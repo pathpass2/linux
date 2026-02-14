@@ -370,10 +370,21 @@ static struct i2c_driver tca8418_keypad_driver = {
 		.name	= "tca8418_keypad",
 		.of_match_table = tca8418_dt_ids,
 	},
-	.probe		= tca8418_keypad_probe,
+	.probe_new	= tca8418_keypad_probe,
 	.id_table	= tca8418_id,
 };
-module_i2c_driver(tca8418_keypad_driver);
+
+static int __init tca8418_keypad_init(void)
+{
+	return i2c_add_driver(&tca8418_keypad_driver);
+}
+subsys_initcall(tca8418_keypad_init);
+
+static void __exit tca8418_keypad_exit(void)
+{
+	i2c_del_driver(&tca8418_keypad_driver);
+}
+module_exit(tca8418_keypad_exit);
 
 MODULE_AUTHOR("Kyle Manna <kyle.manna@fuel7.com>");
 MODULE_DESCRIPTION("Keypad driver for TCA8418");

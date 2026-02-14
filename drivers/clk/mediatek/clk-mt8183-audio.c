@@ -87,17 +87,16 @@ static int clk_mt8183_audio_probe(struct platform_device *pdev)
 	return r;
 }
 
-static void clk_mt8183_audio_remove(struct platform_device *pdev)
+static int clk_mt8183_audio_remove(struct platform_device *pdev)
 {
 	of_platform_depopulate(&pdev->dev);
-	mtk_clk_simple_remove(pdev);
+	return mtk_clk_simple_remove(pdev);
 }
 
 static const struct of_device_id of_match_clk_mt8183_audio[] = {
 	{ .compatible = "mediatek,mt8183-audiosys", .data = &audio_desc },
 	{ /* sentinel */ }
 };
-MODULE_DEVICE_TABLE(of, of_match_clk_mt8183_audio);
 
 static struct platform_driver clk_mt8183_audio_drv = {
 	.probe = clk_mt8183_audio_probe,
@@ -107,7 +106,5 @@ static struct platform_driver clk_mt8183_audio_drv = {
 		.of_match_table = of_match_clk_mt8183_audio,
 	},
 };
-module_platform_driver(clk_mt8183_audio_drv);
 
-MODULE_DESCRIPTION("MediaTek MT8183 audio clocks driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(clk_mt8183_audio_drv);

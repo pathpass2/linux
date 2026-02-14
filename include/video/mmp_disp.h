@@ -156,7 +156,7 @@ struct mmp_overlay {
 	int status;
 	struct mutex access_ok;
 
-	const struct mmp_overlay_ops *ops;
+	struct mmp_overlay_ops *ops;
 };
 
 /* panel type */
@@ -231,7 +231,7 @@ struct mmp_path {
 
 	/* layers */
 	int overlay_num;
-	struct mmp_overlay overlays[] __counted_by(overlay_num);
+	struct mmp_overlay overlays[];
 };
 
 extern struct mmp_path *mmp_get_path(const char *name);
@@ -299,7 +299,7 @@ struct mmp_path_info {
 	int overlay_num;
 	void (*set_mode)(struct mmp_path *path, struct mmp_mode *mode);
 	void (*set_onoff)(struct mmp_path *path, int status);
-	const struct mmp_overlay_ops *overlay_ops;
+	struct mmp_overlay_ops *overlay_ops;
 	void *plat_data;
 };
 

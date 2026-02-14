@@ -40,14 +40,12 @@
 #include <linux/random.h>
 #include <linux/elf-randomize.h>
 #include <linux/of_fdt.h>
-#include <linux/kfence.h>
 
 #include <asm/interrupt.h>
 #include <asm/processor.h>
 #include <asm/mmu.h>
 #include <asm/mmu_context.h>
 #include <asm/page.h>
-#include <asm/pgalloc.h>
 #include <asm/types.h>
 #include <linux/uaccess.h>
 #include <asm/machdep.h>
@@ -57,9 +55,9 @@
 #include <asm/cacheflush.h>
 #include <asm/cputable.h>
 #include <asm/sections.h>
-#include <asm/spu.h>
+#include <asm/copro.h>
 #include <asm/udbg.h>
-#include <asm/text-patching.h>
+#include <asm/code-patching.h>
 #include <asm/fadump.h>
 #include <asm/firmware.h>
 #include <asm/tm.h>
@@ -68,7 +66,6 @@
 #include <asm/pte-walk.h>
 #include <asm/asm-prototypes.h>
 #include <asm/ultravisor.h>
-#include <asm/kfence.h>
 
 #include <mm/mmu_decl.h>
 
@@ -126,7 +123,9 @@ EXPORT_SYMBOL_GPL(mmu_slb_size);
 #ifdef CONFIG_PPC_64K_PAGES
 int mmu_ci_restrictions;
 #endif
-struct mmu_hash_ops mmu_hash_ops __ro_after_init;
+static u8 *linear_map_hash_slots;
+static unsigned long linear_map_hash_count;
+struct mmu_hash_ops mmu_hash_ops;
 EXPORT_SYMBOL(mmu_hash_ops);
 
 /*
@@ -274,272 +273,6 @@ void hash__tlbiel_all(unsigned int action)
 		WARN(1, "%s called on pre-POWER7 CPU\n", __func__);
 }
 
-#if defined(CONFIG_DEBUG_PAGEALLOC) || defined(CONFIG_KFENCE)
-static void kernel_map_linear_page(unsigned long vaddr, unsigned long idx,
-				   u8 *slots, raw_spinlock_t *lock)
-{
-	unsigned long hash;
-	unsigned long vsid = get_kernel_vsid(vaddr, mmu_kernel_ssize);
-	unsigned long vpn = hpt_vpn(vaddr, vsid, mmu_kernel_ssize);
-	unsigned long mode = htab_convert_pte_flags(pgprot_val(PAGE_KERNEL), HPTE_USE_KERNEL_KEY);
-	long ret;
-
-	hash = hpt_hash(vpn, PAGE_SHIFT, mmu_kernel_ssize);
-
-	/* Don't create HPTE entries for bad address */
-	if (!vsid)
-		return;
-
-	if (slots[idx] & 0x80)
-		return;
-
-	ret = hpte_insert_repeating(hash, vpn, __pa(vaddr), mode,
-				    HPTE_V_BOLTED,
-				    mmu_linear_psize, mmu_kernel_ssize);
-
-	BUG_ON (ret < 0);
-	raw_spin_lock(lock);
-	BUG_ON(slots[idx] & 0x80);
-	slots[idx] = ret | 0x80;
-	raw_spin_unlock(lock);
-}
-
-static void kernel_unmap_linear_page(unsigned long vaddr, unsigned long idx,
-				     u8 *slots, raw_spinlock_t *lock)
-{
-	unsigned long hash, hslot, slot;
-	unsigned long vsid = get_kernel_vsid(vaddr, mmu_kernel_ssize);
-	unsigned long vpn = hpt_vpn(vaddr, vsid, mmu_kernel_ssize);
-
-	hash = hpt_hash(vpn, PAGE_SHIFT, mmu_kernel_ssize);
-	raw_spin_lock(lock);
-	if (!(slots[idx] & 0x80)) {
-		raw_spin_unlock(lock);
-		return;
-	}
-	hslot = slots[idx] & 0x7f;
-	slots[idx] = 0;
-	raw_spin_unlock(lock);
-	if (hslot & _PTEIDX_SECONDARY)
-		hash = ~hash;
-	slot = (hash & htab_hash_mask) * HPTES_PER_GROUP;
-	slot += hslot & _PTEIDX_GROUP_IX;
-	mmu_hash_ops.hpte_invalidate(slot, vpn, mmu_linear_psize,
-				     mmu_linear_psize,
-				     mmu_kernel_ssize, 0);
-}
-#endif
-
-static inline bool hash_supports_debug_pagealloc(void)
-{
-	unsigned long max_hash_count = ppc64_rma_size / 4;
-	unsigned long linear_map_count = memblock_end_of_DRAM() >> PAGE_SHIFT;
-
-	if (!debug_pagealloc_enabled() || linear_map_count > max_hash_count)
-		return false;
-	return true;
-}
-
-#ifdef CONFIG_DEBUG_PAGEALLOC
-static u8 *linear_map_hash_slots;
-static unsigned long linear_map_hash_count;
-static DEFINE_RAW_SPINLOCK(linear_map_hash_lock);
-static __init void hash_debug_pagealloc_alloc_slots(void)
-{
-	if (!hash_supports_debug_pagealloc())
-		return;
-
-	linear_map_hash_count = memblock_end_of_DRAM() >> PAGE_SHIFT;
-	linear_map_hash_slots = memblock_alloc_try_nid(
-			linear_map_hash_count, 1, MEMBLOCK_LOW_LIMIT,
-			ppc64_rma_size,	NUMA_NO_NODE);
-	if (!linear_map_hash_slots)
-		panic("%s: Failed to allocate %lu bytes max_addr=%pa\n",
-		      __func__, linear_map_hash_count, &ppc64_rma_size);
-}
-
-static inline void hash_debug_pagealloc_add_slot(phys_addr_t paddr,
-							int slot)
-{
-	if (!debug_pagealloc_enabled() || !linear_map_hash_count)
-		return;
-	if ((paddr >> PAGE_SHIFT) < linear_map_hash_count)
-		linear_map_hash_slots[paddr >> PAGE_SHIFT] = slot | 0x80;
-}
-
-static int hash_debug_pagealloc_map_pages(struct page *page, int numpages,
-					  int enable)
-{
-	unsigned long flags, vaddr, lmi;
-	int i;
-
-	if (!debug_pagealloc_enabled() || !linear_map_hash_count)
-		return 0;
-
-	local_irq_save(flags);
-	for (i = 0; i < numpages; i++, page++) {
-		vaddr = (unsigned long)page_address(page);
-		lmi = __pa(vaddr) >> PAGE_SHIFT;
-		if (lmi >= linear_map_hash_count)
-			continue;
-		if (enable)
-			kernel_map_linear_page(vaddr, lmi,
-				linear_map_hash_slots, &linear_map_hash_lock);
-		else
-			kernel_unmap_linear_page(vaddr, lmi,
-				linear_map_hash_slots, &linear_map_hash_lock);
-	}
-	local_irq_restore(flags);
-	return 0;
-}
-
-#else /* CONFIG_DEBUG_PAGEALLOC */
-static inline void hash_debug_pagealloc_alloc_slots(void) {}
-static inline void hash_debug_pagealloc_add_slot(phys_addr_t paddr, int slot) {}
-static int __maybe_unused
-hash_debug_pagealloc_map_pages(struct page *page, int numpages, int enable)
-{
-	return 0;
-}
-#endif /* CONFIG_DEBUG_PAGEALLOC */
-
-#ifdef CONFIG_KFENCE
-static u8 *linear_map_kf_hash_slots;
-static unsigned long linear_map_kf_hash_count;
-static DEFINE_RAW_SPINLOCK(linear_map_kf_hash_lock);
-
-static phys_addr_t kfence_pool;
-
-static __init void hash_kfence_alloc_pool(void)
-{
-	if (!kfence_early_init_enabled())
-		goto err;
-
-	/* allocate linear map for kfence within RMA region */
-	linear_map_kf_hash_count = KFENCE_POOL_SIZE >> PAGE_SHIFT;
-	linear_map_kf_hash_slots = memblock_alloc_try_nid(
-					linear_map_kf_hash_count, 1,
-					MEMBLOCK_LOW_LIMIT, ppc64_rma_size,
-					NUMA_NO_NODE);
-	if (!linear_map_kf_hash_slots) {
-		pr_err("%s: memblock for linear map (%lu) failed\n", __func__,
-				linear_map_kf_hash_count);
-		goto err;
-	}
-
-	/* allocate kfence pool early */
-	kfence_pool = memblock_phys_alloc_range(KFENCE_POOL_SIZE, PAGE_SIZE,
-				MEMBLOCK_LOW_LIMIT, MEMBLOCK_ALLOC_ANYWHERE);
-	if (!kfence_pool) {
-		pr_err("%s: memblock for kfence pool (%lu) failed\n", __func__,
-				KFENCE_POOL_SIZE);
-		memblock_free(linear_map_kf_hash_slots,
-				linear_map_kf_hash_count);
-		linear_map_kf_hash_count = 0;
-		goto err;
-	}
-	memblock_mark_nomap(kfence_pool, KFENCE_POOL_SIZE);
-
-	return;
-err:
-	pr_info("Disabling kfence\n");
-	disable_kfence();
-}
-
-static __init void hash_kfence_map_pool(void)
-{
-	unsigned long kfence_pool_start, kfence_pool_end;
-	unsigned long prot = pgprot_val(PAGE_KERNEL);
-	unsigned int pshift = mmu_psize_defs[mmu_linear_psize].shift;
-
-	if (!kfence_pool)
-		return;
-
-	kfence_pool_start = (unsigned long) __va(kfence_pool);
-	kfence_pool_end = kfence_pool_start + KFENCE_POOL_SIZE;
-	__kfence_pool = (char *) kfence_pool_start;
-	BUG_ON(htab_bolt_mapping(kfence_pool_start, kfence_pool_end,
-				    kfence_pool, prot, mmu_linear_psize,
-				    mmu_kernel_ssize));
-	update_page_count(mmu_linear_psize, KFENCE_POOL_SIZE >> pshift);
-	memblock_clear_nomap(kfence_pool, KFENCE_POOL_SIZE);
-}
-
-static inline void hash_kfence_add_slot(phys_addr_t paddr, int slot)
-{
-	unsigned long vaddr = (unsigned long) __va(paddr);
-	unsigned long lmi = (vaddr - (unsigned long)__kfence_pool)
-					>> PAGE_SHIFT;
-
-	if (!kfence_pool)
-		return;
-	BUG_ON(!is_kfence_address((void *)vaddr));
-	BUG_ON(lmi >= linear_map_kf_hash_count);
-	linear_map_kf_hash_slots[lmi] = slot | 0x80;
-}
-
-static int hash_kfence_map_pages(struct page *page, int numpages, int enable)
-{
-	unsigned long flags, vaddr, lmi;
-	int i;
-
-	WARN_ON_ONCE(!linear_map_kf_hash_count);
-	local_irq_save(flags);
-	for (i = 0; i < numpages; i++, page++) {
-		vaddr = (unsigned long)page_address(page);
-		lmi = (vaddr - (unsigned long)__kfence_pool) >> PAGE_SHIFT;
-
-		/* Ideally this should never happen */
-		if (lmi >= linear_map_kf_hash_count) {
-			WARN_ON_ONCE(1);
-			continue;
-		}
-
-		if (enable)
-			kernel_map_linear_page(vaddr, lmi,
-					       linear_map_kf_hash_slots,
-					       &linear_map_kf_hash_lock);
-		else
-			kernel_unmap_linear_page(vaddr, lmi,
-						 linear_map_kf_hash_slots,
-						 &linear_map_kf_hash_lock);
-	}
-	local_irq_restore(flags);
-	return 0;
-}
-#else
-static inline void hash_kfence_alloc_pool(void) {}
-static inline void hash_kfence_map_pool(void) {}
-static inline void hash_kfence_add_slot(phys_addr_t paddr, int slot) {}
-static int __maybe_unused
-hash_kfence_map_pages(struct page *page, int numpages, int enable)
-{
-	return 0;
-}
-#endif
-
-#if defined(CONFIG_DEBUG_PAGEALLOC) || defined(CONFIG_KFENCE)
-int hash__kernel_map_pages(struct page *page, int numpages, int enable)
-{
-	void *vaddr = page_address(page);
-
-	if (is_kfence_address(vaddr))
-		return hash_kfence_map_pages(page, numpages, enable);
-	else
-		return hash_debug_pagealloc_map_pages(page, numpages, enable);
-}
-
-static void hash_linear_map_add_slot(phys_addr_t paddr, int slot)
-{
-	if (is_kfence_address(__va(paddr)))
-		hash_kfence_add_slot(paddr, slot);
-	else
-		hash_debug_pagealloc_add_slot(paddr, slot);
-}
-#else
-static void hash_linear_map_add_slot(phys_addr_t paddr, int slot) {}
-#endif
-
 /*
  * 'R' and 'C' update notes:
  *  - Under pHyp or KVM, the updatepp path will not set C, thus it *will*
@@ -577,16 +310,9 @@ unsigned long htab_convert_pte_flags(unsigned long pteflags, unsigned long flags
 			else
 				rflags |= 0x3;
 		}
-		VM_WARN_ONCE(!(pteflags & _PAGE_RWX), "no-access mapping request");
 	} else {
 		if (pteflags & _PAGE_RWX)
 			rflags |= 0x2;
-		/*
-		 * We should never hit this in normal fault handling because
-		 * a permission check (check_pte_access()) will bubble this
-		 * to higher level linux handler even for PAGE_NONE.
-		 */
-		VM_WARN_ONCE(!(pteflags & _PAGE_RWX), "no-access mapping request");
 		if (!((pteflags & _PAGE_WRITE) && (pteflags & _PAGE_DIRTY)))
 			rflags |= 0x1;
 	}
@@ -698,8 +424,9 @@ repeat:
 			break;
 
 		cond_resched();
-		/* add slot info in debug_pagealloc / kfence linear map */
-		hash_linear_map_add_slot(paddr, ret);
+		if (debug_pagealloc_enabled_or_kfence() &&
+			(paddr >> PAGE_SHIFT) < linear_map_hash_count)
+			linear_map_hash_slots[paddr >> PAGE_SHIFT] = ret | 0x80;
 	}
 	return ret < 0 ? ret : 0;
 }
@@ -955,7 +682,7 @@ static int __init htab_dt_scan_hugepage_blocks(unsigned long node,
 	block_size = be64_to_cpu(addr_prop[1]);
 	if (block_size != (16 * GB))
 		return 0;
-	pr_info("Huge page(16GB) memory: "
+	printk(KERN_INFO "Huge page(16GB) memory: "
 			"addr = 0x%lX size = 0x%lX pages = %d\n",
 			phys_addr, block_size, expected_pages);
 	if (phys_addr + block_size * expected_pages <= memblock_end_of_DRAM()) {
@@ -1080,7 +807,7 @@ static void __init htab_init_page_sizes(void)
 	bool aligned = true;
 	init_hpte_page_sizes();
 
-	if (!hash_supports_debug_pagealloc() && !kfence_early_init_enabled()) {
+	if (!debug_pagealloc_enabled_or_kfence()) {
 		/*
 		 * Pick a size for the linear mapping. Currently, we only
 		 * support 16M, 1M and 4K which is the default
@@ -1138,7 +865,7 @@ static void __init htab_init_page_sizes(void)
 		mmu_vmemmap_psize = mmu_virtual_psize;
 #endif /* CONFIG_SPARSEMEM_VMEMMAP */
 
-	pr_info("Page orders: linear mapping = %d, "
+	printk(KERN_DEBUG "Page orders: linear mapping = %d, "
 	       "virtual = %d, io = %d"
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 	       ", vmemmap = %d"
@@ -1237,7 +964,6 @@ int hash__create_section_mapping(unsigned long start, unsigned long end,
 				 int nid, pgprot_t prot)
 {
 	int rc;
-	unsigned int pshift = mmu_psize_defs[mmu_linear_psize].shift;
 
 	if (end >= H_VMALLOC_START) {
 		pr_warn("Outside the supported range\n");
@@ -1255,22 +981,17 @@ int hash__create_section_mapping(unsigned long start, unsigned long end,
 					      mmu_kernel_ssize);
 		BUG_ON(rc2 && (rc2 != -ENOENT));
 	}
-	update_page_count(mmu_linear_psize, (end - start) >> pshift);
 	return rc;
 }
 
 int hash__remove_section_mapping(unsigned long start, unsigned long end)
 {
-	unsigned int pshift = mmu_psize_defs[mmu_linear_psize].shift;
-
 	int rc = htab_remove_mapping(start, end, mmu_linear_psize,
 				     mmu_kernel_ssize);
 
 	if (resize_hpt_for_hotplug(memblock_phys_mem_size()) == -ENOSPC)
 		pr_warn("Hash collision while resizing HPT\n");
 
-	if (!rc)
-		update_page_count(mmu_linear_psize, -((end - start) >> pshift));
 	return rc;
 }
 #endif /* CONFIG_MEMORY_HOTPLUG */
@@ -1311,26 +1032,19 @@ static void __init htab_initialize(void)
 	unsigned long table;
 	unsigned long pteg_count;
 	unsigned long prot;
-	phys_addr_t base = 0, size = 0, end, limit = MEMBLOCK_ALLOC_ANYWHERE;
+	phys_addr_t base = 0, size = 0, end;
 	u64 i;
-	unsigned int pshift = mmu_psize_defs[mmu_linear_psize].shift;
 
 	DBG(" -> htab_initialize()\n");
-
-	if (firmware_has_feature(FW_FEATURE_LPAR))
-		limit = ppc64_rma_size;
 
 	if (mmu_has_feature(MMU_FTR_1T_SEGMENT)) {
 		mmu_kernel_ssize = MMU_SEGSIZE_1T;
 		mmu_highuser_ssize = MMU_SEGSIZE_1T;
-		pr_info("Using 1TB segments\n");
+		printk(KERN_INFO "Using 1TB segments\n");
 	}
 
 	if (stress_slb_enabled)
 		static_branch_enable(&stress_slb_key);
-
-	if (no_slb_preload)
-		static_branch_enable(&no_slb_preload_key);
 
 	if (stress_hpt_enabled) {
 		unsigned long tmp;
@@ -1338,7 +1052,7 @@ static void __init htab_initialize(void)
 		// Too early to use nr_cpu_ids, so use NR_CPUS
 		tmp = memblock_phys_alloc_range(sizeof(struct stress_hpt_struct) * NR_CPUS,
 						__alignof__(struct stress_hpt_struct),
-						MEMBLOCK_LOW_LIMIT, limit);
+						0, MEMBLOCK_ALLOC_ANYWHERE);
 		memset((void *)tmp, 0xff, sizeof(struct stress_hpt_struct) * NR_CPUS);
 		stress_hpt_struct = __va(tmp);
 
@@ -1372,10 +1086,23 @@ static void __init htab_initialize(void)
 			mmu_hash_ops.hpte_clear_all();
 #endif
 	} else {
+		unsigned long limit = MEMBLOCK_ALLOC_ANYWHERE;
+
+#ifdef CONFIG_PPC_CELL
+		/*
+		 * Cell may require the hash table down low when using the
+		 * Axon IOMMU in order to fit the dynamic region over it, see
+		 * comments in cell/iommu.c
+		 */
+		if (fdt_subnode_offset(initial_boot_params, 0, "axon") > 0) {
+			limit = 0x80000000;
+			pr_info("Hash table forced below 2G for Axon IOMMU\n");
+		}
+#endif /* CONFIG_PPC_CELL */
 
 		table = memblock_phys_alloc_range(htab_size_bytes,
 						  htab_size_bytes,
-						  MEMBLOCK_LOW_LIMIT, limit);
+						  0, limit);
 		if (!table)
 			panic("ERROR: Failed to allocate %pa bytes below %pa\n",
 			      &htab_size_bytes, &limit);
@@ -1400,15 +1127,23 @@ static void __init htab_initialize(void)
 
 	prot = pgprot_val(PAGE_KERNEL);
 
-	hash_debug_pagealloc_alloc_slots();
-	hash_kfence_alloc_pool();
+	if (debug_pagealloc_enabled_or_kfence()) {
+		linear_map_hash_count = memblock_end_of_DRAM() >> PAGE_SHIFT;
+		linear_map_hash_slots = memblock_alloc_try_nid(
+				linear_map_hash_count, 1, MEMBLOCK_LOW_LIMIT,
+				ppc64_rma_size,	NUMA_NO_NODE);
+		if (!linear_map_hash_slots)
+			panic("%s: Failed to allocate %lu bytes max_addr=%pa\n",
+			      __func__, linear_map_hash_count, &ppc64_rma_size);
+	}
+
 	/* create bolted the linear mapping in the hash table */
 	for_each_mem_range(i, &base, &end) {
 		size = end - base;
 		base = (unsigned long)__va(base);
 
-		pr_debug("creating mapping for region: 0x%pa..0x%pa (prot: %lx)\n",
-				&base, &size, prot);
+		DBG("creating mapping for region: %lx..%lx (prot: %lx)\n",
+		    base, size, prot);
 
 		if ((base + size) >= H_VMALLOC_START) {
 			pr_warn("Outside the supported range\n");
@@ -1417,10 +1152,7 @@ static void __init htab_initialize(void)
 
 		BUG_ON(htab_bolt_mapping(base, base + size, __pa(base),
 				prot, mmu_linear_psize, mmu_kernel_ssize));
-
-		update_page_count(mmu_linear_psize, size >> pshift);
 	}
-	hash_kfence_map_pool();
 	memblock_set_current_limit(MEMBLOCK_ALLOC_ANYWHERE);
 
 	/*
@@ -1440,8 +1172,6 @@ static void __init htab_initialize(void)
 		BUG_ON(htab_bolt_mapping(tce_alloc_start, tce_alloc_end,
 					 __pa(tce_alloc_start), prot,
 					 mmu_linear_psize, mmu_kernel_ssize));
-		update_page_count(mmu_linear_psize,
-				  (tce_alloc_end - tce_alloc_start) >> pshift);
 	}
 
 
@@ -1496,6 +1226,10 @@ void __init hash__early_init_mmu(void)
 	__pmd_table_size = H_PMD_TABLE_SIZE;
 	__pud_table_size = H_PUD_TABLE_SIZE;
 	__pgd_table_size = H_PGD_TABLE_SIZE;
+	/*
+	 * 4k use hugepd format, so for hash set then to
+	 * zero
+	 */
 	__pmd_val_bits = HASH_PMD_VAL_BITS;
 	__pud_val_bits = HASH_PUD_VAL_BITS;
 	__pgd_val_bits = HASH_PGD_VAL_BITS;
@@ -1573,19 +1307,18 @@ void hash__early_init_mmu_secondary(void)
  */
 unsigned int hash_page_do_lazy_icache(unsigned int pp, pte_t pte, int trap)
 {
-	struct folio *folio;
+	struct page *page;
 
 	if (!pfn_valid(pte_pfn(pte)))
 		return pp;
 
-	folio = page_folio(pte_page(pte));
+	page = pte_page(pte);
 
 	/* page is dirty */
-	if (!test_bit(PG_dcache_clean, &folio->flags.f) &&
-	    !folio_test_reserved(folio)) {
+	if (!test_bit(PG_dcache_clean, &page->flags) && !PageReserved(page)) {
 		if (trap == INTERRUPT_INST_STORAGE) {
-			flush_dcache_icache_folio(folio);
-			set_bit(PG_dcache_clean, &folio->flags.f);
+			flush_dcache_icache_page(page);
+			set_bit(PG_dcache_clean, &page->flags);
 		} else
 			pp |= HPTE_R_N;
 	}
@@ -1619,9 +1352,7 @@ void demote_segment_4k(struct mm_struct *mm, unsigned long addr)
 	if (get_slice_psize(mm, addr) == MMU_PAGE_4K)
 		return;
 	slice_set_range_psize(mm, addr, 1, MMU_PAGE_4K);
-#ifdef CONFIG_SPU_BASE
-	spu_flush_all_slbs(mm);
-#endif
+	copro_flush_all_slbs(mm);
 	if ((get_paca_psize(addr) != MMU_PAGE_4K) && (current->mm == mm)) {
 
 		copy_mm_to_paca(mm);
@@ -1807,13 +1538,6 @@ int hash_page_mm(struct mm_struct *mm, unsigned long ea,
 		goto bail;
 	}
 
-	if (IS_ENABLED(CONFIG_PPC_4K_PAGES) && !radix_enabled()) {
-		if (hugeshift == PMD_SHIFT && psize == MMU_PAGE_16M)
-			hugeshift = mmu_psize_defs[MMU_PAGE_16M].shift;
-		if (hugeshift == PUD_SHIFT && psize == MMU_PAGE_16G)
-			hugeshift = mmu_psize_defs[MMU_PAGE_16G].shift;
-	}
-
 	/*
 	 * Add _PAGE_PRESENT to the required access perm. If there are parallel
 	 * updates to the pte that can possibly clear _PAGE_PTE, catch that too.
@@ -1886,13 +1610,11 @@ int hash_page_mm(struct mm_struct *mm, unsigned long ea,
 			 * in vmalloc space, so switch vmalloc
 			 * to 4k pages
 			 */
-			pr_alert("Reducing vmalloc segment "
+			printk(KERN_ALERT "Reducing vmalloc segment "
 			       "to 4kB pages because of "
 			       "non-cacheable mapping\n");
 			psize = mmu_vmalloc_psize = MMU_PAGE_4K;
-#ifdef CONFIG_SPU_BASE
-			spu_flush_all_slbs(mm);
-#endif
+			copro_flush_all_slbs(mm);
 		}
 	}
 
@@ -2387,6 +2109,81 @@ void hpt_do_stress(unsigned long ea, unsigned long hpte_group)
 	}
 }
 
+#if defined(CONFIG_DEBUG_PAGEALLOC) || defined(CONFIG_KFENCE)
+static DEFINE_RAW_SPINLOCK(linear_map_hash_lock);
+
+static void kernel_map_linear_page(unsigned long vaddr, unsigned long lmi)
+{
+	unsigned long hash;
+	unsigned long vsid = get_kernel_vsid(vaddr, mmu_kernel_ssize);
+	unsigned long vpn = hpt_vpn(vaddr, vsid, mmu_kernel_ssize);
+	unsigned long mode = htab_convert_pte_flags(pgprot_val(PAGE_KERNEL), HPTE_USE_KERNEL_KEY);
+	long ret;
+
+	hash = hpt_hash(vpn, PAGE_SHIFT, mmu_kernel_ssize);
+
+	/* Don't create HPTE entries for bad address */
+	if (!vsid)
+		return;
+
+	if (linear_map_hash_slots[lmi] & 0x80)
+		return;
+
+	ret = hpte_insert_repeating(hash, vpn, __pa(vaddr), mode,
+				    HPTE_V_BOLTED,
+				    mmu_linear_psize, mmu_kernel_ssize);
+
+	BUG_ON (ret < 0);
+	raw_spin_lock(&linear_map_hash_lock);
+	BUG_ON(linear_map_hash_slots[lmi] & 0x80);
+	linear_map_hash_slots[lmi] = ret | 0x80;
+	raw_spin_unlock(&linear_map_hash_lock);
+}
+
+static void kernel_unmap_linear_page(unsigned long vaddr, unsigned long lmi)
+{
+	unsigned long hash, hidx, slot;
+	unsigned long vsid = get_kernel_vsid(vaddr, mmu_kernel_ssize);
+	unsigned long vpn = hpt_vpn(vaddr, vsid, mmu_kernel_ssize);
+
+	hash = hpt_hash(vpn, PAGE_SHIFT, mmu_kernel_ssize);
+	raw_spin_lock(&linear_map_hash_lock);
+	if (!(linear_map_hash_slots[lmi] & 0x80)) {
+		raw_spin_unlock(&linear_map_hash_lock);
+		return;
+	}
+	hidx = linear_map_hash_slots[lmi] & 0x7f;
+	linear_map_hash_slots[lmi] = 0;
+	raw_spin_unlock(&linear_map_hash_lock);
+	if (hidx & _PTEIDX_SECONDARY)
+		hash = ~hash;
+	slot = (hash & htab_hash_mask) * HPTES_PER_GROUP;
+	slot += hidx & _PTEIDX_GROUP_IX;
+	mmu_hash_ops.hpte_invalidate(slot, vpn, mmu_linear_psize,
+				     mmu_linear_psize,
+				     mmu_kernel_ssize, 0);
+}
+
+void hash__kernel_map_pages(struct page *page, int numpages, int enable)
+{
+	unsigned long flags, vaddr, lmi;
+	int i;
+
+	local_irq_save(flags);
+	for (i = 0; i < numpages; i++, page++) {
+		vaddr = (unsigned long)page_address(page);
+		lmi = __pa(vaddr) >> PAGE_SHIFT;
+		if (lmi >= linear_map_hash_count)
+			continue;
+		if (enable)
+			kernel_map_linear_page(vaddr, lmi);
+		else
+			kernel_unmap_linear_page(vaddr, lmi);
+	}
+	local_irq_restore(flags);
+}
+#endif /* CONFIG_DEBUG_PAGEALLOC || CONFIG_KFENCE */
+
 void hash__setup_initial_memory_limit(phys_addr_t first_memblock_base,
 				phys_addr_t first_memblock_size)
 {
@@ -2451,8 +2248,6 @@ DEFINE_DEBUGFS_ATTRIBUTE(fops_hpt_order, hpt_order_get, hpt_order_set, "%llu\n")
 
 static int __init hash64_debugfs(void)
 {
-	if (radix_enabled())
-		return 0;
 	debugfs_create_file("hpt_order", 0600, arch_debugfs_dir, NULL,
 			    &fops_hpt_order);
 	return 0;

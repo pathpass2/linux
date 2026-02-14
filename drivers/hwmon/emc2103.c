@@ -277,10 +277,8 @@ fan1_input_show(struct device *dev, struct device_attribute *da, char *buf)
 {
 	struct emc2103_data *data = emc2103_update_device(dev);
 	int rpm = 0;
-	mutex_lock(&data->update_lock);
 	if (data->fan_tach != 0)
 		rpm = (FAN_RPM_FACTOR * data->fan_multiplier) / data->fan_tach;
-	mutex_unlock(&data->update_lock);
 	return sprintf(buf, "%d\n", rpm);
 }
 
@@ -365,12 +363,10 @@ fan1_target_show(struct device *dev, struct device_attribute *da, char *buf)
 	struct emc2103_data *data = emc2103_update_device(dev);
 	int rpm = 0;
 
-	mutex_lock(&data->update_lock);
 	/* high byte of 0xff indicates disabled so return 0 */
 	if ((data->fan_target != 0) && ((data->fan_target & 0x1fe0) != 0x1fe0))
 		rpm = (FAN_RPM_FACTOR * data->fan_multiplier)
 			/ data->fan_target;
-	mutex_unlock(&data->update_lock);
 
 	return sprintf(buf, "%d\n", rpm);
 }
@@ -624,7 +620,7 @@ emc2103_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id emc2103_ids[] = {
-	{ "emc2103" },
+	{ "emc2103", 0, },
 	{ /* LIST END */ }
 };
 MODULE_DEVICE_TABLE(i2c, emc2103_ids);
@@ -657,7 +653,7 @@ static struct i2c_driver emc2103_driver = {
 	.driver = {
 		.name	= "emc2103",
 	},
-	.probe		= emc2103_probe,
+	.probe_new	= emc2103_probe,
 	.id_table	= emc2103_ids,
 	.detect		= emc2103_detect,
 	.address_list	= normal_i2c,

@@ -1,6 +1,7 @@
-// SPDX-License-Identifier: (GPL-2.0-or-later OR MIT)
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2022 PHYTEC Messtechnik GmbH
+ * Author: Teresa Remmet <t.remmet@phytec.de>
  */
 
 /dts-v1/;
@@ -139,28 +140,8 @@
 	};
 };
 
-/* TPM */
-&ecspi2 {
-	cs-gpios = <&gpio5 13 GPIO_ACTIVE_LOW>;
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_ecspi2>;
-	#address-cells = <1>;
-	#size-cells = <0>;
-	status = "okay";
-
-	tpm: tpm@0 {
-		compatible = "infineon,slb9670", "tcg,tpm_tis-spi";
-		interrupt-parent = <&gpio2>;
-		interrupts = <11 IRQ_TYPE_LEVEL_LOW>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_tpm>;
-		reg = <0>;
-		spi-max-frequency = <43000000>;
-	};
-};
-
 &gpio1 {
-	gpio-line-names = "", "LED_RED", "WDOG_INT", "X_RTC_INT",
+	gpio-line-names = "nINT_ETHPHY", "LED_RED", "WDOG_INT", "X_RTC_INT",
 		"", "", "", "RESET_ETHPHY",
 		"CAN_nINT", "CAN_EN", "nENABLE_FLATLINK", "",
 		"USB_OTG_VBUS_EN", "", "LED_GREEN", "LED_BLUE";
@@ -187,15 +168,6 @@
 		"", "ECSPI1_SS0";
 };
 
-&i2c4 {
-	clock-frequency = <400000>;
-	pinctrl-names = "default", "gpio";
-	pinctrl-0 = <&pinctrl_i2c4>;
-	pinctrl-1 = <&pinctrl_i2c4_gpio>;
-	sda-gpios = <&gpio5 21 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
-	scl-gpios = <&gpio5 20 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
-};
-
 /* PCIe */
 &pcie0 {
 	assigned-clocks = <&clk IMX8MM_CLK_PCIE1_AUX>,
@@ -218,15 +190,8 @@
 	status = "okay";
 };
 
-/* RTC */
 &rv3028 {
-	interrupt-parent = <&gpio1>;
-	interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
-	pinctrl-0 = <&pinctrl_rtc>;
-	pinctrl-names = "default";
-	aux-voltage-chargeable = <1>;
 	trickle-resistor-ohms = <3000>;
-	wakeup-source;
 };
 
 &snvs_pwrkey {
@@ -260,12 +225,11 @@
 		device-wakeup-gpios = <&gpio2 8 GPIO_ACTIVE_HIGH>;
 		interrupt-names = "host-wakeup";
 		interrupt-parent = <&gpio2>;
-		interrupts = <9 IRQ_TYPE_EDGE_FALLING>;
+		interrupts = <9 IRQ_TYPE_EDGE_BOTH>;
 		max-speed = <2000000>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_bt>;
 		shutdown-gpios = <&gpio2 6 GPIO_ACTIVE_HIGH>;
-		vbat-supply = <&reg_vcc_3v3>;
 		vddio-supply = <&reg_vcc_3v3>;
 	};
 };
@@ -284,8 +248,6 @@
 	over-current-active-low;
 	samsung,picophy-pre-emp-curr-control = <3>;
 	samsung,picophy-dc-vol-level-adjust = <7>;
-	pinctrl-0 = <&pinctrl_usbotg1>;
-	pinctrl-names = "default";
 	srp-disable;
 	vbus-supply = <&reg_usb_otg1_vbus>;
 	status = "okay";
@@ -340,7 +302,7 @@
 		fsl,pins = <
 			MX8MM_IOMUXC_SD1_DATA4_GPIO2_IO6	0x00
 			MX8MM_IOMUXC_SD1_DATA6_GPIO2_IO8	0x00
-			MX8MM_IOMUXC_SD1_DATA7_GPIO2_IO9	0x140
+			MX8MM_IOMUXC_SD1_DATA7_GPIO2_IO9	0x00
 		>;
 	};
 
@@ -365,32 +327,9 @@
 		>;
 	};
 
-	pinctrl_ecspi2: ecspi2grp {
-		fsl,pins = <
-			MX8MM_IOMUXC_ECSPI2_MISO_ECSPI2_MISO    0x80
-			MX8MM_IOMUXC_ECSPI2_MOSI_ECSPI2_MOSI    0x80
-			MX8MM_IOMUXC_ECSPI2_SCLK_ECSPI2_SCLK    0x80
-			MX8MM_IOMUXC_ECSPI2_SS0_GPIO5_IO13      0x00
-		>;
-	};
-
 	pinctrl_fan: fan0grp {
 		fsl,pins = <
 			MX8MM_IOMUXC_SAI1_RXD6_GPIO4_IO8	0x16
-		>;
-	};
-
-	pinctrl_i2c4: i2c4grp {
-		fsl,pins = <
-			MX8MM_IOMUXC_I2C4_SCL_I2C4_SCL		0x400001c2
-			MX8MM_IOMUXC_I2C4_SDA_I2C4_SDA		0x400001c2
-		>;
-	};
-
-	pinctrl_i2c4_gpio: i2c4gpiogrp {
-		fsl,pins = <
-			MX8MM_IOMUXC_I2C4_SCL_GPIO5_IO20        0x1e2
-			MX8MM_IOMUXC_I2C4_SDA_GPIO5_IO21        0x1e2
 		>;
 	};
 
@@ -416,18 +355,6 @@
 		>;
 	};
 
-	pinctrl_rtc: rtcgrp {
-		fsl,pins = <
-			MX8MM_IOMUXC_GPIO1_IO03_GPIO1_IO3		0x1c0
-		>;
-	};
-
-	pinctrl_tpm: tpmgrp {
-		fsl,pins = <
-			MX8MM_IOMUXC_SD1_STROBE_GPIO2_IO11      0x140
-		>;
-	};
-
 	pinctrl_uart1: uart1grp {
 		fsl,pins = <
 			MX8MM_IOMUXC_SAI2_RXC_UART1_DCE_RX	0x00
@@ -448,20 +375,14 @@
 
 	pinctrl_uart3: uart3grp {
 		fsl,pins = <
-			MX8MM_IOMUXC_UART3_RXD_UART3_DCE_RX	0x140
-			MX8MM_IOMUXC_UART3_TXD_UART3_DCE_TX	0x140
+			MX8MM_IOMUXC_UART3_RXD_UART3_DCE_RX	0x40
+			MX8MM_IOMUXC_UART3_TXD_UART3_DCE_TX	0x40
 		>;
 	};
 
 	pinctrl_usbotg1pwrgrp: usbotg1pwrgrp {
 		fsl,pins = <
 			MX8MM_IOMUXC_GPIO1_IO12_GPIO1_IO12	0x00
-		>;
-	};
-
-	pinctrl_usbotg1: usbotg1grp {
-		fsl,pins = <
-			MX8MM_IOMUXC_GPIO1_IO13_USB1_OTG_OC	0x00
 		>;
 	};
 

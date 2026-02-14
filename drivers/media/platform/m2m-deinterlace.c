@@ -142,11 +142,6 @@ struct deinterlace_ctx {
 	struct dma_interleaved_template *xt;
 };
 
-static inline struct deinterlace_ctx *file_to_ctx(struct file *filp)
-{
-	return container_of(file_to_v4l2_fh(filp), struct deinterlace_ctx, fh);
-}
-
 /*
  * mem2mem callbacks
  */
@@ -485,7 +480,12 @@ static int vidioc_enum_fmt_vid_out(struct file *file, void *priv,
 
 static int vidioc_g_fmt(struct deinterlace_ctx *ctx, struct v4l2_format *f)
 {
+	struct vb2_queue *vq;
 	struct deinterlace_q_data *q_data;
+
+	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, f->type);
+	if (!vq)
+		return -EINVAL;
 
 	q_data = get_q_data(f->type);
 
@@ -512,13 +512,13 @@ static int vidioc_g_fmt(struct deinterlace_ctx *ctx, struct v4l2_format *f)
 static int vidioc_g_fmt_vid_out(struct file *file, void *priv,
 				struct v4l2_format *f)
 {
-	return vidioc_g_fmt(file_to_ctx(file), f);
+	return vidioc_g_fmt(priv, f);
 }
 
 static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 				struct v4l2_format *f)
 {
-	return vidioc_g_fmt(file_to_ctx(file), f);
+	return vidioc_g_fmt(priv, f);
 }
 
 static int vidioc_try_fmt(struct v4l2_format *f, struct deinterlace_fmt *fmt)
@@ -539,8 +539,8 @@ static int vidioc_try_fmt(struct v4l2_format *f, struct deinterlace_fmt *fmt)
 static int vidioc_try_fmt_vid_cap(struct file *file, void *priv,
 				  struct v4l2_format *f)
 {
-	struct deinterlace_ctx *ctx = file_to_ctx(file);
 	struct deinterlace_fmt *fmt;
+	struct deinterlace_ctx *ctx = priv;
 
 	fmt = find_format(f);
 	if (!fmt || !(fmt->types & MEM2MEM_CAPTURE))
@@ -581,6 +581,8 @@ static int vidioc_s_fmt(struct deinterlace_ctx *ctx, struct v4l2_format *f)
 	struct vb2_queue *vq;
 
 	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, f->type);
+	if (!vq)
+		return -EINVAL;
 
 	q_data = get_q_data(f->type);
 	if (!q_data)
@@ -631,20 +633,20 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	ret = vidioc_try_fmt_vid_cap(file, priv, f);
 	if (ret)
 		return ret;
-	return vidioc_s_fmt(file_to_ctx(file), f);
+	return vidioc_s_fmt(priv, f);
 }
 
 static int vidioc_s_fmt_vid_out(struct file *file, void *priv,
 				struct v4l2_format *f)
 {
-	struct deinterlace_ctx *ctx = file_to_ctx(file);
+	struct deinterlace_ctx *ctx = priv;
 	int ret;
 
 	ret = vidioc_try_fmt_vid_out(file, priv, f);
 	if (ret)
 		return ret;
 
-	ret = vidioc_s_fmt(ctx, f);
+	ret = vidioc_s_fmt(priv, f);
 	if (!ret)
 		ctx->colorspace = f->fmt.pix.colorspace;
 
@@ -654,8 +656,8 @@ static int vidioc_s_fmt_vid_out(struct file *file, void *priv,
 static int vidioc_streamon(struct file *file, void *priv,
 			   enum v4l2_buf_type type)
 {
-	struct deinterlace_ctx *ctx = file_to_ctx(file);
 	struct deinterlace_q_data *s_q_data, *d_q_data;
+	struct deinterlace_ctx *ctx = priv;
 
 	s_q_data = get_q_data(V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	d_q_data = get_q_data(V4L2_BUF_TYPE_VIDEO_CAPTURE);
@@ -722,6 +724,10 @@ static const struct v4l2_ioctl_ops deinterlace_ioctl_ops = {
 /*
  * Queue operations
  */
+struct vb2_dc_conf {
+	struct device           *dev;
+};
+
 static int deinterlace_queue_setup(struct vb2_queue *vq,
 				unsigned int *nbuffers, unsigned int *nplanes,
 				unsigned int sizes[], struct device *alloc_devs[])
@@ -782,6 +788,8 @@ static const struct vb2_ops deinterlace_qops = {
 	.queue_setup	 = deinterlace_queue_setup,
 	.buf_prepare	 = deinterlace_buf_prepare,
 	.buf_queue	 = deinterlace_buf_queue,
+	.wait_prepare	 = vb2_ops_wait_prepare,
+	.wait_finish	 = vb2_ops_wait_finish,
 };
 
 static int queue_init(void *priv, struct vb2_queue *src_vq,
@@ -840,6 +848,7 @@ static int deinterlace_open(struct file *file)
 		return -ENOMEM;
 
 	v4l2_fh_init(&ctx->fh, video_devdata(file));
+	file->private_data = &ctx->fh;
 	ctx->dev = pcdev;
 
 	ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(pcdev->m2m_dev, ctx, &queue_init);
@@ -858,7 +867,7 @@ static int deinterlace_open(struct file *file)
 	}
 
 	ctx->colorspace = V4L2_COLORSPACE_REC709;
-	v4l2_fh_add(&ctx->fh, file);
+	v4l2_fh_add(&ctx->fh);
 
 	dprintk(pcdev, "Created instance %p, m2m_ctx: %p\n",
 		ctx, ctx->fh.m2m_ctx);
@@ -869,11 +878,11 @@ static int deinterlace_open(struct file *file)
 static int deinterlace_release(struct file *file)
 {
 	struct deinterlace_dev *pcdev = video_drvdata(file);
-	struct deinterlace_ctx *ctx = file_to_ctx(file);
+	struct deinterlace_ctx *ctx = file->private_data;
 
 	dprintk(pcdev, "Releasing instance %p\n", ctx);
 
-	v4l2_fh_del(&ctx->fh, file);
+	v4l2_fh_del(&ctx->fh);
 	v4l2_fh_exit(&ctx->fh);
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 	kfree(ctx->xt);
@@ -975,7 +984,7 @@ rel_dma:
 	return ret;
 }
 
-static void deinterlace_remove(struct platform_device *pdev)
+static int deinterlace_remove(struct platform_device *pdev)
 {
 	struct deinterlace_dev *pcdev = platform_get_drvdata(pdev);
 
@@ -984,6 +993,8 @@ static void deinterlace_remove(struct platform_device *pdev)
 	video_unregister_device(&pcdev->vfd);
 	v4l2_device_unregister(&pcdev->v4l2_dev);
 	dma_release_channel(pcdev->dma_chan);
+
+	return 0;
 }
 
 static struct platform_driver deinterlace_pdrv = {

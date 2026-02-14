@@ -142,36 +142,46 @@ static const struct irq_domain_ops rza1_irqc_domain_ops = {
 static int rza1_irqc_parse_map(struct rza1_irqc_priv *priv,
 			       struct device_node *gic_node)
 {
-	struct of_imap_parser imap_parser;
+	unsigned int imaplen, i, j, ret;
 	struct device *dev = priv->dev;
-	struct of_imap_item imap_item;
 	struct device_node *ipar;
-	unsigned int j;
-	u32 i = 0;
-	int ret;
+	const __be32 *imap;
+	u32 intsize;
 
-	ret = of_imap_parser_init(&imap_parser, dev->of_node, &imap_item);
-	if (ret)
-		return ret;
+	imap = of_get_property(dev->of_node, "interrupt-map", &imaplen);
+	if (!imap)
+		return -EINVAL;
 
-	for_each_of_imap_item(&imap_parser, &imap_item) {
-		/* Check interrupt number, ignore sense */
-		if (imap_item.child_imap[0] != i) {
-			of_node_put(imap_item.parent_args.np);
+	for (i = 0; i < IRQC_NUM_IRQ; i++) {
+		if (imaplen < 3)
 			return -EINVAL;
-		}
 
-		ipar  = imap_item.parent_args.np;
+		/* Check interrupt number, ignore sense */
+		if (be32_to_cpup(imap) != i)
+			return -EINVAL;
+
+		ipar = of_find_node_by_phandle(be32_to_cpup(imap + 2));
 		if (ipar != gic_node) {
 			of_node_put(ipar);
 			return -EINVAL;
 		}
 
-		priv->map[i].args_count = imap_item.parent_args.args_count;
-		for (j = 0; j < priv->map[i].args_count; j++)
-			priv->map[i].args[j] = imap_item.parent_args.args[j];
+		imap += 3;
+		imaplen -= 3;
 
-		i++;
+		ret = of_property_read_u32(ipar, "#interrupt-cells", &intsize);
+		of_node_put(ipar);
+		if (ret)
+			return ret;
+
+		if (imaplen < intsize)
+			return -EINVAL;
+
+		priv->map[i].args_count = intsize;
+		for (j = 0; j < intsize; j++)
+			priv->map[i].args[j] = be32_to_cpup(imap++);
+
+		imaplen -= intsize;
 	}
 
 	return 0;
@@ -221,8 +231,9 @@ static int rza1_irqc_probe(struct platform_device *pdev)
 	priv->chip.irq_set_type = rza1_irqc_set_type;
 	priv->chip.flags = IRQCHIP_MASK_ON_SUSPEND | IRQCHIP_SKIP_SET_WAKE;
 
-	priv->irq_domain = irq_domain_create_hierarchy(parent, 0, IRQC_NUM_IRQ, dev_fwnode(dev),
-						       &rza1_irqc_domain_ops, priv);
+	priv->irq_domain = irq_domain_add_hierarchy(parent, 0, IRQC_NUM_IRQ,
+						    np, &rza1_irqc_domain_ops,
+						    priv);
 	if (!priv->irq_domain) {
 		dev_err(dev, "cannot initialize irq domain\n");
 		ret = -ENOMEM;
@@ -233,11 +244,12 @@ out_put_node:
 	return ret;
 }
 
-static void rza1_irqc_remove(struct platform_device *pdev)
+static int rza1_irqc_remove(struct platform_device *pdev)
 {
 	struct rza1_irqc_priv *priv = platform_get_drvdata(pdev);
 
 	irq_domain_remove(priv->irq_domain);
+	return 0;
 }
 
 static const struct of_device_id rza1_irqc_dt_ids[] = {
@@ -250,7 +262,7 @@ static struct platform_driver rza1_irqc_device_driver = {
 	.probe		= rza1_irqc_probe,
 	.remove		= rza1_irqc_remove,
 	.driver		= {
-		.name		= "renesas_rza1_irqc",
+		.name	= "renesas_rza1_irqc",
 		.of_match_table	= rza1_irqc_dt_ids,
 	}
 };
@@ -269,3 +281,4 @@ module_exit(rza1_irqc_exit);
 
 MODULE_AUTHOR("Geert Uytterhoeven <geert+renesas@glider.be>");
 MODULE_DESCRIPTION("Renesas RZ/A1 IRQC Driver");
+MODULE_LICENSE("GPL v2");

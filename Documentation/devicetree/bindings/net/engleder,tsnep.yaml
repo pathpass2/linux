@@ -62,8 +62,7 @@ properties:
 
   mdio:
     type: object
-    $ref: mdio.yaml#
-    unevaluatedProperties: false
+    $ref: "mdio.yaml#"
     description: optional node for embedded MDIO controller
 
 required:

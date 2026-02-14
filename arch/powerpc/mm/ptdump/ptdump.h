@@ -11,13 +11,12 @@ struct flag_info {
 	int		shift;
 };
 
-struct ptdump_pg_level {
+struct pgtable_level {
 	const struct flag_info *flag;
-	char name[4];
 	size_t num;
 	u64 mask;
 };
 
-extern struct ptdump_pg_level pg_level[5];
+extern struct pgtable_level pg_level[5];
 
 void pt_dump_size(struct seq_file *m, unsigned long delta);

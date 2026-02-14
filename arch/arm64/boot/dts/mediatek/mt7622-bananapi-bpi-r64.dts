@@ -15,7 +15,6 @@
 
 / {
 	model = "Bananapi BPI-R64";
-	chassis-type = "embedded";
 	compatible = "bananapi,bpi-r64", "mediatek,mt7622";
 
 	aliases {
@@ -73,9 +72,8 @@
 		};
 	};
 
-	memory@40000000 {
+	memory {
 		reg = <0 0x40000000 0 0x40000000>;
-		device_type = "memory";
 	};
 
 	reg_1p8v: regulator-1p8v {
@@ -149,12 +147,9 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		switch@1f {
+		switch@0 {
 			compatible = "mediatek,mt7531";
-			reg = <0x1f>;
-			interrupt-controller;
-			#interrupt-cells = <1>;
-			interrupts-extended = <&pio 53 IRQ_TYPE_LEVEL_HIGH>;
+			reg = <0>;
 			reset-gpios = <&pio 54 0>;
 
 			ports {
@@ -184,18 +179,6 @@
 				port@4 {
 					reg = <4>;
 					label = "lan3";
-				};
-
-				port@5 {
-					reg = <5>;
-					ethernet = <&gmac1>;
-					phy-mode = "rgmii";
-
-					fixed-link {
-						speed = <1000>;
-						full-duplex;
-						pause;
-					};
 				};
 
 				port@6 {
@@ -265,42 +248,14 @@
 	status = "disabled";
 };
 
-&bch {
-	status = "okay";
-};
-
-&snfi {
+&nor_flash {
 	pinctrl-names = "default";
-	pinctrl-0 = <&serial_nand_pins>;
-	status = "okay";
+	pinctrl-0 = <&spi_nor_pins>;
+	status = "disabled";
+
 	flash@0 {
-		compatible = "spi-nand";
+		compatible = "jedec,spi-nor";
 		reg = <0>;
-		spi-tx-bus-width = <4>;
-		spi-rx-bus-width = <4>;
-		nand-ecc-engine = <&snfi>;
-		partitions {
-			compatible = "fixed-partitions";
-			#address-cells = <1>;
-			#size-cells = <1>;
-
-			partition@0 {
-				label = "bl2";
-				reg = <0x0 0x80000>;
-				read-only;
-			};
-
-			partition@80000 {
-				label = "fip";
-				reg = <0x80000 0x200000>;
-				read-only;
-			};
-
-			ubi: partition@280000 {
-				label = "ubi";
-				reg = <0x280000 0x7d80000>;
-			};
-		};
 	};
 };
 
@@ -320,7 +275,7 @@
 	/* Attention: GPIO 90 is used to switch between PCIe@1,0 and
 	 * SATA functions. i.e. output-high: PCIe, output-low: SATA
 	 */
-	asm-sel-hog {
+	asm_sel {
 		gpio-hog;
 		gpios = <90 GPIO_ACTIVE_HIGH>;
 		output-high;
@@ -329,8 +284,8 @@
 	/* eMMC is shared pin with parallel NAND */
 	emmc_pins_default: emmc-pins-default {
 		mux {
-			function = "emmc";
-			groups = "emmc", "emmc_rst";
+			function = "emmc", "emmc_rst";
+			groups = "emmc";
 		};
 
 		/* "NDL0","NDL1","NDL2","NDL3","NDL4","NDL5","NDL6","NDL7",
@@ -397,9 +352,9 @@
 	i2s1_pins: i2s1-pins {
 		mux {
 			function = "i2s";
-			groups = "i2s_out_mclk_bclk_ws",
-				 "i2s1_in_data",
-				 "i2s1_out_data";
+			groups =  "i2s_out_mclk_bclk_ws",
+				  "i2s1_in_data",
+				  "i2s1_out_data";
 		};
 
 		conf {
@@ -597,11 +552,11 @@
 };
 
 &sata {
-	status = "disabled";
+	status = "disable";
 };
 
 &sata_phy {
-	status = "disabled";
+	status = "disable";
 };
 
 &spi0 {

@@ -7,7 +7,6 @@
  */
 
 #include <linux/bitops.h>
-#include <linux/cleanup.h>
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/module.h>
@@ -30,7 +29,7 @@ struct gen_74x164_chip {
 	 * register at the end of the transfer. So, to have a logical
 	 * numbering, store the bytes in reverse order.
 	 */
-	u8			buffer[] __counted_by(registers);
+	u8			buffer[];
 };
 
 static int __gen_74x164_write_config(struct gen_74x164_chip *chip)
@@ -44,31 +43,34 @@ static int gen_74x164_get_value(struct gpio_chip *gc, unsigned offset)
 	struct gen_74x164_chip *chip = gpiochip_get_data(gc);
 	u8 bank = chip->registers - 1 - offset / 8;
 	u8 pin = offset % 8;
+	int ret;
 
-	guard(mutex)(&chip->lock);
+	mutex_lock(&chip->lock);
+	ret = (chip->buffer[bank] >> pin) & 0x1;
+	mutex_unlock(&chip->lock);
 
-	return !!(chip->buffer[bank] & BIT(pin));
+	return ret;
 }
 
-static int gen_74x164_set_value(struct gpio_chip *gc,
-				unsigned int offset, int val)
+static void gen_74x164_set_value(struct gpio_chip *gc,
+		unsigned offset, int val)
 {
 	struct gen_74x164_chip *chip = gpiochip_get_data(gc);
 	u8 bank = chip->registers - 1 - offset / 8;
 	u8 pin = offset % 8;
 
-	guard(mutex)(&chip->lock);
-
+	mutex_lock(&chip->lock);
 	if (val)
-		chip->buffer[bank] |= BIT(pin);
+		chip->buffer[bank] |= (1 << pin);
 	else
-		chip->buffer[bank] &= ~BIT(pin);
+		chip->buffer[bank] &= ~(1 << pin);
 
-	return __gen_74x164_write_config(chip);
+	__gen_74x164_write_config(chip);
+	mutex_unlock(&chip->lock);
 }
 
-static int gen_74x164_set_multiple(struct gpio_chip *gc, unsigned long *mask,
-				   unsigned long *bits)
+static void gen_74x164_set_multiple(struct gpio_chip *gc, unsigned long *mask,
+				    unsigned long *bits)
 {
 	struct gen_74x164_chip *chip = gpiochip_get_data(gc);
 	unsigned long offset;
@@ -76,8 +78,7 @@ static int gen_74x164_set_multiple(struct gpio_chip *gc, unsigned long *mask,
 	size_t bank;
 	unsigned long bitmask;
 
-	guard(mutex)(&chip->lock);
-
+	mutex_lock(&chip->lock);
 	for_each_set_clump8(offset, bankmask, mask, chip->registers * 8) {
 		bank = chip->registers - 1 - offset / 8;
 		bitmask = bitmap_get_value8(bits, offset) & bankmask;
@@ -85,7 +86,8 @@ static int gen_74x164_set_multiple(struct gpio_chip *gc, unsigned long *mask,
 		chip->buffer[bank] &= ~bankmask;
 		chip->buffer[bank] |= bitmask;
 	}
-	return __gen_74x164_write_config(chip);
+	__gen_74x164_write_config(chip);
+	mutex_unlock(&chip->lock);
 }
 
 static int gen_74x164_direction_output(struct gpio_chip *gc,
@@ -95,22 +97,8 @@ static int gen_74x164_direction_output(struct gpio_chip *gc,
 	return 0;
 }
 
-static void gen_74x164_deactivate(void *data)
-{
-	struct gen_74x164_chip *chip = data;
-
-	gpiod_set_value_cansleep(chip->gpiod_oe, 0);
-}
-
-static int gen_74x164_activate(struct device *dev, struct gen_74x164_chip *chip)
-{
-	gpiod_set_value_cansleep(chip->gpiod_oe, 1);
-	return devm_add_action_or_reset(dev, gen_74x164_deactivate, chip);
-}
-
 static int gen_74x164_probe(struct spi_device *spi)
 {
-	struct device *dev = &spi->dev;
 	struct gen_74x164_chip *chip;
 	u32 nregs;
 	int ret;
@@ -124,19 +112,24 @@ static int gen_74x164_probe(struct spi_device *spi)
 	if (ret < 0)
 		return ret;
 
-	ret = device_property_read_u32(dev, "registers-number", &nregs);
-	if (ret)
-		return dev_err_probe(dev, ret, "Missing 'registers-number' property.\n");
+	ret = device_property_read_u32(&spi->dev, "registers-number", &nregs);
+	if (ret) {
+		dev_err(&spi->dev, "Missing 'registers-number' property.\n");
+		return -EINVAL;
+	}
 
-	chip = devm_kzalloc(dev, struct_size(chip, buffer, nregs), GFP_KERNEL);
+	chip = devm_kzalloc(&spi->dev, sizeof(*chip) + nregs, GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 
-	chip->registers = nregs;
-
-	chip->gpiod_oe = devm_gpiod_get_optional(dev, "enable", GPIOD_OUT_LOW);
+	chip->gpiod_oe = devm_gpiod_get_optional(&spi->dev, "enable",
+						 GPIOD_OUT_LOW);
 	if (IS_ERR(chip->gpiod_oe))
 		return PTR_ERR(chip->gpiod_oe);
+
+	gpiod_set_value_cansleep(chip->gpiod_oe, 1);
+
+	spi_set_drvdata(spi, chip);
 
 	chip->gpio_chip.label = spi->modalias;
 	chip->gpio_chip.direction_output = gen_74x164_direction_output;
@@ -144,24 +137,39 @@ static int gen_74x164_probe(struct spi_device *spi)
 	chip->gpio_chip.set = gen_74x164_set_value;
 	chip->gpio_chip.set_multiple = gen_74x164_set_multiple;
 	chip->gpio_chip.base = -1;
+
+	chip->registers = nregs;
 	chip->gpio_chip.ngpio = GEN_74X164_NUMBER_GPIOS * chip->registers;
+
 	chip->gpio_chip.can_sleep = true;
-	chip->gpio_chip.parent = dev;
+	chip->gpio_chip.parent = &spi->dev;
 	chip->gpio_chip.owner = THIS_MODULE;
 
-	ret = devm_mutex_init(dev, &chip->lock);
-	if (ret)
-		return ret;
+	mutex_init(&chip->lock);
 
 	ret = __gen_74x164_write_config(chip);
-	if (ret)
-		return dev_err_probe(dev, ret, "Config write failed\n");
+	if (ret) {
+		dev_err(&spi->dev, "Failed writing: %d\n", ret);
+		goto exit_destroy;
+	}
 
-	ret = gen_74x164_activate(dev, chip);
-	if (ret)
-		return ret;
+	ret = gpiochip_add_data(&chip->gpio_chip, chip);
+	if (!ret)
+		return 0;
 
-	return devm_gpiochip_add_data(dev, &chip->gpio_chip, chip);
+exit_destroy:
+	mutex_destroy(&chip->lock);
+
+	return ret;
+}
+
+static void gen_74x164_remove(struct spi_device *spi)
+{
+	struct gen_74x164_chip *chip = spi_get_drvdata(spi);
+
+	gpiod_set_value_cansleep(chip->gpiod_oe, 0);
+	gpiochip_remove(&chip->gpio_chip);
+	mutex_destroy(&chip->lock);
 }
 
 static const struct spi_device_id gen_74x164_spi_ids[] = {
@@ -184,6 +192,7 @@ static struct spi_driver gen_74x164_driver = {
 		.of_match_table	= gen_74x164_dt_ids,
 	},
 	.probe		= gen_74x164_probe,
+	.remove		= gen_74x164_remove,
 	.id_table	= gen_74x164_spi_ids,
 };
 module_spi_driver(gen_74x164_driver);

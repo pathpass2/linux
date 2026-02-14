@@ -515,7 +515,7 @@ static int rionet_setup_netdev(struct rio_mport *mport, struct net_device *ndev)
 	/* MTU range: 68 - 4082 */
 	ndev->min_mtu = ETH_MIN_MTU;
 	ndev->max_mtu = RIONET_MAX_MTU;
-	ndev->lltx = true;
+	ndev->features = NETIF_F_LLTX;
 	SET_NETDEV_DEV(ndev, &mport->dev);
 	ndev->ethtool_ops = &rionet_ethtool_ops;
 
@@ -662,7 +662,8 @@ static int rionet_shutdown(struct notifier_block *nb, unsigned long code,
 	return NOTIFY_DONE;
 }
 
-static void rionet_remove_mport(struct device *dev)
+static void rionet_remove_mport(struct device *dev,
+				struct class_interface *class_intf)
 {
 	struct rio_mport *mport = to_rio_mport(dev);
 	struct net_device *ndev;

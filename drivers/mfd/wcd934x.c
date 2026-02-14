@@ -109,10 +109,10 @@ static const struct regmap_range_cfg wcd934x_ranges[] = {
 	},
 };
 
-static const struct regmap_config wcd934x_regmap_config = {
+static struct regmap_config wcd934x_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 8,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.max_register = 0xffff,
 	.can_multi_write = true,
 	.ranges = wcd934x_ranges,
@@ -227,9 +227,10 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 				     "Failed to get IRQ\n");
 
 	ddata->extclk = devm_clk_get(dev, "extclk");
-	if (IS_ERR(ddata->extclk))
-		return dev_err_probe(dev, PTR_ERR(ddata->extclk),
-				     "Failed to get extclk");
+	if (IS_ERR(ddata->extclk)) {
+		dev_err(dev, "Failed to get extclk");
+		return PTR_ERR(ddata->extclk);
+	}
 
 	ddata->supplies[0].supply = "vdd-buck";
 	ddata->supplies[1].supply = "vdd-buck-sido";
@@ -238,12 +239,16 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 	ddata->supplies[4].supply = "vdd-io";
 
 	ret = regulator_bulk_get(dev, WCD934X_MAX_SUPPLY, ddata->supplies);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to get supplies\n");
+	if (ret) {
+		dev_err(dev, "Failed to get supplies: err = %d\n", ret);
+		return ret;
+	}
 
 	ret = regulator_bulk_enable(WCD934X_MAX_SUPPLY, ddata->supplies);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to enable supplies\n");
+	if (ret) {
+		dev_err(dev, "Failed to enable supplies: err = %d\n", ret);
+		return ret;
+	}
 
 	/*
 	 * For WCD934X, it takes about 600us for the Vout_A and
@@ -253,9 +258,8 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 	usleep_range(600, 650);
 	reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(reset_gpio)) {
-		ret = dev_err_probe(dev, PTR_ERR(reset_gpio),
-				    "Failed to get reset gpio\n");
-		goto err_disable_regulators;
+		return dev_err_probe(dev, PTR_ERR(reset_gpio),
+				"Failed to get reset gpio: err = %ld\n", PTR_ERR(reset_gpio));
 	}
 	msleep(20);
 	gpiod_set_value(reset_gpio, 1);
@@ -265,10 +269,6 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 	dev_set_drvdata(dev, ddata);
 
 	return 0;
-
-err_disable_regulators:
-	regulator_bulk_disable(WCD934X_MAX_SUPPLY, ddata->supplies);
-	return ret;
 }
 
 static void wcd934x_slim_remove(struct slim_device *sdev)
@@ -284,7 +284,6 @@ static const struct slim_device_id wcd934x_slim_id[] = {
 	  SLIM_DEV_IDX_WCD9340, SLIM_DEV_INSTANCE_ID_WCD9340 },
 	{}
 };
-MODULE_DEVICE_TABLE(slim, wcd934x_slim_id);
 
 static struct slim_driver wcd934x_slim_driver = {
 	.driver = {
@@ -299,4 +298,5 @@ static struct slim_driver wcd934x_slim_driver = {
 module_slim_driver(wcd934x_slim_driver);
 MODULE_DESCRIPTION("WCD934X slim driver");
 MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("slim:217:250:*");
 MODULE_AUTHOR("Srinivas Kandagatla <srinivas.kandagatla@linaro.org>");

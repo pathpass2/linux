@@ -6,8 +6,6 @@
 #include <linux/debugfs.h>
 #include <linux/string_helpers.h>
 
-#include <drm/drm_managed.h>
-
 #include "gt/intel_gt.h"
 #include "i915_drv.h"
 #include "i915_irq.h"
@@ -16,11 +14,11 @@
 #include "intel_guc_log.h"
 #include "intel_guc_print.h"
 
-#if IS_ENABLED(CONFIG_DRM_I915_DEBUG_GUC)
+#if defined(CONFIG_DRM_I915_DEBUG_GUC)
 #define GUC_LOG_DEFAULT_CRASH_BUFFER_SIZE	SZ_2M
 #define GUC_LOG_DEFAULT_DEBUG_BUFFER_SIZE	SZ_16M
 #define GUC_LOG_DEFAULT_CAPTURE_BUFFER_SIZE	SZ_1M
-#elif IS_ENABLED(CONFIG_DRM_I915_DEBUG_GEM)
+#elif defined(CONFIG_DRM_I915_DEBUG_GEM)
 #define GUC_LOG_DEFAULT_CRASH_BUFFER_SIZE	SZ_1M
 #define GUC_LOG_DEFAULT_DEBUG_BUFFER_SIZE	SZ_2M
 #define GUC_LOG_DEFAULT_CAPTURE_BUFFER_SIZE	SZ_1M
@@ -222,7 +220,8 @@ static int guc_action_control_log(struct intel_guc *guc, bool enable,
  */
 static int subbuf_start_callback(struct rchan_buf *buf,
 				 void *subbuf,
-				 void *prev_subbuf)
+				 void *prev_subbuf,
+				 size_t prev_padding)
 {
 	/*
 	 * Use no-overwrite mode by default, where relay will stop accepting
@@ -334,7 +333,8 @@ bool intel_guc_check_log_buf_overflow(struct intel_guc_log *log,
 			log->stats[type].sampled_overflow += 16;
 		}
 
-		guc_notice_ratelimited(log_to_guc(log), "log buffer overflow\n");
+		dev_notice_ratelimited(guc_to_gt(log_to_guc(log))->i915->drm.dev,
+				       "GuC log buffer overflow\n");
 	}
 
 	return overflow;
@@ -513,11 +513,7 @@ static void guc_log_relay_unmap(struct intel_guc_log *log)
 
 void intel_guc_log_init_early(struct intel_guc_log *log)
 {
-	struct intel_guc *guc = log_to_guc(log);
-	struct drm_i915_private *i915 = guc_to_i915(guc);
-
-	drmm_mutex_init(&i915->drm, &log->relay.lock);
-	drmm_mutex_init(&i915->drm, &log->guc_lock);
+	mutex_init(&log->relay.lock);
 	INIT_WORK(&log->relay.flush_work, copy_debug_logs_work);
 	log->relay.started = false;
 }
@@ -525,7 +521,7 @@ void intel_guc_log_init_early(struct intel_guc_log *log)
 static int guc_log_relay_create(struct intel_guc_log *log)
 {
 	struct intel_guc *guc = log_to_guc(log);
-	struct drm_i915_private *i915 = guc_to_i915(guc);
+	struct drm_i915_private *dev_priv = guc_to_gt(guc)->i915;
 	struct rchan *guc_log_relay_chan;
 	size_t n_subbufs, subbuf_size;
 	int ret;
@@ -547,13 +543,10 @@ static int guc_log_relay_create(struct intel_guc_log *log)
 	 */
 	n_subbufs = 8;
 
-	if (!guc->dbgfs_node)
-		return -ENOENT;
-
 	guc_log_relay_chan = relay_open("guc_log",
-					guc->dbgfs_node,
+					dev_priv->drm.primary->debugfs_root,
 					subbuf_size, n_subbufs,
-					&relay_callbacks, i915);
+					&relay_callbacks, dev_priv);
 	if (!guc_log_relay_chan) {
 		guc_err(guc, "Couldn't create relay channel for logging\n");
 
@@ -578,7 +571,7 @@ static void guc_log_relay_destroy(struct intel_guc_log *log)
 static void guc_log_copy_debuglogs_for_relay(struct intel_guc_log *log)
 {
 	struct intel_guc *guc = log_to_guc(log);
-	struct drm_i915_private *i915 = guc_to_i915(guc);
+	struct drm_i915_private *dev_priv = guc_to_gt(guc)->i915;
 	intel_wakeref_t wakeref;
 
 	_guc_log_copy_debuglogs_for_relay(log);
@@ -587,14 +580,14 @@ static void guc_log_copy_debuglogs_for_relay(struct intel_guc_log *log)
 	 * Generally device is expected to be active only at this
 	 * time, so get/put should be really quick.
 	 */
-	with_intel_runtime_pm(&i915->runtime_pm, wakeref)
+	with_intel_runtime_pm(&dev_priv->runtime_pm, wakeref)
 		guc_action_flush_log_complete(guc);
 }
 
 static u32 __get_default_log_level(struct intel_guc_log *log)
 {
 	struct intel_guc *guc = log_to_guc(log);
-	struct drm_i915_private *i915 = guc_to_i915(guc);
+	struct drm_i915_private *i915 = guc_to_gt(guc)->i915;
 
 	/* A negative value means "use platform/config default" */
 	if (i915->params.guc_log_level < 0) {
@@ -669,7 +662,7 @@ void intel_guc_log_destroy(struct intel_guc_log *log)
 int intel_guc_log_set_level(struct intel_guc_log *log, u32 level)
 {
 	struct intel_guc *guc = log_to_guc(log);
-	struct drm_i915_private *i915 = guc_to_i915(guc);
+	struct drm_i915_private *dev_priv = guc_to_gt(guc)->i915;
 	intel_wakeref_t wakeref;
 	int ret = 0;
 
@@ -683,12 +676,12 @@ int intel_guc_log_set_level(struct intel_guc_log *log, u32 level)
 	if (level < GUC_LOG_LEVEL_DISABLED || level > GUC_LOG_LEVEL_MAX)
 		return -EINVAL;
 
-	mutex_lock(&log->guc_lock);
+	mutex_lock(&dev_priv->drm.struct_mutex);
 
 	if (log->level == level)
 		goto out_unlock;
 
-	with_intel_runtime_pm(&i915->runtime_pm, wakeref)
+	with_intel_runtime_pm(&dev_priv->runtime_pm, wakeref)
 		ret = guc_action_control_log(guc,
 					     GUC_LOG_LEVEL_IS_VERBOSE(level),
 					     GUC_LOG_LEVEL_IS_ENABLED(level),
@@ -701,7 +694,7 @@ int intel_guc_log_set_level(struct intel_guc_log *log, u32 level)
 	log->level = level;
 
 out_unlock:
-	mutex_unlock(&log->guc_lock);
+	mutex_unlock(&dev_priv->drm.struct_mutex);
 
 	return ret;
 }
@@ -801,7 +794,7 @@ void intel_guc_log_relay_flush(struct intel_guc_log *log)
 static void guc_log_relay_stop(struct intel_guc_log *log)
 {
 	struct intel_guc *guc = log_to_guc(log);
-	struct drm_i915_private *i915 = guc_to_i915(guc);
+	struct drm_i915_private *i915 = guc_to_gt(guc)->i915;
 
 	if (!log->relay.started)
 		return;

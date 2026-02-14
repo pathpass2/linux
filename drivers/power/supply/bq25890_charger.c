@@ -164,7 +164,7 @@ static const struct regmap_config bq25890_regmap_config = {
 	.val_bits = 8,
 
 	.max_register = 0x14,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.wr_table = &bq25890_writeable_regs,
 	.volatile_table = &bq25890_volatile_regs,
@@ -750,7 +750,7 @@ static void bq25890_charger_external_power_changed(struct power_supply *psy)
 	if (bq->chip_version != BQ25892)
 		return;
 
-	ret = power_supply_get_property_from_supplier(psy,
+	ret = power_supply_get_property_from_supplier(bq->charger,
 						      POWER_SUPPLY_PROP_USB_TYPE,
 						      &val);
 	if (ret)
@@ -775,7 +775,6 @@ static void bq25890_charger_external_power_changed(struct power_supply *psy)
 	}
 
 	bq25890_field_write(bq, F_IINLIM, input_current_limit);
-	power_supply_changed(psy);
 }
 
 static int bq25890_get_chip_state(struct bq25890_device *bq,
@@ -1106,8 +1105,6 @@ static void bq25890_pump_express_work(struct work_struct *data)
 
 	dev_info(bq->dev, "Hi-voltage charging requested, input voltage is %d mV\n",
 		 voltage);
-
-	power_supply_changed(bq->charger);
 
 	return;
 error_print:
@@ -1617,15 +1614,15 @@ static const struct dev_pm_ops bq25890_pm = {
 };
 
 static const struct i2c_device_id bq25890_i2c_ids[] = {
-	{ "bq25890" },
-	{ "bq25892" },
-	{ "bq25895" },
-	{ "bq25896" },
-	{}
+	{ "bq25890", 0 },
+	{ "bq25892", 0 },
+	{ "bq25895", 0 },
+	{ "bq25896", 0 },
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, bq25890_i2c_ids);
 
-static const struct of_device_id bq25890_of_match[] __maybe_unused = {
+static const struct of_device_id bq25890_of_match[] = {
 	{ .compatible = "ti,bq25890", },
 	{ .compatible = "ti,bq25892", },
 	{ .compatible = "ti,bq25895", },
@@ -1649,7 +1646,7 @@ static struct i2c_driver bq25890_driver = {
 		.acpi_match_table = ACPI_PTR(bq25890_acpi_match),
 		.pm = &bq25890_pm,
 	},
-	.probe = bq25890_probe,
+	.probe_new = bq25890_probe,
 	.remove = bq25890_remove,
 	.shutdown = bq25890_shutdown,
 	.id_table = bq25890_i2c_ids,

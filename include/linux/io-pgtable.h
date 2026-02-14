@@ -15,6 +15,8 @@ enum io_pgtable_fmt {
 	ARM_64_LPAE_S2,
 	ARM_V7S,
 	ARM_MALI_LPAE,
+	AMD_IOMMU_V1,
+	AMD_IOMMU_V2,
 	APPLE_DART,
 	APPLE_DART2,
 	IO_PGTABLE_NUM_FMTS,
@@ -83,16 +85,6 @@ struct io_pgtable_cfg {
 	 *
 	 * IO_PGTABLE_QUIRK_ARM_OUTER_WBWA: Override the outer-cacheability
 	 *	attributes set in the TCR for a non-coherent page-table walker.
-	 *
-	 * IO_PGTABLE_QUIRK_ARM_HD: Enables dirty tracking in stage 1 pagetable.
-	 * IO_PGTABLE_QUIRK_ARM_S2FWB: Use the FWB format for the MemAttrs bits
-	 *
-	 * IO_PGTABLE_QUIRK_NO_WARN: Do not WARN_ON() on conflicting
-	 *	mappings, but silently return -EEXISTS.  Normally an attempt
-	 *	to map over an existing mapping would indicate some sort of
-	 *	kernel bug, which would justify the WARN_ON().  But for GPU
-	 *	drivers, this could be under control of userspace.  Which
-	 *	deserves an error return, but not to spam dmesg.
 	 */
 	#define IO_PGTABLE_QUIRK_ARM_NS			BIT(0)
 	#define IO_PGTABLE_QUIRK_NO_PERMS		BIT(1)
@@ -100,9 +92,6 @@ struct io_pgtable_cfg {
 	#define IO_PGTABLE_QUIRK_ARM_MTK_TTBR_EXT	BIT(4)
 	#define IO_PGTABLE_QUIRK_ARM_TTBR1		BIT(5)
 	#define IO_PGTABLE_QUIRK_ARM_OUTER_WBWA		BIT(6)
-	#define IO_PGTABLE_QUIRK_ARM_HD			BIT(7)
-	#define IO_PGTABLE_QUIRK_ARM_S2FWB		BIT(8)
-	#define IO_PGTABLE_QUIRK_NO_WARN		BIT(9)
 	unsigned long			quirks;
 	unsigned long			pgsize_bitmap;
 	unsigned int			ias;
@@ -110,30 +99,6 @@ struct io_pgtable_cfg {
 	bool				coherent_walk;
 	const struct iommu_flush_ops	*tlb;
 	struct device			*iommu_dev;
-
-	/**
-	 * @alloc: Custom page allocator.
-	 *
-	 * Optional hook used to allocate page tables. If this function is NULL,
-	 * @free must be NULL too.
-	 *
-	 * Memory returned should be zeroed and suitable for dma_map_single() and
-	 * virt_to_phys().
-	 *
-	 * Not all formats support custom page allocators. Before considering
-	 * passing a non-NULL value, make sure the chosen page format supports
-	 * this feature.
-	 */
-	void *(*alloc)(void *cookie, size_t size, gfp_t gfp);
-
-	/**
-	 * @free: Custom page de-allocator.
-	 *
-	 * Optional hook used to free page tables allocated with the @alloc
-	 * hook. Must be non-NULL if @alloc is not NULL, must be NULL
-	 * otherwise.
-	 */
-	void (*free)(void *cookie, void *pages, size_t size);
 
 	/* Low-level data specific to the table format */
 	union {
@@ -178,22 +143,8 @@ struct io_pgtable_cfg {
 		struct {
 			u64 ttbr[4];
 			u32 n_ttbrs;
-			u32 n_levels;
 		} apple_dart_cfg;
-
-		struct {
-			int nid;
-		} amd;
 	};
-};
-
-/**
- * struct arm_lpae_io_pgtable_walk_data - information from a pgtable walk
- *
- * @ptes:     The recorded PTE values from the walk
- */
-struct arm_lpae_io_pgtable_walk_data {
-	u64 ptes[4];
 };
 
 /**
@@ -202,7 +153,6 @@ struct arm_lpae_io_pgtable_walk_data {
  * @map_pages:    Map a physically contiguous range of pages of the same size.
  * @unmap_pages:  Unmap a range of virtually contiguous pages of the same size.
  * @iova_to_phys: Translate iova to physical address.
- * @pgtable_walk: (optional) Perform a page table walk for a given iova.
  *
  * These functions map directly onto the iommu_ops member functions with
  * the same names.
@@ -216,11 +166,6 @@ struct io_pgtable_ops {
 			      struct iommu_iotlb_gather *gather);
 	phys_addr_t (*iova_to_phys)(struct io_pgtable_ops *ops,
 				    unsigned long iova);
-	int (*pgtable_walk)(struct io_pgtable_ops *ops, unsigned long iova, void *wd);
-	int (*read_and_clear_dirty)(struct io_pgtable_ops *ops,
-				    unsigned long iova, size_t size,
-				    unsigned long flags,
-				    struct iommu_dirty_bitmap *dirty);
 };
 
 /**
@@ -293,25 +238,15 @@ io_pgtable_tlb_add_page(struct io_pgtable *iop,
 }
 
 /**
- * enum io_pgtable_caps - IO page table backend capabilities.
- */
-enum io_pgtable_caps {
-	/** @IO_PGTABLE_CAP_CUSTOM_ALLOCATOR: Backend accepts custom page table allocators. */
-	IO_PGTABLE_CAP_CUSTOM_ALLOCATOR = BIT(0),
-};
-
-/**
  * struct io_pgtable_init_fns - Alloc/free a set of page tables for a
  *                              particular format.
  *
  * @alloc: Allocate a set of page tables described by cfg.
  * @free:  Free the page tables associated with iop.
- * @caps:  Combination of @io_pgtable_caps flags encoding the backend capabilities.
  */
 struct io_pgtable_init_fns {
 	struct io_pgtable *(*alloc)(struct io_pgtable_cfg *cfg, void *cookie);
 	void (*free)(struct io_pgtable *iop);
-	u32 caps;
 };
 
 extern struct io_pgtable_init_fns io_pgtable_arm_32_lpae_s1_init_fns;

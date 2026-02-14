@@ -303,12 +303,14 @@ err0:
 	return ret;
 }
 
-static void ux500_remove(struct platform_device *pdev)
+static int ux500_remove(struct platform_device *pdev)
 {
 	struct ux500_glue	*glue = platform_get_drvdata(pdev);
 
 	platform_device_unregister(glue->musb);
 	clk_disable_unprepare(glue->clk);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

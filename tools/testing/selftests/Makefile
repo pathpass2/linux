@@ -1,43 +1,26 @@
 # SPDX-License-Identifier: GPL-2.0
-TARGETS += acct
 TARGETS += alsa
 TARGETS += amd-pstate
 TARGETS += arm64
 TARGETS += bpf
 TARGETS += breakpoints
-TARGETS += cachestat
 TARGETS += capabilities
 TARGETS += cgroup
 TARGETS += clone3
-TARGETS += connector
 TARGETS += core
 TARGETS += cpufreq
 TARGETS += cpu-hotplug
 TARGETS += damon
-TARGETS += devices/error_logs
-TARGETS += devices/probe
-TARGETS += dmabuf-heaps
 TARGETS += drivers/dma-buf
-TARGETS += drivers/ntsync
 TARGETS += drivers/s390x/uvdevice
-TARGETS += drivers/net
 TARGETS += drivers/net/bonding
-TARGETS += drivers/net/netconsole
 TARGETS += drivers/net/team
-TARGETS += drivers/net/virtio_net
-TARGETS += drivers/platform/x86/intel/ifs
-TARGETS += dt
 TARGETS += efivarfs
 TARGETS += exec
-TARGETS += fchmodat2
 TARGETS += filesystems
 TARGETS += filesystems/binderfs
 TARGETS += filesystems/epoll
 TARGETS += filesystems/fat
-TARGETS += filesystems/overlayfs
-TARGETS += filesystems/statmount
-TARGETS += filesystems/mount-notify
-TARGETS += filesystems/fuse
 TARGETS += firmware
 TARGETS += fpu
 TARGETS += ftrace
@@ -50,14 +33,11 @@ TARGETS += ipc
 TARGETS += ir
 TARGETS += kcmp
 TARGETS += kexec
-TARGETS += kselftest_harness
 TARGETS += kvm
 TARGETS += landlock
 TARGETS += lib
 TARGETS += livepatch
-TARGETS += liveupdate
 TARGETS += lkdtm
-TARGETS += lsm
 TARGETS += membarrier
 TARGETS += memfd
 TARGETS += memory-hotplug
@@ -66,44 +46,29 @@ TARGETS += mount
 TARGETS += mount_setattr
 TARGETS += move_mount_set_group
 TARGETS += mqueue
-TARGETS += mseal_system_mappings
 TARGETS += nci
 TARGETS += net
 TARGETS += net/af_unix
-TARGETS += net/can
 TARGETS += net/forwarding
 TARGETS += net/hsr
 TARGETS += net/mptcp
-TARGETS += net/netfilter
 TARGETS += net/openvswitch
-TARGETS += net/ovpn
-TARGETS += net/packetdrill
-TARGETS += net/rds
-TARGETS += net/tcp_ao
-TARGETS += nolibc
+TARGETS += netfilter
 TARGETS += nsfs
-TARGETS += pci_endpoint
-TARGETS += pcie_bwctrl
-TARGETS += perf_events
 TARGETS += pidfd
 TARGETS += pid_namespace
-TARGETS += power_supply
 TARGETS += powerpc
-TARGETS += prctl
 TARGETS += proc
 TARGETS += pstore
 TARGETS += ptrace
 TARGETS += openat2
 TARGETS += resctrl
-TARGETS += riscv
 TARGETS += rlimits
 TARGETS += rseq
 TARGETS += rtc
-TARGETS += rust
-TARGETS += sched_ext
 TARGETS += seccomp
 TARGETS += sgx
-TARGETS += signal
+TARGETS += sigaltstack
 TARGETS += size
 TARGETS += sparc64
 TARGETS += splice
@@ -113,23 +78,16 @@ TARGETS += syscall_user_dispatch
 TARGETS += sysctl
 TARGETS += tc-testing
 TARGETS += tdx
-TARGETS += thermal/intel/power_floor
-TARGETS += thermal/intel/workload_hint
 TARGETS += timens
 ifneq (1, $(quicktest))
 TARGETS += timers
 endif
 TARGETS += tmpfs
 TARGETS += tpm2
-TARGETS += tty
-TARGETS += ublk
-TARGETS += uevent
-TARGETS += user_events
+TARGETS += user
 TARGETS += vDSO
 TARGETS += mm
-TARGETS += vfio
 TARGETS += x86
-TARGETS += x86/bugs
 TARGETS += zram
 #Please keep the TARGETS list alphabetically sorted
 # Run "make quicktest=1 run_tests" or
@@ -138,17 +96,10 @@ TARGETS += zram
 TARGETS_HOTPLUG = cpu-hotplug
 TARGETS_HOTPLUG += memory-hotplug
 
-# Networking tests want the net/lib target, include it automatically
-ifneq ($(filter net drivers/net drivers/net/hw,$(TARGETS)),)
-ifeq ($(filter net/lib,$(TARGETS)),)
-	INSTALL_DEP_TARGETS := net/lib
-endif
-endif
-
-# User can optionally provide a TARGETS skiplist. By default we skip
-# targets using BPF since it has cutting edge build time dependencies
-# which require more effort to install.
-SKIP_TARGETS ?= bpf sched_ext
+# User can optionally provide a TARGETS skiplist.  By default we skip
+# BPF since it has cutting edge build time dependencies which require
+# more effort to install.
+SKIP_TARGETS ?= bpf
 ifneq ($(SKIP_TARGETS),)
 	TMP := $(filter-out $(SKIP_TARGETS), $(TARGETS))
 	override TARGETS := $(TMP)
@@ -210,7 +161,7 @@ export KHDR_INCLUDES
 
 all:
 	@ret=1;							\
-	for TARGET in $(TARGETS) $(INSTALL_DEP_TARGETS); do	\
+	for TARGET in $(TARGETS); do				\
 		BUILD_TARGET=$$BUILD/$$TARGET;			\
 		mkdir $$BUILD_TARGET  -p;			\
 		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET	\
@@ -223,8 +174,6 @@ run_tests: all
 	@for TARGET in $(TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET run_tests \
-				SRC_PATH=$(shell readlink -e $$(pwd)) \
-				OBJ_PATH=$(BUILD)                   \
 				O=$(abs_objtree);		    \
 	done;
 
@@ -270,17 +219,12 @@ ifdef INSTALL_PATH
 	install -m 744 kselftest/module.sh $(INSTALL_PATH)/kselftest/
 	install -m 744 kselftest/runner.sh $(INSTALL_PATH)/kselftest/
 	install -m 744 kselftest/prefix.pl $(INSTALL_PATH)/kselftest/
-	install -m 744 kselftest/ktap_helpers.sh $(INSTALL_PATH)/kselftest/
-	install -m 744 kselftest/ksft.py $(INSTALL_PATH)/kselftest/
 	install -m 744 run_kselftest.sh $(INSTALL_PATH)/
 	rm -f $(TEST_LIST)
 	@ret=1;	\
-	for TARGET in $(TARGETS) $(INSTALL_DEP_TARGETS); do \
+	for TARGET in $(TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
-		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET install \
-				INSTALL_PATH=$(INSTALL_PATH)/$$TARGET \
-				SRC_PATH=$(shell readlink -e $$(pwd)) \
-				OBJ_PATH=$(INSTALL_PATH) \
+		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET INSTALL_PATH=$(INSTALL_PATH)/$$TARGET install \
 				O=$(abs_objtree)		\
 				$(if $(FORCE_TARGETS),|| exit);	\
 		ret=$$((ret * $$?));		\
@@ -298,14 +242,6 @@ ifdef INSTALL_PATH
 		$(MAKE) -s --no-print-directory OUTPUT=$$BUILD_TARGET COLLECTION=$$TARGET \
 			-C $$TARGET emit_tests >> $(TEST_LIST); \
 	done;
-	@VERSION=$$(git describe HEAD 2>/dev/null); \
-	if [ -n "$$VERSION" ]; then \
-		echo "$$VERSION" > $(INSTALL_PATH)/VERSION; \
-		printf "Version saved to $(INSTALL_PATH)/VERSION\n"; \
-	else \
-		printf "Unable to get version from git describe\n"; \
-	fi
-	@echo "**Kselftest Installation is complete: $(INSTALL_PATH)**"
 else
 	$(error Error: set INSTALL_PATH to use install)
 endif
@@ -318,7 +254,7 @@ gen_tar: install
 	@echo "Created ${TAR_PATH}"
 
 clean:
-	@for TARGET in $(TARGETS) $(INSTALL_DEP_TARGETS); do \
+	@for TARGET in $(TARGETS); do \
 		BUILD_TARGET=$$BUILD/$$TARGET;	\
 		$(MAKE) OUTPUT=$$BUILD_TARGET -C $$TARGET clean;\
 	done;

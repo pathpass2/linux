@@ -282,7 +282,7 @@ drivers/ 包含了每个已为特定总线上的设备而挂载的驱动程序�
 假定驱动没有跨越多个总线类型)。
 
 fs/ 包含了一个为文件系统设立的目录。现在每个想要导出属性的文件系统必须
-在 fs/ 下创建自己的层次结构(参见Documentation/filesystems/fuse/fuse.rst)。
+在 fs/ 下创建自己的层次结构(参见Documentation/filesystems/fuse.rst)。
 
 dev/ 包含两个子目录： char/ 和 block/。在这两个子目录中，有以
 <major>:<minor> 格式命名的符号链接。这些符号链接指向 sysfs 目录
@@ -329,8 +329,8 @@ void device_remove_file(struct device *dev, const struct device_attribute * attr
 
 struct bus_attribute {
         struct attribute        attr;
-        ssize_t (*show)(const struct bus_type *, char * buf);
-        ssize_t (*store)(const struct bus_type *, const char * buf, size_t count);
+        ssize_t (*show)(struct bus_type *, char * buf);
+        ssize_t (*store)(struct bus_type *, const char * buf, size_t count);
 };
 
 声明:

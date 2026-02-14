@@ -4,7 +4,7 @@
  *
  * (C) Copyright 2016 - 2021, Xilinx, Inc.
  *
- * Michal Simek <michal.simek@amd.com>
+ * Michal Simek <michal.simek@xilinx.com>
  */
 
 /dts-v1/;
@@ -88,12 +88,8 @@
 	status = "okay";
 	phy-handle = <&phy0>;
 	phy-mode = "rgmii-id";
-	mdio: mdio {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		phy0: ethernet-phy@0 { /* VSC8211 */
-			reg = <0>;
-		};
+	phy0: ethernet-phy@0 { /* VSC8211 */
+		reg = <0>;
 	};
 };
 
@@ -129,6 +125,7 @@
 /* MT29F64G08AECDBJ4-6 */
 &nand0 {
 	status = "okay";
+	arasan,has-mdma;
 	num-cs = <2>;
 };
 

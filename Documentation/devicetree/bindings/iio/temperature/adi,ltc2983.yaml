@@ -18,27 +18,6 @@ description: |
   https://www.analog.com/media/en/technical-documentation/data-sheets/29861fa.pdf
   https://www.analog.com/media/en/technical-documentation/data-sheets/ltm2985.pdf
 
-$defs:
-  sensor-node:
-    type: object
-    description: Sensor node common constraints
-
-    properties:
-      reg:
-        description:
-          Channel number. Connects the sensor to the channel with this number
-          of the device.
-        minimum: 1
-        maximum: 20
-
-      adi,sensor-type:
-        description: Type of sensor connected to the device.
-        $ref: /schemas/types.yaml#/definitions/uint32
-
-    required:
-      - reg
-      - adi,sensor-type
-
 properties:
   compatible:
     oneOf:
@@ -55,8 +34,6 @@ properties:
 
   interrupts:
     maxItems: 1
-
-  vdd-supply: true
 
   adi,mux-delay-config-us:
     description: |
@@ -87,10 +64,28 @@ properties:
     const: 0
 
 patternProperties:
-  '^thermocouple@':
-    $ref: '#/$defs/sensor-node'
-    unevaluatedProperties: false
+  "@([0-9a-f]+)$":
+    type: object
+    description: Sensor.
 
+    properties:
+      reg:
+        description:
+          Channel number. Connects the sensor to the channel with this number
+          of the device.
+        minimum: 1
+        maximum: 20
+
+      adi,sensor-type:
+        description: Type of sensor connected to the device.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+    required:
+      - reg
+      - adi,sensor-type
+
+  "^thermocouple@":
+    type: object
     description: Thermocouple sensor.
 
     properties:
@@ -128,7 +123,7 @@ patternProperties:
         description:
           Used for digitizing custom thermocouples.
           See Page 59 of the datasheet.
-        $ref: /schemas/types.yaml#/definitions/int64-matrix
+        $ref: /schemas/types.yaml#/definitions/uint64-matrix
         minItems: 3
         maxItems: 64
         items:
@@ -145,10 +140,8 @@ patternProperties:
           required:
             - adi,custom-thermocouple
 
-  '^diode@':
-    $ref: '#/$defs/sensor-node'
-    unevaluatedProperties: false
-
+  "^diode@":
+    type: object
     description: Diode sensor.
 
     properties:
@@ -190,9 +183,8 @@ patternProperties:
         $ref: /schemas/types.yaml#/definitions/uint32
         default: 0
 
-  '^rtd@':
-    $ref: '#/$defs/sensor-node'
-    unevaluatedProperties: false
+  "^rtd@":
+    type: object
     description: RTD sensor.
 
     properties:
@@ -279,7 +271,7 @@ patternProperties:
               type: boolean
 
           dependencies:
-            adi,current-rotate: [ 'adi,rsense-share' ]
+            adi,current-rotate: [ "adi,rsense-share" ]
 
       - if:
           properties:
@@ -289,9 +281,8 @@ patternProperties:
           required:
             - adi,custom-rtd
 
-  '^thermistor@':
-    $ref: '#/$defs/sensor-node'
-    unevaluatedProperties: false
+  "^thermistor@":
+    type: object
     description: Thermistor sensor.
 
     properties:
@@ -363,7 +354,7 @@ patternProperties:
       - adi,rsense-handle
 
     dependencies:
-      adi,current-rotate: [ 'adi,rsense-share' ]
+      adi,current-rotate: [ "adi,rsense-share" ]
 
     allOf:
       - if:
@@ -391,9 +382,8 @@ patternProperties:
           required:
             - adi,custom-thermistor
 
-  '^adc@':
-    $ref: '#/$defs/sensor-node'
-    unevaluatedProperties: false
+  "^adc@":
+    type: object
     description: Direct ADC sensor.
 
     properties:
@@ -406,9 +396,8 @@ patternProperties:
         description: Whether the sensor is single-ended.
         type: boolean
 
-  '^temp@':
-    $ref: '#/$defs/sensor-node'
-    unevaluatedProperties: false
+  "^temp@":
+    type: object
     description: Active analog temperature sensor.
 
     properties:
@@ -436,9 +425,8 @@ patternProperties:
     required:
       - adi,custom-temp
 
-  '^rsense@':
-    $ref: '#/$defs/sensor-node'
-    unevaluatedProperties: false
+  "^rsense@":
+    type: object
     description: Sense resistor sensor.
 
     properties:
@@ -461,7 +449,6 @@ required:
   - compatible
   - reg
   - interrupts
-  - vdd-supply
 
 additionalProperties: false
 
@@ -475,7 +462,7 @@ allOf:
               - adi,ltc2984
     then:
       patternProperties:
-        '^temp@': false
+        "^temp@": false
 
 examples:
   - |
@@ -491,7 +478,6 @@ examples:
             #address-cells = <1>;
             #size-cells = <0>;
 
-            vdd-supply = <&supply>;
             interrupts = <20 IRQ_TYPE_EDGE_RISING>;
             interrupt-parent = <&gpio>;
 

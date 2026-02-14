@@ -2,16 +2,13 @@
 /*
  * ACPI device specific properties support.
  *
- * Copyright (C) 2014 - 2023, Intel Corporation
+ * Copyright (C) 2014, Intel Corporation
  * All rights reserved.
  *
  * Authors: Mika Westerberg <mika.westerberg@linux.intel.com>
  *          Darren Hart <dvhart@linux.intel.com>
  *          Rafael J. Wysocki <rafael.j.wysocki@intel.com>
- *          Sakari Ailus <sakari.ailus@linux.intel.com>
  */
-
-#define pr_fmt(fmt) "ACPI: " fmt
 
 #include <linux/acpi.h>
 #include <linux/device.h>
@@ -31,14 +28,9 @@ static int acpi_data_get_property_array(const struct acpi_device_data *data,
  * not defined without a warning. For instance if any of the properties
  * from different GUID appear in a property list of another, it will be
  * accepted by the kernel. Firmware validation tools should catch these.
- *
- * References:
- *
- * [1] UEFI DSD Guide.
- *     https://github.com/UEFI/DSD-Guide/blob/main/src/dsd-guide.adoc
  */
 static const guid_t prp_guids[] = {
-	/* ACPI _DSD device properties GUID [1]: daffd814-6eba-4d8c-8a91-bc9bbf4aa301 */
+	/* ACPI _DSD device properties GUID: daffd814-6eba-4d8c-8a91-bc9bbf4aa301 */
 	GUID_INIT(0xdaffd814, 0x6eba, 0x4d8c,
 		  0x8a, 0x91, 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01),
 	/* Hotplug in D3 GUID: 6211e2c0-58a3-4af3-90e1-927a4e0c55a4 */
@@ -58,12 +50,11 @@ static const guid_t prp_guids[] = {
 		  0xa5, 0x61, 0x99, 0xa5, 0x18, 0x97, 0x62, 0xd0),
 };
 
-/* ACPI _DSD data subnodes GUID [1]: dbb8e3e6-5886-4ba6-8795-1319f52a966b */
+/* ACPI _DSD data subnodes GUID: dbb8e3e6-5886-4ba6-8795-1319f52a966b */
 static const guid_t ads_guid =
 	GUID_INIT(0xdbb8e3e6, 0x5886, 0x4ba6,
 		  0x87, 0x95, 0x13, 0x19, 0xf5, 0x2a, 0x96, 0x6b);
 
-/* ACPI _DSD data buffer GUID [1]: edb12dd0-363d-4085-a3d2-49522ca160c4 */
 static const guid_t buffer_prop_guid =
 	GUID_INIT(0xedb12dd0, 0x363d, 0x4085,
 		  0xa3, 0xd2, 0x49, 0x52, 0x2c, 0xa1, 0x60, 0xc4);
@@ -83,11 +74,7 @@ static bool acpi_nondev_subnode_extract(union acpi_object *desc,
 					struct fwnode_handle *parent)
 {
 	struct acpi_data_node *dn;
-	acpi_handle scope = NULL;
 	bool result;
-
-	if (acpi_graph_ignore_port(handle))
-		return false;
 
 	dn = kzalloc(sizeof(*dn), GFP_KERNEL);
 	if (!dn)
@@ -99,69 +86,47 @@ static bool acpi_nondev_subnode_extract(union acpi_object *desc,
 	INIT_LIST_HEAD(&dn->data.properties);
 	INIT_LIST_HEAD(&dn->data.subnodes);
 
-	/*
-	 * The scope for the completion of relative pathname segments and
-	 * subnode object lookup is the one of the namespace node (device)
-	 * containing the object that has returned the package.  That is, it's
-	 * the scope of that object's parent device.
-	 */
-	if (handle)
-		acpi_get_parent(handle, &scope);
+	result = acpi_extract_properties(handle, desc, &dn->data);
 
-	/*
-	 * Extract properties from the _DSD-equivalent package pointed to by
-	 * desc and use scope (if not NULL) for the completion of relative
-	 * pathname segments.
-	 *
-	 * The extracted properties will be held in the new data node dn.
-	 */
-	result = acpi_extract_properties(scope, desc, &dn->data);
-	/*
-	 * Look for subnodes in the _DSD-equivalent package pointed to by desc
-	 * and create child nodes of dn if there are any.
-	 */
-	if (acpi_enumerate_nondev_subnodes(scope, desc, &dn->data, &dn->fwnode))
+	if (handle) {
+		acpi_handle scope;
+		acpi_status status;
+
+		/*
+		 * The scope for the subnode object lookup is the one of the
+		 * namespace node (device) containing the object that has
+		 * returned the package.  That is, it's the scope of that
+		 * object's parent.
+		 */
+		status = acpi_get_parent(handle, &scope);
+		if (ACPI_SUCCESS(status)
+		    && acpi_enumerate_nondev_subnodes(scope, desc, &dn->data,
+						      &dn->fwnode))
+			result = true;
+	} else if (acpi_enumerate_nondev_subnodes(NULL, desc, &dn->data,
+						  &dn->fwnode)) {
 		result = true;
-
-	if (!result) {
-		kfree(dn);
-		acpi_handle_debug(handle, "Invalid properties/subnodes data, skipping\n");
-		return false;
 	}
 
-	/*
-	 * This will be NULL if the desc package is embedded in an outer
-	 * _DSD-equivalent package and its scope cannot be determined.
-	 */
-	dn->handle = handle;
-	dn->data.pointer = desc;
-	list_add_tail(&dn->sibling, list);
+	if (result) {
+		dn->handle = handle;
+		dn->data.pointer = desc;
+		list_add_tail(&dn->sibling, list);
+		return true;
+	}
 
-	return true;
+	kfree(dn);
+	acpi_handle_debug(handle, "Invalid properties/subnodes data, skipping\n");
+	return false;
 }
 
-static bool acpi_nondev_subnode_ok(acpi_handle scope,
-				   const union acpi_object *link,
-				   struct list_head *list,
-				   struct fwnode_handle *parent)
+static bool acpi_nondev_subnode_data_ok(acpi_handle handle,
+					const union acpi_object *link,
+					struct list_head *list,
+					struct fwnode_handle *parent)
 {
 	struct acpi_buffer buf = { ACPI_ALLOCATE_BUFFER };
-	acpi_handle handle;
 	acpi_status status;
-
-	/*
-	 * If the scope is unknown, the _DSD-equivalent package being parsed
-	 * was embedded in an outer _DSD-equivalent package as a result of
-	 * direct evaluation of an object pointed to by a reference.  In that
-	 * case, using a pathname as the target object pointer is invalid.
-	 */
-	if (!scope)
-		return false;
-
-	status = acpi_get_handle(scope, link->package.elements[1].string.pointer,
-				 &handle);
-	if (ACPI_FAILURE(status))
-		return false;
 
 	status = acpi_evaluate_object_typed(handle, NULL, NULL, &buf,
 					    ACPI_TYPE_PACKAGE);
@@ -176,6 +141,25 @@ static bool acpi_nondev_subnode_ok(acpi_handle scope,
 	return false;
 }
 
+static bool acpi_nondev_subnode_ok(acpi_handle scope,
+				   const union acpi_object *link,
+				   struct list_head *list,
+				   struct fwnode_handle *parent)
+{
+	acpi_handle handle;
+	acpi_status status;
+
+	if (!scope)
+		return false;
+
+	status = acpi_get_handle(scope, link->package.elements[1].string.pointer,
+				 &handle);
+	if (ACPI_FAILURE(status))
+		return false;
+
+	return acpi_nondev_subnode_data_ok(handle, link, list, parent);
+}
+
 static bool acpi_add_nondev_subnodes(acpi_handle scope,
 				     union acpi_object *links,
 				     struct list_head *list,
@@ -184,12 +168,9 @@ static bool acpi_add_nondev_subnodes(acpi_handle scope,
 	bool ret = false;
 	int i;
 
-	/*
-	 * Every element in the links package is expected to represent a link
-	 * to a non-device node in a tree containing device-specific data.
-	 */
 	for (i = 0; i < links->package.count; i++) {
 		union acpi_object *link, *desc;
+		acpi_handle handle;
 		bool result;
 
 		link = &links->package.elements[i];
@@ -197,53 +178,26 @@ static bool acpi_add_nondev_subnodes(acpi_handle scope,
 		if (link->package.count != 2)
 			continue;
 
-		/* The first one (the key) must be a string. */
+		/* The first one must be a string. */
 		if (link->package.elements[0].type != ACPI_TYPE_STRING)
 			continue;
 
-		/* The second one (the target) may be a string or a package. */
+		/* The second one may be a string, a reference or a package. */
 		switch (link->package.elements[1].type) {
 		case ACPI_TYPE_STRING:
-			/*
-			 * The string is expected to be a full pathname or a
-			 * pathname segment relative to the given scope.  That
-			 * pathname is expected to point to an object returning
-			 * a package that contains _DSD-equivalent information.
-			 */
 			result = acpi_nondev_subnode_ok(scope, link, list,
 							 parent);
 			break;
+		case ACPI_TYPE_LOCAL_REFERENCE:
+			handle = link->package.elements[1].reference.handle;
+			result = acpi_nondev_subnode_data_ok(handle, link, list,
+							     parent);
+			break;
 		case ACPI_TYPE_PACKAGE:
-			/*
-			 * This happens when a reference is used in AML to
-			 * point to the target.  Since the target is expected
-			 * to be a named object, a reference to it will cause it
-			 * to be avaluated in place and its return package will
-			 * be embedded in the links package at the location of
-			 * the reference.
-			 *
-			 * The target package is expected to contain _DSD-
-			 * equivalent information, but the scope in which it
-			 * is located in the original AML is unknown.  Thus
-			 * it cannot contain pathname segments represented as
-			 * strings because there is no way to build full
-			 * pathnames out of them.
-			 */
-			acpi_handle_debug(scope, "subnode %s: Unknown scope\n",
-					  link->package.elements[0].string.pointer);
 			desc = &link->package.elements[1];
 			result = acpi_nondev_subnode_extract(desc, NULL, link,
 							     list, parent);
 			break;
-		case ACPI_TYPE_LOCAL_REFERENCE:
-			/*
-			 * It is not expected to see any local references in
-			 * the links package because referencing a named object
-			 * should cause it to be evaluated in place.
-			 */
-			acpi_handle_info(scope, "subnode %s: Unexpected reference\n",
-					 link->package.elements[0].string.pointer);
-			fallthrough;
 		default:
 			result = false;
 			break;
@@ -403,9 +357,6 @@ static void acpi_untie_nondev_subnodes(struct acpi_device_data *data)
 	struct acpi_data_node *dn;
 
 	list_for_each_entry(dn, &data->subnodes, sibling) {
-		if (!dn->handle)
-			continue;
-
 		acpi_detach_data(dn->handle, acpi_nondev_subnode_tag);
 
 		acpi_untie_nondev_subnodes(&dn->data);
@@ -419,9 +370,6 @@ static bool acpi_tie_nondev_subnodes(struct acpi_device_data *data)
 	list_for_each_entry(dn, &data->subnodes, sibling) {
 		acpi_status status;
 		bool ret;
-
-		if (!dn->handle)
-			continue;
 
 		status = acpi_attach_data(dn->handle, acpi_nondev_subnode_tag, dn);
 		if (ACPI_FAILURE(status) && status != AE_ALREADY_EXISTS) {
@@ -844,45 +792,35 @@ acpi_fwnode_get_named_child_node(const struct fwnode_handle *fwnode,
 	return NULL;
 }
 
-static unsigned int acpi_fwnode_get_args_count(struct fwnode_handle *fwnode,
-					       const char *nargs_prop)
-{
-	const struct acpi_device_data *data;
-	const union acpi_object *obj;
-	int ret;
-
-	data = acpi_device_data_of_node(fwnode);
-	if (!data)
-		return 0;
-
-	ret = acpi_data_get_property(data, nargs_prop, ACPI_TYPE_INTEGER, &obj);
-	if (ret)
-		return 0;
-
-	return obj->integer.value;
-}
-
 static int acpi_get_ref_args(struct fwnode_reference_args *args,
 			     struct fwnode_handle *ref_fwnode,
-			     const char *nargs_prop,
 			     const union acpi_object **element,
 			     const union acpi_object *end, size_t num_args)
 {
 	u32 nargs = 0, i;
 
-	if (nargs_prop)
-		num_args = acpi_fwnode_get_args_count(ref_fwnode, nargs_prop);
+	/*
+	 * Find the referred data extension node under the
+	 * referred device node.
+	 */
+	for (; *element < end && (*element)->type == ACPI_TYPE_STRING;
+	     (*element)++) {
+		const char *child_name = (*element)->string.pointer;
+
+		ref_fwnode = acpi_fwnode_get_named_child_node(ref_fwnode, child_name);
+		if (!ref_fwnode)
+			return -EINVAL;
+	}
 
 	/*
 	 * Assume the following integer elements are all args. Stop counting on
-	 * the first reference (possibly represented as a string) or end of the
-	 * package arguments. In case of neither reference, nor integer, return
-	 * an error, we can't parse it.
+	 * the first reference or end of the package arguments. In case of
+	 * neither reference, nor integer, return an error, we can't parse it.
 	 */
 	for (i = 0; (*element) + i < end && i < num_args; i++) {
 		acpi_object_type type = (*element)[i].type;
 
-		if (type == ACPI_TYPE_LOCAL_REFERENCE || type == ACPI_TYPE_STRING)
+		if (type == ACPI_TYPE_LOCAL_REFERENCE)
 			break;
 
 		if (type == ACPI_TYPE_INTEGER)
@@ -906,166 +844,6 @@ static int acpi_get_ref_args(struct fwnode_reference_args *args,
 	return 0;
 }
 
-static struct fwnode_handle *acpi_parse_string_ref(const struct fwnode_handle *fwnode,
-						   const char *refstring)
-{
-	acpi_handle scope, handle;
-	struct acpi_data_node *dn;
-	struct acpi_device *device;
-	acpi_status status;
-
-	if (is_acpi_device_node(fwnode)) {
-		scope = to_acpi_device_node(fwnode)->handle;
-	} else if (is_acpi_data_node(fwnode)) {
-		scope = to_acpi_data_node(fwnode)->handle;
-	} else {
-		pr_debug("Bad node type for node %pfw\n", fwnode);
-		return NULL;
-	}
-
-	status = acpi_get_handle(scope, refstring, &handle);
-	if (ACPI_FAILURE(status)) {
-		acpi_handle_debug(scope, "Unable to get an ACPI handle for %s\n",
-				  refstring);
-		return NULL;
-	}
-
-	device = acpi_fetch_acpi_dev(handle);
-	if (device)
-		return acpi_fwnode_handle(device);
-
-	status = acpi_get_data_full(handle, acpi_nondev_subnode_tag,
-				    (void **)&dn, NULL);
-	if (ACPI_FAILURE(status) || !dn) {
-		acpi_handle_debug(handle, "Subnode not found\n");
-		return NULL;
-	}
-
-	return &dn->fwnode;
-}
-
-static int acpi_fwnode_get_reference_args(const struct fwnode_handle *fwnode,
-					  const char *propname, const char *nargs_prop,
-					  unsigned int args_count, unsigned int index,
-					  struct fwnode_reference_args *args)
-{
-	const union acpi_object *element, *end;
-	const union acpi_object *obj;
-	const struct acpi_device_data *data;
-	struct fwnode_handle *ref_fwnode;
-	struct acpi_device *device;
-	int ret, idx = 0;
-
-	data = acpi_device_data_of_node(fwnode);
-	if (!data)
-		return -ENOENT;
-
-	ret = acpi_data_get_property(data, propname, ACPI_TYPE_ANY, &obj);
-	if (ret)
-		return ret == -EINVAL ? -ENOENT : -EINVAL;
-
-	switch (obj->type) {
-	case ACPI_TYPE_LOCAL_REFERENCE:
-		/* Plain single reference without arguments. */
-		if (index)
-			return -ENOENT;
-
-		device = acpi_fetch_acpi_dev(obj->reference.handle);
-		if (!device)
-			return -EINVAL;
-
-		if (!args)
-			return 0;
-
-		args->fwnode = acpi_fwnode_handle(device);
-		args->nargs = 0;
-
-		return 0;
-	case ACPI_TYPE_STRING:
-		if (index)
-			return -ENOENT;
-
-		ref_fwnode = acpi_parse_string_ref(fwnode, obj->string.pointer);
-		if (!ref_fwnode)
-			return -EINVAL;
-
-		args->fwnode = ref_fwnode;
-		args->nargs = 0;
-
-		return 0;
-	case ACPI_TYPE_PACKAGE:
-		/*
-		 * If it is not a single reference, then it is a package of
-		 * references, followed by number of ints as follows:
-		 *
-		 *  Package () { REF, INT, REF, INT, INT }
-		 *
-		 * Here, REF may be either a local reference or a string. The
-		 * index argument is then used to determine which reference the
-		 * caller wants (along with the arguments).
-		 */
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	if (index >= obj->package.count)
-		return -ENOENT;
-
-	element = obj->package.elements;
-	end = element + obj->package.count;
-
-	while (element < end) {
-		switch (element->type) {
-		case ACPI_TYPE_LOCAL_REFERENCE:
-			device = acpi_fetch_acpi_dev(element->reference.handle);
-			if (!device)
-				return -EINVAL;
-
-			element++;
-			ret = acpi_get_ref_args(idx == index ? args : NULL,
-						acpi_fwnode_handle(device),
-						nargs_prop, &element, end,
-						args_count);
-			if (ret < 0)
-				return ret;
-
-			if (idx == index)
-				return 0;
-
-			break;
-		case ACPI_TYPE_STRING:
-			ref_fwnode = acpi_parse_string_ref(fwnode,
-							   element->string.pointer);
-			if (!ref_fwnode)
-				return -EINVAL;
-
-			element++;
-			ret = acpi_get_ref_args(idx == index ? args : NULL,
-						ref_fwnode, nargs_prop, &element, end,
-						args_count);
-			if (ret < 0)
-				return ret;
-
-			if (idx == index)
-				return 0;
-
-			break;
-		case ACPI_TYPE_INTEGER:
-			if (idx == index)
-				return -ENOENT;
-			element++;
-			break;
-		default:
-			return -EINVAL;
-		}
-
-		idx++;
-	}
-
-	return -ENOENT;
-}
-
 /**
  * __acpi_node_get_property_reference - returns handle to the referenced object
  * @fwnode: Firmware node to get the property from
@@ -1073,7 +851,6 @@ static int acpi_fwnode_get_reference_args(const struct fwnode_handle *fwnode,
  * @index: Index of the reference to return
  * @num_args: Maximum number of arguments after each reference
  * @args: Location to store the returned reference with optional arguments
- *	  (may be NULL)
  *
  * Find property with @name, verifify that it is a package containing at least
  * one object reference and if so, store the ACPI device object pointer to the
@@ -1103,11 +880,89 @@ static int acpi_fwnode_get_reference_args(const struct fwnode_handle *fwnode,
  * Return: %0 on success, negative error code on failure.
  */
 int __acpi_node_get_property_reference(const struct fwnode_handle *fwnode,
-				       const char *propname, size_t index,
-				       size_t num_args,
-				       struct fwnode_reference_args *args)
+	const char *propname, size_t index, size_t num_args,
+	struct fwnode_reference_args *args)
 {
-	return acpi_fwnode_get_reference_args(fwnode, propname, NULL, num_args, index, args);
+	const union acpi_object *element, *end;
+	const union acpi_object *obj;
+	const struct acpi_device_data *data;
+	struct acpi_device *device;
+	int ret, idx = 0;
+
+	data = acpi_device_data_of_node(fwnode);
+	if (!data)
+		return -ENOENT;
+
+	ret = acpi_data_get_property(data, propname, ACPI_TYPE_ANY, &obj);
+	if (ret)
+		return ret == -EINVAL ? -ENOENT : -EINVAL;
+
+	switch (obj->type) {
+	case ACPI_TYPE_LOCAL_REFERENCE:
+		/* Plain single reference without arguments. */
+		if (index)
+			return -ENOENT;
+
+		device = acpi_fetch_acpi_dev(obj->reference.handle);
+		if (!device)
+			return -EINVAL;
+
+		args->fwnode = acpi_fwnode_handle(device);
+		args->nargs = 0;
+		return 0;
+	case ACPI_TYPE_PACKAGE:
+		/*
+		 * If it is not a single reference, then it is a package of
+		 * references followed by number of ints as follows:
+		 *
+		 *  Package () { REF, INT, REF, INT, INT }
+		 *
+		 * The index argument is then used to determine which reference
+		 * the caller wants (along with the arguments).
+		 */
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	if (index >= obj->package.count)
+		return -ENOENT;
+
+	element = obj->package.elements;
+	end = element + obj->package.count;
+
+	while (element < end) {
+		switch (element->type) {
+		case ACPI_TYPE_LOCAL_REFERENCE:
+			device = acpi_fetch_acpi_dev(element->reference.handle);
+			if (!device)
+				return -EINVAL;
+
+			element++;
+
+			ret = acpi_get_ref_args(idx == index ? args : NULL,
+						acpi_fwnode_handle(device),
+						&element, end, num_args);
+			if (ret < 0)
+				return ret;
+
+			if (idx == index)
+				return 0;
+
+			break;
+		case ACPI_TYPE_INTEGER:
+			if (idx == index)
+				return -ENOENT;
+			element++;
+			break;
+		default:
+			return -EINVAL;
+		}
+
+		idx++;
+	}
+
+	return -ENOENT;
 }
 EXPORT_SYMBOL_GPL(__acpi_node_get_property_reference);
 
@@ -1116,48 +971,60 @@ static int acpi_data_prop_read_single(const struct acpi_device_data *data,
 				      enum dev_prop_type proptype, void *val)
 {
 	const union acpi_object *obj;
-	int ret = 0;
+	int ret;
 
-	if (proptype >= DEV_PROP_U8 && proptype <= DEV_PROP_U64)
+	if (proptype >= DEV_PROP_U8 && proptype <= DEV_PROP_U64) {
 		ret = acpi_data_get_property(data, propname, ACPI_TYPE_INTEGER, &obj);
-	else if (proptype == DEV_PROP_STRING)
-		ret = acpi_data_get_property(data, propname, ACPI_TYPE_STRING, &obj);
-	if (ret)
-		return ret;
+		if (ret)
+			return ret;
 
-	switch (proptype) {
-	case DEV_PROP_U8:
-		if (obj->integer.value > U8_MAX)
-			return -EOVERFLOW;
-		if (val)
-			*(u8 *)val = obj->integer.value;
-		break;
-	case DEV_PROP_U16:
-		if (obj->integer.value > U16_MAX)
-			return -EOVERFLOW;
-		if (val)
-			*(u16 *)val = obj->integer.value;
-		break;
-	case DEV_PROP_U32:
-		if (obj->integer.value > U32_MAX)
-			return -EOVERFLOW;
-		if (val)
-			*(u32 *)val = obj->integer.value;
-		break;
-	case DEV_PROP_U64:
-		if (val)
-			*(u64 *)val = obj->integer.value;
-		break;
-	case DEV_PROP_STRING:
+		switch (proptype) {
+		case DEV_PROP_U8:
+			if (obj->integer.value > U8_MAX)
+				return -EOVERFLOW;
+
+			if (val)
+				*(u8 *)val = obj->integer.value;
+
+			break;
+		case DEV_PROP_U16:
+			if (obj->integer.value > U16_MAX)
+				return -EOVERFLOW;
+
+			if (val)
+				*(u16 *)val = obj->integer.value;
+
+			break;
+		case DEV_PROP_U32:
+			if (obj->integer.value > U32_MAX)
+				return -EOVERFLOW;
+
+			if (val)
+				*(u32 *)val = obj->integer.value;
+
+			break;
+		default:
+			if (val)
+				*(u64 *)val = obj->integer.value;
+
+			break;
+		}
+
+		if (!val)
+			return 1;
+	} else if (proptype == DEV_PROP_STRING) {
+		ret = acpi_data_get_property(data, propname, ACPI_TYPE_STRING, &obj);
+		if (ret)
+			return ret;
+
 		if (val)
 			*(char **)val = obj->string.pointer;
-		return 1;
-	default:
-		return -EINVAL;
-	}
 
-	/* When no storage provided return number of available values */
-	return val ? 0 : 1;
+		return 1;
+	} else {
+		ret = -EINVAL;
+	}
+	return ret;
 }
 
 #define acpi_copy_property_array_uint(items, val, nval)			\
@@ -1247,24 +1114,25 @@ static int acpi_data_prop_read(const struct acpi_device_data *data,
 	switch (proptype) {
 	case DEV_PROP_STRING:
 		break;
-	default:
+	case DEV_PROP_U8 ... DEV_PROP_U64:
 		if (obj->type == ACPI_TYPE_BUFFER) {
 			if (nval > obj->buffer.length)
 				return -EOVERFLOW;
-		} else {
-			if (nval > obj->package.count)
-				return -EOVERFLOW;
+			break;
 		}
+		fallthrough;
+	default:
+		if (nval > obj->package.count)
+			return -EOVERFLOW;
 		break;
 	}
+	if (nval == 0)
+		return -EINVAL;
 
-	if (obj->type == ACPI_TYPE_BUFFER) {
-		if (proptype != DEV_PROP_U8)
-			return -EPROTO;
-		items = obj;
-	} else {
+	if (obj->type != ACPI_TYPE_BUFFER)
 		items = obj->package.elements;
-	}
+	else
+		items = obj;
 
 	switch (proptype) {
 	case DEV_PROP_U8:
@@ -1280,11 +1148,9 @@ static int acpi_data_prop_read(const struct acpi_device_data *data,
 		ret = acpi_copy_property_array_uint(items, (u64 *)val, nval);
 		break;
 	case DEV_PROP_STRING:
-		nval = min(nval, obj->package.count);
-		if (nval == 0)
-			return -ENODATA;
-
-		ret = acpi_copy_property_array_string(items, (char **)val, nval);
+		ret = acpi_copy_property_array_string(
+			items, (char **)val,
+			min_t(u32, nval, obj->package.count));
 		break;
 	default:
 		ret = -EINVAL;
@@ -1329,14 +1195,13 @@ static int stop_on_next(struct acpi_device *adev, void *data)
 	return 0;
 }
 
-/*
+/**
  * acpi_get_next_subnode - Return the next child node handle for a fwnode
  * @fwnode: Firmware node to find the next child node for.
  * @child: Handle to one of the device's child nodes or a null handle.
  */
-static struct fwnode_handle *
-acpi_get_next_subnode(const struct fwnode_handle *fwnode,
-		      struct fwnode_handle *child)
+struct fwnode_handle *acpi_get_next_subnode(const struct fwnode_handle *fwnode,
+					    struct fwnode_handle *child)
 {
 	struct acpi_device *adev = to_acpi_device_node(fwnode);
 
@@ -1387,28 +1252,6 @@ acpi_get_next_subnode(const struct fwnode_handle *fwnode,
 		return &dn->fwnode;
 	}
 	return NULL;
-}
-
-/*
- * acpi_get_next_present_subnode - Return the next present child node handle
- * @fwnode: Firmware node to find the next child node for.
- * @child: Handle to one of the device's child nodes or a null handle.
- *
- * Like acpi_get_next_subnode(), but the device nodes returned by
- * acpi_get_next_present_subnode() are guaranteed to be present.
- *
- * Returns: The fwnode handle of the next present sub-node.
- */
-static struct fwnode_handle *
-acpi_get_next_present_subnode(const struct fwnode_handle *fwnode,
-			      struct fwnode_handle *child)
-{
-	do {
-		child = acpi_get_next_subnode(fwnode, child);
-	} while (is_acpi_device_node(child) &&
-		 !acpi_device_is_present(to_acpi_device_node(child)));
-
-	return child;
 }
 
 /**
@@ -1473,7 +1316,7 @@ static struct fwnode_handle *acpi_graph_get_next_endpoint(
 
 	if (!prev) {
 		do {
-			port = acpi_get_next_subnode(fwnode, port);
+			port = fwnode_get_next_child_node(fwnode, port);
 			/*
 			 * The names of the port nodes begin with "port@"
 			 * followed by the number of the port node and they also
@@ -1491,17 +1334,14 @@ static struct fwnode_handle *acpi_graph_get_next_endpoint(
 	if (!port)
 		return NULL;
 
-	do {
-		endpoint = acpi_get_next_subnode(port, prev);
-		if (endpoint)
+	endpoint = fwnode_get_next_child_node(port, prev);
+	while (!endpoint) {
+		port = fwnode_get_next_child_node(fwnode, port);
+		if (!port)
 			break;
-
-		prev = NULL;
-
-		do {
-			port = acpi_get_next_subnode(fwnode, port);
-		} while (port && !is_acpi_graph_node(port, "port"));
-	} while (port);
+		if (is_acpi_graph_node(port, "port"))
+			endpoint = fwnode_get_next_child_node(port, NULL);
+	}
 
 	/*
 	 * The names of the endpoint nodes begin with "endpoint@" followed by
@@ -1588,7 +1428,7 @@ acpi_graph_get_remote_endpoint(const struct fwnode_handle *__fwnode)
 static bool acpi_fwnode_device_is_available(const struct fwnode_handle *fwnode)
 {
 	if (!is_acpi_device_node(fwnode))
-		return true;
+		return false;
 
 	return acpi_device_is_present(to_acpi_device_node(fwnode));
 }
@@ -1652,6 +1492,16 @@ acpi_fwnode_property_read_string_array(const struct fwnode_handle *fwnode,
 {
 	return acpi_node_prop_read(fwnode, propname, DEV_PROP_STRING,
 				   val, nval);
+}
+
+static int
+acpi_fwnode_get_reference_args(const struct fwnode_handle *fwnode,
+			       const char *prop, const char *nargs_prop,
+			       unsigned int args_count, unsigned int index,
+			       struct fwnode_reference_args *args)
+{
+	return __acpi_node_get_property_reference(fwnode, prop, index,
+						  args_count, args);
 }
 
 static const char *acpi_fwnode_get_name(const struct fwnode_handle *fwnode)
@@ -1718,7 +1568,6 @@ static int acpi_fwnode_graph_parse_endpoint(const struct fwnode_handle *fwnode,
 	if (fwnode_property_read_u32(fwnode, "reg", &endpoint->id))
 		fwnode_property_read_u32(fwnode, "endpoint", &endpoint->id);
 
-	fwnode_handle_put(port_fwnode);
 	return 0;
 }
 
@@ -1743,13 +1592,12 @@ static int acpi_fwnode_irq_get(const struct fwnode_handle *fwnode,
 			acpi_fwnode_device_dma_supported,		\
 		.device_get_dma_attr = acpi_fwnode_device_get_dma_attr,	\
 		.property_present = acpi_fwnode_property_present,	\
-		.property_read_bool = acpi_fwnode_property_present,	\
 		.property_read_int_array =				\
 			acpi_fwnode_property_read_int_array,		\
 		.property_read_string_array =				\
 			acpi_fwnode_property_read_string_array,		\
 		.get_parent = acpi_node_get_parent,			\
-		.get_next_child_node = acpi_get_next_present_subnode,	\
+		.get_next_child_node = acpi_get_next_subnode,		\
 		.get_named_child_node = acpi_fwnode_get_named_child_node, \
 		.get_name = acpi_fwnode_get_name,			\
 		.get_name_prefix = acpi_fwnode_get_name_prefix,		\

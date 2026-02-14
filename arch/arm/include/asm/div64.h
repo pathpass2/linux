@@ -52,17 +52,10 @@ static inline uint32_t __div64_32(uint64_t *n, uint32_t base)
 
 #else
 
-#ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-static __always_inline
-#else
-static inline
-#endif
-uint64_t __arch_xprod_64(uint64_t m, uint64_t n, bool bias)
+static inline uint64_t __arch_xprod_64(uint64_t m, uint64_t n, bool bias)
 {
 	unsigned long long res;
 	register unsigned int tmp asm("ip") = 0;
-	bool no_ovf = __builtin_constant_p(m) &&
-		      ((m >> 32) + (m & 0xffffffff) < 0x100000000);
 
 	if (!bias) {
 		asm (	"umull	%Q0, %R0, %Q1, %Q2\n\t"
@@ -70,7 +63,7 @@ uint64_t __arch_xprod_64(uint64_t m, uint64_t n, bool bias)
 			: "=&r" (res)
 			: "r" (m), "r" (n)
 			: "cc");
-	} else if (no_ovf) {
+	} else if (!(m & ((1ULL << 63) | (1ULL << 31)))) {
 		res = m;
 		asm (	"umlal	%Q0, %R0, %Q1, %Q2\n\t"
 			"mov	%Q0, #0"
@@ -87,7 +80,7 @@ uint64_t __arch_xprod_64(uint64_t m, uint64_t n, bool bias)
 			: "cc");
 	}
 
-	if (no_ovf) {
+	if (!(m & ((1ULL << 63) | (1ULL << 31)))) {
 		asm (	"umlal	%R0, %Q0, %R1, %Q2\n\t"
 			"umlal	%R0, %Q0, %Q1, %R2\n\t"
 			"mov	%R0, #0\n\t"

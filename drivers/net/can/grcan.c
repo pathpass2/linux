@@ -30,9 +30,8 @@
 #include <linux/ethtool.h>
 #include <linux/io.h>
 #include <linux/can/dev.h>
-#include <linux/platform_device.h>
 #include <linux/spinlock.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/of_irq.h>
 
 #include <linux/dma-mapping.h>
@@ -778,7 +777,7 @@ static irqreturn_t grcan_interrupt(int irq, void *dev_id)
 	 */
 	if (priv->need_txbug_workaround &&
 	    (sources & (GRCAN_IRQ_TX | GRCAN_IRQ_TXLOSS))) {
-		timer_delete(&priv->hang_timer);
+		del_timer(&priv->hang_timer);
 	}
 
 	/* Frame(s) received or transmitted */
@@ -806,7 +805,7 @@ static irqreturn_t grcan_interrupt(int irq, void *dev_id)
  */
 static void grcan_running_reset(struct timer_list *t)
 {
-	struct grcan_priv *priv = timer_container_of(priv, t, rr_timer);
+	struct grcan_priv *priv = from_timer(priv, t, rr_timer);
 	struct net_device *dev = priv->dev;
 	struct grcan_registers __iomem *regs = priv->regs;
 	unsigned long flags;
@@ -817,8 +816,8 @@ static void grcan_running_reset(struct timer_list *t)
 	spin_lock_irqsave(&priv->lock, flags);
 
 	priv->resetting = false;
-	timer_delete(&priv->hang_timer);
-	timer_delete(&priv->rr_timer);
+	del_timer(&priv->hang_timer);
+	del_timer(&priv->rr_timer);
 
 	if (!priv->closing) {
 		/* Save and reset - config register preserved by grcan_reset */
@@ -897,7 +896,7 @@ static inline void grcan_reset_timer(struct timer_list *timer, __u32 bitrate)
 /* Disable channels and schedule a running reset */
 static void grcan_initiate_running_reset(struct timer_list *t)
 {
-	struct grcan_priv *priv = timer_container_of(priv, t, hang_timer);
+	struct grcan_priv *priv = from_timer(priv, t, hang_timer);
 	struct net_device *dev = priv->dev;
 	struct grcan_registers __iomem *regs = priv->regs;
 	unsigned long flags;
@@ -1073,10 +1072,9 @@ static int grcan_open(struct net_device *dev)
 	if (err)
 		goto exit_close_candev;
 
-	napi_enable(&priv->napi);
-
 	spin_lock_irqsave(&priv->lock, flags);
 
+	napi_enable(&priv->napi);
 	grcan_start(dev);
 	if (!(priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY))
 		netif_start_queue(dev);
@@ -1108,8 +1106,8 @@ static int grcan_close(struct net_device *dev)
 	priv->closing = true;
 	if (priv->need_txbug_workaround) {
 		spin_unlock_irqrestore(&priv->lock, flags);
-		timer_delete_sync(&priv->hang_timer);
-		timer_delete_sync(&priv->rr_timer);
+		del_timer_sync(&priv->hang_timer);
+		del_timer_sync(&priv->rr_timer);
 		spin_lock_irqsave(&priv->lock, flags);
 	}
 	netif_stop_queue(dev);
@@ -1147,7 +1145,7 @@ static void grcan_transmit_catch_up(struct net_device *dev)
 		 * so prevent a running reset while catching up
 		 */
 		if (priv->need_txbug_workaround)
-			timer_delete(&priv->hang_timer);
+			del_timer(&priv->hang_timer);
 	}
 
 	spin_unlock_irqrestore(&priv->lock, flags);
@@ -1561,6 +1559,7 @@ static const struct net_device_ops grcan_netdev_ops = {
 	.ndo_open	= grcan_open,
 	.ndo_stop	= grcan_close,
 	.ndo_start_xmit	= grcan_start_xmit,
+	.ndo_change_mtu = can_change_mtu,
 };
 
 static const struct ethtool_ops grcan_ethtool_ops = {
@@ -1697,7 +1696,7 @@ exit_error:
 	return err;
 }
 
-static void grcan_remove(struct platform_device *ofdev)
+static int grcan_remove(struct platform_device *ofdev)
 {
 	struct net_device *dev = platform_get_drvdata(ofdev);
 	struct grcan_priv *priv = netdev_priv(dev);
@@ -1707,6 +1706,8 @@ static void grcan_remove(struct platform_device *ofdev)
 	irq_dispose_mapping(dev->irq);
 	netif_napi_del(&priv->napi);
 	free_candev(dev);
+
+	return 0;
 }
 
 static const struct of_device_id grcan_match[] = {

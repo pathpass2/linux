@@ -22,9 +22,6 @@
 
 #define MPMU_UART_PLL	0x14
 
-#define APBC_NR_CLKS	48
-#define APMU_NR_CLKS	96
-
 struct pxa1928_clk_unit {
 	struct mmp_clk_unit unit;
 	void __iomem *mpmu_base;
@@ -61,9 +58,9 @@ static struct mmp_clk_factor_masks uart_factor_masks = {
 	.den_shift = 0,
 };
 
-static struct u32_fract uart_factor_tbl[] = {
-	{ .numerator = 832, .denominator = 234 },	/* 58.5MHZ */
-	{ .numerator =   1, .denominator =   1 },	/* 26MHZ */
+static struct mmp_clk_factor_tbl uart_factor_tbl[] = {
+	{.num = 832, .den = 234},	/*58.5MHZ */
+	{.num = 1, .den = 1},		/*26MHZ */
 };
 
 static void pxa1928_pll_init(struct pxa1928_clk_unit *pxa_unit)
@@ -238,7 +235,7 @@ static void __init pxa1928_apmu_clk_init(struct device_node *np)
 		return;
 	}
 
-	mmp_clk_init(np, &pxa_unit->unit, APMU_NR_CLKS);
+	mmp_clk_init(np, &pxa_unit->unit, PXA1928_APMU_NR_CLKS);
 
 	pxa1928_axi_periph_clk_init(pxa_unit);
 }
@@ -259,7 +256,7 @@ static void __init pxa1928_apbc_clk_init(struct device_node *np)
 		return;
 	}
 
-	mmp_clk_init(np, &pxa_unit->unit, APBC_NR_CLKS);
+	mmp_clk_init(np, &pxa_unit->unit, PXA1928_APBC_NR_CLKS);
 
 	pxa1928_apb_periph_clk_init(pxa_unit);
 	pxa1928_clk_reset_init(np, pxa_unit);

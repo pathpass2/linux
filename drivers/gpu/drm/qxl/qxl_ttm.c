@@ -28,7 +28,6 @@
 #include <drm/drm.h>
 #include <drm/drm_file.h>
 #include <drm/drm_debugfs.h>
-#include <drm/drm_print.h>
 #include <drm/qxl_drm.h>
 #include <drm/ttm/ttm_bo.h>
 #include <drm/ttm/ttm_placement.h>
@@ -61,7 +60,9 @@ static void qxl_evict_flags(struct ttm_buffer_object *bo,
 
 	if (!qxl_ttm_bo_is_qxl_bo(bo)) {
 		placement->placement = &placements;
+		placement->busy_placement = &placements;
 		placement->num_placement = 1;
+		placement->num_busy_placement = 1;
 		return;
 	}
 	qbo = to_qxl_bo(bo);
@@ -142,17 +143,6 @@ static int qxl_bo_move(struct ttm_buffer_object *bo, bool evict,
 	struct ttm_resource *old_mem = bo->resource;
 	int ret;
 
-	if (!old_mem) {
-		if (new_mem->mem_type != TTM_PL_SYSTEM) {
-			hop->mem_type = TTM_PL_SYSTEM;
-			hop->flags = TTM_PL_FLAG_TEMPORARY;
-			return -EMULTIHOP;
-		}
-
-		ttm_bo_move_null(bo, new_mem);
-		return 0;
-	}
-
 	qxl_bo_move_notify(bo, new_mem);
 
 	ret = ttm_bo_wait_ctx(bo, ctx);
@@ -197,7 +187,7 @@ int qxl_ttm_init(struct qxl_device *qdev)
 	r = ttm_device_init(&qdev->mman.bdev, &qxl_bo_driver, NULL,
 			    qdev->ddev.anon_inode->i_mapping,
 			    qdev->ddev.vma_offset_manager,
-			    0);
+			    false, false);
 	if (r) {
 		DRM_ERROR("failed initializing buffer object driver(%d).\n", r);
 		return r;

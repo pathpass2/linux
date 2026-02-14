@@ -53,12 +53,9 @@ struct intel_gt;
 struct intel_ring;
 struct intel_uncore;
 struct intel_breadcrumbs;
-struct intel_engine_cs;
-struct i915_perf_group;
 
 typedef u32 intel_engine_mask_t;
 #define ALL_ENGINES ((intel_engine_mask_t)~0ul)
-#define VIRTUAL_ENGINES BIT(BITS_PER_TYPE(intel_engine_mask_t) - 1)
 
 struct intel_hw_status_page {
 	struct list_head timelines;
@@ -237,7 +234,7 @@ struct intel_engine_execlists {
 	 */
 	struct i915_request * const *active;
 	/**
-	 * @inflight: the set of contexts submitted and acknowledged by HW
+	 * @inflight: the set of contexts submitted and acknowleged by HW
 	 *
 	 * The set of inflight contexts is managed by reading CS events
 	 * from the HW. On a context-switch event (not preemption), we
@@ -260,7 +257,7 @@ struct intel_engine_execlists {
 	unsigned int port_mask;
 
 	/**
-	 * @virtual: Queue of requests on a virtual engine, sorted by priority.
+	 * @virtual: Queue of requets on a virtual engine, sorted by priority.
 	 * Each RB entry is a struct i915_priolist containing a list of requests
 	 * of the same priority.
 	 */
@@ -290,7 +287,6 @@ struct intel_engine_execlists {
 	 */
 	u8 csb_head;
 
-	/* private: selftest */
 	I915_SELFTEST_DECLARE(struct st_preempt_hang preempt_hang;)
 };
 
@@ -343,23 +339,6 @@ struct intel_engine_guc_stats {
 	 * @start_gt_clk: GT clock time of last idle to active transition.
 	 */
 	u64 start_gt_clk;
-
-	/**
-	 * @total: The last value of total returned
-	 */
-	u64 total;
-};
-
-union intel_engine_tlb_inv_reg {
-	i915_reg_t	reg;
-	i915_mcr_reg_t	mcr_reg;
-};
-
-struct intel_engine_tlb_inv {
-	bool mcr;
-	union intel_engine_tlb_inv_reg reg;
-	u32 request;
-	u32 done;
 };
 
 struct intel_engine_cs {
@@ -393,8 +372,6 @@ struct intel_engine_cs {
 	u32 context_size;
 	u32 mmio_base;
 
-	struct intel_engine_tlb_inv tlb_inv;
-
 	/*
 	 * Some w/a require forcewake to be held (which prevents RC6) while
 	 * a particular engine is active. If so, we set fw_domain to which
@@ -407,15 +384,7 @@ struct intel_engine_cs {
 
 	unsigned long context_tag;
 
-	/*
-	 * The type evolves during initialization, see related comment for
-	 * struct drm_i915_private's uabi_engines member.
-	 */
-	union {
-		struct llist_node uabi_llist;
-		struct list_head uabi_list;
-		struct rb_node uabi_node;
-	};
+	struct rb_node uabi_node;
 
 	struct intel_sseu sseu;
 
@@ -429,9 +398,6 @@ struct intel_engine_cs {
 	struct llist_head barrier_tasks;
 
 	struct intel_context *kernel_context; /* pinned */
-	struct intel_context *bind_context; /* pinned, only for BCS0 */
-	/* mark the bind context's availability status */
-	bool bind_context_ready;
 
 	/**
 	 * pinned_contexts_list: List of pinned contexts. This list is only
@@ -451,9 +417,7 @@ struct intel_engine_cs {
 	unsigned long serial;
 
 	unsigned long wakeref_serial;
-	intel_wakeref_t wakeref_track;
 	struct intel_wakeref wakeref;
-
 	struct file *default_state;
 
 	struct {
@@ -591,7 +555,7 @@ struct intel_engine_cs {
 #define I915_ENGINE_HAS_RCS_REG_STATE  BIT(9)
 #define I915_ENGINE_HAS_EU_PRIORITY    BIT(10)
 #define I915_ENGINE_FIRST_RENDER_COMPUTE BIT(11)
-#define I915_ENGINE_USES_WA_HOLD_SWITCHOUT BIT(12)
+#define I915_ENGINE_USES_WA_HOLD_CCS_SWITCHOUT BIT(12)
 	unsigned int flags;
 
 	/*
@@ -639,14 +603,6 @@ struct intel_engine_cs {
 	} props, defaults;
 
 	I915_SELFTEST_DECLARE(struct fault_attr reset_timeout);
-
-	/*
-	 * The perf group maps to one OA unit which controls one OA buffer. All
-	 * reports corresponding to this engine will be reported to this OA
-	 * buffer. An engine will map to a single OA unit, but a single OA unit
-	 * can generate reports for multiple engines.
-	 */
-	struct i915_perf_group *oa_group;
 };
 
 static inline bool
@@ -701,12 +657,10 @@ intel_engine_has_relative_mmio(const struct intel_engine_cs * const engine)
 }
 
 /* Wa_14014475959:dg2 */
-/* Wa_16019325821 */
-/* Wa_14019159160 */
 static inline bool
-intel_engine_uses_wa_hold_switchout(struct intel_engine_cs *engine)
+intel_engine_uses_wa_hold_ccs_switchout(struct intel_engine_cs *engine)
 {
-	return engine->flags & I915_ENGINE_USES_WA_HOLD_SWITCHOUT;
+	return engine->flags & I915_ENGINE_USES_WA_HOLD_CCS_SWITCHOUT;
 }
 
 #endif /* __INTEL_ENGINE_TYPES_H__ */

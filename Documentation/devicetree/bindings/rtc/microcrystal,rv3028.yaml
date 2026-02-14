@@ -22,9 +22,6 @@ properties:
   interrupts:
     maxItems: 1
 
-  "#clock-cells":
-    const: 0
-
   trickle-resistor-ohms:
     enum:
       - 3000

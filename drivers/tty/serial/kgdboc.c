@@ -19,7 +19,6 @@
 #include <linux/console.h>
 #include <linux/vt_kern.h>
 #include <linux/input.h>
-#include <linux/irq_work.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/serial_core.h>
@@ -49,25 +48,6 @@ static struct kgdb_io		kgdboc_earlycon_io_ops;
 static int                      (*earlycon_orig_exit)(struct console *con);
 #endif /* IS_BUILTIN(CONFIG_KGDB_SERIAL_CONSOLE) */
 
-/*
- * When we leave the debug trap handler we need to reset the keyboard status
- * (since the original keyboard state gets partially clobbered by kdb use of
- * the keyboard).
- *
- * The path to deliver the reset is somewhat circuitous.
- *
- * To deliver the reset we register an input handler, reset the keyboard and
- * then deregister the input handler. However, to get this done right, we do
- * have to carefully manage the calling context because we can only register
- * input handlers from task context.
- *
- * In particular we need to trigger the action from the debug trap handler with
- * all its NMI and/or NMI-like oddities. To solve this the kgdboc trap exit code
- * (the "post_exception" callback) uses irq_work_queue(), which is NMI-safe, to
- * schedule a callback from a hardirq context. From there we have to defer the
- * work again, this time using schedule_work(), to get a callback using the
- * system workqueue, which runs in task context.
- */
 #ifdef CONFIG_KDB_KEYBOARD
 static int kgdboc_reset_connect(struct input_handler *handler,
 				struct input_dev *dev,
@@ -119,17 +99,10 @@ static void kgdboc_restore_input_helper(struct work_struct *dummy)
 
 static DECLARE_WORK(kgdboc_restore_input_work, kgdboc_restore_input_helper);
 
-static void kgdboc_queue_restore_input_helper(struct irq_work *unused)
-{
-	schedule_work(&kgdboc_restore_input_work);
-}
-
-static DEFINE_IRQ_WORK(kgdboc_restore_input_irq_work, kgdboc_queue_restore_input_helper);
-
 static void kgdboc_restore_input(void)
 {
 	if (likely(system_state == SYSTEM_RUNNING))
-		irq_work_queue(&kgdboc_restore_input_irq_work);
+		schedule_work(&kgdboc_restore_input_work);
 }
 
 static int kgdboc_register_kbd(char **cptr)
@@ -160,7 +133,6 @@ static void kgdboc_unregister_kbd(void)
 			i--;
 		}
 	}
-	irq_work_sync(&kgdboc_restore_input_irq_work);
 	flush_work(&kgdboc_restore_input_work);
 }
 #else /* ! CONFIG_KDB_KEYBOARD */
@@ -186,6 +158,8 @@ static void cleanup_kgdboc(void)
 	if (configured != 1)
 		return;
 
+	if (kgdb_unregister_nmi_console())
+		return;
 	kgdboc_unregister_kbd();
 	kgdb_unregister_io_module(&kgdboc_io_ops);
 }
@@ -248,10 +222,16 @@ do_register:
 	if (err)
 		goto noconfig;
 
+	err = kgdb_register_nmi_console();
+	if (err)
+		goto nmi_con_failed;
+
 	configured = 1;
 
 	return 0;
 
+nmi_con_failed:
+	kgdb_unregister_io_module(&kgdboc_io_ops);
 noconfig:
 	kgdboc_unregister_kbd();
 	configured = 0;
@@ -577,6 +557,7 @@ static int __init kgdboc_earlycon_init(char *opt)
 	console_list_lock();
 	for_each_console(con) {
 		if (con->write && con->read &&
+		    (con->flags & (CON_BOOT | CON_ENABLED)) &&
 		    (!opt || !opt[0] || strcmp(con->name, opt) == 0))
 			break;
 	}

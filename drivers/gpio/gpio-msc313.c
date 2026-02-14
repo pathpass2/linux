@@ -3,14 +3,14 @@
 
 #include <linux/bitops.h>
 #include <linux/kernel.h>
+#include <linux/types.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/gpio/driver.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
-#include <linux/types.h>
 
 #include <dt-bindings/gpio/msc313-gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -486,7 +486,7 @@ struct msc313_gpio {
 	u8 *saved;
 };
 
-static int msc313_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void msc313_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct msc313_gpio *gpio = gpiochip_get_data(chip);
 	u8 gpioreg = readb_relaxed(gpio->base + gpio->gpio_data->offsets[offset]);
@@ -497,8 +497,6 @@ static int msc313_gpio_set(struct gpio_chip *chip, unsigned int offset, int valu
 		gpioreg &= ~MSC313_GPIO_OUT;
 
 	writeb_relaxed(gpioreg, gpio->base + gpio->gpio_data->offsets[offset]);
-
-	return 0;
 }
 
 static int msc313_gpio_get(struct gpio_chip *chip, unsigned int offset)
@@ -534,35 +532,17 @@ static int msc313_gpio_direction_output(struct gpio_chip *chip, unsigned int off
 	return 0;
 }
 
-static void msc313_gpio_irq_mask(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-
-	irq_chip_mask_parent(d);
-	gpiochip_disable_irq(gc, d->hwirq);
-}
-
-static void msc313_gpio_irq_unmask(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-
-	gpiochip_enable_irq(gc, d->hwirq);
-	irq_chip_unmask_parent(d);
-}
-
 /*
  * The interrupt handling happens in the parent interrupt controller,
  * we don't do anything here.
  */
-static const struct irq_chip msc313_gpio_irqchip = {
+static struct irq_chip msc313_gpio_irqchip = {
 	.name = "GPIO",
 	.irq_eoi = irq_chip_eoi_parent,
-	.irq_mask = msc313_gpio_irq_mask,
-	.irq_unmask = msc313_gpio_irq_unmask,
+	.irq_mask = irq_chip_mask_parent,
+	.irq_unmask = irq_chip_unmask_parent,
 	.irq_set_type = irq_chip_set_type_parent,
 	.irq_set_affinity = irq_chip_set_affinity_parent,
-	.flags = IRQCHIP_IMMUTABLE,
-	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 
 /*
@@ -664,8 +644,8 @@ static int msc313_gpio_probe(struct platform_device *pdev)
 	gpiochip->names = gpio->gpio_data->names;
 
 	gpioirqchip = &gpiochip->irq;
-	gpio_irq_chip_set_chip(gpioirqchip, &msc313_gpio_irqchip);
-	gpioirqchip->fwnode = dev_fwnode(dev);
+	gpioirqchip->chip = &msc313_gpio_irqchip;
+	gpioirqchip->fwnode = of_node_to_fwnode(dev->of_node);
 	gpioirqchip->parent_domain = parent_domain;
 	gpioirqchip->child_to_parent_hwirq = msc313e_gpio_child_to_parent_hwirq;
 	gpioirqchip->populate_parent_alloc_arg = msc313_gpio_populate_parent_fwspec;
@@ -694,7 +674,7 @@ static const struct of_device_id msc313_gpio_of_match[] = {
  * SoC goes into suspend to memory mode so we need to save some
  * of the register bits before suspending and put it back when resuming
  */
-static int msc313_gpio_suspend(struct device *dev)
+static int __maybe_unused msc313_gpio_suspend(struct device *dev)
 {
 	struct msc313_gpio *gpio = dev_get_drvdata(dev);
 	int i;
@@ -705,7 +685,7 @@ static int msc313_gpio_suspend(struct device *dev)
 	return 0;
 }
 
-static int msc313_gpio_resume(struct device *dev)
+static int __maybe_unused msc313_gpio_resume(struct device *dev)
 {
 	struct msc313_gpio *gpio = dev_get_drvdata(dev);
 	int i;
@@ -716,13 +696,13 @@ static int msc313_gpio_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(msc313_gpio_ops, msc313_gpio_suspend, msc313_gpio_resume);
+static SIMPLE_DEV_PM_OPS(msc313_gpio_ops, msc313_gpio_suspend, msc313_gpio_resume);
 
 static struct platform_driver msc313_gpio_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
 		.of_match_table = msc313_gpio_of_match,
-		.pm = pm_sleep_ptr(&msc313_gpio_ops),
+		.pm = &msc313_gpio_ops,
 	},
 	.probe = msc313_gpio_probe,
 };

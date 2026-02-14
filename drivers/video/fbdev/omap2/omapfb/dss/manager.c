@@ -11,7 +11,6 @@
 
 #define DSS_SUBSYS_NAME "MANAGER"
 
-#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/module.h>

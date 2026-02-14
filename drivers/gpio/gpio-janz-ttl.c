@@ -76,7 +76,7 @@ static int ttl_get_value(struct gpio_chip *gpio, unsigned offset)
 	return !!ret;
 }
 
-static int ttl_set_value(struct gpio_chip *gpio, unsigned int offset, int value)
+static void ttl_set_value(struct gpio_chip *gpio, unsigned offset, int value)
 {
 	struct ttl_module *mod = dev_get_drvdata(gpio->parent);
 	void __iomem *port;
@@ -103,8 +103,6 @@ static int ttl_set_value(struct gpio_chip *gpio, unsigned int offset, int value)
 
 	iowrite16be(*shadow, port);
 	spin_unlock(&mod->lock);
-
-	return 0;
 }
 
 static void ttl_write_reg(struct ttl_module *mod, u8 reg, u16 val)

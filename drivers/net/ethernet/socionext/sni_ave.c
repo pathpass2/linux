@@ -15,11 +15,10 @@
 #include <linux/mii.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
-#include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/of_mdio.h>
+#include <linux/of_platform.h>
 #include <linux/phy.h>
-#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
 #include <linux/types.h>
@@ -586,8 +585,10 @@ static int ave_rxdesc_prepare(struct net_device *ndev, int entry)
 	skb = priv->rx.desc[entry].skbs;
 	if (!skb) {
 		skb = netdev_alloc_skb(ndev, AVE_MAX_ETHFRAME);
-		if (!skb)
+		if (!skb) {
+			netdev_err(ndev, "can't allocate skb for Rx\n");
 			return -ENOMEM;
+		}
 		skb->data += AVE_FRAME_HEADROOM;
 		skb->tail += AVE_FRAME_HEADROOM;
 	}
@@ -1717,7 +1718,7 @@ out_del_napi:
 	return ret;
 }
 
-static void ave_remove(struct platform_device *pdev)
+static int ave_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct ave_private *priv = netdev_priv(ndev);
@@ -1725,6 +1726,8 @@ static void ave_remove(struct platform_device *pdev)
 	unregister_netdev(ndev);
 	netif_napi_del(&priv->napi_rx);
 	netif_napi_del(&priv->napi_tx);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

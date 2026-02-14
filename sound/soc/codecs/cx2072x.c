@@ -63,6 +63,11 @@ static const DECLARE_TLV_DB_SCALE(adc_tlv, -7400, 100, 0);
 static const DECLARE_TLV_DB_SCALE(dac_tlv, -7400, 100, 0);
 static const DECLARE_TLV_DB_SCALE(boost_tlv, 0, 1200, 0);
 
+struct cx2072x_eq_ctrl {
+	u8 ch;
+	u8 band;
+};
+
 static const DECLARE_TLV_DB_RANGE(hpf_tlv,
 	0, 0, TLV_DB_SCALE_ITEM(120, 0, 0),
 	1, 63, TLV_DB_SCALE_ITEM(30, 30, 0)
@@ -1341,8 +1346,8 @@ static int cx2072x_set_bias_level(struct snd_soc_component *codec,
 				  enum snd_soc_bias_level level)
 {
 	struct cx2072x_priv *cx2072x = snd_soc_component_get_drvdata(codec);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(codec);
-	const enum snd_soc_bias_level old_level = snd_soc_dapm_get_bias_level(dapm);
+	const enum snd_soc_bias_level old_level =
+		snd_soc_component_get_bias_level(codec);
 
 	if (level == SND_SOC_BIAS_STANDBY && old_level == SND_SOC_BIAS_OFF)
 		regmap_write(cx2072x->regmap, CX2072X_AFG_POWER_STATE, 0);
@@ -1363,7 +1368,7 @@ static int cx2072x_set_bias_level(struct snd_soc_component *codec,
 static void cx2072x_enable_jack_detect(struct snd_soc_component *codec)
 {
 	struct cx2072x_priv *cx2072x = snd_soc_component_get_drvdata(codec);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(codec);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(codec);
 
 	/* No-sticky input type */
 	regmap_write(cx2072x->regmap, CX2072X_GPIO_STICKY_MASK, 0x1f);
@@ -1541,14 +1546,6 @@ static int cx2072x_dsp_dai_probe(struct snd_soc_dai *dai)
 	return 0;
 }
 
-static const struct snd_soc_dai_ops cx2072x_dai_ops2 = {
-	.probe		= cx2072x_dsp_dai_probe,
-	.set_sysclk	= cx2072x_set_dai_sysclk,
-	.set_fmt	= cx2072x_set_dai_fmt,
-	.hw_params	= cx2072x_hw_params,
-	.set_bclk_ratio	= cx2072x_set_dai_bclk_ratio,
-};
-
 #define CX2072X_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE)
 
 static struct snd_soc_dai_driver soc_codec_cx2072x_dai[] = {
@@ -1575,6 +1572,7 @@ static struct snd_soc_dai_driver soc_codec_cx2072x_dai[] = {
 	{ /* plabayck only, return echo reference to Conexant DSP chip */
 		.name = "cx2072x-dsp",
 		.id	= CX2072X_DAI_DSP,
+		.probe = cx2072x_dsp_dai_probe,
 		.playback = {
 			.stream_name = "DSP Playback",
 			.channels_min = 2,
@@ -1582,7 +1580,7 @@ static struct snd_soc_dai_driver soc_codec_cx2072x_dai[] = {
 			.rates = CX2072X_RATES_DSP,
 			.formats = CX2072X_FORMATS,
 		},
-		.ops = &cx2072x_dai_ops2,
+		.ops = &cx2072x_dai_ops,
 	},
 	{ /* plabayck only, return echo reference through I2S TX */
 		.name = "cx2072x-aec",
@@ -1611,7 +1609,7 @@ static const struct regmap_config cx2072x_regmap = {
 	.reg_write = cx2072x_reg_write,
 };
 
-static int cx2072x_runtime_suspend(struct device *dev)
+static int __maybe_unused cx2072x_runtime_suspend(struct device *dev)
 {
 	struct cx2072x_priv *cx2072x = dev_get_drvdata(dev);
 
@@ -1619,7 +1617,7 @@ static int cx2072x_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int cx2072x_runtime_resume(struct device *dev)
+static int __maybe_unused cx2072x_runtime_resume(struct device *dev)
 {
 	struct cx2072x_priv *cx2072x = dev_get_drvdata(dev);
 
@@ -1681,8 +1679,8 @@ static void cx2072x_i2c_remove(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id cx2072x_i2c_id[] = {
-	{ "cx20721" },
-	{ "cx20723" },
+	{ "cx20721", 0 },
+	{ "cx20723", 0 },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, cx2072x_i2c_id);
@@ -1696,17 +1694,19 @@ MODULE_DEVICE_TABLE(acpi, cx2072x_acpi_match);
 #endif
 
 static const struct dev_pm_ops cx2072x_runtime_pm = {
-	RUNTIME_PM_OPS(cx2072x_runtime_suspend, cx2072x_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(cx2072x_runtime_suspend, cx2072x_runtime_resume,
+			   NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 };
 
 static struct i2c_driver cx2072x_i2c_driver = {
 	.driver = {
 		.name = "cx2072x",
 		.acpi_match_table = ACPI_PTR(cx2072x_acpi_match),
-		.pm = pm_ptr(&cx2072x_runtime_pm),
+		.pm = &cx2072x_runtime_pm,
 	},
-	.probe = cx2072x_i2c_probe,
+	.probe_new = cx2072x_i2c_probe,
 	.remove = cx2072x_i2c_remove,
 	.id_table = cx2072x_i2c_id,
 };

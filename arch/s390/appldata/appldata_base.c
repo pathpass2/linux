@@ -9,9 +9,9 @@
  * Author: Gerald Schaefer <gerald.schaefer@de.ibm.com>
  */
 
-#define pr_fmt(fmt) "appldata: " fmt
+#define KMSG_COMPONENT	"appldata"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/sched/stat.h>
 #include <linux/init.h>
@@ -26,10 +26,10 @@
 #include <linux/notifier.h>
 #include <linux/cpu.h>
 #include <linux/workqueue.h>
-#include <linux/uaccess.h>
-#include <linux/io.h>
 #include <asm/appldata.h>
 #include <asm/vtimer.h>
+#include <linux/uaccess.h>
+#include <asm/io.h>
 #include <asm/smp.h>
 
 #include "appldata.h"
@@ -46,13 +46,13 @@
  * /proc entries (sysctl)
  */
 static const char appldata_proc_name[APPLDATA_PROC_NAME_LENGTH] = "appldata";
-static int appldata_timer_handler(const struct ctl_table *ctl, int write,
+static int appldata_timer_handler(struct ctl_table *ctl, int write,
 				  void *buffer, size_t *lenp, loff_t *ppos);
-static int appldata_interval_handler(const struct ctl_table *ctl, int write,
+static int appldata_interval_handler(struct ctl_table *ctl, int write,
 				     void *buffer, size_t *lenp, loff_t *ppos);
 
 static struct ctl_table_header *appldata_sysctl_header;
-static const struct ctl_table appldata_table[] = {
+static struct ctl_table appldata_table[] = {
 	{
 		.procname	= "timer",
 		.mode		= S_IRUGO | S_IWUSR,
@@ -63,6 +63,17 @@ static const struct ctl_table appldata_table[] = {
 		.mode		= S_IRUGO | S_IWUSR,
 		.proc_handler	= appldata_interval_handler,
 	},
+	{ },
+};
+
+static struct ctl_table appldata_dir_table[] = {
+	{
+		.procname	= appldata_proc_name,
+		.maxlen		= 0,
+		.mode		= S_IRUGO | S_IXUGO,
+		.child		= appldata_table,
+	},
+	{ },
 };
 
 /*
@@ -199,7 +210,7 @@ static void __appldata_vtimer_setup(int cmd)
  * Start/Stop timer, show status of timer (0 = not active, 1 = active)
  */
 static int
-appldata_timer_handler(const struct ctl_table *ctl, int write,
+appldata_timer_handler(struct ctl_table *ctl, int write,
 			   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int timer_active = appldata_timer_active;
@@ -232,7 +243,7 @@ appldata_timer_handler(const struct ctl_table *ctl, int write,
  * current timer interval.
  */
 static int
-appldata_interval_handler(const struct ctl_table *ctl, int write,
+appldata_interval_handler(struct ctl_table *ctl, int write,
 			   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int interval = appldata_interval;
@@ -262,7 +273,7 @@ appldata_interval_handler(const struct ctl_table *ctl, int write,
  * monitoring (0 = not in process, 1 = in process)
  */
 static int
-appldata_generic_handler(const struct ctl_table *ctl, int write,
+appldata_generic_handler(struct ctl_table *ctl, int write,
 			   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct appldata_ops *ops = NULL, *tmp_ops;
@@ -280,7 +291,7 @@ appldata_generic_handler(const struct ctl_table *ctl, int write,
 	mutex_lock(&appldata_ops_mutex);
 	list_for_each(lh, &appldata_ops_list) {
 		tmp_ops = list_entry(lh, struct appldata_ops, list);
-		if (&tmp_ops->ctl_table[0] == ctl) {
+		if (&tmp_ops->ctl_table[2] == ctl) {
 			found = 1;
 		}
 	}
@@ -350,7 +361,7 @@ int appldata_register_ops(struct appldata_ops *ops)
 	if (ops->size > APPLDATA_MAX_REC_SIZE)
 		return -EINVAL;
 
-	ops->ctl_table = kcalloc(1, sizeof(struct ctl_table), GFP_KERNEL);
+	ops->ctl_table = kcalloc(4, sizeof(struct ctl_table), GFP_KERNEL);
 	if (!ops->ctl_table)
 		return -ENOMEM;
 
@@ -358,12 +369,17 @@ int appldata_register_ops(struct appldata_ops *ops)
 	list_add(&ops->list, &appldata_ops_list);
 	mutex_unlock(&appldata_ops_mutex);
 
-	ops->ctl_table[0].procname = ops->name;
-	ops->ctl_table[0].mode = S_IRUGO | S_IWUSR;
-	ops->ctl_table[0].proc_handler = appldata_generic_handler;
-	ops->ctl_table[0].data = ops;
+	ops->ctl_table[0].procname = appldata_proc_name;
+	ops->ctl_table[0].maxlen   = 0;
+	ops->ctl_table[0].mode     = S_IRUGO | S_IXUGO;
+	ops->ctl_table[0].child    = &ops->ctl_table[2];
 
-	ops->sysctl_header = register_sysctl_sz(appldata_proc_name, ops->ctl_table, 1);
+	ops->ctl_table[2].procname = ops->name;
+	ops->ctl_table[2].mode     = S_IRUGO | S_IWUSR;
+	ops->ctl_table[2].proc_handler = appldata_generic_handler;
+	ops->ctl_table[2].data = ops;
+
+	ops->sysctl_header = register_sysctl_table(ops->ctl_table);
 	if (!ops->sysctl_header)
 		goto out;
 	return 0;
@@ -406,7 +422,7 @@ static int __init appldata_init(void)
 	appldata_wq = alloc_ordered_workqueue("appldata", 0);
 	if (!appldata_wq)
 		return -ENOMEM;
-	appldata_sysctl_header = register_sysctl(appldata_proc_name, appldata_table);
+	appldata_sysctl_header = register_sysctl_table(appldata_dir_table);
 	return 0;
 }
 

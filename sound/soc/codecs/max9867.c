@@ -6,7 +6,6 @@
 // Copyright 2018 Ladislav Michl <ladis@linux-mips.org>
 //
 
-#include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
@@ -17,7 +16,6 @@
 #include "max9867.h"
 
 struct max9867_priv {
-	struct clk *mclk;
 	struct regmap *regmap;
 	const struct snd_pcm_hw_constraint_list *constraints;
 	unsigned int sysclk, pclk;
@@ -56,13 +54,13 @@ static int max9867_adc_dac_event(struct snd_soc_dapm_widget *w,
 	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 	enum max9867_adc_dac adc_dac;
 
-	if (!snd_soc_dapm_widget_name_cmp(w, "ADCL"))
+	if (!strcmp(w->name, "ADCL"))
 		adc_dac = MAX9867_ADC_LEFT;
-	else if (!snd_soc_dapm_widget_name_cmp(w, "ADCR"))
+	else if (!strcmp(w->name, "ADCR"))
 		adc_dac = MAX9867_ADC_RIGHT;
-	else if (!snd_soc_dapm_widget_name_cmp(w, "DACL"))
+	else if (!strcmp(w->name, "DACL"))
 		adc_dac = MAX9867_DAC_LEFT;
-	else if (!snd_soc_dapm_widget_name_cmp(w, "DACR"))
+	else if (!strcmp(w->name, "DACR"))
 		adc_dac = MAX9867_DAC_RIGHT;
 	else
 		return 0;
@@ -78,7 +76,7 @@ static int max9867_adc_dac_event(struct snd_soc_dapm_widget *w,
 static int max9867_filter_get(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 	unsigned int reg;
 	int ret;
@@ -98,7 +96,7 @@ static int max9867_filter_get(struct snd_kcontrol *kcontrol,
 static int max9867_filter_set(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 	unsigned int reg, mode = ucontrol->value.enumerated.item[0];
 	int ret;
@@ -556,18 +554,14 @@ static struct snd_soc_dai_driver max9867_dai[] = {
 #ifdef CONFIG_PM
 static int max9867_suspend(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
-
-	snd_soc_dapm_force_bias_level(dapm, SND_SOC_BIAS_OFF);
+	snd_soc_component_force_bias_level(component, SND_SOC_BIAS_OFF);
 
 	return 0;
 }
 
 static int max9867_resume(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
-
-	snd_soc_dapm_force_bias_level(dapm, SND_SOC_BIAS_STANDBY);
+	snd_soc_component_force_bias_level(component, SND_SOC_BIAS_STANDBY);
 
 	return 0;
 }
@@ -581,16 +575,10 @@ static int max9867_set_bias_level(struct snd_soc_component *component,
 {
 	int err;
 	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
-	case SND_SOC_BIAS_ON:
-		err = clk_prepare_enable(max9867->mclk);
-		if (err)
-			return err;
-		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			err = regcache_sync(max9867->regmap);
 			if (err)
 				return err;
@@ -607,7 +595,6 @@ static int max9867_set_bias_level(struct snd_soc_component *component,
 			return err;
 
 		regcache_mark_dirty(max9867->regmap);
-		clk_disable_unprepare(max9867->mclk);
 		break;
 	default:
 		break;
@@ -676,20 +663,13 @@ static int max9867_i2c_probe(struct i2c_client *i2c)
 	dev_info(&i2c->dev, "device revision: %x\n", reg);
 	ret = devm_snd_soc_register_component(&i2c->dev, &max9867_component,
 			max9867_dai, ARRAY_SIZE(max9867_dai));
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(&i2c->dev, "Failed to register component: %d\n", ret);
-		return ret;
-	}
-
-	max9867->mclk = devm_clk_get(&i2c->dev, NULL);
-	if (IS_ERR(max9867->mclk))
-		return PTR_ERR(max9867->mclk);
-
-	return 0;
+	return ret;
 }
 
 static const struct i2c_device_id max9867_i2c_id[] = {
-	{ "max9867" },
+	{ "max9867", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max9867_i2c_id);
@@ -707,7 +687,7 @@ static struct i2c_driver max9867_i2c_driver = {
 		.name = "max9867",
 		.of_match_table = of_match_ptr(max9867_of_match),
 	},
-	.probe = max9867_i2c_probe,
+	.probe_new  = max9867_i2c_probe,
 	.id_table = max9867_i2c_id,
 };
 

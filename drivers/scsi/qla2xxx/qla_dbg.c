@@ -12,12 +12,13 @@
  * ----------------------------------------------------------------------
  * | Module Init and Probe        |       0x0199       |                |
  * | Mailbox commands             |       0x1206       | 0x11a5-0x11ff	|
- * | Device Discovery             |       0x2134       | 0x2112-0x2115  |
- * |                              |                    | 0x2127-0x2128  |
+ * | Device Discovery             |       0x2134       | 0x210e-0x2115  |
+ * |                              |                    | 0x211c-0x2128  |
+ * |                              |                    | 0x212c-0x2134  |
  * | Queue Command and IO tracing |       0x3074       | 0x300b         |
  * |                              |                    | 0x3027-0x3028  |
  * |                              |                    | 0x303d-0x3041  |
- * |                              |                    | 0x302e,0x3033  |
+ * |                              |                    | 0x302d,0x3033  |
  * |                              |                    | 0x3036,0x3038  |
  * |                              |                    | 0x303a		|
  * | DPC Thread                   |       0x4023       | 0x4002,0x4013  |
@@ -54,11 +55,10 @@
  * | Misc                         |       0xd303       | 0xd031-0xd0ff	|
  * |                              |                    | 0xd101-0xd1fe	|
  * |                              |                    | 0xd214-0xd2fe	|
- * | Target Mode		  |	  0xe089       |		|
+ * | Target Mode		  |	  0xe081       |		|
  * | Target Mode Management	  |	  0xf09b       | 0xf002		|
  * |                              |                    | 0xf046-0xf049  |
  * | Target Mode Task Management  |	  0x1000d      |		|
- * | Target Mode SRR		  |	  0x11038      |		|
  * ----------------------------------------------------------------------
  */
 
@@ -2704,6 +2704,59 @@ ql_dump_buffer(uint level, scsi_qla_host_t *vha, uint id, const void *buf,
 		print_hex_dump(KERN_CONT, "", DUMP_PREFIX_NONE, 16, 1,
 			       buf + cnt, min(16U, size - cnt), false);
 	}
+}
+
+/*
+ * This function is for formatting and logging log messages.
+ * It is to be used when vha is available. It formats the message
+ * and logs it to the messages file. All the messages will be logged
+ * irrespective of value of ql2xextended_error_logging.
+ * parameters:
+ * level: The level of the log messages to be printed in the
+ *        messages file.
+ * vha:   Pointer to the scsi_qla_host_t
+ * id:    This is a unique id for the level. It identifies the
+ *        part of the code from where the message originated.
+ * msg:   The message to be displayed.
+ */
+void
+ql_log_qp(uint32_t level, struct qla_qpair *qpair, int32_t id,
+    const char *fmt, ...)
+{
+	va_list va;
+	struct va_format vaf;
+	char pbuf[128];
+
+	if (level > ql_errlev)
+		return;
+
+	ql_ktrace(0, level, pbuf, NULL, qpair ? qpair->vha : NULL, id, fmt);
+
+	if (!pbuf[0]) /* set by ql_ktrace */
+		ql_dbg_prefix(pbuf, ARRAY_SIZE(pbuf), NULL,
+			      qpair ? qpair->vha : NULL, id);
+
+	va_start(va, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &va;
+
+	switch (level) {
+	case ql_log_fatal: /* FATAL LOG */
+		pr_crit("%s%pV", pbuf, &vaf);
+		break;
+	case ql_log_warn:
+		pr_err("%s%pV", pbuf, &vaf);
+		break;
+	case ql_log_info:
+		pr_warn("%s%pV", pbuf, &vaf);
+		break;
+	default:
+		pr_info("%s%pV", pbuf, &vaf);
+		break;
+	}
+
+	va_end(va);
 }
 
 /*

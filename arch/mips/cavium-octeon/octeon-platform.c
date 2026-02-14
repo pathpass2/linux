@@ -8,12 +8,9 @@
  */
 
 #include <linux/etherdevice.h>
-#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/of_fdt.h>
-#include <linux/platform_device.h>
 #include <linux/libfdt.h>
-#include <linux/string.h>
 
 #include <asm/octeon/octeon.h>
 #include <asm/octeon/cvmx-helper-board.h>
@@ -453,6 +450,7 @@ static const struct of_device_id octeon_ids[] __initconst = {
 	{ .compatible = "cavium,octeon-3860-bootbus", },
 	{ .compatible = "cavium,mdio-mux", },
 	{ .compatible = "gpio-leds", },
+	{ .compatible = "cavium,octeon-7130-usb-uctl", },
 	{},
 };
 
@@ -539,7 +537,8 @@ static void __init octeon_fdt_set_phy(int eth, int phy_addr)
 
 	if (octeon_has_88e1145()) {
 		fdt_nop_property(initial_boot_params, phy, "marvell,reg-init");
-		strscpy_pad(new_name, "marvell,88e1145");
+		memset(new_name, 0, sizeof(new_name));
+		strcpy(new_name, "marvell,88e1145");
 		p = fdt_getprop(initial_boot_params, phy, "compatible",
 				&current_len);
 		if (p && current_len >= strlen(new_name))
@@ -973,7 +972,7 @@ int __init octeon_prune_device_tree(void)
 			 * zero.
 			 */
 
-			/* Assume that CS1 immediately follows. */
+			/* Asume that CS1 immediately follows. */
 			mio_boot_reg_cfg.u64 =
 				cvmx_read_csr(CVMX_MIO_BOOT_REG_CFGX(cs + 1));
 			region1_base = mio_boot_reg_cfg.s.base << 16;

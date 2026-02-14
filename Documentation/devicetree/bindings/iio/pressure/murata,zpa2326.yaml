@@ -12,6 +12,7 @@ maintainers:
 description: |
   Pressure sensor from Murata with SPI and I2C bus interfaces.
 
+
 properties:
   compatible:
     const: murata,zpa2326

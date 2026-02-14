@@ -33,44 +33,47 @@
 
 #include "ast_drv.h"
 
-static u32 ast_get_vram_size(struct ast_device *ast)
+static u32 ast_get_vram_size(struct ast_private *ast)
 {
+	u8 jreg;
 	u32 vram_size;
-	u8 vgacr99, vgacraa;
 
-	vgacraa = ast_get_index_reg(ast, AST_IO_VGACRI, 0xaa);
-	switch (vgacraa & AST_IO_VGACRAA_VGAMEM_SIZE_MASK) {
+	ast_open_key(ast);
+
+	vram_size = AST_VIDMEM_DEFAULT_SIZE;
+	jreg = ast_get_index_reg_mask(ast, AST_IO_CRTC_PORT, 0xaa, 0xff);
+	switch (jreg & 3) {
 	case 0:
-		vram_size = SZ_8M;
+		vram_size = AST_VIDMEM_SIZE_8M;
 		break;
 	case 1:
-		vram_size = SZ_16M;
+		vram_size = AST_VIDMEM_SIZE_16M;
 		break;
 	case 2:
-		vram_size = SZ_32M;
+		vram_size = AST_VIDMEM_SIZE_32M;
 		break;
 	case 3:
-		vram_size = SZ_64M;
+		vram_size = AST_VIDMEM_SIZE_64M;
 		break;
 	}
 
-	vgacr99 = ast_get_index_reg(ast, AST_IO_VGACRI, 0x99);
-	switch (vgacr99 & AST_IO_VGACR99_VGAMEM_RSRV_MASK) {
+	jreg = ast_get_index_reg_mask(ast, AST_IO_CRTC_PORT, 0x99, 0xff);
+	switch (jreg & 0x03) {
 	case 1:
-		vram_size -= SZ_1M;
+		vram_size -= 0x100000;
 		break;
 	case 2:
-		vram_size -= SZ_2M;
+		vram_size -= 0x200000;
 		break;
 	case 3:
-		vram_size -= SZ_4M;
+		vram_size -= 0x400000;
 		break;
 	}
 
 	return vram_size;
 }
 
-int ast_mm_init(struct ast_device *ast)
+int ast_mm_init(struct ast_private *ast)
 {
 	struct drm_device *dev = &ast->base;
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
@@ -92,6 +95,7 @@ int ast_mm_init(struct ast_device *ast)
 
 	ast->vram_base = base;
 	ast->vram_size = vram_size;
+	ast->vram_fb_available = vram_size;
 
 	return 0;
 }

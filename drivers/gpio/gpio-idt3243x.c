@@ -3,7 +3,6 @@
 
 #include <linux/bitops.h>
 #include <linux/gpio/driver.h>
-#include <linux/gpio/generic.h>
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
@@ -19,7 +18,7 @@
 #define IDT_GPIO_ISTAT		0x0C
 
 struct idt_gpio_ctrl {
-	struct gpio_generic_chip chip;
+	struct gpio_chip gc;
 	void __iomem *pic;
 	void __iomem *gpio;
 	u32 mask_cache;
@@ -38,7 +37,7 @@ static void idt_gpio_dispatch(struct irq_desc *desc)
 	pending = readl(ctrl->pic + IDT_PIC_IRQ_PEND);
 	pending &= ~ctrl->mask_cache;
 	for_each_set_bit(bit, &pending, gc->ngpio) {
-		virq = irq_find_mapping(gc->irq.domain, bit);
+		virq = irq_linear_revmap(gc->irq.domain, bit);
 		if (virq)
 			generic_handle_irq(virq);
 	}
@@ -51,13 +50,14 @@ static int idt_gpio_irq_set_type(struct irq_data *d, unsigned int flow_type)
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct idt_gpio_ctrl *ctrl = gpiochip_get_data(gc);
 	unsigned int sense = flow_type & IRQ_TYPE_SENSE_MASK;
+	unsigned long flags;
 	u32 ilevel;
 
 	/* hardware only supports level triggered */
 	if (sense == IRQ_TYPE_NONE || (sense & IRQ_TYPE_EDGE_BOTH))
 		return -EINVAL;
 
-	guard(gpio_generic_lock_irqsave)(&ctrl->chip);
+	raw_spin_lock_irqsave(&gc->bgpio_lock, flags);
 
 	ilevel = readl(ctrl->gpio + IDT_GPIO_ILEVEL);
 	if (sense & IRQ_TYPE_LEVEL_HIGH)
@@ -68,6 +68,7 @@ static int idt_gpio_irq_set_type(struct irq_data *d, unsigned int flow_type)
 	writel(ilevel, ctrl->gpio + IDT_GPIO_ILEVEL);
 	irq_set_handler_locked(d, handle_level_irq);
 
+	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
 	return 0;
 }
 
@@ -83,26 +84,28 @@ static void idt_gpio_mask(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct idt_gpio_ctrl *ctrl = gpiochip_get_data(gc);
+	unsigned long flags;
 
-	scoped_guard(gpio_generic_lock_irqsave, &ctrl->chip) {
-		ctrl->mask_cache |= BIT(d->hwirq);
-		writel(ctrl->mask_cache, ctrl->pic + IDT_PIC_IRQ_MASK);
-	}
+	raw_spin_lock_irqsave(&gc->bgpio_lock, flags);
 
-	gpiochip_disable_irq(gc, irqd_to_hwirq(d));
+	ctrl->mask_cache |= BIT(d->hwirq);
+	writel(ctrl->mask_cache, ctrl->pic + IDT_PIC_IRQ_MASK);
+
+	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
 }
 
 static void idt_gpio_unmask(struct irq_data *d)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct idt_gpio_ctrl *ctrl = gpiochip_get_data(gc);
+	unsigned long flags;
 
-	gpiochip_enable_irq(gc, irqd_to_hwirq(d));
-
-	guard(gpio_generic_lock_irqsave)(&ctrl->chip);
+	raw_spin_lock_irqsave(&gc->bgpio_lock, flags);
 
 	ctrl->mask_cache &= ~BIT(d->hwirq);
 	writel(ctrl->mask_cache, ctrl->pic + IDT_PIC_IRQ_MASK);
+
+	raw_spin_unlock_irqrestore(&gc->bgpio_lock, flags);
 }
 
 static int idt_gpio_irq_init_hw(struct gpio_chip *gc)
@@ -116,19 +119,16 @@ static int idt_gpio_irq_init_hw(struct gpio_chip *gc)
 	return 0;
 }
 
-static const struct irq_chip idt_gpio_irqchip = {
+static struct irq_chip idt_gpio_irqchip = {
 	.name = "IDTGPIO",
 	.irq_mask = idt_gpio_mask,
 	.irq_ack = idt_gpio_ack,
 	.irq_unmask = idt_gpio_unmask,
-	.irq_set_type = idt_gpio_irq_set_type,
-	.flags = IRQCHIP_IMMUTABLE,
-	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+	.irq_set_type = idt_gpio_irq_set_type
 };
 
 static int idt_gpio_probe(struct platform_device *pdev)
 {
-	struct gpio_generic_chip_config config;
 	struct device *dev = &pdev->dev;
 	struct gpio_irq_chip *girq;
 	struct idt_gpio_ctrl *ctrl;
@@ -145,24 +145,18 @@ static int idt_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(ctrl->gpio))
 		return PTR_ERR(ctrl->gpio);
 
-	ctrl->chip.gc.parent = dev;
+	ctrl->gc.parent = dev;
 
-	config = (struct gpio_generic_chip_config) {
-		.dev = &pdev->dev,
-		.sz = 4,
-		.dat = ctrl->gpio + IDT_GPIO_DATA,
-		.dirout = ctrl->gpio + IDT_GPIO_DIR,
-	};
-
-	ret = gpio_generic_chip_init(&ctrl->chip, &config);
+	ret = bgpio_init(&ctrl->gc, &pdev->dev, 4, ctrl->gpio + IDT_GPIO_DATA,
+			 NULL, NULL, ctrl->gpio + IDT_GPIO_DIR, NULL, 0);
 	if (ret) {
-		dev_err(dev, "failed to initialize the generic GPIO chip\n");
+		dev_err(dev, "bgpio_init failed\n");
 		return ret;
 	}
 
 	ret = device_property_read_u32(dev, "ngpios", &ngpios);
 	if (!ret)
-		ctrl->chip.gc.ngpio = ngpios;
+		ctrl->gc.ngpio = ngpios;
 
 	if (device_property_read_bool(dev, "interrupt-controller")) {
 		ctrl->pic = devm_platform_ioremap_resource_byname(pdev, "pic");
@@ -173,8 +167,8 @@ static int idt_gpio_probe(struct platform_device *pdev)
 		if (parent_irq < 0)
 			return parent_irq;
 
-		girq = &ctrl->chip.gc.irq;
-		gpio_irq_chip_set_chip(girq, &idt_gpio_irqchip);
+		girq = &ctrl->gc.irq;
+		girq->chip = &idt_gpio_irqchip;
 		girq->init_hw = idt_gpio_irq_init_hw;
 		girq->parent_handler = idt_gpio_dispatch;
 		girq->num_parents = 1;
@@ -189,7 +183,7 @@ static int idt_gpio_probe(struct platform_device *pdev)
 		girq->handler = handle_bad_irq;
 	}
 
-	return devm_gpiochip_add_data(&pdev->dev, &ctrl->chip.gc, ctrl);
+	return devm_gpiochip_add_data(&pdev->dev, &ctrl->gc, ctrl);
 }
 
 static const struct of_device_id idt_gpio_of_match[] = {

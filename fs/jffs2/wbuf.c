@@ -2,10 +2,10 @@
  * JFFS2 -- Journalling Flash File System, Version 2.
  *
  * Copyright © 2001-2007 Red Hat, Inc.
- * Copyright © 2004 Thomas Gleixner <tglx@kernel.org>
+ * Copyright © 2004 Thomas Gleixner <tglx@linutronix.de>
  *
  * Created by David Woodhouse <dwmw2@infradead.org>
- * Modified debugged and enhanced by Thomas Gleixner <tglx@kernel.org>
+ * Modified debugged and enhanced by Thomas Gleixner <tglx@linutronix.de>
  *
  * For licensing information, see the file 'LICENCE' in this directory.
  *
@@ -584,7 +584,7 @@ static int __jffs2_flush_wbuf(struct jffs2_sb_info *c, int pad)
 	size_t retlen;
 
 	/* Nothing to do if not write-buffering the flash. In particular, we shouldn't
-	   call timer_delete() on the timer we never initialised. */
+	   del_timer() the timer we never initialised. */
 	if (!jffs2_is_writebuffered(c))
 		return 0;
 

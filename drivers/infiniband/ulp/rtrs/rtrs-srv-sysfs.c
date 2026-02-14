@@ -164,7 +164,7 @@ static int rtrs_srv_create_once_sysfs_root_folders(struct rtrs_srv_path *srv_pat
 		 */
 		goto unlock;
 	}
-	srv->dev.class = &rtrs_dev_class;
+	srv->dev.class = rtrs_dev_class;
 	err = dev_set_name(&srv->dev, "%s", srv_path->s.sessname);
 	if (err)
 		goto unlock;
@@ -176,14 +176,14 @@ static int rtrs_srv_create_once_sysfs_root_folders(struct rtrs_srv_path *srv_pat
 	dev_set_uevent_suppress(&srv->dev, true);
 	err = device_add(&srv->dev);
 	if (err) {
-		pr_err("device_add(): %pe\n", ERR_PTR(err));
+		pr_err("device_add(): %d\n", err);
 		put_device(&srv->dev);
 		goto unlock;
 	}
 	srv->kobj_paths = kobject_create_and_add("paths", &srv->dev.kobj);
 	if (!srv->kobj_paths) {
 		err = -ENOMEM;
-		pr_err("kobject_create_and_add(): %pe\n", ERR_PTR(err));
+		pr_err("kobject_create_and_add(): %d\n", err);
 		device_del(&srv->dev);
 		put_device(&srv->dev);
 		goto unlock;
@@ -237,14 +237,14 @@ static int rtrs_srv_create_stats_files(struct rtrs_srv_path *srv_path)
 	err = kobject_init_and_add(&srv_path->stats->kobj_stats, &ktype_stats,
 				   &srv_path->kobj, "stats");
 	if (err) {
-		rtrs_err(s, "kobject_init_and_add(): %pe\n", ERR_PTR(err));
+		rtrs_err(s, "kobject_init_and_add(): %d\n", err);
 		kobject_put(&srv_path->stats->kobj_stats);
 		return err;
 	}
 	err = sysfs_create_group(&srv_path->stats->kobj_stats,
 				 &rtrs_srv_stats_attr_group);
 	if (err) {
-		rtrs_err(s, "sysfs_create_group(): %pe\n", ERR_PTR(err));
+		rtrs_err(s, "sysfs_create_group(): %d\n", err);
 		goto err;
 	}
 
@@ -276,12 +276,12 @@ int rtrs_srv_create_path_files(struct rtrs_srv_path *srv_path)
 	err = kobject_init_and_add(&srv_path->kobj, &ktype, srv->kobj_paths,
 				   "%s", str);
 	if (err) {
-		rtrs_err(s, "kobject_init_and_add(): %pe\n", ERR_PTR(err));
+		rtrs_err(s, "kobject_init_and_add(): %d\n", err);
 		goto destroy_root;
 	}
 	err = sysfs_create_group(&srv_path->kobj, &rtrs_srv_path_attr_group);
 	if (err) {
-		rtrs_err(s, "sysfs_create_group(): %pe\n", ERR_PTR(err));
+		rtrs_err(s, "sysfs_create_group(): %d\n", err);
 		goto put_kobj;
 	}
 	err = rtrs_srv_create_stats_files(srv_path);

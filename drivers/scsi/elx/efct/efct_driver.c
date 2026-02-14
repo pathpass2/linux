@@ -310,7 +310,7 @@ efct_fw_reset(struct efct *efct)
 	 * during attach.
 	 */
 	if (timer_pending(&efct->xport->stats_timer))
-		timer_delete(&efct->xport->stats_timer);
+		del_timer(&efct->xport->stats_timer);
 
 	if (efct_hw_reset(&efct->hw, EFCT_HW_RESET_FIRMWARE)) {
 		efc_log_info(efct, "failed to reset firmware\n");
@@ -415,6 +415,12 @@ efct_intr_thread(int irq, void *handle)
 	return IRQ_HANDLED;
 }
 
+static irqreturn_t
+efct_intr_msix(int irq, void *handle)
+{
+	return IRQ_WAKE_THREAD;
+}
+
 static int
 efct_setup_msix(struct efct *efct, u32 num_intrs)
 {
@@ -444,7 +450,7 @@ efct_setup_msix(struct efct *efct, u32 num_intrs)
 		intr_ctx->index = i;
 
 		rc = request_threaded_irq(pci_irq_vector(efct->pci, i),
-					  NULL, efct_intr_thread, IRQF_ONESHOT,
+					  efct_intr_msix, efct_intr_thread, 0,
 					  EFCT_DRIVER_NAME, intr_ctx);
 		if (rc) {
 			dev_err(&efct->pci->dev,
@@ -464,7 +470,7 @@ out:
 	return rc;
 }
 
-static const struct pci_device_id efct_pci_table[] = {
+static struct pci_device_id efct_pci_table[] = {
 	{PCI_DEVICE(EFCT_VENDOR_ID, EFCT_DEVICE_LANCER_G6), 0},
 	{PCI_DEVICE(EFCT_VENDOR_ID, EFCT_DEVICE_LANCER_G7), 0},
 	{}	/* terminate list */
@@ -729,7 +735,7 @@ efct_pci_io_resume(struct pci_dev *pdev)
 
 MODULE_DEVICE_TABLE(pci, efct_pci_table);
 
-static const struct pci_error_handlers efct_pci_err_handler = {
+static struct pci_error_handlers efct_pci_err_handler = {
 	.error_detected = efct_pci_io_error_detected,
 	.slot_reset = efct_pci_io_slot_reset,
 	.resume = efct_pci_io_resume,
@@ -772,6 +778,5 @@ static void __exit efct_exit(void)
 module_init(efct_init);
 module_exit(efct_exit);
 MODULE_VERSION(EFCT_DRIVER_VERSION);
-MODULE_DESCRIPTION("Emulex Fibre Channel Target driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Broadcom");

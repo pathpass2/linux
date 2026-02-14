@@ -441,6 +441,14 @@ enum rx_desc_bits {
 };
 
 /* Completion queue entry. */
+struct short_rx_done_desc {
+	__le32 status;			/* Low 16 bits is length. */
+};
+struct basic_rx_done_desc {
+	__le32 status;			/* Low 16 bits is length. */
+	__le16 vlanid;
+	__le16 status2;
+};
 struct csum_rx_done_desc {
 	__le32 status;			/* Low 16 bits is length. */
 	__le16 csum;			/* Partial checksum */

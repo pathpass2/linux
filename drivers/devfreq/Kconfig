@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 menuconfig PM_DEVFREQ
 	bool "Generic Dynamic Voltage and Frequency Scaling (DVFS) support"
+	select SRCU
 	select PM_OPP
 	help
 	  A device may have a list of frequencies and voltages available.
@@ -89,17 +90,6 @@ config ARM_EXYNOS_BUS_DEVFREQ
 	  PPMU counters of memory controllers by using DEVFREQ-event device
 	  and adjusts the operating frequencies and voltages with OPP support.
 	  This does not yet operate with optimal voltages.
-
-config ARM_HISI_UNCORE_DEVFREQ
-	tristate "HiSilicon uncore DEVFREQ Driver"
-	depends on ACPI && ACPI_PPTT && PCC
-	select DEVFREQ_GOV_PERFORMANCE
-	select DEVFREQ_GOV_USERSPACE
-	help
-	  This adds a DEVFREQ driver that manages uncore frequency scaling for
-	  HiSilicon Kunpeng SoCs. This enables runtime management of uncore
-	  frequency scaling from kernel and userspace. The uncore domain
-	  contains system interconnects and L3 cache.
 
 config ARM_IMX_BUS_DEVFREQ
 	tristate "i.MX Generic Bus DEVFREQ Driver"

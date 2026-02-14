@@ -190,10 +190,15 @@ static int fill_gate_entry(struct nlattr **tb, struct tcfg_gate_entry *entry,
 
 	entry->interval = interval;
 
-	entry->ipv = nla_get_s32_default(tb[TCA_GATE_ENTRY_IPV], -1);
+	if (tb[TCA_GATE_ENTRY_IPV])
+		entry->ipv = nla_get_s32(tb[TCA_GATE_ENTRY_IPV]);
+	else
+		entry->ipv = -1;
 
-	entry->maxoctets = nla_get_s32_default(tb[TCA_GATE_ENTRY_MAX_OCTETS],
-					       -1);
+	if (tb[TCA_GATE_ENTRY_MAX_OCTETS])
+		entry->maxoctets = nla_get_s32(tb[TCA_GATE_ENTRY_MAX_OCTETS]);
+	else
+		entry->maxoctets = -1;
 
 	return 0;
 }
@@ -287,7 +292,8 @@ static void gate_setup_timer(struct tcf_gate *gact, u64 basetime,
 	gact->param.tcfg_basetime = basetime;
 	gact->param.tcfg_clockid = clockid;
 	gact->tk_offset = tko;
-	hrtimer_setup(&gact->hitimer, gate_timer_func, clockid, HRTIMER_MODE_ABS_SOFT);
+	hrtimer_init(&gact->hitimer, clockid, HRTIMER_MODE_ABS_SOFT);
+	gact->hitimer.function = gate_timer_func;
 }
 
 static int tcf_gate_init(struct net *net, struct nlattr *nla,
@@ -350,7 +356,7 @@ static int tcf_gate_init(struct net *net, struct nlattr *nla,
 		return err;
 
 	if (err && bind)
-		return ACT_P_BOUND;
+		return 0;
 
 	if (!err) {
 		ret = tcf_idr_create_from_flags(tn, index, est, a,
@@ -639,7 +645,6 @@ static struct tc_action_ops act_gate_ops = {
 	.offload_act_setup =	tcf_gate_offload_act_setup,
 	.size		=	sizeof(struct tcf_gate),
 };
-MODULE_ALIAS_NET_ACT("gate");
 
 static __net_init int gate_init_net(struct net *net)
 {
@@ -672,5 +677,4 @@ static void __exit gate_cleanup_module(void)
 
 module_init(gate_init_module);
 module_exit(gate_cleanup_module);
-MODULE_DESCRIPTION("TC gate action");
 MODULE_LICENSE("GPL v2");

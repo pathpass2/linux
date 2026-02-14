@@ -20,9 +20,8 @@
 #include <linux/irq.h>
 #include <linux/init.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/pgtable.h>
-#include <linux/platform_device.h>
 
 #include <linux/uaccess.h>
 #include <asm/irq.h>
@@ -181,28 +180,6 @@ static int __init ofpci_debug(char *str)
 
 __setup("ofpci_debug=", ofpci_debug);
 
-static void of_fixup_pci_pref(struct pci_dev *dev, int index,
-			      struct resource *res)
-{
-	struct pci_bus_region region;
-
-	if (!(res->flags & IORESOURCE_MEM_64))
-		return;
-
-	if (!resource_size(res))
-		return;
-
-	pcibios_resource_to_bus(dev->bus, &region, res);
-	if (region.end <= ~((u32)0))
-		return;
-
-	if (!(res->flags & IORESOURCE_PREFETCH)) {
-		res->flags |= IORESOURCE_PREFETCH;
-		pci_info(dev, "reg 0x%x: fixup: pref added to 64-bit resource\n",
-			 index);
-	}
-}
-
 static unsigned long pci_parse_of_flags(u32 addr0)
 {
 	unsigned long flags = 0;
@@ -266,7 +243,6 @@ static void pci_parse_of_addrs(struct platform_device *op,
 		res->end = op_res->end;
 		res->flags = flags;
 		res->name = pci_name(dev);
-		of_fixup_pci_pref(dev, i, res);
 
 		pci_info(dev, "reg 0x%x: %pR\n", i, res);
 	}
@@ -334,7 +310,7 @@ static struct pci_dev *of_create_pci_dev(struct pci_pbm_info *pbm,
 	/* We can't actually use the firmware value, we have
 	 * to read what is in the register right now.  One
 	 * reason is that in the case of IDE interfaces the
-	 * firmware can sample the value before the IDE
+	 * firmware can sample the value before the the IDE
 	 * interface is programmed into native mode.
 	 */
 	pci_read_config_dword(dev, PCI_CLASS_REVISION, &class);
@@ -687,10 +663,11 @@ static void pci_claim_bus_resources(struct pci_bus *bus)
 	struct pci_dev *dev;
 
 	list_for_each_entry(dev, &bus->devices, bus_list) {
-		struct resource *r;
 		int i;
 
-		pci_dev_for_each_resource(dev, r, i) {
+		for (i = 0; i < PCI_NUM_RESOURCES; i++) {
+			struct resource *r = &dev->resource[i];
+
 			if (r->parent || !r->start || !r->flags)
 				continue;
 
@@ -743,6 +720,34 @@ struct pci_bus *pci_scan_one_pbm(struct pci_pbm_info *pbm,
 
 	pci_bus_add_devices(bus);
 	return bus;
+}
+
+int pcibios_enable_device(struct pci_dev *dev, int mask)
+{
+	u16 cmd, oldcmd;
+	int i;
+
+	pci_read_config_word(dev, PCI_COMMAND, &cmd);
+	oldcmd = cmd;
+
+	for (i = 0; i < PCI_NUM_RESOURCES; i++) {
+		struct resource *res = &dev->resource[i];
+
+		/* Only set up the requested stuff */
+		if (!(mask & (1<<i)))
+			continue;
+
+		if (res->flags & IORESOURCE_IO)
+			cmd |= PCI_COMMAND_IO;
+		if (res->flags & IORESOURCE_MEM)
+			cmd |= PCI_COMMAND_MEMORY;
+	}
+
+	if (cmd != oldcmd) {
+		pci_info(dev, "enabling device (%04x -> %04x)\n", oldcmd, cmd);
+		pci_write_config_word(dev, PCI_COMMAND, cmd);
+	}
+	return 0;
 }
 
 /* Platform support for /proc/bus/pci/X/Y mmap()s. */
@@ -928,7 +933,7 @@ static void pci_bus_slot_names(struct device_node *node, struct pci_bus *bus)
 {
 	const struct pci_slot_names {
 		u32	slot_mask;
-		char	names[];
+		char	names[0];
 	} *prop;
 	const char *sp;
 	int len, i;

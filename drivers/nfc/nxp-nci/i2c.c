@@ -19,7 +19,7 @@
 #include <linux/module.h>
 #include <linux/nfc.h>
 #include <linux/gpio/consumer.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <net/nfc/nfc.h>
 
@@ -97,8 +97,8 @@ static int nxp_nci_i2c_fw_read(struct nxp_nci_i2c_phy *phy,
 			       struct sk_buff **skb)
 {
 	struct i2c_client *client = phy->i2c_dev;
+	u16 header;
 	size_t frame_len;
-	__be16 header;
 	int r;
 
 	r = i2c_master_recv(client, (u8 *) &header, NXP_NCI_FW_HDR_LEN);
@@ -305,7 +305,7 @@ static int nxp_nci_i2c_probe(struct i2c_client *client)
 
 	r = request_threaded_irq(client->irq, NULL,
 				 nxp_nci_i2c_irq_thread_fn,
-				 IRQF_ONESHOT,
+				 IRQF_TRIGGER_RISING | IRQF_ONESHOT,
 				 NXP_NCI_I2C_DRIVER_NAME, phy);
 	if (r < 0)
 		nfc_err(&client->dev, "Unable to register IRQ handler\n");
@@ -322,7 +322,7 @@ static void nxp_nci_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id nxp_nci_i2c_id_table[] = {
-	{ "nxp-nci_i2c" },
+	{"nxp-nci_i2c", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, nxp_nci_i2c_id_table);
@@ -336,7 +336,6 @@ MODULE_DEVICE_TABLE(of, of_nxp_nci_i2c_match);
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id acpi_id[] = {
 	{ "NXP1001" },
-	{ "NXP1002" },
 	{ "NXP7471" },
 	{ }
 };
@@ -349,7 +348,7 @@ static struct i2c_driver nxp_nci_i2c_driver = {
 		   .acpi_match_table = ACPI_PTR(acpi_id),
 		   .of_match_table = of_nxp_nci_i2c_match,
 		  },
-	.probe = nxp_nci_i2c_probe,
+	.probe_new = nxp_nci_i2c_probe,
 	.id_table = nxp_nci_i2c_id_table,
 	.remove = nxp_nci_i2c_remove,
 };

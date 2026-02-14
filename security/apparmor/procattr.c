@@ -20,7 +20,6 @@
  * aa_getprocattr - Return the label information for @label
  * @label: the label to print label info about  (NOT NULL)
  * @string: Returns - string containing the label info (NOT NULL)
- * @newline: indicates that a newline should be added
  *
  * Requires: label != NULL && string != NULL
  *
@@ -28,7 +27,7 @@
  *
  * Returns: size of string placed in @string else error code on failure
  */
-int aa_getprocattr(struct aa_label *label, char **string, bool newline)
+int aa_getprocattr(struct aa_label *label, char **string)
 {
 	struct aa_ns *ns = labels_ns(label);
 	struct aa_ns *current_ns = aa_get_current_ns();
@@ -58,12 +57,11 @@ int aa_getprocattr(struct aa_label *label, char **string, bool newline)
 		return len;
 	}
 
-	if (newline)
-		(*string)[len++] = '\n';
-	(*string)[len] = 0;
+	(*string)[len] = '\n';
+	(*string)[len + 1] = 0;
 
 	aa_put_ns(current_ns);
-	return len;
+	return len + 1;
 }
 
 /**
@@ -125,14 +123,12 @@ int aa_setprocattr_changehat(char *args, size_t size, int flags)
 		for (count = 0; (hat < end) && count < 16; ++count) {
 			char *next = hat + strlen(hat) + 1;
 			hats[count] = hat;
-			AA_DEBUG(DEBUG_DOMAIN,
-				 "%s: (pid %d) Magic 0x%llx count %d hat '%s'\n"
+			AA_DEBUG("%s: (pid %d) Magic 0x%llx count %d hat '%s'\n"
 				 , __func__, current->pid, token, count, hat);
 			hat = next;
 		}
 	} else
-		AA_DEBUG(DEBUG_DOMAIN,
-			 "%s: (pid %d) Magic 0x%llx count %d Hat '%s'\n",
+		AA_DEBUG("%s: (pid %d) Magic 0x%llx count %d Hat '%s'\n",
 			 __func__, current->pid, token, count, "<NULL>");
 
 	return aa_change_hat(hats, count, token, flags);

@@ -25,7 +25,7 @@
 #include <linux/ima.h>
 
 #define DM_MSG_PREFIX "ioctl"
-#define DM_DRIVER_EMAIL "dm-devel@lists.linux.dev"
+#define DM_DRIVER_EMAIL "dm-devel@redhat.com"
 
 struct dm_file {
 	/*
@@ -767,14 +767,7 @@ static int get_target_version(struct file *filp, struct dm_ioctl *param, size_t 
 static int check_name(const char *name)
 {
 	if (strchr(name, '/')) {
-		DMERR("device name cannot contain '/'");
-		return -EINVAL;
-	}
-
-	if (strcmp(name, DM_CONTROL_NODE) == 0 ||
-	    strcmp(name, ".") == 0 ||
-	    strcmp(name, "..") == 0) {
-		DMERR("device name cannot be \"%s\", \".\", or \"..\"", DM_CONTROL_NODE);
+		DMERR("invalid device name");
 		return -EINVAL;
 	}
 
@@ -868,7 +861,7 @@ static void __dev_status(struct mapped_device *md, struct dm_ioctl *param)
 
 		table = dm_get_inactive_table(md, &srcu_idx);
 		if (table) {
-			if (!(dm_table_get_mode(table) & BLK_OPEN_WRITE))
+			if (!(dm_table_get_mode(table) & FMODE_WRITE))
 				param->flags |= DM_READONLY_FLAG;
 			param->target_count = table->num_targets;
 		}
@@ -1181,26 +1174,8 @@ static int do_resume(struct dm_ioctl *param)
 			suspend_flags &= ~DM_SUSPEND_LOCKFS_FLAG;
 		if (param->flags & DM_NOFLUSH_FLAG)
 			suspend_flags |= DM_SUSPEND_NOFLUSH_FLAG;
-		if (!dm_suspended_md(md)) {
-			r = dm_suspend(md, suspend_flags);
-			if (r) {
-				down_write(&_hash_lock);
-				hc = dm_get_mdptr(md);
-				if (hc && !hc->new_map) {
-					hc->new_map = new_map;
-					new_map = NULL;
-				} else {
-					r = -ENXIO;
-				}
-				up_write(&_hash_lock);
-				if (new_map) {
-					dm_sync_table(md);
-					dm_table_destroy(new_map);
-				}
-				dm_put(md);
-				return r;
-			}
-		}
+		if (!dm_suspended_md(md))
+			dm_suspend(md, suspend_flags);
 
 		old_size = dm_get_size(md);
 		old_map = dm_swap_table(md, new_map);
@@ -1214,7 +1189,7 @@ static int do_resume(struct dm_ioctl *param)
 		if (old_size && new_size && old_size != new_size)
 			need_resize_uevent = true;
 
-		if (dm_table_get_mode(new_map) & BLK_OPEN_WRITE)
+		if (dm_table_get_mode(new_map) & FMODE_WRITE)
 			set_disk_ro(dm_disk(md), 0);
 		else
 			set_disk_ro(dm_disk(md), 1);
@@ -1313,8 +1288,8 @@ static void retrieve_status(struct dm_table *table,
 		spec->status = 0;
 		spec->sector_start = ti->begin;
 		spec->length = ti->len;
-		strscpy_pad(spec->target_type, ti->type->name,
-			sizeof(spec->target_type));
+		strncpy(spec->target_type, ti->type->name,
+			sizeof(spec->target_type) - 1);
 
 		outptr += sizeof(struct dm_target_spec);
 		remaining = len - (outptr - outbuf);
@@ -1403,48 +1378,26 @@ static int dev_arm_poll(struct file *filp, struct dm_ioctl *param, size_t param_
 	return 0;
 }
 
-static inline blk_mode_t get_mode(struct dm_ioctl *param)
+static inline fmode_t get_mode(struct dm_ioctl *param)
 {
-	blk_mode_t mode = BLK_OPEN_READ | BLK_OPEN_WRITE;
+	fmode_t mode = FMODE_READ | FMODE_WRITE;
 
 	if (param->flags & DM_READONLY_FLAG)
-		mode = BLK_OPEN_READ;
+		mode = FMODE_READ;
 
 	return mode;
 }
 
-static int next_target(struct dm_target_spec *last, uint32_t next, const char *end,
+static int next_target(struct dm_target_spec *last, uint32_t next, void *end,
 		       struct dm_target_spec **spec, char **target_params)
 {
-	static_assert(__alignof__(struct dm_target_spec) <= 8,
-		"struct dm_target_spec must not require more than 8-byte alignment");
-
-	/*
-	 * Number of bytes remaining, starting with last. This is always
-	 * sizeof(struct dm_target_spec) or more, as otherwise *last was
-	 * out of bounds already.
-	 */
-	size_t remaining = end - (char *)last;
-
-	/*
-	 * There must be room for both the next target spec and the
-	 * NUL-terminator of the target itself.
-	 */
-	if (remaining - sizeof(struct dm_target_spec) <= next) {
-		DMERR("Target spec extends beyond end of parameters");
-		return -EINVAL;
-	}
-
-	if (next % __alignof__(struct dm_target_spec)) {
-		DMERR("Next dm_target_spec (offset %u) is not %zu-byte aligned",
-		      next, __alignof__(struct dm_target_spec));
-		return -EINVAL;
-	}
-
 	*spec = (struct dm_target_spec *) ((unsigned char *) last + next);
 	*target_params = (char *) (*spec + 1);
 
-	return 0;
+	if (*spec < (last + 1))
+		return -EINVAL;
+
+	return invalid_str(*target_params, end);
 }
 
 static int populate_table(struct dm_table *table,
@@ -1454,9 +1407,8 @@ static int populate_table(struct dm_table *table,
 	unsigned int i = 0;
 	struct dm_target_spec *spec = (struct dm_target_spec *) param;
 	uint32_t next = param->data_start;
-	const char *const end = (const char *) param + param_size;
+	void *end = (void *) param + param_size;
 	char *target_params;
-	size_t min_size = sizeof(struct dm_ioctl);
 
 	if (!param->target_count) {
 		DMERR("%s: no targets specified", __func__);
@@ -1464,28 +1416,12 @@ static int populate_table(struct dm_table *table,
 	}
 
 	for (i = 0; i < param->target_count; i++) {
-		const char *nul_terminator;
-
-		if (next < min_size) {
-			DMERR("%s: next target spec (offset %u) overlaps %s",
-			      __func__, next, i ? "previous target" : "'struct dm_ioctl'");
-			return -EINVAL;
-		}
 
 		r = next_target(spec, next, end, &spec, &target_params);
 		if (r) {
 			DMERR("unable to find target");
 			return r;
 		}
-
-		nul_terminator = memchr(target_params, 0, (size_t)(end - target_params));
-		if (nul_terminator == NULL) {
-			DMERR("%s: target parameters not NUL-terminated", __func__);
-			return -EINVAL;
-		}
-
-		/* Add 1 for NUL terminator */
-		min_size = (size_t)(nul_terminator - (const char *)spec) + 1;
 
 		r = dm_table_add_target(table, spec->target_type,
 					(sector_t) spec->sector_start,
@@ -1620,12 +1556,11 @@ static int table_clear(struct file *filp, struct dm_ioctl *param, size_t param_s
 		has_new_map = true;
 	}
 
+	param->flags &= ~DM_INACTIVE_PRESENT_FLAG;
+
+	__dev_status(hc->md, param);
 	md = hc->md;
 	up_write(&_hash_lock);
-
-	param->flags &= ~DM_INACTIVE_PRESENT_FLAG;
-	__dev_status(md, param);
-
 	if (old_map) {
 		dm_sync_table(md);
 		dm_table_destroy(old_map);
@@ -1880,7 +1815,6 @@ static ioctl_fn lookup_ioctl(unsigned int cmd, int *ioctl_flags)
 		{DM_DEV_SET_GEOMETRY_CMD, 0, dev_set_geometry},
 		{DM_DEV_ARM_POLL_CMD, IOCTL_FLAGS_NO_PARAMS, dev_arm_poll},
 		{DM_GET_TARGET_VERSION_CMD, 0, get_target_version},
-		{DM_MPATH_PROBE_PATHS_CMD, 0, NULL}, /* block device ioctl */
 	};
 
 	if (unlikely(cmd >= ARRAY_SIZE(_ioctls)))
@@ -1895,36 +1829,30 @@ static ioctl_fn lookup_ioctl(unsigned int cmd, int *ioctl_flags)
  * As well as checking the version compatibility this always
  * copies the kernel interface version out.
  */
-static int check_version(unsigned int cmd, struct dm_ioctl __user *user,
-			 struct dm_ioctl *kernel_params)
+static int check_version(unsigned int cmd, struct dm_ioctl __user *user)
 {
+	uint32_t version[3];
 	int r = 0;
 
-	/* Make certain version is first member of dm_ioctl struct */
-	BUILD_BUG_ON(offsetof(struct dm_ioctl, version) != 0);
-
-	if (copy_from_user(kernel_params->version, user->version, sizeof(kernel_params->version)))
+	if (copy_from_user(version, user->version, sizeof(version)))
 		return -EFAULT;
 
-	if ((kernel_params->version[0] != DM_VERSION_MAJOR) ||
-	    (kernel_params->version[1] > DM_VERSION_MINOR)) {
-		DMERR_LIMIT("ioctl interface mismatch: kernel(%u.%u.%u), user(%u.%u.%u), cmd(%d)",
+	if ((version[0] != DM_VERSION_MAJOR) ||
+	    (version[1] > DM_VERSION_MINOR)) {
+		DMERR("ioctl interface mismatch: kernel(%u.%u.%u), user(%u.%u.%u), cmd(%d)",
 		      DM_VERSION_MAJOR, DM_VERSION_MINOR,
 		      DM_VERSION_PATCHLEVEL,
-		      kernel_params->version[0],
-		      kernel_params->version[1],
-		      kernel_params->version[2],
-		      cmd);
+		      version[0], version[1], version[2], cmd);
 		r = -EINVAL;
 	}
 
 	/*
 	 * Fill in the kernel version.
 	 */
-	kernel_params->version[0] = DM_VERSION_MAJOR;
-	kernel_params->version[1] = DM_VERSION_MINOR;
-	kernel_params->version[2] = DM_VERSION_PATCHLEVEL;
-	if (copy_to_user(user->version, kernel_params->version, sizeof(kernel_params->version)))
+	version[0] = DM_VERSION_MAJOR;
+	version[1] = DM_VERSION_MINOR;
+	version[2] = DM_VERSION_PATCHLEVEL;
+	if (copy_to_user(user->version, version, sizeof(version)))
 		return -EFAULT;
 
 	return r;
@@ -1948,16 +1876,13 @@ static int copy_params(struct dm_ioctl __user *user, struct dm_ioctl *param_kern
 	struct dm_ioctl *dmi;
 	int secure_data;
 	const size_t minimum_data_size = offsetof(struct dm_ioctl, data);
+	unsigned int noio_flag;
 
-	/* check_version() already copied version from userspace, avoid TOCTOU */
-	if (copy_from_user((char *)param_kernel + sizeof(param_kernel->version),
-			   (char __user *)user + sizeof(param_kernel->version),
-			   minimum_data_size - sizeof(param_kernel->version)))
+	if (copy_from_user(param_kernel, user, minimum_data_size))
 		return -EFAULT;
 
-	if (unlikely(param_kernel->data_size < minimum_data_size) ||
-	    unlikely(param_kernel->data_size > DM_MAX_TARGETS * DM_MAX_TARGET_PARAMS)) {
-		DMERR_LIMIT("Invalid data size in the ioctl structure: %u",
+	if (param_kernel->data_size < minimum_data_size) {
+		DMERR("Invalid data size in the ioctl structure: %u",
 		      param_kernel->data_size);
 		return -EINVAL;
 	}
@@ -1978,7 +1903,9 @@ static int copy_params(struct dm_ioctl __user *user, struct dm_ioctl *param_kern
 	 * Use kmalloc() rather than vmalloc() when we can.
 	 */
 	dmi = NULL;
-	dmi = kvmalloc(param_kernel->data_size, GFP_NOIO | __GFP_HIGH);
+	noio_flag = memalloc_noio_save();
+	dmi = kvmalloc(param_kernel->data_size, GFP_KERNEL | __GFP_HIGH);
+	memalloc_noio_restore(noio_flag);
 
 	if (!dmi) {
 		if (secure_data && clear_user(user, param_kernel->data_size))
@@ -2063,7 +1990,7 @@ static int ctl_ioctl(struct file *file, uint command, struct dm_ioctl __user *us
 	 * Check the interface version passed in.  This also
 	 * writes out the kernel's interface version.
 	 */
-	r = check_version(cmd, user, &param_kernel);
+	r = check_version(cmd, user);
 	if (r)
 		return r;
 

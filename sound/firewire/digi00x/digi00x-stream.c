@@ -259,10 +259,8 @@ int snd_dg00x_stream_init_duplex(struct snd_dg00x *dg00x)
 		return err;
 
 	err = init_stream(dg00x, &dg00x->tx_stream);
-	if (err < 0) {
+	if (err < 0)
 		destroy_stream(dg00x, &dg00x->rx_stream);
-		return err;
-	}
 
 	err = amdtp_domain_init(&dg00x->domain);
 	if (err < 0) {
@@ -427,24 +425,33 @@ void snd_dg00x_stream_lock_changed(struct snd_dg00x *dg00x)
 
 int snd_dg00x_stream_lock_try(struct snd_dg00x *dg00x)
 {
-	guard(spinlock_irq)(&dg00x->lock);
+	int err;
+
+	spin_lock_irq(&dg00x->lock);
 
 	/* user land lock this */
-	if (dg00x->dev_lock_count < 0)
-		return -EBUSY;
+	if (dg00x->dev_lock_count < 0) {
+		err = -EBUSY;
+		goto end;
+	}
 
 	/* this is the first time */
 	if (dg00x->dev_lock_count++ == 0)
 		snd_dg00x_stream_lock_changed(dg00x);
-	return 0;
+	err = 0;
+end:
+	spin_unlock_irq(&dg00x->lock);
+	return err;
 }
 
 void snd_dg00x_stream_lock_release(struct snd_dg00x *dg00x)
 {
-	guard(spinlock_irq)(&dg00x->lock);
+	spin_lock_irq(&dg00x->lock);
 
 	if (WARN_ON(dg00x->dev_lock_count <= 0))
-		return;
+		goto end;
 	if (--dg00x->dev_lock_count == 0)
 		snd_dg00x_stream_lock_changed(dg00x);
+end:
+	spin_unlock_irq(&dg00x->lock);
 }

@@ -197,7 +197,7 @@ static int jz4760_codec_startup(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *dai)
 {
 	struct snd_soc_component *codec = dai->component;
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(codec);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(codec);
 	int ret = 0;
 
 	/*
@@ -214,7 +214,7 @@ static void jz4760_codec_shutdown(struct snd_pcm_substream *substream,
 				  struct snd_soc_dai *dai)
 {
 	struct snd_soc_component *codec = dai->component;
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(codec);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(codec);
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		snd_soc_dapm_disable_pin(dapm, "SYSCLK");
@@ -225,7 +225,6 @@ static int jz4760_codec_pcm_trigger(struct snd_pcm_substream *substream,
 				    int cmd, struct snd_soc_dai *dai)
 {
 	struct snd_soc_component *codec = dai->component;
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(codec);
 	int ret = 0;
 
 	switch (cmd) {
@@ -233,7 +232,7 @@ static int jz4760_codec_pcm_trigger(struct snd_pcm_substream *substream,
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
-			snd_soc_dapm_force_bias_level(dapm, SND_SOC_BIAS_ON);
+			snd_soc_component_force_bias_level(codec, SND_SOC_BIAS_ON);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
@@ -315,13 +314,37 @@ static const struct snd_kcontrol_new jz4760_codec_snd_controls[] = {
 };
 
 static const struct snd_kcontrol_new jz4760_codec_pcm_playback_controls[] = {
-	SOC_DAPM_DOUBLE_R_TLV("Volume", JZ4760_CODEC_REG_GCR6, JZ4760_CODEC_REG_GCR5,
-			      REG_GCR_GAIN_OFFSET, REG_GCR_GAIN_MAX, 1, dac_tlv),
+	{
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.name = "Volume",
+		.info = snd_soc_info_volsw,
+		.access = SNDRV_CTL_ELEM_ACCESS_TLV_READ
+			| SNDRV_CTL_ELEM_ACCESS_READWRITE,
+		.tlv.p = dac_tlv,
+		.get = snd_soc_dapm_get_volsw,
+		.put = snd_soc_dapm_put_volsw,
+		.private_value = SOC_DOUBLE_R_VALUE(JZ4760_CODEC_REG_GCR6,
+						    JZ4760_CODEC_REG_GCR5,
+						    REG_GCR_GAIN_OFFSET,
+						    REG_GCR_GAIN_MAX, 1),
+	},
 };
 
 static const struct snd_kcontrol_new jz4760_codec_hp_playback_controls[] = {
-	SOC_DAPM_DOUBLE_R_TLV("Volume", JZ4760_CODEC_REG_GCR2, JZ4760_CODEC_REG_GCR1,
-			      REG_GCR_GAIN_OFFSET, REG_GCR_GAIN_MAX, 1, out_tlv),
+	{
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.name = "Volume",
+		.info = snd_soc_info_volsw,
+		.access = SNDRV_CTL_ELEM_ACCESS_TLV_READ
+			| SNDRV_CTL_ELEM_ACCESS_READWRITE,
+		.tlv.p = out_tlv,
+		.get = snd_soc_dapm_get_volsw,
+		.put = snd_soc_dapm_put_volsw,
+		.private_value = SOC_DOUBLE_R_VALUE(JZ4760_CODEC_REG_GCR2,
+						    JZ4760_CODEC_REG_GCR1,
+						    REG_GCR_GAIN_OFFSET,
+						    REG_GCR_GAIN_MAX, 1),
+	},
 };
 
 static int hpout_event(struct snd_soc_dapm_widget *w,
@@ -798,7 +821,7 @@ static const u8 jz4760_codec_reg_defaults[] = {
 	0x1F, 0x00, 0x00, 0x00
 };
 
-static const struct regmap_config jz4760_codec_regmap_config = {
+static struct regmap_config jz4760_codec_regmap_config = {
 	.reg_bits = 7,
 	.val_bits = 8,
 

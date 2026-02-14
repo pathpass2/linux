@@ -65,7 +65,7 @@ static void rxrpc_write_space(struct sock *sk)
 
 		if (skwq_has_sleeper(wq))
 			wake_up_interruptible(&wq->wait);
-		sk_wake_async_rcu(sk, SOCK_WAKE_SPACE, POLL_OUT);
+		sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
 	}
 	rcu_read_unlock();
 }
@@ -127,7 +127,7 @@ static int rxrpc_validate_address(struct rxrpc_sock *rx,
 /*
  * bind a local address to an RxRPC socket
  */
-static int rxrpc_bind(struct socket *sock, struct sockaddr_unsized *saddr, int len)
+static int rxrpc_bind(struct socket *sock, struct sockaddr *saddr, int len)
 {
 	struct sockaddr_rxrpc *srx = (struct sockaddr_rxrpc *)saddr;
 	struct rxrpc_local *local;
@@ -259,90 +259,32 @@ static int rxrpc_listen(struct socket *sock, int backlog)
 }
 
 /**
- * rxrpc_kernel_lookup_peer - Obtain remote transport endpoint for an address
- * @sock: The socket through which it will be accessed
- * @srx: The network address
- * @gfp: Allocation flags
- *
- * Lookup or create a remote transport endpoint record for the specified
- * address.
- *
- * Return: The peer record found with a reference, %NULL if no record is found
- * or a negative error code if the address is invalid or unsupported.
- */
-struct rxrpc_peer *rxrpc_kernel_lookup_peer(struct socket *sock,
-					    struct sockaddr_rxrpc *srx, gfp_t gfp)
-{
-	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
-	int ret;
-
-	ret = rxrpc_validate_address(rx, srx, sizeof(*srx));
-	if (ret < 0)
-		return ERR_PTR(ret);
-
-	return rxrpc_lookup_peer(rx->local, srx, gfp);
-}
-EXPORT_SYMBOL(rxrpc_kernel_lookup_peer);
-
-/**
- * rxrpc_kernel_get_peer - Get a reference on a peer
- * @peer: The peer to get a reference on (may be NULL).
- *
- * Get a reference for a remote peer record (if not NULL).
- *
- * Return: The @peer argument.
- */
-struct rxrpc_peer *rxrpc_kernel_get_peer(struct rxrpc_peer *peer)
-{
-	return peer ? rxrpc_get_peer(peer, rxrpc_peer_get_application) : NULL;
-}
-EXPORT_SYMBOL(rxrpc_kernel_get_peer);
-
-/**
- * rxrpc_kernel_put_peer - Allow a kernel app to drop a peer reference
- * @peer: The peer to drop a ref on
- *
- * Drop a reference on a peer record.
- */
-void rxrpc_kernel_put_peer(struct rxrpc_peer *peer)
-{
-	rxrpc_put_peer(peer, rxrpc_peer_put_application);
-}
-EXPORT_SYMBOL(rxrpc_kernel_put_peer);
-
-/**
  * rxrpc_kernel_begin_call - Allow a kernel service to begin a call
  * @sock: The socket on which to make the call
- * @peer: The peer to contact
+ * @srx: The address of the peer to contact
  * @key: The security context to use (defaults to socket setting)
  * @user_call_ID: The ID to use
  * @tx_total_len: Total length of data to transmit during the call (or -1)
- * @hard_timeout: The maximum lifespan of the call in sec
  * @gfp: The allocation constraints
  * @notify_rx: Where to send notifications instead of socket queue
- * @service_id: The ID of the service to contact
  * @upgrade: Request service upgrade for call
  * @interruptibility: The call is interruptible, or can be canceled.
  * @debug_id: The debug ID for tracing to be assigned to the call
  *
  * Allow a kernel service to begin a call on the nominated socket.  This just
  * sets up all the internal tracking structures and allocates connection and
- * call IDs as appropriate.
+ * call IDs as appropriate.  The call to be used is returned.
  *
  * The default socket destination address and security may be overridden by
  * supplying @srx and @key.
- *
- * Return: The new call or an error code.
  */
 struct rxrpc_call *rxrpc_kernel_begin_call(struct socket *sock,
-					   struct rxrpc_peer *peer,
+					   struct sockaddr_rxrpc *srx,
 					   struct key *key,
 					   unsigned long user_call_ID,
 					   s64 tx_total_len,
-					   u32 hard_timeout,
 					   gfp_t gfp,
 					   rxrpc_notify_rx_t notify_rx,
-					   u16 service_id,
 					   bool upgrade,
 					   enum rxrpc_interruptibility interruptibility,
 					   unsigned int debug_id)
@@ -351,11 +293,13 @@ struct rxrpc_call *rxrpc_kernel_begin_call(struct socket *sock,
 	struct rxrpc_call_params p;
 	struct rxrpc_call *call;
 	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
+	int ret;
 
 	_enter(",,%x,%lx", key_serial(key), user_call_ID);
 
-	if (WARN_ON_ONCE(peer->local != rx->local))
-		return ERR_PTR(-EIO);
+	ret = rxrpc_validate_address(rx, srx, sizeof(*srx));
+	if (ret < 0)
+		return ERR_PTR(ret);
 
 	lock_sock(&rx->sk);
 
@@ -369,17 +313,15 @@ struct rxrpc_call *rxrpc_kernel_begin_call(struct socket *sock,
 	p.tx_total_len		= tx_total_len;
 	p.interruptibility	= interruptibility;
 	p.kernel		= true;
-	p.timeouts.hard		= hard_timeout;
 
 	memset(&cp, 0, sizeof(cp));
 	cp.local		= rx->local;
-	cp.peer			= peer;
 	cp.key			= key;
 	cp.security_level	= rx->min_sec_level;
 	cp.exclusive		= false;
 	cp.upgrade		= upgrade;
-	cp.service_id		= service_id;
-	call = rxrpc_new_client_call(rx, &cp, &p, gfp, debug_id);
+	cp.service_id		= srx->srx_service;
+	call = rxrpc_new_client_call(rx, &cp, srx, &p, gfp, debug_id);
 	/* The socket has been unlocked. */
 	if (!IS_ERR(call)) {
 		call->notify_rx = notify_rx;
@@ -400,44 +342,31 @@ static void rxrpc_dummy_notify_rx(struct sock *sk, struct rxrpc_call *rxcall,
 }
 
 /**
- * rxrpc_kernel_shutdown_call - Allow a kernel service to shut down a call it was using
+ * rxrpc_kernel_end_call - Allow a kernel service to end a call it was using
  * @sock: The socket the call is on
  * @call: The call to end
  *
- * Allow a kernel service to shut down a call it was using.  The call must be
+ * Allow a kernel service to end a call it was using.  The call must be
  * complete before this is called (the call should be aborted if necessary).
  */
-void rxrpc_kernel_shutdown_call(struct socket *sock, struct rxrpc_call *call)
+void rxrpc_kernel_end_call(struct socket *sock, struct rxrpc_call *call)
 {
 	_enter("%d{%d}", call->debug_id, refcount_read(&call->ref));
 
 	mutex_lock(&call->user_mutex);
-	if (!test_bit(RXRPC_CALL_RELEASED, &call->flags)) {
-		rxrpc_release_call(rxrpc_sk(sock->sk), call);
+	rxrpc_release_call(rxrpc_sk(sock->sk), call);
 
-		/* Make sure we're not going to call back into a kernel service */
-		if (call->notify_rx) {
-			spin_lock_irq(&call->notify_lock);
-			call->notify_rx = rxrpc_dummy_notify_rx;
-			spin_unlock_irq(&call->notify_lock);
-		}
+	/* Make sure we're not going to call back into a kernel service */
+	if (call->notify_rx) {
+		spin_lock(&call->notify_lock);
+		call->notify_rx = rxrpc_dummy_notify_rx;
+		spin_unlock(&call->notify_lock);
 	}
-	mutex_unlock(&call->user_mutex);
-}
-EXPORT_SYMBOL(rxrpc_kernel_shutdown_call);
 
-/**
- * rxrpc_kernel_put_call - Release a reference to a call
- * @sock: The socket the call is on
- * @call: The call to put
- *
- * Drop the application's ref on an rxrpc call.
- */
-void rxrpc_kernel_put_call(struct socket *sock, struct rxrpc_call *call)
-{
+	mutex_unlock(&call->user_mutex);
 	rxrpc_put_call(call, rxrpc_call_put_kernel);
 }
-EXPORT_SYMBOL(rxrpc_kernel_put_call);
+EXPORT_SYMBOL(rxrpc_kernel_end_call);
 
 /**
  * rxrpc_kernel_check_life - Check to see whether a call is still alive
@@ -446,8 +375,6 @@ EXPORT_SYMBOL(rxrpc_kernel_put_call);
  *
  * Allow a kernel service to find out whether a call is still alive - whether
  * it has completed successfully and all received data has been consumed.
- *
- * Return: %true if the call is still ongoing and %false if it has completed.
  */
 bool rxrpc_kernel_check_life(const struct socket *sock,
 			     const struct rxrpc_call *call)
@@ -461,27 +388,70 @@ bool rxrpc_kernel_check_life(const struct socket *sock,
 EXPORT_SYMBOL(rxrpc_kernel_check_life);
 
 /**
- * rxrpc_kernel_set_notifications - Set table of callback operations
- * @sock: The socket to install table upon
- * @app_ops: Callback operation table to set
+ * rxrpc_kernel_get_epoch - Retrieve the epoch value from a call.
+ * @sock: The socket the call is on
+ * @call: The call to query
  *
- * Allow a kernel service to set a table of event notifications on a socket.
+ * Allow a kernel service to retrieve the epoch value from a service call to
+ * see if the client at the other end rebooted.
  */
-void rxrpc_kernel_set_notifications(struct socket *sock,
-				    const struct rxrpc_kernel_ops *app_ops)
+u32 rxrpc_kernel_get_epoch(struct socket *sock, struct rxrpc_call *call)
+{
+	return call->conn->proto.epoch;
+}
+EXPORT_SYMBOL(rxrpc_kernel_get_epoch);
+
+/**
+ * rxrpc_kernel_new_call_notification - Get notifications of new calls
+ * @sock: The socket to intercept received messages on
+ * @notify_new_call: Function to be called when new calls appear
+ * @discard_new_call: Function to discard preallocated calls
+ *
+ * Allow a kernel service to be given notifications about new calls.
+ */
+void rxrpc_kernel_new_call_notification(
+	struct socket *sock,
+	rxrpc_notify_new_call_t notify_new_call,
+	rxrpc_discard_new_call_t discard_new_call)
 {
 	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
 
-	rx->app_ops = app_ops;
+	rx->notify_new_call = notify_new_call;
+	rx->discard_new_call = discard_new_call;
 }
-EXPORT_SYMBOL(rxrpc_kernel_set_notifications);
+EXPORT_SYMBOL(rxrpc_kernel_new_call_notification);
+
+/**
+ * rxrpc_kernel_set_max_life - Set maximum lifespan on a call
+ * @sock: The socket the call is on
+ * @call: The call to configure
+ * @hard_timeout: The maximum lifespan of the call in jiffies
+ *
+ * Set the maximum lifespan of a call.  The call will end with ETIME or
+ * ETIMEDOUT if it takes longer than this.
+ */
+void rxrpc_kernel_set_max_life(struct socket *sock, struct rxrpc_call *call,
+			       unsigned long hard_timeout)
+{
+	unsigned long now;
+
+	mutex_lock(&call->user_mutex);
+
+	now = jiffies;
+	hard_timeout += now;
+	WRITE_ONCE(call->expect_term_by, hard_timeout);
+	rxrpc_reduce_call_timer(call, hard_timeout, now, rxrpc_timer_set_for_hard);
+
+	mutex_unlock(&call->user_mutex);
+}
+EXPORT_SYMBOL(rxrpc_kernel_set_max_life);
 
 /*
  * connect an RxRPC socket
  * - this just targets it at a specific destination; no actual connection
  *   negotiation takes place
  */
-static int rxrpc_connect(struct socket *sock, struct sockaddr_unsized *addr,
+static int rxrpc_connect(struct socket *sock, struct sockaddr *addr,
 			 int addr_len, int flags)
 {
 	struct sockaddr_rxrpc *srx = (struct sockaddr_rxrpc *)addr;
@@ -592,10 +562,7 @@ static int rxrpc_sendmsg(struct socket *sock, struct msghdr *m, size_t len)
 		fallthrough;
 	case RXRPC_SERVER_BOUND:
 	case RXRPC_SERVER_LISTENING:
-		if (m->msg_flags & MSG_OOB)
-			ret = rxrpc_sendmsg_oob(rx, m, len);
-		else
-			ret = rxrpc_do_sendmsg(rx, m, len);
+		ret = rxrpc_do_sendmsg(rx, m, len);
 		/* The socket has been unlocked */
 		goto out;
 	default:
@@ -630,7 +597,7 @@ static int rxrpc_setsockopt(struct socket *sock, int level, int optname,
 			    sockptr_t optval, unsigned int optlen)
 {
 	struct rxrpc_sock *rx = rxrpc_sk(sock->sk);
-	unsigned int min_sec_level, val;
+	unsigned int min_sec_level;
 	u16 service_upgrade[2];
 	int ret;
 
@@ -678,10 +645,9 @@ static int rxrpc_setsockopt(struct socket *sock, int level, int optname,
 			ret = -EISCONN;
 			if (rx->sk.sk_state != RXRPC_UNBOUND)
 				goto error;
-			ret = copy_safe_from_sockptr(&min_sec_level,
-						     sizeof(min_sec_level),
-						     optval, optlen);
-			if (ret)
+			ret = copy_from_sockptr(&min_sec_level, optval,
+				       sizeof(unsigned int));
+			if (ret < 0)
 				goto error;
 			ret = -EINVAL;
 			if (min_sec_level > RXRPC_SECURITY_MAX)
@@ -709,26 +675,6 @@ static int rxrpc_setsockopt(struct socket *sock, int level, int optname,
 				goto error;
 			rx->service_upgrade.from = service_upgrade[0];
 			rx->service_upgrade.to = service_upgrade[1];
-			goto success;
-
-		case RXRPC_MANAGE_RESPONSE:
-			ret = -EINVAL;
-			if (optlen != sizeof(unsigned int))
-				goto error;
-			ret = -EISCONN;
-			if (rx->sk.sk_state != RXRPC_UNBOUND)
-				goto error;
-			ret = copy_safe_from_sockptr(&val, sizeof(val),
-						     optval, optlen);
-			if (ret)
-				goto error;
-			ret = -EINVAL;
-			if (val > 1)
-				goto error;
-			if (val)
-				set_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
-			else
-				clear_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
 			goto success;
 
 		default:
@@ -837,8 +783,6 @@ static int rxrpc_create(struct net *net, struct socket *sock, int protocol,
 	rx->calls = RB_ROOT;
 
 	spin_lock_init(&rx->incoming_lock);
-	skb_queue_head_init(&rx->recvmsg_oobq);
-	rx->pending_oobq = RB_ROOT;
 	INIT_LIST_HEAD(&rx->sock_calls);
 	INIT_LIST_HEAD(&rx->to_be_accepted);
 	INIT_LIST_HEAD(&rx->recvmsg_q);
@@ -872,10 +816,8 @@ static int rxrpc_shutdown(struct socket *sock, int flags)
 	lock_sock(sk);
 
 	if (sk->sk_state < RXRPC_CLOSE) {
-		spin_lock_irq(&rx->recvmsg_lock);
 		sk->sk_state = RXRPC_CLOSE;
 		sk->sk_shutdown = SHUTDOWN_MASK;
-		spin_unlock_irq(&rx->recvmsg_lock);
 	} else {
 		ret = -ESHUTDOWN;
 	}
@@ -887,30 +829,12 @@ static int rxrpc_shutdown(struct socket *sock, int flags)
 }
 
 /*
- * Purge the out-of-band queue.
- */
-static void rxrpc_purge_oob_queue(struct sock *sk)
-{
-	struct rxrpc_sock *rx = rxrpc_sk(sk);
-	struct sk_buff *skb;
-
-	while ((skb = skb_dequeue(&rx->recvmsg_oobq)))
-		rxrpc_kernel_free_oob(skb);
-	while (!RB_EMPTY_ROOT(&rx->pending_oobq)) {
-		skb = rb_entry(rx->pending_oobq.rb_node, struct sk_buff, rbnode);
-		rb_erase(&skb->rbnode, &rx->pending_oobq);
-		rxrpc_kernel_free_oob(skb);
-	}
-}
-
-/*
  * RxRPC socket destructor
  */
 static void rxrpc_sock_destructor(struct sock *sk)
 {
 	_enter("%p", sk);
 
-	rxrpc_purge_oob_queue(sk);
 	rxrpc_purge_queue(&sk->sk_receive_queue);
 
 	WARN_ON(refcount_read(&sk->sk_wmem_alloc));
@@ -949,9 +873,7 @@ static int rxrpc_release_sock(struct sock *sk)
 		break;
 	}
 
-	spin_lock_irq(&rx->recvmsg_lock);
 	sk->sk_state = RXRPC_CLOSE;
-	spin_unlock_irq(&rx->recvmsg_lock);
 
 	if (rx->local && rx->local->service == rx) {
 		write_lock(&rx->local->services_lock);
@@ -963,7 +885,6 @@ static int rxrpc_release_sock(struct sock *sk)
 	rxrpc_discard_prealloc(rx);
 	rxrpc_release_calls_on_socket(rx);
 	flush_workqueue(rxrpc_workqueue);
-	rxrpc_purge_oob_queue(sk);
 	rxrpc_purge_queue(&sk->sk_receive_queue);
 
 	rxrpc_unuse_local(rx->local, rxrpc_local_unuse_release_sock);
@@ -1017,6 +938,7 @@ static const struct proto_ops rxrpc_rpc_ops = {
 	.sendmsg	= rxrpc_sendmsg,
 	.recvmsg	= rxrpc_recvmsg,
 	.mmap		= sock_no_mmap,
+	.sendpage	= sock_no_sendpage,
 };
 
 static struct proto rxrpc_proto = {
@@ -1042,7 +964,6 @@ static int __init af_rxrpc_init(void)
 	BUILD_BUG_ON(sizeof(struct rxrpc_skb_priv) > sizeof_field(struct sk_buff, cb));
 
 	ret = -ENOMEM;
-	rxrpc_gen_version_string();
 	rxrpc_call_jar = kmem_cache_create(
 		"rxrpc_call_jar", sizeof(struct rxrpc_call), 0,
 		SLAB_HWCACHE_ALIGN, NULL);
@@ -1051,7 +972,7 @@ static int __init af_rxrpc_init(void)
 		goto error_call_jar;
 	}
 
-	rxrpc_workqueue = alloc_ordered_workqueue("krxrpcd", WQ_HIGHPRI | WQ_MEM_RECLAIM);
+	rxrpc_workqueue = alloc_workqueue("krxrpcd", WQ_HIGHPRI | WQ_MEM_RECLAIM | WQ_UNBOUND, 1);
 	if (!rxrpc_workqueue) {
 		pr_notice("Failed to allocate work queue\n");
 		goto error_work_queue;

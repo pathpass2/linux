@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <trace-seq.h>
+#include <traceevent/trace-seq.h>
 
 int main(void)
 {

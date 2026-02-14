@@ -4,10 +4,6 @@
  *	Dong Aisheng <aisheng.dong@nxp.com>
  */
 
-&usbphy1 {
-	compatible = "fsl,imx8qxp-usbphy", "fsl,imx7ulp-usbphy";
-};
-
 &usdhc1 {
 	compatible = "fsl,imx8qxp-usdhc", "fsl,imx7d-usdhc";
 };

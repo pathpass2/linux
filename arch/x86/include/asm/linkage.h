@@ -8,14 +8,6 @@
 #undef notrace
 #define notrace __attribute__((no_instrument_function))
 
-#ifdef CONFIG_64BIT
-/*
- * The generic version tends to create spurious ENDBR instructions under
- * certain conditions.
- */
-#define _THIS_IP_ ({ unsigned long __here; asm ("lea 0(%%rip), %0" : "=r" (__here)); __here; })
-#endif
-
 #ifdef CONFIG_X86_32
 #define asmlinkage CPP_ASMLINKAGE __attribute__((regparm(0)))
 #endif /* CONFIG_X86_32 */
@@ -29,7 +21,7 @@
 #define FUNCTION_PADDING
 #endif
 
-#if (CONFIG_FUNCTION_ALIGNMENT > 8) && !defined(__DISABLE_EXPORTS) && !defined(BUILD_VDSO)
+#if (CONFIG_FUNCTION_ALIGNMENT > 8) && !defined(__DISABLE_EXPORTS) && !defined(BULID_VDSO)
 # define __FUNC_ALIGN		__ALIGN; FUNCTION_PADDING
 #else
 # define __FUNC_ALIGN		__ALIGN
@@ -38,31 +30,31 @@
 #define ASM_FUNC_ALIGN		__stringify(__FUNC_ALIGN)
 #define SYM_F_ALIGN		__FUNC_ALIGN
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
-#if defined(CONFIG_MITIGATION_RETHUNK) && !defined(__DISABLE_EXPORTS) && !defined(BUILD_VDSO)
+#if defined(CONFIG_RETHUNK) && !defined(__DISABLE_EXPORTS) && !defined(BUILD_VDSO)
 #define RET	jmp __x86_return_thunk
-#else /* CONFIG_MITIGATION_RETPOLINE */
-#ifdef CONFIG_MITIGATION_SLS
+#else /* CONFIG_RETPOLINE */
+#ifdef CONFIG_SLS
 #define RET	ret; int3
 #else
 #define RET	ret
 #endif
-#endif /* CONFIG_MITIGATION_RETPOLINE */
+#endif /* CONFIG_RETPOLINE */
 
-#else /* __ASSEMBLER__ */
+#else /* __ASSEMBLY__ */
 
-#if defined(CONFIG_MITIGATION_RETHUNK) && !defined(__DISABLE_EXPORTS) && !defined(BUILD_VDSO)
+#if defined(CONFIG_RETHUNK) && !defined(__DISABLE_EXPORTS) && !defined(BUILD_VDSO)
 #define ASM_RET	"jmp __x86_return_thunk\n\t"
-#else /* CONFIG_MITIGATION_RETPOLINE */
-#ifdef CONFIG_MITIGATION_SLS
+#else /* CONFIG_RETPOLINE */
+#ifdef CONFIG_SLS
 #define ASM_RET	"ret; int3\n\t"
 #else
 #define ASM_RET	"ret\n\t"
 #endif
-#endif /* CONFIG_MITIGATION_RETPOLINE */
+#endif /* CONFIG_RETPOLINE */
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 /*
  * Depending on -fpatchable-function-entry=N,N usage (CONFIG_CALL_PADDING) the
@@ -105,51 +97,40 @@
 	CFI_POST_PADDING					\
 	SYM_FUNC_END(__cfi_##name)
 
-/* UML needs to be able to override memcpy() and friends for KASAN. */
-#ifdef CONFIG_UML
-# define SYM_FUNC_ALIAS_MEMFUNC	SYM_FUNC_ALIAS_WEAK
-#else
-# define SYM_FUNC_ALIAS_MEMFUNC	SYM_FUNC_ALIAS
-#endif
-
 /* SYM_TYPED_FUNC_START -- use for indirectly called globals, w/ CFI type */
 #define SYM_TYPED_FUNC_START(name)				\
-	SYM_TYPED_START(name, SYM_L_GLOBAL, SYM_F_ALIGN)	\
+	SYM_TYPED_START(name, SYM_L_GLOBAL, SYM_A_ALIGN)	\
 	ENDBR
 
 /* SYM_FUNC_START -- use for global functions */
 #define SYM_FUNC_START(name)				\
-	SYM_START(name, SYM_L_GLOBAL, SYM_F_ALIGN)
+	SYM_START(name, SYM_L_GLOBAL, SYM_F_ALIGN)	\
+	ENDBR
 
 /* SYM_FUNC_START_NOALIGN -- use for global functions, w/o alignment */
 #define SYM_FUNC_START_NOALIGN(name)			\
-	SYM_START(name, SYM_L_GLOBAL, SYM_A_NONE)
+	SYM_START(name, SYM_L_GLOBAL, SYM_A_NONE)	\
+	ENDBR
 
 /* SYM_FUNC_START_LOCAL -- use for local functions */
 #define SYM_FUNC_START_LOCAL(name)			\
-	SYM_START(name, SYM_L_LOCAL, SYM_F_ALIGN)
+	SYM_START(name, SYM_L_LOCAL, SYM_F_ALIGN)	\
+	ENDBR
 
 /* SYM_FUNC_START_LOCAL_NOALIGN -- use for local functions, w/o alignment */
 #define SYM_FUNC_START_LOCAL_NOALIGN(name)		\
-	SYM_START(name, SYM_L_LOCAL, SYM_A_NONE)
+	SYM_START(name, SYM_L_LOCAL, SYM_A_NONE)	\
+	ENDBR
 
 /* SYM_FUNC_START_WEAK -- use for weak functions */
 #define SYM_FUNC_START_WEAK(name)			\
-	SYM_START(name, SYM_L_WEAK, SYM_F_ALIGN)
+	SYM_START(name, SYM_L_WEAK, SYM_F_ALIGN)	\
+	ENDBR
 
 /* SYM_FUNC_START_WEAK_NOALIGN -- use for weak functions, w/o alignment */
 #define SYM_FUNC_START_WEAK_NOALIGN(name)		\
-	SYM_START(name, SYM_L_WEAK, SYM_A_NONE)
-
-/*
- * Expose 'sym' to the startup code in arch/x86/boot/startup/, by emitting an
- * alias prefixed with __pi_
- */
-#ifdef __ASSEMBLER__
-#define SYM_PIC_ALIAS(sym)	SYM_ALIAS(__pi_ ## sym, sym, SYM_L_GLOBAL)
-#else
-#define SYM_PIC_ALIAS(sym)	extern typeof(sym) __PASTE(__pi_, sym) __alias(sym)
-#endif
+	SYM_START(name, SYM_L_WEAK, SYM_A_NONE)		\
+	ENDBR
 
 #endif /* _ASM_X86_LINKAGE_H */
 

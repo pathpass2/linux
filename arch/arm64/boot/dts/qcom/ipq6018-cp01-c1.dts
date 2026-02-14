@@ -7,7 +7,7 @@
 
 /dts-v1/;
 
-#include "ipq6018-mp5496.dtsi"
+#include "ipq6018.dtsi"
 
 / {
 	model = "Qualcomm Technologies, Inc. IPQ6018/AP-CP01-C1";
@@ -35,6 +35,7 @@
 };
 
 &blsp1_spi1 {
+	cs-select = <0>;
 	pinctrl-0 = <&spi_0_pins>;
 	pinctrl-names = "default";
 	status = "okay";

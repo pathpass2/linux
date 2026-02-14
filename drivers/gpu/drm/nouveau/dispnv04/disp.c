@@ -68,7 +68,7 @@ nv04_display_fini(struct drm_device *dev, bool runtime, bool suspend)
 	if (nv_two_heads(dev))
 		NVWriteCRTC(dev, 1, NV_PCRTC_INTR_EN_0, 0);
 
-	if (!runtime && !drm->headless)
+	if (!runtime)
 		cancel_work_sync(&drm->hpd_work);
 
 	if (!suspend)
@@ -189,6 +189,7 @@ static void
 nv04_display_destroy(struct drm_device *dev)
 {
 	struct nv04_display *disp = nv04_display(dev);
+	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_encoder *encoder;
 	struct nouveau_crtc *nv_crtc;
 
@@ -205,13 +206,15 @@ nv04_display_destroy(struct drm_device *dev)
 
 	nouveau_display(dev)->priv = NULL;
 	vfree(disp);
+
+	nvif_object_unmap(&drm->client.device.object);
 }
 
 int
 nv04_display_create(struct drm_device *dev)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nvkm_i2c *i2c = nvxx_i2c(drm);
+	struct nvkm_i2c *i2c = nvxx_i2c(&drm->client.device);
 	struct dcb_table *dcb = &drm->vbios.dcb;
 	struct drm_connector *connector, *ct;
 	struct drm_encoder *encoder;
@@ -225,6 +228,8 @@ nv04_display_create(struct drm_device *dev)
 		return -ENOMEM;
 
 	disp->drm = drm;
+
+	nvif_object_map(&drm->client.device.object, NULL, 0);
 
 	nouveau_display(dev)->priv = disp;
 	nouveau_display(dev)->dtor = nv04_display_destroy;
@@ -251,7 +256,7 @@ nv04_display_create(struct drm_device *dev)
 	for (i = 0; i < dcb->entries; i++) {
 		struct dcb_output *dcbent = &dcb->entry[i];
 
-		connector = nouveau_connector_create(dev, dcbent->connector);
+		connector = nouveau_connector_create(dev, dcbent);
 		if (IS_ERR(connector))
 			continue;
 

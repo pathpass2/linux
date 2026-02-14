@@ -163,5 +163,4 @@ static struct hid_driver a4_driver = {
 };
 module_hid_driver(a4_driver);
 
-MODULE_DESCRIPTION("HID driver for some a4tech \"special\" devices");
 MODULE_LICENSE("GPL");

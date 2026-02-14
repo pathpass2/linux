@@ -130,10 +130,6 @@ struct tegra_csi_soc {
 	unsigned int tpg_frmrate_table_size;
 };
 
-#if defined(CONFIG_ARCH_TEGRA_210_SOC)
-extern const struct tegra_csi_soc tegra210_csi_soc;
-#endif
-
 /**
  * struct tegra_csi - NVIDIA Tegra CSI device structure
  *
@@ -154,6 +150,10 @@ struct tegra_csi {
 	const struct tegra_csi_ops *ops;
 	struct list_head csi_chans;
 };
+
+#if defined(CONFIG_ARCH_TEGRA_210_SOC)
+extern const struct tegra_csi_soc tegra210_csi_soc;
+#endif
 
 void tegra_csi_error_recover(struct v4l2_subdev *subdev);
 void tegra_csi_calc_settle_time(struct tegra_csi_channel *csi_chan,

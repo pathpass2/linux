@@ -9,7 +9,6 @@
  * PPC64 updates by Dave Engebretsen (engebret@us.ibm.com)
  */
 
-#include <linux/export.h>
 #include <linux/linkage.h>
 #include <linux/sys.h>
 #include <asm/unistd.h>
@@ -24,6 +23,7 @@
 #include <asm/kexec.h>
 #include <asm/ptrace.h>
 #include <asm/mmu.h>
+#include <asm/export.h>
 #include <asm/feature-fixups.h>
 
 	.text
@@ -74,7 +74,7 @@ _GLOBAL(rmci_off)
 	blr
 #endif /* CONFIG_PPC_EARLY_DEBUG_BOOTX */
 
-#ifdef CONFIG_PPC_PMAC
+#if defined(CONFIG_PPC_PMAC) || defined(CONFIG_PPC_MAPLE)
 
 /*
  * Do an IO access in real mode
@@ -137,7 +137,7 @@ _GLOBAL(real_writeb)
 	sync
 	isync
 	blr
-#endif // CONFIG_PPC_PMAC
+#endif /* defined(CONFIG_PPC_PMAC) || defined(CONFIG_PPC_MAPLE) */
 
 #ifdef CONFIG_PPC_PASEMI
 
@@ -174,7 +174,7 @@ _GLOBAL(real_205_writeb)
 #endif /* CONFIG_PPC_PASEMI */
 
 
-#ifdef CONFIG_CPU_FREQ_PMAC64
+#if defined(CONFIG_CPU_FREQ_PMAC64) || defined(CONFIG_CPU_FREQ_MAPLE)
 /*
  * SCOM access functions for 970 (FX only for now)
  *
@@ -192,7 +192,7 @@ _GLOBAL(scom970_read)
 	xori	r0,r0,MSR_EE
 	mtmsrd	r0,1
 
-	/* rotate 24 bits SCOM address 8 bits left and mask out its low 8 bits
+	/* rotate 24 bits SCOM address 8 bits left and mask out it's low 8 bits
 	 * (including parity). On current CPUs they must be 0'd,
 	 * and finally or in RW bit
 	 */
@@ -226,7 +226,7 @@ _GLOBAL(scom970_write)
 	xori	r0,r0,MSR_EE
 	mtmsrd	r0,1
 
-	/* rotate 24 bits SCOM address 8 bits left and mask out its low 8 bits
+	/* rotate 24 bits SCOM address 8 bits left and mask out it's low 8 bits
 	 * (including parity). On current CPUs they must be 0'd.
 	 */
 
@@ -243,7 +243,7 @@ _GLOBAL(scom970_write)
 	/* restore interrupts */
 	mtmsrd	r5,1
 	blr
-#endif // CONFIG_CPU_FREQ_PMAC64
+#endif /* CONFIG_CPU_FREQ_PMAC64 || CONFIG_CPU_FREQ_MAPLE */
 
 /* kexec_wait(phys_cpu)
  *
@@ -432,7 +432,7 @@ _GLOBAL(kexec_sequence)
 1:
 	/* copy dest pages, flush whole dest image */
 	mr	r3,r29
-	bl	CFUNC(kexec_copy_flush)	/* (image) */
+	bl	kexec_copy_flush	/* (image) */
 
 	/* turn off mmu now if not done earlier */
 	cmpdi	r26,0

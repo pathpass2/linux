@@ -32,6 +32,7 @@ static int echainiv_encrypt(struct aead_request *req)
 	u64 seqno;
 	u8 *info;
 	unsigned int ivsize = crypto_aead_ivsize(geniv);
+	int err;
 
 	if (req->cryptlen < ivsize)
 		return -EINVAL;
@@ -40,9 +41,20 @@ static int echainiv_encrypt(struct aead_request *req)
 
 	info = req->iv;
 
-	if (req->src != req->dst)
-		memcpy_sglist(req->dst, req->src,
-			      req->assoclen + req->cryptlen);
+	if (req->src != req->dst) {
+		SYNC_SKCIPHER_REQUEST_ON_STACK(nreq, ctx->sknull);
+
+		skcipher_request_set_sync_tfm(nreq, ctx->sknull);
+		skcipher_request_set_callback(nreq, req->base.flags,
+					      NULL, NULL);
+		skcipher_request_set_crypt(nreq, req->src, req->dst,
+					   req->assoclen + req->cryptlen,
+					   NULL);
+
+		err = crypto_skcipher_encrypt(nreq);
+		if (err)
+			return err;
+	}
 
 	aead_request_set_callback(subreq, req->base.flags,
 				  req->base.complete, req->base.data);
@@ -145,7 +157,7 @@ static void __exit echainiv_module_exit(void)
 	crypto_unregister_template(&echainiv_tmpl);
 }
 
-module_init(echainiv_module_init);
+subsys_initcall(echainiv_module_init);
 module_exit(echainiv_module_exit);
 
 MODULE_LICENSE("GPL");

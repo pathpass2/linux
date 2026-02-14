@@ -2,7 +2,7 @@
 /*
  * Copyright (c) 2014 Christoph Hellwig.
  */
-#include "xfs_platform.h"
+#include "xfs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
@@ -57,6 +57,9 @@ xfs_fs_get_uuid(
 	u64			*offset)
 {
 	struct xfs_mount	*mp = XFS_M(sb);
+
+	xfs_notice_once(mp,
+"Using experimental pNFS feature, use at your own risk!");
 
 	if (*len < sizeof(uuid_t))
 		return -EINVAL;

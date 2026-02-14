@@ -10,7 +10,6 @@
  */
 
 #include <linux/atomic.h>
-#include <linux/ethtool.h>
 #include <linux/highmem.h>
 #include <linux/if_vlan.h>
 #include <linux/jhash.h>
@@ -149,7 +148,7 @@ struct tbnet_ring {
 /**
  * struct tbnet - ThunderboltIP network driver private data
  * @svc: XDomain service the driver is bound to
- * @xd: XDomain the service belongs to
+ * @xd: XDomain the service blongs to
  * @handler: ThunderboltIP configuration protocol handler
  * @dev: Networking device
  * @napi: NAPI structure for Rx polling
@@ -397,9 +396,9 @@ static void tbnet_tear_down(struct tbnet *net, bool send_logout)
 
 		ret = tb_xdomain_disable_paths(net->xd,
 					       net->local_transmit_path,
-					       net->tx_ring.ring->hop,
+					       net->rx_ring.ring->hop,
 					       net->remote_transmit_path,
-					       net->rx_ring.ring->hop);
+					       net->tx_ring.ring->hop);
 		if (ret)
 			netdev_warn(net->dev, "failed to disable DMA paths\n");
 
@@ -663,9 +662,9 @@ static void tbnet_connected_work(struct work_struct *work)
 		goto err_free_rx_buffers;
 
 	ret = tb_xdomain_enable_paths(net->xd, net->local_transmit_path,
-				      net->tx_ring.ring->hop,
+				      net->rx_ring.ring->hop,
 				      net->remote_transmit_path,
-				      net->rx_ring.ring->hop);
+				      net->tx_ring.ring->hop);
 	if (ret) {
 		netdev_err(net->dev, "failed to enable DMA paths\n");
 		goto err_free_tx_buffers;
@@ -765,7 +764,7 @@ static bool tbnet_check_frame(struct tbnet *net, const struct tbnet_frame *tf,
 	 */
 	if (net->skb && net->rx_hdr.frame_count) {
 		/* Check the frame count fits the count field */
-		if (frame_count != le32_to_cpu(net->rx_hdr.frame_count)) {
+		if (frame_count != net->rx_hdr.frame_count) {
 			net->stats.rx_length_errors++;
 			return false;
 		}
@@ -773,8 +772,8 @@ static bool tbnet_check_frame(struct tbnet *net, const struct tbnet_frame *tf,
 		/* Check the frame identifiers are incremented correctly,
 		 * and id is matching.
 		 */
-		if (frame_index != le16_to_cpu(net->rx_hdr.frame_index) + 1 ||
-		    frame_id != le16_to_cpu(net->rx_hdr.frame_id)) {
+		if (frame_index != net->rx_hdr.frame_index + 1 ||
+		    frame_id != net->rx_hdr.frame_id) {
 			net->stats.rx_missed_errors++;
 			return false;
 		}
@@ -874,12 +873,11 @@ static int tbnet_poll(struct napi_struct *napi, int budget)
 					TBNET_RX_PAGE_SIZE - hdr_size);
 		}
 
-		net->rx_hdr.frame_size = hdr->frame_size;
-		net->rx_hdr.frame_count = hdr->frame_count;
-		net->rx_hdr.frame_index = hdr->frame_index;
-		net->rx_hdr.frame_id = hdr->frame_id;
-		last = le16_to_cpu(net->rx_hdr.frame_index) ==
-		       le32_to_cpu(net->rx_hdr.frame_count) - 1;
+		net->rx_hdr.frame_size = frame_size;
+		net->rx_hdr.frame_count = le32_to_cpu(hdr->frame_count);
+		net->rx_hdr.frame_index = le16_to_cpu(hdr->frame_index);
+		net->rx_hdr.frame_id = le16_to_cpu(hdr->frame_id);
+		last = net->rx_hdr.frame_index == net->rx_hdr.frame_count - 1;
 
 		rx_packets++;
 		net->stats.rx_bytes += frame_size;
@@ -925,12 +923,8 @@ static int tbnet_open(struct net_device *dev)
 
 	netif_carrier_off(dev);
 
-	flags = RING_FLAG_FRAME;
-	/* Only enable full E2E if the other end supports it too */
-	if (tbnet_e2e && net->svc->prtcstns & TBNET_E2E)
-		flags |= RING_FLAG_E2E;
-
-	ring = tb_ring_alloc_tx(xd->tb->nhi, -1, TBNET_RING_SIZE, flags);
+	ring = tb_ring_alloc_tx(xd->tb->nhi, -1, TBNET_RING_SIZE,
+				RING_FLAG_FRAME);
 	if (!ring) {
 		netdev_err(dev, "failed to allocate Tx ring\n");
 		return -ENOMEM;
@@ -948,6 +942,11 @@ static int tbnet_open(struct net_device *dev)
 
 	sof_mask = BIT(TBIP_PDF_FRAME_START);
 	eof_mask = BIT(TBIP_PDF_FRAME_END);
+
+	flags = RING_FLAG_FRAME;
+	/* Only enable full E2E if the other end supports it too */
+	if (tbnet_e2e && net->svc->prtcstns & TBNET_E2E)
+		flags |= RING_FLAG_E2E;
 
 	ring = tb_ring_alloc_rx(xd->tb->nhi, -1, TBNET_RING_SIZE, flags,
 				net->tx_ring.ring->hop, sof_mask,
@@ -991,10 +990,8 @@ static bool tbnet_xmit_csum_and_map(struct tbnet *net, struct sk_buff *skb,
 {
 	struct thunderbolt_ip_frame_header *hdr = page_address(frames[0]->page);
 	struct device *dma_dev = tb_ring_dma_device(net->tx_ring.ring);
+	__wsum wsum = htonl(skb->len - skb_transport_offset(skb));
 	unsigned int i, len, offset = skb_transport_offset(skb);
-	/* Remove payload length from checksum */
-	u32 paylen = skb->len - skb_transport_offset(skb);
-	__wsum wsum = (__force __wsum)htonl(paylen);
 	__be16 protocol = skb->protocol;
 	void *data = skb->data;
 	void *dest = hdr + 1;
@@ -1030,7 +1027,7 @@ static bool tbnet_xmit_csum_and_map(struct tbnet *net, struct sk_buff *skb,
 	/* Data points on the beginning of packet.
 	 * Check is the checksum absolute place in the packet.
 	 * ipcso will update IP checksum.
-	 * tucso will update TCP/UDP checksum.
+	 * tucso will update TCP/UPD checksum.
 	 */
 	if (protocol == htons(ETH_P_IP)) {
 		__sum16 *ipcso = dest + ((void *)&(ip_hdr(skb)->check) - data);
@@ -1049,11 +1046,12 @@ static bool tbnet_xmit_csum_and_map(struct tbnet *net, struct sk_buff *skb,
 		*tucso = ~csum_tcpudp_magic(ip_hdr(skb)->saddr,
 					    ip_hdr(skb)->daddr, 0,
 					    ip_hdr(skb)->protocol, 0);
-	} else if (skb_is_gso(skb) && skb_is_gso_v6(skb)) {
+	} else if (skb_is_gso_v6(skb)) {
 		tucso = dest + ((void *)&(tcp_hdr(skb)->check) - data);
 		*tucso = ~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
 					  &ipv6_hdr(skb)->daddr, 0,
 					  IPPROTO_TCP, 0);
+		return false;
 	} else if (protocol == htons(ETH_P_IPV6)) {
 		tucso = dest + skb_checksum_start_offset(skb) + skb->csum_offset;
 		*tucso = ~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
@@ -1262,55 +1260,7 @@ static const struct net_device_ops tbnet_netdev_ops = {
 	.ndo_open = tbnet_open,
 	.ndo_stop = tbnet_stop,
 	.ndo_start_xmit = tbnet_start_xmit,
-	.ndo_set_mac_address = eth_mac_addr,
 	.ndo_get_stats64 = tbnet_get_stats64,
-};
-
-static int tbnet_get_link_ksettings(struct net_device *dev,
-				    struct ethtool_link_ksettings *cmd)
-{
-	const struct tbnet *net = netdev_priv(dev);
-	const struct tb_xdomain *xd = net->xd;
-	int speed;
-
-	ethtool_link_ksettings_zero_link_mode(cmd, supported);
-	ethtool_link_ksettings_zero_link_mode(cmd, advertising);
-
-	/* Figure out the current link speed and width */
-	switch (xd->link_speed) {
-	case 40:
-		speed = SPEED_80000;
-		break;
-
-	case 20:
-		if (xd->link_width == 2)
-			speed = SPEED_40000;
-		else
-			speed = SPEED_20000;
-		break;
-
-	case 10:
-		if (xd->link_width == 2) {
-			speed = SPEED_20000;
-			break;
-		}
-		fallthrough;
-
-	default:
-		speed = SPEED_10000;
-		break;
-	}
-
-	cmd->base.speed = speed;
-	cmd->base.duplex = DUPLEX_FULL;
-	cmd->base.autoneg = AUTONEG_DISABLE;
-	cmd->base.port = PORT_OTHER;
-
-	return 0;
-}
-
-static const struct ethtool_ops tbnet_ethtool_ops = {
-	.get_link_ksettings = tbnet_get_link_ksettings,
 };
 
 static void tbnet_generate_mac(struct net_device *dev)
@@ -1330,9 +1280,6 @@ static void tbnet_generate_mac(struct net_device *dev)
 	hash = jhash2((u32 *)xd->local_uuid, 4, hash);
 	addr[5] = hash & 0xff;
 	eth_hw_addr_set(dev, addr);
-
-	/* Allow changing it if needed */
-	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
 }
 
 static int tbnet_probe(struct tb_service *svc, const struct tb_service_id *id)
@@ -1363,7 +1310,6 @@ static int tbnet_probe(struct tb_service *svc, const struct tb_service_id *id)
 
 	strcpy(dev->name, "thunderbolt%d");
 	dev->netdev_ops = &tbnet_netdev_ops;
-	dev->ethtool_ops = &tbnet_ethtool_ops;
 
 	/* ThunderboltIP takes advantage of TSO packets but instead of
 	 * segmenting them we just split the packet into Thunderbolt

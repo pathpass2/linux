@@ -14,6 +14,7 @@
 #include <linux/io.h>
 #include <linux/iio/iio.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/iio/machine.h>
 #include <linux/iio/driver.h>
 #include <linux/iopoll.h>
@@ -123,7 +124,7 @@ static void tiadc_step_config(struct iio_dev *indio_dev)
 
 		chan = adc_dev->channel_line[i];
 
-		if (adc_dev->step_avg[i] && adc_dev->step_avg[i] <= STEPCONFIG_AVG_16)
+		if (adc_dev->step_avg[i])
 			stepconfig = STEPCONFIG_AVG(ffs(adc_dev->step_avg[i]) - 1) |
 				     STEPCONFIG_FIFO1;
 		else
@@ -494,7 +495,7 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 	/*
 	 * We check the complete FIFO. We programmed just one entry but in case
 	 * something went wrong we left empty handed (-EAGAIN previously) and
-	 * then the value appeared somehow in the FIFO we would have two entries.
+	 * then the value apeared somehow in the FIFO we would have two entries.
 	 * Therefore we read every item and keep only the latest version of the
 	 * requested channel.
 	 */
@@ -564,11 +565,13 @@ static int tiadc_parse_dt(struct platform_device *pdev,
 			  struct tiadc_device *adc_dev)
 {
 	struct device_node *node = pdev->dev.of_node;
+	struct property *prop;
+	const __be32 *cur;
 	int channels = 0;
 	u32 val;
 	int i;
 
-	of_property_for_each_u32(node, "ti,adc-channels", val) {
+	of_property_for_each_u32(node, "ti,adc-channels", prop, cur, val) {
 		adc_dev->channel_line[channels] = val;
 
 		/* Set Default values for optional DT parameters */
@@ -631,9 +634,10 @@ static int tiadc_probe(struct platform_device *pdev)
 	}
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*adc_dev));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&pdev->dev, "failed to allocate iio device\n");
 		return -ENOMEM;
-
+	}
 	adc_dev = iio_priv(indio_dev);
 
 	adc_dev->mfd_tscadc = ti_tscadc_dev_get(pdev);
@@ -667,10 +671,8 @@ static int tiadc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, indio_dev);
 
 	err = tiadc_request_dma(pdev, adc_dev);
-	if (err && err != -ENODEV) {
-		dev_err_probe(&pdev->dev, err, "DMA request failed\n");
+	if (err && err == -EPROBE_DEFER)
 		goto err_dma;
-	}
 
 	return 0;
 
@@ -680,7 +682,7 @@ err_dma:
 	return err;
 }
 
-static void tiadc_remove(struct platform_device *pdev)
+static int tiadc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct tiadc_device *adc_dev = iio_priv(indio_dev);
@@ -696,6 +698,8 @@ static void tiadc_remove(struct platform_device *pdev)
 
 	step_en = get_adc_step_mask(adc_dev);
 	am335x_tsc_se_clr(adc_dev->mfd_tscadc, step_en);
+
+	return 0;
 }
 
 static int tiadc_suspend(struct device *dev)
@@ -739,12 +743,12 @@ MODULE_DEVICE_TABLE(of, ti_adc_dt_ids);
 
 static struct platform_driver tiadc_driver = {
 	.driver = {
-		.name = "TI-am335x-adc",
-		.pm = pm_sleep_ptr(&tiadc_pm_ops),
+		.name   = "TI-am335x-adc",
+		.pm	= pm_sleep_ptr(&tiadc_pm_ops),
 		.of_match_table = ti_adc_dt_ids,
 	},
-	.probe = tiadc_probe,
-	.remove = tiadc_remove,
+	.probe	= tiadc_probe,
+	.remove	= tiadc_remove,
 };
 module_platform_driver(tiadc_driver);
 

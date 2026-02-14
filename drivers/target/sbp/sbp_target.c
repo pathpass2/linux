@@ -5,7 +5,8 @@
  * Copyright (C) 2011  Chris Boot <bootc@bootc.net>
  */
 
-#define pr_fmt(fmt) "sbp_target: " fmt
+#define KMSG_COMPONENT "sbp_target"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -22,7 +23,7 @@
 #include <target/target_core_base.h>
 #include <target/target_core_backend.h>
 #include <target/target_core_fabric.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "sbp_target.h"
 
@@ -729,7 +730,7 @@ static int tgt_agent_rw_orb_pointer(struct fw_card *card, int tcode, void *data,
 		pr_debug("tgt_agent ORB_POINTER write: 0x%llx\n",
 				agent->orb_pointer);
 
-		queue_work(system_dfl_wq, &agent->work);
+		queue_work(system_unbound_wq, &agent->work);
 
 		return RCODE_COMPLETE;
 
@@ -763,7 +764,7 @@ static int tgt_agent_rw_doorbell(struct fw_card *card, int tcode, void *data,
 
 		pr_debug("tgt_agent DOORBELL\n");
 
-		queue_work(system_dfl_wq, &agent->work);
+		queue_work(system_unbound_wq, &agent->work);
 
 		return RCODE_COMPLETE;
 
@@ -989,7 +990,7 @@ static void tgt_agent_fetch_work(struct work_struct *work)
 
 		if (tgt_agent_check_active(agent) && !doorbell) {
 			INIT_WORK(&req->work, tgt_agent_process_work);
-			queue_work(system_dfl_wq, &req->work);
+			queue_work(system_unbound_wq, &req->work);
 		} else {
 			/* don't process this request, just check next_ORB */
 			sbp_free_request(req);
@@ -1617,7 +1618,7 @@ static void sbp_mgt_agent_rw(struct fw_card *card,
 		agent->orb_offset = sbp2_pointer_to_addr(ptr);
 		agent->request = req;
 
-		queue_work(system_dfl_wq, &agent->work);
+		queue_work(system_unbound_wq, &agent->work);
 		rcode = RCODE_COMPLETE;
 	} else if (tcode == TCODE_READ_BLOCK_REQUEST) {
 		addr_to_sbp2_pointer(agent->orb_offset, ptr);
@@ -1672,6 +1673,11 @@ static int sbp_check_true(struct se_portal_group *se_tpg)
 	return 1;
 }
 
+static int sbp_check_false(struct se_portal_group *se_tpg)
+{
+	return 0;
+}
+
 static char *sbp_get_fabric_wwn(struct se_portal_group *se_tpg)
 {
 	struct sbp_tpg *tpg = container_of(se_tpg, struct sbp_tpg, se_tpg);
@@ -1686,12 +1692,22 @@ static u16 sbp_get_tag(struct se_portal_group *se_tpg)
 	return tpg->tport_tpgt;
 }
 
+static u32 sbp_tpg_get_inst_index(struct se_portal_group *se_tpg)
+{
+	return 1;
+}
+
 static void sbp_release_cmd(struct se_cmd *se_cmd)
 {
 	struct sbp_target_request *req = container_of(se_cmd,
 			struct sbp_target_request, se_cmd);
 
 	sbp_free_request(req);
+}
+
+static u32 sbp_sess_get_index(struct se_session *se_sess)
+{
+	return 0;
 }
 
 static int sbp_write_pending(struct se_cmd *se_cmd)
@@ -1714,6 +1730,16 @@ static int sbp_write_pending(struct se_cmd *se_cmd)
 	}
 
 	target_execute_cmd(se_cmd);
+	return 0;
+}
+
+static void sbp_set_default_node_attrs(struct se_node_acl *nacl)
+{
+	return;
+}
+
+static int sbp_get_cmd_state(struct se_cmd *se_cmd)
+{
 	return 0;
 }
 
@@ -1960,12 +1986,12 @@ static struct se_portal_group *sbp_make_tpg(struct se_wwn *wwn,
 		container_of(wwn, struct sbp_tport, tport_wwn);
 
 	struct sbp_tpg *tpg;
-	u16 tpgt;
+	unsigned long tpgt;
 	int ret;
 
 	if (strstr(name, "tpgt_") != name)
 		return ERR_PTR(-EINVAL);
-	if (kstrtou16(name + 5, 10, &tpgt))
+	if (kstrtoul(name + 5, 10, &tpgt) || tpgt > UINT_MAX)
 		return ERR_PTR(-EINVAL);
 
 	if (tport->tpg) {
@@ -2255,8 +2281,14 @@ static const struct target_core_fabric_ops sbp_ops = {
 	.tpg_get_tag			= sbp_get_tag,
 	.tpg_check_demo_mode		= sbp_check_true,
 	.tpg_check_demo_mode_cache	= sbp_check_true,
+	.tpg_check_demo_mode_write_protect = sbp_check_false,
+	.tpg_check_prod_mode_write_protect = sbp_check_false,
+	.tpg_get_inst_index		= sbp_tpg_get_inst_index,
 	.release_cmd			= sbp_release_cmd,
+	.sess_get_index			= sbp_sess_get_index,
 	.write_pending			= sbp_write_pending,
+	.set_default_node_attributes	= sbp_set_default_node_attrs,
+	.get_cmd_state			= sbp_get_cmd_state,
 	.queue_data_in			= sbp_queue_data_in,
 	.queue_status			= sbp_queue_status,
 	.queue_tm_rsp			= sbp_queue_tm_rsp,
@@ -2277,9 +2309,6 @@ static const struct target_core_fabric_ops sbp_ops = {
 	.tfc_wwn_attrs			= sbp_wwn_attrs,
 	.tfc_tpg_base_attrs		= sbp_tpg_base_attrs,
 	.tfc_tpg_attrib_attrs		= sbp_tpg_attrib_attrs,
-
-	.default_submit_type		= TARGET_DIRECT_SUBMIT,
-	.direct_submit_supp		= 1,
 };
 
 static int __init sbp_init(void)

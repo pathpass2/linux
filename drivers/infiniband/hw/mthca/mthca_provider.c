@@ -53,8 +53,8 @@
 static int mthca_query_device(struct ib_device *ibdev, struct ib_device_attr *props,
 			      struct ib_udata *uhw)
 {
-	struct ib_smp *in_mad;
-	struct ib_smp *out_mad;
+	struct ib_smp *in_mad  = NULL;
+	struct ib_smp *out_mad = NULL;
 	int err = -ENOMEM;
 	struct mthca_dev *mdev = to_mdev(ibdev);
 
@@ -121,8 +121,8 @@ static int mthca_query_device(struct ib_device *ibdev, struct ib_device_attr *pr
 static int mthca_query_port(struct ib_device *ibdev,
 			    u32 port, struct ib_port_attr *props)
 {
-	struct ib_smp *in_mad;
-	struct ib_smp *out_mad;
+	struct ib_smp *in_mad  = NULL;
+	struct ib_smp *out_mad = NULL;
 	int err = -ENOMEM;
 
 	in_mad  = kzalloc(sizeof *in_mad, GFP_KERNEL);
@@ -217,8 +217,8 @@ out:
 static int mthca_query_pkey(struct ib_device *ibdev,
 			    u32 port, u16 index, u16 *pkey)
 {
-	struct ib_smp *in_mad;
-	struct ib_smp *out_mad;
+	struct ib_smp *in_mad  = NULL;
+	struct ib_smp *out_mad = NULL;
 	int err = -ENOMEM;
 
 	in_mad  = kzalloc(sizeof *in_mad, GFP_KERNEL);
@@ -246,8 +246,8 @@ static int mthca_query_pkey(struct ib_device *ibdev,
 static int mthca_query_gid(struct ib_device *ibdev, u32 port,
 			   int index, union ib_gid *gid)
 {
-	struct ib_smp *in_mad;
-	struct ib_smp *out_mad;
+	struct ib_smp *in_mad  = NULL;
+	struct ib_smp *out_mad = NULL;
 	int err = -ENOMEM;
 
 	in_mad  = kzalloc(sizeof *in_mad, GFP_KERNEL);
@@ -574,9 +574,8 @@ static int mthca_destroy_qp(struct ib_qp *qp, struct ib_udata *udata)
 
 static int mthca_create_cq(struct ib_cq *ibcq,
 			   const struct ib_cq_init_attr *attr,
-			   struct uverbs_attr_bundle *attrs)
+			   struct ib_udata *udata)
 {
-	struct ib_udata *udata = &attrs->driver_udata;
 	struct ib_device *ibdev = ibcq->device;
 	int entries = attr->cqe;
 	struct mthca_create_cq ucmd;
@@ -825,8 +824,7 @@ static struct ib_mr *mthca_get_dma_mr(struct ib_pd *pd, int acc)
 }
 
 static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
-				       u64 virt, int acc, struct ib_dmah *dmah,
-				       struct ib_udata *udata)
+				       u64 virt, int acc, struct ib_udata *udata)
 {
 	struct mthca_dev *dev = to_mdev(pd->device);
 	struct ib_block_iter biter;
@@ -838,9 +836,6 @@ static struct ib_mr *mthca_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	int n, i;
 	int err = 0;
 	int write_mtt_size;
-
-	if (dmah)
-		return ERR_PTR(-EOPNOTSUPP);
 
 	if (udata->inlen < sizeof ucmd) {
 		if (!context->reg_mr_warned) {
@@ -994,8 +989,8 @@ static const struct attribute_group mthca_attr_group = {
 
 static int mthca_init_node_data(struct mthca_dev *dev)
 {
-	struct ib_smp *in_mad;
-	struct ib_smp *out_mad;
+	struct ib_smp *in_mad  = NULL;
+	struct ib_smp *out_mad = NULL;
 	int err = -ENOMEM;
 
 	in_mad  = kzalloc(sizeof *in_mad, GFP_KERNEL);

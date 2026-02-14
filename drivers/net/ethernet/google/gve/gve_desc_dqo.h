@@ -236,8 +236,7 @@ struct gve_rx_compl_desc_dqo {
 
 	u8 status_error1;
 
-	u8 reserved5;
-	u8 ts_sub_nsecs_low;
+	__le16 reserved5;
 	__le16 buf_id; /* Buffer ID which was sent on the buffer queue. */
 
 	union {
@@ -248,8 +247,7 @@ struct gve_rx_compl_desc_dqo {
 	};
 	__le32 hash;
 	__le32 reserved6;
-	__le32 reserved7;
-	__le32 ts; /* timestamp in nanosecs */
+	__le64 reserved7;
 } __packed;
 
 static_assert(sizeof(struct gve_rx_compl_desc_dqo) == 32);

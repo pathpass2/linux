@@ -493,7 +493,7 @@ static const struct i2c_algorithm smbus_algorithm = {
 
 static struct i2c_adapter sis630_adapter = {
 	.owner		= THIS_MODULE,
-	.class		= I2C_CLASS_HWMON,
+	.class		= I2C_CLASS_HWMON | I2C_CLASS_SPD,
 	.algo		= &smbus_algorithm,
 	.retries	= 3
 };
@@ -509,8 +509,6 @@ MODULE_DEVICE_TABLE(pci, sis630_ids);
 
 static int sis630_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
-	int ret;
-
 	if (sis630_setup(dev)) {
 		dev_err(&dev->dev,
 			"SIS630 compatible bus not detected, "
@@ -524,15 +522,7 @@ static int sis630_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	snprintf(sis630_adapter.name, sizeof(sis630_adapter.name),
 		 "SMBus SIS630 adapter at %04x", smbus_base + SMB_STS);
 
-	ret = i2c_add_adapter(&sis630_adapter);
-	if (ret)
-		goto release_region;
-
-	return 0;
-
-release_region:
-	release_region(smbus_base + SMB_STS, SIS630_SMB_IOREGION);
-	return ret;
+	return i2c_add_adapter(&sis630_adapter);
 }
 
 static void sis630_remove(struct pci_dev *dev)

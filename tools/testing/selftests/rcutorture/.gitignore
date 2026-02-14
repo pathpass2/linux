@@ -3,4 +3,3 @@ initrd
 b[0-9]*
 res
 *.swp
-.kvm.sh.lock

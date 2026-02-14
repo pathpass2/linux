@@ -6,7 +6,7 @@
 #include <linux/clk-provider.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #include "ccu_common.h"
@@ -876,7 +876,7 @@ static struct clk_hw_onecell_data sun50i_h5_hw_clks = {
 	.num	= CLK_NUMBER_H5,
 };
 
-static const struct ccu_reset_map sun8i_h3_ccu_resets[] = {
+static struct ccu_reset_map sun8i_h3_ccu_resets[] = {
 	[RST_USB_PHY0]		=  { 0x0cc, BIT(0) },
 	[RST_USB_PHY1]		=  { 0x0cc, BIT(1) },
 	[RST_USB_PHY2]		=  { 0x0cc, BIT(2) },
@@ -939,7 +939,7 @@ static const struct ccu_reset_map sun8i_h3_ccu_resets[] = {
 	[RST_BUS_SCR0]		=  { 0x2d8, BIT(20) },
 };
 
-static const struct ccu_reset_map sun50i_h5_ccu_resets[] = {
+static struct ccu_reset_map sun50i_h5_ccu_resets[] = {
 	[RST_USB_PHY0]		=  { 0x0cc, BIT(0) },
 	[RST_USB_PHY1]		=  { 0x0cc, BIT(1) },
 	[RST_USB_PHY2]		=  { 0x0cc, BIT(2) },
@@ -1082,7 +1082,6 @@ static const struct of_device_id sun8i_h3_ccu_ids[] = {
 	},
 	{ }
 };
-MODULE_DEVICE_TABLE(of, sun8i_h3_ccu_ids);
 
 static struct platform_driver sun8i_h3_ccu_driver = {
 	.probe	= sun8i_h3_ccu_probe,
@@ -1094,6 +1093,5 @@ static struct platform_driver sun8i_h3_ccu_driver = {
 };
 module_platform_driver(sun8i_h3_ccu_driver);
 
-MODULE_IMPORT_NS("SUNXI_CCU");
-MODULE_DESCRIPTION("Support for the Allwinner H3 CCU");
+MODULE_IMPORT_NS(SUNXI_CCU);
 MODULE_LICENSE("GPL");

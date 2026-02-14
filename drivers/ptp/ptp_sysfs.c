@@ -18,22 +18,12 @@ static ssize_t clock_name_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(clock_name);
 
-static ssize_t max_phase_adjustment_show(struct device *dev,
-					 struct device_attribute *attr,
-					 char *page)
-{
-	struct ptp_clock *ptp = dev_get_drvdata(dev);
-
-	return sysfs_emit(page, "%d\n", ptp->info->getmaxphase(ptp->info));
-}
-static DEVICE_ATTR_RO(max_phase_adjustment);
-
 #define PTP_SHOW_INT(name, var)						\
 static ssize_t var##_show(struct device *dev,				\
 			   struct device_attribute *attr, char *page)	\
 {									\
 	struct ptp_clock *ptp = dev_get_drvdata(dev);			\
-	return sysfs_emit(page, "%d\n", ptp->info->var);	\
+	return snprintf(page, PAGE_SIZE-1, "%d\n", ptp->info->var);	\
 }									\
 static DEVICE_ATTR(name, 0444, var##_show, NULL);
 
@@ -74,36 +64,32 @@ static ssize_t extts_fifo_show(struct device *dev,
 			       struct device_attribute *attr, char *page)
 {
 	struct ptp_clock *ptp = dev_get_drvdata(dev);
-	struct timestamp_event_queue *queue;
+	struct timestamp_event_queue *queue = &ptp->tsevq;
 	struct ptp_extts_event event;
 	unsigned long flags;
 	size_t qcnt;
 	int cnt = 0;
 
-	cnt = list_count_nodes(&ptp->tsevqs);
-	if (cnt <= 0)
-		goto out;
-
-	/* The sysfs fifo will always draw from the fist queue */
-	queue = list_first_entry(&ptp->tsevqs, struct timestamp_event_queue,
-				 qlist);
-
 	memset(&event, 0, sizeof(event));
+
+	if (mutex_lock_interruptible(&ptp->tsevq_mux))
+		return -ERESTARTSYS;
+
 	spin_lock_irqsave(&queue->lock, flags);
 	qcnt = queue_cnt(queue);
 	if (qcnt) {
 		event = queue->buf[queue->head];
-		/* Paired with READ_ONCE() in queue_cnt() */
-		WRITE_ONCE(queue->head, (queue->head + 1) % PTP_MAX_TIMESTAMPS);
+		queue->head = (queue->head + 1) % PTP_MAX_TIMESTAMPS;
 	}
 	spin_unlock_irqrestore(&queue->lock, flags);
 
 	if (!qcnt)
 		goto out;
 
-	cnt = sysfs_emit(page, "%u %lld %u\n",
-			 event.index, event.t.sec, event.t.nsec);
+	cnt = snprintf(page, PAGE_SIZE, "%u %lld %u\n",
+		       event.index, event.t.sec, event.t.nsec);
 out:
+	mutex_unlock(&ptp->tsevq_mux);
 	return cnt;
 }
 static DEVICE_ATTR(fifo, 0444, extts_fifo_show, NULL);
@@ -193,7 +179,7 @@ static ssize_t n_vclocks_show(struct device *dev,
 	if (mutex_lock_interruptible(&ptp->n_vclocks_mux))
 		return -ERESTARTSYS;
 
-	size = sysfs_emit(page, "%u\n", ptp->n_vclocks);
+	size = snprintf(page, PAGE_SIZE - 1, "%u\n", ptp->n_vclocks);
 
 	mutex_unlock(&ptp->n_vclocks_mux);
 
@@ -269,7 +255,7 @@ static ssize_t max_vclocks_show(struct device *dev,
 	struct ptp_clock *ptp = dev_get_drvdata(dev);
 	ssize_t size;
 
-	size = sysfs_emit(page, "%u\n", ptp->max_vclocks);
+	size = snprintf(page, PAGE_SIZE - 1, "%u\n", ptp->max_vclocks);
 
 	return size;
 }
@@ -284,7 +270,7 @@ static ssize_t max_vclocks_store(struct device *dev,
 	size_t size;
 	u32 max;
 
-	if (kstrtou32(buf, 0, &max) || max == 0 || max > PTP_MAX_VCLOCKS_LIMIT)
+	if (kstrtou32(buf, 0, &max) || max == 0)
 		return -EINVAL;
 
 	if (max == ptp->max_vclocks)
@@ -296,7 +282,8 @@ static ssize_t max_vclocks_store(struct device *dev,
 	if (max < ptp->n_vclocks)
 		goto out;
 
-	vclock_index = kcalloc(max, sizeof(int), GFP_KERNEL);
+	size = sizeof(int) * max;
+	vclock_index = kzalloc(size, GFP_KERNEL);
 	if (!vclock_index) {
 		err = -ENOMEM;
 		goto out;
@@ -322,7 +309,6 @@ static struct attribute *ptp_attrs[] = {
 	&dev_attr_clock_name.attr,
 
 	&dev_attr_max_adjustment.attr,
-	&dev_attr_max_phase_adjustment.attr,
 	&dev_attr_n_alarms.attr,
 	&dev_attr_n_external_timestamps.attr,
 	&dev_attr_n_periodic_outputs.attr,
@@ -359,9 +345,6 @@ static umode_t ptp_is_attribute_visible(struct kobject *kobj,
 	} else if (attr == &dev_attr_n_vclocks.attr ||
 		   attr == &dev_attr_max_vclocks.attr) {
 		if (ptp->is_virtual_clock)
-			mode = 0;
-	} else if (attr == &dev_attr_max_phase_adjustment.attr) {
-		if (!info->adjphase || !info->getmaxphase)
 			mode = 0;
 	}
 

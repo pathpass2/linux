@@ -6,6 +6,8 @@
  * Author: Megha Dey <megha.dey@linux.intel.com>
  */
 
+#ifdef CONFIG_AS_AVX512
+
 #include <linux/raid/pq.h>
 #include "x86.h"
 
@@ -37,10 +39,10 @@ static void raid6_2data_recov_avx512(int disks, size_t bytes, int faila,
 	 */
 
 	dp = (u8 *)ptrs[faila];
-	ptrs[faila] = raid6_get_zero_page();
+	ptrs[faila] = (void *)raid6_empty_zero_page;
 	ptrs[disks-2] = dp;
 	dq = (u8 *)ptrs[failb];
-	ptrs[failb] = raid6_get_zero_page();
+	ptrs[failb] = (void *)raid6_empty_zero_page;
 	ptrs[disks-1] = dq;
 
 	raid6_call.gen_syndrome(disks, bytes, ptrs);
@@ -238,7 +240,7 @@ static void raid6_datap_recov_avx512(int disks, size_t bytes, int faila,
 	 */
 
 	dq = (u8 *)ptrs[faila];
-	ptrs[faila] = raid6_get_zero_page();
+	ptrs[faila] = (void *)raid6_empty_zero_page;
 	ptrs[disks-1] = dq;
 
 	raid6_call.gen_syndrome(disks, bytes, ptrs);
@@ -375,3 +377,7 @@ const struct raid6_recov_calls raid6_recov_avx512 = {
 #endif
 	.priority = 3,
 };
+
+#else
+#warning "your version of binutils lacks AVX512 support"
+#endif

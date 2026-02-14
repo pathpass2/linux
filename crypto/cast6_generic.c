@@ -10,7 +10,7 @@
  */
 
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <crypto/algapi.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -271,7 +271,7 @@ static void __exit cast6_mod_fini(void)
 	crypto_unregister_alg(&alg);
 }
 
-module_init(cast6_mod_init);
+subsys_initcall(cast6_mod_init);
 module_exit(cast6_mod_fini);
 
 MODULE_LICENSE("GPL");

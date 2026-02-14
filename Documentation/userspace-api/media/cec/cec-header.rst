@@ -2,12 +2,9 @@
 
 .. _cec_header:
 
-****************
-CEC uAPI Symbols
-****************
+***************
+CEC Header File
+***************
 
-.. kernel-include:: include/uapi/linux/cec.h
-    :generate-cross-refs:
-    :exception-file: cec.h.rst.exceptions
-    :toc:
-    :warn-broken:
+.. kernel-include:: $BUILDDIR/cec.h.rst
+

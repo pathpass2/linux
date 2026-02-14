@@ -13,7 +13,6 @@
 #include <linux/kdebug.h>
 #include <linux/perf_event.h>
 #include <linux/mm_types.h>
-#include <asm/entry.h>
 #include <asm/mmu.h>
 
 /*
@@ -100,10 +99,10 @@ void do_page_fault(unsigned long address, struct pt_regs *regs)
 	if (faulthandler_disabled() || !mm)
 		goto no_context;
 
-	if (regs->ecr.cause & ECR_C_PROTV_STORE)	/* ST/EX */
+	if (regs->ecr_cause & ECR_C_PROTV_STORE)	/* ST/EX */
 		write = 1;
-	else if ((regs->ecr.vec == ECR_V_PROTV) &&
-	         (regs->ecr.cause == ECR_C_PROTV_INST_FETCH))
+	else if ((regs->ecr_vec == ECR_V_PROTV) &&
+	         (regs->ecr_cause == ECR_C_PROTV_INST_FETCH))
 		exec = 1;
 
 	flags = FAULT_FLAG_DEFAULT;
@@ -114,9 +113,15 @@ void do_page_fault(unsigned long address, struct pt_regs *regs)
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
 retry:
-	vma = lock_mm_and_find_vma(mm, address, regs);
+	mmap_read_lock(mm);
+
+	vma = find_vma(mm, address);
 	if (!vma)
-		goto bad_area_nosemaphore;
+		goto bad_area;
+	if (unlikely(address < vma->vm_start)) {
+		if (!(vma->vm_flags & VM_GROWSDOWN) || expand_stack(vma, address))
+			goto bad_area;
+	}
 
 	/*
 	 * vm_area is good, now check permissions for this memory access
@@ -156,7 +161,6 @@ retry:
 bad_area:
 	mmap_read_unlock(mm);
 
-bad_area_nosemaphore:
 	/*
 	 * Major/minor page fault accounting
 	 * (in case of retry we only land here once)

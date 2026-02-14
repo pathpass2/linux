@@ -332,13 +332,16 @@ unsigned int snd_ca0106_ptr_read(struct snd_ca0106 * emu,
 					  unsigned int reg, 
 					  unsigned int chn)
 {
-	unsigned int regptr;
+	unsigned long flags;
+	unsigned int regptr, val;
   
 	regptr = (reg << 16) | chn;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outl(regptr, emu->port + CA0106_PTR);
-	return inl(emu->port + CA0106_DATA);
+	val = inl(emu->port + CA0106_DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	return val;
 }
 
 void snd_ca0106_ptr_write(struct snd_ca0106 *emu, 
@@ -347,12 +350,14 @@ void snd_ca0106_ptr_write(struct snd_ca0106 *emu,
 				   unsigned int data)
 {
 	unsigned int regptr;
+	unsigned long flags;
 
 	regptr = (reg << 16) | chn;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outl(regptr, emu->port + CA0106_PTR);
 	outl(data, emu->port + CA0106_DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 int snd_ca0106_spi_write(struct snd_ca0106 * emu,
@@ -446,20 +451,24 @@ int snd_ca0106_i2c_write(struct snd_ca0106 *emu,
 
 static void snd_ca0106_intr_enable(struct snd_ca0106 *emu, unsigned int intrenb)
 {
+	unsigned long flags;
 	unsigned int intr_enable;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	intr_enable = inl(emu->port + CA0106_INTE) | intrenb;
 	outl(intr_enable, emu->port + CA0106_INTE);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 static void snd_ca0106_intr_disable(struct snd_ca0106 *emu, unsigned int intrenb)
 {
+	unsigned long flags;
 	unsigned int intr_enable;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	intr_enable = inl(emu->port + CA0106_INTE) & ~intrenb;
 	outl(intr_enable, emu->port + CA0106_INTE);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 
@@ -1129,20 +1138,26 @@ static unsigned short snd_ca0106_ac97_read(struct snd_ac97 *ac97,
 					     unsigned short reg)
 {
 	struct snd_ca0106 *emu = ac97->private_data;
+	unsigned long flags;
+	unsigned short val;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outb(reg, emu->port + CA0106_AC97ADDRESS);
-	return inw(emu->port + CA0106_AC97DATA);
+	val = inw(emu->port + CA0106_AC97DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	return val;
 }
 
 static void snd_ca0106_ac97_write(struct snd_ac97 *ac97,
 				    unsigned short reg, unsigned short val)
 {
 	struct snd_ca0106 *emu = ac97->private_data;
+	unsigned long flags;
   
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outb(reg, emu->port + CA0106_AC97ADDRESS);
 	outw(val, emu->port + CA0106_AC97DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 static int snd_ca0106_ac97(struct snd_ca0106 *chip)
@@ -1300,7 +1315,7 @@ static int snd_ca0106_pcm(struct snd_ca0106 *emu, int device)
         }
 
 	pcm->info_flags = 0;
-	strscpy(pcm->name, "CA0106");
+	strcpy(pcm->name, "CA0106");
 
 	for(substream = pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream; 
 	    substream; 
@@ -1578,7 +1593,7 @@ static int snd_ca0106_create(int dev, struct snd_card *card,
 
 	spin_lock_init(&chip->emu_lock);
 
-	err = pcim_request_all_regions(pci, "snd_ca0106");
+	err = pci_request_regions(pci, "snd_ca0106");
 	if (err < 0)
 		return err;
 	chip->port = pci_resource_start(pci, 0);
@@ -1602,8 +1617,8 @@ static int snd_ca0106_create(int dev, struct snd_card *card,
 	pci_read_config_word(pci, PCI_SUBSYSTEM_ID, &chip->model);
 	dev_info(card->dev, "Model %04x Rev %08x Serial %08x\n",
 	       chip->model, pci->revision, chip->serial);
-	strscpy(card->driver, "CA0106");
-	strscpy(card->shortname, "CA0106");
+	strcpy(card->driver, "CA0106");
+	strcpy(card->shortname, "CA0106");
 
 	for (c = ca0106_chip_details; c->serial; c++) {
 		if (subsystem[dev]) {

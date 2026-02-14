@@ -563,5 +563,4 @@ static void __exit exit_nls_macgaelic(void)
 module_init(init_nls_macgaelic)
 module_exit(exit_nls_macgaelic)
 
-MODULE_DESCRIPTION("NLS Codepage macgaelic");
 MODULE_LICENSE("Dual BSD/GPL");

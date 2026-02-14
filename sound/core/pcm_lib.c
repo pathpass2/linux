@@ -33,25 +33,6 @@
 static int fill_silence_frames(struct snd_pcm_substream *substream,
 			       snd_pcm_uframes_t off, snd_pcm_uframes_t frames);
 
-
-static inline void update_silence_vars(struct snd_pcm_runtime *runtime,
-				       snd_pcm_uframes_t ptr,
-				       snd_pcm_uframes_t new_ptr)
-{
-	snd_pcm_sframes_t delta;
-
-	delta = new_ptr - ptr;
-	if (delta == 0)
-		return;
-	if (delta < 0)
-		delta += runtime->boundary;
-	if ((snd_pcm_uframes_t)delta < runtime->silence_filled)
-		runtime->silence_filled -= delta;
-	else
-		runtime->silence_filled = 0;
-	runtime->silence_start = new_ptr;
-}
-
 /*
  * fill ring buffer with silence
  * runtime->silence_start: starting pointer to silence area
@@ -68,69 +49,63 @@ void snd_pcm_playback_silence(struct snd_pcm_substream *substream, snd_pcm_ufram
 	int err;
 
 	if (runtime->silence_size < runtime->boundary) {
-		snd_pcm_sframes_t noise_dist;
+		snd_pcm_sframes_t noise_dist, n;
 		snd_pcm_uframes_t appl_ptr = READ_ONCE(runtime->control->appl_ptr);
-		update_silence_vars(runtime, runtime->silence_start, appl_ptr);
-		/* initialization outside pointer updates */
-		if (new_hw_ptr == ULONG_MAX)
-			new_hw_ptr = runtime->status->hw_ptr;
-		/* get hw_avail with the boundary crossing */
-		noise_dist = appl_ptr - new_hw_ptr;
-		if (noise_dist < 0)
-			noise_dist += runtime->boundary;
-		/* total noise distance */
-		noise_dist += runtime->silence_filled;
+		if (runtime->silence_start != appl_ptr) {
+			n = appl_ptr - runtime->silence_start;
+			if (n < 0)
+				n += runtime->boundary;
+			if ((snd_pcm_uframes_t)n < runtime->silence_filled)
+				runtime->silence_filled -= n;
+			else
+				runtime->silence_filled = 0;
+			runtime->silence_start = appl_ptr;
+		}
+		if (runtime->silence_filled >= runtime->buffer_size)
+			return;
+		noise_dist = snd_pcm_playback_hw_avail(runtime) + runtime->silence_filled;
 		if (noise_dist >= (snd_pcm_sframes_t) runtime->silence_threshold)
 			return;
 		frames = runtime->silence_threshold - noise_dist;
 		if (frames > runtime->silence_size)
 			frames = runtime->silence_size;
 	} else {
-		/*
-		 * This filling mode aims at free-running mode (used for example by dmix),
-		 * which doesn't update the application pointer.
-		 */
-		snd_pcm_uframes_t hw_ptr = runtime->status->hw_ptr;
-		if (new_hw_ptr == ULONG_MAX) {
-			/*
-			 * Initialization, fill the whole unused buffer with silence.
-			 *
-			 * Usually, this is entered while stopped, before data is queued,
-			 * so both pointers are expected to be zero.
-			 */
-			snd_pcm_sframes_t avail = runtime->control->appl_ptr - hw_ptr;
-			if (avail < 0)
-				avail += runtime->boundary;
-			/*
-			 * In free-running mode, appl_ptr will be zero even while running,
-			 * so we end up with a huge number. There is no useful way to
-			 * handle this, so we just clear the whole buffer.
-			 */
-			runtime->silence_filled = avail > runtime->buffer_size ? 0 : avail;
-			runtime->silence_start = hw_ptr;
+		if (new_hw_ptr == ULONG_MAX) {	/* initialization */
+			snd_pcm_sframes_t avail = snd_pcm_playback_hw_avail(runtime);
+			if (avail > runtime->buffer_size)
+				avail = runtime->buffer_size;
+			runtime->silence_filled = avail > 0 ? avail : 0;
+			runtime->silence_start = (runtime->status->hw_ptr +
+						  runtime->silence_filled) %
+						 runtime->boundary;
 		} else {
-			/* Silence the just played area immediately */
-			update_silence_vars(runtime, hw_ptr, new_hw_ptr);
+			ofs = runtime->status->hw_ptr;
+			frames = new_hw_ptr - ofs;
+			if ((snd_pcm_sframes_t)frames < 0)
+				frames += runtime->boundary;
+			runtime->silence_filled -= frames;
+			if ((snd_pcm_sframes_t)runtime->silence_filled < 0) {
+				runtime->silence_filled = 0;
+				runtime->silence_start = new_hw_ptr;
+			} else {
+				runtime->silence_start = ofs;
+			}
 		}
-		/*
-		 * In this mode, silence_filled actually includes the valid
-		 * sample data from the user.
-		 */
 		frames = runtime->buffer_size - runtime->silence_filled;
 	}
 	if (snd_BUG_ON(frames > runtime->buffer_size))
 		return;
 	if (frames == 0)
 		return;
-	ofs = (runtime->silence_start + runtime->silence_filled) % runtime->buffer_size;
-	do {
+	ofs = runtime->silence_start % runtime->buffer_size;
+	while (frames > 0) {
 		transfer = ofs + frames > runtime->buffer_size ? runtime->buffer_size - ofs : frames;
 		err = fill_silence_frames(substream, ofs, transfer);
 		snd_BUG_ON(err < 0);
 		runtime->silence_filled += transfer;
 		frames -= transfer;
 		ofs = 0;
-	} while (frames > 0);
+	}
 	snd_pcm_dma_buffer_sync(substream, SNDRV_DMA_SYNC_DEVICE);
 }
 
@@ -184,9 +159,6 @@ void __snd_pcm_xrun(struct snd_pcm_substream *substream)
 		pcm_warn(substream->pcm, "XRUN: %s\n", name);
 		dump_stack_on_xrun(substream);
 	}
-#ifdef CONFIG_SND_PCM_XRUN_DEBUG
-	substream->xrun_counter++;
-#endif
 }
 
 #ifdef CONFIG_SND_PCM_XRUN_DEBUG
@@ -519,38 +491,21 @@ void snd_pcm_set_ops(struct snd_pcm *pcm, int direction,
 EXPORT_SYMBOL(snd_pcm_set_ops);
 
 /**
- * snd_pcm_set_sync_per_card - set the PCM sync id with card number
+ * snd_pcm_set_sync - set the PCM sync id
  * @substream: the pcm substream
- * @params: modified hardware parameters
- * @id: identifier (max 12 bytes)
- * @len: identifier length (max 12 bytes)
  *
- * Sets the PCM sync identifier for the card with zero padding.
- *
- * User space or any user should use this 16-byte identifier for a comparison only
- * to check if two IDs are similar or different. Special case is the identifier
- * containing only zeros. Interpretation for this combination is - empty (not set).
- * The contents of the identifier should not be interpreted in any other way.
- *
- * The synchronization ID must be unique per clock source (usually one sound card,
- * but multiple soundcard may use one PCM word clock source which means that they
- * are fully synchronized).
- *
- * This routine composes this ID using card number in first four bytes and
- * 12-byte additional ID. When other ID composition is used (e.g. for multiple
- * sound cards), make sure that the composition does not clash with this
- * composition scheme.
+ * Sets the PCM sync identifier for the card.
  */
-void snd_pcm_set_sync_per_card(struct snd_pcm_substream *substream,
-			       struct snd_pcm_hw_params *params,
-			       const unsigned char *id, unsigned int len)
+void snd_pcm_set_sync(struct snd_pcm_substream *substream)
 {
-	*(__u32 *)params->sync = cpu_to_le32(substream->pcm->card->number);
-	len = min(12, len);
-	memcpy(params->sync + 4, id, len);
-	memset(params->sync + 4 + len, 0, 12 - len);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	
+	runtime->sync.id32[0] = substream->pcm->card->number;
+	runtime->sync.id32[1] = -1;
+	runtime->sync.id32[2] = -1;
+	runtime->sync.id32[3] = -1;
 }
-EXPORT_SYMBOL_GPL(snd_pcm_set_sync_per_card);
+EXPORT_SYMBOL(snd_pcm_set_sync);
 
 /*
  *  Standard ioctl routine
@@ -1726,46 +1681,12 @@ int snd_pcm_hw_param_last(struct snd_pcm_substream *pcm,
 }
 EXPORT_SYMBOL(snd_pcm_hw_param_last);
 
-/**
- * snd_pcm_hw_params_bits - Get the number of bits per the sample.
- * @p: hardware parameters
- *
- * Return: The number of bits per sample based on the format,
- * subformat and msbits the specified hw params has.
- */
-int snd_pcm_hw_params_bits(const struct snd_pcm_hw_params *p)
-{
-	snd_pcm_subformat_t subformat = params_subformat(p);
-	snd_pcm_format_t format = params_format(p);
-
-	switch (format) {
-	case SNDRV_PCM_FORMAT_S32_LE:
-	case SNDRV_PCM_FORMAT_U32_LE:
-	case SNDRV_PCM_FORMAT_S32_BE:
-	case SNDRV_PCM_FORMAT_U32_BE:
-		switch (subformat) {
-		case SNDRV_PCM_SUBFORMAT_MSBITS_20:
-			return 20;
-		case SNDRV_PCM_SUBFORMAT_MSBITS_24:
-			return 24;
-		case SNDRV_PCM_SUBFORMAT_MSBITS_MAX:
-		case SNDRV_PCM_SUBFORMAT_STD:
-		default:
-			break;
-		}
-		fallthrough;
-	default:
-		return snd_pcm_format_width(format);
-	}
-}
-EXPORT_SYMBOL(snd_pcm_hw_params_bits);
-
 static int snd_pcm_lib_ioctl_reset(struct snd_pcm_substream *substream,
 				   void *arg)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-
-	guard(pcm_stream_lock_irqsave)(substream);
+	unsigned long flags;
+	snd_pcm_stream_lock_irqsave(substream, flags);
 	if (snd_pcm_running(substream) &&
 	    snd_pcm_update_hw_ptr(substream) >= 0)
 		runtime->status->hw_ptr %= runtime->buffer_size;
@@ -1773,6 +1694,7 @@ static int snd_pcm_lib_ioctl_reset(struct snd_pcm_substream *substream,
 		runtime->status->hw_ptr = 0;
 		runtime->hw_ptr_wrap = 0;
 	}
+	snd_pcm_stream_unlock_irqrestore(substream, flags);
 	return 0;
 }
 
@@ -1830,18 +1752,6 @@ static int snd_pcm_lib_ioctl_fifo_size(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int snd_pcm_lib_ioctl_sync_id(struct snd_pcm_substream *substream,
-				     void *arg)
-{
-	static const unsigned char id[12] = { 0xff, 0xff, 0xff, 0xff,
-					      0xff, 0xff, 0xff, 0xff,
-					      0xff, 0xff, 0xff, 0xff };
-
-	if (substream->runtime->std_sync_id)
-		snd_pcm_set_sync_per_card(substream, arg, id, sizeof(id));
-	return 0;
-}
-
 /**
  * snd_pcm_lib_ioctl - a generic PCM ioctl callback
  * @substream: the pcm substream instance
@@ -1863,8 +1773,6 @@ int snd_pcm_lib_ioctl(struct snd_pcm_substream *substream,
 		return snd_pcm_lib_ioctl_channel_info(substream, arg);
 	case SNDRV_PCM_IOCTL1_FIFO_SIZE:
 		return snd_pcm_lib_ioctl_fifo_size(substream, arg);
-	case SNDRV_PCM_IOCTL1_SYNC_ID:
-		return snd_pcm_lib_ioctl_sync_id(substream, arg);
 	}
 	return -ENXIO;
 }
@@ -1932,11 +1840,14 @@ EXPORT_SYMBOL(snd_pcm_period_elapsed_under_stream_lock);
  */
 void snd_pcm_period_elapsed(struct snd_pcm_substream *substream)
 {
+	unsigned long flags;
+
 	if (snd_BUG_ON(!substream))
 		return;
 
-	guard(pcm_stream_lock_irqsave)(substream);
+	snd_pcm_stream_lock_irqsave(substream, flags);
 	snd_pcm_period_elapsed_under_stream_lock(substream);
+	snd_pcm_stream_unlock_irqrestore(substream, flags);
 }
 EXPORT_SYMBOL(snd_pcm_period_elapsed);
 
@@ -1967,14 +1878,15 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 		if (substream->wait_time) {
 			wait_time = substream->wait_time;
 		} else {
-			wait_time = 100;
+			wait_time = 10;
 
 			if (runtime->rate) {
-				long t = runtime->buffer_size * 1100 / runtime->rate;
+				long t = runtime->period_size * 2 /
+					 runtime->rate;
 				wait_time = max(t, wait_time);
 			}
+			wait_time = msecs_to_jiffies(wait_time * 1000);
 		}
-		wait_time = msecs_to_jiffies(wait_time);
 	}
 
 	for (;;) {
@@ -2022,8 +1934,8 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 		}
 		if (!tout) {
 			pcm_dbg(substream->pcm,
-				"%s timeout (DMA or IRQ trouble?)\n",
-				is_playback ? "playback write" : "capture read");
+				"%s write error (DMA or IRQ trouble?)\n",
+				is_playback ? "playback" : "capture");
 			err = -EIO;
 			break;
 		}
@@ -2037,11 +1949,10 @@ static int wait_for_avail(struct snd_pcm_substream *substream,
 	
 typedef int (*pcm_transfer_f)(struct snd_pcm_substream *substream,
 			      int channel, unsigned long hwoff,
-			      struct iov_iter *iter, unsigned long bytes);
+			      void *buf, unsigned long bytes);
 
 typedef int (*pcm_copy_f)(struct snd_pcm_substream *, snd_pcm_uframes_t, void *,
-			  snd_pcm_uframes_t, snd_pcm_uframes_t, pcm_transfer_f,
-			  bool);
+			  snd_pcm_uframes_t, snd_pcm_uframes_t, pcm_transfer_f);
 
 /* calculate the target DMA-buffer position to be written/read */
 static void *get_dma_ptr(struct snd_pcm_runtime *runtime,
@@ -2051,14 +1962,23 @@ static void *get_dma_ptr(struct snd_pcm_runtime *runtime,
 		channel * (runtime->dma_bytes / runtime->channels);
 }
 
-/* default copy ops for write; used for both interleaved and non- modes */
+/* default copy_user ops for write; used for both interleaved and non- modes */
 static int default_write_copy(struct snd_pcm_substream *substream,
 			      int channel, unsigned long hwoff,
-			      struct iov_iter *iter, unsigned long bytes)
+			      void *buf, unsigned long bytes)
 {
-	if (copy_from_iter(get_dma_ptr(substream->runtime, channel, hwoff),
-			   bytes, iter) != bytes)
+	if (copy_from_user(get_dma_ptr(substream->runtime, channel, hwoff),
+			   (void __user *)buf, bytes))
 		return -EFAULT;
+	return 0;
+}
+
+/* default copy_kernel ops for write */
+static int default_write_copy_kernel(struct snd_pcm_substream *substream,
+				     int channel, unsigned long hwoff,
+				     void *buf, unsigned long bytes)
+{
+	memcpy(get_dma_ptr(substream->runtime, channel, hwoff), buf, bytes);
 	return 0;
 }
 
@@ -2067,8 +1987,7 @@ static int default_write_copy(struct snd_pcm_substream *substream,
  * a NULL buffer is passed
  */
 static int fill_silence(struct snd_pcm_substream *substream, int channel,
-			unsigned long hwoff, struct iov_iter *iter,
-			unsigned long bytes)
+			unsigned long hwoff, void *buf, unsigned long bytes)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
@@ -2084,41 +2003,25 @@ static int fill_silence(struct snd_pcm_substream *substream, int channel,
 	return 0;
 }
 
-/* default copy ops for read; used for both interleaved and non- modes */
+/* default copy_user ops for read; used for both interleaved and non- modes */
 static int default_read_copy(struct snd_pcm_substream *substream,
 			     int channel, unsigned long hwoff,
-			     struct iov_iter *iter, unsigned long bytes)
+			     void *buf, unsigned long bytes)
 {
-	if (copy_to_iter(get_dma_ptr(substream->runtime, channel, hwoff),
-			 bytes, iter) != bytes)
+	if (copy_to_user((void __user *)buf,
+			 get_dma_ptr(substream->runtime, channel, hwoff),
+			 bytes))
 		return -EFAULT;
 	return 0;
 }
 
-/* call transfer with the filled iov_iter */
-static int do_transfer(struct snd_pcm_substream *substream, int c,
-		       unsigned long hwoff, void *data, unsigned long bytes,
-		       pcm_transfer_f transfer, bool in_kernel)
+/* default copy_kernel ops for read */
+static int default_read_copy_kernel(struct snd_pcm_substream *substream,
+				    int channel, unsigned long hwoff,
+				    void *buf, unsigned long bytes)
 {
-	struct iov_iter iter;
-	int err, type;
-
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		type = ITER_SOURCE;
-	else
-		type = ITER_DEST;
-
-	if (in_kernel) {
-		struct kvec kvec = { data, bytes };
-
-		iov_iter_kvec(&iter, type, &kvec, 1, bytes);
-		return transfer(substream, c, hwoff, &iter, bytes);
-	}
-
-	err = import_ubuf(type, (__force void __user *)data, bytes, &iter);
-	if (err)
-		return err;
-	return transfer(substream, c, hwoff, &iter, bytes);
+	memcpy(buf, get_dma_ptr(substream->runtime, channel, hwoff), bytes);
+	return 0;
 }
 
 /* call transfer function with the converted pointers and sizes;
@@ -2128,8 +2031,7 @@ static int interleaved_copy(struct snd_pcm_substream *substream,
 			    snd_pcm_uframes_t hwoff, void *data,
 			    snd_pcm_uframes_t off,
 			    snd_pcm_uframes_t frames,
-			    pcm_transfer_f transfer,
-			    bool in_kernel)
+			    pcm_transfer_f transfer)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
@@ -2137,9 +2039,7 @@ static int interleaved_copy(struct snd_pcm_substream *substream,
 	hwoff = frames_to_bytes(runtime, hwoff);
 	off = frames_to_bytes(runtime, off);
 	frames = frames_to_bytes(runtime, frames);
-
-	return do_transfer(substream, 0, hwoff, data + off, frames, transfer,
-			   in_kernel);
+	return transfer(substream, 0, hwoff, data + off, frames);
 }
 
 /* call transfer function with the converted pointers and sizes for each
@@ -2149,8 +2049,7 @@ static int noninterleaved_copy(struct snd_pcm_substream *substream,
 			       snd_pcm_uframes_t hwoff, void *data,
 			       snd_pcm_uframes_t off,
 			       snd_pcm_uframes_t frames,
-			       pcm_transfer_f transfer,
-			       bool in_kernel)
+			       pcm_transfer_f transfer)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int channels = runtime->channels;
@@ -2168,8 +2067,8 @@ static int noninterleaved_copy(struct snd_pcm_substream *substream,
 		if (!data || !*bufs)
 			err = fill_silence(substream, c, hwoff, NULL, frames);
 		else
-			err = do_transfer(substream, c, hwoff, *bufs + off,
-					  frames, transfer, in_kernel);
+			err = transfer(substream, c, hwoff, *bufs + off,
+				       frames);
 		if (err < 0)
 			return err;
 	}
@@ -2185,10 +2084,10 @@ static int fill_silence_frames(struct snd_pcm_substream *substream,
 	if (substream->runtime->access == SNDRV_PCM_ACCESS_RW_INTERLEAVED ||
 	    substream->runtime->access == SNDRV_PCM_ACCESS_MMAP_INTERLEAVED)
 		return interleaved_copy(substream, off, NULL, 0, frames,
-					fill_silence, true);
+					fill_silence);
 	else
 		return noninterleaved_copy(substream, off, NULL, 0, frames,
-					   fill_silence, true);
+					   fill_silence);
 }
 
 /* sanity-check for read/write methods */
@@ -2198,7 +2097,7 @@ static int pcm_sanity_check(struct snd_pcm_substream *substream)
 	if (PCM_RUNTIME_CHECK(substream))
 		return -ENXIO;
 	runtime = substream->runtime;
-	if (snd_BUG_ON(!substream->ops->copy && !runtime->dma_area))
+	if (snd_BUG_ON(!substream->ops->copy_user && !runtime->dma_area))
 		return -EINVAL;
 	if (runtime->state == SNDRV_PCM_STATE_OPEN)
 		return -EBADFD;
@@ -2303,9 +2202,15 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 			transfer = fill_silence;
 		else
 			return -EINVAL;
+	} else if (in_kernel) {
+		if (substream->ops->copy_kernel)
+			transfer = substream->ops->copy_kernel;
+		else
+			transfer = is_playback ?
+				default_write_copy_kernel : default_read_copy_kernel;
 	} else {
-		if (substream->ops->copy)
-			transfer = substream->ops->copy;
+		if (substream->ops->copy_user)
+			transfer = (pcm_transfer_f)substream->ops->copy_user;
 		else
 			transfer = is_playback ?
 				default_write_copy : default_read_copy;
@@ -2378,7 +2283,7 @@ snd_pcm_sframes_t __snd_pcm_lib_xfer(struct snd_pcm_substream *substream,
 		if (!is_playback)
 			snd_pcm_dma_buffer_sync(substream, SNDRV_DMA_SYNC_CPU);
 		err = writer(substream, appl_ofs, data, offset, frames,
-			     transfer, in_kernel);
+			     transfer);
 		if (is_playback)
 			snd_pcm_dma_buffer_sync(substream, SNDRV_DMA_SYNC_DEVICE);
 		snd_pcm_stream_lock_irq(substream);
@@ -2590,7 +2495,6 @@ int snd_pcm_add_chmap_ctls(struct snd_pcm *pcm, int stream,
 	struct snd_kcontrol_new knew = {
 		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
 		.access = SNDRV_CTL_ELEM_ACCESS_READ |
-			SNDRV_CTL_ELEM_ACCESS_VOLATILE |
 			SNDRV_CTL_ELEM_ACCESS_TLV_READ |
 			SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK,
 		.info = pcm_chmap_ctl_info,

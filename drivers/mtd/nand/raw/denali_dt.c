@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 
@@ -115,6 +116,7 @@ static int denali_dt_probe(struct platform_device *pdev)
 	struct denali_dt *dt;
 	const struct denali_dt_data *data;
 	struct denali_controller *denali;
+	struct device_node *np;
 	int ret;
 
 	dt = devm_kzalloc(dev, sizeof(*dt), GFP_KERNEL);
@@ -144,15 +146,15 @@ static int denali_dt_probe(struct platform_device *pdev)
 	if (IS_ERR(denali->host))
 		return PTR_ERR(denali->host);
 
-	dt->clk = devm_clk_get_enabled(dev, "nand");
+	dt->clk = devm_clk_get(dev, "nand");
 	if (IS_ERR(dt->clk))
 		return PTR_ERR(dt->clk);
 
-	dt->clk_x = devm_clk_get_enabled(dev, "nand_x");
+	dt->clk_x = devm_clk_get(dev, "nand_x");
 	if (IS_ERR(dt->clk_x))
 		return PTR_ERR(dt->clk_x);
 
-	dt->clk_ecc = devm_clk_get_enabled(dev, "ecc");
+	dt->clk_ecc = devm_clk_get(dev, "ecc");
 	if (IS_ERR(dt->clk_ecc))
 		return PTR_ERR(dt->clk_ecc);
 
@@ -164,6 +166,18 @@ static int denali_dt_probe(struct platform_device *pdev)
 	if (IS_ERR(dt->rst_reg))
 		return PTR_ERR(dt->rst_reg);
 
+	ret = clk_prepare_enable(dt->clk);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(dt->clk_x);
+	if (ret)
+		goto out_disable_clk;
+
+	ret = clk_prepare_enable(dt->clk_ecc);
+	if (ret)
+		goto out_disable_clk_x;
+
 	denali->clk_rate = clk_get_rate(dt->clk);
 	denali->clk_x_rate = clk_get_rate(dt->clk_x);
 
@@ -174,7 +188,7 @@ static int denali_dt_probe(struct platform_device *pdev)
 	 */
 	ret = reset_control_deassert(dt->rst_reg);
 	if (ret)
-		return ret;
+		goto out_disable_clk_ecc;
 
 	ret = reset_control_deassert(dt->rst);
 	if (ret)
@@ -191,10 +205,12 @@ static int denali_dt_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_assert_rst;
 
-	for_each_child_of_node_scoped(dev->of_node, np) {
+	for_each_child_of_node(dev->of_node, np) {
 		ret = denali_dt_chip_init(denali, np);
-		if (ret)
+		if (ret) {
+			of_node_put(np);
 			goto out_remove_denali;
+		}
 	}
 
 	platform_set_drvdata(pdev, dt);
@@ -207,17 +223,28 @@ out_assert_rst:
 	reset_control_assert(dt->rst);
 out_assert_rst_reg:
 	reset_control_assert(dt->rst_reg);
+out_disable_clk_ecc:
+	clk_disable_unprepare(dt->clk_ecc);
+out_disable_clk_x:
+	clk_disable_unprepare(dt->clk_x);
+out_disable_clk:
+	clk_disable_unprepare(dt->clk);
 
 	return ret;
 }
 
-static void denali_dt_remove(struct platform_device *pdev)
+static int denali_dt_remove(struct platform_device *pdev)
 {
 	struct denali_dt *dt = platform_get_drvdata(pdev);
 
 	denali_remove(&dt->controller);
 	reset_control_assert(dt->rst);
 	reset_control_assert(dt->rst_reg);
+	clk_disable_unprepare(dt->clk_ecc);
+	clk_disable_unprepare(dt->clk_x);
+	clk_disable_unprepare(dt->clk);
+
+	return 0;
 }
 
 static struct platform_driver denali_dt_driver = {

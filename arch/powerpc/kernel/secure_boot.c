@@ -5,7 +5,6 @@
  */
 #include <linux/types.h>
 #include <linux/of.h>
-#include <linux/string_choices.h>
 #include <asm/secure_boot.h>
 
 static struct device_node *get_ppc_fw_sb_node(void)
@@ -33,13 +32,11 @@ bool is_ppc_secureboot_enabled(void)
 	if (enabled)
 		goto out;
 
-	node = of_find_node_by_path("/");
-	if (!of_property_read_u32(node, "ibm,secure-boot", &secureboot))
+	if (!of_property_read_u32(of_root, "ibm,secure-boot", &secureboot))
 		enabled = (secureboot > 1);
-	of_node_put(node);
 
 out:
-	pr_info("Secure boot mode %s\n", str_enabled_disabled(enabled));
+	pr_info("Secure boot mode %s\n", enabled ? "enabled" : "disabled");
 
 	return enabled;
 }
@@ -57,13 +54,11 @@ bool is_ppc_trustedboot_enabled(void)
 	if (enabled)
 		goto out;
 
-	node = of_find_node_by_path("/");
-	if (!of_property_read_u32(node, "ibm,trusted-boot", &trustedboot))
+	if (!of_property_read_u32(of_root, "ibm,trusted-boot", &trustedboot))
 		enabled = (trustedboot > 0);
-	of_node_put(node);
 
 out:
-	pr_info("Trusted boot mode %s\n", str_enabled_disabled(enabled));
+	pr_info("Trusted boot mode %s\n", enabled ? "enabled" : "disabled");
 
 	return enabled;
 }

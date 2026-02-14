@@ -1048,7 +1048,6 @@ void mcde_dsi_disable(struct drm_bridge *bridge)
 }
 
 static int mcde_dsi_bridge_attach(struct drm_bridge *bridge,
-				  struct drm_encoder *encoder,
 				  enum drm_bridge_attach_flags flags)
 {
 	struct mcde_dsi *d = bridge_to_mcde_dsi(bridge);
@@ -1060,7 +1059,7 @@ static int mcde_dsi_bridge_attach(struct drm_bridge *bridge,
 	}
 
 	/* Attach the DSI bridge to the output (panel etc) bridge */
-	return drm_bridge_attach(encoder, d->bridge_out, bridge, flags);
+	return drm_bridge_attach(bridge->encoder, d->bridge_out, bridge, flags);
 }
 
 static const struct drm_bridge_funcs mcde_dsi_bridge_funcs = {
@@ -1138,6 +1137,7 @@ static int mcde_dsi_bind(struct device *dev, struct device *master,
 	d->bridge_out = bridge;
 
 	/* Create a bridge for this DSI channel */
+	d->bridge.funcs = &mcde_dsi_bridge_funcs;
 	d->bridge.of_node = dev->of_node;
 	drm_bridge_add(&d->bridge);
 
@@ -1173,9 +1173,9 @@ static int mcde_dsi_probe(struct platform_device *pdev)
 	u32 dsi_id;
 	int ret;
 
-	d = devm_drm_bridge_alloc(dev, struct mcde_dsi, bridge, &mcde_dsi_bridge_funcs);
-	if (IS_ERR(d))
-		return PTR_ERR(d);
+	d = devm_kzalloc(dev, sizeof(*d), GFP_KERNEL);
+	if (!d)
+		return -ENOMEM;
 	d->dev = dev;
 	platform_set_drvdata(pdev, d);
 
@@ -1208,12 +1208,14 @@ static int mcde_dsi_probe(struct platform_device *pdev)
 	return component_add(dev, &mcde_dsi_component_ops);
 }
 
-static void mcde_dsi_remove(struct platform_device *pdev)
+static int mcde_dsi_remove(struct platform_device *pdev)
 {
 	struct mcde_dsi *d = platform_get_drvdata(pdev);
 
 	component_del(&pdev->dev, &mcde_dsi_component_ops);
 	mipi_dsi_host_unregister(&d->dsi_host);
+
+	return 0;
 }
 
 static const struct of_device_id mcde_dsi_of_match[] = {
@@ -1226,7 +1228,7 @@ static const struct of_device_id mcde_dsi_of_match[] = {
 struct platform_driver mcde_dsi_driver = {
 	.driver = {
 		.name           = "mcde-dsi",
-		.of_match_table = mcde_dsi_of_match,
+		.of_match_table = of_match_ptr(mcde_dsi_of_match),
 	},
 	.probe = mcde_dsi_probe,
 	.remove = mcde_dsi_remove,

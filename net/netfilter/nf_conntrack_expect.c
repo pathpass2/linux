@@ -71,7 +71,7 @@ EXPORT_SYMBOL_GPL(nf_ct_unlink_expect_report);
 
 static void nf_ct_expectation_timed_out(struct timer_list *t)
 {
-	struct nf_conntrack_expect *exp = timer_container_of(exp, t, timeout);
+	struct nf_conntrack_expect *exp = from_timer(exp, t, timeout);
 
 	spin_lock_bh(&nf_conntrack_expect_lock);
 	nf_ct_unlink_expect(exp);
@@ -118,7 +118,7 @@ nf_ct_exp_equal(const struct nf_conntrack_tuple *tuple,
 
 bool nf_ct_remove_expect(struct nf_conntrack_expect *exp)
 {
-	if (timer_delete(&exp->timeout)) {
+	if (del_timer(&exp->timeout)) {
 		nf_ct_unlink_expect(exp);
 		nf_ct_expect_put(exp);
 		return true;
@@ -171,7 +171,7 @@ EXPORT_SYMBOL_GPL(nf_ct_expect_find_get);
 struct nf_conntrack_expect *
 nf_ct_find_expectation(struct net *net,
 		       const struct nf_conntrack_zone *zone,
-		       const struct nf_conntrack_tuple *tuple, bool unlink)
+		       const struct nf_conntrack_tuple *tuple)
 {
 	struct nf_conntrack_net *cnet = nf_ct_pernet(net);
 	struct nf_conntrack_expect *i, *exp = NULL;
@@ -211,14 +211,14 @@ nf_ct_find_expectation(struct net *net,
 		     !refcount_inc_not_zero(&exp->master->ct_general.use)))
 		return NULL;
 
-	if (exp->flags & NF_CT_EXPECT_PERMANENT || !unlink) {
+	if (exp->flags & NF_CT_EXPECT_PERMANENT) {
 		refcount_inc(&exp->use);
 		return exp;
-	} else if (timer_delete(&exp->timeout)) {
+	} else if (del_timer(&exp->timeout)) {
 		nf_ct_unlink_expect(exp);
 		return exp;
 	}
-	/* Undo exp->master refcnt increase, if timer_delete() failed */
+	/* Undo exp->master refcnt increase, if del_timer() failed */
 	nf_ct_put(exp->master);
 
 	return NULL;
@@ -520,7 +520,7 @@ void nf_ct_expect_iterate_destroy(bool (*iter)(struct nf_conntrack_expect *e, vo
 		hlist_for_each_entry_safe(exp, next,
 					  &nf_ct_expect_hash[i],
 					  hnode) {
-			if (iter(exp, data) && timer_delete(&exp->timeout)) {
+			if (iter(exp, data) && del_timer(&exp->timeout)) {
 				nf_ct_unlink_expect(exp);
 				nf_ct_expect_put(exp);
 			}
@@ -550,7 +550,7 @@ void nf_ct_expect_iterate_net(struct net *net,
 			if (!net_eq(nf_ct_exp_net(exp), net))
 				continue;
 
-			if (iter(exp, data) && timer_delete(&exp->timeout)) {
+			if (iter(exp, data) && del_timer(&exp->timeout)) {
 				nf_ct_unlink_expect_report(exp, portid, report);
 				nf_ct_expect_put(exp);
 			}
@@ -722,7 +722,9 @@ int nf_conntrack_expect_init(void)
 			nf_ct_expect_hsize = 1;
 	}
 	nf_ct_expect_max = nf_ct_expect_hsize * 4;
-	nf_ct_expect_cachep = KMEM_CACHE(nf_conntrack_expect, 0);
+	nf_ct_expect_cachep = kmem_cache_create("nf_conntrack_expect",
+				sizeof(struct nf_conntrack_expect),
+				0, 0, NULL);
 	if (!nf_ct_expect_cachep)
 		return -ENOMEM;
 

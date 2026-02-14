@@ -7,7 +7,7 @@
 
 #ifndef _FC_ENCODE_H_
 #define _FC_ENCODE_H_
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/utsname.h>
 #include <scsi/fc/fc_ms.h>
 
@@ -136,24 +136,22 @@ static inline int fc_ct_ns_fill(struct fc_lport *lport,
 		break;
 
 	case FC_NS_RSPN_ID:
-		len = strnlen(fc_host_symbolic_name(lport->host),
-			      FC_SYMBOLIC_NAME_SIZE);
+		len = strnlen(fc_host_symbolic_name(lport->host), 255);
 		ct = fc_ct_hdr_fill(fp, op, sizeof(struct fc_ns_rspn) + len,
 				    FC_FST_DIR, FC_NS_SUBTYPE);
 		hton24(ct->payload.spn.fr_fid.fp_fid, lport->port_id);
-		memcpy(ct->payload.spn.fr_name,
-		       fc_host_symbolic_name(lport->host), len);
+		strncpy(ct->payload.spn.fr_name,
+			fc_host_symbolic_name(lport->host), len);
 		ct->payload.spn.fr_name_len = len;
 		break;
 
 	case FC_NS_RSNN_NN:
-		len = strnlen(fc_host_symbolic_name(lport->host),
-			      FC_SYMBOLIC_NAME_SIZE);
+		len = strnlen(fc_host_symbolic_name(lport->host), 255);
 		ct = fc_ct_hdr_fill(fp, op, sizeof(struct fc_ns_rsnn) + len,
 				    FC_FST_DIR, FC_NS_SUBTYPE);
 		put_unaligned_be64(lport->wwnn, &ct->payload.snn.fr_wwn);
-		memcpy(ct->payload.snn.fr_name,
-		       fc_host_symbolic_name(lport->host), len);
+		strncpy(ct->payload.snn.fr_name,
+			fc_host_symbolic_name(lport->host), len);
 		ct->payload.snn.fr_name_len = len;
 		break;
 
@@ -356,7 +354,7 @@ static inline int fc_ct_ms_fill(struct fc_lport *lport,
 		put_unaligned_be16(len, &entry->len);
 		snprintf((char *)&entry->value,
 			FC_FDMI_HBA_ATTR_OSNAMEVERSION_LEN,
-			"%.62s v%.62s",
+			"%s v%s",
 			init_utsname()->sysname,
 			init_utsname()->release);
 

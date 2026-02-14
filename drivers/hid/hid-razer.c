@@ -122,5 +122,4 @@ static struct hid_driver razer_driver = {
 module_hid_driver(razer_driver);
 
 MODULE_AUTHOR("Jelle van der Waa <jvanderwaa@redhat.com>");
-MODULE_DESCRIPTION("HID driver for gaming keys on Razer Blackwidow gaming keyboards");
 MODULE_LICENSE("GPL");

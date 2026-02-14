@@ -154,14 +154,13 @@ static int profile_cmp(struct aa_profile *a, struct aa_profile *b)
 
 /**
  * vec_cmp - label comparison for set ordering
- * @a: aa_profile to compare (NOT NULL)
- * @an: length of @a
- * @b: aa_profile to compare (NOT NULL)
- * @bn: length of @b
+ * @a: label to compare (NOT NULL)
+ * @vec: vector of profiles to compare (NOT NULL)
+ * @n: length of @vec
  *
- * Returns: <0  if @a < @b
- *          ==0 if @a == @b
- *          >0  if @a > @b
+ * Returns: <0  if a < vec
+ *          ==0 if a == vec
+ *          >0  if a > vec
  */
 static int vec_cmp(struct aa_profile **a, int an, struct aa_profile **b, int bn)
 {
@@ -198,25 +197,21 @@ static bool vec_is_stale(struct aa_profile **vec, int n)
 	return false;
 }
 
-static void accum_label_info(struct aa_label *new)
+static long accum_vec_flags(struct aa_profile **vec, int n)
 {
 	long u = FLAG_UNCONFINED;
 	int i;
 
-	AA_BUG(!new);
+	AA_BUG(!vec);
 
-	/* size == 1 is a profile and flags must be set as part of creation */
-	if (new->size == 1)
-		return;
-
-	for (i = 0; i < new->size; i++) {
-		u |= new->vec[i]->label.flags & (FLAG_DEBUG1 | FLAG_DEBUG2 |
-						 FLAG_STALE);
-		if (!(u & new->vec[i]->label.flags & FLAG_UNCONFINED))
+	for (i = 0; i < n; i++) {
+		u |= vec[i]->label.flags & (FLAG_DEBUG1 | FLAG_DEBUG2 |
+					    FLAG_STALE);
+		if (!(u & vec[i]->label.flags & FLAG_UNCONFINED))
 			u &= ~FLAG_UNCONFINED;
-		new->mediates |= new->vec[i]->label.mediates;
 	}
-	new->flags |= u;
+
+	return u;
 }
 
 static int sort_cmp(const void *a, const void *b)
@@ -261,7 +256,6 @@ static inline int unique(struct aa_profile **vec, int n)
  * aa_vec_unique - canonical sort and unique a list of profiles
  * @n: number of refcounted profiles in the list (@n > 0)
  * @vec: list of profiles to sort and merge
- * @flags: null terminator flags of @vec
  *
  * Returns: the number of duplicates eliminated == references put
  *
@@ -435,7 +429,7 @@ struct aa_label *aa_label_alloc(int size, struct aa_proxy *proxy, gfp_t gfp)
 
 	/*  + 1 for null terminator entry on vec */
 	new = kzalloc(struct_size(new, vec, size + 1), gfp);
-	AA_DEBUG(DEBUG_LABEL, "%s (%p)\n", __func__, new);
+	AA_DEBUG("%s (%p)\n", __func__, new);
 	if (!new)
 		goto fail;
 
@@ -590,7 +584,7 @@ bool aa_label_is_unconfined_subset(struct aa_label *set, struct aa_label *sub)
 
 /**
  * __label_remove - remove @label from the label set
- * @label: label to remove
+ * @l: label to remove
  * @new: label to redirect to
  *
  * Requires: labels_set(@label)->lock write_lock
@@ -649,7 +643,6 @@ static bool __label_replace(struct aa_label *old, struct aa_label *new)
 		rb_replace_node(&old->node, &new->node, &ls->root);
 		old->flags &= ~FLAG_IN_TREE;
 		new->flags |= FLAG_IN_TREE;
-		accum_label_info(new);
 		return true;
 	}
 
@@ -710,7 +703,6 @@ static struct aa_label *__label_insert(struct aa_labelset *ls,
 	rb_link_node(&label->node, parent, new);
 	rb_insert_color(&label->node, &ls->root);
 	label->flags |= FLAG_IN_TREE;
-	accum_label_info(label);
 
 	return aa_get_label(label);
 }
@@ -905,11 +897,28 @@ struct aa_label *aa_vec_find_or_create_label(struct aa_profile **vec, int len,
 	return vec_create_and_insert_label(vec, len, gfp);
 }
 
+/**
+ * aa_label_find - find label @label in label set
+ * @label: label to find (NOT NULL)
+ *
+ * Requires: caller to hold a valid ref on l
+ *
+ * Returns: refcounted @label if @label is in tree
+ *          refcounted label that is equiv to @label in tree
+ *     else NULL if @label or equiv is not in tree
+ */
+struct aa_label *aa_label_find(struct aa_label *label)
+{
+	AA_BUG(!label);
+
+	return vec_find(label->vec, label->size);
+}
+
 
 /**
  * aa_label_insert - insert label @label into @ls or return existing label
- * @ls: labelset to insert @label into
- * @label: label to insert
+ * @ls - labelset to insert @label into
+ * @label - label to insert
  *
  * Requires: caller to hold a valid ref on @label
  *
@@ -1091,6 +1100,7 @@ static struct aa_label *label_merge_insert(struct aa_label *new,
 		else if (k == b->size)
 			return aa_get_label(b);
 	}
+	new->flags |= accum_vec_flags(new->vec, new->size);
 	ls = labels_set(new);
 	write_lock_irqsave(&ls->lock, flags);
 	label = __label_insert(labels_set(new), new, false);
@@ -1194,6 +1204,7 @@ struct aa_label *aa_label_find_merge(struct aa_label *a, struct aa_label *b)
 
 /**
  * aa_label_merge - attempt to insert new merged label of @a and @b
+ * @ls: set of labels to insert label into (NOT NULL)
  * @a: label to merge with @b  (NOT NULL)
  * @b: label to merge with @a  (NOT NULL)
  * @gfp: memory allocation type
@@ -1258,22 +1269,21 @@ static inline aa_state_t match_component(struct aa_profile *profile,
 	const char *ns_name;
 
 	if (profile->ns == tp->ns)
-		return aa_dfa_match(rules->policy->dfa, state, tp->base.hname);
+		return aa_dfa_match(rules->policy.dfa, state, tp->base.hname);
 
 	/* try matching with namespace name and then profile */
 	ns_name = aa_ns_name(profile->ns, tp->ns, true);
-	state = aa_dfa_match_len(rules->policy->dfa, state, ":", 1);
-	state = aa_dfa_match(rules->policy->dfa, state, ns_name);
-	state = aa_dfa_match_len(rules->policy->dfa, state, ":", 1);
-	return aa_dfa_match(rules->policy->dfa, state, tp->base.hname);
+	state = aa_dfa_match_len(rules->policy.dfa, state, ":", 1);
+	state = aa_dfa_match(rules->policy.dfa, state, ns_name);
+	state = aa_dfa_match_len(rules->policy.dfa, state, ":", 1);
+	return aa_dfa_match(rules->policy.dfa, state, tp->base.hname);
 }
 
 /**
  * label_compound_match - find perms for full compound label
  * @profile: profile to find perms for
- * @rules: ruleset to search
  * @label: label to check access permissions for
- * @state: state to start match in
+ * @start: state to start match in
  * @subns: whether to do permission checks on components in a subns
  * @request: permissions to request
  * @perms: perms struct to set
@@ -1311,12 +1321,12 @@ next:
 	label_for_each_cont(i, label, tp) {
 		if (!aa_ns_visible(profile->ns, tp->ns, subns))
 			continue;
-		state = aa_dfa_match(rules->policy->dfa, state, "//&");
+		state = aa_dfa_match(rules->policy.dfa, state, "//&");
 		state = match_component(profile, rules, tp, state);
 		if (!state)
 			goto fail;
 	}
-	*perms = *aa_lookup_perms(rules->policy, state);
+	*perms = *aa_lookup_perms(&rules->policy, state);
 	aa_apply_modes_to_perms(profile, perms);
 	if ((perms->allow & request) != request)
 		return -EACCES;
@@ -1369,7 +1379,7 @@ static int label_components_match(struct aa_profile *profile,
 	return 0;
 
 next:
-	tmp = *aa_lookup_perms(rules->policy, state);
+	tmp = *aa_lookup_perms(&rules->policy, state);
 	aa_apply_modes_to_perms(profile, &tmp);
 	aa_perms_accum(perms, &tmp);
 	label_for_each_cont(i, label, tp) {
@@ -1378,7 +1388,7 @@ next:
 		state = match_component(profile, rules, tp, start);
 		if (!state)
 			goto fail;
-		tmp = *aa_lookup_perms(rules->policy, state);
+		tmp = *aa_lookup_perms(&rules->policy, state);
 		aa_apply_modes_to_perms(profile, &tmp);
 		aa_perms_accum(perms, &tmp);
 	}
@@ -1461,7 +1471,7 @@ bool aa_update_label_name(struct aa_ns *ns, struct aa_label *label, gfp_t gfp)
 
 /*
  * cached label name is present and visible
- * @label->hname only exists if label is namespace hierarchical
+ * @label->hname only exists if label is namespace hierachical
  */
 static inline bool use_label_hname(struct aa_ns *ns, struct aa_label *label,
 				   int flags)
@@ -1622,7 +1632,7 @@ int aa_label_snxprint(char *str, size_t size, struct aa_ns *ns,
 	AA_BUG(!str && size != 0);
 	AA_BUG(!label);
 
-	if (DEBUG_ABS_ROOT && (flags & FLAG_ABS_ROOT)) {
+	if (AA_DEBUG_LABEL && (flags & FLAG_ABS_ROOT)) {
 		ns = root_ns;
 		len = snprintf(str, size, "_");
 		update_for_len(total, len, size, str);
@@ -1736,7 +1746,7 @@ void aa_label_xaudit(struct audit_buffer *ab, struct aa_ns *ns,
 	    display_mode(ns, label, flags)) {
 		len  = aa_label_asxprint(&name, ns, label, flags, gfp);
 		if (len < 0) {
-			AA_DEBUG(DEBUG_LABEL, "label print error");
+			AA_DEBUG("label print error");
 			return;
 		}
 		str = name;
@@ -1764,7 +1774,7 @@ void aa_label_seq_xprint(struct seq_file *f, struct aa_ns *ns,
 
 		len = aa_label_asxprint(&str, ns, label, flags, gfp);
 		if (len < 0) {
-			AA_DEBUG(DEBUG_LABEL, "label print error");
+			AA_DEBUG("label print error");
 			return;
 		}
 		seq_puts(f, str);
@@ -1787,7 +1797,7 @@ void aa_label_xprintk(struct aa_ns *ns, struct aa_label *label, int flags,
 
 		len = aa_label_asxprint(&str, ns, label, flags, gfp);
 		if (len < 0) {
-			AA_DEBUG(DEBUG_LABEL, "label print error");
+			AA_DEBUG("label print error");
 			return;
 		}
 		pr_info("%s", str);
@@ -1797,6 +1807,22 @@ void aa_label_xprintk(struct aa_ns *ns, struct aa_label *label, int flags,
 		       label_modename(ns, label, flags));
 	else
 		pr_info("%s", label->hname);
+}
+
+void aa_label_audit(struct audit_buffer *ab, struct aa_label *label, gfp_t gfp)
+{
+	struct aa_ns *ns = aa_get_current_ns();
+
+	aa_label_xaudit(ab, ns, label, FLAG_VIEW_SUBNS, gfp);
+	aa_put_ns(ns);
+}
+
+void aa_label_seq_print(struct seq_file *f, struct aa_label *label, gfp_t gfp)
+{
+	struct aa_ns *ns = aa_get_current_ns();
+
+	aa_label_seq_xprint(f, ns, label, FLAG_VIEW_SUBNS, gfp);
+	aa_put_ns(ns);
 }
 
 void aa_label_printk(struct aa_label *label, gfp_t gfp)
@@ -1870,7 +1896,7 @@ struct aa_label *aa_label_strn_parse(struct aa_label *base, const char *str,
 	AA_BUG(!str);
 
 	str = skipn_spaces(str, n);
-	if (str == NULL || (DEBUG_ABS_ROOT && *str == '_' &&
+	if (str == NULL || (AA_DEBUG_LABEL && *str == '_' &&
 			    base != &root_ns->unconfined->label))
 		return ERR_PTR(-EINVAL);
 
@@ -2011,7 +2037,7 @@ out:
 
 /**
  * __label_update - insert updated version of @label into labelset
- * @label: the label to update/replace
+ * @label - the label to update/replace
  *
  * Returns: new label that is up to date
  *     else NULL on failure

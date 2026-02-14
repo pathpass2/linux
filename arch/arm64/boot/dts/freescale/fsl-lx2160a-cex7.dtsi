@@ -41,7 +41,6 @@
 	rgmii_phy1: ethernet-phy@1 {
 		reg = <1>;
 		qca,smarteee-tw-us-1g = <24>;
-		interrupts-extended = <&gpio2 4 IRQ_TYPE_EDGE_FALLING>;
 	};
 };
 
@@ -95,6 +94,9 @@
 			fan-temperature-ctrlr@18 {
 				compatible = "ti,amc6821";
 				reg = <0x18>;
+				cooling-min-state = <0>;
+				cooling-max-state = <9>;
+				#cooling-cells = <2>;
 			};
 		};
 
@@ -157,7 +159,6 @@
 	rtc@51 {
 		compatible = "nxp,pcf2129";
 		reg = <0x51>;
-		interrupts-extended = <&gpio2 8 IRQ_TYPE_LEVEL_LOW>;
 	};
 };
 

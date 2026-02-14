@@ -188,7 +188,6 @@ struct adp5588_kpad {
 	u32 cols;
 	u32 unlock_keys[2];
 	int nkeys_unlock;
-	bool gpio_only;
 	unsigned short keycode[ADP5588_KEYMAPSIZE];
 	unsigned char gpiomap[ADP5588_MAXGPIO];
 	struct gpio_chip gc;
@@ -222,32 +221,35 @@ static int adp5588_gpio_get_value(struct gpio_chip *chip, unsigned int off)
 	unsigned int bit = ADP5588_BIT(kpad->gpiomap[off]);
 	int val;
 
-	guard(mutex)(&kpad->gpio_lock);
+	mutex_lock(&kpad->gpio_lock);
 
 	if (kpad->dir[bank] & bit)
 		val = kpad->dat_out[bank];
 	else
 		val = adp5588_read(kpad->client, GPIO_DAT_STAT1 + bank);
 
+	mutex_unlock(&kpad->gpio_lock);
+
 	return !!(val & bit);
 }
 
-static int adp5588_gpio_set_value(struct gpio_chip *chip, unsigned int off,
-				  int val)
+static void adp5588_gpio_set_value(struct gpio_chip *chip,
+				   unsigned int off, int val)
 {
 	struct adp5588_kpad *kpad = gpiochip_get_data(chip);
 	unsigned int bank = ADP5588_BANK(kpad->gpiomap[off]);
 	unsigned int bit = ADP5588_BIT(kpad->gpiomap[off]);
 
-	guard(mutex)(&kpad->gpio_lock);
+	mutex_lock(&kpad->gpio_lock);
 
 	if (val)
 		kpad->dat_out[bank] |= bit;
 	else
 		kpad->dat_out[bank] &= ~bit;
 
-	return adp5588_write(kpad->client, GPIO_DAT_OUT1 + bank,
-			     kpad->dat_out[bank]);
+	adp5588_write(kpad->client, GPIO_DAT_OUT1 + bank, kpad->dat_out[bank]);
+
+	mutex_unlock(&kpad->gpio_lock);
 }
 
 static int adp5588_gpio_set_config(struct gpio_chip *chip,  unsigned int off,
@@ -257,6 +259,7 @@ static int adp5588_gpio_set_config(struct gpio_chip *chip,  unsigned int off,
 	unsigned int bank = ADP5588_BANK(kpad->gpiomap[off]);
 	unsigned int bit = ADP5588_BIT(kpad->gpiomap[off]);
 	bool pull_disable;
+	int ret;
 
 	switch (pinconf_to_config_param(config)) {
 	case PIN_CONFIG_BIAS_PULL_UP:
@@ -269,15 +272,19 @@ static int adp5588_gpio_set_config(struct gpio_chip *chip,  unsigned int off,
 		return -ENOTSUPP;
 	}
 
-	guard(mutex)(&kpad->gpio_lock);
+	mutex_lock(&kpad->gpio_lock);
 
 	if (pull_disable)
 		kpad->pull_dis[bank] |= bit;
 	else
 		kpad->pull_dis[bank] &= bit;
 
-	return adp5588_write(kpad->client, GPIO_PULL1 + bank,
-			     kpad->pull_dis[bank]);
+	ret = adp5588_write(kpad->client, GPIO_PULL1 + bank,
+			    kpad->pull_dis[bank]);
+
+	mutex_unlock(&kpad->gpio_lock);
+
+	return ret;
 }
 
 static int adp5588_gpio_direction_input(struct gpio_chip *chip, unsigned int off)
@@ -285,11 +292,16 @@ static int adp5588_gpio_direction_input(struct gpio_chip *chip, unsigned int off
 	struct adp5588_kpad *kpad = gpiochip_get_data(chip);
 	unsigned int bank = ADP5588_BANK(kpad->gpiomap[off]);
 	unsigned int bit = ADP5588_BIT(kpad->gpiomap[off]);
+	int ret;
 
-	guard(mutex)(&kpad->gpio_lock);
+	mutex_lock(&kpad->gpio_lock);
 
 	kpad->dir[bank] &= ~bit;
-	return adp5588_write(kpad->client, GPIO_DIR1 + bank, kpad->dir[bank]);
+	ret = adp5588_write(kpad->client, GPIO_DIR1 + bank, kpad->dir[bank]);
+
+	mutex_unlock(&kpad->gpio_lock);
+
+	return ret;
 }
 
 static int adp5588_gpio_direction_output(struct gpio_chip *chip,
@@ -298,9 +310,9 @@ static int adp5588_gpio_direction_output(struct gpio_chip *chip,
 	struct adp5588_kpad *kpad = gpiochip_get_data(chip);
 	unsigned int bank = ADP5588_BANK(kpad->gpiomap[off]);
 	unsigned int bit = ADP5588_BIT(kpad->gpiomap[off]);
-	int error;
+	int ret;
 
-	guard(mutex)(&kpad->gpio_lock);
+	mutex_lock(&kpad->gpio_lock);
 
 	kpad->dir[bank] |= bit;
 
@@ -309,16 +321,17 @@ static int adp5588_gpio_direction_output(struct gpio_chip *chip,
 	else
 		kpad->dat_out[bank] &= ~bit;
 
-	error = adp5588_write(kpad->client, GPIO_DAT_OUT1 + bank,
-			      kpad->dat_out[bank]);
-	if (error)
-		return error;
+	ret = adp5588_write(kpad->client, GPIO_DAT_OUT1 + bank,
+			    kpad->dat_out[bank]);
+	if (ret)
+		goto out_unlock;
 
-	error = adp5588_write(kpad->client, GPIO_DIR1 + bank, kpad->dir[bank]);
-	if (error)
-		return error;
+	ret = adp5588_write(kpad->client, GPIO_DIR1 + bank, kpad->dir[bank]);
 
-	return 0;
+out_unlock:
+	mutex_unlock(&kpad->gpio_lock);
+
+	return ret;
 }
 
 static int adp5588_build_gpiomap(struct adp5588_kpad *kpad)
@@ -433,17 +446,10 @@ static int adp5588_gpio_add(struct adp5588_kpad *kpad)
 	kpad->gc.label = kpad->client->name;
 	kpad->gc.owner = THIS_MODULE;
 
-	if (device_property_present(dev, "interrupt-controller")) {
-		if (!kpad->client->irq) {
-			dev_err(dev, "Unable to serve as interrupt controller without interrupt");
-			return -EINVAL;
-		}
-
-		girq = &kpad->gc.irq;
-		gpio_irq_chip_set_chip(girq, &adp5588_irq_chip);
-		girq->handler = handle_bad_irq;
-		girq->threaded = true;
-	}
+	girq = &kpad->gc.irq;
+	gpio_irq_chip_set_chip(girq, &adp5588_irq_chip);
+	girq->handler = handle_bad_irq;
+	girq->threaded = true;
 
 	mutex_init(&kpad->gpio_lock);
 
@@ -621,7 +627,7 @@ static int adp5588_setup(struct adp5588_kpad *kpad)
 
 	for (i = 0; i < KEYP_MAX_EVENT; i++) {
 		ret = adp5588_read(client, KEY_EVENTA);
-		if (ret < 0)
+		if (ret)
 			return ret;
 	}
 
@@ -640,18 +646,6 @@ static int adp5588_fw_parse(struct adp5588_kpad *kpad)
 {
 	struct i2c_client *client = kpad->client;
 	int ret, i;
-
-	/*
-	 * Check if the device is to be operated purely in GPIO mode. To do
-	 * so, check that no keypad rows or columns have been specified,
-	 * since all GPINS should be configured as GPIO.
-	 */
-	if (!device_property_present(&client->dev, "keypad,num-rows") &&
-	    !device_property_present(&client->dev, "keypad,num-columns")) {
-		/* If purely GPIO, skip keypad setup */
-		kpad->gpio_only = true;
-		return 0;
-	}
 
 	ret = matrix_keypad_parse_properties(&client->dev, &kpad->rows,
 					     &kpad->cols);
@@ -719,11 +713,17 @@ static int adp5588_fw_parse(struct adp5588_kpad *kpad)
 	return 0;
 }
 
+static void adp5588_disable_regulator(void *reg)
+{
+	regulator_disable(reg);
+}
+
 static int adp5588_probe(struct i2c_client *client)
 {
 	struct adp5588_kpad *kpad;
 	struct input_dev *input;
 	struct gpio_desc *gpio;
+	struct regulator *vcc;
 	unsigned int revid;
 	int ret;
 	int error;
@@ -749,7 +749,16 @@ static int adp5588_probe(struct i2c_client *client)
 	if (error)
 		return error;
 
-	error = devm_regulator_get_enable(&client->dev, "vcc");
+	vcc = devm_regulator_get(&client->dev, "vcc");
+	if (IS_ERR(vcc))
+		return PTR_ERR(vcc);
+
+	error = regulator_enable(vcc);
+	if (error)
+		return error;
+
+	error = devm_add_action_or_reset(&client->dev,
+					 adp5588_disable_regulator, vcc);
 	if (error)
 		return error;
 
@@ -796,19 +805,17 @@ static int adp5588_probe(struct i2c_client *client)
 	if (error)
 		return error;
 
-	if (client->irq) {
-		error = devm_request_threaded_irq(&client->dev, client->irq,
-						  adp5588_hard_irq, adp5588_thread_irq,
-						  IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-						  client->dev.driver->name, kpad);
-		if (error) {
-			dev_err(&client->dev, "failed to request irq %d: %d\n",
-				client->irq, error);
-			return error;
-		}
+	error = devm_request_threaded_irq(&client->dev, client->irq,
+					  adp5588_hard_irq, adp5588_thread_irq,
+					  IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+					  client->dev.driver->name, kpad);
+	if (error) {
+		dev_err(&client->dev, "failed to request irq %d: %d\n",
+			client->irq, error);
+		return error;
 	}
 
-	dev_info(&client->dev, "Rev.%d controller\n", revid);
+	dev_info(&client->dev, "Rev.%d keypad, irq %d\n", revid, client->irq);
 	return 0;
 }
 
@@ -823,8 +830,7 @@ static int adp5588_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
-	if (client->irq)
-		disable_irq(client->irq);
+	disable_irq(client->irq);
 
 	return 0;
 }
@@ -833,8 +839,7 @@ static int adp5588_resume(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 
-	if (client->irq)
-		enable_irq(client->irq);
+	enable_irq(client->irq);
 
 	return 0;
 }
@@ -842,8 +847,8 @@ static int adp5588_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(adp5588_dev_pm_ops, adp5588_suspend, adp5588_resume);
 
 static const struct i2c_device_id adp5588_id[] = {
-	{ "adp5588-keys" },
-	{ "adp5587-keys" },
+	{ "adp5588-keys", 0 },
+	{ "adp5587-keys", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adp5588_id);
@@ -861,7 +866,7 @@ static struct i2c_driver adp5588_driver = {
 		.of_match_table = adp5588_of_match,
 		.pm   = pm_sleep_ptr(&adp5588_dev_pm_ops),
 	},
-	.probe    = adp5588_probe,
+	.probe_new = adp5588_probe,
 	.remove   = adp5588_remove,
 	.id_table = adp5588_id,
 };

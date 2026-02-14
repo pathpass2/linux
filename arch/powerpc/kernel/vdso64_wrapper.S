@@ -2,7 +2,7 @@
 #include <linux/linkage.h>
 #include <asm/page.h>
 
-	.section ".data..ro_after_init", "aw"
+	__PAGE_ALIGNED_DATA
 
 	.globl vdso64_start, vdso64_end
 	.balign PAGE_SIZE

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Simple Power-Managed Bus Driver
  *
@@ -11,8 +10,6 @@
 
 #include <linux/clk.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -74,16 +71,17 @@ static int simple_pm_bus_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void simple_pm_bus_remove(struct platform_device *pdev)
+static int simple_pm_bus_remove(struct platform_device *pdev)
 {
 	const void *data = of_device_get_match_data(&pdev->dev);
 
 	if (pdev->driver_override || data)
-		return;
+		return 0;
 
 	dev_dbg(&pdev->dev, "%s\n", __func__);
 
 	pm_runtime_disable(&pdev->dev);
+	return 0;
 }
 
 static int simple_pm_bus_runtime_suspend(struct device *dev)
@@ -109,29 +107,9 @@ static int simple_pm_bus_runtime_resume(struct device *dev)
 	return 0;
 }
 
-static int simple_pm_bus_suspend(struct device *dev)
-{
-	struct simple_pm_bus *bus = dev_get_drvdata(dev);
-
-	if (!bus)
-		return 0;
-
-	return pm_runtime_force_suspend(dev);
-}
-
-static int simple_pm_bus_resume(struct device *dev)
-{
-	struct simple_pm_bus *bus = dev_get_drvdata(dev);
-
-	if (!bus)
-		return 0;
-
-	return pm_runtime_force_resume(dev);
-}
-
 static const struct dev_pm_ops simple_pm_bus_pm_ops = {
 	RUNTIME_PM_OPS(simple_pm_bus_runtime_suspend, simple_pm_bus_runtime_resume, NULL)
-	NOIRQ_SYSTEM_SLEEP_PM_OPS(simple_pm_bus_suspend, simple_pm_bus_resume)
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 };
 
 #define ONLY_BUS	((void *) 1) /* Match if the device is only a bus. */
@@ -142,12 +120,6 @@ static const struct of_device_id simple_pm_bus_of_match[] = {
 	{ .compatible = "simple-mfd",	.data = ONLY_BUS },
 	{ .compatible = "isa",		.data = ONLY_BUS },
 	{ .compatible = "arm,amba-bus",	.data = ONLY_BUS },
-	{ .compatible = "fsl,ls1021a-scfg", },
-	{ .compatible = "fsl,ls1043a-scfg", },
-	{ .compatible = "fsl,ls1046a-scfg", },
-	{ .compatible = "fsl,ls1088a-isc", },
-	{ .compatible = "fsl,ls2080a-isc", },
-	{ .compatible = "fsl,lx2160a-isc", },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, simple_pm_bus_of_match);
@@ -166,3 +138,4 @@ module_platform_driver(simple_pm_bus_driver);
 
 MODULE_DESCRIPTION("Simple Power-Managed Bus Driver");
 MODULE_AUTHOR("Geert Uytterhoeven <geert+renesas@glider.be>");
+MODULE_LICENSE("GPL v2");

@@ -5,6 +5,7 @@
  *
  ******************************************************************************/
 #include <drv_types.h>
+#include <rtw_debug.h>
 
 void _rtw_init_stainfo(struct sta_info *psta);
 void _rtw_init_stainfo(struct sta_info *psta)
@@ -126,8 +127,9 @@ void kfree_all_stainfo(struct sta_priv *pstapriv)
 	phead = get_list_head(&pstapriv->free_sta_queue);
 	plist = get_next(phead);
 
-	while (phead != plist)
+	while (phead != plist) {
 		plist = get_next(plist);
+	}
 
 	spin_unlock_bh(&pstapriv->sta_hash_lock);
 }
@@ -158,7 +160,7 @@ u32 _rtw_free_sta_priv(struct	sta_priv *pstapriv)
 
 				for (i = 0; i < 16 ; i++) {
 					preorder_ctrl = &psta->recvreorder_ctrl[i];
-					timer_delete_sync(&preorder_ctrl->reordering_ctrl_timer);
+					del_timer_sync(&preorder_ctrl->reordering_ctrl_timer);
 				}
 			}
 		}
@@ -229,7 +231,7 @@ struct	sta_info *rtw_alloc_stainfo(struct	sta_priv *pstapriv, u8 *hwaddr)
 		for (i = 0; i < 16; i++)
 			memcpy(&psta->sta_recvpriv.rxcache.tid_rxseq[i], &wRxSeqInitialValue, 2);
 
-		timer_setup(&psta->addba_retry_timer, addba_timer_hdl, 0);
+		init_addba_retry_timer(pstapriv->padapter, psta);
 
 		/* for A-MPDU Rx reordering buffer control */
 		for (i = 0; i < 16 ; i++) {
@@ -247,9 +249,7 @@ struct	sta_info *rtw_alloc_stainfo(struct	sta_priv *pstapriv, u8 *hwaddr)
 			INIT_LIST_HEAD(&preorder_ctrl->pending_recvframe_queue.queue);
 			spin_lock_init(&preorder_ctrl->pending_recvframe_queue.lock);
 
-			/* init recv timer */
-			timer_setup(&preorder_ctrl->reordering_ctrl_timer,
-				    rtw_reordering_ctrl_timeout_handler, 0);
+			rtw_init_recv_timer(preorder_ctrl);
 		}
 
 		/* init for DM */
@@ -345,7 +345,7 @@ u32 rtw_free_stainfo(struct adapter *padapter, struct sta_info *psta)
 	/* _rtw_init_sta_xmit_priv(&psta->sta_xmitpriv); */
 	/* _rtw_init_sta_recv_priv(&psta->sta_recvpriv); */
 
-	timer_delete_sync(&psta->addba_retry_timer);
+	del_timer_sync(&psta->addba_retry_timer);
 
 	/* for A-MPDU Rx reordering buffer control, cancel reordering_ctrl_timer */
 	for (i = 0; i < 16 ; i++) {
@@ -356,7 +356,7 @@ u32 rtw_free_stainfo(struct adapter *padapter, struct sta_info *psta)
 
 		preorder_ctrl = &psta->recvreorder_ctrl[i];
 
-		timer_delete_sync(&preorder_ctrl->reordering_ctrl_timer);
+		del_timer_sync(&preorder_ctrl->reordering_ctrl_timer);
 
 		ppending_recvframe_queue = &preorder_ctrl->pending_recvframe_queue;
 
@@ -383,6 +383,12 @@ u32 rtw_free_stainfo(struct adapter *padapter, struct sta_info *psta)
 
 	/* release mac id for non-bc/mc station, */
 	rtw_release_macid(pstapriv->padapter, psta);
+
+/*
+	spin_lock_bh(&pstapriv->asoc_list_lock);
+	list_del_init(&psta->asoc_list);
+	spin_unlock_bh(&pstapriv->asoc_list_lock);
+*/
 	spin_lock_bh(&pstapriv->auth_list_lock);
 	if (!list_empty(&psta->auth_list)) {
 		list_del_init(&psta->auth_list);
@@ -465,7 +471,7 @@ struct sta_info *rtw_get_stainfo(struct sta_priv *pstapriv, u8 *hwaddr)
 	if (!hwaddr)
 		return NULL;
 
-	if (is_multicast_ether_addr(hwaddr))
+	if (IS_MCAST(hwaddr))
 		addr = bc_addr;
 	else
 		addr = hwaddr;

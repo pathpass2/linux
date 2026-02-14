@@ -45,7 +45,6 @@ struct xdp_id_md {
 
 struct xdp_features_md {
 	int ifindex;
-	__u32 xdp_zc_max_segs;
 	__u64 flags;
 };
 
@@ -422,9 +421,6 @@ static int parse_xdp_features(struct nlmsghdr *nh, libbpf_dump_nlmsg_t fn,
 		return NL_CONT;
 
 	md->flags = libbpf_nla_getattr_u64(tb[NETDEV_A_DEV_XDP_FEATURES]);
-	if (tb[NETDEV_A_DEV_XDP_ZC_MAX_SEGS])
-		md->xdp_zc_max_segs =
-			libbpf_nla_getattr_u32(tb[NETDEV_A_DEV_XDP_ZC_MAX_SEGS]);
 	return NL_DONE;
 }
 
@@ -472,13 +468,8 @@ int bpf_xdp_query(int ifindex, int xdp_flags, struct bpf_xdp_query_opts *opts)
 		return 0;
 
 	err = libbpf_netlink_resolve_genl_family_id("netdev", sizeof("netdev"), &id);
-	if (err < 0) {
-		if (err == -ENOENT) {
-			opts->feature_flags = 0;
-			goto skip_feature_flags;
-		}
+	if (err < 0)
 		return libbpf_err(err);
-	}
 
 	memset(&req, 0, sizeof(req));
 	req.nh.nlmsg_len = NLMSG_LENGTH(GENL_HDRLEN);
@@ -496,10 +487,8 @@ int bpf_xdp_query(int ifindex, int xdp_flags, struct bpf_xdp_query_opts *opts)
 	if (err)
 		return libbpf_err(err);
 
-	OPTS_SET(opts, feature_flags, md.flags);
-	OPTS_SET(opts, xdp_zc_max_segs, md.xdp_zc_max_segs);
+	opts->feature_flags = md.flags;
 
-skip_feature_flags:
 	return 0;
 }
 
@@ -529,24 +518,14 @@ int bpf_xdp_query_id(int ifindex, int flags, __u32 *prog_id)
 }
 
 
-typedef int (*qdisc_config_t)(struct libbpf_nla_req *req, const struct bpf_tc_hook *hook);
+typedef int (*qdisc_config_t)(struct libbpf_nla_req *req);
 
-static int clsact_config(struct libbpf_nla_req *req, const struct bpf_tc_hook *hook)
+static int clsact_config(struct libbpf_nla_req *req)
 {
 	req->tc.tcm_parent = TC_H_CLSACT;
 	req->tc.tcm_handle = TC_H_MAKE(TC_H_CLSACT, 0);
 
 	return nlattr_add(req, TCA_KIND, "clsact", sizeof("clsact"));
-}
-
-static int qdisc_config(struct libbpf_nla_req *req, const struct bpf_tc_hook *hook)
-{
-	const char *qdisc = OPTS_GET(hook, qdisc, NULL);
-
-	req->tc.tcm_parent = OPTS_GET(hook, parent, TC_H_ROOT);
-	req->tc.tcm_handle = OPTS_GET(hook, handle, 0);
-
-	return nlattr_add(req, TCA_KIND, qdisc, strlen(qdisc) + 1);
 }
 
 static int attach_point_to_config(struct bpf_tc_hook *hook,
@@ -562,9 +541,6 @@ static int attach_point_to_config(struct bpf_tc_hook *hook,
 		return 0;
 	case BPF_TC_CUSTOM:
 		return -EOPNOTSUPP;
-	case BPF_TC_QDISC:
-		*config = &qdisc_config;
-		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -609,7 +585,7 @@ static int tc_qdisc_modify(struct bpf_tc_hook *hook, int cmd, int flags)
 	req.tc.tcm_family  = AF_UNSPEC;
 	req.tc.tcm_ifindex = OPTS_GET(hook, ifindex, 0);
 
-	ret = config(&req, hook);
+	ret = config(&req);
 	if (ret < 0)
 		return ret;
 
@@ -652,7 +628,6 @@ int bpf_tc_hook_destroy(struct bpf_tc_hook *hook)
 	case BPF_TC_INGRESS:
 	case BPF_TC_EGRESS:
 		return libbpf_err(__bpf_tc_detach(hook, NULL, true));
-	case BPF_TC_QDISC:
 	case BPF_TC_INGRESS | BPF_TC_EGRESS:
 		return libbpf_err(tc_qdisc_delete(hook));
 	case BPF_TC_CUSTOM:

@@ -101,7 +101,6 @@
 		L2: l2-cache {
 			compatible = "cache";
 			cache-level = <2>;
-			cache-unified;
 		};
 	};
 
@@ -252,7 +251,7 @@
 		clock-names = "hif_sel";
 	};
 
-	cir: ir-receiver@10009000 {
+	cir: cir@10009000 {
 		compatible = "mediatek,mt7622-cir";
 		reg = <0 0x10009000 0 0x1000>;
 		interrupts = <GIC_SPI 175 IRQ_TYPE_LEVEL_LOW>;
@@ -278,23 +277,21 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 
-		soc-uuid@140 {
-			reg = <0x140 0x8>;
-		};
-
 		thermal_calibration: calib@198 {
 			reg = <0x198 0xc>;
 		};
 	};
 
-	apmixedsys: clock-controller@10209000 {
-		compatible = "mediatek,mt7622-apmixedsys";
+	apmixedsys: apmixedsys@10209000 {
+		compatible = "mediatek,mt7622-apmixedsys",
+			     "syscon";
 		reg = <0 0x10209000 0 0x1000>;
 		#clock-cells = <1>;
 	};
 
-	topckgen: clock-controller@10210000 {
-		compatible = "mediatek,mt7622-topckgen";
+	topckgen: topckgen@10210000 {
+		compatible = "mediatek,mt7622-topckgen",
+			     "syscon";
 		reg = <0 0x10210000 0 0x1000>;
 		#clock-cells = <1>;
 	};
@@ -517,6 +514,7 @@
 			 <&pericfg CLK_PERI_AUXADC_PD>;
 		clock-names = "therm", "auxadc";
 		resets = <&pericfg MT7622_PERI_THERM_SW_RST>;
+		reset-names = "therm";
 		mediatek,auxadc = <&auxadc>;
 		mediatek,apmixedsys = <&apmixedsys>;
 		nvmem-cells = <&thermal_calibration>;
@@ -541,7 +539,7 @@
 		};
 	};
 
-	nandc: nand-controller@1100d000 {
+	nandc: nfi@1100d000 {
 		compatible = "mediatek,mt7622-nfc";
 		reg = <0 0x1100D000 0 0x1000>;
 		interrupts = <GIC_SPI 96 IRQ_TYPE_LEVEL_LOW>;
@@ -735,8 +733,9 @@
 		power-domains = <&scpsys MT7622_POWER_DOMAIN_WB>;
 	};
 
-	ssusbsys: clock-controller@1a000000 {
-		compatible = "mediatek,mt7622-ssusbsys";
+	ssusbsys: ssusbsys@1a000000 {
+		compatible = "mediatek,mt7622-ssusbsys",
+			     "syscon";
 		reg = <0 0x1a000000 0 0x1000>;
 		#clock-cells = <1>;
 		#reset-cells = <1>;
@@ -793,8 +792,9 @@
 		};
 	};
 
-	pciesys: clock-controller@1a100800 {
-		compatible = "mediatek,mt7622-pciesys";
+	pciesys: pciesys@1a100800 {
+		compatible = "mediatek,mt7622-pciesys",
+			     "syscon";
 		reg = <0 0x1a100800 0 0x1000>;
 		#clock-cells = <1>;
 		#reset-cells = <1>;
@@ -904,7 +904,7 @@
 		status = "disabled";
 	};
 
-	sata_phy: t-phy {
+	sata_phy: t-phy@1a243000 {
 		compatible = "mediatek,mt7622-tphy",
 			     "mediatek,generic-tphy-v1";
 		#address-cells = <2>;
@@ -920,13 +920,12 @@
 		};
 	};
 
-	hifsys: clock-controller@1af00000 {
-		compatible = "mediatek,mt7622-hifsys";
+	hifsys: syscon@1af00000 {
+		compatible = "mediatek,mt7622-hifsys", "syscon";
 		reg = <0 0x1af00000 0 0x70>;
-		#clock-cells = <1>;
 	};
 
-	ethsys: clock-controller@1b000000 {
+	ethsys: syscon@1b000000 {
 		compatible = "mediatek,mt7622-ethsys",
 			     "syscon";
 		reg = <0 0x1b000000 0 0x1000>;
@@ -966,7 +965,9 @@
 	};
 
 	eth: ethernet@1b100000 {
-		compatible = "mediatek,mt7622-eth";
+		compatible = "mediatek,mt7622-eth",
+			     "mediatek,mt2701-eth",
+			     "syscon";
 		reg = <0 0x1b100000 0 0x20000>;
 		interrupts = <GIC_SPI 223 IRQ_TYPE_LEVEL_LOW>,
 			     <GIC_SPI 224 IRQ_TYPE_LEVEL_LOW>,

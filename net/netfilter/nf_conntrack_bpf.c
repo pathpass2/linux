@@ -14,8 +14,6 @@
 #include <linux/types.h>
 #include <linux/btf_ids.h>
 #include <linux/net_namespace.h>
-#include <net/sock.h>
-#include <net/xdp.h>
 #include <net/netfilter/nf_conntrack_bpf.h>
 #include <net/netfilter/nf_conntrack_core.h>
 
@@ -33,9 +31,7 @@
  *		   -EINVAL - Passed NULL for bpf_tuple pointer
  *		   -EINVAL - opts->reserved is not 0
  *		   -EINVAL - netns_id is less than -1
- *		   -EINVAL - opts__sz isn't NF_BPF_CT_OPTS_SZ (16) or 12
- *		   -EINVAL - opts->ct_zone_id set when
-			     opts__sz isn't NF_BPF_CT_OPTS_SZ (16)
+ *		   -EINVAL - opts__sz isn't NF_BPF_CT_OPTS_SZ (12)
  *		   -EPROTO - l4proto isn't one of IPPROTO_TCP or IPPROTO_UDP
  *		   -ENONET - No network namespace found for netns_id
  *		   -ENOENT - Conntrack lookup could not find entry for tuple
@@ -45,8 +41,6 @@
  *		 Values:
  *		   IPPROTO_TCP, IPPROTO_UDP
  * @dir:       - connection tracking tuple direction.
- * @ct_zone_id - connection tracking zone id.
- * @ct_zone_dir - connection tracking zone direction.
  * @reserved   - Reserved member, will be reused for more options in future
  *		 Values:
  *		   0
@@ -56,13 +50,11 @@ struct bpf_ct_opts {
 	s32 error;
 	u8 l4proto;
 	u8 dir;
-	u16 ct_zone_id;
-	u8 ct_zone_dir;
-	u8 reserved[3];
+	u8 reserved[2];
 };
 
 enum {
-	NF_BPF_CT_OPTS_SZ = 16,
+	NF_BPF_CT_OPTS_SZ = 12,
 };
 
 static int bpf_nf_ct_tuple_parse(struct bpf_sock_tuple *bpf_tuple,
@@ -111,19 +103,12 @@ __bpf_nf_ct_alloc_entry(struct net *net, struct bpf_sock_tuple *bpf_tuple,
 			u32 timeout)
 {
 	struct nf_conntrack_tuple otuple, rtuple;
-	struct nf_conntrack_zone ct_zone;
 	struct nf_conn *ct;
 	int err;
 
-	if (!(opts_len == NF_BPF_CT_OPTS_SZ || opts_len == 12))
+	if (!opts || !bpf_tuple || opts->reserved[0] || opts->reserved[1] ||
+	    opts_len != NF_BPF_CT_OPTS_SZ)
 		return ERR_PTR(-EINVAL);
-	if (opts_len == NF_BPF_CT_OPTS_SZ) {
-		if (opts->reserved[0] || opts->reserved[1] || opts->reserved[2])
-			return ERR_PTR(-EINVAL);
-	} else {
-		if (opts->ct_zone_id)
-			return ERR_PTR(-EINVAL);
-	}
 
 	if (unlikely(opts->netns_id < BPF_F_CURRENT_NETNS))
 		return ERR_PTR(-EINVAL);
@@ -144,16 +129,7 @@ __bpf_nf_ct_alloc_entry(struct net *net, struct bpf_sock_tuple *bpf_tuple,
 			return ERR_PTR(-ENONET);
 	}
 
-	if (opts_len == NF_BPF_CT_OPTS_SZ) {
-		if (opts->ct_zone_dir == 0)
-			opts->ct_zone_dir = NF_CT_DEFAULT_ZONE_DIR;
-		nf_ct_zone_init(&ct_zone,
-				opts->ct_zone_id, opts->ct_zone_dir, 0);
-	} else {
-		ct_zone = nf_ct_zone_dflt;
-	}
-
-	ct = nf_conntrack_alloc(net, &ct_zone, &otuple, &rtuple,
+	ct = nf_conntrack_alloc(net, &nf_ct_zone_dflt, &otuple, &rtuple,
 				GFP_ATOMIC);
 	if (IS_ERR(ct))
 		goto out;
@@ -175,21 +151,12 @@ static struct nf_conn *__bpf_nf_ct_lookup(struct net *net,
 {
 	struct nf_conntrack_tuple_hash *hash;
 	struct nf_conntrack_tuple tuple;
-	struct nf_conntrack_zone ct_zone;
 	struct nf_conn *ct;
 	int err;
 
-	if (!opts || !bpf_tuple)
+	if (!opts || !bpf_tuple || opts->reserved[0] || opts->reserved[1] ||
+	    opts_len != NF_BPF_CT_OPTS_SZ)
 		return ERR_PTR(-EINVAL);
-	if (!(opts_len == NF_BPF_CT_OPTS_SZ || opts_len == 12))
-		return ERR_PTR(-EINVAL);
-	if (opts_len == NF_BPF_CT_OPTS_SZ) {
-		if (opts->reserved[0] || opts->reserved[1] || opts->reserved[2])
-			return ERR_PTR(-EINVAL);
-	} else {
-		if (opts->ct_zone_id)
-			return ERR_PTR(-EINVAL);
-	}
 	if (unlikely(opts->l4proto != IPPROTO_TCP && opts->l4proto != IPPROTO_UDP))
 		return ERR_PTR(-EPROTO);
 	if (unlikely(opts->netns_id < BPF_F_CURRENT_NETNS))
@@ -206,16 +173,7 @@ static struct nf_conn *__bpf_nf_ct_lookup(struct net *net,
 			return ERR_PTR(-ENONET);
 	}
 
-	if (opts_len == NF_BPF_CT_OPTS_SZ) {
-		if (opts->ct_zone_dir == 0)
-			opts->ct_zone_dir = NF_CT_DEFAULT_ZONE_DIR;
-		nf_ct_zone_init(&ct_zone,
-				opts->ct_zone_id, opts->ct_zone_dir, 0);
-	} else {
-		ct_zone = nf_ct_zone_dflt;
-	}
-
-	hash = nf_conntrack_find_get(net, &ct_zone, &tuple);
+	hash = nf_conntrack_find_get(net, &nf_ct_zone_dflt, &tuple);
 	if (opts->netns_id >= 0)
 		put_net(net);
 	if (!hash)
@@ -234,7 +192,8 @@ BTF_ID(struct, nf_conn___init)
 /* Check writes into `struct nf_conn` */
 static int _nf_conntrack_btf_struct_access(struct bpf_verifier_log *log,
 					   const struct bpf_reg_state *reg,
-					   int off, int size)
+					   int off, int size, enum bpf_access_type atype,
+					   u32 *next_btf_id, enum bpf_type_flag *flag)
 {
 	const struct btf_type *ncit, *nct, *t;
 	size_t end;
@@ -271,7 +230,9 @@ static int _nf_conntrack_btf_struct_access(struct bpf_verifier_log *log,
 	return 0;
 }
 
-__bpf_kfunc_start_defs();
+__diag_push();
+__diag_ignore_all("-Wmissing-prototypes",
+		  "Global functions as their definitions will be in nf_conntrack BTF");
 
 /* bpf_xdp_ct_alloc - Allocate a new CT entry
  *
@@ -286,7 +247,7 @@ __bpf_kfunc_start_defs();
  * @opts	- Additional options for allocation (documented above)
  *		    Cannot be NULL
  * @opts__sz	- Length of the bpf_ct_opts structure
- *		    Must be NF_BPF_CT_OPTS_SZ (16) or 12
+ *		    Must be NF_BPF_CT_OPTS_SZ (12)
  */
 __bpf_kfunc struct nf_conn___init *
 bpf_xdp_ct_alloc(struct xdp_md *xdp_ctx, struct bpf_sock_tuple *bpf_tuple,
@@ -298,7 +259,8 @@ bpf_xdp_ct_alloc(struct xdp_md *xdp_ctx, struct bpf_sock_tuple *bpf_tuple,
 	nfct = __bpf_nf_ct_alloc_entry(dev_net(ctx->rxq->dev), bpf_tuple, tuple__sz,
 				       opts, opts__sz, 10);
 	if (IS_ERR(nfct)) {
-		opts->error = PTR_ERR(nfct);
+		if (opts)
+			opts->error = PTR_ERR(nfct);
 		return NULL;
 	}
 
@@ -319,7 +281,7 @@ bpf_xdp_ct_alloc(struct xdp_md *xdp_ctx, struct bpf_sock_tuple *bpf_tuple,
  * @opts	- Additional options for lookup (documented above)
  *		    Cannot be NULL
  * @opts__sz	- Length of the bpf_ct_opts structure
- *		    Must be NF_BPF_CT_OPTS_SZ (16) or 12
+ *		    Must be NF_BPF_CT_OPTS_SZ (12)
  */
 __bpf_kfunc struct nf_conn *
 bpf_xdp_ct_lookup(struct xdp_md *xdp_ctx, struct bpf_sock_tuple *bpf_tuple,
@@ -332,7 +294,8 @@ bpf_xdp_ct_lookup(struct xdp_md *xdp_ctx, struct bpf_sock_tuple *bpf_tuple,
 	caller_net = dev_net(ctx->rxq->dev);
 	nfct = __bpf_nf_ct_lookup(caller_net, bpf_tuple, tuple__sz, opts, opts__sz);
 	if (IS_ERR(nfct)) {
-		opts->error = PTR_ERR(nfct);
+		if (opts)
+			opts->error = PTR_ERR(nfct);
 		return NULL;
 	}
 	return nfct;
@@ -351,7 +314,7 @@ bpf_xdp_ct_lookup(struct xdp_md *xdp_ctx, struct bpf_sock_tuple *bpf_tuple,
  * @opts	- Additional options for allocation (documented above)
  *		    Cannot be NULL
  * @opts__sz	- Length of the bpf_ct_opts structure
- *		    Must be NF_BPF_CT_OPTS_SZ (16) or 12
+ *		    Must be NF_BPF_CT_OPTS_SZ (12)
  */
 __bpf_kfunc struct nf_conn___init *
 bpf_skb_ct_alloc(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
@@ -364,7 +327,8 @@ bpf_skb_ct_alloc(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
 	net = skb->dev ? dev_net(skb->dev) : sock_net(skb->sk);
 	nfct = __bpf_nf_ct_alloc_entry(net, bpf_tuple, tuple__sz, opts, opts__sz, 10);
 	if (IS_ERR(nfct)) {
-		opts->error = PTR_ERR(nfct);
+		if (opts)
+			opts->error = PTR_ERR(nfct);
 		return NULL;
 	}
 
@@ -385,7 +349,7 @@ bpf_skb_ct_alloc(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
  * @opts	- Additional options for lookup (documented above)
  *		    Cannot be NULL
  * @opts__sz	- Length of the bpf_ct_opts structure
- *		    Must be NF_BPF_CT_OPTS_SZ (16) or 12
+ *		    Must be NF_BPF_CT_OPTS_SZ (12)
  */
 __bpf_kfunc struct nf_conn *
 bpf_skb_ct_lookup(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
@@ -398,7 +362,8 @@ bpf_skb_ct_lookup(struct __sk_buff *skb_ctx, struct bpf_sock_tuple *bpf_tuple,
 	caller_net = skb->dev ? dev_net(skb->dev) : sock_net(skb->sk);
 	nfct = __bpf_nf_ct_lookup(caller_net, bpf_tuple, tuple__sz, opts, opts__sz);
 	if (IS_ERR(nfct)) {
-		opts->error = PTR_ERR(nfct);
+		if (opts)
+			opts->error = PTR_ERR(nfct);
 		return NULL;
 	}
 	return nfct;
@@ -416,9 +381,6 @@ __bpf_kfunc struct nf_conn *bpf_ct_insert_entry(struct nf_conn___init *nfct_i)
 	struct nf_conn *nfct = (struct nf_conn *)nfct_i;
 	int err;
 
-	if (!nf_ct_is_confirmed(nfct))
-		nfct->timeout += nfct_time_stamp;
-	nfct->status |= IPS_CONFIRMED;
 	err = nf_conntrack_hash_check_insert(nfct);
 	if (err < 0) {
 		nf_conntrack_free(nfct);
@@ -439,6 +401,8 @@ __bpf_kfunc struct nf_conn *bpf_ct_insert_entry(struct nf_conn___init *nfct_i)
  */
 __bpf_kfunc void bpf_ct_release(struct nf_conn *nfct)
 {
+	if (!nfct)
+		return;
 	nf_ct_put(nfct);
 }
 
@@ -502,20 +466,20 @@ __bpf_kfunc int bpf_ct_change_status(struct nf_conn *nfct, u32 status)
 	return nf_ct_change_status_common(nfct, status);
 }
 
-__bpf_kfunc_end_defs();
+__diag_pop()
 
-BTF_KFUNCS_START(nf_ct_kfunc_set)
+BTF_SET8_START(nf_ct_kfunc_set)
 BTF_ID_FLAGS(func, bpf_xdp_ct_alloc, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_xdp_ct_lookup, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_skb_ct_alloc, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_skb_ct_lookup, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_ct_insert_entry, KF_ACQUIRE | KF_RET_NULL | KF_RELEASE)
 BTF_ID_FLAGS(func, bpf_ct_release, KF_RELEASE)
-BTF_ID_FLAGS(func, bpf_ct_set_timeout)
-BTF_ID_FLAGS(func, bpf_ct_change_timeout)
-BTF_ID_FLAGS(func, bpf_ct_set_status)
-BTF_ID_FLAGS(func, bpf_ct_change_status)
-BTF_KFUNCS_END(nf_ct_kfunc_set)
+BTF_ID_FLAGS(func, bpf_ct_set_timeout, KF_TRUSTED_ARGS)
+BTF_ID_FLAGS(func, bpf_ct_change_timeout, KF_TRUSTED_ARGS)
+BTF_ID_FLAGS(func, bpf_ct_set_status, KF_TRUSTED_ARGS)
+BTF_ID_FLAGS(func, bpf_ct_change_status, KF_TRUSTED_ARGS)
+BTF_SET8_END(nf_ct_kfunc_set)
 
 static const struct btf_kfunc_id_set nf_conntrack_kfunc_set = {
 	.owner = THIS_MODULE,

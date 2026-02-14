@@ -29,12 +29,12 @@
 #include <linux/crc32.h>
 #include <linux/hardirq.h>
 #include <linux/delay.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -619,7 +619,7 @@ static void mpc52xx_fec_hw_init(struct net_device *dev)
 	out_be32(&fec->rfifo_alarm, 0x0000030c);
 	out_be32(&fec->tfifo_alarm, 0x00000100);
 
-	/* begin transmission when 256 bytes are in FIFO (or EOF or FIFO full) */
+	/* begin transmittion when 256 bytes are in FIFO (or EOF or FIFO full) */
 	out_be32(&fec->x_wmrk, FEC_FIFO_WMRK_256B);
 
 	/* enable crc generation */
@@ -974,7 +974,7 @@ err_netdev:
 	return rv;
 }
 
-static void
+static int
 mpc52xx_fec_remove(struct platform_device *op)
 {
 	struct net_device *ndev;
@@ -998,6 +998,8 @@ mpc52xx_fec_remove(struct platform_device *op)
 	release_mem_region(ndev->base_addr, sizeof(struct mpc52xx_fec));
 
 	free_netdev(ndev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM

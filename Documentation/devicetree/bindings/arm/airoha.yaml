@@ -22,10 +22,6 @@ properties:
           - enum:
               - airoha,en7523-evb
           - const: airoha,en7523
-      - items:
-          - enum:
-              - airoha,en7581-evb
-          - const: airoha,en7581
 
 additionalProperties: true
 

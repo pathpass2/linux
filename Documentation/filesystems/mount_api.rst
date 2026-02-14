@@ -79,6 +79,7 @@ context.  This is represented by the fs_context structure::
 		unsigned int		sb_flags;
 		unsigned int		sb_flags_mask;
 		unsigned int		s_iflags;
+		unsigned int		lsm_flags;
 		enum fs_context_purpose	purpose:8;
 		...
 	};
@@ -299,6 +300,8 @@ manage the filesystem context.  They are as follows:
      On success it should return 0.  In the case of an error, it should return
      a negative error code.
 
+     .. Note:: reconfigure is intended as a replacement for remount_fs.
+
 
 Filesystem context Security
 ===========================
@@ -504,16 +507,8 @@ returned.
 
    * ::
 
-       int vfs_parse_fs_qstr(struct fs_context *fc, const char *key,
-			       const struct qstr *value);
-
-     A wrapper around vfs_parse_fs_param() that copies the value string it is
-     passed.
-
-   * ::
-
        int vfs_parse_fs_string(struct fs_context *fc, const char *key,
-			       const char *value);
+			       const char *value, size_t v_size);
 
      A wrapper around vfs_parse_fs_param() that copies the value string it is
      passed.
@@ -651,8 +646,6 @@ The members are as follows:
 	fs_param_is_blockdev	Blockdev path		* Needs lookup
 	fs_param_is_path	Path			* Needs lookup
 	fs_param_is_fd		File descriptor		result->int_32
-	fs_param_is_uid		User ID (u32)           result->uid
-	fs_param_is_gid		Group ID (u32)          result->gid
 	=======================	=======================	=====================
 
      Note that if the value is of fs_param_is_bool type, fs_parse() will try
@@ -677,6 +670,7 @@ The members are as follows:
 	fsparam_bool()		fs_param_is_bool
 	fsparam_u32()		fs_param_is_u32
 	fsparam_u32oct()	fs_param_is_u32_octal
+	fsparam_u32hex()	fs_param_is_u32_hex
 	fsparam_s32()		fs_param_is_s32
 	fsparam_u64()		fs_param_is_u64
 	fsparam_enum()		fs_param_is_enum
@@ -685,8 +679,6 @@ The members are as follows:
 	fsparam_bdev()		fs_param_is_blockdev
 	fsparam_path()		fs_param_is_path
 	fsparam_fd()		fs_param_is_fd
-	fsparam_uid()		fs_param_is_uid
-	fsparam_gid()		fs_param_is_gid
 	=======================	===============================================
 
      all of which take two arguments, name string and option number - for
@@ -760,8 +752,22 @@ process the parameters it is given.
 
    * ::
 
-       bool fs_validate_description(const char *name,
-                                    const struct fs_parameter_description *desc);
+       bool validate_constant_table(const struct constant_table *tbl,
+				    size_t tbl_size,
+				    int low, int high, int special);
+
+     Validate a constant table.  Checks that all the elements are appropriately
+     ordered, that there are no duplicates and that the values are between low
+     and high inclusive, though provision is made for one allowable special
+     value outside of that range.  If no special value is required, special
+     should just be set to lie inside the low-to-high range.
+
+     If all is good, true is returned.  If the table is invalid, errors are
+     logged to the kernel log buffer and false is returned.
+
+   * ::
+
+       bool fs_validate_description(const struct fs_parameter_description *desc);
 
      This performs some validation checks on a parameter description.  It
      returns true if the description is good and false if it is not.  It will
@@ -779,9 +785,8 @@ process the parameters it is given.
      option number (which it returns).
 
      If successful, and if the parameter type indicates the result is a
-     boolean, integer, enum, uid, or gid type, the value is converted by this
-     function and the result stored in
-     result->{boolean,int_32,uint_32,uint_64,uid,gid}.
+     boolean, integer or enum type, the value is converted by this function and
+     the result stored in result->{boolean,int_32,uint_32,uint_64}.
 
      If a match isn't initially made, the key is prefixed with "no" and no
      value is present then an attempt will be made to look up the key with the

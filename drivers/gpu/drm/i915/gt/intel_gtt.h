@@ -35,9 +35,9 @@
 #define I915_GFP_ALLOW_FAIL (GFP_KERNEL | __GFP_RETRY_MAYFAIL | __GFP_NOWARN)
 
 #if IS_ENABLED(CONFIG_DRM_I915_TRACE_GTT)
-#define GTT_TRACE(...) trace_printk(__VA_ARGS__)
+#define DBG(...) trace_printk(__VA_ARGS__)
 #else
-#define GTT_TRACE(...)
+#define DBG(...)
 #endif
 
 #define NALLOC 3 /* 1 normal, 1 for concurrent threads, 1 for preallocation */
@@ -88,17 +88,9 @@ typedef u64 gen8_pte_t;
 #define BYT_PTE_SNOOPED_BY_CPU_CACHES	REG_BIT(2)
 #define BYT_PTE_WRITEABLE		REG_BIT(1)
 
-#define MTL_PPGTT_PTE_PAT3	BIT_ULL(62)
 #define GEN12_PPGTT_PTE_LM	BIT_ULL(11)
-#define GEN12_PPGTT_PTE_PAT2	BIT_ULL(7)
-#define GEN12_PPGTT_PTE_PAT1	BIT_ULL(4)
-#define GEN12_PPGTT_PTE_PAT0	BIT_ULL(3)
 
-#define GEN12_GGTT_PTE_LM		BIT_ULL(1)
-#define MTL_GGTT_PTE_PAT0		BIT_ULL(52)
-#define MTL_GGTT_PTE_PAT1		BIT_ULL(53)
-#define GEN12_GGTT_PTE_ADDR_MASK	GENMASK_ULL(45, 12)
-#define MTL_GGTT_PTE_PAT_MASK		GENMASK_ULL(53, 52)
+#define GEN12_GGTT_PTE_LM	BIT_ULL(1)
 
 #define GEN12_PDE_64K BIT(6)
 #define GEN12_PTE_PS64 BIT(8)
@@ -155,13 +147,7 @@ typedef u64 gen8_pte_t;
 #define GEN8_PDE_IPS_64K BIT(11)
 #define GEN8_PDE_PS_2M   BIT(7)
 
-#define MTL_PPAT_L4_CACHE_POLICY_MASK	REG_GENMASK(3, 2)
-#define MTL_PAT_INDEX_COH_MODE_MASK	REG_GENMASK(1, 0)
-#define MTL_PPAT_L4_3_UC	REG_FIELD_PREP(MTL_PPAT_L4_CACHE_POLICY_MASK, 3)
-#define MTL_PPAT_L4_1_WT	REG_FIELD_PREP(MTL_PPAT_L4_CACHE_POLICY_MASK, 1)
-#define MTL_PPAT_L4_0_WB	REG_FIELD_PREP(MTL_PPAT_L4_CACHE_POLICY_MASK, 0)
-#define MTL_3_COH_2W	REG_FIELD_PREP(MTL_PAT_INDEX_COH_MODE_MASK, 3)
-#define MTL_2_COH_1W	REG_FIELD_PREP(MTL_PAT_INDEX_COH_MODE_MASK, 2)
+enum i915_cache_level;
 
 struct drm_i915_gem_object;
 struct i915_fence_reg;
@@ -170,9 +156,6 @@ struct intel_gt;
 
 #define for_each_sgt_daddr(__dp, __iter, __sgt) \
 	__for_each_sgt_daddr(__dp, __iter, __sgt, I915_GTT_PAGE_SIZE)
-
-#define for_each_sgt_daddr_next(__dp, __iter) \
-	__for_each_daddr_next(__dp, __iter, I915_GTT_PAGE_SIZE)
 
 struct i915_page_table {
 	struct drm_i915_gem_object *base;
@@ -233,7 +216,7 @@ struct i915_vma_ops {
 	void (*bind_vma)(struct i915_address_space *vm,
 			 struct i915_vm_pt_stash *stash,
 			 struct i915_vma_resource *vma_res,
-			 unsigned int pat_index,
+			 enum i915_cache_level cache_level,
 			 u32 flags);
 	/*
 	 * Unmap an object from an address space. This usually consists of
@@ -249,13 +232,8 @@ struct i915_address_space {
 	struct work_struct release_work;
 
 	struct drm_mm mm;
-	struct {
-		struct drm_i915_gem_object *obj;
-		struct i915_vma *vma;
-	} rsvd;
 	struct intel_gt *gt;
 	struct drm_i915_private *i915;
-	struct drm_i915_file_private *fpriv;
 	struct device *dma;
 	u64 total;		/* size addr space maps (ex. 2GB for ggtt) */
 	u64 reserved;		/* size addr space reserved */
@@ -310,9 +288,8 @@ struct i915_address_space {
 		(*alloc_scratch_dma)(struct i915_address_space *vm, int sz);
 
 	u64 (*pte_encode)(dma_addr_t addr,
-			  unsigned int pat_index,
+			  enum i915_cache_level level,
 			  u32 flags); /* Create a valid PTE */
-	dma_addr_t (*pte_decode)(u64 pte, bool *is_present, bool *is_local);
 #define PTE_READ_ONLY	BIT(0)
 #define PTE_LM		BIT(1)
 
@@ -321,28 +298,24 @@ struct i915_address_space {
 				  u64 start, u64 length);
 	void (*clear_range)(struct i915_address_space *vm,
 			    u64 start, u64 length);
-	void (*scratch_range)(struct i915_address_space *vm,
-			      u64 start, u64 length);
 	void (*insert_page)(struct i915_address_space *vm,
 			    dma_addr_t addr,
 			    u64 offset,
-			    unsigned int pat_index,
+			    enum i915_cache_level cache_level,
 			    u32 flags);
 	void (*insert_entries)(struct i915_address_space *vm,
 			       struct i915_vma_resource *vma_res,
-			       unsigned int pat_index,
+			       enum i915_cache_level cache_level,
 			       u32 flags);
 	void (*raw_insert_page)(struct i915_address_space *vm,
 				dma_addr_t addr,
 				u64 offset,
-				unsigned int pat_index,
+				enum i915_cache_level cache_level,
 				u32 flags);
 	void (*raw_insert_entries)(struct i915_address_space *vm,
 				   struct i915_vma_resource *vma_res,
-				   unsigned int pat_index,
+				   enum i915_cache_level cache_level,
 				   u32 flags);
-	dma_addr_t (*read_entry)(struct i915_address_space *vm,
-				 u64 offset, bool *is_present, bool *is_local);
 	void (*cleanup)(struct i915_address_space *vm);
 
 	void (*foreach)(struct i915_address_space *vm,
@@ -518,7 +491,7 @@ static inline void i915_vm_put(struct i915_address_space *vm)
 
 /**
  * i915_vm_resv_put - Release a reference on the vm's reservation lock
- * @vm: The vm whose reservation lock reference we want to release
+ * @resv: Pointer to a reservation lock obtained from i915_vm_resv_get()
  */
 static inline void i915_vm_resv_put(struct i915_address_space *vm)
 {
@@ -588,13 +561,10 @@ void ppgtt_init(struct i915_ppgtt *ppgtt, struct intel_gt *gt,
 void intel_ggtt_bind_vma(struct i915_address_space *vm,
 			 struct i915_vm_pt_stash *stash,
 			 struct i915_vma_resource *vma_res,
-			 unsigned int pat_index,
+			 enum i915_cache_level cache_level,
 			 u32 flags);
 void intel_ggtt_unbind_vma(struct i915_address_space *vm,
 			   struct i915_vma_resource *vma_res);
-
-dma_addr_t intel_ggtt_read_entry(struct i915_address_space *vm,
-				 u64 offset, bool *is_present, bool *is_local);
 
 int i915_ggtt_probe_hw(struct drm_i915_private *i915);
 int i915_ggtt_init_hw(struct drm_i915_private *i915);
@@ -614,8 +584,8 @@ int i915_ppgtt_init_hw(struct intel_gt *gt);
 struct i915_ppgtt *i915_ppgtt_create(struct intel_gt *gt,
 				     unsigned long lmem_pt_obj_flags);
 
-void i915_ggtt_suspend_vm(struct i915_address_space *vm, bool evict_all);
-bool i915_ggtt_resume_vm(struct i915_address_space *vm, bool all_evicted);
+void i915_ggtt_suspend_vm(struct i915_address_space *vm);
+bool i915_ggtt_resume_vm(struct i915_address_space *vm);
 void i915_ggtt_suspend(struct i915_ggtt *gtt);
 void i915_ggtt_resume(struct i915_ggtt *ggtt);
 
@@ -669,7 +639,7 @@ void gen6_ggtt_invalidate(struct i915_ggtt *ggtt);
 void ppgtt_bind_vma(struct i915_address_space *vm,
 		    struct i915_vm_pt_stash *stash,
 		    struct i915_vma_resource *vma_res,
-		    unsigned int pat_index,
+		    enum i915_cache_level cache_level,
 		    u32 flags);
 void ppgtt_unbind_vma(struct i915_address_space *vm,
 		      struct i915_vma_resource *vma_res);
@@ -701,7 +671,5 @@ static inline struct sgt_dma {
 
 	return (struct sgt_dma){ sg, addr, addr + sg_dma_len(sg) };
 }
-
-bool i915_ggtt_require_binder(struct drm_i915_private *i915);
 
 #endif

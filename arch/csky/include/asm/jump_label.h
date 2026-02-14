@@ -3,7 +3,7 @@
 #ifndef __ASM_CSKY_JUMP_LABEL_H
 #define __ASM_CSKY_JUMP_LABEL_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/types.h>
 
@@ -12,7 +12,7 @@
 static __always_inline bool arch_static_branch(struct static_key *key,
 					       bool branch)
 {
-	asm goto(
+	asm_volatile_goto(
 		"1:	nop32					\n"
 		"	.pushsection	__jump_table, \"aw\"	\n"
 		"	.align		2			\n"
@@ -29,7 +29,7 @@ label:
 static __always_inline bool arch_static_branch_jump(struct static_key *key,
 						    bool branch)
 {
-	asm goto(
+	asm_volatile_goto(
 		"1:	bsr32		%l[label]		\n"
 		"	.pushsection	__jump_table, \"aw\"	\n"
 		"	.align		2			\n"
@@ -43,10 +43,5 @@ label:
 	return true;
 }
 
-enum jump_label_type;
-void arch_jump_label_transform_static(struct jump_entry *entry,
-				      enum jump_label_type type);
-#define arch_jump_label_transform_static arch_jump_label_transform_static
-
-#endif  /* __ASSEMBLER__ */
+#endif  /* __ASSEMBLY__ */
 #endif	/* __ASM_CSKY_JUMP_LABEL_H */

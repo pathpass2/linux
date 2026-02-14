@@ -4,4 +4,3 @@
 #
 
 obj-$(CONFIG_HINIC) += hinic/
-obj-$(CONFIG_HINIC3) += hinic3/

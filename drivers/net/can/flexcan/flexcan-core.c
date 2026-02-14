@@ -23,12 +23,11 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/can/platform/flexcan.h>
-#include <linux/phy/phy.h>
 #include <linux/pm_runtime.h>
-#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 
@@ -349,18 +348,10 @@ static struct flexcan_devtype_data fsl_imx8mp_devtype_data = {
 static struct flexcan_devtype_data fsl_imx93_devtype_data = {
 	.quirks = FLEXCAN_QUIRK_DISABLE_RXFG | FLEXCAN_QUIRK_ENABLE_EACEN_RRS |
 		FLEXCAN_QUIRK_DISABLE_MECR | FLEXCAN_QUIRK_USE_RX_MAILBOX |
-		FLEXCAN_QUIRK_BROKEN_PERR_STATE | FLEXCAN_QUIRK_SETUP_STOP_MODE_GPR |
+		FLEXCAN_QUIRK_BROKEN_PERR_STATE | FLEXCAN_QUIRK_AUTO_STOP_MODE |
 		FLEXCAN_QUIRK_SUPPORT_FD | FLEXCAN_QUIRK_SUPPORT_ECC |
 		FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX |
 		FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX_RTR,
-};
-
-static const struct flexcan_devtype_data fsl_imx95_devtype_data = {
-	.quirks = FLEXCAN_QUIRK_DISABLE_RXFG | FLEXCAN_QUIRK_ENABLE_EACEN_RRS |
-		FLEXCAN_QUIRK_DISABLE_MECR | FLEXCAN_QUIRK_USE_RX_MAILBOX |
-		FLEXCAN_QUIRK_BROKEN_PERR_STATE | FLEXCAN_QUIRK_SUPPORT_FD |
-		FLEXCAN_QUIRK_SUPPORT_ECC | FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX |
-		FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX_RTR | FLEXCAN_QUIRK_SETUP_STOP_MODE_SCMI,
 };
 
 static const struct flexcan_devtype_data fsl_vf610_devtype_data = {
@@ -385,16 +376,6 @@ static const struct flexcan_devtype_data fsl_lx2160a_r1_devtype_data = {
 		FLEXCAN_QUIRK_SUPPORT_ECC |
 		FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX |
 		FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX_RTR,
-};
-
-static const struct flexcan_devtype_data nxp_s32g2_devtype_data = {
-	.quirks = FLEXCAN_QUIRK_DISABLE_RXFG | FLEXCAN_QUIRK_ENABLE_EACEN_RRS |
-		FLEXCAN_QUIRK_DISABLE_MECR | FLEXCAN_QUIRK_BROKEN_PERR_STATE |
-		FLEXCAN_QUIRK_USE_RX_MAILBOX | FLEXCAN_QUIRK_SUPPORT_FD |
-		FLEXCAN_QUIRK_SUPPORT_ECC | FLEXCAN_QUIRK_NR_IRQ_3 |
-		FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX |
-		FLEXCAN_QUIRK_SUPPORT_RX_MAILBOX_RTR |
-		FLEXCAN_QUIRK_SECONDARY_MB_IRQ,
 };
 
 static const struct can_bittiming_const flexcan_bittiming_const = {
@@ -563,11 +544,9 @@ static inline int flexcan_enter_stop_mode(struct flexcan_priv *priv)
 	} else if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SETUP_STOP_MODE_GPR) {
 		regmap_update_bits(priv->stm.gpr, priv->stm.req_gpr,
 				   1 << priv->stm.req_bit, 1 << priv->stm.req_bit);
-	} else if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SETUP_STOP_MODE_SCMI) {
-		/* For the SCMI mode, driver do nothing, ATF will send request to
-		 * SM(system manager, M33 core) through SCMI protocol after linux
-		 * suspend. Once SM get this request, it will send IPG_STOP signal
-		 * to Flex_CAN, let CAN in STOP mode.
+	} else if (priv->devtype_data.quirks & FLEXCAN_QUIRK_AUTO_STOP_MODE) {
+		/* For the auto stop mode, software do nothing, hardware will cover
+		 * all the operation automatically after system go into low power mode.
 		 */
 		return 0;
 	}
@@ -581,11 +560,7 @@ static inline int flexcan_exit_stop_mode(struct flexcan_priv *priv)
 	u32 reg_mcr;
 	int ret;
 
-	/* Remove stop request, for FLEXCAN_QUIRK_SETUP_STOP_MODE_SCMI,
-	 * do nothing here, because ATF already send request to SM before
-	 * linux resume. Once SM get this request, it will deassert the
-	 * IPG_STOP signal to Flex_CAN.
-	 */
+	/* remove stop request */
 	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SETUP_STOP_MODE_SCFW) {
 		ret = flexcan_stop_mode_enable_scfw(priv, false);
 		if (ret < 0)
@@ -598,6 +573,12 @@ static inline int flexcan_exit_stop_mode(struct flexcan_priv *priv)
 	reg_mcr = priv->read(&regs->mcr);
 	reg_mcr &= ~FLEXCAN_MCR_SLF_WAK;
 	priv->write(reg_mcr, &regs->mcr);
+
+	/* For the auto stop mode, hardware will exist stop mode
+	 * automatically after system go out of low power mode.
+	 */
+	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_AUTO_STOP_MODE)
+		return 0;
 
 	return flexcan_low_power_exit_ack(priv);
 }
@@ -645,22 +626,18 @@ static void flexcan_clks_disable(const struct flexcan_priv *priv)
 
 static inline int flexcan_transceiver_enable(const struct flexcan_priv *priv)
 {
-	if (priv->reg_xceiver)
-		return regulator_enable(priv->reg_xceiver);
-	else if (priv->transceiver)
-		return phy_power_on(priv->transceiver);
+	if (!priv->reg_xceiver)
+		return 0;
 
-	return 0;
+	return regulator_enable(priv->reg_xceiver);
 }
 
 static inline int flexcan_transceiver_disable(const struct flexcan_priv *priv)
 {
-	if (priv->reg_xceiver)
-		return regulator_disable(priv->reg_xceiver);
-	else if (priv->transceiver)
-		return phy_power_off(priv->transceiver);
+	if (!priv->reg_xceiver)
+		return 0;
 
-	return 0;
+	return regulator_disable(priv->reg_xceiver);
 }
 
 static int flexcan_chip_enable(struct flexcan_priv *priv)
@@ -1120,8 +1097,8 @@ static irqreturn_t flexcan_irq(int irq, void *dev_id)
 
 		handled = IRQ_HANDLED;
 		stats->tx_bytes +=
-			can_rx_offload_get_echo_skb_queue_timestamp(&priv->offload, 0,
-								    reg_ctrl << 16, NULL);
+			can_rx_offload_get_echo_skb(&priv->offload, 0,
+						    reg_ctrl << 16, NULL);
 		stats->tx_packets++;
 
 		/* after sending a RTR frame MB is in RX mode */
@@ -1226,7 +1203,7 @@ static void flexcan_set_bittiming_cbt(const struct net_device *dev)
 {
 	struct flexcan_priv *priv = netdev_priv(dev);
 	struct can_bittiming *bt = &priv->can.bittiming;
-	struct can_bittiming *dbt = &priv->can.fd.data_bittiming;
+	struct can_bittiming *dbt = &priv->can.data_bittiming;
 	struct flexcan_regs __iomem *regs = priv->regs;
 	u32 reg_cbt, reg_fdctrl;
 
@@ -1777,25 +1754,14 @@ static int flexcan_open(struct net_device *dev)
 			goto out_free_irq_boff;
 	}
 
-	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SECONDARY_MB_IRQ) {
-		err = request_irq(priv->irq_secondary_mb,
-				  flexcan_irq, IRQF_SHARED, dev->name, dev);
-		if (err)
-			goto out_free_irq_err;
-	}
-
 	flexcan_chip_interrupts_enable(dev);
 
 	netif_start_queue(dev);
 
 	return 0;
 
- out_free_irq_err:
-	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_NR_IRQ_3)
-		free_irq(priv->irq_err, dev);
  out_free_irq_boff:
-	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_NR_IRQ_3)
-		free_irq(priv->irq_boff, dev);
+	free_irq(priv->irq_boff, dev);
  out_free_irq:
 	free_irq(dev->irq, dev);
  out_can_rx_offload_disable:
@@ -1819,9 +1785,6 @@ static int flexcan_close(struct net_device *dev)
 
 	netif_stop_queue(dev);
 	flexcan_chip_interrupts_disable(dev);
-
-	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SECONDARY_MB_IRQ)
-		free_irq(priv->irq_secondary_mb, dev);
 
 	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_NR_IRQ_3) {
 		free_irq(priv->irq_err, dev);
@@ -1867,6 +1830,7 @@ static const struct net_device_ops flexcan_netdev_ops = {
 	.ndo_open	= flexcan_open,
 	.ndo_stop	= flexcan_close,
 	.ndo_start_xmit	= flexcan_start_xmit,
+	.ndo_change_mtu = can_change_mtu,
 };
 
 static int register_flexcandev(struct net_device *dev)
@@ -2030,21 +1994,13 @@ static int flexcan_setup_stop_mode(struct platform_device *pdev)
 		ret = flexcan_setup_stop_mode_scfw(pdev);
 	else if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SETUP_STOP_MODE_GPR)
 		ret = flexcan_setup_stop_mode_gpr(pdev);
-	else if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SETUP_STOP_MODE_SCMI)
-		/* ATF will handle all STOP_IPG related work */
+	else if (priv->devtype_data.quirks & FLEXCAN_QUIRK_AUTO_STOP_MODE)
 		ret = 0;
 	else
 		/* return 0 directly if doesn't support stop mode feature */
 		return 0;
 
-	/* If ret is -EINVAL, this means SoC claim to support stop mode, but
-	 * dts file lack the stop mode property definition. For this case,
-	 * directly return 0, this will skip the wakeup capable setting and
-	 * will not block the driver probe.
-	 */
-	if (ret == -EINVAL)
-		return 0;
-	else if (ret)
+	if (ret)
 		return ret;
 
 	device_set_wakeup_capable(&pdev->dev, true);
@@ -2059,7 +2015,6 @@ static const struct of_device_id flexcan_of_match[] = {
 	{ .compatible = "fsl,imx8qm-flexcan", .data = &fsl_imx8qm_devtype_data, },
 	{ .compatible = "fsl,imx8mp-flexcan", .data = &fsl_imx8mp_devtype_data, },
 	{ .compatible = "fsl,imx93-flexcan", .data = &fsl_imx93_devtype_data, },
-	{ .compatible = "fsl,imx95-flexcan", .data = &fsl_imx95_devtype_data, },
 	{ .compatible = "fsl,imx6q-flexcan", .data = &fsl_imx6q_devtype_data, },
 	{ .compatible = "fsl,imx28-flexcan", .data = &fsl_imx28_devtype_data, },
 	{ .compatible = "fsl,imx53-flexcan", .data = &fsl_imx25_devtype_data, },
@@ -2069,7 +2024,6 @@ static const struct of_device_id flexcan_of_match[] = {
 	{ .compatible = "fsl,vf610-flexcan", .data = &fsl_vf610_devtype_data, },
 	{ .compatible = "fsl,ls1021ar2-flexcan", .data = &fsl_ls1021a_r2_devtype_data, },
 	{ .compatible = "fsl,lx2160ar1-flexcan", .data = &fsl_lx2160a_r1_devtype_data, },
-	{ .compatible = "nxp,s32g2-flexcan", .data = &nxp_s32g2_devtype_data, },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, flexcan_of_match);
@@ -2086,11 +2040,11 @@ MODULE_DEVICE_TABLE(platform, flexcan_id_table);
 
 static int flexcan_probe(struct platform_device *pdev)
 {
+	const struct of_device_id *of_id;
 	const struct flexcan_devtype_data *devtype_data;
 	struct net_device *dev;
 	struct flexcan_priv *priv;
 	struct regulator *reg_xceiver;
-	struct phy *transceiver;
 	struct clk *clk_ipg = NULL, *clk_per = NULL;
 	struct flexcan_regs __iomem *regs;
 	struct flexcan_platform_data *pdata;
@@ -2105,11 +2059,6 @@ static int flexcan_probe(struct platform_device *pdev)
 		reg_xceiver = NULL;
 	else if (IS_ERR(reg_xceiver))
 		return PTR_ERR(reg_xceiver);
-
-	transceiver = devm_phy_optional_get(&pdev->dev, NULL);
-	if (IS_ERR(transceiver))
-		return dev_err_probe(&pdev->dev, PTR_ERR(transceiver),
-				     "failed to get phy\n");
 
 	if (pdev->dev.of_node) {
 		of_property_read_u32(pdev->dev.of_node,
@@ -2140,14 +2089,21 @@ static int flexcan_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (irq <= 0)
+		return -ENODEV;
 
 	regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
 
-	devtype_data = device_get_match_data(&pdev->dev);
+	of_id = of_match_device(flexcan_of_match, &pdev->dev);
+	if (of_id)
+		devtype_data = of_id->data;
+	else if (platform_get_device_id(pdev)->driver_data)
+		devtype_data = (struct flexcan_devtype_data *)
+			platform_get_device_id(pdev)->driver_data;
+	else
+		return -ENODEV;
 
 	if ((devtype_data->quirks & FLEXCAN_QUIRK_SUPPORT_FD) &&
 	    !((devtype_data->quirks &
@@ -2208,28 +2164,16 @@ static int flexcan_probe(struct platform_device *pdev)
 	priv->clk_per = clk_per;
 	priv->clk_src = clk_src;
 	priv->reg_xceiver = reg_xceiver;
-	priv->transceiver = transceiver;
-
-	if (transceiver)
-		priv->can.bitrate_max = transceiver->attrs.max_link_rate;
 
 	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_NR_IRQ_3) {
 		priv->irq_boff = platform_get_irq(pdev, 1);
-		if (priv->irq_boff < 0) {
-			err = priv->irq_boff;
+		if (priv->irq_boff <= 0) {
+			err = -ENODEV;
 			goto failed_platform_get_irq;
 		}
 		priv->irq_err = platform_get_irq(pdev, 2);
-		if (priv->irq_err < 0) {
-			err = priv->irq_err;
-			goto failed_platform_get_irq;
-		}
-	}
-
-	if (priv->devtype_data.quirks & FLEXCAN_QUIRK_SECONDARY_MB_IRQ) {
-		priv->irq_secondary_mb = platform_get_irq_byname(pdev, "mb-1");
-		if (priv->irq_secondary_mb < 0) {
-			err = priv->irq_secondary_mb;
+		if (priv->irq_err <= 0) {
+			err = -ENODEV;
 			goto failed_platform_get_irq;
 		}
 	}
@@ -2238,7 +2182,7 @@ static int flexcan_probe(struct platform_device *pdev)
 		priv->can.ctrlmode_supported |= CAN_CTRLMODE_FD |
 			CAN_CTRLMODE_FD_NON_ISO;
 		priv->can.bittiming_const = &flexcan_fd_bittiming_const;
-		priv->can.fd.data_bittiming_const =
+		priv->can.data_bittiming_const =
 			&flexcan_fd_data_bittiming_const;
 	} else {
 		priv->can.bittiming_const = &flexcan_bittiming_const;
@@ -2274,7 +2218,7 @@ static int flexcan_probe(struct platform_device *pdev)
 	return err;
 }
 
-static void flexcan_remove(struct platform_device *pdev)
+static int flexcan_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 
@@ -2283,6 +2227,8 @@ static void flexcan_remove(struct platform_device *pdev)
 	unregister_flexcandev(dev);
 	pm_runtime_disable(&pdev->dev);
 	free_candev(dev);
+
+	return 0;
 }
 
 static int __maybe_unused flexcan_suspend(struct device *device)
@@ -2307,19 +2253,14 @@ static int __maybe_unused flexcan_suspend(struct device *device)
 
 			flexcan_chip_interrupts_disable(dev);
 
-			err = flexcan_transceiver_disable(priv);
-			if (err)
-				return err;
-
 			err = pinctrl_pm_select_sleep_state(device);
 			if (err)
 				return err;
 		}
 		netif_stop_queue(dev);
 		netif_device_detach(dev);
-
-		priv->can.state = CAN_STATE_SLEEPING;
 	}
+	priv->can.state = CAN_STATE_SLEEPING;
 
 	return 0;
 }
@@ -2330,6 +2271,7 @@ static int __maybe_unused flexcan_resume(struct device *device)
 	struct flexcan_priv *priv = netdev_priv(dev);
 	int err;
 
+	priv->can.state = CAN_STATE_ERROR_ACTIVE;
 	if (netif_running(dev)) {
 		netif_device_attach(dev);
 		netif_start_queue(dev);
@@ -2343,20 +2285,12 @@ static int __maybe_unused flexcan_resume(struct device *device)
 			if (err)
 				return err;
 
-			err = flexcan_transceiver_enable(priv);
+			err = flexcan_chip_start(dev);
 			if (err)
 				return err;
 
-			err = flexcan_chip_start(dev);
-			if (err) {
-				flexcan_transceiver_disable(priv);
-				return err;
-			}
-
 			flexcan_chip_interrupts_enable(dev);
 		}
-
-		priv->can.state = CAN_STATE_ERROR_ACTIVE;
 	}
 
 	return 0;
@@ -2388,22 +2322,20 @@ static int __maybe_unused flexcan_noirq_suspend(struct device *device)
 	if (netif_running(dev)) {
 		int err;
 
-		if (device_may_wakeup(device))
+		if (device_may_wakeup(device)) {
 			flexcan_enable_wakeup_irq(priv, true);
-
-		/* For FLEXCAN_QUIRK_SETUP_STOP_MODE_SCMI, it need ATF to send
-		 * to SM through SCMI protocol, SM will assert the IPG_STOP
-		 * signal. But all this works need the CAN clocks keep on.
-		 * After the CAN module get the IPG_STOP mode, and switch to
-		 * STOP mode, whether still keep the CAN clocks on or gate them
-		 * off depend on the Hardware design.
-		 */
-		if (!(device_may_wakeup(device) &&
-		      priv->devtype_data.quirks & FLEXCAN_QUIRK_SETUP_STOP_MODE_SCMI)) {
-			err = pm_runtime_force_suspend(device);
-			if (err)
-				return err;
+			/* For auto stop mode, need to keep the clock on before
+			 * system go into low power mode. After system go into
+			 * low power mode, hardware will config the flexcan into
+			 * stop mode, and gate off the clock automatically.
+			 */
+			if (priv->devtype_data.quirks & FLEXCAN_QUIRK_AUTO_STOP_MODE)
+				return 0;
 		}
+
+		err = pm_runtime_force_suspend(device);
+		if (err)
+			return err;
 	}
 
 	return 0;
@@ -2417,8 +2349,11 @@ static int __maybe_unused flexcan_noirq_resume(struct device *device)
 	if (netif_running(dev)) {
 		int err;
 
+		/* For the wakeup in auto stop mode, no need to gate on the
+		 * clock here, hardware will do this automatically.
+		 */
 		if (!(device_may_wakeup(device) &&
-		      priv->devtype_data.quirks & FLEXCAN_QUIRK_SETUP_STOP_MODE_SCMI)) {
+		      priv->devtype_data.quirks & FLEXCAN_QUIRK_AUTO_STOP_MODE)) {
 			err = pm_runtime_force_resume(device);
 			if (err)
 				return err;

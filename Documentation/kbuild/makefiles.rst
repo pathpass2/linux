@@ -53,7 +53,7 @@ knowledge about the kernel Makefiles, plus detailed knowledge about the
 public interface for kbuild.
 
 *Arch developers* are people who work on an entire architecture, such
-as sparc or x86.  Arch developers need to know about the arch Makefile
+as sparc or ia64.  Arch developers need to know about the arch Makefile
 as well as kbuild Makefiles.
 
 *Kbuild developers* are people who work on the kernel build system itself.
@@ -291,10 +291,6 @@ Example::
   # arch/x86/kernel/Makefile
   extra-y	+= vmlinux.lds
 
-extra-y is now deprecated because this is equivalent to:
-
-  always-$(KBUILD_BUILTIN) += vmlinux.lds
-
 $(extra-y) should only contain targets needed for vmlinux.
 
 Kbuild skips extra-y when vmlinux is apparently not a final goal.
@@ -322,6 +318,9 @@ ccflags-y, asflags-y and ldflags-y
   These three flags apply only to the kbuild makefile in which they
   are assigned. They are used for all the normal cc, as and ld
   invocations happening during a recursive build.
+  Note: Flags with the same behaviour were previously named:
+  EXTRA_CFLAGS, EXTRA_AFLAGS and EXTRA_LDFLAGS.
+  They are still supported but their usage is deprecated.
 
   ccflags-y specifies options for compiling with $(CC).
 
@@ -347,7 +346,7 @@ ccflags-y, asflags-y and ldflags-y
   Example::
 
     #arch/cris/boot/compressed/Makefile
-    ldflags-y += -T $(src)/decompress_$(arch-y).lds
+    ldflags-y += -T $(srctree)/$(src)/decompress_$(arch-y).lds
 
 subdir-ccflags-y, subdir-asflags-y
   The two flags listed above are similar to ccflags-y and asflags-y.
@@ -427,14 +426,14 @@ path to prerequisite files and target files.
 Two variables are used when defining custom rules:
 
 $(src)
-  $(src) is the directory where the Makefile is located. Always use $(src) when
+  $(src) is a relative path which points to the directory
+  where the Makefile is located. Always use $(src) when
   referring to files located in the src tree.
 
 $(obj)
-  $(obj) is the directory where the target is saved. Always use $(obj) when
-  referring to generated files. Use $(obj) for pattern rules that need to work
-  for both generated files and real sources (VPATH will help to find the
-  prerequisites not only in the object tree but also in the source tree).
+  $(obj) is a relative path which points to the directory
+  where the target is saved. Always use $(obj) when
+  referring to generated files.
 
   Example::
 
@@ -449,20 +448,6 @@ $(obj)
   to the target file are prefixed with $(obj), references
   to prerequisites are referenced with $(src) (because they are not
   generated files).
-
-$(srcroot)
-  $(srcroot) refers to the root of the source you are building, which can be
-  either the kernel source or the external modules source, depending on whether
-  KBUILD_EXTMOD is set. This can be either a relative or an absolute path, but
-  if KBUILD_ABS_SRCTREE=1 is set, it is always an absolute path.
-
-$(srctree)
-  $(srctree) refers to the root of the kernel source tree. When building the
-  kernel, this is the same as $(srcroot).
-
-$(objtree)
-  $(objtree) refers to the root of the kernel object tree. It is ``.`` when
-  building the kernel, but it is different when building external modules.
 
 $(kecho)
   echoing information to user in a rule is often a good practice
@@ -593,7 +578,7 @@ cc-option
   Note: cc-option uses KBUILD_CFLAGS for $(CC) options
 
 cc-option-yn
-  cc-option-yn is used to check if $(CC) supports a given option
+  cc-option-yn is used to check if gcc supports a given option
   and return "y" if supported, otherwise "n".
 
   Example::
@@ -611,7 +596,7 @@ cc-option-yn
   Note: cc-option-yn uses KBUILD_CFLAGS for $(CC) options
 
 cc-disable-warning
-  cc-disable-warning checks if $(CC) supports a given warning and returns
+  cc-disable-warning checks if gcc supports a given warning and returns
   the commandline switch to disable it. This special function is needed,
   because gcc 4.4 and later accept any unknown -Wno-* option and only
   warn about it if there is another warning in the source file.
@@ -621,7 +606,7 @@ cc-disable-warning
     KBUILD_CFLAGS += $(call cc-disable-warning, unused-but-set-variable)
 
   In the above example, -Wno-unused-but-set-variable will be added to
-  KBUILD_CFLAGS only if $(CC) really accepts it.
+  KBUILD_CFLAGS only if gcc really accepts it.
 
 gcc-min-version
   gcc-min-version tests if the value of $(CONFIG_GCC_VERSION) is greater than
@@ -629,10 +614,10 @@ gcc-min-version
 
   Example::
 
-    cflags-$(call gcc-min-version, 110100) := -foo
+    cflags-$(call gcc-min-version, 70100) := -foo
 
   In this example, cflags-y will be assigned the value -foo if $(CC) is gcc and
-  $(CONFIG_GCC_VERSION) is >= 11.1.
+  $(CONFIG_GCC_VERSION) is >= 7.1.
 
 clang-min-version
   clang-min-version tests if the value of $(CONFIG_CLANG_VERSION) is greater
@@ -670,20 +655,6 @@ cc-cross-prefix
                     CROSS_COMPILE := $(call cc-cross-prefix, m68k-linux-gnu-)
             endif
     endif
-
-$(RUSTC) support functions
---------------------------
-
-rustc-min-version
-  rustc-min-version tests if the value of $(CONFIG_RUSTC_VERSION) is greater
-  than or equal to the provided value and evaluates to y if so.
-
-  Example::
-
-    rustflags-$(call rustc-min-version, 108500) := -Cfoo
-
-  In this example, rustflags-y will be assigned the value -Cfoo if
-  $(CONFIG_RUSTC_VERSION) is >= 1.85.0.
 
 $(LD) support functions
 -----------------------
@@ -965,10 +936,6 @@ Example::
 
   # net/bpfilter/Makefile
   bpfilter_umh-userldflags += -static
-
-To specify libraries linked to a userspace program, you can use
-``<executable>-userldlibs``. The ``userldlibs`` syntax specifies libraries
-linked to all userspace programs created in the current Makefile.
 
 When linking bpfilter_umh, it will be passed the extra option -static.
 
@@ -1264,7 +1231,7 @@ Add prerequisites to archheaders
 --------------------------------
 
 The archheaders: rule is used to generate header files that
-may be installed into user space by ``make headers_install``.
+may be installed into user space by ``make header_install``.
 
 It is run before ``make archprepare`` when run on the
 architecture itself.
@@ -1656,13 +1623,6 @@ INSTALL_MOD_STRIP
   INSTALL_MOD_STRIP value will be used as the option(s) to the strip
   command.
 
-INSTALL_DTBS_PATH
-  This variable specifies a prefix for relocations required by build
-  roots. It defines a place for installing the device tree blobs. Like
-  INSTALL_MOD_PATH, it isn't defined in the Makefile, but can be passed
-  by the user if desired. Otherwise it defaults to the kernel install
-  path.
-
 Makefile language
 =================
 
@@ -1694,5 +1654,6 @@ Credits
 TODO
 ====
 
+- Describe how kbuild supports shipped files with _shipped.
 - Generating offset header files.
 - Add more variables to chapters 7 or 9?

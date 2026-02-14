@@ -12,7 +12,6 @@
 #include <linux/skbuff.h>
 #include <linux/netfilter.h>
 #include <net/checksum.h>
-#include <net/flow.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/route.h>
@@ -33,7 +32,7 @@ static bool nf_dup_ipv4_route(struct net *net, struct sk_buff *skb,
 		fl4.flowi4_oif = oif;
 
 	fl4.daddr = gw->s_addr;
-	fl4.flowi4_dscp = ip4h_dscp(iph);
+	fl4.flowi4_tos = RT_TOS(iph->tos);
 	fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
 	fl4.flowi4_flags = FLOWI_FLAG_KNOWN_NH;
 	rt = ip_route_output_key(net, &fl4);
@@ -53,9 +52,8 @@ void nf_dup_ipv4(struct net *net, struct sk_buff *skb, unsigned int hooknum,
 {
 	struct iphdr *iph;
 
-	local_bh_disable();
-	if (current->in_nf_duplicate)
-		goto out;
+	if (this_cpu_read(nf_skb_duplicated))
+		return;
 	/*
 	 * Copy the skb, and route the copy. Will later return %XT_CONTINUE for
 	 * the original skb, which should continue on its way as if nothing has
@@ -63,7 +61,7 @@ void nf_dup_ipv4(struct net *net, struct sk_buff *skb, unsigned int hooknum,
 	 */
 	skb = pskb_copy(skb, GFP_ATOMIC);
 	if (skb == NULL)
-		goto out;
+		return;
 
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
 	/* Avoid counting cloned packets towards the original connection. */
@@ -86,14 +84,12 @@ void nf_dup_ipv4(struct net *net, struct sk_buff *skb, unsigned int hooknum,
 		--iph->ttl;
 
 	if (nf_dup_ipv4_route(net, skb, gw, oif)) {
-		current->in_nf_duplicate = true;
+		__this_cpu_write(nf_skb_duplicated, true);
 		ip_local_out(net, skb->sk, skb);
-		current->in_nf_duplicate = false;
+		__this_cpu_write(nf_skb_duplicated, false);
 	} else {
 		kfree_skb(skb);
 	}
-out:
-	local_bh_enable();
 }
 EXPORT_SYMBOL_GPL(nf_dup_ipv4);
 

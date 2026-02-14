@@ -31,6 +31,16 @@ void pgd_init(void *addr)
 }
 
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE)
+pmd_t mk_pmd(struct page *page, pgprot_t prot)
+{
+	pmd_t pmd;
+
+	pmd_val(pmd) = (page_to_pfn(page) << _PFN_SHIFT) | pgprot_val(prot);
+
+	return pmd;
+}
+
+
 void set_pmd_at(struct mm_struct *mm, unsigned long addr,
 		pmd_t *pmdp, pmd_t pmd)
 {

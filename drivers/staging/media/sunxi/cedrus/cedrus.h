@@ -155,11 +155,6 @@ struct cedrus_ctx {
 	} codec;
 };
 
-static inline struct cedrus_ctx *cedrus_file2ctx(struct file *file)
-{
-	return container_of(file_to_v4l2_fh(file), struct cedrus_ctx, fh);
-}
-
 struct cedrus_dec_ops {
 	void (*irq_clear)(struct cedrus_ctx *ctx);
 	void (*irq_disable)(struct cedrus_ctx *ctx);

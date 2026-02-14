@@ -168,7 +168,6 @@ enum {
 struct ntb_dev_data {
 	const unsigned char mw_count;
 	const unsigned int mw_idx;
-	const bool is_endpoint;
 };
 
 struct amd_ntb_dev;

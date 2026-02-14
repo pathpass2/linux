@@ -36,6 +36,11 @@
  */
 #define WRITE_PROTECT_EN	0
 
+struct sd3078 {
+	struct rtc_device	*rtc;
+	struct regmap		*regmap;
+};
+
 /*
  * In order to prevent arbitrary modification of the time register,
  * when modification of the register,
@@ -44,11 +49,14 @@
  * 2. set WRITE2 bit
  * 3. set WRITE3 bit
  */
-static void sd3078_enable_reg_write(struct regmap *regmap)
+static void sd3078_enable_reg_write(struct sd3078 *sd3078)
 {
-	regmap_update_bits(regmap, SD3078_REG_CTRL2, KEY_WRITE1, KEY_WRITE1);
-	regmap_update_bits(regmap, SD3078_REG_CTRL1, KEY_WRITE2, KEY_WRITE2);
-	regmap_update_bits(regmap, SD3078_REG_CTRL1, KEY_WRITE3, KEY_WRITE3);
+	regmap_update_bits(sd3078->regmap, SD3078_REG_CTRL2,
+			   KEY_WRITE1, KEY_WRITE1);
+	regmap_update_bits(sd3078->regmap, SD3078_REG_CTRL1,
+			   KEY_WRITE2, KEY_WRITE2);
+	regmap_update_bits(sd3078->regmap, SD3078_REG_CTRL1,
+			   KEY_WRITE3, KEY_WRITE3);
 }
 
 #if WRITE_PROTECT_EN
@@ -61,11 +69,14 @@ static void sd3078_enable_reg_write(struct regmap *regmap)
  * 2. clear WRITE3 bit
  * 3. clear WRITE1 bit
  */
-static void sd3078_disable_reg_write(struct regmap *regmap)
+static void sd3078_disable_reg_write(struct sd3078 *sd3078)
 {
-	regmap_update_bits(regmap, SD3078_REG_CTRL1, KEY_WRITE2, 0);
-	regmap_update_bits(regmap, SD3078_REG_CTRL1, KEY_WRITE3, 0);
-	regmap_update_bits(regmap, SD3078_REG_CTRL2, KEY_WRITE1, 0);
+	regmap_update_bits(sd3078->regmap, SD3078_REG_CTRL1,
+			   KEY_WRITE2, 0);
+	regmap_update_bits(sd3078->regmap, SD3078_REG_CTRL1,
+			   KEY_WRITE3, 0);
+	regmap_update_bits(sd3078->regmap, SD3078_REG_CTRL2,
+			   KEY_WRITE1, 0);
 }
 #endif
 
@@ -74,10 +85,11 @@ static int sd3078_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	unsigned char hour;
 	unsigned char rtc_data[NUM_TIME_REGS] = {0};
 	struct i2c_client *client = to_i2c_client(dev);
-	struct regmap *regmap = i2c_get_clientdata(client);
+	struct sd3078 *sd3078 = i2c_get_clientdata(client);
 	int ret;
 
-	ret = regmap_bulk_read(regmap, SD3078_REG_SC, rtc_data, NUM_TIME_REGS);
+	ret = regmap_bulk_read(sd3078->regmap, SD3078_REG_SC, rtc_data,
+			       NUM_TIME_REGS);
 	if (ret < 0) {
 		dev_err(dev, "reading from RTC failed with err:%d\n", ret);
 		return ret;
@@ -111,7 +123,7 @@ static int sd3078_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	unsigned char rtc_data[NUM_TIME_REGS];
 	struct i2c_client *client = to_i2c_client(dev);
-	struct regmap *regmap = i2c_get_clientdata(client);
+	struct sd3078 *sd3078 = i2c_get_clientdata(client);
 	int ret;
 
 	rtc_data[SD3078_REG_SC] = bin2bcd(tm->tm_sec);
@@ -123,10 +135,10 @@ static int sd3078_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	rtc_data[SD3078_REG_YR] = bin2bcd(tm->tm_year - 100);
 
 #if WRITE_PROTECT_EN
-	sd3078_enable_reg_write(regmap);
+	sd3078_enable_reg_write(sd3078);
 #endif
 
-	ret = regmap_bulk_write(regmap, SD3078_REG_SC, rtc_data,
+	ret = regmap_bulk_write(sd3078->regmap, SD3078_REG_SC, rtc_data,
 				NUM_TIME_REGS);
 	if (ret < 0) {
 		dev_err(dev, "writing to RTC failed with err:%d\n", ret);
@@ -134,7 +146,7 @@ static int sd3078_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	}
 
 #if WRITE_PROTECT_EN
-	sd3078_disable_reg_write(regmap);
+	sd3078_disable_reg_write(sd3078);
 #endif
 
 	return 0;
@@ -154,39 +166,42 @@ static const struct regmap_config regmap_config = {
 static int sd3078_probe(struct i2c_client *client)
 {
 	int ret;
-	struct regmap *regmap;
-	struct rtc_device *rtc;
+	struct sd3078 *sd3078;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return -ENODEV;
 
-	regmap = devm_regmap_init_i2c(client, &regmap_config);
-	if (IS_ERR(regmap)) {
+	sd3078 = devm_kzalloc(&client->dev, sizeof(*sd3078), GFP_KERNEL);
+	if (!sd3078)
+		return -ENOMEM;
+
+	sd3078->regmap = devm_regmap_init_i2c(client, &regmap_config);
+	if (IS_ERR(sd3078->regmap)) {
 		dev_err(&client->dev, "regmap allocation failed\n");
-		return PTR_ERR(regmap);
+		return PTR_ERR(sd3078->regmap);
 	}
 
-	i2c_set_clientdata(client, regmap);
+	i2c_set_clientdata(client, sd3078);
 
-	rtc = devm_rtc_allocate_device(&client->dev);
-	if (IS_ERR(rtc))
-		return PTR_ERR(rtc);
+	sd3078->rtc = devm_rtc_allocate_device(&client->dev);
+	if (IS_ERR(sd3078->rtc))
+		return PTR_ERR(sd3078->rtc);
 
-	rtc->ops = &sd3078_rtc_ops;
-	rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
-	rtc->range_max = RTC_TIMESTAMP_END_2099;
+	sd3078->rtc->ops = &sd3078_rtc_ops;
+	sd3078->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
+	sd3078->rtc->range_max = RTC_TIMESTAMP_END_2099;
 
-	ret = devm_rtc_register_device(rtc);
+	ret = devm_rtc_register_device(sd3078->rtc);
 	if (ret)
 		return ret;
 
-	sd3078_enable_reg_write(regmap);
+	sd3078_enable_reg_write(sd3078);
 
 	return 0;
 }
 
 static const struct i2c_device_id sd3078_id[] = {
-	{ "sd3078" },
+	{"sd3078", 0},
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, sd3078_id);
@@ -202,7 +217,7 @@ static struct i2c_driver sd3078_driver = {
 		.name   = "sd3078",
 		.of_match_table = of_match_ptr(rtc_dt_match),
 	},
-	.probe      = sd3078_probe,
+	.probe_new  = sd3078_probe,
 	.id_table   = sd3078_id,
 };
 

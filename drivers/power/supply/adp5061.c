@@ -590,7 +590,7 @@ static int adp5061_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_VOLTAGE_AVG:
 		/*
 		 * This property is used to set the VWEAK threshold
-		 * below this value, weak charge mode is entered
+		 * bellow this value, weak charge mode is entered
 		 * above this value, fast chargerge mode is entered
 		 */
 		return adp5061_get_vweak_th(st, val);
@@ -727,7 +727,7 @@ static int adp5061_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adp5061_id[] = {
-	{ "adp5061" },
+	{ "adp5061", 0},
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adp5061_id);
@@ -736,7 +736,7 @@ static struct i2c_driver adp5061_driver = {
 	.driver = {
 		.name = KBUILD_MODNAME,
 	},
-	.probe = adp5061_probe,
+	.probe_new = adp5061_probe,
 	.id_table = adp5061_id,
 };
 module_i2c_driver(adp5061_driver);

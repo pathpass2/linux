@@ -99,8 +99,6 @@
 #include <stdio.h>
 #include <ctype.h>
 
-#include <xalloc.h>
-
 static void usage(void)
 {
 	fprintf(stderr, "Usage: fixdep <depfile> <target> <cmdline>\n");
@@ -133,9 +131,12 @@ static unsigned int strhash(const char *str, unsigned int sz)
 static void add_to_hashtable(const char *name, int len, unsigned int hash,
 			     struct item *hashtab[])
 {
-	struct item *aux;
+	struct item *aux = malloc(sizeof(*aux) + len);
 
-	aux = xmalloc(sizeof(*aux) + len);
+	if (!aux) {
+		perror("fixdep:malloc");
+		exit(1);
+	}
 	memcpy(aux->name, name, len);
 	aux->len = len;
 	aux->hash = hash;
@@ -227,7 +228,11 @@ static void *read_file(const char *filename)
 		perror(filename);
 		exit(2);
 	}
-	buf = xmalloc(st.st_size + 1);
+	buf = malloc(st.st_size + 1);
+	if (!buf) {
+		perror("fixdep: malloc");
+		exit(2);
+	}
 	if (read(fd, buf, st.st_size) != st.st_size) {
 		perror("fixdep: read");
 		exit(2);
@@ -241,7 +246,8 @@ static void *read_file(const char *filename)
 /* Ignore certain dependencies */
 static int is_ignored_file(const char *s, int len)
 {
-	return str_ends_with(s, len, "include/generated/autoconf.h");
+	return str_ends_with(s, len, "include/generated/autoconf.h") ||
+	       str_ends_with(s, len, "include/generated/autoksyms.h");
 }
 
 /* Do not parse these files */

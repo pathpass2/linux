@@ -21,6 +21,9 @@
 #define HIST_INTR_EN                    0x01c
 #define HIST_INTR_STATUS                0x020
 #define HIST_INTR_CLEAR                 0x024
+#define INTF_INTR_EN                    0x1C0
+#define INTF_INTR_STATUS                0x1C4
+#define INTF_INTR_CLEAR                 0x1C8
 #define SPLIT_DISPLAY_EN                0x2F4
 #define SPLIT_DISPLAY_UPPER_PIPE_CTRL   0x2F8
 #define DSPP_IGC_COLOR0_RAM_LUTN        0x300
@@ -59,13 +62,6 @@
 #define MDP_WD_TIMER_4_CTL2             0x444
 #define MDP_WD_TIMER_4_LOAD_VALUE       0x448
 #define DCE_SEL                         0x450
-
-#define MDP_DP_PHY_INTF_SEL             0x460
-#define MDP_DP_PHY_INTF_SEL_INTF0		GENMASK(2, 0)
-#define MDP_DP_PHY_INTF_SEL_INTF1		GENMASK(5, 3)
-#define MDP_DP_PHY_INTF_SEL_PHY0		GENMASK(8, 6)
-#define MDP_DP_PHY_INTF_SEL_PHY1		GENMASK(11, 9)
-#define MDP_DP_PHY_INTF_SEL_PHY2		GENMASK(14, 12)
 
 #define MDP_PERIPH_TOP0			MDP_WD_TIMER_0_CTL
 #define MDP_PERIPH_TOP0_END		CLK_CTRL3

@@ -20,9 +20,7 @@
 #include <drm/drm.h>
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_dumb_buffers.h>
 #include <drm/drm_gem_dma_helper.h>
-#include <drm/drm_print.h>
 #include <drm/drm_vma_manager.h>
 
 /**
@@ -230,7 +228,7 @@ void drm_gem_dma_free(struct drm_gem_dma_object *dma_obj)
 	struct drm_gem_object *gem_obj = &dma_obj->base;
 	struct iosys_map map = IOSYS_MAP_INIT_VADDR(dma_obj->vaddr);
 
-	if (drm_gem_is_imported(gem_obj)) {
+	if (gem_obj->import_attach) {
 		if (dma_obj->vaddr)
 			dma_buf_vunmap_unlocked(gem_obj->import_attach->dmabuf, &map);
 		drm_prime_gem_destroy(gem_obj, dma_obj->sgt);
@@ -306,11 +304,9 @@ int drm_gem_dma_dumb_create(struct drm_file *file_priv,
 			    struct drm_mode_create_dumb *args)
 {
 	struct drm_gem_dma_object *dma_obj;
-	int ret;
 
-	ret = drm_mode_size_dumb(drm, args, 0, 0);
-	if (ret)
-		return ret;
+	args->pitch = DIV_ROUND_UP(args->width * args->bpp, 8);
+	args->size = args->pitch * args->height;
 
 	dma_obj = drm_gem_dma_create_with_handle(file_priv, drm, args->size,
 						 &args->handle);
@@ -586,7 +582,7 @@ drm_gem_dma_prime_import_sg_table_vmap(struct drm_device *dev,
 
 	ret = dma_buf_vmap_unlocked(attach->dmabuf, &map);
 	if (ret) {
-		drm_err(dev, "Failed to vmap PRIME buffer\n");
+		DRM_ERROR("Failed to vmap PRIME buffer\n");
 		return ERR_PTR(ret);
 	}
 
@@ -604,5 +600,5 @@ drm_gem_dma_prime_import_sg_table_vmap(struct drm_device *dev,
 EXPORT_SYMBOL(drm_gem_dma_prime_import_sg_table_vmap);
 
 MODULE_DESCRIPTION("DRM DMA memory-management helpers");
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);
 MODULE_LICENSE("GPL");

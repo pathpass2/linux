@@ -293,7 +293,7 @@ struct memstick_host {
 };
 
 struct memstick_driver {
-	const struct memstick_device_id *id_table;
+	struct memstick_device_id *id_table;
 	int                       (*probe)(struct memstick_dev *card);
 	void                      (*remove)(struct memstick_dev *card);
 	int                       (*suspend)(struct memstick_dev *card,

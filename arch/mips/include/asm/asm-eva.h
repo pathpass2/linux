@@ -10,7 +10,7 @@
 #ifndef __ASM_ASM_EVA_H
 #define __ASM_ASM_EVA_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /* Kernel variants */
 
@@ -99,7 +99,7 @@
 
 #endif /* CONFIG_EVA */
 
-#else /* __ASSEMBLER__ */
+#else /* __ASSEMBLY__ */
 
 #define kernel_cache(op, base)		cache op, base
 #define kernel_pref(hint, base)		pref hint, base
@@ -185,6 +185,6 @@
 
 #endif /* CONFIG_EVA */
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_ASM_EVA_H */

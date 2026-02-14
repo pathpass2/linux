@@ -15,3 +15,10 @@ Kernel Livepatching
     system-state
     reliable-stacktrace
     api
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

@@ -178,21 +178,18 @@ static u8 ingenic_tcu_get_prescale(unsigned long rate, unsigned long req_rate)
 	return 5; /* /1024 divider */
 }
 
-static int ingenic_tcu_determine_rate(struct clk_hw *hw,
-				      struct clk_rate_request *req)
+static long ingenic_tcu_round_rate(struct clk_hw *hw, unsigned long req_rate,
+		unsigned long *parent_rate)
 {
-	unsigned long rate = req->best_parent_rate;
+	unsigned long rate = *parent_rate;
 	u8 prescale;
 
-	if (req->rate > rate) {
-		req->rate = rate;
-		return 0;
-	}
+	if (req_rate > rate)
+		return rate;
 
-	prescale = ingenic_tcu_get_prescale(rate, req->rate);
+	prescale = ingenic_tcu_get_prescale(rate, req_rate);
 
-	req->rate = rate >> (prescale * 2);
-	return 0;
+	return rate >> (prescale * 2);
 }
 
 static int ingenic_tcu_set_rate(struct clk_hw *hw, unsigned long req_rate,
@@ -222,7 +219,7 @@ static const struct clk_ops ingenic_tcu_clk_ops = {
 	.set_parent	= ingenic_tcu_set_parent,
 
 	.recalc_rate	= ingenic_tcu_recalc_rate,
-	.determine_rate	= ingenic_tcu_determine_rate,
+	.round_rate	= ingenic_tcu_round_rate,
 	.set_rate	= ingenic_tcu_set_rate,
 
 	.enable		= ingenic_tcu_enable,
@@ -455,7 +452,7 @@ err_free_tcu:
 	return ret;
 }
 
-static int __maybe_unused tcu_pm_suspend(void *data)
+static int __maybe_unused tcu_pm_suspend(void)
 {
 	struct ingenic_tcu *tcu = ingenic_tcu;
 
@@ -465,7 +462,7 @@ static int __maybe_unused tcu_pm_suspend(void *data)
 	return 0;
 }
 
-static void __maybe_unused tcu_pm_resume(void *data)
+static void __maybe_unused tcu_pm_resume(void)
 {
 	struct ingenic_tcu *tcu = ingenic_tcu;
 
@@ -473,13 +470,9 @@ static void __maybe_unused tcu_pm_resume(void *data)
 		clk_enable(tcu->clk);
 }
 
-static const struct syscore_ops __maybe_unused tcu_pm_ops = {
+static struct syscore_ops __maybe_unused tcu_pm_ops = {
 	.suspend = tcu_pm_suspend,
 	.resume = tcu_pm_resume,
-};
-
-static struct syscore __maybe_unused tcu_pm = {
-	.ops = &tcu_pm_ops,
 };
 
 static void __init ingenic_tcu_init(struct device_node *np)
@@ -490,7 +483,7 @@ static void __init ingenic_tcu_init(struct device_node *np)
 		pr_crit("Failed to initialize TCU clocks: %d\n", ret);
 
 	if (IS_ENABLED(CONFIG_PM_SLEEP))
-		register_syscore(&tcu_pm);
+		register_syscore_ops(&tcu_pm_ops);
 }
 
 CLK_OF_DECLARE_DRIVER(jz4740_cgu, "ingenic,jz4740-tcu", ingenic_tcu_init);

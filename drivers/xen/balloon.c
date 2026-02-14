@@ -84,7 +84,7 @@ module_param(balloon_boot_timeout, uint, 0444);
 #ifdef CONFIG_XEN_BALLOON_MEMORY_HOTPLUG
 static int xen_hotplug_unpopulated;
 
-static const struct ctl_table balloon_table[] = {
+static struct ctl_table balloon_table[] = {
 	{
 		.procname	= "hotplug_unpopulated",
 		.data		= &xen_hotplug_unpopulated,
@@ -94,6 +94,25 @@ static const struct ctl_table balloon_table[] = {
 		.extra1         = SYSCTL_ZERO,
 		.extra2         = SYSCTL_ONE,
 	},
+	{ }
+};
+
+static struct ctl_table balloon_root[] = {
+	{
+		.procname	= "balloon",
+		.mode		= 0555,
+		.child		= balloon_table,
+	},
+	{ }
+};
+
+static struct ctl_table xen_root[] = {
+	{
+		.procname	= "xen",
+		.mode		= 0555,
+		.child		= balloon_root,
+	},
+	{ }
 };
 
 #else
@@ -146,8 +165,7 @@ static DECLARE_WAIT_QUEUE_HEAD(balloon_wq);
 /* balloon_append: add the given page to the balloon. */
 static void balloon_append(struct page *page)
 {
-	if (!PageOffline(page))
-		__SetPageOffline(page);
+	__SetPageOffline(page);
 
 	/* Lowmem is re-populated first, so highmem pages go at list tail. */
 	if (PageHighMem(page)) {
@@ -157,8 +175,6 @@ static void balloon_append(struct page *page)
 		list_add(&page->lru, &ballooned_pages);
 		balloon_stats.balloon_low++;
 	}
-	inc_node_page_state(page, NR_BALLOON_PAGES);
-
 	wake_up(&balloon_wq);
 }
 
@@ -181,8 +197,6 @@ static struct page *balloon_retrieve(bool require_lowmem)
 		balloon_stats.balloon_low--;
 
 	__ClearPageOffline(page);
-	dec_node_page_state(page, NR_BALLOON_PAGES);
-
 	return page;
 }
 
@@ -302,7 +316,7 @@ static enum bp_state reserve_additional_memory(void)
          * are not restored since this region is now known not to
          * conflict with any devices.
          */ 
-	if (xen_pv_domain()) {
+	if (!xen_feature(XENFEAT_auto_translated_physmap)) {
 		unsigned long pfn, i;
 
 		pfn = PFN_DOWN(resource->start);
@@ -417,11 +431,7 @@ static enum bp_state increase_reservation(unsigned long nr_pages)
 
 		xenmem_reservation_va_mapping_update(1, &page, &frame_list[i]);
 
-		/*
-		 * Relinquish the page back to the allocator. Note that
-		 * some pages, including ones added via xen_online_page(), might
-		 * not be marked reserved; free_reserved_page() will handle that.
-		 */
+		/* Relinquish the page back to the allocator. */
 		free_reserved_page(page);
 	}
 
@@ -626,7 +636,7 @@ int xen_alloc_ballooned_pages(unsigned int nr_pages, struct page **pages)
 			 */
 			BUILD_BUG_ON(XEN_PAGE_SIZE != PAGE_SIZE);
 
-			if (xen_pv_domain()) {
+			if (!xen_feature(XENFEAT_auto_translated_physmap)) {
 				ret = xen_alloc_p2m_entry(page_to_pfn(page));
 				if (ret < 0)
 					goto out_undo;
@@ -679,8 +689,9 @@ void xen_free_ballooned_pages(unsigned int nr_pages, struct page **pages)
 }
 EXPORT_SYMBOL(xen_free_ballooned_pages);
 
-static int __init balloon_add_regions(void)
+static void __init balloon_add_regions(void)
 {
+#if defined(CONFIG_XEN_PV)
 	unsigned long start_pfn, pages;
 	unsigned long pfn, extra_pfn_end;
 	unsigned int i;
@@ -702,55 +713,27 @@ static int __init balloon_add_regions(void)
 		for (pfn = start_pfn; pfn < extra_pfn_end; pfn++)
 			balloon_append(pfn_to_page(pfn));
 
-		/*
-		 * Extra regions are accounted for in the physmap, but need
-		 * decreasing from current_pages and target_pages to balloon
-		 * down the initial allocation, because they are already
-		 * accounted for in total_pages.
-		 */
-		pages = extra_pfn_end - start_pfn;
-		if (pages >= balloon_stats.current_pages ||
-		    pages >= balloon_stats.target_pages) {
-			WARN(1, "Extra pages underflow current target");
-			return -ERANGE;
-		}
-		balloon_stats.current_pages -= pages;
-		balloon_stats.target_pages -= pages;
+		balloon_stats.total_pages += extra_pfn_end - start_pfn;
 	}
-
-	return 0;
+#endif
 }
 
 static int __init balloon_init(void)
 {
 	struct task_struct *task;
-	long current_pages = 0;
-	domid_t domid = DOMID_SELF;
-	int rc;
 
 	if (!xen_domain())
 		return -ENODEV;
 
 	pr_info("Initialising balloon driver\n");
 
-	if (xen_initial_domain())
-		current_pages = HYPERVISOR_memory_op(XENMEM_current_reservation,
-		                                     &domid);
-	if (current_pages <= 0) {
-		if (xen_pv_domain()) {
-			if (xen_released_pages >= xen_start_info->nr_pages)
-				goto underflow;
-			current_pages = min(xen_start_info->nr_pages -
-			                    xen_released_pages, max_pfn);
-		} else {
-			if (xen_unpopulated_pages >= get_num_physpages())
-				goto underflow;
-			current_pages = get_num_physpages() -
-			                xen_unpopulated_pages;
-		}
-	}
-
-	balloon_stats.current_pages = current_pages;
+#ifdef CONFIG_XEN_PV
+	balloon_stats.current_pages = xen_pv_domain()
+		? min(xen_start_info->nr_pages - xen_released_pages, max_pfn)
+		: get_num_physpages();
+#else
+	balloon_stats.current_pages = get_num_physpages();
+#endif
 	balloon_stats.target_pages  = balloon_stats.current_pages;
 	balloon_stats.balloon_low   = 0;
 	balloon_stats.balloon_high  = 0;
@@ -764,12 +747,10 @@ static int __init balloon_init(void)
 #ifdef CONFIG_XEN_BALLOON_MEMORY_HOTPLUG
 	set_online_page_callback(&xen_online_page);
 	register_memory_notifier(&xen_memory_nb);
-	register_sysctl_init("xen/balloon", balloon_table);
+	register_sysctl_table(xen_root);
 #endif
 
-	rc = balloon_add_regions();
-	if (rc)
-		return rc;
+	balloon_add_regions();
 
 	task = kthread_run(balloon_thread, NULL, "xen-balloon");
 	if (IS_ERR(task)) {
@@ -781,10 +762,6 @@ static int __init balloon_init(void)
 	xen_balloon_init();
 
 	return 0;
-
- underflow:
-	WARN(1, "Released pages underflow current target");
-	return -ERANGE;
 }
 subsys_initcall(balloon_init);
 

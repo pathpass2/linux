@@ -31,8 +31,6 @@ extern unsigned long efi_mixed_mode_stack_pa;
 
 #define ARCH_EFI_IRQ_FLAGS_MASK	X86_EFLAGS_IF
 
-#define EFI_UNACCEPTED_UNIT_SIZE PMD_SIZE
-
 /*
  * The EFI services are called through variadic functions in many cases. These
  * functions are implemented in assembler and support only a fixed number of
@@ -90,9 +88,21 @@ static inline void efi_fpu_end(void)
 }
 
 #ifdef CONFIG_X86_32
-#define EFI_X86_KERNEL_ALLOC_LIMIT		(SZ_512M - 1)
+#define arch_efi_call_virt_setup()					\
+({									\
+	efi_fpu_begin();						\
+	firmware_restrict_branch_speculation_start();			\
+})
+
+#define arch_efi_call_virt_teardown()					\
+({									\
+	firmware_restrict_branch_speculation_end();			\
+	efi_fpu_end();							\
+})
+
 #else /* !CONFIG_X86_32 */
-#define EFI_X86_KERNEL_ALLOC_LIMIT		EFI_ALLOC_LIMIT
+
+#define EFI_LOADER_SIGNATURE	"EL64"
 
 extern asmlinkage u64 __efi_call(void *fp, ...);
 
@@ -103,12 +113,27 @@ extern bool efi_disable_ibt_for_runtime;
 	__efi_call(__VA_ARGS__);					\
 })
 
+#define arch_efi_call_virt_setup()					\
+({									\
+	efi_sync_low_kernel_mappings();					\
+	efi_fpu_begin();						\
+	firmware_restrict_branch_speculation_start();			\
+	efi_enter_mm();							\
+})
+
 #undef arch_efi_call_virt
 #define arch_efi_call_virt(p, f, args...) ({				\
 	u64 ret, ibt = ibt_save(efi_disable_ibt_for_runtime);		\
 	ret = efi_call((void *)p->f, args);				\
 	ibt_restore(ibt);						\
 	ret;								\
+})
+
+#define arch_efi_call_virt_teardown()					\
+({									\
+	efi_leave_mm();							\
+	firmware_restrict_branch_speculation_end();			\
+	efi_fpu_end();							\
 })
 
 #ifdef CONFIG_KASAN
@@ -140,8 +165,17 @@ extern void efi_delete_dummy_variable(void);
 extern void efi_crash_gracefully_on_page_fault(unsigned long phys_addr);
 extern void efi_free_boot_services(void);
 
-void arch_efi_call_virt_setup(void);
-void arch_efi_call_virt_teardown(void);
+void efi_enter_mm(void);
+void efi_leave_mm(void);
+
+/* kexec external ABI */
+struct efi_setup_data {
+	u64 fw_vendor;
+	u64 __unused;
+	u64 tables;
+	u64 smbios;
+	u64 reserved[8];
+};
 
 extern u64 efi_setup;
 
@@ -181,8 +215,6 @@ efi_status_t efi_set_virtual_address_map(unsigned long memory_map_size,
 /* arch specific definitions used by the stub code */
 
 #ifdef CONFIG_EFI_MIXED
-
-#define EFI_ALLOC_LIMIT		(efi_is_64bit() ? ULONG_MAX : U32_MAX)
 
 #define ARCH_HAS_EFISTUB_WRAPPERS
 
@@ -229,8 +261,7 @@ static inline bool efi_is_native(void)
 
 static inline void *efi64_zero_upper(void *p)
 {
-	if (p)
-		((u32 *)p)[1] = 0;
+	((u32 *)p)[1] = 0;
 	return p;
 }
 
@@ -249,9 +280,6 @@ static inline u32 efi64_convert_status(efi_status_t status)
 
 #define __efi64_argmap_allocate_pool(type, size, buffer)		\
 	((type), (size), efi64_zero_upper(buffer))
-
-#define __efi64_argmap_locate_handle_buffer(type, proto, key, num, buf)	\
-	((type), (proto), (key), efi64_zero_upper(num), efi64_zero_upper(buf))
 
 #define __efi64_argmap_create_event(type, tpl, f, c, event)		\
 	((type), (tpl), (f), (c), efi64_zero_upper(event))
@@ -319,10 +347,6 @@ static inline u32 efi64_convert_status(efi_status_t status)
 #define __efi64_argmap_clear_memory_attributes(protocol, phys, size, flags) \
 	((protocol), __efi64_split(phys), __efi64_split(size), __efi64_split(flags))
 
-/* EFI SMBIOS protocol */
-#define __efi64_argmap_get_next(protocol, smbioshandle, type, record, phandle) \
-	((protocol), (smbioshandle), (type), efi64_zero_upper(record), \
-	 efi64_zero_upper(phandle))
 /*
  * The macros below handle the plumbing for the argument mapping. To add a
  * mapping for a specific EFI method, simply define a macro
@@ -392,8 +416,24 @@ static inline void efi_reserve_boot_services(void)
 }
 #endif /* CONFIG_EFI */
 
+#ifdef CONFIG_EFI_FAKE_MEMMAP
+extern void __init efi_fake_memmap_early(void);
+extern void __init efi_fake_memmap(void);
+#else
+static inline void efi_fake_memmap_early(void)
+{
+}
+
+static inline void efi_fake_memmap(void)
+{
+}
+#endif
+
 extern int __init efi_memmap_alloc(unsigned int num_entries,
 				   struct efi_memory_map_data *data);
+extern void __efi_memmap_free(u64 phys, unsigned long size,
+			      unsigned long flags);
+#define __efi_memmap_free __efi_memmap_free
 
 extern int __init efi_memmap_install(struct efi_memory_map_data *data);
 extern int __init efi_memmap_split_count(efi_memory_desc_t *md,
@@ -401,9 +441,8 @@ extern int __init efi_memmap_split_count(efi_memory_desc_t *md,
 extern void __init efi_memmap_insert(struct efi_memory_map *old_memmap,
 				     void *buf, struct efi_mem_range *mem);
 
-extern enum efi_secureboot_mode __x86_ima_efi_boot_mode(void);
-
-#define arch_ima_efi_boot_mode	__x86_ima_efi_boot_mode()
+#define arch_ima_efi_boot_mode	\
+	({ extern struct boot_params boot_params; boot_params.secure_boot; })
 
 #ifdef CONFIG_EFI_RUNTIME_MAP
 int efi_get_runtime_map_size(void);

@@ -407,23 +407,32 @@ static void motu_lock_changed(struct snd_motu *motu)
 
 int snd_motu_stream_lock_try(struct snd_motu *motu)
 {
-	guard(spinlock_irq)(&motu->lock);
+	int err;
 
-	if (motu->dev_lock_count < 0)
-		return -EBUSY;
+	spin_lock_irq(&motu->lock);
+
+	if (motu->dev_lock_count < 0) {
+		err = -EBUSY;
+		goto out;
+	}
 
 	if (motu->dev_lock_count++ == 0)
 		motu_lock_changed(motu);
-	return 0;
+	err = 0;
+out:
+	spin_unlock_irq(&motu->lock);
+	return err;
 }
 
 void snd_motu_stream_lock_release(struct snd_motu *motu)
 {
-	guard(spinlock_irq)(&motu->lock);
+	spin_lock_irq(&motu->lock);
 
 	if (WARN_ON(motu->dev_lock_count <= 0))
-		return;
+		goto out;
 
 	if (--motu->dev_lock_count == 0)
 		motu_lock_changed(motu);
+out:
+	spin_unlock_irq(&motu->lock);
 }

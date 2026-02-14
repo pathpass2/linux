@@ -145,7 +145,7 @@ enum ocelot_stat {
 };
 
 struct ocelot_stat_layout {
-	enum ocelot_reg reg;
+	u32 reg;
 	char name[ETH_GSTRING_LEN];
 };
 
@@ -257,7 +257,7 @@ struct ocelot_stat_layout {
 
 struct ocelot_stats_region {
 	struct list_head node;
-	enum ocelot_reg base;
+	u32 base;
 	enum ocelot_stat first_stat;
 	int count;
 	u32 *buf;
@@ -395,7 +395,7 @@ static void ocelot_check_stats_work(struct work_struct *work)
 void ocelot_get_strings(struct ocelot *ocelot, int port, u32 sset, u8 *data)
 {
 	const struct ocelot_stat_layout *layout;
-	enum ocelot_stat i;
+	int i;
 
 	if (sset != ETH_SS_STATS)
 		return;
@@ -442,8 +442,7 @@ out_unlock:
 int ocelot_get_sset_count(struct ocelot *ocelot, int port, int sset)
 {
 	const struct ocelot_stat_layout *layout;
-	enum ocelot_stat i;
-	int num_stats = 0;
+	int i, num_stats = 0;
 
 	if (sset != ETH_SS_STATS)
 		return -EOPNOTSUPP;
@@ -462,8 +461,8 @@ static void ocelot_port_ethtool_stats_cb(struct ocelot *ocelot, int port,
 					 void *priv)
 {
 	const struct ocelot_stat_layout *layout;
-	enum ocelot_stat i;
 	u64 *data = priv;
+	int i;
 
 	layout = ocelot_get_stats_layout(ocelot);
 
@@ -582,10 +581,10 @@ static void ocelot_port_rmon_stats_cb(struct ocelot *ocelot, int port, void *pri
 	rmon_stats->hist_tx[0] = s[OCELOT_STAT_TX_64];
 	rmon_stats->hist_tx[1] = s[OCELOT_STAT_TX_65_127];
 	rmon_stats->hist_tx[2] = s[OCELOT_STAT_TX_128_255];
-	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_256_511];
-	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_512_1023];
-	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_1024_1526];
-	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_1527_MAX];
+	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_128_255];
+	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_256_511];
+	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_512_1023];
+	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_1024_1526];
 }
 
 static void ocelot_port_pmac_rmon_stats_cb(struct ocelot *ocelot, int port,
@@ -610,10 +609,10 @@ static void ocelot_port_pmac_rmon_stats_cb(struct ocelot *ocelot, int port,
 	rmon_stats->hist_tx[0] = s[OCELOT_STAT_TX_PMAC_64];
 	rmon_stats->hist_tx[1] = s[OCELOT_STAT_TX_PMAC_65_127];
 	rmon_stats->hist_tx[2] = s[OCELOT_STAT_TX_PMAC_128_255];
-	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_PMAC_256_511];
-	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_PMAC_512_1023];
-	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_PMAC_1024_1526];
-	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_PMAC_1527_MAX];
+	rmon_stats->hist_tx[3] = s[OCELOT_STAT_TX_PMAC_128_255];
+	rmon_stats->hist_tx[4] = s[OCELOT_STAT_TX_PMAC_256_511];
+	rmon_stats->hist_tx[5] = s[OCELOT_STAT_TX_PMAC_512_1023];
+	rmon_stats->hist_tx[6] = s[OCELOT_STAT_TX_PMAC_1024_1526];
 }
 
 void ocelot_port_get_rmon_stats(struct ocelot *ocelot, int port,
@@ -821,26 +820,6 @@ void ocelot_port_get_eth_phy_stats(struct ocelot *ocelot, int port,
 }
 EXPORT_SYMBOL_GPL(ocelot_port_get_eth_phy_stats);
 
-void ocelot_port_get_ts_stats(struct ocelot *ocelot, int port,
-			      struct ethtool_ts_stats *ts_stats)
-{
-	struct ocelot_port *ocelot_port = ocelot->ports[port];
-	struct ocelot_ts_stats *stats = ocelot_port->ts_stats;
-	unsigned int start;
-
-	if (!ocelot->ptp)
-		return;
-
-	do {
-		start = u64_stats_fetch_begin(&stats->syncp);
-		ts_stats->pkts = stats->pkts;
-		ts_stats->onestep_pkts_unconfirmed = stats->onestep_pkts_unconfirmed;
-		ts_stats->lost = stats->lost;
-		ts_stats->err = stats->err;
-	} while (u64_stats_fetch_retry(&stats->syncp, start));
-}
-EXPORT_SYMBOL_GPL(ocelot_port_get_ts_stats);
-
 void ocelot_port_get_stats64(struct ocelot *ocelot, int port,
 			     struct rtnl_link_stats64 *stats)
 {
@@ -910,8 +889,8 @@ static int ocelot_prepare_stats_regions(struct ocelot *ocelot)
 {
 	struct ocelot_stats_region *region = NULL;
 	const struct ocelot_stat_layout *layout;
-	enum ocelot_reg last = 0;
-	enum ocelot_stat i;
+	unsigned int last = 0;
+	int i;
 
 	INIT_LIST_HEAD(&ocelot->stats_regions);
 
@@ -921,17 +900,6 @@ static int ocelot_prepare_stats_regions(struct ocelot *ocelot)
 		if (!layout[i].reg)
 			continue;
 
-		/* enum ocelot_stat must be kept sorted in the same order
-		 * as the addresses behind layout[i].reg in order to have
-		 * efficient bulking
-		 */
-		if (last) {
-			WARN(ocelot->map[SYS][last & REG_MASK] >= ocelot->map[SYS][layout[i].reg & REG_MASK],
-			     "reg 0x%x had address 0x%x but reg 0x%x has address 0x%x, bulking broken!",
-			     last, ocelot->map[SYS][last & REG_MASK],
-			     layout[i].reg, ocelot->map[SYS][layout[i].reg & REG_MASK]);
-		}
-
 		if (region && ocelot->map[SYS][layout[i].reg & REG_MASK] ==
 		    ocelot->map[SYS][last & REG_MASK] + 4) {
 			region->count++;
@@ -940,6 +908,12 @@ static int ocelot_prepare_stats_regions(struct ocelot *ocelot)
 					      GFP_KERNEL);
 			if (!region)
 				return -ENOMEM;
+
+			/* enum ocelot_stat must be kept sorted in the same
+			 * order as layout[i].reg in order to have efficient
+			 * bulking
+			 */
+			WARN_ON(last >= layout[i].reg);
 
 			region->base = layout[i].reg;
 			region->first_stat = i;
@@ -951,15 +925,6 @@ static int ocelot_prepare_stats_regions(struct ocelot *ocelot)
 	}
 
 	list_for_each_entry(region, &ocelot->stats_regions, node) {
-		enum ocelot_target target;
-		u32 addr;
-
-		ocelot_reg_to_target_addr(ocelot, region->base, &target,
-					  &addr);
-
-		dev_dbg(ocelot->dev,
-			"region of %d contiguous counters starting with SYS:STAT:CNT[0x%03x]\n",
-			region->count, addr / 4);
 		region->buf = devm_kcalloc(ocelot->dev, region->count,
 					   sizeof(*region->buf), GFP_KERNEL);
 		if (!region->buf)
@@ -979,23 +944,6 @@ int ocelot_stats_init(struct ocelot *ocelot)
 				     sizeof(u64), GFP_KERNEL);
 	if (!ocelot->stats)
 		return -ENOMEM;
-
-	if (ocelot->ptp) {
-		for (int port = 0; port < ocelot->num_phys_ports; port++) {
-			struct ocelot_port *ocelot_port = ocelot->ports[port];
-
-			if (!ocelot_port)
-				continue;
-
-			ocelot_port->ts_stats = devm_kzalloc(ocelot->dev,
-							     sizeof(*ocelot_port->ts_stats),
-							     GFP_KERNEL);
-			if (!ocelot_port->ts_stats)
-				return -ENOMEM;
-
-			u64_stats_init(&ocelot_port->ts_stats->syncp);
-		}
-	}
 
 	snprintf(queue_name, sizeof(queue_name), "%s-stats",
 		 dev_name(ocelot->dev));
@@ -1021,6 +969,7 @@ int ocelot_stats_init(struct ocelot *ocelot)
 
 void ocelot_stats_deinit(struct ocelot *ocelot)
 {
-	disable_delayed_work_sync(&ocelot->stats_work);
+	cancel_delayed_work(&ocelot->stats_work);
 	destroy_workqueue(ocelot->stats_queue);
 }
+

@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018-2022 Intel Corporation
+// Copyright(c) 2018-2022 Intel Corporation. All rights reserved.
 //
 
 #include <linux/delay.h>
@@ -15,6 +15,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <sound/hdaudio_ext.h>
 #include <sound/sof.h>

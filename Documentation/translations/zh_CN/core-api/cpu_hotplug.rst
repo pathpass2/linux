@@ -22,7 +22,7 @@
        Srivatsa Vaddagiri <vatsa@in.ibm.com>,
        Ashok Raj <ashok.raj@intel.com>,
        Joel Schopp <jschopp@austin.ibm.com>,
-       Thomas Gleixner <tglx@kernel.org>
+       Thomas Gleixner <tglx@linutronix.de>
 
 简介
 ====
@@ -48,6 +48,12 @@ CPU热拔插支持的一个更新颖的用途是它在SMP的暂停恢复支持�
 ``nr_cpus=n``
   限制内核将支持的CPU总量。如果这里提供的数量低于实际可用的CPU数量，那么其他CPU
   以后就不能上线了。
+
+``additional_cpus=n``
+  使用它来限制可热插拔的CPU。该选项设置
+  ``cpu_possible_mask = cpu_present_mask + additional_cpus``
+
+  这个选项只限于IA64架构。
 
 ``possible_cpus=n``
   这个选项设置 ``cpu_possible_mask`` 中的 ``possible_cpus`` 位。

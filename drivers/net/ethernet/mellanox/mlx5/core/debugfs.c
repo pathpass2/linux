@@ -143,8 +143,8 @@ static ssize_t average_read(struct file *filp, char __user *buf, size_t count,
 	return simple_read_from_buffer(buf, count, pos, tbuf, ret);
 }
 
-static ssize_t reset_write(struct file *filp, const char __user *buf,
-			   size_t count, loff_t *pos)
+static ssize_t average_write(struct file *filp, const char __user *buf,
+			     size_t count, loff_t *pos)
 {
 	struct mlx5_cmd_stats *stats;
 
@@ -152,11 +152,6 @@ static ssize_t reset_write(struct file *filp, const char __user *buf,
 	spin_lock_irq(&stats->lock);
 	stats->sum = 0;
 	stats->n = 0;
-	stats->failed = 0;
-	stats->failed_mbox_status = 0;
-	stats->last_failed_errno = 0;
-	stats->last_failed_mbox_status = 0;
-	stats->last_failed_syndrome = 0;
 	spin_unlock_irq(&stats->lock);
 
 	*pos += count;
@@ -164,16 +159,11 @@ static ssize_t reset_write(struct file *filp, const char __user *buf,
 	return count;
 }
 
-static const struct file_operations reset_fops = {
-	.owner	= THIS_MODULE,
-	.open	= simple_open,
-	.write	= reset_write,
-};
-
-static const struct file_operations average_fops = {
+static const struct file_operations stats_fops = {
 	.owner	= THIS_MODULE,
 	.open	= simple_open,
 	.read	= average_read,
+	.write	= average_write,
 };
 
 static ssize_t slots_read(struct file *filp, char __user *buf, size_t count,
@@ -186,8 +176,8 @@ static ssize_t slots_read(struct file *filp, char __user *buf, size_t count,
 	int ret;
 
 	cmd = filp->private_data;
-	weight = bitmap_weight(&cmd->vars.bitmask, cmd->vars.max_reg_cmds);
-	field = cmd->vars.max_reg_cmds - weight;
+	weight = bitmap_weight(&cmd->bitmask, cmd->max_reg_cmds);
+	field = cmd->max_reg_cmds - weight;
 	ret = snprintf(tbuf, sizeof(tbuf), "%d\n", field);
 	return simple_read_from_buffer(buf, count, pos, tbuf, ret);
 }
@@ -197,24 +187,6 @@ static const struct file_operations slots_fops = {
 	.open	= simple_open,
 	.read	= slots_read,
 };
-
-static struct mlx5_cmd_stats *
-mlx5_cmdif_alloc_stats(struct xarray *stats_xa, int opcode)
-{
-	struct mlx5_cmd_stats *stats = kzalloc(sizeof(*stats), GFP_KERNEL);
-	int err;
-
-	if (!stats)
-		return NULL;
-
-	err = xa_insert(stats_xa, opcode, stats, GFP_KERNEL);
-	if (err) {
-		kfree(stats);
-		return NULL;
-	}
-	spin_lock_init(&stats->lock);
-	return stats;
-}
 
 void mlx5_cmdif_debugfs_init(struct mlx5_core_dev *dev)
 {
@@ -228,20 +200,14 @@ void mlx5_cmdif_debugfs_init(struct mlx5_core_dev *dev)
 
 	debugfs_create_file("slots_inuse", 0400, *cmd, &dev->cmd, &slots_fops);
 
-	xa_init(&dev->cmd.stats);
-
 	for (i = 0; i < MLX5_CMD_OP_MAX; i++) {
+		stats = &dev->cmd.stats[i];
 		namep = mlx5_command_str(i);
 		if (strcmp(namep, "unknown command opcode")) {
-			stats = mlx5_cmdif_alloc_stats(&dev->cmd.stats, i);
-			if (!stats)
-				continue;
 			stats->root = debugfs_create_dir(namep, *cmd);
 
-			debugfs_create_file("reset", 0200, stats->root, stats,
-					    &reset_fops);
 			debugfs_create_file("average", 0400, stats->root, stats,
-					    &average_fops);
+					    &stats_fops);
 			debugfs_create_u64("n", 0400, stats->root, &stats->n);
 			debugfs_create_u64("failed", 0400, stats->root, &stats->failed);
 			debugfs_create_u64("failed_mbox_status", 0400, stats->root,
@@ -258,13 +224,7 @@ void mlx5_cmdif_debugfs_init(struct mlx5_core_dev *dev)
 
 void mlx5_cmdif_debugfs_cleanup(struct mlx5_core_dev *dev)
 {
-	struct mlx5_cmd_stats *stats;
-	unsigned long i;
-
 	debugfs_remove_recursive(dev->priv.dbg.cmdif_debugfs);
-	xa_for_each(&dev->cmd.stats, i, stats)
-		kfree(stats);
-	xa_destroy(&dev->cmd.stats);
 }
 
 void mlx5_cq_debugfs_init(struct mlx5_core_dev *dev)
@@ -286,7 +246,6 @@ void mlx5_pages_debugfs_init(struct mlx5_core_dev *dev)
 
 	debugfs_create_u32("fw_pages_total", 0400, pages, &dev->priv.fw_pages);
 	debugfs_create_u32("fw_pages_vfs", 0400, pages, &dev->priv.page_counters[MLX5_VF]);
-	debugfs_create_u32("fw_pages_ec_vfs", 0400, pages, &dev->priv.page_counters[MLX5_EC_VF]);
 	debugfs_create_u32("fw_pages_sfs", 0400, pages, &dev->priv.page_counters[MLX5_SF]);
 	debugfs_create_u32("fw_pages_host_pf", 0400, pages, &dev->priv.page_counters[MLX5_HOST_PF]);
 	debugfs_create_u32("fw_pages_alloc_failed", 0400, pages, &dev->priv.fw_pages_alloc_failed);
@@ -554,11 +513,11 @@ EXPORT_SYMBOL(mlx5_debug_qp_add);
 
 void mlx5_debug_qp_remove(struct mlx5_core_dev *dev, struct mlx5_core_qp *qp)
 {
-	if (!mlx5_debugfs_root || !qp->dbg)
+	if (!mlx5_debugfs_root)
 		return;
 
-	rem_res_tree(qp->dbg);
-	qp->dbg = NULL;
+	if (qp->dbg)
+		rem_res_tree(qp->dbg);
 }
 EXPORT_SYMBOL(mlx5_debug_qp_remove);
 
@@ -612,20 +571,4 @@ void mlx5_debug_cq_remove(struct mlx5_core_dev *dev, struct mlx5_core_cq *cq)
 		rem_res_tree(cq->dbg);
 		cq->dbg = NULL;
 	}
-}
-
-static int vhca_id_show(struct seq_file *file, void *priv)
-{
-	struct mlx5_core_dev *dev = file->private;
-
-	seq_printf(file, "0x%x\n", MLX5_CAP_GEN(dev, vhca_id));
-	return 0;
-}
-
-DEFINE_SHOW_ATTRIBUTE(vhca_id);
-
-void mlx5_vhca_debugfs_init(struct mlx5_core_dev *dev)
-{
-	debugfs_create_file("vhca_id", 0400, dev->priv.dbg.dbg_root, dev,
-			    &vhca_id_fops);
 }

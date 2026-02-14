@@ -17,7 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/log2.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 
@@ -120,9 +120,8 @@ static ssize_t timestamp0_show(struct device *dev,
 {
 	struct rv3028_data *rv3028 = dev_get_drvdata(dev->parent);
 	struct rtc_time tm;
-	unsigned int count;
+	int ret, count;
 	u8 date[6];
-	int ret;
 
 	ret = regmap_read(rv3028->regmap, RV3028_TS_COUNT, &count);
 	if (ret)
@@ -157,8 +156,7 @@ static ssize_t timestamp0_count_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
 	struct rv3028_data *rv3028 = dev_get_drvdata(dev->parent);
-	unsigned int count;
-	int ret;
+	int ret, count;
 
 	ret = regmap_read(rv3028->regmap, RV3028_TS_COUNT, &count);
 	if (ret)
@@ -731,19 +729,14 @@ static unsigned long rv3028_clkout_recalc_rate(struct clk_hw *hw,
 	return clkout_rates[clkout];
 }
 
-static int rv3028_clkout_determine_rate(struct clk_hw *hw,
-					struct clk_rate_request *req)
+static long rv3028_clkout_round_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long *prate)
 {
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(clkout_rates); i++)
-		if (clkout_rates[i] <= req->rate) {
-			req->rate = clkout_rates[i];
-
-			return 0;
-		}
-
-	req->rate = clkout_rates[0];
+		if (clkout_rates[i] <= rate)
+			return clkout_rates[i];
 
 	return 0;
 }
@@ -807,7 +800,7 @@ static const struct clk_ops rv3028_clkout_ops = {
 	.unprepare = rv3028_clkout_unprepare,
 	.is_prepared = rv3028_clkout_is_prepared,
 	.recalc_rate = rv3028_clkout_recalc_rate,
-	.determine_rate = rv3028_clkout_determine_rate,
+	.round_rate = rv3028_clkout_round_rate,
 	.set_rate = rv3028_clkout_set_rate,
 };
 
@@ -862,68 +855,11 @@ static const struct regmap_config regmap_config = {
         .max_register = 0x37,
 };
 
-static u8 rv3028_set_trickle_charger(struct rv3028_data *rv3028,
-				     struct i2c_client *client)
-{
-	int ret, val_old, val;
-	u32 ohms, chargeable;
-
-	ret = regmap_read(rv3028->regmap, RV3028_BACKUP, &val_old);
-	if (ret < 0)
-		return ret;
-
-	/* mask out only trickle charger bits */
-	val_old = val_old & (RV3028_BACKUP_TCE | RV3028_BACKUP_TCR_MASK);
-	val = val_old;
-
-	/* setup trickle charger */
-	if (!device_property_read_u32(&client->dev, "trickle-resistor-ohms",
-				      &ohms)) {
-		int i;
-
-		for (i = 0; i < ARRAY_SIZE(rv3028_trickle_resistors); i++)
-			if (ohms == rv3028_trickle_resistors[i])
-				break;
-
-		if (i < ARRAY_SIZE(rv3028_trickle_resistors)) {
-			/* enable trickle charger and its resistor */
-			val = RV3028_BACKUP_TCE | i;
-		} else {
-			dev_warn(&client->dev, "invalid trickle resistor value\n");
-		}
-	}
-
-	if (!device_property_read_u32(&client->dev, "aux-voltage-chargeable",
-				      &chargeable)) {
-		switch (chargeable) {
-		case 0:
-			val &= ~RV3028_BACKUP_TCE;
-			break;
-		case 1:
-			val |= RV3028_BACKUP_TCE;
-			break;
-		default:
-			dev_warn(&client->dev,
-				 "unsupported aux-voltage-chargeable value\n");
-			break;
-		}
-	}
-
-	/* only update EEPROM if changes are necessary */
-	if (val_old != val) {
-		ret = rv3028_update_cfg(rv3028, RV3028_BACKUP, RV3028_BACKUP_TCE |
-						RV3028_BACKUP_TCR_MASK, val);
-		if (ret)
-			return ret;
-	}
-
-	return ret;
-}
-
 static int rv3028_probe(struct i2c_client *client)
 {
 	struct rv3028_data *rv3028;
 	int ret, status;
+	u32 ohms;
 	struct nvmem_config nvmem_cfg = {
 		.name = "rv3028_nvram",
 		.word_size = 1,
@@ -1001,9 +937,24 @@ static int rv3028_probe(struct i2c_client *client)
 	if (ret)
 		return ret;
 
-	ret = rv3028_set_trickle_charger(rv3028, client);
-	if (ret)
-		return ret;
+	/* setup trickle charger */
+	if (!device_property_read_u32(&client->dev, "trickle-resistor-ohms",
+				      &ohms)) {
+		int i;
+
+		for (i = 0; i < ARRAY_SIZE(rv3028_trickle_resistors); i++)
+			if (ohms == rv3028_trickle_resistors[i])
+				break;
+
+		if (i < ARRAY_SIZE(rv3028_trickle_resistors)) {
+			ret = rv3028_update_cfg(rv3028, RV3028_BACKUP, RV3028_BACKUP_TCE |
+						 RV3028_BACKUP_TCR_MASK, RV3028_BACKUP_TCE | i);
+			if (ret)
+				return ret;
+		} else {
+			dev_warn(&client->dev, "invalid trickle resistor value\n");
+		}
+	}
 
 	ret = rtc_add_group(rv3028->rtc, &rv3028_attr_group);
 	if (ret)
@@ -1023,6 +974,8 @@ static int rv3028_probe(struct i2c_client *client)
 	eeprom_cfg.priv = rv3028;
 	devm_rtc_nvmem_register(rv3028->rtc, &eeprom_cfg);
 
+	rv3028->rtc->max_user_freq = 1;
+
 #ifdef CONFIG_COMMON_CLK
 	rv3028_clkout_register_clk(rv3028, client);
 #endif
@@ -1041,20 +994,13 @@ static const __maybe_unused struct of_device_id rv3028_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, rv3028_of_match);
 
-static const struct i2c_device_id rv3028_id_table[] = {
-	{ .name = "rv3028", },
-	{ }
-};
-MODULE_DEVICE_TABLE(i2c, rv3028_id_table);
-
 static struct i2c_driver rv3028_driver = {
 	.driver = {
 		.name = "rtc-rv3028",
 		.acpi_match_table = rv3028_i2c_acpi_match,
 		.of_match_table = of_match_ptr(rv3028_of_match),
 	},
-	.id_table	= rv3028_id_table,
-	.probe		= rv3028_probe,
+	.probe_new	= rv3028_probe,
 };
 module_i2c_driver(rv3028_driver);
 

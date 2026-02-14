@@ -9,14 +9,9 @@
 
 #include <linux/efi.h>
 #include <linux/init.h>
-#include <linux/kmemleak.h>
-#include <linux/kthread.h>
-#include <linux/screen_info.h>
-#include <linux/vmalloc.h>
 
 #include <asm/efi.h>
 #include <asm/stacktrace.h>
-#include <asm/vmap_stack.h>
 
 static bool region_is_misaligned(const efi_memory_desc_t *md)
 {
@@ -31,21 +26,13 @@ static bool region_is_misaligned(const efi_memory_desc_t *md)
  * executable, everything else can be mapped with the XN bits
  * set. Also take the new (optional) RO/XP bits into account.
  */
-static __init ptdesc_t create_mapping_protection(efi_memory_desc_t *md)
+static __init pteval_t create_mapping_protection(efi_memory_desc_t *md)
 {
 	u64 attr = md->attribute;
 	u32 type = md->type;
 
-	if (type == EFI_MEMORY_MAPPED_IO) {
-		pgprot_t prot = __pgprot(PROT_DEVICE_nGnRE);
-
-		if (arm64_is_protected_mmio(md->phys_addr,
-					    md->num_pages << EFI_PAGE_SHIFT))
-			prot = pgprot_encrypted(prot);
-		else
-			prot = pgprot_decrypted(prot);
-		return pgprot_val(prot);
-	}
+	if (type == EFI_MEMORY_MAPPED_IO)
+		return PROT_DEVICE_nGnRE;
 
 	if (region_is_misaligned(md)) {
 		static bool __initdata code_is_misaligned;
@@ -83,9 +70,13 @@ static __init ptdesc_t create_mapping_protection(efi_memory_desc_t *md)
 	return pgprot_val(PAGE_KERNEL_EXEC);
 }
 
+/* we will fill this structure from the stub, so don't put it in .bss */
+struct screen_info screen_info __section(".data");
+EXPORT_SYMBOL(screen_info);
+
 int __init efi_create_mapping(struct mm_struct *mm, efi_memory_desc_t *md)
 {
-	ptdesc_t prot_val = create_mapping_protection(md);
+	pteval_t prot_val = create_mapping_protection(md);
 	bool page_mappings_only = (md->type == EFI_RUNTIME_SERVICES_CODE ||
 				   md->type == EFI_RUNTIME_SERVICES_DATA);
 
@@ -115,15 +106,16 @@ static int __init set_permissions(pte_t *ptep, unsigned long addr, void *data)
 {
 	struct set_perm_data *spd = data;
 	const efi_memory_desc_t *md = spd->md;
-	pte_t pte = __ptep_get(ptep);
+	pte_t pte = READ_ONCE(*ptep);
 
 	if (md->attribute & EFI_MEMORY_RO)
 		pte = set_pte_bit(pte, __pgprot(PTE_RDONLY));
 	if (md->attribute & EFI_MEMORY_XP)
 		pte = set_pte_bit(pte, __pgprot(PTE_PXN));
-	else if (system_supports_bti_kernel() && spd->has_bti)
+	else if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL) &&
+		 system_supports_bti() && spd->has_bti)
 		pte = set_pte_bit(pte, __pgprot(PTE_GP));
-	__set_pte(ptep, pte);
+	set_pte(ptep, pte);
 	return 0;
 }
 
@@ -166,54 +158,7 @@ asmlinkage efi_status_t efi_handle_corrupted_x18(efi_status_t s, const char *f)
 	return s;
 }
 
-void arch_efi_call_virt_setup(void)
-{
-	efi_runtime_assert_lock_held();
-
-	if (preemptible() && (current->flags & PF_KTHREAD)) {
-		/*
-		 * Disable migration to ensure that a preempted EFI runtime
-		 * service call will be resumed on the same CPU. This avoids
-		 * potential issues with EFI runtime calls that are preempted
-		 * while polling for an asynchronous completion of a secure
-		 * firmware call, which may not permit the CPU to change.
-		 */
-		migrate_disable();
-		kthread_use_mm(&efi_mm);
-	} else {
-		efi_virtmap_load();
-	}
-
-	/*
-	 * Enable access to the valid TTBR0_EL1 and invoke the errata
-	 * workaround directly since there is no return from exception when
-	 * invoking the EFI run-time services.
-	 */
-	uaccess_ttbr0_enable();
-	post_ttbr_update_workaround();
-
-	__efi_fpsimd_begin();
-}
-
-void arch_efi_call_virt_teardown(void)
-{
-	__efi_fpsimd_end();
-
-	/*
-	 * Defer the switch to the current thread's TTBR0_EL1 until
-	 * uaccess_enable(). Do so before efi_virtmap_unload() updates the
-	 * saved TTBR0 value, so the userland page tables are not activated
-	 * inadvertently over the back of an exception.
-	 */
-	uaccess_ttbr0_disable();
-
-	if (preemptible() && (current->flags & PF_KTHREAD)) {
-		kthread_unuse_mm(&efi_mm);
-		migrate_enable();
-	} else {
-		efi_virtmap_unload();
-	}
-}
+DEFINE_RAW_SPINLOCK(efi_rt_lock);
 
 asmlinkage u64 *efi_rt_stack_top __ro_after_init;
 
@@ -249,14 +194,14 @@ static int __init arm64_efi_rt_init(void)
 	if (!efi_enabled(EFI_RUNTIME_SERVICES))
 		return 0;
 
-	p = arch_alloc_vmap_stack(THREAD_SIZE, NUMA_NO_NODE);
-	if (!p) {
+	p = __vmalloc_node(THREAD_SIZE, THREAD_ALIGN, GFP_KERNEL,
+			   NUMA_NO_NODE, &&l);
+l:	if (!p) {
 		pr_warn("Failed to allocate EFI runtime stack\n");
 		clear_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 		return -ENOMEM;
 	}
 
-	kmemleak_not_leak(p);
 	efi_rt_stack_top = p + THREAD_SIZE;
 	return 0;
 }

@@ -7,10 +7,8 @@
 #ifndef __UM_UBD_USER_H
 #define __UM_UBD_USER_H
 
-#include <os.h>
-
-int start_io_thread(struct os_helper_thread **td_out, int *fd_out);
-void *io_thread(void *arg);
+extern int start_io_thread(unsigned long sp, int *fds_out);
+extern int io_thread(void *arg);
 extern int kernel_fd;
 
 extern int ubd_read_poll(int timeout);

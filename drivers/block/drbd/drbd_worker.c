@@ -28,8 +28,8 @@
 #include "drbd_protocol.h"
 #include "drbd_req.h"
 
-static int make_ov_request(struct drbd_peer_device *, int);
-static int make_resync_request(struct drbd_peer_device *, int);
+static int make_ov_request(struct drbd_device *, int);
+static int make_resync_request(struct drbd_device *, int);
 
 /* endio handlers:
  *   drbd_md_endio (defined here)
@@ -124,7 +124,7 @@ void drbd_endio_write_sec_final(struct drbd_peer_request *peer_req) __releases(l
 		 * In case of a write error, send the neg ack anyways. */
 		if (!__test_and_set_bit(__EE_SEND_WRITE_ACK, &peer_req->flags))
 			inc_unacked(device);
-		drbd_set_out_of_sync(peer_device, peer_req->i.sector, peer_req->i.size);
+		drbd_set_out_of_sync(device, peer_req->i.sector, peer_req->i.size);
 	}
 
 	spin_lock_irqsave(&device->resource->req_lock, flags);
@@ -276,7 +276,7 @@ void drbd_request_endio(struct bio *bio)
 
 	/* not req_mod(), we need irqsave here! */
 	spin_lock_irqsave(&device->resource->req_lock, flags);
-	__req_mod(req, what, NULL, &m);
+	__req_mod(req, what, &m);
 	spin_unlock_irqrestore(&device->resource->req_lock, flags);
 	put_ldev(device);
 
@@ -363,7 +363,7 @@ static int w_e_send_csum(struct drbd_work *w, int cancel)
 		 * drbd_alloc_pages due to pp_in_use > max_buffers. */
 		drbd_free_peer_req(device, peer_req);
 		peer_req = NULL;
-		inc_rs_pending(peer_device);
+		inc_rs_pending(device);
 		err = drbd_send_drequest_csum(peer_device, sector, size,
 					      digest, digest_size,
 					      P_CSUM_RS_REQUEST);
@@ -430,10 +430,10 @@ int w_resync_timer(struct drbd_work *w, int cancel)
 
 	switch (device->state.conn) {
 	case C_VERIFY_S:
-		make_ov_request(first_peer_device(device), cancel);
+		make_ov_request(device, cancel);
 		break;
 	case C_SYNC_TARGET:
-		make_resync_request(first_peer_device(device), cancel);
+		make_resync_request(device, cancel);
 		break;
 	}
 
@@ -442,8 +442,7 @@ int w_resync_timer(struct drbd_work *w, int cancel)
 
 void resync_timer_fn(struct timer_list *t)
 {
-	struct drbd_device *device = timer_container_of(device, t,
-							resync_timer);
+	struct drbd_device *device = from_timer(device, t, resync_timer);
 
 	drbd_queue_work_if_unqueued(
 		&first_peer_device(device)->connection->sender_work,
@@ -494,9 +493,8 @@ struct fifo_buffer *fifo_alloc(unsigned int fifo_size)
 	return fb;
 }
 
-static int drbd_rs_controller(struct drbd_peer_device *peer_device, unsigned int sect_in)
+static int drbd_rs_controller(struct drbd_device *device, unsigned int sect_in)
 {
-	struct drbd_device *device = peer_device->device;
 	struct disk_conf *dc;
 	unsigned int want;     /* The number of sectors we want in-flight */
 	int req_sect; /* Number of sectors to request in this turn */
@@ -547,9 +545,8 @@ static int drbd_rs_controller(struct drbd_peer_device *peer_device, unsigned int
 	return req_sect;
 }
 
-static int drbd_rs_number_requests(struct drbd_peer_device *peer_device)
+static int drbd_rs_number_requests(struct drbd_device *device)
 {
-	struct drbd_device *device = peer_device->device;
 	unsigned int sect_in;  /* Number of sectors that came in since the last turn */
 	int number, mxb;
 
@@ -559,7 +556,7 @@ static int drbd_rs_number_requests(struct drbd_peer_device *peer_device)
 	rcu_read_lock();
 	mxb = drbd_get_max_buffers(device) / 2;
 	if (rcu_dereference(device->rs_plan_s)->size) {
-		number = drbd_rs_controller(peer_device, sect_in) >> (BM_BLOCK_SHIFT - 9);
+		number = drbd_rs_controller(device, sect_in) >> (BM_BLOCK_SHIFT - 9);
 		device->c_sync_rate = number * HZ * (BM_BLOCK_SIZE / 1024) / SLEEP_TIME;
 	} else {
 		device->c_sync_rate = rcu_dereference(device->ldev->disk_conf)->resync_rate;
@@ -583,9 +580,9 @@ static int drbd_rs_number_requests(struct drbd_peer_device *peer_device)
 	return number;
 }
 
-static int make_resync_request(struct drbd_peer_device *const peer_device, int cancel)
+static int make_resync_request(struct drbd_device *const device, int cancel)
 {
-	struct drbd_device *const device = peer_device->device;
+	struct drbd_peer_device *const peer_device = first_peer_device(device);
 	struct drbd_connection *const connection = peer_device ? peer_device->connection : NULL;
 	unsigned long bit;
 	sector_t sector;
@@ -601,7 +598,7 @@ static int make_resync_request(struct drbd_peer_device *const peer_device, int c
 
 	if (device->rs_total == 0) {
 		/* empty resync? */
-		drbd_resync_finished(peer_device);
+		drbd_resync_finished(device);
 		return 0;
 	}
 
@@ -621,7 +618,7 @@ static int make_resync_request(struct drbd_peer_device *const peer_device, int c
 	}
 
 	max_bio_size = queue_max_hw_sectors(device->rq_queue) << 9;
-	number = drbd_rs_number_requests(peer_device);
+	number = drbd_rs_number_requests(device);
 	if (number <= 0)
 		goto requeue;
 
@@ -656,7 +653,7 @@ next_sector:
 
 		sector = BM_BIT_TO_SECT(bit);
 
-		if (drbd_try_rs_begin_io(peer_device, sector)) {
+		if (drbd_try_rs_begin_io(device, sector)) {
 			device->bm_resync_fo = bit;
 			goto requeue;
 		}
@@ -732,13 +729,13 @@ next_sector:
 		} else {
 			int err;
 
-			inc_rs_pending(peer_device);
+			inc_rs_pending(device);
 			err = drbd_send_drequest(peer_device,
 						 size == discard_granularity ? P_RS_THIN_REQ : P_RS_DATA_REQUEST,
 						 sector, size, ID_SYNCER);
 			if (err) {
 				drbd_err(device, "drbd_send_drequest() failed, aborting...\n");
-				dec_rs_pending(peer_device);
+				dec_rs_pending(device);
 				put_ldev(device);
 				return err;
 			}
@@ -763,9 +760,8 @@ next_sector:
 	return 0;
 }
 
-static int make_ov_request(struct drbd_peer_device *peer_device, int cancel)
+static int make_ov_request(struct drbd_device *device, int cancel)
 {
-	struct drbd_device *device = peer_device->device;
 	int number, i, size;
 	sector_t sector;
 	const sector_t capacity = get_capacity(device->vdisk);
@@ -774,7 +770,7 @@ static int make_ov_request(struct drbd_peer_device *peer_device, int cancel)
 	if (unlikely(cancel))
 		return 1;
 
-	number = drbd_rs_number_requests(peer_device);
+	number = drbd_rs_number_requests(device);
 
 	sector = device->ov_position;
 	for (i = 0; i < number; i++) {
@@ -792,7 +788,7 @@ static int make_ov_request(struct drbd_peer_device *peer_device, int cancel)
 
 		size = BM_BLOCK_SIZE;
 
-		if (drbd_try_rs_begin_io(peer_device, sector)) {
+		if (drbd_try_rs_begin_io(device, sector)) {
 			device->ov_position = sector;
 			goto requeue;
 		}
@@ -800,9 +796,9 @@ static int make_ov_request(struct drbd_peer_device *peer_device, int cancel)
 		if (sector + (size>>9) > capacity)
 			size = (capacity-sector)<<9;
 
-		inc_rs_pending(peer_device);
+		inc_rs_pending(device);
 		if (drbd_send_ov_request(first_peer_device(device), sector, size)) {
-			dec_rs_pending(peer_device);
+			dec_rs_pending(device);
 			return 0;
 		}
 		sector += BM_SECT_PER_BIT;
@@ -822,8 +818,8 @@ int w_ov_finished(struct drbd_work *w, int cancel)
 		container_of(w, struct drbd_device_work, w);
 	struct drbd_device *device = dw->device;
 	kfree(dw);
-	ov_out_of_sync_print(first_peer_device(device));
-	drbd_resync_finished(first_peer_device(device));
+	ov_out_of_sync_print(device);
+	drbd_resync_finished(device);
 
 	return 0;
 }
@@ -835,7 +831,7 @@ static int w_resync_finished(struct drbd_work *w, int cancel)
 	struct drbd_device *device = dw->device;
 	kfree(dw);
 
-	drbd_resync_finished(first_peer_device(device));
+	drbd_resync_finished(device);
 
 	return 0;
 }
@@ -850,10 +846,9 @@ static void ping_peer(struct drbd_device *device)
 		   test_bit(GOT_PING_ACK, &connection->flags) || device->state.conn < C_CONNECTED);
 }
 
-int drbd_resync_finished(struct drbd_peer_device *peer_device)
+int drbd_resync_finished(struct drbd_device *device)
 {
-	struct drbd_device *device = peer_device->device;
-	struct drbd_connection *connection = peer_device->connection;
+	struct drbd_connection *connection = first_peer_device(device)->connection;
 	unsigned long db, dt, dbdt;
 	unsigned long n_oos;
 	union drbd_state os, ns;
@@ -1030,6 +1025,22 @@ out:
 	return 1;
 }
 
+/* helper */
+static void move_to_net_ee_or_free(struct drbd_device *device, struct drbd_peer_request *peer_req)
+{
+	if (drbd_peer_req_has_active_page(peer_req)) {
+		/* This might happen if sendpage() has not finished */
+		int i = PFN_UP(peer_req->i.size);
+		atomic_add(i, &device->pp_in_use_by_net);
+		atomic_sub(i, &device->pp_in_use);
+		spin_lock_irq(&device->resource->req_lock);
+		list_add_tail(&peer_req->w.list, &device->net_ee);
+		spin_unlock_irq(&device->resource->req_lock);
+		wake_up(&drbd_pp_wait);
+	} else
+		drbd_free_peer_req(device, peer_req);
+}
+
 /**
  * w_e_end_data_req() - Worker callback, to send a P_DATA_REPLY packet in response to a P_DATA_REQUEST
  * @w:		work object.
@@ -1043,8 +1054,9 @@ int w_e_end_data_req(struct drbd_work *w, int cancel)
 	int err;
 
 	if (unlikely(cancel)) {
-		err = 0;
-		goto out;
+		drbd_free_peer_req(device, peer_req);
+		dec_unacked(device);
+		return 0;
 	}
 
 	if (likely((peer_req->flags & EE_WAS_ERROR) == 0)) {
@@ -1057,12 +1069,12 @@ int w_e_end_data_req(struct drbd_work *w, int cancel)
 		err = drbd_send_ack(peer_device, P_NEG_DREPLY, peer_req);
 	}
 
+	dec_unacked(device);
+
+	move_to_net_ee_or_free(device, peer_req);
+
 	if (unlikely(err))
 		drbd_err(device, "drbd_send_block() failed\n");
-out:
-	dec_unacked(device);
-	drbd_free_peer_req(device, peer_req);
-
 	return err;
 }
 
@@ -1103,8 +1115,9 @@ int w_e_end_rsdata_req(struct drbd_work *w, int cancel)
 	int err;
 
 	if (unlikely(cancel)) {
-		err = 0;
-		goto out;
+		drbd_free_peer_req(device, peer_req);
+		dec_unacked(device);
+		return 0;
 	}
 
 	if (get_ldev_if_state(device, D_FAILED)) {
@@ -1116,7 +1129,7 @@ int w_e_end_rsdata_req(struct drbd_work *w, int cancel)
 		err = drbd_send_ack(peer_device, P_RS_CANCEL, peer_req);
 	} else if (likely((peer_req->flags & EE_WAS_ERROR) == 0)) {
 		if (likely(device->state.pdsk >= D_INCONSISTENT)) {
-			inc_rs_pending(peer_device);
+			inc_rs_pending(device);
 			if (peer_req->flags & EE_RS_THIN_REQ && all_zero(peer_req))
 				err = drbd_send_rs_deallocated(peer_device, peer_req);
 			else
@@ -1135,14 +1148,15 @@ int w_e_end_rsdata_req(struct drbd_work *w, int cancel)
 		err = drbd_send_ack(peer_device, P_NEG_RS_DREPLY, peer_req);
 
 		/* update resync data with failure */
-		drbd_rs_failed_io(peer_device, peer_req->i.sector, peer_req->i.size);
+		drbd_rs_failed_io(device, peer_req->i.sector, peer_req->i.size);
 	}
+
+	dec_unacked(device);
+
+	move_to_net_ee_or_free(device, peer_req);
+
 	if (unlikely(err))
 		drbd_err(device, "drbd_send_block() failed\n");
-out:
-	dec_unacked(device);
-	drbd_free_peer_req(device, peer_req);
-
 	return err;
 }
 
@@ -1157,8 +1171,9 @@ int w_e_end_csum_rs_req(struct drbd_work *w, int cancel)
 	int err, eq = 0;
 
 	if (unlikely(cancel)) {
-		err = 0;
-		goto out;
+		drbd_free_peer_req(device, peer_req);
+		dec_unacked(device);
+		return 0;
 	}
 
 	if (get_ldev(device)) {
@@ -1184,12 +1199,12 @@ int w_e_end_csum_rs_req(struct drbd_work *w, int cancel)
 		}
 
 		if (eq) {
-			drbd_set_in_sync(peer_device, peer_req->i.sector, peer_req->i.size);
+			drbd_set_in_sync(device, peer_req->i.sector, peer_req->i.size);
 			/* rs_same_csums unit is BM_BLOCK_SIZE */
 			device->rs_same_csum += peer_req->i.size >> BM_BLOCK_SHIFT;
 			err = drbd_send_ack(peer_device, P_RS_IS_IN_SYNC, peer_req);
 		} else {
-			inc_rs_pending(peer_device);
+			inc_rs_pending(device);
 			peer_req->block_id = ID_SYNCER; /* By setting block_id, digest pointer becomes invalid! */
 			peer_req->flags &= ~EE_HAS_DIGEST; /* This peer request no longer has a digest pointer */
 			kfree(di);
@@ -1200,12 +1215,12 @@ int w_e_end_csum_rs_req(struct drbd_work *w, int cancel)
 		if (drbd_ratelimit())
 			drbd_err(device, "Sending NegDReply. I guess it gets messy.\n");
 	}
+
+	dec_unacked(device);
+	move_to_net_ee_or_free(device, peer_req);
+
 	if (unlikely(err))
 		drbd_err(device, "drbd_send_block/ack() failed\n");
-out:
-	dec_unacked(device);
-	drbd_free_peer_req(device, peer_req);
-
 	return err;
 }
 
@@ -1242,10 +1257,10 @@ int w_e_end_ov_req(struct drbd_work *w, int cancel)
 	 * drbd_alloc_pages due to pp_in_use > max_buffers. */
 	drbd_free_peer_req(device, peer_req);
 	peer_req = NULL;
-	inc_rs_pending(peer_device);
+	inc_rs_pending(device);
 	err = drbd_send_drequest_csum(peer_device, sector, size, digest, digest_size, P_OV_REPLY);
 	if (err)
-		dec_rs_pending(peer_device);
+		dec_rs_pending(device);
 	kfree(digest);
 
 out:
@@ -1255,16 +1270,15 @@ out:
 	return err;
 }
 
-void drbd_ov_out_of_sync_found(struct drbd_peer_device *peer_device, sector_t sector, int size)
+void drbd_ov_out_of_sync_found(struct drbd_device *device, sector_t sector, int size)
 {
-	struct drbd_device *device = peer_device->device;
 	if (device->ov_last_oos_start + device->ov_last_oos_size == sector) {
 		device->ov_last_oos_size += size>>9;
 	} else {
 		device->ov_last_oos_start = sector;
 		device->ov_last_oos_size = size>>9;
 	}
-	drbd_set_out_of_sync(peer_device, sector, size);
+	drbd_set_out_of_sync(device, sector, size);
 }
 
 int w_e_end_ov_reply(struct drbd_work *w, int cancel)
@@ -1314,9 +1328,9 @@ int w_e_end_ov_reply(struct drbd_work *w, int cancel)
 	 * drbd_alloc_pages due to pp_in_use > max_buffers. */
 	drbd_free_peer_req(device, peer_req);
 	if (!eq)
-		drbd_ov_out_of_sync_found(peer_device, sector, size);
+		drbd_ov_out_of_sync_found(device, sector, size);
 	else
-		ov_out_of_sync_print(peer_device);
+		ov_out_of_sync_print(device);
 
 	err = drbd_send_ack_ex(peer_device, P_OV_RESULT, sector, size,
 			       eq ? ID_IN_SYNC : ID_OUT_OF_SYNC);
@@ -1327,14 +1341,14 @@ int w_e_end_ov_reply(struct drbd_work *w, int cancel)
 
 	/* let's advance progress step marks only for every other megabyte */
 	if ((device->ov_left & 0x200) == 0x200)
-		drbd_advance_rs_marks(peer_device, device->ov_left);
+		drbd_advance_rs_marks(device, device->ov_left);
 
 	stop_sector_reached = verify_can_do_stop_sector(device) &&
 		(sector + (size>>9)) >= device->ov_stop_sector;
 
 	if (device->ov_left == 0 || stop_sector_reached) {
-		ov_out_of_sync_print(peer_device);
-		drbd_resync_finished(peer_device);
+		ov_out_of_sync_print(device);
+		drbd_resync_finished(device);
 	}
 
 	return err;
@@ -1411,7 +1425,7 @@ int w_send_out_of_sync(struct drbd_work *w, int cancel)
 	int err;
 
 	if (unlikely(cancel)) {
-		req_mod(req, SEND_CANCELED, peer_device);
+		req_mod(req, SEND_CANCELED);
 		return 0;
 	}
 	req->pre_send_jif = jiffies;
@@ -1423,7 +1437,7 @@ int w_send_out_of_sync(struct drbd_work *w, int cancel)
 	maybe_send_barrier(connection, req->epoch);
 
 	err = drbd_send_out_of_sync(peer_device, req);
-	req_mod(req, OOS_HANDED_TO_NETWORK, peer_device);
+	req_mod(req, OOS_HANDED_TO_NETWORK);
 
 	return err;
 }
@@ -1443,7 +1457,7 @@ int w_send_dblock(struct drbd_work *w, int cancel)
 	int err;
 
 	if (unlikely(cancel)) {
-		req_mod(req, SEND_CANCELED, peer_device);
+		req_mod(req, SEND_CANCELED);
 		return 0;
 	}
 	req->pre_send_jif = jiffies;
@@ -1453,7 +1467,7 @@ int w_send_dblock(struct drbd_work *w, int cancel)
 	connection->send.current_epoch_writes++;
 
 	err = drbd_send_dblock(peer_device, req);
-	req_mod(req, err ? SEND_FAILED : HANDED_OVER_TO_NETWORK, peer_device);
+	req_mod(req, err ? SEND_FAILED : HANDED_OVER_TO_NETWORK);
 
 	if (do_send_unplug && !err)
 		pd_send_unplug_remote(peer_device);
@@ -1476,7 +1490,7 @@ int w_send_read_req(struct drbd_work *w, int cancel)
 	int err;
 
 	if (unlikely(cancel)) {
-		req_mod(req, SEND_CANCELED, peer_device);
+		req_mod(req, SEND_CANCELED);
 		return 0;
 	}
 	req->pre_send_jif = jiffies;
@@ -1488,7 +1502,7 @@ int w_send_read_req(struct drbd_work *w, int cancel)
 	err = drbd_send_drequest(peer_device, P_DATA_REQUEST, req->i.sector, req->i.size,
 				 (unsigned long)req);
 
-	req_mod(req, err ? SEND_FAILED : HANDED_OVER_TO_NETWORK, peer_device);
+	req_mod(req, err ? SEND_FAILED : HANDED_OVER_TO_NETWORK);
 
 	if (do_send_unplug && !err)
 		pd_send_unplug_remote(peer_device);
@@ -1654,9 +1668,8 @@ void drbd_resync_after_changed(struct drbd_device *device)
 	} while (changed);
 }
 
-void drbd_rs_controller_reset(struct drbd_peer_device *peer_device)
+void drbd_rs_controller_reset(struct drbd_device *device)
 {
-	struct drbd_device *device = peer_device->device;
 	struct gendisk *disk = device->ldev->backing_bdev->bd_disk;
 	struct fifo_buffer *plan;
 
@@ -1679,8 +1692,7 @@ void drbd_rs_controller_reset(struct drbd_peer_device *peer_device)
 
 void start_resync_timer_fn(struct timer_list *t)
 {
-	struct drbd_device *device = timer_container_of(device, t,
-							start_resync_timer);
+	struct drbd_device *device = from_timer(device, t, start_resync_timer);
 	drbd_device_post_work(device, RS_START);
 }
 
@@ -1879,10 +1891,10 @@ void drbd_start_resync(struct drbd_device *device, enum drbd_conns side)
 				rcu_read_unlock();
 				schedule_timeout_interruptible(timeo);
 			}
-			drbd_resync_finished(peer_device);
+			drbd_resync_finished(device);
 		}
 
-		drbd_rs_controller_reset(peer_device);
+		drbd_rs_controller_reset(device);
 		/* ns.conn may already be != device->state.conn,
 		 * we may have been paused in between, or become paused until
 		 * the timer triggers.
@@ -1897,9 +1909,8 @@ out:
 	mutex_unlock(device->state_mutex);
 }
 
-static void update_on_disk_bitmap(struct drbd_peer_device *peer_device, bool resync_done)
+static void update_on_disk_bitmap(struct drbd_device *device, bool resync_done)
 {
-	struct drbd_device *device = peer_device->device;
 	struct sib_info sib = { .sib_reason = SIB_SYNC_PROGRESS, };
 	device->rs_last_bcast = jiffies;
 
@@ -1908,7 +1919,7 @@ static void update_on_disk_bitmap(struct drbd_peer_device *peer_device, bool res
 
 	drbd_bm_write_lazy(device, 0);
 	if (resync_done && is_sync_state(device->state.conn))
-		drbd_resync_finished(peer_device);
+		drbd_resync_finished(device);
 
 	drbd_bcast_event(device, &sib);
 	/* update timestamp, in case it took a while to write out stuff */
@@ -1934,7 +1945,6 @@ static void drbd_ldev_destroy(struct drbd_device *device)
 
 static void go_diskless(struct drbd_device *device)
 {
-	struct drbd_peer_device *peer_device = first_peer_device(device);
 	D_ASSERT(device, device->state.disk == D_FAILED);
 	/* we cannot assert local_cnt == 0 here, as get_ldev_if_state will
 	 * inc/dec it frequently. Once we are D_DISKLESS, no one will touch
@@ -1960,7 +1970,7 @@ static void go_diskless(struct drbd_device *device)
 		 * Any modifications would not be expected anymore, though.
 		 */
 		if (drbd_bitmap_io_from_worker(device, drbd_bm_write,
-					"detach", BM_LOCKED_TEST_ALLOWED, peer_device)) {
+					"detach", BM_LOCKED_TEST_ALLOWED)) {
 			if (test_bit(WAS_READ_ERROR, &device->flags)) {
 				drbd_md_set_flag(device, MDF_FULL_SYNC);
 				drbd_md_sync(device);
@@ -2007,7 +2017,7 @@ static void do_device_work(struct drbd_device *device, const unsigned long todo)
 		do_md_sync(device);
 	if (test_bit(RS_DONE, &todo) ||
 	    test_bit(RS_PROGRESS, &todo))
-		update_on_disk_bitmap(first_peer_device(device), test_bit(RS_DONE, &todo));
+		update_on_disk_bitmap(device, test_bit(RS_DONE, &todo));
 	if (test_bit(GO_DISKLESS, &todo))
 		go_diskless(device);
 	if (test_bit(DESTROY_DISK, &todo))

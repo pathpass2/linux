@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021, 2023-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef ATH11K_DP_TX_H
@@ -13,8 +12,7 @@
 struct ath11k_dp_htt_wbm_tx_status {
 	u32 msdu_id;
 	bool acked;
-	s8 ack_rssi;
-	u16 peer_id;
+	int ack_rssi;
 };
 
 void ath11k_dp_tx_update_txcompl(struct ath11k *ar, struct hal_tx_status *ts);

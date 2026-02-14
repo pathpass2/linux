@@ -82,13 +82,6 @@ struct vport *ovs_netdev_link(struct vport *vport, const char *name)
 		err = -ENODEV;
 		goto error_free_vport;
 	}
-	/* Ensure that the device exists and that the provided
-	 * name is not one of its aliases.
-	 */
-	if (strcmp(name, ovs_vport_name(vport))) {
-		err = -ENODEV;
-		goto error_put;
-	}
 	netdev_tracker_alloc(vport->dev, &vport->dev_tracker, GFP_KERNEL);
 	if (vport->dev->flags & IFF_LOOPBACK ||
 	    (vport->dev->type != ARPHRD_ETHER &&
@@ -160,19 +153,10 @@ void ovs_netdev_detach_dev(struct vport *vport)
 
 static void netdev_destroy(struct vport *vport)
 {
-	/* When called from ovs_db_notify_wq() after a dp_device_event(), the
-	 * port has already been detached, so we can avoid taking the RTNL by
-	 * checking this first.
-	 */
-	if (netif_is_ovs_port(vport->dev)) {
-		rtnl_lock();
-		/* Check again while holding the lock to ensure we don't race
-		 * with the netdev notifier and detach twice.
-		 */
-		if (netif_is_ovs_port(vport->dev))
-			ovs_netdev_detach_dev(vport);
-		rtnl_unlock();
-	}
+	rtnl_lock();
+	if (netif_is_ovs_port(vport->dev))
+		ovs_netdev_detach_dev(vport);
+	rtnl_unlock();
 
 	call_rcu(&vport->rcu, vport_netdev_free);
 }

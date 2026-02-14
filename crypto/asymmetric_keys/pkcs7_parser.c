@@ -92,29 +92,14 @@ static int pkcs7_check_authattrs(struct pkcs7_message *msg)
 	if (!sinfo)
 		goto inconsistent;
 
-#ifdef CONFIG_PKCS7_WAIVE_AUTHATTRS_REJECTION_FOR_MLDSA
-	msg->authattrs_rej_waivable = true;
-#endif
-
 	if (sinfo->authattrs) {
 		want = true;
 		msg->have_authattrs = true;
-#ifdef CONFIG_PKCS7_WAIVE_AUTHATTRS_REJECTION_FOR_MLDSA
-		if (strncmp(sinfo->sig->pkey_algo, "mldsa", 5) != 0)
-			msg->authattrs_rej_waivable = false;
-#endif
-	} else if (sinfo->sig->algo_takes_data) {
-		sinfo->sig->hash_algo = "none";
 	}
 
-	for (sinfo = sinfo->next; sinfo; sinfo = sinfo->next) {
+	for (sinfo = sinfo->next; sinfo; sinfo = sinfo->next)
 		if (!!sinfo->authattrs != want)
 			goto inconsistent;
-
-		if (!sinfo->authattrs &&
-		    sinfo->sig->algo_takes_data)
-			sinfo->sig->hash_algo = "none";
-	}
 	return 0;
 
 inconsistent:
@@ -242,6 +227,12 @@ int pkcs7_sig_note_digest_algo(void *context, size_t hdrlen,
 	struct pkcs7_parse_context *ctx = context;
 
 	switch (ctx->last_oid) {
+	case OID_md4:
+		ctx->sinfo->sig->hash_algo = "md4";
+		break;
+	case OID_md5:
+		ctx->sinfo->sig->hash_algo = "md5";
+		break;
 	case OID_sha1:
 		ctx->sinfo->sig->hash_algo = "sha1";
 		break;
@@ -265,15 +256,6 @@ int pkcs7_sig_note_digest_algo(void *context, size_t hdrlen,
 		break;
 	case OID_gost2012Digest512:
 		ctx->sinfo->sig->hash_algo = "streebog512";
-		break;
-	case OID_sha3_256:
-		ctx->sinfo->sig->hash_algo = "sha3-256";
-		break;
-	case OID_sha3_384:
-		ctx->sinfo->sig->hash_algo = "sha3-384";
-		break;
-	case OID_sha3_512:
-		ctx->sinfo->sig->hash_algo = "sha3-512";
 		break;
 	default:
 		printk("Unsupported digest algo: %u\n", ctx->last_oid);
@@ -301,31 +283,17 @@ int pkcs7_sig_note_pkey_algo(void *context, size_t hdrlen,
 	case OID_id_ecdsa_with_sha256:
 	case OID_id_ecdsa_with_sha384:
 	case OID_id_ecdsa_with_sha512:
-	case OID_id_ecdsa_with_sha3_256:
-	case OID_id_ecdsa_with_sha3_384:
-	case OID_id_ecdsa_with_sha3_512:
 		ctx->sinfo->sig->pkey_algo = "ecdsa";
 		ctx->sinfo->sig->encoding = "x962";
+		break;
+	case OID_SM2_with_SM3:
+		ctx->sinfo->sig->pkey_algo = "sm2";
+		ctx->sinfo->sig->encoding = "raw";
 		break;
 	case OID_gost2012PKey256:
 	case OID_gost2012PKey512:
 		ctx->sinfo->sig->pkey_algo = "ecrdsa";
 		ctx->sinfo->sig->encoding = "raw";
-		break;
-	case OID_id_ml_dsa_44:
-		ctx->sinfo->sig->pkey_algo = "mldsa44";
-		ctx->sinfo->sig->encoding = "raw";
-		ctx->sinfo->sig->algo_takes_data = true;
-		break;
-	case OID_id_ml_dsa_65:
-		ctx->sinfo->sig->pkey_algo = "mldsa65";
-		ctx->sinfo->sig->encoding = "raw";
-		ctx->sinfo->sig->algo_takes_data = true;
-		break;
-	case OID_id_ml_dsa_87:
-		ctx->sinfo->sig->pkey_algo = "mldsa87";
-		ctx->sinfo->sig->encoding = "raw";
-		ctx->sinfo->sig->algo_takes_data = true;
 		break;
 	default:
 		printk("Unsupported pkey algo: %u\n", ctx->last_oid);
@@ -629,8 +597,8 @@ int pkcs7_sig_note_set_of_authattrs(void *context, size_t hdrlen,
 	}
 
 	/* We need to switch the 'CONT 0' to a 'SET OF' when we digest */
-	sinfo->authattrs = value - hdrlen;
-	sinfo->authattrs_len = vlen + hdrlen;
+	sinfo->authattrs = value - (hdrlen - 1);
+	sinfo->authattrs_len = vlen + (hdrlen - 1);
 	return 0;
 }
 

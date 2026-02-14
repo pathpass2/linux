@@ -13,8 +13,6 @@
 
 struct nv50_head {
 	const struct nv50_head_func *func;
-	struct nv50_disp *disp;
-
 	struct nouveau_crtc base;
 	struct nv50_crc crc;
 	struct nv50_lut olut;
@@ -51,7 +49,6 @@ struct nv50_head_func {
 	int (*procamp)(struct nv50_head *, struct nv50_head_atom *);
 	int (*or)(struct nv50_head *, struct nv50_head_atom *);
 	void (*static_wndw_map)(struct nv50_head *, struct nv50_head_atom *);
-	int (*display_id)(struct nv50_head *, u32 display_id);
 };
 
 extern const struct nv50_head_func head507d;
@@ -100,7 +97,4 @@ int headc37d_dither(struct nv50_head *, struct nv50_head_atom *);
 void headc37d_static_wndw_map(struct nv50_head *, struct nv50_head_atom *);
 
 extern const struct nv50_head_func headc57d;
-bool headc57d_olut(struct nv50_head *, struct nv50_head_atom *, int size);
-
-extern const struct nv50_head_func headca7d;
 #endif

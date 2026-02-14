@@ -64,6 +64,7 @@ enum libbpf_print_level {
 #include "libbpf.h"
 #include "bpf.h"
 #include "btf.h"
+#include "str_error.h"
 #include "libbpf_internal.h"
 #endif
 
@@ -682,7 +683,7 @@ static int bpf_core_calc_field_relo(const char *prog_name,
 {
 	const struct bpf_core_accessor *acc;
 	const struct btf_type *t;
-	__u32 byte_off, byte_sz, bit_off, bit_sz, field_type_id, elem_id;
+	__u32 byte_off, byte_sz, bit_off, bit_sz, field_type_id;
 	const struct btf_member *m;
 	const struct btf_type *mt;
 	bool bitfield;
@@ -705,14 +706,8 @@ static int bpf_core_calc_field_relo(const char *prog_name,
 	if (!acc->name) {
 		if (relo->kind == BPF_CORE_FIELD_BYTE_OFFSET) {
 			*val = spec->bit_offset / 8;
-			/* remember field size for load/store mem size;
-			 * note, for arrays we care about individual element
-			 * sizes, not the overall array size
-			 */
-			t = skip_mods_and_typedefs(spec->btf, acc->type_id, &elem_id);
-			while (btf_is_array(t))
-				t = skip_mods_and_typedefs(spec->btf, btf_array(t)->type, &elem_id);
-			sz = btf__resolve_size(spec->btf, elem_id);
+			/* remember field size for load/store mem size */
+			sz = btf__resolve_size(spec->btf, acc->type_id);
 			if (sz < 0)
 				return -EINVAL;
 			*field_sz = sz;
@@ -772,17 +767,7 @@ static int bpf_core_calc_field_relo(const char *prog_name,
 	case BPF_CORE_FIELD_BYTE_OFFSET:
 		*val = byte_off;
 		if (!bitfield) {
-			/* remember field size for load/store mem size;
-			 * note, for arrays we care about individual element
-			 * sizes, not the overall array size
-			 */
-			t = skip_mods_and_typedefs(spec->btf, field_type_id, &elem_id);
-			while (btf_is_array(t))
-				t = skip_mods_and_typedefs(spec->btf, btf_array(t)->type, &elem_id);
-			sz = btf__resolve_size(spec->btf, elem_id);
-			if (sz < 0)
-				return -EINVAL;
-			*field_sz = sz;
+			*field_sz = byte_sz;
 			*type_id = field_type_id;
 		}
 		break;
@@ -791,7 +776,7 @@ static int bpf_core_calc_field_relo(const char *prog_name,
 		break;
 	case BPF_CORE_FIELD_SIGNED:
 		*val = (btf_is_any_enum(mt) && BTF_INFO_KFLAG(mt->info)) ||
-		       (btf_is_int(mt) && (btf_int_encoding(mt) & BTF_INT_SIGNED));
+		       (btf_int_encoding(mt) & BTF_INT_SIGNED);
 		if (validate)
 			*validate = true; /* signedness is never ambiguous */
 		break;
@@ -1354,7 +1339,7 @@ int bpf_core_calc_relo_insn(const char *prog_name,
 					  cands->cands[i].id, cand_spec);
 		if (err < 0) {
 			bpf_core_format_spec(spec_buf, sizeof(spec_buf), cand_spec);
-			pr_warn("prog '%s': relo #%d: error matching candidate #%d %s: %d\n",
+			pr_warn("prog '%s': relo #%d: error matching candidate #%d %s: %d\n ",
 				prog_name, relo_idx, i, spec_buf, err);
 			return err;
 		}
@@ -1565,6 +1550,9 @@ int __bpf_core_types_match(const struct btf *local_btf, __u32 local_id, const st
 
 	if (level <= 0)
 		return -EINVAL;
+
+	local_t = btf_type_by_id(local_btf, local_id);
+	targ_t = btf_type_by_id(targ_btf, targ_id);
 
 recur:
 	depth--;

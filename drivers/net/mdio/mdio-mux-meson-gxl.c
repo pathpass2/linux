@@ -17,7 +17,6 @@
 #define  REG2_LEDACT		GENMASK(23, 22)
 #define  REG2_LEDLINK		GENMASK(25, 24)
 #define  REG2_DIV4SEL		BIT(27)
-#define  REG2_REVERSED		BIT(28)
 #define  REG2_ADCBYPASS		BIT(30)
 #define  REG2_CLKINSEL		BIT(31)
 #define ETH_REG3		0x4
@@ -66,7 +65,7 @@ static void gxl_enable_internal_mdio(struct gxl_mdio_mux *priv)
 	 * The only constraint is that it must match the one in
 	 * drivers/net/phy/meson-gxl.c to properly match the PHY.
 	 */
-	writel(REG2_REVERSED | FIELD_PREP(REG2_PHYID, EPHY_GXL_ID),
+	writel(FIELD_PREP(REG2_PHYID, EPHY_GXL_ID),
 	       priv->regs + ETH_REG2);
 
 	/* Enable the internal phy */
@@ -141,11 +140,13 @@ static int gxl_mdio_mux_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void gxl_mdio_mux_remove(struct platform_device *pdev)
+static int gxl_mdio_mux_remove(struct platform_device *pdev)
 {
 	struct gxl_mdio_mux *priv = platform_get_drvdata(pdev);
 
 	mdio_mux_uninit(priv->mux_handle);
+
+	return 0;
 }
 
 static struct platform_driver gxl_mdio_mux_driver = {

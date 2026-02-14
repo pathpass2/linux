@@ -4,56 +4,48 @@
  *
  * Copyright 2022 Google LLC
  */
-
-#define pr_fmt(fmt) "gpiolib: swnode: " fmt
-
 #include <linux/err.h>
 #include <linux/errno.h>
-#include <linux/export.h>
-#include <linux/init.h>
+#include <linux/gpio/consumer.h>
+#include <linux/gpio/driver.h>
 #include <linux/kernel.h>
 #include <linux/printk.h>
 #include <linux/property.h>
 #include <linux/string.h>
 
-#include <linux/gpio/consumer.h>
-#include <linux/gpio/driver.h>
-#include <linux/gpio/property.h>
-
 #include "gpiolib.h"
 #include "gpiolib-swnode.h"
 
-static struct gpio_device *swnode_get_gpio_device(struct fwnode_handle *fwnode)
+static void swnode_format_propname(const char *con_id, char *propname,
+				   size_t max_size)
 {
-	const struct software_node *gdev_node;
-	struct gpio_device *gdev;
-
-	gdev_node = to_software_node(fwnode);
-	if (!gdev_node)
-		goto fwnode_lookup;
-
 	/*
-	 * Check for a special node that identifies undefined GPIOs, this is
-	 * primarily used as a key for internal chip selects in SPI bindings.
+	 * Note we do not need to try both -gpios and -gpio suffixes,
+	 * as, unlike OF and ACPI, we can fix software nodes to conform
+	 * to the proper binding.
 	 */
-	if (IS_ENABLED(CONFIG_GPIO_SWNODE_UNDEFINED) &&
-	    gdev_node == &swnode_gpio_undefined)
-		return ERR_PTR(-ENOENT);
-
-fwnode_lookup:
-	gdev = gpio_device_find_by_fwnode(fwnode);
-	return gdev ?: ERR_PTR(-EPROBE_DEFER);
+	if (con_id)
+		snprintf(propname, max_size, "%s-gpios", con_id);
+	else
+		strscpy(propname, "gpios", max_size);
 }
 
-static int swnode_gpio_get_reference(const struct fwnode_handle *fwnode,
-				     const char *propname, unsigned int idx,
-				     struct fwnode_reference_args *args)
+static int swnode_gpiochip_match_name(struct gpio_chip *chip, void *data)
 {
-	/*
-	 * We expect all swnode-described GPIOs have GPIO number and
-	 * polarity arguments, hence nargs is set to 2.
-	 */
-	return fwnode_property_get_reference_args(fwnode, propname, NULL, 2, idx, args);
+	return !strcmp(chip->label, data);
+}
+
+static struct gpio_chip *swnode_get_chip(struct fwnode_handle *fwnode)
+{
+	const struct software_node *chip_node;
+	struct gpio_chip *chip;
+
+	chip_node = to_software_node(fwnode);
+	if (!chip_node || !chip_node->name)
+		return ERR_PTR(-EINVAL);
+
+	chip = gpiochip_find((void *)chip_node->name, swnode_gpiochip_match_name);
+	return chip ?: ERR_PTR(-EPROBE_DEFER);
 }
 
 struct gpio_desc *swnode_find_gpio(struct fwnode_handle *fwnode,
@@ -62,36 +54,34 @@ struct gpio_desc *swnode_find_gpio(struct fwnode_handle *fwnode,
 {
 	const struct software_node *swnode;
 	struct fwnode_reference_args args;
+	struct gpio_chip *chip;
 	struct gpio_desc *desc;
 	char propname[32]; /* 32 is max size of property name */
-	int ret = 0;
+	int error;
 
 	swnode = to_software_node(fwnode);
 	if (!swnode)
 		return ERR_PTR(-EINVAL);
 
-	for_each_gpio_property_name(propname, con_id) {
-		ret = swnode_gpio_get_reference(fwnode, propname, idx, &args);
-		if (ret == 0)
-			break;
-	}
-	if (ret) {
-		pr_debug("%s: can't parse '%s' property of node '%pfwP[%d]'\n",
-			__func__, propname, fwnode, idx);
-		return ERR_PTR(ret);
-	}
-
-	struct gpio_device *gdev __free(gpio_device_put) =
-					swnode_get_gpio_device(args.fwnode);
-	fwnode_handle_put(args.fwnode);
-	if (IS_ERR(gdev))
-		return ERR_CAST(gdev);
+	swnode_format_propname(con_id, propname, sizeof(propname));
 
 	/*
-	 * FIXME: The GPIO device reference is put at return but the descriptor
-	 * is passed on. Find a proper solution.
+	 * We expect all swnode-described GPIOs have GPIO number and
+	 * polarity arguments, hence nargs is set to 2.
 	 */
-	desc = gpio_device_get_desc(gdev, args.args[0]);
+	error = fwnode_property_get_reference_args(fwnode, propname, NULL, 2, idx, &args);
+	if (error) {
+		pr_debug("%s: can't parse '%s' property of node '%pfwP[%d]'\n",
+			__func__, propname, fwnode, idx);
+		return ERR_PTR(error);
+	}
+
+	chip = swnode_get_chip(args.fwnode);
+	fwnode_handle_put(args.fwnode);
+	if (IS_ERR(chip))
+		return ERR_CAST(chip);
+
+	desc = gpiochip_get_desc(chip, args.args[0]);
 	*flags = args.args[1]; /* We expect native GPIO flags */
 
 	pr_debug("%s: parsed '%s' property of node '%pfwP[%d]' - status (%d)\n",
@@ -106,7 +96,7 @@ struct gpio_desc *swnode_find_gpio(struct fwnode_handle *fwnode,
  *		system-global GPIOs
  * @con_id:	function within the GPIO consumer
  *
- * Returns:
+ * Return:
  * The number of GPIOs associated with a device / function or %-ENOENT,
  * if no GPIO has been assigned to the requested function.
  */
@@ -116,48 +106,18 @@ int swnode_gpio_count(const struct fwnode_handle *fwnode, const char *con_id)
 	char propname[32];
 	int count;
 
+	swnode_format_propname(con_id, propname, sizeof(propname));
+
 	/*
 	 * This is not very efficient, but GPIO lists usually have only
 	 * 1 or 2 entries.
 	 */
-	for_each_gpio_property_name(propname, con_id) {
-		count = 0;
-		while (swnode_gpio_get_reference(fwnode, propname, count, &args) == 0) {
-			fwnode_handle_put(args.fwnode);
-			count++;
-		}
-		if (count)
-			return count;
+	count = 0;
+	while (fwnode_property_get_reference_args(fwnode, propname, NULL, 0,
+						  count, &args) == 0) {
+		fwnode_handle_put(args.fwnode);
+		count++;
 	}
 
-	return -ENOENT;
+	return count ?: -ENOENT;
 }
-
-#if IS_ENABLED(CONFIG_GPIO_SWNODE_UNDEFINED)
-/*
- * A special node that identifies undefined GPIOs, this is primarily used as
- * a key for internal chip selects in SPI bindings.
- */
-const struct software_node swnode_gpio_undefined = {
-	.name = "swnode-gpio-undefined",
-};
-EXPORT_SYMBOL_NS_GPL(swnode_gpio_undefined, "GPIO_SWNODE");
-
-static int __init swnode_gpio_init(void)
-{
-	int ret;
-
-	ret = software_node_register(&swnode_gpio_undefined);
-	if (ret < 0)
-		pr_err("failed to register swnode: %d\n", ret);
-
-	return ret;
-}
-subsys_initcall(swnode_gpio_init);
-
-static void __exit swnode_gpio_cleanup(void)
-{
-	software_node_unregister(&swnode_gpio_undefined);
-}
-__exitcall(swnode_gpio_cleanup);
-#endif

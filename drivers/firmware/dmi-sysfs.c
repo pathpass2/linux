@@ -304,13 +304,12 @@ static struct attribute *dmi_sysfs_sel_attrs[] = {
 };
 ATTRIBUTE_GROUPS(dmi_sysfs_sel);
 
-static const struct kobj_type dmi_system_event_log_ktype = {
+static struct kobj_type dmi_system_event_log_ktype = {
 	.release = dmi_entry_free,
 	.sysfs_ops = &dmi_sysfs_specialize_attr_ops,
 	.default_groups = dmi_sysfs_sel_groups,
 };
 
-#ifdef CONFIG_HAS_IOPORT
 typedef u8 (*sel_io_reader)(const struct dmi_system_event_log *sel,
 			    loff_t offset);
 
@@ -375,7 +374,6 @@ static ssize_t dmi_sel_raw_read_io(struct dmi_sysfs_entry *entry,
 
 	return wrote;
 }
-#endif
 
 static ssize_t dmi_sel_raw_read_phys32(struct dmi_sysfs_entry *entry,
 				       const struct dmi_system_event_log *sel,
@@ -411,13 +409,11 @@ static ssize_t dmi_sel_raw_read_helper(struct dmi_sysfs_entry *entry,
 	memcpy(&sel, dh, sizeof(sel));
 
 	switch (sel.access_method) {
-#ifdef CONFIG_HAS_IOPORT
 	case DMI_SEL_ACCESS_METHOD_IO8:
 	case DMI_SEL_ACCESS_METHOD_IO2x8:
 	case DMI_SEL_ACCESS_METHOD_IO16:
 		return dmi_sel_raw_read_io(entry, &sel, state->buf,
 					   state->pos, state->count);
-#endif
 	case DMI_SEL_ACCESS_METHOD_PHYS32:
 		return dmi_sel_raw_read_phys32(entry, &sel, state->buf,
 					       state->pos, state->count);
@@ -431,9 +427,9 @@ static ssize_t dmi_sel_raw_read_helper(struct dmi_sysfs_entry *entry,
 	}
 }
 
-static ssize_t raw_event_log_read(struct file *filp, struct kobject *kobj,
-				  const struct bin_attribute *bin_attr,
-				  char *buf, loff_t pos, size_t count)
+static ssize_t dmi_sel_raw_read(struct file *filp, struct kobject *kobj,
+				struct bin_attribute *bin_attr,
+				char *buf, loff_t pos, size_t count)
 {
 	struct dmi_sysfs_entry *entry = to_entry(kobj->parent);
 	struct dmi_read_state state = {
@@ -445,7 +441,10 @@ static ssize_t raw_event_log_read(struct file *filp, struct kobject *kobj,
 	return find_dmi_entry(entry, dmi_sel_raw_read_helper, &state);
 }
 
-static const BIN_ATTR_ADMIN_RO(raw_event_log, 0);
+static struct bin_attribute dmi_sel_raw_attr = {
+	.attr = {.name = "raw_event_log", .mode = 0400},
+	.read = dmi_sel_raw_read,
+};
 
 static int dmi_system_event_log(struct dmi_sysfs_entry *entry)
 {
@@ -461,7 +460,7 @@ static int dmi_system_event_log(struct dmi_sysfs_entry *entry)
 	if (ret)
 		goto out_free;
 
-	ret = sysfs_create_bin_file(entry->child, &bin_attr_raw_event_log);
+	ret = sysfs_create_bin_file(entry->child, &dmi_sel_raw_attr);
 	if (ret)
 		goto out_del;
 
@@ -534,10 +533,10 @@ static ssize_t dmi_entry_raw_read_helper(struct dmi_sysfs_entry *entry,
 				       &state->pos, dh, entry_length);
 }
 
-static ssize_t raw_read(struct file *filp,
-			struct kobject *kobj,
-			const struct bin_attribute *bin_attr,
-			char *buf, loff_t pos, size_t count)
+static ssize_t dmi_entry_raw_read(struct file *filp,
+				  struct kobject *kobj,
+				  struct bin_attribute *bin_attr,
+				  char *buf, loff_t pos, size_t count)
 {
 	struct dmi_sysfs_entry *entry = to_entry(kobj);
 	struct dmi_read_state state = {
@@ -549,7 +548,10 @@ static ssize_t raw_read(struct file *filp,
 	return find_dmi_entry(entry, dmi_entry_raw_read_helper, &state);
 }
 
-static const BIN_ATTR_ADMIN_RO(raw, 0);
+static const struct bin_attribute dmi_entry_raw_attr = {
+	.attr = {.name = "raw", .mode = 0400},
+	.read = dmi_entry_raw_read,
+};
 
 static void dmi_sysfs_entry_release(struct kobject *kobj)
 {
@@ -561,7 +563,7 @@ static void dmi_sysfs_entry_release(struct kobject *kobj)
 	kfree(entry);
 }
 
-static const struct kobj_type dmi_sysfs_entry_ktype = {
+static struct kobj_type dmi_sysfs_entry_ktype = {
 	.release = dmi_sysfs_entry_release,
 	.sysfs_ops = &dmi_sysfs_attr_ops,
 	.default_groups = dmi_sysfs_entry_groups,
@@ -624,7 +626,7 @@ static void __init dmi_sysfs_register_handle(const struct dmi_header *dh,
 		goto out_err;
 
 	/* Create the raw binary file to access the entry */
-	*ret = sysfs_create_bin_file(&entry->kobj, &bin_attr_raw);
+	*ret = sysfs_create_bin_file(&entry->kobj, &dmi_entry_raw_attr);
 	if (*ret)
 		goto out_err;
 

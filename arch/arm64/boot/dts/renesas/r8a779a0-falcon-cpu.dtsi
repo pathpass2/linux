@@ -208,7 +208,8 @@
 		clocks = <&sn65dsi86_refclk>;
 		clock-names = "refclk";
 
-		interrupts-extended = <&intc_ex 0 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-parent = <&intc_ex>;
+		interrupts = <0 IRQ_TYPE_LEVEL_HIGH>;
 
 		vccio-supply = <&reg_1p8v>;
 		vpll-supply = <&reg_1p8v>;
@@ -348,7 +349,6 @@
 &scif0 {
 	pinctrl-0 = <&scif0_pins>;
 	pinctrl-names = "default";
-	bootph-all;
 
 	uart-has-rtscts;
 	status = "okay";

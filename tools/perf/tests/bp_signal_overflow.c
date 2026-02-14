@@ -25,7 +25,6 @@
 #include "tests.h"
 #include "debug.h"
 #include "event.h"
-#include "parse-events.h"
 #include "../perf-sys.h"
 #include "cloexec.h"
 
@@ -89,7 +88,7 @@ static int test__bp_signal_overflow(struct test_suite *test __maybe_unused, int 
 	pe.config = 0;
 	pe.bp_type = HW_BREAKPOINT_X;
 	pe.bp_addr = (unsigned long) test_function;
-	pe.bp_len = default_breakpoint_len();
+	pe.bp_len = sizeof(long);
 
 	pe.sample_period = THRESHOLD;
 	pe.sample_type = PERF_SAMPLE_IP;

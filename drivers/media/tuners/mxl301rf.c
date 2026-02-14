@@ -64,7 +64,7 @@ static int reg_read(struct mxl301rf_state *state, u8 reg, u8 *val)
 
 /* tuner_ops */
 
-/* get RSSI and update property cache, set to *out in % */
+/* get RSSI and update propery cache, set to *out in % */
 static int mxl301rf_get_rf_strength(struct dvb_frontend *fe, u16 *out)
 {
 	struct mxl301rf_state *state;
@@ -317,7 +317,7 @@ static void mxl301rf_remove(struct i2c_client *client)
 
 
 static const struct i2c_device_id mxl301rf_id[] = {
-	{ "mxl301rf" },
+	{"mxl301rf", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, mxl301rf_id);
@@ -326,7 +326,7 @@ static struct i2c_driver mxl301rf_driver = {
 	.driver = {
 		.name	= "mxl301rf",
 	},
-	.probe		= mxl301rf_probe,
+	.probe_new	= mxl301rf_probe,
 	.remove		= mxl301rf_remove,
 	.id_table	= mxl301rf_id,
 };

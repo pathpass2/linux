@@ -7,7 +7,8 @@
  *
  */
 
-#define pr_fmt(fmt) "hmcdrv: " fmt
+#define KMSG_COMPONENT "hmcdrv"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -15,7 +16,7 @@
 #include <linux/wait.h>
 #include <linux/string.h>
 #include <asm/asm-extable.h>
-#include <asm/ctlreg.h>
+#include <asm/ctl_reg.h>
 #include <asm/diag.h>
 
 #include "hmcdrv_ftp.h"
@@ -105,7 +106,7 @@ static int diag_ftp_2c4(struct diag_ftp_ldfpl *fpl,
 	int rc;
 
 	diag_stat_inc(DIAG_STAT_X2C4);
-	asm_inline volatile(
+	asm volatile(
 		"	diag	%[addr],%[cmd],0x2c4\n"
 		"0:	j	2f\n"
 		"1:	la	%[rc],%[err]\n"
@@ -158,7 +159,7 @@ ssize_t diag_ftp_cmd(const struct hmcdrv_ftp_cmdspec *ftp, size_t *fsize)
 		goto out;
 	}
 
-	len = strscpy(ldfpl->fident, ftp->fname);
+	len = strscpy(ldfpl->fident, ftp->fname, sizeof(ldfpl->fident));
 	if (len < 0) {
 		len = -EINVAL;
 		goto out_free;

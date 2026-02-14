@@ -151,8 +151,6 @@ int main(int argc, char *argv[])
 	time_t offset;
 	int ret = 0;
 
-	ksft_print_header();
-
 	nscheck();
 
 	check_supported_timers();

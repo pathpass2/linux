@@ -6,7 +6,8 @@
  * Driver for the s390 pseudo random number generator
  */
 
-#define pr_fmt(fmt) "prng: " fmt
+#define KMSG_COMPONENT "prng"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/fs.h>
 #include <linux/fips.h>
@@ -678,7 +679,7 @@ static ssize_t prng_chunksize_show(struct device *dev,
 				   struct device_attribute *attr,
 				   char *buf)
 {
-	return sysfs_emit(buf, "%u\n", prng_chunk_size);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", prng_chunk_size);
 }
 static DEVICE_ATTR(chunksize, 0444, prng_chunksize_show, NULL);
 
@@ -697,7 +698,7 @@ static ssize_t prng_counter_show(struct device *dev,
 		counter = prng_data->prngws.byte_counter;
 	mutex_unlock(&prng_data->mutex);
 
-	return sysfs_emit(buf, "%llu\n", counter);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", counter);
 }
 static DEVICE_ATTR(byte_counter, 0444, prng_counter_show, NULL);
 
@@ -706,7 +707,7 @@ static ssize_t prng_errorflag_show(struct device *dev,
 				   struct device_attribute *attr,
 				   char *buf)
 {
-	return sysfs_emit(buf, "%d\n", prng_errorflag);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", prng_errorflag);
 }
 static DEVICE_ATTR(errorflag, 0444, prng_errorflag_show, NULL);
 
@@ -716,9 +717,9 @@ static ssize_t prng_mode_show(struct device *dev,
 			      char *buf)
 {
 	if (prng_mode == PRNG_MODE_TDES)
-		return sysfs_emit(buf, "TDES\n");
+		return scnprintf(buf, PAGE_SIZE, "TDES\n");
 	else
-		return sysfs_emit(buf, "SHA512\n");
+		return scnprintf(buf, PAGE_SIZE, "SHA512\n");
 }
 static DEVICE_ATTR(mode, 0444, prng_mode_show, NULL);
 
@@ -741,7 +742,7 @@ static ssize_t prng_reseed_limit_show(struct device *dev,
 				      struct device_attribute *attr,
 				      char *buf)
 {
-	return sysfs_emit(buf, "%u\n", prng_reseed_limit);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", prng_reseed_limit);
 }
 static ssize_t prng_reseed_limit_store(struct device *dev,
 				       struct device_attribute *attr,
@@ -772,7 +773,7 @@ static ssize_t prng_strength_show(struct device *dev,
 				  struct device_attribute *attr,
 				  char *buf)
 {
-	return sysfs_emit(buf, "256\n");
+	return scnprintf(buf, PAGE_SIZE, "256\n");
 }
 static DEVICE_ATTR(strength, 0444, prng_strength_show, NULL);
 

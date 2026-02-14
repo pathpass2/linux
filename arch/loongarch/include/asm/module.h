@@ -6,7 +6,6 @@
 #define _ASM_MODULE_H
 
 #include <asm/inst.h>
-#include <asm/orc_types.h>
 #include <asm-generic/module.h>
 
 #define RELA_STACK_DEPTH 16
@@ -22,12 +21,6 @@ struct mod_arch_specific {
 	struct mod_section plt;
 	struct mod_section plt_idx;
 
-#ifdef CONFIG_UNWINDER_ORC
-	unsigned int num_orcs;
-	int *orc_unwind_ip;
-	struct orc_entry *orc_unwind;
-#endif
-
 	/* For CONFIG_DYNAMIC_FTRACE */
 	struct plt_entry *ftrace_trampolines;
 };
@@ -38,10 +31,8 @@ struct got_entry {
 
 struct plt_entry {
 	u32 inst_lu12iw;
-#ifdef CONFIG_64BIT
 	u32 inst_lu32id;
 	u32 inst_lu52id;
-#endif
 	u32 inst_jirl;
 };
 
@@ -59,23 +50,14 @@ static inline struct got_entry emit_got_entry(Elf_Addr val)
 
 static inline struct plt_entry emit_plt_entry(unsigned long val)
 {
-#ifdef CONFIG_32BIT
-	u32 lu12iw, jirl;
-
-	lu12iw = larch_insn_gen_lu12iw(LOONGARCH_GPR_T1, ADDR_IMM(val, LU12IW));
-	jirl = larch_insn_gen_jirl(0, LOONGARCH_GPR_T1, ADDR_IMM(val, ORI));
-
-	return (struct plt_entry) { lu12iw, jirl };
-#else
 	u32 lu12iw, lu32id, lu52id, jirl;
 
 	lu12iw = larch_insn_gen_lu12iw(LOONGARCH_GPR_T1, ADDR_IMM(val, LU12IW));
 	lu32id = larch_insn_gen_lu32id(LOONGARCH_GPR_T1, ADDR_IMM(val, LU32ID));
 	lu52id = larch_insn_gen_lu52id(LOONGARCH_GPR_T1, LOONGARCH_GPR_T1, ADDR_IMM(val, LU52ID));
-	jirl = larch_insn_gen_jirl(0, LOONGARCH_GPR_T1, ADDR_IMM(val, ORI));
+	jirl = larch_insn_gen_jirl(0, LOONGARCH_GPR_T1, 0, (val & 0xfff));
 
 	return (struct plt_entry) { lu12iw, lu32id, lu52id, jirl };
-#endif
 }
 
 static inline struct plt_idx_entry emit_plt_idx_entry(unsigned long val)

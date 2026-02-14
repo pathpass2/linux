@@ -6,6 +6,36 @@
 #include "ice.h"
 
 /**
+ * ice_set_rx_bufs_act - propagate Rx buffer action to frags
+ * @xdp: XDP buffer representing frame (linear and frags part)
+ * @rx_ring: Rx ring struct
+ * act: action to store onto Rx buffers related to XDP buffer parts
+ *
+ * Set action that should be taken before putting Rx buffer from first frag
+ * to one before last. Last one is handled by caller of this function as it
+ * is the EOP frag that is currently being processed. This function is
+ * supposed to be called only when XDP buffer contains frags.
+ */
+static inline void
+ice_set_rx_bufs_act(struct xdp_buff *xdp, const struct ice_rx_ring *rx_ring,
+		    const unsigned int act)
+{
+	const struct skb_shared_info *sinfo = xdp_get_shared_info_from_buff(xdp);
+	u32 first = rx_ring->first_desc;
+	u32 nr_frags = sinfo->nr_frags;
+	u32 cnt = rx_ring->count;
+	struct ice_rx_buf *buf;
+
+	for (int i = 0; i < nr_frags; i++) {
+		buf = &rx_ring->rx_buf[first];
+		buf->act = act;
+
+		if (++first == cnt)
+			first = 0;
+	}
+}
+
+/**
  * ice_test_staterr - tests bits in Rx descriptor status and error fields
  * @status_err_n: Rx descriptor status_error0 or status_error1 bits
  * @stat_err_bits: value to mask
@@ -38,7 +68,7 @@ ice_is_non_eop(const struct ice_rx_ring *rx_ring,
 	if (likely(ice_test_staterr(rx_desc->wb.status_error0, ICE_RXD_EOF)))
 		return false;
 
-	ice_stats_inc(rx_ring->ring_stats, rx_non_eop_descs);
+	rx_ring->ring_stats->rx_stats.non_eop_descs++;
 
 	return true;
 }
@@ -54,21 +84,7 @@ ice_build_ctob(u64 td_cmd, u64 td_offset, unsigned int size, u64 td_tag)
 }
 
 /**
- * ice_build_tstamp_desc - build Tx time stamp descriptor
- * @tx_desc: Tx LAN descriptor index
- * @tstamp: time stamp
- *
- * Return: Tx time stamp descriptor
- */
-static inline __le32
-ice_build_tstamp_desc(u16 tx_desc, u32 tstamp)
-{
-	return cpu_to_le32(FIELD_PREP(ICE_TXTIME_TX_DESC_IDX_M, tx_desc) |
-			   FIELD_PREP(ICE_TXTIME_STAMP_M, tstamp));
-}
-
-/**
- * ice_get_vlan_tci - get VLAN TCI from Rx flex descriptor
+ * ice_get_vlan_tag_from_rx_desc - get VLAN from Rx flex descriptor
  * @rx_desc: Rx 32b flex descriptor with RXDID=2
  *
  * The OS and current PF implementation only support stripping a single VLAN tag
@@ -76,7 +92,7 @@ ice_build_tstamp_desc(u16 tx_desc, u32 tstamp)
  * one is found return the tag, else return 0 to mean no VLAN tag was found.
  */
 static inline u16
-ice_get_vlan_tci(const union ice_32b_rx_flex_desc *rx_desc)
+ice_get_vlan_tag_from_rx_desc(union ice_32b_rx_flex_desc *rx_desc)
 {
 	u16 stat_err_bits;
 
@@ -125,14 +141,14 @@ static inline u32 ice_set_rs_bit(const struct ice_tx_ring *xdp_ring)
 }
 
 void ice_finalize_xdp_rx(struct ice_tx_ring *xdp_ring, unsigned int xdp_res, u32 first_idx);
+int ice_xmit_xdp_buff(struct xdp_buff *xdp, struct ice_tx_ring *xdp_ring);
 int __ice_xmit_xdp_ring(struct xdp_buff *xdp, struct ice_tx_ring *xdp_ring,
 			bool frame);
 void ice_release_rx_desc(struct ice_rx_ring *rx_ring, u16 val);
 void
 ice_process_skb_fields(struct ice_rx_ring *rx_ring,
 		       union ice_32b_rx_flex_desc *rx_desc,
-		       struct sk_buff *skb);
+		       struct sk_buff *skb, u16 ptype);
 void
-ice_receive_skb(struct ice_rx_ring *rx_ring, struct sk_buff *skb, u16 vlan_tci);
-
+ice_receive_skb(struct ice_rx_ring *rx_ring, struct sk_buff *skb, u16 vlan_tag);
 #endif /* !_ICE_TXRX_LIB_H_ */

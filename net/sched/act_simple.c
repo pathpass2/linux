@@ -72,6 +72,7 @@ static int reset_policy(struct tc_action *a, const struct nlattr *defdata,
 	d = to_defact(a);
 	spin_lock_bh(&d->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(a, p->action, goto_ch);
+	memset(d->tcfd_defdata, 0, SIMP_MAX_DATA);
 	nla_strscpy(d->tcfd_defdata, defdata, SIMP_MAX_DATA);
 	spin_unlock_bh(&d->tcf_lock);
 	if (goto_ch)
@@ -117,7 +118,7 @@ static int tcf_simp_init(struct net *net, struct nlattr *nla,
 		return err;
 	exists = err;
 	if (exists && bind)
-		return ACT_P_BOUND;
+		return 0;
 
 	if (tb[TCA_DEF_DATA] == NULL) {
 		if (exists)
@@ -208,7 +209,6 @@ static struct tc_action_ops act_simp_ops = {
 	.init		=	tcf_simp_init,
 	.size		=	sizeof(struct tcf_defact),
 };
-MODULE_ALIAS_NET_ACT("simple");
 
 static __net_init int simp_init_net(struct net *net)
 {

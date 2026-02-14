@@ -3,7 +3,6 @@
  * Copyright (C) 2022 Loongson Technology Corporation Limited
  */
 #include <linux/cpumask.h>
-#include <linux/export.h>
 #include <linux/ftrace.h>
 #include <linux/kallsyms.h>
 
@@ -212,7 +211,7 @@ static bool next_frame(struct unwind_state *state)
 			pc = regs->csr_era;
 
 			if (user_mode(regs) || !__kernel_text_address(pc))
-				goto out;
+				return false;
 
 			state->first = true;
 			state->pc = pc;
@@ -227,8 +226,6 @@ static bool next_frame(struct unwind_state *state)
 
 	} while (!get_stack_info(state->sp, state->task, info));
 
-out:
-	state->stack_info.type = STACK_TYPE_UNKNOWN;
 	return false;
 }
 

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: BSD-3-Clause-Clear
+# SPDX-License-Identifier: ISC
 
 obj-$(CONFIG_MT7615_COMMON) += mt7615-common.o
 obj-$(CONFIG_MT7615E) += mt7615e.o

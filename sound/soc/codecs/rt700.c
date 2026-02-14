@@ -37,8 +37,8 @@ static int rt700_index_write(struct regmap *regmap,
 
 	ret = regmap_write(regmap, addr, value);
 	if (ret < 0)
-		pr_err("%s: Failed to set private value: %06x <= %04x ret=%d\n",
-		       __func__, addr, value, ret);
+		pr_err("Failed to set private value: %06x <= %04x ret=%d\n",
+			addr, value, ret);
 
 	return ret;
 }
@@ -52,8 +52,8 @@ static int rt700_index_read(struct regmap *regmap,
 	*value = 0;
 	ret = regmap_read(regmap, addr, value);
 	if (ret < 0)
-		pr_err("%s: Failed to get private value: %06x => %04x ret=%d\n",
-		       __func__, addr, *value, ret);
+		pr_err("Failed to get private value: %06x => %04x ret=%d\n",
+			addr, *value, ret);
 
 	return ret;
 }
@@ -272,10 +272,11 @@ io_error:
 
 static void rt700_jack_init(struct rt700_priv *rt700)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(rt700->component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(rt700->component);
 
 	/* power on */
-	if (snd_soc_dapm_get_bias_level(dapm) <= SND_SOC_BIAS_STANDBY)
+	if (dapm->bias_level <= SND_SOC_BIAS_STANDBY)
 		regmap_write(rt700->regmap,
 			RT700_SET_AUDIO_POWER_STATE, AC_PWRST_D0);
 
@@ -306,7 +307,7 @@ static void rt700_jack_init(struct rt700_priv *rt700)
 	}
 
 	/* power off */
-	if (snd_soc_dapm_get_bias_level(dapm) <= SND_SOC_BIAS_STANDBY)
+	if (dapm->bias_level <= SND_SOC_BIAS_STANDBY)
 		regmap_write(rt700->regmap,
 			RT700_SET_AUDIO_POWER_STATE, AC_PWRST_D3);
 }
@@ -318,10 +319,6 @@ static int rt700_set_jack_detect(struct snd_soc_component *component,
 	int ret;
 
 	rt700->hs_jack = hs_jack;
-
-	/* we can only resume if the device was initialized at least once */
-	if (!rt700->first_hw_init)
-		return 0;
 
 	ret = pm_runtime_resume_and_get(component->dev);
 	if (ret < 0) {
@@ -337,6 +334,7 @@ static int rt700_set_jack_detect(struct snd_soc_component *component,
 
 	rt700_jack_init(rt700);
 
+	pm_runtime_mark_last_busy(component->dev);
 	pm_runtime_put_autosuspend(component->dev);
 
 	return 0;
@@ -361,7 +359,8 @@ static int rt700_set_amp_gain_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(component);
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
 	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
@@ -396,7 +395,7 @@ static int rt700_set_amp_gain_put(struct snd_kcontrol *kcontrol,
 		val_ll |= read_ll;
 	}
 
-	if (snd_soc_dapm_get_bias_level(dapm) <= SND_SOC_BIAS_STANDBY)
+	if (dapm->bias_level <= SND_SOC_BIAS_STANDBY)
 		regmap_write(rt700->regmap,
 				RT700_SET_AUDIO_POWER_STATE, AC_PWRST_D0);
 
@@ -448,7 +447,7 @@ static int rt700_set_amp_gain_put(struct snd_kcontrol *kcontrol,
 			break;
 	}
 
-	if (snd_soc_dapm_get_bias_level(dapm) <= SND_SOC_BIAS_STANDBY)
+	if (dapm->bias_level <= SND_SOC_BIAS_STANDBY)
 		regmap_write(rt700->regmap,
 				RT700_SET_AUDIO_POWER_STATE, AC_PWRST_D3);
 	return 0;
@@ -522,7 +521,8 @@ static const struct snd_kcontrol_new rt700_snd_controls[] = {
 static int rt700_mux_get(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_dapm_kcontrol_to_component(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_dapm_kcontrol_component(kcontrol);
 	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
 	unsigned int reg, val = 0, nid;
 	int ret;
@@ -550,8 +550,10 @@ static int rt700_mux_get(struct snd_kcontrol *kcontrol,
 static int rt700_mux_put(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_soc_dapm_kcontrol_to_component(kcontrol);
-	struct snd_soc_dapm_context *dapm = snd_soc_dapm_kcontrol_to_dapm(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_dapm_kcontrol_component(kcontrol);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_dapm_kcontrol_dapm(kcontrol);
 	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	unsigned int *item = ucontrol->value.enumerated.item;
@@ -821,9 +823,6 @@ static int rt700_probe(struct snd_soc_component *component)
 
 	rt700->component = component;
 
-	if (!rt700->first_hw_init)
-		return 0;
-
 	ret = pm_runtime_resume(component->dev);
 	if (ret < 0 && ret != -EACCES)
 		return ret;
@@ -834,12 +833,13 @@ static int rt700_probe(struct snd_soc_component *component)
 static int rt700_set_bias_level(struct snd_soc_component *component,
 				enum snd_soc_bias_level level)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(component);
 	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_PREPARE:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_STANDBY) {
+		if (dapm->bias_level == SND_SOC_BIAS_STANDBY) {
 			regmap_write(rt700->regmap,
 				RT700_SET_AUDIO_POWER_STATE,
 				AC_PWRST_D0);
@@ -855,7 +855,7 @@ static int rt700_set_bias_level(struct snd_soc_component *component,
 	default:
 		break;
 	}
-
+	dapm->bias_level = level;
 	return 0;
 }
 
@@ -875,7 +875,19 @@ static const struct snd_soc_component_driver soc_codec_dev_rt700 = {
 static int rt700_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 				int direction)
 {
-	snd_soc_dai_dma_data_set(dai, direction, sdw_stream);
+	struct sdw_stream_data *stream;
+
+	if (!sdw_stream)
+		return 0;
+
+	stream = kzalloc(sizeof(*stream), GFP_KERNEL);
+	if (!stream)
+		return -ENOMEM;
+
+	stream->sdw_stream = sdw_stream;
+
+	/* Use tx_mask or rx_mask to configure stream tag and set dma_data */
+	snd_soc_dai_dma_data_set(dai, direction, stream);
 
 	return 0;
 }
@@ -883,7 +895,11 @@ static int rt700_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 static void rt700_shutdown(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *dai)
 {
+	struct sdw_stream_data *stream;
+
+	stream = snd_soc_dai_get_dma_data(dai, substream);
 	snd_soc_dai_set_dma_data(dai, substream, NULL);
+	kfree(stream);
 }
 
 static int rt700_pcm_hw_params(struct snd_pcm_substream *substream,
@@ -894,14 +910,14 @@ static int rt700_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
 	struct sdw_stream_config stream_config = {0};
 	struct sdw_port_config port_config = {0};
-	struct sdw_stream_runtime *sdw_stream;
+	struct sdw_stream_data *stream;
 	int retval;
 	unsigned int val = 0;
 
 	dev_dbg(dai->dev, "%s %s", __func__, dai->name);
-	sdw_stream = snd_soc_dai_get_dma_data(dai, substream);
+	stream = snd_soc_dai_get_dma_data(dai, substream);
 
-	if (!sdw_stream)
+	if (!stream)
 		return -EINVAL;
 
 	if (!rt700->slave)
@@ -923,14 +939,14 @@ static int rt700_pcm_hw_params(struct snd_pcm_substream *substream,
 		port_config.num += 2;
 		break;
 	default:
-		dev_err(component->dev, "%s: Invalid DAI id %d\n", __func__, dai->id);
+		dev_err(component->dev, "Invalid DAI id %d\n", dai->id);
 		return -EINVAL;
 	}
 
 	retval = sdw_stream_add_slave(rt700->slave, &stream_config,
-					&port_config, 1, sdw_stream);
+					&port_config, 1, stream->sdw_stream);
 	if (retval) {
-		dev_err(dai->dev, "%s: Unable to configure port\n", __func__);
+		dev_err(dai->dev, "Unable to configure port\n");
 		return retval;
 	}
 
@@ -938,8 +954,8 @@ static int rt700_pcm_hw_params(struct snd_pcm_substream *substream,
 		/* bit 3:0 Number of Channel */
 		val |= (params_channels(params) - 1);
 	} else {
-		dev_err(component->dev, "%s: Unsupported channels %d\n",
-			__func__, params_channels(params));
+		dev_err(component->dev, "Unsupported channels %d\n",
+			params_channels(params));
 		return -EINVAL;
 	}
 
@@ -975,13 +991,13 @@ static int rt700_pcm_hw_free(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_component *component = dai->component;
 	struct rt700_priv *rt700 = snd_soc_component_get_drvdata(component);
-	struct sdw_stream_runtime *sdw_stream =
+	struct sdw_stream_data *stream =
 		snd_soc_dai_get_dma_data(dai, substream);
 
 	if (!rt700->slave)
 		return -EINVAL;
 
-	sdw_stream_remove_slave(rt700->slave, sdw_stream);
+	sdw_stream_remove_slave(rt700->slave, stream->sdw_stream);
 	return 0;
 }
 
@@ -1099,8 +1115,6 @@ int rt700_init(struct device *dev, struct regmap *sdw_regmap,
 	rt700->sdw_regmap = sdw_regmap;
 	rt700->regmap = regmap;
 
-	regcache_cache_only(rt700->regmap, true);
-
 	mutex_init(&rt700->disable_irq_lock);
 
 	INIT_DELAYED_WORK(&rt700->jack_detect_work,
@@ -1119,26 +1133,10 @@ int rt700_init(struct device *dev, struct regmap *sdw_regmap,
 				&soc_codec_dev_rt700,
 				rt700_dai,
 				ARRAY_SIZE(rt700_dai));
-	if (ret < 0)
-		return ret;
 
-	/* set autosuspend parameters */
-	pm_runtime_set_autosuspend_delay(dev, 3000);
-	pm_runtime_use_autosuspend(dev);
-
-	/* make sure the device does not suspend immediately */
-	pm_runtime_mark_last_busy(dev);
-
-	pm_runtime_enable(dev);
-
-	/* important note: the device is NOT tagged as 'active' and will remain
-	 * 'suspended' until the hardware is enumerated/initialized. This is required
-	 * to make sure the ASoC framework use of pm_runtime_get_sync() does not silently
-	 * fail with -EACCESS because of race conditions between card creation and enumeration
-	 */
 	dev_dbg(&slave->dev, "%s\n", __func__);
 
-	return 0;
+	return ret;
 }
 
 int rt700_io_init(struct device *dev, struct sdw_slave *slave)
@@ -1150,16 +1148,27 @@ int rt700_io_init(struct device *dev, struct sdw_slave *slave)
 	if (rt700->hw_init)
 		return 0;
 
-	regcache_cache_only(rt700->regmap, false);
-	if (rt700->first_hw_init)
+	if (rt700->first_hw_init) {
+		regcache_cache_only(rt700->regmap, false);
 		regcache_cache_bypass(rt700->regmap, true);
+	}
 
 	/*
 	 * PM runtime is only enabled when a Slave reports as Attached
 	 */
-	if (!rt700->first_hw_init)
-		/* PM runtime status is marked as 'active' only when a Slave reports as Attached */
+	if (!rt700->first_hw_init) {
+		/* set autosuspend parameters */
+		pm_runtime_set_autosuspend_delay(&slave->dev, 3000);
+		pm_runtime_use_autosuspend(&slave->dev);
+
+		/* update count of parent 'active' children */
 		pm_runtime_set_active(&slave->dev);
+
+		/* make sure the device does not suspend immediately */
+		pm_runtime_mark_last_busy(&slave->dev);
+
+		pm_runtime_enable(&slave->dev);
+	}
 
 	pm_runtime_get_noresume(&slave->dev);
 
@@ -1223,6 +1232,7 @@ int rt700_io_init(struct device *dev, struct sdw_slave *slave)
 	/* Mark Slave initialization complete */
 	rt700->hw_init = true;
 
+	pm_runtime_mark_last_busy(&slave->dev);
 	pm_runtime_put_autosuspend(&slave->dev);
 
 	dev_dbg(&slave->dev, "%s hw_init complete\n", __func__);

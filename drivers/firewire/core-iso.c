@@ -22,32 +22,31 @@
 
 #include "core.h"
 
-#include <trace/events/firewire.h>
-
 /*
  * Isochronous DMA context management
  */
 
 int fw_iso_buffer_alloc(struct fw_iso_buffer *buffer, int page_count)
 {
-	struct page **page_array __free(kfree) = kcalloc(page_count, sizeof(page_array[0]), GFP_KERNEL);
+	int i;
 
-	if (!page_array)
+	buffer->page_count = 0;
+	buffer->page_count_mapped = 0;
+	buffer->pages = kmalloc_array(page_count, sizeof(buffer->pages[0]),
+				      GFP_KERNEL);
+	if (buffer->pages == NULL)
 		return -ENOMEM;
 
-	// Retrieve noncontiguous pages. The descriptors for 1394 OHCI isochronous DMA contexts
-	// have a set of address and length per each, while the reason to use pages is the
-	// convenience to map them into virtual address space of user process.
-	unsigned long nr_populated = alloc_pages_bulk(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO,
-						      page_count, page_array);
-	if (nr_populated != page_count) {
-		// Assuming the above call fills page_array sequentially from the beginning.
-		release_pages(page_array, nr_populated);
+	for (i = 0; i < page_count; i++) {
+		buffer->pages[i] = alloc_page(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO);
+		if (buffer->pages[i] == NULL)
+			break;
+	}
+	buffer->page_count = i;
+	if (i < page_count) {
+		fw_iso_buffer_destroy(buffer, NULL);
 		return -ENOMEM;
 	}
-
-	buffer->page_count = page_count;
-	buffer->pages = no_free_ptr(page_array);
 
 	return 0;
 }
@@ -55,32 +54,22 @@ int fw_iso_buffer_alloc(struct fw_iso_buffer *buffer, int page_count)
 int fw_iso_buffer_map_dma(struct fw_iso_buffer *buffer, struct fw_card *card,
 			  enum dma_data_direction direction)
 {
-	dma_addr_t *dma_addrs __free(kfree) = kcalloc(buffer->page_count, sizeof(dma_addrs[0]),
-						      GFP_KERNEL);
+	dma_addr_t address;
 	int i;
 
-	if (!dma_addrs)
-		return -ENOMEM;
+	buffer->direction = direction;
 
-	// Retrieve DMA mapping addresses for the pages. They are not contiguous. Maintain the cache
-	// coherency for the pages by hand.
 	for (i = 0; i < buffer->page_count; i++) {
-		// The dma_map_phys() with a physical address per page is available here, instead.
-		dma_addr_t dma_addr = dma_map_page(card->device, buffer->pages[i], 0, PAGE_SIZE,
-						   direction);
-		if (dma_mapping_error(card->device, dma_addr))
+		address = dma_map_page(card->device, buffer->pages[i],
+				       0, PAGE_SIZE, direction);
+		if (dma_mapping_error(card->device, address))
 			break;
 
-		dma_addrs[i] = dma_addr;
+		set_page_private(buffer->pages[i], address);
 	}
-	if (i < buffer->page_count) {
-		while (i-- > 0)
-			dma_unmap_page(card->device, dma_addrs[i], PAGE_SIZE, buffer->direction);
+	buffer->page_count_mapped = i;
+	if (i < buffer->page_count)
 		return -ENOMEM;
-	}
-
-	buffer->direction = direction;
-	buffer->dma_addrs = no_free_ptr(dma_addrs);
 
 	return 0;
 }
@@ -105,31 +94,34 @@ EXPORT_SYMBOL(fw_iso_buffer_init);
 void fw_iso_buffer_destroy(struct fw_iso_buffer *buffer,
 			   struct fw_card *card)
 {
-	if (buffer->dma_addrs) {
-		for (int i = 0; i < buffer->page_count; ++i) {
-			dma_addr_t dma_addr = buffer->dma_addrs[i];
-			dma_unmap_page(card->device, dma_addr, PAGE_SIZE, buffer->direction);
-		}
-		kfree(buffer->dma_addrs);
-		buffer->dma_addrs = NULL;
-	}
+	int i;
+	dma_addr_t address;
 
-	if (buffer->pages) {
-		release_pages(buffer->pages, buffer->page_count);
-		kfree(buffer->pages);
-		buffer->pages = NULL;
+	for (i = 0; i < buffer->page_count_mapped; i++) {
+		address = page_private(buffer->pages[i]);
+		dma_unmap_page(card->device, address,
+			       PAGE_SIZE, buffer->direction);
 	}
+	for (i = 0; i < buffer->page_count; i++)
+		__free_page(buffer->pages[i]);
 
+	kfree(buffer->pages);
+	buffer->pages = NULL;
 	buffer->page_count = 0;
+	buffer->page_count_mapped = 0;
 }
 EXPORT_SYMBOL(fw_iso_buffer_destroy);
 
 /* Convert DMA address to offset into virtually contiguous buffer. */
 size_t fw_iso_buffer_lookup(struct fw_iso_buffer *buffer, dma_addr_t completed)
 {
-	for (int i = 0; i < buffer->page_count; i++) {
-		dma_addr_t dma_addr = buffer->dma_addrs[i];
-		ssize_t offset = (ssize_t)completed - (ssize_t)dma_addr;
+	size_t i;
+	dma_addr_t address;
+	ssize_t offset;
+
+	for (i = 0; i < buffer->page_count; i++) {
+		address = page_private(buffer->pages[i]);
+		offset = (ssize_t)completed - (ssize_t)address;
 		if (offset > 0 && offset <= PAGE_SIZE)
 			return (i << PAGE_SHIFT) + offset;
 	}
@@ -137,14 +129,14 @@ size_t fw_iso_buffer_lookup(struct fw_iso_buffer *buffer, dma_addr_t completed)
 	return 0;
 }
 
-struct fw_iso_context *__fw_iso_context_create(struct fw_card *card, int type, int channel,
-		int speed, size_t header_size, size_t header_storage_size,
-		union fw_iso_callback callback, void *callback_data)
+struct fw_iso_context *fw_iso_context_create(struct fw_card *card,
+		int type, int channel, int speed, size_t header_size,
+		fw_iso_callback_t callback, void *callback_data)
 {
 	struct fw_iso_context *ctx;
 
-	ctx = card->driver->allocate_iso_context(card, type, channel, header_size,
-						 header_storage_size);
+	ctx = card->driver->allocate_iso_context(card,
+						 type, channel, header_size);
 	if (IS_ERR(ctx))
 		return ctx;
 
@@ -152,26 +144,16 @@ struct fw_iso_context *__fw_iso_context_create(struct fw_card *card, int type, i
 	ctx->type = type;
 	ctx->channel = channel;
 	ctx->speed = speed;
-	ctx->flags = 0;
 	ctx->header_size = header_size;
-	ctx->header_storage_size = header_storage_size;
-	ctx->callback = callback;
+	ctx->callback.sc = callback;
 	ctx->callback_data = callback_data;
-
-	trace_isoc_outbound_allocate(ctx, channel, speed);
-	trace_isoc_inbound_single_allocate(ctx, channel, header_size);
-	trace_isoc_inbound_multiple_allocate(ctx);
 
 	return ctx;
 }
-EXPORT_SYMBOL(__fw_iso_context_create);
+EXPORT_SYMBOL(fw_iso_context_create);
 
 void fw_iso_context_destroy(struct fw_iso_context *ctx)
 {
-	trace_isoc_outbound_destroy(ctx);
-	trace_isoc_inbound_single_destroy(ctx);
-	trace_isoc_inbound_multiple_destroy(ctx);
-
 	ctx->card->driver->free_iso_context(ctx);
 }
 EXPORT_SYMBOL(fw_iso_context_destroy);
@@ -179,18 +161,12 @@ EXPORT_SYMBOL(fw_iso_context_destroy);
 int fw_iso_context_start(struct fw_iso_context *ctx,
 			 int cycle, int sync, int tags)
 {
-	trace_isoc_outbound_start(ctx, cycle);
-	trace_isoc_inbound_single_start(ctx, cycle, sync, tags);
-	trace_isoc_inbound_multiple_start(ctx, cycle, sync, tags);
-
 	return ctx->card->driver->start_iso(ctx, cycle, sync, tags);
 }
 EXPORT_SYMBOL(fw_iso_context_start);
 
 int fw_iso_context_set_channels(struct fw_iso_context *ctx, u64 *channels)
 {
-	trace_isoc_inbound_multiple_channels(ctx, *channels);
-
 	return ctx->card->driver->set_iso_channels(ctx, channels);
 }
 
@@ -199,81 +175,25 @@ int fw_iso_context_queue(struct fw_iso_context *ctx,
 			 struct fw_iso_buffer *buffer,
 			 unsigned long payload)
 {
-	trace_isoc_outbound_queue(ctx, payload, packet);
-	trace_isoc_inbound_single_queue(ctx, payload, packet);
-	trace_isoc_inbound_multiple_queue(ctx, payload, packet);
-
 	return ctx->card->driver->queue_iso(ctx, packet, buffer, payload);
 }
 EXPORT_SYMBOL(fw_iso_context_queue);
 
 void fw_iso_context_queue_flush(struct fw_iso_context *ctx)
 {
-	trace_isoc_outbound_flush(ctx);
-	trace_isoc_inbound_single_flush(ctx);
-	trace_isoc_inbound_multiple_flush(ctx);
-
 	ctx->card->driver->flush_queue_iso(ctx);
 }
 EXPORT_SYMBOL(fw_iso_context_queue_flush);
 
-/**
- * fw_iso_context_flush_completions() - process isochronous context in current process context.
- * @ctx: the isochronous context
- *
- * Process the isochronous context in the current process context. The registered callback function
- * is called when a queued packet buffer with the interrupt flag is completed, either after
- * transmission in the IT context or after being filled in the IR context. Additionally, the
- * callback function is also called for the packet buffer completed at last. Furthermore, the
- * callback function is called as well when the header buffer in the context becomes full. If it is
- * required to process the context asynchronously, fw_iso_context_schedule_flush_completions() is
- * available instead.
- *
- * Context: Process context. May sleep due to disable_work_sync().
- */
 int fw_iso_context_flush_completions(struct fw_iso_context *ctx)
 {
-	int err;
-
-	trace_isoc_outbound_flush_completions(ctx);
-	trace_isoc_inbound_single_flush_completions(ctx);
-	trace_isoc_inbound_multiple_flush_completions(ctx);
-
-	might_sleep();
-
-	// Avoid dead lock due to programming mistake.
-	if (WARN_ON_ONCE(current_work() == &ctx->work))
-		return 0;
-
-	disable_work_sync(&ctx->work);
-
-	err = ctx->card->driver->flush_iso_completions(ctx);
-
-	enable_work(&ctx->work);
-
-	return err;
+	return ctx->card->driver->flush_iso_completions(ctx);
 }
 EXPORT_SYMBOL(fw_iso_context_flush_completions);
 
 int fw_iso_context_stop(struct fw_iso_context *ctx)
 {
-	int err;
-
-	trace_isoc_outbound_stop(ctx);
-	trace_isoc_inbound_single_stop(ctx);
-	trace_isoc_inbound_multiple_stop(ctx);
-
-	might_sleep();
-
-	// Avoid dead lock due to programming mistake.
-	if (WARN_ON_ONCE(current_work() == &ctx->work))
-		return 0;
-
-	err = ctx->card->driver->stop_iso(ctx);
-
-	cancel_work_sync(&ctx->work);
-
-	return err;
+	return ctx->card->driver->stop_iso(ctx);
 }
 EXPORT_SYMBOL(fw_iso_context_stop);
 
@@ -423,8 +343,9 @@ void fw_iso_resource_manage(struct fw_card *card, int generation,
 	u32 channels_lo = channels_mask >> 32;	/* channels 63...32 */
 	int irm_id, ret, c = -EINVAL;
 
-	scoped_guard(spinlock_irq, &card->lock)
-		irm_id = card->irm_node->node_id;
+	spin_lock_irq(&card->lock);
+	irm_id = card->irm_node->node_id;
+	spin_unlock_irq(&card->lock);
 
 	if (channels_hi)
 		c = manage_channel(card, irm_id, generation, channels_hi,

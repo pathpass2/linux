@@ -17,18 +17,23 @@ properties:
   compatible:
     const: qcom,sc7280-lpass-lpi-pinctrl
 
+  qcom,adsp-bypass-mode:
+    description:
+      Tells ADSP is in bypass mode.
+    type: boolean
+
   reg:
     maxItems: 2
 
-  clocks:
-    items:
-      - description: LPASS Core voting clock
-      - description: LPASS Audio voting clock
+  gpio-controller: true
 
-  clock-names:
-    items:
-      - const: core
-      - const: audio
+  "#gpio-cells":
+    description: Specifying the pin number and flags, as defined in
+      include/dt-bindings/gpio/gpio.h
+    const: 2
+
+  gpio-ranges:
+    maxItems: 1
 
 patternProperties:
   "-state$":
@@ -45,8 +50,7 @@ $defs:
     description:
       Pinctrl node's client devices use subnodes for desired pin configuration.
       Client device subnodes use below standard properties.
-    $ref: qcom,lpass-lpi-common.yaml#/$defs/qcom-tlmm-state
-    unevaluatedProperties: false
+    $ref: "/schemas/pinctrl/pincfg-node.yaml"
 
     properties:
       pins:
@@ -69,27 +73,49 @@ $defs:
           Specify the alternative function to be configured for the specified
           pins.
 
+      drive-strength:
+        enum: [2, 4, 6, 8, 10, 12, 14, 16]
+        default: 2
+        description:
+          Selects the drive strength for the specified pins, in mA.
+
+      slew-rate:
+        enum: [0, 1, 2, 3]
+        default: 0
+        description: |
+            0: No adjustments
+            1: Higher Slew rate (faster edges)
+            2: Lower Slew rate (slower edges)
+            3: Reserved (No adjustments)
+
+      bias-pull-down: true
+      bias-pull-up: true
+      bias-bus-hold: true
+      bias-disable: true
+      output-high: true
+      output-low: true
+
+    required:
+      - pins
+      - function
+
+    additionalProperties: false
+
 required:
   - compatible
   - reg
+  - gpio-controller
+  - "#gpio-cells"
+  - gpio-ranges
 
-allOf:
-  - $ref: qcom,lpass-lpi-common.yaml#
-
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |
-    #include <dt-bindings/sound/qcom,q6afe.h>
     lpass_tlmm: pinctrl@33c0000 {
         compatible = "qcom,sc7280-lpass-lpi-pinctrl";
         reg = <0x33c0000 0x20000>,
               <0x3550000 0x10000>;
-
-        clocks = <&q6prmcc LPASS_HW_MACRO_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
-                 <&q6prmcc LPASS_HW_DCODEC_VOTE LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
-        clock-names = "core", "audio";
-
         gpio-controller;
         #gpio-cells = <2>;
         gpio-ranges = <&lpass_tlmm 0 0 15>;

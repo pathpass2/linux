@@ -54,7 +54,6 @@ int otx2_pfc_txschq_config(struct otx2_nic *pfvf)
 
 	return 0;
 }
-EXPORT_SYMBOL(otx2_pfc_txschq_config);
 
 static int otx2_pfc_txschq_alloc_one(struct otx2_nic *pfvf, u8 prio)
 {
@@ -71,7 +70,7 @@ static int otx2_pfc_txschq_alloc_one(struct otx2_nic *pfvf, u8 prio)
 	 * link config level. These rest of the scheduler can be
 	 * same as hw.txschq_list.
 	 */
-	for (lvl = 0; lvl <= pfvf->hw.txschq_link_cfg_lvl; lvl++)
+	for (lvl = 0; lvl < pfvf->hw.txschq_link_cfg_lvl; lvl++)
 		req->schq[lvl] = 1;
 
 	rc = otx2_sync_mbox_msg(&pfvf->mbox);
@@ -84,7 +83,7 @@ static int otx2_pfc_txschq_alloc_one(struct otx2_nic *pfvf, u8 prio)
 		return PTR_ERR(rsp);
 
 	/* Setup transmit scheduler list */
-	for (lvl = 0; lvl <= pfvf->hw.txschq_link_cfg_lvl; lvl++) {
+	for (lvl = 0; lvl < pfvf->hw.txschq_link_cfg_lvl; lvl++) {
 		if (!rsp->schq[lvl])
 			return -ENOSPC;
 
@@ -123,16 +122,22 @@ int otx2_pfc_txschq_alloc(struct otx2_nic *pfvf)
 
 	return 0;
 }
-EXPORT_SYMBOL(otx2_pfc_txschq_alloc);
 
 static int otx2_pfc_txschq_stop_one(struct otx2_nic *pfvf, u8 prio)
 {
-	int lvl;
+	struct nix_txsch_free_req *free_req;
 
+	mutex_lock(&pfvf->mbox.lock);
 	/* free PFC TLx nodes */
-	for (lvl = 0; lvl <= pfvf->hw.txschq_link_cfg_lvl; lvl++)
-		otx2_txschq_free_one(pfvf, lvl,
-				     pfvf->pfc_schq_list[lvl][prio]);
+	free_req = otx2_mbox_alloc_msg_nix_txsch_free(&pfvf->mbox);
+	if (!free_req) {
+		mutex_unlock(&pfvf->mbox.lock);
+		return -ENOMEM;
+	}
+
+	free_req->flags = TXSCHQ_FREE_ALL;
+	otx2_sync_mbox_msg(&pfvf->mbox);
+	mutex_unlock(&pfvf->mbox.lock);
 
 	pfvf->pfc_alloc_status[prio] = false;
 	return 0;
@@ -262,7 +267,6 @@ update_sq_smq_map:
 
 	return 0;
 }
-EXPORT_SYMBOL(otx2_pfc_txschq_update);
 
 int otx2_pfc_txschq_stop(struct otx2_nic *pfvf)
 {
@@ -285,7 +289,6 @@ int otx2_pfc_txschq_stop(struct otx2_nic *pfvf)
 
 	return 0;
 }
-EXPORT_SYMBOL(otx2_pfc_txschq_stop);
 
 int otx2_config_priority_flow_ctrl(struct otx2_nic *pfvf)
 {
@@ -315,11 +318,6 @@ int otx2_config_priority_flow_ctrl(struct otx2_nic *pfvf)
 	if (!otx2_sync_mbox_msg(&pfvf->mbox)) {
 		rsp = (struct cgx_pfc_rsp *)
 		       otx2_mbox_get_rsp(&pfvf->mbox.mbox, 0, &req->hdr);
-		if (IS_ERR(rsp)) {
-			err = PTR_ERR(rsp);
-			goto unlock;
-		}
-
 		if (req->rx_pause != rsp->rx_pause || req->tx_pause != rsp->tx_pause) {
 			dev_warn(pfvf->dev,
 				 "Failed to config PFC\n");
@@ -330,7 +328,6 @@ unlock:
 	mutex_unlock(&pfvf->mbox.lock);
 	return err;
 }
-EXPORT_SYMBOL(otx2_config_priority_flow_ctrl);
 
 void otx2_update_bpid_in_rqctx(struct otx2_nic *pfvf, int vlan_prio, int qidx,
 			       bool pfc_enable)
@@ -395,7 +392,6 @@ out:
 			 "Updating BPIDs in CQ and Aura contexts of RQ%d failed with err %d\n",
 			 qidx, err);
 }
-EXPORT_SYMBOL(otx2_update_bpid_in_rqctx);
 
 static int otx2_dcbnl_ieee_getpfc(struct net_device *dev, struct ieee_pfc *pfc)
 {
@@ -410,10 +406,9 @@ static int otx2_dcbnl_ieee_getpfc(struct net_device *dev, struct ieee_pfc *pfc)
 static int otx2_dcbnl_ieee_setpfc(struct net_device *dev, struct ieee_pfc *pfc)
 {
 	struct otx2_nic *pfvf = netdev_priv(dev);
-	u8 old_pfc_en;
 	int err;
 
-	old_pfc_en = pfvf->pfc_en;
+	/* Save PFC configuration to interface */
 	pfvf->pfc_en = pfc->pfc_en;
 
 	if (pfvf->hw.tx_queues >= NIX_PF_PFC_PRIO_MAX)
@@ -423,20 +418,13 @@ static int otx2_dcbnl_ieee_setpfc(struct net_device *dev, struct ieee_pfc *pfc)
 	 * supported by the tx queue configuration
 	 */
 	err = otx2_check_pfc_config(pfvf);
-	if (err) {
-		pfvf->pfc_en = old_pfc_en;
+	if (err)
 		return err;
-	}
 
 process_pfc:
 	err = otx2_config_priority_flow_ctrl(pfvf);
-	if (err) {
-		pfvf->pfc_en = old_pfc_en;
+	if (err)
 		return err;
-	}
-
-	/* Default disable backpressure on NIX-CPT */
-	otx2_nix_cpt_config_bp(pfvf, false);
 
 	/* Request Per channel Bpids */
 	if (pfc->pfc_en)
@@ -444,12 +432,6 @@ process_pfc:
 
 	err = otx2_pfc_txschq_update(pfvf);
 	if (err) {
-		if (pfc->pfc_en)
-			otx2_nix_config_bp(pfvf, false);
-
-		otx2_pfc_txschq_stop(pfvf);
-		pfvf->pfc_en = old_pfc_en;
-		otx2_config_priority_flow_ctrl(pfvf);
 		dev_err(pfvf->dev, "%s failed to update TX schedulers\n", __func__);
 		return err;
 	}
@@ -486,4 +468,3 @@ int otx2_dcbnl_set_ops(struct net_device *dev)
 
 	return 0;
 }
-EXPORT_SYMBOL(otx2_dcbnl_set_ops);

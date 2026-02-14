@@ -8,15 +8,6 @@ One of the most common uses of RCU is protecting read-mostly linked lists
 that all of the required memory ordering is provided by the list macros.
 This document describes several list-based RCU use cases.
 
-When iterating a list while holding the rcu_read_lock(), writers may
-modify the list.  The reader is guaranteed to see all of the elements
-which were added to the list before they acquired the rcu_read_lock()
-and are still on the list when they drop the rcu_read_unlock().
-Elements which are added to, or removed from the list may or may not
-be seen.  If the writer calls list_replace_rcu(), the reader may see
-either the old element or the new element; they will not see both,
-nor will they see neither.
-
 
 Example 1: Read-mostly list: Deferred Destruction
 -------------------------------------------------
@@ -334,7 +325,7 @@ If the system-call audit module were to ever need to reject stale data, one way
 to accomplish this would be to add a ``deleted`` flag and a ``lock`` spinlock to the
 ``audit_entry`` structure, and modify audit_filter_task() as follows::
 
-	static struct audit_entry *audit_filter_task(struct task_struct *tsk, char **key)
+	static enum audit_state audit_filter_task(struct task_struct *tsk)
 	{
 		struct audit_entry *e;
 		enum audit_state   state;
@@ -346,18 +337,16 @@ to accomplish this would be to add a ``deleted`` flag and a ``lock`` spinlock to
 				if (e->deleted) {
 					spin_unlock(&e->lock);
 					rcu_read_unlock();
-					return NULL;
+					return AUDIT_BUILD_CONTEXT;
 				}
 				rcu_read_unlock();
 				if (state == AUDIT_STATE_RECORD)
 					*key = kstrdup(e->rule.filterkey, GFP_ATOMIC);
-				/* As long as e->lock is held, e is valid and
-				 * its value is not stale */
-				return e;
+				return state;
 			}
 		}
 		rcu_read_unlock();
-		return NULL;
+		return AUDIT_BUILD_CONTEXT;
 	}
 
 The ``audit_del_rule()`` function would need to set the ``deleted`` flag under the

@@ -25,6 +25,7 @@
 
 #define DRIVER_NAME         "vboxvideo"
 #define DRIVER_DESC         "Oracle VM VirtualBox Graphics Card"
+#define DRIVER_DATE         "20130823"
 
 #define DRIVER_MAJOR        1
 #define DRIVER_MINOR        0

@@ -232,7 +232,7 @@ static int da9052_ts_probe(struct platform_device *pdev)
 	if (!da9052)
 		return -EINVAL;
 
-	tsi = kzalloc(sizeof(*tsi), GFP_KERNEL);
+	tsi = kzalloc(sizeof(struct da9052_tsi), GFP_KERNEL);
 	input_dev = input_allocate_device();
 	if (!tsi || !input_dev) {
 		error = -ENOMEM;
@@ -311,7 +311,7 @@ err_free_mem:
 	return error;
 }
 
-static void da9052_ts_remove(struct platform_device *pdev)
+static int  da9052_ts_remove(struct platform_device *pdev)
 {
 	struct da9052_tsi *tsi = platform_get_drvdata(pdev);
 
@@ -322,6 +322,8 @@ static void da9052_ts_remove(struct platform_device *pdev)
 
 	input_unregister_device(tsi->dev);
 	kfree(tsi);
+
+	return 0;
 }
 
 static struct platform_driver da9052_tsi_driver = {

@@ -176,10 +176,9 @@ static int snd_cs5535audio_mixer(struct cs5535audio *cs5535au)
 static void process_bm0_irq(struct cs5535audio *cs5535au)
 {
 	u8 bm_stat;
-
-	scoped_guard(spinlock, &cs5535au->reg_lock) {
-		bm_stat = cs_readb(cs5535au, ACC_BM0_STATUS);
-	}
+	spin_lock(&cs5535au->reg_lock);
+	bm_stat = cs_readb(cs5535au, ACC_BM0_STATUS);
+	spin_unlock(&cs5535au->reg_lock);
 	if (bm_stat & EOP) {
 		snd_pcm_period_elapsed(cs5535au->playback_substream);
 	} else {
@@ -192,10 +191,9 @@ static void process_bm0_irq(struct cs5535audio *cs5535au)
 static void process_bm1_irq(struct cs5535audio *cs5535au)
 {
 	u8 bm_stat;
-
-	scoped_guard(spinlock, &cs5535au->reg_lock) {
-		bm_stat = cs_readb(cs5535au, ACC_BM1_STATUS);
-	}
+	spin_lock(&cs5535au->reg_lock);
+	bm_stat = cs_readb(cs5535au, ACC_BM1_STATUS);
+	spin_unlock(&cs5535au->reg_lock);
 	if (bm_stat & EOP)
 		snd_pcm_period_elapsed(cs5535au->capture_substream);
 }
@@ -264,7 +262,7 @@ static int snd_cs5535audio_create(struct snd_card *card,
 	cs5535au->pci = pci;
 	cs5535au->irq = -1;
 
-	err = pcim_request_all_regions(pci, "CS5535 Audio");
+	err = pci_request_regions(pci, "CS5535 Audio");
 	if (err < 0)
 		return err;
 
@@ -317,9 +315,9 @@ static int __snd_cs5535audio_probe(struct pci_dev *pci,
 	if (err < 0)
 		return err;
 
-	strscpy(card->driver, DRIVER_NAME);
+	strcpy(card->driver, DRIVER_NAME);
 
-	strscpy(card->shortname, "CS5535 Audio");
+	strcpy(card->shortname, "CS5535 Audio");
 	sprintf(card->longname, "%s %s at 0x%lx, irq %i",
 		card->shortname, card->driver,
 		cs5535au->port, cs5535au->irq);

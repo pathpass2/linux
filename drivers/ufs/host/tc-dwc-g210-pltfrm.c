@@ -74,9 +74,14 @@ static int tc_dwc_g210_pltfm_probe(struct platform_device *pdev)
  * @pdev: pointer to platform device structure
  *
  */
-static void tc_dwc_g210_pltfm_remove(struct platform_device *pdev)
+static int tc_dwc_g210_pltfm_remove(struct platform_device *pdev)
 {
-	ufshcd_pltfrm_remove(pdev);
+	struct ufs_hba *hba =  platform_get_drvdata(pdev);
+
+	pm_runtime_get_sync(&(pdev)->dev);
+	ufshcd_remove(hba);
+
+	return 0;
 }
 
 static const struct dev_pm_ops tc_dwc_g210_pltfm_pm_ops = {
@@ -87,6 +92,7 @@ static const struct dev_pm_ops tc_dwc_g210_pltfm_pm_ops = {
 static struct platform_driver tc_dwc_g210_pltfm_driver = {
 	.probe		= tc_dwc_g210_pltfm_probe,
 	.remove		= tc_dwc_g210_pltfm_remove,
+	.shutdown = ufshcd_pltfrm_shutdown,
 	.driver		= {
 		.name	= "tc-dwc-g210-pltfm",
 		.pm	= &tc_dwc_g210_pltfm_pm_ops,

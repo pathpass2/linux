@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2019 MediaTek Inc.
  *
  * Author: Roy Luo <royluo@google.com>
@@ -163,16 +163,16 @@ int mt7615_mcu_parse_response(struct mt76_dev *mdev, int cmd,
 		   cmd == MCU_UNI_CMD(HIF_CTRL) ||
 		   cmd == MCU_UNI_CMD(OFFLOAD) ||
 		   cmd == MCU_UNI_CMD(SUSPEND)) {
-		struct mt76_connac_mcu_uni_event *event;
+		struct mt7615_mcu_uni_event *event;
 
 		skb_pull(skb, sizeof(*rxd));
-		event = (struct mt76_connac_mcu_uni_event *)skb->data;
+		event = (struct mt7615_mcu_uni_event *)skb->data;
 		ret = le32_to_cpu(event->status);
 	} else if (cmd == MCU_CE_QUERY(REG_READ)) {
-		struct mt76_connac_mcu_reg_event *event;
+		struct mt7615_mcu_reg_event *event;
 
 		skb_pull(skb, sizeof(*rxd));
-		event = (struct mt76_connac_mcu_reg_event *)skb->data;
+		event = (struct mt7615_mcu_reg_event *)skb->data;
 		ret = (int)le32_to_cpu(event->val);
 	}
 
@@ -353,7 +353,7 @@ static void
 mt7615_mcu_csa_finish(void *priv, u8 *mac, struct ieee80211_vif *vif)
 {
 	if (vif->bss_conf.csa_active)
-		ieee80211_csa_finish(vif, 0);
+		ieee80211_csa_finish(vif);
 }
 
 static void
@@ -394,7 +394,7 @@ mt7615_mcu_rx_radar_detected(struct mt7615_dev *dev, struct sk_buff *skb)
 	if (mt76_phy_dfs_state(mphy) < MT_DFS_STATE_CAC)
 		return;
 
-	ieee80211_radar_detected(mphy->hw, NULL);
+	ieee80211_radar_detected(mphy->hw);
 	dev->hw_pattern++;
 }
 
@@ -453,7 +453,7 @@ mt7615_mcu_scan_event(struct mt7615_dev *dev, struct sk_buff *skb)
 	else
 		mphy = &dev->mt76.phy;
 
-	phy = mphy->priv;
+	phy = (struct mt7615_phy *)mphy->priv;
 
 	spin_lock_bh(&dev->mt76.lock);
 	__skb_queue_tail(&phy->scan_event_list, skb);
@@ -481,7 +481,7 @@ mt7615_mcu_roc_event(struct mt7615_dev *dev, struct sk_buff *skb)
 
 	ieee80211_ready_on_channel(mphy->hw);
 
-	phy = mphy->priv;
+	phy = (struct mt7615_phy *)mphy->priv;
 	phy->roc_grant = true;
 	wake_up(&phy->roc_wait);
 
@@ -842,16 +842,13 @@ mt7615_mcu_wtbl_sta_add(struct mt7615_phy *phy, struct ieee80211_vif *vif,
 {
 	struct mt7615_vif *mvif = (struct mt7615_vif *)vif->drv_priv;
 	struct sk_buff *skb, *sskb, *wskb = NULL;
-	struct ieee80211_link_sta *link_sta;
 	struct mt7615_dev *dev = phy->dev;
 	struct wtbl_req_hdr *wtbl_hdr;
 	struct mt7615_sta *msta;
 	bool new_entry = true;
-	int conn_state;
 	int cmd, err;
 
 	msta = sta ? (struct mt7615_sta *)sta->drv_priv : &mvif->sta;
-	link_sta = sta ? &sta->deflink : NULL;
 
 	sskb = mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mvif->mt76,
 					     &msta->wcid);
@@ -864,9 +861,7 @@ mt7615_mcu_wtbl_sta_add(struct mt7615_phy *phy, struct ieee80211_vif *vif,
 		else
 			mvif->sta_added = true;
 	}
-	conn_state = enable ? CONN_STATE_PORT_SECURE : CONN_STATE_DISCONNECT;
-	mt76_connac_mcu_sta_basic_tlv(&dev->mt76, sskb, &vif->bss_conf,
-				      link_sta, conn_state, new_entry);
+	mt76_connac_mcu_sta_basic_tlv(sskb, vif, sta, enable, new_entry);
 	if (enable && sta)
 		mt76_connac_mcu_sta_tlv(phy->mt76, sskb, sta, vif, 0,
 					MT76_STA_INFO_STATE_ASSOC);
@@ -874,10 +869,8 @@ mt7615_mcu_wtbl_sta_add(struct mt7615_phy *phy, struct ieee80211_vif *vif,
 	wtbl_hdr = mt76_connac_mcu_alloc_wtbl_req(&dev->mt76, &msta->wcid,
 						  WTBL_RESET_AND_SET, NULL,
 						  &wskb);
-	if (IS_ERR(wtbl_hdr)) {
-		dev_kfree_skb(sskb);
+	if (IS_ERR(wtbl_hdr))
 		return PTR_ERR(wtbl_hdr);
-	}
 
 	if (enable) {
 		mt76_connac_mcu_wtbl_generic_tlv(&dev->mt76, wskb, vif, sta,
@@ -1115,8 +1108,8 @@ mt7615_mcu_uni_add_dev(struct mt7615_phy *phy, struct ieee80211_vif *vif,
 {
 	struct mt7615_vif *mvif = (struct mt7615_vif *)vif->drv_priv;
 
-	return mt76_connac_mcu_uni_add_dev(phy->mt76, &vif->bss_conf, &mvif->mt76,
-					   &mvif->sta.wcid, enable);
+	return mt76_connac_mcu_uni_add_dev(phy->mt76, vif, &mvif->sta.wcid,
+					   enable);
 }
 
 static int
@@ -1702,7 +1695,7 @@ int mt7615_mcu_init(struct mt7615_dev *dev)
 	};
 	int ret;
 
-	dev->mt76.mcu_ops = &mt7615_mcu_ops;
+	dev->mt76.mcu_ops = &mt7615_mcu_ops,
 
 	ret = mt7615_mcu_drv_pmctrl(dev);
 	if (ret)
@@ -1880,6 +1873,16 @@ int mt7615_mcu_set_dbdc(struct mt7615_dev *dev)
 out:
 	return mt76_mcu_send_msg(&dev->mt76, MCU_EXT_CMD(DBDC_CTRL), &req,
 				 sizeof(req), true);
+}
+
+int mt7615_mcu_del_wtbl_all(struct mt7615_dev *dev)
+{
+	struct wtbl_req_hdr req = {
+		.operation = WTBL_RESET_ALL,
+	};
+
+	return mt76_mcu_send_msg(&dev->mt76, MCU_EXT_CMD(WTBL_UPDATE),
+				 &req, sizeof(req), true);
 }
 
 int mt7615_mcu_set_fcc5_lpn(struct mt7615_dev *dev, int val)
@@ -2069,7 +2072,7 @@ static void mt7615_mcu_set_txpower_sku(struct mt7615_phy *phy, u8 *sku)
 	};
 
 	tx_power = mt76_get_sar_power(mphy, mphy->chandef.chan, tx_power);
-	tx_power -= mt76_tx_power_path_delta(n_chains);
+	tx_power -= mt76_tx_power_nss_delta(n_chains);
 	tx_power = mt76_get_rate_power_limits(mphy, mphy->chandef.chan,
 					      &limits, tx_power);
 	mphy->txpower_cur = tx_power;
@@ -2086,8 +2089,8 @@ static void mt7615_mcu_set_txpower_sku(struct mt7615_phy *phy, u8 *sku)
 		int delta = 0;
 
 		if (i < n_chains - 1)
-			delta = mt76_tx_power_path_delta(n_chains) -
-				mt76_tx_power_path_delta(i + 1);
+			delta = mt76_tx_power_nss_delta(n_chains) -
+				mt76_tx_power_nss_delta(i + 1);
 		sku[MT_SKU_1SS_DELTA + i] = delta;
 	}
 }
@@ -2143,9 +2146,9 @@ int mt7615_mcu_set_chan_info(struct mt7615_phy *phy, int cmd)
 	};
 
 	if (cmd == MCU_EXT_CMD(SET_RX_PATH) ||
-	    phy->mt76->hw->conf.flags & IEEE80211_CONF_MONITOR)
+	    dev->mt76.hw->conf.flags & IEEE80211_CONF_MONITOR)
 		req.switch_reason = CH_SWITCH_NORMAL;
-	else if (phy->mt76->offchannel)
+	else if (phy->mt76->hw->conf.flags & IEEE80211_CONF_OFFCHANNEL)
 		req.switch_reason = CH_SWITCH_SCAN_BYPASS_DPD;
 	else if (!cfg80211_reg_can_beacon(phy->mt76->hw->wiphy, chandef,
 					  NL80211_IFTYPE_AP))

@@ -14,11 +14,10 @@ init_task_work(struct callback_head *twork, task_work_func_t func)
 }
 
 enum task_work_notify_mode {
-	TWA_NONE = 0,
+	TWA_NONE,
 	TWA_RESUME,
 	TWA_SIGNAL,
 	TWA_SIGNAL_NO_IPI,
-	TWA_NMI_CURRENT,
 };
 
 static inline bool task_work_pending(struct task_struct *task)
@@ -31,8 +30,7 @@ int task_work_add(struct task_struct *task, struct callback_head *twork,
 
 struct callback_head *task_work_cancel_match(struct task_struct *task,
 	bool (*match)(struct callback_head *, void *data), void *data);
-struct callback_head *task_work_cancel_func(struct task_struct *, task_work_func_t);
-bool task_work_cancel(struct task_struct *task, struct callback_head *cb);
+struct callback_head *task_work_cancel(struct task_struct *, task_work_func_t);
 void task_work_run(void);
 
 static inline void exit_task_work(struct task_struct *task)

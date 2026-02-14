@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
@@ -41,25 +40,24 @@ static void verify_dma_pinned(unsigned int cmd, struct page **pages,
 			      unsigned long nr_pages)
 {
 	unsigned long i;
-	struct folio *folio;
+	struct page *page;
 
 	switch (cmd) {
 	case PIN_FAST_BENCHMARK:
 	case PIN_BASIC_TEST:
 	case PIN_LONGTERM_BENCHMARK:
 		for (i = 0; i < nr_pages; i++) {
-			folio = page_folio(pages[i]);
-
-			if (WARN(!folio_maybe_dma_pinned(folio),
+			page = pages[i];
+			if (WARN(!page_maybe_dma_pinned(page),
 				 "pages[%lu] is NOT dma-pinned\n", i)) {
 
-				dump_page(&folio->page, "gup_test failure");
+				dump_page(page, "gup_test failure");
 				break;
 			} else if (cmd == PIN_LONGTERM_BENCHMARK &&
-				WARN(!folio_is_longterm_pinnable(folio),
+				WARN(!is_longterm_pinnable_page(page),
 				     "pages[%lu] is NOT pinnable but pinned\n",
 				     i)) {
-				dump_page(&folio->page, "gup_test failure");
+				dump_page(page, "gup_test failure");
 				break;
 			}
 		}
@@ -141,27 +139,29 @@ static int __gup_test_ioctl(unsigned int cmd,
 						 pages + i);
 			break;
 		case GUP_BASIC_TEST:
-			nr = get_user_pages(addr, nr, gup->gup_flags, pages + i);
+			nr = get_user_pages(addr, nr, gup->gup_flags, pages + i,
+					    NULL);
 			break;
 		case PIN_FAST_BENCHMARK:
 			nr = pin_user_pages_fast(addr, nr, gup->gup_flags,
 						 pages + i);
 			break;
 		case PIN_BASIC_TEST:
-			nr = pin_user_pages(addr, nr, gup->gup_flags, pages + i);
+			nr = pin_user_pages(addr, nr, gup->gup_flags, pages + i,
+					    NULL);
 			break;
 		case PIN_LONGTERM_BENCHMARK:
 			nr = pin_user_pages(addr, nr,
 					    gup->gup_flags | FOLL_LONGTERM,
-					    pages + i);
+					    pages + i, NULL);
 			break;
 		case DUMP_USER_PAGES_TEST:
 			if (gup->test_flags & GUP_TEST_FLAG_DUMP_PAGES_USE_PIN)
 				nr = pin_user_pages(addr, nr, gup->gup_flags,
-						    pages + i);
+						    pages + i, NULL);
 			else
 				nr = get_user_pages(addr, nr, gup->gup_flags,
-						    pages + i);
+						    pages + i, NULL);
 			break;
 		default:
 			ret = -EINVAL;
@@ -271,7 +271,7 @@ static inline int pin_longterm_test_start(unsigned long arg)
 							gup_flags, pages);
 		else
 			cur_pages = pin_user_pages(addr, remaining_pages,
-						   gup_flags, pages);
+						   gup_flags, pages, NULL);
 		if (cur_pages < 0) {
 			pin_longterm_test_stop();
 			ret = cur_pages;
@@ -381,7 +381,6 @@ static int gup_test_release(struct inode *inode, struct file *file)
 static const struct file_operations gup_test_fops = {
 	.open = nonseekable_open,
 	.unlocked_ioctl = gup_test_ioctl,
-	.compat_ioctl = compat_ptr_ioctl,
 	.release = gup_test_release,
 };
 

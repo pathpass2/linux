@@ -173,7 +173,7 @@ static void mlxsw_sp_rx_no_mark_listener(struct sk_buff *skb, u16 local_port,
 	if (err)
 		return;
 
-	napi_gro_receive(mlxsw_skb_cb(skb)->rx_md_info.napi, skb);
+	netif_receive_skb(skb);
 }
 
 static void mlxsw_sp_rx_mark_listener(struct sk_buff *skb, u16 local_port,
@@ -959,18 +959,18 @@ static const struct mlxsw_sp_trap_item mlxsw_sp_trap_items_arr[] = {
 	},
 	{
 		.trap = MLXSW_SP_TRAP_CONTROL(ARP_REQUEST, NEIGH_DISCOVERY,
-					      TRAP),
+					      MIRROR),
 		.listeners_arr = {
-			MLXSW_SP_RXL_NO_MARK(ARPBC, NEIGH_DISCOVERY,
-					     TRAP_TO_CPU, false),
+			MLXSW_SP_RXL_MARK(ROUTER_ARPBC, NEIGH_DISCOVERY,
+					  TRAP_TO_CPU, false),
 		},
 	},
 	{
 		.trap = MLXSW_SP_TRAP_CONTROL(ARP_RESPONSE, NEIGH_DISCOVERY,
-					      TRAP),
+					      MIRROR),
 		.listeners_arr = {
-			MLXSW_SP_RXL_NO_MARK(ARPUC, NEIGH_DISCOVERY,
-					     TRAP_TO_CPU, false),
+			MLXSW_SP_RXL_MARK(ROUTER_ARPUC, NEIGH_DISCOVERY,
+					  TRAP_TO_CPU, false),
 		},
 	},
 	{

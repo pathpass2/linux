@@ -8,6 +8,7 @@
 #include <linux/kernel.h>
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -95,9 +96,10 @@ static int mtk_adsp_ipc_probe(struct platform_device *pdev)
 		adsp_chan->idx = i;
 		adsp_chan->ch = mbox_request_channel_byname(cl, adsp_mbox_ch_names[i]);
 		if (IS_ERR(adsp_chan->ch)) {
-			ret = dev_err_probe(dev, PTR_ERR(adsp_chan->ch),
-					    "Failed to request mbox channel %s\n",
-					    adsp_mbox_ch_names[i]);
+			ret = PTR_ERR(adsp_chan->ch);
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Failed to request mbox chan %s ret %d\n",
+					adsp_mbox_ch_names[i], ret);
 
 			for (j = 0; j < i; j++) {
 				adsp_chan = &adsp_ipc->chans[j];
@@ -115,7 +117,7 @@ static int mtk_adsp_ipc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void mtk_adsp_ipc_remove(struct platform_device *pdev)
+static int mtk_adsp_ipc_remove(struct platform_device *pdev)
 {
 	struct mtk_adsp_ipc *adsp_ipc = dev_get_drvdata(&pdev->dev);
 	struct mtk_adsp_chan *adsp_chan;
@@ -125,6 +127,8 @@ static void mtk_adsp_ipc_remove(struct platform_device *pdev)
 		adsp_chan = &adsp_ipc->chans[i];
 		mbox_free_channel(adsp_chan->ch);
 	}
+
+	return 0;
 }
 
 static struct platform_driver mtk_adsp_ipc_driver = {

@@ -124,8 +124,11 @@ __snd_util_memblk_new(struct snd_util_memhdr *hdr, unsigned int units,
 struct snd_util_memblk *
 snd_util_mem_alloc(struct snd_util_memhdr *hdr, int size)
 {
-	guard(mutex)(&hdr->block_mutex);
-	return __snd_util_mem_alloc(hdr, size);
+	struct snd_util_memblk *blk;
+	mutex_lock(&hdr->block_mutex);
+	blk = __snd_util_mem_alloc(hdr, size);
+	mutex_unlock(&hdr->block_mutex);
+	return blk;
 }
 
 
@@ -150,8 +153,9 @@ int snd_util_mem_free(struct snd_util_memhdr *hdr, struct snd_util_memblk *blk)
 	if (snd_BUG_ON(!hdr || !blk))
 		return -EINVAL;
 
-	guard(mutex)(&hdr->block_mutex);
+	mutex_lock(&hdr->block_mutex);
 	__snd_util_mem_free(hdr, blk);
+	mutex_unlock(&hdr->block_mutex);
 	return 0;
 }
 
@@ -160,8 +164,11 @@ int snd_util_mem_free(struct snd_util_memhdr *hdr, struct snd_util_memblk *blk)
  */
 int snd_util_mem_avail(struct snd_util_memhdr *hdr)
 {
-	guard(mutex)(&hdr->block_mutex);
-	return hdr->size - hdr->used;
+	unsigned int size;
+	mutex_lock(&hdr->block_mutex);
+	size = hdr->size - hdr->used;
+	mutex_unlock(&hdr->block_mutex);
+	return size;
 }
 
 

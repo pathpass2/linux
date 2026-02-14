@@ -294,8 +294,7 @@ static void mxic_spi_hw_init(struct mxic_spi *mxic)
 	       mxic->regs + HC_CFG);
 }
 
-static u32 mxic_spi_prep_hc_cfg(struct spi_device *spi, u32 flags,
-				bool swap16)
+static u32 mxic_spi_prep_hc_cfg(struct spi_device *spi, u32 flags)
 {
 	int nio = 1;
 
@@ -306,14 +305,9 @@ static u32 mxic_spi_prep_hc_cfg(struct spi_device *spi, u32 flags,
 	else if (spi->mode & (SPI_TX_DUAL | SPI_RX_DUAL))
 		nio = 2;
 
-	if (swap16)
-		flags &= ~HC_CFG_DATA_PASS;
-	else
-		flags |= HC_CFG_DATA_PASS;
-
 	return flags | HC_CFG_NIO(nio) |
-	       HC_CFG_TYPE(spi_get_chipselect(spi, 0), HC_CFG_TYPE_SPI_NOR) |
-	       HC_CFG_SLV_ACT(spi_get_chipselect(spi, 0)) | HC_CFG_IDLE_SIO_LVL(1);
+	       HC_CFG_TYPE(spi->chip_select, HC_CFG_TYPE_SPI_NOR) |
+	       HC_CFG_SLV_ACT(spi->chip_select) | HC_CFG_IDLE_SIO_LVL(1);
 }
 
 static u32 mxic_spi_mem_prep_op_cfg(const struct spi_mem_op *op,
@@ -396,15 +390,14 @@ static int mxic_spi_data_xfer(struct mxic_spi *mxic, const void *txbuf,
 static ssize_t mxic_spi_mem_dirmap_read(struct spi_mem_dirmap_desc *desc,
 					u64 offs, size_t len, void *buf)
 {
-	struct mxic_spi *mxic = spi_controller_get_devdata(desc->mem->spi->controller);
+	struct mxic_spi *mxic = spi_master_get_devdata(desc->mem->spi->master);
 	int ret;
 	u32 sts;
 
 	if (WARN_ON(offs + desc->info.offset + len > U32_MAX))
 		return -EINVAL;
 
-	writel(mxic_spi_prep_hc_cfg(desc->mem->spi, 0, desc->info.op_tmpl.data.swap16),
-	       mxic->regs + HC_CFG);
+	writel(mxic_spi_prep_hc_cfg(desc->mem->spi, 0), mxic->regs + HC_CFG);
 
 	writel(mxic_spi_mem_prep_op_cfg(&desc->info.op_tmpl, len),
 	       mxic->regs + LRD_CFG);
@@ -412,7 +405,7 @@ static ssize_t mxic_spi_mem_dirmap_read(struct spi_mem_dirmap_desc *desc,
 	len = min_t(size_t, len, mxic->linear.size);
 	writel(len, mxic->regs + LRD_RANGE);
 	writel(LMODE_CMD0(desc->info.op_tmpl.cmd.opcode) |
-	       LMODE_SLV_ACT(spi_get_chipselect(desc->mem->spi, 0)) |
+	       LMODE_SLV_ACT(desc->mem->spi->chip_select) |
 	       LMODE_EN,
 	       mxic->regs + LRD_CTRL);
 
@@ -441,15 +434,14 @@ static ssize_t mxic_spi_mem_dirmap_write(struct spi_mem_dirmap_desc *desc,
 					 u64 offs, size_t len,
 					 const void *buf)
 {
-	struct mxic_spi *mxic = spi_controller_get_devdata(desc->mem->spi->controller);
+	struct mxic_spi *mxic = spi_master_get_devdata(desc->mem->spi->master);
 	u32 sts;
 	int ret;
 
 	if (WARN_ON(offs + desc->info.offset + len > U32_MAX))
 		return -EINVAL;
 
-	writel(mxic_spi_prep_hc_cfg(desc->mem->spi, 0, desc->info.op_tmpl.data.swap16),
-	       mxic->regs + HC_CFG);
+	writel(mxic_spi_prep_hc_cfg(desc->mem->spi, 0), mxic->regs + HC_CFG);
 
 	writel(mxic_spi_mem_prep_op_cfg(&desc->info.op_tmpl, len),
 	       mxic->regs + LWR_CFG);
@@ -457,7 +449,7 @@ static ssize_t mxic_spi_mem_dirmap_write(struct spi_mem_dirmap_desc *desc,
 	len = min_t(size_t, len, mxic->linear.size);
 	writel(len, mxic->regs + LWR_RANGE);
 	writel(LMODE_CMD0(desc->info.op_tmpl.cmd.opcode) |
-	       LMODE_SLV_ACT(spi_get_chipselect(desc->mem->spi, 0)) |
+	       LMODE_SLV_ACT(desc->mem->spi->chip_select) |
 	       LMODE_EN,
 	       mxic->regs + LWR_CTRL);
 
@@ -501,10 +493,10 @@ static bool mxic_spi_mem_supports_op(struct spi_mem *mem,
 
 static int mxic_spi_mem_dirmap_create(struct spi_mem_dirmap_desc *desc)
 {
-	struct mxic_spi *mxic = spi_controller_get_devdata(desc->mem->spi->controller);
+	struct mxic_spi *mxic = spi_master_get_devdata(desc->mem->spi->master);
 
 	if (!mxic->linear.map)
-		return -EOPNOTSUPP;
+		return -EINVAL;
 
 	if (desc->info.offset + desc->info.length > U32_MAX)
 		return -EINVAL;
@@ -518,21 +510,21 @@ static int mxic_spi_mem_dirmap_create(struct spi_mem_dirmap_desc *desc)
 static int mxic_spi_mem_exec_op(struct spi_mem *mem,
 				const struct spi_mem_op *op)
 {
-	struct mxic_spi *mxic = spi_controller_get_devdata(mem->spi->controller);
+	struct mxic_spi *mxic = spi_master_get_devdata(mem->spi->master);
 	int i, ret;
 	u8 addr[8], cmd[2];
 
-	ret = mxic_spi_set_freq(mxic, op->max_freq);
+	ret = mxic_spi_set_freq(mxic, mem->spi->max_speed_hz);
 	if (ret)
 		return ret;
 
-	writel(mxic_spi_prep_hc_cfg(mem->spi, HC_CFG_MAN_CS_EN, op->data.swap16),
+	writel(mxic_spi_prep_hc_cfg(mem->spi, HC_CFG_MAN_CS_EN),
 	       mxic->regs + HC_CFG);
 
 	writel(HC_EN_BIT, mxic->regs + HC_EN);
 
 	writel(mxic_spi_mem_prep_op_cfg(op, op->data.nbytes),
-	       mxic->regs + SS_CTRL(spi_get_chipselect(mem->spi, 0)));
+	       mxic->regs + SS_CTRL(mem->spi->chip_select));
 
 	writel(readl(mxic->regs + HC_CFG) | HC_CFG_MAN_CS_ASSERT,
 	       mxic->regs + HC_CFG);
@@ -581,13 +573,11 @@ static const struct spi_controller_mem_ops mxic_spi_mem_ops = {
 static const struct spi_controller_mem_caps mxic_spi_mem_caps = {
 	.dtr = true,
 	.ecc = true,
-	.swap16 = true,
-	.per_op_freq = true,
 };
 
 static void mxic_spi_set_cs(struct spi_device *spi, bool lvl)
 {
-	struct mxic_spi *mxic = spi_controller_get_devdata(spi->controller);
+	struct mxic_spi *mxic = spi_master_get_devdata(spi->master);
 
 	if (!lvl) {
 		writel(readl(mxic->regs + HC_CFG) | HC_CFG_MAN_CS_EN,
@@ -602,11 +592,11 @@ static void mxic_spi_set_cs(struct spi_device *spi, bool lvl)
 	}
 }
 
-static int mxic_spi_transfer_one(struct spi_controller *host,
+static int mxic_spi_transfer_one(struct spi_master *master,
 				 struct spi_device *spi,
 				 struct spi_transfer *t)
 {
-	struct mxic_spi *mxic = spi_controller_get_devdata(host);
+	struct mxic_spi *mxic = spi_master_get_devdata(master);
 	unsigned int busw = OP_BUSW_1;
 	int ret;
 
@@ -642,7 +632,7 @@ static int mxic_spi_transfer_one(struct spi_controller *host,
 	if (ret)
 		return ret;
 
-	spi_finalize_current_transfer(host);
+	spi_finalize_current_transfer(master);
 
 	return 0;
 }
@@ -650,7 +640,7 @@ static int mxic_spi_transfer_one(struct spi_controller *host,
 /* ECC wrapper */
 static int mxic_spi_mem_ecc_init_ctx(struct nand_device *nand)
 {
-	const struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
+	struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
 	struct mxic_spi *mxic = nand->ecc.engine->priv;
 
 	mxic->ecc.use_pipelined_conf = true;
@@ -660,7 +650,7 @@ static int mxic_spi_mem_ecc_init_ctx(struct nand_device *nand)
 
 static void mxic_spi_mem_ecc_cleanup_ctx(struct nand_device *nand)
 {
-	const struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
+	struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
 	struct mxic_spi *mxic = nand->ecc.engine->priv;
 
 	mxic->ecc.use_pipelined_conf = false;
@@ -671,7 +661,7 @@ static void mxic_spi_mem_ecc_cleanup_ctx(struct nand_device *nand)
 static int mxic_spi_mem_ecc_prepare_io_req(struct nand_device *nand,
 					   struct nand_page_io_req *req)
 {
-	const struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
+	struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
 
 	return ops->prepare_io_req(nand, req);
 }
@@ -679,12 +669,12 @@ static int mxic_spi_mem_ecc_prepare_io_req(struct nand_device *nand,
 static int mxic_spi_mem_ecc_finish_io_req(struct nand_device *nand,
 					  struct nand_page_io_req *req)
 {
-	const struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
+	struct nand_ecc_engine_ops *ops = mxic_ecc_get_pipelined_ops();
 
 	return ops->finish_io_req(nand, req);
 }
 
-static const struct nand_ecc_engine_ops mxic_spi_mem_ecc_engine_pipelined_ops = {
+static struct nand_ecc_engine_ops mxic_spi_mem_ecc_engine_pipelined_ops = {
 	.init_ctx = mxic_spi_mem_ecc_init_ctx,
 	.cleanup_ctx = mxic_spi_mem_ecc_cleanup_ctx,
 	.prepare_io_req = mxic_spi_mem_ecc_prepare_io_req,
@@ -723,8 +713,8 @@ static int mxic_spi_mem_ecc_probe(struct platform_device *pdev,
 
 static int __maybe_unused mxic_spi_runtime_suspend(struct device *dev)
 {
-	struct spi_controller *host = dev_get_drvdata(dev);
-	struct mxic_spi *mxic = spi_controller_get_devdata(host);
+	struct spi_master *master = dev_get_drvdata(dev);
+	struct mxic_spi *mxic = spi_master_get_devdata(master);
 
 	mxic_spi_clk_disable(mxic);
 	clk_disable_unprepare(mxic->ps_clk);
@@ -734,8 +724,8 @@ static int __maybe_unused mxic_spi_runtime_suspend(struct device *dev)
 
 static int __maybe_unused mxic_spi_runtime_resume(struct device *dev)
 {
-	struct spi_controller *host = dev_get_drvdata(dev);
-	struct mxic_spi *mxic = spi_controller_get_devdata(host);
+	struct spi_master *master = dev_get_drvdata(dev);
+	struct mxic_spi *mxic = spi_master_get_devdata(master);
 	int ret;
 
 	ret = clk_prepare_enable(mxic->ps_clk);
@@ -754,20 +744,21 @@ static const struct dev_pm_ops mxic_spi_dev_pm_ops = {
 
 static int mxic_spi_probe(struct platform_device *pdev)
 {
-	struct spi_controller *host;
+	struct spi_master *master;
 	struct resource *res;
 	struct mxic_spi *mxic;
 	int ret;
 
-	host = devm_spi_alloc_host(&pdev->dev, sizeof(struct mxic_spi));
-	if (!host)
+	master = devm_spi_alloc_master(&pdev->dev, sizeof(struct mxic_spi));
+	if (!master)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, host);
+	platform_set_drvdata(pdev, master);
 
-	mxic = spi_controller_get_devdata(host);
+	mxic = spi_master_get_devdata(master);
 	mxic->dev = &pdev->dev;
 
+	master->dev.of_node = pdev->dev.of_node;
 
 	mxic->ps_clk = devm_clk_get(&pdev->dev, "ps_clk");
 	if (IS_ERR(mxic->ps_clk))
@@ -795,19 +786,19 @@ static int mxic_spi_probe(struct platform_device *pdev)
 	}
 
 	pm_runtime_enable(&pdev->dev);
-	host->auto_runtime_pm = true;
+	master->auto_runtime_pm = true;
 
-	host->num_chipselect = 1;
-	host->mem_ops = &mxic_spi_mem_ops;
-	host->mem_caps = &mxic_spi_mem_caps;
+	master->num_chipselect = 1;
+	master->mem_ops = &mxic_spi_mem_ops;
+	master->mem_caps = &mxic_spi_mem_caps;
 
-	host->set_cs = mxic_spi_set_cs;
-	host->transfer_one = mxic_spi_transfer_one;
-	host->bits_per_word_mask = SPI_BPW_MASK(8);
-	host->mode_bits = SPI_CPOL | SPI_CPHA |
-			  SPI_RX_DUAL | SPI_TX_DUAL |
-			  SPI_RX_QUAD | SPI_TX_QUAD |
-			  SPI_RX_OCTAL | SPI_TX_OCTAL;
+	master->set_cs = mxic_spi_set_cs;
+	master->transfer_one = mxic_spi_transfer_one;
+	master->bits_per_word_mask = SPI_BPW_MASK(8);
+	master->mode_bits = SPI_CPOL | SPI_CPHA |
+			SPI_RX_DUAL | SPI_TX_DUAL |
+			SPI_RX_QUAD | SPI_TX_QUAD |
+			SPI_RX_OCTAL | SPI_TX_OCTAL;
 
 	mxic_spi_hw_init(mxic);
 
@@ -817,9 +808,9 @@ static int mxic_spi_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ret = spi_register_controller(host);
+	ret = spi_register_master(master);
 	if (ret) {
-		dev_err(&pdev->dev, "spi_register_controller failed\n");
+		dev_err(&pdev->dev, "spi_register_master failed\n");
 		pm_runtime_disable(&pdev->dev);
 		mxic_spi_mem_ecc_remove(mxic);
 	}
@@ -827,14 +818,16 @@ static int mxic_spi_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void mxic_spi_remove(struct platform_device *pdev)
+static int mxic_spi_remove(struct platform_device *pdev)
 {
-	struct spi_controller *host = platform_get_drvdata(pdev);
-	struct mxic_spi *mxic = spi_controller_get_devdata(host);
+	struct spi_master *master = platform_get_drvdata(pdev);
+	struct mxic_spi *mxic = spi_master_get_devdata(master);
 
 	pm_runtime_disable(&pdev->dev);
 	mxic_spi_mem_ecc_remove(mxic);
-	spi_unregister_controller(host);
+	spi_unregister_master(master);
+
+	return 0;
 }
 
 static const struct of_device_id mxic_spi_of_ids[] = {

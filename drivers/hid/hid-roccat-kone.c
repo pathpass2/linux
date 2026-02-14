@@ -89,6 +89,9 @@ static int kone_send(struct usb_device *usb_dev, uint usb_command,
 	return ((len < 0) ? len : ((len != size) ? -EIO : 0));
 }
 
+/* kone_class is used for creating sysfs attributes via roccat char device */
+static struct class *kone_class;
+
 static void kone_set_settings_checksum(struct kone_settings *settings)
 {
 	uint16_t checksum = 0;
@@ -261,7 +264,7 @@ static int kone_get_firmware_version(struct usb_device *usb_dev, int *result)
 }
 
 static ssize_t kone_sysfs_read_settings(struct file *fp, struct kobject *kobj,
-		const struct bin_attribute *attr, char *buf,
+		struct bin_attribute *attr, char *buf,
 		loff_t off, size_t count) {
 	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct kone_device *kone = hid_get_drvdata(dev_get_drvdata(dev));
@@ -285,7 +288,7 @@ static ssize_t kone_sysfs_read_settings(struct file *fp, struct kobject *kobj,
  * case of error the old data is still valid
  */
 static ssize_t kone_sysfs_write_settings(struct file *fp, struct kobject *kobj,
-		const struct bin_attribute *attr, char *buf,
+		struct bin_attribute *attr, char *buf,
 		loff_t off, size_t count) {
 	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct kone_device *kone = hid_get_drvdata(dev_get_drvdata(dev));
@@ -327,11 +330,11 @@ unlock:
 
 	return sizeof(struct kone_settings);
 }
-static const BIN_ATTR(settings, 0660, kone_sysfs_read_settings,
-		      kone_sysfs_write_settings, sizeof(struct kone_settings));
+static BIN_ATTR(settings, 0660, kone_sysfs_read_settings,
+		kone_sysfs_write_settings, sizeof(struct kone_settings));
 
 static ssize_t kone_sysfs_read_profilex(struct file *fp,
-		struct kobject *kobj, const struct bin_attribute *attr,
+		struct kobject *kobj, struct bin_attribute *attr,
 		char *buf, loff_t off, size_t count) {
 	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct kone_device *kone = hid_get_drvdata(dev_get_drvdata(dev));
@@ -351,7 +354,7 @@ static ssize_t kone_sysfs_read_profilex(struct file *fp,
 
 /* Writes data only if different to stored data */
 static ssize_t kone_sysfs_write_profilex(struct file *fp,
-		struct kobject *kobj, const struct bin_attribute *attr,
+		struct kobject *kobj, struct bin_attribute *attr,
 		char *buf, loff_t off, size_t count) {
 	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct kone_device *kone = hid_get_drvdata(dev_get_drvdata(dev));
@@ -382,7 +385,7 @@ static ssize_t kone_sysfs_write_profilex(struct file *fp,
 	return sizeof(struct kone_profile);
 }
 #define PROFILE_ATTR(number)					\
-static const struct bin_attribute bin_attr_profile##number = {	\
+static struct bin_attribute bin_attr_profile##number = {	\
 	.attr = { .name = "profile" #number, .mode = 0660 },	\
 	.size = sizeof(struct kone_profile),			\
 	.read = kone_sysfs_read_profilex,			\
@@ -400,7 +403,7 @@ static ssize_t kone_sysfs_show_actual_profile(struct device *dev,
 {
 	struct kone_device *kone =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kone->actual_profile);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kone->actual_profile);
 }
 static DEVICE_ATTR(actual_profile, 0440, kone_sysfs_show_actual_profile, NULL);
 
@@ -409,7 +412,7 @@ static ssize_t kone_sysfs_show_actual_dpi(struct device *dev,
 {
 	struct kone_device *kone =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kone->actual_dpi);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kone->actual_dpi);
 }
 static DEVICE_ATTR(actual_dpi, 0440, kone_sysfs_show_actual_dpi, NULL);
 
@@ -432,7 +435,7 @@ static ssize_t kone_sysfs_show_weight(struct device *dev,
 
 	if (retval)
 		return retval;
-	return sysfs_emit(buf, "%d\n", weight);
+	return snprintf(buf, PAGE_SIZE, "%d\n", weight);
 }
 static DEVICE_ATTR(weight, 0440, kone_sysfs_show_weight, NULL);
 
@@ -441,7 +444,7 @@ static ssize_t kone_sysfs_show_firmware_version(struct device *dev,
 {
 	struct kone_device *kone =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kone->firmware_version);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kone->firmware_version);
 }
 static DEVICE_ATTR(firmware_version, 0440, kone_sysfs_show_firmware_version,
 		   NULL);
@@ -451,7 +454,7 @@ static ssize_t kone_sysfs_show_tcu(struct device *dev,
 {
 	struct kone_device *kone =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kone->settings.tcu);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kone->settings.tcu);
 }
 
 static int kone_tcu_command(struct usb_device *usb_dev, int number)
@@ -553,7 +556,7 @@ static ssize_t kone_sysfs_show_startup_profile(struct device *dev,
 {
 	struct kone_device *kone =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kone->settings.startup_profile);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kone->settings.startup_profile);
 }
 
 static ssize_t kone_sysfs_set_startup_profile(struct device *dev,
@@ -634,7 +637,7 @@ static struct attribute *kone_attrs[] = {
 	NULL,
 };
 
-static const struct bin_attribute *const kone_bin_attributes[] = {
+static struct bin_attribute *kone_bin_attributes[] = {
 	&bin_attr_settings,
 	&bin_attr_profile1,
 	&bin_attr_profile2,
@@ -652,12 +655,6 @@ static const struct attribute_group kone_group = {
 static const struct attribute_group *kone_groups[] = {
 	&kone_group,
 	NULL,
-};
-
-/* kone_class is used for creating sysfs attributes via roccat char device */
-static const struct class kone_class = {
-	.name = "kone",
-	.dev_groups = kone_groups,
 };
 
 static int kone_init_kone_device_struct(struct usb_device *usb_dev,
@@ -715,8 +712,8 @@ static int kone_init_specials(struct hid_device *hdev)
 			goto exit_free;
 		}
 
-		retval = roccat_connect(&kone_class, hdev,
-					sizeof(struct kone_roccat_report));
+		retval = roccat_connect(kone_class, hdev,
+				sizeof(struct kone_roccat_report));
 		if (retval < 0) {
 			hid_err(hdev, "couldn't init char dev\n");
 			/* be tolerant about not getting chrdev */
@@ -893,20 +890,21 @@ static int __init kone_init(void)
 	int retval;
 
 	/* class name has to be same as driver name */
-	retval = class_register(&kone_class);
-	if (retval)
-		return retval;
+	kone_class = class_create(THIS_MODULE, "kone");
+	if (IS_ERR(kone_class))
+		return PTR_ERR(kone_class);
+	kone_class->dev_groups = kone_groups;
 
 	retval = hid_register_driver(&kone_driver);
 	if (retval)
-		class_unregister(&kone_class);
+		class_destroy(kone_class);
 	return retval;
 }
 
 static void __exit kone_exit(void)
 {
 	hid_unregister_driver(&kone_driver);
-	class_unregister(&kone_class);
+	class_destroy(kone_class);
 }
 
 module_init(kone_init);

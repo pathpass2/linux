@@ -18,11 +18,6 @@
 #define REALVIEW_SYS_FLAGSSET_OFFSET	0x30
 
 static const struct of_device_id realview_scu_match[] = {
-	/*
-	 * The ARM11MP SCU compatible is only provided as fallback for
-	 * old RealView EB Cortex-A9 device trees that were using this
-	 * compatible by mistake.
-	 */
 	{ .compatible = "arm,arm11mp-scu", },
 	{ .compatible = "arm,cortex-a9-scu", },
 	{ .compatible = "arm,cortex-a5-scu", },
@@ -32,6 +27,7 @@ static const struct of_device_id realview_scu_match[] = {
 static const struct of_device_id realview_syscon_match[] = {
         { .compatible = "arm,core-module-integrator", },
         { .compatible = "arm,realview-eb-syscon", },
+        { .compatible = "arm,realview-pb11mp-syscon", },
         { .compatible = "arm,realview-pbx-syscon", },
         { },
 };
@@ -70,7 +66,6 @@ static void __init realview_smp_prepare_cpus(unsigned int max_cpus)
 		return;
 	}
 	map = syscon_node_to_regmap(np);
-	of_node_put(np);
 	if (IS_ERR(map)) {
 		pr_err("PLATSMP: No syscon regmap\n");
 		return;

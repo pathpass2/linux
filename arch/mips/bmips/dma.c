@@ -9,7 +9,7 @@ bool bmips_rac_flush_disable;
 
 void arch_sync_dma_for_cpu_all(void)
 {
-	void __iomem *cbr = bmips_cbr_addr;
+	void __iomem *cbr = BMIPS_GET_CBR();
 	u32 cfg;
 
 	if (boot_cpu_type() != CPU_BMIPS3300 &&

@@ -31,7 +31,6 @@ properties:
       - const: nvidia,tegra210-mvc
       - items:
           - enum:
-              - nvidia,tegra264-mvc
               - nvidia,tegra234-mvc
               - nvidia,tegra194-mvc
               - nvidia,tegra186-mvc

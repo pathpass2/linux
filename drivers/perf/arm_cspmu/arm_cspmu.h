@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0
  *
  * ARM CoreSight Architecture PMU driver.
- * Copyright (c) 2022-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  *
  */
 
 #ifndef __ARM_CSPMU_H__
 #define __ARM_CSPMU_H__
 
+#include <linux/acpi.h>
 #include <linux/bitfield.h>
 #include <linux/cpumask.h>
 #include <linux/device.h>
@@ -28,7 +29,7 @@
 	})[0].attr.attr)
 
 #define ARM_CSPMU_FORMAT_ATTR(_name, _config)				\
-	ARM_CSPMU_EXT_ATTR(_name, device_show_string, _config)
+	ARM_CSPMU_EXT_ATTR(_name, arm_cspmu_sysfs_format_show, (char *)_config)
 
 #define ARM_CSPMU_EVENT_ATTR(_name, _config)				\
 	PMU_EVENT_ATTR_ID(_name, arm_cspmu_sysfs_event_show, _config)
@@ -47,8 +48,6 @@
 /* Default filter format */
 #define ARM_CSPMU_FORMAT_FILTER_ATTR	\
 	ARM_CSPMU_FORMAT_ATTR(filter, "config1:0-31")
-#define ARM_CSPMU_FORMAT_FILTER2_ATTR	\
-	ARM_CSPMU_FORMAT_ATTR(filter2, "config2:0-31")
 
 /*
  * This is the default event number for cycle count, if supported, since the
@@ -67,91 +66,9 @@
 /* The cycle counter, if implemented, is located at counter[31]. */
 #define ARM_CSPMU_CYCLE_CNTR_IDX	31
 
-/*
- * CoreSight PMU Arch register offsets.
- */
-#define PMEVCNTR_LO			0x0
-#define PMEVCNTR_HI			0x4
-#define PMEVTYPER			0x400
-#define PMCCFILTR			0x47C
-#define PMEVFILT2R			0x800
-#define PMEVFILTR			0xA00
-#define PMCNTENSET			0xC00
-#define PMCNTENCLR			0xC20
-#define PMINTENSET			0xC40
-#define PMINTENCLR			0xC60
-#define PMOVSCLR			0xC80
-#define PMOVSSET			0xCC0
-#define PMIMPDEF			0xD80
-#define PMCFGR				0xE00
-#define PMCR				0xE04
-#define PMIIDR				0xE08
-#define PMPIDR0				0xFE0
-#define PMPIDR1				0xFE4
-#define PMPIDR2				0xFE8
-#define PMPIDR3				0xFEC
-#define PMPIDR4				0xFD0
-
-/* PMCFGR register field */
-#define PMCFGR_NCG			GENMASK(31, 28)
-#define PMCFGR_HDBG			BIT(24)
-#define PMCFGR_TRO			BIT(23)
-#define PMCFGR_SS			BIT(22)
-#define PMCFGR_FZO			BIT(21)
-#define PMCFGR_MSI			BIT(20)
-#define PMCFGR_UEN			BIT(19)
-#define PMCFGR_NA			BIT(17)
-#define PMCFGR_EX			BIT(16)
-#define PMCFGR_CCD			BIT(15)
-#define PMCFGR_CC			BIT(14)
-#define PMCFGR_SIZE			GENMASK(13, 8)
-#define PMCFGR_N			GENMASK(7, 0)
-
-/* PMCR register field */
-#define PMCR_TRO			BIT(11)
-#define PMCR_HDBG			BIT(10)
-#define PMCR_FZO			BIT(9)
-#define PMCR_NA				BIT(8)
-#define PMCR_DP				BIT(5)
-#define PMCR_X				BIT(4)
-#define PMCR_D				BIT(3)
-#define PMCR_C				BIT(2)
-#define PMCR_P				BIT(1)
-#define PMCR_E				BIT(0)
-
 /* PMIIDR register field */
-#define PMIIDR_IMPLEMENTER		GENMASK(11, 0)
-#define PMIIDR_IMPLEMENTER_DES_0	GENMASK(3, 0)
-#define PMIIDR_IMPLEMENTER_DES_1	GENMASK(6, 4)
-#define PMIIDR_IMPLEMENTER_DES_2	GENMASK(11, 8)
-#define PMIIDR_REVISION			GENMASK(15, 12)
-#define PMIIDR_VARIANT			GENMASK(19, 16)
-#define PMIIDR_PRODUCTID		GENMASK(31, 20)
-#define PMIIDR_PRODUCTID_PART_0		GENMASK(27, 20)
-#define PMIIDR_PRODUCTID_PART_1		GENMASK(31, 28)
-
-/* PMPIDR0 register field */
-#define PMPIDR0_PART_0			GENMASK(7, 0)
-
-/* PMPIDR1 register field */
-#define PMPIDR1_DES_0			GENMASK(7, 4)
-#define PMPIDR1_PART_1			GENMASK(3, 0)
-
-/* PMPIDR2 register field */
-#define PMPIDR2_REVISION		GENMASK(7, 4)
-#define PMPIDR2_DES_1			GENMASK(2, 0)
-
-/* PMPIDR3 register field */
-#define PMPIDR3_REVAND			GENMASK(7, 4)
-#define PMPIDR3_CMOD			GENMASK(3, 0)
-
-/* PMPIDR4 register field */
-#define PMPIDR4_SIZE			GENMASK(7, 4)
-#define PMPIDR4_DES_2			GENMASK(3, 0)
-
-/* JEDEC-assigned JEP106 identification code */
-#define ARM_CSPMU_IMPL_ID_NVIDIA	0x36B
-#define ARM_CSPMU_IMPL_ID_AMPERE	0xA16
+#define ARM_CSPMU_PMIIDR_IMPLEMENTER	GENMASK(11, 0)
+#define ARM_CSPMU_PMIIDR_PRODUCTID	GENMASK(31, 20)
 
 struct arm_cspmu;
 
@@ -183,38 +100,16 @@ struct arm_cspmu_impl_ops {
 	bool (*is_cycle_counter_event)(const struct perf_event *event);
 	/* Decode event type/id from configs */
 	u32 (*event_type)(const struct perf_event *event);
-	/* Set/reset event filters */
-	void (*set_cc_filter)(struct arm_cspmu *cspmu,
-			      const struct perf_event *event);
-	void (*set_ev_filter)(struct arm_cspmu *cspmu,
-			      const struct perf_event *event);
-	void (*reset_ev_filter)(struct arm_cspmu *cspmu,
-				const struct perf_event *event);
-	/* Implementation specific event validation */
-	int (*validate_event)(struct arm_cspmu *cspmu,
-			      struct perf_event *event);
+	/* Decode filter value from configs */
+	u32 (*event_filter)(const struct perf_event *event);
 	/* Hide/show unsupported events */
 	umode_t (*event_attr_is_visible)(struct kobject *kobj,
 					 struct attribute *attr, int unused);
 };
 
-/* Vendor/implementer registration parameter. */
-struct arm_cspmu_impl_match {
-	/* Backend module. */
-	struct module *module;
-	const char *module_name;
-	/* PMIIDR value/mask. */
-	u32 pmiidr_val;
-	u32 pmiidr_mask;
-	/* Callback to vendor backend to init arm_cspmu_impl::ops. */
-	int (*impl_init_ops)(struct arm_cspmu *cspmu);
-};
-
 /* Vendor/implementer descriptor. */
 struct arm_cspmu_impl {
 	u32 pmiidr;
-	struct module *module;
-	struct arm_cspmu_impl_match *match;
 	struct arm_cspmu_impl_ops ops;
 	void *ctx;
 };
@@ -223,23 +118,22 @@ struct arm_cspmu_impl {
 struct arm_cspmu {
 	struct pmu pmu;
 	struct device *dev;
+	struct acpi_apmt_node *apmt_node;
 	const char *name;
 	const char *identifier;
 	void __iomem *base0;
 	void __iomem *base1;
+	int irq;
 	cpumask_t associated_cpus;
 	cpumask_t active_cpu;
 	struct hlist_node cpuhp_node;
-	int irq;
 
-	bool has_atomic_dword;
 	u32 pmcfgr;
 	u32 num_logical_ctrs;
 	u32 num_set_clr_reg;
 	int cycle_counter_logical_idx;
 
 	struct arm_cspmu_hw_events hw_events;
-	const struct attribute_group *attr_groups[5];
 
 	struct arm_cspmu_impl impl;
 };
@@ -249,10 +143,9 @@ ssize_t arm_cspmu_sysfs_event_show(struct device *dev,
 				   struct device_attribute *attr,
 				   char *buf);
 
-/* Register vendor backend. */
-int arm_cspmu_impl_register(const struct arm_cspmu_impl_match *impl_match);
-
-/* Unregister vendor backend. */
-void arm_cspmu_impl_unregister(const struct arm_cspmu_impl_match *impl_match);
+/* Default function to show format attribute in sysfs. */
+ssize_t arm_cspmu_sysfs_format_show(struct device *dev,
+				    struct device_attribute *attr,
+				    char *buf);
 
 #endif /* __ARM_CSPMU_H__ */

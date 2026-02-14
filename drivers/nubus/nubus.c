@@ -32,18 +32,7 @@
 
 /* Globals */
 
-/* The "nubus.populate_procfs" parameter makes slot resources available in
- * procfs. It's deprecated and disabled by default because procfs is no longer
- * thought to be suitable for that and some board ROMs make it too expensive.
- */
-bool nubus_populate_procfs;
-module_param_named(populate_procfs, nubus_populate_procfs, bool, 0);
-
 LIST_HEAD(nubus_func_rsrcs);
-
-static struct device nubus_parent = {
-	.init_name	= "nubus",
-};
 
 /* Meaning of "bytelanes":
 
@@ -583,9 +572,9 @@ nubus_get_functional_resource(struct nubus_board *board, int slot,
 			nubus_proc_add_rsrc(dir.procdir, &ent);
 			break;
 		default:
-			if (nubus_populate_procfs)
-				nubus_get_private_resource(fres, dir.procdir,
-							   &ent);
+			/* Local/Private resources have their own
+			   function */
+			nubus_get_private_resource(fres, dir.procdir, &ent);
 		}
 	}
 
@@ -833,7 +822,7 @@ static void __init nubus_add_board(int slot, int bytelanes)
 		list_add_tail(&fres->list, &nubus_func_rsrcs);
 	}
 
-	if (nubus_device_register(&nubus_parent, board))
+	if (nubus_device_register(board))
 		put_device(&board->dev);
 }
 
@@ -886,11 +875,9 @@ static int __init nubus_init(void)
 		return 0;
 
 	nubus_proc_init();
-	err = device_register(&nubus_parent);
-	if (err) {
-		put_device(&nubus_parent);
+	err = nubus_parent_device_register();
+	if (err)
 		return err;
-	}
 	nubus_scan_bus();
 	return 0;
 }

@@ -16,9 +16,9 @@
 static int sk_diag_dump(struct sock *sk, struct sk_buff *skb,
 			struct netlink_callback *cb,
 			const struct inet_diag_req_v2 *req,
-			bool net_admin)
+			struct nlattr *bc, bool net_admin)
 {
-	if (!inet_diag_bc_sk(cb->data, sk))
+	if (!inet_diag_bc_sk(bc, sk))
 		return 0;
 
 	return inet_sk_diag_fill(sk, NULL, skb, cb, req, NLM_F_MULTI,
@@ -92,8 +92,12 @@ static void udp_dump(struct udp_table *table, struct sk_buff *skb,
 {
 	bool net_admin = netlink_net_capable(cb->skb, CAP_NET_ADMIN);
 	struct net *net = sock_net(skb->sk);
+	struct inet_diag_dump_data *cb_data;
 	int num, s_num, slot, s_slot;
+	struct nlattr *bc;
 
+	cb_data = cb->data;
+	bc = cb_data->inet_diag_nla_bc;
 	s_slot = cb->args[0];
 	num = s_num = cb->args[1];
 
@@ -126,7 +130,7 @@ static void udp_dump(struct udp_table *table, struct sk_buff *skb,
 			    r->id.idiag_dport)
 				goto next;
 
-			if (sk_diag_dump(sk, skb, cb, r, net_admin) < 0) {
+			if (sk_diag_dump(sk, skb, cb, r, bc, net_admin) < 0) {
 				spin_unlock_bh(&hslot->lock);
 				goto done;
 			}
@@ -233,7 +237,6 @@ static int udplite_diag_destroy(struct sk_buff *in_skb,
 #endif
 
 static const struct inet_diag_handler udp_diag_handler = {
-	.owner		 = THIS_MODULE,
 	.dump		 = udp_diag_dump,
 	.dump_one	 = udp_diag_dump_one,
 	.idiag_get_info  = udp_diag_get_info,
@@ -257,7 +260,6 @@ static int udplite_diag_dump_one(struct netlink_callback *cb,
 }
 
 static const struct inet_diag_handler udplite_diag_handler = {
-	.owner		 = THIS_MODULE,
 	.dump		 = udplite_diag_dump,
 	.dump_one	 = udplite_diag_dump_one,
 	.idiag_get_info  = udp_diag_get_info,
@@ -294,6 +296,5 @@ static void __exit udp_diag_exit(void)
 module_init(udp_diag_init);
 module_exit(udp_diag_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("UDP socket monitoring via SOCK_DIAG");
 MODULE_ALIAS_NET_PF_PROTO_TYPE(PF_NETLINK, NETLINK_SOCK_DIAG, 2-17 /* AF_INET - IPPROTO_UDP */);
 MODULE_ALIAS_NET_PF_PROTO_TYPE(PF_NETLINK, NETLINK_SOCK_DIAG, 2-136 /* AF_INET - IPPROTO_UDPLITE */);

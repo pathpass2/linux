@@ -334,5 +334,4 @@ static void __exit exit_nls_cp852(void)
 module_init(init_nls_cp852)
 module_exit(exit_nls_cp852)
 
-MODULE_DESCRIPTION("NLS Codepage 852 (Central/Eastern Europe)");
 MODULE_LICENSE("Dual BSD/GPL");

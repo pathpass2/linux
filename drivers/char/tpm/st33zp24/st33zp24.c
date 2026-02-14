@@ -300,7 +300,7 @@ static irqreturn_t tpm_ioserirq_handler(int irq, void *dev_id)
  * send TPM commands through the I2C bus.
  */
 static int st33zp24_send(struct tpm_chip *chip, unsigned char *buf,
-			 size_t bufsiz, size_t len)
+			 size_t len)
 {
 	struct st33zp24_dev *tpm_dev = dev_get_drvdata(&chip->dev);
 	u32 status, i, size, ordinal;
@@ -328,10 +328,8 @@ static int st33zp24_send(struct tpm_chip *chip, unsigned char *buf,
 
 	for (i = 0; i < len - 1;) {
 		burstcnt = get_burstcount(chip);
-		if (burstcnt < 0) {
-			ret = burstcnt;
-			goto out_err;
-		}
+		if (burstcnt < 0)
+			return burstcnt;
 		size = min_t(int, len - i - 1, burstcnt);
 		ret = tpm_dev->ops->send(tpm_dev->phy_id, TPM_DATA_FIFO,
 					 buf + i, size);
@@ -584,7 +582,7 @@ int st33zp24_pm_resume(struct device *dev)
 EXPORT_SYMBOL(st33zp24_pm_resume);
 #endif
 
-MODULE_AUTHOR("TPM support <TPMsupport@list.st.com>");
+MODULE_AUTHOR("TPM support (TPMsupport@list.st.com)");
 MODULE_DESCRIPTION("ST33ZP24 TPM 1.2 driver");
 MODULE_VERSION("1.3.0");
 MODULE_LICENSE("GPL");

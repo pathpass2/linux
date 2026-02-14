@@ -25,25 +25,29 @@ properties:
           - const: sercomm,sc-partitions
           - const: fixed-partitions
 
-  "#address-cells":
-    enum: [ 1, 2 ]
+  "#address-cells": true
 
-  "#size-cells":
-    enum: [ 1, 2 ]
+  "#size-cells": true
 
 patternProperties:
   "@[0-9a-f]+$":
-    $ref: partition.yaml#/$defs/partition-node
+    $ref: partition.yaml#
+
+    properties:
+      sercomm,scpart-id:
+        description: Partition id in Sercomm partition map. Mtd parser
+          uses this id to find a record in the partition map containing
+          offset and size of the current partition. The values from
+          partition map overrides partition offset and size defined in
+          reg property of the dts. Frequently these values are the same,
+          but may differ if device has bad eraseblocks on a flash.
+        $ref: /schemas/types.yaml#/definitions/uint32
 
 required:
   - "#address-cells"
   - "#size-cells"
 
-# fixed-partitions can be nested
-allOf:
-  - $ref: partition.yaml#
-
-unevaluatedProperties: false
+additionalProperties: true
 
 examples:
   - |
@@ -60,7 +64,6 @@ examples:
 
         uimage@100000 {
             reg = <0x0100000 0x200000>;
-            compression = "lzma";
         };
     };
 
@@ -119,6 +122,7 @@ examples:
             compatible = "fixed-partitions";
             label = "calibration";
             reg = <0xf00000 0x100000>;
+            ranges = <0 0xf00000 0x100000>;
             #address-cells = <1>;
             #size-cells = <1>;
 

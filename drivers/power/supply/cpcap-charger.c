@@ -14,11 +14,11 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
@@ -516,7 +516,7 @@ static void cpcap_charger_vbus_work(struct work_struct *work)
 out_err:
 	cpcap_charger_update_state(ddata, POWER_SUPPLY_STATUS_UNKNOWN);
 	dev_err(ddata->dev, "%s could not %s vbus: %i\n", __func__,
-		str_enable_disable(ddata->vbus_enabled), error);
+		ddata->vbus_enabled ? "enable" : "disable", error);
 }
 
 static int cpcap_charger_set_vbus(struct phy_companion *comparator,
@@ -689,8 +689,9 @@ static void cpcap_usb_detect(struct work_struct *work)
 		struct power_supply *battery;
 
 		battery = power_supply_get_by_name("battery");
-		if (!battery) {
-			dev_err(ddata->dev, "battery power_supply not available\n");
+		if (IS_ERR_OR_NULL(battery)) {
+			dev_err(ddata->dev, "battery power_supply not available %li\n",
+					PTR_ERR(battery));
 			return;
 		}
 
@@ -864,6 +865,7 @@ static const struct power_supply_desc cpcap_charger_usb_desc = {
 	.property_is_writeable = cpcap_charger_property_is_writeable,
 };
 
+#ifdef CONFIG_OF
 static const struct of_device_id cpcap_charger_id_table[] = {
 	{
 		.compatible = "motorola,mapphone-cpcap-charger",
@@ -871,12 +873,19 @@ static const struct of_device_id cpcap_charger_id_table[] = {
 	{},
 };
 MODULE_DEVICE_TABLE(of, cpcap_charger_id_table);
+#endif
 
 static int cpcap_charger_probe(struct platform_device *pdev)
 {
 	struct cpcap_charger_ddata *ddata;
+	const struct of_device_id *of_id;
 	struct power_supply_config psy_cfg = {};
 	int error;
+
+	of_id = of_match_device(of_match_ptr(cpcap_charger_id_table),
+				&pdev->dev);
+	if (!of_id)
+		return -EINVAL;
 
 	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
@@ -901,10 +910,10 @@ static int cpcap_charger_probe(struct platform_device *pdev)
 
 	atomic_set(&ddata->active, 1);
 
-	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
+	psy_cfg.of_node = pdev->dev.of_node;
 	psy_cfg.drv_data = ddata;
 	psy_cfg.supplied_to = cpcap_charger_supplied_to;
-	psy_cfg.num_supplicants = ARRAY_SIZE(cpcap_charger_supplied_to);
+	psy_cfg.num_supplicants = ARRAY_SIZE(cpcap_charger_supplied_to),
 
 	ddata->usb = devm_power_supply_register(ddata->dev,
 						&cpcap_charger_usb_desc,
@@ -957,19 +966,21 @@ static void cpcap_charger_shutdown(struct platform_device *pdev)
 	cancel_delayed_work_sync(&ddata->detect_work);
 }
 
-static void cpcap_charger_remove(struct platform_device *pdev)
+static int cpcap_charger_remove(struct platform_device *pdev)
 {
 	cpcap_charger_shutdown(pdev);
+
+	return 0;
 }
 
 static struct platform_driver cpcap_charger_driver = {
 	.probe = cpcap_charger_probe,
 	.driver	= {
 		.name	= "cpcap-charger",
-		.of_match_table = cpcap_charger_id_table,
+		.of_match_table = of_match_ptr(cpcap_charger_id_table),
 	},
 	.shutdown = cpcap_charger_shutdown,
-	.remove = cpcap_charger_remove,
+	.remove	= cpcap_charger_remove,
 };
 module_platform_driver(cpcap_charger_driver);
 

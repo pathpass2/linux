@@ -192,9 +192,8 @@ retry:
 			&& (kernel_mode(regs) || !store_updates_sp(regs)))
 				goto bad_area;
 	}
-	vma = expand_stack(mm, address);
-	if (!vma)
-		goto bad_area_nosemaphore;
+	if (expand_stack(vma, address))
+		goto bad_area;
 
 good_area:
 	code = SEGV_ACCERR;

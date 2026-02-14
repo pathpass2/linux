@@ -34,7 +34,8 @@ static int setkey_unaligned(struct crypto_cipher *tfm, const u8 *key,
 	alignbuffer = (u8 *)ALIGN((unsigned long)buffer, alignmask + 1);
 	memcpy(alignbuffer, key, keylen);
 	ret = cia->cia_setkey(crypto_cipher_tfm(tfm), alignbuffer, keylen);
-	kfree_sensitive(buffer);
+	memset(alignbuffer, 0, keylen);
+	kfree(buffer);
 	return ret;
 
 }
@@ -53,7 +54,7 @@ int crypto_cipher_setkey(struct crypto_cipher *tfm,
 
 	return cia->cia_setkey(crypto_cipher_tfm(tfm), key, keylen);
 }
-EXPORT_SYMBOL_NS_GPL(crypto_cipher_setkey, "CRYPTO_INTERNAL");
+EXPORT_SYMBOL_NS_GPL(crypto_cipher_setkey, CRYPTO_INTERNAL);
 
 static inline void cipher_crypt_one(struct crypto_cipher *tfm,
 				    u8 *dst, const u8 *src, bool enc)
@@ -81,39 +82,11 @@ void crypto_cipher_encrypt_one(struct crypto_cipher *tfm,
 {
 	cipher_crypt_one(tfm, dst, src, true);
 }
-EXPORT_SYMBOL_NS_GPL(crypto_cipher_encrypt_one, "CRYPTO_INTERNAL");
+EXPORT_SYMBOL_NS_GPL(crypto_cipher_encrypt_one, CRYPTO_INTERNAL);
 
 void crypto_cipher_decrypt_one(struct crypto_cipher *tfm,
 			       u8 *dst, const u8 *src)
 {
 	cipher_crypt_one(tfm, dst, src, false);
 }
-EXPORT_SYMBOL_NS_GPL(crypto_cipher_decrypt_one, "CRYPTO_INTERNAL");
-
-struct crypto_cipher *crypto_clone_cipher(struct crypto_cipher *cipher)
-{
-	struct crypto_tfm *tfm = crypto_cipher_tfm(cipher);
-	struct crypto_alg *alg = tfm->__crt_alg;
-	struct crypto_cipher *ncipher;
-	struct crypto_tfm *ntfm;
-
-	if (alg->cra_init)
-		return ERR_PTR(-ENOSYS);
-
-	if (unlikely(!crypto_mod_get(alg)))
-		return ERR_PTR(-ESTALE);
-
-	ntfm = __crypto_alloc_tfmgfp(alg, CRYPTO_ALG_TYPE_CIPHER,
-				     CRYPTO_ALG_TYPE_MASK, GFP_ATOMIC);
-	if (IS_ERR(ntfm)) {
-		crypto_mod_put(alg);
-		return ERR_CAST(ntfm);
-	}
-
-	ntfm->crt_flags = tfm->crt_flags;
-
-	ncipher = __crypto_cipher_cast(ntfm);
-
-	return ncipher;
-}
-EXPORT_SYMBOL_GPL(crypto_clone_cipher);
+EXPORT_SYMBOL_NS_GPL(crypto_cipher_decrypt_one, CRYPTO_INTERNAL);

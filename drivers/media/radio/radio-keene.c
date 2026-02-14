@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (c) 2012 Hans Verkuil <hverkuil@kernel.org>
+ * Copyright (c) 2012 Hans Verkuil <hverkuil@xs4all.nl>
  */
 
 /* kernel includes */
@@ -18,7 +18,7 @@
 #include <linux/mutex.h>
 
 /* driver and module definitions */
-MODULE_AUTHOR("Hans Verkuil <hverkuil@kernel.org>");
+MODULE_AUTHOR("Hans Verkuil <hverkuil@xs4all.nl>");
 MODULE_DESCRIPTION("Keene FM Transmitter driver");
 MODULE_LICENSE("GPL");
 
@@ -338,6 +338,7 @@ static int usb_keene_probe(struct usb_interface *intf,
 	if (hdl->error) {
 		retval = hdl->error;
 
+		v4l2_ctrl_handler_free(hdl);
 		goto err_v4l2;
 	}
 	retval = v4l2_device_register(&intf->dev, &radio->v4l2_dev);
@@ -383,7 +384,6 @@ static int usb_keene_probe(struct usb_interface *intf,
 err_vdev:
 	v4l2_device_unregister(&radio->v4l2_dev);
 err_v4l2:
-	v4l2_ctrl_handler_free(&radio->hdl);
 	kfree(radio->buffer);
 	kfree(radio);
 err:

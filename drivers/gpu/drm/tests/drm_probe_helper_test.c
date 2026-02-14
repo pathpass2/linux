@@ -60,6 +60,13 @@ static int drm_probe_helper_test_init(struct kunit *test)
 	return 0;
 }
 
+static void drm_probe_helper_test_exit(struct kunit *test)
+{
+	struct drm_probe_helper_test_priv *priv = test->priv;
+
+	drm_kunit_helper_free_device(test, priv->dev);
+}
+
 typedef struct drm_display_mode *(*expected_mode_func_t)(struct drm_device *);
 
 struct drm_connector_helper_tv_get_modes_test {
@@ -98,7 +105,7 @@ drm_test_connector_helper_tv_get_modes_check(struct kunit *test)
 	struct drm_connector *connector = &priv->connector;
 	struct drm_cmdline_mode *cmdline = &connector->cmdline_mode;
 	struct drm_display_mode *mode;
-	struct drm_display_mode *expected;
+	const struct drm_display_mode *expected;
 	size_t len;
 	int ret;
 
@@ -134,9 +141,6 @@ drm_test_connector_helper_tv_get_modes_check(struct kunit *test)
 
 		KUNIT_EXPECT_TRUE(test, drm_mode_equal(mode, expected));
 		KUNIT_EXPECT_TRUE(test, mode->type & DRM_MODE_TYPE_PREFERRED);
-
-		ret = drm_kunit_add_mode_destroy_action(test, expected);
-		KUNIT_ASSERT_EQ(test, ret, 0);
 	}
 
 	if (params->num_expected_modes >= 2) {
@@ -148,9 +152,6 @@ drm_test_connector_helper_tv_get_modes_check(struct kunit *test)
 
 		KUNIT_EXPECT_TRUE(test, drm_mode_equal(mode, expected));
 		KUNIT_EXPECT_FALSE(test, mode->type & DRM_MODE_TYPE_PREFERRED);
-
-		ret = drm_kunit_add_mode_destroy_action(test, expected);
-		KUNIT_ASSERT_EQ(test, ret, 0);
 	}
 
 	mutex_unlock(&priv->drm->mode_config.mutex);
@@ -207,11 +208,11 @@ static struct kunit_case drm_test_connector_helper_tv_get_modes_tests[] = {
 static struct kunit_suite drm_test_connector_helper_tv_get_modes_suite = {
 	.name = "drm_connector_helper_tv_get_modes",
 	.init = drm_probe_helper_test_init,
+	.exit = drm_probe_helper_test_exit,
 	.test_cases = drm_test_connector_helper_tv_get_modes_tests,
 };
 
 kunit_test_suite(drm_test_connector_helper_tv_get_modes_suite);
 
 MODULE_AUTHOR("Maxime Ripard <maxime@cerno.tech>");
-MODULE_DESCRIPTION("Kunit test for drm_probe_helper functions");
 MODULE_LICENSE("GPL");

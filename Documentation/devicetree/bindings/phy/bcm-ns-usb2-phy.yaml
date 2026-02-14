@@ -18,8 +18,16 @@ properties:
     const: brcm,ns-usb2-phy
 
   reg:
-    maxItems: 1
-    description: PHY control register
+    anyOf:
+      - maxItems: 1
+        description: PHY control register
+      - maxItems: 1
+        description: iomem address range of DMU (Device Management Unit)
+        deprecated: true
+
+  reg-names:
+    items:
+      - const: dmu
 
   brcm,syscon-clkset:
     description: phandle to syscon for clkset register
@@ -42,7 +50,12 @@ required:
   - clocks
   - clock-names
   - "#phy-cells"
-  - brcm,syscon-clkset
+
+oneOf:
+  - required:
+      - brcm,syscon-clkset
+  - required:
+      - reg-names
 
 additionalProperties: false
 

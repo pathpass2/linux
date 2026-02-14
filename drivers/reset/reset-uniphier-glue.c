@@ -6,7 +6,7 @@
 
 #include <linux/clk.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/reset/reset-simple.h>
@@ -35,6 +35,13 @@ static void uniphier_clk_disable(void *_priv)
 	clk_bulk_disable_unprepare(priv->data->nclks, priv->clk);
 }
 
+static void uniphier_rst_assert(void *_priv)
+{
+	struct uniphier_glue_reset_priv *priv = _priv;
+
+	reset_control_bulk_assert(priv->data->nrsts, priv->rst);
+}
+
 static int uniphier_glue_reset_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -51,13 +58,21 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 		    priv->data->nrsts > MAX_RSTS))
 		return -EINVAL;
 
-	priv->rdata.membase = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	priv->rdata.membase = devm_ioremap_resource(dev, res);
 	if (IS_ERR(priv->rdata.membase))
 		return PTR_ERR(priv->rdata.membase);
 
 	for (i = 0; i < priv->data->nclks; i++)
 		priv->clk[i].id = priv->data->clock_names[i];
 	ret = devm_clk_bulk_get(dev, priv->data->nclks, priv->clk);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < priv->data->nrsts; i++)
+		priv->rst[i].id = priv->data->reset_names[i];
+	ret = devm_reset_control_bulk_get_shared(dev, priv->data->nrsts,
+						 priv->rst);
 	if (ret)
 		return ret;
 
@@ -69,11 +84,11 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	for (i = 0; i < priv->data->nrsts; i++)
-		priv->rst[i].id = priv->data->reset_names[i];
-	ret = devm_reset_control_bulk_get_shared_deasserted(dev,
-							    priv->data->nrsts,
-							    priv->rst);
+	ret = reset_control_bulk_deassert(priv->data->nrsts, priv->rst);
+	if (ret)
+		return ret;
+
+	ret = devm_add_action_or_reset(dev, uniphier_rst_assert, priv);
 	if (ret)
 		return ret;
 
@@ -83,6 +98,8 @@ static int uniphier_glue_reset_probe(struct platform_device *pdev)
 	priv->rdata.rcdev.ops = &reset_simple_ops;
 	priv->rdata.rcdev.of_node = dev->of_node;
 	priv->rdata.active_low = true;
+
+	platform_set_drvdata(pdev, priv);
 
 	return devm_reset_controller_register(dev, &priv->rdata.rcdev);
 }

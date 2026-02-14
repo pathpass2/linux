@@ -81,8 +81,7 @@ static const struct nfp_devlink_param_u8_arg nfp_devlink_u8_args[] = {
 
 static int
 nfp_devlink_param_u8_get(struct devlink *devlink, u32 id,
-			 struct devlink_param_gset_ctx *ctx,
-			 struct netlink_ext_ack *extack)
+			 struct devlink_param_gset_ctx *ctx)
 {
 	const struct nfp_devlink_param_u8_arg *arg;
 	struct nfp_pf *pf = devlink_priv(devlink);
@@ -133,8 +132,7 @@ exit_close_nsp:
 
 static int
 nfp_devlink_param_u8_set(struct devlink *devlink, u32 id,
-			 struct devlink_param_gset_ctx *ctx,
-			 struct netlink_ext_ack *extack)
+			 struct devlink_param_gset_ctx *ctx)
 {
 	const struct nfp_devlink_param_u8_arg *arg;
 	struct nfp_pf *pf = devlink_priv(devlink);

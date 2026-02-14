@@ -20,7 +20,6 @@
 #include <linux/delay.h>
 #include <linux/cpu.h>
 #include <linux/hyperv.h>
-#include <linux/export.h>
 #include <asm/mshyperv.h>
 #include <linux/sched/isolation.h>
 
@@ -68,7 +67,7 @@ const struct vmbus_device vmbus_devs[] = {
 	{ .dev_type = HV_PCIE,
 	  HV_PCIE_GUID,
 	  .perf_device = false,
-	  .allowed_in_isolated = true,
+	  .allowed_in_isolated = false,
 	},
 
 	/* Synthetic Frame Buffer */
@@ -121,9 +120,7 @@ const struct vmbus_device vmbus_devs[] = {
 	},
 
 	/* File copy */
-	/* fcopy always uses 16KB ring buffer size and is working well for last many years */
-	{ .pref_ring_size = 0x4000,
-	  .dev_type = HV_FCOPY,
+	{ .dev_type = HV_FCOPY,
 	  HV_FCOPY_GUID,
 	  .perf_device = false,
 	  .allowed_in_isolated = false,
@@ -143,19 +140,12 @@ const struct vmbus_device vmbus_devs[] = {
 	  .allowed_in_isolated = false,
 	},
 
-	/*
-	 * Unknown GUID
-	 * 64 KB ring buffer + 4 KB header should be sufficient size for any Hyper-V device apart
-	 * from HV_NIC and HV_SCSI. This case avoid the fallback for unknown devices to allocate
-	 * much bigger (2 MB) of ring size.
-	 */
-	{ .pref_ring_size = 0x11000,
-	  .dev_type = HV_UNKNOWN,
+	/* Unknown GUID */
+	{ .dev_type = HV_UNKNOWN,
 	  .perf_device = false,
 	  .allowed_in_isolated = false,
 	},
 };
-EXPORT_SYMBOL_GPL(vmbus_devs);
 
 static const struct {
 	guid_t guid;
@@ -839,22 +829,11 @@ static void vmbus_wait_for_unload(void)
 		if (completion_done(&vmbus_connection.unload_event))
 			goto completed;
 
-		for_each_present_cpu(cpu) {
+		for_each_online_cpu(cpu) {
 			struct hv_per_cpu_context *hv_cpu
 				= per_cpu_ptr(hv_context.cpu_context, cpu);
 
-			/*
-			 * In a CoCo VM the hyp_synic_message_page is not allocated
-			 * in hv_synic_alloc(). Instead it is set/cleared in
-			 * hv_hyp_synic_enable_regs() and hv_hyp_synic_disable_regs()
-			 * such that it is set only when the CPU is online. If
-			 * not all present CPUs are online, the message page
-			 * might be NULL, so skip such CPUs.
-			 */
-			page_addr = hv_cpu->hyp_synic_message_page;
-			if (!page_addr)
-				continue;
-
+			page_addr = hv_cpu->synic_message_page;
 			msg = (struct hv_message *)page_addr
 				+ VMBUS_MESSAGE_SINT;
 
@@ -888,14 +867,11 @@ completed:
 	 * maybe-pending messages on all CPUs to be able to receive new
 	 * messages after we reconnect.
 	 */
-	for_each_present_cpu(cpu) {
+	for_each_online_cpu(cpu) {
 		struct hv_per_cpu_context *hv_cpu
 			= per_cpu_ptr(hv_context.cpu_context, cpu);
 
-		page_addr = hv_cpu->hyp_synic_message_page;
-		if (!page_addr)
-			continue;
-
+		page_addr = hv_cpu->synic_message_page;
 		msg = (struct hv_message *)page_addr + VMBUS_MESSAGE_SINT;
 		msg->header.message_type = HVMSG_NONE;
 	}
@@ -943,6 +919,16 @@ void vmbus_initiate_unload(bool crash)
 		wait_for_completion(&vmbus_connection.unload_event);
 	else
 		vmbus_wait_for_unload();
+}
+
+static void check_ready_for_resume_event(void)
+{
+	/*
+	 * If all the old primary channels have been fixed up, then it's safe
+	 * to resume.
+	 */
+	if (atomic_dec_and_test(&vmbus_connection.nr_chan_fixup_on_resume))
+		complete(&vmbus_connection.ready_for_resume_event);
 }
 
 static void vmbus_setup_channel_state(struct vmbus_channel *channel,
@@ -1022,7 +1008,6 @@ static void vmbus_onoffer(struct vmbus_channel_message_header *hdr)
 	struct vmbus_channel_offer_channel *offer;
 	struct vmbus_channel *oldchannel, *newchannel;
 	size_t offer_sz;
-	bool co_ring_buffer, co_external_memory;
 
 	offer = (struct vmbus_channel_offer_channel *)hdr;
 
@@ -1033,22 +1018,6 @@ static void vmbus_onoffer(struct vmbus_channel_message_header *hdr)
 				   offer->child_relid);
 		atomic_dec(&vmbus_connection.offer_in_progress);
 		return;
-	}
-
-	co_ring_buffer = is_co_ring_buffer(offer);
-	co_external_memory = is_co_external_memory(offer);
-	if (!co_ring_buffer && co_external_memory) {
-		pr_err("Invalid offer relid=%d: the ring buffer isn't encrypted\n",
-			offer->child_relid);
-		return;
-	}
-	if (co_ring_buffer || co_external_memory) {
-		if (vmbus_proto_version < VERSION_WIN10_V6_0 || !vmbus_is_confidential()) {
-			pr_err("Invalid offer relid=%d: no support for confidential VMBus\n",
-				offer->child_relid);
-			atomic_dec(&vmbus_connection.offer_in_progress);
-			return;
-		}
 	}
 
 	oldchannel = find_primary_channel_by_offer(offer);
@@ -1117,6 +1086,8 @@ static void vmbus_onoffer(struct vmbus_channel_message_header *hdr)
 
 		/* Add the channel back to the array of channels. */
 		vmbus_channel_map_relid(oldchannel);
+		check_ready_for_resume_event();
+
 		mutex_unlock(&vmbus_connection.channel_mutex);
 		return;
 	}
@@ -1129,8 +1100,6 @@ static void vmbus_onoffer(struct vmbus_channel_message_header *hdr)
 		pr_err("Unable to allocate channel object\n");
 		return;
 	}
-	newchannel->co_ring_buffer = co_ring_buffer;
-	newchannel->co_external_memory = co_external_memory;
 
 	vmbus_setup_channel_state(newchannel, offer);
 
@@ -1304,28 +1273,13 @@ EXPORT_SYMBOL_GPL(vmbus_hvsock_device_unregister);
 
 /*
  * vmbus_onoffers_delivered -
- * The CHANNELMSG_ALLOFFERS_DELIVERED message arrives after all
- * boot-time offers are delivered. A boot-time offer is for the primary
- * channel for any virtual hardware configured in the VM at the time it boots.
- * Boot-time offers include offers for physical devices assigned to the VM
- * via Hyper-V's Discrete Device Assignment (DDA) functionality that are
- * handled as virtual PCI devices in Linux (e.g., NVMe devices and GPUs).
- * Boot-time offers do not include offers for VMBus sub-channels. Because
- * devices can be hot-added to the VM after it is booted, additional channel
- * offers that aren't boot-time offers can be received at any time after the
- * all-offers-delivered message.
+ * This is invoked when all offers have been delivered.
  *
- * SR-IOV NIC Virtual Functions (VFs) assigned to a VM are not considered
- * to be assigned to the VM at boot-time, and offers for VFs may occur after
- * the all-offers-delivered message. VFs are optional accelerators to the
- * synthetic VMBus NIC and are effectively hot-added only after the VMBus
- * NIC channel is opened (once it knows the guest can support it, via the
- * sriov bit in the netvsc protocol).
+ * Nothing to do here.
  */
 static void vmbus_onoffers_delivered(
 			struct vmbus_channel_message_header *hdr)
 {
-	complete(&vmbus_connection.all_offers_delivered_event);
 }
 
 /*
@@ -1601,8 +1555,7 @@ void vmbus_onmessage(struct vmbus_channel_message_header *hdr)
 }
 
 /*
- * vmbus_request_offers - Send a request to get all our pending offers
- * and wait for all boot-time offers to arrive.
+ * vmbus_request_offers - Send a request to get all our pending offers.
  */
 int vmbus_request_offers(void)
 {
@@ -1620,10 +1573,6 @@ int vmbus_request_offers(void)
 
 	msg->msgtype = CHANNELMSG_REQUESTOFFERS;
 
-	/*
-	 * This REQUESTOFFERS message will result in the host sending an all
-	 * offers delivered message after all the boot-time offers are sent.
-	 */
 	ret = vmbus_post_msg(msg, sizeof(struct vmbus_channel_message_header),
 			     true);
 
@@ -1634,29 +1583,6 @@ int vmbus_request_offers(void)
 
 		goto cleanup;
 	}
-
-	/*
-	 * Wait for the host to send all boot-time offers.
-	 * Keeping it as a best-effort mechanism, where a warning is
-	 * printed if a timeout occurs, and execution is resumed.
-	 */
-	if (!wait_for_completion_timeout(&vmbus_connection.all_offers_delivered_event,
-					 secs_to_jiffies(60))) {
-		pr_warn("timed out waiting for all boot-time offers to be delivered.\n");
-	}
-
-	/*
-	 * Flush handling of offer messages (which may initiate work on
-	 * other work queues).
-	 */
-	flush_workqueue(vmbus_connection.work_queue);
-
-	/*
-	 * Flush workqueue for processing the incoming offers. Subchannel
-	 * offers and their processing can happen later, so there is no need to
-	 * flush that workqueue here.
-	 */
-	flush_workqueue(vmbus_connection.handle_primary_chan_wq);
 
 cleanup:
 	kfree(msginfo);

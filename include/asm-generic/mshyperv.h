@@ -6,8 +6,9 @@
  * independent. See arch/<arch>/include/asm/mshyperv.h for definitions
  * that are specific to architecture <arch>.
  *
- * Definitions that are derived from Hyper-V code or headers should not go in
- * this file, but should instead go in the relevant files in include/hyperv.
+ * Definitions that are specified in the Hyper-V Top Level Functional
+ * Spec (TLFS) should not go in this file, but should instead go in
+ * hyperv-tlfs.h.
  *
  * Copyright (C) 2019, Microsoft, Inc.
  *
@@ -20,91 +21,41 @@
 #include <linux/types.h>
 #include <linux/atomic.h>
 #include <linux/bitops.h>
-#include <acpi/acpi_numa.h>
 #include <linux/cpumask.h>
 #include <linux/nmi.h>
 #include <asm/ptrace.h>
-#include <hyperv/hvhdk.h>
-
-#define VTPM_BASE_ADDRESS 0xfed40000
-
-enum hv_partition_type {
-	HV_PARTITION_TYPE_GUEST,
-	HV_PARTITION_TYPE_ROOT,
-	HV_PARTITION_TYPE_L1VH,
-};
+#include <asm/hyperv-tlfs.h>
 
 struct ms_hyperv_info {
 	u32 features;
 	u32 priv_high;
-	u32 ext_features;
 	u32 misc_features;
 	u32 hints;
 	u32 nested_features;
 	u32 max_vp_index;
 	u32 max_lp_index;
-	u8 vtl;
-	union {
-		u32 isolation_config_a;
-		struct {
-			u32 paravisor_present : 1;
-			u32 reserved_a1 : 31;
-		};
-	};
+	u32 isolation_config_a;
 	union {
 		u32 isolation_config_b;
 		struct {
 			u32 cvm_type : 4;
-			u32 reserved_b1 : 1;
+			u32 reserved1 : 1;
 			u32 shared_gpa_boundary_active : 1;
 			u32 shared_gpa_boundary_bits : 6;
-			u32 reserved_b2 : 20;
+			u32 reserved2 : 20;
 		};
 	};
 	u64 shared_gpa_boundary;
-	bool msi_ext_dest_id;
-	bool confidential_vmbus_available;
 };
 extern struct ms_hyperv_info ms_hyperv;
 extern bool hv_nested;
-extern u64 hv_current_partition_id;
-extern enum hv_partition_type hv_curr_partition_type;
 
 extern void * __percpu *hyperv_pcpu_input_arg;
 extern void * __percpu *hyperv_pcpu_output_arg;
 
-u64 hv_do_hypercall(u64 control, void *inputaddr, void *outputaddr);
-u64 hv_do_fast_hypercall8(u16 control, u64 input8);
-u64 hv_do_fast_hypercall16(u16 control, u64 input1, u64 input2);
-
-bool hv_isolation_type_snp(void);
-bool hv_isolation_type_tdx(void);
-
-/*
- * On architectures where Hyper-V doesn't support AEOI (e.g., ARM64),
- * it doesn't provide a recommendation flag and AEOI must be disabled.
- */
-static inline bool hv_recommend_using_aeoi(void)
-{
-#ifdef HV_DEPRECATING_AEOI_RECOMMENDED
-	return !(ms_hyperv.hints & HV_DEPRECATING_AEOI_RECOMMENDED);
-#else
-	return false;
-#endif
-}
-
-static inline struct hv_proximity_domain_info hv_numa_node_to_pxm_info(int node)
-{
-	struct hv_proximity_domain_info pxm_info = {};
-
-	if (node != NUMA_NO_NODE) {
-		pxm_info.domain_id = node_to_pxm(node);
-		pxm_info.flags.proximity_info_valid = 1;
-		pxm_info.flags.proximity_preferred = 1;
-	}
-
-	return pxm_info;
-}
+extern u64 hv_do_hypercall(u64 control, void *inputaddr, void *outputaddr);
+extern u64 hv_do_fast_hypercall8(u16 control, u64 input8);
+extern bool hv_isolation_type_snp(void);
 
 /* Helper functions that provide a consistent pattern for checking Hyper-V hypercall status. */
 static inline int hv_result(u64 status)
@@ -126,12 +77,10 @@ static inline unsigned int hv_repcomp(u64 status)
 
 /*
  * Rep hypercalls. Callers of this functions are supposed to ensure that
- * rep_count, varhead_size, and rep_start comply with Hyper-V hypercall
- * definition.
+ * rep_count and varhead_size comply with Hyper-V hypercall definition.
  */
-static inline u64 hv_do_rep_hypercall_ex(u16 code, u16 rep_count,
-					 u16 varhead_size, u16 rep_start,
-					 void *input, void *output)
+static inline u64 hv_do_rep_hypercall(u16 code, u16 rep_count, u16 varhead_size,
+				      void *input, void *output)
 {
 	u64 control = code;
 	u64 status;
@@ -139,7 +88,6 @@ static inline u64 hv_do_rep_hypercall_ex(u16 code, u16 rep_count,
 
 	control |= (u64)varhead_size << HV_HYPERCALL_VARHEAD_OFFSET;
 	control |= (u64)rep_count << HV_HYPERCALL_REP_COMP_OFFSET;
-	control |= (u64)rep_start << HV_HYPERCALL_REP_START_OFFSET;
 
 	do {
 		status = hv_do_hypercall(control, input, output);
@@ -157,14 +105,6 @@ static inline u64 hv_do_rep_hypercall_ex(u16 code, u16 rep_count,
 	return status;
 }
 
-/* For the typical case where rep_start is 0 */
-static inline u64 hv_do_rep_hypercall(u16 code, u16 rep_count, u16 varhead_size,
-				      void *input, void *output)
-{
-	return hv_do_rep_hypercall_ex(code, rep_count, varhead_size, 0,
-				      input, output);
-}
-
 /* Generate the guest OS identifier as described in the Hyper-V TLFS */
 static inline u64 hv_generate_guest_id(u64 kernel_version)
 {
@@ -176,7 +116,40 @@ static inline u64 hv_generate_guest_id(u64 kernel_version)
 	return guest_id;
 }
 
-int hv_get_hypervisor_version(union hv_hypervisor_version_info *info);
+/* Free the message slot and signal end-of-message if required */
+static inline void vmbus_signal_eom(struct hv_message *msg, u32 old_msg_type)
+{
+	/*
+	 * On crash we're reading some other CPU's message page and we need
+	 * to be careful: this other CPU may already had cleared the header
+	 * and the host may already had delivered some other message there.
+	 * In case we blindly write msg->header.message_type we're going
+	 * to lose it. We can still lose a message of the same type but
+	 * we count on the fact that there can only be one
+	 * CHANNELMSG_UNLOAD_RESPONSE and we don't care about other messages
+	 * on crash.
+	 */
+	if (cmpxchg(&msg->header.message_type, old_msg_type,
+		    HVMSG_NONE) != old_msg_type)
+		return;
+
+	/*
+	 * The cmxchg() above does an implicit memory barrier to
+	 * ensure the write to MessageType (ie set to
+	 * HVMSG_NONE) happens before we read the
+	 * MessagePending and EOMing. Otherwise, the EOMing
+	 * will not deliver any more messages since there is
+	 * no empty slot
+	 */
+	if (msg->header.message_flags.msg_pending) {
+		/*
+		 * This will cause message queue rescan to
+		 * possibly deliver another msg from the
+		 * hypervisor
+		 */
+		hv_set_register(HV_REGISTER_EOM, 0);
+	}
+}
 
 void hv_setup_vmbus_handler(void (*handler)(void));
 void hv_remove_vmbus_handler(void);
@@ -187,7 +160,11 @@ void hv_setup_kexec_handler(void (*handler)(void));
 void hv_remove_kexec_handler(void);
 void hv_setup_crash_handler(void (*handler)(struct pt_regs *regs));
 void hv_remove_crash_handler(void);
-void hv_setup_mshv_handler(void (*handler)(void));
+
+extern int vmbus_interrupt;
+extern int vmbus_irq;
+
+extern bool hv_root_partition;
 
 #if IS_ENABLED(CONFIG_HYPERV)
 /*
@@ -205,12 +182,13 @@ extern u64 (*hv_read_reference_counter)(void);
 #define VP_INVAL	U32_MAX
 
 int __init hv_common_init(void);
-void __init hv_get_partition_id(void);
 void __init hv_common_free(void);
-void __init ms_hyperv_late_init(void);
 int hv_common_cpu_init(unsigned int cpu);
 int hv_common_cpu_die(unsigned int cpu);
-void hv_identify_partition_type(void);
+
+void *hv_alloc_hyperv_page(void);
+void *hv_alloc_hyperv_zeroed_page(void);
+void hv_free_hyperv_page(unsigned long addr);
 
 /**
  * hv_cpu_number_to_vp_number() - Map CPU to VP.
@@ -230,9 +208,10 @@ static inline int hv_cpu_number_to_vp_number(int cpu_number)
 
 static inline int __cpumask_to_vpset(struct hv_vpset *vpset,
 				    const struct cpumask *cpus,
-				    bool (*func)(int cpu))
+				    bool exclude_self)
 {
 	int cpu, vcpu, vcpu_bank, vcpu_offset, nr_bank = 1;
+	int this_cpu = smp_processor_id();
 	int max_vcpu_bank = hv_max_vp_index / HV_VCPUS_PER_SPARSE_BANK;
 
 	/* vpset.valid_bank_mask can represent up to HV_MAX_SPARSE_VCPU_BANKS banks */
@@ -251,7 +230,7 @@ static inline int __cpumask_to_vpset(struct hv_vpset *vpset,
 	 * Some banks may end up being empty but this is acceptable.
 	 */
 	for_each_cpu(cpu, cpus) {
-		if (func && func(cpu))
+		if (exclude_self && cpu == this_cpu)
 			continue;
 		vcpu = hv_cpu_number_to_vp_number(cpu);
 		if (vcpu == VP_INVAL)
@@ -267,40 +246,19 @@ static inline int __cpumask_to_vpset(struct hv_vpset *vpset,
 	return nr_bank;
 }
 
-/*
- * Convert a Linux cpumask into a Hyper-V VPset. In the _skip variant,
- * 'func' is called for each CPU present in cpumask.  If 'func' returns
- * true, that CPU is skipped -- i.e., that CPU from cpumask is *not*
- * added to the Hyper-V VPset. If 'func' is NULL, no CPUs are
- * skipped.
- */
 static inline int cpumask_to_vpset(struct hv_vpset *vpset,
 				    const struct cpumask *cpus)
 {
-	return __cpumask_to_vpset(vpset, cpus, NULL);
+	return __cpumask_to_vpset(vpset, cpus, false);
 }
 
-static inline int cpumask_to_vpset_skip(struct hv_vpset *vpset,
-				    const struct cpumask *cpus,
-				    bool (*func)(int cpu))
+static inline int cpumask_to_vpset_noself(struct hv_vpset *vpset,
+				    const struct cpumask *cpus)
 {
-	return __cpumask_to_vpset(vpset, cpus, func);
+	WARN_ON_ONCE(preemptible());
+	return __cpumask_to_vpset(vpset, cpus, true);
 }
 
-#define _hv_status_fmt(fmt) "%s: Hyper-V status: %#x = %s: " fmt
-#define hv_status_printk(level, status, fmt, ...) \
-do { \
-	u64 __status = (status); \
-	pr_##level(_hv_status_fmt(fmt), __func__, hv_result(__status), \
-		   hv_result_to_string(__status), ##__VA_ARGS__); \
-} while (0)
-#define hv_status_err(status, fmt, ...) \
-	hv_status_printk(err, status, fmt, ##__VA_ARGS__)
-#define hv_status_debug(status, fmt, ...) \
-	hv_status_printk(debug, status, fmt, ##__VA_ARGS__)
-
-const char *hv_result_to_string(u64 hv_status);
-int hv_result_to_errno(u64 status);
 void hyperv_report_panic(struct pt_regs *regs, long err, bool in_die);
 bool hv_is_hyperv_initialized(void);
 bool hv_is_hibernation_supported(void);
@@ -308,66 +266,20 @@ enum hv_isolation_type hv_get_isolation_type(void);
 bool hv_is_isolation_supported(void);
 bool hv_isolation_type_snp(void);
 u64 hv_ghcb_hypercall(u64 control, void *input, void *output, u32 input_size);
-u64 hv_tdx_hypercall(u64 control, u64 param1, u64 param2);
-void hv_enable_coco_interrupt(unsigned int cpu, unsigned int vector, bool set);
-void hv_para_set_sint_proxy(bool enable);
-u64 hv_para_get_synic_register(unsigned int reg);
-void hv_para_set_synic_register(unsigned int reg, u64 val);
 void hyperv_cleanup(void);
 bool hv_query_ext_cap(u64 cap_query);
 void hv_setup_dma_ops(struct device *dev, bool coherent);
+void *hv_map_memory(void *addr, unsigned long size);
+void hv_unmap_memory(void *addr);
 #else /* CONFIG_HYPERV */
-static inline void hv_identify_partition_type(void) {}
 static inline bool hv_is_hyperv_initialized(void) { return false; }
 static inline bool hv_is_hibernation_supported(void) { return false; }
 static inline void hyperv_cleanup(void) {}
-static inline void ms_hyperv_late_init(void) {}
 static inline bool hv_is_isolation_supported(void) { return false; }
 static inline enum hv_isolation_type hv_get_isolation_type(void)
 {
 	return HV_ISOLATION_TYPE_NONE;
 }
 #endif /* CONFIG_HYPERV */
-
-#if IS_ENABLED(CONFIG_MSHV_ROOT)
-static inline bool hv_root_partition(void)
-{
-	return hv_curr_partition_type == HV_PARTITION_TYPE_ROOT;
-}
-static inline bool hv_l1vh_partition(void)
-{
-	return hv_curr_partition_type == HV_PARTITION_TYPE_L1VH;
-}
-static inline bool hv_parent_partition(void)
-{
-	return hv_root_partition() || hv_l1vh_partition();
-}
-int hv_call_deposit_pages(int node, u64 partition_id, u32 num_pages);
-int hv_call_add_logical_proc(int node, u32 lp_index, u32 acpi_id);
-int hv_call_create_vp(int node, u64 partition_id, u32 vp_index, u32 flags);
-
-#else /* CONFIG_MSHV_ROOT */
-static inline bool hv_root_partition(void) { return false; }
-static inline bool hv_l1vh_partition(void) { return false; }
-static inline bool hv_parent_partition(void) { return false; }
-static inline int hv_call_deposit_pages(int node, u64 partition_id, u32 num_pages)
-{
-	return -EOPNOTSUPP;
-}
-static inline int hv_call_add_logical_proc(int node, u32 lp_index, u32 acpi_id)
-{
-	return -EOPNOTSUPP;
-}
-static inline int hv_call_create_vp(int node, u64 partition_id, u32 vp_index, u32 flags)
-{
-	return -EOPNOTSUPP;
-}
-#endif /* CONFIG_MSHV_ROOT */
-
-#if IS_ENABLED(CONFIG_HYPERV_VTL_MODE)
-u8 __init get_vtl(void);
-#else
-static inline u8 get_vtl(void) { return 0; }
-#endif
 
 #endif

@@ -15,10 +15,6 @@
 #include <linux/kernel.h>
 #include <linux/hwmon-vid.h>
 
-#ifdef CONFIG_X86
-#include <asm/msr.h>
-#endif
-
 /*
  * Common code for decoding VID pins.
  *

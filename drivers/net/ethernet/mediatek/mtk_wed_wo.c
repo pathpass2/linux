@@ -7,9 +7,10 @@
 
 #include <linux/kernel.h>
 #include <linux/dma-mapping.h>
+#include <linux/of_platform.h>
 #include <linux/interrupt.h>
+#include <linux/of_address.h>
 #include <linux/mfd/syscon.h>
-#include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/bitfield.h>
 
@@ -142,8 +143,7 @@ mtk_wed_wo_queue_refill(struct mtk_wed_wo *wo, struct mtk_wed_wo_queue *q,
 		dma_addr_t addr;
 		void *buf;
 
-		buf = page_frag_alloc(&q->cache, q->buf_size,
-				      GFP_ATOMIC | GFP_DMA32);
+		buf = page_frag_alloc(&q->cache, q->buf_size, GFP_ATOMIC);
 		if (!buf)
 			break;
 
@@ -286,13 +286,11 @@ mtk_wed_wo_queue_free(struct mtk_wed_wo *wo, struct mtk_wed_wo_queue *q)
 static void
 mtk_wed_wo_queue_tx_clean(struct mtk_wed_wo *wo, struct mtk_wed_wo_queue *q)
 {
+	struct page *page;
 	int i;
 
 	for (i = 0; i < q->n_desc; i++) {
 		struct mtk_wed_wo_queue_entry *entry = &q->entry[i];
-
-		if (!entry->buf)
-			continue;
 
 		dma_unmap_single(wo->hw->dev, entry->addr, entry->len,
 				 DMA_TO_DEVICE);
@@ -300,12 +298,19 @@ mtk_wed_wo_queue_tx_clean(struct mtk_wed_wo *wo, struct mtk_wed_wo_queue *q)
 		entry->buf = NULL;
 	}
 
-	page_frag_cache_drain(&q->cache);
+	if (!q->cache.va)
+		return;
+
+	page = virt_to_page(q->cache.va);
+	__page_frag_cache_drain(page, q->cache.pagecnt_bias);
+	memset(&q->cache, 0, sizeof(q->cache));
 }
 
 static void
 mtk_wed_wo_queue_rx_clean(struct mtk_wed_wo *wo, struct mtk_wed_wo_queue *q)
 {
+	struct page *page;
+
 	for (;;) {
 		void *buf = mtk_wed_wo_dequeue(wo, q, NULL, true);
 
@@ -315,7 +320,12 @@ mtk_wed_wo_queue_rx_clean(struct mtk_wed_wo *wo, struct mtk_wed_wo_queue *q)
 		skb_free_frag(buf);
 	}
 
-	page_frag_cache_drain(&q->cache);
+	if (!q->cache.va)
+		return;
+
+	page = virt_to_page(q->cache.va);
+	__page_frag_cache_drain(page, q->cache.pagecnt_bias);
+	memset(&q->cache, 0, sizeof(q->cache));
 }
 
 static void

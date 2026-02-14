@@ -383,7 +383,8 @@ static void sccnxp_set_bit(struct uart_port *port, int sig, int state)
 
 static void sccnxp_handle_rx(struct uart_port *port)
 {
-	u8 sr, ch, flag;
+	u8 sr;
+	unsigned int ch, flag;
 
 	for (;;) {
 		sr = sccnxp_port_read(port, SCCNXP_SR_REG);
@@ -439,7 +440,7 @@ static void sccnxp_handle_rx(struct uart_port *port)
 static void sccnxp_handle_tx(struct uart_port *port)
 {
 	u8 sr;
-	struct tty_port *tport = &port->state->port;
+	struct circ_buf *xmit = &port->state->xmit;
 	struct sccnxp_port *s = dev_get_drvdata(port->dev);
 
 	if (unlikely(port->x_char)) {
@@ -449,7 +450,7 @@ static void sccnxp_handle_tx(struct uart_port *port)
 		return;
 	}
 
-	if (kfifo_is_empty(&tport->xmit_fifo) || uart_tx_stopped(port)) {
+	if (uart_circ_empty(xmit) || uart_tx_stopped(port)) {
 		/* Disable TX if FIFO is empty */
 		if (sccnxp_port_read(port, SCCNXP_SR_REG) & SR_TXEMT) {
 			sccnxp_disable_irq(port, IMR_TXRDY);
@@ -461,20 +462,16 @@ static void sccnxp_handle_tx(struct uart_port *port)
 		return;
 	}
 
-	while (1) {
-		unsigned char ch;
-
+	while (!uart_circ_empty(xmit)) {
 		sr = sccnxp_port_read(port, SCCNXP_SR_REG);
 		if (!(sr & SR_TXRDY))
 			break;
 
-		if (!uart_fifo_get(port, &ch))
-			break;
-
-		sccnxp_port_write(port, SCCNXP_THR_REG, ch);
+		sccnxp_port_write(port, SCCNXP_THR_REG, xmit->buf[xmit->tail]);
+		uart_xmit_advance(port, 1);
 	}
 
-	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS)
+	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(port);
 }
 
@@ -500,7 +497,7 @@ static void sccnxp_handle_events(struct sccnxp_port *s)
 
 static void sccnxp_timer(struct timer_list *t)
 {
-	struct sccnxp_port *s = timer_container_of(s, t, timer);
+	struct sccnxp_port *s = from_timer(s, t, timer);
 	unsigned long flags;
 
 	spin_lock_irqsave(&s->lock, flags);
@@ -883,14 +880,14 @@ MODULE_DEVICE_TABLE(platform, sccnxp_id_table);
 
 static int sccnxp_probe(struct platform_device *pdev)
 {
+	struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	struct sccnxp_pdata *pdata = dev_get_platdata(&pdev->dev);
-	struct resource *res;
 	int i, ret, uartclk;
 	struct sccnxp_port *s;
 	void __iomem *membase;
 	struct clk *clk;
 
-	membase = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	membase = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(membase))
 		return PTR_ERR(membase);
 
@@ -1025,7 +1022,7 @@ err_out:
 	return ret;
 }
 
-static void sccnxp_remove(struct platform_device *pdev)
+static int sccnxp_remove(struct platform_device *pdev)
 {
 	int i;
 	struct sccnxp_port *s = platform_get_drvdata(pdev);
@@ -1033,18 +1030,17 @@ static void sccnxp_remove(struct platform_device *pdev)
 	if (!s->poll)
 		devm_free_irq(&pdev->dev, s->irq, s);
 	else
-		timer_delete_sync(&s->timer);
+		del_timer_sync(&s->timer);
 
 	for (i = 0; i < s->uart.nr; i++)
 		uart_remove_one_port(&s->uart, &s->port[i]);
 
 	uart_unregister_driver(&s->uart);
 
-	if (!IS_ERR(s->regulator)) {
-		int ret = regulator_disable(s->regulator);
-		if (ret)
-			dev_err(&pdev->dev, "Failed to disable regulator\n");
-	}
+	if (!IS_ERR(s->regulator))
+		return regulator_disable(s->regulator);
+
+	return 0;
 }
 
 static struct platform_driver sccnxp_uart_driver = {

@@ -6,12 +6,11 @@
  *			 <benh@kernel.crashing.org>
  */
 
+#include <linux/device.h>
 #include <linux/mod_devicetable.h>
-
-struct device;
-struct device_node;
-struct of_device_id;
-struct platform_device;
+#include <linux/pm.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 /**
  * struct of_dev_auxdata - lookup table entry for device names & platform_data
@@ -47,15 +46,12 @@ struct of_dev_auxdata {
 	{ .compatible = _compat, .phys_addr = _phys, .name = _name, \
 	  .platform_data = _pdata }
 
+extern const struct of_device_id of_default_bus_match_table[];
+
 /* Platform drivers register/unregister */
 extern struct platform_device *of_device_alloc(struct device_node *np,
 					 const char *bus_id,
 					 struct device *parent);
-
-extern int of_device_add(struct platform_device *pdev);
-extern int of_device_register(struct platform_device *ofdev);
-extern void of_device_unregister(struct platform_device *ofdev);
-
 #ifdef CONFIG_OF
 extern struct platform_device *of_find_device_by_node(struct device_node *np);
 #else
@@ -123,6 +119,12 @@ static inline int devm_of_platform_populate(struct device *dev)
 }
 
 static inline void devm_of_platform_depopulate(struct device *dev) { }
+#endif
+
+#if defined(CONFIG_OF_DYNAMIC) && defined(CONFIG_OF_ADDRESS)
+extern void of_platform_register_reconfig_notifier(void);
+#else
+static inline void of_platform_register_reconfig_notifier(void) { }
 #endif
 
 #endif	/* _LINUX_OF_PLATFORM_H */

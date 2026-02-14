@@ -57,11 +57,14 @@ DEFINE_SHOW_ATTRIBUTE(hsr_node_table);
 void hsr_debugfs_rename(struct net_device *dev)
 {
 	struct hsr_priv *priv = netdev_priv(dev);
-	int err;
+	struct dentry *d;
 
-	err = debugfs_change_name(priv->node_tbl_root, "%s", dev->name);
-	if (err)
+	d = debugfs_rename(hsr_debugfs_root_dir, priv->node_tbl_root,
+			   hsr_debugfs_root_dir, dev->name);
+	if (IS_ERR(d))
 		netdev_warn(dev, "failed to rename\n");
+	else
+		priv->node_tbl_root = d;
 }
 
 /* hsr_debugfs_init - create hsr node_table file for dumping

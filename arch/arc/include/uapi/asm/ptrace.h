@@ -14,7 +14,7 @@
 
 #define PTRACE_GET_THREAD_AREA	25
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 /*
  * Userspace ABI: Register state needed by
  *  -ptrace (gdbserver)
@@ -53,6 +53,6 @@ struct user_regs_arcv2 {
 	unsigned long r30, r58, r59;
 };
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #endif /* _UAPI__ASM_ARC_PTRACE_H */

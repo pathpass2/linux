@@ -321,9 +321,6 @@ static int ipmb_probe(struct i2c_client *client)
 	ipmb_dev->miscdev.name = devm_kasprintf(&client->dev, GFP_KERNEL,
 						"%s%d", "ipmb-",
 						client->adapter->nr);
-	if (!ipmb_dev->miscdev.name)
-		return -ENOMEM;
-
 	ipmb_dev->miscdev.fops = &ipmb_fops;
 	ipmb_dev->miscdev.parent = &client->dev;
 	ret = misc_register(&ipmb_dev->miscdev);
@@ -353,25 +350,23 @@ static void ipmb_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ipmb_id[] = {
-	{ "ipmb-dev" },
-	{}
+	{ "ipmb-dev", 0 },
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, ipmb_id);
 
-#ifdef CONFIG_ACPI
 static const struct acpi_device_id acpi_ipmb_id[] = {
 	{ "IPMB0001", 0 },
 	{},
 };
 MODULE_DEVICE_TABLE(acpi, acpi_ipmb_id);
-#endif
 
 static struct i2c_driver ipmb_driver = {
 	.driver = {
 		.name = "ipmb-dev",
 		.acpi_match_table = ACPI_PTR(acpi_ipmb_id),
 	},
-	.probe = ipmb_probe,
+	.probe_new = ipmb_probe,
 	.remove = ipmb_remove,
 	.id_table = ipmb_id,
 };

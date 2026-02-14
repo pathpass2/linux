@@ -12,7 +12,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/cleanup.h>
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/i2c.h>
@@ -374,10 +373,12 @@ static int ads1015_set_power_state(struct ads1015_data *data, bool on)
 	int ret;
 	struct device *dev = regmap_get_device(data->regmap);
 
-	if (on)
+	if (on) {
 		ret = pm_runtime_resume_and_get(dev);
-	else
+	} else {
+		pm_runtime_mark_last_busy(dev);
 		ret = pm_runtime_put_autosuspend(dev);
+	}
 
 	return ret < 0 ? ret : 0;
 }
@@ -447,13 +448,15 @@ static irqreturn_t ads1015_trigger_handler(int irq, void *p)
 	/* Ensure natural alignment of timestamp */
 	struct {
 		s16 chan;
-		aligned_s64 timestamp;
-	} scan = { };
+		s64 timestamp __aligned(8);
+	} scan;
 	int chan, ret, res;
+
+	memset(&scan, 0, sizeof(scan));
 
 	mutex_lock(&data->lock);
 	chan = find_first_bit(indio_dev->active_scan_mask,
-			      iio_get_masklength(indio_dev));
+			      indio_dev->masklength);
 	ret = ads1015_get_adc_result(data, chan, &res);
 	if (ret < 0) {
 		mutex_unlock(&data->lock);
@@ -463,8 +466,8 @@ static irqreturn_t ads1015_trigger_handler(int irq, void *p)
 	scan.chan = res;
 	mutex_unlock(&data->lock);
 
-	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
-				    iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, &scan,
+					   iio_get_time_ns(indio_dev));
 
 err:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -530,31 +533,6 @@ static int ads1015_read_avail(struct iio_dev *indio_dev,
 	}
 }
 
-static int __ads1015_read_info_raw(struct ads1015_data *data,
-				   struct iio_chan_spec const *chan, int *val)
-{
-	int ret;
-
-	if (ads1015_event_channel_enabled(data) &&
-	    data->event_channel != chan->address)
-		return -EBUSY;
-
-	ret = ads1015_set_power_state(data, true);
-	if (ret < 0)
-		return ret;
-
-	ret = ads1015_get_adc_result(data, chan->address, val);
-	if (ret < 0) {
-		ads1015_set_power_state(data, false);
-		return ret;
-	}
-
-	*val = sign_extend32(*val >> chan->scan_type.shift,
-			     chan->scan_type.realbits - 1);
-
-	return ads1015_set_power_state(data, false);
-}
-
 static int ads1015_read_raw(struct iio_dev *indio_dev,
 			    struct iio_chan_spec const *chan, int *val,
 			    int *val2, long mask)
@@ -562,29 +540,58 @@ static int ads1015_read_raw(struct iio_dev *indio_dev,
 	int ret, idx;
 	struct ads1015_data *data = iio_priv(indio_dev);
 
-	guard(mutex)(&data->lock);
+	mutex_lock(&data->lock);
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
-		ret = __ads1015_read_info_raw(data, chan, val);
-		iio_device_release_direct(indio_dev);
+		ret = iio_device_claim_direct_mode(indio_dev);
 		if (ret)
-			return ret;
+			break;
 
-		return IIO_VAL_INT;
+		if (ads1015_event_channel_enabled(data) &&
+				data->event_channel != chan->address) {
+			ret = -EBUSY;
+			goto release_direct;
+		}
+
+		ret = ads1015_set_power_state(data, true);
+		if (ret < 0)
+			goto release_direct;
+
+		ret = ads1015_get_adc_result(data, chan->address, val);
+		if (ret < 0) {
+			ads1015_set_power_state(data, false);
+			goto release_direct;
+		}
+
+		*val = sign_extend32(*val >> chan->scan_type.shift,
+				     chan->scan_type.realbits - 1);
+
+		ret = ads1015_set_power_state(data, false);
+		if (ret < 0)
+			goto release_direct;
+
+		ret = IIO_VAL_INT;
+release_direct:
+		iio_device_release_direct_mode(indio_dev);
+		break;
 	case IIO_CHAN_INFO_SCALE:
 		idx = data->channel_data[chan->address].pga;
 		*val = ads1015_fullscale_range[idx];
 		*val2 = chan->scan_type.realbits - 1;
-		return IIO_VAL_FRACTIONAL_LOG2;
+		ret = IIO_VAL_FRACTIONAL_LOG2;
+		break;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		idx = data->channel_data[chan->address].data_rate;
 		*val = data->chip->data_rate[idx];
-		return IIO_VAL_INT;
+		ret = IIO_VAL_INT;
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+	mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static int ads1015_write_raw(struct iio_dev *indio_dev,
@@ -592,16 +599,23 @@ static int ads1015_write_raw(struct iio_dev *indio_dev,
 			     int val2, long mask)
 {
 	struct ads1015_data *data = iio_priv(indio_dev);
+	int ret;
 
-	guard(mutex)(&data->lock);
+	mutex_lock(&data->lock);
 	switch (mask) {
 	case IIO_CHAN_INFO_SCALE:
-		return ads1015_set_scale(data, chan, val, val2);
+		ret = ads1015_set_scale(data, chan, val, val2);
+		break;
 	case IIO_CHAN_INFO_SAMP_FREQ:
-		return ads1015_set_data_rate(data, chan->address, val);
+		ret = ads1015_set_data_rate(data, chan->address, val);
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+	mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static int ads1015_read_event(struct iio_dev *indio_dev,
@@ -610,18 +624,20 @@ static int ads1015_read_event(struct iio_dev *indio_dev,
 	int *val2)
 {
 	struct ads1015_data *data = iio_priv(indio_dev);
+	int ret;
 	unsigned int comp_queue;
 	int period;
 	int dr;
 
-	guard(mutex)(&data->lock);
+	mutex_lock(&data->lock);
 
 	switch (info) {
 	case IIO_EV_INFO_VALUE:
 		*val = (dir == IIO_EV_DIR_RISING) ?
 			data->thresh_data[chan->address].high_thresh :
 			data->thresh_data[chan->address].low_thresh;
-		return IIO_VAL_INT;
+		ret = IIO_VAL_INT;
+		break;
 	case IIO_EV_INFO_PERIOD:
 		dr = data->channel_data[chan->address].data_rate;
 		comp_queue = data->thresh_data[chan->address].comp_queue;
@@ -630,10 +646,16 @@ static int ads1015_read_event(struct iio_dev *indio_dev,
 
 		*val = period / USEC_PER_SEC;
 		*val2 = period % USEC_PER_SEC;
-		return IIO_VAL_INT_PLUS_MICRO;
+		ret = IIO_VAL_INT_PLUS_MICRO;
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+
+	mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static int ads1015_write_event(struct iio_dev *indio_dev,
@@ -644,22 +666,24 @@ static int ads1015_write_event(struct iio_dev *indio_dev,
 	struct ads1015_data *data = iio_priv(indio_dev);
 	const int *data_rate = data->chip->data_rate;
 	int realbits = chan->scan_type.realbits;
+	int ret = 0;
 	long long period;
 	int i;
 	int dr;
 
-	guard(mutex)(&data->lock);
+	mutex_lock(&data->lock);
 
 	switch (info) {
 	case IIO_EV_INFO_VALUE:
-		if (val >= 1 << (realbits - 1) || val < -1 << (realbits - 1))
-			return -EINVAL;
-
+		if (val >= 1 << (realbits - 1) || val < -1 << (realbits - 1)) {
+			ret = -EINVAL;
+			break;
+		}
 		if (dir == IIO_EV_DIR_RISING)
 			data->thresh_data[chan->address].high_thresh = val;
 		else
 			data->thresh_data[chan->address].low_thresh = val;
-		return 0;
+		break;
 	case IIO_EV_INFO_PERIOD:
 		dr = data->channel_data[chan->address].data_rate;
 		period = val * USEC_PER_SEC + val2;
@@ -670,10 +694,15 @@ static int ads1015_write_event(struct iio_dev *indio_dev,
 				break;
 		}
 		data->thresh_data[chan->address].comp_queue = i;
-		return 0;
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+
+	mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static int ads1015_read_event_config(struct iio_dev *indio_dev,
@@ -681,19 +710,25 @@ static int ads1015_read_event_config(struct iio_dev *indio_dev,
 	enum iio_event_direction dir)
 {
 	struct ads1015_data *data = iio_priv(indio_dev);
+	int ret = 0;
 
-	guard(mutex)(&data->lock);
-	if (data->event_channel != chan->address)
-		return 0;
-
-	switch (dir) {
-	case IIO_EV_DIR_RISING:
-		return 1;
-	case IIO_EV_DIR_EITHER:
-		return (data->comp_mode == ADS1015_CFG_COMP_MODE_WINDOW);
-	default:
-		return -EINVAL;
+	mutex_lock(&data->lock);
+	if (data->event_channel == chan->address) {
+		switch (dir) {
+		case IIO_EV_DIR_RISING:
+			ret = 1;
+			break;
+		case IIO_EV_DIR_EITHER:
+			ret = (data->comp_mode == ADS1015_CFG_COMP_MODE_WINDOW);
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
 	}
+	mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static int ads1015_enable_event_config(struct ads1015_data *data,
@@ -771,25 +806,30 @@ static int ads1015_disable_event_config(struct ads1015_data *data,
 
 static int ads1015_write_event_config(struct iio_dev *indio_dev,
 	const struct iio_chan_spec *chan, enum iio_event_type type,
-	enum iio_event_direction dir, bool state)
+	enum iio_event_direction dir, int state)
 {
 	struct ads1015_data *data = iio_priv(indio_dev);
 	int ret;
 	int comp_mode = (dir == IIO_EV_DIR_EITHER) ?
 		ADS1015_CFG_COMP_MODE_WINDOW : ADS1015_CFG_COMP_MODE_TRAD;
 
-	guard(mutex)(&data->lock);
+	mutex_lock(&data->lock);
 
 	/* Prevent from enabling both buffer and event at a time */
-	if (!iio_device_claim_direct(indio_dev))
-		return -EBUSY;
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret) {
+		mutex_unlock(&data->lock);
+		return ret;
+	}
 
 	if (state)
 		ret = ads1015_enable_event_config(data, chan, comp_mode);
 	else
 		ret = ads1015_disable_event_config(data, chan, comp_mode);
 
-	iio_device_release_direct(indio_dev);
+	iio_device_release_direct_mode(indio_dev);
+	mutex_unlock(&data->lock);
+
 	return ret;
 }
 
@@ -862,9 +902,10 @@ static int ads1015_client_get_channels_config(struct i2c_client *client)
 	struct iio_dev *indio_dev = i2c_get_clientdata(client);
 	struct ads1015_data *data = iio_priv(indio_dev);
 	struct device *dev = &client->dev;
+	struct fwnode_handle *node;
 	int i = -1;
 
-	device_for_each_child_node_scoped(dev, node) {
+	device_for_each_child_node(dev, node) {
 		u32 pval;
 		unsigned int channel;
 		unsigned int pga = ADS1015_DEFAULT_PGA;
@@ -884,8 +925,9 @@ static int ads1015_client_get_channels_config(struct i2c_client *client)
 
 		if (!fwnode_property_read_u32(node, "ti,gain", &pval)) {
 			pga = pval;
-			if (pga > 5) {
+			if (pga > 6) {
 				dev_err(dev, "invalid gain on %pfw\n", node);
+				fwnode_handle_put(node);
 				return -EINVAL;
 			}
 		}
@@ -894,6 +936,7 @@ static int ads1015_client_get_channels_config(struct i2c_client *client)
 			data_rate = pval;
 			if (data_rate > 7) {
 				dev_err(dev, "invalid data_rate on %pfw\n", node);
+				fwnode_handle_put(node);
 				return -EINVAL;
 			}
 		}
@@ -933,13 +976,16 @@ static int ads1015_set_conv_mode(struct ads1015_data *data, int mode)
 
 static int ads1015_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	const struct ads1015_chip_data *chip;
 	struct iio_dev *indio_dev;
 	struct ads1015_data *data;
 	int ret;
 	int i;
 
-	chip = i2c_get_match_data(client);
+	chip = device_get_match_data(&client->dev);
+	if (!chip)
+		chip = (const struct ads1015_chip_data *)id->driver_data;
 	if (!chip)
 		return dev_err_probe(&client->dev, -EINVAL, "Unknown chip\n");
 
@@ -992,7 +1038,8 @@ static int ads1015_probe(struct i2c_client *client)
 	}
 
 	if (client->irq && chip->has_comparator) {
-		unsigned long irq_trig = irq_get_trigger_type(client->irq);
+		unsigned long irq_trig =
+			irqd_get_trigger_type(irq_get_irq_data(client->irq));
 		unsigned int cfg_comp_mask = ADS1015_CFG_COMP_QUE_MASK |
 			ADS1015_CFG_COMP_LAT_MASK | ADS1015_CFG_COMP_POL_MASK;
 		unsigned int cfg_comp =
@@ -1000,13 +1047,11 @@ static int ads1015_probe(struct i2c_client *client)
 			1 << ADS1015_CFG_COMP_LAT_SHIFT;
 
 		switch (irq_trig) {
-		case IRQF_TRIGGER_FALLING:
 		case IRQF_TRIGGER_LOW:
 			cfg_comp |= ADS1015_CFG_COMP_POL_LOW <<
 					ADS1015_CFG_COMP_POL_SHIFT;
 			break;
 		case IRQF_TRIGGER_HIGH:
-		case IRQF_TRIGGER_RISING:
 			cfg_comp |= ADS1015_CFG_COMP_POL_HIGH <<
 					ADS1015_CFG_COMP_POL_SHIFT;
 			break;
@@ -1132,7 +1177,7 @@ static const struct i2c_device_id ads1015_id[] = {
 	{ "ads1015", (kernel_ulong_t)&ads1015_data },
 	{ "ads1115", (kernel_ulong_t)&ads1115_data },
 	{ "tla2024", (kernel_ulong_t)&tla2024_data },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, ads1015_id);
 
@@ -1140,7 +1185,7 @@ static const struct of_device_id ads1015_of_match[] = {
 	{ .compatible = "ti,ads1015", .data = &ads1015_data },
 	{ .compatible = "ti,ads1115", .data = &ads1115_data },
 	{ .compatible = "ti,tla2024", .data = &tla2024_data },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, ads1015_of_match);
 
@@ -1150,7 +1195,7 @@ static struct i2c_driver ads1015_driver = {
 		.of_match_table = ads1015_of_match,
 		.pm = &ads1015_pm_ops,
 	},
-	.probe		= ads1015_probe,
+	.probe_new	= ads1015_probe,
 	.remove		= ads1015_remove,
 	.id_table	= ads1015_id,
 };

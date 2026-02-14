@@ -12,10 +12,9 @@ Contents:
    driver
    consumer
    board
-   legacy-boards
    drivers-on-gpio
+   legacy
    bt8xxgpio
-   pca953x
 
 Core
 ====
@@ -29,7 +28,7 @@ Core
 ACPI support
 ============
 
-.. kernel-doc:: drivers/gpio/gpiolib-acpi-core.c
+.. kernel-doc:: drivers/gpio/gpiolib-acpi.c
    :export:
 
 Device tree support

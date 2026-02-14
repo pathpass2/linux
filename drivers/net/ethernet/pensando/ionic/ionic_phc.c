@@ -65,12 +65,11 @@ static u64 ionic_hwstamp_rx_filt(int config_rx_filter)
 }
 
 static int ionic_lif_hwstamp_set_ts_config(struct ionic_lif *lif,
-					   struct kernel_hwtstamp_config *new_ts,
-					   struct netlink_ext_ack *extack)
+					   struct hwtstamp_config *new_ts)
 {
-	struct kernel_hwtstamp_config *config;
-	struct kernel_hwtstamp_config ts = {};
 	struct ionic *ionic = lif->ionic;
+	struct hwtstamp_config *config;
+	struct hwtstamp_config ts;
 	int tx_mode = 0;
 	u64 rx_filt = 0;
 	int err, err2;
@@ -100,16 +99,12 @@ static int ionic_lif_hwstamp_set_ts_config(struct ionic_lif *lif,
 
 	tx_mode = ionic_hwstamp_tx_mode(config->tx_type);
 	if (tx_mode < 0) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "TX time stamping mode isn't supported");
 		err = tx_mode;
 		goto err_queues;
 	}
 
 	mask = cpu_to_le64(BIT_ULL(tx_mode));
 	if ((ionic->ident.lif.eth.hwstamp_tx_modes & mask) != mask) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "TX time stamping mode isn't supported");
 		err = -ERANGE;
 		goto err_queues;
 	}
@@ -129,47 +124,32 @@ static int ionic_lif_hwstamp_set_ts_config(struct ionic_lif *lif,
 
 	if (tx_mode) {
 		err = ionic_lif_create_hwstamp_txq(lif);
-		if (err) {
-			NL_SET_ERR_MSG_MOD(extack,
-					   "Error creating TX timestamp queue");
+		if (err)
 			goto err_queues;
-		}
 	}
 
 	if (rx_filt) {
 		err = ionic_lif_create_hwstamp_rxq(lif);
-		if (err) {
-			NL_SET_ERR_MSG_MOD(extack,
-					   "Error creating RX timestamp queue");
+		if (err)
 			goto err_queues;
-		}
 	}
 
 	if (tx_mode != lif->phc->ts_config_tx_mode) {
 		err = ionic_lif_set_hwstamp_txmode(lif, tx_mode);
-		if (err) {
-			NL_SET_ERR_MSG_MOD(extack,
-					   "Error enabling TX timestamp mode");
+		if (err)
 			goto err_txmode;
-		}
 	}
 
 	if (rx_filt != lif->phc->ts_config_rx_filt) {
 		err = ionic_lif_set_hwstamp_rxfilt(lif, rx_filt);
-		if (err) {
-			NL_SET_ERR_MSG_MOD(extack,
-					   "Error enabling RX timestamp mode");
+		if (err)
 			goto err_rxfilt;
-		}
 	}
 
 	if (rx_all != (lif->phc->ts_config.rx_filter == HWTSTAMP_FILTER_ALL)) {
 		err = ionic_lif_config_hwstamp_rxq_all(lif, rx_all);
-		if (err) {
-			NL_SET_ERR_MSG_MOD(extack,
-					   "Error enabling RX timestamp mode");
+		if (err)
 			goto err_rxall;
-		}
 	}
 
 	memcpy(&lif->phc->ts_config, config, sizeof(*config));
@@ -203,23 +183,27 @@ err_queues:
 	return err;
 }
 
-int ionic_hwstamp_set(struct net_device *netdev,
-		      struct kernel_hwtstamp_config *config,
-		      struct netlink_ext_ack *extack)
+int ionic_lif_hwstamp_set(struct ionic_lif *lif, struct ifreq *ifr)
 {
-	struct ionic_lif *lif = netdev_priv(netdev);
+	struct hwtstamp_config config;
 	int err;
 
 	if (!lif->phc || !lif->phc->ptp)
 		return -EOPNOTSUPP;
 
+	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+		return -EFAULT;
+
 	mutex_lock(&lif->queue_lock);
-	err = ionic_lif_hwstamp_set_ts_config(lif, config, extack);
+	err = ionic_lif_hwstamp_set_ts_config(lif, &config);
 	mutex_unlock(&lif->queue_lock);
 	if (err) {
 		netdev_info(lif->netdev, "hwstamp set failed: %d\n", err);
 		return err;
 	}
+
+	if (copy_to_user(ifr->ifr_data, &config, sizeof(config)))
+		return -EFAULT;
 
 	return 0;
 }
@@ -232,7 +216,7 @@ void ionic_lif_hwstamp_replay(struct ionic_lif *lif)
 		return;
 
 	mutex_lock(&lif->queue_lock);
-	err = ionic_lif_hwstamp_set_ts_config(lif, NULL, NULL);
+	err = ionic_lif_hwstamp_set_ts_config(lif, NULL);
 	mutex_unlock(&lif->queue_lock);
 	if (err)
 		netdev_info(lif->netdev, "hwstamp replay failed: %d\n", err);
@@ -262,18 +246,19 @@ void ionic_lif_hwstamp_recreate_queues(struct ionic_lif *lif)
 	mutex_unlock(&lif->phc->config_lock);
 }
 
-int ionic_hwstamp_get(struct net_device *netdev,
-		      struct kernel_hwtstamp_config *config)
+int ionic_lif_hwstamp_get(struct ionic_lif *lif, struct ifreq *ifr)
 {
-	struct ionic_lif *lif = netdev_priv(netdev);
+	struct hwtstamp_config config;
 
 	if (!lif->phc || !lif->phc->ptp)
 		return -EOPNOTSUPP;
 
 	mutex_lock(&lif->phc->config_lock);
-	memcpy(config, &lif->phc->ts_config, sizeof(*config));
+	memcpy(&config, &lif->phc->ts_config, sizeof(config));
 	mutex_unlock(&lif->phc->config_lock);
 
+	if (copy_to_user(ifr->ifr_data, &config, sizeof(config)))
+		return -EFAULT;
 	return 0;
 }
 
@@ -305,7 +290,7 @@ static u64 ionic_hwstamp_read(struct ionic *ionic,
 	return (u64)tick_low | ((u64)tick_high << 32);
 }
 
-static u64 ionic_cc_read(struct cyclecounter *cc)
+static u64 ionic_cc_read(const struct cyclecounter *cc)
 {
 	struct ionic_phc *phc = container_of(cc, struct ionic_phc, cc);
 	struct ionic *ionic = phc->lif->ionic;
@@ -594,10 +579,11 @@ void ionic_lif_alloc_phc(struct ionic_lif *lif)
 	diff |= diff >> 16;
 	diff |= diff >> 32;
 
-	/* constrain to the hardware bitmask */
+	/* constrain to the hardware bitmask, and use this as the bitmask */
 	diff &= phc->cc.mask;
+	phc->cc.mask = diff;
 
-	/* the wrap period is now defined by diff
+	/* the wrap period is now defined by diff (or phc->cc.mask)
 	 *
 	 * we will update the time basis at about 1/4 the wrap period, so
 	 * should not see a difference of more than +/- diff/4.

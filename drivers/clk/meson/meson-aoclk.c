@@ -13,12 +13,11 @@
 #include <linux/platform_device.h>
 #include <linux/reset-controller.h>
 #include <linux/mfd/syscon.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/module.h>
 
 #include <linux/slab.h>
 #include "meson-aoclk.h"
-#include "clk-regmap.h"
 
 static int meson_aoclk_do_reset(struct reset_controller_dev *rcdev,
 			       unsigned long id)
@@ -37,23 +36,15 @@ static const struct reset_control_ops meson_aoclk_reset_ops = {
 int meson_aoclkc_probe(struct platform_device *pdev)
 {
 	struct meson_aoclk_reset_controller *rstc;
-	const struct meson_clkc_data *clkc_data;
-	const struct meson_aoclk_data *data;
+	struct meson_aoclk_data *data;
 	struct device *dev = &pdev->dev;
 	struct device_node *np;
 	struct regmap *regmap;
-	int ret;
+	int ret, clkid;
 
-	clkc_data = of_device_get_match_data(dev);
-	if (!clkc_data)
-		return -EINVAL;
-
-	ret = meson_clkc_syscon_probe(pdev);
-	if (ret)
-		return ret;
-
-	data = container_of(clkc_data, struct meson_aoclk_data,
-			    clkc_data);
+	data = (struct meson_aoclk_data *) of_device_get_match_data(dev);
+	if (!data)
+		return -ENODEV;
 
 	rstc = devm_kzalloc(dev, sizeof(*rstc), GFP_KERNEL);
 	if (!rstc)
@@ -79,10 +70,24 @@ int meson_aoclkc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	return 0;
-}
-EXPORT_SYMBOL_NS_GPL(meson_aoclkc_probe, "CLK_MESON");
+	/* Populate regmap */
+	for (clkid = 0; clkid < data->num_clks; clkid++)
+		data->clks[clkid]->map = regmap;
 
-MODULE_DESCRIPTION("Amlogic Always-ON Clock Controller helpers");
-MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("CLK_MESON");
+	/* Register all clks */
+	for (clkid = 0; clkid < data->hw_data->num; clkid++) {
+		if (!data->hw_data->hws[clkid])
+			continue;
+
+		ret = devm_clk_hw_register(dev, data->hw_data->hws[clkid]);
+		if (ret) {
+			dev_err(dev, "Clock registration failed\n");
+			return ret;
+		}
+	}
+
+	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get,
+		(void *) data->hw_data);
+}
+EXPORT_SYMBOL_GPL(meson_aoclkc_probe);
+MODULE_LICENSE("GPL v2");

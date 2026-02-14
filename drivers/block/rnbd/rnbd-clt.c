@@ -60,9 +60,7 @@ static void rnbd_clt_put_dev(struct rnbd_clt_dev *dev)
 	kfree(dev->pathname);
 	rnbd_clt_put_sess(dev->sess);
 	mutex_destroy(&dev->lock);
-
-	if (dev->kobj.state_initialized)
-		kobject_put(&dev->kobj);
+	kfree(dev);
 }
 
 static inline bool rnbd_clt_get_dev(struct rnbd_clt_dev *dev)
@@ -923,11 +921,11 @@ rnbd_clt_session *find_or_create_sess(const char *sessname, bool *first)
 	return sess;
 }
 
-static int rnbd_client_open(struct gendisk *disk, blk_mode_t mode)
+static int rnbd_client_open(struct block_device *block_device, fmode_t mode)
 {
-	struct rnbd_clt_dev *dev = disk->private_data;
+	struct rnbd_clt_dev *dev = block_device->bd_disk->private_data;
 
-	if (get_disk_ro(dev->gd) && (mode & BLK_OPEN_WRITE))
+	if (get_disk_ro(dev->gd) && (mode & FMODE_WRITE))
 		return -EPERM;
 
 	if (dev->dev_state == DEV_STATE_UNMAPPED ||
@@ -937,18 +935,18 @@ static int rnbd_client_open(struct gendisk *disk, blk_mode_t mode)
 	return 0;
 }
 
-static void rnbd_client_release(struct gendisk *gen)
+static void rnbd_client_release(struct gendisk *gen, fmode_t mode)
 {
 	struct rnbd_clt_dev *dev = gen->private_data;
 
 	rnbd_clt_put_dev(dev);
 }
 
-static int rnbd_client_getgeo(struct gendisk *disk,
+static int rnbd_client_getgeo(struct block_device *block_device,
 			      struct hd_geometry *geo)
 {
 	u64 size;
-	struct rnbd_clt_dev *dev = disk->private_data;
+	struct rnbd_clt_dev *dev = block_device->bd_disk->private_data;
 	struct queue_limits *limit = &dev->queue->limits;
 
 	size = dev->size * (limit->logical_block_size / SECTOR_SIZE);
@@ -1008,11 +1006,11 @@ static int rnbd_client_xfer_request(struct rnbd_clt_dev *dev,
 	msg.prio	= cpu_to_le16(req_get_ioprio(rq));
 
 	/*
-	 * We only support discards/WRITE_ZEROES with single segment for now.
+	 * We only support discards with single segment for now.
 	 * See queue limits.
 	 */
-	if ((req_op(rq) != REQ_OP_DISCARD) && (req_op(rq) != REQ_OP_WRITE_ZEROES))
-		sg_cnt = blk_rq_map_sg(rq, iu->sgt.sgl);
+	if (req_op(rq) != REQ_OP_DISCARD)
+		sg_cnt = blk_rq_map_sg(dev->queue, rq, iu->sgt.sgl);
 
 	if (sg_cnt == 0)
 		sg_mark_end(&iu->sgt.sgl[0]);
@@ -1211,7 +1209,8 @@ static int setup_mq_tags(struct rnbd_clt_session *sess)
 	tag_set->ops		= &rnbd_mq_ops;
 	tag_set->queue_depth	= sess->queue_depth;
 	tag_set->numa_node		= NUMA_NO_NODE;
-	tag_set->flags		= BLK_MQ_F_TAG_QUEUE_SHARED;
+	tag_set->flags		= BLK_MQ_F_SHOULD_MERGE |
+				  BLK_MQ_F_TAG_QUEUE_SHARED;
 	tag_set->cmd_size	= sizeof(struct rnbd_iu) + RNBD_RDMA_SGL_SIZE;
 
 	/* for HCTX_TYPE_DEFAULT, HCTX_TYPE_READ, HCTX_TYPE_POLL */
@@ -1330,6 +1329,41 @@ static void rnbd_init_mq_hw_queues(struct rnbd_clt_dev *dev)
 	}
 }
 
+static void setup_request_queue(struct rnbd_clt_dev *dev,
+				struct rnbd_msg_open_rsp *rsp)
+{
+	blk_queue_logical_block_size(dev->queue,
+				     le16_to_cpu(rsp->logical_block_size));
+	blk_queue_physical_block_size(dev->queue,
+				      le16_to_cpu(rsp->physical_block_size));
+	blk_queue_max_hw_sectors(dev->queue,
+				 dev->sess->max_io_size / SECTOR_SIZE);
+
+	/*
+	 * we don't support discards to "discontiguous" segments
+	 * in on request
+	 */
+	blk_queue_max_discard_segments(dev->queue, 1);
+
+	blk_queue_max_discard_sectors(dev->queue,
+				      le32_to_cpu(rsp->max_discard_sectors));
+	dev->queue->limits.discard_granularity =
+					le32_to_cpu(rsp->discard_granularity);
+	dev->queue->limits.discard_alignment =
+					le32_to_cpu(rsp->discard_alignment);
+	if (le16_to_cpu(rsp->secure_discard))
+		blk_queue_max_secure_erase_sectors(dev->queue,
+					le32_to_cpu(rsp->max_discard_sectors));
+	blk_queue_flag_set(QUEUE_FLAG_SAME_COMP, dev->queue);
+	blk_queue_flag_set(QUEUE_FLAG_SAME_FORCE, dev->queue);
+	blk_queue_max_segments(dev->queue, dev->sess->max_segments);
+	blk_queue_io_opt(dev->queue, dev->sess->max_io_size);
+	blk_queue_virt_boundary(dev->queue, SZ_4K - 1);
+	blk_queue_write_cache(dev->queue,
+			      !!(rsp->cache_policy & RNBD_WRITEBACK),
+			      !!(rsp->cache_policy & RNBD_FUA));
+}
+
 static int rnbd_clt_setup_gen_disk(struct rnbd_clt_dev *dev,
 				   struct rnbd_msg_open_rsp *rsp, int idx)
 {
@@ -1353,6 +1387,10 @@ static int rnbd_clt_setup_gen_disk(struct rnbd_clt_dev *dev,
 	if (dev->access_mode == RNBD_ACCESS_RO)
 		set_disk_ro(dev->gd, true);
 
+	/*
+	 * Network device does not need rotational
+	 */
+	blk_queue_flag_set(QUEUE_FLAG_NONROT, dev->queue);
 	err = add_disk(dev->gd);
 	if (err)
 		put_disk(dev->gd);
@@ -1363,41 +1401,18 @@ static int rnbd_clt_setup_gen_disk(struct rnbd_clt_dev *dev,
 static int rnbd_client_setup_device(struct rnbd_clt_dev *dev,
 				    struct rnbd_msg_open_rsp *rsp)
 {
-	struct queue_limits lim = {
-		.logical_block_size	= le16_to_cpu(rsp->logical_block_size),
-		.physical_block_size	= le16_to_cpu(rsp->physical_block_size),
-		.io_opt			= dev->sess->max_io_size,
-		.max_hw_sectors		= dev->sess->max_io_size / SECTOR_SIZE,
-		.max_hw_discard_sectors	= le32_to_cpu(rsp->max_discard_sectors),
-		.discard_granularity	= le32_to_cpu(rsp->discard_granularity),
-		.discard_alignment	= le32_to_cpu(rsp->discard_alignment),
-		.max_segments		= dev->sess->max_segments,
-		.virt_boundary_mask	= SZ_4K - 1,
-		.max_write_zeroes_sectors =
-			le32_to_cpu(rsp->max_write_zeroes_sectors),
-	};
 	int idx = dev->clt_device_id;
 
 	dev->size = le64_to_cpu(rsp->nsectors) *
 			le16_to_cpu(rsp->logical_block_size);
 
-	if (rsp->secure_discard) {
-		lim.max_secure_erase_sectors =
-			le32_to_cpu(rsp->max_discard_sectors);
-	}
-
-	if (rsp->cache_policy & RNBD_WRITEBACK) {
-		lim.features |= BLK_FEAT_WRITE_CACHE;
-		if (rsp->cache_policy & RNBD_FUA)
-			lim.features |= BLK_FEAT_FUA;
-	}
-
-	dev->gd = blk_mq_alloc_disk(&dev->sess->tag_set, &lim, dev);
+	dev->gd = blk_mq_alloc_disk(&dev->sess->tag_set, dev);
 	if (IS_ERR(dev->gd))
 		return PTR_ERR(dev->gd);
 	dev->queue = dev->gd->queue;
 	rnbd_init_mq_hw_queues(dev);
 
+	setup_request_queue(dev, rsp);
 	return rnbd_clt_setup_gen_disk(dev, rsp, idx);
 }
 
@@ -1425,11 +1440,9 @@ static struct rnbd_clt_dev *init_dev(struct rnbd_clt_session *sess,
 		goto out_alloc;
 	}
 
-	dev->clt_device_id = ida_alloc_max(&index_ida,
-					   (1 << (MINORBITS - RNBD_PART_BITS)) - 1,
-					   GFP_KERNEL);
-	if (dev->clt_device_id < 0) {
-		ret = dev->clt_device_id;
+	ret = ida_alloc_max(&index_ida, (1 << (MINORBITS - RNBD_PART_BITS)) - 1,
+			    GFP_KERNEL);
+	if (ret < 0) {
 		pr_err("Failed to initialize device '%s' from session %s, allocating idr failed, err: %d\n",
 		       pathname, sess->sessname, ret);
 		goto out_queues;
@@ -1438,9 +1451,10 @@ static struct rnbd_clt_dev *init_dev(struct rnbd_clt_session *sess,
 	dev->pathname = kstrdup(pathname, GFP_KERNEL);
 	if (!dev->pathname) {
 		ret = -ENOMEM;
-		goto out_ida;
+		goto out_queues;
 	}
 
+	dev->clt_device_id	= ret;
 	dev->sess		= sess;
 	dev->access_mode	= access_mode;
 	dev->nr_poll_queues	= nr_poll_queues;
@@ -1456,8 +1470,6 @@ static struct rnbd_clt_dev *init_dev(struct rnbd_clt_session *sess,
 
 	return dev;
 
-out_ida:
-	ida_free(&index_ida, dev->clt_device_id);
 out_queues:
 	kfree(dev->hw_queues);
 out_alloc:
@@ -1519,7 +1531,7 @@ static bool insert_dev_if_not_exists_devpath(struct rnbd_clt_dev *dev)
 	return found;
 }
 
-static void rnbd_delete_dev(struct rnbd_clt_dev *dev)
+static void delete_dev(struct rnbd_clt_dev *dev)
 {
 	struct rnbd_clt_session *sess = dev->sess;
 
@@ -1555,8 +1567,8 @@ struct rnbd_clt_dev *rnbd_clt_map_device(const char *sessname,
 
 	dev = init_dev(sess, access_mode, pathname, nr_poll_queues);
 	if (IS_ERR(dev)) {
-		pr_err("map_device: failed to map device '%s' from session %s, can't initialize device, err: %pe\n",
-		       pathname, sess->sessname, dev);
+		pr_err("map_device: failed to map device '%s' from session %s, can't initialize device, err: %ld\n",
+		       pathname, sess->sessname, PTR_ERR(dev));
 		ret = PTR_ERR(dev);
 		goto put_sess;
 	}
@@ -1614,11 +1626,10 @@ struct rnbd_clt_dev *rnbd_clt_map_device(const char *sessname,
 	}
 
 	rnbd_clt_info(dev,
-		       "map_device: Device mapped as %s (nsectors: %llu, logical_block_size: %d, physical_block_size: %d, max_write_zeroes_sectors: %d, max_discard_sectors: %d, discard_granularity: %d, discard_alignment: %d, secure_discard: %d, max_segments: %d, max_hw_sectors: %d, wc: %d, fua: %d)\n",
+		       "map_device: Device mapped as %s (nsectors: %llu, logical_block_size: %d, physical_block_size: %d, max_discard_sectors: %d, discard_granularity: %d, discard_alignment: %d, secure_discard: %d, max_segments: %d, max_hw_sectors: %d, wc: %d, fua: %d)\n",
 		       dev->gd->disk_name, le64_to_cpu(rsp->nsectors),
 		       le16_to_cpu(rsp->logical_block_size),
 		       le16_to_cpu(rsp->physical_block_size),
-		       le32_to_cpu(rsp->max_write_zeroes_sectors),
 		       le32_to_cpu(rsp->max_discard_sectors),
 		       le32_to_cpu(rsp->discard_granularity),
 		       le32_to_cpu(rsp->discard_alignment),
@@ -1640,7 +1651,7 @@ put_iu:
 	kfree(rsp);
 	rnbd_put_iu(sess, iu);
 del_dev:
-	rnbd_delete_dev(dev);
+	delete_dev(dev);
 put_dev:
 	rnbd_clt_put_dev(dev);
 put_sess:
@@ -1649,13 +1660,13 @@ put_sess:
 	return ERR_PTR(ret);
 }
 
-static void rnbd_destroy_gen_disk(struct rnbd_clt_dev *dev)
+static void destroy_gen_disk(struct rnbd_clt_dev *dev)
 {
 	del_gendisk(dev->gd);
 	put_disk(dev->gd);
 }
 
-static void rnbd_destroy_sysfs(struct rnbd_clt_dev *dev,
+static void destroy_sysfs(struct rnbd_clt_dev *dev,
 			  const struct attribute *sysfs_self)
 {
 	rnbd_clt_remove_dev_symlink(dev);
@@ -1664,6 +1675,7 @@ static void rnbd_destroy_sysfs(struct rnbd_clt_dev *dev,
 			/* To avoid deadlock firstly remove itself */
 			sysfs_remove_file_self(&dev->kobj, sysfs_self);
 		kobject_del(&dev->kobj);
+		kobject_put(&dev->kobj);
 	}
 }
 
@@ -1692,9 +1704,9 @@ int rnbd_clt_unmap_device(struct rnbd_clt_dev *dev, bool force,
 	dev->dev_state = DEV_STATE_UNMAPPED;
 	mutex_unlock(&dev->lock);
 
-	rnbd_delete_dev(dev);
-	rnbd_destroy_sysfs(dev, sysfs_self);
-	rnbd_destroy_gen_disk(dev);
+	delete_dev(dev);
+	destroy_sysfs(dev, sysfs_self);
+	destroy_gen_disk(dev);
 	if (was_mapped && sess->rtrs)
 		send_msg_close(dev, dev->device_id, RTRS_PERMIT_WAIT);
 
@@ -1813,7 +1825,7 @@ static int __init rnbd_client_init(void)
 		unregister_blkdev(rnbd_client_major, "rnbd");
 		return err;
 	}
-	rnbd_clt_wq = alloc_workqueue("rnbd_clt_wq", WQ_PERCPU, 0);
+	rnbd_clt_wq = alloc_workqueue("rnbd_clt_wq", 0, 0);
 	if (!rnbd_clt_wq) {
 		pr_err("Failed to load module, alloc_workqueue failed.\n");
 		rnbd_clt_destroy_sysfs_files();

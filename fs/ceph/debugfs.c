@@ -55,6 +55,8 @@ static int mdsc_show(struct seq_file *s, void *p)
 	struct ceph_mds_client *mdsc = fsc->mdsc;
 	struct ceph_mds_request *req;
 	struct rb_node *rp;
+	int pathlen = 0;
+	u64 pathbase;
 	char *path;
 
 	mutex_lock(&mdsc->mutex);
@@ -79,8 +81,8 @@ static int mdsc_show(struct seq_file *s, void *p)
 		if (req->r_inode) {
 			seq_printf(s, " #%llx", ceph_ino(req->r_inode));
 		} else if (req->r_dentry) {
-			struct ceph_path_info path_info;
-			path = ceph_mdsc_build_path(mdsc, req->r_dentry, &path_info, 0);
+			path = ceph_mdsc_build_path(req->r_dentry, &pathlen,
+						    &pathbase, 0);
 			if (IS_ERR(path))
 				path = NULL;
 			spin_lock(&req->r_dentry->d_lock);
@@ -89,7 +91,7 @@ static int mdsc_show(struct seq_file *s, void *p)
 				   req->r_dentry,
 				   path ? path : "");
 			spin_unlock(&req->r_dentry->d_lock);
-			ceph_mdsc_free_path_info(&path_info);
+			ceph_mdsc_free_path(path, pathlen);
 		} else if (req->r_path1) {
 			seq_printf(s, " #%llx/%s", req->r_ino1.ino,
 				   req->r_path1);
@@ -98,8 +100,8 @@ static int mdsc_show(struct seq_file *s, void *p)
 		}
 
 		if (req->r_old_dentry) {
-			struct ceph_path_info path_info;
-			path = ceph_mdsc_build_path(mdsc, req->r_old_dentry, &path_info, 0);
+			path = ceph_mdsc_build_path(req->r_old_dentry, &pathlen,
+						    &pathbase, 0);
 			if (IS_ERR(path))
 				path = NULL;
 			spin_lock(&req->r_old_dentry->d_lock);
@@ -109,7 +111,7 @@ static int mdsc_show(struct seq_file *s, void *p)
 				   req->r_old_dentry,
 				   path ? path : "");
 			spin_unlock(&req->r_old_dentry->d_lock);
-			ceph_mdsc_free_path_info(&path_info);
+			ceph_mdsc_free_path(path, pathlen);
 		} else if (req->r_path2 && req->r_op != CEPH_MDS_OP_SYMLINK) {
 			if (req->r_ino2.ino)
 				seq_printf(s, " #%llx/%s", req->r_ino2.ino,
@@ -246,20 +248,14 @@ static int metrics_caps_show(struct seq_file *s, void *p)
 	return 0;
 }
 
-static int caps_show_cb(struct inode *inode, int mds, void *p)
+static int caps_show_cb(struct inode *inode, struct ceph_cap *cap, void *p)
 {
-	struct ceph_inode_info *ci = ceph_inode(inode);
 	struct seq_file *s = p;
-	struct ceph_cap *cap;
 
-	spin_lock(&ci->i_ceph_lock);
-	cap = __get_cap_for_mds(ci, mds);
-	if (cap)
-		seq_printf(s, "0x%-17llx%-3d%-17s%-17s\n", ceph_ino(inode),
-			   cap->session->s_mds,
-			   ceph_cap_string(cap->issued),
-			   ceph_cap_string(cap->implemented));
-	spin_unlock(&ci->i_ceph_lock);
+	seq_printf(s, "0x%-17llx%-3d%-17s%-17s\n", ceph_ino(inode),
+		   cap->session->s_mds,
+		   ceph_cap_string(cap->issued),
+		   ceph_cap_string(cap->implemented));
 	return 0;
 }
 
@@ -355,7 +351,7 @@ static int status_show(struct seq_file *s, void *p)
 
 	seq_printf(s, "instance: %s.%lld %s/%u\n", ENTITY_NAME(inst->name),
 		   ceph_pr_addr(client_addr), le32_to_cpu(client_addr->nonce));
-	seq_printf(s, "blocklisted: %s\n", str_true_false(fsc->blocklisted));
+	seq_printf(s, "blocklisted: %s\n", fsc->blocklisted ? "true" : "false");
 
 	return 0;
 }
@@ -396,7 +392,7 @@ DEFINE_SIMPLE_ATTRIBUTE(congestion_kb_fops, congestion_kb_get,
 
 void ceph_fs_debugfs_cleanup(struct ceph_fs_client *fsc)
 {
-	doutc(fsc->client, "begin\n");
+	dout("ceph_fs_debugfs_cleanup\n");
 	debugfs_remove(fsc->debugfs_bdi);
 	debugfs_remove(fsc->debugfs_congestion_kb);
 	debugfs_remove(fsc->debugfs_mdsmap);
@@ -405,14 +401,13 @@ void ceph_fs_debugfs_cleanup(struct ceph_fs_client *fsc)
 	debugfs_remove(fsc->debugfs_status);
 	debugfs_remove(fsc->debugfs_mdsc);
 	debugfs_remove_recursive(fsc->debugfs_metrics_dir);
-	doutc(fsc->client, "done\n");
 }
 
 void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 {
-	char name[NAME_MAX];
+	char name[100];
 
-	doutc(fsc->client, "begin\n");
+	dout("ceph_fs_debugfs_init\n");
 	fsc->debugfs_congestion_kb =
 		debugfs_create_file("writeback_congestion_kb",
 				    0600,
@@ -468,7 +463,6 @@ void ceph_fs_debugfs_init(struct ceph_fs_client *fsc)
 			    &metrics_size_fops);
 	debugfs_create_file("caps", 0400, fsc->debugfs_metrics_dir, fsc,
 			    &metrics_caps_fops);
-	doutc(fsc->client, "done\n");
 }
 
 

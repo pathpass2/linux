@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Rust standard library vendored code.
-//!
 //! The contents of this file come from the Rust standard library, hosted in
 //! the <https://github.com/rust-lang/rust> repository, licensed under
 //! "Apache-2.0 OR MIT" and adapted for kernel use. For copyright details,
@@ -16,9 +14,9 @@
 ///
 /// ```rust
 /// let a = 2;
-/// # #[expect(clippy::disallowed_macros)]
+/// # #[allow(clippy::dbg_macro)]
 /// let b = dbg!(a * 2) + 1;
-/// //      ^-- prints: [src/main.rs:3:9] a * 2 = 4
+/// //      ^-- prints: [src/main.rs:2] a * 2 = 4
 /// assert_eq!(b, 5);
 /// ```
 ///
@@ -54,7 +52,7 @@
 /// With a method call:
 ///
 /// ```rust
-/// # #[expect(clippy::disallowed_macros)]
+/// # #[allow(clippy::dbg_macro)]
 /// fn foo(n: usize) {
 ///     if dbg!(n.checked_sub(4)).is_some() {
 ///         // ...
@@ -67,13 +65,14 @@
 /// This prints to the kernel log:
 ///
 /// ```text,ignore
-/// [src/main.rs:3:8] n.checked_sub(4) = None
+/// [src/main.rs:4] n.checked_sub(4) = None
 /// ```
 ///
 /// Naive factorial implementation:
 ///
 /// ```rust
-/// # #![expect(clippy::disallowed_macros)]
+/// # #[allow(clippy::dbg_macro)]
+/// # {
 /// fn factorial(n: u32) -> u32 {
 ///     if dbg!(n <= 1) {
 ///         dbg!(1)
@@ -83,20 +82,21 @@
 /// }
 ///
 /// dbg!(factorial(4));
+/// # }
 /// ```
 ///
 /// This prints to the kernel log:
 ///
 /// ```text,ignore
-/// [src/main.rs:3:8] n <= 1 = false
-/// [src/main.rs:3:8] n <= 1 = false
-/// [src/main.rs:3:8] n <= 1 = false
-/// [src/main.rs:3:8] n <= 1 = true
-/// [src/main.rs:4:9] 1 = 1
-/// [src/main.rs:5:9] n * factorial(n - 1) = 2
-/// [src/main.rs:5:9] n * factorial(n - 1) = 6
-/// [src/main.rs:5:9] n * factorial(n - 1) = 24
-/// [src/main.rs:11:1] factorial(4) = 24
+/// [src/main.rs:3] n <= 1 = false
+/// [src/main.rs:3] n <= 1 = false
+/// [src/main.rs:3] n <= 1 = false
+/// [src/main.rs:3] n <= 1 = true
+/// [src/main.rs:4] 1 = 1
+/// [src/main.rs:5] n * factorial(n - 1) = 2
+/// [src/main.rs:5] n * factorial(n - 1) = 6
+/// [src/main.rs:5] n * factorial(n - 1) = 24
+/// [src/main.rs:11] factorial(4) = 24
 /// ```
 ///
 /// The `dbg!(..)` macro moves the input:
@@ -118,7 +118,7 @@
 /// a tuple (and return it, too):
 ///
 /// ```
-/// # #![expect(clippy::disallowed_macros)]
+/// # #[allow(clippy::dbg_macro)]
 /// assert_eq!(dbg!(1usize, 2u32), (1, 2));
 /// ```
 ///
@@ -127,16 +127,16 @@
 /// invocations. You can use a 1-tuple directly if you need one:
 ///
 /// ```
-/// # #![expect(clippy::disallowed_macros)]
+/// # #[allow(clippy::dbg_macro)]
+/// # {
 /// assert_eq!(1, dbg!(1u32,)); // trailing comma ignored
 /// assert_eq!((1,), dbg!((1u32,))); // 1-tuple
+/// # }
 /// ```
 ///
 /// [`std::dbg`]: https://doc.rust-lang.org/std/macro.dbg.html
 /// [`eprintln`]: https://doc.rust-lang.org/std/macro.eprintln.html
-/// [`printk`]: https://docs.kernel.org/core-api/printk-basics.html
-/// [`pr_info`]: crate::pr_info!
-/// [`pr_debug`]: crate::pr_debug!
+/// [`printk`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html
 #[macro_export]
 macro_rules! dbg {
     // NOTE: We cannot use `concat!` to make a static string as a format argument
@@ -144,16 +144,15 @@ macro_rules! dbg {
     // `$val` expression could be a block (`{ .. }`), in which case the `pr_info!`
     // will be malformed.
     () => {
-        $crate::pr_info!("[{}:{}:{}]\n", ::core::file!(), ::core::line!(), ::core::column!())
+        $crate::pr_info!("[{}:{}]\n", ::core::file!(), ::core::line!())
     };
     ($val:expr $(,)?) => {
         // Use of `match` here is intentional because it affects the lifetimes
-        // of temporaries - <https://stackoverflow.com/a/48732525/1063961>
+        // of temporaries - https://stackoverflow.com/a/48732525/1063961
         match $val {
             tmp => {
-                $crate::pr_info!("[{}:{}:{}] {} = {:#?}\n",
-                    ::core::file!(), ::core::line!(), ::core::column!(),
-                    ::core::stringify!($val), &tmp);
+                $crate::pr_info!("[{}:{}] {} = {:#?}\n",
+                    ::core::file!(), ::core::line!(), ::core::stringify!($val), &tmp);
                 tmp
             }
         }

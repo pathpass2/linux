@@ -20,7 +20,6 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
-#include <drm/drm_print.h>
 
 #include "meson_plane.h"
 #include "meson_registers.h"
@@ -535,7 +534,6 @@ int meson_plane_create(struct meson_drm *priv)
 	struct meson_plane *meson_plane;
 	struct drm_plane *plane;
 	const uint64_t *format_modifiers = format_modifiers_default;
-	int ret;
 
 	meson_plane = devm_kzalloc(priv->drm->dev, sizeof(*meson_plane),
 				   GFP_KERNEL);
@@ -550,16 +548,12 @@ int meson_plane_create(struct meson_drm *priv)
 	else if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A))
 		format_modifiers = format_modifiers_afbc_g12a;
 
-	ret = drm_universal_plane_init(priv->drm, plane, 0xFF,
-					&meson_plane_funcs,
-					supported_drm_formats,
-					ARRAY_SIZE(supported_drm_formats),
-					format_modifiers,
-					DRM_PLANE_TYPE_PRIMARY, "meson_primary_plane");
-	if (ret) {
-		devm_kfree(priv->drm->dev, meson_plane);
-		return ret;
-	}
+	drm_universal_plane_init(priv->drm, plane, 0xFF,
+				 &meson_plane_funcs,
+				 supported_drm_formats,
+				 ARRAY_SIZE(supported_drm_formats),
+				 format_modifiers,
+				 DRM_PLANE_TYPE_PRIMARY, "meson_primary_plane");
 
 	drm_plane_helper_add(plane, &meson_plane_helper_funcs);
 

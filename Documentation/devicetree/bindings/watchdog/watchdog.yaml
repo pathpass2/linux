@@ -17,14 +17,13 @@ description: |
 select:
   properties:
     $nodename:
-      pattern: "^watchdog(@.*|-([0-9]|[1-9][0-9]+))?$"
+      pattern: "^watchdog(@.*|-[0-9a-f])?$"
 
 properties:
   $nodename:
-    pattern: "^(pmic|timer|watchdog)(@.*|-([0-9]|[1-9][0-9]+))?$"
+    pattern: "^(timer|watchdog)(@.*|-[0-9a-f])?$"
 
   timeout-sec:
-    maxItems: 1
     description:
       Contains the watchdog timeout in seconds.
 

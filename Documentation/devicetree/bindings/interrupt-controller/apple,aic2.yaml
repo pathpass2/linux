@@ -31,23 +31,19 @@ description: |
 properties:
   compatible:
     items:
-      - enum:
-          - apple,t8112-aic
-          - apple,t6000-aic
-          - apple,t6020-aic
+      - const: apple,t6000-aic
       - const: apple,aic2
 
   interrupt-controller: true
 
   '#interrupt-cells':
-    minimum: 3
-    maximum: 4
+    const: 4
     description: |
       The 1st cell contains the interrupt type:
         - 0: Hardware IRQ
         - 1: FIQ
 
-      The 2nd cell contains the die ID (only present on apple,t6000-aic).
+      The 2nd cell contains the die ID.
 
       The next cell contains the interrupt number.
         - HW IRQs: interrupt number
@@ -113,19 +109,6 @@ additionalProperties: false
 
 allOf:
   - $ref: /schemas/interrupt-controller.yaml#
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: apple,t8112-aic
-    then:
-      properties:
-        '#interrupt-cells':
-          const: 3
-    else:
-      properties:
-        '#interrupt-cells':
-          const: 4
 
 examples:
   - |

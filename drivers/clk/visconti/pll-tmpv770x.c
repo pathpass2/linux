@@ -16,9 +16,6 @@
 
 #include "pll.h"
 
-/* Must be equal to the last pll ID increased by one */
-#define PLLS_NR	(TMPV770X_PLL_PIIMGERPLL + 1)
-
 static DEFINE_SPINLOCK(tmpv770x_pll_lock);
 
 static const struct visconti_pll_rate_table pipll0_rates[] __initconst = {
@@ -69,7 +66,7 @@ static void __init tmpv770x_setup_plls(struct device_node *np)
 	if (!reg_base)
 		return;
 
-	ctx = visconti_init_pll(np, reg_base, PLLS_NR);
+	ctx = visconti_init_pll(np, reg_base, TMPV770X_NR_PLL);
 	if (IS_ERR(ctx)) {
 		iounmap(reg_base);
 		return;

@@ -18,13 +18,10 @@ static inline int path_equal(const struct path *path1, const struct path *path2)
 	return path1->mnt == path2->mnt && path1->dentry == path2->dentry;
 }
 
-/*
- * Cleanup macro for use with __free(path_put). Avoids dereference and
- * copying @path unlike DEFINE_FREE(). path_put() will handle the empty
- * path correctly just ensure @path is initialized:
- *
- * struct path path __free(path_put) = {};
- */
-#define __free_path_put path_put
+static inline void path_put_init(struct path *path)
+{
+	path_put(path);
+	*path = (struct path) { };
+}
 
 #endif  /* _LINUX_PATH_H */

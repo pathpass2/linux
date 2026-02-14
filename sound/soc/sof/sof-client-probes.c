@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2019-2022 Intel Corporation
+// Copyright(c) 2019-2022 Intel Corporation. All rights reserved.
 //
 // Author: Cezary Rojewski <cezary.rojewski@intel.com>
 //
@@ -17,14 +17,8 @@
 
 #include <sound/soc.h>
 #include <sound/sof/header.h>
-#include <sound/sof/ipc4/header.h>
 #include "sof-client.h"
 #include "sof-client-probes.h"
-#include "sof-audio.h"
-
-#ifdef CONFIG_SND_SOC_SOF_IPC4
-#include "ipc4-priv.h"
-#endif
 
 #define SOF_PROBES_SUSPEND_DELAY_MS 3000
 /* only extraction supported for now */
@@ -75,8 +69,7 @@ static int sof_probes_compr_shutdown(struct snd_compr_stream *cstream,
 	int i, ret;
 
 	/* disconnect all probe points */
-	ret = ipc->points_info(cdev, &desc, &num_desc,
-			       PROBES_INFO_ACTIVE_PROBES);
+	ret = ipc->points_info(cdev, &desc, &num_desc);
 	if (ret < 0) {
 		dev_err(dai->dev, "Failed to get probe points: %d\n", ret);
 		goto exit;
@@ -123,10 +116,6 @@ static int sof_probes_compr_set_params(struct snd_compr_stream *cstream,
 	if (ret)
 		return ret;
 
-	ret = sof_client_boot_dsp(cdev);
-	if (ret)
-		return ret;
-
 	ret = ipc->init(cdev, priv->extractor_stream_tag, rtd->dma_bytes);
 	if (ret < 0) {
 		dev_err(dai->dev, "Failed to init probe: %d\n", ret);
@@ -148,7 +137,7 @@ static int sof_probes_compr_trigger(struct snd_compr_stream *cstream, int cmd,
 }
 
 static int sof_probes_compr_pointer(struct snd_compr_stream *cstream,
-				    struct snd_compr_tstamp64 *tstamp,
+				    struct snd_compr_tstamp *tstamp,
 				    struct snd_soc_dai *dai)
 {
 	struct snd_soc_card *card = snd_soc_component_get_drvdata(dai->component);
@@ -200,8 +189,7 @@ static const struct snd_compress_ops sof_probes_compressed_ops = {
 };
 
 static ssize_t sof_probes_dfs_points_read(struct file *file, char __user *to,
-					  size_t count, loff_t *ppos,
-					  enum sof_probe_info_type type)
+					  size_t count, loff_t *ppos)
 {
 	struct sof_client_dev *cdev = file->private_data;
 	struct sof_probes_priv *priv = cdev->data;
@@ -228,24 +216,21 @@ static ssize_t sof_probes_dfs_points_read(struct file *file, char __user *to,
 		goto exit;
 	}
 
-	ret = sof_client_boot_dsp(cdev);
-	if (ret)
-		goto pm_error;
-
-	ret = ipc->points_info(cdev, &desc, &num_desc, type);
+	ret = ipc->points_info(cdev, &desc, &num_desc);
 	if (ret < 0)
-		goto pm_error;
+		goto exit;
+
+	pm_runtime_mark_last_busy(dev);
+	err = pm_runtime_put_autosuspend(dev);
+	if (err < 0)
+		dev_err_ratelimited(dev, "debugfs read failed to idle %d\n", err);
 
 	for (i = 0; i < num_desc; i++) {
 		offset = strlen(buf);
 		remaining = PAGE_SIZE - offset;
-		if (ipc->point_print)
-			ret = ipc->point_print(cdev, buf + offset, remaining, &desc[i]);
-		else
-			ret = snprintf(buf + offset, remaining,
-				       "Id: %#010x  Purpose: %u  Node id: %#x\n",
-				       desc[i].buffer_id, desc[i].purpose, desc[i].stream_tag);
-
+		ret = snprintf(buf + offset, remaining,
+			       "Id: %#010x  Purpose: %u  Node id: %#x\n",
+				desc[i].buffer_id, desc[i].purpose, desc[i].stream_tag);
 		if (ret < 0 || ret >= remaining) {
 			/* truncate the output buffer at the last full line */
 			buf[offset] = '\0';
@@ -256,31 +241,9 @@ static ssize_t sof_probes_dfs_points_read(struct file *file, char __user *to,
 	ret = simple_read_from_buffer(to, count, ppos, buf, strlen(buf));
 
 	kfree(desc);
-
-pm_error:
-	err = pm_runtime_put_autosuspend(dev);
-	if (err < 0)
-		dev_err_ratelimited(dev, "debugfs read failed to idle %d\n", err);
-
 exit:
 	kfree(buf);
 	return ret;
-}
-
-static ssize_t sof_probes_dfs_active_points_read(struct file *file,
-						 char __user *to,
-						 size_t count, loff_t *ppos)
-{
-	return sof_probes_dfs_points_read(file, to, count, ppos,
-					  PROBES_INFO_ACTIVE_PROBES);
-}
-
-static ssize_t sof_probes_dfs_available_points_read(struct file *file,
-						    char __user *to,
-						    size_t count, loff_t *ppos)
-{
-	return sof_probes_dfs_points_read(file, to, count, ppos,
-					  PROBES_INFO_AVAILABE_PROBES);
 }
 
 static ssize_t
@@ -320,13 +283,11 @@ sof_probes_dfs_points_write(struct file *file, const char __user *from,
 		goto exit;
 	}
 
-	ret = sof_client_boot_dsp(cdev);
-	if (!ret) {
-		ret = ipc->points_add(cdev, desc, bytes / sizeof(*desc));
-		if (!ret)
-			ret = count;
-	}
+	ret = ipc->points_add(cdev, desc, bytes / sizeof(*desc));
+	if (!ret)
+		ret = count;
 
+	pm_runtime_mark_last_busy(dev);
 	err = pm_runtime_put_autosuspend(dev);
 	if (err < 0)
 		dev_err_ratelimited(dev, "debugfs write failed to idle %d\n", err);
@@ -335,18 +296,10 @@ exit:
 	return ret;
 }
 
-static const struct file_operations sof_probes_active_points_fops = {
+static const struct file_operations sof_probes_points_fops = {
 	.open = simple_open,
-	.read = sof_probes_dfs_active_points_read,
+	.read = sof_probes_dfs_points_read,
 	.write = sof_probes_dfs_points_write,
-	.llseek = default_llseek,
-
-	.owner = THIS_MODULE,
-};
-
-static const struct file_operations sof_probes_available_points_fops = {
-	.open = simple_open,
-	.read = sof_probes_dfs_available_points_read,
 	.llseek = default_llseek,
 
 	.owner = THIS_MODULE,
@@ -378,13 +331,11 @@ sof_probes_dfs_points_remove_write(struct file *file, const char __user *from,
 		goto exit;
 	}
 
-	ret = sof_client_boot_dsp(cdev);
-	if (!ret) {
-		ret = ipc->points_remove(cdev, &array[1], array[0]);
-		if (!ret)
-			ret = count;
-	}
+	ret = ipc->points_remove(cdev, &array[1], array[0]);
+	if (!ret)
+		ret = count;
 
+	pm_runtime_mark_last_busy(dev);
 	err = pm_runtime_put_autosuspend(dev);
 	if (err < 0)
 		dev_err_ratelimited(dev, "debugfs write failed to idle %d\n", err);
@@ -401,14 +352,10 @@ static const struct file_operations sof_probes_points_remove_fops = {
 	.owner = THIS_MODULE,
 };
 
-static const struct snd_soc_dai_ops sof_probes_dai_ops = {
-	.compress_new = snd_soc_new_compress,
-};
-
 static struct snd_soc_dai_driver sof_probes_dai_drv[] = {
 {
 	.name = "Probe Extraction CPU DAI",
-	.ops  = &sof_probes_dai_ops,
+	.compress_new = snd_soc_new_compress,
 	.cops = &sof_probes_compr_ops,
 	.capture = {
 		.stream_name = "Probe Extraction",
@@ -427,6 +374,8 @@ static const struct snd_soc_component_driver sof_probes_component = {
 	.module_get_upon_open = 1,
 	.legacy_dai_naming = 1,
 };
+
+SND_SOC_DAILINK_DEF(dummy, DAILINK_COMP_ARRAY(COMP_DUMMY()));
 
 static int sof_probes_client_probe(struct auxiliary_device *auxdev,
 				   const struct auxiliary_device_id *id)
@@ -468,13 +417,13 @@ static int sof_probes_client_probe(struct auxiliary_device *auxdev,
 	priv->host_ops = ops;
 
 	switch (sof_client_get_ipc_type(cdev)) {
-#ifdef CONFIG_SND_SOC_SOF_IPC4
-	case SOF_IPC_TYPE_4:
+#ifdef CONFIG_SND_SOC_SOF_INTEL_IPC4
+	case SOF_INTEL_IPC4:
 		priv->ipc_ops = &ipc4_probe_ops;
 		break;
 #endif
 #ifdef CONFIG_SND_SOC_SOF_IPC3
-	case SOF_IPC_TYPE_3:
+	case SOF_IPC:
 		priv->ipc_ops = &ipc3_probe_ops;
 		break;
 #endif
@@ -499,16 +448,12 @@ static int sof_probes_client_probe(struct auxiliary_device *auxdev,
 
 	/* create read-write probes_points debugfs entry */
 	priv->dfs_points = debugfs_create_file("probe_points", 0644, dfsroot,
-					       cdev, &sof_probes_active_points_fops);
+					       cdev, &sof_probes_points_fops);
 
 	/* create read-write probe_points_remove debugfs entry */
 	priv->dfs_points_remove = debugfs_create_file("probe_points_remove", 0644,
 						      dfsroot, cdev,
 						      &sof_probes_points_remove_fops);
-
-	/* create read-write probes_points debugfs entry */
-	priv->dfs_points = debugfs_create_file("probe_points_available", 0644, dfsroot,
-					       cdev, &sof_probes_available_points_fops);
 
 	links = devm_kcalloc(dev, SOF_PROBES_NUM_DAI_LINKS, sizeof(*links), GFP_KERNEL);
 	cpus = devm_kcalloc(dev, SOF_PROBES_NUM_DAI_LINKS, sizeof(*cpus), GFP_KERNEL);
@@ -524,7 +469,7 @@ static int sof_probes_client_probe(struct auxiliary_device *auxdev,
 	links[0].cpus = &cpus[0];
 	links[0].num_cpus = 1;
 	links[0].cpus->dai_name = "Probe Extraction CPU DAI";
-	links[0].codecs = &snd_soc_dummy_dlc;
+	links[0].codecs = dummy;
 	links[0].num_codecs = 1;
 	links[0].platforms = platform_component;
 	links[0].num_platforms = ARRAY_SIZE(platform_component);
@@ -538,6 +483,9 @@ static int sof_probes_client_probe(struct auxiliary_device *auxdev,
 	card->num_links = SOF_PROBES_NUM_DAI_LINKS;
 	card->dai_link = links;
 
+	/* set idle_bias_off to prevent the core from resuming the card->dev */
+	card->dapm.idle_bias_off = true;
+
 	snd_soc_card_set_drvdata(card, cdev);
 
 	ret = devm_snd_soc_register_card(dev, card);
@@ -547,14 +495,6 @@ static int sof_probes_client_probe(struct auxiliary_device *auxdev,
 		dev_err(dev, "Probes card register failed %d\n", ret);
 		return ret;
 	}
-
-	/*
-	 * set idle_bias_off to prevent the core from resuming the card->dev
-	 * call it after snd_soc_register_card()
-	 */
-	struct snd_soc_dapm_context *dapm = snd_soc_card_to_dapm(card);
-
-	snd_soc_dapm_set_idle_bias(dapm, false);
 
 	/* enable runtime PM */
 	pm_runtime_set_autosuspend_delay(dev, SOF_PROBES_SUSPEND_DELAY_MS);
@@ -581,7 +521,6 @@ static void sof_probes_client_remove(struct auxiliary_device *auxdev)
 
 static const struct auxiliary_device_id sof_probes_client_id_table[] = {
 	{ .name = "snd_sof.hda-probes", },
-	{ .name = "snd_sof.acp-probes", },
 	{},
 };
 MODULE_DEVICE_TABLE(auxiliary, sof_probes_client_id_table);
@@ -596,6 +535,6 @@ static struct auxiliary_driver sof_probes_client_drv = {
 
 module_auxiliary_driver(sof_probes_client_drv);
 
-MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("SOF Probes Client Driver");
-MODULE_IMPORT_NS("SND_SOC_SOF_CLIENT");
+MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(SND_SOC_SOF_CLIENT);

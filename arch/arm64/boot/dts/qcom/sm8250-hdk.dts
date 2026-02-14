@@ -14,7 +14,6 @@
 / {
 	model = "Qualcomm Technologies, Inc. SM8250 HDK";
 	compatible = "qcom,sm8250-hdk", "qcom,sm8250";
-	chassis-type = "embedded";
 
 	aliases {
 		serial0 = &uart12;
@@ -371,15 +370,6 @@
 
 &gpu {
 	status = "okay";
-};
-
-&gpu_zap_shader {
-	firmware-name = "qcom/sm8250/a650_zap.mbn";
-};
-
-&pon {
-	mode-bootloader = <0x2>;
-	mode-recovery = <0x1>;
 };
 
 &pon_pwrkey {

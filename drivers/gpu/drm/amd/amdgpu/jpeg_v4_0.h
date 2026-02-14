@@ -32,4 +32,5 @@ enum amdgpu_jpeg_v4_0_sub_block {
 };
 
 extern const struct amdgpu_ip_block_version jpeg_v4_0_ip_block;
+
 #endif /* __JPEG_V4_0_H__ */

@@ -82,7 +82,7 @@ struct read_buffer {
 	struct list_head list;
 	unsigned int cons;
 	unsigned int len;
-	char msg[] __counted_by(len);
+	char msg[];
 };
 
 struct xenbus_file_priv {
@@ -195,7 +195,7 @@ static int queue_reply(struct list_head *queue, const void *data, size_t len)
 	if (len > XENSTORE_PAYLOAD_MAX)
 		return -EINVAL;
 
-	rb = kmalloc(struct_size(rb, msg, len), GFP_KERNEL);
+	rb = kmalloc(sizeof(*rb) + len, GFP_KERNEL);
 	if (rb == NULL)
 		return -ENOMEM;
 
@@ -406,7 +406,7 @@ void xenbus_dev_queue_reply(struct xb_req_data *req)
 	mutex_unlock(&u->reply_mutex);
 
 	kfree(req->body);
-	kref_put(&req->kref, xs_free_req);
+	kfree(req);
 
 	kref_put(&u->kref, xenbus_file_free);
 
@@ -700,6 +700,7 @@ const struct file_operations xen_xenbus_fops = {
 	.open = xenbus_file_open,
 	.release = xenbus_file_release,
 	.poll = xenbus_file_poll,
+	.llseek = no_llseek,
 };
 EXPORT_SYMBOL_GPL(xen_xenbus_fops);
 

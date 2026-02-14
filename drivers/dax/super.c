@@ -7,12 +7,12 @@
 #include <linux/mount.h>
 #include <linux/pseudo_fs.h>
 #include <linux/magic.h>
+#include <linux/pfn_t.h>
 #include <linux/cdev.h>
 #include <linux/slab.h>
 #include <linux/uio.h>
 #include <linux/dax.h>
 #include <linux/fs.h>
-#include <linux/cacheinfo.h>
 #include "dax-private.h"
 
 /**
@@ -147,7 +147,7 @@ enum dax_device_flags {
  * pages accessible at the device relative @pgoff.
  */
 long dax_direct_access(struct dax_device *dax_dev, pgoff_t pgoff, long nr_pages,
-		enum dax_access_mode mode, void **kaddr, unsigned long *pfn)
+		enum dax_access_mode mode, void **kaddr, pfn_t *pfn)
 {
 	long avail;
 
@@ -203,8 +203,6 @@ size_t dax_copy_to_iter(struct dax_device *dax_dev, pgoff_t pgoff, void *addr,
 int dax_zero_page_range(struct dax_device *dax_dev, pgoff_t pgoff,
 			size_t nr_pages)
 {
-	int ret;
-
 	if (!dax_alive(dax_dev))
 		return -ENXIO;
 	/*
@@ -215,8 +213,7 @@ int dax_zero_page_range(struct dax_device *dax_dev, pgoff_t pgoff,
 	if (nr_pages != 1)
 		return -EIO;
 
-	ret = dax_dev->ops->zero_page_range(dax_dev, pgoff, nr_pages);
-	return dax_mem2blk_err(ret);
+	return dax_dev->ops->zero_page_range(dax_dev, pgoff, nr_pages);
 }
 EXPORT_SYMBOL_GPL(dax_zero_page_range);
 
@@ -319,11 +316,6 @@ EXPORT_SYMBOL_GPL(dax_alive);
  * that any fault handlers or operations that might have seen
  * dax_alive(), have completed.  Any operations that start after
  * synchronize_srcu() has run will abort upon seeing !dax_alive().
- *
- * Note, because alloc_dax() returns an ERR_PTR() on error, callers
- * typically store its result into a local variable in order to check
- * the result. Therefore, care must be taken to populate the struct
- * device dax_dev field make sure the dax_dev is not leaked.
  */
 void kill_dax(struct dax_device *dax_dev)
 {
@@ -331,8 +323,7 @@ void kill_dax(struct dax_device *dax_dev)
 		return;
 
 	if (dax_dev->holder_data != NULL)
-		dax_holder_notify_failure(dax_dev, 0, U64_MAX,
-				MF_MEM_PRE_REMOVE);
+		dax_holder_notify_failure(dax_dev, 0, U64_MAX, 0);
 
 	clear_bit(DAXDEV_ALIVE, &dax_dev->flags);
 	synchronize_srcu(&dax_srcu);
@@ -388,7 +379,7 @@ static const struct super_operations dax_sops = {
 	.alloc_inode = dax_alloc_inode,
 	.destroy_inode = dax_destroy_inode,
 	.free_inode = dax_free_inode,
-	.drop_inode = inode_just_drop,
+	.drop_inode = generic_delete_inode,
 };
 
 static int dax_init_fs_context(struct fs_context *fc)
@@ -433,7 +424,7 @@ static struct dax_device *dax_dev_get(dev_t devt)
 		return NULL;
 
 	dax_dev = to_dax_dev(inode);
-	if (inode_state_read_once(inode) & I_NEW) {
+	if (inode->i_state & I_NEW) {
 		set_bit(DAXDEV_ALIVE, &dax_dev->flags);
 		inode->i_cdev = &dax_dev->cdev;
 		inode->i_mode = S_IFCHR;
@@ -450,14 +441,6 @@ struct dax_device *alloc_dax(void *private, const struct dax_operations *ops)
 	struct dax_device *dax_dev;
 	dev_t devt;
 	int minor;
-
-	/*
-	 * Unavailable on architectures with virtually aliased data caches,
-	 * except for device-dax (NULL operations pointer), which does
-	 * not use aliased mappings from the kernel.
-	 */
-	if (ops && cpu_dcache_is_aliasing())
-		return ERR_PTR(-EOPNOTSUPP);
 
 	if (WARN_ON_ONCE(ops && !ops->zero_page_range))
 		return ERR_PTR(-EINVAL);
@@ -545,7 +528,8 @@ static int dax_fs_init(void)
 	int rc;
 
 	dax_cache = kmem_cache_create("dax_cache", sizeof(struct dax_device), 0,
-			SLAB_HWCACHE_ALIGN | SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
+			(SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|
+			 SLAB_MEM_SPREAD|SLAB_ACCOUNT),
 			init_once);
 	if (!dax_cache)
 		return -ENOMEM;
@@ -605,7 +589,6 @@ static void __exit dax_core_exit(void)
 }
 
 MODULE_AUTHOR("Intel Corporation");
-MODULE_DESCRIPTION("DAX: direct access to differentiated memory");
 MODULE_LICENSE("GPL v2");
 subsys_initcall(dax_core_init);
 module_exit(dax_core_exit);

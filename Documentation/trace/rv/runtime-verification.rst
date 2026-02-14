@@ -8,14 +8,14 @@ checking* and *theorem proving*) with a more practical approach for complex
 systems.
 
 Instead of relying on a fine-grained model of a system (e.g., a
-re-implementation at instruction level), RV works by analyzing the trace of the
+re-implementation a instruction level), RV works by analyzing the trace of the
 system's actual execution, comparing it against a formal specification of
 the system behavior.
 
 The main advantage is that RV can give precise information on the runtime
 behavior of the monitored system, without the pitfalls of developing models
 that require a re-implementation of the entire system in a modeling language.
-Moreover, given an efficient monitoring method, it is possible to execute an
+Moreover, given an efficient monitoring method, it is possible execute an
 *online* verification of a system, enabling the *reaction* for unexpected
 events, avoiding, for example, the propagation of a failure on safety-critical
 systems.
@@ -31,7 +31,7 @@ In Linux terms, the runtime verification monitors are encapsulated inside the
 *RV monitor* abstraction. A *RV monitor* includes a reference model of the
 system, a set of instances of the monitor (per-cpu monitor, per-task monitor,
 and so on), and the helper functions that glue the monitor to the system via
-trace, as depicted below::
+trace, as depicted bellow::
 
  Linux   +---- RV Monitor ----------------------------------+ Formal
   Realm  |                                                  |  Realm

@@ -628,8 +628,8 @@ int ubifs_create_dflt_lpt(struct ubifs_info *c, int *main_lebs, int lpt_first,
 	pnode = kzalloc(sizeof(struct ubifs_pnode), GFP_KERNEL);
 	nnode = kzalloc(sizeof(struct ubifs_nnode), GFP_KERNEL);
 	buf = vmalloc(c->leb_size);
-	ltab = vmalloc_array(c->lpt_lebs,
-			     sizeof(struct ubifs_lpt_lprops));
+	ltab = vmalloc(array_size(sizeof(struct ubifs_lpt_lprops),
+				  c->lpt_lebs));
 	if (!pnode || !nnode || !buf || !ltab || !lsave) {
 		err = -ENOMEM;
 		goto out;
@@ -1777,8 +1777,8 @@ static int lpt_init_rd(struct ubifs_info *c)
 {
 	int err, i;
 
-	c->ltab = vmalloc_array(c->lpt_lebs,
-				sizeof(struct ubifs_lpt_lprops));
+	c->ltab = vmalloc(array_size(sizeof(struct ubifs_lpt_lprops),
+				     c->lpt_lebs));
 	if (!c->ltab)
 		return -ENOMEM;
 
@@ -1846,8 +1846,8 @@ static int lpt_init_wr(struct ubifs_info *c)
 {
 	int err, i;
 
-	c->ltab_cmt = vmalloc_array(c->lpt_lebs,
-				    sizeof(struct ubifs_lpt_lprops));
+	c->ltab_cmt = vmalloc(array_size(sizeof(struct ubifs_lpt_lprops),
+					 c->lpt_lebs));
 	if (!c->ltab_cmt)
 		return -ENOMEM;
 
@@ -1918,7 +1918,6 @@ out_err:
  * @pnode: where to keep a pnode
  * @cnode: where to keep a cnode
  * @in_tree: is the node in the tree in memory
- * @ptr: union of node pointers
  * @ptr.nnode: pointer to the nnode (if it is an nnode) which may be here or in
  * the tree
  * @ptr.pnode: ditto for pnode

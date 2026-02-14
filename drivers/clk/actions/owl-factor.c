@@ -130,16 +130,14 @@ long owl_factor_helper_round_rate(struct owl_clk_common *common,
 	return *parent_rate * mul / div;
 }
 
-static int owl_factor_determine_rate(struct clk_hw *hw,
-				     struct clk_rate_request *req)
+static long owl_factor_round_rate(struct clk_hw *hw, unsigned long rate,
+			unsigned long *parent_rate)
 {
 	struct owl_factor *factor = hw_to_owl_factor(hw);
 	struct owl_factor_hw *factor_hw = &factor->factor_hw;
 
-	req->rate = owl_factor_helper_round_rate(&factor->common, factor_hw,
-						 req->rate, &req->best_parent_rate);
-
-	return 0;
+	return owl_factor_helper_round_rate(&factor->common, factor_hw,
+					rate, parent_rate);
 }
 
 unsigned long owl_factor_helper_recalc_rate(struct owl_clk_common *common,
@@ -216,7 +214,7 @@ static int owl_factor_set_rate(struct clk_hw *hw, unsigned long rate,
 }
 
 const struct clk_ops owl_factor_ops = {
-	.determine_rate = owl_factor_determine_rate,
+	.round_rate	= owl_factor_round_rate,
 	.recalc_rate	= owl_factor_recalc_rate,
 	.set_rate	= owl_factor_set_rate,
 };

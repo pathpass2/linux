@@ -20,7 +20,7 @@
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
-#include "hci_uart.h"
+#include "h4_recv.h"
 
 #define VERSION "0.11"
 
@@ -41,7 +41,6 @@ struct bpa10x_data {
 	struct usb_anchor rx_anchor;
 
 	struct sk_buff *rx_skb[2];
-	struct hci_uart hu;
 };
 
 static void bpa10x_tx_complete(struct urb *urb)
@@ -97,7 +96,7 @@ static void bpa10x_rx_complete(struct urb *urb)
 	if (urb->status == 0) {
 		bool idx = usb_pipebulk(urb->pipe);
 
-		data->rx_skb[idx] = h4_recv_buf(&data->hu, data->rx_skb[idx],
+		data->rx_skb[idx] = h4_recv_buf(hdev, data->rx_skb[idx],
 						urb->transfer_buffer,
 						urb->actual_length,
 						bpa10x_recv_pkts,
@@ -389,7 +388,6 @@ static int bpa10x_probe(struct usb_interface *intf,
 	hci_set_drvdata(hdev, data);
 
 	data->hdev = hdev;
-	data->hu.hdev = hdev;
 
 	SET_HCIDEV_DEV(hdev, &intf->dev);
 
@@ -400,7 +398,7 @@ static int bpa10x_probe(struct usb_interface *intf,
 	hdev->send     = bpa10x_send_frame;
 	hdev->set_diag = bpa10x_set_diag;
 
-	hci_set_quirk(hdev, HCI_QUIRK_RESET_ON_CLOSE);
+	set_bit(HCI_QUIRK_RESET_ON_CLOSE, &hdev->quirks);
 
 	err = hci_register_dev(hdev);
 	if (err < 0) {

@@ -116,7 +116,7 @@ static inline void sx865x_penrelease(struct sx8654 *ts)
 
 static void sx865x_penrelease_timer_handler(struct timer_list *t)
 {
-	struct sx8654 *ts = timer_container_of(ts, t, timer);
+	struct sx8654 *ts = from_timer(ts, t, timer);
 	unsigned long flags;
 
 	spin_lock_irqsave(&ts->lock, flags);
@@ -290,7 +290,7 @@ static void sx8654_close(struct input_dev *dev)
 	disable_irq(client->irq);
 
 	if (!sx8654->data->has_irq_penrelease)
-		timer_delete_sync(&sx8654->timer);
+		del_timer_sync(&sx8654->timer);
 
 	/* enable manual mode mode */
 	error = i2c_smbus_write_byte(client, sx8654->data->cmd_manual);
@@ -323,9 +323,13 @@ static int sx8654_probe(struct i2c_client *client)
 
 	sx8654->gpio_reset = devm_gpiod_get_optional(&client->dev, "reset",
 						     GPIOD_OUT_HIGH);
-	if (IS_ERR(sx8654->gpio_reset))
-		return dev_err_probe(&client->dev, PTR_ERR(sx8654->gpio_reset),
-				     "unable to get reset-gpio\n");
+	if (IS_ERR(sx8654->gpio_reset)) {
+		error = PTR_ERR(sx8654->gpio_reset);
+		if (error != -EPROBE_DEFER)
+			dev_err(&client->dev, "unable to get reset-gpio: %d\n",
+				error);
+		return error;
+	}
 	dev_dbg(&client->dev, "got GPIO reset pin\n");
 
 	sx8654->data = device_get_match_data(&client->dev);
@@ -466,7 +470,7 @@ static struct i2c_driver sx8654_driver = {
 		.of_match_table = of_match_ptr(sx8654_of_match),
 	},
 	.id_table = sx8654_id_table,
-	.probe = sx8654_probe,
+	.probe_new = sx8654_probe,
 };
 module_i2c_driver(sx8654_driver);
 

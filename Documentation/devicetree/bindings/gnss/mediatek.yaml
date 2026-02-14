@@ -15,7 +15,6 @@ description:
 
 allOf:
   - $ref: gnss-common.yaml#
-  - $ref: /schemas/serial/serial-peripheral-props.yaml#
 
 properties:
   compatible:

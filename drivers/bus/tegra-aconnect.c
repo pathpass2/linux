@@ -53,9 +53,11 @@ static int tegra_aconnect_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void tegra_aconnect_remove(struct platform_device *pdev)
+static int tegra_aconnect_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static int tegra_aconnect_runtime_resume(struct device *dev)

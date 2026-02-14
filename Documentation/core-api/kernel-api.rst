@@ -3,6 +3,12 @@ The Linux Kernel API
 ====================
 
 
+List Management Functions
+=========================
+
+.. kernel-doc:: include/linux/list.h
+   :internal:
+
 Basic C Library Functions
 =========================
 
@@ -90,12 +96,6 @@ Command-line Parsing
 .. kernel-doc:: lib/cmdline.c
    :export:
 
-Error Pointers
---------------
-
-.. kernel-doc:: include/linux/err.h
-   :internal:
-
 Sorting
 -------
 
@@ -130,27 +130,25 @@ Arithmetic Overflow Checking
 CRC Functions
 -------------
 
-.. kernel-doc:: lib/crc/crc4.c
+.. kernel-doc:: lib/crc4.c
    :export:
 
-.. kernel-doc:: lib/crc/crc7.c
+.. kernel-doc:: lib/crc7.c
    :export:
 
-.. kernel-doc:: lib/crc/crc8.c
+.. kernel-doc:: lib/crc8.c
    :export:
 
-.. kernel-doc:: lib/crc/crc16.c
+.. kernel-doc:: lib/crc16.c
    :export:
 
-.. kernel-doc:: lib/crc/crc-ccitt.c
+.. kernel-doc:: lib/crc32.c
+
+.. kernel-doc:: lib/crc-ccitt.c
    :export:
 
-.. kernel-doc:: lib/crc/crc-itu-t.c
+.. kernel-doc:: lib/crc-itu-t.c
    :export:
-
-.. kernel-doc:: include/linux/crc32.h
-
-.. kernel-doc:: include/linux/crc64.h
 
 Base 2 log and power Functions
 ------------------------------
@@ -158,10 +156,8 @@ Base 2 log and power Functions
 .. kernel-doc:: include/linux/log2.h
    :internal:
 
-Integer log and power Functions
--------------------------------
-
-.. kernel-doc:: include/linux/int_log.h
+Integer power Functions
+-----------------------
 
 .. kernel-doc:: lib/math/int_pow.c
    :export:
@@ -224,29 +220,11 @@ relay interface
 Module Support
 ==============
 
-Kernel module auto-loading
---------------------------
+Module Loading
+--------------
 
-.. kernel-doc:: kernel/module/kmod.c
+.. kernel-doc:: kernel/kmod.c
    :export:
-
-Module debugging
-----------------
-
-.. kernel-doc:: kernel/module/stats.c
-   :doc: module debugging statistics overview
-
-dup_failed_modules - tracks duplicate failed modules
-****************************************************
-
-.. kernel-doc:: kernel/module/stats.c
-   :doc: dup_failed_modules - tracks duplicate failed modules
-
-module statistics debugfs counters
-**********************************
-
-.. kernel-doc:: kernel/module/stats.c
-   :doc: module statistics debugfs counters
 
 Inter Module support
 --------------------
@@ -416,15 +394,3 @@ Read-Copy Update (RCU)
 .. kernel-doc:: include/linux/rcu_sync.h
 
 .. kernel-doc:: kernel/rcu/sync.c
-
-.. kernel-doc:: kernel/rcu/tasks.h
-
-.. kernel-doc:: kernel/rcu/tree_stall.h
-
-.. kernel-doc:: include/linux/rcupdate_trace.h
-
-.. kernel-doc:: include/linux/rcupdate_wait.h
-
-.. kernel-doc:: include/linux/rcuref.h
-
-.. kernel-doc:: include/linux/rcutree.h

@@ -17,6 +17,7 @@
 #include <linux/iio/events.h>
 
 #define APDS9300_DRV_NAME "apds9300"
+#define APDS9300_IRQ_NAME "apds9300_event"
 
 /* Command register bits */
 #define APDS9300_CMD	BIT(7) /* Select command register. Must write as 1 */
@@ -45,10 +46,10 @@
 struct apds9300_data {
 	struct i2c_client *client;
 	struct mutex mutex;
-	bool power_state;
+	int power_state;
 	int thresh_low;
 	int thresh_hi;
-	bool intr_en;
+	int intr_en;
 };
 
 /* Lux calculation */
@@ -147,7 +148,7 @@ static int apds9300_set_thresh_hi(struct apds9300_data *data, int value)
 	return 0;
 }
 
-static int apds9300_set_intr_state(struct apds9300_data *data, bool state)
+static int apds9300_set_intr_state(struct apds9300_data *data, int state)
 {
 	int ret;
 	u8 cmd;
@@ -168,7 +169,7 @@ static int apds9300_set_intr_state(struct apds9300_data *data, bool state)
 	return 0;
 }
 
-static int apds9300_set_power_state(struct apds9300_data *data, bool state)
+static int apds9300_set_power_state(struct apds9300_data *data, int state)
 {
 	int ret;
 	u8 cmd;
@@ -220,7 +221,7 @@ static int apds9300_chip_init(struct apds9300_data *data)
 	 * Disable interrupt to ensure thai it is doesn't enable
 	 * i.e. after device soft reset
 	 */
-	ret = apds9300_set_intr_state(data, false);
+	ret = apds9300_set_intr_state(data, 0);
 	if (ret < 0)
 		goto err;
 
@@ -320,7 +321,7 @@ static int apds9300_read_interrupt_config(struct iio_dev *indio_dev,
 
 static int apds9300_write_interrupt_config(struct iio_dev *indio_dev,
 		const struct iio_chan_spec *chan, enum iio_event_type type,
-		enum iio_event_direction dir, bool state)
+		enum iio_event_direction dir, int state)
 {
 	struct apds9300_data *data = iio_priv(indio_dev);
 	int ret;
@@ -431,7 +432,7 @@ static int apds9300_probe(struct i2c_client *client)
 		ret = devm_request_threaded_irq(&client->dev, client->irq,
 				NULL, apds9300_interrupt_handler,
 				IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
-				"apds9300_event", indio_dev);
+				APDS9300_IRQ_NAME, indio_dev);
 		if (ret) {
 			dev_err(&client->dev, "irq request error %d\n", -ret);
 			goto err;
@@ -458,8 +459,8 @@ static void apds9300_remove(struct i2c_client *client)
 	iio_device_unregister(indio_dev);
 
 	/* Ensure that power off and interrupts are disabled */
-	apds9300_set_intr_state(data, false);
-	apds9300_set_power_state(data, false);
+	apds9300_set_intr_state(data, 0);
+	apds9300_set_power_state(data, 0);
 }
 
 static int apds9300_suspend(struct device *dev)
@@ -469,7 +470,7 @@ static int apds9300_suspend(struct device *dev)
 	int ret;
 
 	mutex_lock(&data->mutex);
-	ret = apds9300_set_power_state(data, false);
+	ret = apds9300_set_power_state(data, 0);
 	mutex_unlock(&data->mutex);
 
 	return ret;
@@ -482,7 +483,7 @@ static int apds9300_resume(struct device *dev)
 	int ret;
 
 	mutex_lock(&data->mutex);
-	ret = apds9300_set_power_state(data, true);
+	ret = apds9300_set_power_state(data, 1);
 	mutex_unlock(&data->mutex);
 
 	return ret;
@@ -492,7 +493,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(apds9300_pm_ops, apds9300_suspend,
 				apds9300_resume);
 
 static const struct i2c_device_id apds9300_id[] = {
-	{ APDS9300_DRV_NAME },
+	{ APDS9300_DRV_NAME, 0 },
 	{ }
 };
 
@@ -503,7 +504,7 @@ static struct i2c_driver apds9300_driver = {
 		.name	= APDS9300_DRV_NAME,
 		.pm	= pm_sleep_ptr(&apds9300_pm_ops),
 	},
-	.probe		= apds9300_probe,
+	.probe_new	= apds9300_probe,
 	.remove		= apds9300_remove,
 	.id_table	= apds9300_id,
 };

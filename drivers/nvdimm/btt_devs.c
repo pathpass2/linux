@@ -19,7 +19,7 @@ static void nd_btt_release(struct device *dev)
 
 	dev_dbg(dev, "trace\n");
 	nd_detach_ndns(&nd_btt->dev, &nd_btt->ndns);
-	ida_free(&nd_region->btt_ida, nd_btt->id);
+	ida_simple_remove(&nd_region->btt_ida, nd_btt->id);
 	kfree(nd_btt->uuid);
 	kfree(nd_btt);
 }
@@ -50,12 +50,14 @@ static ssize_t sector_size_store(struct device *dev,
 	struct nd_btt *nd_btt = to_nd_btt(dev);
 	ssize_t rc;
 
-	guard(device)(dev);
-	guard(nvdimm_bus)(dev);
+	device_lock(dev);
+	nvdimm_bus_lock(dev);
 	rc = nd_size_select_store(dev, buf, &nd_btt->lbasize,
 			btt_lbasize_supported);
 	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
 			buf[len - 1] == '\n' ? "" : "\n");
+	nvdimm_bus_unlock(dev);
+	device_unlock(dev);
 
 	return rc ? rc : len;
 }
@@ -91,10 +93,13 @@ static ssize_t namespace_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct nd_btt *nd_btt = to_nd_btt(dev);
+	ssize_t rc;
 
-	guard(nvdimm_bus)(dev);
-	return sprintf(buf, "%s\n", nd_btt->ndns
+	nvdimm_bus_lock(dev);
+	rc = sprintf(buf, "%s\n", nd_btt->ndns
 			? dev_name(&nd_btt->ndns->dev) : "");
+	nvdimm_bus_unlock(dev);
+	return rc;
 }
 
 static ssize_t namespace_store(struct device *dev,
@@ -103,11 +108,13 @@ static ssize_t namespace_store(struct device *dev,
 	struct nd_btt *nd_btt = to_nd_btt(dev);
 	ssize_t rc;
 
-	guard(device)(dev);
-	guard(nvdimm_bus)(dev);
+	device_lock(dev);
+	nvdimm_bus_lock(dev);
 	rc = nd_namespace_store(dev, &nd_btt->ndns, buf, len);
 	dev_dbg(dev, "result: %zd wrote: %s%s", rc, buf,
 			buf[len - 1] == '\n' ? "" : "\n");
+	nvdimm_bus_unlock(dev);
+	device_unlock(dev);
 
 	return rc;
 }
@@ -184,7 +191,7 @@ static struct device *__nd_btt_create(struct nd_region *nd_region,
 	if (!nd_btt)
 		return NULL;
 
-	nd_btt->id = ida_alloc(&nd_region->btt_ida, GFP_KERNEL);
+	nd_btt->id = ida_simple_get(&nd_region->btt_ida, 0, 0, GFP_KERNEL);
 	if (nd_btt->id < 0)
 		goto out_nd_btt;
 
@@ -210,7 +217,7 @@ static struct device *__nd_btt_create(struct nd_region *nd_region,
 	return dev;
 
 out_put_id:
-	ida_free(&nd_region->btt_ida, nd_btt->id);
+	ida_simple_remove(&nd_region->btt_ida, nd_btt->id);
 
 out_nd_btt:
 	kfree(nd_btt);
@@ -344,8 +351,9 @@ int nd_btt_probe(struct device *dev, struct nd_namespace_common *ndns)
 		return -ENODEV;
 	}
 
-	scoped_guard(nvdimm_bus, &ndns->dev)
-		btt_dev = __nd_btt_create(nd_region, 0, NULL, ndns);
+	nvdimm_bus_lock(&ndns->dev);
+	btt_dev = __nd_btt_create(nd_region, 0, NULL, ndns);
+	nvdimm_bus_unlock(&ndns->dev);
 	if (!btt_dev)
 		return -ENOMEM;
 	btt_sb = devm_kzalloc(dev, sizeof(*btt_sb), GFP_KERNEL);

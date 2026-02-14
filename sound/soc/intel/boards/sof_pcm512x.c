@@ -71,7 +71,7 @@ static const struct dmi_system_id sof_pcm512x_quirk_table[] = {
 static int sof_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct sof_card_private *ctx = snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_dai *dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct snd_soc_dai *dai = asoc_rtd_to_codec(rtd, 0);
 	struct sof_hdmi_pcm *pcm;
 
 	pcm = devm_kzalloc(rtd->card->dev, sizeof(*pcm), GFP_KERNEL);
@@ -89,7 +89,7 @@ static int sof_hdmi_init(struct snd_soc_pcm_runtime *rtd)
 
 static int sof_pcm512x_codec_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_component *codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+	struct snd_soc_component *codec = asoc_rtd_to_codec(rtd, 0)->component;
 
 	snd_soc_component_update_bits(codec, PCM512x_GPIO_EN, 0x08, 0x08);
 	snd_soc_component_update_bits(codec, PCM512x_GPIO_OUTPUT_4, 0x0f, 0x02);
@@ -101,8 +101,8 @@ static int sof_pcm512x_codec_init(struct snd_soc_pcm_runtime *rtd)
 
 static int aif1_startup(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_component *codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_component *codec = asoc_rtd_to_codec(rtd, 0)->component;
 
 	snd_soc_component_update_bits(codec, PCM512x_GPIO_CONTROL_1,
 				      0x08, 0x08);
@@ -112,8 +112,8 @@ static int aif1_startup(struct snd_pcm_substream *substream)
 
 static void aif1_shutdown(struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_component *codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_component *codec = asoc_rtd_to_codec(rtd, 0)->component;
 
 	snd_soc_component_update_bits(codec, PCM512x_GPIO_CONTROL_1,
 				      0x08, 0x00);
@@ -177,10 +177,9 @@ static const struct snd_soc_dapm_route dmic_map[] = {
 static int dmic_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_card *card = rtd->card;
-	struct snd_soc_dapm_context *dapm = snd_soc_card_to_dapm(card);
 	int ret;
 
-	ret = snd_soc_dapm_new_controls(dapm, dmic_widgets,
+	ret = snd_soc_dapm_new_controls(&card->dapm, dmic_widgets,
 					ARRAY_SIZE(dmic_widgets));
 	if (ret) {
 		dev_err(card->dev, "DMic widget addition failed: %d\n", ret);
@@ -188,7 +187,7 @@ static int dmic_init(struct snd_soc_pcm_runtime *rtd)
 		return ret;
 	}
 
-	ret = snd_soc_dapm_add_routes(dapm, dmic_map,
+	ret = snd_soc_dapm_add_routes(&card->dapm, dmic_map,
 				      ARRAY_SIZE(dmic_map));
 
 	if (ret)
@@ -247,11 +246,12 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 	links[id].num_platforms = ARRAY_SIZE(platform_component);
 	links[id].init = sof_pcm512x_codec_init;
 	links[id].ops = &sof_pcm512x_ops;
+	links[id].dpcm_playback = 1;
 	/*
 	 * capture only supported with specific versions of the Hifiberry DAC+
 	 */
-	if (!(sof_pcm512x_quirk & SOF_PCM512X_ENABLE_SSP_CAPTURE))
-		links[id].playback_only = 1;
+	if (sof_pcm512x_quirk & SOF_PCM512X_ENABLE_SSP_CAPTURE)
+		links[id].dpcm_capture = 1;
 	links[id].no_pcm = 1;
 	links[id].cpus = &cpus[id];
 	links[id].num_cpus = 1;
@@ -294,7 +294,7 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 		links[id].platforms = platform_component;
 		links[id].num_platforms = ARRAY_SIZE(platform_component);
 		links[id].ignore_suspend = 1;
-		links[id].capture_only = 1;
+		links[id].dpcm_capture = 1;
 		links[id].no_pcm = 1;
 		id++;
 	}
@@ -331,7 +331,8 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 				devm_kasprintf(dev, GFP_KERNEL,
 					       "intel-hdmi-hifi%d", i);
 		} else {
-			idisp_components[i - 1] = snd_soc_dummy_dlc;
+			idisp_components[i - 1].name = "snd-soc-dummy";
+			idisp_components[i - 1].dai_name = "snd-soc-dummy-dai";
 		}
 		if (!idisp_components[i - 1].dai_name)
 			goto devm_err;
@@ -341,7 +342,7 @@ static struct snd_soc_dai_link *sof_card_dai_links_create(struct device *dev,
 		links[id].platforms = platform_component;
 		links[id].num_platforms = ARRAY_SIZE(platform_component);
 		links[id].init = sof_hdmi_init;
-		links[id].playback_only = 1;
+		links[id].dpcm_playback = 1;
 		links[id].no_pcm = 1;
 		id++;
 	}
@@ -371,7 +372,8 @@ static int sof_audio_probe(struct platform_device *pdev)
 		sof_pcm512x_quirk = SOF_PCM512X_SSP_CODEC(2);
 	} else {
 		dmic_be_num = 2;
-		if (mach->mach_params.codec_mask & IDISP_CODEC_MASK)
+		if (mach->mach_params.common_hdmi_codec_drv &&
+		    (mach->mach_params.codec_mask & IDISP_CODEC_MASK))
 			ctx->idisp_codec = true;
 
 		/* links are always present in topology */
@@ -414,7 +416,7 @@ static int sof_audio_probe(struct platform_device *pdev)
 					  &sof_audio_card_pcm512x);
 }
 
-static void sof_pcm512x_remove(struct platform_device *pdev)
+static int sof_pcm512x_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 	struct snd_soc_component *component;
@@ -425,6 +427,8 @@ static void sof_pcm512x_remove(struct platform_device *pdev)
 			break;
 		}
 	}
+
+	return 0;
 }
 
 static struct platform_driver sof_audio = {
@@ -441,4 +445,4 @@ MODULE_DESCRIPTION("ASoC Intel(R) SOF + PCM512x Machine driver");
 MODULE_AUTHOR("Pierre-Louis Bossart");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:sof_pcm512x");
-MODULE_IMPORT_NS("SND_SOC_INTEL_HDA_DSP_COMMON");
+MODULE_IMPORT_NS(SND_SOC_INTEL_HDA_DSP_COMMON);

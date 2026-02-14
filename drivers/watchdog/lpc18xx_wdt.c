@@ -77,8 +77,7 @@ static int lpc18xx_wdt_feed(struct watchdog_device *wdt_dev)
 
 static void lpc18xx_wdt_timer_feed(struct timer_list *t)
 {
-	struct lpc18xx_wdt_dev *lpc18xx_wdt = timer_container_of(lpc18xx_wdt,
-								 t, timer);
+	struct lpc18xx_wdt_dev *lpc18xx_wdt = from_timer(lpc18xx_wdt, t, timer);
 	struct watchdog_device *wdt_dev = &lpc18xx_wdt->wdt_dev;
 
 	lpc18xx_wdt_feed(wdt_dev);
@@ -136,7 +135,7 @@ static int lpc18xx_wdt_start(struct watchdog_device *wdt_dev)
 	unsigned int val;
 
 	if (timer_pending(&lpc18xx_wdt->timer))
-		timer_delete(&lpc18xx_wdt->timer);
+		del_timer(&lpc18xx_wdt->timer);
 
 	val = readl(lpc18xx_wdt->base + LPC18XX_WDT_MOD);
 	val |= LPC18XX_WDT_MOD_WDEN;
@@ -262,12 +261,14 @@ static int lpc18xx_wdt_probe(struct platform_device *pdev)
 	return devm_watchdog_register_device(dev, &lpc18xx_wdt->wdt_dev);
 }
 
-static void lpc18xx_wdt_remove(struct platform_device *pdev)
+static int lpc18xx_wdt_remove(struct platform_device *pdev)
 {
 	struct lpc18xx_wdt_dev *lpc18xx_wdt = platform_get_drvdata(pdev);
 
 	dev_warn(&pdev->dev, "I quit now, hardware will probably reboot!\n");
-	timer_delete_sync(&lpc18xx_wdt->timer);
+	del_timer_sync(&lpc18xx_wdt->timer);
+
+	return 0;
 }
 
 static const struct of_device_id lpc18xx_wdt_match[] = {

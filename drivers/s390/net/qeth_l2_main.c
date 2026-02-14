@@ -7,9 +7,9 @@
  *		 Frank Blaschka <frank.blaschka@de.ibm.com>
  */
 
-#define pr_fmt(fmt) "qeth: " fmt
+#define KMSG_COMPONENT "qeth"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/string.h>
@@ -22,7 +22,6 @@
 #include <linux/hash.h>
 #include <linux/hashtable.h>
 #include <net/switchdev.h>
-#include <asm/machine.h>
 #include <asm/chsc.h>
 #include <asm/css_chars.h>
 #include <asm/setup.h>
@@ -300,7 +299,7 @@ static int qeth_l2_request_initial_mac(struct qeth_card *card)
 
 	QETH_CARD_TEXT(card, 2, "l2reqmac");
 
-	if (machine_is_vm()) {
+	if (MACHINE_IS_VM) {
 		rc = qeth_vm_request_mac(card);
 		if (!rc)
 			goto out;
@@ -2389,12 +2388,9 @@ static int qeth_l2_set_online(struct qeth_card *card, bool carrier_ok)
 		qeth_enable_hw_features(dev);
 		qeth_l2_enable_brport_features(card);
 
-		if (netif_running(dev)) {
-			local_bh_disable();
-			napi_schedule(&card->napi);
-			/* kick-start the NAPI softirq: */
-			local_bh_enable();
-			qeth_l2_set_rx_mode(dev);
+		if (card->info.open_when_online) {
+			card->info.open_when_online = 0;
+			dev_open(dev, NULL);
 		}
 		rtnl_unlock();
 	}

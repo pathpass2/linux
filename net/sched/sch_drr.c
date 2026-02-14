@@ -17,6 +17,7 @@
 
 struct drr_class {
 	struct Qdisc_class_common	common;
+	unsigned int			filter_cnt;
 
 	struct gnet_stats_basic_sync		bstats;
 	struct gnet_stats_queue		qstats;
@@ -34,11 +35,6 @@ struct drr_sched {
 	struct tcf_block		*block;
 	struct Qdisc_class_hash		clhash;
 };
-
-static bool cl_is_active(struct drr_class *cl)
-{
-	return !list_empty(&cl->alist);
-}
 
 static struct drr_class *drr_find_class(struct Qdisc *sch, u32 classid)
 {
@@ -110,7 +106,6 @@ static int drr_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 		return -ENOBUFS;
 
 	gnet_stats_basic_sync_init(&cl->bstats);
-	INIT_LIST_HEAD(&cl->alist);
 	cl->common.classid = classid;
 	cl->quantum	   = quantum;
 	cl->qdisc	   = qdisc_create_dflt(sch->dev_queue,
@@ -155,10 +150,8 @@ static int drr_delete_class(struct Qdisc *sch, unsigned long arg,
 	struct drr_sched *q = qdisc_priv(sch);
 	struct drr_class *cl = (struct drr_class *)arg;
 
-	if (qdisc_class_in_use(&cl->common)) {
-		NL_SET_ERR_MSG(extack, "DRR class is in use");
+	if (cl->filter_cnt > 0)
 		return -EBUSY;
-	}
 
 	sch_tree_lock(sch);
 
@@ -194,8 +187,8 @@ static unsigned long drr_bind_tcf(struct Qdisc *sch, unsigned long parent,
 {
 	struct drr_class *cl = drr_find_class(sch, classid);
 
-	if (cl)
-		qdisc_class_get(&cl->common);
+	if (cl != NULL)
+		cl->filter_cnt++;
 
 	return (unsigned long)cl;
 }
@@ -204,7 +197,7 @@ static void drr_unbind_tcf(struct Qdisc *sch, unsigned long arg)
 {
 	struct drr_class *cl = (struct drr_class *)arg;
 
-	qdisc_class_put(&cl->common);
+	cl->filter_cnt--;
 }
 
 static int drr_graft_class(struct Qdisc *sch, unsigned long arg,
@@ -235,7 +228,7 @@ static void drr_qlen_notify(struct Qdisc *csh, unsigned long arg)
 {
 	struct drr_class *cl = (struct drr_class *)arg;
 
-	list_del_init(&cl->alist);
+	list_del(&cl->alist);
 }
 
 static int drr_dump_class(struct Qdisc *sch, unsigned long arg,
@@ -342,6 +335,7 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	struct drr_sched *q = qdisc_priv(sch);
 	struct drr_class *cl;
 	int err = 0;
+	bool first;
 
 	cl = drr_classify(skb, sch, &err);
 	if (cl == NULL) {
@@ -351,6 +345,7 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		return err;
 	}
 
+	first = !cl->qdisc->q.qlen;
 	err = qdisc_enqueue(skb, cl->qdisc, to_free);
 	if (unlikely(err != NET_XMIT_SUCCESS)) {
 		if (net_xmit_drop_count(err)) {
@@ -360,7 +355,7 @@ static int drr_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		return err;
 	}
 
-	if (!cl_is_active(cl)) {
+	if (first) {
 		list_add_tail(&cl->alist, &q->active);
 		cl->deficit = cl->quantum;
 	}
@@ -394,7 +389,7 @@ static struct sk_buff *drr_dequeue(struct Qdisc *sch)
 			if (unlikely(skb == NULL))
 				goto out;
 			if (cl->qdisc->q.qlen == 0)
-				list_del_init(&cl->alist);
+				list_del(&cl->alist);
 
 			bstats_update(&cl->bstats, skb);
 			qdisc_bstats_update(sch, skb);
@@ -435,7 +430,7 @@ static void drr_reset_qdisc(struct Qdisc *sch)
 	for (i = 0; i < q->clhash.hashsize; i++) {
 		hlist_for_each_entry(cl, &q->clhash.hash[i], common.hnode) {
 			if (cl->qdisc->q.qlen)
-				list_del_init(&cl->alist);
+				list_del(&cl->alist);
 			qdisc_reset(cl->qdisc);
 		}
 	}
@@ -485,7 +480,6 @@ static struct Qdisc_ops drr_qdisc_ops __read_mostly = {
 	.destroy	= drr_destroy_qdisc,
 	.owner		= THIS_MODULE,
 };
-MODULE_ALIAS_NET_SCH("drr");
 
 static int __init drr_init(void)
 {
@@ -500,4 +494,3 @@ static void __exit drr_exit(void)
 module_init(drr_init);
 module_exit(drr_exit);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Deficit Round Robin scheduler");

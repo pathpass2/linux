@@ -16,6 +16,8 @@ extern struct dvb_frontend *fc0013_attach(struct dvb_frontend *fe,
 					struct i2c_adapter *i2c,
 					u8 i2c_address, int dual_master,
 					enum fc001x_xtal_freq xtal_freq);
+extern int fc0013_rc_cal_add(struct dvb_frontend *fe, int rc_val);
+extern int fc0013_rc_cal_reset(struct dvb_frontend *fe);
 #else
 static inline struct dvb_frontend *fc0013_attach(struct dvb_frontend *fe,
 					struct i2c_adapter *i2c,
@@ -26,6 +28,15 @@ static inline struct dvb_frontend *fc0013_attach(struct dvb_frontend *fe,
 	return NULL;
 }
 
+static inline int fc0013_rc_cal_add(struct dvb_frontend *fe, int rc_val)
+{
+	return 0;
+}
+
+static inline int fc0013_rc_cal_reset(struct dvb_frontend *fe)
+{
+	return 0;
+}
 #endif
 
 #endif

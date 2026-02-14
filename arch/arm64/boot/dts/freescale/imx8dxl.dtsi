@@ -4,8 +4,6 @@
  */
 
 #include <dt-bindings/clock/imx8-clock.h>
-#include <dt-bindings/dma/fsl-edma.h>
-#include <dt-bindings/clock/imx8-lpcg.h>
 #include <dt-bindings/firmware/imx/rsrc.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -30,10 +28,6 @@
 		gpio6 = &lsio_gpio6;
 		gpio7 = &lsio_gpio7;
 		mu1 = &lsio_mu1;
-		spi0 = &lpspi0;
-		spi1 = &lpspi1;
-		spi2 = &lpspi2;
-		spi3 = &lpspi3;
 	};
 
 	cpus: cpus {
@@ -66,7 +60,6 @@
 		A35_L2: l2-cache0 {
 			compatible = "cache";
 			cache-level = <2>;
-			cache-unified;
 		};
 	};
 
@@ -92,7 +85,6 @@
 		compatible = "arm,gic-v3";
 		reg = <0x0 0x51a00000 0 0x10000>, /* GIC Dist */
 		      <0x0 0x51b00000 0 0xc0000>; /* GICR (RD_base + SGI_base) */
-		#address-cells = <0>;
 		#interrupt-cells = <3>;
 		interrupt-controller;
 		interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
@@ -110,7 +102,7 @@
 	};
 
 	pmu {
-		compatible = "arm,cortex-a35-pmu";
+		compatible = "arm,armv8-pmuv3";
 		interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_HIGH>;
 	};
 
@@ -129,13 +121,17 @@
 			  &lsio_mu1 3 3>;
 
 		pd: power-controller {
-			compatible = "fsl,imx8dl-scu-pd", "fsl,scu-pd";
+			compatible = "fsl,scu-pd";
 			#power-domain-cells = <1>;
+			wakeup-irq = <160 163 235 236 237 228 229 230 231 238
+				     239 240 166 169>;
 		};
 
 		clk: clock-controller {
 			compatible = "fsl,imx8dxl-clk", "fsl,scu-clk";
 			#clock-cells = <2>;
+			clocks = <&xtal32k &xtal24m>;
+			clock-names = "xtal_32KHz", "xtal_24Mhz";
 		};
 
 		scu_gpio: gpio {
@@ -173,12 +169,12 @@
 		};
 
 		watchdog {
-			compatible = "fsl,imx8dxl-sc-wdt", "fsl,imx-sc-wdt";
+			compatible = "fsl,imx-sc-wdt";
 			timeout-sec = <60>;
 		};
 
 		tsens: thermal-sensor {
-			compatible = "fsl,imx8dxl-sc-thermal", "fsl,imx-sc-thermal";
+			compatible = "fsl,imx-sc-thermal";
 			#thermal-sensor-cells = <1>;
 		};
 	};
@@ -192,7 +188,7 @@
 	};
 
 	thermal_zones: thermal-zones {
-		cpu-thermal {
+		cpu-thermal0 {
 			polling-delay-passive = <250>;
 			polling-delay = <2000>;
 			thermal-sensors = <&tsens IMX_SC_R_SYSTEM>;
@@ -236,35 +232,14 @@
 		clock-output-names = "xtal_24MHz";
 	};
 
-	db_ipg_clk: clock-db-ipg {
-		compatible = "fixed-clock";
-		#clock-cells = <0>;
-		clock-frequency = <456000000>;
-		clock-output-names = "db_ipg_clk";
-	};
-
 	/* sorted in register address */
-	#include "imx8-ss-cm40.dtsi"
 	#include "imx8-ss-adma.dtsi"
 	#include "imx8-ss-conn.dtsi"
 	#include "imx8-ss-ddr.dtsi"
 	#include "imx8-ss-lsio.dtsi"
-	#include "imx8-ss-hsio.dtsi"
 };
 
 #include "imx8dxl-ss-adma.dtsi"
 #include "imx8dxl-ss-conn.dtsi"
 #include "imx8dxl-ss-lsio.dtsi"
 #include "imx8dxl-ss-ddr.dtsi"
-#include "imx8dxl-ss-hsio.dtsi"
-
-&cm40_intmux {
-	interrupts = <GIC_SPI 8 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 9 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 10 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 11 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 12 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 13 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 14 IRQ_TYPE_LEVEL_HIGH>,
-		     <GIC_SPI 15 IRQ_TYPE_LEVEL_HIGH>;
-};

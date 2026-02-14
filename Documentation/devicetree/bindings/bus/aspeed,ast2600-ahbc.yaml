@@ -17,10 +17,8 @@ description: |
 
 properties:
   compatible:
-    items:
-      - enum:
-          - aspeed,ast2600-ahbc
-      - const: syscon
+    enum:
+      - aspeed,ast2600-ahbc
 
   reg:
     maxItems: 1
@@ -34,6 +32,6 @@ additionalProperties: false
 examples:
   - |
     ahbc@1e600000 {
-        compatible = "aspeed,ast2600-ahbc", "syscon";
+        compatible = "aspeed,ast2600-ahbc";
         reg = <0x1e600000 0x100>;
     };

@@ -30,7 +30,6 @@ static phys_addr_t __init __efi_memmap_alloc_late(unsigned long size)
 	return PFN_PHYS(page_to_pfn(p));
 }
 
-static
 void __init __efi_memmap_free(u64 phys, unsigned long size, unsigned long flags)
 {
 	if (flags & EFI_MEMMAP_MEMBLOCK) {
@@ -42,7 +41,7 @@ void __init __efi_memmap_free(u64 phys, unsigned long size, unsigned long flags)
 		struct page *p = pfn_to_page(PHYS_PFN(phys));
 		unsigned int order = get_order(size);
 
-		__free_pages(p, order);
+		free_pages((unsigned long) page_address(p), order);
 	}
 }
 
@@ -83,7 +82,7 @@ int __init efi_memmap_alloc(unsigned int num_entries,
 
 /**
  * efi_memmap_install - Install a new EFI memory map in efi.memmap
- * @data: efi memmap installation parameters
+ * @ctx: map allocation parameters (address, size, flags)
  *
  * Unlike efi_memmap_init_*(), this function does not allow the caller
  * to switch from early to late mappings. It simply uses the existing
@@ -93,22 +92,12 @@ int __init efi_memmap_alloc(unsigned int num_entries,
  */
 int __init efi_memmap_install(struct efi_memory_map_data *data)
 {
-	unsigned long size = efi.memmap.desc_size * efi.memmap.nr_map;
-	unsigned long flags = efi.memmap.flags;
-	u64 phys = efi.memmap.phys_map;
-	int ret;
-
 	efi_memmap_unmap();
 
 	if (efi_enabled(EFI_PARAVIRT))
 		return 0;
 
-	ret = __efi_memmap_init(data);
-	if (ret)
-		return ret;
-
-	__efi_memmap_free(phys, size, flags);
-	return 0;
+	return __efi_memmap_init(data);
 }
 
 /**

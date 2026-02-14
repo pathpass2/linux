@@ -241,7 +241,7 @@ static int dw_hdmi_imx_probe(struct platform_device *pdev)
 	if (IS_ERR(hdmi->hdmi))
 		return PTR_ERR(hdmi->hdmi);
 
-	hdmi->bridge = of_drm_find_and_get_bridge(np);
+	hdmi->bridge = of_drm_find_bridge(np);
 	if (!hdmi->bridge) {
 		dev_err(hdmi->dev, "Unable to find bridge\n");
 		dw_hdmi_remove(hdmi->hdmi);
@@ -249,21 +249,20 @@ static int dw_hdmi_imx_probe(struct platform_device *pdev)
 	}
 
 	ret = component_add(&pdev->dev, &dw_hdmi_imx_ops);
-	if (ret) {
-		drm_bridge_put(hdmi->bridge);
+	if (ret)
 		dw_hdmi_remove(hdmi->hdmi);
-	}
 
 	return ret;
 }
 
-static void dw_hdmi_imx_remove(struct platform_device *pdev)
+static int dw_hdmi_imx_remove(struct platform_device *pdev)
 {
 	struct imx_hdmi *hdmi = platform_get_drvdata(pdev);
 
 	component_del(&pdev->dev, &dw_hdmi_imx_ops);
-	drm_bridge_put(hdmi->bridge);
 	dw_hdmi_remove(hdmi->hdmi);
+
+	return 0;
 }
 
 static struct platform_driver dw_hdmi_imx_platform_driver = {
@@ -281,3 +280,4 @@ MODULE_AUTHOR("Andy Yan <andy.yan@rock-chips.com>");
 MODULE_AUTHOR("Yakir Yang <ykk@rock-chips.com>");
 MODULE_DESCRIPTION("IMX6 Specific DW-HDMI Driver Extension");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:dwhdmi-imx");

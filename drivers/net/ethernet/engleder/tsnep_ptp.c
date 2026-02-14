@@ -19,53 +19,57 @@ void tsnep_get_system_time(struct tsnep_adapter *adapter, u64 *time)
 	*time = (((u64)high) << 32) | ((u64)low);
 }
 
-int tsnep_ptp_hwtstamp_get(struct net_device *netdev,
-			   struct kernel_hwtstamp_config *config)
+int tsnep_ptp_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 {
 	struct tsnep_adapter *adapter = netdev_priv(netdev);
+	struct hwtstamp_config config;
 
-	*config = adapter->hwtstamp_config;
-	return 0;
-}
+	if (!ifr)
+		return -EINVAL;
 
-int tsnep_ptp_hwtstamp_set(struct net_device *netdev,
-			   struct kernel_hwtstamp_config *config,
-			   struct netlink_ext_ack *extack)
-{
-	struct tsnep_adapter *adapter = netdev_priv(netdev);
+	if (cmd == SIOCSHWTSTAMP) {
+		if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+			return -EFAULT;
 
-	switch (config->tx_type) {
-	case HWTSTAMP_TX_OFF:
-	case HWTSTAMP_TX_ON:
-		break;
-	default:
-		return -ERANGE;
+		switch (config.tx_type) {
+		case HWTSTAMP_TX_OFF:
+		case HWTSTAMP_TX_ON:
+			break;
+		default:
+			return -ERANGE;
+		}
+
+		switch (config.rx_filter) {
+		case HWTSTAMP_FILTER_NONE:
+			break;
+		case HWTSTAMP_FILTER_ALL:
+		case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
+		case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
+		case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
+		case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+		case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+		case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+		case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+		case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
+		case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
+		case HWTSTAMP_FILTER_PTP_V2_EVENT:
+		case HWTSTAMP_FILTER_PTP_V2_SYNC:
+		case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
+		case HWTSTAMP_FILTER_NTP_ALL:
+			config.rx_filter = HWTSTAMP_FILTER_ALL;
+			break;
+		default:
+			return -ERANGE;
+		}
+
+		memcpy(&adapter->hwtstamp_config, &config,
+		       sizeof(adapter->hwtstamp_config));
 	}
 
-	switch (config->rx_filter) {
-	case HWTSTAMP_FILTER_NONE:
-		break;
-	case HWTSTAMP_FILTER_ALL:
-	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
-	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
-	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
-	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
-	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
-	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
-	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
-	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
-	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
-	case HWTSTAMP_FILTER_PTP_V2_EVENT:
-	case HWTSTAMP_FILTER_PTP_V2_SYNC:
-	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
-	case HWTSTAMP_FILTER_NTP_ALL:
-		config->rx_filter = HWTSTAMP_FILTER_ALL;
-		break;
-	default:
-		return -ERANGE;
-	}
+	if (copy_to_user(ifr->ifr_data, &adapter->hwtstamp_config,
+			 sizeof(adapter->hwtstamp_config)))
+		return -EFAULT;
 
-	adapter->hwtstamp_config = *config;
 	return 0;
 }
 

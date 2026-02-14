@@ -9,17 +9,13 @@
 
 #define JUMP_LABEL_NOP_SIZE 4
 
-/* This macro is also expanded on the Rust side. */
-#define ARCH_STATIC_BRANCH_ASM(key, label)		\
-	"1:\n\t"					\
-	WASM(nop) "\n\t"				\
-	".pushsection __jump_table,  \"aw\"\n\t"	\
-	".word 1b, " label ", " key "\n\t"		\
-	".popsection\n\t"				\
-
 static __always_inline bool arch_static_branch(struct static_key *key, bool branch)
 {
-	asm goto(ARCH_STATIC_BRANCH_ASM("%c0", "%l[l_yes]")
+	asm_volatile_goto("1:\n\t"
+		 WASM(nop) "\n\t"
+		 ".pushsection __jump_table,  \"aw\"\n\t"
+		 ".word 1b, %l[l_yes], %c0\n\t"
+		 ".popsection\n\t"
 		 : :  "i" (&((char *)key)[branch]) :  : l_yes);
 
 	return false;
@@ -29,7 +25,7 @@ l_yes:
 
 static __always_inline bool arch_static_branch_jump(struct static_key *key, bool branch)
 {
-	asm goto("1:\n\t"
+	asm_volatile_goto("1:\n\t"
 		 WASM(b) " %l[l_yes]\n\t"
 		 ".pushsection __jump_table,  \"aw\"\n\t"
 		 ".word 1b, %l[l_yes], %c0\n\t"

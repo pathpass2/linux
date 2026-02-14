@@ -11,59 +11,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <linux/auxvec.h>
-#include <linux/compiler.h>
 #include <sys/auxv.h>
 #include <sys/prctl.h>
 #include <asm/hwcap.h>
 #include <asm/sigcontext.h>
 #include <asm/unistd.h>
 
-#include <linux/auxvec.h>
+#include "../../kselftest.h"
 
-#include "kselftest.h"
-
-#define TESTS_PER_HWCAP 3
-
-#ifndef AT_HWCAP3
-#define AT_HWCAP3 29
-#endif
+#define TESTS_PER_HWCAP 2
 
 /*
- * Function expected to generate exception when the feature is not
- * supported and return when it is supported. If the specific exception
- * is generated then the handler must be able to skip over the
- * instruction safely.
+ * Function expected to generate SIGILL when the feature is not
+ * supported and return when it is supported. If SIGILL is generated
+ * then the handler must be able to skip over the instruction safely.
  *
  * Note that it is expected that for many architecture extensions
  * there are no specific traps due to no architecture state being
  * added so we may not fault if running on a kernel which doesn't know
  * to add the hwcap.
  */
-typedef void (*sig_fn)(void);
-
-static void aes_sigill(void)
-{
-	/* AESE V0.16B, V0.16B */
-	asm volatile(".inst 0x4e284800" : : : );
-}
-
-static void atomics_sigill(void)
-{
-	/* STADD W0, [SP] */
-	asm volatile(".inst 0xb82003ff" : : : );
-}
-
-static void cmpbr_sigill(void)
-{
-	/* Not implemented, too complicated and unreliable anyway */
-}
-
-static void crc32_sigill(void)
-{
-	/* CRC32W W0, W0, W1 */
-	asm volatile(".inst 0x1ac14800" : : : );
-}
+typedef void (*sigill_fn)(void);
 
 static void cssc_sigill(void)
 {
@@ -71,172 +39,9 @@ static void cssc_sigill(void)
 	asm volatile(".inst 0xdac01c00" : : : "x0");
 }
 
-static void f8cvt_sigill(void)
-{
-	/* FSCALE V0.4H, V0.4H, V0.4H */
-	asm volatile(".inst 0x2ec03c00");
-}
-
-static void f8dp2_sigill(void)
-{
-	/* FDOT V0.4H, V0.4H, V0.5H */
-	asm volatile(".inst 0xe40fc00");
-}
-
-static void f8dp4_sigill(void)
-{
-	/* FDOT V0.2S, V0.2S, V0.2S */
-	asm volatile(".inst 0xe00fc00");
-}
-
-static void f8fma_sigill(void)
-{
-	/* FMLALB V0.8H, V0.16B, V0.16B */
-	asm volatile(".inst 0xec0fc00");
-}
-
-static void f8mm4_sigill(void)
-{
-	/* FMMLA V0.4SH, V0.16B, V0.16B */
-	asm volatile(".inst 0x6e00ec00");
-}
-
-static void f8mm8_sigill(void)
-{
-	/* FMMLA V0.4S, V0.16B, V0.16B */
-	asm volatile(".inst 0x6e80ec00");
-}
-
-static void faminmax_sigill(void)
-{
-	/* FAMIN V0.4H, V0.4H, V0.4H */
-	asm volatile(".inst 0x2ec01c00");
-}
-
-static void fp_sigill(void)
-{
-	asm volatile("fmov s0, #1");
-}
-
-static void fpmr_sigill(void)
-{
-	asm volatile("mrs x0, S3_3_C4_C4_2" : : : "x0");
-}
-
-static void fprcvt_sigill(void)
-{
-	/* FCVTAS S0, H0 */
-	asm volatile(".inst 0x1efa0000");
-}
-
-static void gcs_sigill(void)
-{
-	unsigned long *gcspr;
-
-	asm volatile(
-		"mrs	%0, S3_3_C2_C5_1"
-	: "=r" (gcspr)
-	:
-	: "cc");
-}
-
-static void ilrcpc_sigill(void)
-{
-	/* LDAPUR W0, [SP, #8] */
-	asm volatile(".inst 0x994083e0" : : : );
-}
-
-static void jscvt_sigill(void)
-{
-	/* FJCVTZS W0, D0 */
-	asm volatile(".inst 0x1e7e0000" : : : );
-}
-
-static void lrcpc_sigill(void)
-{
-	/* LDAPR W0, [SP, #0] */
-	asm volatile(".inst 0xb8bfc3e0" : : : );
-}
-
-static void lse128_sigill(void)
-{
-	u64 __attribute__ ((aligned (16))) mem[2] = { 10, 20 };
-	register u64 *memp asm ("x0") = mem;
-	register u64 val0 asm ("x1") = 5;
-	register u64 val1 asm ("x2") = 4;
-
-	/* SWPP X1, X2, [X0] */
-	asm volatile(".inst 0x19228001"
-		     : "+r" (memp), "+r" (val0), "+r" (val1)
-		     :
-		     : "cc", "memory");
-}
-
-static void lsfe_sigill(void)
-{
-	float __attribute__ ((aligned (16))) mem;
-	register float *memp asm ("x0") = &mem;
-
-	/* STFADD H0, [X0] */
-	asm volatile(".inst 0x7c20801f"
-		     : "+r" (memp)
-		     :
-		     : "memory");
-}
-
-static void lut_sigill(void)
-{
-	/* LUTI2 V0.16B, { V0.16B }, V[0] */
-	asm volatile(".inst 0x4e801000");
-}
-
-static void mops_sigill(void)
-{
-	char dst[1], src[1];
-	register char *dstp asm ("x0") = dst;
-	register char *srcp asm ("x1") = src;
-	register long size asm ("x2") = 1;
-
-	/* CPYP [x0]!, [x1]!, x2! */
-	asm volatile(".inst 0x1d010440"
-		     : "+r" (dstp), "+r" (srcp), "+r" (size)
-		     :
-		     : "cc", "memory");
-}
-
-static void pmull_sigill(void)
-{
-	/* PMULL V0.1Q, V0.1D, V0.1D */
-	asm volatile(".inst 0x0ee0e000" : : : );
-}
-
-static void poe_sigill(void)
-{
-	/* mrs x0, POR_EL0 */
-	asm volatile("mrs x0, S3_3_C10_C2_4" : : : "x0");
-}
-
 static void rng_sigill(void)
 {
 	asm volatile("mrs x0, S3_3_C2_C4_0" : : : "x0");
-}
-
-static void sha1_sigill(void)
-{
-	/* SHA1H S0, S0 */
-	asm volatile(".inst 0x5e280800" : : : );
-}
-
-static void sha2_sigill(void)
-{
-	/* SHA256H Q0, Q0, V0.4S */
-	asm volatile(".inst 0x5e004000" : : : );
-}
-
-static void sha512_sigill(void)
-{
-	/* SHA512H Q0, Q0, V0.2D */
-	asm volatile(".inst 0xce608000" : : : );
 }
 
 static void sme_sigill(void)
@@ -264,42 +69,6 @@ static void sme2p1_sigill(void)
 
 	/* BFCLAMP { Z0.H - Z1.H }, Z0.H, Z0.H */
 	asm volatile(".inst 0xc120C000" : : : );
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void sme2p2_sigill(void)
-{
-	/* SMSTART SM */
-	asm volatile("msr S0_3_C4_C3_3, xzr" : : : );
-
-	/* UXTB Z0.D, P0/Z, Z0.D  */
-	asm volatile(".inst 0x4c1a000" : : : );
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void sme_aes_sigill(void)
-{
-	/* SMSTART SM */
-	asm volatile("msr S0_3_C4_C3_3, xzr" : : : );
-
-	/* AESD z0.b, z0.b, z0.b */
-	asm volatile(".inst 0x4522e400" : : : "z0");
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void sme_sbitperm_sigill(void)
-{
-	/* SMSTART SM */
-	asm volatile("msr S0_3_C4_C3_3, xzr" : : : );
-
-	/* BDEP Z0.B, Z0.B, Z0.B */
-	asm volatile(".inst 0x4500b400" : : : "z0");
 
 	/* SMSTOP */
 	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
@@ -353,114 +122,6 @@ static void smef16f16_sigill(void)
 	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
 }
 
-static void smef8f16_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* FDOT ZA.H[W0, 0], Z0.B-Z1.B, Z0.B-Z1.B */
-	asm volatile(".inst 0xc1a01020" : : : );
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smef8f32_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* FDOT ZA.S[W0, 0], { Z0.B-Z1.B }, Z0.B[0] */
-	asm volatile(".inst 0xc1500038" : : : );
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smelutv2_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* LUTI4 { Z0.B-Z3.B }, ZT0, { Z0-Z1 } */
-	asm volatile(".inst 0xc08b0000" : : : );
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smesf8dp2_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* FDOT Z0.H, Z0.B, Z0.B[0] */
-	asm volatile(".inst 0x64204400" : : : );
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smesf8dp4_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* FDOT Z0.S, Z0.B, Z0.B[0] */
-	asm volatile(".inst 0xc1a41C00" : : : );
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smesf8fma_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* FMLALB Z0.8H, Z0.B, Z0.B */
-	asm volatile(".inst 0x64205000");
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smesfexpa_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* FEXPA Z0.D, Z0.D */
-	asm volatile(".inst 0x04e0b800");
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smesmop4_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* SMOP4A ZA0.S, Z0.B, { Z0.B - Z1.B } */
-	asm volatile(".inst 0x80108000");
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
-static void smestmop_sigill(void)
-{
-	/* SMSTART */
-	asm volatile("msr S0_3_C4_C7_3, xzr" : : : );
-
-	/* STMOPA ZA0.S, { Z0.H - Z1.H }, Z0.H, Z20[0] */
-	asm volatile(".inst 0x80408008");
-
-	/* SMSTOP */
-	asm volatile("msr S0_3_C4_C6_3, xzr" : : : );
-}
-
 static void sve_sigill(void)
 {
 	/* RDVL x0, #0 */
@@ -479,40 +140,10 @@ static void sve2p1_sigill(void)
 	asm volatile(".inst 0x65000000" : : : "z0");
 }
 
-static void sve2p2_sigill(void)
-{
-	/* NOT Z0.D, P0/Z, Z0.D */
-	asm volatile(".inst 0x4cea000" : : : "z0");
-}
-
 static void sveaes_sigill(void)
 {
 	/* AESD z0.b, z0.b, z0.b */
 	asm volatile(".inst 0x4522e400" : : : "z0");
-}
-
-static void sveaes2_sigill(void)
-{
-	/* AESD {Z0.B - Z1.B }, { Z0.B - Z1.B }, Z0.Q */
-	asm volatile(".inst 0x4522ec00" : : : "z0");
-}
-
-static void sveb16b16_sigill(void)
-{
-	/* BFADD Z0.H, Z0.H, Z0.H */
-	asm volatile(".inst 0x65000000" : : : );
-}
-
-static void svebfscale_sigill(void)
-{
-	/* BFSCALE Z0.H, P0/M, Z0.H, Z0.H */
-	asm volatile(".inst 0x65098000" : : : "z0");
-}
-
-static void svef16mm_sigill(void)
-{
-	/* FMMLA Z0.S, Z0.H, Z0.H */
-	asm volatile(".inst 0x6420e400");
 }
 
 static void svepmull_sigill(void)
@@ -531,12 +162,6 @@ static void svesha3_sigill(void)
 {
 	/* EOR3 Z0.D, Z0.D, Z0.D, Z0.D */
 	asm volatile(".inst 0x4203800" : : : "z0");
-}
-
-static void sveeltperm_sigill(void)
-{
-	/* COMPACT Z0.B, P0, Z0.B */
-	asm volatile(".inst 0x5218000" : : : "x0");
 }
 
 static void svesm4_sigill(void)
@@ -569,289 +194,20 @@ static void svebf16_sigill(void)
 	asm volatile(".inst 0x658aa000" : : : "z0");
 }
 
-static void hbc_sigill(void)
-{
-	/* BC.EQ +4 */
-	asm volatile("cmp xzr, xzr\n"
-		     ".inst 0x54000030" : : : "cc");
-}
-
-static void uscat_sigbus(void)
-{
-	/* unaligned atomic access */
-	asm volatile("ADD x1, sp, #2" : : : );
-	/* STADD W0, [X1] */
-	asm volatile(".inst 0xb820003f" : : : );
-}
-
-static void lrcpc3_sigill(void)
-{
-	int data[2] = { 1, 2 };
-
-	register int *src asm ("x0") = data;
-	register int data0 asm ("w2") = 0;
-	register int data1 asm ("w3") = 0;
-
-	/* LDIAPP w2, w3, [x0] */
-	asm volatile(".inst 0x99431802"
-	              : "=r" (data0), "=r" (data1) : "r" (src) :);
-}
-
-static void ignore_signal(int sig, siginfo_t *info, void *context)
-{
-	ucontext_t *uc = context;
-
-	uc->uc_mcontext.pc += 4;
-}
-
-static void ls64_sigill(void)
-{
-	struct sigaction ign, old;
-	char src[64] __aligned(64) = { 1 };
-
-	/*
-	 * LS64 requires target memory to be Device/Non-cacheable (if
-	 * FEAT_LS64WB not supported) and the completer supports these
-	 * instructions, otherwise we'll receive a SIGBUS. Since we are only
-	 * testing the ABI here, so just ignore the SIGBUS and see if we can
-	 * execute the instructions without receiving a SIGILL. Restore the
-	 * handler of SIGBUS after this test.
-	 */
-	ign.sa_sigaction = ignore_signal;
-	ign.sa_flags = SA_SIGINFO | SA_RESTART;
-	sigemptyset(&ign.sa_mask);
-	sigaction(SIGBUS, &ign, &old);
-
-	register void *xn asm ("x8") = src;
-	register u64 xt_1 asm ("x0");
-
-	/* LD64B x0, [x8] */
-	asm volatile(".inst 0xf83fd100" : "=r" (xt_1) : "r" (xn)
-		     : "x1", "x2", "x3", "x4", "x5", "x6", "x7");
-
-	/* ST64B x0, [x8] */
-	asm volatile(".inst 0xf83f9100" : : "r" (xt_1), "r" (xn)
-		     : "x1", "x2", "x3", "x4", "x5", "x6", "x7");
-
-	sigaction(SIGBUS, &old, NULL);
-}
-
 static const struct hwcap_data {
 	const char *name;
 	unsigned long at_hwcap;
 	unsigned long hwcap_bit;
 	const char *cpuinfo;
-	sig_fn sigill_fn;
+	sigill_fn sigill_fn;
 	bool sigill_reliable;
-	sig_fn sigbus_fn;
-	bool sigbus_reliable;
 } hwcaps[] = {
-	{
-		.name = "AES",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_AES,
-		.cpuinfo = "aes",
-		.sigill_fn = aes_sigill,
-	},
-	{
-		.name = "CMPBR",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_CMPBR,
-		.cpuinfo = "cmpbr",
-		.sigill_fn = cmpbr_sigill,
-	},
-	{
-		.name = "CRC32",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_CRC32,
-		.cpuinfo = "crc32",
-		.sigill_fn = crc32_sigill,
-	},
 	{
 		.name = "CSSC",
 		.at_hwcap = AT_HWCAP2,
 		.hwcap_bit = HWCAP2_CSSC,
 		.cpuinfo = "cssc",
 		.sigill_fn = cssc_sigill,
-	},
-	{
-		.name = "F8CVT",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_F8CVT,
-		.cpuinfo = "f8cvt",
-		.sigill_fn = f8cvt_sigill,
-	},
-	{
-		.name = "F8DP4",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_F8DP4,
-		.cpuinfo = "f8dp4",
-		.sigill_fn = f8dp4_sigill,
-	},
-	{
-		.name = "F8DP2",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_F8DP2,
-		.cpuinfo = "f8dp2",
-		.sigill_fn = f8dp2_sigill,
-	},
-	{
-		.name = "F8E5M2",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_F8E5M2,
-		.cpuinfo = "f8e5m2",
-	},
-	{
-		.name = "F8E4M3",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_F8E4M3,
-		.cpuinfo = "f8e4m3",
-	},
-	{
-		.name = "F8FMA",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_F8FMA,
-		.cpuinfo = "f8fma",
-		.sigill_fn = f8fma_sigill,
-	},
-	{
-		.name = "F8MM8",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_F8MM8,
-		.cpuinfo = "f8mm8",
-		.sigill_fn = f8mm8_sigill,
-	},
-	{
-		.name = "F8MM4",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_F8MM4,
-		.cpuinfo = "f8mm4",
-		.sigill_fn = f8mm4_sigill,
-	},
-	{
-		.name = "FAMINMAX",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_FAMINMAX,
-		.cpuinfo = "faminmax",
-		.sigill_fn = faminmax_sigill,
-	},
-	{
-		.name = "FP",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_FP,
-		.cpuinfo = "fp",
-		.sigill_fn = fp_sigill,
-	},
-	{
-		.name = "FPMR",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_FPMR,
-		.cpuinfo = "fpmr",
-		.sigill_fn = fpmr_sigill,
-		.sigill_reliable = true,
-	},
-	{
-		.name = "FPRCVT",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_FPRCVT,
-		.cpuinfo = "fprcvt",
-		.sigill_fn = fprcvt_sigill,
-	},
-	{
-		.name = "GCS",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_GCS,
-		.cpuinfo = "gcs",
-		.sigill_fn = gcs_sigill,
-		.sigill_reliable = true,
-	},
-	{
-		.name = "JSCVT",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_JSCVT,
-		.cpuinfo = "jscvt",
-		.sigill_fn = jscvt_sigill,
-	},
-	{
-		.name = "LRCPC",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_LRCPC,
-		.cpuinfo = "lrcpc",
-		.sigill_fn = lrcpc_sigill,
-	},
-	{
-		.name = "LRCPC2",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_ILRCPC,
-		.cpuinfo = "ilrcpc",
-		.sigill_fn = ilrcpc_sigill,
-	},
-	{
-		.name = "LRCPC3",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_LRCPC3,
-		.cpuinfo = "lrcpc3",
-		.sigill_fn = lrcpc3_sigill,
-	},
-	{
-		.name = "LSE",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_ATOMICS,
-		.cpuinfo = "atomics",
-		.sigill_fn = atomics_sigill,
-	},
-	{
-		.name = "LSE2",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_USCAT,
-		.cpuinfo = "uscat",
-		.sigill_fn = atomics_sigill,
-		.sigbus_fn = uscat_sigbus,
-		.sigbus_reliable = true,
-	},
-	{
-		.name = "LSE128",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_LSE128,
-		.cpuinfo = "lse128",
-		.sigill_fn = lse128_sigill,
-	},
-	{
-		.name = "LSFE",
-		.at_hwcap = AT_HWCAP3,
-		.hwcap_bit = HWCAP3_LSFE,
-		.cpuinfo = "lsfe",
-		.sigill_fn = lsfe_sigill,
-	},
-	{
-		.name = "LUT",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_LUT,
-		.cpuinfo = "lut",
-		.sigill_fn = lut_sigill,
-	},
-	{
-		.name = "MOPS",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_MOPS,
-		.cpuinfo = "mops",
-		.sigill_fn = mops_sigill,
-		.sigill_reliable = true,
-	},
-	{
-		.name = "PMULL",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_PMULL,
-		.cpuinfo = "pmull",
-		.sigill_fn = pmull_sigill,
-	},
-	{
-		.name = "POE",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_POE,
-		.cpuinfo = "poe",
-		.sigill_fn = poe_sigill,
-		.sigill_reliable = true,
 	},
 	{
 		.name = "RNG",
@@ -865,27 +221,6 @@ static const struct hwcap_data {
 		.at_hwcap = AT_HWCAP2,
 		.hwcap_bit = HWCAP2_RPRFM,
 		.cpuinfo = "rprfm",
-	},
-	{
-		.name = "SHA1",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SHA1,
-		.cpuinfo = "sha1",
-		.sigill_fn = sha1_sigill,
-	},
-	{
-		.name = "SHA2",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SHA2,
-		.cpuinfo = "sha2",
-		.sigill_fn = sha2_sigill,
-	},
-	{
-		.name = "SHA512",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SHA512,
-		.cpuinfo = "sha512",
-		.sigill_fn = sha512_sigill,
 	},
 	{
 		.name = "SME",
@@ -909,20 +244,6 @@ static const struct hwcap_data {
 		.hwcap_bit = HWCAP2_SME2P1,
 		.cpuinfo = "sme2p1",
 		.sigill_fn = sme2p1_sigill,
-	},
-	{
-		.name = "SME 2.2",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SME2P2,
-		.cpuinfo = "sme2p2",
-		.sigill_fn = sme2p2_sigill,
-	},
-	{
-		.name = "SME AES",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SME_AES,
-		.cpuinfo = "smeaes",
-		.sigill_fn = sme_aes_sigill,
 	},
 	{
 		.name = "SME I16I32",
@@ -953,76 +274,6 @@ static const struct hwcap_data {
 		.sigill_fn = smef16f16_sigill,
 	},
 	{
-		.name = "SME F8F16",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_SME_F8F16,
-		.cpuinfo = "smef8f16",
-		.sigill_fn = smef8f16_sigill,
-	},
-	{
-		.name = "SME F8F32",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_SME_F8F32,
-		.cpuinfo = "smef8f32",
-		.sigill_fn = smef8f32_sigill,
-	},
-	{
-		.name = "SME LUTV2",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_SME_LUTV2,
-		.cpuinfo = "smelutv2",
-		.sigill_fn = smelutv2_sigill,
-	},
-	{
-		.name = "SME SBITPERM",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SME_SBITPERM,
-		.cpuinfo = "smesbitperm",
-		.sigill_fn = sme_sbitperm_sigill,
-	},
-	{
-		.name = "SME SF8FMA",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_SME_SF8FMA,
-		.cpuinfo = "smesf8fma",
-		.sigill_fn = smesf8fma_sigill,
-	},
-	{
-		.name = "SME SF8DP2",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_SME_SF8DP2,
-		.cpuinfo = "smesf8dp2",
-		.sigill_fn = smesf8dp2_sigill,
-	},
-	{
-		.name = "SME SF8DP4",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_SME_SF8DP4,
-		.cpuinfo = "smesf8dp4",
-		.sigill_fn = smesf8dp4_sigill,
-	},
-	{
-		.name = "SME SFEXPA",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SME_SFEXPA,
-		.cpuinfo = "smesfexpa",
-		.sigill_fn = smesfexpa_sigill,
-	},
-	{
-		.name = "SME SMOP4",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SME_SMOP4,
-		.cpuinfo = "smesmop4",
-		.sigill_fn = smesmop4_sigill,
-	},
-	{
-		.name = "SME STMOP",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SME_STMOP,
-		.cpuinfo = "smestmop",
-		.sigill_fn = smestmop_sigill,
-	},
-	{
 		.name = "SVE",
 		.at_hwcap = AT_HWCAP,
 		.hwcap_bit = HWCAP_SVE,
@@ -1045,53 +296,11 @@ static const struct hwcap_data {
 		.sigill_fn = sve2p1_sigill,
 	},
 	{
-		.name = "SVE 2.2",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SVE2P2,
-		.cpuinfo = "sve2p2",
-		.sigill_fn = sve2p2_sigill,
-	},
-	{
 		.name = "SVE AES",
 		.at_hwcap = AT_HWCAP2,
 		.hwcap_bit = HWCAP2_SVEAES,
 		.cpuinfo = "sveaes",
 		.sigill_fn = sveaes_sigill,
-	},
-	{
-		.name = "SVE AES2",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SVE_AES2,
-		.cpuinfo = "sveaes2",
-		.sigill_fn = sveaes2_sigill,
-	},
-	{
-		.name = "SVE BFSCALE",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SVE_BFSCALE,
-		.cpuinfo = "svebfscale",
-		.sigill_fn = svebfscale_sigill,
-	},
-	{
-		.name = "SVE ELTPERM",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SVE_ELTPERM,
-		.cpuinfo = "sveeltperm",
-		.sigill_fn = sveeltperm_sigill,
-	},
-	{
-		.name = "SVE F16MM",
-		.at_hwcap = AT_HWCAP,
-		.hwcap_bit = HWCAP_SVE_F16MM,
-		.cpuinfo = "svef16mm",
-		.sigill_fn = svef16mm_sigill,
-	},
-	{
-		.name = "SVE2 B16B16",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_SVE_B16B16,
-		.cpuinfo = "sveb16b16",
-		.sigill_fn = sveb16b16_sigill,
 	},
 	{
 		.name = "SVE2 PMULL",
@@ -1155,51 +364,19 @@ static const struct hwcap_data {
 		.hwcap_bit = HWCAP2_SVE_EBF16,
 		.cpuinfo = "sveebf16",
 	},
-	{
-		.name = "HBC",
-		.at_hwcap = AT_HWCAP2,
-		.hwcap_bit = HWCAP2_HBC,
-		.cpuinfo = "hbc",
-		.sigill_fn = hbc_sigill,
-		.sigill_reliable = true,
-	},
-	{
-		.name = "MTE_FAR",
-		.at_hwcap = AT_HWCAP3,
-		.hwcap_bit = HWCAP3_MTE_FAR,
-		.cpuinfo = "mtefar",
-	},
-	{
-		.name = "MTE_STOREONLY",
-		.at_hwcap = AT_HWCAP3,
-		.hwcap_bit = HWCAP3_MTE_STORE_ONLY,
-		.cpuinfo = "mtestoreonly",
-	},
-	{
-		.name = "LS64",
-		.at_hwcap = AT_HWCAP3,
-		.hwcap_bit = HWCAP3_LS64,
-		.cpuinfo = "ls64",
-		.sigill_fn = ls64_sigill,
-		.sigill_reliable = true,
-	},
 };
 
-typedef void (*sighandler_fn)(int, siginfo_t *, void *);
+static bool seen_sigill;
 
-#define DEF_SIGHANDLER_FUNC(SIG, NUM)					\
-static bool seen_##SIG;							\
-static void handle_##SIG(int sig, siginfo_t *info, void *context)	\
-{									\
-	ucontext_t *uc = context;					\
-									\
-	seen_##SIG = true;						\
-	/* Skip over the offending instruction */			\
-	uc->uc_mcontext.pc += 4;					\
+static void handle_sigill(int sig, siginfo_t *info, void *context)
+{
+	ucontext_t *uc = context;
+
+	seen_sigill = true;
+
+	/* Skip over the offending instruction */
+	uc->uc_mcontext.pc += 4;
 }
-
-DEF_SIGHANDLER_FUNC(sigill, SIGILL);
-DEF_SIGHANDLER_FUNC(sigbus, SIGBUS);
 
 bool cpuinfo_present(const char *name)
 {
@@ -1243,77 +420,24 @@ bool cpuinfo_present(const char *name)
 	return false;
 }
 
-static int install_sigaction(int signum, sighandler_fn handler)
-{
-	int ret;
-	struct sigaction sa;
-
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_sigaction = handler;
-	sa.sa_flags = SA_RESTART | SA_SIGINFO;
-	sigemptyset(&sa.sa_mask);
-	ret = sigaction(signum, &sa, NULL);
-	if (ret < 0)
-		ksft_exit_fail_msg("Failed to install SIGNAL handler: %s (%d)\n",
-				   strerror(errno), errno);
-
-	return ret;
-}
-
-static void uninstall_sigaction(int signum)
-{
-	if (sigaction(signum, NULL, NULL) < 0)
-		ksft_exit_fail_msg("Failed to uninstall SIGNAL handler: %s (%d)\n",
-				   strerror(errno), errno);
-}
-
-#define DEF_INST_RAISE_SIG(SIG, NUM)					\
-static bool inst_raise_##SIG(const struct hwcap_data *hwcap,		\
-				bool have_hwcap)			\
-{									\
-	if (!hwcap->SIG##_fn) {						\
-		ksft_test_result_skip(#SIG"_%s\n", hwcap->name);	\
-		/* assume that it would raise exception in default */	\
-		return true;						\
-	}								\
-									\
-	install_sigaction(NUM, handle_##SIG);				\
-									\
-	seen_##SIG = false;						\
-	hwcap->SIG##_fn();						\
-									\
-	if (have_hwcap) {						\
-		/* Should be able to use the extension */		\
-		ksft_test_result(!seen_##SIG,				\
-				#SIG"_%s\n", hwcap->name);		\
-	} else if (hwcap->SIG##_reliable) {				\
-		/* Guaranteed a SIGNAL */				\
-		ksft_test_result(seen_##SIG,				\
-				#SIG"_%s\n", hwcap->name);		\
-	} else {							\
-		/* Missing SIGNAL might be fine */			\
-		ksft_print_msg(#SIG"_%sreported for %s\n",		\
-				seen_##SIG ? "" : "not ",		\
-				hwcap->name);				\
-		ksft_test_result_skip(#SIG"_%s\n",			\
-					hwcap->name);			\
-	}								\
-									\
-	uninstall_sigaction(NUM);					\
-	return seen_##SIG;						\
-}
-
-DEF_INST_RAISE_SIG(sigill, SIGILL);
-DEF_INST_RAISE_SIG(sigbus, SIGBUS);
-
 int main(void)
 {
-	int i;
 	const struct hwcap_data *hwcap;
-	bool have_cpuinfo, have_hwcap, raise_sigill;
+	int i, ret;
+	bool have_cpuinfo, have_hwcap;
+	struct sigaction sa;
 
 	ksft_print_header();
 	ksft_set_plan(ARRAY_SIZE(hwcaps) * TESTS_PER_HWCAP);
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_sigaction = handle_sigill;
+	sa.sa_flags = SA_RESTART | SA_SIGINFO;
+	sigemptyset(&sa.sa_mask);
+	ret = sigaction(SIGILL, &sa, NULL);
+	if (ret < 0)
+		ksft_exit_fail_msg("Failed to install SIGILL handler: %s (%d)\n",
+				   strerror(errno), errno);
 
 	for (i = 0; i < ARRAY_SIZE(hwcaps); i++) {
 		hwcap = &hwcaps[i];
@@ -1327,15 +451,30 @@ int main(void)
 		ksft_test_result(have_hwcap == have_cpuinfo,
 				 "cpuinfo_match_%s\n", hwcap->name);
 
-		/*
-		 * Testing for SIGBUS only makes sense after make sure
-		 * that the instruction does not cause a SIGILL signal.
-		 */
-		raise_sigill = inst_raise_sigill(hwcap, have_hwcap);
-		if (!raise_sigill)
-			inst_raise_sigbus(hwcap, have_hwcap);
-		else
-			ksft_test_result_skip("sigbus_%s\n", hwcap->name);
+		if (hwcap->sigill_fn) {
+			seen_sigill = false;
+			hwcap->sigill_fn();
+
+			if (have_hwcap) {
+				/* Should be able to use the extension */
+				ksft_test_result(!seen_sigill, "sigill_%s\n",
+						 hwcap->name);
+			} else if (hwcap->sigill_reliable) {
+				/* Guaranteed a SIGILL */
+				ksft_test_result(seen_sigill, "sigill_%s\n",
+						 hwcap->name);
+			} else {
+				/* Missing SIGILL might be fine */
+				ksft_print_msg("SIGILL %sreported for %s\n",
+					       seen_sigill ? "" : "not ",
+					       hwcap->name);
+				ksft_test_result_skip("sigill_%s\n",
+						      hwcap->name);
+			}
+		} else {
+			ksft_test_result_skip("sigill_%s\n",
+					      hwcap->name);
+		}
 	}
 
 	ksft_print_cnts();

@@ -64,7 +64,6 @@
 #include <net/xfrm.h>
 #include <net/ioam6.h>
 #include <net/rawv6.h>
-#include <net/rps.h>
 
 #include <linux/uaccess.h>
 #include <linux/mroute6.h>
@@ -103,9 +102,9 @@ bool ipv6_mod_enabled(void)
 }
 EXPORT_SYMBOL_GPL(ipv6_mod_enabled);
 
-static struct ipv6_pinfo *inet6_sk_generic(struct sock *sk)
+static __inline__ struct ipv6_pinfo *inet6_sk_generic(struct sock *sk)
 {
-	const int offset = sk->sk_prot->ipv6_pinfo_offset;
+	const int offset = sk->sk_prot->obj_size - sizeof(struct ipv6_pinfo);
 
 	return (struct ipv6_pinfo *)(((u8 *)sk) + offset);
 }
@@ -200,16 +199,13 @@ lookup_protocol:
 	if (INET_PROTOSW_REUSE & answer_flags)
 		sk->sk_reuse = SK_CAN_REUSE;
 
-	if (INET_PROTOSW_ICSK & answer_flags)
-		inet_init_csk_locks(sk);
-
 	inet = inet_sk(sk);
-	inet_assign_bit(IS_ICSK, sk, INET_PROTOSW_ICSK & answer_flags);
+	inet->is_icsk = (INET_PROTOSW_ICSK & answer_flags) != 0;
 
 	if (SOCK_RAW == sock->type) {
 		inet->inet_num = protocol;
 		if (IPPROTO_RAW == protocol)
-			inet_set_bit(HDRINCL, sk);
+			inet->hdrincl = 1;
 	}
 
 	sk->sk_destruct		= inet6_sock_destruct;
@@ -221,11 +217,10 @@ lookup_protocol:
 	inet_sk(sk)->pinet6 = np = inet6_sk_generic(sk);
 	np->hop_limit	= -1;
 	np->mcast_hops	= IPV6_DEFAULT_MCASTHOPS;
-	inet6_set_bit(MC6_LOOP, sk);
-	inet6_set_bit(MC6_ALL, sk);
+	np->mc_loop	= 1;
+	np->mc_all	= 1;
 	np->pmtudisc	= IPV6_PMTUDISC_WANT;
-	inet6_assign_bit(REPFLOW, sk, READ_ONCE(net->ipv6.sysctl.flowlabel_reflect) &
-				      FLOWLABEL_REFLECT_ESTABLISHED);
+	np->repflow	= net->ipv6.sysctl.flowlabel_reflect & FLOWLABEL_REFLECT_ESTABLISHED;
 	sk->sk_ipv6only	= net->ipv6.sysctl.bindv6only;
 	sk->sk_txrehash = READ_ONCE(net->core.sysctl_txrehash);
 
@@ -234,7 +229,7 @@ lookup_protocol:
 	 */
 	inet->uc_ttl	= -1;
 
-	inet_set_bit(MC_LOOP, sk);
+	inet->mc_loop	= 1;
 	inet->mc_ttl	= 1;
 	inet->mc_index	= 0;
 	RCU_INIT_POINTER(inet->mc_list, NULL);
@@ -252,32 +247,34 @@ lookup_protocol:
 		 */
 		inet->inet_sport = htons(inet->inet_num);
 		err = sk->sk_prot->hash(sk);
-		if (err)
-			goto out_sk_release;
+		if (err) {
+			sk_common_release(sk);
+			goto out;
+		}
 	}
 	if (sk->sk_prot->init) {
 		err = sk->sk_prot->init(sk);
-		if (err)
-			goto out_sk_release;
+		if (err) {
+			sk_common_release(sk);
+			goto out;
+		}
 	}
 
 	if (!kern) {
 		err = BPF_CGROUP_RUN_PROG_INET_SOCK(sk);
-		if (err)
-			goto out_sk_release;
+		if (err) {
+			sk_common_release(sk);
+			goto out;
+		}
 	}
 out:
 	return err;
 out_rcu_unlock:
 	rcu_read_unlock();
 	goto out;
-out_sk_release:
-	sk_common_release(sk);
-	sock->sk = NULL;
-	goto out;
 }
 
-static int __inet6_bind(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len,
+static int __inet6_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 			u32 flags)
 {
 	struct sockaddr_in6 *addr = (struct sockaddr_in6 *)uaddr;
@@ -402,7 +399,7 @@ static int __inet6_bind(struct sock *sk, struct sockaddr_unsized *uaddr, int add
 		sk->sk_ipv6only = 1;
 
 	/* Make sure we are allowed to bind here. */
-	if (snum || !(inet_test_bit(BIND_ADDRESS_NO_PORT, sk) ||
+	if (snum || !(inet->bind_address_no_port ||
 		      (flags & BIND_FORCE_ADDRESS_NO_PORT))) {
 		err = sk->sk_prot->get_port(sk, snum);
 		if (err) {
@@ -438,8 +435,10 @@ out_unlock:
 	goto out;
 }
 
-int inet6_bind_sk(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len)
+/* bind for INET6 API */
+int inet6_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 {
+	struct sock *sk = sock->sk;
 	u32 flags = BIND_WITH_LOCK;
 	const struct proto *prot;
 	int err = 0;
@@ -456,18 +455,12 @@ int inet6_bind_sk(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len)
 	/* BPF prog is run before any checks are done so that if the prog
 	 * changes context in a wrong way it will be caught.
 	 */
-	err = BPF_CGROUP_RUN_PROG_INET_BIND_LOCK(sk, uaddr, &addr_len,
+	err = BPF_CGROUP_RUN_PROG_INET_BIND_LOCK(sk, uaddr,
 						 CGROUP_INET6_BIND, &flags);
 	if (err)
 		return err;
 
 	return __inet6_bind(sk, uaddr, addr_len, flags);
-}
-
-/* bind for INET6 API */
-int inet6_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
-{
-	return inet6_bind_sk(sock->sk, uaddr, addr_len);
 }
 EXPORT_SYMBOL(inet6_bind);
 
@@ -507,7 +500,7 @@ void inet6_cleanup_sock(struct sock *sk)
 
 	/* Free tx options */
 
-	opt = unrcu_pointer(xchg(&np->opt, NULL));
+	opt = xchg((__force struct ipv6_txoptions **)&np->opt, NULL);
 	if (opt) {
 		atomic_sub(opt->tot_len, &sk->sk_omem_alloc);
 		txopt_put(opt);
@@ -522,7 +515,6 @@ int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 		  int peer)
 {
 	struct sockaddr_in6 *sin = (struct sockaddr_in6 *)uaddr;
-	int sin_addr_len = sizeof(*sin);
 	struct sock *sk = sock->sk;
 	struct inet_sock *inet = inet_sk(sk);
 	struct ipv6_pinfo *np = inet6_sk(sk);
@@ -540,9 +532,9 @@ int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 		}
 		sin->sin6_port = inet->inet_dport;
 		sin->sin6_addr = sk->sk_v6_daddr;
-		if (inet6_test_bit(SNDFLOW, sk))
+		if (np->sndflow)
 			sin->sin6_flowinfo = np->flow_label;
-		BPF_CGROUP_RUN_SA_PROG(sk, (struct sockaddr *)sin, &sin_addr_len,
+		BPF_CGROUP_RUN_SA_PROG(sk, (struct sockaddr *)sin,
 				       CGROUP_INET6_GETPEERNAME);
 	} else {
 		if (ipv6_addr_any(&sk->sk_v6_rcv_saddr))
@@ -550,13 +542,13 @@ int inet6_getname(struct socket *sock, struct sockaddr *uaddr,
 		else
 			sin->sin6_addr = sk->sk_v6_rcv_saddr;
 		sin->sin6_port = inet->inet_sport;
-		BPF_CGROUP_RUN_SA_PROG(sk, (struct sockaddr *)sin, &sin_addr_len,
+		BPF_CGROUP_RUN_SA_PROG(sk, (struct sockaddr *)sin,
 				       CGROUP_INET6_GETSOCKNAME);
 	}
 	sin->sin6_scope_id = ipv6_iface_scope_id(&sin->sin6_addr,
 						 sk->sk_bound_dev_if);
 	release_sock(sk);
-	return sin_addr_len;
+	return sizeof(*sin);
 }
 EXPORT_SYMBOL(inet6_getname);
 
@@ -587,7 +579,7 @@ int inet6_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		prot = READ_ONCE(sk->sk_prot);
 		if (!prot->ioctl)
 			return -ENOIOCTLCMD;
-		return sk_ioctl(sk, cmd, (void __user *)arg);
+		return prot->ioctl(sk, cmd, arg);
 	}
 	/*NOTREACHED*/
 	return 0;
@@ -703,10 +695,10 @@ const struct proto_ops inet6_stream_ops = {
 #ifdef CONFIG_MMU
 	.mmap		   = tcp_mmap,
 #endif
-	.splice_eof	   = inet_splice_eof,
+	.sendpage	   = inet_sendpage,
 	.sendmsg_locked    = tcp_sendmsg_locked,
+	.sendpage_locked   = tcp_sendpage_locked,
 	.splice_read	   = tcp_splice_read,
-	.set_peek_off      = sk_set_peek_off,
 	.read_sock	   = tcp_read_sock,
 	.read_skb	   = tcp_read_skb,
 	.peek_len	   = tcp_peek_len,
@@ -715,7 +707,6 @@ const struct proto_ops inet6_stream_ops = {
 #endif
 	.set_rcvlowat	   = tcp_set_rcvlowat,
 };
-EXPORT_SYMBOL_GPL(inet6_stream_ops);
 
 const struct proto_ops inet6_dgram_ops = {
 	.family		   = PF_INET6,
@@ -737,7 +728,8 @@ const struct proto_ops inet6_dgram_ops = {
 	.recvmsg	   = inet6_recvmsg,		/* retpoline's sake */
 	.read_skb	   = udp_read_skb,
 	.mmap		   = sock_no_mmap,
-	.set_peek_off	   = udp_set_peek_off,
+	.sendpage	   = sock_no_sendpage,
+	.set_peek_off	   = sk_set_peek_off,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	   = inet6_compat_ioctl,
 #endif
@@ -824,42 +816,45 @@ EXPORT_SYMBOL(inet6_unregister_protosw);
 int inet6_sk_rebuild_header(struct sock *sk)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
-	struct inet_sock *inet = inet_sk(sk);
-	struct in6_addr *final_p;
 	struct dst_entry *dst;
-	struct flowi6 *fl6;
 
 	dst = __sk_dst_check(sk, np->dst_cookie);
-	if (dst)
-		return 0;
 
-	fl6 = &inet->cork.fl.u.ip6;
-	memset(fl6, 0, sizeof(*fl6));
-	fl6->flowi6_proto = sk->sk_protocol;
-	fl6->daddr = sk->sk_v6_daddr;
-	fl6->saddr = np->saddr;
-	fl6->flowlabel = np->flow_label;
-	fl6->flowi6_oif = sk->sk_bound_dev_if;
-	fl6->flowi6_mark = sk->sk_mark;
-	fl6->fl6_dport = inet->inet_dport;
-	fl6->fl6_sport = inet->inet_sport;
-	fl6->flowi6_uid = sk_uid(sk);
-	security_sk_classify_flow(sk, flowi6_to_flowi_common(fl6));
+	if (!dst) {
+		struct inet_sock *inet = inet_sk(sk);
+		struct in6_addr *final_p, final;
+		struct flowi6 fl6;
 
-	rcu_read_lock();
-	final_p = fl6_update_dst(fl6, rcu_dereference(np->opt), &np->final);
-	rcu_read_unlock();
+		memset(&fl6, 0, sizeof(fl6));
+		fl6.flowi6_proto = sk->sk_protocol;
+		fl6.daddr = sk->sk_v6_daddr;
+		fl6.saddr = np->saddr;
+		fl6.flowlabel = np->flow_label;
+		fl6.flowi6_oif = sk->sk_bound_dev_if;
+		fl6.flowi6_mark = sk->sk_mark;
+		fl6.fl6_dport = inet->inet_dport;
+		fl6.fl6_sport = inet->inet_sport;
+		fl6.flowi6_uid = sk->sk_uid;
+		security_sk_classify_flow(sk, flowi6_to_flowi_common(&fl6));
 
-	dst = ip6_dst_lookup_flow(sock_net(sk), sk, fl6, final_p);
-	if (IS_ERR(dst)) {
-		sk->sk_route_caps = 0;
-		WRITE_ONCE(sk->sk_err_soft, -PTR_ERR(dst));
-		return PTR_ERR(dst);
+		rcu_read_lock();
+		final_p = fl6_update_dst(&fl6, rcu_dereference(np->opt),
+					 &final);
+		rcu_read_unlock();
+
+		dst = ip6_dst_lookup_flow(sock_net(sk), sk, &fl6, final_p);
+		if (IS_ERR(dst)) {
+			sk->sk_route_caps = 0;
+			sk->sk_err_soft = -PTR_ERR(dst);
+			return PTR_ERR(dst);
+		}
+
+		ip6_dst_store(sk, dst, NULL, NULL);
 	}
 
-	ip6_dst_store(sk, dst, false, false);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(inet6_sk_rebuild_header);
 
 bool ipv6_opt_accepted(const struct sock *sk, const struct sk_buff *skb,
 		       const struct inet6_skb_parm *opt)
@@ -879,6 +874,7 @@ bool ipv6_opt_accepted(const struct sock *sk, const struct sk_buff *skb,
 	}
 	return false;
 }
+EXPORT_SYMBOL_GPL(ipv6_opt_accepted);
 
 static struct packet_type ipv6_packet_type __read_mostly = {
 	.type = cpu_to_be16(ETH_P_IPV6),
@@ -956,8 +952,6 @@ static int __net_init inet6_net_init(struct net *net)
 	net->ipv6.sysctl.icmpv6_echo_ignore_all = 0;
 	net->ipv6.sysctl.icmpv6_echo_ignore_multicast = 0;
 	net->ipv6.sysctl.icmpv6_echo_ignore_anycast = 0;
-	net->ipv6.sysctl.icmpv6_error_anycast_as_unicast = 0;
-	net->ipv6.sysctl.icmpv6_errors_extension_mask = 0;
 
 	/* By default, rate limit error messages.
 	 * Except for pmtu discovery, it would break it.
@@ -1051,13 +1045,11 @@ static const struct ipv6_stub ipv6_stub_impl = {
 #if IS_ENABLED(CONFIG_XFRM)
 	.xfrm6_local_rxpmtu = xfrm6_local_rxpmtu,
 	.xfrm6_udp_encap_rcv = xfrm6_udp_encap_rcv,
-	.xfrm6_gro_udp_encap_rcv = xfrm6_gro_udp_encap_rcv,
 	.xfrm6_rcv_encap = xfrm6_rcv_encap,
 #endif
 	.nd_tbl	= &nd_tbl,
 	.ipv6_fragment = ip6_fragment,
 	.ipv6_dev_find = ipv6_dev_find,
-	.ip6_xmit = ip6_xmit,
 };
 
 static const struct ipv6_bpf_stub ipv6_bpf_stub_impl = {
@@ -1065,7 +1057,6 @@ static const struct ipv6_bpf_stub ipv6_bpf_stub_impl = {
 	.udp6_lib_lookup = __udp6_lib_lookup,
 	.ipv6_setsockopt = do_ipv6_setsockopt,
 	.ipv6_getsockopt = do_ipv6_getsockopt,
-	.ipv6_dev_get_saddr = ipv6_dev_get_saddr,
 };
 
 static int __init inet6_init(void)

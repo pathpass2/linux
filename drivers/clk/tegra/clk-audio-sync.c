@@ -17,15 +17,15 @@ static unsigned long clk_sync_source_recalc_rate(struct clk_hw *hw,
 	return sync->rate;
 }
 
-static int clk_sync_source_determine_rate(struct clk_hw *hw,
-					  struct clk_rate_request *req)
+static long clk_sync_source_round_rate(struct clk_hw *hw, unsigned long rate,
+				       unsigned long *prate)
 {
 	struct tegra_clk_sync_source *sync = to_clk_sync_source(hw);
 
-	if (req->rate > sync->max_rate)
+	if (rate > sync->max_rate)
 		return -EINVAL;
 	else
-		return 0;
+		return rate;
 }
 
 static int clk_sync_source_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -38,7 +38,7 @@ static int clk_sync_source_set_rate(struct clk_hw *hw, unsigned long rate,
 }
 
 const struct clk_ops tegra_clk_sync_source_ops = {
-	.determine_rate = clk_sync_source_determine_rate,
+	.round_rate = clk_sync_source_round_rate,
 	.set_rate = clk_sync_source_set_rate,
 	.recalc_rate = clk_sync_source_recalc_rate,
 };

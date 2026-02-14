@@ -23,12 +23,9 @@
  */
 
 #include "nouveau_drv.h"
-#include "nouveau_bios.h"
 #include "nouveau_reg.h"
 #include "dispnv04/hw.h"
 #include "nouveau_encoder.h"
-
-#include <subdev/gsp.h>
 
 #include <linux/io-mapping.h>
 #include <linux/firmware.h>
@@ -42,6 +39,11 @@
 
 #define BIOSLOG(sip, fmt, arg...) NV_DEBUG(sip->dev, fmt, ##arg)
 #define LOG_OLD_VALUE(x)
+
+struct init_exec {
+	bool execute;
+	bool repeat;
+};
 
 static bool nv_cksum(const uint8_t *data, unsigned int length)
 {
@@ -1673,7 +1675,7 @@ apply_dcb_encoder_quirks(struct drm_device *dev, int idx, u32 *conn, u32 *conf)
 	 */
 	if (nv_match_device(dev, 0x0201, 0x1462, 0x8851)) {
 		if (*conn == 0xf2005014 && *conf == 0xffffffff) {
-			fabricate_dcb_output(dcb, DCB_OUTPUT_TMDS, 1, 1, DCB_OUTPUT_B);
+			fabricate_dcb_output(dcb, DCB_OUTPUT_TMDS, 1, 1, 1);
 			return false;
 		}
 	}
@@ -1759,26 +1761,26 @@ fabricate_dcb_encoder_table(struct drm_device *dev, struct nvbios *bios)
 #ifdef __powerpc__
 	/* Apple iMac G4 NV17 */
 	if (of_machine_is_compatible("PowerMac4,5")) {
-		fabricate_dcb_output(dcb, DCB_OUTPUT_TMDS, 0, all_heads, DCB_OUTPUT_B);
-		fabricate_dcb_output(dcb, DCB_OUTPUT_ANALOG, 1, all_heads, DCB_OUTPUT_C);
+		fabricate_dcb_output(dcb, DCB_OUTPUT_TMDS, 0, all_heads, 1);
+		fabricate_dcb_output(dcb, DCB_OUTPUT_ANALOG, 1, all_heads, 2);
 		return;
 	}
 #endif
 
 	/* Make up some sane defaults */
 	fabricate_dcb_output(dcb, DCB_OUTPUT_ANALOG,
-			     bios->legacy.i2c_indices.crt, 1, DCB_OUTPUT_B);
+			     bios->legacy.i2c_indices.crt, 1, 1);
 
 	if (nv04_tv_identify(dev, bios->legacy.i2c_indices.tv) >= 0)
 		fabricate_dcb_output(dcb, DCB_OUTPUT_TV,
 				     bios->legacy.i2c_indices.tv,
-				     all_heads, DCB_OUTPUT_A);
+				     all_heads, 0);
 
 	else if (bios->tmds.output0_script_ptr ||
 		 bios->tmds.output1_script_ptr)
 		fabricate_dcb_output(dcb, DCB_OUTPUT_TMDS,
 				     bios->legacy.i2c_indices.panel,
-				     all_heads, DCB_OUTPUT_B);
+				     all_heads, 1);
 }
 
 static int
@@ -2015,7 +2017,7 @@ uint8_t *nouveau_bios_embedded_edid(struct drm_device *dev)
 static bool NVInitVBIOS(struct drm_device *dev)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nvkm_bios *bios = nvxx_bios(drm);
+	struct nvkm_bios *bios = nvxx_bios(&drm->client.device);
 	struct nvbios *legacy = &drm->vbios;
 
 	memset(legacy, 0, sizeof(struct nvbios));
@@ -2085,18 +2087,15 @@ nouveau_bios_init(struct drm_device *dev)
 	int ret;
 
 	/* only relevant for PCI devices */
-	if (!dev_is_pci(dev->dev) ||
-	    nvkm_gsp_rm(nvxx_device(drm)->gsp))
+	if (!dev_is_pci(dev->dev))
 		return 0;
 
 	if (!NVInitVBIOS(dev))
 		return -ENODEV;
 
-	if (drm->client.device.info.family < NV_DEVICE_INFO_V0_TESLA) {
-		ret = parse_dcb_table(dev, bios);
-		if (ret)
-			return ret;
-	}
+	ret = parse_dcb_table(dev, bios);
+	if (ret)
+		return ret;
 
 	if (!bios->major_version)	/* we don't run version 0 bios */
 		return 0;

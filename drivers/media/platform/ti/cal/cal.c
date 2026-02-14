@@ -13,7 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -61,24 +61,48 @@ MODULE_PARM_DESC(mc_api, "activates the MC API");
 const struct cal_format_info cal_formats[] = {
 	{
 		.fourcc		= V4L2_PIX_FMT_YUYV,
-		.code		= MEDIA_BUS_FMT_YUYV8_1X16,
+		.code		= MEDIA_BUS_FMT_YUYV8_2X8,
 		.bpp		= 16,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_UYVY,
-		.code		= MEDIA_BUS_FMT_UYVY8_1X16,
+		.code		= MEDIA_BUS_FMT_UYVY8_2X8,
 		.bpp		= 16,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_YVYU,
-		.code		= MEDIA_BUS_FMT_YVYU8_1X16,
+		.code		= MEDIA_BUS_FMT_YVYU8_2X8,
 		.bpp		= 16,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_VYUY,
-		.code		= MEDIA_BUS_FMT_VYUY8_1X16,
+		.code		= MEDIA_BUS_FMT_VYUY8_2X8,
 		.bpp		= 16,
 	}, {
-		.fourcc		= V4L2_PIX_FMT_RGB565,
-		.code		= MEDIA_BUS_FMT_RGB565_1X16,
+		.fourcc		= V4L2_PIX_FMT_RGB565, /* gggbbbbb rrrrrggg */
+		.code		= MEDIA_BUS_FMT_RGB565_2X8_LE,
 		.bpp		= 16,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_RGB565X, /* rrrrrggg gggbbbbb */
+		.code		= MEDIA_BUS_FMT_RGB565_2X8_BE,
+		.bpp		= 16,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_RGB555, /* gggbbbbb arrrrrgg */
+		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_LE,
+		.bpp		= 16,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_RGB555X, /* arrrrrgg gggbbbbb */
+		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_BE,
+		.bpp		= 16,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_RGB24, /* rgb */
+		.code		= MEDIA_BUS_FMT_RGB888_2X12_LE,
+		.bpp		= 24,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_BGR24, /* bgr */
+		.code		= MEDIA_BUS_FMT_RGB888_2X12_BE,
+		.bpp		= 24,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_RGB32, /* argb */
+		.code		= MEDIA_BUS_FMT_ARGB8888_1X32,
+		.bpp		= 32,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SBGGR8,
 		.code		= MEDIA_BUS_FMT_SBGGR8_1X8,
@@ -446,24 +470,30 @@ static bool cal_ctx_wr_dma_stopped(struct cal_ctx *ctx)
 }
 
 static int
-cal_get_remote_frame_desc_entry(struct cal_ctx *ctx,
+cal_get_remote_frame_desc_entry(struct cal_camerarx *phy,
 				struct v4l2_mbus_frame_desc_entry *entry)
 {
 	struct v4l2_mbus_frame_desc fd;
-	struct media_pad *phy_source_pad;
 	int ret;
 
-	phy_source_pad = media_pad_remote_pad_first(&ctx->pad);
-	if (!phy_source_pad)
-		return -ENODEV;
-
-	ret = v4l2_subdev_call(&ctx->phy->subdev, pad, get_frame_desc,
-			       phy_source_pad->index, &fd);
-	if (ret)
+	ret = cal_camerarx_get_remote_frame_desc(phy, &fd);
+	if (ret) {
+		if (ret != -ENOIOCTLCMD)
+			dev_err(phy->cal->dev,
+				"Failed to get remote frame desc: %d\n", ret);
 		return ret;
+	}
 
-	if (fd.num_entries != 1)
-		return -EINVAL;
+	if (fd.num_entries == 0) {
+		dev_err(phy->cal->dev,
+			"No streams found in the remote frame descriptor\n");
+
+		return -ENODEV;
+	}
+
+	if (fd.num_entries > 1)
+		dev_dbg(phy->cal->dev,
+			"Multiple streams not supported in remote frame descriptor, using the first one\n");
 
 	*entry = fd.entry[0];
 
@@ -475,15 +505,14 @@ int cal_ctx_prepare(struct cal_ctx *ctx)
 	struct v4l2_mbus_frame_desc_entry entry;
 	int ret;
 
-	ret = cal_get_remote_frame_desc_entry(ctx, &entry);
+	ret = cal_get_remote_frame_desc_entry(ctx->phy, &entry);
 
 	if (ret == -ENOIOCTLCMD) {
 		ctx->vc = 0;
 		ctx->datatype = CAL_CSI2_CTX_DT_ANY;
 	} else if (!ret) {
-		ctx_dbg(2, ctx, "Framedesc: stream %u, len %u, vc %u, dt %#x\n",
-			entry.stream, entry.length, entry.bus.csi2.vc,
-			entry.bus.csi2.dt);
+		ctx_dbg(2, ctx, "Framedesc: len %u, vc %u, dt %#x\n",
+			entry.length, entry.bus.csi2.vc, entry.bus.csi2.dt);
 
 		ctx->vc = entry.bus.csi2.vc;
 		ctx->datatype = entry.bus.csi2.dt;
@@ -491,7 +520,7 @@ int cal_ctx_prepare(struct cal_ctx *ctx)
 		return ret;
 	}
 
-	ctx->use_pix_proc = ctx->vb_vidq.type == V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	ctx->use_pix_proc = !ctx->fmtinfo->meta;
 
 	if (ctx->use_pix_proc) {
 		ret = cal_reserve_pix_proc(ctx->cal);
@@ -550,7 +579,7 @@ void cal_ctx_start(struct cal_ctx *ctx)
 void cal_ctx_stop(struct cal_ctx *ctx)
 {
 	struct cal_camerarx *phy = ctx->phy;
-	long time_left;
+	long timeout;
 
 	WARN_ON(phy->vc_enable_count[ctx->vc] == 0);
 
@@ -566,9 +595,9 @@ void cal_ctx_stop(struct cal_ctx *ctx)
 	ctx->dma.state = CAL_DMA_STOP_REQUESTED;
 	spin_unlock_irq(&ctx->dma.lock);
 
-	time_left = wait_event_timeout(ctx->dma.wait, cal_ctx_wr_dma_stopped(ctx),
-				       msecs_to_jiffies(500));
-	if (!time_left) {
+	timeout = wait_event_timeout(ctx->dma.wait, cal_ctx_wr_dma_stopped(ctx),
+				     msecs_to_jiffies(500));
+	if (!timeout) {
 		ctx_err(ctx, "failed to disable dma cleanly\n");
 		cal_ctx_wr_dma_disable(ctx);
 	}
@@ -775,19 +804,19 @@ static irqreturn_t cal_irq(int irq_cal, void *data)
  */
 
 struct cal_v4l2_async_subdev {
-	struct v4l2_async_connection asd; /* Must be first */
+	struct v4l2_async_subdev asd; /* Must be first */
 	struct cal_camerarx *phy;
 };
 
 static inline struct cal_v4l2_async_subdev *
-to_cal_asd(struct v4l2_async_connection *asd)
+to_cal_asd(struct v4l2_async_subdev *asd)
 {
 	return container_of(asd, struct cal_v4l2_async_subdev, asd);
 }
 
 static int cal_async_notifier_bound(struct v4l2_async_notifier *notifier,
 				    struct v4l2_subdev *subdev,
-				    struct v4l2_async_connection *asd)
+				    struct v4l2_async_subdev *asd)
 {
 	struct cal_camerarx *phy = to_cal_asd(asd)->phy;
 	int pad;
@@ -799,6 +828,7 @@ static int cal_async_notifier_bound(struct v4l2_async_notifier *notifier,
 		return 0;
 	}
 
+	phy->source = subdev;
 	phy_dbg(1, phy, "Using source %s for capture\n", subdev->name);
 
 	pad = media_entity_get_fwnode_pad(&subdev->entity,
@@ -819,9 +849,6 @@ static int cal_async_notifier_bound(struct v4l2_async_notifier *notifier,
 			subdev->name);
 		return ret;
 	}
-
-	phy->source = subdev;
-	phy->source_pad = pad;
 
 	return 0;
 }
@@ -868,7 +895,7 @@ static int cal_async_notifier_register(struct cal_dev *cal)
 	unsigned int i;
 	int ret;
 
-	v4l2_async_nf_init(&cal->notifier, &cal->v4l2_dev);
+	v4l2_async_nf_init(&cal->notifier);
 	cal->notifier.ops = &cal_async_notifier_ops;
 
 	for (i = 0; i < cal->data->num_csi2_phy; ++i) {
@@ -892,7 +919,7 @@ static int cal_async_notifier_register(struct cal_dev *cal)
 		casd->phy = phy;
 	}
 
-	ret = v4l2_async_nf_register(&cal->notifier);
+	ret = v4l2_async_nf_register(&cal->v4l2_dev, &cal->notifier);
 	if (ret) {
 		cal_err(cal, "Error registering async notifier\n");
 		goto error;
@@ -1017,6 +1044,7 @@ static struct cal_ctx *cal_ctx_create(struct cal_dev *cal, int inst)
 		return NULL;
 
 	ctx->cal = cal;
+	ctx->phy = cal->phy[inst];
 	ctx->dma_ctx = inst;
 	ctx->csi2_ctx = inst;
 	ctx->cport = inst;
@@ -1107,7 +1135,8 @@ static int cal_init_camerarx_regmap(struct cal_dev *cal)
 		return 0;
 	}
 
-	dev_warn(cal->dev, "failed to get ti,camerrx-control: %pe\n", syscon);
+	dev_warn(cal->dev, "failed to get ti,camerrx-control: %ld\n",
+		 PTR_ERR(syscon));
 
 	/*
 	 * Backward DTS compatibility. If syscon entry is not present then
@@ -1227,37 +1256,18 @@ static int cal_probe(struct platform_device *pdev)
 	}
 
 	/* Create contexts. */
-	if (!cal_mc_api) {
-		for (i = 0; i < cal->data->num_csi2_phy; ++i) {
-			struct cal_ctx *ctx;
+	for (i = 0; i < cal->data->num_csi2_phy; ++i) {
+		if (!cal->phy[i]->source_node)
+			continue;
 
-			if (!cal->phy[i]->source_node)
-				continue;
-
-			ctx = cal_ctx_create(cal, i);
-			if (!ctx) {
-				cal_err(cal, "Failed to create context %u\n", cal->num_contexts);
-				ret = -ENODEV;
-				goto error_context;
-			}
-
-			ctx->phy = cal->phy[i];
-
-			cal->ctx[cal->num_contexts++] = ctx;
+		cal->ctx[cal->num_contexts] = cal_ctx_create(cal, i);
+		if (!cal->ctx[cal->num_contexts]) {
+			cal_err(cal, "Failed to create context %u\n", cal->num_contexts);
+			ret = -ENODEV;
+			goto error_context;
 		}
-	} else {
-		for (i = 0; i < ARRAY_SIZE(cal->ctx); ++i) {
-			struct cal_ctx *ctx;
 
-			ctx = cal_ctx_create(cal, i);
-			if (!ctx) {
-				cal_err(cal, "Failed to create context %u\n", i);
-				ret = -ENODEV;
-				goto error_context;
-			}
-
-			cal->ctx[cal->num_contexts++] = ctx;
-		}
+		cal->num_contexts++;
 	}
 
 	/* Register the media device. */
@@ -1283,7 +1293,7 @@ error_pm_runtime:
 	return ret;
 }
 
-static void cal_remove(struct platform_device *pdev)
+static int cal_remove(struct platform_device *pdev)
 {
 	struct cal_dev *cal = platform_get_drvdata(pdev);
 	unsigned int i;
@@ -1309,6 +1319,8 @@ static void cal_remove(struct platform_device *pdev)
 	if (ret >= 0)
 		pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static int cal_runtime_resume(struct device *dev)

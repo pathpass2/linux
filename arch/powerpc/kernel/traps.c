@@ -121,7 +121,7 @@ static void pmac_backlight_unblank(void)
 
 		props = &pmac_backlight->props;
 		props->brightness = props->max_brightness;
-		props->power = BACKLIGHT_POWER_ON;
+		props->power = FB_BLANK_UNBLANK;
 		backlight_update_status(pmac_backlight);
 	}
 	mutex_unlock(&pmac_backlight_mutex);
@@ -157,7 +157,7 @@ static int die_owner = -1;
 static unsigned int die_nest_count;
 static int die_counter;
 
-void panic_flush_kmsg_start(void)
+extern void panic_flush_kmsg_start(void)
 {
 	/*
 	 * These are mostly taken from kernel/panic.c, but tries to do
@@ -170,7 +170,7 @@ void panic_flush_kmsg_start(void)
 	bust_spinlocks(1);
 }
 
-void panic_flush_kmsg_end(void)
+extern void panic_flush_kmsg_end(void)
 {
 	kmsg_dump(KMSG_DUMP_PANIC);
 	bust_spinlocks(0);
@@ -263,9 +263,10 @@ static int __die(const char *str, struct pt_regs *regs, long err)
 {
 	printk("Oops: %s, sig: %ld [#%d]\n", str, err, ++die_counter);
 
-	printk("%s PAGE_SIZE=%luK%s %s%s%s%s %s\n",
+	printk("%s PAGE_SIZE=%luK%s%s%s%s%s%s %s\n",
 	       IS_ENABLED(CONFIG_CPU_LITTLE_ENDIAN) ? "LE" : "BE",
 	       PAGE_SIZE / 1024, get_mmu_str(),
+	       IS_ENABLED(CONFIG_PREEMPT) ? " PREEMPT" : "",
 	       IS_ENABLED(CONFIG_SMP) ? " SMP" : "",
 	       IS_ENABLED(CONFIG_SMP) ? (" NR_CPUS=" __stringify(NR_CPUS)) : "",
 	       debug_pagealloc_enabled() ? " DEBUG_PAGEALLOC" : "",
@@ -403,7 +404,7 @@ noinstr void hv_nmi_check_nonrecoverable(struct pt_regs *regs)
 		return;
 	if (!(regs->msr & MSR_HV))
 		return;
-	if (user_mode(regs))
+	if (regs->msr & MSR_PR)
 		return;
 
 	/*
@@ -1157,13 +1158,12 @@ DEFINE_INTERRUPT_HANDLER(single_step_exception)
  * pretend we got a single-step exception.  This was pointed out
  * by Kumar Gala.  -- paulus
  */
-void emulate_single_step(struct pt_regs *regs)
+static void emulate_single_step(struct pt_regs *regs)
 {
 	if (single_stepping(regs))
 		__single_step_exception(regs);
 }
 
-#ifdef CONFIG_PPC_FPU_REGS
 static inline int __parse_fpscr(unsigned long fpscr)
 {
 	int ret = FPE_FLTUNK;
@@ -1190,7 +1190,6 @@ static inline int __parse_fpscr(unsigned long fpscr)
 
 	return ret;
 }
-#endif
 
 static void parse_fpe(struct pt_regs *regs)
 {
@@ -1438,12 +1437,10 @@ static int emulate_instruction(struct pt_regs *regs)
 	return -EINVAL;
 }
 
-#ifdef CONFIG_GENERIC_BUG
 int is_valid_bugaddr(unsigned long addr)
 {
 	return is_kernel_addr(addr);
 }
-#endif
 
 #ifdef CONFIG_MATH_EMULATION
 static int emulate_math(struct pt_regs *regs)
@@ -1509,17 +1506,18 @@ static void do_program_check(struct pt_regs *regs)
 		if (!is_kernel_addr(bugaddr) && !(regs->msr & MSR_IR))
 			bugaddr += PAGE_OFFSET;
 
-		if (!user_mode(regs) &&
+		if (!(regs->msr & MSR_PR) &&  /* not user-mode */
 		    report_bug(bugaddr, regs) == BUG_TRAP_TYPE_WARN) {
-			regs_add_return_ip(regs, 4);
-			return;
-		}
+			const struct exception_table_entry *entry;
 
-		/* User mode considers other cases after enabling IRQs */
-		if (!user_mode(regs)) {
-			_exception(SIGTRAP, regs, TRAP_BRKPT, regs->nip);
-			return;
+			entry = search_exception_tables(bugaddr);
+			if (entry) {
+				regs_set_return_ip(regs, extable_fixup(entry) + regs->nip - bugaddr);
+				return;
+			}
 		}
+		_exception(SIGTRAP, regs, TRAP_BRKPT, regs->nip);
+		return;
 	}
 #ifdef CONFIG_PPC_TRANSACTIONAL_MEM
 	if (reason & REASON_TM) {
@@ -1552,43 +1550,15 @@ static void do_program_check(struct pt_regs *regs)
 
 	/*
 	 * If we took the program check in the kernel skip down to sending a
-	 * SIGILL. The subsequent cases all relate to user space, such as
-	 * emulating instructions which we should only do for user space. We
-	 * also do not want to enable interrupts for kernel faults because that
-	 * might lead to further faults, and loose the context of the original
-	 * exception.
+	 * SIGILL. The subsequent cases all relate to emulating instructions
+	 * which we should only do for userspace. We also do not want to enable
+	 * interrupts for kernel faults because that might lead to further
+	 * faults, and loose the context of the original exception.
 	 */
 	if (!user_mode(regs))
 		goto sigill;
 
 	interrupt_cond_local_irq_enable(regs);
-
-	/*
-	 * (reason & REASON_TRAP) is mostly handled before enabling IRQs,
-	 * except get_user_instr() can sleep so we cannot reliably inspect the
-	 * current instruction in that context. Now that we know we are
-	 * handling a user space trap and can sleep, we can check if the trap
-	 * was a hashchk failure.
-	 */
-	if (reason & REASON_TRAP) {
-		if (cpu_has_feature(CPU_FTR_DEXCR_NPHIE)) {
-			ppc_inst_t insn;
-
-			if (get_user_instr(insn, (void __user *)regs->nip)) {
-				_exception(SIGSEGV, regs, SEGV_MAPERR, regs->nip);
-				return;
-			}
-
-			if (ppc_inst_primary_opcode(insn) == 31 &&
-			    get_xop(ppc_inst_val(insn)) == OP_31_XOP_HASHCHK) {
-				_exception(SIGILL, regs, ILL_ILLOPN, regs->nip);
-				return;
-			}
-		}
-
-		_exception(SIGTRAP, regs, TRAP_BRKPT, regs->nip);
-		return;
-	}
 
 	/* (reason & REASON_ILLEGAL) would be the obvious thing here,
 	 * but there seems to be a hardware bug on the 405GP (RevD)
@@ -2243,11 +2213,22 @@ void __noreturn unrecoverable_exception(struct pt_regs *regs)
 		;
 }
 
-#ifdef CONFIG_BOOKE_WDT
+#if defined(CONFIG_BOOKE_WDT) || defined(CONFIG_40x)
+/*
+ * Default handler for a Watchdog exception,
+ * spins until a reboot occurs
+ */
+void __attribute__ ((weak)) WatchdogHandler(struct pt_regs *regs)
+{
+	/* Generic WatchdogHandler, implement your own */
+	mtspr(SPRN_TCR, mfspr(SPRN_TCR)&(~TCR_WIE));
+	return;
+}
+
 DEFINE_INTERRUPT_HANDLER_NMI(WatchdogException)
 {
 	printk (KERN_EMERG "PowerPC Book-E Watchdog Exception\n");
-	mtspr(SPRN_TCR, mfspr(SPRN_TCR) & ~TCR_WIE);
+	WatchdogHandler(regs);
 	return 0;
 }
 #endif

@@ -5,8 +5,6 @@
 
 #include <linux/highmem.h>
 
-#include <drm/drm_print.h>
-
 #include "display/intel_display.h"
 #include "i915_drv.h"
 #include "i915_reg.h"
@@ -300,7 +298,6 @@ void i915_vma_revoke_fence(struct i915_vma *vma)
 		return;
 
 	GEM_BUG_ON(fence->vma != vma);
-	i915_active_wait(&fence->active);
 	GEM_BUG_ON(!i915_active_is_idle(&fence->active));
 	GEM_BUG_ON(atomic_read(&fence->pin_count));
 
@@ -330,7 +327,6 @@ static bool fence_is_active(const struct i915_fence_reg *fence)
 
 static struct i915_fence_reg *fence_find(struct i915_ggtt *ggtt)
 {
-	struct intel_display *display = ggtt->vm.i915->display;
 	struct i915_fence_reg *active = NULL;
 	struct i915_fence_reg *fence, *fn;
 
@@ -356,7 +352,7 @@ static struct i915_fence_reg *fence_find(struct i915_ggtt *ggtt)
 	}
 
 	/* Wait for completion of pending flips which consume fences */
-	if (intel_has_pending_fb_unpin(display))
+	if (intel_has_pending_fb_unpin(ggtt->vm.i915))
 		return ERR_PTR(-EAGAIN);
 
 	return ERR_PTR(-ENOBUFS);
@@ -421,6 +417,7 @@ out_unpin:
  * For an untiled surface, this removes any existing fence.
  *
  * Returns:
+ *
  * 0 on success, negative error code on failure.
  */
 int i915_vma_pin_fence(struct i915_vma *vma)
@@ -752,7 +749,7 @@ static void swizzle_page(struct page *page)
 	char *vaddr;
 	int i;
 
-	vaddr = kmap_local_page(page);
+	vaddr = kmap(page);
 
 	for (i = 0; i < PAGE_SIZE; i += 128) {
 		memcpy(temp, &vaddr[i], 64);
@@ -760,7 +757,7 @@ static void swizzle_page(struct page *page)
 		memcpy(&vaddr[i + 64], temp, 64);
 	}
 
-	kunmap_local(vaddr);
+	kunmap(page);
 }
 
 /**
@@ -821,7 +818,7 @@ i915_gem_object_save_bit_17_swizzle(struct drm_i915_gem_object *obj,
 	if (obj->bit_17 == NULL) {
 		obj->bit_17 = bitmap_zalloc(page_count, GFP_KERNEL);
 		if (obj->bit_17 == NULL) {
-			drm_err(obj->base.dev,
+			drm_err(&to_i915(obj->base.dev)->drm,
 				"Failed to allocate memory for bit 17 record\n");
 			return;
 		}

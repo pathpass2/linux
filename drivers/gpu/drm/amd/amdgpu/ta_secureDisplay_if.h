@@ -31,12 +31,10 @@
  *    Secure Display Command ID
  */
 enum ta_securedisplay_command {
-	/* Query whether TA is responding. It is used only for validation purpose */
+	/* Query whether TA is responding used only for validation purpose */
 	TA_SECUREDISPLAY_COMMAND__QUERY_TA              = 1,
 	/* Send region of Interest and CRC value to I2C */
 	TA_SECUREDISPLAY_COMMAND__SEND_ROI_CRC          = 2,
-	/* V2 to send multiple regions of Interest and CRC value to I2C */
-	TA_SECUREDISPLAY_COMMAND__SEND_ROI_CRC_V2       = 3,
 	/* Maximum Command ID */
 	TA_SECUREDISPLAY_COMMAND__MAX_ID                = 0x7FFFFFFF,
 };
@@ -85,8 +83,6 @@ enum ta_securedisplay_ta_query_cmd_ret {
 enum ta_securedisplay_buffer_size {
 	/* 15 bytes = 8 byte (ROI) + 6 byte(CRC) + 1 byte(phy_id) */
 	TA_SECUREDISPLAY_I2C_BUFFER_SIZE                = 15,
-	/* 16 bytes = 8 byte (ROI) + 6 byte(CRC) + 1 byte(phy_id) + 1 byte(roi_idx) */
-	TA_SECUREDISPLAY_V2_I2C_BUFFER_SIZE             = 16,
 };
 
 /** Input/output structures for Secure Display commands */
@@ -99,15 +95,7 @@ enum ta_securedisplay_buffer_size {
  *    Physical ID to determine which DIO scratch register should be used to get ROI
  */
 struct ta_securedisplay_send_roi_crc_input {
-	/* Physical ID */
-	uint32_t  phy_id;
-};
-
-struct ta_securedisplay_send_roi_crc_v2_input {
-	/* Physical ID */
-	uint32_t phy_id;
-	/* Region of interest index */
-	uint8_t  roi_idx;
+	uint32_t  phy_id;  /* Physical ID */
 };
 
 /** @union ta_securedisplay_cmd_input
@@ -116,8 +104,6 @@ struct ta_securedisplay_send_roi_crc_v2_input {
 union ta_securedisplay_cmd_input {
 	/* send ROI and CRC input buffer format */
 	struct ta_securedisplay_send_roi_crc_input        send_roi_crc;
-	/* send ROI and CRC input buffer format, v2 adds a ROI index */
-	struct ta_securedisplay_send_roi_crc_v2_input     send_roi_crc_v2;
 	uint32_t                                          reserved[4];
 };
 
@@ -142,10 +128,6 @@ struct ta_securedisplay_send_roi_crc_output {
 	uint8_t  reserved;
 };
 
-struct ta_securedisplay_send_roi_crc_v2_output {
-	uint8_t  i2c_buf[TA_SECUREDISPLAY_V2_I2C_BUFFER_SIZE];  /* I2C buffer */
-};
-
 /** @union ta_securedisplay_cmd_output
  *    Output buffer
  */
@@ -154,8 +136,6 @@ union ta_securedisplay_cmd_output {
 	struct ta_securedisplay_query_ta_output            query_ta;
 	/* Send ROI CRC output buffer format used only for validation purpose */
 	struct ta_securedisplay_send_roi_crc_output        send_roi_crc;
-	/* Send ROI CRC output buffer format used only for validation purpose */
-	struct ta_securedisplay_send_roi_crc_v2_output     send_roi_crc_v2;
 	uint32_t                                           reserved[4];
 };
 

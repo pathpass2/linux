@@ -8,7 +8,6 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
 #include <linux/sched_clock.h>
 
 #define TIMER0_FREQ	1000000
@@ -85,7 +84,7 @@ static int __init gxp_timer_init(struct device_node *node)
 
 	clk = of_clk_get(node, 0);
 	if (IS_ERR(clk)) {
-		ret = PTR_ERR(clk);
+		ret = (int)PTR_ERR(clk);
 		pr_err("%pOFn clock not found: %d\n", node, ret);
 		goto err_free;
 	}

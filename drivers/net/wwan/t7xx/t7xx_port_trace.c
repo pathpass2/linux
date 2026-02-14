@@ -33,7 +33,7 @@ static int t7xx_trace_remove_buf_file_handler(struct dentry *dentry)
 }
 
 static int t7xx_trace_subbuf_start_handler(struct rchan_buf *buf, void *subbuf,
-					   void *prev_subbuf)
+					   void *prev_subbuf, size_t prev_padding)
 {
 	if (relay_buf_full(buf)) {
 		pr_err_ratelimited("Relay_buf full dropping traces");
@@ -59,7 +59,6 @@ static void t7xx_trace_port_uninit(struct t7xx_port *port)
 
 	relay_close(relaych);
 	debugfs_remove_recursive(debugfs_dir);
-	port->log.relaych = NULL;
 }
 
 static int t7xx_trace_port_recv_skb(struct t7xx_port *port, struct sk_buff *skb)

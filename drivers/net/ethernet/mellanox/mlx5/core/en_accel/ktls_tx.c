@@ -660,7 +660,7 @@ tx_sync_info_get(struct mlx5e_ktls_offload_context_tx *priv_tx,
 	while (remaining > 0) {
 		skb_frag_t *frag = &record->frags[i];
 
-		page_ref_inc(skb_frag_page(frag));
+		get_page(skb_frag_page(frag));
 		remaining -= skb_frag_size(frag);
 		info->frags[i++] = *frag;
 	}
@@ -744,7 +744,7 @@ tx_post_resync_dump(struct mlx5e_txqsq *sq, skb_frag_t *frag, u32 tisn)
 	dseg->addr       = cpu_to_be64(dma_addr);
 	dseg->lkey       = sq->mkey_be;
 	dseg->byte_count = cpu_to_be32(fsz);
-	mlx5e_dma_push_netmem(sq, skb_frag_netmem(frag), dma_addr, fsz);
+	mlx5e_dma_push(sq, dma_addr, fsz, MLX5E_DMA_MAP_PAGE);
 
 	tx_fill_wi(sq, pi, MLX5E_KTLS_DUMP_WQEBBS, fsz, skb_frag_page(frag));
 	sq->pc += MLX5E_KTLS_DUMP_WQEBBS;
@@ -763,7 +763,7 @@ void mlx5e_ktls_tx_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
 	stats = sq->stats;
 
 	mlx5e_tx_dma_unmap(sq->pdev, dma);
-	page_ref_dec(wi->resync_dump_frag_page);
+	put_page(wi->resync_dump_frag_page);
 	stats->tls_dump_packets++;
 	stats->tls_dump_bytes += wi->num_bytes;
 }
@@ -816,12 +816,12 @@ mlx5e_ktls_tx_handle_ooo(struct mlx5e_ktls_offload_context_tx *priv_tx,
 
 err_out:
 	for (; i < info.nr_frags; i++)
-		/* The page_ref_dec() here undoes the page ref obtained in tx_sync_info_get().
+		/* The put_page() here undoes the page ref obtained in tx_sync_info_get().
 		 * Page refs obtained for the DUMP WQEs above (by page_ref_add) will be
 		 * released only upon their completions (or in mlx5e_free_txqsq_descs,
 		 * if channel closes).
 		 */
-		page_ref_dec(skb_frag_page(&info.frags[i]));
+		put_page(skb_frag_page(&info.frags[i]));
 
 	return MLX5E_KTLS_SYNC_FAIL;
 }
@@ -846,7 +846,7 @@ bool mlx5e_ktls_handle_tx_skb(struct net_device *netdev, struct mlx5e_txqsq *sq,
 	tls_ctx = tls_get_ctx(skb->sk);
 	tls_netdev = rcu_dereference_bh(tls_ctx->netdev);
 	/* Don't WARN on NULL: if tls_device_down is running in parallel,
-	 * netdev might become NULL, even if tls_is_skb_tx_device_offloaded was
+	 * netdev might become NULL, even if tls_is_sk_tx_device_offloaded was
 	 * true. Rather continue processing this packet.
 	 */
 	if (WARN_ON_ONCE(tls_netdev && tls_netdev != netdev))
@@ -908,51 +908,28 @@ static void mlx5e_tls_tx_debugfs_init(struct mlx5e_tls *tls,
 
 int mlx5e_ktls_init_tx(struct mlx5e_priv *priv)
 {
-	struct mlx5_crypto_dek_pool *dek_pool;
 	struct mlx5e_tls *tls = priv->tls;
-	int err;
-
-	if (!mlx5e_is_ktls_device(priv->mdev))
-		return 0;
-
-	/* DEK pool could be used by either or both of TX and RX. But we have to
-	 * put the creation here to avoid syndrome when doing devlink reload.
-	 */
-	dek_pool = mlx5_crypto_dek_pool_create(priv->mdev, MLX5_ACCEL_OBJ_TLS_KEY);
-	if (IS_ERR(dek_pool))
-		return PTR_ERR(dek_pool);
-	tls->dek_pool = dek_pool;
 
 	if (!mlx5e_is_ktls_tx(priv->mdev))
 		return 0;
 
 	priv->tls->tx_pool = mlx5e_tls_tx_pool_init(priv->mdev, &priv->tls->sw_stats);
-	if (!priv->tls->tx_pool) {
-		err = -ENOMEM;
-		goto err_tx_pool_init;
-	}
+	if (!priv->tls->tx_pool)
+		return -ENOMEM;
 
 	mlx5e_tls_tx_debugfs_init(tls, tls->debugfs.dfs);
 
 	return 0;
-
-err_tx_pool_init:
-	mlx5_crypto_dek_pool_destroy(dek_pool);
-	return err;
 }
 
 void mlx5e_ktls_cleanup_tx(struct mlx5e_priv *priv)
 {
 	if (!mlx5e_is_ktls_tx(priv->mdev))
-		goto dek_pool_destroy;
+		return;
 
 	debugfs_remove_recursive(priv->tls->debugfs.dfs_tx);
 	priv->tls->debugfs.dfs_tx = NULL;
 
 	mlx5e_tls_tx_pool_cleanup(priv->tls->tx_pool);
 	priv->tls->tx_pool = NULL;
-
-dek_pool_destroy:
-	if (mlx5e_is_ktls_device(priv->mdev))
-		mlx5_crypto_dek_pool_destroy(priv->tls->dek_pool);
 }

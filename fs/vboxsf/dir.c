@@ -179,10 +179,9 @@ static int vboxsf_dir_iterate(struct file *dir, struct dir_context *ctx)
 	return 0;
 }
 
-WRAP_DIR_ITER(vboxsf_dir_iterate) // FIXME!
 const struct file_operations vboxsf_dir_fops = {
 	.open = vboxsf_dir_open,
-	.iterate_shared = shared_vboxsf_dir_iterate,
+	.iterate = vboxsf_dir_iterate,
 	.release = vboxsf_dir_release,
 	.read = generic_read_dir,
 	.llseek = generic_file_llseek,
@@ -192,8 +191,7 @@ const struct file_operations vboxsf_dir_fops = {
  * This is called during name resolution/lookup to check if the @dentry in
  * the cache is still valid. the job is handled by vboxsf_inode_revalidate.
  */
-static int vboxsf_dentry_revalidate(struct inode *dir, const struct qstr *name,
-				    struct dentry *dentry, unsigned int flags)
+static int vboxsf_dentry_revalidate(struct dentry *dentry, unsigned int flags)
 {
 	if (flags & LOOKUP_RCU)
 		return -ECHILD;
@@ -303,11 +301,11 @@ static int vboxsf_dir_mkfile(struct mnt_idmap *idmap,
 	return vboxsf_dir_create(parent, dentry, mode, false, excl, NULL);
 }
 
-static struct dentry *vboxsf_dir_mkdir(struct mnt_idmap *idmap,
-				       struct inode *parent, struct dentry *dentry,
-				       umode_t mode)
+static int vboxsf_dir_mkdir(struct mnt_idmap *idmap,
+			    struct inode *parent, struct dentry *dentry,
+			    umode_t mode)
 {
-	return ERR_PTR(vboxsf_dir_create(parent, dentry, mode, true, true, NULL));
+	return vboxsf_dir_create(parent, dentry, mode, true, true, NULL);
 }
 
 static int vboxsf_dir_atomic_open(struct inode *parent, struct dentry *dentry,
@@ -315,39 +313,46 @@ static int vboxsf_dir_atomic_open(struct inode *parent, struct dentry *dentry,
 {
 	struct vboxsf_sbi *sbi = VBOXSF_SBI(parent->i_sb);
 	struct vboxsf_handle *sf_handle;
+	struct dentry *res = NULL;
 	u64 handle;
 	int err;
 
 	if (d_in_lookup(dentry)) {
-		struct dentry *res = vboxsf_dir_lookup(parent, dentry, 0);
-		if (res || d_really_is_positive(dentry))
-			return finish_no_open(file, res);
+		res = vboxsf_dir_lookup(parent, dentry, 0);
+		if (IS_ERR(res))
+			return PTR_ERR(res);
+
+		if (res)
+			dentry = res;
 	}
 
 	/* Only creates */
-	if (!(flags & O_CREAT))
-		return finish_no_open(file, NULL);
+	if (!(flags & O_CREAT) || d_really_is_positive(dentry))
+		return finish_no_open(file, res);
 
 	err = vboxsf_dir_create(parent, dentry, mode, false, flags & O_EXCL, &handle);
 	if (err)
-		return err;
+		goto out;
 
 	sf_handle = vboxsf_create_sf_handle(d_inode(dentry), handle, SHFL_CF_ACCESS_READWRITE);
 	if (IS_ERR(sf_handle)) {
 		vboxsf_close(sbi->root, handle);
-		return PTR_ERR(sf_handle);
+		err = PTR_ERR(sf_handle);
+		goto out;
 	}
 
 	err = finish_open(file, dentry, generic_file_open);
 	if (err) {
 		/* This also closes the handle passed to vboxsf_create_sf_handle() */
 		vboxsf_release_sf_handle(d_inode(dentry), sf_handle);
-		return err;
+		goto out;
 	}
 
 	file->private_data = sf_handle;
 	file->f_mode |= FMODE_CREATED;
-	return 0;
+out:
+	dput(res);
+	return err;
 }
 
 static int vboxsf_dir_unlink(struct inode *parent, struct dentry *dentry)

@@ -11,6 +11,7 @@
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
+		compatible = "marvell,armada-ap810-octa";
 
 		cpu0: cpu@0 {
 			device_type = "cpu";

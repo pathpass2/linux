@@ -36,6 +36,11 @@ struct snmp_mib {
 	.entry = _entry,			\
 }
 
+#define SNMP_MIB_SENTINEL {	\
+	.name = NULL,		\
+	.entry = 0,		\
+}
+
 /*
  * We use unsigned longs for most mibs but u64 for ipstats.
  */
@@ -154,7 +159,7 @@ struct linux_tls_mib {
 
 #define __SNMP_ADD_STATS64(mib, field, addend) 				\
 	do {								\
-		TYPEOF_UNQUAL(*mib) *ptr = raw_cpu_ptr(mib);		\
+		__typeof__(*mib) *ptr = raw_cpu_ptr(mib);		\
 		u64_stats_update_begin(&ptr->syncp);			\
 		ptr->mibs[field] += addend;				\
 		u64_stats_update_end(&ptr->syncp);			\
@@ -171,7 +176,8 @@ struct linux_tls_mib {
 #define SNMP_INC_STATS64(mib, field) SNMP_ADD_STATS64(mib, field, 1)
 #define __SNMP_UPD_PO_STATS64(mib, basefield, addend)			\
 	do {								\
-		TYPEOF_UNQUAL(*mib) *ptr = raw_cpu_ptr(mib);		\
+		__typeof__(*mib) *ptr;				\
+		ptr = raw_cpu_ptr((mib));				\
 		u64_stats_update_begin(&ptr->syncp);			\
 		ptr->mibs[basefield##PKTS]++;				\
 		ptr->mibs[basefield##OCTETS] += addend;			\

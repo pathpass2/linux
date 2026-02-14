@@ -12,8 +12,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/random.h>
-#include <crypto/sha2.h>
-#include <crypto/utils.h>
+#include <crypto/hash.h>
 
 #include "tb.h"
 
@@ -37,7 +36,7 @@ static bool match_service_id(const struct tb_service_id *id,
 			return false;
 	}
 
-	if (id->match_flags & TBSVC_MATCH_PROTOCOL_REVISION) {
+	if (id->match_flags & TBSVC_MATCH_PROTOCOL_VERSION) {
 		if (id->protocol_revision != svc->prtcrevs)
 			return false;
 	}
@@ -46,9 +45,9 @@ static bool match_service_id(const struct tb_service_id *id,
 }
 
 static const struct tb_service_id *__tb_service_match(struct device *dev,
-						      const struct device_driver *drv)
+						      struct device_driver *drv)
 {
-	const struct tb_service_driver *driver;
+	struct tb_service_driver *driver;
 	const struct tb_service_id *ids;
 	struct tb_service *svc;
 
@@ -56,7 +55,7 @@ static const struct tb_service_id *__tb_service_match(struct device *dev,
 	if (!svc)
 		return NULL;
 
-	driver = container_of_const(drv, struct tb_service_driver, driver);
+	driver = container_of(drv, struct tb_service_driver, driver);
 	if (!driver->id_table)
 		return NULL;
 
@@ -68,7 +67,7 @@ static const struct tb_service_id *__tb_service_match(struct device *dev,
 	return NULL;
 }
 
-static int tb_service_match(struct device *dev, const struct device_driver *drv)
+static int tb_service_match(struct device *dev, struct device_driver *drv)
 {
 	return !!__tb_service_match(dev, drv);
 }
@@ -218,7 +217,7 @@ static ssize_t boot_acl_store(struct device *dev, struct device_attribute *attr,
 	ret = tb->cm_ops->set_boot_acl(tb, acl, tb->nboot_acl);
 	if (!ret) {
 		/* Notify userspace about the change */
-		tb_domain_event(tb, NULL);
+		kobject_uevent(&tb->dev.kobj, KOBJ_CHANGE);
 	}
 	mutex_unlock(&tb->lock);
 
@@ -308,7 +307,7 @@ static const struct attribute_group *domain_attr_groups[] = {
 	NULL,
 };
 
-const struct bus_type tb_bus_type = {
+struct bus_type tb_bus_type = {
 	.name = "thunderbolt",
 	.match = tb_service_match,
 	.probe = tb_service_probe,
@@ -322,12 +321,12 @@ static void tb_domain_release(struct device *dev)
 
 	tb_ctl_free(tb->ctl);
 	destroy_workqueue(tb->wq);
-	ida_free(&tb_domain_ida, tb->index);
+	ida_simple_remove(&tb_domain_ida, tb->index);
 	mutex_destroy(&tb->lock);
 	kfree(tb);
 }
 
-const struct device_type tb_domain_type = {
+struct device_type tb_domain_type = {
 	.name = "thunderbolt_domain",
 	.release = tb_domain_release,
 };
@@ -369,14 +368,14 @@ static bool tb_domain_event_cb(void *data, enum tb_cfg_pkg_type type,
  * Call tb_domain_put() to release the domain before it has been added
  * to the system.
  *
- * Return: Pointer to &struct tb or %NULL in case of error.
+ * Return: allocated domain structure on %NULL in case of error
  */
 struct tb *tb_domain_alloc(struct tb_nhi *nhi, int timeout_msec, size_t privsize)
 {
 	struct tb *tb;
 
 	/*
-	 * Make sure the structure sizes map with what the hardware
+	 * Make sure the structure sizes map with that the hardware
 	 * expects because bit-fields are being used.
 	 */
 	BUILD_BUG_ON(sizeof(struct tb_regs_switch_header) != 5 * 4);
@@ -390,7 +389,7 @@ struct tb *tb_domain_alloc(struct tb_nhi *nhi, int timeout_msec, size_t privsize
 	tb->nhi = nhi;
 	mutex_init(&tb->lock);
 
-	tb->index = ida_alloc(&tb_domain_ida, GFP_KERNEL);
+	tb->index = ida_simple_get(&tb_domain_ida, 0, 0, GFP_KERNEL);
 	if (tb->index < 0)
 		goto err_free;
 
@@ -398,7 +397,7 @@ struct tb *tb_domain_alloc(struct tb_nhi *nhi, int timeout_msec, size_t privsize
 	if (!tb->wq)
 		goto err_remove_ida;
 
-	tb->ctl = tb_ctl_alloc(nhi, tb->index, timeout_msec, tb_domain_event_cb, tb);
+	tb->ctl = tb_ctl_alloc(nhi, timeout_msec, tb_domain_event_cb, tb);
 	if (!tb->ctl)
 		goto err_destroy_wq;
 
@@ -414,7 +413,7 @@ struct tb *tb_domain_alloc(struct tb_nhi *nhi, int timeout_msec, size_t privsize
 err_destroy_wq:
 	destroy_workqueue(tb->wq);
 err_remove_ida:
-	ida_free(&tb_domain_ida, tb->index);
+	ida_simple_remove(&tb_domain_ida, tb->index);
 err_free:
 	kfree(tb);
 
@@ -424,16 +423,15 @@ err_free:
 /**
  * tb_domain_add() - Add domain to the system
  * @tb: Domain to add
- * @reset: Issue reset to the host router
  *
  * Starts the domain and adds it to the system. Hotplugging devices will
  * work after this has been returned successfully. In order to remove
  * and release the domain after this function has been called, call
  * tb_domain_remove().
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: %0 in case of success and negative errno in case of error
  */
-int tb_domain_add(struct tb *tb, bool reset)
+int tb_domain_add(struct tb *tb)
 {
 	int ret;
 
@@ -462,7 +460,7 @@ int tb_domain_add(struct tb *tb, bool reset)
 
 	/* Start the domain */
 	if (tb->cm_ops->start) {
-		ret = tb->cm_ops->start(tb, reset);
+		ret = tb->cm_ops->start(tb);
 		if (ret)
 			goto err_domain_del;
 	}
@@ -507,10 +505,6 @@ void tb_domain_remove(struct tb *tb)
 	mutex_unlock(&tb->lock);
 
 	flush_workqueue(tb->wq);
-
-	if (tb->cm_ops->deinit)
-		tb->cm_ops->deinit(tb);
-
 	device_unregister(&tb->dev);
 }
 
@@ -519,8 +513,6 @@ void tb_domain_remove(struct tb *tb)
  * @tb: Domain to suspend
  *
  * Suspends all devices in the domain and stops the control channel.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_domain_suspend_noirq(struct tb *tb)
 {
@@ -547,8 +539,6 @@ int tb_domain_suspend_noirq(struct tb *tb)
  *
  * Re-starts the control channel, and resumes all devices connected to
  * the domain.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_domain_resume_noirq(struct tb *tb)
 {
@@ -648,8 +638,6 @@ int tb_domain_disapprove_switch(struct tb *tb, struct tb_switch *sw)
  * This will approve switch by connection manager specific means. In
  * case of success the connection manager will create PCIe tunnel from
  * parent to @sw.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_domain_approve_switch(struct tb *tb, struct tb_switch *sw)
 {
@@ -715,6 +703,8 @@ int tb_domain_challenge_switch_key(struct tb *tb, struct tb_switch *sw)
 	u8 response[TB_SWITCH_KEY_SIZE];
 	u8 hmac[TB_SWITCH_KEY_SIZE];
 	struct tb_switch *parent_sw;
+	struct crypto_shash *tfm;
+	struct shash_desc *shash;
 	int ret;
 
 	if (!tb->cm_ops->approve_switch || !tb->cm_ops->challenge_switch_key)
@@ -730,15 +720,45 @@ int tb_domain_challenge_switch_key(struct tb *tb, struct tb_switch *sw)
 	if (ret)
 		return ret;
 
-	static_assert(sizeof(hmac) == SHA256_DIGEST_SIZE);
-	hmac_sha256_usingrawkey(sw->key, TB_SWITCH_KEY_SIZE,
-				challenge, sizeof(challenge), hmac);
+	tfm = crypto_alloc_shash("hmac(sha256)", 0, 0);
+	if (IS_ERR(tfm))
+		return PTR_ERR(tfm);
+
+	ret = crypto_shash_setkey(tfm, sw->key, TB_SWITCH_KEY_SIZE);
+	if (ret)
+		goto err_free_tfm;
+
+	shash = kzalloc(sizeof(*shash) + crypto_shash_descsize(tfm),
+			GFP_KERNEL);
+	if (!shash) {
+		ret = -ENOMEM;
+		goto err_free_tfm;
+	}
+
+	shash->tfm = tfm;
+
+	memset(hmac, 0, sizeof(hmac));
+	ret = crypto_shash_digest(shash, challenge, sizeof(hmac), hmac);
+	if (ret)
+		goto err_free_shash;
 
 	/* The returned HMAC must match the one we calculated */
-	if (crypto_memneq(response, hmac, sizeof(hmac)))
-		return -EKEYREJECTED;
+	if (memcmp(response, hmac, sizeof(hmac))) {
+		ret = -EKEYREJECTED;
+		goto err_free_shash;
+	}
+
+	crypto_free_shash(tfm);
+	kfree(shash);
 
 	return tb->cm_ops->approve_switch(tb, sw);
+
+err_free_shash:
+	kfree(shash);
+err_free_tfm:
+	crypto_free_shash(tfm);
+
+	return ret;
 }
 
 /**
@@ -748,7 +768,7 @@ int tb_domain_challenge_switch_key(struct tb *tb, struct tb_switch *sw)
  * This needs to be called in preparation for NVM upgrade of the host
  * controller. Makes sure all PCIe paths are disconnected.
  *
- * Return: %0 on success and negative errno in case of error.
+ * Return %0 on success and negative errno in case of error.
  */
 int tb_domain_disconnect_pcie_paths(struct tb *tb)
 {
@@ -770,11 +790,9 @@ int tb_domain_disconnect_pcie_paths(struct tb *tb)
  * Calls connection manager specific method to enable DMA paths to the
  * XDomain in question.
  *
- * Return:
- * * %0 - On success.
- * * %-ENOTSUPP - If the connection manager implementation does not support
- *   XDomains.
- * * Negative errno - An error occurred.
+ * Return: 0% in case of success and negative errno otherwise. In
+ * particular returns %-ENOTSUPP if the connection manager
+ * implementation does not support XDomains.
  */
 int tb_domain_approve_xdomain_paths(struct tb *tb, struct tb_xdomain *xd,
 				    int transmit_path, int transmit_ring,
@@ -799,11 +817,9 @@ int tb_domain_approve_xdomain_paths(struct tb *tb, struct tb_xdomain *xd,
  * Calls connection manager specific method to disconnect DMA paths to
  * the XDomain in question.
  *
- * Return:
- * * %0 - On success.
- * * %-ENOTSUPP - If the connection manager implementation does not support
- *   XDomains.
- * * Negative errno - An error occurred.
+ * Return: 0% in case of success and negative errno otherwise. In
+ * particular returns %-ENOTSUPP if the connection manager
+ * implementation does not support XDomains.
  */
 int tb_domain_disconnect_xdomain_paths(struct tb *tb, struct tb_xdomain *xd,
 				       int transmit_path, int transmit_ring,

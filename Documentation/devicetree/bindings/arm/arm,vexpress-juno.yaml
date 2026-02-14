@@ -8,7 +8,7 @@ title: ARM Versatile Express and Juno Boards
 
 maintainers:
   - Sudeep Holla <sudeep.holla@arm.com>
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
 
 description: |+
   ARM's Versatile Express platform were built as reference designs for exploring
@@ -103,9 +103,8 @@ properties:
           - const: arm,juno-r2
           - const: arm,juno
           - const: arm,vexpress
-      - description: Arm AEMv8a (Architecture Envelope Model)
-          Versatile Express Real-Time System Model (VE RTSM)
-          is a programmers view of the Versatile Express with Arm
+      - description: Arm AEMv8a Versatile Express Real-Time System Model
+          (VE RTSM) is a programmers view of the Versatile Express with Arm
           v8A hardware. See ARM DUI 0575D.
         items:
           - const: arm,rtsm_ve,aemv8a
@@ -123,14 +122,14 @@ properties:
   arm,vexpress,position:
     description: When daughterboards are stacked on one site, their position
       in the stack be be described this attribute.
-    $ref: /schemas/types.yaml#/definitions/uint32
+    $ref: '/schemas/types.yaml#/definitions/uint32'
     minimum: 0
     maximum: 3
 
   arm,vexpress,dcc:
     description: When describing tiles consisting of more than one DCC, its
       number can be specified with this attribute.
-    $ref: /schemas/types.yaml#/definitions/uint32
+    $ref: '/schemas/types.yaml#/definitions/uint32'
     minimum: 0
     maximum: 3
 
@@ -140,12 +139,11 @@ patternProperties:
       the connection between the motherboard and any tiles. Sometimes the
       compatible is placed directly under this node, sometimes it is placed
       in a subnode named "motherboard-bus". Sometimes the compatible includes
-      "arm,vexpress,v2?-p1" sometimes (on software models) it is just
+      "arm,vexpress,v2?-p1" sometimes (on software models) is is just
       "simple-bus". If the compatible is placed in the "motherboard-bus" node,
       it is stricter and always has two compatibles.
     type: object
-    $ref: /schemas/simple-bus.yaml
-    unevaluatedProperties: false
+    $ref: '/schemas/simple-bus.yaml'
 
     properties:
       compatible:
@@ -156,12 +154,6 @@ patternProperties:
                   - arm,vexpress,v2p-p1
               - const: simple-bus
           - const: simple-bus
-
-      "#interrupt-cells":
-        const: 1
-
-      interrupt-map: true
-      interrupt-map-mask: true
 
     patternProperties:
       '^motherboard-bus@':
@@ -187,13 +179,13 @@ patternProperties:
               - const: simple-bus
           arm,v2m-memory-map:
             description: This describes the memory map type.
-            $ref: /schemas/types.yaml#/definitions/string
+            $ref: '/schemas/types.yaml#/definitions/string'
             enum:
               - rs1
               - rs2
 
           arm,hbi:
-            $ref: /schemas/types.yaml#/definitions/uint32
+            $ref: '/schemas/types.yaml#/definitions/uint32'
             description: This indicates the ARM HBI (Hardware Board ID), this is
               ARM's unique board model ID, visible on the PCB's silkscreen.
 
@@ -204,7 +196,7 @@ patternProperties:
               property, describing the physical location of the children nodes.
               0 means motherboard site, while 1 and 2 are daughterboard sites, and
               0xf means "sisterboard" which is the site containing the main CPU tile.
-            $ref: /schemas/types.yaml#/definitions/uint32
+            $ref: '/schemas/types.yaml#/definitions/uint32'
             minimum: 0
             maximum: 15
 

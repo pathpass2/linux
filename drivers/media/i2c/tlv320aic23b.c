@@ -7,7 +7,7 @@
  * Based on wm8775 driver
  *
  * Copyright (C) 2004 Ulf Eklund <ivtv at eklund.to>
- * Copyright (C) 2005 Hans Verkuil <hverkuil@kernel.org>
+ * Copyright (C) 2005 Hans Verkuil <hverkuil@xs4all.nl>
  */
 
 #include <linux/module.h>
@@ -188,7 +188,7 @@ static void tlv320aic23b_remove(struct i2c_client *client)
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id tlv320aic23b_id[] = {
-	{ "tlv320aic23b" },
+	{ "tlv320aic23b", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tlv320aic23b_id);
@@ -197,7 +197,7 @@ static struct i2c_driver tlv320aic23b_driver = {
 	.driver = {
 		.name	= "tlv320aic23b",
 	},
-	.probe		= tlv320aic23b_probe,
+	.probe_new	= tlv320aic23b_probe,
 	.remove		= tlv320aic23b_remove,
 	.id_table	= tlv320aic23b_id,
 };

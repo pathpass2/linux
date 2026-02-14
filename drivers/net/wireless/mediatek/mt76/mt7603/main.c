@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 
 #include <linux/etherdevice.h>
 #include <linux/platform_device.h>
@@ -23,7 +23,7 @@ mt7603_start(struct ieee80211_hw *hw)
 }
 
 static void
-mt7603_stop(struct ieee80211_hw *hw, bool suspend)
+mt7603_stop(struct ieee80211_hw *hw)
 {
 	struct mt7603_dev *dev = hw->priv;
 
@@ -66,9 +66,10 @@ mt7603_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 
 	idx = MT7603_WTBL_RESERVED - 1 - mvif->idx;
 	dev->mt76.vif_mask |= BIT_ULL(mvif->idx);
+	INIT_LIST_HEAD(&mvif->sta.poll_list);
 	mvif->sta.wcid.idx = idx;
-	mvif->sta.vif = mvif;
-	mt76_wcid_init(&mvif->sta.wcid, 0);
+	mvif->sta.wcid.hw_key_idx = -1;
+	mt76_packet_id_init(&mvif->sta.wcid);
 
 	eth_broadcast_addr(bc_addr);
 	mt7603_wtbl_init(dev, idx, mvif->idx, bc_addr);
@@ -99,16 +100,16 @@ mt7603_remove_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 
 	rcu_assign_pointer(dev->mt76.wcid[idx], NULL);
 
-	spin_lock_bh(&dev->mt76.sta_poll_lock);
-	if (!list_empty(&msta->wcid.poll_list))
-		list_del_init(&msta->wcid.poll_list);
-	spin_unlock_bh(&dev->mt76.sta_poll_lock);
+	spin_lock_bh(&dev->sta_poll_lock);
+	if (!list_empty(&msta->poll_list))
+		list_del_init(&msta->poll_list);
+	spin_unlock_bh(&dev->sta_poll_lock);
 
 	mutex_lock(&dev->mt76.mutex);
 	dev->mt76.vif_mask &= ~BIT_ULL(mvif->idx);
 	mutex_unlock(&dev->mt76.mutex);
 
-	mt76_wcid_cleanup(&dev->mt76, &mvif->sta.wcid);
+	mt76_packet_id_flush(&dev->mt76, &mvif->sta.wcid);
 }
 
 void mt7603_init_edcca(struct mt7603_dev *dev)
@@ -131,24 +132,30 @@ void mt7603_init_edcca(struct mt7603_dev *dev)
 	mt7603_edcca_set_strict(dev, false);
 }
 
-int mt7603_set_channel(struct mt76_phy *mphy)
+static int
+mt7603_set_channel(struct ieee80211_hw *hw, struct cfg80211_chan_def *def)
 {
-	struct mt7603_dev *dev = container_of(mphy->dev, struct mt7603_dev, mt76);
-	struct cfg80211_chan_def *def = &mphy->chandef;
-
+	struct mt7603_dev *dev = hw->priv;
 	u8 *rssi_data = (u8 *)dev->mt76.eeprom.data;
 	int idx, ret;
 	u8 bw = MT_BW_20;
 	bool failed = false;
 
+	ieee80211_stop_queues(hw);
+	cancel_delayed_work_sync(&dev->mphy.mac_work);
 	tasklet_disable(&dev->mt76.pre_tbtt_tasklet);
 
+	mutex_lock(&dev->mt76.mutex);
+	set_bit(MT76_RESET, &dev->mphy.state);
+
 	mt7603_beacon_set_timer(dev, -1, 0);
+	mt76_set_channel(&dev->mphy);
 	mt7603_mac_stop(dev);
 
 	if (def->width == NL80211_CHAN_WIDTH_40)
 		bw = MT_BW_40;
 
+	dev->mphy.chandef = *def;
 	mt76_rmw_field(dev, MT_AGG_BWCR, MT_AGG_BWCR_BW, bw);
 	ret = mt7603_mcu_set_channel(dev);
 	if (ret) {
@@ -172,6 +179,10 @@ int mt7603_set_channel(struct mt76_phy *mphy)
 	mt7603_mac_set_timing(dev);
 	mt7603_mac_start(dev);
 
+	clear_bit(MT76_RESET, &dev->mphy.state);
+
+	mt76_txq_schedule_all(&dev->mphy);
+
 	ieee80211_queue_delayed_work(mt76_hw(dev), &dev->mphy.mac_work,
 				     msecs_to_jiffies(MT7603_WATCHDOG_TIME));
 
@@ -187,13 +198,16 @@ int mt7603_set_channel(struct mt76_phy *mphy)
 	mt7603_init_edcca(dev);
 
 out:
-	if (!mphy->offchannel)
+	if (!(mt76_hw(dev)->conf.flags & IEEE80211_CONF_OFFCHANNEL))
 		mt7603_beacon_set_timer(dev, -1, dev->mt76.beacon_int);
+	mutex_unlock(&dev->mt76.mutex);
 
 	tasklet_enable(&dev->mt76.pre_tbtt_tasklet);
 
 	if (failed)
 		mt7603_mac_work(&dev->mphy.mac_work.work);
+
+	ieee80211_wake_queues(hw);
 
 	return ret;
 }
@@ -212,18 +226,18 @@ static int mt7603_set_sar_specs(struct ieee80211_hw *hw,
 	if (err)
 		return err;
 
-	return mt76_update_channel(mphy);
+	return mt7603_set_channel(hw, &mphy->chandef);
 }
 
 static int
-mt7603_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+mt7603_config(struct ieee80211_hw *hw, u32 changed)
 {
 	struct mt7603_dev *dev = hw->priv;
 	int ret = 0;
 
 	if (changed & (IEEE80211_CONF_CHANGE_CHANNEL |
 		       IEEE80211_CONF_CHANGE_POWER))
-		ret = mt76_update_channel(&dev->mphy);
+		ret = mt7603_set_channel(hw, &hw->conf.chandef);
 
 	if (changed & IEEE80211_CONF_CHANGE_MONITOR) {
 		mutex_lock(&dev->mt76.mutex);
@@ -337,13 +351,12 @@ mt7603_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 	if (idx < 0)
 		return -ENOSPC;
 
-	INIT_LIST_HEAD(&msta->wcid.poll_list);
+	INIT_LIST_HEAD(&msta->poll_list);
 	__skb_queue_head_init(&msta->psq);
 	msta->ps = ~0;
 	msta->smps = ~0;
 	msta->wcid.sta = 1;
 	msta->wcid.idx = idx;
-	msta->vif = mvif;
 	mt7603_wtbl_init(dev, idx, mvif->idx, sta->addr);
 	mt7603_wtbl_set_ps(dev, msta, false);
 
@@ -353,19 +366,13 @@ mt7603_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 	return ret;
 }
 
-int
-mt7603_sta_event(struct mt76_dev *mdev, struct ieee80211_vif *vif,
-		 struct ieee80211_sta *sta, enum mt76_sta_event ev)
+void
+mt7603_sta_assoc(struct mt76_dev *mdev, struct ieee80211_vif *vif,
+		 struct ieee80211_sta *sta)
 {
 	struct mt7603_dev *dev = container_of(mdev, struct mt7603_dev, mt76);
 
-	if (ev == MT76_STA_EVENT_ASSOC) {
-		mutex_lock(&dev->mt76.mutex);
-		mt7603_wtbl_update_cap(dev, sta);
-		mutex_unlock(&dev->mt76.mutex);
-	}
-
-	return 0;
+	mt7603_wtbl_update_cap(dev, sta);
 }
 
 void
@@ -373,19 +380,18 @@ mt7603_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 		  struct ieee80211_sta *sta)
 {
 	struct mt7603_dev *dev = container_of(mdev, struct mt7603_dev, mt76);
-	struct mt7603_vif *mvif = (struct mt7603_vif *)vif->drv_priv;
 	struct mt7603_sta *msta = (struct mt7603_sta *)sta->drv_priv;
 	struct mt76_wcid *wcid = (struct mt76_wcid *)sta->drv_priv;
 
 	spin_lock_bh(&dev->ps_lock);
 	__skb_queue_purge(&msta->psq);
-	mt7603_filter_tx(dev, mvif->idx, wcid->idx, true);
+	mt7603_filter_tx(dev, wcid->idx, true);
 	spin_unlock_bh(&dev->ps_lock);
 
-	spin_lock_bh(&mdev->sta_poll_lock);
-	if (!list_empty(&msta->wcid.poll_list))
-		list_del_init(&msta->wcid.poll_list);
-	spin_unlock_bh(&mdev->sta_poll_lock);
+	spin_lock_bh(&dev->sta_poll_lock);
+	if (!list_empty(&msta->poll_list))
+		list_del_init(&msta->poll_list);
+	spin_unlock_bh(&dev->sta_poll_lock);
 
 	mt7603_wtbl_clear(dev, wcid->idx);
 }
@@ -506,15 +512,15 @@ mt7603_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	    !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
 		return -EOPNOTSUPP;
 
-	if (cmd != SET_KEY) {
+	if (cmd == SET_KEY) {
+		key->hw_key_idx = wcid->idx;
+		wcid->hw_key_idx = idx;
+	} else {
 		if (idx == wcid->hw_key_idx)
 			wcid->hw_key_idx = -1;
 
-		return 0;
+		key = NULL;
 	}
-
-	key->hw_key_idx = wcid->idx;
-	wcid->hw_key_idx = idx;
 	mt76_wcid_key_setup(&dev->mt76, wcid, key);
 
 	return mt7603_wtbl_set_key(dev, wcid->idx, key);
@@ -657,8 +663,7 @@ mt7603_sta_rate_tbl_update(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 }
 
 static void
-mt7603_set_coverage_class(struct ieee80211_hw *hw, int radio_idx,
-			  s16 coverage_class)
+mt7603_set_coverage_class(struct ieee80211_hw *hw, s16 coverage_class)
 {
 	struct mt7603_dev *dev = hw->priv;
 
@@ -693,10 +698,6 @@ static void mt7603_tx(struct ieee80211_hw *hw,
 }
 
 const struct ieee80211_ops mt7603_ops = {
-	.add_chanctx = ieee80211_emulate_add_chanctx,
-	.remove_chanctx = ieee80211_emulate_remove_chanctx,
-	.change_chanctx = ieee80211_emulate_change_chanctx,
-	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx = mt7603_tx,
 	.start = mt7603_start,
 	.stop = mt7603_stop,
@@ -724,7 +725,6 @@ const struct ieee80211_ops mt7603_ops = {
 	.set_sar_specs = mt7603_set_sar_specs,
 };
 
-MODULE_DESCRIPTION("MediaTek MT7603E and MT76x8 wireless driver");
 MODULE_LICENSE("Dual BSD/GPL");
 
 static int __init mt7603_init(void)

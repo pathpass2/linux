@@ -2,8 +2,8 @@
 // Copyright (C) 2016 Broadcom
 
 #include <linux/io.h>
-#include <linux/mod_devicetable.h>
-#include <linux/platform_device.h>
+#include <linux/of_address.h>
+#include <linux/of_platform.h>
 #include <linux/reboot.h>
 
 #define RSTMGR_REG_WR_ACCESS_OFFSET	0
@@ -15,7 +15,8 @@
 
 static void __iomem *kona_reset_base;
 
-static int kona_reset_handler(struct sys_off_data *data)
+static int kona_reset_handler(struct notifier_block *this,
+				unsigned long mode, void *cmd)
 {
 	/*
 	 * A soft reset is triggered by writing a 0 to bit 0 of the soft reset
@@ -30,14 +31,20 @@ static int kona_reset_handler(struct sys_off_data *data)
 	return NOTIFY_DONE;
 }
 
+static struct notifier_block kona_reset_nb = {
+	.notifier_call = kona_reset_handler,
+	.priority = 128,
+};
+
 static int kona_reset_probe(struct platform_device *pdev)
 {
-	kona_reset_base = devm_platform_ioremap_resource(pdev, 0);
+	struct resource *res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+
+	kona_reset_base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(kona_reset_base))
 		return PTR_ERR(kona_reset_base);
 
-	return devm_register_sys_off_handler(&pdev->dev, SYS_OFF_MODE_RESTART,
-					     128, kona_reset_handler, NULL);
+	return register_restart_handler(&kona_reset_nb);
 }
 
 static const struct of_device_id of_match[] = {

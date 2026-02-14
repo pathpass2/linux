@@ -71,7 +71,6 @@ static int snd_bcm2835_ctl_put(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
 	struct bcm2835_chip *chip = snd_kcontrol_chip(kcontrol);
-	struct snd_ctl_elem_info info;
 	int val, *valp;
 	int changed = 0;
 
@@ -85,11 +84,6 @@ static int snd_bcm2835_ctl_put(struct snd_kcontrol *kcontrol,
 		return -EINVAL;
 
 	val = ucontrol->value.integer.value[0];
-
-	snd_bcm2835_ctl_info(kcontrol, &info);
-	if (val < info.value.integer.min || val > info.value.integer.max)
-		return -EINVAL;
-
 	mutex_lock(&chip->audio_mutex);
 	if (val != *valp) {
 		*valp = val;

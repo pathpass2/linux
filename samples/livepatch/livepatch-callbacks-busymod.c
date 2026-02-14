@@ -44,7 +44,8 @@ static void busymod_work_func(struct work_struct *work)
 static int livepatch_callbacks_mod_init(void)
 {
 	pr_info("%s\n", __func__);
-	schedule_delayed_work(&work, 0);
+	schedule_delayed_work(&work,
+		msecs_to_jiffies(1000 * 0));
 	return 0;
 }
 
@@ -56,5 +57,4 @@ static void livepatch_callbacks_mod_exit(void)
 
 module_init(livepatch_callbacks_mod_init);
 module_exit(livepatch_callbacks_mod_exit);
-MODULE_DESCRIPTION("Live patching demo for (un)patching callbacks, support module");
 MODULE_LICENSE("GPL");

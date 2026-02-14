@@ -41,7 +41,7 @@
 /* kHZ*/
 #define DP_ADAPTOR_DVI_MAX_TMDS_CLK 165000
 /* kHZ*/
-#define DP_ADAPTOR_HDMI_SAFE_MAX_TMDS_CLK 340000
+#define DP_ADAPTOR_HDMI_SAFE_MAX_TMDS_CLK 165000
 
 struct dp_hdmi_dongle_signature_data {
 	int8_t id[15];/* "DP-HDMI ADAPTOR"*/
@@ -50,6 +50,7 @@ struct dp_hdmi_dongle_signature_data {
 
 /* DP-HDMI dongle slave address for retrieving dongle signature*/
 #define DP_HDMI_DONGLE_ADDRESS 0x40
+static const uint8_t dp_hdmi_dongle_signature_str[] = "DP-HDMI ADAPTOR";
 #define DP_HDMI_DONGLE_SIGNATURE_EOT 0x04
 
 

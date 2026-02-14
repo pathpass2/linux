@@ -95,7 +95,7 @@ static const struct regmap_irq mt6370_irqs[] = {
 	REGMAP_IRQ_REG_LINE(MT6370_IRQ_FLED1_SHORT, 8),
 	REGMAP_IRQ_REG_LINE(MT6370_IRQ_FLED2_STRB, 8),
 	REGMAP_IRQ_REG_LINE(MT6370_IRQ_FLED1_STRB, 8),
-	REGMAP_IRQ_REG_LINE(MT6370_IRQ_FLED2_STRB_TO, 8),
+	REGMAP_IRQ_REG_LINE(mT6370_IRQ_FLED2_STRB_TO, 8),
 	REGMAP_IRQ_REG_LINE(MT6370_IRQ_FLED1_STRB_TO, 8),
 	REGMAP_IRQ_REG_LINE(MT6370_IRQ_FLED2_TOR, 8),
 	REGMAP_IRQ_REG_LINE(MT6370_IRQ_FLED1_TOR, 8),
@@ -303,7 +303,7 @@ static struct i2c_driver mt6370_driver = {
 		.name = "mt6370",
 		.of_match_table = mt6370_match_table,
 	},
-	.probe = mt6370_probe,
+	.probe_new = mt6370_probe,
 };
 module_i2c_driver(mt6370_driver);
 

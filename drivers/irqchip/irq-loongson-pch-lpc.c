@@ -15,8 +15,6 @@
 #include <linux/kernel.h>
 #include <linux/syscore_ops.h>
 
-#include "irq-loongson.h"
-
 /* Registers */
 #define LPC_INT_CTL		0x00
 #define LPC_INT_ENA		0x04
@@ -151,7 +149,7 @@ static int pch_lpc_disabled(struct pch_lpc *priv)
 			(readl(priv->base + LPC_INT_STS) == 0xffffffff);
 }
 
-static int pch_lpc_suspend(void *data)
+static int pch_lpc_suspend(void)
 {
 	pch_lpc_priv->saved_reg_ctl = readl(pch_lpc_priv->base + LPC_INT_CTL);
 	pch_lpc_priv->saved_reg_ena = readl(pch_lpc_priv->base + LPC_INT_ENA);
@@ -159,20 +157,16 @@ static int pch_lpc_suspend(void *data)
 	return 0;
 }
 
-static void pch_lpc_resume(void *data)
+static void pch_lpc_resume(void)
 {
 	writel(pch_lpc_priv->saved_reg_ctl, pch_lpc_priv->base + LPC_INT_CTL);
 	writel(pch_lpc_priv->saved_reg_ena, pch_lpc_priv->base + LPC_INT_ENA);
 	writel(pch_lpc_priv->saved_reg_pol, pch_lpc_priv->base + LPC_INT_POL);
 }
 
-static const struct syscore_ops pch_lpc_syscore_ops = {
+static struct syscore_ops pch_lpc_syscore_ops = {
 	.suspend = pch_lpc_suspend,
 	.resume = pch_lpc_resume,
-};
-
-static struct syscore pch_lpc_syscore = {
-	.ops = &pch_lpc_syscore_ops,
 };
 
 int __init pch_lpc_acpi_init(struct irq_domain *parent,
@@ -204,13 +198,8 @@ int __init pch_lpc_acpi_init(struct irq_domain *parent,
 		goto iounmap_base;
 	}
 
-	/*
-	 * The LPC interrupt controller is a legacy i8259-compatible device,
-	 * which requires a static 1:1 mapping for IRQs 0-15.
-	 * Use irq_domain_create_legacy to establish this static mapping early.
-	 */
-	priv->lpc_domain = irq_domain_create_legacy(irq_handle, LPC_COUNT, 0, 0,
-						    &pch_lpc_domain_ops, priv);
+	priv->lpc_domain = irq_domain_create_linear(irq_handle, LPC_COUNT,
+					&pch_lpc_domain_ops, priv);
 	if (!priv->lpc_domain) {
 		pr_err("Failed to create IRQ domain\n");
 		goto free_irq_handle;
@@ -226,7 +215,7 @@ int __init pch_lpc_acpi_init(struct irq_domain *parent,
 
 	pch_lpc_priv = priv;
 	pch_lpc_handle = irq_handle;
-	register_syscore(&pch_lpc_syscore);
+	register_syscore_ops(&pch_lpc_syscore_ops);
 
 	return 0;
 

@@ -59,34 +59,36 @@ static irqreturn_t oxygen_interrupt(int dummy, void *dev_id)
 	if (!status)
 		return IRQ_NONE;
 
-	scoped_guard(spinlock, &chip->reg_lock) {
-		clear = status & (OXYGEN_CHANNEL_A |
-				  OXYGEN_CHANNEL_B |
-				  OXYGEN_CHANNEL_C |
-				  OXYGEN_CHANNEL_SPDIF |
-				  OXYGEN_CHANNEL_MULTICH |
-				  OXYGEN_CHANNEL_AC97 |
-				  OXYGEN_INT_SPDIF_IN_DETECT |
-				  OXYGEN_INT_GPIO |
-				  OXYGEN_INT_AC97);
-		if (clear) {
-			if (clear & OXYGEN_INT_SPDIF_IN_DETECT)
-				chip->interrupt_mask &= ~OXYGEN_INT_SPDIF_IN_DETECT;
-			oxygen_write16(chip, OXYGEN_INTERRUPT_MASK,
-				       chip->interrupt_mask & ~clear);
-			oxygen_write16(chip, OXYGEN_INTERRUPT_MASK,
-				       chip->interrupt_mask);
-		}
+	spin_lock(&chip->reg_lock);
 
-		elapsed_streams = status & chip->pcm_running;
+	clear = status & (OXYGEN_CHANNEL_A |
+			  OXYGEN_CHANNEL_B |
+			  OXYGEN_CHANNEL_C |
+			  OXYGEN_CHANNEL_SPDIF |
+			  OXYGEN_CHANNEL_MULTICH |
+			  OXYGEN_CHANNEL_AC97 |
+			  OXYGEN_INT_SPDIF_IN_DETECT |
+			  OXYGEN_INT_GPIO |
+			  OXYGEN_INT_AC97);
+	if (clear) {
+		if (clear & OXYGEN_INT_SPDIF_IN_DETECT)
+			chip->interrupt_mask &= ~OXYGEN_INT_SPDIF_IN_DETECT;
+		oxygen_write16(chip, OXYGEN_INTERRUPT_MASK,
+			       chip->interrupt_mask & ~clear);
+		oxygen_write16(chip, OXYGEN_INTERRUPT_MASK,
+			       chip->interrupt_mask);
 	}
+
+	elapsed_streams = status & chip->pcm_running;
+
+	spin_unlock(&chip->reg_lock);
 
 	for (i = 0; i < PCM_COUNT; ++i)
 		if ((elapsed_streams & (1 << i)) && chip->streams[i])
 			snd_pcm_period_elapsed(chip->streams[i]);
 
 	if (status & OXYGEN_INT_SPDIF_IN_DETECT) {
-		guard(spinlock)(&chip->reg_lock);
+		spin_lock(&chip->reg_lock);
 		i = oxygen_read32(chip, OXYGEN_SPDIF_CONTROL);
 		if (i & (OXYGEN_SPDIF_SENSE_INT | OXYGEN_SPDIF_LOCK_INT |
 			 OXYGEN_SPDIF_RATE_INT)) {
@@ -94,6 +96,7 @@ static irqreturn_t oxygen_interrupt(int dummy, void *dev_id)
 			oxygen_write32(chip, OXYGEN_SPDIF_CONTROL, i);
 			schedule_work(&chip->spdif_input_bits_work);
 		}
+		spin_unlock(&chip->reg_lock);
 	}
 
 	if (status & OXYGEN_INT_GPIO)
@@ -124,45 +127,45 @@ static void oxygen_spdif_input_bits_changed(struct work_struct *work)
 	 * changes.
 	 */
 	msleep(1);
-	scoped_guard(spinlock_irq, &chip->reg_lock) {
+	spin_lock_irq(&chip->reg_lock);
+	reg = oxygen_read32(chip, OXYGEN_SPDIF_CONTROL);
+	if ((reg & (OXYGEN_SPDIF_SENSE_STATUS |
+		    OXYGEN_SPDIF_LOCK_STATUS))
+	    == OXYGEN_SPDIF_SENSE_STATUS) {
+		/*
+		 * If we detect activity on the SPDIF input but cannot lock to
+		 * a signal, the clock bit is likely to be wrong.
+		 */
+		reg ^= OXYGEN_SPDIF_IN_CLOCK_MASK;
+		oxygen_write32(chip, OXYGEN_SPDIF_CONTROL, reg);
+		spin_unlock_irq(&chip->reg_lock);
+		msleep(1);
+		spin_lock_irq(&chip->reg_lock);
 		reg = oxygen_read32(chip, OXYGEN_SPDIF_CONTROL);
 		if ((reg & (OXYGEN_SPDIF_SENSE_STATUS |
 			    OXYGEN_SPDIF_LOCK_STATUS))
 		    == OXYGEN_SPDIF_SENSE_STATUS) {
-			/*
-			 * If we detect activity on the SPDIF input but cannot lock to
-			 * a signal, the clock bit is likely to be wrong.
-			 */
-			reg ^= OXYGEN_SPDIF_IN_CLOCK_MASK;
-			oxygen_write32(chip, OXYGEN_SPDIF_CONTROL, reg);
-			spin_unlock_irq(&chip->reg_lock);
-			msleep(1);
-			spin_lock_irq(&chip->reg_lock);
-			reg = oxygen_read32(chip, OXYGEN_SPDIF_CONTROL);
-			if ((reg & (OXYGEN_SPDIF_SENSE_STATUS |
-				    OXYGEN_SPDIF_LOCK_STATUS))
-			    == OXYGEN_SPDIF_SENSE_STATUS) {
-				/* nothing detected with either clock; give up */
-				if ((reg & OXYGEN_SPDIF_IN_CLOCK_MASK)
-				    == OXYGEN_SPDIF_IN_CLOCK_192) {
-					/*
-					 * Reset clock to <= 96 kHz because this is
-					 * more likely to be received next time.
-					 */
-					reg &= ~OXYGEN_SPDIF_IN_CLOCK_MASK;
-					reg |= OXYGEN_SPDIF_IN_CLOCK_96;
-					oxygen_write32(chip, OXYGEN_SPDIF_CONTROL, reg);
-				}
+			/* nothing detected with either clock; give up */
+			if ((reg & OXYGEN_SPDIF_IN_CLOCK_MASK)
+			    == OXYGEN_SPDIF_IN_CLOCK_192) {
+				/*
+				 * Reset clock to <= 96 kHz because this is
+				 * more likely to be received next time.
+				 */
+				reg &= ~OXYGEN_SPDIF_IN_CLOCK_MASK;
+				reg |= OXYGEN_SPDIF_IN_CLOCK_96;
+				oxygen_write32(chip, OXYGEN_SPDIF_CONTROL, reg);
 			}
 		}
 	}
+	spin_unlock_irq(&chip->reg_lock);
 
 	if (chip->controls[CONTROL_SPDIF_INPUT_BITS]) {
-		scoped_guard(spinlock_irq, &chip->reg_lock) {
-			chip->interrupt_mask |= OXYGEN_INT_SPDIF_IN_DETECT;
-			oxygen_write16(chip, OXYGEN_INTERRUPT_MASK,
-				       chip->interrupt_mask);
-		}
+		spin_lock_irq(&chip->reg_lock);
+		chip->interrupt_mask |= OXYGEN_INT_SPDIF_IN_DETECT;
+		oxygen_write16(chip, OXYGEN_INTERRUPT_MASK,
+			       chip->interrupt_mask);
+		spin_unlock_irq(&chip->reg_lock);
 
 		/*
 		 * We don't actually know that any channel status bits have
@@ -554,11 +557,12 @@ static void oxygen_init(struct oxygen *chip)
 
 static void oxygen_shutdown(struct oxygen *chip)
 {
-	guard(spinlock_irq)(&chip->reg_lock);
+	spin_lock_irq(&chip->reg_lock);
 	chip->interrupt_mask = 0;
 	chip->pcm_running = 0;
 	oxygen_write16(chip, OXYGEN_DMA_STATUS, 0);
 	oxygen_write16(chip, OXYGEN_INTERRUPT_MASK, 0);
+	spin_unlock_irq(&chip->reg_lock);
 }
 
 static void oxygen_card_free(struct snd_card *card)
@@ -605,7 +609,7 @@ static int __oxygen_pci_probe(struct pci_dev *pci, int index, char *id,
 	if (err < 0)
 		return err;
 
-	err = pcim_request_all_regions(pci, DRIVER);
+	err = pci_request_regions(pci, DRIVER);
 	if (err < 0) {
 		dev_err(card->dev, "cannot reserve PCI resources\n");
 		return err;
@@ -651,11 +655,11 @@ static int __oxygen_pci_probe(struct pci_dev *pci, int index, char *id,
 	chip->irq = pci->irq;
 	card->sync_irq = chip->irq;
 
-	strscpy(card->driver, chip->model.chip);
-	strscpy(card->shortname, chip->model.shortname);
+	strcpy(card->driver, chip->model.chip);
+	strcpy(card->shortname, chip->model.shortname);
 	sprintf(card->longname, "%s at %#lx, irq %i",
 		chip->model.longname, chip->addr, chip->irq);
-	strscpy(card->mixername, chip->model.chip);
+	strcpy(card->mixername, chip->model.chip);
 	snd_component_add(card, chip->model.chip);
 
 	err = oxygen_pcm_init(chip);
@@ -682,13 +686,13 @@ static int __oxygen_pci_probe(struct pci_dev *pci, int index, char *id,
 
 	oxygen_proc_init(chip);
 
-	scoped_guard(spinlock_irq, &chip->reg_lock) {
-		if (chip->model.device_config & CAPTURE_1_FROM_SPDIF)
-			chip->interrupt_mask |= OXYGEN_INT_SPDIF_IN_DETECT;
-		if (chip->has_ac97_0 | chip->has_ac97_1)
-			chip->interrupt_mask |= OXYGEN_INT_AC97;
-		oxygen_write16(chip, OXYGEN_INTERRUPT_MASK, chip->interrupt_mask);
-	}
+	spin_lock_irq(&chip->reg_lock);
+	if (chip->model.device_config & CAPTURE_1_FROM_SPDIF)
+		chip->interrupt_mask |= OXYGEN_INT_SPDIF_IN_DETECT;
+	if (chip->has_ac97_0 | chip->has_ac97_1)
+		chip->interrupt_mask |= OXYGEN_INT_AC97;
+	oxygen_write16(chip, OXYGEN_INTERRUPT_MASK, chip->interrupt_mask);
+	spin_unlock_irq(&chip->reg_lock);
 
 	err = snd_card_register(card);
 	if (err < 0)
@@ -709,6 +713,7 @@ int oxygen_pci_probe(struct pci_dev *pci, int index, char *id,
 }
 EXPORT_SYMBOL(oxygen_pci_probe);
 
+#ifdef CONFIG_PM_SLEEP
 static int oxygen_pci_suspend(struct device *dev)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
@@ -720,12 +725,12 @@ static int oxygen_pci_suspend(struct device *dev)
 	if (chip->model.suspend)
 		chip->model.suspend(chip);
 
-	scoped_guard(spinlock_irq, &chip->reg_lock) {
-		saved_interrupt_mask = chip->interrupt_mask;
-		chip->interrupt_mask = 0;
-		oxygen_write16(chip, OXYGEN_DMA_STATUS, 0);
-		oxygen_write16(chip, OXYGEN_INTERRUPT_MASK, 0);
-	}
+	spin_lock_irq(&chip->reg_lock);
+	saved_interrupt_mask = chip->interrupt_mask;
+	chip->interrupt_mask = 0;
+	oxygen_write16(chip, OXYGEN_DMA_STATUS, 0);
+	oxygen_write16(chip, OXYGEN_INTERRUPT_MASK, 0);
+	spin_unlock_irq(&chip->reg_lock);
 
 	flush_work(&chip->spdif_input_bits_work);
 	flush_work(&chip->gpio_work);
@@ -784,7 +789,9 @@ static int oxygen_pci_resume(struct device *dev)
 	return 0;
 }
 
-EXPORT_SIMPLE_DEV_PM_OPS(oxygen_pci_pm, oxygen_pci_suspend, oxygen_pci_resume);
+SIMPLE_DEV_PM_OPS(oxygen_pci_pm, oxygen_pci_suspend, oxygen_pci_resume);
+EXPORT_SYMBOL(oxygen_pci_pm);
+#endif /* CONFIG_PM_SLEEP */
 
 void oxygen_pci_shutdown(struct pci_dev *pci)
 {

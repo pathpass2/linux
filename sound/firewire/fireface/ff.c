@@ -11,12 +11,12 @@
 
 MODULE_DESCRIPTION("RME Fireface series Driver");
 MODULE_AUTHOR("Takashi Sakamoto <o-takashi@sakamocchi.jp>");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 
 static void name_card(struct snd_ff *ff)
 {
 	struct fw_device *fw_dev = fw_parent_device(ff->unit);
-	static const char *const names[] = {
+	const char *const names[] = {
 		[SND_FF_UNIT_VERSION_FF800]	= "Fireface800",
 		[SND_FF_UNIT_VERSION_FF400]	= "Fireface400",
 		[SND_FF_UNIT_VERSION_UFX]	= "FirefaceUFX",
@@ -27,9 +27,9 @@ static void name_card(struct snd_ff *ff)
 
 	name = names[ff->unit_version];
 
-	strscpy(ff->card->driver, "Fireface");
-	strscpy(ff->card->shortname, name);
-	strscpy(ff->card->mixername, name);
+	strcpy(ff->card->driver, "Fireface");
+	strcpy(ff->card->shortname, name);
+	strcpy(ff->card->mixername, name);
 	snprintf(ff->card->longname, sizeof(ff->card->longname),
 		 "RME %s, GUID %08x%08x at %s, S%d", name,
 		 fw_dev->config_rom[3], fw_dev->config_rom[4],

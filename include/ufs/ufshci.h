@@ -11,8 +11,7 @@
 #ifndef _UFSHCI_H
 #define _UFSHCI_H
 
-#include <linux/types.h>
-#include <ufs/ufs.h>
+#include <scsi/scsi_host.h>
 
 enum {
 	TASK_REQ_UPIU_SIZE_DWORDS	= 8,
@@ -25,9 +24,8 @@ enum {
 	REG_CONTROLLER_CAPABILITIES		= 0x00,
 	REG_MCQCAP				= 0x04,
 	REG_UFS_VERSION				= 0x08,
-	REG_EXT_CONTROLLER_CAPABILITIES		= 0x0C,
-	REG_CONTROLLER_PID			= 0x10,
-	REG_CONTROLLER_MID			= 0x14,
+	REG_CONTROLLER_DEV_ID			= 0x10,
+	REG_CONTROLLER_PROD_ID			= 0x14,
 	REG_AUTO_HIBERNATE_IDLE_TIMER		= 0x18,
 	REG_INTERRUPT_STATUS			= 0x20,
 	REG_INTERRUPT_ENABLE			= 0x24,
@@ -68,9 +66,7 @@ enum {
 
 /* Controller capability masks */
 enum {
-	MASK_TRANSFER_REQUESTS_SLOTS_SDB	= 0x0000001F,
-	MASK_TRANSFER_REQUESTS_SLOTS_MCQ	= 0x000000FF,
-	MASK_NUMBER_OUTSTANDING_RTT		= 0x0000FF00,
+	MASK_TRANSFER_REQUESTS_SLOTS		= 0x0000001F,
 	MASK_TASK_MANAGEMENT_REQUEST_SLOTS	= 0x00070000,
 	MASK_EHSLUTRD_SUPPORTED			= 0x00400000,
 	MASK_AUTO_HIBERN8_SUPPORT		= 0x00800000,
@@ -78,19 +74,21 @@ enum {
 	MASK_OUT_OF_ORDER_DATA_DELIVERY_SUPPORT	= 0x02000000,
 	MASK_UIC_DME_TEST_MODE_SUPPORT		= 0x04000000,
 	MASK_CRYPTO_SUPPORT			= 0x10000000,
-	MASK_LSDB_SUPPORT			= 0x20000000,
 	MASK_MCQ_SUPPORT			= 0x40000000,
 };
 
+/* MCQ capability mask */
 enum {
-	/* Submission Queue (SQ) Configuration Registers */
+	MASK_EXT_IID_SUPPORT = 0x00000400,
+};
+
+enum {
 	REG_SQATTR		= 0x0,
 	REG_SQLBA		= 0x4,
 	REG_SQUBA		= 0x8,
 	REG_SQDAO		= 0xC,
 	REG_SQISAO		= 0x10,
 
-	/* Completion Queue (CQ) Configuration Registers */
 	REG_CQATTR		= 0x20,
 	REG_CQLBA		= 0x24,
 	REG_CQUBA		= 0x28,
@@ -98,13 +96,9 @@ enum {
 	REG_CQISAO		= 0x30,
 };
 
-/* Operation and Runtime Registers - Submission Queues and Completion Queues */
 enum {
 	REG_SQHP		= 0x0,
 	REG_SQTP		= 0x4,
-	REG_SQRTC		= 0x8,
-	REG_SQCTI		= 0xC,
-	REG_SQRTS		= 0x10,
 };
 
 enum {
@@ -117,25 +111,12 @@ enum {
 	REG_CQIE		= 0x4,
 };
 
-enum {
-	SQ_START		= 0x0,
-	SQ_STOP			= 0x1,
-	SQ_ICU			= 0x2,
-};
-
-enum {
-	SQ_STS			= 0x1,
-	SQ_CUS			= 0x2,
-};
-
-#define SQ_ICU_ERR_CODE_MASK		GENMASK(7, 4)
 #define UFS_MASK(mask, offset)		((mask) << (offset))
 
 /* UFS Version 08h */
 #define MINOR_VERSION_NUM_MASK		UFS_MASK(0xFFFF, 0)
 #define MAJOR_VERSION_NUM_MASK		UFS_MASK(0xFFFF, 16)
 
-#define UFSHCD_NUM_RESERVED	1
 /*
  * Controller UFSHCI version
  * - 2.x and newer use the following scheme:
@@ -183,7 +164,6 @@ static inline u32 ufshci_version(u32 major, u32 minor)
 #define UTP_TASK_REQ_COMPL			0x200
 #define UIC_COMMAND_COMPL			0x400
 #define DEVICE_FATAL_ERROR			0x800
-#define UTP_ERROR				0x1000
 #define CONTROLLER_FATAL_ERROR			0x10000
 #define SYSTEM_BUS_FATAL_ERROR			0x20000
 #define CRYPTO_ENGINE_FATAL_ERROR		0x40000
@@ -203,8 +183,7 @@ static inline u32 ufshci_version(u32 major, u32 minor)
 				CONTROLLER_FATAL_ERROR |\
 				SYSTEM_BUS_FATAL_ERROR |\
 				CRYPTO_ENGINE_FATAL_ERROR |\
-				UIC_LINK_LOST |\
-				UTP_ERROR)
+				UIC_LINK_LOST)
 
 /* HCS - Host Controller Status 30h */
 #define DEVICE_PRESENT				0x1
@@ -286,10 +265,6 @@ enum {
 /* UTMRLRSR - UTP Task Management Request Run-Stop Register 80h */
 #define UTP_TASK_REQ_LIST_RUN_STOP_BIT		0x1
 
-/* REG_UFS_MEM_CFG - Global Config Registers 300h */
-#define MCQ_MODE_SELECT	BIT(0)
-#define ESI_ENABLE	BIT(1)
-
 /* CQISy - CQ y Interrupt Status Register  */
 #define UFSHCD_MCQ_CQIS_TAIL_ENT_PUSH_STS	0x1
 
@@ -360,8 +335,12 @@ enum {
 
 /* Interrupt disable masks */
 enum {
+	/* Interrupt disable mask for UFSHCI v1.0 */
+	INTERRUPT_MASK_ALL_VER_10	= 0x30FFF,
+	INTERRUPT_MASK_RW_VER_10	= 0x30000,
+
 	/* Interrupt disable mask for UFSHCI v1.1 */
-	INTERRUPT_MASK_ALL_VER_11       = 0x31FFF,
+	INTERRUPT_MASK_ALL_VER_11	= 0x31FFF,
 
 	/* Interrupt disable mask for UFSHCI v2.1 */
 	INTERRUPT_MASK_ALL_VER_21	= 0x71FFF,
@@ -426,6 +405,13 @@ union ufs_crypto_cfg_entry {
  * Request Descriptor Definitions
  */
 
+/* Transfer request command type */
+enum {
+	UTP_CMD_TYPE_SCSI		= 0x0,
+	UTP_CMD_TYPE_UFS		= 0x1,
+	UTP_CMD_TYPE_DEV_MANAGE		= 0x2,
+};
+
 /* To accommodate UFS2.0 required Command type */
 enum {
 	UTP_CMD_TYPE_UFS_STORAGE	= 0x1,
@@ -435,13 +421,15 @@ enum {
 	UTP_SCSI_COMMAND		= 0x00000000,
 	UTP_NATIVE_UFS_COMMAND		= 0x10000000,
 	UTP_DEVICE_MANAGEMENT_FUNCTION	= 0x20000000,
+	UTP_REQ_DESC_INT_CMD		= 0x01000000,
+	UTP_REQ_DESC_CRYPTO_ENABLE_CMD	= 0x00800000,
 };
 
 /* UTP Transfer Request Data Direction (DD) */
-enum utp_data_direction {
-	UTP_NO_DATA_TRANSFER	= 0,
-	UTP_HOST_TO_DEVICE	= 1,
-	UTP_DEVICE_TO_HOST	= 2,
+enum {
+	UTP_NO_DATA_TRANSFER	= 0x00000000,
+	UTP_HOST_TO_DEVICE	= 0x02000000,
+	UTP_DEVICE_TO_HOST	= 0x04000000,
 };
 
 /* Overall command status values */
@@ -465,7 +453,7 @@ enum {
 };
 
 /* The maximum length of the data byte count field in the PRDT is 256KB */
-#define PRDT_DATA_BYTE_COUNT_MAX	SZ_256K
+#define PRDT_DATA_BYTE_COUNT_MAX	(256 * 1024)
 /* The granularity of the data byte count field in the PRDT is 32-bit */
 #define PRDT_DATA_BYTE_COUNT_PAD	4
 
@@ -500,43 +488,23 @@ struct utp_transfer_cmd_desc {
 
 /**
  * struct request_desc_header - Descriptor Header common to both UTRD and UTMRD
+ * @dword0: Descriptor Header DW0
+ * @dword1: Descriptor Header DW1
+ * @dword2: Descriptor Header DW2
+ * @dword3: Descriptor Header DW3
  */
 struct request_desc_header {
-	u8 cci;
-	u8 ehs_length;
-#if defined(__BIG_ENDIAN)
-	u8 enable_crypto:1;
-	u8 reserved2:7;
-
-	u8 command_type:4;
-	u8 reserved1:1;
-	u8 data_direction:2;
-	u8 interrupt:1;
-#elif defined(__LITTLE_ENDIAN)
-	u8 reserved2:7;
-	u8 enable_crypto:1;
-
-	u8 interrupt:1;
-	u8 data_direction:2;
-	u8 reserved1:1;
-	u8 command_type:4;
-#else
-#error
-#endif
-
-	__le32 dunl;
-	u8 ocs;
-	u8 cds;
-	__le16 ldbc;
-	__le32 dunu;
+	__le32 dword_0;
+	__le32 dword_1;
+	__le32 dword_2;
+	__le32 dword_3;
 };
-
-static_assert(sizeof(struct request_desc_header) == 16);
 
 /**
  * struct utp_transfer_req_desc - UTP Transfer Request Descriptor (UTRD)
  * @header: UTRD header DW-0 to DW-3
- * @command_desc_base_addr: UCD base address DW 4-5
+ * @command_desc_base_addr_lo: UCD base address low DW-4
+ * @command_desc_base_addr_hi: UCD base address high DW-5
  * @response_upiu_length: response UPIU length DW-6
  * @response_upiu_offset: response UPIU offset DW-6
  * @prd_table_length: Physical region descriptor length DW-7
@@ -548,7 +516,8 @@ struct utp_transfer_req_desc {
 	struct request_desc_header header;
 
 	/* DW 4-5*/
-	__le64  command_desc_base_addr;
+	__le32  command_desc_base_addr_lo;
+	__le32  command_desc_base_addr_hi;
 
 	/* DW 6 */
 	__le16  response_upiu_length;
@@ -573,26 +542,10 @@ struct cq_entry {
 	__le16  prd_table_offset;
 
 	/* DW 4 */
-	u8 overall_status;
-	u8 extended_error_code;
-	__le16 reserved_1;
+	__le32 status;
 
-	/* DW 5 */
-	u8 task_tag;
-	u8 lun;
-#if defined(__BIG_ENDIAN)
-	u8 ext_iid:4;
-	u8 iid:4;
-#elif defined(__LITTLE_ENDIAN)
-	u8 iid:4;
-	u8 ext_iid:4;
-#else
-#error
-#endif
-	u8 reserved_2;
-
-	/* DW 6-7 */
-	__le32 reserved_3[2];
+	/* DW 5-7 */
+	__le32 reserved[3];
 };
 
 static_assert(sizeof(struct cq_entry) == 32);

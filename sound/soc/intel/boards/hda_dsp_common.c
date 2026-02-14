@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2019 Intel Corporation
+// Copyright(c) 2019 Intel Corporation. All rights reserved.
 
 #include <linux/module.h>
 #include <sound/pcm.h>
@@ -15,7 +15,7 @@
 
 /*
  * Search card topology and return PCM device number
- * matching Nth playback HDMI device (zero-based index).
+ * matching Nth HDMI device (zero-based index).
  */
 static struct snd_pcm *hda_dsp_hdmi_pcm_handle(struct snd_soc_card *card,
 					       int hdmi_idx)
@@ -25,17 +25,8 @@ static struct snd_pcm *hda_dsp_hdmi_pcm_handle(struct snd_soc_card *card,
 	int i = 0;
 
 	for_each_card_rtds(card, rtd) {
-		/* ignore BE PCMs */
-		if (rtd->dai_link && rtd->dai_link->no_pcm)
-			continue;
-
-		spcm = rtd->pcm;
-
-		/* ignore PCMs with no playback streams */
-		if (!spcm || !spcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream)
-			continue;
-
-		/* look for FE PCMs with name "HDMI x" */
+		spcm = rtd->pcm ?
+			rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].pcm : NULL;
 		if (spcm && strstr(spcm->id, "HDMI")) {
 			if (i == hdmi_idx)
 				return rtd->pcm;
@@ -92,7 +83,7 @@ int hda_dsp_hdmi_build_controls(struct snd_soc_card *card,
 
 	return err;
 }
-EXPORT_SYMBOL_NS(hda_dsp_hdmi_build_controls, "SND_SOC_INTEL_HDA_DSP_COMMON");
+EXPORT_SYMBOL_NS(hda_dsp_hdmi_build_controls, SND_SOC_INTEL_HDA_DSP_COMMON);
 
 #endif
 

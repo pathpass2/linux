@@ -136,7 +136,7 @@ static void do_longhaul1(unsigned int mults_index)
 {
 	union msr_bcr2 bcr2;
 
-	rdmsrq(MSR_VIA_BCR2, bcr2.val);
+	rdmsrl(MSR_VIA_BCR2, bcr2.val);
 	/* Enable software clock multiplier */
 	bcr2.bits.ESOFTBF = 1;
 	bcr2.bits.CLOCKMUL = mults_index & 0xff;
@@ -144,16 +144,16 @@ static void do_longhaul1(unsigned int mults_index)
 	/* Sync to timer tick */
 	safe_halt();
 	/* Change frequency on next halt or sleep */
-	wrmsrq(MSR_VIA_BCR2, bcr2.val);
+	wrmsrl(MSR_VIA_BCR2, bcr2.val);
 	/* Invoke transition */
 	ACPI_FLUSH_CPU_CACHE();
 	halt();
 
 	/* Disable software clock multiplier */
 	local_irq_disable();
-	rdmsrq(MSR_VIA_BCR2, bcr2.val);
+	rdmsrl(MSR_VIA_BCR2, bcr2.val);
 	bcr2.bits.ESOFTBF = 0;
-	wrmsrq(MSR_VIA_BCR2, bcr2.val);
+	wrmsrl(MSR_VIA_BCR2, bcr2.val);
 }
 
 /* For processor with Longhaul MSR */
@@ -164,7 +164,7 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	union msr_longhaul longhaul;
 	u32 t;
 
-	rdmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+	rdmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 	/* Setup new frequency */
 	if (!revid_errata)
 		longhaul.bits.RevisionKey = longhaul.bits.RevisionID;
@@ -180,7 +180,7 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	/* Raise voltage if necessary */
 	if (can_scale_voltage && dir) {
 		longhaul.bits.EnableSoftVID = 1;
-		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 		/* Change voltage */
 		if (!cx_address) {
 			ACPI_FLUSH_CPU_CACHE();
@@ -194,12 +194,12 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 			t = inl(acpi_gbl_FADT.xpm_timer_block.address);
 		}
 		longhaul.bits.EnableSoftVID = 0;
-		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 	}
 
 	/* Change frequency on next halt or sleep */
 	longhaul.bits.EnableSoftBusRatio = 1;
-	wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+	wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 	if (!cx_address) {
 		ACPI_FLUSH_CPU_CACHE();
 		halt();
@@ -212,12 +212,12 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 	}
 	/* Disable bus ratio bit */
 	longhaul.bits.EnableSoftBusRatio = 0;
-	wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+	wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 
 	/* Reduce voltage if necessary */
 	if (can_scale_voltage && !dir) {
 		longhaul.bits.EnableSoftVID = 1;
-		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 		/* Change voltage */
 		if (!cx_address) {
 			ACPI_FLUSH_CPU_CACHE();
@@ -231,14 +231,13 @@ static void do_powersaver(int cx_address, unsigned int mults_index,
 			t = inl(acpi_gbl_FADT.xpm_timer_block.address);
 		}
 		longhaul.bits.EnableSoftVID = 0;
-		wrmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+		wrmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 	}
 }
 
 /**
- * longhaul_setstate()
- * @policy: cpufreq_policy structure containing the current policy.
- * @table_index: index of the frequency within the cpufreq_frequency_table.
+ * longhaul_set_cpu_frequency()
+ * @mults_index : bitpattern of the new multiplier.
  *
  * Sets a new clock ratio.
  */
@@ -534,7 +533,7 @@ static void longhaul_setup_voltagescaling(void)
 	unsigned int j, speed, pos, kHz_step, numvscales;
 	int min_vid_speed;
 
-	rdmsrq(MSR_VIA_LONGHAUL, longhaul.val);
+	rdmsrl(MSR_VIA_LONGHAUL, longhaul.val);
 	if (!(longhaul.bits.RevisionID & 1)) {
 		pr_info("Voltage scaling not supported by CPU\n");
 		return;
@@ -906,6 +905,7 @@ static struct cpufreq_driver longhaul_driver = {
 	.get	= longhaul_get,
 	.init	= longhaul_cpu_init,
 	.name	= "longhaul",
+	.attr	= cpufreq_generic_attr,
 };
 
 static const struct x86_cpu_id longhaul_id[] = {
@@ -952,9 +952,6 @@ static void __exit longhaul_exit(void)
 {
 	struct cpufreq_policy *policy = cpufreq_cpu_get(0);
 	int i;
-
-	if (unlikely(!policy))
-		return;
 
 	for (i = 0; i < numscales; i++) {
 		if (mults[i] == maxmult) {

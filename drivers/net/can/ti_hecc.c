@@ -21,6 +21,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
 
 #include <linux/can/dev.h>
@@ -383,7 +384,7 @@ static void ti_hecc_start(struct net_device *ndev)
 	 * overflows instead of the hardware silently dropping the
 	 * messages.
 	 */
-	mbx_mask = ~BIT_U32(HECC_RX_LAST_MBOX);
+	mbx_mask = ~BIT(HECC_RX_LAST_MBOX);
 	hecc_write(priv, HECC_CANOPC, mbx_mask);
 
 	/* Enable interrupts */
@@ -624,7 +625,7 @@ static int ti_hecc_error(struct net_device *ndev, int int_status,
 
 		timestamp = hecc_read(priv, HECC_CANLNT);
 		err = can_rx_offload_queue_timestamp(&priv->offload, skb,
-						     timestamp);
+						  timestamp);
 		if (err)
 			ndev->stats.rx_fifo_errors++;
 	}
@@ -747,8 +748,8 @@ static irqreturn_t ti_hecc_interrupt(int irq, void *dev_id)
 			spin_unlock_irqrestore(&priv->mbx_lock, flags);
 			stamp = hecc_read_stamp(priv, mbxno);
 			stats->tx_bytes +=
-				can_rx_offload_get_echo_skb_queue_timestamp(&priv->offload,
-									    mbxno, stamp, NULL);
+				can_rx_offload_get_echo_skb(&priv->offload,
+							    mbxno, stamp, NULL);
 			stats->tx_packets++;
 			--priv->tx_tail;
 		}
@@ -829,6 +830,7 @@ static const struct net_device_ops ti_hecc_netdev_ops = {
 	.ndo_open		= ti_hecc_open,
 	.ndo_stop		= ti_hecc_close,
 	.ndo_start_xmit		= ti_hecc_xmit,
+	.ndo_change_mtu		= can_change_mtu,
 };
 
 static const struct ethtool_ops ti_hecc_ethtool_ops = {
@@ -961,7 +963,7 @@ probe_exit_candev:
 	return err;
 }
 
-static void ti_hecc_remove(struct platform_device *pdev)
+static int ti_hecc_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct ti_hecc_priv *priv = netdev_priv(ndev);
@@ -971,6 +973,8 @@ static void ti_hecc_remove(struct platform_device *pdev)
 	clk_put(priv->clk);
 	can_rx_offload_del(&priv->offload);
 	free_candev(ndev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM

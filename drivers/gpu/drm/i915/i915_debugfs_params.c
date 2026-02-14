@@ -4,7 +4,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/debugfs.h>
 
 #include "i915_debugfs_params.h"
 #include "gt/intel_gt.h"
@@ -39,13 +38,10 @@ static int i915_param_int_open(struct inode *inode, struct file *file)
 
 static int notify_guc(struct drm_i915_private *i915)
 {
-	struct intel_gt *gt;
-	int i, ret = 0;
+	int ret = 0;
 
-	for_each_gt(gt, i915, i) {
-		if (intel_uc_uses_guc_submission(&gt->uc))
-			ret = intel_guc_global_policies_update(&gt->uc.guc);
-	}
+	if (intel_uc_uses_guc_submission(&to_gt(i915)->uc))
+		ret = intel_guc_global_policies_update(&to_gt(i915)->uc.guc);
 
 	return ret;
 }
@@ -248,11 +244,11 @@ i915_debugfs_create_charp(const char *name, umode_t mode,
 /* add a subdirectory with files for each i915 param */
 struct dentry *i915_debugfs_params(struct drm_i915_private *i915)
 {
-	struct dentry *debugfs_root = i915->drm.debugfs_root;
+	struct drm_minor *minor = i915->drm.primary;
 	struct i915_params *params = &i915->params;
 	struct dentry *dir;
 
-	dir = debugfs_create_dir("i915_params", debugfs_root);
+	dir = debugfs_create_dir("i915_params", minor->debugfs_root);
 	if (IS_ERR(dir))
 		return dir;
 

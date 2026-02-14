@@ -15,18 +15,12 @@
  * will be subsequently registered.
  */
 
-#include <linux/array_size.h>
-#include <linux/dev_printk.h>
-#include <linux/err.h>
 #include <linux/i2c.h>
+#include <linux/kernel.h>
 #include <linux/mfd/core.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/regmap.h>
-#include <linux/stddef.h>
 
 #include "simple-mfd-i2c.h"
 
@@ -78,59 +72,15 @@ static const struct simple_mfd_data silergy_sy7636a = {
 	.mfd_cell_size = ARRAY_SIZE(sy7636a_cells),
 };
 
-static const struct mfd_cell max5970_cells[] = {
-	{ .name = "max5970-regulator", },
-	{ .name = "max5970-iio", },
-	{ .name = "max5970-led", },
-};
-
-static const struct simple_mfd_data maxim_max5970 = {
-	.mfd_cell = max5970_cells,
-	.mfd_cell_size = ARRAY_SIZE(max5970_cells),
-};
-
-static const struct mfd_cell max77705_sensor_cells[] = {
-	{ .name = "max77705-battery" },
-	{ .name = "max77705-hwmon", },
-};
-
-static const struct simple_mfd_data maxim_mon_max77705 = {
-	.mfd_cell = max77705_sensor_cells,
-	.mfd_cell_size = ARRAY_SIZE(max77705_sensor_cells),
-};
-
-static const struct regmap_config spacemit_p1_regmap_config = {
-	.reg_bits = 8,
-	.val_bits = 8,
-};
-
-static const struct mfd_cell spacemit_p1_cells[] = {
-	{ .name = "spacemit-p1-regulator", },
-	{ .name = "spacemit-p1-rtc", },
-};
-
-static const struct simple_mfd_data spacemit_p1 = {
-	.regmap_config = &spacemit_p1_regmap_config,
-	.mfd_cell = spacemit_p1_cells,
-	.mfd_cell_size = ARRAY_SIZE(spacemit_p1_cells),
-};
-
 static const struct of_device_id simple_mfd_i2c_of_match[] = {
-	{ .compatible = "fsl,ls1028aqds-fpga" },
-	{ .compatible = "fsl,lx2160aqds-fpga" },
-	{ .compatible = "fsl,lx2160ardb-fpga" },
 	{ .compatible = "kontron,sl28cpld" },
-	{ .compatible = "maxim,max5970", .data = &maxim_max5970 },
-	{ .compatible = "maxim,max5978", .data = &maxim_max5970 },
-	{ .compatible = "maxim,max77705-battery", .data = &maxim_mon_max77705 },
-	{ .compatible = "silergy,sy7636a", .data = &silergy_sy7636a },
-	{ .compatible = "spacemit,p1", .data = &spacemit_p1 },
+	{ .compatible = "silergy,sy7636a", .data = &silergy_sy7636a},
 	{}
 };
 MODULE_DEVICE_TABLE(of, simple_mfd_i2c_of_match);
 
 static struct i2c_driver simple_mfd_i2c_driver = {
-	.probe = simple_mfd_i2c_probe,
+	.probe_new = simple_mfd_i2c_probe,
 	.driver = {
 		.name = "simple-mfd-i2c",
 		.of_match_table = simple_mfd_i2c_of_match,

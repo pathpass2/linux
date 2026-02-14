@@ -23,7 +23,7 @@
 #include <linux/seq_file.h>
 
 #include <asm/traps.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /* instructions we emulate */
 #define INST_LDHU	0x0b

@@ -30,7 +30,6 @@
 #include "dce100/dce_clk_mgr.h"
 #include "dcn30/dcn30_clk_mgr.h"
 #include "dml/dcn30/dcn30_fpu.h"
-#include "dcn30/dcn30m_clk_mgr.h"
 #include "reg_helper.h"
 #include "core_types.h"
 #include "dm_helpers.h"
@@ -207,6 +206,7 @@ static void dcn3_update_clocks(struct clk_mgr *clk_mgr_base,
 	bool force_reset = false;
 	bool update_uclk = false;
 	bool p_state_change_support;
+	int total_plane_count;
 
 	if (dc->work_arounds.skip_clock_update || !clk_mgr->smu_present)
 		return;
@@ -247,7 +247,8 @@ static void dcn3_update_clocks(struct clk_mgr *clk_mgr_base,
 		clk_mgr_base->clks.socclk_khz = new_clocks->socclk_khz;
 
 	clk_mgr_base->clks.prev_p_state_change_support = clk_mgr_base->clks.p_state_change_support;
-	p_state_change_support = new_clocks->p_state_change_support;
+	total_plane_count = clk_mgr_helper_get_active_plane_cnt(dc, context);
+	p_state_change_support = new_clocks->p_state_change_support || (total_plane_count == 0);
 
 	// invalidate the current P-State forced min in certain dc_mode_softmax situations
 	if (dc->clk_mgr->dc_mode_softmax_enabled && safe_to_lower && !p_state_change_support) {
@@ -475,7 +476,7 @@ static void dcn30_notify_link_rate_change(struct clk_mgr *clk_mgr_base, struct d
 
 	clk_mgr->cur_phyclk_req_table[link->link_index] = link->cur_link_settings.link_rate * LINK_RATE_REF_FREQ_IN_KHZ;
 
-	for (i = 0; i < MAX_LINKS; i++) {
+	for (i = 0; i < MAX_PIPES * 2; i++) {
 		if (clk_mgr->cur_phyclk_req_table[i] > max_phyclk_req)
 			max_phyclk_req = clk_mgr->cur_phyclk_req_table[i];
 	}
@@ -499,8 +500,7 @@ static struct clk_mgr_funcs dcn3_funcs = {
 		.are_clock_states_equal = dcn3_are_clock_states_equal,
 		.enable_pme_wa = dcn3_enable_pme_wa,
 		.notify_link_rate_change = dcn30_notify_link_rate_change,
-		.is_smu_present = dcn3_is_smu_present,
-		.set_smartmux_switch = dcn30m_set_smartmux_switch
+		.is_smu_present = dcn3_is_smu_present
 };
 
 static void dcn3_init_clocks_fpga(struct clk_mgr *clk_mgr)
@@ -523,8 +523,6 @@ void dcn3_clk_mgr_construct(
 		struct pp_smu_funcs *pp_smu,
 		struct dccg *dccg)
 {
-	struct clk_state_registers_and_bypass s = { 0 };
-
 	clk_mgr->base.ctx = ctx;
 	clk_mgr->base.funcs = &dcn3_funcs;
 	clk_mgr->regs = &clk_mgr_regs;
@@ -541,19 +539,27 @@ void dcn3_clk_mgr_construct(
 
 	clk_mgr->base.dprefclk_khz = 730000; // 700 MHz planned if VCO is 3.85 GHz, will be retrieved
 
-	/* integer part is now VCO frequency in kHz */
-	clk_mgr->base.dentist_vco_freq_khz = dcn30_get_vco_frequency_from_reg(clk_mgr);
-
-	/* in case we don't get a value from the register, use default */
-	if (clk_mgr->base.dentist_vco_freq_khz == 0)
+	if (IS_FPGA_MAXIMUS_DC(ctx->dce_environment)) {
+		clk_mgr->base.funcs  = &dcn3_fpga_funcs;
 		clk_mgr->base.dentist_vco_freq_khz = 3650000;
-	/* Convert dprefclk units from MHz to KHz */
-	/* Value already divided by 10, some resolution lost */
 
-	/*TODO: uncomment assert once dcn3_dump_clk_registers is implemented */
-	//ASSERT(s.dprefclk != 0);
-	if (s.dprefclk != 0)
-		clk_mgr->base.dprefclk_khz = s.dprefclk * 1000;
+	} else {
+		struct clk_state_registers_and_bypass s = { 0 };
+
+		/* integer part is now VCO frequency in kHz */
+		clk_mgr->base.dentist_vco_freq_khz = dcn30_get_vco_frequency_from_reg(clk_mgr);
+
+		/* in case we don't get a value from the register, use default */
+		if (clk_mgr->base.dentist_vco_freq_khz == 0)
+			clk_mgr->base.dentist_vco_freq_khz = 3650000;
+		/* Convert dprefclk units from MHz to KHz */
+		/* Value already divided by 10, some resolution lost */
+
+		/*TODO: uncomment assert once dcn3_dump_clk_registers is implemented */
+		//ASSERT(s.dprefclk != 0);
+		if (s.dprefclk != 0)
+			clk_mgr->base.dprefclk_khz = s.dprefclk * 1000;
+	}
 
 	clk_mgr->dfs_bypass_enabled = false;
 
@@ -562,19 +568,11 @@ void dcn3_clk_mgr_construct(
 	dce_clock_read_ss_info(clk_mgr);
 
 	clk_mgr->base.bw_params = kzalloc(sizeof(*clk_mgr->base.bw_params), GFP_KERNEL);
-	if (!clk_mgr->base.bw_params) {
-		BREAK_TO_DEBUGGER();
-		return;
-	}
 
 	/* need physical address of table to give to PMFW */
 	clk_mgr->wm_range_table = dm_helpers_allocate_gpu_mem(clk_mgr->base.ctx,
 			DC_MEM_ALLOC_TYPE_GART, sizeof(WatermarksExternal_t),
 			&clk_mgr->wm_range_table_addr);
-	if (!clk_mgr->wm_range_table) {
-		BREAK_TO_DEBUGGER();
-		return;
-	}
 }
 
 void dcn3_clk_mgr_destroy(struct clk_mgr_internal *clk_mgr)

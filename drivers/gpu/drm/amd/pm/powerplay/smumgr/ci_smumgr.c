@@ -2298,7 +2298,6 @@ static uint32_t ci_get_mac_definition(uint32_t value)
 	case SMU_MAX_ENTRIES_SMIO:
 		return SMU7_MAX_ENTRIES_SMIO;
 	case SMU_MAX_LEVELS_VDDC:
-	case SMU_MAX_LEVELS_VDDGFX:
 		return SMU7_MAX_LEVELS_VDDC;
 	case SMU_MAX_LEVELS_VDDCI:
 		return SMU7_MAX_LEVELS_VDDCI;
@@ -2733,7 +2732,7 @@ static bool ci_is_dpm_running(struct pp_hwmgr *hwmgr)
 
 static int ci_smu_init(struct pp_hwmgr *hwmgr)
 {
-	struct ci_smumgr *ci_priv;
+	struct ci_smumgr *ci_priv = NULL;
 
 	ci_priv = kzalloc(sizeof(struct ci_smumgr), GFP_KERNEL);
 

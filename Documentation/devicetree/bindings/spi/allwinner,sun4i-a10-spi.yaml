@@ -14,6 +14,9 @@ maintainers:
   - Maxime Ripard <mripard@kernel.org>
 
 properties:
+  "#address-cells": true
+  "#size-cells": true
+
   compatible:
     const: allwinner,sun4i-a10-spi
 
@@ -43,11 +46,11 @@ properties:
       - const: rx
       - const: tx
 
+  num-cs: true
+
 patternProperties:
   "^.*@[0-9a-f]+":
     type: object
-    additionalProperties: true
-
     properties:
       reg:
         items:
@@ -55,12 +58,10 @@ patternProperties:
           maximum: 4
 
       spi-rx-bus-width:
-        items:
-          - const: 1
+        const: 1
 
       spi-tx-bus-width:
-        items:
-          - const: 1
+        const: 1
 
 required:
   - compatible
@@ -69,7 +70,7 @@ required:
   - clocks
   - clock-names
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

@@ -10,9 +10,9 @@
 
 pgd_t *pgd_alloc(struct mm_struct *mm)
 {
-	pgd_t *init, *ret;
+	pgd_t *ret, *init;
 
-	ret = __pgd_alloc(mm, PGD_TABLE_ORDER);
+	ret = (pgd_t *) __get_free_pages(GFP_KERNEL, PGD_TABLE_ORDER);
 	if (ret) {
 		init = pgd_offset(&init_mm, 0UL);
 		pgd_init(ret);

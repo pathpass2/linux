@@ -11,6 +11,7 @@
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <linux/i2c.h>
+#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/regulator/consumer.h>
@@ -346,8 +347,6 @@ static int tas6424_power_on(struct snd_soc_component *component)
 static int tas6424_set_bias_level(struct snd_soc_component *component,
 				  enum snd_soc_bias_level level)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
-
 	dev_dbg(component->dev, "%s() level=%d\n", __func__, level);
 
 	switch (level) {
@@ -355,7 +354,7 @@ static int tas6424_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF)
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF)
 			tas6424_power_on(component);
 		break;
 	case SND_SOC_BIAS_OFF:
@@ -366,7 +365,7 @@ static int tas6424_set_bias_level(struct snd_soc_component *component,
 	return 0;
 }
 
-static const struct snd_soc_component_driver soc_codec_dev_tas6424 = {
+static struct snd_soc_component_driver soc_codec_dev_tas6424 = {
 	.set_bias_level		= tas6424_set_bias_level,
 	.controls		= tas6424_snd_controls,
 	.num_controls		= ARRAY_SIZE(tas6424_snd_controls),
@@ -794,7 +793,7 @@ static void tas6424_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tas6424_i2c_ids[] = {
-	{ "tas6424" },
+	{ "tas6424", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tas6424_i2c_ids);
@@ -804,7 +803,7 @@ static struct i2c_driver tas6424_i2c_driver = {
 		.name = "tas6424",
 		.of_match_table = of_match_ptr(tas6424_of_ids),
 	},
-	.probe = tas6424_i2c_probe,
+	.probe_new = tas6424_i2c_probe,
 	.remove = tas6424_i2c_remove,
 	.id_table = tas6424_i2c_ids,
 };

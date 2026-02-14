@@ -16,6 +16,7 @@
 #include <linux/mmc/sdio_ids.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
+#include <linux/gpio.h>
 #include <linux/pm_runtime.h>
 #include <linux/printk.h>
 #include <linux/of.h>
@@ -74,8 +75,8 @@ static int __must_check wl12xx_sdio_raw_read(struct device *child, int addr,
 
 	sdio_release_host(func);
 
-	if (ret)
-		dev_err_ratelimited(child->parent, "sdio read failed (%d)\n", ret);
+	if (WARN_ON(ret))
+		dev_err(child->parent, "sdio read failed (%d)\n", ret);
 
 	if (unlikely(dump)) {
 		printk(KERN_DEBUG "wlcore_sdio: READ from 0x%04x\n", addr);
@@ -119,8 +120,8 @@ static int __must_check wl12xx_sdio_raw_write(struct device *child, int addr,
 
 	sdio_release_host(func);
 
-	if (ret)
-		dev_err_ratelimited(child->parent, "sdio write failed (%d)\n", ret);
+	if (WARN_ON(ret))
+		dev_err(child->parent, "sdio write failed (%d)\n", ret);
 
 	return ret;
 }
@@ -323,12 +324,17 @@ static int wl1271_probe(struct sdio_func *func,
 
 	memset(res, 0x00, sizeof(res));
 
-	res[0] = DEFINE_RES_IRQ_NAMED(irq, "irq");
-	res[0].flags |= irq_get_trigger_type(irq);
+	res[0].start = irq;
+	res[0].flags = IORESOURCE_IRQ |
+		       irqd_get_trigger_type(irq_get_irq_data(irq));
+	res[0].name = "irq";
+
 
 	if (wakeirq > 0) {
-		res[1] = DEFINE_RES_IRQ_NAMED(wakeirq, "wakeirq");
-		res[1].flags |= irq_get_trigger_type(wakeirq);
+		res[1].start = wakeirq;
+		res[1].flags = IORESOURCE_IRQ |
+			       irqd_get_trigger_type(irq_get_irq_data(wakeirq));
+		res[1].name = "wakeirq";
 		num_irqs = 2;
 	} else {
 		num_irqs = 1;
@@ -370,6 +376,7 @@ static void wl1271_remove(struct sdio_func *func)
 	platform_device_unregister(glue->core);
 }
 
+#ifdef CONFIG_PM
 static int wl1271_suspend(struct device *dev)
 {
 	/* Tell MMC/SDIO core it's OK to power down the card
@@ -421,23 +428,36 @@ static const struct dev_pm_ops wl1271_sdio_pm_ops = {
 	.suspend	= wl1271_suspend,
 	.resume		= wl1271_resume,
 };
+#endif
 
 static struct sdio_driver wl1271_sdio_driver = {
 	.name		= "wl1271_sdio",
 	.id_table	= wl1271_devices,
 	.probe		= wl1271_probe,
 	.remove		= wl1271_remove,
+#ifdef CONFIG_PM
 	.drv = {
-		.pm = pm_ptr(&wl1271_sdio_pm_ops),
+		.pm = &wl1271_sdio_pm_ops,
 	},
+#endif
 };
 
-module_sdio_driver(wl1271_sdio_driver);
+static int __init wl1271_init(void)
+{
+	return sdio_register_driver(&wl1271_sdio_driver);
+}
+
+static void __exit wl1271_exit(void)
+{
+	sdio_unregister_driver(&wl1271_sdio_driver);
+}
+
+module_init(wl1271_init);
+module_exit(wl1271_exit);
 
 module_param(dump, bool, 0600);
 MODULE_PARM_DESC(dump, "Enable sdio read/write dumps.");
 
-MODULE_DESCRIPTION("TI WLAN SDIO helpers");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Luciano Coelho <coelho@ti.com>");
 MODULE_AUTHOR("Juuso Oikarinen <juuso.oikarinen@nokia.com>");

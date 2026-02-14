@@ -19,13 +19,16 @@ DEFINE_LED_TRIGGER(ledtrig_disk_write);
 
 void ledtrig_disk_activity(bool write)
 {
-	led_trigger_blink_oneshot(ledtrig_disk, BLINK_DELAY, BLINK_DELAY, 0);
+	unsigned long blink_delay = BLINK_DELAY;
+
+	led_trigger_blink_oneshot(ledtrig_disk,
+				  &blink_delay, &blink_delay, 0);
 	if (write)
 		led_trigger_blink_oneshot(ledtrig_disk_write,
-					  BLINK_DELAY, BLINK_DELAY, 0);
+					  &blink_delay, &blink_delay, 0);
 	else
 		led_trigger_blink_oneshot(ledtrig_disk_read,
-					  BLINK_DELAY, BLINK_DELAY, 0);
+					  &blink_delay, &blink_delay, 0);
 }
 EXPORT_SYMBOL(ledtrig_disk_activity);
 

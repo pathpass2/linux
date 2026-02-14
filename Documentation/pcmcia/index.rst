@@ -1,7 +1,7 @@
 .. SPDX-License-Identifier: GPL-2.0
 
 ======
-PCMCIA
+pcmcia
 ======
 
 .. toctree::
@@ -11,3 +11,10 @@ PCMCIA
     devicetable
     locking
     driver-changes
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

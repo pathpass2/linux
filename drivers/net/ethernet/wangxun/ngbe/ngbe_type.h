@@ -59,6 +59,28 @@
 #define NGBE_EEPROM_VERSION_L			0x1D
 #define NGBE_EEPROM_VERSION_H			0x1E
 
+/* mdio access */
+#define NGBE_MSCA				0x11200
+#define NGBE_MSCA_RA(v)				FIELD_PREP(U16_MAX, v)
+#define NGBE_MSCA_PA(v)				FIELD_PREP(GENMASK(20, 16), v)
+#define NGBE_MSCA_DA(v)				FIELD_PREP(GENMASK(25, 21), v)
+#define NGBE_MSCC				0x11204
+#define NGBE_MSCC_CMD(v)			FIELD_PREP(GENMASK(17, 16), v)
+
+enum NGBE_MSCA_CMD_value {
+	NGBE_MSCA_CMD_RSV = 0,
+	NGBE_MSCA_CMD_WRITE,
+	NGBE_MSCA_CMD_POST_READ,
+	NGBE_MSCA_CMD_READ,
+};
+
+#define NGBE_MSCC_SADDR				BIT(18)
+#define NGBE_MSCC_BUSY				BIT(22)
+#define NGBE_MDIO_CLK(v)			FIELD_PREP(GENMASK(21, 19), v)
+
+/* Media-dependent registers. */
+#define NGBE_MDIO_CLAUSE_SELECT			0x11220
+
 /* GPIO Registers */
 #define NGBE_GPIO_DR				0x14800
 #define NGBE_GPIO_DDR				0x14804
@@ -70,24 +92,17 @@
 
 /* Extended Interrupt Enable Set */
 #define NGBE_PX_MISC_IEN_DEV_RST		BIT(10)
-#define NGBE_PX_MISC_IEN_TIMESYNC		BIT(11)
 #define NGBE_PX_MISC_IEN_ETH_LK			BIT(18)
 #define NGBE_PX_MISC_IEN_INT_ERR		BIT(20)
-#define NGBE_PX_MISC_IC_VF_MBOX			BIT(23)
 #define NGBE_PX_MISC_IEN_GPIO			BIT(26)
 #define NGBE_PX_MISC_IEN_MASK ( \
 				NGBE_PX_MISC_IEN_DEV_RST | \
-				NGBE_PX_MISC_IEN_TIMESYNC | \
 				NGBE_PX_MISC_IEN_ETH_LK | \
 				NGBE_PX_MISC_IEN_INT_ERR | \
-				NGBE_PX_MISC_IC_VF_MBOX | \
 				NGBE_PX_MISC_IEN_GPIO)
 
-/* Extended Interrupt Cause Read */
-#define NGBE_PX_MISC_IC_TIMESYNC		BIT(11) /* time sync */
-
 #define NGBE_INTR_ALL				0x1FF
-#define NGBE_INTR_MISC(A)			BIT((A)->msix_entry->entry)
+#define NGBE_INTR_MISC(A)			BIT((A)->num_q_vectors)
 
 #define NGBE_PHY_CONFIG(reg_offset)		(0x14000 + ((reg_offset) * 4))
 #define NGBE_CFG_LAN_SPEED			0x14440
@@ -112,7 +127,6 @@
 #define NGBE_FW_CMD_ST_FAIL			0x70657376
 
 #define NGBE_MAX_FDIR_INDICES			7
-#define NGBE_MAX_RSS_INDICES			8
 
 #define NGBE_MAX_RX_QUEUES			(NGBE_MAX_FDIR_INDICES + 1)
 #define NGBE_MAX_TX_QUEUES			(NGBE_MAX_FDIR_INDICES + 1)
@@ -122,8 +136,8 @@
 #define NGBE_RAR_ENTRIES			32
 #define NGBE_RX_PB_SIZE				42
 #define NGBE_MC_TBL_SIZE			128
-#define NGBE_SP_VFT_TBL_SIZE			128
 #define NGBE_TDB_PB_SZ				(20 * 1024) /* 160KB Packet Buffer */
+#define NGBE_MAX_JUMBO_FRAME_SIZE		9432 /* max payload 9414 */
 
 /* TX/RX descriptor defines */
 #define NGBE_DEFAULT_TXD			512 /* default ring size */
@@ -136,11 +150,6 @@
 #define NGBE_MAX_RXD				8192
 #define NGBE_MIN_RXD				128
 
-#define NGBE_MAX_VFS_DRV_LIMIT			7
 extern char ngbe_driver_name[];
-
-void ngbe_down(struct wx *wx);
-void ngbe_up(struct wx *wx);
-int ngbe_setup_tc(struct net_device *dev, u8 tc);
 
 #endif /* _NGBE_TYPE_H_ */

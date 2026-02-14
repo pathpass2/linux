@@ -21,7 +21,6 @@
 #include <scsi/scsi.h>
 #include <scsi/scsi_eh.h>
 #include <scsi/scsi_dbg.h>
-#include <scsi/scsi_devinfo.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
@@ -38,7 +37,7 @@ struct uas_dev_info {
 	struct usb_anchor cmd_urbs;
 	struct usb_anchor sense_urbs;
 	struct usb_anchor data_urbs;
-	u64 flags;
+	unsigned long flags;
 	int qdepth, resetting;
 	unsigned cmd_pipe, status_pipe, data_in_pipe, data_out_pipe;
 	unsigned use_streams:1;
@@ -309,18 +308,18 @@ static void uas_stat_cmplt(struct urb *urb)
 	int status = urb->status;
 	bool success;
 
-	if (status) {
-		if (status != -ENOENT && status != -ECONNRESET && status != -ESHUTDOWN)
-			dev_err(&urb->dev->dev, "stat urb: status %d\n", status);
-		goto bail;
-	}
-
-	idx = be16_to_cpup(&iu->tag) - 1;
-
 	spin_lock_irqsave(&devinfo->lock, flags);
 
 	if (devinfo->resetting)
 		goto out;
+
+	if (status) {
+		if (status != -ENOENT && status != -ECONNRESET && status != -ESHUTDOWN)
+			dev_err(&urb->dev->dev, "stat urb: status %d\n", status);
+		goto out;
+	}
+
+	idx = be16_to_cpup(&iu->tag) - 1;
 	if (idx >= MAX_CMNDS || !devinfo->cmnd[idx]) {
 		dev_err(&urb->dev->dev,
 			"stat urb: no pending cmd for uas-tag %d\n", idx + 1);
@@ -375,8 +374,9 @@ static void uas_stat_cmplt(struct urb *urb)
 	default:
 		uas_log_cmd_state(cmnd, "bogus IU", iu->iu_id);
 	}
-	spin_unlock_irqrestore(&devinfo->lock, flags);
+out:
 	usb_free_urb(urb);
+	spin_unlock_irqrestore(&devinfo->lock, flags);
 
 	/* Unlinking of data urbs must be done without holding the lock */
 	if (data_in_urb) {
@@ -387,12 +387,6 @@ static void uas_stat_cmplt(struct urb *urb)
 		usb_unlink_urb(data_out_urb);
 		usb_put_urb(data_out_urb);
 	}
-	return;
-
-out:
-	spin_unlock_irqrestore(&devinfo->lock, flags);
-bail:
-	usb_free_urb(urb);
 }
 
 static void uas_data_cmplt(struct urb *urb)
@@ -428,14 +422,13 @@ static void uas_data_cmplt(struct urb *urb)
 			uas_log_cmd_state(cmnd, "data cmplt err", status);
 		/* error: no data transfered */
 		scsi_set_resid(cmnd, sdb->length);
-		set_host_byte(cmnd, DID_ERROR);
 	} else {
 		scsi_set_resid(cmnd, sdb->length - urb->actual_length);
 	}
 	uas_try_complete(cmnd, __func__);
 out:
-	spin_unlock_irqrestore(&devinfo->lock, flags);
 	usb_free_urb(urb);
+	spin_unlock_irqrestore(&devinfo->lock, flags);
 }
 
 static void uas_cmd_cmplt(struct urb *urb)
@@ -540,7 +533,7 @@ static struct urb *uas_alloc_cmd_urb(struct uas_dev_info *devinfo, gfp_t gfp,
  * daft to me.
  */
 
-static int uas_submit_sense_urb(struct scsi_cmnd *cmnd, gfp_t gfp)
+static struct urb *uas_submit_sense_urb(struct scsi_cmnd *cmnd, gfp_t gfp)
 {
 	struct uas_dev_info *devinfo = cmnd->device->hostdata;
 	struct urb *urb;
@@ -548,28 +541,30 @@ static int uas_submit_sense_urb(struct scsi_cmnd *cmnd, gfp_t gfp)
 
 	urb = uas_alloc_sense_urb(devinfo, gfp, cmnd);
 	if (!urb)
-		return -ENOMEM;
+		return NULL;
 	usb_anchor_urb(urb, &devinfo->sense_urbs);
 	err = usb_submit_urb(urb, gfp);
 	if (err) {
 		usb_unanchor_urb(urb);
 		uas_log_cmd_state(cmnd, "sense submit err", err);
 		usb_free_urb(urb);
+		return NULL;
 	}
-	return err;
+	return urb;
 }
 
 static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 			   struct uas_dev_info *devinfo)
 {
 	struct uas_cmd_info *cmdinfo = scsi_cmd_priv(cmnd);
+	struct urb *urb;
 	int err;
 
 	lockdep_assert_held(&devinfo->lock);
 	if (cmdinfo->state & SUBMIT_STATUS_URB) {
-		err = uas_submit_sense_urb(cmnd, GFP_ATOMIC);
-		if (err)
-			return err;
+		urb = uas_submit_sense_urb(cmnd, GFP_ATOMIC);
+		if (!urb)
+			return SCSI_MLQUEUE_DEVICE_BUSY;
 		cmdinfo->state &= ~SUBMIT_STATUS_URB;
 	}
 
@@ -577,7 +572,7 @@ static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 		cmdinfo->data_in_urb = uas_alloc_data_urb(devinfo, GFP_ATOMIC,
 							cmnd, DMA_FROM_DEVICE);
 		if (!cmdinfo->data_in_urb)
-			return -ENOMEM;
+			return SCSI_MLQUEUE_DEVICE_BUSY;
 		cmdinfo->state &= ~ALLOC_DATA_IN_URB;
 	}
 
@@ -587,7 +582,7 @@ static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 		if (err) {
 			usb_unanchor_urb(cmdinfo->data_in_urb);
 			uas_log_cmd_state(cmnd, "data in submit err", err);
-			return err;
+			return SCSI_MLQUEUE_DEVICE_BUSY;
 		}
 		cmdinfo->state &= ~SUBMIT_DATA_IN_URB;
 		cmdinfo->state |= DATA_IN_URB_INFLIGHT;
@@ -597,7 +592,7 @@ static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 		cmdinfo->data_out_urb = uas_alloc_data_urb(devinfo, GFP_ATOMIC,
 							cmnd, DMA_TO_DEVICE);
 		if (!cmdinfo->data_out_urb)
-			return -ENOMEM;
+			return SCSI_MLQUEUE_DEVICE_BUSY;
 		cmdinfo->state &= ~ALLOC_DATA_OUT_URB;
 	}
 
@@ -607,7 +602,7 @@ static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 		if (err) {
 			usb_unanchor_urb(cmdinfo->data_out_urb);
 			uas_log_cmd_state(cmnd, "data out submit err", err);
-			return err;
+			return SCSI_MLQUEUE_DEVICE_BUSY;
 		}
 		cmdinfo->state &= ~SUBMIT_DATA_OUT_URB;
 		cmdinfo->state |= DATA_OUT_URB_INFLIGHT;
@@ -616,7 +611,7 @@ static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 	if (cmdinfo->state & ALLOC_CMD_URB) {
 		cmdinfo->cmd_urb = uas_alloc_cmd_urb(devinfo, GFP_ATOMIC, cmnd);
 		if (!cmdinfo->cmd_urb)
-			return -ENOMEM;
+			return SCSI_MLQUEUE_DEVICE_BUSY;
 		cmdinfo->state &= ~ALLOC_CMD_URB;
 	}
 
@@ -626,7 +621,7 @@ static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 		if (err) {
 			usb_unanchor_urb(cmdinfo->cmd_urb);
 			uas_log_cmd_state(cmnd, "cmd submit err", err);
-			return err;
+			return SCSI_MLQUEUE_DEVICE_BUSY;
 		}
 		cmdinfo->cmd_urb = NULL;
 		cmdinfo->state &= ~SUBMIT_CMD_URB;
@@ -636,7 +631,7 @@ static int uas_submit_urbs(struct scsi_cmnd *cmnd,
 	return 0;
 }
 
-static enum scsi_qc_status uas_queuecommand_lck(struct scsi_cmnd *cmnd)
+static int uas_queuecommand_lck(struct scsi_cmnd *cmnd)
 {
 	struct scsi_device *sdev = cmnd->device;
 	struct uas_dev_info *devinfo = sdev->hostdata;
@@ -703,11 +698,7 @@ static enum scsi_qc_status uas_queuecommand_lck(struct scsi_cmnd *cmnd)
 	 * of queueing, no matter how fatal the error
 	 */
 	if (err == -ENODEV) {
-		if (cmdinfo->state & (COMMAND_INFLIGHT | DATA_IN_URB_INFLIGHT |
-				DATA_OUT_URB_INFLIGHT))
-			goto out;
-
-		set_host_byte(cmnd, DID_NO_CONNECT);
+		set_host_byte(cmnd, DID_ERROR);
 		scsi_done(cmnd);
 		goto zombie;
 	}
@@ -720,7 +711,6 @@ static enum scsi_qc_status uas_queuecommand_lck(struct scsi_cmnd *cmnd)
 		uas_add_work(cmnd);
 	}
 
-out:
 	devinfo->cmnd[idx] = cmnd;
 zombie:
 	spin_unlock_irqrestore(&devinfo->lock, flags);
@@ -827,30 +817,31 @@ static int uas_target_alloc(struct scsi_target *starget)
 	return 0;
 }
 
-static int uas_sdev_init(struct scsi_device *sdev)
+static int uas_slave_alloc(struct scsi_device *sdev)
 {
 	struct uas_dev_info *devinfo =
 		(struct uas_dev_info *)sdev->host->hostdata;
 
-	/*
-	 * Some USB storage devices reset if the IO advice hints grouping mode
-	 * page is queried. Hence skip that mode page.
-	 */
-	sdev->sdev_bflags |= BLIST_SKIP_IO_HINTS;
-
 	sdev->hostdata = devinfo;
+
+	/*
+	 * The protocol has no requirements on alignment in the strict sense.
+	 * Controllers may or may not have alignment restrictions.
+	 * As this is not exported, we use an extremely conservative guess.
+	 */
+	blk_queue_update_dma_alignment(sdev->request_queue, (512 - 1));
+
+	if (devinfo->flags & US_FL_MAX_SECTORS_64)
+		blk_queue_max_hw_sectors(sdev->request_queue, 64);
+	else if (devinfo->flags & US_FL_MAX_SECTORS_240)
+		blk_queue_max_hw_sectors(sdev->request_queue, 240);
+
 	return 0;
 }
 
-static int uas_sdev_configure(struct scsi_device *sdev,
-			      struct queue_limits *lim)
+static int uas_slave_configure(struct scsi_device *sdev)
 {
 	struct uas_dev_info *devinfo = sdev->hostdata;
-
-	if (devinfo->flags & US_FL_MAX_SECTORS_64)
-		lim->max_hw_sectors = 64;
-	else if (devinfo->flags & US_FL_MAX_SECTORS_240)
-		lim->max_hw_sectors = 240;
 
 	if (devinfo->flags & US_FL_NO_REPORT_OPCODES)
 		sdev->no_report_opcodes = 1;
@@ -888,13 +879,6 @@ static int uas_sdev_configure(struct scsi_device *sdev,
 		sdev->guess_capacity = 1;
 
 	/*
-	 * Some devices report generic values until the media has been
-	 * accessed. Force a READ(10) prior to querying device
-	 * characteristics.
-	 */
-	sdev->read_before_ms = 1;
-
-	/*
 	 * Some devices don't like MODE SENSE with page=0x3f,
 	 * which is the command used for checking if a device
 	 * is write-protected.  Now that we tell the sd driver
@@ -910,23 +894,17 @@ static int uas_sdev_configure(struct scsi_device *sdev,
 	return 0;
 }
 
-static const struct scsi_host_template uas_host_template = {
+static struct scsi_host_template uas_host_template = {
 	.module = THIS_MODULE,
 	.name = "uas",
 	.queuecommand = uas_queuecommand,
 	.target_alloc = uas_target_alloc,
-	.sdev_init = uas_sdev_init,
-	.sdev_configure = uas_sdev_configure,
+	.slave_alloc = uas_slave_alloc,
+	.slave_configure = uas_slave_configure,
 	.eh_abort_handler = uas_eh_abort_handler,
 	.eh_device_reset_handler = uas_eh_device_reset_handler,
 	.this_id = -1,
 	.skip_settle_delay = 1,
-	/*
-	 * The protocol has no requirements on alignment in the strict sense.
-	 * Controllers may or may not have alignment restrictions.
-	 * As this is not exported, we use an extremely conservative guess.
-	 */
-	.dma_alignment = 511,
 	.dma_boundary = PAGE_SIZE - 1,
 	.cmd_size = sizeof(struct uas_cmd_info),
 };
@@ -937,7 +915,7 @@ static const struct scsi_host_template uas_host_template = {
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
 	.driver_info = (flags) }
 
-static const struct usb_device_id uas_usb_ids[] = {
+static struct usb_device_id uas_usb_ids[] = {
 #	include "unusual_uas.h"
 	{ USB_INTERFACE_INFO(USB_CLASS_MASS_STORAGE, USB_SC_SCSI, USB_PR_BULK) },
 	{ USB_INTERFACE_INFO(USB_CLASS_MASS_STORAGE, USB_SC_SCSI, USB_PR_UAS) },
@@ -1010,7 +988,7 @@ static int uas_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	struct Scsi_Host *shost = NULL;
 	struct uas_dev_info *devinfo;
 	struct usb_device *udev = interface_to_usbdev(intf);
-	u64 dev_flags;
+	unsigned long dev_flags;
 
 	if (!uas_use_uas_driver(intf, id, &dev_flags))
 		return -ENODEV;
@@ -1243,8 +1221,9 @@ static void uas_disconnect(struct usb_interface *intf)
  * hang on reboot when the device is still in uas mode. Note the reset is
  * necessary as some devices won't revert to usb-storage mode without it.
  */
-static void uas_shutdown(struct usb_interface *intf)
+static void uas_shutdown(struct device *dev)
 {
+	struct usb_interface *intf = to_usb_interface(dev);
 	struct usb_device *udev = interface_to_usbdev(intf);
 	struct Scsi_Host *shost = usb_get_intfdata(intf);
 	struct uas_dev_info *devinfo = (struct uas_dev_info *)shost->hostdata;
@@ -1267,7 +1246,7 @@ static struct usb_driver uas_driver = {
 	.suspend = uas_suspend,
 	.resume = uas_resume,
 	.reset_resume = uas_reset_resume,
-	.shutdown = uas_shutdown,
+	.drvwrap.driver.shutdown = uas_shutdown,
 	.id_table = uas_usb_ids,
 };
 
@@ -1275,7 +1254,7 @@ static int __init uas_init(void)
 {
 	int rv;
 
-	workqueue = alloc_workqueue("uas", WQ_MEM_RECLAIM | WQ_PERCPU, 0);
+	workqueue = alloc_workqueue("uas", WQ_MEM_RECLAIM, 0);
 	if (!workqueue)
 		return -ENOMEM;
 
@@ -1297,8 +1276,7 @@ static void __exit uas_exit(void)
 module_init(uas_init);
 module_exit(uas_exit);
 
-MODULE_DESCRIPTION("USB Attached SCSI driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("USB_STORAGE");
+MODULE_IMPORT_NS(USB_STORAGE);
 MODULE_AUTHOR(
 	"Hans de Goede <hdegoede@redhat.com>, Matthew Wilcox and Sarah Sharp");

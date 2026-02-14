@@ -45,9 +45,6 @@
 #define VSC7512_SIO_CTRL_RES_START	0x710700f8
 #define VSC7512_SIO_CTRL_RES_SIZE	0x00000100
 
-#define VSC7512_HSIO_RES_START		0x710d0000
-#define VSC7512_HSIO_RES_SIZE		0x00000128
-
 #define VSC7512_ANA_RES_START		0x71880000
 #define VSC7512_ANA_RES_SIZE		0x00010000
 
@@ -113,7 +110,7 @@ int ocelot_chip_reset(struct device *dev)
 	return readx_poll_timeout(ocelot_gcb_chip_rst_status, ddata, val, !val,
 				  VSC7512_GCB_RST_SLEEP_US, VSC7512_GCB_RST_TIMEOUT_US);
 }
-EXPORT_SYMBOL_NS(ocelot_chip_reset, "MFD_OCELOT");
+EXPORT_SYMBOL_NS(ocelot_chip_reset, MFD_OCELOT);
 
 static const struct resource vsc7512_miim0_resources[] = {
 	DEFINE_RES_REG_NAMED(VSC7512_MIIM0_RES_START, VSC7512_MIIM_RES_SIZE, "gcb_miim0"),
@@ -132,13 +129,8 @@ static const struct resource vsc7512_sgpio_resources[] = {
 	DEFINE_RES_REG_NAMED(VSC7512_SIO_CTRL_RES_START, VSC7512_SIO_CTRL_RES_SIZE, "gcb_sio"),
 };
 
-static const struct resource vsc7512_serdes_resources[] = {
-	DEFINE_RES_REG_NAMED(VSC7512_HSIO_RES_START, VSC7512_HSIO_RES_SIZE, "hsio"),
-};
-
 static const struct resource vsc7512_switch_resources[] = {
 	DEFINE_RES_REG_NAMED(VSC7512_ANA_RES_START, VSC7512_ANA_RES_SIZE, "ana"),
-	DEFINE_RES_REG_NAMED(VSC7512_HSIO_RES_START, VSC7512_HSIO_RES_SIZE, "hsio"),
 	DEFINE_RES_REG_NAMED(VSC7512_QS_RES_START, VSC7512_QS_RES_SIZE, "qs"),
 	DEFINE_RES_REG_NAMED(VSC7512_QSYS_RES_START, VSC7512_QSYS_RES_SIZE, "qsys"),
 	DEFINE_RES_REG_NAMED(VSC7512_REW_RES_START, VSC7512_REW_RES_SIZE, "rew"),
@@ -185,11 +177,6 @@ static const struct mfd_cell vsc7512_devs[] = {
 		.num_resources = ARRAY_SIZE(vsc7512_miim1_resources),
 		.resources = vsc7512_miim1_resources,
 	}, {
-		.name = "ocelot-serdes",
-		.of_compatible = "mscc,vsc7514-serdes",
-		.num_resources = ARRAY_SIZE(vsc7512_serdes_resources),
-		.resources = vsc7512_serdes_resources,
-	}, {
 		.name = "ocelot-ext-switch",
 		.of_compatible = "mscc,vsc7512-switch",
 		.num_resources = ARRAY_SIZE(vsc7512_switch_resources),
@@ -226,9 +213,9 @@ int ocelot_core_init(struct device *dev)
 
 	return devm_mfd_add_devices(dev, PLATFORM_DEVID_AUTO, vsc7512_devs, ndevs, NULL, 0, NULL);
 }
-EXPORT_SYMBOL_NS(ocelot_core_init, "MFD_OCELOT");
+EXPORT_SYMBOL_NS(ocelot_core_init, MFD_OCELOT);
 
 MODULE_DESCRIPTION("Externally Controlled Ocelot Chip Driver");
 MODULE_AUTHOR("Colin Foster <colin.foster@in-advantage.com>");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("MFD_OCELOT_SPI");
+MODULE_IMPORT_NS(MFD_OCELOT_SPI);

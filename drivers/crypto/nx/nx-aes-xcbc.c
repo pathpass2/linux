@@ -7,14 +7,13 @@
  * Author: Kent Yoder <yoder1@us.ibm.com>
  */
 
-#include <crypto/aes.h>
 #include <crypto/internal/hash.h>
-#include <linux/atomic.h>
-#include <linux/errno.h>
-#include <linux/kernel.h>
+#include <crypto/aes.h>
+#include <crypto/algapi.h>
 #include <linux/module.h>
-#include <linux/spinlock.h>
-#include <linux/string.h>
+#include <linux/types.h>
+#include <linux/crypto.h>
+#include <asm/vio.h>
 
 #include "nx_csbcpb.h"
 #include "nx.h"
@@ -22,6 +21,8 @@
 
 struct xcbc_state {
 	u8 state[AES_BLOCK_SIZE];
+	unsigned int count;
+	u8 buffer[AES_BLOCK_SIZE];
 };
 
 static int nx_xcbc_set_key(struct crypto_shash *desc,
@@ -57,7 +58,7 @@ static int nx_xcbc_set_key(struct crypto_shash *desc,
  */
 static int nx_xcbc_empty(struct shash_desc *desc, u8 *out)
 {
-	struct nx_crypto_ctx *nx_ctx = crypto_shash_ctx(desc->tfm);
+	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
 	struct nx_csbcpb *csbcpb = nx_ctx->csbcpb;
 	struct nx_sg *in_sg, *out_sg;
 	u8 keys[2][AES_BLOCK_SIZE];
@@ -134,9 +135,9 @@ out:
 	return rc;
 }
 
-static int nx_crypto_ctx_aes_xcbc_init2(struct crypto_shash *tfm)
+static int nx_crypto_ctx_aes_xcbc_init2(struct crypto_tfm *tfm)
 {
-	struct nx_crypto_ctx *nx_ctx = crypto_shash_ctx(tfm);
+	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(tfm);
 	struct nx_csbcpb *csbcpb = nx_ctx->csbcpb;
 	int err;
 
@@ -165,24 +166,31 @@ static int nx_xcbc_update(struct shash_desc *desc,
 			  const u8          *data,
 			  unsigned int       len)
 {
-	struct nx_crypto_ctx *nx_ctx = crypto_shash_ctx(desc->tfm);
 	struct xcbc_state *sctx = shash_desc_ctx(desc);
+	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
 	struct nx_csbcpb *csbcpb = nx_ctx->csbcpb;
 	struct nx_sg *in_sg;
 	struct nx_sg *out_sg;
+	u32 to_process = 0, leftover, total;
 	unsigned int max_sg_len;
 	unsigned long irq_flags;
-	u32 to_process, total;
 	int rc = 0;
 	int data_len;
 
 	spin_lock_irqsave(&nx_ctx->lock, irq_flags);
 
-	memcpy(csbcpb->cpb.aes_xcbc.out_cv_mac, sctx->state, AES_BLOCK_SIZE);
-	NX_CPB_FDM(csbcpb) |= NX_FDM_INTERMEDIATE;
-	NX_CPB_FDM(csbcpb) |= NX_FDM_CONTINUATION;
 
-	total = len;
+	total = sctx->count + len;
+
+	/* 2 cases for total data len:
+	 *  1: <= AES_BLOCK_SIZE: copy into state, return 0
+	 *  2: > AES_BLOCK_SIZE: process X blocks, copy in leftover
+	 */
+	if (total <= AES_BLOCK_SIZE) {
+		memcpy(sctx->buffer + sctx->count, data, len);
+		sctx->count += len;
+		goto out;
+	}
 
 	in_sg = nx_ctx->in_sg;
 	max_sg_len = min_t(u64, nx_driver.of.max_sg_len/sizeof(struct nx_sg),
@@ -192,7 +200,7 @@ static int nx_xcbc_update(struct shash_desc *desc,
 
 	data_len = AES_BLOCK_SIZE;
 	out_sg = nx_build_sg_list(nx_ctx->out_sg, (u8 *)sctx->state,
-				  &data_len, nx_ctx->ap->sglen);
+				  &len, nx_ctx->ap->sglen);
 
 	if (data_len != AES_BLOCK_SIZE) {
 		rc = -EINVAL;
@@ -202,21 +210,56 @@ static int nx_xcbc_update(struct shash_desc *desc,
 	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
 
 	do {
-		to_process = total & ~(AES_BLOCK_SIZE - 1);
+		to_process = total - to_process;
+		to_process = to_process & ~(AES_BLOCK_SIZE - 1);
 
+		leftover = total - to_process;
+
+		/* the hardware will not accept a 0 byte operation for this
+		 * algorithm and the operation MUST be finalized to be correct.
+		 * So if we happen to get an update that falls on a block sized
+		 * boundary, we must save off the last block to finalize with
+		 * later. */
+		if (!leftover) {
+			to_process -= AES_BLOCK_SIZE;
+			leftover = AES_BLOCK_SIZE;
+		}
+
+		if (sctx->count) {
+			data_len = sctx->count;
+			in_sg = nx_build_sg_list(nx_ctx->in_sg,
+						(u8 *) sctx->buffer,
+						&data_len,
+						max_sg_len);
+			if (data_len != sctx->count) {
+				rc = -EINVAL;
+				goto out;
+			}
+		}
+
+		data_len = to_process - sctx->count;
 		in_sg = nx_build_sg_list(in_sg,
 					(u8 *) data,
-					&to_process,
+					&data_len,
 					max_sg_len);
+
+		if (data_len != to_process - sctx->count) {
+			rc = -EINVAL;
+			goto out;
+		}
 
 		nx_ctx->op.inlen = (nx_ctx->in_sg - in_sg) *
 					sizeof(struct nx_sg);
 
 		/* we've hit the nx chip previously and we're updating again,
 		 * so copy over the partial digest */
-		memcpy(csbcpb->cpb.aes_xcbc.cv,
-		       csbcpb->cpb.aes_xcbc.out_cv_mac, AES_BLOCK_SIZE);
+		if (NX_CPB_FDM(csbcpb) & NX_FDM_CONTINUATION) {
+			memcpy(csbcpb->cpb.aes_xcbc.cv,
+				csbcpb->cpb.aes_xcbc.out_cv_mac,
+				AES_BLOCK_SIZE);
+		}
 
+		NX_CPB_FDM(csbcpb) |= NX_FDM_INTERMEDIATE;
 		if (!nx_ctx->op.inlen || !nx_ctx->op.outlen) {
 			rc = -EINVAL;
 			goto out;
@@ -228,24 +271,28 @@ static int nx_xcbc_update(struct shash_desc *desc,
 
 		atomic_inc(&(nx_ctx->stats->aes_ops));
 
-		total -= to_process;
-		data += to_process;
-		in_sg = nx_ctx->in_sg;
-	} while (total >= AES_BLOCK_SIZE);
+		/* everything after the first update is continuation */
+		NX_CPB_FDM(csbcpb) |= NX_FDM_CONTINUATION;
 
-	rc = total;
-	memcpy(sctx->state, csbcpb->cpb.aes_xcbc.out_cv_mac, AES_BLOCK_SIZE);
+		total -= to_process;
+		data += to_process - sctx->count;
+		sctx->count = 0;
+		in_sg = nx_ctx->in_sg;
+	} while (leftover > AES_BLOCK_SIZE);
+
+	/* copy the leftover back into the state struct */
+	memcpy(sctx->buffer, data, leftover);
+	sctx->count = leftover;
 
 out:
 	spin_unlock_irqrestore(&nx_ctx->lock, irq_flags);
 	return rc;
 }
 
-static int nx_xcbc_finup(struct shash_desc *desc, const u8 *src,
-			 unsigned int nbytes, u8 *out)
+static int nx_xcbc_final(struct shash_desc *desc, u8 *out)
 {
-	struct nx_crypto_ctx *nx_ctx = crypto_shash_ctx(desc->tfm);
 	struct xcbc_state *sctx = shash_desc_ctx(desc);
+	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
 	struct nx_csbcpb *csbcpb = nx_ctx->csbcpb;
 	struct nx_sg *in_sg, *out_sg;
 	unsigned long irq_flags;
@@ -254,10 +301,12 @@ static int nx_xcbc_finup(struct shash_desc *desc, const u8 *src,
 
 	spin_lock_irqsave(&nx_ctx->lock, irq_flags);
 
-	if (nbytes) {
-		/* non-zero final, so copy over the partial digest */
-		memcpy(csbcpb->cpb.aes_xcbc.cv, sctx->state, AES_BLOCK_SIZE);
-	} else {
+	if (NX_CPB_FDM(csbcpb) & NX_FDM_CONTINUATION) {
+		/* we've hit the nx chip previously, now we're finalizing,
+		 * so copy over the partial digest */
+		memcpy(csbcpb->cpb.aes_xcbc.cv,
+		       csbcpb->cpb.aes_xcbc.out_cv_mac, AES_BLOCK_SIZE);
+	} else if (sctx->count == 0) {
 		/*
 		 * we've never seen an update, so this is a 0 byte op. The
 		 * hardware cannot handle a 0 byte op, so just ECB to
@@ -271,11 +320,11 @@ static int nx_xcbc_finup(struct shash_desc *desc, const u8 *src,
 	 * this is not an intermediate operation */
 	NX_CPB_FDM(csbcpb) &= ~NX_FDM_INTERMEDIATE;
 
-	len = nbytes;
-	in_sg = nx_build_sg_list(nx_ctx->in_sg, (u8 *)src, &len,
-				 nx_ctx->ap->sglen);
+	len = sctx->count;
+	in_sg = nx_build_sg_list(nx_ctx->in_sg, (u8 *)sctx->buffer,
+				 &len, nx_ctx->ap->sglen);
 
-	if (len != nbytes) {
+	if (len != sctx->count) {
 		rc = -EINVAL;
 		goto out;
 	}
@@ -313,19 +362,18 @@ struct shash_alg nx_shash_aes_xcbc_alg = {
 	.digestsize = AES_BLOCK_SIZE,
 	.init       = nx_xcbc_init,
 	.update     = nx_xcbc_update,
-	.finup      = nx_xcbc_finup,
+	.final      = nx_xcbc_final,
 	.setkey     = nx_xcbc_set_key,
 	.descsize   = sizeof(struct xcbc_state),
-	.init_tfm   = nx_crypto_ctx_aes_xcbc_init2,
-	.exit_tfm   = nx_crypto_ctx_shash_exit,
+	.statesize  = sizeof(struct xcbc_state),
 	.base       = {
 		.cra_name        = "xcbc(aes)",
 		.cra_driver_name = "xcbc-aes-nx",
 		.cra_priority    = 300,
-		.cra_flags	 = CRYPTO_AHASH_ALG_BLOCK_ONLY |
-				   CRYPTO_AHASH_ALG_FINAL_NONZERO,
 		.cra_blocksize   = AES_BLOCK_SIZE,
 		.cra_module      = THIS_MODULE,
 		.cra_ctxsize     = sizeof(struct nx_crypto_ctx),
+		.cra_init        = nx_crypto_ctx_aes_xcbc_init2,
+		.cra_exit        = nx_crypto_ctx_exit,
 	}
 };

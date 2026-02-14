@@ -34,6 +34,32 @@ static struct msm_dsi_manager msm_dsim_glb;
 #define IS_SYNC_NEEDED()	(msm_dsim_glb.is_sync_needed)
 #define IS_MASTER_DSI_LINK(id)	(msm_dsim_glb.master_dsi_link_id == id)
 
+#ifdef CONFIG_OF
+static bool dsi_mgr_power_on_early(struct drm_bridge *bridge)
+{
+	struct drm_bridge *next_bridge = drm_bridge_get_next_bridge(bridge);
+
+	/*
+	 * If the next bridge in the chain is the Parade ps8640 bridge chip
+	 * then don't power on early since it seems to violate the expectations
+	 * of the firmware that the bridge chip is running.
+	 *
+	 * NOTE: this is expected to be a temporary special case. It's expected
+	 * that we'll eventually have a framework that allows the next level
+	 * bridge to indicate whether it needs us to power on before it or
+	 * after it. When that framework is in place then we'll use it and
+	 * remove this special case.
+	 */
+	return !(next_bridge && next_bridge->of_node &&
+		 of_device_is_compatible(next_bridge->of_node, "parade,ps8640"));
+}
+#else
+static inline bool dsi_mgr_power_on_early(struct drm_bridge *bridge)
+{
+	return true;
+}
+#endif
+
 static inline struct msm_dsi *dsi_mgr_get_dsi(int id)
 {
 	return msm_dsim_glb.dsi[id];
@@ -74,35 +100,17 @@ static int dsi_mgr_setup_components(int id)
 	int ret;
 
 	if (!IS_BONDED_DSI()) {
-		/*
-		 * Set the usecase before calling msm_dsi_host_register(), which would
-		 * already program the PLL source mux based on a default usecase.
-		 */
-		msm_dsi_phy_set_usecase(msm_dsi->phy, MSM_DSI_PHY_STANDALONE);
-		msm_dsi_host_set_phy_mode(msm_dsi->host, msm_dsi->phy);
-
 		ret = msm_dsi_host_register(msm_dsi->host);
 		if (ret)
 			return ret;
+
+		msm_dsi_phy_set_usecase(msm_dsi->phy, MSM_DSI_PHY_STANDALONE);
+		msm_dsi_host_set_phy_mode(msm_dsi->host, msm_dsi->phy);
 	} else if (other_dsi) {
 		struct msm_dsi *master_link_dsi = IS_MASTER_DSI_LINK(id) ?
 							msm_dsi : other_dsi;
 		struct msm_dsi *slave_link_dsi = IS_MASTER_DSI_LINK(id) ?
 							other_dsi : msm_dsi;
-
-		/*
-		 * PLL0 is to drive both DSI link clocks in bonded DSI mode.
-		 *
-		 * Set the usecase before calling msm_dsi_host_register(), which would
-		 * already program the PLL source mux based on a default usecase.
-		 */
-		msm_dsi_phy_set_usecase(clk_master_dsi->phy,
-					MSM_DSI_PHY_MASTER);
-		msm_dsi_phy_set_usecase(clk_slave_dsi->phy,
-					MSM_DSI_PHY_SLAVE);
-		msm_dsi_host_set_phy_mode(msm_dsi->host, msm_dsi->phy);
-		msm_dsi_host_set_phy_mode(other_dsi->host, other_dsi->phy);
-
 		/* Register slave host first, so that slave DSI device
 		 * has a chance to probe, and do not block the master
 		 * DSI device's probe.
@@ -116,6 +124,14 @@ static int dsi_mgr_setup_components(int id)
 		ret = msm_dsi_host_register(master_link_dsi->host);
 		if (ret)
 			return ret;
+
+		/* PLL0 is to drive both 2 DSI link clocks in bonded DSI mode. */
+		msm_dsi_phy_set_usecase(clk_master_dsi->phy,
+					MSM_DSI_PHY_MASTER);
+		msm_dsi_phy_set_usecase(clk_slave_dsi->phy,
+					MSM_DSI_PHY_SLAVE);
+		msm_dsi_host_set_phy_mode(msm_dsi->host, msm_dsi->phy);
+		msm_dsi_host_set_phy_mode(other_dsi->host, other_dsi->phy);
 	}
 
 	return 0;
@@ -208,7 +224,37 @@ static int dsi_mgr_bridge_get_id(struct drm_bridge *bridge)
 	return dsi_bridge->id;
 }
 
-static int dsi_mgr_bridge_power_on(struct drm_bridge *bridge)
+static void msm_dsi_manager_set_split_display(u8 id)
+{
+	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
+	struct msm_dsi *other_dsi = dsi_mgr_get_other_dsi(id);
+	struct msm_drm_private *priv = msm_dsi->dev->dev_private;
+	struct msm_kms *kms = priv->kms;
+	struct msm_dsi *master_dsi, *slave_dsi;
+
+	if (IS_BONDED_DSI() && !IS_MASTER_DSI_LINK(id)) {
+		master_dsi = other_dsi;
+		slave_dsi = msm_dsi;
+	} else {
+		master_dsi = msm_dsi;
+		slave_dsi = other_dsi;
+	}
+
+	if (!msm_dsi->external_bridge || !IS_BONDED_DSI())
+		return;
+
+	/*
+	 * Set split display info to kms once bonded DSI panel is connected to
+	 * both hosts.
+	 */
+	if (other_dsi && other_dsi->external_bridge && kms->funcs->set_split_display) {
+		kms->funcs->set_split_display(kms, master_dsi->encoder,
+					      slave_dsi->encoder,
+					      msm_dsi_is_cmd_mode(msm_dsi));
+	}
+}
+
+static void dsi_mgr_bridge_power_on(struct drm_bridge *bridge)
 {
 	int id = dsi_mgr_bridge_get_id(bridge);
 	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
@@ -219,6 +265,12 @@ static int dsi_mgr_bridge_power_on(struct drm_bridge *bridge)
 	int ret;
 
 	DBG("id=%d", id);
+	if (!msm_dsi_device_connected(msm_dsi))
+		return;
+
+	/* Do nothing with the host if it is slave-DSI in case of bonded DSI */
+	if (is_bonded_dsi && !IS_MASTER_DSI_LINK(id))
+		return;
 
 	ret = dsi_mgr_phy_enable(id, phy_shared_timings);
 	if (ret)
@@ -248,31 +300,14 @@ static int dsi_mgr_bridge_power_on(struct drm_bridge *bridge)
 	if (is_bonded_dsi && msm_dsi1)
 		msm_dsi_host_enable_irq(msm_dsi1->host);
 
-	return 0;
+	return;
 
 host1_on_fail:
 	msm_dsi_host_power_off(host);
 host_on_fail:
 	dsi_mgr_phy_disable(id);
 phy_en_fail:
-	return ret;
-}
-
-static void dsi_mgr_bridge_power_off(struct drm_bridge *bridge)
-{
-	int id = dsi_mgr_bridge_get_id(bridge);
-	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
-	struct msm_dsi *msm_dsi1 = dsi_mgr_get_dsi(DSI_1);
-	struct mipi_dsi_host *host = msm_dsi->host;
-	bool is_bonded_dsi = IS_BONDED_DSI();
-
-	msm_dsi_host_disable_irq(host);
-	if (is_bonded_dsi && msm_dsi1) {
-		msm_dsi_host_disable_irq(msm_dsi1->host);
-		msm_dsi_host_power_off(msm_dsi1->host);
-	}
-	msm_dsi_host_power_off(host);
-	dsi_mgr_phy_disable(id);
+	return;
 }
 
 static void dsi_mgr_bridge_pre_enable(struct drm_bridge *bridge)
@@ -285,16 +320,15 @@ static void dsi_mgr_bridge_pre_enable(struct drm_bridge *bridge)
 	int ret;
 
 	DBG("id=%d", id);
+	if (!msm_dsi_device_connected(msm_dsi))
+		return;
 
 	/* Do nothing with the host if it is slave-DSI in case of bonded DSI */
 	if (is_bonded_dsi && !IS_MASTER_DSI_LINK(id))
 		return;
 
-	ret = dsi_mgr_bridge_power_on(bridge);
-	if (ret) {
-		dev_err(&msm_dsi->pdev->dev, "Power on failed: %d\n", ret);
-		return;
-	}
+	if (!dsi_mgr_power_on_early(bridge))
+		dsi_mgr_bridge_power_on(bridge);
 
 	ret = msm_dsi_host_enable(host);
 	if (ret) {
@@ -315,7 +349,8 @@ static void dsi_mgr_bridge_pre_enable(struct drm_bridge *bridge)
 host1_en_fail:
 	msm_dsi_host_disable(host);
 host_en_fail:
-	dsi_mgr_bridge_power_off(bridge);
+
+	return;
 }
 
 void msm_dsi_manager_tpg_enable(void)
@@ -341,6 +376,9 @@ static void dsi_mgr_bridge_post_disable(struct drm_bridge *bridge)
 	int ret;
 
 	DBG("id=%d", id);
+
+	if (!msm_dsi_device_connected(msm_dsi))
+		return;
 
 	/*
 	 * Do nothing with the host if it is slave-DSI in case of bonded DSI.
@@ -400,6 +438,9 @@ static void dsi_mgr_bridge_mode_set(struct drm_bridge *bridge,
 	msm_dsi_host_set_display_mode(host, adjusted_mode);
 	if (is_bonded_dsi && other_dsi)
 		msm_dsi_host_set_display_mode(other_dsi->host, adjusted_mode);
+
+	if (dsi_mgr_power_on_early(bridge))
+		dsi_mgr_bridge_power_on(bridge);
 }
 
 static enum drm_mode_status dsi_mgr_bridge_mode_valid(struct drm_bridge *bridge,
@@ -433,19 +474,7 @@ static enum drm_mode_status dsi_mgr_bridge_mode_valid(struct drm_bridge *bridge,
 	return msm_dsi_host_check_dsc(host, mode);
 }
 
-static int dsi_mgr_bridge_attach(struct drm_bridge *bridge,
-				 struct drm_encoder *encoder,
-				 enum drm_bridge_attach_flags flags)
-{
-	int id = dsi_mgr_bridge_get_id(bridge);
-	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
-
-	return drm_bridge_attach(encoder, msm_dsi->next_bridge,
-				 bridge, flags);
-}
-
 static const struct drm_bridge_funcs dsi_mgr_bridge_funcs = {
-	.attach = dsi_mgr_bridge_attach,
 	.pre_enable = dsi_mgr_bridge_pre_enable,
 	.post_disable = dsi_mgr_bridge_post_disable,
 	.mode_set = dsi_mgr_bridge_mode_set,
@@ -453,43 +482,100 @@ static const struct drm_bridge_funcs dsi_mgr_bridge_funcs = {
 };
 
 /* initialize bridge */
-int msm_dsi_manager_connector_init(struct msm_dsi *msm_dsi,
-				   struct drm_encoder *encoder)
+struct drm_bridge *msm_dsi_manager_bridge_init(u8 id)
 {
-	struct drm_device *dev = msm_dsi->dev;
-	struct drm_bridge *bridge;
+	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
+	struct drm_bridge *bridge = NULL;
 	struct dsi_bridge *dsi_bridge;
-	struct drm_connector *connector;
+	struct drm_encoder *encoder;
 	int ret;
 
-	dsi_bridge = devm_drm_bridge_alloc(msm_dsi->dev->dev, struct dsi_bridge, base,
-					   &dsi_mgr_bridge_funcs);
-	if (IS_ERR(dsi_bridge))
-		return PTR_ERR(dsi_bridge);
-
-	dsi_bridge->id = msm_dsi->id;
-
-	bridge = &dsi_bridge->base;
-
-	ret = devm_drm_bridge_add(msm_dsi->dev->dev, bridge);
-	if (ret)
-		return ret;
-
-	ret = drm_bridge_attach(encoder, bridge, NULL, DRM_BRIDGE_ATTACH_NO_CONNECTOR);
-	if (ret)
-		return ret;
-
-	connector = drm_bridge_connector_init(dev, encoder);
-	if (IS_ERR(connector)) {
-		DRM_ERROR("Unable to create bridge connector\n");
-		return PTR_ERR(connector);
+	dsi_bridge = devm_kzalloc(msm_dsi->dev->dev,
+				sizeof(*dsi_bridge), GFP_KERNEL);
+	if (!dsi_bridge) {
+		ret = -ENOMEM;
+		goto fail;
 	}
 
-	ret = drm_connector_attach_encoder(connector, encoder);
-	if (ret < 0)
-		return ret;
+	dsi_bridge->id = id;
+
+	encoder = msm_dsi->encoder;
+
+	bridge = &dsi_bridge->base;
+	bridge->funcs = &dsi_mgr_bridge_funcs;
+
+	drm_bridge_add(bridge);
+
+	ret = drm_bridge_attach(encoder, bridge, NULL, 0);
+	if (ret)
+		goto fail;
+
+	return bridge;
+
+fail:
+	if (bridge)
+		msm_dsi_manager_bridge_destroy(bridge);
+
+	return ERR_PTR(ret);
+}
+
+int msm_dsi_manager_ext_bridge_init(u8 id)
+{
+	struct msm_dsi *msm_dsi = dsi_mgr_get_dsi(id);
+	struct drm_device *dev = msm_dsi->dev;
+	struct drm_encoder *encoder;
+	struct drm_bridge *int_bridge, *ext_bridge;
+	int ret;
+
+	int_bridge = msm_dsi->bridge;
+	ext_bridge = devm_drm_of_get_bridge(&msm_dsi->pdev->dev,
+					    msm_dsi->pdev->dev.of_node, 1, 0);
+	if (IS_ERR(ext_bridge))
+		return PTR_ERR(ext_bridge);
+
+	msm_dsi->external_bridge = ext_bridge;
+
+	encoder = msm_dsi->encoder;
+
+	/*
+	 * Try first to create the bridge without it creating its own
+	 * connector.. currently some bridges support this, and others
+	 * do not (and some support both modes)
+	 */
+	ret = drm_bridge_attach(encoder, ext_bridge, int_bridge,
+			DRM_BRIDGE_ATTACH_NO_CONNECTOR);
+	if (ret == -EINVAL) {
+		/*
+		 * link the internal dsi bridge to the external bridge,
+		 * connector is created by the next bridge.
+		 */
+		ret = drm_bridge_attach(encoder, ext_bridge, int_bridge, 0);
+		if (ret < 0)
+			return ret;
+	} else {
+		struct drm_connector *connector;
+
+		/* We are in charge of the connector, create one now. */
+		connector = drm_bridge_connector_init(dev, encoder);
+		if (IS_ERR(connector)) {
+			DRM_ERROR("Unable to create bridge connector\n");
+			return PTR_ERR(connector);
+		}
+
+		ret = drm_connector_attach_encoder(connector, encoder);
+		if (ret < 0)
+			return ret;
+	}
+
+	/* The pipeline is ready, ping encoders if necessary */
+	msm_dsi_manager_set_split_display(id);
 
 	return 0;
+}
+
+void msm_dsi_manager_bridge_destroy(struct drm_bridge *bridge)
+{
+	drm_bridge_remove(bridge);
 }
 
 int msm_dsi_manager_cmd_xfer(int id, const struct mipi_dsi_msg *msg)
@@ -612,9 +698,4 @@ bool msm_dsi_is_bonded_dsi(struct msm_dsi *msm_dsi)
 bool msm_dsi_is_master_dsi(struct msm_dsi *msm_dsi)
 {
 	return IS_MASTER_DSI_LINK(msm_dsi->id);
-}
-
-const char *msm_dsi_get_te_source(struct msm_dsi *msm_dsi)
-{
-	return msm_dsi->te_source;
 }

@@ -15,28 +15,25 @@
 
 #if !defined(__ASSEMBLY__)
 
-#include <linux/vmcore_info.h>
-#include <linux/crash_reserve.h>
+#include <linux/crash_core.h>
 #include <asm/io.h>
 #include <linux/range.h>
 
 #include <uapi/linux/kexec.h>
 #include <linux/verification.h>
 
+/* Location of a reserved region to hold the crash kernel.
+ */
+extern struct resource crashk_res;
+extern struct resource crashk_low_res;
 extern note_buf_t __percpu *crash_notes;
-
-#ifdef CONFIG_CRASH_DUMP
-#include <linux/prandom.h>
-#endif
 
 #ifdef CONFIG_KEXEC_CORE
 #include <linux/list.h>
 #include <linux/compat.h>
 #include <linux/ioport.h>
 #include <linux/module.h>
-#include <linux/highmem.h>
 #include <asm/kexec.h>
-#include <linux/crash_core.h>
 
 /* Verify architecture specific macros are defined */
 
@@ -72,6 +69,8 @@ extern note_buf_t __percpu *crash_notes;
 #define KEXEC_CRASH_MEM_ALIGN PAGE_SIZE
 #endif
 
+#define KEXEC_CORE_NOTE_NAME	CRASH_CORE_NOTE_NAME
+
 /*
  * This structure is used to hold the arguments that are used when loading
  * kernel binaries.
@@ -79,12 +78,6 @@ extern note_buf_t __percpu *crash_notes;
 
 typedef unsigned long kimage_entry_t;
 
-/*
- * This is a copy of the UAPI struct kexec_segment and must be identical
- * to it because it gets copied straight from user space into kernel
- * memory. Do not modify this structure unless you change the way segments
- * get ingested from user space.
- */
 struct kexec_segment {
 	/*
 	 * This pointer can point to user memory if kexec_load() system
@@ -178,9 +171,7 @@ int kexec_image_post_load_cleanup_default(struct kimage *image);
  * @buf_align:	Minimum alignment needed.
  * @buf_min:	The buffer can't be placed below this address.
  * @buf_max:	The buffer can't be placed above this address.
- * @cma:	CMA page if the buffer is backed by CMA.
  * @top_down:	Allocate from top of memory.
- * @random:	Place the buffer at a random position.
  */
 struct kexec_buf {
 	struct kimage *image;
@@ -191,40 +182,15 @@ struct kexec_buf {
 	unsigned long buf_align;
 	unsigned long buf_min;
 	unsigned long buf_max;
-	struct page *cma;
 	bool top_down;
-#ifdef CONFIG_CRASH_DUMP
-	bool random;
-#endif
 };
-
-
-#ifdef CONFIG_CRASH_DUMP
-static inline void kexec_random_range_start(unsigned long start,
-					    unsigned long end,
-					    struct kexec_buf *kbuf,
-					    unsigned long *temp_start)
-{
-	unsigned short i;
-
-	if (kbuf->random) {
-		get_random_bytes(&i, sizeof(unsigned short));
-		*temp_start = start + (end - start) / USHRT_MAX * i;
-	}
-}
-#else
-static inline void kexec_random_range_start(unsigned long start,
-					    unsigned long end,
-					    struct kexec_buf *kbuf,
-					    unsigned long *temp_start)
-{}
-#endif
 
 int kexec_load_purgatory(struct kimage *image, struct kexec_buf *kbuf);
 int kexec_purgatory_get_set_symbol(struct kimage *image, const char *name,
 				   void *buf, unsigned int size,
 				   bool get_value);
 void *kexec_purgatory_get_symbol_addr(struct kimage *image, const char *name);
+void *kexec_image_load_default(struct kimage *image);
 
 #ifndef arch_kexec_kernel_image_probe
 static inline int
@@ -241,12 +207,10 @@ static inline int arch_kimage_file_post_load_cleanup(struct kimage *image)
 }
 #endif
 
-#ifndef arch_check_excluded_range
-static inline int arch_check_excluded_range(struct kimage *image,
-					    unsigned long start,
-					    unsigned long end)
+#ifndef arch_kexec_kernel_image_load
+static inline void *arch_kexec_kernel_image_load(struct kimage *image)
 {
-	return 0;
+	return kexec_image_load_default(image);
 }
 #endif
 
@@ -273,6 +237,21 @@ static inline int arch_kexec_locate_mem_hole(struct kexec_buf *kbuf)
 	return kexec_locate_mem_hole(kbuf);
 }
 #endif
+
+/* Alignment required for elf header segment */
+#define ELF_CORE_HEADER_ALIGN   4096
+
+struct crash_mem {
+	unsigned int max_nr_ranges;
+	unsigned int nr_ranges;
+	struct range ranges[];
+};
+
+extern int crash_exclude_mem_range(struct crash_mem *mem,
+				   unsigned long long mstart,
+				   unsigned long long mend);
+extern int crash_prepare_elf64_headers(struct crash_mem *mem, int need_kernel_map,
+				       void **addr, unsigned long *sz);
 
 #ifndef arch_kexec_apply_relocations_add
 /*
@@ -348,7 +327,6 @@ struct kimage {
 
 	unsigned long nr_segments;
 	struct kexec_segment segment[KEXEC_SEGMENT_MAX];
-	struct page *segment_cma[KEXEC_SEGMENT_MAX];
 
 	struct list_head control_pages;
 	struct list_head dest_pages;
@@ -364,13 +342,6 @@ struct kimage {
 	unsigned int preserve_context : 1;
 	/* If set, we are using file mode kexec syscall */
 	unsigned int file_mode:1;
-#ifdef CONFIG_CRASH_HOTPLUG
-	/* If set, it is safe to update kexec segments that are
-	 * excluded from SHA calculation.
-	 */
-	unsigned int hotplug_support:1;
-#endif
-	unsigned int no_cma:1;
 
 #ifdef ARCH_HAS_KIMAGE_ARCH
 	struct kimage_arch arch;
@@ -395,15 +366,6 @@ struct kimage {
 
 	/* Information for loading purgatory */
 	struct purgatory_info purgatory_info;
-
-	/* Force carrying over the DTB from the current boot */
-	bool force_dtb;
-#endif
-
-#ifdef CONFIG_CRASH_HOTPLUG
-	int hp_action;
-	int elfcorehdr_index;
-	bool elfcorehdr_updated;
 #endif
 
 #ifdef CONFIG_IMA_KEXEC
@@ -412,24 +374,12 @@ struct kimage {
 
 	phys_addr_t ima_buffer_addr;
 	size_t ima_buffer_size;
-
-	unsigned long ima_segment_index;
-	bool is_ima_segment_index_set;
 #endif
-
-	struct {
-		struct kexec_segment *scratch;
-		phys_addr_t fdt;
-	} kho;
 
 	/* Core ELF header buffer */
 	void *elf_headers;
 	unsigned long elf_headers_sz;
 	unsigned long elf_load_addr;
-
-	/* dm crypt keys buffer */
-	unsigned long dm_crypt_keys_addr;
-	unsigned long dm_crypt_keys_sz;
 };
 
 /* kexec interface functions */
@@ -444,6 +394,13 @@ extern struct page *kimage_alloc_control_pages(struct kimage *image,
 static inline int machine_kexec_post_load(struct kimage *image) { return 0; }
 #endif
 
+extern void __crash_kexec(struct pt_regs *);
+extern void crash_kexec(struct pt_regs *);
+int kexec_should_crash(struct task_struct *);
+int kexec_crash_loaded(void);
+void crash_save_cpu(struct pt_regs *regs, int cpu);
+extern int kimage_crash_copy_vmcoreinfo(struct kimage *image);
+
 extern struct kimage *kexec_image;
 extern struct kimage *kexec_crash_image;
 
@@ -455,19 +412,35 @@ bool kexec_load_permitted(int kexec_image_type);
 
 /* List of defined/legal kexec flags */
 #ifndef CONFIG_KEXEC_JUMP
-#define KEXEC_FLAGS    (KEXEC_ON_CRASH | KEXEC_UPDATE_ELFCOREHDR | KEXEC_CRASH_HOTPLUG_SUPPORT)
+#define KEXEC_FLAGS    KEXEC_ON_CRASH
 #else
-#define KEXEC_FLAGS    (KEXEC_ON_CRASH | KEXEC_PRESERVE_CONTEXT | KEXEC_UPDATE_ELFCOREHDR | \
-			KEXEC_CRASH_HOTPLUG_SUPPORT)
+#define KEXEC_FLAGS    (KEXEC_ON_CRASH | KEXEC_PRESERVE_CONTEXT)
 #endif
 
 /* List of defined/legal kexec file flags */
 #define KEXEC_FILE_FLAGS	(KEXEC_FILE_UNLOAD | KEXEC_FILE_ON_CRASH | \
-				 KEXEC_FILE_NO_INITRAMFS | KEXEC_FILE_DEBUG | \
-				 KEXEC_FILE_NO_CMA | KEXEC_FILE_FORCE_DTB)
+				 KEXEC_FILE_NO_INITRAMFS)
 
 /* flag to track if kexec reboot is in progress */
 extern bool kexec_in_progress;
+
+int crash_shrink_memory(unsigned long new_size);
+ssize_t crash_get_memory_size(void);
+
+#ifndef arch_kexec_protect_crashkres
+/*
+ * Protection mechanism for crashkernel reserved memory after
+ * the kdump kernel is loaded.
+ *
+ * Provide an empty default implementation here -- architecture
+ * code may override this
+ */
+static inline void arch_kexec_protect_crashkres(void) { }
+#endif
+
+#ifndef arch_kexec_unprotect_crashkres
+static inline void arch_kexec_unprotect_crashkres(void) { }
+#endif
 
 #ifndef page_to_boot_pfn
 static inline unsigned long page_to_boot_pfn(struct page *page)
@@ -525,24 +498,13 @@ static inline int arch_kexec_post_alloc_pages(void *vaddr, unsigned int pages, g
 static inline void arch_kexec_pre_free_pages(void *vaddr, unsigned int pages) { }
 #endif
 
-extern bool kexec_file_dbg_print;
-
-#define kexec_dprintk(fmt, arg...) \
-        do { if (kexec_file_dbg_print) pr_info(fmt, ##arg); } while (0)
-
-extern void *kimage_map_segment(struct kimage *image, int idx);
-extern void kimage_unmap_segment(void *buffer);
 #else /* !CONFIG_KEXEC_CORE */
 struct pt_regs;
 struct task_struct;
-struct kimage;
 static inline void __crash_kexec(struct pt_regs *regs) { }
 static inline void crash_kexec(struct pt_regs *regs) { }
 static inline int kexec_should_crash(struct task_struct *p) { return 0; }
 static inline int kexec_crash_loaded(void) { return 0; }
-static inline void *kimage_map_segment(struct kimage *image, int idx)
-{ return NULL; }
-static inline void kimage_unmap_segment(void *buffer) { }
 #define kexec_in_progress false
 #endif /* CONFIG_KEXEC_CORE */
 

@@ -307,16 +307,15 @@ static int max8952_pmic_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max8952_ids[] = {
-	{ "max8952" },
-	{ }
+	{ "max8952", 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, max8952_ids);
 
 static struct i2c_driver max8952_pmic_driver = {
-	.probe		= max8952_pmic_probe,
+	.probe_new	= max8952_pmic_probe,
 	.driver		= {
 		.name	= "max8952",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = of_match_ptr(max8952_dt_match),
 	},
 	.id_table	= max8952_ids,

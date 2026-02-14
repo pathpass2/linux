@@ -89,7 +89,7 @@ struct lm3697 {
 	int bank_cfg;
 	int num_banks;
 
-	struct lm3697_led leds[] __counted_by(num_banks);
+	struct lm3697_led leds[];
 };
 
 static const struct reg_default lm3697_reg_defs[] = {
@@ -202,6 +202,7 @@ out:
 
 static int lm3697_probe_dt(struct lm3697 *priv)
 {
+	struct fwnode_handle *child = NULL;
 	struct device *dev = priv->dev;
 	struct lm3697_led *led;
 	int ret = -EINVAL;
@@ -219,18 +220,19 @@ static int lm3697_probe_dt(struct lm3697 *priv)
 	if (IS_ERR(priv->regulator))
 		priv->regulator = NULL;
 
-	device_for_each_child_node_scoped(dev, child) {
+	device_for_each_child_node(dev, child) {
 		struct led_init_data init_data = {};
 
 		ret = fwnode_property_read_u32(child, "reg", &control_bank);
 		if (ret) {
 			dev_err(dev, "reg property missing\n");
-			return ret;
+			goto child_out;
 		}
 
 		if (control_bank > LM3697_CONTROL_B) {
 			dev_err(dev, "reg property is invalid\n");
-			return -EINVAL;
+			ret = -EINVAL;
+			goto child_out;
 		}
 
 		led = &priv->leds[i];
@@ -260,7 +262,7 @@ static int lm3697_probe_dt(struct lm3697 *priv)
 						    led->num_leds);
 		if (ret) {
 			dev_err(dev, "led-sources property missing\n");
-			return ret;
+			goto child_out;
 		}
 
 		for (j = 0; j < led->num_leds; j++)
@@ -284,13 +286,17 @@ static int lm3697_probe_dt(struct lm3697 *priv)
 						     &init_data);
 		if (ret) {
 			dev_err(dev, "led register err: %d\n", ret);
-			return ret;
+			goto child_out;
 		}
 
 		i++;
 	}
 
-	return 0;
+	return ret;
+
+child_out:
+	fwnode_handle_put(child);
+	return ret;
 }
 
 static int lm3697_probe(struct i2c_client *client)
@@ -354,7 +360,7 @@ static void lm3697_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lm3697_id[] = {
-	{ "lm3697" },
+	{ "lm3697", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lm3697_id);
@@ -370,7 +376,7 @@ static struct i2c_driver lm3697_driver = {
 		.name	= "lm3697",
 		.of_match_table = of_lm3697_leds_match,
 	},
-	.probe		= lm3697_probe,
+	.probe_new	= lm3697_probe,
 	.remove		= lm3697_remove,
 	.id_table	= lm3697_id,
 };

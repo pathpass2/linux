@@ -268,7 +268,7 @@ struct stripe_head {
 		unsigned long	flags;
 		u32		log_checksum;
 		unsigned short	write_hint;
-	} dev[]; /* allocated depending of RAID geometry ("disks" member) */
+	} dev[1]; /* allocated with extra space depending of RAID geometry */
 };
 
 /* stripe_head_state - collects and tracks the dynamic state of a stripe_head
@@ -358,6 +358,7 @@ enum {
 	STRIPE_REPLACED,
 	STRIPE_PREREAD_ACTIVE,
 	STRIPE_DELAYED,
+	STRIPE_DEGRADED,
 	STRIPE_BIT_DELAY,
 	STRIPE_EXPANDING,
 	STRIPE_EXPAND_SOURCE,
@@ -371,6 +372,9 @@ enum {
 	STRIPE_ON_RELEASE_LIST,
 	STRIPE_BATCH_READY,
 	STRIPE_BATCH_ERR,
+	STRIPE_BITMAP_PENDING,	/* Being added to bitmap, don't add
+				 * to batch yet.
+				 */
 	STRIPE_LOG_TRAPPED,	/* trapped into log (see raid5-cache.c)
 				 * this bit is used in two scenarios:
 				 *
@@ -469,8 +473,8 @@ enum {
  */
 
 struct disk_info {
-	struct md_rdev	*rdev;
-	struct md_rdev	*replacement;
+	struct md_rdev	__rcu *rdev;
+	struct md_rdev  __rcu *replacement;
 	struct page	*extra_page; /* extra page to use in prexor */
 };
 
@@ -629,7 +633,7 @@ struct r5conf {
 	 * two caches.
 	 */
 	int			active_name;
-	char			cache_name[2][48];
+	char			cache_name[2][32];
 	struct kmem_cache	*slab_cache; /* for allocating stripes */
 	struct mutex		cache_size_mutex; /* Protect changes to cache size */
 
@@ -640,6 +644,7 @@ struct r5conf {
 					    * (fresh device added).
 					    * Cleared when a sync completes.
 					    */
+	int			recovery_disabled;
 	/* per cpu variables */
 	struct raid5_percpu __percpu *percpu;
 	int scribble_disks;
@@ -663,9 +668,9 @@ struct r5conf {
 	struct llist_head	released_stripes;
 	wait_queue_head_t	wait_for_quiescent;
 	wait_queue_head_t	wait_for_stripe;
-	wait_queue_head_t	wait_for_reshape;
+	wait_queue_head_t	wait_for_overlap;
 	unsigned long		cache_state;
-	struct shrinker		*shrinker;
+	struct shrinker		shrinker;
 	int			pool_size; /* number of disks in stripeheads in pool */
 	spinlock_t		device_lock;
 	struct disk_info	*disks;
@@ -674,7 +679,7 @@ struct r5conf {
 	/* When taking over an array from a different personality, we store
 	 * the new thread here until we fully activate the array.
 	 */
-	struct md_thread __rcu	*thread;
+	struct md_thread	*thread;
 	struct list_head	temp_inactive_list[NR_STRIPE_HASH_LOCKS];
 	struct r5worker_group	*worker_groups;
 	int			group_cnt;
@@ -689,9 +694,6 @@ struct r5conf {
 	struct list_head	pending_list;
 	int			pending_data_cnt;
 	struct r5pending_data	*next_pending_data;
-
-	mempool_t		*ctx_pool;
-	int			ctx_size;
 };
 
 #if PAGE_SIZE == DEFAULT_STRIPE_SIZE

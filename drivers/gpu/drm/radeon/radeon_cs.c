@@ -182,8 +182,11 @@ static int radeon_cs_parser_relocs(struct radeon_cs_parser *p)
 			}
 		}
 
-		p->relocs[i].shared = !r->write_domain;
-		radeon_cs_buckets_add(&buckets, &p->relocs[i].list, priority);
+		p->relocs[i].tv.bo = &p->relocs[i].robj->tbo;
+		p->relocs[i].tv.num_shared = !r->write_domain;
+
+		radeon_cs_buckets_add(&buckets, &p->relocs[i].tv.head,
+				      priority);
 	}
 
 	radeon_cs_buckets_get_list(&buckets, &p->validated);
@@ -194,7 +197,7 @@ static int radeon_cs_parser_relocs(struct radeon_cs_parser *p)
 	if (need_mmap_lock)
 		mmap_read_lock(current->mm);
 
-	r = radeon_bo_list_validate(p->rdev, &p->exec, &p->validated, p->ring);
+	r = radeon_bo_list_validate(p->rdev, &p->ticket, &p->validated, p->ring);
 
 	if (need_mmap_lock)
 		mmap_read_unlock(current->mm);
@@ -250,11 +253,12 @@ static int radeon_cs_sync_rings(struct radeon_cs_parser *p)
 	struct radeon_bo_list *reloc;
 	int r;
 
-	list_for_each_entry(reloc, &p->validated, list) {
+	list_for_each_entry(reloc, &p->validated, tv.head) {
 		struct dma_resv *resv;
 
 		resv = reloc->robj->tbo.base.resv;
-		r = radeon_sync_resv(p->rdev, &p->ib.sync, resv, reloc->shared);
+		r = radeon_sync_resv(p->rdev, &p->ib.sync, resv,
+				     reloc->tv.num_shared);
 		if (r)
 			return r;
 	}
@@ -266,13 +270,11 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
 {
 	struct drm_radeon_cs *cs = data;
 	uint64_t *chunk_array_ptr;
-	u64 size;
-	unsigned i;
+	unsigned size, i;
 	u32 ring = RADEON_CS_RING_GFX;
 	s32 priority = 0;
 
 	INIT_LIST_HEAD(&p->validated);
-	drm_exec_init(&p->exec, DRM_EXEC_INTERRUPTIBLE_WAIT, 0);
 
 	if (!cs->num_chunks) {
 		return 0;
@@ -394,8 +396,8 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
 static int cmp_size_smaller_first(void *priv, const struct list_head *a,
 				  const struct list_head *b)
 {
-	struct radeon_bo_list *la = list_entry(a, struct radeon_bo_list, list);
-	struct radeon_bo_list *lb = list_entry(b, struct radeon_bo_list, list);
+	struct radeon_bo_list *la = list_entry(a, struct radeon_bo_list, tv.head);
+	struct radeon_bo_list *lb = list_entry(b, struct radeon_bo_list, tv.head);
 
 	/* Sort A before B if A is smaller. */
 	if (la->robj->tbo.base.size > lb->robj->tbo.base.size)
@@ -409,17 +411,16 @@ static int cmp_size_smaller_first(void *priv, const struct list_head *a,
  * radeon_cs_parser_fini() - clean parser states
  * @parser:	parser structure holding parsing context.
  * @error:	error number
+ * @backoff:	indicator to backoff the reservation
  *
  * If error is set than unvalidate buffer, otherwise just free memory
  * used by parsing context.
  **/
-static void radeon_cs_parser_fini(struct radeon_cs_parser *parser, int error)
+static void radeon_cs_parser_fini(struct radeon_cs_parser *parser, int error, bool backoff)
 {
 	unsigned i;
 
 	if (!error) {
-		struct radeon_bo_list *reloc;
-
 		/* Sort the buffer list from the smallest to largest buffer,
 		 * which affects the order of buffers in the LRU list.
 		 * This assures that the smallest buffers are added first
@@ -431,16 +432,14 @@ static void radeon_cs_parser_fini(struct radeon_cs_parser *parser, int error)
 		 * per frame under memory pressure.
 		 */
 		list_sort(NULL, &parser->validated, cmp_size_smaller_first);
-		list_for_each_entry(reloc, &parser->validated, list) {
-			dma_resv_add_fence(reloc->robj->tbo.base.resv,
-					   &parser->ib.fence->base,
-					   reloc->shared ?
-					   DMA_RESV_USAGE_READ :
-					   DMA_RESV_USAGE_WRITE);
-		}
-	}
 
-	drm_exec_fini(&parser->exec);
+		ttm_eu_fence_buffer_objects(&parser->ticket,
+					    &parser->validated,
+					    &parser->ib.fence->base);
+	} else if (backoff) {
+		ttm_eu_backoff_reservation(&parser->ticket,
+					   &parser->validated);
+	}
 
 	if (parser->relocs != NULL) {
 		for (i = 0; i < parser->nrelocs; i++) {
@@ -693,7 +692,7 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	r = radeon_cs_parser_init(&parser, data);
 	if (r) {
 		DRM_ERROR("Failed to initialize parser !\n");
-		radeon_cs_parser_fini(&parser, r);
+		radeon_cs_parser_fini(&parser, r, false);
 		up_read(&rdev->exclusive_lock);
 		r = radeon_cs_handle_lockup(rdev, r);
 		return r;
@@ -707,7 +706,7 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 	}
 
 	if (r) {
-		radeon_cs_parser_fini(&parser, r);
+		radeon_cs_parser_fini(&parser, r, false);
 		up_read(&rdev->exclusive_lock);
 		r = radeon_cs_handle_lockup(rdev, r);
 		return r;
@@ -724,7 +723,7 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		goto out;
 	}
 out:
-	radeon_cs_parser_fini(&parser, r);
+	radeon_cs_parser_fini(&parser, r, true);
 	up_read(&rdev->exclusive_lock);
 	r = radeon_cs_handle_lockup(rdev, r);
 	return r;
@@ -834,7 +833,7 @@ void radeon_cs_dump_packet(struct radeon_cs_parser *p,
 	ib = p->ib.ptr;
 	idx = pkt->idx;
 	for (i = 0; i <= (pkt->count + 1); i++, idx++)
-		dev_dbg(p->dev, "ib[%d]=0x%08X\n", idx, ib[idx]);
+		DRM_INFO("ib[%d]=0x%08X\n", idx, ib[idx]);
 }
 
 /**

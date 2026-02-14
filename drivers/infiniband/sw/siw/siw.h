@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
+/* SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause */
 
 /* Authors: Bernard Metzler <bmt@zurich.ibm.com> */
 /* Copyright (c) 2008-2019, IBM Corporation */
@@ -10,9 +10,9 @@
 #include <rdma/restrack.h>
 #include <linux/socket.h>
 #include <linux/skbuff.h>
+#include <crypto/hash.h>
 #include <linux/crc32.h>
 #include <linux/crc32c.h>
-#include <linux/unaligned.h>
 
 #include <rdma/siw-abi.h>
 #include "iwarp.h"
@@ -46,9 +46,6 @@
  */
 #define SIW_IRQ_MAXBURST_SQ_ACTIVE 4
 
-/* There is always only a port 1 per siw device */
-#define SIW_PORT 1
-
 struct siw_dev_cap {
 	int max_qp;
 	int max_qp_wr;
@@ -72,11 +69,14 @@ struct siw_pd {
 
 struct siw_device {
 	struct ib_device base_dev;
+	struct net_device *netdev;
 	struct siw_dev_cap attrs;
 
 	u32 vendor_part_id;
 	int numa_node;
-	char raw_gid[ETH_ALEN];
+
+	/* physical port state (only one port per device) */
+	enum ib_port_state state;
 
 	spinlock_t lock;
 
@@ -93,6 +93,8 @@ struct siw_device {
 	atomic_t num_mr;
 	atomic_t num_srq;
 	atomic_t num_ctx;
+
+	struct work_struct netdev_down;
 };
 
 struct siw_ucontext {
@@ -118,10 +120,11 @@ struct siw_page_chunk {
 };
 
 struct siw_umem {
-	struct ib_umem *base_mem;
 	struct siw_page_chunk *page_chunk;
 	int num_pages;
+	bool writable;
 	u64 fp_addr; /* First page base address */
+	struct mm_struct *owning_mm;
 };
 
 struct siw_pble {
@@ -133,7 +136,7 @@ struct siw_pble {
 struct siw_pbl {
 	unsigned int num_buf;
 	unsigned int max_buf;
-	struct siw_pble pbe[] __counted_by(max_buf);
+	struct siw_pble pbe[];
 };
 
 /*
@@ -285,12 +288,10 @@ struct siw_rx_stream {
 	int skb_offset; /* offset in skb */
 	int skb_copied; /* processed bytes in skb */
 
-	enum siw_rx_state state;
-
 	union iwarp_hdr hdr;
 	struct mpa_trailer trailer;
-	u32 mpa_crc;
-	bool mpa_crc_enabled;
+
+	enum siw_rx_state state;
 
 	/*
 	 * For each FPDU, main RX loop runs through 3 stages:
@@ -312,6 +313,7 @@ struct siw_rx_stream {
 	u64 ddp_to;
 	u32 inval_stag; /* Stag to be invalidated */
 
+	struct shash_desc *mpa_crc_hd;
 	u8 rx_suspend : 1;
 	u8 pad : 2; /* # of pad bytes expected */
 	u8 rdmap_op : 4; /* opcode of current frame */
@@ -391,8 +393,7 @@ struct siw_iwarp_tx {
 	int burst;
 	int bytes_unsent; /* ddp payload bytes */
 
-	u32 mpa_crc;
-	bool mpa_crc_enabled;
+	struct shash_desc *mpa_crc_hd;
 
 	u8 do_crc : 1; /* do crc for segment */
 	u8 use_sendpage : 1; /* send w/o copy */
@@ -416,10 +417,10 @@ struct siw_iwarp_tx {
 struct siw_qp {
 	struct ib_qp base_qp;
 	struct siw_device *sdev;
-	int tx_cpu;
 	struct kref ref;
 	struct completion qp_free;
 	struct list_head devq;
+	int tx_cpu;
 	struct siw_qp_attrs attrs;
 
 	struct siw_cep *cep;
@@ -464,6 +465,7 @@ struct siw_qp {
 	} term_info;
 	struct rdma_user_mmap_entry *sq_entry; /* mmap info for SQE array */
 	struct rdma_user_mmap_entry *rq_entry; /* mmap info for RQE array */
+	struct rcu_head rcu;
 };
 
 /* helper macros */
@@ -498,6 +500,7 @@ extern u_char mpa_version;
 extern const bool peer_to_peer;
 extern struct task_struct *siw_tx_thread[];
 
+extern struct crypto_shash *siw_crypto_shash;
 extern struct iwarp_msg_info iwarp_pktinfo[RDMAP_TERMINATE + 1];
 
 /* QP general functions */
@@ -527,12 +530,11 @@ void siw_qp_llp_data_ready(struct sock *sk);
 void siw_qp_llp_write_space(struct sock *sk);
 
 /* QP TX path functions */
-int siw_create_tx_threads(void);
-void siw_stop_tx_threads(void);
 int siw_run_sq(void *arg);
 int siw_qp_sq_process(struct siw_qp *qp);
 int siw_sq_start(struct siw_qp *qp);
 int siw_activate_tx(struct siw_qp *qp);
+void siw_stop_tx_thread(int nr_cpu);
 int siw_get_tx_cpu(struct siw_device *sdev);
 void siw_put_tx_cpu(int cpu);
 
@@ -655,7 +657,7 @@ static inline struct siw_sqe *orq_get_free(struct siw_qp *qp)
 
 static inline int siw_orq_empty(struct siw_qp *qp)
 {
-	return orq_get_current(qp)->flags == 0 ? 1 : 0;
+	return qp->orq[qp->orq_get % qp->attrs.orq_size].flags == 0 ? 1 : 0;
 }
 
 static inline struct siw_sqe *irq_alloc_free(struct siw_qp *qp)
@@ -669,33 +671,29 @@ static inline struct siw_sqe *irq_alloc_free(struct siw_qp *qp)
 	return NULL;
 }
 
-static inline void siw_crc_init(u32 *crc)
+static inline __wsum siw_csum_update(const void *buff, int len, __wsum sum)
 {
-	*crc = ~0;
+	return (__force __wsum)crc32c((__force __u32)sum, buff, len);
 }
 
-static inline void siw_crc_update(u32 *crc, const void *data, size_t len)
+static inline __wsum siw_csum_combine(__wsum csum, __wsum csum2, int offset,
+				      int len)
 {
-	*crc = crc32c(*crc, data, len);
-}
-
-static inline void siw_crc_final(u32 *crc, u8 out[4])
-{
-	put_unaligned_le32(~*crc, out);
-}
-
-static inline void siw_crc_oneshot(const void *data, size_t len, u8 out[4])
-{
-	u32 crc;
-
-	siw_crc_init(&crc);
-	siw_crc_update(&crc, data, len);
-	return siw_crc_final(&crc, out);
+	return (__force __wsum)__crc32c_le_combine((__force __u32)csum,
+						   (__force __u32)csum2, len);
 }
 
 static inline void siw_crc_skb(struct siw_rx_stream *srx, unsigned int len)
 {
-	srx->mpa_crc = skb_crc32c(srx->skb, srx->skb_offset, len, srx->mpa_crc);
+	const struct skb_checksum_ops siw_cs_ops = {
+		.update = siw_csum_update,
+		.combine = siw_csum_combine,
+	};
+	__wsum crc = *(u32 *)shash_desc_ctx(srx->mpa_crc_hd);
+
+	crc = __skb_checksum(srx->skb, srx->skb_offset, len, crc,
+			     &siw_cs_ops);
+	*(u32 *)shash_desc_ctx(srx->mpa_crc_hd) = crc;
 }
 
 #define siw_dbg(ibdev, fmt, ...)                                               \
@@ -718,7 +716,7 @@ static inline void siw_crc_skb(struct siw_rx_stream *srx, unsigned int len)
 		  "MEM[0x%08x] %s: " fmt, mem->stag, __func__, ##__VA_ARGS__)
 
 #define siw_dbg_cep(cep, fmt, ...)                                             \
-	ibdev_dbg(&cep->sdev->base_dev, "CEP[0x%p] %s: " fmt,                 \
+	ibdev_dbg(&cep->sdev->base_dev, "CEP[0x%pK] %s: " fmt,                 \
 		  cep, __func__, ##__VA_ARGS__)
 
 void siw_cq_flush(struct siw_cq *cq);

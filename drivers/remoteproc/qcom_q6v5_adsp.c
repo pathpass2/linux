@@ -14,8 +14,8 @@
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/of_reserved_mem.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
@@ -55,6 +55,8 @@
 #define QDSP6SS_CORE_CBCR	0x20
 #define QDSP6SS_SLEEP_CBCR	0x3c
 
+#define QCOM_Q6V5_RPROC_PROXY_PD_MAX	3
+
 #define LPASS_BOOT_CORE_START	BIT(0)
 #define LPASS_BOOT_CMD_START	BIT(0)
 #define LPASS_EFUSE_Q6SS_EVB_SEL 0x0
@@ -72,8 +74,7 @@ struct adsp_pil_data {
 
 	const char **clk_ids;
 	int num_clks;
-	const char **pd_names;
-	unsigned int num_pds;
+	const char **proxy_pd_names;
 	const char *load_state;
 };
 
@@ -109,102 +110,108 @@ struct qcom_adsp {
 	size_t mem_size;
 	bool has_iommu;
 
-	struct dev_pm_domain_list *pd_list;
+	struct device *proxy_pds[QCOM_Q6V5_RPROC_PROXY_PD_MAX];
+	size_t proxy_pd_count;
 
 	struct qcom_rproc_glink glink_subdev;
-	struct qcom_rproc_pdm pdm_subdev;
 	struct qcom_rproc_ssr ssr_subdev;
 	struct qcom_sysmon *sysmon;
 
 	int (*shutdown)(struct qcom_adsp *adsp);
 };
 
-static int qcom_rproc_pds_attach(struct qcom_adsp *adsp, const char **pd_names,
-				 unsigned int num_pds)
+static int qcom_rproc_pds_attach(struct device *dev, struct qcom_adsp *adsp,
+				 const char **pd_names)
 {
-	struct device *dev = adsp->dev;
-	struct dev_pm_domain_attach_data pd_data = {
-		.pd_names = pd_names,
-		.num_pd_names = num_pds,
-	};
+	struct device **devs = adsp->proxy_pds;
+	size_t num_pds = 0;
 	int ret;
-
-	/* Handle single power domain */
-	if (dev->pm_domain)
-		goto out;
+	int i;
 
 	if (!pd_names)
 		return 0;
 
-	ret = dev_pm_domain_attach_list(dev, &pd_data, &adsp->pd_list);
-	if (ret < 0)
-		return ret;
-
-out:
-	pm_runtime_enable(dev);
-	return 0;
-}
-
-static void qcom_rproc_pds_detach(struct qcom_adsp *adsp)
-{
-	struct device *dev = adsp->dev;
-	struct dev_pm_domain_list *pds = adsp->pd_list;
-
-	dev_pm_domain_detach_list(pds);
-
-	if (dev->pm_domain || pds)
-		pm_runtime_disable(adsp->dev);
-}
-
-static int qcom_rproc_pds_enable(struct qcom_adsp *adsp)
-{
-	struct device *dev = adsp->dev;
-	struct dev_pm_domain_list *pds = adsp->pd_list;
-	int ret, i = 0;
-
-	if (!dev->pm_domain && !pds)
-		return 0;
-
-	if (dev->pm_domain)
-		dev_pm_genpd_set_performance_state(dev, INT_MAX);
-
-	while (pds && i < pds->num_pds) {
-		dev_pm_genpd_set_performance_state(pds->pd_devs[i], INT_MAX);
-		i++;
+	/* Handle single power domain */
+	if (dev->pm_domain) {
+		devs[0] = dev;
+		pm_runtime_enable(dev);
+		return 1;
 	}
 
-	ret = pm_runtime_resume_and_get(dev);
-	if (ret < 0) {
-		while (pds && i > 0) {
-			i--;
-			dev_pm_genpd_set_performance_state(pds->pd_devs[i], 0);
-		}
+	while (pd_names[num_pds])
+		num_pds++;
 
-		if (dev->pm_domain)
-			dev_pm_genpd_set_performance_state(dev, 0);
+	if (num_pds > ARRAY_SIZE(adsp->proxy_pds))
+		return -E2BIG;
+
+	for (i = 0; i < num_pds; i++) {
+		devs[i] = dev_pm_domain_attach_by_name(dev, pd_names[i]);
+		if (IS_ERR_OR_NULL(devs[i])) {
+			ret = PTR_ERR(devs[i]) ? : -ENODATA;
+			goto unroll_attach;
+		}
+	}
+
+	return num_pds;
+
+unroll_attach:
+	for (i--; i >= 0; i--)
+		dev_pm_domain_detach(devs[i], false);
+
+	return ret;
+}
+
+static void qcom_rproc_pds_detach(struct qcom_adsp *adsp, struct device **pds,
+				  size_t pd_count)
+{
+	struct device *dev = adsp->dev;
+	int i;
+
+	/* Handle single power domain */
+	if (dev->pm_domain && pd_count) {
+		pm_runtime_disable(dev);
+		return;
+	}
+
+	for (i = 0; i < pd_count; i++)
+		dev_pm_domain_detach(pds[i], false);
+}
+
+static int qcom_rproc_pds_enable(struct qcom_adsp *adsp, struct device **pds,
+				 size_t pd_count)
+{
+	int ret;
+	int i;
+
+	for (i = 0; i < pd_count; i++) {
+		dev_pm_genpd_set_performance_state(pds[i], INT_MAX);
+		ret = pm_runtime_resume_and_get(pds[i]);
+		if (ret < 0) {
+			dev_pm_genpd_set_performance_state(pds[i], 0);
+			goto unroll_pd_votes;
+		}
+	}
+
+	return 0;
+
+unroll_pd_votes:
+	for (i--; i >= 0; i--) {
+		dev_pm_genpd_set_performance_state(pds[i], 0);
+		pm_runtime_put(pds[i]);
 	}
 
 	return ret;
 }
 
-static void qcom_rproc_pds_disable(struct qcom_adsp *adsp)
+static void qcom_rproc_pds_disable(struct qcom_adsp *adsp, struct device **pds,
+				   size_t pd_count)
 {
-	struct device *dev = adsp->dev;
-	struct dev_pm_domain_list *pds = adsp->pd_list;
-	int i = 0;
+	int i;
 
-	if (!dev->pm_domain && !pds)
-		return;
-
-	if (dev->pm_domain)
-		dev_pm_genpd_set_performance_state(dev, 0);
-
-	while (pds && i < pds->num_pds) {
-		dev_pm_genpd_set_performance_state(pds->pd_devs[i], 0);
-		i++;
+	for (i = 0; i < pd_count; i++) {
+		dev_pm_genpd_set_performance_state(pds[i], 0);
+		pm_runtime_put(pds[i]);
 	}
-
-	pm_runtime_put(dev);
 }
 
 static int qcom_wpss_shutdown(struct qcom_adsp *adsp)
@@ -314,10 +321,10 @@ reset:
 
 static int adsp_load(struct rproc *rproc, const struct firmware *fw)
 {
-	struct qcom_adsp *adsp = rproc->priv;
+	struct qcom_adsp *adsp = (struct qcom_adsp *)rproc->priv;
 	int ret;
 
-	ret = qcom_mdt_load_no_init(adsp->dev, fw, rproc->firmware,
+	ret = qcom_mdt_load_no_init(adsp->dev, fw, rproc->firmware, 0,
 				    adsp->mem_region, adsp->mem_phys,
 				    adsp->mem_size, &adsp->mem_reloc);
 	if (ret)
@@ -372,7 +379,7 @@ static int adsp_map_carveout(struct rproc *rproc)
 
 static int adsp_start(struct rproc *rproc)
 {
-	struct qcom_adsp *adsp = rproc->priv;
+	struct qcom_adsp *adsp = (struct qcom_adsp *)rproc->priv;
 	int ret;
 	unsigned int val;
 
@@ -390,7 +397,8 @@ static int adsp_start(struct rproc *rproc)
 	if (ret)
 		goto adsp_smmu_unmap;
 
-	ret = qcom_rproc_pds_enable(adsp);
+	ret = qcom_rproc_pds_enable(adsp, adsp->proxy_pds,
+				    adsp->proxy_pd_count);
 	if (ret < 0)
 		goto disable_xo_clk;
 
@@ -440,7 +448,7 @@ static int adsp_start(struct rproc *rproc)
 disable_adsp_clks:
 	clk_bulk_disable_unprepare(adsp->num_clks, adsp->clks);
 disable_power_domain:
-	qcom_rproc_pds_disable(adsp);
+	qcom_rproc_pds_disable(adsp, adsp->proxy_pds, adsp->proxy_pd_count);
 disable_xo_clk:
 	clk_disable_unprepare(adsp->xo);
 adsp_smmu_unmap:
@@ -456,12 +464,12 @@ static void qcom_adsp_pil_handover(struct qcom_q6v5 *q6v5)
 	struct qcom_adsp *adsp = container_of(q6v5, struct qcom_adsp, q6v5);
 
 	clk_disable_unprepare(adsp->xo);
-	qcom_rproc_pds_disable(adsp);
+	qcom_rproc_pds_disable(adsp, adsp->proxy_pds, adsp->proxy_pd_count);
 }
 
 static int adsp_stop(struct rproc *rproc)
 {
-	struct qcom_adsp *adsp = rproc->priv;
+	struct qcom_adsp *adsp = (struct qcom_adsp *)rproc->priv;
 	int handover;
 	int ret;
 
@@ -484,7 +492,7 @@ static int adsp_stop(struct rproc *rproc)
 
 static void *adsp_da_to_va(struct rproc *rproc, u64 da, size_t len, bool *is_iomem)
 {
-	struct qcom_adsp *adsp = rproc->priv;
+	struct qcom_adsp *adsp = (struct qcom_adsp *)rproc->priv;
 	int offset;
 
 	offset = da - adsp->mem_reloc;
@@ -534,11 +542,15 @@ static const struct rproc_ops adsp_ops = {
 static int adsp_init_clock(struct qcom_adsp *adsp, const char **clk_ids)
 {
 	int num_clks = 0;
-	int i;
+	int i, ret;
 
 	adsp->xo = devm_clk_get(adsp->dev, "xo");
-	if (IS_ERR(adsp->xo))
-		return dev_err_probe(adsp->dev, PTR_ERR(adsp->xo), "failed to get xo clock");
+	if (IS_ERR(adsp->xo)) {
+		ret = PTR_ERR(adsp->xo);
+		if (ret != -EPROBE_DEFER)
+			dev_err(adsp->dev, "failed to get xo clock");
+		return ret;
+	}
 
 	for (i = 0; clk_ids[i]; i++)
 		num_clks++;
@@ -625,22 +637,29 @@ static int adsp_init_mmio(struct qcom_adsp *adsp,
 
 static int adsp_alloc_memory_region(struct qcom_adsp *adsp)
 {
+	struct device_node *node;
+	struct resource r;
 	int ret;
-	struct resource res;
 
-	ret = of_reserved_mem_region_to_resource(adsp->dev->of_node, 0, &res);
-	if (ret) {
-		dev_err(adsp->dev, "unable to resolve memory-region\n");
-		return ret;
+	node = of_parse_phandle(adsp->dev->of_node, "memory-region", 0);
+	if (!node) {
+		dev_err(adsp->dev, "no memory-region specified\n");
+		return -EINVAL;
 	}
 
-	adsp->mem_phys = adsp->mem_reloc = res.start;
-	adsp->mem_size = resource_size(&res);
-	adsp->mem_region = devm_ioremap_resource_wc(adsp->dev, &res);
-	if (IS_ERR(adsp->mem_region)) {
-		dev_err(adsp->dev, "unable to map memory region: %pR\n", &res);
-		return PTR_ERR(adsp->mem_region);
+	ret = of_address_to_resource(node, 0, &r);
+	of_node_put(node);
+	if (ret)
+		return ret;
 
+	adsp->mem_phys = adsp->mem_reloc = r.start;
+	adsp->mem_size = resource_size(&r);
+	adsp->mem_region = devm_ioremap_wc(adsp->dev,
+				adsp->mem_phys, adsp->mem_size);
+	if (!adsp->mem_region) {
+		dev_err(adsp->dev, "unable to map memory region: %pa+%zx\n",
+			&r.start, adsp->mem_size);
+		return -EBUSY;
 	}
 
 	return 0;
@@ -666,8 +685,8 @@ static int adsp_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	rproc = devm_rproc_alloc(&pdev->dev, pdev->name, &adsp_ops,
-				 firmware_name, sizeof(*adsp));
+	rproc = rproc_alloc(&pdev->dev, pdev->name, &adsp_ops,
+			    firmware_name, sizeof(*adsp));
 	if (!rproc) {
 		dev_err(&pdev->dev, "unable to allocate remoteproc\n");
 		return -ENOMEM;
@@ -677,7 +696,7 @@ static int adsp_probe(struct platform_device *pdev)
 	rproc->has_iommu = desc->has_iommu;
 	rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_NONE);
 
-	adsp = rproc->priv;
+	adsp = (struct qcom_adsp *)rproc->priv;
 	adsp->dev = &pdev->dev;
 	adsp->rproc = rproc;
 	adsp->info_name = desc->sysmon_name;
@@ -692,16 +711,19 @@ static int adsp_probe(struct platform_device *pdev)
 
 	ret = adsp_alloc_memory_region(adsp);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
 	ret = adsp_init_clock(adsp, desc->clk_ids);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
-	ret = qcom_rproc_pds_attach(adsp, desc->pd_names, desc->num_pds);
-	if (ret < 0)
-		return dev_err_probe(&pdev->dev, ret,
-				     "Failed to attach proxy power domains\n");
+	ret = qcom_rproc_pds_attach(adsp->dev, adsp,
+				    desc->proxy_pd_names);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to attach proxy power domains\n");
+		goto free_rproc;
+	}
+	adsp->proxy_pd_count = ret;
 
 	ret = adsp_init_reset(adsp);
 	if (ret)
@@ -717,36 +739,31 @@ static int adsp_probe(struct platform_device *pdev)
 		goto disable_pm;
 
 	qcom_add_glink_subdev(rproc, &adsp->glink_subdev, desc->ssr_name);
-	qcom_add_pdm_subdev(rproc, &adsp->pdm_subdev);
 	qcom_add_ssr_subdev(rproc, &adsp->ssr_subdev, desc->ssr_name);
 	adsp->sysmon = qcom_add_sysmon_subdev(rproc,
 					      desc->sysmon_name,
 					      desc->ssctl_id);
 	if (IS_ERR(adsp->sysmon)) {
 		ret = PTR_ERR(adsp->sysmon);
-		goto deinit_remove_glink_pdm_ssr;
+		goto disable_pm;
 	}
 
 	ret = rproc_add(rproc);
 	if (ret)
-		goto remove_sysmon;
+		goto disable_pm;
 
 	return 0;
 
-remove_sysmon:
-	qcom_remove_sysmon_subdev(adsp->sysmon);
-deinit_remove_glink_pdm_ssr:
-	qcom_q6v5_deinit(&adsp->q6v5);
-	qcom_remove_glink_subdev(rproc, &adsp->glink_subdev);
-	qcom_remove_pdm_subdev(rproc, &adsp->pdm_subdev);
-	qcom_remove_ssr_subdev(rproc, &adsp->ssr_subdev);
 disable_pm:
-	qcom_rproc_pds_detach(adsp);
+	qcom_rproc_pds_detach(adsp, adsp->proxy_pds, adsp->proxy_pd_count);
+
+free_rproc:
+	rproc_free(rproc);
 
 	return ret;
 }
 
-static void adsp_remove(struct platform_device *pdev)
+static int adsp_remove(struct platform_device *pdev)
 {
 	struct qcom_adsp *adsp = platform_get_drvdata(pdev);
 
@@ -754,10 +771,12 @@ static void adsp_remove(struct platform_device *pdev)
 
 	qcom_q6v5_deinit(&adsp->q6v5);
 	qcom_remove_glink_subdev(adsp->rproc, &adsp->glink_subdev);
-	qcom_remove_pdm_subdev(adsp->rproc, &adsp->pdm_subdev);
 	qcom_remove_sysmon_subdev(adsp->sysmon);
 	qcom_remove_ssr_subdev(adsp->rproc, &adsp->ssr_subdev);
-	qcom_rproc_pds_detach(adsp);
+	qcom_rproc_pds_detach(adsp, adsp->proxy_pds, adsp->proxy_pd_count);
+	rproc_free(adsp->rproc);
+
+	return 0;
 }
 
 static const struct adsp_pil_data adsp_resource_init = {
@@ -773,8 +792,9 @@ static const struct adsp_pil_data adsp_resource_init = {
 		"qdsp6ss_xo", "qdsp6ss_sleep", "qdsp6ss_core", NULL
 	},
 	.num_clks = 7,
-	.pd_names = (const char*[]) { "cx" },
-	.num_pds = 1,
+	.proxy_pd_names = (const char*[]) {
+		"cx", NULL
+	},
 };
 
 static const struct adsp_pil_data adsp_sc7280_resource_init = {
@@ -805,8 +825,9 @@ static const struct adsp_pil_data cdsp_resource_init = {
 		"q6_axim", NULL
 	},
 	.num_clks = 7,
-	.pd_names = (const char*[]) { "cx" },
-	.num_pds = 1,
+	.proxy_pd_names = (const char*[]) {
+		"cx", NULL
+	},
 };
 
 static const struct adsp_pil_data wpss_resource_init = {
@@ -822,8 +843,9 @@ static const struct adsp_pil_data wpss_resource_init = {
 		"ahb_bdg", "ahb", "rscp", NULL
 	},
 	.num_clks = 3,
-	.pd_names = (const char*[]) { "cx", "mx" },
-	.num_pds = 2,
+	.proxy_pd_names = (const char*[]) {
+		"cx", "mx", NULL
+	},
 };
 
 static const struct of_device_id adsp_of_match[] = {

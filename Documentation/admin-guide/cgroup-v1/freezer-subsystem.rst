@@ -125,7 +125,3 @@ to unfreeze all tasks in the container::
 
 This is the basic mechanism which should do the right thing for user space task
 in a simple scenario.
-
-This freezer implementation is affected by shortcomings (see commit
-76f969e8948d8 ("cgroup: cgroup v2 freezer")) and cgroup v2 freezer is
-recommended.

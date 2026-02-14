@@ -3,7 +3,7 @@
 #define TARGET_CORE_BACKEND_H
 
 #include <linux/types.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <target/target_core_base.h>
 
 #define TRANSPORT_FLAG_PASSTHROUGH		0x1
@@ -62,17 +62,13 @@ struct target_backend_ops {
 	struct configfs_attribute **tb_dev_action_attrs;
 };
 
-struct exec_cmd_ops {
+struct sbc_ops {
 	sense_reason_t (*execute_rw)(struct se_cmd *cmd, struct scatterlist *,
 				     u32, enum dma_data_direction);
 	sense_reason_t (*execute_sync_cache)(struct se_cmd *cmd);
 	sense_reason_t (*execute_write_same)(struct se_cmd *cmd);
 	sense_reason_t (*execute_unmap)(struct se_cmd *cmd,
 				sector_t lba, sector_t nolb);
-	sense_reason_t (*execute_pr_out)(struct se_cmd *cmd, u8 sa, u64 key,
-					 u64 sa_key, u8 type, bool aptpl);
-	sense_reason_t (*execute_pr_in)(struct se_cmd *cmd, u8 sa,
-					unsigned char *param_data);
 };
 
 int	transport_backend_register(const struct target_backend_ops *);
@@ -90,7 +86,7 @@ sense_reason_t	spc_emulate_report_luns(struct se_cmd *cmd);
 sense_reason_t	spc_emulate_inquiry_std(struct se_cmd *, unsigned char *);
 sense_reason_t	spc_emulate_evpd_83(struct se_cmd *, unsigned char *);
 
-sense_reason_t	sbc_parse_cdb(struct se_cmd *cmd, struct exec_cmd_ops *ops);
+sense_reason_t	sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops);
 u32	sbc_get_device_rev(struct se_device *dev);
 u32	sbc_get_device_type(struct se_device *dev);
 sector_t	sbc_get_write_same_sectors(struct se_cmd *cmd);
@@ -121,10 +117,8 @@ sense_reason_t passthrough_parse_cdb(struct se_cmd *cmd,
 
 bool target_sense_desc_format(struct se_device *dev);
 sector_t target_to_linux_sector(struct se_device *dev, sector_t lb);
-bool target_configure_unmap_from_bdev(struct se_dev_attrib *attrib,
-				      struct block_device *bdev);
-void target_configure_write_atomic_from_bdev(struct se_dev_attrib *attrib,
-					     struct block_device *bdev);
+bool target_configure_unmap_from_queue(struct se_dev_attrib *attrib,
+				       struct block_device *bdev);
 
 static inline bool target_dev_configured(struct se_device *se_dev)
 {

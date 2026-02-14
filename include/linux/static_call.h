@@ -160,8 +160,6 @@ extern void arch_static_call_transform(void *site, void *tramp, void *func, bool
 
 #ifdef CONFIG_HAVE_STATIC_CALL_INLINE
 
-extern int static_call_initialized;
-
 extern int __init static_call_init(void);
 
 extern void static_call_force_reinit(void);
@@ -227,8 +225,6 @@ extern long __static_call_return0(void);
 
 #elif defined(CONFIG_HAVE_STATIC_CALL)
 
-#define static_call_initialized 0
-
 static inline int static_call_init(void) { return 0; }
 
 #define DEFINE_STATIC_CALL(name, _func)					\
@@ -284,8 +280,6 @@ extern long __static_call_return0(void);
 	EXPORT_SYMBOL_GPL(STATIC_CALL_TRAMP(name))
 
 #else /* Generic implementation */
-
-#define static_call_initialized 0
 
 static inline int static_call_init(void) { return 0; }
 

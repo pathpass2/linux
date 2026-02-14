@@ -18,7 +18,7 @@ struct temperature_state {
 	struct hid_sensor_hub_attribute_info temperature_attr;
 	struct {
 		s32 temperature_data;
-		aligned_s64 timestamp;
+		u64 timestamp __aligned(8);
 	} scan;
 	int scale_pre_decml;
 	int scale_post_decml;
@@ -131,9 +131,8 @@ static int temperature_proc_event(struct hid_sensor_hub_device *hsdev,
 	struct temperature_state *temp_st = iio_priv(indio_dev);
 
 	if (atomic_read(&temp_st->common_attributes.data_ready))
-		iio_push_to_buffers_with_ts(indio_dev, &temp_st->scan,
-					    sizeof(temp_st->scan),
-					    iio_get_time_ns(indio_dev));
+		iio_push_to_buffers_with_timestamp(indio_dev, &temp_st->scan,
+						   iio_get_time_ns(indio_dev));
 
 	return 0;
 }
@@ -258,7 +257,7 @@ error_remove_trigger:
 }
 
 /* Function to deinitialize the processing for usage id */
-static void hid_temperature_remove(struct platform_device *pdev)
+static int hid_temperature_remove(struct platform_device *pdev)
 {
 	struct hid_sensor_hub_device *hsdev = dev_get_platdata(&pdev->dev);
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
@@ -266,6 +265,8 @@ static void hid_temperature_remove(struct platform_device *pdev)
 
 	sensor_hub_remove_callback(hsdev, HID_USAGE_SENSOR_TEMPERATURE);
 	hid_sensor_remove_trigger(indio_dev, &temp_st->common_attributes);
+
+	return 0;
 }
 
 static const struct platform_device_id hid_temperature_ids[] = {
@@ -273,7 +274,7 @@ static const struct platform_device_id hid_temperature_ids[] = {
 		/* Format: HID-SENSOR-usage_id_in_hex_lowercase */
 		.name = "HID-SENSOR-200033",
 	},
-	{ }
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(platform, hid_temperature_ids);
 
@@ -291,4 +292,4 @@ module_platform_driver(hid_temperature_platform_driver);
 MODULE_DESCRIPTION("HID Environmental temperature sensor");
 MODULE_AUTHOR("Song Hongyan <hongyan.song@intel.com>");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_HID");
+MODULE_IMPORT_NS(IIO_HID);

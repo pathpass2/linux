@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause-Clear */
+/* SPDX-License-Identifier: ISC */
 
 #ifndef __MT7603_MAC_H
 #define __MT7603_MAC_H

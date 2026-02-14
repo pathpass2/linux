@@ -14,7 +14,7 @@
 #include <linux/time.h>
 #include <linux/timer.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "musb_core.h"
 

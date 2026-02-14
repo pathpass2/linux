@@ -12,7 +12,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/sizes.h>
@@ -329,13 +329,15 @@ err_component:
 	return ret;
 }
 
-static void rotator_remove(struct platform_device *pdev)
+static int rotator_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	component_del(dev, &rotator_component_ops);
 	pm_runtime_dont_use_autosuspend(dev);
 	pm_runtime_disable(dev);
+
+	return 0;
 }
 
 static int rotator_runtime_suspend(struct device *dev)
@@ -454,6 +456,7 @@ struct platform_driver rotator_driver = {
 	.remove		= rotator_remove,
 	.driver		= {
 		.name	= "exynos-rotator",
+		.owner	= THIS_MODULE,
 		.pm	= pm_ptr(&rotator_pm_ops),
 		.of_match_table = exynos_rotator_match,
 	},

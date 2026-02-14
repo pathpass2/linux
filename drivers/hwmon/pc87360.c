@@ -323,11 +323,7 @@ static struct pc87360_data *pc87360_update_device(struct device *dev)
 		}
 
 		/* Voltages */
-		/*
-		 * The min() below does not have any practical meaning and is
-		 * only needed to silence a warning observed with gcc 12+.
-		 */
-		for (i = 0; i < min(data->innr, ARRAY_SIZE(data->in)); i++) {
+		for (i = 0; i < data->innr; i++) {
 			data->in_status[i] = pc87360_read_value(data, LD_IN, i,
 					     PC87365_REG_IN_STATUS);
 			/* Clear bits */
@@ -1315,7 +1311,7 @@ static void pc87360_init_device(struct platform_device *pdev,
 				    (reg & 0xC0) | 0x11);
 	}
 
-	nr = min(data->innr, 11);
+	nr = data->innr < 11 ? data->innr : 11;
 	for (i = 0; i < nr; i++) {
 		reg = pc87360_read_value(data, LD_IN, i,
 					 PC87365_REG_IN_STATUS);
@@ -1590,12 +1586,14 @@ error:
 	return err;
 }
 
-static void pc87360_remove(struct platform_device *pdev)
+static int pc87360_remove(struct platform_device *pdev)
 {
 	struct pc87360_data *data = platform_get_drvdata(pdev);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	pc87360_remove_files(&pdev->dev);
+
+	return 0;
 }
 
 /*

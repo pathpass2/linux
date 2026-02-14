@@ -15,7 +15,6 @@
 #include "edac_module.h"
 #include <ras/ras_event.h>
 #include <linux/notifier.h>
-#include <linux/string.h>
 
 #define OTHER_DETAIL_LEN	400
 
@@ -333,7 +332,7 @@ static int ghes_edac_report_mem_error(struct notifier_block *nb,
 		p = pvt->msg;
 		p += snprintf(p, sizeof(pvt->msg), "%s", cper_mem_err_type_str(etype));
 	} else {
-		strscpy(pvt->msg, "unknown error");
+		strcpy(pvt->msg, "unknown error");
 	}
 
 	/* Error address */
@@ -358,14 +357,14 @@ static int ghes_edac_report_mem_error(struct notifier_block *nb,
 		dimm = find_dimm_by_handle(mci, mem_err->mem_dev_handle);
 		if (dimm) {
 			e->top_layer = dimm->idx;
-			strscpy(e->label, dimm->label);
+			strcpy(e->label, dimm->label);
 		}
 	}
 	if (p > e->location)
 		*(p - 1) = '\0';
 
 	if (!*e->label)
-		strscpy(e->label, "unknown memory");
+		strcpy(e->label, "unknown memory");
 
 	/* All other fields are mapped on e->other_detail */
 	p = pvt->other_detail;
@@ -548,7 +547,7 @@ static int __init ghes_edac_init(void)
 		return -ENODEV;
 
 	if (list_empty(ghes_devs)) {
-		pr_info("GHES probing device list is empty\n");
+		pr_info("GHES probing device list is empty");
 		return -ENODEV;
 	}
 

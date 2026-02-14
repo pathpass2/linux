@@ -571,10 +571,6 @@ static void fetch_pipe_params(struct display_mode_lib *mode_lib)
 		mode_lib->vba.OutputLinkDPRate[mode_lib->vba.NumberOfActivePlanes] = dout->dp_rate;
 		mode_lib->vba.ODMUse[mode_lib->vba.NumberOfActivePlanes] = dst->odm_combine_policy;
 		mode_lib->vba.DETSizeOverride[mode_lib->vba.NumberOfActivePlanes] = src->det_size_override;
-		if (src->det_size_override)
-			mode_lib->vba.DETBufferSizeInKByte[mode_lib->vba.NumberOfActivePlanes] = src->det_size_override;
-		else
-			mode_lib->vba.DETBufferSizeInKByte[mode_lib->vba.NumberOfActivePlanes] = ip->det_buffer_size_kbytes;
 		//TODO: Need to assign correct values to dp_multistream vars
 		mode_lib->vba.OutputMultistreamEn[mode_lib->vba.NumberOfActiveSurfaces] = dout->dp_multistream_en;
 		mode_lib->vba.OutputMultistreamId[mode_lib->vba.NumberOfActiveSurfaces] = dout->dp_multistream_id;
@@ -789,8 +785,6 @@ static void fetch_pipe_params(struct display_mode_lib *mode_lib)
 					mode_lib->vba.pipe_plane[k] =
 							mode_lib->vba.NumberOfActivePlanes;
 					mode_lib->vba.DPPPerPlane[mode_lib->vba.NumberOfActivePlanes]++;
-					if (src_k->det_size_override)
-						mode_lib->vba.DETBufferSizeInKByte[mode_lib->vba.NumberOfActivePlanes] = src_k->det_size_override;
 					if (mode_lib->vba.SourceScan[mode_lib->vba.NumberOfActivePlanes]
 							== dm_horz) {
 						mode_lib->vba.ViewportWidth[mode_lib->vba.NumberOfActivePlanes] +=
@@ -933,16 +927,18 @@ static void fetch_pipe_params(struct display_mode_lib *mode_lib)
 }
 
 /**
+ * ********************************************************************************************
  * cache_debug_params: Cache any params that needed to be maintained from the initial validation
  * for debug purposes.
  *
  * The DML getters can modify some of the VBA params that we are interested in (for example when
  * calculating with dummy p-state latency), so cache any params here that we want for debugging
  *
- * @mode_lib: mode_lib input/output of validate call
+ * @param [in] mode_lib: mode_lib input/output of validate call
  *
- * Return: void
+ * @return: void
  *
+ * ********************************************************************************************
  */
 static void cache_debug_params(struct display_mode_lib *mode_lib)
 {
@@ -1099,13 +1095,8 @@ void ModeSupportAndSystemConfiguration(struct display_mode_lib *mode_lib)
 
 	// Total Available Pipes Support Check
 	for (k = 0; k < mode_lib->vba.NumberOfActivePlanes; ++k) {
-		pipe_idx = get_pipe_idx(mode_lib, k);
-		if (pipe_idx == -1) {
-			ASSERT(0);
-			continue; // skip inactive planes
-		}
 		total_pipes += mode_lib->vba.DPPPerPlane[k];
-
+		pipe_idx = get_pipe_idx(mode_lib, k);
 		if (mode_lib->vba.cache_pipes[pipe_idx].clks_cfg.dppclk_mhz > 0.0)
 			mode_lib->vba.DPPCLK[k] = mode_lib->vba.cache_pipes[pipe_idx].clks_cfg.dppclk_mhz;
 		else

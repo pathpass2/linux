@@ -8,11 +8,16 @@
 
 #include <linux/fs.h>
 
-int ocfs2_map_folio_blocks(struct folio *folio, u64 *p_blkno,
+handle_t *ocfs2_start_walk_page_trans(struct inode *inode,
+							 struct page *page,
+							 unsigned from,
+							 unsigned to);
+
+int ocfs2_map_page_blocks(struct page *page, u64 *p_blkno,
 			  struct inode *inode, unsigned int from,
 			  unsigned int to, int new);
 
-void ocfs2_unlock_and_free_folios(struct folio **folios, int num_folios);
+void ocfs2_unlock_and_free_pages(struct page **pages, int num_pages);
 
 int walk_page_buffers(	handle_t *handle,
 			struct buffer_head *head,
@@ -32,11 +37,11 @@ typedef enum {
 } ocfs2_write_type_t;
 
 int ocfs2_write_begin_nolock(struct address_space *mapping,
-		loff_t pos, unsigned len, ocfs2_write_type_t type,
-		struct folio **foliop, void **fsdata,
-		struct buffer_head *di_bh, struct folio *mmap_folio);
+			     loff_t pos, unsigned len, ocfs2_write_type_t type,
+			     struct page **pagep, void **fsdata,
+			     struct buffer_head *di_bh, struct page *mmap_page);
 
-int ocfs2_read_inline_data(struct inode *inode, struct folio *folio,
+int ocfs2_read_inline_data(struct inode *inode, struct page *page,
 			   struct buffer_head *di_bh);
 int ocfs2_size_fits_inline_data(struct buffer_head *di_bh, u64 new_size);
 
@@ -65,8 +70,6 @@ enum ocfs2_iocb_lock_bits {
 	OCFS2_IOCB_NUM_LOCKS
 };
 
-#define ocfs2_iocb_init_rw_locked(iocb) \
-	(iocb->private = NULL)
 #define ocfs2_iocb_clear_rw_locked(iocb) \
 	clear_bit(OCFS2_IOCB_RW_LOCK, (unsigned long *)&iocb->private)
 #define ocfs2_iocb_rw_locked_level(iocb) \

@@ -30,6 +30,7 @@
 #define ST_AHCI_OOBR_CIMAX_SHIFT	0
 
 struct st_ahci_drv_data {
+	struct platform_device *ahci;
 	struct reset_control *pwr;
 	struct reset_control *sw_rst;
 	struct reset_control *pwr_rst;
@@ -137,7 +138,7 @@ static const struct ata_port_info st_ahci_port_info = {
 	.port_ops       = &st_ahci_port_ops,
 };
 
-static const struct scsi_host_template ahci_platform_sht = {
+static struct scsi_host_template ahci_platform_sht = {
 	AHCI_SHT(DRV_NAME),
 };
 
@@ -176,6 +177,7 @@ static int st_ahci_probe(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int st_ahci_suspend(struct device *dev)
 {
 	struct ata_host *host = dev_get_drvdata(dev);
@@ -220,8 +222,9 @@ static int st_ahci_resume(struct device *dev)
 
 	return ahci_platform_resume_host(dev);
 }
+#endif
 
-static DEFINE_SIMPLE_DEV_PM_OPS(st_ahci_pm_ops, st_ahci_suspend, st_ahci_resume);
+static SIMPLE_DEV_PM_OPS(st_ahci_pm_ops, st_ahci_suspend, st_ahci_resume);
 
 static const struct of_device_id st_ahci_match[] = {
 	{ .compatible = "st,ahci", },
@@ -232,7 +235,7 @@ MODULE_DEVICE_TABLE(of, st_ahci_match);
 static struct platform_driver st_ahci_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.pm = pm_sleep_ptr(&st_ahci_pm_ops),
+		.pm = &st_ahci_pm_ops,
 		.of_match_table = st_ahci_match,
 	},
 	.probe = st_ahci_probe,

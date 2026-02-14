@@ -29,7 +29,6 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/pci.h>
 #include <linux/platform_data/simplefb.h>
 #include <linux/platform_device.h>
 #include <linux/screen_info.h>
@@ -38,8 +37,6 @@
 static struct platform_device *pd;
 static DEFINE_MUTEX(disable_lock);
 static bool disabled;
-
-static struct device *sysfb_parent_dev(const struct screen_info *si);
 
 static bool sysfb_unregister(void)
 {
@@ -54,7 +51,6 @@ static bool sysfb_unregister(void)
 
 /**
  * sysfb_disable() - disable the Generic System Framebuffers support
- * @dev:	the device to check if non-NULL
  *
  * This disables the registration of system framebuffer devices that match the
  * generic drivers that make use of the system framebuffer set up by firmware.
@@ -64,146 +60,58 @@ static bool sysfb_unregister(void)
  * Context: The function can sleep. A @disable_lock mutex is acquired to serialize
  *          against sysfb_init(), that registers a system framebuffer device.
  */
-void sysfb_disable(struct device *dev)
+void sysfb_disable(void)
 {
-	struct screen_info *si = &sysfb_primary_display.screen;
-	struct device *parent;
-
 	mutex_lock(&disable_lock);
-	parent = sysfb_parent_dev(si);
-	if (!dev || !parent || dev == parent) {
-		sysfb_unregister();
-		disabled = true;
-	}
+	sysfb_unregister();
+	disabled = true;
 	mutex_unlock(&disable_lock);
 }
 EXPORT_SYMBOL_GPL(sysfb_disable);
 
-/**
- * sysfb_handles_screen_info() - reports if sysfb handles the global screen_info
- *
- * Callers can use sysfb_handles_screen_info() to determine whether the Generic
- * System Framebuffers (sysfb) can handle the global screen_info data structure
- * or not. Drivers might need this information to know if they have to setup the
- * system framebuffer, or if they have to delegate this action to sysfb instead.
- *
- * Returns:
- * True if sysfb handles the global screen_info data structure.
- */
-bool sysfb_handles_screen_info(void)
-{
-	const struct screen_info *si = &sysfb_primary_display.screen;
-
-	return !!screen_info_video_type(si);
-}
-EXPORT_SYMBOL_GPL(sysfb_handles_screen_info);
-
-#if defined(CONFIG_PCI)
-static bool sysfb_pci_dev_is_enabled(struct pci_dev *pdev)
-{
-	/*
-	 * TODO: Try to integrate this code into the PCI subsystem
-	 */
-	int ret;
-	u16 command;
-
-	ret = pci_read_config_word(pdev, PCI_COMMAND, &command);
-	if (ret != PCIBIOS_SUCCESSFUL)
-		return false;
-	if (!(command & PCI_COMMAND_MEMORY))
-		return false;
-	return true;
-}
-#else
-static bool sysfb_pci_dev_is_enabled(struct pci_dev *pdev)
-{
-	return false;
-}
-#endif
-
-static struct device *sysfb_parent_dev(const struct screen_info *si)
-{
-	struct pci_dev *pdev;
-
-	pdev = screen_info_pci_dev(si);
-	if (IS_ERR(pdev)) {
-		return ERR_CAST(pdev);
-	} else if (pdev) {
-		if (!sysfb_pci_dev_is_enabled(pdev)) {
-			pci_dev_put(pdev);
-			return ERR_PTR(-ENODEV);
-		}
-		return &pdev->dev;
-	}
-
-	return NULL;
-}
-
 static __init int sysfb_init(void)
 {
-	struct sysfb_display_info *dpy = &sysfb_primary_display;
-	struct screen_info *si = &dpy->screen;
-	struct device *parent;
-	unsigned int type;
+	struct screen_info *si = &screen_info;
 	struct simplefb_platform_data mode;
 	const char *name;
 	bool compatible;
 	int ret = 0;
 
-	screen_info_apply_fixups();
-
 	mutex_lock(&disable_lock);
 	if (disabled)
 		goto unlock_mutex;
 
-	sysfb_apply_efi_quirks(si);
-
-	parent = sysfb_parent_dev(si);
-	if (IS_ERR(parent)) {
-		ret = PTR_ERR(parent);
-		goto unlock_mutex;
-	}
+	sysfb_apply_efi_quirks();
 
 	/* try to create a simple-framebuffer device */
 	compatible = sysfb_parse_mode(si, &mode);
 	if (compatible) {
-		pd = sysfb_create_simplefb(si, &mode, parent);
+		pd = sysfb_create_simplefb(si, &mode);
 		if (!IS_ERR(pd))
-			goto put_device;
+			goto unlock_mutex;
 	}
-
-	type = screen_info_video_type(si);
 
 	/* if the FB is incompatible, create a legacy framebuffer device */
-	switch (type) {
-	case VIDEO_TYPE_EGAC:
-		name = "ega-framebuffer";
-		break;
-	case VIDEO_TYPE_VGAC:
-		name = "vga-framebuffer";
-		break;
-	case VIDEO_TYPE_VLFB:
-		name = "vesa-framebuffer";
-		break;
-	case VIDEO_TYPE_EFI:
+	if (si->orig_video_isVGA == VIDEO_TYPE_EFI)
 		name = "efi-framebuffer";
-		break;
-	default:
+	else if (si->orig_video_isVGA == VIDEO_TYPE_VLFB)
+		name = "vesa-framebuffer";
+	else if (si->orig_video_isVGA == VIDEO_TYPE_VGAC)
+		name = "vga-framebuffer";
+	else if (si->orig_video_isVGA == VIDEO_TYPE_EGAC)
+		name = "ega-framebuffer";
+	else
 		name = "platform-framebuffer";
-		break;
-	}
 
 	pd = platform_device_alloc(name, 0);
 	if (!pd) {
 		ret = -ENOMEM;
-		goto put_device;
+		goto unlock_mutex;
 	}
 
-	pd->dev.parent = parent;
+	sysfb_set_efifb_fwnode(pd);
 
-	sysfb_set_efifb_fwnode(si, pd);
-
-	ret = platform_device_add_data(pd, dpy, sizeof(*dpy));
+	ret = platform_device_add_data(pd, si, sizeof(*si));
 	if (ret)
 		goto err;
 
@@ -211,11 +119,9 @@ static __init int sysfb_init(void)
 	if (ret)
 		goto err;
 
-	goto put_device;
+	goto unlock_mutex;
 err:
 	platform_device_put(pd);
-put_device:
-	put_device(parent);
 unlock_mutex:
 	mutex_unlock(&disable_lock);
 	return ret;

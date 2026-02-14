@@ -4,9 +4,8 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/i2c.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/mfd/syscon.h>
 
@@ -184,11 +183,11 @@ static int gxp_i2c_unreg_slave(struct i2c_client *slave)
 #endif
 
 static const struct i2c_algorithm gxp_i2c_algo = {
-	.xfer = gxp_i2c_master_xfer,
+	.master_xfer   = gxp_i2c_master_xfer,
 	.functionality = gxp_i2c_func,
 #if IS_ENABLED(CONFIG_I2C_SLAVE)
-	.reg_slave = gxp_i2c_reg_slave,
-	.unreg_slave = gxp_i2c_unreg_slave,
+	.reg_slave     = gxp_i2c_reg_slave,
+	.unreg_slave   = gxp_i2c_unreg_slave,
 #endif
 };
 
@@ -354,6 +353,7 @@ static void gxp_i2c_chk_data_ack(struct gxp_i2c_drvdata *drvdata)
 	writew(value, drvdata->base + GXP_I2CMCMD);
 }
 
+#if IS_ENABLED(CONFIG_I2C_SLAVE)
 static bool gxp_i2c_slave_irq_handler(struct gxp_i2c_drvdata *drvdata)
 {
 	u8 value;
@@ -437,6 +437,7 @@ static bool gxp_i2c_slave_irq_handler(struct gxp_i2c_drvdata *drvdata)
 
 	return true;
 }
+#endif
 
 static irqreturn_t gxp_i2c_irq_handler(int irq, void *_drvdata)
 {
@@ -578,13 +579,15 @@ static int gxp_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void gxp_i2c_remove(struct platform_device *pdev)
+static int gxp_i2c_remove(struct platform_device *pdev)
 {
 	struct gxp_i2c_drvdata *drvdata = platform_get_drvdata(pdev);
 
 	/* Disable interrupt */
 	regmap_update_bits(i2cg_map, GXP_I2CINTEN, BIT(drvdata->engine), 0);
 	i2c_del_adapter(&drvdata->adapter);
+
+	return 0;
 }
 
 static const struct of_device_id gxp_i2c_of_match[] = {

@@ -20,10 +20,6 @@ do
 	fi
 done
 
-if [ -n "${INSTALL_PATH}" ] && ! [ -e "${INSTALL_PATH}" ]; then
-	mkdir -p "${INSTALL_PATH}"
-fi
-
 # User/arch may have a custom install script
 for file in "${HOME}/bin/${INSTALLKERNEL}"		\
 	    "/sbin/${INSTALLKERNEL}"			\

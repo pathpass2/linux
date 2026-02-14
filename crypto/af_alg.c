@@ -145,7 +145,7 @@ void af_alg_release_parent(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(af_alg_release_parent);
 
-static int alg_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
+static int alg_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 {
 	const u32 allowed = CRYPTO_ALG_KERN_DRIVER_ONLY;
 	struct sock *sk = sock->sk;
@@ -320,21 +320,18 @@ static int alg_setkey_by_key_serial(struct alg_sock *ask, sockptr_t optval,
 
 	if (IS_ERR(ret)) {
 		up_read(&key->sem);
-		key_put(key);
 		return PTR_ERR(ret);
 	}
 
 	key_data = sock_kmalloc(&ask->sk, key_datalen, GFP_KERNEL);
 	if (!key_data) {
 		up_read(&key->sem);
-		key_put(key);
 		return -ENOMEM;
 	}
 
 	memcpy(key_data, ret, key_datalen);
 
 	up_read(&key->sem);
-	key_put(key);
 
 	err = type->setkey(ask->private, key_data, key_datalen);
 
@@ -407,8 +404,7 @@ unlock:
 	return err;
 }
 
-int af_alg_accept(struct sock *sk, struct socket *newsock,
-		  struct proto_accept_arg *arg)
+int af_alg_accept(struct sock *sk, struct socket *newsock, bool kern)
 {
 	struct alg_sock *ask = alg_sk(sk);
 	const struct af_alg_type *type;
@@ -423,7 +419,7 @@ int af_alg_accept(struct sock *sk, struct socket *newsock,
 	if (!type)
 		goto unlock;
 
-	sk2 = sk_alloc(sock_net(sk), PF_ALG, GFP_KERNEL, &alg_proto, arg->kern);
+	sk2 = sk_alloc(sock_net(sk), PF_ALG, GFP_KERNEL, &alg_proto, kern);
 	err = -ENOMEM;
 	if (!sk2)
 		goto unlock;
@@ -469,10 +465,10 @@ unlock:
 }
 EXPORT_SYMBOL_GPL(af_alg_accept);
 
-static int alg_accept(struct socket *sock, struct socket *newsock,
-		      struct proto_accept_arg *arg)
+static int alg_accept(struct socket *sock, struct socket *newsock, int flags,
+		      bool kern)
 {
-	return af_alg_accept(sock->sk, newsock, arg);
+	return af_alg_accept(sock->sk, newsock, kern);
 }
 
 static const struct proto_ops alg_proto_ops = {
@@ -486,6 +482,7 @@ static const struct proto_ops alg_proto_ops = {
 	.listen		=	sock_no_listen,
 	.shutdown	=	sock_no_shutdown,
 	.mmap		=	sock_no_mmap,
+	.sendpage	=	sock_no_sendpage,
 	.sendmsg	=	sock_no_sendmsg,
 	.recvmsg	=	sock_no_recvmsg,
 
@@ -534,25 +531,50 @@ static const struct net_proto_family alg_family = {
 	.owner	=	THIS_MODULE,
 };
 
+int af_alg_make_sg(struct af_alg_sgl *sgl, struct iov_iter *iter, int len)
+{
+	size_t off;
+	ssize_t n;
+	int npages, i;
+
+	n = iov_iter_get_pages2(iter, sgl->pages, len, ALG_MAX_PAGES, &off);
+	if (n < 0)
+		return n;
+
+	npages = DIV_ROUND_UP(off + n, PAGE_SIZE);
+	if (WARN_ON(npages == 0))
+		return -EINVAL;
+	/* Add one extra for linking */
+	sg_init_table(sgl->sg, npages + 1);
+
+	for (i = 0, len = n; i < npages; i++) {
+		int plen = min_t(int, len, PAGE_SIZE - off);
+
+		sg_set_page(sgl->sg + i, sgl->pages[i], plen, off);
+
+		off = 0;
+		len -= plen;
+	}
+	sg_mark_end(sgl->sg + npages - 1);
+	sgl->npages = npages;
+
+	return n;
+}
+EXPORT_SYMBOL_GPL(af_alg_make_sg);
+
 static void af_alg_link_sg(struct af_alg_sgl *sgl_prev,
 			   struct af_alg_sgl *sgl_new)
 {
-	sg_unmark_end(sgl_prev->sgt.sgl + sgl_prev->sgt.nents - 1);
-	sg_chain(sgl_prev->sgt.sgl, sgl_prev->sgt.nents + 1, sgl_new->sgt.sgl);
+	sg_unmark_end(sgl_prev->sg + sgl_prev->npages - 1);
+	sg_chain(sgl_prev->sg, sgl_prev->npages + 1, sgl_new->sg);
 }
 
 void af_alg_free_sg(struct af_alg_sgl *sgl)
 {
 	int i;
 
-	if (sgl->sgt.sgl) {
-		if (sgl->need_unpin)
-			for (i = 0; i < sgl->sgt.nents; i++)
-				unpin_user_page(sg_page(&sgl->sgt.sgl[i]));
-		if (sgl->sgt.sgl != sgl->sgl)
-			kvfree(sgl->sgt.sgl);
-		sgl->sgt.sgl = NULL;
-	}
+	for (i = 0; i < sgl->npages; i++)
+		put_page(sgl->pages[i]);
 }
 EXPORT_SYMBOL_GPL(af_alg_free_sg);
 
@@ -848,7 +870,7 @@ void af_alg_wmem_wakeup(struct sock *sk)
 		wake_up_interruptible_sync_poll(&wq->wait, EPOLLIN |
 							   EPOLLRDNORM |
 							   EPOLLRDBAND);
-	sk_wake_async_rcu(sk, SOCK_WAKE_WAITD, POLL_IN);
+	sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_IN);
 	rcu_read_unlock();
 }
 EXPORT_SYMBOL_GPL(af_alg_wmem_wakeup);
@@ -915,7 +937,7 @@ static void af_alg_data_wakeup(struct sock *sk)
 		wake_up_interruptible_sync_poll(&wq->wait, EPOLLOUT |
 							   EPOLLRDNORM |
 							   EPOLLRDBAND);
-	sk_wake_async_rcu(sk, SOCK_WAKE_SPACE, POLL_OUT);
+	sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
 	rcu_read_unlock();
 }
 
@@ -970,12 +992,6 @@ int af_alg_sendmsg(struct socket *sock, struct msghdr *msg, size_t size,
 	}
 
 	lock_sock(sk);
-	if (ctx->write) {
-		release_sock(sk);
-		return -EBUSY;
-	}
-	ctx->write = true;
-
 	if (ctx->init && !ctx->more) {
 		if (ctx->used) {
 			err = -EINVAL;
@@ -999,10 +1015,10 @@ int af_alg_sendmsg(struct socket *sock, struct msghdr *msg, size_t size,
 	while (size) {
 		struct scatterlist *sg;
 		size_t len = size;
-		ssize_t plen;
+		size_t plen;
 
 		/* use the existing memory in an allocated page */
-		if (ctx->merge && !(msg->msg_flags & MSG_SPLICE_PAGES)) {
+		if (ctx->merge) {
 			sgl = list_entry(ctx->tsgl_list.prev,
 					 struct af_alg_tsgl, list);
 			sg = sgl->sg + sgl->cur - 1;
@@ -1025,8 +1041,6 @@ int af_alg_sendmsg(struct socket *sock, struct msghdr *msg, size_t size,
 			continue;
 		}
 
-		ctx->merge = 0;
-
 		if (!af_alg_writable(sk)) {
 			err = af_alg_wait_for_wmem(sk, msg->msg_flags);
 			if (err)
@@ -1046,63 +1060,40 @@ int af_alg_sendmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		if (sgl->cur)
 			sg_unmark_end(sg + sgl->cur - 1);
 
-		if (msg->msg_flags & MSG_SPLICE_PAGES) {
-			struct sg_table sgtable = {
-				.sgl		= sg,
-				.nents		= sgl->cur,
-				.orig_nents	= sgl->cur,
-			};
+		do {
+			struct page *pg;
+			unsigned int i = sgl->cur;
 
-			plen = extract_iter_to_sg(&msg->msg_iter, len, &sgtable,
-						  MAX_SGL_ENTS - sgl->cur, 0);
-			if (plen < 0) {
-				err = plen;
+			plen = min_t(size_t, len, PAGE_SIZE);
+
+			pg = alloc_page(GFP_KERNEL);
+			if (!pg) {
+				err = -ENOMEM;
 				goto unlock;
 			}
 
-			for (; sgl->cur < sgtable.nents; sgl->cur++)
-				get_page(sg_page(&sg[sgl->cur]));
+			sg_assign_page(sg + i, pg);
+
+			err = memcpy_from_msg(page_address(sg_page(sg + i)),
+					      msg, plen);
+			if (err) {
+				__free_page(sg_page(sg + i));
+				sg_assign_page(sg + i, NULL);
+				goto unlock;
+			}
+
+			sg[i].length = plen;
 			len -= plen;
 			ctx->used += plen;
 			copied += plen;
 			size -= plen;
-		} else {
-			do {
-				struct page *pg;
-				unsigned int i = sgl->cur;
-
-				plen = min_t(size_t, len, PAGE_SIZE);
-
-				pg = alloc_page(GFP_KERNEL);
-				if (!pg) {
-					err = -ENOMEM;
-					goto unlock;
-				}
-
-				sg_assign_page(sg + i, pg);
-
-				err = memcpy_from_msg(
-					page_address(sg_page(sg + i)),
-					msg, plen);
-				if (err) {
-					__free_page(sg_page(sg + i));
-					sg_assign_page(sg + i, NULL);
-					goto unlock;
-				}
-
-				sg[i].length = plen;
-				len -= plen;
-				ctx->used += plen;
-				copied += plen;
-				size -= plen;
-				sgl->cur++;
-			} while (len && sgl->cur < MAX_SGL_ENTS);
-
-			ctx->merge = plen & (PAGE_SIZE - 1);
-		}
+			sgl->cur++;
+		} while (len && sgl->cur < MAX_SGL_ENTS);
 
 		if (!size)
 			sg_mark_end(sg + sgl->cur - 1);
+
+		ctx->merge = plen & (PAGE_SIZE - 1);
 	}
 
 	err = 0;
@@ -1111,12 +1102,74 @@ int af_alg_sendmsg(struct socket *sock, struct msghdr *msg, size_t size,
 
 unlock:
 	af_alg_data_wakeup(sk);
-	ctx->write = false;
 	release_sock(sk);
 
 	return copied ?: err;
 }
 EXPORT_SYMBOL_GPL(af_alg_sendmsg);
+
+/**
+ * af_alg_sendpage - sendpage system call handler
+ * @sock: socket of connection to user space to write to
+ * @page: data to send
+ * @offset: offset into page to begin sending
+ * @size: length of data
+ * @flags: message send/receive flags
+ *
+ * This is a generic implementation of sendpage to fill ctx->tsgl_list.
+ */
+ssize_t af_alg_sendpage(struct socket *sock, struct page *page,
+			int offset, size_t size, int flags)
+{
+	struct sock *sk = sock->sk;
+	struct alg_sock *ask = alg_sk(sk);
+	struct af_alg_ctx *ctx = ask->private;
+	struct af_alg_tsgl *sgl;
+	int err = -EINVAL;
+
+	if (flags & MSG_SENDPAGE_NOTLAST)
+		flags |= MSG_MORE;
+
+	lock_sock(sk);
+	if (!ctx->more && ctx->used)
+		goto unlock;
+
+	if (!size)
+		goto done;
+
+	if (!af_alg_writable(sk)) {
+		err = af_alg_wait_for_wmem(sk, flags);
+		if (err)
+			goto unlock;
+	}
+
+	err = af_alg_alloc_tsgl(sk);
+	if (err)
+		goto unlock;
+
+	ctx->merge = 0;
+	sgl = list_entry(ctx->tsgl_list.prev, struct af_alg_tsgl, list);
+
+	if (sgl->cur)
+		sg_unmark_end(sgl->sg + sgl->cur - 1);
+
+	sg_mark_end(sgl->sg + sgl->cur);
+
+	get_page(page);
+	sg_set_page(sgl->sg + sgl->cur, page, size, offset);
+	sgl->cur++;
+	ctx->used += size;
+
+done:
+	ctx->more = flags & MSG_MORE;
+
+unlock:
+	af_alg_data_wakeup(sk);
+	release_sock(sk);
+
+	return err ?: size;
+}
+EXPORT_SYMBOL_GPL(af_alg_sendpage);
 
 /**
  * af_alg_free_resources - release resources required for crypto request
@@ -1125,13 +1178,9 @@ EXPORT_SYMBOL_GPL(af_alg_sendmsg);
 void af_alg_free_resources(struct af_alg_async_req *areq)
 {
 	struct sock *sk = areq->sk;
-	struct af_alg_ctx *ctx;
 
 	af_alg_free_areq_sgls(areq);
 	sock_kfree_s(sk, areq, areq->areqlen);
-
-	ctx = alg_sk(sk)->private;
-	ctx->inflight = false;
 }
 EXPORT_SYMBOL_GPL(af_alg_free_resources);
 
@@ -1201,25 +1250,17 @@ EXPORT_SYMBOL_GPL(af_alg_poll);
 struct af_alg_async_req *af_alg_alloc_areq(struct sock *sk,
 					   unsigned int areqlen)
 {
-	struct af_alg_ctx *ctx = alg_sk(sk)->private;
-	struct af_alg_async_req *areq;
+	struct af_alg_async_req *areq = sock_kmalloc(sk, areqlen, GFP_KERNEL);
 
-	/* Only one AIO request can be in flight. */
-	if (ctx->inflight)
-		return ERR_PTR(-EBUSY);
-
-	areq = sock_kmalloc(sk, areqlen, GFP_KERNEL);
 	if (unlikely(!areq))
 		return ERR_PTR(-ENOMEM);
 
-	memset(areq, 0, areqlen);
-
-	ctx->inflight = true;
-
 	areq->areqlen = areqlen;
 	areq->sk = sk;
-	areq->first_rsgl.sgl.sgt.sgl = areq->first_rsgl.sgl.sgl;
+	areq->last_rsgl = NULL;
 	INIT_LIST_HEAD(&areq->rsgl_list);
+	areq->tsgl = NULL;
+	areq->tsgl_entries = 0;
 
 	return areq;
 }
@@ -1247,8 +1288,8 @@ int af_alg_get_rsgl(struct sock *sk, struct msghdr *msg, int flags,
 
 	while (maxsize > len && msg_data_left(msg)) {
 		struct af_alg_rsgl *rsgl;
-		ssize_t err;
 		size_t seglen;
+		int err;
 
 		/* limit the amount of readable buffers */
 		if (!af_alg_readable(sk))
@@ -1265,22 +1306,15 @@ int af_alg_get_rsgl(struct sock *sk, struct msghdr *msg, int flags,
 				return -ENOMEM;
 		}
 
-		rsgl->sgl.need_unpin =
-			iov_iter_extract_will_pin(&msg->msg_iter);
-		rsgl->sgl.sgt.sgl = rsgl->sgl.sgl;
-		rsgl->sgl.sgt.nents = 0;
-		rsgl->sgl.sgt.orig_nents = 0;
+		rsgl->sgl.npages = 0;
 		list_add_tail(&rsgl->list, &areq->rsgl_list);
 
-		sg_init_table(rsgl->sgl.sgt.sgl, ALG_MAX_PAGES);
-		err = extract_iter_to_sg(&msg->msg_iter, seglen, &rsgl->sgl.sgt,
-					 ALG_MAX_PAGES, 0);
+		/* make one iovec available as scatterlist */
+		err = af_alg_make_sg(&rsgl->sgl, &msg->msg_iter, seglen);
 		if (err < 0) {
 			rsgl->sg_num_bytes = 0;
 			return err;
 		}
-
-		sg_mark_end(rsgl->sgl.sgt.sgl + rsgl->sgl.sgt.nents - 1);
 
 		/* chain the new scatterlist with previous one */
 		if (areq->last_rsgl)
@@ -1324,6 +1358,5 @@ static void __exit af_alg_exit(void)
 
 module_init(af_alg_init);
 module_exit(af_alg_exit);
-MODULE_DESCRIPTION("Crypto userspace interface");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_NETPROTO(AF_ALG);

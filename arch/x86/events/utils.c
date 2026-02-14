@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <asm/insn.h>
-#include <linux/mm.h>
 
-#include <asm/msr.h>
 #include "perf_event.h"
 
 static int decode_branch_type(struct insn *insn)
@@ -134,9 +132,9 @@ static int get_branch_type(unsigned long from, unsigned long to, int abort,
 		 * The LBR logs any address in the IP, even if the IP just
 		 * faulted. This means userspace can control the from address.
 		 * Ensure we don't blindly read any address by validating it is
-		 * a known text address and not a vsyscall address.
+		 * a known text address.
 		 */
-		if (kernel_text_address(from) && !in_gate_area_no_mm(from)) {
+		if (kernel_text_address(from)) {
 			addr = (void *)from;
 			/*
 			 * Assume we can get the maximum possible size

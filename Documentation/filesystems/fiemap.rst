@@ -12,10 +12,21 @@ returns a list of extents.
 Request Basics
 --------------
 
-A fiemap request is encoded within struct fiemap:
+A fiemap request is encoded within struct fiemap::
 
-.. kernel-doc:: include/uapi/linux/fiemap.h
-   :identifiers: fiemap
+  struct fiemap {
+	__u64	fm_start;	 /* logical offset (inclusive) at
+				  * which to start mapping (in) */
+	__u64	fm_length;	 /* logical length of mapping which
+				  * userspace cares about (in) */
+	__u32	fm_flags;	 /* FIEMAP_FLAG_* flags for request (in/out) */
+	__u32	fm_mapped_extents; /* number of extents that were
+				    * mapped (out) */
+	__u32	fm_extent_count; /* size of fm_extents array (in) */
+	__u32	fm_reserved;
+	struct fiemap_extent fm_extents[0]; /* array of mapped extents (out) */
+  };
+
 
 fm_start, and fm_length specify the logical range within the file
 which the process would like mappings for. Extents returned mirror
@@ -49,8 +60,6 @@ FIEMAP_FLAG_XATTR
   If this flag is set, the extents returned will describe the inodes
   extended attribute lookup tree, instead of its data tree.
 
-FIEMAP_FLAG_CACHE
-  This flag requests caching of the extents.
 
 Extent Mapping
 --------------
@@ -68,10 +77,18 @@ complete the requested range and will not have the FIEMAP_EXTENT_LAST
 flag set (see the next section on extent flags).
 
 Each extent is described by a single fiemap_extent structure as
-returned in fm_extents:
+returned in fm_extents::
 
-.. kernel-doc:: include/uapi/linux/fiemap.h
-    :identifiers: fiemap_extent
+    struct fiemap_extent {
+	    __u64	fe_logical;  /* logical offset in bytes for the start of
+				* the extent */
+	    __u64	fe_physical; /* physical offset in bytes for the start
+				* of the extent */
+	    __u64	fe_length;   /* length in bytes for the extent */
+	    __u64	fe_reserved64[2];
+	    __u32	fe_flags;    /* FIEMAP_EXTENT_* flags for this extent */
+	    __u32	fe_reserved[3];
+    };
 
 All offsets and lengths are in bytes and mirror those on disk.  It is valid
 for an extents logical offset to start before the request or its logical
@@ -158,8 +175,6 @@ FIEMAP_EXTENT_MERGED
   userspace would be highly inefficient, the kernel will try to merge most
   adjacent blocks into 'extents'.
 
-FIEMAP_EXTENT_SHARED
-  This flag is set to request that space be shared with other files.
 
 VFS -> File System Implementation
 ---------------------------------
@@ -176,10 +191,14 @@ each discovered extent::
                      u64 len);
 
 ->fiemap is passed struct fiemap_extent_info which describes the
-fiemap request:
+fiemap request::
 
-.. kernel-doc:: include/linux/fiemap.h
-    :identifiers: fiemap_extent_info
+  struct fiemap_extent_info {
+	unsigned int fi_flags;		/* Flags as passed from user */
+	unsigned int fi_extents_mapped;	/* Number of mapped extents */
+	unsigned int fi_extents_max;	/* Size of fiemap_extent array */
+	struct fiemap_extent *fi_extents_start;	/* Start of fiemap_extent array */
+  };
 
 It is intended that the file system should not need to access any of this
 structure directly. Filesystem handlers should be tolerant to signals and return

@@ -54,10 +54,10 @@ UIMAGE_ENTRYADDR = $(VMLINUX_ENTRY_ADDRESS)
 # Compressed vmlinux images
 #
 
-targets += vmlinux.bin.bz2
-targets += vmlinux.bin.gz
-targets += vmlinux.bin.lzma
-targets += vmlinux.bin.lzo
+extra-y += vmlinux.bin.bz2
+extra-y += vmlinux.bin.gz
+extra-y += vmlinux.bin.lzma
+extra-y += vmlinux.bin.lzo
 
 $(obj)/vmlinux.bin.bz2: $(obj)/vmlinux.bin FORCE
 	$(call if_changed,bzip2)

@@ -40,4 +40,13 @@
 struct aic32x4_setup_data {
 	unsigned int gpio_func[5];
 };
+
+struct aic32x4_pdata {
+	struct aic32x4_setup_data *setup;
+	u32 power_cfg;
+	u32 micpga_routing;
+	bool swapdacs;
+	int rstn_gpio;
+};
+
 #endif

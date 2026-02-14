@@ -3,7 +3,6 @@
  * UniNorth AGPGART routines.
  */
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/init.h>
@@ -726,5 +725,4 @@ MODULE_PARM_DESC(aperture,
 		 "\t\tDefault: " DEFAULT_APERTURE_STRING "M");
 
 MODULE_AUTHOR("Ben Herrenschmidt & Paul Mackerras");
-MODULE_DESCRIPTION("Apple UniNorth & U3 AGP support");
 MODULE_LICENSE("GPL");

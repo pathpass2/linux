@@ -24,7 +24,6 @@
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
 #include <linux/etherdevice.h>
-#include <linux/if_vlan.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/net_tstamp.h>
@@ -64,15 +63,7 @@
 
 #define POOL_ALLOC_SIZE		(sizeof(struct desc) * (RX_DESCS + TX_DESCS))
 #define REGS_SIZE		0x1000
-
-/* MRU is said to be 14320 in a code dump, the SW manual says that
- * MRU/MTU is 16320 and includes VLAN and ethernet headers.
- * See "IXP400 Software Programmer's Guide" section 10.3.2, page 161.
- *
- * FIXME: we have chosen the safe default (14320) but if you can test
- * jumboframes, experiment with 16320 and see what happens!
- */
-#define MAX_MRU			(14320 - VLAN_ETH_HLEN)
+#define MAX_MRU			1536 /* 0x600 */
 #define RX_BUFF_SIZE		ALIGN((NET_IP_ALIGN) + MAX_MRU, 4)
 
 #define NAPI_WEIGHT		16
@@ -163,6 +154,7 @@ typedef void buffer_t;
 
 /* Information about built-in Ethernet MAC interfaces */
 struct eth_plat_info {
+	u8 phy;		/* MII PHY ID, 0 - 31 */
 	u8 rxq;		/* configurable, currently 0 - 31 only */
 	u8 txreadyq;
 	u8 hwaddr[ETH_ALEN];
@@ -394,20 +386,16 @@ static void ixp_tx_timestamp(struct port *port, struct sk_buff *skb)
 	__raw_writel(TX_SNAPSHOT_LOCKED, &regs->channel[ch].ch_event);
 }
 
-static int ixp4xx_hwtstamp_set(struct net_device *netdev,
-			       struct kernel_hwtstamp_config *cfg,
-			       struct netlink_ext_ack *extack)
+static int hwtstamp_set(struct net_device *netdev, struct ifreq *ifr)
 {
+	struct hwtstamp_config cfg;
 	struct ixp46x_ts_regs *regs;
 	struct port *port = netdev_priv(netdev);
 	int ret;
 	int ch;
 
-	if (!cpu_is_ixp46x())
-		return -EOPNOTSUPP;
-
-	if (!netif_running(netdev))
-		return -EINVAL;
+	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
+		return -EFAULT;
 
 	ret = ixp46x_ptp_find(&port->timesync_regs, &port->phc_index);
 	if (ret)
@@ -416,10 +404,10 @@ static int ixp4xx_hwtstamp_set(struct net_device *netdev,
 	ch = PORT2CHANNEL(port);
 	regs = port->timesync_regs;
 
-	if (cfg->tx_type != HWTSTAMP_TX_OFF && cfg->tx_type != HWTSTAMP_TX_ON)
+	if (cfg.tx_type != HWTSTAMP_TX_OFF && cfg.tx_type != HWTSTAMP_TX_ON)
 		return -ERANGE;
 
-	switch (cfg->rx_filter) {
+	switch (cfg.rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		port->hwts_rx_en = 0;
 		break;
@@ -435,45 +423,39 @@ static int ixp4xx_hwtstamp_set(struct net_device *netdev,
 		return -ERANGE;
 	}
 
-	port->hwts_tx_en = cfg->tx_type == HWTSTAMP_TX_ON;
+	port->hwts_tx_en = cfg.tx_type == HWTSTAMP_TX_ON;
 
 	/* Clear out any old time stamps. */
 	__raw_writel(TX_SNAPSHOT_LOCKED | RX_SNAPSHOT_LOCKED,
 		     &regs->channel[ch].ch_event);
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
 }
 
-static int ixp4xx_hwtstamp_get(struct net_device *netdev,
-			       struct kernel_hwtstamp_config *cfg)
+static int hwtstamp_get(struct net_device *netdev, struct ifreq *ifr)
 {
+	struct hwtstamp_config cfg;
 	struct port *port = netdev_priv(netdev);
 
-	if (!cpu_is_ixp46x())
-		return -EOPNOTSUPP;
-
-	if (!netif_running(netdev))
-		return -EINVAL;
-
-	cfg->flags = 0;
-	cfg->tx_type = port->hwts_tx_en ? HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
+	cfg.flags = 0;
+	cfg.tx_type = port->hwts_tx_en ? HWTSTAMP_TX_ON : HWTSTAMP_TX_OFF;
 
 	switch (port->hwts_rx_en) {
 	case 0:
-		cfg->rx_filter = HWTSTAMP_FILTER_NONE;
+		cfg.rx_filter = HWTSTAMP_FILTER_NONE;
 		break;
 	case PTP_SLAVE_MODE:
-		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_SYNC;
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_SYNC;
 		break;
 	case PTP_MASTER_MODE:
-		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ;
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ;
 		break;
 	default:
 		WARN_ON_ONCE(1);
 		return -ERANGE;
 	}
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
 }
 
 static int ixp4xx_mdio_cmd(struct mii_bus *bus, int phy_id, int location,
@@ -732,9 +714,9 @@ static int eth_poll(struct napi_struct *napi, int budget)
 			napi_complete(napi);
 			qmgr_enable_irq(rxq);
 			if (!qmgr_stat_below_low_watermark(rxq) &&
-			    napi_schedule(napi)) { /* not empty again */
+			    napi_reschedule(napi)) { /* not empty again */
 #if DEBUG_RX
-				netdev_debug(dev, "eth_poll napi_schedule succeeded\n");
+				netdev_debug(dev, "eth_poll napi_reschedule succeeded\n");
 #endif
 				qmgr_disable_irq(rxq);
 				continue;
@@ -995,6 +977,21 @@ static void eth_set_mcast_list(struct net_device *dev)
 }
 
 
+static int eth_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
+{
+	if (!netif_running(dev))
+		return -EINVAL;
+
+	if (cpu_is_ixp46x()) {
+		if (cmd == SIOCSHWTSTAMP)
+			return hwtstamp_set(dev, req);
+		if (cmd == SIOCGHWTSTAMP)
+			return hwtstamp_get(dev, req);
+	}
+
+	return phy_mii_ioctl(dev->phydev, req, cmd);
+}
+
 /* ethtool support */
 
 static void ixp4xx_get_drvinfo(struct net_device *dev,
@@ -1010,7 +1007,7 @@ static void ixp4xx_get_drvinfo(struct net_device *dev,
 }
 
 static int ixp4xx_get_ts_info(struct net_device *dev,
-			      struct kernel_ethtool_ts_info *info)
+			      struct ethtool_ts_info *info)
 {
 	struct port *port = netdev_priv(dev);
 
@@ -1021,7 +1018,9 @@ static int ixp4xx_get_ts_info(struct net_device *dev,
 
 	if (info->phc_index < 0) {
 		info->so_timestamping =
-			SOF_TIMESTAMPING_TX_SOFTWARE;
+			SOF_TIMESTAMPING_TX_SOFTWARE |
+			SOF_TIMESTAMPING_RX_SOFTWARE |
+			SOF_TIMESTAMPING_SOFTWARE;
 		return 0;
 	}
 	info->so_timestamping =
@@ -1183,54 +1182,6 @@ static void destroy_queues(struct port *port)
 	}
 }
 
-static int ixp4xx_do_change_mtu(struct net_device *dev, int new_mtu)
-{
-	struct port *port = netdev_priv(dev);
-	struct npe *npe = port->npe;
-	int framesize, chunks;
-	struct msg msg = {};
-
-	/* adjust for ethernet headers */
-	framesize = new_mtu + VLAN_ETH_HLEN;
-	/* max rx/tx 64 byte chunks */
-	chunks = DIV_ROUND_UP(framesize, 64);
-
-	msg.cmd = NPE_SETMAXFRAMELENGTHS;
-	msg.eth_id = port->id;
-
-	/* Firmware wants to know buffer size in 64 byte chunks */
-	msg.byte2 = chunks << 8;
-	msg.byte3 = chunks << 8;
-
-	msg.byte4 = msg.byte6 = framesize >> 8;
-	msg.byte5 = msg.byte7 = framesize & 0xff;
-
-	if (npe_send_recv_message(npe, &msg, "ETH_SET_MAX_FRAME_LENGTH"))
-		return -EIO;
-	netdev_dbg(dev, "set MTU on NPE %s to %d bytes\n",
-		   npe_name(npe), new_mtu);
-
-	return 0;
-}
-
-static int ixp4xx_eth_change_mtu(struct net_device *dev, int new_mtu)
-{
-	int ret;
-
-	/* MTU can only be changed when the interface is up. We also
-	 * set the MTU from dev->mtu when opening the device.
-	 */
-	if (dev->flags & IFF_UP) {
-		ret = ixp4xx_do_change_mtu(dev, new_mtu);
-		if (ret < 0)
-			return ret;
-	}
-
-	WRITE_ONCE(dev->mtu, new_mtu);
-
-	return 0;
-}
-
 static int eth_open(struct net_device *dev)
 {
 	struct port *port = netdev_priv(dev);
@@ -1280,8 +1231,6 @@ static int eth_open(struct net_device *dev)
 	msg.eth_id = port->id;
 	if (npe_send_recv_message(port->npe, &msg, "ETH_SET_FIREWALL_MODE"))
 		return -EIO;
-
-	ixp4xx_do_change_mtu(dev, dev->mtu);
 
 	if ((err = request_queues(port)) != 0)
 		return err;
@@ -1425,14 +1374,11 @@ static int eth_close(struct net_device *dev)
 static const struct net_device_ops ixp4xx_netdev_ops = {
 	.ndo_open = eth_open,
 	.ndo_stop = eth_close,
-	.ndo_change_mtu = ixp4xx_eth_change_mtu,
 	.ndo_start_xmit = eth_xmit,
 	.ndo_set_rx_mode = eth_set_mcast_list,
-	.ndo_eth_ioctl = phy_do_ioctl_running,
+	.ndo_eth_ioctl = eth_ioctl,
 	.ndo_set_mac_address = eth_mac_addr,
 	.ndo_validate_addr = eth_validate_addr,
-	.ndo_hwtstamp_get = ixp4xx_hwtstamp_get,
-	.ndo_hwtstamp_set = ixp4xx_hwtstamp_set,
 };
 
 static struct eth_plat_info *ixp4xx_of_get_platdata(struct device *dev)
@@ -1542,9 +1488,6 @@ static int ixp4xx_eth_probe(struct platform_device *pdev)
 	ndev->dev.dma_mask = dev->dma_mask;
 	ndev->dev.coherent_dma_mask = dev->coherent_dma_mask;
 
-	ndev->min_mtu = ETH_MIN_MTU;
-	ndev->max_mtu = MAX_MRU;
-
 	netif_napi_add_weight(ndev, &port->napi, eth_poll, NAPI_WEIGHT);
 
 	if (!(port->npe = npe_request(NPE_ID(port->id))))
@@ -1577,7 +1520,7 @@ static int ixp4xx_eth_probe(struct platform_device *pdev)
 	if ((err = register_netdev(ndev)))
 		goto err_phy_dis;
 
-	netdev_info(ndev, "%s: MII PHY %s on %s\n", ndev->name, phydev_name(phydev),
+	netdev_info(ndev, "%s: MII PHY %i on %s\n", ndev->name, plat->phy,
 		    npe_name(port->npe));
 
 	return 0;
@@ -1590,7 +1533,7 @@ err_free_mem:
 	return err;
 }
 
-static void ixp4xx_eth_remove(struct platform_device *pdev)
+static int ixp4xx_eth_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct phy_device *phydev = ndev->phydev;
@@ -1601,6 +1544,7 @@ static void ixp4xx_eth_remove(struct platform_device *pdev)
 	ixp4xx_mdio_remove();
 	npe_port_tab[NPE_ID(port->id)] = NULL;
 	npe_release(port->npe);
+	return 0;
 }
 
 static const struct of_device_id ixp4xx_eth_of_match[] = {

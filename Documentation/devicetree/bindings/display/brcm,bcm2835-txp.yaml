@@ -11,10 +11,7 @@ maintainers:
 
 properties:
   compatible:
-    enum:
-      - brcm,bcm2712-mop
-      - brcm,bcm2712-moplet
-      - brcm,bcm2835-txp
+    const: brcm,bcm2835-txp
 
   reg:
     maxItems: 1

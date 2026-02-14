@@ -11,13 +11,12 @@
 #include <linux/jump_label.h>
 #include <asm/lowcore.h>
 #include <asm/ptrace.h>
-#include <asm/asm.h>
 
 struct qpaci_info_block {
 	u64 header;
 	struct {
 		u64 : 8;
-		u64 num_cc : 8;		/* # of supported crypto counters */
+		u64 num_cc : 8;	/* # of supported crypto counters */
 		u64 : 9;
 		u64 num_nnpa : 7;	/* # of supported NNPA counters */
 		u64 : 32;
@@ -34,11 +33,12 @@ static inline int qpaci(struct qpaci_info_block *info)
 		"	lgr	0,%[size]\n"
 		"	.insn	s,0xb28f0000,%[info]\n"
 		"	lgr	%[size],0\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, cc), [info] "=Q" (*info), [size] "+&d" (size)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
+		: [cc] "=d" (cc), [info] "=Q" (*info), [size] "+&d" (size)
 		:
-		: CC_CLOBBER_LIST("0", "memory"));
-	return CC_TRANSFORM(cc) ? (size + 1) * sizeof(u64) : 0;
+		: "0", "cc", "memory");
+	return cc ? (size + 1) * sizeof(u64) : 0;
 }
 
 #define PAI_CRYPTO_BASE			0x1000	/* First event number */
@@ -55,11 +55,11 @@ static __always_inline void pai_kernel_enter(struct pt_regs *regs)
 		return;
 	if (!static_branch_unlikely(&pai_key))
 		return;
-	if (!get_lowcore()->ccd)
+	if (!S390_lowcore.ccd)
 		return;
 	if (!user_mode(regs))
 		return;
-	WRITE_ONCE(get_lowcore()->ccd, get_lowcore()->ccd | PAI_CRYPTO_KERNEL_OFFSET);
+	WRITE_ONCE(S390_lowcore.ccd, S390_lowcore.ccd | PAI_CRYPTO_KERNEL_OFFSET);
 }
 
 static __always_inline void pai_kernel_exit(struct pt_regs *regs)
@@ -68,16 +68,17 @@ static __always_inline void pai_kernel_exit(struct pt_regs *regs)
 		return;
 	if (!static_branch_unlikely(&pai_key))
 		return;
-	if (!get_lowcore()->ccd)
+	if (!S390_lowcore.ccd)
 		return;
 	if (!user_mode(regs))
 		return;
-	WRITE_ONCE(get_lowcore()->ccd, get_lowcore()->ccd & ~PAI_CRYPTO_KERNEL_OFFSET);
+	WRITE_ONCE(S390_lowcore.ccd, S390_lowcore.ccd & ~PAI_CRYPTO_KERNEL_OFFSET);
 }
 
-#define PAI_SAVE_AREA(x)	((x)->hw.event_base)
-#define PAI_CPU_MASK(x)		((x)->hw.addr_filters)
-#define PAI_PMU_IDX(x)		((x)->hw.last_tag)
-#define PAI_SWLIST(x)		(&(x)->hw.tp_list)
+enum paievt_mode {
+	PAI_MODE_NONE,
+	PAI_MODE_SAMPLING,
+	PAI_MODE_COUNTING,
+};
 
 #endif

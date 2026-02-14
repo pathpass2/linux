@@ -9,8 +9,6 @@
 #include <kunit/test.h>
 #include "./hid-uclogic-rdesc.h"
 
-MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");
-
 struct uclogic_template_case {
 	const char *name;
 	const __u8 *template;

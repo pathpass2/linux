@@ -47,31 +47,29 @@ enum {
 	__LOCKF(USED_READ)
 };
 
-enum {
 #define LOCKDEP_STATE(__STATE)	LOCKF_ENABLED_##__STATE |
-	LOCKF_ENABLED_IRQ =
+static const unsigned long LOCKF_ENABLED_IRQ =
 #include "lockdep_states.h"
-	0,
+	0;
 #undef LOCKDEP_STATE
 
 #define LOCKDEP_STATE(__STATE)	LOCKF_USED_IN_##__STATE |
-	LOCKF_USED_IN_IRQ =
+static const unsigned long LOCKF_USED_IN_IRQ =
 #include "lockdep_states.h"
-	0,
+	0;
 #undef LOCKDEP_STATE
 
 #define LOCKDEP_STATE(__STATE)	LOCKF_ENABLED_##__STATE##_READ |
-	LOCKF_ENABLED_IRQ_READ =
+static const unsigned long LOCKF_ENABLED_IRQ_READ =
 #include "lockdep_states.h"
-	0,
+	0;
 #undef LOCKDEP_STATE
 
 #define LOCKDEP_STATE(__STATE)	LOCKF_USED_IN_##__STATE##_READ |
-	LOCKF_USED_IN_IRQ_READ =
+static const unsigned long LOCKF_USED_IN_IRQ_READ =
 #include "lockdep_states.h"
-	0,
+	0;
 #undef LOCKDEP_STATE
-};
 
 #define LOCKF_ENABLED_IRQ_ALL (LOCKF_ENABLED_IRQ | LOCKF_ENABLED_IRQ_READ)
 #define LOCKF_USED_IN_IRQ_ALL (LOCKF_USED_IN_IRQ | LOCKF_USED_IN_IRQ_READ)
@@ -121,8 +119,7 @@ enum {
 
 #define MAX_LOCKDEP_CHAINS	(1UL << MAX_LOCKDEP_CHAINS_BITS)
 
-#define AVG_LOCKDEP_CHAIN_DEPTH		5
-#define MAX_LOCKDEP_CHAIN_HLOCKS (MAX_LOCKDEP_CHAINS * AVG_LOCKDEP_CHAIN_DEPTH)
+#define MAX_LOCKDEP_CHAIN_HLOCKS (MAX_LOCKDEP_CHAINS*5)
 
 extern struct lock_chain lock_chains[];
 
@@ -140,7 +137,6 @@ extern unsigned long nr_lock_classes;
 extern unsigned long nr_zapped_classes;
 extern unsigned long nr_zapped_lock_chains;
 extern unsigned long nr_list_entries;
-extern unsigned long nr_dynamic_keys;
 long lockdep_next_lockchain(long i);
 unsigned long lock_chain_count(void);
 extern unsigned long nr_stack_trace_entries;

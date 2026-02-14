@@ -552,8 +552,7 @@ EXPORT_SYMBOL(ir_raw_encode_scancode);
  */
 static void ir_raw_edge_handle(struct timer_list *t)
 {
-	struct ir_raw_event_ctrl *raw = timer_container_of(raw, t,
-							   edge_handle);
+	struct ir_raw_event_ctrl *raw = from_timer(raw, t, edge_handle);
 	struct rc_dev *dev = raw->dev;
 	unsigned long flags;
 	ktime_t interval;
@@ -663,7 +662,7 @@ void ir_raw_event_unregister(struct rc_dev *dev)
 		return;
 
 	kthread_stop(dev->raw->thread);
-	timer_delete_sync(&dev->raw->edge_handle);
+	del_timer_sync(&dev->raw->edge_handle);
 
 	mutex_lock(&ir_raw_handler_lock);
 	list_del(&dev->raw->list);

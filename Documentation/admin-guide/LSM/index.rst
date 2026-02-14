@@ -47,5 +47,3 @@ subdirectories.
    tomoyo
    Yama
    SafeSetID
-   ipe
-   landlock

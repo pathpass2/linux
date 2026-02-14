@@ -18,20 +18,6 @@
 
 #include "pcie-designware.h"
 
-#define PEX_PF0_CONFIG			0xC0014
-#define PEX_PF0_CFG_READY		BIT(0)
-
-/* PEX PFa PCIE PME and message interrupt registers*/
-#define PEX_PF0_PME_MES_DR		0xC0020
-#define PEX_PF0_PME_MES_DR_LUD		BIT(7)
-#define PEX_PF0_PME_MES_DR_LDD		BIT(9)
-#define PEX_PF0_PME_MES_DR_HRD		BIT(10)
-
-#define PEX_PF0_PME_MES_IER		0xC0028
-#define PEX_PF0_PME_MES_IER_LUDIE	BIT(7)
-#define PEX_PF0_PME_MES_IER_LDDIE	BIT(9)
-#define PEX_PF0_PME_MES_IER_HRDIE	BIT(10)
-
 #define to_ls_pcie_ep(x)	dev_get_drvdata((x)->dev)
 
 struct ls_pcie_ep_drvdata {
@@ -44,99 +30,7 @@ struct ls_pcie_ep {
 	struct dw_pcie			*pci;
 	struct pci_epc_features		*ls_epc;
 	const struct ls_pcie_ep_drvdata *drvdata;
-	int				irq;
-	u32				lnkcap;
-	bool				big_endian;
 };
-
-static u32 ls_pcie_pf_lut_readl(struct ls_pcie_ep *pcie, u32 offset)
-{
-	struct dw_pcie *pci = pcie->pci;
-
-	if (pcie->big_endian)
-		return ioread32be(pci->dbi_base + offset);
-	else
-		return ioread32(pci->dbi_base + offset);
-}
-
-static void ls_pcie_pf_lut_writel(struct ls_pcie_ep *pcie, u32 offset, u32 value)
-{
-	struct dw_pcie *pci = pcie->pci;
-
-	if (pcie->big_endian)
-		iowrite32be(value, pci->dbi_base + offset);
-	else
-		iowrite32(value, pci->dbi_base + offset);
-}
-
-static irqreturn_t ls_pcie_ep_event_handler(int irq, void *dev_id)
-{
-	struct ls_pcie_ep *pcie = dev_id;
-	struct dw_pcie *pci = pcie->pci;
-	u32 val, cfg;
-	u8 offset;
-
-	val = ls_pcie_pf_lut_readl(pcie, PEX_PF0_PME_MES_DR);
-	ls_pcie_pf_lut_writel(pcie, PEX_PF0_PME_MES_DR, val);
-
-	if (!val)
-		return IRQ_NONE;
-
-	if (val & PEX_PF0_PME_MES_DR_LUD) {
-
-		offset = dw_pcie_find_capability(pci, PCI_CAP_ID_EXP);
-
-		/*
-		 * The values of the Maximum Link Width and Supported Link
-		 * Speed from the Link Capabilities Register will be lost
-		 * during link down or hot reset. Restore initial value
-		 * that configured by the Reset Configuration Word (RCW).
-		 */
-		dw_pcie_dbi_ro_wr_en(pci);
-		dw_pcie_writel_dbi(pci, offset + PCI_EXP_LNKCAP, pcie->lnkcap);
-		dw_pcie_dbi_ro_wr_dis(pci);
-
-		cfg = ls_pcie_pf_lut_readl(pcie, PEX_PF0_CONFIG);
-		cfg |= PEX_PF0_CFG_READY;
-		ls_pcie_pf_lut_writel(pcie, PEX_PF0_CONFIG, cfg);
-		dw_pcie_ep_linkup(&pci->ep);
-
-		dev_dbg(pci->dev, "Link up\n");
-	} else if (val & PEX_PF0_PME_MES_DR_LDD) {
-		dev_dbg(pci->dev, "Link down\n");
-		dw_pcie_ep_linkdown(&pci->ep);
-	} else if (val & PEX_PF0_PME_MES_DR_HRD) {
-		dev_dbg(pci->dev, "Hot reset\n");
-	}
-
-	return IRQ_HANDLED;
-}
-
-static int ls_pcie_ep_interrupt_init(struct ls_pcie_ep *pcie,
-				     struct platform_device *pdev)
-{
-	u32 val;
-	int ret;
-
-	pcie->irq = platform_get_irq_byname(pdev, "pme");
-	if (pcie->irq < 0)
-		return pcie->irq;
-
-	ret = devm_request_irq(&pdev->dev, pcie->irq, ls_pcie_ep_event_handler,
-			       IRQF_SHARED, pdev->name, pcie);
-	if (ret) {
-		dev_err(&pdev->dev, "Can't register PCIe IRQ\n");
-		return ret;
-	}
-
-	/* Enable interrupts */
-	val = ls_pcie_pf_lut_readl(pcie, PEX_PF0_PME_MES_IER);
-	val |=  PEX_PF0_PME_MES_IER_LDDIE | PEX_PF0_PME_MES_IER_HRDIE |
-		PEX_PF0_PME_MES_IER_LUDIE;
-	ls_pcie_pf_lut_writel(pcie, PEX_PF0_PME_MES_IER, val);
-
-	return 0;
-}
 
 static const struct pci_epc_features*
 ls_pcie_ep_get_features(struct dw_pcie_ep *ep)
@@ -166,16 +60,16 @@ static void ls_pcie_ep_init(struct dw_pcie_ep *ep)
 }
 
 static int ls_pcie_ep_raise_irq(struct dw_pcie_ep *ep, u8 func_no,
-				unsigned int type, u16 interrupt_num)
+				enum pci_epc_irq_type type, u16 interrupt_num)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
 
 	switch (type) {
-	case PCI_IRQ_INTX:
-		return dw_pcie_ep_raise_intx_irq(ep, func_no);
-	case PCI_IRQ_MSI:
+	case PCI_EPC_IRQ_LEGACY:
+		return dw_pcie_ep_raise_legacy_irq(ep, func_no);
+	case PCI_EPC_IRQ_MSI:
 		return dw_pcie_ep_raise_msi_irq(ep, func_no, interrupt_num);
-	case PCI_IRQ_MSIX:
+	case PCI_EPC_IRQ_MSIX:
 		return dw_pcie_ep_raise_msix_irq_doorbell(ep, func_no,
 							  interrupt_num);
 	default:
@@ -184,7 +78,8 @@ static int ls_pcie_ep_raise_irq(struct dw_pcie_ep *ep, u8 func_no,
 	}
 }
 
-static unsigned int ls_pcie_ep_get_dbi_offset(struct dw_pcie_ep *ep, u8 func_no)
+static unsigned int ls_pcie_ep_func_conf_select(struct dw_pcie_ep *ep,
+						u8 func_no)
 {
 	struct dw_pcie *pci = to_dw_pcie_from_ep(ep);
 	struct ls_pcie_ep *pcie = to_ls_pcie_ep(pci);
@@ -194,10 +89,10 @@ static unsigned int ls_pcie_ep_get_dbi_offset(struct dw_pcie_ep *ep, u8 func_no)
 }
 
 static const struct dw_pcie_ep_ops ls_pcie_ep_ops = {
-	.init = ls_pcie_ep_init,
+	.ep_init = ls_pcie_ep_init,
 	.raise_irq = ls_pcie_ep_raise_irq,
 	.get_features = ls_pcie_ep_get_features,
-	.get_dbi_offset = ls_pcie_ep_get_dbi_offset,
+	.func_conf_select = ls_pcie_ep_func_conf_select,
 };
 
 static const struct ls_pcie_ep_drvdata ls1_ep_drvdata = {
@@ -215,7 +110,6 @@ static const struct ls_pcie_ep_drvdata lx2_ep_drvdata = {
 };
 
 static const struct of_device_id ls_pcie_ep_of_match[] = {
-	{ .compatible = "fsl,ls1028a-pcie-ep", .data = &ls1_ep_drvdata },
 	{ .compatible = "fsl,ls1046a-pcie-ep", .data = &ls1_ep_drvdata },
 	{ .compatible = "fsl,ls1088a-pcie-ep", .data = &ls2_ep_drvdata },
 	{ .compatible = "fsl,ls2088a-pcie-ep", .data = &ls2_ep_drvdata },
@@ -230,8 +124,6 @@ static int __init ls_pcie_ep_probe(struct platform_device *pdev)
 	struct ls_pcie_ep *pcie;
 	struct pci_epc_features *ls_epc;
 	struct resource *dbi_base;
-	u8 offset;
-	int ret;
 
 	pcie = devm_kzalloc(dev, sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
@@ -250,11 +142,7 @@ static int __init ls_pcie_ep_probe(struct platform_device *pdev)
 	pci->dev = dev;
 	pci->ops = pcie->drvdata->dw_pcie_ops;
 
-	ls_epc->bar[BAR_2].only_64bit = true;
-	ls_epc->bar[BAR_3].type = BAR_RESERVED;
-	ls_epc->bar[BAR_4].only_64bit = true;
-	ls_epc->bar[BAR_5].type = BAR_RESERVED;
-	ls_epc->linkup_notifier = true;
+	ls_epc->bar_fixed_64bit = (1 << BAR_2) | (1 << BAR_4);
 
 	pcie->pci = pci;
 	pcie->ls_epc = ls_epc;
@@ -266,29 +154,9 @@ static int __init ls_pcie_ep_probe(struct platform_device *pdev)
 
 	pci->ep.ops = &ls_pcie_ep_ops;
 
-	pcie->big_endian = of_property_read_bool(dev->of_node, "big-endian");
-
-	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
-
 	platform_set_drvdata(pdev, pcie);
 
-	offset = dw_pcie_find_capability(pci, PCI_CAP_ID_EXP);
-	pcie->lnkcap = dw_pcie_readl_dbi(pci, offset + PCI_EXP_LNKCAP);
-
-	ret = dw_pcie_ep_init(&pci->ep);
-	if (ret)
-		return ret;
-
-	ret = dw_pcie_ep_init_registers(&pci->ep);
-	if (ret) {
-		dev_err(dev, "Failed to initialize DWC endpoint registers\n");
-		dw_pcie_ep_deinit(&pci->ep);
-		return ret;
-	}
-
-	pci_epc_init_notify(pci->ep.epc);
-
-	return ls_pcie_ep_interrupt_init(pcie, pdev);
+	return dw_pcie_ep_init(&pci->ep);
 }
 
 static struct platform_driver ls_pcie_ep_driver = {

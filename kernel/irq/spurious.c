@@ -19,41 +19,77 @@ static int irqfixup __read_mostly;
 #define POLL_SPURIOUS_IRQ_INTERVAL (HZ/10)
 static void poll_spurious_irqs(struct timer_list *unused);
 static DEFINE_TIMER(poll_spurious_irq_timer, poll_spurious_irqs);
-int irq_poll_cpu;
+static int irq_poll_cpu;
 static atomic_t irq_poll_active;
+
+/*
+ * We wait here for a poller to finish.
+ *
+ * If the poll runs on this CPU, then we yell loudly and return
+ * false. That will leave the interrupt line disabled in the worst
+ * case, but it should never happen.
+ *
+ * We wait until the poller is done and then recheck disabled and
+ * action (about to be disabled). Only if it's still active, we return
+ * true and let the handler run.
+ */
+bool irq_wait_for_poll(struct irq_desc *desc)
+	__must_hold(&desc->lock)
+{
+	if (WARN_ONCE(irq_poll_cpu == smp_processor_id(),
+		      "irq poll in progress on cpu %d for irq %d\n",
+		      smp_processor_id(), desc->irq_data.irq))
+		return false;
+
+#ifdef CONFIG_SMP
+	do {
+		raw_spin_unlock(&desc->lock);
+		while (irqd_irq_inprogress(&desc->irq_data))
+			cpu_relax();
+		raw_spin_lock(&desc->lock);
+	} while (irqd_irq_inprogress(&desc->irq_data));
+	/* Might have been disabled in meantime */
+	return !irqd_irq_disabled(&desc->irq_data) && desc->action;
+#else
+	return false;
+#endif
+}
+
 
 /*
  * Recovery handler for misrouted interrupts.
  */
-static bool try_one_irq(struct irq_desc *desc, bool force)
+static int try_one_irq(struct irq_desc *desc, bool force)
 {
+	irqreturn_t ret = IRQ_NONE;
 	struct irqaction *action;
-	bool ret = false;
 
-	guard(raw_spinlock)(&desc->lock);
+	raw_spin_lock(&desc->lock);
 
 	/*
 	 * PER_CPU, nested thread interrupts and interrupts explicitly
 	 * marked polled are excluded from polling.
 	 */
-	if (irq_settings_is_per_cpu(desc) || irq_settings_is_nested_thread(desc) ||
+	if (irq_settings_is_per_cpu(desc) ||
+	    irq_settings_is_nested_thread(desc) ||
 	    irq_settings_is_polled(desc))
-		return false;
+		goto out;
 
 	/*
 	 * Do not poll disabled interrupts unless the spurious
 	 * disabled poller asks explicitly.
 	 */
 	if (irqd_irq_disabled(&desc->irq_data) && !force)
-		return false;
+		goto out;
 
 	/*
 	 * All handlers must agree on IRQF_SHARED, so we test just the
 	 * first.
 	 */
 	action = desc->action;
-	if (!action || !(action->flags & IRQF_SHARED) || (action->flags & __IRQF_TIMER))
-		return false;
+	if (!action || !(action->flags & IRQF_SHARED) ||
+	    (action->flags & __IRQF_TIMER))
+		goto out;
 
 	/* Already running on another processor */
 	if (irqd_irq_inprogress(&desc->irq_data)) {
@@ -62,19 +98,21 @@ static bool try_one_irq(struct irq_desc *desc, bool force)
 		 * CPU to go looking for our mystery interrupt too
 		 */
 		desc->istate |= IRQS_PENDING;
-		return false;
+		goto out;
 	}
 
 	/* Mark it poll in progress */
 	desc->istate |= IRQS_POLL_INPROGRESS;
 	do {
 		if (handle_irq_event(desc) == IRQ_HANDLED)
-			ret = true;
+			ret = IRQ_HANDLED;
 		/* Make sure that there is still a valid action */
 		action = desc->action;
 	} while ((desc->istate & IRQS_PENDING) && action);
 	desc->istate &= ~IRQS_POLL_INPROGRESS;
-	return ret;
+out:
+	raw_spin_unlock(&desc->lock);
+	return ret == IRQ_HANDLED;
 }
 
 static int misrouted_irq(int irq)
@@ -119,7 +157,8 @@ static void poll_spurious_irqs(struct timer_list *unused)
 			 continue;
 
 		/* Racy but it doesn't matter */
-		state = READ_ONCE(desc->istate);
+		state = desc->istate;
+		barrier();
 		if (!(state & IRQS_SPURIOUS_DISABLED))
 			continue;
 
@@ -129,7 +168,8 @@ static void poll_spurious_irqs(struct timer_list *unused)
 	}
 out:
 	atomic_dec(&irq_poll_active);
-	mod_timer(&poll_spurious_irq_timer, jiffies + POLL_SPURIOUS_IRQ_INTERVAL);
+	mod_timer(&poll_spurious_irq_timer,
+		  jiffies + POLL_SPURIOUS_IRQ_INTERVAL);
 }
 
 static inline int bad_action_ret(irqreturn_t action_ret)
@@ -153,13 +193,17 @@ static void __report_bad_irq(struct irq_desc *desc, irqreturn_t action_ret)
 {
 	unsigned int irq = irq_desc_get_irq(desc);
 	struct irqaction *action;
+	unsigned long flags;
 
-	if (bad_action_ret(action_ret))
-		pr_err("irq event %d: bogus return value %x\n", irq, action_ret);
-	else
-		pr_err("irq %d: nobody cared (try booting with the \"irqpoll\" option)\n", irq);
+	if (bad_action_ret(action_ret)) {
+		printk(KERN_ERR "irq event %d: bogus return value %x\n",
+				irq, action_ret);
+	} else {
+		printk(KERN_ERR "irq %d: nobody cared (try booting with "
+				"the \"irqpoll\" option)\n", irq);
+	}
 	dump_stack();
-	pr_err("handlers:\n");
+	printk(KERN_ERR "handlers:\n");
 
 	/*
 	 * We need to take desc->lock here. note_interrupt() is called
@@ -167,13 +211,15 @@ static void __report_bad_irq(struct irq_desc *desc, irqreturn_t action_ret)
 	 * with something else removing an action. It's ok to take
 	 * desc->lock here. See synchronize_irq().
 	 */
-	guard(raw_spinlock_irqsave)(&desc->lock);
+	raw_spin_lock_irqsave(&desc->lock, flags);
 	for_each_action_of_desc(desc, action) {
-		pr_err("[<%p>] %ps", action->handler, action->handler);
+		printk(KERN_ERR "[<%p>] %ps", action->handler, action->handler);
 		if (action->thread_fn)
-			pr_cont(" threaded [<%p>] %ps", action->thread_fn, action->thread_fn);
-		pr_cont("\n");
+			printk(KERN_CONT " threaded [<%p>] %ps",
+					action->thread_fn, action->thread_fn);
+		printk(KERN_CONT "\n");
 	}
+	raw_spin_unlock_irqrestore(&desc->lock, flags);
 }
 
 static void report_bad_irq(struct irq_desc *desc, irqreturn_t action_ret)
@@ -186,17 +232,18 @@ static void report_bad_irq(struct irq_desc *desc, irqreturn_t action_ret)
 	}
 }
 
-static inline bool try_misrouted_irq(unsigned int irq, struct irq_desc *desc,
-				     irqreturn_t action_ret)
+static inline int
+try_misrouted_irq(unsigned int irq, struct irq_desc *desc,
+		  irqreturn_t action_ret)
 {
 	struct irqaction *action;
 
 	if (!irqfixup)
-		return false;
+		return 0;
 
 	/* We didn't actually handle the IRQ - see if it was misrouted? */
 	if (action_ret == IRQ_NONE)
-		return true;
+		return 1;
 
 	/*
 	 * But for 'irqfixup == 2' we also do it for handled interrupts if
@@ -204,16 +251,19 @@ static inline bool try_misrouted_irq(unsigned int irq, struct irq_desc *desc,
 	 * traditional PC timer interrupt.. Legacy)
 	 */
 	if (irqfixup < 2)
-		return false;
+		return 0;
 
 	if (!irq)
-		return true;
+		return 1;
 
 	/*
 	 * Since we don't get the descriptor lock, "action" can
-	 * change under us.
+	 * change under us.  We don't really care, but we don't
+	 * want to follow a NULL pointer. So tell the compiler to
+	 * just load it once by using a barrier.
 	 */
-	action = READ_ONCE(desc->action);
+	action = desc->action;
+	barrier();
 	return action && (action->flags & IRQF_IRQPOLL);
 }
 
@@ -223,7 +273,8 @@ void note_interrupt(struct irq_desc *desc, irqreturn_t action_ret)
 {
 	unsigned int irq;
 
-	if (desc->istate & IRQS_POLL_INPROGRESS || irq_settings_is_polled(desc))
+	if (desc->istate & IRQS_POLL_INPROGRESS ||
+	    irq_settings_is_polled(desc))
 		return;
 
 	if (bad_action_ret(action_ret)) {
@@ -369,12 +420,13 @@ void note_interrupt(struct irq_desc *desc, irqreturn_t action_ret)
 		/*
 		 * Now kill the IRQ
 		 */
-		pr_emerg("Disabling IRQ #%d\n", irq);
+		printk(KERN_EMERG "Disabling IRQ #%d\n", irq);
 		desc->istate |= IRQS_SPURIOUS_DISABLED;
 		desc->depth++;
 		irq_disable(desc);
 
-		mod_timer(&poll_spurious_irq_timer, jiffies + POLL_SPURIOUS_IRQ_INTERVAL);
+		mod_timer(&poll_spurious_irq_timer,
+			  jiffies + POLL_SPURIOUS_IRQ_INTERVAL);
 	}
 	desc->irqs_unhandled = 0;
 }
@@ -384,9 +436,11 @@ bool noirqdebug __read_mostly;
 int noirqdebug_setup(char *str)
 {
 	noirqdebug = 1;
-	pr_info("IRQ lockup detection disabled\n");
+	printk(KERN_INFO "IRQ lockup detection disabled\n");
+
 	return 1;
 }
+
 __setup("noirqdebug", noirqdebug_setup);
 module_param(noirqdebug, bool, 0644);
 MODULE_PARM_DESC(noirqdebug, "Disable irq lockup detection when true");
@@ -398,10 +452,12 @@ static int __init irqfixup_setup(char *str)
 		return 1;
 	}
 	irqfixup = 1;
-	pr_warn("Misrouted IRQ fixup support enabled.\n");
-	pr_warn("This may impact system performance.\n");
+	printk(KERN_WARNING "Misrouted IRQ fixup support enabled.\n");
+	printk(KERN_WARNING "This may impact system performance.\n");
+
 	return 1;
 }
+
 __setup("irqfixup", irqfixup_setup);
 module_param(irqfixup, int, 0644);
 
@@ -412,8 +468,11 @@ static int __init irqpoll_setup(char *str)
 		return 1;
 	}
 	irqfixup = 2;
-	pr_warn("Misrouted IRQ fixup and polling support enabled\n");
-	pr_warn("This may significantly impact system performance\n");
+	printk(KERN_WARNING "Misrouted IRQ fixup and polling support "
+				"enabled\n");
+	printk(KERN_WARNING "This may significantly impact system "
+				"performance\n");
 	return 1;
 }
+
 __setup("irqpoll", irqpoll_setup);

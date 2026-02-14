@@ -607,6 +607,7 @@ static int ab8500_gpadc_read(struct ab8500_gpadc *gpadc,
 	}
 
 	/* This eventually drops the regulator */
+	pm_runtime_mark_last_busy(gpadc->dev);
 	pm_runtime_put_autosuspend(gpadc->dev);
 
 	return (high_data << 8) | low_data;
@@ -1020,13 +1021,14 @@ static int ab8500_gpadc_parse_channel(struct device *dev,
 /**
  * ab8500_gpadc_parse_channels() - Parse the GPADC channels from DT
  * @gpadc: the GPADC to configure the channels for
- * @chans_parsed: the IIO channels we parsed
- * @nchans_parsed: the number of IIO channels we parsed
+ * @chans: the IIO channels we parsed
+ * @nchans: the number of IIO channels we parsed
  */
 static int ab8500_gpadc_parse_channels(struct ab8500_gpadc *gpadc,
 				       struct iio_chan_spec **chans_parsed,
 				       unsigned int *nchans_parsed)
 {
+	struct fwnode_handle *child;
 	struct ab8500_gpadc_chan_info *ch;
 	struct iio_chan_spec *iio_chans;
 	unsigned int nchans;
@@ -1050,7 +1052,7 @@ static int ab8500_gpadc_parse_channels(struct ab8500_gpadc *gpadc,
 		return -ENOMEM;
 
 	i = 0;
-	device_for_each_child_node_scoped(gpadc->dev, child) {
+	device_for_each_child_node(gpadc->dev, child) {
 		struct iio_chan_spec *iio_chan;
 		int ret;
 
@@ -1060,6 +1062,7 @@ static int ab8500_gpadc_parse_channels(struct ab8500_gpadc *gpadc,
 		ret = ab8500_gpadc_parse_channel(gpadc->dev, child, ch,
 						 iio_chan);
 		if (ret) {
+			fwnode_handle_put(child);
 			return ret;
 		}
 		i++;
@@ -1096,12 +1099,14 @@ static int ab8500_gpadc_probe(struct platform_device *pdev)
 
 	gpadc->irq_sw = platform_get_irq_byname(pdev, "SW_CONV_END");
 	if (gpadc->irq_sw < 0)
-		return gpadc->irq_sw;
+		return dev_err_probe(dev, gpadc->irq_sw,
+				     "failed to get platform sw_conv_end irq\n");
 
 	if (is_ab8500(gpadc->ab8500)) {
 		gpadc->irq_hw = platform_get_irq_byname(pdev, "HW_CONV_END");
 		if (gpadc->irq_hw < 0)
-			return gpadc->irq_hw;
+			return dev_err_probe(dev, gpadc->irq_hw,
+					     "failed to get platform hw_conv_end irq\n");
 	} else {
 		gpadc->irq_hw = 0;
 	}
@@ -1176,7 +1181,7 @@ out_dis_pm:
 	return ret;
 }
 
-static void ab8500_gpadc_remove(struct platform_device *pdev)
+static int ab8500_gpadc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct ab8500_gpadc *gpadc = iio_priv(indio_dev);
@@ -1185,6 +1190,8 @@ static void ab8500_gpadc_remove(struct platform_device *pdev)
 	pm_runtime_put_noidle(gpadc->dev);
 	pm_runtime_disable(gpadc->dev);
 	regulator_disable(gpadc->vddadc);
+
+	return 0;
 }
 
 static DEFINE_RUNTIME_DEV_PM_OPS(ab8500_gpadc_pm_ops,

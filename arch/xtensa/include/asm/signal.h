@@ -14,10 +14,10 @@
 
 #include <uapi/asm/signal.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #define __ARCH_HAS_SA_RESTORER
 
 #include <asm/sigcontext.h>
 
-#endif	/* __ASSEMBLER__ */
+#endif	/* __ASSEMBLY__ */
 #endif	/* _XTENSA_SIGNAL_H */

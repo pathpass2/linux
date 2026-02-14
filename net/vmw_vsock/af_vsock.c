@@ -83,57 +83,12 @@
  *   TCP_ESTABLISHED - connected
  *   TCP_CLOSING - disconnecting
  *   TCP_LISTEN - listening
- *
- * - Namespaces in vsock support two different modes: "local" and "global".
- *   Each mode defines how the namespace interacts with CIDs.
- *   Each namespace exposes two sysctl files:
- *
- *   - /proc/sys/net/vsock/ns_mode (read-only) reports the current namespace's
- *     mode, which is set at namespace creation and immutable thereafter.
- *   - /proc/sys/net/vsock/child_ns_mode (writable) controls what mode future
- *     child namespaces will inherit when created. The default is "global".
- *
- *   Changing child_ns_mode only affects newly created namespaces, not the
- *   current namespace or existing children. At namespace creation, ns_mode
- *   is inherited from the parent's child_ns_mode.
- *
- *   The init_net mode is "global" and cannot be modified.
- *
- *   The modes affect the allocation and accessibility of CIDs as follows:
- *
- *   - global - access and allocation are all system-wide
- *      - all CID allocation from global namespaces draw from the same
- *        system-wide pool.
- *      - if one global namespace has already allocated some CID, another
- *        global namespace will not be able to allocate the same CID.
- *      - global mode AF_VSOCK sockets can reach any VM or socket in any global
- *        namespace, they are not contained to only their own namespace.
- *      - AF_VSOCK sockets in a global mode namespace cannot reach VMs or
- *        sockets in any local mode namespace.
- *   - local - access and allocation are contained within the namespace
- *     - CID allocation draws only from a private pool local only to the
- *       namespace, and does not affect the CIDs available for allocation in any
- *       other namespace (global or local).
- *     - VMs in a local namespace do not collide with CIDs in any other local
- *       namespace or any global namespace. For example, if a VM in a local mode
- *       namespace is given CID 10, then CID 10 is still available for
- *       allocation in any other namespace, but not in the same namespace.
- *     - AF_VSOCK sockets in a local mode namespace can connect only to VMs or
- *       other sockets within their own namespace.
- *     - sockets bound to VMADDR_CID_ANY in local namespaces will never resolve
- *       to any transport that is not compatible with local mode. There is no
- *       error that propagates to the user (as there is for connection attempts)
- *       because it is possible for some packet to reach this socket from
- *       a different transport that *does* support local mode. For
- *       example, virtio-vsock may not support local mode, but the socket
- *       may still accept a connection from vhost-vsock which does.
  */
 
 #include <linux/compat.h>
 #include <linux/types.h>
 #include <linux/bitops.h>
 #include <linux/cred.h>
-#include <linux/errqueue.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
@@ -144,45 +99,27 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/net.h>
-#include <linux/proc_fs.h>
 #include <linux/poll.h>
 #include <linux/random.h>
 #include <linux/skbuff.h>
 #include <linux/smp.h>
 #include <linux/socket.h>
 #include <linux/stddef.h>
-#include <linux/sysctl.h>
 #include <linux/unistd.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <net/sock.h>
 #include <net/af_vsock.h>
-#include <net/netns/vsock.h>
-#include <uapi/linux/vm_sockets.h>
-#include <uapi/asm-generic/ioctls.h>
-
-#define VSOCK_NET_MODE_STR_GLOBAL "global"
-#define VSOCK_NET_MODE_STR_LOCAL "local"
-
-/* 6 chars for "global", 1 for null-terminator, and 1 more for '\n'.
- * The newline is added by proc_dostring() for read operations.
- */
-#define VSOCK_NET_MODE_STR_MAX 8
 
 static int __vsock_bind(struct sock *sk, struct sockaddr_vm *addr);
 static void vsock_sk_destruct(struct sock *sk);
 static int vsock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb);
-static void vsock_close(struct sock *sk, long timeout);
 
 /* Protocol family. */
-struct proto vsock_proto = {
+static struct proto vsock_proto = {
 	.name = "AF_VSOCK",
 	.owner = THIS_MODULE,
 	.obj_size = sizeof(struct vsock_sock),
-	.close = vsock_close,
-#ifdef CONFIG_BPF_SYSCALL
-	.psock_update_sk_prot = vsock_bpf_update_proto,
-#endif
 };
 
 /* The default peer timeout indicates how long we will wait for a peer response
@@ -290,42 +227,33 @@ static void __vsock_remove_connected(struct vsock_sock *vsk)
 	sock_put(&vsk->sk);
 }
 
-static struct sock *__vsock_find_bound_socket_net(struct sockaddr_vm *addr,
-						  struct net *net)
+static struct sock *__vsock_find_bound_socket(struct sockaddr_vm *addr)
 {
 	struct vsock_sock *vsk;
 
 	list_for_each_entry(vsk, vsock_bound_sockets(addr), bound_table) {
-		struct sock *sk = sk_vsock(vsk);
-
-		if (vsock_addr_equals_addr(addr, &vsk->local_addr) &&
-		    vsock_net_check_mode(sock_net(sk), net))
-			return sk;
+		if (vsock_addr_equals_addr(addr, &vsk->local_addr))
+			return sk_vsock(vsk);
 
 		if (addr->svm_port == vsk->local_addr.svm_port &&
 		    (vsk->local_addr.svm_cid == VMADDR_CID_ANY ||
-		     addr->svm_cid == VMADDR_CID_ANY) &&
-		     vsock_net_check_mode(sock_net(sk), net))
-			return sk;
+		     addr->svm_cid == VMADDR_CID_ANY))
+			return sk_vsock(vsk);
 	}
 
 	return NULL;
 }
 
-static struct sock *
-__vsock_find_connected_socket_net(struct sockaddr_vm *src,
-				  struct sockaddr_vm *dst, struct net *net)
+static struct sock *__vsock_find_connected_socket(struct sockaddr_vm *src,
+						  struct sockaddr_vm *dst)
 {
 	struct vsock_sock *vsk;
 
 	list_for_each_entry(vsk, vsock_connected_sockets(src, dst),
 			    connected_table) {
-		struct sock *sk = sk_vsock(vsk);
-
 		if (vsock_addr_equals_addr(src, &vsk->remote_addr) &&
-		    dst->svm_port == vsk->local_addr.svm_port &&
-		    vsock_net_check_mode(sock_net(sk), net)) {
-			return sk;
+		    dst->svm_port == vsk->local_addr.svm_port) {
+			return sk_vsock(vsk);
 		}
 	}
 
@@ -368,78 +296,40 @@ void vsock_remove_connected(struct vsock_sock *vsk)
 }
 EXPORT_SYMBOL_GPL(vsock_remove_connected);
 
-/* Find a bound socket, filtering by namespace and namespace mode.
- *
- * Use this in transports that are namespace-aware and can provide the
- * network namespace context.
- */
-struct sock *vsock_find_bound_socket_net(struct sockaddr_vm *addr,
-					 struct net *net)
+struct sock *vsock_find_bound_socket(struct sockaddr_vm *addr)
 {
 	struct sock *sk;
 
 	spin_lock_bh(&vsock_table_lock);
-	sk = __vsock_find_bound_socket_net(addr, net);
+	sk = __vsock_find_bound_socket(addr);
 	if (sk)
 		sock_hold(sk);
 
 	spin_unlock_bh(&vsock_table_lock);
 
 	return sk;
-}
-EXPORT_SYMBOL_GPL(vsock_find_bound_socket_net);
-
-/* Find a bound socket without namespace filtering.
- *
- * Use this in transports that lack namespace context. All sockets are
- * treated as if in global mode.
- */
-struct sock *vsock_find_bound_socket(struct sockaddr_vm *addr)
-{
-	return vsock_find_bound_socket_net(addr, NULL);
 }
 EXPORT_SYMBOL_GPL(vsock_find_bound_socket);
 
-/* Find a connected socket, filtering by namespace and namespace mode.
- *
- * Use this in transports that are namespace-aware and can provide the
- * network namespace context.
- */
-struct sock *vsock_find_connected_socket_net(struct sockaddr_vm *src,
-					     struct sockaddr_vm *dst,
-					     struct net *net)
+struct sock *vsock_find_connected_socket(struct sockaddr_vm *src,
+					 struct sockaddr_vm *dst)
 {
 	struct sock *sk;
 
 	spin_lock_bh(&vsock_table_lock);
-	sk = __vsock_find_connected_socket_net(src, dst, net);
+	sk = __vsock_find_connected_socket(src, dst);
 	if (sk)
 		sock_hold(sk);
 
 	spin_unlock_bh(&vsock_table_lock);
 
 	return sk;
-}
-EXPORT_SYMBOL_GPL(vsock_find_connected_socket_net);
-
-/* Find a connected socket without namespace filtering.
- *
- * Use this in transports that lack namespace context. All sockets are
- * treated as if in global mode.
- */
-struct sock *vsock_find_connected_socket(struct sockaddr_vm *src,
-					 struct sockaddr_vm *dst)
-{
-	return vsock_find_connected_socket_net(src, dst, NULL);
 }
 EXPORT_SYMBOL_GPL(vsock_find_connected_socket);
 
 void vsock_remove_sock(struct vsock_sock *vsk)
 {
-	/* Transport reassignment must not remove the binding. */
-	if (sock_flag(sk_vsock(vsk), SOCK_DEAD))
-		vsock_remove_bound(vsk);
-
+	vsock_remove_bound(vsk);
 	vsock_remove_connected(vsk);
 }
 EXPORT_SYMBOL_GPL(vsock_remove_sock);
@@ -506,8 +396,6 @@ EXPORT_SYMBOL_GPL(vsock_enqueue_accept);
 
 static bool vsock_use_local_transport(unsigned int remote_cid)
 {
-	lockdep_assert_held(&vsock_register_mutex);
-
 	if (!transport_local)
 		return false;
 
@@ -565,8 +453,6 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 
 	remote_flags = vsk->remote_addr.svm_flags;
 
-	mutex_lock(&vsock_register_mutex);
-
 	switch (sk->sk_type) {
 	case SOCK_DGRAM:
 		new_transport = transport_dgram;
@@ -582,30 +468,13 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 			new_transport = transport_h2g;
 		break;
 	default:
-		ret = -ESOCKTNOSUPPORT;
-		goto err;
+		return -ESOCKTNOSUPPORT;
 	}
-
-	if (vsk->transport && vsk->transport == new_transport) {
-		ret = 0;
-		goto err;
-	}
-
-	/* We increase the module refcnt to prevent the transport unloading
-	 * while there are open sockets assigned to it.
-	 */
-	if (!new_transport || !try_module_get(new_transport->module)) {
-		ret = -ENODEV;
-		goto err;
-	}
-
-	/* It's safe to release the mutex after a successful try_module_get().
-	 * Whichever transport `new_transport` points at, it won't go away until
-	 * the last module_put() below or in vsock_deassign_transport().
-	 */
-	mutex_unlock(&vsock_register_mutex);
 
 	if (vsk->transport) {
+		if (vsk->transport == new_transport)
+			return 0;
+
 		/* transport->release() must be called with sock lock acquired.
 		 * This path can only be taken during vsock_connect(), where we
 		 * have already held the sock lock. In the other cases, this
@@ -614,20 +483,17 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 		 */
 		vsk->transport->release(vsk);
 		vsock_deassign_transport(vsk);
-
-		/* transport's release() and destruct() can touch some socket
-		 * state, since we are reassigning the socket to a new transport
-		 * during vsock_connect(), let's reset these fields to have a
-		 * clean state.
-		 */
-		sock_reset_flag(sk, SOCK_DONE);
-		sk->sk_state = TCP_CLOSE;
-		vsk->peer_shutdown = 0;
 	}
+
+	/* We increase the module refcnt to prevent the transport unloading
+	 * while there are open sockets assigned to it.
+	 */
+	if (!new_transport || !try_module_get(new_transport->module))
+		return -ENODEV;
 
 	if (sk->sk_type == SOCK_SEQPACKET) {
 		if (!new_transport->seqpacket_allow ||
-		    !new_transport->seqpacket_allow(vsk, remote_cid)) {
+		    !new_transport->seqpacket_allow(remote_cid)) {
 			module_put(new_transport->module);
 			return -ESOCKTNOSUPPORT;
 		}
@@ -642,31 +508,12 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 	vsk->transport = new_transport;
 
 	return 0;
-err:
-	mutex_unlock(&vsock_register_mutex);
-	return ret;
 }
 EXPORT_SYMBOL_GPL(vsock_assign_transport);
 
-/*
- * Provide safe access to static transport_{h2g,g2h,dgram,local} callbacks.
- * Otherwise we may race with module removal. Do not use on `vsk->transport`.
- */
-static u32 vsock_registered_transport_cid(const struct vsock_transport **transport)
-{
-	u32 cid = VMADDR_CID_ANY;
-
-	mutex_lock(&vsock_register_mutex);
-	if (*transport)
-		cid = (*transport)->get_local_cid();
-	mutex_unlock(&vsock_register_mutex);
-
-	return cid;
-}
-
 bool vsock_find_cid(unsigned int cid)
 {
-	if (cid == vsock_registered_transport_cid(&transport_g2h))
+	if (transport_g2h && cid == transport_g2h->get_local_cid())
 		return true;
 
 	if (transport_h2g && cid == VMADDR_CID_HOST)
@@ -775,11 +622,11 @@ out:
 static int __vsock_bind_connectible(struct vsock_sock *vsk,
 				    struct sockaddr_vm *addr)
 {
-	struct net *net = sock_net(sk_vsock(vsk));
+	static u32 port;
 	struct sockaddr_vm new_addr;
 
-	if (!net->vsock.port)
-		net->vsock.port = get_random_u32_above(LAST_RESERVED_PORT);
+	if (!port)
+		port = get_random_u32_above(LAST_RESERVED_PORT);
 
 	vsock_addr_init(&new_addr, addr->svm_cid, addr->svm_port);
 
@@ -788,13 +635,12 @@ static int __vsock_bind_connectible(struct vsock_sock *vsk,
 		unsigned int i;
 
 		for (i = 0; i < MAX_PORT_RETRIES; i++) {
-			if (net->vsock.port == VMADDR_PORT_ANY ||
-			    net->vsock.port <= LAST_RESERVED_PORT)
-				net->vsock.port = LAST_RESERVED_PORT + 1;
+			if (port <= LAST_RESERVED_PORT)
+				port = LAST_RESERVED_PORT + 1;
 
-			new_addr.svm_port = net->vsock.port++;
+			new_addr.svm_port = port++;
 
-			if (!__vsock_find_bound_socket_net(&new_addr, net)) {
+			if (!__vsock_find_bound_socket(&new_addr)) {
 				found = true;
 				break;
 			}
@@ -811,7 +657,7 @@ static int __vsock_bind_connectible(struct vsock_sock *vsk,
 			return -EACCES;
 		}
 
-		if (__vsock_find_bound_socket_net(&new_addr, net))
+		if (__vsock_find_bound_socket(&new_addr))
 			return -EADDRINUSE;
 	}
 
@@ -945,52 +791,44 @@ static bool sock_type_connectible(u16 type)
 
 static void __vsock_release(struct sock *sk, int level)
 {
-	struct vsock_sock *vsk;
-	struct sock *pending;
+	if (sk) {
+		struct sock *pending;
+		struct vsock_sock *vsk;
 
-	vsk = vsock_sk(sk);
-	pending = NULL;	/* Compiler warning. */
+		vsk = vsock_sk(sk);
+		pending = NULL;	/* Compiler warning. */
 
-	/* When "level" is SINGLE_DEPTH_NESTING, use the nested
-	 * version to avoid the warning "possible recursive locking
-	 * detected". When "level" is 0, lock_sock_nested(sk, level)
-	 * is the same as lock_sock(sk).
-	 */
-	lock_sock_nested(sk, level);
+		/* When "level" is SINGLE_DEPTH_NESTING, use the nested
+		 * version to avoid the warning "possible recursive locking
+		 * detected". When "level" is 0, lock_sock_nested(sk, level)
+		 * is the same as lock_sock(sk).
+		 */
+		lock_sock_nested(sk, level);
 
-	/* Indicate to vsock_remove_sock() that the socket is being released and
-	 * can be removed from the bound_table. Unlike transport reassignment
-	 * case, where the socket must remain bound despite vsock_remove_sock()
-	 * being called from the transport release() callback.
-	 */
-	sock_set_flag(sk, SOCK_DEAD);
+		if (vsk->transport)
+			vsk->transport->release(vsk);
+		else if (sock_type_connectible(sk->sk_type))
+			vsock_remove_sock(vsk);
 
-	if (vsk->transport)
-		vsk->transport->release(vsk);
-	else if (sock_type_connectible(sk->sk_type))
-		vsock_remove_sock(vsk);
+		sock_orphan(sk);
+		sk->sk_shutdown = SHUTDOWN_MASK;
 
-	sock_orphan(sk);
-	sk->sk_shutdown = SHUTDOWN_MASK;
+		skb_queue_purge(&sk->sk_receive_queue);
 
-	skb_queue_purge(&sk->sk_receive_queue);
+		/* Clean up any sockets that never were accepted. */
+		while ((pending = vsock_dequeue_accept(sk)) != NULL) {
+			__vsock_release(pending, SINGLE_DEPTH_NESTING);
+			sock_put(pending);
+		}
 
-	/* Clean up any sockets that never were accepted. */
-	while ((pending = vsock_dequeue_accept(sk)) != NULL) {
-		__vsock_release(pending, SINGLE_DEPTH_NESTING);
-		sock_put(pending);
+		release_sock(sk);
+		sock_put(sk);
 	}
-
-	release_sock(sk);
-	sock_put(sk);
 }
 
 static void vsock_sk_destruct(struct sock *sk)
 {
 	struct vsock_sock *vsk = vsock_sk(sk);
-
-	/* Flush MSG_ZEROCOPY leftovers. */
-	__skb_queue_purge(&sk->sk_error_queue);
 
 	vsock_deassign_transport(vsk);
 
@@ -1023,32 +861,22 @@ EXPORT_SYMBOL_GPL(vsock_create_connected);
 
 s64 vsock_stream_has_data(struct vsock_sock *vsk)
 {
-	if (WARN_ON(!vsk->transport))
-		return 0;
-
 	return vsk->transport->stream_has_data(vsk);
 }
 EXPORT_SYMBOL_GPL(vsock_stream_has_data);
 
-s64 vsock_connectible_has_data(struct vsock_sock *vsk)
+static s64 vsock_connectible_has_data(struct vsock_sock *vsk)
 {
 	struct sock *sk = sk_vsock(vsk);
-
-	if (WARN_ON(!vsk->transport))
-		return 0;
 
 	if (sk->sk_type == SOCK_SEQPACKET)
 		return vsk->transport->seqpacket_has_data(vsk);
 	else
 		return vsock_stream_has_data(vsk);
 }
-EXPORT_SYMBOL_GPL(vsock_connectible_has_data);
 
 s64 vsock_stream_has_space(struct vsock_sock *vsk)
 {
-	if (WARN_ON(!vsk->transport))
-		return 0;
-
 	return vsk->transport->stream_has_space(vsk);
 }
 EXPORT_SYMBOL_GPL(vsock_stream_has_space);
@@ -1063,22 +891,9 @@ void vsock_data_ready(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(vsock_data_ready);
 
-/* Dummy callback required by sockmap.
- * See unconditional call of saved_close() in sock_map_close().
- */
-static void vsock_close(struct sock *sk, long timeout)
-{
-}
-
 static int vsock_release(struct socket *sock)
 {
-	struct sock *sk = sock->sk;
-
-	if (!sk)
-		return 0;
-
-	sk->sk_prot->close(sk, 0);
-	__vsock_release(sk, 0);
+	__vsock_release(sock->sk, 0);
 	sock->sk = NULL;
 	sock->state = SS_FREE;
 
@@ -1086,7 +901,7 @@ static int vsock_release(struct socket *sock)
 }
 
 static int
-vsock_bind(struct socket *sock, struct sockaddr_unsized *addr, int addr_len)
+vsock_bind(struct socket *sock, struct sockaddr *addr, int addr_len)
 {
 	int err;
 	struct sock *sk;
@@ -1128,7 +943,17 @@ static int vsock_getname(struct socket *sock,
 		vm_addr = &vsk->local_addr;
 	}
 
-	BUILD_BUG_ON(sizeof(*vm_addr) > sizeof(struct sockaddr_storage));
+	if (!vm_addr) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	/* sys_getsockname() and sys_getpeername() pass us a
+	 * MAX_SOCK_ADDR-sized buffer and don't set addr_len.  Unfortunately
+	 * that macro is defined in socket.c instead of .h, so we hardcode its
+	 * value here.
+	 */
+	BUILD_BUG_ON(sizeof(*vm_addr) > 128);
 	memcpy(addr, vm_addr, sizeof(*vm_addr));
 	err = sizeof(*vm_addr);
 
@@ -1136,39 +961,6 @@ out:
 	release_sock(sk);
 	return err;
 }
-
-void vsock_linger(struct sock *sk)
-{
-	DEFINE_WAIT_FUNC(wait, woken_wake_function);
-	ssize_t (*unsent)(struct vsock_sock *vsk);
-	struct vsock_sock *vsk = vsock_sk(sk);
-	long timeout;
-
-	if (!sock_flag(sk, SOCK_LINGER))
-		return;
-
-	timeout = sk->sk_lingertime;
-	if (!timeout)
-		return;
-
-	/* Transports must implement `unsent_bytes` if they want to support
-	 * SOCK_LINGER through `vsock_linger()` since we use it to check when
-	 * the socket can be closed.
-	 */
-	unsent = vsk->transport->unsent_bytes;
-	if (!unsent)
-		return;
-
-	add_wait_queue(sk_sleep(sk), &wait);
-
-	do {
-		if (sk_wait_event(sk, &timeout, unsent(vsk) == 0, &wait))
-			break;
-	} while (!signal_pending(current) && timeout);
-
-	remove_wait_queue(sk_sleep(sk), &wait);
-}
-EXPORT_SYMBOL_GPL(vsock_linger);
 
 static int vsock_shutdown(struct socket *sock, int mode)
 {
@@ -1234,7 +1026,7 @@ static __poll_t vsock_poll(struct file *file, struct socket *sock,
 	poll_wait(file, sk_sleep(sk), wait);
 	mask = 0;
 
-	if (sk->sk_err || !skb_queue_empty_lockless(&sk->sk_error_queue))
+	if (sk->sk_err)
 		/* Signify that there has been an error on this socket. */
 		mask |= EPOLLERR;
 
@@ -1251,9 +1043,6 @@ static __poll_t vsock_poll(struct file *file, struct socket *sock,
 	    vsk->peer_shutdown & SEND_SHUTDOWN) {
 		mask |= EPOLLRDHUP;
 	}
-
-	if (sk_is_readable(sk))
-		mask |= EPOLLIN | EPOLLRDNORM;
 
 	if (sock->type == SOCK_DGRAM) {
 		/* For datagram sockets we can read if there is something in
@@ -1342,16 +1131,6 @@ static __poll_t vsock_poll(struct file *file, struct socket *sock,
 	return mask;
 }
 
-static int vsock_read_skb(struct sock *sk, skb_read_actor_t read_actor)
-{
-	struct vsock_sock *vsk = vsock_sk(sk);
-
-	if (WARN_ON_ONCE(!vsk->transport))
-		return -ENODEV;
-
-	return vsk->transport->read_skb(vsk, read_actor);
-}
-
 static int vsock_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
 			       size_t len)
 {
@@ -1413,7 +1192,7 @@ static int vsock_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
 		goto out;
 	}
 
-	if (!transport->dgram_allow(vsk, remote_addr->svm_cid,
+	if (!transport->dgram_allow(remote_addr->svm_cid,
 				    remote_addr->svm_port)) {
 		err = -EINVAL;
 		goto out;
@@ -1427,7 +1206,7 @@ out:
 }
 
 static int vsock_dgram_connect(struct socket *sock,
-			       struct sockaddr_unsized *addr, int addr_len, int flags)
+			       struct sockaddr *addr, int addr_len, int flags)
 {
 	int err;
 	struct sock *sk;
@@ -1454,7 +1233,7 @@ static int vsock_dgram_connect(struct socket *sock,
 	if (err)
 		goto out;
 
-	if (!vsk->transport->dgram_allow(vsk, remote_addr->svm_cid,
+	if (!vsk->transport->dgram_allow(remote_addr->svm_cid,
 					 remote_addr->svm_port)) {
 		err = -EINVAL;
 		goto out;
@@ -1463,117 +1242,17 @@ static int vsock_dgram_connect(struct socket *sock,
 	memcpy(&vsk->remote_addr, remote_addr, sizeof(vsk->remote_addr));
 	sock->state = SS_CONNECTED;
 
-	/* sock map disallows redirection of non-TCP sockets with sk_state !=
-	 * TCP_ESTABLISHED (see sock_map_redirect_allowed()), so we set
-	 * TCP_ESTABLISHED here to allow redirection of connected vsock dgrams.
-	 *
-	 * This doesn't seem to be abnormal state for datagram sockets, as the
-	 * same approach can be see in other datagram socket types as well
-	 * (such as unix sockets).
-	 */
-	sk->sk_state = TCP_ESTABLISHED;
-
 out:
 	release_sock(sk);
 	return err;
 }
 
-int __vsock_dgram_recvmsg(struct socket *sock, struct msghdr *msg,
-			  size_t len, int flags)
+static int vsock_dgram_recvmsg(struct socket *sock, struct msghdr *msg,
+			       size_t len, int flags)
 {
-	struct sock *sk = sock->sk;
-	struct vsock_sock *vsk = vsock_sk(sk);
+	struct vsock_sock *vsk = vsock_sk(sock->sk);
 
 	return vsk->transport->dgram_dequeue(vsk, msg, len, flags);
-}
-
-int vsock_dgram_recvmsg(struct socket *sock, struct msghdr *msg,
-			size_t len, int flags)
-{
-#ifdef CONFIG_BPF_SYSCALL
-	struct sock *sk = sock->sk;
-	const struct proto *prot;
-
-	prot = READ_ONCE(sk->sk_prot);
-	if (prot != &vsock_proto)
-		return prot->recvmsg(sk, msg, len, flags, NULL);
-#endif
-
-	return __vsock_dgram_recvmsg(sock, msg, len, flags);
-}
-EXPORT_SYMBOL_GPL(vsock_dgram_recvmsg);
-
-static int vsock_do_ioctl(struct socket *sock, unsigned int cmd,
-			  int __user *arg)
-{
-	struct sock *sk = sock->sk;
-	struct vsock_sock *vsk;
-	int ret;
-
-	vsk = vsock_sk(sk);
-
-	switch (cmd) {
-	case SIOCINQ: {
-		ssize_t n_bytes;
-
-		if (!vsk->transport) {
-			ret = -EOPNOTSUPP;
-			break;
-		}
-
-		if (sock_type_connectible(sk->sk_type) &&
-		    sk->sk_state == TCP_LISTEN) {
-			ret = -EINVAL;
-			break;
-		}
-
-		n_bytes = vsock_stream_has_data(vsk);
-		if (n_bytes < 0) {
-			ret = n_bytes;
-			break;
-		}
-		ret = put_user(n_bytes, arg);
-		break;
-	}
-	case SIOCOUTQ: {
-		ssize_t n_bytes;
-
-		if (!vsk->transport || !vsk->transport->unsent_bytes) {
-			ret = -EOPNOTSUPP;
-			break;
-		}
-
-		if (sock_type_connectible(sk->sk_type) && sk->sk_state == TCP_LISTEN) {
-			ret = -EINVAL;
-			break;
-		}
-
-		n_bytes = vsk->transport->unsent_bytes(vsk);
-		if (n_bytes < 0) {
-			ret = n_bytes;
-			break;
-		}
-
-		ret = put_user(n_bytes, arg);
-		break;
-	}
-	default:
-		ret = -ENOIOCTLCMD;
-	}
-
-	return ret;
-}
-
-static int vsock_ioctl(struct socket *sock, unsigned int cmd,
-		       unsigned long arg)
-{
-	int ret;
-
-	lock_sock(sock->sk);
-	ret = vsock_do_ioctl(sock, cmd, (int __user *)arg);
-	release_sock(sock->sk);
-
-	return ret;
 }
 
 static const struct proto_ops vsock_dgram_ops = {
@@ -1586,13 +1265,13 @@ static const struct proto_ops vsock_dgram_ops = {
 	.accept = sock_no_accept,
 	.getname = vsock_getname,
 	.poll = vsock_poll,
-	.ioctl = vsock_ioctl,
+	.ioctl = sock_no_ioctl,
 	.listen = sock_no_listen,
 	.shutdown = vsock_shutdown,
 	.sendmsg = vsock_dgram_sendmsg,
 	.recvmsg = vsock_dgram_recvmsg,
 	.mmap = sock_no_mmap,
-	.read_skb = vsock_read_skb,
+	.sendpage = sock_no_sendpage,
 };
 
 static int vsock_transport_cancel_pkt(struct vsock_sock *vsk)
@@ -1627,7 +1306,7 @@ static void vsock_connect_timeout(struct work_struct *work)
 	sock_put(sk);
 }
 
-static int vsock_connect(struct socket *sock, struct sockaddr_unsized *addr,
+static int vsock_connect(struct socket *sock, struct sockaddr *addr,
 			 int addr_len, int flags)
 {
 	int err;
@@ -1684,20 +1363,9 @@ static int vsock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 		 * endpoints.
 		 */
 		if (!transport ||
-		    !transport->stream_allow(vsk, remote_addr->svm_cid,
+		    !transport->stream_allow(remote_addr->svm_cid,
 					     remote_addr->svm_port)) {
 			err = -ENETUNREACH;
-			goto out;
-		}
-
-		if (vsock_msgzerocopy_allow(transport)) {
-			set_bit(SOCK_SUPPORT_ZC, &sk->sk_socket->flags);
-		} else if (sock_flag(sk, SOCK_ZEROCOPY)) {
-			/* If this option was set before 'connect()',
-			 * when transport was unknown, check that this
-			 * feature is supported here.
-			 */
-			err = -EOPNOTSUPP;
 			goto out;
 		}
 
@@ -1710,11 +1378,6 @@ static int vsock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 		err = transport->connect(vsk);
 		if (err < 0)
 			goto out;
-
-		/* sk_err might have been set as a result of an earlier
-		 * (failed) connect attempt.
-		 */
-		sk->sk_err = 0;
 
 		/* Mark sock as connecting and set the error code to in
 		 * progress in case this is a non-blocking connect.
@@ -1730,11 +1393,7 @@ static int vsock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 	timeout = vsk->connect_timeout;
 	prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
 
-	/* If the socket is already closing or it is in an error state, there
-	 * is no point in waiting.
-	 */
-	while (sk->sk_state != TCP_ESTABLISHED &&
-	       sk->sk_state != TCP_CLOSING && sk->sk_err == 0) {
+	while (sk->sk_state != TCP_ESTABLISHED && sk->sk_err == 0) {
 		if (flags & O_NONBLOCK) {
 			/* If we're not going to block, we schedule a timeout
 			 * function to generate a timeout on the connection
@@ -1748,7 +1407,7 @@ static int vsock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 			 * reschedule it, then ungrab the socket refcount to
 			 * keep it balanced.
 			 */
-			if (mod_delayed_work(system_percpu_wq, &vsk->connect_work,
+			if (mod_delayed_work(system_wq, &vsk->connect_work,
 					     timeout))
 				sock_put(sk);
 
@@ -1760,40 +1419,18 @@ static int vsock_connect(struct socket *sock, struct sockaddr_unsized *addr,
 		timeout = schedule_timeout(timeout);
 		lock_sock(sk);
 
-		/* Connection established. Whatever happens to socket once we
-		 * release it, that's not connect()'s concern. No need to go
-		 * into signal and timeout handling. Call it a day.
-		 *
-		 * Note that allowing to "reset" an already established socket
-		 * here is racy and insecure.
-		 */
-		if (sk->sk_state == TCP_ESTABLISHED)
-			break;
-
-		/* If connection was _not_ established and a signal/timeout came
-		 * to be, we want the socket's state reset. User space may want
-		 * to retry.
-		 *
-		 * sk_state != TCP_ESTABLISHED implies that socket is not on
-		 * vsock_connected_table. We keep the binding and the transport
-		 * assigned.
-		 */
-		if (signal_pending(current) || timeout == 0) {
-			err = timeout == 0 ? -ETIMEDOUT : sock_intr_errno(timeout);
-
-			/* Listener might have already responded with
-			 * VIRTIO_VSOCK_OP_RESPONSE. Its handling expects our
-			 * sk_state == TCP_SYN_SENT, which hereby we break.
-			 * In such case VIRTIO_VSOCK_OP_RST will follow.
-			 */
+		if (signal_pending(current)) {
+			err = sock_intr_errno(timeout);
+			sk->sk_state = sk->sk_state == TCP_ESTABLISHED ? TCP_CLOSING : TCP_CLOSE;
+			sock->state = SS_UNCONNECTED;
+			vsock_transport_cancel_pkt(vsk);
+			vsock_remove_connected(vsk);
+			goto out_wait;
+		} else if (timeout == 0) {
+			err = -ETIMEDOUT;
 			sk->sk_state = TCP_CLOSE;
 			sock->state = SS_UNCONNECTED;
-
-			/* Try to cancel VIRTIO_VSOCK_OP_REQUEST skb sent out by
-			 * transport->connect().
-			 */
 			vsock_transport_cancel_pkt(vsk);
-
 			goto out_wait;
 		}
 
@@ -1815,8 +1452,8 @@ out:
 	return err;
 }
 
-static int vsock_accept(struct socket *sock, struct socket *newsock,
-			struct proto_accept_arg *arg)
+static int vsock_accept(struct socket *sock, struct socket *newsock, int flags,
+			bool kern)
 {
 	struct sock *listener;
 	int err;
@@ -1843,7 +1480,7 @@ static int vsock_accept(struct socket *sock, struct socket *newsock,
 	/* Wait for children sockets to appear; these are the new sockets
 	 * created upon connection establishment.
 	 */
-	timeout = sock_rcvtimeo(listener, arg->flags & O_NONBLOCK);
+	timeout = sock_rcvtimeo(listener, flags & O_NONBLOCK);
 	prepare_to_wait(sk_sleep(listener), &wait, TASK_INTERRUPTIBLE);
 
 	while ((connected = vsock_dequeue_accept(listener)) == NULL &&
@@ -1886,13 +1523,6 @@ static int vsock_accept(struct socket *sock, struct socket *newsock,
 		} else {
 			newsock->state = SS_CONNECTED;
 			sock_graft(connected, newsock);
-
-			set_bit(SOCK_CUSTOM_SOCKOPT,
-				&connected->sk_socket->flags);
-
-			if (vsock_msgzerocopy_allow(vconnected->transport))
-				set_bit(SOCK_SUPPORT_ZC,
-					&connected->sk_socket->flags);
 		}
 
 		release_sock(connected);
@@ -1970,7 +1600,7 @@ static int vsock_connectible_setsockopt(struct socket *sock,
 	const struct vsock_transport *transport;
 	u64 val;
 
-	if (level != AF_VSOCK && level != SOL_SOCKET)
+	if (level != AF_VSOCK)
 		return -ENOPROTOOPT;
 
 #define COPY_IN(_v)                                       \
@@ -1992,33 +1622,6 @@ static int vsock_connectible_setsockopt(struct socket *sock,
 	lock_sock(sk);
 
 	transport = vsk->transport;
-
-	if (level == SOL_SOCKET) {
-		int zerocopy;
-
-		if (optname != SO_ZEROCOPY) {
-			release_sock(sk);
-			return sock_setsockopt(sock, level, optname, optval, optlen);
-		}
-
-		/* Use 'int' type here, because variable to
-		 * set this option usually has this type.
-		 */
-		COPY_IN(zerocopy);
-
-		if (zerocopy < 0 || zerocopy > 1) {
-			err = -EINVAL;
-			goto exit;
-		}
-
-		if (transport && !vsock_msgzerocopy_allow(transport)) {
-			err = -EOPNOTSUPP;
-			goto exit;
-		}
-
-		sock_valbool_flag(sk, SOCK_ZEROCOPY, zerocopy);
-		goto exit;
-	}
 
 	switch (optname) {
 	case SO_VM_SOCKETS_BUFFER_SIZE:
@@ -2184,12 +1787,6 @@ static int vsock_connectible_sendmsg(struct socket *sock, struct msghdr *msg,
 		goto out;
 	}
 
-	if (msg->msg_flags & MSG_ZEROCOPY &&
-	    !vsock_msgzerocopy_allow(transport)) {
-		err = -EOPNOTSUPP;
-		goto out;
-	}
-
 	/* Wait for room in the produce queue to enqueue our user's data. */
 	timeout = sock_sndtimeo(sk, msg->msg_flags & MSG_DONTWAIT);
 
@@ -2289,9 +1886,6 @@ out_err:
 			err = total_written;
 	}
 out:
-	if (sk->sk_type == SOCK_STREAM)
-		err = sk_stream_error(sk, msg->msg_flags, err);
-
 	release_sock(sk);
 	return err;
 }
@@ -2413,7 +2007,7 @@ static int __vsock_stream_recvmsg(struct sock *sk, struct msghdr *msg,
 
 		read = transport->stream_dequeue(vsk, msg, len - copied, flags);
 		if (read < 0) {
-			err = read;
+			err = -ENOMEM;
 			break;
 		}
 
@@ -2464,7 +2058,7 @@ static int __vsock_seqpacket_recvmsg(struct sock *sk, struct msghdr *msg,
 	msg_len = transport->seqpacket_dequeue(vsk, msg, flags);
 
 	if (msg_len < 0) {
-		err = msg_len;
+		err = -ENOMEM;
 		goto out;
 	}
 
@@ -2492,9 +2086,9 @@ out:
 	return err;
 }
 
-int
-__vsock_connectible_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
-			    int flags)
+static int
+vsock_connectible_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
+			  int flags)
 {
 	struct sock *sk;
 	struct vsock_sock *vsk;
@@ -2502,10 +2096,6 @@ __vsock_connectible_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	int err;
 
 	sk = sock->sk;
-
-	if (unlikely(flags & MSG_ERRQUEUE))
-		return sock_recv_errqueue(sk, msg, len, SOL_VSOCK, VSOCK_RECVERR);
-
 	vsk = vsock_sk(sk);
 	err = 0;
 
@@ -2559,23 +2149,6 @@ out:
 	return err;
 }
 
-int
-vsock_connectible_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
-			  int flags)
-{
-#ifdef CONFIG_BPF_SYSCALL
-	struct sock *sk = sock->sk;
-	const struct proto *prot;
-
-	prot = READ_ONCE(sk->sk_prot);
-	if (prot != &vsock_proto)
-		return prot->recvmsg(sk, msg, len, flags, NULL);
-#endif
-
-	return __vsock_connectible_recvmsg(sock, msg, len, flags);
-}
-EXPORT_SYMBOL_GPL(vsock_connectible_recvmsg);
-
 static int vsock_set_rcvlowat(struct sock *sk, int val)
 {
 	const struct vsock_transport *transport;
@@ -2588,13 +2161,8 @@ static int vsock_set_rcvlowat(struct sock *sk, int val)
 
 	transport = vsk->transport;
 
-	if (transport && transport->notify_set_rcvlowat) {
-		int err;
-
-		err = transport->notify_set_rcvlowat(vsk, val);
-		if (err)
-			return err;
-	}
+	if (transport && transport->set_rcvlowat)
+		return transport->set_rcvlowat(vsk, val);
 
 	WRITE_ONCE(sk->sk_rcvlowat, val ? : 1);
 	return 0;
@@ -2610,7 +2178,7 @@ static const struct proto_ops vsock_stream_ops = {
 	.accept = vsock_accept,
 	.getname = vsock_getname,
 	.poll = vsock_poll,
-	.ioctl = vsock_ioctl,
+	.ioctl = sock_no_ioctl,
 	.listen = vsock_listen,
 	.shutdown = vsock_shutdown,
 	.setsockopt = vsock_connectible_setsockopt,
@@ -2618,8 +2186,8 @@ static const struct proto_ops vsock_stream_ops = {
 	.sendmsg = vsock_connectible_sendmsg,
 	.recvmsg = vsock_connectible_recvmsg,
 	.mmap = sock_no_mmap,
+	.sendpage = sock_no_sendpage,
 	.set_rcvlowat = vsock_set_rcvlowat,
-	.read_skb = vsock_read_skb,
 };
 
 static const struct proto_ops vsock_seqpacket_ops = {
@@ -2632,7 +2200,7 @@ static const struct proto_ops vsock_seqpacket_ops = {
 	.accept = vsock_accept,
 	.getname = vsock_getname,
 	.poll = vsock_poll,
-	.ioctl = vsock_ioctl,
+	.ioctl = sock_no_ioctl,
 	.listen = vsock_listen,
 	.shutdown = vsock_shutdown,
 	.setsockopt = vsock_connectible_setsockopt,
@@ -2640,7 +2208,7 @@ static const struct proto_ops vsock_seqpacket_ops = {
 	.sendmsg = vsock_connectible_sendmsg,
 	.recvmsg = vsock_connectible_recvmsg,
 	.mmap = sock_no_mmap,
-	.read_skb = vsock_read_skb,
+	.sendpage = sock_no_sendpage,
 };
 
 static int vsock_create(struct net *net, struct socket *sock,
@@ -2681,17 +2249,10 @@ static int vsock_create(struct net *net, struct socket *sock,
 	if (sock->type == SOCK_DGRAM) {
 		ret = vsock_assign_transport(vsk, NULL);
 		if (ret < 0) {
-			sock->sk = NULL;
 			sock_put(sk);
 			return ret;
 		}
 	}
-
-	/* SOCK_DGRAM doesn't have 'setsockopt' callback set in its
-	 * proto_ops, so there is no handler for custom logic.
-	 */
-	if (sock_type_connectible(sock->type))
-		set_bit(SOCK_CUSTOM_SOCKOPT, &sk->sk_socket->flags);
 
 	vsock_insert_unbound(vsk);
 
@@ -2708,19 +2269,18 @@ static long vsock_dev_do_ioctl(struct file *filp,
 			       unsigned int cmd, void __user *ptr)
 {
 	u32 __user *p = ptr;
+	u32 cid = VMADDR_CID_ANY;
 	int retval = 0;
-	u32 cid;
 
 	switch (cmd) {
 	case IOCTL_VM_SOCKETS_GET_LOCAL_CID:
 		/* To be compatible with the VMCI behavior, we prioritize the
 		 * guest CID instead of well-know host CID (VMADDR_CID_HOST).
 		 */
-		cid = vsock_registered_transport_cid(&transport_g2h);
-		if (cid == VMADDR_CID_ANY)
-			cid = vsock_registered_transport_cid(&transport_h2g);
-		if (cid == VMADDR_CID_ANY)
-			cid = vsock_registered_transport_cid(&transport_local);
+		if (transport_g2h)
+			cid = transport_g2h->get_local_cid();
+		else if (transport_h2g)
+			cid = transport_h2g->get_local_cid();
 
 		if (put_user(cid, p) != 0)
 			retval = -EFAULT;
@@ -2761,180 +2321,6 @@ static struct miscdevice vsock_device = {
 	.fops		= &vsock_device_ops,
 };
 
-static int __vsock_net_mode_string(const struct ctl_table *table, int write,
-				   void *buffer, size_t *lenp, loff_t *ppos,
-				   enum vsock_net_mode mode,
-				   enum vsock_net_mode *new_mode)
-{
-	char data[VSOCK_NET_MODE_STR_MAX] = {0};
-	struct ctl_table tmp;
-	int ret;
-
-	if (!table->data || !table->maxlen || !*lenp) {
-		*lenp = 0;
-		return 0;
-	}
-
-	tmp = *table;
-	tmp.data = data;
-
-	if (!write) {
-		const char *p;
-
-		switch (mode) {
-		case VSOCK_NET_MODE_GLOBAL:
-			p = VSOCK_NET_MODE_STR_GLOBAL;
-			break;
-		case VSOCK_NET_MODE_LOCAL:
-			p = VSOCK_NET_MODE_STR_LOCAL;
-			break;
-		default:
-			WARN_ONCE(true, "netns has invalid vsock mode");
-			*lenp = 0;
-			return 0;
-		}
-
-		strscpy(data, p, sizeof(data));
-		tmp.maxlen = strlen(p);
-	}
-
-	ret = proc_dostring(&tmp, write, buffer, lenp, ppos);
-	if (ret || !write)
-		return ret;
-
-	if (*lenp >= sizeof(data))
-		return -EINVAL;
-
-	if (!strncmp(data, VSOCK_NET_MODE_STR_GLOBAL, sizeof(data)))
-		*new_mode = VSOCK_NET_MODE_GLOBAL;
-	else if (!strncmp(data, VSOCK_NET_MODE_STR_LOCAL, sizeof(data)))
-		*new_mode = VSOCK_NET_MODE_LOCAL;
-	else
-		return -EINVAL;
-
-	return 0;
-}
-
-static int vsock_net_mode_string(const struct ctl_table *table, int write,
-				 void *buffer, size_t *lenp, loff_t *ppos)
-{
-	struct net *net;
-
-	if (write)
-		return -EPERM;
-
-	net = current->nsproxy->net_ns;
-
-	return __vsock_net_mode_string(table, write, buffer, lenp, ppos,
-				       vsock_net_mode(net), NULL);
-}
-
-static int vsock_net_child_mode_string(const struct ctl_table *table, int write,
-				       void *buffer, size_t *lenp, loff_t *ppos)
-{
-	enum vsock_net_mode new_mode;
-	struct net *net;
-	int ret;
-
-	net = current->nsproxy->net_ns;
-
-	ret = __vsock_net_mode_string(table, write, buffer, lenp, ppos,
-				      vsock_net_child_mode(net), &new_mode);
-	if (ret)
-		return ret;
-
-	if (write)
-		vsock_net_set_child_mode(net, new_mode);
-
-	return 0;
-}
-
-static struct ctl_table vsock_table[] = {
-	{
-		.procname	= "ns_mode",
-		.data		= &init_net.vsock.mode,
-		.maxlen		= VSOCK_NET_MODE_STR_MAX,
-		.mode		= 0444,
-		.proc_handler	= vsock_net_mode_string
-	},
-	{
-		.procname	= "child_ns_mode",
-		.data		= &init_net.vsock.child_ns_mode,
-		.maxlen		= VSOCK_NET_MODE_STR_MAX,
-		.mode		= 0644,
-		.proc_handler	= vsock_net_child_mode_string
-	},
-};
-
-static int __net_init vsock_sysctl_register(struct net *net)
-{
-	struct ctl_table *table;
-
-	if (net_eq(net, &init_net)) {
-		table = vsock_table;
-	} else {
-		table = kmemdup(vsock_table, sizeof(vsock_table), GFP_KERNEL);
-		if (!table)
-			goto err_alloc;
-
-		table[0].data = &net->vsock.mode;
-		table[1].data = &net->vsock.child_ns_mode;
-	}
-
-	net->vsock.sysctl_hdr = register_net_sysctl_sz(net, "net/vsock", table,
-						       ARRAY_SIZE(vsock_table));
-	if (!net->vsock.sysctl_hdr)
-		goto err_reg;
-
-	return 0;
-
-err_reg:
-	if (!net_eq(net, &init_net))
-		kfree(table);
-err_alloc:
-	return -ENOMEM;
-}
-
-static void vsock_sysctl_unregister(struct net *net)
-{
-	const struct ctl_table *table;
-
-	table = net->vsock.sysctl_hdr->ctl_table_arg;
-	unregister_net_sysctl_table(net->vsock.sysctl_hdr);
-	if (!net_eq(net, &init_net))
-		kfree(table);
-}
-
-static void vsock_net_init(struct net *net)
-{
-	if (net_eq(net, &init_net))
-		net->vsock.mode = VSOCK_NET_MODE_GLOBAL;
-	else
-		net->vsock.mode = vsock_net_child_mode(current->nsproxy->net_ns);
-
-	net->vsock.child_ns_mode = VSOCK_NET_MODE_GLOBAL;
-}
-
-static __net_init int vsock_sysctl_init_net(struct net *net)
-{
-	vsock_net_init(net);
-
-	if (vsock_sysctl_register(net))
-		return -ENOMEM;
-
-	return 0;
-}
-
-static __net_exit void vsock_sysctl_exit_net(struct net *net)
-{
-	vsock_sysctl_unregister(net);
-}
-
-static struct pernet_operations vsock_sysctl_ops = {
-	.init = vsock_sysctl_init_net,
-	.exit = vsock_sysctl_exit_net,
-};
-
 static int __init vsock_init(void)
 {
 	int err = 0;
@@ -2962,17 +2348,8 @@ static int __init vsock_init(void)
 		goto err_unregister_proto;
 	}
 
-	if (register_pernet_subsys(&vsock_sysctl_ops)) {
-		err = -ENOMEM;
-		goto err_unregister_sock;
-	}
-
-	vsock_bpf_build_proto();
-
 	return 0;
 
-err_unregister_sock:
-	sock_unregister(AF_VSOCK);
 err_unregister_proto:
 	proto_unregister(&vsock_proto);
 err_deregister_misc:
@@ -2986,7 +2363,6 @@ static void __exit vsock_exit(void)
 	misc_deregister(&vsock_device);
 	sock_unregister(AF_VSOCK);
 	proto_unregister(&vsock_proto);
-	unregister_pernet_subsys(&vsock_sysctl_ops);
 }
 
 const struct vsock_transport *vsock_core_get_transport(struct vsock_sock *vsk)

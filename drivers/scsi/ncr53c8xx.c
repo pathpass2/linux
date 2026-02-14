@@ -4555,7 +4555,7 @@ static void ncr_detach(struct ncb *np)
 	char inst_name[16];
 
 	/* Local copy so we don't access np after freeing it! */
-	strscpy(inst_name, ncr_name(np), sizeof(inst_name));
+	strlcpy(inst_name, ncr_name(np), sizeof(inst_name));
 
 	printk("%s: releasing host resources\n", ncr_name(np));
 
@@ -7786,7 +7786,7 @@ static void __init ncr_getclock (struct ncb *np, int mult)
 
 /*===================== LINUX ENTRY POINTS SECTION ==========================*/
 
-static int ncr53c8xx_sdev_init(struct scsi_device *device)
+static int ncr53c8xx_slave_alloc(struct scsi_device *device)
 {
 	struct Scsi_Host *host = device->host;
 	struct ncb *np = ((struct host_data *) host->hostdata)->ncb;
@@ -7796,8 +7796,7 @@ static int ncr53c8xx_sdev_init(struct scsi_device *device)
 	return 0;
 }
 
-static int ncr53c8xx_sdev_configure(struct scsi_device *device,
-				    struct queue_limits *lim)
+static int ncr53c8xx_slave_configure(struct scsi_device *device)
 {
 	struct Scsi_Host *host = device->host;
 	struct ncb *np = ((struct host_data *) host->hostdata)->ncb;
@@ -7852,7 +7851,7 @@ static int ncr53c8xx_sdev_configure(struct scsi_device *device,
 	return 0;
 }
 
-static enum scsi_qc_status ncr53c8xx_queue_command_lck(struct scsi_cmnd *cmd)
+static int ncr53c8xx_queue_command_lck(struct scsi_cmnd *cmd)
 {
      struct ncr_cmd_priv *cmd_priv = scsi_cmd_priv(cmd);
      void (*done)(struct scsi_cmnd *) = scsi_done;
@@ -7923,7 +7922,7 @@ irqreturn_t ncr53c8xx_intr(int irq, void *dev_id)
 
 static void ncr53c8xx_timeout(struct timer_list *t)
 {
-	struct ncb *np = timer_container_of(np, t, timer);
+	struct ncb *np = from_timer(np, t, timer);
 	unsigned long flags;
 	struct scsi_cmnd *done_list;
 
@@ -8094,8 +8093,8 @@ struct Scsi_Host * __init ncr_attach(struct scsi_host_template *tpnt,
 		tpnt->shost_groups = ncr53c8xx_host_groups;
 
 	tpnt->queuecommand	= ncr53c8xx_queue_command;
-	tpnt->sdev_configure	= ncr53c8xx_sdev_configure;
-	tpnt->sdev_init		= ncr53c8xx_sdev_init;
+	tpnt->slave_configure	= ncr53c8xx_slave_configure;
+	tpnt->slave_alloc	= ncr53c8xx_slave_alloc;
 	tpnt->eh_bus_reset_handler = ncr53c8xx_bus_reset;
 	tpnt->can_queue		= SCSI_NCR_CAN_QUEUE;
 	tpnt->this_id		= 7;

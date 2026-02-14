@@ -35,6 +35,11 @@ MODULE_PARM_DESC(debug, "Bitmapped debugging message enable value");
 
 /* This is the time (in jiffies) between invocations of the hardware
  * monitor.
+ * On Falcon-based NICs, this will:
+ * - Check the on-board hardware monitor;
+ * - Poll the link state and reconfigure the hardware as necessary.
+ * On Siena-based NICs for power systems with EEH support, this will give EEH a
+ * chance to start.
  */
 static unsigned int efx_monitor_interval = 1 * HZ;
 
@@ -302,7 +307,7 @@ int efx_change_mtu(struct net_device *net_dev, int new_mtu)
 	efx_stop_all(efx);
 
 	mutex_lock(&efx->mac_lock);
-	WRITE_ONCE(net_dev->mtu, new_mtu);
+	net_dev->mtu = new_mtu;
 	efx_mac_reconfigure(efx, true);
 	mutex_unlock(&efx->mac_lock);
 
@@ -539,8 +544,6 @@ void efx_start_all(struct efx_nic *efx)
 	/* Start the hardware monitor if there is one */
 	efx_start_monitor(efx);
 
-	efx_selftest_async_start(efx);
-
 	/* Link state detection is normally event-driven; we have
 	 * to poll now because we could have missed a change
 	 */
@@ -595,7 +598,7 @@ void efx_stop_all(struct efx_nic *efx)
 	efx_stop_datapath(efx);
 }
 
-/* Context: process, rcu_read_lock or RTNL held, non-blocking. */
+/* Context: process, dev_base_lock or RTNL held, non-blocking. */
 void efx_net_stats(struct net_device *net_dev, struct rtnl_link_stats64 *stats)
 {
 	struct efx_nic *efx = efx_netdev_priv(net_dev);
@@ -631,6 +634,22 @@ int __efx_reconfigure_port(struct efx_nic *efx)
 
 	if (rc)
 		efx->phy_mode = phy_mode;
+
+	return rc;
+}
+
+/* Reinitialise the MAC to pick up new PHY settings, even if the port is
+ * disabled.
+ */
+int efx_reconfigure_port(struct efx_nic *efx)
+{
+	int rc;
+
+	EFX_ASSERT_RESET_SERIALISED(efx);
+
+	mutex_lock(&efx->mac_lock);
+	rc = __efx_reconfigure_port(efx);
+	mutex_unlock(&efx->mac_lock);
 
 	return rc;
 }
@@ -698,7 +717,7 @@ void efx_reset_down(struct efx_nic *efx, enum reset_type method)
 
 	mutex_lock(&efx->mac_lock);
 	down_write(&efx->filter_sem);
-	mutex_lock(&efx->net_dev->ethtool->rss_lock);
+	mutex_lock(&efx->rss_lock);
 	efx->type->fini(efx);
 }
 
@@ -761,9 +780,11 @@ int efx_reset_up(struct efx_nic *efx, enum reset_type method, bool ok)
 
 	if (efx->type->rx_restore_rss_contexts)
 		efx->type->rx_restore_rss_contexts(efx);
-	mutex_unlock(&efx->net_dev->ethtool->rss_lock);
+	mutex_unlock(&efx->rss_lock);
 	efx->type->filter_table_restore(efx);
 	up_write(&efx->filter_sem);
+	if (efx->type->sriov_reset)
+		efx->type->sriov_reset(efx);
 
 	mutex_unlock(&efx->mac_lock);
 
@@ -777,7 +798,7 @@ int efx_reset_up(struct efx_nic *efx, enum reset_type method, bool ok)
 fail:
 	efx->port_initialized = false;
 
-	mutex_unlock(&efx->net_dev->ethtool->rss_lock);
+	mutex_unlock(&efx->rss_lock);
 	up_write(&efx->filter_sem);
 	mutex_unlock(&efx->mac_lock);
 
@@ -984,7 +1005,9 @@ int efx_init_struct(struct efx_nic *efx, struct pci_dev *pci_dev)
 		efx->type->rx_hash_offset - efx->type->rx_prefix_size;
 	efx->rx_packet_ts_offset =
 		efx->type->rx_ts_offset - efx->type->rx_prefix_size;
-	efx->rss_context.priv.context_id = EFX_MCDI_RSS_CONTEXT_INVALID;
+	INIT_LIST_HEAD(&efx->rss_context.list);
+	efx->rss_context.context_id = EFX_MCDI_RSS_CONTEXT_INVALID;
+	mutex_init(&efx->rss_lock);
 	efx->vport_id = EVB_PORT_ID_ASSIGNED;
 	spin_lock_init(&efx->stats_lock);
 	efx->vi_stride = EFX_DEFAULT_VI_STRIDE;
@@ -1003,7 +1026,6 @@ int efx_init_struct(struct efx_nic *efx, struct pci_dev *pci_dev)
 	INIT_LIST_HEAD(&efx->vf_reps);
 	INIT_WORK(&efx->mac_work, efx_mac_work);
 	init_waitqueue_head(&efx->flush_wq);
-	mutex_init(&efx->reflash_mutex);
 
 	efx->tx_queues_per_channel = 1;
 	efx->rxq_entries = EFX_DEFAULT_DMAQ_SIZE;
@@ -1258,6 +1280,9 @@ out:
 
 /* For simplicity and reliability, we always require a slot reset and try to
  * reset the hardware when a pci error affecting the device is detected.
+ * We leave both the link_reset and mmio_enabled callback unimplemented:
+ * with our request for slot reset the mmio_enabled callback will never be
+ * called, and the link_reset callback is not used by AER or EEH mechanisms.
  */
 const struct pci_error_handlers efx_err_handlers = {
 	.error_detected = efx_io_error_detected,

@@ -9,3 +9,10 @@ Contents:
    :maxdepth: 2
 
    qualcomm/rmnet
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

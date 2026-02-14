@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2021-2024 Intel Corporation
+ * Copyright (C) 2021 Intel Corporation
  */
 
 #ifndef __iwl_mei_h__
@@ -283,16 +283,6 @@ struct iwl_mei_colloc_info {
 	u8 bssid[ETH_ALEN];
 };
 
-/**
- * enum iwl_mei_sap_version - SAP version
- * @IWL_MEI_SAP_VERSION_3: SAP version 3
- * @IWL_MEI_SAP_VERSION_4: SAP version 4
- */
-enum iwl_mei_sap_version {
-	IWL_MEI_SAP_VERSION_3 = 3,
-	IWL_MEI_SAP_VERSION_4 = 4,
-};
-
 /*
  * struct iwl_mei_ops - driver's operations called by iwlmei
  * Operations will not be called more than once concurrently.
@@ -311,7 +301,7 @@ enum iwl_mei_sap_version {
 struct iwl_mei_ops {
 	void (*me_conn_status)(void *priv,
 			       const struct iwl_mei_conn_info *conn_info);
-	void (*rfkill)(void *priv, bool blocked, bool csme_taking_ownership);
+	void (*rfkill)(void *priv, bool blocked);
 	void (*roaming_forbidden)(void *priv, bool forbidden);
 	void (*sap_connected)(void *priv);
 	void (*nic_stolen)(void *priv);
@@ -466,11 +456,8 @@ void iwl_mei_device_state(bool up);
 /**
  * iwl_mei_pldr_req() - must be called before loading the fw
  *
- * Requests from the ME that it releases its potential bus access to
- * the WiFi NIC so that the device can safely undergo product reset.
- *
- * Return: 0 if the request was successful and the device can be
- *	reset, a negative error value otherwise
+ * Return: 0 if the PLDR flow was successful and the fw can be loaded, negative
+ *	value otherwise.
  */
 int iwl_mei_pldr_req(void);
 
@@ -501,12 +488,12 @@ static inline void iwl_mei_set_nic_info(const u8 *mac_address, const u8 *nvm_add
 static inline void iwl_mei_set_country_code(u16 mcc)
 {}
 
-static inline void iwl_mei_set_power_limit(const __le16 *power_limit)
+static inline void iwl_mei_set_power_limit(__le16 *power_limit)
 {}
 
 static inline int iwl_mei_register(void *priv,
 				   const struct iwl_mei_ops *ops)
-{ return -EOPNOTSUPP; }
+{ return 0; }
 
 static inline void iwl_mei_start_unregister(void)
 {}

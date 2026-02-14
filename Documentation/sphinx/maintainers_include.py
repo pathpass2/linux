@@ -3,7 +3,7 @@
 # -*- coding: utf-8; mode: python -*-
 # pylint: disable=R0903, C0330, R0914, R0912, E0401
 
-"""
+u"""
     maintainers-include
     ~~~~~~~~~~~~~~~~~~~
 
@@ -22,11 +22,9 @@ import re
 import os.path
 
 from docutils import statemachine
+from docutils.utils.error_reporting import ErrorString
 from docutils.parsers.rst import Directive
 from docutils.parsers.rst.directives.misc import Include
-
-def ErrorString(exc):  # Shamelessly stolen from docutils
-    return f'{exc.__class__.__name}: {exc}'
 
 __version__  = '1.0'
 
@@ -39,7 +37,7 @@ def setup(app):
     )
 
 class MaintainersInclude(Include):
-    """MaintainersInclude (``maintainers-include``) directive"""
+    u"""MaintainersInclude (``maintainers-include``) directive"""
     required_arguments = 0
 
     def parse_maintainers(self, path):
@@ -79,7 +77,7 @@ class MaintainersInclude(Include):
             line = line.rstrip()
 
             # Linkify all non-wildcard refs to ReST files in Documentation/.
-            pat = r'(Documentation/([^\s\?\*]*)\.rst)'
+            pat = '(Documentation/([^\s\?\*]*)\.rst)'
             m = re.search(pat, line)
             if m:
                 # maintainers.rst is in a subdirectory, so include "../".
@@ -92,11 +90,11 @@ class MaintainersInclude(Include):
                 output = "| %s" % (line.replace("\\", "\\\\"))
                 # Look for and record field letter to field name mappings:
                 #   R: Designated *reviewer*: FullName <address@domain>
-                m = re.search(r"\s(\S):\s", line)
+                m = re.search("\s(\S):\s", line)
                 if m:
                     field_letter = m.group(1)
                 if field_letter and not field_letter in fields:
-                    m = re.search(r"\*([^\*]+)\*", line)
+                    m = re.search("\*([^\*]+)\*", line)
                     if m:
                         fields[field_letter] = m.group(1)
             elif subsystems:
@@ -114,7 +112,7 @@ class MaintainersInclude(Include):
                     field_content = ""
 
                     # Collapse whitespace in subsystem name.
-                    heading = re.sub(r"\s+", " ", line)
+                    heading = re.sub("\s+", " ", line)
                     output = output + "%s\n%s" % (heading, "~" * len(heading))
                     field_prev = ""
                 else:

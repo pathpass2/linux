@@ -1194,7 +1194,7 @@ struct cmd_clk_is_enabled_request {
  */
 struct cmd_clk_is_enabled_response {
 	/**
-	 * @brief The state of the clock that has been successfully
+	 * @brief The state of the clock that has been succesfully
 	 * requested with CMD_CLK_ENABLE or CMD_CLK_DISABLE by the
 	 * master invoking the command earlier.
 	 *
@@ -3755,7 +3755,7 @@ enum mrq_pwr_limit_cmd {
  * @defgroup bpmp_pwr_limit_type PWR_LIMIT TYPEs
  * @{
  */
-/** @brief Limit value specifies target cap */
+/** @brief Limit value specifies traget cap */
 #define PWR_LIMIT_TYPE_TARGET_CAP		0U
 /** @brief Limit value specifies maximum possible target cap */
 #define PWR_LIMIT_TYPE_BOUND_MAX		1U

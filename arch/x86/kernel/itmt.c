@@ -19,7 +19,6 @@
 #include <linux/sched.h>
 #include <linux/cpumask.h>
 #include <linux/cpuset.h>
-#include <linux/debugfs.h>
 #include <linux/mutex.h>
 #include <linux/sysctl.h>
 #include <linux/nodemask.h>
@@ -35,51 +34,59 @@ static bool __read_mostly sched_itmt_capable;
  * of higher turbo frequency for cpus supporting Intel Turbo Boost Max
  * Technology 3.0.
  *
- * It can be set via /sys/kernel/debug/x86/sched_itmt_enabled
+ * It can be set via /proc/sys/kernel/sched_itmt_enabled
  */
-bool __read_mostly sysctl_sched_itmt_enabled;
+unsigned int __read_mostly sysctl_sched_itmt_enabled;
 
-static ssize_t sched_itmt_enabled_write(struct file *filp,
-					const char __user *ubuf,
-					size_t cnt, loff_t *ppos)
+static int sched_itmt_update_handler(struct ctl_table *table, int write,
+				     void *buffer, size_t *lenp, loff_t *ppos)
 {
-	ssize_t result;
-	bool orig;
+	unsigned int old_sysctl;
+	int ret;
 
-	guard(mutex)(&itmt_update_mutex);
+	mutex_lock(&itmt_update_mutex);
 
-	orig = sysctl_sched_itmt_enabled;
-	result = debugfs_write_file_bool(filp, ubuf, cnt, ppos);
+	if (!sched_itmt_capable) {
+		mutex_unlock(&itmt_update_mutex);
+		return -EINVAL;
+	}
 
-	if (sysctl_sched_itmt_enabled != orig) {
+	old_sysctl = sysctl_sched_itmt_enabled;
+	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (!ret && write && old_sysctl != sysctl_sched_itmt_enabled) {
 		x86_topology_update = true;
 		rebuild_sched_domains();
 	}
 
-	return result;
+	mutex_unlock(&itmt_update_mutex);
+
+	return ret;
 }
 
-static int sched_core_priority_show(struct seq_file *s, void *unused)
-{
-	int cpu;
-
-	seq_puts(s, "CPU #\tPriority\n");
-	for_each_possible_cpu(cpu)
-		seq_printf(s, "%d\t%d\n", cpu, arch_asym_cpu_priority(cpu));
-
-	return 0;
-}
-DEFINE_SHOW_ATTRIBUTE(sched_core_priority);
-
-static const struct file_operations dfs_sched_itmt_fops = {
-	.read =         debugfs_read_file_bool,
-	.write =        sched_itmt_enabled_write,
-	.open =         simple_open,
-	.llseek =       default_llseek,
+static struct ctl_table itmt_kern_table[] = {
+	{
+		.procname	= "sched_itmt_enabled",
+		.data		= &sysctl_sched_itmt_enabled,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= sched_itmt_update_handler,
+		.extra1		= SYSCTL_ZERO,
+		.extra2		= SYSCTL_ONE,
+	},
+	{}
 };
 
-static struct dentry *dfs_sched_itmt;
-static struct dentry *dfs_sched_core_prio;
+static struct ctl_table itmt_root_table[] = {
+	{
+		.procname	= "kernel",
+		.mode		= 0555,
+		.child		= itmt_kern_table,
+	},
+	{}
+};
+
+static struct ctl_table_header *itmt_sysctl_header;
 
 /**
  * sched_set_itmt_support() - Indicate platform supports ITMT
@@ -100,26 +107,16 @@ static struct dentry *dfs_sched_core_prio;
  */
 int sched_set_itmt_support(void)
 {
-	guard(mutex)(&itmt_update_mutex);
+	mutex_lock(&itmt_update_mutex);
 
-	if (sched_itmt_capable)
+	if (sched_itmt_capable) {
+		mutex_unlock(&itmt_update_mutex);
 		return 0;
-
-	dfs_sched_itmt = debugfs_create_file_unsafe("sched_itmt_enabled",
-						    0644,
-						    arch_debugfs_dir,
-						    &sysctl_sched_itmt_enabled,
-						    &dfs_sched_itmt_fops);
-	if (IS_ERR_OR_NULL(dfs_sched_itmt)) {
-		dfs_sched_itmt = NULL;
-		return -ENOMEM;
 	}
 
-	dfs_sched_core_prio = debugfs_create_file("sched_core_priority", 0644,
-						  arch_debugfs_dir, NULL,
-						  &sched_core_priority_fops);
-	if (IS_ERR_OR_NULL(dfs_sched_core_prio)) {
-		dfs_sched_core_prio = NULL;
+	itmt_sysctl_header = register_sysctl_table(itmt_root_table);
+	if (!itmt_sysctl_header) {
+		mutex_unlock(&itmt_update_mutex);
 		return -ENOMEM;
 	}
 
@@ -129,6 +126,8 @@ int sched_set_itmt_support(void)
 
 	x86_topology_update = true;
 	rebuild_sched_domains();
+
+	mutex_unlock(&itmt_update_mutex);
 
 	return 0;
 }
@@ -145,17 +144,18 @@ int sched_set_itmt_support(void)
  */
 void sched_clear_itmt_support(void)
 {
-	guard(mutex)(&itmt_update_mutex);
+	mutex_lock(&itmt_update_mutex);
 
-	if (!sched_itmt_capable)
+	if (!sched_itmt_capable) {
+		mutex_unlock(&itmt_update_mutex);
 		return;
-
+	}
 	sched_itmt_capable = false;
 
-	debugfs_remove(dfs_sched_itmt);
-	dfs_sched_itmt = NULL;
-	debugfs_remove(dfs_sched_core_prio);
-	dfs_sched_core_prio = NULL;
+	if (itmt_sysctl_header) {
+		unregister_sysctl_table(itmt_sysctl_header);
+		itmt_sysctl_header = NULL;
+	}
 
 	if (sysctl_sched_itmt_enabled) {
 		/* disable sched_itmt if we are no longer ITMT capable */
@@ -163,6 +163,8 @@ void sched_clear_itmt_support(void)
 		x86_topology_update = true;
 		rebuild_sched_domains();
 	}
+
+	mutex_unlock(&itmt_update_mutex);
 }
 
 int arch_asym_cpu_priority(int cpu)
@@ -172,19 +174,32 @@ int arch_asym_cpu_priority(int cpu)
 
 /**
  * sched_set_itmt_core_prio() - Set CPU priority based on ITMT
- * @prio:	Priority of @cpu
- * @cpu:	The CPU number
+ * @prio:	Priority of cpu core
+ * @core_cpu:	The cpu number associated with the core
  *
  * The pstate driver will find out the max boost frequency
  * and call this function to set a priority proportional
- * to the max boost frequency. CPUs with higher boost
+ * to the max boost frequency. CPU with higher boost
  * frequency will receive higher priority.
  *
  * No need to rebuild sched domain after updating
  * the CPU priorities. The sched domains have no
  * dependency on CPU priorities.
  */
-void sched_set_itmt_core_prio(int prio, int cpu)
+void sched_set_itmt_core_prio(int prio, int core_cpu)
 {
-	per_cpu(sched_core_priority, cpu) = prio;
+	int cpu, i = 1;
+
+	for_each_cpu(cpu, topology_sibling_cpumask(core_cpu)) {
+		int smt_prio;
+
+		/*
+		 * Ensure that the siblings are moved to the end
+		 * of the priority chain and only used when
+		 * all other high priority cpus are out of capacity.
+		 */
+		smt_prio = prio * smp_num_siblings / (i * i);
+		per_cpu(sched_core_priority, cpu) = smt_prio;
+		i++;
+	}
 }

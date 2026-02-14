@@ -42,7 +42,7 @@
 #define PTRACE_GETFDPIC_EXEC	0
 #define PTRACE_GETFDPIC_INTERP	1
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct user_pt_regs {
 	__u32 pc;

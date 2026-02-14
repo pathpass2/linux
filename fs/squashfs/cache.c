@@ -198,7 +198,7 @@ void squashfs_cache_delete(struct squashfs_cache *cache)
 {
 	int i, j;
 
-	if (IS_ERR(cache) || cache == NULL)
+	if (cache == NULL)
 		return;
 
 	for (i = 0; i < cache->entries; i++) {
@@ -224,15 +224,11 @@ struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 	int block_size)
 {
 	int i, j;
-	struct squashfs_cache *cache;
+	struct squashfs_cache *cache = kzalloc(sizeof(*cache), GFP_KERNEL);
 
-	if (entries == 0)
-		return NULL;
-
-	cache = kzalloc(sizeof(*cache), GFP_KERNEL);
 	if (cache == NULL) {
 		ERROR("Failed to allocate %s cache\n", name);
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 	}
 
 	cache->entry = kcalloc(entries, sizeof(*(cache->entry)), GFP_KERNEL);
@@ -285,7 +281,7 @@ struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 
 cleanup:
 	squashfs_cache_delete(cache);
-	return ERR_PTR(-ENOMEM);
+	return NULL;
 }
 
 

@@ -54,9 +54,7 @@ static inline int convert_to_internal_xattr_flags(int setxattr_flags)
 static unsigned int xattr_key(const char *key)
 {
 	unsigned int i = 0;
-	if (!key)
-		return 0;
-	while (*key)
+	while (key)
 		i += *key++;
 	return i % 16;
 }
@@ -152,7 +150,7 @@ ssize_t orangefs_inode_getxattr(struct inode *inode, const char *name,
 		goto out_unlock;
 
 	new_op->upcall.req.getxattr.refn = orangefs_inode->refn;
-	strscpy(new_op->upcall.req.getxattr.key, name);
+	strcpy(new_op->upcall.req.getxattr.key, name);
 
 	/*
 	 * NOTE: Although keys are meant to be NULL terminated textual
@@ -173,12 +171,12 @@ ssize_t orangefs_inode_getxattr(struct inode *inode, const char *name,
 				     (char *)new_op->upcall.req.getxattr.key);
 			cx = kmalloc(sizeof *cx, GFP_KERNEL);
 			if (cx) {
-				strscpy(cx->key, name);
+				strcpy(cx->key, name);
 				cx->length = -1;
 				cx->timeout = jiffies +
 				    orangefs_getattr_timeout_msecs*HZ/1000;
-				hlist_add_head( &cx->node,
-                                   &orangefs_inode->xattr_cache[xattr_key(cx->key)]);
+				hash_add(orangefs_inode->xattr_cache, &cx->node,
+				    xattr_key(cx->key));
 			}
 		}
 		goto out_release_op;
@@ -220,19 +218,19 @@ ssize_t orangefs_inode_getxattr(struct inode *inode, const char *name,
 	ret = length;
 
 	if (cx) {
-		strscpy(cx->key, name);
+		strcpy(cx->key, name);
 		memcpy(cx->val, buffer, length);
 		cx->length = length;
 		cx->timeout = jiffies + HZ;
 	} else {
 		cx = kmalloc(sizeof *cx, GFP_KERNEL);
 		if (cx) {
-			strscpy(cx->key, name);
+			strcpy(cx->key, name);
 			memcpy(cx->val, buffer, length);
 			cx->length = length;
 			cx->timeout = jiffies + HZ;
-			hlist_add_head(&cx->node,
-				&orangefs_inode->xattr_cache[xattr_key(cx->key)]);
+			hash_add(orangefs_inode->xattr_cache, &cx->node,
+			    xattr_key(cx->key));
 		}
 	}
 
@@ -267,7 +265,7 @@ static int orangefs_inode_removexattr(struct inode *inode, const char *name,
 	 * textual strings, I am going to explicitly pass the
 	 * length just in case we change this later on...
 	 */
-	strscpy(new_op->upcall.req.removexattr.key, name);
+	strcpy(new_op->upcall.req.removexattr.key, name);
 	new_op->upcall.req.removexattr.key_sz = strlen(name) + 1;
 
 	gossip_debug(GOSSIP_XATTR_DEBUG,
@@ -361,7 +359,7 @@ int orangefs_inode_setxattr(struct inode *inode, const char *name,
 	 * strings, I am going to explicitly pass the length just in
 	 * case we change this later on...
 	 */
-	strscpy(new_op->upcall.req.setxattr.keyval.key, name);
+	strcpy(new_op->upcall.req.setxattr.keyval.key, name);
 	new_op->upcall.req.setxattr.keyval.key_sz = strlen(name) + 1;
 	memcpy(new_op->upcall.req.setxattr.keyval.val, value, size);
 	new_op->upcall.req.setxattr.keyval.val_sz = size;
@@ -556,7 +554,9 @@ static const struct xattr_handler orangefs_xattr_default_handler = {
 	.set = orangefs_xattr_set_default,
 };
 
-const struct xattr_handler * const orangefs_xattr_handlers[] = {
+const struct xattr_handler *orangefs_xattr_handlers[] = {
+	&posix_acl_access_xattr_handler,
+	&posix_acl_default_xattr_handler,
 	&orangefs_xattr_default_handler,
 	NULL
 };

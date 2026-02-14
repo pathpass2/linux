@@ -69,21 +69,26 @@ static int litex_check_csr_access(void __iomem *reg_addr)
 
 struct litex_soc_ctrl_device {
 	void __iomem *base;
+	struct notifier_block reset_nb;
 };
 
-static int litex_reset_handler(struct sys_off_data *data)
+static int litex_reset_handler(struct notifier_block *this, unsigned long mode,
+			       void *cmd)
 {
-	struct litex_soc_ctrl_device *soc_ctrl_dev = data->cb_data;
+	struct litex_soc_ctrl_device *soc_ctrl_dev =
+		container_of(this, struct litex_soc_ctrl_device, reset_nb);
 
 	litex_write32(soc_ctrl_dev->base + RESET_REG_OFF, RESET_REG_VALUE);
 	return NOTIFY_DONE;
 }
 
+#ifdef CONFIG_OF
 static const struct of_device_id litex_soc_ctrl_of_match[] = {
 	{.compatible = "litex,soc-controller"},
 	{},
 };
 MODULE_DEVICE_TABLE(of, litex_soc_ctrl_of_match);
+#endif /* CONFIG_OF */
 
 static int litex_soc_ctrl_probe(struct platform_device *pdev)
 {
@@ -102,9 +107,11 @@ static int litex_soc_ctrl_probe(struct platform_device *pdev)
 	if (error)
 		return error;
 
-	error = devm_register_restart_handler(&pdev->dev,
-					      litex_reset_handler,
-					      soc_ctrl_dev);
+	platform_set_drvdata(pdev, soc_ctrl_dev);
+
+	soc_ctrl_dev->reset_nb.notifier_call = litex_reset_handler;
+	soc_ctrl_dev->reset_nb.priority = 128;
+	error = register_restart_handler(&soc_ctrl_dev->reset_nb);
 	if (error) {
 		dev_warn(&pdev->dev, "cannot register restart handler: %d\n",
 			 error);
@@ -113,12 +120,21 @@ static int litex_soc_ctrl_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int litex_soc_ctrl_remove(struct platform_device *pdev)
+{
+	struct litex_soc_ctrl_device *soc_ctrl_dev = platform_get_drvdata(pdev);
+
+	unregister_restart_handler(&soc_ctrl_dev->reset_nb);
+	return 0;
+}
+
 static struct platform_driver litex_soc_ctrl_driver = {
 	.driver = {
 		.name = "litex-soc-controller",
-		.of_match_table = litex_soc_ctrl_of_match,
+		.of_match_table = of_match_ptr(litex_soc_ctrl_of_match)
 	},
 	.probe = litex_soc_ctrl_probe,
+	.remove = litex_soc_ctrl_remove,
 };
 
 module_platform_driver(litex_soc_ctrl_driver);

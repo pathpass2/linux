@@ -39,5 +39,4 @@ static struct pci_driver pf_stub_driver = {
 };
 module_pci_driver(pf_stub_driver);
 
-MODULE_DESCRIPTION("SR-IOV PF stub driver with no functionality");
 MODULE_LICENSE("GPL");

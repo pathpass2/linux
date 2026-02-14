@@ -17,7 +17,6 @@
 #include <linux/irqchip/arm-gic-v3.h>
 #include <linux/platform_device.h>
 #include <linux/of_address.h>
-#include <linux/of_irq.h>
 #include <linux/of_pci.h>
 #include <linux/of_platform.h>
 #include <linux/phy/phy.h>
@@ -55,7 +54,7 @@
 
 #define CFG_RD_SUCCESS			0
 #define CFG_RD_UR			1
-#define CFG_RD_RRS			2
+#define CFG_RD_CRS			2
 #define CFG_RD_CA			3
 #define CFG_RETRY_STATUS		0xffff0001
 #define CFG_RETRY_STATUS_TIMEOUT_US	500000 /* 500 milliseconds */
@@ -486,31 +485,31 @@ static unsigned int iproc_pcie_cfg_retry(struct iproc_pcie *pcie,
 	u32 status;
 
 	/*
-	 * As per PCIe r6.0, sec 2.3.2, Config RRS Software Visibility only
+	 * As per PCIe spec r3.1, sec 2.3.2, CRS Software Visibility only
 	 * affects config reads of the Vendor ID.  For config writes or any
 	 * other config reads, the Root may automatically reissue the
 	 * configuration request again as a new request.
 	 *
 	 * For config reads, this hardware returns CFG_RETRY_STATUS data
-	 * when it receives a RRS completion, regardless of the address of
-	 * the read or the RRS Software Visibility Enable bit.  As a
+	 * when it receives a CRS completion, regardless of the address of
+	 * the read or the CRS Software Visibility Enable bit.  As a
 	 * partial workaround for this, we retry in software any read that
 	 * returns CFG_RETRY_STATUS.
 	 *
 	 * Note that a non-Vendor ID config register may have a value of
 	 * CFG_RETRY_STATUS.  If we read that, we can't distinguish it from
-	 * a RRS completion, so we will incorrectly retry the read and
+	 * a CRS completion, so we will incorrectly retry the read and
 	 * eventually return the wrong data (0xffffffff).
 	 */
 	data = readl(cfg_data_p);
 	while (data == CFG_RETRY_STATUS && timeout--) {
 		/*
-		 * RRS state is set in CFG_RD status register
+		 * CRS state is set in CFG_RD status register
 		 * This will handle the case where CFG_RETRY_STATUS is
 		 * valid config data.
 		 */
 		status = iproc_pcie_read_reg(pcie, IPROC_PCIE_CFG_RD_STATUS);
-		if (status != CFG_RD_RRS)
+		if (status != CFG_RD_CRS)
 			return data;
 
 		udelay(1);
@@ -557,8 +556,8 @@ static void iproc_pcie_fix_cap(struct iproc_pcie *pcie, int where, u32 *val)
 		break;
 
 	case IPROC_PCI_EXP_CAP + PCI_EXP_RTCTL:
-		/* Don't advertise RRS SV support */
-		*val &= ~(PCI_EXP_RTCAP_RRS_SV << 16);
+		/* Don't advertise CRS SV support */
+		*val &= ~(PCI_EXP_RTCAP_CRSVIS << 16);
 		break;
 
 	default:
@@ -784,7 +783,7 @@ static int iproc_pcie_check_link(struct iproc_pcie *pcie)
 
 	/* make sure we are not in EP mode */
 	iproc_pci_raw_config_read32(pcie, 0, PCI_HEADER_TYPE, 1, &hdr_type);
-	if ((hdr_type & PCI_HEADER_TYPE_MASK) != PCI_HEADER_TYPE_BRIDGE) {
+	if ((hdr_type & 0x7f) != PCI_HEADER_TYPE_BRIDGE) {
 		dev_err(dev, "in EP mode, hdr=%#02x\n", hdr_type);
 		return -EFAULT;
 	}
@@ -1338,16 +1337,29 @@ static int iproc_pcie_msi_steer(struct iproc_pcie *pcie,
 
 static int iproc_pcie_msi_enable(struct iproc_pcie *pcie)
 {
-	struct device_node *msi_node = NULL;
+	struct device_node *msi_node;
 	int ret;
 
 	/*
 	 * Either the "msi-parent" or the "msi-map" phandle needs to exist
 	 * for us to obtain the MSI node.
 	 */
-	of_msi_xlate(pcie->dev, &msi_node, 0);
-	if (!msi_node)
-		return -ENODEV;
+
+	msi_node = of_parse_phandle(pcie->dev->of_node, "msi-parent", 0);
+	if (!msi_node) {
+		const __be32 *msi_map = NULL;
+		int len;
+		u32 phandle;
+
+		msi_map = of_get_property(pcie->dev->of_node, "msi-map", &len);
+		if (!msi_map)
+			return -ENODEV;
+
+		phandle = be32_to_cpup(msi_map + 1);
+		msi_node = of_find_node_by_phandle(phandle);
+		if (!msi_node)
+			return -ENODEV;
+	}
 
 	/*
 	 * Certain revisions of the iProc PCIe controller require additional
@@ -1525,7 +1537,7 @@ err_exit_phy:
 }
 EXPORT_SYMBOL(iproc_pcie_setup);
 
-void iproc_pcie_remove(struct iproc_pcie *pcie)
+int iproc_pcie_remove(struct iproc_pcie *pcie)
 {
 	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
 
@@ -1536,6 +1548,8 @@ void iproc_pcie_remove(struct iproc_pcie *pcie)
 
 	phy_power_off(pcie->phy);
 	phy_exit(pcie->phy);
+
+	return 0;
 }
 EXPORT_SYMBOL(iproc_pcie_remove);
 

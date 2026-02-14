@@ -21,12 +21,8 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id, btree_keycmp ke
 	struct hfs_btree *tree;
 	struct hfs_btree_header_rec *head;
 	struct address_space *mapping;
-	struct folio *folio;
-	struct buffer_head *bh;
+	struct page *page;
 	unsigned int size;
-	u16 dblock;
-	sector_t start_block;
-	loff_t offset;
 
 	tree = kzalloc(sizeof(*tree), GFP_KERNEL);
 	if (!tree)
@@ -42,7 +38,7 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id, btree_keycmp ke
 	tree->inode = iget_locked(sb, id);
 	if (!tree->inode)
 		goto free_tree;
-	BUG_ON(!(inode_state_read_once(tree->inode) & I_NEW));
+	BUG_ON(!(tree->inode->i_state & I_NEW));
 	{
 	struct hfs_mdb *mdb = HFS_SB(sb)->mdb;
 	HFS_I(tree->inode)->flags = 0;
@@ -79,40 +75,12 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id, btree_keycmp ke
 	unlock_new_inode(tree->inode);
 
 	mapping = tree->inode->i_mapping;
-	folio = filemap_grab_folio(mapping, 0);
-	if (IS_ERR(folio))
+	page = read_mapping_page(mapping, 0, NULL);
+	if (IS_ERR(page))
 		goto free_inode;
 
-	folio_zero_range(folio, 0, folio_size(folio));
-
-	dblock = hfs_ext_find_block(HFS_I(tree->inode)->first_extents, 0);
-	start_block = HFS_SB(sb)->fs_start + (dblock * HFS_SB(sb)->fs_div);
-
-	size = folio_size(folio);
-	offset = 0;
-	while (size > 0) {
-		size_t len;
-
-		bh = sb_bread(sb, start_block);
-		if (!bh) {
-			pr_err("unable to read tree header\n");
-			goto put_folio;
-		}
-
-		len = min_t(size_t, folio_size(folio), sb->s_blocksize);
-		memcpy_to_folio(folio, offset, bh->b_data, sb->s_blocksize);
-
-		brelse(bh);
-
-		start_block++;
-		offset += len;
-		size -= len;
-	}
-
-	folio_mark_uptodate(folio);
-
 	/* Load the header */
-	head = (struct hfs_btree_header_rec *)(kmap_local_folio(folio, 0) +
+	head = (struct hfs_btree_header_rec *)(kmap_local_page(page) +
 					       sizeof(struct hfs_bnode_desc));
 	tree->root = be32_to_cpu(head->root);
 	tree->leaf_count = be32_to_cpu(head->leaf_count);
@@ -127,22 +95,22 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id, btree_keycmp ke
 
 	size = tree->node_size;
 	if (!is_power_of_2(size))
-		goto fail_folio;
+		goto fail_page;
 	if (!tree->node_count)
-		goto fail_folio;
+		goto fail_page;
 	switch (id) {
 	case HFS_EXT_CNID:
 		if (tree->max_key_len != HFS_MAX_EXT_KEYLEN) {
 			pr_err("invalid extent max_key_len %d\n",
 			       tree->max_key_len);
-			goto fail_folio;
+			goto fail_page;
 		}
 		break;
 	case HFS_CAT_CNID:
 		if (tree->max_key_len != HFS_MAX_CAT_KEYLEN) {
 			pr_err("invalid catalog max_key_len %d\n",
 			       tree->max_key_len);
-			goto fail_folio;
+			goto fail_page;
 		}
 		break;
 	default:
@@ -153,15 +121,12 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id, btree_keycmp ke
 	tree->pages_per_bnode = (tree->node_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
 	kunmap_local(head);
-	folio_unlock(folio);
-	folio_put(folio);
+	put_page(page);
 	return tree;
 
-fail_folio:
+fail_page:
 	kunmap_local(head);
-put_folio:
-	folio_unlock(folio);
-	folio_put(folio);
+	put_page(page);
 free_inode:
 	tree->inode->i_mapping->a_ops = &hfs_aops;
 	iput(tree->inode);
@@ -259,7 +224,7 @@ static struct hfs_bnode *hfs_bmap_new_bmap(struct hfs_bnode *prev, u32 idx)
 }
 
 /* Make sure @tree has enough space for the @rsvd_nodes */
-int hfs_bmap_reserve(struct hfs_btree *tree, u32 rsvd_nodes)
+int hfs_bmap_reserve(struct hfs_btree *tree, int rsvd_nodes)
 {
 	struct inode *inode = tree->inode;
 	u32 count;
@@ -364,7 +329,7 @@ void hfs_bmap_free(struct hfs_bnode *node)
 	u32 nidx;
 	u8 *data, byte, m;
 
-	hfs_dbg("node %u\n", node->this);
+	hfs_dbg(BNODE_MOD, "btree_free_node: %u\n", node->this);
 	tree = node->tree;
 	nidx = node->this;
 	node = hfs_bnode_find(tree, 0);

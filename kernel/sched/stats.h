@@ -110,69 +110,38 @@ __schedstats_from_se(struct sched_entity *se)
 void psi_task_change(struct task_struct *task, int clear, int set);
 void psi_task_switch(struct task_struct *prev, struct task_struct *next,
 		     bool sleep);
-#ifdef CONFIG_IRQ_TIME_ACCOUNTING
-void psi_account_irqtime(struct rq *rq, struct task_struct *curr, struct task_struct *prev);
-#else /* !CONFIG_IRQ_TIME_ACCOUNTING: */
-static inline void psi_account_irqtime(struct rq *rq, struct task_struct *curr,
-				       struct task_struct *prev) {}
-#endif /* !CONFIG_IRQ_TIME_ACCOUNTING */
+void psi_account_irqtime(struct task_struct *task, u32 delta);
+
 /*
  * PSI tracks state that persists across sleeps, such as iowaits and
  * memory stalls. As a result, it has to distinguish between sleeps,
- * where a task's runnable state changes, and migrations, where a task
- * and its runnable state are being moved between CPUs and runqueues.
- *
- * A notable case is a task whose dequeue is delayed. PSI considers
- * those sleeping, but because they are still on the runqueue they can
- * go through migration requeues. In this case, *sleeping* states need
- * to be transferred.
+ * where a task's runnable state changes, and requeues, where a task
+ * and its state are being moved between CPUs and runqueues.
  */
-static inline void psi_enqueue(struct task_struct *p, int flags)
+static inline void psi_enqueue(struct task_struct *p, bool wakeup)
 {
-	int clear = 0, set = 0;
+	int clear = 0, set = TSK_RUNNING;
 
 	if (static_branch_likely(&psi_disabled))
 		return;
 
-	/* Same runqueue, nothing changed for psi */
-	if (flags & ENQUEUE_RESTORE)
-		return;
+	if (p->in_memstall)
+		set |= TSK_MEMSTALL_RUNNING;
 
-	/* psi_sched_switch() will handle the flags */
-	if (task_on_cpu(task_rq(p), p))
-		return;
-
-	if (p->se.sched_delayed) {
-		/* CPU migration of "sleeping" task */
-		WARN_ON_ONCE(!(flags & ENQUEUE_MIGRATED));
+	if (!wakeup) {
 		if (p->in_memstall)
 			set |= TSK_MEMSTALL;
-		if (p->in_iowait)
-			set |= TSK_IOWAIT;
-	} else if (flags & ENQUEUE_MIGRATED) {
-		/* CPU migration of runnable task */
-		set = TSK_RUNNING;
-		if (p->in_memstall)
-			set |= TSK_MEMSTALL | TSK_MEMSTALL_RUNNING;
 	} else {
-		/* Wakeup of new or sleeping task */
 		if (p->in_iowait)
 			clear |= TSK_IOWAIT;
-		set = TSK_RUNNING;
-		if (p->in_memstall)
-			set |= TSK_MEMSTALL_RUNNING;
 	}
 
 	psi_task_change(p, clear, set);
 }
 
-static inline void psi_dequeue(struct task_struct *p, int flags)
+static inline void psi_dequeue(struct task_struct *p, bool sleep)
 {
 	if (static_branch_likely(&psi_disabled))
-		return;
-
-	/* Same runqueue, nothing changed for psi */
-	if (flags & DEQUEUE_SAVE)
 		return;
 
 	/*
@@ -180,19 +149,10 @@ static inline void psi_dequeue(struct task_struct *p, int flags)
 	 * avoid walking all ancestors twice, psi_task_switch() handles
 	 * TSK_RUNNING and TSK_IOWAIT for us when it moves TSK_ONCPU.
 	 * Do nothing here.
-	 *
-	 * In the SCHED_PROXY_EXECUTION case we may do sleeping
-	 * dequeues that are not followed by a task switch, so check
-	 * TSK_ONCPU is set to ensure the task switch is imminent.
-	 * Otherwise clear the flags as usual.
 	 */
-	if ((flags & DEQUEUE_SLEEP) && (p->psi_flags & TSK_ONCPU))
+	if (sleep)
 		return;
 
-	/*
-	 * When migrating a task to another CPU, clear all psi
-	 * state. The enqueue callback above will work it out.
-	 */
 	psi_task_change(p, p->psi_flags, 0);
 }
 
@@ -211,7 +171,7 @@ static inline void psi_ttwu_dequeue(struct task_struct *p)
 
 		rq = __task_rq_lock(p, &rf);
 		psi_task_change(p, p->psi_flags, 0);
-		__task_rq_unlock(rq, p, &rf);
+		__task_rq_unlock(rq, &rf);
 	}
 }
 
@@ -225,16 +185,15 @@ static inline void psi_sched_switch(struct task_struct *prev,
 	psi_task_switch(prev, next, sleep);
 }
 
-#else /* !CONFIG_PSI: */
-static inline void psi_enqueue(struct task_struct *p, bool migrate) {}
-static inline void psi_dequeue(struct task_struct *p, bool migrate) {}
+#else /* CONFIG_PSI */
+static inline void psi_enqueue(struct task_struct *p, bool wakeup) {}
+static inline void psi_dequeue(struct task_struct *p, bool sleep) {}
 static inline void psi_ttwu_dequeue(struct task_struct *p) {}
 static inline void psi_sched_switch(struct task_struct *prev,
 				    struct task_struct *next,
 				    bool sleep) {}
-static inline void psi_account_irqtime(struct rq *rq, struct task_struct *curr,
-				       struct task_struct *prev) {}
-#endif /* !CONFIG_PSI */
+static inline void psi_account_irqtime(struct task_struct *task, u32 delta) {}
+#endif /* CONFIG_PSI */
 
 #ifdef CONFIG_SCHED_INFO
 /*
@@ -253,19 +212,14 @@ static inline void sched_info_dequeue(struct rq *rq, struct task_struct *t)
 	delta = rq_clock(rq) - t->sched_info.last_queued;
 	t->sched_info.last_queued = 0;
 	t->sched_info.run_delay += delta;
-	if (delta > t->sched_info.max_run_delay) {
-		t->sched_info.max_run_delay = delta;
-		ktime_get_real_ts64(&t->sched_info.max_run_delay_ts);
-	}
-	if (delta && (!t->sched_info.min_run_delay || delta < t->sched_info.min_run_delay))
-		t->sched_info.min_run_delay = delta;
+
 	rq_sched_info_dequeue(rq, delta);
 }
 
 /*
  * Called when a task finally hits the CPU.  We can now calculate how
  * long it was waiting to run.  We also note when it began so that we
- * can keep stats on how long its time-slice is.
+ * can keep stats on how long its timeslice is.
  */
 static void sched_info_arrive(struct rq *rq, struct task_struct *t)
 {
@@ -280,12 +234,6 @@ static void sched_info_arrive(struct rq *rq, struct task_struct *t)
 	t->sched_info.run_delay += delta;
 	t->sched_info.last_arrival = now;
 	t->sched_info.pcount++;
-	if (delta > t->sched_info.max_run_delay) {
-		t->sched_info.max_run_delay = delta;
-		ktime_get_real_ts64(&t->sched_info.max_run_delay_ts);
-	}
-	if (delta && (!t->sched_info.min_run_delay || delta < t->sched_info.min_run_delay))
-		t->sched_info.min_run_delay = delta;
 
 	rq_sched_info_arrive(rq, delta);
 }
@@ -343,6 +291,6 @@ sched_info_switch(struct rq *rq, struct task_struct *prev, struct task_struct *n
 # define sched_info_enqueue(rq, t)	do { } while (0)
 # define sched_info_dequeue(rq, t)	do { } while (0)
 # define sched_info_switch(rq, t, next)	do { } while (0)
-#endif /* !CONFIG_SCHED_INFO */
+#endif /* CONFIG_SCHED_INFO */
 
 #endif /* _KERNEL_STATS_H */

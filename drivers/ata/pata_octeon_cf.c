@@ -16,7 +16,6 @@
 #include <linux/slab.h>
 #include <linux/irq.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <scsi/scsi_host.h>
@@ -59,7 +58,7 @@ struct octeon_cf_port {
 	u64 dma_base;
 };
 
-static const struct scsi_host_template octeon_cf_sht = {
+static struct scsi_host_template octeon_cf_sht = {
 	ATA_PIO_SHT(DRV_NAME),
 };
 
@@ -183,7 +182,7 @@ static void octeon_cf_set_piomode(struct ata_port *ap, struct ata_device *dev)
 	reg_tim.s.ale = 0;
 	/* Not used */
 	reg_tim.s.page = 0;
-	/* Time after IORDY to continue to assert the data */
+	/* Time after IORDY to coninue to assert the data */
 	reg_tim.s.wait = 0;
 	/* Time to wait to complete the cycle. */
 	reg_tim.s.pause = pause;
@@ -789,6 +788,7 @@ static unsigned int octeon_cf_qc_issue(struct ata_queued_cmd *qc)
 static struct ata_port_operations octeon_cf_ops = {
 	.inherits		= &ata_sff_port_ops,
 	.check_atapi_dma	= octeon_cf_check_atapi_dma,
+	.qc_prep		= ata_noop_qc_prep,
 	.qc_issue		= octeon_cf_qc_issue,
 	.sff_dev_select		= octeon_cf_dev_select,
 	.sff_irq_on		= octeon_cf_ata_port_noaction,
@@ -804,7 +804,9 @@ static int octeon_cf_probe(struct platform_device *pdev)
 	struct resource *res_cs0, *res_cs1;
 
 	bool is_16bit;
-	u64 reg;
+	const __be32 *cs_num;
+	struct property *reg_prop;
+	int n_addr, n_size, reg_len;
 	struct device_node *node;
 	void __iomem *cs0;
 	void __iomem *cs1 = NULL;
@@ -814,8 +816,8 @@ static int octeon_cf_probe(struct platform_device *pdev)
 	irq_handler_t irq_handler = NULL;
 	void __iomem *base;
 	struct octeon_cf_port *cf_port;
+	int rv = -ENOMEM;
 	u32 bus_width;
-	int rv;
 
 	node = pdev->dev.of_node;
 	if (node == NULL)
@@ -832,10 +834,15 @@ static int octeon_cf_probe(struct platform_device *pdev)
 	else
 		is_16bit = false;
 
-	rv = of_property_read_reg(node, 0, &reg, NULL);
-	if (rv < 0)
-		return rv;
-	cf_port->cs0 = upper_32_bits(reg);
+	n_addr = of_n_addr_cells(node);
+	n_size = of_n_size_cells(node);
+
+	reg_prop = of_find_property(node, "reg", &reg_len);
+	if (!reg_prop || reg_len < sizeof(__be32))
+		return -EINVAL;
+
+	cs_num = reg_prop->value;
+	cf_port->cs0 = be32_to_cpup(cs_num);
 
 	if (cf_port->is_true_ide) {
 		struct device_node *dma_node;
@@ -877,12 +884,13 @@ static int octeon_cf_probe(struct platform_device *pdev)
 		cs1 = devm_ioremap(&pdev->dev, res_cs1->start,
 					   resource_size(res_cs1));
 		if (!cs1)
+			return rv;
+
+		if (reg_len < (n_addr + n_size + 1) * sizeof(__be32))
 			return -EINVAL;
 
-		rv = of_property_read_reg(node, 1, &reg, NULL);
-		if (rv < 0)
-			return rv;
-		cf_port->cs1 = upper_32_bits(reg);
+		cs_num += n_addr + n_size;
+		cf_port->cs1 = be32_to_cpup(cs_num);
 	}
 
 	res_cs0 = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -892,12 +900,12 @@ static int octeon_cf_probe(struct platform_device *pdev)
 	cs0 = devm_ioremap(&pdev->dev, res_cs0->start,
 				   resource_size(res_cs0));
 	if (!cs0)
-		return -ENOMEM;
+		return rv;
 
 	/* allocate host */
 	host = ata_host_alloc(&pdev->dev, 1);
 	if (!host)
-		return -ENOMEM;
+		return rv;
 
 	ap = host->ports[0];
 	ap->private_data = cf_port;
@@ -935,13 +943,14 @@ static int octeon_cf_probe(struct platform_device *pdev)
 		ap->mwdma_mask	= enable_dma ? ATA_MWDMA4 : 0;
 
 		/* True IDE mode needs a timer to poll for not-busy.  */
-		hrtimer_setup(&cf_port->delayed_finish, octeon_cf_delayed_finish, CLOCK_MONOTONIC,
-			      HRTIMER_MODE_REL);
+		hrtimer_init(&cf_port->delayed_finish, CLOCK_MONOTONIC,
+			     HRTIMER_MODE_REL);
+		cf_port->delayed_finish.function = octeon_cf_delayed_finish;
 	} else {
 		/* 16 bit but not True IDE */
 		base = cs0 + 0x800;
 		octeon_cf_ops.sff_data_xfer	= octeon_cf_data_xfer16;
-		octeon_cf_ops.reset.softreset	= octeon_cf_softreset16;
+		octeon_cf_ops.softreset		= octeon_cf_softreset16;
 		octeon_cf_ops.sff_check_status	= octeon_cf_check_status16;
 		octeon_cf_ops.sff_tf_read	= octeon_cf_tf_read16;
 		octeon_cf_ops.sff_tf_load	= octeon_cf_tf_load16;

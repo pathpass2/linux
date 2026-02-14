@@ -363,7 +363,6 @@ int tomoyo_write_unix_network(struct tomoyo_acl_param *param)
 static int tomoyo_audit_net_log(struct tomoyo_request_info *r,
 				const char *family, const u8 protocol,
 				const u8 operation, const char *address)
-	__must_hold_shared(&tomoyo_ss)
 {
 	return tomoyo_supervisor(r, "network %s %s %s %s\n", family,
 				 tomoyo_proto_keyword[protocol],
@@ -378,7 +377,6 @@ static int tomoyo_audit_net_log(struct tomoyo_request_info *r,
  * Returns 0 on success, negative value otherwise.
  */
 static int tomoyo_audit_inet_log(struct tomoyo_request_info *r)
-	__must_hold_shared(&tomoyo_ss)
 {
 	char buf[128];
 	int len;
@@ -404,7 +402,6 @@ static int tomoyo_audit_inet_log(struct tomoyo_request_info *r)
  * Returns 0 on success, negative value otherwise.
  */
 static int tomoyo_audit_unix_log(struct tomoyo_request_info *r)
-	__must_hold_shared(&tomoyo_ss)
 {
 	return tomoyo_audit_net_log(r, "unix", r->param.unix_network.protocol,
 				    r->param.unix_network.operation,

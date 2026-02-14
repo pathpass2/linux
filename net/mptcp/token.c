@@ -103,7 +103,7 @@ static void mptcp_crypto_key_gen_sha(u64 *key, u32 *token, u64 *idsn)
  * It creates a unique token to identify the new mptcp connection,
  * a secret local key and the initial data sequence number (idsn).
  *
- * Return: 0 on success.
+ * Returns 0 on success.
  */
 int mptcp_token_new_request(struct request_sock *req)
 {
@@ -146,7 +146,7 @@ int mptcp_token_new_request(struct request_sock *req)
  * the computed token at a later time, this is needed to process
  * join requests.
  *
- * Return: 0 on success.
+ * returns 0 on success.
  */
 int mptcp_token_new_connect(struct sock *ssk)
 {
@@ -241,7 +241,7 @@ found:
  * This function returns the mptcp connection structure with the given token.
  * A reference count on the mptcp socket returned is taken.
  *
- * Return: NULL if no connection with the given token value exists.
+ * returns NULL if no connection with the given token value exists.
  */
 struct mptcp_sock *mptcp_token_get_sock(struct net *net, u32 token)
 {
@@ -288,13 +288,11 @@ EXPORT_SYMBOL_GPL(mptcp_token_get_sock);
  * @s_slot: start slot number
  * @s_num: start number inside the given lock
  *
- * Description:
- *   On successful iteration, the iterator is moved to the next position and a
- *   reference to the returned socket is acquired.
+ * This function returns the first mptcp connection structure found inside the
+ * token container starting from the specified position, or NULL.
  *
- * Return:
- *   The first mptcp connection structure found inside the token container
- *   starting from the specified position, or NULL.
+ * On successful iteration, the iterator is moved to the next position and
+ * a reference to the returned socket is acquired.
  */
 struct mptcp_sock *mptcp_token_iter_next(const struct net *net, long *s_slot,
 					 long *s_num)

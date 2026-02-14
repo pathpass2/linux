@@ -8,7 +8,6 @@
  */
 
 .text
-#include <linux/export.h>
 #include <linux/threads.h>
 #include <linux/init.h>
 #include <linux/linkage.h>
@@ -26,6 +25,7 @@
 #include <asm/nops.h>
 #include <asm/nospec-branch.h>
 #include <asm/bootparam.h>
+#include <asm/export.h>
 #include <asm/pgtable_32.h>
 
 /* Physical address */
@@ -44,6 +44,9 @@
 #define X86_CAPABILITY	new_cpu_data+CPUINFO_x86_capability
 #define X86_VENDOR_ID	new_cpu_data+CPUINFO_x86_vendor_id
 
+
+#define SIZEOF_PTREGS 17*4
+
 /*
  * Worst-case size of the kernel mapping we need to make:
  * a relocatable kernel can live anywhere in lowmem, so we need to be able
@@ -61,7 +64,7 @@ RESERVE_BRK(pagetables, INIT_MAP_SIZE)
  * any particular GDT layout, because we load our own as soon as we
  * can.
  */
-	__INIT
+__HEAD
 SYM_CODE_START(startup_32)
 	movl pa(initial_stack),%ecx
 	
@@ -86,7 +89,7 @@ SYM_CODE_START(startup_32)
 	movl $pa(__bss_stop),%ecx
 	subl %edi,%ecx
 	shrl $2,%ecx
-	rep stosl
+	rep ; stosl
 /*
  * Copy bootup parameters out of the way.
  * Note: %esi still has the pointer to the real-mode data.
@@ -98,19 +101,26 @@ SYM_CODE_START(startup_32)
 	movl $pa(boot_params),%edi
 	movl $(PARAM_SIZE/4),%ecx
 	cld
-	rep movsl
+	rep
+	movsl
 	movl pa(boot_params) + NEW_CL_POINTER,%esi
 	andl %esi,%esi
 	jz 1f			# No command line
 	movl $pa(boot_command_line),%edi
 	movl $(COMMAND_LINE_SIZE/4),%ecx
-	rep movsl
+	rep
+	movsl
 1:
 
 #ifdef CONFIG_OLPC
 	/* save OFW's pgdir table for later use when calling into OFW */
 	movl %cr3, %eax
 	movl %eax, pa(olpc_ofw_pgd)
+#endif
+
+#ifdef CONFIG_MICROCODE
+	/* Early load ucode on BSP. */
+	call load_ucode_bsp
 #endif
 
 	/* Create early pagetables. */
@@ -128,6 +138,20 @@ SYM_CODE_START(startup_32)
 	jmp .Ldefault_entry
 SYM_CODE_END(startup_32)
 
+#ifdef CONFIG_HOTPLUG_CPU
+/*
+ * Boot CPU0 entry point. It's called from play_dead(). Everything has been set
+ * up already except stack. We just set up stack here. Then call
+ * start_secondary().
+ */
+SYM_FUNC_START(start_cpu0)
+	movl initial_stack, %ecx
+	movl %ecx, %esp
+	call *(initial_code)
+1:	jmp 1b
+SYM_FUNC_END(start_cpu0)
+#endif
+
 /*
  * Non-boot CPU entry point; entered from trampoline.S
  * We can't lgdt here, because lgdt itself uses a data segment, but
@@ -136,9 +160,6 @@ SYM_CODE_END(startup_32)
  * If cpu hotplug is not supported then this code can go in init section
  * which will be freed later
  */
-#ifdef CONFIG_HOTPLUG_CPU
-       .text
-#endif
 SYM_FUNC_START(startup_32_smp)
 	cld
 	movl $(__BOOT_DS),%eax
@@ -149,6 +170,11 @@ SYM_FUNC_START(startup_32_smp)
 	movl pa(initial_stack),%ecx
 	movl %eax,%ss
 	leal -__PAGE_OFFSET(%ecx),%esp
+
+#ifdef CONFIG_MICROCODE
+	/* Early load ucode on AP. */
+	call load_ucode_ap
+#endif
 
 .Ldefault_entry:
 	movl $(CR0_STATE & ~X86_CR0_PG),%eax
@@ -412,7 +438,7 @@ __REFDATA
 	.align 4
 SYM_DATA(initial_code,		.long i386_start_kernel)
 
-#ifdef CONFIG_MITIGATION_PAGE_TABLE_ISOLATION
+#ifdef CONFIG_PAGE_TABLE_ISOLATION
 #define	PGD_ALIGN	(2 * PAGE_SIZE)
 #define PTI_USER_PGD_FILL	1024
 #else
@@ -472,7 +498,7 @@ SYM_DATA_START(initial_page_table)
 # endif
 	.align PAGE_SIZE		/* needs to be page-sized too */
 
-#ifdef CONFIG_MITIGATION_PAGE_TABLE_ISOLATION
+#ifdef CONFIG_PAGE_TABLE_ISOLATION
 	/*
 	 * PTI needs another page so sync_initial_pagetable() works correctly
 	 * and does not scribble over the data which is placed behind the
@@ -486,13 +512,19 @@ SYM_DATA_END(initial_page_table)
 
 .data
 .balign 4
-SYM_DATA(initial_stack, .long __top_init_kernel_stack)
+/*
+ * The SIZEOF_PTREGS gap is a convention which helps the in-kernel unwinder
+ * reliably detect the end of the stack.
+ */
+SYM_DATA(initial_stack,
+		.long init_thread_union + THREAD_SIZE -
+		SIZEOF_PTREGS - TOP_OF_KERNEL_STACK_PADDING)
 
 __INITRODATA
 int_msg:
 	.asciz "Unknown interrupt or fault at: %p %p %p\n"
 
-#include "../xen/xen-head.S"
+#include "../../x86/xen/xen-head.S"
 
 /*
  * The IDT and GDT 'descriptors' are a strange 48-bit object

@@ -5,7 +5,6 @@
 #define MMU_NO_CONTEXT	~0UL
 
 #include <linux/mm_types.h>
-#include <linux/mmu_notifier.h>
 #include <asm/book3s/64/tlbflush-hash.h>
 #include <asm/book3s/64/tlbflush-radix.h>
 
@@ -49,14 +48,6 @@ static inline void flush_pmd_tlb_range(struct vm_area_struct *vma,
 {
 	if (radix_enabled())
 		radix__flush_pmd_tlb_range(vma, start, end);
-}
-
-#define __HAVE_ARCH_FLUSH_PUD_TLB_RANGE
-static inline void flush_pud_tlb_range(struct vm_area_struct *vma,
-				       unsigned long start, unsigned long end)
-{
-	if (radix_enabled())
-		radix__flush_pud_tlb_range(vma, start, end);
 }
 
 #define __HAVE_ARCH_FLUSH_HUGETLB_TLB_RANGE
@@ -130,8 +121,7 @@ static inline void flush_tlb_page(struct vm_area_struct *vma,
 
 #define flush_tlb_fix_spurious_fault flush_tlb_fix_spurious_fault
 static inline void flush_tlb_fix_spurious_fault(struct vm_area_struct *vma,
-						unsigned long address,
-						pte_t *ptep)
+						unsigned long address)
 {
 	/*
 	 * Book3S 64 does not require spurious fault flushes because the PTE
@@ -158,6 +148,11 @@ static inline void flush_tlb_fix_spurious_fault(struct vm_area_struct *vma,
 	 */
 }
 
+static inline bool __pte_protnone(unsigned long pte)
+{
+	return (pte & (pgprot_val(PAGE_NONE) | _PAGE_RWX)) == pgprot_val(PAGE_NONE);
+}
+
 static inline bool __pte_flags_need_flush(unsigned long oldval,
 					  unsigned long newval)
 {
@@ -174,8 +169,8 @@ static inline bool __pte_flags_need_flush(unsigned long oldval,
 	/*
 	 * We do not expect kernel mappings or non-PTEs or not-present PTEs.
 	 */
-	VM_WARN_ON_ONCE(oldval & _PAGE_PRIVILEGED);
-	VM_WARN_ON_ONCE(newval & _PAGE_PRIVILEGED);
+	VM_WARN_ON_ONCE(!__pte_protnone(oldval) && oldval & _PAGE_PRIVILEGED);
+	VM_WARN_ON_ONCE(!__pte_protnone(newval) && newval & _PAGE_PRIVILEGED);
 	VM_WARN_ON_ONCE(!(oldval & _PAGE_PTE));
 	VM_WARN_ON_ONCE(!(newval & _PAGE_PTE));
 	VM_WARN_ON_ONCE(!(oldval & _PAGE_PRESENT));

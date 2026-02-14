@@ -26,8 +26,6 @@
 #include <linux/pci.h>
 #include <linux/uaccess.h>
 
-#include <drm/drm_print.h>
-
 #include "qxl_drv.h"
 #include "qxl_object.h"
 
@@ -40,6 +38,7 @@ int qxl_alloc_ioctl(struct drm_device *dev, void *data, struct drm_file *file_pr
 	struct qxl_device *qdev = to_qxl(dev);
 	struct drm_qxl_alloc *qxl_alloc = data;
 	int ret;
+	struct qxl_bo *qobj;
 	uint32_t handle;
 	u32 domain = QXL_GEM_DOMAIN_VRAM;
 
@@ -51,7 +50,7 @@ int qxl_alloc_ioctl(struct drm_device *dev, void *data, struct drm_file *file_pr
 						domain,
 						qxl_alloc->size,
 						NULL,
-						NULL, &handle);
+						&qobj, &handle);
 	if (ret) {
 		DRM_ERROR("%s: failed to create gem ret=%d\n",
 			  __func__, ret);
@@ -147,7 +146,7 @@ static int qxl_process_single_command(struct qxl_device *qdev,
 	struct qxl_release *release;
 	struct qxl_bo *cmd_bo;
 	void *fb_cmd;
-	int i, ret;
+	int i, ret, num_relocs;
 	int unwritten;
 
 	switch (cmd->type) {
@@ -202,6 +201,7 @@ static int qxl_process_single_command(struct qxl_device *qdev,
 	}
 
 	/* fill out reloc info structs */
+	num_relocs = 0;
 	for (i = 0; i < cmd->relocs_num; ++i) {
 		struct drm_qxl_reloc reloc;
 		struct drm_qxl_reloc __user *u = u64_to_user_ptr(cmd->relocs);
@@ -231,6 +231,7 @@ static int qxl_process_single_command(struct qxl_device *qdev,
 			reloc_info[i].dst_bo = cmd_bo;
 			reloc_info[i].dst_offset = reloc.dst_offset + release->release_offset;
 		}
+		num_relocs++;
 
 		/* reserve and validate the reloc dst bo */
 		if (reloc.reloc_type == QXL_RELOC_TYPE_BO || reloc.src_handle) {
@@ -385,6 +386,7 @@ int qxl_alloc_surf_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 {
 	struct qxl_device *qdev = to_qxl(dev);
 	struct drm_qxl_alloc_surf *param = data;
+	struct qxl_bo *qobj;
 	int handle;
 	int ret;
 	int size, actual_stride;
@@ -404,7 +406,7 @@ int qxl_alloc_surf_ioctl(struct drm_device *dev, void *data, struct drm_file *fi
 						QXL_GEM_DOMAIN_SURFACE,
 						size,
 						&surf,
-						NULL, &handle);
+						&qobj, &handle);
 	if (ret) {
 		DRM_ERROR("%s: failed to create gem ret=%d\n",
 			  __func__, ret);

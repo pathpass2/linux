@@ -64,14 +64,10 @@ static void tb_port_dummy_read(struct tb_port *port)
  * @port: Port to find the capability for
  * @offset: Previous capability offset (%0 for start)
  *
- * Finds dword offset of the next capability in port config space
- * capability list. When passed %0 in @offset parameter, first entry
- * will be returned, if it exists.
- *
- * Return:
- * * Double word offset of the first or next capability - On success.
- * * %0 - If no next capability is found.
- * * Negative errno - Another error occurred.
+ * Returns dword offset of the next capability in port config space
+ * capability list and returns it. Passing %0 returns the first entry in
+ * the capability list. If no next capability is found returns %0. In case
+ * of failure returns negative errno.
  */
 int tb_port_next_cap(struct tb_port *port, unsigned int offset)
 {
@@ -116,10 +112,9 @@ static int __tb_port_find_cap(struct tb_port *port, enum tb_port_cap cap)
  * @port: Port to find the capability for
  * @cap: Capability to look
  *
- * Return:
- * * Offset to the start of capability - On success.
- * * %-ENOENT - If no such capability was found.
- * * Negative errno - Another error occurred.
+ * Returns offset to start of capability or %-ENOENT if no such
+ * capability was found. Negative errno is returned if there was an
+ * error.
  */
 int tb_port_find_cap(struct tb_port *port, enum tb_port_cap cap)
 {
@@ -142,14 +137,10 @@ int tb_port_find_cap(struct tb_port *port, enum tb_port_cap cap)
  * @sw: Switch to find the capability for
  * @offset: Previous capability offset (%0 for start)
  *
- * Finds dword offset of the next capability in port config space
- * capability list. When passed %0 in @offset parameter, first entry
- * will be returned, if it exists.
- *
- * Return:
- * * Double word offset of the first or next capability - On success.
- * * %0 - If no next capability is found.
- * * Negative errno - Another error occurred.
+ * Finds dword offset of the next capability in router config space
+ * capability list and returns it. Passing %0 returns the first entry in
+ * the capability list. If no next capability is found returns %0. In case
+ * of failure returns negative errno.
  */
 int tb_switch_next_cap(struct tb_switch *sw, unsigned int offset)
 {
@@ -190,10 +181,9 @@ int tb_switch_next_cap(struct tb_switch *sw, unsigned int offset)
  * @sw: Switch to find the capability for
  * @cap: Capability to look
  *
- * Return:
- * * Offset to the start of capability - On success.
- * * %-ENOENT - If no such capability was found.
- * * Negative errno - Another error occurred.
+ * Returns offset to start of capability or %-ENOENT if no such
+ * capability was found. Negative errno is returned if there was an
+ * error.
  */
 int tb_switch_find_cap(struct tb_switch *sw, enum tb_switch_cap cap)
 {
@@ -223,13 +213,10 @@ int tb_switch_find_cap(struct tb_switch *sw, enum tb_switch_cap cap)
  * @sw: Switch to find the capability for
  * @vsec: Vendor specific capability to look
  *
- * This function enumerates vendor specific capabilities (VSEC) of a
- * switch and returns offset when capability matching @vsec is found.
- *
- * Return:
- * * Offset of capability - On success.
- * * %-ENOENT - If capability was not found.
- * * Negative errno - Another error occurred.
+ * Functions enumerates vendor specific capabilities (VSEC) of a switch
+ * and returns offset when capability matching @vsec is found. If no
+ * such capability is found returns %-ENOENT. In case of error returns
+ * negative errno.
  */
 int tb_switch_find_vse_cap(struct tb_switch *sw, enum tb_switch_vse_cap vsec)
 {

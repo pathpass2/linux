@@ -134,6 +134,7 @@ read_attribute(partial_stripes_expensive);
 rw_attribute(synchronous);
 rw_attribute(journal_delay_ms);
 rw_attribute(io_disable);
+rw_attribute(discard);
 rw_attribute(running);
 rw_attribute(label);
 rw_attribute(errors);
@@ -659,7 +660,7 @@ static unsigned int bch_root_usage(struct cache_set *c)
 	unsigned int bytes = 0;
 	struct bkey *k;
 	struct btree *b;
-	struct btree_iter_stack iter;
+	struct btree_iter iter;
 
 	goto lock_root;
 
@@ -701,7 +702,13 @@ static unsigned int bch_cache_max_chain(struct cache_set *c)
 	for (h = c->bucket_hash;
 	     h < c->bucket_hash + (1 << BUCKET_HASH_BITS);
 	     h++) {
-		ret = max(ret, hlist_count_nodes(h));
+		unsigned int i = 0;
+		struct hlist_node *p;
+
+		hlist_for_each(p, h)
+			i++;
+
+		ret = max(ret, i);
 	}
 
 	mutex_unlock(&c->bucket_lock);
@@ -859,8 +866,7 @@ STORE(__bch_cache_set)
 
 		sc.gfp_mask = GFP_KERNEL;
 		sc.nr_to_scan = strtoul_or_return(buf);
-		if (c->shrink)
-			c->shrink->scan_objects(c->shrink, &sc);
+		c->shrink.scan_objects(&c->shrink, &sc);
 	}
 
 	sysfs_strtoul_clamp(congested_read_threshold_us,
@@ -1035,6 +1041,7 @@ SHOW(__bch_cache)
 	sysfs_hprint(bucket_size,	bucket_bytes(ca));
 	sysfs_hprint(block_size,	block_bytes(ca));
 	sysfs_print(nbuckets,		ca->sb.nbuckets);
+	sysfs_print(discard,		ca->discard);
 	sysfs_hprint(written, atomic_long_read(&ca->sectors_written) << 9);
 	sysfs_hprint(btree_written,
 		     atomic_long_read(&ca->btree_sectors_written) << 9);
@@ -1096,7 +1103,7 @@ SHOW(__bch_cache)
 			sum += INITIAL_PRIO - cached[i];
 
 		if (n)
-			sum = div64_u64(sum, n);
+			do_div(sum, n);
 
 		for (i = 0; i < ARRAY_SIZE(q); i++)
 			q[i] = INITIAL_PRIO - cached[n * (i + 1) /
@@ -1104,25 +1111,26 @@ SHOW(__bch_cache)
 
 		vfree(p);
 
-		ret = sysfs_emit(buf,
-				 "Unused:		%zu%%\n"
-				 "Clean:		%zu%%\n"
-				 "Dirty:		%zu%%\n"
-				 "Metadata:	%zu%%\n"
-				 "Average:	%llu\n"
-				 "Sectors per Q:	%zu\n"
-				 "Quantiles:	[",
-				 unused * 100 / (size_t) ca->sb.nbuckets,
-				 available * 100 / (size_t) ca->sb.nbuckets,
-				 dirty * 100 / (size_t) ca->sb.nbuckets,
-				 meta * 100 / (size_t) ca->sb.nbuckets, sum,
-				 n * ca->sb.bucket_size / (ARRAY_SIZE(q) + 1));
+		ret = scnprintf(buf, PAGE_SIZE,
+				"Unused:		%zu%%\n"
+				"Clean:		%zu%%\n"
+				"Dirty:		%zu%%\n"
+				"Metadata:	%zu%%\n"
+				"Average:	%llu\n"
+				"Sectors per Q:	%zu\n"
+				"Quantiles:	[",
+				unused * 100 / (size_t) ca->sb.nbuckets,
+				available * 100 / (size_t) ca->sb.nbuckets,
+				dirty * 100 / (size_t) ca->sb.nbuckets,
+				meta * 100 / (size_t) ca->sb.nbuckets, sum,
+				n * ca->sb.bucket_size / (ARRAY_SIZE(q) + 1));
 
 		for (i = 0; i < ARRAY_SIZE(q); i++)
-			ret += sysfs_emit_at(buf, ret, "%u ", q[i]);
+			ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+					 "%u ", q[i]);
 		ret--;
 
-		ret += sysfs_emit_at(buf, ret, "]\n");
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret, "]\n");
 
 		return ret;
 	}
@@ -1139,6 +1147,18 @@ STORE(__bch_cache)
 	/* no user space access if system is rebooting */
 	if (bcache_is_reboot)
 		return -EBUSY;
+
+	if (attr == &sysfs_discard) {
+		bool v = strtoul_or_return(buf);
+
+		if (bdev_max_discard_sectors(ca->bdev))
+			ca->discard = v;
+
+		if (v != CACHE_DISCARD(&ca->sb)) {
+			SET_CACHE_DISCARD(&ca->sb, v);
+			bcache_write_super(ca->set);
+		}
+	}
 
 	if (attr == &sysfs_cache_replacement_policy) {
 		v = __sysfs_match_string(cache_replacement_policies, -1, buf);
@@ -1171,6 +1191,7 @@ static struct attribute *bch_cache_attrs[] = {
 	&sysfs_block_size,
 	&sysfs_nbuckets,
 	&sysfs_priority_stats,
+	&sysfs_discard,
 	&sysfs_written,
 	&sysfs_btree_written,
 	&sysfs_metadata_written,

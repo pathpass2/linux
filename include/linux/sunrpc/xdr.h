@@ -13,7 +13,7 @@
 
 #include <linux/uio.h>
 #include <asm/byteorder.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/scatterlist.h>
 
 struct bio_vec;
@@ -119,8 +119,6 @@ xdr_buf_init(struct xdr_buf *buf, void *start, size_t len)
 #define	rpc_autherr_badverf	cpu_to_be32(RPC_AUTH_BADVERF)
 #define	rpc_autherr_rejectedverf cpu_to_be32(RPC_AUTH_REJECTEDVERF)
 #define	rpc_autherr_tooweak	cpu_to_be32(RPC_AUTH_TOOWEAK)
-#define	rpc_autherr_invalidresp	cpu_to_be32(RPC_AUTH_INVALIDRESP)
-#define	rpc_autherr_failed	cpu_to_be32(RPC_AUTH_FAILED)
 #define	rpcsec_gsserr_credproblem	cpu_to_be32(RPCSEC_GSS_CREDPROBLEM)
 #define	rpcsec_gsserr_ctxproblem	cpu_to_be32(RPCSEC_GSS_CTXPROBLEM)
 
@@ -130,7 +128,10 @@ xdr_buf_init(struct xdr_buf *buf, void *start, size_t len)
 __be32 *xdr_encode_opaque_fixed(__be32 *p, const void *ptr, unsigned int len);
 __be32 *xdr_encode_opaque(__be32 *p, const void *ptr, unsigned int len);
 __be32 *xdr_encode_string(__be32 *p, const char *s);
+__be32 *xdr_decode_string_inplace(__be32 *p, char **sp, unsigned int *lenp,
+			unsigned int maxlen);
 __be32 *xdr_encode_netobj(__be32 *p, const struct xdr_netobj *);
+__be32 *xdr_decode_netobj(__be32 *p, struct xdr_netobj *);
 
 void	xdr_inline_pages(struct xdr_buf *, unsigned int,
 			 struct page **, unsigned int, unsigned int);
@@ -138,8 +139,6 @@ void	xdr_terminate_string(const struct xdr_buf *, const u32);
 size_t	xdr_buf_pagecount(const struct xdr_buf *buf);
 int	xdr_alloc_bvec(struct xdr_buf *buf, gfp_t gfp);
 void	xdr_free_bvec(struct xdr_buf *buf);
-unsigned int xdr_buf_to_bvec(struct bio_vec *bvec, unsigned int bvec_size,
-			     const struct xdr_buf *xdr);
 
 static inline __be32 *xdr_encode_array(__be32 *p, const void *s, unsigned int len)
 {
@@ -225,7 +224,6 @@ struct xdr_stream {
 	struct kvec *iov;	/* pointer to the current kvec */
 	struct kvec scratch;	/* Scratch buffer */
 	struct page **page_ptr;	/* pointer to the current page */
-	void *page_kaddr;	/* kmapped address of the current page */
 	unsigned int nwords;	/* Remaining decode buffer length */
 
 	struct rpc_rqst *rqst;	/* For debugging */
@@ -241,9 +239,11 @@ typedef int	(*kxdrdproc_t)(struct rpc_rqst *rqstp, struct xdr_stream *xdr,
 
 extern void xdr_init_encode(struct xdr_stream *xdr, struct xdr_buf *buf,
 			    __be32 *p, struct rpc_rqst *rqst);
-void xdr_init_encode_pages(struct xdr_stream *xdr, struct xdr_buf *buf);
+extern void xdr_init_encode_pages(struct xdr_stream *xdr, struct xdr_buf *buf,
+			   struct page **pages, struct rpc_rqst *rqst);
 extern __be32 *xdr_reserve_space(struct xdr_stream *xdr, size_t nbytes);
-extern int xdr_reserve_space_vec(struct xdr_stream *xdr, size_t nbytes);
+extern int xdr_reserve_space_vec(struct xdr_stream *xdr, struct kvec *vec,
+		size_t nbytes);
 extern void __xdr_commit_encode(struct xdr_stream *xdr);
 extern void xdr_truncate_encode(struct xdr_stream *xdr, size_t len);
 extern void xdr_truncate_decode(struct xdr_stream *xdr, size_t len);
@@ -256,7 +256,6 @@ extern void xdr_init_decode(struct xdr_stream *xdr, struct xdr_buf *buf,
 			    __be32 *p, struct rpc_rqst *rqst);
 extern void xdr_init_decode_pages(struct xdr_stream *xdr, struct xdr_buf *buf,
 		struct page **pages, unsigned int len);
-extern void xdr_finish_decode(struct xdr_stream *xdr);
 extern __be32 *xdr_inline_decode(struct xdr_stream *xdr, size_t nbytes);
 extern unsigned int xdr_read_pages(struct xdr_stream *xdr, unsigned int len);
 extern void xdr_enter_page(struct xdr_stream *xdr, unsigned int len);
@@ -288,16 +287,16 @@ xdr_set_scratch_buffer(struct xdr_stream *xdr, void *buf, size_t buflen)
 }
 
 /**
- * xdr_set_scratch_folio - Attach a scratch buffer for decoding data
+ * xdr_set_scratch_page - Attach a scratch buffer for decoding data
  * @xdr: pointer to xdr_stream struct
- * @page: an anonymous folio
+ * @page: an anonymous page
  *
  * See xdr_set_scratch_buffer().
  */
 static inline void
-xdr_set_scratch_folio(struct xdr_stream *xdr, struct folio *folio)
+xdr_set_scratch_page(struct xdr_stream *xdr, struct page *page)
 {
-	xdr_set_scratch_buffer(xdr, folio_address(folio), folio_size(folio));
+	xdr_set_scratch_buffer(xdr, page_address(page), PAGE_SIZE);
 }
 
 /**
@@ -339,6 +338,12 @@ xdr_stream_remaining(const struct xdr_stream *xdr)
 	return xdr->nwords << 2;
 }
 
+ssize_t xdr_stream_decode_opaque(struct xdr_stream *xdr, void *ptr,
+		size_t size);
+ssize_t xdr_stream_decode_opaque_dup(struct xdr_stream *xdr, void **ptr,
+		size_t maxlen, gfp_t gfp_flags);
+ssize_t xdr_stream_decode_string(struct xdr_stream *xdr, char *str,
+		size_t size);
 ssize_t xdr_stream_decode_string_dup(struct xdr_stream *xdr, char **str,
 		size_t maxlen, gfp_t gfp_flags);
 ssize_t xdr_stream_decode_opaque_auth(struct xdr_stream *xdr, u32 *flavor,
@@ -673,27 +678,6 @@ xdr_stream_decode_u32(struct xdr_stream *xdr, __u32 *ptr)
 }
 
 /**
- * xdr_stream_decode_be32 - Decode a big-endian 32-bit integer
- * @xdr: pointer to xdr_stream
- * @ptr: location to store integer
- *
- * Return values:
- *   %0 on success
- *   %-EBADMSG on XDR buffer overflow
- */
-static inline ssize_t
-xdr_stream_decode_be32(struct xdr_stream *xdr, __be32 *ptr)
-{
-	const size_t count = sizeof(*ptr);
-	__be32 *p = xdr_inline_decode(xdr, count);
-
-	if (unlikely(!p))
-		return -EBADMSG;
-	*ptr = *p;
-	return 0;
-}
-
-/**
  * xdr_stream_decode_u64 - Decode a 64-bit integer
  * @xdr: pointer to xdr_stream
  * @ptr: location to store 64-bit integer
@@ -721,7 +705,7 @@ xdr_stream_decode_u64(struct xdr_stream *xdr, __u64 *ptr)
  * @len: size of buffer pointed to by @ptr
  *
  * Return values:
- *   %0 on success
+ *   On success, returns size of object stored in @ptr
  *   %-EBADMSG on XDR buffer overflow
  */
 static inline ssize_t
@@ -732,7 +716,7 @@ xdr_stream_decode_opaque_fixed(struct xdr_stream *xdr, void *ptr, size_t len)
 	if (unlikely(!p))
 		return -EBADMSG;
 	xdr_decode_opaque_fixed(p, ptr, len);
-	return 0;
+	return len;
 }
 
 /**
@@ -792,7 +776,7 @@ xdr_stream_decode_uint32_array(struct xdr_stream *xdr,
 
 	if (unlikely(xdr_stream_decode_u32(xdr, &len) < 0))
 		return -EBADMSG;
-	if (U32_MAX >= SIZE_MAX / sizeof(*p) && len > SIZE_MAX / sizeof(*p))
+	if (len > SIZE_MAX / sizeof(*p))
 		return -EBADMSG;
 	p = xdr_inline_decode(xdr, len * sizeof(*p));
 	if (unlikely(!p))

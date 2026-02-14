@@ -61,6 +61,12 @@ static int keywest_attach_adapter(struct i2c_adapter *adapter)
 		return -ENODEV;
 	}
 	
+	/*
+	 * Let i2c-core delete that device on driver removal.
+	 * This is safe because i2c-core holds the core_lock mutex for us.
+	 */
+	list_add_tail(&keywest_ctx->client->detected,
+		      &to_i2c_driver(keywest_ctx->client->dev.driver)->clients);
 	return 0;
 }
 
@@ -74,8 +80,8 @@ static void keywest_remove(struct i2c_client *client)
 
 
 static const struct i2c_device_id keywest_i2c_id[] = {
-	{ "MAC,tas3004" },	/* instantiated by i2c-powermac */
-	{ "keywest" },		/* instantiated by us if needed */
+	{ "MAC,tas3004", 0 },		/* instantiated by i2c-powermac */
+	{ "keywest", 0 },		/* instantiated by us if needed */
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, keywest_i2c_id);
@@ -84,7 +90,7 @@ static struct i2c_driver keywest_driver = {
 	.driver = {
 		.name = "PMac Keywest Audio",
 	},
-	.probe = keywest_probe,
+	.probe_new = keywest_probe,
 	.remove = keywest_remove,
 	.id_table = keywest_i2c_id,
 };
@@ -93,7 +99,6 @@ static struct i2c_driver keywest_driver = {
 void snd_pmac_keywest_cleanup(struct pmac_keywest *i2c)
 {
 	if (keywest_ctx && keywest_ctx == i2c) {
-		i2c_unregister_device(keywest_ctx->client);
 		i2c_del_driver(&keywest_driver);
 		keywest_ctx = NULL;
 	}
@@ -108,8 +113,7 @@ int snd_pmac_tumbler_post_init(void)
 
 	err = keywest_ctx->init_client(keywest_ctx);
 	if (err < 0) {
-		dev_err(&keywest_ctx->client->dev,
-			"tumbler: %i :cannot initialize the MCS\n", err);
+		snd_printk(KERN_ERR "tumbler: %i :cannot initialize the MCS\n", err);
 		return err;
 	}
 	return 0;
@@ -132,7 +136,7 @@ int snd_pmac_keywest_init(struct pmac_keywest *i2c)
 
 	err = i2c_add_driver(&keywest_driver);
 	if (err) {
-		dev_err(&i2c->client->dev, "cannot register keywest i2c driver\n");
+		snd_printk(KERN_ERR "cannot register keywest i2c driver\n");
 		i2c_put_adapter(adap);
 		return err;
 	}

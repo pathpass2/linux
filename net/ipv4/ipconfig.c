@@ -274,9 +274,9 @@ static int __init ic_open_devs(void)
 
 	/* wait for a carrier on at least one device */
 	start = jiffies;
-	next_msg = start + secs_to_jiffies(20);
+	next_msg = start + msecs_to_jiffies(20000);
 	while (time_before(jiffies, start +
-			   secs_to_jiffies(carrier_timeout))) {
+			   msecs_to_jiffies(carrier_timeout * 1000))) {
 		int wait, elapsed;
 
 		rtnl_lock();
@@ -295,7 +295,7 @@ static int __init ic_open_devs(void)
 		elapsed = jiffies_to_msecs(jiffies - start);
 		wait = (carrier_timeout * 1000 - elapsed + 500) / 1000;
 		pr_info("Waiting up to %d more seconds for network.\n", wait);
-		next_msg = jiffies + secs_to_jiffies(20);
+		next_msg = jiffies + msecs_to_jiffies(20000);
 	}
 have_carrier:
 
@@ -665,9 +665,6 @@ static struct packet_type bootp_packet_type __initdata = {
 	.func =	ic_bootp_recv,
 };
 
-/* DHCPACK can overwrite DNS if fallback was set upon first BOOTP reply */
-static int ic_nameservers_fallback __initdata;
-
 /*
  *  Initialize DHCP/BOOTP extension fields in the request.
  */
@@ -679,18 +676,8 @@ static const u8 ic_bootp_cookie[4] = { 99, 130, 83, 99 };
 static void __init
 ic_dhcp_init_options(u8 *options, struct ic_device *d)
 {
-	static const u8 ic_req_params[] = {
-		1,	/* Subnet mask */
-		3,	/* Default gateway */
-		6,	/* DNS server */
-		12,	/* Host name */
-		15,	/* Domain name */
-		17,	/* Boot path */
-		26,	/* MTU */
-		40,	/* NIS domain name */
-		42,	/* NTP servers */
-	};
-	u8 mt = (ic_servaddr == NONE) ? DHCPDISCOVER : DHCPREQUEST;
+	u8 mt = ((ic_servaddr == NONE)
+		 ? DHCPDISCOVER : DHCPREQUEST);
 	u8 *e = options;
 	int len;
 
@@ -715,36 +702,51 @@ ic_dhcp_init_options(u8 *options, struct ic_device *d)
 		e += 4;
 	}
 
-	*e++ = 55;	/* Parameter request list */
-	*e++ = sizeof(ic_req_params);
-	memcpy(e, ic_req_params, sizeof(ic_req_params));
-	e += sizeof(ic_req_params);
+	/* always? */
+	{
+		static const u8 ic_req_params[] = {
+			1,	/* Subnet mask */
+			3,	/* Default gateway */
+			6,	/* DNS server */
+			12,	/* Host name */
+			15,	/* Domain name */
+			17,	/* Boot path */
+			26,	/* MTU */
+			40,	/* NIS domain name */
+			42,	/* NTP servers */
+		};
 
-	if (ic_host_name_set) {
-		*e++ = 12;	/* host-name */
-		len = strlen(utsname()->nodename);
-		*e++ = len;
-		memcpy(e, utsname()->nodename, len);
-		e += len;
-	}
-	if (*vendor_class_identifier) {
-		pr_info("DHCP: sending class identifier \"%s\"\n",
-			vendor_class_identifier);
-		*e++ = 60;	/* Class-identifier */
-		len = strlen(vendor_class_identifier);
-		*e++ = len;
-		memcpy(e, vendor_class_identifier, len);
-		e += len;
-	}
-	len = strlen(dhcp_client_identifier + 1);
-	/* the minimum length of identifier is 2, include 1 byte type,
-	 * and can not be larger than the length of options
-	 */
-	if (len >= 1 && len < 312 - (e - options) - 1) {
-		*e++ = 61;
-		*e++ = len + 1;
-		memcpy(e, dhcp_client_identifier, len + 1);
-		e += len + 1;
+		*e++ = 55;	/* Parameter request list */
+		*e++ = sizeof(ic_req_params);
+		memcpy(e, ic_req_params, sizeof(ic_req_params));
+		e += sizeof(ic_req_params);
+
+		if (ic_host_name_set) {
+			*e++ = 12;	/* host-name */
+			len = strlen(utsname()->nodename);
+			*e++ = len;
+			memcpy(e, utsname()->nodename, len);
+			e += len;
+		}
+		if (*vendor_class_identifier) {
+			pr_info("DHCP: sending class identifier \"%s\"\n",
+				vendor_class_identifier);
+			*e++ = 60;	/* Class-identifier */
+			len = strlen(vendor_class_identifier);
+			*e++ = len;
+			memcpy(e, vendor_class_identifier, len);
+			e += len;
+		}
+		len = strlen(dhcp_client_identifier + 1);
+		/* the minimum length of identifier is 2, include 1 byte type,
+		 * and can not be larger than the length of options
+		 */
+		if (len >= 1 && len < 312 - (e - options) - 1) {
+			*e++ = 61;
+			*e++ = len + 1;
+			memcpy(e, dhcp_client_identifier, len + 1);
+			e += len + 1;
+		}
 	}
 
 	*e++ = 255;	/* End of the list */
@@ -936,8 +938,7 @@ static void __init ic_do_bootp_ext(u8 *ext)
 		if (servers > CONF_NAMESERVERS_MAX)
 			servers = CONF_NAMESERVERS_MAX;
 		for (i = 0; i < servers; i++) {
-			if (ic_nameservers[i] == NONE ||
-			    ic_nameservers_fallback)
+			if (ic_nameservers[i] == NONE)
 				memcpy(&ic_nameservers[i], ext+1+4*i, 4);
 		}
 		break;
@@ -1157,10 +1158,8 @@ static int __init ic_bootp_recv(struct sk_buff *skb, struct net_device *dev, str
 	ic_addrservaddr = b->iph.saddr;
 	if (ic_gateway == NONE && b->relay_ip)
 		ic_gateway = b->relay_ip;
-	if (ic_nameservers[0] == NONE) {
+	if (ic_nameservers[0] == NONE)
 		ic_nameservers[0] = ic_servaddr;
-		ic_nameservers_fallback = 1;
-	}
 	ic_got_reply = IC_BOOTP;
 
 drop_unlock:
@@ -1685,8 +1684,7 @@ static int __init ic_proto_name(char *name)
 			*v = 0;
 			if (kstrtou8(client_id, 0, dhcp_client_identifier))
 				pr_debug("DHCP: Invalid client identifier type\n");
-			strscpy(dhcp_client_identifier + 1, v + 1,
-				sizeof(dhcp_client_identifier) - 1);
+			strncpy(dhcp_client_identifier + 1, v + 1, 251);
 			*v = ',';
 		}
 		return 1;

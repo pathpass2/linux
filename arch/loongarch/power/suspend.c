@@ -20,43 +20,41 @@ u64 loongarch_suspend_addr;
 struct saved_registers {
 	u32 ecfg;
 	u32 euen;
+	u64 pgd;
+	u64 kpgd;
 	u32 pwctl0;
 	u32 pwctl1;
-	unsigned long pgd;
-	unsigned long kpgd;
-	unsigned long pcpu_base;
 };
 static struct saved_registers saved_regs;
 
-void loongarch_common_suspend(void)
+static void arch_common_suspend(void)
 {
 	save_counter();
-	saved_regs.pgd = csr_read(LOONGARCH_CSR_PGDL);
-	saved_regs.kpgd = csr_read(LOONGARCH_CSR_PGDH);
+	saved_regs.pgd = csr_read64(LOONGARCH_CSR_PGDL);
+	saved_regs.kpgd = csr_read64(LOONGARCH_CSR_PGDH);
 	saved_regs.pwctl0 = csr_read32(LOONGARCH_CSR_PWCTL0);
 	saved_regs.pwctl1 = csr_read32(LOONGARCH_CSR_PWCTL1);
 	saved_regs.ecfg = csr_read32(LOONGARCH_CSR_ECFG);
 	saved_regs.euen = csr_read32(LOONGARCH_CSR_EUEN);
-	saved_regs.pcpu_base = csr_read(PERCPU_BASE_KS);
 
 	loongarch_suspend_addr = loongson_sysconf.suspend_addr;
 }
 
-void loongarch_common_resume(void)
+static void arch_common_resume(void)
 {
 	sync_counter();
 	local_flush_tlb_all();
-	csr_write(eentry, LOONGARCH_CSR_EENTRY);
-	csr_write(eentry, LOONGARCH_CSR_MERRENTRY);
-	csr_write(tlbrentry, LOONGARCH_CSR_TLBRENTRY);
+	csr_write64(per_cpu_offset(0), PERCPU_BASE_KS);
+	csr_write64(eentry, LOONGARCH_CSR_EENTRY);
+	csr_write64(eentry, LOONGARCH_CSR_MERRENTRY);
+	csr_write64(tlbrentry, LOONGARCH_CSR_TLBRENTRY);
 
-	csr_write(saved_regs.pgd, LOONGARCH_CSR_PGDL);
-	csr_write(saved_regs.kpgd, LOONGARCH_CSR_PGDH);
+	csr_write64(saved_regs.pgd, LOONGARCH_CSR_PGDL);
+	csr_write64(saved_regs.kpgd, LOONGARCH_CSR_PGDH);
 	csr_write32(saved_regs.pwctl0, LOONGARCH_CSR_PWCTL0);
 	csr_write32(saved_regs.pwctl1, LOONGARCH_CSR_PWCTL1);
 	csr_write32(saved_regs.ecfg, LOONGARCH_CSR_ECFG);
 	csr_write32(saved_regs.euen, LOONGARCH_CSR_EUEN);
-	csr_write(saved_regs.pcpu_base, PERCPU_BASE_KS);
 }
 
 int loongarch_acpi_suspend(void)
@@ -64,12 +62,12 @@ int loongarch_acpi_suspend(void)
 	enable_gpe_wakeup();
 	enable_pci_wakeup();
 
-	loongarch_common_suspend();
+	arch_common_suspend();
 
 	/* processor specific suspend */
 	loongarch_suspend_enter();
 
-	loongarch_common_resume();
+	arch_common_resume();
 
 	return 0;
 }

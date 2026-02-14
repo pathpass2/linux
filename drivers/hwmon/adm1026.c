@@ -197,16 +197,8 @@ static int adm1026_scaling[] = { /* .001 Volts */
 #define FAN_TO_REG(val, div)  ((val) <= 0 ? 0xff : \
 				clamp_val(1350000 / ((val) * (div)), \
 					      1, 254))
-
-static int fan_from_reg(int val, int div)
-{
-	if (val == 0)
-		return -1;
-	if (val == 0xff)
-		return 0;
-	return 1350000 / (val * div);
-}
-
+#define FAN_FROM_REG(val, div) ((val) == 0 ? -1 : (val) == 0xff ? 0 : \
+				1350000 / ((val) * (div)))
 #define DIV_FROM_REG(val) (1 << (val))
 #define DIV_TO_REG(val) ((val) >= 8 ? 3 : (val) >= 4 ? 2 : (val) >= 2 ? 1 : 0)
 
@@ -664,7 +656,7 @@ static ssize_t fan_show(struct device *dev, struct device_attribute *attr,
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
 	struct adm1026_data *data = adm1026_update_device(dev);
-	return sprintf(buf, "%d\n", fan_from_reg(data->fan[nr],
+	return sprintf(buf, "%d\n", FAN_FROM_REG(data->fan[nr],
 		data->fan_div[nr]));
 }
 static ssize_t fan_min_show(struct device *dev, struct device_attribute *attr,
@@ -673,7 +665,7 @@ static ssize_t fan_min_show(struct device *dev, struct device_attribute *attr,
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
 	struct adm1026_data *data = adm1026_update_device(dev);
-	return sprintf(buf, "%d\n", fan_from_reg(data->fan_min[nr],
+	return sprintf(buf, "%d\n", FAN_FROM_REG(data->fan_min[nr],
 		data->fan_div[nr]));
 }
 static ssize_t fan_min_store(struct device *dev,
@@ -1857,7 +1849,7 @@ static int adm1026_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adm1026_id[] = {
-	{ "adm1026" },
+	{ "adm1026", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adm1026_id);
@@ -1867,7 +1859,7 @@ static struct i2c_driver adm1026_driver = {
 	.driver = {
 		.name	= "adm1026",
 	},
-	.probe		= adm1026_probe,
+	.probe_new	= adm1026_probe,
 	.id_table	= adm1026_id,
 	.detect		= adm1026_detect,
 	.address_list	= normal_i2c,

@@ -89,7 +89,6 @@ struct pfru_payload_hdr {
 	__u32 hw_ver;
 	__u32 rt_ver;
 	__u8 platform_id[16];
-	__u32 svn_ver;
 };
 
 enum pfru_dsm_status {

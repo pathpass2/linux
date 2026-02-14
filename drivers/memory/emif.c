@@ -7,7 +7,6 @@
  * Aneesh V <aneesh@ti.com>
  * Santosh Shilimkar <santosh.shilimkar@ti.com>
  */
-#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/reboot.h>
@@ -39,7 +38,6 @@
  *				are two devices attached to this EMIF, this
  *				value is the maximum of the two temperature
  *				levels.
- * @lpmode:			Chosen low power mode
  * @node:			node in the device list
  * @base:			base address of memory-mapped IO registers.
  * @dev:			device pointer.
@@ -59,6 +57,7 @@ struct emif_data {
 	u8				temperature_level;
 	u8				lpmode;
 	struct list_head		node;
+	unsigned long			irq_state;
 	void __iomem			*base;
 	struct device			*dev;
 	struct emif_regs		*regs_cache[EMIF_MAX_NUM_FREQUENCIES];
@@ -70,8 +69,10 @@ struct emif_data {
 
 static struct emif_data *emif1;
 static DEFINE_SPINLOCK(emif_lock);
+static unsigned long	irq_state;
 static LIST_HEAD(device_list);
 
+#ifdef CONFIG_DEBUG_FS
 static void do_emif_regdump_show(struct seq_file *s, struct emif_data *emif,
 	struct emif_regs *regs)
 {
@@ -139,24 +140,31 @@ static int emif_mr4_show(struct seq_file *s, void *unused)
 
 DEFINE_SHOW_ATTRIBUTE(emif_mr4);
 
-static void emif_debugfs_init(struct emif_data *emif)
+static int __init_or_module emif_debugfs_init(struct emif_data *emif)
 {
-	if (IS_ENABLED(CONFIG_DEBUG_FS)) {
-		emif->debugfs_root = debugfs_create_dir(dev_name(emif->dev), NULL);
-		debugfs_create_file("regcache_dump", S_IRUGO, emif->debugfs_root, emif,
-				    &emif_regdump_fops);
-		debugfs_create_file("mr4", S_IRUGO, emif->debugfs_root, emif,
-				    &emif_mr4_fops);
-	}
+	emif->debugfs_root = debugfs_create_dir(dev_name(emif->dev), NULL);
+	debugfs_create_file("regcache_dump", S_IRUGO, emif->debugfs_root, emif,
+			    &emif_regdump_fops);
+	debugfs_create_file("mr4", S_IRUGO, emif->debugfs_root, emif,
+			    &emif_mr4_fops);
+	return 0;
 }
 
-static void emif_debugfs_exit(struct emif_data *emif)
+static void __exit emif_debugfs_exit(struct emif_data *emif)
 {
-	if (IS_ENABLED(CONFIG_DEBUG_FS)) {
-		debugfs_remove_recursive(emif->debugfs_root);
-		emif->debugfs_root = NULL;
-	}
+	debugfs_remove_recursive(emif->debugfs_root);
+	emif->debugfs_root = NULL;
 }
+#else
+static inline int __init_or_module emif_debugfs_init(struct emif_data *emif)
+{
+	return 0;
+}
+
+static inline void __exit emif_debugfs_exit(struct emif_data *emif)
+{
+}
+#endif
 
 /*
  * Get bus width used by EMIF. Note that this may be different from the
@@ -523,18 +531,18 @@ out:
 static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
 {
 	u32		old_temp_level;
-	irqreturn_t	ret;
+	irqreturn_t	ret = IRQ_HANDLED;
 	struct emif_custom_configs *custom_configs;
 
-	guard(spinlock_irqsave)(&emif_lock);
+	spin_lock_irqsave(&emif_lock, irq_state);
 	old_temp_level = emif->temperature_level;
 	get_temperature_level(emif);
 
 	if (unlikely(emif->temperature_level == old_temp_level)) {
-		return IRQ_HANDLED;
+		goto out;
 	} else if (!emif->curr_regs) {
 		dev_err(emif->dev, "temperature alert before registers are calculated, not de-rating timings\n");
-		return IRQ_HANDLED;
+		goto out;
 	}
 
 	custom_configs = emif->plat_data->custom_configs;
@@ -554,7 +562,8 @@ static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
 			 * from thread context
 			 */
 			emif->temperature_level = SDRAM_TEMP_VERY_HIGH_SHUTDOWN;
-			return IRQ_WAKE_THREAD;
+			ret = IRQ_WAKE_THREAD;
+			goto out;
 		}
 	}
 
@@ -570,9 +579,10 @@ static irqreturn_t handle_temp_alert(void __iomem *base, struct emif_data *emif)
 		/* Temperature is going up - handle immediately */
 		setup_temperature_sensitive_regs(emif, emif->curr_regs);
 		do_freq_update();
-		ret = IRQ_HANDLED;
 	}
 
+out:
+	spin_unlock_irqrestore(&emif_lock, irq_state);
 	return ret;
 }
 
@@ -615,7 +625,6 @@ static irqreturn_t emif_interrupt_handler(int irq, void *dev_id)
 static irqreturn_t emif_threaded_isr(int irq, void *dev_id)
 {
 	struct emif_data	*emif = dev_id;
-	unsigned long		irq_state;
 
 	if (emif->temperature_level == SDRAM_TEMP_VERY_HIGH_SHUTDOWN) {
 		dev_emerg(emif->dev, "SDRAM temperature exceeds operating limit.. Needs shut down!!!\n");
@@ -670,7 +679,7 @@ static void disable_and_clear_all_interrupts(struct emif_data *emif)
 	clear_all_interrupts(emif);
 }
 
-static int setup_interrupts(struct emif_data *emif, u32 irq)
+static int __init_or_module setup_interrupts(struct emif_data *emif, u32 irq)
 {
 	u32		interrupts, type;
 	void __iomem	*base = emif->base;
@@ -701,7 +710,7 @@ static int setup_interrupts(struct emif_data *emif, u32 irq)
 
 }
 
-static void emif_onetime_settings(struct emif_data *emif)
+static void __init_or_module emif_onetime_settings(struct emif_data *emif)
 {
 	u32				pwr_mgmt_ctrl, zq, temp_alert_cfg;
 	void __iomem			*base = emif->base;
@@ -825,7 +834,8 @@ static int is_custom_config_valid(struct emif_custom_configs *cust_cfgs,
 	return valid;
 }
 
-static void of_get_custom_configs(struct device_node *np_emif,
+#if defined(CONFIG_OF)
+static void __init_or_module of_get_custom_configs(struct device_node *np_emif,
 		struct emif_data *emif)
 {
 	struct emif_custom_configs	*cust_cfgs = NULL;
@@ -863,7 +873,7 @@ static void of_get_custom_configs(struct device_node *np_emif,
 						be32_to_cpup(poll_intvl);
 	}
 
-	if (of_property_read_bool(np_emif, "extended-temp-part"))
+	if (of_find_property(np_emif, "extended-temp-part", &len))
 		cust_cfgs->mask |= EMIF_CUSTOM_CONFIG_EXTENDED_TEMP_PART;
 
 	if (!is_custom_config_valid(cust_cfgs, emif->dev)) {
@@ -874,14 +884,18 @@ static void of_get_custom_configs(struct device_node *np_emif,
 	emif->plat_data->custom_configs = cust_cfgs;
 }
 
-static void of_get_ddr_info(struct device_node *np_emif,
+static void __init_or_module of_get_ddr_info(struct device_node *np_emif,
 		struct device_node *np_ddr,
 		struct ddr_device_info *dev_info)
 {
 	u32 density = 0, io_width = 0;
+	int len;
 
-	dev_info->cs1_used = of_property_read_bool(np_emif, "cs1-used");
-	dev_info->cal_resistors_per_cs = of_property_read_bool(np_emif, "cal-resistor-per-cs");
+	if (of_find_property(np_emif, "cs1-used", &len))
+		dev_info->cs1_used = true;
+
+	if (of_find_property(np_emif, "cal-resistor-per-cs", &len))
+		dev_info->cal_resistors_per_cs = true;
 
 	if (of_device_is_compatible(np_ddr, "jedec,lpddr2-s4"))
 		dev_info->type = DDR_TYPE_LPDDR2_S4;
@@ -904,13 +918,14 @@ static void of_get_ddr_info(struct device_node *np_emif,
 		dev_info->io_width = __fls(io_width) - 1;
 }
 
-static struct emif_data *of_get_memory_device_details(
+static struct emif_data * __init_or_module of_get_memory_device_details(
 		struct device_node *np_emif, struct device *dev)
 {
 	struct emif_data		*emif = NULL;
 	struct ddr_device_info		*dev_info = NULL;
 	struct emif_platform_data	*pd = NULL;
 	struct device_node		*np_ddr;
+	int				len;
 
 	np_ddr = of_parse_phandle(np_emif, "device-handle", 0);
 	if (!np_ddr)
@@ -938,7 +953,7 @@ static struct emif_data *of_get_memory_device_details(
 
 	of_property_read_u32(np_emif, "phy-type", &pd->phy_type);
 
-	if (of_property_read_bool(np_emif, "hw-caps-ll-interface"))
+	if (of_find_property(np_emif, "hw-caps-ll-interface", &len))
 		pd->hw_caps |= EMIF_HW_CAPS_LL_INTERFACE;
 
 	of_get_ddr_info(np_emif, np_ddr, dev_info);
@@ -976,7 +991,16 @@ out:
 	return emif;
 }
 
-static struct emif_data *get_device_details(
+#else
+
+static struct emif_data * __init_or_module of_get_memory_device_details(
+		struct device_node *np_emif, struct device *dev)
+{
+	return NULL;
+}
+#endif
+
+static struct emif_data *__init_or_module get_device_details(
 		struct platform_device *pdev)
 {
 	u32				size;
@@ -1080,7 +1104,7 @@ error:
 	return NULL;
 }
 
-static int emif_probe(struct platform_device *pdev)
+static int __init_or_module emif_probe(struct platform_device *pdev)
 {
 	struct emif_data	*emif;
 	int			irq, ret;
@@ -1135,11 +1159,13 @@ error:
 	return -ENODEV;
 }
 
-static void emif_remove(struct platform_device *pdev)
+static int __exit emif_remove(struct platform_device *pdev)
 {
 	struct emif_data *emif = platform_get_drvdata(pdev);
 
 	emif_debugfs_exit(emif);
+
+	return 0;
 }
 
 static void emif_shutdown(struct platform_device *pdev)
@@ -1159,8 +1185,7 @@ MODULE_DEVICE_TABLE(of, emif_of_match);
 #endif
 
 static struct platform_driver emif_driver = {
-	.probe		= emif_probe,
-	.remove		= emif_remove,
+	.remove		= __exit_p(emif_remove),
 	.shutdown	= emif_shutdown,
 	.driver = {
 		.name = "emif",
@@ -1168,7 +1193,7 @@ static struct platform_driver emif_driver = {
 	},
 };
 
-module_platform_driver(emif_driver);
+module_platform_driver_probe(emif_driver, emif_probe);
 
 MODULE_DESCRIPTION("TI EMIF SDRAM Controller Driver");
 MODULE_LICENSE("GPL");

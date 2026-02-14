@@ -6,7 +6,7 @@
 // Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
 
 #include <linux/slab.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/module.h>
 #include <linux/workqueue.h>
@@ -140,15 +140,6 @@ static int test_dai_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	return 0;
 }
 
-static int test_dai_set_tdm_slot(struct snd_soc_dai *dai,
-				 unsigned int tx_mask, unsigned int rx_mask,
-				 int slots, int slot_width)
-{
-	dev_info(dai->dev, "set tdm slot: tx_mask=0x%08X, rx_mask=0x%08X, slots=%d, slot_width=%d\n",
-		 tx_mask, rx_mask, slots, slot_width);
-	return 0;
-}
-
 static int test_dai_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 {
 	mile_stone(dai);
@@ -190,7 +181,15 @@ static int test_dai_trigger(struct snd_pcm_substream *substream, int cmd, struct
 	return 0;
 }
 
-static const u64 test_dai_formats =
+static int test_dai_bespoke_trigger(struct snd_pcm_substream *substream,
+				    int cmd, struct snd_soc_dai *dai)
+{
+	mile_stone(dai);
+
+	return 0;
+}
+
+static u64 test_dai_formats =
 	/*
 	 * Select below from Sound Card, not auto
 	 *	SND_SOC_POSSIBLE_DAIFMT_BP_FP
@@ -212,7 +211,6 @@ static const u64 test_dai_formats =
 
 static const struct snd_soc_dai_ops test_ops = {
 	.set_fmt		= test_dai_set_fmt,
-	.set_tdm_slot		= test_dai_set_tdm_slot,
 	.startup		= test_dai_startup,
 	.shutdown		= test_dai_shutdown,
 	.auto_selectable_formats	= &test_dai_formats,
@@ -224,18 +222,18 @@ static const struct snd_soc_dai_ops test_verbose_ops = {
 	.set_pll		= test_dai_set_pll,
 	.set_clkdiv		= test_dai_set_clkdiv,
 	.set_fmt		= test_dai_set_fmt,
-	.set_tdm_slot		= test_dai_set_tdm_slot,
 	.mute_stream		= test_dai_mute_stream,
 	.startup		= test_dai_startup,
 	.shutdown		= test_dai_shutdown,
 	.hw_params		= test_dai_hw_params,
 	.hw_free		= test_dai_hw_free,
 	.trigger		= test_dai_trigger,
+	.bespoke_trigger	= test_dai_bespoke_trigger,
 	.auto_selectable_formats	= &test_dai_formats,
 	.num_auto_selectable_formats	= 1,
 };
 
-#define STUB_RATES	SNDRV_PCM_RATE_CONTINUOUS
+#define STUB_RATES	SNDRV_PCM_RATE_8000_384000
 #define STUB_FORMATS	(SNDRV_PCM_FMTBIT_S8		| \
 			 SNDRV_PCM_FMTBIT_U8		| \
 			 SNDRV_PCM_FMTBIT_S16_LE	| \
@@ -354,7 +352,7 @@ static const struct snd_pcm_hardware test_component_hardware = {
 static int test_component_open(struct snd_soc_component *component,
 			       struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 
 	mile_stone(component);
 
@@ -532,6 +530,7 @@ static int test_driver_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *node = dev->of_node;
+	struct device_node *ep;
 	const struct test_adata *adata = of_device_get_match_data(&pdev->dev);
 	struct snd_soc_component_driver *cdriv;
 	struct snd_soc_dai_driver *ddriv;
@@ -547,8 +546,8 @@ static int test_driver_probe(struct platform_device *pdev)
 
 	priv	= devm_kzalloc(dev, sizeof(*priv),		GFP_KERNEL);
 	cdriv	= devm_kzalloc(dev, sizeof(*cdriv),		GFP_KERNEL);
-	ddriv	= devm_kcalloc(dev, num, sizeof(*ddriv), 	GFP_KERNEL);
-	dname	= devm_kcalloc(dev, num, sizeof(*dname), 	GFP_KERNEL);
+	ddriv	= devm_kzalloc(dev, sizeof(*ddriv) * num,	GFP_KERNEL);
+	dname	= devm_kzalloc(dev, sizeof(*dname) * num,	GFP_KERNEL);
 	if (!priv || !cdriv || !ddriv || !dname || !adata)
 		return -EINVAL;
 
@@ -601,7 +600,7 @@ static int test_driver_probe(struct platform_device *pdev)
 	}
 
 	i = 0;
-	for_each_of_graph_port(node, port) {
+	for_each_endpoint_of_node(node, ep) {
 		snprintf(dname[i].name, TEST_NAME_LEN, "%s.%d", node->name, i);
 		ddriv[i].name = dname[i].name;
 
@@ -636,9 +635,11 @@ static int test_driver_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void test_driver_remove(struct platform_device *pdev)
+static int test_driver_remove(struct platform_device *pdev)
 {
 	mile_stone_x(&pdev->dev);
+
+	return 0;
 }
 
 static struct platform_driver test_driver = {

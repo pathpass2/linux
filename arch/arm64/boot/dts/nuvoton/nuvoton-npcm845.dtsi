@@ -49,8 +49,6 @@
 
 		l2: l2-cache {
 			compatible = "cache";
-			cache-level = <2>;
-			cache-unified;
 		};
 	};
 
@@ -64,8 +62,8 @@
 	};
 
 	psci {
-		compatible = "arm,psci-1.0";
-		method = "smc";
+		compatible      = "arm,psci-1.0";
+		method          = "smc";
 	};
 
 	timer {

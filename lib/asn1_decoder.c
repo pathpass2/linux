@@ -518,5 +518,4 @@ error:
 }
 EXPORT_SYMBOL_GPL(asn1_ber_decoder);
 
-MODULE_DESCRIPTION("Decoder for ASN.1 BER/DER/CER encoded bytestream");
 MODULE_LICENSE("GPL");

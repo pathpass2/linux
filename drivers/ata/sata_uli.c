@@ -59,7 +59,7 @@ static struct pci_driver uli_pci_driver = {
 	.remove			= ata_pci_remove_one,
 };
 
-static const struct scsi_host_template uli_sht = {
+static struct scsi_host_template uli_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -67,7 +67,7 @@ static struct ata_port_operations uli_ops = {
 	.inherits		= &ata_bmdma_port_ops,
 	.scr_read		= uli_scr_read,
 	.scr_write		= uli_scr_write,
-	.reset.hardreset	= ATA_OP_NULL,
+	.hardreset		= ATA_OP_NULL,
 };
 
 static const struct ata_port_info uli_port_info = {
@@ -221,7 +221,7 @@ static int uli_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	pci_set_master(pdev);
-	pcim_intx(pdev, 1);
+	pci_intx(pdev, 1);
 	return ata_host_activate(host, pdev->irq, ata_bmdma_interrupt,
 				 IRQF_SHARED, &uli_sht);
 }

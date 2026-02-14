@@ -10,7 +10,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
 
 /*
  * FPGA programming requires a higher level of privilege (EL3), per the SoC
@@ -436,13 +435,15 @@ probe_err:
 	return ret;
 }
 
-static void s10_remove(struct platform_device *pdev)
+static int s10_remove(struct platform_device *pdev)
 {
 	struct fpga_manager *mgr = platform_get_drvdata(pdev);
 	struct s10_priv *priv = mgr->priv;
 
 	fpga_mgr_unregister(mgr);
 	stratix10_svc_free_channel(priv->chan);
+
+	return 0;
 }
 
 static const struct of_device_id s10_of_match[] = {

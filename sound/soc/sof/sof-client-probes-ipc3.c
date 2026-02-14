@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2019-2022 Intel Corporation
+// Copyright(c) 2019-2022 Intel Corporation. All rights reserved.
 //
 // Author: Cezary Rojewski <cezary.rojewski@intel.com>
 //
@@ -65,6 +65,7 @@ static int ipc3_probes_init(struct sof_client_dev *cdev, u32 stream_tag,
 {
 	struct sof_ipc_probe_dma_add_params *msg;
 	size_t size = struct_size(msg, dma, 1);
+	struct sof_ipc_reply reply;
 	int ret;
 
 	msg = kmalloc(size, GFP_KERNEL);
@@ -76,7 +77,7 @@ static int ipc3_probes_init(struct sof_client_dev *cdev, u32 stream_tag,
 	msg->dma[0].stream_tag = stream_tag;
 	msg->dma[0].dma_buffer_size = buffer_size;
 
-	ret = sof_client_ipc_tx_message_no_reply(cdev, msg);
+	ret = sof_client_ipc_tx_message(cdev, msg, &reply, sizeof(reply));
 	kfree(msg);
 	return ret;
 }
@@ -92,19 +93,18 @@ static int ipc3_probes_init(struct sof_client_dev *cdev, u32 stream_tag,
 static int ipc3_probes_deinit(struct sof_client_dev *cdev)
 {
 	struct sof_ipc_cmd_hdr msg;
+	struct sof_ipc_reply reply;
 
 	msg.size = sizeof(msg);
 	msg.cmd = SOF_IPC_GLB_PROBE | SOF_IPC_PROBE_DEINIT;
 
-	return sof_client_ipc_tx_message_no_reply(cdev, &msg);
+	return sof_client_ipc_tx_message(cdev, &msg, &reply, sizeof(reply));
 }
 
 static int ipc3_probes_info(struct sof_client_dev *cdev, unsigned int cmd,
-			    void **params, size_t *num_params,
-			    enum sof_probe_info_type type)
+			    void **params, size_t *num_params)
 {
 	size_t max_msg_size = sof_client_get_ipc_max_payload_size(cdev);
-	struct device *dev = &cdev->auxdev.dev;
 	struct sof_ipc_probe_info_params msg = {{{0}}};
 	struct sof_ipc_probe_info_params *reply;
 	size_t bytes;
@@ -112,11 +112,6 @@ static int ipc3_probes_info(struct sof_client_dev *cdev, unsigned int cmd,
 
 	*params = NULL;
 	*num_params = 0;
-
-	if (type != PROBES_INFO_ACTIVE_PROBES) {
-		dev_err(dev, "%s: info type %u not supported", __func__, type);
-		return -EOPNOTSUPP;
-	}
 
 	reply = kzalloc(max_msg_size, GFP_KERNEL);
 	if (!reply)
@@ -149,25 +144,21 @@ exit:
 }
 
 /**
- * ipc3_probes_points_info - retrieve list of probe points
+ * ipc3_probes_points_info - retrieve list of active probe points
  * @cdev:		SOF client device
  * @desc:	Returned list of active probes
  * @num_desc:	Returned count of active probes
- * @type:	Either PROBES_INFO_ACTIVE_PROBES or PROBES_INFO_AVAILABE_PROBES
  *
- * If type is PROBES_INFO_ACTIVE_PROBES, host sends PROBE_POINT_INFO
- * request to obtain list of active probe points, valid for
- * disconnection when given probe is no longer required.
- *
- * Type PROBES_INFO_AVAILABE_PROBES is not yet supported.
+ * Host sends PROBE_POINT_INFO request to obtain list of active probe
+ * points, valid for disconnection when given probe is no longer
+ * required.
  */
 static int ipc3_probes_points_info(struct sof_client_dev *cdev,
 				   struct sof_probe_point_desc **desc,
-				   size_t *num_desc,
-				   enum sof_probe_info_type type)
+				   size_t *num_desc)
 {
 	return ipc3_probes_info(cdev, SOF_IPC_PROBE_POINT_INFO,
-				(void **)desc, num_desc, type);
+			       (void **)desc, num_desc);
 }
 
 /**
@@ -189,6 +180,7 @@ static int ipc3_probes_points_add(struct sof_client_dev *cdev,
 {
 	struct sof_ipc_probe_point_add_params *msg;
 	size_t size = struct_size(msg, desc, num_desc);
+	struct sof_ipc_reply reply;
 	int ret;
 
 	msg = kmalloc(size, GFP_KERNEL);
@@ -199,7 +191,7 @@ static int ipc3_probes_points_add(struct sof_client_dev *cdev,
 	msg->hdr.cmd = SOF_IPC_GLB_PROBE | SOF_IPC_PROBE_POINT_ADD;
 	memcpy(&msg->desc[0], desc, size - sizeof(*msg));
 
-	ret = sof_client_ipc_tx_message_no_reply(cdev, msg);
+	ret = sof_client_ipc_tx_message(cdev, msg, &reply, sizeof(reply));
 	kfree(msg);
 	return ret;
 }
@@ -219,6 +211,7 @@ static int ipc3_probes_points_remove(struct sof_client_dev *cdev,
 {
 	struct sof_ipc_probe_point_remove_params *msg;
 	size_t size = struct_size(msg, buffer_id, num_buffer_id);
+	struct sof_ipc_reply reply;
 	int ret;
 
 	msg = kmalloc(size, GFP_KERNEL);
@@ -229,7 +222,7 @@ static int ipc3_probes_points_remove(struct sof_client_dev *cdev,
 	msg->hdr.cmd = SOF_IPC_GLB_PROBE | SOF_IPC_PROBE_POINT_REMOVE;
 	memcpy(&msg->buffer_id[0], buffer_id, size - sizeof(*msg));
 
-	ret = sof_client_ipc_tx_message_no_reply(cdev, msg);
+	ret = sof_client_ipc_tx_message(cdev, msg, &reply, sizeof(reply));
 	kfree(msg);
 	return ret;
 }

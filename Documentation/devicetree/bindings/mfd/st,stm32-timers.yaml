@@ -21,9 +21,7 @@ maintainers:
 
 properties:
   compatible:
-    enum:
-      - st,stm32-timers
-      - st,stm32mp25-timers
+    const: st,stm32-timers
 
   reg:
     maxItems: 1
@@ -36,9 +34,6 @@ properties:
       - const: int
 
   resets:
-    maxItems: 1
-
-  power-domains:
     maxItems: 1
 
   dmas:
@@ -72,19 +67,13 @@ properties:
   "#size-cells":
     const: 0
 
-  access-controllers:
-    minItems: 1
-    maxItems: 2
-
   pwm:
     type: object
     additionalProperties: false
 
     properties:
       compatible:
-        enum:
-          - st,stm32-pwm
-          - st,stm32mp25-pwm
+        const: st,stm32-pwm
 
       "#pwm-cells":
         const: 3
@@ -120,9 +109,7 @@ properties:
 
     properties:
       compatible:
-        enum:
-          - st,stm32-timer-counter
-          - st,stm32mp25-timer-counter
+        const: st,stm32-timer-counter
 
     required:
       - compatible
@@ -137,13 +124,12 @@ patternProperties:
         enum:
           - st,stm32-timer-trigger
           - st,stm32h7-timer-trigger
-          - st,stm32mp25-timer-trigger
 
       reg:
         description: Identify trigger hardware block.
         items:
           minimum: 0
-          maximum: 19
+          maximum: 16
 
     required:
       - compatible

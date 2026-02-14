@@ -25,6 +25,7 @@
 #include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/sort.h>
 #include <linux/pm_wakeirq.h>
 
@@ -85,7 +86,7 @@ static int titsc_config_wires(struct titsc *ts_dev)
 		wire_order[i] = ts_dev->config_inp[i] & 0x0F;
 		if (WARN_ON(analog_line[i] > 7))
 			return -EINVAL;
-		if (WARN_ON(wire_order[i] >= ARRAY_SIZE(config_pins)))
+		if (WARN_ON(wire_order[i] > ARRAY_SIZE(config_pins)))
 			return -EINVAL;
 	}
 
@@ -157,6 +158,7 @@ static void titsc_step_config(struct titsc *ts_dev)
 			     n++ == 0 ? STEPCONFIG_OPENDLY : 0);
 	}
 
+	config = 0;
 	config = STEPCONFIG_MODE_HWSYNC |
 			STEPCONFIG_AVG_16 | ts_dev->bit_yn |
 			STEPCONFIG_INM_ADCREFM;
@@ -389,10 +391,6 @@ static int titsc_parse_dt(struct platform_device *pdev,
 		dev_warn(&pdev->dev,
 			 "invalid co-ordinate readouts, resetting it to 5\n");
 		ts_dev->coordinate_readouts = 5;
-	} else if (ts_dev->coordinate_readouts > 6) {
-		dev_warn(&pdev->dev,
-			 "co-ordinate readouts too large, limiting to 6\n");
-		ts_dev->coordinate_readouts = 6;
 	}
 
 	err = of_property_read_u32(node, "ti,charge-delay",
@@ -494,7 +492,7 @@ err_free_mem:
 	return err;
 }
 
-static void titsc_remove(struct platform_device *pdev)
+static int titsc_remove(struct platform_device *pdev)
 {
 	struct titsc *ts_dev = platform_get_drvdata(pdev);
 	u32 steps;
@@ -511,6 +509,7 @@ static void titsc_remove(struct platform_device *pdev)
 	input_unregister_device(ts_dev->input);
 
 	kfree(ts_dev);
+	return 0;
 }
 
 static int titsc_suspend(struct device *dev)
@@ -556,7 +555,7 @@ static struct platform_driver ti_tsc_driver = {
 	.probe	= titsc_probe,
 	.remove	= titsc_remove,
 	.driver	= {
-		.name	= "TI-am335x-tsc",
+		.name   = "TI-am335x-tsc",
 		.pm	= pm_sleep_ptr(&titsc_pm_ops),
 		.of_match_table = ti_tsc_dt_ids,
 	},

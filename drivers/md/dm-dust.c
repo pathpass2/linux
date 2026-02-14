@@ -534,9 +534,7 @@ static void dust_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
-static int dust_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
-			      unsigned int cmd, unsigned long arg,
-			      bool *forward)
+static int dust_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
 {
 	struct dust_device *dd = ti->private;
 	struct dm_dev *dev = dd->dev;
@@ -572,8 +570,25 @@ static struct target_type dust_target = {
 	.status = dust_status,
 	.prepare_ioctl = dust_prepare_ioctl,
 };
-module_dm(dust);
+
+static int __init dm_dust_init(void)
+{
+	int r = dm_register_target(&dust_target);
+
+	if (r < 0)
+		DMERR("dm_register_target failed %d", r);
+
+	return r;
+}
+
+static void __exit dm_dust_exit(void)
+{
+	dm_unregister_target(&dust_target);
+}
+
+module_init(dm_dust_init);
+module_exit(dm_dust_exit);
 
 MODULE_DESCRIPTION(DM_NAME " dust test target");
-MODULE_AUTHOR("Bryan Gurney <dm-devel@lists.linux.dev>");
+MODULE_AUTHOR("Bryan Gurney <dm-devel@redhat.com>");
 MODULE_LICENSE("GPL");

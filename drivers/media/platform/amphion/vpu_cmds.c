@@ -9,10 +9,13 @@
 #include <linux/list.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/delay.h>
+#include <linux/vmalloc.h>
 #include "vpu.h"
 #include "vpu_defs.h"
 #include "vpu_cmds.h"
@@ -31,7 +34,6 @@ struct vpu_cmd_t {
 	struct vpu_cmd_request *request;
 	struct vpu_rpc_event *pkt;
 	unsigned long key;
-	atomic_long_t *last_response_cmd;
 };
 
 static struct vpu_cmd_request vpu_cmd_requests[] = {
@@ -83,22 +85,22 @@ static struct vpu_cmd_t *vpu_alloc_cmd(struct vpu_inst *inst, u32 id, void *data
 	int i;
 	int ret;
 
-	cmd = kzalloc(sizeof(*cmd), GFP_KERNEL);
+	cmd = vzalloc(sizeof(*cmd));
 	if (!cmd)
 		return NULL;
 
-	cmd->pkt = kzalloc(sizeof(*cmd->pkt), GFP_KERNEL);
+	cmd->pkt = vzalloc(sizeof(*cmd->pkt));
 	if (!cmd->pkt) {
-		kfree(cmd);
+		vfree(cmd);
 		return NULL;
 	}
 
 	cmd->id = id;
 	ret = vpu_iface_pack_cmd(inst->core, cmd->pkt, inst->id, id, data);
 	if (ret) {
-		dev_err(inst->dev, "iface pack cmd %s fail\n", vpu_id_name(id));
-		kfree(cmd->pkt);
-		kfree(cmd);
+		dev_err(inst->dev, "iface pack cmd(%d) fail\n", id);
+		vfree(cmd->pkt);
+		vfree(cmd);
 		return NULL;
 	}
 	for (i = 0; i < ARRAY_SIZE(vpu_cmd_requests); i++) {
@@ -115,24 +117,22 @@ static void vpu_free_cmd(struct vpu_cmd_t *cmd)
 {
 	if (!cmd)
 		return;
-	if (cmd->last_response_cmd)
-		atomic_long_set(cmd->last_response_cmd, cmd->key);
-	kfree(cmd->pkt);
-	kfree(cmd);
+	vfree(cmd->pkt);
+	vfree(cmd);
 }
 
 static int vpu_session_process_cmd(struct vpu_inst *inst, struct vpu_cmd_t *cmd)
 {
 	int ret;
 
-	dev_dbg(inst->dev, "[%d]send cmd %s\n", inst->id, vpu_id_name(cmd->id));
+	dev_dbg(inst->dev, "[%d]send cmd(0x%x)\n", inst->id, cmd->id);
 	vpu_iface_pre_send_cmd(inst);
 	ret = vpu_cmd_send(inst->core, cmd->pkt);
 	if (!ret) {
 		vpu_iface_post_send_cmd(inst);
 		vpu_inst_record_flow(inst, cmd->id);
 	} else {
-		dev_err(inst->dev, "[%d] iface send cmd %s fail\n", inst->id, vpu_id_name(cmd->id));
+		dev_err(inst->dev, "[%d] iface send cmd(0x%x) fail\n", inst->id, cmd->id);
 	}
 
 	return ret;
@@ -149,8 +149,7 @@ static void vpu_process_cmd_request(struct vpu_inst *inst)
 	list_for_each_entry_safe(cmd, tmp, &inst->cmd_q, list) {
 		list_del_init(&cmd->list);
 		if (vpu_session_process_cmd(inst, cmd))
-			dev_err(inst->dev, "[%d] process cmd %s fail\n",
-				inst->id, vpu_id_name(cmd->id));
+			dev_err(inst->dev, "[%d] process cmd(%d) fail\n", inst->id, cmd->id);
 		if (cmd->request) {
 			inst->pending = (void *)cmd;
 			break;
@@ -174,8 +173,7 @@ static int vpu_request_cmd(struct vpu_inst *inst, u32 id, void *data,
 		return -ENOMEM;
 
 	mutex_lock(&core->cmd_lock);
-	cmd->key = ++inst->cmd_seq;
-	cmd->last_response_cmd = &inst->last_response_cmd;
+	cmd->key = core->cmd_seq++;
 	if (key)
 		*key = cmd->key;
 	if (sync)
@@ -249,12 +247,26 @@ void vpu_clear_request(struct vpu_inst *inst)
 
 static bool check_is_responsed(struct vpu_inst *inst, unsigned long key)
 {
-	unsigned long last_response = atomic_long_read(&inst->last_response_cmd);
+	struct vpu_core *core = inst->core;
+	struct vpu_cmd_t *cmd;
+	bool flag = true;
 
-	if (key <= last_response && (last_response - key) < (ULONG_MAX >> 1))
-		return true;
+	mutex_lock(&core->cmd_lock);
+	cmd = inst->pending;
+	if (cmd && key == cmd->key) {
+		flag = false;
+		goto exit;
+	}
+	list_for_each_entry(cmd, &inst->cmd_q, list) {
+		if (key == cmd->key) {
+			flag = false;
+			break;
+		}
+	}
+exit:
+	mutex_unlock(&core->cmd_lock);
 
-	return false;
+	return flag;
 }
 
 static int sync_session_response(struct vpu_inst *inst, unsigned long key, long timeout, int try)
@@ -293,8 +305,7 @@ static void vpu_core_keep_active(struct vpu_core *core)
 
 	dev_dbg(core->dev, "try to wake up\n");
 	mutex_lock(&core->cmd_lock);
-	if (vpu_cmd_send(core, &pkt))
-		dev_err(core->dev, "fail to keep active\n");
+	vpu_cmd_send(core, &pkt);
 	mutex_unlock(&core->cmd_lock);
 }
 
@@ -302,7 +313,7 @@ static int vpu_session_send_cmd(struct vpu_inst *inst, u32 id, void *data)
 {
 	unsigned long key;
 	int sync = false;
-	int ret;
+	int ret = -EINVAL;
 
 	if (inst->id < 0)
 		return -EINVAL;
@@ -328,7 +339,7 @@ static int vpu_session_send_cmd(struct vpu_inst *inst, u32 id, void *data)
 
 exit:
 	if (ret)
-		dev_err(inst->dev, "[%d] send cmd %s fail\n", inst->id, vpu_id_name(id));
+		dev_err(inst->dev, "[%d] send cmd(0x%x) fail\n", inst->id, id);
 
 	return ret;
 }

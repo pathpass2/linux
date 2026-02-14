@@ -10,7 +10,7 @@
  * with 128-bit integer types.
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <crypto/curve25519.h>
 #include <linux/string.h>
 

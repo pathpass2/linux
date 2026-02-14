@@ -716,7 +716,7 @@ static void uhci_stop(struct usb_hcd *hcd)
 	spin_unlock_irq(&uhci->lock);
 	synchronize_irq(hcd->irq);
 
-	timer_delete_sync(&uhci->fsbr_timer);
+	del_timer_sync(&uhci->fsbr_timer);
 	release_uhci(uhci);
 }
 
@@ -841,7 +841,7 @@ static int uhci_count_ports(struct usb_hcd *hcd)
 
 static const char hcd_name[] = "uhci_hcd";
 
-#if defined(CONFIG_USB_PCI) && defined(CONFIG_HAS_IOPORT)
+#ifdef CONFIG_USB_PCI
 #include "uhci-pci.c"
 #define	PCI_DRIVER		uhci_pci_driver
 #endif

@@ -270,15 +270,18 @@ static int au1xi2s_drvprobe(struct platform_device *pdev)
 					  &au1xi2s_dai_driver, 1);
 }
 
-static void au1xi2s_drvremove(struct platform_device *pdev)
+static int au1xi2s_drvremove(struct platform_device *pdev)
 {
 	struct au1xpsc_audio_data *ctx = platform_get_drvdata(pdev);
 
 	snd_soc_unregister_component(&pdev->dev);
 
 	WR(ctx, I2S_ENABLE, EN_D);	/* clock off, disable */
+
+	return 0;
 }
 
+#ifdef CONFIG_PM
 static int au1xi2s_drvsuspend(struct device *dev)
 {
 	struct au1xpsc_audio_data *ctx = dev_get_drvdata(dev);
@@ -293,13 +296,23 @@ static int au1xi2s_drvresume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(au1xi2sc_pmops, au1xi2s_drvsuspend,
-				au1xi2s_drvresume);
+static const struct dev_pm_ops au1xi2sc_pmops = {
+	.suspend	= au1xi2s_drvsuspend,
+	.resume		= au1xi2s_drvresume,
+};
+
+#define AU1XI2SC_PMOPS (&au1xi2sc_pmops)
+
+#else
+
+#define AU1XI2SC_PMOPS NULL
+
+#endif
 
 static struct platform_driver au1xi2s_driver = {
 	.driver	= {
 		.name	= "alchemy-i2sc",
-		.pm	= pm_ptr(&au1xi2sc_pmops),
+		.pm	= AU1XI2SC_PMOPS,
 	},
 	.probe		= au1xi2s_drvprobe,
 	.remove		= au1xi2s_drvremove,

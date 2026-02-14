@@ -7,7 +7,8 @@
  * Copyright IBM Corp. 2002, 2004
  */
 
-#define pr_fmt(fmt) "extmem: " fmt
+#define KMSG_COMPONENT "extmem"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/string.h>
@@ -20,7 +21,6 @@
 #include <linux/ioport.h>
 #include <linux/refcount.h>
 #include <linux/pgtable.h>
-#include <asm/machine.h>
 #include <asm/diag.h>
 #include <asm/page.h>
 #include <asm/ebcdic.h>
@@ -28,7 +28,6 @@
 #include <asm/extmem.h>
 #include <asm/cpcmd.h>
 #include <asm/setup.h>
-#include <asm/asm.h>
 
 #define DCSS_PURGESEG   0x08
 #define DCSS_LOADSHRX	0x20
@@ -135,21 +134,20 @@ dcss_diag(int *func, void *parameter,
            unsigned long *ret1, unsigned long *ret2)
 {
 	unsigned long rx, ry;
-	int cc;
+	int rc;
 
-	rx = virt_to_phys(parameter);
+	rx = (unsigned long) parameter;
 	ry = (unsigned long) *func;
 
 	diag_stat_inc(DIAG_STAT_X064);
 	asm volatile(
-		"	diag	%[rx],%[ry],0x64\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, cc), [rx] "+d" (rx), [ry] "+d" (ry)
-		:
-		: CC_CLOBBER);
+		"	diag	%0,%1,0x64\n"
+		"	ipm	%2\n"
+		"	srl	%2,28\n"
+		: "+d" (rx), "+d" (ry), "=d" (rc) : : "cc");
 	*ret1 = rx;
 	*ret2 = ry;
-	return CC_TRANSFORM(cc);
+	return rc;
 }
 
 static inline int
@@ -180,7 +178,7 @@ query_segment_type (struct dcss_segment *seg)
 
 	/* initialize diag input parameters */
 	qin->qopcode = DCSS_FINDSEGA;
-	qin->qoutptr = virt_to_phys(qout);
+	qin->qoutptr = (unsigned long) qout;
 	qin->qoutlen = sizeof(struct qout64);
 	memcpy (qin->qname, seg->dcss_name, 8);
 
@@ -255,7 +253,7 @@ segment_type (char* name)
 	int rc;
 	struct dcss_segment seg;
 
-	if (!machine_is_vm())
+	if (!MACHINE_IS_VM)
 		return -ENOSYS;
 
 	dcss_mkname(name, seg.dcss_name);
@@ -418,7 +416,7 @@ segment_load (char *name, int do_nonshared, unsigned long *addr,
 	struct dcss_segment *seg;
 	int rc;
 
-	if (!machine_is_vm())
+	if (!MACHINE_IS_VM)
 		return -ENOSYS;
 
 	mutex_lock(&dcss_lock);
@@ -529,14 +527,6 @@ segment_modify_shared (char *name, int do_nonshared)
 	return rc;
 }
 
-static void __dcss_diag_purge_on_cpu_0(void *data)
-{
-	struct dcss_segment *seg = (struct dcss_segment *)data;
-	unsigned long dummy;
-
-	dcss_diag(&purgeseg_scode, seg->dcss_name, &dummy, &dummy);
-}
-
 /*
  * Decrease the use count of a DCSS segment and remove
  * it from the address space if nobody is using it
@@ -545,9 +535,10 @@ static void __dcss_diag_purge_on_cpu_0(void *data)
 void
 segment_unload(char *name)
 {
+	unsigned long dummy;
 	struct dcss_segment *seg;
 
-	if (!machine_is_vm())
+	if (!MACHINE_IS_VM)
 		return;
 
 	mutex_lock(&dcss_lock);
@@ -562,14 +553,7 @@ segment_unload(char *name)
 	kfree(seg->res);
 	vmem_remove_mapping(seg->start_addr, seg->end - seg->start_addr + 1);
 	list_del(&seg->list);
-	/*
-	 * Workaround for z/VM issue, where calling the DCSS unload diag on
-	 * a non-IPL CPU would cause bogus sclp maximum memory detection on
-	 * next IPL.
-	 * IPL CPU 0 cannot be set offline, so the dcss_diag() call can
-	 * directly be scheduled to that CPU.
-	 */
-	smp_call_function_single(0, __dcss_diag_purge_on_cpu_0, seg, 1);
+	dcss_diag(&purgeseg_scode, seg->dcss_name, &dummy, &dummy);
 	kfree(seg);
 out_unlock:
 	mutex_unlock(&dcss_lock);
@@ -586,7 +570,7 @@ segment_save(char *name)
 	char cmd2[80];
 	int i, response;
 
-	if (!machine_is_vm())
+	if (!MACHINE_IS_VM)
 		return;
 
 	mutex_lock(&dcss_lock);
@@ -597,16 +581,14 @@ segment_save(char *name)
 		goto out;
 	}
 
-	snprintf(cmd1, sizeof(cmd1), "DEFSEG %s", name);
+	sprintf(cmd1, "DEFSEG %s", name);
 	for (i=0; i<seg->segcnt; i++) {
-		size_t len = strlen(cmd1);
-
-		snprintf(cmd1 + len, sizeof(cmd1) - len, " %lX-%lX %s",
-			 seg->range[i].start >> PAGE_SHIFT,
-			 seg->range[i].end >> PAGE_SHIFT,
-			 segtype_string[seg->range[i].start & 0xff]);
+		sprintf(cmd1+strlen(cmd1), " %lX-%lX %s",
+			seg->range[i].start >> PAGE_SHIFT,
+			seg->range[i].end >> PAGE_SHIFT,
+			segtype_string[seg->range[i].start & 0xff]);
 	}
-	snprintf(cmd2, sizeof(cmd2), "SAVESEG %s", name);
+	sprintf(cmd2, "SAVESEG %s", name);
 	response = 0;
 	cpcmd(cmd1, NULL, 0, &response);
 	if (response) {
@@ -658,13 +640,10 @@ void segment_warning(int rc, char *seg_name)
 		pr_err("There is not enough memory to load or query "
 		       "DCSS %s\n", seg_name);
 		break;
-	case -ERANGE: {
-		struct range mhp_range = arch_get_mappable_range();
-
-		pr_err("DCSS %s exceeds the kernel mapping range (%llu) "
-		       "and cannot be loaded\n", seg_name, mhp_range.end + 1);
+	case -ERANGE:
+		pr_err("DCSS %s exceeds the kernel mapping range (%lu) "
+		       "and cannot be loaded\n", seg_name, VMEM_MAX_PHYS);
 		break;
-	}
 	default:
 		break;
 	}

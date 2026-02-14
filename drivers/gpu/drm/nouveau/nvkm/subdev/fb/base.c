@@ -174,18 +174,6 @@ nvkm_fb_mem_unlock(struct nvkm_fb *fb)
 	return 0;
 }
 
-u64
-nvkm_fb_vidmem_size(struct nvkm_device *device)
-{
-	struct nvkm_fb *fb = device->fb;
-
-	if (fb && fb->func->vidmem.size)
-		return fb->func->vidmem.size(fb);
-
-	WARN_ON(1);
-	return 0;
-}
-
 static int
 nvkm_fb_init(struct nvkm_subdev *subdev)
 {
@@ -279,7 +267,7 @@ nvkm_fb_ctor(const struct nvkm_fb_func *func, struct nvkm_device *device,
 	mutex_init(&fb->tags.mutex);
 
 	if (func->sysmem.flush_page_init) {
-		fb->sysmem.flush_page = alloc_page(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO);
+		fb->sysmem.flush_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
 		if (!fb->sysmem.flush_page)
 			return -ENOMEM;
 

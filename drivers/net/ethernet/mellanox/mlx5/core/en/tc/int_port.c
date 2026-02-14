@@ -93,8 +93,8 @@ mlx5e_int_port_create_rx_rule(struct mlx5_eswitch *esw,
 	flow_rule = mlx5_add_flow_rules(esw->offloads.ft_offloads, spec,
 					&flow_act, dest, 1);
 	if (IS_ERR(flow_rule))
-		mlx5_core_warn(esw->dev, "ft offloads: Failed to add internal vport rx rule err %pe\n",
-			       flow_rule);
+		mlx5_core_warn(esw->dev, "ft offloads: Failed to add internal vport rx rule err %ld\n",
+			       PTR_ERR(flow_rule));
 
 	kvfree(spec);
 
@@ -242,7 +242,7 @@ mlx5e_int_port_remove(struct mlx5e_tc_int_port_priv *priv,
 		mlx5_del_flow_rules(int_port->rx_rule);
 	mapping_remove(ctx, int_port->mapping);
 	mlx5e_int_port_metadata_free(priv, int_port->match_metadata);
-	kfree_rcu_mightsleep(int_port);
+	kfree_rcu(int_port);
 	priv->num_ports--;
 }
 
@@ -307,8 +307,7 @@ mlx5e_tc_int_port_init(struct mlx5e_priv *priv)
 {
 	struct mlx5_eswitch *esw = priv->mdev->priv.eswitch;
 	struct mlx5e_tc_int_port_priv *int_port_priv;
-	u8 mapping_id[MLX5_SW_IMAGE_GUID_MAX_BYTES];
-	u8 id_len;
+	u64 mapping_id;
 
 	if (!mlx5e_tc_int_port_supported(esw))
 		return NULL;
@@ -317,15 +316,14 @@ mlx5e_tc_int_port_init(struct mlx5e_priv *priv)
 	if (!int_port_priv)
 		return NULL;
 
-	mlx5_query_nic_sw_system_image_guid(priv->mdev, mapping_id, &id_len);
+	mapping_id = mlx5_query_nic_system_image_guid(priv->mdev);
 
-	int_port_priv->metadata_mapping = mapping_create_for_id(mapping_id, id_len,
-								MAPPING_TYPE_INT_PORT,
+	int_port_priv->metadata_mapping = mapping_create_for_id(mapping_id, MAPPING_TYPE_INT_PORT,
 								sizeof(u32) * 2,
 								(1 << ESW_VPORT_BITS) - 1, true);
 	if (IS_ERR(int_port_priv->metadata_mapping)) {
-		mlx5_core_warn(priv->mdev, "Can't allocate metadata mapping of int port offload, err=%pe\n",
-			       int_port_priv->metadata_mapping);
+		mlx5_core_warn(priv->mdev, "Can't allocate metadata mapping of int port offload, err=%ld\n",
+			       PTR_ERR(int_port_priv->metadata_mapping));
 		goto err_mapping;
 	}
 

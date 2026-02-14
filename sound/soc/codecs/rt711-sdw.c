@@ -38,9 +38,7 @@ static bool rt711_readable_register(struct device *dev, unsigned int reg)
 	case 0x8300 ... 0x83ff:
 	case 0x9c00 ... 0x9cff:
 	case 0xb900 ... 0xb9ff:
-	case 0x752008:
 	case 0x752009:
-	case 0x75200b:
 	case 0x752011:
 	case 0x75201a:
 	case 0x752045:
@@ -298,7 +296,7 @@ static const struct regmap_config rt711_regmap = {
 	.max_register = 0x755800,
 	.reg_defaults = rt711_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(rt711_reg_defaults),
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.use_single_read = true,
 	.use_single_write = true,
 	.reg_read = rt711_sdw_read,
@@ -321,6 +319,9 @@ static int rt711_update_status(struct sdw_slave *slave,
 {
 	struct rt711_priv *rt711 = dev_get_drvdata(&slave->dev);
 
+	/* Update the status */
+	rt711->status = status;
+
 	if (status == SDW_SLAVE_UNATTACHED)
 		rt711->hw_init = false;
 
@@ -328,7 +329,7 @@ static int rt711_update_status(struct sdw_slave *slave,
 	 * Perform initialization only if slave status is present and
 	 * hw_init flag is false
 	 */
-	if (rt711->hw_init || status != SDW_SLAVE_ATTACHED)
+	if (rt711->hw_init || rt711->status != SDW_SLAVE_ATTACHED)
 		return 0;
 
 	/* perform I/O transfers required for Slave initialization */
@@ -410,7 +411,7 @@ static int rt711_bus_config(struct sdw_slave *slave,
 
 	ret = rt711_clock_config(&slave->dev);
 	if (ret < 0)
-		dev_err(&slave->dev, "%s: Invalid clk config", __func__);
+		dev_err(&slave->dev, "Invalid clk config");
 
 	return ret;
 }
@@ -455,7 +456,9 @@ static int rt711_sdw_probe(struct sdw_slave *slave,
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	return rt711_init(&slave->dev, sdw_regmap, regmap, slave);
+	rt711_init(&slave->dev, sdw_regmap, regmap, slave);
+
+	return 0;
 }
 
 static int rt711_sdw_remove(struct sdw_slave *slave)
@@ -468,7 +471,8 @@ static int rt711_sdw_remove(struct sdw_slave *slave)
 		cancel_work_sync(&rt711->calibration_work);
 	}
 
-	pm_runtime_disable(&slave->dev);
+	if (rt711->first_hw_init)
+		pm_runtime_disable(&slave->dev);
 
 	mutex_destroy(&rt711->calibrate_mutex);
 	mutex_destroy(&rt711->disable_irq_lock);
@@ -482,7 +486,7 @@ static const struct sdw_device_id rt711_id[] = {
 };
 MODULE_DEVICE_TABLE(sdw, rt711_id);
 
-static int rt711_dev_suspend(struct device *dev)
+static int __maybe_unused rt711_dev_suspend(struct device *dev)
 {
 	struct rt711_priv *rt711 = dev_get_drvdata(dev);
 
@@ -498,7 +502,7 @@ static int rt711_dev_suspend(struct device *dev)
 	return 0;
 }
 
-static int rt711_dev_system_suspend(struct device *dev)
+static int __maybe_unused rt711_dev_system_suspend(struct device *dev)
 {
 	struct rt711_priv *rt711 = dev_get_drvdata(dev);
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
@@ -528,7 +532,7 @@ static int rt711_dev_system_suspend(struct device *dev)
 
 #define RT711_PROBE_TIMEOUT 5000
 
-static int rt711_dev_resume(struct device *dev)
+static int __maybe_unused rt711_dev_resume(struct device *dev)
 {
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
 	struct rt711_priv *rt711 = dev_get_drvdata(dev);
@@ -537,20 +541,13 @@ static int rt711_dev_resume(struct device *dev)
 	if (!rt711->first_hw_init)
 		return 0;
 
-	if (!slave->unattach_request) {
-		mutex_lock(&rt711->disable_irq_lock);
-		if (rt711->disable_irq == true) {
-			sdw_write_no_pm(slave, SDW_SCP_INTMASK1, SDW_SCP_INT1_IMPL_DEF);
-			rt711->disable_irq = false;
-		}
-		mutex_unlock(&rt711->disable_irq_lock);
+	if (!slave->unattach_request)
 		goto regmap_sync;
-	}
 
 	time = wait_for_completion_timeout(&slave->initialization_complete,
 				msecs_to_jiffies(RT711_PROBE_TIMEOUT));
 	if (!time) {
-		dev_err(&slave->dev, "%s: Initialization not complete, timed out\n", __func__);
+		dev_err(&slave->dev, "Initialization not complete, timed out\n");
 		return -ETIMEDOUT;
 	}
 
@@ -564,14 +561,15 @@ regmap_sync:
 }
 
 static const struct dev_pm_ops rt711_pm = {
-	SYSTEM_SLEEP_PM_OPS(rt711_dev_system_suspend, rt711_dev_resume)
-	RUNTIME_PM_OPS(rt711_dev_suspend, rt711_dev_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(rt711_dev_system_suspend, rt711_dev_resume)
+	SET_RUNTIME_PM_OPS(rt711_dev_suspend, rt711_dev_resume, NULL)
 };
 
 static struct sdw_driver rt711_sdw_driver = {
 	.driver = {
 		.name = "rt711",
-		.pm = pm_ptr(&rt711_pm),
+		.owner = THIS_MODULE,
+		.pm = &rt711_pm,
 	},
 	.probe = rt711_sdw_probe,
 	.remove = rt711_sdw_remove,

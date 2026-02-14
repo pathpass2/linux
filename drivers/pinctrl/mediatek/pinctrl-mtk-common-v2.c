@@ -13,7 +13,6 @@
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
 #include <linux/of_irq.h>
 
 #include "mtk-eint.h"
@@ -368,7 +367,7 @@ static const struct mtk_eint_xt mtk_eint_xt = {
 int mtk_build_eint(struct mtk_pinctrl *hw, struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	int ret, i, j, count_reg_names;
+	int ret;
 
 	if (!IS_ENABLED(CONFIG_EINT_MTK))
 		return 0;
@@ -380,27 +379,10 @@ int mtk_build_eint(struct mtk_pinctrl *hw, struct platform_device *pdev)
 	if (!hw->eint)
 		return -ENOMEM;
 
-	count_reg_names = of_property_count_strings(np, "reg-names");
-	if (count_reg_names < 0)
-		return -EINVAL;
-
-	hw->eint->nbase = count_reg_names - (int)hw->soc->nbase_names;
-	if (hw->eint->nbase <= 0)
-		return -EINVAL;
-
-	hw->eint->base = devm_kmalloc_array(&pdev->dev, hw->eint->nbase,
-					    sizeof(*hw->eint->base), GFP_KERNEL | __GFP_ZERO);
-	if (!hw->eint->base) {
-		ret = -ENOMEM;
-		goto err_free_base;
-	}
-
-	for (i = hw->soc->nbase_names, j = 0; i < count_reg_names; i++, j++) {
-		hw->eint->base[j] = of_iomap(np, i);
-		if (IS_ERR(hw->eint->base[j])) {
-			ret = PTR_ERR(hw->eint->base[j]);
-			goto err_free_eint;
-		}
+	hw->eint->base = devm_platform_ioremap_resource_byname(pdev, "eint");
+	if (IS_ERR(hw->eint->base)) {
+		ret = PTR_ERR(hw->eint->base);
+		goto err_free_eint;
 	}
 
 	hw->eint->irq = irq_of_parse_and_map(np, 0);
@@ -419,19 +401,9 @@ int mtk_build_eint(struct mtk_pinctrl *hw, struct platform_device *pdev)
 	hw->eint->pctl = hw;
 	hw->eint->gpio_xlate = &mtk_eint_xt;
 
-	ret = mtk_eint_do_init(hw->eint, hw->soc->eint_pin);
-	if (ret)
-		goto err_free_eint;
-
-	return 0;
+	return mtk_eint_do_init(hw->eint);
 
 err_free_eint:
-	for (j = 0; j < hw->eint->nbase; j++) {
-		if (hw->eint->base[j])
-			iounmap(hw->eint->base[j]);
-	}
-	devm_kfree(hw->dev, hw->eint->base);
-err_free_base:
 	devm_kfree(hw->dev, hw->eint);
 	hw->eint = NULL;
 	return ret;
@@ -601,7 +573,7 @@ EXPORT_SYMBOL_GPL(mtk_pinconf_bias_get_rev1);
  */
 static int mtk_pinconf_bias_set_pu_pd(struct mtk_pinctrl *hw,
 				const struct mtk_pin_desc *desc,
-				u32 pullup, u32 arg, bool pd_only)
+				u32 pullup, u32 arg)
 {
 	int err, pu, pd;
 
@@ -615,16 +587,18 @@ static int mtk_pinconf_bias_set_pu_pd(struct mtk_pinctrl *hw,
 		pu = 0;
 		pd = 1;
 	} else {
-		return -EINVAL;
+		err = -EINVAL;
+		goto out;
 	}
 
-	if (!pd_only) {
-		err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_PU, pu);
-		if (err)
-			return err;
-	}
+	err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_PU, pu);
+	if (err)
+		goto out;
 
-	return mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_PD, pd);
+	err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_PD, pd);
+
+out:
+	return err;
 }
 
 static int mtk_pinconf_bias_set_pullsel_pullen(struct mtk_pinctrl *hw,
@@ -735,35 +709,32 @@ static int mtk_pinconf_bias_set_rsel(struct mtk_pinctrl *hw,
 {
 	int err, rsel_val;
 
+	if (!pullup && arg == MTK_DISABLE)
+		return 0;
+
 	if (hw->rsel_si_unit) {
 		/* find pin rsel_index from pin_rsel array*/
 		err = mtk_hw_pin_rsel_lookup(hw, desc, pullup, arg, &rsel_val);
 		if (err)
-			return err;
+			goto out;
 	} else {
-		if (arg < MTK_PULL_SET_RSEL_000 || arg > MTK_PULL_SET_RSEL_111)
-			return -EINVAL;
+		if (arg < MTK_PULL_SET_RSEL_000 ||
+		    arg > MTK_PULL_SET_RSEL_111) {
+			err = -EINVAL;
+			goto out;
+		}
 
 		rsel_val = arg - MTK_PULL_SET_RSEL_000;
 	}
 
-	return mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_RSEL, rsel_val);
-}
+	err = mtk_hw_set_value(hw, desc, PINCTRL_PIN_REG_RSEL, rsel_val);
+	if (err)
+		goto out;
 
-static int mtk_pinconf_bias_set_pu_pd_rsel(struct mtk_pinctrl *hw,
-					   const struct mtk_pin_desc *desc,
-					   u32 pullup, u32 arg)
-{
-	u32 enable = arg == MTK_DISABLE ? MTK_DISABLE : MTK_ENABLE;
-	int err;
+	err = mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, MTK_ENABLE);
 
-	if (arg != MTK_DISABLE) {
-		err = mtk_pinconf_bias_set_rsel(hw, desc, pullup, arg);
-		if (err)
-			return err;
-	}
-
-	return mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, enable, false);
+out:
+	return err;
 }
 
 int mtk_pinconf_bias_set_combo(struct mtk_pinctrl *hw,
@@ -779,28 +750,22 @@ int mtk_pinconf_bias_set_combo(struct mtk_pinctrl *hw,
 		try_all_type = MTK_PULL_TYPE_MASK;
 
 	if (try_all_type & MTK_PULL_RSEL_TYPE) {
-		err = mtk_pinconf_bias_set_pu_pd_rsel(hw, desc, pullup, arg);
-		if (!err)
-			return 0;
-	}
-
-	if (try_all_type & MTK_PULL_PD_TYPE) {
-		err = mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, arg, true);
+		err = mtk_pinconf_bias_set_rsel(hw, desc, pullup, arg);
 		if (!err)
 			return err;
 	}
 
 	if (try_all_type & MTK_PULL_PU_PD_TYPE) {
-		err = mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, arg, false);
+		err = mtk_pinconf_bias_set_pu_pd(hw, desc, pullup, arg);
 		if (!err)
-			return 0;
+			return err;
 	}
 
 	if (try_all_type & MTK_PULL_PULLSEL_TYPE) {
 		err = mtk_pinconf_bias_set_pullsel_pullen(hw, desc,
 							  pullup, arg);
 		if (!err)
-			return 0;
+			return err;
 	}
 
 	if (try_all_type & MTK_PULL_PUPD_R1R0_TYPE)
@@ -838,9 +803,9 @@ static int mtk_rsel_get_si_unit(struct mtk_pinctrl *hw,
 	return 0;
 }
 
-static int mtk_pinconf_bias_get_pu_pd_rsel(struct mtk_pinctrl *hw,
-					   const struct mtk_pin_desc *desc,
-					   u32 *pullup, u32 *enable)
+static int mtk_pinconf_bias_get_rsel(struct mtk_pinctrl *hw,
+				     const struct mtk_pin_desc *desc,
+				     u32 *pullup, u32 *enable)
 {
 	int pu, pd, rsel, err;
 
@@ -901,29 +866,6 @@ static int mtk_pinconf_bias_get_pu_pd(struct mtk_pinctrl *hw,
 		*pullup = 1;
 		*enable = MTK_ENABLE;
 	} else if (pu == 0 && pd == 1) {
-		*pullup = 0;
-		*enable = MTK_ENABLE;
-	} else
-		err = -EINVAL;
-
-out:
-	return err;
-}
-
-static int mtk_pinconf_bias_get_pd(struct mtk_pinctrl *hw,
-				const struct mtk_pin_desc *desc,
-				u32 *pullup, u32 *enable)
-{
-	int err, pd;
-
-	err = mtk_hw_get_value(hw, desc, PINCTRL_PIN_REG_PD, &pd);
-	if (err)
-		goto out;
-
-	if (pd == 0) {
-		*pullup = 0;
-		*enable = MTK_DISABLE;
-	} else if (pd == 1) {
 		*pullup = 0;
 		*enable = MTK_ENABLE;
 	} else
@@ -997,13 +939,7 @@ int mtk_pinconf_bias_get_combo(struct mtk_pinctrl *hw,
 		try_all_type = MTK_PULL_TYPE_MASK;
 
 	if (try_all_type & MTK_PULL_RSEL_TYPE) {
-		err = mtk_pinconf_bias_get_pu_pd_rsel(hw, desc, pullup, enable);
-		if (!err)
-			return 0;
-	}
-
-	if (try_all_type & MTK_PULL_PD_TYPE) {
-		err = mtk_pinconf_bias_get_pd(hw, desc, pullup, enable);
+		err = mtk_pinconf_bias_get_rsel(hw, desc, pullup, enable);
 		if (!err)
 			return err;
 	}
@@ -1011,14 +947,14 @@ int mtk_pinconf_bias_get_combo(struct mtk_pinctrl *hw,
 	if (try_all_type & MTK_PULL_PU_PD_TYPE) {
 		err = mtk_pinconf_bias_get_pu_pd(hw, desc, pullup, enable);
 		if (!err)
-			return 0;
+			return err;
 	}
 
 	if (try_all_type & MTK_PULL_PULLSEL_TYPE) {
 		err = mtk_pinconf_bias_get_pullsel_pullen(hw, desc,
 							  pullup, enable);
 		if (!err)
-			return 0;
+			return err;
 	}
 
 	if (try_all_type & MTK_PULL_PUPD_R1R0_TYPE)

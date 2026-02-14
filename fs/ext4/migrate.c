@@ -37,6 +37,7 @@ static int finish_range(handle_t *handle, struct inode *inode,
 	path = ext4_find_extent(inode, lb->first_block, NULL, 0);
 	if (IS_ERR(path)) {
 		retval = PTR_ERR(path);
+		path = NULL;
 		goto err_out;
 	}
 
@@ -52,9 +53,7 @@ static int finish_range(handle_t *handle, struct inode *inode,
 	retval = ext4_datasem_ensure_credits(handle, inode, needed, needed, 0);
 	if (retval < 0)
 		goto err_out;
-	path = ext4_ext_insert_extent(handle, inode, path, &newext, 0);
-	if (IS_ERR(path))
-		retval = PTR_ERR(path);
+	retval = ext4_ext_insert_extent(handle, inode, &path, &newext, 0);
 err_out:
 	up_write((&EXT4_I(inode)->i_data_sem));
 	ext4_free_ext_path(path);
@@ -409,6 +408,7 @@ static int free_ext_block(handle_t *handle, struct inode *inode)
 
 int ext4_ext_migrate(struct inode *inode)
 {
+	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 	handle_t *handle;
 	int retval = 0, i;
 	__le32 *i_data;
@@ -418,7 +418,6 @@ int ext4_ext_migrate(struct inode *inode)
 	unsigned long max_entries;
 	__u32 goal, tmp_csum_seed;
 	uid_t owner[2];
-	int alloc_ctx;
 
 	/*
 	 * If the filesystem does not support extents, or the inode
@@ -435,7 +434,7 @@ int ext4_ext_migrate(struct inode *inode)
 		 */
 		return retval;
 
-	alloc_ctx = ext4_writepages_down_write(inode->i_sb);
+	percpu_down_write(&sbi->s_writepages_rwsem);
 
 	/*
 	 * Worst case we can touch the allocation bitmaps and a block
@@ -449,12 +448,6 @@ int ext4_ext_migrate(struct inode *inode)
 		retval = PTR_ERR(handle);
 		goto out_unlock;
 	}
-	/*
-	 * This operation rewrites the inode's block mapping layout
-	 * (indirect to extents) and is not tracked in the fast commit
-	 * log, so disable fast commits for this transaction.
-	 */
-	ext4_fc_mark_ineligible(inode->i_sb, EXT4_FC_REASON_MIGRATE, handle);
 	goal = (((inode->i_ino - 1) / EXT4_INODES_PER_GROUP(inode->i_sb)) *
 		EXT4_INODES_PER_GROUP(inode->i_sb)) + 1;
 	owner[0] = i_uid_read(inode);
@@ -593,7 +586,7 @@ out_tmp_inode:
 	unlock_new_inode(tmp_inode);
 	iput(tmp_inode);
 out_unlock:
-	ext4_writepages_up_write(inode->i_sb, alloc_ctx);
+	percpu_up_write(&sbi->s_writepages_rwsem);
 	return retval;
 }
 
@@ -612,7 +605,6 @@ int ext4_ind_migrate(struct inode *inode)
 	ext4_fsblk_t			blk;
 	handle_t			*handle;
 	int				ret, ret2 = 0;
-	int				alloc_ctx;
 
 	if (!ext4_has_feature_extents(inode->i_sb) ||
 	    (!ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)))
@@ -629,19 +621,13 @@ int ext4_ind_migrate(struct inode *inode)
 	if (test_opt(inode->i_sb, DELALLOC))
 		ext4_alloc_da_blocks(inode);
 
-	alloc_ctx = ext4_writepages_down_write(inode->i_sb);
+	percpu_down_write(&sbi->s_writepages_rwsem);
 
 	handle = ext4_journal_start(inode, EXT4_HT_MIGRATE, 1);
 	if (IS_ERR(handle)) {
 		ret = PTR_ERR(handle);
 		goto out_unlock;
 	}
-	/*
-	 * This operation rewrites the inode's block mapping layout
-	 * (extents to indirect blocks) and is not tracked in the fast
-	 * commit log, so disable fast commits for this transaction.
-	 */
-	ext4_fc_mark_ineligible(inode->i_sb, EXT4_FC_REASON_MIGRATE, handle);
 
 	down_write(&EXT4_I(inode)->i_data_sem);
 	ret = ext4_ext_check_inode(inode);
@@ -676,9 +662,9 @@ int ext4_ind_migrate(struct inode *inode)
 	if (unlikely(ret2 && !ret))
 		ret = ret2;
 errout:
-	up_write(&EXT4_I(inode)->i_data_sem);
 	ext4_journal_stop(handle);
+	up_write(&EXT4_I(inode)->i_data_sem);
 out_unlock:
-	ext4_writepages_up_write(inode->i_sb, alloc_ctx);
+	percpu_up_write(&sbi->s_writepages_rwsem);
 	return ret;
 }

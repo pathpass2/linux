@@ -50,15 +50,9 @@ static int led_pwm_mc_set(struct led_classdev *cdev,
 			duty = priv->leds[i].state.period - duty;
 
 		priv->leds[i].state.duty_cycle = duty;
-		/*
-		 * Disabling a PWM doesn't guarantee that it emits the inactive level.
-		 * So keep it on. Only for suspending the PWM should be disabled because
-		 * otherwise it refuses to suspend. The possible downside is that the
-		 * LED might stay (or even go) on.
-		 */
-		priv->leds[i].state.enabled = !(cdev->flags & LED_SUSPENDED);
-		ret = pwm_apply_might_sleep(priv->leds[i].pwm,
-					    &priv->leds[i].state);
+		priv->leds[i].state.enabled = duty > 0;
+		ret = pwm_apply_state(priv->leds[i].pwm,
+				      &priv->leds[i].state);
 		if (ret)
 			break;
 	}
@@ -107,12 +101,12 @@ release_fwnode:
 
 static int led_pwm_mc_probe(struct platform_device *pdev)
 {
-	struct fwnode_handle *mcnode;
+	struct fwnode_handle *mcnode, *fwnode;
 	struct led_init_data init_data = {};
 	struct led_classdev *cdev;
 	struct mc_subled *subled;
 	struct pwm_mc_led *priv;
-	unsigned int count;
+	int count = 0;
 	int ret = 0;
 
 	mcnode = device_get_named_child_node(&pdev->dev, "multi-led");
@@ -121,7 +115,8 @@ static int led_pwm_mc_probe(struct platform_device *pdev)
 				     "expected multi-led node\n");
 
 	/* count the nodes inside the multi-led node */
-	count = fwnode_get_child_node_count(mcnode);
+	fwnode_for_each_child_node(mcnode, fwnode)
+		count++;
 
 	priv = devm_kzalloc(&pdev->dev, struct_size(priv, leds, count),
 			    GFP_KERNEL);
@@ -140,11 +135,8 @@ static int led_pwm_mc_probe(struct platform_device *pdev)
 
 	/* init the multicolor's LED class device */
 	cdev = &priv->mc_cdev.led_cdev;
-	ret = fwnode_property_read_u32(mcnode, "max-brightness",
+	fwnode_property_read_u32(mcnode, "max-brightness",
 				 &cdev->max_brightness);
-	if (ret)
-		goto release_mcnode;
-
 	cdev->flags = LED_CORE_SUSPENDRESUME;
 	cdev->brightness_set_blocking = led_pwm_mc_set;
 
@@ -166,8 +158,8 @@ static int led_pwm_mc_probe(struct platform_device *pdev)
 	ret = led_pwm_mc_set(cdev, cdev->brightness);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret,
-				     "failed to set led PWM value for %s\n",
-				     cdev->name);
+				     "failed to set led PWM value for %s: %d",
+				     cdev->name, ret);
 
 	platform_set_drvdata(pdev, priv);
 	return 0;

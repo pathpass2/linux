@@ -18,6 +18,9 @@
 #else
 #include <linux/module.h>
 #include <linux/gfp.h>
+/* In .bss so it's zeroed */
+const char raid6_empty_zero_page[PAGE_SIZE] __attribute__((aligned(256)));
+EXPORT_SYMBOL(raid6_empty_zero_page);
 #endif
 
 struct raid6_calls raid6_call;
@@ -25,8 +28,10 @@ EXPORT_SYMBOL_GPL(raid6_call);
 
 const struct raid6_calls * const raid6_algos[] = {
 #if defined(__i386__) && !defined(__arch_um__)
+#ifdef CONFIG_AS_AVX512
 	&raid6_avx512x2,
 	&raid6_avx512x1,
+#endif
 	&raid6_avx2x2,
 	&raid6_avx2x1,
 	&raid6_sse2x2,
@@ -37,9 +42,11 @@ const struct raid6_calls * const raid6_algos[] = {
 	&raid6_mmxx1,
 #endif
 #if defined(__x86_64__) && !defined(__arch_um__)
+#ifdef CONFIG_AS_AVX512
 	&raid6_avx512x4,
 	&raid6_avx512x2,
 	&raid6_avx512x1,
+#endif
 	&raid6_avx2x4,
 	&raid6_avx2x2,
 	&raid6_avx2x1,
@@ -66,19 +73,9 @@ const struct raid6_calls * const raid6_algos[] = {
 	&raid6_neonx2,
 	&raid6_neonx1,
 #endif
-#ifdef CONFIG_LOONGARCH
-#ifdef CONFIG_CPU_HAS_LASX
-	&raid6_lasx,
-#endif
-#ifdef CONFIG_CPU_HAS_LSX
-	&raid6_lsx,
-#endif
-#endif
-#ifdef CONFIG_RISCV_ISA_V
-	&raid6_rvvx1,
-	&raid6_rvvx2,
-	&raid6_rvvx4,
-	&raid6_rvvx8,
+#if defined(__ia64__)
+	&raid6_intx32,
+	&raid6_intx16,
 #endif
 	&raid6_intx8,
 	&raid6_intx4,
@@ -95,7 +92,9 @@ EXPORT_SYMBOL_GPL(raid6_datap_recov);
 
 const struct raid6_recov_calls *const raid6_recov_algos[] = {
 #ifdef CONFIG_X86
+#ifdef CONFIG_AS_AVX512
 	&raid6_recov_avx512,
+#endif
 	&raid6_recov_avx2,
 	&raid6_recov_ssse3,
 #endif
@@ -104,17 +103,6 @@ const struct raid6_recov_calls *const raid6_recov_algos[] = {
 #endif
 #if defined(CONFIG_KERNEL_MODE_NEON)
 	&raid6_recov_neon,
-#endif
-#ifdef CONFIG_LOONGARCH
-#ifdef CONFIG_CPU_HAS_LASX
-	&raid6_recov_lasx,
-#endif
-#ifdef CONFIG_CPU_HAS_LSX
-	&raid6_recov_lsx,
-#endif
-#endif
-#ifdef CONFIG_RISCV_ISA_V
-	&raid6_recov_rvv,
 #endif
 	&raid6_recov_intx1,
 	NULL

@@ -47,22 +47,6 @@ struct vhost_vring_addr {
 	__u64 log_guest_addr;
 };
 
-struct vhost_worker_state {
-	/*
-	 * For VHOST_NEW_WORKER the kernel will return the new vhost_worker id.
-	 * For VHOST_FREE_WORKER this must be set to the id of the vhost_worker
-	 * to free.
-	 */
-	unsigned int worker_id;
-};
-
-struct vhost_vring_worker {
-	/* vring index */
-	unsigned int index;
-	/* The id of the vhost_worker returned from VHOST_NEW_WORKER */
-	unsigned int worker_id;
-};
-
 /* no alignment requirement */
 struct vhost_iotlb_msg {
 	__u64 iova;
@@ -108,11 +92,6 @@ struct vhost_msg_v2 {
 		struct vhost_iotlb_msg iotlb;
 		__u8 padding[64];
 	};
-};
-
-struct vhost_features_array {
-	__u64 count; /* number of entries present in features array */
-	__u64 features[] __counted_by(count);
 };
 
 struct vhost_memory_region {
@@ -186,16 +165,5 @@ struct vhost_vdpa_iova_range {
 #define VHOST_BACKEND_F_SUSPEND  0x4
 /* Device can be resumed */
 #define VHOST_BACKEND_F_RESUME  0x5
-/* Device supports the driver enabling virtqueues both before and after
- * DRIVER_OK
- */
-#define VHOST_BACKEND_F_ENABLE_AFTER_DRIVER_OK  0x6
-/* Device may expose the virtqueue's descriptor area, driver area and
- * device area to a different group for ASID binding than where its
- * buffers may reside. Requires VHOST_BACKEND_F_IOTLB_ASID.
- */
-#define VHOST_BACKEND_F_DESC_ASID    0x7
-/* IOTLB don't flush memory mapping across device reset */
-#define VHOST_BACKEND_F_IOTLB_PERSIST  0x8
 
 #endif

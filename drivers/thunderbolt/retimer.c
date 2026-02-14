@@ -14,11 +14,7 @@
 #include "sb_regs.h"
 #include "tb.h"
 
-#if IS_ENABLED(CONFIG_USB4_DEBUGFS_MARGINING)
 #define TB_MAX_RETIMER_INDEX	6
-#else
-#define TB_MAX_RETIMER_INDEX	2
-#endif
 
 /**
  * tb_retimer_nvm_read() - Read contents of retimer NVM
@@ -27,9 +23,8 @@
  * @buf: Data read from NVM is stored here
  * @size: Number of bytes to read
  *
- * Reads retimer NVM and copies the contents to @buf.
- *
- * Return: %0 if the read was successful, negative errno in case of failure.
+ * Reads retimer NVM and copies the contents to @buf. Returns %0 if the
+ * read was successful and negative errno in case of failure.
  */
 int tb_retimer_nvm_read(struct tb_retimer *rt, unsigned int address, void *buf,
 			size_t size)
@@ -94,19 +89,15 @@ static int tb_retimer_nvm_add(struct tb_retimer *rt)
 	if (ret)
 		goto err_nvm;
 
-	if (!rt->no_nvm_upgrade) {
-		ret = tb_nvm_add_non_active(nvm, nvm_write);
-		if (ret)
-			goto err_nvm;
-	}
+	ret = tb_nvm_add_non_active(nvm, nvm_write);
+	if (ret)
+		goto err_nvm;
 
 	rt->nvm = nvm;
-	dev_dbg(&rt->dev, "NVM version %x.%x\n", nvm->major, nvm->minor);
 	return 0;
 
 err_nvm:
 	dev_dbg(&rt->dev, "NVM upgrade disabled\n");
-	rt->no_nvm_upgrade = true;
 	if (!IS_ERR(nvm))
 		tb_nvm_free(nvm);
 
@@ -186,6 +177,8 @@ static ssize_t nvm_authenticate_show(struct device *dev,
 
 	if (!rt->nvm)
 		ret = -EAGAIN;
+	else if (rt->no_nvm_upgrade)
+		ret = -EOPNOTSUPP;
 	else
 		ret = sysfs_emit(buf, "%#x\n", rt->auth_status);
 
@@ -194,35 +187,9 @@ static ssize_t nvm_authenticate_show(struct device *dev,
 	return ret;
 }
 
-static void tb_retimer_nvm_authenticate_status(struct tb_port *port, u32 *status)
-{
-	int i;
-
-	tb_port_dbg(port, "reading NVM authentication status of retimers\n");
-
-	/*
-	 * Before doing anything else, read the authentication status.
-	 * If the retimer has it set, store it for the new retimer
-	 * device instance.
-	 */
-	for (i = 1; i <= TB_MAX_RETIMER_INDEX; i++) {
-		if (usb4_port_retimer_nvm_authenticate_status(port, i, &status[i]))
-			break;
-	}
-}
-
 static void tb_retimer_set_inbound_sbtx(struct tb_port *port)
 {
 	int i;
-
-	/*
-	 * When USB4 port is online sideband communications are
-	 * already up.
-	 */
-	if (!usb4_port_device_is_offline(port->usb4))
-		return;
-
-	tb_port_dbg(port, "enabling sideband transactions\n");
 
 	for (i = 1; i <= TB_MAX_RETIMER_INDEX; i++)
 		usb4_port_retimer_set_inbound_sbtx(port, i);
@@ -232,20 +199,8 @@ static void tb_retimer_unset_inbound_sbtx(struct tb_port *port)
 {
 	int i;
 
-	/*
-	 * When USB4 port is offline we need to keep the sideband
-	 * communications up to make it possible to communicate with
-	 * the connected retimers.
-	 */
-	if (usb4_port_device_is_offline(port->usb4))
-		return;
-
-	tb_port_dbg(port, "disabling sideband transactions\n");
-
-	for (i = TB_MAX_RETIMER_INDEX; i >= 1; i--) {
-		if (usb4_port_retimer_unset_inbound_sbtx(port, i))
-			break;
-	}
+	for (i = TB_MAX_RETIMER_INDEX; i >= 1; i--)
+		usb4_port_retimer_unset_inbound_sbtx(port, i);
 }
 
 static ssize_t nvm_authenticate_store(struct device *dev,
@@ -274,13 +229,6 @@ static ssize_t nvm_authenticate_store(struct device *dev,
 	rt->auth_status = 0;
 
 	if (val) {
-		/*
-		 * When NVM authentication starts the retimer is not
-		 * accessible so calling tb_retimer_unset_inbound_sbtx()
-		 * will fail and therefore we do not call it. Exception
-		 * is when the validation fails or we only write the new
-		 * NVM image without authentication.
-		 */
 		tb_retimer_set_inbound_sbtx(rt->port);
 		if (val == AUTHENTICATE_ONLY) {
 			ret = tb_retimer_nvm_authenticate(rt, true);
@@ -301,8 +249,7 @@ static ssize_t nvm_authenticate_store(struct device *dev,
 	}
 
 exit_unlock:
-	if (ret || val == WRITE_ONLY)
-		tb_retimer_unset_inbound_sbtx(rt->port);
+	tb_retimer_unset_inbound_sbtx(rt->port);
 	mutex_unlock(&rt->tb->lock);
 exit_rpm:
 	pm_runtime_mark_last_busy(&rt->dev);
@@ -342,19 +289,6 @@ static ssize_t vendor_show(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(vendor);
 
-static umode_t retimer_is_visible(struct kobject *kobj, struct attribute *attr,
-				  int n)
-{
-	struct device *dev = kobj_to_dev(kobj);
-	struct tb_retimer *rt = tb_to_retimer(dev);
-
-	if (attr == &dev_attr_nvm_authenticate.attr ||
-	    attr == &dev_attr_nvm_version.attr)
-		return rt->no_nvm_upgrade ? 0 : attr->mode;
-
-	return attr->mode;
-}
-
 static struct attribute *retimer_attrs[] = {
 	&dev_attr_device.attr,
 	&dev_attr_nvm_authenticate.attr,
@@ -364,7 +298,6 @@ static struct attribute *retimer_attrs[] = {
 };
 
 static const struct attribute_group retimer_group = {
-	.is_visible = retimer_is_visible,
 	.attrs = retimer_attrs,
 };
 
@@ -380,35 +313,47 @@ static void tb_retimer_release(struct device *dev)
 	kfree(rt);
 }
 
-const struct device_type tb_retimer_type = {
+struct device_type tb_retimer_type = {
 	.name = "thunderbolt_retimer",
 	.groups = retimer_groups,
 	.release = tb_retimer_release,
 };
 
-static int tb_retimer_add(struct tb_port *port, u8 index, u32 auth_status,
-			  bool on_board)
+static int tb_retimer_add(struct tb_port *port, u8 index, u32 auth_status)
 {
 	struct tb_retimer *rt;
 	u32 vendor, device;
 	int ret;
 
-	ret = usb4_port_sb_read(port, USB4_SB_TARGET_RETIMER, index,
-				USB4_SB_VENDOR_ID, &vendor, sizeof(vendor));
+	ret = usb4_port_retimer_read(port, index, USB4_SB_VENDOR_ID, &vendor,
+				     sizeof(vendor));
 	if (ret) {
 		if (ret != -ENODEV)
 			tb_port_warn(port, "failed read retimer VendorId: %d\n", ret);
 		return ret;
 	}
 
-	ret = usb4_port_sb_read(port, USB4_SB_TARGET_RETIMER, index,
-				USB4_SB_PRODUCT_ID, &device, sizeof(device));
+	ret = usb4_port_retimer_read(port, index, USB4_SB_PRODUCT_ID, &device,
+				     sizeof(device));
 	if (ret) {
 		if (ret != -ENODEV)
 			tb_port_warn(port, "failed read retimer ProductId: %d\n", ret);
 		return ret;
 	}
 
+	if (vendor != PCI_VENDOR_ID_INTEL && vendor != 0x8087) {
+		tb_port_info(port, "retimer NVM format of vendor %#x is not supported\n",
+			     vendor);
+		return -EOPNOTSUPP;
+	}
+
+	/*
+	 * Check that it supports NVM operations. If not then don't add
+	 * the device at all.
+	 */
+	ret = usb4_port_retimer_nvm_sector_size(port, index);
+	if (ret < 0)
+		return ret;
 
 	rt = kzalloc(sizeof(*rt), GFP_KERNEL);
 	if (!rt)
@@ -420,13 +365,6 @@ static int tb_retimer_add(struct tb_port *port, u8 index, u32 auth_status,
 	rt->auth_status = auth_status;
 	rt->port = port;
 	rt->tb = port->sw->tb;
-
-	/*
-	 * Only support NVM upgrade for on-board retimers. The retimers
-	 * on the other side of the connection.
-	 */
-	if (!on_board || usb4_port_retimer_nvm_sector_size(port, index) <= 0)
-		rt->no_nvm_upgrade = true;
 
 	rt->dev.parent = &port->usb4->dev;
 	rt->dev.bus = &tb_bus_type;
@@ -458,14 +396,12 @@ static int tb_retimer_add(struct tb_port *port, u8 index, u32 auth_status,
 	pm_runtime_mark_last_busy(&rt->dev);
 	pm_runtime_use_autosuspend(&rt->dev);
 
-	tb_retimer_debugfs_init(rt);
 	return 0;
 }
 
 static void tb_retimer_remove(struct tb_retimer *rt)
 {
 	dev_info(&rt->dev, "retimer disconnected\n");
-	tb_retimer_debugfs_remove(rt);
 	tb_nvm_free(rt->nvm);
 	device_unregister(&rt->dev);
 }
@@ -475,7 +411,7 @@ struct tb_retimer_lookup {
 	u8 index;
 };
 
-static int retimer_match(struct device *dev, const void *data)
+static int retimer_match(struct device *dev, void *data)
 {
 	const struct tb_retimer_lookup *lookup = data;
 	struct tb_retimer *rt = tb_to_retimer(dev);
@@ -501,16 +437,14 @@ static struct tb_retimer *tb_port_find_retimer(struct tb_port *port, u8 index)
  * @add: If true also registers found retimers
  *
  * Brings the sideband into a state where retimers can be accessed.
- * Then tries to enumerate on-board retimers connected to @port. Found
+ * Then Tries to enumerate on-board retimers connected to @port. Found
  * retimers are registered as children of @port if @add is set.  Does
  * not scan for cable retimers for now.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_retimer_scan(struct tb_port *port, bool add)
 {
 	u32 status[TB_MAX_RETIMER_INDEX + 1] = {};
-	int ret, i, max, last_idx = 0;
+	int ret, i, last_idx = 0;
 
 	/*
 	 * Send broadcast RT to make sure retimer indices facing this
@@ -521,18 +455,20 @@ int tb_retimer_scan(struct tb_port *port, bool add)
 		return ret;
 
 	/*
-	 * Immediately after sending enumerate retimers read the
-	 * authentication status of each retimer.
-	 */
-	tb_retimer_nvm_authenticate_status(port, status);
-
-	/*
 	 * Enable sideband channel for each retimer. We can do this
 	 * regardless whether there is device connected or not.
 	 */
 	tb_retimer_set_inbound_sbtx(port);
 
-	for (max = 1, i = 1; i <= TB_MAX_RETIMER_INDEX; i++) {
+	/*
+	 * Before doing anything else, read the authentication status.
+	 * If the retimer has it set, store it for the new retimer
+	 * device instance.
+	 */
+	for (i = 1; i <= TB_MAX_RETIMER_INDEX; i++)
+		usb4_port_retimer_nvm_authenticate_status(port, i, &status[i]);
+
+	for (i = 1; i <= TB_MAX_RETIMER_INDEX; i++) {
 		/*
 		 * Last retimer is true only for the last on-board
 		 * retimer (the one connected directly to the Type-C
@@ -543,33 +479,28 @@ int tb_retimer_scan(struct tb_port *port, bool add)
 			last_idx = i;
 		else if (ret < 0)
 			break;
-
-		max = i;
 	}
 
+	tb_retimer_unset_inbound_sbtx(port);
+
+	if (!last_idx)
+		return 0;
+
+	/* Add on-board retimers if they do not exist already */
 	ret = 0;
-	if (!IS_ENABLED(CONFIG_USB4_DEBUGFS_MARGINING))
-		max = min(last_idx, max);
-
-	/* Add retimers if they do not exist already */
-	for (i = 1; i <= max; i++) {
+	for (i = 1; i <= last_idx; i++) {
 		struct tb_retimer *rt;
-
-		/* Skip cable retimers */
-		if (usb4_port_retimer_is_cable(port, i))
-			continue;
 
 		rt = tb_port_find_retimer(port, i);
 		if (rt) {
 			put_device(&rt->dev);
 		} else if (add) {
-			ret = tb_retimer_add(port, i, status[i], i <= last_idx);
+			ret = tb_retimer_add(port, i, status[i]);
 			if (ret && ret != -EOPNOTSUPP)
 				break;
 		}
 	}
 
-	tb_retimer_unset_inbound_sbtx(port);
 	return ret;
 }
 

@@ -16,8 +16,8 @@
  * * number of bytes written - success
  * * negative - error code
  */
-static int
-ice_gnss_do_write(struct ice_pf *pf, const unsigned char *buf, unsigned int size)
+static unsigned int
+ice_gnss_do_write(struct ice_pf *pf, unsigned char *buf, unsigned int size)
 {
 	struct ice_aqc_link_topo_addr link_topo;
 	struct ice_hw *hw = &pf->hw;
@@ -72,7 +72,39 @@ err_out:
 	dev_err(ice_pf_to_dev(pf), "GNSS failed to write, offset=%u, size=%u, err=%d\n",
 		offset, size, err);
 
-	return err;
+	return offset;
+}
+
+/**
+ * ice_gnss_write_pending - Write all pending data to internal GNSS
+ * @work: GNSS write work structure
+ */
+static void ice_gnss_write_pending(struct kthread_work *work)
+{
+	struct gnss_serial *gnss = container_of(work, struct gnss_serial,
+						write_work);
+	struct ice_pf *pf = gnss->back;
+
+	if (!pf)
+		return;
+
+	if (!test_bit(ICE_FLAG_GNSS, pf->flags))
+		return;
+
+	if (!list_empty(&gnss->queue)) {
+		struct gnss_write_buf *write_buf = NULL;
+		unsigned int bytes;
+
+		write_buf = list_first_entry(&gnss->queue,
+					     struct gnss_write_buf, queue);
+
+		bytes = ice_gnss_do_write(pf, write_buf->buf, write_buf->size);
+		dev_dbg(ice_pf_to_dev(pf), "%u bytes written to GNSS\n", bytes);
+
+		list_del(&write_buf->queue);
+		kfree(write_buf->buf);
+		kfree(write_buf);
+	}
 }
 
 /**
@@ -85,7 +117,6 @@ static void ice_gnss_read(struct kthread_work *work)
 {
 	struct gnss_serial *gnss = container_of(work, struct gnss_serial,
 						read_work.work);
-	unsigned long delay = ICE_GNSS_POLL_DATA_DELAY_TIME;
 	unsigned int i, bytes_read, data_len, count;
 	struct ice_aqc_link_topo_addr link_topo;
 	struct ice_pf *pf;
@@ -96,10 +127,20 @@ static void ice_gnss_read(struct kthread_work *work)
 	int err = 0;
 
 	pf = gnss->back;
-	if (!pf || !test_bit(ICE_FLAG_GNSS, pf->flags))
+	if (!pf) {
+		err = -EFAULT;
+		goto exit;
+	}
+
+	if (!test_bit(ICE_FLAG_GNSS, pf->flags))
 		return;
 
 	hw = &pf->hw;
+	buf = (char *)get_zeroed_page(GFP_KERNEL);
+	if (!buf) {
+		err = -ENOMEM;
+		goto exit;
+	}
 
 	memset(&link_topo, 0, sizeof(struct ice_aqc_link_topo_addr));
 	link_topo.topo_params.index = ICE_E810T_GNSS_I2C_BUS;
@@ -110,24 +151,25 @@ static void ice_gnss_read(struct kthread_work *work)
 	i2c_params = ICE_GNSS_UBX_DATA_LEN_WIDTH |
 		     ICE_AQC_I2C_USE_REPEATED_START;
 
-	err = ice_aq_read_i2c(hw, link_topo, ICE_GNSS_UBX_I2C_BUS_ADDR,
-			      cpu_to_le16(ICE_GNSS_UBX_DATA_LEN_H),
-			      i2c_params, (u8 *)&data_len_b, NULL);
-	if (err)
-		goto requeue;
+	/* Read data length in a loop, when it's not 0 the data is ready */
+	for (i = 0; i < ICE_MAX_UBX_READ_TRIES; i++) {
+		err = ice_aq_read_i2c(hw, link_topo, ICE_GNSS_UBX_I2C_BUS_ADDR,
+				      cpu_to_le16(ICE_GNSS_UBX_DATA_LEN_H),
+				      i2c_params, (u8 *)&data_len_b, NULL);
+		if (err)
+			goto exit_buf;
 
-	data_len = be16_to_cpu(data_len_b);
-	if (data_len == 0 || data_len == U16_MAX)
-		goto requeue;
+		data_len = be16_to_cpu(data_len_b);
+		if (data_len != 0 && data_len != U16_MAX)
+			break;
 
-	/* The u-blox has data_len bytes for us to read */
+		mdelay(10);
+	}
 
 	data_len = min_t(typeof(data_len), data_len, PAGE_SIZE);
-
-	buf = (char *)get_zeroed_page(GFP_KERNEL);
-	if (!buf) {
+	if (!data_len) {
 		err = -ENOMEM;
-		goto requeue;
+		goto exit_buf;
 	}
 
 	/* Read received data */
@@ -141,7 +183,7 @@ static void ice_gnss_read(struct kthread_work *work)
 				      cpu_to_le16(ICE_GNSS_UBX_EMPTY_DATA),
 				      bytes_read, &buf[i], NULL);
 		if (err)
-			goto free_buf;
+			goto exit_buf;
 	}
 
 	count = gnss_insert_raw(pf->gnss_dev, buf, i);
@@ -149,11 +191,11 @@ static void ice_gnss_read(struct kthread_work *work)
 		dev_warn(ice_pf_to_dev(pf),
 			 "gnss_insert_raw ret=%d size=%d\n",
 			 count, i);
-	delay = ICE_GNSS_TIMER_DELAY_TIME;
-free_buf:
+exit_buf:
 	free_page((unsigned long)buf);
-requeue:
-	kthread_queue_delayed_work(gnss->kworker, &gnss->read_work, delay);
+	kthread_queue_delayed_work(gnss->kworker, &gnss->read_work,
+				   ICE_GNSS_TIMER_DELAY_TIME);
+exit:
 	if (err)
 		dev_dbg(ice_pf_to_dev(pf), "GNSS failed to read err=%d\n", err);
 }
@@ -182,7 +224,9 @@ static struct gnss_serial *ice_gnss_struct_init(struct ice_pf *pf)
 	pf->gnss_serial = gnss;
 
 	kthread_init_delayed_work(&gnss->read_work, ice_gnss_read);
-	kworker = kthread_run_worker(0, "ice-gnss-%s", dev_name(dev));
+	INIT_LIST_HEAD(&gnss->queue);
+	kthread_init_work(&gnss->write_work, ice_gnss_write_pending);
+	kworker = kthread_create_worker(0, "ice-gnss-%s", dev_name(dev));
 	if (IS_ERR(kworker)) {
 		kfree(gnss);
 		return NULL;
@@ -241,6 +285,7 @@ static void ice_gnss_close(struct gnss_device *gdev)
 	if (!gnss)
 		return;
 
+	kthread_cancel_work_sync(&gnss->write_work);
 	kthread_cancel_delayed_work_sync(&gnss->read_work);
 }
 
@@ -259,7 +304,10 @@ ice_gnss_write(struct gnss_device *gdev, const unsigned char *buf,
 	       size_t count)
 {
 	struct ice_pf *pf = gnss_get_drvdata(gdev);
+	struct gnss_write_buf *write_buf;
 	struct gnss_serial *gnss;
+	unsigned char *cmd_buf;
+	int err = count;
 
 	/* We cannot write a single byte using our I2C implementation. */
 	if (count <= 1 || count > ICE_GNSS_TTY_WRITE_BUF)
@@ -275,7 +323,24 @@ ice_gnss_write(struct gnss_device *gdev, const unsigned char *buf,
 	if (!gnss)
 		return -ENODEV;
 
-	return ice_gnss_do_write(pf, buf, count);
+	cmd_buf = kcalloc(count, sizeof(*buf), GFP_KERNEL);
+	if (!cmd_buf)
+		return -ENOMEM;
+
+	memcpy(cmd_buf, buf, count);
+	write_buf = kzalloc(sizeof(*write_buf), GFP_KERNEL);
+	if (!write_buf) {
+		kfree(cmd_buf);
+		return -ENOMEM;
+	}
+
+	write_buf->buf = cmd_buf;
+	write_buf->size = count;
+	INIT_LIST_HEAD(&write_buf->queue);
+	list_add_tail(&write_buf->queue, &gnss->queue);
+	kthread_queue_work(gnss->kworker, &gnss->write_work);
+
+	return err;
 }
 
 static const struct gnss_operations ice_gnss_ops = {
@@ -371,6 +436,7 @@ void ice_gnss_exit(struct ice_pf *pf)
 	if (pf->gnss_serial) {
 		struct gnss_serial *gnss = pf->gnss_serial;
 
+		kthread_cancel_work_sync(&gnss->write_work);
 		kthread_cancel_delayed_work_sync(&gnss->read_work);
 		kthread_destroy_worker(gnss->kworker);
 		gnss->kworker = NULL;
@@ -381,23 +447,29 @@ void ice_gnss_exit(struct ice_pf *pf)
 }
 
 /**
- * ice_gnss_is_module_present - Check if GNSS HW is present
+ * ice_gnss_is_gps_present - Check if GPS HW is present
  * @hw: pointer to HW struct
- *
- * Return: true when GNSS is present, false otherwise.
  */
-bool ice_gnss_is_module_present(struct ice_hw *hw)
+bool ice_gnss_is_gps_present(struct ice_hw *hw)
 {
-	int err;
-	u8 data;
-
-	if (!hw->func_caps.ts_func_info.src_tmr_owned ||
-	    !ice_is_gps_in_netlist(hw))
+	if (!hw->func_caps.ts_func_info.src_tmr_owned)
 		return false;
 
-	err = ice_read_pca9575_reg(hw, ICE_PCA9575_P0_IN, &data);
-	if (err || !!(data & ICE_P0_GNSS_PRSNT_N))
+#if IS_ENABLED(CONFIG_PTP_1588_CLOCK)
+	if (ice_is_e810t(hw)) {
+		int err;
+		u8 data;
+
+		err = ice_read_pca9575_reg_e810t(hw, ICE_PCA9575_P0_IN, &data);
+		if (err || !!(data & ICE_E810T_P0_GNSS_PRSNT_N))
+			return false;
+	} else {
 		return false;
+	}
+#else
+	if (!ice_is_e810t(hw))
+		return false;
+#endif /* IS_ENABLED(CONFIG_PTP_1588_CLOCK) */
 
 	return true;
 }

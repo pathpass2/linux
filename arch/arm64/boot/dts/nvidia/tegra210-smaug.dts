@@ -25,59 +25,15 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	memory@80000000 {
+	memory {
 		device_type = "memory";
 		reg = <0x0 0x80000000 0x0 0xc0000000>;
 	};
 
 	host1x@50000000 {
-		dpaux1: dpaux@54040000 {
-			vdd-supply = <&pp3300>;
-			status = "okay";
-		};
-
-		dsia: dsi@54300000 {
-			avdd-dsi-csi-supply = <&vdd_dsi_csi>;
-			status = "okay";
-
-			link2: panel@0 {
-				compatible = "jdi,lpm102a188a";
-				reg = <0>;
-			};
-		};
-
-		dsib: dsi@54400000 {
-			avdd-dsi-csi-supply = <&vdd_dsi_csi>;
-			nvidia,ganged-mode = <&dsia>;
-			status = "okay";
-
-			link1: panel@0 {
-				compatible = "jdi,lpm102a188a";
-				reg = <0>;
-				power-supply = <&pplcd_vdd>;
-				ddi-supply = <&pp1800_lcdio>;
-				enable-gpios = <&gpio TEGRA_GPIO(V, 1) GPIO_ACTIVE_HIGH>;
-				reset-gpios = <&gpio TEGRA_GPIO(V, 2) GPIO_ACTIVE_LOW>;
-				link2 = <&link2>;
-				backlight = <&backlight>;
-			};
-		};
-
-		sor1: sor@54580000 {
-			avdd-io-hdmi-dp-supply = <&pp1800>;
-			vdd-hdmi-dp-pll-supply = <&avddio_1v05>;
-			nvidia,dpaux = <&dpaux1>;
-			status = "okay";
-		};
-
 		dpaux: dpaux@545c0000 {
 			status = "okay";
 		};
-	};
-
-	gpu@57000000 {
-		vdd-supply = <&max77621_gpu>;
-		status = "okay";
 	};
 
 	pinmux: pinmux@700008d4 {
@@ -1351,15 +1307,11 @@
 	};
 
 	serial@70006000 {
-		/delete-property/ dmas;
-		/delete-property/ dma-names;
 		status = "okay";
 	};
 
 	uartd: serial@70006300 {
 		compatible = "nvidia,tegra30-hsuart";
-		reset-names = "serial";
-		/delete-property/ reg-shift;
 		status = "okay";
 
 		bluetooth {
@@ -1371,19 +1323,6 @@
 			interrupt-parent = <&gpio>;
 			interrupts = <TEGRA_GPIO(H, 5) IRQ_TYPE_LEVEL_LOW>;
 			interrupt-names = "host-wakeup";
-		};
-	};
-
-	i2c@7000c000 {
-		status = "okay";
-		clock-frequency = <1000000>;
-
-		touchscreen: i2c-hid-dev@20 {
-				compatible = "hid-over-i2c";
-				reg = <0x20>;
-				hid-descr-addr = <0x0020>;
-				interrupt-parent = <&gpio>;
-				interrupts = <TEGRA_GPIO(X, 1) IRQ_TYPE_EDGE_FALLING>;
 		};
 	};
 
@@ -1410,11 +1349,6 @@
 					reg = <0x55>;
 				};
 			};
-
-			usbc_extcon0: extcon0 {
-				compatible = "google,extcon-usbc-cros-ec";
-				google,usb-port-id = <0>;
-			};
 		};
 	};
 
@@ -1436,23 +1370,8 @@
 			maxim,dvs-default-state = <1>;
 			maxim,enable-active-discharge;
 			maxim,enable-bias-control;
+			maxim,enable-etr;
 			maxim,enable-gpio = <&pmic 5 0>;
-			maxim,externally-enable;
-		};
-
-		max77621_gpu: regulator@1c {
-			compatible = "maxim,max77621";
-			reg = <0x1c>;
-			interrupt-parent = <&gpio>;
-			interrupts = <TEGRA_GPIO(A, 6) IRQ_TYPE_LEVEL_LOW>;
-			regulator-min-microvolt = <840000>;
-			regulator-max-microvolt = <1150000>;
-			regulator-name = "PPVAR_GPU";
-			regulator-ramp-delay = <12500>;
-			maxim,dvs-default-state = <1>;
-			maxim,enable-active-discharge;
-			maxim,enable-bias-control;
-			maxim,enable-gpio = <&pmic 6 GPIO_ACTIVE_HIGH>;
 			maxim,externally-enable;
 		};
 
@@ -1708,37 +1627,6 @@
 			status = "okay";
 		};
 
-		backlight: backlight@2c {
-			compatible = "ti,lp8557";
-			reg = <0x2c>;
-			power-supply = <&pplcd_vdd>;
-			enable-supply = <&pp1800_lcdio>;
-			bl-name = "lp8557-backlight";
-			dev-ctrl = /bits/ 8 <0x01>;
-			init-brt = /bits/ 8 <0x80>;
-
-			/* Full scale current, 20mA */
-			rom-11h {
-				rom-addr = /bits/ 8 <0x11>;
-				rom-val = /bits/ 8 <0x05>;
-			};
-			/* Frequency = 4.9kHz, magic undocumented val */
-			rom-12h {
-				rom-addr = /bits/ 8 <0x12>;
-				rom-val = /bits/ 8 <0x29>;
-			};
-			/* Boost freq = 1MHz, BComp option = 1 */
-			rom-13h {
-				rom-addr = /bits/ 8 <0x13>;
-				rom-val = /bits/ 8 <0x03>;
-			};
-			/* 4V OV, 6 output LED string enabled */
-			rom-14h {
-				rom-addr = /bits/ 8 <0x14>;
-				rom-val = /bits/ 8 <0xbf>;
-			};
-		};
-
 		audio-codec@2d {
 			compatible = "realtek,rt5677";
 			reg = <0x2d>;
@@ -1748,15 +1636,6 @@
 			gpio-controller;
 			#gpio-cells = <2>;
 			status = "okay";
-		};
-
-		tmp451: temperature-sensor@4c {
-			compatible = "ti,tmp451";
-			reg = <0x4c>;
-			interrupt-parent = <&gpio>;
-			interrupts = <TEGRA_GPIO(X, 4) IRQ_TYPE_LEVEL_LOW>;
-			vcc-supply = <&pp1800>;
-			#thermal-sensor-cells = <1>;
 		};
 	};
 
@@ -1821,8 +1700,6 @@
 				status = "okay";
 				vbus-supply = <&usbc_vbus>;
 				mode = "otg";
-				usb-role-switch;
-				role-switch-default-mode = "host";
 			};
 
 			usb3-0 {
@@ -1854,17 +1731,6 @@
 	mmc@700b0600 {
 		bus-width = <8>;
 		non-removable;
-		status = "okay";
-	};
-
-	usb@700d0000 {
-		phys = <&{/padctl@7009f000/pads/usb2/lanes/usb2-0}>,
-		       <&{/padctl@7009f000/pads/pcie/lanes/pcie-6}>;
-		phy-names = "usb2-0", "usb3-0";
-
-		avddio-usb-supply = <&avddio_1v05>;
-		hvdd-usb-supply = <&pp3300>;
-
 		status = "okay";
 	};
 
@@ -2041,13 +1907,5 @@
 		regulator-name = "USBC_VBUS";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
-	};
-
-	vdd_dsi_csi: regulator-vdd-dsi-csi {
-		compatible = "regulator-fixed";
-		regulator-name = "AVDD_DSI_CSI_1V2";
-		regulator-min-microvolt = <1200000>;
-		regulator-max-microvolt = <1200000>;
-		vin-supply = <&pp1200_avdd>;
 	};
 };

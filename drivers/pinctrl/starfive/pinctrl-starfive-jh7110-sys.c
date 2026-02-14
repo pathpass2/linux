@@ -13,6 +13,8 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/spinlock.h>
@@ -29,8 +31,7 @@
 #include "pinctrl-starfive-jh7110.h"
 
 #define JH7110_SYS_NGPIO		64
-
-#define JH7110_SYS_REGS_NUM		174
+#define JH7110_SYS_GC_BASE		0
 
 /* registers */
 #define JH7110_SYS_DOEN			0x000
@@ -409,6 +410,7 @@ static const struct jh7110_pinctrl_soc_info jh7110_sys_pinctrl_info = {
 	.pins		= jh7110_sys_pins,
 	.npins		= ARRAY_SIZE(jh7110_sys_pins),
 	.ngpios		= JH7110_SYS_NGPIO,
+	.gc_base	= JH7110_SYS_GC_BASE,
 	.dout_reg_base	= JH7110_SYS_DOUT,
 	.dout_mask	= GENMASK(6, 0),
 	.doen_reg_base	= JH7110_SYS_DOEN,
@@ -417,7 +419,6 @@ static const struct jh7110_pinctrl_soc_info jh7110_sys_pinctrl_info = {
 	.gpi_mask	= GENMASK(6, 0),
 	.gpioin_reg_base	   = JH7110_SYS_GPIOIN,
 	.irq_reg		   = &jh7110_sys_irq_reg,
-	.nsaved_regs		   = JH7110_SYS_REGS_NUM,
 	.jh7110_set_one_pin_mux  = jh7110_sys_set_one_pin_mux,
 	.jh7110_get_padcfg_base  = jh7110_sys_get_padcfg_base,
 	.jh7110_gpio_irq_handler = jh7110_sys_irq_handler,
@@ -438,7 +439,6 @@ static struct platform_driver jh7110_sys_pinctrl_driver = {
 	.driver = {
 		.name = "starfive-jh7110-sys-pinctrl",
 		.of_match_table = jh7110_sys_pinctrl_of_match,
-		.pm = pm_sleep_ptr(&jh7110_pinctrl_pm_ops),
 	},
 };
 module_platform_driver(jh7110_sys_pinctrl_driver);

@@ -15,26 +15,12 @@
 
 #define NF_RECURSION_LIMIT	2
 
-#ifndef CONFIG_PREEMPT_RT
-static u8 *nf_get_nf_dup_skb_recursion(void)
-{
-	return this_cpu_ptr(&softnet_data.xmit.nf_dup_skb_recursion);
-}
-#else
-
-static u8 *nf_get_nf_dup_skb_recursion(void)
-{
-	return &current->net_xmit.nf_dup_skb_recursion;
-}
-
-#endif
+static DEFINE_PER_CPU(u8, nf_dup_skb_recursion);
 
 static void nf_do_netdev_egress(struct sk_buff *skb, struct net_device *dev,
 				enum nf_dev_hooks hook)
 {
-	u8 *nf_dup_skb_recursion = nf_get_nf_dup_skb_recursion();
-
-	if (*nf_dup_skb_recursion > NF_RECURSION_LIMIT)
+	if (__this_cpu_read(nf_dup_skb_recursion) > NF_RECURSION_LIMIT)
 		goto err;
 
 	if (hook == NF_NETDEV_INGRESS && skb_mac_header_was_set(skb)) {
@@ -46,9 +32,9 @@ static void nf_do_netdev_egress(struct sk_buff *skb, struct net_device *dev,
 
 	skb->dev = dev;
 	skb_clear_tstamp(skb);
-	(*nf_dup_skb_recursion)++;
+	__this_cpu_inc(nf_dup_skb_recursion);
 	dev_queue_xmit(skb);
-	(*nf_dup_skb_recursion)--;
+	__this_cpu_dec(nf_dup_skb_recursion);
 	return;
 err:
 	kfree_skb(skb);

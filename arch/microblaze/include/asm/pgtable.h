@@ -10,14 +10,14 @@
 
 #include <asm/setup.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 extern int mem_init_done;
 #endif
 
 #include <asm-generic/pgtable-nopmd.h>
 
 #ifdef __KERNEL__
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/sched.h>
 #include <linux/threads.h>
@@ -39,7 +39,7 @@ extern pte_t *va_to_pte(unsigned long address);
 #define VMALLOC_START	(CONFIG_KERNEL_START + CONFIG_LOWMEM_SIZE)
 #define VMALLOC_END	ioremap_bot
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 /*
  * Macro to mark a page protection value as "uncacheable".
@@ -99,6 +99,7 @@ extern pte_t *va_to_pte(unsigned long address);
 #define PTRS_PER_PGD	(1 << (32 - PGDIR_SHIFT))
 
 #define USER_PTRS_PER_PGD	(TASK_SIZE / PGDIR_SIZE)
+#define FIRST_USER_PGD_NR	0
 
 #define USER_PGD_PTRS (PAGE_OFFSET >> PGDIR_SHIFT)
 #define KERNEL_PGD_PTRS (PTRS_PER_PGD-USER_PGD_PTRS)
@@ -207,7 +208,7 @@ extern pte_t *va_to_pte(unsigned long address);
  * Also, write permissions imply read permissions.
  */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 /*
  * ZERO_PAGE is a global shared page that is always zero: used
  * for zero-mapped memory areas etc..
@@ -215,7 +216,7 @@ extern pte_t *va_to_pte(unsigned long address);
 extern unsigned long empty_zero_page[1024];
 #define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #define pte_none(pte)		((pte_val(pte) & ~_PTE_NONE_MASK) == 0)
 #define pte_present(pte)	(pte_val(pte) & _PAGE_PRESENT)
@@ -229,14 +230,14 @@ extern unsigned long empty_zero_page[1024];
 
 #define pte_page(x)		(mem_map + (unsigned long) \
 				((pte_val(x) - memory_start) >> PAGE_SHIFT))
-#define PFN_PTE_SHIFT		PAGE_SHIFT
+#define PFN_SHIFT_OFFSET	(PAGE_SHIFT)
 
-#define pte_pfn(x)		(pte_val(x) >> PFN_PTE_SHIFT)
+#define pte_pfn(x)		(pte_val(x) >> PFN_SHIFT_OFFSET)
 
 #define pfn_pte(pfn, prot) \
-	__pte(((pte_basic_t)(pfn) << PFN_PTE_SHIFT) | pgprot_val(prot))
+	__pte(((pte_basic_t)(pfn) << PFN_SHIFT_OFFSET) | pgprot_val(prot))
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 /*
  * The following only work if pte_present() is true.
  * Undefined behaviour if not..
@@ -265,7 +266,7 @@ static inline pte_t pte_mkread(pte_t pte) \
 	{ pte_val(pte) |= _PAGE_USER; return pte; }
 static inline pte_t pte_mkexec(pte_t pte) \
 	{ pte_val(pte) |= _PAGE_USER | _PAGE_EXEC; return pte; }
-static inline pte_t pte_mkwrite_novma(pte_t pte) \
+static inline pte_t pte_mkwrite(pte_t pte) \
 	{ pte_val(pte) |= _PAGE_RW; return pte; }
 static inline pte_t pte_mkdirty(pte_t pte) \
 	{ pte_val(pte) |= _PAGE_DIRTY; return pte; }
@@ -283,6 +284,14 @@ static inline pte_t mk_pte_phys(phys_addr_t physpage, pgprot_t pgprot)
 	pte_val(pte) = physpage | pgprot_val(pgprot);
 	return pte;
 }
+
+#define mk_pte(page, pgprot) \
+({									   \
+	pte_t pte;							   \
+	pte_val(pte) = (((page - mem_map) << PAGE_SHIFT) + memory_start) |  \
+			pgprot_val(pgprot);				   \
+	pte;								   \
+})
 
 static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 {
@@ -321,13 +330,19 @@ static inline unsigned long pte_update(pte_t *p, unsigned long clr,
 /*
  * set_pte stores a linux PTE into the linux page table.
  */
-static inline void set_pte(pte_t *ptep, pte_t pte)
+static inline void set_pte(struct mm_struct *mm, unsigned long addr,
+		pte_t *ptep, pte_t pte)
+{
+	*ptep = pte;
+}
+
+static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
+		pte_t *ptep, pte_t pte)
 {
 	*ptep = pte;
 }
 
 #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_YOUNG
-struct vm_area_struct;
 static inline int ptep_test_and_clear_young(struct vm_area_struct *vma,
 		unsigned long address, pte_t *ptep)
 {
@@ -397,7 +412,7 @@ extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) >> 2 })
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val << 2 })
 
-static inline bool pte_swp_exclusive(pte_t pte)
+static inline int pte_swp_exclusive(pte_t pte)
 {
 	return pte_val(pte) & _PAGE_SWP_EXCLUSIVE;
 }
@@ -435,13 +450,13 @@ extern int mem_init_done;
 
 asmlinkage void __init mmu_init(void);
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* __KERNEL__ */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 extern unsigned long ioremap_bot, ioremap_base;
 
 void setup_memory(void);
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_MICROBLAZE_PGTABLE_H */

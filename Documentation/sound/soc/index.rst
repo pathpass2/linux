@@ -18,4 +18,3 @@ The documentation is spilt into the following sections:-
    jack
    dpcm
    codec-to-codec
-   usb

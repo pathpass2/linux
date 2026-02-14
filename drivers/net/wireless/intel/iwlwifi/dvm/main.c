@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /******************************************************************************
  *
- * Copyright(c) 2003 - 2014, 2018 - 2022 Intel Corporation. All rights reserved.
- * Copyright(c) 2024-2025 Intel Corporation. All rights reserved.
+ * Copyright(c) 2003 - 2014, 2018 - 2022  Intel Corporation. All rights reserved.
  * Copyright(c) 2015 Intel Deutschland GmbH
  *
  * Portions of this file are derived from the ipw3945 project, as well
@@ -26,7 +25,8 @@
 
 #include <asm/div64.h>
 
-#include "iwl-nvm-utils.h"
+#include "iwl-eeprom-read.h"
+#include "iwl-eeprom-parse.h"
 #include "iwl-io.h"
 #include "iwl-trans.h"
 #include "iwl-op-mode.h"
@@ -48,7 +48,7 @@
 #define DRV_DESCRIPTION	"Intel(R) Wireless WiFi Link AGN driver for Linux"
 MODULE_DESCRIPTION(DRV_DESCRIPTION);
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("IWLWIFI");
+MODULE_IMPORT_NS(IWLWIFI);
 
 /* Please keep this array *SORTED* by hex value.
  * Access is done through binary search.
@@ -381,8 +381,7 @@ int iwl_send_statistics_request(struct iwl_priv *priv, u8 flags, bool clear)
  */
 static void iwl_bg_statistics_periodic(struct timer_list *t)
 {
-	struct iwl_priv *priv = timer_container_of(priv, t,
-						   statistics_periodic);
+	struct iwl_priv *priv = from_timer(priv, t, statistics_periodic);
 
 	if (test_bit(STATUS_EXIT_PENDING, &priv->status))
 		return;
@@ -538,7 +537,7 @@ static void iwl_continuous_event_trace(struct iwl_priv *priv)
  */
 static void iwl_bg_ucode_trace(struct timer_list *t)
 {
-	struct iwl_priv *priv = timer_container_of(priv, t, ucode_trace);
+	struct iwl_priv *priv = from_timer(priv, t, ucode_trace);
 
 	if (test_bit(STATUS_EXIT_PENDING, &priv->status))
 		return;
@@ -825,11 +824,11 @@ int iwl_alive_start(struct iwl_priv *priv)
 	iwlagn_send_tx_ant_config(priv, priv->nvm_data->valid_tx_ant);
 
 	if (iwl_is_associated_ctx(ctx) && !priv->wowlan) {
-		struct iwl_rxon_cmd *active = (void *)(uintptr_t)&ctx->active;
-
+		struct iwl_rxon_cmd *active_rxon =
+				(struct iwl_rxon_cmd *)&ctx->active;
 		/* apply any changes in staging */
 		ctx->staging.filter_flags |= RXON_FILTER_ASSOC_MSK;
-		active->filter_flags &= ~RXON_FILTER_ASSOC_MSK;
+		active_rxon->filter_flags &= ~RXON_FILTER_ASSOC_MSK;
 	} else {
 		struct iwl_rxon_context *tmp;
 		/* Initialize our rx_config data */
@@ -1049,11 +1048,9 @@ static void iwl_bg_restart(struct work_struct *data)
  *
  *****************************************************************************/
 
-static int iwl_setup_deferred_work(struct iwl_priv *priv)
+static void iwl_setup_deferred_work(struct iwl_priv *priv)
 {
 	priv->workqueue = alloc_ordered_workqueue(DRV_NAME, 0);
-	if (!priv->workqueue)
-		return -ENOMEM;
 
 	INIT_WORK(&priv->restart, iwl_bg_restart);
 	INIT_WORK(&priv->beacon_update, iwl_bg_beacon_update);
@@ -1070,8 +1067,6 @@ static int iwl_setup_deferred_work(struct iwl_priv *priv)
 	timer_setup(&priv->statistics_periodic, iwl_bg_statistics_periodic, 0);
 
 	timer_setup(&priv->ucode_trace, iwl_bg_ucode_trace, 0);
-
-	return 0;
 }
 
 void iwl_cancel_deferred_work(struct iwl_priv *priv)
@@ -1087,8 +1082,8 @@ void iwl_cancel_deferred_work(struct iwl_priv *priv)
 	cancel_work_sync(&priv->bt_full_concurrency);
 	cancel_work_sync(&priv->bt_runtime_config);
 
-	timer_delete_sync(&priv->statistics_periodic);
-	timer_delete_sync(&priv->ucode_trace);
+	del_timer_sync(&priv->statistics_periodic);
+	del_timer_sync(&priv->ucode_trace);
 }
 
 static int iwl_init_drv(struct iwl_priv *priv)
@@ -1142,10 +1137,9 @@ static void iwl_uninit_drv(struct iwl_priv *priv)
 
 static void iwl_set_hw_params(struct iwl_priv *priv)
 {
-	/* there are no devices with HT but without HT40 on all bands */
-	if (priv->cfg->ht_params.ht40_bands)
+	if (priv->cfg->ht_params)
 		priv->hw_params.use_rts_for_aggregation =
-			priv->cfg->ht_params.use_rts_for_aggregation;
+			priv->cfg->ht_params->use_rts_for_aggregation;
 
 	/* Device-specific setup */
 	priv->lib->set_hw_params(priv);
@@ -1179,9 +1173,8 @@ static int iwl_eeprom_init_hw_params(struct iwl_priv *priv)
 {
 	struct iwl_nvm_data *data = priv->nvm_data;
 
-	/* all HT devices also have HT40 on at least one band */
 	if (data->sku_cap_11n_enable &&
-	    !priv->cfg->ht_params.ht40_bands) {
+	    !priv->cfg->ht_params) {
 		IWL_ERR(priv, "Invalid 11n configuration\n");
 		return -EINVAL;
 	}
@@ -1231,7 +1224,7 @@ static int iwl_nvm_check_version(struct iwl_nvm_data *data,
 }
 
 static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
-						 const struct iwl_rf_cfg *cfg,
+						 const struct iwl_cfg *cfg,
 						 const struct iwl_fw *fw,
 						 struct dentry *dbgfs_dir)
 {
@@ -1240,6 +1233,7 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 	struct iwl_op_mode *op_mode;
 	u16 num_mac;
 	u32 ucode_flags;
+	struct iwl_trans_config trans_cfg = {};
 	static const u8 no_reclaim_cmds[] = {
 		REPLY_RX_PHY_CMD,
 		REPLY_RX_MPDU_CMD,
@@ -1247,16 +1241,14 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 		STATISTICS_NOTIFICATION,
 		REPLY_TX,
 	};
-	int i, err;
+	int i;
 
 	/************************
 	 * 1. Allocating HW data
 	 ************************/
 	hw = iwl_alloc_all();
 	if (!hw) {
-		pr_err("%s: Cannot allocate network device\n",
-		       trans->info.name);
-		err = -ENOMEM;
+		pr_err("%s: Cannot allocate network device\n", trans->name);
 		goto out;
 	}
 
@@ -1268,7 +1260,7 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 	priv->cfg = cfg;
 	priv->fw = fw;
 
-	switch (priv->trans->mac_cfg->device_family) {
+	switch (priv->trans->trans_cfg->device_family) {
 	case IWL_DEVICE_FAMILY_1000:
 	case IWL_DEVICE_FAMILY_100:
 		priv->lib = &iwl_dvm_1000_cfg;
@@ -1307,60 +1299,61 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 		break;
 	}
 
-	if (WARN_ON(!priv->lib)) {
-		err = -ENODEV;
+	if (WARN_ON(!priv->lib))
 		goto out_free_hw;
-	}
 
 	/*
 	 * Populate the state variables that the transport layer needs
 	 * to know about.
 	 */
-	BUILD_BUG_ON(sizeof(no_reclaim_cmds) >
-		     sizeof(trans->conf.no_reclaim_cmds));
-	memcpy(trans->conf.no_reclaim_cmds, no_reclaim_cmds,
-	       sizeof(no_reclaim_cmds));
-	trans->conf.n_no_reclaim_cmds = ARRAY_SIZE(no_reclaim_cmds);
+	trans_cfg.op_mode = op_mode;
+	trans_cfg.no_reclaim_cmds = no_reclaim_cmds;
+	trans_cfg.n_no_reclaim_cmds = ARRAY_SIZE(no_reclaim_cmds);
 
 	switch (iwlwifi_mod_params.amsdu_size) {
 	case IWL_AMSDU_DEF:
 	case IWL_AMSDU_4K:
-		trans->conf.rx_buf_size = IWL_AMSDU_4K;
+		trans_cfg.rx_buf_size = IWL_AMSDU_4K;
 		break;
 	case IWL_AMSDU_8K:
-		trans->conf.rx_buf_size = IWL_AMSDU_8K;
+		trans_cfg.rx_buf_size = IWL_AMSDU_8K;
 		break;
 	case IWL_AMSDU_12K:
 	default:
-		trans->conf.rx_buf_size = IWL_AMSDU_4K;
+		trans_cfg.rx_buf_size = IWL_AMSDU_4K;
 		pr_err("Unsupported amsdu_size: %d\n",
 		       iwlwifi_mod_params.amsdu_size);
 	}
 
-	trans->conf.command_groups = iwl_dvm_groups;
-	trans->conf.command_groups_size = ARRAY_SIZE(iwl_dvm_groups);
+	trans_cfg.cmd_q_wdg_timeout = IWL_WATCHDOG_DISABLED;
 
-	trans->conf.cmd_fifo = IWLAGN_CMD_FIFO_NUM;
-	trans->conf.cb_data_offs = offsetof(struct ieee80211_tx_info,
-					    driver_data[2]);
+	trans_cfg.command_groups = iwl_dvm_groups;
+	trans_cfg.command_groups_size = ARRAY_SIZE(iwl_dvm_groups);
+
+	trans_cfg.cmd_fifo = IWLAGN_CMD_FIFO_NUM;
+	trans_cfg.cb_data_offs = offsetof(struct ieee80211_tx_info,
+					  driver_data[2]);
 
 	WARN_ON(sizeof(priv->transport_queue_stop) * BITS_PER_BYTE <
-		priv->trans->mac_cfg->base->num_of_queues);
+		priv->trans->trans_cfg->base_params->num_of_queues);
 
 	ucode_flags = fw->ucode_capa.flags;
 
 	if (ucode_flags & IWL_UCODE_TLV_FLAGS_PAN) {
 		priv->sta_key_max_num = STA_KEY_MAX_NUM_PAN;
-		trans->conf.cmd_queue = IWL_IPAN_CMD_QUEUE_NUM;
+		trans_cfg.cmd_queue = IWL_IPAN_CMD_QUEUE_NUM;
 	} else {
 		priv->sta_key_max_num = STA_KEY_MAX_NUM;
-		trans->conf.cmd_queue = IWL_DEFAULT_CMD_QUEUE_NUM;
+		trans_cfg.cmd_queue = IWL_DEFAULT_CMD_QUEUE_NUM;
 	}
 
-	trans->conf.rx_mpdu_cmd = REPLY_RX_MPDU_CMD;
-	trans->conf.rx_mpdu_cmd_hdr_size = sizeof(struct iwl_rx_mpdu_res_start);
+	/* Configure transport layer */
+	iwl_trans_configure(priv->trans, &trans_cfg);
 
-	iwl_trans_op_mode_enter(priv->trans, op_mode);
+	trans->rx_mpdu_cmd = REPLY_RX_MPDU_CMD;
+	trans->rx_mpdu_cmd_hdr_size = sizeof(struct iwl_rx_mpdu_res_start);
+	trans->command_groups = trans_cfg.command_groups;
+	trans->command_groups_size = trans_cfg.command_groups_size;
 
 	/* At this point both hw and priv are allocated. */
 
@@ -1384,18 +1377,16 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 	 * 2. Read REV register
 	 ***********************/
 	IWL_INFO(priv, "Detected %s, REV=0x%X\n",
-		priv->trans->info.name, priv->trans->info.hw_rev);
+		priv->trans->name, priv->trans->hw_rev);
 
-	err = iwl_trans_start_hw(priv->trans);
-	if (err)
-		goto out_leave_trans;
+	if (iwl_trans_start_hw(priv->trans))
+		goto out_free_hw;
 
 	/* Read the EEPROM */
-	err = iwl_read_eeprom(priv->trans, &priv->eeprom_blob,
-			      &priv->eeprom_blob_size);
-	if (err) {
+	if (iwl_read_eeprom(priv->trans, &priv->eeprom_blob,
+			    &priv->eeprom_blob_size)) {
 		IWL_ERR(priv, "Unable to init EEPROM\n");
-		goto out_leave_trans;
+		goto out_free_hw;
 	}
 
 	/* Reset chip to save power until we load uCode during "up". */
@@ -1404,17 +1395,13 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 	priv->nvm_data = iwl_parse_eeprom_data(priv->trans, priv->cfg,
 					       priv->eeprom_blob,
 					       priv->eeprom_blob_size);
-	if (!priv->nvm_data) {
-		err = -ENOMEM;
+	if (!priv->nvm_data)
 		goto out_free_eeprom_blob;
-	}
 
-	err = iwl_nvm_check_version(priv->nvm_data, priv->trans);
-	if (err)
+	if (iwl_nvm_check_version(priv->nvm_data, priv->trans))
 		goto out_free_eeprom;
 
-	err = iwl_eeprom_init_hw_params(priv);
-	if (err)
+	if (iwl_eeprom_init_hw_params(priv))
 		goto out_free_eeprom;
 
 	/* extract MAC Address */
@@ -1443,7 +1430,10 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 		 * packaging bug or due to the eeprom check above
 		 */
 		priv->sta_key_max_num = STA_KEY_MAX_NUM;
-		trans->conf.cmd_queue = IWL_DEFAULT_CMD_QUEUE_NUM;
+		trans_cfg.cmd_queue = IWL_DEFAULT_CMD_QUEUE_NUM;
+
+		/* Configure transport layer again*/
+		iwl_trans_configure(priv->trans, &trans_cfg);
 	}
 
 	/*******************
@@ -1458,8 +1448,7 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 		atomic_set(&priv->queue_stop_count[i], 0);
 	}
 
-	err = iwl_init_drv(priv);
-	if (err)
+	if (iwl_init_drv(priv))
 		goto out_free_eeprom;
 
 	/* At this point both hw and priv are initialized. */
@@ -1467,10 +1456,7 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 	/********************
 	 * 6. Setup services
 	 ********************/
-	err = iwl_setup_deferred_work(priv);
-	if (err)
-		goto out_uninit_drv;
-
+	iwl_setup_deferred_work(priv);
 	iwl_setup_rx_handlers(priv);
 
 	iwl_power_initialize(priv);
@@ -1478,7 +1464,7 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 
 	snprintf(priv->hw->wiphy->fw_version,
 		 sizeof(priv->hw->wiphy->fw_version),
-		 "%.31s", fw->fw_version);
+		 "%s", fw->fw_version);
 
 	priv->new_scan_threshold_behaviour =
 		!!(ucode_flags & IWL_UCODE_TLV_FLAGS_NEWSCAN);
@@ -1496,8 +1482,7 @@ static struct iwl_op_mode *iwl_op_mode_dvm_start(struct iwl_trans *trans,
 	 *
 	 * 7. Setup and register with mac80211 and debugfs
 	 **************************************************/
-	err = iwlagn_mac_setup_register(priv, &fw->ucode_capa);
-	if (err)
+	if (iwlagn_mac_setup_register(priv, &fw->ucode_capa))
 		goto out_destroy_workqueue;
 
 	iwl_dbgfs_register(priv, dbgfs_dir);
@@ -1509,18 +1494,16 @@ out_destroy_workqueue:
 	iwl_cancel_deferred_work(priv);
 	destroy_workqueue(priv->workqueue);
 	priv->workqueue = NULL;
-out_uninit_drv:
 	iwl_uninit_drv(priv);
 out_free_eeprom_blob:
 	kfree(priv->eeprom_blob);
 out_free_eeprom:
 	kfree(priv->nvm_data);
-out_leave_trans:
-	iwl_trans_op_mode_leave(priv->trans);
 out_free_hw:
 	ieee80211_free_hw(priv->hw);
 out:
-	return ERR_PTR(err);
+	op_mode = NULL;
+	return op_mode;
 }
 
 static void iwl_op_mode_dvm_stop(struct iwl_op_mode *op_mode)
@@ -1914,8 +1897,16 @@ static void iwlagn_fw_error(struct iwl_priv *priv, bool ondemand)
 	unsigned int reload_msec;
 	unsigned long reload_jiffies;
 
+	if (iwl_have_debug_level(IWL_DL_FW))
+		iwl_print_rx_config_cmd(priv, IWL_RXON_CTX_BSS);
+
 	/* uCode is no longer loaded. */
 	priv->ucode_loaded = false;
+
+	/* Set the FW error flag -- cleared on iwl_down */
+	set_bit(STATUS_FW_ERROR, &priv->status);
+
+	iwl_abort_notification_waits(&priv->notif_wait);
 
 	/* Keep the restart process from trying to send host
 	 * commands by clearing the ready bit */
@@ -1953,43 +1944,27 @@ static void iwlagn_fw_error(struct iwl_priv *priv, bool ondemand)
 	}
 }
 
-static void iwl_nic_error(struct iwl_op_mode *op_mode,
-			  enum iwl_fw_error_type type)
+static void iwl_nic_error(struct iwl_op_mode *op_mode, bool sync)
 {
 	struct iwl_priv *priv = IWL_OP_MODE_GET_DVM(op_mode);
-
-	/* Set the FW error flag -- cleared on iwl_down */
-	set_bit(STATUS_FW_ERROR, &priv->status);
-
-	iwl_abort_notification_waits(&priv->notif_wait);
-
-	if (type == IWL_ERR_TYPE_CMD_QUEUE_FULL && iwl_check_for_ct_kill(priv))
-		return;
 
 	IWL_ERR(priv, "Loaded firmware version: %s\n",
 		priv->fw->fw_version);
 
-	if (type == IWL_ERR_TYPE_CMD_QUEUE_FULL) {
-		IWL_ERR(priv, "Command queue full!\n");
-	} else {
-		iwl_dump_nic_error_log(priv);
-		iwl_dump_nic_event_log(priv, false, NULL);
-	}
+	iwl_dump_nic_error_log(priv);
+	iwl_dump_nic_event_log(priv, false, NULL);
 
-	if (iwl_have_debug_level(IWL_DL_FW))
-		iwl_print_rx_config_cmd(priv, IWL_RXON_CTX_BSS);
+	iwlagn_fw_error(priv, false);
 }
 
-static bool iwlagn_sw_reset(struct iwl_op_mode *op_mode,
-			    enum iwl_fw_error_type type)
+static void iwl_cmd_queue_full(struct iwl_op_mode *op_mode)
 {
 	struct iwl_priv *priv = IWL_OP_MODE_GET_DVM(op_mode);
 
-	if (type == IWL_ERR_TYPE_CMD_QUEUE_FULL && iwl_check_for_ct_kill(priv))
-		return false;
-
-	iwlagn_fw_error(priv, false);
-	return true;
+	if (!iwl_check_for_ct_kill(priv)) {
+		IWL_ERR(priv, "Restarting adapter queue is full\n");
+		iwlagn_fw_error(priv, false);
+	}
 }
 
 #define EEPROM_RF_CONFIG_TYPE_MAX      0x3
@@ -2001,7 +1976,7 @@ static void iwl_nic_config(struct iwl_op_mode *op_mode)
 	/* SKU Control */
 	iwl_trans_set_bits_mask(priv->trans, CSR_HW_IF_CONFIG_REG,
 				CSR_HW_IF_CONFIG_REG_MSK_MAC_STEP_DASH,
-				CSR_HW_REV_STEP_DASH(priv->trans->info.hw_rev));
+				CSR_HW_REV_STEP_DASH(priv->trans->hw_rev));
 
 	/* write radio config values to register */
 	if (priv->nvm_data->radio_cfg_type <= EEPROM_RF_CONFIG_TYPE_MAX) {
@@ -2144,7 +2119,7 @@ static const struct iwl_op_mode_ops iwl_dvm_ops = {
 	.hw_rf_kill = iwl_set_hw_rfkill_state,
 	.free_skb = iwl_free_skb,
 	.nic_error = iwl_nic_error,
-	.sw_reset = iwlagn_sw_reset,
+	.cmd_queue_full = iwl_cmd_queue_full,
 	.nic_config = iwl_nic_config,
 	.wimax_active = iwl_wimax_active,
 };

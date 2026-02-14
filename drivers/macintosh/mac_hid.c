@@ -16,7 +16,6 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 
-MODULE_DESCRIPTION("Mouse button 2+3 emulation");
 MODULE_LICENSE("GPL");
 
 static int mouse_emulate_buttons;
@@ -183,18 +182,17 @@ static void mac_hid_stop_emulation(void)
 	mac_hid_destroy_emumouse();
 }
 
-static int mac_hid_toggle_emumouse(const struct ctl_table *table, int write,
+static int mac_hid_toggle_emumouse(struct ctl_table *table, int write,
 				   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	int *valp = table->data;
-	int old_val;
+	int old_val = *valp;
 	int rc;
 
 	rc = mutex_lock_killable(&mac_hid_emumouse_mutex);
 	if (rc)
 		return rc;
 
-	old_val = *valp;
 	rc = proc_dointvec(table, write, buffer, lenp, ppos);
 
 	if (rc == 0 && write && *valp != old_val) {
@@ -216,7 +214,7 @@ static int mac_hid_toggle_emumouse(const struct ctl_table *table, int write,
 }
 
 /* file(s) in /proc/sys/dev/mac_hid */
-static const struct ctl_table mac_hid_files[] = {
+static struct ctl_table mac_hid_files[] = {
 	{
 		.procname	= "mouse_button_emulation",
 		.data		= &mouse_emulate_buttons,
@@ -238,6 +236,7 @@ static const struct ctl_table mac_hid_files[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 	},
+	{ }
 };
 
 static struct ctl_table_header *mac_hid_sysctl_header;

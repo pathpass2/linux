@@ -26,6 +26,7 @@ struct fwnode_handle;
  *
  * @name:	The name of the bus.
  * @dev_name:	Used for subsystems to enumerate devices like ("foo%u", dev->id).
+ * @dev_root:	Default device to use as the parent.
  * @bus_groups:	Default attributes of the bus.
  * @dev_groups:	Default attributes of the devices on the bus.
  * @drv_groups: Default attributes of the device drivers on the bus.
@@ -48,7 +49,6 @@ struct fwnode_handle;
  *		will never get called until they do.
  * @remove:	Called when a device removed from this bus.
  * @shutdown:	Called at shut-down time to quiesce the device.
- * @irq_get_affinity:	Get IRQ affinity mask for the device on this bus.
  *
  * @online:	Called to put the device back online (after offlining it).
  * @offline:	Called to put the device offline for hot-removal. May fail.
@@ -63,6 +63,10 @@ struct fwnode_handle;
  *			this bus.
  * @pm:		Power management operations of this bus, callback the specific
  *		device driver's pm-ops.
+ * @iommu_ops:  IOMMU specific operations for this bus, used to attach IOMMU
+ *              driver implementations to a bus and allow the driver to do
+ *              bus-specific setup
+ * @lock_key:	Lock class key for use by the lock validator
  * @need_parent_lock:	When probing or removing a device on this bus, the
  *			device core should lock the device's parent.
  *
@@ -78,18 +82,17 @@ struct fwnode_handle;
 struct bus_type {
 	const char		*name;
 	const char		*dev_name;
+	struct device		*dev_root;
 	const struct attribute_group **bus_groups;
 	const struct attribute_group **dev_groups;
 	const struct attribute_group **drv_groups;
 
-	int (*match)(struct device *dev, const struct device_driver *drv);
+	int (*match)(struct device *dev, struct device_driver *drv);
 	int (*uevent)(const struct device *dev, struct kobj_uevent_env *env);
 	int (*probe)(struct device *dev);
 	void (*sync_state)(struct device *dev);
 	void (*remove)(struct device *dev);
 	void (*shutdown)(struct device *dev);
-	const struct cpumask *(*irq_get_affinity)(struct device *dev,
-			unsigned int irq_vec);
 
 	int (*online)(struct device *dev);
 	int (*offline)(struct device *dev);
@@ -104,19 +107,21 @@ struct bus_type {
 
 	const struct dev_pm_ops *pm;
 
+	const struct iommu_ops *iommu_ops;
+
 	bool need_parent_lock;
 };
 
-int __must_check bus_register(const struct bus_type *bus);
+extern int __must_check bus_register(struct bus_type *bus);
 
-void bus_unregister(const struct bus_type *bus);
+extern void bus_unregister(const struct bus_type *bus);
 
-int __must_check bus_rescan_devices(const struct bus_type *bus);
+extern int __must_check bus_rescan_devices(struct bus_type *bus);
 
 struct bus_attribute {
 	struct attribute	attr;
-	ssize_t (*show)(const struct bus_type *bus, char *buf);
-	ssize_t (*store)(const struct bus_type *bus, const char *buf, size_t count);
+	ssize_t (*show)(struct bus_type *bus, char *buf);
+	ssize_t (*store)(struct bus_type *bus, const char *buf, size_t count);
 };
 
 #define BUS_ATTR_RW(_name) \
@@ -129,12 +134,8 @@ struct bus_attribute {
 int __must_check bus_create_file(const struct bus_type *bus, struct bus_attribute *attr);
 void bus_remove_file(const struct bus_type *bus, struct bus_attribute *attr);
 
-/* Matching function type for drivers/base APIs to find a specific device */
-typedef int (*device_match_t)(struct device *dev, const void *data);
-
 /* Generic device matching functions that all busses can use to match with */
 int device_match_name(struct device *dev, const void *name);
-int device_match_type(struct device *dev, const void *type);
 int device_match_of_node(struct device *dev, const void *np);
 int device_match_fwnode(struct device *dev, const void *fwnode);
 int device_match_devt(struct device *dev, const void *pdevt);
@@ -142,17 +143,12 @@ int device_match_acpi_dev(struct device *dev, const void *adev);
 int device_match_acpi_handle(struct device *dev, const void *handle);
 int device_match_any(struct device *dev, const void *unused);
 
-/* Device iterating function type for various driver core for_each APIs */
-typedef int (*device_iter_t)(struct device *dev, void *data);
-
 /* iterator helpers for buses */
-int bus_for_each_dev(const struct bus_type *bus, struct device *start,
-		     void *data, device_iter_t fn);
+int bus_for_each_dev(const struct bus_type *bus, struct device *start, void *data,
+		     int (*fn)(struct device *dev, void *data));
 struct device *bus_find_device(const struct bus_type *bus, struct device *start,
-			       const void *data, device_match_t match);
-struct device *bus_find_device_reverse(const struct bus_type *bus,
-				       struct device *start, const void *data,
-				       device_match_t match);
+			       const void *data,
+			       int (*match)(struct device *dev, const void *data));
 /**
  * bus_find_device_by_name - device iterator for locating a particular device
  * of a specific name.
@@ -215,9 +211,9 @@ bus_find_next_device(const struct bus_type *bus,struct device *cur)
 	return bus_find_device(bus, cur, NULL, device_match_any);
 }
 
+#ifdef CONFIG_ACPI
 struct acpi_device;
 
-#ifdef CONFIG_ACPI
 /**
  * bus_find_device_by_acpi_dev : device iterator for locating a particular device
  * matching the ACPI COMPANION device.
@@ -231,7 +227,7 @@ bus_find_device_by_acpi_dev(const struct bus_type *bus, const struct acpi_device
 }
 #else
 static inline struct device *
-bus_find_device_by_acpi_dev(const struct bus_type *bus, const struct acpi_device *adev)
+bus_find_device_by_acpi_dev(const struct bus_type *bus, const void *adev)
 {
 	return NULL;
 }
@@ -239,7 +235,7 @@ bus_find_device_by_acpi_dev(const struct bus_type *bus, const struct acpi_device
 
 int bus_for_each_drv(const struct bus_type *bus, struct device_driver *start,
 		     void *data, int (*fn)(struct device_driver *, void *));
-void bus_sort_breadthfirst(const struct bus_type *bus,
+void bus_sort_breadthfirst(struct bus_type *bus,
 			   int (*compare)(const struct device *a,
 					  const struct device *b));
 /*
@@ -250,8 +246,10 @@ void bus_sort_breadthfirst(const struct bus_type *bus,
  */
 struct notifier_block;
 
-int bus_register_notifier(const struct bus_type *bus, struct notifier_block *nb);
-int bus_unregister_notifier(const struct bus_type *bus, struct notifier_block *nb);
+extern int bus_register_notifier(const struct bus_type *bus,
+				 struct notifier_block *nb);
+extern int bus_unregister_notifier(const struct bus_type *bus,
+				   struct notifier_block *nb);
 
 /**
  * enum bus_notifier_event - Bus Notifier events that have happened
@@ -283,7 +281,7 @@ enum bus_notifier_event {
 	BUS_NOTIFY_DRIVER_NOT_BOUND,
 };
 
-struct kset *bus_get_kset(const struct bus_type *bus);
+extern struct kset *bus_get_kset(const struct bus_type *bus);
 struct device *bus_get_dev_root(const struct bus_type *bus);
 
 #endif

@@ -135,10 +135,6 @@ static ssize_t amdgpu_securedisplay_debugfs_write(struct file *f, const char __u
 		mutex_unlock(&psp->securedisplay_context.mutex);
 		break;
 	case 2:
-		if (size < 3 || phy_id >= TA_SECUREDISPLAY_MAX_PHY) {
-			dev_err(adev->dev, "Invalid input: %s\n", str);
-			return -EINVAL;
-		}
 		mutex_lock(&psp->securedisplay_context.mutex);
 		psp_prep_securedisplay_cmd_buf(psp, &securedisplay_cmd,
 			TA_SECUREDISPLAY_COMMAND__SEND_ROI_CRC);
@@ -159,6 +155,7 @@ static ssize_t amdgpu_securedisplay_debugfs_write(struct file *f, const char __u
 		dev_err(adev->dev, "Invalid input: %s\n", str);
 	}
 
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 
 	return size;

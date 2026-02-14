@@ -133,7 +133,7 @@ gf100_chan_userd_clear(struct nvkm_chan *chan)
 
 static const struct nvkm_chan_func_userd
 gf100_chan_userd = {
-	.bar = NVKM_BAR1_FB,
+	.bar = 1,
 	.size = 0x1000,
 	.clear = gf100_chan_userd_clear,
 };
@@ -447,7 +447,7 @@ gf100_fifo_nonstall_allow(struct nvkm_event *event, int type, int index)
 	spin_unlock_irqrestore(&fifo->lock, flags);
 }
 
-static void
+void
 gf100_fifo_nonstall_block(struct nvkm_event *event, int type, int index)
 {
 	struct nvkm_fifo *fifo = container_of(event, typeof(*fifo), nonstall.event);

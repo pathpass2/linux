@@ -49,9 +49,7 @@ MODULE_LICENSE("GPL");
 /* -------- driver information -------------------------------------- */
 
 static DEFINE_MUTEX(capi_mutex);
-static const struct class capi_class = {
-	.name = "capi",
-};
+static struct class *capi_class;
 static int capi_major = 68;		/* allocated */
 
 module_param_named(major, capi_major, uint, 0);
@@ -306,9 +304,15 @@ static void capincci_alloc_minor(struct capidev *cdev, struct capincci *np)
 static void capincci_free_minor(struct capincci *np)
 {
 	struct capiminor *mp = np->minorp;
+	struct tty_struct *tty;
 
 	if (mp) {
-		tty_port_tty_vhangup(&mp->port);
+		tty = tty_port_tty_get(&mp->port);
+		if (tty) {
+			tty_vhangup(tty);
+			tty_kref_put(tty);
+		}
+
 		capiminor_free(mp);
 	}
 }
@@ -1018,6 +1022,7 @@ static int capi_release(struct inode *inode, struct file *file)
 static const struct file_operations capi_fops =
 {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.read		= capi_read,
 	.write		= capi_write,
 	.poll		= capi_poll,
@@ -1072,13 +1077,13 @@ static void capinc_tty_close(struct tty_struct *tty, struct file *filp)
 	tty_port_close(&mp->port, tty, filp);
 }
 
-static ssize_t capinc_tty_write(struct tty_struct *tty, const u8 *buf,
-				size_t count)
+static int capinc_tty_write(struct tty_struct *tty,
+			    const unsigned char *buf, int count)
 {
 	struct capiminor *mp = tty->driver_data;
 	struct sk_buff *skb;
 
-	pr_debug("capinc_tty_write(count=%zu)\n", count);
+	pr_debug("capinc_tty_write(count=%d)\n", count);
 
 	spin_lock_bh(&mp->outlock);
 	skb = mp->outskb;
@@ -1107,7 +1112,7 @@ static ssize_t capinc_tty_write(struct tty_struct *tty, const u8 *buf,
 	return count;
 }
 
-static int capinc_tty_put_char(struct tty_struct *tty, u8 ch)
+static int capinc_tty_put_char(struct tty_struct *tty, unsigned char ch)
 {
 	struct capiminor *mp = tty->driver_data;
 	bool invoke_send = false;
@@ -1226,9 +1231,9 @@ static void capinc_tty_hangup(struct tty_struct *tty)
 	tty_port_hangup(&mp->port);
 }
 
-static void capinc_tty_send_xchar(struct tty_struct *tty, u8 ch)
+static void capinc_tty_send_xchar(struct tty_struct *tty, char ch)
 {
-	pr_debug("capinc_tty_send_xchar(%u)\n", ch);
+	pr_debug("capinc_tty_send_xchar(%d)\n", ch);
 }
 
 static const struct tty_operations capinc_ops = {
@@ -1388,19 +1393,18 @@ static int __init capi_init(void)
 		kcapi_exit();
 		return major_ret;
 	}
-
-	ret = class_register(&capi_class);
-	if (ret) {
+	capi_class = class_create(THIS_MODULE, "capi");
+	if (IS_ERR(capi_class)) {
 		unregister_chrdev(capi_major, "capi20");
 		kcapi_exit();
-		return ret;
+		return PTR_ERR(capi_class);
 	}
 
-	device_create(&capi_class, NULL, MKDEV(capi_major, 0), NULL, "capi20");
+	device_create(capi_class, NULL, MKDEV(capi_major, 0), NULL, "capi20");
 
 	if (capinc_tty_init() < 0) {
-		device_destroy(&capi_class, MKDEV(capi_major, 0));
-		class_unregister(&capi_class);
+		device_destroy(capi_class, MKDEV(capi_major, 0));
+		class_destroy(capi_class);
 		unregister_chrdev(capi_major, "capi20");
 		kcapi_exit();
 		return -ENOMEM;
@@ -1423,8 +1427,8 @@ static void __exit capi_exit(void)
 {
 	proc_exit();
 
-	device_destroy(&capi_class, MKDEV(capi_major, 0));
-	class_unregister(&capi_class);
+	device_destroy(capi_class, MKDEV(capi_major, 0));
+	class_destroy(capi_class);
 	unregister_chrdev(capi_major, "capi20");
 
 	capinc_tty_exit();

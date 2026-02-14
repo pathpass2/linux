@@ -23,7 +23,6 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/uio.h>
-#include <linux/splice.h>
 
 #include <linux/coda.h>
 #include "coda_psdev.h"
@@ -79,43 +78,19 @@ coda_file_write_iter(struct kiocb *iocb, struct iov_iter *to)
 	if (ret)
 		goto finish_write;
 
+	file_start_write(host_file);
 	inode_lock(coda_inode);
 	ret = vfs_iter_write(cfi->cfi_container, to, &iocb->ki_pos, 0);
 	coda_inode->i_size = file_inode(host_file)->i_size;
 	coda_inode->i_blocks = (coda_inode->i_size + 511) >> 9;
-	inode_set_mtime_to_ts(coda_inode, inode_set_ctime_current(coda_inode));
+	coda_inode->i_mtime = coda_inode->i_ctime = current_time(coda_inode);
 	inode_unlock(coda_inode);
+	file_end_write(host_file);
 
 finish_write:
 	venus_access_intent(coda_inode->i_sb, coda_i2f(coda_inode),
 			    &cfi->cfi_access_intent,
 			    count, ki_pos, CODA_ACCESS_TYPE_WRITE_FINISH);
-	return ret;
-}
-
-static ssize_t
-coda_file_splice_read(struct file *coda_file, loff_t *ppos,
-		      struct pipe_inode_info *pipe,
-		      size_t len, unsigned int flags)
-{
-	struct inode *coda_inode = file_inode(coda_file);
-	struct coda_file_info *cfi = coda_ftoc(coda_file);
-	struct file *in = cfi->cfi_container;
-	loff_t ki_pos = *ppos;
-	ssize_t ret;
-
-	ret = venus_access_intent(coda_inode->i_sb, coda_i2f(coda_inode),
-				  &cfi->cfi_access_intent,
-				  len, ki_pos, CODA_ACCESS_TYPE_READ);
-	if (ret)
-		goto finish_read;
-
-	ret = vfs_splice_read(in, ppos, pipe, len, flags);
-
-finish_read:
-	venus_access_intent(coda_inode->i_sb, coda_i2f(coda_inode),
-			    &cfi->cfi_access_intent,
-			    len, ki_pos, CODA_ACCESS_TYPE_READ_FINISH);
 	return ret;
 }
 
@@ -160,7 +135,7 @@ coda_file_mmap(struct file *coda_file, struct vm_area_struct *vma)
 	size_t count;
 	int ret;
 
-	if (!can_mmap_file(host_file))
+	if (!host_file->f_op->mmap)
 		return -ENODEV;
 
 	if (WARN_ON(coda_file != vma->vm_file))
@@ -199,10 +174,10 @@ coda_file_mmap(struct file *coda_file, struct vm_area_struct *vma)
 	spin_unlock(&cii->c_lock);
 
 	vma->vm_file = get_file(host_file);
-	ret = vfs_mmap(vma->vm_file, vma);
+	ret = call_mmap(vma->vm_file, vma);
 
 	if (ret) {
-		/* if vfs_mmap fails, our caller will put host_file so we
+		/* if call_mmap fails, our caller will put host_file so we
 		 * should drop the reference to the coda_file that we got.
 		 */
 		fput(coda_file);
@@ -327,5 +302,5 @@ const struct file_operations coda_file_operations = {
 	.open		= coda_open,
 	.release	= coda_release,
 	.fsync		= coda_fsync,
-	.splice_read	= coda_file_splice_read,
+	.splice_read	= generic_file_splice_read,
 };

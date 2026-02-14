@@ -12,33 +12,22 @@
 #include <subcmd/parse-options.h>
 #include "debug.h"
 #include "dso.h"
-#include "env.h"
 #include "machine.h"
 #include "map.h"
 #include "symbol.h"
 
 static int __cmd_kallsyms(int argc, const char **argv)
 {
-	int i, err;
-	struct perf_env host_env;
-	struct machine *machine = NULL;
+	int i;
+	struct machine *machine = machine__new_kallsyms();
 
-
-	perf_env__init(&host_env);
-	err = perf_env__set_cmdline(&host_env, argc, argv);
-	if (err)
-		goto out;
-
-	machine = machine__new_kallsyms(&host_env);
 	if (machine == NULL) {
 		pr_err("Couldn't read /proc/kallsyms\n");
-		err = -1;
-		goto out;
+		return -1;
 	}
 
 	for (i = 0; i < argc; ++i) {
 		struct map *map;
-		const struct dso *dso;
 		struct symbol *symbol = machine__find_kernel_symbol_by_name(machine, argv[i], &map);
 
 		if (symbol == NULL) {
@@ -46,16 +35,14 @@ static int __cmd_kallsyms(int argc, const char **argv)
 			continue;
 		}
 
-		dso = map__dso(map);
 		printf("%s: %s %s %#" PRIx64 "-%#" PRIx64 " (%#" PRIx64 "-%#" PRIx64")\n",
-			symbol->name, dso__short_name(dso), dso__long_name(dso),
-			map__unmap_ip(map, symbol->start), map__unmap_ip(map, symbol->end),
+			symbol->name, map->dso->short_name, map->dso->long_name,
+			map->unmap_ip(map, symbol->start), map->unmap_ip(map, symbol->end),
 			symbol->start, symbol->end);
 	}
-out:
+
 	machine__delete(machine);
-	perf_env__exit(&host_env);
-	return err;
+	return 0;
 }
 
 int cmd_kallsyms(int argc, const char **argv)
@@ -73,6 +60,7 @@ int cmd_kallsyms(int argc, const char **argv)
 	if (argc < 1)
 		usage_with_options(kallsyms_usage, options);
 
+	symbol_conf.sort_by_name = true;
 	symbol_conf.try_vmlinux_path = (symbol_conf.vmlinux_name == NULL);
 	if (symbol__init(NULL) < 0)
 		return -1;

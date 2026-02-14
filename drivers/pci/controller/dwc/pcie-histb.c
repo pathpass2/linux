@@ -151,7 +151,7 @@ static struct pci_ops histb_pci_ops = {
 	.write = histb_pcie_wr_own_conf,
 };
 
-static bool histb_pcie_link_up(struct dw_pcie *pci)
+static int histb_pcie_link_up(struct dw_pcie *pci)
 {
 	struct histb_pcie *hipcie = to_histb_pcie(pci);
 	u32 regval;
@@ -160,8 +160,11 @@ static bool histb_pcie_link_up(struct dw_pcie *pci)
 	regval = histb_pcie_readl(hipcie, PCIE_SYS_STAT0);
 	status = histb_pcie_readl(hipcie, PCIE_SYS_STAT4);
 	status &= PCIE_LTSSM_STATE_MASK;
-	return ((regval & PCIE_XMLH_LINK_UP) && (regval & PCIE_RDLH_LINK_UP) &&
-		(status == PCIE_LTSSM_STATE_ACTIVE));
+	if ((regval & PCIE_XMLH_LINK_UP) && (regval & PCIE_RDLH_LINK_UP) &&
+	    (status == PCIE_LTSSM_STATE_ACTIVE))
+		return 1;
+
+	return 0;
 }
 
 static int histb_pcie_start_link(struct dw_pcie *pci)
@@ -195,7 +198,7 @@ static int histb_pcie_host_init(struct dw_pcie_rp *pp)
 }
 
 static const struct dw_pcie_host_ops histb_pcie_host_ops = {
-	.init = histb_pcie_host_init,
+	.host_init = histb_pcie_host_init,
 };
 
 static void histb_pcie_host_disable(struct histb_pcie *hipcie)
@@ -406,30 +409,28 @@ static int histb_pcie_probe(struct platform_device *pdev)
 	ret = histb_pcie_host_enable(pp);
 	if (ret) {
 		dev_err(dev, "failed to enable host\n");
-		goto err_exit_phy;
+		return ret;
 	}
 
 	ret = dw_pcie_host_init(pp);
 	if (ret) {
 		dev_err(dev, "failed to initialize host\n");
-		goto err_exit_phy;
+		return ret;
 	}
 
 	return 0;
-
-err_exit_phy:
-	phy_exit(hipcie->phy);
-
-	return ret;
 }
 
-static void histb_pcie_remove(struct platform_device *pdev)
+static int histb_pcie_remove(struct platform_device *pdev)
 {
 	struct histb_pcie *hipcie = platform_get_drvdata(pdev);
 
 	histb_pcie_host_disable(hipcie);
 
-	phy_exit(hipcie->phy);
+	if (hipcie->phy)
+		phy_exit(hipcie->phy);
+
+	return 0;
 }
 
 static const struct of_device_id histb_pcie_of_match[] = {
@@ -440,7 +441,7 @@ MODULE_DEVICE_TABLE(of, histb_pcie_of_match);
 
 static struct platform_driver histb_pcie_platform_driver = {
 	.probe	= histb_pcie_probe,
-	.remove = histb_pcie_remove,
+	.remove	= histb_pcie_remove,
 	.driver = {
 		.name = "histb-pcie",
 		.of_match_table = histb_pcie_of_match,

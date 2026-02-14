@@ -26,15 +26,10 @@ properties:
       - const: rockchip,rk3568-spdif
       - items:
           - enum:
-              - rockchip,rk3128-spdif
               - rockchip,rk3188-spdif
               - rockchip,rk3288-spdif
               - rockchip,rk3308-spdif
           - const: rockchip,rk3066-spdif
-      - items:
-          - enum:
-              - rockchip,rk3588-spdif
-          - const: rockchip,rk3568-spdif
 
   reg:
     maxItems: 1
@@ -69,9 +64,6 @@ properties:
 
   "#sound-dai-cells":
     const: 0
-
-  port:
-    $ref: /schemas/graph.yaml#/properties/port
 
 required:
   - compatible

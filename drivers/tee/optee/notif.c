@@ -9,7 +9,7 @@
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/tee_core.h>
+#include <linux/tee_drv.h>
 #include "optee_private.h"
 
 struct notif_entry {
@@ -29,7 +29,7 @@ static bool have_key(struct optee *optee, u_int key)
 	return false;
 }
 
-int optee_notif_wait(struct optee *optee, u_int key, u32 timeout)
+int optee_notif_wait(struct optee *optee, u_int key)
 {
 	unsigned long flags;
 	struct notif_entry *entry;
@@ -70,12 +70,7 @@ int optee_notif_wait(struct optee *optee, u_int key, u32 timeout)
 	 * Unlock temporarily and wait for completion.
 	 */
 	spin_unlock_irqrestore(&optee->notif.lock, flags);
-	if (timeout != 0) {
-		if (!wait_for_completion_timeout(&entry->c, timeout))
-			rc = -ETIMEDOUT;
-	} else {
-		wait_for_completion(&entry->c);
-	}
+	wait_for_completion(&entry->c);
 	spin_lock_irqsave(&optee->notif.lock, flags);
 
 	list_del(&entry->link);

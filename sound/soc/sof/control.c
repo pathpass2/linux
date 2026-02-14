@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation
+// Copyright(c) 2018 Intel Corporation. All rights reserved.
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //
@@ -187,24 +187,16 @@ int snd_sof_bytes_ext_volatile_get(struct snd_kcontrol *kcontrol, unsigned int _
 	const struct sof_ipc_tplg_ops *tplg_ops = sof_ipc_get_ops(sdev, tplg);
 	int ret, err;
 
-	/* ignore the ext_volatile_get call if the callbacks are not provided */
-	if (!tplg_ops || !tplg_ops->control ||
-	    !tplg_ops->control->bytes_ext_volatile_get)
-		return 0;
-
 	ret = pm_runtime_resume_and_get(scomp->dev);
 	if (ret < 0 && ret != -EACCES) {
 		dev_err_ratelimited(scomp->dev, "%s: failed to resume %d\n", __func__, ret);
 		return ret;
 	}
 
-	/* Make sure the DSP/firmware is booted up */
-	ret = snd_sof_boot_dsp_firmware(sdev);
-	if (!ret)
-		ret = tplg_ops->control->bytes_ext_volatile_get(scontrol,
-								binary_data,
-								size);
+	if (tplg_ops && tplg_ops->control && tplg_ops->control->bytes_ext_volatile_get)
+		ret = tplg_ops->control->bytes_ext_volatile_get(scontrol, binary_data, size);
 
+	pm_runtime_mark_last_busy(scomp->dev);
 	err = pm_runtime_put_autosuspend(scomp->dev);
 	if (err < 0)
 		dev_err_ratelimited(scomp->dev, "%s: failed to idle %d\n", __func__, err);

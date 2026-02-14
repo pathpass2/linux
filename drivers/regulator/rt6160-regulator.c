@@ -31,11 +31,8 @@
 #define RT6160_PGSTAT_MASK	BIT(0)
 
 #define RT6160_VENDOR_ID	0xA0
-#define RT6166_VENDOR_ID	0xB0
 #define RT6160_VOUT_MINUV	2025000
 #define RT6160_VOUT_MAXUV	5200000
-#define RT6166_VOUT_MINUV	1800000
-#define RT6166_VOUD_MAXUV	4950000
 #define RT6160_VOUT_STPUV	25000
 #define RT6160_N_VOUTS		((RT6160_VOUT_MAXUV - RT6160_VOUT_MINUV) / RT6160_VOUT_STPUV + 1)
 
@@ -46,7 +43,6 @@ struct rt6160_priv {
 	struct gpio_desc *enable_gpio;
 	struct regmap *regmap;
 	bool enable_state;
-	uint8_t devid;
 };
 
 static const unsigned int rt6160_ramp_tables[] = {
@@ -264,26 +260,15 @@ static int rt6160_probe(struct i2c_client *i2c)
 	if (ret)
 		return ret;
 
-	devid = devid & RT6160_VID_MASK;
-
-	switch (devid) {
-	case RT6166_VENDOR_ID:
-	case RT6160_VENDOR_ID:
-		break;
-	default:
+	if ((devid & RT6160_VID_MASK) != RT6160_VENDOR_ID) {
 		dev_err(&i2c->dev, "VID not correct [0x%02x]\n", devid);
 		return -ENODEV;
 	}
 
-	priv->devid = devid;
-
 	priv->desc.name = "rt6160-buckboost";
 	priv->desc.type = REGULATOR_VOLTAGE;
 	priv->desc.owner = THIS_MODULE;
-	if (priv->devid == RT6166_VENDOR_ID)
-		priv->desc.min_uV = RT6166_VOUT_MINUV;
-	else
-		priv->desc.min_uV = RT6160_VOUT_MINUV;
+	priv->desc.min_uV = RT6160_VOUT_MINUV;
 	priv->desc.uV_step = RT6160_VOUT_STPUV;
 	if (vsel_active_low)
 		priv->desc.vsel_reg = RT6160_REG_VSELL;
@@ -323,10 +308,9 @@ MODULE_DEVICE_TABLE(of, rt6160_of_match_table);
 static struct i2c_driver rt6160_driver = {
 	.driver = {
 		.name = "rt6160",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = rt6160_of_match_table,
 	},
-	.probe = rt6160_probe,
+	.probe_new = rt6160_probe,
 };
 module_i2c_driver(rt6160_driver);
 

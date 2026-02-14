@@ -13,7 +13,6 @@
 	compatible = "tsd,px30-ringneck-haikou", "rockchip,px30";
 
 	aliases {
-		ethernet0 = &gmac;
 		mmc2 = &sdmmc;
 	};
 
@@ -69,17 +68,15 @@
 		simple-audio-card,format = "i2s";
 		simple-audio-card,name = "Haikou,I2S-codec";
 		simple-audio-card,mclk-fs = <512>;
-		simple-audio-card,frame-master = <&sgtl5000_codec>;
-		simple-audio-card,bitclock-master = <&sgtl5000_codec>;
 
-		sgtl5000_codec: simple-audio-card,codec {
+		simple-audio-card,codec {
+			clocks = <&sgtl5000_clk>;
 			sound-dai = <&sgtl5000>;
-			// Prevent the dai subsystem from overwriting the clock
-			// frequency. We are using a fixed-frequency oscillator.
-			system-clock-fixed;
 		};
 
 		simple-audio-card,cpu {
+			bitclock-master;
+			frame-master;
 			sound-dai = <&i2s0_8ch>;
 		};
 	};
@@ -87,10 +84,10 @@
 	sgtl5000_clk: sgtl5000-oscillator {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
-		clock-frequency = <24576000>;
+		clock-frequency  = <24576000>;
 	};
 
-	dc_12v: regulator-dc-12v {
+	dc_12v: dc-12v-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "dc_12v";
 		regulator-always-on;
@@ -99,7 +96,7 @@
 		regulator-max-microvolt = <12000000>;
 	};
 
-	vcc3v3_baseboard: regulator-vcc3v3-baseboard {
+	vcc3v3_baseboard: vcc3v3-baseboard-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_baseboard";
 		regulator-always-on;
@@ -109,7 +106,7 @@
 		vin-supply = <&dc_12v>;
 	};
 
-	vcc5v0_baseboard: regulator-vcc5v0-baseboard {
+	vcc5v0_baseboard: vcc5v0-baseboard-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc5v0_baseboard";
 		regulator-always-on;
@@ -119,7 +116,7 @@
 		vin-supply = <&dc_12v>;
 	};
 
-	vdda_codec: regulator-vdda-codec {
+	vdda_codec: vdda-codec-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vdda_codec";
 		regulator-boot-on;
@@ -128,7 +125,7 @@
 		vin-supply = <&vcc5v0_baseboard>;
 	};
 
-	vddd_codec: regulator-vddd-codec {
+	vddd_codec: vddd-codec-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vddd_codec";
 		regulator-boot-on;
@@ -154,8 +151,6 @@
 };
 
 &i2c3 {
-	status = "okay";
-
 	eeprom@50 {
 		reg = <0x50>;
 		compatible = "atmel,24c01";
@@ -196,13 +191,6 @@
 			  <3 RK_PB3 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
-
-	uart {
-		uart5_rts_pin: uart5-rts-pin {
-			rockchip,pins =
-			  <0 RK_PB5 RK_FUNC_GPIO &pcfg_pull_none>;
-		};
-	};
 };
 
 &pwm0 {
@@ -231,16 +219,11 @@
 };
 
 &uart0 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&uart0_xfer>;
 	status = "okay";
 };
 
 &uart5 {
-	/* Add pinmux for rts-gpios (uart5_rts_pin) */
-	pinctrl-names = "default";
-	pinctrl-0 = <&uart5_xfer &uart5_rts_pin>;
-	rts-gpios = <&gpio0 RK_PB5 GPIO_ACTIVE_HIGH>;
+	pinctrl-0 = <&uart5_xfer>;
 	status = "okay";
 };
 

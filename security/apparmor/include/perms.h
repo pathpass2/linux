@@ -48,9 +48,6 @@
 
 #define AA_LINK_SUBSET		AA_MAY_LOCK	/* overlaid */
 
-#define AA_MAY_CREATE_SQPOLL   AA_MAY_CREATE
-#define AA_MAY_OVERRIDE_CRED   AA_MAY_APPEND
-#define AA_URING_PERM_MASK     (AA_MAY_OVERRIDE_CRED | AA_MAY_CREATE_SQPOLL)
 
 #define PERMS_CHRS_MASK (MAY_READ | MAY_WRITE | AA_MAY_CREATE |		\
 			 AA_MAY_DELETE | AA_MAY_LINK | AA_MAY_LOCK |	\
@@ -101,8 +98,8 @@ extern struct aa_perms allperms;
 
 /**
  * aa_perms_accum_raw - accumulate perms with out masking off overlapping perms
- * @accum: perms struct to accumulate into
- * @addend: perms struct to add to @accum
+ * @accum - perms struct to accumulate into
+ * @addend - perms struct to add to @accum
  */
 static inline void aa_perms_accum_raw(struct aa_perms *accum,
 				      struct aa_perms *addend)
@@ -128,8 +125,8 @@ static inline void aa_perms_accum_raw(struct aa_perms *accum,
 
 /**
  * aa_perms_accum - accumulate perms, masking off overlapping perms
- * @accum: perms struct to accumulate into
- * @addend: perms struct to add to @accum
+ * @accum - perms struct to accumulate into
+ * @addend - perms struct to add to @accum
  */
 static inline void aa_perms_accum(struct aa_perms *accum,
 				  struct aa_perms *addend)
@@ -213,7 +210,10 @@ void aa_perms_accum_raw(struct aa_perms *accum, struct aa_perms *addend);
 void aa_profile_match_label(struct aa_profile *profile,
 			    struct aa_ruleset *rules, struct aa_label *label,
 			    int type, u32 request, struct aa_perms *perms);
+int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
+			  u32 request, int type, u32 *deny,
+			  struct common_audit_data *sa);
 int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
-		   u32 request, struct apparmor_audit_data *ad,
+		   u32 request, struct common_audit_data *sa,
 		   void (*cb)(struct audit_buffer *, void *));
 #endif /* __AA_PERM_H */

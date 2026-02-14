@@ -8,7 +8,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
@@ -109,6 +109,12 @@ static int sprd_pmic_eic_direction_input(struct gpio_chip *chip,
 	return 0;
 }
 
+static void sprd_pmic_eic_set(struct gpio_chip *chip, unsigned int offset,
+			      int value)
+{
+	/* EICs are always input, nothing need to do here. */
+}
+
 static int sprd_pmic_eic_set_debounce(struct gpio_chip *chip,
 				      unsigned int offset,
 				      unsigned int debounce)
@@ -145,8 +151,8 @@ static void sprd_pmic_eic_irq_mask(struct irq_data *data)
 	struct sprd_pmic_eic *pmic_eic = gpiochip_get_data(chip);
 	u32 offset = irqd_to_hwirq(data);
 
-	pmic_eic->reg[REG_IE] &= ~BIT(offset);
-	pmic_eic->reg[REG_TRIG] &= ~BIT(offset);
+	pmic_eic->reg[REG_IE] = 0;
+	pmic_eic->reg[REG_TRIG] = 0;
 
 	gpiochip_disable_irq(chip, offset);
 }
@@ -159,8 +165,8 @@ static void sprd_pmic_eic_irq_unmask(struct irq_data *data)
 
 	gpiochip_enable_irq(chip, offset);
 
-	pmic_eic->reg[REG_IE] |= BIT(offset);
-	pmic_eic->reg[REG_TRIG] |= BIT(offset);
+	pmic_eic->reg[REG_IE] = 1;
+	pmic_eic->reg[REG_TRIG] = 1;
 }
 
 static int sprd_pmic_eic_irq_set_type(struct irq_data *data,
@@ -168,14 +174,13 @@ static int sprd_pmic_eic_irq_set_type(struct irq_data *data,
 {
 	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
 	struct sprd_pmic_eic *pmic_eic = gpiochip_get_data(chip);
-	u32 offset = irqd_to_hwirq(data);
 
 	switch (flow_type) {
 	case IRQ_TYPE_LEVEL_HIGH:
-		pmic_eic->reg[REG_IEV] |= BIT(offset);
+		pmic_eic->reg[REG_IEV] = 1;
 		break;
 	case IRQ_TYPE_LEVEL_LOW:
-		pmic_eic->reg[REG_IEV] &= ~BIT(offset);
+		pmic_eic->reg[REG_IEV] = 0;
 		break;
 	case IRQ_TYPE_EDGE_RISING:
 	case IRQ_TYPE_EDGE_FALLING:
@@ -217,15 +222,15 @@ static void sprd_pmic_eic_bus_sync_unlock(struct irq_data *data)
 			sprd_pmic_eic_update(chip, offset, SPRD_PMIC_EIC_IEV, 1);
 	} else {
 		sprd_pmic_eic_update(chip, offset, SPRD_PMIC_EIC_IEV,
-				     !!(pmic_eic->reg[REG_IEV] & BIT(offset)));
+				     pmic_eic->reg[REG_IEV]);
 	}
 
 	/* Set irq unmask */
 	sprd_pmic_eic_update(chip, offset, SPRD_PMIC_EIC_IE,
-			     !!(pmic_eic->reg[REG_IE] & BIT(offset)));
+			     pmic_eic->reg[REG_IE]);
 	/* Generate trigger start pulse for debounce EIC */
 	sprd_pmic_eic_update(chip, offset, SPRD_PMIC_EIC_TRIG,
-			     !!(pmic_eic->reg[REG_TRIG] & BIT(offset)));
+			     pmic_eic->reg[REG_TRIG]);
 
 	mutex_unlock(&pmic_eic->buslock);
 }
@@ -345,8 +350,8 @@ static int sprd_pmic_eic_probe(struct platform_device *pdev)
 	pmic_eic->chip.request = sprd_pmic_eic_request;
 	pmic_eic->chip.free = sprd_pmic_eic_free;
 	pmic_eic->chip.set_config = sprd_pmic_eic_set_config;
+	pmic_eic->chip.set = sprd_pmic_eic_set;
 	pmic_eic->chip.get = sprd_pmic_eic_get;
-	pmic_eic->chip.can_sleep = true;
 
 	irq = &pmic_eic->chip.irq;
 	gpio_irq_chip_set_chip(irq, &pmic_eic_irq_chip);
@@ -358,6 +363,7 @@ static int sprd_pmic_eic_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	platform_set_drvdata(pdev, pmic_eic);
 	return 0;
 }
 

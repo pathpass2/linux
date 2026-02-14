@@ -8,6 +8,7 @@
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/rational.h>
 #include <linux/regmap.h>
@@ -378,7 +379,6 @@ static int rockchip_pdm_dai_probe(struct snd_soc_dai *dai)
 }
 
 static const struct snd_soc_dai_ops rockchip_pdm_dai_ops = {
-	.probe = rockchip_pdm_dai_probe,
 	.set_fmt = rockchip_pdm_set_fmt,
 	.trigger = rockchip_pdm_trigger,
 	.hw_params = rockchip_pdm_hw_params,
@@ -391,6 +391,7 @@ static const struct snd_soc_dai_ops rockchip_pdm_dai_ops = {
 			      SNDRV_PCM_FMTBIT_S32_LE)
 
 static struct snd_soc_dai_driver rockchip_pdm_dai = {
+	.probe = rockchip_pdm_dai_probe,
 	.capture = {
 		.stream_name = "Capture",
 		.channels_min = 2,
@@ -571,6 +572,7 @@ static int rockchip_pdm_path_parse(struct rk_pdm_dev *pdm, struct device_node *n
 static int rockchip_pdm_probe(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
+	const struct of_device_id *match;
 	struct rk_pdm_dev *pdm;
 	struct resource *res;
 	void __iomem *regs;
@@ -580,7 +582,10 @@ static int rockchip_pdm_probe(struct platform_device *pdev)
 	if (!pdm)
 		return -ENOMEM;
 
-	pdm->version = (unsigned long)device_get_match_data(&pdev->dev);
+	match = of_match_device(rockchip_pdm_match, &pdev->dev);
+	if (match)
+		pdm->version = (enum rk_pdm_version)match->data;
+
 	if (pdm->version == RK_PDM_RK3308) {
 		pdm->reset = devm_reset_control_get(&pdev->dev, "pdm-m");
 		if (IS_ERR(pdm->reset))
@@ -656,7 +661,7 @@ err_pm_disable:
 	return ret;
 }
 
-static void rockchip_pdm_remove(struct platform_device *pdev)
+static int rockchip_pdm_remove(struct platform_device *pdev)
 {
 	struct rk_pdm_dev *pdm = dev_get_drvdata(&pdev->dev);
 
@@ -666,8 +671,11 @@ static void rockchip_pdm_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(pdm->clk);
 	clk_disable_unprepare(pdm->hclk);
+
+	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int rockchip_pdm_suspend(struct device *dev)
 {
 	struct rk_pdm_dev *pdm = dev_get_drvdata(dev);
@@ -692,11 +700,12 @@ static int rockchip_pdm_resume(struct device *dev)
 
 	return ret;
 }
+#endif
 
 static const struct dev_pm_ops rockchip_pdm_pm_ops = {
-	RUNTIME_PM_OPS(rockchip_pdm_runtime_suspend,
-		       rockchip_pdm_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(rockchip_pdm_suspend, rockchip_pdm_resume)
+	SET_RUNTIME_PM_OPS(rockchip_pdm_runtime_suspend,
+			   rockchip_pdm_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(rockchip_pdm_suspend, rockchip_pdm_resume)
 };
 
 static struct platform_driver rockchip_pdm_driver = {
@@ -705,7 +714,7 @@ static struct platform_driver rockchip_pdm_driver = {
 	.driver = {
 		.name = "rockchip-pdm",
 		.of_match_table = of_match_ptr(rockchip_pdm_match),
-		.pm = pm_ptr(&rockchip_pdm_pm_ops),
+		.pm = &rockchip_pdm_pm_ops,
 	},
 };
 

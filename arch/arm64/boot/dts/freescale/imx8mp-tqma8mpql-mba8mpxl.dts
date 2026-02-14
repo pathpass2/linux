@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later OR MIT
 /*
- * Copyright 2021-2025 TQ-Systems GmbH <linux@ew.tq-group.com>,
- * D-82229 Seefeld, Germany.
- * Author: Alexander Stein
+ * Copyright 2021-2022 TQ-Systems GmbH
+ * Author: Alexander Stein <alexander.stein@tq-group.com>
  */
 
 /dts-v1/;
@@ -16,7 +15,6 @@
 / {
 	model = "TQ-Systems i.MX8MPlus TQMa8MPxL on MBa8MPxL";
 	compatible = "tq,imx8mp-tqma8mpql-mba8mpxl", "tq,imx8mp-tqma8mpql", "fsl,imx8mp";
-	chassis-type = "embedded";
 
 	chosen {
 		stdout-path = &uart4;
@@ -57,21 +55,6 @@
 		clock-frequency = <25000000>;
 	};
 
-	connector {
-		compatible = "gpio-usb-b-connector", "usb-b-connector";
-		type = "micro";
-		label = "X29";
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_usbcon0>;
-		id-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
-
-		port {
-			usb_dr_connector: endpoint {
-				remote-endpoint = <&usb3_dwc>;
-			};
-		};
-	};
-
 	fan0: pwm-fan {
 		compatible = "pwm-fan";
 		pinctrl-names = "default";
@@ -97,14 +80,12 @@
 			label = "S12";
 			linux,code = <BTN_0>;
 			gpios = <&gpio5 27 GPIO_ACTIVE_LOW>;
-			wakeup-source;
 		};
 
 		switch-2 {
 			label = "S13";
 			linux,code = <BTN_1>;
 			gpios = <&gpio5 26 GPIO_ACTIVE_LOW>;
-			wakeup-source;
 		};
 	};
 
@@ -133,18 +114,6 @@
 			function = LED_FUNCTION_STATUS;
 			function-enumerator = <1>;
 			gpios = <&gpio5 3 GPIO_ACTIVE_HIGH>;
-		};
-	};
-
-	hdmi-connector {
-		compatible = "hdmi-connector";
-		label = "X44";
-		type = "a";
-
-		port {
-			hdmi_connector_in: endpoint {
-				remote-endpoint = <&hdmi_tx_out>;
-			};
 		};
 	};
 
@@ -197,13 +166,6 @@
 		enable-active-high;
 	};
 
-	reg_vcc_1v8: regulator-1v8 {
-		compatible = "regulator-fixed";
-		regulator-name = "VCC_1V8";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-	};
-
 	reg_vcc_3v3: regulator-3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "VCC_3V3";
@@ -223,36 +185,19 @@
 		#size-cells = <2>;
 		ranges;
 
+		ocram: ocram@900000 {
+			no-map;
+			reg = <0 0x900000 0 0x70000>;
+		};
+
 		/* global autoconfigured region for contiguous allocations */
 		linux,cma {
 			compatible = "shared-dma-pool";
 			reusable;
 			size = <0 0x38000000>;
-			alloc-ranges = <0 0x40000000 0 0xb0000000>;
+			alloc-ranges = <0 0x40000000 0 0xB0000000>;
 			linux,cma-default;
 		};
-	};
-
-	sound {
-		compatible = "fsl,imx-audio-tlv320aic32x4";
-		model = "tqm-tlv320aic32";
-		audio-asrc = <&easrc>;
-		audio-cpu = <&sai3>;
-		audio-codec = <&tlv320aic3x04>;
-		audio-routing =
-			"IN3_L", "Mic Jack",
-			"Mic Jack", "Mic Bias",
-			"IN1_L", "Line In Jack",
-			"IN1_R", "Line In Jack",
-			"Line Out Jack", "LOL",
-			"Line Out Jack", "LOR";
-	};
-
-	sound-hdmi {
-		compatible = "fsl,imx-audio-hdmi";
-		model = "audio-hdmi";
-		audio-cpu = <&aud2htx>;
-		hdmi-out;
 	};
 
 	thermal-zones {
@@ -295,10 +240,6 @@
 			};
 		};
 	};
-};
-
-&aud2htx {
-	status = "okay";
 };
 
 &ecspi1 {
@@ -356,7 +297,7 @@
 			reset-deassert-us = <50000>;
 			enet-phy-lane-no-swap;
 			interrupt-parent = <&gpio4>;
-			interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
+			interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
 		};
 	};
 };
@@ -386,7 +327,7 @@
 			reset-deassert-us = <50000>;
 			enet-phy-lane-no-swap;
 			interrupt-parent = <&gpio4>;
-			interrupts = <1 IRQ_TYPE_LEVEL_LOW>;
+			interrupts = <1 IRQ_TYPE_EDGE_FALLING>;
 		};
 	};
 };
@@ -497,32 +438,6 @@
 			  "", "", "", "";
 };
 
-&hdmi_pai {
-	status = "okay";
-};
-
-&hdmi_pvi {
-	status = "okay";
-};
-
-&hdmi_tx {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_hdmi>;
-	status = "okay";
-
-	ports {
-		port@1 {
-			hdmi_tx_out: endpoint {
-				remote-endpoint = <&hdmi_connector_in>;
-			};
-		};
-	};
-};
-
-&hdmi_tx_phy {
-	status = "okay";
-};
-
 &i2c2 {
 	clock-frequency = <384000>;
 	pinctrl-names = "default", "gpio";
@@ -531,18 +446,6 @@
 	scl-gpios = <&gpio5 16 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	sda-gpios = <&gpio5 17 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	status = "okay";
-
-	tlv320aic3x04: audio-codec@18 {
-		compatible = "ti,tlv320aic32x4";
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_tlv320aic3x04>;
-		reg = <0x18>;
-		clock-names = "mclk";
-		clocks = <&audio_blk_ctrl IMX8MP_CLK_AUDIOMIX_SAI3_MCLK1>;
-		reset-gpios = <&gpio4 29 GPIO_ACTIVE_LOW>;
-		iov-supply = <&reg_vcc_1v8>;
-		ldoin-supply = <&reg_vcc_3v3>;
-	};
 
 	se97_1c: temperature-sensor@1c {
 		compatible = "nxp,se97b", "jedec,jc-42.4-temp";
@@ -584,10 +487,6 @@
 	status = "okay";
 };
 
-&lcdif3 {
-	status = "okay";
-};
-
 &pcf85063 {
 	/* RTC_EVENT# is connected on MBa8MPxL */
 	pinctrl-names = "default";
@@ -624,20 +523,6 @@
 &pwm3 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_pwm3>;
-	status = "okay";
-};
-
-&reg_usdhc2_vqmmc {
-	status = "okay";
-};
-
-&sai3 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_sai3>;
-	assigned-clocks = <&clk IMX8MP_CLK_SAI3>;
-	assigned-clock-parents = <&clk IMX8MP_AUDIO_PLL1_OUT>;
-	assigned-clock-rates = <12288000>;
-	fsl,sai-mclk-direction-output;
 	status = "okay";
 };
 
@@ -686,6 +571,7 @@
 &usb3_1 {
 	fsl,disable-port-power-control;
 	fsl,permanently-attached;
+	dr_mode = "host";
 	status = "okay";
 };
 
@@ -709,10 +595,13 @@
 	role-switch-default-mode = "peripheral";
 	status = "okay";
 
-	port {
-		usb3_dwc: endpoint {
-			remote-endpoint = <&usb_dr_connector>;
-		};
+	connector {
+		compatible = "gpio-usb-b-connector", "usb-b-connector";
+		type = "micro";
+		label = "X29";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_usbcon0>;
+		id-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
 	};
 };
 
@@ -807,8 +696,7 @@
 			   <MX8MP_IOMUXC_ENET_TD2__ENET_QOS_RGMII_TD2			0x12>,
 			   <MX8MP_IOMUXC_ENET_TD3__ENET_QOS_RGMII_TD3			0x12>,
 			   <MX8MP_IOMUXC_ENET_TX_CTL__ENET_QOS_RGMII_TX_CTL		0x12>,
-			   <MX8MP_IOMUXC_ENET_TXC__CCM_ENET_QOS_CLOCK_GENERATE_TX_CLK	0x14>,
-			   <MX8MP_IOMUXC_SAI2_RXD0__ENET_QOS_1588_EVENT2_OUT		0x16>;
+			   <MX8MP_IOMUXC_ENET_TXC__CCM_ENET_QOS_CLOCK_GENERATE_TX_CLK	0x14>;
 	};
 
 	pinctrl_eqos_event: eqosevtgrp {
@@ -884,7 +772,7 @@
 		fsl,pins = <MX8MP_IOMUXC_HDMI_DDC_SCL__HDMIMIX_HDMI_SCL	0x400001c2>,
 			   <MX8MP_IOMUXC_HDMI_DDC_SDA__HDMIMIX_HDMI_SDA	0x400001c2>,
 			   <MX8MP_IOMUXC_HDMI_HPD__HDMIMIX_HDMI_HPD	0x40000010>,
-			   <MX8MP_IOMUXC_HDMI_CEC__HDMIMIX_HDMI_CEC	0x40000030>;
+			   <MX8MP_IOMUXC_HDMI_CEC__HDMIMIX_HDMI_CEC	0x40000010>;
 	};
 
 	pinctrl_hoggpio2: hoggpio2grp {
@@ -953,23 +841,6 @@
 		fsl,pins = <MX8MP_IOMUXC_SAI2_MCLK__GPIO4_IO27		0x80>;
 	};
 
-	pinctrl_sai3: sai3grp {
-		fsl,pins = <
-			MX8MP_IOMUXC_SAI3_TXFS__AUDIOMIX_SAI3_TX_SYNC	0x94
-			MX8MP_IOMUXC_SAI3_TXC__AUDIOMIX_SAI3_TX_BCLK	0x94
-			MX8MP_IOMUXC_SAI3_RXD__AUDIOMIX_SAI3_RX_DATA00	0x94
-			MX8MP_IOMUXC_SAI3_TXD__AUDIOMIX_SAI3_TX_DATA00	0x94
-			MX8MP_IOMUXC_SAI3_MCLK__AUDIOMIX_SAI3_MCLK	0x94
-		>;
-	};
-
-	pinctrl_tlv320aic3x04: tlv320aic3x04grp {
-		fsl,pins = <
-			/* CODEC RST# */
-			MX8MP_IOMUXC_SAI3_RXC__GPIO4_IO29		0x180
-		>;
-	};
-
 	/* X61 */
 	pinctrl_uart1: uart1grp {
 		fsl,pins = <MX8MP_IOMUXC_SD1_CLK__UART1_DCE_TX		0x140>,
@@ -1011,7 +882,8 @@
 			   <MX8MP_IOMUXC_SD2_DATA0__USDHC2_DATA0	0x1d2>,
 			   <MX8MP_IOMUXC_SD2_DATA1__USDHC2_DATA1	0x1d2>,
 			   <MX8MP_IOMUXC_SD2_DATA2__USDHC2_DATA2	0x1d2>,
-			   <MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d2>;
+			   <MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d2>,
+			   <MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT	0xc0>;
 	};
 
 	pinctrl_usdhc2_100mhz: usdhc2-100mhzgrp {
@@ -1020,7 +892,8 @@
 			   <MX8MP_IOMUXC_SD2_DATA0__USDHC2_DATA0	0x1d4>,
 			   <MX8MP_IOMUXC_SD2_DATA1__USDHC2_DATA1	0x1d4>,
 			   <MX8MP_IOMUXC_SD2_DATA2__USDHC2_DATA2	0x1d4>,
-			   <MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d4>;
+			   <MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d4>,
+			   <MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT	0xc0>;
 	};
 
 	pinctrl_usdhc2_200mhz: usdhc2-200mhzgrp {
@@ -1029,7 +902,8 @@
 			   <MX8MP_IOMUXC_SD2_DATA0__USDHC2_DATA0	0x1d4>,
 			   <MX8MP_IOMUXC_SD2_DATA1__USDHC2_DATA1	0x1d4>,
 			   <MX8MP_IOMUXC_SD2_DATA2__USDHC2_DATA2	0x1d4>,
-			   <MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d4>;
+			   <MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d4>,
+			   <MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT	0xc0>;
 	};
 
 	pinctrl_usdhc2_gpio: usdhc2-gpiogrp {

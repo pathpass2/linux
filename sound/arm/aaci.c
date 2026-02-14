@@ -73,7 +73,7 @@ static void aaci_ac97_write(struct snd_ac97 *ac97, unsigned short reg,
 	if (ac97->num >= 4)
 		return;
 
-	guard(mutex)(&aaci->ac97_sem);
+	mutex_lock(&aaci->ac97_sem);
 
 	aaci_ac97_select_codec(aaci, ac97);
 
@@ -97,6 +97,8 @@ static void aaci_ac97_write(struct snd_ac97 *ac97, unsigned short reg,
 	if (v & (SLFR_1TXB|SLFR_2TXB))
 		dev_err(&aaci->dev->dev,
 			"timeout waiting for write to complete\n");
+
+	mutex_unlock(&aaci->ac97_sem);
 }
 
 /*
@@ -111,7 +113,7 @@ static unsigned short aaci_ac97_read(struct snd_ac97 *ac97, unsigned short reg)
 	if (ac97->num >= 4)
 		return ~0;
 
-	guard(mutex)(&aaci->ac97_sem);
+	mutex_lock(&aaci->ac97_sem);
 
 	aaci_ac97_select_codec(aaci, ac97);
 
@@ -132,7 +134,8 @@ static unsigned short aaci_ac97_read(struct snd_ac97 *ac97, unsigned short reg)
 
 	if (v & SLFR_1TXB) {
 		dev_err(&aaci->dev->dev, "timeout on slot 1 TX busy\n");
-		return ~0;
+		v = ~0;
+		goto out;
 	}
 
 	/* Now wait for the response frame */
@@ -148,7 +151,8 @@ static unsigned short aaci_ac97_read(struct snd_ac97 *ac97, unsigned short reg)
 
 	if (v != (SLFR_1RXV|SLFR_2RXV)) {
 		dev_err(&aaci->dev->dev, "timeout on RX valid\n");
-		return ~0;
+		v = ~0;
+		goto out;
 	}
 
 	do {
@@ -167,6 +171,8 @@ static unsigned short aaci_ac97_read(struct snd_ac97 *ac97, unsigned short reg)
 			v = ~0;
 		}
 	} while (retries);
+ out:
+	mutex_unlock(&aaci->ac97_sem);
 	return v;
 }
 
@@ -210,43 +216,45 @@ static void aaci_fifo_irq(struct aaci *aaci, int channel, u32 mask)
 			return;
 		}
 
-		scoped_guard(spinlock, &aacirun->lock) {
-			ptr = aacirun->ptr;
-			do {
-				unsigned int len = aacirun->fifo_bytes;
-				u32 val;
+		spin_lock(&aacirun->lock);
 
-				if (aacirun->bytes <= 0) {
-					aacirun->bytes += aacirun->period;
-					period_elapsed = true;
-				}
-				if (!(aacirun->cr & CR_EN))
-					break;
+		ptr = aacirun->ptr;
+		do {
+			unsigned int len = aacirun->fifo_bytes;
+			u32 val;
 
-				val = readl(aacirun->base + AACI_SR);
-				if (!(val & SR_RXHF))
-					break;
-				if (!(val & SR_RXFF))
-					len >>= 1;
+			if (aacirun->bytes <= 0) {
+				aacirun->bytes += aacirun->period;
+				period_elapsed = true;
+			}
+			if (!(aacirun->cr & CR_EN))
+				break;
 
-				aacirun->bytes -= len;
+			val = readl(aacirun->base + AACI_SR);
+			if (!(val & SR_RXHF))
+				break;
+			if (!(val & SR_RXFF))
+				len >>= 1;
 
-				/* reading 16 bytes at a time */
-				for( ; len > 0; len -= 16) {
-					asm(
-					    "ldmia	%1, {r0, r1, r2, r3}\n\t"
-					    "stmia	%0!, {r0, r1, r2, r3}"
-					    : "+r" (ptr)
-					    : "r" (aacirun->fifo)
-					    : "r0", "r1", "r2", "r3", "cc");
+			aacirun->bytes -= len;
 
-					if (ptr >= aacirun->end)
-						ptr = aacirun->start;
-				}
-			} while(1);
+			/* reading 16 bytes at a time */
+			for( ; len > 0; len -= 16) {
+				asm(
+					"ldmia	%1, {r0, r1, r2, r3}\n\t"
+					"stmia	%0!, {r0, r1, r2, r3}"
+					: "+r" (ptr)
+					: "r" (aacirun->fifo)
+					: "r0", "r1", "r2", "r3", "cc");
 
-			aacirun->ptr = ptr;
-		}
+				if (ptr >= aacirun->end)
+					ptr = aacirun->start;
+			}
+		} while(1);
+
+		aacirun->ptr = ptr;
+
+		spin_unlock(&aacirun->lock);
 
 		if (period_elapsed)
 			snd_pcm_period_elapsed(aacirun->substream);
@@ -268,43 +276,45 @@ static void aaci_fifo_irq(struct aaci *aaci, int channel, u32 mask)
 			return;
 		}
 
-		scoped_guard(spinlock, &aacirun->lock) {
-			ptr = aacirun->ptr;
-			do {
-				unsigned int len = aacirun->fifo_bytes;
-				u32 val;
+		spin_lock(&aacirun->lock);
 
-				if (aacirun->bytes <= 0) {
-					aacirun->bytes += aacirun->period;
-					period_elapsed = true;
-				}
-				if (!(aacirun->cr & CR_EN))
-					break;
+		ptr = aacirun->ptr;
+		do {
+			unsigned int len = aacirun->fifo_bytes;
+			u32 val;
 
-				val = readl(aacirun->base + AACI_SR);
-				if (!(val & SR_TXHE))
-					break;
-				if (!(val & SR_TXFE))
-					len >>= 1;
+			if (aacirun->bytes <= 0) {
+				aacirun->bytes += aacirun->period;
+				period_elapsed = true;
+			}
+			if (!(aacirun->cr & CR_EN))
+				break;
 
-				aacirun->bytes -= len;
+			val = readl(aacirun->base + AACI_SR);
+			if (!(val & SR_TXHE))
+				break;
+			if (!(val & SR_TXFE))
+				len >>= 1;
 
-				/* writing 16 bytes at a time */
-				for ( ; len > 0; len -= 16) {
-					asm(
-					    "ldmia	%0!, {r0, r1, r2, r3}\n\t"
-					    "stmia	%1, {r0, r1, r2, r3}"
-					    : "+r" (ptr)
-					    : "r" (aacirun->fifo)
-					    : "r0", "r1", "r2", "r3", "cc");
+			aacirun->bytes -= len;
 
-					if (ptr >= aacirun->end)
-						ptr = aacirun->start;
-				}
-			} while (1);
+			/* writing 16 bytes at a time */
+			for ( ; len > 0; len -= 16) {
+				asm(
+					"ldmia	%0!, {r0, r1, r2, r3}\n\t"
+					"stmia	%1, {r0, r1, r2, r3}"
+					: "+r" (ptr)
+					: "r" (aacirun->fifo)
+					: "r0", "r1", "r2", "r3", "cc");
 
-			aacirun->ptr = ptr;
-		}
+				if (ptr >= aacirun->end)
+					ptr = aacirun->start;
+			}
+		} while (1);
+
+		aacirun->ptr = ptr;
+
+		spin_unlock(&aacirun->lock);
 
 		if (period_elapsed)
 			snd_pcm_period_elapsed(aacirun->substream);
@@ -427,13 +437,14 @@ static int aaci_pcm_open(struct snd_pcm_substream *substream)
 	 */
 	runtime->hw.fifo_size = aaci->fifo_depth * 2;
 
-	guard(mutex)(&aaci->irq_lock);
+	mutex_lock(&aaci->irq_lock);
 	if (!aaci->users++) {
 		ret = request_irq(aaci->dev->irq[0], aaci_irq,
 			   IRQF_SHARED, DRIVER_NAME, aaci);
 		if (ret != 0)
 			aaci->users--;
 	}
+	mutex_unlock(&aaci->irq_lock);
 
 	return ret;
 }
@@ -451,9 +462,10 @@ static int aaci_pcm_close(struct snd_pcm_substream *substream)
 
 	aacirun->substream = NULL;
 
-	guard(mutex)(&aaci->irq_lock);
+	mutex_lock(&aaci->irq_lock);
 	if (!--aaci->users)
 		free_irq(aaci->dev->irq[0], aaci);
+	mutex_unlock(&aaci->irq_lock);
 
 	return 0;
 }
@@ -573,8 +585,10 @@ static void aaci_pcm_playback_start(struct aaci_runtime *aacirun)
 static int aaci_pcm_playback_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct aaci_runtime *aacirun = substream->runtime->private_data;
+	unsigned long flags;
+	int ret = 0;
 
-	guard(spinlock_irqsave)(&aacirun->lock);
+	spin_lock_irqsave(&aacirun->lock, flags);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -600,10 +614,12 @@ static int aaci_pcm_playback_trigger(struct snd_pcm_substream *substream, int cm
 		break;
 
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
 	}
 
-	return 0;
+	spin_unlock_irqrestore(&aacirun->lock, flags);
+
+	return ret;
 }
 
 static const struct snd_pcm_ops aaci_playback_ops = {
@@ -653,8 +669,10 @@ static void aaci_pcm_capture_start(struct aaci_runtime *aacirun)
 static int aaci_pcm_capture_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	struct aaci_runtime *aacirun = substream->runtime->private_data;
+	unsigned long flags;
+	int ret = 0;
 
-	guard(spinlock_irqsave)(&aacirun->lock);
+	spin_lock_irqsave(&aacirun->lock, flags);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -680,10 +698,12 @@ static int aaci_pcm_capture_trigger(struct snd_pcm_substream *substream, int cmd
 		break;
 
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
 	}
 
-	return 0;
+	spin_unlock_irqrestore(&aacirun->lock, flags);
+
+	return ret;
 }
 
 static int aaci_pcm_capture_prepare(struct snd_pcm_substream *substream)
@@ -717,8 +737,10 @@ static const struct snd_pcm_ops aaci_capture_ops = {
 /*
  * Power Management.
  */
+#ifdef CONFIG_PM
 static int aaci_do_suspend(struct snd_card *card)
 {
+	struct aaci *aaci = card->private_data;
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3cold);
 	return 0;
 }
@@ -741,7 +763,12 @@ static int aaci_resume(struct device *dev)
 	return card ? aaci_do_resume(card) : 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(aaci_dev_pm_ops, aaci_suspend, aaci_resume);
+static SIMPLE_DEV_PM_OPS(aaci_dev_pm_ops, aaci_suspend, aaci_resume);
+#define AACI_DEV_PM_OPS (&aaci_dev_pm_ops)
+#else
+#define AACI_DEV_PM_OPS NULL
+#endif
+
 
 static const struct ac97_pcm ac97_defs[] = {
 	[0] = {	/* Front PCM */
@@ -1041,7 +1068,7 @@ static void aaci_remove(struct amba_device *dev)
 	}
 }
 
-static const struct amba_id aaci_ids[] = {
+static struct amba_id aaci_ids[] = {
 	{
 		.id	= 0x00041041,
 		.mask	= 0x000fffff,
@@ -1054,7 +1081,7 @@ MODULE_DEVICE_TABLE(amba, aaci_ids);
 static struct amba_driver aaci_driver = {
 	.drv		= {
 		.name	= DRIVER_NAME,
-		.pm	= &aaci_dev_pm_ops,
+		.pm	= AACI_DEV_PM_OPS,
 	},
 	.probe		= aaci_probe,
 	.remove		= aaci_remove,

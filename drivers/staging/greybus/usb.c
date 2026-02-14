@@ -242,5 +242,4 @@ static struct gbphy_driver usb_driver = {
 };
 
 module_gbphy_driver(usb_driver);
-MODULE_DESCRIPTION("USB host driver for the Greybus 'generic' USB module");
 MODULE_LICENSE("GPL v2");

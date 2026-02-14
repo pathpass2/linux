@@ -38,7 +38,7 @@
  *
  *     - Arno Griffioen <arno@usn.nl>
  *     - David Carter <carter@cs.bris.ac.uk>
- *
+ * 
  *   The abstract console driver provides a generic interface for a text
  *   console. It supports VGA text mode, frame buffer based graphical consoles
  *   and special graphics processors that are only accessible through some
@@ -79,7 +79,6 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/errno.h>
-#include <linux/hex.h>
 #include <linux/kd.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -105,6 +104,7 @@
 #include <linux/uaccess.h>
 #include <linux/kdb.h>
 #include <linux/ctype.h>
+#include <linux/bsearch.h>
 #include <linux/gcd.h>
 
 #define MAX_NR_CON_DRIVER 16
@@ -135,18 +135,19 @@ const struct consw *conswitchp;
 #define DEFAULT_CURSOR_BLINK_MS	200
 
 struct vc vc_cons [MAX_NR_CONSOLES];
-EXPORT_SYMBOL(vc_cons);
 
+#ifndef VT_SINGLE_DRIVER
 static const struct consw *con_driver_map[MAX_NR_CONSOLES];
+#endif
 
 static int con_open(struct tty_struct *, struct file *);
-static void vc_init(struct vc_data *vc, int do_clear);
+static void vc_init(struct vc_data *vc, unsigned int rows,
+		    unsigned int cols, int do_clear);
 static void gotoxy(struct vc_data *vc, int new_x, int new_y);
-static void restore_cur(struct vc_data *vc);
 static void save_cur(struct vc_data *vc);
 static void reset_terminal(struct vc_data *vc, int do_clear);
 static void con_flush_chars(struct tty_struct *tty);
-static int set_vesa_blanking(u8 __user *mode);
+static int set_vesa_blanking(char __user *p);
 static void set_cursor(struct vc_data *vc);
 static void hide_cursor(struct vc_data *vc);
 static void console_callback(struct work_struct *ignored);
@@ -161,7 +162,6 @@ int default_utf8 = true;
 module_param(default_utf8, int, S_IRUGO | S_IWUSR);
 int global_cursor_default = -1;
 module_param(global_cursor_default, int, S_IRUGO | S_IWUSR);
-EXPORT_SYMBOL(global_cursor_default);
 
 static int cur_default = CUR_UNDERLINE;
 module_param(cur_default, int, S_IRUGO | S_IWUSR);
@@ -174,9 +174,8 @@ static int ignore_poke;
 
 int do_poke_blanked_console;
 int console_blanked;
-EXPORT_SYMBOL(console_blanked);
 
-static enum vesa_blank_mode vesa_blank_mode;
+static int vesa_blank_mode; /* 0:none 1:suspendV 2:suspendH 3:powerdown */
 static int vesa_off_interval;
 static int blankinterval;
 core_param(consoleblank, blankinterval, int, 0444);
@@ -188,11 +187,16 @@ static DECLARE_WORK(con_driver_unregister_work, con_driver_unregister_callback);
  * fg_console is the current virtual console,
  * last_console is the last used one,
  * want_console is the console we want to switch to,
+ * saved_* variants are for save/restore around kernel debugger enter/leave
  */
 int fg_console;
-EXPORT_SYMBOL(fg_console);
 int last_console;
 int want_console = -1;
+static int saved_fg_console;
+static int saved_last_console;
+static int saved_want_console;
+static int saved_vc_mode;
+static int saved_console_blanked;
 
 /*
  * For each existing display, we have a pointer to console currently visible
@@ -219,7 +223,6 @@ static int scrollback_delta;
  * the console on our behalf.
  */
 int (*console_blank_hook)(int);
-EXPORT_SYMBOL(console_blank_hook);
 
 static DEFINE_TIMER(console_timer, blank_screen_t);
 static int blank_state;
@@ -280,20 +283,18 @@ static inline bool con_should_update(const struct vc_data *vc)
 	return con_is_visible(vc) && !console_blanked;
 }
 
-static inline u16 *screenpos(const struct vc_data *vc, unsigned int offset,
-			     bool viewed)
+static inline unsigned short *screenpos(const struct vc_data *vc, int offset,
+		bool viewed)
 {
-	unsigned long origin = viewed ? vc->vc_visible_origin : vc->vc_origin;
-
-	return (u16 *)(origin + offset);
-}
-
-static void con_putc(struct vc_data *vc, u16 ca, unsigned int y, unsigned int x)
-{
-	if (vc->vc_sw->con_putc)
-		vc->vc_sw->con_putc(vc, ca, y, x);
+	unsigned short *p;
+	
+	if (!viewed)
+		p = (unsigned short *)(vc->vc_origin + offset);
+	else if (!vc->vc_sw->con_screen_pos)
+		p = (unsigned short *)(vc->vc_visible_origin + offset);
 	else
-		vc->vc_sw->con_putcs(vc, &ca, 1, y, x);
+		p = vc->vc_sw->con_screen_pos(vc, offset);
+	return p;
 }
 
 /* Called  from the keyboard irq path.. */
@@ -377,7 +378,7 @@ static void vc_uniscr_delete(struct vc_data *vc, unsigned int nr)
 		u32 *ln = vc->vc_uni_lines[vc->state.y];
 		unsigned int x = vc->state.x, cols = vc->vc_cols;
 
-		memmove(&ln[x], &ln[x + nr], (cols - x - nr) * sizeof(*ln));
+		memcpy(&ln[x], &ln[x + nr], (cols - x - nr) * sizeof(*ln));
 		memset32(&ln[cols - nr], ' ', nr);
 	}
 }
@@ -436,15 +437,6 @@ static void vc_uniscr_scroll(struct vc_data *vc, unsigned int top,
 		juggle_array(&uni_lines[top], size, nr);
 		vc_uniscr_clear_lines(vc, bottom - nr, nr);
 	}
-}
-
-static u32 vc_uniscr_getc(struct vc_data *vc, int relative_pos)
-{
-	int pos = vc->state.x + vc->vc_need_wrap + relative_pos;
-
-	if (vc->vc_uni_lines && in_range(pos, 0, vc->vc_cols))
-		return vc->vc_uni_lines[vc->state.y][pos];
-	return 0;
 }
 
 static void vc_uniscr_copy_area(u32 **dst_lines,
@@ -596,12 +588,18 @@ static void con_scroll(struct vc_data *vc, unsigned int top,
 static void do_update_region(struct vc_data *vc, unsigned long start, int count)
 {
 	unsigned int xx, yy, offset;
-	u16 *p = (u16 *)start;
+	u16 *p;
 
-	offset = (start - vc->vc_origin) / 2;
-	xx = offset % vc->vc_cols;
-	yy = offset / vc->vc_cols;
-
+	p = (u16 *) start;
+	if (!vc->vc_sw->con_getxy) {
+		offset = (start - vc->vc_origin) / 2;
+		xx = offset % vc->vc_cols;
+		yy = offset / vc->vc_cols;
+	} else {
+		int nxx, nyy;
+		start = vc->vc_sw->con_getxy(vc, start, &nxx, &nyy);
+		xx = nxx; yy = nyy;
+	}
 	for(;;) {
 		u16 attrib = scr_readw(p) & 0xff00;
 		int startx = xx;
@@ -624,6 +622,10 @@ static void do_update_region(struct vc_data *vc, unsigned long start, int count)
 			break;
 		xx = 0;
 		yy++;
+		if (vc->vc_sw->con_getxy) {
+			p = (u16 *)start;
+			start = vc->vc_sw->con_getxy(vc, start, NULL, NULL);
+		}
 	}
 }
 
@@ -637,7 +639,6 @@ void update_region(struct vc_data *vc, unsigned long start, int count)
 		set_cursor(vc);
 	}
 }
-EXPORT_SYMBOL(update_region);
 
 /* Structure of attributes is hardware-dependent */
 
@@ -698,7 +699,7 @@ static void update_attr(struct vc_data *vc)
 /* Note: inverting the screen twice should revert to the original state */
 void invert_screen(struct vc_data *vc, int offset, int count, bool viewed)
 {
-	u16 *p;
+	unsigned short *p;
 
 	WARN_CONSOLE_UNLOCKED();
 
@@ -757,7 +758,7 @@ void complement_pos(struct vc_data *vc, int offset)
 	    old_offset < vc->vc_screenbuf_size) {
 		scr_writew(old, screenpos(vc, old_offset, true));
 		if (con_should_update(vc))
-			con_putc(vc, old, oldy, oldx);
+			vc->vc_sw->con_putc(vc, old, oldy, oldx);
 		notify_update(vc);
 	}
 
@@ -766,14 +767,15 @@ void complement_pos(struct vc_data *vc, int offset)
 	if (offset != -1 && offset >= 0 &&
 	    offset < vc->vc_screenbuf_size) {
 		unsigned short new;
-		u16 *p = screenpos(vc, offset, true);
+		unsigned short *p;
+		p = screenpos(vc, offset, true);
 		old = scr_readw(p);
 		new = old ^ vc->vc_complement_mask;
 		scr_writew(new, p);
 		if (con_should_update(vc)) {
 			oldx = (offset >> 1) % vc->vc_cols;
 			oldy = (offset >> 1) / vc->vc_cols;
-			con_putc(vc, new, oldy, oldx);
+			vc->vc_sw->con_putc(vc, new, oldy, oldx);
 		}
 		notify_update(vc);
 	}
@@ -827,7 +829,7 @@ static void add_softcursor(struct vc_data *vc)
 		i ^= CUR_FG;
 	scr_writew(i, (u16 *)vc->vc_pos);
 	if (con_should_update(vc))
-		con_putc(vc, i, vc->state.y, vc->state.x);
+		vc->vc_sw->con_putc(vc, i, vc->state.y, vc->state.x);
 }
 
 static void hide_softcursor(struct vc_data *vc)
@@ -835,8 +837,8 @@ static void hide_softcursor(struct vc_data *vc)
 	if (softcursor_original != -1) {
 		scr_writew(softcursor_original, (u16 *)vc->vc_pos);
 		if (con_should_update(vc))
-			con_putc(vc, softcursor_original, vc->state.y,
-				 vc->state.x);
+			vc->vc_sw->con_putc(vc, softcursor_original,
+					vc->state.y, vc->state.x);
 		softcursor_original = -1;
 	}
 }
@@ -846,7 +848,7 @@ static void hide_cursor(struct vc_data *vc)
 	if (vc_is_sel(vc))
 		clear_selection();
 
-	vc->vc_sw->con_cursor(vc, false);
+	vc->vc_sw->con_cursor(vc, CM_ERASE);
 	hide_softcursor(vc);
 }
 
@@ -859,7 +861,7 @@ static void set_cursor(struct vc_data *vc)
 			clear_selection();
 		add_softcursor(vc);
 		if (CUR_SIZE(vc->vc_cursor_type) != CUR_NONE)
-			vc->vc_sw->con_cursor(vc, true);
+			vc->vc_sw->con_cursor(vc, CM_DRAW);
 	} else
 		hide_cursor(vc);
 }
@@ -891,18 +893,21 @@ static void flush_scrollback(struct vc_data *vc)
 	WARN_CONSOLE_UNLOCKED();
 
 	set_origin(vc);
-	if (!con_is_visible(vc))
-		return;
-
-	/*
-	 * The legacy way for flushing the scrollback buffer is to use a side
-	 * effect of the con_switch method. We do it only on the foreground
-	 * console as background consoles have no scrollback buffers in that
-	 * case and we obviously don't want to switch to them.
-	 */
-	hide_cursor(vc);
-	vc->vc_sw->con_switch(vc);
-	set_cursor(vc);
+	if (vc->vc_sw->con_flush_scrollback) {
+		vc->vc_sw->con_flush_scrollback(vc);
+	} else if (con_is_visible(vc)) {
+		/*
+		 * When no con_flush_scrollback method is provided then the
+		 * legacy way for flushing the scrollback buffer is to use
+		 * a side effect of the con_switch method. We do it only on
+		 * the foreground console as background consoles have no
+		 * scrollback buffers in that case and we obviously don't
+		 * want to switch to them.
+		 */
+		hide_cursor(vc);
+		vc->vc_sw->con_switch(vc);
+		set_cursor(vc);
+	}
 }
 
 /*
@@ -953,7 +958,7 @@ void redraw_screen(struct vc_data *vc, int is_switch)
 	}
 
 	if (redraw) {
-		bool update;
+		int update;
 		int old_was_color = vc->vc_can_do_color;
 
 		set_origin(vc);
@@ -979,7 +984,6 @@ void redraw_screen(struct vc_data *vc, int is_switch)
 		notify_update(vc);
 	}
 }
-EXPORT_SYMBOL(redraw_screen);
 
 /*
  *	Allocation, freeing and resizing of VTs.
@@ -990,16 +994,16 @@ int vc_cons_allocated(unsigned int i)
 	return (i < MAX_NR_CONSOLES && vc_cons[i].d);
 }
 
-static void visual_init(struct vc_data *vc, int num, bool init)
+static void visual_init(struct vc_data *vc, int num, int init)
 {
 	/* ++Geert: vc->vc_sw->con_init determines console size */
 	if (vc->vc_sw)
 		module_put(vc->vc_sw->owner);
 	vc->vc_sw = conswitchp;
-
+#ifndef VT_SINGLE_DRIVER
 	if (con_driver_map[num])
 		vc->vc_sw = con_driver_map[num];
-
+#endif
 	__module_get(vc->vc_sw->owner);
 	vc->vc_num = num;
 	vc->vc_display_fg = &master_display_fg;
@@ -1074,7 +1078,7 @@ int vc_allocate(unsigned int currcons)	/* return 0 on success */
 	vc->port.ops = &vc_port_ops;
 	INIT_WORK(&vc_cons[currcons].SAK_work, vc_SAK);
 
-	visual_init(vc, currcons, true);
+	visual_init(vc, currcons, 1);
 
 	if (!*vc->uni_pagedict_loc)
 		con_set_default_unimap(vc);
@@ -1093,7 +1097,7 @@ int vc_allocate(unsigned int currcons)	/* return 0 on success */
 	if (global_cursor_default == -1)
 		global_cursor_default = 1;
 
-	vc_init(vc, 1);
+	vc_init(vc, vc->vc_rows, vc->vc_cols, 1);
 	vcs_make_sysfs(currcons);
 	atomic_notifier_call_chain(&vt_notifier_list, VT_ALLOCATE, &param);
 
@@ -1106,43 +1110,50 @@ err_free:
 }
 
 static inline int resize_screen(struct vc_data *vc, int width, int height,
-				bool from_user)
+				int user)
 {
 	/* Resizes the resolution of the display adapater */
 	int err = 0;
 
 	if (vc->vc_sw->con_resize)
-		err = vc->vc_sw->con_resize(vc, width, height, from_user);
+		err = vc->vc_sw->con_resize(vc, width, height, user);
 
 	return err;
 }
 
 /**
- * vc_do_resize - resizing method for the tty
- * @tty: tty being resized
- * @vc: virtual console private data
- * @cols: columns
- * @lines: lines
- * @from_user: invoked by a user?
+ *	vc_do_resize	-	resizing method for the tty
+ *	@tty: tty being resized
+ *	@vc: virtual console private data
+ *	@cols: columns
+ *	@lines: lines
  *
- * Resize a virtual console, clipping according to the actual constraints. If
- * the caller passes a tty structure then update the termios winsize
- * information and perform any necessary signal handling.
+ *	Resize a virtual console, clipping according to the actual constraints.
+ *	If the caller passes a tty structure then update the termios winsize
+ *	information and perform any necessary signal handling.
  *
- * Locking: Caller must hold the console semaphore. Takes the termios rwsem and
- * ctrl.lock of the tty IFF a tty is passed.
+ *	Caller must hold the console semaphore. Takes the termios rwsem and
+ *	ctrl.lock of the tty IFF a tty is passed.
  */
+
 static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
-			unsigned int cols, unsigned int lines, bool from_user)
+				unsigned int cols, unsigned int lines)
 {
 	unsigned long old_origin, new_origin, new_scr_end, rlth, rrem, err = 0;
 	unsigned long end;
 	unsigned int old_rows, old_row_size, first_copied_row;
 	unsigned int new_cols, new_rows, new_row_size, new_screen_size;
+	unsigned int user;
 	unsigned short *oldscreen, *newscreen;
 	u32 **new_uniscr = NULL;
 
 	WARN_CONSOLE_UNLOCKED();
+
+	if (!vc)
+		return -ENXIO;
+
+	user = vc->vc_resize_user;
+	vc->vc_resize_user = 0;
 
 	if (cols > VC_MAXCOL || lines > VC_MAXROW)
 		return -EINVAL;
@@ -1169,7 +1180,7 @@ static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
 		 * to deal with possible errors from the code below, we call
 		 * the resize_screen here as well.
 		 */
-		return resize_screen(vc, new_cols, new_rows, from_user);
+		return resize_screen(vc, new_cols, new_rows, user);
 	}
 
 	if (new_screen_size > KMALLOC_MAX_SIZE || !new_screen_size)
@@ -1192,7 +1203,7 @@ static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
 	old_rows = vc->vc_rows;
 	old_row_size = vc->vc_size_row;
 
-	err = resize_screen(vc, new_cols, new_rows, from_user);
+	err = resize_screen(vc, new_cols, new_rows, user);
 	if (err) {
 		kfree(newscreen);
 		vc_uniscr_free(new_uniscr);
@@ -1279,42 +1290,43 @@ static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
 }
 
 /**
- * __vc_resize - resize a VT
- * @vc: virtual console
- * @cols: columns
- * @rows: rows
- * @from_user: invoked by a user?
+ *	vc_resize		-	resize a VT
+ *	@vc: virtual console
+ *	@cols: columns
+ *	@rows: rows
  *
- * Resize a virtual console as seen from the console end of things. We use the
- * common vc_do_resize() method to update the structures.
- *
- * Locking: The caller must hold the console sem to protect console internals
- * and @vc->port.tty.
+ *	Resize a virtual console as seen from the console end of things. We
+ *	use the common vc_do_resize methods to update the structures. The
+ *	caller must hold the console sem to protect console internals and
+ *	vc->port.tty
  */
-int __vc_resize(struct vc_data *vc, unsigned int cols, unsigned int rows,
-		bool from_user)
+
+int vc_resize(struct vc_data *vc, unsigned int cols, unsigned int rows)
 {
-	return vc_do_resize(vc->port.tty, vc, cols, rows, from_user);
+	return vc_do_resize(vc->port.tty, vc, cols, rows);
 }
-EXPORT_SYMBOL(__vc_resize);
 
 /**
- * vt_resize - resize a VT
- * @tty: tty to resize
- * @ws: winsize attributes
+ *	vt_resize		-	resize a VT
+ *	@tty: tty to resize
+ *	@ws: winsize attributes
  *
- * Resize a virtual terminal. This is called by the tty layer as we register
- * our own handler for resizing. The mutual helper does all the actual work.
+ *	Resize a virtual terminal. This is called by the tty layer as we
+ *	register our own handler for resizing. The mutual helper does all
+ *	the actual work.
  *
- * Locking: Takes the console sem and the called methods then take the tty
- * termios_rwsem and the tty ctrl.lock in that order.
+ *	Takes the console sem and the called methods then take the tty
+ *	termios_rwsem and the tty ctrl.lock in that order.
  */
 static int vt_resize(struct tty_struct *tty, struct winsize *ws)
 {
 	struct vc_data *vc = tty->driver_data;
+	int ret;
 
-	guard(console_lock)();
-	return vc_do_resize(tty, vc, ws->ws_col, ws->ws_row, false);
+	console_lock();
+	ret = vc_do_resize(tty, vc, ws->ws_col, ws->ws_row);
+	console_unlock();
+	return ret;
 }
 
 struct vc_data *vc_deallocate(unsigned int currcons)
@@ -1335,10 +1347,6 @@ struct vc_data *vc_deallocate(unsigned int currcons)
 		vc_uniscr_set(vc, NULL);
 		kfree(vc->vc_screenbuf);
 		vc_cons[currcons].d = NULL;
-		if (vc->vc_saved_screen != NULL) {
-			kfree(vc->vc_saved_screen);
-			vc->vc_saved_screen = NULL;
-		}
 	}
 	return vc;
 }
@@ -1360,7 +1368,6 @@ enum { EPecma = 0, EPdec, EPeq, EPgt, EPlt};
 
 const unsigned char color_table[] = { 0, 4, 2, 6, 1, 5, 3, 7,
 				       8,12,10,14, 9,13,11,15 };
-EXPORT_SYMBOL(color_table);
 
 /* the default colour table, for VGA+ colour systems */
 unsigned char default_red[] = {
@@ -1368,21 +1375,18 @@ unsigned char default_red[] = {
 	0x55, 0xff, 0x55, 0xff, 0x55, 0xff, 0x55, 0xff
 };
 module_param_array(default_red, byte, NULL, S_IRUGO | S_IWUSR);
-EXPORT_SYMBOL(default_red);
 
 unsigned char default_grn[] = {
 	0x00, 0x00, 0xaa, 0x55, 0x00, 0x00, 0xaa, 0xaa,
 	0x55, 0x55, 0xff, 0xff, 0x55, 0x55, 0xff, 0xff
 };
 module_param_array(default_grn, byte, NULL, S_IRUGO | S_IWUSR);
-EXPORT_SYMBOL(default_grn);
 
 unsigned char default_blu[] = {
 	0x00, 0x00, 0x00, 0x00, 0xaa, 0xaa, 0xaa, 0xaa,
 	0x55, 0x55, 0x55, 0x55, 0xff, 0xff, 0xff, 0xff
 };
 module_param_array(default_blu, byte, NULL, S_IRUGO | S_IWUSR);
-EXPORT_SYMBOL(default_blu);
 
 /*
  * gotoxy() must verify all boundaries, because the arguments
@@ -1489,43 +1493,36 @@ static inline void del(struct vc_data *vc)
 	/* ignored */
 }
 
-enum CSI_J {
-	CSI_J_CURSOR_TO_END	= 0,
-	CSI_J_START_TO_CURSOR	= 1,
-	CSI_J_VISIBLE		= 2,
-	CSI_J_FULL		= 3,
-};
-
-static void csi_J(struct vc_data *vc, enum CSI_J vpar)
+static void csi_J(struct vc_data *vc, int vpar)
 {
-	unsigned short *start;
 	unsigned int count;
+	unsigned short * start;
 
 	switch (vpar) {
-	case CSI_J_CURSOR_TO_END:
-		vc_uniscr_clear_line(vc, vc->state.x,
-				     vc->vc_cols - vc->state.x);
-		vc_uniscr_clear_lines(vc, vc->state.y + 1,
-				      vc->vc_rows - vc->state.y - 1);
-		count = (vc->vc_scr_end - vc->vc_pos) >> 1;
-		start = (unsigned short *)vc->vc_pos;
-		break;
-	case CSI_J_START_TO_CURSOR:
-		vc_uniscr_clear_line(vc, 0, vc->state.x + 1);
-		vc_uniscr_clear_lines(vc, 0, vc->state.y);
-		count = ((vc->vc_pos - vc->vc_origin) >> 1) + 1;
-		start = (unsigned short *)vc->vc_origin;
-		break;
-	case CSI_J_FULL:
-		flush_scrollback(vc);
-		fallthrough;
-	case CSI_J_VISIBLE:
-		vc_uniscr_clear_lines(vc, 0, vc->vc_rows);
-		count = vc->vc_cols * vc->vc_rows;
-		start = (unsigned short *)vc->vc_origin;
-		break;
-	default:
-		return;
+		case 0:	/* erase from cursor to end of display */
+			vc_uniscr_clear_line(vc, vc->state.x,
+					     vc->vc_cols - vc->state.x);
+			vc_uniscr_clear_lines(vc, vc->state.y + 1,
+					      vc->vc_rows - vc->state.y - 1);
+			count = (vc->vc_scr_end - vc->vc_pos) >> 1;
+			start = (unsigned short *)vc->vc_pos;
+			break;
+		case 1:	/* erase from start to cursor */
+			vc_uniscr_clear_line(vc, 0, vc->state.x + 1);
+			vc_uniscr_clear_lines(vc, 0, vc->state.y);
+			count = ((vc->vc_pos - vc->vc_origin) >> 1) + 1;
+			start = (unsigned short *)vc->vc_origin;
+			break;
+		case 3: /* include scrollback */
+			flush_scrollback(vc);
+			fallthrough;
+		case 2: /* erase whole display */
+			vc_uniscr_clear_lines(vc, 0, vc->vc_rows);
+			count = vc->vc_cols * vc->vc_rows;
+			start = (unsigned short *)vc->vc_origin;
+			break;
+		default:
+			return;
 	}
 	scr_memsetw(start, vc->vc_video_erase_char, 2 * count);
 	if (con_should_update(vc))
@@ -1533,33 +1530,27 @@ static void csi_J(struct vc_data *vc, enum CSI_J vpar)
 	vc->vc_need_wrap = 0;
 }
 
-enum {
-	CSI_K_CURSOR_TO_LINEEND		= 0,
-	CSI_K_LINESTART_TO_CURSOR	= 1,
-	CSI_K_LINE			= 2,
-};
-
-static void csi_K(struct vc_data *vc)
+static void csi_K(struct vc_data *vc, int vpar)
 {
 	unsigned int count;
 	unsigned short *start = (unsigned short *)vc->vc_pos;
 	int offset;
 
-	switch (vc->vc_par[0]) {
-	case CSI_K_CURSOR_TO_LINEEND:
-		offset = 0;
-		count = vc->vc_cols - vc->state.x;
-		break;
-	case CSI_K_LINESTART_TO_CURSOR:
-		offset = -vc->state.x;
-		count = vc->state.x + 1;
-		break;
-	case CSI_K_LINE:
-		offset = -vc->state.x;
-		count = vc->vc_cols;
-		break;
-	default:
-		return;
+	switch (vpar) {
+		case 0:	/* erase from cursor to end of line */
+			offset = 0;
+			count = vc->vc_cols - vc->state.x;
+			break;
+		case 1:	/* erase from start of line to cursor */
+			offset = -vc->state.x;
+			count = vc->state.x + 1;
+			break;
+		case 2: /* erase whole line */
+			offset = -vc->state.x;
+			count = vc->vc_cols;
+			break;
+		default:
+			return;
 	}
 	vc_uniscr_clear_line(vc, vc->state.x + offset, count);
 	scr_memsetw(start + offset, vc->vc_video_erase_char, 2 * count);
@@ -1568,15 +1559,20 @@ static void csi_K(struct vc_data *vc)
 		do_update_region(vc, (unsigned long)(start + offset), count);
 }
 
-/* erase the following count positions */
-static void csi_X(struct vc_data *vc)
+/* erase the following vpar positions */
+static void csi_X(struct vc_data *vc, unsigned int vpar)
 {					  /* not vt100? */
-	unsigned int count = clamp(vc->vc_par[0], 1, vc->vc_cols - vc->state.x);
+	unsigned int count;
+
+	if (!vpar)
+		vpar++;
+
+	count = min(vpar, vc->vc_cols - vc->state.x);
 
 	vc_uniscr_clear_line(vc, vc->state.x, count);
 	scr_memsetw((unsigned short *)vc->vc_pos, vc->vc_video_erase_char, 2 * count);
 	if (con_should_update(vc))
-		vc->vc_sw->con_clear(vc, vc->state.y, vc->state.x, count);
+		vc->vc_sw->con_clear(vc, vc->state.y, vc->state.x, 1, count);
 	vc->vc_need_wrap = 0;
 }
 
@@ -1592,7 +1588,7 @@ static void default_attr(struct vc_data *vc)
 
 struct rgb { u8 r; u8 g; u8 b; };
 
-static void rgb_from_256(unsigned int i, struct rgb *c)
+static void rgb_from_256(int i, struct rgb *c)
 {
 	if (i < 8) {            /* Standard colours. */
 		c->r = i&1 ? 0xaa : 0x00;
@@ -1603,12 +1599,9 @@ static void rgb_from_256(unsigned int i, struct rgb *c)
 		c->g = i&2 ? 0xff : 0x55;
 		c->b = i&4 ? 0xff : 0x55;
 	} else if (i < 232) {   /* 6x6x6 colour cube. */
-		i -= 16;
-		c->b = i % 6 * 255 / 6;
-		i /= 6;
-		c->g = i % 6 * 255 / 6;
-		i /= 6;
-		c->r = i     * 255 / 6;
+		c->r = (i - 16) / 36 * 85 / 2;
+		c->g = (i - 16) / 6 % 6 * 85 / 2;
+		c->b = (i - 16) % 6 * 85 / 2;
 	} else                  /* Grayscale ramp. */
 		c->r = c->g = c->b = i * 10 - 2312;
 }
@@ -1678,39 +1671,6 @@ static int vc_t416_color(struct vc_data *vc, int i,
 	return i;
 }
 
-enum {
-	CSI_m_DEFAULT			= 0,
-	CSI_m_BOLD			= 1,
-	CSI_m_HALF_BRIGHT		= 2,
-	CSI_m_ITALIC			= 3,
-	CSI_m_UNDERLINE			= 4,
-	CSI_m_BLINK			= 5,
-	CSI_m_REVERSE			= 7,
-	CSI_m_PRI_FONT			= 10,
-	CSI_m_ALT_FONT1			= 11,
-	CSI_m_ALT_FONT2			= 12,
-	CSI_m_DOUBLE_UNDERLINE		= 21,
-	CSI_m_NORMAL_INTENSITY		= 22,
-	CSI_m_NO_ITALIC			= 23,
-	CSI_m_NO_UNDERLINE		= 24,
-	CSI_m_NO_BLINK			= 25,
-	CSI_m_NO_REVERSE		= 27,
-	CSI_m_FG_COLOR_BEG		= 30,
-	CSI_m_FG_COLOR_END		= 37,
-	CSI_m_FG_COLOR			= 38,
-	CSI_m_DEFAULT_FG_COLOR		= 39,
-	CSI_m_BG_COLOR_BEG		= 40,
-	CSI_m_BG_COLOR_END		= 47,
-	CSI_m_BG_COLOR			= 48,
-	CSI_m_DEFAULT_BG_COLOR		= 49,
-	CSI_m_BRIGHT_FG_COLOR_BEG	= 90,
-	CSI_m_BRIGHT_FG_COLOR_END	= 97,
-	CSI_m_BRIGHT_FG_COLOR_OFF	= CSI_m_BRIGHT_FG_COLOR_BEG - CSI_m_FG_COLOR_BEG,
-	CSI_m_BRIGHT_BG_COLOR_BEG	= 100,
-	CSI_m_BRIGHT_BG_COLOR_END	= 107,
-	CSI_m_BRIGHT_BG_COLOR_OFF	= CSI_m_BRIGHT_BG_COLOR_BEG - CSI_m_BG_COLOR_BEG,
-};
-
 /* console_lock is held */
 static void csi_m(struct vc_data *vc)
 {
@@ -1718,33 +1678,33 @@ static void csi_m(struct vc_data *vc)
 
 	for (i = 0; i <= vc->vc_npar; i++)
 		switch (vc->vc_par[i]) {
-		case CSI_m_DEFAULT:	/* all attributes off */
+		case 0:	/* all attributes off */
 			default_attr(vc);
 			break;
-		case CSI_m_BOLD:
+		case 1:
 			vc->state.intensity = VCI_BOLD;
 			break;
-		case CSI_m_HALF_BRIGHT:
+		case 2:
 			vc->state.intensity = VCI_HALF_BRIGHT;
 			break;
-		case CSI_m_ITALIC:
+		case 3:
 			vc->state.italic = true;
 			break;
-		case CSI_m_DOUBLE_UNDERLINE:
+		case 21:
 			/*
 			 * No console drivers support double underline, so
 			 * convert it to a single underline.
 			 */
-		case CSI_m_UNDERLINE:
+		case 4:
 			vc->state.underline = true;
 			break;
-		case CSI_m_BLINK:
+		case 5:
 			vc->state.blink = true;
 			break;
-		case CSI_m_REVERSE:
+		case 7:
 			vc->state.reverse = true;
 			break;
-		case CSI_m_PRI_FONT: /* ANSI X3.64-1979 (SCO-ish?)
+		case 10: /* ANSI X3.64-1979 (SCO-ish?)
 			  * Select primary font, don't display control chars if
 			  * defined, don't set bit 8 on output.
 			  */
@@ -1752,7 +1712,7 @@ static void csi_m(struct vc_data *vc)
 			vc->vc_disp_ctrl = 0;
 			vc->vc_toggle_meta = 0;
 			break;
-		case CSI_m_ALT_FONT1: /* ANSI X3.64-1979 (SCO-ish?)
+		case 11: /* ANSI X3.64-1979 (SCO-ish?)
 			  * Select first alternate font, lets chars < 32 be
 			  * displayed as ROM chars.
 			  */
@@ -1760,7 +1720,7 @@ static void csi_m(struct vc_data *vc)
 			vc->vc_disp_ctrl = 1;
 			vc->vc_toggle_meta = 0;
 			break;
-		case CSI_m_ALT_FONT2: /* ANSI X3.64-1979 (SCO-ish?)
+		case 12: /* ANSI X3.64-1979 (SCO-ish?)
 			  * Select second alternate font, toggle high bit
 			  * before displaying as ROM char.
 			  */
@@ -1768,51 +1728,47 @@ static void csi_m(struct vc_data *vc)
 			vc->vc_disp_ctrl = 1;
 			vc->vc_toggle_meta = 1;
 			break;
-		case CSI_m_NORMAL_INTENSITY:
+		case 22:
 			vc->state.intensity = VCI_NORMAL;
 			break;
-		case CSI_m_NO_ITALIC:
+		case 23:
 			vc->state.italic = false;
 			break;
-		case CSI_m_NO_UNDERLINE:
+		case 24:
 			vc->state.underline = false;
 			break;
-		case CSI_m_NO_BLINK:
+		case 25:
 			vc->state.blink = false;
 			break;
-		case CSI_m_NO_REVERSE:
+		case 27:
 			vc->state.reverse = false;
 			break;
-		case CSI_m_FG_COLOR:
+		case 38:
 			i = vc_t416_color(vc, i, rgb_foreground);
 			break;
-		case CSI_m_BG_COLOR:
+		case 48:
 			i = vc_t416_color(vc, i, rgb_background);
 			break;
-		case CSI_m_DEFAULT_FG_COLOR:
+		case 39:
 			vc->state.color = (vc->vc_def_color & 0x0f) |
 				(vc->state.color & 0xf0);
 			break;
-		case CSI_m_DEFAULT_BG_COLOR:
+		case 49:
 			vc->state.color = (vc->vc_def_color & 0xf0) |
 				(vc->state.color & 0x0f);
 			break;
-		case CSI_m_BRIGHT_FG_COLOR_BEG ... CSI_m_BRIGHT_FG_COLOR_END:
-			vc->state.intensity = VCI_BOLD;
-			vc->vc_par[i] -= CSI_m_BRIGHT_FG_COLOR_OFF;
-			fallthrough;
-		case CSI_m_FG_COLOR_BEG ... CSI_m_FG_COLOR_END:
-			vc->vc_par[i] -= CSI_m_FG_COLOR_BEG;
-			vc->state.color = color_table[vc->vc_par[i]] |
-				(vc->state.color & 0xf0);
-			break;
-		case CSI_m_BRIGHT_BG_COLOR_BEG ... CSI_m_BRIGHT_BG_COLOR_END:
-			vc->vc_par[i] -= CSI_m_BRIGHT_BG_COLOR_OFF;
-			fallthrough;
-		case CSI_m_BG_COLOR_BEG ... CSI_m_BG_COLOR_END:
-			vc->vc_par[i] -= CSI_m_BG_COLOR_BEG;
-			vc->state.color = (color_table[vc->vc_par[i]] << 4) |
-				(vc->state.color & 0x0f);
+		default:
+			if (vc->vc_par[i] >= 90 && vc->vc_par[i] <= 107) {
+				if (vc->vc_par[i] < 100)
+					vc->state.intensity = VCI_BOLD;
+				vc->vc_par[i] -= 60;
+			}
+			if (vc->vc_par[i] >= 30 && vc->vc_par[i] <= 37)
+				vc->state.color = color_table[vc->vc_par[i] - 30]
+					| (vc->state.color & 0xf0);
+			else if (vc->vc_par[i] >= 40 && vc->vc_par[i] <= 47)
+				vc->state.color = (color_table[vc->vc_par[i] - 40] << 4)
+					| (vc->state.color & 0x0f);
 			break;
 		}
 	update_attr(vc);
@@ -1866,233 +1822,133 @@ int mouse_reporting(void)
 	return vc_cons[fg_console].d->vc_report_mouse;
 }
 
-/* invoked via ioctl(TIOCLINUX) */
-static int get_bracketed_paste(struct tty_struct *tty)
-{
-	struct vc_data *vc = tty->driver_data;
-
-	return vc->vc_bracketed_paste;
-}
-
 /* console_lock is held */
-static void enter_alt_screen(struct vc_data *vc)
+static void set_mode(struct vc_data *vc, int on_off)
 {
-	unsigned int size = vc->vc_rows * vc->vc_cols * 2;
-
-	if (vc->vc_saved_screen != NULL)
-		return; /* Already inside an alt-screen */
-	vc->vc_saved_screen = kmemdup((u16 *)vc->vc_origin, size, GFP_KERNEL);
-	if (vc->vc_saved_screen == NULL)
-		return;
-	vc->vc_saved_rows = vc->vc_rows;
-	vc->vc_saved_cols = vc->vc_cols;
-	save_cur(vc);
-	/* clear entire screen */
-	csi_J(vc, CSI_J_FULL);
-}
-
-/* console_lock is held */
-static void leave_alt_screen(struct vc_data *vc)
-{
-	unsigned int rows = min(vc->vc_saved_rows, vc->vc_rows);
-	unsigned int cols = min(vc->vc_saved_cols, vc->vc_cols);
-	u16 *src, *dest;
-
-	if (vc->vc_saved_screen == NULL)
-		return; /* Not inside an alt-screen */
-	for (unsigned int r = 0; r < rows; r++) {
-		src = vc->vc_saved_screen + r * vc->vc_saved_cols;
-		dest = ((u16 *)vc->vc_origin) + r * vc->vc_cols;
-		memcpy(dest, src, 2 * cols);
-	}
-	restore_cur(vc);
-	/* Update the entire screen */
-	if (con_should_update(vc))
-		do_update_region(vc, vc->vc_origin, vc->vc_screenbuf_size / 2);
-	kfree(vc->vc_saved_screen);
-	vc->vc_saved_screen = NULL;
-}
-
-enum {
-	CSI_DEC_hl_CURSOR_KEYS	= 1,	/* CKM: cursor keys send ^[Ox/^[[x */
-	CSI_DEC_hl_132_COLUMNS	= 3,	/* COLM: 80/132 mode switch */
-	CSI_DEC_hl_REVERSE_VIDEO = 5,	/* SCNM */
-	CSI_DEC_hl_ORIGIN_MODE	= 6,	/* OM: origin relative/absolute */
-	CSI_DEC_hl_AUTOWRAP	= 7,	/* AWM */
-	CSI_DEC_hl_AUTOREPEAT	= 8,	/* ARM */
-	CSI_DEC_hl_MOUSE_X10	= 9,
-	CSI_DEC_hl_SHOW_CURSOR	= 25,	/* TCEM */
-	CSI_DEC_hl_MOUSE_VT200	= 1000,
-	CSI_DEC_hl_ALT_SCREEN	= 1049,
-	CSI_DEC_hl_BRACKETED_PASTE = 2004,
-};
-
-/* console_lock is held */
-static void csi_DEC_hl(struct vc_data *vc, bool on_off)
-{
-	unsigned int i;
+	int i;
 
 	for (i = 0; i <= vc->vc_npar; i++)
-		switch (vc->vc_par[i]) {
-		case CSI_DEC_hl_CURSOR_KEYS:
-			if (on_off)
-				set_kbd(vc, decckm);
-			else
-				clr_kbd(vc, decckm);
-			break;
-		case CSI_DEC_hl_132_COLUMNS:	/* unimplemented */
+		if (vc->vc_priv == EPdec) {
+			switch(vc->vc_par[i]) {	/* DEC private modes set/reset */
+			case 1:			/* Cursor keys send ^[Ox/^[[x */
+				if (on_off)
+					set_kbd(vc, decckm);
+				else
+					clr_kbd(vc, decckm);
+				break;
+			case 3:	/* 80/132 mode switch unimplemented */
 #if 0
-			vc_resize(deccolm ? 132 : 80, vc->vc_rows);
-			/* this alone does not suffice; some user mode
-			   utility has to change the hardware regs */
+				vc_resize(deccolm ? 132 : 80, vc->vc_rows);
+				/* this alone does not suffice; some user mode
+				   utility has to change the hardware regs */
 #endif
-			break;
-		case CSI_DEC_hl_REVERSE_VIDEO:
-			if (vc->vc_decscnm != on_off) {
-				vc->vc_decscnm = on_off;
-				invert_screen(vc, 0, vc->vc_screenbuf_size,
-					      false);
-				update_attr(vc);
+				break;
+			case 5:			/* Inverted screen on/off */
+				if (vc->vc_decscnm != on_off) {
+					vc->vc_decscnm = on_off;
+					invert_screen(vc, 0,
+							vc->vc_screenbuf_size,
+							false);
+					update_attr(vc);
+				}
+				break;
+			case 6:			/* Origin relative/absolute */
+				vc->vc_decom = on_off;
+				gotoxay(vc, 0, 0);
+				break;
+			case 7:			/* Autowrap on/off */
+				vc->vc_decawm = on_off;
+				break;
+			case 8:			/* Autorepeat on/off */
+				if (on_off)
+					set_kbd(vc, decarm);
+				else
+					clr_kbd(vc, decarm);
+				break;
+			case 9:
+				vc->vc_report_mouse = on_off ? 1 : 0;
+				break;
+			case 25:		/* Cursor on/off */
+				vc->vc_deccm = on_off;
+				break;
+			case 1000:
+				vc->vc_report_mouse = on_off ? 2 : 0;
+				break;
 			}
-			break;
-		case CSI_DEC_hl_ORIGIN_MODE:
-			vc->vc_decom = on_off;
-			gotoxay(vc, 0, 0);
-			break;
-		case CSI_DEC_hl_AUTOWRAP:
-			vc->vc_decawm = on_off;
-			break;
-		case CSI_DEC_hl_AUTOREPEAT:
-			if (on_off)
-				set_kbd(vc, decarm);
-			else
-				clr_kbd(vc, decarm);
-			break;
-		case CSI_DEC_hl_MOUSE_X10:
-			vc->vc_report_mouse = on_off ? 1 : 0;
-			break;
-		case CSI_DEC_hl_SHOW_CURSOR:
-			vc->vc_deccm = on_off;
-			break;
-		case CSI_DEC_hl_MOUSE_VT200:
-			vc->vc_report_mouse = on_off ? 2 : 0;
-			break;
-		case CSI_DEC_hl_BRACKETED_PASTE:
-			vc->vc_bracketed_paste = on_off;
-			break;
-		case CSI_DEC_hl_ALT_SCREEN:
-			if (on_off)
-				enter_alt_screen(vc);
-			else
-				leave_alt_screen(vc);
-			break;
+		} else {
+			switch(vc->vc_par[i]) {	/* ANSI modes set/reset */
+			case 3:			/* Monitor (display ctrls) */
+				vc->vc_disp_ctrl = on_off;
+				break;
+			case 4:			/* Insert Mode on/off */
+				vc->vc_decim = on_off;
+				break;
+			case 20:		/* Lf, Enter == CrLf/Lf */
+				if (on_off)
+					set_kbd(vc, lnm);
+				else
+					clr_kbd(vc, lnm);
+				break;
+			}
 		}
 }
-
-enum {
-	CSI_hl_DISPLAY_CTRL	= 3,	/* handle ansi control chars */
-	CSI_hl_INSERT		= 4,	/* IRM: insert/replace */
-	CSI_hl_AUTO_NL		= 20,	/* LNM: Enter == CrLf/Lf */
-};
 
 /* console_lock is held */
-static void csi_hl(struct vc_data *vc, bool on_off)
-{
-	unsigned int i;
-
-	for (i = 0; i <= vc->vc_npar; i++)
-		switch (vc->vc_par[i]) {	/* ANSI modes set/reset */
-		case CSI_hl_DISPLAY_CTRL:
-			vc->vc_disp_ctrl = on_off;
-			break;
-		case CSI_hl_INSERT:
-			vc->vc_decim = on_off;
-			break;
-		case CSI_hl_AUTO_NL:
-			if (on_off)
-				set_kbd(vc, lnm);
-			else
-				clr_kbd(vc, lnm);
-			break;
-		}
-}
-
-enum CSI_right_square_bracket {
-	CSI_RSB_COLOR_FOR_UNDERLINE		= 1,
-	CSI_RSB_COLOR_FOR_HALF_BRIGHT		= 2,
-	CSI_RSB_MAKE_CUR_COLOR_DEFAULT		= 8,
-	CSI_RSB_BLANKING_INTERVAL		= 9,
-	CSI_RSB_BELL_FREQUENCY			= 10,
-	CSI_RSB_BELL_DURATION			= 11,
-	CSI_RSB_BRING_CONSOLE_TO_FRONT		= 12,
-	CSI_RSB_UNBLANK				= 13,
-	CSI_RSB_VESA_OFF_INTERVAL		= 14,
-	CSI_RSB_BRING_PREV_CONSOLE_TO_FRONT	= 15,
-	CSI_RSB_CURSOR_BLINK_INTERVAL		= 16,
-};
-
-/*
- * csi_RSB - csi+] (Right Square Bracket) handler
- *
- * These are linux console private sequences.
- *
- * console_lock is held
- */
-static void csi_RSB(struct vc_data *vc)
+static void setterm_command(struct vc_data *vc)
 {
 	switch (vc->vc_par[0]) {
-	case CSI_RSB_COLOR_FOR_UNDERLINE:
+	case 1:	/* set color for underline mode */
 		if (vc->vc_can_do_color && vc->vc_par[1] < 16) {
 			vc->vc_ulcolor = color_table[vc->vc_par[1]];
 			if (vc->state.underline)
 				update_attr(vc);
 		}
 		break;
-	case CSI_RSB_COLOR_FOR_HALF_BRIGHT:
+	case 2:	/* set color for half intensity mode */
 		if (vc->vc_can_do_color && vc->vc_par[1] < 16) {
 			vc->vc_halfcolor = color_table[vc->vc_par[1]];
 			if (vc->state.intensity == VCI_HALF_BRIGHT)
 				update_attr(vc);
 		}
 		break;
-	case CSI_RSB_MAKE_CUR_COLOR_DEFAULT:
+	case 8:	/* store colors as defaults */
 		vc->vc_def_color = vc->vc_attr;
 		if (vc->vc_hi_font_mask == 0x100)
 			vc->vc_def_color >>= 1;
 		default_attr(vc);
 		update_attr(vc);
 		break;
-	case CSI_RSB_BLANKING_INTERVAL:
+	case 9:	/* set blanking interval */
 		blankinterval = min(vc->vc_par[1], 60U) * 60;
 		poke_blanked_console();
 		break;
-	case CSI_RSB_BELL_FREQUENCY:
+	case 10: /* set bell frequency in Hz */
 		if (vc->vc_npar >= 1)
 			vc->vc_bell_pitch = vc->vc_par[1];
 		else
 			vc->vc_bell_pitch = DEFAULT_BELL_PITCH;
 		break;
-	case CSI_RSB_BELL_DURATION:
+	case 11: /* set bell duration in msec */
 		if (vc->vc_npar >= 1)
 			vc->vc_bell_duration = (vc->vc_par[1] < 2000) ?
 				msecs_to_jiffies(vc->vc_par[1]) : 0;
 		else
 			vc->vc_bell_duration = DEFAULT_BELL_DURATION;
 		break;
-	case CSI_RSB_BRING_CONSOLE_TO_FRONT:
+	case 12: /* bring specified console to the front */
 		if (vc->vc_par[1] >= 1 && vc_cons_allocated(vc->vc_par[1] - 1))
 			set_console(vc->vc_par[1] - 1);
 		break;
-	case CSI_RSB_UNBLANK:
+	case 13: /* unblank the screen */
 		poke_blanked_console();
 		break;
-	case CSI_RSB_VESA_OFF_INTERVAL:
+	case 14: /* set vesa powerdown interval */
 		vesa_off_interval = min(vc->vc_par[1], 60U) * 60 * HZ;
 		break;
-	case CSI_RSB_BRING_PREV_CONSOLE_TO_FRONT:
+	case 15: /* activate the previous console */
 		set_console(last_console);
 		break;
-	case CSI_RSB_CURSOR_BLINK_INTERVAL:
+	case 16: /* set cursor blink duration in msec */
 		if (vc->vc_npar >= 1 && vc->vc_par[1] >= 50 &&
 				vc->vc_par[1] <= USHRT_MAX)
 			vc->vc_cur_blink_ms = vc->vc_par[1];
@@ -2105,32 +1961,41 @@ static void csi_RSB(struct vc_data *vc)
 /* console_lock is held */
 static void csi_at(struct vc_data *vc, unsigned int nr)
 {
-	nr = clamp(nr, 1, vc->vc_cols - vc->state.x);
+	if (nr > vc->vc_cols - vc->state.x)
+		nr = vc->vc_cols - vc->state.x;
+	else if (!nr)
+		nr = 1;
 	insert_char(vc, nr);
 }
 
 /* console_lock is held */
-static void csi_L(struct vc_data *vc)
+static void csi_L(struct vc_data *vc, unsigned int nr)
 {
-	unsigned int nr = clamp(vc->vc_par[0], 1, vc->vc_rows - vc->state.y);
-
+	if (nr > vc->vc_rows - vc->state.y)
+		nr = vc->vc_rows - vc->state.y;
+	else if (!nr)
+		nr = 1;
 	con_scroll(vc, vc->state.y, vc->vc_bottom, SM_DOWN, nr);
 	vc->vc_need_wrap = 0;
 }
 
 /* console_lock is held */
-static void csi_P(struct vc_data *vc)
+static void csi_P(struct vc_data *vc, unsigned int nr)
 {
-	unsigned int nr = clamp(vc->vc_par[0], 1, vc->vc_cols - vc->state.x);
-
+	if (nr > vc->vc_cols - vc->state.x)
+		nr = vc->vc_cols - vc->state.x;
+	else if (!nr)
+		nr = 1;
 	delete_char(vc, nr);
 }
 
 /* console_lock is held */
-static void csi_M(struct vc_data *vc)
+static void csi_M(struct vc_data *vc, unsigned int nr)
 {
-	unsigned int nr = clamp(vc->vc_par[0], 1, vc->vc_rows - vc->state.y);
-
+	if (nr > vc->vc_rows - vc->state.y)
+		nr = vc->vc_rows - vc->state.y;
+	else if (!nr)
+		nr=1;
 	con_scroll(vc, vc->state.y, vc->vc_bottom, SM_UP, nr);
 	vc->vc_need_wrap = 0;
 }
@@ -2153,48 +2018,9 @@ static void restore_cur(struct vc_data *vc)
 	vc->vc_need_wrap = 0;
 }
 
-/**
- * enum vc_ctl_state - control characters state of a vt
- *
- * @ESnormal:		initial state, no control characters parsed
- * @ESesc:		ESC parsed
- * @ESsquare:		CSI parsed -- modifiers/parameters/ctrl chars expected
- * @ESgetpars:		CSI parsed -- parameters/ctrl chars expected
- * @ESfunckey:		CSI [ parsed
- * @EShash:		ESC # parsed
- * @ESsetG0:		ESC ( parsed
- * @ESsetG1:		ESC ) parsed
- * @ESpercent:		ESC % parsed
- * @EScsiignore:	CSI [0x20-0x3f] parsed
- * @ESnonstd:		OSC parsed
- * @ESpalette:		OSC P parsed
- * @ESosc:		OSC [0-9] parsed
- * @ESANSI_first:	first state for ignoring ansi control sequences
- * @ESapc:		ESC _ parsed
- * @ESpm:		ESC ^ parsed
- * @ESdcs:		ESC P parsed
- * @ESANSI_last:	last state for ignoring ansi control sequences
- */
-enum vc_ctl_state {
-	ESnormal,
-	ESesc,
-	ESsquare,
-	ESgetpars,
-	ESfunckey,
-	EShash,
-	ESsetG0,
-	ESsetG1,
-	ESpercent,
-	EScsiignore,
-	ESnonstd,
-	ESpalette,
-	ESosc,
-	ESANSI_first = ESosc,
-	ESapc,
-	ESpm,
-	ESdcs,
-	ESANSI_last = ESdcs,
-};
+enum { ESnormal, ESesc, ESsquare, ESgetpars, ESfunckey,
+	EShash, ESsetG0, ESsetG1, ESpercent, EScsiignore, ESnonstd,
+	ESpalette, ESosc, ESapc, ESpm, ESdcs };
 
 /* console_lock is held (except via vc_init()) */
 static void reset_terminal(struct vc_data *vc, int do_clear)
@@ -2211,7 +2037,6 @@ static void reset_terminal(struct vc_data *vc, int do_clear)
 	vc->state.charset	= 0;
 	vc->vc_need_wrap	= 0;
 	vc->vc_report_mouse	= 0;
-	vc->vc_bracketed_paste	= 0;
 	vc->vc_utf              = default_utf8;
 	vc->vc_utf_count	= 0;
 
@@ -2223,13 +2048,6 @@ static void reset_terminal(struct vc_data *vc, int do_clear)
 	vc->vc_decawm		= 1;
 	vc->vc_deccm		= global_cursor_default;
 	vc->vc_decim		= 0;
-
-	if (vc->vc_saved_screen != NULL) {
-		kfree(vc->vc_saved_screen);
-		vc->vc_saved_screen = NULL;
-		vc->vc_saved_rows = 0;
-		vc->vc_saved_cols = 0;
-	}
 
 	vt_reset_keyboard(vc->vc_num);
 
@@ -2250,10 +2068,10 @@ static void reset_terminal(struct vc_data *vc, int do_clear)
 	gotoxy(vc, 0, 0);
 	save_cur(vc);
 	if (do_clear)
-	    csi_J(vc, CSI_J_VISIBLE);
+	    csi_J(vc, 2);
 }
 
-static void vc_setGx(struct vc_data *vc, unsigned int which, u8 c)
+static void vc_setGx(struct vc_data *vc, unsigned int which, int c)
 {
 	unsigned char *charset = &vc->state.Gx_charset[which];
 
@@ -2276,54 +2094,36 @@ static void vc_setGx(struct vc_data *vc, unsigned int which, u8 c)
 		vc->vc_translate = set_translate(*charset, vc);
 }
 
-static bool ansi_control_string(enum vc_ctl_state state)
+/* is this state an ANSI control string? */
+static bool ansi_control_string(unsigned int state)
 {
-	return state >= ESANSI_first && state <= ESANSI_last;
+	if (state == ESosc || state == ESapc || state == ESpm || state == ESdcs)
+		return true;
+	return false;
 }
 
-enum {
-	ASCII_NULL		= 0,
-	ASCII_BELL		= 7,
-	ASCII_BACKSPACE		= 8,
-	ASCII_IGNORE_FIRST	= ASCII_BACKSPACE,
-	ASCII_HTAB		= 9,
-	ASCII_LINEFEED		= 10,
-	ASCII_VTAB		= 11,
-	ASCII_FORMFEED		= 12,
-	ASCII_CAR_RET		= 13,
-	ASCII_IGNORE_LAST	= ASCII_CAR_RET,
-	ASCII_SHIFTOUT		= 14,
-	ASCII_SHIFTIN		= 15,
-	ASCII_CANCEL		= 24,
-	ASCII_SUBSTITUTE	= 26,
-	ASCII_ESCAPE		= 27,
-	ASCII_CSI_IGNORE_FIRST	= ' ', /* 0x2x, 0x3a and 0x3c - 0x3f */
-	ASCII_CSI_IGNORE_LAST	= '?',
-	ASCII_DEL		= 127,
-	ASCII_EXT_CSI		= 128 + ASCII_ESCAPE,
-};
-
-/*
- * Handle ascii characters in control sequences and change states accordingly.
- * E.g. ESC sets the state of vc to ESesc.
- *
- * Returns: true if @c handled.
- */
-static bool handle_ascii(struct tty_struct *tty, struct vc_data *vc, u8 c)
+/* console_lock is held */
+static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, int c)
 {
+	/*
+	 *  Control characters can be used in the _middle_
+	 *  of an escape sequence, aside from ANSI control strings.
+	 */
+	if (ansi_control_string(vc->vc_state) && c >= 8 && c <= 13)
+		return;
 	switch (c) {
-	case ASCII_NULL:
-		return true;
-	case ASCII_BELL:
+	case 0:
+		return;
+	case 7:
 		if (ansi_control_string(vc->vc_state))
 			vc->vc_state = ESnormal;
 		else if (vc->vc_bell_duration)
 			kd_mksound(vc->vc_bell_pitch, vc->vc_bell_duration);
-		return true;
-	case ASCII_BACKSPACE:
+		return;
+	case 8:
 		bs(vc);
-		return true;
-	case ASCII_HTAB:
+		return;
+	case 9:
 		vc->vc_pos -= (vc->state.x << 1);
 
 		vc->state.x = find_next_bit(vc->vc_tab_stop,
@@ -2334,330 +2134,119 @@ static bool handle_ascii(struct tty_struct *tty, struct vc_data *vc, u8 c)
 
 		vc->vc_pos += (vc->state.x << 1);
 		notify_write(vc, '\t');
-		return true;
-	case ASCII_LINEFEED:
-	case ASCII_VTAB:
-	case ASCII_FORMFEED:
+		return;
+	case 10: case 11: case 12:
 		lf(vc);
 		if (!is_kbd(vc, lnm))
-			return true;
+			return;
 		fallthrough;
-	case ASCII_CAR_RET:
+	case 13:
 		cr(vc);
-		return true;
-	case ASCII_SHIFTOUT:
+		return;
+	case 14:
 		vc->state.charset = 1;
 		vc->vc_translate = set_translate(vc->state.Gx_charset[1], vc);
 		vc->vc_disp_ctrl = 1;
-		return true;
-	case ASCII_SHIFTIN:
+		return;
+	case 15:
 		vc->state.charset = 0;
 		vc->vc_translate = set_translate(vc->state.Gx_charset[0], vc);
 		vc->vc_disp_ctrl = 0;
-		return true;
-	case ASCII_CANCEL:
-	case ASCII_SUBSTITUTE:
+		return;
+	case 24: case 26:
 		vc->vc_state = ESnormal;
-		return true;
-	case ASCII_ESCAPE:
+		return;
+	case 27:
 		vc->vc_state = ESesc;
-		return true;
-	case ASCII_DEL:
+		return;
+	case 127:
 		del(vc);
-		return true;
-	case ASCII_EXT_CSI:
-		vc->vc_state = ESsquare;
-		return true;
-	}
-
-	return false;
-}
-
-/*
- * Handle a character (@c) following an ESC (when @vc is in the ESesc state).
- * E.g. previous ESC with @c == '[' here yields the ESsquare state (that is:
- * CSI).
- */
-static void handle_esc(struct tty_struct *tty, struct vc_data *vc, u8 c)
-{
-	vc->vc_state = ESnormal;
-	switch (c) {
-	case '[':
-		vc->vc_state = ESsquare;
-		break;
-	case ']':
-		vc->vc_state = ESnonstd;
-		break;
-	case '_':
-		vc->vc_state = ESapc;
-		break;
-	case '^':
-		vc->vc_state = ESpm;
-		break;
-	case '%':
-		vc->vc_state = ESpercent;
-		break;
-	case 'E':
-		cr(vc);
-		lf(vc);
-		break;
-	case 'M':
-		ri(vc);
-		break;
-	case 'D':
-		lf(vc);
-		break;
-	case 'H':
-		if (vc->state.x < VC_TABSTOPS_COUNT)
-			set_bit(vc->state.x, vc->vc_tab_stop);
-		break;
-	case 'P':
-		vc->vc_state = ESdcs;
-		break;
-	case 'Z':
-		respond_ID(tty);
-		break;
-	case '7':
-		save_cur(vc);
-		break;
-	case '8':
-		restore_cur(vc);
-		break;
-	case '(':
-		vc->vc_state = ESsetG0;
-		break;
-	case ')':
-		vc->vc_state = ESsetG1;
-		break;
-	case '#':
-		vc->vc_state = EShash;
-		break;
-	case 'c':
-		reset_terminal(vc, 1);
-		break;
-	case '>':  /* Numeric keypad */
-		clr_kbd(vc, kbdapplic);
-		break;
-	case '=':  /* Appl. keypad */
-		set_kbd(vc, kbdapplic);
-		break;
-	}
-}
-
-/*
- * Handle special DEC control sequences ("ESC [ ? parameters char"). Parameters
- * are in @vc->vc_par and the char is in @c here.
- */
-static void csi_DEC(struct tty_struct *tty, struct vc_data *vc, u8 c)
-{
-	switch (c) {
-	case 'h':
-		csi_DEC_hl(vc, true);
-		break;
-	case 'l':
-		csi_DEC_hl(vc, false);
-		break;
-	case 'c':
-		if (vc->vc_par[0])
-			vc->vc_cursor_type = CUR_MAKE(vc->vc_par[0],
-						      vc->vc_par[1],
-						      vc->vc_par[2]);
-		else
-			vc->vc_cursor_type = cur_default;
-		break;
-	case 'm':
-		clear_selection();
-		if (vc->vc_par[0])
-			vc->vc_complement_mask = vc->vc_par[0] << 8 | vc->vc_par[1];
-		else
-			vc->vc_complement_mask = vc->vc_s_complement_mask;
-		break;
-	case 'n':
-		if (vc->vc_par[0] == 5)
-			status_report(tty);
-		else if (vc->vc_par[0] == 6)
-			cursor_report(vc, tty);
-		break;
-	}
-}
-
-/*
- * Handle Control Sequence Introducer control characters. That is
- * "ESC [ parameters char". Parameters are in @vc->vc_par and the char is in
- * @c here.
- */
-static void csi_ECMA(struct tty_struct *tty, struct vc_data *vc, u8 c)
-{
-	switch (c) {
-	case 'G':
-	case '`':
-		if (vc->vc_par[0])
-			vc->vc_par[0]--;
-		gotoxy(vc, vc->vc_par[0], vc->state.y);
-		break;
-	case 'A':
-		if (!vc->vc_par[0])
-			vc->vc_par[0]++;
-		gotoxy(vc, vc->state.x, vc->state.y - vc->vc_par[0]);
-		break;
-	case 'B':
-	case 'e':
-		if (!vc->vc_par[0])
-			vc->vc_par[0]++;
-		gotoxy(vc, vc->state.x, vc->state.y + vc->vc_par[0]);
-		break;
-	case 'C':
-	case 'a':
-		if (!vc->vc_par[0])
-			vc->vc_par[0]++;
-		gotoxy(vc, vc->state.x + vc->vc_par[0], vc->state.y);
-		break;
-	case 'D':
-		if (!vc->vc_par[0])
-			vc->vc_par[0]++;
-		gotoxy(vc, vc->state.x - vc->vc_par[0], vc->state.y);
-		break;
-	case 'E':
-		if (!vc->vc_par[0])
-			vc->vc_par[0]++;
-		gotoxy(vc, 0, vc->state.y + vc->vc_par[0]);
-		break;
-	case 'F':
-		if (!vc->vc_par[0])
-			vc->vc_par[0]++;
-		gotoxy(vc, 0, vc->state.y - vc->vc_par[0]);
-		break;
-	case 'd':
-		if (vc->vc_par[0])
-			vc->vc_par[0]--;
-		gotoxay(vc, vc->state.x ,vc->vc_par[0]);
-		break;
-	case 'H':
-	case 'f':
-		if (vc->vc_par[0])
-			vc->vc_par[0]--;
-		if (vc->vc_par[1])
-			vc->vc_par[1]--;
-		gotoxay(vc, vc->vc_par[1], vc->vc_par[0]);
-		break;
-	case 'J':
-		csi_J(vc, vc->vc_par[0]);
-		break;
-	case 'K':
-		csi_K(vc);
-		break;
-	case 'L':
-		csi_L(vc);
-		break;
-	case 'M':
-		csi_M(vc);
-		break;
-	case 'P':
-		csi_P(vc);
-		break;
-	case 'c':
-		if (!vc->vc_par[0])
-			respond_ID(tty);
-		break;
-	case 'g':
-		if (!vc->vc_par[0] && vc->state.x < VC_TABSTOPS_COUNT)
-			set_bit(vc->state.x, vc->vc_tab_stop);
-		else if (vc->vc_par[0] == 3)
-			bitmap_zero(vc->vc_tab_stop, VC_TABSTOPS_COUNT);
-		break;
-	case 'h':
-		csi_hl(vc, true);
-		break;
-	case 'l':
-		csi_hl(vc, false);
-		break;
-	case 'm':
-		csi_m(vc);
-		break;
-	case 'n':
-		if (vc->vc_par[0] == 5)
-			status_report(tty);
-		else if (vc->vc_par[0] == 6)
-			cursor_report(vc, tty);
-		break;
-	case 'q': /* DECLL - but only 3 leds */
-		/* map 0,1,2,3 to 0,1,2,4 */
-		if (vc->vc_par[0] < 4)
-			vt_set_led_state(vc->vc_num,
-				    (vc->vc_par[0] < 3) ? vc->vc_par[0] : 4);
-		break;
-	case 'r':
-		if (!vc->vc_par[0])
-			vc->vc_par[0]++;
-		if (!vc->vc_par[1])
-			vc->vc_par[1] = vc->vc_rows;
-		/* Minimum allowed region is 2 lines */
-		if (vc->vc_par[0] < vc->vc_par[1] &&
-		    vc->vc_par[1] <= vc->vc_rows) {
-			vc->vc_top = vc->vc_par[0] - 1;
-			vc->vc_bottom = vc->vc_par[1];
-			gotoxay(vc, 0, 0);
-		}
-		break;
-	case 's':
-		save_cur(vc);
-		break;
-	case 'u':
-		restore_cur(vc);
-		break;
-	case 'X':
-		csi_X(vc);
-		break;
-	case '@':
-		csi_at(vc, vc->vc_par[0]);
-		break;
-	case ']':
-		csi_RSB(vc);
-		break;
-	}
-
-}
-
-static void vc_reset_params(struct vc_data *vc)
-{
-	memset(vc->vc_par, 0, sizeof(vc->vc_par));
-	vc->vc_npar = 0;
-}
-
-/* console_lock is held */
-static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, u8 c)
-{
-	/*
-	 *  Control characters can be used in the _middle_
-	 *  of an escape sequence, aside from ANSI control strings.
-	 */
-	if (ansi_control_string(vc->vc_state) && c >= ASCII_IGNORE_FIRST &&
-	    c <= ASCII_IGNORE_LAST)
 		return;
-
-	if (handle_ascii(tty, vc, c))
+	case 128+27:
+		vc->vc_state = ESsquare;
 		return;
-
+	}
 	switch(vc->vc_state) {
-	case ESesc:	/* ESC */
-		handle_esc(tty, vc, c);
-		return;
-	case ESnonstd:	/* ESC ] aka OSC */
+	case ESesc:
+		vc->vc_state = ESnormal;
 		switch (c) {
-		case 'P': /* palette escape sequence */
-			vc_reset_params(vc);
+		case '[':
+			vc->vc_state = ESsquare;
+			return;
+		case ']':
+			vc->vc_state = ESnonstd;
+			return;
+		case '_':
+			vc->vc_state = ESapc;
+			return;
+		case '^':
+			vc->vc_state = ESpm;
+			return;
+		case '%':
+			vc->vc_state = ESpercent;
+			return;
+		case 'E':
+			cr(vc);
+			lf(vc);
+			return;
+		case 'M':
+			ri(vc);
+			return;
+		case 'D':
+			lf(vc);
+			return;
+		case 'H':
+			if (vc->state.x < VC_TABSTOPS_COUNT)
+				set_bit(vc->state.x, vc->vc_tab_stop);
+			return;
+		case 'P':
+			vc->vc_state = ESdcs;
+			return;
+		case 'Z':
+			respond_ID(tty);
+			return;
+		case '7':
+			save_cur(vc);
+			return;
+		case '8':
+			restore_cur(vc);
+			return;
+		case '(':
+			vc->vc_state = ESsetG0;
+			return;
+		case ')':
+			vc->vc_state = ESsetG1;
+			return;
+		case '#':
+			vc->vc_state = EShash;
+			return;
+		case 'c':
+			reset_terminal(vc, 1);
+			return;
+		case '>':  /* Numeric keypad */
+			clr_kbd(vc, kbdapplic);
+			return;
+		case '=':  /* Appl. keypad */
+			set_kbd(vc, kbdapplic);
+			return;
+		}
+		return;
+	case ESnonstd:
+		if (c=='P') {   /* palette escape sequence */
+			for (vc->vc_npar = 0; vc->vc_npar < NPAR; vc->vc_npar++)
+				vc->vc_par[vc->vc_npar] = 0;
+			vc->vc_npar = 0;
 			vc->vc_state = ESpalette;
 			return;
-		case 'R': /* reset palette */
+		} else if (c=='R') {   /* reset palette */
 			reset_palette(vc);
-			break;
-		case '0' ... '9':
+			vc->vc_state = ESnormal;
+		} else if (c>='0' && c<='9')
 			vc->vc_state = ESosc;
-			return;
-		}
-		vc->vc_state = ESnormal;
+		else
+			vc->vc_state = ESnormal;
 		return;
-	case ESpalette:	/* ESC ] P aka OSC P */
+	case ESpalette:
 		if (isxdigit(c)) {
 			vc->vc_par[vc->vc_npar++] = hex_to_bin(c);
 			if (vc->vc_npar == 7) {
@@ -2674,14 +2263,16 @@ static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, u8 c)
 		} else
 			vc->vc_state = ESnormal;
 		return;
-	case ESsquare:	/* ESC [ aka CSI, parameters or modifiers expected */
-		vc_reset_params(vc);
-
+	case ESsquare:
+		for (vc->vc_npar = 0; vc->vc_npar < NPAR; vc->vc_npar++)
+			vc->vc_par[vc->vc_npar] = 0;
+		vc->vc_npar = 0;
 		vc->vc_state = ESgetpars;
-		switch (c) {
-		case '[': /* Function key */
-			vc->vc_state = ESfunckey;
+		if (c == '[') { /* Function key */
+			vc->vc_state=ESfunckey;
 			return;
+		}
+		switch (c) {
 		case '?':
 			vc->vc_priv = EPdec;
 			return;
@@ -2697,44 +2288,182 @@ static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, u8 c)
 		}
 		vc->vc_priv = EPecma;
 		fallthrough;
-	case ESgetpars: /* ESC [ aka CSI, parameters expected */
-		switch (c) {
-		case ';':
-			if (vc->vc_npar < NPAR - 1) {
-				vc->vc_npar++;
-				return;
-			}
-			break;
-		case '0' ... '9':
+	case ESgetpars:
+		if (c == ';' && vc->vc_npar < NPAR - 1) {
+			vc->vc_npar++;
+			return;
+		} else if (c>='0' && c<='9') {
 			vc->vc_par[vc->vc_npar] *= 10;
 			vc->vc_par[vc->vc_npar] += c - '0';
 			return;
 		}
-		if (c >= ASCII_CSI_IGNORE_FIRST && c <= ASCII_CSI_IGNORE_LAST) {
+		if (c >= 0x20 && c <= 0x3f) { /* 0x2x, 0x3a and 0x3c - 0x3f */
 			vc->vc_state = EScsiignore;
 			return;
 		}
-
-		/* parameters done, handle the control char @c */
-
 		vc->vc_state = ESnormal;
-
-		switch (vc->vc_priv) {
-		case EPdec:
-			csi_DEC(tty, vc, c);
+		switch(c) {
+		case 'h':
+			if (vc->vc_priv <= EPdec)
+				set_mode(vc, 1);
 			return;
-		case EPecma:
-			csi_ECMA(tty, vc, c);
+		case 'l':
+			if (vc->vc_priv <= EPdec)
+				set_mode(vc, 0);
 			return;
-		default:
+		case 'c':
+			if (vc->vc_priv == EPdec) {
+				if (vc->vc_par[0])
+					vc->vc_cursor_type =
+						CUR_MAKE(vc->vc_par[0],
+							 vc->vc_par[1],
+							 vc->vc_par[2]);
+				else
+					vc->vc_cursor_type = cur_default;
+				return;
+			}
+			break;
+		case 'm':
+			if (vc->vc_priv == EPdec) {
+				clear_selection();
+				if (vc->vc_par[0])
+					vc->vc_complement_mask = vc->vc_par[0] << 8 | vc->vc_par[1];
+				else
+					vc->vc_complement_mask = vc->vc_s_complement_mask;
+				return;
+			}
+			break;
+		case 'n':
+			if (vc->vc_priv == EPecma) {
+				if (vc->vc_par[0] == 5)
+					status_report(tty);
+				else if (vc->vc_par[0] == 6)
+					cursor_report(vc, tty);
+			}
 			return;
 		}
+		if (vc->vc_priv != EPecma) {
+			vc->vc_priv = EPecma;
+			return;
+		}
+		switch(c) {
+		case 'G': case '`':
+			if (vc->vc_par[0])
+				vc->vc_par[0]--;
+			gotoxy(vc, vc->vc_par[0], vc->state.y);
+			return;
+		case 'A':
+			if (!vc->vc_par[0])
+				vc->vc_par[0]++;
+			gotoxy(vc, vc->state.x, vc->state.y - vc->vc_par[0]);
+			return;
+		case 'B': case 'e':
+			if (!vc->vc_par[0])
+				vc->vc_par[0]++;
+			gotoxy(vc, vc->state.x, vc->state.y + vc->vc_par[0]);
+			return;
+		case 'C': case 'a':
+			if (!vc->vc_par[0])
+				vc->vc_par[0]++;
+			gotoxy(vc, vc->state.x + vc->vc_par[0], vc->state.y);
+			return;
+		case 'D':
+			if (!vc->vc_par[0])
+				vc->vc_par[0]++;
+			gotoxy(vc, vc->state.x - vc->vc_par[0], vc->state.y);
+			return;
+		case 'E':
+			if (!vc->vc_par[0])
+				vc->vc_par[0]++;
+			gotoxy(vc, 0, vc->state.y + vc->vc_par[0]);
+			return;
+		case 'F':
+			if (!vc->vc_par[0])
+				vc->vc_par[0]++;
+			gotoxy(vc, 0, vc->state.y - vc->vc_par[0]);
+			return;
+		case 'd':
+			if (vc->vc_par[0])
+				vc->vc_par[0]--;
+			gotoxay(vc, vc->state.x ,vc->vc_par[0]);
+			return;
+		case 'H': case 'f':
+			if (vc->vc_par[0])
+				vc->vc_par[0]--;
+			if (vc->vc_par[1])
+				vc->vc_par[1]--;
+			gotoxay(vc, vc->vc_par[1], vc->vc_par[0]);
+			return;
+		case 'J':
+			csi_J(vc, vc->vc_par[0]);
+			return;
+		case 'K':
+			csi_K(vc, vc->vc_par[0]);
+			return;
+		case 'L':
+			csi_L(vc, vc->vc_par[0]);
+			return;
+		case 'M':
+			csi_M(vc, vc->vc_par[0]);
+			return;
+		case 'P':
+			csi_P(vc, vc->vc_par[0]);
+			return;
+		case 'c':
+			if (!vc->vc_par[0])
+				respond_ID(tty);
+			return;
+		case 'g':
+			if (!vc->vc_par[0] && vc->state.x < VC_TABSTOPS_COUNT)
+				set_bit(vc->state.x, vc->vc_tab_stop);
+			else if (vc->vc_par[0] == 3)
+				bitmap_zero(vc->vc_tab_stop, VC_TABSTOPS_COUNT);
+			return;
+		case 'm':
+			csi_m(vc);
+			return;
+		case 'q': /* DECLL - but only 3 leds */
+			/* map 0,1,2,3 to 0,1,2,4 */
+			if (vc->vc_par[0] < 4)
+				vt_set_led_state(vc->vc_num,
+					    (vc->vc_par[0] < 3) ? vc->vc_par[0] : 4);
+			return;
+		case 'r':
+			if (!vc->vc_par[0])
+				vc->vc_par[0]++;
+			if (!vc->vc_par[1])
+				vc->vc_par[1] = vc->vc_rows;
+			/* Minimum allowed region is 2 lines */
+			if (vc->vc_par[0] < vc->vc_par[1] &&
+			    vc->vc_par[1] <= vc->vc_rows) {
+				vc->vc_top = vc->vc_par[0] - 1;
+				vc->vc_bottom = vc->vc_par[1];
+				gotoxay(vc, 0, 0);
+			}
+			return;
+		case 's':
+			save_cur(vc);
+			return;
+		case 'u':
+			restore_cur(vc);
+			return;
+		case 'X':
+			csi_X(vc, vc->vc_par[0]);
+			return;
+		case '@':
+			csi_at(vc, vc->vc_par[0]);
+			return;
+		case ']': /* setterm functions */
+			setterm_command(vc);
+			return;
+		}
+		return;
 	case EScsiignore:
-		if (c >= ASCII_CSI_IGNORE_FIRST && c <= ASCII_CSI_IGNORE_LAST)
+		if (c >= 20 && c <= 0x3f)
 			return;
 		vc->vc_state = ESnormal;
 		return;
-	case ESpercent:	/* ESC % */
+	case ESpercent:
 		vc->vc_state = ESnormal;
 		switch (c) {
 		case '@':  /* defined in ISO 2022 */
@@ -2746,40 +2475,77 @@ static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, u8 c)
 			return;
 		}
 		return;
-	case ESfunckey:	/* ESC [ [ aka CSI [ */
+	case ESfunckey:
 		vc->vc_state = ESnormal;
 		return;
-	case EShash:	/* ESC # */
+	case EShash:
 		vc->vc_state = ESnormal;
 		if (c == '8') {
 			/* DEC screen alignment test. kludge :-) */
 			vc->vc_video_erase_char =
 				(vc->vc_video_erase_char & 0xff00) | 'E';
-			csi_J(vc, CSI_J_VISIBLE);
+			csi_J(vc, 2);
 			vc->vc_video_erase_char =
 				(vc->vc_video_erase_char & 0xff00) | ' ';
 			do_update_region(vc, vc->vc_origin, vc->vc_screenbuf_size / 2);
 		}
 		return;
-	case ESsetG0:	/* ESC ( */
+	case ESsetG0:
 		vc_setGx(vc, 0, c);
 		vc->vc_state = ESnormal;
 		return;
-	case ESsetG1:	/* ESC ) */
+	case ESsetG1:
 		vc_setGx(vc, 1, c);
 		vc->vc_state = ESnormal;
 		return;
-	case ESapc:	/* ESC _ */
+	case ESapc:
 		return;
-	case ESosc:	/* ESC ] [0-9] aka OSC [0-9] */
+	case ESosc:
 		return;
-	case ESpm:	/* ESC ^ */
+	case ESpm:
 		return;
-	case ESdcs:	/* ESC P */
+	case ESdcs:
 		return;
 	default:
 		vc->vc_state = ESnormal;
 	}
+}
+
+/* is_double_width() is based on the wcwidth() implementation by
+ * Markus Kuhn -- 2007-05-26 (Unicode 5.0)
+ * Latest version: https://www.cl.cam.ac.uk/~mgk25/ucs/wcwidth.c
+ */
+struct interval {
+	uint32_t first;
+	uint32_t last;
+};
+
+static int ucs_cmp(const void *key, const void *elt)
+{
+	uint32_t ucs = *(uint32_t *)key;
+	struct interval e = *(struct interval *) elt;
+
+	if (ucs > e.last)
+		return 1;
+	else if (ucs < e.first)
+		return -1;
+	return 0;
+}
+
+static int is_double_width(uint32_t ucs)
+{
+	static const struct interval double_width[] = {
+		{ 0x1100, 0x115F }, { 0x2329, 0x232A }, { 0x2E80, 0x303E },
+		{ 0x3040, 0xA4CF }, { 0xAC00, 0xD7A3 }, { 0xF900, 0xFAFF },
+		{ 0xFE10, 0xFE19 }, { 0xFE30, 0xFE6F }, { 0xFF00, 0xFF60 },
+		{ 0xFFE0, 0xFFE6 }, { 0x20000, 0x2FFFD }, { 0x30000, 0x3FFFD }
+	};
+	if (ucs < double_width[0].first ||
+	    ucs > double_width[ARRAY_SIZE(double_width) - 1].last)
+		return 0;
+
+	return bsearch(&ucs, double_width, ARRAY_SIZE(double_width),
+			sizeof(struct interval), ucs_cmp) != NULL;
 }
 
 struct vc_draw_region {
@@ -2812,45 +2578,39 @@ static inline int vc_translate_ascii(const struct vc_data *vc, int c)
 
 
 /**
- * vc_sanitize_unicode - Replace invalid Unicode code points with ``U+FFFD``
- * @c: the received code point
+ * vc_sanitize_unicode -- Replace invalid Unicode code points with U+FFFD
+ * @c: the received character, or U+FFFD for invalid sequences.
  */
 static inline int vc_sanitize_unicode(const int c)
 {
-	if (c >= 0xd800 && c <= 0xdfff)
+	if ((c >= 0xd800 && c <= 0xdfff) || c == 0xfffe || c == 0xffff)
 		return 0xfffd;
 
 	return c;
 }
 
 /**
- * vc_translate_unicode - Combine UTF-8 into Unicode in &vc_data.vc_utf_char
+ * vc_translate_unicode -- Combine UTF-8 into Unicode in @vc_utf_char
  * @vc: virtual console
- * @c: UTF-8 byte to translate
- * @rescan: set to true iff @c wasn't consumed here and needs to be re-processed
+ * @c: character to translate
+ * @rescan: we return true if we need more (continuation) data
  *
- * * &vc_data.vc_utf_char is the being-constructed Unicode code point.
- * * &vc_data.vc_utf_count is the number of continuation bytes still expected to
- *   arrive.
- * * &vc_data.vc_npar is the number of continuation bytes arrived so far.
- *
- * Return:
- * * %-1 - Input OK so far, @c consumed, further bytes expected.
- * * %0xFFFD - Possibility 1: input invalid, @c may have been consumed (see
- *             desc. of @rescan). Possibility 2: input OK, @c consumed,
- *             ``U+FFFD`` is the resulting code point. ``U+FFFD`` is valid,
- *             ``REPLACEMENT CHARACTER``.
- * * otherwise - Input OK, @c consumed, resulting code point returned.
+ * @vc_utf_char is the being-constructed unicode character.
+ * @vc_utf_count is the number of continuation bytes still expected to arrive.
+ * @vc_npar is the number of continuation bytes arrived so far.
  */
 static int vc_translate_unicode(struct vc_data *vc, int c, bool *rescan)
 {
-	static const u32 utf8_length_changes[] = {0x7f, 0x7ff, 0xffff, 0x10ffff};
+	static const u32 utf8_length_changes[] = {
+		0x0000007f, 0x000007ff, 0x0000ffff,
+		0x001fffff, 0x03ffffff, 0x7fffffff
+	};
 
 	/* Continuation byte received */
 	if ((c & 0xc0) == 0x80) {
 		/* Unexpected continuation byte? */
 		if (!vc->vc_utf_count)
-			goto bad_sequence;
+			return 0xfffd;
 
 		vc->vc_utf_char = (vc->vc_utf_char << 6) | (c & 0x3f);
 		vc->vc_npar++;
@@ -2862,17 +2622,17 @@ static int vc_translate_unicode(struct vc_data *vc, int c, bool *rescan)
 		/* Reject overlong sequences */
 		if (c <= utf8_length_changes[vc->vc_npar - 1] ||
 				c > utf8_length_changes[vc->vc_npar])
-			goto bad_sequence;
+			return 0xfffd;
 
 		return vc_sanitize_unicode(c);
 	}
 
 	/* Single ASCII byte or first byte of a sequence received */
 	if (vc->vc_utf_count) {
-		/* A continuation byte was expected */
+		/* Continuation byte expected */
 		*rescan = true;
 		vc->vc_utf_count = 0;
-		goto bad_sequence;
+		return 0xfffd;
 	}
 
 	/* Nothing to do if an ASCII byte was received */
@@ -2890,15 +2650,19 @@ static int vc_translate_unicode(struct vc_data *vc, int c, bool *rescan)
 	} else if ((c & 0xf8) == 0xf0) {
 		vc->vc_utf_count = 3;
 		vc->vc_utf_char = (c & 0x07);
+	} else if ((c & 0xfc) == 0xf8) {
+		vc->vc_utf_count = 4;
+		vc->vc_utf_char = (c & 0x03);
+	} else if ((c & 0xfe) == 0xfc) {
+		vc->vc_utf_count = 5;
+		vc->vc_utf_char = (c & 0x01);
 	} else {
-		goto bad_sequence;
+		/* 254 and 255 are invalid */
+		return 0xfffd;
 	}
 
 need_more_bytes:
 	return -1;
-
-bad_sequence:
-	return 0xfffd;
 }
 
 static int vc_translate(struct vc_data *vc, int *c, bool *rescan)
@@ -2937,13 +2701,9 @@ static bool vc_is_control(struct vc_data *vc, int tc, int c)
 	 * as cursor movement) and should not be displayed as a glyph unless
 	 * the disp_ctrl mode is explicitly enabled.
 	 */
-	static const u32 CTRL_ACTION = BIT(ASCII_NULL) |
-		GENMASK(ASCII_SHIFTIN, ASCII_BELL) | BIT(ASCII_CANCEL) |
-		BIT(ASCII_SUBSTITUTE) | BIT(ASCII_ESCAPE);
+	static const u32 CTRL_ACTION = 0x0d00ff81;
 	/* Cannot be overridden by disp_ctrl */
-	static const u32 CTRL_ALWAYS = BIT(ASCII_NULL) | BIT(ASCII_BACKSPACE) |
-		BIT(ASCII_LINEFEED) | BIT(ASCII_SHIFTIN) | BIT(ASCII_SHIFTOUT) |
-		BIT(ASCII_CAR_RET) | BIT(ASCII_FORMFEED) | BIT(ASCII_ESCAPE);
+	static const u32 CTRL_ALWAYS = 0x0800f501;
 
 	if (vc->vc_state != ESnormal)
 		return true;
@@ -2960,130 +2720,20 @@ static bool vc_is_control(struct vc_data *vc, int tc, int c)
 	 * useless without them; to display an arbitrary font position use the
 	 * direct-to-font zone in UTF-8 mode.
 	 */
-	if (c < BITS_PER_TYPE(CTRL_ALWAYS)) {
+	if (c < 32) {
 		if (vc->vc_disp_ctrl)
 			return CTRL_ALWAYS & BIT(c);
 		else
 			return vc->vc_utf || (CTRL_ACTION & BIT(c));
 	}
 
-	if (c == ASCII_DEL && !vc->vc_disp_ctrl)
+	if (c == 127 && !vc->vc_disp_ctrl)
 		return true;
 
-	if (c == ASCII_EXT_CSI)
+	if (c == 128 + 27)
 		return true;
 
 	return false;
-}
-
-static void vc_con_rewind(struct vc_data *vc)
-{
-	if (vc->state.x && !vc->vc_need_wrap) {
-		vc->vc_pos -= 2;
-		vc->state.x--;
-	}
-	vc->vc_need_wrap = 0;
-}
-
-#define UCS_ZWS		0x200b	/* Zero Width Space */
-#define UCS_VS16	0xfe0f	/* Variation Selector 16 */
-#define UCS_REPLACEMENT	0xfffd	/* Replacement Character */
-
-static int vc_process_ucs(struct vc_data *vc, int *c, int *tc)
-{
-	u32 prev_c, curr_c = *c;
-
-	if (ucs_is_double_width(curr_c)) {
-		/*
-		 * The Unicode screen memory is allocated only when
-		 * required. This is one such case as we need to remember
-		 * which displayed characters are double-width.
-		 */
-		vc_uniscr_check(vc);
-		return 2;
-	}
-
-	if (!ucs_is_zero_width(curr_c))
-		return 1;
-
-	/* From here curr_c is known to be zero-width. */
-
-	if (ucs_is_double_width(vc_uniscr_getc(vc, -2))) {
-		/*
-		 * Let's merge this zero-width code point with the preceding
-		 * double-width code point by replacing the existing
-		 * zero-width space padding. To do so we rewind one column
-		 * and pretend this has a width of 1.
-		 * We give the legacy display the same initial space padding.
-		 */
-		vc_con_rewind(vc);
-		*tc = ' ';
-		return 1;
-	}
-
-	/* From here the preceding character, if any, must be single-width. */
-	prev_c = vc_uniscr_getc(vc, -1);
-
-	if (curr_c == UCS_VS16 && prev_c != 0) {
-		/*
-		 * VS16 (U+FE0F) is special. It typically turns the preceding
-		 * single-width character into a double-width one. Let it
-		 * have a width of 1 effectively making the combination with
-		 * the preceding character double-width.
-		 */
-		*tc = ' ';
-		return 1;
-	}
-
-	/* try recomposition */
-	prev_c = ucs_recompose(prev_c, curr_c);
-	if (prev_c != 0) {
-		vc_con_rewind(vc);
-		*tc = *c = prev_c;
-		return 1;
-	}
-
-	/* Otherwise zero-width code points are ignored. */
-	return 0;
-}
-
-static int vc_get_glyph(struct vc_data *vc, int tc)
-{
-	int glyph = conv_uni_to_pc(vc, tc);
-	u16 charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
-
-	if (!(glyph & ~charmask))
-		return glyph;
-
-	if (glyph == -1)
-		return -1; /* nothing to display */
-
-	/* Glyph not found */
-	if ((!vc->vc_utf || vc->vc_disp_ctrl || tc < 128) && !(tc & ~charmask)) {
-		/*
-		 * In legacy mode use the glyph we get by a 1:1 mapping.
-		 * This would make absolutely no sense with Unicode in mind, but do this for
-		 * ASCII characters since a font may lack Unicode mapping info and we don't
-		 * want to end up with having question marks only.
-		 */
-		return tc;
-	}
-
-	/*
-	 * The Unicode screen memory is allocated only when required.
-	 * This is one such case: we're about to "cheat" with the displayed
-	 * character meaning the simple screen buffer won't hold the original
-	 * information, whereas the Unicode screen buffer always does.
-	 */
-	vc_uniscr_check(vc);
-
-	/* Try getting a simpler fallback character. */
-	tc = ucs_get_fallback(tc);
-	if (tc)
-		return vc_get_glyph(vc, tc);
-
-	/* Display U+FFFD (Unicode Replacement Character). */
-	return conv_uni_to_pc(vc, UCS_REPLACEMENT);
 }
 
 static int vc_con_write_normal(struct vc_data *vc, int tc, int c,
@@ -3091,28 +2741,49 @@ static int vc_con_write_normal(struct vc_data *vc, int tc, int c,
 {
 	int next_c;
 	unsigned char vc_attr = vc->vc_attr;
-	u16 himask = vc->vc_hi_font_mask;
+	u16 himask = vc->vc_hi_font_mask, charmask = himask ? 0x1ff : 0xff;
 	u8 width = 1;
 	bool inverse = false;
 
 	if (vc->vc_utf && !vc->vc_disp_ctrl) {
-		width = vc_process_ucs(vc, &c, &tc);
-		if (!width)
-			goto out;
+		if (is_double_width(c))
+			width = 2;
 	}
 
 	/* Now try to find out how to display it */
-	tc = vc_get_glyph(vc, tc);
-	if (tc == -1)
-		return -1; /* nothing to display */
-	if (tc < 0) {
-		inverse = true;
-		tc = conv_uni_to_pc(vc, '?');
-		if (tc < 0)
-			tc = '?';
+	tc = conv_uni_to_pc(vc, tc);
+	if (tc & ~charmask) {
+		if (tc == -1 || tc == -2)
+			return -1; /* nothing to display */
 
-		vc_attr = vc_invert_attr(vc);
-		con_flush(vc, draw);
+		/* Glyph not found */
+		if ((!vc->vc_utf || vc->vc_disp_ctrl || c < 128) &&
+				!(c & ~charmask)) {
+			/*
+			 * In legacy mode use the glyph we get by a 1:1
+			 * mapping.
+			 * This would make absolutely no sense with Unicode in
+			 * mind, but do this for ASCII characters since a font
+			 * may lack Unicode mapping info and we don't want to
+			 * end up with having question marks only.
+			 */
+			tc = c;
+		} else {
+			/*
+			 * Display U+FFFD. If it's not found, display an inverse
+			 * question mark.
+			 */
+			tc = conv_uni_to_pc(vc, 0xfffd);
+			if (tc < 0) {
+				inverse = true;
+				tc = conv_uni_to_pc(vc, '?');
+				if (tc < 0)
+					tc = '?';
+
+				vc_attr = vc_invert_attr(vc);
+				con_flush(vc, draw);
+			}
+		}
 	}
 
 	next_c = c;
@@ -3153,14 +2824,8 @@ static int vc_con_write_normal(struct vc_data *vc, int tc, int c,
 		tc = conv_uni_to_pc(vc, ' ');
 		if (tc < 0)
 			tc = ' ';
-		/*
-		 * Store a zero-width space in the Unicode screen given that
-		 * the previous code point is semantically double width.
-		 */
-		next_c = UCS_ZWS;
+		next_c = ' ';
 	}
-
-out:
 	notify_write(vc, c);
 
 	if (inverse)
@@ -3170,25 +2835,33 @@ out:
 }
 
 /* acquires console_lock */
-static int do_con_write(struct tty_struct *tty, const u8 *buf, int count)
+static int do_con_write(struct tty_struct *tty, const unsigned char *buf, int count)
 {
 	struct vc_draw_region draw = {
 		.x = -1,
 	};
 	int c, tc, n = 0;
 	unsigned int currcons;
-	struct vc_data *vc = tty->driver_data;
+	struct vc_data *vc;
 	struct vt_notifier_param param;
 	bool rescan;
 
 	if (in_interrupt())
 		return count;
 
-	guard(console_lock)();
+	console_lock();
+	vc = tty->driver_data;
+	if (vc == NULL) {
+		pr_err("vt: argh, driver_data is NULL !\n");
+		console_unlock();
+		return 0;
+	}
+
 	currcons = vc->vc_num;
 	if (!vc_cons_allocated(currcons)) {
 		/* could this happen? */
 		pr_warn_once("con_write: tty %d not allocated\n", currcons+1);
+		console_unlock();
 		return 0;
 	}
 
@@ -3200,7 +2873,7 @@ static int do_con_write(struct tty_struct *tty, const u8 *buf, int count)
 	param.vc = vc;
 
 	while (!tty->flow.stopped && count) {
-		u8 orig = *buf;
+		int orig = *buf;
 		buf++;
 		n++;
 		count--;
@@ -3232,7 +2905,7 @@ rescan_last_byte:
 	con_flush(vc, &draw);
 	console_conditional_schedule();
 	notify_update(vc);
-
+	console_unlock();
 	return n;
 }
 
@@ -3247,7 +2920,7 @@ rescan_last_byte:
  */
 static void console_callback(struct work_struct *ignored)
 {
-	guard(console_lock)();
+	console_lock();
 
 	if (want_console >= 0) {
 		if (want_console != fg_console &&
@@ -3276,6 +2949,8 @@ static void console_callback(struct work_struct *ignored)
 		blank_timer_expired = 0;
 	}
 	notify_update(vc_cons[fg_console].d);
+
+	console_unlock();
 }
 
 int set_console(int nr)
@@ -3307,16 +2982,16 @@ struct tty_driver *console_driver;
 #ifdef CONFIG_VT_CONSOLE
 
 /**
- * vt_kmsg_redirect() - sets/gets the kernel message console
- * @new: the new virtual terminal number or -1 if the console should stay
- *	unchanged
+ * vt_kmsg_redirect() - Sets/gets the kernel message console
+ * @new:	The new virtual terminal number or -1 if the console should stay
+ * 		unchanged
  *
  * By default, the kernel messages are always printed on the current virtual
  * console. However, the user may modify that default with the
- * %TIOCL_SETKMSGREDIRECT ioctl call.
+ * TIOCL_SETKMSGREDIRECT ioctl call.
  *
  * This function sets the kernel message console to be @new. It returns the old
- * virtual console number. The virtual terminal number %0 (both as parameter and
+ * virtual console number. The virtual terminal number 0 (both as parameter and
  * return value) means no redirection (i.e. always printed on the currently
  * active console).
  *
@@ -3324,8 +2999,8 @@ struct tty_driver *console_driver;
  * value is not modified. You may use the macro vt_get_kmsg_redirect() in that
  * case to make the code more understandable.
  *
- * When the kernel is compiled without %CONFIG_VT_CONSOLE, this function ignores
- * the parameter and always returns %0.
+ * When the kernel is compiled without CONFIG_VT_CONSOLE, this function ignores
+ * the parameter and always returns 0.
  */
 int vt_kmsg_redirect(int new)
 {
@@ -3380,23 +3055,22 @@ static void vt_console_print(struct console *co, const char *b, unsigned count)
 	cnt = 0;
 	while (count--) {
 		c = *b++;
-		if (c == ASCII_LINEFEED || c == ASCII_CAR_RET ||
-		    c == ASCII_BACKSPACE || vc->vc_need_wrap) {
+		if (c == 10 || c == 13 || c == 8 || vc->vc_need_wrap) {
 			if (cnt && con_is_visible(vc))
 				vc->vc_sw->con_putcs(vc, start, cnt, vc->state.y, start_x);
 			cnt = 0;
-			if (c == ASCII_BACKSPACE) {
+			if (c == 8) {		/* backspace */
 				bs(vc);
 				start = (ushort *)vc->vc_pos;
 				start_x = vc->state.x;
 				continue;
 			}
-			if (c != ASCII_CAR_RET)
+			if (c != 13)
 				lf(vc);
 			cr(vc);
 			start = (ushort *)vc->vc_pos;
 			start_x = vc->state.x;
-			if (c == ASCII_LINEFEED || c == ASCII_CAR_RET)
+			if (c == 10 || c == 13)
 				continue;
 		}
 		vc_uniscr_putc(vc, c);
@@ -3460,8 +3134,6 @@ int tioclinux(struct tty_struct *tty, unsigned long arg)
 {
 	char type, data;
 	char __user *p = (char __user *)arg;
-	void __user *param_aligned32 = (u32 __user *)arg + 1;
-	void __user *param = (void __user *)arg + 1;
 	int lines;
 	int ret;
 
@@ -3471,80 +3143,93 @@ int tioclinux(struct tty_struct *tty, unsigned long arg)
 		return -EFAULT;
 	ret = 0;
 
-	switch (type) {
-	case TIOCL_SETSEL:
-		return set_selection_user(param, tty);
-	case TIOCL_PASTESEL:
-		if (!capable(CAP_SYS_ADMIN))
-			return -EPERM;
-		return paste_selection(tty);
-	case TIOCL_UNBLANKSCREEN:
-		scoped_guard(console_lock)
+	switch (type)
+	{
+		case TIOCL_SETSEL:
+			ret = set_selection_user((struct tiocl_selection
+						 __user *)(p+1), tty);
+			break;
+		case TIOCL_PASTESEL:
+			ret = paste_selection(tty);
+			break;
+		case TIOCL_UNBLANKSCREEN:
+			console_lock();
 			unblank_screen();
-		break;
-	case TIOCL_SELLOADLUT:
-		if (!capable(CAP_SYS_ADMIN))
-			return -EPERM;
-		return sel_loadlut(param_aligned32);
-	case TIOCL_GETSHIFTSTATE:
-		/*
-		 * Make it possible to react to Shift+Mousebutton. Note that
-		 * 'shift_state' is an undocumented kernel-internal variable;
-		 * programs not closely related to the kernel should not use
-		 * this.
-		 */
-		data = vt_get_shift_state();
-		return put_user(data, p);
-	case TIOCL_GETMOUSEREPORTING:
-		scoped_guard(console_lock)	/* May be overkill */
+			console_unlock();
+			break;
+		case TIOCL_SELLOADLUT:
+			console_lock();
+			ret = sel_loadlut(p);
+			console_unlock();
+			break;
+		case TIOCL_GETSHIFTSTATE:
+
+	/*
+	 * Make it possible to react to Shift+Mousebutton.
+	 * Note that 'shift_state' is an undocumented
+	 * kernel-internal variable; programs not closely
+	 * related to the kernel should not use this.
+	 */
+			data = vt_get_shift_state();
+			ret = put_user(data, p);
+			break;
+		case TIOCL_GETMOUSEREPORTING:
+			console_lock();	/* May be overkill */
 			data = mouse_reporting();
-		return put_user(data, p);
-	case TIOCL_SETVESABLANK:
-		return set_vesa_blanking(param);
-	case TIOCL_GETKMSGREDIRECT:
-		data = vt_get_kmsg_redirect();
-		return put_user(data, p);
-	case TIOCL_SETKMSGREDIRECT:
-		if (!capable(CAP_SYS_ADMIN))
-			return -EPERM;
-
-		if (get_user(data, p+1))
-			return -EFAULT;
-
-		vt_kmsg_redirect(data);
-
-		break;
-	case TIOCL_GETFGCONSOLE:
-		/*
-		 * No locking needed as this is a transiently correct return
-		 * anyway if the caller hasn't disabled switching.
-		 */
-		return fg_console;
-	case TIOCL_SCROLLCONSOLE:
-		if (get_user(lines, (s32 __user *)param_aligned32))
-			return -EFAULT;
-
-		/*
-		 * Needs the console lock here. Note that lots of other calls
-		 * need fixing before the lock is actually useful!
-		 */
-		scoped_guard(console_lock)
-			scrollfront(vc_cons[fg_console].d, lines);
-		break;
-	case TIOCL_BLANKSCREEN:	/* until explicitly unblanked, not only poked */
-		scoped_guard(console_lock) {
+			console_unlock();
+			ret = put_user(data, p);
+			break;
+		case TIOCL_SETVESABLANK:
+			console_lock();
+			ret = set_vesa_blanking(p);
+			console_unlock();
+			break;
+		case TIOCL_GETKMSGREDIRECT:
+			data = vt_get_kmsg_redirect();
+			ret = put_user(data, p);
+			break;
+		case TIOCL_SETKMSGREDIRECT:
+			if (!capable(CAP_SYS_ADMIN)) {
+				ret = -EPERM;
+			} else {
+				if (get_user(data, p+1))
+					ret = -EFAULT;
+				else
+					vt_kmsg_redirect(data);
+			}
+			break;
+		case TIOCL_GETFGCONSOLE:
+			/* No locking needed as this is a transiently
+			   correct return anyway if the caller hasn't
+			   disabled switching */
+			ret = fg_console;
+			break;
+		case TIOCL_SCROLLCONSOLE:
+			if (get_user(lines, (s32 __user *)(p+4))) {
+				ret = -EFAULT;
+			} else {
+				/* Need the console lock here. Note that lots
+				   of other calls need fixing before the lock
+				   is actually useful ! */
+				console_lock();
+				scrollfront(vc_cons[fg_console].d, lines);
+				console_unlock();
+				ret = 0;
+			}
+			break;
+		case TIOCL_BLANKSCREEN:	/* until explicitly unblanked, not only poked */
+			console_lock();
 			ignore_poke = 1;
 			do_blank_screen(0);
-		}
-		break;
-	case TIOCL_BLANKEDSCREEN:
-		return console_blanked;
-	case TIOCL_GETBRACKETEDPASTE:
-		return get_bracketed_paste(tty);
-	default:
-		return -EINVAL;
+			console_unlock();
+			break;
+		case TIOCL_BLANKEDSCREEN:
+			ret = console_blanked;
+			break;
+		default:
+			ret = -EINVAL;
+			break;
 	}
-
 	return ret;
 }
 
@@ -3552,7 +3237,7 @@ int tioclinux(struct tty_struct *tty, unsigned long arg)
  * /dev/ttyN handling
  */
 
-static ssize_t con_write(struct tty_struct *tty, const u8 *buf, size_t count)
+static int con_write(struct tty_struct *tty, const unsigned char *buf, int count)
 {
 	int	retval;
 
@@ -3562,7 +3247,7 @@ static ssize_t con_write(struct tty_struct *tty, const u8 *buf, size_t count)
 	return retval;
 }
 
-static int con_put_char(struct tty_struct *tty, u8 ch)
+static int con_put_char(struct tty_struct *tty, unsigned char ch)
 {
 	return do_con_write(tty, &ch, 1);
 }
@@ -3620,13 +3305,17 @@ static void con_start(struct tty_struct *tty)
 
 static void con_flush_chars(struct tty_struct *tty)
 {
-	struct vc_data *vc = tty->driver_data;
+	struct vc_data *vc;
 
 	if (in_interrupt())	/* from flush_to_ldisc */
 		return;
 
-	guard(console_lock)();
-	set_cursor(vc);
+	/* if we race with con_close(), vt may be null */
+	console_lock();
+	vc = tty->driver_data;
+	if (vc)
+		set_cursor(vc);
+	console_unlock();
 }
 
 /*
@@ -3638,20 +3327,22 @@ static int con_install(struct tty_driver *driver, struct tty_struct *tty)
 	struct vc_data *vc;
 	int ret;
 
-	guard(console_lock)();
+	console_lock();
 	ret = vc_allocate(currcons);
 	if (ret)
-		return ret;
+		goto unlock;
 
 	vc = vc_cons[currcons].d;
 
 	/* Still being freed */
-	if (vc->port.tty)
-		return -ERESTARTSYS;
+	if (vc->port.tty) {
+		ret = -ERESTARTSYS;
+		goto unlock;
+	}
 
 	ret = tty_port_install(&vc->port, driver, tty);
 	if (ret)
-		return ret;
+		goto unlock;
 
 	tty->driver_data = vc;
 	vc->port.tty = tty;
@@ -3665,8 +3356,9 @@ static int con_install(struct tty_driver *driver, struct tty_struct *tty)
 		tty->termios.c_iflag |= IUTF8;
 	else
 		tty->termios.c_iflag &= ~IUTF8;
-
-	return 0;
+unlock:
+	console_unlock();
+	return ret;
 }
 
 static int con_open(struct tty_struct *tty, struct file *filp)
@@ -3685,9 +3377,9 @@ static void con_shutdown(struct tty_struct *tty)
 {
 	struct vc_data *vc = tty->driver_data;
 	BUG_ON(vc == NULL);
-
-	guard(console_lock)();
+	console_lock();
 	vc->port.tty = NULL;
+	console_unlock();
 }
 
 static void con_cleanup(struct tty_struct *tty)
@@ -3697,15 +3389,6 @@ static void con_cleanup(struct tty_struct *tty)
 	tty_port_put(&vc->port);
 }
 
-/*
- * We can't deal with anything but the N_TTY ldisc,
- * because we can sleep in our write() routine.
- */
-static int con_ldisc_ok(struct tty_struct *tty, int ldisc)
-{
-	return ldisc == N_TTY ? 0 : -EINVAL;
-}
-
 static int default_color           = 7; /* white */
 static int default_italic_color    = 2; // green (ASCII)
 static int default_underline_color = 3; // cyan (ASCII)
@@ -3713,9 +3396,15 @@ module_param_named(color, default_color, int, S_IRUGO | S_IWUSR);
 module_param_named(italic, default_italic_color, int, S_IRUGO | S_IWUSR);
 module_param_named(underline, default_underline_color, int, S_IRUGO | S_IWUSR);
 
-static void vc_init(struct vc_data *vc, int do_clear)
+static void vc_init(struct vc_data *vc, unsigned int rows,
+		    unsigned int cols, int do_clear)
 {
 	int j, k ;
+
+	vc->vc_cols = cols;
+	vc->vc_rows = rows;
+	vc->vc_size_row = cols << 1;
+	vc->vc_screenbuf_size = vc->vc_rows * vc->vc_size_row;
 
 	set_origin(vc);
 	vc->vc_pos = vc->vc_origin;
@@ -3781,17 +3470,18 @@ static int __init con_init(void)
 		vc_cons[currcons].d = vc = kzalloc(sizeof(struct vc_data), GFP_NOWAIT);
 		INIT_WORK(&vc_cons[currcons].SAK_work, vc_SAK);
 		tty_port_init(&vc->port);
-		visual_init(vc, currcons, true);
+		visual_init(vc, currcons, 1);
 		/* Assuming vc->vc_{cols,rows,screenbuf_size} are sane here. */
 		vc->vc_screenbuf = kzalloc(vc->vc_screenbuf_size, GFP_NOWAIT);
-		vc_init(vc, currcons || !vc->vc_sw->con_save_screen);
+		vc_init(vc, vc->vc_rows, vc->vc_cols,
+			currcons || !vc->vc_sw->con_save_screen);
 	}
 	currcons = fg_console = 0;
 	master_display_fg = vc = vc_cons[currcons].d;
 	set_origin(vc);
 	save_screen(vc);
 	gotoxy(vc, vc->state.x, vc->state.y);
-	csi_J(vc, CSI_J_CURSOR_TO_END);
+	csi_J(vc, 0);
 	update_screen(vc);
 	pr_info("Console: %s %s %dx%d\n",
 		vc->vc_can_do_color ? "colour" : "mono",
@@ -3825,7 +3515,6 @@ static const struct tty_operations con_ops = {
 	.resize = vt_resize,
 	.shutdown = con_shutdown,
 	.cleanup = con_cleanup,
-	.ldisc_ok = con_ldisc_ok,
 };
 
 static struct cdev vc0_cdev;
@@ -3850,7 +3539,7 @@ int __init vty_init(const struct file_operations *console_fops)
 	if (cdev_add(&vc0_cdev, MKDEV(TTY_MAJOR, 0), 1) ||
 	    register_chrdev_region(MKDEV(TTY_MAJOR, 0), 1, "/dev/vc/0") < 0)
 		panic("Couldn't register /dev/tty0 driver\n");
-	tty0dev = device_create_with_groups(&tty_class, NULL,
+	tty0dev = device_create_with_groups(tty_class, NULL,
 					    MKDEV(TTY_MAJOR, 0), NULL,
 					    vt_dev_groups, "tty0");
 	if (IS_ERR(tty0dev))
@@ -3882,9 +3571,9 @@ int __init vty_init(const struct file_operations *console_fops)
 	return 0;
 }
 
-static const struct class vtconsole_class = {
-	.name = "vtconsole",
-};
+#ifndef VT_SINGLE_DRIVER
+
+static struct class *vtconsole_class;
 
 static int do_bind_con_driver(const struct consw *csw, int first, int last,
 			   int deflt)
@@ -3951,7 +3640,7 @@ static int do_bind_con_driver(const struct consw *csw, int first, int last,
 		old_was_color = vc->vc_can_do_color;
 		vc->vc_sw->con_deinit(vc);
 		vc->vc_origin = (unsigned long)vc->vc_screenbuf;
-		visual_init(vc, i, false);
+		visual_init(vc, i, 0);
 		set_origin(vc);
 		update_attr(vc);
 
@@ -4176,12 +3865,14 @@ static ssize_t store_bind(struct device *dev, struct device_attribute *attr,
 	struct con_driver *con = dev_get_drvdata(dev);
 	int bind = simple_strtoul(buf, NULL, 0);
 
-	guard(console_lock)();
+	console_lock();
 
 	if (bind)
 		vt_bind(con);
 	else
 		vt_unbind(con);
+
+	console_unlock();
 
 	return count;
 }
@@ -4192,8 +3883,9 @@ static ssize_t show_bind(struct device *dev, struct device_attribute *attr,
 	struct con_driver *con = dev_get_drvdata(dev);
 	int bind;
 
-	scoped_guard(console_lock)
-		bind = con_is_bound(con->con);
+	console_lock();
+	bind = con_is_bound(con->con);
+	console_unlock();
 
 	return sysfs_emit(buf, "%i\n", bind);
 }
@@ -4238,7 +3930,7 @@ static void vtconsole_deinit_device(struct con_driver *con)
  * RETURNS: zero if unbound, nonzero if bound
  *
  * Drivers can call this and if zero, they should release
- * all resources allocated on &consw.con_startup()
+ * all resources allocated on con_startup()
  */
 int con_is_bound(const struct consw *csw)
 {
@@ -4278,9 +3970,24 @@ EXPORT_SYMBOL(con_is_visible);
  * Called when the console is taken over by the kernel debugger, this
  * function needs to save the current console state, then put the console
  * into a state suitable for the kernel debugger.
+ *
+ * RETURNS:
+ * Zero on success, nonzero if a failure occurred when trying to prepare
+ * the console for the debugger.
  */
-void con_debug_enter(struct vc_data *vc)
+int con_debug_enter(struct vc_data *vc)
 {
+	int ret = 0;
+
+	saved_fg_console = fg_console;
+	saved_last_console = last_console;
+	saved_want_console = want_console;
+	saved_vc_mode = vc->vc_mode;
+	saved_console_blanked = console_blanked;
+	vc->vc_mode = KD_TEXT;
+	console_blanked = 0;
+	if (vc->vc_sw->con_debug_enter)
+		ret = vc->vc_sw->con_debug_enter(vc);
 #ifdef CONFIG_KGDB_KDB
 	/* Set the initial LINES variable if it is not already set */
 	if (vc->vc_rows < 999) {
@@ -4310,6 +4017,7 @@ void con_debug_enter(struct vc_data *vc)
 		}
 	}
 #endif /* CONFIG_KGDB_KDB */
+	return ret;
 }
 EXPORT_SYMBOL_GPL(con_debug_enter);
 
@@ -4318,9 +4026,27 @@ EXPORT_SYMBOL_GPL(con_debug_enter);
  *
  * Restore the console state to what it was before the kernel debugger
  * was invoked.
+ *
+ * RETURNS:
+ * Zero on success, nonzero if a failure occurred when trying to restore
+ * the console.
  */
-void con_debug_leave(void)
-{ }
+int con_debug_leave(void)
+{
+	struct vc_data *vc;
+	int ret = 0;
+
+	fg_console = saved_fg_console;
+	last_console = saved_last_console;
+	want_console = saved_want_console;
+	console_blanked = saved_console_blanked;
+	vc_cons[fg_console].d->vc_mode = saved_vc_mode;
+
+	vc = vc_cons[fg_console].d;
+	if (vc->vc_sw->con_debug_leave)
+		ret = vc->vc_sw->con_debug_leave(vc);
+	return ret;
+}
 EXPORT_SYMBOL_GPL(con_debug_leave);
 
 static int do_register_con_driver(const struct consw *csw, int first, int last)
@@ -4374,7 +4100,7 @@ static int do_register_con_driver(const struct consw *csw, int first, int last)
 		goto err;
 
 	con_driver->dev =
-		device_create_with_groups(&vtconsole_class, NULL,
+		device_create_with_groups(vtconsole_class, NULL,
 					  MKDEV(0, con_driver->node),
 					  con_driver, con_dev_groups,
 					  "vtcon%i", con_driver->node);
@@ -4444,7 +4170,7 @@ static void con_driver_unregister_callback(struct work_struct *ignored)
 {
 	int i;
 
-	guard(console_lock)();
+	console_lock();
 
 	for (i = 0; i < MAX_NR_CON_DRIVER; i++) {
 		struct con_driver *con_driver = &registered_con_driver[i];
@@ -4455,7 +4181,7 @@ static void con_driver_unregister_callback(struct work_struct *ignored)
 		console_unlock();
 
 		vtconsole_deinit_device(con_driver);
-		device_destroy(&vtconsole_class, MKDEV(0, con_driver->node));
+		device_destroy(vtconsole_class, MKDEV(0, con_driver->node));
 
 		console_lock();
 
@@ -4469,6 +4195,8 @@ static void con_driver_unregister_callback(struct work_struct *ignored)
 		con_driver->first = 0;
 		con_driver->last = 0;
 	}
+
+	console_unlock();
 }
 
 /*
@@ -4504,18 +4232,21 @@ EXPORT_SYMBOL_GPL(do_take_over_console);
  */
 void give_up_console(const struct consw *csw)
 {
-	guard(console_lock)();
+	console_lock();
 	do_unregister_con_driver(csw);
+	console_unlock();
 }
-EXPORT_SYMBOL(give_up_console);
 
 static int __init vtconsole_class_init(void)
 {
 	int i;
 
-	i = class_register(&vtconsole_class);
-	if (i)
-		pr_warn("Unable to create vt console class; errno = %d\n", i);
+	vtconsole_class = class_create(THIS_MODULE, "vtconsole");
+	if (IS_ERR(vtconsole_class)) {
+		pr_warn("Unable to create vt console class; errno = %ld\n",
+			PTR_ERR(vtconsole_class));
+		vtconsole_class = NULL;
+	}
 
 	/* Add system drivers to sysfs */
 	for (i = 0; i < MAX_NR_CON_DRIVER; i++) {
@@ -4523,7 +4254,7 @@ static int __init vtconsole_class_init(void)
 
 		if (con->con && !con->dev) {
 			con->dev =
-				device_create_with_groups(&vtconsole_class, NULL,
+				device_create_with_groups(vtconsole_class, NULL,
 							  MKDEV(0, con->node),
 							  con, con_dev_groups,
 							  "vtcon%i", con->node);
@@ -4542,20 +4273,20 @@ static int __init vtconsole_class_init(void)
 }
 postcore_initcall(vtconsole_class_init);
 
+#endif
+
 /*
  *	Screen blanking
  */
 
-static int set_vesa_blanking(u8 __user *mode_user)
+static int set_vesa_blanking(char __user *p)
 {
-	u8 mode;
+	unsigned int mode;
 
-	if (get_user(mode, mode_user))
+	if (get_user(mode, p + 1))
 		return -EFAULT;
 
-	guard(console_lock)();
-	vesa_blank_mode = (mode <= VESA_BLANK_MAX) ? mode : VESA_NO_BLANKING;
-
+	vesa_blank_mode = (mode < 4) ? mode : 0;
 	return 0;
 }
 
@@ -4580,7 +4311,7 @@ void do_blank_screen(int entering_gfx)
 	if (entering_gfx) {
 		hide_cursor(vc);
 		save_screen(vc);
-		vc->vc_sw->con_blank(vc, VESA_VSYNC_SUSPEND, 1);
+		vc->vc_sw->con_blank(vc, -1, 1);
 		console_blanked = fg_console + 1;
 		blank_state = blank_off;
 		set_origin(vc);
@@ -4596,13 +4327,12 @@ void do_blank_screen(int entering_gfx)
 	}
 
 	hide_cursor(vc);
-	timer_delete_sync(&console_timer);
+	del_timer_sync(&console_timer);
 	blank_timer_expired = 0;
 
 	save_screen(vc);
 	/* In case we need to reset origin, blanking hook returns 1 */
-	i = vc->vc_sw->con_blank(vc, vesa_off_interval ? VESA_VSYNC_SUSPEND :
-				 (vesa_blank_mode + 1), 0);
+	i = vc->vc_sw->con_blank(vc, vesa_off_interval ? 1 : (vesa_blank_mode + 1), 0);
 	console_blanked = fg_console + 1;
 	if (i)
 		set_origin(vc);
@@ -4653,7 +4383,7 @@ void do_unblank_screen(int leaving_gfx)
 	}
 
 	console_blanked = 0;
-	if (vc->vc_sw->con_blank(vc, VESA_NO_BLANKING, leaving_gfx))
+	if (vc->vc_sw->con_blank(vc, 0, leaving_gfx))
 		/* Low-level driver cannot restore -> do it ourselves */
 		update_screen(vc);
 	if (console_blank_hook)
@@ -4661,7 +4391,6 @@ void do_unblank_screen(int leaving_gfx)
 	set_palette(vc);
 	set_cursor(vc);
 	vt_event_post(VT_EVENT_UNBLANK, vc->vc_num, vc->vc_num);
-	notify_update(vc);
 }
 EXPORT_SYMBOL(do_unblank_screen);
 
@@ -4702,7 +4431,7 @@ void poke_blanked_console(void)
 	/* This isn't perfectly race free, but a race here would be mostly harmless,
 	 * at worst, we'll do a spurious blank and it's unlikely
 	 */
-	timer_delete(&console_timer);
+	del_timer(&console_timer);
 	blank_timer_expired = 0;
 
 	if (ignore_poke || !vc_cons[fg_console].d || vc_cons[fg_console].d->vc_mode == KD_GRAPHICS)
@@ -4740,7 +4469,7 @@ int con_set_cmap(unsigned char __user *arg)
 	if (copy_from_user(colormap, arg, sizeof(colormap)))
 		return -EFAULT;
 
-	guard(console_lock)();
+	console_lock();
 	for (i = k = 0; i < 16; i++) {
 		default_red[i] = colormap[k++];
 		default_grn[i] = colormap[k++];
@@ -4756,6 +4485,7 @@ int con_set_cmap(unsigned char __user *arg)
 		}
 		set_palette(vc_cons[i].d);
 	}
+	console_unlock();
 
 	return 0;
 }
@@ -4765,12 +4495,13 @@ int con_get_cmap(unsigned char __user *arg)
 	int i, k;
 	unsigned char colormap[3*16];
 
-	scoped_guard(console_lock)
-		for (i = k = 0; i < 16; i++) {
-			colormap[k++] = default_red[i];
-			colormap[k++] = default_grn[i];
-			colormap[k++] = default_blu[i];
-		}
+	console_lock();
+	for (i = k = 0; i < 16; i++) {
+		colormap[k++] = default_red[i];
+		colormap[k++] = default_grn[i];
+		colormap[k++] = default_blu[i];
+	}
+	console_unlock();
 
 	if (copy_to_user(arg, colormap, sizeof(colormap)))
 		return -EFAULT;
@@ -4810,54 +4541,62 @@ void reset_palette(struct vc_data *vc)
 static int con_font_get(struct vc_data *vc, struct console_font_op *op)
 {
 	struct console_font font;
+	int rc = -EINVAL;
 	int c;
 	unsigned int vpitch = op->op == KD_FONT_OP_GET_TALL ? op->height : 32;
 
 	if (vpitch > max_font_height)
 		return -EINVAL;
 
-	void *font_data __free(kvfree) = NULL;
 	if (op->data) {
-		font.data = font_data = kvzalloc(max_font_size, GFP_KERNEL);
+		font.data = kvmalloc(max_font_size, GFP_KERNEL);
 		if (!font.data)
 			return -ENOMEM;
 	} else
 		font.data = NULL;
 
-	scoped_guard(console_lock) {
-		if (vc->vc_mode != KD_TEXT)
-			return -EINVAL;
-		if (!vc->vc_sw->con_font_get)
-			return -ENOSYS;
+	console_lock();
+	if (vc->vc_mode != KD_TEXT)
+		rc = -EINVAL;
+	else if (vc->vc_sw->con_font_get)
+		rc = vc->vc_sw->con_font_get(vc, &font, vpitch);
+	else
+		rc = -ENOSYS;
+	console_unlock();
 
-		int ret = vc->vc_sw->con_font_get(vc, &font, vpitch);
-		if (ret)
-			return ret;
-	}
+	if (rc)
+		goto out;
 
-	c = DIV_ROUND_UP(font.width, 8) * vpitch * font.charcount;
+	c = (font.width+7)/8 * vpitch * font.charcount;
 
 	if (op->data && font.charcount > op->charcount)
-		return -ENOSPC;
+		rc = -ENOSPC;
 	if (font.width > op->width || font.height > op->height)
-		return -ENOSPC;
+		rc = -ENOSPC;
+	if (rc)
+		goto out;
 
 	op->height = font.height;
 	op->width = font.width;
 	op->charcount = font.charcount;
 
 	if (op->data && copy_to_user(op->data, font.data, c))
-		return -EFAULT;
+		rc = -EFAULT;
 
-	return 0;
+out:
+	kvfree(font.data);
+	return rc;
 }
 
-static int con_font_set(struct vc_data *vc, const struct console_font_op *op)
+static int con_font_set(struct vc_data *vc, struct console_font_op *op)
 {
 	struct console_font font;
+	int rc = -EINVAL;
 	int size;
 	unsigned int vpitch = op->op == KD_FONT_OP_SET_TALL ? op->height : 32;
 
+	if (vc->vc_mode != KD_TEXT)
+		return -EINVAL;
 	if (!op->data)
 		return -EINVAL;
 	if (op->charcount > max_font_glyphs)
@@ -4867,11 +4606,11 @@ static int con_font_set(struct vc_data *vc, const struct console_font_op *op)
 		return -EINVAL;
 	if (vpitch < op->height)
 		return -EINVAL;
-	size = DIV_ROUND_UP(op->width, 8) * vpitch * op->charcount;
+	size = (op->width+7)/8 * vpitch * op->charcount;
 	if (size > max_font_size)
 		return -ENOSPC;
 
-	void *font_data __free(kfree) = font.data = memdup_user(op->data, size);
+	font.data = memdup_user(op->data, size);
 	if (IS_ERR(font.data))
 		return PTR_ERR(font.data);
 
@@ -4879,17 +4618,18 @@ static int con_font_set(struct vc_data *vc, const struct console_font_op *op)
 	font.width = op->width;
 	font.height = op->height;
 
-	guard(console_lock)();
-
+	console_lock();
 	if (vc->vc_mode != KD_TEXT)
-		return -EINVAL;
-	if (!vc->vc_sw->con_font_set)
-		return -ENOSYS;
-
-	if (vc_is_sel(vc))
-		clear_selection();
-
-	return vc->vc_sw->con_font_set(vc, &font, vpitch, op->flags);
+		rc = -EINVAL;
+	else if (vc->vc_sw->con_font_set) {
+		if (vc_is_sel(vc))
+			clear_selection();
+		rc = vc->vc_sw->con_font_set(vc, &font, vpitch, op->flags);
+	} else
+		rc = -ENOSYS;
+	console_unlock();
+	kfree(font.data);
+	return rc;
 }
 
 static int con_font_default(struct vc_data *vc, struct console_font_op *op)
@@ -4897,6 +4637,8 @@ static int con_font_default(struct vc_data *vc, struct console_font_op *op)
 	struct console_font font = {.width = op->width, .height = op->height};
 	char name[MAX_FONT_NAME];
 	char *s = name;
+	int rc;
+
 
 	if (!op->data)
 		s = NULL;
@@ -4905,23 +4647,23 @@ static int con_font_default(struct vc_data *vc, struct console_font_op *op)
 	else
 		name[MAX_FONT_NAME - 1] = 0;
 
-	scoped_guard(console_lock) {
-		if (vc->vc_mode != KD_TEXT)
-			return -EINVAL;
-		if (!vc->vc_sw->con_font_default)
-			return -ENOSYS;
-
+	console_lock();
+	if (vc->vc_mode != KD_TEXT) {
+		console_unlock();
+		return -EINVAL;
+	}
+	if (vc->vc_sw->con_font_default) {
 		if (vc_is_sel(vc))
 			clear_selection();
-		int ret = vc->vc_sw->con_font_default(vc, &font, s);
-		if (ret)
-			return ret;
+		rc = vc->vc_sw->con_font_default(vc, &font, s);
+	} else
+		rc = -ENOSYS;
+	console_unlock();
+	if (!rc) {
+		op->width = font.width;
+		op->height = font.height;
 	}
-
-	op->width = font.width;
-	op->height = font.height;
-
-	return 0;
+	return rc;
 }
 
 int con_font_op(struct vc_data *vc, struct console_font_op *op)
@@ -5010,3 +4752,63 @@ void vcs_scr_updated(struct vc_data *vc)
 {
 	notify_update(vc);
 }
+
+void vc_scrolldelta_helper(struct vc_data *c, int lines,
+		unsigned int rolled_over, void *base, unsigned int size)
+{
+	unsigned long ubase = (unsigned long)base;
+	ptrdiff_t scr_end = (void *)c->vc_scr_end - base;
+	ptrdiff_t vorigin = (void *)c->vc_visible_origin - base;
+	ptrdiff_t origin = (void *)c->vc_origin - base;
+	int margin = c->vc_size_row * 4;
+	int from, wrap, from_off, avail;
+
+	/* Turn scrollback off */
+	if (!lines) {
+		c->vc_visible_origin = c->vc_origin;
+		return;
+	}
+
+	/* Do we have already enough to allow jumping from 0 to the end? */
+	if (rolled_over > scr_end + margin) {
+		from = scr_end;
+		wrap = rolled_over + c->vc_size_row;
+	} else {
+		from = 0;
+		wrap = size;
+	}
+
+	from_off = (vorigin - from + wrap) % wrap + lines * c->vc_size_row;
+	avail = (origin - from + wrap) % wrap;
+
+	/* Only a little piece would be left? Show all incl. the piece! */
+	if (avail < 2 * margin)
+		margin = 0;
+	if (from_off < margin)
+		from_off = 0;
+	if (from_off > avail - margin)
+		from_off = avail;
+
+	c->vc_visible_origin = ubase + (from + from_off) % wrap;
+}
+EXPORT_SYMBOL_GPL(vc_scrolldelta_helper);
+
+/*
+ *	Visible symbols for modules
+ */
+
+EXPORT_SYMBOL(color_table);
+EXPORT_SYMBOL(default_red);
+EXPORT_SYMBOL(default_grn);
+EXPORT_SYMBOL(default_blu);
+EXPORT_SYMBOL(update_region);
+EXPORT_SYMBOL(redraw_screen);
+EXPORT_SYMBOL(vc_resize);
+EXPORT_SYMBOL(fg_console);
+EXPORT_SYMBOL(console_blank_hook);
+EXPORT_SYMBOL(console_blanked);
+EXPORT_SYMBOL(vc_cons);
+EXPORT_SYMBOL(global_cursor_default);
+#ifndef VT_SINGLE_DRIVER
+EXPORT_SYMBOL(give_up_console);
+#endif

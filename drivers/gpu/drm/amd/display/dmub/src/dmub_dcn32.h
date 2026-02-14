@@ -89,9 +89,6 @@ struct dmub_srv;
 	DMUB_SR(DMCUB_REGION5_OFFSET) \
 	DMUB_SR(DMCUB_REGION5_OFFSET_HIGH) \
 	DMUB_SR(DMCUB_REGION5_TOP_ADDRESS) \
-	DMUB_SR(DMCUB_REGION6_OFFSET) \
-	DMUB_SR(DMCUB_REGION6_OFFSET_HIGH) \
-	DMUB_SR(DMCUB_REGION6_TOP_ADDRESS) \
 	DMUB_SR(DMCUB_SCRATCH0) \
 	DMUB_SR(DMCUB_SCRATCH1) \
 	DMUB_SR(DMCUB_SCRATCH2) \
@@ -110,13 +107,6 @@ struct dmub_srv;
 	DMUB_SR(DMCUB_SCRATCH15) \
 	DMUB_SR(DMCUB_SCRATCH16) \
 	DMUB_SR(DMCUB_SCRATCH17) \
-	DMUB_SR(DMCUB_SCRATCH18) \
-	DMUB_SR(DMCUB_SCRATCH19) \
-	DMUB_SR(DMCUB_SCRATCH20) \
-	DMUB_SR(DMCUB_SCRATCH21) \
-	DMUB_SR(DMCUB_SCRATCH22) \
-	DMUB_SR(DMCUB_SCRATCH23) \
-	DMUB_SR(DMCUB_GPINT_DATAIN0) \
 	DMUB_SR(DMCUB_GPINT_DATAIN1) \
 	DMUB_SR(DMCUB_GPINT_DATAOUT) \
 	DMUB_SR(CC_DC_PIPE_DIS) \
@@ -158,8 +148,6 @@ struct dmub_srv;
 	DMUB_SF(DMCUB_REGION4_TOP_ADDRESS, DMCUB_REGION4_ENABLE) \
 	DMUB_SF(DMCUB_REGION5_TOP_ADDRESS, DMCUB_REGION5_TOP_ADDRESS) \
 	DMUB_SF(DMCUB_REGION5_TOP_ADDRESS, DMCUB_REGION5_ENABLE) \
-	DMUB_SF(DMCUB_REGION6_TOP_ADDRESS, DMCUB_REGION6_TOP_ADDRESS) \
-	DMUB_SF(DMCUB_REGION6_TOP_ADDRESS, DMCUB_REGION6_ENABLE) \
 	DMUB_SF(CC_DC_PIPE_DIS, DC_DMCUB_ENABLE) \
 	DMUB_SF(MMHUBBUB_SOFT_RESET, DMUIF_SOFT_RESET) \
 	DMUB_SF(DCN_VM_FB_LOCATION_BASE, FB_BASE) \
@@ -167,8 +155,7 @@ struct dmub_srv;
 	DMUB_SF(DMCUB_INBOX0_WPTR, DMCUB_INBOX0_WPTR) \
 	DMUB_SF(DMCUB_REGION3_TMR_AXI_SPACE, DMCUB_REGION3_TMR_AXI_SPACE) \
 	DMUB_SF(DMCUB_INTERRUPT_ENABLE, DMCUB_GPINT_IH_INT_EN) \
-	DMUB_SF(DMCUB_INTERRUPT_ACK, DMCUB_GPINT_IH_INT_ACK) \
-	DMUB_SF(DMCUB_CNTL, DMCUB_PWAIT_MODE_STATUS)
+	DMUB_SF(DMCUB_INTERRUPT_ACK, DMCUB_GPINT_IH_INT_ACK)
 
 struct dmub_srv_dcn32_reg_offset {
 #define DMUB_SR(reg) uint32_t reg;
@@ -190,10 +177,12 @@ struct dmub_srv_dcn32_reg_mask {
 };
 
 struct dmub_srv_dcn32_regs {
-	struct dmub_srv_dcn32_reg_offset offset;
-	struct dmub_srv_dcn32_reg_mask mask;
-	struct dmub_srv_dcn32_reg_shift shift;
+	const struct dmub_srv_dcn32_reg_offset offset;
+	const struct dmub_srv_dcn32_reg_mask mask;
+	const struct dmub_srv_dcn32_reg_shift shift;
 };
+
+extern const struct dmub_srv_dcn32_regs dmub_srv_dcn32_regs;
 
 void dmub_dcn32_reset(struct dmub_srv *dmub);
 
@@ -212,13 +201,10 @@ void dmub_dcn32_setup_windows(struct dmub_srv *dmub,
 			      const struct dmub_window *cw3,
 			      const struct dmub_window *cw4,
 			      const struct dmub_window *cw5,
-			      const struct dmub_window *cw6,
-			      const struct dmub_window *region6);
+			      const struct dmub_window *cw6);
 
 void dmub_dcn32_setup_mailbox(struct dmub_srv *dmub,
 			      const struct dmub_region *inbox1);
-
-uint32_t dmub_dcn32_get_inbox1_wptr(struct dmub_srv *dmub);
 
 uint32_t dmub_dcn32_get_inbox1_rptr(struct dmub_srv *dmub);
 
@@ -260,14 +246,11 @@ void dmub_dcn32_set_outbox0_rptr(struct dmub_srv *dmub, uint32_t rptr_offset);
 
 uint32_t dmub_dcn32_get_current_time(struct dmub_srv *dmub);
 
-void dmub_dcn32_get_diagnostic_data(struct dmub_srv *dmub);
+void dmub_dcn32_get_diagnostic_data(struct dmub_srv *dmub, struct dmub_diagnostic_data *diag_data);
 
 void dmub_dcn32_configure_dmub_in_system_memory(struct dmub_srv *dmub);
 void dmub_dcn32_send_inbox0_cmd(struct dmub_srv *dmub, union dmub_inbox0_data_register data);
 void dmub_dcn32_clear_inbox0_ack_register(struct dmub_srv *dmub);
 uint32_t dmub_dcn32_read_inbox0_ack_register(struct dmub_srv *dmub);
-void dmub_dcn32_save_surf_addr(struct dmub_srv *dmub, const struct dc_plane_address *addr, uint8_t subvp_index);
-
-void dmub_srv_dcn32_regs_init(struct dmub_srv *dmub, struct dc_context *ctx);
 
 #endif /* _DMUB_DCN32_H_ */

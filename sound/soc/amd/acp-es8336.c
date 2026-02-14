@@ -62,7 +62,7 @@ static int st_es8336_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_card *card;
 	struct snd_soc_component *codec;
 
-	codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+	codec = asoc_rtd_to_codec(rtd, 0)->component;
 	card = rtd->card;
 
 	ret = snd_soc_card_jack_new_pins(card, "Headset", SND_JACK_HEADSET | SND_JACK_BTN_0,
@@ -111,10 +111,10 @@ static int st_es8336_codec_startup(struct snd_pcm_substream *substream)
 	int ret;
 
 	runtime = substream->runtime;
-	rtd = snd_soc_substream_to_rtd(substream);
+	rtd = asoc_substream_to_rtd(substream);
 	card = rtd->card;
 	machine = snd_soc_card_get_drvdata(card);
-	codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	codec_dai = asoc_rtd_to_codec(rtd, 0);
 	ret = snd_soc_dai_set_sysclk(codec_dai, 0, ES8336_PLL_FREQ, SND_SOC_CLOCK_IN);
 	if (ret < 0) {
 		dev_err(rtd->dev, "can't set codec sysclk: %d\n", ret);
@@ -137,11 +137,11 @@ static const struct snd_soc_ops st_es8336_ops = {
 };
 
 SND_SOC_DAILINK_DEF(designware1,
-		    DAILINK_COMP_ARRAY(COMP_CPU("designware-i2s.1")));
+		    DAILINK_COMP_ARRAY(COMP_CPU("designware-i2s.2.auto")));
 SND_SOC_DAILINK_DEF(codec,
 		    DAILINK_COMP_ARRAY(COMP_CODEC("i2c-ESSX8336:00", "ES8316 HiFi")));
 SND_SOC_DAILINK_DEF(platform,
-		    DAILINK_COMP_ARRAY(COMP_PLATFORM("acp_audio_dma.0")));
+		    DAILINK_COMP_ARRAY(COMP_PLATFORM("acp_audio_dma.1.auto")));
 
 static struct snd_soc_dai_link st_dai_es8336[] = {
 	{
@@ -149,7 +149,9 @@ static struct snd_soc_dai_link st_dai_es8336[] = {
 		.stream_name = "ES8336 HiFi Play",
 		.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
 				| SND_SOC_DAIFMT_CBP_CFP,
-		.trigger_stop = SND_SOC_TRIGGER_ORDER_LDC,
+		.stop_dma_first = 1,
+		.dpcm_capture = 1,
+		.dpcm_playback = 1,
 		.init = st_es8336_init,
 		.ops = &st_es8336_ops,
 		SND_SOC_DAILINK_REG(designware1, codec, platform),
@@ -201,10 +203,8 @@ static int st_es8336_late_probe(struct snd_soc_card *card)
 
 	codec_dev = acpi_get_first_physical_node(adev);
 	acpi_dev_put(adev);
-	if (!codec_dev) {
+	if (!codec_dev)
 		dev_err(card->dev, "can not find codec dev\n");
-		return -ENODEV;
-	}
 
 	ret = devm_acpi_dev_add_driver_gpios(codec_dev, acpi_es8336_gpios);
 	if (ret)

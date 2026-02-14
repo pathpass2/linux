@@ -2,7 +2,7 @@
 /*
  * WWAN device simulator for WWAN framework testing.
  *
- * Copyright (c) 2021, 2025, Sergey Ryazanov <ryazanov.s.a@gmail.com>
+ * Copyright (c) 2021, Sergey Ryazanov <ryazanov.s.a@gmail.com>
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -12,10 +12,8 @@
 #include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/spinlock.h>
-#include <linux/time.h>
 #include <linux/list.h>
 #include <linux/skbuff.h>
-#include <linux/timer.h>
 #include <linux/netdevice.h>
 #include <linux/wwan.h>
 #include <linux/debugfs.h>
@@ -27,9 +25,7 @@ static int wwan_hwsim_devsnum = 2;
 module_param_named(devices, wwan_hwsim_devsnum, int, 0444);
 MODULE_PARM_DESC(devices, "Number of simulated devices");
 
-static const struct class wwan_hwsim_class = {
-	.name = "wwan_hwsim",
-};
+static struct class *wwan_hwsim_class;
 
 static struct dentry *wwan_hwsim_debugfs_topdir;
 static struct dentry *wwan_hwsim_debugfs_devcreate;
@@ -58,19 +54,12 @@ struct wwan_hwsim_port {
 	struct wwan_port *wwan;
 	struct work_struct del_work;
 	struct dentry *debugfs_topdir;
-	union {
-		struct {
-			enum {	/* AT command parser state */
-				AT_PARSER_WAIT_A,
-				AT_PARSER_WAIT_T,
-				AT_PARSER_WAIT_TERM,
-				AT_PARSER_SKIP_LINE,
-			} pstate;
-		} at_emul;
-		struct {
-			struct timer_list timer;
-		} nmea_emul;
-	};
+	enum {			/* AT command parser state */
+		AT_PARSER_WAIT_A,
+		AT_PARSER_WAIT_T,
+		AT_PARSER_WAIT_TERM,
+		AT_PARSER_SKIP_LINE,
+	} pstate;
 };
 
 static const struct file_operations wwan_hwsim_debugfs_portdestroy_fops;
@@ -110,16 +99,16 @@ static const struct wwan_ops wwan_hwsim_wwan_rtnl_ops = {
 	.setup = wwan_hwsim_netdev_setup,
 };
 
-static int wwan_hwsim_at_emul_start(struct wwan_port *wport)
+static int wwan_hwsim_port_start(struct wwan_port *wport)
 {
 	struct wwan_hwsim_port *port = wwan_port_get_drvdata(wport);
 
-	port->at_emul.pstate = AT_PARSER_WAIT_A;
+	port->pstate = AT_PARSER_WAIT_A;
 
 	return 0;
 }
 
-static void wwan_hwsim_at_emul_stop(struct wwan_port *wport)
+static void wwan_hwsim_port_stop(struct wwan_port *wport)
 {
 }
 
@@ -129,7 +118,7 @@ static void wwan_hwsim_at_emul_stop(struct wwan_port *wport)
  *
  * Be aware that this processor is not fully V.250 compliant.
  */
-static int wwan_hwsim_at_emul_tx(struct wwan_port *wport, struct sk_buff *in)
+static int wwan_hwsim_port_tx(struct wwan_port *wport, struct sk_buff *in)
 {
 	struct wwan_hwsim_port *port = wwan_port_get_drvdata(wport);
 	struct sk_buff *out;
@@ -151,17 +140,17 @@ static int wwan_hwsim_at_emul_tx(struct wwan_port *wport, struct sk_buff *in)
 	for (i = 0, s = 0; i < in->len; ++i) {
 		char c = in->data[i];
 
-		if (port->at_emul.pstate == AT_PARSER_WAIT_A) {
+		if (port->pstate == AT_PARSER_WAIT_A) {
 			if (c == 'A' || c == 'a')
-				port->at_emul.pstate = AT_PARSER_WAIT_T;
+				port->pstate = AT_PARSER_WAIT_T;
 			else if (c != '\n')	/* Ignore formating char */
-				port->at_emul.pstate = AT_PARSER_SKIP_LINE;
-		} else if (port->at_emul.pstate == AT_PARSER_WAIT_T) {
+				port->pstate = AT_PARSER_SKIP_LINE;
+		} else if (port->pstate == AT_PARSER_WAIT_T) {
 			if (c == 'T' || c == 't')
-				port->at_emul.pstate = AT_PARSER_WAIT_TERM;
+				port->pstate = AT_PARSER_WAIT_TERM;
 			else
-				port->at_emul.pstate = AT_PARSER_SKIP_LINE;
-		} else if (port->at_emul.pstate == AT_PARSER_WAIT_TERM) {
+				port->pstate = AT_PARSER_SKIP_LINE;
+		} else if (port->pstate == AT_PARSER_WAIT_TERM) {
 			if (c != '\r')
 				continue;
 			/* Consume the trailing formatting char as well */
@@ -171,11 +160,11 @@ static int wwan_hwsim_at_emul_tx(struct wwan_port *wport, struct sk_buff *in)
 			skb_put_data(out, &in->data[s], n);/* Echo */
 			skb_put_data(out, "\r\nOK\r\n", 6);
 			s = i + 1;
-			port->at_emul.pstate = AT_PARSER_WAIT_A;
-		} else if (port->at_emul.pstate == AT_PARSER_SKIP_LINE) {
+			port->pstate = AT_PARSER_WAIT_A;
+		} else if (port->pstate == AT_PARSER_SKIP_LINE) {
 			if (c != '\r')
 				continue;
-			port->at_emul.pstate = AT_PARSER_WAIT_A;
+			port->pstate = AT_PARSER_WAIT_A;
 		}
 	}
 
@@ -192,130 +181,17 @@ static int wwan_hwsim_at_emul_tx(struct wwan_port *wport, struct sk_buff *in)
 	return 0;
 }
 
-static const struct wwan_port_ops wwan_hwsim_at_emul_port_ops = {
-	.start = wwan_hwsim_at_emul_start,
-	.stop = wwan_hwsim_at_emul_stop,
-	.tx = wwan_hwsim_at_emul_tx,
+static const struct wwan_port_ops wwan_hwsim_port_ops = {
+	.start = wwan_hwsim_port_start,
+	.stop = wwan_hwsim_port_stop,
+	.tx = wwan_hwsim_port_tx,
 };
 
-#if IS_ENABLED(CONFIG_GNSS)
-#define NMEA_MAX_LEN		82	/* Max sentence length */
-#define NMEA_TRAIL_LEN		5	/* '*' + Checksum + <CR><LF> */
-#define NMEA_MAX_DATA_LEN	(NMEA_MAX_LEN - NMEA_TRAIL_LEN)
-
-static __printf(2, 3)
-void wwan_hwsim_nmea_skb_push_sentence(struct sk_buff *skb,
-				       const char *fmt, ...)
+static struct wwan_hwsim_port *wwan_hwsim_port_new(struct wwan_hwsim_dev *dev)
 {
-	unsigned char *s, *p;
-	va_list ap;
-	u8 cs = 0;
-	int len;
-
-	s = skb_put(skb, NMEA_MAX_LEN + 1);	/* +'\0' */
-	if (!s)
-		return;
-
-	va_start(ap, fmt);
-	len = vsnprintf(s, NMEA_MAX_DATA_LEN + 1, fmt, ap);
-	va_end(ap);
-	if (WARN_ON_ONCE(len > NMEA_MAX_DATA_LEN))/* No space for trailer */
-		return;
-
-	for (p = s + 1; *p != '\0'; ++p)/* Skip leading '$' or '!' */
-		cs ^= *p;
-	p += snprintf(p, 5 + 1, "*%02X\r\n", cs);
-
-	len = (p - s) - (NMEA_MAX_LEN + 1);	/* exp. vs real length diff */
-	skb->tail += len;			/* Adjust tail to real length */
-	skb->len += len;
-}
-
-static void wwan_hwsim_nmea_emul_timer(struct timer_list *t)
-{
-	/* 43.74754722298909 N 11.25759835922875 E in DMM format */
-	static const unsigned int coord[4 * 2] = { 43, 44, 8528, 0,
-						   11, 15, 4559, 0 };
-	struct wwan_hwsim_port *port = timer_container_of(port, t, nmea_emul.timer);
-	struct sk_buff *skb;
-	struct tm tm;
-
-	time64_to_tm(ktime_get_real_seconds(), 0, &tm);
-
-	mod_timer(&port->nmea_emul.timer, jiffies + HZ);	/* 1 second */
-
-	skb = alloc_skb(NMEA_MAX_LEN * 2 + 2, GFP_ATOMIC);	/* GGA + RMC */
-	if (!skb)
-		return;
-
-	wwan_hwsim_nmea_skb_push_sentence(skb,
-					  "$GPGGA,%02u%02u%02u.000,%02u%02u.%04u,%c,%03u%02u.%04u,%c,1,7,1.03,176.2,M,55.2,M,,",
-					  tm.tm_hour, tm.tm_min, tm.tm_sec,
-					  coord[0], coord[1], coord[2],
-					  coord[3] ? 'S' : 'N',
-					  coord[4], coord[5], coord[6],
-					  coord[7] ? 'W' : 'E');
-
-	wwan_hwsim_nmea_skb_push_sentence(skb,
-					  "$GPRMC,%02u%02u%02u.000,A,%02u%02u.%04u,%c,%03u%02u.%04u,%c,0.02,31.66,%02u%02u%02u,,,A",
-					  tm.tm_hour, tm.tm_min, tm.tm_sec,
-					  coord[0], coord[1], coord[2],
-					  coord[3] ? 'S' : 'N',
-					  coord[4], coord[5], coord[6],
-					  coord[7] ? 'W' : 'E',
-					  tm.tm_mday, tm.tm_mon + 1,
-					  (unsigned int)tm.tm_year - 100);
-
-	wwan_port_rx(port->wwan, skb);
-}
-
-static int wwan_hwsim_nmea_emul_start(struct wwan_port *wport)
-{
-	struct wwan_hwsim_port *port = wwan_port_get_drvdata(wport);
-
-	timer_setup(&port->nmea_emul.timer, wwan_hwsim_nmea_emul_timer, 0);
-	wwan_hwsim_nmea_emul_timer(&port->nmea_emul.timer);
-
-	return 0;
-}
-
-static void wwan_hwsim_nmea_emul_stop(struct wwan_port *wport)
-{
-	struct wwan_hwsim_port *port = wwan_port_get_drvdata(wport);
-
-	timer_delete_sync(&port->nmea_emul.timer);
-}
-
-static int wwan_hwsim_nmea_emul_tx(struct wwan_port *wport, struct sk_buff *in)
-{
-	consume_skb(in);
-
-	return 0;
-}
-
-static const struct wwan_port_ops wwan_hwsim_nmea_emul_port_ops = {
-	.start = wwan_hwsim_nmea_emul_start,
-	.stop = wwan_hwsim_nmea_emul_stop,
-	.tx = wwan_hwsim_nmea_emul_tx,
-};
-#endif
-
-static struct wwan_hwsim_port *wwan_hwsim_port_new(struct wwan_hwsim_dev *dev,
-						   enum wwan_port_type type)
-{
-	const struct wwan_port_ops *ops;
 	struct wwan_hwsim_port *port;
 	char name[0x10];
 	int err;
-
-	if (type == WWAN_PORT_AT)
-		ops = &wwan_hwsim_at_emul_port_ops;
-#if IS_ENABLED(CONFIG_GNSS)
-	else if (type == WWAN_PORT_NMEA)
-		ops = &wwan_hwsim_nmea_emul_port_ops;
-#endif
-	else
-		return ERR_PTR(-EINVAL);
 
 	port = kzalloc(sizeof(*port), GFP_KERNEL);
 	if (!port)
@@ -327,7 +203,9 @@ static struct wwan_hwsim_port *wwan_hwsim_port_new(struct wwan_hwsim_dev *dev,
 	port->id = dev->port_idx++;
 	spin_unlock(&dev->ports_lock);
 
-	port->wwan = wwan_create_port(&dev->dev, type, ops, NULL, port);
+	port->wwan = wwan_create_port(&dev->dev, WWAN_PORT_AT,
+				      &wwan_hwsim_port_ops,
+				      port);
 	if (IS_ERR(port->wwan)) {
 		err = PTR_ERR(port->wwan);
 		goto err_free_port;
@@ -399,7 +277,7 @@ static struct wwan_hwsim_dev *wwan_hwsim_dev_new(void)
 	spin_unlock(&wwan_hwsim_devs_lock);
 
 	dev->dev.release = wwan_hwsim_dev_release;
-	dev->dev.class = &wwan_hwsim_class;
+	dev->dev.class = wwan_hwsim_class;
 	dev_set_name(&dev->dev, "hwsim%u", dev->id);
 
 	spin_lock_init(&dev->ports_lock);
@@ -512,7 +390,7 @@ static ssize_t wwan_hwsim_debugfs_portcreate_write(struct file *file,
 	struct wwan_hwsim_dev *dev = file->private_data;
 	struct wwan_hwsim_port *port;
 
-	port = wwan_hwsim_port_new(dev, WWAN_PORT_AT);
+	port = wwan_hwsim_port_new(dev);
 	if (IS_ERR(port))
 		return PTR_ERR(port);
 
@@ -579,8 +457,6 @@ static int __init wwan_hwsim_init_devs(void)
 	int i, j;
 
 	for (i = 0; i < wwan_hwsim_devsnum; ++i) {
-		struct wwan_hwsim_port *port;
-
 		dev = wwan_hwsim_dev_new();
 		if (IS_ERR(dev))
 			return PTR_ERR(dev);
@@ -589,12 +465,13 @@ static int __init wwan_hwsim_init_devs(void)
 		list_add_tail(&dev->list, &wwan_hwsim_devs);
 		spin_unlock(&wwan_hwsim_devs_lock);
 
-		/* Create a few various ports per each device to accelerate
+		/* Create a couple of ports per each device to accelerate
 		 * the simulator readiness time.
 		 */
-
 		for (j = 0; j < 2; ++j) {
-			port = wwan_hwsim_port_new(dev, WWAN_PORT_AT);
+			struct wwan_hwsim_port *port;
+
+			port = wwan_hwsim_port_new(dev);
 			if (IS_ERR(port))
 				return PTR_ERR(port);
 
@@ -602,18 +479,6 @@ static int __init wwan_hwsim_init_devs(void)
 			list_add_tail(&port->list, &dev->ports);
 			spin_unlock(&dev->ports_lock);
 		}
-
-#if IS_ENABLED(CONFIG_GNSS)
-		port = wwan_hwsim_port_new(dev, WWAN_PORT_NMEA);
-		if (IS_ERR(port)) {
-			dev_warn(&dev->dev, "failed to create initial NMEA port: %d\n",
-				 (int)PTR_ERR(port));
-		} else {
-			spin_lock(&dev->ports_lock);
-			list_add_tail(&port->list, &dev->ports);
-			spin_unlock(&dev->ports_lock);
-		}
-#endif
 	}
 
 	return 0;
@@ -642,13 +507,15 @@ static int __init wwan_hwsim_init(void)
 	if (wwan_hwsim_devsnum < 0 || wwan_hwsim_devsnum > 128)
 		return -EINVAL;
 
-	wwan_wq = alloc_workqueue("wwan_wq", WQ_PERCPU, 0);
+	wwan_wq = alloc_workqueue("wwan_wq", 0, 0);
 	if (!wwan_wq)
 		return -ENOMEM;
 
-	err = class_register(&wwan_hwsim_class);
-	if (err)
+	wwan_hwsim_class = class_create(THIS_MODULE, "wwan_hwsim");
+	if (IS_ERR(wwan_hwsim_class)) {
+		err = PTR_ERR(wwan_hwsim_class);
 		goto err_wq_destroy;
+	}
 
 	wwan_hwsim_debugfs_topdir = debugfs_create_dir("wwan_hwsim", NULL);
 	wwan_hwsim_debugfs_devcreate =
@@ -667,7 +534,7 @@ err_clean_devs:
 	wwan_hwsim_free_devs();
 	flush_workqueue(wwan_wq);	/* Wait deletion works completion */
 	debugfs_remove(wwan_hwsim_debugfs_topdir);
-	class_unregister(&wwan_hwsim_class);
+	class_destroy(wwan_hwsim_class);
 err_wq_destroy:
 	destroy_workqueue(wwan_wq);
 
@@ -680,7 +547,7 @@ static void __exit wwan_hwsim_exit(void)
 	wwan_hwsim_free_devs();
 	flush_workqueue(wwan_wq);	/* Wait deletion works completion */
 	debugfs_remove(wwan_hwsim_debugfs_topdir);
-	class_unregister(&wwan_hwsim_class);
+	class_destroy(wwan_hwsim_class);
 	destroy_workqueue(wwan_wq);
 }
 

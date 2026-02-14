@@ -44,34 +44,6 @@ enum {
 	NOT_ON_MEDIA = 3,
 };
 
-static void do_insert_old_idx(struct ubifs_info *c,
-			      struct ubifs_old_idx *old_idx)
-{
-	struct ubifs_old_idx *o;
-	struct rb_node **p, *parent = NULL;
-
-	p = &c->old_idx.rb_node;
-	while (*p) {
-		parent = *p;
-		o = rb_entry(parent, struct ubifs_old_idx, rb);
-		if (old_idx->lnum < o->lnum)
-			p = &(*p)->rb_left;
-		else if (old_idx->lnum > o->lnum)
-			p = &(*p)->rb_right;
-		else if (old_idx->offs < o->offs)
-			p = &(*p)->rb_left;
-		else if (old_idx->offs > o->offs)
-			p = &(*p)->rb_right;
-		else {
-			ubifs_err(c, "old idx added twice!");
-			kfree(old_idx);
-			return;
-		}
-	}
-	rb_link_node(&old_idx->rb, parent, p);
-	rb_insert_color(&old_idx->rb, &c->old_idx);
-}
-
 /**
  * insert_old_idx - record an index node obsoleted since the last commit start.
  * @c: UBIFS file-system description object
@@ -97,15 +69,35 @@ static void do_insert_old_idx(struct ubifs_info *c,
  */
 static int insert_old_idx(struct ubifs_info *c, int lnum, int offs)
 {
-	struct ubifs_old_idx *old_idx;
+	struct ubifs_old_idx *old_idx, *o;
+	struct rb_node **p, *parent = NULL;
 
 	old_idx = kmalloc(sizeof(struct ubifs_old_idx), GFP_NOFS);
 	if (unlikely(!old_idx))
 		return -ENOMEM;
 	old_idx->lnum = lnum;
 	old_idx->offs = offs;
-	do_insert_old_idx(c, old_idx);
 
+	p = &c->old_idx.rb_node;
+	while (*p) {
+		parent = *p;
+		o = rb_entry(parent, struct ubifs_old_idx, rb);
+		if (lnum < o->lnum)
+			p = &(*p)->rb_left;
+		else if (lnum > o->lnum)
+			p = &(*p)->rb_right;
+		else if (offs < o->offs)
+			p = &(*p)->rb_left;
+		else if (offs > o->offs)
+			p = &(*p)->rb_right;
+		else {
+			ubifs_err(c, "old idx added twice!");
+			kfree(old_idx);
+			return 0;
+		}
+	}
+	rb_link_node(&old_idx->rb, parent, p);
+	rb_insert_color(&old_idx->rb, &c->old_idx);
 	return 0;
 }
 
@@ -207,6 +199,23 @@ static struct ubifs_znode *copy_znode(struct ubifs_info *c,
 	__set_bit(DIRTY_ZNODE, &zn->flags);
 	__clear_bit(COW_ZNODE, &zn->flags);
 
+	ubifs_assert(c, !ubifs_zn_obsolete(znode));
+	__set_bit(OBSOLETE_ZNODE, &znode->flags);
+
+	if (znode->level != 0) {
+		int i;
+		const int n = zn->child_cnt;
+
+		/* The children now have new parent */
+		for (i = 0; i < n; i++) {
+			struct ubifs_zbranch *zbr = &zn->zbranch[i];
+
+			if (zbr->znode)
+				zbr->znode->parent = zn;
+		}
+	}
+
+	atomic_long_inc(&c->dirty_zn_cnt);
 	return zn;
 }
 
@@ -222,42 +231,6 @@ static int add_idx_dirt(struct ubifs_info *c, int lnum, int dirt)
 {
 	c->calc_idx_sz -= ALIGN(dirt, 8);
 	return ubifs_add_dirt(c, lnum, dirt);
-}
-
-/**
- * replace_znode - replace old znode with new znode.
- * @c: UBIFS file-system description object
- * @new_zn: new znode
- * @old_zn: old znode
- * @zbr: the branch of parent znode
- *
- * Replace old znode with new znode in TNC.
- */
-static void replace_znode(struct ubifs_info *c, struct ubifs_znode *new_zn,
-			  struct ubifs_znode *old_zn, struct ubifs_zbranch *zbr)
-{
-	ubifs_assert(c, !ubifs_zn_obsolete(old_zn));
-	__set_bit(OBSOLETE_ZNODE, &old_zn->flags);
-
-	if (old_zn->level != 0) {
-		int i;
-		const int n = new_zn->child_cnt;
-
-		/* The children now have new parent */
-		for (i = 0; i < n; i++) {
-			struct ubifs_zbranch *child = &new_zn->zbranch[i];
-
-			if (child->znode)
-				child->znode->parent = new_zn;
-		}
-	}
-
-	zbr->znode = new_zn;
-	zbr->lnum = 0;
-	zbr->offs = 0;
-	zbr->len = 0;
-
-	atomic_long_inc(&c->dirty_zn_cnt);
 }
 
 /**
@@ -292,32 +265,28 @@ static struct ubifs_znode *dirty_cow_znode(struct ubifs_info *c,
 		return zn;
 
 	if (zbr->len) {
-		struct ubifs_old_idx *old_idx;
-
-		old_idx = kmalloc(sizeof(struct ubifs_old_idx), GFP_NOFS);
-		if (unlikely(!old_idx)) {
-			err = -ENOMEM;
+		err = insert_old_idx(c, zbr->lnum, zbr->offs);
+		if (unlikely(err))
+			/*
+			 * Obsolete znodes will be freed by tnc_destroy_cnext()
+			 * or free_obsolete_znodes(), copied up znodes should
+			 * be added back to tnc and freed by
+			 * ubifs_destroy_tnc_subtree().
+			 */
 			goto out;
-		}
-		old_idx->lnum = zbr->lnum;
-		old_idx->offs = zbr->offs;
-
 		err = add_idx_dirt(c, zbr->lnum, zbr->len);
-		if (err) {
-			kfree(old_idx);
-			goto out;
-		}
-
-		do_insert_old_idx(c, old_idx);
-	}
-
-	replace_znode(c, zn, znode, zbr);
-
-	return zn;
+	} else
+		err = 0;
 
 out:
-	kfree(zn);
-	return ERR_PTR(err);
+	zbr->znode = zn;
+	zbr->lnum = 0;
+	zbr->offs = 0;
+	zbr->len = 0;
+
+	if (unlikely(err))
+		return ERR_PTR(err);
+	return zn;
 }
 
 /**
@@ -2930,6 +2899,8 @@ int ubifs_tnc_remove_ino(struct ubifs_info *c, ino_t inum)
 		dbg_tnc("xent '%s', ino %lu", xent->name,
 			(unsigned long)xattr_inum);
 
+		ubifs_evict_xattr_inode(c, xattr_inum);
+
 		fname_name(&nm) = xent->name;
 		fname_len(&nm) = le16_to_cpu(xent->nlen);
 		err = ubifs_tnc_remove_nm(c, &key1, &nm);
@@ -3114,7 +3085,14 @@ static void tnc_destroy_cnext(struct ubifs_info *c)
 void ubifs_tnc_close(struct ubifs_info *c)
 {
 	tnc_destroy_cnext(c);
-	ubifs_destroy_tnc_tree(c);
+	if (c->zroot.znode) {
+		long n, freed;
+
+		n = atomic_long_read(&c->clean_zn_cnt);
+		freed = ubifs_destroy_tnc_subtree(c, c->zroot.znode);
+		ubifs_assert(c, freed == n);
+		atomic_long_sub(n, &ubifs_clean_zn_cnt);
+	}
 	kfree(c->gap_lebs);
 	kfree(c->ilebs);
 	destroy_old_idx(c);

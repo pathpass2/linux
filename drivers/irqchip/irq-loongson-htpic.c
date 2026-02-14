@@ -71,17 +71,13 @@ static void htpic_reg_init(void)
 	writel(0xffff, htpic->base + HTINT_EN_OFF);
 }
 
-static void htpic_resume(void *data)
+static void htpic_resume(void)
 {
 	htpic_reg_init();
 }
 
-static const struct syscore_ops htpic_syscore_ops = {
+struct syscore_ops htpic_syscore_ops = {
 	.resume		= htpic_resume,
-};
-
-static struct syscore htpic_syscore = {
-	.ops = &htpic_syscore_ops,
 };
 
 static int __init htpic_of_init(struct device_node *node, struct device_node *parent)
@@ -134,7 +130,7 @@ static int __init htpic_of_init(struct device_node *node, struct device_node *pa
 						htpic_irq_dispatch, htpic);
 	}
 
-	register_syscore(&htpic_syscore);
+	register_syscore_ops(&htpic_syscore_ops);
 
 	return 0;
 

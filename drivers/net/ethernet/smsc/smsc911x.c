@@ -43,6 +43,8 @@
 #include <linux/smsc911x.h>
 #include <linux/device.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_gpio.h>
 #include <linux/of_net.h>
 #include <linux/acpi.h>
 #include <linux/pm_runtime.h>
@@ -55,7 +57,6 @@
 #define SMSC_MDIONAME		"smsc911x-mdio"
 #define SMSC_DRV_VERSION	"2008-10-21"
 
-MODULE_DESCRIPTION("SMSC LAN911x/LAN921x Ethernet driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(SMSC_DRV_VERSION);
 MODULE_ALIAS("platform:smsc911x");
@@ -551,7 +552,7 @@ static void smsc911x_mac_write(struct smsc911x_data *pdata,
 /* Get a phy register */
 static int smsc911x_mii_read(struct mii_bus *bus, int phyaddr, int regidx)
 {
-	struct smsc911x_data *pdata = bus->priv;
+	struct smsc911x_data *pdata = (struct smsc911x_data *)bus->priv;
 	unsigned long flags;
 	unsigned int addr;
 	int i, reg;
@@ -590,7 +591,7 @@ out:
 static int smsc911x_mii_write(struct mii_bus *bus, int phyaddr, int regidx,
 			   u16 val)
 {
-	struct smsc911x_data *pdata = bus->priv;
+	struct smsc911x_data *pdata = (struct smsc911x_data *)bus->priv;
 	unsigned long flags;
 	unsigned int addr;
 	int i, reg;
@@ -1015,7 +1016,7 @@ static void smsc911x_phy_adjust_link(struct net_device *dev)
 static int smsc911x_mii_probe(struct net_device *dev)
 {
 	struct smsc911x_data *pdata = netdev_priv(dev);
-	struct phy_device *phydev;
+	struct phy_device *phydev = NULL;
 	int ret;
 
 	/* find the first phy */
@@ -1743,6 +1744,7 @@ irq_stop_out:
 	free_irq(dev->irq, dev);
 mii_free_out:
 	phy_disconnect(dev->phydev);
+	dev->phydev = NULL;
 out:
 	pm_runtime_put(dev->dev.parent);
 	return retval;
@@ -1773,6 +1775,7 @@ static int smsc911x_stop(struct net_device *dev)
 	if (dev->phydev) {
 		phy_stop(dev->phydev);
 		phy_disconnect(dev->phydev);
+		dev->phydev = NULL;
 	}
 	netif_carrier_off(dev);
 	pm_runtime_put(dev->dev.parent);
@@ -2162,19 +2165,9 @@ static const struct net_device_ops smsc911x_netdev_ops = {
 static void smsc911x_read_mac_address(struct net_device *dev)
 {
 	struct smsc911x_data *pdata = netdev_priv(dev);
-	u32 mac_high16, mac_low32;
+	u32 mac_high16 = smsc911x_mac_read(pdata, ADDRH);
+	u32 mac_low32 = smsc911x_mac_read(pdata, ADDRL);
 	u8 addr[ETH_ALEN];
-
-	mac_high16 = smsc911x_mac_read(pdata, ADDRH);
-	mac_low32 = smsc911x_mac_read(pdata, ADDRL);
-
-	/* The first mac_read in some setups can incorrectly read 0. Re-read it
-	 * to get the full MAC if this is observed.
-	 */
-	if (mac_high16 == 0) {
-		SMSC_TRACE(pdata, probe, "Re-read MAC ADDRH\n");
-		mac_high16 = smsc911x_mac_read(pdata, ADDRH);
-	}
 
 	addr[0] = (u8)(mac_low32);
 	addr[1] = (u8)(mac_low32 >> 8);
@@ -2324,7 +2317,7 @@ static int smsc911x_init(struct net_device *dev)
 	return 0;
 }
 
-static void smsc911x_drv_remove(struct platform_device *pdev)
+static int smsc911x_drv_remove(struct platform_device *pdev)
 {
 	struct net_device *dev;
 	struct smsc911x_data *pdata;
@@ -2358,9 +2351,11 @@ static void smsc911x_drv_remove(struct platform_device *pdev)
 	free_netdev(dev);
 
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
-/* standard register access */
+/* standard register acces */
 static const struct smsc911x_ops standard_smsc911x_ops = {
 	.reg_read = __smsc911x_reg_read,
 	.reg_write = __smsc911x_reg_write,

@@ -1012,7 +1012,7 @@ static int i810_check_params(struct fb_var_screeninfo *var,
 						      var->bits_per_pixel);
 			vidmem = line_length * info->var.yres;
 			if (vxres < var->xres) {
-				dev_info(&par->dev->dev, "required video memory, "
+				printk("i810fb: required video memory, "
 				       "%d bytes, for %dx%d-%d (virtual) "
 				       "is out of range\n",
 				       vidmem, vxres, vyres,
@@ -1067,9 +1067,9 @@ static int i810_check_params(struct fb_var_screeninfo *var,
 				|(info->monspecs.hfmax-HFMAX)
 				|(info->monspecs.vfmin-VFMIN)
 				|(info->monspecs.vfmax-VFMAX);
-			dev_err(&par->dev->dev, "invalid video mode%s\n",
-				default_sync ? "" : ". Specifying "
-				"vsyncN/hsyncN parameters may help");
+			printk("i810fb: invalid video mode%s\n",
+			       default_sync ? "" : ". Specifying "
+			       "vsyncN/hsyncN parameters may help");
 			retval = -EINVAL;
 		}
 	}
@@ -1442,13 +1442,13 @@ static int i810fb_set_par(struct fb_info *info)
 	encode_fix(&info->fix, info);
 
 	if (info->var.accel_flags && !(par->dev_flags & LOCKUP)) {
-		info->flags = FBINFO_HWACCEL_YPAN |
+		info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN |
 		FBINFO_HWACCEL_COPYAREA | FBINFO_HWACCEL_FILLRECT |
 		FBINFO_HWACCEL_IMAGEBLIT;
 		info->pixmap.scan_align = 2;
 	} else {
 		info->pixmap.scan_align = 1;
-		info->flags = FBINFO_HWACCEL_YPAN;
+		info->flags = FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
 	}
 	return 0;
 }
@@ -1547,7 +1547,6 @@ static const struct fb_ops i810fb_ops = {
 	.owner =             THIS_MODULE,
 	.fb_open =           i810fb_open,
 	.fb_release =        i810fb_release,
-	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var =      i810fb_check_var,
 	.fb_set_par =        i810fb_set_par,
 	.fb_setcolreg =      i810fb_setcolreg,
@@ -1558,7 +1557,6 @@ static const struct fb_ops i810fb_ops = {
 	.fb_imageblit =      i810fb_imageblit,
 	.fb_cursor =         i810fb_cursor,
 	.fb_sync =           i810fb_sync,
-	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /***********************************************************************
@@ -1674,19 +1672,19 @@ static int i810_alloc_agp_mem(struct fb_info *info)
 	size = par->fb.size + par->iring.size;
 
 	if (!(bridge = agp_backend_acquire(par->dev))) {
-		dev_warn(&par->dev->dev, "cannot acquire agpgart\n");
+		printk("i810fb_alloc_fbmem: cannot acquire agpgart\n");
 		return -ENODEV;
 	}
 	if (!(par->i810_gtt.i810_fb_memory =
 	      agp_allocate_memory(bridge, size >> 12, AGP_NORMAL_MEMORY))) {
-		dev_warn(&par->dev->dev, "can't allocate framebuffer "
+		printk("i810fb_alloc_fbmem: can't allocate framebuffer "
 		       "memory\n");
 		agp_backend_release(bridge);
 		return -ENOMEM;
 	}
 	if (agp_bind_memory(par->i810_gtt.i810_fb_memory,
 			    par->fb.offset)) {
-		dev_warn(&par->dev->dev, "can't bind framebuffer memory\n");
+		printk("i810fb_alloc_fbmem: can't bind framebuffer memory\n");
 		agp_backend_release(bridge);
 		return -EBUSY;
 	}
@@ -1694,14 +1692,14 @@ static int i810_alloc_agp_mem(struct fb_info *info)
 	if (!(par->i810_gtt.i810_cursor_memory =
 	      agp_allocate_memory(bridge, par->cursor_heap.size >> 12,
 				  AGP_PHYSICAL_MEMORY))) {
-		dev_warn(&par->dev->dev, "can't allocate "
+		printk("i810fb_alloc_cursormem:  can't allocate "
 		       "cursor memory\n");
 		agp_backend_release(bridge);
 		return -ENOMEM;
 	}
 	if (agp_bind_memory(par->i810_gtt.i810_cursor_memory,
 			    par->cursor_heap.offset)) {
-		dev_warn(&par->dev->dev, "cannot bind cursor memory\n");
+		printk("i810fb_alloc_cursormem: cannot bind cursor memory\n");
 		agp_backend_release(bridge);
 		return -EBUSY;
 	}
@@ -1844,7 +1842,7 @@ static int i810_allocate_pci_resource(struct i810fb_par *par,
 	int err;
 
 	if ((err = pci_enable_device(par->dev))) {
-		dev_err(&par->dev->dev, "cannot enable device\n");
+		printk("i810fb_init: cannot enable device\n");
 		return err;
 	}
 	par->res_flags |= PCI_DEVICE_ENABLED;
@@ -1859,14 +1857,14 @@ static int i810_allocate_pci_resource(struct i810fb_par *par,
 		par->mmio_start_phys = pci_resource_start(par->dev, 0);
 	}
 	if (!par->aperture.size) {
-		dev_warn(&par->dev->dev, "device is disabled\n");
+		printk("i810fb_init: device is disabled\n");
 		return -ENOMEM;
 	}
 
 	if (!request_mem_region(par->aperture.physical,
 				par->aperture.size,
 				i810_pci_list[entry->driver_data])) {
-		dev_warn(&par->dev->dev, "cannot request framebuffer region\n");
+		printk("i810fb_init: cannot request framebuffer region\n");
 		return -ENODEV;
 	}
 	par->res_flags |= FRAMEBUFFER_REQ;
@@ -1874,14 +1872,14 @@ static int i810_allocate_pci_resource(struct i810fb_par *par,
 	par->aperture.virtual = ioremap_wc(par->aperture.physical,
 					   par->aperture.size);
 	if (!par->aperture.virtual) {
-		dev_warn(&par->dev->dev, "cannot remap framebuffer region\n");
+		printk("i810fb_init: cannot remap framebuffer region\n");
 		return -ENODEV;
 	}
 
 	if (!request_mem_region(par->mmio_start_phys,
 				MMIO_SIZE,
 				i810_pci_list[entry->driver_data])) {
-		dev_warn(&par->dev->dev, "cannot request mmio region\n");
+		printk("i810fb_init: cannot request mmio region\n");
 		return -ENODEV;
 	}
 	par->res_flags |= MMIO_REQ;
@@ -1889,7 +1887,7 @@ static int i810_allocate_pci_resource(struct i810fb_par *par,
 	par->mmio_start_virtual = ioremap(par->mmio_start_phys,
 						  MMIO_SIZE);
 	if (!par->mmio_start_virtual) {
-		dev_warn(&par->dev->dev, "cannot remap mmio region\n");
+		printk("i810fb_init: cannot remap mmio region\n");
 		return -ENODEV;
 	}
 
@@ -1921,12 +1919,12 @@ static void i810fb_find_init_mode(struct fb_info *info)
 	}
 
 	if (!err)
-		dev_info(&par->dev->dev, "DDC probe successful\n");
+		printk("i810fb_init_pci: DDC probe successful\n");
 
 	fb_edid_to_monspecs(par->edid, specs);
 
 	if (specs->modedb == NULL)
-		dev_info(&par->dev->dev, "Unable to get Mode Database\n");
+		printk("i810fb_init_pci: Unable to get Mode Database\n");
 
 	fb_videomode_to_modelist(specs->modedb, specs->modedb_len,
 				 &info->modelist);
@@ -2072,7 +2070,7 @@ static int i810fb_init_pci(struct pci_dev *dev,
 
 	if (err < 0) {
     		i810fb_release_resource(info, par);
-		dev_warn(&par->dev->dev, "cannot register framebuffer device\n");
+		printk("i810fb_init: cannot register framebuffer device\n");
     		return err;
     	}
 
@@ -2084,10 +2082,10 @@ static int i810fb_init_pci(struct pci_dev *dev,
 	vfreq = hfreq/(info->var.yres + info->var.upper_margin +
 		       info->var.vsync_len + info->var.lower_margin);
 
-	dev_info(&par->dev->dev, "fb%d         : %s v%d.%d.%d%s\n"
-		"Video RAM   : %dK\n"
-		"Monitor     : H: %d-%d KHz V: %d-%d Hz\n"
-		"Mode        : %dx%d-%dbpp@%dHz\n",
+      	printk("I810FB: fb%d         : %s v%d.%d.%d%s\n"
+      	       "I810FB: Video RAM   : %dK\n"
+	       "I810FB: Monitor     : H: %d-%d KHz V: %d-%d Hz\n"
+	       "I810FB: Mode        : %dx%d-%dbpp@%dHz\n",
 	       info->node,
 	       i810_pci_list[entry->driver_data],
 	       VERSION_MAJOR, VERSION_MINOR, VERSION_TEENIE, BRANCH_VERSION,
@@ -2137,7 +2135,7 @@ static void i810fb_remove_pci(struct pci_dev *dev)
 
 	unregister_framebuffer(info);
 	i810fb_release_resource(info, par);
-	dev_info(&par->dev->dev, "unloaded i810 framebuffer device\n");
+	printk("cleanup_module:  unloaded i810 framebuffer device\n");
 }
 
 #ifndef MODULE

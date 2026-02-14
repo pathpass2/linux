@@ -10,11 +10,11 @@
  */
 
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/i2c.h>
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/regmap.h>
+#include <linux/acpi.h>
 #include <linux/regulator/consumer.h>
 
 #include <linux/iio/iio.h>
@@ -23,6 +23,8 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/triggered_buffer.h>
+
+#define LTR501_DRV_NAME "ltr501"
 
 #define LTR501_ALS_CONTR 0x80 /* ALS operation mode, SW reset */
 #define LTR501_PS_CONTR 0x81 /* PS operation mode */
@@ -62,6 +64,8 @@
 
 #define LTR501_ALS_DEF_PERIOD 500000
 #define LTR501_PS_DEF_PERIOD 100000
+
+#define LTR501_REGMAP_NAME "ltr501_regmap"
 
 #define LTR501_LUX_CONV(vis_coeff, vis_data, ir_coeff, ir_data) \
 			((vis_coeff * vis_data) - (ir_coeff * ir_data))
@@ -537,7 +541,7 @@ static const struct iio_chan_spec_ext_info ltr501_ext_info[] = {
 		.shared = IIO_SEPARATE,
 		.read = ltr501_read_near_level,
 	},
-	{ }
+	{ /* sentinel */ }
 };
 
 static const struct iio_event_spec ltr501_als_event_spec[] = {
@@ -642,36 +646,6 @@ static const struct iio_chan_spec ltr301_channels[] = {
 	IIO_CHAN_SOFT_TIMESTAMP(2),
 };
 
-static int ltr501_read_info_raw(struct ltr501_data *data,
-				struct iio_chan_spec const *chan,
-				int *val)
-{
-	__le16 buf[2];
-	int ret;
-
-	switch (chan->type) {
-	case IIO_INTENSITY:
-		mutex_lock(&data->lock_als);
-		ret = ltr501_read_als(data, buf);
-		mutex_unlock(&data->lock_als);
-		if (ret < 0)
-			return ret;
-		*val = le16_to_cpu(chan->address == LTR501_ALS_DATA1 ?
-				   buf[0] : buf[1]);
-		return IIO_VAL_INT;
-	case IIO_PROXIMITY:
-		mutex_lock(&data->lock_ps);
-		ret = ltr501_read_ps(data);
-		mutex_unlock(&data->lock_ps);
-		if (ret < 0)
-			return ret;
-		*val = ret & LTR501_PS_DATA_MASK;
-		return IIO_VAL_INT;
-	default:
-		return -EINVAL;
-	}
-}
-
 static int ltr501_read_raw(struct iio_dev *indio_dev,
 			   struct iio_chan_spec const *chan,
 			   int *val, int *val2, long mask)
@@ -684,13 +658,14 @@ static int ltr501_read_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_PROCESSED:
 		switch (chan->type) {
 		case IIO_LIGHT:
-			if (!iio_device_claim_direct(indio_dev))
-				return -EBUSY;
+			ret = iio_device_claim_direct_mode(indio_dev);
+			if (ret)
+				return ret;
 
 			mutex_lock(&data->lock_als);
 			ret = ltr501_read_als(data, buf);
 			mutex_unlock(&data->lock_als);
-			iio_device_release_direct(indio_dev);
+			iio_device_release_direct_mode(indio_dev);
 			if (ret < 0)
 				return ret;
 			*val = ltr501_calculate_lux(le16_to_cpu(buf[1]),
@@ -700,12 +675,36 @@ static int ltr501_read_raw(struct iio_dev *indio_dev,
 			return -EINVAL;
 		}
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 
-		ret = ltr501_read_info_raw(data, chan, val);
+		switch (chan->type) {
+		case IIO_INTENSITY:
+			mutex_lock(&data->lock_als);
+			ret = ltr501_read_als(data, buf);
+			mutex_unlock(&data->lock_als);
+			if (ret < 0)
+				break;
+			*val = le16_to_cpu(chan->address == LTR501_ALS_DATA1 ?
+					   buf[0] : buf[1]);
+			ret = IIO_VAL_INT;
+			break;
+		case IIO_PROXIMITY:
+			mutex_lock(&data->lock_ps);
+			ret = ltr501_read_ps(data);
+			mutex_unlock(&data->lock_ps);
+			if (ret < 0)
+				break;
+			*val = ret & LTR501_PS_DATA_MASK;
+			ret = IIO_VAL_INT;
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
 
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		return ret;
 
 	case IIO_CHAN_INFO_SCALE:
@@ -757,13 +756,17 @@ static int ltr501_get_gain_index(const struct ltr501_gain *gain, int size,
 	return -1;
 }
 
-static int __ltr501_write_raw(struct iio_dev *indio_dev,
-			      struct iio_chan_spec const *chan,
-			      int val, int val2, long mask)
+static int ltr501_write_raw(struct iio_dev *indio_dev,
+			    struct iio_chan_spec const *chan,
+			    int val, int val2, long mask)
 {
 	struct ltr501_data *data = iio_priv(indio_dev);
 	int i, ret, freq_val, freq_val2;
 	const struct ltr501_chip_info *info = data->chip_info;
+
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret)
+		return ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SCALE:
@@ -772,43 +775,53 @@ static int __ltr501_write_raw(struct iio_dev *indio_dev,
 			i = ltr501_get_gain_index(info->als_gain,
 						  info->als_gain_tbl_size,
 						  val, val2);
-			if (i < 0)
-				return -EINVAL;
+			if (i < 0) {
+				ret = -EINVAL;
+				break;
+			}
 
 			data->als_contr &= ~info->als_gain_mask;
 			data->als_contr |= i << info->als_gain_shift;
 
-			return regmap_write(data->regmap, LTR501_ALS_CONTR,
-					    data->als_contr);
+			ret = regmap_write(data->regmap, LTR501_ALS_CONTR,
+					   data->als_contr);
+			break;
 		case IIO_PROXIMITY:
 			i = ltr501_get_gain_index(info->ps_gain,
 						  info->ps_gain_tbl_size,
 						  val, val2);
-			if (i < 0)
-				return -EINVAL;
-
+			if (i < 0) {
+				ret = -EINVAL;
+				break;
+			}
 			data->ps_contr &= ~LTR501_CONTR_PS_GAIN_MASK;
 			data->ps_contr |= i << LTR501_CONTR_PS_GAIN_SHIFT;
 
-			return regmap_write(data->regmap, LTR501_PS_CONTR,
-					    data->ps_contr);
+			ret = regmap_write(data->regmap, LTR501_PS_CONTR,
+					   data->ps_contr);
+			break;
 		default:
-			return -EINVAL;
+			ret = -EINVAL;
+			break;
 		}
+		break;
 
 	case IIO_CHAN_INFO_INT_TIME:
 		switch (chan->type) {
 		case IIO_INTENSITY:
-			if (val != 0)
-				return -EINVAL;
-
+			if (val != 0) {
+				ret = -EINVAL;
+				break;
+			}
 			mutex_lock(&data->lock_als);
 			ret = ltr501_set_it_time(data, val2);
 			mutex_unlock(&data->lock_als);
-			return ret;
+			break;
 		default:
-			return -EINVAL;
+			ret = -EINVAL;
+			break;
 		}
+		break;
 
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		switch (chan->type) {
@@ -816,61 +829,50 @@ static int __ltr501_write_raw(struct iio_dev *indio_dev,
 			ret = ltr501_als_read_samp_freq(data, &freq_val,
 							&freq_val2);
 			if (ret < 0)
-				return ret;
+				break;
 
 			ret = ltr501_als_write_samp_freq(data, val, val2);
 			if (ret < 0)
-				return ret;
+				break;
 
 			/* update persistence count when changing frequency */
 			ret = ltr501_write_intr_prst(data, chan->type,
 						     0, data->als_period);
 
 			if (ret < 0)
-				/* Do not ovewrite error */
-				ltr501_als_write_samp_freq(data, freq_val,
-							   freq_val2);
-			return ret;
+				ret = ltr501_als_write_samp_freq(data, freq_val,
+								 freq_val2);
+			break;
 		case IIO_PROXIMITY:
 			ret = ltr501_ps_read_samp_freq(data, &freq_val,
 						       &freq_val2);
 			if (ret < 0)
-				return ret;
+				break;
 
 			ret = ltr501_ps_write_samp_freq(data, val, val2);
 			if (ret < 0)
-				return ret;
+				break;
 
 			/* update persistence count when changing frequency */
 			ret = ltr501_write_intr_prst(data, chan->type,
 						     0, data->ps_period);
 
 			if (ret < 0)
-				/* Do not overwrite error */
-				ltr501_ps_write_samp_freq(data, freq_val,
-							  freq_val2);
-			return ret;
+				ret = ltr501_ps_write_samp_freq(data, freq_val,
+								freq_val2);
+			break;
 		default:
-			return -EINVAL;
+			ret = -EINVAL;
+			break;
 		}
+		break;
+
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
-}
 
-static int ltr501_write_raw(struct iio_dev *indio_dev,
-			    struct iio_chan_spec const *chan,
-			    int val, int val2, long mask)
-{
-	int ret;
-
-	if (!iio_device_claim_direct(indio_dev))
-		return -EBUSY;
-
-	ret = __ltr501_write_raw(indio_dev, chan, val, val2, mask);
-
-	iio_device_release_direct(indio_dev);
-
+	iio_device_release_direct_mode(indio_dev);
 	return ret;
 }
 
@@ -1075,10 +1077,14 @@ static int ltr501_read_event_config(struct iio_dev *indio_dev,
 static int ltr501_write_event_config(struct iio_dev *indio_dev,
 				     const struct iio_chan_spec *chan,
 				     enum iio_event_type type,
-				     enum iio_event_direction dir, bool state)
+				     enum iio_event_direction dir, int state)
 {
 	struct ltr501_data *data = iio_priv(indio_dev);
 	int ret;
+
+	/* only 1 and 0 are valid inputs */
+	if (state != 1  && state != 0)
+		return -EINVAL;
 
 	switch (chan->type) {
 	case IIO_INTENSITY:
@@ -1278,12 +1284,14 @@ static irqreturn_t ltr501_trigger_handler(int irq, void *p)
 	struct ltr501_data *data = iio_priv(indio_dev);
 	struct {
 		u16 channels[3];
-		aligned_s64 ts;
-	} scan = { };
+		s64 ts __aligned(8);
+	} scan;
 	__le16 als_buf[2];
 	u8 mask = 0;
 	int j = 0;
 	int ret, psdata;
+
+	memset(&scan, 0, sizeof(scan));
 
 	/* figure out which data needs to be ready */
 	if (test_bit(0, indio_dev->active_scan_mask) ||
@@ -1315,8 +1323,8 @@ static irqreturn_t ltr501_trigger_handler(int irq, void *p)
 		scan.channels[j++] = psdata & LTR501_PS_DATA_MASK;
 	}
 
-	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
-				    iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, &scan,
+					   iio_get_time_ns(indio_dev));
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -1398,11 +1406,11 @@ static bool ltr501_is_volatile_reg(struct device *dev, unsigned int reg)
 }
 
 static const struct regmap_config ltr501_regmap_config = {
-	.name = "ltr501_regmap",
+	.name =  LTR501_REGMAP_NAME,
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = LTR501_MAX_REG,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.volatile_reg = ltr501_is_volatile_reg,
 };
 
@@ -1413,6 +1421,17 @@ static int ltr501_powerdown(struct ltr501_data *data)
 				  data->ps_contr & ~LTR501_CONTR_ACTIVE);
 }
 
+static const char *ltr501_match_acpi_device(struct device *dev, int *chip_idx)
+{
+	const struct acpi_device_id *id;
+
+	id = acpi_match_device(dev->driver->acpi_match_table, dev);
+	if (!id)
+		return NULL;
+	*chip_idx = id->driver_data;
+	return dev_name(dev);
+}
+
 static int ltr501_probe(struct i2c_client *client)
 {
 	const struct i2c_device_id *id = i2c_client_get_device_id(client);
@@ -1420,10 +1439,8 @@ static int ltr501_probe(struct i2c_client *client)
 	struct ltr501_data *data;
 	struct iio_dev *indio_dev;
 	struct regmap *regmap;
-	const void *ddata = NULL;
-	int partid, chip_idx;
-	const char *name;
-	int ret;
+	int ret, partid, chip_idx = 0;
+	const char *name = NULL;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
 	if (!indio_dev)
@@ -1505,12 +1522,11 @@ static int ltr501_probe(struct i2c_client *client)
 	if (id) {
 		name = id->name;
 		chip_idx = id->driver_data;
+	} else  if (ACPI_HANDLE(&client->dev)) {
+		name = ltr501_match_acpi_device(&client->dev, &chip_idx);
 	} else {
-		name = iio_get_acpi_device_name_and_data(&client->dev, &ddata);
-		chip_idx = (intptr_t)ddata;
-	}
-	if (!name)
 		return -ENODEV;
+	}
 
 	data->chip_info = &ltr501_chip_info_tbl[chip_idx];
 
@@ -1593,10 +1609,10 @@ static int ltr501_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(ltr501_pm_ops, ltr501_suspend, ltr501_resume);
 
 static const struct acpi_device_id ltr_acpi_match[] = {
+	{ "LTER0501", ltr501 },
+	{ "LTER0559", ltr559 },
 	{ "LTER0301", ltr301 },
-	/* https://www.catalog.update.microsoft.com/Search.aspx?q=lter0303 */
-	{ "LTER0303", ltr303 },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, ltr_acpi_match);
 
@@ -1614,18 +1630,18 @@ static const struct of_device_id ltr501_of_match[] = {
 	{ .compatible = "liteon,ltr559", },
 	{ .compatible = "liteon,ltr301", },
 	{ .compatible = "liteon,ltr303", },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, ltr501_of_match);
 
 static struct i2c_driver ltr501_driver = {
 	.driver = {
-		.name   = "ltr501",
+		.name   = LTR501_DRV_NAME,
 		.of_match_table = ltr501_of_match,
 		.pm	= pm_sleep_ptr(&ltr501_pm_ops),
-		.acpi_match_table = ltr_acpi_match,
+		.acpi_match_table = ACPI_PTR(ltr_acpi_match),
 	},
-	.probe = ltr501_probe,
+	.probe_new = ltr501_probe,
 	.remove	= ltr501_remove,
 	.id_table = ltr501_id,
 };

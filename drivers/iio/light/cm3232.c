@@ -54,21 +54,22 @@ static const struct {
 struct cm3232_als_info {
 	u8 regs_cmd_default;
 	u8 hw_id;
+	int calibscale;
 	int mlux_per_bit;
 	int mlux_per_bit_base_it;
 };
 
-static const struct cm3232_als_info cm3232_als_info_default = {
+static struct cm3232_als_info cm3232_als_info_default = {
 	.regs_cmd_default = CM3232_CMD_DEFAULT,
 	.hw_id = CM3232_HW_ID,
+	.calibscale = CM3232_CALIBSCALE_DEFAULT,
 	.mlux_per_bit = CM3232_MLUX_PER_BIT_DEFAULT,
 	.mlux_per_bit_base_it = CM3232_MLUX_PER_BIT_BASE_IT,
 };
 
 struct cm3232_chip {
 	struct i2c_client *client;
-	const struct cm3232_als_info *als_info;
-	int calibscale;
+	struct cm3232_als_info *als_info;
 	u8 regs_cmd;
 	u16 regs_als;
 };
@@ -88,15 +89,6 @@ static int cm3232_reg_init(struct cm3232_chip *chip)
 
 	chip->als_info = &cm3232_als_info_default;
 
-	/* Disable and reset device */
-	chip->regs_cmd = CM3232_CMD_ALS_DISABLE | CM3232_CMD_ALS_RESET;
-	ret = i2c_smbus_write_byte_data(client, CM3232_REG_ADDR_CMD,
-					chip->regs_cmd);
-	if (ret < 0) {
-		dev_err(&chip->client->dev, "Error writing reg_cmd\n");
-		return ret;
-	}
-
 	/* Identify device */
 	ret = i2c_smbus_read_word_data(client, CM3232_REG_ADDR_ID);
 	if (ret < 0) {
@@ -106,6 +98,15 @@ static int cm3232_reg_init(struct cm3232_chip *chip)
 
 	if ((ret & 0xFF) != chip->als_info->hw_id)
 		return -ENODEV;
+
+	/* Disable and reset device */
+	chip->regs_cmd = CM3232_CMD_ALS_DISABLE | CM3232_CMD_ALS_RESET;
+	ret = i2c_smbus_write_byte_data(client, CM3232_REG_ADDR_CMD,
+					chip->regs_cmd);
+	if (ret < 0) {
+		dev_err(&chip->client->dev, "Error writing reg_cmd\n");
+		return ret;
+	}
 
 	/* Register default value */
 	chip->regs_cmd = chip->als_info->regs_cmd_default;
@@ -198,7 +199,7 @@ static int cm3232_write_als_it(struct cm3232_chip *chip, int val, int val2)
 static int cm3232_get_lux(struct cm3232_chip *chip)
 {
 	struct i2c_client *client = chip->client;
-	const struct cm3232_als_info *als_info = chip->als_info;
+	struct cm3232_als_info *als_info = chip->als_info;
 	int ret;
 	int val, val2;
 	int als_it;
@@ -221,7 +222,7 @@ static int cm3232_get_lux(struct cm3232_chip *chip)
 
 	chip->regs_als = (u16)ret;
 	lux *= chip->regs_als;
-	lux *= chip->calibscale;
+	lux *= als_info->calibscale;
 	lux = div_u64(lux, CM3232_CALIBSCALE_RESOLUTION);
 	lux = div_u64(lux, CM3232_MLUX_PER_LUX);
 
@@ -236,6 +237,7 @@ static int cm3232_read_raw(struct iio_dev *indio_dev,
 			int *val, int *val2, long mask)
 {
 	struct cm3232_chip *chip = iio_priv(indio_dev);
+	struct cm3232_als_info *als_info = chip->als_info;
 	int ret;
 
 	switch (mask) {
@@ -246,7 +248,7 @@ static int cm3232_read_raw(struct iio_dev *indio_dev,
 		*val = ret;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_CALIBSCALE:
-		*val = chip->calibscale;
+		*val = als_info->calibscale;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_INT_TIME:
 		return cm3232_read_als_it(chip, val, val2);
@@ -260,10 +262,11 @@ static int cm3232_write_raw(struct iio_dev *indio_dev,
 			int val, int val2, long mask)
 {
 	struct cm3232_chip *chip = iio_priv(indio_dev);
+	struct cm3232_als_info *als_info = chip->als_info;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_CALIBSCALE:
-		chip->calibscale = val;
+		als_info->calibscale = val;
 		return 0;
 	case IIO_CHAN_INFO_INT_TIME:
 		return cm3232_write_als_it(chip, val, val2);
@@ -336,7 +339,6 @@ static int cm3232_probe(struct i2c_client *client)
 	chip = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
 	chip->client = client;
-	chip->calibscale = CM3232_CALIBSCALE_DEFAULT;
 
 	indio_dev->channels = cm3232_channels;
 	indio_dev->num_channels = ARRAY_SIZE(cm3232_channels);
@@ -366,8 +368,8 @@ static void cm3232_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id cm3232_id[] = {
-	{ "cm3232" },
-	{ }
+	{"cm3232", 0},
+	{}
 };
 
 static int cm3232_suspend(struct device *dev)
@@ -404,7 +406,7 @@ MODULE_DEVICE_TABLE(i2c, cm3232_id);
 
 static const struct of_device_id cm3232_of_match[] = {
 	{.compatible = "capella,cm3232"},
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, cm3232_of_match);
 
@@ -415,7 +417,7 @@ static struct i2c_driver cm3232_driver = {
 		.pm	= pm_sleep_ptr(&cm3232_pm_ops),
 	},
 	.id_table	= cm3232_id,
-	.probe		= cm3232_probe,
+	.probe_new	= cm3232_probe,
 	.remove		= cm3232_remove,
 };
 

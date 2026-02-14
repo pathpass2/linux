@@ -67,7 +67,7 @@
 #define PMUNIMPL	(1<<PUNIMPL)
 #define PMMOVEM		(1<<PMOVEM)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -127,7 +127,7 @@ extern unsigned int fp_debugprint;
 
 #define FPDATA		((struct fp_data *)current->thread.fp)
 
-#else	/* __ASSEMBLER__ */
+#else	/* __ASSEMBLY__ */
 
 #define FPDATA		%a2
 
@@ -311,6 +311,6 @@ old_gas=old_gas+1
 .endm
 
 
-#endif	/* __ASSEMBLER__ */
+#endif	/* __ASSEMBLY__ */
 
 #endif	/* _ASM_M68K_SETUP_H */

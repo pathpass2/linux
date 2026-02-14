@@ -124,7 +124,10 @@ struct xenbus_driver {
 	void (*reclaim_memory)(struct xenbus_device *dev);
 };
 
-#define to_xenbus_driver(__drv)	container_of_const(__drv, struct xenbus_driver, driver)
+static inline struct xenbus_driver *to_xenbus_driver(struct device_driver *drv)
+{
+	return container_of(drv, struct xenbus_driver, driver);
+}
 
 int __must_check __xenbus_register_frontend(struct xenbus_driver *drv,
 					    struct module *owner,
@@ -154,11 +157,13 @@ void *xenbus_read(struct xenbus_transaction t,
 		  const char *dir, const char *node, unsigned int *len);
 int xenbus_write(struct xenbus_transaction t,
 		 const char *dir, const char *node, const char *string);
+int xenbus_mkdir(struct xenbus_transaction t,
+		 const char *dir, const char *node);
 int xenbus_exists(struct xenbus_transaction t,
 		  const char *dir, const char *node);
 int xenbus_rm(struct xenbus_transaction t, const char *dir, const char *node);
 int xenbus_transaction_start(struct xenbus_transaction *t);
-int xenbus_transaction_end(struct xenbus_transaction t, bool abort);
+int xenbus_transaction_end(struct xenbus_transaction t, int abort);
 
 /* Single read and scanf: returns -errno or num scanned if > 0. */
 __scanf(4, 5)
@@ -178,7 +183,7 @@ int xenbus_printf(struct xenbus_transaction t,
  * sprintf-style type string, and pointer. Returns 0 or errno.*/
 int xenbus_gather(struct xenbus_transaction t, const char *dir, ...);
 
-/* notifier routines for when the xenstore comes up */
+/* notifer routines for when the xenstore comes up */
 extern int xenstored_ready;
 int register_xenstore_notifier(struct notifier_block *nb);
 void unregister_xenstore_notifier(struct notifier_block *nb);

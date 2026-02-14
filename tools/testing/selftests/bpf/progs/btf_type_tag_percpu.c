@@ -30,42 +30,36 @@ int BPF_PROG(test_percpu2, struct bpf_testmod_btf_type_tag_2 *arg)
 
 /* trace_cgroup_mkdir(struct cgroup *cgrp, const char *path)
  *
- * struct css_rstat_cpu {
+ * struct cgroup_rstat_cpu {
  *   ...
- *   struct cgroup_subsys_state *updated_children;
- *   ...
- * };
- *
- * struct cgroup_subsys_state {
- *   ...
- *   struct css_rstat_cpu __percpu *rstat_cpu;
+ *   struct cgroup *updated_children;
  *   ...
  * };
  *
  * struct cgroup {
- *   struct cgroup_subsys_state self;
+ *   ...
+ *   struct cgroup_rstat_cpu __percpu *rstat_cpu;
  *   ...
  * };
  */
 SEC("tp_btf/cgroup_mkdir")
 int BPF_PROG(test_percpu_load, struct cgroup *cgrp, const char *path)
 {
-	g = (__u64)cgrp->self.rstat_cpu->updated_children;
+	g = (__u64)cgrp->rstat_cpu->updated_children;
 	return 0;
 }
 
 SEC("tp_btf/cgroup_mkdir")
 int BPF_PROG(test_percpu_helper, struct cgroup *cgrp, const char *path)
 {
-	struct css_rstat_cpu *rstat;
+	struct cgroup_rstat_cpu *rstat;
 	__u32 cpu;
 
 	cpu = bpf_get_smp_processor_id();
-	rstat = (struct css_rstat_cpu *)bpf_per_cpu_ptr(
-			cgrp->self.rstat_cpu, cpu);
+	rstat = (struct cgroup_rstat_cpu *)bpf_per_cpu_ptr(cgrp->rstat_cpu, cpu);
 	if (rstat) {
 		/* READ_ONCE */
-		*(volatile long *)rstat;
+		*(volatile int *)rstat;
 	}
 
 	return 0;

@@ -39,9 +39,6 @@ static const struct i2c_device_id pcm512x_i2c_id[] = {
 	{ "pcm5122", },
 	{ "pcm5141", },
 	{ "pcm5142", },
-	{ "pcm5242", },
-	{ "tas5754", },
-	{ "tas5756", },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pcm512x_i2c_id);
@@ -52,9 +49,6 @@ static const struct of_device_id pcm512x_of_match[] = {
 	{ .compatible = "ti,pcm5122", },
 	{ .compatible = "ti,pcm5141", },
 	{ .compatible = "ti,pcm5142", },
-	{ .compatible = "ti,pcm5242", },
-	{ .compatible = "ti,tas5754", },
-	{ .compatible = "ti,tas5756", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, pcm512x_of_match);
@@ -72,14 +66,14 @@ MODULE_DEVICE_TABLE(acpi, pcm512x_acpi_match);
 #endif
 
 static struct i2c_driver pcm512x_i2c_driver = {
-	.probe		= pcm512x_i2c_probe,
+	.probe_new	= pcm512x_i2c_probe,
 	.remove 	= pcm512x_i2c_remove,
 	.id_table	= pcm512x_i2c_id,
 	.driver		= {
 		.name	= "pcm512x",
 		.of_match_table = of_match_ptr(pcm512x_of_match),
 		.acpi_match_table = ACPI_PTR(pcm512x_acpi_match),
-		.pm     = pm_ptr(&pcm512x_pm_ops),
+		.pm     = &pcm512x_pm_ops,
 	},
 };
 

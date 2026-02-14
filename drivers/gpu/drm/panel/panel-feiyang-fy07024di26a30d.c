@@ -11,7 +11,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
 
 #define FEIYANG_INIT_CMD_LEN	2
@@ -189,13 +189,15 @@ static int feiyang_dsi_probe(struct mipi_dsi_device *dsi)
 	struct feiyang *ctx;
 	int ret;
 
-	ctx = devm_drm_panel_alloc(&dsi->dev, struct feiyang, panel,
-				   &feiyang_funcs, DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
 
 	mipi_dsi_set_drvdata(dsi, ctx);
 	ctx->dsi = dsi;
+
+	drm_panel_init(&ctx->panel, &dsi->dev, &feiyang_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 
 	ctx->dvdd = devm_regulator_get(&dsi->dev, "dvdd");
 	if (IS_ERR(ctx->dvdd))

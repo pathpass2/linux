@@ -43,7 +43,7 @@
  *    Bridge address map
  */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define ATE_V		0x01
 #define ATE_CO		0x02
@@ -288,7 +288,7 @@ struct bridge_err_cmdword {
 };
 
 #define berr_field	berr_un.berr_st
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /*
  * The values of these macros can and should be crosschecked

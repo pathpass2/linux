@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation
+// Copyright(c) 2018 Intel Corporation. All rights reserved.
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //
@@ -47,7 +47,7 @@ int sof_ipc_send_msg(struct snd_sof_dev *sdev, void *msg_data, size_t msg_bytes,
 	 * The spin-lock is needed to protect message objects against other
 	 * atomic contexts.
 	 */
-	guard(spinlock_irq)(&sdev->ipc_lock);
+	spin_lock_irq(&sdev->ipc_lock);
 
 	/* initialise the message */
 	msg = &ipc->msg;
@@ -65,6 +65,8 @@ int sof_ipc_send_msg(struct snd_sof_dev *sdev, void *msg_data, size_t msg_bytes,
 	/* Next reply that we receive will be related to this message */
 	if (!ret)
 		msg->ipc_complete = false;
+
+	spin_unlock_irq(&sdev->ipc_lock);
 
 	return ret;
 }
@@ -163,12 +165,12 @@ struct snd_sof_ipc *snd_sof_ipc_init(struct snd_sof_dev *sdev)
 
 	switch (sdev->pdata->ipc_type) {
 #if defined(CONFIG_SND_SOC_SOF_IPC3)
-	case SOF_IPC_TYPE_3:
+	case SOF_IPC:
 		ops = &ipc3_ops;
 		break;
 #endif
-#if defined(CONFIG_SND_SOC_SOF_IPC4)
-	case SOF_IPC_TYPE_4:
+#if defined(CONFIG_SND_SOC_SOF_INTEL_IPC4)
+	case SOF_INTEL_IPC4:
 		ops = &ipc4_ops;
 		break;
 #endif
@@ -223,8 +225,9 @@ void snd_sof_ipc_free(struct snd_sof_dev *sdev)
 		return;
 
 	/* disable sending of ipc's */
-	scoped_guard(mutex, &ipc->tx_mutex)
-		ipc->disable_ipc_tx = true;
+	mutex_lock(&ipc->tx_mutex);
+	ipc->disable_ipc_tx = true;
+	mutex_unlock(&ipc->tx_mutex);
 
 	if (ipc->ops->exit)
 		ipc->ops->exit(sdev);

@@ -46,25 +46,31 @@ static void midi_capture_trigger(struct snd_rawmidi_substream *substream,
 				 int up)
 {
 	struct snd_ff *ff = substream->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&ff->lock);
+	spin_lock_irqsave(&ff->lock, flags);
 
 	if (up)
 		WRITE_ONCE(ff->tx_midi_substreams[substream->number],
 			   substream);
 	else
 		WRITE_ONCE(ff->tx_midi_substreams[substream->number], NULL);
+
+	spin_unlock_irqrestore(&ff->lock, flags);
 }
 
 static void midi_playback_trigger(struct snd_rawmidi_substream *substream,
 				  int up)
 {
 	struct snd_ff *ff = substream->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&ff->lock);
+	spin_lock_irqsave(&ff->lock, flags);
 
 	if (up || !ff->rx_midi_error[substream->number])
 		schedule_work(&ff->rx_midi_work[substream->number]);
+
+	spin_unlock_irqrestore(&ff->lock, flags);
 }
 
 static void set_midi_substream_names(struct snd_rawmidi_str *stream,
@@ -73,8 +79,8 @@ static void set_midi_substream_names(struct snd_rawmidi_str *stream,
 	struct snd_rawmidi_substream *substream;
 
 	list_for_each_entry(substream, &stream->substreams, list) {
-		scnprintf(substream->name, sizeof(substream->name),
-			  "%s MIDI %d", name, substream->number + 1);
+		snprintf(substream->name, sizeof(substream->name),
+			 "%s MIDI %d", name, substream->number + 1);
 	}
 }
 

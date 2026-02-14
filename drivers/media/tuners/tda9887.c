@@ -707,5 +707,4 @@ struct dvb_frontend *tda9887_attach(struct dvb_frontend *fe,
 }
 EXPORT_SYMBOL_GPL(tda9887_attach);
 
-MODULE_DESCRIPTION("NXP TDA9885/6/7 analog IF demodulator driver");
 MODULE_LICENSE("GPL");

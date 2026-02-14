@@ -182,8 +182,6 @@ via UML. To run tests on qemu, by default it requires two flags:
   is ignored), the tests will run via UML. Non-UML architectures,
   for example: i386, x86_64, arm and so on; run on qemu.
 
-  ``--arch help`` lists all valid ``--arch`` values.
-
 - ``--cross_compile``: Specifies the Kbuild toolchain. It passes the
   same argument as passed to the ``CROSS_COMPILE`` variable used by
   Kbuild. As a reminder, this will be the prefix for the toolchain
@@ -323,24 +321,3 @@ command line arguments:
 
 - ``--json``: If set, stores the test results in a JSON format and prints to `stdout` or
   saves to a file if a filename is specified.
-
-- ``--filter``: Specifies filters on test attributes, for example, ``speed!=slow``.
-  Multiple filters can be used by wrapping input in quotes and separating filters
-  by commas. Example: ``--filter "speed>slow, module=example"``.
-
-- ``--filter_action``: If set to ``skip``, filtered tests will be shown as skipped
-  in the output rather than showing no output.
-
-- ``--list_tests``: If set, lists all tests that will be run.
-
-- ``--list_tests_attr``: If set, lists all tests that will be run and all of their
-  attributes.
-
-Command-line completion
-==============================
-
-The kunit_tool comes with a bash completion script:
-
-.. code-block:: bash
-
-	source tools/testing/kunit/kunit-completion.sh

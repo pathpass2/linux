@@ -21,26 +21,15 @@
  * lower 3 bits of the address, to detect memory corruptions with higher
  * probability, where similar constants are used.
  */
-#define KFENCE_CANARY_PATTERN_U8(addr) ((u8)0xaa ^ (u8)((unsigned long)(addr) & 0x7))
-
-/*
- * Define a continuous 8-byte canary starting from a multiple of 8. The canary
- * of each byte is only related to the lowest three bits of its address, so the
- * canary of every 8 bytes is the same. 64-bit memory can be filled and checked
- * at a time instead of byte by byte to improve performance.
- */
-#define KFENCE_CANARY_PATTERN_U64 ((u64)0xaaaaaaaaaaaaaaaa ^ (u64)(le64_to_cpu(0x0706050403020100)))
+#define KFENCE_CANARY_PATTERN(addr) ((u8)0xaa ^ (u8)((unsigned long)(addr) & 0x7))
 
 /* Maximum stack depth for reports. */
 #define KFENCE_STACK_DEPTH 64
-
-extern raw_spinlock_t kfence_freelist_lock;
 
 /* KFENCE object states. */
 enum kfence_object_state {
 	KFENCE_OBJECT_UNUSED,		/* Object is unused. */
 	KFENCE_OBJECT_ALLOCATED,	/* Object is currently allocated. */
-	KFENCE_OBJECT_RCU_FREEING,	/* Object was allocated, and then being freed by rcu. */
 	KFENCE_OBJECT_FREED,		/* Object was allocated, and then freed. */
 };
 
@@ -55,7 +44,7 @@ struct kfence_track {
 
 /* KFENCE metadata per guarded allocation. */
 struct kfence_metadata {
-	struct list_head list __guarded_by(&kfence_freelist_lock);	/* Freelist node. */
+	struct list_head list;		/* Freelist node; access under kfence_freelist_lock. */
 	struct rcu_head rcu_head;	/* For delayed freeing. */
 
 	/*
@@ -93,22 +82,19 @@ struct kfence_metadata {
 	 * In case of an invalid access, the page that was unprotected; we
 	 * optimistically only store one address.
 	 */
-	unsigned long unprotected_page __guarded_by(&lock);
+	unsigned long unprotected_page;
 
 	/* Allocation and free stack information. */
-	struct kfence_track alloc_track __guarded_by(&lock);
-	struct kfence_track free_track __guarded_by(&lock);
+	struct kfence_track alloc_track;
+	struct kfence_track free_track;
 	/* For updating alloc_covered on frees. */
-	u32 alloc_stack_hash __guarded_by(&lock);
+	u32 alloc_stack_hash;
 #ifdef CONFIG_MEMCG
-	struct slabobj_ext obj_exts;
+	struct obj_cgroup *objcg;
 #endif
 };
 
-#define KFENCE_METADATA_SIZE PAGE_ALIGN(sizeof(struct kfence_metadata) * \
-					CONFIG_KFENCE_NUM_OBJECTS)
-
-extern struct kfence_metadata *kfence_metadata;
+extern struct kfence_metadata kfence_metadata[CONFIG_KFENCE_NUM_OBJECTS];
 
 static inline struct kfence_metadata *addr_to_metadata(unsigned long addr)
 {
@@ -143,6 +129,6 @@ enum kfence_error_type {
 void kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
 			 const struct kfence_metadata *meta, enum kfence_error_type type);
 
-void kfence_print_object(struct seq_file *seq, const struct kfence_metadata *meta) __must_hold(&meta->lock);
+void kfence_print_object(struct seq_file *seq, const struct kfence_metadata *meta);
 
 #endif /* MM_KFENCE_KFENCE_H */

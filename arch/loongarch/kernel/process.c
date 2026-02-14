@@ -13,7 +13,6 @@
 #include <linux/cpu.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/entry-common.h>
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/sched/debug.h>
@@ -35,13 +34,10 @@
 #include <linux/nmi.h>
 
 #include <asm/asm.h>
-#include <asm/asm-prototypes.h>
 #include <asm/bootinfo.h>
 #include <asm/cpu.h>
 #include <asm/elf.h>
-#include <asm/exec.h>
 #include <asm/fpu.h>
-#include <asm/lbt.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/irq_regs.h>
@@ -49,7 +45,6 @@
 #include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/reg.h>
-#include <asm/switch_to.h>
 #include <asm/unwind.h>
 #include <asm/vdso.h>
 
@@ -66,9 +61,15 @@ EXPORT_SYMBOL(__stack_chk_guard);
 unsigned long boot_option_idle_override = IDLE_NO_OVERRIDE;
 EXPORT_SYMBOL(boot_option_idle_override);
 
-asmlinkage void restore_and_ret(void);
-asmlinkage void ret_from_fork_asm(void);
-asmlinkage void ret_from_kernel_thread_asm(void);
+#ifdef CONFIG_HOTPLUG_CPU
+void arch_cpu_idle_dead(void)
+{
+	play_dead();
+}
+#endif
+
+asmlinkage void ret_from_fork(void);
+asmlinkage void ret_from_kernel_thread(void);
 
 void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp)
 {
@@ -88,12 +89,9 @@ void start_thread(struct pt_regs *regs, unsigned long pc, unsigned long sp)
 	euen = regs->csr_euen & ~(CSR_EUEN_FPEN);
 	regs->csr_euen = euen;
 	lose_fpu(0);
-	lose_lbt(0);
-	current->thread.fpu.fcsr = boot_cpu_data.fpu_csr0;
 
 	clear_thread_flag(TIF_LSX_CTX_LIVE);
 	clear_thread_flag(TIF_LASX_CTX_LIVE);
-	clear_thread_flag(TIF_LBT_CTX_LIVE);
 	clear_used_math();
 	regs->csr_era = pc;
 	regs->regs[3] = sp;
@@ -119,49 +117,17 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 	 */
 	preempt_disable();
 
-	if (is_fpu_owner()) {
-		if (is_lasx_enabled())
-			save_lasx(current);
-		else if (is_lsx_enabled())
-			save_lsx(current);
-		else
-			save_fp(current);
-	}
+	if (is_fpu_owner())
+		save_fp(current);
 
 	preempt_enable();
 
-	if (IS_ENABLED(CONFIG_RANDSTRUCT)) {
+	if (used_math())
 		memcpy(dst, src, sizeof(struct task_struct));
-		return 0;
-	}
-
-	if (!used_math())
-		memcpy(dst, src, offsetof(struct task_struct, thread.fpu.fpr));
 	else
-		memcpy(dst, src, offsetof(struct task_struct, thread.lbt.scr0));
-
-#ifdef CONFIG_CPU_HAS_LBT
-	memcpy(&dst->thread.lbt, &src->thread.lbt, sizeof(struct loongarch_lbt));
-#endif
+		memcpy(dst, src, offsetof(struct task_struct, thread.fpu.fpr));
 
 	return 0;
-}
-
-asmlinkage void noinstr __no_stack_protector ret_from_fork(struct task_struct *prev,
-							   struct pt_regs *regs)
-{
-	schedule_tail(prev);
-	syscall_exit_to_user_mode(regs);
-}
-
-asmlinkage void noinstr __no_stack_protector ret_from_kernel_thread(struct task_struct *prev,
-								    struct pt_regs *regs,
-								    int (*fn)(void *),
-								    void *fn_arg)
-{
-	schedule_tail(prev);
-	fn(fn_arg);
-	syscall_exit_to_user_mode(regs);
 }
 
 /*
@@ -172,7 +138,7 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 	unsigned long childksp;
 	unsigned long tls = args->tls;
 	unsigned long usp = args->stack;
-	u64 clone_flags = args->flags;
+	unsigned long clone_flags = args->flags;
 	struct pt_regs *childregs, *regs = current_pt_regs();
 
 	childksp = (unsigned long)task_stack_page(p) + THREAD_SIZE;
@@ -191,8 +157,8 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 		p->thread.reg03 = childksp;
 		p->thread.reg23 = (unsigned long)args->fn;
 		p->thread.reg24 = (unsigned long)args->fn_arg;
-		p->thread.reg01 = (unsigned long)ret_from_kernel_thread_asm;
-		p->thread.sched_ra = (unsigned long)ret_from_kernel_thread_asm;
+		p->thread.reg01 = (unsigned long)ret_from_kernel_thread;
+		p->thread.sched_ra = (unsigned long)ret_from_kernel_thread;
 		memset(childregs, 0, sizeof(struct pt_regs));
 		childregs->csr_euen = p->thread.csr_euen;
 		childregs->csr_crmd = p->thread.csr_crmd;
@@ -208,8 +174,8 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 		childregs->regs[3] = usp;
 
 	p->thread.reg03 = (unsigned long) childregs;
-	p->thread.reg01 = (unsigned long) ret_from_fork_asm;
-	p->thread.sched_ra = (unsigned long) ret_from_fork_asm;
+	p->thread.reg01 = (unsigned long) ret_from_fork;
+	p->thread.sched_ra = (unsigned long) ret_from_fork;
 
 	/*
 	 * New tasks lose permission to use the fpu. This accelerates context
@@ -224,10 +190,8 @@ out:
 	ptrace_hw_copy_thread(p);
 	clear_tsk_thread_flag(p, TIF_USEDFPU);
 	clear_tsk_thread_flag(p, TIF_USEDSIMD);
-	clear_tsk_thread_flag(p, TIF_USEDLBT);
 	clear_tsk_thread_flag(p, TIF_LSX_CTX_LIVE);
 	clear_tsk_thread_flag(p, TIF_LASX_CTX_LIVE);
-	clear_tsk_thread_flag(p, TIF_LBT_CTX_LIVE);
 
 	return 0;
 }
@@ -319,15 +283,13 @@ unsigned long stack_top(void)
 {
 	unsigned long top = TASK_SIZE & PAGE_MASK;
 
-	if (current->thread.vdso) {
-		/* Space for the VDSO & data page */
-		top -= PAGE_ALIGN(current->thread.vdso->size);
-		top -= VVAR_SIZE;
+	/* Space for the VDSO & data page */
+	top -= PAGE_ALIGN(current->thread.vdso->size);
+	top -= PAGE_SIZE;
 
-		/* Space to randomize the VDSO base */
-		if (current->flags & PF_RANDOMIZE)
-			top -= VDSO_RANDOMIZE_SIZE;
-	}
+	/* Space to randomize the VDSO base */
+	if (current->flags & PF_RANDOMIZE)
+		top -= VDSO_RANDOMIZE_SIZE;
 
 	return top;
 }
@@ -377,16 +339,13 @@ static void raise_backtrace(cpumask_t *mask)
 	}
 }
 
-void arch_trigger_cpumask_backtrace(const cpumask_t *mask, int exclude_cpu)
+void arch_trigger_cpumask_backtrace(const cpumask_t *mask, bool exclude_self)
 {
-	nmi_trigger_cpumask_backtrace(mask, exclude_cpu, raise_backtrace);
+	nmi_trigger_cpumask_backtrace(mask, exclude_self, raise_backtrace);
 }
 
-#ifdef CONFIG_32BIT
-void loongarch_dump_regs32(u32 *uregs, const struct pt_regs *regs)
-#else
+#ifdef CONFIG_64BIT
 void loongarch_dump_regs64(u64 *uregs, const struct pt_regs *regs)
-#endif
 {
 	unsigned int i;
 
@@ -403,3 +362,4 @@ void loongarch_dump_regs64(u64 *uregs, const struct pt_regs *regs)
 	uregs[LOONGARCH_EF_CSR_ECFG] = regs->csr_ecfg;
 	uregs[LOONGARCH_EF_CSR_ESTAT] = regs->csr_estat;
 }
+#endif /* CONFIG_64BIT */

@@ -71,10 +71,13 @@ static int
 enable_slot(struct hotplug_slot *hotplug_slot)
 {
 	struct slot *slot = to_slot(hotplug_slot);
+	int retval = 0;
 
 	dbg("%s - physical_slot = %s", __func__, slot_name(slot));
 
-	return 0;
+	if (controller->ops->set_power)
+		retval = controller->ops->set_power(slot, 1);
+	return retval;
 }
 
 static int
@@ -106,6 +109,12 @@ disable_slot(struct hotplug_slot *hotplug_slot)
 	}
 	cpci_led_on(slot);
 
+	if (controller->ops->set_power) {
+		retval = controller->ops->set_power(slot, 0);
+		if (retval)
+			goto disable_error;
+	}
+
 	slot->adapter_status = 0;
 
 	if (slot->extracting) {
@@ -120,7 +129,11 @@ disable_error:
 static u8
 cpci_get_power_status(struct slot *slot)
 {
-	return 1;
+	u8 power = 1;
+
+	if (controller->ops->get_power)
+		power = controller->ops->get_power(slot);
+	return power;
 }
 
 static int

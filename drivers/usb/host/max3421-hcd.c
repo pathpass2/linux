@@ -779,17 +779,11 @@ max3421_check_unlink(struct usb_hcd *hcd)
 				retval = 1;
 				dev_dbg(&spi->dev, "%s: URB %p unlinked=%d",
 					__func__, urb, urb->unlinked);
-				if (urb == max3421_hcd->curr_urb) {
-					max3421_hcd->urb_done = 1;
-					max3421_hcd->hien &= ~(BIT(MAX3421_HI_HXFRDN_BIT) |
-							       BIT(MAX3421_HI_RCVDAV_BIT));
-				} else {
-					usb_hcd_unlink_urb_from_ep(hcd, urb);
-					spin_unlock_irqrestore(&max3421_hcd->lock,
-							       flags);
-					usb_hcd_giveback_urb(hcd, urb, 0);
-					spin_lock_irqsave(&max3421_hcd->lock, flags);
-				}
+				usb_hcd_unlink_urb_from_ep(hcd, urb);
+				spin_unlock_irqrestore(&max3421_hcd->lock,
+						       flags);
+				usb_hcd_giveback_urb(hcd, urb, 0);
+				spin_lock_irqsave(&max3421_hcd->lock, flags);
 			}
 		}
 	}
@@ -1164,12 +1158,12 @@ dump_eps(struct usb_hcd *hcd)
 		end = dp + sizeof(ubuf);
 		*dp = '\0';
 		list_for_each_entry(urb, &ep->urb_list, urb_list) {
-			ret = scnprintf(dp, end - dp, " %p(%d.%s %d/%d)", urb,
-					usb_pipetype(urb->pipe),
-					usb_urb_dir_in(urb) ? "IN" : "OUT",
-					urb->actual_length,
-					urb->transfer_buffer_length);
-			if (ret == end - dp - 1)
+			ret = snprintf(dp, end - dp, " %p(%d.%s %d/%d)", urb,
+				       usb_pipetype(urb->pipe),
+				       usb_urb_dir_in(urb) ? "IN" : "OUT",
+				       urb->actual_length,
+				       urb->transfer_buffer_length);
+			if (ret < 0 || ret >= end - dp)
 				break;	/* error or buffer full */
 			dp += ret;
 		}
@@ -1261,9 +1255,9 @@ max3421_handle_irqs(struct usb_hcd *hcd)
 			end = sbuf + sizeof(sbuf);
 			*dp = '\0';
 			for (i = 0; i < 16; ++i) {
-				int ret = scnprintf(dp, end - dp, " %lu",
-						    max3421_hcd->err_stat[i]);
-				if (ret == end - dp - 1)
+				int ret = snprintf(dp, end - dp, " %lu",
+						   max3421_hcd->err_stat[i]);
+				if (ret < 0 || ret >= end - dp)
 					break;	/* error or buffer full */
 				dp += ret;
 			}
@@ -1916,7 +1910,7 @@ error:
 	if (hcd) {
 		kfree(max3421_hcd->tx);
 		kfree(max3421_hcd->rx);
-		if (!IS_ERR_OR_NULL(max3421_hcd->spi_thread))
+		if (max3421_hcd->spi_thread)
 			kthread_stop(max3421_hcd->spi_thread);
 		usb_put_hcd(hcd);
 	}
@@ -1946,12 +1940,6 @@ max3421_remove(struct spi_device *spi)
 	usb_put_hcd(hcd);
 }
 
-static const struct spi_device_id max3421_spi_ids[] = {
-	{ "max3421" },
-	{ },
-};
-MODULE_DEVICE_TABLE(spi, max3421_spi_ids);
-
 static const struct of_device_id max3421_of_match_table[] = {
 	{ .compatible = "maxim,max3421", },
 	{},
@@ -1961,10 +1949,9 @@ MODULE_DEVICE_TABLE(of, max3421_of_match_table);
 static struct spi_driver max3421_driver = {
 	.probe		= max3421_probe,
 	.remove		= max3421_remove,
-	.id_table	= max3421_spi_ids,
 	.driver		= {
 		.name	= "max3421-hcd",
-		.of_match_table = max3421_of_match_table,
+		.of_match_table = of_match_ptr(max3421_of_match_table),
 	},
 };
 

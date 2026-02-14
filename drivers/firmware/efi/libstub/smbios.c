@@ -6,31 +6,20 @@
 
 #include "efistub.h"
 
-typedef union efi_smbios_protocol efi_smbios_protocol_t;
+typedef struct efi_smbios_protocol efi_smbios_protocol_t;
 
-union efi_smbios_protocol {
-	struct {
-		efi_status_t (__efiapi *add)(efi_smbios_protocol_t *, efi_handle_t,
-					     u16 *, struct efi_smbios_record *);
-		efi_status_t (__efiapi *update_string)(efi_smbios_protocol_t *, u16 *,
-						       unsigned long *, u8 *);
-		efi_status_t (__efiapi *remove)(efi_smbios_protocol_t *, u16);
-		efi_status_t (__efiapi *get_next)(efi_smbios_protocol_t *, u16 *, u8 *,
-						  struct efi_smbios_record **,
-						  efi_handle_t *);
+struct efi_smbios_protocol {
+	efi_status_t (__efiapi *add)(efi_smbios_protocol_t *, efi_handle_t,
+				     u16 *, struct efi_smbios_record *);
+	efi_status_t (__efiapi *update_string)(efi_smbios_protocol_t *, u16 *,
+					       unsigned long *, u8 *);
+	efi_status_t (__efiapi *remove)(efi_smbios_protocol_t *, u16);
+	efi_status_t (__efiapi *get_next)(efi_smbios_protocol_t *, u16 *, u8 *,
+					  struct efi_smbios_record **,
+					  efi_handle_t *);
 
-		u8 major_version;
-		u8 minor_version;
-	};
-	struct {
-		u32 add;
-		u32 update_string;
-		u32 remove;
-		u32 get_next;
-
-		u8 major_version;
-		u8 minor_version;
-	} mixed_mode;
+	u8 major_version;
+	u8 minor_version;
 };
 
 const struct efi_smbios_record *efi_get_smbios_record(u8 type)
@@ -49,7 +38,7 @@ const struct efi_smbios_record *efi_get_smbios_record(u8 type)
 }
 
 const u8 *__efi_get_smbios_string(const struct efi_smbios_record *record,
-				  const u8 *offset)
+				  u8 type, int offset)
 {
 	const u8 *strtable;
 
@@ -57,7 +46,7 @@ const u8 *__efi_get_smbios_string(const struct efi_smbios_record *record,
 		return NULL;
 
 	strtable = (u8 *)record + record->length;
-	for (int i = 1; i < *offset; i++) {
+	for (int i = 1; i < ((u8 *)record)[offset]; i++) {
 		int len = strlen(strtable);
 
 		if (!len)

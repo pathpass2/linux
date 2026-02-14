@@ -431,9 +431,8 @@ next_run:
 		if (vbo + blocksize > data_size)
 			nbits = 8 * (data_size - vbo);
 
-		ok = nbits > from ?
-			     (*fn)((ulong *)bh->b_data, from, nbits, ret) :
-			     false;
+		ok = nbits > from ? (*fn)((ulong *)bh->b_data, from, nbits, ret)
+				  : false;
 		put_bh(bh);
 
 		if (ok) {
@@ -618,7 +617,7 @@ static bool index_hdr_check(const struct INDEX_HDR *hdr, u32 bytes)
 	u32 off = le32_to_cpu(hdr->de_off);
 
 	if (!IS_ALIGNED(off, 8) || tot > bytes || end > tot ||
-	    size_add(off, sizeof(struct NTFS_DE)) > end) {
+	    off + sizeof(struct NTFS_DE) > end) {
 		/* incorrect index buffer. */
 		return false;
 	}
@@ -726,17 +725,10 @@ static struct NTFS_DE *hdr_find_e(const struct ntfs_index *indx,
 	u32 e_size, e_key_len;
 	u32 end = le32_to_cpu(hdr->used);
 	u32 off = le32_to_cpu(hdr->de_off);
-	u32 total = le32_to_cpu(hdr->total);
 	u16 offs[128];
 
-	if (unlikely(!cmp))
-		return NULL;
-
 fill_table:
-	if (end > total)
-		return NULL;
-
-	if (size_add(off, sizeof(struct NTFS_DE)) > end)
+	if (off + sizeof(struct NTFS_DE) > end)
 		return NULL;
 
 	e = Add2Ptr(hdr, off);
@@ -768,7 +760,8 @@ binary_search:
 				return NULL;
 
 			max_idx = 0;
-			table_size = min(table_size * 2, (int)ARRAY_SIZE(offs));
+			table_size = min(table_size * 2,
+					 (int)ARRAY_SIZE(offs));
 			goto fill_table;
 		}
 	} else if (diff2 < 0) {
@@ -850,10 +843,6 @@ static inline struct NTFS_DE *hdr_delete_de(struct INDEX_HDR *hdr,
 	u16 esize = le16_to_cpu(re->size);
 	u32 off = PtrOffset(hdr, re);
 	int bytes = used - (off + esize);
-
-	/* check INDEX_HDR valid before using INDEX_HDR */
-	if (!check_index_header(hdr, le32_to_cpu(hdr->total)))
-		return NULL;
 
 	if (off >= used || esize < sizeof(struct NTFS_DE) ||
 	    bytes < sizeof(struct NTFS_DE))
@@ -978,7 +967,7 @@ static struct indx_node *indx_new(struct ntfs_index *indx,
 		hdr->used =
 			cpu_to_le32(eo + sizeof(struct NTFS_DE) + sizeof(u64));
 		de_set_vbn_le(e, *sub_vbn);
-		hdr->flags = NTFS_INDEX_HDR_HAS_SUBNODES;
+		hdr->flags = 1;
 	} else {
 		e->size = cpu_to_le16(sizeof(struct NTFS_DE));
 		hdr->used = cpu_to_le32(eo + sizeof(struct NTFS_DE));
@@ -997,7 +986,6 @@ struct INDEX_ROOT *indx_get_root(struct ntfs_index *indx, struct ntfs_inode *ni,
 	struct ATTR_LIST_ENTRY *le = NULL;
 	struct ATTRIB *a;
 	const struct INDEX_NAMES *in = &s_index_names[indx->type];
-	struct INDEX_ROOT *root;
 
 	a = ni_find_attr(ni, NULL, &le, ATTR_ROOT, in->name, in->name_len, NULL,
 			 mi);
@@ -1007,16 +995,7 @@ struct INDEX_ROOT *indx_get_root(struct ntfs_index *indx, struct ntfs_inode *ni,
 	if (attr)
 		*attr = a;
 
-	root = resident_data_ex(a, sizeof(struct INDEX_ROOT));
-
-	/* length check */
-	if (root &&
-	    offsetof(struct INDEX_ROOT, ihdr) + le32_to_cpu(root->ihdr.used) >
-		    le32_to_cpu(a->res.data_size)) {
-		return NULL;
-	}
-
-	return root;
+	return resident_data_ex(a, sizeof(struct INDEX_ROOT));
 }
 
 static int indx_write(struct ntfs_index *indx, struct ntfs_inode *ni,
@@ -1094,7 +1073,8 @@ int indx_read(struct ntfs_index *indx, struct ntfs_inode *ni, CLST vbn,
 
 ok:
 	if (!index_buf_check(ib, bytes, &vbn)) {
-		_ntfs_bad_inode(&ni->vfs_inode);
+		ntfs_inode_err(&ni->vfs_inode, "directory corrupted");
+		ntfs_set_state(ni->mi.sbi, NTFS_DIRTY_ERROR);
 		err = -EINVAL;
 		goto out;
 	}
@@ -1105,8 +1085,7 @@ ok:
 	}
 
 	/* check for index header length */
-	if (offsetof(struct INDEX_BUFFER, ihdr) + le32_to_cpu(ib->ihdr.used) >
-	    bytes) {
+	if (offsetof(struct INDEX_BUFFER, ihdr) + ib->ihdr.used > bytes) {
 		err = -EINVAL;
 		goto out;
 	}
@@ -1115,11 +1094,6 @@ ok:
 	*node = in;
 
 out:
-	if (err == -E_NTFS_CORRUPT) {
-		_ntfs_bad_inode(&ni->vfs_inode);
-		err = -EINVAL;
-	}
-
 	if (ib != in->index)
 		kfree(ib);
 
@@ -1177,10 +1151,8 @@ int indx_find(struct ntfs_index *indx, struct ntfs_inode *ni,
 
 		/* Read next level. */
 		err = indx_read(indx, ni, de_get_vbn(e), &node);
-		if (err) {
-			/* io error? */
+		if (err)
 			return err;
-		}
 
 		/* Lookup entry that is <= to the search value. */
 		e = hdr_find_e(indx, &node->index->ihdr, key, key_len, ctx,
@@ -1454,13 +1426,13 @@ static int indx_create_allocate(struct ntfs_index *indx, struct ntfs_inode *ni,
 
 	alloc->nres.valid_size = alloc->nres.data_size = cpu_to_le64(data_size);
 
-	err = ni_insert_resident(ni, ntfs3_bitmap_size(1), ATTR_BITMAP,
-				 in->name, in->name_len, &bitmap, NULL, NULL);
+	err = ni_insert_resident(ni, bitmap_size(1), ATTR_BITMAP, in->name,
+				 in->name_len, &bitmap, NULL, NULL);
 	if (err)
 		goto out2;
 
 	if (in->name == I30_NAME) {
-		i_size_write(&ni->vfs_inode, data_size);
+		ni->vfs_inode.i_size = data_size;
 		inode_set_bytes(&ni->vfs_inode, alloc_size);
 	}
 
@@ -1508,16 +1480,6 @@ static int indx_add_allocate(struct ntfs_index *indx, struct ntfs_inode *ni,
 			bmp_size = bmp_size_v = le32_to_cpu(bmp->res.data_size);
 		}
 
-		/*
-		 * Index blocks exist, but $BITMAP has zero valid bits.
-		 * This implies an on-disk corruption and must be rejected.
-		 */
-		if (in->name == I30_NAME &&
-		    unlikely(bmp_size_v == 0 && indx->alloc_run.count)) {
-			err = -EINVAL;
-			goto out1;
-		}
-
 		bit = bmp_size << 3;
 	}
 
@@ -1526,9 +1488,8 @@ static int indx_add_allocate(struct ntfs_index *indx, struct ntfs_inode *ni,
 	if (bmp) {
 		/* Increase bitmap. */
 		err = attr_set_size(ni, ATTR_BITMAP, in->name, in->name_len,
-				    &indx->bitmap_run,
-				    ntfs3_bitmap_size(bit + 1), NULL, true,
-				    NULL);
+				    &indx->bitmap_run, bitmap_size(bit + 1),
+				    NULL, true, NULL);
 		if (err)
 			goto out1;
 	}
@@ -1542,11 +1503,6 @@ static int indx_add_allocate(struct ntfs_index *indx, struct ntfs_inode *ni,
 		goto out1;
 	}
 
-	if (data_size <= le64_to_cpu(alloc->nres.data_size)) {
-		/* Reuse index. */
-		goto out;
-	}
-
 	/* Increase allocation. */
 	err = attr_set_size(ni, ATTR_ALLOC, in->name, in->name_len,
 			    &indx->alloc_run, data_size, &data_size, true,
@@ -1558,9 +1514,8 @@ static int indx_add_allocate(struct ntfs_index *indx, struct ntfs_inode *ni,
 	}
 
 	if (in->name == I30_NAME)
-		i_size_write(&ni->vfs_inode, data_size);
+		ni->vfs_inode.i_size = data_size;
 
-out:
 	*vbn = bit << indx->idx2vbn_bits;
 
 	return 0;
@@ -1691,7 +1646,7 @@ static int indx_insert_into_root(struct ntfs_index *indx, struct ntfs_inode *ni,
 	e->size = cpu_to_le16(sizeof(struct NTFS_DE) + sizeof(u64));
 	e->flags = NTFS_IE_HAS_SUBNODES | NTFS_IE_LAST;
 
-	hdr->flags = NTFS_INDEX_HDR_HAS_SUBNODES;
+	hdr->flags = 1;
 	hdr->used = hdr->total =
 		cpu_to_le32(new_root_size - offsetof(struct INDEX_ROOT, ihdr));
 
@@ -1699,9 +1654,9 @@ static int indx_insert_into_root(struct ntfs_index *indx, struct ntfs_inode *ni,
 	mi->dirty = true;
 
 	/* Create alloc and bitmap attributes (if not). */
-	err = run_is_empty(&indx->alloc_run) ?
-		      indx_create_allocate(indx, ni, &new_vbn) :
-		      indx_add_allocate(indx, ni, &new_vbn);
+	err = run_is_empty(&indx->alloc_run)
+		      ? indx_create_allocate(indx, ni, &new_vbn)
+		      : indx_add_allocate(indx, ni, &new_vbn);
 
 	/* Layout of record may be changed, so rescan root. */
 	root = indx_get_root(indx, ni, &attr, &mi);
@@ -1804,11 +1759,10 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,
 	struct indx_node *n1 = fnd->nodes[level];
 	struct INDEX_HDR *hdr1 = &n1->index->ihdr;
 	struct INDEX_HDR *hdr2;
-	u32 to_copy, used, used1;
+	u32 to_copy, used;
 	CLST new_vbn;
 	__le64 t_vbn, *sub_vbn;
 	u16 sp_size;
-	void *hdr1_saved = NULL;
 
 	/* Try the most easy case. */
 	e = fnd->level - 1 == level ? fnd->de[level] : NULL;
@@ -1840,13 +1794,6 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,
 	if (!up_e)
 		return -ENOMEM;
 	memcpy(up_e, sp, sp_size);
-
-	used1 = le32_to_cpu(hdr1->used);
-	hdr1_saved = kmemdup(hdr1, used1, GFP_NOFS);
-	if (!hdr1_saved) {
-		err = -ENOMEM;
-		goto out;
-	}
 
 	if (!hdr1->flags) {
 		up_e->flags |= NTFS_IE_HAS_SUBNODES;
@@ -1880,7 +1827,7 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,
 	hdr_insert_head(hdr2, de_t, to_copy);
 
 	/* Remove all entries (sp including) from hdr1. */
-	used = used1 - to_copy - sp_size;
+	used = le32_to_cpu(hdr1->used) - to_copy - sp_size;
 	memmove(de_t, Add2Ptr(sp, sp_size), used - le32_to_cpu(hdr1->de_off));
 	hdr1->used = cpu_to_le32(used);
 
@@ -1891,9 +1838,9 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,
 	hdr_insert_de(indx,
 		      (*indx->cmp)(new_de + 1, le16_to_cpu(new_de->key_size),
 				   up_e + 1, le16_to_cpu(up_e->key_size),
-				   ctx) < 0 ?
-			      hdr2 :
-			      hdr1,
+				   ctx) < 0
+			      ? hdr2
+			      : hdr1,
 		      new_de, NULL, ctx);
 
 	indx_mark_used(indx, ni, new_vbn >> indx->idx2vbn_bits);
@@ -1910,6 +1857,8 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,
 	if (!level) {
 		/* Insert in root. */
 		err = indx_insert_into_root(indx, ni, up_e, NULL, ctx, fnd, 0);
+		if (err)
+			goto out;
 	} else {
 		/*
 		 * The target buffer's parent is another index buffer.
@@ -1917,21 +1866,12 @@ indx_insert_into_buffer(struct ntfs_index *indx, struct ntfs_inode *ni,
 		 */
 		err = indx_insert_into_buffer(indx, ni, root, up_e, ctx,
 					      level - 1, fnd);
-	}
-
-	if (err) {
-		/*
-		 * Undo critical operations.
-		 */
-		indx_mark_free(indx, ni, new_vbn >> indx->idx2vbn_bits);
-		unsafe_memcpy(hdr1, hdr1_saved, used1,
-			      "There are entries after the structure");
-		indx_write(indx, ni, n1, 0);
+		if (err)
+			goto out;
 	}
 
 out:
 	kfree(up_e);
-	kfree(hdr1_saved);
 
 	return err;
 }
@@ -1990,12 +1930,16 @@ int indx_insert_entry(struct ntfs_index *indx, struct ntfs_inode *ni,
 		 */
 		err = indx_insert_into_root(indx, ni, new_de, fnd->root_de, ctx,
 					    fnd, undo);
+		if (err)
+			goto out;
 	} else {
 		/*
 		 * Found a leaf buffer, so we'll insert the new entry into it.
 		 */
 		err = indx_insert_into_buffer(indx, ni, root, new_de, ctx,
 					      fnd->level - 1, fnd);
+		if (err)
+			goto out;
 	}
 
 out:
@@ -2106,9 +2050,9 @@ static int indx_shrink(struct ntfs_index *indx, struct ntfs_inode *ni,
 		return err;
 
 	if (in->name == I30_NAME)
-		i_size_write(&ni->vfs_inode, new_data);
+		ni->vfs_inode.i_size = new_data;
 
-	bpb = ntfs3_bitmap_size(bit);
+	bpb = bitmap_size(bit);
 	if (bpb * 8 == nbits)
 		return 0;
 
@@ -2193,10 +2137,6 @@ static int indx_get_entry_to_replace(struct ntfs_index *indx,
 
 		e = hdr_first_de(&n->index->ihdr);
 		fnd_push(fnd, n, e);
-		if (!e) {
-			err = -EINVAL;
-			goto out;
-		}
 
 		if (!de_is_last(e)) {
 			/*
@@ -2218,10 +2158,6 @@ static int indx_get_entry_to_replace(struct ntfs_index *indx,
 
 	n = fnd->nodes[level];
 	te = hdr_first_de(&n->index->ihdr);
-	if (!te) {
-		err = -EINVAL;
-		goto out;
-	}
 	/* Copy the candidate entry into the replacement entry buffer. */
 	re = kmalloc(le16_to_cpu(te->size) + sizeof(u64), GFP_NOFS);
 	if (!re) {
@@ -2372,8 +2308,8 @@ int indx_delete_entry(struct ntfs_index *indx, struct ntfs_inode *ni,
 			err = level ? indx_insert_into_buffer(indx, ni, root,
 							      re, ctx,
 							      fnd->level - 1,
-							      fnd) :
-				      indx_insert_into_root(indx, ni, re, e,
+							      fnd)
+				    : indx_insert_into_root(indx, ni, re, e,
 							    ctx, fnd, 0);
 			kfree(re);
 
@@ -2600,7 +2536,7 @@ int indx_delete_entry(struct ntfs_index *indx, struct ntfs_inode *ni,
 		err = attr_set_size(ni, ATTR_ALLOC, in->name, in->name_len,
 				    &indx->alloc_run, 0, NULL, false, NULL);
 		if (in->name == I30_NAME)
-			i_size_write(&ni->vfs_inode, 0);
+			ni->vfs_inode.i_size = 0;
 
 		err = ni_remove_attr(ni, ATTR_ALLOC, in->name, in->name_len,
 				     false, NULL);

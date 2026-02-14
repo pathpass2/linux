@@ -140,7 +140,7 @@ err_irq:
 }
 
 
-static void ehci_hcd_grlib_remove(struct platform_device *op)
+static int ehci_hcd_grlib_remove(struct platform_device *op)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(op);
 
@@ -151,6 +151,8 @@ static void ehci_hcd_grlib_remove(struct platform_device *op)
 	irq_dispose_mapping(hcd->irq);
 
 	usb_put_hcd(hcd);
+
+	return 0;
 }
 
 

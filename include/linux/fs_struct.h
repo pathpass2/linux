@@ -2,14 +2,14 @@
 #ifndef _LINUX_FS_STRUCT_H
 #define _LINUX_FS_STRUCT_H
 
-#include <linux/sched.h>
 #include <linux/path.h>
 #include <linux/spinlock.h>
 #include <linux/seqlock.h>
 
 struct fs_struct {
 	int users;
-	seqlock_t seq;
+	spinlock_t lock;
+	seqcount_spinlock_t seq;
 	int umask;
 	int in_exec;
 	struct path root, pwd;
@@ -26,25 +26,20 @@ extern int unshare_fs_struct(void);
 
 static inline void get_fs_root(struct fs_struct *fs, struct path *root)
 {
-	read_seqlock_excl(&fs->seq);
+	spin_lock(&fs->lock);
 	*root = fs->root;
 	path_get(root);
-	read_sequnlock_excl(&fs->seq);
+	spin_unlock(&fs->lock);
 }
 
 static inline void get_fs_pwd(struct fs_struct *fs, struct path *pwd)
 {
-	read_seqlock_excl(&fs->seq);
+	spin_lock(&fs->lock);
 	*pwd = fs->pwd;
 	path_get(pwd);
-	read_sequnlock_excl(&fs->seq);
+	spin_unlock(&fs->lock);
 }
 
 extern bool current_chrooted(void);
-
-static inline int current_umask(void)
-{
-	return current->fs->umask;
-}
 
 #endif /* _LINUX_FS_STRUCT_H */

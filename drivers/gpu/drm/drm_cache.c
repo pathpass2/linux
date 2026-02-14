@@ -93,7 +93,8 @@ drm_clflush_pages(struct page *pages[], unsigned long num_pages)
 		return;
 	}
 
-	wbinvd_on_all_cpus();
+	if (wbinvd_on_all_cpus())
+		pr_err("Timed out waiting for cache flush\n");
 
 #elif defined(__powerpc__)
 	unsigned long i;
@@ -138,7 +139,8 @@ drm_clflush_sg(struct sg_table *st)
 		return;
 	}
 
-	wbinvd_on_all_cpus();
+	if (wbinvd_on_all_cpus())
+		pr_err("Timed out waiting for cache flush\n");
 #else
 	WARN_ONCE(1, "Architecture has no drm_cache.c support\n");
 #endif
@@ -170,7 +172,8 @@ drm_clflush_virt_range(void *addr, unsigned long length)
 		return;
 	}
 
-	wbinvd_on_all_cpus();
+	if (wbinvd_on_all_cpus())
+		pr_err("Timed out waiting for cache flush\n");
 #else
 	WARN_ONCE(1, "Architecture has no drm_cache.c support\n");
 #endif

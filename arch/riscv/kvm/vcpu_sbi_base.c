@@ -41,9 +41,10 @@ static int kvm_sbi_ext_base_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 			 * For experimental/vendor extensions
 			 * forward it to the userspace
 			 */
-			return kvm_riscv_vcpu_sbi_forward_handler(vcpu, run, retdata);
+			kvm_riscv_vcpu_sbi_forward(vcpu, run);
+			retdata->uexit = true;
 		} else {
-			sbi_ext = kvm_vcpu_sbi_find_ext(vcpu, cp->a0);
+			sbi_ext = kvm_vcpu_sbi_find_ext(cp->a0);
 			*out_val = sbi_ext && sbi_ext->probe ?
 					   sbi_ext->probe(vcpu) : !!sbi_ext;
 		}
@@ -69,4 +70,29 @@ const struct kvm_vcpu_sbi_extension vcpu_sbi_ext_base = {
 	.extid_start = SBI_EXT_BASE,
 	.extid_end = SBI_EXT_BASE,
 	.handler = kvm_sbi_ext_base_handler,
+};
+
+static int kvm_sbi_ext_forward_handler(struct kvm_vcpu *vcpu,
+				       struct kvm_run *run,
+				       struct kvm_vcpu_sbi_return *retdata)
+{
+	/*
+	 * Both SBI experimental and vendor extensions are
+	 * unconditionally forwarded to userspace.
+	 */
+	kvm_riscv_vcpu_sbi_forward(vcpu, run);
+	retdata->uexit = true;
+	return 0;
+}
+
+const struct kvm_vcpu_sbi_extension vcpu_sbi_ext_experimental = {
+	.extid_start = SBI_EXT_EXPERIMENTAL_START,
+	.extid_end = SBI_EXT_EXPERIMENTAL_END,
+	.handler = kvm_sbi_ext_forward_handler,
+};
+
+const struct kvm_vcpu_sbi_extension vcpu_sbi_ext_vendor = {
+	.extid_start = SBI_EXT_VENDOR_START,
+	.extid_end = SBI_EXT_VENDOR_END,
+	.handler = kvm_sbi_ext_forward_handler,
 };

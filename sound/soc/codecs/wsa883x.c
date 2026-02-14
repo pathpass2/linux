@@ -6,15 +6,14 @@
 #include <linux/bitops.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
-#include <linux/hwmon.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/of_gpio.h>
 #include <linux/pm_runtime.h>
 #include <linux/printk.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
-#include <linux/reset.h>
 #include <linux/slab.h>
 #include <linux/soundwire/sdw.h>
 #include <linux/soundwire/sdw_registers.h>
@@ -158,28 +157,8 @@
 #define WSA883X_PA_FSM_ERR_COND         (WSA883X_DIG_CTRL_BASE + 0x0014)
 #define WSA883X_PA_FSM_MSK              (WSA883X_DIG_CTRL_BASE + 0x0015)
 #define WSA883X_PA_FSM_BYP              (WSA883X_DIG_CTRL_BASE + 0x0016)
-#define WSA883X_PA_FSM_BYP_DC_CAL_EN_MASK		0x01
-#define WSA883X_PA_FSM_BYP_DC_CAL_EN_SHIFT		0
-#define WSA883X_PA_FSM_BYP_CLK_WD_EN_MASK		0x02
-#define WSA883X_PA_FSM_BYP_CLK_WD_EN_SHIFT		1
-#define WSA883X_PA_FSM_BYP_BG_EN_MASK			0x04
-#define WSA883X_PA_FSM_BYP_BG_EN_SHIFT			2
-#define WSA883X_PA_FSM_BYP_BOOST_EN_MASK		0x08
-#define WSA883X_PA_FSM_BYP_BOOST_EN_SHIFT		3
-#define WSA883X_PA_FSM_BYP_PA_EN_MASK			0x10
-#define WSA883X_PA_FSM_BYP_PA_EN_SHIFT			4
-#define WSA883X_PA_FSM_BYP_D_UNMUTE_MASK		0x20
-#define WSA883X_PA_FSM_BYP_D_UNMUTE_SHIFT		5
-#define WSA883X_PA_FSM_BYP_SPKR_PROT_EN_MASK		0x40
-#define WSA883X_PA_FSM_BYP_SPKR_PROT_EN_SHIFT		6
-#define WSA883X_PA_FSM_BYP_TSADC_EN_MASK		0x80
-#define WSA883X_PA_FSM_BYP_TSADC_EN_SHIFT		7
 #define WSA883X_PA_FSM_DBG              (WSA883X_DIG_CTRL_BASE + 0x0017)
 #define WSA883X_TADC_VALUE_CTL          (WSA883X_DIG_CTRL_BASE + 0x0020)
-#define WSA883X_TADC_VALUE_CTL_TEMP_VALUE_RD_EN_MASK	0x01
-#define WSA883X_TADC_VALUE_CTL_TEMP_VALUE_RD_EN_SHIFT	0
-#define WSA883X_TADC_VALUE_CTL_VBAT_VALUE_RD_EN_MASK	0x02
-#define WSA883X_TADC_VALUE_CTL_VBAT_VALUE_RD_EN_SHIFT	1
 #define WSA883X_TEMP_DETECT_CTL         (WSA883X_DIG_CTRL_BASE + 0x0021)
 #define WSA883X_TEMP_MSB                (WSA883X_DIG_CTRL_BASE + 0x0022)
 #define WSA883X_TEMP_LSB                (WSA883X_DIG_CTRL_BASE + 0x0023)
@@ -449,17 +428,6 @@
 		SNDRV_PCM_FMTBIT_S24_LE |\
 		SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S32_LE)
 
-/* Two-point trimming for temperature calibration */
-#define WSA883X_T1_TEMP			-10L
-#define WSA883X_T2_TEMP			150L
-
-/*
- * Device will report senseless data in many cases, so discard any measurements
- * outside of valid range.
- */
-#define WSA883X_LOW_TEMP_THRESHOLD	5
-#define WSA883X_HIGH_TEMP_THRESHOLD	45
-
 struct wsa883x_priv {
 	struct regmap *regmap;
 	struct device *dev;
@@ -469,20 +437,13 @@ struct wsa883x_priv {
 	struct sdw_stream_runtime *sruntime;
 	struct sdw_port_config port_config[WSA883X_MAX_SWR_PORTS];
 	struct gpio_desc *sd_n;
-	struct reset_control *sd_reset;
 	bool port_prepared[WSA883X_MAX_SWR_PORTS];
 	bool port_enable[WSA883X_MAX_SWR_PORTS];
+	int version;
+	int variant;
 	int active_ports;
 	int dev_mode;
 	int comp_offset;
-	bool hw_init;
-	/*
-	 * Protects temperature reading code (related to speaker protection) and
-	 * fields: temperature and pa_on.
-	 */
-	struct mutex sp_lock;
-	unsigned int temperature;
-	bool pa_on;
 };
 
 enum {
@@ -522,32 +483,33 @@ static const struct soc_enum wsa_dev_mode_enum =
 
 /* 4 ports */
 static struct sdw_dpn_prop wsa_sink_dpn_prop[WSA883X_MAX_SWR_PORTS] = {
-	[WSA883X_PORT_DAC] = {
-		.num = WSA883X_PORT_DAC + 1,
+	{
+		/* DAC */
+		.num = 1,
 		.type = SDW_DPN_SIMPLE,
 		.min_ch = 1,
 		.max_ch = 1,
 		.simple_ch_prep_sm = true,
 		.read_only_wordlength = true,
-	},
-	[WSA883X_PORT_COMP] = {
-		.num = WSA883X_PORT_COMP + 1,
+	}, {
+		/* COMP */
+		.num = 2,
 		.type = SDW_DPN_SIMPLE,
 		.min_ch = 1,
 		.max_ch = 1,
 		.simple_ch_prep_sm = true,
 		.read_only_wordlength = true,
-	},
-	[WSA883X_PORT_BOOST] = {
-		.num = WSA883X_PORT_BOOST + 1,
+	}, {
+		/* BOOST */
+		.num = 3,
 		.type = SDW_DPN_SIMPLE,
 		.min_ch = 1,
 		.max_ch = 1,
 		.simple_ch_prep_sm = true,
 		.read_only_wordlength = true,
-	},
-	[WSA883X_PORT_VISENSE] = {
-		.num = WSA883X_PORT_VISENSE + 1,
+	}, {
+		/* VISENSE */
+		.num = 4,
 		.type = SDW_DPN_SIMPLE,
 		.min_ch = 1,
 		.max_ch = 1,
@@ -557,25 +519,22 @@ static struct sdw_dpn_prop wsa_sink_dpn_prop[WSA883X_MAX_SWR_PORTS] = {
 };
 
 static const struct sdw_port_config wsa883x_pconfig[WSA883X_MAX_SWR_PORTS] = {
-	[WSA883X_PORT_DAC] = {
-		.num = WSA883X_PORT_DAC + 1,
+	{
+		.num = 1,
 		.ch_mask = 0x1,
-	},
-	[WSA883X_PORT_COMP] = {
-		.num = WSA883X_PORT_COMP + 1,
+	}, {
+		.num = 2,
 		.ch_mask = 0xf,
-	},
-	[WSA883X_PORT_BOOST] = {
-		.num = WSA883X_PORT_BOOST + 1,
+	}, {
+		.num = 3,
 		.ch_mask = 0x3,
-	},
-	[WSA883X_PORT_VISENSE] = {
-		.num = WSA883X_PORT_VISENSE + 1,
-		.ch_mask = 0x1,
+	}, {	/* IV feedback */
+		.num = 4,
+		.ch_mask = 0x3,
 	},
 };
 
-static const struct reg_default wsa883x_defaults[] = {
+static struct reg_default wsa883x_defaults[] = {
 	{ WSA883X_REF_CTRL, 0xD5 },
 	{ WSA883X_TEST_CTL_0, 0x06 },
 	{ WSA883X_BIAS_0, 0xD2 },
@@ -976,10 +935,10 @@ static bool wsa883x_volatile_register(struct device *dev, unsigned int reg)
 	return wsa883x_readonly_register(dev, reg);
 }
 
-static const struct regmap_config wsa883x_regmap_config = {
+static struct regmap_config wsa883x_regmap_config = {
 	.reg_bits = 32,
 	.val_bits = 8,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = wsa883x_defaults,
 	.max_register = WSA883X_MAX_REGISTER,
 	.num_reg_defaults = ARRAY_SIZE(wsa883x_defaults),
@@ -987,6 +946,7 @@ static const struct regmap_config wsa883x_regmap_config = {
 	.writeable_reg = wsa883x_writeable_register,
 	.reg_format_endian = REGMAP_ENDIAN_NATIVE,
 	.val_format_endian = REGMAP_ENDIAN_NATIVE,
+	.can_multi_write = true,
 	.use_single_read = true,
 };
 
@@ -1039,42 +999,35 @@ static const struct reg_sequence reg_init[] = {
 	{WSA883X_GMAMP_SUP1, 0xE2},
 };
 
-static int wsa883x_init(struct wsa883x_priv *wsa883x)
+static void wsa883x_init(struct wsa883x_priv *wsa883x)
 {
 	struct regmap *regmap = wsa883x->regmap;
-	int variant, version, ret;
+	int variant, version;
 
-	if (wsa883x->hw_init)
-		return 0;
+	regmap_read(regmap, WSA883X_OTP_REG_0, &variant);
+	wsa883x->variant = variant & WSA883X_ID_MASK;
 
-	ret = regmap_read(regmap, WSA883X_OTP_REG_0, &variant);
-	if (ret)
-		return ret;
-	variant = variant & WSA883X_ID_MASK;
+	regmap_read(regmap, WSA883X_CHIP_ID0, &version);
+	wsa883x->version = version;
 
-	ret = regmap_read(regmap, WSA883X_CHIP_ID0, &version);
-	if (ret)
-		return ret;
-
-	switch (variant) {
+	switch (wsa883x->variant) {
 	case WSA8830:
-		dev_dbg(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8830\n",
-			version);
+		dev_info(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8830\n",
+			 wsa883x->version);
 		break;
 	case WSA8835:
-		dev_dbg(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8835\n",
-			version);
+		dev_info(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8835\n",
+			 wsa883x->version);
 		break;
 	case WSA8832:
-		dev_dbg(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8832\n",
-			version);
+		dev_info(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8832\n",
+			 wsa883x->version);
 		break;
 	case WSA8835_V2:
-		dev_dbg(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8835_V2\n",
-			version);
+		dev_info(wsa883x->dev, "WSA883X Version 1_%d, Variant: WSA8835_V2\n",
+			 wsa883x->version);
 		break;
 	default:
-		dev_warn(wsa883x->dev, "unknown variant: %d\n", variant);
 		break;
 	}
 
@@ -1083,16 +1036,12 @@ static int wsa883x_init(struct wsa883x_priv *wsa883x)
 	/* Initial settings */
 	regmap_multi_reg_write(regmap, reg_init, ARRAY_SIZE(reg_init));
 
-	if (variant == WSA8830 || variant == WSA8832) {
+	if (wsa883x->variant == WSA8830 || wsa883x->variant == WSA8832) {
 		wsa883x->comp_offset = COMP_OFFSET3;
 		regmap_update_bits(regmap, WSA883X_DRE_CTL_0,
 				   WSA883X_DRE_OFFSET_MASK,
 				   wsa883x->comp_offset);
 	}
-
-	wsa883x->hw_init = true;
-
-	return 0;
 }
 
 static int wsa883x_update_status(struct sdw_slave *slave,
@@ -1100,11 +1049,8 @@ static int wsa883x_update_status(struct sdw_slave *slave,
 {
 	struct wsa883x_priv *wsa883x = dev_get_drvdata(&slave->dev);
 
-	if (status == SDW_SLAVE_UNATTACHED)
-		wsa883x->hw_init = false;
-
 	if (status == SDW_SLAVE_ATTACHED && slave->dev_num > 0)
-		return wsa883x_init(wsa883x);
+		wsa883x_init(wsa883x);
 
 	return 0;
 }
@@ -1131,7 +1077,7 @@ static const struct sdw_slave_ops wsa883x_slave_ops = {
 static int wsa_dev_mode_get(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct wsa883x_priv *wsa883x = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.enumerated.item[0] = wsa883x->dev_mode;
@@ -1142,7 +1088,7 @@ static int wsa_dev_mode_get(struct snd_kcontrol *kcontrol,
 static int wsa_dev_mode_put(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct wsa883x_priv *wsa883x = snd_soc_component_get_drvdata(component);
 
 	if (wsa883x->dev_mode == ucontrol->value.enumerated.item[0])
@@ -1153,16 +1099,12 @@ static int wsa_dev_mode_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-static const SNDRV_CTL_TLVD_DECLARE_DB_RANGE(pa_gain,
-	0, 14, TLV_DB_SCALE_ITEM(-300, 0, 0),
-	15, 29, TLV_DB_SCALE_ITEM(-300, 150, 0),
-	30, 31, TLV_DB_SCALE_ITEM(1800, 0, 0),
-);
+static const DECLARE_TLV_DB_SCALE(pa_gain, -300, 150, -300);
 
 static int wsa883x_get_swr_port(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *comp = snd_soc_kcontrol_component(kcontrol);
 	struct wsa883x_priv *data = snd_soc_component_get_drvdata(comp);
 	struct soc_mixer_control *mixer = (struct soc_mixer_control *)kcontrol->private_value;
 	int portidx = mixer->reg;
@@ -1175,7 +1117,7 @@ static int wsa883x_get_swr_port(struct snd_kcontrol *kcontrol,
 static int wsa883x_set_swr_port(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *comp = snd_soc_kcontrol_component(kcontrol);
 	struct wsa883x_priv *data = snd_soc_component_get_drvdata(comp);
 	struct soc_mixer_control *mixer = (struct soc_mixer_control *)kcontrol->private_value;
 	int portidx = mixer->reg;
@@ -1198,7 +1140,7 @@ static int wsa883x_set_swr_port(struct snd_kcontrol *kcontrol,
 static int wsa883x_get_comp_offset(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct wsa883x_priv *wsa883x = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = wsa883x->comp_offset;
@@ -1209,7 +1151,7 @@ static int wsa883x_get_comp_offset(struct snd_kcontrol *kcontrol,
 static int wsa883x_set_comp_offset(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct wsa883x_priv *wsa883x = snd_soc_component_get_drvdata(component);
 
 	if (wsa883x->comp_offset == ucontrol->value.integer.value[0])
@@ -1237,10 +1179,6 @@ static int wsa883x_spkr_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		mutex_lock(&wsa883x->sp_lock);
-		wsa883x->pa_on = true;
-		mutex_unlock(&wsa883x->sp_lock);
-
 		switch (wsa883x->dev_mode) {
 		case RECEIVER:
 			snd_soc_component_write_field(component, WSA883X_CDC_PATH_MODE,
@@ -1266,6 +1204,9 @@ static int wsa883x_spkr_event(struct snd_soc_dapm_widget *w,
 			break;
 		}
 
+		snd_soc_component_write_field(component, WSA883X_DRE_CTL_1,
+					      WSA883X_DRE_GAIN_EN_MASK,
+					      WSA883X_DRE_GAIN_FROM_CSR);
 		if (wsa883x->port_enable[WSA883X_PORT_COMP])
 			snd_soc_component_write_field(component, WSA883X_DRE_CTL_0,
 						      WSA883X_DRE_OFFSET_MASK,
@@ -1278,6 +1219,9 @@ static int wsa883x_spkr_event(struct snd_soc_dapm_widget *w,
 		snd_soc_component_write_field(component, WSA883X_PDM_WD_CTL,
 					      WSA883X_PDM_EN_MASK,
 					      WSA883X_PDM_ENABLE);
+		snd_soc_component_write_field(component, WSA883X_PA_FSM_CTL,
+					      WSA883X_GLOBAL_PA_EN_MASK,
+					      WSA883X_GLOBAL_PA_ENABLE);
 
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
@@ -1290,9 +1234,6 @@ static int wsa883x_spkr_event(struct snd_soc_dapm_widget *w,
 					      WSA883X_GLOBAL_PA_EN_MASK, 0);
 		snd_soc_component_write_field(component, WSA883X_PDM_WD_CTL,
 					      WSA883X_PDM_EN_MASK, 0);
-		mutex_lock(&wsa883x->sp_lock);
-		wsa883x->pa_on = false;
-		mutex_unlock(&wsa883x->sp_lock);
 		break;
 	}
 	return 0;
@@ -1393,8 +1334,7 @@ static int wsa883x_digital_mute(struct snd_soc_dai *dai, int mute, int stream)
 					      WSA883X_DRE_GAIN_EN_MASK,
 					      WSA883X_DRE_GAIN_FROM_CSR);
 		snd_soc_component_write_field(component, WSA883X_PA_FSM_CTL,
-					      WSA883X_GLOBAL_PA_EN_MASK,
-					      WSA883X_GLOBAL_PA_ENABLE);
+					      WSA883X_GLOBAL_PA_EN_MASK, 1);
 
 	}
 
@@ -1406,7 +1346,6 @@ static const struct snd_soc_dai_ops wsa883x_dai_ops = {
 	.hw_free = wsa883x_hw_free,
 	.mute_stream = wsa883x_digital_mute,
 	.set_stream = wsa883x_set_sdw_stream,
-	.mute_unmute_on_trigger = true,
 };
 
 static struct snd_soc_dai_driver wsa883x_dais[] = {
@@ -1424,176 +1363,6 @@ static struct snd_soc_dai_driver wsa883x_dais[] = {
 		.ops = &wsa883x_dai_ops,
 	},
 };
-
-static int wsa883x_get_temp(struct wsa883x_priv *wsa883x, long *temp)
-{
-	unsigned int d1_msb = 0, d1_lsb = 0, d2_msb = 0, d2_lsb = 0;
-	unsigned int dmeas_msb = 0, dmeas_lsb = 0;
-	int d1, d2, dmeas;
-	unsigned int mask;
-	int ret, range;
-	long val;
-
-	guard(mutex)(&wsa883x->sp_lock);
-
-	if (wsa883x->pa_on) {
-		/*
-		 * Reading temperature is possible only when Power Amplifier is
-		 * off. Report last cached data.
-		 */
-		*temp = wsa883x->temperature * 1000;
-		return 0;
-	}
-
-	ret = pm_runtime_resume_and_get(wsa883x->dev);
-	if (ret < 0)
-		return ret;
-
-	mask = WSA883X_PA_FSM_BYP_DC_CAL_EN_MASK |
-	       WSA883X_PA_FSM_BYP_CLK_WD_EN_MASK |
-	       WSA883X_PA_FSM_BYP_BG_EN_MASK |
-	       WSA883X_PA_FSM_BYP_D_UNMUTE_MASK |
-	       WSA883X_PA_FSM_BYP_SPKR_PROT_EN_MASK |
-	       WSA883X_PA_FSM_BYP_TSADC_EN_MASK;
-
-	/*
-	 * Here and further do not care about read or update failures.
-	 * For example, before turning the amplifier on for the first
-	 * time, reading WSA883X_TEMP_DIN_MSB will always return 0.
-	 * Instead, check if returned value is within reasonable
-	 * thresholds.
-	 */
-	regmap_update_bits(wsa883x->regmap, WSA883X_PA_FSM_BYP, mask, mask);
-
-	regmap_update_bits(wsa883x->regmap, WSA883X_TADC_VALUE_CTL,
-			   WSA883X_TADC_VALUE_CTL_TEMP_VALUE_RD_EN_MASK,
-			   FIELD_PREP(WSA883X_TADC_VALUE_CTL_TEMP_VALUE_RD_EN_MASK, 0x0));
-
-	regmap_read(wsa883x->regmap, WSA883X_TEMP_MSB, &dmeas_msb);
-	regmap_read(wsa883x->regmap, WSA883X_TEMP_LSB, &dmeas_lsb);
-
-	regmap_update_bits(wsa883x->regmap, WSA883X_TADC_VALUE_CTL,
-			   WSA883X_TADC_VALUE_CTL_TEMP_VALUE_RD_EN_MASK,
-			   FIELD_PREP(WSA883X_TADC_VALUE_CTL_TEMP_VALUE_RD_EN_MASK, 0x1));
-
-	regmap_read(wsa883x->regmap, WSA883X_OTP_REG_1, &d1_msb);
-	regmap_read(wsa883x->regmap, WSA883X_OTP_REG_2, &d1_lsb);
-	regmap_read(wsa883x->regmap, WSA883X_OTP_REG_3, &d2_msb);
-	regmap_read(wsa883x->regmap, WSA883X_OTP_REG_4, &d2_lsb);
-
-	regmap_update_bits(wsa883x->regmap, WSA883X_PA_FSM_BYP, mask, 0x0);
-
-	dmeas = (((dmeas_msb & 0xff) << 0x8) | (dmeas_lsb & 0xff)) >> 0x6;
-	d1 = (((d1_msb & 0xff) << 0x8) | (d1_lsb & 0xff)) >> 0x6;
-	d2 = (((d2_msb & 0xff) << 0x8) | (d2_lsb & 0xff)) >> 0x6;
-
-	if (d1 == d2) {
-		/* Incorrect data in OTP? */
-		ret = -EINVAL;
-		goto out;
-	}
-
-	val = WSA883X_T1_TEMP + (((dmeas - d1) * (WSA883X_T2_TEMP - WSA883X_T1_TEMP)) / (d2 - d1));
-	range = WSA883X_HIGH_TEMP_THRESHOLD - WSA883X_LOW_TEMP_THRESHOLD;
-	if (in_range(val, WSA883X_LOW_TEMP_THRESHOLD, range)) {
-		wsa883x->temperature = val;
-		*temp = val * 1000;
-		ret = 0;
-	} else {
-		ret = -EAGAIN;
-	}
-out:
-	pm_runtime_put_autosuspend(wsa883x->dev);
-
-	return ret;
-}
-
-static umode_t wsa883x_hwmon_is_visible(const void *data,
-					enum hwmon_sensor_types type, u32 attr,
-					int channel)
-{
-	if (type != hwmon_temp)
-		return 0;
-
-	switch (attr) {
-	case hwmon_temp_input:
-		return 0444;
-	default:
-		break;
-	}
-
-	return 0;
-}
-
-static int wsa883x_hwmon_read(struct device *dev,
-			      enum hwmon_sensor_types type,
-			      u32 attr, int channel, long *temp)
-{
-	int ret;
-
-	switch (attr) {
-	case hwmon_temp_input:
-		ret = wsa883x_get_temp(dev_get_drvdata(dev), temp);
-		break;
-	default:
-		ret = -EOPNOTSUPP;
-		break;
-	}
-
-	return ret;
-}
-
-static const struct hwmon_channel_info *const wsa883x_hwmon_info[] = {
-	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
-	NULL
-};
-
-static const struct hwmon_ops wsa883x_hwmon_ops = {
-	.is_visible	= wsa883x_hwmon_is_visible,
-	.read		= wsa883x_hwmon_read,
-};
-
-static const struct hwmon_chip_info wsa883x_hwmon_chip_info = {
-	.ops	= &wsa883x_hwmon_ops,
-	.info	= wsa883x_hwmon_info,
-};
-
-static void wsa883x_reset_assert(void *data)
-{
-	struct wsa883x_priv *wsa883x = data;
-
-	if (wsa883x->sd_reset)
-		reset_control_assert(wsa883x->sd_reset);
-	else
-		gpiod_direction_output(wsa883x->sd_n, 1);
-}
-
-static void wsa883x_reset_deassert(struct wsa883x_priv *wsa883x)
-{
-	if (wsa883x->sd_reset)
-		reset_control_deassert(wsa883x->sd_reset);
-	else
-		gpiod_direction_output(wsa883x->sd_n, 0);
-}
-
-static int wsa883x_get_reset(struct device *dev, struct wsa883x_priv *wsa883x)
-{
-	wsa883x->sd_reset = devm_reset_control_get_optional_shared(dev, NULL);
-	if (IS_ERR(wsa883x->sd_reset))
-		return dev_err_probe(dev, PTR_ERR(wsa883x->sd_reset),
-				     "Failed to get reset\n");
-
-	 /* if sd_reset: NULL, so use the backwards compatible way for powerdown-gpios */
-	if (!wsa883x->sd_reset) {
-		wsa883x->sd_n = devm_gpiod_get_optional(dev, "powerdown",
-							GPIOD_OUT_HIGH);
-		if (IS_ERR(wsa883x->sd_n))
-			return dev_err_probe(dev, PTR_ERR(wsa883x->sd_n),
-					     "Shutdown Control GPIO not found\n");
-	}
-
-	return 0;
-}
 
 static int wsa883x_probe(struct sdw_slave *pdev,
 			 const struct sdw_device_id *id)
@@ -1615,9 +1384,13 @@ static int wsa883x_probe(struct sdw_slave *pdev,
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to enable vdd regulator\n");
 
-	ret = wsa883x_get_reset(dev, wsa883x);
-	if (ret)
+	wsa883x->sd_n = devm_gpiod_get_optional(dev, "powerdown",
+						GPIOD_FLAGS_BIT_NONEXCLUSIVE | GPIOD_OUT_HIGH);
+	if (IS_ERR(wsa883x->sd_n)) {
+		ret = dev_err_probe(dev, PTR_ERR(wsa883x->sd_n),
+				    "Shutdown Control GPIO not found\n");
 		goto err;
+	}
 
 	dev_set_drvdata(dev, wsa883x);
 	wsa883x->slave = pdev;
@@ -1626,45 +1399,20 @@ static int wsa883x_probe(struct sdw_slave *pdev,
 	wsa883x->sconfig.bps = 1;
 	wsa883x->sconfig.direction = SDW_DATA_DIR_RX;
 	wsa883x->sconfig.type = SDW_STREAM_PDM;
-	mutex_init(&wsa883x->sp_lock);
 
-	/*
-	 * Port map index starts with 0, however the data port for this codec
-	 * are from index 1
-	 */
-	if (of_property_read_u32_array(dev->of_node, "qcom,port-mapping", &pdev->m_port_map[1],
-					WSA883X_MAX_SWR_PORTS))
-		dev_dbg(dev, "Static Port mapping not specified\n");
-
-	pdev->prop.sink_ports = GENMASK(WSA883X_MAX_SWR_PORTS - 1, 0);
+	pdev->prop.sink_ports = GENMASK(WSA883X_MAX_SWR_PORTS, 0);
 	pdev->prop.simple_clk_stop_capable = true;
 	pdev->prop.sink_dpn_prop = wsa_sink_dpn_prop;
 	pdev->prop.scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
-
-	wsa883x_reset_deassert(wsa883x);
-	ret = devm_add_action_or_reset(dev, wsa883x_reset_assert, wsa883x);
-	if (ret)
-		return ret;
+	gpiod_direction_output(wsa883x->sd_n, 0);
 
 	wsa883x->regmap = devm_regmap_init_sdw(pdev, &wsa883x_regmap_config);
 	if (IS_ERR(wsa883x->regmap)) {
+		gpiod_direction_output(wsa883x->sd_n, 1);
 		ret = dev_err_probe(dev, PTR_ERR(wsa883x->regmap),
 				    "regmap_init failed\n");
 		goto err;
 	}
-
-	if (IS_REACHABLE(CONFIG_HWMON)) {
-		struct device *hwmon;
-
-		hwmon = devm_hwmon_device_register_with_info(dev, "wsa883x",
-							     wsa883x,
-							     &wsa883x_hwmon_chip_info,
-							     NULL);
-		if (IS_ERR(hwmon))
-			return dev_err_probe(dev, PTR_ERR(hwmon),
-					     "Failed to register hwmon sensor\n");
-	}
-
 	pm_runtime_set_autosuspend_delay(dev, 3000);
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_mark_last_busy(dev);
@@ -1683,7 +1431,7 @@ err:
 
 }
 
-static int wsa883x_runtime_suspend(struct device *dev)
+static int __maybe_unused wsa883x_runtime_suspend(struct device *dev)
 {
 	struct regmap *regmap = dev_get_regmap(dev, NULL);
 
@@ -1693,7 +1441,7 @@ static int wsa883x_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int wsa883x_runtime_resume(struct device *dev)
+static int __maybe_unused wsa883x_runtime_resume(struct device *dev)
 {
 	struct regmap *regmap = dev_get_regmap(dev, NULL);
 
@@ -1704,7 +1452,7 @@ static int wsa883x_runtime_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops wsa883x_pm_ops = {
-	RUNTIME_PM_OPS(wsa883x_runtime_suspend, wsa883x_runtime_resume, NULL)
+	SET_RUNTIME_PM_OPS(wsa883x_runtime_suspend, wsa883x_runtime_resume, NULL)
 };
 
 static const struct sdw_device_id wsa883x_swr_id[] = {
@@ -1717,7 +1465,7 @@ MODULE_DEVICE_TABLE(sdw, wsa883x_swr_id);
 static struct sdw_driver wsa883x_codec_driver = {
 	.driver = {
 		.name = "wsa883x-codec",
-		.pm = pm_ptr(&wsa883x_pm_ops),
+		.pm = &wsa883x_pm_ops,
 		.suppress_bind_attrs = true,
 	},
 	.probe = wsa883x_probe,

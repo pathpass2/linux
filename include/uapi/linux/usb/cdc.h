@@ -104,10 +104,8 @@ struct usb_cdc_union_desc {
 	__u8	bDescriptorSubType;
 
 	__u8	bMasterInterface0;
-	union {
-		__u8	bSlaveInterface0;
-		__DECLARE_FLEX_ARRAY(__u8, bSlaveInterfaces);
-	};
+	__u8	bSlaveInterface0;
+	/* ... and there could be other slave interfaces */
 } __attribute__ ((packed));
 
 /* "Country Selection Functional Descriptor" from CDC spec 5.2.3.9 */
@@ -117,10 +115,8 @@ struct usb_cdc_country_functional_desc {
 	__u8	bDescriptorSubType;
 
 	__u8	iCountryCodeRelDate;
-	union {
-		__le16	wCountryCode0;
-		__DECLARE_FLEX_ARRAY(__le16, wCountryCodes);
-	};
+	__le16	wCountyCode0;
+	/* ... and there can be a lot of country codes */
 } __attribute__ ((packed));
 
 /* "Network Channel Terminal Functional Descriptor" from CDC spec 5.2.3.11 */

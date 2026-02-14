@@ -15,13 +15,8 @@ struct cpu_features {
 extern struct cpu_features cpu;
 extern u32 cpu_vendor[3];
 
-#ifdef CONFIG_X86_32
-bool has_eflag(unsigned long mask);
-#else
-static inline bool has_eflag(unsigned long mask) { return true; }
-#endif
+int has_eflag(unsigned long mask);
 void get_cpuflags(void);
 void cpuid_count(u32 id, u32 count, u32 *a, u32 *b, u32 *c, u32 *d);
-bool has_cpuflag(int flag);
 
 #endif

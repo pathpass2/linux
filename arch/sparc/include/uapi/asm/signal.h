@@ -105,7 +105,7 @@
 #define __old_sigaction32	sigaction32
 #endif
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 typedef unsigned long __old_sigset_t;            /* at least 32 bits */
 
@@ -176,6 +176,6 @@ typedef struct sigaltstack {
 } stack_t;
 
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 #endif /* _UAPI__SPARC_SIGNAL_H */

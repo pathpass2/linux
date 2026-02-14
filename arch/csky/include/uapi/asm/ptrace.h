@@ -3,7 +3,7 @@
 #ifndef _CSKY_PTRACE_H
 #define _CSKY_PTRACE_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct pt_regs {
 	unsigned long	tls;
@@ -47,5 +47,5 @@ struct user_fp {
 	unsigned long	reserved;
 };
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* _CSKY_PTRACE_H */

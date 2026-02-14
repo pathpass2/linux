@@ -192,6 +192,7 @@ enum {
 int dmz_ctr_metadata(struct dmz_dev *dev, int num_dev,
 		     struct dmz_metadata **zmd, const char *devname);
 void dmz_dtr_metadata(struct dmz_metadata *zmd);
+int dmz_resume_metadata(struct dmz_metadata *zmd);
 
 void dmz_lock_map(struct dmz_metadata *zmd);
 void dmz_unlock_map(struct dmz_metadata *zmd);
@@ -229,6 +230,7 @@ unsigned int dmz_nr_unmap_rnd_zones(struct dmz_metadata *zmd, int idx);
 unsigned int dmz_nr_seq_zones(struct dmz_metadata *zmd, int idx);
 unsigned int dmz_nr_unmap_seq_zones(struct dmz_metadata *zmd, int idx);
 unsigned int dmz_zone_nr_blocks(struct dmz_metadata *zmd);
+unsigned int dmz_zone_nr_blocks_shift(struct dmz_metadata *zmd);
 unsigned int dmz_zone_nr_sectors(struct dmz_metadata *zmd);
 unsigned int dmz_zone_nr_sectors_shift(struct dmz_metadata *zmd);
 

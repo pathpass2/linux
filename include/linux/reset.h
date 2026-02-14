@@ -2,7 +2,6 @@
 #ifndef _LINUX_RESET_H_
 #define _LINUX_RESET_H_
 
-#include <linux/bits.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/types.h>
@@ -26,48 +25,6 @@ struct reset_control_bulk_data {
 	struct reset_control		*rstc;
 };
 
-#define RESET_CONTROL_FLAGS_BIT_SHARED		BIT(0)	/* not exclusive */
-#define RESET_CONTROL_FLAGS_BIT_OPTIONAL	BIT(1)
-#define RESET_CONTROL_FLAGS_BIT_ACQUIRED	BIT(2)	/* iff exclusive, not released */
-#define RESET_CONTROL_FLAGS_BIT_DEASSERTED	BIT(3)
-
-/**
- * enum reset_control_flags - Flags that can be passed to the reset_control_get functions
- *                    to determine the type of reset control.
- *                    These values cannot be OR'd.
- *
- * @RESET_CONTROL_EXCLUSIVE:				exclusive, acquired,
- * @RESET_CONTROL_EXCLUSIVE_DEASSERTED:			exclusive, acquired, deasserted
- * @RESET_CONTROL_EXCLUSIVE_RELEASED:			exclusive, released,
- * @RESET_CONTROL_SHARED:				shared
- * @RESET_CONTROL_SHARED_DEASSERTED:			shared, deasserted
- * @RESET_CONTROL_OPTIONAL_EXCLUSIVE:			optional, exclusive, acquired
- * @RESET_CONTROL_OPTIONAL_EXCLUSIVE_DEASSERTED:	optional, exclusive, acquired, deasserted
- * @RESET_CONTROL_OPTIONAL_EXCLUSIVE_RELEASED:		optional, exclusive, released
- * @RESET_CONTROL_OPTIONAL_SHARED:			optional, shared
- * @RESET_CONTROL_OPTIONAL_SHARED_DEASSERTED:		optional, shared, deasserted
- */
-enum reset_control_flags {
-	RESET_CONTROL_EXCLUSIVE				= RESET_CONTROL_FLAGS_BIT_ACQUIRED,
-	RESET_CONTROL_EXCLUSIVE_DEASSERTED		= RESET_CONTROL_FLAGS_BIT_ACQUIRED |
-							  RESET_CONTROL_FLAGS_BIT_DEASSERTED,
-	RESET_CONTROL_EXCLUSIVE_RELEASED		= 0,
-	RESET_CONTROL_SHARED				= RESET_CONTROL_FLAGS_BIT_SHARED,
-	RESET_CONTROL_SHARED_DEASSERTED			= RESET_CONTROL_FLAGS_BIT_SHARED |
-							  RESET_CONTROL_FLAGS_BIT_DEASSERTED,
-	RESET_CONTROL_OPTIONAL_EXCLUSIVE		= RESET_CONTROL_FLAGS_BIT_OPTIONAL |
-							  RESET_CONTROL_FLAGS_BIT_ACQUIRED,
-	RESET_CONTROL_OPTIONAL_EXCLUSIVE_DEASSERTED	= RESET_CONTROL_FLAGS_BIT_OPTIONAL |
-							  RESET_CONTROL_FLAGS_BIT_ACQUIRED |
-							  RESET_CONTROL_FLAGS_BIT_DEASSERTED,
-	RESET_CONTROL_OPTIONAL_EXCLUSIVE_RELEASED	= RESET_CONTROL_FLAGS_BIT_OPTIONAL,
-	RESET_CONTROL_OPTIONAL_SHARED			= RESET_CONTROL_FLAGS_BIT_OPTIONAL |
-							  RESET_CONTROL_FLAGS_BIT_SHARED,
-	RESET_CONTROL_OPTIONAL_SHARED_DEASSERTED	= RESET_CONTROL_FLAGS_BIT_OPTIONAL |
-							  RESET_CONTROL_FLAGS_BIT_SHARED |
-							  RESET_CONTROL_FLAGS_BIT_DEASSERTED,
-};
-
 #ifdef CONFIG_RESET_CONTROLLER
 
 int reset_control_reset(struct reset_control *rstc);
@@ -85,25 +42,30 @@ int reset_control_bulk_acquire(int num_rstcs, struct reset_control_bulk_data *rs
 void reset_control_bulk_release(int num_rstcs, struct reset_control_bulk_data *rstcs);
 
 struct reset_control *__of_reset_control_get(struct device_node *node,
-				     const char *id, int index, enum reset_control_flags flags);
+				     const char *id, int index, bool shared,
+				     bool optional, bool acquired);
 struct reset_control *__reset_control_get(struct device *dev, const char *id,
-					  int index, enum reset_control_flags flags);
+					  int index, bool shared,
+					  bool optional, bool acquired);
 void reset_control_put(struct reset_control *rstc);
 int __reset_control_bulk_get(struct device *dev, int num_rstcs,
 			     struct reset_control_bulk_data *rstcs,
-			     enum reset_control_flags flags);
+			     bool shared, bool optional, bool acquired);
 void reset_control_bulk_put(int num_rstcs, struct reset_control_bulk_data *rstcs);
 
 int __device_reset(struct device *dev, bool optional);
 struct reset_control *__devm_reset_control_get(struct device *dev,
-				     const char *id, int index, enum reset_control_flags flags);
+				     const char *id, int index, bool shared,
+				     bool optional, bool acquired);
 int __devm_reset_control_bulk_get(struct device *dev, int num_rstcs,
 				  struct reset_control_bulk_data *rstcs,
-				  enum reset_control_flags flags);
+				  bool shared, bool optional, bool acquired);
 
 struct reset_control *devm_reset_control_array_get(struct device *dev,
-						   enum reset_control_flags flags);
-struct reset_control *of_reset_control_array_get(struct device_node *np, enum reset_control_flags);
+						   bool shared, bool optional);
+struct reset_control *of_reset_control_array_get(struct device_node *np,
+						 bool shared, bool optional,
+						 bool acquired);
 
 int reset_control_get_count(struct device *dev);
 
@@ -154,19 +116,17 @@ static inline int __device_reset(struct device *dev, bool optional)
 
 static inline struct reset_control *__of_reset_control_get(
 					struct device_node *node,
-					const char *id, int index, enum reset_control_flags flags)
+					const char *id, int index, bool shared,
+					bool optional, bool acquired)
 {
-	bool optional = flags & RESET_CONTROL_FLAGS_BIT_OPTIONAL;
-
 	return optional ? NULL : ERR_PTR(-ENOTSUPP);
 }
 
 static inline struct reset_control *__reset_control_get(
 					struct device *dev, const char *id,
-					int index, enum reset_control_flags flags)
+					int index, bool shared, bool optional,
+					bool acquired)
 {
-	bool optional = flags & RESET_CONTROL_FLAGS_BIT_OPTIONAL;
-
 	return optional ? NULL : ERR_PTR(-ENOTSUPP);
 }
 
@@ -202,10 +162,8 @@ reset_control_bulk_release(int num_rstcs, struct reset_control_bulk_data *rstcs)
 static inline int
 __reset_control_bulk_get(struct device *dev, int num_rstcs,
 			 struct reset_control_bulk_data *rstcs,
-			 enum reset_control_flags flags)
+			 bool shared, bool optional, bool acquired)
 {
-	bool optional = flags & RESET_CONTROL_FLAGS_BIT_OPTIONAL;
-
 	return optional ? 0 : -EOPNOTSUPP;
 }
 
@@ -216,36 +174,30 @@ reset_control_bulk_put(int num_rstcs, struct reset_control_bulk_data *rstcs)
 
 static inline struct reset_control *__devm_reset_control_get(
 					struct device *dev, const char *id,
-					int index, enum reset_control_flags flags)
+					int index, bool shared, bool optional,
+					bool acquired)
 {
-	bool optional = flags & RESET_CONTROL_FLAGS_BIT_OPTIONAL;
-
 	return optional ? NULL : ERR_PTR(-ENOTSUPP);
 }
 
 static inline int
 __devm_reset_control_bulk_get(struct device *dev, int num_rstcs,
 			      struct reset_control_bulk_data *rstcs,
-			      enum reset_control_flags flags)
+			      bool shared, bool optional, bool acquired)
 {
-	bool optional = flags & RESET_CONTROL_FLAGS_BIT_OPTIONAL;
-
 	return optional ? 0 : -EOPNOTSUPP;
 }
 
 static inline struct reset_control *
-devm_reset_control_array_get(struct device *dev, enum reset_control_flags flags)
+devm_reset_control_array_get(struct device *dev, bool shared, bool optional)
 {
-	bool optional = flags & RESET_CONTROL_FLAGS_BIT_OPTIONAL;
-
 	return optional ? NULL : ERR_PTR(-ENOTSUPP);
 }
 
 static inline struct reset_control *
-of_reset_control_array_get(struct device_node *np, enum reset_control_flags flags)
+of_reset_control_array_get(struct device_node *np, bool shared, bool optional,
+			   bool acquired)
 {
-	bool optional = flags & RESET_CONTROL_FLAGS_BIT_OPTIONAL;
-
 	return optional ? NULL : ERR_PTR(-ENOTSUPP);
 }
 
@@ -284,7 +236,7 @@ static inline int device_reset_optional(struct device *dev)
 static inline struct reset_control *
 __must_check reset_control_get_exclusive(struct device *dev, const char *id)
 {
-	return __reset_control_get(dev, id, 0, RESET_CONTROL_EXCLUSIVE);
+	return __reset_control_get(dev, id, 0, false, false, true);
 }
 
 /**
@@ -301,7 +253,7 @@ static inline int __must_check
 reset_control_bulk_get_exclusive(struct device *dev, int num_rstcs,
 				 struct reset_control_bulk_data *rstcs)
 {
-	return __reset_control_bulk_get(dev, num_rstcs, rstcs, RESET_CONTROL_EXCLUSIVE);
+	return __reset_control_bulk_get(dev, num_rstcs, rstcs, false, false, true);
 }
 
 /**
@@ -322,7 +274,7 @@ static inline struct reset_control *
 __must_check reset_control_get_exclusive_released(struct device *dev,
 						  const char *id)
 {
-	return __reset_control_get(dev, id, 0, RESET_CONTROL_EXCLUSIVE_RELEASED);
+	return __reset_control_get(dev, id, 0, false, false, false);
 }
 
 /**
@@ -343,7 +295,7 @@ static inline int __must_check
 reset_control_bulk_get_exclusive_released(struct device *dev, int num_rstcs,
 					  struct reset_control_bulk_data *rstcs)
 {
-	return __reset_control_bulk_get(dev, num_rstcs, rstcs, RESET_CONTROL_EXCLUSIVE_RELEASED);
+	return __reset_control_bulk_get(dev, num_rstcs, rstcs, false, false, false);
 }
 
 /**
@@ -364,8 +316,7 @@ static inline int __must_check
 reset_control_bulk_get_optional_exclusive_released(struct device *dev, int num_rstcs,
 						   struct reset_control_bulk_data *rstcs)
 {
-	return __reset_control_bulk_get(dev, num_rstcs, rstcs,
-					RESET_CONTROL_OPTIONAL_EXCLUSIVE_RELEASED);
+	return __reset_control_bulk_get(dev, num_rstcs, rstcs, false, true, false);
 }
 
 /**
@@ -393,7 +344,7 @@ reset_control_bulk_get_optional_exclusive_released(struct device *dev, int num_r
 static inline struct reset_control *reset_control_get_shared(
 					struct device *dev, const char *id)
 {
-	return __reset_control_get(dev, id, 0, RESET_CONTROL_SHARED);
+	return __reset_control_get(dev, id, 0, true, false, false);
 }
 
 /**
@@ -410,7 +361,7 @@ static inline int __must_check
 reset_control_bulk_get_shared(struct device *dev, int num_rstcs,
 			      struct reset_control_bulk_data *rstcs)
 {
-	return __reset_control_bulk_get(dev, num_rstcs, rstcs, RESET_CONTROL_SHARED);
+	return __reset_control_bulk_get(dev, num_rstcs, rstcs, true, false, false);
 }
 
 /**
@@ -427,7 +378,7 @@ reset_control_bulk_get_shared(struct device *dev, int num_rstcs,
 static inline struct reset_control *reset_control_get_optional_exclusive(
 					struct device *dev, const char *id)
 {
-	return __reset_control_get(dev, id, 0, RESET_CONTROL_OPTIONAL_EXCLUSIVE);
+	return __reset_control_get(dev, id, 0, false, true, true);
 }
 
 /**
@@ -447,7 +398,7 @@ static inline int __must_check
 reset_control_bulk_get_optional_exclusive(struct device *dev, int num_rstcs,
 					  struct reset_control_bulk_data *rstcs)
 {
-	return __reset_control_bulk_get(dev, num_rstcs, rstcs, RESET_CONTROL_OPTIONAL_EXCLUSIVE);
+	return __reset_control_bulk_get(dev, num_rstcs, rstcs, false, true, true);
 }
 
 /**
@@ -464,7 +415,7 @@ reset_control_bulk_get_optional_exclusive(struct device *dev, int num_rstcs,
 static inline struct reset_control *reset_control_get_optional_shared(
 					struct device *dev, const char *id)
 {
-	return __reset_control_get(dev, id, 0, RESET_CONTROL_OPTIONAL_SHARED);
+	return __reset_control_get(dev, id, 0, true, true, false);
 }
 
 /**
@@ -484,7 +435,7 @@ static inline int __must_check
 reset_control_bulk_get_optional_shared(struct device *dev, int num_rstcs,
 				       struct reset_control_bulk_data *rstcs)
 {
-	return __reset_control_bulk_get(dev, num_rstcs, rstcs, RESET_CONTROL_OPTIONAL_SHARED);
+	return __reset_control_bulk_get(dev, num_rstcs, rstcs, true, true, false);
 }
 
 /**
@@ -500,7 +451,7 @@ reset_control_bulk_get_optional_shared(struct device *dev, int num_rstcs,
 static inline struct reset_control *of_reset_control_get_exclusive(
 				struct device_node *node, const char *id)
 {
-	return __of_reset_control_get(node, id, 0, RESET_CONTROL_EXCLUSIVE);
+	return __of_reset_control_get(node, id, 0, false, false, true);
 }
 
 /**
@@ -520,7 +471,7 @@ static inline struct reset_control *of_reset_control_get_exclusive(
 static inline struct reset_control *of_reset_control_get_optional_exclusive(
 				struct device_node *node, const char *id)
 {
-	return __of_reset_control_get(node, id, 0, RESET_CONTROL_OPTIONAL_EXCLUSIVE);
+	return __of_reset_control_get(node, id, 0, false, true, true);
 }
 
 /**
@@ -545,7 +496,7 @@ static inline struct reset_control *of_reset_control_get_optional_exclusive(
 static inline struct reset_control *of_reset_control_get_shared(
 				struct device_node *node, const char *id)
 {
-	return __of_reset_control_get(node, id, 0, RESET_CONTROL_SHARED);
+	return __of_reset_control_get(node, id, 0, true, false, false);
 }
 
 /**
@@ -562,7 +513,7 @@ static inline struct reset_control *of_reset_control_get_shared(
 static inline struct reset_control *of_reset_control_get_exclusive_by_index(
 					struct device_node *node, int index)
 {
-	return __of_reset_control_get(node, NULL, index, RESET_CONTROL_EXCLUSIVE);
+	return __of_reset_control_get(node, NULL, index, false, false, true);
 }
 
 /**
@@ -590,7 +541,7 @@ static inline struct reset_control *of_reset_control_get_exclusive_by_index(
 static inline struct reset_control *of_reset_control_get_shared_by_index(
 					struct device_node *node, int index)
 {
-	return __of_reset_control_get(node, NULL, index, RESET_CONTROL_SHARED);
+	return __of_reset_control_get(node, NULL, index, true, false, false);
 }
 
 /**
@@ -609,26 +560,7 @@ static inline struct reset_control *
 __must_check devm_reset_control_get_exclusive(struct device *dev,
 					      const char *id)
 {
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_EXCLUSIVE);
-}
-
-/**
- * devm_reset_control_get_exclusive_deasserted - resource managed
- *                                    reset_control_get_exclusive() +
- *                                    reset_control_deassert()
- * @dev: device to be reset by the controller
- * @id: reset line name
- *
- * Managed reset_control_get_exclusive() + reset_control_deassert(). For reset
- * controllers returned from this function, reset_control_assert() +
- * reset_control_put() is called automatically on driver detach.
- *
- * See reset_control_get_exclusive() for more information.
- */
-static inline struct reset_control * __must_check
-devm_reset_control_get_exclusive_deasserted(struct device *dev, const char *id)
-{
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_EXCLUSIVE_DEASSERTED);
+	return __devm_reset_control_get(dev, id, 0, false, false, true);
 }
 
 /**
@@ -648,8 +580,7 @@ static inline int __must_check
 devm_reset_control_bulk_get_exclusive(struct device *dev, int num_rstcs,
 				      struct reset_control_bulk_data *rstcs)
 {
-	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs,
-					     RESET_CONTROL_EXCLUSIVE);
+	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, false, false, true);
 }
 
 /**
@@ -668,7 +599,7 @@ static inline struct reset_control *
 __must_check devm_reset_control_get_exclusive_released(struct device *dev,
 						       const char *id)
 {
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_EXCLUSIVE_RELEASED);
+	return __devm_reset_control_get(dev, id, 0, false, false, false);
 }
 
 /**
@@ -688,8 +619,7 @@ static inline int __must_check
 devm_reset_control_bulk_get_exclusive_released(struct device *dev, int num_rstcs,
 					       struct reset_control_bulk_data *rstcs)
 {
-	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs,
-					     RESET_CONTROL_EXCLUSIVE_RELEASED);
+	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, false, false, false);
 }
 
 /**
@@ -708,7 +638,7 @@ static inline struct reset_control *
 __must_check devm_reset_control_get_optional_exclusive_released(struct device *dev,
 								const char *id)
 {
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_OPTIONAL_EXCLUSIVE_RELEASED);
+	return __devm_reset_control_get(dev, id, 0, false, true, false);
 }
 
 /**
@@ -728,8 +658,7 @@ static inline int __must_check
 devm_reset_control_bulk_get_optional_exclusive_released(struct device *dev, int num_rstcs,
 							struct reset_control_bulk_data *rstcs)
 {
-	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs,
-					     RESET_CONTROL_OPTIONAL_EXCLUSIVE_RELEASED);
+	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, false, true, false);
 }
 
 /**
@@ -744,26 +673,7 @@ devm_reset_control_bulk_get_optional_exclusive_released(struct device *dev, int 
 static inline struct reset_control *devm_reset_control_get_shared(
 					struct device *dev, const char *id)
 {
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_SHARED);
-}
-
-/**
- * devm_reset_control_get_shared_deasserted - resource managed
- *                                            reset_control_get_shared() +
- *                                            reset_control_deassert()
- * @dev: device to be reset by the controller
- * @id: reset line name
- *
- * Managed reset_control_get_shared() + reset_control_deassert(). For reset
- * controllers returned from this function, reset_control_assert() +
- * reset_control_put() is called automatically on driver detach.
- *
- * See devm_reset_control_get_shared() for more information.
- */
-static inline struct reset_control * __must_check
-devm_reset_control_get_shared_deasserted(struct device *dev, const char *id)
-{
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_SHARED_DEASSERTED);
+	return __devm_reset_control_get(dev, id, 0, true, false, false);
 }
 
 /**
@@ -783,29 +693,7 @@ static inline int __must_check
 devm_reset_control_bulk_get_shared(struct device *dev, int num_rstcs,
 				   struct reset_control_bulk_data *rstcs)
 {
-	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, RESET_CONTROL_SHARED);
-}
-
-/**
- * devm_reset_control_bulk_get_shared_deasserted - resource managed
- *                                                 reset_control_bulk_get_shared() +
- *                                                 reset_control_bulk_deassert()
- * @dev: device to be reset by the controller
- * @num_rstcs: number of entries in rstcs array
- * @rstcs: array of struct reset_control_bulk_data with reset line names set
- *
- * Managed reset_control_bulk_get_shared() + reset_control_bulk_deassert(). For
- * reset controllers returned from this function, reset_control_bulk_assert() +
- * reset_control_bulk_put() are called automatically on driver detach.
- *
- * See devm_reset_control_bulk_get_shared() for more information.
- */
-static inline int __must_check
-devm_reset_control_bulk_get_shared_deasserted(struct device *dev, int num_rstcs,
-					      struct reset_control_bulk_data *rstcs)
-{
-	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs,
-					     RESET_CONTROL_SHARED_DEASSERTED);
+	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, true, false, false);
 }
 
 /**
@@ -823,26 +711,7 @@ devm_reset_control_bulk_get_shared_deasserted(struct device *dev, int num_rstcs,
 static inline struct reset_control *devm_reset_control_get_optional_exclusive(
 					struct device *dev, const char *id)
 {
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_OPTIONAL_EXCLUSIVE);
-}
-
-/**
- * devm_reset_control_get_optional_exclusive_deasserted - resource managed
- *                                                        reset_control_get_optional_exclusive() +
- *                                                        reset_control_deassert()
- * @dev: device to be reset by the controller
- * @id: reset line name
- *
- * Managed reset_control_get_optional_exclusive() + reset_control_deassert().
- * For reset controllers returned from this function, reset_control_assert() +
- * reset_control_put() is called automatically on driver detach.
- *
- * See devm_reset_control_get_optional_exclusive() for more information.
- */
-static inline struct reset_control *
-devm_reset_control_get_optional_exclusive_deasserted(struct device *dev, const char *id)
-{
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_OPTIONAL_EXCLUSIVE_DEASSERTED);
+	return __devm_reset_control_get(dev, id, 0, false, true, true);
 }
 
 /**
@@ -862,8 +731,7 @@ static inline int __must_check
 devm_reset_control_bulk_get_optional_exclusive(struct device *dev, int num_rstcs,
 					       struct reset_control_bulk_data *rstcs)
 {
-	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs,
-					     RESET_CONTROL_OPTIONAL_EXCLUSIVE);
+	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, false, true, true);
 }
 
 /**
@@ -881,26 +749,7 @@ devm_reset_control_bulk_get_optional_exclusive(struct device *dev, int num_rstcs
 static inline struct reset_control *devm_reset_control_get_optional_shared(
 					struct device *dev, const char *id)
 {
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_OPTIONAL_SHARED);
-}
-
-/**
- * devm_reset_control_get_optional_shared_deasserted - resource managed
- *                                                     reset_control_get_optional_shared() +
- *                                                     reset_control_deassert()
- * @dev: device to be reset by the controller
- * @id: reset line name
- *
- * Managed reset_control_get_optional_shared() + reset_control_deassert(). For
- * reset controllers returned from this function, reset_control_assert() +
- * reset_control_put() is called automatically on driver detach.
- *
- * See devm_reset_control_get_optional_shared() for more information.
- */
-static inline struct reset_control *
-devm_reset_control_get_optional_shared_deasserted(struct device *dev, const char *id)
-{
-	return __devm_reset_control_get(dev, id, 0, RESET_CONTROL_OPTIONAL_SHARED_DEASSERTED);
+	return __devm_reset_control_get(dev, id, 0, true, true, false);
 }
 
 /**
@@ -920,7 +769,7 @@ static inline int __must_check
 devm_reset_control_bulk_get_optional_shared(struct device *dev, int num_rstcs,
 					    struct reset_control_bulk_data *rstcs)
 {
-	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, RESET_CONTROL_OPTIONAL_SHARED);
+	return __devm_reset_control_bulk_get(dev, num_rstcs, rstcs, true, true, false);
 }
 
 /**
@@ -938,7 +787,7 @@ devm_reset_control_bulk_get_optional_shared(struct device *dev, int num_rstcs,
 static inline struct reset_control *
 devm_reset_control_get_exclusive_by_index(struct device *dev, int index)
 {
-	return __devm_reset_control_get(dev, NULL, index, RESET_CONTROL_EXCLUSIVE);
+	return __devm_reset_control_get(dev, NULL, index, false, false, true);
 }
 
 /**
@@ -954,7 +803,7 @@ devm_reset_control_get_exclusive_by_index(struct device *dev, int index)
 static inline struct reset_control *
 devm_reset_control_get_shared_by_index(struct device *dev, int index)
 {
-	return __devm_reset_control_get(dev, NULL, index, RESET_CONTROL_SHARED);
+	return __devm_reset_control_get(dev, NULL, index, true, false, false);
 }
 
 /*
@@ -1002,60 +851,54 @@ static inline struct reset_control *devm_reset_control_get_by_index(
 static inline struct reset_control *
 devm_reset_control_array_get_exclusive(struct device *dev)
 {
-	return devm_reset_control_array_get(dev, RESET_CONTROL_EXCLUSIVE);
-}
-
-static inline struct reset_control *
-devm_reset_control_array_get_exclusive_released(struct device *dev)
-{
-	return devm_reset_control_array_get(dev, RESET_CONTROL_EXCLUSIVE_RELEASED);
+	return devm_reset_control_array_get(dev, false, false);
 }
 
 static inline struct reset_control *
 devm_reset_control_array_get_shared(struct device *dev)
 {
-	return devm_reset_control_array_get(dev, RESET_CONTROL_SHARED);
+	return devm_reset_control_array_get(dev, true, false);
 }
 
 static inline struct reset_control *
 devm_reset_control_array_get_optional_exclusive(struct device *dev)
 {
-	return devm_reset_control_array_get(dev, RESET_CONTROL_OPTIONAL_EXCLUSIVE);
+	return devm_reset_control_array_get(dev, false, true);
 }
 
 static inline struct reset_control *
 devm_reset_control_array_get_optional_shared(struct device *dev)
 {
-	return devm_reset_control_array_get(dev, RESET_CONTROL_OPTIONAL_SHARED);
+	return devm_reset_control_array_get(dev, true, true);
 }
 
 static inline struct reset_control *
 of_reset_control_array_get_exclusive(struct device_node *node)
 {
-	return of_reset_control_array_get(node, RESET_CONTROL_EXCLUSIVE);
+	return of_reset_control_array_get(node, false, false, true);
 }
 
 static inline struct reset_control *
 of_reset_control_array_get_exclusive_released(struct device_node *node)
 {
-	return of_reset_control_array_get(node, RESET_CONTROL_EXCLUSIVE_RELEASED);
+	return of_reset_control_array_get(node, false, false, false);
 }
 
 static inline struct reset_control *
 of_reset_control_array_get_shared(struct device_node *node)
 {
-	return of_reset_control_array_get(node, RESET_CONTROL_SHARED);
+	return of_reset_control_array_get(node, true, false, true);
 }
 
 static inline struct reset_control *
 of_reset_control_array_get_optional_exclusive(struct device_node *node)
 {
-	return of_reset_control_array_get(node, RESET_CONTROL_OPTIONAL_EXCLUSIVE);
+	return of_reset_control_array_get(node, false, true, true);
 }
 
 static inline struct reset_control *
 of_reset_control_array_get_optional_shared(struct device_node *node)
 {
-	return of_reset_control_array_get(node, RESET_CONTROL_OPTIONAL_SHARED);
+	return of_reset_control_array_get(node, true, true, true);
 }
 #endif

@@ -155,6 +155,9 @@ int efx_mcdi_rpc_start(struct efx_nic *efx, unsigned cmd,
 int efx_mcdi_rpc_finish(struct efx_nic *efx, unsigned cmd, size_t inlen,
 			efx_dword_t *outbuf, size_t outlen,
 			size_t *outlen_actual);
+int efx_mcdi_rpc_finish_quiet(struct efx_nic *efx, unsigned cmd,
+			      size_t inlen, efx_dword_t *outbuf,
+			      size_t outlen, size_t *outlen_actual);
 
 typedef void efx_mcdi_async_completer(struct efx_nic *efx,
 				      unsigned long cookie, int rc,
@@ -164,6 +167,11 @@ int efx_mcdi_rpc_async(struct efx_nic *efx, unsigned int cmd,
 		       const efx_dword_t *inbuf, size_t inlen, size_t outlen,
 		       efx_mcdi_async_completer *complete,
 		       unsigned long cookie);
+int efx_mcdi_rpc_async_quiet(struct efx_nic *efx, unsigned int cmd,
+			     const efx_dword_t *inbuf, size_t inlen,
+			     size_t outlen,
+			     efx_mcdi_async_completer *complete,
+			     unsigned long cookie);
 
 void efx_mcdi_display_error(struct efx_nic *efx, unsigned cmd,
 			    size_t inlen, efx_dword_t *outbuf,
@@ -210,27 +218,13 @@ void efx_mcdi_sensor_event(struct efx_nic *efx, efx_qword_t *ev);
 	BUILD_BUG_ON(_field ## _LEN != 1);				\
 	*(u8 *)MCDI_STRUCT_PTR(_buf, _field) = _value;			\
 	} while (0)
-#define MCDI_STRUCT_POPULATE_BYTE_1(_buf, _field, _name, _value) do {	\
-	efx_dword_t _temp;						\
-	EFX_POPULATE_DWORD_1(_temp, _name, _value);			\
-	MCDI_STRUCT_SET_BYTE(_buf, _field,				\
-			     EFX_DWORD_FIELD(_temp, EFX_BYTE_0));	\
-	} while (0)
 #define MCDI_BYTE(_buf, _field)						\
 	((void)BUILD_BUG_ON_ZERO(MC_CMD_ ## _field ## _LEN != 1),	\
 	 *MCDI_PTR(_buf, _field))
-#define MCDI_STRUCT_BYTE(_buf, _field)					\
-	((void)BUILD_BUG_ON_ZERO(_field ## _LEN != 1),			\
-	 *MCDI_STRUCT_PTR(_buf, _field))
 #define MCDI_SET_WORD(_buf, _field, _value) do {			\
 	BUILD_BUG_ON(MC_CMD_ ## _field ## _LEN != 2);			\
 	BUILD_BUG_ON(MC_CMD_ ## _field ## _OFST & 1);			\
 	*(__force __le16 *)MCDI_PTR(_buf, _field) = cpu_to_le16(_value);\
-	} while (0)
-#define MCDI_STRUCT_SET_WORD(_buf, _field, _value) do {			\
-	BUILD_BUG_ON(_field ## _LEN != 2);				\
-	BUILD_BUG_ON(_field ## _OFST & 1);				\
-	*(__force __le16 *)MCDI_STRUCT_PTR(_buf, _field) = cpu_to_le16(_value);\
 	} while (0)
 #define MCDI_WORD(_buf, _field)						\
 	((u16)BUILD_BUG_ON_ZERO(MC_CMD_ ## _field ## _LEN != 2) +	\
@@ -239,11 +233,6 @@ void efx_mcdi_sensor_event(struct efx_nic *efx, efx_qword_t *ev);
 	((void)BUILD_BUG_ON_ZERO(_field ## _LEN != 2),  \
 	le16_to_cpu(*(__force const __le16 *)MCDI_STRUCT_PTR(_buf, _field)))
 /* Write a 16-bit field defined in the protocol as being big-endian. */
-#define MCDI_SET_WORD_BE(_buf, _field, _value) do {			\
-	BUILD_BUG_ON(MC_CMD_ ## _field ## _LEN != 2);			\
-	BUILD_BUG_ON(MC_CMD_ ## _field ## _OFST & 1);			\
-	*(__force __be16 *)MCDI_PTR(_buf, _field) = (_value);		\
-	} while (0)
 #define MCDI_STRUCT_SET_WORD_BE(_buf, _field, _value) do {		\
 	BUILD_BUG_ON(_field ## _LEN != 2);				\
 	BUILD_BUG_ON(_field ## _OFST & 1);				\
@@ -392,7 +381,7 @@ int efx_mcdi_log_ctrl(struct efx_nic *efx, bool evq, bool uart, u32 dest_evq);
 int efx_mcdi_nvram_types(struct efx_nic *efx, u32 *nvram_types_out);
 int efx_mcdi_nvram_info(struct efx_nic *efx, unsigned int type,
 			size_t *size_out, size_t *erase_size_out,
-			size_t *write_size_out, bool *protected_out);
+			bool *protected_out);
 int efx_new_mcdi_nvram_test_all(struct efx_nic *efx);
 int efx_mcdi_nvram_metadata(struct efx_nic *efx, unsigned int type,
 			    u32 *subtype, u16 version[4], char *desc,
@@ -402,8 +391,10 @@ int efx_mcdi_handle_assertion(struct efx_nic *efx);
 int efx_mcdi_set_id_led(struct efx_nic *efx, enum efx_led_mode mode);
 int efx_mcdi_wol_filter_set_magic(struct efx_nic *efx, const u8 *mac,
 				  int *id_out);
+int efx_mcdi_wol_filter_get_magic(struct efx_nic *efx, int *id_out);
 int efx_mcdi_wol_filter_remove(struct efx_nic *efx, int id);
 int efx_mcdi_wol_filter_reset(struct efx_nic *efx);
+int efx_mcdi_flush_rxqs(struct efx_nic *efx);
 void efx_mcdi_process_link_change(struct efx_nic *efx, efx_qword_t *ev);
 void efx_mcdi_mac_start_stats(struct efx_nic *efx);
 void efx_mcdi_mac_stop_stats(struct efx_nic *efx);
@@ -423,26 +414,6 @@ void efx_mcdi_mon_remove(struct efx_nic *efx);
 static inline int efx_mcdi_mon_probe(struct efx_nic *efx) { return 0; }
 static inline void efx_mcdi_mon_remove(struct efx_nic *efx) {}
 #endif
-
-int efx_mcdi_nvram_update_start(struct efx_nic *efx, unsigned int type);
-int efx_mcdi_nvram_write(struct efx_nic *efx, unsigned int type,
-			 loff_t offset, const u8 *buffer, size_t length);
-int efx_mcdi_nvram_erase(struct efx_nic *efx, unsigned int type,
-			 loff_t offset, size_t length);
-int efx_mcdi_nvram_metadata(struct efx_nic *efx, unsigned int type,
-			    u32 *subtype, u16 version[4], char *desc,
-			    size_t descsize);
-
-enum efx_update_finish_mode {
-	EFX_UPDATE_FINISH_WAIT,
-	EFX_UPDATE_FINISH_BACKGROUND,
-	EFX_UPDATE_FINISH_POLL,
-	EFX_UPDATE_FINISH_ABORT,
-};
-
-int efx_mcdi_nvram_update_finish(struct efx_nic *efx, unsigned int type,
-				 enum efx_update_finish_mode mode);
-int efx_mcdi_nvram_update_finish_polled(struct efx_nic *efx, unsigned int type);
 
 #ifdef CONFIG_SFC_MTD
 int efx_mcdi_mtd_read(struct mtd_info *mtd, loff_t start, size_t len,

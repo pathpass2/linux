@@ -23,8 +23,6 @@
 #include <linux/platform_data/cros_ec_sensorhub.h>
 #include <linux/platform_device.h>
 
-#include "cros_ec_sensors_trace.h"
-
 /*
  * Hard coded to the first device to support sensor fifo.  The EC has a 2048
  * byte fifo and will trigger an interrupt when fifo is 2/3 full.
@@ -34,19 +32,25 @@
 static int cros_ec_get_host_cmd_version_mask(struct cros_ec_device *ec_dev,
 					     u16 cmd_offset, u16 cmd, u32 *mask)
 {
-	DEFINE_RAW_FLEX(struct cros_ec_command, buf, data,
-			MAX(sizeof(struct ec_response_get_cmd_versions),
-			    sizeof(struct ec_params_get_cmd_versions)));
 	int ret;
+	struct {
+		struct cros_ec_command msg;
+		union {
+			struct ec_params_get_cmd_versions params;
+			struct ec_response_get_cmd_versions resp;
+		};
+	} __packed buf = {
+		.msg = {
+			.command = EC_CMD_GET_CMD_VERSIONS + cmd_offset,
+			.insize = sizeof(struct ec_response_get_cmd_versions),
+			.outsize = sizeof(struct ec_params_get_cmd_versions)
+			},
+		.params = {.cmd = cmd}
+	};
 
-	buf->command = EC_CMD_GET_CMD_VERSIONS + cmd_offset;
-	buf->insize = sizeof(struct ec_response_get_cmd_versions);
-	buf->outsize = sizeof(struct ec_params_get_cmd_versions);
-	((struct ec_params_get_cmd_versions *)buf->data)->cmd = cmd;
-
-	ret = cros_ec_cmd_xfer_status(ec_dev, buf);
+	ret = cros_ec_cmd_xfer_status(ec_dev, &buf.msg);
 	if (ret >= 0)
-		*mask = ((struct ec_response_get_cmd_versions *)buf->data)->version_mask;
+		*mask = buf.resp.version_mask;
 	return ret;
 }
 
@@ -91,6 +95,22 @@ static void get_default_min_max_freq(enum motionsensor_type type,
 	}
 }
 
+static int cros_ec_sensor_set_ec_rate(struct cros_ec_sensors_core_state *st,
+				      int rate)
+{
+	int ret;
+
+	if (rate > U16_MAX)
+		rate = U16_MAX;
+
+	mutex_lock(&st->cmd_lock);
+	st->param.cmd = MOTIONSENSE_CMD_EC_RATE;
+	st->param.ec_rate.data = rate;
+	ret = cros_ec_motion_send_host_cmd(st, 0);
+	mutex_unlock(&st->cmd_lock);
+	return ret;
+}
+
 static ssize_t cros_ec_sensor_set_report_latency(struct device *dev,
 						 struct device_attribute *attr,
 						 const char *buf, size_t len)
@@ -106,25 +126,7 @@ static ssize_t cros_ec_sensor_set_report_latency(struct device *dev,
 
 	/* EC rate is in ms. */
 	latency = integer * 1000 + fract / 1000;
-
-	mutex_lock(&st->cmd_lock);
-	st->param.cmd = MOTIONSENSE_CMD_EC_RATE;
-	st->param.ec_rate.data = min(U16_MAX, latency);
-	ret = cros_ec_motion_send_host_cmd(st, 0);
-	if (ret < 0) {
-		mutex_unlock(&st->cmd_lock);
-		return ret;
-	}
-
-	/*
-	 * Flush samples currently in the FIFO, especially when the new latency
-	 * is shorter than the old one: new timeout value is only considered when
-	 * there is a new sample available. It can take a while for a slow
-	 * sensor.
-	 */
-	st->param.cmd = MOTIONSENSE_CMD_FIFO_FLUSH;
-	ret = cros_ec_motion_send_host_cmd(st, 0);
-	mutex_unlock(&st->cmd_lock);
+	ret = cros_ec_sensor_set_ec_rate(st, latency);
 	if (ret < 0)
 		return ret;
 
@@ -188,15 +190,14 @@ int cros_ec_sensors_push_data(struct iio_dev *indio_dev,
 	/*
 	 * Ignore samples if the buffer is not set: it is needed if the ODR is
 	 * set but the buffer is not enabled yet.
-	 *
-	 * Note: iio_device_claim_buffer_mode() returns -EBUSY if the buffer
-	 * is not enabled.
 	 */
-	if (iio_device_claim_buffer_mode(indio_dev) < 0)
+	if (!iio_buffer_enabled(indio_dev))
 		return 0;
 
 	out = (s16 *)st->samples;
-	iio_for_each_active_channel(indio_dev, i) {
+	for_each_set_bit(i,
+			 indio_dev->active_scan_mask,
+			 indio_dev->masklength) {
 		*out = data[i];
 		out++;
 	}
@@ -209,7 +210,6 @@ int cros_ec_sensors_push_data(struct iio_dev *indio_dev,
 	iio_push_to_buffers_with_timestamp(indio_dev, st->samples,
 					   timestamp + delta);
 
-	iio_device_release_buffer_mode(indio_dev);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(cros_ec_sensors_push_data);
@@ -253,7 +253,7 @@ int cros_ec_sensors_core_init(struct platform_device *pdev,
 	platform_set_drvdata(pdev, indio_dev);
 
 	state->ec = ec->ec_dev;
-	state->msg = devm_kzalloc(&pdev->dev, sizeof(*state->msg) +
+	state->msg = devm_kzalloc(&pdev->dev,
 				max((u16)sizeof(struct ec_params_motion_sense),
 				state->ec->max_response), GFP_KERNEL);
 	if (!state->msg)
@@ -411,7 +411,6 @@ EXPORT_SYMBOL_GPL(cros_ec_sensors_core_register);
 int cros_ec_motion_send_host_cmd(struct cros_ec_sensors_core_state *state,
 				 u16 opt_length)
 {
-	struct ec_response_motion_sense *resp = (struct ec_response_motion_sense *)state->msg->data;
 	int ret;
 
 	if (opt_length)
@@ -422,12 +421,12 @@ int cros_ec_motion_send_host_cmd(struct cros_ec_sensors_core_state *state,
 	memcpy(state->msg->data, &state->param, sizeof(state->param));
 
 	ret = cros_ec_cmd_xfer_status(state->ec, state->msg);
-	trace_cros_ec_motion_host_cmd(&state->param, resp, ret);
 	if (ret < 0)
 		return ret;
 
-	if (ret && state->resp != resp)
-		memcpy(state->resp, resp, ret);
+	if (ret &&
+	    state->resp != (struct ec_response_motion_sense *)state->msg->data)
+		memcpy(state->resp, state->msg->data, ret);
 
 	return 0;
 }
@@ -482,19 +481,9 @@ const struct iio_chan_spec_ext_info cros_ec_sensors_ext_info[] = {
 		.shared = IIO_SHARED_BY_ALL,
 		.read = cros_ec_sensors_id
 	},
-	{ }
+	{ },
 };
 EXPORT_SYMBOL_GPL(cros_ec_sensors_ext_info);
-
-const struct iio_chan_spec_ext_info cros_ec_sensors_limited_info[] = {
-	{
-		.name = "id",
-		.shared = IIO_SHARED_BY_ALL,
-		.read = cros_ec_sensors_id
-	},
-	{ }
-};
-EXPORT_SYMBOL_GPL(cros_ec_sensors_limited_info);
 
 /**
  * cros_ec_sensors_idx_to_reg - convert index into offset in shared memory
@@ -594,7 +583,7 @@ static int cros_ec_sensors_read_data_unsafe(struct iio_dev *indio_dev,
 	int ret;
 
 	/* Read all sensors enabled in scan_mask. Each value is 2 bytes. */
-	for_each_set_bit(i, &scan_mask, iio_get_masklength(indio_dev)) {
+	for_each_set_bit(i, &scan_mask, indio_dev->masklength) {
 		ret = cros_ec_sensors_cmd_read_u16(ec,
 					     cros_ec_sensors_idx_to_reg(st, i),
 					     data);
@@ -690,7 +679,7 @@ int cros_ec_sensors_read_cmd(struct iio_dev *indio_dev,
 		return ret;
 	}
 
-	for_each_set_bit(i, &scan_mask, iio_get_masklength(indio_dev)) {
+	for_each_set_bit(i, &scan_mask, indio_dev->masklength) {
 		*data = st->resp->data.data[i];
 		data++;
 	}
@@ -844,18 +833,6 @@ int cros_ec_sensors_core_write(struct cros_ec_sensors_core_state *st,
 		st->param.sensor_odr.roundup = 1;
 
 		ret = cros_ec_motion_send_host_cmd(st, 0);
-		if (ret)
-			break;
-
-		/* Flush the FIFO when a sensor is stopped.
-		 * If the FIFO has just been emptied, pending samples will be
-		 * stuck until new samples are available. It will not happen
-		 * when all the sensors are stopped.
-		 */
-		if (frequency == 0) {
-			st->param.cmd = MOTIONSENSE_CMD_FIFO_FLUSH;
-			ret = cros_ec_motion_send_host_cmd(st, 0);
-		}
 		break;
 	default:
 		ret = -EINVAL;

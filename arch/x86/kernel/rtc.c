@@ -10,6 +10,7 @@
 #include <asm/vsyscall.h>
 #include <asm/x86_init.h>
 #include <asm/time.h>
+#include <asm/intel-mid.h>
 #include <asm/setup.h>
 
 #ifdef CONFIG_X86_32
@@ -66,7 +67,7 @@ void mach_get_cmos_time(struct timespec64 *now)
 		return;
 	}
 
-	if (mc146818_get_time(&tm, 1000)) {
+	if (mc146818_get_time(&tm)) {
 		pr_err("Unable to read current time from RTC\n");
 		now->tv_sec = now->tv_nsec = 0;
 		return;

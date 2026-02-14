@@ -12,9 +12,6 @@
 
 #include "axg-tdm.h"
 
-/* Maximum bit clock frequency according the datasheets */
-#define MAX_SCLK 100000000 /* Hz */
-
 enum {
 	TDM_IFACE_PAD,
 	TDM_IFACE_LOOPBACK,
@@ -133,7 +130,7 @@ static int axg_tdm_iface_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 
 	case SND_SOC_DAIFMT_BP_FC:
 	case SND_SOC_DAIFMT_BC_FP:
-		dev_err(dai->dev, "only BP_FP and BC_FC are supported\n");
+		dev_err(dai->dev, "only CBS_CFS and CBM_CFM are supported\n");
 		fallthrough;
 	default:
 		return -EINVAL;
@@ -156,27 +153,19 @@ static int axg_tdm_iface_startup(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
+	/* Apply component wide rate symmetry */
 	if (snd_soc_component_active(dai->component)) {
-		/* Apply component wide rate symmetry */
 		ret = snd_pcm_hw_constraint_single(substream->runtime,
 						   SNDRV_PCM_HW_PARAM_RATE,
 						   iface->rate);
-
-	} else {
-		/* Limit rate according to the slot number and width */
-		unsigned int max_rate =
-			MAX_SCLK / (iface->slots * iface->slot_width);
-		ret = snd_pcm_hw_constraint_minmax(substream->runtime,
-						   SNDRV_PCM_HW_PARAM_RATE,
-						   0, max_rate);
+		if (ret < 0) {
+			dev_err(dai->dev,
+				"can't set iface rate constraint\n");
+			return ret;
+		}
 	}
 
-	if (ret < 0)
-		dev_err(dai->dev, "can't set iface rate constraint\n");
-	else
-		ret = 0;
-
-	return ret;
+	return 0;
 }
 
 static int axg_tdm_iface_set_stream(struct snd_pcm_substream *substream,
@@ -275,8 +264,8 @@ static int axg_tdm_iface_set_sclk(struct snd_soc_dai *dai,
 	srate = iface->slots * iface->slot_width * params_rate(params);
 
 	if (!iface->mclk_rate) {
-		/* If no specific mclk is requested, default to bit clock * 2 */
-		clk_set_rate(iface->mclk, 2 * srate);
+		/* If no specific mclk is requested, default to bit clock * 4 */
+		clk_set_rate(iface->mclk, 4 * srate);
 	} else {
 		/* Check if we can actually get the bit clock from mclk */
 		if (iface->mclk_rate % srate) {
@@ -309,7 +298,6 @@ static int axg_tdm_iface_hw_params(struct snd_pcm_substream *substream,
 				   struct snd_soc_dai *dai)
 {
 	struct axg_tdm_iface *iface = snd_soc_dai_get_drvdata(dai);
-	struct axg_tdm_stream *ts = snd_soc_dai_get_dma_data(dai, substream);
 	int ret;
 
 	switch (iface->fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
@@ -347,11 +335,7 @@ static int axg_tdm_iface_hw_params(struct snd_pcm_substream *substream,
 			return ret;
 	}
 
-	ret = axg_tdm_stream_set_cont_clocks(ts, iface->fmt);
-	if (ret)
-		dev_err(dai->dev, "failed to apply continuous clock setting\n");
-
-	return ret;
+	return 0;
 }
 
 static int axg_tdm_iface_hw_free(struct snd_pcm_substream *substream,
@@ -359,32 +343,19 @@ static int axg_tdm_iface_hw_free(struct snd_pcm_substream *substream,
 {
 	struct axg_tdm_stream *ts = snd_soc_dai_get_dma_data(dai, substream);
 
-	return axg_tdm_stream_set_cont_clocks(ts, 0);
-}
-
-static int axg_tdm_iface_trigger(struct snd_pcm_substream *substream,
-				 int cmd,
-				 struct snd_soc_dai *dai)
-{
-	struct axg_tdm_stream *ts =
-		snd_soc_dai_get_dma_data(dai, substream);
-
-	switch (cmd) {
-	case SNDRV_PCM_TRIGGER_START:
-	case SNDRV_PCM_TRIGGER_RESUME:
-	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		axg_tdm_stream_start(ts);
-		break;
-	case SNDRV_PCM_TRIGGER_SUSPEND:
-	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-	case SNDRV_PCM_TRIGGER_STOP:
-		axg_tdm_stream_stop(ts);
-		break;
-	default:
-		return -EINVAL;
-	}
+	/* Stop all attached formatters */
+	axg_tdm_stream_stop(ts);
 
 	return 0;
+}
+
+static int axg_tdm_iface_prepare(struct snd_pcm_substream *substream,
+				 struct snd_soc_dai *dai)
+{
+	struct axg_tdm_stream *ts = snd_soc_dai_get_dma_data(dai, substream);
+
+	/* Force all attached formatters to update */
+	return axg_tdm_stream_reset(ts);
 }
 
 static int axg_tdm_iface_remove_dai(struct snd_soc_dai *dai)
@@ -424,14 +395,12 @@ static int axg_tdm_iface_probe_dai(struct snd_soc_dai *dai)
 }
 
 static const struct snd_soc_dai_ops axg_tdm_iface_ops = {
-	.probe		= axg_tdm_iface_probe_dai,
-	.remove		= axg_tdm_iface_remove_dai,
 	.set_sysclk	= axg_tdm_iface_set_sysclk,
 	.set_fmt	= axg_tdm_iface_set_fmt,
 	.startup	= axg_tdm_iface_startup,
 	.hw_params	= axg_tdm_iface_hw_params,
+	.prepare	= axg_tdm_iface_prepare,
 	.hw_free	= axg_tdm_iface_hw_free,
-	.trigger	= axg_tdm_iface_trigger,
 };
 
 /* TDM Backend DAIs */
@@ -442,22 +411,20 @@ static const struct snd_soc_dai_driver axg_tdm_iface_dai_drv[] = {
 			.stream_name	= "Playback",
 			.channels_min	= 1,
 			.channels_max	= AXG_TDM_CHANNEL_MAX,
-			.rates		= SNDRV_PCM_RATE_CONTINUOUS,
-			.rate_min	= 5512,
-			.rate_max	= 768000,
+			.rates		= AXG_TDM_RATES,
 			.formats	= AXG_TDM_FORMATS,
 		},
 		.capture = {
 			.stream_name	= "Capture",
 			.channels_min	= 1,
 			.channels_max	= AXG_TDM_CHANNEL_MAX,
-			.rates		= SNDRV_PCM_RATE_CONTINUOUS,
-			.rate_min	= 5512,
-			.rate_max	= 768000,
+			.rates		= AXG_TDM_RATES,
 			.formats	= AXG_TDM_FORMATS,
 		},
 		.id = TDM_IFACE_PAD,
 		.ops = &axg_tdm_iface_ops,
+		.probe = axg_tdm_iface_probe_dai,
+		.remove = axg_tdm_iface_remove_dai,
 	},
 	[TDM_IFACE_LOOPBACK] = {
 		.name = "TDM Loopback",
@@ -465,13 +432,13 @@ static const struct snd_soc_dai_driver axg_tdm_iface_dai_drv[] = {
 			.stream_name	= "Loopback",
 			.channels_min	= 1,
 			.channels_max	= AXG_TDM_CHANNEL_MAX,
-			.rates		= SNDRV_PCM_RATE_CONTINUOUS,
-			.rate_min	= 5512,
-			.rate_max	= 768000,
+			.rates		= AXG_TDM_RATES,
 			.formats	= AXG_TDM_FORMATS,
 		},
 		.id = TDM_IFACE_LOOPBACK,
 		.ops = &axg_tdm_iface_ops,
+		.probe = axg_tdm_iface_probe_dai,
+		.remove = axg_tdm_iface_remove_dai,
 	},
 };
 
@@ -479,8 +446,8 @@ static int axg_tdm_iface_set_bias_level(struct snd_soc_component *component,
 					enum snd_soc_bias_level level)
 {
 	struct axg_tdm_iface *iface = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
-	enum snd_soc_bias_level now = snd_soc_dapm_get_bias_level(dapm);
+	enum snd_soc_bias_level now =
+		snd_soc_component_get_bias_level(component);
 	int ret = 0;
 
 	switch (level) {
@@ -529,6 +496,7 @@ static int axg_tdm_iface_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct snd_soc_dai_driver *dai_drv;
 	struct axg_tdm_iface *iface;
+	int ret, i;
 
 	iface = devm_kzalloc(dev, sizeof(*iface), GFP_KERNEL);
 	if (!iface)
@@ -540,10 +508,14 @@ static int axg_tdm_iface_probe(struct platform_device *pdev)
 	 * We'll change the number of channel provided by DAI stream, so dpcm
 	 * channel merge can be done properly
 	 */
-	dai_drv = devm_kmemdup_array(dev, axg_tdm_iface_dai_drv, ARRAY_SIZE(axg_tdm_iface_dai_drv),
-				     sizeof(axg_tdm_iface_dai_drv[0]), GFP_KERNEL);
+	dai_drv = devm_kcalloc(dev, ARRAY_SIZE(axg_tdm_iface_dai_drv),
+			       sizeof(*dai_drv), GFP_KERNEL);
 	if (!dai_drv)
 		return -ENOMEM;
+
+	for (i = 0; i < ARRAY_SIZE(axg_tdm_iface_dai_drv); i++)
+		memcpy(&dai_drv[i], &axg_tdm_iface_dai_drv[i],
+		       sizeof(*dai_drv));
 
 	/* Bit clock provided on the pad */
 	iface->sclk = devm_clk_get(dev, "sclk");
@@ -561,9 +533,14 @@ static int axg_tdm_iface_probe(struct platform_device *pdev)
 	 * At this point, ignore the error if mclk is missing. We'll
 	 * throw an error if the cpu dai is master and mclk is missing
 	 */
-	iface->mclk = devm_clk_get_optional(dev, "mclk");
-	if (IS_ERR(iface->mclk))
-		return dev_err_probe(dev, PTR_ERR(iface->mclk), "failed to get mclk\n");
+	iface->mclk = devm_clk_get(dev, "mclk");
+	if (IS_ERR(iface->mclk)) {
+		ret = PTR_ERR(iface->mclk);
+		if (ret == -ENOENT)
+			iface->mclk = NULL;
+		else
+			return dev_err_probe(dev, ret, "failed to get mclk\n");
+	}
 
 	return devm_snd_soc_register_component(dev,
 					&axg_tdm_iface_component_drv, dai_drv,

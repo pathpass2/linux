@@ -27,7 +27,6 @@
 #include <linux/clk.h>
 #include <linux/console.h>
 #include <linux/io.h>
-#include <linux/string_choices.h>
 
 #include <linux/uaccess.h>
 #include <asm/div64.h>
@@ -325,13 +324,6 @@ static int sm501fb_check_var(struct fb_var_screeninfo *var,
 	/* check the virtual size */
 
 	if (var->xres_virtual > 4096 || var->yres_virtual > 2048)
-		return -EINVAL;
-
-	/* geometry sanity checks */
-	if (var->xres + var->xoffset > var->xres_virtual)
-		return -EINVAL;
-
-	if (var->yres + var->yoffset > var->yres_virtual)
 		return -EINVAL;
 
 	/* can cope with 8,16 or 32bpp */
@@ -1301,7 +1293,7 @@ static int sm501fb_sync(struct fb_info *info)
 		count--;
 
 	if (count <= 0) {
-		fb_err(info, "Timeout waiting for 2d engine sync\n");
+		dev_err(info->dev, "Timeout waiting for 2d engine sync\n");
 		return 1;
 	}
 	return 0;
@@ -1460,7 +1452,6 @@ static void sm501fb_fillrect(struct fb_info *info, const struct fb_fillrect *rec
 
 static struct fb_ops sm501fb_ops_crt = {
 	.owner		= THIS_MODULE,
-	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= sm501fb_check_var_crt,
 	.fb_set_par	= sm501fb_set_par_crt,
 	.fb_blank	= sm501fb_blank_crt,
@@ -1471,12 +1462,10 @@ static struct fb_ops sm501fb_ops_crt = {
 	.fb_copyarea	= sm501fb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
 	.fb_sync	= sm501fb_sync,
-	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 static struct fb_ops sm501fb_ops_pnl = {
 	.owner		= THIS_MODULE,
-	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= sm501fb_check_var_pnl,
 	.fb_set_par	= sm501fb_set_par_pnl,
 	.fb_pan_display	= sm501fb_pan_pnl,
@@ -1487,7 +1476,6 @@ static struct fb_ops sm501fb_ops_pnl = {
 	.fb_copyarea	= sm501fb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
 	.fb_sync	= sm501fb_sync,
-	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /* sm501_init_cursor
@@ -1720,8 +1708,8 @@ static int sm501fb_init_fb(struct fb_info *fb, enum sm501_controller head,
 		BUG();
 	}
 
-	dev_info(info->dev, "fb %s %s at start\n",
-		 fbname, str_enabled_disabled(enable));
+	dev_info(info->dev, "fb %s %sabled at start\n",
+		 fbname, enable ? "en" : "dis");
 
 	/* check to see if our routing allows this */
 
@@ -1743,7 +1731,7 @@ static int sm501fb_init_fb(struct fb_info *fb, enum sm501_controller head,
 		par->ops.fb_cursor = NULL;
 
 	fb->fbops = &par->ops;
-	fb->flags = FBINFO_READS_FAST |
+	fb->flags = FBINFO_FLAG_DEFAULT | FBINFO_READS_FAST |
 		FBINFO_HWACCEL_COPYAREA | FBINFO_HWACCEL_FILLRECT |
 		FBINFO_HWACCEL_XPAN | FBINFO_HWACCEL_YPAN;
 
@@ -2057,7 +2045,7 @@ err_alloc:
 /*
  *  Cleanup
  */
-static void sm501fb_remove(struct platform_device *pdev)
+static int sm501fb_remove(struct platform_device *pdev)
 {
 	struct sm501fb_info *info = platform_get_drvdata(pdev);
 	struct fb_info	   *fbinfo_crt = info->fb[0];
@@ -2076,6 +2064,8 @@ static void sm501fb_remove(struct platform_device *pdev)
 
 	framebuffer_release(fbinfo_pnl);
 	framebuffer_release(fbinfo_crt);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM

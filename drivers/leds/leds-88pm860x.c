@@ -115,7 +115,7 @@ static int pm860x_led_set(struct led_classdev *cdev,
 static int pm860x_led_dt_init(struct platform_device *pdev,
 			      struct pm860x_led *data)
 {
-	struct device_node *nproot;
+	struct device_node *nproot, *np;
 	int iset = 0;
 
 	if (!dev_of_node(pdev->dev.parent))
@@ -125,11 +125,12 @@ static int pm860x_led_dt_init(struct platform_device *pdev,
 		dev_err(&pdev->dev, "failed to find leds node\n");
 		return -ENODEV;
 	}
-	for_each_available_child_of_node_scoped(nproot, np) {
+	for_each_available_child_of_node(nproot, np) {
 		if (of_node_name_eq(np, data->name)) {
 			of_property_read_u32(np, "marvell,88pm860x-iset",
 					     &iset);
 			data->iset = PM8606_LED_CURRENT(iset);
+			of_node_put(np);
 			break;
 		}
 	}
@@ -214,11 +215,13 @@ static int pm860x_led_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void pm860x_led_remove(struct platform_device *pdev)
+static int pm860x_led_remove(struct platform_device *pdev)
 {
 	struct pm860x_led *data = platform_get_drvdata(pdev);
 
 	led_classdev_unregister(&data->cdev);
+
+	return 0;
 }
 
 static struct platform_driver pm860x_led_driver = {

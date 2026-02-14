@@ -1,7 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
-#include "spark.h"
+#include <stdio.h>
 #include <limits.h>
-#include <linux/kernel.h>
+#include <string.h>
+#include <stdlib.h>
+#include "spark.h"
+#include "stat.h"
 
 #define SPARK_SHIFT 8
 

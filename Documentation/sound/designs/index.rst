@@ -6,7 +6,6 @@ Designs and Implementations
 
    control-names
    channel-mapping-api
-   compress-accel
    compress-offload
    timestamping
    jack-controls
@@ -16,4 +15,3 @@ Designs and Implementations
    oss-emulation
    seq-oss
    jack-injection
-   midi-2.0

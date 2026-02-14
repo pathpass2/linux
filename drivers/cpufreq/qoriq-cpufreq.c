@@ -225,7 +225,7 @@ err_np:
 	return -ENODEV;
 }
 
-static void qoriq_cpufreq_cpu_exit(struct cpufreq_policy *policy)
+static int qoriq_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 {
 	struct cpu_data *data = policy->driver_data;
 
@@ -233,6 +233,8 @@ static void qoriq_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 	kfree(data->table);
 	kfree(data);
 	policy->driver_data = NULL;
+
+	return 0;
 }
 
 static int qoriq_cpufreq_target(struct cpufreq_policy *policy,
@@ -254,6 +256,7 @@ static struct cpufreq_driver qoriq_cpufreq_driver = {
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= qoriq_cpufreq_target,
 	.get		= cpufreq_generic_get,
+	.attr		= cpufreq_generic_attr,
 };
 
 static const struct of_device_id qoriq_cpufreq_blacklist[] = {
@@ -285,9 +288,11 @@ static int qoriq_cpufreq_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void qoriq_cpufreq_remove(struct platform_device *pdev)
+static int qoriq_cpufreq_remove(struct platform_device *pdev)
 {
 	cpufreq_unregister_driver(&qoriq_cpufreq_driver);
+
+	return 0;
 }
 
 static struct platform_driver qoriq_cpufreq_platform_driver = {

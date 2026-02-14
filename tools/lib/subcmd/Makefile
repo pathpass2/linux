@@ -38,8 +38,10 @@ endif
 
 ifeq ($(DEBUG),1)
   CFLAGS += -O0
-else
+else ifeq ($(CC_NO_CLANG), 0)
   CFLAGS += -O3
+else
+  CFLAGS += -O6
 endif
 
 # Treat warnings as errors unless directed not to
@@ -74,7 +76,7 @@ include $(srctree)/tools/build/Makefile.include
 
 all: fixdep $(LIBFILE)
 
-$(SUBCMD_IN): fixdep FORCE
+$(SUBCMD_IN): FORCE
 	@$(MAKE) $(build)=libsubcmd
 
 $(LIBFILE): $(SUBCMD_IN)

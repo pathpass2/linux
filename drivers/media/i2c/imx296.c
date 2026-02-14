@@ -9,7 +9,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -201,6 +201,8 @@ struct imx296 {
 	const struct imx296_clk_params *clk_params;
 	bool mono;
 
+	bool streaming;
+
 	struct v4l2_subdev subdev;
 	struct media_pad pad;
 
@@ -319,11 +321,11 @@ static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 	unsigned int vmax;
 	int ret = 0;
 
-	if (!pm_runtime_get_if_in_use(sensor->dev))
+	if (!sensor->streaming)
 		return 0;
 
 	state = v4l2_subdev_get_locked_active_state(&sensor->subdev);
-	format = v4l2_subdev_state_get_format(state, 0);
+	format = v4l2_subdev_get_pad_format(&sensor->subdev, state, 0);
 
 	switch (ctrl->id) {
 	case V4L2_CID_EXPOSURE:
@@ -373,8 +375,6 @@ static int imx296_s_ctrl(struct v4l2_ctrl *ctrl)
 		ret = -EINVAL;
 		break;
 	}
-
-	pm_runtime_put(sensor->dev);
 
 	return ret;
 }
@@ -511,8 +511,8 @@ static int imx296_setup(struct imx296 *sensor, struct v4l2_subdev_state *state)
 	unsigned int i;
 	int ret = 0;
 
-	format = v4l2_subdev_state_get_format(state, 0);
-	crop = v4l2_subdev_state_get_crop(state, 0);
+	format = v4l2_subdev_get_pad_format(&sensor->subdev, state, 0);
+	crop = v4l2_subdev_get_pad_crop(&sensor->subdev, state, 0);
 
 	for (i = 0; i < ARRAY_SIZE(imx296_init_table); ++i)
 		imx296_write(sensor, imx296_init_table[i].reg,
@@ -604,7 +604,10 @@ static int imx296_s_stream(struct v4l2_subdev *sd, int enable)
 	if (!enable) {
 		ret = imx296_stream_off(sensor);
 
+		pm_runtime_mark_last_busy(sensor->dev);
 		pm_runtime_put_autosuspend(sensor->dev);
+
+		sensor->streaming = false;
 
 		goto unlock;
 	}
@@ -616,6 +619,13 @@ static int imx296_s_stream(struct v4l2_subdev *sd, int enable)
 	ret = imx296_setup(sensor, state);
 	if (ret < 0)
 		goto err_pm;
+
+	/*
+	 * Set streaming to true to ensure __v4l2_ctrl_handler_setup() will set
+	 * the controls. The flag is reset to false further down if an error
+	 * occurs.
+	 */
+	sensor->streaming = true;
 
 	ret = __v4l2_ctrl_handler_setup(&sensor->ctrls);
 	if (ret < 0)
@@ -636,6 +646,7 @@ err_pm:
 	 * likely has no other chance to recover.
 	 */
 	pm_runtime_put_sync(sensor->dev);
+	sensor->streaming = false;
 
 	goto unlock;
 }
@@ -661,7 +672,7 @@ static int imx296_enum_frame_size(struct v4l2_subdev *sd,
 {
 	const struct v4l2_mbus_framefmt *format;
 
-	format = v4l2_subdev_state_get_format(state, fse->pad);
+	format = v4l2_subdev_get_pad_format(sd, state, fse->pad);
 
 	if (fse->index >= 2 || fse->code != format->code)
 		return -EINVAL;
@@ -674,6 +685,15 @@ static int imx296_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
+static int imx296_get_format(struct v4l2_subdev *sd,
+			     struct v4l2_subdev_state *state,
+			     struct v4l2_subdev_format *fmt)
+{
+	fmt->format = *v4l2_subdev_get_pad_format(sd, state, fmt->pad);
+
+	return 0;
+}
+
 static int imx296_set_format(struct v4l2_subdev *sd,
 			     struct v4l2_subdev_state *state,
 			     struct v4l2_subdev_format *fmt)
@@ -682,8 +702,8 @@ static int imx296_set_format(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 
-	crop = v4l2_subdev_state_get_crop(state, fmt->pad);
-	format = v4l2_subdev_state_get_format(state, fmt->pad);
+	crop = v4l2_subdev_get_pad_crop(sd, state, fmt->pad);
+	format = v4l2_subdev_get_pad_format(sd, state, fmt->pad);
 
 	/*
 	 * Binning is only allowed when cropping is disabled according to the
@@ -731,7 +751,7 @@ static int imx296_get_selection(struct v4l2_subdev *sd,
 {
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
-		sel->r = *v4l2_subdev_state_get_crop(state, sel->pad);
+		sel->r = *v4l2_subdev_get_pad_crop(sd, state, sel->pad);
 		break;
 
 	case V4L2_SEL_TGT_CROP_DEFAULT:
@@ -779,14 +799,14 @@ static int imx296_set_selection(struct v4l2_subdev *sd,
 	rect.height = min_t(unsigned int, rect.height,
 			    IMX296_PIXEL_ARRAY_HEIGHT - rect.top);
 
-	crop = v4l2_subdev_state_get_crop(state, sel->pad);
+	crop = v4l2_subdev_get_pad_crop(sd, state, sel->pad);
 
 	if (rect.width != crop->width || rect.height != crop->height) {
 		/*
 		 * Reset the output image size if the crop rectangle size has
 		 * been modified.
 		 */
-		format = v4l2_subdev_state_get_format(state, sel->pad);
+		format = v4l2_subdev_get_pad_format(sd, state, sel->pad);
 		format->width = rect.width;
 		format->height = rect.height;
 	}
@@ -797,8 +817,8 @@ static int imx296_set_selection(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int imx296_init_state(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_state *state)
+static int imx296_init_cfg(struct v4l2_subdev *sd,
+			   struct v4l2_subdev_state *state)
 {
 	struct v4l2_subdev_selection sel = {
 		.target = V4L2_SEL_TGT_CROP,
@@ -825,19 +845,16 @@ static const struct v4l2_subdev_video_ops imx296_subdev_video_ops = {
 static const struct v4l2_subdev_pad_ops imx296_subdev_pad_ops = {
 	.enum_mbus_code = imx296_enum_mbus_code,
 	.enum_frame_size = imx296_enum_frame_size,
-	.get_fmt = v4l2_subdev_get_fmt,
+	.get_fmt = imx296_get_format,
 	.set_fmt = imx296_set_format,
 	.get_selection = imx296_get_selection,
 	.set_selection = imx296_set_selection,
+	.init_cfg = imx296_init_cfg,
 };
 
 static const struct v4l2_subdev_ops imx296_subdev_ops = {
 	.video = &imx296_subdev_video_ops,
 	.pad = &imx296_subdev_pad_ops,
-};
-
-static const struct v4l2_subdev_internal_ops imx296_internal_ops = {
-	.init_state = imx296_init_state,
 };
 
 static int imx296_subdev_init(struct imx296 *sensor)
@@ -846,7 +863,6 @@ static int imx296_subdev_init(struct imx296 *sensor)
 	int ret;
 
 	v4l2_i2c_subdev_init(&sensor->subdev, client, &imx296_subdev_ops);
-	sensor->subdev.internal_ops = &imx296_internal_ops;
 
 	ret = imx296_ctrls_init(sensor);
 	if (ret < 0)
@@ -915,13 +931,11 @@ static int imx296_read_temperature(struct imx296 *sensor, int *temp)
 	if (ret < 0)
 		return ret;
 
-	tmdout = imx296_read(sensor, IMX296_TMDOUT);
+	tmdout = imx296_read(sensor, IMX296_TMDOUT) & IMX296_TMDOUT_MASK;
 	if (tmdout < 0)
 		return tmdout;
 
-	tmdout &= IMX296_TMDOUT_MASK;
-
-	/* T(°C) = 246.312 - 0.304 * TMDOUT */
+	/* T(°C) = 246.312 - 0.304 * TMDOUT */;
 	*temp = 246312 - 304 * tmdout;
 
 	return imx296_write(sensor, IMX296_TMDCTRL, 0, NULL);
@@ -952,8 +966,6 @@ static int imx296_identify_model(struct imx296 *sensor)
 			"failed to get sensor out of standby (%d)\n", ret);
 		return ret;
 	}
-
-	usleep_range(2000, 5000);
 
 	ret = imx296_read(sensor, IMX296_SENSOR_INFO);
 	if (ret < 0) {
@@ -1043,7 +1055,7 @@ static int imx296_probe(struct i2c_client *client)
 		return dev_err_probe(sensor->dev, PTR_ERR(sensor->reset),
 				     "failed to get reset GPIO\n");
 
-	sensor->clk = devm_v4l2_sensor_clk_get(sensor->dev, "inck");
+	sensor->clk = devm_clk_get(sensor->dev, "inck");
 	if (IS_ERR(sensor->clk))
 		return dev_err_probe(sensor->dev, PTR_ERR(sensor->clk),
 				     "failed to get clock\n");
@@ -1149,7 +1161,7 @@ static struct i2c_driver imx296_i2c_driver = {
 		.name = "imx296",
 		.pm = &imx296_pm_ops
 	},
-	.probe = imx296_probe,
+	.probe_new = imx296_probe,
 	.remove = imx296_remove,
 };
 

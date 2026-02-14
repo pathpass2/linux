@@ -24,6 +24,8 @@
 
 static uint profile_numbers[5] = {0, 1, 2, 3, 4};
 
+static struct class *kovaplus_class;
+
 static uint kovaplus_convert_event_cpi(uint value)
 {
 	return (value == 7 ? 4 : (value == 4 ? 3 : value));
@@ -171,8 +173,8 @@ static ssize_t kovaplus_sysfs_write(struct file *fp, struct kobject *kobj,
 
 #define KOVAPLUS_SYSFS_W(thingy, THINGY) \
 static ssize_t kovaplus_sysfs_write_ ## thingy(struct file *fp, \
-		struct kobject *kobj, const struct bin_attribute *attr, \
-		char *buf, loff_t off, size_t count) \
+		struct kobject *kobj, struct bin_attribute *attr, char *buf, \
+		loff_t off, size_t count) \
 { \
 	return kovaplus_sysfs_write(fp, kobj, buf, off, count, \
 			KOVAPLUS_SIZE_ ## THINGY, KOVAPLUS_COMMAND_ ## THINGY); \
@@ -180,8 +182,8 @@ static ssize_t kovaplus_sysfs_write_ ## thingy(struct file *fp, \
 
 #define KOVAPLUS_SYSFS_R(thingy, THINGY) \
 static ssize_t kovaplus_sysfs_read_ ## thingy(struct file *fp, \
-		struct kobject *kobj, const struct bin_attribute *attr, \
-		char *buf, loff_t off, size_t count) \
+		struct kobject *kobj, struct bin_attribute *attr, char *buf, \
+		loff_t off, size_t count) \
 { \
 	return kovaplus_sysfs_read(fp, kobj, buf, off, count, \
 			KOVAPLUS_SIZE_ ## THINGY, KOVAPLUS_COMMAND_ ## THINGY); \
@@ -193,7 +195,7 @@ KOVAPLUS_SYSFS_R(thingy, THINGY)
 
 #define KOVAPLUS_BIN_ATTRIBUTE_RW(thingy, THINGY) \
 KOVAPLUS_SYSFS_RW(thingy, THINGY); \
-static const struct bin_attribute bin_attr_##thingy = { \
+static struct bin_attribute bin_attr_##thingy = { \
 	.attr = { .name = #thingy, .mode = 0660 }, \
 	.size = KOVAPLUS_SIZE_ ## THINGY, \
 	.read = kovaplus_sysfs_read_ ## thingy, \
@@ -202,7 +204,7 @@ static const struct bin_attribute bin_attr_##thingy = { \
 
 #define KOVAPLUS_BIN_ATTRIBUTE_W(thingy, THINGY) \
 KOVAPLUS_SYSFS_W(thingy, THINGY); \
-static const struct bin_attribute bin_attr_##thingy = { \
+static struct bin_attribute bin_attr_##thingy = { \
 	.attr = { .name = #thingy, .mode = 0220 }, \
 	.size = KOVAPLUS_SIZE_ ## THINGY, \
 	.write = kovaplus_sysfs_write_ ## thingy \
@@ -213,8 +215,8 @@ KOVAPLUS_BIN_ATTRIBUTE_RW(profile_settings, PROFILE_SETTINGS);
 KOVAPLUS_BIN_ATTRIBUTE_RW(profile_buttons, PROFILE_BUTTONS);
 
 static ssize_t kovaplus_sysfs_read_profilex_settings(struct file *fp,
-		struct kobject *kobj, const struct bin_attribute *attr,
-		char *buf, loff_t off, size_t count)
+		struct kobject *kobj, struct bin_attribute *attr, char *buf,
+		loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct usb_device *usb_dev = interface_to_usbdev(to_usb_interface(dev));
@@ -231,8 +233,8 @@ static ssize_t kovaplus_sysfs_read_profilex_settings(struct file *fp,
 }
 
 static ssize_t kovaplus_sysfs_read_profilex_buttons(struct file *fp,
-		struct kobject *kobj, const struct bin_attribute *attr,
-		char *buf, loff_t off, size_t count)
+		struct kobject *kobj, struct bin_attribute *attr, char *buf,
+		loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj)->parent->parent;
 	struct usb_device *usb_dev = interface_to_usbdev(to_usb_interface(dev));
@@ -249,13 +251,13 @@ static ssize_t kovaplus_sysfs_read_profilex_buttons(struct file *fp,
 }
 
 #define PROFILE_ATTR(number)						\
-static const struct bin_attribute bin_attr_profile##number##_settings = {	\
+static struct bin_attribute bin_attr_profile##number##_settings = {	\
 	.attr = { .name = "profile" #number "_settings", .mode = 0440 },	\
 	.size = KOVAPLUS_SIZE_PROFILE_SETTINGS,				\
 	.read = kovaplus_sysfs_read_profilex_settings,			\
 	.private = &profile_numbers[number-1],				\
 };									\
-static const struct bin_attribute bin_attr_profile##number##_buttons = {	\
+static struct bin_attribute bin_attr_profile##number##_buttons = {	\
 	.attr = { .name = "profile" #number "_buttons", .mode = 0440 },	\
 	.size = KOVAPLUS_SIZE_PROFILE_BUTTONS,				\
 	.read = kovaplus_sysfs_read_profilex_buttons,			\
@@ -272,7 +274,7 @@ static ssize_t kovaplus_sysfs_show_actual_profile(struct device *dev,
 {
 	struct kovaplus_device *kovaplus =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kovaplus->actual_profile);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kovaplus->actual_profile);
 }
 
 static ssize_t kovaplus_sysfs_set_actual_profile(struct device *dev,
@@ -325,7 +327,7 @@ static ssize_t kovaplus_sysfs_show_actual_cpi(struct device *dev,
 {
 	struct kovaplus_device *kovaplus =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kovaplus->actual_cpi);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kovaplus->actual_cpi);
 }
 static DEVICE_ATTR(actual_cpi, 0440, kovaplus_sysfs_show_actual_cpi, NULL);
 
@@ -334,7 +336,7 @@ static ssize_t kovaplus_sysfs_show_actual_sensitivity_x(struct device *dev,
 {
 	struct kovaplus_device *kovaplus =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kovaplus->actual_x_sensitivity);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kovaplus->actual_x_sensitivity);
 }
 static DEVICE_ATTR(actual_sensitivity_x, 0440,
 		   kovaplus_sysfs_show_actual_sensitivity_x, NULL);
@@ -344,7 +346,7 @@ static ssize_t kovaplus_sysfs_show_actual_sensitivity_y(struct device *dev,
 {
 	struct kovaplus_device *kovaplus =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", kovaplus->actual_y_sensitivity);
+	return snprintf(buf, PAGE_SIZE, "%d\n", kovaplus->actual_y_sensitivity);
 }
 static DEVICE_ATTR(actual_sensitivity_y, 0440,
 		   kovaplus_sysfs_show_actual_sensitivity_y, NULL);
@@ -365,7 +367,7 @@ static ssize_t kovaplus_sysfs_show_firmware_version(struct device *dev,
 			&info, KOVAPLUS_SIZE_INFO);
 	mutex_unlock(&kovaplus->kovaplus_lock);
 
-	return sysfs_emit(buf, "%d\n", info.firmware_version);
+	return snprintf(buf, PAGE_SIZE, "%d\n", info.firmware_version);
 }
 static DEVICE_ATTR(firmware_version, 0440,
 		   kovaplus_sysfs_show_firmware_version, NULL);
@@ -379,7 +381,7 @@ static struct attribute *kovaplus_attrs[] = {
 	NULL,
 };
 
-static const struct bin_attribute *const kovaplus_bin_attributes[] = {
+static struct bin_attribute *kovaplus_bin_attributes[] = {
 	&bin_attr_control,
 	&bin_attr_info,
 	&bin_attr_profile_settings,
@@ -405,11 +407,6 @@ static const struct attribute_group kovaplus_group = {
 static const struct attribute_group *kovaplus_groups[] = {
 	&kovaplus_group,
 	NULL,
-};
-
-static const struct class kovaplus_class = {
-	.name = "kovaplus",
-	.dev_groups = kovaplus_groups,
 };
 
 static int kovaplus_init_kovaplus_device_struct(struct usb_device *usb_dev,
@@ -466,8 +463,8 @@ static int kovaplus_init_specials(struct hid_device *hdev)
 			goto exit_free;
 		}
 
-		retval = roccat_connect(&kovaplus_class, hdev,
-					sizeof(struct kovaplus_roccat_report));
+		retval = roccat_connect(kovaplus_class, hdev,
+				sizeof(struct kovaplus_roccat_report));
 		if (retval < 0) {
 			hid_err(hdev, "couldn't init char dev\n");
 		} else {
@@ -641,20 +638,21 @@ static int __init kovaplus_init(void)
 {
 	int retval;
 
-	retval = class_register(&kovaplus_class);
-	if (retval)
-		return retval;
+	kovaplus_class = class_create(THIS_MODULE, "kovaplus");
+	if (IS_ERR(kovaplus_class))
+		return PTR_ERR(kovaplus_class);
+	kovaplus_class->dev_groups = kovaplus_groups;
 
 	retval = hid_register_driver(&kovaplus_driver);
 	if (retval)
-		class_unregister(&kovaplus_class);
+		class_destroy(kovaplus_class);
 	return retval;
 }
 
 static void __exit kovaplus_exit(void)
 {
 	hid_unregister_driver(&kovaplus_driver);
-	class_unregister(&kovaplus_class);
+	class_destroy(kovaplus_class);
 }
 
 module_init(kovaplus_init);

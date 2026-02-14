@@ -468,7 +468,7 @@ static int qmi_sample_probe(struct platform_device *pdev)
 		return ret;
 
 	sq = dev_get_platdata(&pdev->dev);
-	ret = kernel_connect(sample->qmi.sock, (struct sockaddr_unsized *)sq,
+	ret = kernel_connect(sample->qmi.sock, (struct sockaddr *)sq,
 			     sizeof(*sq), 0);
 	if (ret < 0) {
 		pr_err("failed to connect to remote service port\n");
@@ -511,7 +511,7 @@ err_release_qmi_handle:
 	return ret;
 }
 
-static void qmi_sample_remove(struct platform_device *pdev)
+static int qmi_sample_remove(struct platform_device *pdev)
 {
 	struct qmi_sample *sample = platform_get_drvdata(pdev);
 
@@ -520,6 +520,8 @@ static void qmi_sample_remove(struct platform_device *pdev)
 	debugfs_remove(sample->de_dir);
 
 	qmi_handle_release(&sample->qmi);
+
+	return 0;
 }
 
 static struct platform_driver qmi_sample_driver = {

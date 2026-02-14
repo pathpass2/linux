@@ -1139,7 +1139,8 @@ static irqreturn_t csky_pmu_handle_irq(int irq_num, void *dev)
 		perf_sample_data_init(&data, 0, hwc->last_period);
 		csky_pmu_event_set_period(event);
 
-		perf_event_overflow(event, &data, regs);
+		if (perf_event_overflow(event, &data, regs))
+			csky_pmu_stop_event(event);
 	}
 
 	csky_pmu_enable(&csky_pmu.pmu);

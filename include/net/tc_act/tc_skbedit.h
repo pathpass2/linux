@@ -12,7 +12,6 @@
 #include <linux/tc_act/tc_skbedit.h>
 
 struct tcf_skbedit_params {
-	int action;
 	u32 flags;
 	u32 priority;
 	u32 mark;

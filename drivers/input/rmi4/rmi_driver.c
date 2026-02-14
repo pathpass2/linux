@@ -21,7 +21,6 @@
 #include <linux/irqdomain.h>
 #include <uapi/linux/input.h>
 #include <linux/rmi.h>
-#include <linux/export.h>
 #include "rmi_bus.h"
 #include "rmi_driver.h"
 
@@ -979,11 +978,11 @@ static int rmi_driver_remove(struct device *dev)
 
 	rmi_disable_irq(rmi_dev, false);
 
-	rmi_f34_remove_sysfs(rmi_dev);
-	rmi_free_function_list(rmi_dev);
-
 	irq_domain_remove(data->irqdomain);
 	data->irqdomain = NULL;
+
+	rmi_f34_remove_sysfs(rmi_dev);
+	rmi_free_function_list(rmi_dev);
 
 	return 0;
 }
@@ -1197,11 +1196,7 @@ static int rmi_driver_probe(struct device *dev)
 		}
 		rmi_driver_set_input_params(rmi_dev, data->input);
 		data->input->phys = devm_kasprintf(dev, GFP_KERNEL,
-						   "%s/input0", dev_name(dev));
-		if (!data->input->phys) {
-			retval = -ENOMEM;
-			goto err;
-		}
+						"%s/input0", dev_name(dev));
 	}
 
 	retval = rmi_init_functions(data);
@@ -1259,7 +1254,7 @@ static struct rmi_driver rmi_physical_driver = {
 	.set_input_params = rmi_driver_set_input_params,
 };
 
-bool rmi_is_physical_driver(const struct device_driver *drv)
+bool rmi_is_physical_driver(struct device_driver *drv)
 {
 	return drv == &rmi_physical_driver.driver;
 }

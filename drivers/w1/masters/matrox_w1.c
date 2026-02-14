@@ -7,7 +7,7 @@
 
 #include <asm/types.h>
 #include <linux/atomic.h>
-#include <linux/io.h>
+#include <asm/io.h>
 
 #include <linux/delay.h>
 #include <linux/kernel.h>
@@ -39,7 +39,8 @@
 #define MATROX_GET_DATA			0x2B
 #define MATROX_CURSOR_CTL		0x06
 
-struct matrox_device {
+struct matrox_device
+{
 	void __iomem *base_addr;
 	void __iomem *port_index;
 	void __iomem *port_data;
@@ -47,6 +48,7 @@ struct matrox_device {
 
 	unsigned long phys_addr;
 	void __iomem *virt_addr;
+	unsigned long found;
 
 	struct w1_bus_master *bus_master;
 };
@@ -62,7 +64,7 @@ struct matrox_device {
  *
  * Port mapping.
  */
-static inline u8 matrox_w1_read_reg(struct matrox_device *dev, u8 reg)
+static __inline__ u8 matrox_w1_read_reg(struct matrox_device *dev, u8 reg)
 {
 	u8 ret;
 
@@ -73,7 +75,7 @@ static inline u8 matrox_w1_read_reg(struct matrox_device *dev, u8 reg)
 	return ret;
 }
 
-static inline void matrox_w1_write_reg(struct matrox_device *dev, u8 reg, u8 val)
+static __inline__ void matrox_w1_write_reg(struct matrox_device *dev, u8 reg, u8 val)
 {
 	writeb(reg, dev->port_index);
 	writeb(val, dev->port_data);
@@ -121,8 +123,13 @@ static int matrox_w1_probe(struct pci_dev *pdev, const struct pci_device_id *ent
 
 	dev = kzalloc(sizeof(struct matrox_device) +
 		       sizeof(struct w1_bus_master), GFP_KERNEL);
-	if (!dev)
+	if (!dev) {
+		dev_err(&pdev->dev,
+			"%s: Failed to create new matrox_device object.\n",
+			__func__);
 		return -ENOMEM;
+	}
+
 
 	dev->bus_master = (struct w1_bus_master *)(dev + 1);
 
@@ -157,6 +164,8 @@ static int matrox_w1_probe(struct pci_dev *pdev, const struct pci_device_id *ent
 
 	pci_set_drvdata(pdev, dev);
 
+	dev->found = 1;
+
 	dev_info(&pdev->dev, "Matrox G400 GPIO transport layer for 1-wire.\n");
 
 	return 0;
@@ -173,9 +182,10 @@ static void matrox_w1_remove(struct pci_dev *pdev)
 {
 	struct matrox_device *dev = pci_get_drvdata(pdev);
 
-	w1_remove_master_device(dev->bus_master);
-	iounmap(dev->virt_addr);
-
+	if (dev->found) {
+		w1_remove_master_device(dev->bus_master);
+		iounmap(dev->virt_addr);
+	}
 	kfree(dev);
 }
 

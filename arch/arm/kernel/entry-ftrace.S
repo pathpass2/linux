@@ -257,21 +257,11 @@ ENDPROC(ftrace_graph_regs_caller)
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 ENTRY(return_to_handler)
-	mov	ip, sp				@ sp at exit of instrumented routine
-	sub	sp, #PT_REGS_SIZE
-	str	r0, [sp, #S_R0]
-	str	r1, [sp, #S_R1]
-	str	r2, [sp, #S_R2]
-	str	r3, [sp, #S_R3]
-	str	ip, [sp, #S_FP]
-	mov	r0, sp
+	stmdb	sp!, {r0-r3}
+	add	r0, sp, #16		@ sp at exit of instrumented routine
 	bl	ftrace_return_to_handler
-	mov	lr, r0				@ r0 has real ret addr
-	ldr	r3, [sp, #S_R3]
-	ldr	r2, [sp, #S_R2]
-	ldr	r1, [sp, #S_R1]
-	ldr	r0, [sp, #S_R0]
-	add	sp, sp, #PT_REGS_SIZE		@ restore stack pointer
+	mov	lr, r0			@ r0 has real ret addr
+	ldmia	sp!, {r0-r3}
 	ret	lr
 ENDPROC(return_to_handler)
 #endif
@@ -280,10 +270,6 @@ ENTRY(ftrace_stub)
 .Lftrace_stub:
 	ret	lr
 ENDPROC(ftrace_stub)
-
-ENTRY(ftrace_stub_graph)
-	ret	lr
-ENDPROC(ftrace_stub_graph)
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 

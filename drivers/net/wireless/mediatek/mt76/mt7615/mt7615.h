@@ -1,11 +1,10 @@
-/* SPDX-License-Identifier: BSD-3-Clause-Clear */
+/* SPDX-License-Identifier: ISC */
 /* Copyright (C) 2019 MediaTek Inc. */
 
 #ifndef __MT7615_H
 #define __MT7615_H
 
 #include <linux/completion.h>
-#include <linux/hex.h>
 #include <linux/interrupt.h>
 #include <linux/ktime.h>
 #include <linux/regmap.h>
@@ -52,7 +51,6 @@
 #define MT7663_FIRMWARE_N9		"mediatek/mt7663_n9_rebb.bin"
 
 #define MT7615_EEPROM_SIZE		1024
-#define MT7663_EEPROM_SIZE		1536
 #define MT7615_TOKEN_SIZE		4096
 
 #define MT_FRAC_SCALE		12
@@ -126,6 +124,7 @@ struct mt7615_sta {
 
 	struct mt7615_vif *vif;
 
+	struct list_head poll_list;
 	u32 airtime_ac[8];
 
 	struct ieee80211_tx_rate rates[4];
@@ -140,7 +139,7 @@ struct mt7615_sta {
 };
 
 struct mt7615_vif {
-	struct mt76_vif_link mt76; /* must be first */
+	struct mt76_vif mt76; /* must be first */
 	struct mt7615_sta sta;
 	bool sta_added;
 };
@@ -246,6 +245,8 @@ struct mt7615_dev {
 	};
 
 	const struct mt76_bus_ops *bus_ops;
+	struct tasklet_struct irq_tasklet;
+
 	struct mt7615_phy phy;
 	u64 omac_mask;
 
@@ -261,6 +262,9 @@ struct mt7615_dev {
 	struct work_struct reset_work;
 	wait_queue_head_t reset_wait;
 	u32 reset_state;
+
+	struct list_head sta_poll_list;
+	spinlock_t sta_poll_lock;
 
 	struct {
 		u8 n_pulses;
@@ -400,12 +404,20 @@ void mt7615_mac_set_rates(struct mt7615_phy *phy, struct mt7615_sta *sta,
 			  struct ieee80211_tx_rate *rates);
 void mt7615_pm_wake_work(struct work_struct *work);
 void mt7615_pm_power_save_work(struct work_struct *work);
+int mt7615_mcu_del_wtbl_all(struct mt7615_dev *dev);
 int mt7615_mcu_set_chan_info(struct mt7615_phy *phy, int cmd);
 int mt7615_mcu_set_wmm(struct mt7615_dev *dev, u8 queue,
 		       const struct ieee80211_tx_queue_params *params);
 void mt7615_mcu_rx_event(struct mt7615_dev *dev, struct sk_buff *skb);
 int mt7615_mcu_rdd_send_pattern(struct mt7615_dev *dev);
 int mt7615_mcu_fw_log_2_host(struct mt7615_dev *dev, u8 ctrl);
+
+static inline void mt7615_irq_enable(struct mt7615_dev *dev, u32 mask)
+{
+	mt76_set_irq_mask(&dev->mt76, 0, 0, mask);
+
+	tasklet_schedule(&dev->irq_tasklet);
+}
 
 static inline bool mt7615_firmware_offload(struct mt7615_dev *dev)
 {
@@ -457,7 +469,7 @@ void mt7615_roc_work(struct work_struct *work);
 void mt7615_roc_timer(struct timer_list *timer);
 void mt7615_init_txpower(struct mt7615_dev *dev,
 			 struct ieee80211_supported_band *sband);
-int mt7615_set_channel(struct mt76_phy *mphy);
+int mt7615_set_channel(struct mt7615_phy *phy);
 void mt7615_init_work(struct mt7615_dev *dev);
 
 int mt7615_mcu_restart(struct mt76_dev *dev);
@@ -478,9 +490,11 @@ int mt7615_mac_write_txwi(struct mt7615_dev *dev, __le32 *txwi,
 void mt7615_mac_set_timing(struct mt7615_phy *phy);
 int __mt7615_mac_wtbl_set_key(struct mt7615_dev *dev,
 			      struct mt76_wcid *wcid,
-			      struct ieee80211_key_conf *key);
+			      struct ieee80211_key_conf *key,
+			      enum set_key_cmd cmd);
 int mt7615_mac_wtbl_set_key(struct mt7615_dev *dev, struct mt76_wcid *wcid,
-			    struct ieee80211_key_conf *key);
+			    struct ieee80211_key_conf *key,
+			    enum set_key_cmd cmd);
 void mt7615_mac_reset_work(struct work_struct *work);
 u32 mt7615_mac_get_sta_tid_sn(struct mt7615_dev *dev, int wcid, u8 tid);
 
@@ -506,6 +520,7 @@ void mt7615_tx_token_put(struct mt7615_dev *dev);
 bool mt7615_rx_check(struct mt76_dev *mdev, void *data, int len);
 void mt7615_queue_rx_skb(struct mt76_dev *mdev, enum mt76_rxq_id q,
 			 struct sk_buff *skb, u32 *info);
+void mt7615_sta_ps(struct mt76_dev *mdev, struct ieee80211_sta *sta, bool ps);
 int mt7615_mac_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 		       struct ieee80211_sta *sta);
 void mt7615_mac_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,

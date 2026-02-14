@@ -6,7 +6,6 @@
 #include <linux/path.h>
 #include <linux/slab.h>
 #include <linux/fs_struct.h>
-#include <linux/init_task.h>
 #include "internal.h"
 
 /*
@@ -18,10 +17,12 @@ void set_fs_root(struct fs_struct *fs, const struct path *path)
 	struct path old_root;
 
 	path_get(path);
-	write_seqlock(&fs->seq);
+	spin_lock(&fs->lock);
+	write_seqcount_begin(&fs->seq);
 	old_root = fs->root;
 	fs->root = *path;
-	write_sequnlock(&fs->seq);
+	write_seqcount_end(&fs->seq);
+	spin_unlock(&fs->lock);
 	if (old_root.dentry)
 		path_put(&old_root);
 }
@@ -35,10 +36,12 @@ void set_fs_pwd(struct fs_struct *fs, const struct path *path)
 	struct path old_pwd;
 
 	path_get(path);
-	write_seqlock(&fs->seq);
+	spin_lock(&fs->lock);
+	write_seqcount_begin(&fs->seq);
 	old_pwd = fs->pwd;
 	fs->pwd = *path;
-	write_sequnlock(&fs->seq);
+	write_seqcount_end(&fs->seq);
+	spin_unlock(&fs->lock);
 
 	if (old_pwd.dentry)
 		path_put(&old_pwd);
@@ -59,22 +62,24 @@ void chroot_fs_refs(const struct path *old_root, const struct path *new_root)
 	int count = 0;
 
 	read_lock(&tasklist_lock);
-	for_each_process_thread(g, p) {
+	do_each_thread(g, p) {
 		task_lock(p);
 		fs = p->fs;
 		if (fs) {
 			int hits = 0;
-			write_seqlock(&fs->seq);
+			spin_lock(&fs->lock);
+			write_seqcount_begin(&fs->seq);
 			hits += replace_path(&fs->root, old_root, new_root);
 			hits += replace_path(&fs->pwd, old_root, new_root);
+			write_seqcount_end(&fs->seq);
 			while (hits--) {
 				count++;
 				path_get(new_root);
 			}
-			write_sequnlock(&fs->seq);
+			spin_unlock(&fs->lock);
 		}
 		task_unlock(p);
-	}
+	} while_each_thread(g, p);
 	read_unlock(&tasklist_lock);
 	while (count--)
 		path_put(old_root);
@@ -94,10 +99,10 @@ void exit_fs(struct task_struct *tsk)
 	if (fs) {
 		int kill;
 		task_lock(tsk);
-		read_seqlock_excl(&fs->seq);
+		spin_lock(&fs->lock);
 		tsk->fs = NULL;
 		kill = !--fs->users;
-		read_sequnlock_excl(&fs->seq);
+		spin_unlock(&fs->lock);
 		task_unlock(tsk);
 		if (kill)
 			free_fs_struct(fs);
@@ -111,15 +116,16 @@ struct fs_struct *copy_fs_struct(struct fs_struct *old)
 	if (fs) {
 		fs->users = 1;
 		fs->in_exec = 0;
-		seqlock_init(&fs->seq);
+		spin_lock_init(&fs->lock);
+		seqcount_spinlock_init(&fs->seq, &fs->lock);
 		fs->umask = old->umask;
 
-		read_seqlock_excl(&old->seq);
+		spin_lock(&old->lock);
 		fs->root = old->root;
 		path_get(&fs->root);
 		fs->pwd = old->pwd;
 		path_get(&fs->pwd);
-		read_sequnlock_excl(&old->seq);
+		spin_unlock(&old->lock);
 	}
 	return fs;
 }
@@ -134,10 +140,10 @@ int unshare_fs_struct(void)
 		return -ENOMEM;
 
 	task_lock(current);
-	read_seqlock_excl(&fs->seq);
+	spin_lock(&fs->lock);
 	kill = !--fs->users;
 	current->fs = new_fs;
-	read_sequnlock_excl(&fs->seq);
+	spin_unlock(&fs->lock);
 	task_unlock(current);
 
 	if (kill)
@@ -147,9 +153,16 @@ int unshare_fs_struct(void)
 }
 EXPORT_SYMBOL_GPL(unshare_fs_struct);
 
+int current_umask(void)
+{
+	return current->fs->umask;
+}
+EXPORT_SYMBOL(current_umask);
+
 /* to be mentioned only in INIT_TASK */
 struct fs_struct init_fs = {
 	.users		= 1,
-	.seq		= __SEQLOCK_UNLOCKED(init_fs.seq),
+	.lock		= __SPIN_LOCK_UNLOCKED(init_fs.lock),
+	.seq		= SEQCNT_SPINLOCK_ZERO(init_fs.seq, &init_fs.lock),
 	.umask		= 0022,
 };

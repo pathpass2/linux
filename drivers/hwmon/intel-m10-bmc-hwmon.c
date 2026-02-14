@@ -24,7 +24,7 @@ struct m10bmc_sdata {
 
 struct m10bmc_hwmon_board_data {
 	const struct m10bmc_sdata *tables[hwmon_max];
-	const struct hwmon_channel_info * const *hinfo;
+	const struct hwmon_channel_info **hinfo;
 };
 
 struct m10bmc_hwmon {
@@ -67,7 +67,7 @@ static const struct m10bmc_sdata n3000bmc_power_tbl[] = {
 	{ 0x160, 0x0, 0x0, 0x0, 0x0, 1000, "Board Power" },
 };
 
-static const struct hwmon_channel_info * const n3000bmc_hinfo[] = {
+static const struct hwmon_channel_info *n3000bmc_hinfo[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_HYST |
 			   HWMON_T_CRIT | HWMON_T_CRIT_HYST | HWMON_T_LABEL,
@@ -154,7 +154,7 @@ static const struct m10bmc_hwmon_board_data n3000bmc_hwmon_bdata = {
 	.hinfo = n3000bmc_hinfo,
 };
 
-static const struct hwmon_channel_info * const d5005bmc_hinfo[] = {
+static const struct hwmon_channel_info *d5005bmc_hinfo[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_HYST |
 			   HWMON_T_CRIT | HWMON_T_CRIT_HYST | HWMON_T_LABEL,
@@ -280,7 +280,7 @@ static const struct m10bmc_sdata n5010bmc_curr_tbl[] = {
 	{ 0x1a0, 0x0, 0x0, 0x0, 0x0, 1, "CVL2 0.8V Current" },
 };
 
-static const struct hwmon_channel_info * const n5010bmc_hinfo[] = {
+static const struct hwmon_channel_info *n5010bmc_hinfo[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_CRIT | HWMON_T_LABEL,
 			   HWMON_T_INPUT | HWMON_T_CRIT | HWMON_T_LABEL,
@@ -358,7 +358,7 @@ static const struct m10bmc_sdata n6000bmc_temp_tbl[] = {
 	{ 0x4f0, 0x4f4, 0x4f8, 0x52c, 0x0, 500, "Board Top Near FPGA Temperature" },
 	{ 0x4fc, 0x500, 0x504, 0x52c, 0x0, 500, "Board Bottom Near CVL Temperature" },
 	{ 0x508, 0x50c, 0x510, 0x52c, 0x0, 500, "Board Top East Near VRs Temperature" },
-	{ 0x514, 0x518, 0x51c, 0x52c, 0x0, 500, "CVL Die Temperature" },
+	{ 0x514, 0x518, 0x51c, 0x52c, 0x0, 500, "Columbiaville Die Temperature" },
 	{ 0x520, 0x524, 0x528, 0x52c, 0x0, 500, "Board Rear Side Temperature" },
 	{ 0x530, 0x534, 0x538, 0x52c, 0x0, 500, "Board Front Side Temperature" },
 	{ 0x53c, 0x540, 0x544, 0x0, 0x0, 500, "QSFP1 Case Temperature" },
@@ -429,10 +429,10 @@ static const struct m10bmc_sdata n6000bmc_curr_tbl[] = {
 };
 
 static const struct m10bmc_sdata n6000bmc_power_tbl[] = {
-	{ 0x724, 0x0, 0x0, 0x0, 0x0, 1000, "Board Power" },
+	{ 0x724, 0x0, 0x0, 0x0, 0x0, 1, "Board Power" },
 };
 
-static const struct hwmon_channel_info * const n6000bmc_hinfo[] = {
+static const struct hwmon_channel_info *n6000bmc_hinfo[] = {
 	HWMON_CHANNEL_INFO(temp,
 			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_CRIT |
 			   HWMON_T_LABEL,
@@ -564,6 +564,13 @@ static const struct m10bmc_hwmon_board_data n6000bmc_hwmon_bdata = {
 
 	.hinfo = n6000bmc_hinfo,
 };
+
+static umode_t
+m10bmc_hwmon_is_visible(const void *data, enum hwmon_sensor_types type,
+			u32 attr, int channel)
+{
+	return 0444;
+}
 
 static const struct m10bmc_sdata *
 find_sensor_data(struct m10bmc_hwmon *hw, enum hwmon_sensor_types type,
@@ -722,7 +729,7 @@ static int m10bmc_hwmon_read_string(struct device *dev,
 }
 
 static const struct hwmon_ops m10bmc_hwmon_ops = {
-	.visible = 0444,
+	.is_visible = m10bmc_hwmon_is_visible,
 	.read = m10bmc_hwmon_read,
 	.read_string = m10bmc_hwmon_read_string,
 };
@@ -787,4 +794,3 @@ MODULE_DEVICE_TABLE(platform, intel_m10bmc_hwmon_ids);
 MODULE_AUTHOR("Intel Corporation");
 MODULE_DESCRIPTION("Intel MAX 10 BMC hardware monitor");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("INTEL_M10_BMC_CORE");

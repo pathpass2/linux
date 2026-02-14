@@ -61,10 +61,6 @@ class TestMetricExpressions(unittest.TestCase):
     after = before
     self.assertEqual(ParsePerfJson(before).ToPerfJson(), after)
 
-    before = r'a + 3e-12 + b'
-    after = before
-    self.assertEqual(ParsePerfJson(before).ToPerfJson(), after)
-
   def test_IfElseTests(self):
     # if-else needs rewriting to Select and back.
     before = r'Event1 if #smt_on else Event2'
@@ -162,9 +158,9 @@ class TestMetricExpressions(unittest.TestCase):
 
   def test_RewriteMetricsInTermsOfOthers(self):
     Expression.__eq__ = lambda e1, e2: e1.Equals(e2)
-    before = [('cpu', 'm1', ParsePerfJson('a + b + c + d')),
-              ('cpu', 'm2', ParsePerfJson('a + b + c'))]
-    after = {('cpu', 'm1'): ParsePerfJson('m2 + d')}
+    before = [('m1', ParsePerfJson('a + b + c + d')),
+              ('m2', ParsePerfJson('a + b + c'))]
+    after = {'m1': ParsePerfJson('m2 + d')}
     self.assertEqual(RewriteMetricsInTermsOfOthers(before), after)
     Expression.__eq__ = None
 

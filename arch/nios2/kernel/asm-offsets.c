@@ -2,7 +2,6 @@
 /*
  * Copyright (C) 2011 Tobias Klauser <tklauser@distanz.ch>
  */
-#define COMPILE_OFFSETS
 
 #include <linux/stddef.h>
 #include <linux/sched.h>

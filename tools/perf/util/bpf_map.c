@@ -5,7 +5,6 @@
 #include <bpf/libbpf.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
-#include <errno.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -35,6 +34,9 @@ int bpf_map__fprintf(struct bpf_map *map, FILE *fp)
 
 	if (fd < 0)
 		return fd;
+
+	if (!map)
+		return PTR_ERR(map);
 
 	err = -ENOMEM;
 	key = malloc(bpf_map__key_size(map));

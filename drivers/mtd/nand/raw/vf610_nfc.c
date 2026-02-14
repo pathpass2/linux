@@ -29,9 +29,8 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/swab.h>
 
@@ -810,6 +809,8 @@ static int vf610_nfc_probe(struct platform_device *pdev)
 	struct vf610_nfc *nfc;
 	struct mtd_info *mtd;
 	struct nand_chip *chip;
+	struct device_node *child;
+	const struct of_device_id *of_id;
 	int err;
 	int irq;
 
@@ -826,30 +827,40 @@ static int vf610_nfc_probe(struct platform_device *pdev)
 	mtd->name = DRV_NAME;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (irq <= 0)
+		return -EINVAL;
 
 	nfc->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(nfc->regs))
 		return PTR_ERR(nfc->regs);
 
-	nfc->clk = devm_clk_get_enabled(&pdev->dev, NULL);
-	if (IS_ERR(nfc->clk)) {
-		dev_err(nfc->dev, "Unable to get and enable clock!\n");
+	nfc->clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(nfc->clk))
 		return PTR_ERR(nfc->clk);
+
+	err = clk_prepare_enable(nfc->clk);
+	if (err) {
+		dev_err(nfc->dev, "Unable to enable clock!\n");
+		return err;
 	}
 
-	nfc->variant = (unsigned long)device_get_match_data(&pdev->dev);
-	if (!nfc->variant)
-		return -ENODEV;
+	of_id = of_match_device(vf610_nfc_dt_ids, &pdev->dev);
+	if (!of_id) {
+		err = -ENODEV;
+		goto err_disable_clk;
+	}
 
-	for_each_available_child_of_node_scoped(nfc->dev->of_node, child) {
+	nfc->variant = (enum vf610_nfc_variant)of_id->data;
+
+	for_each_available_child_of_node(nfc->dev->of_node, child) {
 		if (of_device_is_compatible(child, "fsl,vf610-nfc-nandcs")) {
 
 			if (nand_get_flash_node(chip)) {
 				dev_err(nfc->dev,
 					"Only one NAND chip supported!\n");
-				return -EINVAL;
+				err = -EINVAL;
+				of_node_put(child);
+				goto err_disable_clk;
 			}
 
 			nand_set_flash_node(chip, child);
@@ -858,7 +869,8 @@ static int vf610_nfc_probe(struct platform_device *pdev)
 
 	if (!nand_get_flash_node(chip)) {
 		dev_err(nfc->dev, "NAND chip sub-node missing!\n");
-		return -ENODEV;
+		err = -ENODEV;
+		goto err_disable_clk;
 	}
 
 	chip->options |= NAND_NO_SUBPAGE_WRITE;
@@ -868,7 +880,7 @@ static int vf610_nfc_probe(struct platform_device *pdev)
 	err = devm_request_irq(nfc->dev, irq, vf610_nfc_irq, 0, DRV_NAME, nfc);
 	if (err) {
 		dev_err(nfc->dev, "Error requesting IRQ!\n");
-		return err;
+		goto err_disable_clk;
 	}
 
 	vf610_nfc_preinit_controller(nfc);
@@ -880,7 +892,7 @@ static int vf610_nfc_probe(struct platform_device *pdev)
 	/* Scan the NAND chip */
 	err = nand_scan(chip, 1);
 	if (err)
-		return err;
+		goto err_disable_clk;
 
 	platform_set_drvdata(pdev, nfc);
 
@@ -892,10 +904,12 @@ static int vf610_nfc_probe(struct platform_device *pdev)
 
 err_cleanup_nand:
 	nand_cleanup(chip);
+err_disable_clk:
+	clk_disable_unprepare(nfc->clk);
 	return err;
 }
 
-static void vf610_nfc_remove(struct platform_device *pdev)
+static int vf610_nfc_remove(struct platform_device *pdev)
 {
 	struct vf610_nfc *nfc = platform_get_drvdata(pdev);
 	struct nand_chip *chip = &nfc->chip;
@@ -904,6 +918,8 @@ static void vf610_nfc_remove(struct platform_device *pdev)
 	ret = mtd_device_unregister(nand_to_mtd(chip));
 	WARN_ON(ret);
 	nand_cleanup(chip);
+	clk_disable_unprepare(nfc->clk);
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

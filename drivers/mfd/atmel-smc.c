@@ -8,15 +8,8 @@
  * Author: Boris Brezillon <boris.brezillon@free-electrons.com>
  */
 
-#include <linux/bits.h>
-#include <linux/err.h>
-#include <linux/export.h>
-#include <linux/mod_devicetable.h>
-#include <linux/of.h>
-#include <linux/regmap.h>
-#include <linux/string.h>
-
 #include <linux/mfd/syscon/atmel-smc.h>
+#include <linux/string.h>
 
 /**
  * atmel_smc_cs_conf_init - initialize a SMC CS conf
@@ -262,8 +255,8 @@ EXPORT_SYMBOL_GPL(atmel_smc_cs_conf_apply);
 /**
  * atmel_hsmc_cs_conf_apply - apply an SMC CS conf
  * @regmap: the HSMC regmap
- * @layout: the layout of registers
  * @cs: the CS id
+ * @layout: the layout of registers
  * @conf: the SMC CS conf to apply
  *
  * Applies an SMC CS configuration.
@@ -303,8 +296,8 @@ EXPORT_SYMBOL_GPL(atmel_smc_cs_conf_get);
 /**
  * atmel_hsmc_cs_conf_get - retrieve the current SMC CS conf
  * @regmap: the HSMC regmap
- * @layout: the layout of registers
  * @cs: the CS id
+ * @layout: the layout of registers
  * @conf: the SMC CS conf object to store the current conf
  *
  * Retrieve the SMC CS configuration.
@@ -330,7 +323,7 @@ static const struct atmel_hsmc_reg_layout sama5d2_reg_layout = {
 	.timing_regs_offset = 0x700,
 };
 
-static const struct of_device_id atmel_smc_ids[] __maybe_unused = {
+static const struct of_device_id atmel_smc_ids[] = {
 	{ .compatible = "atmel,at91sam9260-smc", .data = NULL },
 	{ .compatible = "atmel,sama5d3-smc", .data = &sama5d3_reg_layout },
 	{ .compatible = "atmel,sama5d2-smc", .data = &sama5d2_reg_layout },

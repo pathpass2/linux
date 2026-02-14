@@ -311,6 +311,7 @@ struct bcm_vk_peer_log {
 	u32 wr_idx;
 	u32 buf_size;
 	u32 mask;
+	char data[];
 };
 
 /* max buf size allowed */
@@ -339,7 +340,7 @@ struct bcm_vk_proc_mon_info {
 };
 
 struct bcm_vk_hb_ctrl {
-	struct delayed_work work;
+	struct timer_list timer;
 	u32 last_uptime;
 	u32 lost_cnt;
 };

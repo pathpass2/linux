@@ -1,6 +1,3 @@
-Symmetric Key Cipher
-====================
-
 Block Cipher Algorithm Definitions
 ----------------------------------
 

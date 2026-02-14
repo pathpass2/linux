@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause) */
 /* Copyright(c) 2015-17 Intel Corporation. */
 #include <sound/soc.h>
-#include "bus.h"
 
 #ifndef __SDW_CADENCE_H
 #define __SDW_CADENCE_H
@@ -14,8 +13,6 @@
  * can configure the IP to have a smaller FIFO.
  */
 #define CDNS_MCP_IP_MAX_CMD_LEN		32
-
-#define SDW_CADENCE_MCP_IP_OFFSET	0x4000
 
 /**
  * struct sdw_cdns_pdi: PDI (Physical Data Interface) instance
@@ -87,6 +84,7 @@ struct sdw_cdns_stream_config {
  * @bus: Bus handle
  * @stream_type: Stream type
  * @link_id: Master link id
+ * @hw_params: hw_params to be applied in .prepare step
  * @suspended: status set when suspended, to be used in .prepare
  * @paused: status set in .trigger, to be used in suspend
  * @direction: stream direction
@@ -98,6 +96,7 @@ struct sdw_cdns_dai_runtime {
 	struct sdw_bus *bus;
 	enum sdw_stream_type stream_type;
 	int link_id;
+	struct snd_pcm_hw_params *hw_params;
 	bool suspended;
 	bool paused;
 	int direction;
@@ -108,7 +107,6 @@ struct sdw_cdns_dai_runtime {
  * @dev: Linux device
  * @bus: Bus handle
  * @instance: instance number
- * @ip_offset: version-dependent offset to access IP_MCP registers and fields
  * @response_buf: SoundWire response buffer
  * @tx_complete: Tx completion
  * @ports: Data ports
@@ -118,15 +116,11 @@ struct sdw_cdns_dai_runtime {
  * @link_up: Link status
  * @msg_count: Messages sent on bus
  * @dai_runtime_array: runtime context for each allocated DAI.
- * @status_update_lock: protect concurrency between interrupt-based and delayed work
- * status update
  */
 struct sdw_cdns {
 	struct device *dev;
 	struct sdw_bus bus;
 	unsigned int instance;
-
-	u32 ip_offset;
 
 	/*
 	 * The datasheet says the RX FIFO AVAIL can be 2 entries more
@@ -151,13 +145,10 @@ struct sdw_cdns {
 	bool interrupt_enabled;
 
 	struct work_struct work;
-	struct delayed_work attach_dwork;
 
 	struct list_head list;
 
 	struct sdw_cdns_dai_runtime **dai_runtime_array;
-
-	struct mutex status_update_lock; /* add mutual exclusion to sdw_handle_slave_status() */
 };
 
 #define bus_to_cdns(_bus) container_of(_bus, struct sdw_cdns, bus)
@@ -169,7 +160,6 @@ int sdw_cdns_probe(struct sdw_cdns *cdns);
 irqreturn_t sdw_cdns_irq(int irq, void *dev_id);
 irqreturn_t sdw_cdns_thread(int irq, void *dev_id);
 
-int sdw_cdns_soft_reset(struct sdw_cdns *cdns);
 int sdw_cdns_init(struct sdw_cdns *cdns);
 int sdw_cdns_pdi_init(struct sdw_cdns *cdns,
 		      struct sdw_cdns_stream_config config);
@@ -206,33 +196,4 @@ int cdns_set_sdw_stream(struct snd_soc_dai *dai,
 void sdw_cdns_check_self_clearing_bits(struct sdw_cdns *cdns, const char *string,
 				       bool initial_delay, int reset_iterations);
 
-void sdw_cdns_config_update(struct sdw_cdns *cdns);
-int sdw_cdns_config_update_set_wait(struct sdw_cdns *cdns);
-
-/* SoundWire BPT/BRA helpers to format data */
-int sdw_cdns_bpt_find_bandwidth(int command, /* 0: write, 1: read */
-				int row, int col, int frame_rate,
-				unsigned int *tx_dma_bandwidth,
-				unsigned int *rx_dma_bandwidth);
-
-int sdw_cdns_bpt_find_buffer_sizes(int command, /* 0: write, 1: read */
-				   int row, int col, unsigned int data_bytes,
-				   unsigned int requested_bytes_per_frame,
-				   unsigned int *data_per_frame, unsigned int *pdi0_buffer_size,
-				   unsigned int *pdi1_buffer_size, unsigned int *num_frames);
-
-int sdw_cdns_prepare_write_dma_buffer(u8 dev_num, struct sdw_bpt_section *sec, int num_sec,
-				      int data_per_frame, u8 *dma_buffer,
-				      int dma_buffer_size, int *dma_buffer_total_bytes);
-
-int sdw_cdns_prepare_read_dma_buffer(u8 dev_num, struct sdw_bpt_section *sec, int num_sec,
-				     int data_per_frame, u8 *dma_buffer, int dma_buffer_size,
-				     int *dma_buffer_total_bytes, unsigned int fake_size);
-
-int sdw_cdns_check_write_response(struct device *dev, u8 *dma_buffer,
-				  int dma_buffer_size, int num_frames);
-
-int sdw_cdns_check_read_response(struct device *dev, u8 *dma_buffer, int dma_buffer_size,
-				 struct sdw_bpt_section *sec, int num_sec, int num_frames,
-				 int data_per_frame);
 #endif /* __SDW_CADENCE_H */

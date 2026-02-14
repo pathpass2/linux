@@ -1,7 +1,6 @@
 [
     {
         "BriefDescription": "Cycles L1D locked",
-        "Counter": "0,1",
         "EventCode": "0x63",
         "EventName": "CACHE_LOCK_CYCLES.L1D",
         "SampleAfterValue": "2000000",
@@ -9,7 +8,6 @@
     },
     {
         "BriefDescription": "Cycles L1D and L2 locked",
-        "Counter": "0,1",
         "EventCode": "0x63",
         "EventName": "CACHE_LOCK_CYCLES.L1D_L2",
         "SampleAfterValue": "2000000",
@@ -17,7 +15,6 @@
     },
     {
         "BriefDescription": "L1D cache lines replaced in M state",
-        "Counter": "0,1",
         "EventCode": "0x51",
         "EventName": "L1D.M_EVICT",
         "SampleAfterValue": "2000000",
@@ -25,7 +22,6 @@
     },
     {
         "BriefDescription": "L1D cache lines allocated in the M state",
-        "Counter": "0,1",
         "EventCode": "0x51",
         "EventName": "L1D.M_REPL",
         "SampleAfterValue": "2000000",
@@ -33,7 +29,6 @@
     },
     {
         "BriefDescription": "L1D snoop eviction of cache lines in M state",
-        "Counter": "0,1",
         "EventCode": "0x51",
         "EventName": "L1D.M_SNOOP_EVICT",
         "SampleAfterValue": "2000000",
@@ -41,7 +36,6 @@
     },
     {
         "BriefDescription": "L1 data cache lines allocated",
-        "Counter": "0,1",
         "EventCode": "0x51",
         "EventName": "L1D.REPL",
         "SampleAfterValue": "2000000",
@@ -49,7 +43,6 @@
     },
     {
         "BriefDescription": "L1D prefetch load lock accepted in fill buffer",
-        "Counter": "0,1",
         "EventCode": "0x52",
         "EventName": "L1D_CACHE_PREFETCH_LOCK_FB_HIT",
         "SampleAfterValue": "2000000",
@@ -57,7 +50,6 @@
     },
     {
         "BriefDescription": "L1D hardware prefetch misses",
-        "Counter": "0,1",
         "EventCode": "0x4E",
         "EventName": "L1D_PREFETCH.MISS",
         "SampleAfterValue": "200000",
@@ -65,7 +57,6 @@
     },
     {
         "BriefDescription": "L1D hardware prefetch requests",
-        "Counter": "0,1",
         "EventCode": "0x4E",
         "EventName": "L1D_PREFETCH.REQUESTS",
         "SampleAfterValue": "200000",
@@ -73,7 +64,6 @@
     },
     {
         "BriefDescription": "L1D hardware prefetch requests triggered",
-        "Counter": "0,1",
         "EventCode": "0x4E",
         "EventName": "L1D_PREFETCH.TRIGGERS",
         "SampleAfterValue": "200000",
@@ -81,7 +71,6 @@
     },
     {
         "BriefDescription": "L1 writebacks to L2 in E state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x28",
         "EventName": "L1D_WB_L2.E_STATE",
         "SampleAfterValue": "100000",
@@ -89,7 +78,6 @@
     },
     {
         "BriefDescription": "L1 writebacks to L2 in I state (misses)",
-        "Counter": "0,1,2,3",
         "EventCode": "0x28",
         "EventName": "L1D_WB_L2.I_STATE",
         "SampleAfterValue": "100000",
@@ -97,7 +85,6 @@
     },
     {
         "BriefDescription": "All L1 writebacks to L2",
-        "Counter": "0,1,2,3",
         "EventCode": "0x28",
         "EventName": "L1D_WB_L2.MESI",
         "SampleAfterValue": "100000",
@@ -105,7 +92,6 @@
     },
     {
         "BriefDescription": "L1 writebacks to L2 in M state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x28",
         "EventName": "L1D_WB_L2.M_STATE",
         "SampleAfterValue": "100000",
@@ -113,47 +99,13 @@
     },
     {
         "BriefDescription": "L1 writebacks to L2 in S state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x28",
         "EventName": "L1D_WB_L2.S_STATE",
         "SampleAfterValue": "100000",
         "UMask": "0x2"
     },
     {
-        "BriefDescription": "L1I instruction fetch stall cycles",
-        "Counter": "0,1,2,3",
-        "EventCode": "0x80",
-        "EventName": "L1I.CYCLES_STALLED",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x4"
-    },
-    {
-        "BriefDescription": "L1I instruction fetch hits",
-        "Counter": "0,1,2,3",
-        "EventCode": "0x80",
-        "EventName": "L1I.HITS",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x1"
-    },
-    {
-        "BriefDescription": "L1I instruction fetch misses",
-        "Counter": "0,1,2,3",
-        "EventCode": "0x80",
-        "EventName": "L1I.MISSES",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x2"
-    },
-    {
-        "BriefDescription": "L1I Instruction fetches",
-        "Counter": "0,1,2,3",
-        "EventCode": "0x80",
-        "EventName": "L1I.READS",
-        "SampleAfterValue": "2000000",
-        "UMask": "0x3"
-    },
-    {
         "BriefDescription": "All L2 data requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.ANY",
         "SampleAfterValue": "200000",
@@ -161,7 +113,6 @@
     },
     {
         "BriefDescription": "L2 data demand loads in E state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.DEMAND.E_STATE",
         "SampleAfterValue": "200000",
@@ -169,7 +120,6 @@
     },
     {
         "BriefDescription": "L2 data demand loads in I state (misses)",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.DEMAND.I_STATE",
         "SampleAfterValue": "200000",
@@ -177,7 +127,6 @@
     },
     {
         "BriefDescription": "L2 data demand requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.DEMAND.MESI",
         "SampleAfterValue": "200000",
@@ -185,7 +134,6 @@
     },
     {
         "BriefDescription": "L2 data demand loads in M state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.DEMAND.M_STATE",
         "SampleAfterValue": "200000",
@@ -193,7 +141,6 @@
     },
     {
         "BriefDescription": "L2 data demand loads in S state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.DEMAND.S_STATE",
         "SampleAfterValue": "200000",
@@ -201,7 +148,6 @@
     },
     {
         "BriefDescription": "L2 data prefetches in E state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.PREFETCH.E_STATE",
         "SampleAfterValue": "200000",
@@ -209,7 +155,6 @@
     },
     {
         "BriefDescription": "L2 data prefetches in the I state (misses)",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.PREFETCH.I_STATE",
         "SampleAfterValue": "200000",
@@ -217,7 +162,6 @@
     },
     {
         "BriefDescription": "All L2 data prefetches",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.PREFETCH.MESI",
         "SampleAfterValue": "200000",
@@ -225,7 +169,6 @@
     },
     {
         "BriefDescription": "L2 data prefetches in M state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.PREFETCH.M_STATE",
         "SampleAfterValue": "200000",
@@ -233,15 +176,13 @@
     },
     {
         "BriefDescription": "L2 data prefetches in the S state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x26",
         "EventName": "L2_DATA_RQSTS.PREFETCH.S_STATE",
         "SampleAfterValue": "200000",
         "UMask": "0x20"
     },
     {
-        "BriefDescription": "L2 lines allocated",
-        "Counter": "0,1,2,3",
+        "BriefDescription": "L2 lines alloacated",
         "EventCode": "0xF1",
         "EventName": "L2_LINES_IN.ANY",
         "SampleAfterValue": "100000",
@@ -249,7 +190,6 @@
     },
     {
         "BriefDescription": "L2 lines allocated in the E state",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF1",
         "EventName": "L2_LINES_IN.E_STATE",
         "SampleAfterValue": "100000",
@@ -257,7 +197,6 @@
     },
     {
         "BriefDescription": "L2 lines allocated in the S state",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF1",
         "EventName": "L2_LINES_IN.S_STATE",
         "SampleAfterValue": "100000",
@@ -265,7 +204,6 @@
     },
     {
         "BriefDescription": "L2 lines evicted",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF2",
         "EventName": "L2_LINES_OUT.ANY",
         "SampleAfterValue": "100000",
@@ -273,7 +211,6 @@
     },
     {
         "BriefDescription": "L2 lines evicted by a demand request",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF2",
         "EventName": "L2_LINES_OUT.DEMAND_CLEAN",
         "SampleAfterValue": "100000",
@@ -281,7 +218,6 @@
     },
     {
         "BriefDescription": "L2 modified lines evicted by a demand request",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF2",
         "EventName": "L2_LINES_OUT.DEMAND_DIRTY",
         "SampleAfterValue": "100000",
@@ -289,7 +225,6 @@
     },
     {
         "BriefDescription": "L2 lines evicted by a prefetch request",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF2",
         "EventName": "L2_LINES_OUT.PREFETCH_CLEAN",
         "SampleAfterValue": "100000",
@@ -297,7 +232,6 @@
     },
     {
         "BriefDescription": "L2 modified lines evicted by a prefetch request",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF2",
         "EventName": "L2_LINES_OUT.PREFETCH_DIRTY",
         "SampleAfterValue": "100000",
@@ -305,7 +239,6 @@
     },
     {
         "BriefDescription": "L2 instruction fetches",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.IFETCHES",
         "SampleAfterValue": "200000",
@@ -313,7 +246,6 @@
     },
     {
         "BriefDescription": "L2 instruction fetch hits",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.IFETCH_HIT",
         "SampleAfterValue": "200000",
@@ -321,7 +253,6 @@
     },
     {
         "BriefDescription": "L2 instruction fetch misses",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.IFETCH_MISS",
         "SampleAfterValue": "200000",
@@ -329,7 +260,6 @@
     },
     {
         "BriefDescription": "L2 load hits",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.LD_HIT",
         "SampleAfterValue": "200000",
@@ -337,7 +267,6 @@
     },
     {
         "BriefDescription": "L2 load misses",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.LD_MISS",
         "SampleAfterValue": "200000",
@@ -345,7 +274,6 @@
     },
     {
         "BriefDescription": "L2 requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.LOADS",
         "SampleAfterValue": "200000",
@@ -353,7 +281,6 @@
     },
     {
         "BriefDescription": "All L2 misses",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.MISS",
         "SampleAfterValue": "200000",
@@ -361,7 +288,6 @@
     },
     {
         "BriefDescription": "All L2 prefetches",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.PREFETCHES",
         "SampleAfterValue": "200000",
@@ -369,7 +295,6 @@
     },
     {
         "BriefDescription": "L2 prefetch hits",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.PREFETCH_HIT",
         "SampleAfterValue": "200000",
@@ -377,7 +302,6 @@
     },
     {
         "BriefDescription": "L2 prefetch misses",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.PREFETCH_MISS",
         "SampleAfterValue": "200000",
@@ -385,7 +309,6 @@
     },
     {
         "BriefDescription": "All L2 requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.REFERENCES",
         "SampleAfterValue": "200000",
@@ -393,7 +316,6 @@
     },
     {
         "BriefDescription": "L2 RFO requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.RFOS",
         "SampleAfterValue": "200000",
@@ -401,7 +323,6 @@
     },
     {
         "BriefDescription": "L2 RFO hits",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.RFO_HIT",
         "SampleAfterValue": "200000",
@@ -409,7 +330,6 @@
     },
     {
         "BriefDescription": "L2 RFO misses",
-        "Counter": "0,1,2,3",
         "EventCode": "0x24",
         "EventName": "L2_RQSTS.RFO_MISS",
         "SampleAfterValue": "200000",
@@ -417,7 +337,6 @@
     },
     {
         "BriefDescription": "All L2 transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.ANY",
         "SampleAfterValue": "200000",
@@ -425,7 +344,6 @@
     },
     {
         "BriefDescription": "L2 fill transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.FILL",
         "SampleAfterValue": "200000",
@@ -433,7 +351,6 @@
     },
     {
         "BriefDescription": "L2 instruction fetch transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.IFETCH",
         "SampleAfterValue": "200000",
@@ -441,7 +358,6 @@
     },
     {
         "BriefDescription": "L1D writeback to L2 transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.L1D_WB",
         "SampleAfterValue": "200000",
@@ -449,7 +365,6 @@
     },
     {
         "BriefDescription": "L2 Load transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.LOAD",
         "SampleAfterValue": "200000",
@@ -457,7 +372,6 @@
     },
     {
         "BriefDescription": "L2 prefetch transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.PREFETCH",
         "SampleAfterValue": "200000",
@@ -465,7 +379,6 @@
     },
     {
         "BriefDescription": "L2 RFO transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.RFO",
         "SampleAfterValue": "200000",
@@ -473,7 +386,6 @@
     },
     {
         "BriefDescription": "L2 writeback to LLC transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF0",
         "EventName": "L2_TRANSACTIONS.WB",
         "SampleAfterValue": "200000",
@@ -481,7 +393,6 @@
     },
     {
         "BriefDescription": "L2 demand lock RFOs in E state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.LOCK.E_STATE",
         "SampleAfterValue": "100000",
@@ -489,7 +400,6 @@
     },
     {
         "BriefDescription": "All demand L2 lock RFOs that hit the cache",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.LOCK.HIT",
         "SampleAfterValue": "100000",
@@ -497,7 +407,6 @@
     },
     {
         "BriefDescription": "L2 demand lock RFOs in I state (misses)",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.LOCK.I_STATE",
         "SampleAfterValue": "100000",
@@ -505,7 +414,6 @@
     },
     {
         "BriefDescription": "All demand L2 lock RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.LOCK.MESI",
         "SampleAfterValue": "100000",
@@ -513,7 +421,6 @@
     },
     {
         "BriefDescription": "L2 demand lock RFOs in M state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.LOCK.M_STATE",
         "SampleAfterValue": "100000",
@@ -521,7 +428,6 @@
     },
     {
         "BriefDescription": "L2 demand lock RFOs in S state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.LOCK.S_STATE",
         "SampleAfterValue": "100000",
@@ -529,7 +435,6 @@
     },
     {
         "BriefDescription": "All L2 demand store RFOs that hit the cache",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.RFO.HIT",
         "SampleAfterValue": "100000",
@@ -537,7 +442,6 @@
     },
     {
         "BriefDescription": "L2 demand store RFOs in I state (misses)",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.RFO.I_STATE",
         "SampleAfterValue": "100000",
@@ -545,7 +449,6 @@
     },
     {
         "BriefDescription": "All L2 demand store RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.RFO.MESI",
         "SampleAfterValue": "100000",
@@ -553,7 +456,6 @@
     },
     {
         "BriefDescription": "L2 demand store RFOs in M state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.RFO.M_STATE",
         "SampleAfterValue": "100000",
@@ -561,7 +463,6 @@
     },
     {
         "BriefDescription": "L2 demand store RFOs in S state",
-        "Counter": "0,1,2,3",
         "EventCode": "0x27",
         "EventName": "L2_WRITE.RFO.S_STATE",
         "SampleAfterValue": "100000",
@@ -569,7 +470,6 @@
     },
     {
         "BriefDescription": "Longest latency cache miss",
-        "Counter": "0,1,2,3",
         "EventCode": "0x2E",
         "EventName": "LONGEST_LAT_CACHE.MISS",
         "SampleAfterValue": "100000",
@@ -577,7 +477,6 @@
     },
     {
         "BriefDescription": "Longest latency cache reference",
-        "Counter": "0,1,2,3",
         "EventCode": "0x2E",
         "EventName": "LONGEST_LAT_CACHE.REFERENCE",
         "SampleAfterValue": "200000",
@@ -585,7 +484,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 0 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_0",
         "MSRIndex": "0x3F6",
@@ -595,7 +493,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 1024 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_1024",
         "MSRIndex": "0x3F6",
@@ -606,7 +503,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 128 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_128",
         "MSRIndex": "0x3F6",
@@ -617,7 +513,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 16 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_16",
         "MSRIndex": "0x3F6",
@@ -628,7 +523,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 16384 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_16384",
         "MSRIndex": "0x3F6",
@@ -639,7 +533,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 2048 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_2048",
         "MSRIndex": "0x3F6",
@@ -650,7 +543,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 256 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_256",
         "MSRIndex": "0x3F6",
@@ -661,7 +553,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 32 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_32",
         "MSRIndex": "0x3F6",
@@ -672,7 +563,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 32768 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_32768",
         "MSRIndex": "0x3F6",
@@ -683,7 +573,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 4 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_4",
         "MSRIndex": "0x3F6",
@@ -694,7 +583,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 4096 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_4096",
         "MSRIndex": "0x3F6",
@@ -705,7 +593,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 512 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_512",
         "MSRIndex": "0x3F6",
@@ -716,7 +603,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 64 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_64",
         "MSRIndex": "0x3F6",
@@ -727,7 +613,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 8 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_8",
         "MSRIndex": "0x3F6",
@@ -738,7 +623,6 @@
     },
     {
         "BriefDescription": "Memory instructions retired above 8192 clocks (Precise Event)",
-        "Counter": "3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LATENCY_ABOVE_THRESHOLD_8192",
         "MSRIndex": "0x3F6",
@@ -749,7 +633,6 @@
     },
     {
         "BriefDescription": "Instructions retired which contains a load (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.LOADS",
         "PEBS": "1",
@@ -758,7 +641,6 @@
     },
     {
         "BriefDescription": "Instructions retired which contains a store (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB",
         "EventName": "MEM_INST_RETIRED.STORES",
         "PEBS": "1",
@@ -767,7 +649,6 @@
     },
     {
         "BriefDescription": "Retired loads that miss L1D and hit an previously allocated LFB (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "MEM_LOAD_RETIRED.HIT_LFB",
         "PEBS": "1",
@@ -776,7 +657,6 @@
     },
     {
         "BriefDescription": "Retired loads that hit the L1 data cache (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "MEM_LOAD_RETIRED.L1D_HIT",
         "PEBS": "1",
@@ -785,7 +665,6 @@
     },
     {
         "BriefDescription": "Retired loads that hit the L2 cache (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "MEM_LOAD_RETIRED.L2_HIT",
         "PEBS": "1",
@@ -794,7 +673,6 @@
     },
     {
         "BriefDescription": "Retired loads that miss the LLC cache (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "MEM_LOAD_RETIRED.LLC_MISS",
         "PEBS": "1",
@@ -803,7 +681,6 @@
     },
     {
         "BriefDescription": "Retired loads that hit valid versions in the LLC cache (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "MEM_LOAD_RETIRED.LLC_UNSHARED_HIT",
         "PEBS": "1",
@@ -812,7 +689,6 @@
     },
     {
         "BriefDescription": "Retired loads that hit sibling core's L2 in modified or unmodified states (Precise Event)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xCB",
         "EventName": "MEM_LOAD_RETIRED.OTHER_CORE_L2_HIT_HITM",
         "PEBS": "1",
@@ -821,7 +697,6 @@
     },
     {
         "BriefDescription": "All offcore requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB0",
         "EventName": "OFFCORE_REQUESTS.ANY",
         "SampleAfterValue": "100000",
@@ -829,7 +704,6 @@
     },
     {
         "BriefDescription": "Offcore read requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB0",
         "EventName": "OFFCORE_REQUESTS.ANY.READ",
         "SampleAfterValue": "100000",
@@ -837,7 +711,6 @@
     },
     {
         "BriefDescription": "Offcore RFO requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB0",
         "EventName": "OFFCORE_REQUESTS.ANY.RFO",
         "SampleAfterValue": "100000",
@@ -845,7 +718,6 @@
     },
     {
         "BriefDescription": "Offcore demand code read requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB0",
         "EventName": "OFFCORE_REQUESTS.DEMAND.READ_CODE",
         "SampleAfterValue": "100000",
@@ -853,7 +725,6 @@
     },
     {
         "BriefDescription": "Offcore demand data read requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB0",
         "EventName": "OFFCORE_REQUESTS.DEMAND.READ_DATA",
         "SampleAfterValue": "100000",
@@ -861,7 +732,6 @@
     },
     {
         "BriefDescription": "Offcore demand RFO requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB0",
         "EventName": "OFFCORE_REQUESTS.DEMAND.RFO",
         "SampleAfterValue": "100000",
@@ -869,7 +739,6 @@
     },
     {
         "BriefDescription": "Offcore L1 data cache writebacks",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB0",
         "EventName": "OFFCORE_REQUESTS.L1D_WRITEBACK",
         "SampleAfterValue": "100000",
@@ -877,7 +746,6 @@
     },
     {
         "BriefDescription": "Outstanding offcore reads",
-        "Counter": "0",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.ANY.READ",
         "SampleAfterValue": "2000000",
@@ -885,7 +753,6 @@
     },
     {
         "BriefDescription": "Cycles offcore reads busy",
-        "Counter": "0",
         "CounterMask": "1",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.ANY.READ_NOT_EMPTY",
@@ -894,7 +761,6 @@
     },
     {
         "BriefDescription": "Outstanding offcore demand code reads",
-        "Counter": "0",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.DEMAND.READ_CODE",
         "SampleAfterValue": "2000000",
@@ -902,7 +768,6 @@
     },
     {
         "BriefDescription": "Cycles offcore demand code read busy",
-        "Counter": "0",
         "CounterMask": "1",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.DEMAND.READ_CODE_NOT_EMPTY",
@@ -911,7 +776,6 @@
     },
     {
         "BriefDescription": "Outstanding offcore demand data reads",
-        "Counter": "0",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.DEMAND.READ_DATA",
         "SampleAfterValue": "2000000",
@@ -919,7 +783,6 @@
     },
     {
         "BriefDescription": "Cycles offcore demand data read busy",
-        "Counter": "0",
         "CounterMask": "1",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.DEMAND.READ_DATA_NOT_EMPTY",
@@ -928,7 +791,6 @@
     },
     {
         "BriefDescription": "Outstanding offcore demand RFOs",
-        "Counter": "0",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.DEMAND.RFO",
         "SampleAfterValue": "2000000",
@@ -936,7 +798,6 @@
     },
     {
         "BriefDescription": "Cycles offcore demand RFOs busy",
-        "Counter": "0",
         "CounterMask": "1",
         "EventCode": "0x60",
         "EventName": "OFFCORE_REQUESTS_OUTSTANDING.DEMAND.RFO_NOT_EMPTY",
@@ -945,7 +806,6 @@
     },
     {
         "BriefDescription": "Offcore requests blocked due to Super Queue full",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB2",
         "EventName": "OFFCORE_REQUESTS_SQ_FULL",
         "SampleAfterValue": "100000",
@@ -953,7 +813,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -963,7 +822,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -973,7 +831,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -983,7 +840,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -993,7 +849,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1003,7 +858,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1013,7 +867,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1023,7 +876,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1033,7 +885,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1043,7 +894,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_DATA read and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_DATA.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1053,7 +903,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1063,7 +912,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1073,7 +921,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1083,7 +930,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1093,7 +939,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1103,7 +948,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1113,7 +957,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1123,7 +966,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1133,7 +975,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1143,7 +984,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY IFETCH and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_IFETCH.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1153,7 +993,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1163,7 +1002,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1173,7 +1011,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1183,7 +1020,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1193,7 +1029,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1203,7 +1038,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1213,7 +1047,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1223,7 +1056,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1233,7 +1065,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1243,7 +1074,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY_REQUEST and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_REQUEST.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1253,7 +1083,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1263,7 +1092,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1273,7 +1101,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1283,7 +1110,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1293,7 +1119,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1303,7 +1128,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1313,7 +1137,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1323,7 +1146,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1333,7 +1155,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1343,7 +1164,6 @@
     },
     {
         "BriefDescription": "REQUEST = ANY RFO and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ANY_RFO.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1353,7 +1173,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1363,7 +1182,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1373,7 +1191,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1383,7 +1200,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1393,7 +1209,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1403,7 +1218,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1413,7 +1227,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1423,7 +1236,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1433,7 +1245,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1443,7 +1254,6 @@
     },
     {
         "BriefDescription": "REQUEST = CORE_WB and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1453,7 +1263,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1463,7 +1272,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1473,7 +1281,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1483,7 +1290,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1493,7 +1299,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1503,7 +1308,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1513,7 +1317,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1523,7 +1326,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1533,7 +1335,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1543,7 +1344,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IFETCH and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IFETCH.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1553,7 +1353,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1563,7 +1362,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1573,7 +1371,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1583,7 +1380,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1593,7 +1389,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1603,7 +1398,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1613,7 +1407,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1623,7 +1416,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1633,7 +1425,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1643,7 +1434,6 @@
     },
     {
         "BriefDescription": "REQUEST = DATA_IN and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DATA_IN.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1653,7 +1443,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1663,7 +1452,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1673,7 +1461,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1683,7 +1470,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1693,7 +1479,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1703,7 +1488,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1713,7 +1497,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1723,7 +1506,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1733,7 +1515,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1743,7 +1524,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1753,7 +1533,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1763,7 +1542,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1773,7 +1551,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1783,7 +1560,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1793,7 +1569,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1803,7 +1578,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1813,7 +1587,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1823,7 +1596,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1833,7 +1605,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1843,7 +1614,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_DATA_RD and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1853,7 +1623,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1863,7 +1632,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1873,7 +1641,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1883,7 +1650,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1893,7 +1659,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1903,7 +1668,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1913,7 +1677,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1923,7 +1686,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1933,7 +1695,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1943,7 +1704,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_IFETCH and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_IFETCH.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1953,7 +1713,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1963,7 +1722,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1973,7 +1731,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1983,7 +1740,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1993,7 +1749,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2003,7 +1758,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2013,7 +1767,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2023,7 +1776,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2033,7 +1785,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2043,7 +1794,6 @@
     },
     {
         "BriefDescription": "REQUEST = DEMAND_RFO and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2053,7 +1803,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2063,7 +1812,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2073,7 +1821,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2083,7 +1830,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2093,7 +1839,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2103,7 +1848,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2113,7 +1857,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2123,7 +1866,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2133,7 +1875,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2143,7 +1884,6 @@
     },
     {
         "BriefDescription": "REQUEST = OTHER and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2153,7 +1893,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2163,7 +1902,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2173,7 +1911,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2183,7 +1920,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2193,7 +1929,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2203,7 +1938,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2213,7 +1947,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2223,7 +1956,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2233,7 +1965,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2243,7 +1974,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2253,7 +1983,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2263,7 +1992,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2273,7 +2001,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2283,7 +2010,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2293,7 +2019,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2303,7 +2028,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2313,7 +2037,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2323,7 +2046,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2333,7 +2055,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2343,7 +2064,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_DATA_RD and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_DATA_RD.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2353,7 +2073,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2363,7 +2082,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2373,7 +2091,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2383,7 +2100,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2393,7 +2109,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2403,7 +2118,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2413,7 +2127,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2423,7 +2136,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2433,7 +2145,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2443,7 +2154,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_RFO and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_IFETCH.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2453,7 +2163,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2463,7 +2172,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2473,7 +2181,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2483,7 +2190,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2493,7 +2199,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2503,7 +2208,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2513,7 +2217,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2523,7 +2226,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2533,7 +2235,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2543,7 +2244,6 @@
     },
     {
         "BriefDescription": "REQUEST = PF_IFETCH and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_RFO.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2553,7 +2253,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = ALL_LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.ALL_LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2563,7 +2262,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = ANY_CACHE_DRAM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.ANY_CACHE_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2573,7 +2271,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = ANY_LOCATION",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.ANY_LOCATION",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2583,7 +2280,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = IO_CSR_MMIO",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.IO_CSR_MMIO",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2593,7 +2289,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = LLC_HIT_NO_OTHER_CORE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.LLC_HIT_NO_OTHER_CORE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2603,7 +2298,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.LLC_HIT_OTHER_CORE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2613,7 +2307,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = LLC_HIT_OTHER_CORE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.LLC_HIT_OTHER_CORE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2623,7 +2316,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = LOCAL_CACHE",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.LOCAL_CACHE",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2633,7 +2325,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = LOCAL_DRAM AND REMOTE_CACHE_HIT",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.LOCAL_DRAM_AND_REMOTE_CACHE_HIT",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2643,7 +2334,6 @@
     },
     {
         "BriefDescription": "REQUEST = PREFETCH and RESPONSE = REMOTE_CACHE_HITM",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PREFETCH.REMOTE_CACHE_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2653,7 +2343,6 @@
     },
     {
         "BriefDescription": "Super Queue LRU hints sent to LLC",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF4",
         "EventName": "SQ_MISC.LRU_HINTS",
         "SampleAfterValue": "2000000",
@@ -2661,7 +2350,6 @@
     },
     {
         "BriefDescription": "Super Queue lock splits across a cache line",
-        "Counter": "0,1,2,3",
         "EventCode": "0xF4",
         "EventName": "SQ_MISC.SPLIT_LOCK",
         "SampleAfterValue": "2000000",
@@ -2669,7 +2357,6 @@
     },
     {
         "BriefDescription": "Loads delayed with at-Retirement block code",
-        "Counter": "0,1,2,3",
         "EventCode": "0x6",
         "EventName": "STORE_BLOCKS.AT_RET",
         "SampleAfterValue": "200000",
@@ -2677,7 +2364,6 @@
     },
     {
         "BriefDescription": "Cacheable loads delayed with L1D block code",
-        "Counter": "0,1,2,3",
         "EventCode": "0x6",
         "EventName": "STORE_BLOCKS.L1D_BLOCK",
         "SampleAfterValue": "200000",

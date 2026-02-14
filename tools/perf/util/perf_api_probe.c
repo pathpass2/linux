@@ -59,34 +59,23 @@ out_delete:
 
 static bool perf_probe_api(setup_probe_fn_t fn)
 {
-	struct perf_pmu *pmu;
+	const char *try[] = {"cycles:u", "instructions:u", "cpu-clock:u", NULL};
 	struct perf_cpu_map *cpus;
 	struct perf_cpu cpu;
-	int ret = 0;
+	int ret, i = 0;
 
-	cpus = perf_cpu_map__new_online_cpus();
+	cpus = perf_cpu_map__new(NULL);
 	if (!cpus)
 		return false;
 	cpu = perf_cpu_map__cpu(cpus, 0);
 	perf_cpu_map__put(cpus);
 
-	ret = perf_do_probe_api(fn, cpu, "software/cpu-clock/u");
-	if (!ret)
-		return true;
+	do {
+		ret = perf_do_probe_api(fn, cpu, try[i++]);
+		if (!ret)
+			return true;
+	} while (ret == -EAGAIN && try[i]);
 
-	pmu = perf_pmus__scan_core(/*pmu=*/NULL);
-	if (pmu) {
-		const char *try[] = {"cycles", "instructions", NULL};
-		char buf[256];
-		int i = 0;
-
-		while (ret == -EAGAIN && try[i]) {
-			snprintf(buf, sizeof(buf), "%s/%s/u", pmu->name, try[i++]);
-			ret = perf_do_probe_api(fn, cpu, buf);
-			if (!ret)
-				return true;
-		}
-	}
 	return false;
 }
 
@@ -151,7 +140,7 @@ bool perf_can_record_cpu_wide(void)
 	struct perf_cpu cpu;
 	int fd;
 
-	cpus = perf_cpu_map__new_online_cpus();
+	cpus = perf_cpu_map__new(NULL);
 	if (!cpus)
 		return false;
 

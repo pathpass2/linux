@@ -40,34 +40,25 @@ static int sysfs_get_enabled(char *path, int *mode)
 {
 	int fd;
 	char yes_no;
-	int ret = 0;
 
 	*mode = 0;
 
 	fd = open(path, O_RDONLY);
-	if (fd == -1) {
-		ret = -1;
-		goto out;
-	}
+	if (fd == -1)
+		return -1;
 
 	if (read(fd, &yes_no, 1) != 1) {
-		ret = -1;
-		goto out_close;
+		close(fd);
+		return -1;
 	}
 
 	if (yes_no == '1') {
 		*mode = 1;
-		goto out_close;
+		return 0;
 	} else if (yes_no == '0') {
-		goto out_close;
-	} else {
-		ret = -1;
-		goto out_close;
+		return 0;
 	}
-out_close:
-	close(fd);
-out:
-	return ret;
+	return -1;
 }
 
 int powercap_get_enabled(int *mode)
@@ -75,14 +66,6 @@ int powercap_get_enabled(int *mode)
 	char path[SYSFS_PATH_MAX] = PATH_TO_POWERCAP "/intel-rapl/enabled";
 
 	return sysfs_get_enabled(path, mode);
-}
-
-/*
- * TODO: implement function. Returns dummy 0 for now.
- */
-int powercap_set_enabled(int mode)
-{
-	return 0;
 }
 
 /*

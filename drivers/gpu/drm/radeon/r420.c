@@ -26,7 +26,6 @@
  *          Jerome Glisse
  */
 
-#include <linux/debugfs.h>
 #include <linux/pci.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -322,7 +321,7 @@ int r420_resume(struct radeon_device *rdev)
 	if (rdev->is_atom_bios) {
 		atom_asic_init(rdev->mode_info.atom_context);
 	} else {
-		radeon_combios_asic_init(rdev_to_drm(rdev));
+		radeon_combios_asic_init(rdev->ddev);
 	}
 	/* Resume clock after posting */
 	r420_clock_resume(rdev);
@@ -414,7 +413,7 @@ int r420_init(struct radeon_device *rdev)
 		return -EINVAL;
 
 	/* Initialize clocks */
-	radeon_get_clock_info(rdev_to_drm(rdev));
+	radeon_get_clock_info(rdev->ddev);
 	/* initialize AGP */
 	if (rdev->flags & RADEON_IS_AGP) {
 		r = radeon_agp_init(rdev);
@@ -475,7 +474,7 @@ int r420_init(struct radeon_device *rdev)
 #if defined(CONFIG_DEBUG_FS)
 static int r420_debugfs_pipes_info_show(struct seq_file *m, void *unused)
 {
-	struct radeon_device *rdev = m->private;
+	struct radeon_device *rdev = (struct radeon_device *)m->private;
 	uint32_t tmp;
 
 	tmp = RREG32(R400_GB_PIPE_SELECT);
@@ -493,7 +492,7 @@ DEFINE_SHOW_ATTRIBUTE(r420_debugfs_pipes_info);
 void r420_debugfs_pipes_info_init(struct radeon_device *rdev)
 {
 #if defined(CONFIG_DEBUG_FS)
-	struct dentry *root = rdev_to_drm(rdev)->primary->debugfs_root;
+	struct dentry *root = rdev->ddev->primary->debugfs_root;
 
 	debugfs_create_file("r420_pipes_info", 0444, root, rdev,
 			    &r420_debugfs_pipes_info_fops);

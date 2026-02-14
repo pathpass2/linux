@@ -14,8 +14,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-#include <linux/of.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/types.h>
@@ -54,14 +52,7 @@
 
 #define DWDST			BIT(1)
 
-#define PON_REASON_SOF_NUM	0xBBBBCCCC
-#define PON_REASON_MAGIC_NUM	0xDDDDDDDD
-#define PON_REASON_EOF_NUM	0xCCCCBBBB
-#define RESERVED_MEM_MIN_SIZE	12
-
-#define MAX_HW_ERROR		250
-
-static int heartbeat;
+static int heartbeat = DEFAULT_HEARTBEAT;
 
 /*
  * struct to hold data for each WDT device
@@ -79,11 +70,6 @@ static int rti_wdt_start(struct watchdog_device *wdd)
 {
 	u32 timer_margin;
 	struct rti_wdt_device *wdt = watchdog_get_drvdata(wdd);
-	int ret;
-
-	ret = pm_runtime_resume_and_get(wdd->parent);
-	if (ret)
-		return ret;
 
 	/* set timeout period */
 	timer_margin = (u64)wdd->timeout * wdt->freq;
@@ -99,7 +85,7 @@ static int rti_wdt_start(struct watchdog_device *wdd)
 	 * to be 50% or less than that; we obviouly want to configure the open
 	 * window as large as possible so we select the 50% option.
 	 */
-	wdd->min_hw_heartbeat_ms = 520 * wdd->timeout + MAX_HW_ERROR;
+	wdd->min_hw_heartbeat_ms = 500 * wdd->timeout;
 
 	/* Generate NMI when wdt expires */
 	writel_relaxed(RTIWWDRX_NMI, wdt->base + RTIWWDRXCTRL);
@@ -133,33 +119,31 @@ static int rti_wdt_setup_hw_hb(struct watchdog_device *wdd, u32 wsize)
 	 * be petted during the open window; not too early or not too late.
 	 * The HW configuration options only allow for the open window size
 	 * to be 50% or less than that.
-	 * To avoid any glitches, we accommodate 2% + max hardware error
-	 * safety margin.
 	 */
 	switch (wsize) {
 	case RTIWWDSIZE_50P:
-		/* 50% open window => 52% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 520 * heartbeat + MAX_HW_ERROR;
+		/* 50% open window => 50% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 500 * heartbeat;
 		break;
 
 	case RTIWWDSIZE_25P:
-		/* 25% open window => 77% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 770 * heartbeat + MAX_HW_ERROR;
+		/* 25% open window => 75% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 750 * heartbeat;
 		break;
 
 	case RTIWWDSIZE_12P5:
-		/* 12.5% open window => 89.5% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 895 * heartbeat + MAX_HW_ERROR;
+		/* 12.5% open window => 87.5% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 875 * heartbeat;
 		break;
 
 	case RTIWWDSIZE_6P25:
-		/* 6.5% open window => 95.5% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 955 * heartbeat + MAX_HW_ERROR;
+		/* 6.5% open window => 93.5% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 935 * heartbeat;
 		break;
 
 	case RTIWWDSIZE_3P125:
-		/* 3.125% open window => 98.9% min heartbeat */
-		wdd->min_hw_heartbeat_ms = 989 * heartbeat + MAX_HW_ERROR;
+		/* 3.125% open window => 96.9% min heartbeat */
+		wdd->min_hw_heartbeat_ms = 969 * heartbeat;
 		break;
 
 	default:
@@ -214,10 +198,6 @@ static int rti_wdt_probe(struct platform_device *pdev)
 	struct rti_wdt_device *wdt;
 	struct clk *clk;
 	u32 last_ping = 0;
-	u32 reserved_mem_size;
-	struct resource res;
-	u32 *vaddr;
-	u64 paddr;
 
 	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
 	if (!wdt)
@@ -236,6 +216,14 @@ static int rti_wdt_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	/*
+	 * If watchdog is running at 32k clock, it is not accurate.
+	 * Adjust frequency down in this case so that we don't pet
+	 * the watchdog too often.
+	 */
+	if (wdt->freq < 32768)
+		wdt->freq = wdt->freq * 9 / 10;
+
 	pm_runtime_enable(dev);
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret < 0) {
@@ -251,7 +239,6 @@ static int rti_wdt_probe(struct platform_device *pdev)
 	wdd->min_timeout = 1;
 	wdd->max_hw_heartbeat_ms = (WDT_PRELOAD_MAX << WDT_PRELOAD_SHIFT) /
 		wdt->freq * 1000;
-	wdd->timeout = DEFAULT_HEARTBEAT;
 	wdd->parent = dev;
 
 	watchdog_set_drvdata(wdd, wdt);
@@ -272,8 +259,7 @@ static int rti_wdt_probe(struct platform_device *pdev)
 
 		set_bit(WDOG_HW_RUNNING, &wdd->status);
 		time_left_ms = rti_wdt_get_timeleft_ms(wdd);
-		/* AM62x TRM: texp = (RTIDWDPRLD + 1) * (2^13) / RTICLK1 */
-		heartbeat_ms = readl(wdt->base + RTIDWDPRLD) + 1;
+		heartbeat_ms = readl(wdt->base + RTIDWDPRLD);
 		heartbeat_ms <<= WDT_PRELOAD_SHIFT;
 		heartbeat_ms *= 1000;
 		do_div(heartbeat_ms, wdt->freq);
@@ -298,47 +284,16 @@ static int rti_wdt_probe(struct platform_device *pdev)
 		}
 	}
 
-	ret = of_reserved_mem_region_to_resource(pdev->dev.of_node, 0, &res);
-	if (!ret) {
-		/*
-		 * If reserved memory is defined for watchdog reset cause.
-		 * Readout the Power-on(PON) reason and pass to bootstatus.
-		 */
-		paddr = res.start;
-		reserved_mem_size = resource_size(&res);
-		if (reserved_mem_size < RESERVED_MEM_MIN_SIZE) {
-			dev_err(dev, "The size of reserved memory is too small.\n");
-			ret = -EINVAL;
-			goto err_iomap;
-		}
-
-		vaddr = memremap(paddr, reserved_mem_size, MEMREMAP_WB);
-		if (!vaddr) {
-			dev_err(dev, "Failed to map memory-region.\n");
-			ret = -ENOMEM;
-			goto err_iomap;
-		}
-
-		if (vaddr[0] == PON_REASON_SOF_NUM &&
-		    vaddr[1] == PON_REASON_MAGIC_NUM &&
-		    vaddr[2] == PON_REASON_EOF_NUM) {
-			wdd->bootstatus |= WDIOF_CARDRESET;
-		}
-		memset(vaddr, 0, reserved_mem_size);
-		memunmap(vaddr);
-	}
-
 	watchdog_init_timeout(wdd, heartbeat, dev);
 
 	ret = watchdog_register_device(wdd);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "cannot register watchdog device\n");
 		goto err_iomap;
+	}
 
 	if (last_ping)
 		watchdog_set_last_hw_keepalive(wdd, last_ping);
-
-	if (!watchdog_hw_running(wdd))
-		pm_runtime_put_sync(&pdev->dev);
 
 	return 0;
 
@@ -349,16 +304,15 @@ err_iomap:
 	return ret;
 }
 
-static void rti_wdt_remove(struct platform_device *pdev)
+static int rti_wdt_remove(struct platform_device *pdev)
 {
 	struct rti_wdt_device *wdt = platform_get_drvdata(pdev);
 
 	watchdog_unregister_device(&wdt->wdd);
-
-	if (!pm_runtime_suspended(&pdev->dev))
-		pm_runtime_put(&pdev->dev);
-
+	pm_runtime_put(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static const struct of_device_id rti_wdt_of_match[] = {

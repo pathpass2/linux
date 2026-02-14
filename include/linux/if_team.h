@@ -162,8 +162,8 @@ struct team_option {
 	bool per_port;
 	unsigned int array_size; /* != 0 means the option is array */
 	enum team_option_type type;
-	void (*init)(struct team *team, struct team_option_inst_info *info);
-	void (*getter)(struct team *team, struct team_gsetter_ctx *ctx);
+	int (*init)(struct team *team, struct team_option_inst_info *info);
+	int (*getter)(struct team *team, struct team_gsetter_ctx *ctx);
 	int (*setter)(struct team *team, struct team_gsetter_ctx *ctx);
 };
 
@@ -189,7 +189,7 @@ struct team {
 	struct net_device *dev; /* associated netdevice */
 	struct team_pcpu_stats __percpu *pcpu_stats;
 
-	const struct header_ops *header_ops_cache;
+	struct mutex lock; /* used for overall locking, e.g. port lists write */
 
 	/*
 	 * List of enabled ports and their count
@@ -208,7 +208,6 @@ struct team {
 	bool queue_override_enabled;
 	struct list_head *qom_lists; /* array of queue override mapping lists */
 	bool port_mtu_change_allowed;
-	bool notifier_ctx;
 	struct {
 		unsigned int count;
 		unsigned int interval; /* in ms */
@@ -221,6 +220,7 @@ struct team {
 		atomic_t count_pending;
 		struct delayed_work dw;
 	} mcast_rejoin;
+	struct lock_class_key team_lock_key;
 	long mode_priv[TEAM_MODE_PRIV_LONGS];
 };
 

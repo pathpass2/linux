@@ -60,30 +60,12 @@ static inline void update_alloc_hint_after_get(struct sbitmap *sb,
 /*
  * See if we have deferred clears that we can batch move
  */
-static inline bool sbitmap_deferred_clear(struct sbitmap_word *map,
-		unsigned int depth, unsigned int alloc_hint, bool wrap)
+static inline bool sbitmap_deferred_clear(struct sbitmap_word *map)
 {
-	unsigned long mask, word_mask;
+	unsigned long mask;
 
-	guard(raw_spinlock_irqsave)(&map->swap_lock);
-
-	if (!map->cleared) {
-		if (depth == 0)
-			return false;
-
-		word_mask = (~0UL) >> (BITS_PER_LONG - depth);
-		/*
-		 * The current behavior is to always retry after moving
-		 * ->cleared to word, and we change it to retry in case
-		 * of any free bits. To avoid an infinite loop, we need
-		 * to take wrap & alloc_hint into account, otherwise a
-		 * soft lockup may occur.
-		 */
-		if (!wrap && alloc_hint)
-			word_mask &= ~((1UL << alloc_hint) - 1);
-
-		return (READ_ONCE(map->word) & word_mask) != word_mask;
-	}
+	if (!READ_ONCE(map->cleared))
+		return false;
 
 	/*
 	 * First get a stable cleared mask, setting the old mask to 0.
@@ -103,7 +85,6 @@ int sbitmap_init_node(struct sbitmap *sb, unsigned int depth, int shift,
 		      bool alloc_hint)
 {
 	unsigned int bits_per_word;
-	int i;
 
 	if (shift < 0)
 		shift = sbitmap_calculate_shift(depth);
@@ -135,9 +116,6 @@ int sbitmap_init_node(struct sbitmap *sb, unsigned int depth, int shift,
 		return -ENOMEM;
 	}
 
-	for (i = 0; i < sb->map_nr; i++)
-		raw_spin_lock_init(&sb->map[i].swap_lock);
-
 	return 0;
 }
 EXPORT_SYMBOL_GPL(sbitmap_init_node);
@@ -148,7 +126,7 @@ void sbitmap_resize(struct sbitmap *sb, unsigned int depth)
 	unsigned int i;
 
 	for (i = 0; i < sb->map_nr; i++)
-		sbitmap_deferred_clear(&sb->map[i], 0, 0, 0);
+		sbitmap_deferred_clear(&sb->map[i]);
 
 	sb->depth = depth;
 	sb->map_nr = DIV_ROUND_UP(sb->depth, bits_per_word);
@@ -201,35 +179,15 @@ static int sbitmap_find_bit_in_word(struct sbitmap_word *map,
 					alloc_hint, wrap);
 		if (nr != -1)
 			break;
-		if (!sbitmap_deferred_clear(map, depth, alloc_hint, wrap))
+		if (!sbitmap_deferred_clear(map))
 			break;
 	} while (1);
 
 	return nr;
 }
 
-static unsigned int __map_depth_with_shallow(const struct sbitmap *sb,
-					     int index,
-					     unsigned int shallow_depth)
-{
-	u64 shallow_word_depth;
-	unsigned int word_depth, reminder;
-
-	word_depth = __map_depth(sb, index);
-	if (shallow_depth >= sb->depth)
-		return word_depth;
-
-	shallow_word_depth = word_depth * shallow_depth;
-	reminder = do_div(shallow_word_depth, sb->depth);
-
-	if (reminder >= (index + 1) * word_depth)
-		shallow_word_depth++;
-
-	return (unsigned int)shallow_word_depth;
-}
-
 static int sbitmap_find_bit(struct sbitmap *sb,
-			    unsigned int shallow_depth,
+			    unsigned int depth,
 			    unsigned int index,
 			    unsigned int alloc_hint,
 			    bool wrap)
@@ -238,12 +196,12 @@ static int sbitmap_find_bit(struct sbitmap *sb,
 	int nr = -1;
 
 	for (i = 0; i < sb->map_nr; i++) {
-		unsigned int depth = __map_depth_with_shallow(sb, index,
-							      shallow_depth);
+		nr = sbitmap_find_bit_in_word(&sb->map[index],
+					      min_t(unsigned int,
+						    __map_depth(sb, index),
+						    depth),
+					      alloc_hint, wrap);
 
-		if (depth)
-			nr = sbitmap_find_bit_in_word(&sb->map[index], depth,
-						      alloc_hint, wrap);
 		if (nr != -1) {
 			nr += index << sb->shift;
 			break;
@@ -307,22 +265,7 @@ static int __sbitmap_get_shallow(struct sbitmap *sb,
 	return sbitmap_find_bit(sb, shallow_depth, index, alloc_hint, true);
 }
 
-/**
- * sbitmap_get_shallow() - Try to allocate a free bit from a &struct sbitmap,
- * limiting the depth used from each word.
- * @sb: Bitmap to allocate from.
- * @shallow_depth: The maximum number of bits to allocate from the bitmap.
- *
- * This rather specific operation allows for having multiple users with
- * different allocation limits. E.g., there can be a high-priority class that
- * uses sbitmap_get() and a low-priority class that uses sbitmap_get_shallow()
- * with a @shallow_depth of (sb->depth >> 1). Then, the low-priority
- * class can only allocate half of the total bits in the bitmap, preventing it
- * from starving out the high-priority class.
- *
- * Return: Non-negative allocated bit number if successful, -1 otherwise.
- */
-static int sbitmap_get_shallow(struct sbitmap *sb, unsigned long shallow_depth)
+int sbitmap_get_shallow(struct sbitmap *sb, unsigned long shallow_depth)
 {
 	int nr;
 	unsigned int hint, depth;
@@ -337,6 +280,7 @@ static int sbitmap_get_shallow(struct sbitmap *sb, unsigned long shallow_depth)
 
 	return nr;
 }
+EXPORT_SYMBOL_GPL(sbitmap_get_shallow);
 
 bool sbitmap_any_bit_set(const struct sbitmap *sb)
 {
@@ -440,9 +384,32 @@ EXPORT_SYMBOL_GPL(sbitmap_bitmap_show);
 static unsigned int sbq_calc_wake_batch(struct sbitmap_queue *sbq,
 					unsigned int depth)
 {
-	return clamp_t(unsigned int,
-		       min(depth, sbq->min_shallow_depth) / SBQ_WAIT_QUEUES,
-		       1, SBQ_WAKE_BATCH);
+	unsigned int wake_batch;
+	unsigned int shallow_depth;
+
+	/*
+	 * For each batch, we wake up one queue. We need to make sure that our
+	 * batch size is small enough that the full depth of the bitmap,
+	 * potentially limited by a shallow depth, is enough to wake up all of
+	 * the queues.
+	 *
+	 * Each full word of the bitmap has bits_per_word bits, and there might
+	 * be a partial word. There are depth / bits_per_word full words and
+	 * depth % bits_per_word bits left over. In bitwise arithmetic:
+	 *
+	 * bits_per_word = 1 << shift
+	 * depth / bits_per_word = depth >> shift
+	 * depth % bits_per_word = depth & ((1 << shift) - 1)
+	 *
+	 * Each word can be limited to sbq->min_shallow_depth bits.
+	 */
+	shallow_depth = min(1U << sbq->sb.shift, sbq->min_shallow_depth);
+	depth = ((depth >> sbq->sb.shift) * shallow_depth +
+		 min(depth & ((1U << sbq->sb.shift) - 1), shallow_depth));
+	wake_batch = clamp_t(unsigned int, depth / SBQ_WAIT_QUEUES, 1,
+			     SBQ_WAKE_BATCH);
+
+	return wake_batch;
 }
 
 int sbitmap_queue_init_node(struct sbitmap_queue *sbq, unsigned int depth,
@@ -532,18 +499,18 @@ unsigned long __sbitmap_queue_get_batch(struct sbitmap_queue *sbq, int nr_tags,
 		struct sbitmap_word *map = &sb->map[index];
 		unsigned long get_mask;
 		unsigned int map_depth = __map_depth(sb, index);
-		unsigned long val;
 
-		sbitmap_deferred_clear(map, 0, 0, 0);
-		val = READ_ONCE(map->word);
-		if (val == (1UL << (map_depth - 1)) - 1)
+		sbitmap_deferred_clear(map);
+		if (map->word == (1UL << (map_depth - 1)) - 1)
 			goto next;
 
-		nr = find_first_zero_bit(&val, map_depth);
+		nr = find_first_zero_bit(&map->word, map_depth);
 		if (nr + nr_tags <= map_depth) {
 			atomic_long_t *ptr = (atomic_long_t *) &map->word;
+			unsigned long val;
 
 			get_mask = ((1UL << nr_tags) - 1) << nr;
+			val = READ_ONCE(map->word);
 			while (!atomic_long_try_cmpxchg(ptr, &val,
 							  get_mask | val))
 				;
@@ -583,7 +550,7 @@ EXPORT_SYMBOL_GPL(sbitmap_queue_min_shallow_depth);
 
 static void __sbitmap_queue_wake_up(struct sbitmap_queue *sbq, int nr)
 {
-	int i, wake_index, woken;
+	int i, wake_index;
 
 	if (!atomic_read(&sbq->ws_active))
 		return;
@@ -600,12 +567,13 @@ static void __sbitmap_queue_wake_up(struct sbitmap_queue *sbq, int nr)
 		 */
 		wake_index = sbq_index_inc(wake_index);
 
-		if (waitqueue_active(&ws->wait)) {
-			woken = wake_up_nr(&ws->wait, nr);
-			if (woken == nr)
-				break;
-			nr -= woken;
-		}
+		/*
+		 * It is sufficient to wake up at least one waiter to
+		 * guarantee forward progress.
+		 */
+		if (waitqueue_active(&ws->wait) &&
+		    wake_up_nr(&ws->wait, nr))
+			break;
 	}
 
 	if (wake_index != atomic_read(&sbq->wake_index))

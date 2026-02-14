@@ -10,7 +10,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
@@ -27,6 +26,14 @@
 #define TGL_H_HOSTSW_OWN	0x0c0
 #define TGL_H_GPI_IS		0x100
 #define TGL_H_GPI_IE		0x120
+
+#define TGL_GPP(r, s, e, g)				\
+	{						\
+		.reg_num = (r),				\
+		.base = (s),				\
+		.size = ((e) - (s) + 1),		\
+		.gpio_base = (g),			\
+	}
 
 #define TGL_LP_COMMUNITY(b, s, e, g)			\
 	INTEL_COMMUNITY_GPPS(b, s, e, g, TGL_LP)
@@ -331,30 +338,30 @@ static const struct pinctrl_pin_desc tgllp_pins[] = {
 };
 
 static const struct intel_padgroup tgllp_community0_gpps[] = {
-	INTEL_GPP(0, 0, 25, 0),				/* GPP_B */
-	INTEL_GPP(1, 26, 41, 32),			/* GPP_T */
-	INTEL_GPP(2, 42, 66, 64),			/* GPP_A */
+	TGL_GPP(0, 0, 25, 0),				/* GPP_B */
+	TGL_GPP(1, 26, 41, 32),				/* GPP_T */
+	TGL_GPP(2, 42, 66, 64),				/* GPP_A */
 };
 
 static const struct intel_padgroup tgllp_community1_gpps[] = {
-	INTEL_GPP(0, 67, 74, 96),			/* GPP_S */
-	INTEL_GPP(1, 75, 98, 128),			/* GPP_H */
-	INTEL_GPP(2, 99, 119, 160),			/* GPP_D */
-	INTEL_GPP(3, 120, 143, 192),			/* GPP_U */
-	INTEL_GPP(4, 144, 170, 224),			/* vGPIO */
+	TGL_GPP(0, 67, 74, 96),				/* GPP_S */
+	TGL_GPP(1, 75, 98, 128),			/* GPP_H */
+	TGL_GPP(2, 99, 119, 160),			/* GPP_D */
+	TGL_GPP(3, 120, 143, 192),			/* GPP_U */
+	TGL_GPP(4, 144, 170, 224),			/* vGPIO */
 };
 
 static const struct intel_padgroup tgllp_community4_gpps[] = {
-	INTEL_GPP(0, 171, 194, 256),			/* GPP_C */
-	INTEL_GPP(1, 195, 219, 288),			/* GPP_F */
-	INTEL_GPP(2, 220, 225, INTEL_GPIO_BASE_NOMAP),	/* HVCMOS */
-	INTEL_GPP(3, 226, 250, 320),			/* GPP_E */
-	INTEL_GPP(4, 251, 259, INTEL_GPIO_BASE_NOMAP),	/* JTAG */
+	TGL_GPP(0, 171, 194, 256),			/* GPP_C */
+	TGL_GPP(1, 195, 219, 288),			/* GPP_F */
+	TGL_GPP(2, 220, 225, INTEL_GPIO_BASE_NOMAP),	/* HVCMOS */
+	TGL_GPP(3, 226, 250, 320),			/* GPP_E */
+	TGL_GPP(4, 251, 259, INTEL_GPIO_BASE_NOMAP),	/* JTAG */
 };
 
 static const struct intel_padgroup tgllp_community5_gpps[] = {
-	INTEL_GPP(0, 260, 267, 352),			/* GPP_R */
-	INTEL_GPP(1, 268, 276, INTEL_GPIO_BASE_NOMAP),	/* SPI */
+	TGL_GPP(0, 260, 267, 352),			/* GPP_R */
+	TGL_GPP(1, 268, 276, INTEL_GPIO_BASE_NOMAP),	/* SPI */
 };
 
 static const struct intel_community tgllp_communities[] = {
@@ -683,34 +690,34 @@ static const struct pinctrl_pin_desc tglh_pins[] = {
 };
 
 static const struct intel_padgroup tglh_community0_gpps[] = {
-	INTEL_GPP(0, 0, 24, 0),				/* GPP_A */
-	INTEL_GPP(1, 25, 44, 32),			/* GPP_R */
-	INTEL_GPP(2, 45, 70, 64),			/* GPP_B */
-	INTEL_GPP(3, 71, 78, 96),			/* vGPIO_0 */
+	TGL_GPP(0, 0, 24, 0),				/* GPP_A */
+	TGL_GPP(1, 25, 44, 32),				/* GPP_R */
+	TGL_GPP(2, 45, 70, 64),				/* GPP_B */
+	TGL_GPP(3, 71, 78, 96),				/* vGPIO_0 */
 };
 
 static const struct intel_padgroup tglh_community1_gpps[] = {
-	INTEL_GPP(0, 79, 104, 128),			/* GPP_D */
-	INTEL_GPP(1, 105, 128, 160),			/* GPP_C */
-	INTEL_GPP(2, 129, 136, 192),			/* GPP_S */
-	INTEL_GPP(3, 137, 153, 224),			/* GPP_G */
-	INTEL_GPP(4, 154, 180, 256),			/* vGPIO */
+	TGL_GPP(0, 79, 104, 128),			/* GPP_D */
+	TGL_GPP(1, 105, 128, 160),			/* GPP_C */
+	TGL_GPP(2, 129, 136, 192),			/* GPP_S */
+	TGL_GPP(3, 137, 153, 224),			/* GPP_G */
+	TGL_GPP(4, 154, 180, 256),			/* vGPIO */
 };
 
 static const struct intel_padgroup tglh_community3_gpps[] = {
-	INTEL_GPP(0, 181, 193, 288),			/* GPP_E */
-	INTEL_GPP(1, 194, 217, 320),			/* GPP_F */
+	TGL_GPP(0, 181, 193, 288),			/* GPP_E */
+	TGL_GPP(1, 194, 217, 320),			/* GPP_F */
 };
 
 static const struct intel_padgroup tglh_community4_gpps[] = {
-	INTEL_GPP(0, 218, 241, 352),			/* GPP_H */
-	INTEL_GPP(1, 242, 251, 384),			/* GPP_J */
-	INTEL_GPP(2, 252, 266, 416),			/* GPP_K */
+	TGL_GPP(0, 218, 241, 352),			/* GPP_H */
+	TGL_GPP(1, 242, 251, 384),			/* GPP_J */
+	TGL_GPP(2, 252, 266, 416),			/* GPP_K */
 };
 
 static const struct intel_padgroup tglh_community5_gpps[] = {
-	INTEL_GPP(0, 267, 281, 448),			/* GPP_I */
-	INTEL_GPP(1, 282, 290, INTEL_GPIO_BASE_NOMAP),	/* JTAG */
+	TGL_GPP(0, 267, 281, 448),			/* GPP_I */
+	TGL_GPP(1, 282, 290, INTEL_GPIO_BASE_NOMAP),	/* JTAG */
 };
 
 static const struct intel_community tglh_communities[] = {
@@ -736,18 +743,20 @@ static const struct acpi_device_id tgl_pinctrl_acpi_match[] = {
 };
 MODULE_DEVICE_TABLE(acpi, tgl_pinctrl_acpi_match);
 
+static INTEL_PINCTRL_PM_OPS(tgl_pinctrl_pm_ops);
+
 static struct platform_driver tgl_pinctrl_driver = {
 	.probe = intel_pinctrl_probe_by_hid,
 	.driver = {
 		.name = "tigerlake-pinctrl",
 		.acpi_match_table = tgl_pinctrl_acpi_match,
-		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
+		.pm = &tgl_pinctrl_pm_ops,
 	},
 };
+
 module_platform_driver(tgl_pinctrl_driver);
 
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_AUTHOR("Mika Westerberg <mika.westerberg@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Tiger Lake PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("PINCTRL_INTEL");

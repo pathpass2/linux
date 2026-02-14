@@ -8,9 +8,9 @@
  *		 Arnd Bergmann (arndb@de.ibm.com)
  */
 
-#define pr_fmt(fmt) "cio: " fmt
+#define KMSG_COMPONENT "cio"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/vmalloc.h>
 #include <linux/proc_fs.h>

@@ -49,7 +49,7 @@
 #define EXEC_BIOS_CMD_TABLE(fname, params)\
 	(amdgpu_atom_execute_table(((struct amdgpu_device *)bp->base.ctx->driver_context)->mode_info.atom_context, \
 		GET_INDEX_INTO_MASTER_TABLE(command, fname), \
-		(uint32_t *)&params, sizeof(params)) == 0)
+		(uint32_t *)&params) == 0)
 
 #define BIOS_CMD_TABLE_REVISION(fname, frev, crev)\
 	amdgpu_atom_parse_cmd_header(((struct amdgpu_device *)bp->base.ctx->driver_context)->mode_info.atom_context, \
@@ -101,6 +101,7 @@ static void init_dig_encoder_control(struct bios_parser *bp)
 		bp->cmd_tbl.dig_encoder_control = encoder_control_digx_v1_5;
 		break;
 	default:
+		dm_output_to_console("Don't have dig_encoder_control for v%d\n", version);
 		bp->cmd_tbl.dig_encoder_control = encoder_control_fallback;
 		break;
 	}
@@ -122,7 +123,9 @@ static void encoder_control_dmcub(
 		sizeof(cmd.digx_encoder_control.header);
 	cmd.digx_encoder_control.encoder_control.dig.stream_param = *dig;
 
-	dc_wake_and_execute_dmub_cmd(dmcub->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+	dc_dmub_srv_cmd_queue(dmcub, &cmd);
+	dc_dmub_srv_cmd_execute(dmcub);
+	dc_dmub_srv_wait_idle(dmcub);
 }
 
 static enum bp_result encoder_control_digx_v1_5(
@@ -209,7 +212,6 @@ static enum bp_result encoder_control_fallback(
  ******************************************************************************
  *****************************************************************************/
 
-
 static enum bp_result transmitter_control_v1_6(
 	struct bios_parser *bp,
 	struct bp_transmitter_control *cntl);
@@ -225,10 +227,9 @@ static enum bp_result transmitter_control_fallback(
 static void init_transmitter_control(struct bios_parser *bp)
 {
 	uint8_t frev;
-	uint8_t crev = 0;
+	uint8_t crev;
 
-	if (!BIOS_CMD_TABLE_REVISION(dig1transmittercontrol, frev, crev) && (bp->base.ctx->dc->ctx->dce_version <= DCN_VERSION_2_0))
-		BREAK_TO_DEBUGGER();
+	BIOS_CMD_TABLE_REVISION(dig1transmittercontrol, frev, crev);
 
 	switch (crev) {
 	case 6:
@@ -238,6 +239,7 @@ static void init_transmitter_control(struct bios_parser *bp)
 		bp->cmd_tbl.transmitter_control = transmitter_control_v1_7;
 		break;
 	default:
+		dm_output_to_console("Don't have transmitter_control for v%d\n", crev);
 		bp->cmd_tbl.transmitter_control = transmitter_control_fallback;
 		break;
 	}
@@ -259,7 +261,9 @@ static void transmitter_control_dmcub(
 		sizeof(cmd.dig1_transmitter_control.header);
 	cmd.dig1_transmitter_control.transmitter_control.dig = *dig;
 
-	dc_wake_and_execute_dmub_cmd(dmcub->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+	dc_dmub_srv_cmd_queue(dmcub, &cmd);
+	dc_dmub_srv_cmd_execute(dmcub);
+	dc_dmub_srv_wait_idle(dmcub);
 }
 
 static enum bp_result transmitter_control_v1_6(
@@ -321,22 +325,9 @@ static void transmitter_control_dmcub_v1_7(
 		sizeof(cmd.dig1_transmitter_control.header);
 	cmd.dig1_transmitter_control.transmitter_control.dig_v1_7 = *dig;
 
-	dc_wake_and_execute_dmub_cmd(dmcub->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
-}
-
-static struct dc_link *get_link_by_phy_id(struct dc *p_dc, uint32_t phy_id)
-{
-	struct dc_link *link = NULL;
-
-	// Get Transition Bitmask from dc_link structure associated with PHY
-	for (uint8_t link_id = 0; link_id < MAX_LINKS; link_id++) {
-		if (phy_id == p_dc->links[link_id]->link_enc->transmitter) {
-			link = p_dc->links[link_id];
-			break;
-		}
-	}
-
-	return link;
+	dc_dmub_srv_cmd_queue(dmcub, &cmd);
+	dc_dmub_srv_cmd_execute(dmcub);
+	dc_dmub_srv_wait_idle(dmcub);
 }
 
 static enum bp_result transmitter_control_v1_7(
@@ -377,38 +368,7 @@ static enum bp_result transmitter_control_v1_7(
 
 	if (bp->base.ctx->dc->ctx->dmub_srv &&
 		bp->base.ctx->dc->debug.dmub_command_table) {
-		struct dm_process_phy_transition_init_params process_phy_transition_init_params = {0};
-		struct dc_link *link = get_link_by_phy_id(bp->base.ctx->dc, dig_v1_7.phyid);
-		bool is_phy_transition_interlock_allowed = false;
-		uint8_t action = dig_v1_7.action;
-
-		if (link) {
-			if (link->phy_transition_bitmask &&
-				(action == TRANSMITTER_CONTROL_ENABLE || action == TRANSMITTER_CONTROL_DISABLE)) {
-				is_phy_transition_interlock_allowed = true;
-
-				// Prepare input parameters for processing ACPI retimers
-				process_phy_transition_init_params.action                   = action;
-				process_phy_transition_init_params.display_port_lanes_count = cntl->lanes_number;
-				process_phy_transition_init_params.phy_id                   = dig_v1_7.phyid;
-				process_phy_transition_init_params.signal                   = cntl->signal;
-				process_phy_transition_init_params.sym_clock_10khz          = dig_v1_7.symclk_units.symclk_10khz;
-				process_phy_transition_init_params.display_port_link_rate   = link->cur_link_settings.link_rate;
-				process_phy_transition_init_params.transition_bitmask       = link->phy_transition_bitmask;
-			}
-			dig_v1_7.skip_phy_ssc_reduction = link->wa_flags.skip_phy_ssc_reduction;
-		}
-
-		// Handle PRE_OFF_TO_ON: Process ACPI PHY Transition Interlock
-		if (is_phy_transition_interlock_allowed && action == TRANSMITTER_CONTROL_ENABLE)
-			dm_acpi_process_phy_transition_interlock(bp->base.ctx, process_phy_transition_init_params);
-
 		transmitter_control_dmcub_v1_7(bp->base.ctx->dmub_srv, &dig_v1_7);
-
-		// Handle POST_ON_TO_OFF: Process ACPI PHY Transition Interlock
-		if (is_phy_transition_interlock_allowed && action == TRANSMITTER_CONTROL_DISABLE)
-			dm_acpi_process_phy_transition_interlock(bp->base.ctx, process_phy_transition_init_params);
-
 		return BP_RESULT_OK;
 	}
 
@@ -453,6 +413,8 @@ static void init_set_pixel_clock(struct bios_parser *bp)
 		bp->cmd_tbl.set_pixel_clock = set_pixel_clock_v7;
 		break;
 	default:
+		dm_output_to_console("Don't have set_pixel_clock for v%d\n",
+			 BIOS_CMD_TABLE_PARA_REVISION(setpixelclock));
 		bp->cmd_tbl.set_pixel_clock = set_pixel_clock_fallback;
 		break;
 	}
@@ -473,7 +435,9 @@ static void set_pixel_clock_dmcub(
 		sizeof(cmd.set_pixel_clock.header);
 	cmd.set_pixel_clock.pixel_clock.clk = *clk;
 
-	dc_wake_and_execute_dmub_cmd(dmcub->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+	dc_dmub_srv_cmd_queue(dmcub, &cmd);
+	dc_dmub_srv_cmd_execute(dmcub);
+	dc_dmub_srv_wait_idle(dmcub);
 }
 
 static enum bp_result set_pixel_clock_v7(
@@ -597,6 +561,7 @@ static void init_set_crtc_timing(struct bios_parser *bp)
 			set_crtc_using_dtd_timing_v3;
 		break;
 	default:
+		dm_output_to_console("Don't have set_crtc_timing for v%d\n", dtd_version);
 		bp->cmd_tbl.set_crtc_timing = NULL;
 		break;
 	}
@@ -713,6 +678,8 @@ static void init_enable_crtc(struct bios_parser *bp)
 		bp->cmd_tbl.enable_crtc = enable_crtc_v1;
 		break;
 	default:
+		dm_output_to_console("Don't have enable_crtc for v%d\n",
+			 BIOS_CMD_TABLE_PARA_REVISION(enablecrtc));
 		bp->cmd_tbl.enable_crtc = NULL;
 		break;
 	}
@@ -837,7 +804,9 @@ static void enable_disp_power_gating_dmcub(
 		sizeof(cmd.enable_disp_power_gating.header);
 	cmd.enable_disp_power_gating.power_gating.pwr = *pwr;
 
-	dc_wake_and_execute_dmub_cmd(dmcub->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+	dc_dmub_srv_cmd_queue(dmcub, &cmd);
+	dc_dmub_srv_cmd_execute(dmcub);
+	dc_dmub_srv_wait_idle(dmcub);
 }
 
 static enum bp_result enable_disp_power_gating_v2_1(
@@ -904,6 +873,8 @@ static void init_set_dce_clock(struct bios_parser *bp)
 		bp->cmd_tbl.set_dce_clock = set_dce_clock_v2_1;
 		break;
 	default:
+		dm_output_to_console("Don't have set_dce_clock for v%d\n",
+			 BIOS_CMD_TABLE_PARA_REVISION(setdceclock));
 		bp->cmd_tbl.set_dce_clock = NULL;
 		break;
 	}
@@ -1015,7 +986,7 @@ static unsigned int get_smu_clock_info_v3_1(struct bios_parser *bp, uint8_t id)
 static enum bp_result enable_lvtma_control(
 	struct bios_parser *bp,
 	uint8_t uc_pwr_on,
-	uint8_t pwrseq_instance,
+	uint8_t panel_instance,
 	uint8_t bypass_panel_control_wait);
 
 static void init_enable_lvtma_control(struct bios_parser *bp)
@@ -1028,7 +999,7 @@ static void init_enable_lvtma_control(struct bios_parser *bp)
 static void enable_lvtma_control_dmcub(
 	struct dc_dmub_srv *dmcub,
 	uint8_t uc_pwr_on,
-	uint8_t pwrseq_instance,
+	uint8_t panel_instance,
 	uint8_t bypass_panel_control_wait)
 {
 
@@ -1041,17 +1012,20 @@ static void enable_lvtma_control_dmcub(
 			DMUB_CMD__VBIOS_LVTMA_CONTROL;
 	cmd.lvtma_control.data.uc_pwr_action =
 			uc_pwr_on;
-	cmd.lvtma_control.data.pwrseq_inst =
-			pwrseq_instance;
+	cmd.lvtma_control.data.panel_inst =
+			panel_instance;
 	cmd.lvtma_control.data.bypass_panel_control_wait =
 			bypass_panel_control_wait;
-	dc_wake_and_execute_dmub_cmd(dmcub->ctx, &cmd, DM_DMUB_WAIT_TYPE_WAIT);
+	dc_dmub_srv_cmd_queue(dmcub, &cmd);
+	dc_dmub_srv_cmd_execute(dmcub);
+	dc_dmub_srv_wait_idle(dmcub);
+
 }
 
 static enum bp_result enable_lvtma_control(
 	struct bios_parser *bp,
 	uint8_t uc_pwr_on,
-	uint8_t pwrseq_instance,
+	uint8_t panel_instance,
 	uint8_t bypass_panel_control_wait)
 {
 	enum bp_result result = BP_RESULT_FAILURE;
@@ -1060,7 +1034,7 @@ static enum bp_result enable_lvtma_control(
 	    bp->base.ctx->dc->debug.dmub_command_table) {
 		enable_lvtma_control_dmcub(bp->base.ctx->dmub_srv,
 				uc_pwr_on,
-				pwrseq_instance,
+				panel_instance,
 				bypass_panel_control_wait);
 		return BP_RESULT_OK;
 	}
@@ -1084,4 +1058,3 @@ void dal_firmware_parser_init_cmd_tbl(struct bios_parser *bp)
 
 	init_enable_lvtma_control(bp);
 }
-

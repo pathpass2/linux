@@ -38,7 +38,7 @@ MODULE_DEVICE_TABLE(of, pcm179x_of_match);
 #endif
 
 static const struct i2c_device_id pcm179x_i2c_ids[] = {
-	{ "pcm179x" },
+	{ "pcm179x", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pcm179x_i2c_ids);
@@ -49,7 +49,7 @@ static struct i2c_driver pcm179x_i2c_driver = {
 		.of_match_table = of_match_ptr(pcm179x_of_match),
 	},
 	.id_table	= pcm179x_i2c_ids,
-	.probe		= pcm179x_i2c_probe,
+	.probe_new	= pcm179x_i2c_probe,
 };
 
 module_i2c_driver(pcm179x_i2c_driver);

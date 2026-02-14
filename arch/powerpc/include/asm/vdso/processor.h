@@ -2,7 +2,7 @@
 #ifndef _ASM_POWERPC_VDSO_PROCESSOR_H
 #define _ASM_POWERPC_VDSO_PROCESSOR_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /* Macros for adjusting thread priority (hardware multi-threading) */
 #ifdef CONFIG_PPC64
@@ -33,6 +33,6 @@
 #define cpu_relax()	barrier()
 #endif
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_POWERPC_VDSO_PROCESSOR_H */

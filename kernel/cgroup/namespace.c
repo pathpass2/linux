@@ -5,7 +5,7 @@
 #include <linux/slab.h>
 #include <linux/nsproxy.h>
 #include <linux/proc_ns.h>
-#include <linux/nstree.h>
+
 
 /* cgroup namespaces */
 
@@ -21,31 +21,33 @@ static void dec_cgroup_namespaces(struct ucounts *ucounts)
 
 static struct cgroup_namespace *alloc_cgroup_ns(void)
 {
-	struct cgroup_namespace *new_ns __free(kfree) = NULL;
+	struct cgroup_namespace *new_ns;
 	int ret;
 
 	new_ns = kzalloc(sizeof(struct cgroup_namespace), GFP_KERNEL_ACCOUNT);
 	if (!new_ns)
 		return ERR_PTR(-ENOMEM);
-	ret = ns_common_init(new_ns);
-	if (ret)
+	ret = ns_alloc_inum(&new_ns->ns);
+	if (ret) {
+		kfree(new_ns);
 		return ERR_PTR(ret);
-	return no_free_ptr(new_ns);
+	}
+	refcount_set(&new_ns->ns.count, 1);
+	new_ns->ns.ops = &cgroupns_operations;
+	return new_ns;
 }
 
 void free_cgroup_ns(struct cgroup_namespace *ns)
 {
-	ns_tree_remove(ns);
 	put_css_set(ns->root_cset);
 	dec_cgroup_namespaces(ns->ucounts);
 	put_user_ns(ns->user_ns);
-	ns_common_free(ns);
-	/* Concurrent nstree traversal depends on a grace period. */
-	kfree_rcu(ns, ns.ns_rcu);
+	ns_free_inum(&ns->ns);
+	kfree(ns);
 }
 EXPORT_SYMBOL(free_cgroup_ns);
 
-struct cgroup_namespace *copy_cgroup_ns(u64 flags,
+struct cgroup_namespace *copy_cgroup_ns(unsigned long flags,
 					struct user_namespace *user_ns,
 					struct cgroup_namespace *old_ns)
 {
@@ -85,8 +87,12 @@ struct cgroup_namespace *copy_cgroup_ns(u64 flags,
 	new_ns->ucounts = ucounts;
 	new_ns->root_cset = cset;
 
-	ns_tree_add(new_ns);
 	return new_ns;
+}
+
+static inline struct cgroup_namespace *to_cg_ns(struct ns_common *ns)
+{
+	return container_of(ns, struct cgroup_namespace, ns);
 }
 
 static int cgroupns_install(struct nsset *nsset, struct ns_common *ns)
@@ -137,8 +143,15 @@ static struct user_namespace *cgroupns_owner(struct ns_common *ns)
 
 const struct proc_ns_operations cgroupns_operations = {
 	.name		= "cgroup",
+	.type		= CLONE_NEWCGROUP,
 	.get		= cgroupns_get,
 	.put		= cgroupns_put,
 	.install	= cgroupns_install,
 	.owner		= cgroupns_owner,
 };
+
+static __init int cgroup_namespaces_init(void)
+{
+	return 0;
+}
+subsys_initcall(cgroup_namespaces_init);

@@ -48,7 +48,8 @@ struct regmap *__regmap_init_slimbus(struct slim_device *slimbus,
 	if (IS_ERR(bus))
 		return ERR_CAST(bus);
 
-	return __regmap_init(&slimbus->dev, bus, slimbus, config, lock_key, lock_name);
+	return __regmap_init(&slimbus->dev, bus, &slimbus->dev, config,
+			     lock_key, lock_name);
 }
 EXPORT_SYMBOL_GPL(__regmap_init_slimbus);
 
@@ -62,9 +63,9 @@ struct regmap *__devm_regmap_init_slimbus(struct slim_device *slimbus,
 	if (IS_ERR(bus))
 		return ERR_CAST(bus);
 
-	return __devm_regmap_init(&slimbus->dev, bus, slimbus, config, lock_key, lock_name);
+	return __devm_regmap_init(&slimbus->dev, bus, &slimbus, config,
+				  lock_key, lock_name);
 }
 EXPORT_SYMBOL_GPL(__devm_regmap_init_slimbus);
 
-MODULE_DESCRIPTION("Register map access API - SLIMbus support");
 MODULE_LICENSE("GPL v2");

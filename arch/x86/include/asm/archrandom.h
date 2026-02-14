@@ -23,7 +23,8 @@ static inline bool __must_check rdrand_long(unsigned long *v)
 	unsigned int retry = RDRAND_RETRY_LOOPS;
 	do {
 		asm volatile("rdrand %[out]"
-			     : "=@ccc" (ok), [out] "=r" (*v));
+			     CC_SET(c)
+			     : CC_OUT(c) (ok), [out] "=r" (*v));
 		if (ok)
 			return true;
 	} while (--retry);
@@ -34,7 +35,8 @@ static inline bool __must_check rdseed_long(unsigned long *v)
 {
 	bool ok;
 	asm volatile("rdseed %[out]"
-		     : "=@ccc" (ok), [out] "=r" (*v));
+		     CC_SET(c)
+		     : CC_OUT(c) (ok), [out] "=r" (*v));
 	return ok;
 }
 

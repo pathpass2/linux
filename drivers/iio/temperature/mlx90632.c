@@ -334,8 +334,8 @@ static int mlx90632_perform_measurement(struct mlx90632_data *data)
 	unsigned int reg_status;
 	int ret;
 
-	ret = regmap_clear_bits(data->regmap, MLX90632_REG_STATUS,
-				MLX90632_STAT_DATA_RDY);
+	ret = regmap_update_bits(data->regmap, MLX90632_REG_STATUS,
+				 MLX90632_STAT_DATA_RDY, 0);
 	if (ret < 0)
 		return ret;
 
@@ -1043,6 +1043,7 @@ static int mlx90632_read_raw(struct iio_dev *indio_dev,
 	}
 
 mlx90632_read_raw_pm:
+	pm_runtime_mark_last_busy(&data->client->dev);
 	pm_runtime_put_autosuspend(&data->client->dev);
 	return ret;
 }
@@ -1177,8 +1178,10 @@ static int mlx90632_probe(struct i2c_client *client)
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*mlx90632));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&client->dev, "Failed to allocate device\n");
 		return -ENOMEM;
+	}
 
 	regmap = devm_regmap_init_i2c(client, &mlx90632_regmap);
 	if (IS_ERR(regmap)) {
@@ -1276,7 +1279,7 @@ static int mlx90632_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id mlx90632_id[] = {
-	{ "mlx90632" },
+	{ "mlx90632", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mlx90632_id);
@@ -1334,7 +1337,7 @@ static struct i2c_driver mlx90632_driver = {
 		.of_match_table = mlx90632_of_match,
 		.pm	= pm_ptr(&mlx90632_pm_ops),
 	},
-	.probe = mlx90632_probe,
+	.probe_new = mlx90632_probe,
 	.id_table = mlx90632_id,
 };
 module_i2c_driver(mlx90632_driver);

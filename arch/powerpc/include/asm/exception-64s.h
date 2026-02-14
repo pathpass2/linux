@@ -53,7 +53,7 @@
  */
 #define MAX_MCE_DEPTH	4
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 #define STF_ENTRY_BARRIER_SLOT						\
 	STF_ENTRY_BARRIER_FIXUP_SECTION;				\
@@ -170,9 +170,9 @@
 	RFSCV;								\
 	b	rfscv_flush_fallback
 
-#else /* __ASSEMBLER__ */
+#else /* __ASSEMBLY__ */
 /* Prototype for function defined in exceptions-64s.S */
 void do_uaccess_flush(void);
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif	/* _ASM_POWERPC_EXCEPTION_H */

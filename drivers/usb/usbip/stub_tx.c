@@ -4,7 +4,6 @@
  */
 
 #include <linux/kthread.h>
-#include <linux/minmax.h>
 #include <linux/socket.h>
 #include <linux/scatterlist.h>
 
@@ -202,7 +201,7 @@ static int stub_send_ret_submit(struct stub_device *sdev)
 
 		/* 1. setup usbip_header */
 		setup_ret_submit_pdu(&pdu_header, urb);
-		usbip_dbg_stub_tx("setup txdata seqnum: %u\n",
+		usbip_dbg_stub_tx("setup txdata seqnum: %d\n",
 				  pdu_header.base.seqnum);
 
 		if (priv->sgl) {
@@ -240,13 +239,17 @@ static int stub_send_ret_submit(struct stub_device *sdev)
 		    urb->actual_length > 0) {
 			if (urb->num_sgs) {
 				unsigned int copy = urb->actual_length;
-				unsigned int size;
+				int size;
 
 				for_each_sg(urb->sg, sg, urb->num_sgs, i) {
 					if (copy == 0)
 						break;
 
-					size = min(copy, sg->length);
+					if (copy < sg->length)
+						size = copy;
+					else
+						size = sg->length;
+
 					iov[iovnum].iov_base = sg_virt(sg);
 					iov[iovnum].iov_len = size;
 

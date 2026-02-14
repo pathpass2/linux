@@ -43,11 +43,13 @@ TC_INDIRECT_SCOPE int tcf_skbedit_act(struct sk_buff *skb,
 {
 	struct tcf_skbedit *d = to_skbedit(a);
 	struct tcf_skbedit_params *params;
+	int action;
 
 	tcf_lastuse_update(&d->tcf_tm);
 	bstats_update(this_cpu_ptr(d->common.cpu_bstats), skb);
 
 	params = rcu_dereference_bh(d->params);
+	action = READ_ONCE(d->tcf_action);
 
 	if (params->flags & SKBEDIT_F_PRIORITY)
 		skb->priority = params->priority;
@@ -83,7 +85,7 @@ TC_INDIRECT_SCOPE int tcf_skbedit_act(struct sk_buff *skb,
 	}
 	if (params->flags & SKBEDIT_F_PTYPE)
 		skb->pkt_type = params->ptype;
-	return params->action;
+	return action;
 
 err:
 	qstats_drop_inc(this_cpu_ptr(d->common.cpu_qstats));
@@ -207,7 +209,7 @@ static int tcf_skbedit_init(struct net *net, struct nlattr *nla,
 		return err;
 	exists = err;
 	if (exists && bind)
-		return ACT_P_BOUND;
+		return 0;
 
 	if (!flags) {
 		if (exists)
@@ -260,7 +262,6 @@ static int tcf_skbedit_init(struct net *net, struct nlattr *nla,
 	if (flags & SKBEDIT_F_MASK)
 		params_new->mask = *mask;
 
-	params_new->action = parm->action;
 	spin_lock_bh(&d->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, parm->action, goto_ch);
 	params_new = rcu_replace_pointer(d->params, params_new,
@@ -283,9 +284,9 @@ release_idr:
 static int tcf_skbedit_dump(struct sk_buff *skb, struct tc_action *a,
 			    int bind, int ref)
 {
-	const struct tcf_skbedit *d = to_skbedit(a);
 	unsigned char *b = skb_tail_pointer(skb);
-	const struct tcf_skbedit_params *params;
+	struct tcf_skbedit *d = to_skbedit(a);
+	struct tcf_skbedit_params *params;
 	struct tc_skbedit opt = {
 		.index   = d->tcf_index,
 		.refcnt  = refcount_read(&d->tcf_refcnt) - ref,
@@ -294,9 +295,10 @@ static int tcf_skbedit_dump(struct sk_buff *skb, struct tc_action *a,
 	u64 pure_flags = 0;
 	struct tcf_t t;
 
-	rcu_read_lock();
-	params = rcu_dereference(d->params);
-	opt.action = params->action;
+	spin_lock_bh(&d->tcf_lock);
+	params = rcu_dereference_protected(d->params,
+					   lockdep_is_held(&d->tcf_lock));
+	opt.action = d->tcf_action;
 
 	if (nla_put(skb, TCA_SKBEDIT_PARMS, sizeof(opt), &opt))
 		goto nla_put_failure;
@@ -331,12 +333,12 @@ static int tcf_skbedit_dump(struct sk_buff *skb, struct tc_action *a,
 	tcf_tm_dump(&t, &d->tcf_tm);
 	if (nla_put_64bit(skb, TCA_SKBEDIT_TM, sizeof(t), &t, TCA_SKBEDIT_PAD))
 		goto nla_put_failure;
-	rcu_read_unlock();
+	spin_unlock_bh(&d->tcf_lock);
 
 	return skb->len;
 
 nla_put_failure:
-	rcu_read_unlock();
+	spin_unlock_bh(&d->tcf_lock);
 	nlmsg_trim(skb, b);
 	return -1;
 }
@@ -424,7 +426,6 @@ static struct tc_action_ops act_skbedit_ops = {
 	.offload_act_setup =	tcf_skbedit_offload_act_setup,
 	.size		=	sizeof(struct tcf_skbedit),
 };
-MODULE_ALIAS_NET_ACT("skbedit");
 
 static __net_init int skbedit_init_net(struct net *net)
 {

@@ -9,13 +9,10 @@
 #include <linux/kvm_host.h>
 #include <asm/csr.h>
 #include <asm/insn-def.h>
-#include <asm/kvm_mmu.h>
-#include <asm/kvm_nacl.h>
 
 static int gstage_page_fault(struct kvm_vcpu *vcpu, struct kvm_run *run,
 			     struct kvm_cpu_trap *trap)
 {
-	struct kvm_gstage_mapping host_map;
 	struct kvm_memory_slot *memslot;
 	unsigned long hva, fault_addr;
 	bool writable;
@@ -43,9 +40,8 @@ static int gstage_page_fault(struct kvm_vcpu *vcpu, struct kvm_run *run,
 		};
 	}
 
-	ret = kvm_riscv_mmu_map(vcpu, memslot, fault_addr, hva,
-				(trap->scause == EXC_STORE_GUEST_PAGE_FAULT) ? true : false,
-				&host_map);
+	ret = kvm_riscv_gstage_map(vcpu, memslot, fault_addr, hva,
+		(trap->scause == EXC_STORE_GUEST_PAGE_FAULT) ? true : false);
 	if (ret < 0)
 		return ret;
 
@@ -139,7 +135,7 @@ unsigned long kvm_riscv_vcpu_unpriv_read(struct kvm_vcpu *vcpu,
 void kvm_riscv_vcpu_trap_redirect(struct kvm_vcpu *vcpu,
 				  struct kvm_cpu_trap *trap)
 {
-	unsigned long vsstatus = ncsr_read(CSR_VSSTATUS);
+	unsigned long vsstatus = csr_read(CSR_VSSTATUS);
 
 	/* Change Guest SSTATUS.SPP bit */
 	vsstatus &= ~SR_SPP;
@@ -155,29 +151,18 @@ void kvm_riscv_vcpu_trap_redirect(struct kvm_vcpu *vcpu,
 	vsstatus &= ~SR_SIE;
 
 	/* Update Guest SSTATUS */
-	ncsr_write(CSR_VSSTATUS, vsstatus);
+	csr_write(CSR_VSSTATUS, vsstatus);
 
 	/* Update Guest SCAUSE, STVAL, and SEPC */
-	ncsr_write(CSR_VSCAUSE, trap->scause);
-	ncsr_write(CSR_VSTVAL, trap->stval);
-	ncsr_write(CSR_VSEPC, trap->sepc);
+	csr_write(CSR_VSCAUSE, trap->scause);
+	csr_write(CSR_VSTVAL, trap->stval);
+	csr_write(CSR_VSEPC, trap->sepc);
 
 	/* Set Guest PC to Guest exception vector */
-	vcpu->arch.guest_context.sepc = ncsr_read(CSR_VSTVEC);
+	vcpu->arch.guest_context.sepc = csr_read(CSR_VSTVEC);
 
 	/* Set Guest privilege mode to supervisor */
 	vcpu->arch.guest_context.sstatus |= SR_SPP;
-}
-
-static inline int vcpu_redirect(struct kvm_vcpu *vcpu, struct kvm_cpu_trap *trap)
-{
-	int ret = -EFAULT;
-
-	if (vcpu->arch.guest_context.hstatus & HSTATUS_SPV) {
-		kvm_riscv_vcpu_trap_redirect(vcpu, trap);
-		ret = 1;
-	}
-	return ret;
 }
 
 /*
@@ -198,32 +183,10 @@ int kvm_riscv_vcpu_exit(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	run->exit_reason = KVM_EXIT_UNKNOWN;
 	switch (trap->scause) {
 	case EXC_INST_ILLEGAL:
-		kvm_riscv_vcpu_pmu_incr_fw(vcpu, SBI_PMU_FW_ILLEGAL_INSN);
-		vcpu->stat.instr_illegal_exits++;
-		ret = vcpu_redirect(vcpu, trap);
-		break;
-	case EXC_LOAD_MISALIGNED:
-		kvm_riscv_vcpu_pmu_incr_fw(vcpu, SBI_PMU_FW_MISALIGNED_LOAD);
-		vcpu->stat.load_misaligned_exits++;
-		ret = vcpu_redirect(vcpu, trap);
-		break;
-	case EXC_STORE_MISALIGNED:
-		kvm_riscv_vcpu_pmu_incr_fw(vcpu, SBI_PMU_FW_MISALIGNED_STORE);
-		vcpu->stat.store_misaligned_exits++;
-		ret = vcpu_redirect(vcpu, trap);
-		break;
-	case EXC_LOAD_ACCESS:
-		kvm_riscv_vcpu_pmu_incr_fw(vcpu, SBI_PMU_FW_ACCESS_LOAD);
-		vcpu->stat.load_access_exits++;
-		ret = vcpu_redirect(vcpu, trap);
-		break;
-	case EXC_STORE_ACCESS:
-		kvm_riscv_vcpu_pmu_incr_fw(vcpu, SBI_PMU_FW_ACCESS_STORE);
-		vcpu->stat.store_access_exits++;
-		ret = vcpu_redirect(vcpu, trap);
-		break;
-	case EXC_INST_ACCESS:
-		ret = vcpu_redirect(vcpu, trap);
+		if (vcpu->arch.guest_context.hstatus & HSTATUS_SPV) {
+			kvm_riscv_vcpu_trap_redirect(vcpu, trap);
+			ret = 1;
+		}
 		break;
 	case EXC_VIRTUAL_INST_FAULT:
 		if (vcpu->arch.guest_context.hstatus & HSTATUS_SPV)
@@ -238,10 +201,6 @@ int kvm_riscv_vcpu_exit(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	case EXC_SUPERVISOR_SYSCALL:
 		if (vcpu->arch.guest_context.hstatus & HSTATUS_SPV)
 			ret = kvm_riscv_vcpu_sbi_ecall(vcpu, run);
-		break;
-	case EXC_BREAKPOINT:
-		run->exit_reason = KVM_EXIT_DEBUG;
-		ret = 0;
 		break;
 	default:
 		break;

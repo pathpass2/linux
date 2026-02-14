@@ -7,6 +7,7 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/blkdev.h>
+#include <linux/blk-integrity.h>
 #include <linux/device.h>
 #include <linux/ctype.h>
 #include <linux/ndctl.h>
@@ -141,8 +142,9 @@ static void nvdimm_map_put(void *data)
 	struct nvdimm_map *nvdimm_map = data;
 	struct nvdimm_bus *nvdimm_bus = nvdimm_map->nvdimm_bus;
 
-	guard(nvdimm_bus)(&nvdimm_bus->dev);
+	nvdimm_bus_lock(&nvdimm_bus->dev);
 	kref_put(&nvdimm_map->kref, nvdimm_map_release);
+	nvdimm_bus_unlock(&nvdimm_bus->dev);
 }
 
 /**
@@ -157,13 +159,13 @@ void *devm_nvdimm_memremap(struct device *dev, resource_size_t offset,
 {
 	struct nvdimm_map *nvdimm_map;
 
-	scoped_guard(nvdimm_bus, dev) {
-		nvdimm_map = find_nvdimm_map(dev, offset);
-		if (!nvdimm_map)
-			nvdimm_map = alloc_nvdimm_map(dev, offset, size, flags);
-		else
-			kref_get(&nvdimm_map->kref);
-	}
+	nvdimm_bus_lock(dev);
+	nvdimm_map = find_nvdimm_map(dev, offset);
+	if (!nvdimm_map)
+		nvdimm_map = alloc_nvdimm_map(dev, offset, size, flags);
+	else
+		kref_get(&nvdimm_map->kref);
+	nvdimm_bus_unlock(dev);
 
 	if (!nvdimm_map)
 		return NULL;
@@ -506,6 +508,35 @@ int nvdimm_bus_add_badrange(struct nvdimm_bus *nvdimm_bus, u64 addr, u64 length)
 }
 EXPORT_SYMBOL_GPL(nvdimm_bus_add_badrange);
 
+#ifdef CONFIG_BLK_DEV_INTEGRITY
+int nd_integrity_init(struct gendisk *disk, unsigned long meta_size)
+{
+	struct blk_integrity bi;
+
+	if (meta_size == 0)
+		return 0;
+
+	memset(&bi, 0, sizeof(bi));
+
+	bi.tuple_size = meta_size;
+	bi.tag_size = meta_size;
+
+	blk_integrity_register(disk, &bi);
+	blk_queue_max_integrity_segments(disk->queue, 1);
+
+	return 0;
+}
+EXPORT_SYMBOL(nd_integrity_init);
+
+#else /* CONFIG_BLK_DEV_INTEGRITY */
+int nd_integrity_init(struct gendisk *disk, unsigned long meta_size)
+{
+	return 0;
+}
+EXPORT_SYMBOL(nd_integrity_init);
+
+#endif
+
 static __init int libnvdimm_init(void)
 {
 	int rc;
@@ -539,7 +570,6 @@ static __exit void libnvdimm_exit(void)
 	nvdimm_devs_exit();
 }
 
-MODULE_DESCRIPTION("NVDIMM (Non-Volatile Memory Device) core");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Intel Corporation");
 subsys_initcall(libnvdimm_init);

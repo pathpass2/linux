@@ -15,6 +15,7 @@
 #include <drm/drm_crtc.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_of.h>
+#include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
@@ -53,13 +54,13 @@ static int ptn3460_read_bytes(struct ptn3460_bridge *ptn_bridge, char addr,
 	int ret;
 
 	ret = i2c_master_send(ptn_bridge->client, &addr, 1);
-	if (ret < 0) {
+	if (ret <= 0) {
 		DRM_ERROR("Failed to send i2c command, ret=%d\n", ret);
 		return ret;
 	}
 
 	ret = i2c_master_recv(ptn_bridge->client, buf, len);
-	if (ret < 0) {
+	if (ret <= 0) {
 		DRM_ERROR("Failed to recv i2c data, ret=%d\n", ret);
 		return ret;
 	}
@@ -77,7 +78,7 @@ static int ptn3460_write_byte(struct ptn3460_bridge *ptn_bridge, char addr,
 	buf[1] = val;
 
 	ret = i2c_master_send(ptn_bridge->client, buf, ARRAY_SIZE(buf));
-	if (ret < 0) {
+	if (ret <= 0) {
 		DRM_ERROR("Failed to send i2c command, ret=%d\n", ret);
 		return ret;
 	}
@@ -153,11 +154,10 @@ static void ptn3460_disable(struct drm_bridge *bridge)
 }
 
 
-static const struct drm_edid *ptn3460_edid_read(struct drm_bridge *bridge,
-						struct drm_connector *connector)
+static struct edid *ptn3460_get_edid(struct drm_bridge *bridge,
+				     struct drm_connector *connector)
 {
 	struct ptn3460_bridge *ptn_bridge = bridge_to_ptn3460(bridge);
-	const struct drm_edid *drm_edid = NULL;
 	bool power_off;
 	u8 *edid;
 	int ret;
@@ -175,28 +175,27 @@ static const struct drm_edid *ptn3460_edid_read(struct drm_bridge *bridge,
 				 EDID_LENGTH);
 	if (ret) {
 		kfree(edid);
+		edid = NULL;
 		goto out;
 	}
-
-	drm_edid = drm_edid_alloc(edid, EDID_LENGTH);
 
 out:
 	if (power_off)
 		ptn3460_disable(&ptn_bridge->bridge);
 
-	return drm_edid;
+	return (struct edid *)edid;
 }
 
 static int ptn3460_connector_get_modes(struct drm_connector *connector)
 {
 	struct ptn3460_bridge *ptn_bridge = connector_to_ptn3460(connector);
-	const struct drm_edid *drm_edid;
+	struct edid *edid;
 	int num_modes;
 
-	drm_edid = ptn3460_edid_read(&ptn_bridge->bridge, connector);
-	drm_edid_connector_update(connector, drm_edid);
-	num_modes = drm_edid_connector_add_modes(connector);
-	drm_edid_free(drm_edid);
+	edid = ptn3460_get_edid(&ptn_bridge->bridge, connector);
+	drm_connector_update_edid_property(connector, edid);
+	num_modes = drm_add_edid_modes(connector, edid);
+	kfree(edid);
 
 	return num_modes;
 }
@@ -214,20 +213,24 @@ static const struct drm_connector_funcs ptn3460_connector_funcs = {
 };
 
 static int ptn3460_bridge_attach(struct drm_bridge *bridge,
-				 struct drm_encoder *encoder,
 				 enum drm_bridge_attach_flags flags)
 {
 	struct ptn3460_bridge *ptn_bridge = bridge_to_ptn3460(bridge);
 	int ret;
 
 	/* Let this driver create connector if requested */
-	ret = drm_bridge_attach(encoder, ptn_bridge->panel_bridge,
+	ret = drm_bridge_attach(bridge->encoder, ptn_bridge->panel_bridge,
 				bridge, flags | DRM_BRIDGE_ATTACH_NO_CONNECTOR);
 	if (ret < 0)
 		return ret;
 
 	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)
 		return 0;
+
+	if (!bridge->encoder) {
+		DRM_ERROR("Parent encoder object not found");
+		return -ENODEV;
+	}
 
 	ptn_bridge->connector.polled = DRM_CONNECTOR_POLL_HPD;
 	ret = drm_connector_init(bridge->dev, &ptn_bridge->connector,
@@ -240,7 +243,7 @@ static int ptn3460_bridge_attach(struct drm_bridge *bridge,
 					&ptn3460_connector_helper_funcs);
 	drm_connector_register(&ptn_bridge->connector);
 	drm_connector_attach_encoder(&ptn_bridge->connector,
-							encoder);
+							bridge->encoder);
 
 	drm_helper_hpd_irq_event(ptn_bridge->connector.dev);
 
@@ -251,7 +254,7 @@ static const struct drm_bridge_funcs ptn3460_bridge_funcs = {
 	.pre_enable = ptn3460_pre_enable,
 	.disable = ptn3460_disable,
 	.attach = ptn3460_bridge_attach,
-	.edid_read = ptn3460_edid_read,
+	.get_edid = ptn3460_get_edid,
 };
 
 static int ptn3460_probe(struct i2c_client *client)
@@ -261,10 +264,10 @@ static int ptn3460_probe(struct i2c_client *client)
 	struct drm_bridge *panel_bridge;
 	int ret;
 
-	ptn_bridge = devm_drm_bridge_alloc(dev, struct ptn3460_bridge, bridge,
-					   &ptn3460_bridge_funcs);
-	if (IS_ERR(ptn_bridge))
-		return PTR_ERR(ptn_bridge);
+	ptn_bridge = devm_kzalloc(dev, sizeof(*ptn_bridge), GFP_KERNEL);
+	if (!ptn_bridge) {
+		return -ENOMEM;
+	}
 
 	panel_bridge = devm_drm_of_get_bridge(dev, dev->of_node, 0, 0);
 	if (IS_ERR(panel_bridge))
@@ -300,6 +303,7 @@ static int ptn3460_probe(struct i2c_client *client)
 		return ret;
 	}
 
+	ptn_bridge->bridge.funcs = &ptn3460_bridge_funcs;
 	ptn_bridge->bridge.ops = DRM_BRIDGE_OP_EDID;
 	ptn_bridge->bridge.type = DRM_MODE_CONNECTOR_LVDS;
 	ptn_bridge->bridge.of_node = dev->of_node;
@@ -318,8 +322,8 @@ static void ptn3460_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ptn3460_i2c_table[] = {
-	{ "ptn3460" },
-	{}
+	{"ptn3460", 0},
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, ptn3460_i2c_table);
 
@@ -331,7 +335,7 @@ MODULE_DEVICE_TABLE(of, ptn3460_match);
 
 static struct i2c_driver ptn3460_driver = {
 	.id_table	= ptn3460_i2c_table,
-	.probe		= ptn3460_probe,
+	.probe_new	= ptn3460_probe,
 	.remove		= ptn3460_remove,
 	.driver		= {
 		.name	= "nxp,ptn3460",

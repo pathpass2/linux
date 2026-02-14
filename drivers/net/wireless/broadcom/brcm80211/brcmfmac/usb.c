@@ -117,6 +117,13 @@ struct bootrom_id_le {
 	__le32 boardrev;	/* Board revision */
 };
 
+struct brcmf_usb_image {
+	struct list_head list;
+	s8 *fwname;
+	u8 *image;
+	int image_len;
+};
+
 struct brcmf_usbdev_info {
 	struct brcmf_usbdev bus_pub; /* MUST BE FIRST */
 	spinlock_t qlock;
@@ -741,19 +748,15 @@ static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
 			    void *buffer, int buflen)
 {
 	int ret;
-	char *tmpbuf = NULL;
+	char *tmpbuf;
 	u16 size;
 
-	if (!devinfo || !devinfo->ctl_urb) {
-		ret = -EINVAL;
-		goto err;
-	}
+	if ((!devinfo) || (devinfo->ctl_urb == NULL))
+		return -EINVAL;
 
 	tmpbuf = kmalloc(buflen, GFP_ATOMIC);
-	if (!tmpbuf) {
-		ret = -ENOMEM;
-		goto err;
-	}
+	if (!tmpbuf)
+		return -ENOMEM;
 
 	size = buflen;
 	devinfo->ctl_urb->transfer_buffer_length = size;
@@ -774,23 +777,18 @@ static int brcmf_usb_dl_cmd(struct brcmf_usbdev_info *devinfo, u8 cmd,
 	ret = usb_submit_urb(devinfo->ctl_urb, GFP_ATOMIC);
 	if (ret < 0) {
 		brcmf_err("usb_submit_urb failed %d\n", ret);
-		goto err;
+		goto finalize;
 	}
 
 	if (!brcmf_usb_ioctl_resp_wait(devinfo)) {
 		usb_kill_urb(devinfo->ctl_urb);
 		ret = -ETIMEDOUT;
-		goto err;
 	} else {
 		memcpy(buffer, tmpbuf, buflen);
 	}
 
+finalize:
 	kfree(tmpbuf);
-	return 0;
-
-err:
-	kfree(tmpbuf);
-	brcmf_err("dl cmd %u failed: err=%d\n", cmd, ret);
 	return ret;
 }
 
@@ -905,16 +903,14 @@ brcmf_usb_dl_writeimage(struct brcmf_usbdev_info *devinfo, u8 *fw, int fwlen)
 	}
 
 	/* 1) Prepare USB boot loader for runtime image */
-	err = brcmf_usb_dl_cmd(devinfo, DL_START, &state, sizeof(state));
-	if (err)
-		goto fail;
+	brcmf_usb_dl_cmd(devinfo, DL_START, &state, sizeof(state));
 
 	rdlstate = le32_to_cpu(state.state);
 	rdlbytes = le32_to_cpu(state.bytes);
 
 	/* 2) Check we are in the Waiting state */
 	if (rdlstate != DL_WAITING) {
-		brcmf_err("Invalid DL state: %u\n", rdlstate);
+		brcmf_err("Failed to DL_START\n");
 		err = -EINVAL;
 		goto fail;
 	}
@@ -927,7 +923,10 @@ brcmf_usb_dl_writeimage(struct brcmf_usbdev_info *devinfo, u8 *fw, int fwlen)
 		/* Wait until the usb device reports it received all
 		 * the bytes we sent */
 		if ((rdlbytes == sent) && (rdlbytes != dllen)) {
-			sendlen = min(dllen - sent, TRX_RDL_CHUNK);
+			if ((dllen-sent) < TRX_RDL_CHUNK)
+				sendlen = dllen-sent;
+			else
+				sendlen = TRX_RDL_CHUNK;
 
 			/* simply avoid having to send a ZLP by ensuring we
 			 * never have an even
@@ -1244,8 +1243,8 @@ brcmf_usb_prepare_fw_request(struct brcmf_usbdev_info *devinfo)
 static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
 			      enum brcmf_fwvendor fwvid)
 {
-	struct brcmf_bus *bus;
-	struct brcmf_usbdev *bus_pub;
+	struct brcmf_bus *bus = NULL;
+	struct brcmf_usbdev *bus_pub = NULL;
 	struct device *dev = devinfo->dev;
 	struct brcmf_fw_request *fwreq;
 	int ret;
@@ -1255,7 +1254,7 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
 	if (!bus_pub)
 		return -ENODEV;
 
-	bus = kzalloc(sizeof(*bus), GFP_ATOMIC);
+	bus = kzalloc(sizeof(struct brcmf_bus), GFP_ATOMIC);
 	if (!bus) {
 		ret = -ENOMEM;
 		goto fail;
@@ -1280,9 +1279,6 @@ static int brcmf_usb_probe_cb(struct brcmf_usbdev_info *devinfo,
 		ret = -ENOMEM;
 		goto fail;
 	}
-	ret = PTR_ERR_OR_ZERO(devinfo->settings);
-	if (ret < 0)
-		goto fail;
 
 	if (!brcmf_usb_dlneeded(devinfo)) {
 		ret = brcmf_alloc(devinfo->dev, devinfo->settings);
@@ -1335,9 +1331,6 @@ brcmf_usb_disconnect_cb(struct brcmf_usbdev_info *devinfo)
 	brcmf_usb_detach(devinfo);
 }
 
-/* Forward declaration for usb_match_id() call */
-static const struct usb_device_id brcmf_usb_devid_table[];
-
 static int
 brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
@@ -1348,14 +1341,6 @@ brcmf_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	int ret = 0;
 	u32 num_of_eps;
 	u8 endpoint_num, ep;
-
-	if (!id) {
-		id = usb_match_id(intf, brcmf_usb_devid_table);
-		if (!id) {
-			dev_err(&intf->dev, "Error could not find matching usb_device_id\n");
-			return -ENODEV;
-		}
-	}
 
 	brcmf_dbg(USB, "Enter 0x%04x:0x%04x\n", id->idVendor, id->idProduct);
 
@@ -1585,7 +1570,7 @@ static int brcmf_usb_reset_device(struct device *dev, void *notused)
 
 void brcmf_usb_exit(void)
 {
-	struct device_driver *drv = &brcmf_usbdrvr.driver;
+	struct device_driver *drv = &brcmf_usbdrvr.drvwrap.driver;
 	int ret;
 
 	brcmf_dbg(USB, "Enter\n");

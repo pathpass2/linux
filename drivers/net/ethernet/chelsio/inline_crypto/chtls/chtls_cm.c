@@ -171,7 +171,7 @@ static void chtls_purge_receive_queue(struct sock *sk)
 	struct sk_buff *skb;
 
 	while ((skb = __skb_dequeue(&sk->sk_receive_queue)) != NULL) {
-		skb_dstref_steal(skb);
+		skb_dst_set(skb, (void *)NULL);
 		kfree_skb(skb);
 	}
 }
@@ -194,7 +194,7 @@ static void chtls_purge_recv_queue(struct sock *sk)
 	struct sk_buff *skb;
 
 	while ((skb = __skb_dequeue(&tlsk->sk_recv_queue)) != NULL) {
-		skb_dstref_steal(skb);
+		skb_dst_set(skb, NULL);
 		kfree_skb(skb);
 	}
 }
@@ -505,7 +505,7 @@ static void reset_listen_child(struct sock *child)
 
 	chtls_send_reset(child, CPL_ABORT_SEND_RST, skb);
 	sock_orphan(child);
-	tcp_orphan_count_inc();
+	INC_ORPHAN_COUNT(child);
 	if (child->sk_state == TCP_CLOSE)
 		inet_csk_destroy_sock(child);
 }
@@ -870,7 +870,7 @@ static void do_abort_syn_rcv(struct sock *child, struct sock *parent)
 		 * created only after 3 way handshake is done.
 		 */
 		sock_orphan(child);
-		tcp_orphan_count_inc();
+		INC_ORPHAN_COUNT(child);
 		chtls_release_resources(child);
 		chtls_conn_done(child);
 	} else {
@@ -951,7 +951,6 @@ static unsigned int chtls_select_mss(const struct chtls_sock *csk,
 	struct tcp_sock *tp;
 	unsigned int mss;
 	struct sock *sk;
-	u16 user_mss;
 
 	mss = ntohs(req->tcpopt.mss);
 	sk = csk->sk;
@@ -970,9 +969,8 @@ static unsigned int chtls_select_mss(const struct chtls_sock *csk,
 		tcpoptsz += round_up(TCPOLEN_TIMESTAMP, 4);
 
 	tp->advmss = dst_metric_advmss(dst);
-	user_mss = USER_MSS(tp);
-	if (user_mss && tp->advmss > user_mss)
-		tp->advmss = user_mss;
+	if (USER_MSS(tp) && tp->advmss > USER_MSS(tp))
+		tp->advmss = USER_MSS(tp);
 	if (tp->advmss > pmtu - iphdrsz)
 		tp->advmss = pmtu - iphdrsz;
 	if (mss && tp->advmss > mss)
@@ -1199,12 +1197,12 @@ static struct sock *chtls_recv_sock(struct sock *lsk,
 		struct ipv6_pinfo *newnp = inet6_sk(newsk);
 		struct ipv6_pinfo *np = inet6_sk(lsk);
 
-		newinet->pinet6 = &newtcp6sk->inet6;
-		newinet->ipv6_fl_list = NULL;
+		inet_sk(newsk)->pinet6 = &newtcp6sk->inet6;
 		memcpy(newnp, np, sizeof(struct ipv6_pinfo));
 		newsk->sk_v6_daddr = treq->ir_v6_rmt_addr;
 		newsk->sk_v6_rcv_saddr = treq->ir_v6_loc_addr;
 		inet6_sk(newsk)->saddr = treq->ir_v6_loc_addr;
+		newnp->ipv6_fl_list = NULL;
 		newnp->pktoptions = NULL;
 		newsk->sk_bound_dev_if = treq->ir_iif;
 		newinet->inet_opt = NULL;
@@ -1468,7 +1466,7 @@ static void make_established(struct sock *sk, u32 snd_isn, unsigned int opt)
 	tp->write_seq = snd_isn;
 	tp->snd_nxt = snd_isn;
 	tp->snd_una = snd_isn;
-	atomic_set(&inet_sk(sk)->inet_id, get_random_u16());
+	inet_sk(sk)->inet_id = get_random_u16();
 	assign_rxopt(sk, opt);
 
 	if (tp->rcv_wnd > (RCV_BUFSIZ_M << 10))
@@ -1736,7 +1734,7 @@ static int chtls_rx_data(struct chtls_dev *cdev, struct sk_buff *skb)
 		pr_err("can't find conn. for hwtid %u.\n", hwtid);
 		return -EINVAL;
 	}
-	skb_dstref_steal(skb);
+	skb_dst_set(skb, NULL);
 	process_cpl_msg(chtls_recv_data, sk, skb);
 	return 0;
 }
@@ -1788,7 +1786,7 @@ static int chtls_rx_pdu(struct chtls_dev *cdev, struct sk_buff *skb)
 		pr_err("can't find conn. for hwtid %u.\n", hwtid);
 		return -EINVAL;
 	}
-	skb_dstref_steal(skb);
+	skb_dst_set(skb, NULL);
 	process_cpl_msg(chtls_recv_pdu, sk, skb);
 	return 0;
 }
@@ -1857,7 +1855,7 @@ static int chtls_rx_cmp(struct chtls_dev *cdev, struct sk_buff *skb)
 		pr_err("can't find conn. for hwtid %u.\n", hwtid);
 		return -EINVAL;
 	}
-	skb_dstref_steal(skb);
+	skb_dst_set(skb, NULL);
 	process_cpl_msg(chtls_rx_hdr, sk, skb);
 
 	return 0;
@@ -2261,7 +2259,7 @@ static void chtls_rx_ack(struct sock *sk, struct sk_buff *skb)
 
 		if (tp->snd_una != snd_una) {
 			tp->snd_una = snd_una;
-			tp->rcv_tstamp = tcp_jiffies32;
+			tp->rcv_tstamp = tcp_time_stamp(tp);
 			if (tp->snd_una == tp->snd_nxt &&
 			    !csk_flag_nochk(csk, CSK_TX_FAILOVER))
 				csk_reset_flag(csk, CSK_TX_WAIT_IDLE);

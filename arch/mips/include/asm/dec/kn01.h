@@ -71,7 +71,7 @@
 #define KN01_CSR_LEDS		(0xff<<0) /* ~diagnostic LEDs (w/o) */
 
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>

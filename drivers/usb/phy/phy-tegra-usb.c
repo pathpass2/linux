@@ -16,7 +16,7 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/resource.h>
 #include <linux/slab.h>
@@ -711,6 +711,58 @@ static int utmi_phy_power_off(struct tegra_usb_phy *phy)
 	return utmip_pad_power_off(phy);
 }
 
+static void utmi_phy_preresume(struct tegra_usb_phy *phy)
+{
+	void __iomem *base = phy->regs;
+	u32 val;
+
+	val = readl_relaxed(base + UTMIP_TX_CFG0);
+	val |= UTMIP_HS_DISCON_DISABLE;
+	writel_relaxed(val, base + UTMIP_TX_CFG0);
+}
+
+static void utmi_phy_postresume(struct tegra_usb_phy *phy)
+{
+	void __iomem *base = phy->regs;
+	u32 val;
+
+	val = readl_relaxed(base + UTMIP_TX_CFG0);
+	val &= ~UTMIP_HS_DISCON_DISABLE;
+	writel_relaxed(val, base + UTMIP_TX_CFG0);
+}
+
+static void utmi_phy_restore_start(struct tegra_usb_phy *phy,
+				   enum tegra_usb_phy_port_speed port_speed)
+{
+	void __iomem *base = phy->regs;
+	u32 val;
+
+	val = readl_relaxed(base + UTMIP_MISC_CFG0);
+	val &= ~UTMIP_DPDM_OBSERVE_SEL(~0);
+	if (port_speed == TEGRA_USB_PHY_PORT_SPEED_LOW)
+		val |= UTMIP_DPDM_OBSERVE_SEL_FS_K;
+	else
+		val |= UTMIP_DPDM_OBSERVE_SEL_FS_J;
+	writel_relaxed(val, base + UTMIP_MISC_CFG0);
+	usleep_range(1, 10);
+
+	val = readl_relaxed(base + UTMIP_MISC_CFG0);
+	val |= UTMIP_DPDM_OBSERVE;
+	writel_relaxed(val, base + UTMIP_MISC_CFG0);
+	usleep_range(10, 100);
+}
+
+static void utmi_phy_restore_end(struct tegra_usb_phy *phy)
+{
+	void __iomem *base = phy->regs;
+	u32 val;
+
+	val = readl_relaxed(base + UTMIP_MISC_CFG0);
+	val &= ~UTMIP_DPDM_OBSERVE;
+	writel_relaxed(val, base + UTMIP_MISC_CFG0);
+	usleep_range(10, 100);
+}
+
 static int ulpi_phy_power_on(struct tegra_usb_phy *phy)
 {
 	void __iomem *base = phy->regs;
@@ -1071,6 +1123,43 @@ disable_clk:
 	return err;
 }
 
+void tegra_usb_phy_preresume(struct usb_phy *u_phy)
+{
+	struct tegra_usb_phy *phy = to_tegra_usb_phy(u_phy);
+
+	if (!phy->is_ulpi_phy)
+		utmi_phy_preresume(phy);
+}
+EXPORT_SYMBOL_GPL(tegra_usb_phy_preresume);
+
+void tegra_usb_phy_postresume(struct usb_phy *u_phy)
+{
+	struct tegra_usb_phy *phy = to_tegra_usb_phy(u_phy);
+
+	if (!phy->is_ulpi_phy)
+		utmi_phy_postresume(phy);
+}
+EXPORT_SYMBOL_GPL(tegra_usb_phy_postresume);
+
+void tegra_ehci_phy_restore_start(struct usb_phy *u_phy,
+				  enum tegra_usb_phy_port_speed port_speed)
+{
+	struct tegra_usb_phy *phy = to_tegra_usb_phy(u_phy);
+
+	if (!phy->is_ulpi_phy)
+		utmi_phy_restore_start(phy, port_speed);
+}
+EXPORT_SYMBOL_GPL(tegra_ehci_phy_restore_start);
+
+void tegra_ehci_phy_restore_end(struct usb_phy *u_phy)
+{
+	struct tegra_usb_phy *phy = to_tegra_usb_phy(u_phy);
+
+	if (!phy->is_ulpi_phy)
+		utmi_phy_restore_end(phy);
+}
+EXPORT_SYMBOL_GPL(tegra_ehci_phy_restore_end);
+
 static int read_utmi_param(struct platform_device *pdev, const char *param,
 			   u8 *dest)
 {
@@ -1286,7 +1375,7 @@ static int tegra_usb_phy_probe(struct platform_device *pdev)
 	tegra_phy->is_legacy_phy =
 		of_property_read_bool(np, "nvidia,has-legacy-mode");
 
-	if (of_property_present(np, "dr_mode"))
+	if (of_find_property(np, "dr_mode", NULL))
 		tegra_phy->mode = usb_get_dr_mode(&pdev->dev);
 	else
 		tegra_phy->mode = USB_DR_MODE_HOST;
@@ -1397,11 +1486,13 @@ static int tegra_usb_phy_probe(struct platform_device *pdev)
 	return usb_add_phy_dev(&tegra_phy->u_phy);
 }
 
-static void tegra_usb_phy_remove(struct platform_device *pdev)
+static int tegra_usb_phy_remove(struct platform_device *pdev)
 {
 	struct tegra_usb_phy *tegra_phy = platform_get_drvdata(pdev);
 
 	usb_remove_phy(&tegra_phy->u_phy);
+
+	return 0;
 }
 
 static struct platform_driver tegra_usb_phy_driver = {

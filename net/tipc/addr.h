@@ -130,6 +130,7 @@ static inline int in_own_node(struct net *net, u32 addr)
 bool tipc_in_scope(bool legacy_format, u32 domain, u32 addr);
 void tipc_set_node_id(struct net *net, u8 *id);
 void tipc_set_node_addr(struct net *net, u32 addr);
-int tipc_nodeid2string(char *str, u8 *id);
+char *tipc_nodeid2string(char *str, u8 *id);
+u32 tipc_node_id2hash(u8 *id128);
 
 #endif

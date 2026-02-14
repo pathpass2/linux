@@ -9,7 +9,6 @@
  */
 
 #include <linux/linkage.h>
-#include <linux/cfi_types.h>
 #include <asm/frame.h>
 #include "glue_helper-asm-avx.S"
 
@@ -657,7 +656,7 @@ SYM_FUNC_START_LOCAL(__serpent_dec_blk8_avx)
 	RET;
 SYM_FUNC_END(__serpent_dec_blk8_avx)
 
-SYM_TYPED_FUNC_START(serpent_ecb_enc_8way_avx)
+SYM_FUNC_START(serpent_ecb_enc_8way_avx)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -675,7 +674,7 @@ SYM_TYPED_FUNC_START(serpent_ecb_enc_8way_avx)
 	RET;
 SYM_FUNC_END(serpent_ecb_enc_8way_avx)
 
-SYM_TYPED_FUNC_START(serpent_ecb_dec_8way_avx)
+SYM_FUNC_START(serpent_ecb_dec_8way_avx)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst
@@ -693,7 +692,7 @@ SYM_TYPED_FUNC_START(serpent_ecb_dec_8way_avx)
 	RET;
 SYM_FUNC_END(serpent_ecb_dec_8way_avx)
 
-SYM_TYPED_FUNC_START(serpent_cbc_dec_8way_avx)
+SYM_FUNC_START(serpent_cbc_dec_8way_avx)
 	/* input:
 	 *	%rdi: ctx, CTX
 	 *	%rsi: dst

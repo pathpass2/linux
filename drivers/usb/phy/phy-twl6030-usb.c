@@ -179,16 +179,16 @@ static ssize_t vbus_show(struct device *dev,
 
 	switch (twl->linkstat) {
 	case MUSB_VBUS_VALID:
-	       ret = sysfs_emit(buf, "vbus\n");
+	       ret = snprintf(buf, PAGE_SIZE, "vbus\n");
 	       break;
 	case MUSB_ID_GROUND:
-	       ret = sysfs_emit(buf, "id\n");
+	       ret = snprintf(buf, PAGE_SIZE, "id\n");
 	       break;
 	case MUSB_VBUS_OFF:
-	       ret = sysfs_emit(buf, "none\n");
+	       ret = snprintf(buf, PAGE_SIZE, "none\n");
 	       break;
 	default:
-	       ret = sysfs_emit(buf, "UNKNOWN\n");
+	       ret = snprintf(buf, PAGE_SIZE, "UNKNOWN\n");
 	}
 	spin_unlock_irqrestore(&twl->lock, flags);
 
@@ -328,8 +328,9 @@ static int twl6030_set_vbus(struct phy_companion *comparator, bool enabled)
 
 static int twl6030_usb_probe(struct platform_device *pdev)
 {
+	u32 ret;
 	struct twl6030_usb	*twl;
-	int			status, err, ret;
+	int			status, err;
 	struct device_node	*np = pdev->dev.of_node;
 	struct device		*dev = &pdev->dev;
 
@@ -408,7 +409,7 @@ err_put_regulator:
 	return status;
 }
 
-static void twl6030_usb_remove(struct platform_device *pdev)
+static int twl6030_usb_remove(struct platform_device *pdev)
 {
 	struct twl6030_usb *twl = platform_get_drvdata(pdev);
 
@@ -421,6 +422,8 @@ static void twl6030_usb_remove(struct platform_device *pdev)
 	free_irq(twl->irq2, twl);
 	regulator_put(twl->usb3v3);
 	cancel_work_sync(&twl->set_vbus_work);
+
+	return 0;
 }
 
 static const struct of_device_id twl6030_usb_id_table[] = {

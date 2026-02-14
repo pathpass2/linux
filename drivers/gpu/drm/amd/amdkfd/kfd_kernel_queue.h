@@ -47,13 +47,13 @@
 int kq_acquire_packet_buffer(struct kernel_queue *kq,
 				size_t packet_size_in_dwords,
 				unsigned int **buffer_ptr);
-int kq_submit_packet(struct kernel_queue *kq);
+void kq_submit_packet(struct kernel_queue *kq);
 void kq_rollback_packet(struct kernel_queue *kq);
 
 
 struct kernel_queue {
 	/* data */
-	struct kfd_node		*dev;
+	struct kfd_dev		*dev;
 	struct mqd_manager	*mqd_mgr;
 	struct queue		*queue;
 	uint64_t		pending_wptr64;

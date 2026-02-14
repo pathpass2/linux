@@ -38,8 +38,10 @@ __setup("no_file_caps", file_caps_disable);
 
 static void warn_legacy_capability_use(void)
 {
+	char name[sizeof(current->comm)];
+
 	pr_info_once("warning: `%s' uses 32-bit capabilities (legacy support in use)\n",
-		     current->comm);
+		     get_task_comm(name, current));
 }
 
 /*
@@ -60,8 +62,10 @@ static void warn_legacy_capability_use(void)
 
 static void warn_deprecated_v2(void)
 {
+	char name[sizeof(current->comm)];
+
 	pr_info_once("warning: `%s' uses deprecated v2 capabilities in a way that may be insecure\n",
-		     current->comm);
+		     get_task_comm(name, current));
 }
 
 /*
@@ -108,7 +112,7 @@ static inline int cap_get_target_pid(pid_t pid, kernel_cap_t *pEp,
 	int ret;
 
 	if (pid && (pid != task_pid_vnr(current))) {
-		const struct task_struct *target;
+		struct task_struct *target;
 
 		rcu_read_lock();
 
@@ -286,6 +290,22 @@ bool has_ns_capability(struct task_struct *t,
 }
 
 /**
+ * has_capability - Does a task have a capability in init_user_ns
+ * @t: The task in question
+ * @cap: The capability to be tested for
+ *
+ * Return true if the specified task has the given superior capability
+ * currently in effect to the initial user namespace, false if not.
+ *
+ * Note that this does not set PF_SUPERPRIV on the task.
+ */
+bool has_capability(struct task_struct *t, int cap)
+{
+	return has_ns_capability(t, &init_user_ns, cap);
+}
+EXPORT_SYMBOL(has_capability);
+
+/**
  * has_ns_capability_noaudit - Does a task have a capability (unaudited)
  * in a specific user ns.
  * @t: The task in question
@@ -447,7 +467,6 @@ EXPORT_SYMBOL(file_ns_capable);
 /**
  * privileged_wrt_inode_uidgid - Do capabilities in the namespace work over the inode?
  * @ns: The user namespace in question
- * @idmap: idmap of the mount @inode was found from
  * @inode: The inode in question
  *
  * Return true if the inode uid and gid are within the namespace.
@@ -462,7 +481,6 @@ bool privileged_wrt_inode_uidgid(struct user_namespace *ns,
 
 /**
  * capable_wrt_inode_uidgid - Check nsown_capable and uid and gid mapped
- * @idmap: idmap of the mount @inode was found from
  * @inode: The inode in question
  * @cap: The capability in question
  *

@@ -9,7 +9,8 @@
  *              Network name space (netns) aware.
  */
 
-#define pr_fmt(fmt) "IPVS: " fmt
+#define KMSG_COMPONENT "IPVS"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/in.h>
 #include <linux/ip.h>

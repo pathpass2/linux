@@ -954,7 +954,8 @@ const struct powerpc_operand powerpc_operands[] =
   { 0xff, 11, NULL, NULL, PPC_OPERAND_SIGNOPT },
 };
 
-const unsigned int num_powerpc_operands = ARRAY_SIZE(powerpc_operands);
+const unsigned int num_powerpc_operands = (sizeof (powerpc_operands)
+					   / sizeof (powerpc_operands[0]));
 
 /* The functions used to insert and extract complicated operands.  */
 
@@ -6967,8 +6968,9 @@ const struct powerpc_opcode powerpc_opcodes[] = {
 {"fcfidu.",	XRC(63,974,1),	XRA_MASK, POWER7|PPCA2,	PPCVLE,		{FRT, FRB}},
 };
 
-const int powerpc_num_opcodes = ARRAY_SIZE(powerpc_opcodes);
-
+const int powerpc_num_opcodes =
+  sizeof (powerpc_opcodes) / sizeof (powerpc_opcodes[0]);
+
 /* The VLE opcode table.
 
    The format of this opcode table is the same as the main opcode table.  */
@@ -7205,8 +7207,9 @@ const struct powerpc_opcode vle_opcodes[] = {
 {"se_bl",	BD8(58,0,1),	BD8_MASK,	PPCVLE,	0,		{B8}},
 };
 
-const int vle_num_opcodes = ARRAY_SIZE(vle_opcodes);
-
+const int vle_num_opcodes =
+  sizeof (vle_opcodes) / sizeof (vle_opcodes[0]);
+
 /* The macro table.  This is only used by the assembler.  */
 
 /* The expressions of the form (-x ! 31) & (x | 31) have the value 0
@@ -7273,4 +7276,5 @@ const struct powerpc_macro powerpc_macros[] = {
 {"e_clrlslwi",4, PPCVLE, "e_rlwinm %0,%1,%3,(%2)-(%3),31-(%3)"},
 };
 
-const int powerpc_num_macros = ARRAY_SIZE(powerpc_macros);
+const int powerpc_num_macros =
+  sizeof (powerpc_macros) / sizeof (powerpc_macros[0]);

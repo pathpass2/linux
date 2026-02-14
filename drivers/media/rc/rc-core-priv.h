@@ -72,6 +72,11 @@ struct ir_raw_event_ctrl {
 		bool is_nec_x;
 		bool necx_repeat;
 	} nec;
+	struct nec_dec_ext {
+		int state;
+		unsigned count;
+		u64 bits;
+	} nec_ext;
 #endif
 #if IS_ENABLED(CONFIG_IR_RC5_DECODER)
 	struct rc5_dec {
@@ -85,8 +90,8 @@ struct ir_raw_event_ctrl {
 	struct rc6_dec {
 		int state;
 		u8 header;
-		bool toggle;
 		u32 body;
+		bool toggle;
 		unsigned count;
 		unsigned wanted_bits;
 	} rc6;
@@ -127,8 +132,8 @@ struct ir_raw_event_ctrl {
 	struct mce_kbd_dec {
 		/* locks key up timer */
 		spinlock_t keylock;
-		int state;
 		struct timer_list rx_timeout;
+		int state;
 		u8 header;
 		u32 body;
 		unsigned count;
@@ -325,7 +330,7 @@ void lirc_raw_event(struct rc_dev *dev, struct ir_raw_event ev);
 void lirc_scancode_event(struct rc_dev *dev, struct lirc_scancode *lsc);
 int lirc_register(struct rc_dev *dev);
 void lirc_unregister(struct rc_dev *dev);
-struct rc_dev *rc_dev_get_from_fd(int fd, bool write);
+struct rc_dev *rc_dev_get_from_fd(int fd);
 #else
 static inline int lirc_dev_init(void) { return 0; }
 static inline void lirc_dev_exit(void) {}

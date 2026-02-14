@@ -241,22 +241,16 @@ mips_pci_controller:
 #endif
 
 		/*
-		 * Set up memory mapping in host bridge for PCI DMA masters,
-		 * in transparent addressing mode.  For EVA use the Malta
-		 * maximum of 2 GiB memory in the alias space at 0x80000000
-		 * as per PHYS_OFFSET.  Otherwise use 256 MiB of memory in
-		 * the regular space, avoiding mapping the PCI MMIO window
-		 * for DMA as it seems to confuse the system controller's
-		 * logic, causing PCI MMIO to stop working.
+		 * Setup the Malta max (2GB) memory for PCI DMA in host bridge
+		 * in transparent addressing mode.
 		 */
-		mask = PHYS_OFFSET ? PHYS_OFFSET : 0xf0000000;
-		MSC_WRITE(MSC01_PCI_BAR0,
-			  mask | PCI_BASE_ADDRESS_MEM_PREFETCH);
-		MSC_WRITE(MSC01_PCI_HEAD4,
-			  PHYS_OFFSET | PCI_BASE_ADDRESS_MEM_PREFETCH);
+		mask = PHYS_OFFSET | PCI_BASE_ADDRESS_MEM_PREFETCH;
+		MSC_WRITE(MSC01_PCI_BAR0, mask);
+		MSC_WRITE(MSC01_PCI_HEAD4, mask);
 
+		mask &= MSC01_PCI_BAR0_SIZE_MSK;
 		MSC_WRITE(MSC01_PCI_P2SCMSKL, mask);
-		MSC_WRITE(MSC01_PCI_P2SCMAPL, PHYS_OFFSET);
+		MSC_WRITE(MSC01_PCI_P2SCMAPL, mask);
 
 		/* Don't handle target retries indefinitely.  */
 		if ((data & MSC01_PCI_CFG_MAXRTRY_MSK) ==
@@ -294,6 +288,8 @@ mips_pci_controller:
 	mips_cpc_probe();
 
 	if (!register_cps_smp_ops())
+		return;
+	if (!register_cmp_smp_ops())
 		return;
 	if (!register_vsmp_smp_ops())
 		return;

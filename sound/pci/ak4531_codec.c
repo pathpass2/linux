@@ -77,8 +77,9 @@ static int snd_ak4531_get_single(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	int invert = (kcontrol->private_value >> 22) & 1;
 	int val;
 
-	guard(mutex)(&ak4531->reg_mutex);
+	mutex_lock(&ak4531->reg_mutex);
 	val = (ak4531->regs[reg] >> shift) & mask;
+	mutex_unlock(&ak4531->reg_mutex);
 	if (invert) {
 		val = mask - val;
 	}
@@ -101,10 +102,11 @@ static int snd_ak4531_put_single(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 		val = mask - val;
 	}
 	val <<= shift;
-	guard(mutex)(&ak4531->reg_mutex);
+	mutex_lock(&ak4531->reg_mutex);
 	val = (ak4531->regs[reg] & ~(mask << shift)) | val;
 	change = val != ak4531->regs[reg];
 	ak4531->write(ak4531, reg, ak4531->regs[reg] = val);
+	mutex_unlock(&ak4531->reg_mutex);
 	return change;
 }
 
@@ -144,9 +146,10 @@ static int snd_ak4531_get_double(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	int invert = (kcontrol->private_value >> 22) & 1;
 	int left, right;
 
-	guard(mutex)(&ak4531->reg_mutex);
+	mutex_lock(&ak4531->reg_mutex);
 	left = (ak4531->regs[left_reg] >> left_shift) & mask;
 	right = (ak4531->regs[right_reg] >> right_shift) & mask;
+	mutex_unlock(&ak4531->reg_mutex);
 	if (invert) {
 		left = mask - left;
 		right = mask - right;
@@ -176,7 +179,7 @@ static int snd_ak4531_put_double(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	}
 	left <<= left_shift;
 	right <<= right_shift;
-	guard(mutex)(&ak4531->reg_mutex);
+	mutex_lock(&ak4531->reg_mutex);
 	if (left_reg == right_reg) {
 		left = (ak4531->regs[left_reg] & ~((mask << left_shift) | (mask << right_shift))) | left | right;
 		change = left != ak4531->regs[left_reg];
@@ -188,6 +191,7 @@ static int snd_ak4531_put_double(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 		ak4531->write(ak4531, left_reg, ak4531->regs[left_reg] = left);
 		ak4531->write(ak4531, right_reg, ak4531->regs[right_reg] = right);
 	}
+	mutex_unlock(&ak4531->reg_mutex);
 	return change;
 }
 
@@ -214,11 +218,12 @@ static int snd_ak4531_get_input_sw(struct snd_kcontrol *kcontrol, struct snd_ctl
 	int left_shift = (kcontrol->private_value >> 16) & 0x0f;
 	int right_shift = (kcontrol->private_value >> 24) & 0x0f;
 
-	guard(mutex)(&ak4531->reg_mutex);
+	mutex_lock(&ak4531->reg_mutex);
 	ucontrol->value.integer.value[0] = (ak4531->regs[reg1] >> left_shift) & 1;
 	ucontrol->value.integer.value[1] = (ak4531->regs[reg2] >> left_shift) & 1;
 	ucontrol->value.integer.value[2] = (ak4531->regs[reg1] >> right_shift) & 1;
 	ucontrol->value.integer.value[3] = (ak4531->regs[reg2] >> right_shift) & 1;
+	mutex_unlock(&ak4531->reg_mutex);
 	return 0;
 }
 
@@ -232,7 +237,7 @@ static int snd_ak4531_put_input_sw(struct snd_kcontrol *kcontrol, struct snd_ctl
 	int change;
 	int val1, val2;
 
-	guard(mutex)(&ak4531->reg_mutex);
+	mutex_lock(&ak4531->reg_mutex);
 	val1 = ak4531->regs[reg1] & ~((1 << left_shift) | (1 << right_shift));
 	val2 = ak4531->regs[reg2] & ~((1 << left_shift) | (1 << right_shift));
 	val1 |= (ucontrol->value.integer.value[0] & 1) << left_shift;
@@ -242,6 +247,7 @@ static int snd_ak4531_put_input_sw(struct snd_kcontrol *kcontrol, struct snd_ctl
 	change = val1 != ak4531->regs[reg1] || val2 != ak4531->regs[reg2];
 	ak4531->write(ak4531, reg1, ak4531->regs[reg1] = val1);
 	ak4531->write(ak4531, reg2, ak4531->regs[reg2] = val2);
+	mutex_unlock(&ak4531->reg_mutex);
 	return change;
 }
 
@@ -383,7 +389,7 @@ int snd_ak4531_mixer(struct snd_card *card,
 		snd_ak4531_free(ak4531);
 		return err;
 	}
-	strscpy(card->mixername, "Asahi Kasei AK4531");
+	strcpy(card->mixername, "Asahi Kasei AK4531");
 	ak4531->write(ak4531, AK4531_RESET, 0x03);	/* no RST, PD */
 	udelay(100);
 	ak4531->write(ak4531, AK4531_CLOCK, 0x00);	/* CODEC ADC and CODEC DAC use {LR,B}CLK2 and run off LRCLK2 PLL */

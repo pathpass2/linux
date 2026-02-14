@@ -20,7 +20,6 @@ properties:
   compatible:
     enum:
       - ocs,ocp8110
-      - richtek,rt5033-led
       - sgmicro,sgm3140
 
   enable-gpios:

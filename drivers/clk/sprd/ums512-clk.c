@@ -9,8 +9,8 @@
 #include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -800,7 +800,7 @@ static SPRD_MUX_CLK_DATA(uart1_clk, "uart1-clk", uart_parents,
 			 0x250, 0, 3, UMS512_MUX_FLAG);
 
 static const struct clk_parent_data thm_parents[] = {
-	{ .fw_name = "ext-32k" },
+	{ .fw_name = "ext-32m" },
 	{ .hw = &clk_250k.hw  },
 };
 static SPRD_MUX_CLK_DATA(thm0_clk, "thm0-clk", thm_parents,
@@ -1550,7 +1550,7 @@ static struct sprd_clk_desc ums512_aon_gate_desc = {
 
 /* audcp apb gates */
 /* Audcp apb clocks configure CLK_IGNORE_UNUSED because these clocks may be
- * controlled by audcp sys at the same time. It may cause an exception if
+ * controlled by audcp sys at the same time. It may be cause an execption if
  * kernel gates these clock.
  */
 static SPRD_SC_GATE_CLK_HW(audcp_wdg_eb, "audcp-wdg-eb",
@@ -1592,7 +1592,7 @@ static const struct sprd_clk_desc ums512_audcpapb_gate_desc = {
 
 /* audcp ahb gates */
 /* Audcp aphb clocks configure CLK_IGNORE_UNUSED because these clocks may be
- * controlled by audcp sys at the same time. It may cause an exception if
+ * controlled by audcp sys at the same time. It may be cause an execption if
  * kernel gates these clock.
  */
 static SPRD_SC_GATE_CLK_HW(audcp_iis0_eb, "audcp-iis0-eb",

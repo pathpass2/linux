@@ -4,31 +4,25 @@
 
 #ifndef __ASSEMBLY__
 
-#ifndef __arch_get_vdso_u_time_data
-static __always_inline const struct vdso_time_data *__arch_get_vdso_u_time_data(void)
+#ifndef __arch_get_k_vdso_data
+static __always_inline struct vdso_data *__arch_get_k_vdso_data(void)
 {
-	return &vdso_u_time_data;
+	return NULL;
 }
-#endif
+#endif /* __arch_get_k_vdso_data */
 
-#ifndef __arch_get_vdso_u_rng_data
-static __always_inline const struct vdso_rng_data *__arch_get_vdso_u_rng_data(void)
+#ifndef __arch_update_vsyscall
+static __always_inline void __arch_update_vsyscall(struct vdso_data *vdata,
+						   struct timekeeper *tk)
 {
-	return &vdso_u_rng_data;
 }
-#endif
+#endif /* __arch_update_vsyscall */
 
-#ifndef __arch_update_vdso_clock
-static __always_inline void __arch_update_vdso_clock(struct vdso_clock *vc)
+#ifndef __arch_sync_vdso_data
+static __always_inline void __arch_sync_vdso_data(struct vdso_data *vdata)
 {
 }
-#endif /* __arch_update_vdso_clock */
-
-#ifndef __arch_sync_vdso_time_data
-static __always_inline void __arch_sync_vdso_time_data(struct vdso_time_data *vdata)
-{
-}
-#endif /* __arch_sync_vdso_time_data */
+#endif /* __arch_sync_vdso_data */
 
 #endif /* !__ASSEMBLY__ */
 

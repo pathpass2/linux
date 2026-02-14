@@ -10,7 +10,6 @@
 #include <linux/kstrtox.h>
 #include <linux/workqueue.h>
 #include <linux/greybus.h>
-#include <linux/string_choices.h>
 
 #define SVC_INTF_EJECT_TIMEOUT		9000
 #define SVC_INTF_ACTIVATE_TIMEOUT	6000
@@ -74,7 +73,7 @@ static ssize_t watchdog_show(struct device *dev, struct device_attribute *attr,
 	struct gb_svc *svc = to_gb_svc(dev);
 
 	return sprintf(buf, "%s\n",
-		       str_enabled_disabled(gb_svc_watchdog_enabled(svc)));
+		       gb_svc_watchdog_enabled(svc) ? "enabled" : "disabled");
 }
 
 static ssize_t watchdog_store(struct device *dev,
@@ -1306,7 +1305,7 @@ static void gb_svc_release(struct device *dev)
 	kfree(svc);
 }
 
-const struct device_type greybus_svc_type = {
+struct device_type greybus_svc_type = {
 	.name		= "greybus_svc",
 	.release	= gb_svc_release,
 };
@@ -1319,7 +1318,7 @@ struct gb_svc *gb_svc_create(struct gb_host_device *hd)
 	if (!svc)
 		return NULL;
 
-	svc->wq = alloc_ordered_workqueue("%s:svc", 0, dev_name(&hd->dev));
+	svc->wq = alloc_workqueue("%s:svc", WQ_UNBOUND, 1, dev_name(&hd->dev));
 	if (!svc->wq) {
 		kfree(svc);
 		return NULL;

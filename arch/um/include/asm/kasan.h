@@ -24,6 +24,12 @@
 
 #ifdef CONFIG_KASAN
 void kasan_init(void);
+void kasan_map_memory(void *start, unsigned long len);
+extern int kasan_um_is_ready;
+
+#ifdef CONFIG_STATIC_LINK
+#define kasan_arch_is_ready() (kasan_um_is_ready)
+#endif
 #else
 static inline void kasan_init(void) { }
 #endif /* CONFIG_KASAN */

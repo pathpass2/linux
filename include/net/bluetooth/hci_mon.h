@@ -51,14 +51,12 @@ struct hci_mon_hdr {
 #define HCI_MON_CTRL_EVENT	17
 #define HCI_MON_ISO_TX_PKT	18
 #define HCI_MON_ISO_RX_PKT	19
-#define HCI_MON_DRV_TX_PKT	20
-#define HCI_MON_DRV_RX_PKT	21
 
 struct hci_mon_new_index {
 	__u8		type;
 	__u8		bus;
 	bdaddr_t	bdaddr;
-	char		name[8] __nonstring;
+	char		name[8];
 } __packed;
 #define HCI_MON_NEW_INDEX_SIZE 16
 

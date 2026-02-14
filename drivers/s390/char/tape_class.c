@@ -8,16 +8,21 @@
  * Based on simple class device code by Greg K-H
  */
 
-#define pr_fmt(fmt) "tape: " fmt
+#define KMSG_COMPONENT "tape"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/export.h>
 #include <linux/slab.h>
 
 #include "tape_class.h"
 
-static const struct class tape_class = {
-	.name = "tape390",
-};
+MODULE_AUTHOR("Stefan Bader <shbader@de.ibm.com>");
+MODULE_DESCRIPTION(
+	"Copyright IBM Corp. 2004   All Rights Reserved.\n"
+	"tape_class.c"
+);
+MODULE_LICENSE("GPL");
+
+static struct class *tape_class;
 
 /*
  * Register a tape device and return a pointer to the cdev structure.
@@ -69,7 +74,7 @@ struct tape_class_device *register_tape_dev(
 	if (rc)
 		goto fail_with_cdev;
 
-	tcd->class_device = device_create(&tape_class, device,
+	tcd->class_device = device_create(tape_class, device,
 					  tcd->char_device->dev, NULL,
 					  "%s", tcd->device_name);
 	rc = PTR_ERR_OR_ZERO(tcd->class_device);
@@ -86,7 +91,7 @@ struct tape_class_device *register_tape_dev(
 	return tcd;
 
 fail_with_class_device:
-	device_destroy(&tape_class, tcd->char_device->dev);
+	device_destroy(tape_class, tcd->char_device->dev);
 
 fail_with_cdev:
 	cdev_del(tcd->char_device);
@@ -102,19 +107,26 @@ void unregister_tape_dev(struct device *device, struct tape_class_device *tcd)
 {
 	if (tcd != NULL && !IS_ERR(tcd)) {
 		sysfs_remove_link(&device->kobj, tcd->mode_name);
-		device_destroy(&tape_class, tcd->char_device->dev);
+		device_destroy(tape_class, tcd->char_device->dev);
 		cdev_del(tcd->char_device);
 		kfree(tcd);
 	}
 }
 EXPORT_SYMBOL(unregister_tape_dev);
 
-int tape_class_init(void)
+
+static int __init tape_init(void)
 {
-	return class_register(&tape_class);
+	tape_class = class_create(THIS_MODULE, "tape390");
+
+	return 0;
 }
 
-void tape_class_exit(void)
+static void __exit tape_exit(void)
 {
-	class_unregister(&tape_class);
+	class_destroy(tape_class);
+	tape_class = NULL;
 }
+
+postcore_initcall(tape_init);
+module_exit(tape_exit);

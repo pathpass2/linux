@@ -3,16 +3,12 @@
  * Copyright © 2021 Intel Corporation
  */
 
-#include <linux/debugfs.h>
-
-#include <drm/drm_print.h>
-
+#include "i915_drv.h"
+#include "i915_reg.h"
 #include "intel_atomic.h"
 #include "intel_de.h"
-#include "intel_display_regs.h"
 #include "intel_display_types.h"
 #include "intel_drrs.h"
-#include "intel_frontbuffer.h"
 #include "intel_panel.h"
 
 /**
@@ -66,30 +62,27 @@ const char *intel_drrs_type_str(enum drrs_type drrs_type)
 	return str[drrs_type];
 }
 
-bool intel_cpu_transcoder_has_drrs(struct intel_display *display,
-				   enum transcoder cpu_transcoder)
-{
-	if (HAS_DOUBLE_BUFFERED_M_N(display))
-		return true;
-
-	return intel_cpu_transcoder_has_m2_n2(display, cpu_transcoder);
-}
-
 static void
 intel_drrs_set_refresh_rate_pipeconf(struct intel_crtc *crtc,
 				     enum drrs_refresh_rate refresh_rate)
 {
-	struct intel_display *display = to_intel_display(crtc);
+	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
 	enum transcoder cpu_transcoder = crtc->drrs.cpu_transcoder;
-	u32 bit;
+	u32 val, bit;
 
-	if (display->platform.valleyview || display->platform.cherryview)
-		bit = TRANSCONF_REFRESH_RATE_ALT_VLV;
+	if (IS_VALLEYVIEW(dev_priv) || IS_CHERRYVIEW(dev_priv))
+		bit = PIPECONF_REFRESH_RATE_ALT_VLV;
 	else
-		bit = TRANSCONF_REFRESH_RATE_ALT_ILK;
+		bit = PIPECONF_REFRESH_RATE_ALT_ILK;
 
-	intel_de_rmw(display, TRANSCONF(display, cpu_transcoder),
-		     bit, refresh_rate == DRRS_REFRESH_RATE_LOW ? bit : 0);
+	val = intel_de_read(dev_priv, PIPECONF(cpu_transcoder));
+
+	if (refresh_rate == DRRS_REFRESH_RATE_LOW)
+		val |= bit;
+	else
+		val &= ~bit;
+
+	intel_de_write(dev_priv, PIPECONF(cpu_transcoder), val);
 }
 
 static void
@@ -109,12 +102,12 @@ bool intel_drrs_is_active(struct intel_crtc *crtc)
 static void intel_drrs_set_state(struct intel_crtc *crtc,
 				 enum drrs_refresh_rate refresh_rate)
 {
-	struct intel_display *display = to_intel_display(crtc);
+	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
 
 	if (refresh_rate == crtc->drrs.refresh_rate)
 		return;
 
-	if (intel_cpu_transcoder_has_m2_n2(display, crtc->drrs.cpu_transcoder))
+	if (intel_cpu_transcoder_has_m2_n2(dev_priv, crtc->drrs.cpu_transcoder))
 		intel_drrs_set_refresh_rate_pipeconf(crtc, refresh_rate);
 	else
 		intel_drrs_set_refresh_rate_m_n(crtc, refresh_rate);
@@ -124,21 +117,19 @@ static void intel_drrs_set_state(struct intel_crtc *crtc,
 
 static void intel_drrs_schedule_work(struct intel_crtc *crtc)
 {
-	struct intel_display *display = to_intel_display(crtc);
-
-	mod_delayed_work(display->wq.unordered, &crtc->drrs.work, msecs_to_jiffies(1000));
+	mod_delayed_work(system_wq, &crtc->drrs.work, msecs_to_jiffies(1000));
 }
 
 static unsigned int intel_drrs_frontbuffer_bits(const struct intel_crtc_state *crtc_state)
 {
-	struct intel_display *display = to_intel_display(crtc_state);
 	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
 	unsigned int frontbuffer_bits;
 
 	frontbuffer_bits = INTEL_FRONTBUFFER_ALL_MASK(crtc->pipe);
 
-	for_each_intel_crtc_in_pipe_mask(display->drm, crtc,
-					 crtc_state->joiner_pipes)
+	for_each_intel_crtc_in_pipe_mask(&i915->drm, crtc,
+					 crtc_state->bigjoiner_pipes)
 		frontbuffer_bits |= INTEL_FRONTBUFFER_ALL_MASK(crtc->pipe);
 
 	return frontbuffer_bits;
@@ -160,7 +151,7 @@ void intel_drrs_activate(const struct intel_crtc_state *crtc_state)
 	if (!crtc_state->hw.active)
 		return;
 
-	if (intel_crtc_is_joiner_secondary(crtc_state))
+	if (intel_crtc_is_bigjoiner_slave(crtc_state))
 		return;
 
 	mutex_lock(&crtc->drrs.mutex);
@@ -192,7 +183,7 @@ void intel_drrs_deactivate(const struct intel_crtc_state *old_crtc_state)
 	if (!old_crtc_state->hw.active)
 		return;
 
-	if (intel_crtc_is_joiner_secondary(old_crtc_state))
+	if (intel_crtc_is_bigjoiner_slave(old_crtc_state))
 		return;
 
 	mutex_lock(&crtc->drrs.mutex);
@@ -221,13 +212,13 @@ static void intel_drrs_downclock_work(struct work_struct *work)
 	mutex_unlock(&crtc->drrs.mutex);
 }
 
-static void intel_drrs_frontbuffer_update(struct intel_display *display,
+static void intel_drrs_frontbuffer_update(struct drm_i915_private *dev_priv,
 					  unsigned int all_frontbuffer_bits,
 					  bool invalidate)
 {
 	struct intel_crtc *crtc;
 
-	for_each_intel_crtc(display->drm, crtc) {
+	for_each_intel_crtc(&dev_priv->drm, crtc) {
 		unsigned int frontbuffer_bits;
 
 		mutex_lock(&crtc->drrs.mutex);
@@ -261,7 +252,7 @@ static void intel_drrs_frontbuffer_update(struct intel_display *display,
 
 /**
  * intel_drrs_invalidate - Disable Idleness DRRS
- * @display: display device
+ * @dev_priv: i915 device
  * @frontbuffer_bits: frontbuffer plane tracking bits
  *
  * This function gets called everytime rendering on the given planes start.
@@ -269,15 +260,15 @@ static void intel_drrs_frontbuffer_update(struct intel_display *display,
  *
  * Dirty frontbuffers relevant to DRRS are tracked in busy_frontbuffer_bits.
  */
-void intel_drrs_invalidate(struct intel_display *display,
+void intel_drrs_invalidate(struct drm_i915_private *dev_priv,
 			   unsigned int frontbuffer_bits)
 {
-	intel_drrs_frontbuffer_update(display, frontbuffer_bits, true);
+	intel_drrs_frontbuffer_update(dev_priv, frontbuffer_bits, true);
 }
 
 /**
  * intel_drrs_flush - Restart Idleness DRRS
- * @display: display device
+ * @dev_priv: i915 device
  * @frontbuffer_bits: frontbuffer plane tracking bits
  *
  * This function gets called every time rendering on the given planes has
@@ -287,10 +278,10 @@ void intel_drrs_invalidate(struct intel_display *display,
  *
  * Dirty frontbuffers relevant to DRRS are tracked in busy_frontbuffer_bits.
  */
-void intel_drrs_flush(struct intel_display *display,
+void intel_drrs_flush(struct drm_i915_private *dev_priv,
 		      unsigned int frontbuffer_bits)
 {
-	intel_drrs_frontbuffer_update(display, frontbuffer_bits, false);
+	intel_drrs_frontbuffer_update(dev_priv, frontbuffer_bits, false);
 }
 
 /**
@@ -311,7 +302,6 @@ void intel_drrs_crtc_init(struct intel_crtc *crtc)
 static int intel_drrs_debugfs_status_show(struct seq_file *m, void *unused)
 {
 	struct intel_crtc *crtc = m->private;
-	struct intel_display *display = to_intel_display(crtc);
 	const struct intel_crtc_state *crtc_state;
 	int ret;
 
@@ -322,10 +312,6 @@ static int intel_drrs_debugfs_status_show(struct seq_file *m, void *unused)
 	crtc_state = to_intel_crtc_state(crtc->base.state);
 
 	mutex_lock(&crtc->drrs.mutex);
-
-	seq_printf(m, "DRRS capable: %s\n",
-		   str_yes_no(intel_cpu_transcoder_has_drrs(display,
-							    crtc_state->cpu_transcoder)));
 
 	seq_printf(m, "DRRS enabled: %s\n",
 		   str_yes_no(crtc_state->has_drrs));
@@ -352,7 +338,7 @@ DEFINE_SHOW_ATTRIBUTE(intel_drrs_debugfs_status);
 static int intel_drrs_debugfs_ctl_set(void *data, u64 val)
 {
 	struct intel_crtc *crtc = data;
-	struct intel_display *display = to_intel_display(crtc);
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
 	struct intel_crtc_state *crtc_state;
 	struct drm_crtc_commit *commit;
 	int ret;
@@ -374,7 +360,8 @@ static int intel_drrs_debugfs_ctl_set(void *data, u64 val)
 			goto out;
 	}
 
-	drm_dbg_kms(display->drm, "Manually %sactivating DRRS\n", val ? "" : "de");
+	drm_dbg(&i915->drm,
+		"Manually %sactivating DRRS\n", val ? "" : "de");
 
 	if (val)
 		intel_drrs_activate(crtc_state);

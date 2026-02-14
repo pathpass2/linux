@@ -25,7 +25,6 @@
 #include "namei.h"
 #include "ocfs2_trace.h"
 #include "file.h"
-#include "symlink.h"
 
 #include <linux/bio.h>
 #include <linux/blkdev.h>
@@ -34,7 +33,6 @@
 #include <linux/pagevec.h>
 #include <linux/swap.h>
 #include <linux/security.h>
-#include <linux/string.h>
 #include <linux/fsnotify.h>
 #include <linux/quotaops.h>
 #include <linux/namei.h>
@@ -622,7 +620,7 @@ static int ocfs2_create_refcount_tree(struct inode *inode,
 	/* Initialize ocfs2_refcount_block. */
 	rb = (struct ocfs2_refcount_block *)new_bh->b_data;
 	memset(rb, 0, inode->i_sb->s_blocksize);
-	strscpy(rb->rf_signature, OCFS2_REFCOUNT_BLOCK_SIGNATURE);
+	strcpy((void *)rb, OCFS2_REFCOUNT_BLOCK_SIGNATURE);
 	rb->rf_suballoc_slot = cpu_to_le16(meta_ac->ac_alloc_slot);
 	rb->rf_suballoc_loc = cpu_to_le64(suballoc_loc);
 	rb->rf_suballoc_bit = cpu_to_le16(suballoc_bit_start);
@@ -632,7 +630,7 @@ static int ocfs2_create_refcount_tree(struct inode *inode,
 	rb->rf_records.rl_count =
 			cpu_to_le16(ocfs2_refcount_recs_per_rb(osb->sb));
 	spin_lock(&osb->osb_lock);
-	rb->rf_generation = cpu_to_le32(osb->s_next_generation++);
+	rb->rf_generation = osb->s_next_generation++;
 	spin_unlock(&osb->osb_lock);
 
 	ocfs2_journal_dirty(handle, new_bh);
@@ -1394,6 +1392,13 @@ static int cmp_refcount_rec_by_cpos(const void *a, const void *b)
 	return 0;
 }
 
+static void swap_refcount_rec(void *a, void *b, int size)
+{
+	struct ocfs2_refcount_rec *l = a, *r = b;
+
+	swap(*l, *r);
+}
+
 /*
  * The refcount cpos are ordered by their 64bit cpos,
  * But we will use the low 32 bit to be the e_cpos in the b-tree.
@@ -1469,7 +1474,7 @@ static int ocfs2_divide_leaf_refcount_block(struct buffer_head *ref_leaf_bh,
 	 */
 	sort(&rl->rl_recs, le16_to_cpu(rl->rl_used),
 	     sizeof(struct ocfs2_refcount_rec),
-	     cmp_refcount_rec_by_low_cpos, NULL);
+	     cmp_refcount_rec_by_low_cpos, swap_refcount_rec);
 
 	ret = ocfs2_find_refcount_split_pos(rl, &cpos, &split_index);
 	if (ret) {
@@ -1494,11 +1499,11 @@ static int ocfs2_divide_leaf_refcount_block(struct buffer_head *ref_leaf_bh,
 
 	sort(&rl->rl_recs, le16_to_cpu(rl->rl_used),
 	     sizeof(struct ocfs2_refcount_rec),
-	     cmp_refcount_rec_by_cpos, NULL);
+	     cmp_refcount_rec_by_cpos, swap_refcount_rec);
 
 	sort(&new_rl->rl_recs, le16_to_cpu(new_rl->rl_used),
 	     sizeof(struct ocfs2_refcount_rec),
-	     cmp_refcount_rec_by_cpos, NULL);
+	     cmp_refcount_rec_by_cpos, swap_refcount_rec);
 
 	*split_cpos = cpos;
 	return 0;
@@ -1563,7 +1568,7 @@ static int ocfs2_new_leaf_refcount_block(handle_t *handle,
 	/* Initialize ocfs2_refcount_block. */
 	new_rb = (struct ocfs2_refcount_block *)new_bh->b_data;
 	memset(new_rb, 0, sb->s_blocksize);
-	strscpy(new_rb->rf_signature, OCFS2_REFCOUNT_BLOCK_SIGNATURE);
+	strcpy((void *)new_rb, OCFS2_REFCOUNT_BLOCK_SIGNATURE);
 	new_rb->rf_suballoc_slot = cpu_to_le16(meta_ac->ac_alloc_slot);
 	new_rb->rf_suballoc_loc = cpu_to_le64(suballoc_loc);
 	new_rb->rf_suballoc_bit = cpu_to_le16(suballoc_bit_start);
@@ -2421,7 +2426,7 @@ static int ocfs2_calc_refcount_meta_credits(struct super_block *sb,
 		 *
 		 * If we will insert a new one, this is easy and only happens
 		 * during adding refcounted flag to the extent, so we don't
-		 * have a chance of splitting. We just need one record.
+		 * have a chance of spliting. We just need one record.
 		 *
 		 * If the refcount rec already exists, that would be a little
 		 * complicated. we may have to:
@@ -2611,11 +2616,11 @@ static inline unsigned int ocfs2_cow_align_length(struct super_block *sb,
 /*
  * Calculate out the start and number of virtual clusters we need to CoW.
  *
- * cpos is virtual start cluster position we want to do CoW in a
+ * cpos is vitual start cluster position we want to do CoW in a
  * file and write_len is the cluster length.
  * max_cpos is the place where we want to stop CoW intentionally.
  *
- * Normal we will start CoW from the beginning of extent record containing cpos.
+ * Normal we will start CoW from the beginning of extent record cotaining cpos.
  * We try to break up extents on boundaries of MAX_CONTIG_BYTES so that we
  * get good I/O from the resulting extent tree.
  */
@@ -2903,6 +2908,7 @@ int ocfs2_duplicate_clusters_by_page(handle_t *handle,
 	int ret = 0, partial;
 	struct super_block *sb = inode->i_sb;
 	u64 new_block = ocfs2_clusters_to_blocks(sb, new_cluster);
+	struct page *page;
 	pgoff_t page_index;
 	unsigned int from, to;
 	loff_t offset, end, map_end;
@@ -2921,7 +2927,6 @@ int ocfs2_duplicate_clusters_by_page(handle_t *handle,
 		end = i_size_read(inode);
 
 	while (offset < end) {
-		struct folio *folio;
 		page_index = offset >> PAGE_SHIFT;
 		map_end = ((loff_t)page_index + 1) << PAGE_SHIFT;
 		if (map_end > end)
@@ -2934,10 +2939,9 @@ int ocfs2_duplicate_clusters_by_page(handle_t *handle,
 			to = map_end & (PAGE_SIZE - 1);
 
 retry:
-		folio = __filemap_get_folio(mapping, page_index,
-				FGP_LOCK | FGP_ACCESSED | FGP_CREAT, GFP_NOFS);
-		if (IS_ERR(folio)) {
-			ret = PTR_ERR(folio);
+		page = find_or_create_page(mapping, page_index, GFP_NOFS);
+		if (!page) {
+			ret = -ENOMEM;
 			mlog_errno(ret);
 			break;
 		}
@@ -2947,17 +2951,18 @@ retry:
 		 * page, so write it back.
 		 */
 		if (PAGE_SIZE <= OCFS2_SB(sb)->s_clustersize) {
-			if (folio_test_dirty(folio)) {
-				folio_unlock(folio);
-				folio_put(folio);
-
-				ret = filemap_write_and_wait_range(mapping,
-						offset, map_end - 1);
+			if (PageDirty(page)) {
+				/*
+				 * write_on_page will unlock the page on return
+				 */
+				ret = write_one_page(page);
 				goto retry;
 			}
 		}
 
-		if (!folio_test_uptodate(folio)) {
+		if (!PageUptodate(page)) {
+			struct folio *folio = page_folio(page);
+
 			ret = block_read_full_folio(folio, ocfs2_get_block);
 			if (ret) {
 				mlog_errno(ret);
@@ -2966,8 +2971,8 @@ retry:
 			folio_lock(folio);
 		}
 
-		if (folio_buffers(folio)) {
-			ret = walk_page_buffers(handle, folio_buffers(folio),
+		if (page_has_buffers(page)) {
+			ret = walk_page_buffers(handle, page_buffers(page),
 						from, to, &partial,
 						ocfs2_clear_cow_buffer);
 			if (ret) {
@@ -2976,12 +2981,14 @@ retry:
 			}
 		}
 
-		ocfs2_map_and_dirty_folio(inode, handle, from, to,
-				folio, 0, &new_block);
-		folio_mark_accessed(folio);
+		ocfs2_map_and_dirty_page(inode,
+					 handle, from, to,
+					 page, 0, &new_block);
+		mark_page_accessed(page);
 unlock:
-		folio_unlock(folio);
-		folio_put(folio);
+		unlock_page(page);
+		put_page(page);
+		page = NULL;
 		offset = map_end;
 		if (ret)
 			break;
@@ -3742,9 +3749,9 @@ static int ocfs2_change_ctime(struct inode *inode,
 		goto out_commit;
 	}
 
-	inode_set_ctime_current(inode);
-	di->i_ctime = cpu_to_le64(inode_get_ctime_sec(inode));
-	di->i_ctime_nsec = cpu_to_le32(inode_get_ctime_nsec(inode));
+	inode->i_ctime = current_time(inode);
+	di->i_ctime = cpu_to_le64(inode->i_ctime.tv_sec);
+	di->i_ctime_nsec = cpu_to_le32(inode->i_ctime.tv_nsec);
 
 	ocfs2_journal_dirty(handle, di_bh);
 
@@ -4065,12 +4072,12 @@ static int ocfs2_complete_reflink(struct inode *s_inode,
 		 * we want mtime to appear identical to the source and
 		 * update ctime.
 		 */
-		inode_set_ctime_current(t_inode);
+		t_inode->i_ctime = current_time(t_inode);
 
-		di->i_ctime = cpu_to_le64(inode_get_ctime_sec(t_inode));
-		di->i_ctime_nsec = cpu_to_le32(inode_get_ctime_nsec(t_inode));
+		di->i_ctime = cpu_to_le64(t_inode->i_ctime.tv_sec);
+		di->i_ctime_nsec = cpu_to_le32(t_inode->i_ctime.tv_nsec);
 
-		inode_set_mtime_to_ts(t_inode, inode_get_mtime(s_inode));
+		t_inode->i_mtime = s_inode->i_mtime;
 		di->i_mtime = s_di->i_mtime;
 		di->i_mtime_nsec = s_di->i_mtime_nsec;
 	}
@@ -4147,9 +4154,8 @@ static int __ocfs2_reflink(struct dentry *old_dentry,
 	int ret;
 	struct inode *inode = d_inode(old_dentry);
 	struct buffer_head *new_bh = NULL;
-	struct ocfs2_inode_info *oi = OCFS2_I(inode);
 
-	if (oi->ip_flags & OCFS2_INODE_SYSTEM_FILE) {
+	if (OCFS2_I(inode)->ip_flags & OCFS2_INODE_SYSTEM_FILE) {
 		ret = -EINVAL;
 		mlog_errno(ret);
 		goto out;
@@ -4175,26 +4181,6 @@ static int __ocfs2_reflink(struct dentry *old_dentry,
 		goto out_unlock;
 	}
 
-	if ((oi->ip_dyn_features & OCFS2_HAS_XATTR_FL) &&
-	    (oi->ip_dyn_features & OCFS2_INLINE_XATTR_FL)) {
-		/*
-		 * Adjust extent record count to reserve space for extended attribute.
-		 * Inline data count had been adjusted in ocfs2_duplicate_inline_data().
-		 */
-		struct ocfs2_inode_info *new_oi = OCFS2_I(new_inode);
-
-		if (!(new_oi->ip_dyn_features & OCFS2_INLINE_DATA_FL) &&
-		    !(ocfs2_inode_is_fast_symlink(new_inode))) {
-			struct ocfs2_dinode *new_di = (struct ocfs2_dinode *)new_bh->b_data;
-			struct ocfs2_dinode *old_di = (struct ocfs2_dinode *)old_bh->b_data;
-			struct ocfs2_extent_list *el = &new_di->id2.i_list;
-			int inline_size = le16_to_cpu(old_di->i_xattr_inline_size);
-
-			le16_add_cpu(&el->l_count, -(inline_size /
-					sizeof(struct ocfs2_extent_rec)));
-		}
-	}
-
 	ret = ocfs2_create_reflink_node(inode, old_bh,
 					new_inode, new_bh, preserve);
 	if (ret) {
@@ -4202,7 +4188,7 @@ static int __ocfs2_reflink(struct dentry *old_dentry,
 		goto inode_unlock;
 	}
 
-	if (oi->ip_dyn_features & OCFS2_HAS_XATTR_FL) {
+	if (OCFS2_I(inode)->ip_dyn_features & OCFS2_HAS_XATTR_FL) {
 		ret = ocfs2_reflink_xattrs(inode, old_bh,
 					   new_inode, new_bh,
 					   preserve);
@@ -4419,7 +4405,7 @@ int ocfs2_reflink_ioctl(struct inode *inode,
 		return error;
 	}
 
-	new_dentry = start_creating_user_path(AT_FDCWD, newname, &new_path, 0);
+	new_dentry = user_path_create(AT_FDCWD, newname, &new_path, 0);
 	error = PTR_ERR(new_dentry);
 	if (IS_ERR(new_dentry)) {
 		mlog_errno(error);
@@ -4436,7 +4422,7 @@ int ocfs2_reflink_ioctl(struct inode *inode,
 				  d_inode(new_path.dentry),
 				  new_dentry, preserve);
 out_dput:
-	end_creating_path(&new_path, new_dentry);
+	done_path_create(&new_path, new_dentry);
 out:
 	path_put(&old_path);
 
@@ -4469,7 +4455,7 @@ int ocfs2_reflink_update_dest(struct inode *dest,
 	if (newlen > i_size_read(dest))
 		i_size_write(dest, newlen);
 	spin_unlock(&OCFS2_I(dest)->ip_lock);
-	inode_set_mtime_to_ts(dest, inode_set_ctime_current(dest));
+	dest->i_ctime = dest->i_mtime = current_time(dest);
 
 	ret = ocfs2_mark_inode_dirty(handle, dest, d_bh);
 	if (ret) {

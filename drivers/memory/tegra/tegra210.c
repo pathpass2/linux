@@ -9,11 +9,11 @@
 
 static const struct tegra_mc_client tegra210_mc_clients[] = {
 	{
-		.id = TEGRA210_MC_PTCR,
+		.id = 0x00,
 		.name = "ptcr",
 		.swgroup = TEGRA_SWGROUP_PTC,
 	}, {
-		.id = TEGRA210_MC_DISPLAY0A,
+		.id = 0x01,
 		.name = "display0a",
 		.swgroup = TEGRA_SWGROUP_DC,
 		.regs = {
@@ -29,7 +29,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAY0AB,
+		.id = 0x02,
 		.name = "display0ab",
 		.swgroup = TEGRA_SWGROUP_DCB,
 		.regs = {
@@ -45,7 +45,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAY0B,
+		.id = 0x03,
 		.name = "display0b",
 		.swgroup = TEGRA_SWGROUP_DC,
 		.regs = {
@@ -61,7 +61,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAY0BB,
+		.id = 0x04,
 		.name = "display0bb",
 		.swgroup = TEGRA_SWGROUP_DCB,
 		.regs = {
@@ -77,7 +77,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAY0C,
+		.id = 0x05,
 		.name = "display0c",
 		.swgroup = TEGRA_SWGROUP_DC,
 		.regs = {
@@ -93,7 +93,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAY0CB,
+		.id = 0x06,
 		.name = "display0cb",
 		.swgroup = TEGRA_SWGROUP_DCB,
 		.regs = {
@@ -109,7 +109,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_AFIR,
+		.id = 0x0e,
 		.name = "afir",
 		.swgroup = TEGRA_SWGROUP_AFI,
 		.regs = {
@@ -125,7 +125,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_AVPCARM7R,
+		.id = 0x0f,
 		.name = "avpcarm7r",
 		.swgroup = TEGRA_SWGROUP_AVPC,
 		.regs = {
@@ -141,7 +141,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAYHC,
+		.id = 0x10,
 		.name = "displayhc",
 		.swgroup = TEGRA_SWGROUP_DC,
 		.regs = {
@@ -157,7 +157,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAYHCB,
+		.id = 0x11,
 		.name = "displayhcb",
 		.swgroup = TEGRA_SWGROUP_DCB,
 		.regs = {
@@ -173,7 +173,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_HDAR,
+		.id = 0x15,
 		.name = "hdar",
 		.swgroup = TEGRA_SWGROUP_HDA,
 		.regs = {
@@ -189,7 +189,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_HOST1XDMAR,
+		.id = 0x16,
 		.name = "host1xdmar",
 		.swgroup = TEGRA_SWGROUP_HC,
 		.regs = {
@@ -205,7 +205,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_HOST1XR,
+		.id = 0x17,
 		.name = "host1xr",
 		.swgroup = TEGRA_SWGROUP_HC,
 		.regs = {
@@ -221,7 +221,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_NVENCSRD,
+		.id = 0x1c,
 		.name = "nvencsrd",
 		.swgroup = TEGRA_SWGROUP_NVENC,
 		.regs = {
@@ -237,7 +237,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_PPCSAHBDMAR,
+		.id = 0x1d,
 		.name = "ppcsahbdmar",
 		.swgroup = TEGRA_SWGROUP_PPCS,
 		.regs = {
@@ -253,7 +253,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_PPCSAHBSLVR,
+		.id = 0x1e,
 		.name = "ppcsahbslvr",
 		.swgroup = TEGRA_SWGROUP_PPCS,
 		.regs = {
@@ -269,7 +269,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SATAR,
+		.id = 0x1f,
 		.name = "satar",
 		.swgroup = TEGRA_SWGROUP_SATA,
 		.regs = {
@@ -285,7 +285,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_MPCORER,
+		.id = 0x27,
 		.name = "mpcorer",
 		.swgroup = TEGRA_SWGROUP_MPCORE,
 		.regs = {
@@ -297,7 +297,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_NVENCSWR,
+		.id = 0x2b,
 		.name = "nvencswr",
 		.swgroup = TEGRA_SWGROUP_NVENC,
 		.regs = {
@@ -313,7 +313,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_AFIW,
+		.id = 0x31,
 		.name = "afiw",
 		.swgroup = TEGRA_SWGROUP_AFI,
 		.regs = {
@@ -329,7 +329,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_AVPCARM7W,
+		.id = 0x32,
 		.name = "avpcarm7w",
 		.swgroup = TEGRA_SWGROUP_AVPC,
 		.regs = {
@@ -345,7 +345,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_HDAW,
+		.id = 0x35,
 		.name = "hdaw",
 		.swgroup = TEGRA_SWGROUP_HDA,
 		.regs = {
@@ -361,7 +361,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_HOST1XW,
+		.id = 0x36,
 		.name = "host1xw",
 		.swgroup = TEGRA_SWGROUP_HC,
 		.regs = {
@@ -377,7 +377,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_MPCOREW,
+		.id = 0x39,
 		.name = "mpcorew",
 		.swgroup = TEGRA_SWGROUP_MPCORE,
 		.regs = {
@@ -389,7 +389,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_PPCSAHBDMAW,
+		.id = 0x3b,
 		.name = "ppcsahbdmaw",
 		.swgroup = TEGRA_SWGROUP_PPCS,
 		.regs = {
@@ -405,7 +405,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_PPCSAHBSLVW,
+		.id = 0x3c,
 		.name = "ppcsahbslvw",
 		.swgroup = TEGRA_SWGROUP_PPCS,
 		.regs = {
@@ -421,7 +421,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SATAW,
+		.id = 0x3d,
 		.name = "sataw",
 		.swgroup = TEGRA_SWGROUP_SATA,
 		.regs = {
@@ -437,7 +437,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ISPRA,
+		.id = 0x44,
 		.name = "ispra",
 		.swgroup = TEGRA_SWGROUP_ISP2,
 		.regs = {
@@ -453,7 +453,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ISPWA,
+		.id = 0x46,
 		.name = "ispwa",
 		.swgroup = TEGRA_SWGROUP_ISP2,
 		.regs = {
@@ -469,7 +469,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ISPWB,
+		.id = 0x47,
 		.name = "ispwb",
 		.swgroup = TEGRA_SWGROUP_ISP2,
 		.regs = {
@@ -485,7 +485,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_XUSB_HOSTR,
+		.id = 0x4a,
 		.name = "xusb_hostr",
 		.swgroup = TEGRA_SWGROUP_XUSB_HOST,
 		.regs = {
@@ -501,7 +501,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_XUSB_HOSTW,
+		.id = 0x4b,
 		.name = "xusb_hostw",
 		.swgroup = TEGRA_SWGROUP_XUSB_HOST,
 		.regs = {
@@ -517,7 +517,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_XUSB_DEVR,
+		.id = 0x4c,
 		.name = "xusb_devr",
 		.swgroup = TEGRA_SWGROUP_XUSB_DEV,
 		.regs = {
@@ -533,7 +533,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_XUSB_DEVW,
+		.id = 0x4d,
 		.name = "xusb_devw",
 		.swgroup = TEGRA_SWGROUP_XUSB_DEV,
 		.regs = {
@@ -549,7 +549,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ISPRAB,
+		.id = 0x4e,
 		.name = "isprab",
 		.swgroup = TEGRA_SWGROUP_ISP2B,
 		.regs = {
@@ -565,7 +565,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ISPWAB,
+		.id = 0x50,
 		.name = "ispwab",
 		.swgroup = TEGRA_SWGROUP_ISP2B,
 		.regs = {
@@ -581,7 +581,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ISPWBB,
+		.id = 0x51,
 		.name = "ispwbb",
 		.swgroup = TEGRA_SWGROUP_ISP2B,
 		.regs = {
@@ -597,7 +597,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_TSECSRD,
+		.id = 0x54,
 		.name = "tsecsrd",
 		.swgroup = TEGRA_SWGROUP_TSEC,
 		.regs = {
@@ -613,7 +613,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_TSECSWR,
+		.id = 0x55,
 		.name = "tsecswr",
 		.swgroup = TEGRA_SWGROUP_TSEC,
 		.regs = {
@@ -629,7 +629,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_A9AVPSCR,
+		.id = 0x56,
 		.name = "a9avpscr",
 		.swgroup = TEGRA_SWGROUP_A9AVP,
 		.regs = {
@@ -645,7 +645,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_A9AVPSCW,
+		.id = 0x57,
 		.name = "a9avpscw",
 		.swgroup = TEGRA_SWGROUP_A9AVP,
 		.regs = {
@@ -661,7 +661,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_GPUSRD,
+		.id = 0x58,
 		.name = "gpusrd",
 		.swgroup = TEGRA_SWGROUP_GPU,
 		.regs = {
@@ -678,7 +678,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_GPUSWR,
+		.id = 0x59,
 		.name = "gpuswr",
 		.swgroup = TEGRA_SWGROUP_GPU,
 		.regs = {
@@ -695,7 +695,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAYT,
+		.id = 0x5a,
 		.name = "displayt",
 		.swgroup = TEGRA_SWGROUP_DC,
 		.regs = {
@@ -711,7 +711,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCRA,
+		.id = 0x60,
 		.name = "sdmmcra",
 		.swgroup = TEGRA_SWGROUP_SDMMC1A,
 		.regs = {
@@ -727,7 +727,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCRAA,
+		.id = 0x61,
 		.name = "sdmmcraa",
 		.swgroup = TEGRA_SWGROUP_SDMMC2A,
 		.regs = {
@@ -743,7 +743,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCR,
+		.id = 0x62,
 		.name = "sdmmcr",
 		.swgroup = TEGRA_SWGROUP_SDMMC3A,
 		.regs = {
@@ -759,7 +759,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCRAB,
+		.id = 0x63,
 		.swgroup = TEGRA_SWGROUP_SDMMC4A,
 		.name = "sdmmcrab",
 		.regs = {
@@ -775,7 +775,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCWA,
+		.id = 0x64,
 		.name = "sdmmcwa",
 		.swgroup = TEGRA_SWGROUP_SDMMC1A,
 		.regs = {
@@ -791,7 +791,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCWAA,
+		.id = 0x65,
 		.name = "sdmmcwaa",
 		.swgroup = TEGRA_SWGROUP_SDMMC2A,
 		.regs = {
@@ -807,7 +807,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCW,
+		.id = 0x66,
 		.name = "sdmmcw",
 		.swgroup = TEGRA_SWGROUP_SDMMC3A,
 		.regs = {
@@ -823,7 +823,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SDMMCWAB,
+		.id = 0x67,
 		.name = "sdmmcwab",
 		.swgroup = TEGRA_SWGROUP_SDMMC4A,
 		.regs = {
@@ -839,7 +839,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_VICSRD,
+		.id = 0x6c,
 		.name = "vicsrd",
 		.swgroup = TEGRA_SWGROUP_VIC,
 		.regs = {
@@ -855,7 +855,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_VICSWR,
+		.id = 0x6d,
 		.name = "vicswr",
 		.swgroup = TEGRA_SWGROUP_VIC,
 		.regs = {
@@ -871,7 +871,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_VIW,
+		.id = 0x72,
 		.name = "viw",
 		.swgroup = TEGRA_SWGROUP_VI,
 		.regs = {
@@ -887,7 +887,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_DISPLAYD,
+		.id = 0x73,
 		.name = "displayd",
 		.swgroup = TEGRA_SWGROUP_DC,
 		.regs = {
@@ -903,7 +903,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_NVDECSRD,
+		.id = 0x78,
 		.name = "nvdecsrd",
 		.swgroup = TEGRA_SWGROUP_NVDEC,
 		.regs = {
@@ -919,7 +919,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_NVDECSWR,
+		.id = 0x79,
 		.name = "nvdecswr",
 		.swgroup = TEGRA_SWGROUP_NVDEC,
 		.regs = {
@@ -935,7 +935,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_APER,
+		.id = 0x7a,
 		.name = "aper",
 		.swgroup = TEGRA_SWGROUP_APE,
 		.regs = {
@@ -951,7 +951,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_APEW,
+		.id = 0x7b,
 		.name = "apew",
 		.swgroup = TEGRA_SWGROUP_APE,
 		.regs = {
@@ -967,7 +967,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_NVJPGRD,
+		.id = 0x7e,
 		.name = "nvjpgsrd",
 		.swgroup = TEGRA_SWGROUP_NVJPG,
 		.regs = {
@@ -983,7 +983,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_NVJPGWR,
+		.id = 0x7f,
 		.name = "nvjpgswr",
 		.swgroup = TEGRA_SWGROUP_NVJPG,
 		.regs = {
@@ -999,7 +999,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SESRD,
+		.id = 0x80,
 		.name = "sesrd",
 		.swgroup = TEGRA_SWGROUP_SE,
 		.regs = {
@@ -1015,7 +1015,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_SESWR,
+		.id = 0x81,
 		.name = "seswr",
 		.swgroup = TEGRA_SWGROUP_SE,
 		.regs = {
@@ -1031,7 +1031,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_AXIAPR,
+		.id = 0x82,
 		.name = "axiapr",
 		.swgroup = TEGRA_SWGROUP_AXIAP,
 		.regs = {
@@ -1047,7 +1047,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_AXIAPW,
+		.id = 0x83,
 		.name = "axiapw",
 		.swgroup = TEGRA_SWGROUP_AXIAP,
 		.regs = {
@@ -1063,7 +1063,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ETRR,
+		.id = 0x84,
 		.name = "etrr",
 		.swgroup = TEGRA_SWGROUP_ETR,
 		.regs = {
@@ -1079,7 +1079,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_ETRW,
+		.id = 0x85,
 		.name = "etrw",
 		.swgroup = TEGRA_SWGROUP_ETR,
 		.regs = {
@@ -1095,7 +1095,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_TSECSRDB,
+		.id = 0x86,
 		.name = "tsecsrdb",
 		.swgroup = TEGRA_SWGROUP_TSECB,
 		.regs = {
@@ -1111,7 +1111,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_TSECSWRB,
+		.id = 0x87,
 		.name = "tsecswrb",
 		.swgroup = TEGRA_SWGROUP_TSECB,
 		.regs = {
@@ -1127,7 +1127,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_GPUSRD2,
+		.id = 0x88,
 		.name = "gpusrd2",
 		.swgroup = TEGRA_SWGROUP_GPU,
 		.regs = {
@@ -1144,7 +1144,7 @@ static const struct tegra_mc_client tegra210_mc_clients[] = {
 			},
 		},
 	}, {
-		.id = TEGRA210_MC_GPUSWR2,
+		.id = 0x89,
 		.name = "gpuswr2",
 		.swgroup = TEGRA_SWGROUP_GPU,
 		.regs = {

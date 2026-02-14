@@ -293,6 +293,11 @@ struct acpi_pci_root *acpi_pci_find_root(acpi_handle handle)
 }
 EXPORT_SYMBOL_GPL(acpi_pci_find_root);
 
+struct acpi_handle_node {
+	struct list_head node;
+	acpi_handle handle;
+};
+
 /**
  * acpi_get_pci_dev - convert ACPI CA handle to struct pci_dev
  * @handle: the handle in question
@@ -689,8 +694,8 @@ static int acpi_pci_root_add(struct acpi_device *device,
 
 	root->device = device;
 	root->segment = segment & 0xFFFF;
-	strscpy(acpi_device_name(device), ACPI_PCI_ROOT_DEVICE_NAME);
-	strscpy(acpi_device_class(device), ACPI_PCI_ROOT_CLASS);
+	strcpy(acpi_device_name(device), ACPI_PCI_ROOT_DEVICE_NAME);
+	strcpy(acpi_device_class(device), ACPI_PCI_ROOT_CLASS);
 	device->driver_data = root;
 
 	if (hotadd && dmar_device_add(handle)) {
@@ -738,7 +743,7 @@ static int acpi_pci_root_add(struct acpi_device *device,
 	if (no_aspm)
 		pcie_no_aspm();
 
-	pci_acpi_add_root_pm_notifier(device, root);
+	pci_acpi_add_bus_pm_notifier(device);
 	device_set_wakeup_capable(root->bus->bridge, device->wakeup.flags.valid);
 
 	if (hotadd) {
@@ -858,7 +863,7 @@ next:
 	}
 }
 
-static void acpi_pci_root_remap_iospace(const struct fwnode_handle *fwnode,
+static void acpi_pci_root_remap_iospace(struct fwnode_handle *fwnode,
 			struct resource_entry *entry)
 {
 #ifdef PCI_IOBASE
@@ -1003,6 +1008,7 @@ struct pci_bus *acpi_pci_root_create(struct acpi_pci_root *root,
 	int node = acpi_get_node(device->handle);
 	struct pci_bus *bus;
 	struct pci_host_bridge *host_bridge;
+	union acpi_object *obj;
 
 	info->root = root;
 	info->bridge = device;
@@ -1043,6 +1049,17 @@ struct pci_bus *acpi_pci_root_create(struct acpi_pci_root *root,
 
 	if (!(root->osc_ext_control_set & OSC_CXL_ERROR_REPORTING_CONTROL))
 		host_bridge->native_cxl_error = 0;
+
+	/*
+	 * Evaluate the "PCI Boot Configuration" _DSM Function.  If it
+	 * exists and returns 0, we must preserve any PCI resource
+	 * assignments made by firmware for this host bridge.
+	 */
+	obj = acpi_evaluate_dsm(ACPI_HANDLE(bus->bridge), &pci_acpi_dsm_guid, 1,
+				DSM_PCI_PRESERVE_BOOT_CONFIG, NULL);
+	if (obj && obj->type == ACPI_TYPE_INTEGER && obj->integer.value == 0)
+		host_bridge->preserve_config = 1;
+	ACPI_FREE(obj);
 
 	acpi_dev_power_up_children_with_adr(device);
 

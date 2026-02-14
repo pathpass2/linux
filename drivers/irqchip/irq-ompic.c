@@ -84,8 +84,6 @@ DEFINE_PER_CPU(unsigned long, ops);
 
 static void __iomem *ompic_base;
 
-static DEFINE_PER_CPU_READ_MOSTLY(int, ipi_dummy_dev);
-
 static inline u32 ompic_readreg(void __iomem *base, loff_t offset)
 {
 	return ioread32be(base + offset);
@@ -185,17 +183,12 @@ static int __init ompic_of_init(struct device_node *node,
 		goto out_unmap;
 	}
 
-	irq_set_percpu_devid(irq);
-	ret = request_percpu_irq(irq, ompic_ipi_handler, "ompic_ipi",
-				 &ipi_dummy_dev);
-
-	if (ret) {
-		pr_err("ompic: failed to request irq %d, error: %d",
-		       irq, ret);
+	ret = request_irq(irq, ompic_ipi_handler, IRQF_PERCPU,
+				"ompic_ipi", NULL);
+	if (ret)
 		goto out_irq_disp;
-	}
 
-	set_smp_cross_call(ompic_raise_softirq, irq);
+	set_smp_cross_call(ompic_raise_softirq);
 
 	return 0;
 

@@ -28,6 +28,8 @@ struct tpd12s015_device {
 	struct gpio_desc *ls_oe_gpio;
 	struct gpio_desc *hpd_gpio;
 	int hpd_irq;
+
+	struct drm_bridge *next_bridge;
 };
 
 static inline struct tpd12s015_device *to_tpd12s015(struct drm_bridge *bridge)
@@ -36,7 +38,6 @@ static inline struct tpd12s015_device *to_tpd12s015(struct drm_bridge *bridge)
 }
 
 static int tpd12s015_attach(struct drm_bridge *bridge,
-			    struct drm_encoder *encoder,
 			    enum drm_bridge_attach_flags flags)
 {
 	struct tpd12s015_device *tpd = to_tpd12s015(bridge);
@@ -45,7 +46,7 @@ static int tpd12s015_attach(struct drm_bridge *bridge,
 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR))
 		return -EINVAL;
 
-	ret = drm_bridge_attach(encoder, tpd->bridge.next_bridge,
+	ret = drm_bridge_attach(bridge->encoder, tpd->next_bridge,
 				bridge, flags);
 	if (ret < 0)
 		return ret;
@@ -75,12 +76,6 @@ static enum drm_connector_status tpd12s015_detect(struct drm_bridge *bridge)
 		return connector_status_disconnected;
 }
 
-static enum drm_connector_status
-tpd12s015_bridge_detect(struct drm_bridge *bridge, struct drm_connector *connector)
-{
-	return tpd12s015_detect(bridge);
-}
-
 static void tpd12s015_hpd_enable(struct drm_bridge *bridge)
 {
 	struct tpd12s015_device *tpd = to_tpd12s015(bridge);
@@ -98,7 +93,7 @@ static void tpd12s015_hpd_disable(struct drm_bridge *bridge)
 static const struct drm_bridge_funcs tpd12s015_bridge_funcs = {
 	.attach			= tpd12s015_attach,
 	.detach			= tpd12s015_detach,
-	.detect			= tpd12s015_bridge_detect,
+	.detect			= tpd12s015_detect,
 	.hpd_enable		= tpd12s015_hpd_enable,
 	.hpd_disable		= tpd12s015_hpd_disable,
 };
@@ -120,13 +115,13 @@ static int tpd12s015_probe(struct platform_device *pdev)
 	struct gpio_desc *gpio;
 	int ret;
 
-	tpd = devm_drm_bridge_alloc(&pdev->dev, struct tpd12s015_device,
-				    bridge, &tpd12s015_bridge_funcs);
-	if (IS_ERR(tpd))
-		return PTR_ERR(tpd);
+	tpd = devm_kzalloc(&pdev->dev, sizeof(*tpd), GFP_KERNEL);
+	if (!tpd)
+		return -ENOMEM;
 
 	platform_set_drvdata(pdev, tpd);
 
+	tpd->bridge.funcs = &tpd12s015_bridge_funcs;
 	tpd->bridge.of_node = pdev->dev.of_node;
 	tpd->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
 	tpd->bridge.ops = DRM_BRIDGE_OP_DETECT;
@@ -136,10 +131,10 @@ static int tpd12s015_probe(struct platform_device *pdev)
 	if (!node)
 		return -ENODEV;
 
-	tpd->bridge.next_bridge = of_drm_find_and_get_bridge(node);
+	tpd->next_bridge = of_drm_find_bridge(node);
 	of_node_put(node);
 
-	if (!tpd->bridge.next_bridge)
+	if (!tpd->next_bridge)
 		return -EPROBE_DEFER;
 
 	/* Get the control and HPD GPIOs. */
@@ -184,11 +179,13 @@ static int tpd12s015_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void tpd12s015_remove(struct platform_device *pdev)
+static int __exit tpd12s015_remove(struct platform_device *pdev)
 {
 	struct tpd12s015_device *tpd = platform_get_drvdata(pdev);
 
 	drm_bridge_remove(&tpd->bridge);
+
+	return 0;
 }
 
 static const struct of_device_id tpd12s015_of_match[] = {
@@ -200,7 +197,7 @@ MODULE_DEVICE_TABLE(of, tpd12s015_of_match);
 
 static struct platform_driver tpd12s015_driver = {
 	.probe	= tpd12s015_probe,
-	.remove = tpd12s015_remove,
+	.remove	= __exit_p(tpd12s015_remove),
 	.driver	= {
 		.name	= "tpd12s015",
 		.of_match_table = tpd12s015_of_match,

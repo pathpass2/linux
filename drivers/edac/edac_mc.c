@@ -166,7 +166,6 @@ const char * const edac_mem_types[] = {
 	[MEM_NVDIMM]	= "Non-volatile-RAM",
 	[MEM_WIO2]	= "Wide-IO-2",
 	[MEM_HBM2]	= "High-bandwidth-memory-Gen2",
-	[MEM_HBM3]	= "High-bandwidth-memory-Gen3",
 };
 EXPORT_SYMBOL_GPL(edac_mem_types);
 
@@ -214,7 +213,7 @@ static int edac_mc_alloc_csrows(struct mem_ctl_info *mci)
 	unsigned int row, chn;
 
 	/*
-	 * Allocate and fill the csrow/channels structs
+	 * Alocate and fill the csrow/channels structs
 	 */
 	mci->csrows = kcalloc(tot_csrows, sizeof(*mci->csrows), GFP_KERNEL);
 	if (!mci->csrows)

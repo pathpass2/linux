@@ -2,7 +2,7 @@
 /*
  * Broadcom GENET (Gigabit Ethernet) Wake-on-LAN support
  *
- * Copyright (c) 2014-2025 Broadcom
+ * Copyright (c) 2014-2020 Broadcom
  */
 
 #define pr_fmt(fmt)				"bcmgenet_wol: " fmt
@@ -41,27 +41,17 @@ void bcmgenet_get_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
 	struct device *kdev = &priv->pdev->dev;
-	u32 phy_wolopts = 0;
 
-	if (dev->phydev) {
-		phy_ethtool_get_wol(dev->phydev, wol);
-		phy_wolopts = wol->wolopts;
+	if (!device_can_wakeup(kdev)) {
+		wol->supported = 0;
+		wol->wolopts = 0;
+		return;
 	}
 
-	/* MAC is not wake-up capable, return what the PHY does */
-	if (!device_can_wakeup(kdev))
-		return;
-
-	/* Overlay MAC capabilities with that of the PHY queried before */
-	wol->supported |= WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER;
-	wol->wolopts |= priv->wolopts;
-
-	/* Return the PHY configured magic password */
-	if (phy_wolopts & WAKE_MAGICSECURE)
-		return;
-
-	/* Otherwise the MAC one */
+	wol->supported = WAKE_MAGIC | WAKE_MAGICSECURE | WAKE_FILTER;
+	wol->wolopts = priv->wolopts;
 	memset(wol->sopass, 0, sizeof(wol->sopass));
+
 	if (wol->wolopts & WAKE_MAGICSECURE)
 		memcpy(wol->sopass, priv->sopass, sizeof(priv->sopass));
 }
@@ -73,14 +63,6 @@ int bcmgenet_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 {
 	struct bcmgenet_priv *priv = netdev_priv(dev);
 	struct device *kdev = &priv->pdev->dev;
-	int ret;
-
-	/* Try Wake-on-LAN from the PHY first */
-	if (dev->phydev) {
-		ret = phy_ethtool_set_wol(dev->phydev, wol);
-		if (ret != -EOPNOTSUPP && wol->wolopts)
-			return ret;
-	}
 
 	if (!device_can_wakeup(kdev))
 		return -ENOTSUPP;
@@ -145,13 +127,24 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 				enum bcmgenet_power_mode mode)
 {
 	struct net_device *dev = priv->dev;
-	u32 reg, hfb_ctrl_reg;
+	struct bcmgenet_rxnfc_rule *rule;
+	u32 reg, hfb_ctrl_reg, hfb_enable = 0;
 	int retries = 0;
 
 	if (mode != GENET_POWER_WOL_MAGIC) {
 		netif_err(priv, wol, dev, "unsupported mode: %d\n", mode);
 		return -EINVAL;
 	}
+
+	/* Can't suspend with WoL if MAC is still in reset */
+	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
+	if (reg & CMD_SW_RESET)
+		reg &= ~CMD_SW_RESET;
+
+	/* disable RX */
+	reg &= ~CMD_RX_EN;
+	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
+	mdelay(10);
 
 	if (priv->wolopts & (WAKE_MAGIC | WAKE_MAGICSECURE)) {
 		reg = bcmgenet_umac_readl(priv, UMAC_MPD_CTRL);
@@ -164,8 +157,13 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 	}
 
 	hfb_ctrl_reg = bcmgenet_hfb_reg_readl(priv, HFB_CTRL);
-	reg = hfb_ctrl_reg | RBUF_ACPI_EN;
-	bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
+	if (priv->wolopts & WAKE_FILTER) {
+		list_for_each_entry(rule, &priv->rxnfc_list, list)
+			if (rule->fs.ring_cookie == RX_CLS_FLOW_WAKE)
+				hfb_enable |= (1 << rule->fs.location);
+		reg = (hfb_ctrl_reg & ~RBUF_HFB_EN) | RBUF_ACPI_EN;
+		bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
+	}
 
 	/* Do not leave UniMAC in MPD mode only */
 	retries = bcmgenet_poll_wol_status(priv);
@@ -180,30 +178,27 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 	netif_dbg(priv, wol, dev, "MPD WOL-ready status set after %d msec\n",
 		  retries);
 
-	/* Disable phy status updates while suspending */
-	mutex_lock(&dev->phydev->lock);
-	dev->phydev->state = PHY_READY;
-	mutex_unlock(&dev->phydev->lock);
-
 	clk_prepare_enable(priv->clk_wol);
+	priv->wol_active = 1;
+
+	if (hfb_enable) {
+		bcmgenet_hfb_reg_writel(priv, hfb_enable,
+					HFB_FLT_ENABLE_V3PLUS + 4);
+		hfb_ctrl_reg = RBUF_HFB_EN | RBUF_ACPI_EN;
+		bcmgenet_hfb_reg_writel(priv, hfb_ctrl_reg, HFB_CTRL);
+	}
 
 	/* Enable CRC forward */
-	spin_lock_bh(&priv->reg_lock);
 	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
 	priv->crc_fwd_en = 1;
 	reg |= CMD_CRC_FWD;
 
-	/* Can't suspend with WoL if MAC is still in reset */
-	if (reg & CMD_SW_RESET)
-		reg &= ~CMD_SW_RESET;
-
 	/* Receiver must be enabled for WOL MP detection */
 	reg |= CMD_RX_EN;
 	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
-	spin_unlock_bh(&priv->reg_lock);
 
 	reg = UMAC_IRQ_MPD_R;
-	if (hfb_ctrl_reg & RBUF_HFB_EN)
+	if (hfb_enable)
 		reg |=  UMAC_IRQ_HFB_SM | UMAC_IRQ_HFB_MM;
 
 	bcmgenet_intrl2_0_writel(priv, reg, INTRL2_CPU_MASK_CLEAR);
@@ -211,57 +206,43 @@ int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
 	return 0;
 }
 
-int bcmgenet_wol_power_up_cfg(struct bcmgenet_priv *priv,
-			      enum bcmgenet_power_mode mode)
+void bcmgenet_wol_power_up_cfg(struct bcmgenet_priv *priv,
+			       enum bcmgenet_power_mode mode)
 {
-	struct net_device *dev = priv->dev;
 	u32 reg;
 
 	if (mode != GENET_POWER_WOL_MAGIC) {
 		netif_err(priv, wol, priv->dev, "invalid mode: %d\n", mode);
-		return -EINVAL;
+		return;
 	}
 
+	if (!priv->wol_active)
+		return;	/* failed to suspend so skip the rest */
+
+	priv->wol_active = 0;
 	clk_disable_unprepare(priv->clk_wol);
 	priv->crc_fwd_en = 0;
-
-	bcmgenet_intrl2_0_writel(priv, UMAC_IRQ_WAKE_EVENT,
-				 INTRL2_CPU_MASK_SET);
-	if (bcmgenet_has_mdio_intr(priv))
-		bcmgenet_intrl2_0_writel(priv,
-					 UMAC_IRQ_MDIO_EVENT,
-					 INTRL2_CPU_MASK_CLEAR);
 
 	/* Disable Magic Packet Detection */
 	if (priv->wolopts & (WAKE_MAGIC | WAKE_MAGICSECURE)) {
 		reg = bcmgenet_umac_readl(priv, UMAC_MPD_CTRL);
 		if (!(reg & MPD_EN))
-			return -EPERM;	/* already reset so skip the rest */
+			return;	/* already reset so skip the rest */
 		reg &= ~(MPD_EN | MPD_PW_EN);
 		bcmgenet_umac_writel(priv, reg, UMAC_MPD_CTRL);
 	}
 
-	/* Disable ACPI mode */
-	reg = bcmgenet_hfb_reg_readl(priv, HFB_CTRL);
-	if (!(reg & RBUF_ACPI_EN))
-		return -EPERM;	/* already reset so skip the rest */
-	reg &= ~RBUF_ACPI_EN;
-	bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
+	/* Disable WAKE_FILTER Detection */
+	if (priv->wolopts & WAKE_FILTER) {
+		reg = bcmgenet_hfb_reg_readl(priv, HFB_CTRL);
+		if (!(reg & RBUF_ACPI_EN))
+			return;	/* already reset so skip the rest */
+		reg &= ~(RBUF_HFB_EN | RBUF_ACPI_EN);
+		bcmgenet_hfb_reg_writel(priv, reg, HFB_CTRL);
+	}
 
 	/* Disable CRC Forward */
-	spin_lock_bh(&priv->reg_lock);
 	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
 	reg &= ~CMD_CRC_FWD;
 	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
-	spin_unlock_bh(&priv->reg_lock);
-
-	/* Resume link status tracking */
-	mutex_lock(&dev->phydev->lock);
-	if (dev->phydev->link)
-		dev->phydev->state = PHY_RUNNING;
-	else
-		dev->phydev->state = PHY_NOLINK;
-	mutex_unlock(&dev->phydev->lock);
-
-	return 0;
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright(c) 2022 Intel Corporation. All rights reserved. */
 #include <linux/libnvdimm.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/module.h>
 #include <linux/async.h>
 #include <linux/slab.h>
@@ -14,8 +14,7 @@ static unsigned long cxl_pmem_get_security_flags(struct nvdimm *nvdimm,
 {
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
-	struct cxl_mailbox *cxl_mbox = &cxlmd->cxlds->cxl_mbox;
-	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
 	unsigned long security_flags = 0;
 	struct cxl_get_security_output {
 		__le32 flags;
@@ -30,14 +29,11 @@ static unsigned long cxl_pmem_get_security_flags(struct nvdimm *nvdimm,
 		.payload_out = &out,
 	};
 
-	rc = cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+	rc = cxl_internal_send_cmd(cxlds, &mbox_cmd);
 	if (rc < 0)
 		return 0;
 
 	sec_out = le32_to_cpu(out.flags);
-	/* cache security state */
-	mds->security.state = sec_out;
-
 	if (ptype == NVDIMM_MASTER) {
 		if (sec_out & CXL_PMEM_SEC_STATE_MASTER_PASS_SET)
 			set_bit(NVDIMM_SECURITY_UNLOCKED, &security_flags);
@@ -71,7 +67,7 @@ static int cxl_pmem_security_change_key(struct nvdimm *nvdimm,
 {
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
-	struct cxl_mailbox *cxl_mbox = &cxlmd->cxlds->cxl_mbox;
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
 	struct cxl_mbox_cmd mbox_cmd;
 	struct cxl_set_pass set_pass;
 
@@ -88,7 +84,7 @@ static int cxl_pmem_security_change_key(struct nvdimm *nvdimm,
 		.payload_in = &set_pass,
 	};
 
-	return cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+	return cxl_internal_send_cmd(cxlds, &mbox_cmd);
 }
 
 static int __cxl_pmem_security_disable(struct nvdimm *nvdimm,
@@ -97,7 +93,7 @@ static int __cxl_pmem_security_disable(struct nvdimm *nvdimm,
 {
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
-	struct cxl_mailbox *cxl_mbox = &cxlmd->cxlds->cxl_mbox;
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
 	struct cxl_disable_pass dis_pass;
 	struct cxl_mbox_cmd mbox_cmd;
 
@@ -113,7 +109,7 @@ static int __cxl_pmem_security_disable(struct nvdimm *nvdimm,
 		.payload_in = &dis_pass,
 	};
 
-	return cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+	return cxl_internal_send_cmd(cxlds, &mbox_cmd);
 }
 
 static int cxl_pmem_security_disable(struct nvdimm *nvdimm,
@@ -132,12 +128,12 @@ static int cxl_pmem_security_freeze(struct nvdimm *nvdimm)
 {
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
-	struct cxl_mailbox *cxl_mbox = &cxlmd->cxlds->cxl_mbox;
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
 	struct cxl_mbox_cmd mbox_cmd = {
 		.opcode = CXL_MBOX_OP_FREEZE_SECURITY,
 	};
 
-	return cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+	return cxl_internal_send_cmd(cxlds, &mbox_cmd);
 }
 
 static int cxl_pmem_security_unlock(struct nvdimm *nvdimm,
@@ -145,7 +141,7 @@ static int cxl_pmem_security_unlock(struct nvdimm *nvdimm,
 {
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
-	struct cxl_mailbox *cxl_mbox = &cxlmd->cxlds->cxl_mbox;
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
 	u8 pass[NVDIMM_PASSPHRASE_LEN];
 	struct cxl_mbox_cmd mbox_cmd;
 	int rc;
@@ -157,7 +153,7 @@ static int cxl_pmem_security_unlock(struct nvdimm *nvdimm,
 		.payload_in = pass,
 	};
 
-	rc = cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+	rc = cxl_internal_send_cmd(cxlds, &mbox_cmd);
 	if (rc < 0)
 		return rc;
 
@@ -170,7 +166,7 @@ static int cxl_pmem_security_passphrase_erase(struct nvdimm *nvdimm,
 {
 	struct cxl_nvdimm *cxl_nvd = nvdimm_provider_data(nvdimm);
 	struct cxl_memdev *cxlmd = cxl_nvd->cxlmd;
-	struct cxl_mailbox *cxl_mbox = &cxlmd->cxlds->cxl_mbox;
+	struct cxl_dev_state *cxlds = cxlmd->cxlds;
 	struct cxl_mbox_cmd mbox_cmd;
 	struct cxl_pass_erase erase;
 	int rc;
@@ -186,7 +182,7 @@ static int cxl_pmem_security_passphrase_erase(struct nvdimm *nvdimm,
 		.payload_in = &erase,
 	};
 
-	rc = cxl_internal_send_cmd(cxl_mbox, &mbox_cmd);
+	rc = cxl_internal_send_cmd(cxlds, &mbox_cmd);
 	if (rc < 0)
 		return rc;
 

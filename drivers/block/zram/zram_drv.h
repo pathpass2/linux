@@ -17,6 +17,7 @@
 
 #include <linux/rwsem.h>
 #include <linux/zsmalloc.h>
+#include <linux/crypto.h>
 
 #include "zcomp.h"
 
@@ -26,6 +27,7 @@
 #define ZRAM_LOGICAL_BLOCK_SIZE	(1 << ZRAM_LOGICAL_BLOCK_SHIFT)
 #define ZRAM_SECTOR_PER_LOGICAL_BLOCK	\
 	(1 << (ZRAM_LOGICAL_BLOCK_SHIFT - SECTOR_SHIFT))
+
 
 /*
  * ZRAM is mainly used for memory efficiency so we want to keep memory
@@ -43,10 +45,11 @@
 
 /* Flags for zram pages (table[page_no].flags) */
 enum zram_pageflags {
-	ZRAM_SAME = ZRAM_FLAG_SHIFT,	/* Page consists the same element */
-	ZRAM_ENTRY_LOCK, /* entry access lock bit */
+	/* zram slot is locked */
+	ZRAM_LOCK = ZRAM_FLAG_SHIFT,
+	ZRAM_SAME,	/* Page consists the same element */
 	ZRAM_WB,	/* page is stored on backing_device */
-	ZRAM_PP_SLOT,	/* Selected for post-processing */
+	ZRAM_UNDER_WB,	/* page is under writeback */
 	ZRAM_HUGE,	/* Incompressible page */
 	ZRAM_IDLE,	/* not accessed page since last idle marking */
 	ZRAM_INCOMPRESSIBLE, /* none of the algorithms could compress it */
@@ -57,36 +60,32 @@ enum zram_pageflags {
 	__NR_ZRAM_PAGEFLAGS,
 };
 
-/*
- * Allocated for each disk page.  We use bit-lock (ZRAM_ENTRY_LOCK bit
- * of flags) to save memory.  There can be plenty of entries and standard
- * locking primitives (e.g. mutex) will significantly increase sizeof()
- * of each entry and hence of the meta table.
- */
+/*-- Data structures */
+
+/* Allocated for each disk page */
 struct zram_table_entry {
-	unsigned long handle;
 	union {
-		unsigned long __lock;
-		struct attr {
-			u32 flags;
-#ifdef CONFIG_ZRAM_TRACK_ENTRY_ACTIME
-			u32 ac_time;
-#endif
-		} attr;
+		unsigned long handle;
+		unsigned long element;
 	};
-	struct lockdep_map dep_map;
+	unsigned long flags;
+#ifdef CONFIG_ZRAM_MEMORY_TRACKING
+	ktime_t ac_time;
+#endif
 };
 
 struct zram_stats {
 	atomic64_t compr_data_size;	/* compressed size of pages stored */
 	atomic64_t failed_reads;	/* can happen when memory is too low */
 	atomic64_t failed_writes;	/* can happen when memory is too low */
+	atomic64_t invalid_io;	/* non-page-aligned I/O requests */
 	atomic64_t notify_free;	/* no. of swap slot free notifications */
 	atomic64_t same_pages;		/* no. of same element filled pages */
 	atomic64_t huge_pages;		/* no. of huge pages */
 	atomic64_t huge_pages_since;	/* no. of huge pages since zram set up */
 	atomic64_t pages_stored;	/* no. of pages currently stored */
 	atomic_long_t max_used_pages;	/* no. of maximum pages stored */
+	atomic64_t writestall;		/* no. of write slow paths */
 	atomic64_t miss_free;		/* no. of missed free */
 #ifdef	CONFIG_ZRAM_WRITEBACK
 	atomic64_t bd_count;		/* no. of pages in backing device */
@@ -109,10 +108,9 @@ struct zram {
 	struct zram_table_entry *table;
 	struct zs_pool *mem_pool;
 	struct zcomp *comps[ZRAM_MAX_COMPS];
-	struct zcomp_params params[ZRAM_MAX_COMPS];
 	struct gendisk *disk;
-	/* Locks the device either in exclusive or in shared mode */
-	struct rw_semaphore dev_lock;
+	/* Prevent concurrent execution of device init */
+	struct rw_semaphore init_lock;
 	/*
 	 * the number of pages zram can consume for storing compressed data
 	 */
@@ -132,9 +130,8 @@ struct zram {
 	bool claim; /* Protected by disk->open_mutex */
 #ifdef CONFIG_ZRAM_WRITEBACK
 	struct file *backing_dev;
+	spinlock_t wb_limit_lock;
 	bool wb_limit_enable;
-	bool wb_compressed;
-	u32 wb_batch_size;
 	u64 bd_wb_limit;
 	struct block_device *bdev;
 	unsigned long *bitmap;

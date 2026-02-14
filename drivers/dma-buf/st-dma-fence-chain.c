@@ -84,10 +84,10 @@ static int sanitycheck(void *arg)
 		return -ENOMEM;
 
 	chain = mock_chain(NULL, f, 1);
-	if (chain)
-		dma_fence_enable_sw_signaling(chain);
-	else
+	if (!chain)
 		err = -ENOMEM;
+
+	dma_fence_enable_sw_signaling(chain);
 
 	dma_fence_signal(f);
 	dma_fence_put(f);
@@ -476,9 +476,10 @@ static int find_race(void *arg)
 	for (i = 0; i < ncpus; i++) {
 		int ret;
 
-		ret = kthread_stop_put(threads[i]);
+		ret = kthread_stop(threads[i]);
 		if (ret && !err)
 			err = ret;
+		put_task_struct(threads[i]);
 	}
 	kfree(threads);
 
@@ -590,7 +591,8 @@ static int wait_forward(void *arg)
 	for (i = 0; i < fc.chain_length; i++)
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop_put(tsk);
+	err = kthread_stop(tsk);
+	put_task_struct(tsk);
 
 err:
 	fence_chains_fini(&fc);
@@ -619,7 +621,8 @@ static int wait_backward(void *arg)
 	for (i = fc.chain_length; i--; )
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop_put(tsk);
+	err = kthread_stop(tsk);
+	put_task_struct(tsk);
 
 err:
 	fence_chains_fini(&fc);
@@ -666,7 +669,8 @@ static int wait_random(void *arg)
 	for (i = 0; i < fc.chain_length; i++)
 		dma_fence_signal(fc.fences[i]);
 
-	err = kthread_stop_put(tsk);
+	err = kthread_stop(tsk);
+	put_task_struct(tsk);
 
 err:
 	fence_chains_fini(&fc);

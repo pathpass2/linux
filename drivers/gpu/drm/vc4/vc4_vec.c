@@ -17,13 +17,12 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_panel.h>
-#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <linux/clk.h>
 #include <linux/component.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_graph.h>
+#include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 
 #include "vc4_drv.h"
@@ -220,11 +219,17 @@ struct vc4_vec {
 		writel(val, vec->regs + (offset));					\
 	} while (0)
 
-#define encoder_to_vc4_vec(_encoder)					\
-	container_of_const(_encoder, struct vc4_vec, encoder.base)
+static inline struct vc4_vec *
+encoder_to_vc4_vec(struct drm_encoder *encoder)
+{
+	return container_of(encoder, struct vc4_vec, encoder.base);
+}
 
-#define connector_to_vc4_vec(_connector)				\
-	container_of_const(_connector, struct vc4_vec, connector)
+static inline struct vc4_vec *
+connector_to_vc4_vec(struct drm_connector *connector)
+{
+	return container_of(connector, struct vc4_vec, connector);
+}
 
 enum vc4_vec_tv_mode_id {
 	VC4_VEC_TV_MODE_NTSC,
@@ -235,7 +240,6 @@ enum vc4_vec_tv_mode_id {
 	VC4_VEC_TV_MODE_PAL_60,
 	VC4_VEC_TV_MODE_PAL_N,
 	VC4_VEC_TV_MODE_SECAM,
-	VC4_VEC_TV_MODE_MONOCHROME,
 };
 
 struct vc4_vec_tv_mode {
@@ -326,22 +330,6 @@ static const struct vc4_vec_tv_mode vc4_vec_tv_modes[] = {
 		.config1 = VEC_CONFIG1_C_CVBS_CVBS,
 		.custom_freq = 0x29c71c72,
 	},
-	{
-		/* 50Hz mono */
-		.mode = DRM_MODE_TV_MODE_MONOCHROME,
-		.expected_htotal = 864,
-		.config0 = VEC_CONFIG0_PAL_BDGHI_STD | VEC_CONFIG0_BURDIS |
-			   VEC_CONFIG0_CHRDIS,
-		.config1 = VEC_CONFIG1_C_CVBS_CVBS,
-	},
-	{
-		/* 60Hz mono */
-		.mode = DRM_MODE_TV_MODE_MONOCHROME,
-		.expected_htotal = 858,
-		.config0 = VEC_CONFIG0_PAL_M_STD | VEC_CONFIG0_BURDIS |
-			   VEC_CONFIG0_CHRDIS,
-		.config1 = VEC_CONFIG1_C_CVBS_CVBS,
-	},
 };
 
 static inline const struct vc4_vec_tv_mode *
@@ -369,7 +357,6 @@ static const struct drm_prop_enum_list legacy_tv_mode_names[] = {
 	{ VC4_VEC_TV_MODE_PAL_M, "PAL-M", },
 	{ VC4_VEC_TV_MODE_PAL_N, "PAL-N", },
 	{ VC4_VEC_TV_MODE_SECAM, "SECAM", },
-	{ VC4_VEC_TV_MODE_MONOCHROME, "Mono", },
 };
 
 static enum drm_connector_status
@@ -425,10 +412,6 @@ vc4_vec_connector_set_property(struct drm_connector *connector,
 		state->tv.mode = DRM_MODE_TV_MODE_SECAM;
 		break;
 
-	case VC4_VEC_TV_MODE_MONOCHROME:
-		state->tv.mode = DRM_MODE_TV_MODE_MONOCHROME;
-		break;
-
 	default:
 		return -EINVAL;
 	}
@@ -474,10 +457,6 @@ vc4_vec_connector_get_property(struct drm_connector *connector,
 
 	case DRM_MODE_TV_MODE_SECAM:
 		*val = VC4_VEC_TV_MODE_SECAM;
-		break;
-
-	case DRM_MODE_TV_MODE_MONOCHROME:
-		*val = VC4_VEC_TV_MODE_MONOCHROME;
 		break;
 
 	default:
@@ -530,8 +509,6 @@ static int vc4_vec_connector_init(struct drm_device *dev, struct vc4_vec *vec)
 
 	drm_object_attach_property(&connector->base, prop, VC4_VEC_TV_MODE_NTSC);
 
-	drm_connector_attach_tv_margin_properties(connector);
-
 	drm_connector_attach_encoder(connector, &vec->encoder.base);
 
 	return 0;
@@ -542,7 +519,7 @@ static void vc4_vec_encoder_disable(struct drm_encoder *encoder,
 {
 	struct drm_device *drm = encoder->dev;
 	struct vc4_vec *vec = encoder_to_vc4_vec(encoder);
-	int idx;
+	int idx, ret;
 
 	if (!drm_dev_enter(drm, &idx))
 		return;
@@ -556,8 +533,16 @@ static void vc4_vec_encoder_disable(struct drm_encoder *encoder,
 
 	clk_disable_unprepare(vec->clock);
 
-	pm_runtime_put(&vec->pdev->dev);
+	ret = pm_runtime_put(&vec->pdev->dev);
+	if (ret < 0) {
+		DRM_ERROR("Failed to release power domain: %d\n", ret);
+		goto err_dev_exit;
+	}
 
+	drm_dev_exit(idx);
+	return;
+
+err_dev_exit:
 	drm_dev_exit(idx);
 }
 
@@ -584,7 +569,7 @@ static void vc4_vec_encoder_enable(struct drm_encoder *encoder,
 
 	ret = pm_runtime_resume_and_get(&vec->pdev->dev);
 	if (ret < 0) {
-		drm_err(drm, "Failed to retain power domain: %d\n", ret);
+		DRM_ERROR("Failed to retain power domain: %d\n", ret);
 		goto err_dev_exit;
 	}
 
@@ -597,13 +582,13 @@ static void vc4_vec_encoder_enable(struct drm_encoder *encoder,
 	 */
 	ret = clk_set_rate(vec->clock, 108000000);
 	if (ret) {
-		drm_err(drm, "Failed to set clock rate: %d\n", ret);
+		DRM_ERROR("Failed to set clock rate: %d\n", ret);
 		goto err_put_runtime_pm;
 	}
 
 	ret = clk_prepare_enable(vec->clock);
 	if (ret) {
-		drm_err(drm, "Failed to turn on core clock: %d\n", ret);
+		DRM_ERROR("Failed to turn on core clock: %d\n", ret);
 		goto err_put_runtime_pm;
 	}
 
@@ -775,8 +760,7 @@ static int vc4_vec_bind(struct device *dev, struct device *master, void *data)
 					    BIT(DRM_MODE_TV_MODE_PAL) |
 					    BIT(DRM_MODE_TV_MODE_PAL_M) |
 					    BIT(DRM_MODE_TV_MODE_PAL_N) |
-					    BIT(DRM_MODE_TV_MODE_SECAM) |
-					    BIT(DRM_MODE_TV_MODE_MONOCHROME));
+					    BIT(DRM_MODE_TV_MODE_SECAM));
 	if (ret)
 		return ret;
 
@@ -799,7 +783,7 @@ static int vc4_vec_bind(struct device *dev, struct device *master, void *data)
 	if (IS_ERR(vec->clock)) {
 		ret = PTR_ERR(vec->clock);
 		if (ret != -EPROBE_DEFER)
-			drm_err(drm, "Failed to get clock: %d\n", ret);
+			DRM_ERROR("Failed to get clock: %d\n", ret);
 		return ret;
 	}
 
@@ -834,9 +818,10 @@ static int vc4_vec_dev_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &vc4_vec_ops);
 }
 
-static void vc4_vec_dev_remove(struct platform_device *pdev)
+static int vc4_vec_dev_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &vc4_vec_ops);
+	return 0;
 }
 
 struct platform_driver vc4_vec_driver = {

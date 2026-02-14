@@ -165,13 +165,13 @@ static const struct vm_operations_struct vboxsf_file_vm_ops = {
 	.map_pages	= filemap_map_pages,
 };
 
-static int vboxsf_file_mmap_prepare(struct vm_area_desc *desc)
+static int vboxsf_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	int err;
 
-	err = generic_file_mmap_prepare(desc);
+	err = generic_file_mmap(file, vma);
 	if (!err)
-		desc->vm_ops = &vboxsf_file_vm_ops;
+		vma->vm_ops = &vboxsf_file_vm_ops;
 
 	return err;
 }
@@ -213,11 +213,11 @@ const struct file_operations vboxsf_reg_fops = {
 	.llseek = generic_file_llseek,
 	.read_iter = generic_file_read_iter,
 	.write_iter = generic_file_write_iter,
-	.mmap_prepare = vboxsf_file_mmap_prepare,
+	.mmap = vboxsf_file_mmap,
 	.open = vboxsf_file_open,
 	.release = vboxsf_file_release,
 	.fsync = noop_fsync,
-	.splice_read = filemap_splice_read,
+	.splice_read = generic_file_splice_read,
 };
 
 const struct inode_operations vboxsf_reg_iops = {
@@ -227,19 +227,26 @@ const struct inode_operations vboxsf_reg_iops = {
 
 static int vboxsf_read_folio(struct file *file, struct folio *folio)
 {
+	struct page *page = &folio->page;
 	struct vboxsf_handle *sf_handle = file->private_data;
-	loff_t off = folio_pos(folio);
+	loff_t off = page_offset(page);
 	u32 nread = PAGE_SIZE;
 	u8 *buf;
 	int err;
 
-	buf = kmap_local_folio(folio, 0);
+	buf = kmap(page);
 
 	err = vboxsf_read(sf_handle->root, sf_handle->handle, off, &nread, buf);
-	buf = folio_zero_tail(folio, nread, buf + nread);
+	if (err == 0) {
+		memset(&buf[nread], 0, PAGE_SIZE - nread);
+		flush_dcache_page(page);
+		SetPageUptodate(page);
+	} else {
+		SetPageError(page);
+	}
 
-	kunmap_local(buf);
-	folio_end_read(folio, err == 0);
+	kunmap(page);
+	unlock_page(page);
 	return err;
 }
 
@@ -261,64 +268,62 @@ static struct vboxsf_handle *vboxsf_get_write_handle(struct vboxsf_inode *sf_i)
 	return sf_handle;
 }
 
-static int vboxsf_writepages(struct address_space *mapping,
-		struct writeback_control *wbc)
+static int vboxsf_writepage(struct page *page, struct writeback_control *wbc)
 {
-	struct inode *inode = mapping->host;
-	struct folio *folio = NULL;
+	struct inode *inode = page->mapping->host;
 	struct vboxsf_inode *sf_i = VBOXSF_I(inode);
 	struct vboxsf_handle *sf_handle;
+	loff_t off = page_offset(page);
 	loff_t size = i_size_read(inode);
-	int error;
+	u32 nwrite = PAGE_SIZE;
+	u8 *buf;
+	int err;
+
+	if (off + PAGE_SIZE > size)
+		nwrite = size & ~PAGE_MASK;
 
 	sf_handle = vboxsf_get_write_handle(sf_i);
 	if (!sf_handle)
 		return -EBADF;
 
-	while ((folio = writeback_iter(mapping, wbc, folio, &error))) {
-		loff_t off = folio_pos(folio);
-		u32 nwrite = folio_size(folio);
-		u8 *buf;
-
-		if (nwrite > size - off)
-			nwrite = size - off;
-
-		buf = kmap_local_folio(folio, 0);
-		error = vboxsf_write(sf_handle->root, sf_handle->handle,
-				off, &nwrite, buf);
-		kunmap_local(buf);
-
-		folio_unlock(folio);
-	}
+	buf = kmap(page);
+	err = vboxsf_write(sf_handle->root, sf_handle->handle,
+			   off, &nwrite, buf);
+	kunmap(page);
 
 	kref_put(&sf_handle->refcount, vboxsf_handle_release);
 
-	/* mtime changed */
-	if (error == 0)
+	if (err == 0) {
+		ClearPageError(page);
+		/* mtime changed */
 		sf_i->force_restat = 1;
-	return error;
+	} else {
+		ClearPageUptodate(page);
+	}
+
+	unlock_page(page);
+	return err;
 }
 
-static int vboxsf_write_end(const struct kiocb *iocb,
-			    struct address_space *mapping,
+static int vboxsf_write_end(struct file *file, struct address_space *mapping,
 			    loff_t pos, unsigned int len, unsigned int copied,
-			    struct folio *folio, void *fsdata)
+			    struct page *page, void *fsdata)
 {
 	struct inode *inode = mapping->host;
-	struct vboxsf_handle *sf_handle = iocb->ki_filp->private_data;
-	size_t from = offset_in_folio(folio, pos);
+	struct vboxsf_handle *sf_handle = file->private_data;
+	unsigned int from = pos & ~PAGE_MASK;
 	u32 nwritten = len;
 	u8 *buf;
 	int err;
 
-	/* zero the stale part of the folio if we did a short copy */
-	if (!folio_test_uptodate(folio) && copied < len)
-		folio_zero_range(folio, from + copied, len - copied);
+	/* zero the stale part of the page if we did a short copy */
+	if (!PageUptodate(page) && copied < len)
+		zero_user(page, from + copied, len - copied);
 
-	buf = kmap(&folio->page);
+	buf = kmap(page);
 	err = vboxsf_write(sf_handle->root, sf_handle->handle,
 			   pos, &nwritten, buf + from);
-	kunmap(&folio->page);
+	kunmap(page);
 
 	if (err) {
 		nwritten = 0;
@@ -328,16 +333,16 @@ static int vboxsf_write_end(const struct kiocb *iocb,
 	/* mtime changed */
 	VBOXSF_I(inode)->force_restat = 1;
 
-	if (!folio_test_uptodate(folio) && nwritten == folio_size(folio))
-		folio_mark_uptodate(folio);
+	if (!PageUptodate(page) && nwritten == PAGE_SIZE)
+		SetPageUptodate(page);
 
 	pos += nwritten;
 	if (pos > inode->i_size)
 		i_size_write(inode, pos);
 
 out:
-	folio_unlock(folio);
-	folio_put(folio);
+	unlock_page(page);
+	put_page(page);
 
 	return nwritten;
 }
@@ -345,15 +350,14 @@ out:
 /*
  * Note simple_write_begin does not read the page from disk on partial writes
  * this is ok since vboxsf_write_end only writes the written parts of the
- * page and it does not call folio_mark_uptodate for partial writes.
+ * page and it does not call SetPageUptodate for partial writes.
  */
 const struct address_space_operations vboxsf_reg_aops = {
 	.read_folio = vboxsf_read_folio,
-	.writepages = vboxsf_writepages,
+	.writepage = vboxsf_writepage,
 	.dirty_folio = filemap_dirty_folio,
 	.write_begin = simple_write_begin,
 	.write_end = vboxsf_write_end,
-	.migrate_folio = filemap_migrate_folio,
 };
 
 static const char *vboxsf_get_link(struct dentry *dentry, struct inode *inode,

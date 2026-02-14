@@ -19,8 +19,7 @@
 #include <linux/clk/ti.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -36,10 +35,6 @@
 #include <clocksource/timer-ti-dm.h>
 
 #include <linux/platform_data/dmtimer-omap.h>
-
-#ifdef CONFIG_ARM_DMA_USE_IOMMU
-#include <asm/dma-iommu.h>
-#endif
 
 #include "omap_remoteproc.h"
 #include "remoteproc_internal.h"
@@ -555,6 +550,7 @@ static void omap_rproc_kick(struct rproc *rproc, int vqid)
 		dev_err(dev, "failed to send mailbox message, status = %d\n",
 			ret);
 
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 }
 
@@ -655,6 +651,7 @@ static int omap_rproc_start(struct rproc *rproc)
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_get_noresume(dev);
 	pm_runtime_enable(dev);
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -712,6 +709,7 @@ enable_device:
 	reset_control_deassert(oproc->reset);
 out:
 	/* schedule the next auto-suspend */
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 	return ret;
 }
@@ -721,7 +719,6 @@ out:
  * @rproc: remote processor to apply the address translation for
  * @da: device address to translate
  * @len: length of the memory buffer
- * @is_iomem: pointer filled in to indicate if @da is iomapped memory
  *
  * Custom function implementing the rproc .da_to_va ops to provide address
  * translation (device address to kernel virtual address) for internal RAMs
@@ -1135,6 +1132,7 @@ static int omap_rproc_get_boot_data(struct platform_device *pdev,
 	struct device_node *np = pdev->dev.of_node;
 	struct omap_rproc *oproc = rproc->priv;
 	const struct omap_rproc_dev_data *data;
+	int ret;
 
 	data = of_device_get_match_data(&pdev->dev);
 	if (!data)
@@ -1150,8 +1148,10 @@ static int omap_rproc_get_boot_data(struct platform_device *pdev,
 
 	oproc->boot_data->syscon =
 			syscon_regmap_lookup_by_phandle(np, "ti,bootreg");
-	if (IS_ERR(oproc->boot_data->syscon))
-		return PTR_ERR(oproc->boot_data->syscon);
+	if (IS_ERR(oproc->boot_data->syscon)) {
+		ret = PTR_ERR(oproc->boot_data->syscon);
+		return ret;
+	}
 
 	if (of_property_read_u32_index(np, "ti,bootreg", 1,
 				       &oproc->boot_data->boot_reg)) {
@@ -1208,7 +1208,7 @@ static int omap_rproc_of_get_internal_memories(struct platform_device *pdev,
 		oproc->mem[i].dev_addr = data->mems[i].dev_addr;
 		oproc->mem[i].size = resource_size(res);
 
-		dev_dbg(dev, "memory %8s: bus addr %pa size 0x%x va %p da 0x%x\n",
+		dev_dbg(dev, "memory %8s: bus addr %pa size 0x%x va %pK da 0x%x\n",
 			data->mems[i].name, &oproc->mem[i].bus_addr,
 			oproc->mem[i].size, oproc->mem[i].cpu_addr,
 			oproc->mem[i].dev_addr);
@@ -1276,13 +1276,6 @@ static int omap_rproc_of_get_timers(struct platform_device *pdev,
 	return 0;
 }
 
-static void omap_rproc_mem_release(void *data)
-{
-	struct device *dev = data;
-
-	of_reserved_mem_device_release(dev);
-}
-
 static int omap_rproc_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -1311,8 +1304,8 @@ static int omap_rproc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	rproc = devm_rproc_alloc(&pdev->dev, dev_name(&pdev->dev), &omap_rproc_ops,
-				 firmware, sizeof(*oproc));
+	rproc = rproc_alloc(&pdev->dev, dev_name(&pdev->dev), &omap_rproc_ops,
+			    firmware, sizeof(*oproc));
 	if (!rproc)
 		return -ENOMEM;
 
@@ -1322,30 +1315,17 @@ static int omap_rproc_probe(struct platform_device *pdev)
 	/* All existing OMAP IPU and DSP processors have an MMU */
 	rproc->has_iommu = true;
 
-#ifdef CONFIG_ARM_DMA_USE_IOMMU
-	/*
-	 * Throw away the ARM DMA mapping that we'll never use, so it doesn't
-	 * interfere with the core rproc->domain and we get the right DMA ops.
-	 */
-	if (pdev->dev.archdata.mapping) {
-		struct dma_iommu_mapping *mapping = to_dma_iommu_mapping(&pdev->dev);
-
-		arm_iommu_detach_device(&pdev->dev);
-		arm_iommu_release_mapping(mapping);
-	}
-#endif
-
 	ret = omap_rproc_of_get_internal_memories(pdev, rproc);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
 	ret = omap_rproc_get_boot_data(pdev, rproc);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
 	ret = omap_rproc_of_get_timers(pdev, rproc);
 	if (ret)
-		return ret;
+		goto free_rproc;
 
 	init_completion(&oproc->pm_comp);
 	oproc->autosuspend_delay = DEFAULT_AUTOSUSPEND_DELAY;
@@ -1356,8 +1336,10 @@ static int omap_rproc_probe(struct platform_device *pdev)
 	pm_runtime_set_autosuspend_delay(&pdev->dev, oproc->autosuspend_delay);
 
 	oproc->fck = devm_clk_get(&pdev->dev, 0);
-	if (IS_ERR(oproc->fck))
-		return PTR_ERR(oproc->fck);
+	if (IS_ERR(oproc->fck)) {
+		ret = PTR_ERR(oproc->fck);
+		goto free_rproc;
+	}
 
 	ret = of_reserved_mem_device_init(&pdev->dev);
 	if (ret) {
@@ -1365,15 +1347,29 @@ static int omap_rproc_probe(struct platform_device *pdev)
 		dev_warn(&pdev->dev, "Typically this should be provided,\n");
 		dev_warn(&pdev->dev, "only omit if you know what you are doing.\n");
 	}
-	ret = devm_add_action_or_reset(&pdev->dev, omap_rproc_mem_release, &pdev->dev);
-	if (ret)
-		return ret;
 
 	platform_set_drvdata(pdev, rproc);
 
-	ret = devm_rproc_add(&pdev->dev, rproc);
+	ret = rproc_add(rproc);
 	if (ret)
-		return ret;
+		goto release_mem;
+
+	return 0;
+
+release_mem:
+	of_reserved_mem_device_release(&pdev->dev);
+free_rproc:
+	rproc_free(rproc);
+	return ret;
+}
+
+static int omap_rproc_remove(struct platform_device *pdev)
+{
+	struct rproc *rproc = platform_get_drvdata(pdev);
+
+	rproc_del(rproc);
+	rproc_free(rproc);
+	of_reserved_mem_device_release(&pdev->dev);
 
 	return 0;
 }
@@ -1386,6 +1382,7 @@ static const struct dev_pm_ops omap_rproc_pm_ops = {
 
 static struct platform_driver omap_rproc_driver = {
 	.probe = omap_rproc_probe,
+	.remove = omap_rproc_remove,
 	.driver = {
 		.name = "omap-rproc",
 		.pm = &omap_rproc_pm_ops,

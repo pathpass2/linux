@@ -8,6 +8,7 @@
 #include <linux/of_address.h>
 #include <dt-bindings/clock/imx27-clock.h>
 #include <soc/imx/revision.h>
+#include <soc/imx/timer.h>
 #include <asm/irq.h>
 
 #include "clk.h"
@@ -171,14 +172,17 @@ static void __init _mx27_clocks_init(unsigned long fref)
 
 static void __init mx27_clocks_init_dt(struct device_node *np)
 {
+	struct device_node *refnp;
 	u32 fref = 26000000; /* default */
 
-	for_each_compatible_node_scoped(refnp, NULL, "fixed-clock") {
+	for_each_compatible_node(refnp, NULL, "fixed-clock") {
 		if (!of_device_is_compatible(refnp, "fsl,imx-osc26m"))
 			continue;
 
-		if (!of_property_read_u32(refnp, "clock-frequency", &fref))
+		if (!of_property_read_u32(refnp, "clock-frequency", &fref)) {
+			of_node_put(refnp);
 			break;
+		}
 	}
 
 	ccm = of_iomap(np, 0);

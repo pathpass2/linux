@@ -6,6 +6,7 @@
  ******************************************************************************/
 
 #include <drv_types.h>
+#include <rtw_debug.h>
 #include <hal_data.h>
 
 u8 rtw_hal_sdio_max_txoqt_free_space(struct adapter *padapter)

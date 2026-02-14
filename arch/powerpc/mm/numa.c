@@ -16,7 +16,6 @@
 #include <linux/cpu.h>
 #include <linux/notifier.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
 #include <linux/pfn.h>
 #include <linux/cpuset.h>
 #include <linux/node.h>
@@ -34,7 +33,6 @@
 #include <asm/hvcall.h>
 #include <asm/setup.h>
 #include <asm/vdso.h>
-#include <asm/vphn.h>
 #include <asm/drmem.h>
 
 static int numa_enabled = 1;
@@ -43,9 +41,11 @@ static char *cmdline __initdata;
 
 int numa_cpu_lookup_table[NR_CPUS];
 cpumask_var_t node_to_cpumask_map[MAX_NUMNODES];
+struct pglist_data *node_data[MAX_NUMNODES];
 
 EXPORT_SYMBOL(numa_cpu_lookup_table);
 EXPORT_SYMBOL(node_to_cpumask_map);
+EXPORT_SYMBOL(node_data);
 
 static int primary_domain_index;
 static int n_mem_addr_cells, n_mem_size_cells;
@@ -366,7 +366,6 @@ void update_numa_distance(struct device_node *node)
 	WARN(numa_distance_table[nid][nid] == -1,
 	     "NUMA distance details for node %d not provided\n", nid);
 }
-EXPORT_SYMBOL_GPL(update_numa_distance);
 
 /*
  * ibm,numa-lookup-index-table= {N, domainid1, domainid2, ..... domainidN}
@@ -894,7 +893,7 @@ static int __init numa_setup_drmem_lmb(struct drmem_lmb *lmb,
 
 static int __init parse_numa_properties(void)
 {
-	struct device_node *memory, *pci;
+	struct device_node *memory;
 	int default_nid = 0;
 	unsigned long i;
 	const __be32 *associativity;
@@ -1008,18 +1007,6 @@ new_range:
 			goto new_range;
 	}
 
-	for_each_node_by_name(pci, "pci") {
-		int nid = NUMA_NO_NODE;
-
-		associativity = of_get_associativity(pci);
-		if (associativity) {
-			nid = associativity_to_nid(associativity);
-			initialize_form1_numa_distance(associativity);
-		}
-		if (likely(nid >= 0) && !node_online(nid))
-			node_set_online(nid);
-	}
-
 	/*
 	 * Now do the same thing for each MEMBLOCK listed in the
 	 * ibm,dynamic-memory property in the
@@ -1093,9 +1080,27 @@ void __init dump_numa_cpu_topology(void)
 static void __init setup_node_data(int nid, u64 start_pfn, u64 end_pfn)
 {
 	u64 spanned_pages = end_pfn - start_pfn;
+	const size_t nd_size = roundup(sizeof(pg_data_t), SMP_CACHE_BYTES);
+	u64 nd_pa;
+	void *nd;
+	int tnid;
 
-	alloc_node_data(nid);
+	nd_pa = memblock_phys_alloc_try_nid(nd_size, SMP_CACHE_BYTES, nid);
+	if (!nd_pa)
+		panic("Cannot allocate %zu bytes for node %d data\n",
+		      nd_size, nid);
 
+	nd = __va(nd_pa);
+
+	/* report and initialize */
+	pr_info("  NODE_DATA [mem %#010Lx-%#010Lx]\n",
+		nd_pa, nd_pa + nd_size - 1);
+	tnid = early_pfn_to_nid(nd_pa >> PAGE_SHIFT);
+	if (tnid != nid)
+		pr_info("    NODE_DATA(%d) on node %d\n", nid, tnid);
+
+	node_data[nid] = nd;
+	memset(NODE_DATA(nid), 0, sizeof(pg_data_t));
 	NODE_DATA(nid)->node_id = nid;
 	NODE_DATA(nid)->node_start_pfn = start_pfn;
 	NODE_DATA(nid)->node_spanned_pages = spanned_pages;
@@ -1103,7 +1108,7 @@ static void __init setup_node_data(int nid, u64 start_pfn, u64 end_pfn)
 
 static void __init find_possible_nodes(void)
 {
-	struct device_node *rtas, *root;
+	struct device_node *rtas;
 	const __be32 *domains = NULL;
 	int prop_length, max_nodes;
 	u32 i;
@@ -1124,12 +1129,10 @@ static void __init find_possible_nodes(void)
 	 * If the LPAR is migratable, new nodes might be activated after a LPM,
 	 * so we should consider the max number in that case.
 	 */
-	root = of_find_node_by_path("/");
-	if (!of_get_property(root, "ibm,migratable-partition", NULL))
+	if (!of_get_property(of_root, "ibm,migratable-partition", NULL))
 		domains = of_get_property(rtas,
 					  "ibm,current-associativity-domains",
 					  &prop_length);
-	of_node_put(root);
 	if (!domains) {
 		domains = of_get_property(rtas, "ibm,max-associativity-domains",
 					&prop_length);
@@ -1213,6 +1216,8 @@ void __init initmem_init(void)
 		setup_node_data(nid, start_pfn, end_pfn);
 	}
 
+	sparse_init();
+
 	/*
 	 * We need the numa_cpu_lookup_table to be accurate for all CPUs,
 	 * even before we online them, so that we can use cpu_to_{node,mem}
@@ -1283,15 +1288,23 @@ static int hot_add_node_scn_to_nid(unsigned long scn_addr)
 	int nid = NUMA_NO_NODE;
 
 	for_each_node_by_type(memory, "memory") {
-		int i = 0;
+		unsigned long start, size;
+		int ranges;
+		const __be32 *memcell_buf;
+		unsigned int len;
 
-		while (1) {
-			struct resource res;
+		memcell_buf = of_get_property(memory, "reg", &len);
+		if (!memcell_buf || len <= 0)
+			continue;
 
-			if (of_address_to_resource(memory, i++, &res))
-				break;
+		/* ranges in cell */
+		ranges = (len >> 2) / (n_mem_addr_cells + n_mem_size_cells);
 
-			if ((scn_addr < res.start) || (scn_addr > res.end))
+		while (ranges--) {
+			start = read_n_cells(n_mem_addr_cells, &memcell_buf);
+			size = read_n_cells(n_mem_size_cells, &memcell_buf);
+
+			if ((scn_addr < start) || (scn_addr >= (start + size)))
 				continue;
 
 			nid = of_node_to_nid_single(memory);
@@ -1334,7 +1347,7 @@ int hot_add_scn_to_nid(unsigned long scn_addr)
 	return nid;
 }
 
-u64 hot_add_drconf_memory_max(void)
+static u64 hot_add_drconf_memory_max(void)
 {
 	struct device_node *memory = NULL;
 	struct device_node *dn = NULL;

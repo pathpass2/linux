@@ -9,10 +9,7 @@
 #ifndef RENESAS_SDHI_H
 #define RENESAS_SDHI_H
 
-#include <linux/device.h>
-#include <linux/dmaengine.h>
 #include <linux/platform_device.h>
-#include <linux/workqueue.h>
 #include "tmio_mmc.h"
 
 struct renesas_sdhi_scc {
@@ -66,10 +63,10 @@ struct renesas_sdhi_of_data_with_quirks {
 struct renesas_sdhi_dma {
 	unsigned long end_flags;
 	enum dma_slave_buswidth dma_buswidth;
-	dma_filter_fn filter;
+	bool (*filter)(struct dma_chan *chan, void *arg);
 	void (*enable)(struct tmio_mmc_host *host, bool enable);
 	struct completion dma_dataend;
-	struct work_struct dma_complete;
+	struct tasklet_struct dma_complete;
 };
 
 struct renesas_sdhi {
@@ -86,7 +83,6 @@ struct renesas_sdhi {
 	u32 scc_tappos_hs400;
 	const u8 *adjust_hs400_calib_table;
 	bool needs_adjust_hs400;
-	bool card_is_sdio;
 
 	/* Tuning values: 1 for success, 0 for failure */
 	DECLARE_BITMAP(taps, BITS_PER_LONG);
@@ -96,8 +92,6 @@ struct renesas_sdhi {
 	unsigned int tap_set;
 
 	struct reset_control *rstc;
-	struct tmio_mmc_host *host;
-	struct regulator_dev *rdev;
 };
 
 #define host_to_priv(host) \
@@ -107,7 +101,5 @@ int renesas_sdhi_probe(struct platform_device *pdev,
 		       const struct tmio_mmc_dma_ops *dma_ops,
 		       const struct renesas_sdhi_of_data *of_data,
 		       const struct renesas_sdhi_quirks *quirks);
-void renesas_sdhi_remove(struct platform_device *pdev);
-int renesas_sdhi_suspend(struct device *dev);
-int renesas_sdhi_resume(struct device *dev);
+int renesas_sdhi_remove(struct platform_device *pdev);
 #endif

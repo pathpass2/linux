@@ -27,14 +27,14 @@ properties:
     description: |
       For multicolor LED support this property should be defined as either
       LED_COLOR_ID_RGB or LED_COLOR_ID_MULTI which can be found in
-      include/dt-bindings/leds/common.h.
+      include/linux/leds/common.h.
     enum: [ 8, 9 ]
 
 required:
   - color
 
 allOf:
-  - $ref: common.yaml#
+  - $ref: "common.yaml#"
 
 additionalProperties: true
 

@@ -133,6 +133,8 @@ struct ar0521_dev {
 		u16 mult2;
 		u16 vt_pix;
 	} pll;
+
+	bool streaming;
 };
 
 static inline struct ar0521_dev *to_ar0521_dev(struct v4l2_subdev *sd)
@@ -255,10 +257,10 @@ static u32 calc_pll(struct ar0521_dev *sensor, u32 freq, u16 *pre_ptr, u16 *mult
 			continue; /* Minimum value */
 		if (new_mult > 254)
 			break; /* Maximum, larger pre won't work either */
-		if (sensor->extclk_freq * (u64)new_mult < (u64)AR0521_PLL_MIN *
+		if (sensor->extclk_freq * (u64)new_mult < AR0521_PLL_MIN *
 		    new_pre)
 			continue;
-		if (sensor->extclk_freq * (u64)new_mult > (u64)AR0521_PLL_MAX *
+		if (sensor->extclk_freq * (u64)new_mult > AR0521_PLL_MAX *
 		    new_pre)
 			break; /* Larger pre won't work either */
 		new_pll = div64_round_up(sensor->extclk_freq * (u64)new_mult,
@@ -314,7 +316,7 @@ static void ar0521_calc_pll(struct ar0521_dev *sensor)
 	 * In the clock tree:
 	 * MIPI_CLK = PIXEL_CLOCK * bpp / 2 / 2
 	 *
-	 * Generic pixel_rate to bus clock frequency equation:
+	 * Generic pixel_rate to bus clock frequencey equation:
 	 * MIPI_CLK = V4L2_CID_PIXEL_RATE * bpp / lanes / 2
 	 *
 	 * From which we derive the PIXEL_CLOCK to use in the clock tree:
@@ -327,7 +329,7 @@ static void ar0521_calc_pll(struct ar0521_dev *sensor)
 	 *
 	 * TODO: in case we have less data lanes we have to reduce the desired
 	 * VCO not to exceed the limits specified by the datasheet and
-	 * consequently reduce the obtained pixel clock.
+	 * consequentially reduce the obtained pixel clock.
 	 */
 	pixel_clock = AR0521_PIXEL_CLOCK_RATE * 2 / sensor->lane_count;
 	bpp = ar0521_code_to_bpp(sensor);
@@ -446,7 +448,8 @@ static int ar0521_get_fmt(struct v4l2_subdev *sd,
 	mutex_lock(&sensor->lock);
 
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY)
-		fmt = v4l2_subdev_state_get_format(sd_state, 0);
+		fmt = v4l2_subdev_get_try_format(&sensor->sd, sd_state, 0
+						 /* pad */);
 	else
 		fmt = &sensor->fmt;
 
@@ -471,7 +474,7 @@ static int ar0521_set_fmt(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *fmt;
 
-		fmt = v4l2_subdev_state_get_format(sd_state, 0);
+		fmt = v4l2_subdev_get_try_format(sd, sd_state, 0 /* pad */);
 		*fmt = format->format;
 
 		mutex_unlock(&sensor->lock);
@@ -806,7 +809,7 @@ static const struct initial_reg {
 	REGS(be(0x3F00),
 	     be(0x0017),  /* 3F00: BM_T0 */
 	     be(0x02DD),  /* 3F02: BM_T1 */
-	     /* 3F04: if Ana_gain less than 2, use noise_floor0, multiply */
+	     /* 3F04: if Ana_gain less than 2, use noise_floor0, multipl */
 	     be(0x0020),
 	     /* 3F06: if Ana_gain between 4 and 7, use noise_floor2 and */
 	     be(0x0040),
@@ -835,30 +838,21 @@ static const struct initial_reg {
 	     be(0x0707)), /* 3F44: couple k factor 2 */
 };
 
-static void __ar0521_power_off(struct device *dev)
+static int ar0521_power_off(struct device *dev)
 {
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ar0521_dev *sensor = to_ar0521_dev(sd);
 	int i;
 
+	clk_disable_unprepare(sensor->extclk);
+
 	if (sensor->reset_gpio)
-		/* assert RESET signal */
-		gpiod_set_value_cansleep(sensor->reset_gpio, 1);
+		gpiod_set_value(sensor->reset_gpio, 1); /* assert RESET signal */
 
 	for (i = ARRAY_SIZE(ar0521_supply_names) - 1; i >= 0; i--) {
 		if (sensor->supplies[i])
 			regulator_disable(sensor->supplies[i]);
 	}
-}
-
-static int ar0521_power_off(struct device *dev)
-{
-	struct v4l2_subdev *sd = dev_get_drvdata(dev);
-	struct ar0521_dev *sensor = to_ar0521_dev(sd);
-
-	clk_disable_unprepare(sensor->extclk);
-	__ar0521_power_off(dev);
-
 	return 0;
 }
 
@@ -887,7 +881,7 @@ static int ar0521_power_on(struct device *dev)
 
 	if (sensor->reset_gpio)
 		/* deassert RESET signal */
-		gpiod_set_value_cansleep(sensor->reset_gpio, 0);
+		gpiod_set_value(sensor->reset_gpio, 0);
 	usleep_range(4500, 5000); /* min 45000 clocks */
 
 	for (cnt = 0; cnt < ARRAY_SIZE(initial_regs); cnt++) {
@@ -917,8 +911,7 @@ static int ar0521_power_on(struct device *dev)
 
 	return 0;
 off:
-	clk_disable_unprepare(sensor->extclk);
-	__ar0521_power_off(dev);
+	ar0521_power_off(dev);
 	return ret;
 }
 
@@ -998,9 +991,12 @@ static int ar0521_s_stream(struct v4l2_subdev *sd, int enable)
 	int ret;
 
 	mutex_lock(&sensor->lock);
-	ret = ar0521_set_stream(sensor, enable);
-	mutex_unlock(&sensor->lock);
 
+	ret = ar0521_set_stream(sensor, enable);
+	if (!ret)
+		sensor->streaming = enable;
+
+	mutex_unlock(&sensor->lock);
 	return ret;
 }
 
@@ -1026,6 +1022,28 @@ static const struct v4l2_subdev_ops ar0521_subdev_ops = {
 	.video = &ar0521_video_ops,
 	.pad = &ar0521_pad_ops,
 };
+
+static int __maybe_unused ar0521_suspend(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ar0521_dev *sensor = to_ar0521_dev(sd);
+
+	if (sensor->streaming)
+		ar0521_set_stream(sensor, 0);
+
+	return 0;
+}
+
+static int __maybe_unused ar0521_resume(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ar0521_dev *sensor = to_ar0521_dev(sd);
+
+	if (sensor->streaming)
+		return ar0521_set_stream(sensor, 1);
+
+	return 0;
+}
 
 static int ar0521_probe(struct i2c_client *client)
 {
@@ -1077,10 +1095,11 @@ static int ar0521_probe(struct i2c_client *client)
 	}
 
 	/* Get master clock (extclk) */
-	sensor->extclk = devm_v4l2_sensor_clk_get(dev, "extclk");
-	if (IS_ERR(sensor->extclk))
-		return dev_err_probe(dev, PTR_ERR(sensor->extclk),
-				     "failed to get extclk\n");
+	sensor->extclk = devm_clk_get(dev, "extclk");
+	if (IS_ERR(sensor->extclk)) {
+		dev_err(dev, "failed to get extclk\n");
+		return PTR_ERR(sensor->extclk);
+	}
 
 	sensor->extclk_freq = clk_get_rate(sensor->extclk);
 
@@ -1109,8 +1128,8 @@ static int ar0521_probe(struct i2c_client *client)
 						ar0521_supply_names[cnt]);
 
 		if (IS_ERR(supply)) {
-			dev_info(dev, "no %s regulator found: %pe\n",
-				 ar0521_supply_names[cnt], supply);
+			dev_info(dev, "no %s regulator found: %li\n",
+				 ar0521_supply_names[cnt], PTR_ERR(supply));
 			return PTR_ERR(supply);
 		}
 		sensor->supplies[cnt] = supply;
@@ -1164,6 +1183,7 @@ static void ar0521_remove(struct i2c_client *client)
 }
 
 static const struct dev_pm_ops ar0521_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(ar0521_suspend, ar0521_resume)
 	SET_RUNTIME_PM_OPS(ar0521_power_off, ar0521_power_on, NULL)
 };
 static const struct of_device_id ar0521_dt_ids[] = {
@@ -1178,7 +1198,7 @@ static struct i2c_driver ar0521_i2c_driver = {
 		.pm = &ar0521_pm_ops,
 		.of_match_table = ar0521_dt_ids,
 	},
-	.probe = ar0521_probe,
+	.probe_new = ar0521_probe,
 	.remove = ar0521_remove,
 };
 

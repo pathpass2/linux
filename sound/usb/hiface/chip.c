@@ -101,7 +101,7 @@ static int hiface_chip_probe(struct usb_interface *intf,
 
 	/* check whether the card is already registered */
 	chip = NULL;
-	guard(mutex)(&register_mutex);
+	mutex_lock(&register_mutex);
 
 	for (i = 0; i < SNDRV_CARDS; i++)
 		if (enable[i])
@@ -109,12 +109,13 @@ static int hiface_chip_probe(struct usb_interface *intf,
 
 	if (i >= SNDRV_CARDS) {
 		dev_err(&device->dev, "no available " CARD_NAME " audio device\n");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto err;
 	}
 
 	ret = hiface_chip_create(intf, device, i, quirk, &chip);
 	if (ret < 0)
-		return ret;
+		goto err;
 
 	ret = hiface_pcm_init(chip, quirk ? quirk->extra_freq : 0);
 	if (ret < 0)
@@ -126,11 +127,15 @@ static int hiface_chip_probe(struct usb_interface *intf,
 		goto err_chip_destroy;
 	}
 
+	mutex_unlock(&register_mutex);
+
 	usb_set_intfdata(intf, chip);
 	return 0;
 
 err_chip_destroy:
 	snd_card_free(chip->card);
+err:
+	mutex_unlock(&register_mutex);
 	return ret;
 }
 

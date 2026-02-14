@@ -3,7 +3,6 @@
 #ifndef BTRFS_LRU_CACHE_H
 #define BTRFS_LRU_CACHE_H
 
-#include <linux/types.h>
 #include <linux/maple_tree.h>
 #include <linux/list.h>
 
@@ -50,6 +49,16 @@ struct btrfs_lru_cache {
 
 #define btrfs_lru_cache_for_each_entry_safe(cache, entry, tmp)		\
 	list_for_each_entry_safe_reverse((entry), (tmp), &(cache)->lru_list, lru_list)
+
+static inline unsigned int btrfs_lru_cache_size(const struct btrfs_lru_cache *cache)
+{
+	return cache->size;
+}
+
+static inline bool btrfs_lru_cache_is_full(const struct btrfs_lru_cache *cache)
+{
+	return cache->size >= cache->max_size;
+}
 
 static inline struct btrfs_lru_cache_entry *btrfs_lru_cache_lru_entry(
 					      struct btrfs_lru_cache *cache)

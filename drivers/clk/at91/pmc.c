@@ -115,7 +115,7 @@ struct pmc_data *pmc_data_allocate(unsigned int ncore, unsigned int nsystem,
 /* Address in SECURAM that say if we suspend to backup mode. */
 static void __iomem *at91_pmc_backup_suspend;
 
-static int at91_pmc_suspend(void *data)
+static int at91_pmc_suspend(void)
 {
 	unsigned int backup;
 
@@ -129,7 +129,7 @@ static int at91_pmc_suspend(void *data)
 	return clk_save_context();
 }
 
-static void at91_pmc_resume(void *data)
+static void at91_pmc_resume(void)
 {
 	unsigned int backup;
 
@@ -143,19 +143,14 @@ static void at91_pmc_resume(void *data)
 	clk_restore_context();
 }
 
-static const struct syscore_ops pmc_syscore_ops = {
+static struct syscore_ops pmc_syscore_ops = {
 	.suspend = at91_pmc_suspend,
 	.resume = at91_pmc_resume,
-};
-
-static struct syscore pmc_syscore = {
-	.ops = &pmc_syscore_ops,
 };
 
 static const struct of_device_id pmc_dt_ids[] = {
 	{ .compatible = "atmel,sama5d2-pmc" },
 	{ .compatible = "microchip,sama7g5-pmc", },
-	{ .compatible = "microchip,sama7d65-pmc", },
 	{ /* sentinel */ }
 };
 
@@ -189,7 +184,7 @@ static int __init pmc_register_ops(void)
 		return -ENOMEM;
 	}
 
-	register_syscore(&pmc_syscore);
+	register_syscore_ops(&pmc_syscore_ops);
 
 	return 0;
 }

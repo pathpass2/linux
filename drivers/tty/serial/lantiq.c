@@ -17,8 +17,7 @@
 #include <linux/ioport.h>
 #include <linux/lantiq.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/serial.h>
 #include <linux/serial_core.h>
 #include <linux/slab.h>
@@ -251,7 +250,6 @@ lqasc_err_int(int irq, void *_port)
 	struct ltq_uart_port *ltq_port = to_ltq_uart_port(port);
 
 	spin_lock_irqsave(&ltq_port->lock, flags);
-	__raw_writel(ASC_IRNCR_EIR, port->membase + LTQ_ASC_IRNCR);
 	/* clear any pending interrupts */
 	asc_update_bits(0, ASCWHBSTATE_CLRPE | ASCWHBSTATE_CLRFE |
 		ASCWHBSTATE_CLRROE, port->membase + LTQ_ASC_WHBSTATE);
@@ -773,8 +771,10 @@ static int fetch_irq_intel(struct device *dev, struct ltq_uart_port *ltq_port)
 	int ret;
 
 	ret = platform_get_irq(to_platform_device(dev), 0);
-	if (ret < 0)
+	if (ret < 0) {
+		dev_err(dev, "failed to fetch IRQ for serial port\n");
 		return ret;
+	}
 	ltq_port->common_irq = ret;
 	port->irq = ret;
 
@@ -885,11 +885,11 @@ static int lqasc_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void lqasc_remove(struct platform_device *pdev)
+static int lqasc_remove(struct platform_device *pdev)
 {
 	struct uart_port *port = platform_get_drvdata(pdev);
 
-	uart_remove_one_port(&lqasc_reg, port);
+	return uart_remove_one_port(&lqasc_reg, port);
 }
 
 static const struct ltq_soc_data soc_data_lantiq = {

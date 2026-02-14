@@ -4,7 +4,6 @@
 
 #include <linux/types.h>
 #include <linux/capability.h>
-#include <errno.h>
 
 #ifndef CAP_PERFMON
 #define CAP_PERFMON		38

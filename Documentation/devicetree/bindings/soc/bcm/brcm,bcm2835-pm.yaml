@@ -13,21 +13,23 @@ description: |
 maintainers:
   - Nicolas Saenz Julienne <nsaenz@kernel.org>
 
+allOf:
+  - $ref: /schemas/watchdog/watchdog.yaml#
+
 properties:
   compatible:
     items:
       - enum:
           - brcm,bcm2835-pm
           - brcm,bcm2711-pm
-          - brcm,bcm2712-pm
       - const: brcm,bcm2835-pm-wdt
 
   reg:
-    minItems: 1
+    minItems: 2
     maxItems: 3
 
   reg-names:
-    minItems: 1
+    minItems: 2
     items:
       - const: pm
       - const: asb
@@ -60,35 +62,7 @@ required:
   - reg
   - "#power-domain-cells"
   - "#reset-cells"
-
-allOf:
-  - $ref: /schemas/watchdog/watchdog.yaml#
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - brcm,bcm2835-pm
-              - brcm,bcm2711-pm
-    then:
-      required:
-        - clocks
-
-      properties:
-        reg:
-          minItems: 2
-
-        reg-names:
-          minItems: 2
-
-    else:
-      properties:
-        reg:
-          maxItems: 1
-
-        reg-names:
-          maxItems: 1
+  - clocks
 
 additionalProperties: false
 

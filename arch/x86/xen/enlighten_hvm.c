@@ -28,6 +28,8 @@
 #include <asm/xen/page.h>
 
 #include "xen-ops.h"
+#include "mmu.h"
+#include "smp.h"
 
 static unsigned long shared_info_pfn;
 
@@ -106,8 +108,15 @@ static void __init init_hvm_pv_info(void)
 	/* PVH set up hypercall page in xen_prepare_pvh(). */
 	if (xen_pvh_domain())
 		pv_info.name = "Xen PVH";
-	else
+	else {
+		u64 pfn;
+		uint32_t msr;
+
 		pv_info.name = "Xen HVM";
+		msr = cpuid_ebx(base + 2);
+		pfn = __pa(hypercall_page);
+		wrmsr_safe(msr, (u32)pfn, (u32)(pfn >> 32));
+	}
 
 	xen_setup_features();
 
@@ -123,11 +132,11 @@ DEFINE_IDTENTRY_SYSVEC(sysvec_xen_hvm_callback)
 	struct pt_regs *old_regs = set_irq_regs(regs);
 
 	if (xen_percpu_upcall)
-		apic_eoi();
+		ack_APIC_irq();
 
 	inc_irq_stat(irq_hv_callback_count);
 
-	xen_evtchn_do_upcall();
+	xen_hvm_evtchn_do_upcall();
 
 	set_irq_regs(old_regs);
 }
@@ -139,9 +148,7 @@ static void xen_hvm_shutdown(void)
 	if (kexec_in_progress)
 		xen_reboot(SHUTDOWN_soft_reset);
 }
-#endif
 
-#ifdef CONFIG_CRASH_DUMP
 static void xen_hvm_crash_shutdown(struct pt_regs *regs)
 {
 	native_machine_crash_shutdown(regs);
@@ -154,14 +161,15 @@ static int xen_cpu_up_prepare_hvm(unsigned int cpu)
 	int rc = 0;
 
 	/*
-	 * If a CPU was offlined earlier and offlining timed out then the
-	 * lock mechanism is still initialized. Uninit it unconditionally
-	 * as it's safe to call even if already uninited. Interrupts and
-	 * timer have already been handled in xen_cpu_dead_hvm().
+	 * This can happen if CPU was offlined earlier and
+	 * offlining timed out in common_cpu_die().
 	 */
-	xen_uninit_lock_cpu(cpu);
+	if (cpu_report_state(cpu) == CPU_DEAD_FROZEN) {
+		xen_smp_intr_free(cpu);
+		xen_uninit_lock_cpu(cpu);
+	}
 
-	if (cpu_acpi_id(cpu) != CPU_ACPIID_INVALID)
+	if (cpu_acpi_id(cpu) != U32_MAX)
 		per_cpu(xen_vcpu_id, cpu) = cpu_acpi_id(cpu);
 	else
 		per_cpu(xen_vcpu_id, cpu) = cpu;
@@ -229,8 +237,6 @@ static void __init xen_hvm_guest_init(void)
 
 #ifdef CONFIG_KEXEC_CORE
 	machine_ops.shutdown = xen_hvm_shutdown;
-#endif
-#ifdef CONFIG_CRASH_DUMP
 	machine_ops.crash_shutdown = xen_hvm_crash_shutdown;
 #endif
 }
@@ -292,10 +298,6 @@ static uint32_t __init xen_platform_hvm(void)
 
 	if (xen_pv_domain())
 		return 0;
-
-	/* Set correct hypercall function. */
-	if (xen_domain)
-		xen_hypercall_setfunc();
 
 	if (xen_pvh_domain() && nopv) {
 		/* Guest booting via the Xen-PVH boot entry goes here */

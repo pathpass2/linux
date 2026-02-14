@@ -25,11 +25,11 @@
 #define CB_OP_GETATTR_BITMAP_MAXSZ	(4 * 4) // bitmap length, 3 bitmaps
 #define CB_OP_GETATTR_RES_MAXSZ		(CB_OP_HDR_RES_MAXSZ + \
 					 CB_OP_GETATTR_BITMAP_MAXSZ + \
-					 /* change, size, atime, ctime,
-					  * mtime, deleg_atime, deleg_mtime */\
-					 (2 + 2 + 3 + 3 + 3 + 3 + 3) * 4)
+					 /* change, size, ctime, mtime */\
+					 (2 + 2 + 3 + 3) * 4)
 #define CB_OP_RECALL_RES_MAXSZ		(CB_OP_HDR_RES_MAXSZ)
 
+#if defined(CONFIG_NFS_V4_1)
 #define CB_OP_LAYOUTRECALL_RES_MAXSZ	(CB_OP_HDR_RES_MAXSZ)
 #define CB_OP_DEVICENOTIFY_RES_MAXSZ	(CB_OP_HDR_RES_MAXSZ)
 #define CB_OP_SEQUENCE_RES_MAXSZ	(CB_OP_HDR_RES_MAXSZ + \
@@ -38,6 +38,7 @@
 #define CB_OP_RECALLANY_RES_MAXSZ	(CB_OP_HDR_RES_MAXSZ)
 #define CB_OP_RECALLSLOT_RES_MAXSZ	(CB_OP_HDR_RES_MAXSZ)
 #define CB_OP_NOTIFY_LOCK_RES_MAXSZ	(CB_OP_HDR_RES_MAXSZ)
+#endif /* CONFIG_NFS_V4_1 */
 #ifdef CONFIG_NFS_V4_2
 #define CB_OP_OFFLOAD_RES_MAXSZ		(CB_OP_HDR_RES_MAXSZ)
 #endif /* CONFIG_NFS_V4_2 */
@@ -116,9 +117,7 @@ static __be32 decode_bitmap(struct xdr_stream *xdr, uint32_t *bitmap)
 	if (likely(attrlen > 0))
 		bitmap[0] = ntohl(*p++);
 	if (attrlen > 1)
-		bitmap[1] = ntohl(*p++);
-	if (attrlen > 2)
-		bitmap[2] = ntohl(*p);
+		bitmap[1] = ntohl(*p);
 	return 0;
 }
 
@@ -203,6 +202,7 @@ static __be32 decode_recall_args(struct svc_rqst *rqstp,
 	return decode_fh(xdr, &args->fh);
 }
 
+#if defined(CONFIG_NFS_V4_1)
 static __be32 decode_layout_stateid(struct xdr_stream *xdr, nfs4_stateid *stateid)
 {
 	stateid->type = NFS4_LAYOUT_STATEID_TYPE;
@@ -372,8 +372,6 @@ static __be32 decode_rc_list(struct xdr_stream *xdr,
 
 	rc_list->rcl_nrefcalls = ntohl(*p++);
 	if (rc_list->rcl_nrefcalls) {
-		if (unlikely(rc_list->rcl_nrefcalls > xdr->buf->len))
-			goto out;
 		p = xdr_inline_decode(xdr,
 			     rc_list->rcl_nrefcalls * 2 * sizeof(uint32_t));
 		if (unlikely(p == NULL))
@@ -447,7 +445,7 @@ static __be32 decode_recallany_args(struct svc_rqst *rqstp,
 				      void *argp)
 {
 	struct cb_recallanyargs *args = argp;
-	uint32_t bitmap[3];
+	uint32_t bitmap[2];
 	__be32 *p, status;
 
 	p = xdr_inline_decode(xdr, 4);
@@ -518,6 +516,7 @@ static __be32 decode_notify_lock_args(struct svc_rqst *rqstp,
 	return decode_lockowner(xdr, args);
 }
 
+#endif /* CONFIG_NFS_V4_1 */
 #ifdef CONFIG_NFS_V4_2
 static __be32 decode_write_response(struct xdr_stream *xdr,
 					struct cb_offloadargs *args)
@@ -636,13 +635,6 @@ static __be32 encode_attr_time(struct xdr_stream *xdr, const struct timespec64 *
 	return 0;
 }
 
-static __be32 encode_attr_atime(struct xdr_stream *xdr, const uint32_t *bitmap, const struct timespec64 *time)
-{
-	if (!(bitmap[1] & FATTR4_WORD1_TIME_ACCESS))
-		return 0;
-	return encode_attr_time(xdr,time);
-}
-
 static __be32 encode_attr_ctime(struct xdr_stream *xdr, const uint32_t *bitmap, const struct timespec64 *time)
 {
 	if (!(bitmap[1] & FATTR4_WORD1_TIME_METADATA))
@@ -653,24 +645,6 @@ static __be32 encode_attr_ctime(struct xdr_stream *xdr, const uint32_t *bitmap, 
 static __be32 encode_attr_mtime(struct xdr_stream *xdr, const uint32_t *bitmap, const struct timespec64 *time)
 {
 	if (!(bitmap[1] & FATTR4_WORD1_TIME_MODIFY))
-		return 0;
-	return encode_attr_time(xdr,time);
-}
-
-static __be32 encode_attr_delegatime(struct xdr_stream *xdr,
-				     const uint32_t *bitmap,
-				     const struct timespec64 *time)
-{
-	if (!(bitmap[2] & FATTR4_WORD2_TIME_DELEG_ACCESS))
-		return 0;
-	return encode_attr_time(xdr,time);
-}
-
-static __be32 encode_attr_delegmtime(struct xdr_stream *xdr,
-				     const uint32_t *bitmap,
-				     const struct timespec64 *time)
-{
-	if (!(bitmap[2] & FATTR4_WORD2_TIME_DELEG_MODIFY))
 		return 0;
 	return encode_attr_time(xdr,time);
 }
@@ -725,23 +699,16 @@ static __be32 encode_getattr_res(struct svc_rqst *rqstp, struct xdr_stream *xdr,
 	status = encode_attr_size(xdr, res->bitmap, res->size);
 	if (unlikely(status != 0))
 		goto out;
-	status = encode_attr_atime(xdr, res->bitmap, &res->atime);
-	if (unlikely(status != 0))
-		goto out;
 	status = encode_attr_ctime(xdr, res->bitmap, &res->ctime);
 	if (unlikely(status != 0))
 		goto out;
 	status = encode_attr_mtime(xdr, res->bitmap, &res->mtime);
-	if (unlikely(status != 0))
-		goto out;
-	status = encode_attr_delegatime(xdr, res->bitmap, &res->atime);
-	if (unlikely(status != 0))
-		goto out;
-	status = encode_attr_delegmtime(xdr, res->bitmap, &res->mtime);
 	*savep = htonl((unsigned int)((char *)xdr->p - (char *)(savep+1)));
 out:
 	return status;
 }
+
+#if defined(CONFIG_NFS_V4_1)
 
 static __be32 encode_sessionid(struct xdr_stream *xdr,
 				 const struct nfs4_sessionid *sid)
@@ -839,6 +806,19 @@ static void nfs4_cb_free_slot(struct cb_process_state *cps)
 		cps->slot = NULL;
 	}
 }
+
+#else /* CONFIG_NFS_V4_1 */
+
+static __be32
+preprocess_nfs41_op(int nop, unsigned int op_nr, struct callback_op **op)
+{
+	return htonl(NFS4ERR_MINOR_VERS_MISMATCH);
+}
+
+static void nfs4_cb_free_slot(struct cb_process_state *cps)
+{
+}
+#endif /* CONFIG_NFS_V4_1 */
 
 #ifdef CONFIG_NFS_V4_2
 static __be32
@@ -965,7 +945,6 @@ static __be32 nfs4_callback_compound(struct svc_rqst *rqstp)
 			nfs_put_client(cps.clp);
 			goto out_invalidcred;
 		}
-		svc_xprt_set_valid(rqstp->rq_xprt);
 	}
 
 	cps.minorversion = hdr_arg.minorversion;
@@ -986,11 +965,6 @@ static __be32 nfs4_callback_compound(struct svc_rqst *rqstp)
 	if (unlikely(status == htonl(NFS4ERR_RESOURCE_HDR))) {
 		status = htonl(NFS4ERR_RESOURCE);
 		nops--;
-	}
-
-	if (svc_is_backchannel(rqstp) && cps.clp) {
-		rqstp->bc_to_initval = cps.clp->cl_rpcclient->cl_timeout->to_initval;
-		rqstp->bc_to_retries = cps.clp->cl_rpcclient->cl_timeout->to_retries;
 	}
 
 	*hdr_res.status = status;
@@ -1032,6 +1006,7 @@ static struct callback_op callback_ops[] = {
 		.decode_args = decode_recall_args,
 		.res_maxsize = CB_OP_RECALL_RES_MAXSZ,
 	},
+#if defined(CONFIG_NFS_V4_1)
 	[OP_CB_LAYOUTRECALL] = {
 		.process_op = nfs4_callback_layoutrecall,
 		.decode_args = decode_layoutrecall_args,
@@ -1063,6 +1038,7 @@ static struct callback_op callback_ops[] = {
 		.decode_args = decode_notify_lock_args,
 		.res_maxsize = CB_OP_NOTIFY_LOCK_RES_MAXSZ,
 	},
+#endif /* CONFIG_NFS_V4_1 */
 #ifdef CONFIG_NFS_V4_2
 	[OP_CB_OFFLOAD] = {
 		.process_op = nfs4_callback_offload,

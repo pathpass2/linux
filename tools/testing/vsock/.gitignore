@@ -2,5 +2,3 @@
 *.d
 vsock_test
 vsock_diag_test
-vsock_perf
-vsock_uring_test

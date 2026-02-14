@@ -5,15 +5,10 @@
  *  Copyright (C) 2000-2002 Russell King
  *  modification for nommu, Hyok S. Choi, 2004
  *
- *  Note: this file should not be included explicitly, include <asm/page.h>
- *  to get access to these definitions.
+ *  Note: this file should not be included by non-asm/.h files
  */
 #ifndef __ASM_ARM_MEMORY_H
 #define __ASM_ARM_MEMORY_H
-
-#ifndef _ASMARM_PAGE_H
-#error "Do not include <asm/memory.h> directly"
-#endif
 
 #include <linux/compiler.h>
 #include <linux/const.h>
@@ -146,6 +141,12 @@ extern unsigned long vectors_base;
 #define ITCM_OFFSET	UL(0xfffe0000)
 #define DTCM_OFFSET	UL(0xfffe8000)
 #endif
+
+/*
+ * Convert a page to/from a physical address
+ */
+#define page_to_phys(page)	(__pfn_to_phys(page_to_pfn(page)))
+#define phys_to_page(phys)	(pfn_to_page(__phys_to_pfn(phys)))
 
 /*
  * PLAT_PHYS_OFFSET is the offset (from zero) of the start of physical
@@ -287,12 +288,10 @@ static inline unsigned long __phys_to_virt(phys_addr_t x)
 
 #endif
 
-static inline unsigned long virt_to_pfn(const void *p)
-{
-	unsigned long kaddr = (unsigned long)p;
-	return (((kaddr - PAGE_OFFSET) >> PAGE_SHIFT) +
-		PHYS_PFN_OFFSET);
-}
+#define virt_to_pfn(kaddr) \
+	((((unsigned long)(kaddr) - PAGE_OFFSET) >> PAGE_SHIFT) + \
+	 PHYS_PFN_OFFSET)
+
 #define __pa_symbol_nodebug(x)	__virt_to_phys_nodebug((x))
 
 #ifdef CONFIG_DEBUG_VIRTUAL

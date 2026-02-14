@@ -24,8 +24,6 @@
 #include <linux/pid_namespace.h>
 #include <linux/uaccess.h>
 #include <linux/fs.h>
-#include <linux/fs_context.h>
-#include <linux/fs_parser.h>
 #include <linux/vmalloc.h>
 
 #include <linux/coda.h>
@@ -72,8 +70,8 @@ int __init coda_init_inodecache(void)
 {
 	coda_inode_cachep = kmem_cache_create("coda_inode_cache",
 				sizeof(struct coda_inode_info), 0,
-				SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
-				init_once);
+				SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|
+				SLAB_ACCOUNT, init_once);
 	if (coda_inode_cachep == NULL)
 		return -ENOMEM;
 	return 0;
@@ -89,10 +87,10 @@ void coda_destroy_inodecache(void)
 	kmem_cache_destroy(coda_inode_cachep);
 }
 
-static int coda_reconfigure(struct fs_context *fc)
+static int coda_remount(struct super_block *sb, int *flags, char *data)
 {
-	sync_filesystem(fc->root->d_sb);
-	fc->sb_flags |= SB_NOATIME;
+	sync_filesystem(sb);
+	*flags |= SB_NOATIME;
 	return 0;
 }
 
@@ -104,119 +102,78 @@ static const struct super_operations coda_super_operations =
 	.evict_inode	= coda_evict_inode,
 	.put_super	= coda_put_super,
 	.statfs		= coda_statfs,
+	.remount_fs	= coda_remount,
 };
 
-struct coda_fs_context {
-	int	idx;
-};
-
-enum {
-	Opt_fd,
-};
-
-static const struct fs_parameter_spec coda_param_specs[] = {
-	fsparam_fd	("fd",	Opt_fd),
-	{}
-};
-
-static int coda_set_idx(struct fs_context *fc, struct file *file)
+static int get_device_index(struct coda_mount_data *data)
 {
-	struct coda_fs_context *ctx = fc->fs_private;
+	struct fd f;
 	struct inode *inode;
 	int idx;
 
-	inode = file_inode(file);
+	if (data == NULL) {
+		pr_warn("%s: Bad mount data\n", __func__);
+		return -1;
+	}
+
+	if (data->version != CODA_MOUNT_VERSION) {
+		pr_warn("%s: Bad mount version\n", __func__);
+		return -1;
+	}
+
+	f = fdget(data->fd);
+	if (!f.file)
+		goto Ebadf;
+	inode = file_inode(f.file);
 	if (!S_ISCHR(inode->i_mode) || imajor(inode) != CODA_PSDEV_MAJOR) {
-		return invalf(fc, "coda: Not coda psdev");
+		fdput(f);
+		goto Ebadf;
 	}
+
 	idx = iminor(inode);
-	if (idx < 0 || idx >= MAX_CODADEVS)
-		return invalf(fc, "coda: Bad minor number");
-	ctx->idx = idx;
-	return 0;
-}
+	fdput(f);
 
-static int coda_parse_fd(struct fs_context *fc, struct fs_parameter *param,
-			 struct fs_parse_result *result)
-{
-	struct file *file;
-	int err;
-
-	if (param->type == fs_value_is_file) {
-		file = param->file;
-		param->file = NULL;
-	} else {
-		file = fget(result->uint_32);
-	}
-	if (!file)
-		return -EBADF;
-
-	err = coda_set_idx(fc, file);
-	fput(file);
-	return err;
-}
-
-static int coda_parse_param(struct fs_context *fc, struct fs_parameter *param)
-{
-	struct fs_parse_result result;
-	int opt;
-
-	opt = fs_parse(fc, coda_param_specs, param, &result);
-	if (opt < 0)
-		return opt;
-
-	switch (opt) {
-	case Opt_fd:
-		return coda_parse_fd(fc, param, &result);
+	if (idx < 0 || idx >= MAX_CODADEVS) {
+		pr_warn("%s: Bad minor number\n", __func__);
+		return -1;
 	}
 
-	return 0;
+	return idx;
+Ebadf:
+	pr_warn("%s: Bad file\n", __func__);
+	return -1;
 }
 
-/*
- * Parse coda's binary mount data form.  We ignore any errors and go with index
- * 0 if we get one for backward compatibility.
- */
-static int coda_parse_monolithic(struct fs_context *fc, void *_data)
+static int coda_fill_super(struct super_block *sb, void *data, int silent)
 {
-	struct file *file;
-	struct coda_mount_data *data = _data;
-
-	if (!data)
-		return invalf(fc, "coda: Bad mount data");
-
-	if (data->version != CODA_MOUNT_VERSION)
-		return invalf(fc, "coda: Bad mount version");
-
-	file = fget(data->fd);
-	if (file) {
-		coda_set_idx(fc, file);
-		fput(file);
-	}
-	return 0;
-}
-
-static int coda_fill_super(struct super_block *sb, struct fs_context *fc)
-{
-	struct coda_fs_context *ctx = fc->fs_private;
 	struct inode *root = NULL;
 	struct venus_comm *vc;
 	struct CodaFid fid;
 	int error;
+	int idx;
 
-	infof(fc, "coda: device index: %i\n", ctx->idx);
+	if (task_active_pid_ns(current) != &init_pid_ns)
+		return -EINVAL;
 
-	vc = &coda_comms[ctx->idx];
+	idx = get_device_index((struct coda_mount_data *) data);
+
+	/* Ignore errors in data, for backward compatibility */
+	if(idx == -1)
+		idx = 0;
+	
+	pr_info("%s: device index: %i\n", __func__,  idx);
+
+	vc = &coda_comms[idx];
 	mutex_lock(&vc->vc_mutex);
 
 	if (!vc->vc_inuse) {
-		errorf(fc, "coda: No pseudo device");
+		pr_warn("%s: No pseudo device\n", __func__);
 		error = -EINVAL;
 		goto unlock_out;
 	}
 
 	if (vc->vc_sb) {
-		errorf(fc, "coda: Device already mounted");
+		pr_warn("%s: Device already mounted\n", __func__);
 		error = -EBUSY;
 		goto unlock_out;
 	}
@@ -230,7 +187,7 @@ static int coda_fill_super(struct super_block *sb, struct fs_context *fc)
 	sb->s_blocksize_bits = 12;
 	sb->s_magic = CODA_SUPER_MAGIC;
 	sb->s_op = &coda_super_operations;
-	set_default_d_op(sb, &coda_dentry_operations);
+	sb->s_d_op = &coda_dentry_operations;
 	sb->s_time_gran = 1;
 	sb->s_time_min = S64_MIN;
 	sb->s_time_max = S64_MAX;
@@ -299,8 +256,7 @@ int coda_getattr(struct mnt_idmap *idmap, const struct path *path,
 {
 	int err = coda_revalidate_inode(d_inode(path->dentry));
 	if (!err)
-		generic_fillattr(&nop_mnt_idmap, request_mask,
-				 d_inode(path->dentry), stat);
+		generic_fillattr(&nop_mnt_idmap, d_inode(path->dentry), stat);
 	return err;
 }
 
@@ -313,7 +269,7 @@ int coda_setattr(struct mnt_idmap *idmap, struct dentry *de,
 
 	memset(&vattr, 0, sizeof(vattr)); 
 
-	inode_set_ctime_current(inode);
+	inode->i_ctime = current_time(inode);
 	coda_iattr_to_vattr(iattr, &vattr);
 	vattr.va_type = C_VNON; /* cannot set type */
 
@@ -356,45 +312,18 @@ static int coda_statfs(struct dentry *dentry, struct kstatfs *buf)
 	return 0; 
 }
 
-static int coda_get_tree(struct fs_context *fc)
+/* init_coda: used by filesystems.c to register coda */
+
+static struct dentry *coda_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
 {
-	if (task_active_pid_ns(current) != &init_pid_ns)
-		return -EINVAL;
-
-	return get_tree_nodev(fc, coda_fill_super);
-}
-
-static void coda_free_fc(struct fs_context *fc)
-{
-	kfree(fc->fs_private);
-}
-
-static const struct fs_context_operations coda_context_ops = {
-	.free		= coda_free_fc,
-	.parse_param	= coda_parse_param,
-	.parse_monolithic = coda_parse_monolithic,
-	.get_tree	= coda_get_tree,
-	.reconfigure	= coda_reconfigure,
-};
-
-static int coda_init_fs_context(struct fs_context *fc)
-{
-	struct coda_fs_context *ctx;
-
-	ctx = kzalloc(sizeof(struct coda_fs_context), GFP_KERNEL);
-	if (!ctx)
-		return -ENOMEM;
-
-	fc->fs_private = ctx;
-	fc->ops = &coda_context_ops;
-	return 0;
+	return mount_nodev(fs_type, flags, data, coda_fill_super);
 }
 
 struct file_system_type coda_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "coda",
-	.init_fs_context = coda_init_fs_context,
-	.parameters	= coda_param_specs,
+	.mount		= coda_mount,
 	.kill_sb	= kill_anon_super,
 	.fs_flags	= FS_BINARY_MOUNTDATA,
 };

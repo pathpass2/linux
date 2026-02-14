@@ -46,8 +46,6 @@
 *	First release to the public
 */
 
-#define pr_fmt(fmt) "smapi: " fmt
-
 #include <linux/kernel.h>
 #include <linux/mc146818rtc.h>	/* CMOS defines */
 #include "smapi.h"
@@ -71,6 +69,10 @@ static int smapi_request(unsigned short inBX, unsigned short inCX,
 	unsigned short usSmapiOK = -EIO, *pusSmapiOK = &usSmapiOK;
 	unsigned int inBXCX = (inBX << 16) | inCX;
 	unsigned int inDISI = (inDI << 16) | inSI;
+	int retval = 0;
+
+	PRINTK_5(TRACE_SMAPI, "inBX %x inCX %x inDI %x inSI %x\n",
+		inBX, inCX, inDI, inSI);
 
 	__asm__ __volatile__("movw  $0x5380,%%ax\n\t"
 			    "movl  %7,%%ebx\n\t"
@@ -105,6 +107,10 @@ static int smapi_request(unsigned short inBX, unsigned short inCX,
 			    :"%eax", "%ebx", "%ecx", "%edx", "%edi",
 			    "%esi");
 
+	PRINTK_8(TRACE_SMAPI,
+		"myoutAX %x myoutBX %x myoutCX %x myoutDX %x myoutDI %x myoutSI %x usSmapiOK %x\n",
+		myoutAX, myoutBX, myoutCX, myoutDX, myoutDI, myoutSI,
+		usSmapiOK);
 	*outAX = myoutAX;
 	*outBX = myoutBX;
 	*outCX = myoutCX;
@@ -112,11 +118,13 @@ static int smapi_request(unsigned short inBX, unsigned short inCX,
 	*outDI = myoutDI;
 	*outSI = myoutSI;
 
-	return usSmapiOK == 1 ? 0 : -EIO;
+	retval = (usSmapiOK == 1) ? 0 : -EIO;
+	PRINTK_2(TRACE_SMAPI, "smapi::smapi_request exit retval %x\n", retval);
+	return retval;
 }
 
 
-int smapi_query_DSP_cfg(struct smapi_dsp_settings *pSettings)
+int smapi_query_DSP_cfg(SMAPI_DSP_SETTINGS * pSettings)
 {
 	int bRC;
 	unsigned short usAX, usBX, usCX, usDX, usDI, usSI;
@@ -126,12 +134,16 @@ int smapi_query_DSP_cfg(struct smapi_dsp_settings *pSettings)
 	static const unsigned short ausUartBases[] = {
 		0x03F8, 0x02F8, 0x03E8, 0x02E8 };
 
+	PRINTK_1(TRACE_SMAPI, "smapi::smapi_query_DSP_cfg entry\n");
+
 	bRC = smapi_request(0x1802, 0x0000, 0, 0,
 		&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
 	if (bRC) {
-		pr_err("%s: Error: Could not get DSP Settings. Aborting.\n", __func__);
+		PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_query_DSP_cfg: Error: Could not get DSP Settings. Aborting.\n");
 		return bRC;
 	}
+
+	PRINTK_1(TRACE_SMAPI, "smapi::smapi_query_DSP_cfg, smapi_request OK\n");
 
 	pSettings->bDSPPresent = ((usBX & 0x0100) != 0);
 	pSettings->bDSPEnabled = ((usCX & 0x0001) != 0);
@@ -142,19 +154,26 @@ int smapi_query_DSP_cfg(struct smapi_dsp_settings *pSettings)
 	} else {
 		pSettings->usDspBaseIO = 0;
 	}
+	PRINTK_6(TRACE_SMAPI,
+		"smapi::smapi_query_DSP_cfg get DSP Settings bDSPPresent %x bDSPEnabled %x usDspIRQ %x usDspDMA %x usDspBaseIO %x\n",
+		pSettings->bDSPPresent, pSettings->bDSPEnabled,
+		pSettings->usDspIRQ, pSettings->usDspDMA,
+		pSettings->usDspBaseIO);
 
 	/* check for illegal values */
 	if ( pSettings->usDspBaseIO == 0 ) 
-		pr_err("%s: Worry: DSP base I/O address is 0\n", __func__);
+		PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_query_DSP_cfg: Worry: DSP base I/O address is 0\n");
 	if ( pSettings->usDspIRQ == 0 )
-		pr_err("%s: Worry: DSP IRQ line is 0\n", __func__);
+		PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_query_DSP_cfg: Worry: DSP IRQ line is 0\n");
 
 	bRC = smapi_request(0x1804, 0x0000, 0, 0,
 	   	&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
 	if (bRC) {
-		pr_err("%s: Error: Could not get DSP modem settings. Aborting.\n", __func__);
+		PRINTK_ERROR("smapi::smapi_query_DSP_cfg: Error: Could not get DSP modem settings. Aborting.\n");
 		return bRC;
 	} 
+
+	PRINTK_1(TRACE_SMAPI, "smapi::smapi_query_DSP_cfg, smapi_request OK\n");
 
 	pSettings->bModemEnabled = ((usCX & 0x0001) != 0);
 	pSettings->usUartIRQ = usSI & 0x000F;
@@ -164,11 +183,19 @@ int smapi_query_DSP_cfg(struct smapi_dsp_settings *pSettings)
 		pSettings->usUartBaseIO = 0;
 	}
 
+	PRINTK_4(TRACE_SMAPI,
+		"smapi::smapi_query_DSP_cfg get DSP modem settings bModemEnabled %x usUartIRQ %x usUartBaseIO %x\n",
+		pSettings->bModemEnabled,
+		pSettings->usUartIRQ,
+		pSettings->usUartBaseIO);
+
 	/* check for illegal values */
 	if ( pSettings->usUartBaseIO == 0 ) 
-		pr_err("%s: Worry: UART base I/O address is 0\n", __func__);
+		PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_query_DSP_cfg: Worry: UART base I/O address is 0\n");
 	if ( pSettings->usUartIRQ == 0 )
-		pr_err("%s: Worry: UART IRQ line is 0\n", __func__);
+		PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_query_DSP_cfg: Worry: UART IRQ line is 0\n");
+
+	PRINTK_2(TRACE_SMAPI, "smapi::smapi_query_DSP_cfg exit bRC %x\n", bRC);
 
 	return bRC;
 }
@@ -191,14 +218,17 @@ int smapi_set_DSP_cfg(void)
 
 	unsigned short dspio_index = 0, uartio_index = 0;
 
+	PRINTK_5(TRACE_SMAPI,
+		"smapi::smapi_set_DSP_cfg entry mwave_3780i_irq %x mwave_3780i_io %x mwave_uart_irq %x mwave_uart_io %x\n",
+		mwave_3780i_irq, mwave_3780i_io, mwave_uart_irq, mwave_uart_io);
+
 	if (mwave_3780i_io) {
 		for (i = 0; i < ARRAY_SIZE(ausDspBases); i++) {
 			if (mwave_3780i_io == ausDspBases[i])
 				break;
 		}
 		if (i == ARRAY_SIZE(ausDspBases)) {
-			pr_err("%s: Error: Invalid mwave_3780i_io address %x. Aborting.\n",
-			       __func__, mwave_3780i_io);
+			PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_set_DSP_cfg: Error: Invalid mwave_3780i_io address %x. Aborting.\n", mwave_3780i_io);
 			return bRC;
 		}
 		dspio_index = i;
@@ -210,8 +240,7 @@ int smapi_set_DSP_cfg(void)
 				break;
 		}
 		if (i == ARRAY_SIZE(ausDspIrqs)) {
-			pr_err("%s: Error: Invalid mwave_3780i_irq %x. Aborting.\n", __func__,
-			       mwave_3780i_irq);
+			PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_set_DSP_cfg: Error: Invalid mwave_3780i_irq %x. Aborting.\n", mwave_3780i_irq);
 			return bRC;
 		}
 	}
@@ -222,8 +251,7 @@ int smapi_set_DSP_cfg(void)
 				break;
 		}
 		if (i == ARRAY_SIZE(ausUartBases)) {
-			pr_err("%s: Error: Invalid mwave_uart_io address %x. Aborting.\n", __func__,
-			       mwave_uart_io);
+			PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_set_DSP_cfg: Error: Invalid mwave_uart_io address %x. Aborting.\n", mwave_uart_io);
 			return bRC;
 		}
 		uartio_index = i;
@@ -236,8 +264,7 @@ int smapi_set_DSP_cfg(void)
 				break;
 		}
 		if (i == ARRAY_SIZE(ausUartIrqs)) {
-			pr_err("%s: Error: Invalid mwave_uart_irq %x. Aborting.\n", __func__,
-			       mwave_uart_irq);
+			PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_set_DSP_cfg: Error: Invalid mwave_uart_irq %x. Aborting.\n", mwave_uart_irq);
 			return bRC;
 		}
 	}
@@ -252,15 +279,46 @@ int smapi_set_DSP_cfg(void)
 		if (usBX & 0x0100) {	/* serial port A is present */
 			if (usCX & 1) {	/* serial port is enabled */
 				if ((usSI & 0xFF) == mwave_uart_irq) {
-					pr_err("%s: Serial port A irq %x conflicts with mwave_uart_irq %x\n",
-					       __func__, usSI & 0xFF, mwave_uart_irq);
+#ifndef MWAVE_FUTZ_WITH_OTHER_DEVICES
+					PRINTK_ERROR(KERN_ERR_MWAVE
+						"smapi::smapi_set_DSP_cfg: Serial port A irq %x conflicts with mwave_uart_irq %x\n", usSI & 0xFF, mwave_uart_irq);
+#else
+					PRINTK_3(TRACE_SMAPI,
+						"smapi::smapi_set_DSP_cfg: Serial port A irq %x conflicts with mwave_uart_irq %x\n", usSI & 0xFF, mwave_uart_irq);
+#endif
+#ifdef MWAVE_FUTZ_WITH_OTHER_DEVICES
+					PRINTK_1(TRACE_SMAPI,
+						"smapi::smapi_set_DSP_cfg Disabling conflicting serial port\n");
+					bRC = smapi_request(0x1403, 0x0100, 0, usSI,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+					bRC = smapi_request(0x1402, 0x0000, 0, 0,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+#else
 					goto exit_conflict;
+#endif
 				} else {
 					if ((usSI >> 8) == uartio_index) {
-						pr_err("%s: Serial port A base I/O address %x conflicts with mwave uart I/O %x\n",
-						       __func__, ausUartBases[usSI >> 8],
-						       ausUartBases[uartio_index]);
+#ifndef MWAVE_FUTZ_WITH_OTHER_DEVICES
+						PRINTK_ERROR(KERN_ERR_MWAVE
+							"smapi::smapi_set_DSP_cfg: Serial port A base I/O address %x conflicts with mwave uart I/O %x\n", ausUartBases[usSI >> 8], ausUartBases[uartio_index]);
+#else
+						PRINTK_3(TRACE_SMAPI,
+							"smapi::smapi_set_DSP_cfg: Serial port A base I/O address %x conflicts with mwave uart I/O %x\n", ausUartBases[usSI >> 8], ausUartBases[uartio_index]);
+#endif
+#ifdef MWAVE_FUTZ_WITH_OTHER_DEVICES
+						PRINTK_1(TRACE_SMAPI,
+							"smapi::smapi_set_DSP_cfg Disabling conflicting serial port A\n");
+						bRC = smapi_request (0x1403, 0x0100, 0, usSI,
+							&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+						if (bRC) goto exit_smapi_request_error;
+						bRC = smapi_request (0x1402, 0x0000, 0, 0,
+							&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+						if (bRC) goto exit_smapi_request_error;
+#else
 						goto exit_conflict;
+#endif
 					}
 				}
 			}
@@ -274,15 +332,46 @@ int smapi_set_DSP_cfg(void)
 		if (usBX & 0x0100) {	/* serial port B is present */
 			if (usCX & 1) {	/* serial port is enabled */
 				if ((usSI & 0xFF) == mwave_uart_irq) {
-					pr_err("%s: Serial port B irq %x conflicts with mwave_uart_irq %x\n",
-					       __func__, usSI & 0xFF, mwave_uart_irq);
+#ifndef MWAVE_FUTZ_WITH_OTHER_DEVICES
+					PRINTK_ERROR(KERN_ERR_MWAVE
+						"smapi::smapi_set_DSP_cfg: Serial port B irq %x conflicts with mwave_uart_irq %x\n", usSI & 0xFF, mwave_uart_irq);
+#else
+					PRINTK_3(TRACE_SMAPI,
+						"smapi::smapi_set_DSP_cfg: Serial port B irq %x conflicts with mwave_uart_irq %x\n", usSI & 0xFF, mwave_uart_irq);
+#endif
+#ifdef MWAVE_FUTZ_WITH_OTHER_DEVICES
+					PRINTK_1(TRACE_SMAPI,
+						"smapi::smapi_set_DSP_cfg Disabling conflicting serial port B\n");
+					bRC = smapi_request(0x1405, 0x0100, 0, usSI,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+					bRC = smapi_request(0x1404, 0x0000, 0, 0,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+#else
 					goto exit_conflict;
+#endif
 				} else {
 					if ((usSI >> 8) == uartio_index) {
-						pr_err("%s: Serial port B base I/O address %x conflicts with mwave uart I/O %x\n",
-						       __func__, ausUartBases[usSI >> 8],
-						       ausUartBases[uartio_index]);
+#ifndef MWAVE_FUTZ_WITH_OTHER_DEVICES
+						PRINTK_ERROR(KERN_ERR_MWAVE
+							"smapi::smapi_set_DSP_cfg: Serial port B base I/O address %x conflicts with mwave uart I/O %x\n", ausUartBases[usSI >> 8], ausUartBases[uartio_index]);
+#else
+						PRINTK_3(TRACE_SMAPI,
+							"smapi::smapi_set_DSP_cfg: Serial port B base I/O address %x conflicts with mwave uart I/O %x\n", ausUartBases[usSI >> 8], ausUartBases[uartio_index]);
+#endif
+#ifdef MWAVE_FUTZ_WITH_OTHER_DEVICES
+						PRINTK_1 (TRACE_SMAPI,
+						    "smapi::smapi_set_DSP_cfg Disabling conflicting serial port B\n");
+						bRC = smapi_request (0x1405, 0x0100, 0, usSI,
+							&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+						if (bRC) goto exit_smapi_request_error;
+						bRC = smapi_request (0x1404, 0x0000, 0, 0,
+							&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+						if (bRC) goto exit_smapi_request_error;
+#else
 						goto exit_conflict;
+#endif
 					}
 				}
 			}
@@ -298,15 +387,58 @@ int smapi_set_DSP_cfg(void)
 		/* bRC == 0 */
 		if ((usCX & 0xff) != 0xff) { /* IR port not disabled */
 			if ((usCX & 0xff) == mwave_uart_irq) {
-				pr_err("%s: IR port irq %x conflicts with mwave_uart_irq %x\n",
-				       __func__, usCX & 0xff, mwave_uart_irq);
+#ifndef MWAVE_FUTZ_WITH_OTHER_DEVICES
+				PRINTK_ERROR(KERN_ERR_MWAVE
+					"smapi::smapi_set_DSP_cfg: IR port irq %x conflicts with mwave_uart_irq %x\n", usCX & 0xff, mwave_uart_irq);
+#else
+				PRINTK_3(TRACE_SMAPI,
+					"smapi::smapi_set_DSP_cfg: IR port irq %x conflicts with mwave_uart_irq %x\n", usCX & 0xff, mwave_uart_irq);
+#endif
+#ifdef MWAVE_FUTZ_WITH_OTHER_DEVICES
+				PRINTK_1(TRACE_SMAPI,
+					"smapi::smapi_set_DSP_cfg Disabling conflicting IR port\n");
+				bRC = smapi_request(0x1701, 0x0100, 0, 0,
+					&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+				if (bRC) goto exit_smapi_request_error;
+				bRC = smapi_request(0x1700, 0, 0, 0,
+					&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+				if (bRC) goto exit_smapi_request_error;
+				bRC = smapi_request(0x1705, 0x01ff, 0, usSI,
+					&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+				if (bRC) goto exit_smapi_request_error;
+				bRC = smapi_request(0x1704, 0x0000, 0, 0,
+					&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+				if (bRC) goto exit_smapi_request_error;
+#else
 				goto exit_conflict;
+#endif
 			} else {
 				if ((usSI & 0xff) == uartio_index) {
-					pr_err("%s: IR port base I/O address %x conflicts with mwave uart I/O %x\n",
-					       __func__, ausUartBases[usSI & 0xff],
-					       ausUartBases[uartio_index]);
+#ifndef MWAVE_FUTZ_WITH_OTHER_DEVICES
+					PRINTK_ERROR(KERN_ERR_MWAVE
+						"smapi::smapi_set_DSP_cfg: IR port base I/O address %x conflicts with mwave uart I/O %x\n", ausUartBases[usSI & 0xff], ausUartBases[uartio_index]);
+#else
+					PRINTK_3(TRACE_SMAPI,
+						"smapi::smapi_set_DSP_cfg: IR port base I/O address %x conflicts with mwave uart I/O %x\n", ausUartBases[usSI & 0xff], ausUartBases[uartio_index]);
+#endif
+#ifdef MWAVE_FUTZ_WITH_OTHER_DEVICES
+					PRINTK_1(TRACE_SMAPI,
+						"smapi::smapi_set_DSP_cfg Disabling conflicting IR port\n");
+					bRC = smapi_request(0x1701, 0x0100, 0, 0,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+					bRC = smapi_request(0x1700, 0, 0, 0,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+					bRC = smapi_request(0x1705, 0x01ff, 0, usSI,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+					bRC = smapi_request(0x1704, 0x0000, 0, 0,
+						&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+					if (bRC) goto exit_smapi_request_error;
+#else
 					goto exit_conflict;
+#endif
 				}
 			}
 		}
@@ -350,6 +482,7 @@ int smapi_set_DSP_cfg(void)
 	if (bRC) goto exit_smapi_request_error;
 
 /* normal exit: */
+	PRINTK_1(TRACE_SMAPI, "smapi::smapi_set_DSP_cfg exit\n");
 	return 0;
 
 exit_conflict:
@@ -357,21 +490,50 @@ exit_conflict:
 	return -EIO;
 
 exit_smapi_request_error:
-	pr_err("%s: exit on smapi_request error bRC %x\n", __func__, bRC);
+	PRINTK_ERROR(KERN_ERR_MWAVE "smapi::smapi_set_DSP_cfg exit on smapi_request error bRC %x\n", bRC);
 	return bRC;
 }
 
 
 int smapi_set_DSP_power_state(bool bOn)
 {
+	int bRC;
 	unsigned short usAX, usBX, usCX, usDX, usDI, usSI;
 	unsigned short usPowerFunction;
 
+	PRINTK_2(TRACE_SMAPI, "smapi::smapi_set_DSP_power_state entry bOn %x\n", bOn);
+
 	usPowerFunction = (bOn) ? 1 : 0;
 
-	return smapi_request(0x4901, 0x0000, 0, usPowerFunction, &usAX, &usBX, &usCX, &usDX, &usDI,
-			     &usSI);
+	bRC = smapi_request(0x4901, 0x0000, 0, usPowerFunction,
+		&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+
+	PRINTK_2(TRACE_SMAPI, "smapi::smapi_set_DSP_power_state exit bRC %x\n", bRC);
+
+	return bRC;
 }
+
+#if 0
+static int SmapiQuerySystemID(void)
+{
+	int bRC = -EIO;
+	unsigned short usAX = 0xffff, usBX = 0xffff, usCX = 0xffff,
+		usDX = 0xffff, usDI = 0xffff, usSI = 0xffff;
+
+	printk("smapi::SmapiQUerySystemID entry\n");
+	bRC = smapi_request(0x0000, 0, 0, 0,
+		&usAX, &usBX, &usCX, &usDX, &usDI, &usSI);
+
+	if (bRC == 0) {
+		printk("AX=%x, BX=%x, CX=%x, DX=%x, DI=%x, SI=%x\n",
+			usAX, usBX, usCX, usDX, usDI, usSI);
+	} else {
+		printk("smapi::SmapiQuerySystemID smapi_request error\n");
+	}
+
+	return bRC;
+}
+#endif  /*  0  */
 
 int smapi_init(void)
 {
@@ -379,10 +541,13 @@ int smapi_init(void)
 	unsigned short usSmapiID = 0;
 	unsigned long flags;
 
+	PRINTK_1(TRACE_SMAPI, "smapi::smapi_init entry\n");
+
 	spin_lock_irqsave(&rtc_lock, flags);
 	usSmapiID = CMOS_READ(0x7C);
 	usSmapiID |= (CMOS_READ(0x7D) << 8);
 	spin_unlock_irqrestore(&rtc_lock, flags);
+	PRINTK_2(TRACE_SMAPI, "smapi::smapi_init usSmapiID %x\n", usSmapiID);
 
 	if (usSmapiID == 0x5349) {
 		spin_lock_irqsave(&rtc_lock, flags);
@@ -390,13 +555,16 @@ int smapi_init(void)
 		g_usSmapiPort |= (CMOS_READ(0x7F) << 8);
 		spin_unlock_irqrestore(&rtc_lock, flags);
 		if (g_usSmapiPort == 0) {
-			pr_err("%s: ERROR unable to read from SMAPI port\n", __func__);
+			PRINTK_ERROR("smapi::smapi_init, ERROR unable to read from SMAPI port\n");
 		} else {
+			PRINTK_2(TRACE_SMAPI,
+				"smapi::smapi_init, exit true g_usSmapiPort %x\n",
+				g_usSmapiPort);
 			retval = 0;
 			//SmapiQuerySystemID();
 		}
 	} else {
-		pr_err("%s: ERROR invalid usSmapiID\n", __func__);
+		PRINTK_ERROR("smapi::smapi_init, ERROR invalid usSmapiID\n");
 		retval = -ENXIO;
 	}
 

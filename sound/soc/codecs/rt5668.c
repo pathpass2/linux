@@ -15,7 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/acpi.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <linux/regulator/consumer.h>
 #include <linux/mutex.h>
 #include <sound/core.h>
@@ -42,7 +43,6 @@ static const char *rt5668_supply_names[RT5668_NUM_SUPPLIES] = {
 struct rt5668_priv {
 	struct snd_soc_component *component;
 	struct rt5668_platform_data pdata;
-	struct gpio_desc *ldo1_en;
 	struct regmap *regmap;
 	struct snd_soc_jack *hs_jack;
 	struct regulator_bulk_data supplies[RT5668_NUM_SUPPLIES];
@@ -799,6 +799,49 @@ static void rt5668_reset(struct regmap *regmap)
 	regmap_write(regmap, RT5668_RESET, 0);
 	regmap_write(regmap, RT5668_I2C_MODE, 1);
 }
+/**
+ * rt5668_sel_asrc_clk_src - select ASRC clock source for a set of filters
+ * @component: SoC audio component device.
+ * @filter_mask: mask of filters.
+ * @clk_src: clock source
+ *
+ * The ASRC function is for asynchronous MCLK and LRCK. Also, since RT5668 can
+ * only support standard 32fs or 64fs i2s format, ASRC should be enabled to
+ * support special i2s clock format such as Intel's 100fs(100 * sampling rate).
+ * ASRC function will track i2s clock and generate a corresponding system clock
+ * for codec. This function provides an API to select the clock source for a
+ * set of filters specified by the mask. And the component driver will turn on
+ * ASRC for these filters if ASRC is selected as their clock source.
+ */
+int rt5668_sel_asrc_clk_src(struct snd_soc_component *component,
+		unsigned int filter_mask, unsigned int clk_src)
+{
+
+	switch (clk_src) {
+	case RT5668_CLK_SEL_SYS:
+	case RT5668_CLK_SEL_I2S1_ASRC:
+	case RT5668_CLK_SEL_I2S2_ASRC:
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	if (filter_mask & RT5668_DA_STEREO1_FILTER) {
+		snd_soc_component_update_bits(component, RT5668_PLL_TRACK_2,
+			RT5668_FILTER_CLK_SEL_MASK,
+			clk_src << RT5668_FILTER_CLK_SEL_SFT);
+	}
+
+	if (filter_mask & RT5668_AD_STEREO1_FILTER) {
+		snd_soc_component_update_bits(component, RT5668_PLL_TRACK_3,
+			RT5668_FILTER_CLK_SEL_MASK,
+			clk_src << RT5668_FILTER_CLK_SEL_SFT);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rt5668_sel_asrc_clk_src);
 
 static int rt5668_button_detect(struct snd_soc_component *component)
 {
@@ -853,7 +896,8 @@ static int rt5668_headset_detect(struct snd_soc_component *component,
 		int jack_insert)
 {
 	struct rt5668_priv *rt5668 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(component);
 	unsigned int val, count;
 
 	if (jack_insert) {
@@ -1966,10 +2010,10 @@ static int rt5668_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0, tdm_ctrl = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		rt5668->master[dai->id] = 1;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		rt5668->master[dai->id] = 0;
 		break;
 	default:
@@ -2326,7 +2370,7 @@ static const struct regmap_config rt5668_regmap = {
 	.max_register = RT5668_I2C_MODE,
 	.volatile_reg = rt5668_volatile_register,
 	.readable_reg = rt5668_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = rt5668_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5668_reg),
 	.use_single_read = true,
@@ -2334,7 +2378,7 @@ static const struct regmap_config rt5668_regmap = {
 };
 
 static const struct i2c_device_id rt5668_i2c_id[] = {
-	{"rt5668b"},
+	{"rt5668b", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rt5668_i2c_id);
@@ -2348,6 +2392,9 @@ static int rt5668_parse_dt(struct rt5668_priv *rt5668, struct device *dev)
 		&rt5668->pdata.dmic1_clk_pin);
 	of_property_read_u32(dev->of_node, "realtek,jd-src",
 		&rt5668->pdata.jd_src);
+
+	rt5668->pdata.ldo1_en = of_get_named_gpio(dev->of_node,
+		"realtek,ldo1-en-gpios", 0);
 
 	return 0;
 }
@@ -2450,15 +2497,13 @@ static int rt5668_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
-	rt5668->ldo1_en = devm_gpiod_get_optional(&i2c->dev,
-						  "realtek,ldo1-en",
-						  GPIOD_OUT_HIGH);
-	if (IS_ERR(rt5668->ldo1_en)) {
-		dev_err(&i2c->dev, "Fail gpio request ldo1_en\n");
-		return PTR_ERR(rt5668->ldo1_en);
+	if (gpio_is_valid(rt5668->pdata.ldo1_en)) {
+		if (devm_gpio_request_one(&i2c->dev, rt5668->pdata.ldo1_en,
+					  GPIOF_OUT_INIT_HIGH, "rt5668"))
+			dev_err(&i2c->dev, "Fail gpio_request gpio_ldo\n");
 	}
 
-	/* Sleep for 300 ms minimum */
+	/* Sleep for 300 ms miniumum */
 	usleep_range(300000, 350000);
 
 	regmap_write(rt5668->regmap, RT5668_I2C_MODE, 0x1);
@@ -2536,7 +2581,7 @@ static int rt5668_i2c_probe(struct i2c_client *i2c)
 			rt5668_irq, IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING
 			| IRQF_ONESHOT, "rt5668", rt5668);
 		if (ret)
-			dev_err(&i2c->dev, "Failed to request IRQ: %d\n", ret);
+			dev_err(&i2c->dev, "Failed to reguest IRQ: %d\n", ret);
 
 	}
 
@@ -2554,15 +2599,15 @@ static void rt5668_i2c_shutdown(struct i2c_client *client)
 #ifdef CONFIG_OF
 static const struct of_device_id rt5668_of_match[] = {
 	{.compatible = "realtek,rt5668b"},
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, rt5668_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt5668_acpi_match[] = {
-	{ "10EC5668" },
-	{ }
+	{"10EC5668", 0,},
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, rt5668_acpi_match);
 #endif
@@ -2573,7 +2618,7 @@ static struct i2c_driver rt5668_i2c_driver = {
 		.of_match_table = of_match_ptr(rt5668_of_match),
 		.acpi_match_table = ACPI_PTR(rt5668_acpi_match),
 	},
-	.probe = rt5668_i2c_probe,
+	.probe_new = rt5668_i2c_probe,
 	.shutdown = rt5668_i2c_shutdown,
 	.id_table = rt5668_i2c_id,
 };

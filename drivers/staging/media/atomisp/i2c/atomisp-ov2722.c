@@ -3,6 +3,16 @@
  * Support for OmniVision OV2722 1080p HD camera sensor.
  *
  * Copyright (c) 2013 Intel Corporation. All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License version
+ * 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 
 #include <linux/module.h>
@@ -518,6 +528,9 @@ static int power_up(struct v4l2_subdev *sd)
 		return -ENODEV;
 	}
 
+	if (dev->power_on == 1)
+		return 0; /* Already on */
+
 	/* power control */
 	ret = power_ctrl(sd, 1);
 	if (ret)
@@ -542,6 +555,7 @@ static int power_up(struct v4l2_subdev *sd)
 	/* according to DS, 20ms is needed between PWDN and i2c access */
 	msleep(20);
 
+	dev->power_on = 1;
 	return 0;
 
 fail_clk:
@@ -565,6 +579,9 @@ static int power_down(struct v4l2_subdev *sd)
 		return -ENODEV;
 	}
 
+	if (dev->power_on == 0)
+		return 0; /* Already off */
+
 	ret = dev->platform_data->flisclk_ctrl(sd, 0);
 	if (ret)
 		dev_err(&client->dev, "flisclk failed\n");
@@ -582,6 +599,7 @@ static int power_down(struct v4l2_subdev *sd)
 	if (ret)
 		dev_err(&client->dev, "vprog failed.\n");
 
+	dev->power_on = 0;
 	return ret;
 }
 
@@ -600,7 +618,7 @@ static int ov2722_s_power(struct v4l2_subdev *sd, int on)
 }
 
 /* TODO: remove it. */
-static int ov2722_startup(struct v4l2_subdev *sd)
+static int startup(struct v4l2_subdev *sd)
 {
 	struct ov2722_device *dev = to_ov2722_sensor(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
@@ -653,16 +671,19 @@ static int ov2722_set_fmt(struct v4l2_subdev *sd,
 
 	fmt->code = MEDIA_BUS_FMT_SGRBG10_1X10;
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_state_get_format(sd_state, 0) = *fmt;
+		sd_state->pads->try_fmt = *fmt;
 		return 0;
 	}
 
 	mutex_lock(&dev->input_lock);
 
+	/* s_power has not been called yet for std v4l2 clients (camorama) */
+	power_up(sd);
+
 	dev->pixels_per_line = dev->res->pixels_per_line;
 	dev->lines_per_frame = dev->res->lines_per_frame;
 
-	ret = ov2722_startup(sd);
+	ret = startup(sd);
 	if (ret) {
 		int i = 0;
 
@@ -677,7 +698,7 @@ static int ov2722_set_fmt(struct v4l2_subdev *sd,
 				dev_err(&client->dev, "power up failed, continue\n");
 				continue;
 			}
-			ret = ov2722_startup(sd);
+			ret = startup(sd);
 			if (ret) {
 				dev_err(&client->dev, " startup FAILED!\n");
 			} else {
@@ -824,18 +845,10 @@ fail_power_off:
 	return ret;
 }
 
-static int ov2722_get_frame_interval(struct v4l2_subdev *sd,
-				     struct v4l2_subdev_state *sd_state,
-				     struct v4l2_subdev_frame_interval *interval)
+static int ov2722_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *interval)
 {
 	struct ov2722_device *dev = to_ov2722_sensor(sd);
-
-	/*
-	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
-	 * subdev active state API.
-	 */
-	if (interval->which != V4L2_SUBDEV_FORMAT_ACTIVE)
-		return -EINVAL;
 
 	interval->interval.numerator = 1;
 	interval->interval.denominator = dev->res->fps;
@@ -888,6 +901,7 @@ static const struct v4l2_subdev_sensor_ops ov2722_sensor_ops = {
 
 static const struct v4l2_subdev_video_ops ov2722_video_ops = {
 	.s_stream = ov2722_s_stream,
+	.g_frame_interval = ov2722_g_frame_interval,
 };
 
 static const struct v4l2_subdev_core_ops ov2722_core_ops = {
@@ -900,7 +914,6 @@ static const struct v4l2_subdev_pad_ops ov2722_pad_ops = {
 	.enum_frame_size = ov2722_enum_frame_size,
 	.get_fmt = ov2722_get_fmt,
 	.set_fmt = ov2722_set_fmt,
-	.get_frame_interval = ov2722_get_frame_interval,
 };
 
 static const struct v4l2_subdev_ops ov2722_ops = {
@@ -957,6 +970,7 @@ static int ov2722_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	mutex_init(&dev->input_lock);
+	dev->power_on = -1;
 
 	dev->res = &ov2722_res_preview[0];
 	v4l2_i2c_subdev_init(&dev->sd, client, &ov2722_ops);
@@ -982,7 +996,7 @@ static int ov2722_probe(struct i2c_client *client)
 	if (ret)
 		ov2722_remove(client);
 
-	return atomisp_register_i2c_module(&dev->sd, ovpdev);
+	return atomisp_register_i2c_module(&dev->sd, ovpdev, RAW_CAMERA);
 
 out_ctrl_handler_free:
 	v4l2_ctrl_handler_free(&dev->ctrl_handler);
@@ -1005,7 +1019,7 @@ static struct i2c_driver ov2722_driver = {
 		.name = "ov2722",
 		.acpi_match_table = ov2722_acpi_match,
 	},
-	.probe = ov2722_probe,
+	.probe_new = ov2722_probe,
 	.remove = ov2722_remove,
 };
 module_i2c_driver(ov2722_driver);

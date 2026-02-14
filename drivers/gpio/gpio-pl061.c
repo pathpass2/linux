@@ -37,6 +37,7 @@
 
 #define PL061_GPIO_NR	8
 
+#ifdef CONFIG_PM
 struct pl061_context_save_regs {
 	u8 gpio_data;
 	u8 gpio_dir;
@@ -45,6 +46,7 @@ struct pl061_context_save_regs {
 	u8 gpio_iev;
 	u8 gpio_ie;
 };
+#endif
 
 struct pl061 {
 	raw_spinlock_t		lock;
@@ -53,7 +55,9 @@ struct pl061 {
 	struct gpio_chip	gc;
 	int			parent_irq;
 
+#ifdef CONFIG_PM
 	struct pl061_context_save_regs csave_regs;
+#endif
 };
 
 static int pl061_get_direction(struct gpio_chip *gc, unsigned offset)
@@ -111,13 +115,11 @@ static int pl061_get_value(struct gpio_chip *gc, unsigned offset)
 	return !!readb(pl061->base + (BIT(offset + 2)));
 }
 
-static int pl061_set_value(struct gpio_chip *gc, unsigned int offset, int value)
+static void pl061_set_value(struct gpio_chip *gc, unsigned offset, int value)
 {
 	struct pl061 *pl061 = gpiochip_get_data(gc);
 
 	writeb(!!value << offset, pl061->base + (BIT(offset + 2)));
-
-	return 0;
 }
 
 static int pl061_irq_type(struct irq_data *d, unsigned trigger)
@@ -289,7 +291,7 @@ static void pl061_irq_print_chip(struct irq_data *data, struct seq_file *p)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
 
-	seq_puts(p, dev_name(gc->parent));
+	seq_printf(p, dev_name(gc->parent));
 }
 
 static const struct irq_chip pl061_irq_chip = {
@@ -363,6 +365,7 @@ static int pl061_probe(struct amba_device *adev, const struct amba_id *id)
 	return 0;
 }
 
+#ifdef CONFIG_PM
 static int pl061_suspend(struct device *dev)
 {
 	struct pl061 *pl061 = dev_get_drvdata(dev);
@@ -406,7 +409,13 @@ static int pl061_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(pl061_dev_pm_ops, pl061_suspend, pl061_resume);
+static const struct dev_pm_ops pl061_dev_pm_ops = {
+	.suspend = pl061_suspend,
+	.resume = pl061_resume,
+	.freeze = pl061_suspend,
+	.restore = pl061_resume,
+};
+#endif
 
 static const struct amba_id pl061_ids[] = {
 	{
@@ -420,12 +429,13 @@ MODULE_DEVICE_TABLE(amba, pl061_ids);
 static struct amba_driver pl061_gpio_driver = {
 	.drv = {
 		.name	= "pl061_gpio",
-		.pm	= pm_sleep_ptr(&pl061_dev_pm_ops),
+#ifdef CONFIG_PM
+		.pm	= &pl061_dev_pm_ops,
+#endif
 	},
 	.id_table	= pl061_ids,
 	.probe		= pl061_probe,
 };
 module_amba_driver(pl061_gpio_driver);
 
-MODULE_DESCRIPTION("Driver for the ARM PrimeCell(tm) General Purpose Input/Output (PL061)");
 MODULE_LICENSE("GPL v2");

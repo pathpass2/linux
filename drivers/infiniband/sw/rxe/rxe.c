@@ -31,15 +31,12 @@ void rxe_dealloc(struct ib_device *ib_dev)
 
 	WARN_ON(!RB_EMPTY_ROOT(&rxe->mcg_tree));
 
-	mutex_destroy(&rxe->usdev_lock);
+	if (rxe->tfm)
+		crypto_free_shash(rxe->tfm);
 }
 
-static const struct ib_device_ops rxe_ib_dev_odp_ops = {
-	.advise_mr = rxe_ib_advise_mr,
-};
-
 /* initialize rxe device parameters */
-static void rxe_init_device_param(struct rxe_dev *rxe, struct net_device *ndev)
+static void rxe_init_device_param(struct rxe_dev *rxe)
 {
 	rxe->max_inline_data			= RXE_MAX_INLINE_DATA;
 
@@ -72,45 +69,10 @@ static void rxe_init_device_param(struct rxe_dev *rxe, struct net_device *ndev)
 	rxe->attr.max_fast_reg_page_list_len	= RXE_MAX_FMR_PAGE_LIST_LEN;
 	rxe->attr.max_pkeys			= RXE_MAX_PKEYS;
 	rxe->attr.local_ca_ack_delay		= RXE_LOCAL_CA_ACK_DELAY;
-
-	if (ndev->addr_len) {
-		memcpy(rxe->raw_gid, ndev->dev_addr,
-			min_t(unsigned int, ndev->addr_len, ETH_ALEN));
-	} else {
-		/*
-		 * This device does not have a HW address, but
-		 * connection mangagement requires a unique gid.
-		 */
-		eth_random_addr(rxe->raw_gid);
-	}
-
 	addrconf_addr_eui48((unsigned char *)&rxe->attr.sys_image_guid,
-			rxe->raw_gid);
+			rxe->ndev->dev_addr);
 
 	rxe->max_ucontext			= RXE_MAX_UCONTEXT;
-
-	if (IS_ENABLED(CONFIG_INFINIBAND_ON_DEMAND_PAGING)) {
-		rxe->attr.kernel_cap_flags |= IBK_ON_DEMAND_PAGING;
-
-		/* IB_ODP_SUPPORT_IMPLICIT is not supported right now. */
-		rxe->attr.odp_caps.general_caps |= IB_ODP_SUPPORT;
-
-		rxe->attr.odp_caps.per_transport_caps.ud_odp_caps |= IB_ODP_SUPPORT_SEND;
-		rxe->attr.odp_caps.per_transport_caps.ud_odp_caps |= IB_ODP_SUPPORT_RECV;
-		rxe->attr.odp_caps.per_transport_caps.ud_odp_caps |= IB_ODP_SUPPORT_SRQ_RECV;
-
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_SEND;
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_RECV;
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_WRITE;
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_READ;
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_ATOMIC;
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_SRQ_RECV;
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_FLUSH;
-		rxe->attr.odp_caps.per_transport_caps.rc_odp_caps |= IB_ODP_SUPPORT_ATOMIC_WRITE;
-
-		/* set handler for ODP prefetching API - ibv_advise_mr(3) */
-		ib_set_device_ops(&rxe->ib_dev, &rxe_ib_dev_odp_ops);
-	}
 }
 
 /* initialize port attributes */
@@ -142,13 +104,13 @@ static void rxe_init_port_param(struct rxe_port *port)
 /* initialize port state, note IB convention that HCA ports are always
  * numbered from 1
  */
-static void rxe_init_ports(struct rxe_dev *rxe, struct net_device *ndev)
+static void rxe_init_ports(struct rxe_dev *rxe)
 {
 	struct rxe_port *port = &rxe->port;
 
 	rxe_init_port_param(port);
 	addrconf_addr_eui48((unsigned char *)&port->port_guid,
-			    rxe->raw_gid);
+			    rxe->ndev->dev_addr);
 	spin_lock_init(&port->port_lock);
 }
 
@@ -166,12 +128,12 @@ static void rxe_init_pools(struct rxe_dev *rxe)
 }
 
 /* initialize rxe device state */
-static void rxe_init(struct rxe_dev *rxe, struct net_device *ndev)
+static void rxe_init(struct rxe_dev *rxe)
 {
 	/* init default device parameters */
-	rxe_init_device_param(rxe, ndev);
+	rxe_init_device_param(rxe);
 
-	rxe_init_ports(rxe, ndev);
+	rxe_init_ports(rxe);
 	rxe_init_pools(rxe);
 
 	/* init pending mmap list */
@@ -203,37 +165,36 @@ void rxe_set_mtu(struct rxe_dev *rxe, unsigned int ndev_mtu)
 /* called by ifc layer to create new rxe device.
  * The caller should allocate memory for rxe by calling ib_alloc_device.
  */
-int rxe_add(struct rxe_dev *rxe, unsigned int mtu, const char *ibdev_name,
-			struct net_device *ndev)
+int rxe_add(struct rxe_dev *rxe, unsigned int mtu, const char *ibdev_name)
 {
-	rxe_init(rxe, ndev);
+	rxe_init(rxe);
 	rxe_set_mtu(rxe, mtu);
 
-	return rxe_register_device(rxe, ibdev_name, ndev);
+	return rxe_register_device(rxe, ibdev_name);
 }
 
 static int rxe_newlink(const char *ibdev_name, struct net_device *ndev)
 {
-	struct rxe_dev *rxe;
+	struct rxe_dev *exists;
 	int err = 0;
 
 	if (is_vlan_dev(ndev)) {
-		rxe_err("rxe creation allowed on top of a real device only\n");
+		pr_err("rxe creation allowed on top of a real device only\n");
 		err = -EPERM;
 		goto err;
 	}
 
-	rxe = rxe_get_dev_from_net(ndev);
-	if (rxe) {
-		ib_device_put(&rxe->ib_dev);
-		rxe_err_dev(rxe, "already configured on %s\n", ndev->name);
+	exists = rxe_get_dev_from_net(ndev);
+	if (exists) {
+		ib_device_put(&exists->ib_dev);
+		rxe_dbg(exists, "already configured on %s\n", ndev->name);
 		err = -EEXIST;
 		goto err;
 	}
 
 	err = rxe_net_add(ibdev_name, ndev);
 	if (err) {
-		rxe_err("failed to add %s\n", ndev->name);
+		rxe_dbg(exists, "failed to add %s\n", ndev->name);
 		goto err;
 	}
 err:
@@ -249,15 +210,9 @@ static int __init rxe_module_init(void)
 {
 	int err;
 
-	err = rxe_alloc_wq();
+	err = rxe_net_init();
 	if (err)
 		return err;
-
-	err = rxe_net_init();
-	if (err) {
-		rxe_destroy_wq();
-		return err;
-	}
 
 	rdma_link_register(&rxe_link_ops);
 	pr_info("loaded\n");
@@ -269,7 +224,6 @@ static void __exit rxe_module_exit(void)
 	rdma_link_unregister(&rxe_link_ops);
 	ib_unregister_driver(RDMA_DRIVER_RXE);
 	rxe_net_exit();
-	rxe_destroy_wq();
 
 	pr_info("unloaded\n");
 }

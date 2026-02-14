@@ -109,8 +109,8 @@
 
 struct n_hdlc_buf {
 	struct list_head  list_item;
-	size_t		  count;
-	u8		  buf[];
+	int		  count;
+	char		  buf[];
 };
 
 struct n_hdlc_buf_list {
@@ -263,22 +263,25 @@ static int n_hdlc_tty_open(struct tty_struct *tty)
  */
 static void n_hdlc_send_frames(struct n_hdlc *n_hdlc, struct tty_struct *tty)
 {
+	register int actual;
+	unsigned long flags;
 	struct n_hdlc_buf *tbuf;
-	ssize_t actual;
 
 check_again:
-	scoped_guard(spinlock_irqsave, &n_hdlc->tx_buf_list.spinlock) {
-		if (n_hdlc->tbusy) {
-			n_hdlc->woke_up = true;
-			return;
-		}
-		n_hdlc->tbusy = true;
-		n_hdlc->woke_up = false;
+
+	spin_lock_irqsave(&n_hdlc->tx_buf_list.spinlock, flags);
+	if (n_hdlc->tbusy) {
+		n_hdlc->woke_up = true;
+		spin_unlock_irqrestore(&n_hdlc->tx_buf_list.spinlock, flags);
+		return;
 	}
+	n_hdlc->tbusy = true;
+	n_hdlc->woke_up = false;
+	spin_unlock_irqrestore(&n_hdlc->tx_buf_list.spinlock, flags);
 
 	tbuf = n_hdlc_buf_get(&n_hdlc->tx_buf_list);
 	while (tbuf) {
-		pr_debug("sending frame %p, count=%zu\n", tbuf, tbuf->count);
+		pr_debug("sending frame %p, count=%d\n", tbuf, tbuf->count);
 
 		/* Send the next block of data to device */
 		set_bit(TTY_DO_WRITE_WAKEUP, &tty->flags);
@@ -321,8 +324,9 @@ check_again:
 		clear_bit(TTY_DO_WRITE_WAKEUP, &tty->flags);
 
 	/* Clear the re-entry flag */
-	scoped_guard(spinlock_irqsave, &n_hdlc->tx_buf_list.spinlock)
-		n_hdlc->tbusy = false;
+	spin_lock_irqsave(&n_hdlc->tx_buf_list.spinlock, flags);
+	n_hdlc->tbusy = false;
+	spin_unlock_irqrestore(&n_hdlc->tx_buf_list.spinlock, flags);
 
 	if (n_hdlc->woke_up)
 		goto check_again;
@@ -365,13 +369,13 @@ static void n_hdlc_tty_wakeup(struct tty_struct *tty)
  * Called by tty low level driver when receive data is available. Data is
  * interpreted as one HDLC frame.
  */
-static void n_hdlc_tty_receive(struct tty_struct *tty, const u8 *data,
-			       const u8 *flags, size_t count)
+static void n_hdlc_tty_receive(struct tty_struct *tty, const __u8 *data,
+			       const char *flags, int count)
 {
 	register struct n_hdlc *n_hdlc = tty->disc_data;
 	register struct n_hdlc_buf *buf;
 
-	pr_debug("%s() called count=%zu\n", __func__, count);
+	pr_debug("%s() called count=%d\n", __func__, count);
 
 	if (count > maxframe) {
 		pr_debug("rx count>maxframesize, data discarded\n");
@@ -421,8 +425,8 @@ static void n_hdlc_tty_receive(struct tty_struct *tty, const u8 *data,
  * Returns the number of bytes returned or error code.
  */
 static ssize_t n_hdlc_tty_read(struct tty_struct *tty, struct file *file,
-			       u8 *kbuf, size_t nr, void **cookie,
-			       unsigned long offset)
+			   __u8 *kbuf, size_t nr,
+			   void **cookie, unsigned long offset)
 {
 	struct n_hdlc *n_hdlc = tty->disc_data;
 	int ret = 0;
@@ -514,12 +518,12 @@ done_with_rbuf:
  * Returns the number of bytes written (or error code).
  */
 static ssize_t n_hdlc_tty_write(struct tty_struct *tty, struct file *file,
-				const u8 *data, size_t count)
+			    const unsigned char *data, size_t count)
 {
 	struct n_hdlc *n_hdlc = tty->disc_data;
+	int error = 0;
 	DECLARE_WAITQUEUE(wait, current);
 	struct n_hdlc_buf *tbuf;
-	ssize_t error = 0;
 
 	pr_debug("%s() called count=%zd\n", __func__, count);
 
@@ -580,7 +584,9 @@ static int n_hdlc_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 			    unsigned long arg)
 {
 	struct n_hdlc *n_hdlc = tty->disc_data;
+	int error = 0;
 	int count;
+	unsigned long flags;
 	struct n_hdlc_buf *buf = NULL;
 
 	pr_debug("%s() called %d\n", __func__, cmd);
@@ -589,27 +595,29 @@ static int n_hdlc_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 	case FIONREAD:
 		/* report count of read data available */
 		/* in next available frame (if any) */
-		scoped_guard(spinlock_irqsave, &n_hdlc->rx_buf_list.spinlock) {
-			buf = list_first_entry_or_null(&n_hdlc->rx_buf_list.list,
-						       struct n_hdlc_buf, list_item);
-			if (buf)
-				count = buf->count;
-			else
-				count = 0;
-		}
-		return put_user(count, (int __user *)arg);
+		spin_lock_irqsave(&n_hdlc->rx_buf_list.spinlock, flags);
+		buf = list_first_entry_or_null(&n_hdlc->rx_buf_list.list,
+						struct n_hdlc_buf, list_item);
+		if (buf)
+			count = buf->count;
+		else
+			count = 0;
+		spin_unlock_irqrestore(&n_hdlc->rx_buf_list.spinlock, flags);
+		error = put_user(count, (int __user *)arg);
+		break;
 
 	case TIOCOUTQ:
 		/* get the pending tx byte count in the driver */
 		count = tty_chars_in_buffer(tty);
 		/* add size of next output frame in queue */
-		scoped_guard(spinlock_irqsave, &n_hdlc->tx_buf_list.spinlock) {
-			buf = list_first_entry_or_null(&n_hdlc->tx_buf_list.list,
-						       struct n_hdlc_buf, list_item);
-			if (buf)
-				count += buf->count;
-		}
-		return put_user(count, (int __user *)arg);
+		spin_lock_irqsave(&n_hdlc->tx_buf_list.spinlock, flags);
+		buf = list_first_entry_or_null(&n_hdlc->tx_buf_list.list,
+						struct n_hdlc_buf, list_item);
+		if (buf)
+			count += buf->count;
+		spin_unlock_irqrestore(&n_hdlc->tx_buf_list.spinlock, flags);
+		error = put_user(count, (int __user *)arg);
+		break;
 
 	case TCFLSH:
 		switch (arg) {
@@ -620,8 +628,11 @@ static int n_hdlc_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
 		fallthrough;	/* to default */
 
 	default:
-		return n_tty_ioctl_helper(tty, cmd, arg);
+		error = n_tty_ioctl_helper(tty, cmd, arg);
+		break;
 	}
+	return error;
+
 }	/* end of n_hdlc_tty_ioctl() */
 
 /**
@@ -715,10 +726,14 @@ static struct n_hdlc *n_hdlc_alloc(void)
 static void n_hdlc_buf_return(struct n_hdlc_buf_list *buf_list,
 						struct n_hdlc_buf *buf)
 {
-	guard(spinlock_irqsave)(&buf_list->spinlock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&buf_list->spinlock, flags);
 
 	list_add(&buf->list_item, &buf_list->list);
 	buf_list->count++;
+
+	spin_unlock_irqrestore(&buf_list->spinlock, flags);
 }
 
 /**
@@ -729,10 +744,14 @@ static void n_hdlc_buf_return(struct n_hdlc_buf_list *buf_list,
 static void n_hdlc_buf_put(struct n_hdlc_buf_list *buf_list,
 			   struct n_hdlc_buf *buf)
 {
-	guard(spinlock_irqsave)(&buf_list->spinlock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&buf_list->spinlock, flags);
 
 	list_add_tail(&buf->list_item, &buf_list->list);
 	buf_list->count++;
+
+	spin_unlock_irqrestore(&buf_list->spinlock, flags);
 }	/* end of n_hdlc_buf_put() */
 
 /**
@@ -745,9 +764,10 @@ static void n_hdlc_buf_put(struct n_hdlc_buf_list *buf_list,
  */
 static struct n_hdlc_buf *n_hdlc_buf_get(struct n_hdlc_buf_list *buf_list)
 {
+	unsigned long flags;
 	struct n_hdlc_buf *buf;
 
-	guard(spinlock_irqsave)(&buf_list->spinlock);
+	spin_lock_irqsave(&buf_list->spinlock, flags);
 
 	buf = list_first_entry_or_null(&buf_list->list,
 						struct n_hdlc_buf, list_item);
@@ -756,6 +776,7 @@ static struct n_hdlc_buf *n_hdlc_buf_get(struct n_hdlc_buf_list *buf_list)
 		buf_list->count--;
 	}
 
+	spin_unlock_irqrestore(&buf_list->spinlock, flags);
 	return buf;
 }	/* end of n_hdlc_buf_get() */
 
@@ -801,7 +822,6 @@ static void __exit n_hdlc_exit(void)
 module_init(n_hdlc_init);
 module_exit(n_hdlc_exit);
 
-MODULE_DESCRIPTION("HDLC line discipline support");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Paul Fulghum paulkf@microgate.com");
 module_param(maxframe, int, 0);

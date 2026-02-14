@@ -36,8 +36,6 @@
  * Checksum an MP configuration block.
  */
 
-static unsigned int num_procs __initdata;
-
 static int __init mpf_checksum(unsigned char *mp, int len)
 {
 	int sum = 0;
@@ -50,17 +48,23 @@ static int __init mpf_checksum(unsigned char *mp, int len)
 
 static void __init MP_processor_info(struct mpc_cpu *m)
 {
+	int apicid;
 	char *bootup_cpu = "";
 
-	topology_register_apic(m->apicid, CPU_ACPIID_INVALID, m->cpuflag & CPU_ENABLED);
-	if (!(m->cpuflag & CPU_ENABLED))
+	if (!(m->cpuflag & CPU_ENABLED)) {
+		disabled_cpus++;
 		return;
+	}
 
-	if (m->cpuflag & CPU_BOOTPROCESSOR)
+	apicid = m->apicid;
+
+	if (m->cpuflag & CPU_BOOTPROCESSOR) {
 		bootup_cpu = " (Bootup-CPU)";
+		boot_cpu_physical_apicid = m->apicid;
+	}
 
 	pr_info("Processor #%d%s\n", m->apicid, bootup_cpu);
-	num_procs++;
+	generic_processor_info(apicid, m->apicver);
 }
 
 #ifdef CONFIG_X86_IO_APIC
@@ -68,7 +72,7 @@ static void __init mpc_oem_bus_info(struct mpc_bus *m, char *str)
 {
 	memcpy(str, m->bustype, 6);
 	str[6] = 0;
-	apic_pr_verbose("Bus #%d is %s\n", m->busid, str);
+	apic_printk(APIC_VERBOSE, "Bus #%d is %s\n", m->busid, str);
 }
 
 static void __init MP_bus_info(struct mpc_bus *m)
@@ -197,12 +201,12 @@ static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 	if (!smp_check_mpc(mpc, oem, str))
 		return 0;
 
-	if (early) {
-		/* Initialize the lapic mapping */
-		if (!acpi_lapic)
-			register_lapic_address(mpc->lapic);
+	/* Initialize the lapic mapping */
+	if (!acpi_lapic)
+		register_lapic_address(mpc->lapic);
+
+	if (early)
 		return 1;
-	}
 
 	/* Now process the configuration blocks. */
 	while (count < mpc->length) {
@@ -237,9 +241,9 @@ static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 		}
 	}
 
-	if (!num_procs && !acpi_lapic)
+	if (!num_processors)
 		pr_err("MPTABLE: no processors registered!\n");
-	return num_procs || acpi_lapic;
+	return num_processors;
 }
 
 #ifdef CONFIG_X86_IO_APIC
@@ -376,6 +380,11 @@ static inline void __init construct_default_ISA_mptable(int mpc_default_type)
 	int i;
 
 	/*
+	 * local APIC has default address
+	 */
+	mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
+
+	/*
 	 * 2 CPUs, numbered 0 & 1.
 	 */
 	processor.type = MP_PROCESSOR;
@@ -417,7 +426,7 @@ static unsigned long __init get_mpc_size(unsigned long physptr)
 	mpc = early_memremap(physptr, PAGE_SIZE);
 	size = mpc->length;
 	early_memunmap(mpc, PAGE_SIZE);
-	apic_pr_verbose("  mpc: %lx-%lx\n", physptr, physptr + size);
+	apic_printk(APIC_VERBOSE, "  mpc: %lx-%lx\n", physptr, physptr + size);
 
 	return size;
 }
@@ -474,7 +483,7 @@ static int __init check_physptr(struct mpf_intel *mpf, unsigned int early)
 /*
  * Scan the memory blocks for an SMP configuration block.
  */
-static __init void mpparse_get_smp_config(unsigned int early)
+void __init default_get_smp_config(unsigned int early)
 {
 	struct mpf_intel *mpf;
 
@@ -516,8 +525,10 @@ static __init void mpparse_get_smp_config(unsigned int early)
 	 */
 	if (mpf->feature1) {
 		if (early) {
-			/* Local APIC has default address */
-			register_lapic_address(APIC_DEFAULT_PHYS_BASE);
+			/*
+			 * local APIC has default address
+			 */
+			mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
 			goto out;
 		}
 
@@ -530,23 +541,13 @@ static __init void mpparse_get_smp_config(unsigned int early)
 	} else
 		BUG();
 
-	if (!early && !acpi_lapic)
-		pr_info("Processors: %d\n", num_procs);
+	if (!early)
+		pr_info("Processors: %d\n", num_processors);
 	/*
 	 * Only use the first configuration found.
 	 */
 out:
 	early_memunmap(mpf, sizeof(*mpf));
-}
-
-void __init mpparse_parse_early_smp_config(void)
-{
-	mpparse_get_smp_config(true);
-}
-
-void __init mpparse_parse_smp_config(void)
-{
-	mpparse_get_smp_config(false);
 }
 
 static void __init smp_reserve_memory(struct mpf_intel *mpf)
@@ -560,7 +561,8 @@ static int __init smp_scan_config(unsigned long base, unsigned long length)
 	struct mpf_intel *mpf;
 	int ret = 0;
 
-	apic_pr_verbose("Scan for SMP in [mem %#010lx-%#010lx]\n", base, base + length - 1);
+	apic_printk(APIC_VERBOSE, "Scan for SMP in [mem %#010lx-%#010lx]\n",
+		    base, base + length - 1);
 	BUILD_BUG_ON(sizeof(*mpf) != 16);
 
 	while (length > 0) {
@@ -597,7 +599,7 @@ static int __init smp_scan_config(unsigned long base, unsigned long length)
 	return ret;
 }
 
-void __init mpparse_find_mptable(void)
+void __init default_find_smp_config(void)
 {
 	unsigned int address;
 
@@ -682,13 +684,13 @@ static void __init check_irq_src(struct mpc_intsrc *m, int *nr_m_spare)
 {
 	int i;
 
-	apic_pr_verbose("OLD ");
+	apic_printk(APIC_VERBOSE, "OLD ");
 	print_mp_irq_info(m);
 
 	i = get_MP_intsrc_index(m);
 	if (i > 0) {
 		memcpy(m, &mp_irqs[i], sizeof(*m));
-		apic_pr_verbose("NEW ");
+		apic_printk(APIC_VERBOSE, "NEW ");
 		print_mp_irq_info(&mp_irqs[i]);
 		return;
 	}
@@ -771,7 +773,7 @@ static int  __init replace_intsrc_all(struct mpc_table *mpc,
 			continue;
 
 		if (nr_m_spare > 0) {
-			apic_pr_verbose("*NEW* found\n");
+			apic_printk(APIC_VERBOSE, "*NEW* found\n");
 			nr_m_spare--;
 			memcpy(m_spare[nr_m_spare], &mp_irqs[i], sizeof(mp_irqs[i]));
 			m_spare[nr_m_spare] = NULL;

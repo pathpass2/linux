@@ -222,17 +222,20 @@ static int hd44780_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	lcd = hd44780_common_alloc();
-	if (!lcd)
+	hdc = hd44780_common_alloc();
+	if (!hdc)
 		return -ENOMEM;
 
-	hd = kzalloc(sizeof(*hd), GFP_KERNEL);
+	lcd = charlcd_alloc();
+	if (!lcd)
+		goto fail1;
+
+	hd = kzalloc(sizeof(struct hd44780), GFP_KERNEL);
 	if (!hd)
 		goto fail2;
 
-	hdc = lcd->drvdata;
 	hdc->hd44780 = hd;
-
+	lcd->drvdata = hdc;
 	for (i = 0; i < ifwidth; i++) {
 		hd->pins[base + i] = devm_gpiod_get_index(dev, "data", i,
 							  GPIOD_OUT_LOW);
@@ -310,18 +313,23 @@ static int hd44780_probe(struct platform_device *pdev)
 fail3:
 	kfree(hd);
 fail2:
-	hd44780_common_free(lcd);
+	kfree(lcd);
+fail1:
+	kfree(hdc);
 	return ret;
 }
 
-static void hd44780_remove(struct platform_device *pdev)
+static int hd44780_remove(struct platform_device *pdev)
 {
 	struct charlcd *lcd = platform_get_drvdata(pdev);
 	struct hd44780_common *hdc = lcd->drvdata;
 
 	charlcd_unregister(lcd);
 	kfree(hdc->hd44780);
-	hd44780_common_free(lcd);
+	kfree(lcd->drvdata);
+
+	kfree(lcd);
+	return 0;
 }
 
 static const struct of_device_id hd44780_of_match[] = {

@@ -4,7 +4,6 @@
  *  Copyright (C) 2008 Christian Kornacker <ckornacker@suse.de>
  */
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -121,10 +120,6 @@ out_dir:
 struct config *prepare_default_config()
 {
 	struct config *config = malloc(sizeof(struct config));
-	if (!config) {
-		perror("malloc");
-		return NULL;
-	}
 
 	dprintf("loading defaults\n");
 
@@ -170,8 +165,8 @@ int prepare_config(const char *path, struct config *config)
 
 	configfile = fopen(path, "r");
 	if (configfile == NULL) {
-		fprintf(stderr, "error: unable to read configfile: %s, %s\n",
-			path, strerror(errno));
+		perror("fopen");
+		fprintf(stderr, "error: unable to read configfile\n");
 		free(config);
 		return 1;
 	}

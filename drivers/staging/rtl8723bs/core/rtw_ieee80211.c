@@ -6,9 +6,9 @@
  ******************************************************************************/
 
 #include <drv_types.h>
-#include <linux/hex.h>
+#include <rtw_debug.h>
 #include <linux/of.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 u8 RTW_WPA_OUI_TYPE[] = { 0x00, 0x50, 0xf2, 1 };
 u16 RTW_WPA_VERSION = 1;
@@ -55,9 +55,7 @@ static u8 WIFI_OFDMRATES[] = {
 
 int rtw_get_bit_value_from_ieee_value(u8 val)
 {
-	static const unsigned char dot11_rate_table[] = {
-		2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108, 0
-	}; /*  last element must be zero!! */
+	unsigned char dot11_rate_table[] = {2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108, 0}; /*  last element must be zero!! */
 	int i = 0;
 
 	while (dot11_rate_table[i] != 0) {
@@ -133,30 +131,30 @@ u8 *rtw_set_ie(u8 *pbuf,
 	return pbuf + len + 2;
 }
 
-/* index: the information element id index, limit is the limit for search */
+/*----------------------------------------------------------------------------
+index: the information element id index, limit is the limit for search
+-----------------------------------------------------------------------------*/
 u8 *rtw_get_ie(u8 *pbuf, signed int index, signed int *len, signed int limit)
 {
 	signed int tmp, i;
 	u8 *p;
 
-	if (limit < 2)
+	if (limit < 1)
 		return NULL;
 
 	p = pbuf;
 	i = 0;
 	*len = 0;
-	while (i + 2 <= limit) {
-		tmp = *(p + 1);
-		if (i + 2 + tmp > limit)
-			break;
-
+	while (1) {
 		if (*p == index) {
-			*len = tmp;
+			*len = *(p + 1);
 			return p;
 		}
-
+		tmp = *(p + 1);
 		p += (tmp + 2);
 		i += (tmp + 2);
+		if (i >= limit)
+			break;
 	}
 	return NULL;
 }
@@ -561,6 +559,7 @@ int rtw_parse_wpa2_ie(u8 *rsn_ie, int rsn_ie_len, int *group_cipher, int *pairwi
 	return ret;
 }
 
+/* ifdef CONFIG_WAPI_SUPPORT */
 int rtw_get_wapi_ie(u8 *in_ie, uint in_len, u8 *wapi_ie, u16 *wapi_len)
 {
 	int len = 0;
@@ -600,6 +599,7 @@ int rtw_get_wapi_ie(u8 *in_ie, uint in_len, u8 *wapi_ie, u16 *wapi_len)
 
 	return len;
 }
+/* endif */
 
 void rtw_get_sec_ie(u8 *in_ie, uint in_len, u8 *rsn_ie, u16 *rsn_len, u8 *wpa_ie, u16 *wpa_len)
 {
@@ -768,27 +768,21 @@ static int rtw_ieee802_11_parse_vendor_specific(u8 *pos, uint elen,
 {
 	unsigned int oui;
 
-	/*
-	 * first 3 bytes in vendor specific information element are the IEEE
+	/* first 3 bytes in vendor specific information element are the IEEE
 	 * OUI of the vendor. The following byte is used a vendor specific
-	 * sub-type.
-	 */
+	 * sub-type. */
 	if (elen < 4)
 		return -1;
 
 	oui = get_unaligned_be24(pos);
 	switch (oui) {
 	case OUI_MICROSOFT:
-		/*
-		 * Microsoft/Wi-Fi information elements are further typed and
-		 * subtyped
-		 */
+		/* Microsoft/Wi-Fi information elements are further typed and
+		 * subtyped */
 		switch (pos[3]) {
 		case 1:
-			/*
-			 * Microsoft OUI (00:50:F2) with OUI Type 1:
-			 * real WPA information element
-			 */
+			/* Microsoft OUI (00:50:F2) with OUI Type 1:
+			 * real WPA information element */
 			elems->wpa_ie = pos;
 			elems->wpa_ie_len = elen;
 			break;
@@ -993,10 +987,11 @@ void rtw_macaddr_cfg(struct device *dev, u8 *mac_addr)
 	if (is_broadcast_ether_addr(mac) || is_zero_ether_addr(mac)) {
 		addr = of_get_property(np, "local-mac-address", &len);
 
-		if (addr && len == ETH_ALEN)
+		if (addr && len == ETH_ALEN) {
 			ether_addr_copy(mac_addr, addr);
-		else
+		} else {
 			eth_random_addr(mac_addr);
+		}
 	}
 }
 
@@ -1040,8 +1035,8 @@ void rtw_get_bcn_info(struct wlan_network *pnetwork)
 	u16 wpa_len = 0, rsn_len = 0;
 	struct HT_info_element *pht_info = NULL;
 	struct ieee80211_ht_cap *pht_cap = NULL;
-	unsigned int len;
-	unsigned char *p;
+	unsigned int		len;
+	unsigned char 	*p;
 	__le16 le_cap;
 
 	memcpy((u8 *)&le_cap, rtw_get_capability_from_ie(pnetwork->network.ies), 2);

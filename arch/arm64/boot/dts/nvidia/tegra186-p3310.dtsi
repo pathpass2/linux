@@ -61,8 +61,6 @@
 	};
 
 	serial@3100000 {
-		/delete-property/ dmas;
-		/delete-property/ dma-names;
 		status = "okay";
 	};
 
@@ -147,7 +145,6 @@
 	/* SDMMC3 (SDIO) */
 	mmc@3440000 {
 		status = "okay";
-		vqmmc-supply = <&vddio_sdmmc3>;
 	};
 
 	/* SDMMC4 (eMMC) */
@@ -191,10 +188,6 @@
 
 	pmc@c360000 {
 		nvidia,invert-interrupt;
-	};
-
-	gpu@17000000 {
-		status = "okay";
 	};
 
 	bpmp {

@@ -12,3 +12,10 @@ NetLabel
     lsm_interface
 
     draft_ietf
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

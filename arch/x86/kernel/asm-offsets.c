@@ -33,14 +33,6 @@
 
 static void __used common(void)
 {
-	OFFSET(CPUINFO_x86, cpuinfo_x86, x86);
-	OFFSET(CPUINFO_x86_vendor, cpuinfo_x86, x86_vendor);
-	OFFSET(CPUINFO_x86_model, cpuinfo_x86, x86_model);
-	OFFSET(CPUINFO_x86_stepping, cpuinfo_x86, x86_stepping);
-	OFFSET(CPUINFO_cpuid_level, cpuinfo_x86, cpuid_level);
-	OFFSET(CPUINFO_x86_capability, cpuinfo_x86, x86_capability);
-	OFFSET(CPUINFO_x86_vendor_id, cpuinfo_x86, x86_vendor_id);
-
 	BLANK();
 	OFFSET(TASK_threadsp, task_struct, thread.sp);
 #ifdef CONFIG_STACKPROTECTOR
@@ -63,14 +55,8 @@ static void __used common(void)
 	OFFSET(IA32_SIGCONTEXT_bp, sigcontext_32, bp);
 	OFFSET(IA32_SIGCONTEXT_sp, sigcontext_32, sp);
 	OFFSET(IA32_SIGCONTEXT_ip, sigcontext_32, ip);
-	OFFSET(IA32_SIGCONTEXT_es, sigcontext_32, es);
-	OFFSET(IA32_SIGCONTEXT_cs, sigcontext_32, cs);
-	OFFSET(IA32_SIGCONTEXT_ss, sigcontext_32, ss);
-	OFFSET(IA32_SIGCONTEXT_ds, sigcontext_32, ds);
-	OFFSET(IA32_SIGCONTEXT_flags, sigcontext_32, flags);
 
 	BLANK();
-	OFFSET(IA32_SIGFRAME_sigcontext,    sigframe_ia32,    sc);
 	OFFSET(IA32_RT_SIGFRAME_sigcontext, rt_sigframe_ia32, uc.uc_mcontext);
 #endif
 
@@ -82,19 +68,26 @@ static void __used common(void)
 #endif
 
 	BLANK();
-	OFFSET(TDX_MODULE_rcx, tdx_module_args, rcx);
-	OFFSET(TDX_MODULE_rdx, tdx_module_args, rdx);
-	OFFSET(TDX_MODULE_r8,  tdx_module_args, r8);
-	OFFSET(TDX_MODULE_r9,  tdx_module_args, r9);
-	OFFSET(TDX_MODULE_r10, tdx_module_args, r10);
-	OFFSET(TDX_MODULE_r11, tdx_module_args, r11);
-	OFFSET(TDX_MODULE_r12, tdx_module_args, r12);
-	OFFSET(TDX_MODULE_r13, tdx_module_args, r13);
-	OFFSET(TDX_MODULE_r14, tdx_module_args, r14);
-	OFFSET(TDX_MODULE_r15, tdx_module_args, r15);
-	OFFSET(TDX_MODULE_rbx, tdx_module_args, rbx);
-	OFFSET(TDX_MODULE_rdi, tdx_module_args, rdi);
-	OFFSET(TDX_MODULE_rsi, tdx_module_args, rsi);
+	OFFSET(TDX_MODULE_rcx, tdx_module_output, rcx);
+	OFFSET(TDX_MODULE_rdx, tdx_module_output, rdx);
+	OFFSET(TDX_MODULE_r8,  tdx_module_output, r8);
+	OFFSET(TDX_MODULE_r9,  tdx_module_output, r9);
+	OFFSET(TDX_MODULE_r10, tdx_module_output, r10);
+	OFFSET(TDX_MODULE_r11, tdx_module_output, r11);
+
+	BLANK();
+	OFFSET(TDX_HYPERCALL_r8,  tdx_hypercall_args, r8);
+	OFFSET(TDX_HYPERCALL_r9,  tdx_hypercall_args, r9);
+	OFFSET(TDX_HYPERCALL_r10, tdx_hypercall_args, r10);
+	OFFSET(TDX_HYPERCALL_r11, tdx_hypercall_args, r11);
+	OFFSET(TDX_HYPERCALL_r12, tdx_hypercall_args, r12);
+	OFFSET(TDX_HYPERCALL_r13, tdx_hypercall_args, r13);
+	OFFSET(TDX_HYPERCALL_r14, tdx_hypercall_args, r14);
+	OFFSET(TDX_HYPERCALL_r15, tdx_hypercall_args, r15);
+	OFFSET(TDX_HYPERCALL_rdi, tdx_hypercall_args, rdi);
+	OFFSET(TDX_HYPERCALL_rsi, tdx_hypercall_args, rsi);
+	OFFSET(TDX_HYPERCALL_rbx, tdx_hypercall_args, rbx);
+	OFFSET(TDX_HYPERCALL_rdx, tdx_hypercall_args, rdx);
 
 	BLANK();
 	OFFSET(BP_scratch, boot_params, scratch);
@@ -108,7 +101,6 @@ static void __used common(void)
 
 	BLANK();
 	DEFINE(PTREGS_SIZE, sizeof(struct pt_regs));
-	OFFSET(C_PTREGS_SIZE, pt_regs, orig_ax);
 
 	/* TLB state for the entry code */
 	OFFSET(TLB_STATE_user_pcid_flush_mask, tlb_state, user_pcid_flush_mask);
@@ -122,6 +114,10 @@ static void __used common(void)
 	OFFSET(TSS_sp0, tss_struct, x86_tss.sp0);
 	OFFSET(TSS_sp1, tss_struct, x86_tss.sp1);
 	OFFSET(TSS_sp2, tss_struct, x86_tss.sp2);
+	OFFSET(X86_top_of_stack, pcpu_hot, top_of_stack);
+#ifdef CONFIG_CALL_DEPTH_TRACKING
+	OFFSET(X86_call_depth, pcpu_hot, call_depth);
+#endif
 #if IS_ENABLED(CONFIG_CRYPTO_ARIA_AESNI_AVX_X86_64)
 	/* Offset for fields in aria_ctx */
 	BLANK();
@@ -130,7 +126,4 @@ static void __used common(void)
 	OFFSET(ARIA_CTX_rounds, aria_ctx, rounds);
 #endif
 
-	BLANK();
-	DEFINE(ALT_INSTR_SIZE,	sizeof(struct alt_instr));
-	DEFINE(EXTABLE_SIZE,	sizeof(struct exception_table_entry));
 }

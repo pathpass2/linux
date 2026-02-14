@@ -101,11 +101,11 @@ u64 __pvclock_clocksource_read(struct pvclock_vcpu_time_info *src, bool dowd)
 	 * updating at the same time, and one of them could be slightly behind,
 	 * making the assumption that last_value always go forward fail to hold.
 	 */
-	last = raw_atomic64_read(&last_value);
+	last = arch_atomic64_read(&last_value);
 	do {
 		if (ret <= last)
 			return last;
-	} while (!raw_atomic64_try_cmpxchg(&last_value, &last, ret));
+	} while (!arch_atomic64_try_cmpxchg(&last_value, &last, ret));
 
 	return ret;
 }

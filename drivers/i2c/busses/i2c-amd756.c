@@ -211,7 +211,7 @@ static s32 amd756_access(struct i2c_adapter * adap, u16 addr,
 		       SMB_HOST_ADDRESS);
 		outb_p(command, SMB_HOST_COMMAND);
 		if (read_write == I2C_SMBUS_WRITE)
-			outw_p(data->word, SMB_HOST_DATA);
+			outw_p(data->word, SMB_HOST_DATA);	/* TODO: endian???? */
 		size = AMD756_WORD_DATA;
 		break;
 	case I2C_SMBUS_BLOCK_DATA:
@@ -256,7 +256,7 @@ static s32 amd756_access(struct i2c_adapter * adap, u16 addr,
 		data->byte = inw_p(SMB_HOST_DATA);
 		break;
 	case AMD756_WORD_DATA:
-		data->word = inw_p(SMB_HOST_DATA);
+		data->word = inw_p(SMB_HOST_DATA);	/* TODO: endian???? */
 		break;
 	case AMD756_BLOCK_DATA:
 		data->block[0] = inw_p(SMB_HOST_DATA) & 0x3f;
@@ -283,9 +283,9 @@ static const struct i2c_algorithm smbus_algorithm = {
 	.functionality	= amd756_func,
 };
 
-static struct i2c_adapter amd756_smbus = {
+struct i2c_adapter amd756_smbus = {
 	.owner		= THIS_MODULE,
-	.class          = I2C_CLASS_HWMON,
+	.class          = I2C_CLASS_HWMON | I2C_CLASS_SPD,
 	.algo		= &smbus_algorithm,
 };
 
@@ -398,3 +398,5 @@ module_pci_driver(amd756_driver);
 MODULE_AUTHOR("Merlin Hughes <merlin@merlin.org>");
 MODULE_DESCRIPTION("AMD756/766/768/8111 and nVidia nForce SMBus driver");
 MODULE_LICENSE("GPL");
+
+EXPORT_SYMBOL(amd756_smbus);

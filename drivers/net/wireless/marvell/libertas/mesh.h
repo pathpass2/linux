@@ -7,6 +7,7 @@
 
 
 #include <net/iw_handler.h>
+#include <net/lib80211.h>
 
 #include "host.h"
 #include "dev.h"

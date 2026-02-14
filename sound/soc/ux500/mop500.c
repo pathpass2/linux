@@ -134,7 +134,7 @@ static int mop500_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void mop500_remove(struct platform_device *pdev)
+static int mop500_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 
@@ -143,6 +143,8 @@ static void mop500_remove(struct platform_device *pdev)
 	snd_soc_unregister_card(card);
 	mop500_ab8500_remove(card);
 	mop500_of_node_put();
+
+	return 0;
 }
 
 static const struct of_device_id snd_soc_mop500_match[] = {

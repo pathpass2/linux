@@ -14,7 +14,7 @@
 #include <sys/sysinfo.h>
 #include <pthread.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 #include "cgroup_util.h"
 
 
@@ -26,7 +26,6 @@
  */
 #define MAX_VMSTAT_ERROR (4096 * 64 * get_nprocs())
 
-#define KMEM_DEAD_WAIT_RETRIES        80
 
 static int alloc_dcache(const char *cgroup, void *arg)
 {
@@ -71,16 +70,12 @@ static int test_kmem_basic(const char *root)
 		goto cleanup;
 
 	cg_write(cg, "memory.high", "1M");
-
-	/* wait for RCU freeing */
-	sleep(1);
-
 	slab1 = cg_read_key_long(cg, "memory.stat", "slab ");
-	if (slab1 < 0)
+	if (slab1 <= 0)
 		goto cleanup;
 
 	current = cg_read_long(cg, "memory.current");
-	if (current < 0)
+	if (current <= 0)
 		goto cleanup;
 
 	if (slab1 < slab0 / 2 && current < slab0 / 2)
@@ -163,11 +158,11 @@ static int cg_run_in_subcgroups(const char *parent,
  * allocates some slab memory (mostly negative dentries) using 2 * NR_CPUS
  * threads. Then it checks the sanity of numbers on the parent level:
  * the total size of the cgroups should be roughly equal to
- * anon + file + kernel + sock.
+ * anon + file + slab + kernel_stack.
  */
 static int test_kmem_memcg_deletion(const char *root)
 {
-	long current, anon, file, kernel, sock, sum;
+	long current, slab, anon, file, kernel_stack, pagetables, percpu, sock, sum;
 	int ret = KSFT_FAIL;
 	char *parent;
 
@@ -185,22 +180,29 @@ static int test_kmem_memcg_deletion(const char *root)
 		goto cleanup;
 
 	current = cg_read_long(parent, "memory.current");
+	slab = cg_read_key_long(parent, "memory.stat", "slab ");
 	anon = cg_read_key_long(parent, "memory.stat", "anon ");
 	file = cg_read_key_long(parent, "memory.stat", "file ");
-	kernel = cg_read_key_long(parent, "memory.stat", "kernel ");
+	kernel_stack = cg_read_key_long(parent, "memory.stat", "kernel_stack ");
+	pagetables = cg_read_key_long(parent, "memory.stat", "pagetables ");
+	percpu = cg_read_key_long(parent, "memory.stat", "percpu ");
 	sock = cg_read_key_long(parent, "memory.stat", "sock ");
-	if (current < 0 || anon < 0 || file < 0 || kernel < 0 || sock < 0)
+	if (current < 0 || slab < 0 || anon < 0 || file < 0 ||
+	    kernel_stack < 0 || pagetables < 0 || percpu < 0 || sock < 0)
 		goto cleanup;
 
-	sum = anon + file + kernel + sock;
-	if (labs(sum - current) < MAX_VMSTAT_ERROR) {
+	sum = slab + anon + file + kernel_stack + pagetables + percpu + sock;
+	if (abs(sum - current) < MAX_VMSTAT_ERROR) {
 		ret = KSFT_PASS;
 	} else {
 		printf("memory.current = %ld\n", current);
-		printf("anon + file + kernel + sock = %ld\n", sum);
+		printf("slab + anon + file + kernel_stack = %ld\n", sum);
+		printf("slab = %ld\n", slab);
 		printf("anon = %ld\n", anon);
 		printf("file = %ld\n", file);
-		printf("kernel = %ld\n", kernel);
+		printf("kernel_stack = %ld\n", kernel_stack);
+		printf("pagetables = %ld\n", pagetables);
+		printf("percpu = %ld\n", percpu);
 		printf("sock = %ld\n", sock);
 	}
 
@@ -307,7 +309,8 @@ static int test_kmem_dead_cgroups(const char *root)
 {
 	int ret = KSFT_FAIL;
 	char *parent;
-	long dead = -1;
+	long dead;
+	int i;
 
 	parent = cg_name(root, "kmem_dead_cgroups_test");
 	if (!parent)
@@ -322,19 +325,19 @@ static int test_kmem_dead_cgroups(const char *root)
 	if (cg_run_in_subcgroups(parent, alloc_dcache, (void *)100, 30))
 		goto cleanup;
 
-	/*
-	 * Allow up to ~8s for reclaim of dying descendants to complete.
-	 * This is a generous upper bound derived from stress testing, not
-	 * from a specific kernel constant, and can be adjusted if reclaim
-	 * behavior changes in the future.
-	 */
-	dead = cg_read_key_long_poll(parent, "cgroup.stat",
-					"nr_dying_descendants ", 0, KMEM_DEAD_WAIT_RETRIES,
-					DEFAULT_WAIT_INTERVAL_US);
-	if (dead)
-		goto cleanup;
-
-	ret = KSFT_PASS;
+	for (i = 0; i < 5; i++) {
+		dead = cg_read_key_long(parent, "cgroup.stat",
+					"nr_dying_descendants ");
+		if (dead == 0) {
+			ret = KSFT_PASS;
+			break;
+		}
+		/*
+		 * Reclaiming cgroups might take some time,
+		 * let's wait a bit and repeat.
+		 */
+		sleep(1);
+	}
 
 cleanup:
 	cg_destroy(parent);
@@ -380,7 +383,7 @@ static int test_percpu_basic(const char *root)
 	current = cg_read_long(parent, "memory.current");
 	percpu = cg_read_key_long(parent, "memory.stat", "percpu ");
 
-	if (current > 0 && percpu > 0 && labs(current - percpu) <
+	if (current > 0 && percpu > 0 && abs(current - percpu) <
 	    MAX_VMSTAT_ERROR)
 		ret = KSFT_PASS;
 	else
@@ -418,11 +421,9 @@ struct kmem_test {
 int main(int argc, char **argv)
 {
 	char root[PATH_MAX];
-	int i;
+	int i, ret = EXIT_SUCCESS;
 
-	ksft_print_header();
-	ksft_set_plan(ARRAY_SIZE(tests));
-	if (cg_find_unified_root(root, sizeof(root), NULL))
+	if (cg_find_unified_root(root, sizeof(root)))
 		ksft_exit_skip("cgroup v2 isn't mounted\n");
 
 	/*
@@ -445,10 +446,11 @@ int main(int argc, char **argv)
 			ksft_test_result_skip("%s\n", tests[i].name);
 			break;
 		default:
+			ret = EXIT_FAILURE;
 			ksft_test_result_fail("%s\n", tests[i].name);
 			break;
 		}
 	}
 
-	ksft_finished();
+	return ret;
 }

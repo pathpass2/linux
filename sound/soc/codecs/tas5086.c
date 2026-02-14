@@ -24,13 +24,14 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/of_gpio.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -245,7 +246,7 @@ struct tas5086_private {
 	/* Current sample rate for de-emphasis control */
 	int		rate;
 	/* GPIO driving Reset pin, if any */
-	struct gpio_desc *reset;
+	int		gpio_nreset;
 	struct		regulator_bulk_data supplies[ARRAY_SIZE(supply_names)];
 };
 
@@ -272,7 +273,7 @@ static int tas5086_set_deemph(struct snd_soc_component *component)
 static int tas5086_get_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct tas5086_private *priv = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = priv->deemph;
@@ -283,7 +284,7 @@ static int tas5086_get_deemph(struct snd_kcontrol *kcontrol,
 static int tas5086_put_deemph(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct tas5086_private *priv = snd_soc_component_get_drvdata(component);
 
 	priv->deemph = ucontrol->value.integer.value[0];
@@ -461,11 +462,11 @@ static int tas5086_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 
 static void tas5086_reset(struct tas5086_private *priv)
 {
-	if (priv->reset) {
+	if (gpio_is_valid(priv->gpio_nreset)) {
 		/* Reset codec - minimum assertion time is 400ns */
-		gpiod_set_value_cansleep(priv->reset, 1);
+		gpio_direction_output(priv->gpio_nreset, 0);
 		udelay(1);
-		gpiod_set_value_cansleep(priv->reset, 0);
+		gpio_set_value(priv->gpio_nreset, 1);
 
 		/* Codec needs ~15ms to wake up */
 		msleep(15);
@@ -839,7 +840,7 @@ static int tas5086_probe(struct snd_soc_component *component)
 			snprintf(name, sizeof(name),
 				 "ti,mid-z-channel-%d", i + 1);
 
-			if (of_property_read_bool(of_node, name))
+			if (of_get_property(of_node, name, NULL) != NULL)
 				priv->pwm_start_mid_z |= 1 << i;
 		}
 	}
@@ -866,10 +867,9 @@ static void tas5086_remove(struct snd_soc_component *component)
 {
 	struct tas5086_private *priv = snd_soc_component_get_drvdata(component);
 
-	if (priv->reset) {
+	if (gpio_is_valid(priv->gpio_nreset))
 		/* Set codec to the reset state */
-		gpiod_set_value_cansleep(priv->reset, 1);
-	}
+		gpio_set_value(priv->gpio_nreset, 0);
 
 	regulator_bulk_disable(ARRAY_SIZE(priv->supplies), priv->supplies);
 };
@@ -891,7 +891,7 @@ static const struct snd_soc_component_driver soc_component_dev_tas5086 = {
 };
 
 static const struct i2c_device_id tas5086_i2c_id[] = {
-	{ "tas5086" },
+	{ "tas5086", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tas5086_i2c_id);
@@ -914,6 +914,7 @@ static int tas5086_i2c_probe(struct i2c_client *i2c)
 {
 	struct tas5086_private *priv;
 	struct device *dev = &i2c->dev;
+	int gpio_nreset = -EINVAL;
 	int i, ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -939,11 +940,16 @@ static int tas5086_i2c_probe(struct i2c_client *i2c)
 
 	i2c_set_clientdata(i2c, priv);
 
-	/* Request line asserted */
-	priv->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(priv->reset))
-		return PTR_ERR(priv->reset);
-	gpiod_set_consumer_name(priv->reset, "TAS5086 Reset");
+	if (of_match_device(of_match_ptr(tas5086_dt_ids), dev)) {
+		struct device_node *of_node = dev->of_node;
+		gpio_nreset = of_get_named_gpio(of_node, "reset-gpio", 0);
+	}
+
+	if (gpio_is_valid(gpio_nreset))
+		if (devm_gpio_request(dev, gpio_nreset, "TAS5086 Reset"))
+			gpio_nreset = -EINVAL;
+
+	priv->gpio_nreset = gpio_nreset;
 
 	ret = regulator_bulk_enable(ARRAY_SIZE(priv->supplies), priv->supplies);
 	if (ret < 0) {
@@ -984,7 +990,7 @@ static struct i2c_driver tas5086_i2c_driver = {
 		.of_match_table = of_match_ptr(tas5086_dt_ids),
 	},
 	.id_table	= tas5086_i2c_id,
-	.probe		= tas5086_i2c_probe,
+	.probe_new	= tas5086_i2c_probe,
 	.remove		= tas5086_i2c_remove,
 };
 

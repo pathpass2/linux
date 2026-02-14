@@ -18,9 +18,10 @@
 #include <linux/clk/davinci.h>
 #include <linux/clkdev.h>
 #include <linux/err.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/pm_clock.h>
 #include <linux/pm_domain.h>
 #include <linux/regmap.h>
@@ -277,11 +278,6 @@ davinci_lpsc_clk_register(struct device *dev, const char *name,
 
 	lpsc->pm_domain.name = devm_kasprintf(dev, GFP_KERNEL, "%s: %s",
 					      best_dev_name(dev), name);
-	if (!lpsc->pm_domain.name) {
-		clk_hw_unregister(&lpsc->hw);
-		kfree(lpsc);
-		return ERR_PTR(-ENOMEM);
-	}
 	lpsc->pm_domain.attach_dev = davinci_psc_genpd_attach_dev;
 	lpsc->pm_domain.detach_dev = davinci_psc_genpd_detach_dev;
 	lpsc->pm_domain.flags = GENPD_FLAG_PM_CLK;
@@ -499,26 +495,37 @@ int of_davinci_psc_clk_init(struct device *dev,
 }
 
 static const struct of_device_id davinci_psc_of_match[] = {
+#ifdef CONFIG_ARCH_DAVINCI_DA850
 	{ .compatible = "ti,da850-psc0", .data = &of_da850_psc0_init_data },
 	{ .compatible = "ti,da850-psc1", .data = &of_da850_psc1_init_data },
+#endif
 	{ }
 };
 
 static const struct platform_device_id davinci_psc_id_table[] = {
+#ifdef CONFIG_ARCH_DAVINCI_DA830
+	{ .name = "da830-psc0", .driver_data = (kernel_ulong_t)&da830_psc0_init_data },
+	{ .name = "da830-psc1", .driver_data = (kernel_ulong_t)&da830_psc1_init_data },
+#endif
+#ifdef CONFIG_ARCH_DAVINCI_DA850
 	{ .name = "da850-psc0", .driver_data = (kernel_ulong_t)&da850_psc0_init_data },
 	{ .name = "da850-psc1", .driver_data = (kernel_ulong_t)&da850_psc1_init_data },
+#endif
 	{ }
 };
 
 static int davinci_psc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	const struct of_device_id *of_id;
 	const struct davinci_psc_init_data *init_data = NULL;
 	void __iomem *base;
 	int ret;
 
-	init_data = device_get_match_data(dev);
-	if (!init_data && pdev->id_entry)
+	of_id = of_match_device(davinci_psc_of_match, dev);
+	if (of_id)
+		init_data = of_id->data;
+	else if (pdev->id_entry)
 		init_data = (void *)pdev->id_entry->driver_data;
 
 	if (!init_data) {

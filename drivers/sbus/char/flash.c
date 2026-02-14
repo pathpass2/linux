@@ -14,7 +14,7 @@
 #include <linux/spinlock.h>
 #include <linux/mm.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include <linux/uaccess.h>
 #include <asm/io.h>
@@ -187,9 +187,11 @@ static int flash_probe(struct platform_device *op)
 	return misc_register(&flash_dev);
 }
 
-static void flash_remove(struct platform_device *op)
+static int flash_remove(struct platform_device *op)
 {
 	misc_deregister(&flash_dev);
+
+	return 0;
 }
 
 static const struct of_device_id flash_match[] = {
@@ -211,5 +213,4 @@ static struct platform_driver flash_driver = {
 
 module_platform_driver(flash_driver);
 
-MODULE_DESCRIPTION("OBP Flash Device driver");
 MODULE_LICENSE("GPL");

@@ -27,6 +27,7 @@
  *   others: timeout = 2048 ms * 2^(TWDSCALE-1).
  */
 static const unsigned int wdt_timeout[] = { 0, 2, 4, 8, 16, 32, 65, 131 };
+static bool use_sw_pm;
 
 #define DA9063_TWDSCALE_DISABLE		0
 #define DA9063_TWDSCALE_MIN		1
@@ -229,7 +230,7 @@ static int da9063_wdt_probe(struct platform_device *pdev)
 	if (!wdd)
 		return -ENOMEM;
 
-	da9063->use_sw_pm = device_property_present(dev, "dlg,use-sw-pm");
+	use_sw_pm = device_property_present(dev, "dlg,use-sw-pm");
 
 	wdd->info = &da9063_watchdog_info;
 	wdd->ops = &da9063_watchdog_ops;
@@ -263,12 +264,11 @@ static int da9063_wdt_probe(struct platform_device *pdev)
 	return devm_watchdog_register_device(dev, wdd);
 }
 
-static int da9063_wdt_suspend(struct device *dev)
+static int __maybe_unused da9063_wdt_suspend(struct device *dev)
 {
 	struct watchdog_device *wdd = dev_get_drvdata(dev);
-	struct da9063 *da9063 = watchdog_get_drvdata(wdd);
 
-	if (!da9063->use_sw_pm)
+	if (!use_sw_pm)
 		return 0;
 
 	if (watchdog_active(wdd))
@@ -277,12 +277,11 @@ static int da9063_wdt_suspend(struct device *dev)
 	return 0;
 }
 
-static int da9063_wdt_resume(struct device *dev)
+static int __maybe_unused da9063_wdt_resume(struct device *dev)
 {
 	struct watchdog_device *wdd = dev_get_drvdata(dev);
-	struct da9063 *da9063 = watchdog_get_drvdata(wdd);
 
-	if (!da9063->use_sw_pm)
+	if (!use_sw_pm)
 		return 0;
 
 	if (watchdog_active(wdd))
@@ -291,14 +290,14 @@ static int da9063_wdt_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(da9063_wdt_pm_ops, da9063_wdt_suspend,
-				da9063_wdt_resume);
+static SIMPLE_DEV_PM_OPS(da9063_wdt_pm_ops,
+			da9063_wdt_suspend, da9063_wdt_resume);
 
 static struct platform_driver da9063_wdt_driver = {
 	.probe = da9063_wdt_probe,
 	.driver = {
 		.name = DA9063_DRVNAME_WATCHDOG,
-		.pm = pm_sleep_ptr(&da9063_wdt_pm_ops),
+		.pm = &da9063_wdt_pm_ops,
 	},
 };
 module_platform_driver(da9063_wdt_driver);

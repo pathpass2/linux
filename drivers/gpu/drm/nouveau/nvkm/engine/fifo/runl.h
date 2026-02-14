@@ -11,14 +11,12 @@ enum nvkm_subdev_type;
 
 struct nvkm_engn {
 	const struct nvkm_engn_func {
-		int (*nonstall)(struct nvkm_engn *);
 		bool (*chsw)(struct nvkm_engn *);
 		int (*cxid)(struct nvkm_engn *, bool *cgid);
 		void (*mmu_fault_trigger)(struct nvkm_engn *);
 		bool (*mmu_fault_triggered)(struct nvkm_engn *);
 		int (*ctor)(struct nvkm_engn *, struct nvkm_vctx *);
 		void (*bind)(struct nvkm_engn *, struct nvkm_cctx *, struct nvkm_chan *);
-		int (*ctor2)(struct nvkm_engn *, struct nvkm_vctx *, struct nvkm_chan *);
 		int (*ramht_add)(struct nvkm_engn *, struct nvkm_object *, struct nvkm_chan *);
 		void (*ramht_del)(struct nvkm_chan *, int hash);
 	} *func;
@@ -28,11 +26,6 @@ struct nvkm_engn {
 	struct nvkm_engine *engine;
 
 	int fault;
-
-	struct {
-		u32 desc;
-		u32 size;
-	} rm;
 
 	struct list_head head;
 };
@@ -75,11 +68,6 @@ struct nvkm_runl {
 	int runq_nr;
 
 	struct nvkm_inth inth;
-
-	struct {
-		int vector;
-		struct nvkm_inth inth;
-	} nonstall;
 
 	struct list_head cgrps;
 	int cgrp_nr;

@@ -22,7 +22,6 @@
 #include <linux/platform_data/st_sensors_pdata.h>
 
 #define LSM9DS0_IMU_DEV_NAME		"lsm9ds0"
-#define LSM303D_IMU_DEV_NAME		"lsm303d"
 
 /*
  * Buffer size max case: 2bytes per channel, 3 channels in total +
@@ -258,9 +257,9 @@ struct st_sensor_data {
 	bool hw_irq_trigger;
 	s64 hw_timestamp;
 
-	struct mutex odr_lock;
+	char buffer_data[ST_SENSORS_MAX_BUFFER_SIZE] ____cacheline_aligned;
 
-	char buffer_data[ST_SENSORS_MAX_BUFFER_SIZE] __aligned(IIO_DMA_MINALIGN);
+	struct mutex odr_lock;
 };
 
 #ifdef CONFIG_IIO_BUFFER

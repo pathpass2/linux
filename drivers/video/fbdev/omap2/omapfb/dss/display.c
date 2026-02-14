@@ -11,7 +11,6 @@
 
 #define DSS_SUBSYS_NAME "DISPLAY"
 
-#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/jiffies.h>

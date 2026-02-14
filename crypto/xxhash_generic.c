@@ -4,7 +4,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/xxhash.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #define XXHASH64_BLOCK_SIZE	32
 #define XXHASH64_DIGEST_SIZE	8
@@ -96,7 +96,7 @@ static void __exit xxhash_mod_fini(void)
 	crypto_unregister_shash(&alg);
 }
 
-module_init(xxhash_mod_init);
+subsys_initcall(xxhash_mod_init);
 module_exit(xxhash_mod_fini);
 
 MODULE_AUTHOR("Nikolay Borisov <nborisov@suse.com>");

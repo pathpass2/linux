@@ -5,14 +5,13 @@
 #include <linux/memory.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/pfn_t.h>
 #include <linux/slab.h>
 #include <linux/dax.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
 #include <linux/memory-tiers.h>
-#include <linux/memory_hotplug.h>
-#include <linux/string_helpers.h>
 #include "dax-private.h"
 #include "bus.h"
 
@@ -50,31 +49,14 @@ struct dax_kmem_data {
 	struct resource *res[];
 };
 
-static DEFINE_MUTEX(kmem_memory_type_lock);
-static LIST_HEAD(kmem_memory_types);
-
-static struct memory_dev_type *kmem_find_alloc_memory_type(int adist)
-{
-	guard(mutex)(&kmem_memory_type_lock);
-	return mt_find_alloc_memory_type(adist, &kmem_memory_types);
-}
-
-static void kmem_put_memory_types(void)
-{
-	guard(mutex)(&kmem_memory_type_lock);
-	mt_put_memory_types(&kmem_memory_types);
-}
-
+static struct memory_dev_type *dax_slowmem_type;
 static int dev_dax_kmem_probe(struct dev_dax *dev_dax)
 {
 	struct device *dev = &dev_dax->dev;
-	unsigned long total_len = 0, orig_len = 0;
+	unsigned long total_len = 0;
 	struct dax_kmem_data *data;
-	struct memory_dev_type *mtype;
 	int i, rc, mapped = 0;
-	mhp_t mhp_flags;
 	int numa_node;
-	int adist = MEMTIER_DEFAULT_DAX_ADISTANCE;
 
 	/*
 	 * Ensure good NUMA information for the persistent memory.
@@ -89,15 +71,9 @@ static int dev_dax_kmem_probe(struct dev_dax *dev_dax)
 		return -EINVAL;
 	}
 
-	mt_calc_adistance(numa_node, &adist);
-	mtype = kmem_find_alloc_memory_type(adist);
-	if (IS_ERR(mtype))
-		return PTR_ERR(mtype);
-
 	for (i = 0; i < dev_dax->nr_range; i++) {
 		struct range range;
 
-		orig_len += range_len(&dev_dax->ranges[i].range);
 		rc = dax_kmem_range(dev_dax, i, &range);
 		if (rc) {
 			dev_info(dev, "mapping%d: %#llx-%#llx too small after alignment\n",
@@ -110,15 +86,9 @@ static int dev_dax_kmem_probe(struct dev_dax *dev_dax)
 	if (!total_len) {
 		dev_warn(dev, "rejecting DAX region without any memory after alignment\n");
 		return -EINVAL;
-	} else if (total_len != orig_len) {
-		char buf[16];
-
-		string_get_size(orig_len - total_len, 1, STRING_UNITS_2,
-				buf, sizeof(buf));
-		dev_warn(dev, "DAX region truncated by %s due to alignment\n", buf);
 	}
 
-	init_node_memory_type(numa_node, mtype);
+	init_node_memory_type(numa_node, dax_slowmem_type);
 
 	rc = -ENOMEM;
 	data = kzalloc(struct_size(data, res, dev_dax->nr_range), GFP_KERNEL);
@@ -129,7 +99,7 @@ static int dev_dax_kmem_probe(struct dev_dax *dev_dax)
 	if (!data->res_name)
 		goto err_res_name;
 
-	rc = memory_group_register_static(numa_node, PFN_UP(total_len));
+	rc = memory_group_register_static(numa_node, total_len);
 	if (rc < 0)
 		goto err_reg_mgid;
 	data->mgid = rc;
@@ -166,16 +136,12 @@ static int dev_dax_kmem_probe(struct dev_dax *dev_dax)
 		 */
 		res->flags = IORESOURCE_SYSTEM_RAM;
 
-		mhp_flags = MHP_NID_IS_MGID;
-		if (dev_dax->memmap_on_memory)
-			mhp_flags |= MHP_MEMMAP_ON_MEMORY;
-
 		/*
 		 * Ensure that future kexec'd kernels will not treat
 		 * this as RAM automatically.
 		 */
 		rc = add_memory_driver_managed(data->mgid, range.start,
-				range_len(&range), kmem_name, mhp_flags);
+				range_len(&range), kmem_name, MHP_NID_IS_MGID);
 
 		if (rc) {
 			dev_warn(dev, "mapping%d: %#llx-%#llx memory add failed\n",
@@ -201,7 +167,7 @@ err_reg_mgid:
 err_res_name:
 	kfree(data);
 err_dax_kmem_data:
-	clear_node_memory_type(numa_node, mtype);
+	clear_node_memory_type(numa_node, dax_slowmem_type);
 	return rc;
 }
 
@@ -253,7 +219,7 @@ static void dev_dax_kmem_remove(struct dev_dax *dev_dax)
 		 * for that. This implies this reference will be around
 		 * till next reboot.
 		 */
-		clear_node_memory_type(node, NULL);
+		clear_node_memory_type(node, dax_slowmem_type);
 	}
 }
 #else
@@ -285,6 +251,12 @@ static int __init dax_kmem_init(void)
 	if (!kmem_name)
 		return -ENOMEM;
 
+	dax_slowmem_type = alloc_memory_type(MEMTIER_DEFAULT_DAX_ADISTANCE);
+	if (IS_ERR(dax_slowmem_type)) {
+		rc = PTR_ERR(dax_slowmem_type);
+		goto err_dax_slowmem_type;
+	}
+
 	rc = dax_driver_register(&device_dax_kmem_driver);
 	if (rc)
 		goto error_dax_driver;
@@ -292,7 +264,8 @@ static int __init dax_kmem_init(void)
 	return rc;
 
 error_dax_driver:
-	kmem_put_memory_types();
+	destroy_memory_type(dax_slowmem_type);
+err_dax_slowmem_type:
 	kfree_const(kmem_name);
 	return rc;
 }
@@ -302,11 +275,10 @@ static void __exit dax_kmem_exit(void)
 	dax_driver_unregister(&device_dax_kmem_driver);
 	if (!any_hotremove_failed)
 		kfree_const(kmem_name);
-	kmem_put_memory_types();
+	destroy_memory_type(dax_slowmem_type);
 }
 
 MODULE_AUTHOR("Intel Corporation");
-MODULE_DESCRIPTION("KMEM DAX: map dax-devices as System-RAM");
 MODULE_LICENSE("GPL v2");
 module_init(dax_kmem_init);
 module_exit(dax_kmem_exit);

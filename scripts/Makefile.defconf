@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 # Configuration heplers
 
-cmd_merge_fragments = \
-	$(srctree)/scripts/kconfig/merge_config.sh \
-	$4 -m -O $(objtree) $(srctree)/arch/$(SRCARCH)/configs/$2 \
-	$(foreach config,$3,$(srctree)/arch/$(SRCARCH)/configs/$(config).config)
-
 # Creates 'merged defconfigs'
 # ---------------------------------------------------------------------------
 # Usage:
@@ -13,7 +8,9 @@ cmd_merge_fragments = \
 #
 # Input config fragments without '.config' suffix
 define merge_into_defconfig
-	$(call cmd,merge_fragments,$1,$2)
+	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/kconfig/merge_config.sh \
+		-m -O $(objtree) $(srctree)/arch/$(ARCH)/configs/$(1) \
+		$(foreach config,$(2),$(srctree)/arch/$(ARCH)/configs/$(config).config)
 	+$(Q)$(MAKE) -f $(srctree)/Makefile olddefconfig
 endef
 
@@ -25,6 +22,8 @@ endef
 #
 # Input config fragments without '.config' suffix
 define merge_into_defconfig_override
-	$(call cmd,merge_fragments,$1,$2,-Q)
+	$(Q)$(CONFIG_SHELL) $(srctree)/scripts/kconfig/merge_config.sh \
+		-Q -m -O $(objtree) $(srctree)/arch/$(ARCH)/configs/$(1) \
+		$(foreach config,$(2),$(srctree)/arch/$(ARCH)/configs/$(config).config)
 	+$(Q)$(MAKE) -f $(srctree)/Makefile olddefconfig
 endef

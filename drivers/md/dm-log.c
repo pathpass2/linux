@@ -121,7 +121,7 @@ int dm_dirty_log_type_register(struct dm_dirty_log_type *type)
 	if (!__find_dirty_log_type(type->name))
 		list_add(&type->list, &_log_types);
 	else
-		r = -EBUSY;
+		r = -EEXIST;
 	spin_unlock(&_lock);
 
 	return r;
@@ -300,7 +300,7 @@ static int rw_header(struct log_c *lc, enum req_op op)
 {
 	lc->io_req.bi_opf = op;
 
-	return dm_io(&lc->io_req, 1, &lc->header_location, NULL, IOPRIO_DEFAULT);
+	return dm_io(&lc->io_req, 1, &lc->header_location, NULL);
 }
 
 static int flush_header(struct log_c *lc)
@@ -313,7 +313,7 @@ static int flush_header(struct log_c *lc)
 
 	lc->io_req.bi_opf = REQ_OP_WRITE | REQ_PREFLUSH;
 
-	return dm_io(&lc->io_req, 1, &null_location, NULL, IOPRIO_DEFAULT);
+	return dm_io(&lc->io_req, 1, &null_location, NULL);
 }
 
 static int read_header(struct log_c *log)
@@ -530,7 +530,7 @@ static void destroy_log_context(struct log_c *lc)
 
 static void core_dtr(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	vfree(lc->clean_bits);
 	destroy_log_context(lc);
@@ -569,7 +569,7 @@ static int disk_ctr(struct dm_dirty_log *log, struct dm_target *ti,
 
 static void disk_dtr(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	dm_put_device(lc->ti, lc->log_dev);
 	vfree(lc->disk_header);
@@ -590,7 +590,7 @@ static int disk_resume(struct dm_dirty_log *log)
 {
 	int r;
 	unsigned int i;
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 	size_t size = lc->bitset_uint32_count * sizeof(uint32_t);
 
 	/* read the disk header */
@@ -652,14 +652,14 @@ static int disk_resume(struct dm_dirty_log *log)
 
 static uint32_t core_get_region_size(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	return lc->region_size;
 }
 
 static int core_resume(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	lc->sync_search = 0;
 	return 0;
@@ -667,14 +667,14 @@ static int core_resume(struct dm_dirty_log *log)
 
 static int core_is_clean(struct dm_dirty_log *log, region_t region)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	return log_test_bit(lc->clean_bits, region);
 }
 
 static int core_in_sync(struct dm_dirty_log *log, region_t region, int block)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	return log_test_bit(lc->sync_bits, region);
 }
@@ -727,14 +727,14 @@ static int disk_flush(struct dm_dirty_log *log)
 
 static void core_mark_region(struct dm_dirty_log *log, region_t region)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	log_clear_bit(lc, lc->clean_bits, region);
 }
 
 static void core_clear_region(struct dm_dirty_log *log, region_t region)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	if (likely(!lc->flush_failed))
 		log_set_bit(lc, lc->clean_bits, region);
@@ -742,7 +742,7 @@ static void core_clear_region(struct dm_dirty_log *log, region_t region)
 
 static int core_get_resync_work(struct dm_dirty_log *log, region_t *region)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	if (lc->sync_search >= lc->region_count)
 		return 0;
@@ -765,7 +765,7 @@ static int core_get_resync_work(struct dm_dirty_log *log, region_t *region)
 static void core_set_region_sync(struct dm_dirty_log *log, region_t region,
 				 int in_sync)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	log_clear_bit(lc, lc->recovering_bits, region);
 	if (in_sync) {
@@ -779,7 +779,7 @@ static void core_set_region_sync(struct dm_dirty_log *log, region_t region,
 
 static region_t core_get_sync_count(struct dm_dirty_log *log)
 {
-	struct log_c *lc = log->context;
+	struct log_c *lc = (struct log_c *) log->context;
 
 	return lc->sync_count;
 }
@@ -908,5 +908,5 @@ module_init(dm_dirty_log_init);
 module_exit(dm_dirty_log_exit);
 
 MODULE_DESCRIPTION(DM_NAME " dirty region log");
-MODULE_AUTHOR("Joe Thornber, Heinz Mauelshagen <dm-devel@lists.linux.dev>");
+MODULE_AUTHOR("Joe Thornber, Heinz Mauelshagen <dm-devel@redhat.com>");
 MODULE_LICENSE("GPL");

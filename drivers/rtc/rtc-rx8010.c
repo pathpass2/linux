@@ -50,7 +50,7 @@
 #define RX8010_ALARM_AE		BIT(7)
 
 static const struct i2c_device_id rx8010_id[] = {
-	{ "rx8010" },
+	{ "rx8010", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rx8010_id);
@@ -412,6 +412,7 @@ static int rx8010_probe(struct i2c_client *client)
 	}
 
 	rx8010->rtc->ops = &rx8010_rtc_ops;
+	rx8010->rtc->max_user_freq = 1;
 	rx8010->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
 	rx8010->rtc->range_max = RTC_TIMESTAMP_END_2099;
 
@@ -423,7 +424,7 @@ static struct i2c_driver rx8010_driver = {
 		.name = "rtc-rx8010",
 		.of_match_table = of_match_ptr(rx8010_of_match),
 	},
-	.probe		= rx8010_probe,
+	.probe_new	= rx8010_probe,
 	.id_table	= rx8010_id,
 };
 

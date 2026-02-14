@@ -418,22 +418,31 @@ static int hts221_read_oneshot(struct hts221_hw *hw, u8 addr, int *val)
 	return IIO_VAL_INT;
 }
 
-static int __hts221_read_raw(struct iio_dev *iio_dev,
-			     struct iio_chan_spec const *ch,
-			     int *val, int *val2, long mask)
+static int hts221_read_raw(struct iio_dev *iio_dev,
+			   struct iio_chan_spec const *ch,
+			   int *val, int *val2, long mask)
 {
 	struct hts221_hw *hw = iio_priv(iio_dev);
+	int ret;
+
+	ret = iio_device_claim_direct_mode(iio_dev);
+	if (ret)
+		return ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		return hts221_read_oneshot(hw, ch->address, val);
+		ret = hts221_read_oneshot(hw, ch->address, val);
+		break;
 	case IIO_CHAN_INFO_SCALE:
-		return hts221_get_sensor_scale(hw, ch->type, val, val2);
+		ret = hts221_get_sensor_scale(hw, ch->type, val, val2);
+		break;
 	case IIO_CHAN_INFO_OFFSET:
-		return hts221_get_sensor_offset(hw, ch->type, val, val2);
+		ret = hts221_get_sensor_offset(hw, ch->type, val, val2);
+		break;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = hw->odr;
-		return IIO_VAL_INT;
+		ret = IIO_VAL_INT;
+		break;
 	case IIO_CHAN_INFO_OVERSAMPLING_RATIO: {
 		u8 idx;
 		const struct hts221_avg *avg;
@@ -443,72 +452,64 @@ static int __hts221_read_raw(struct iio_dev *iio_dev,
 			avg = &hts221_avg_list[HTS221_SENSOR_H];
 			idx = hw->sensors[HTS221_SENSOR_H].cur_avg_idx;
 			*val = avg->avg_avl[idx];
-			return IIO_VAL_INT;
+			ret = IIO_VAL_INT;
+			break;
 		case IIO_TEMP:
 			avg = &hts221_avg_list[HTS221_SENSOR_T];
 			idx = hw->sensors[HTS221_SENSOR_T].cur_avg_idx;
 			*val = avg->avg_avl[idx];
-			return IIO_VAL_INT;
+			ret = IIO_VAL_INT;
+			break;
 		default:
-			return -EINVAL;
+			ret = -EINVAL;
+			break;
 		}
+		break;
 	}
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
-}
 
-static int hts221_read_raw(struct iio_dev *iio_dev,
-			   struct iio_chan_spec const *ch,
-			   int *val, int *val2, long mask)
-{
-	int ret;
-
-	if (!iio_device_claim_direct(iio_dev))
-		return -EBUSY;
-
-	ret = __hts221_read_raw(iio_dev, ch, val, val2, mask);
-
-	iio_device_release_direct(iio_dev);
+	iio_device_release_direct_mode(iio_dev);
 
 	return ret;
-}
-
-static int __hts221_write_raw(struct iio_dev *iio_dev,
-			      struct iio_chan_spec const *chan,
-			      int val, long mask)
-{
-	struct hts221_hw *hw = iio_priv(iio_dev);
-
-	switch (mask) {
-	case IIO_CHAN_INFO_SAMP_FREQ:
-		return hts221_update_odr(hw, val);
-	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
-		switch (chan->type) {
-		case IIO_HUMIDITYRELATIVE:
-			return hts221_update_avg(hw, HTS221_SENSOR_H, val);
-		case IIO_TEMP:
-			return hts221_update_avg(hw, HTS221_SENSOR_T, val);
-		default:
-			return -EINVAL;
-		}
-	default:
-		return -EINVAL;
-	}
 }
 
 static int hts221_write_raw(struct iio_dev *iio_dev,
 			    struct iio_chan_spec const *chan,
 			    int val, int val2, long mask)
 {
+	struct hts221_hw *hw = iio_priv(iio_dev);
 	int ret;
 
-	if (!iio_device_claim_direct(iio_dev))
-		return -EBUSY;
+	ret = iio_device_claim_direct_mode(iio_dev);
+	if (ret)
+		return ret;
 
-	ret = __hts221_write_raw(iio_dev, chan, val, mask);
+	switch (mask) {
+	case IIO_CHAN_INFO_SAMP_FREQ:
+		ret = hts221_update_odr(hw, val);
+		break;
+	case IIO_CHAN_INFO_OVERSAMPLING_RATIO:
+		switch (chan->type) {
+		case IIO_HUMIDITYRELATIVE:
+			ret = hts221_update_avg(hw, HTS221_SENSOR_H, val);
+			break;
+		case IIO_TEMP:
+			ret = hts221_update_avg(hw, HTS221_SENSOR_T, val);
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
 
-	iio_device_release_direct(iio_dev);
+	iio_device_release_direct_mode(iio_dev);
 
 	return ret;
 }
@@ -572,7 +573,7 @@ int hts221_probe(struct device *dev, int irq, const char *name,
 	if (!iio_dev)
 		return -ENOMEM;
 
-	dev_set_drvdata(dev, iio_dev);
+	dev_set_drvdata(dev, (void *)iio_dev);
 
 	hw = iio_priv(iio_dev);
 	hw->name = name;
@@ -648,7 +649,7 @@ int hts221_probe(struct device *dev, int irq, const char *name,
 
 	return devm_iio_device_register(hw->dev, iio_dev);
 }
-EXPORT_SYMBOL_NS(hts221_probe, "IIO_HTS221");
+EXPORT_SYMBOL_NS(hts221_probe, IIO_HTS221);
 
 static int hts221_suspend(struct device *dev)
 {

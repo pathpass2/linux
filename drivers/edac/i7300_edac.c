@@ -23,7 +23,6 @@
 #include <linux/slab.h>
 #include <linux/edac.h>
 #include <linux/mmzone.h>
-#include <linux/string_choices.h>
 
 #include "edac_module.h"
 
@@ -621,7 +620,7 @@ static int decode_mtr(struct i7300_pvt *pvt,
 	edac_dbg(2, "\t\tWIDTH: x%d\n", MTR_DRAM_WIDTH(mtr));
 
 	edac_dbg(2, "\t\tELECTRICAL THROTTLING is %s\n",
-		 str_enabled_disabled(MTR_DIMMS_ETHROTTLE(mtr)));
+		 MTR_DIMMS_ETHROTTLE(mtr) ? "enabled" : "disabled");
 
 	edac_dbg(2, "\t\tNUMBANK: %d bank(s)\n", MTR_DRAM_BANKS(mtr));
 	edac_dbg(2, "\t\tNUMRANK: %s\n",
@@ -872,9 +871,9 @@ static int i7300_get_mc_regs(struct mem_ctl_info *mci)
 			 IS_MIRRORED(pvt->mc_settings) ? "" : "non-");
 
 	edac_dbg(0, "Error detection is %s\n",
-		 str_enabled_disabled(IS_ECC_ENABLED(pvt->mc_settings)));
+		 IS_ECC_ENABLED(pvt->mc_settings) ? "enabled" : "disabled");
 	edac_dbg(0, "Retry is %s\n",
-		 str_enabled_disabled(IS_RETRY_ENABLED(pvt->mc_settings)));
+		 IS_RETRY_ENABLED(pvt->mc_settings) ? "enabled" : "disabled");
 
 	/* Get Memory Interleave Range registers */
 	pci_read_config_word(pvt->pci_dev_16_1_fsb_addr_map, MIR0,

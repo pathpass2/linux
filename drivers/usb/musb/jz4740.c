@@ -10,7 +10,7 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/usb/role.h>
@@ -59,7 +59,7 @@ static irqreturn_t jz4740_musb_interrupt(int irq, void *__hci)
 	return IRQ_NONE;
 }
 
-static const struct musb_fifo_cfg jz4740_musb_fifo_cfg[] = {
+static struct musb_fifo_cfg jz4740_musb_fifo_cfg[] = {
 	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, },
 	{ .hw_ep_num = 1, .style = FIFO_RX, .maxpacket = 512, },
 	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 64, },
@@ -205,7 +205,7 @@ static const struct musb_hdrc_platform_data jz4740_musb_pdata = {
 	.platform_ops	= &jz4740_musb_ops,
 };
 
-static const struct musb_fifo_cfg jz4770_musb_fifo_cfg[] = {
+static struct musb_fifo_cfg jz4770_musb_fifo_cfg[] = {
 	{ .hw_ep_num = 1, .style = FIFO_TX, .maxpacket = 512, },
 	{ .hw_ep_num = 1, .style = FIFO_RX, .maxpacket = 512, },
 	{ .hw_ep_num = 2, .style = FIFO_TX, .maxpacket = 512, },
@@ -308,12 +308,14 @@ err_platform_device_put:
 	return ret;
 }
 
-static void jz4740_remove(struct platform_device *pdev)
+static int jz4740_remove(struct platform_device *pdev)
 {
 	struct jz4740_glue *glue = platform_get_drvdata(pdev);
 
 	platform_device_unregister(glue->pdev);
 	clk_disable_unprepare(glue->clk);
+
+	return 0;
 }
 
 static const struct of_device_id jz4740_musb_of_match[] = {

@@ -302,5 +302,4 @@ static void __exit exit_nls_cp866(void)
 module_init(init_nls_cp866)
 module_exit(exit_nls_cp866)
 
-MODULE_DESCRIPTION("NLS Codepage 866 (Cyrillic/Russian)");
 MODULE_LICENSE("Dual BSD/GPL");

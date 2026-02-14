@@ -340,6 +340,8 @@ static void adm1266_init_debugfs(struct adm1266_data *data)
 		return;
 
 	data->debugfs_dir = debugfs_create_dir(data->client->name, root);
+	if (!data->debugfs_dir)
+		return;
 
 	debugfs_create_devm_seqfile(&data->client->dev, "sequencer_state", data->debugfs_dir,
 				    adm1266_state_read);
@@ -490,7 +492,7 @@ static const struct of_device_id adm1266_of_match[] = {
 MODULE_DEVICE_TABLE(of, adm1266_of_match);
 
 static const struct i2c_device_id adm1266_id[] = {
-	{ "adm1266" },
+	{ "adm1266", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adm1266_id);
@@ -500,7 +502,7 @@ static struct i2c_driver adm1266_driver = {
 		   .name = "adm1266",
 		   .of_match_table = adm1266_of_match,
 		  },
-	.probe = adm1266_probe,
+	.probe_new = adm1266_probe,
 	.id_table = adm1266_id,
 };
 
@@ -509,4 +511,4 @@ module_i2c_driver(adm1266_driver);
 MODULE_AUTHOR("Alexandru Tachici <alexandru.tachici@analog.com>");
 MODULE_DESCRIPTION("PMBus driver for Analog Devices ADM1266");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("PMBUS");
+MODULE_IMPORT_NS(PMBUS);

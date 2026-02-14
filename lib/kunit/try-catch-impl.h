@@ -17,13 +17,11 @@ struct kunit;
 static inline void kunit_try_catch_init(struct kunit_try_catch *try_catch,
 					struct kunit *test,
 					kunit_try_catch_func_t try,
-					kunit_try_catch_func_t catch,
-					unsigned long timeout)
+					kunit_try_catch_func_t catch)
 {
 	try_catch->test = test;
 	try_catch->try = try;
 	try_catch->catch = catch;
-	try_catch->timeout = timeout;
 }
 
 #endif /* _KUNIT_TRY_CATCH_IMPL_H */

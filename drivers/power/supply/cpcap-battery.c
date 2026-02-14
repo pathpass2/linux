@@ -15,7 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/reboot.h>
@@ -1122,11 +1122,15 @@ static int cpcap_battery_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, ddata);
 
+	error = cpcap_battery_init_interrupts(pdev, ddata);
+	if (error)
+		return error;
+
 	error = cpcap_battery_init_iio(ddata);
 	if (error)
 		return error;
 
-	psy_cfg.fwnode = dev_fwnode(&pdev->dev);
+	psy_cfg.of_node = pdev->dev.of_node;
 	psy_cfg.drv_data = ddata;
 
 	ddata->psy = devm_power_supply_register(ddata->dev,
@@ -1138,10 +1142,6 @@ static int cpcap_battery_probe(struct platform_device *pdev)
 		return error;
 	}
 
-	error = cpcap_battery_init_interrupts(pdev, ddata);
-	if (error)
-		return error;
-
 	atomic_set(&ddata->active, 1);
 
 	error = cpcap_battery_calibrate(ddata);
@@ -1151,7 +1151,7 @@ static int cpcap_battery_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void cpcap_battery_remove(struct platform_device *pdev)
+static int cpcap_battery_remove(struct platform_device *pdev)
 {
 	struct cpcap_battery_ddata *ddata = platform_get_drvdata(pdev);
 	int error;
@@ -1161,6 +1161,8 @@ static void cpcap_battery_remove(struct platform_device *pdev)
 				   0xffff, 0);
 	if (error)
 		dev_err(&pdev->dev, "could not disable: %i\n", error);
+
+	return 0;
 }
 
 static struct platform_driver cpcap_battery_driver = {
@@ -1169,7 +1171,7 @@ static struct platform_driver cpcap_battery_driver = {
 		.of_match_table = of_match_ptr(cpcap_battery_id_table),
 	},
 	.probe	= cpcap_battery_probe,
-	.remove	= cpcap_battery_remove,
+	.remove = cpcap_battery_remove,
 };
 module_platform_driver(cpcap_battery_driver);
 

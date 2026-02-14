@@ -111,7 +111,6 @@
 		reg = <0x45>;
 
 		vcc-supply = <&pm8953_l10>;
-		vio-supply = <&pm8953_l5>;
 
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -326,6 +325,5 @@
 };
 
 &usb3_dwc3 {
-	/delete-property/ usb-role-switch;
 	dr_mode = "peripheral";
 };

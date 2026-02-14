@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Qualcomm's SPMI PMIC Round Robin ADC
 
 maintainers:
-  - Casey Connolly <casey.connolly@linaro.org>
+  - Caleb Connolly <caleb.connolly@linaro.org>
 
 description: |
   The Qualcomm SPMI Round Robin ADC (RRADC) provides interface to clients to
@@ -43,9 +43,9 @@ examples:
         #address-cells = <1>;
         #size-cells = <0>;
 
-        adc@4500 {
+        pmic_rradc: adc@4500 {
             compatible = "qcom,pmi8998-rradc";
             reg = <0x4500>;
-            #io-channel-cells = <1>;
+            #io-channel-cells  = <1>;
         };
     };

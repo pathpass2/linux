@@ -135,14 +135,9 @@ static int vivid_thread_touch_cap(void *data)
 			next_jiffies_since_start = jiffies_since_start;
 
 		wait_jiffies = next_jiffies_since_start - jiffies_since_start;
-		if (!time_is_after_jiffies(cur_jiffies + wait_jiffies))
-			continue;
-
-		wait_queue_head_t wait;
-
-		init_waitqueue_head(&wait);
-		wait_event_interruptible_timeout(wait, kthread_should_stop(),
-					cur_jiffies + wait_jiffies - jiffies);
+		while (time_is_after_jiffies(cur_jiffies + wait_jiffies) &&
+		       !kthread_should_stop())
+			schedule();
 	}
 	dprintk(dev, 1, "Touch Capture Thread End\n");
 	return 0;

@@ -15,7 +15,7 @@
  *	Zhenyu Wang
  */
 
-#include <linux/crc32c.h>
+#include <crypto/hash.h>
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/inet.h>
@@ -168,7 +168,7 @@ iscsi_tcp_segment_splice_digest(struct iscsi_segment *segment, void *digest)
 	segment->size = ISCSI_DIGEST_SIZE;
 	segment->copied = 0;
 	segment->sg = NULL;
-	segment->crcp = NULL;
+	segment->hash = NULL;
 }
 
 /**
@@ -191,27 +191,29 @@ int iscsi_tcp_segment_done(struct iscsi_tcp_conn *tcp_conn,
 			   struct iscsi_segment *segment, int recv,
 			   unsigned copied)
 {
+	struct scatterlist sg;
 	unsigned int pad;
 
 	ISCSI_DBG_TCP(tcp_conn->iscsi_conn, "copied %u %u size %u %s\n",
 		      segment->copied, copied, segment->size,
 		      recv ? "recv" : "xmit");
-	if (segment->crcp && copied) {
-		if (segment->data) {
-			*segment->crcp = crc32c(*segment->crcp,
-						segment->data + segment->copied,
-						copied);
-		} else {
-			const void *data;
+	if (segment->hash && copied) {
+		/*
+		 * If a segment is kmapd we must unmap it before sending
+		 * to the crypto layer since that will try to kmap it again.
+		 */
+		iscsi_tcp_segment_unmap(segment);
 
-			data = kmap_local_page(sg_page(segment->sg));
-			*segment->crcp = crc32c(*segment->crcp,
-						data + segment->copied +
-						segment->sg_offset +
-						segment->sg->offset,
-						copied);
-			kunmap_local(data);
-		}
+		if (!segment->data) {
+			sg_init_table(&sg, 1);
+			sg_set_page(&sg, sg_page(segment->sg), copied,
+				    segment->copied + segment->sg_offset +
+							segment->sg->offset);
+		} else
+			sg_init_one(&sg, segment->data + segment->copied,
+				    copied);
+		ahash_request_set_crypt(segment->hash, &sg, NULL, copied);
+		crypto_ahash_update(segment->hash);
 	}
 
 	segment->copied += copied;
@@ -256,8 +258,10 @@ int iscsi_tcp_segment_done(struct iscsi_tcp_conn *tcp_conn,
 	 * Set us up for transferring the data digest. hdr digest
 	 * is completely handled in hdr done function.
 	 */
-	if (segment->crcp) {
-		put_unaligned_le32(~*segment->crcp, segment->digest);
+	if (segment->hash) {
+		ahash_request_set_crypt(segment->hash, NULL,
+					segment->digest, 0);
+		crypto_ahash_final(segment->hash);
 		iscsi_tcp_segment_splice_digest(segment,
 				 recv ? segment->recv_digest : segment->digest);
 		return 0;
@@ -278,7 +282,8 @@ EXPORT_SYMBOL_GPL(iscsi_tcp_segment_done);
  * given buffer, and returns the number of bytes
  * consumed, which can actually be less than @len.
  *
- * If CRC is enabled, the function will update the CRC while copying.
+ * If hash digest is enabled, the function will update the
+ * hash while copying.
  * Combining these two operations doesn't buy us a lot (yet),
  * but in the future we could implement combined copy+crc,
  * just way we do for network layer checksums.
@@ -306,10 +311,14 @@ iscsi_tcp_segment_recv(struct iscsi_tcp_conn *tcp_conn,
 }
 
 inline void
-iscsi_tcp_dgst_header(const void *hdr, size_t hdrlen,
-		      unsigned char digest[ISCSI_DIGEST_SIZE])
+iscsi_tcp_dgst_header(struct ahash_request *hash, const void *hdr,
+		      size_t hdrlen, unsigned char digest[ISCSI_DIGEST_SIZE])
 {
-	put_unaligned_le32(~crc32c(~0, hdr, hdrlen), digest);
+	struct scatterlist sg;
+
+	sg_init_one(&sg, hdr, hdrlen);
+	ahash_request_set_crypt(hash, &sg, digest, hdrlen);
+	crypto_ahash_digest(hash);
 }
 EXPORT_SYMBOL_GPL(iscsi_tcp_dgst_header);
 
@@ -334,23 +343,24 @@ iscsi_tcp_dgst_verify(struct iscsi_tcp_conn *tcp_conn,
  */
 static inline void
 __iscsi_segment_init(struct iscsi_segment *segment, size_t size,
-		     iscsi_segment_done_fn_t *done, u32 *crcp)
+		     iscsi_segment_done_fn_t *done, struct ahash_request *hash)
 {
 	memset(segment, 0, sizeof(*segment));
 	segment->total_size = size;
 	segment->done = done;
 
-	if (crcp) {
-		segment->crcp = crcp;
-		*crcp = ~0;
+	if (hash) {
+		segment->hash = hash;
+		crypto_ahash_init(hash);
 	}
 }
 
 inline void
 iscsi_segment_init_linear(struct iscsi_segment *segment, void *data,
-			  size_t size, iscsi_segment_done_fn_t *done, u32 *crcp)
+			  size_t size, iscsi_segment_done_fn_t *done,
+			  struct ahash_request *hash)
 {
-	__iscsi_segment_init(segment, size, done, crcp);
+	__iscsi_segment_init(segment, size, done, hash);
 	segment->data = data;
 	segment->size = size;
 }
@@ -360,12 +370,13 @@ inline int
 iscsi_segment_seek_sg(struct iscsi_segment *segment,
 		      struct scatterlist *sg_list, unsigned int sg_count,
 		      unsigned int offset, size_t size,
-		      iscsi_segment_done_fn_t *done, u32 *crcp)
+		      iscsi_segment_done_fn_t *done,
+		      struct ahash_request *hash)
 {
 	struct scatterlist *sg;
 	unsigned int i;
 
-	__iscsi_segment_init(segment, size, done, crcp);
+	__iscsi_segment_init(segment, size, done, hash);
 	for_each_sg(sg_list, sg, sg_count, i) {
 		if (offset < sg->length) {
 			iscsi_tcp_segment_init_sg(segment, sg, offset);
@@ -382,7 +393,7 @@ EXPORT_SYMBOL_GPL(iscsi_segment_seek_sg);
  * iscsi_tcp_hdr_recv_prep - prep segment for hdr reception
  * @tcp_conn: iscsi connection to prep for
  *
- * This function always passes NULL for the crcp argument, because when this
+ * This function always passes NULL for the hash argument, because when this
  * function is called we do not yet know the final size of the header and want
  * to delay the digest processing until we know that.
  */
@@ -423,15 +434,15 @@ static void
 iscsi_tcp_data_recv_prep(struct iscsi_tcp_conn *tcp_conn)
 {
 	struct iscsi_conn *conn = tcp_conn->iscsi_conn;
-	u32 *rx_crcp = NULL;
+	struct ahash_request *rx_hash = NULL;
 
 	if (conn->datadgst_en &&
 	    !(conn->session->tt->caps & CAP_DIGEST_OFFLOAD))
-		rx_crcp = tcp_conn->rx_crcp;
+		rx_hash = tcp_conn->rx_hash;
 
 	iscsi_segment_init_linear(&tcp_conn->in.segment,
 				conn->data, tcp_conn->in.datalen,
-				iscsi_tcp_data_recv_done, rx_crcp);
+				iscsi_tcp_data_recv_done, rx_hash);
 }
 
 /**
@@ -719,7 +730,7 @@ iscsi_tcp_hdr_dissect(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
 
 		if (tcp_conn->in.datalen) {
 			struct iscsi_tcp_task *tcp_task = task->dd_data;
-			u32 *rx_crcp = NULL;
+			struct ahash_request *rx_hash = NULL;
 			struct scsi_data_buffer *sdb = &task->sc->sdb;
 
 			/*
@@ -732,7 +743,7 @@ iscsi_tcp_hdr_dissect(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
 			 */
 			if (conn->datadgst_en &&
 			    !(conn->session->tt->caps & CAP_DIGEST_OFFLOAD))
-				rx_crcp = tcp_conn->rx_crcp;
+				rx_hash = tcp_conn->rx_hash;
 
 			ISCSI_DBG_TCP(conn, "iscsi_tcp_begin_data_in( "
 				     "offset=%d, datalen=%d)\n",
@@ -745,7 +756,7 @@ iscsi_tcp_hdr_dissect(struct iscsi_conn *conn, struct iscsi_hdr *hdr)
 						   tcp_task->data_offset,
 						   tcp_conn->in.datalen,
 						   iscsi_tcp_process_data_in,
-						   rx_crcp);
+						   rx_hash);
 			spin_unlock(&conn->session->back_lock);
 			return rc;
 		}
@@ -867,7 +878,7 @@ iscsi_tcp_hdr_recv_done(struct iscsi_tcp_conn *tcp_conn,
 			return 0;
 		}
 
-		iscsi_tcp_dgst_header(hdr,
+		iscsi_tcp_dgst_header(tcp_conn->rx_hash, hdr,
 				      segment->total_copied - ISCSI_DIGEST_SIZE,
 				      segment->digest);
 

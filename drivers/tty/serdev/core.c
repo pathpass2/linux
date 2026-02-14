@@ -15,11 +15,9 @@
 #include <linux/of_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
-#include <linux/property.h>
 #include <linux/sched.h>
 #include <linux/serdev.h>
 #include <linux/slab.h>
-
 #include <linux/platform_data/x86/apple.h>
 
 static bool is_registered;
@@ -77,7 +75,7 @@ static bool is_serdev_device(const struct device *dev)
 static void serdev_ctrl_release(struct device *dev)
 {
 	struct serdev_controller *ctrl = to_serdev_controller(dev);
-	ida_free(&ctrl_ida, ctrl->nr);
+	ida_simple_remove(&ctrl_ida, ctrl->nr);
 	kfree(ctrl);
 }
 
@@ -85,7 +83,7 @@ static const struct device_type serdev_ctrl_type = {
 	.release	= serdev_ctrl_release,
 };
 
-static int serdev_device_match(struct device *dev, const struct device_driver *drv)
+static int serdev_device_match(struct device *dev, struct device_driver *drv)
 {
 	if (!is_serdev_device(dev))
 		return 0;
@@ -118,11 +116,12 @@ int serdev_device_add(struct serdev_device *serdev)
 
 	err = device_add(&serdev->dev);
 	if (err < 0) {
-		dev_err(&serdev->dev, "Failed to add serdev: %d\n", err);
+		dev_err(&serdev->dev, "Can't add %s, status %pe\n",
+			dev_name(&serdev->dev), ERR_PTR(err));
 		goto err_clear_serdev;
 	}
 
-	dev_dbg(&serdev->dev, "serdev registered successfully\n");
+	dev_dbg(&serdev->dev, "device %s registered\n", dev_name(&serdev->dev));
 
 	return 0;
 
@@ -186,20 +185,30 @@ void serdev_device_close(struct serdev_device *serdev)
 }
 EXPORT_SYMBOL_GPL(serdev_device_close);
 
-static void devm_serdev_device_close(void *serdev)
+static void devm_serdev_device_release(struct device *dev, void *dr)
 {
-	serdev_device_close(serdev);
+	serdev_device_close(*(struct serdev_device **)dr);
 }
 
 int devm_serdev_device_open(struct device *dev, struct serdev_device *serdev)
 {
+	struct serdev_device **dr;
 	int ret;
 
-	ret = serdev_device_open(serdev);
-	if (ret)
-		return ret;
+	dr = devres_alloc(devm_serdev_device_release, sizeof(*dr), GFP_KERNEL);
+	if (!dr)
+		return -ENOMEM;
 
-	return devm_add_action_or_reset(dev, devm_serdev_device_close, serdev);
+	ret = serdev_device_open(serdev);
+	if (ret) {
+		devres_free(dr);
+		return ret;
+	}
+
+	*dr = serdev;
+	devres_add(dev, dr);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(devm_serdev_device_open);
 
@@ -224,7 +233,8 @@ EXPORT_SYMBOL_GPL(serdev_device_write_wakeup);
  * Return: The number of bytes written (less than count if not enough room in
  * the write buffer), or a negative errno on errors.
  */
-int serdev_device_write_buf(struct serdev_device *serdev, const u8 *buf, size_t count)
+int serdev_device_write_buf(struct serdev_device *serdev,
+			    const unsigned char *buf, size_t count)
 {
 	struct serdev_controller *ctrl = serdev->ctrl;
 
@@ -257,12 +267,13 @@ EXPORT_SYMBOL_GPL(serdev_device_write_buf);
  * -ETIMEDOUT or -ERESTARTSYS if interrupted before any bytes were written, or
  * a negative errno on errors.
  */
-ssize_t serdev_device_write(struct serdev_device *serdev, const u8 *buf,
-			    size_t count, long timeout)
+int serdev_device_write(struct serdev_device *serdev,
+			const unsigned char *buf, size_t count,
+			long timeout)
 {
 	struct serdev_controller *ctrl = serdev->ctrl;
-	size_t written = 0;
-	ssize_t ret;
+	int written = 0;
+	int ret;
 
 	if (!ctrl || !ctrl->ops->write_buf || !serdev->ops->write_wakeup)
 		return -EINVAL;
@@ -315,6 +326,17 @@ void serdev_device_write_flush(struct serdev_device *serdev)
 }
 EXPORT_SYMBOL_GPL(serdev_device_write_flush);
 
+int serdev_device_write_room(struct serdev_device *serdev)
+{
+	struct serdev_controller *ctrl = serdev->ctrl;
+
+	if (!ctrl || !ctrl->ops->write_room)
+		return 0;
+
+	return serdev->ctrl->ops->write_room(ctrl);
+}
+EXPORT_SYMBOL_GPL(serdev_device_write_room);
+
 unsigned int serdev_device_set_baudrate(struct serdev_device *serdev, unsigned int speed)
 {
 	struct serdev_controller *ctrl = serdev->ctrl;
@@ -344,7 +366,7 @@ int serdev_device_set_parity(struct serdev_device *serdev,
 	struct serdev_controller *ctrl = serdev->ctrl;
 
 	if (!ctrl || !ctrl->ops->set_parity)
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 
 	return ctrl->ops->set_parity(ctrl, parity);
 }
@@ -366,7 +388,7 @@ int serdev_device_get_tiocm(struct serdev_device *serdev)
 	struct serdev_controller *ctrl = serdev->ctrl;
 
 	if (!ctrl || !ctrl->ops->get_tiocm)
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 
 	return ctrl->ops->get_tiocm(ctrl);
 }
@@ -377,34 +399,26 @@ int serdev_device_set_tiocm(struct serdev_device *serdev, int set, int clear)
 	struct serdev_controller *ctrl = serdev->ctrl;
 
 	if (!ctrl || !ctrl->ops->set_tiocm)
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 
 	return ctrl->ops->set_tiocm(ctrl, set, clear);
 }
 EXPORT_SYMBOL_GPL(serdev_device_set_tiocm);
-
-int serdev_device_break_ctl(struct serdev_device *serdev, int break_state)
-{
-	struct serdev_controller *ctrl = serdev->ctrl;
-
-	if (!ctrl || !ctrl->ops->break_ctl)
-		return -EOPNOTSUPP;
-
-	return ctrl->ops->break_ctl(ctrl, break_state);
-}
-EXPORT_SYMBOL_GPL(serdev_device_break_ctl);
 
 static int serdev_drv_probe(struct device *dev)
 {
 	const struct serdev_device_driver *sdrv = to_serdev_device_driver(dev->driver);
 	int ret;
 
-	ret = dev_pm_domain_attach(dev, PD_FLAG_ATTACH_POWER_ON |
-					PD_FLAG_DETACH_POWER_OFF);
+	ret = dev_pm_domain_attach(dev, true);
 	if (ret)
 		return ret;
 
-	return sdrv->probe(to_serdev_device(dev));
+	ret = sdrv->probe(to_serdev_device(dev));
+	if (ret)
+		dev_pm_domain_detach(dev, true);
+
+	return ret;
 }
 
 static void serdev_drv_remove(struct device *dev)
@@ -412,9 +426,11 @@ static void serdev_drv_remove(struct device *dev)
 	const struct serdev_device_driver *sdrv = to_serdev_device_driver(dev->driver);
 	if (sdrv->remove)
 		sdrv->remove(to_serdev_device(dev));
+
+	dev_pm_domain_detach(dev, true);
 }
 
-static const struct bus_type serdev_bus_type = {
+static struct bus_type serdev_bus_type = {
 	.name		= "serial",
 	.match		= serdev_device_match,
 	.probe		= serdev_drv_probe,
@@ -449,7 +465,6 @@ EXPORT_SYMBOL_GPL(serdev_device_alloc);
 
 /**
  * serdev_controller_alloc() - Allocate a new serdev controller
- * @host:	serial port hardware controller device
  * @parent:	parent device
  * @size:	size of private data
  *
@@ -458,9 +473,8 @@ EXPORT_SYMBOL_GPL(serdev_device_alloc);
  * The allocated private data region may be accessed via
  * serdev_controller_get_drvdata()
  */
-struct serdev_controller *serdev_controller_alloc(struct device *host,
-						  struct device *parent,
-						  size_t size)
+struct serdev_controller *serdev_controller_alloc(struct device *parent,
+					      size_t size)
 {
 	struct serdev_controller *ctrl;
 	int id;
@@ -472,7 +486,7 @@ struct serdev_controller *serdev_controller_alloc(struct device *host,
 	if (!ctrl)
 		return NULL;
 
-	id = ida_alloc(&ctrl_ida, GFP_KERNEL);
+	id = ida_simple_get(&ctrl_ida, 0, 0, GFP_KERNEL);
 	if (id < 0) {
 		dev_err(parent,
 			"unable to allocate serdev controller identifier.\n");
@@ -485,8 +499,7 @@ struct serdev_controller *serdev_controller_alloc(struct device *host,
 	ctrl->dev.type = &serdev_ctrl_type;
 	ctrl->dev.bus = &serdev_bus_type;
 	ctrl->dev.parent = parent;
-	ctrl->host = host;
-	device_set_node(&ctrl->dev, dev_fwnode(host));
+	ctrl->dev.of_node = parent->of_node;
 	serdev_controller_set_drvdata(ctrl, &ctrl[1]);
 
 	dev_set_name(&ctrl->dev, "serial%d", id);
@@ -512,7 +525,7 @@ static int of_serdev_register_devices(struct serdev_controller *ctrl)
 	bool found = false;
 
 	for_each_available_child_of_node(ctrl->dev.of_node, node) {
-		if (!of_property_present(node, "compatible"))
+		if (!of_get_property(node, "compatible", NULL))
 			continue;
 
 		dev_dbg(&ctrl->dev, "adding child %pOF\n", node);
@@ -649,7 +662,7 @@ static int acpi_serdev_check_resources(struct serdev_controller *ctrl,
 		acpi_get_parent(adev->handle, &lookup.controller_handle);
 
 	/* Make sure controller and ResourceSource handle match */
-	if (!device_match_acpi_handle(ctrl->host, lookup.controller_handle))
+	if (ACPI_HANDLE(ctrl->dev.parent) != lookup.controller_handle)
 		return -ENODEV;
 
 	return 0;
@@ -714,7 +727,7 @@ static int acpi_serdev_register_devices(struct serdev_controller *ctrl)
 	bool skip;
 	int ret;
 
-	if (!has_acpi_companion(ctrl->host))
+	if (!has_acpi_companion(ctrl->dev.parent))
 		return -ENODEV;
 
 	/*
@@ -723,7 +736,7 @@ static int acpi_serdev_register_devices(struct serdev_controller *ctrl)
 	 * succeed in this case, so that the proper serdev devices can be
 	 * added "manually" later.
 	 */
-	ret = acpi_quirk_skip_serdev_enumeration(ctrl->host, &skip);
+	ret = acpi_quirk_skip_serdev_enumeration(ctrl->dev.parent, &skip);
 	if (ret)
 		return ret;
 	if (skip)
@@ -777,7 +790,8 @@ int serdev_controller_add(struct serdev_controller *ctrl)
 		goto err_rpm_disable;
 	}
 
-	dev_dbg(&ctrl->dev, "serdev controller registered: dev:%p\n", &ctrl->dev);
+	dev_dbg(&ctrl->dev, "serdev%d registered: dev:%p\n",
+		ctrl->nr, &ctrl->dev);
 	return 0;
 
 err_rpm_disable:

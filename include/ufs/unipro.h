@@ -111,9 +111,6 @@
 #define PA_TXLINKSTARTUPHS	0x1544
 #define PA_AVAILRXDATALANES	0x1540
 #define PA_MINRXTRAILINGCLOCKS	0x1543
-#define PA_TXHSG1SYNCLENGTH	0x1552
-#define PA_TXHSG2SYNCLENGTH	0x1554
-#define PA_TXHSG3SYNCLENGTH	0x1556
 #define PA_LOCAL_TX_LCC_ENABLE	0x155E
 #define PA_ACTIVETXDATALANES	0x1560
 #define PA_CONNECTEDTXDATALANES	0x1561
@@ -163,9 +160,7 @@
 #define PA_PACPFRAMECOUNT	0x15C0
 #define PA_PACPERRORCOUNT	0x15C1
 #define PA_PHYTESTCONTROL	0x15C2
-#define PA_TXHSG4SYNCLENGTH	0x15D0
-#define PA_TXHSADAPTTYPE	0x15D4
-#define PA_TXHSG5SYNCLENGTH	0x15D6
+#define PA_TXHSADAPTTYPE       0x15D4
 
 /* Adpat type for PA_TXHSADAPTTYPE attribute */
 #define PA_REFRESH_ADAPT       0x00
@@ -179,7 +174,6 @@
 #define VS_POWERSTATE		0xD083
 #define VS_MPHYCFGUPDT		0xD085
 #define VS_DEBUGOMC		0xD09E
-#define VS_MPHYDISABLE		0xD0C1
 
 #define PA_GRANULARITY_MIN_VAL	1
 #define PA_GRANULARITY_MAX_VAL	6
@@ -199,7 +193,7 @@
 #define DME_LocalAFC0ReqTimeOutVal		0xD043
 
 /* PA power modes */
-enum ufs_pa_pwr_mode {
+enum {
 	FAST_MODE	= 1,
 	SLOW_MODE	= 2,
 	FASTAUTO_MODE	= 4,
@@ -211,7 +205,7 @@ enum ufs_pa_pwr_mode {
 #define PWRMODE_RX_OFFSET	4
 
 /* PA TX/RX Frequency Series */
-enum ufs_hs_gear_rate {
+enum {
 	PA_HS_MODE_A	= 1,
 	PA_HS_MODE_B	= 2,
 };
@@ -234,12 +228,6 @@ enum ufs_hs_gear_tag {
 	UFS_HS_G3,		/* HS Gear 3 */
 	UFS_HS_G4,		/* HS Gear 4 */
 	UFS_HS_G5		/* HS Gear 5 */
-};
-
-enum ufs_lanes {
-	UFS_LANE_DONT_CHANGE,	/* Don't change Lane */
-	UFS_LANE_1,		/* Lane 1 (default for reset) */
-	UFS_LANE_2,		/* Lane 2 */
 };
 
 enum ufs_unipro_ver {

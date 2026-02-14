@@ -73,16 +73,12 @@
 
 #define SMU_11_0_7_GFX_BUSY_THRESHOLD 15
 
-#define GET_PPTABLE_MEMBER(field, member)                                    \
-	do {                                                                 \
-		if (amdgpu_ip_version(smu->adev, MP1_HWIP, 0) ==             \
-		    IP_VERSION(11, 0, 13))                                   \
-			(*member) = (smu->smu_table.driver_pptable +         \
-				     offsetof(PPTable_beige_goby_t, field)); \
-		else                                                         \
-			(*member) = (smu->smu_table.driver_pptable +         \
-				     offsetof(PPTable_t, field));            \
-	} while (0)
+#define GET_PPTABLE_MEMBER(field, member) do {\
+	if (smu->adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 13))\
+		(*member) = (smu->smu_table.driver_pptable + offsetof(PPTable_beige_goby_t, field));\
+	else\
+		(*member) = (smu->smu_table.driver_pptable + offsetof(PPTable_t, field));\
+} while(0)
 
 /* STB FIFO depth is in 64bit units */
 #define SIENNA_CICHLID_STB_DEPTH_UNIT_BYTES 8
@@ -95,7 +91,7 @@
 
 static int get_table_size(struct smu_context *smu)
 {
-	if (amdgpu_ip_version(smu->adev, MP1_HWIP, 0) == IP_VERSION(11, 0, 13))
+	if (smu->adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 13))
 		return sizeof(PPTable_beige_goby_t);
 	else
 		return sizeof(PPTable_t);
@@ -276,82 +272,85 @@ static const uint8_t sienna_cichlid_throttler_map[] = {
 };
 
 static int
-sienna_cichlid_init_allowed_features(struct smu_context *smu)
+sienna_cichlid_get_allowed_feature_mask(struct smu_context *smu,
+				  uint32_t *feature_mask, uint32_t num)
 {
 	struct amdgpu_device *adev = smu->adev;
 
-	smu_feature_list_clear_all(smu, SMU_FEATURE_LIST_ALLOWED);
+	if (num > 2)
+		return -EINVAL;
 
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_PREFETCHER_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_FCLK_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_MP0CLK_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DS_SOCCLK_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DS_DCEFCLK_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DS_FCLK_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DS_UCLK_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_FW_DSTATE_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DF_CSTATE_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_RSMU_SMN_CG_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_GFX_SS_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_VR0HOT_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_PPT_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_TDC_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_BACO_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_APCC_DFLL_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_FW_CTF_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_FAN_CONTROL_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_THERMAL_BIT);
-	smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_OUT_OF_BAND_MONITOR_BIT);
+	memset(feature_mask, 0, sizeof(uint32_t) * num);
+
+	*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DPM_PREFETCHER_BIT)
+				| FEATURE_MASK(FEATURE_DPM_FCLK_BIT)
+				| FEATURE_MASK(FEATURE_DPM_MP0CLK_BIT)
+				| FEATURE_MASK(FEATURE_DS_SOCCLK_BIT)
+				| FEATURE_MASK(FEATURE_DS_DCEFCLK_BIT)
+				| FEATURE_MASK(FEATURE_DS_FCLK_BIT)
+				| FEATURE_MASK(FEATURE_DS_UCLK_BIT)
+				| FEATURE_MASK(FEATURE_FW_DSTATE_BIT)
+				| FEATURE_MASK(FEATURE_DF_CSTATE_BIT)
+				| FEATURE_MASK(FEATURE_RSMU_SMN_CG_BIT)
+				| FEATURE_MASK(FEATURE_GFX_SS_BIT)
+				| FEATURE_MASK(FEATURE_VR0HOT_BIT)
+				| FEATURE_MASK(FEATURE_PPT_BIT)
+				| FEATURE_MASK(FEATURE_TDC_BIT)
+				| FEATURE_MASK(FEATURE_BACO_BIT)
+				| FEATURE_MASK(FEATURE_APCC_DFLL_BIT)
+				| FEATURE_MASK(FEATURE_FW_CTF_BIT)
+				| FEATURE_MASK(FEATURE_FAN_CONTROL_BIT)
+				| FEATURE_MASK(FEATURE_THERMAL_BIT)
+				| FEATURE_MASK(FEATURE_OUT_OF_BAND_MONITOR_BIT);
 
 	if (adev->pm.pp_feature & PP_SCLK_DPM_MASK) {
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_GFXCLK_BIT);
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_GFX_GPO_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DPM_GFXCLK_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DPM_GFX_GPO_BIT);
 	}
 
 	if ((adev->pm.pp_feature & PP_GFX_DCS_MASK) &&
-	    (amdgpu_ip_version(adev, MP1_HWIP, 0) > IP_VERSION(11, 0, 7)) &&
+	    (adev->ip_versions[MP1_HWIP][0] > IP_VERSION(11, 0, 7)) &&
 	    !(adev->flags & AMD_IS_APU))
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_GFX_DCS_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_GFX_DCS_BIT);
 
-	if (adev->pm.pp_feature & PP_MCLK_DPM_MASK) {
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_UCLK_BIT);
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_MEM_VDDCI_SCALING_BIT);
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_MEM_MVDD_SCALING_BIT);
-	}
+	if (adev->pm.pp_feature & PP_MCLK_DPM_MASK)
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DPM_UCLK_BIT)
+					| FEATURE_MASK(FEATURE_MEM_VDDCI_SCALING_BIT)
+					| FEATURE_MASK(FEATURE_MEM_MVDD_SCALING_BIT);
 
 	if (adev->pm.pp_feature & PP_PCIE_DPM_MASK)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_LINK_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DPM_LINK_BIT);
 
 	if (adev->pm.pp_feature & PP_DCEFCLK_DPM_MASK)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_DCEFCLK_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DPM_DCEFCLK_BIT);
 
 	if (adev->pm.pp_feature & PP_SOCCLK_DPM_MASK)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DPM_SOCCLK_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DPM_SOCCLK_BIT);
 
 	if (adev->pm.pp_feature & PP_ULV_MASK)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_GFX_ULV_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_GFX_ULV_BIT);
 
 	if (adev->pm.pp_feature & PP_SCLK_DEEP_SLEEP_MASK)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DS_GFXCLK_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DS_GFXCLK_BIT);
 
 	if (adev->pm.pp_feature & PP_GFXOFF_MASK)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_GFXOFF_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_GFXOFF_BIT);
 
 	if (smu->adev->pg_flags & AMD_PG_SUPPORT_ATHUB)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_ATHUB_PG_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_ATHUB_PG_BIT);
 
 	if (smu->adev->pg_flags & AMD_PG_SUPPORT_MMHUB)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_MMHUB_PG_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_MMHUB_PG_BIT);
 
 	if (smu->adev->pg_flags & AMD_PG_SUPPORT_VCN ||
 	    smu->adev->pg_flags & AMD_PG_SUPPORT_JPEG)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_MM_DPM_PG_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_MM_DPM_PG_BIT);
 
 	if (smu->dc_controlled_by_gpio)
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_ACDC_BIT);
+       *(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_ACDC_BIT);
 
 	if (amdgpu_device_should_use_aspm(adev))
-		smu_feature_list_set_bit(smu, SMU_FEATURE_LIST_ALLOWED, FEATURE_DS_LCLK_BIT);
+		*(uint64_t *)feature_mask |= FEATURE_MASK(FEATURE_DS_LCLK_BIT);
 
 	return 0;
 }
@@ -432,13 +431,7 @@ static int sienna_cichlid_append_powerplay_table(struct smu_context *smu)
 {
 	struct atom_smc_dpm_info_v4_9 *smc_dpm_table;
 	int index, ret;
-	PPTable_beige_goby_t *ppt_beige_goby;
-	PPTable_t *ppt;
-
-	if (amdgpu_ip_version(smu->adev, MP1_HWIP, 0) == IP_VERSION(11, 0, 13))
-		ppt_beige_goby = smu->smu_table.driver_pptable;
-	else
-		ppt = smu->smu_table.driver_pptable;
+	I2cControllerConfig_t *table_member;
 
 	index = get_index_into_master_table(atom_master_list_of_data_tables_v2_1,
 					    smc_dpm_info);
@@ -447,13 +440,9 @@ static int sienna_cichlid_append_powerplay_table(struct smu_context *smu)
 				      (uint8_t **)&smc_dpm_table);
 	if (ret)
 		return ret;
-
-	if (amdgpu_ip_version(smu->adev, MP1_HWIP, 0) == IP_VERSION(11, 0, 13))
-		smu_memcpy_trailing(ppt_beige_goby, I2cControllers, BoardReserved,
-				    smc_dpm_table, I2cControllers);
-	else
-		smu_memcpy_trailing(ppt, I2cControllers, BoardReserved,
-				    smc_dpm_table, I2cControllers);
+	GET_PPTABLE_MEMBER(I2cControllers, &table_member);
+	memcpy(table_member, smc_dpm_table->I2cControllers,
+			sizeof(*smc_dpm_table) - sizeof(smc_dpm_table->table_header));
 
 	return 0;
 }
@@ -530,7 +519,6 @@ static int sienna_cichlid_tables_init(struct smu_context *smu)
 	struct smu_table_context *smu_table = &smu->smu_table;
 	struct smu_table *tables = smu_table->tables;
 	int table_size;
-	int ret;
 
 	table_size = get_table_size(smu);
 	SMU_TABLE_INIT(tables, SMU_TABLE_PPTABLE, table_size,
@@ -558,10 +546,9 @@ static int sienna_cichlid_tables_init(struct smu_context *smu)
 		goto err0_out;
 	smu_table->metrics_time = 0;
 
-	ret = smu_driver_table_init(smu, SMU_DRIVER_TABLE_GPU_METRICS,
-				    sizeof(struct gpu_metrics_v1_3),
-				    SMU_GPU_METRICS_CACHE_INTERVAL);
-	if (ret)
+	smu_table->gpu_metrics_table_size = sizeof(struct gpu_metrics_v1_3);
+	smu_table->gpu_metrics_table = kzalloc(smu_table->gpu_metrics_table_size, GFP_KERNEL);
+	if (!smu_table->gpu_metrics_table)
 		goto err1_out;
 
 	smu_table->watermarks_table = kzalloc(sizeof(Watermarks_t), GFP_KERNEL);
@@ -584,16 +571,14 @@ err4_out:
 err3_out:
 	kfree(smu_table->watermarks_table);
 err2_out:
-	smu_driver_table_fini(smu, SMU_DRIVER_TABLE_GPU_METRICS);
+	kfree(smu_table->gpu_metrics_table);
 err1_out:
 	kfree(smu_table->metrics_table);
 err0_out:
 	return -ENOMEM;
 }
 
-static uint32_t sienna_cichlid_get_throttler_status_locked(struct smu_context *smu,
-							   bool use_metrics_v3,
-							   bool use_metrics_v2)
+static uint32_t sienna_cichlid_get_throttler_status_locked(struct smu_context *smu)
 {
 	struct smu_table_context *smu_table= &smu->smu_table;
 	SmuMetricsExternal_t *metrics_ext =
@@ -601,11 +586,13 @@ static uint32_t sienna_cichlid_get_throttler_status_locked(struct smu_context *s
 	uint32_t throttler_status = 0;
 	int i;
 
-	if (use_metrics_v3) {
+	if ((smu->adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 7)) &&
+	     (smu->smc_fw_version >= 0x3A4900)) {
 		for (i = 0; i < THROTTLER_COUNT; i++)
 			throttler_status |=
 				(metrics_ext->SmuMetrics_V3.ThrottlingPercentage[i] ? 1U << i : 0);
-	} else if (use_metrics_v2) {
+	} else if ((smu->adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 7)) &&
+	     (smu->smc_fw_version >= 0x3A4300)) {
 		for (i = 0; i < THROTTLER_COUNT; i++)
 			throttler_status |=
 				(metrics_ext->SmuMetrics_V2.ThrottlingPercentage[i] ? 1U << i : 0);
@@ -616,22 +603,14 @@ static uint32_t sienna_cichlid_get_throttler_status_locked(struct smu_context *s
 	return throttler_status;
 }
 
-static bool sienna_cichlid_is_od_feature_supported(struct smu_11_0_7_overdrive_table *od_table,
-						   enum SMU_11_0_7_ODFEATURE_CAP cap)
-{
-	return od_table->cap[cap];
-}
-
 static int sienna_cichlid_get_power_limit(struct smu_context *smu,
 					  uint32_t *current_power_limit,
 					  uint32_t *default_power_limit,
-					  uint32_t *max_power_limit,
-					  uint32_t *min_power_limit)
+					  uint32_t *max_power_limit)
 {
 	struct smu_11_0_7_powerplay_table *powerplay_table =
 		(struct smu_11_0_7_powerplay_table *)smu->smu_table.power_play_table;
-	struct smu_11_0_7_overdrive_table *od_settings = smu->od_settings;
-	uint32_t power_limit, od_percent_upper = 0, od_percent_lower = 0;
+	uint32_t power_limit, od_percent;
 	uint16_t *table_member;
 
 	GET_PPTABLE_MEMBER(SocketPowerLimitAc, &table_member);
@@ -646,29 +625,21 @@ static int sienna_cichlid_get_power_limit(struct smu_context *smu,
 	if (default_power_limit)
 		*default_power_limit = power_limit;
 
-	if (powerplay_table) {
-		if (smu->od_enabled &&
-				sienna_cichlid_is_od_feature_supported(od_settings, SMU_11_0_7_ODCAP_POWER_LIMIT)) {
-			od_percent_upper = le32_to_cpu(powerplay_table->overdrive_table.max[SMU_11_0_7_ODSETTING_POWERPERCENTAGE]);
-			od_percent_lower = le32_to_cpu(powerplay_table->overdrive_table.min[SMU_11_0_7_ODSETTING_POWERPERCENTAGE]);
-		} else if ((sienna_cichlid_is_od_feature_supported(od_settings, SMU_11_0_7_ODCAP_POWER_LIMIT))) {
-			od_percent_upper = 0;
-			od_percent_lower = le32_to_cpu(powerplay_table->overdrive_table.min[SMU_11_0_7_ODSETTING_POWERPERCENTAGE]);
-		}
-	}
-
-	dev_dbg(smu->adev->dev, "od percent upper:%d, od percent lower:%d (default power: %d)\n",
-					od_percent_upper, od_percent_lower, power_limit);
-
 	if (max_power_limit) {
-		*max_power_limit = power_limit * (100 + od_percent_upper);
-		*max_power_limit /= 100;
+		if (smu->od_enabled) {
+			od_percent =
+				le32_to_cpu(powerplay_table->overdrive_table.max[
+							SMU_11_0_7_ODSETTING_POWERPERCENTAGE]);
+
+			dev_dbg(smu->adev->dev, "ODSETTING_POWERPERCENTAGE: %d (default: %d)\n",
+					od_percent, power_limit);
+
+			power_limit *= (100 + od_percent);
+			power_limit /= 100;
+		}
+		*max_power_limit = power_limit;
 	}
 
-	if (min_power_limit) {
-		*min_power_limit = power_limit * (100 - od_percent_lower);
-		*min_power_limit /= 100;
-	}
 	return 0;
 }
 
@@ -687,7 +658,7 @@ static void sienna_cichlid_get_smartshift_power_percentage(struct smu_context *s
 	uint32_t cur_power_limit;
 
 	if (metrics_v4->ApuSTAPMSmartShiftLimit != 0) {
-		sienna_cichlid_get_power_limit(smu, &cur_power_limit, NULL, NULL, NULL);
+		sienna_cichlid_get_power_limit(smu, &cur_power_limit, NULL, NULL);
 		apu_power_limit = metrics_v4->ApuSTAPMLimit;
 		dgpu_power_limit = cur_power_limit;
 		powerRatio = (((apu_power_limit +
@@ -744,7 +715,7 @@ static int sienna_cichlid_get_smu_metrics_data(struct smu_context *smu,
 	uint32_t apu_percent = 0;
 	uint32_t dgpu_percent = 0;
 
-	switch (amdgpu_ip_version(smu->adev, MP1_HWIP, 0)) {
+	switch (smu->adev->ip_versions[MP1_HWIP][0]) {
 	case IP_VERSION(11, 0, 7):
 		if (smu->smc_fw_version >= 0x3A4900)
 			use_metrics_v3 = true;
@@ -883,7 +854,7 @@ static int sienna_cichlid_get_smu_metrics_data(struct smu_context *smu,
 			metrics->TemperatureVrSoc) * SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
 		break;
 	case METRICS_THROTTLER_STATUS:
-		*value = sienna_cichlid_get_throttler_status_locked(smu, use_metrics_v3, use_metrics_v2);
+		*value = sienna_cichlid_get_throttler_status_locked(smu);
 		break;
 	case METRICS_CURR_FANSPEED:
 		*value = use_metrics_v3 ? metrics_v3->CurrFanSpeed :
@@ -953,15 +924,13 @@ static int sienna_cichlid_init_smc_tables(struct smu_context *smu)
 static int sienna_cichlid_set_default_dpm_table(struct smu_context *smu)
 {
 	struct smu_11_0_dpm_context *dpm_context = smu->smu_dpm.dpm_context;
-	struct smu_dpm_table *dpm_table;
+	struct smu_11_0_dpm_table *dpm_table;
 	struct amdgpu_device *adev = smu->adev;
 	int i, ret = 0;
 	DpmDescriptor_t *table_member;
-	uint16_t *lclk_freq;
 
 	/* socclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.soc_table;
-	dpm_table->clk_type = SMU_SOCCLK;
 	GET_PPTABLE_MEMBER(DpmDescriptor, &table_member);
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_SOCCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
@@ -969,63 +938,68 @@ static int sienna_cichlid_set_default_dpm_table(struct smu_context *smu)
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_SOCCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_SOCCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.socclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
 	/* gfxclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.gfx_table;
-	dpm_table->clk_type = SMU_GFXCLK;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_GFXCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
 						     SMU_GFXCLK,
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_GFXCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_GFXCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.gfxclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
 	/* uclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.uclk_table;
-	dpm_table->clk_type = SMU_UCLK;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_UCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
 						     SMU_UCLK,
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_UCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_UCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.uclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
 	/* fclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.fclk_table;
-	dpm_table->clk_type = SMU_FCLK;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_FCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
 						     SMU_FCLK,
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_FCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_FCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.fclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
 	/* vclk0/1 dpm table setup */
@@ -1034,20 +1008,20 @@ static int sienna_cichlid_set_default_dpm_table(struct smu_context *smu)
 			continue;
 
 		dpm_table = &dpm_context->dpm_tables.vclk_table;
-		dpm_table->clk_type = i ? SMU_VCLK1 : SMU_VCLK;
 		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_MM_DPM_PG_BIT)) {
 			ret = smu_v11_0_set_single_dpm_table(smu,
 							     i ? SMU_VCLK1 : SMU_VCLK,
 							     dpm_table);
 			if (ret)
 				return ret;
-			if (!table_member[i ? PPCLK_VCLK_1 : PPCLK_VCLK_0]
-				     .SnapToDiscrete)
-				dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+			dpm_table->is_fine_grained =
+				!table_member[i ? PPCLK_VCLK_1 : PPCLK_VCLK_0].SnapToDiscrete;
 		} else {
 			dpm_table->count = 1;
 			dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.vclk / 100;
 			dpm_table->dpm_levels[0].enabled = true;
+			dpm_table->min = dpm_table->dpm_levels[0].value;
+			dpm_table->max = dpm_table->dpm_levels[0].value;
 		}
 	}
 
@@ -1056,113 +1030,114 @@ static int sienna_cichlid_set_default_dpm_table(struct smu_context *smu)
 		if (adev->vcn.harvest_config & (1 << i))
 			continue;
 		dpm_table = &dpm_context->dpm_tables.dclk_table;
-		dpm_table->clk_type = i ? SMU_DCLK1 : SMU_DCLK;
 		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_MM_DPM_PG_BIT)) {
 			ret = smu_v11_0_set_single_dpm_table(smu,
 							     i ? SMU_DCLK1 : SMU_DCLK,
 							     dpm_table);
 			if (ret)
 				return ret;
-			if (!table_member[i ? PPCLK_DCLK_1 : PPCLK_DCLK_0]
-				     .SnapToDiscrete)
-				dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+			dpm_table->is_fine_grained =
+				!table_member[i ? PPCLK_DCLK_1 : PPCLK_DCLK_0].SnapToDiscrete;
 		} else {
 			dpm_table->count = 1;
 			dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.dclk / 100;
 			dpm_table->dpm_levels[0].enabled = true;
+			dpm_table->min = dpm_table->dpm_levels[0].value;
+			dpm_table->max = dpm_table->dpm_levels[0].value;
 		}
 	}
 
 	/* dcefclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.dcef_table;
-	dpm_table->clk_type = SMU_DCEFCLK;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_DCEFCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
 						     SMU_DCEFCLK,
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_DCEFCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_DCEFCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.dcefclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
 	/* pixelclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.pixel_table;
-	dpm_table->clk_type = SMU_PIXCLK;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_DCEFCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
 						     SMU_PIXCLK,
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_PIXCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_PIXCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.dcefclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
 	/* displayclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.display_table;
-	dpm_table->clk_type = SMU_DISPCLK;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_DCEFCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
 						     SMU_DISPCLK,
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_DISPCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_DISPCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.dcefclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
 
 	/* phyclk dpm table setup */
 	dpm_table = &dpm_context->dpm_tables.phy_table;
-	dpm_table->clk_type = SMU_PHYCLK;
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_DCEFCLK_BIT)) {
 		ret = smu_v11_0_set_single_dpm_table(smu,
 						     SMU_PHYCLK,
 						     dpm_table);
 		if (ret)
 			return ret;
-		if (!table_member[PPCLK_PHYCLK].SnapToDiscrete)
-			dpm_table->flags |= SMU_DPM_TABLE_FINE_GRAINED;
+		dpm_table->is_fine_grained =
+			!table_member[PPCLK_PHYCLK].SnapToDiscrete;
 	} else {
 		dpm_table->count = 1;
 		dpm_table->dpm_levels[0].value = smu->smu_table.boot_values.dcefclk / 100;
 		dpm_table->dpm_levels[0].enabled = true;
+		dpm_table->min = dpm_table->dpm_levels[0].value;
+		dpm_table->max = dpm_table->dpm_levels[0].value;
 	}
-
-	GET_PPTABLE_MEMBER(LclkFreq, &lclk_freq);
-	for (i = 0; i < NUM_LINK_LEVELS; i++)
-		dpm_context->dpm_tables.pcie_table.lclk_freq[i] = lclk_freq[i];
-	dpm_context->dpm_tables.pcie_table.lclk_levels = NUM_LINK_LEVELS;
 
 	return 0;
 }
 
-static int sienna_cichlid_dpm_set_vcn_enable(struct smu_context *smu,
-					      bool enable,
-					      int inst)
+static int sienna_cichlid_dpm_set_vcn_enable(struct smu_context *smu, bool enable)
 {
 	struct amdgpu_device *adev = smu->adev;
-	int ret = 0;
+	int i, ret = 0;
 
-	if (adev->vcn.harvest_config & (1 << inst))
-		return ret;
-	/* vcn dpm on is a prerequisite for vcn power gate messages */
-	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_MM_DPM_PG_BIT)) {
-		ret = smu_cmn_send_smc_msg_with_param(smu, enable ?
-						      SMU_MSG_PowerUpVcn : SMU_MSG_PowerDownVcn,
-						      0x10000 * inst, NULL);
+	for (i = 0; i < adev->vcn.num_vcn_inst; i++) {
+		if (adev->vcn.harvest_config & (1 << i))
+			continue;
+		/* vcn dpm on is a prerequisite for vcn power gate messages */
+		if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_MM_DPM_PG_BIT)) {
+			ret = smu_cmn_send_smc_msg_with_param(smu, enable ?
+							      SMU_MSG_PowerUpVcn : SMU_MSG_PowerDownVcn,
+							      0x10000 * i, NULL);
+			if (ret)
+				return ret;
+		}
 	}
 
 	return ret;
@@ -1256,6 +1231,12 @@ static bool sienna_cichlid_is_support_fine_grained_dpm(struct smu_context *smu, 
 	return dpm_desc->SnapToDiscrete == 0;
 }
 
+static bool sienna_cichlid_is_od_feature_supported(struct smu_11_0_7_overdrive_table *od_table,
+						   enum SMU_11_0_7_ODFEATURE_CAP cap)
+{
+	return od_table->cap[cap];
+}
+
 static void sienna_cichlid_get_od_setting_range(struct smu_11_0_7_overdrive_table *od_table,
 						enum SMU_11_0_7_ODSETTING_ID setting,
 						uint32_t *min, uint32_t *max)
@@ -1266,56 +1247,103 @@ static void sienna_cichlid_get_od_setting_range(struct smu_11_0_7_overdrive_tabl
 		*max = od_table->max[setting];
 }
 
-static int sienna_cichlid_emit_clk_levels(struct smu_context *smu,
-					  enum smu_clk_type clk_type, char *buf,
-					  int *offset)
+static int sienna_cichlid_print_clk_levels(struct smu_context *smu,
+			enum smu_clk_type clk_type, char *buf)
 {
 	struct amdgpu_device *adev = smu->adev;
 	struct smu_table_context *table_context = &smu->smu_table;
 	struct smu_dpm_context *smu_dpm = &smu->smu_dpm;
 	struct smu_11_0_dpm_context *dpm_context = smu_dpm->dpm_context;
+	uint16_t *table_member;
+
 	struct smu_11_0_7_overdrive_table *od_settings = smu->od_settings;
 	OverDriveTable_t *od_table =
 		(OverDriveTable_t *)table_context->overdrive_table;
-	int size = *offset, ret = 0, start_offset = *offset;
-	uint32_t cur_value = 0;
-	struct smu_dpm_table *single_dpm_table = NULL;
-	struct smu_pcie_table *pcie_table;
+	int i, size = 0, ret = 0;
+	uint32_t cur_value = 0, value = 0, count = 0;
+	uint32_t freq_values[3] = {0};
+	uint32_t mark_index = 0;
 	uint32_t gen_speed, lane_width;
 	uint32_t min_value, max_value;
+	uint32_t smu_version;
+
+	smu_cmn_get_sysfs_buf(&buf, &size);
 
 	switch (clk_type) {
 	case SMU_GFXCLK:
 	case SMU_SCLK:
-		single_dpm_table = &(dpm_context->dpm_tables.gfx_table);
-		break;
 	case SMU_SOCCLK:
-		single_dpm_table = &(dpm_context->dpm_tables.soc_table);
-		break;
 	case SMU_MCLK:
 	case SMU_UCLK:
-		single_dpm_table = &(dpm_context->dpm_tables.uclk_table);
-		break;
 	case SMU_FCLK:
-		single_dpm_table = &(dpm_context->dpm_tables.fclk_table);
-		break;
 	case SMU_VCLK:
 	case SMU_VCLK1:
-		single_dpm_table = &(dpm_context->dpm_tables.vclk_table);
-		break;
 	case SMU_DCLK:
 	case SMU_DCLK1:
-		single_dpm_table = &(dpm_context->dpm_tables.dclk_table);
-		break;
 	case SMU_DCEFCLK:
-		single_dpm_table = &(dpm_context->dpm_tables.dcef_table);
+		ret = sienna_cichlid_get_current_clk_freq_by_table(smu, clk_type, &cur_value);
+		if (ret)
+			goto print_clk_out;
+
+		ret = smu_v11_0_get_dpm_level_count(smu, clk_type, &count);
+		if (ret)
+			goto print_clk_out;
+
+		if (!sienna_cichlid_is_support_fine_grained_dpm(smu, clk_type)) {
+			for (i = 0; i < count; i++) {
+				ret = smu_v11_0_get_dpm_freq_by_index(smu, clk_type, i, &value);
+				if (ret)
+					goto print_clk_out;
+
+				size += sysfs_emit_at(buf, size, "%d: %uMhz %s\n", i, value,
+						cur_value == value ? "*" : "");
+			}
+		} else {
+			ret = smu_v11_0_get_dpm_freq_by_index(smu, clk_type, 0, &freq_values[0]);
+			if (ret)
+				goto print_clk_out;
+			ret = smu_v11_0_get_dpm_freq_by_index(smu, clk_type, count - 1, &freq_values[2]);
+			if (ret)
+				goto print_clk_out;
+
+			freq_values[1] = cur_value;
+			mark_index = cur_value == freq_values[0] ? 0 :
+				     cur_value == freq_values[2] ? 2 : 1;
+
+			count = 3;
+			if (mark_index != 1) {
+				count = 2;
+				freq_values[1] = freq_values[2];
+			}
+
+			for (i = 0; i < count; i++) {
+				size += sysfs_emit_at(buf, size, "%d: %uMhz %s\n", i, freq_values[i],
+						cur_value  == freq_values[i] ? "*" : "");
+			}
+
+		}
 		break;
 	case SMU_PCIE:
 		gen_speed = smu_v11_0_get_current_pcie_link_speed_level(smu);
 		lane_width = smu_v11_0_get_current_pcie_link_width_level(smu);
-		pcie_table = &dpm_context->dpm_tables.pcie_table;
-		return smu_cmn_print_pcie_levels(smu, pcie_table, gen_speed,
-						 lane_width, buf, offset);
+		GET_PPTABLE_MEMBER(LclkFreq, &table_member);
+		for (i = 0; i < NUM_LINK_LEVELS; i++)
+			size += sysfs_emit_at(buf, size, "%d: %s %s %dMhz %s\n", i,
+					(dpm_context->dpm_tables.pcie_table.pcie_gen[i] == 0) ? "2.5GT/s," :
+					(dpm_context->dpm_tables.pcie_table.pcie_gen[i] == 1) ? "5.0GT/s," :
+					(dpm_context->dpm_tables.pcie_table.pcie_gen[i] == 2) ? "8.0GT/s," :
+					(dpm_context->dpm_tables.pcie_table.pcie_gen[i] == 3) ? "16.0GT/s," : "",
+					(dpm_context->dpm_tables.pcie_table.pcie_lane[i] == 1) ? "x1" :
+					(dpm_context->dpm_tables.pcie_table.pcie_lane[i] == 2) ? "x2" :
+					(dpm_context->dpm_tables.pcie_table.pcie_lane[i] == 3) ? "x4" :
+					(dpm_context->dpm_tables.pcie_table.pcie_lane[i] == 4) ? "x8" :
+					(dpm_context->dpm_tables.pcie_table.pcie_lane[i] == 5) ? "x12" :
+					(dpm_context->dpm_tables.pcie_table.pcie_lane[i] == 6) ? "x16" : "",
+					table_member[i],
+					(gen_speed == dpm_context->dpm_tables.pcie_table.pcie_gen[i]) &&
+					(lane_width == dpm_context->dpm_tables.pcie_table.pcie_lane[i]) ?
+					"*" : "");
+		break;
 	case SMU_OD_SCLK:
 		if (!smu->od_enabled || !od_table || !od_settings)
 			break;
@@ -1346,9 +1374,9 @@ static int sienna_cichlid_emit_clk_levels(struct smu_context *smu,
 		 * OD GFX Voltage Offset functionality is supported only by 58.41.0
 		 * and onwards SMU firmwares.
 		 */
-		if ((amdgpu_ip_version(adev, MP1_HWIP, 0) ==
-		     IP_VERSION(11, 0, 7)) &&
-		    (smu->smc_fw_version < 0x003a2900))
+		smu_cmn_get_smc_version(smu, NULL, &smu_version);
+		if ((adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 7)) &&
+		     (smu_version < 0x003a2900))
 			break;
 
 		size += sysfs_emit_at(buf, size, "OD_VDDGFX_OFFSET:\n");
@@ -1384,18 +1412,8 @@ static int sienna_cichlid_emit_clk_levels(struct smu_context *smu,
 		break;
 	}
 
-	if (single_dpm_table) {
-		ret = sienna_cichlid_get_current_clk_freq_by_table(
-			smu, clk_type, &cur_value);
-		if (ret)
-			return ret;
-		return smu_cmn_print_dpm_clk_levels(smu, single_dpm_table,
-						    cur_value, buf, offset);
-	}
-
-	*offset += size - start_offset;
-
-	return 0;
+print_clk_out:
+	return size;
 }
 
 static int sienna_cichlid_force_clk_levels(struct smu_context *smu,
@@ -1428,7 +1446,7 @@ static int sienna_cichlid_force_clk_levels(struct smu_context *smu,
 		if (ret)
 			goto forec_level_out;
 
-		ret = smu_v11_0_set_soft_freq_limited_range(smu, clk_type, min_freq, max_freq, false);
+		ret = smu_v11_0_set_soft_freq_limited_range(smu, clk_type, min_freq, max_freq);
 		if (ret)
 			goto forec_level_out;
 		break;
@@ -1447,23 +1465,26 @@ static int sienna_cichlid_populate_umd_state_clk(struct smu_context *smu)
 {
 	struct smu_11_0_dpm_context *dpm_context =
 				smu->smu_dpm.dpm_context;
-	struct smu_dpm_table *gfx_table = &dpm_context->dpm_tables.gfx_table;
-	struct smu_dpm_table *mem_table = &dpm_context->dpm_tables.uclk_table;
-	struct smu_dpm_table *soc_table = &dpm_context->dpm_tables.soc_table;
+	struct smu_11_0_dpm_table *gfx_table =
+				&dpm_context->dpm_tables.gfx_table;
+	struct smu_11_0_dpm_table *mem_table =
+				&dpm_context->dpm_tables.uclk_table;
+	struct smu_11_0_dpm_table *soc_table =
+				&dpm_context->dpm_tables.soc_table;
 	struct smu_umd_pstate_table *pstate_table =
 				&smu->pstate_table;
 	struct amdgpu_device *adev = smu->adev;
 
-	pstate_table->gfxclk_pstate.min = SMU_DPM_TABLE_MIN(gfx_table);
-	pstate_table->gfxclk_pstate.peak = SMU_DPM_TABLE_MAX(gfx_table);
+	pstate_table->gfxclk_pstate.min = gfx_table->min;
+	pstate_table->gfxclk_pstate.peak = gfx_table->max;
 
-	pstate_table->uclk_pstate.min = SMU_DPM_TABLE_MIN(mem_table);
-	pstate_table->uclk_pstate.peak = SMU_DPM_TABLE_MAX(mem_table);
+	pstate_table->uclk_pstate.min = mem_table->min;
+	pstate_table->uclk_pstate.peak = mem_table->max;
 
-	pstate_table->socclk_pstate.min = SMU_DPM_TABLE_MIN(soc_table);
-	pstate_table->socclk_pstate.peak = SMU_DPM_TABLE_MAX(soc_table);
+	pstate_table->socclk_pstate.min = soc_table->min;
+	pstate_table->socclk_pstate.peak = soc_table->max;
 
-	switch (amdgpu_ip_version(adev, MP1_HWIP, 0)) {
+	switch (adev->ip_versions[MP1_HWIP][0]) {
 	case IP_VERSION(11, 0, 7):
 	case IP_VERSION(11, 0, 11):
 		pstate_table->gfxclk_pstate.standard = SIENNA_CICHLID_UMD_PSTATE_PROFILING_GFXCLK;
@@ -1647,7 +1668,7 @@ static int sienna_cichlid_get_power_profile_mode(struct smu_context *smu, char *
 		size += sysfs_emit_at(buf, size, "%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
 			" ",
 			2,
-			"MEMCLK",
+			"MEMLK",
 			activity_monitor->Mem_FPS,
 			activity_monitor->Mem_MinFreqStep,
 			activity_monitor->Mem_MinActiveFreqType,
@@ -1662,126 +1683,84 @@ static int sienna_cichlid_get_power_profile_mode(struct smu_context *smu, char *
 	return size;
 }
 
-#define SIENNA_CICHLID_CUSTOM_PARAMS_COUNT 10
-#define SIENNA_CICHLID_CUSTOM_PARAMS_CLOCK_COUNT 3
-#define SIENNA_CICHLID_CUSTOM_PARAMS_SIZE (SIENNA_CICHLID_CUSTOM_PARAMS_CLOCK_COUNT * SIENNA_CICHLID_CUSTOM_PARAMS_COUNT * sizeof(long))
-
-static int sienna_cichlid_set_power_profile_mode_coeff(struct smu_context *smu,
-						       long *input)
+static int sienna_cichlid_set_power_profile_mode(struct smu_context *smu, long *input, uint32_t size)
 {
 
 	DpmActivityMonitorCoeffIntExternal_t activity_monitor_external;
 	DpmActivityMonitorCoeffInt_t *activity_monitor =
 		&(activity_monitor_external.DpmActivityMonitorCoeffInt);
-	int ret, idx;
+	int workload_type, ret = 0;
 
-	ret = smu_cmn_update_table(smu,
-				   SMU_TABLE_ACTIVITY_MONITOR_COEFF, WORKLOAD_PPLIB_CUSTOM_BIT,
-				   (void *)(&activity_monitor_external), false);
-	if (ret) {
-		dev_err(smu->adev->dev, "[%s] Failed to get activity monitor!", __func__);
-		return ret;
+	smu->power_profile_mode = input[size];
+
+	if (smu->power_profile_mode > PP_SMC_POWER_PROFILE_CUSTOM) {
+		dev_err(smu->adev->dev, "Invalid power profile mode %d\n", smu->power_profile_mode);
+		return -EINVAL;
 	}
 
-	idx = 0 * SIENNA_CICHLID_CUSTOM_PARAMS_COUNT;
-	if (input[idx]) {
-		/* Gfxclk */
-		activity_monitor->Gfx_FPS = input[idx + 1];
-		activity_monitor->Gfx_MinFreqStep = input[idx + 2];
-		activity_monitor->Gfx_MinActiveFreqType = input[idx + 3];
-		activity_monitor->Gfx_MinActiveFreq = input[idx + 4];
-		activity_monitor->Gfx_BoosterFreqType = input[idx + 5];
-		activity_monitor->Gfx_BoosterFreq = input[idx + 6];
-		activity_monitor->Gfx_PD_Data_limit_c = input[idx + 7];
-		activity_monitor->Gfx_PD_Data_error_coeff = input[idx + 8];
-		activity_monitor->Gfx_PD_Data_error_rate_coeff = input[idx + 9];
-	}
-	idx = 1 * SIENNA_CICHLID_CUSTOM_PARAMS_COUNT;
-	if (input[idx]) {
-		/* Socclk */
-		activity_monitor->Fclk_FPS = input[idx + 1];
-		activity_monitor->Fclk_MinFreqStep = input[idx + 2];
-		activity_monitor->Fclk_MinActiveFreqType = input[idx + 3];
-		activity_monitor->Fclk_MinActiveFreq = input[idx + 4];
-		activity_monitor->Fclk_BoosterFreqType = input[idx + 5];
-		activity_monitor->Fclk_BoosterFreq = input[idx + 6];
-		activity_monitor->Fclk_PD_Data_limit_c = input[idx + 7];
-		activity_monitor->Fclk_PD_Data_error_coeff = input[idx + 8];
-		activity_monitor->Fclk_PD_Data_error_rate_coeff = input[idx + 9];
-	}
-	idx = 2 * SIENNA_CICHLID_CUSTOM_PARAMS_COUNT;
-	if (input[idx]) {
-		/* Memclk */
-		activity_monitor->Mem_FPS = input[idx + 1];
-		activity_monitor->Mem_MinFreqStep = input[idx + 2];
-		activity_monitor->Mem_MinActiveFreqType = input[idx + 3];
-		activity_monitor->Mem_MinActiveFreq = input[idx + 4];
-		activity_monitor->Mem_BoosterFreqType = input[idx + 5];
-		activity_monitor->Mem_BoosterFreq = input[idx + 6];
-		activity_monitor->Mem_PD_Data_limit_c = input[idx + 7];
-		activity_monitor->Mem_PD_Data_error_coeff = input[idx + 8];
-		activity_monitor->Mem_PD_Data_error_rate_coeff = input[idx + 9];
-	}
+	if (smu->power_profile_mode == PP_SMC_POWER_PROFILE_CUSTOM) {
 
-	ret = smu_cmn_update_table(smu,
-				   SMU_TABLE_ACTIVITY_MONITOR_COEFF, WORKLOAD_PPLIB_CUSTOM_BIT,
-				   (void *)(&activity_monitor_external), true);
-	if (ret) {
-		dev_err(smu->adev->dev, "[%s] Failed to set activity monitor!", __func__);
-		return ret;
-	}
-
-	return ret;
-}
-
-static int sienna_cichlid_set_power_profile_mode(struct smu_context *smu,
-						 u32 workload_mask,
-						 long *custom_params,
-						 u32 custom_params_max_idx)
-{
-	u32 backend_workload_mask = 0;
-	int ret, idx = -1, i;
-
-	smu_cmn_get_backend_workload_mask(smu, workload_mask,
-					  &backend_workload_mask);
-
-	if (workload_mask & (1 << PP_SMC_POWER_PROFILE_CUSTOM)) {
-		if (!smu->custom_profile_params) {
-			smu->custom_profile_params =
-				kzalloc(SIENNA_CICHLID_CUSTOM_PARAMS_SIZE, GFP_KERNEL);
-			if (!smu->custom_profile_params)
-				return -ENOMEM;
-		}
-		if (custom_params && custom_params_max_idx) {
-			if (custom_params_max_idx != SIENNA_CICHLID_CUSTOM_PARAMS_COUNT)
-				return -EINVAL;
-			if (custom_params[0] >= SIENNA_CICHLID_CUSTOM_PARAMS_CLOCK_COUNT)
-				return -EINVAL;
-			idx = custom_params[0] * SIENNA_CICHLID_CUSTOM_PARAMS_COUNT;
-			smu->custom_profile_params[idx] = 1;
-			for (i = 1; i < custom_params_max_idx; i++)
-				smu->custom_profile_params[idx + i] = custom_params[i];
-		}
-		ret = sienna_cichlid_set_power_profile_mode_coeff(smu,
-								  smu->custom_profile_params);
+		ret = smu_cmn_update_table(smu,
+				       SMU_TABLE_ACTIVITY_MONITOR_COEFF, WORKLOAD_PPLIB_CUSTOM_BIT,
+				       (void *)(&activity_monitor_external), false);
 		if (ret) {
-			if (idx != -1)
-				smu->custom_profile_params[idx] = 0;
+			dev_err(smu->adev->dev, "[%s] Failed to get activity monitor!", __func__);
 			return ret;
 		}
-	} else if (smu->custom_profile_params) {
-		memset(smu->custom_profile_params, 0, SIENNA_CICHLID_CUSTOM_PARAMS_SIZE);
+
+		switch (input[0]) {
+		case 0: /* Gfxclk */
+			activity_monitor->Gfx_FPS = input[1];
+			activity_monitor->Gfx_MinFreqStep = input[2];
+			activity_monitor->Gfx_MinActiveFreqType = input[3];
+			activity_monitor->Gfx_MinActiveFreq = input[4];
+			activity_monitor->Gfx_BoosterFreqType = input[5];
+			activity_monitor->Gfx_BoosterFreq = input[6];
+			activity_monitor->Gfx_PD_Data_limit_c = input[7];
+			activity_monitor->Gfx_PD_Data_error_coeff = input[8];
+			activity_monitor->Gfx_PD_Data_error_rate_coeff = input[9];
+			break;
+		case 1: /* Socclk */
+			activity_monitor->Fclk_FPS = input[1];
+			activity_monitor->Fclk_MinFreqStep = input[2];
+			activity_monitor->Fclk_MinActiveFreqType = input[3];
+			activity_monitor->Fclk_MinActiveFreq = input[4];
+			activity_monitor->Fclk_BoosterFreqType = input[5];
+			activity_monitor->Fclk_BoosterFreq = input[6];
+			activity_monitor->Fclk_PD_Data_limit_c = input[7];
+			activity_monitor->Fclk_PD_Data_error_coeff = input[8];
+			activity_monitor->Fclk_PD_Data_error_rate_coeff = input[9];
+			break;
+		case 2: /* Memlk */
+			activity_monitor->Mem_FPS = input[1];
+			activity_monitor->Mem_MinFreqStep = input[2];
+			activity_monitor->Mem_MinActiveFreqType = input[3];
+			activity_monitor->Mem_MinActiveFreq = input[4];
+			activity_monitor->Mem_BoosterFreqType = input[5];
+			activity_monitor->Mem_BoosterFreq = input[6];
+			activity_monitor->Mem_PD_Data_limit_c = input[7];
+			activity_monitor->Mem_PD_Data_error_coeff = input[8];
+			activity_monitor->Mem_PD_Data_error_rate_coeff = input[9];
+			break;
+		}
+
+		ret = smu_cmn_update_table(smu,
+				       SMU_TABLE_ACTIVITY_MONITOR_COEFF, WORKLOAD_PPLIB_CUSTOM_BIT,
+				       (void *)(&activity_monitor_external), true);
+		if (ret) {
+			dev_err(smu->adev->dev, "[%s] Failed to set activity monitor!", __func__);
+			return ret;
+		}
 	}
 
-	ret = smu_cmn_send_smc_msg_with_param(smu, SMU_MSG_SetWorkloadMask,
-					      backend_workload_mask, NULL);
-	if (ret) {
-		dev_err(smu->adev->dev, "Failed to set workload mask 0x%08x\n",
-			workload_mask);
-		if (idx != -1)
-			smu->custom_profile_params[idx] = 0;
-		return ret;
-	}
+	/* conv PP_SMC_POWER_PROFILE* to WORKLOAD_PPLIB_*_BIT */
+	workload_type = smu_cmn_to_asic_specific_index(smu,
+						       CMN2ASIC_MAPPING_WORKLOAD,
+						       smu->power_profile_mode);
+	if (workload_type < 0)
+		return -EINVAL;
+	smu_cmn_send_smc_msg_with_param(smu, SMU_MSG_SetWorkloadMask,
+				    1 << workload_type, NULL);
 
 	return ret;
 }
@@ -1913,7 +1892,7 @@ static int sienna_cichlid_read_sensor(struct smu_context *smu,
 							  (uint32_t *)data);
 		*size = 4;
 		break;
-	case AMDGPU_PP_SENSOR_GPU_AVG_POWER:
+	case AMDGPU_PP_SENSOR_GPU_POWER:
 		ret = sienna_cichlid_get_smu_metrics_data(smu,
 							  METRICS_AVERAGE_SOCKETPOWER,
 							  (uint32_t *)data);
@@ -1938,16 +1917,12 @@ static int sienna_cichlid_read_sensor(struct smu_context *smu,
 		*size = 4;
 		break;
 	case AMDGPU_PP_SENSOR_GFX_MCLK:
-		ret = sienna_cichlid_get_smu_metrics_data(smu,
-							  METRICS_CURR_UCLK,
-							  (uint32_t *)data);
+		ret = sienna_cichlid_get_current_clk_freq_by_table(smu, SMU_UCLK, (uint32_t *)data);
 		*(uint32_t *)data *= 100;
 		*size = 4;
 		break;
 	case AMDGPU_PP_SENSOR_GFX_SCLK:
-		ret = sienna_cichlid_get_smu_metrics_data(smu,
-							  METRICS_AVERAGE_GFXCLK,
-							  (uint32_t *)data);
+		ret = sienna_cichlid_get_current_clk_freq_by_table(smu, SMU_GFXCLK, (uint32_t *)data);
 		*(uint32_t *)data *= 100;
 		*size = 4;
 		break;
@@ -1956,8 +1931,7 @@ static int sienna_cichlid_read_sensor(struct smu_context *smu,
 		*size = 4;
 		break;
 	case AMDGPU_PP_SENSOR_SS_APU_SHARE:
-		if (amdgpu_ip_version(adev, MP1_HWIP, 0) !=
-		    IP_VERSION(11, 0, 7)) {
+		if (adev->ip_versions[MP1_HWIP][0] != IP_VERSION(11, 0, 7)) {
 			ret = sienna_cichlid_get_smu_metrics_data(smu,
 						METRICS_SS_APU_SHARE, (uint32_t *)data);
 			*size = 4;
@@ -1966,8 +1940,7 @@ static int sienna_cichlid_read_sensor(struct smu_context *smu,
 		}
 		break;
 	case AMDGPU_PP_SENSOR_SS_DGPU_SHARE:
-		if (amdgpu_ip_version(adev, MP1_HWIP, 0) !=
-		    IP_VERSION(11, 0, 7)) {
+		if (adev->ip_versions[MP1_HWIP][0] != IP_VERSION(11, 0, 7)) {
 			ret = sienna_cichlid_get_smu_metrics_data(smu,
 						METRICS_SS_DGPU_SHARE, (uint32_t *)data);
 			*size = 4;
@@ -1975,7 +1948,6 @@ static int sienna_cichlid_read_sensor(struct smu_context *smu,
 			ret = -EOPNOTSUPP;
 		}
 		break;
-	case AMDGPU_PP_SENSOR_GPU_INPUT_POWER:
 	default:
 		ret = -EOPNOTSUPP;
 		break;
@@ -1991,7 +1963,7 @@ static void sienna_cichlid_get_unique_id(struct smu_context *smu)
 
 	/* Only supported as of version 0.58.83.0 and only on Sienna Cichlid */
 	if (smu->smc_fw_version < 0x3A5300 ||
-	    amdgpu_ip_version(smu->adev, MP1_HWIP, 0) != IP_VERSION(11, 0, 7))
+	    smu->adev->ip_versions[MP1_HWIP][0] != IP_VERSION(11, 0, 7))
 		return;
 
 	if (sienna_cichlid_get_smu_metrics_data(smu, METRICS_UNIQUE_ID_UPPER32, &upper32))
@@ -2002,6 +1974,8 @@ static void sienna_cichlid_get_unique_id(struct smu_context *smu)
 out:
 
 	adev->unique_id = ((uint64_t)upper32 << 32) | lower32;
+	if (adev->serial[0] == '\0')
+		sprintf(adev->serial, "%016llx", adev->unique_id);
 }
 
 static int sienna_cichlid_get_uclk_dpm_states(struct smu_context *smu, uint32_t *clocks_in_khz, uint32_t *num_states)
@@ -2094,57 +2068,47 @@ static int sienna_cichlid_display_disable_memory_clock_switch(struct smu_context
 }
 
 static int sienna_cichlid_update_pcie_parameters(struct smu_context *smu,
-						 uint8_t pcie_gen_cap,
-						 uint8_t pcie_width_cap)
+					 uint32_t pcie_gen_cap,
+					 uint32_t pcie_width_cap)
 {
 	struct smu_11_0_dpm_context *dpm_context = smu->smu_dpm.dpm_context;
-	struct smu_pcie_table *pcie_table = &dpm_context->dpm_tables.pcie_table;
-	uint8_t *table_member1, *table_member2;
-	uint8_t min_gen_speed, max_gen_speed;
-	uint8_t min_lane_width, max_lane_width;
+
 	uint32_t smu_pcie_arg;
-	int ret = 0;
-	int i;
+	uint8_t *table_member1, *table_member2;
+	int ret, i;
 
 	GET_PPTABLE_MEMBER(PcieGenSpeed, &table_member1);
 	GET_PPTABLE_MEMBER(PcieLaneCount, &table_member2);
 
-	min_gen_speed = max_t(uint8_t, 0, table_member1[0]);
-	max_gen_speed = min(pcie_gen_cap, table_member1[1]);
-	min_gen_speed = min_gen_speed > max_gen_speed ?
-			max_gen_speed : min_gen_speed;
-	min_lane_width = max_t(uint8_t, 1, table_member2[0]);
-	max_lane_width = min(pcie_width_cap, table_member2[1]);
-	min_lane_width = min_lane_width > max_lane_width ?
-			 max_lane_width : min_lane_width;
-
-	if (!(smu->adev->pm.pp_feature & PP_PCIE_DPM_MASK)) {
-		pcie_table->pcie_gen[0] = max_gen_speed;
-		pcie_table->pcie_lane[0] = max_lane_width;
-	} else {
-		pcie_table->pcie_gen[0] = min_gen_speed;
-		pcie_table->pcie_lane[0] = min_lane_width;
+	/* lclk dpm table setup */
+	for (i = 0; i < MAX_PCIE_CONF; i++) {
+		dpm_context->dpm_tables.pcie_table.pcie_gen[i] = table_member1[i];
+		dpm_context->dpm_tables.pcie_table.pcie_lane[i] = table_member2[i];
 	}
-	pcie_table->pcie_gen[1] = max_gen_speed;
-	pcie_table->pcie_lane[1] = max_lane_width;
 
 	for (i = 0; i < NUM_LINK_LEVELS; i++) {
-		if (!(smu->adev->pm.pp_feature & PP_PCIE_DPM_MASK) ||
-			table_member1[i] > pcie_gen_cap || table_member2[i] > pcie_width_cap) {
-			smu_pcie_arg = (i << 16 |
-				pcie_table->pcie_gen[i] << 8 |
-				pcie_table->pcie_lane[i]);
+		smu_pcie_arg = (i << 16) |
+			((table_member1[i] <= pcie_gen_cap) ?
+			 (table_member1[i] << 8) :
+			 (pcie_gen_cap << 8)) |
+			((table_member2[i] <= pcie_width_cap) ?
+			 table_member2[i] :
+			 pcie_width_cap);
 
-			ret = smu_cmn_send_smc_msg_with_param(smu,
-						SMU_MSG_OverridePcieParameters,
-						smu_pcie_arg,
-						NULL);
-			if (ret)
-				break;
-		}
+		ret = smu_cmn_send_smc_msg_with_param(smu,
+				SMU_MSG_OverridePcieParameters,
+				smu_pcie_arg,
+				NULL);
+		if (ret)
+			return ret;
+
+		if (table_member1[i] > pcie_gen_cap)
+			dpm_context->dpm_tables.pcie_table.pcie_gen[i] = pcie_gen_cap;
+		if (table_member2[i] > pcie_width_cap)
+			dpm_context->dpm_tables.pcie_table.pcie_lane[i] = pcie_width_cap;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int sienna_cichlid_get_dpm_ultimate_freq(struct smu_context *smu,
@@ -2158,14 +2122,16 @@ static void sienna_cichlid_dump_od_table(struct smu_context *smu,
 					 OverDriveTable_t *od_table)
 {
 	struct amdgpu_device *adev = smu->adev;
+	uint32_t smu_version;
 
 	dev_dbg(smu->adev->dev, "OD: Gfxclk: (%d, %d)\n", od_table->GfxclkFmin,
 							  od_table->GfxclkFmax);
 	dev_dbg(smu->adev->dev, "OD: Uclk: (%d, %d)\n", od_table->UclkFmin,
 							od_table->UclkFmax);
 
-	if (!((amdgpu_ip_version(adev, MP1_HWIP, 0) == IP_VERSION(11, 0, 7)) &&
-	      (smu->smc_fw_version < 0x003a2900)))
+	smu_cmn_get_smc_version(smu, NULL, &smu_version);
+	if (!((adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 7)) &&
+	       (smu_version < 0x003a2900)))
 		dev_dbg(smu->adev->dev, "OD: VddGfxOffset: %d\n", od_table->VddGfxOffset);
 }
 
@@ -2243,6 +2209,7 @@ static int sienna_cichlid_od_edit_dpm_table(struct smu_context *smu,
 	enum SMU_11_0_7_ODSETTING_ID freq_setting;
 	uint16_t *freq_ptr;
 	int i, ret = 0;
+	uint32_t smu_version;
 
 	if (!smu->od_enabled) {
 		dev_warn(smu->adev->dev, "OverDrive is not enabled!\n");
@@ -2395,9 +2362,9 @@ static int sienna_cichlid_od_edit_dpm_table(struct smu_context *smu,
 		 * OD GFX Voltage Offset functionality is supported only by 58.41.0
 		 * and onwards SMU firmwares.
 		 */
-		if ((amdgpu_ip_version(adev, MP1_HWIP, 0) ==
-		     IP_VERSION(11, 0, 7)) &&
-		    (smu->smc_fw_version < 0x003a2900)) {
+		smu_cmn_get_smc_version(smu, NULL, &smu_version);
+		if ((adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 7)) &&
+		     (smu_version < 0x003a2900)) {
 			dev_err(smu->adev->dev, "OD GFX Voltage offset functionality is supported "
 						"only by 58.41.0 and onwards SMU firmwares!\n");
 			return -EOPNOTSUPP;
@@ -2467,17 +2434,13 @@ static bool sienna_cichlid_is_mode1_reset_supported(struct smu_context *smu)
 {
 	struct amdgpu_device *adev = smu->adev;
 	uint32_t val;
-	uint32_t smu_version;
-	int ret;
+	u32 smu_version;
 
 	/**
 	 * SRIOV env will not support SMU mode1 reset
 	 * PM FW support mode1 reset from 58.26
 	 */
-	ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
-	if (ret)
-		return false;
-
+	smu_cmn_get_smc_version(smu, NULL, &smu_version);
 	if (amdgpu_sriov_vf(adev) || (smu_version < 0x003a1a00))
 		return false;
 
@@ -2487,6 +2450,1273 @@ static bool sienna_cichlid_is_mode1_reset_supported(struct smu_context *smu)
 	 */
 	val = RREG32_SOC15(MP0, 0, mmMP0_SMN_C2PMSG_81);
 	return val != 0x0;
+}
+
+static void beige_goby_dump_pptable(struct smu_context *smu)
+{
+	struct smu_table_context *table_context = &smu->smu_table;
+	PPTable_beige_goby_t *pptable = table_context->driver_pptable;
+	int i;
+
+	dev_info(smu->adev->dev, "Dumped PPTable:\n");
+
+	dev_info(smu->adev->dev, "Version = 0x%08x\n", pptable->Version);
+	dev_info(smu->adev->dev, "FeaturesToRun[0] = 0x%08x\n", pptable->FeaturesToRun[0]);
+	dev_info(smu->adev->dev, "FeaturesToRun[1] = 0x%08x\n", pptable->FeaturesToRun[1]);
+
+	for (i = 0; i < PPT_THROTTLER_COUNT; i++) {
+		dev_info(smu->adev->dev, "SocketPowerLimitAc[%d] = 0x%x\n", i, pptable->SocketPowerLimitAc[i]);
+		dev_info(smu->adev->dev, "SocketPowerLimitAcTau[%d] = 0x%x\n", i, pptable->SocketPowerLimitAcTau[i]);
+		dev_info(smu->adev->dev, "SocketPowerLimitDc[%d] = 0x%x\n", i, pptable->SocketPowerLimitDc[i]);
+		dev_info(smu->adev->dev, "SocketPowerLimitDcTau[%d] = 0x%x\n", i, pptable->SocketPowerLimitDcTau[i]);
+	}
+
+	for (i = 0; i < TDC_THROTTLER_COUNT; i++) {
+		dev_info(smu->adev->dev, "TdcLimit[%d] = 0x%x\n", i, pptable->TdcLimit[i]);
+		dev_info(smu->adev->dev, "TdcLimitTau[%d] = 0x%x\n", i, pptable->TdcLimitTau[i]);
+	}
+
+	for (i = 0; i < TEMP_COUNT; i++) {
+		dev_info(smu->adev->dev, "TemperatureLimit[%d] = 0x%x\n", i, pptable->TemperatureLimit[i]);
+	}
+
+	dev_info(smu->adev->dev, "FitLimit = 0x%x\n", pptable->FitLimit);
+	dev_info(smu->adev->dev, "TotalPowerConfig = 0x%x\n", pptable->TotalPowerConfig);
+	dev_info(smu->adev->dev, "TotalPowerPadding[0] = 0x%x\n", pptable->TotalPowerPadding[0]);
+	dev_info(smu->adev->dev, "TotalPowerPadding[1] = 0x%x\n", pptable->TotalPowerPadding[1]);
+	dev_info(smu->adev->dev, "TotalPowerPadding[2] = 0x%x\n", pptable->TotalPowerPadding[2]);
+
+	dev_info(smu->adev->dev, "ApccPlusResidencyLimit = 0x%x\n", pptable->ApccPlusResidencyLimit);
+	for (i = 0; i < NUM_SMNCLK_DPM_LEVELS; i++) {
+		dev_info(smu->adev->dev, "SmnclkDpmFreq[%d] = 0x%x\n", i, pptable->SmnclkDpmFreq[i]);
+		dev_info(smu->adev->dev, "SmnclkDpmVoltage[%d] = 0x%x\n", i, pptable->SmnclkDpmVoltage[i]);
+	}
+	dev_info(smu->adev->dev, "ThrottlerControlMask = 0x%x\n", pptable->ThrottlerControlMask);
+
+	dev_info(smu->adev->dev, "FwDStateMask = 0x%x\n", pptable->FwDStateMask);
+
+	dev_info(smu->adev->dev, "UlvVoltageOffsetSoc = 0x%x\n", pptable->UlvVoltageOffsetSoc);
+	dev_info(smu->adev->dev, "UlvVoltageOffsetGfx = 0x%x\n", pptable->UlvVoltageOffsetGfx);
+	dev_info(smu->adev->dev, "MinVoltageUlvGfx = 0x%x\n", pptable->MinVoltageUlvGfx);
+	dev_info(smu->adev->dev, "MinVoltageUlvSoc = 0x%x\n", pptable->MinVoltageUlvSoc);
+
+	dev_info(smu->adev->dev, "SocLIVmin = 0x%x\n", pptable->SocLIVmin);
+
+	dev_info(smu->adev->dev, "GceaLinkMgrIdleThreshold = 0x%x\n", pptable->GceaLinkMgrIdleThreshold);
+
+	dev_info(smu->adev->dev, "MinVoltageGfx = 0x%x\n", pptable->MinVoltageGfx);
+	dev_info(smu->adev->dev, "MinVoltageSoc = 0x%x\n", pptable->MinVoltageSoc);
+	dev_info(smu->adev->dev, "MaxVoltageGfx = 0x%x\n", pptable->MaxVoltageGfx);
+	dev_info(smu->adev->dev, "MaxVoltageSoc = 0x%x\n", pptable->MaxVoltageSoc);
+
+	dev_info(smu->adev->dev, "LoadLineResistanceGfx = 0x%x\n", pptable->LoadLineResistanceGfx);
+	dev_info(smu->adev->dev, "LoadLineResistanceSoc = 0x%x\n", pptable->LoadLineResistanceSoc);
+
+	dev_info(smu->adev->dev, "VDDGFX_TVmin = 0x%x\n", pptable->VDDGFX_TVmin);
+	dev_info(smu->adev->dev, "VDDSOC_TVmin = 0x%x\n", pptable->VDDSOC_TVmin);
+	dev_info(smu->adev->dev, "VDDGFX_Vmin_HiTemp = 0x%x\n", pptable->VDDGFX_Vmin_HiTemp);
+	dev_info(smu->adev->dev, "VDDGFX_Vmin_LoTemp = 0x%x\n", pptable->VDDGFX_Vmin_LoTemp);
+	dev_info(smu->adev->dev, "VDDSOC_Vmin_HiTemp = 0x%x\n", pptable->VDDSOC_Vmin_HiTemp);
+	dev_info(smu->adev->dev, "VDDSOC_Vmin_LoTemp = 0x%x\n", pptable->VDDSOC_Vmin_LoTemp);
+	dev_info(smu->adev->dev, "VDDGFX_TVminHystersis = 0x%x\n", pptable->VDDGFX_TVminHystersis);
+	dev_info(smu->adev->dev, "VDDSOC_TVminHystersis = 0x%x\n", pptable->VDDSOC_TVminHystersis);
+
+	dev_info(smu->adev->dev, "[PPCLK_GFXCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_GFXCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_SOCCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_SOCCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_UCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_UCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_UCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_UCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_UCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_UCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_UCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_UCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_FCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_FCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_FCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_FCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_FCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_FCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_FCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_FCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_DCLK_0]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_DCLK_0].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].Padding,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsFmin,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_VCLK_0]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_VCLK_0].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].Padding,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsFmin,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_DCLK_1]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_DCLK_1].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].Padding,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsFmin,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_VCLK_1]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_VCLK_1].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].Padding,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsFmin,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].Padding16);
+
+	dev_info(smu->adev->dev, "FreqTableGfx\n");
+	for (i = 0; i < NUM_GFXCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableGfx[i]);
+
+	dev_info(smu->adev->dev, "FreqTableVclk\n");
+	for (i = 0; i < NUM_VCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableVclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableDclk\n");
+	for (i = 0; i < NUM_DCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableDclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableSocclk\n");
+	for (i = 0; i < NUM_SOCCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableSocclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableUclk\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableUclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableFclk\n");
+	for (i = 0; i < NUM_FCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableFclk[i]);
+
+	dev_info(smu->adev->dev, "DcModeMaxFreq\n");
+	dev_info(smu->adev->dev, "  .PPCLK_GFXCLK = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_GFXCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_SOCCLK = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_SOCCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_UCLK   = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_UCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_FCLK   = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_FCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_DCLK_0 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_DCLK_0]);
+	dev_info(smu->adev->dev, "  .PPCLK_VCLK_0 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_VCLK_0]);
+	dev_info(smu->adev->dev, "  .PPCLK_DCLK_1 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_DCLK_1]);
+	dev_info(smu->adev->dev, "  .PPCLK_VCLK_1 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_VCLK_1]);
+
+	dev_info(smu->adev->dev, "FreqTableUclkDiv\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->FreqTableUclkDiv[i]);
+
+	dev_info(smu->adev->dev, "FclkBoostFreq = 0x%x\n", pptable->FclkBoostFreq);
+	dev_info(smu->adev->dev, "FclkParamPadding = 0x%x\n", pptable->FclkParamPadding);
+
+	dev_info(smu->adev->dev, "Mp0clkFreq\n");
+	for (i = 0; i < NUM_MP0CLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->Mp0clkFreq[i]);
+
+	dev_info(smu->adev->dev, "Mp0DpmVoltage\n");
+	for (i = 0; i < NUM_MP0CLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->Mp0DpmVoltage[i]);
+
+	dev_info(smu->adev->dev, "MemVddciVoltage\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->MemVddciVoltage[i]);
+
+	dev_info(smu->adev->dev, "MemMvddVoltage\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->MemMvddVoltage[i]);
+
+	dev_info(smu->adev->dev, "GfxclkFgfxoffEntry = 0x%x\n", pptable->GfxclkFgfxoffEntry);
+	dev_info(smu->adev->dev, "GfxclkFinit = 0x%x\n", pptable->GfxclkFinit);
+	dev_info(smu->adev->dev, "GfxclkFidle = 0x%x\n", pptable->GfxclkFidle);
+	dev_info(smu->adev->dev, "GfxclkSource = 0x%x\n", pptable->GfxclkSource);
+	dev_info(smu->adev->dev, "GfxclkPadding = 0x%x\n", pptable->GfxclkPadding);
+
+	dev_info(smu->adev->dev, "GfxGpoSubFeatureMask = 0x%x\n", pptable->GfxGpoSubFeatureMask);
+
+	dev_info(smu->adev->dev, "GfxGpoEnabledWorkPolicyMask = 0x%x\n", pptable->GfxGpoEnabledWorkPolicyMask);
+	dev_info(smu->adev->dev, "GfxGpoDisabledWorkPolicyMask = 0x%x\n", pptable->GfxGpoDisabledWorkPolicyMask);
+	dev_info(smu->adev->dev, "GfxGpoPadding[0] = 0x%x\n", pptable->GfxGpoPadding[0]);
+	dev_info(smu->adev->dev, "GfxGpoVotingAllow = 0x%x\n", pptable->GfxGpoVotingAllow);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[0] = 0x%x\n", pptable->GfxGpoPadding32[0]);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[1] = 0x%x\n", pptable->GfxGpoPadding32[1]);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[2] = 0x%x\n", pptable->GfxGpoPadding32[2]);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[3] = 0x%x\n", pptable->GfxGpoPadding32[3]);
+	dev_info(smu->adev->dev, "GfxDcsFopt = 0x%x\n", pptable->GfxDcsFopt);
+	dev_info(smu->adev->dev, "GfxDcsFclkFopt = 0x%x\n", pptable->GfxDcsFclkFopt);
+	dev_info(smu->adev->dev, "GfxDcsUclkFopt = 0x%x\n", pptable->GfxDcsUclkFopt);
+
+	dev_info(smu->adev->dev, "DcsGfxOffVoltage = 0x%x\n", pptable->DcsGfxOffVoltage);
+	dev_info(smu->adev->dev, "DcsMinGfxOffTime = 0x%x\n", pptable->DcsMinGfxOffTime);
+	dev_info(smu->adev->dev, "DcsMaxGfxOffTime = 0x%x\n", pptable->DcsMaxGfxOffTime);
+	dev_info(smu->adev->dev, "DcsMinCreditAccum = 0x%x\n", pptable->DcsMinCreditAccum);
+	dev_info(smu->adev->dev, "DcsExitHysteresis = 0x%x\n", pptable->DcsExitHysteresis);
+	dev_info(smu->adev->dev, "DcsTimeout = 0x%x\n", pptable->DcsTimeout);
+
+	dev_info(smu->adev->dev, "DcsParamPadding[0] = 0x%x\n", pptable->DcsParamPadding[0]);
+	dev_info(smu->adev->dev, "DcsParamPadding[1] = 0x%x\n", pptable->DcsParamPadding[1]);
+	dev_info(smu->adev->dev, "DcsParamPadding[2] = 0x%x\n", pptable->DcsParamPadding[2]);
+	dev_info(smu->adev->dev, "DcsParamPadding[3] = 0x%x\n", pptable->DcsParamPadding[3]);
+	dev_info(smu->adev->dev, "DcsParamPadding[4] = 0x%x\n", pptable->DcsParamPadding[4]);
+
+	dev_info(smu->adev->dev, "FlopsPerByteTable\n");
+	for (i = 0; i < RLC_PACE_TABLE_NUM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->FlopsPerByteTable[i]);
+
+	dev_info(smu->adev->dev, "LowestUclkReservedForUlv = 0x%x\n", pptable->LowestUclkReservedForUlv);
+	dev_info(smu->adev->dev, "vddingMem[0] = 0x%x\n", pptable->PaddingMem[0]);
+	dev_info(smu->adev->dev, "vddingMem[1] = 0x%x\n", pptable->PaddingMem[1]);
+	dev_info(smu->adev->dev, "vddingMem[2] = 0x%x\n", pptable->PaddingMem[2]);
+
+	dev_info(smu->adev->dev, "UclkDpmPstates\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->UclkDpmPstates[i]);
+
+	dev_info(smu->adev->dev, "UclkDpmSrcFreqRange\n");
+	dev_info(smu->adev->dev, "  .Fmin = 0x%x\n",
+		pptable->UclkDpmSrcFreqRange.Fmin);
+	dev_info(smu->adev->dev, "  .Fmax = 0x%x\n",
+		pptable->UclkDpmSrcFreqRange.Fmax);
+	dev_info(smu->adev->dev, "UclkDpmTargFreqRange\n");
+	dev_info(smu->adev->dev, "  .Fmin = 0x%x\n",
+		pptable->UclkDpmTargFreqRange.Fmin);
+	dev_info(smu->adev->dev, "  .Fmax = 0x%x\n",
+		pptable->UclkDpmTargFreqRange.Fmax);
+	dev_info(smu->adev->dev, "UclkDpmMidstepFreq = 0x%x\n", pptable->UclkDpmMidstepFreq);
+	dev_info(smu->adev->dev, "UclkMidstepPadding = 0x%x\n", pptable->UclkMidstepPadding);
+
+	dev_info(smu->adev->dev, "PcieGenSpeed\n");
+	for (i = 0; i < NUM_LINK_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->PcieGenSpeed[i]);
+
+	dev_info(smu->adev->dev, "PcieLaneCount\n");
+	for (i = 0; i < NUM_LINK_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->PcieLaneCount[i]);
+
+	dev_info(smu->adev->dev, "LclkFreq\n");
+	for (i = 0; i < NUM_LINK_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->LclkFreq[i]);
+
+	dev_info(smu->adev->dev, "FanStopTemp = 0x%x\n", pptable->FanStopTemp);
+	dev_info(smu->adev->dev, "FanStartTemp = 0x%x\n", pptable->FanStartTemp);
+
+	dev_info(smu->adev->dev, "FanGain\n");
+	for (i = 0; i < TEMP_COUNT; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->FanGain[i]);
+
+	dev_info(smu->adev->dev, "FanPwmMin = 0x%x\n", pptable->FanPwmMin);
+	dev_info(smu->adev->dev, "FanAcousticLimitRpm = 0x%x\n", pptable->FanAcousticLimitRpm);
+	dev_info(smu->adev->dev, "FanThrottlingRpm = 0x%x\n", pptable->FanThrottlingRpm);
+	dev_info(smu->adev->dev, "FanMaximumRpm = 0x%x\n", pptable->FanMaximumRpm);
+	dev_info(smu->adev->dev, "MGpuFanBoostLimitRpm = 0x%x\n", pptable->MGpuFanBoostLimitRpm);
+	dev_info(smu->adev->dev, "FanTargetTemperature = 0x%x\n", pptable->FanTargetTemperature);
+	dev_info(smu->adev->dev, "FanTargetGfxclk = 0x%x\n", pptable->FanTargetGfxclk);
+	dev_info(smu->adev->dev, "FanPadding16 = 0x%x\n", pptable->FanPadding16);
+	dev_info(smu->adev->dev, "FanTempInputSelect = 0x%x\n", pptable->FanTempInputSelect);
+	dev_info(smu->adev->dev, "FanPadding = 0x%x\n", pptable->FanPadding);
+	dev_info(smu->adev->dev, "FanZeroRpmEnable = 0x%x\n", pptable->FanZeroRpmEnable);
+	dev_info(smu->adev->dev, "FanTachEdgePerRev = 0x%x\n", pptable->FanTachEdgePerRev);
+
+	dev_info(smu->adev->dev, "FuzzyFan_ErrorSetDelta = 0x%x\n", pptable->FuzzyFan_ErrorSetDelta);
+	dev_info(smu->adev->dev, "FuzzyFan_ErrorRateSetDelta = 0x%x\n", pptable->FuzzyFan_ErrorRateSetDelta);
+	dev_info(smu->adev->dev, "FuzzyFan_PwmSetDelta = 0x%x\n", pptable->FuzzyFan_PwmSetDelta);
+	dev_info(smu->adev->dev, "FuzzyFan_Reserved = 0x%x\n", pptable->FuzzyFan_Reserved);
+
+	dev_info(smu->adev->dev, "OverrideAvfsGb[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->OverrideAvfsGb[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "OverrideAvfsGb[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->OverrideAvfsGb[AVFS_VOLTAGE_SOC]);
+	dev_info(smu->adev->dev, "dBtcGbGfxDfllModelSelect = 0x%x\n", pptable->dBtcGbGfxDfllModelSelect);
+	dev_info(smu->adev->dev, "Padding8_Avfs = 0x%x\n", pptable->Padding8_Avfs);
+
+	dev_info(smu->adev->dev, "qAvfsGb[AVFS_VOLTAGE_GFX]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qAvfsGb[AVFS_VOLTAGE_GFX].a,
+			pptable->qAvfsGb[AVFS_VOLTAGE_GFX].b,
+			pptable->qAvfsGb[AVFS_VOLTAGE_GFX].c);
+	dev_info(smu->adev->dev, "qAvfsGb[AVFS_VOLTAGE_SOC]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qAvfsGb[AVFS_VOLTAGE_SOC].a,
+			pptable->qAvfsGb[AVFS_VOLTAGE_SOC].b,
+			pptable->qAvfsGb[AVFS_VOLTAGE_SOC].c);
+	dev_info(smu->adev->dev, "dBtcGbGfxPll{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->dBtcGbGfxPll.a,
+			pptable->dBtcGbGfxPll.b,
+			pptable->dBtcGbGfxPll.c);
+	dev_info(smu->adev->dev, "dBtcGbGfxAfll{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->dBtcGbGfxDfll.a,
+			pptable->dBtcGbGfxDfll.b,
+			pptable->dBtcGbGfxDfll.c);
+	dev_info(smu->adev->dev, "dBtcGbSoc{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->dBtcGbSoc.a,
+			pptable->dBtcGbSoc.b,
+			pptable->dBtcGbSoc.c);
+	dev_info(smu->adev->dev, "qAgingGb[AVFS_VOLTAGE_GFX]{m = 0x%x b = 0x%x}\n",
+			pptable->qAgingGb[AVFS_VOLTAGE_GFX].m,
+			pptable->qAgingGb[AVFS_VOLTAGE_GFX].b);
+	dev_info(smu->adev->dev, "qAgingGb[AVFS_VOLTAGE_SOC]{m = 0x%x b = 0x%x}\n",
+			pptable->qAgingGb[AVFS_VOLTAGE_SOC].m,
+			pptable->qAgingGb[AVFS_VOLTAGE_SOC].b);
+
+	dev_info(smu->adev->dev, "PiecewiseLinearDroopIntGfxDfll\n");
+	for (i = 0; i < NUM_PIECE_WISE_LINEAR_DROOP_MODEL_VF_POINTS; i++) {
+		dev_info(smu->adev->dev, "		Fset[%d] = 0x%x\n",
+			i, pptable->PiecewiseLinearDroopIntGfxDfll.Fset[i]);
+		dev_info(smu->adev->dev, "		Vdroop[%d] = 0x%x\n",
+			i, pptable->PiecewiseLinearDroopIntGfxDfll.Vdroop[i]);
+	}
+
+	dev_info(smu->adev->dev, "qStaticVoltageOffset[AVFS_VOLTAGE_GFX]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_GFX].a,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_GFX].b,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_GFX].c);
+	dev_info(smu->adev->dev, "qStaticVoltageOffset[AVFS_VOLTAGE_SOC]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_SOC].a,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_SOC].b,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_SOC].c);
+
+	dev_info(smu->adev->dev, "DcTol[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcTol[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcTol[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcTol[AVFS_VOLTAGE_SOC]);
+
+	dev_info(smu->adev->dev, "DcBtcEnabled[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcEnabled[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcEnabled[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcEnabled[AVFS_VOLTAGE_SOC]);
+	dev_info(smu->adev->dev, "Padding8_GfxBtc[0] = 0x%x\n", pptable->Padding8_GfxBtc[0]);
+	dev_info(smu->adev->dev, "Padding8_GfxBtc[1] = 0x%x\n", pptable->Padding8_GfxBtc[1]);
+
+	dev_info(smu->adev->dev, "DcBtcMin[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcMin[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcMin[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcMin[AVFS_VOLTAGE_SOC]);
+	dev_info(smu->adev->dev, "DcBtcMax[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcMax[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcMax[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcMax[AVFS_VOLTAGE_SOC]);
+
+	dev_info(smu->adev->dev, "DcBtcGb[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcGb[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcGb[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcGb[AVFS_VOLTAGE_SOC]);
+
+	dev_info(smu->adev->dev, "XgmiDpmPstates\n");
+	for (i = 0; i < NUM_XGMI_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiDpmPstates[i]);
+	dev_info(smu->adev->dev, "XgmiDpmSpare[0] = 0x%02x\n", pptable->XgmiDpmSpare[0]);
+	dev_info(smu->adev->dev, "XgmiDpmSpare[1] = 0x%02x\n", pptable->XgmiDpmSpare[1]);
+
+	dev_info(smu->adev->dev, "DebugOverrides = 0x%x\n", pptable->DebugOverrides);
+	dev_info(smu->adev->dev, "ReservedEquation0{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation0.a,
+			pptable->ReservedEquation0.b,
+			pptable->ReservedEquation0.c);
+	dev_info(smu->adev->dev, "ReservedEquation1{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation1.a,
+			pptable->ReservedEquation1.b,
+			pptable->ReservedEquation1.c);
+	dev_info(smu->adev->dev, "ReservedEquation2{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation2.a,
+			pptable->ReservedEquation2.b,
+			pptable->ReservedEquation2.c);
+	dev_info(smu->adev->dev, "ReservedEquation3{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation3.a,
+			pptable->ReservedEquation3.b,
+			pptable->ReservedEquation3.c);
+
+	dev_info(smu->adev->dev, "SkuReserved[0] = 0x%x\n", pptable->SkuReserved[0]);
+	dev_info(smu->adev->dev, "SkuReserved[1] = 0x%x\n", pptable->SkuReserved[1]);
+	dev_info(smu->adev->dev, "SkuReserved[2] = 0x%x\n", pptable->SkuReserved[2]);
+	dev_info(smu->adev->dev, "SkuReserved[3] = 0x%x\n", pptable->SkuReserved[3]);
+	dev_info(smu->adev->dev, "SkuReserved[4] = 0x%x\n", pptable->SkuReserved[4]);
+	dev_info(smu->adev->dev, "SkuReserved[5] = 0x%x\n", pptable->SkuReserved[5]);
+	dev_info(smu->adev->dev, "SkuReserved[6] = 0x%x\n", pptable->SkuReserved[6]);
+	dev_info(smu->adev->dev, "SkuReserved[7] = 0x%x\n", pptable->SkuReserved[7]);
+
+	dev_info(smu->adev->dev, "GamingClk[0] = 0x%x\n", pptable->GamingClk[0]);
+	dev_info(smu->adev->dev, "GamingClk[1] = 0x%x\n", pptable->GamingClk[1]);
+	dev_info(smu->adev->dev, "GamingClk[2] = 0x%x\n", pptable->GamingClk[2]);
+	dev_info(smu->adev->dev, "GamingClk[3] = 0x%x\n", pptable->GamingClk[3]);
+	dev_info(smu->adev->dev, "GamingClk[4] = 0x%x\n", pptable->GamingClk[4]);
+	dev_info(smu->adev->dev, "GamingClk[5] = 0x%x\n", pptable->GamingClk[5]);
+
+	for (i = 0; i < NUM_I2C_CONTROLLERS; i++) {
+		dev_info(smu->adev->dev, "I2cControllers[%d]:\n", i);
+		dev_info(smu->adev->dev, "                   .Enabled = 0x%x\n",
+				pptable->I2cControllers[i].Enabled);
+		dev_info(smu->adev->dev, "                   .Speed = 0x%x\n",
+				pptable->I2cControllers[i].Speed);
+		dev_info(smu->adev->dev, "                   .SlaveAddress = 0x%x\n",
+				pptable->I2cControllers[i].SlaveAddress);
+		dev_info(smu->adev->dev, "                   .ControllerPort = 0x%x\n",
+				pptable->I2cControllers[i].ControllerPort);
+		dev_info(smu->adev->dev, "                   .ControllerName = 0x%x\n",
+				pptable->I2cControllers[i].ControllerName);
+		dev_info(smu->adev->dev, "                   .ThermalThrottler = 0x%x\n",
+				pptable->I2cControllers[i].ThermalThrotter);
+		dev_info(smu->adev->dev, "                   .I2cProtocol = 0x%x\n",
+				pptable->I2cControllers[i].I2cProtocol);
+		dev_info(smu->adev->dev, "                   .PaddingConfig = 0x%x\n",
+				pptable->I2cControllers[i].PaddingConfig);
+	}
+
+	dev_info(smu->adev->dev, "GpioScl = 0x%x\n", pptable->GpioScl);
+	dev_info(smu->adev->dev, "GpioSda = 0x%x\n", pptable->GpioSda);
+	dev_info(smu->adev->dev, "FchUsbPdSlaveAddr = 0x%x\n", pptable->FchUsbPdSlaveAddr);
+	dev_info(smu->adev->dev, "I2cSpare[0] = 0x%x\n", pptable->I2cSpare[0]);
+
+	dev_info(smu->adev->dev, "Board Parameters:\n");
+	dev_info(smu->adev->dev, "VddGfxVrMapping = 0x%x\n", pptable->VddGfxVrMapping);
+	dev_info(smu->adev->dev, "VddSocVrMapping = 0x%x\n", pptable->VddSocVrMapping);
+	dev_info(smu->adev->dev, "VddMem0VrMapping = 0x%x\n", pptable->VddMem0VrMapping);
+	dev_info(smu->adev->dev, "VddMem1VrMapping = 0x%x\n", pptable->VddMem1VrMapping);
+	dev_info(smu->adev->dev, "GfxUlvPhaseSheddingMask = 0x%x\n", pptable->GfxUlvPhaseSheddingMask);
+	dev_info(smu->adev->dev, "SocUlvPhaseSheddingMask = 0x%x\n", pptable->SocUlvPhaseSheddingMask);
+	dev_info(smu->adev->dev, "VddciUlvPhaseSheddingMask = 0x%x\n", pptable->VddciUlvPhaseSheddingMask);
+	dev_info(smu->adev->dev, "MvddUlvPhaseSheddingMask = 0x%x\n", pptable->MvddUlvPhaseSheddingMask);
+
+	dev_info(smu->adev->dev, "GfxMaxCurrent = 0x%x\n", pptable->GfxMaxCurrent);
+	dev_info(smu->adev->dev, "GfxOffset = 0x%x\n", pptable->GfxOffset);
+	dev_info(smu->adev->dev, "Padding_TelemetryGfx = 0x%x\n", pptable->Padding_TelemetryGfx);
+
+	dev_info(smu->adev->dev, "SocMaxCurrent = 0x%x\n", pptable->SocMaxCurrent);
+	dev_info(smu->adev->dev, "SocOffset = 0x%x\n", pptable->SocOffset);
+	dev_info(smu->adev->dev, "Padding_TelemetrySoc = 0x%x\n", pptable->Padding_TelemetrySoc);
+
+	dev_info(smu->adev->dev, "Mem0MaxCurrent = 0x%x\n", pptable->Mem0MaxCurrent);
+	dev_info(smu->adev->dev, "Mem0Offset = 0x%x\n", pptable->Mem0Offset);
+	dev_info(smu->adev->dev, "Padding_TelemetryMem0 = 0x%x\n", pptable->Padding_TelemetryMem0);
+
+	dev_info(smu->adev->dev, "Mem1MaxCurrent = 0x%x\n", pptable->Mem1MaxCurrent);
+	dev_info(smu->adev->dev, "Mem1Offset = 0x%x\n", pptable->Mem1Offset);
+	dev_info(smu->adev->dev, "Padding_TelemetryMem1 = 0x%x\n", pptable->Padding_TelemetryMem1);
+
+	dev_info(smu->adev->dev, "MvddRatio = 0x%x\n", pptable->MvddRatio);
+
+	dev_info(smu->adev->dev, "AcDcGpio = 0x%x\n", pptable->AcDcGpio);
+	dev_info(smu->adev->dev, "AcDcPolarity = 0x%x\n", pptable->AcDcPolarity);
+	dev_info(smu->adev->dev, "VR0HotGpio = 0x%x\n", pptable->VR0HotGpio);
+	dev_info(smu->adev->dev, "VR0HotPolarity = 0x%x\n", pptable->VR0HotPolarity);
+	dev_info(smu->adev->dev, "VR1HotGpio = 0x%x\n", pptable->VR1HotGpio);
+	dev_info(smu->adev->dev, "VR1HotPolarity = 0x%x\n", pptable->VR1HotPolarity);
+	dev_info(smu->adev->dev, "GthrGpio = 0x%x\n", pptable->GthrGpio);
+	dev_info(smu->adev->dev, "GthrPolarity = 0x%x\n", pptable->GthrPolarity);
+	dev_info(smu->adev->dev, "LedPin0 = 0x%x\n", pptable->LedPin0);
+	dev_info(smu->adev->dev, "LedPin1 = 0x%x\n", pptable->LedPin1);
+	dev_info(smu->adev->dev, "LedPin2 = 0x%x\n", pptable->LedPin2);
+	dev_info(smu->adev->dev, "LedEnableMask = 0x%x\n", pptable->LedEnableMask);
+	dev_info(smu->adev->dev, "LedPcie = 0x%x\n", pptable->LedPcie);
+	dev_info(smu->adev->dev, "LedError = 0x%x\n", pptable->LedError);
+	dev_info(smu->adev->dev, "LedSpare1[0] = 0x%x\n", pptable->LedSpare1[0]);
+	dev_info(smu->adev->dev, "LedSpare1[1] = 0x%x\n", pptable->LedSpare1[1]);
+
+	dev_info(smu->adev->dev, "PllGfxclkSpreadEnabled = 0x%x\n", pptable->PllGfxclkSpreadEnabled);
+	dev_info(smu->adev->dev, "PllGfxclkSpreadPercent = 0x%x\n", pptable->PllGfxclkSpreadPercent);
+	dev_info(smu->adev->dev, "PllGfxclkSpreadFreq = 0x%x\n",    pptable->PllGfxclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "DfllGfxclkSpreadEnabled = 0x%x\n", pptable->DfllGfxclkSpreadEnabled);
+	dev_info(smu->adev->dev, "DfllGfxclkSpreadPercent = 0x%x\n", pptable->DfllGfxclkSpreadPercent);
+	dev_info(smu->adev->dev, "DfllGfxclkSpreadFreq = 0x%x\n",    pptable->DfllGfxclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "UclkSpreadPadding = 0x%x\n", pptable->UclkSpreadPadding);
+	dev_info(smu->adev->dev, "UclkSpreadFreq = 0x%x\n", pptable->UclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "FclkSpreadEnabled = 0x%x\n", pptable->FclkSpreadEnabled);
+	dev_info(smu->adev->dev, "FclkSpreadPercent = 0x%x\n", pptable->FclkSpreadPercent);
+	dev_info(smu->adev->dev, "FclkSpreadFreq = 0x%x\n", pptable->FclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "MemoryChannelEnabled = 0x%x\n", pptable->MemoryChannelEnabled);
+	dev_info(smu->adev->dev, "DramBitWidth = 0x%x\n", pptable->DramBitWidth);
+	dev_info(smu->adev->dev, "PaddingMem1[0] = 0x%x\n", pptable->PaddingMem1[0]);
+	dev_info(smu->adev->dev, "PaddingMem1[1] = 0x%x\n", pptable->PaddingMem1[1]);
+	dev_info(smu->adev->dev, "PaddingMem1[2] = 0x%x\n", pptable->PaddingMem1[2]);
+
+	dev_info(smu->adev->dev, "TotalBoardPower = 0x%x\n", pptable->TotalBoardPower);
+	dev_info(smu->adev->dev, "BoardPowerPadding = 0x%x\n", pptable->BoardPowerPadding);
+
+	dev_info(smu->adev->dev, "XgmiLinkSpeed\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiLinkSpeed[i]);
+	dev_info(smu->adev->dev, "XgmiLinkWidth\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiLinkWidth[i]);
+	dev_info(smu->adev->dev, "XgmiFclkFreq\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiFclkFreq[i]);
+	dev_info(smu->adev->dev, "XgmiSocVoltage\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiSocVoltage[i]);
+
+	dev_info(smu->adev->dev, "HsrEnabled = 0x%x\n", pptable->HsrEnabled);
+	dev_info(smu->adev->dev, "VddqOffEnabled = 0x%x\n", pptable->VddqOffEnabled);
+	dev_info(smu->adev->dev, "PaddingUmcFlags[0] = 0x%x\n", pptable->PaddingUmcFlags[0]);
+	dev_info(smu->adev->dev, "PaddingUmcFlags[1] = 0x%x\n", pptable->PaddingUmcFlags[1]);
+
+	dev_info(smu->adev->dev, "BoardReserved[0] = 0x%x\n", pptable->BoardReserved[0]);
+	dev_info(smu->adev->dev, "BoardReserved[1] = 0x%x\n", pptable->BoardReserved[1]);
+	dev_info(smu->adev->dev, "BoardReserved[2] = 0x%x\n", pptable->BoardReserved[2]);
+	dev_info(smu->adev->dev, "BoardReserved[3] = 0x%x\n", pptable->BoardReserved[3]);
+	dev_info(smu->adev->dev, "BoardReserved[4] = 0x%x\n", pptable->BoardReserved[4]);
+	dev_info(smu->adev->dev, "BoardReserved[5] = 0x%x\n", pptable->BoardReserved[5]);
+	dev_info(smu->adev->dev, "BoardReserved[6] = 0x%x\n", pptable->BoardReserved[6]);
+	dev_info(smu->adev->dev, "BoardReserved[7] = 0x%x\n", pptable->BoardReserved[7]);
+	dev_info(smu->adev->dev, "BoardReserved[8] = 0x%x\n", pptable->BoardReserved[8]);
+	dev_info(smu->adev->dev, "BoardReserved[9] = 0x%x\n", pptable->BoardReserved[9]);
+	dev_info(smu->adev->dev, "BoardReserved[10] = 0x%x\n", pptable->BoardReserved[10]);
+
+	dev_info(smu->adev->dev, "MmHubPadding[0] = 0x%x\n", pptable->MmHubPadding[0]);
+	dev_info(smu->adev->dev, "MmHubPadding[1] = 0x%x\n", pptable->MmHubPadding[1]);
+	dev_info(smu->adev->dev, "MmHubPadding[2] = 0x%x\n", pptable->MmHubPadding[2]);
+	dev_info(smu->adev->dev, "MmHubPadding[3] = 0x%x\n", pptable->MmHubPadding[3]);
+	dev_info(smu->adev->dev, "MmHubPadding[4] = 0x%x\n", pptable->MmHubPadding[4]);
+	dev_info(smu->adev->dev, "MmHubPadding[5] = 0x%x\n", pptable->MmHubPadding[5]);
+	dev_info(smu->adev->dev, "MmHubPadding[6] = 0x%x\n", pptable->MmHubPadding[6]);
+	dev_info(smu->adev->dev, "MmHubPadding[7] = 0x%x\n", pptable->MmHubPadding[7]);
+}
+
+static void sienna_cichlid_dump_pptable(struct smu_context *smu)
+{
+	struct smu_table_context *table_context = &smu->smu_table;
+	PPTable_t *pptable = table_context->driver_pptable;
+	int i;
+
+	if (smu->adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 13)) {
+		beige_goby_dump_pptable(smu);
+		return;
+	}
+
+	dev_info(smu->adev->dev, "Dumped PPTable:\n");
+
+	dev_info(smu->adev->dev, "Version = 0x%08x\n", pptable->Version);
+	dev_info(smu->adev->dev, "FeaturesToRun[0] = 0x%08x\n", pptable->FeaturesToRun[0]);
+	dev_info(smu->adev->dev, "FeaturesToRun[1] = 0x%08x\n", pptable->FeaturesToRun[1]);
+
+	for (i = 0; i < PPT_THROTTLER_COUNT; i++) {
+		dev_info(smu->adev->dev, "SocketPowerLimitAc[%d] = 0x%x\n", i, pptable->SocketPowerLimitAc[i]);
+		dev_info(smu->adev->dev, "SocketPowerLimitAcTau[%d] = 0x%x\n", i, pptable->SocketPowerLimitAcTau[i]);
+		dev_info(smu->adev->dev, "SocketPowerLimitDc[%d] = 0x%x\n", i, pptable->SocketPowerLimitDc[i]);
+		dev_info(smu->adev->dev, "SocketPowerLimitDcTau[%d] = 0x%x\n", i, pptable->SocketPowerLimitDcTau[i]);
+	}
+
+	for (i = 0; i < TDC_THROTTLER_COUNT; i++) {
+		dev_info(smu->adev->dev, "TdcLimit[%d] = 0x%x\n", i, pptable->TdcLimit[i]);
+		dev_info(smu->adev->dev, "TdcLimitTau[%d] = 0x%x\n", i, pptable->TdcLimitTau[i]);
+	}
+
+	for (i = 0; i < TEMP_COUNT; i++) {
+		dev_info(smu->adev->dev, "TemperatureLimit[%d] = 0x%x\n", i, pptable->TemperatureLimit[i]);
+	}
+
+	dev_info(smu->adev->dev, "FitLimit = 0x%x\n", pptable->FitLimit);
+	dev_info(smu->adev->dev, "TotalPowerConfig = 0x%x\n", pptable->TotalPowerConfig);
+	dev_info(smu->adev->dev, "TotalPowerPadding[0] = 0x%x\n", pptable->TotalPowerPadding[0]);
+	dev_info(smu->adev->dev, "TotalPowerPadding[1] = 0x%x\n", pptable->TotalPowerPadding[1]);
+	dev_info(smu->adev->dev, "TotalPowerPadding[2] = 0x%x\n", pptable->TotalPowerPadding[2]);
+
+	dev_info(smu->adev->dev, "ApccPlusResidencyLimit = 0x%x\n", pptable->ApccPlusResidencyLimit);
+	for (i = 0; i < NUM_SMNCLK_DPM_LEVELS; i++) {
+		dev_info(smu->adev->dev, "SmnclkDpmFreq[%d] = 0x%x\n", i, pptable->SmnclkDpmFreq[i]);
+		dev_info(smu->adev->dev, "SmnclkDpmVoltage[%d] = 0x%x\n", i, pptable->SmnclkDpmVoltage[i]);
+	}
+	dev_info(smu->adev->dev, "ThrottlerControlMask = 0x%x\n", pptable->ThrottlerControlMask);
+
+	dev_info(smu->adev->dev, "FwDStateMask = 0x%x\n", pptable->FwDStateMask);
+
+	dev_info(smu->adev->dev, "UlvVoltageOffsetSoc = 0x%x\n", pptable->UlvVoltageOffsetSoc);
+	dev_info(smu->adev->dev, "UlvVoltageOffsetGfx = 0x%x\n", pptable->UlvVoltageOffsetGfx);
+	dev_info(smu->adev->dev, "MinVoltageUlvGfx = 0x%x\n", pptable->MinVoltageUlvGfx);
+	dev_info(smu->adev->dev, "MinVoltageUlvSoc = 0x%x\n", pptable->MinVoltageUlvSoc);
+
+	dev_info(smu->adev->dev, "SocLIVmin = 0x%x\n", pptable->SocLIVmin);
+	dev_info(smu->adev->dev, "PaddingLIVmin = 0x%x\n", pptable->PaddingLIVmin);
+
+	dev_info(smu->adev->dev, "GceaLinkMgrIdleThreshold = 0x%x\n", pptable->GceaLinkMgrIdleThreshold);
+	dev_info(smu->adev->dev, "paddingRlcUlvParams[0] = 0x%x\n", pptable->paddingRlcUlvParams[0]);
+	dev_info(smu->adev->dev, "paddingRlcUlvParams[1] = 0x%x\n", pptable->paddingRlcUlvParams[1]);
+	dev_info(smu->adev->dev, "paddingRlcUlvParams[2] = 0x%x\n", pptable->paddingRlcUlvParams[2]);
+
+	dev_info(smu->adev->dev, "MinVoltageGfx = 0x%x\n", pptable->MinVoltageGfx);
+	dev_info(smu->adev->dev, "MinVoltageSoc = 0x%x\n", pptable->MinVoltageSoc);
+	dev_info(smu->adev->dev, "MaxVoltageGfx = 0x%x\n", pptable->MaxVoltageGfx);
+	dev_info(smu->adev->dev, "MaxVoltageSoc = 0x%x\n", pptable->MaxVoltageSoc);
+
+	dev_info(smu->adev->dev, "LoadLineResistanceGfx = 0x%x\n", pptable->LoadLineResistanceGfx);
+	dev_info(smu->adev->dev, "LoadLineResistanceSoc = 0x%x\n", pptable->LoadLineResistanceSoc);
+
+	dev_info(smu->adev->dev, "VDDGFX_TVmin = 0x%x\n", pptable->VDDGFX_TVmin);
+	dev_info(smu->adev->dev, "VDDSOC_TVmin = 0x%x\n", pptable->VDDSOC_TVmin);
+	dev_info(smu->adev->dev, "VDDGFX_Vmin_HiTemp = 0x%x\n", pptable->VDDGFX_Vmin_HiTemp);
+	dev_info(smu->adev->dev, "VDDGFX_Vmin_LoTemp = 0x%x\n", pptable->VDDGFX_Vmin_LoTemp);
+	dev_info(smu->adev->dev, "VDDSOC_Vmin_HiTemp = 0x%x\n", pptable->VDDSOC_Vmin_HiTemp);
+	dev_info(smu->adev->dev, "VDDSOC_Vmin_LoTemp = 0x%x\n", pptable->VDDSOC_Vmin_LoTemp);
+	dev_info(smu->adev->dev, "VDDGFX_TVminHystersis = 0x%x\n", pptable->VDDGFX_TVminHystersis);
+	dev_info(smu->adev->dev, "VDDSOC_TVminHystersis = 0x%x\n", pptable->VDDSOC_TVminHystersis);
+
+	dev_info(smu->adev->dev, "[PPCLK_GFXCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_GFXCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_GFXCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_SOCCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_SOCCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_SOCCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_UCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_UCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_UCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_UCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_UCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_UCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_UCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_UCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_UCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_FCLK]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_FCLK].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_FCLK].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_FCLK].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_FCLK].Padding,
+			pptable->DpmDescriptor[PPCLK_FCLK].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_FCLK].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_FCLK].SsFmin,
+			pptable->DpmDescriptor[PPCLK_FCLK].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_DCLK_0]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_DCLK_0].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].Padding,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].SsFmin,
+			pptable->DpmDescriptor[PPCLK_DCLK_0].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_VCLK_0]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_VCLK_0].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].Padding,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].SsFmin,
+			pptable->DpmDescriptor[PPCLK_VCLK_0].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_DCLK_1]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_DCLK_1].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].Padding,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].SsFmin,
+			pptable->DpmDescriptor[PPCLK_DCLK_1].Padding16);
+
+	dev_info(smu->adev->dev, "[PPCLK_VCLK_1]\n"
+			"  .VoltageMode          = 0x%02x\n"
+			"  .SnapToDiscrete       = 0x%02x\n"
+			"  .NumDiscreteLevels    = 0x%02x\n"
+			"  .padding              = 0x%02x\n"
+			"  .ConversionToAvfsClk{m = 0x%08x b = 0x%08x}\n"
+			"  .SsCurve            {a = 0x%08x b = 0x%08x c = 0x%08x}\n"
+			"  .SsFmin               = 0x%04x\n"
+			"  .Padding_16           = 0x%04x\n",
+			pptable->DpmDescriptor[PPCLK_VCLK_1].VoltageMode,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SnapToDiscrete,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].NumDiscreteLevels,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].Padding,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].ConversionToAvfsClk.m,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].ConversionToAvfsClk.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsCurve.a,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsCurve.b,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsCurve.c,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].SsFmin,
+			pptable->DpmDescriptor[PPCLK_VCLK_1].Padding16);
+
+	dev_info(smu->adev->dev, "FreqTableGfx\n");
+	for (i = 0; i < NUM_GFXCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableGfx[i]);
+
+	dev_info(smu->adev->dev, "FreqTableVclk\n");
+	for (i = 0; i < NUM_VCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableVclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableDclk\n");
+	for (i = 0; i < NUM_DCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableDclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableSocclk\n");
+	for (i = 0; i < NUM_SOCCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableSocclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableUclk\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableUclk[i]);
+
+	dev_info(smu->adev->dev, "FreqTableFclk\n");
+	for (i = 0; i < NUM_FCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%02d] = 0x%x\n", i, pptable->FreqTableFclk[i]);
+
+	dev_info(smu->adev->dev, "DcModeMaxFreq\n");
+	dev_info(smu->adev->dev, "  .PPCLK_GFXCLK = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_GFXCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_SOCCLK = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_SOCCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_UCLK   = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_UCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_FCLK   = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_FCLK]);
+	dev_info(smu->adev->dev, "  .PPCLK_DCLK_0 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_DCLK_0]);
+	dev_info(smu->adev->dev, "  .PPCLK_VCLK_0 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_VCLK_0]);
+	dev_info(smu->adev->dev, "  .PPCLK_DCLK_1 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_DCLK_1]);
+	dev_info(smu->adev->dev, "  .PPCLK_VCLK_1 = 0x%x\n", pptable->DcModeMaxFreq[PPCLK_VCLK_1]);
+
+	dev_info(smu->adev->dev, "FreqTableUclkDiv\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->FreqTableUclkDiv[i]);
+
+	dev_info(smu->adev->dev, "FclkBoostFreq = 0x%x\n", pptable->FclkBoostFreq);
+	dev_info(smu->adev->dev, "FclkParamPadding = 0x%x\n", pptable->FclkParamPadding);
+
+	dev_info(smu->adev->dev, "Mp0clkFreq\n");
+	for (i = 0; i < NUM_MP0CLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->Mp0clkFreq[i]);
+
+	dev_info(smu->adev->dev, "Mp0DpmVoltage\n");
+	for (i = 0; i < NUM_MP0CLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->Mp0DpmVoltage[i]);
+
+	dev_info(smu->adev->dev, "MemVddciVoltage\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->MemVddciVoltage[i]);
+
+	dev_info(smu->adev->dev, "MemMvddVoltage\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->MemMvddVoltage[i]);
+
+	dev_info(smu->adev->dev, "GfxclkFgfxoffEntry = 0x%x\n", pptable->GfxclkFgfxoffEntry);
+	dev_info(smu->adev->dev, "GfxclkFinit = 0x%x\n", pptable->GfxclkFinit);
+	dev_info(smu->adev->dev, "GfxclkFidle = 0x%x\n", pptable->GfxclkFidle);
+	dev_info(smu->adev->dev, "GfxclkSource = 0x%x\n", pptable->GfxclkSource);
+	dev_info(smu->adev->dev, "GfxclkPadding = 0x%x\n", pptable->GfxclkPadding);
+
+	dev_info(smu->adev->dev, "GfxGpoSubFeatureMask = 0x%x\n", pptable->GfxGpoSubFeatureMask);
+
+	dev_info(smu->adev->dev, "GfxGpoEnabledWorkPolicyMask = 0x%x\n", pptable->GfxGpoEnabledWorkPolicyMask);
+	dev_info(smu->adev->dev, "GfxGpoDisabledWorkPolicyMask = 0x%x\n", pptable->GfxGpoDisabledWorkPolicyMask);
+	dev_info(smu->adev->dev, "GfxGpoPadding[0] = 0x%x\n", pptable->GfxGpoPadding[0]);
+	dev_info(smu->adev->dev, "GfxGpoVotingAllow = 0x%x\n", pptable->GfxGpoVotingAllow);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[0] = 0x%x\n", pptable->GfxGpoPadding32[0]);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[1] = 0x%x\n", pptable->GfxGpoPadding32[1]);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[2] = 0x%x\n", pptable->GfxGpoPadding32[2]);
+	dev_info(smu->adev->dev, "GfxGpoPadding32[3] = 0x%x\n", pptable->GfxGpoPadding32[3]);
+	dev_info(smu->adev->dev, "GfxDcsFopt = 0x%x\n", pptable->GfxDcsFopt);
+	dev_info(smu->adev->dev, "GfxDcsFclkFopt = 0x%x\n", pptable->GfxDcsFclkFopt);
+	dev_info(smu->adev->dev, "GfxDcsUclkFopt = 0x%x\n", pptable->GfxDcsUclkFopt);
+
+	dev_info(smu->adev->dev, "DcsGfxOffVoltage = 0x%x\n", pptable->DcsGfxOffVoltage);
+	dev_info(smu->adev->dev, "DcsMinGfxOffTime = 0x%x\n", pptable->DcsMinGfxOffTime);
+	dev_info(smu->adev->dev, "DcsMaxGfxOffTime = 0x%x\n", pptable->DcsMaxGfxOffTime);
+	dev_info(smu->adev->dev, "DcsMinCreditAccum = 0x%x\n", pptable->DcsMinCreditAccum);
+	dev_info(smu->adev->dev, "DcsExitHysteresis = 0x%x\n", pptable->DcsExitHysteresis);
+	dev_info(smu->adev->dev, "DcsTimeout = 0x%x\n", pptable->DcsTimeout);
+
+	dev_info(smu->adev->dev, "DcsParamPadding[0] = 0x%x\n", pptable->DcsParamPadding[0]);
+	dev_info(smu->adev->dev, "DcsParamPadding[1] = 0x%x\n", pptable->DcsParamPadding[1]);
+	dev_info(smu->adev->dev, "DcsParamPadding[2] = 0x%x\n", pptable->DcsParamPadding[2]);
+	dev_info(smu->adev->dev, "DcsParamPadding[3] = 0x%x\n", pptable->DcsParamPadding[3]);
+	dev_info(smu->adev->dev, "DcsParamPadding[4] = 0x%x\n", pptable->DcsParamPadding[4]);
+
+	dev_info(smu->adev->dev, "FlopsPerByteTable\n");
+	for (i = 0; i < RLC_PACE_TABLE_NUM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->FlopsPerByteTable[i]);
+
+	dev_info(smu->adev->dev, "LowestUclkReservedForUlv = 0x%x\n", pptable->LowestUclkReservedForUlv);
+	dev_info(smu->adev->dev, "vddingMem[0] = 0x%x\n", pptable->PaddingMem[0]);
+	dev_info(smu->adev->dev, "vddingMem[1] = 0x%x\n", pptable->PaddingMem[1]);
+	dev_info(smu->adev->dev, "vddingMem[2] = 0x%x\n", pptable->PaddingMem[2]);
+
+	dev_info(smu->adev->dev, "UclkDpmPstates\n");
+	for (i = 0; i < NUM_UCLK_DPM_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->UclkDpmPstates[i]);
+
+	dev_info(smu->adev->dev, "UclkDpmSrcFreqRange\n");
+	dev_info(smu->adev->dev, "  .Fmin = 0x%x\n",
+		pptable->UclkDpmSrcFreqRange.Fmin);
+	dev_info(smu->adev->dev, "  .Fmax = 0x%x\n",
+		pptable->UclkDpmSrcFreqRange.Fmax);
+	dev_info(smu->adev->dev, "UclkDpmTargFreqRange\n");
+	dev_info(smu->adev->dev, "  .Fmin = 0x%x\n",
+		pptable->UclkDpmTargFreqRange.Fmin);
+	dev_info(smu->adev->dev, "  .Fmax = 0x%x\n",
+		pptable->UclkDpmTargFreqRange.Fmax);
+	dev_info(smu->adev->dev, "UclkDpmMidstepFreq = 0x%x\n", pptable->UclkDpmMidstepFreq);
+	dev_info(smu->adev->dev, "UclkMidstepPadding = 0x%x\n", pptable->UclkMidstepPadding);
+
+	dev_info(smu->adev->dev, "PcieGenSpeed\n");
+	for (i = 0; i < NUM_LINK_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->PcieGenSpeed[i]);
+
+	dev_info(smu->adev->dev, "PcieLaneCount\n");
+	for (i = 0; i < NUM_LINK_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->PcieLaneCount[i]);
+
+	dev_info(smu->adev->dev, "LclkFreq\n");
+	for (i = 0; i < NUM_LINK_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->LclkFreq[i]);
+
+	dev_info(smu->adev->dev, "FanStopTemp = 0x%x\n", pptable->FanStopTemp);
+	dev_info(smu->adev->dev, "FanStartTemp = 0x%x\n", pptable->FanStartTemp);
+
+	dev_info(smu->adev->dev, "FanGain\n");
+	for (i = 0; i < TEMP_COUNT; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->FanGain[i]);
+
+	dev_info(smu->adev->dev, "FanPwmMin = 0x%x\n", pptable->FanPwmMin);
+	dev_info(smu->adev->dev, "FanAcousticLimitRpm = 0x%x\n", pptable->FanAcousticLimitRpm);
+	dev_info(smu->adev->dev, "FanThrottlingRpm = 0x%x\n", pptable->FanThrottlingRpm);
+	dev_info(smu->adev->dev, "FanMaximumRpm = 0x%x\n", pptable->FanMaximumRpm);
+	dev_info(smu->adev->dev, "MGpuFanBoostLimitRpm = 0x%x\n", pptable->MGpuFanBoostLimitRpm);
+	dev_info(smu->adev->dev, "FanTargetTemperature = 0x%x\n", pptable->FanTargetTemperature);
+	dev_info(smu->adev->dev, "FanTargetGfxclk = 0x%x\n", pptable->FanTargetGfxclk);
+	dev_info(smu->adev->dev, "FanPadding16 = 0x%x\n", pptable->FanPadding16);
+	dev_info(smu->adev->dev, "FanTempInputSelect = 0x%x\n", pptable->FanTempInputSelect);
+	dev_info(smu->adev->dev, "FanPadding = 0x%x\n", pptable->FanPadding);
+	dev_info(smu->adev->dev, "FanZeroRpmEnable = 0x%x\n", pptable->FanZeroRpmEnable);
+	dev_info(smu->adev->dev, "FanTachEdgePerRev = 0x%x\n", pptable->FanTachEdgePerRev);
+
+	dev_info(smu->adev->dev, "FuzzyFan_ErrorSetDelta = 0x%x\n", pptable->FuzzyFan_ErrorSetDelta);
+	dev_info(smu->adev->dev, "FuzzyFan_ErrorRateSetDelta = 0x%x\n", pptable->FuzzyFan_ErrorRateSetDelta);
+	dev_info(smu->adev->dev, "FuzzyFan_PwmSetDelta = 0x%x\n", pptable->FuzzyFan_PwmSetDelta);
+	dev_info(smu->adev->dev, "FuzzyFan_Reserved = 0x%x\n", pptable->FuzzyFan_Reserved);
+
+	dev_info(smu->adev->dev, "OverrideAvfsGb[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->OverrideAvfsGb[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "OverrideAvfsGb[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->OverrideAvfsGb[AVFS_VOLTAGE_SOC]);
+	dev_info(smu->adev->dev, "dBtcGbGfxDfllModelSelect = 0x%x\n", pptable->dBtcGbGfxDfllModelSelect);
+	dev_info(smu->adev->dev, "Padding8_Avfs = 0x%x\n", pptable->Padding8_Avfs);
+
+	dev_info(smu->adev->dev, "qAvfsGb[AVFS_VOLTAGE_GFX]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qAvfsGb[AVFS_VOLTAGE_GFX].a,
+			pptable->qAvfsGb[AVFS_VOLTAGE_GFX].b,
+			pptable->qAvfsGb[AVFS_VOLTAGE_GFX].c);
+	dev_info(smu->adev->dev, "qAvfsGb[AVFS_VOLTAGE_SOC]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qAvfsGb[AVFS_VOLTAGE_SOC].a,
+			pptable->qAvfsGb[AVFS_VOLTAGE_SOC].b,
+			pptable->qAvfsGb[AVFS_VOLTAGE_SOC].c);
+	dev_info(smu->adev->dev, "dBtcGbGfxPll{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->dBtcGbGfxPll.a,
+			pptable->dBtcGbGfxPll.b,
+			pptable->dBtcGbGfxPll.c);
+	dev_info(smu->adev->dev, "dBtcGbGfxAfll{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->dBtcGbGfxDfll.a,
+			pptable->dBtcGbGfxDfll.b,
+			pptable->dBtcGbGfxDfll.c);
+	dev_info(smu->adev->dev, "dBtcGbSoc{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->dBtcGbSoc.a,
+			pptable->dBtcGbSoc.b,
+			pptable->dBtcGbSoc.c);
+	dev_info(smu->adev->dev, "qAgingGb[AVFS_VOLTAGE_GFX]{m = 0x%x b = 0x%x}\n",
+			pptable->qAgingGb[AVFS_VOLTAGE_GFX].m,
+			pptable->qAgingGb[AVFS_VOLTAGE_GFX].b);
+	dev_info(smu->adev->dev, "qAgingGb[AVFS_VOLTAGE_SOC]{m = 0x%x b = 0x%x}\n",
+			pptable->qAgingGb[AVFS_VOLTAGE_SOC].m,
+			pptable->qAgingGb[AVFS_VOLTAGE_SOC].b);
+
+	dev_info(smu->adev->dev, "PiecewiseLinearDroopIntGfxDfll\n");
+	for (i = 0; i < NUM_PIECE_WISE_LINEAR_DROOP_MODEL_VF_POINTS; i++) {
+		dev_info(smu->adev->dev, "		Fset[%d] = 0x%x\n",
+			i, pptable->PiecewiseLinearDroopIntGfxDfll.Fset[i]);
+		dev_info(smu->adev->dev, "		Vdroop[%d] = 0x%x\n",
+			i, pptable->PiecewiseLinearDroopIntGfxDfll.Vdroop[i]);
+	}
+
+	dev_info(smu->adev->dev, "qStaticVoltageOffset[AVFS_VOLTAGE_GFX]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_GFX].a,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_GFX].b,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_GFX].c);
+	dev_info(smu->adev->dev, "qStaticVoltageOffset[AVFS_VOLTAGE_SOC]{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_SOC].a,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_SOC].b,
+			pptable->qStaticVoltageOffset[AVFS_VOLTAGE_SOC].c);
+
+	dev_info(smu->adev->dev, "DcTol[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcTol[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcTol[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcTol[AVFS_VOLTAGE_SOC]);
+
+	dev_info(smu->adev->dev, "DcBtcEnabled[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcEnabled[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcEnabled[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcEnabled[AVFS_VOLTAGE_SOC]);
+	dev_info(smu->adev->dev, "Padding8_GfxBtc[0] = 0x%x\n", pptable->Padding8_GfxBtc[0]);
+	dev_info(smu->adev->dev, "Padding8_GfxBtc[1] = 0x%x\n", pptable->Padding8_GfxBtc[1]);
+
+	dev_info(smu->adev->dev, "DcBtcMin[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcMin[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcMin[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcMin[AVFS_VOLTAGE_SOC]);
+	dev_info(smu->adev->dev, "DcBtcMax[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcMax[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcMax[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcMax[AVFS_VOLTAGE_SOC]);
+
+	dev_info(smu->adev->dev, "DcBtcGb[AVFS_VOLTAGE_GFX] = 0x%x\n", pptable->DcBtcGb[AVFS_VOLTAGE_GFX]);
+	dev_info(smu->adev->dev, "DcBtcGb[AVFS_VOLTAGE_SOC] = 0x%x\n", pptable->DcBtcGb[AVFS_VOLTAGE_SOC]);
+
+	dev_info(smu->adev->dev, "XgmiDpmPstates\n");
+	for (i = 0; i < NUM_XGMI_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiDpmPstates[i]);
+	dev_info(smu->adev->dev, "XgmiDpmSpare[0] = 0x%02x\n", pptable->XgmiDpmSpare[0]);
+	dev_info(smu->adev->dev, "XgmiDpmSpare[1] = 0x%02x\n", pptable->XgmiDpmSpare[1]);
+
+	dev_info(smu->adev->dev, "DebugOverrides = 0x%x\n", pptable->DebugOverrides);
+	dev_info(smu->adev->dev, "ReservedEquation0{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation0.a,
+			pptable->ReservedEquation0.b,
+			pptable->ReservedEquation0.c);
+	dev_info(smu->adev->dev, "ReservedEquation1{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation1.a,
+			pptable->ReservedEquation1.b,
+			pptable->ReservedEquation1.c);
+	dev_info(smu->adev->dev, "ReservedEquation2{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation2.a,
+			pptable->ReservedEquation2.b,
+			pptable->ReservedEquation2.c);
+	dev_info(smu->adev->dev, "ReservedEquation3{a = 0x%x b = 0x%x c = 0x%x}\n",
+			pptable->ReservedEquation3.a,
+			pptable->ReservedEquation3.b,
+			pptable->ReservedEquation3.c);
+
+	dev_info(smu->adev->dev, "SkuReserved[0] = 0x%x\n", pptable->SkuReserved[0]);
+	dev_info(smu->adev->dev, "SkuReserved[1] = 0x%x\n", pptable->SkuReserved[1]);
+	dev_info(smu->adev->dev, "SkuReserved[2] = 0x%x\n", pptable->SkuReserved[2]);
+	dev_info(smu->adev->dev, "SkuReserved[3] = 0x%x\n", pptable->SkuReserved[3]);
+	dev_info(smu->adev->dev, "SkuReserved[4] = 0x%x\n", pptable->SkuReserved[4]);
+	dev_info(smu->adev->dev, "SkuReserved[5] = 0x%x\n", pptable->SkuReserved[5]);
+	dev_info(smu->adev->dev, "SkuReserved[6] = 0x%x\n", pptable->SkuReserved[6]);
+	dev_info(smu->adev->dev, "SkuReserved[7] = 0x%x\n", pptable->SkuReserved[7]);
+
+	dev_info(smu->adev->dev, "GamingClk[0] = 0x%x\n", pptable->GamingClk[0]);
+	dev_info(smu->adev->dev, "GamingClk[1] = 0x%x\n", pptable->GamingClk[1]);
+	dev_info(smu->adev->dev, "GamingClk[2] = 0x%x\n", pptable->GamingClk[2]);
+	dev_info(smu->adev->dev, "GamingClk[3] = 0x%x\n", pptable->GamingClk[3]);
+	dev_info(smu->adev->dev, "GamingClk[4] = 0x%x\n", pptable->GamingClk[4]);
+	dev_info(smu->adev->dev, "GamingClk[5] = 0x%x\n", pptable->GamingClk[5]);
+
+	for (i = 0; i < NUM_I2C_CONTROLLERS; i++) {
+		dev_info(smu->adev->dev, "I2cControllers[%d]:\n", i);
+		dev_info(smu->adev->dev, "                   .Enabled = 0x%x\n",
+				pptable->I2cControllers[i].Enabled);
+		dev_info(smu->adev->dev, "                   .Speed = 0x%x\n",
+				pptable->I2cControllers[i].Speed);
+		dev_info(smu->adev->dev, "                   .SlaveAddress = 0x%x\n",
+				pptable->I2cControllers[i].SlaveAddress);
+		dev_info(smu->adev->dev, "                   .ControllerPort = 0x%x\n",
+				pptable->I2cControllers[i].ControllerPort);
+		dev_info(smu->adev->dev, "                   .ControllerName = 0x%x\n",
+				pptable->I2cControllers[i].ControllerName);
+		dev_info(smu->adev->dev, "                   .ThermalThrottler = 0x%x\n",
+				pptable->I2cControllers[i].ThermalThrotter);
+		dev_info(smu->adev->dev, "                   .I2cProtocol = 0x%x\n",
+				pptable->I2cControllers[i].I2cProtocol);
+		dev_info(smu->adev->dev, "                   .PaddingConfig = 0x%x\n",
+				pptable->I2cControllers[i].PaddingConfig);
+	}
+
+	dev_info(smu->adev->dev, "GpioScl = 0x%x\n", pptable->GpioScl);
+	dev_info(smu->adev->dev, "GpioSda = 0x%x\n", pptable->GpioSda);
+	dev_info(smu->adev->dev, "FchUsbPdSlaveAddr = 0x%x\n", pptable->FchUsbPdSlaveAddr);
+	dev_info(smu->adev->dev, "I2cSpare[0] = 0x%x\n", pptable->I2cSpare[0]);
+
+	dev_info(smu->adev->dev, "Board Parameters:\n");
+	dev_info(smu->adev->dev, "VddGfxVrMapping = 0x%x\n", pptable->VddGfxVrMapping);
+	dev_info(smu->adev->dev, "VddSocVrMapping = 0x%x\n", pptable->VddSocVrMapping);
+	dev_info(smu->adev->dev, "VddMem0VrMapping = 0x%x\n", pptable->VddMem0VrMapping);
+	dev_info(smu->adev->dev, "VddMem1VrMapping = 0x%x\n", pptable->VddMem1VrMapping);
+	dev_info(smu->adev->dev, "GfxUlvPhaseSheddingMask = 0x%x\n", pptable->GfxUlvPhaseSheddingMask);
+	dev_info(smu->adev->dev, "SocUlvPhaseSheddingMask = 0x%x\n", pptable->SocUlvPhaseSheddingMask);
+	dev_info(smu->adev->dev, "VddciUlvPhaseSheddingMask = 0x%x\n", pptable->VddciUlvPhaseSheddingMask);
+	dev_info(smu->adev->dev, "MvddUlvPhaseSheddingMask = 0x%x\n", pptable->MvddUlvPhaseSheddingMask);
+
+	dev_info(smu->adev->dev, "GfxMaxCurrent = 0x%x\n", pptable->GfxMaxCurrent);
+	dev_info(smu->adev->dev, "GfxOffset = 0x%x\n", pptable->GfxOffset);
+	dev_info(smu->adev->dev, "Padding_TelemetryGfx = 0x%x\n", pptable->Padding_TelemetryGfx);
+
+	dev_info(smu->adev->dev, "SocMaxCurrent = 0x%x\n", pptable->SocMaxCurrent);
+	dev_info(smu->adev->dev, "SocOffset = 0x%x\n", pptable->SocOffset);
+	dev_info(smu->adev->dev, "Padding_TelemetrySoc = 0x%x\n", pptable->Padding_TelemetrySoc);
+
+	dev_info(smu->adev->dev, "Mem0MaxCurrent = 0x%x\n", pptable->Mem0MaxCurrent);
+	dev_info(smu->adev->dev, "Mem0Offset = 0x%x\n", pptable->Mem0Offset);
+	dev_info(smu->adev->dev, "Padding_TelemetryMem0 = 0x%x\n", pptable->Padding_TelemetryMem0);
+
+	dev_info(smu->adev->dev, "Mem1MaxCurrent = 0x%x\n", pptable->Mem1MaxCurrent);
+	dev_info(smu->adev->dev, "Mem1Offset = 0x%x\n", pptable->Mem1Offset);
+	dev_info(smu->adev->dev, "Padding_TelemetryMem1 = 0x%x\n", pptable->Padding_TelemetryMem1);
+
+	dev_info(smu->adev->dev, "MvddRatio = 0x%x\n", pptable->MvddRatio);
+
+	dev_info(smu->adev->dev, "AcDcGpio = 0x%x\n", pptable->AcDcGpio);
+	dev_info(smu->adev->dev, "AcDcPolarity = 0x%x\n", pptable->AcDcPolarity);
+	dev_info(smu->adev->dev, "VR0HotGpio = 0x%x\n", pptable->VR0HotGpio);
+	dev_info(smu->adev->dev, "VR0HotPolarity = 0x%x\n", pptable->VR0HotPolarity);
+	dev_info(smu->adev->dev, "VR1HotGpio = 0x%x\n", pptable->VR1HotGpio);
+	dev_info(smu->adev->dev, "VR1HotPolarity = 0x%x\n", pptable->VR1HotPolarity);
+	dev_info(smu->adev->dev, "GthrGpio = 0x%x\n", pptable->GthrGpio);
+	dev_info(smu->adev->dev, "GthrPolarity = 0x%x\n", pptable->GthrPolarity);
+	dev_info(smu->adev->dev, "LedPin0 = 0x%x\n", pptable->LedPin0);
+	dev_info(smu->adev->dev, "LedPin1 = 0x%x\n", pptable->LedPin1);
+	dev_info(smu->adev->dev, "LedPin2 = 0x%x\n", pptable->LedPin2);
+	dev_info(smu->adev->dev, "LedEnableMask = 0x%x\n", pptable->LedEnableMask);
+	dev_info(smu->adev->dev, "LedPcie = 0x%x\n", pptable->LedPcie);
+	dev_info(smu->adev->dev, "LedError = 0x%x\n", pptable->LedError);
+	dev_info(smu->adev->dev, "LedSpare1[0] = 0x%x\n", pptable->LedSpare1[0]);
+	dev_info(smu->adev->dev, "LedSpare1[1] = 0x%x\n", pptable->LedSpare1[1]);
+
+	dev_info(smu->adev->dev, "PllGfxclkSpreadEnabled = 0x%x\n", pptable->PllGfxclkSpreadEnabled);
+	dev_info(smu->adev->dev, "PllGfxclkSpreadPercent = 0x%x\n", pptable->PllGfxclkSpreadPercent);
+	dev_info(smu->adev->dev, "PllGfxclkSpreadFreq = 0x%x\n",    pptable->PllGfxclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "DfllGfxclkSpreadEnabled = 0x%x\n", pptable->DfllGfxclkSpreadEnabled);
+	dev_info(smu->adev->dev, "DfllGfxclkSpreadPercent = 0x%x\n", pptable->DfllGfxclkSpreadPercent);
+	dev_info(smu->adev->dev, "DfllGfxclkSpreadFreq = 0x%x\n",    pptable->DfllGfxclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "UclkSpreadPadding = 0x%x\n", pptable->UclkSpreadPadding);
+	dev_info(smu->adev->dev, "UclkSpreadFreq = 0x%x\n", pptable->UclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "FclkSpreadEnabled = 0x%x\n", pptable->FclkSpreadEnabled);
+	dev_info(smu->adev->dev, "FclkSpreadPercent = 0x%x\n", pptable->FclkSpreadPercent);
+	dev_info(smu->adev->dev, "FclkSpreadFreq = 0x%x\n", pptable->FclkSpreadFreq);
+
+	dev_info(smu->adev->dev, "MemoryChannelEnabled = 0x%x\n", pptable->MemoryChannelEnabled);
+	dev_info(smu->adev->dev, "DramBitWidth = 0x%x\n", pptable->DramBitWidth);
+	dev_info(smu->adev->dev, "PaddingMem1[0] = 0x%x\n", pptable->PaddingMem1[0]);
+	dev_info(smu->adev->dev, "PaddingMem1[1] = 0x%x\n", pptable->PaddingMem1[1]);
+	dev_info(smu->adev->dev, "PaddingMem1[2] = 0x%x\n", pptable->PaddingMem1[2]);
+
+	dev_info(smu->adev->dev, "TotalBoardPower = 0x%x\n", pptable->TotalBoardPower);
+	dev_info(smu->adev->dev, "BoardPowerPadding = 0x%x\n", pptable->BoardPowerPadding);
+
+	dev_info(smu->adev->dev, "XgmiLinkSpeed\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiLinkSpeed[i]);
+	dev_info(smu->adev->dev, "XgmiLinkWidth\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiLinkWidth[i]);
+	dev_info(smu->adev->dev, "XgmiFclkFreq\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiFclkFreq[i]);
+	dev_info(smu->adev->dev, "XgmiSocVoltage\n");
+	for (i = 0; i < NUM_XGMI_PSTATE_LEVELS; i++)
+		dev_info(smu->adev->dev, "  .[%d] = 0x%x\n", i, pptable->XgmiSocVoltage[i]);
+
+	dev_info(smu->adev->dev, "HsrEnabled = 0x%x\n", pptable->HsrEnabled);
+	dev_info(smu->adev->dev, "VddqOffEnabled = 0x%x\n", pptable->VddqOffEnabled);
+	dev_info(smu->adev->dev, "PaddingUmcFlags[0] = 0x%x\n", pptable->PaddingUmcFlags[0]);
+	dev_info(smu->adev->dev, "PaddingUmcFlags[1] = 0x%x\n", pptable->PaddingUmcFlags[1]);
+
+	dev_info(smu->adev->dev, "BoardReserved[0] = 0x%x\n", pptable->BoardReserved[0]);
+	dev_info(smu->adev->dev, "BoardReserved[1] = 0x%x\n", pptable->BoardReserved[1]);
+	dev_info(smu->adev->dev, "BoardReserved[2] = 0x%x\n", pptable->BoardReserved[2]);
+	dev_info(smu->adev->dev, "BoardReserved[3] = 0x%x\n", pptable->BoardReserved[3]);
+	dev_info(smu->adev->dev, "BoardReserved[4] = 0x%x\n", pptable->BoardReserved[4]);
+	dev_info(smu->adev->dev, "BoardReserved[5] = 0x%x\n", pptable->BoardReserved[5]);
+	dev_info(smu->adev->dev, "BoardReserved[6] = 0x%x\n", pptable->BoardReserved[6]);
+	dev_info(smu->adev->dev, "BoardReserved[7] = 0x%x\n", pptable->BoardReserved[7]);
+	dev_info(smu->adev->dev, "BoardReserved[8] = 0x%x\n", pptable->BoardReserved[8]);
+	dev_info(smu->adev->dev, "BoardReserved[9] = 0x%x\n", pptable->BoardReserved[9]);
+	dev_info(smu->adev->dev, "BoardReserved[10] = 0x%x\n", pptable->BoardReserved[10]);
+
+	dev_info(smu->adev->dev, "MmHubPadding[0] = 0x%x\n", pptable->MmHubPadding[0]);
+	dev_info(smu->adev->dev, "MmHubPadding[1] = 0x%x\n", pptable->MmHubPadding[1]);
+	dev_info(smu->adev->dev, "MmHubPadding[2] = 0x%x\n", pptable->MmHubPadding[2]);
+	dev_info(smu->adev->dev, "MmHubPadding[3] = 0x%x\n", pptable->MmHubPadding[3]);
+	dev_info(smu->adev->dev, "MmHubPadding[4] = 0x%x\n", pptable->MmHubPadding[4]);
+	dev_info(smu->adev->dev, "MmHubPadding[5] = 0x%x\n", pptable->MmHubPadding[5]);
+	dev_info(smu->adev->dev, "MmHubPadding[6] = 0x%x\n", pptable->MmHubPadding[6]);
+	dev_info(smu->adev->dev, "MmHubPadding[7] = 0x%x\n", pptable->MmHubPadding[7]);
 }
 
 static int sienna_cichlid_i2c_xfer(struct i2c_adapter *i2c_adap,
@@ -2546,6 +3776,7 @@ static int sienna_cichlid_i2c_xfer(struct i2c_adapter *i2c_adap,
 	}
 	mutex_lock(&adev->pm.mutex);
 	r = smu_cmn_update_table(smu, SMU_TABLE_I2C_COMMANDS, 0, req, true);
+	mutex_unlock(&adev->pm.mutex);
 	if (r)
 		goto fail;
 
@@ -2562,7 +3793,6 @@ static int sienna_cichlid_i2c_xfer(struct i2c_adapter *i2c_adap,
 	}
 	r = num_msgs;
 fail:
-	mutex_unlock(&adev->pm.mutex);
 	kfree(req);
 	return r;
 }
@@ -2606,10 +3836,10 @@ static int sienna_cichlid_i2c_control_init(struct smu_context *smu)
 		control->quirks = &sienna_cichlid_i2c_control_quirks;
 		i2c_set_adapdata(control, smu_i2c);
 
-		res = devm_i2c_add_adapter(adev->dev, control);
+		res = i2c_add_adapter(control);
 		if (res) {
 			DRM_ERROR("Failed to register hw i2c, err: %d\n", res);
-			return res;
+			goto Out_err;
 		}
 	}
 	/* assign the buses used for the FRU EEPROM and RAS EEPROM */
@@ -2618,12 +3848,27 @@ static int sienna_cichlid_i2c_control_init(struct smu_context *smu)
 	adev->pm.fru_eeprom_i2c_bus = &adev->pm.smu_i2c[0].adapter;
 
 	return 0;
+Out_err:
+	for ( ; i >= 0; i--) {
+		struct amdgpu_smu_i2c_bus *smu_i2c = &adev->pm.smu_i2c[i];
+		struct i2c_adapter *control = &smu_i2c->adapter;
+
+		i2c_del_adapter(control);
+	}
+	return res;
 }
 
 static void sienna_cichlid_i2c_control_fini(struct smu_context *smu)
 {
 	struct amdgpu_device *adev = smu->adev;
+	int i;
 
+	for (i = 0; i < MAX_SMU_I2C_BUSES; i++) {
+		struct amdgpu_smu_i2c_bus *smu_i2c = &adev->pm.smu_i2c[i];
+		struct i2c_adapter *control = &smu_i2c->adapter;
+
+		i2c_del_adapter(control);
+	}
 	adev->pm.ras_eeprom_i2c_bus = NULL;
 	adev->pm.fru_eeprom_i2c_bus = NULL;
 }
@@ -2631,9 +3876,9 @@ static void sienna_cichlid_i2c_control_fini(struct smu_context *smu)
 static ssize_t sienna_cichlid_get_gpu_metrics(struct smu_context *smu,
 					      void **table)
 {
+	struct smu_table_context *smu_table = &smu->smu_table;
 	struct gpu_metrics_v1_3 *gpu_metrics =
-		(struct gpu_metrics_v1_3 *)smu_driver_table_ptr(
-			smu, SMU_DRIVER_TABLE_GPU_METRICS);
+		(struct gpu_metrics_v1_3 *)smu_table->gpu_metrics_table;
 	SmuMetricsExternal_t metrics_external;
 	SmuMetrics_t *metrics =
 		&(metrics_external.SmuMetrics);
@@ -2647,7 +3892,7 @@ static ssize_t sienna_cichlid_get_gpu_metrics(struct smu_context *smu,
 	uint16_t average_gfx_activity;
 	int ret = 0;
 
-	switch (amdgpu_ip_version(smu->adev, MP1_HWIP, 0)) {
+	switch (smu->adev->ip_versions[MP1_HWIP][0]) {
 	case IP_VERSION(11, 0, 7):
 		if (smu->smc_fw_version >= 0x3A4900)
 			use_metrics_v3 = true;
@@ -2755,7 +4000,7 @@ static ssize_t sienna_cichlid_get_gpu_metrics(struct smu_context *smu,
 	gpu_metrics->current_dclk1 = use_metrics_v3 ? metrics_v3->CurrClock[PPCLK_DCLK_1] :
 		use_metrics_v2 ? metrics_v2->CurrClock[PPCLK_DCLK_1] : metrics->CurrClock[PPCLK_DCLK_1];
 
-	gpu_metrics->throttle_status = sienna_cichlid_get_throttler_status_locked(smu, use_metrics_v3, use_metrics_v2);
+	gpu_metrics->throttle_status = sienna_cichlid_get_throttler_status_locked(smu);
 	gpu_metrics->indep_throttle_status =
 			smu_cmn_get_indep_throttler_status(gpu_metrics->throttle_status,
 							   sienna_cichlid_throttler_map);
@@ -2763,10 +4008,8 @@ static ssize_t sienna_cichlid_get_gpu_metrics(struct smu_context *smu,
 	gpu_metrics->current_fan_speed = use_metrics_v3 ? metrics_v3->CurrFanSpeed :
 		use_metrics_v2 ? metrics_v2->CurrFanSpeed : metrics->CurrFanSpeed;
 
-	if (((amdgpu_ip_version(adev, MP1_HWIP, 0) == IP_VERSION(11, 0, 7)) &&
-	     smu->smc_fw_version > 0x003A1E00) ||
-	    ((amdgpu_ip_version(adev, MP1_HWIP, 0) == IP_VERSION(11, 0, 11)) &&
-	     smu->smc_fw_version > 0x00410400)) {
+	if (((adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 7)) && smu->smc_fw_version > 0x003A1E00) ||
+	      ((adev->ip_versions[MP1_HWIP][0] == IP_VERSION(11, 0, 11)) && smu->smc_fw_version > 0x00410400)) {
 		gpu_metrics->pcie_link_width = use_metrics_v3 ? metrics_v3->PcieWidth :
 			use_metrics_v2 ? metrics_v2->PcieWidth : metrics->PcieWidth;
 		gpu_metrics->pcie_link_speed = link_speed[use_metrics_v3 ? metrics_v3->PcieRate :
@@ -2782,16 +4025,19 @@ static ssize_t sienna_cichlid_get_gpu_metrics(struct smu_context *smu,
 
 	*table = (void *)gpu_metrics;
 
-	smu_driver_table_update_cache_time(smu, SMU_DRIVER_TABLE_GPU_METRICS);
-
 	return sizeof(struct gpu_metrics_v1_3);
 }
 
 static int sienna_cichlid_check_ecc_table_support(struct smu_context *smu)
 {
+	uint32_t if_version = 0xff, smu_version = 0xff;
 	int ret = 0;
 
-	if (smu->smc_fw_version < SUPPORT_ECCTABLE_SMU_VERSION)
+	ret = smu_cmn_get_smc_version(smu, &if_version, &smu_version);
+	if (ret)
+		return -EOPNOTSUPP;
+
+	if (smu_version < SUPPORT_ECCTABLE_SMU_VERSION)
 		ret = -EOPNOTSUPP;
 
 	return ret;
@@ -2857,13 +4103,17 @@ static int sienna_cichlid_enable_mgpu_fan_boost(struct smu_context *smu)
 static int sienna_cichlid_gpo_control(struct smu_context *smu,
 				      bool enablement)
 {
+	uint32_t smu_version;
 	int ret = 0;
 
 
 	if (smu_cmn_feature_is_enabled(smu, SMU_FEATURE_DPM_GFX_GPO_BIT)) {
+		ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
+		if (ret)
+			return ret;
 
 		if (enablement) {
-			if (smu->smc_fw_version < 0x003a2500) {
+			if (smu_version < 0x003a2500) {
 				ret = smu_cmn_send_smc_msg_with_param(smu,
 								      SMU_MSG_SetGpoFeaturePMask,
 								      GFX_GPO_PACE_MASK | GFX_GPO_DEM_MASK,
@@ -2875,7 +4125,7 @@ static int sienna_cichlid_gpo_control(struct smu_context *smu,
 								      NULL);
 			}
 		} else {
-			if (smu->smc_fw_version < 0x003a2500) {
+			if (smu_version < 0x003a2500) {
 				ret = smu_cmn_send_smc_msg_with_param(smu,
 								      SMU_MSG_SetGpoFeaturePMask,
 								      0,
@@ -2894,11 +4144,18 @@ static int sienna_cichlid_gpo_control(struct smu_context *smu,
 
 static int sienna_cichlid_notify_2nd_usb20_port(struct smu_context *smu)
 {
+	uint32_t smu_version;
+	int ret = 0;
+
+	ret = smu_cmn_get_smc_version(smu, NULL, &smu_version);
+	if (ret)
+		return ret;
+
 	/*
 	 * Message SMU_MSG_Enable2ndUSB20Port is supported by 58.45
 	 * onwards PMFWs.
 	 */
-	if (smu->smc_fw_version < 0x003A2D00)
+	if (smu_version < 0x003A2D00)
 		return 0;
 
 	return smu_cmn_send_smc_msg_with_param(smu,
@@ -2978,7 +4235,7 @@ static int sienna_cichlid_get_default_config_table_settings(struct smu_context *
 	table->gfx_activity_average_tau = 10;
 	table->mem_activity_average_tau = 10;
 	table->socket_power_average_tau = 100;
-	if (amdgpu_ip_version(adev, MP1_HWIP, 0) != IP_VERSION(11, 0, 7))
+	if (adev->ip_versions[MP1_HWIP][0] != IP_VERSION(11, 0, 7))
 		table->apu_socket_power_average_tau = 100;
 
 	return 0;
@@ -3038,23 +4295,31 @@ static int sienna_cichlid_stb_get_data_direct(struct smu_context *smu,
 	return 0;
 }
 
+static bool sienna_cichlid_is_mode2_reset_supported(struct smu_context *smu)
+{
+	return true;
+}
+
 static int sienna_cichlid_mode2_reset(struct smu_context *smu)
 {
-	struct smu_msg_ctl *ctl = &smu->msg_ctl;
+	u32 smu_version;
+	int ret = 0, index;
 	struct amdgpu_device *adev = smu->adev;
-	int ret = 0;
 	int timeout = 100;
 
-	mutex_lock(&ctl->lock);
+	smu_cmn_get_smc_version(smu, NULL, &smu_version);
 
-	ret = smu_msg_send_async_locked(ctl, SMU_MSG_DriverMode2Reset,
-					SMU_RESET_MODE_2);
-	if (ret)
-		goto out;
+	index = smu_cmn_to_asic_specific_index(smu, CMN2ASIC_MAPPING_MSG,
+						SMU_MSG_DriverMode2Reset);
 
-	ret = smu_msg_wait_response(ctl, 0);
+	mutex_lock(&smu->message_lock);
+
+	ret = smu_cmn_send_msg_without_waiting(smu, (uint16_t)index,
+					       SMU_RESET_MODE_2);
+
+	ret = smu_cmn_wait_for_response(smu);
 	while (ret != 0 && timeout) {
-		ret = smu_msg_wait_response(ctl, 0);
+		ret = smu_cmn_wait_for_response(smu);
 		/* Wait a bit more time for getting ACK */
 		if (ret != 0) {
 			--timeout;
@@ -3072,23 +4337,23 @@ static int sienna_cichlid_mode2_reset(struct smu_context *smu)
 		goto out;
 	}
 
-	dev_info(adev->dev, "restore config space...\n");
+	dev_info(smu->adev->dev, "restore config space...\n");
 	/* Restore the config space saved during init */
 	amdgpu_device_load_pci_state(adev->pdev);
 out:
-	mutex_unlock(&ctl->lock);
+	mutex_unlock(&smu->message_lock);
 
 	return ret;
 }
 
 static const struct pptable_funcs sienna_cichlid_ppt_funcs = {
-	.init_allowed_features = sienna_cichlid_init_allowed_features,
+	.get_allowed_feature_mask = sienna_cichlid_get_allowed_feature_mask,
 	.set_default_dpm_table = sienna_cichlid_set_default_dpm_table,
 	.dpm_set_vcn_enable = sienna_cichlid_dpm_set_vcn_enable,
 	.dpm_set_jpeg_enable = sienna_cichlid_dpm_set_jpeg_enable,
 	.i2c_init = sienna_cichlid_i2c_control_init,
 	.i2c_fini = sienna_cichlid_i2c_control_fini,
-	.emit_clk_levels = sienna_cichlid_emit_clk_levels,
+	.print_clk_levels = sienna_cichlid_print_clk_levels,
 	.force_clk_levels = sienna_cichlid_force_clk_levels,
 	.populate_umd_state_clk = sienna_cichlid_populate_umd_state_clk,
 	.pre_display_config_changed = sienna_cichlid_pre_display_config_changed,
@@ -3107,6 +4372,7 @@ static const struct pptable_funcs sienna_cichlid_ppt_funcs = {
 	.display_disable_memory_clock_switch = sienna_cichlid_display_disable_memory_clock_switch,
 	.get_power_limit = sienna_cichlid_get_power_limit,
 	.update_pcie_parameters = sienna_cichlid_update_pcie_parameters,
+	.dump_pptable = sienna_cichlid_dump_pptable,
 	.init_microcode = smu_v11_0_init_microcode,
 	.load_microcode = smu_v11_0_load_microcode,
 	.fini_microcode = smu_v11_0_fini_microcode,
@@ -3123,6 +4389,8 @@ static const struct pptable_funcs sienna_cichlid_ppt_funcs = {
 	.set_tool_table_location = smu_v11_0_set_tool_table_location,
 	.notify_memory_pool_location = smu_v11_0_notify_memory_pool_location,
 	.system_features_control = sienna_cichlid_system_features_control,
+	.send_smc_msg_with_param = smu_cmn_send_smc_msg_with_param,
+	.send_smc_msg = smu_cmn_send_smc_msg,
 	.init_display_count = NULL,
 	.set_allowed_mask = smu_v11_0_set_allowed_mask,
 	.get_enabled_mask = smu_cmn_get_enabled_mask,
@@ -3144,7 +4412,9 @@ static const struct pptable_funcs sienna_cichlid_ppt_funcs = {
 	.register_irq_handler = smu_v11_0_register_irq_handler,
 	.set_azalia_d3_pme = smu_v11_0_set_azalia_d3_pme,
 	.get_max_sustainable_clocks_by_dc = smu_v11_0_get_max_sustainable_clocks_by_dc,
-	.get_bamaco_support = smu_v11_0_get_bamaco_support,
+	.baco_is_support = smu_v11_0_baco_is_support,
+	.baco_get_state = smu_v11_0_baco_get_state,
+	.baco_set_state = smu_v11_0_baco_set_state,
 	.baco_enter = sienna_cichlid_baco_enter,
 	.baco_exit = sienna_cichlid_baco_exit,
 	.mode1_reset_is_support = sienna_cichlid_is_mode1_reset_supported,
@@ -3171,16 +4441,18 @@ static const struct pptable_funcs sienna_cichlid_ppt_funcs = {
 	.get_default_config_table_settings = sienna_cichlid_get_default_config_table_settings,
 	.set_config_table = sienna_cichlid_set_config_table,
 	.get_unique_id = sienna_cichlid_get_unique_id,
+	.mode2_reset_is_support = sienna_cichlid_is_mode2_reset_supported,
 	.mode2_reset = sienna_cichlid_mode2_reset,
 };
 
 void sienna_cichlid_set_ppt_funcs(struct smu_context *smu)
 {
 	smu->ppt_funcs = &sienna_cichlid_ppt_funcs;
+	smu->message_map = sienna_cichlid_message_map;
 	smu->clock_map = sienna_cichlid_clk_map;
 	smu->feature_map = sienna_cichlid_feature_mask_map;
 	smu->table_map = sienna_cichlid_table_map;
 	smu->pwr_src_map = sienna_cichlid_pwr_src_map;
 	smu->workload_map = sienna_cichlid_workload_map;
-	smu_v11_0_init_msg_ctl(smu, sienna_cichlid_message_map);
+	smu_v11_0_set_smu_mailbox_registers(smu);
 }

@@ -8,7 +8,6 @@
 #include <linux/bits.h>
 #include <linux/err.h>
 #include <linux/gpio/driver.h>
-#include <linux/gpio/generic.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -19,8 +18,8 @@
 #define MMIO_74XX_BIT_CNT(x)	((x) & GENMASK(7, 0))
 
 struct mmio_74xx_gpio_priv {
-	struct gpio_generic_chip gen_gc;
-	unsigned int flags;
+	struct gpio_chip	gc;
+	unsigned		flags;
 };
 
 static const struct of_device_id mmio_74xx_gpio_ids[] = {
@@ -100,15 +99,16 @@ static int mmio_74xx_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	struct mmio_74xx_gpio_priv *priv = gpiochip_get_data(gc);
 
-	if (priv->flags & MMIO_74XX_DIR_OUT)
-		return gpio_generic_chip_set(&priv->gen_gc, gpio, val);
+	if (priv->flags & MMIO_74XX_DIR_OUT) {
+		gc->set(gc, gpio, val);
+		return 0;
+	}
 
 	return -ENOTSUPP;
 }
 
 static int mmio_74xx_gpio_probe(struct platform_device *pdev)
 {
-	struct gpio_generic_chip_config config = { };
 	struct mmio_74xx_gpio_priv *priv;
 	void __iomem *dat;
 	int err;
@@ -123,21 +123,21 @@ static int mmio_74xx_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(dat))
 		return PTR_ERR(dat);
 
-	config.dev = &pdev->dev;
-	config.sz = DIV_ROUND_UP(MMIO_74XX_BIT_CNT(priv->flags), 8);
-	config.dat = dat;
-
-	err = gpio_generic_chip_init(&priv->gen_gc, &config);
+	err = bgpio_init(&priv->gc, &pdev->dev,
+			 DIV_ROUND_UP(MMIO_74XX_BIT_CNT(priv->flags), 8),
+			 dat, NULL, NULL, NULL, NULL, 0);
 	if (err)
 		return err;
 
-	priv->gen_gc.gc.direction_input = mmio_74xx_dir_in;
-	priv->gen_gc.gc.direction_output = mmio_74xx_dir_out;
-	priv->gen_gc.gc.get_direction = mmio_74xx_get_direction;
-	priv->gen_gc.gc.ngpio = MMIO_74XX_BIT_CNT(priv->flags);
-	priv->gen_gc.gc.owner = THIS_MODULE;
+	priv->gc.direction_input = mmio_74xx_dir_in;
+	priv->gc.direction_output = mmio_74xx_dir_out;
+	priv->gc.get_direction = mmio_74xx_get_direction;
+	priv->gc.ngpio = MMIO_74XX_BIT_CNT(priv->flags);
+	priv->gc.owner = THIS_MODULE;
 
-	return devm_gpiochip_add_data(&pdev->dev, &priv->gen_gc.gc, priv);
+	platform_set_drvdata(pdev, priv);
+
+	return devm_gpiochip_add_data(&pdev->dev, &priv->gc, priv);
 }
 
 static struct platform_driver mmio_74xx_gpio_driver = {

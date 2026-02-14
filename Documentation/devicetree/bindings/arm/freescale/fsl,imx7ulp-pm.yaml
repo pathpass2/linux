@@ -28,14 +28,6 @@ properties:
   reg:
     maxItems: 1
 
-  clocks:
-    maxItems: 2
-
-  clock-names:
-    items:
-      - const: divcore
-      - const: hsrun_divcore
-
 required:
   - compatible
   - reg

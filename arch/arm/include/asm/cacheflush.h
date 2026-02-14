@@ -231,15 +231,14 @@ vivt_flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned
 					vma->vm_flags);
 }
 
-static inline void vivt_flush_cache_pages(struct vm_area_struct *vma,
-		unsigned long user_addr, unsigned long pfn, unsigned int nr)
+static inline void
+vivt_flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr, unsigned long pfn)
 {
 	struct mm_struct *mm = vma->vm_mm;
 
 	if (!mm || cpumask_test_cpu(smp_processor_id(), mm_cpumask(mm))) {
 		unsigned long addr = user_addr & PAGE_MASK;
-		__cpuc_flush_user_range(addr, addr + nr * PAGE_SIZE,
-				vma->vm_flags);
+		__cpuc_flush_user_range(addr, addr + PAGE_SIZE, vma->vm_flags);
 	}
 }
 
@@ -248,17 +247,15 @@ static inline void vivt_flush_cache_pages(struct vm_area_struct *vma,
 		vivt_flush_cache_mm(mm)
 #define flush_cache_range(vma,start,end) \
 		vivt_flush_cache_range(vma,start,end)
-#define flush_cache_pages(vma, addr, pfn, nr) \
-		vivt_flush_cache_pages(vma, addr, pfn, nr)
+#define flush_cache_page(vma,addr,pfn) \
+		vivt_flush_cache_page(vma,addr,pfn)
 #else
-void flush_cache_mm(struct mm_struct *mm);
-void flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned long end);
-void flush_cache_pages(struct vm_area_struct *vma, unsigned long user_addr,
-		unsigned long pfn, unsigned int nr);
+extern void flush_cache_mm(struct mm_struct *mm);
+extern void flush_cache_range(struct vm_area_struct *vma, unsigned long start, unsigned long end);
+extern void flush_cache_page(struct vm_area_struct *vma, unsigned long user_addr, unsigned long pfn);
 #endif
 
 #define flush_cache_dup_mm(mm) flush_cache_mm(mm)
-#define flush_cache_page(vma, addr, pfn) flush_cache_pages(vma, addr, pfn, 1)
 
 /*
  * flush_icache_user_range is used when we want to ensure that the
@@ -283,7 +280,7 @@ void flush_cache_pages(struct vm_area_struct *vma, unsigned long user_addr,
  * flush_dcache_page is used when the kernel has written to the page
  * cache page at virtual address page->virtual.
  *
- * If this page isn't mapped (ie, folio_mapping == NULL), or it might
+ * If this page isn't mapped (ie, page_mapping == NULL), or it might
  * have userspace mappings, then we _must_ always clean + invalidate
  * the dcache entries associated with the kernel mapping.
  *
@@ -292,9 +289,7 @@ void flush_cache_pages(struct vm_area_struct *vma, unsigned long user_addr,
  * See update_mmu_cache for the user space part.
  */
 #define ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE 1
-void flush_dcache_page(struct page *);
-void flush_dcache_folio(struct folio *folio);
-#define flush_dcache_folio flush_dcache_folio
+extern void flush_dcache_page(struct page *);
 
 #define ARCH_IMPLEMENTS_FLUSH_KERNEL_VMAP_RANGE 1
 static inline void flush_kernel_vmap_range(void *addr, int size)
@@ -322,6 +317,12 @@ static inline void flush_anon_page(struct vm_area_struct *vma,
 #define flush_dcache_mmap_unlock(mapping)	xa_unlock_irq(&mapping->i_pages)
 
 /*
+ * We don't appear to need to do anything here.  In fact, if we did, we'd
+ * duplicate cache flushing elsewhere performed by flush_dcache_page().
+ */
+#define flush_icache_page(vma,page)	do { } while (0)
+
+/*
  * flush_cache_vmap() is used when creating mappings (eg, via vmap,
  * vmalloc, ioremap etc) in kernel space for pages.  On non-VIPT
  * caches, since the direct-mappings of these pages may contain cached
@@ -339,8 +340,6 @@ static inline void flush_cache_vmap(unsigned long start, unsigned long end)
 		 */
 		dsb(ishst);
 }
-
-#define flush_cache_vmap_early(start, end)	do { } while (0)
 
 static inline void flush_cache_vunmap(unsigned long start, unsigned long end)
 {

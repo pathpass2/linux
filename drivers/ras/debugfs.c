@@ -3,15 +3,9 @@
 #include <linux/ras.h>
 #include "debugfs.h"
 
-static struct dentry *ras_debugfs_dir;
+struct dentry *ras_debugfs_dir;
 
 static atomic_t trace_count = ATOMIC_INIT(0);
-
-struct dentry *ras_get_debugfs_root(void)
-{
-	return ras_debugfs_dir;
-}
-EXPORT_SYMBOL_GPL(ras_get_debugfs_root);
 
 int ras_userspace_consumers(void)
 {
@@ -52,7 +46,7 @@ int __init ras_add_daemon_trace(void)
 
 	fentry = debugfs_create_file("daemon_active", S_IRUSR, ras_debugfs_dir,
 				     NULL, &trace_fops);
-	if (IS_ERR(fentry))
+	if (!fentry)
 		return -ENODEV;
 
 	return 0;

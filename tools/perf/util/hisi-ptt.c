@@ -35,6 +35,11 @@ struct hisi_ptt {
 	u32 pmu_type;
 };
 
+struct hisi_ptt_queue {
+	struct hisi_ptt *ptt;
+	struct auxtrace_buffer *buffer;
+};
+
 static enum hisi_ptt_pkt_type hisi_ptt_check_packet_type(unsigned char *buf)
 {
 	uint32_t head = *(uint32_t *)buf;
@@ -79,14 +84,14 @@ static void hisi_ptt_dump_event(struct hisi_ptt *ptt, unsigned char *buf,
 static int hisi_ptt_process_event(struct perf_session *session __maybe_unused,
 				  union perf_event *event __maybe_unused,
 				  struct perf_sample *sample __maybe_unused,
-				  const struct perf_tool *tool __maybe_unused)
+				  struct perf_tool *tool __maybe_unused)
 {
 	return 0;
 }
 
 static int hisi_ptt_process_auxtrace_event(struct perf_session *session,
 					   union perf_event *event,
-					   const struct perf_tool *tool __maybe_unused)
+					   struct perf_tool *tool __maybe_unused)
 {
 	struct hisi_ptt *ptt = container_of(session->auxtrace, struct hisi_ptt,
 					    auxtrace);
@@ -103,10 +108,8 @@ static int hisi_ptt_process_auxtrace_event(struct perf_session *session,
 		data_offset = 0;
 	} else {
 		data_offset = lseek(fd, 0, SEEK_CUR);
-		if (data_offset == -1) {
-			free(data);
+		if (data_offset == -1)
 			return -errno;
-		}
 	}
 
 	err = readn(fd, data, size);
@@ -118,12 +121,11 @@ static int hisi_ptt_process_auxtrace_event(struct perf_session *session,
 	if (dump_trace)
 		hisi_ptt_dump_event(ptt, data, size);
 
-	free(data);
 	return 0;
 }
 
 static int hisi_ptt_flush(struct perf_session *session __maybe_unused,
-			  const struct perf_tool *tool __maybe_unused)
+			  struct perf_tool *tool __maybe_unused)
 {
 	return 0;
 }

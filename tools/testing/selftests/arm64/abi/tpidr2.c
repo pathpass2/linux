@@ -3,11 +3,30 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 
-#include "kselftest.h"
-
 #define SYS_TPIDR2 "S3_3_C13_C0_5"
 
 #define EXPECTED_TESTS 5
+
+static void putstr(const char *str)
+{
+	write(1, str, strlen(str));
+}
+
+static void putnum(unsigned int num)
+{
+	char c;
+
+	if (num / 10)
+		putnum(num / 10);
+
+	c = '0' + (num % 10);
+	write(1, &c, 1);
+}
+
+static int tests_run;
+static int tests_passed;
+static int tests_failed;
+static int tests_skipped;
 
 static void set_tpidr2(uint64_t val)
 {
@@ -29,6 +48,20 @@ static uint64_t get_tpidr2(void)
 		: "cc");
 
 	return val;
+}
+
+static void print_summary(void)
+{
+	if (tests_passed + tests_failed + tests_skipped != EXPECTED_TESTS)
+		putstr("# UNEXPECTED TEST COUNT: ");
+
+	putstr("# Totals: pass:");
+	putnum(tests_passed);
+	putstr(" fail:");
+	putnum(tests_failed);
+	putstr(" xfail:0 xpass:0 skip:");
+	putnum(tests_skipped);
+	putstr(" error:0\n");
 }
 
 /* Processes should start with TPIDR2 == 0 */
@@ -72,8 +105,9 @@ static int write_fork_read(void)
 	if (newpid == 0) {
 		/* In child */
 		if (get_tpidr2() != oldpid) {
-			ksft_print_msg("TPIDR2 changed in child: %llx\n",
-				       get_tpidr2());
+			putstr("# TPIDR2 changed in child: ");
+			putnum(get_tpidr2());
+			putstr("\n");
 			exit(0);
 		}
 
@@ -81,12 +115,14 @@ static int write_fork_read(void)
 		if (get_tpidr2() == getpid()) {
 			exit(1);
 		} else {
-			ksft_print_msg("Failed to set TPIDR2 in child\n");
+			putstr("# Failed to set TPIDR2 in child\n");
 			exit(0);
 		}
 	}
 	if (newpid < 0) {
-		ksft_print_msg("fork() failed: %d\n", newpid);
+		putstr("# fork() failed: -");
+		putnum(-newpid);
+		putstr("\n");
 		return 0;
 	}
 
@@ -96,22 +132,23 @@ static int write_fork_read(void)
 		if (waiting < 0) {
 			if (errno == EINTR)
 				continue;
-			ksft_print_msg("waitpid() failed: %d\n", errno);
+			putstr("# waitpid() failed: ");
+			putnum(errno);
+			putstr("\n");
 			return 0;
 		}
 		if (waiting != newpid) {
-			ksft_print_msg("waitpid() returned wrong PID: %d != %d\n",
-				       waiting, newpid);
+			putstr("# waitpid() returned wrong PID\n");
 			return 0;
 		}
 
 		if (!WIFEXITED(status)) {
-			ksft_print_msg("child did not exit\n");
+			putstr("# child did not exit\n");
 			return 0;
 		}
 
 		if (getpid() != get_tpidr2()) {
-			ksft_print_msg("TPIDR2 corrupted in parent\n");
+			putstr("# TPIDR2 corrupted in parent\n");
 			return 0;
 		}
 
@@ -128,13 +165,12 @@ static int sys_clone(unsigned long clone_flags, unsigned long newsp,
 		     int *parent_tidptr, unsigned long tls,
 		     int *child_tidptr)
 {
-	return syscall(__NR_clone, clone_flags, newsp, parent_tidptr, tls, child_tidptr);
+	return my_syscall5(__NR_clone, clone_flags, newsp, parent_tidptr, tls,
+			   child_tidptr);
 }
 
-#define __STACK_SIZE (8 * 1024 * 1024)
-
 /*
- * If we clone with CLONE_VM then the value in the parent should
+ * If we clone with CLONE_SETTLS then the value in the parent should
  * be unchanged and the child should start with zero and be able to
  * set its own value.
  */
@@ -143,65 +179,63 @@ static int write_clone_read(void)
 	int parent_tid, child_tid;
 	pid_t parent, waiting;
 	int ret, status;
-	void *stack;
 
 	parent = getpid();
 	set_tpidr2(parent);
 
-	stack = malloc(__STACK_SIZE);
-	if (!stack) {
-		ksft_print_msg("malloc() failed\n");
-		return 0;
-	}
-
-	ret = sys_clone(CLONE_VM, (unsigned long)stack + __STACK_SIZE,
-			&parent_tid, 0, &child_tid);
+	ret = sys_clone(CLONE_SETTLS, 0, &parent_tid, 0, &child_tid);
 	if (ret == -1) {
-		ksft_print_msg("clone() failed: %d\n", errno);
+		putstr("# clone() failed\n");
+		putnum(errno);
+		putstr("\n");
 		return 0;
 	}
 
 	if (ret == 0) {
 		/* In child */
 		if (get_tpidr2() != 0) {
-			ksft_print_msg("TPIDR2 non-zero in child: %llx\n",
-				       get_tpidr2());
+			putstr("# TPIDR2 non-zero in child: ");
+			putnum(get_tpidr2());
+			putstr("\n");
 			exit(0);
 		}
 
 		if (gettid() == 0)
-			ksft_print_msg("Child TID==0\n");
+			putstr("# Child TID==0\n");
 		set_tpidr2(gettid());
 		if (get_tpidr2() == gettid()) {
 			exit(1);
 		} else {
-			ksft_print_msg("Failed to set TPIDR2 in child\n");
+			putstr("# Failed to set TPIDR2 in child\n");
 			exit(0);
 		}
 	}
 
 	for (;;) {
-		waiting = waitpid(ret, &status, __WCLONE);
+		waiting = wait4(ret, &status, __WCLONE, NULL);
 
 		if (waiting < 0) {
 			if (errno == EINTR)
 				continue;
-			ksft_print_msg("waitpid() failed: %d\n", errno);
+			putstr("# wait4() failed: ");
+			putnum(errno);
+			putstr("\n");
 			return 0;
 		}
 		if (waiting != ret) {
-			ksft_print_msg("waitpid() returned wrong PID %d\n",
-				       waiting);
+			putstr("# wait4() returned wrong PID ");
+			putnum(waiting);
+			putstr("\n");
 			return 0;
 		}
 
 		if (!WIFEXITED(status)) {
-			ksft_print_msg("child did not exit\n");
+			putstr("# child did not exit\n");
 			return 0;
 		}
 
 		if (parent != get_tpidr2()) {
-			ksft_print_msg("TPIDR2 corrupted in parent\n");
+			putstr("# TPIDR2 corrupted in parent\n");
 			return 0;
 		}
 
@@ -209,14 +243,29 @@ static int write_clone_read(void)
 	}
 }
 
+#define run_test(name)			     \
+	if (name()) {			     \
+		tests_passed++;		     \
+	} else {			     \
+		tests_failed++;		     \
+		putstr("not ");		     \
+	}				     \
+	putstr("ok ");			     \
+	putnum(++tests_run);		     \
+	putstr(" " #name "\n");
+
 int main(int argc, char **argv)
 {
-	int ret;
+	int ret, i;
 
-	ksft_print_header();
-	ksft_set_plan(5);
+	putstr("TAP version 13\n");
+	putstr("1..");
+	putnum(EXPECTED_TESTS);
+	putstr("\n");
 
-	ksft_print_msg("PID: %d\n", getpid());
+	putstr("# PID: ");
+	putnum(getpid());
+	putstr("\n");
 
 	/*
 	 * This test is run with nolibc which doesn't support hwcap and
@@ -225,21 +274,25 @@ int main(int argc, char **argv)
 	 */
 	ret = open("/proc/sys/abi/sme_default_vector_length", O_RDONLY, 0);
 	if (ret >= 0) {
-		ksft_test_result(default_value(), "default_value\n");
-		ksft_test_result(write_read(), "write_read\n");
-		ksft_test_result(write_sleep_read(), "write_sleep_read\n");
-		ksft_test_result(write_fork_read(), "write_fork_read\n");
-		ksft_test_result(write_clone_read(), "write_clone_read\n");
+		run_test(default_value);
+		run_test(write_read);
+		run_test(write_sleep_read);
+		run_test(write_fork_read);
+		run_test(write_clone_read);
 
 	} else {
-		ksft_print_msg("SME support not present\n");
+		putstr("# SME support not present\n");
 
-		ksft_test_result_skip("default_value\n");
-		ksft_test_result_skip("write_read\n");
-		ksft_test_result_skip("write_sleep_read\n");
-		ksft_test_result_skip("write_fork_read\n");
-		ksft_test_result_skip("write_clone_read\n");
+		for (i = 0; i < EXPECTED_TESTS; i++) {
+			putstr("ok ");
+			putnum(i);
+			putstr(" skipped, TPIDR2 not supported\n");
+		}
+
+		tests_skipped += EXPECTED_TESTS;
 	}
 
-	ksft_finished();
+	print_summary();
+
+	return 0;
 }

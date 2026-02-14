@@ -4,7 +4,6 @@
  */
 
 #include <drm/drm_prime.h>
-#include <drm/drm_print.h>
 #include <linux/dma-mapping.h>
 #include <linux/shmem_fs.h>
 #include <linux/spinlock.h>
@@ -101,10 +100,11 @@ struct page **etnaviv_gem_get_pages(struct etnaviv_gem_object *etnaviv_obj)
 
 	if (!etnaviv_obj->sgt) {
 		struct drm_device *dev = etnaviv_obj->base.dev;
-		unsigned int npages = etnaviv_obj->base.size >> PAGE_SHIFT;
+		int npages = etnaviv_obj->base.size >> PAGE_SHIFT;
 		struct sg_table *sgt;
 
-		sgt = drm_prime_pages_to_sg(dev, etnaviv_obj->pages, npages);
+		sgt = drm_prime_pages_to_sg(etnaviv_obj->base.dev,
+					    etnaviv_obj->pages, npages);
 		if (IS_ERR(sgt)) {
 			dev_err(dev->dev, "failed to allocate sgt: %ld\n",
 				PTR_ERR(sgt));
@@ -343,7 +343,6 @@ void *etnaviv_gem_vmap(struct drm_gem_object *obj)
 static void *etnaviv_gem_vmap_impl(struct etnaviv_gem_object *obj)
 {
 	struct page **pages;
-	pgprot_t prot;
 
 	lockdep_assert_held(&obj->lock);
 
@@ -351,28 +350,15 @@ static void *etnaviv_gem_vmap_impl(struct etnaviv_gem_object *obj)
 	if (IS_ERR(pages))
 		return NULL;
 
-	switch (obj->flags & ETNA_BO_CACHE_MASK) {
-	case ETNA_BO_CACHED:
-		prot = PAGE_KERNEL;
-		break;
-	case ETNA_BO_UNCACHED:
-		prot = pgprot_noncached(PAGE_KERNEL);
-		break;
-	case ETNA_BO_WC:
-	default:
-		prot = pgprot_writecombine(PAGE_KERNEL);
-	}
-
-	return vmap(pages, obj->base.size >> PAGE_SHIFT, VM_MAP, prot);
+	return vmap(pages, obj->base.size >> PAGE_SHIFT,
+			VM_MAP, pgprot_writecombine(PAGE_KERNEL));
 }
 
 static inline enum dma_data_direction etnaviv_op_to_dma_dir(u32 op)
 {
-	op &= ETNA_PREP_READ | ETNA_PREP_WRITE;
-
-	if (op == ETNA_PREP_READ)
+	if (op & ETNA_PREP_READ)
 		return DMA_FROM_DEVICE;
-	else if (op == ETNA_PREP_WRITE)
+	else if (op & ETNA_PREP_WRITE)
 		return DMA_TO_DEVICE;
 	else
 		return DMA_BIDIRECTIONAL;
@@ -527,7 +513,6 @@ void etnaviv_gem_free_object(struct drm_gem_object *obj)
 	etnaviv_obj->ops->release(etnaviv_obj);
 	drm_gem_object_release(obj);
 
-	mutex_destroy(&etnaviv_obj->lock);
 	kfree(etnaviv_obj);
 }
 
@@ -539,17 +524,6 @@ void etnaviv_gem_obj_add(struct drm_device *dev, struct drm_gem_object *obj)
 	mutex_lock(&priv->gem_lock);
 	list_add_tail(&etnaviv_obj->gem_node, &priv->gem_list);
 	mutex_unlock(&priv->gem_lock);
-}
-
-static enum drm_gem_object_status etnaviv_gem_status(struct drm_gem_object *obj)
-{
-	struct etnaviv_gem_object *etnaviv_obj = to_etnaviv_bo(obj);
-	enum drm_gem_object_status status = 0;
-
-	if (etnaviv_obj->pages)
-		status |= DRM_GEM_OBJECT_RESIDENT;
-
-	return status;
 }
 
 static const struct vm_operations_struct vm_ops = {
@@ -565,7 +539,6 @@ static const struct drm_gem_object_funcs etnaviv_gem_object_funcs = {
 	.get_sg_table = etnaviv_gem_prime_get_sg_table,
 	.vmap = etnaviv_gem_prime_vmap,
 	.mmap = etnaviv_gem_mmap,
-	.status = etnaviv_gem_status,
 	.vm_ops = &vm_ops,
 };
 
@@ -596,7 +569,6 @@ static int etnaviv_gem_new_impl(struct drm_device *dev, u32 size, u32 flags,
 	if (!etnaviv_obj)
 		return -ENOMEM;
 
-	etnaviv_obj->size = ALIGN(size, SZ_4K);
 	etnaviv_obj->flags = flags;
 	etnaviv_obj->ops = ops;
 
@@ -617,13 +589,16 @@ int etnaviv_gem_new_handle(struct drm_device *dev, struct drm_file *file,
 	struct drm_gem_object *obj = NULL;
 	int ret;
 
-	ret = etnaviv_gem_new_impl(dev, size, flags, &etnaviv_gem_shmem_ops, &obj);
+	size = PAGE_ALIGN(size);
+
+	ret = etnaviv_gem_new_impl(dev, size, flags,
+				   &etnaviv_gem_shmem_ops, &obj);
 	if (ret)
 		goto fail;
 
 	lockdep_set_class(&to_etnaviv_bo(obj)->lock, &etnaviv_shm_lock_class);
 
-	ret = drm_gem_object_init(dev, obj, PAGE_ALIGN(size));
+	ret = drm_gem_object_init(dev, obj, size);
 	if (ret)
 		goto fail;
 
@@ -711,7 +686,7 @@ static void etnaviv_gem_userptr_release(struct etnaviv_gem_object *etnaviv_obj)
 		kfree(etnaviv_obj->sgt);
 	}
 	if (etnaviv_obj->pages) {
-		unsigned int npages = etnaviv_obj->base.size >> PAGE_SHIFT;
+		int npages = etnaviv_obj->base.size >> PAGE_SHIFT;
 
 		unpin_user_pages(etnaviv_obj->pages, npages);
 		kvfree(etnaviv_obj->pages);

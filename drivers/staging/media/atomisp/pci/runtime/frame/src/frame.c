@@ -2,18 +2,26 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
-#include <linux/bitops.h>
-#include <linux/math.h>
-
-#include "assert_support.h"
-#include "atomisp_internal.h"
 #include "hmm.h"
-#include "ia_css_debug.h"
+
 #include "ia_css_frame.h"
+#include <math_support.h>
+#include "assert_support.h"
+#include "ia_css_debug.h"
 #include "isp.h"
 #include "sh_css_internal.h"
+#include "atomisp_internal.h"
 
 #define NV12_TILEY_TILE_WIDTH  128
 #define NV12_TILEY_TILE_HEIGHT  32
@@ -261,34 +269,6 @@ int ia_css_frame_init_planes(struct ia_css_frame *frame)
 	return 0;
 }
 
-unsigned int ia_css_frame_pad_width(unsigned int width, enum ia_css_frame_format format)
-{
-	switch (format) {
-	/*
-	 * Frames with a U and V plane of 8 bits per pixel need to have
-	 * all planes aligned, this means double the alignment for the
-	 * Y plane if the horizontal decimation is 2.
-	 */
-	case IA_CSS_FRAME_FORMAT_YUV420:
-	case IA_CSS_FRAME_FORMAT_YV12:
-	case IA_CSS_FRAME_FORMAT_NV12:
-	case IA_CSS_FRAME_FORMAT_NV21:
-	case IA_CSS_FRAME_FORMAT_BINARY_8:
-	case IA_CSS_FRAME_FORMAT_YUV_LINE:
-		return CEIL_MUL(width, 2 * HIVE_ISP_DDR_WORD_BYTES);
-
-	case IA_CSS_FRAME_FORMAT_NV12_TILEY:
-		return CEIL_MUL(width, NV12_TILEY_TILE_WIDTH);
-
-	case IA_CSS_FRAME_FORMAT_RAW:
-	case IA_CSS_FRAME_FORMAT_RAW_PACKED:
-		return CEIL_MUL(width, 2 * ISP_VEC_NELEMS);
-
-	default:
-		return CEIL_MUL(width, HIVE_ISP_DDR_WORD_BYTES);
-	}
-}
-
 void ia_css_frame_info_set_width(struct ia_css_frame_info *info,
 				 unsigned int width,
 				 unsigned int min_padded_width)
@@ -305,8 +285,25 @@ void ia_css_frame_info_set_width(struct ia_css_frame_info *info,
 	align = max(min_padded_width, width);
 
 	info->res.width = width;
-	info->padded_width = ia_css_frame_pad_width(align, info->format);
-
+	/* frames with a U and V plane of 8 bits per pixel need to have
+	   all planes aligned, this means double the alignment for the
+	   Y plane if the horizontal decimation is 2. */
+	if (info->format == IA_CSS_FRAME_FORMAT_YUV420 ||
+	    info->format == IA_CSS_FRAME_FORMAT_YV12 ||
+	    info->format == IA_CSS_FRAME_FORMAT_NV12 ||
+	    info->format == IA_CSS_FRAME_FORMAT_NV21 ||
+	    info->format == IA_CSS_FRAME_FORMAT_BINARY_8 ||
+	    info->format == IA_CSS_FRAME_FORMAT_YUV_LINE)
+		info->padded_width =
+		    CEIL_MUL(align, 2 * HIVE_ISP_DDR_WORD_BYTES);
+	else if (info->format == IA_CSS_FRAME_FORMAT_NV12_TILEY)
+		info->padded_width = CEIL_MUL(align, NV12_TILEY_TILE_WIDTH);
+	else if (info->format == IA_CSS_FRAME_FORMAT_RAW ||
+		 info->format == IA_CSS_FRAME_FORMAT_RAW_PACKED)
+		info->padded_width = CEIL_MUL(align, 2 * ISP_VEC_NELEMS);
+	else {
+		info->padded_width = CEIL_MUL(align, HIVE_ISP_DDR_WORD_BYTES);
+	}
 	IA_CSS_LEAVE_PRIVATE("");
 }
 
@@ -354,7 +351,7 @@ void ia_css_frame_free_multiple(unsigned int num_frames,
 int ia_css_frame_allocate_with_buffer_size(struct ia_css_frame **frame,
 					   const unsigned int buffer_size_bytes)
 {
-	/* AM: Body copied from frame_allocate_with_data(). */
+	/* AM: Body coppied from frame_allocate_with_data(). */
 	int err;
 	struct ia_css_frame *me = frame_create(0, 0,
 					       IA_CSS_FRAME_FORMAT_NUM,/* Not valid format yet */
@@ -460,16 +457,15 @@ static void frame_init_single_plane(struct ia_css_frame *frame,
 	unsigned int stride;
 
 	stride = subpixels_per_line * bytes_per_pixel;
-	/*
-	 * Frame height needs to be even number - needed by hw ISYS2401.
-	 * In case of odd number, round up to even.
-	 * Images won't be impacted by this round up,
-	 * only needed by jpeg/embedded data.
-	 * As long as buffer allocation and release are using data_bytes,
-	 * there won't be memory leak.
-	 */
-	frame->data_bytes = stride * round_up(height, 2);
+	/* Frame height needs to be even number - needed by hw ISYS2401
+	   In case of odd number, round up to even.
+	   Images won't be impacted by this round up,
+	   only needed by jpeg/embedded data.
+	   As long as buffer allocation and release are using data_bytes,
+	   there won't be memory leak. */
+	frame->data_bytes = stride * CEIL_MUL2(height, 2);
 	frame_init_plane(plane, subpixels_per_line, stride, height, 0);
+	return;
 }
 
 static void frame_init_raw_single_plane(
@@ -488,6 +484,7 @@ static void frame_init_raw_single_plane(
 			  HIVE_ISP_DDR_WORD_BITS / bits_per_pixel);
 	frame->data_bytes = stride * height;
 	frame_init_plane(plane, subpixels_per_line, stride, height, 0);
+	return;
 }
 
 static void frame_init_nv_planes(struct ia_css_frame *frame,
@@ -604,6 +601,9 @@ static void frame_init_qplane6_planes(struct ia_css_frame *frame)
 
 static int frame_allocate_buffer_data(struct ia_css_frame *frame)
 {
+#ifdef ISP2401
+	IA_CSS_ENTER_LEAVE_PRIVATE("frame->data_bytes=%d\n", frame->data_bytes);
+#endif
 	frame->data = hmm_alloc(frame->data_bytes);
 	if (frame->data == mmgr_NULL)
 		return -ENOMEM;
@@ -635,10 +635,14 @@ static int frame_allocate_with_data(struct ia_css_frame **frame,
 
 	if (err) {
 		kvfree(me);
-		*frame = NULL;
-	} else {
-		*frame = me;
+#ifndef ISP2401
+		return err;
+#else
+		me = NULL;
+#endif
 	}
+
+	*frame = me;
 
 	return err;
 }
@@ -691,7 +695,7 @@ ia_css_elems_bytes_from_info(const struct ia_css_frame_info *info)
 	if (info->format == IA_CSS_FRAME_FORMAT_RAW
 	    || (info->format == IA_CSS_FRAME_FORMAT_RAW_PACKED)) {
 		if (info->raw_bit_depth)
-			return BITS_TO_BYTES(info->raw_bit_depth);
+			return CEIL_DIV(info->raw_bit_depth, 8);
 		else
 			return 2; /* bytes per pixel */
 	}

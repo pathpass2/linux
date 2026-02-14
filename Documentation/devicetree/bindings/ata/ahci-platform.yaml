@@ -18,6 +18,24 @@ maintainers:
   - Hans de Goede <hdegoede@redhat.com>
   - Jens Axboe <axboe@kernel.dk>
 
+select:
+  properties:
+    compatible:
+      contains:
+        enum:
+          - brcm,iproc-ahci
+          - cavium,octeon-7130-ahci
+          - hisilicon,hisi-ahci
+          - ibm,476gtr-ahci
+          - marvell,armada-3700-ahci
+          - marvell,armada-8k-ahci
+          - marvell,berlin2q-ahci
+  required:
+    - compatible
+
+allOf:
+  - $ref: "ahci-common.yaml#"
+
 properties:
   compatible:
     oneOf:
@@ -27,11 +45,6 @@ properties:
               - marvell,armada-8k-ahci
               - marvell,berlin2-ahci
               - marvell,berlin2q-ahci
-              - qcom,apq8064-ahci
-              - qcom,ipq806x-ahci
-              - socionext,uniphier-pro4-ahci
-              - socionext,uniphier-pxs2-ahci
-              - socionext,uniphier-pxs3-ahci
           - const: generic-ahci
       - enum:
           - cavium,octeon-7130-ahci
@@ -48,11 +61,11 @@ properties:
 
   clocks:
     minItems: 1
-    maxItems: 5
+    maxItems: 3
 
   clock-names:
     minItems: 1
-    maxItems: 5
+    maxItems: 3
 
   interrupts:
     maxItems: 1
@@ -61,10 +74,6 @@ properties:
     maxItems: 1
 
   resets:
-    minItems: 1
-    maxItems: 3
-
-  iommus:
     maxItems: 1
 
 patternProperties:
@@ -81,68 +90,6 @@ required:
   - compatible
   - reg
   - interrupts
-
-allOf:
-  - $ref: ahci-common.yaml#
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - qcom,apq8064-ahci
-              - qcom,ipq806x-ahci
-    then:
-      properties:
-        clocks:
-          minItems: 5
-        clock-names:
-          items:
-            - const: slave_iface
-            - const: iface
-            - const: core
-            - const: rxoob
-            - const: pmalive
-      required:
-        - phys
-        - phy-names
-        - clocks
-        - clock-names
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: socionext,uniphier-pro4-ahci
-    then:
-      properties:
-        resets:
-          items:
-            - description: reset line for the parent
-            - description: reset line for the glue logic
-            - description: reset line for the controller
-      required:
-        - resets
-    else:
-      if:
-        properties:
-          compatible:
-            contains:
-              enum:
-                - socionext,uniphier-pxs2-ahci
-                - socionext,uniphier-pxs3-ahci
-      then:
-        properties:
-          resets:
-            items:
-              - description: reset for the glue logic
-              - description: reset for the controller
-        required:
-          - resets
-      else:
-        properties:
-          resets:
-            maxItems: 1
 
 unevaluatedProperties: false
 

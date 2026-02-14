@@ -25,12 +25,13 @@ static int
 nvif_fifo_runlists(struct nvif_device *device)
 {
 	struct nvif_object *object = &device->object;
-	TRAILING_OVERLAP(struct nv_device_info_v1, m, data,
+	struct {
+		struct nv_device_info_v1 m;
 		struct {
 			struct nv_device_info_v1_data runlists;
 			struct nv_device_info_v1_data runlist[64];
 		} v;
-	) *a;
+	} *a;
 	int ret, i;
 
 	if (device->runlist)

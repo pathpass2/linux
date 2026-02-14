@@ -13,7 +13,7 @@
 
 / {
 	model = "IEI-Puzzle-M801";
-	compatible = "iei,puzzle-m801", "marvell,armada8040", "marvell,armada-ap806-quad", "marvell,armada-ap806";
+	compatible = "marvell,armada8040", "marvell,armada-ap806-quad", "marvell,armada-ap806";
 
 	aliases {
 		ethernet0 = &cp0_eth0;
@@ -285,7 +285,7 @@
 	pinctrl-0 = <&cp0_i2c1_pins>;
 	status = "okay";
 
-	i2c-mux@70 {
+	i2c-switch@70 {
 		compatible = "nxp,pca9544";
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -408,12 +408,12 @@
 
 	sata-port@0 {
 		phys = <&cp0_comphy2 0>;
-		status = "okay";
+		phy-names = "cp0-sata0-0-phy";
 	};
 
 	sata-port@1 {
 		phys = <&cp0_comphy5 1>;
-		status = "okay";
+		phy-names = "cp0-sata0-1-phy";
 	};
 };
 

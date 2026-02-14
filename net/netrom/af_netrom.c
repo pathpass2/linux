@@ -240,7 +240,7 @@ void nr_destroy_socket(struct sock *);
  */
 static void nr_destroy_timer(struct timer_list *t)
 {
-	struct sock *sk = timer_container_of(sk, t, sk_timer);
+	struct sock *sk = from_timer(sk, t, sk_timer);
 	bh_lock_sock(sk);
 	sock_hold(sk);
 	nr_destroy_socket(sk);
@@ -453,16 +453,16 @@ static int nr_create(struct net *net, struct socket *sock, int protocol,
 	nr_init_timers(sk);
 
 	nr->t1     =
-		msecs_to_jiffies(READ_ONCE(sysctl_netrom_transport_timeout));
+		msecs_to_jiffies(sysctl_netrom_transport_timeout);
 	nr->t2     =
-		msecs_to_jiffies(READ_ONCE(sysctl_netrom_transport_acknowledge_delay));
+		msecs_to_jiffies(sysctl_netrom_transport_acknowledge_delay);
 	nr->n2     =
-		msecs_to_jiffies(READ_ONCE(sysctl_netrom_transport_maximum_tries));
+		msecs_to_jiffies(sysctl_netrom_transport_maximum_tries);
 	nr->t4     =
-		msecs_to_jiffies(READ_ONCE(sysctl_netrom_transport_busy_delay));
+		msecs_to_jiffies(sysctl_netrom_transport_busy_delay);
 	nr->idle   =
-		msecs_to_jiffies(READ_ONCE(sysctl_netrom_transport_no_activity_timeout));
-	nr->window = READ_ONCE(sysctl_netrom_transport_requested_window_size);
+		msecs_to_jiffies(sysctl_netrom_transport_no_activity_timeout);
+	nr->window = sysctl_netrom_transport_requested_window_size;
 
 	nr->bpqext = 1;
 	nr->state  = NR_STATE_0;
@@ -487,7 +487,7 @@ static struct sock *nr_make_new(struct sock *osk)
 	sock_init_data(NULL, sk);
 
 	sk->sk_type     = osk->sk_type;
-	sk->sk_priority = READ_ONCE(osk->sk_priority);
+	sk->sk_priority = osk->sk_priority;
 	sk->sk_protocol = osk->sk_protocol;
 	sk->sk_rcvbuf   = osk->sk_rcvbuf;
 	sk->sk_sndbuf   = osk->sk_sndbuf;
@@ -561,7 +561,7 @@ static int nr_release(struct socket *sock)
 	return 0;
 }
 
-static int nr_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
+static int nr_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 {
 	struct sock *sk = sock->sk;
 	struct nr_sock *nr = nr_sk(sk);
@@ -632,8 +632,8 @@ static int nr_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr
 	return 0;
 }
 
-static int nr_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
-		      int addr_len, int flags)
+static int nr_connect(struct socket *sock, struct sockaddr *uaddr,
+	int addr_len, int flags)
 {
 	struct sock *sk = sock->sk;
 	struct nr_sock *nr = nr_sk(sk);
@@ -657,11 +657,6 @@ static int nr_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 
 	if (sk->sk_state == TCP_ESTABLISHED) {
 		err = -EISCONN;	/* No reconnect on a seqpacket socket */
-		goto out_release;
-	}
-
-	if (sock->state == SS_CONNECTING) {
-		err = -EALREADY;
 		goto out_release;
 	}
 
@@ -772,8 +767,8 @@ out_release:
 	return err;
 }
 
-static int nr_accept(struct socket *sock, struct socket *newsock,
-		     struct proto_accept_arg *arg)
+static int nr_accept(struct socket *sock, struct socket *newsock, int flags,
+		     bool kern)
 {
 	struct sk_buff *skb;
 	struct sock *newsk;
@@ -805,7 +800,7 @@ static int nr_accept(struct socket *sock, struct socket *newsock,
 		if (skb)
 			break;
 
-		if (arg->flags & O_NONBLOCK) {
+		if (flags & O_NONBLOCK) {
 			err = -EWOULDBLOCK;
 			break;
 		}
@@ -954,7 +949,7 @@ int nr_rx_frame(struct sk_buff *skb, struct net_device *dev)
 		 * G8PZT's Xrouter which is sending packets with command type 7
 		 * as an extension of the protocol.
 		 */
-		if (READ_ONCE(sysctl_netrom_reset_circuit) &&
+		if (sysctl_netrom_reset_circuit &&
 		    (frametype != NR_RESET || flags != 0))
 			nr_transmit_reset(skb, 1);
 
@@ -1369,6 +1364,7 @@ static const struct proto_ops nr_proto_ops = {
 	.sendmsg	=	nr_sendmsg,
 	.recvmsg	=	nr_recvmsg,
 	.mmap		=	sock_no_mmap,
+	.sendpage	=	sock_no_sendpage,
 };
 
 static struct notifier_block nr_dev_notifier = {

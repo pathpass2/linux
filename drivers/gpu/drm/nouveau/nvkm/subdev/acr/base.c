@@ -182,7 +182,7 @@ nvkm_acr_managed_falcon(struct nvkm_device *device, enum nvkm_acr_lsf_id id)
 }
 
 static int
-nvkm_acr_fini(struct nvkm_subdev *subdev, enum nvkm_suspend_state suspend)
+nvkm_acr_fini(struct nvkm_subdev *subdev, bool suspend)
 {
 	if (!subdev->use.enabled)
 		return 0;
@@ -224,7 +224,7 @@ nvkm_acr_oneinit(struct nvkm_subdev *subdev)
 	u64 falcons;
 	int ret, i;
 
-	if (list_empty(&acr->hsfw) || !acr->func || !acr->func->wpr_layout) {
+	if (list_empty(&acr->hsfw)) {
 		nvkm_debug(subdev, "No HSFW(s)\n");
 		nvkm_acr_cleanup(acr);
 		return 0;

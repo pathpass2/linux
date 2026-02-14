@@ -31,7 +31,6 @@
 #include <linux/ssb/ssb.h>
 #include <linux/slab.h>
 #include <linux/phy.h>
-#include <linux/phy_fixed.h>
 
 #include <linux/uaccess.h>
 #include <asm/io.h>
@@ -576,7 +575,7 @@ static void b44_check_phy(struct b44 *bp)
 
 static void b44_timer(struct timer_list *t)
 {
-	struct b44 *bp = timer_container_of(bp, t, timer);
+	struct b44 *bp = from_timer(bp, t, timer);
 
 	spin_lock_irq(&bp->lock);
 
@@ -1043,13 +1042,13 @@ static int b44_change_mtu(struct net_device *dev, int new_mtu)
 		/* We'll just catch it later when the
 		 * device is up'd.
 		 */
-		WRITE_ONCE(dev->mtu, new_mtu);
+		dev->mtu = new_mtu;
 		return 0;
 	}
 
 	spin_lock_irq(&bp->lock);
 	b44_halt(bp);
-	WRITE_ONCE(dev->mtu, new_mtu);
+	dev->mtu = new_mtu;
 	b44_init_rings(bp);
 	b44_init_hw(bp, B44_FULL_RESET);
 	spin_unlock_irq(&bp->lock);
@@ -1629,7 +1628,7 @@ static int b44_close(struct net_device *dev)
 
 	napi_disable(&bp->napi);
 
-	timer_delete_sync(&bp->timer);
+	del_timer_sync(&bp->timer);
 
 	spin_lock_irq(&bp->lock);
 
@@ -1790,16 +1789,15 @@ static int b44_nway_reset(struct net_device *dev)
 	u32 bmcr;
 	int r;
 
-	if (bp->flags & B44_FLAG_EXTERNAL_PHY)
-		return phy_ethtool_nway_reset(dev);
-
 	spin_lock_irq(&bp->lock);
 	b44_readphy(bp, MII_BMCR, &bmcr);
 	b44_readphy(bp, MII_BMCR, &bmcr);
 	r = -EINVAL;
-	if (bmcr & BMCR_ANENABLE)
-		r = b44_writephy(bp, MII_BMCR,
-				 bmcr | BMCR_ANRESTART);
+	if (bmcr & BMCR_ANENABLE) {
+		b44_writephy(bp, MII_BMCR,
+			     bmcr | BMCR_ANRESTART);
+		r = 0;
+	}
 	spin_unlock_irq(&bp->lock);
 
 	return r;
@@ -2013,14 +2011,12 @@ static int b44_set_pauseparam(struct net_device *dev,
 		bp->flags |= B44_FLAG_TX_PAUSE;
 	else
 		bp->flags &= ~B44_FLAG_TX_PAUSE;
-	if (netif_running(dev)) {
-		if (bp->flags & B44_FLAG_PAUSE_AUTO) {
-			b44_halt(bp);
-			b44_init_rings(bp);
-			b44_init_hw(bp, B44_FULL_RESET);
-		} else {
-			__b44_set_flow_ctrl(bp, bp->flags);
-		}
+	if (bp->flags & B44_FLAG_PAUSE_AUTO) {
+		b44_halt(bp);
+		b44_init_rings(bp);
+		b44_init_hw(bp, B44_FULL_RESET);
+	} else {
+		__b44_set_flow_ctrl(bp, bp->flags);
 	}
 	spin_unlock_irq(&bp->lock);
 
@@ -2237,6 +2233,7 @@ static int b44_register_phy_one(struct b44 *bp)
 	struct mii_bus *mii_bus;
 	struct ssb_device *sdev = bp->sdev;
 	struct phy_device *phydev;
+	char bus_id[MII_BUS_ID_SIZE + 3];
 	struct ssb_sprom *sprom = &sdev->bus->sprom;
 	int err;
 
@@ -2263,26 +2260,27 @@ static int b44_register_phy_one(struct b44 *bp)
 		goto err_out_mdiobus;
 	}
 
-	phydev = mdiobus_get_phy(bp->mii_bus, bp->phy_addr);
-	if (!phydev &&
-	    sprom->boardflags_lo & (B44_BOARDFLAG_ROBO | B44_BOARDFLAG_ADM)) {
+	if (!mdiobus_is_registered_device(bp->mii_bus, bp->phy_addr) &&
+	    (sprom->boardflags_lo & (B44_BOARDFLAG_ROBO | B44_BOARDFLAG_ADM))) {
+
 		dev_info(sdev->dev,
 			 "could not find PHY at %i, use fixed one\n",
 			 bp->phy_addr);
 
-		phydev = fixed_phy_register_100fd();
-		if (!IS_ERR(phydev))
-			bp->phy_addr = phydev->mdio.addr;
+		bp->phy_addr = 0;
+		snprintf(bus_id, sizeof(bus_id), PHY_ID_FMT, "fixed-0",
+			 bp->phy_addr);
+	} else {
+		snprintf(bus_id, sizeof(bus_id), PHY_ID_FMT, mii_bus->id,
+			 bp->phy_addr);
 	}
 
-	if (IS_ERR_OR_NULL(phydev))
-		err = -ENODEV;
-	else
-		err = phy_connect_direct(bp->dev, phydev, &b44_adjust_link,
-					 PHY_INTERFACE_MODE_MII);
-	if (err) {
+	phydev = phy_connect(bp->dev, bus_id, &b44_adjust_link,
+			     PHY_INTERFACE_MODE_MII);
+	if (IS_ERR(phydev)) {
 		dev_err(sdev->dev, "could not attach PHY at %i\n",
 			bp->phy_addr);
+		err = PTR_ERR(phydev);
 		goto err_out_mdiobus_unregister;
 	}
 
@@ -2295,6 +2293,7 @@ static int b44_register_phy_one(struct b44 *bp)
 	linkmode_copy(phydev->advertising, phydev->supported);
 
 	bp->old_link = 0;
+	bp->phy_addr = phydev->mdio.addr;
 
 	phy_attached_info(phydev);
 
@@ -2312,15 +2311,10 @@ err_out:
 
 static void b44_unregister_phy_one(struct b44 *bp)
 {
-	struct mii_bus *mii_bus = bp->mii_bus;
 	struct net_device *dev = bp->dev;
-	struct phy_device *phydev;
+	struct mii_bus *mii_bus = bp->mii_bus;
 
-	phydev = dev->phydev;
-
-	phy_disconnect(phydev);
-	if (phy_is_pseudo_fixed_link(phydev))
-		fixed_phy_unregister(phydev);
+	phy_disconnect(dev->phydev);
 	mdiobus_unregister(mii_bus);
 	mdiobus_free(mii_bus);
 }
@@ -2479,7 +2473,7 @@ static int b44_suspend(struct ssb_device *sdev, pm_message_t state)
 	if (!netif_running(dev))
 		return 0;
 
-	timer_delete_sync(&bp->timer);
+	del_timer_sync(&bp->timer);
 
 	spin_lock_irq(&bp->lock);
 
@@ -2576,7 +2570,7 @@ static int __init b44_init(void)
 	unsigned int dma_desc_align_size = dma_get_cache_alignment();
 	int err;
 
-	/* Setup parameters for syncing RX/TX DMA descriptors */
+	/* Setup paramaters for syncing RX/TX DMA descriptors */
 	dma_desc_sync_size = max_t(unsigned int, dma_desc_align_size, sizeof(struct dma_desc));
 
 	err = b44_pci_init();

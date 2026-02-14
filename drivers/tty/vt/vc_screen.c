@@ -48,12 +48,10 @@
 
 #include <linux/uaccess.h>
 #include <asm/byteorder.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #define HEADER_SIZE	4u
-#define CON_BUF_SIZE (IS_ENABLED(CONFIG_BASE_SMALL) ? 256 : PAGE_SIZE)
-
-DEFINE_FREE(free_page_ptr, void *, if (_T) free_page((unsigned long)_T));
+#define CON_BUF_SIZE (CONFIG_BASE_SMALL ? 256 : PAGE_SIZE)
 
 /*
  * Our minor space:
@@ -73,6 +71,7 @@ DEFINE_FREE(free_page_ptr, void *, if (_T) free_page((unsigned long)_T));
 #define console(inode)		(iminor(inode) & 63)
 #define use_unicode(inode)	(iminor(inode) & 64)
 #define use_attributes(inode)	(iminor(inode) & 128)
+
 
 struct vcs_poll_data {
 	struct notifier_block notifier;
@@ -175,7 +174,7 @@ vcs_poll_data_get(struct file *file)
 }
 
 /**
- * vcs_vc - return VC for @inode
+ * vcs_vc -- return VC for @inode
  * @inode: inode for which to return a VC
  * @viewed: returns whether this console is currently foreground (viewed)
  *
@@ -200,7 +199,7 @@ static struct vc_data *vcs_vc(struct inode *inode, bool *viewed)
 }
 
 /**
- * vcs_size - return size for a VC in @vc
+ * vcs_size -- return size for a VC in @vc
  * @vc: which VC
  * @attr: does it use attributes?
  * @unicode: is it unicode?
@@ -232,13 +231,15 @@ static loff_t vcs_lseek(struct file *file, loff_t offset, int orig)
 	struct vc_data *vc;
 	int size;
 
-	scoped_guard(console_lock) {
-		vc = vcs_vc(inode, NULL);
-		if (!vc)
-			return -ENXIO;
-
-		size = vcs_size(vc, use_attributes(inode), use_unicode(inode));
+	console_lock();
+	vc = vcs_vc(inode, NULL);
+	if (!vc) {
+		console_unlock();
+		return -ENXIO;
 	}
+
+	size = vcs_size(vc, use_attributes(inode), use_unicode(inode));
+	console_unlock();
 	if (size < 0)
 		return size;
 	return fixed_size_llseek(file, offset, orig, size);
@@ -368,10 +369,11 @@ vcs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	struct vcs_poll_data *poll;
 	unsigned int read;
 	ssize_t ret;
+	char *con_buf;
 	loff_t pos;
 	bool viewed, attr, uni_mode;
 
-	char *con_buf __free(free_page_ptr) = (char *)__get_free_page(GFP_KERNEL);
+	con_buf = (char *) __get_free_page(GFP_KERNEL);
 	if (!con_buf)
 		return -ENOMEM;
 
@@ -380,16 +382,17 @@ vcs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	/* Select the proper current console and verify
 	 * sanity of the situation under the console lock.
 	 */
-	guard(console_lock)();
+	console_lock();
 
 	uni_mode = use_unicode(inode);
 	attr = use_attributes(inode);
 
+	ret = -EINVAL;
 	if (pos < 0)
-		return -EINVAL;
+		goto unlock_out;
 	/* we enforce 32-bit alignment for pos and count in unicode mode */
 	if (uni_mode && (pos | count) & 3)
-		return -EINVAL;
+		goto unlock_out;
 
 	poll = file->private_data;
 	if (count && poll)
@@ -465,8 +468,10 @@ vcs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	}
 	*ppos += read;
 	if (read)
-		return read;
-
+		ret = read;
+unlock_out:
+	console_unlock();
+	free_page((unsigned long) con_buf);
 	return ret;
 }
 
@@ -586,6 +591,7 @@ vcs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
 	struct inode *inode = file_inode(file);
 	struct vc_data *vc;
+	char *con_buf;
 	u16 *org0, *org;
 	unsigned int written;
 	int size;
@@ -596,7 +602,7 @@ vcs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 	if (use_unicode(inode))
 		return -EOPNOTSUPP;
 
-	char *con_buf __free(free_page_ptr) = (char *)__get_free_page(GFP_KERNEL);
+	con_buf = (char *) __get_free_page(GFP_KERNEL);
 	if (!con_buf)
 		return -ENOMEM;
 
@@ -605,18 +611,22 @@ vcs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 	/* Select the proper current console and verify
 	 * sanity of the situation under the console lock.
 	 */
-	guard(console_lock)();
+	console_lock();
 
 	attr = use_attributes(inode);
+	ret = -ENXIO;
 	vc = vcs_vc(inode, &viewed);
 	if (!vc)
-		return -ENXIO;
+		goto unlock_out;
 
 	size = vcs_size(vc, attr, false);
-	if (size < 0)
-		return size;
+	if (size < 0) {
+		ret = size;
+		goto unlock_out;
+	}
+	ret = -EINVAL;
 	if (pos < 0 || pos > size)
-		return -EINVAL;
+		goto unlock_out;
 	if (count > size - pos)
 		count = size - pos;
 	written = 0;
@@ -641,25 +651,21 @@ vcs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 				 */
 				if (written)
 					break;
-				return -EFAULT;
+				ret = -EFAULT;
+				goto unlock_out;
 			}
 		}
 
-		/* The vc might have been freed or vcs_size might have changed
-		 * while we slept to grab the user buffer, so recheck.
+		/* The vcs_size might have changed while we slept to grab
+		 * the user buffer, so recheck.
 		 * Return data written up to now on failure.
 		 */
-		vc = vcs_vc(inode, &viewed);
-		if (!vc) {
-			if (written)
-				break;
-			return -ENXIO;
-		}
 		size = vcs_size(vc, attr, false);
 		if (size < 0) {
 			if (written)
 				break;
-			return size;
+			ret = size;
+			goto unlock_out;
 		}
 		if (pos >= size)
 			break;
@@ -689,6 +695,9 @@ vcs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 	if (written)
 		vcs_scr_updated(vc);
 
+unlock_out:
+	console_unlock();
+	free_page((unsigned long) con_buf);
 	return ret;
 }
 
@@ -738,17 +747,17 @@ vcs_open(struct inode *inode, struct file *filp)
 	unsigned int currcons = console(inode);
 	bool attr = use_attributes(inode);
 	bool uni_mode = use_unicode(inode);
+	int ret = 0;
 
 	/* we currently don't support attributes in unicode mode */
 	if (attr && uni_mode)
 		return -EOPNOTSUPP;
 
-	guard(console_lock)();
-
-	if (currcons && !vc_cons_allocated(currcons - 1))
-		return -ENXIO;
-
-	return 0;
+	console_lock();
+	if(currcons && !vc_cons_allocated(currcons-1))
+		ret = -ENXIO;
+	console_unlock();
+	return ret;
 }
 
 static int vcs_release(struct inode *inode, struct file *file)
@@ -770,22 +779,23 @@ static const struct file_operations vcs_fops = {
 	.release	= vcs_release,
 };
 
-static const struct class vc_class = {
-	.name = "vc",
-};
+static struct class *vc_class;
 
 void vcs_make_sysfs(int index)
 {
-	device_create(&vc_class, NULL, MKDEV(VCS_MAJOR, index + 1), NULL, "vcs%u", index + 1);
-	device_create(&vc_class, NULL, MKDEV(VCS_MAJOR, index + 65), NULL, "vcsu%u", index + 1);
-	device_create(&vc_class, NULL, MKDEV(VCS_MAJOR, index + 129), NULL, "vcsa%u", index + 1);
+	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, index + 1), NULL,
+		      "vcs%u", index + 1);
+	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, index + 65), NULL,
+		      "vcsu%u", index + 1);
+	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, index + 129), NULL,
+		      "vcsa%u", index + 1);
 }
 
 void vcs_remove_sysfs(int index)
 {
-	device_destroy(&vc_class, MKDEV(VCS_MAJOR, index + 1));
-	device_destroy(&vc_class, MKDEV(VCS_MAJOR, index + 65));
-	device_destroy(&vc_class, MKDEV(VCS_MAJOR, index + 129));
+	device_destroy(vc_class, MKDEV(VCS_MAJOR, index + 1));
+	device_destroy(vc_class, MKDEV(VCS_MAJOR, index + 65));
+	device_destroy(vc_class, MKDEV(VCS_MAJOR, index + 129));
 }
 
 int __init vcs_init(void)
@@ -794,12 +804,11 @@ int __init vcs_init(void)
 
 	if (register_chrdev(VCS_MAJOR, "vcs", &vcs_fops))
 		panic("unable to get major %d for vcs device", VCS_MAJOR);
-	if (class_register(&vc_class))
-		panic("unable to create vc_class");
+	vc_class = class_create(THIS_MODULE, "vc");
 
-	device_create(&vc_class, NULL, MKDEV(VCS_MAJOR, 0), NULL, "vcs");
-	device_create(&vc_class, NULL, MKDEV(VCS_MAJOR, 64), NULL, "vcsu");
-	device_create(&vc_class, NULL, MKDEV(VCS_MAJOR, 128), NULL, "vcsa");
+	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, 0), NULL, "vcs");
+	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, 64), NULL, "vcsu");
+	device_create(vc_class, NULL, MKDEV(VCS_MAJOR, 128), NULL, "vcsa");
 	for (i = 0; i < MIN_NR_CONSOLES; i++)
 		vcs_make_sysfs(i);
 	return 0;

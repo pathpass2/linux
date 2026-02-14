@@ -15,14 +15,10 @@ description: |
   buck-<name> and ldo-<name>.
   MT6331 regulators node should be sub node of the MT6397 MFD node.
 
-properties:
-  compatible:
-    const: mediatek,mt6331-regulator
-
 patternProperties:
   "^buck-v(core2|io18|dvfs11|dvfs12|dvfs13|dvfs14)$":
     type: object
-    $ref: regulator.yaml#
+    $ref: "regulator.yaml#"
 
     properties:
       regulator-name:
@@ -30,39 +26,39 @@ patternProperties:
 
     unevaluatedProperties: false
 
-  "^ldo-(avdd32aud|vauxa32)$":
+  "^ldo-v(avdd32aud|auxa32)$":
     type: object
-    $ref: regulator.yaml#
+    $ref: "regulator.yaml#"
 
     properties:
       regulator-name:
-        pattern: "^(avdd32_aud|vauxa32)$"
+        pattern: "^v(avdd32aud|auxa32)$"
 
     unevaluatedProperties: false
 
-  "^ldo-v(dig18|emc33|ibr|io28|mc|mch|mipi|rtc|sim1|sim2|sram|usb10)$":
+  "^ldo-v(dig18|emc33|ibr|mc|mch|mipi|rtc|sram|usb10)$":
     type: object
-    $ref: regulator.yaml#
+    $ref: "regulator.yaml#"
 
     properties:
       regulator-name:
-        pattern: "^v(dig18|emc33|ibr|io28|mc|mch|mipi|rtc|sim1|sim2|sram|usb)$"
+        pattern: "^v(dig18|emc33|ibr|mc|mch|mipi|rtc|sram|usb10)$"
 
     unevaluatedProperties: false
 
   "^ldo-vcam(a|af|d|io)$":
     type: object
-    $ref: regulator.yaml#
+    $ref: "regulator.yaml#"
 
     properties:
       regulator-name:
-        pattern: "^vcam(a|_af|d|io)$"
+        pattern: "^vcam(a|af|d|io)$"
 
     unevaluatedProperties: false
 
   "^ldo-vtcxo[12]$":
     type: object
-    $ref: regulator.yaml#
+    $ref: "regulator.yaml#"
 
     properties:
       regulator-name:
@@ -75,19 +71,16 @@ patternProperties:
 
   "^ldo-vgp[1234]$":
     type: object
-    $ref: regulator.yaml#
+    $ref: "regulator.yaml#"
 
     properties:
       regulator-name:
-        pattern: "^vgp[1234]$"
+        pattern: "^vgp[12]$"
 
     required:
       - regulator-name
 
     unevaluatedProperties: false
-
-required:
-  - compatible
 
 additionalProperties: false
 

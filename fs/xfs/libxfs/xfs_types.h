@@ -9,19 +9,15 @@
 typedef uint32_t	prid_t;		/* project ID */
 
 typedef uint32_t	xfs_agblock_t;	/* blockno in alloc. group */
-typedef uint32_t	xfs_rgblock_t;	/* blockno in realtime group */
 typedef uint32_t	xfs_agino_t;	/* inode # within allocation grp */
 typedef uint32_t	xfs_extlen_t;	/* extent length in blocks */
-typedef uint32_t	xfs_rtxlen_t;	/* file extent length in rtextents */
 typedef uint32_t	xfs_agnumber_t;	/* allocation group number */
-typedef uint32_t	xfs_rgnumber_t;	/* realtime group number */
 typedef uint64_t	xfs_extnum_t;	/* # of extents in a file */
 typedef uint32_t	xfs_aextnum_t;	/* # extents in an attribute fork */
 typedef int64_t		xfs_fsize_t;	/* bytes in a file */
 typedef uint64_t	xfs_ufsize_t;	/* unsigned bytes in a file */
 
 typedef int32_t		xfs_suminfo_t;	/* type of bitmap summary info */
-typedef uint32_t	xfs_rtsumoff_t;	/* offset of an rtsummary info word */
 typedef uint32_t	xfs_rtword_t;	/* word type for bitmap manipulations */
 
 typedef int64_t		xfs_lsn_t;	/* log sequence number */
@@ -35,8 +31,6 @@ typedef uint64_t	xfs_rfsblock_t;	/* blockno in filesystem (raw) */
 typedef uint64_t	xfs_rtblock_t;	/* extent (block) in realtime area */
 typedef uint64_t	xfs_fileoff_t;	/* block number in a file */
 typedef uint64_t	xfs_filblks_t;	/* number of blocks in a file */
-typedef uint64_t	xfs_rtxnum_t;	/* rtextent number */
-typedef uint64_t	xfs_rtbxlen_t;	/* rtbitmap extent length in rtextents */
 
 typedef int64_t		xfs_srtblock_t;	/* signed version of xfs_rtblock_t */
 
@@ -55,9 +49,7 @@ typedef void *		xfs_failaddr_t;
 #define	NULLFILEOFF	((xfs_fileoff_t)-1)
 
 #define	NULLAGBLOCK	((xfs_agblock_t)-1)
-#define NULLRGBLOCK	((xfs_rgblock_t)-1)
 #define	NULLAGNUMBER	((xfs_agnumber_t)-1)
-#define	NULLRGNUMBER	((xfs_rgnumber_t)-1)
 
 #define NULLCOMMITLSN	((xfs_lsn_t)-1)
 
@@ -84,13 +76,11 @@ typedef void *		xfs_failaddr_t;
 /*
  * Inode fork identifiers.
  */
-#define XFS_STAGING_FORK	(-1)	/* fake fork for staging a btree */
-#define	XFS_DATA_FORK		(0)
-#define	XFS_ATTR_FORK		(1)
-#define	XFS_COW_FORK		(2)
+#define	XFS_DATA_FORK	0
+#define	XFS_ATTR_FORK	1
+#define	XFS_COW_FORK	2
 
 #define XFS_WHICHFORK_STRINGS \
-	{ XFS_STAGING_FORK, 	"staging" }, \
 	{ XFS_DATA_FORK, 	"data" }, \
 	{ XFS_ATTR_FORK,	"attr" }, \
 	{ XFS_COW_FORK,		"cow" }
@@ -120,6 +110,24 @@ typedef enum {
 	{ XFS_LOOKUP_LEi,	"le" }, \
 	{ XFS_LOOKUP_GEi,	"ge" }
 
+/*
+ * This enum is used in string mapping in xfs_trace.h and scrub/trace.h;
+ * please keep the TRACE_DEFINE_ENUMs for it up to date.
+ */
+typedef enum {
+	XFS_BTNUM_BNOi, XFS_BTNUM_CNTi, XFS_BTNUM_RMAPi, XFS_BTNUM_BMAPi,
+	XFS_BTNUM_INOi, XFS_BTNUM_FINOi, XFS_BTNUM_REFCi, XFS_BTNUM_MAX
+} xfs_btnum_t;
+
+#define XFS_BTNUM_STRINGS \
+	{ XFS_BTNUM_BNOi,	"bnobt" }, \
+	{ XFS_BTNUM_CNTi,	"cntbt" }, \
+	{ XFS_BTNUM_RMAPi,	"rmapbt" }, \
+	{ XFS_BTNUM_BMAPi,	"bmbt" }, \
+	{ XFS_BTNUM_INOi,	"inobt" }, \
+	{ XFS_BTNUM_FINOi,	"finobt" }, \
+	{ XFS_BTNUM_REFCi,	"refcbt" }
+
 struct xfs_name {
 	const unsigned char	*name;
 	int			len;
@@ -137,7 +145,6 @@ typedef uint32_t	xfs_dqid_t;
  */
 #define	XFS_NBBYLOG	3		/* log2(NBBY) */
 #define	XFS_WORDLOG	2		/* log2(sizeof(xfs_rtword_t)) */
-#define	XFS_SUMINFOLOG	2		/* log2(sizeof(xfs_suminfo_t)) */
 #define	XFS_NBWORDLOG	(XFS_NBBYLOG + XFS_WORDLOG)
 #define	XFS_NBWORD	(1 << XFS_NBWORDLOG)
 #define	XFS_WORDMASK	((1 << XFS_WORDLOG) - 1)
@@ -195,71 +202,7 @@ enum xfs_ag_resv_type {
 	XFS_AG_RESV_AGFL,
 	XFS_AG_RESV_METADATA,
 	XFS_AG_RESV_RMAPBT,
-
-	/*
-	 * Don't increase fdblocks when freeing extent.  This is a pony for
-	 * the bnobt repair functions to re-free the free space without
-	 * altering fdblocks.  If you think you need this you're wrong.
-	 */
-	XFS_AG_RESV_IGNORE,
-
-	/*
-	 * This allocation activity is being done on behalf of a metadata file.
-	 * These files maintain their own permanent space reservations and are
-	 * required to adjust fdblocks using the xfs_metafile_resv_* helpers.
-	 */
-	XFS_AG_RESV_METAFILE,
 };
-
-/* Results of scanning a btree keyspace to check occupancy. */
-enum xbtree_recpacking {
-	/* None of the keyspace maps to records. */
-	XBTREE_RECPACKING_EMPTY = 0,
-
-	/* Some, but not all, of the keyspace maps to records. */
-	XBTREE_RECPACKING_SPARSE,
-
-	/* The entire keyspace maps to records. */
-	XBTREE_RECPACKING_FULL,
-};
-
-enum xfs_group_type {
-	XG_TYPE_AG,
-	XG_TYPE_RTG,
-	XG_TYPE_MAX,
-} __packed;
-
-#define XG_TYPE_STRINGS \
-	{ XG_TYPE_AG,	"ag" }, \
-	{ XG_TYPE_RTG,	"rtg" }
-
-enum xfs_free_counter {
-	/*
-	 * Number of free blocks on the data device.
-	 */
-	XC_FREE_BLOCKS,
-
-	/*
-	 * Number of free RT extents on the RT device.
-	 */
-	XC_FREE_RTEXTENTS,
-
-	/*
-	 * Number of available for use RT extents.
-	 *
-	 * This counter only exists for zoned RT device and indicates the number
-	 * of RT extents that can be directly used by writes.  XC_FREE_RTEXTENTS
-	 * also includes blocks that have been written previously and freed, but
-	 * sit in a rtgroup that still needs a zone reset.
-	 */
-	XC_FREE_RTAVAILABLE,
-	XC_FREE_NR,
-};
-
-#define XFS_FREECOUNTER_STR \
-	{ XC_FREE_BLOCKS,		"blocks" }, \
-	{ XC_FREE_RTEXTENTS,		"rtextents" }, \
-	{ XC_FREE_RTAVAILABLE,		"rtavailable" }
 
 /*
  * Type verifier functions
@@ -271,11 +214,11 @@ bool xfs_verify_fsbext(struct xfs_mount *mp, xfs_fsblock_t fsbno,
 		xfs_fsblock_t len);
 
 bool xfs_verify_ino(struct xfs_mount *mp, xfs_ino_t ino);
-bool xfs_is_sb_inum(struct xfs_mount *mp, xfs_ino_t ino);
+bool xfs_internal_inum(struct xfs_mount *mp, xfs_ino_t ino);
 bool xfs_verify_dir_ino(struct xfs_mount *mp, xfs_ino_t ino);
 bool xfs_verify_rtbno(struct xfs_mount *mp, xfs_rtblock_t rtbno);
-bool xfs_verify_rtbext(struct xfs_mount *mp, xfs_rtblock_t rtbno,
-		xfs_filblks_t len);
+bool xfs_verify_rtext(struct xfs_mount *mp, xfs_rtblock_t rtbno,
+		xfs_rtblock_t len);
 bool xfs_verify_icount(struct xfs_mount *mp, unsigned long long icount);
 bool xfs_verify_dablk(struct xfs_mount *mp, xfs_fileoff_t off);
 void xfs_icount_range(struct xfs_mount *mp, unsigned long long *min,

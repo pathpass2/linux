@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2019 MediaTek Inc.
  *
  * Author: Ryder Lee <ryder.lee@mediatek.com>
@@ -47,9 +47,6 @@ static int mt7615_efuse_init(struct mt7615_dev *dev, u32 base)
 	void *buf;
 	u32 val;
 
-	if (is_mt7663(&dev->mt76))
-		len = MT7663_EEPROM_SIZE;
-
 	val = mt76_rr(dev, base + MT_EFUSE_BASE_CTRL);
 	if (val & MT_EFUSE_BASE_CTRL_EMPTY)
 		return 0;
@@ -74,8 +71,6 @@ static int mt7615_efuse_init(struct mt7615_dev *dev, u32 base)
 static int mt7615_eeprom_load(struct mt7615_dev *dev, u32 addr)
 {
 	int ret;
-
-	BUILD_BUG_ON(MT7615_EEPROM_FULL_SIZE < MT7663_EEPROM_SIZE);
 
 	ret = mt76_eeprom_init(&dev->mt76, MT7615_EEPROM_FULL_SIZE);
 	if (ret < 0)
@@ -128,12 +123,12 @@ mt7615_eeprom_parse_hw_band_cap(struct mt7615_dev *dev)
 	case MT_EE_5GHZ:
 		dev->mphy.cap.has_5ghz = true;
 		break;
-	case MT_EE_DBDC:
-		dev->dbdc_support = true;
-		fallthrough;
 	case MT_EE_2GHZ:
 		dev->mphy.cap.has_2ghz = true;
 		break;
+	case MT_EE_DBDC:
+		dev->dbdc_support = true;
+		fallthrough;
 	default:
 		dev->mphy.cap.has_2ghz = true;
 		dev->mphy.cap.has_5ghz = true;
@@ -341,7 +336,7 @@ int mt7615_eeprom_init(struct mt7615_dev *dev, u32 addr)
 	ret = mt7615_check_eeprom(&dev->mt76);
 	if (ret && dev->mt76.otp.data) {
 		memcpy(dev->mt76.eeprom.data, dev->mt76.otp.data,
-		       dev->mt76.otp.size);
+		       MT7615_EEPROM_SIZE);
 	} else {
 		dev->flash_eeprom = true;
 		mt7615_cal_free_data(dev);
@@ -351,6 +346,8 @@ int mt7615_eeprom_init(struct mt7615_dev *dev, u32 addr)
 	memcpy(dev->mphy.macaddr, dev->mt76.eeprom.data + MT_EE_MAC_ADDR,
 	       ETH_ALEN);
 
-	return mt76_eeprom_override(&dev->mphy);
+	mt76_eeprom_override(&dev->mphy);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(mt7615_eeprom_init);

@@ -284,6 +284,7 @@ struct s5k5baf {
 	struct regulator_bulk_data supplies[S5K5BAF_NUM_SUPPLIES];
 
 	struct clk *clock;
+	u32 mclk_frequency;
 
 	struct s5k5baf_fw *fw;
 
@@ -575,7 +576,7 @@ static void s5k5baf_hw_patch(struct s5k5baf *state)
 
 static void s5k5baf_hw_set_clocks(struct s5k5baf *state)
 {
-	unsigned long mclk = clk_get_rate(state->clock) / 1000;
+	unsigned long mclk = state->mclk_frequency / 1000;
 	u16 status;
 	static const u16 nseq_clk_cfg[] = {
 		NSEQ(REG_I_USE_NPVI_CLOCKS,
@@ -945,6 +946,10 @@ static int s5k5baf_power_on(struct s5k5baf *state)
 	if (ret < 0)
 		goto err;
 
+	ret = clk_set_rate(state->clock, state->mclk_frequency);
+	if (ret < 0)
+		goto err_reg_dis;
+
 	ret = clk_prepare_enable(state->clock);
 	if (ret < 0)
 		goto err_reg_dis;
@@ -1113,18 +1118,10 @@ out:
 	return ret;
 }
 
-static int s5k5baf_get_frame_interval(struct v4l2_subdev *sd,
-				      struct v4l2_subdev_state *sd_state,
-				      struct v4l2_subdev_frame_interval *fi)
+static int s5k5baf_g_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
 {
 	struct s5k5baf *state = to_s5k5baf(sd);
-
-	/*
-	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
-	 * subdev active state API.
-	 */
-	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE)
-		return -EINVAL;
 
 	mutex_lock(&state->lock);
 	fi->interval.numerator = state->fiv;
@@ -1134,8 +1131,8 @@ static int s5k5baf_get_frame_interval(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static void __s5k5baf_set_frame_interval(struct s5k5baf *state,
-					 struct v4l2_subdev_frame_interval *fi)
+static void s5k5baf_set_frame_interval(struct s5k5baf *state,
+				       struct v4l2_subdev_frame_interval *fi)
 {
 	struct v4l2_fract *i = &fi->interval;
 
@@ -1158,21 +1155,13 @@ static void __s5k5baf_set_frame_interval(struct s5k5baf *state,
 			  state->fiv);
 }
 
-static int s5k5baf_set_frame_interval(struct v4l2_subdev *sd,
-				      struct v4l2_subdev_state *sd_state,
-				      struct v4l2_subdev_frame_interval *fi)
+static int s5k5baf_s_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
 {
 	struct s5k5baf *state = to_s5k5baf(sd);
 
-	/*
-	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
-	 * subdev active state API.
-	 */
-	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE)
-		return -EINVAL;
-
 	mutex_lock(&state->lock);
-	__s5k5baf_set_frame_interval(state, fi);
+	s5k5baf_set_frame_interval(state, fi);
 	mutex_unlock(&state->lock);
 	return 0;
 }
@@ -1284,7 +1273,7 @@ static int s5k5baf_get_fmt(struct v4l2_subdev *sd,
 	struct v4l2_mbus_framefmt *mf;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		mf = v4l2_subdev_state_get_format(sd_state, fmt->pad);
+		mf = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 		fmt->format = *mf;
 		return 0;
 	}
@@ -1318,7 +1307,7 @@ static int s5k5baf_set_fmt(struct v4l2_subdev *sd,
 	mf->field = V4L2_FIELD_NONE;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_state_get_format(sd_state, fmt->pad) = *mf;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = *mf;
 		return 0;
 	}
 
@@ -1390,11 +1379,11 @@ static int s5k5baf_get_selection(struct v4l2_subdev *sd,
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
 		if (rtype == R_COMPOSE)
-			sel->r = *v4l2_subdev_state_get_compose(sd_state,
-								sel->pad);
+			sel->r = *v4l2_subdev_get_try_compose(sd, sd_state,
+							      sel->pad);
 		else
-			sel->r = *v4l2_subdev_state_get_crop(sd_state,
-							     sel->pad);
+			sel->r = *v4l2_subdev_get_try_crop(sd, sd_state,
+							   sel->pad);
 		return 0;
 	}
 
@@ -1483,11 +1472,14 @@ static int s5k5baf_set_selection(struct v4l2_subdev *sd,
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
 		rects = (struct v4l2_rect * []) {
-			&s5k5baf_cis_rect,
-			v4l2_subdev_state_get_crop(sd_state, PAD_CIS),
-			v4l2_subdev_state_get_compose(sd_state, PAD_CIS),
-			v4l2_subdev_state_get_crop(sd_state, PAD_OUT)
-		};
+				&s5k5baf_cis_rect,
+				v4l2_subdev_get_try_crop(sd, sd_state,
+							 PAD_CIS),
+				v4l2_subdev_get_try_compose(sd, sd_state,
+							    PAD_CIS),
+				v4l2_subdev_get_try_crop(sd, sd_state,
+							 PAD_OUT)
+			};
 		s5k5baf_set_rect_and_adjust(rects, rtype, &sel->r);
 		return 0;
 	}
@@ -1537,11 +1529,11 @@ static const struct v4l2_subdev_pad_ops s5k5baf_pad_ops = {
 	.set_fmt		= s5k5baf_set_fmt,
 	.get_selection		= s5k5baf_get_selection,
 	.set_selection		= s5k5baf_set_selection,
-	.get_frame_interval	= s5k5baf_get_frame_interval,
-	.set_frame_interval	= s5k5baf_set_frame_interval,
 };
 
 static const struct v4l2_subdev_video_ops s5k5baf_video_ops = {
+	.g_frame_interval	= s5k5baf_g_frame_interval,
+	.s_frame_interval	= s5k5baf_s_frame_interval,
 	.s_stream		= s5k5baf_s_stream,
 };
 
@@ -1704,22 +1696,22 @@ static int s5k5baf_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct v4l2_mbus_framefmt *mf;
 
-	mf = v4l2_subdev_state_get_format(fh->state, PAD_CIS);
+	mf = v4l2_subdev_get_try_format(sd, fh->state, PAD_CIS);
 	s5k5baf_try_cis_format(mf);
 
 	if (s5k5baf_is_cis_subdev(sd))
 		return 0;
 
-	mf = v4l2_subdev_state_get_format(fh->state, PAD_OUT);
+	mf = v4l2_subdev_get_try_format(sd, fh->state, PAD_OUT);
 	mf->colorspace = s5k5baf_formats[0].colorspace;
 	mf->code = s5k5baf_formats[0].code;
 	mf->width = s5k5baf_cis_rect.width;
 	mf->height = s5k5baf_cis_rect.height;
 	mf->field = V4L2_FIELD_NONE;
 
-	*v4l2_subdev_state_get_crop(fh->state, PAD_CIS) = s5k5baf_cis_rect;
-	*v4l2_subdev_state_get_compose(fh->state, PAD_CIS) = s5k5baf_cis_rect;
-	*v4l2_subdev_state_get_crop(fh->state, PAD_OUT) = s5k5baf_cis_rect;
+	*v4l2_subdev_get_try_crop(sd, fh->state, PAD_CIS) = s5k5baf_cis_rect;
+	*v4l2_subdev_get_try_compose(sd, fh->state, PAD_CIS) = s5k5baf_cis_rect;
+	*v4l2_subdev_get_try_crop(sd, fh->state, PAD_OUT) = s5k5baf_cis_rect;
 
 	return 0;
 }
@@ -1836,7 +1828,15 @@ static int s5k5baf_parse_device_node(struct s5k5baf *state, struct device *dev)
 		return -EINVAL;
 	}
 
-	node_ep = of_graph_get_endpoint_by_regs(node, 0, -1);
+	ret = of_property_read_u32(node, "clock-frequency",
+				   &state->mclk_frequency);
+	if (ret < 0) {
+		state->mclk_frequency = S5K5BAF_DEFAULT_MCLK_FREQ;
+		dev_info(dev, "using default %u Hz clock frequency\n",
+			 state->mclk_frequency);
+	}
+
+	node_ep = of_graph_get_next_endpoint(node, NULL);
 	if (!node_ep) {
 		dev_err(dev, "no endpoint defined at node %pOF\n", node);
 		return -EINVAL;
@@ -1954,11 +1954,9 @@ static int s5k5baf_probe(struct i2c_client *c)
 	if (ret < 0)
 		goto err_me;
 
-	state->clock = devm_v4l2_sensor_clk_get_legacy(state->sd.dev,
-						       S5K5BAF_CLK_NAME, false,
-						       S5K5BAF_DEFAULT_MCLK_FREQ);
+	state->clock = devm_clk_get(state->sd.dev, S5K5BAF_CLK_NAME);
 	if (IS_ERR(state->clock)) {
-		ret = PTR_ERR(state->clock);
+		ret = -EPROBE_DEFER;
 		goto err_me;
 	}
 
@@ -2007,8 +2005,8 @@ static void s5k5baf_remove(struct i2c_client *c)
 }
 
 static const struct i2c_device_id s5k5baf_id[] = {
-	{ S5K5BAF_DRIVER_NAME },
-	{ }
+	{ S5K5BAF_DRIVER_NAME, 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, s5k5baf_id);
 
@@ -2023,7 +2021,7 @@ static struct i2c_driver s5k5baf_i2c_driver = {
 		.of_match_table = s5k5baf_of_match,
 		.name = S5K5BAF_DRIVER_NAME
 	},
-	.probe		= s5k5baf_probe,
+	.probe_new	= s5k5baf_probe,
 	.remove		= s5k5baf_remove,
 	.id_table	= s5k5baf_id,
 };

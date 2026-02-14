@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause-Clear */
+/* SPDX-License-Identifier: ISC */
 /* Copyright (C) 2020 MediaTek Inc. */
 
 #ifndef __MT7915_MCU_H
@@ -29,7 +29,7 @@ struct mt7915_mcu_thermal_ctrl {
 } __packed;
 
 struct mt7915_mcu_thermal_notify {
-	struct mt76_connac2_mcu_rxd_hdr rxd;
+	struct mt76_connac2_mcu_rxd rxd;
 
 	struct mt7915_mcu_thermal_ctrl ctrl;
 	__le32 temperature;
@@ -37,7 +37,7 @@ struct mt7915_mcu_thermal_notify {
 } __packed;
 
 struct mt7915_mcu_csa_notify {
-	struct mt76_connac2_mcu_rxd_hdr rxd;
+	struct mt76_connac2_mcu_rxd rxd;
 
 	u8 omac_idx;
 	u8 csa_count;
@@ -46,7 +46,7 @@ struct mt7915_mcu_csa_notify {
 } __packed;
 
 struct mt7915_mcu_bcc_notify {
-	struct mt76_connac2_mcu_rxd_hdr rxd;
+	struct mt76_connac2_mcu_rxd rxd;
 
 	u8 band_idx;
 	u8 omac_idx;
@@ -55,9 +55,9 @@ struct mt7915_mcu_bcc_notify {
 } __packed;
 
 struct mt7915_mcu_rdd_report {
-	struct mt76_connac2_mcu_rxd_hdr rxd;
+	struct mt76_connac2_mcu_rxd rxd;
 
-	u8 rdd_idx;
+	u8 band_idx;
 	u8 long_detected;
 	u8 constant_prf_detected;
 	u8 staggered_prf_detected;
@@ -429,16 +429,10 @@ enum {
 
 enum {
 	TX_POWER_LIMIT_ENABLE,
-	TX_POWER_LIMIT_PATH_ENABLE = 0x3,
 	TX_POWER_LIMIT_TABLE = 0x4,
 	TX_POWER_LIMIT_INFO = 0x7,
 	TX_POWER_LIMIT_FRAME = 0x11,
 	TX_POWER_LIMIT_FRAME_MIN = 0x12,
-};
-
-enum {
-	TX_POWER_INFO_PATH = 1,
-	TX_POWER_INFO_RATE,
 };
 
 enum {
@@ -501,14 +495,10 @@ enum {
 	SER_RECOVER
 };
 
-#define MT7915_MAX_BEACON_SIZE		1308
-#define MT7915_BEACON_UPDATE_SIZE	(sizeof(struct sta_req_hdr) +	\
-					 sizeof(struct bss_info_bcn) +	\
-					 sizeof(struct bss_info_bcn_cntdwn) +	\
-					 sizeof(struct bss_info_bcn_mbss) +	\
-					 MT_TXD_SIZE +	\
-					 sizeof(struct bss_info_bcn_cont))
-#define MT7915_MAX_BSS_OFFLOAD_SIZE	(MT7915_MAX_BEACON_SIZE +	\
+#define MT7915_MAX_BEACON_SIZE		512
+#define MT7915_MAX_INBAND_FRAME_SIZE	256
+#define MT7915_MAX_BSS_OFFLOAD_SIZE	(MT7915_MAX_BEACON_SIZE +	  \
+					 MT7915_MAX_INBAND_FRAME_SIZE +	  \
 					 MT7915_BEACON_UPDATE_SIZE)
 
 #define MT7915_BSS_UPDATE_MAX_SIZE	(sizeof(struct sta_req_hdr) +	\
@@ -520,5 +510,23 @@ enum {
 					 sizeof(struct bss_info_he) +	\
 					 sizeof(struct bss_info_bmc_rate) +\
 					 sizeof(struct bss_info_ext_bss))
+
+#define MT7915_BEACON_UPDATE_SIZE	(sizeof(struct sta_req_hdr) +	\
+					 sizeof(struct bss_info_bcn_cntdwn) + \
+					 sizeof(struct bss_info_bcn_mbss) + \
+					 sizeof(struct bss_info_bcn_cont) + \
+					 sizeof(struct bss_info_inband_discovery))
+
+static inline s8
+mt7915_get_power_bound(struct mt7915_phy *phy, s8 txpower)
+{
+	struct mt76_phy *mphy = phy->mt76;
+	int n_chains = hweight8(mphy->antenna_mask);
+
+	txpower = mt76_get_sar_power(mphy, mphy->chandef.chan, txpower * 2);
+	txpower -= mt76_tx_power_nss_delta(n_chains);
+
+	return txpower;
+}
 
 #endif

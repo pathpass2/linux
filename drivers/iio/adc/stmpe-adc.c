@@ -14,7 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/stmpe.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/device.h>
 
@@ -267,8 +267,10 @@ static int stmpe_adc_probe(struct platform_device *pdev)
 		return irq_adc;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(struct stmpe_adc));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&pdev->dev, "failed allocating iio device\n");
 		return -ENOMEM;
+	}
 
 	info = iio_priv(indio_dev);
 	mutex_init(&info->lock);
@@ -345,7 +347,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(stmpe_adc_pm_ops, NULL, stmpe_adc_resume);
 
 static const struct of_device_id stmpe_adc_ids[] = {
 	{ .compatible = "st,stmpe-adc", },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(of, stmpe_adc_ids);
 

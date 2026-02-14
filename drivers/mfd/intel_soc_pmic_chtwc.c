@@ -159,25 +159,18 @@ static const struct dmi_system_id cht_wc_model_dmi_ids[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "Mipad2"),
 		},
 	}, {
-		/* Lenovo Yoga Book X90F / X90L */
+		/* Lenovo Yoga Book X90F / X91F / X91L */
 		.driver_data = (void *)(long)INTEL_CHT_WC_LENOVO_YOGABOOK1,
 		.matches = {
-			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel Corporation"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "CHERRYVIEW D1 PLATFORM"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_VERSION, "YETI-11"),
-		},
-	}, {
-		/* Lenovo Yoga Book X91F / X91L */
-		.driver_data = (void *)(long)INTEL_CHT_WC_LENOVO_YOGABOOK1,
-		.matches = {
-			/* Non exact match to match F + L versions */
-			DMI_MATCH(DMI_PRODUCT_NAME, "Lenovo YB1-X91"),
+			/* Non exact match to match all versions */
+			DMI_MATCH(DMI_PRODUCT_NAME, "Lenovo YB1-X9"),
 		},
 	}, {
 		/* Lenovo Yoga Tab 3 Pro YT3-X90F */
 		.driver_data = (void *)(long)INTEL_CHT_WC_LENOVO_YT3_X90,
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Intel Corporation"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "CHERRYVIEW D1 PLATFORM"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "Blade3-10A-001"),
 		},
 	},
@@ -267,11 +260,11 @@ static const struct acpi_device_id cht_wc_acpi_ids[] = {
 
 static struct i2c_driver cht_wc_driver = {
 	.driver	= {
-		.name	= "intel_soc_pmic_chtwc",
+		.name	= "CHT Whiskey Cove PMIC",
 		.pm     = pm_sleep_ptr(&cht_wc_pm_ops),
 		.acpi_match_table = cht_wc_acpi_ids,
 	},
-	.probe = cht_wc_probe,
+	.probe_new = cht_wc_probe,
 	.shutdown = cht_wc_shutdown,
 	.id_table = cht_wc_i2c_id,
 };

@@ -37,8 +37,7 @@ properties:
     minItems: 3
     maxItems: 4
 
-  clocks:
-    maxItems: 5
+  clocks: true
 
   clock-names:
     items:

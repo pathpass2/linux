@@ -96,7 +96,6 @@ static const u16 pci_ext_cap_length[PCI_EXT_CAP_ID_MAX + 1] = {
 	[PCI_EXT_CAP_ID_SECPCI]	=	0,	/* not yet */
 	[PCI_EXT_CAP_ID_PMUX]	=	0,	/* not yet */
 	[PCI_EXT_CAP_ID_PASID]	=	0,	/* not yet */
-	[PCI_EXT_CAP_ID_DVSEC]	=	0xFF,
 };
 
 /*
@@ -313,10 +312,6 @@ static int vfio_virt_config_read(struct vfio_pci_core_device *vdev, int pos,
 	return count;
 }
 
-static struct perm_bits direct_ro_perms = {
-	.readfn = vfio_direct_config_read,
-};
-
 /* Default capability regions to read-only, no-virtualization */
 static struct perm_bits cap_perms[PCI_CAP_ID_MAX + 1] = {
 	[0 ... PCI_CAP_ID_MAX] = { .readfn = vfio_direct_config_read }
@@ -416,7 +411,6 @@ bool __vfio_pci_memory_enabled(struct vfio_pci_core_device *vdev)
 	return pdev->current_state < PCI_D3hot &&
 	       (pdev->no_command_memory || (cmd & PCI_COMMAND_MEMORY));
 }
-EXPORT_SYMBOL_GPL(__vfio_pci_memory_enabled);
 
 /*
  * Restore the *real* BARs after we detect a FLR or backdoor reset.
@@ -512,13 +506,13 @@ static void vfio_bar_fixup(struct vfio_pci_core_device *vdev)
 		mask = ~(pci_resource_len(pdev, PCI_ROM_RESOURCE) - 1);
 		mask |= PCI_ROM_ADDRESS_ENABLE;
 		*vbar &= cpu_to_le32((u32)mask);
-	} else if (pdev->rom && pdev->romlen) {
-		mask = ~(roundup_pow_of_two(pdev->romlen) - 1);
+	} else if (pdev->resource[PCI_ROM_RESOURCE].flags &
+					IORESOURCE_ROM_SHADOW) {
+		mask = ~(0x20000 - 1);
 		mask |= PCI_ROM_ADDRESS_ENABLE;
 		*vbar &= cpu_to_le32((u32)mask);
-	} else {
+	} else
 		*vbar = 0;
-	}
 
 	vdev->bardirty = false;
 }
@@ -590,12 +584,10 @@ static int vfio_basic_config_write(struct vfio_pci_core_device *vdev, int pos,
 		virt_mem = !!(le16_to_cpu(*virt_cmd) & PCI_COMMAND_MEMORY);
 		new_mem = !!(new_cmd & PCI_COMMAND_MEMORY);
 
-		if (!new_mem) {
+		if (!new_mem)
 			vfio_pci_zap_and_down_write_memory_lock(vdev);
-			vfio_pci_dma_buf_move(vdev, true);
-		} else {
+		else
 			down_write(&vdev->memory_lock);
-		}
 
 		/*
 		 * If the user is writing mem/io enable (new_mem/io) and we
@@ -630,8 +622,6 @@ static int vfio_basic_config_write(struct vfio_pci_core_device *vdev, int pos,
 		*virt_cmd &= cpu_to_le16(~mask);
 		*virt_cmd |= cpu_to_le16(new_cmd & mask);
 
-		if (__vfio_pci_memory_enabled(vdev))
-			vfio_pci_dma_buf_move(vdev, false);
 		up_write(&vdev->memory_lock);
 	}
 
@@ -712,16 +702,12 @@ static int __init init_pci_cap_basic_perm(struct perm_bits *perm)
 static void vfio_lock_and_set_power_state(struct vfio_pci_core_device *vdev,
 					  pci_power_t state)
 {
-	if (state >= PCI_D3hot) {
+	if (state >= PCI_D3hot)
 		vfio_pci_zap_and_down_write_memory_lock(vdev);
-		vfio_pci_dma_buf_move(vdev, true);
-	} else {
+	else
 		down_write(&vdev->memory_lock);
-	}
 
 	vfio_pci_set_power_state(vdev, state);
-	if (__vfio_pci_memory_enabled(vdev))
-		vfio_pci_dma_buf_move(vdev, false);
 	up_write(&vdev->memory_lock);
 }
 
@@ -909,10 +895,7 @@ static int vfio_exp_config_write(struct vfio_pci_core_device *vdev, int pos,
 
 		if (!ret && (cap & PCI_EXP_DEVCAP_FLR)) {
 			vfio_pci_zap_and_down_write_memory_lock(vdev);
-			vfio_pci_dma_buf_move(vdev, true);
 			pci_try_reset_function(vdev->pdev);
-			if (__vfio_pci_memory_enabled(vdev))
-				vfio_pci_dma_buf_move(vdev, false);
 			up_write(&vdev->memory_lock);
 		}
 	}
@@ -994,10 +977,7 @@ static int vfio_af_config_write(struct vfio_pci_core_device *vdev, int pos,
 
 		if (!ret && (cap & PCI_AF_CAP_FLR) && (cap & PCI_AF_CAP_TP)) {
 			vfio_pci_zap_and_down_write_memory_lock(vdev);
-			vfio_pci_dma_buf_move(vdev, true);
 			pci_try_reset_function(vdev->pdev);
-			if (__vfio_pci_memory_enabled(vdev))
-				vfio_pci_dma_buf_move(vdev, false);
 			up_write(&vdev->memory_lock);
 		}
 	}
@@ -1121,7 +1101,6 @@ int __init vfio_pci_init_perm_bits(void)
 	ret |= init_pci_ext_cap_err_perm(&ecap_perms[PCI_EXT_CAP_ID_ERR]);
 	ret |= init_pci_ext_cap_pwr_perm(&ecap_perms[PCI_EXT_CAP_ID_PWR]);
 	ecap_perms[PCI_EXT_CAP_ID_VNDR].writefn = vfio_raw_config_write;
-	ecap_perms[PCI_EXT_CAP_ID_DVSEC].writefn = vfio_raw_config_write;
 
 	if (ret)
 		vfio_pci_uninit_perm_bits();
@@ -1404,12 +1383,11 @@ static int vfio_ext_cap_len(struct vfio_pci_core_device *vdev, u16 ecap, u16 epo
 
 	switch (ecap) {
 	case PCI_EXT_CAP_ID_VNDR:
-		ret = pci_read_config_dword(pdev, epos + PCI_VNDR_HEADER,
-					    &dword);
+		ret = pci_read_config_dword(pdev, epos + PCI_VSEC_HDR, &dword);
 		if (ret)
 			return pcibios_err_to_errno(ret);
 
-		return PCI_VNDR_HEADER_LEN(dword);
+		return dword >> PCI_VSEC_HDR_LEN_SHIFT;
 	case PCI_EXT_CAP_ID_VC:
 	case PCI_EXT_CAP_ID_VC9:
 	case PCI_EXT_CAP_ID_MFVC:
@@ -1462,11 +1440,6 @@ static int vfio_ext_cap_len(struct vfio_pci_core_device *vdev, u16 ecap, u16 epo
 			return PCI_TPH_BASE_SIZEOF + (sts * 2) + 2;
 		}
 		return PCI_TPH_BASE_SIZEOF;
-	case PCI_EXT_CAP_ID_DVSEC:
-		ret = pci_read_config_dword(pdev, epos + PCI_DVSEC_HEADER1, &dword);
-		if (ret)
-			return pcibios_err_to_errno(ret);
-		return PCI_DVSEC_HEADER1_LEN(dword);
 	default:
 		pci_warn(pdev, "%s: unknown length for PCI ecap %#x@%#x\n",
 			 __func__, ecap, epos);
@@ -1586,8 +1559,8 @@ static int vfio_cap_init(struct vfio_pci_core_device *vdev)
 		}
 
 		if (!len) {
-			pci_dbg(pdev, "%s: hiding cap %#x@%#x\n", __func__,
-				cap, pos);
+			pci_info(pdev, "%s: hiding cap %#x@%#x\n", __func__,
+				 cap, pos);
 			*prev = next;
 			pos = next;
 			continue;
@@ -1663,8 +1636,8 @@ static int vfio_ecap_init(struct vfio_pci_core_device *vdev)
 		}
 
 		if (!len) {
-			pci_dbg(pdev, "%s: hiding ecap %#x@%#x\n",
-				__func__, ecap, epos);
+			pci_info(pdev, "%s: hiding ecap %#x@%#x\n",
+				 __func__, ecap, epos);
 
 			/* If not the first in the chain, we can skip over it */
 			if (prev) {
@@ -1829,8 +1802,7 @@ int vfio_config_init(struct vfio_pci_core_device *vdev)
 					cpu_to_le16(PCI_COMMAND_MEMORY);
 	}
 
-	if (!IS_ENABLED(CONFIG_VFIO_PCI_INTX) || vdev->nointx ||
-	    !vdev->pdev->irq || vdev->pdev->irq == IRQ_NOTCONNECTED)
+	if (!IS_ENABLED(CONFIG_VFIO_PCI_INTX) || vdev->nointx)
 		vconfig[PCI_INTERRUPT_PIN] = 0;
 
 	ret = vfio_cap_init(vdev);
@@ -1918,17 +1890,9 @@ static ssize_t vfio_config_do_rw(struct vfio_pci_core_device *vdev, char __user 
 		cap_start = *ppos;
 	} else {
 		if (*ppos >= PCI_CFG_SPACE_SIZE) {
-			/*
-			 * We can get a cap_id that exceeds PCI_EXT_CAP_ID_MAX
-			 * if we're hiding an unknown capability at the start
-			 * of the extended capability list.  Use default, ro
-			 * access, which will virtualize the id and next values.
-			 */
-			if (cap_id > PCI_EXT_CAP_ID_MAX)
-				perm = &direct_ro_perms;
-			else
-				perm = &ecap_perms[cap_id];
+			WARN_ON(cap_id > PCI_EXT_CAP_ID_MAX);
 
+			perm = &ecap_perms[cap_id];
 			cap_start = vfio_find_cap_start(vdev, *ppos);
 		} else {
 			WARN_ON(cap_id > PCI_CAP_ID_MAX);
@@ -1995,45 +1959,3 @@ ssize_t vfio_pci_config_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 
 	return done;
 }
-
-/**
- * vfio_pci_core_range_intersect_range() - Determine overlap between a buffer
- *					   and register offset ranges.
- * @buf_start:		start offset of the buffer
- * @buf_cnt:		number of buffer bytes
- * @reg_start:		start register offset
- * @reg_cnt:		number of register bytes
- * @buf_offset:	start offset of overlap in the buffer
- * @intersect_count:	number of overlapping bytes
- * @register_offset:	start offset of overlap in register
- *
- * Returns: true if there is overlap, false if not.
- * The overlap start and size is returned through function args.
- */
-bool vfio_pci_core_range_intersect_range(loff_t buf_start, size_t buf_cnt,
-					 loff_t reg_start, size_t reg_cnt,
-					 loff_t *buf_offset,
-					 size_t *intersect_count,
-					 size_t *register_offset)
-{
-	if (buf_start <= reg_start &&
-	    buf_start + buf_cnt > reg_start) {
-		*buf_offset = reg_start - buf_start;
-		*intersect_count = min_t(size_t, reg_cnt,
-					 buf_start + buf_cnt - reg_start);
-		*register_offset = 0;
-		return true;
-	}
-
-	if (buf_start > reg_start &&
-	    buf_start < reg_start + reg_cnt) {
-		*buf_offset = 0;
-		*intersect_count = min_t(size_t, buf_cnt,
-					 reg_start + reg_cnt - buf_start);
-		*register_offset = buf_start - reg_start;
-		return true;
-	}
-
-	return false;
-}
-EXPORT_SYMBOL_GPL(vfio_pci_core_range_intersect_range);

@@ -6,7 +6,7 @@
 #ifndef _ASM_ARC_SWITCH_TO_H
 #define _ASM_ARC_SWITCH_TO_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/sched.h>
 #include <asm/dsp-impl.h>

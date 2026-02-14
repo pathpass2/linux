@@ -8,7 +8,7 @@ title: Qualcomm RPMh Network-On-Chip Interconnect
 
 maintainers:
   - Georgi Djakov <georgi.djakov@linaro.org>
-  - Odelu Kukatla <quic_okukatla@quicinc.com>
+  - Odelu Kukatla <okukatla@codeaurora.org>
 
 description: |
    RPMh interconnect providers support system bandwidth requirements through
@@ -17,6 +17,9 @@ description: |
    associated with each execution environment. Provider nodes must point to at
    least one RPMh device child node pertaining to their RSC and each provider
    can map to multiple RPMh resources.
+
+allOf:
+  - $ref: qcom,rpmh-common.yaml#
 
 properties:
   reg:
@@ -71,7 +74,7 @@ properties:
       - qcom,sdx65-system-noc
       - qcom,sm8150-aggre1-noc
       - qcom,sm8150-aggre2-noc
-      - qcom,sm8150-camnoc-virt
+      - qcom,sm8150-camnoc-noc
       - qcom,sm8150-compute-noc
       - qcom,sm8150-config-noc
       - qcom,sm8150-dc-noc
@@ -88,7 +91,6 @@ properties:
       - qcom,sm8250-mc-virt
       - qcom,sm8250-mmss-noc
       - qcom,sm8250-npu-noc
-      - qcom,sm8250-qup-virt
       - qcom,sm8250-system-noc
       - qcom,sm8350-aggre1-noc
       - qcom,sm8350-aggre2-noc
@@ -105,40 +107,25 @@ properties:
 
 required:
   - compatible
-
-allOf:
-  - $ref: qcom,rpmh-common.yaml#
-  - if:
-      not:
-        properties:
-          compatible:
-            enum:
-              - qcom,sc8180x-camnoc-virt
-              - qcom,sc8180x-mc-virt
-              - qcom,sc8180x-qup-virt
-              - qcom,sdx65-mc-virt
-              - qcom,sm8250-qup-virt
-    then:
-      required:
-        - reg
+  - reg
 
 unevaluatedProperties: false
 
 examples:
   - |
-    #include <dt-bindings/interconnect/qcom,sdm845.h>
+      #include <dt-bindings/interconnect/qcom,sdm845.h>
 
-    interconnect@1380000 {
-        compatible = "qcom,sdm845-mem-noc";
-        reg = <0x01380000 0x27200>;
-        #interconnect-cells = <1>;
-        qcom,bcm-voters = <&apps_bcm_voter>;
-    };
+      mem_noc: interconnect@1380000 {
+             compatible = "qcom,sdm845-mem-noc";
+             reg = <0x01380000 0x27200>;
+             #interconnect-cells = <1>;
+             qcom,bcm-voters = <&apps_bcm_voter>;
+      };
 
-    interconnect@1740000 {
-        compatible = "qcom,sdm845-mmss-noc";
-        reg = <0x01740000 0x1c1000>;
-        #interconnect-cells = <1>;
-        qcom,bcm-voter-names = "apps", "disp";
-        qcom,bcm-voters = <&apps_bcm_voter>, <&disp_bcm_voter>;
-    };
+      mmss_noc: interconnect@1740000 {
+             compatible = "qcom,sdm845-mmss-noc";
+             reg = <0x01740000 0x1c1000>;
+             #interconnect-cells = <1>;
+             qcom,bcm-voter-names = "apps", "disp";
+             qcom,bcm-voters = <&apps_bcm_voter>, <&disp_bcm_voter>;
+      };

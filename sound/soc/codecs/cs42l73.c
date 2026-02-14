@@ -8,33 +8,26 @@
  *	    Brian Austin, Cirrus Logic Inc, <brian.austin@cirrus.com>
  */
 
-#include <linux/delay.h>
-#include <linux/gpio/consumer.h>
-#include <linux/i2c.h>
-#include <linux/init.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/delay.h>
+#include <linux/of_gpio.h>
 #include <linux/pm.h>
+#include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <sound/core.h>
-#include <sound/initval.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
+#include <sound/initval.h>
 #include <sound/tlv.h>
-#include "cirrus_legacy.h"
+#include <sound/cs42l73.h>
 #include "cs42l73.h"
-
-struct cs42l73_platform_data {
-	/* RST GPIO */
-	struct gpio_desc *reset_gpio;
-	unsigned int chgfreq;
-	int jack_detection;
-	unsigned int mclk_freq;
-};
+#include "cirrus_legacy.h"
 
 struct sp_config {
 	u8 spc, mmcc, spfs;
@@ -950,11 +943,11 @@ static int cs42l73_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 	mmcc = snd_soc_component_read(component, CS42L73_MMCC(id));
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		mmcc |= CS42L73_MS_MASTER;
 		break;
 
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		mmcc &= ~CS42L73_MS_MASTER;
 		break;
 
@@ -1101,7 +1094,6 @@ static int cs42l73_set_bias_level(struct snd_soc_component *component,
 				  enum snd_soc_bias_level level)
 {
 	struct cs42l73_private *cs42l73 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -1113,7 +1105,7 @@ static int cs42l73_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			regcache_cache_only(cs42l73->regmap, false);
 			regcache_sync(cs42l73->regmap);
 		}
@@ -1275,7 +1267,7 @@ static const struct regmap_config cs42l73_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(cs42l73_reg_defaults),
 	.volatile_reg = cs42l73_volatile_register,
 	.readable_reg = cs42l73_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.use_single_read = true,
 	.use_single_write = true,
@@ -1284,7 +1276,7 @@ static const struct regmap_config cs42l73_regmap = {
 static int cs42l73_i2c_probe(struct i2c_client *i2c_client)
 {
 	struct cs42l73_private *cs42l73;
-	struct cs42l73_platform_data *pdata;
+	struct cs42l73_platform_data *pdata = dev_get_platdata(&i2c_client->dev);
 	int ret, devid;
 	unsigned int reg;
 	u32 val32;
@@ -1300,27 +1292,38 @@ static int cs42l73_i2c_probe(struct i2c_client *i2c_client)
 		return ret;
 	}
 
-	pdata = devm_kzalloc(&i2c_client->dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata)
-		return -ENOMEM;
+	if (pdata) {
+		cs42l73->pdata = *pdata;
+	} else {
+		pdata = devm_kzalloc(&i2c_client->dev, sizeof(*pdata),
+				     GFP_KERNEL);
+		if (!pdata)
+			return -ENOMEM;
 
-	if (i2c_client->dev.of_node) {
-		if (of_property_read_u32(i2c_client->dev.of_node, "chgfreq", &val32) >= 0)
-			pdata->chgfreq = val32;
+		if (i2c_client->dev.of_node) {
+			if (of_property_read_u32(i2c_client->dev.of_node,
+				"chgfreq", &val32) >= 0)
+				pdata->chgfreq = val32;
+		}
+		pdata->reset_gpio = of_get_named_gpio(i2c_client->dev.of_node,
+						"reset-gpio", 0);
+		cs42l73->pdata = *pdata;
 	}
-	pdata->reset_gpio = devm_gpiod_get_optional(&i2c_client->dev, "reset", GPIOD_OUT_LOW);
-
-	if (IS_ERR(pdata->reset_gpio))
-		return PTR_ERR(pdata->reset_gpio);
-
-	gpiod_set_consumer_name(pdata->reset_gpio, "CS42L73 /RST");
-	cs42l73->pdata = *pdata;
 
 	i2c_set_clientdata(i2c_client, cs42l73);
 
 	if (cs42l73->pdata.reset_gpio) {
-		gpiod_set_value_cansleep(cs42l73->pdata.reset_gpio, 1);
-		gpiod_set_value_cansleep(cs42l73->pdata.reset_gpio, 0);
+		ret = devm_gpio_request_one(&i2c_client->dev,
+					    cs42l73->pdata.reset_gpio,
+					    GPIOF_OUT_INIT_HIGH,
+					    "CS42L73 /RST");
+		if (ret < 0) {
+			dev_err(&i2c_client->dev, "Failed to request /RST %d: %d\n",
+				cs42l73->pdata.reset_gpio, ret);
+			return ret;
+		}
+		gpio_set_value_cansleep(cs42l73->pdata.reset_gpio, 0);
+		gpio_set_value_cansleep(cs42l73->pdata.reset_gpio, 1);
 	}
 
 	/* initialize codec */
@@ -1357,7 +1360,7 @@ static int cs42l73_i2c_probe(struct i2c_client *i2c_client)
 	return 0;
 
 err_reset:
-	gpiod_set_value_cansleep(cs42l73->pdata.reset_gpio, 1);
+	gpio_set_value_cansleep(cs42l73->pdata.reset_gpio, 0);
 
 	return ret;
 }
@@ -1369,7 +1372,7 @@ static const struct of_device_id cs42l73_of_match[] = {
 MODULE_DEVICE_TABLE(of, cs42l73_of_match);
 
 static const struct i2c_device_id cs42l73_id[] = {
-	{"cs42l73"},
+	{"cs42l73", 0},
 	{}
 };
 
@@ -1381,7 +1384,7 @@ static struct i2c_driver cs42l73_i2c_driver = {
 		   .of_match_table = cs42l73_of_match,
 		   },
 	.id_table = cs42l73_id,
-	.probe = cs42l73_i2c_probe,
+	.probe_new = cs42l73_i2c_probe,
 
 };
 

@@ -12,7 +12,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/delay.h>
-#include <linux/types.h>
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -46,6 +45,7 @@
 #define STK8312_ALL_CHANNEL_SIZE	3
 
 #define STK8312_DRIVER_NAME		"stk8312"
+#define STK8312_IRQ_NAME		"stk8312_event"
 
 /*
  * The accelerometer has two measurement ranges:
@@ -105,7 +105,7 @@ struct stk8312_data {
 	/* Ensure timestamp is naturally aligned */
 	struct {
 		s8 chans[3];
-		aligned_s64 timestamp;
+		s64 timestamp __aligned(8);
 	} scan;
 };
 
@@ -448,7 +448,8 @@ static irqreturn_t stk8312_trigger_handler(int irq, void *p)
 			goto err;
 		}
 	} else {
-		iio_for_each_active_channel(indio_dev, bit) {
+		for_each_set_bit(bit, indio_dev->active_scan_mask,
+				 indio_dev->masklength) {
 			ret = stk8312_read_accel(data, bit);
 			if (ret < 0) {
 				mutex_unlock(&data->lock);
@@ -459,8 +460,8 @@ static irqreturn_t stk8312_trigger_handler(int irq, void *p)
 	}
 	mutex_unlock(&data->lock);
 
-	iio_push_to_buffers_with_ts(indio_dev, &data->scan, sizeof(data->scan),
-				    pf->timestamp);
+	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
+					   pf->timestamp);
 err:
 	iio_trigger_notify_done(indio_dev->trig);
 
@@ -504,8 +505,10 @@ static int stk8312_probe(struct i2c_client *client)
 	struct stk8312_data *data;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&client->dev, "iio allocation failed!\n");
 		return -ENOMEM;
+	}
 
 	data = iio_priv(indio_dev);
 	data->client = client;
@@ -540,7 +543,7 @@ static int stk8312_probe(struct i2c_client *client)
 						NULL,
 						IRQF_TRIGGER_RISING |
 						IRQF_ONESHOT,
-						"stk8312_event",
+						STK8312_IRQ_NAME,
 						indio_dev);
 		if (ret < 0) {
 			dev_err(&client->dev, "request irq %d failed\n",
@@ -630,9 +633,9 @@ static DEFINE_SIMPLE_DEV_PM_OPS(stk8312_pm_ops, stk8312_suspend,
 
 static const struct i2c_device_id stk8312_i2c_id[] = {
 	/* Deprecated in favour of lowercase form */
-	{ "STK8312" },
-	{ "stk8312" },
-	{ }
+	{ "STK8312", 0 },
+	{ "stk8312", 0 },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, stk8312_i2c_id);
 
@@ -641,7 +644,7 @@ static struct i2c_driver stk8312_driver = {
 		.name = STK8312_DRIVER_NAME,
 		.pm = pm_sleep_ptr(&stk8312_pm_ops),
 	},
-	.probe =        stk8312_probe,
+	.probe_new =        stk8312_probe,
 	.remove =           stk8312_remove,
 	.id_table =         stk8312_i2c_id,
 };

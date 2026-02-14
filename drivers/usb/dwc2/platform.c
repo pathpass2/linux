@@ -11,7 +11,7 @@
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/phy/phy.h>
@@ -101,16 +101,10 @@ static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
 	if (ret)
 		return ret;
 
-	if (hsotg->utmi_clk) {
-		ret = clk_prepare_enable(hsotg->utmi_clk);
-		if (ret)
-			goto err_dis_reg;
-	}
-
 	if (hsotg->clk) {
 		ret = clk_prepare_enable(hsotg->clk);
 		if (ret)
-			goto err_dis_utmi_clk;
+			return ret;
 	}
 
 	if (hsotg->uphy) {
@@ -119,28 +113,9 @@ static int __dwc2_lowlevel_hw_enable(struct dwc2_hsotg *hsotg)
 		ret = hsotg->plat->phy_init(pdev, hsotg->plat->phy_type);
 	} else {
 		ret = phy_init(hsotg->phy);
-		if (ret == 0) {
+		if (ret == 0)
 			ret = phy_power_on(hsotg->phy);
-			if (ret)
-				phy_exit(hsotg->phy);
-		}
 	}
-
-	if (ret)
-		goto err_dis_clk;
-
-	return 0;
-
-err_dis_clk:
-	if (hsotg->clk)
-		clk_disable_unprepare(hsotg->clk);
-
-err_dis_utmi_clk:
-	if (hsotg->utmi_clk)
-		clk_disable_unprepare(hsotg->utmi_clk);
-
-err_dis_reg:
-	regulator_bulk_disable(ARRAY_SIZE(hsotg->supplies), hsotg->supplies);
 
 	return ret;
 }
@@ -181,9 +156,6 @@ static int __dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg)
 	if (hsotg->clk)
 		clk_disable_unprepare(hsotg->clk);
 
-	if (hsotg->utmi_clk)
-		clk_disable_unprepare(hsotg->utmi_clk);
-
 	return regulator_bulk_disable(ARRAY_SIZE(hsotg->supplies), hsotg->supplies);
 }
 
@@ -203,11 +175,6 @@ int dwc2_lowlevel_hw_disable(struct dwc2_hsotg *hsotg)
 	return ret;
 }
 
-static void dwc2_reset_control_assert(void *data)
-{
-	reset_control_assert(data);
-}
-
 static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 {
 	int i, ret;
@@ -218,10 +185,6 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 				     "error getting reset control\n");
 
 	reset_control_deassert(hsotg->reset);
-	ret = devm_add_action_or_reset(hsotg->dev, dwc2_reset_control_assert,
-				       hsotg->reset);
-	if (ret)
-		return ret;
 
 	hsotg->reset_ecc = devm_reset_control_get_optional(hsotg->dev, "dwc2-ecc");
 	if (IS_ERR(hsotg->reset_ecc))
@@ -229,10 +192,6 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 				     "error getting reset control for ecc\n");
 
 	reset_control_deassert(hsotg->reset_ecc);
-	ret = devm_add_action_or_reset(hsotg->dev, dwc2_reset_control_assert,
-				       hsotg->reset_ecc);
-	if (ret)
-		return ret;
 
 	/*
 	 * Attempt to find a generic PHY, then look for an old style
@@ -273,11 +232,6 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
 	if (IS_ERR(hsotg->clk))
 		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->clk), "cannot get otg clock\n");
 
-	hsotg->utmi_clk = devm_clk_get_optional(hsotg->dev, "utmi");
-	if (IS_ERR(hsotg->utmi_clk))
-		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->utmi_clk),
-				     "cannot get utmi clock\n");
-
 	/* Regulators */
 	for (i = 0; i < ARRAY_SIZE(hsotg->supplies); i++)
 		hsotg->supplies[i].supply = dwc2_hsotg_supply_names[i];
@@ -301,7 +255,7 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
  * stops device processing. Any resources used on behalf of this device are
  * freed.
  */
-static void dwc2_driver_remove(struct platform_device *dev)
+static int dwc2_driver_remove(struct platform_device *dev)
 {
 	struct dwc2_hsotg *hsotg = platform_get_drvdata(dev);
 	struct dwc2_gregs_backup *gr;
@@ -331,7 +285,7 @@ static void dwc2_driver_remove(struct platform_device *dev)
 
 	/* Exit clock gating when driver is removed. */
 	if (hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
-	    hsotg->bus_suspended && !hsotg->params.no_clock_gating) {
+	    hsotg->bus_suspended) {
 		if (dwc2_is_device_mode(hsotg))
 			dwc2_gadget_exit_clock_gating(hsotg, 0);
 		else
@@ -351,6 +305,11 @@ static void dwc2_driver_remove(struct platform_device *dev)
 
 	if (hsotg->ll_hw_enabled)
 		dwc2_lowlevel_hw_disable(hsotg);
+
+	reset_control_assert(hsotg->reset);
+	reset_control_assert(hsotg->reset_ecc);
+
+	return 0;
 }
 
 /**
@@ -369,11 +328,8 @@ static void dwc2_driver_shutdown(struct platform_device *dev)
 {
 	struct dwc2_hsotg *hsotg = platform_get_drvdata(dev);
 
-	if (hsotg->ll_hw_enabled) {
-		dwc2_disable_global_interrupts(hsotg);
-		synchronize_irq(hsotg->irq);
-		dwc2_lowlevel_hw_disable(hsotg);
-	}
+	dwc2_disable_global_interrupts(hsotg);
+	synchronize_irq(hsotg->irq);
 }
 
 /**
@@ -472,6 +428,18 @@ static int dwc2_driver_probe(struct platform_device *dev)
 
 	spin_lock_init(&hsotg->lock);
 
+	hsotg->irq = platform_get_irq(dev, 0);
+	if (hsotg->irq < 0)
+		return hsotg->irq;
+
+	dev_dbg(hsotg->dev, "registering common handler for irq%d\n",
+		hsotg->irq);
+	retval = devm_request_irq(hsotg->dev, hsotg->irq,
+				  dwc2_handle_common_intr, IRQF_SHARED,
+				  dev_name(hsotg->dev), hsotg);
+	if (retval)
+		return retval;
+
 	hsotg->vbus_supply = devm_regulator_get_optional(hsotg->dev, "vbus");
 	if (IS_ERR(hsotg->vbus_supply)) {
 		retval = PTR_ERR(hsotg->vbus_supply);
@@ -512,20 +480,6 @@ static int dwc2_driver_probe(struct platform_device *dev)
 
 	/* Detect config values from hardware */
 	retval = dwc2_get_hwparams(hsotg);
-	if (retval)
-		goto error;
-
-	hsotg->irq = platform_get_irq(dev, 0);
-	if (hsotg->irq < 0) {
-		retval = hsotg->irq;
-		goto error;
-	}
-
-	dev_dbg(hsotg->dev, "registering common handler for irq%d\n",
-		hsotg->irq);
-	retval = devm_request_irq(hsotg->dev, hsotg->irq,
-				  dwc2_handle_common_intr, IRQF_SHARED,
-				  dev_name(hsotg->dev), hsotg);
 	if (retval)
 		goto error;
 
@@ -649,13 +603,9 @@ error:
 static int __maybe_unused dwc2_suspend(struct device *dev)
 {
 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
-	bool is_device_mode;
+	bool is_device_mode = dwc2_is_device_mode(dwc2);
 	int ret = 0;
 
-	if (!dwc2->ll_hw_enabled)
-		return 0;
-
-	is_device_mode = dwc2_is_device_mode(dwc2);
 	if (is_device_mode)
 		dwc2_hsotg_suspend(dwc2);
 
@@ -692,14 +642,6 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 		regulator_disable(dwc2->usb33d);
 	}
 
-	if (is_device_mode)
-		ret = dwc2_gadget_backup_critical_registers(dwc2);
-	else
-		ret = dwc2_host_backup_critical_registers(dwc2);
-
-	if (ret)
-		return ret;
-
 	if (dwc2->ll_hw_enabled &&
 	    (is_device_mode || dwc2_host_can_poweroff_phy(dwc2))) {
 		ret = __dwc2_lowlevel_hw_disable(dwc2);
@@ -709,31 +651,10 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 	return ret;
 }
 
-static int dwc2_restore_critical_registers(struct dwc2_hsotg *hsotg)
-{
-	struct dwc2_gregs_backup *gr;
-
-	gr = &hsotg->gr_backup;
-
-	if (!gr->valid) {
-		dev_err(hsotg->dev, "No valid register backup, failed to restore\n");
-		return -EINVAL;
-	}
-
-	if (gr->gintsts & GINTSTS_CURMODE_HOST)
-		return dwc2_host_restore_critical_registers(hsotg);
-
-	return dwc2_gadget_restore_critical_registers(hsotg, DWC2_RESTORE_DCTL |
-						      DWC2_RESTORE_DCFG);
-}
-
 static int __maybe_unused dwc2_resume(struct device *dev)
 {
 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
 	int ret = 0;
-
-	if (!dwc2->ll_hw_enabled)
-		return 0;
 
 	if (dwc2->phy_off_for_suspend && dwc2->ll_hw_enabled) {
 		ret = __dwc2_lowlevel_hw_enable(dwc2);
@@ -741,18 +662,6 @@ static int __maybe_unused dwc2_resume(struct device *dev)
 			return ret;
 	}
 	dwc2->phy_off_for_suspend = false;
-
-	/*
-	 * During suspend it's possible that the power domain for the
-	 * DWC2 controller is disabled and all register values get lost.
-	 * In case the GUSBCFG register is not initialized, it's clear the
-	 * registers must be restored.
-	 */
-	if (!(dwc2_readl(dwc2, GUSBCFG) & GUSBCFG_TOUTCAL_MASK)) {
-		ret = dwc2_restore_critical_registers(dwc2);
-		if (ret)
-			return ret;
-	}
 
 	if (dwc2->params.activate_stm_id_vb_detection) {
 		unsigned long flags;

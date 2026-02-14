@@ -3,11 +3,9 @@
 #
 # Run a series of udpgro benchmarks
 
-source lib.sh
-
 readonly PEER_NS="ns-peer-$(mktemp -u XXXXXX)"
 
-BPF_FILE="lib/xdp_dummy.bpf.o"
+BPF_FILE="../bpf/xdp_dummy.bpf.o"
 
 cleanup() {
 	local -r jobs="$(jobs -p)"
@@ -42,7 +40,8 @@ run_one() {
 	ip netns exec "${PEER_NS}" ./udpgso_bench_rx ${rx_args} -r &
 	ip netns exec "${PEER_NS}" ./udpgso_bench_rx -t ${rx_args} -r &
 
-	wait_local_port_listen "${PEER_NS}" 8000 udp
+	# Hack: let bg programs complete the startup
+	sleep 0.2
 	./udpgso_bench_tx ${tx_args}
 }
 
@@ -84,7 +83,7 @@ run_all() {
 }
 
 if [ ! -f ${BPF_FILE} ]; then
-	echo "Missing ${BPF_FILE}. Run 'make' first"
+	echo "Missing ${BPF_FILE}. Build bpf selftest first"
 	exit -1
 fi
 

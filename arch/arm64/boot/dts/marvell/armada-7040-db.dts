@@ -124,6 +124,7 @@
 
 	expander0: pca9555@21 {
 		compatible = "nxp,pca9555";
+		pinctrl-names = "default";
 		gpio-controller;
 		#gpio-cells = <2>;
 		reg = <0x21>;
@@ -213,7 +214,7 @@
 
 	sata-port@1 {
 		phys = <&cp0_comphy3 1>;
-		status = "okay";
+		phy-names = "cp0-sata0-1-phy";
 	};
 };
 

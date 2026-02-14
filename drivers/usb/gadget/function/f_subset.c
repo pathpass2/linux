@@ -367,7 +367,9 @@ geth_bind(struct usb_configuration *c, struct usb_function *f)
 	 * until we're activated via set_alt().
 	 */
 
-	DBG(cdev, "CDC Subset: IN/%s OUT/%s\n",
+	DBG(cdev, "CDC Subset: %s speed IN/%s OUT/%s\n",
+			gadget_is_superspeed(c->cdev->gadget) ? "super" :
+			gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full",
 			geth->port.in_ep->name, geth->port.out_ep->name);
 	return 0;
 
@@ -500,6 +502,5 @@ static struct usb_function *geth_alloc(struct usb_function_instance *fi)
 }
 
 DECLARE_USB_FUNCTION_INIT(geth, geth_alloc_inst, geth_alloc);
-MODULE_DESCRIPTION("\"CDC Subset\" Ethernet link function driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David Brownell");

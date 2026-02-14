@@ -387,7 +387,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(itg3200_pm_ops, itg3200_suspend,
 				itg3200_resume);
 
 static const struct i2c_device_id itg3200_id[] = {
-	{ "itg3200" },
+	{ "itg3200", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, itg3200_id);
@@ -405,7 +405,7 @@ static struct i2c_driver itg3200_driver = {
 		.pm	= pm_sleep_ptr(&itg3200_pm_ops),
 	},
 	.id_table	= itg3200_id,
-	.probe		= itg3200_probe,
+	.probe_new	= itg3200_probe,
 	.remove		= itg3200_remove,
 };
 

@@ -226,7 +226,8 @@ static int tas5805m_vol_info(struct snd_kcontrol *kcontrol,
 static int tas5805m_vol_get(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct tas5805m_priv *tas5805m =
 		snd_soc_component_get_drvdata(component);
 
@@ -246,7 +247,8 @@ static inline int volume_is_valid(int v)
 static int tas5805m_vol_put(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct tas5805m_priv *tas5805m =
 		snd_soc_component_get_drvdata(component);
 	int ret = 0;
@@ -472,7 +474,7 @@ static int tas5805m_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
-	tas5805m = devm_kzalloc(dev, sizeof(*tas5805m), GFP_KERNEL);
+	tas5805m = devm_kzalloc(dev, sizeof(struct tas5805m_priv), GFP_KERNEL);
 	if (!tas5805m)
 		return -ENOMEM;
 
@@ -518,11 +520,12 @@ static int tas5805m_i2c_probe(struct i2c_client *i2c)
 	}
 
 	tas5805m->dsp_cfg_len = fw->size;
-	tas5805m->dsp_cfg_data = devm_kmemdup(dev, fw->data, fw->size, GFP_KERNEL);
+	tas5805m->dsp_cfg_data = devm_kmalloc(dev, fw->size, GFP_KERNEL);
 	if (!tas5805m->dsp_cfg_data) {
 		release_firmware(fw);
 		return -ENOMEM;
 	}
+	memcpy(tas5805m->dsp_cfg_data, fw->data, fw->size);
 
 	release_firmware(fw);
 
@@ -594,7 +597,7 @@ MODULE_DEVICE_TABLE(of, tas5805m_of_match);
 #endif
 
 static struct i2c_driver tas5805m_i2c_driver = {
-	.probe		= tas5805m_i2c_probe,
+	.probe_new	= tas5805m_i2c_probe,
 	.remove		= tas5805m_i2c_remove,
 	.id_table	= tas5805m_i2c_id,
 	.driver		= {

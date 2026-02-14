@@ -1,5 +1,4 @@
 .. SPDX-License-Identifier: GPL-2.0
-.. c:namespace:: V4L
 
 .. _decoder:
 
@@ -278,7 +277,7 @@ Initialization
      other fields
          follow standard semantics.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``sizeimage``
          adjusted size of ``OUTPUT`` buffers.
@@ -312,7 +311,7 @@ Initialization
       ``memory``
           follows standard semantics.
 
-    * **Returned fields:**
+    * **Return fields:**
 
       ``count``
           the actual number of buffers allocated.
@@ -340,7 +339,7 @@ Initialization
       ``format``
           follows standard semantics.
 
-    * **Returned fields:**
+    * **Return fields:**
 
       ``count``
           adjusted to the number of allocated buffers.
@@ -411,7 +410,7 @@ Capture Setup
       ``type``
           a ``V4L2_BUF_TYPE_*`` enum appropriate for ``CAPTURE``.
 
-    * **Returned fields:**
+    * **Return fields:**
 
       ``width``, ``height``
           frame buffer resolution for the decoded frames.
@@ -444,7 +443,7 @@ Capture Setup
       ``target``
           set to ``V4L2_SEL_TGT_COMPOSE``.
 
-    * **Returned fields:**
+    * **Return fields:**
 
       ``r.left``, ``r.top``, ``r.width``, ``r.height``
           the visible rectangle; it must fit within the frame buffer resolution
@@ -553,7 +552,7 @@ Capture Setup
          frame is written; defaults to ``V4L2_SEL_TGT_COMPOSE_DEFAULT``;
          read-only on hardware without additional compose/scaling capabilities.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``r.left``, ``r.top``, ``r.width``, ``r.height``
          the visible rectangle; it must fit within the frame buffer resolution
@@ -630,7 +629,7 @@ Capture Setup
       ``memory``
           follows standard semantics.
 
-    * **Returned fields:**
+    * **Return fields:**
 
       ``count``
           actual number of buffers allocated.
@@ -669,7 +668,7 @@ Capture Setup
           a format representing the maximum framebuffer resolution to be
           accommodated by newly allocated buffers.
 
-    * **Returned fields:**
+    * **Return fields:**
 
       ``count``
           adjusted to the number of allocated buffers.
@@ -933,10 +932,7 @@ reflected by corresponding queries):
 
 * the minimum number of buffers needed for decoding,
 
-* bit-depth of the bitstream has been changed,
-
-* colorspace of the bitstream has been changed, but it doesn't require
-  buffer reallocation.
+* bit-depth of the bitstream has been changed.
 
 Whenever that happens, the decoder must proceed as follows:
 

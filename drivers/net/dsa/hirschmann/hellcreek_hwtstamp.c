@@ -16,7 +16,7 @@
 #include "hellcreek_ptp.h"
 
 int hellcreek_get_ts_info(struct dsa_switch *ds, int port,
-			  struct kernel_ethtool_ts_info *info)
+			  struct ethtool_ts_info *info)
 {
 	struct hellcreek *hellcreek = ds->priv;
 
@@ -40,7 +40,7 @@ int hellcreek_get_ts_info(struct dsa_switch *ds, int port,
  * the user requested what is actually available or not
  */
 static int hellcreek_set_hwtstamp_config(struct hellcreek *hellcreek, int port,
-					 struct kernel_hwtstamp_config *config)
+					 struct hwtstamp_config *config)
 {
 	struct hellcreek_port_hwtstamp *ps =
 		&hellcreek->ports[port].port_hwtstamp;
@@ -110,35 +110,41 @@ static int hellcreek_set_hwtstamp_config(struct hellcreek *hellcreek, int port,
 }
 
 int hellcreek_port_hwtstamp_set(struct dsa_switch *ds, int port,
-				struct kernel_hwtstamp_config *config,
-				struct netlink_ext_ack *extack)
+				struct ifreq *ifr)
 {
 	struct hellcreek *hellcreek = ds->priv;
 	struct hellcreek_port_hwtstamp *ps;
+	struct hwtstamp_config config;
 	int err;
 
 	ps = &hellcreek->ports[port].port_hwtstamp;
 
-	err = hellcreek_set_hwtstamp_config(hellcreek, port, config);
+	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	err = hellcreek_set_hwtstamp_config(hellcreek, port, &config);
 	if (err)
 		return err;
 
 	/* Save the chosen configuration to be returned later */
-	ps->tstamp_config = *config;
+	memcpy(&ps->tstamp_config, &config, sizeof(config));
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, &config, sizeof(config)) ?
+		-EFAULT : 0;
 }
 
 int hellcreek_port_hwtstamp_get(struct dsa_switch *ds, int port,
-				struct kernel_hwtstamp_config *config)
+				struct ifreq *ifr)
 {
 	struct hellcreek *hellcreek = ds->priv;
 	struct hellcreek_port_hwtstamp *ps;
+	struct hwtstamp_config *config;
 
 	ps = &hellcreek->ports[port].port_hwtstamp;
-	*config = ps->tstamp_config;
+	config = &ps->tstamp_config;
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, config, sizeof(*config)) ?
+		-EFAULT : 0;
 }
 
 /* Returns a pointer to the PTP header if the caller should time stamp, or NULL
@@ -292,10 +298,17 @@ static void hellcreek_get_rxts(struct hellcreek *hellcreek,
 	struct sk_buff_head received;
 	unsigned long flags;
 
-	/* Construct Rx timestamps for all received PTP packets. */
+	/* The latched timestamp belongs to one of the received frames. */
 	__skb_queue_head_init(&received);
+
+	/* Lock & disable interrupts */
 	spin_lock_irqsave(&rxq->lock, flags);
+
+	/* Add the reception queue "rxq" to the "received" queue an reintialize
+	 * "rxq".  From now on, we deal with "received" not with "rxq"
+	 */
 	skb_queue_splice_tail_init(rxq, &received);
+
 	spin_unlock_irqrestore(&rxq->lock, flags);
 
 	for (; skb; skb = __skb_dequeue(&received)) {

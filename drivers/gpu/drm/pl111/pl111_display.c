@@ -20,7 +20,6 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
-#include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
 
 #include "pl111_drm.h"
@@ -54,7 +53,7 @@ pl111_mode_valid(struct drm_simple_display_pipe *pipe,
 {
 	struct drm_device *drm = pipe->crtc.dev;
 	struct pl111_drm_dev_private *priv = drm->dev_private;
-	u32 cpp = DIV_ROUND_UP(priv->variant->fb_depth, 8);
+	u32 cpp = priv->variant->fb_bpp / 8;
 	u64 bw;
 
 	/*
@@ -138,7 +137,7 @@ static void pl111_display_enable(struct drm_simple_display_pipe *pipe,
 
 	ret = clk_set_rate(priv->clk, mode->clock * 1000);
 	if (ret) {
-		drm_err(drm,
+		dev_err(drm->dev,
 			"Failed to set pixel clock rate to %d: %d\n",
 			mode->clock * 1000, ret);
 	}
@@ -474,15 +473,12 @@ static int pl111_clk_div_choose_div(struct clk_hw *hw, unsigned long rate,
 	return best_div;
 }
 
-static int pl111_clk_div_determine_rate(struct clk_hw *hw,
-					struct clk_rate_request *req)
+static long pl111_clk_div_round_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long *prate)
 {
-	int div = pl111_clk_div_choose_div(hw, req->rate,
-					   &req->best_parent_rate, true);
+	int div = pl111_clk_div_choose_div(hw, rate, prate, true);
 
-	req->rate = DIV_ROUND_UP_ULL(req->best_parent_rate, div);
-
-	return 0;
+	return DIV_ROUND_UP_ULL(*prate, div);
 }
 
 static unsigned long pl111_clk_div_recalc_rate(struct clk_hw *hw,
@@ -532,7 +528,7 @@ static int pl111_clk_div_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops pl111_clk_div_ops = {
 	.recalc_rate = pl111_clk_div_recalc_rate,
-	.determine_rate = pl111_clk_div_determine_rate,
+	.round_rate = pl111_clk_div_round_rate,
 	.set_rate = pl111_clk_div_set_rate,
 };
 
@@ -553,7 +549,7 @@ pl111_init_clock_divider(struct drm_device *drm)
 	int ret;
 
 	if (IS_ERR(parent)) {
-		drm_err(drm, "CLCD: unable to get clcdclk.\n");
+		dev_err(drm->dev, "CLCD: unable to get clcdclk.\n");
 		return PTR_ERR(parent);
 	}
 

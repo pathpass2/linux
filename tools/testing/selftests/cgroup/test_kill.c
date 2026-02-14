@@ -9,7 +9,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 #include "../pidfd/pidfd.h"
 #include "cgroup_util.h"
 
@@ -274,11 +274,9 @@ struct cgkill_test {
 int main(int argc, char *argv[])
 {
 	char root[PATH_MAX];
-	int i;
+	int i, ret = EXIT_SUCCESS;
 
-	ksft_print_header();
-	ksft_set_plan(ARRAY_SIZE(tests));
-	if (cg_find_unified_root(root, sizeof(root), NULL))
+	if (cg_find_unified_root(root, sizeof(root)))
 		ksft_exit_skip("cgroup v2 isn't mounted\n");
 	for (i = 0; i < ARRAY_SIZE(tests); i++) {
 		switch (tests[i].fn(root)) {
@@ -289,10 +287,11 @@ int main(int argc, char *argv[])
 			ksft_test_result_skip("%s\n", tests[i].name);
 			break;
 		default:
+			ret = EXIT_FAILURE;
 			ksft_test_result_fail("%s\n", tests[i].name);
 			break;
 		}
 	}
 
-	ksft_finished();
+	return ret;
 }

@@ -2,7 +2,7 @@
 #ifndef _ASM_PARISC_FTRACE_H
 #define _ASM_PARISC_FTRACE_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 extern void mcount(void);
 
 #define MCOUNT_ADDR		((unsigned long)mcount)
@@ -12,10 +12,6 @@ extern void mcount(void);
 extern unsigned long sys_call_table[];
 
 extern unsigned long return_address(unsigned int);
-struct ftrace_regs;
-extern void ftrace_function_trampoline(unsigned long parent,
-		unsigned long self_addr, unsigned long org_sp_gr3,
-		struct ftrace_regs *fregs);
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 extern void ftrace_caller(void);
@@ -29,6 +25,6 @@ unsigned long ftrace_call_adjust(unsigned long addr);
 
 #define ftrace_return_address(n) return_address(n)
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_PARISC_FTRACE_H */

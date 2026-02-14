@@ -59,8 +59,6 @@
 #endif
 	.endm
 
-	__HEAD
-
 #ifndef CONFIG_NO_EXCEPT_FILL
 	/*
 	 * Reserved space for exception handlers.

@@ -334,5 +334,4 @@ void imx_icc_unregister(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(imx_icc_unregister);
 
-MODULE_DESCRIPTION("Interconnect framework driver for i.MX SoC");
 MODULE_LICENSE("GPL v2");

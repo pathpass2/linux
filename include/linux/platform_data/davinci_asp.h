@@ -26,6 +26,16 @@ struct davinci_mcasp_pdata {
 	struct gen_pool *sram_pool;
 
 	/*
+	 * If McBSP peripheral gets the clock from an external pin,
+	 * there are three chooses, that are MCBSP_CLKX, MCBSP_CLKR
+	 * and MCBSP_CLKS.
+	 * Depending on different hardware connections it is possible
+	 * to use this setting to change the behaviour of McBSP
+	 * driver.
+	 */
+	int clk_input_pin;
+
+	/*
 	 * This flag works when both clock and FS are outputs for the cpu
 	 * and makes clock more accurate (FS is not symmetrical and the
 	 * clock is very fast.
@@ -59,8 +69,7 @@ struct davinci_mcasp_pdata {
 	bool i2s_accurate_sck;
 
 	/* McASP specific fields */
-	int tdm_slots_tx;
-	int tdm_slots_rx;
+	int tdm_slots;
 	u8 op_mode;
 	u8 dismod;
 	u8 num_serializer;
@@ -80,6 +89,11 @@ enum {
 	MCASP_VERSION_3,        /* TI81xx/AM33xx */
 	MCASP_VERSION_4,	/* DRA7xxx */
 	MCASP_VERSION_OMAP,	/* OMAP4/5 */
+};
+
+enum mcbsp_clk_input_pin {
+	MCBSP_CLKR = 0,		/* as in DM365 */
+	MCBSP_CLKS,
 };
 
 #define INACTIVE_MODE	0

@@ -4,7 +4,7 @@
  * Copyright (c) 2013 Red Hat, Inc.
  * All Rights Reserved.
  */
-#include "xfs_platform.h"
+#include "xfs.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -23,7 +23,6 @@
 #include "xfs_buf_item.h"
 #include "xfs_log.h"
 #include "xfs_errortag.h"
-#include "xfs_health.h"
 
 /*
  * xfs_da_btree.c
@@ -86,8 +85,7 @@ xfs_da_state_alloc(
 {
 	struct xfs_da_state	*state;
 
-	state = kmem_cache_zalloc(xfs_da_state_cache,
-			GFP_KERNEL | __GFP_NOLOCKDEP | __GFP_NOFAIL);
+	state = kmem_cache_zalloc(xfs_da_state_cache, GFP_NOFS | __GFP_NOFAIL);
 	state->args = args;
 	state->mp = args->dp->i_mount;
 	return state;
@@ -252,51 +250,6 @@ xfs_da3_node_verify(
 	return NULL;
 }
 
-xfs_failaddr_t
-xfs_da3_node_header_check(
-	struct xfs_buf		*bp,
-	xfs_ino_t		owner)
-{
-	struct xfs_mount	*mp = bp->b_mount;
-
-	if (xfs_has_crc(mp)) {
-		struct xfs_da3_blkinfo *hdr3 = bp->b_addr;
-
-		if (hdr3->hdr.magic != cpu_to_be16(XFS_DA3_NODE_MAGIC))
-			return __this_address;
-
-		if (be64_to_cpu(hdr3->owner) != owner)
-			return __this_address;
-	}
-
-	return NULL;
-}
-
-xfs_failaddr_t
-xfs_da3_header_check(
-	struct xfs_buf		*bp,
-	xfs_ino_t		owner)
-{
-	struct xfs_mount	*mp = bp->b_mount;
-	struct xfs_da_blkinfo	*hdr = bp->b_addr;
-
-	if (!xfs_has_crc(mp))
-		return NULL;
-
-	switch (hdr->magic) {
-	case cpu_to_be16(XFS_ATTR3_LEAF_MAGIC):
-		return xfs_attr3_leaf_header_check(bp, owner);
-	case cpu_to_be16(XFS_DA3_NODE_MAGIC):
-		return xfs_da3_node_header_check(bp, owner);
-	case cpu_to_be16(XFS_DIR3_LEAF1_MAGIC):
-	case cpu_to_be16(XFS_DIR3_LEAFN_MAGIC):
-		return xfs_dir3_leaf_header_check(bp, owner);
-	}
-
-	ASSERT(0);
-	return NULL;
-}
-
 static void
 xfs_da3_node_write_verify(
 	struct xfs_buf	*bp)
@@ -399,8 +352,6 @@ const struct xfs_buf_ops xfs_da3_node_buf_ops = {
 static int
 xfs_da3_node_set_type(
 	struct xfs_trans	*tp,
-	struct xfs_inode	*dp,
-	int			whichfork,
 	struct xfs_buf		*bp)
 {
 	struct xfs_da_blkinfo	*info = bp->b_addr;
@@ -422,7 +373,6 @@ xfs_da3_node_set_type(
 		XFS_CORRUPTION_ERROR(__func__, XFS_ERRLEVEL_LOW, tp->t_mountp,
 				info, sizeof(*info));
 		xfs_trans_brelse(tp, bp);
-		xfs_dirattr_mark_sick(dp, whichfork);
 		return -EFSCORRUPTED;
 	}
 }
@@ -441,7 +391,7 @@ xfs_da3_node_read(
 			&xfs_da3_node_buf_ops);
 	if (error || !*bpp || !tp)
 		return error;
-	return xfs_da3_node_set_type(tp, dp, whichfork, *bpp);
+	return xfs_da3_node_set_type(tp, *bpp);
 }
 
 int
@@ -458,8 +408,6 @@ xfs_da3_node_read_mapped(
 	error = xfs_trans_read_buf(mp, tp, mp->m_ddev_targp, mappedbno,
 			XFS_FSB_TO_BB(mp, xfs_dabuf_nfsb(mp, whichfork)), 0,
 			bpp, &xfs_da3_node_buf_ops);
-	if (xfs_metadata_is_sick(error))
-		xfs_dirattr_mark_sick(dp, whichfork);
 	if (error || !*bpp)
 		return error;
 
@@ -470,26 +418,7 @@ xfs_da3_node_read_mapped(
 
 	if (!tp)
 		return 0;
-	return xfs_da3_node_set_type(tp, dp, whichfork, *bpp);
-}
-
-/*
- * Copy src directory/attr leaf/node buffer to the dst.
- * For v5 file systems make sure the right blkno is stamped in.
- */
-void
-xfs_da_buf_copy(
-	struct xfs_buf *dst,
-	struct xfs_buf *src,
-	size_t size)
-{
-	struct xfs_da3_blkinfo *da3 = dst->b_addr;
-
-	memcpy(dst->b_addr, src->b_addr, size);
-	dst->b_ops = src->b_ops;
-	xfs_trans_buf_copy_type(dst, src);
-	if (xfs_has_crc(dst->b_mount))
-		da3->blkno = cpu_to_be64(xfs_buf_daddr(dst));
+	return xfs_da3_node_set_type(tp, *bpp);
 }
 
 /*========================================================================
@@ -531,7 +460,7 @@ xfs_da3_node_create(
 		memset(hdr3, 0, sizeof(struct xfs_da3_node_hdr));
 		ichdr.magic = XFS_DA3_NODE_MAGIC;
 		hdr3->info.blkno = cpu_to_be64(xfs_buf_daddr(bp));
-		hdr3->info.owner = cpu_to_be64(args->owner);
+		hdr3->info.owner = cpu_to_be64(args->dp->i_ino);
 		uuid_copy(&hdr3->info.uuid, &mp->m_sb.sb_meta_uuid);
 	} else {
 		ichdr.magic = XFS_DA_NODE_MAGIC;
@@ -565,7 +494,7 @@ xfs_da3_split(
 
 	trace_xfs_da_split(state->args);
 
-	if (XFS_TEST_ERROR(state->mp, XFS_ERRTAG_DA_LEAF_SPLIT))
+	if (XFS_TEST_ERROR(false, state->mp, XFS_ERRTAG_DA_LEAF_SPLIT))
 		return -EIO;
 
 	/*
@@ -593,8 +522,9 @@ xfs_da3_split(
 		switch (oldblk->magic) {
 		case XFS_ATTR_LEAF_MAGIC:
 			error = xfs_attr3_leaf_split(state, oldblk, newblk);
-			if (error < 0)
+			if ((error != 0) && (error != -ENOSPC)) {
 				return error;	/* GROT: attr is inconsistent */
+			}
 			if (!error) {
 				addblk = newblk;
 				break;
@@ -616,8 +546,6 @@ xfs_da3_split(
 				error = xfs_attr3_leaf_split(state, newblk,
 							    &state->extrablk);
 			}
-			if (error == 1)
-				return -ENOSPC;
 			if (error)
 				return error;	/* GROT: attr inconsistent */
 			addblk = newblk;
@@ -684,7 +612,6 @@ xfs_da3_split(
 	if (node->hdr.info.forw) {
 		if (be32_to_cpu(node->hdr.info.forw) != addblk->blkno) {
 			xfs_buf_mark_corrupt(oldblk->bp);
-			xfs_da_mark_sick(state->args);
 			error = -EFSCORRUPTED;
 			goto out;
 		}
@@ -698,7 +625,6 @@ xfs_da3_split(
 	if (node->hdr.info.back) {
 		if (be32_to_cpu(node->hdr.info.back) != addblk->blkno) {
 			xfs_buf_mark_corrupt(oldblk->bp);
-			xfs_da_mark_sick(state->args);
 			error = -EFSCORRUPTED;
 			goto out;
 		}
@@ -764,6 +690,12 @@ xfs_da3_root_split(
 		btree = icnodehdr.btree;
 		size = (int)((char *)&btree[icnodehdr.count] - (char *)oldroot);
 		level = icnodehdr.level;
+
+		/*
+		 * we are about to copy oldroot to bp, so set up the type
+		 * of bp while we know exactly what it will be.
+		 */
+		xfs_trans_buf_set_type(tp, bp, XFS_BLFT_DA_NODE_BUF);
 	} else {
 		struct xfs_dir3_icleaf_hdr leafhdr;
 
@@ -775,17 +707,31 @@ xfs_da3_root_split(
 		size = (int)((char *)&leafhdr.ents[leafhdr.count] -
 			(char *)leaf);
 		level = 0;
+
+		/*
+		 * we are about to copy oldroot to bp, so set up the type
+		 * of bp while we know exactly what it will be.
+		 */
+		xfs_trans_buf_set_type(tp, bp, XFS_BLFT_DIR_LEAFN_BUF);
 	}
 
 	/*
-	 * Copy old root to new buffer and log it.
+	 * we can copy most of the information in the node from one block to
+	 * another, but for CRC enabled headers we have to make sure that the
+	 * block specific identifiers are kept intact. We update the buffer
+	 * directly for this.
 	 */
-	xfs_da_buf_copy(bp, blk1->bp, size);
+	memcpy(node, oldroot, size);
+	if (oldroot->hdr.info.magic == cpu_to_be16(XFS_DA3_NODE_MAGIC) ||
+	    oldroot->hdr.info.magic == cpu_to_be16(XFS_DIR3_LEAFN_MAGIC)) {
+		struct xfs_da3_intnode *node3 = (struct xfs_da3_intnode *)node;
+
+		node3->hdr.info.blkno = cpu_to_be64(xfs_buf_daddr(bp));
+	}
 	xfs_trans_log_buf(tp, bp, 0, size - 1);
 
-	/*
-	 * Update blk1 to point to new buffer.
-	 */
+	bp->b_ops = blk1->bp->b_ops;
+	xfs_trans_buf_copy_type(bp, blk1->bp);
 	blk1->bp = bp;
 	blk1->blkno = blkno;
 
@@ -1245,7 +1191,6 @@ xfs_da3_root_join(
 	struct xfs_da3_icnode_hdr oldroothdr;
 	int			error;
 	struct xfs_inode	*dp = state->args->dp;
-	xfs_failaddr_t		fa;
 
 	trace_xfs_da_root_join(state->args);
 
@@ -1272,24 +1217,24 @@ xfs_da3_root_join(
 	error = xfs_da3_node_read(args->trans, dp, child, &bp, args->whichfork);
 	if (error)
 		return error;
-	fa = xfs_da3_header_check(bp, args->owner);
-	if (fa) {
-		__xfs_buf_mark_corrupt(bp, fa);
-		xfs_trans_brelse(args->trans, bp);
-		xfs_da_mark_sick(args);
-		return -EFSCORRUPTED;
-	}
 	xfs_da_blkinfo_onlychild_validate(bp->b_addr, oldroothdr.level);
 
 	/*
-	 * Copy child to root buffer and log it.
+	 * This could be copying a leaf back into the root block in the case of
+	 * there only being a single leaf block left in the tree. Hence we have
+	 * to update the b_ops pointer as well to match the buffer type change
+	 * that could occur. For dir3 blocks we also need to update the block
+	 * number in the buffer header.
 	 */
-	xfs_da_buf_copy(root_blk->bp, bp, args->geo->blksize);
+	memcpy(root_blk->bp->b_addr, bp->b_addr, args->geo->blksize);
+	root_blk->bp->b_ops = bp->b_ops;
+	xfs_trans_buf_copy_type(root_blk->bp, bp);
+	if (oldroothdr.magic == XFS_DA3_NODE_MAGIC) {
+		struct xfs_da3_blkinfo *da3 = root_blk->bp->b_addr;
+		da3->blkno = cpu_to_be64(xfs_buf_daddr(root_blk->bp));
+	}
 	xfs_trans_log_buf(args->trans, root_blk->bp, 0,
 			  args->geo->blksize - 1);
-	/*
-	 * Now we can drop the child buffer.
-	 */
 	error = xfs_da_shrink_inode(args, child, bp);
 	return error;
 }
@@ -1313,7 +1258,6 @@ xfs_da3_node_toosmall(
 	struct xfs_da_blkinfo	*info;
 	xfs_dablk_t		blkno;
 	struct xfs_buf		*bp;
-	xfs_failaddr_t		fa;
 	struct xfs_da3_icnode_hdr nodehdr;
 	int			count;
 	int			forward;
@@ -1388,13 +1332,6 @@ xfs_da3_node_toosmall(
 				state->args->whichfork);
 		if (error)
 			return error;
-		fa = xfs_da3_node_header_check(bp, state->args->owner);
-		if (fa) {
-			__xfs_buf_mark_corrupt(bp, fa);
-			xfs_trans_brelse(state->args->trans, bp);
-			xfs_da_mark_sick(state->args);
-			return -EFSCORRUPTED;
-		}
 
 		node = bp->b_addr;
 		xfs_da3_node_hdr_from_disk(dp->i_mount, &thdr, node);
@@ -1653,7 +1590,6 @@ xfs_da3_node_lookup_int(
 	struct xfs_da_node_entry *btree;
 	struct xfs_da3_icnode_hdr nodehdr;
 	struct xfs_da_args	*args;
-	xfs_failaddr_t		fa;
 	xfs_dablk_t		blkno;
 	xfs_dahash_t		hashval;
 	xfs_dahash_t		btreehashval;
@@ -1692,12 +1628,6 @@ xfs_da3_node_lookup_int(
 
 		if (magic == XFS_ATTR_LEAF_MAGIC ||
 		    magic == XFS_ATTR3_LEAF_MAGIC) {
-			fa = xfs_attr3_leaf_header_check(blk->bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(blk->bp, fa);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			blk->magic = XFS_ATTR_LEAF_MAGIC;
 			blk->hashval = xfs_attr_leaf_lasthash(blk->bp, NULL);
 			break;
@@ -1705,12 +1635,6 @@ xfs_da3_node_lookup_int(
 
 		if (magic == XFS_DIR2_LEAFN_MAGIC ||
 		    magic == XFS_DIR3_LEAFN_MAGIC) {
-			fa = xfs_dir3_leaf_header_check(blk->bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(blk->bp, fa);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			blk->magic = XFS_DIR2_LEAFN_MAGIC;
 			blk->hashval = xfs_dir2_leaf_lasthash(args->dp,
 							      blk->bp, NULL);
@@ -1719,14 +1643,6 @@ xfs_da3_node_lookup_int(
 
 		if (magic != XFS_DA_NODE_MAGIC && magic != XFS_DA3_NODE_MAGIC) {
 			xfs_buf_mark_corrupt(blk->bp);
-			xfs_da_mark_sick(args);
-			return -EFSCORRUPTED;
-		}
-
-		fa = xfs_da3_node_header_check(blk->bp, args->owner);
-		if (fa) {
-			__xfs_buf_mark_corrupt(blk->bp, fa);
-			xfs_da_mark_sick(args);
 			return -EFSCORRUPTED;
 		}
 
@@ -1742,7 +1658,6 @@ xfs_da3_node_lookup_int(
 		/* Tree taller than we can handle; bail out! */
 		if (nodehdr.level >= XFS_DA_NODE_MAXDEPTH) {
 			xfs_buf_mark_corrupt(blk->bp);
-			xfs_da_mark_sick(args);
 			return -EFSCORRUPTED;
 		}
 
@@ -1751,7 +1666,6 @@ xfs_da3_node_lookup_int(
 			expected_level = nodehdr.level - 1;
 		else if (expected_level != nodehdr.level) {
 			xfs_buf_mark_corrupt(blk->bp);
-			xfs_da_mark_sick(args);
 			return -EFSCORRUPTED;
 		} else
 			expected_level--;
@@ -1803,16 +1717,12 @@ xfs_da3_node_lookup_int(
 		}
 
 		/* We can't point back to the root. */
-		if (XFS_IS_CORRUPT(dp->i_mount, blkno == args->geo->leafblk)) {
-			xfs_da_mark_sick(args);
+		if (XFS_IS_CORRUPT(dp->i_mount, blkno == args->geo->leafblk))
 			return -EFSCORRUPTED;
-		}
 	}
 
-	if (XFS_IS_CORRUPT(dp->i_mount, expected_level != 0)) {
-		xfs_da_mark_sick(args);
+	if (XFS_IS_CORRUPT(dp->i_mount, expected_level != 0))
 		return -EFSCORRUPTED;
-	}
 
 	/*
 	 * A leaf block that ends in the hashval that we are interested in
@@ -1830,7 +1740,6 @@ xfs_da3_node_lookup_int(
 			args->blkno = blk->blkno;
 		} else {
 			ASSERT(0);
-			xfs_da_mark_sick(args);
 			return -EFSCORRUPTED;
 		}
 		if (((retval == -ENOENT) || (retval == -ENOATTR)) &&
@@ -1902,7 +1811,6 @@ xfs_da3_blk_link(
 	struct xfs_da_blkinfo	*tmp_info;
 	struct xfs_da_args	*args;
 	struct xfs_buf		*bp;
-	xfs_failaddr_t		fa;
 	int			before = 0;
 	int			error;
 	struct xfs_inode	*dp = state->args->dp;
@@ -1946,13 +1854,6 @@ xfs_da3_blk_link(
 						&bp, args->whichfork);
 			if (error)
 				return error;
-			fa = xfs_da3_header_check(bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(bp, fa);
-				xfs_trans_brelse(args->trans, bp);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			ASSERT(bp != NULL);
 			tmp_info = bp->b_addr;
 			ASSERT(tmp_info->magic == old_info->magic);
@@ -1974,13 +1875,6 @@ xfs_da3_blk_link(
 						&bp, args->whichfork);
 			if (error)
 				return error;
-			fa = xfs_da3_header_check(bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(bp, fa);
-				xfs_trans_brelse(args->trans, bp);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			ASSERT(bp != NULL);
 			tmp_info = bp->b_addr;
 			ASSERT(tmp_info->magic == old_info->magic);
@@ -2010,7 +1904,6 @@ xfs_da3_blk_unlink(
 	struct xfs_da_blkinfo	*tmp_info;
 	struct xfs_da_args	*args;
 	struct xfs_buf		*bp;
-	xfs_failaddr_t		fa;
 	int			error;
 
 	/*
@@ -2041,13 +1934,6 @@ xfs_da3_blk_unlink(
 						&bp, args->whichfork);
 			if (error)
 				return error;
-			fa = xfs_da3_header_check(bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(bp, fa);
-				xfs_trans_brelse(args->trans, bp);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			ASSERT(bp != NULL);
 			tmp_info = bp->b_addr;
 			ASSERT(tmp_info->magic == save_info->magic);
@@ -2065,13 +1951,6 @@ xfs_da3_blk_unlink(
 						&bp, args->whichfork);
 			if (error)
 				return error;
-			fa = xfs_da3_header_check(bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(bp, fa);
-				xfs_trans_brelse(args->trans, bp);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			ASSERT(bp != NULL);
 			tmp_info = bp->b_addr;
 			ASSERT(tmp_info->magic == save_info->magic);
@@ -2108,7 +1987,6 @@ xfs_da3_path_shift(
 	struct xfs_da_node_entry *btree;
 	struct xfs_da3_icnode_hdr nodehdr;
 	struct xfs_buf		*bp;
-	xfs_failaddr_t		fa;
 	xfs_dablk_t		blkno = 0;
 	int			level;
 	int			error;
@@ -2187,12 +2065,6 @@ xfs_da3_path_shift(
 		switch (be16_to_cpu(info->magic)) {
 		case XFS_DA_NODE_MAGIC:
 		case XFS_DA3_NODE_MAGIC:
-			fa = xfs_da3_node_header_check(blk->bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(blk->bp, fa);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			blk->magic = XFS_DA_NODE_MAGIC;
 			xfs_da3_node_hdr_from_disk(dp->i_mount, &nodehdr,
 						   bp->b_addr);
@@ -2206,12 +2078,6 @@ xfs_da3_path_shift(
 			break;
 		case XFS_ATTR_LEAF_MAGIC:
 		case XFS_ATTR3_LEAF_MAGIC:
-			fa = xfs_attr3_leaf_header_check(blk->bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(blk->bp, fa);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			blk->magic = XFS_ATTR_LEAF_MAGIC;
 			ASSERT(level == path->active-1);
 			blk->index = 0;
@@ -2219,12 +2085,6 @@ xfs_da3_path_shift(
 			break;
 		case XFS_DIR2_LEAFN_MAGIC:
 		case XFS_DIR3_LEAFN_MAGIC:
-			fa = xfs_dir3_leaf_header_check(blk->bp, args->owner);
-			if (fa) {
-				__xfs_buf_mark_corrupt(blk->bp, fa);
-				xfs_da_mark_sick(args);
-				return -EFSCORRUPTED;
-			}
 			blk->magic = XFS_DIR2_LEAFN_MAGIC;
 			ASSERT(level == path->active-1);
 			blk->index = 0;
@@ -2298,8 +2158,8 @@ xfs_da_grow_inode_int(
 	struct xfs_inode	*dp = args->dp;
 	int			w = args->whichfork;
 	xfs_rfsblock_t		nblks = dp->i_nblocks;
-	struct xfs_bmbt_irec	map, *mapp = &map;
-	int			nmap, error, got, i, mapi = 1;
+	struct xfs_bmbt_irec	map, *mapp;
+	int			nmap, error, got, i, mapi;
 
 	/*
 	 * Find a spot in the file space to put the new block.
@@ -2315,7 +2175,14 @@ xfs_da_grow_inode_int(
 	error = xfs_bmapi_write(tp, dp, *bno, count,
 			xfs_bmapi_aflag(w)|XFS_BMAPI_METADATA|XFS_BMAPI_CONTIG,
 			args->total, &map, &nmap);
-	if (error == -ENOSPC && count > 1) {
+	if (error)
+		return error;
+
+	ASSERT(nmap <= 1);
+	if (nmap == 1) {
+		mapp = &map;
+		mapi = 1;
+	} else if (nmap == 0 && count > 1) {
 		xfs_fileoff_t		b;
 		int			c;
 
@@ -2323,8 +2190,7 @@ xfs_da_grow_inode_int(
 		 * If we didn't get it and the block might work if fragmented,
 		 * try without the CONTIG flag.  Loop until we get it all.
 		 */
-		mapp = kmalloc(sizeof(*mapp) * count,
-				GFP_KERNEL | __GFP_NOFAIL);
+		mapp = kmem_alloc(sizeof(*mapp) * count, 0);
 		for (b = *bno, mapi = 0; b < *bno + count; ) {
 			c = (int)(*bno + count - b);
 			nmap = min(XFS_BMAP_MAX_NMAP, c);
@@ -2333,13 +2199,16 @@ xfs_da_grow_inode_int(
 					args->total, &mapp[mapi], &nmap);
 			if (error)
 				goto out_free_map;
+			if (nmap < 1)
+				break;
 			mapi += nmap;
 			b = mapp[mapi - 1].br_startoff +
 			    mapp[mapi - 1].br_blockcount;
 		}
+	} else {
+		mapi = 0;
+		mapp = NULL;
 	}
-	if (error)
-		goto out_free_map;
 
 	/*
 	 * Count the blocks we got, make sure it matches the total.
@@ -2358,7 +2227,7 @@ xfs_da_grow_inode_int(
 
 out_free_map:
 	if (mapp != &map)
-		kfree(mapp);
+		kmem_free(mapp);
 	return error;
 }
 
@@ -2411,7 +2280,6 @@ xfs_da3_swap_lastblock(
 	struct xfs_buf		*last_buf;
 	struct xfs_buf		*sib_buf;
 	struct xfs_buf		*par_buf;
-	xfs_failaddr_t		fa;
 	xfs_dahash_t		dead_hash;
 	xfs_fileoff_t		lastoff;
 	xfs_dablk_t		dead_blkno;
@@ -2437,10 +2305,8 @@ xfs_da3_swap_lastblock(
 	error = xfs_bmap_last_before(tp, dp, &lastoff, w);
 	if (error)
 		return error;
-	if (XFS_IS_CORRUPT(mp, lastoff == 0)) {
-		xfs_da_mark_sick(args);
+	if (XFS_IS_CORRUPT(mp, lastoff == 0))
 		return -EFSCORRUPTED;
-	}
 	/*
 	 * Read the last block in the btree space.
 	 */
@@ -2448,21 +2314,12 @@ xfs_da3_swap_lastblock(
 	error = xfs_da3_node_read(tp, dp, last_blkno, &last_buf, w);
 	if (error)
 		return error;
-	fa = xfs_da3_header_check(last_buf, args->owner);
-	if (fa) {
-		__xfs_buf_mark_corrupt(last_buf, fa);
-		xfs_trans_brelse(tp, last_buf);
-		xfs_da_mark_sick(args);
-		return -EFSCORRUPTED;
-	}
-
 	/*
 	 * Copy the last block into the dead buffer and log it.
 	 */
-	xfs_da_buf_copy(dead_buf, last_buf, args->geo->blksize);
+	memcpy(dead_buf->b_addr, last_buf->b_addr, args->geo->blksize);
 	xfs_trans_log_buf(tp, dead_buf, 0, args->geo->blksize - 1);
 	dead_info = dead_buf->b_addr;
-
 	/*
 	 * Get values from the moved block.
 	 */
@@ -2494,18 +2351,10 @@ xfs_da3_swap_lastblock(
 		error = xfs_da3_node_read(tp, dp, sib_blkno, &sib_buf, w);
 		if (error)
 			goto done;
-		fa = xfs_da3_header_check(sib_buf, args->owner);
-		if (fa) {
-			__xfs_buf_mark_corrupt(sib_buf, fa);
-			xfs_da_mark_sick(args);
-			error = -EFSCORRUPTED;
-			goto done;
-		}
 		sib_info = sib_buf->b_addr;
 		if (XFS_IS_CORRUPT(mp,
 				   be32_to_cpu(sib_info->forw) != last_blkno ||
 				   sib_info->magic != dead_info->magic)) {
-			xfs_da_mark_sick(args);
 			error = -EFSCORRUPTED;
 			goto done;
 		}
@@ -2522,18 +2371,10 @@ xfs_da3_swap_lastblock(
 		error = xfs_da3_node_read(tp, dp, sib_blkno, &sib_buf, w);
 		if (error)
 			goto done;
-		fa = xfs_da3_header_check(sib_buf, args->owner);
-		if (fa) {
-			__xfs_buf_mark_corrupt(sib_buf, fa);
-			xfs_da_mark_sick(args);
-			error = -EFSCORRUPTED;
-			goto done;
-		}
 		sib_info = sib_buf->b_addr;
 		if (XFS_IS_CORRUPT(mp,
 				   be32_to_cpu(sib_info->back) != last_blkno ||
 				   sib_info->magic != dead_info->magic)) {
-			xfs_da_mark_sick(args);
 			error = -EFSCORRUPTED;
 			goto done;
 		}
@@ -2552,18 +2393,10 @@ xfs_da3_swap_lastblock(
 		error = xfs_da3_node_read(tp, dp, par_blkno, &par_buf, w);
 		if (error)
 			goto done;
-		fa = xfs_da3_node_header_check(par_buf, args->owner);
-		if (fa) {
-			__xfs_buf_mark_corrupt(par_buf, fa);
-			xfs_da_mark_sick(args);
-			error = -EFSCORRUPTED;
-			goto done;
-		}
 		par_node = par_buf->b_addr;
 		xfs_da3_node_hdr_from_disk(dp->i_mount, &par_hdr, par_node);
 		if (XFS_IS_CORRUPT(mp,
 				   level >= 0 && level != par_hdr.level + 1)) {
-			xfs_da_mark_sick(args);
 			error = -EFSCORRUPTED;
 			goto done;
 		}
@@ -2575,7 +2408,6 @@ xfs_da3_swap_lastblock(
 		     entno++)
 			continue;
 		if (XFS_IS_CORRUPT(mp, entno == par_hdr.count)) {
-			xfs_da_mark_sick(args);
 			error = -EFSCORRUPTED;
 			goto done;
 		}
@@ -2601,24 +2433,15 @@ xfs_da3_swap_lastblock(
 		xfs_trans_brelse(tp, par_buf);
 		par_buf = NULL;
 		if (XFS_IS_CORRUPT(mp, par_blkno == 0)) {
-			xfs_da_mark_sick(args);
 			error = -EFSCORRUPTED;
 			goto done;
 		}
 		error = xfs_da3_node_read(tp, dp, par_blkno, &par_buf, w);
 		if (error)
 			goto done;
-		fa = xfs_da3_node_header_check(par_buf, args->owner);
-		if (fa) {
-			__xfs_buf_mark_corrupt(par_buf, fa);
-			xfs_da_mark_sick(args);
-			error = -EFSCORRUPTED;
-			goto done;
-		}
 		par_node = par_buf->b_addr;
 		xfs_da3_node_hdr_from_disk(dp->i_mount, &par_hdr, par_node);
 		if (XFS_IS_CORRUPT(mp, par_hdr.level != level)) {
-			xfs_da_mark_sick(args);
 			error = -EFSCORRUPTED;
 			goto done;
 		}
@@ -2702,8 +2525,7 @@ xfs_dabuf_map(
 	int			error = 0, nirecs, i;
 
 	if (nfsb > 1)
-		irecs = kzalloc(sizeof(irec) * nfsb,
-				GFP_KERNEL | __GFP_NOLOCKDEP | __GFP_NOFAIL);
+		irecs = kmem_zalloc(sizeof(irec) * nfsb, KM_NOFS);
 
 	nirecs = nfsb;
 	error = xfs_bmapi_read(dp, bno, nfsb, irecs, &nirecs,
@@ -2716,8 +2538,7 @@ xfs_dabuf_map(
 	 * larger one that needs to be free by the caller.
 	 */
 	if (nirecs > 1) {
-		map = kzalloc(nirecs * sizeof(struct xfs_buf_map),
-				GFP_KERNEL | __GFP_NOLOCKDEP | __GFP_NOFAIL);
+		map = kmem_zalloc(nirecs * sizeof(struct xfs_buf_map), KM_NOFS);
 		if (!map) {
 			error = -ENOMEM;
 			goto out_free_irecs;
@@ -2743,13 +2564,12 @@ xfs_dabuf_map(
 	*nmaps = nirecs;
 out_free_irecs:
 	if (irecs != &irec)
-		kfree(irecs);
+		kmem_free(irecs);
 	return error;
 
 invalid_mapping:
 	/* Caller ok with no mapping. */
 	if (XFS_IS_CORRUPT(mp, !(flags & XFS_DABUF_MAP_HOLE_OK))) {
-		xfs_dirattr_mark_sick(dp, whichfork);
 		error = -EFSCORRUPTED;
 		if (xfs_error_level >= XFS_ERRLEVEL_LOW) {
 			xfs_alert(mp, "%s: bno %u inode %llu",
@@ -2800,7 +2620,7 @@ xfs_da_get_buf(
 
 out_free:
 	if (mapp != &map)
-		kfree(mapp);
+		kmem_free(mapp);
 
 	return error;
 }
@@ -2831,14 +2651,6 @@ xfs_da_read_buf(
 
 	error = xfs_trans_read_buf_map(mp, tp, mp->m_ddev_targp, mapp, nmap, 0,
 			&bp, ops);
-	if (xfs_metadata_is_sick(error))
-		xfs_dirattr_mark_sick(dp, whichfork);
-	/*
-	 * ENODATA from disk implies a disk medium failure; ENODATA for
-	 * xattrs means attribute not found, so disambiguate that here.
-	 */
-	if (error == -ENODATA && whichfork == XFS_ATTR_FORK)
-		error = -EIO;
 	if (error)
 		goto out_free;
 
@@ -2849,7 +2661,7 @@ xfs_da_read_buf(
 	*bpp = bp;
 out_free:
 	if (mapp != &map)
-		kfree(mapp);
+		kmem_free(mapp);
 
 	return error;
 }
@@ -2880,7 +2692,7 @@ xfs_da_reada_buf(
 
 out_free:
 	if (mapp != &map)
-		kfree(mapp);
+		kmem_free(mapp);
 
 	return error;
 }

@@ -9,7 +9,7 @@ title: Qualcomm Shared Memory Point 2 Point
 maintainers:
   - Andy Gross <agross@kernel.org>
   - Bjorn Andersson <bjorn.andersson@linaro.org>
-  - Krzysztof Kozlowski <krzk@kernel.org>
+  - Krzysztof Kozlowski <krzysztof.kozlowski@linaro.org>
 
 description:
   The Shared Memory Point to Point (SMP2P) protocol facilitates communication
@@ -41,7 +41,6 @@ properties:
     description:
       Three entries specifying the outgoing ipc bit used for signaling the
       remote end of the smp2p edge.
-    deprecated: true
 
   qcom,local-pid:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -55,7 +54,8 @@ properties:
 
   qcom,smem:
     $ref: /schemas/types.yaml#/definitions/uint32-array
-    maxItems: 2
+    items:
+      maxItems: 2
     description:
       Two identifiers of the inbound and outbound smem items used for this edge.
 
@@ -128,7 +128,7 @@ examples:
         compatible = "qcom,smp2p";
         qcom,smem = <431>, <451>;
         interrupts = <GIC_SPI 143 IRQ_TYPE_EDGE_RISING>;
-        mboxes = <&apcs 18>;
+        qcom,ipc = <&apcs 8 18>;
         qcom,local-pid = <0>;
         qcom,remote-pid = <4>;
 

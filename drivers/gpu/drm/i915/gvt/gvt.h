@@ -34,33 +34,30 @@
 #define _GVT_H_
 
 #include <uapi/linux/pci_regs.h>
-#include <linux/mdev.h>
+#include <linux/kvm_host.h>
 #include <linux/vfio.h>
-#include <asm/kvm_page_track.h>
+#include <linux/mdev.h>
 
-#include "display/intel_display_limits.h"
+#include "i915_drv.h"
+#include "intel_gvt.h"
 
-#include "gt/intel_gt.h"
-
-#include "cmd_parser.h"
 #include "debug.h"
+#include "mmio.h"
+#include "reg.h"
+#include "interrupt.h"
+#include "gtt.h"
 #include "display.h"
-#include "dmabuf.h"
 #include "edid.h"
 #include "execlist.h"
-#include "fb_decoder.h"
-#include "gtt.h"
-#include "intel_gvt.h"
-#include "interrupt.h"
-#include "mmio.h"
-#include "mmio_context.h"
-#include "page_track.h"
-#include "reg.h"
 #include "scheduler.h"
+#include "sched_policy.h"
+#include "mmio_context.h"
+#include "cmd_parser.h"
+#include "fb_decoder.h"
+#include "dmabuf.h"
+#include "page_track.h"
 
 #define GVT_MAX_VGPU 8
-
-struct engine_mmio;
 
 /* Describe per-platform limitations. */
 struct intel_gvt_device_info {
@@ -89,6 +86,7 @@ struct intel_vgpu_gm {
 /* Fences owned by a vGPU */
 struct intel_vgpu_fence {
 	struct i915_fence_reg *regs[INTEL_GVT_MAX_NUM_FENCES];
+	u32 base;
 	u32 size;
 };
 
@@ -118,6 +116,7 @@ struct intel_vgpu_irq {
 };
 
 struct intel_vgpu_opregion {
+	bool mapped;
 	void *va;
 	u32 gfn[INTEL_GVT_OPREGION_PAGES];
 };
@@ -221,6 +220,7 @@ struct intel_vgpu {
 
 	struct vfio_region *region;
 	int num_regions;
+	struct eventfd_ctx *intx_trigger;
 	struct eventfd_ctx *msi_trigger;
 
 	/*
@@ -253,6 +253,7 @@ struct intel_gvt_fence {
 
 /* Special MMIO blocks. */
 struct gvt_mmio_block {
+	unsigned int device;
 	i915_reg_t   offset;
 	unsigned int size;
 	gvt_mmio_func read;
@@ -366,6 +367,11 @@ struct intel_gvt {
 	struct dentry *debugfs_root;
 };
 
+static inline struct intel_gvt *to_gvt(struct drm_i915_private *i915)
+{
+	return i915->gvt;
+}
+
 enum {
 	/* Scheduling trigger by timer */
 	INTEL_GVT_REQUEST_SCHED = 0,
@@ -440,6 +446,7 @@ int intel_gvt_load_firmware(struct intel_gvt *gvt);
 #define vgpu_hidden_gmadr_end(vgpu) \
 	(vgpu_hidden_gmadr_base(vgpu) + vgpu_hidden_sz(vgpu) - 1)
 
+#define vgpu_fence_base(vgpu) (vgpu->fence.base)
 #define vgpu_fence_sz(vgpu) (vgpu->fence.size)
 
 /* ring context size i.e. the first 0x50 dwords*/
@@ -452,10 +459,8 @@ void intel_vgpu_free_resource(struct intel_vgpu *vgpu);
 void intel_vgpu_write_fence(struct intel_vgpu *vgpu,
 	u32 fence, u64 value);
 
-/*
- * Macros for easily accessing vGPU virtual/shadow register.
- * Explicitly separate use for typed MMIO reg or real offset.
- */
+/* Macros for easily accessing vGPU virtual/shadow register.
+   Explicitly seperate use for typed MMIO reg or real offset.*/
 #define vgpu_vreg_t(vgpu, reg) \
 	(*(u32 *)(vgpu->mmio.vreg + i915_mmio_reg_offset(reg)))
 #define vgpu_vreg(vgpu, offset) \
@@ -533,6 +538,12 @@ int intel_gvt_set_edid(struct intel_vgpu *vgpu, int port_num);
 	    gvt_gmadr_is_hidden(gvt, gmadr))
 
 bool intel_gvt_ggtt_validate_range(struct intel_vgpu *vgpu, u64 addr, u32 size);
+int intel_gvt_ggtt_gmadr_g2h(struct intel_vgpu *vgpu, u64 g_addr, u64 *h_addr);
+int intel_gvt_ggtt_gmadr_h2g(struct intel_vgpu *vgpu, u64 h_addr, u64 *g_addr);
+int intel_gvt_ggtt_index_g2h(struct intel_vgpu *vgpu, unsigned long g_index,
+			     unsigned long *h_index);
+int intel_gvt_ggtt_h2g_index(struct intel_vgpu *vgpu, unsigned long h_index,
+			     unsigned long *g_index);
 
 void intel_vgpu_init_cfg_space(struct intel_vgpu *vgpu,
 		bool primary);
@@ -570,15 +581,14 @@ enum {
 	GVT_FAILSAFE_GUEST_ERR,
 };
 
-static inline intel_wakeref_t mmio_hw_access_pre(struct intel_gt *gt)
+static inline void mmio_hw_access_pre(struct intel_gt *gt)
 {
-	return intel_runtime_pm_get(gt->uncore->rpm);
+	intel_runtime_pm_get(gt->uncore->rpm);
 }
 
-static inline void mmio_hw_access_post(struct intel_gt *gt,
-				       intel_wakeref_t wakeref)
+static inline void mmio_hw_access_post(struct intel_gt *gt)
 {
-	intel_runtime_pm_put(gt->uncore->rpm, wakeref);
+	intel_runtime_pm_put_unchecked(gt->uncore->rpm);
 }
 
 /**
@@ -699,7 +709,7 @@ static inline void intel_gvt_mmio_set_cmd_write_patch(
  * @offset: register offset
  *
  * Returns:
- * True if GPU command write to an MMIO should be patched.
+ * True if GPU commmand write to an MMIO should be patched
  */
 static inline bool intel_gvt_mmio_is_cmd_write_patch(
 			struct intel_gvt *gvt, unsigned int offset)

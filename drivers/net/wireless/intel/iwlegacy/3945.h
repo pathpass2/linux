@@ -157,10 +157,8 @@ struct il3945_ibss_seq {
 };
 
 #define IL_RX_HDR(x) ((struct il3945_rx_frame_hdr *)(\
-		      container_of(&x->u.rx_frame.stats, \
-				   struct il3945_rx_frame_stats, \
-				   hdr)->payload + \
-		      x->u.rx_frame.stats.phy_count))
+		       x->u.rx_frame.stats.payload + \
+		       x->u.rx_frame.stats.phy_count))
 #define IL_RX_END(x) ((struct il3945_rx_frame_end *)(\
 		       IL_RX_HDR(x)->payload + \
 		       le16_to_cpu(IL_RX_HDR(x)->len)))
@@ -173,6 +171,7 @@ struct il3945_ibss_seq {
  * for use by iwl-*.c
  *
  *****************************************************************************/
+int il3945_calc_db_from_ratio(int sig_ratio);
 void il3945_rx_replenish(void *data);
 void il3945_rx_queue_reset(struct il_priv *il, struct il_rx_queue *rxq);
 unsigned int il3945_fill_beacon_frame(struct il_priv *il,

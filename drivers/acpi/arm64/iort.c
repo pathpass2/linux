@@ -19,7 +19,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/dma-map-ops.h>
-#include "init.h"
 
 #define IORT_TYPE_MASK(type)	(1 << (type))
 #define IORT_MSI_TYPE		(1 << ACPI_IORT_NODE_ITS_GROUP)
@@ -264,47 +263,39 @@ static acpi_status iort_match_node_callback(struct acpi_iort_node *node,
 	struct device *dev = context;
 	acpi_status status = AE_NOT_FOUND;
 
-	if (node->type == ACPI_IORT_NODE_NAMED_COMPONENT ||
-	    node->type == ACPI_IORT_NODE_IWB) {
+	if (node->type == ACPI_IORT_NODE_NAMED_COMPONENT) {
 		struct acpi_buffer buf = { ACPI_ALLOCATE_BUFFER, NULL };
-		struct acpi_iort_named_component *ncomp;
-		struct acpi_iort_iwb *iwb;
-		struct device *cdev = dev;
 		struct acpi_device *adev;
-		const char *device_name;
+		struct acpi_iort_named_component *ncomp;
+		struct device *nc_dev = dev;
 
 		/*
 		 * Walk the device tree to find a device with an
 		 * ACPI companion; there is no point in scanning
-		 * IORT for a device matching a named component or IWB if
+		 * IORT for a device matching a named component if
 		 * the device does not have an ACPI companion to
 		 * start with.
 		 */
 		do {
-			adev = ACPI_COMPANION(cdev);
+			adev = ACPI_COMPANION(nc_dev);
 			if (adev)
 				break;
 
-			cdev = cdev->parent;
-		} while (cdev);
+			nc_dev = nc_dev->parent;
+		} while (nc_dev);
 
 		if (!adev)
 			goto out;
 
 		status = acpi_get_name(adev->handle, ACPI_FULL_PATHNAME, &buf);
 		if (ACPI_FAILURE(status)) {
-			dev_warn(cdev, "Can't get device full path name\n");
+			dev_warn(nc_dev, "Can't get device full path name\n");
 			goto out;
 		}
 
-		if (node->type == ACPI_IORT_NODE_NAMED_COMPONENT) {
-			ncomp = (struct acpi_iort_named_component *)node->node_data;
-			device_name = ncomp->device_name;
-		} else {
-			iwb = (struct acpi_iort_iwb *)node->node_data;
-			device_name = iwb->device_name;
-		}
-		status = !strcmp(device_name, buf.pointer) ?  AE_OK : AE_NOT_FOUND;
+		ncomp = (struct acpi_iort_named_component *)node->node_data;
+		status = !strcmp(ncomp->device_name, buf.pointer) ?
+							AE_OK : AE_NOT_FOUND;
 		acpi_os_free(buf.pointer);
 	} else if (node->type == ACPI_IORT_NODE_PCI_ROOT_COMPLEX) {
 		struct acpi_iort_root_complex *pci_rc;
@@ -325,28 +316,12 @@ out:
 	return status;
 }
 
-static acpi_status iort_match_iwb_callback(struct acpi_iort_node *node, void *context)
-{
-	struct acpi_iort_iwb *iwb;
-	u32 *id = context;
-
-	if (node->type != ACPI_IORT_NODE_IWB)
-		return AE_NOT_FOUND;
-
-	iwb = (struct acpi_iort_iwb *)node->node_data;
-	if (iwb->iwb_index != *id)
-		return AE_NOT_FOUND;
-
-	return AE_OK;
-}
-
 static int iort_id_map(struct acpi_iort_id_mapping *map, u8 type, u32 rid_in,
 		       u32 *rid_out, bool check_overlap)
 {
 	/* Single mapping does not care for input id */
 	if (map->flags & ACPI_IORT_ID_SINGLE_MAPPING) {
 		if (type == ACPI_IORT_NODE_NAMED_COMPONENT ||
-		    type == ACPI_IORT_NODE_IWB		   ||
 		    type == ACPI_IORT_NODE_PCI_ROOT_COMPLEX) {
 			*rid_out = map->output_base;
 			return 0;
@@ -416,7 +391,6 @@ static struct acpi_iort_node *iort_node_get_id(struct acpi_iort_node *node,
 
 	if (map->flags & ACPI_IORT_ID_SINGLE_MAPPING) {
 		if (node->type == ACPI_IORT_NODE_NAMED_COMPONENT ||
-		    node->type == ACPI_IORT_NODE_IWB ||
 		    node->type == ACPI_IORT_NODE_PCI_ROOT_COMPLEX ||
 		    node->type == ACPI_IORT_NODE_SMMU_V3 ||
 		    node->type == ACPI_IORT_NODE_PMCG) {
@@ -587,14 +561,9 @@ static struct acpi_iort_node *iort_find_dev_node(struct device *dev)
 			return node;
 		/*
 		 * if not, then it should be a platform device defined in
-		 * DSDT/SSDT (with Named Component node in IORT) or an
-		 * IWB device in the DSDT/SSDT.
+		 * DSDT/SSDT (with Named Component node in IORT)
 		 */
-		node = iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
-				      iort_match_node_callback, dev);
-		if (node)
-			return node;
-		return iort_scan_node(ACPI_IORT_NODE_IWB,
+		return iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
 				      iort_match_node_callback, dev);
 	}
 
@@ -625,78 +594,16 @@ u32 iort_msi_map_id(struct device *dev, u32 input_id)
 }
 
 /**
- * iort_msi_xlate() - Map a MSI input ID for a device
- * @dev: The device for which the mapping is to be done.
- * @input_id: The device input ID.
- * @fwnode: Pointer to store the fwnode.
- *
- * Returns: mapped MSI ID on success, input ID otherwise
- *	    On success, the fwnode pointer is initialized to the MSI
- *	    controller fwnode handle.
- */
-u32 iort_msi_xlate(struct device *dev, u32 input_id, struct fwnode_handle **fwnode)
-{
-	struct acpi_iort_its_group *its;
-	struct acpi_iort_node *node;
-	u32 dev_id;
-
-	node = iort_find_dev_node(dev);
-	if (!node)
-		return input_id;
-
-	node = iort_node_map_id(node, input_id, &dev_id, IORT_MSI_TYPE);
-	if (!node)
-		return input_id;
-
-	/* Move to ITS specific data */
-	its = (struct acpi_iort_its_group *)node->node_data;
-
-	*fwnode = iort_find_domain_token(its->identifiers[0]);
-
-	return dev_id;
-}
-
-int iort_its_translate_pa(struct fwnode_handle *node, phys_addr_t *base)
-{
-	struct iort_its_msi_chip *its_msi_chip;
-	int ret = -ENODEV;
-
-	spin_lock(&iort_msi_chip_lock);
-	list_for_each_entry(its_msi_chip, &iort_msi_chip_list, list) {
-		if (its_msi_chip->fw_node == node) {
-			*base = its_msi_chip->base_addr;
-			ret = 0;
-			break;
-		}
-	}
-	spin_unlock(&iort_msi_chip_lock);
-
-	return ret;
-}
-
-static int __maybe_unused iort_find_its_base(u32 its_id, phys_addr_t *base)
-{
-	struct fwnode_handle *fwnode = iort_find_domain_token(its_id);
-
-	if (!fwnode)
-		return -ENODEV;
-
-	return iort_its_translate_pa(fwnode, base);
-}
-
-/**
- * iort_pmsi_get_msi_info() - Get the device id and translate frame PA for a device
+ * iort_pmsi_get_dev_id() - Get the device id for a device
  * @dev: The device for which the mapping is to be done.
  * @dev_id: The device ID found.
- * @pa: optional pointer to store translate frame address.
  *
- * Returns: 0 for successful devid and pa retrieval, -ENODEV on error
+ * Returns: 0 for successful find a dev id, -ENODEV on error
  */
-int iort_pmsi_get_msi_info(struct device *dev, u32 *dev_id, phys_addr_t *pa)
+int iort_pmsi_get_dev_id(struct device *dev, u32 *dev_id)
 {
-	struct acpi_iort_node *node, *parent = NULL;
-	struct acpi_iort_its_group *its;
 	int i, index;
+	struct acpi_iort_node *node;
 
 	node = iort_find_dev_node(dev);
 	if (!node)
@@ -705,29 +612,35 @@ int iort_pmsi_get_msi_info(struct device *dev, u32 *dev_id, phys_addr_t *pa)
 	index = iort_get_id_mapping_index(node);
 	/* if there is a valid index, go get the dev_id directly */
 	if (index >= 0) {
-		parent = iort_node_get_id(node, dev_id, index);
+		if (iort_node_get_id(node, dev_id, index))
+			return 0;
 	} else {
 		for (i = 0; i < node->mapping_count; i++) {
-			parent = iort_node_map_platform_id(node, dev_id,
-						      IORT_MSI_TYPE, i);
-			if (parent)
-				break;
+			if (iort_node_map_platform_id(node, dev_id,
+						      IORT_MSI_TYPE, i))
+				return 0;
 		}
 	}
 
-	if (!parent)
-		return -ENODEV;
+	return -ENODEV;
+}
 
-	if (pa) {
-		int ret;
+static int __maybe_unused iort_find_its_base(u32 its_id, phys_addr_t *base)
+{
+	struct iort_its_msi_chip *its_msi_chip;
+	int ret = -ENODEV;
 
-		its = (struct acpi_iort_its_group *)node->node_data;
-		ret = iort_find_its_base(its->identifiers[0], pa);
-		if (ret)
-			return ret;
+	spin_lock(&iort_msi_chip_lock);
+	list_for_each_entry(its_msi_chip, &iort_msi_chip_list, list) {
+		if (its_msi_chip->translation_id == its_id) {
+			*base = its_msi_chip->base_addr;
+			ret = 0;
+			break;
+		}
 	}
+	spin_unlock(&iort_msi_chip_lock);
 
-	return 0;
+	return ret;
 }
 
 /**
@@ -787,35 +700,6 @@ struct irq_domain *iort_get_device_domain(struct device *dev, u32 id,
 		return NULL;
 
 	return irq_find_matching_fwnode(handle, bus_token);
-}
-
-struct fwnode_handle *iort_iwb_handle(u32 iwb_id)
-{
-	struct fwnode_handle *fwnode;
-	struct acpi_iort_node *node;
-	struct acpi_device *device;
-	struct acpi_iort_iwb *iwb;
-	acpi_status status;
-	acpi_handle handle;
-
-	/* find its associated IWB node */
-	node = iort_scan_node(ACPI_IORT_NODE_IWB, iort_match_iwb_callback, &iwb_id);
-	if (!node)
-		return NULL;
-
-	iwb = (struct acpi_iort_iwb *)node->node_data;
-	status = acpi_get_handle(NULL, iwb->device_name, &handle);
-	if (ACPI_FAILURE(status))
-		return NULL;
-
-	device = acpi_get_acpi_dev(handle);
-	if (!device)
-		return NULL;
-
-	fwnode = acpi_fwnode_handle(device);
-	acpi_put_acpi_dev(device);
-
-	return fwnode;
 }
 
 static void iort_set_device_domain(struct device *dev,
@@ -878,14 +762,8 @@ static struct irq_domain *iort_get_platform_device_domain(struct device *dev)
 	/* find its associated iort node */
 	node = iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
 			      iort_match_node_callback, dev);
-	if (!node) {
-		/* find its associated iort node */
-		node = iort_scan_node(ACPI_IORT_NODE_IWB,
-				      iort_match_node_callback, dev);
-
-		if (!node)
-			return NULL;
-	}
+	if (!node)
+		return NULL;
 
 	/* then find its msi parent node */
 	for (i = 0; i < node->mapping_count; i++) {
@@ -943,7 +821,7 @@ static struct iommu_iort_rmr_data *iort_rmr_alloc(
 		return NULL;
 
 	/* Create a copy of SIDs array to associate with this rmr_data */
-	sids_copy = kmemdup_array(sids, num_sids, sizeof(*sids), GFP_KERNEL);
+	sids_copy = kmemdup(sids, num_sids * sizeof(*sids), GFP_KERNEL);
 	if (!sids_copy) {
 		kfree(rmr_data);
 		return NULL;
@@ -1058,10 +936,8 @@ static u32 *iort_rmr_alloc_sids(u32 *sids, u32 count, u32 id_start,
 
 	new_sids = krealloc_array(sids, count + new_count,
 				  sizeof(*new_sids), GFP_KERNEL);
-	if (!new_sids) {
-		kfree(sids);
+	if (!new_sids)
 		return NULL;
-	}
 
 	for (i = count; i < total_count; i++)
 		new_sids[i] = id_start++;
@@ -1129,6 +1005,9 @@ static void iort_node_get_rmr_info(struct acpi_iort_node *node,
 	 */
 	for (i = 0; i < node->mapping_count; i++, map++) {
 		struct acpi_iort_node *parent;
+
+		if (!map->id_count)
+			continue;
 
 		parent = ACPI_ADD_PTR(struct acpi_iort_node, iort_table,
 				      map->output_reference);
@@ -1341,24 +1220,13 @@ static bool iort_pci_rc_supports_ats(struct acpi_iort_node *node)
 	return pci_rc->ats_attribute & ACPI_IORT_ATS_SUPPORTED;
 }
 
-static bool iort_pci_rc_supports_canwbs(struct acpi_iort_node *node)
-{
-	struct acpi_iort_memory_access *memory_access;
-	struct acpi_iort_root_complex *pci_rc;
-
-	pci_rc = (struct acpi_iort_root_complex *)node->node_data;
-	memory_access =
-		(struct acpi_iort_memory_access *)&pci_rc->memory_properties;
-	return memory_access->memory_flags & ACPI_IORT_MF_CANWBS;
-}
-
 static int iort_iommu_xlate(struct device *dev, struct acpi_iort_node *node,
 			    u32 streamid)
 {
+	const struct iommu_ops *ops;
 	struct fwnode_handle *iort_fwnode;
 
-	/* If there's no SMMU driver at all, give up now */
-	if (!node || !iort_iommu_driver_enabled(node->type))
+	if (!node)
 		return -ENODEV;
 
 	iort_fwnode = iort_get_fwnode(node);
@@ -1366,10 +1234,19 @@ static int iort_iommu_xlate(struct device *dev, struct acpi_iort_node *node,
 		return -ENODEV;
 
 	/*
-	 * If the SMMU drivers are enabled but not loaded/probed
-	 * yet, this will defer.
+	 * If the ops look-up fails, this means that either
+	 * the SMMU drivers have not been probed yet or that
+	 * the SMMU drivers are not built in the kernel;
+	 * Depending on whether the SMMU drivers are built-in
+	 * in the kernel or not, defer the IOMMU configuration
+	 * or just abort it.
 	 */
-	return acpi_iommu_fwspec_init(dev, streamid, iort_fwnode);
+	ops = iommu_ops_from_fwnode(iort_fwnode);
+	if (!ops)
+		return iort_iommu_driver_enabled(node->type) ?
+		       -EPROBE_DEFER : -ENODEV;
+
+	return acpi_iommu_fwspec_init(dev, streamid, iort_fwnode, ops);
 }
 
 struct iort_pci_alias_info {
@@ -1469,8 +1346,6 @@ int iort_iommu_configure_id(struct device *dev, const u32 *id_in)
 		fwspec = dev_iommu_fwspec_get(dev);
 		if (fwspec && iort_pci_rc_supports_ats(node))
 			fwspec->flags |= IOMMU_FWSPEC_PCI_RC_ATS;
-		if (fwspec && iort_pci_rc_supports_canwbs(node))
-			fwspec->flags |= IOMMU_FWSPEC_PCI_RC_CANWBS;
 	} else {
 		node = iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
 				      iort_match_node_callback, dev);
@@ -1494,7 +1369,7 @@ int iort_iommu_configure_id(struct device *dev, const u32 *input_id)
 { return -ENODEV; }
 #endif
 
-static int nc_dma_get_range(struct device *dev, u64 *limit)
+static int nc_dma_get_range(struct device *dev, u64 *size)
 {
 	struct acpi_iort_node *node;
 	struct acpi_iort_named_component *ncomp;
@@ -1511,13 +1386,13 @@ static int nc_dma_get_range(struct device *dev, u64 *limit)
 		return -EINVAL;
 	}
 
-	*limit = ncomp->memory_address_limit >= 64 ? U64_MAX :
-			(1ULL << ncomp->memory_address_limit) - 1;
+	*size = ncomp->memory_address_limit >= 64 ? U64_MAX :
+			1ULL<<ncomp->memory_address_limit;
 
 	return 0;
 }
 
-static int rc_dma_get_range(struct device *dev, u64 *limit)
+static int rc_dma_get_range(struct device *dev, u64 *size)
 {
 	struct acpi_iort_node *node;
 	struct acpi_iort_root_complex *rc;
@@ -1535,8 +1410,8 @@ static int rc_dma_get_range(struct device *dev, u64 *limit)
 		return -EINVAL;
 	}
 
-	*limit = rc->memory_address_limit >= 64 ? U64_MAX :
-			(1ULL << rc->memory_address_limit) - 1;
+	*size = rc->memory_address_limit >= 64 ? U64_MAX :
+			1ULL<<rc->memory_address_limit;
 
 	return 0;
 }
@@ -1544,16 +1419,16 @@ static int rc_dma_get_range(struct device *dev, u64 *limit)
 /**
  * iort_dma_get_ranges() - Look up DMA addressing limit for the device
  * @dev: device to lookup
- * @limit: DMA limit result pointer
+ * @size: DMA range size result pointer
  *
  * Return: 0 on success, an error otherwise.
  */
-int iort_dma_get_ranges(struct device *dev, u64 *limit)
+int iort_dma_get_ranges(struct device *dev, u64 *size)
 {
 	if (dev_is_pci(dev))
-		return rc_dma_get_range(dev, limit);
+		return rc_dma_get_range(dev, size);
 	else
-		return nc_dma_get_range(dev, limit);
+		return nc_dma_get_range(dev, size);
 }
 
 static void __init acpi_iort_register_irq(int hwirq, const char *name,
@@ -1835,19 +1710,7 @@ static void __init arm_smmu_v3_pmcg_init_resources(struct resource *res,
 static struct acpi_platform_list pmcg_plat_info[] __initdata = {
 	/* HiSilicon Hip08 Platform */
 	{"HISI  ", "HIP08   ", 0, ACPI_SIG_IORT, greater_than_or_equal,
-	 "Erratum #162001800, Erratum #162001900", IORT_SMMU_V3_PMCG_HISI_HIP08},
-	/* HiSilicon Hip09 Platform */
-	{"HISI  ", "HIP09   ", 0, ACPI_SIG_IORT, greater_than_or_equal,
-	 "Erratum #162001900", IORT_SMMU_V3_PMCG_HISI_HIP09},
-	{"HISI  ", "HIP09A  ", 0, ACPI_SIG_IORT, greater_than_or_equal,
-	 "Erratum #162001900", IORT_SMMU_V3_PMCG_HISI_HIP09},
-	/* HiSilicon Hip10/11 Platform uses the same SMMU IP with Hip09 */
-	{"HISI  ", "HIP10   ", 0, ACPI_SIG_IORT, greater_than_or_equal,
-	 "Erratum #162001900", IORT_SMMU_V3_PMCG_HISI_HIP09},
-	{"HISI  ", "HIP10C  ", 0, ACPI_SIG_IORT, greater_than_or_equal,
-	 "Erratum #162001900", IORT_SMMU_V3_PMCG_HISI_HIP09},
-	{"HISI  ", "HIP11   ", 0, ACPI_SIG_IORT, greater_than_or_equal,
-	 "Erratum #162001900", IORT_SMMU_V3_PMCG_HISI_HIP09},
+	 "Erratum #162001800", IORT_SMMU_V3_PMCG_HISI_HIP08},
 	{ }
 };
 

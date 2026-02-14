@@ -111,7 +111,6 @@ void snd_dmaengine_pcm_set_config_from_dai_data(
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		slave_config->dst_addr = dma_data->addr;
 		slave_config->dst_maxburst = dma_data->maxburst;
-		slave_config->dst_port_window_size = dma_data->port_window_size;
 		if (dma_data->flags & SND_DMAENGINE_PCM_DAI_FLAG_PACK)
 			slave_config->dst_addr_width =
 				DMA_SLAVE_BUSWIDTH_UNDEFINED;
@@ -120,7 +119,6 @@ void snd_dmaengine_pcm_set_config_from_dai_data(
 	} else {
 		slave_config->src_addr = dma_data->addr;
 		slave_config->src_maxburst = dma_data->maxburst;
-		slave_config->src_port_window_size = dma_data->port_window_size;
 		if (dma_data->flags & SND_DMAENGINE_PCM_DAI_FLAG_PACK)
 			slave_config->src_addr_width =
 				DMA_SLAVE_BUSWIDTH_UNDEFINED;
@@ -330,36 +328,26 @@ int snd_dmaengine_pcm_open(struct snd_pcm_substream *substream,
 }
 EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_open);
 
-int snd_dmaengine_pcm_sync_stop(struct snd_pcm_substream *substream)
+/**
+ * snd_dmaengine_pcm_open_request_chan - Open a dmaengine based PCM substream and request channel
+ * @substream: PCM substream
+ * @filter_fn: Filter function used to request the DMA channel
+ * @filter_data: Data passed to the DMA filter function
+ *
+ * This function will request a DMA channel using the passed filter function and
+ * data. The function should usually be called from the pcm open callback. Note
+ * that this function will use private_data field of the substream's runtime. So
+ * it is not available to your pcm driver implementation.
+ *
+ * Return: 0 on success, a negative error code otherwise
+ */
+int snd_dmaengine_pcm_open_request_chan(struct snd_pcm_substream *substream,
+	dma_filter_fn filter_fn, void *filter_data)
 {
-	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
-	struct dma_tx_state state;
-	enum dma_status status;
-
-	status = dmaengine_tx_status(prtd->dma_chan, prtd->cookie, &state);
-	if (status != DMA_PAUSED)
-		dmaengine_synchronize(prtd->dma_chan);
-
-	return 0;
+	return snd_dmaengine_pcm_open(substream,
+		    snd_dmaengine_pcm_request_channel(filter_fn, filter_data));
 }
-EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_sync_stop);
-
-static void __snd_dmaengine_pcm_close(struct snd_pcm_substream *substream,
-				      bool release_channel)
-{
-	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
-	struct dma_tx_state state;
-	enum dma_status status;
-
-	status = dmaengine_tx_status(prtd->dma_chan, prtd->cookie, &state);
-	if (status == DMA_PAUSED)
-		dmaengine_terminate_async(prtd->dma_chan);
-
-	dmaengine_synchronize(prtd->dma_chan);
-	if (release_channel)
-		dma_release_channel(prtd->dma_chan);
-	kfree(prtd);
-}
+EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_open_request_chan);
 
 /**
  * snd_dmaengine_pcm_close - Close a dmaengine based PCM substream
@@ -369,7 +357,11 @@ static void __snd_dmaengine_pcm_close(struct snd_pcm_substream *substream,
  */
 int snd_dmaengine_pcm_close(struct snd_pcm_substream *substream)
 {
-	__snd_dmaengine_pcm_close(substream, false);
+	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
+
+	dmaengine_synchronize(prtd->dma_chan);
+	kfree(prtd);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_close);
@@ -385,7 +377,12 @@ EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_close);
  */
 int snd_dmaengine_pcm_close_release_chan(struct snd_pcm_substream *substream)
 {
-	__snd_dmaengine_pcm_close(substream, true);
+	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
+
+	dmaengine_synchronize(prtd->dma_chan);
+	dma_release_channel(prtd->dma_chan);
+	kfree(prtd);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_close_release_chan);
@@ -473,5 +470,4 @@ int snd_dmaengine_pcm_refine_runtime_hwparams(
 }
 EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_refine_runtime_hwparams);
 
-MODULE_DESCRIPTION("PCM dmaengine helper APIs");
 MODULE_LICENSE("GPL");

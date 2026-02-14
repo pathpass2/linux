@@ -11,7 +11,6 @@
 #include <linux/interrupt.h>
 #include <linux/dmaengine.h>
 #include <linux/delay.h>
-#include <linux/hex.h>
 #include <linux/netdevice.h>
 #include <linux/of_mdio.h>
 #include <linux/etherdevice.h>
@@ -935,8 +934,7 @@ static irqreturn_t pasemi_mac_rx_intr(int irq, void *data)
 
 static void pasemi_mac_tx_timer(struct timer_list *t)
 {
-	struct pasemi_mac_txring *txring = timer_container_of(txring, t,
-							      clean_timer);
+	struct pasemi_mac_txring *txring = from_timer(txring, t, clean_timer);
 	struct pasemi_mac *mac = txring->mac;
 
 	pasemi_mac_clean_tx(txring);
@@ -1290,7 +1288,7 @@ static int pasemi_mac_close(struct net_device *dev)
 		phy_disconnect(dev->phydev);
 	}
 
-	timer_delete_sync(&mac->tx->clean_timer);
+	del_timer_sync(&mac->tx->clean_timer);
 
 	netif_stop_queue(dev);
 	napi_disable(&mac->napi);
@@ -1425,7 +1423,7 @@ static void pasemi_mac_queue_csdesc(const struct sk_buff *skb,
 	write_dma_reg(PAS_DMA_TXCHAN_INCR(txring->chan.chno), 2);
 }
 
-static netdev_tx_t pasemi_mac_start_tx(struct sk_buff *skb, struct net_device *dev)
+static int pasemi_mac_start_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct pasemi_mac * const mac = netdev_priv(dev);
 	struct pasemi_mac_txring * const txring = tx_ring(mac);
@@ -1641,7 +1639,7 @@ static int pasemi_mac_change_mtu(struct net_device *dev, int new_mtu)
 	reg |= PAS_MAC_CFG_MACCFG_MAXF(new_mtu + ETH_HLEN + 4);
 	write_mac_reg(mac, PAS_MAC_CFG_MACCFG, reg);
 
-	WRITE_ONCE(dev->mtu, new_mtu);
+	dev->mtu = new_mtu;
 	/* MTU + ETH_HLEN + VLAN_HLEN + 2 64B cachelines */
 	mac->bufsz = new_mtu + ETH_HLEN + ETH_FCS_LEN + LOCAL_SKB_ALIGN + 128;
 
@@ -1701,9 +1699,8 @@ pasemi_mac_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	netif_napi_add(dev, &mac->napi, pasemi_mac_poll);
 
-	dev->features = NETIF_F_IP_CSUM | NETIF_F_SG | NETIF_F_HIGHDMA |
-			NETIF_F_GSO;
-	dev->lltx = true;
+	dev->features = NETIF_F_IP_CSUM | NETIF_F_LLTX | NETIF_F_SG |
+			NETIF_F_HIGHDMA | NETIF_F_GSO;
 
 	mac->dma_pdev = pci_get_device(PCI_VENDOR_ID_PASEMI, 0xa007, NULL);
 	if (!mac->dma_pdev) {

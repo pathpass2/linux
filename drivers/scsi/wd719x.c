@@ -204,8 +204,7 @@ static void wd719x_finish_cmd(struct wd719x_scb *scb, int result)
 }
 
 /* Build a SCB and send it to the card */
-static enum scsi_qc_status wd719x_queuecommand(struct Scsi_Host *sh,
-					       struct scsi_cmnd *cmd)
+static int wd719x_queuecommand(struct Scsi_Host *sh, struct scsi_cmnd *cmd)
 {
 	int i, count_sg;
 	unsigned long flags;
@@ -545,7 +544,7 @@ static int wd719x_host_reset(struct scsi_cmnd *cmd)
 	return wd719x_chip_init(wd) == 0 ? SUCCESS : FAILED;
 }
 
-static int wd719x_biosparam(struct scsi_device *sdev, struct gendisk *unused,
+static int wd719x_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 			    sector_t capacity, int geom[])
 {
 	if (capacity >= 0x200000) {
@@ -879,7 +878,7 @@ fail_free_params:
 	return ret;
 }
 
-static const struct scsi_host_template wd719x_template = {
+static struct scsi_host_template wd719x_template = {
 	.module				= THIS_MODULE,
 	.name				= "Western Digital 719x",
 	.cmd_size			= sizeof(struct wd719x_scb),

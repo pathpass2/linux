@@ -15,8 +15,7 @@
 #include <linux/if_vlan.h>
 #include <linux/interrupt.h>
 #include <linux/etherdevice.h>
-#include <net/dcbnl.h>
-#include <linux/bnxt/hsi.h>
+#include "bnxt_hsi.h"
 #include "bnxt.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ulp.h"
@@ -96,7 +95,7 @@ int bnxt_set_vf_spoofchk(struct net_device *dev, int vf_id, bool setting)
 	/*TODO: if the driver supports VLAN filter on guest VLAN,
 	 * the spoof check should also include vlan anti-spoofing
 	 */
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
+	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
 	if (!rc) {
 		req->fid = cpu_to_le16(vf->fw_fid);
 		req->flags = cpu_to_le32(func_flags);
@@ -147,7 +146,7 @@ static int bnxt_hwrm_set_trusted_vf(struct bnxt *bp, struct bnxt_vf_info *vf)
 	if (!(bp->fw_cap & BNXT_FW_CAP_TRUSTED_VF))
 		return 0;
 
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
+	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
 	if (rc)
 		return rc;
 
@@ -197,8 +196,11 @@ int bnxt_get_vf_config(struct net_device *dev, int vf_id,
 		memcpy(&ivi->mac, vf->vf_mac_addr, ETH_ALEN);
 	ivi->max_tx_rate = vf->max_tx_rate;
 	ivi->min_tx_rate = vf->min_tx_rate;
-	ivi->vlan = vf->vlan & VLAN_VID_MASK;
-	ivi->qos = vf->vlan >> VLAN_PRIO_SHIFT;
+	ivi->vlan = vf->vlan;
+	if (vf->flags & BNXT_VF_QOS)
+		ivi->qos = vf->vlan >> VLAN_PRIO_SHIFT;
+	else
+		ivi->qos = 0;
 	ivi->spoofchk = !!(vf->flags & BNXT_VF_SPOOFCHK);
 	ivi->trusted = bnxt_is_trusted_vf(bp, vf);
 	if (!(vf->flags & BNXT_VF_LINK_FORCED))
@@ -230,7 +232,7 @@ int bnxt_set_vf_mac(struct net_device *dev, int vf_id, u8 *mac)
 	}
 	vf = &bp->pf.vf[vf_id];
 
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
+	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
 	if (rc)
 		return rc;
 
@@ -254,33 +256,29 @@ int bnxt_set_vf_vlan(struct net_device *dev, int vf_id, u16 vlan_id, u8 qos,
 	if (bp->hwrm_spec_code < 0x10201)
 		return -ENOTSUPP;
 
-	if (vlan_proto != htons(ETH_P_8021Q) &&
-	    (vlan_proto != htons(ETH_P_8021AD) ||
-	     !(bp->fw_cap & BNXT_FW_CAP_DFLT_VLAN_TPID_PCP)))
+	if (vlan_proto != htons(ETH_P_8021Q))
 		return -EPROTONOSUPPORT;
 
 	rc = bnxt_vf_ndo_prep(bp, vf_id);
 	if (rc)
 		return rc;
 
-	if (vlan_id >= VLAN_N_VID || qos >= IEEE_8021Q_MAX_PRIORITIES ||
-	    (!vlan_id && qos))
+	/* TODO: needed to implement proper handling of user priority,
+	 * currently fail the command if there is valid priority
+	 */
+	if (vlan_id > 4095 || qos)
 		return -EINVAL;
 
 	vf = &bp->pf.vf[vf_id];
-	vlan_tag = vlan_id | (u16)qos << VLAN_PRIO_SHIFT;
+	vlan_tag = vlan_id;
 	if (vlan_tag == vf->vlan)
 		return 0;
 
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
+	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
 	if (!rc) {
 		req->fid = cpu_to_le16(vf->fw_fid);
 		req->dflt_vlan = cpu_to_le16(vlan_tag);
 		req->enables = cpu_to_le32(FUNC_CFG_REQ_ENABLES_DFLT_VLAN);
-		if (bp->fw_cap & BNXT_FW_CAP_DFLT_VLAN_TPID_PCP) {
-			req->enables |= cpu_to_le32(FUNC_CFG_REQ_ENABLES_TPID);
-			req->tpid = vlan_proto;
-		}
 		rc = hwrm_req_send(bp, req);
 		if (!rc)
 			vf->vlan = vlan_tag;
@@ -316,7 +314,7 @@ int bnxt_set_vf_bw(struct net_device *dev, int vf_id, int min_tx_rate,
 	}
 	if (min_tx_rate == vf->min_tx_rate && max_tx_rate == vf->max_tx_rate)
 		return 0;
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
+	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
 	if (!rc) {
 		req->fid = cpu_to_le16(vf->fw_fid);
 		req->enables = cpu_to_le32(FUNC_CFG_REQ_ENABLES_MAX_BW |
@@ -330,38 +328,6 @@ int bnxt_set_vf_bw(struct net_device *dev, int vf_id, int min_tx_rate,
 		}
 	}
 	return rc;
-}
-
-static int bnxt_set_vf_link_admin_state(struct bnxt *bp, int vf_id)
-{
-	struct hwrm_func_cfg_input *req;
-	struct bnxt_vf_info *vf;
-	int rc;
-
-	if (!(bp->fw_cap & BNXT_FW_CAP_LINK_ADMIN))
-		return 0;
-
-	vf = &bp->pf.vf[vf_id];
-
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
-	if (rc)
-		return rc;
-
-	req->fid = cpu_to_le16(vf->fw_fid);
-	switch (vf->flags & (BNXT_VF_LINK_FORCED | BNXT_VF_LINK_UP)) {
-	case BNXT_VF_LINK_FORCED:
-		req->options =
-			FUNC_CFG_REQ_OPTIONS_LINK_ADMIN_STATE_FORCED_DOWN;
-		break;
-	case (BNXT_VF_LINK_FORCED | BNXT_VF_LINK_UP):
-		req->options = FUNC_CFG_REQ_OPTIONS_LINK_ADMIN_STATE_FORCED_UP;
-		break;
-	default:
-		req->options = FUNC_CFG_REQ_OPTIONS_LINK_ADMIN_STATE_AUTO;
-		break;
-	}
-	req->enables = cpu_to_le32(FUNC_CFG_REQ_ENABLES_ADMIN_LINK_STATE);
-	return hwrm_req_send(bp, req);
 }
 
 int bnxt_set_vf_link_state(struct net_device *dev, int vf_id, int link)
@@ -389,11 +355,10 @@ int bnxt_set_vf_link_state(struct net_device *dev, int vf_id, int link)
 		break;
 	default:
 		netdev_err(bp->dev, "Invalid link option\n");
-		return -EINVAL;
+		rc = -EINVAL;
+		break;
 	}
-	if (bp->fw_cap & BNXT_FW_CAP_LINK_ADMIN)
-		rc = bnxt_set_vf_link_admin_state(bp, vf_id);
-	else if (vf->flags & (BNXT_VF_LINK_UP | BNXT_VF_LINK_FORCED))
+	if (vf->flags & (BNXT_VF_LINK_UP | BNXT_VF_LINK_FORCED))
 		rc = bnxt_hwrm_fwd_async_event_cmpl(bp, vf,
 			ASYNC_EVENT_CMPL_EVENT_ID_LINK_STATUS_CHANGE);
 	return rc;
@@ -526,7 +491,7 @@ static int __bnxt_set_vf_params(struct bnxt *bp, int vf_id)
 	struct bnxt_vf_info *vf;
 	int rc;
 
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
+	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
 	if (rc)
 		return rc;
 
@@ -553,63 +518,6 @@ static int __bnxt_set_vf_params(struct bnxt *bp, int vf_id)
 	return hwrm_req_send(bp, req);
 }
 
-static void bnxt_hwrm_roce_sriov_cfg(struct bnxt *bp, int num_vfs)
-{
-	struct hwrm_func_qcaps_output *resp;
-	struct hwrm_func_cfg_input *cfg_req;
-	struct hwrm_func_qcaps_input *req;
-	int rc;
-
-	rc = hwrm_req_init(bp, req, HWRM_FUNC_QCAPS);
-	if (rc)
-		return;
-
-	req->fid = cpu_to_le16(0xffff);
-	resp = hwrm_req_hold(bp, req);
-	rc = hwrm_req_send(bp, req);
-	if (rc)
-		goto err;
-
-	rc = hwrm_req_init(bp, cfg_req, HWRM_FUNC_CFG);
-	if (rc)
-		goto err;
-
-	/* In case of VF Dynamic resource allocation, driver will provision
-	 * maximum resources to all the VFs. FW will dynamically allocate
-	 * resources to VFs on the fly, so always divide the resources by 1.
-	 */
-	if (BNXT_ROCE_VF_DYN_ALLOC_CAP(bp))
-		num_vfs = 1;
-
-	cfg_req->fid = cpu_to_le16(0xffff);
-	cfg_req->enables2 =
-		cpu_to_le32(FUNC_CFG_REQ_ENABLES2_ROCE_MAX_AV_PER_VF |
-			    FUNC_CFG_REQ_ENABLES2_ROCE_MAX_CQ_PER_VF |
-			    FUNC_CFG_REQ_ENABLES2_ROCE_MAX_MRW_PER_VF |
-			    FUNC_CFG_REQ_ENABLES2_ROCE_MAX_QP_PER_VF |
-			    FUNC_CFG_REQ_ENABLES2_ROCE_MAX_SRQ_PER_VF |
-			    FUNC_CFG_REQ_ENABLES2_ROCE_MAX_GID_PER_VF);
-	cfg_req->roce_max_av_per_vf =
-		cpu_to_le32(le32_to_cpu(resp->roce_vf_max_av) / num_vfs);
-	cfg_req->roce_max_cq_per_vf =
-		cpu_to_le32(le32_to_cpu(resp->roce_vf_max_cq) / num_vfs);
-	cfg_req->roce_max_mrw_per_vf =
-		cpu_to_le32(le32_to_cpu(resp->roce_vf_max_mrw) / num_vfs);
-	cfg_req->roce_max_qp_per_vf =
-		cpu_to_le32(le32_to_cpu(resp->roce_vf_max_qp) / num_vfs);
-	cfg_req->roce_max_srq_per_vf =
-		cpu_to_le32(le32_to_cpu(resp->roce_vf_max_srq) / num_vfs);
-	cfg_req->roce_max_gid_per_vf =
-		cpu_to_le32(le32_to_cpu(resp->roce_vf_max_gid) / num_vfs);
-
-	rc = hwrm_req_send(bp, cfg_req);
-
-err:
-	hwrm_req_drop(bp, req);
-	if (rc)
-		netdev_err(bp->dev, "RoCE sriov configuration failed\n");
-}
-
 /* Only called by PF to reserve resources for VFs, returns actual number of
  * VFs configured, or < 0 on error.
  */
@@ -628,7 +536,7 @@ static int bnxt_hwrm_func_vf_resc_cfg(struct bnxt *bp, int num_vfs, bool reset)
 	if (rc)
 		return rc;
 
-	if (bp->flags & BNXT_FLAG_CHIP_P5_PLUS) {
+	if (bp->flags & BNXT_FLAG_CHIP_P5) {
 		vf_msix = hw_resc->max_nqs - bnxt_nq_rings_in_use(bp);
 		vf_ring_grps = 0;
 	} else {
@@ -642,6 +550,7 @@ static int bnxt_hwrm_func_vf_resc_cfg(struct bnxt *bp, int num_vfs, bool reset)
 		vf_rx_rings = hw_resc->max_rx_rings - bp->rx_nr_rings;
 	vf_tx_rings = hw_resc->max_tx_rings - bp->tx_nr_rings;
 	vf_vnics = hw_resc->max_vnics - bp->nr_vnics;
+	vf_vnics = min_t(u16, vf_vnics, vf_rx_rings);
 	vf_rss = hw_resc->max_rsscos_ctxs - bp->rsscos_nr_ctxs;
 
 	req->min_rsscos_ctx = cpu_to_le16(BNXT_VF_MIN_RSS_CTX);
@@ -657,26 +566,17 @@ static int bnxt_hwrm_func_vf_resc_cfg(struct bnxt *bp, int num_vfs, bool reset)
 		req->min_l2_ctxs = cpu_to_le16(min);
 		req->min_vnics = cpu_to_le16(min);
 		req->min_stat_ctx = cpu_to_le16(min);
-		if (!(bp->flags & BNXT_FLAG_CHIP_P5_PLUS))
+		if (!(bp->flags & BNXT_FLAG_CHIP_P5))
 			req->min_hw_ring_grps = cpu_to_le16(min);
 	} else {
 		vf_cp_rings /= num_vfs;
 		vf_tx_rings /= num_vfs;
 		vf_rx_rings /= num_vfs;
-		if ((bp->fw_cap & BNXT_FW_CAP_PRE_RESV_VNICS) &&
-		    vf_vnics >= pf->max_vfs) {
-			/* Take into account that FW has pre-reserved 1 VNIC for
-			 * each pf->max_vfs.
-			 */
-			vf_vnics = (vf_vnics - pf->max_vfs + num_vfs) / num_vfs;
-		} else {
-			vf_vnics /= num_vfs;
-		}
+		vf_vnics /= num_vfs;
 		vf_stat_ctx /= num_vfs;
 		vf_ring_grps /= num_vfs;
 		vf_rss /= num_vfs;
 
-		vf_vnics = min_t(u16, vf_vnics, vf_rx_rings);
 		req->min_cmpl_rings = cpu_to_le16(vf_cp_rings);
 		req->min_tx_rings = cpu_to_le16(vf_tx_rings);
 		req->min_rx_rings = cpu_to_le16(vf_rx_rings);
@@ -694,26 +594,20 @@ static int bnxt_hwrm_func_vf_resc_cfg(struct bnxt *bp, int num_vfs, bool reset)
 	req->max_stat_ctx = cpu_to_le16(vf_stat_ctx);
 	req->max_hw_ring_grps = cpu_to_le16(vf_ring_grps);
 	req->max_rsscos_ctx = cpu_to_le16(vf_rss);
-	if (bp->flags & BNXT_FLAG_CHIP_P5_PLUS)
+	if (bp->flags & BNXT_FLAG_CHIP_P5)
 		req->max_msix = cpu_to_le16(vf_msix / num_vfs);
 
 	hwrm_req_hold(bp, req);
 	for (i = 0; i < num_vfs; i++) {
-		struct bnxt_vf_info *vf = &pf->vf[i];
-
-		vf->fw_fid = pf->first_vf_id + i;
-		rc = bnxt_set_vf_link_admin_state(bp, i);
-		if (rc)
-			break;
-
 		if (reset)
 			__bnxt_set_vf_params(bp, i);
 
-		req->vf_id = cpu_to_le16(vf->fw_fid);
+		req->vf_id = cpu_to_le16(pf->first_vf_id + i);
 		rc = hwrm_req_send(bp, req);
 		if (rc)
 			break;
 		pf->active_vfs = i + 1;
+		pf->vf[i].fw_fid = pf->first_vf_id + i;
 	}
 
 	if (pf->active_vfs) {
@@ -728,7 +622,7 @@ static int bnxt_hwrm_func_vf_resc_cfg(struct bnxt *bp, int num_vfs, bool reset)
 			le16_to_cpu(req->min_rsscos_ctx) * n;
 		hw_resc->max_stat_ctxs -= le16_to_cpu(req->min_stat_ctx) * n;
 		hw_resc->max_vnics -= le16_to_cpu(req->min_vnics) * n;
-		if (bp->flags & BNXT_FLAG_CHIP_P5_PLUS)
+		if (bp->flags & BNXT_FLAG_CHIP_P5)
 			hw_resc->max_nqs -= vf_msix;
 
 		rc = pf->active_vfs;
@@ -751,7 +645,7 @@ static int bnxt_hwrm_func_cfg(struct bnxt *bp, int num_vfs)
 	u32 mtu, i;
 	int rc;
 
-	rc = bnxt_hwrm_func_cfg_short_req_init(bp, &req);
+	rc = hwrm_req_init(bp, req, HWRM_FUNC_CFG);
 	if (rc)
 		return rc;
 
@@ -780,13 +674,7 @@ static int bnxt_hwrm_func_cfg(struct bnxt *bp, int num_vfs)
 				   FUNC_CFG_REQ_ENABLES_NUM_VNICS |
 				   FUNC_CFG_REQ_ENABLES_NUM_HW_RING_GRPS);
 
-	if (bp->fw_cap & BNXT_FW_CAP_LINK_ADMIN) {
-		req->options = FUNC_CFG_REQ_OPTIONS_LINK_ADMIN_STATE_AUTO;
-		req->enables |=
-			cpu_to_le32(FUNC_CFG_REQ_ENABLES_ADMIN_LINK_STATE);
-	}
-
-	mtu = bp->dev->mtu + VLAN_ETH_HLEN;
+	mtu = bp->dev->mtu + ETH_HLEN + VLAN_HLEN;
 	req->mru = cpu_to_le16(mtu);
 	req->admin_mtu = cpu_to_le16(mtu);
 
@@ -861,9 +749,6 @@ int bnxt_cfg_hw_sriov(struct bnxt *bp, int *num_vfs, bool reset)
 		*num_vfs = rc;
 	}
 
-	if (BNXT_RDMA_SRIOV_EN(bp) && BNXT_ROCE_VF_RESC_CAP(bp))
-		bnxt_hwrm_roce_sriov_cfg(bp, *num_vfs);
-
 	return 0;
 }
 
@@ -875,7 +760,7 @@ static int bnxt_sriov_enable(struct bnxt *bp, int *num_vfs)
 	int tx_ok = 0, rx_ok = 0, rss_ok = 0;
 	int avail_cp, avail_stat;
 
-	/* Check if we can enable requested num of vf's. At a minimum
+	/* Check if we can enable requested num of vf's. At a mininum
 	 * we require 1 RX 1 TX rings for each VF. In this minimum conf
 	 * features like TPA will not be available.
 	 */
@@ -940,23 +825,7 @@ static int bnxt_sriov_enable(struct bnxt *bp, int *num_vfs)
 	if (rc)
 		goto err_out2;
 
-	if (bp->eswitch_mode != DEVLINK_ESWITCH_MODE_SWITCHDEV)
-		return 0;
-
-	/* Create representors for VFs in switchdev mode */
-	devl_lock(bp->dl);
-	rc = bnxt_vf_reps_create(bp);
-	devl_unlock(bp->dl);
-	if (rc) {
-		netdev_info(bp->dev, "Cannot enable VFS as representors cannot be created\n");
-		goto err_out3;
-	}
-
 	return 0;
-
-err_out3:
-	/* Disable SR-IOV */
-	pci_disable_sriov(bp->pdev);
 
 err_out2:
 	/* Free the resources reserved for various VF's */
@@ -971,7 +840,7 @@ err_out1:
 	return rc;
 }
 
-void __bnxt_sriov_disable(struct bnxt *bp)
+void bnxt_sriov_disable(struct bnxt *bp)
 {
 	u16 num_vfs = pci_num_vf(bp->pdev);
 
@@ -995,20 +864,10 @@ void __bnxt_sriov_disable(struct bnxt *bp)
 	devl_unlock(bp->dl);
 
 	bnxt_free_vf_resources(bp);
-}
-
-static void bnxt_sriov_disable(struct bnxt *bp)
-{
-	if (!pci_num_vf(bp->pdev))
-		return;
-
-	__bnxt_sriov_disable(bp);
 
 	/* Reclaim all resources for the PF. */
 	rtnl_lock();
-	netdev_lock(bp->dev);
 	bnxt_restore_pf_fw_resources(bp);
-	netdev_unlock(bp->dev);
 	rtnl_unlock();
 }
 
@@ -1017,22 +876,23 @@ int bnxt_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	struct net_device *dev = pci_get_drvdata(pdev);
 	struct bnxt *bp = netdev_priv(dev);
 
+	if (!(bp->flags & BNXT_FLAG_USING_MSIX)) {
+		netdev_warn(dev, "Not allow SRIOV if the irq mode is not MSIX\n");
+		return 0;
+	}
+
 	rtnl_lock();
-	netdev_lock(dev);
 	if (!netif_running(dev)) {
 		netdev_warn(dev, "Reject SRIOV config request since if is down!\n");
-		netdev_unlock(dev);
 		rtnl_unlock();
 		return 0;
 	}
 	if (test_bit(BNXT_STATE_IN_FW_RESET, &bp->state)) {
 		netdev_warn(dev, "Reject SRIOV config request when FW reset is in progress\n");
-		netdev_unlock(dev);
 		rtnl_unlock();
 		return 0;
 	}
 	bp->sriov_cfg = true;
-	netdev_unlock(dev);
 	rtnl_unlock();
 
 	if (pci_vfs_assigned(bp->pdev)) {
@@ -1066,11 +926,8 @@ static int bnxt_hwrm_fwd_resp(struct bnxt *bp, struct bnxt_vf_info *vf,
 	struct hwrm_fwd_resp_input *req;
 	int rc;
 
-	if (BNXT_FWD_RESP_SIZE_ERR(msg_size)) {
-		netdev_warn_once(bp->dev, "HWRM fwd response too big (%d bytes)\n",
-				 msg_size);
+	if (BNXT_FWD_RESP_SIZE_ERR(msg_size))
 		return -EINVAL;
-	}
 
 	rc = hwrm_req_init(bp, req, HWRM_FWD_RESP);
 	if (!rc) {
@@ -1185,7 +1042,7 @@ static int bnxt_vf_validate_set_mac(struct bnxt *bp, struct bnxt_vf_info *vf)
 		/* There are two cases:
 		 * 1.If firmware spec < 0x10202,VF MAC address is not forwarded
 		 *   to the PF and so it doesn't have to match
-		 * 2.Allow VF to modify its own MAC when PF has not assigned a
+		 * 2.Allow VF to modify it's own MAC when PF has not assigned a
 		 *   valid MAC address and firmware spec >= 0x10202
 		 */
 		mac_ok = true;
@@ -1204,7 +1061,7 @@ static int bnxt_vf_set_link(struct bnxt *bp, struct bnxt_vf_info *vf)
 		rc = bnxt_hwrm_exec_fwd_resp(
 			bp, vf, sizeof(struct hwrm_port_phy_qcfg_input));
 	} else {
-		struct hwrm_port_phy_qcfg_output_compat phy_qcfg_resp = {};
+		struct hwrm_port_phy_qcfg_output phy_qcfg_resp = {0};
 		struct hwrm_port_phy_qcfg_input *phy_qcfg_req;
 
 		phy_qcfg_req =
@@ -1215,11 +1072,6 @@ static int bnxt_vf_set_link(struct bnxt *bp, struct bnxt_vf_info *vf)
 		mutex_unlock(&bp->link_lock);
 		phy_qcfg_resp.resp_len = cpu_to_le16(sizeof(phy_qcfg_resp));
 		phy_qcfg_resp.seq_id = phy_qcfg_req->seq_id;
-		/* New SPEEDS2 fields are beyond the legacy structure, so
-		 * clear the SPEEDS2_SUPPORTED flag.
-		 */
-		phy_qcfg_resp.option_flags &=
-			~PORT_PHY_QCAPS_RESP_FLAGS2_SPEEDS2_SUPPORTED;
 		phy_qcfg_resp.valid = 1;
 
 		if (vf->flags & BNXT_VF_LINK_UP) {
@@ -1381,7 +1233,7 @@ int bnxt_cfg_hw_sriov(struct bnxt *bp, int *num_vfs, bool reset)
 	return 0;
 }
 
-void __bnxt_sriov_disable(struct bnxt *bp)
+void bnxt_sriov_disable(struct bnxt *bp)
 {
 }
 

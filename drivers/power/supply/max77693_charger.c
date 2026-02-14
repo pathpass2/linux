@@ -197,58 +197,12 @@ static int max77693_get_online(struct regmap *regmap, int *val)
 	return 0;
 }
 
-/*
- * There are *two* current limit registers:
- * - CHGIN limit, which limits the input current from the external charger;
- * - Fast charge current limit, which limits the current going to the battery.
- */
-
-static int max77693_get_input_current_limit(struct regmap *regmap, int *val)
-{
-	unsigned int data;
-	int ret;
-
-	ret = regmap_read(regmap, MAX77693_CHG_REG_CHG_CNFG_09, &data);
-	if (ret < 0)
-		return ret;
-
-	data &= CHG_CNFG_09_CHGIN_ILIM_MASK;
-	data >>= CHG_CNFG_09_CHGIN_ILIM_SHIFT;
-
-	if (data <= 0x03)
-		/* The first four values (0x00..0x03) are 60mA */
-		*val = 60000;
-	else
-		*val = data * 20000; /* 20mA steps */
-
-	return 0;
-}
-
-static int max77693_get_fast_charge_current(struct regmap *regmap, int *val)
-{
-	unsigned int data;
-	int ret;
-
-	ret = regmap_read(regmap, MAX77693_CHG_REG_CHG_CNFG_02, &data);
-	if (ret < 0)
-		return ret;
-
-	data &= CHG_CNFG_02_CC_MASK;
-	data >>= CHG_CNFG_02_CC_SHIFT;
-
-	*val = data * 33300; /* 33.3mA steps */
-
-	return 0;
-}
-
 static enum power_supply_property max77693_charger_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_CHARGE_TYPE,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_ONLINE,
-	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
-	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
 	POWER_SUPPLY_PROP_MODEL_NAME,
 	POWER_SUPPLY_PROP_MANUFACTURER,
 };
@@ -276,12 +230,6 @@ static int max77693_charger_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_ONLINE:
 		ret = max77693_get_online(regmap, &val->intval);
-		break;
-	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
-		ret = max77693_get_input_current_limit(regmap, &val->intval);
-		break;
-	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
-		ret = max77693_get_fast_charge_current(regmap, &val->intval);
 		break;
 	case POWER_SUPPLY_PROP_MODEL_NAME:
 		val->strval = max77693_charger_model;
@@ -608,7 +556,7 @@ static int max77693_set_charge_input_threshold_volt(struct max77693_charger *chg
 	case 4700000:
 	case 4800000:
 	case 4900000:
-		data = ((uvolt - 4700000) / 100000) + 1;
+		data = (uvolt - 4700000) / 100000;
 		break;
 	default:
 		dev_err(chg->dev, "Wrong value for charge input voltage regulation threshold\n");
@@ -761,9 +709,9 @@ static int max77693_charger_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	chg->charger = devm_power_supply_register(&pdev->dev,
-						  &max77693_charger_desc,
-						  &psy_cfg);
+	chg->charger = power_supply_register(&pdev->dev,
+						&max77693_charger_desc,
+						&psy_cfg);
 	if (IS_ERR(chg->charger)) {
 		dev_err(&pdev->dev, "failed: power supply register\n");
 		ret = PTR_ERR(chg->charger);
@@ -780,11 +728,17 @@ err:
 	return ret;
 }
 
-static void max77693_charger_remove(struct platform_device *pdev)
+static int max77693_charger_remove(struct platform_device *pdev)
 {
+	struct max77693_charger *chg = platform_get_drvdata(pdev);
+
 	device_remove_file(&pdev->dev, &dev_attr_top_off_timer);
 	device_remove_file(&pdev->dev, &dev_attr_top_off_threshold_current);
 	device_remove_file(&pdev->dev, &dev_attr_fast_charge_timer);
+
+	power_supply_unregister(chg->charger);
+
+	return 0;
 }
 
 static const struct platform_device_id max77693_charger_id[] = {

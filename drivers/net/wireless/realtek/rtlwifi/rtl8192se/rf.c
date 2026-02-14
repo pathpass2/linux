@@ -438,7 +438,7 @@ bool rtl92s_phy_rf6052_config(struct ieee80211_hw *hw)
 		rtl92s_phy_set_bb_reg(hw, pphyreg->rfhssi_para2,
 				B3WIRE_DATALENGTH, 0x0);
 
-		/* Initialize RF from configuration file */
+		/* Initialize RF fom connfiguration file */
 		switch (rfpath) {
 		case RF90_PATH_A:
 			rtstatus = rtl92s_phy_config_rf(hw,

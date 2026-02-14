@@ -8,7 +8,6 @@
  * Veritas filesystem driver - lookup and other directory related code.
  */
 #include <linux/fs.h>
-#include <linux/filelock.h>
 #include <linux/time.h>
 #include <linux/mm.h>
 #include <linux/highmem.h>
@@ -37,7 +36,6 @@ const struct file_operations vxfs_dir_operations = {
 	.llseek =		generic_file_llseek,
 	.read =			generic_read_dir,
 	.iterate_shared =	vxfs_readdir,
-	.setlease =		generic_setlease,
 };
 
 
@@ -179,7 +177,8 @@ vxfs_lookup(struct inode *dip, struct dentry *dp, unsigned int flags)
 /**
  * vxfs_readdir - read a directory
  * @fp:		the directory to read
- * @ctx:	dir_context for filldir/readdir
+ * @retp:	return buffer
+ * @filler:	filldir callback
  *
  * Description:
  *   vxfs_readdir fills @retp with directory entries from @fp

@@ -79,14 +79,6 @@ static inline u64 u64_stats_read(const u64_stats_t *p)
 	return local64_read(&p->v);
 }
 
-static inline void *u64_stats_copy(void *dst, const void *src, size_t len)
-{
-	BUILD_BUG_ON(len % sizeof(u64_stats_t));
-	for (size_t i = 0; i < len / sizeof(u64_stats_t); i++)
-		((u64 *)dst)[i] = local64_read(&((local64_t *)src)[i]);
-	return dst;
-}
-
 static inline void u64_stats_set(u64_stats_t *p, u64 val)
 {
 	local64_set(&p->v, val);
@@ -95,11 +87,6 @@ static inline void u64_stats_set(u64_stats_t *p, u64 val)
 static inline void u64_stats_add(u64_stats_t *p, unsigned long val)
 {
 	local64_add(val, &p->v);
-}
-
-static inline void u64_stats_sub(u64_stats_t *p, s64 val)
-{
-	local64_sub(val, &p->v);
 }
 
 static inline void u64_stats_inc(u64_stats_t *p)
@@ -123,7 +110,6 @@ static inline bool __u64_stats_fetch_retry(const struct u64_stats_sync *syncp,
 }
 
 #else /* 64 bit */
-#include <linux/string.h>
 
 typedef struct {
 	u64		v;
@@ -132,12 +118,6 @@ typedef struct {
 static inline u64 u64_stats_read(const u64_stats_t *p)
 {
 	return p->v;
-}
-
-static inline void *u64_stats_copy(void *dst, const void *src, size_t len)
-{
-	BUILD_BUG_ON(len % sizeof(u64_stats_t));
-	return memcpy(dst, src, len);
 }
 
 static inline void u64_stats_set(u64_stats_t *p, u64 val)
@@ -150,21 +130,15 @@ static inline void u64_stats_add(u64_stats_t *p, unsigned long val)
 	p->v += val;
 }
 
-static inline void u64_stats_sub(u64_stats_t *p, s64 val)
-{
-	p->v -= val;
-}
-
 static inline void u64_stats_inc(u64_stats_t *p)
 {
 	p->v++;
 }
 
-#define u64_stats_init(syncp)				\
-	do {						\
-		struct u64_stats_sync *__s = (syncp);	\
-		seqcount_init(&__s->seq);		\
-	} while (0)
+static inline void u64_stats_init(struct u64_stats_sync *syncp)
+{
+	seqcount_init(&syncp->seq);
+}
 
 static inline void __u64_stats_update_begin(struct u64_stats_sync *syncp)
 {

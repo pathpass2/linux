@@ -10,17 +10,15 @@
 #
 # ----------------------------------------------------------------------
 
-me=${0##*/}
-
 check_vmlinux()
 {
-	if file "$1" | grep -q 'Linux kernel.*boot executable' ||
-		readelf -h "$1" > /dev/null 2>&1
-	then
-		cat "$1"
-		echo "$me: Extracted vmlinux using '$2' from offset $3" >&2
-		exit 0
-	fi
+	# Use readelf to check if it's a valid ELF
+	# TODO: find a better to way to check that it's really vmlinux
+	#       and not just an elf
+	readelf -h $1 > /dev/null 2>&1 || return 1
+
+	cat $1
+	exit 0
 }
 
 try_decompress()
@@ -33,11 +31,12 @@ try_decompress()
 	do
 		pos=${pos%%:*}
 		tail -c+$pos "$img" | $3 > $tmp 2> /dev/null
-		check_vmlinux $tmp "$3" $pos
+		check_vmlinux $tmp
 	done
 }
 
 # Check invocation:
+me=${0##*/}
 img=$1
 if	[ $# -ne 1 -o ! -s "$img" ]
 then
@@ -59,7 +58,7 @@ try_decompress '\002!L\030'   xxx   'lz4 -d'
 try_decompress '(\265/\375'   xxx   unzstd
 
 # Finally check for uncompressed images or objects:
-check_vmlinux "$img" cat 0
+check_vmlinux $img
 
 # Bail out:
 echo "$me: Cannot find vmlinux." >&2

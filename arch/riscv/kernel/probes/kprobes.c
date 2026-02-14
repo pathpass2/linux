@@ -6,13 +6,12 @@
 #include <linux/extable.h>
 #include <linux/slab.h>
 #include <linux/stop_machine.h>
-#include <linux/vmalloc.h>
 #include <asm/ptrace.h>
 #include <linux/uaccess.h>
 #include <asm/sections.h>
 #include <asm/cacheflush.h>
 #include <asm/bug.h>
-#include <asm/text-patching.h>
+#include <asm/patch.h>
 
 #include "decode-insn.h"
 
@@ -24,13 +23,14 @@ post_kprobe_handler(struct kprobe *, struct kprobe_ctlblk *, struct pt_regs *);
 
 static void __kprobes arch_prepare_ss_slot(struct kprobe *p)
 {
-	size_t len = GET_INSN_LENGTH(p->opcode);
 	u32 insn = __BUG_INSN_32;
+	unsigned long offset = GET_INSN_LENGTH(p->opcode);
 
-	p->ainsn.api.restore = (unsigned long)p->addr + len;
+	p->ainsn.api.restore = (unsigned long)p->addr + offset;
 
-	patch_text_nosync(p->ainsn.api.insn, &p->opcode, len);
-	patch_text_nosync((void *)p->ainsn.api.insn + len, &insn, GET_INSN_LENGTH(insn));
+	patch_text(p->ainsn.api.insn, &p->opcode, 1);
+	patch_text((void *)((unsigned long)(p->ainsn.api.insn) + offset),
+		   &insn, 1);
 }
 
 static void __kprobes arch_prepare_simulate(struct kprobe *p)
@@ -49,15 +49,10 @@ static void __kprobes arch_simulate_insn(struct kprobe *p, struct pt_regs *regs)
 	post_kprobe_handler(p, kcb, regs);
 }
 
-static bool __kprobes arch_check_kprobe(unsigned long addr)
+static bool __kprobes arch_check_kprobe(struct kprobe *p)
 {
-	unsigned long tmp, offset;
-
-	/* start iterating at the closest preceding symbol */
-	if (!kallsyms_lookup_size_offset(addr, NULL, &offset))
-		return false;
-
-	tmp = addr - offset;
+	unsigned long tmp  = (unsigned long)p->addr - p->offset;
+	unsigned long addr = (unsigned long)p->addr;
 
 	while (tmp <= addr) {
 		if (tmp == addr)
@@ -76,7 +71,7 @@ int __kprobes arch_prepare_kprobe(struct kprobe *p)
 	if ((unsigned long)insn & 0x1)
 		return -EILSEQ;
 
-	if (!arch_check_kprobe((unsigned long)p->addr))
+	if (!arch_check_kprobe(p))
 		return -EILSEQ;
 
 	/* copy instruction */
@@ -109,21 +104,29 @@ int __kprobes arch_prepare_kprobe(struct kprobe *p)
 	return 0;
 }
 
+#ifdef CONFIG_MMU
+void *alloc_insn_page(void)
+{
+	return  __vmalloc_node_range(PAGE_SIZE, 1, VMALLOC_START, VMALLOC_END,
+				     GFP_KERNEL, PAGE_KERNEL_READ_EXEC,
+				     VM_FLUSH_RESET_PERMS, NUMA_NO_NODE,
+				     __builtin_return_address(0));
+}
+#endif
+
 /* install breakpoint in text */
 void __kprobes arch_arm_kprobe(struct kprobe *p)
 {
-	size_t len = GET_INSN_LENGTH(p->opcode);
-	u32 insn = len == 4 ? __BUG_INSN_32 : __BUG_INSN_16;
+	u32 insn = (p->opcode & __INSN_LENGTH_MASK) == __INSN_LENGTH_32 ?
+		   __BUG_INSN_32 : __BUG_INSN_16;
 
-	patch_text(p->addr, &insn, len);
+	patch_text(p->addr, &insn, 1);
 }
 
 /* remove breakpoint from text */
 void __kprobes arch_disarm_kprobe(struct kprobe *p)
 {
-	size_t len = GET_INSN_LENGTH(p->opcode);
-
-	patch_text(p->addr, &p->opcode, len);
+	patch_text(p->addr, &p->opcode, 1);
 }
 
 void __kprobes arch_remove_kprobe(struct kprobe *p)

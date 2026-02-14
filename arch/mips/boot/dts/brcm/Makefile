@@ -33,3 +33,5 @@ dtb-$(CONFIG_DT_NONE) += \
 	bcm97420c.dtb \
 	bcm97425svmb.dtb \
 	bcm97435svmb.dtb
+
+obj-$(CONFIG_BUILTIN_DTB)	+= $(addsuffix .o, $(dtb-y))

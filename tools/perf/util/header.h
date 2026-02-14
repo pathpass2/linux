@@ -10,13 +10,7 @@
 #include <linux/bitmap.h>
 #include <linux/types.h>
 #include "env.h"
-#include <perf/cpumap.h>
-
-struct evlist;
-union perf_event;
-struct perf_header;
-struct perf_session;
-struct perf_tool;
+#include "pmu.h"
 
 enum {
 	HEADER_RESERVED		= 0,	/* always cleared */
@@ -67,28 +61,14 @@ struct perf_file_section {
 	u64 size;
 };
 
-/**
- * struct perf_file_header: Header representation on disk.
- */
 struct perf_file_header {
-	/** @magic: Holds "PERFILE2". */
 	u64				magic;
-	/** @size: Size of this header - sizeof(struct perf_file_header). */
 	u64				size;
-	/**
-	 * @attr_size: Size of attrs entries - sizeof(struct perf_event_attr) +
-	 * sizeof(struct perf_file_section).
-	 */
 	u64				attr_size;
-	/** @attrs: Offset and size of file section holding attributes. */
 	struct perf_file_section	attrs;
-	/** @data: Offset and size of file section holding regular event data. */
 	struct perf_file_section	data;
-	/** @event_types: Ignored. */
+	/* event_types is ignored */
 	struct perf_file_section	event_types;
-	/**
-	 * @adds_features: Bitmap of features. The features are immediately after the data section.
-	 */
 	DECLARE_BITMAP(adds_features, HEADER_FEAT_BITS);
 };
 
@@ -96,6 +76,8 @@ struct perf_pipe_file_header {
 	u64				magic;
 	u64				size;
 };
+
+struct perf_header;
 
 int perf_file_header__read(struct perf_file_header *header,
 			   struct perf_header *ph, int fd);
@@ -128,9 +110,12 @@ struct perf_header_feature_ops {
 	bool	   synthesize;
 };
 
-extern const char perf_version_string[];
+struct evlist;
+struct perf_session;
+struct perf_tool;
+union perf_event;
 
-int perf_session__read_header(struct perf_session *session);
+int perf_session__read_header(struct perf_session *session, int repipe_fd);
 int perf_session__write_header(struct perf_session *session,
 			       struct evlist *evlist,
 			       int fd, bool at_exit);
@@ -149,8 +134,7 @@ struct feat_copier {
 int perf_session__inject_header(struct perf_session *session,
 				struct evlist *evlist,
 				int fd,
-				struct feat_copier *fc,
-				bool write_attrs_after_data);
+				struct feat_copier *fc);
 
 size_t perf_session__data_offset(const struct evlist *evlist);
 
@@ -170,20 +154,17 @@ int perf_header__fprintf_info(struct perf_session *s, FILE *fp, bool full);
 
 int perf_event__process_feature(struct perf_session *session,
 				union perf_event *event);
-int perf_event__process_attr(const struct perf_tool *tool, union perf_event *event,
+int perf_event__process_attr(struct perf_tool *tool, union perf_event *event,
 			     struct evlist **pevlist);
-int perf_event__process_event_update(const struct perf_tool *tool,
+int perf_event__process_event_update(struct perf_tool *tool,
 				     union perf_event *event,
 				     struct evlist **pevlist);
-size_t perf_event__fprintf_attr(union perf_event *event, FILE *fp);
 size_t perf_event__fprintf_event_update(union perf_event *event, FILE *fp);
 #ifdef HAVE_LIBTRACEEVENT
-int perf_event__process_tracing_data(const struct perf_tool *tool,
-				     struct perf_session *session,
+int perf_event__process_tracing_data(struct perf_session *session,
 				     union perf_event *event);
 #endif
-int perf_event__process_build_id(const struct perf_tool *tool,
-				 struct perf_session *session,
+int perf_event__process_build_id(struct perf_session *session,
 				 union perf_event *event);
 bool is_perf_magic(u64 magic);
 
@@ -196,18 +177,12 @@ int do_write(struct feat_fd *fd, const void *buf, size_t size);
 int write_padded(struct feat_fd *fd, const void *bf,
 		 size_t count, size_t count_aligned);
 
-#define MAX_CACHE_LVL 4
-
-int build_caches_for_cpu(u32 cpu, struct cpu_cache_level caches[], u32 *cntp);
-
+int is_cpu_online(unsigned int cpu);
 /*
  * arch specific callback
  */
-int get_cpuid(char *buffer, size_t sz, struct perf_cpu cpu);
+int get_cpuid(char *buffer, size_t sz);
 
-char *get_cpuid_str(struct perf_cpu cpu);
-
-char *get_cpuid_allow_env_override(struct perf_cpu cpu);
-
+char *get_cpuid_str(struct perf_pmu *pmu __maybe_unused);
 int strcmp_cpuid_str(const char *s1, const char *s2);
 #endif /* __PERF_HEADER_H */

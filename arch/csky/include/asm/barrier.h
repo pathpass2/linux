@@ -3,7 +3,7 @@
 #ifndef __ASM_CSKY_BARRIER_H
 #define __ASM_CSKY_BARRIER_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define nop()	asm volatile ("nop\n":::"memory")
 
@@ -84,5 +84,5 @@
 
 #include <asm-generic/barrier.h>
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* __ASM_CSKY_BARRIER_H */

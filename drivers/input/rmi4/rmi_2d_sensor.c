@@ -4,7 +4,6 @@
  * Copyright (c) 2011 Unixphere
  */
 
-#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/of.h>

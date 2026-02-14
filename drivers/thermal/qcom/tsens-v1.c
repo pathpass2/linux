@@ -21,7 +21,7 @@
 #define TM_HIGH_LOW_INT_STATUS_OFF		0x0088
 #define TM_HIGH_LOW_Sn_INT_THRESHOLD_OFF	0x0090
 
-static struct tsens_legacy_calibration_format tsens_qcs404_nvmem = {
+struct tsens_legacy_calibration_format tsens_qcs404_nvmem = {
 	.base_len = 8,
 	.base_shift = 2,
 	.sp_len = 6,
@@ -39,6 +39,28 @@ static struct tsens_legacy_calibration_format tsens_qcs404_nvmem = {
 		{ { 2, 24 }, { 2, 30 } },
 		{ { 3, 4 },  { 3, 10 } },
 		{ { 3, 16 }, { 3, 22 } },
+	},
+};
+
+struct tsens_legacy_calibration_format tsens_8976_nvmem = {
+	.base_len = 8,
+	.base_shift = 2,
+	.sp_len = 6,
+	.mode = { 4, 0 },
+	.invalid = { 4, 2 },
+	.base = { { 0, 0 }, { 2, 8 } },
+	.sp = {
+		{ { 0, 8 },  { 0, 14 } },
+		{ { 0, 20 }, { 0, 26 } },
+		{ { 1, 0 },  { 1, 6 } },
+		{ { 1, 12 }, { 1, 18 } },
+		{ { 2, 8 },  { 2, 14 } },
+		{ { 2, 20 }, { 2, 26 } },
+		{ { 3, 0 },  { 3, 6 } },
+		{ { 3, 12 }, { 3, 18 } },
+		{ { 4, 2 },  { 4, 9 } },
+		{ { 4, 14 }, { 4, 21 } },
+		{ { 4, 26 }, { 5, 1 } },
 	},
 };
 
@@ -70,17 +92,6 @@ static int calibrate_v1(struct tsens_priv *priv)
 
 static struct tsens_features tsens_v1_feat = {
 	.ver_major	= VER_1_X,
-	.crit_int	= 0,
-	.combo_int	= 0,
-	.adc		= 1,
-	.srot_split	= 1,
-	.max_sensors	= 11,
-	.trip_min_temp	= -40000,
-	.trip_max_temp	= 120000,
-};
-
-static struct tsens_features tsens_v1_no_rpm_feat = {
-	.ver_major	= VER_1_X_NO_RPM,
 	.crit_int	= 0,
 	.combo_int	= 0,
 	.adc		= 1,
@@ -161,43 +172,6 @@ static int __init init_8956(struct tsens_priv *priv) {
 	return init_common(priv);
 }
 
-static int __init init_tsens_v1_no_rpm(struct tsens_priv *priv)
-{
-	int i, ret;
-	u32 mask = 0;
-
-	ret = init_common(priv);
-	if (ret < 0) {
-		dev_err(priv->dev, "Init common failed %d\n", ret);
-		return ret;
-	}
-
-	ret = regmap_field_write(priv->rf[TSENS_SW_RST], 1);
-	if (ret) {
-		dev_err(priv->dev, "Reset failed\n");
-		return ret;
-	}
-
-	for (i = 0; i < priv->num_sensors; i++)
-		mask |= BIT(priv->sensor[i].hw_id);
-
-	ret = regmap_field_update_bits(priv->rf[SENSOR_EN], mask, mask);
-	if (ret) {
-		dev_err(priv->dev, "Sensor Enable failed\n");
-		return ret;
-	}
-
-	ret = regmap_field_write(priv->rf[TSENS_EN], 1);
-	if (ret) {
-		dev_err(priv->dev, "Enable failed\n");
-		return ret;
-	}
-
-	ret = regmap_field_write(priv->rf[TSENS_SW_RST], 0);
-
-	return ret;
-}
-
 static const struct tsens_ops ops_generic_v1 = {
 	.init		= init_common,
 	.calibrate	= calibrate_v1,
@@ -208,19 +182,6 @@ struct tsens_plat_data data_tsens_v1 = {
 	.ops		= &ops_generic_v1,
 	.feat		= &tsens_v1_feat,
 	.fields	= tsens_v1_regfields,
-};
-
-static const struct tsens_ops ops_common = {
-	.init		= init_common,
-	.calibrate	= tsens_calibrate_common,
-	.get_temp	= get_temp_tsens_valid,
-};
-
-struct tsens_plat_data data_8937 = {
-	.num_sensors	= 11,
-	.ops		= &ops_common,
-	.feat		= &tsens_v1_feat,
-	.fields		= tsens_v1_regfields,
 };
 
 static const struct tsens_ops ops_8956 = {
@@ -236,23 +197,15 @@ struct tsens_plat_data data_8956 = {
 	.fields		= tsens_v1_regfields,
 };
 
-struct tsens_plat_data data_8976 = {
-	.num_sensors	= 11,
-	.ops		= &ops_common,
-	.feat		= &tsens_v1_feat,
-	.fields		= tsens_v1_regfields,
-};
-
-static const struct tsens_ops ops_ipq5018 = {
-	.init		= init_tsens_v1_no_rpm,
+static const struct tsens_ops ops_8976 = {
+	.init		= init_common,
 	.calibrate	= tsens_calibrate_common,
 	.get_temp	= get_temp_tsens_valid,
 };
 
-const struct tsens_plat_data data_ipq5018 = {
-	.num_sensors	= 5,
-	.ops		= &ops_ipq5018,
-	.hw_ids		= (unsigned int []){0, 1, 2, 3, 4},
-	.feat		= &tsens_v1_no_rpm_feat,
+struct tsens_plat_data data_8976 = {
+	.num_sensors	= 11,
+	.ops		= &ops_8976,
+	.feat		= &tsens_v1_feat,
 	.fields		= tsens_v1_regfields,
 };

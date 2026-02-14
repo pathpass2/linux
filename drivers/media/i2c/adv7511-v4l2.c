@@ -62,6 +62,11 @@ MODULE_LICENSE("GPL v2");
 **********************************************************************
 */
 
+struct i2c_reg_value {
+	unsigned char reg;
+	unsigned char value;
+};
+
 struct adv7511_state_edid {
 	/* total number of blocks */
 	u32 blocks;
@@ -116,9 +121,6 @@ struct adv7511_state {
 	unsigned edid_detect_counter;
 	struct workqueue_struct *work_queue;
 	struct delayed_work edid_handler; /* work entry */
-
-	struct dentry *debugfs_dir;
-	struct v4l2_debugfs_if *infoframes;
 };
 
 static void adv7511_check_monitor_present_status(struct v4l2_subdev *sd);
@@ -486,25 +488,27 @@ static u8 hdmi_infoframe_checksum(u8 *ptr, size_t size)
 	return 256 - csum;
 }
 
-static int read_infoframe(struct v4l2_subdev *sd,
-			  const struct adv7511_cfg_read_infoframe *cri,
-			  u8 *buffer)
+static void log_infoframe(struct v4l2_subdev *sd, const struct adv7511_cfg_read_infoframe *cri)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
+	struct device *dev = &client->dev;
+	union hdmi_infoframe frame;
+	u8 buffer[32];
 	u8 len;
 	int i;
 
 	if (!(adv7511_rd(sd, cri->present_reg) & cri->present_mask)) {
 		v4l2_info(sd, "%s infoframe not transmitted\n", cri->desc);
-		return 0;
+		return;
 	}
 
 	memcpy(buffer, cri->header, sizeof(cri->header));
 
 	len = buffer[2];
 
-	if (len + 4 > V4L2_DEBUGFS_IF_MAX_LEN) {
+	if (len + 4 > sizeof(buffer)) {
 		v4l2_err(sd, "%s: invalid %s infoframe length %d\n", __func__, cri->desc, len);
-		return 0;
+		return;
 	}
 
 	if (cri->payload_addr >= 0x100) {
@@ -517,38 +521,21 @@ static int read_infoframe(struct v4l2_subdev *sd,
 	buffer[3] = 0;
 	buffer[3] = hdmi_infoframe_checksum(buffer, len + 4);
 
-	return len + 4;
-}
-
-static void log_infoframe(struct v4l2_subdev *sd,
-			  const struct adv7511_cfg_read_infoframe *cri)
-{
-	union hdmi_infoframe frame;
-	struct i2c_client *client = v4l2_get_subdevdata(sd);
-	struct device *dev = &client->dev;
-	u8 buffer[V4L2_DEBUGFS_IF_MAX_LEN] = {};
-	int len = read_infoframe(sd, cri, buffer);
-
-	if (len <= 0)
-		return;
-
-	if (hdmi_infoframe_unpack(&frame, buffer, len) < 0) {
-		v4l2_err(sd, "%s: unpack of %s infoframe failed\n",
-			 __func__, cri->desc);
+	if (hdmi_infoframe_unpack(&frame, buffer, len + 4) < 0) {
+		v4l2_err(sd, "%s: unpack of %s infoframe failed\n", __func__, cri->desc);
 		return;
 	}
 
 	hdmi_infoframe_log(KERN_INFO, dev, &frame);
 }
 
-static const struct adv7511_cfg_read_infoframe cri[] = {
-	{ "AVI", 0x44, 0x10, { 0x82, 2, 13 }, 0x55 },
-	{ "Audio", 0x44, 0x08, { 0x84, 1, 10 }, 0x73 },
-	{ "SDP", 0x40, 0x40, { 0x83, 1, 25 }, 0x103 },
-};
-
 static void adv7511_log_infoframes(struct v4l2_subdev *sd)
 {
+	static const struct adv7511_cfg_read_infoframe cri[] = {
+		{ "AVI", 0x44, 0x10, { 0x82, 2, 13 }, 0x55 },
+		{ "Audio", 0x44, 0x08, { 0x84, 1, 10 }, 0x73 },
+		{ "SDP", 0x40, 0x40, { 0x83, 1, 25 }, 0x103 },
+	};
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(cri); i++)
@@ -1008,17 +995,14 @@ static int adv7511_s_stream(struct v4l2_subdev *sd, int enable)
 	return 0;
 }
 
-static int adv7511_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
-				struct v4l2_dv_timings *timings)
+static int adv7511_s_dv_timings(struct v4l2_subdev *sd,
+			       struct v4l2_dv_timings *timings)
 {
 	struct adv7511_state *state = get_adv7511_state(sd);
 	struct v4l2_bt_timings *bt = &timings->bt;
 	u32 fps;
 
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
-
-	if (pad != 0)
-		return -EINVAL;
 
 	/* quick sanity check */
 	if (!v4l2_valid_dv_timings(timings, &adv7511_timings_cap, NULL, NULL))
@@ -1058,15 +1042,12 @@ static int adv7511_s_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
 	return 0;
 }
 
-static int adv7511_g_dv_timings(struct v4l2_subdev *sd, unsigned int pad,
+static int adv7511_g_dv_timings(struct v4l2_subdev *sd,
 				struct v4l2_dv_timings *timings)
 {
 	struct adv7511_state *state = get_adv7511_state(sd);
 
 	v4l2_dbg(1, debug, sd, "%s:\n", __func__);
-
-	if (pad != 0)
-		return -EINVAL;
 
 	if (!timings)
 		return -EINVAL;
@@ -1097,6 +1078,8 @@ static int adv7511_dv_timings_cap(struct v4l2_subdev *sd,
 
 static const struct v4l2_subdev_video_ops adv7511_video_ops = {
 	.s_stream = adv7511_s_stream,
+	.s_dv_timings = adv7511_s_dv_timings,
+	.g_dv_timings = adv7511_g_dv_timings,
 };
 
 /* ------------------------------ AUDIO OPS ------------------------------ */
@@ -1255,7 +1238,7 @@ static int adv7511_get_fmt(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *fmt;
 
-		fmt = v4l2_subdev_state_get_format(sd_state, format->pad);
+		fmt = v4l2_subdev_get_try_format(sd, sd_state, format->pad);
 		format->format.code = fmt->code;
 		format->format.colorspace = fmt->colorspace;
 		format->format.ycbcr_enc = fmt->ycbcr_enc;
@@ -1310,7 +1293,7 @@ static int adv7511_set_fmt(struct v4l2_subdev *sd,
 	if (format->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *fmt;
 
-		fmt = v4l2_subdev_state_get_format(sd_state, format->pad);
+		fmt = v4l2_subdev_get_try_format(sd, sd_state, format->pad);
 		fmt->code = format->format.code;
 		fmt->colorspace = format->format.colorspace;
 		fmt->ycbcr_enc = format->format.ycbcr_enc;
@@ -1370,9 +1353,9 @@ static int adv7511_set_fmt(struct v4l2_subdev *sd,
 	case V4L2_COLORSPACE_BT2020:
 		c = HDMI_COLORIMETRY_EXTENDED;
 		if (y && format->format.ycbcr_enc == V4L2_YCBCR_ENC_BT2020_CONST_LUM)
-			ec = HDMI_EXTENDED_COLORIMETRY_BT2020_CONST_LUM;
+			ec = 5; /* Not yet available in hdmi.h */
 		else
-			ec = HDMI_EXTENDED_COLORIMETRY_BT2020;
+			ec = 6; /* Not yet available in hdmi.h */
 		break;
 	default:
 		break;
@@ -1420,8 +1403,6 @@ static const struct v4l2_subdev_pad_ops adv7511_pad_ops = {
 	.enum_mbus_code = adv7511_enum_mbus_code,
 	.get_fmt = adv7511_get_fmt,
 	.set_fmt = adv7511_set_fmt,
-	.s_dv_timings = adv7511_s_dv_timings,
-	.g_dv_timings = adv7511_g_dv_timings,
 	.enum_dv_timings = adv7511_enum_dv_timings,
 	.dv_timings_cap = adv7511_dv_timings_cap,
 };
@@ -1664,9 +1645,7 @@ static bool adv7511_check_edid_status(struct v4l2_subdev *sd)
 		if (!err) {
 			adv7511_dbg_dump_edid(2, debug, sd, segment, &state->edid.data[segment * 256]);
 			if (segment == 0) {
-				state->edid.blocks =
-					v4l2_num_edid_blocks(state->edid.data,
-							     EDID_MAX_SEGM * 2);
+				state->edid.blocks = state->edid.data[0x7e] + 1;
 				v4l2_dbg(1, debug, sd, "%s: %d blocks in total\n",
 					 __func__, state->edid.blocks);
 			}
@@ -1684,7 +1663,7 @@ static bool adv7511_check_edid_status(struct v4l2_subdev *sd)
 		/* one more segment read ok */
 		state->edid.segments = segment + 1;
 		v4l2_ctrl_s_ctrl(state->have_edid0_ctrl, 0x1);
-		if (state->edid.blocks > state->edid.segments * 2) {
+		if (((state->edid.data[0x7e] >> 1) + 1) > state->edid.segments) {
 			/* Request next EDID segment */
 			v4l2_dbg(1, debug, sd, "%s: request segment %d\n", __func__, state->edid.segments);
 			adv7511_wr(sd, 0xc9, 0xf);
@@ -1713,34 +1692,6 @@ static bool adv7511_check_edid_status(struct v4l2_subdev *sd)
 	return false;
 }
 
-static ssize_t
-adv7511_debugfs_if_read(u32 type, void *priv,
-			struct file *filp, char __user *ubuf, size_t count, loff_t *ppos)
-{
-	u8 buf[V4L2_DEBUGFS_IF_MAX_LEN] = {};
-	struct v4l2_subdev *sd = priv;
-	int index;
-	int len;
-
-	switch (type) {
-	case V4L2_DEBUGFS_IF_AVI:
-		index = 0;
-		break;
-	case V4L2_DEBUGFS_IF_AUDIO:
-		index = 1;
-		break;
-	case V4L2_DEBUGFS_IF_SPD:
-		index = 2;
-		break;
-	default:
-		return 0;
-	}
-	len = read_infoframe(sd, &cri[index], buf);
-	if (len > 0)
-		len = simple_read_from_buffer(ubuf, count, ppos, buf, len);
-	return len < 0 ? 0 : len;
-}
-
 static int adv7511_registered(struct v4l2_subdev *sd)
 {
 	struct adv7511_state *state = get_adv7511_state(sd);
@@ -1748,16 +1699,9 @@ static int adv7511_registered(struct v4l2_subdev *sd)
 	int err;
 
 	err = cec_register_adapter(state->cec_adap, &client->dev);
-	if (err) {
+	if (err)
 		cec_delete_adapter(state->cec_adap);
-		return err;
-	}
-
-	state->debugfs_dir = debugfs_create_dir(sd->name, v4l2_debugfs_root());
-	state->infoframes = v4l2_debugfs_if_alloc(state->debugfs_dir,
-		V4L2_DEBUGFS_IF_AVI | V4L2_DEBUGFS_IF_AUDIO |
-		V4L2_DEBUGFS_IF_SPD, sd, adv7511_debugfs_if_read);
-	return 0;
+	return err;
 }
 
 static void adv7511_unregistered(struct v4l2_subdev *sd)
@@ -1765,10 +1709,6 @@ static void adv7511_unregistered(struct v4l2_subdev *sd)
 	struct adv7511_state *state = get_adv7511_state(sd);
 
 	cec_unregister_adapter(state->cec_adap);
-	v4l2_debugfs_if_free(state->infoframes);
-	state->infoframes = NULL;
-	debugfs_remove_recursive(state->debugfs_dir);
-	state->debugfs_dir = NULL;
 }
 
 static const struct v4l2_subdev_internal_ops adv7511_int_ops = {
@@ -2008,7 +1948,7 @@ static void adv7511_remove(struct i2c_client *client)
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id adv7511_id[] = {
-	{ "adv7511-v4l2" },
+	{ "adv7511-v4l2", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adv7511_id);
@@ -2017,7 +1957,7 @@ static struct i2c_driver adv7511_driver = {
 	.driver = {
 		.name = "adv7511-v4l2",
 	},
-	.probe = adv7511_probe,
+	.probe_new = adv7511_probe,
 	.remove = adv7511_remove,
 	.id_table = adv7511_id,
 };

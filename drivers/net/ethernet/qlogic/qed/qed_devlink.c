@@ -66,12 +66,12 @@ qed_fw_fatal_reporter_dump(struct devlink_health_reporter *reporter,
 		return err;
 	}
 
-	devlink_fmsg_binary_pair_put(fmsg, "dump_data", p_dbg_data_buf,
-				     dbg_data_buf_size);
+	err = devlink_fmsg_binary_pair_put(fmsg, "dump_data",
+					   p_dbg_data_buf, dbg_data_buf_size);
 
 	vfree(p_dbg_data_buf);
 
-	return 0;
+	return err;
 }
 
 static int
@@ -87,21 +87,20 @@ qed_fw_fatal_reporter_recover(struct devlink_health_reporter *reporter,
 	return 0;
 }
 
-#define QED_REPORTER_FW_GRACEFUL_PERIOD 0
-
 static const struct devlink_health_reporter_ops qed_fw_fatal_reporter_ops = {
 		.name = "fw_fatal",
 		.recover = qed_fw_fatal_reporter_recover,
 		.dump = qed_fw_fatal_reporter_dump,
-		.default_graceful_period = QED_REPORTER_FW_GRACEFUL_PERIOD,
 };
+
+#define QED_REPORTER_FW_GRACEFUL_PERIOD 0
 
 void qed_fw_reporters_create(struct devlink *devlink)
 {
 	struct qed_devlink *dl = devlink_priv(devlink);
 
-	dl->fw_reporter = devlink_health_reporter_create(devlink,
-		&qed_fw_fatal_reporter_ops, dl);
+	dl->fw_reporter = devlink_health_reporter_create(devlink, &qed_fw_fatal_reporter_ops,
+							 QED_REPORTER_FW_GRACEFUL_PERIOD, dl);
 	if (IS_ERR(dl->fw_reporter)) {
 		DP_NOTICE(dl->cdev, "Failed to create fw reporter, err = %ld\n",
 			  PTR_ERR(dl->fw_reporter));
@@ -121,8 +120,7 @@ void qed_fw_reporters_destroy(struct devlink *devlink)
 }
 
 static int qed_dl_param_get(struct devlink *dl, u32 id,
-			    struct devlink_param_gset_ctx *ctx,
-			    struct netlink_ext_ack *extack)
+			    struct devlink_param_gset_ctx *ctx)
 {
 	struct qed_devlink *qed_dl = devlink_priv(dl);
 	struct qed_dev *cdev;
@@ -134,8 +132,7 @@ static int qed_dl_param_get(struct devlink *dl, u32 id,
 }
 
 static int qed_dl_param_set(struct devlink *dl, u32 id,
-			    struct devlink_param_gset_ctx *ctx,
-			    struct netlink_ext_ack *extack)
+			    struct devlink_param_gset_ctx *ctx)
 {
 	struct qed_devlink *qed_dl = devlink_priv(dl);
 	struct qed_dev *cdev;

@@ -18,7 +18,6 @@ properties:
       - allwinner,sun50i-a64-crypto
       - allwinner,sun50i-h5-crypto
       - allwinner,sun50i-h6-crypto
-      - allwinner,sun50i-h616-crypto
 
   reg:
     maxItems: 1
@@ -50,7 +49,6 @@ if:
     compatible:
       enum:
         - allwinner,sun20i-d1-crypto
-        - allwinner,sun50i-h616-crypto
 then:
   properties:
     clocks:

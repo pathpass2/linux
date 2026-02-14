@@ -2,8 +2,6 @@
 #include <linux/export.h>
 #include <linux/types.h>
 #include <linux/bits.h>
-
-#include <asm/msr.h>
 #include "probe.h"
 
 static umode_t
@@ -45,7 +43,7 @@ perf_msr_probe(struct perf_msr *msr, int cnt, bool zero, void *data)
 			if (msr[bit].test && !msr[bit].test(bit, data))
 				continue;
 			/* Virt sucks; you cannot tell if a R/O MSR is present :/ */
-			if (rdmsrq_safe(msr[bit].msr, &val))
+			if (rdmsrl_safe(msr[bit].msr, &val))
 				continue;
 
 			mask = msr[bit].mask;

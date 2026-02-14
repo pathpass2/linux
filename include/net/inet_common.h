@@ -19,30 +19,28 @@ struct msghdr;
 struct net;
 struct page;
 struct sock;
+struct sockaddr;
 struct socket;
 
 int inet_release(struct socket *sock);
-int inet_stream_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
+int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 			int addr_len, int flags);
-int __inet_stream_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
+int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 			  int addr_len, int flags, int is_sendmsg);
-int inet_dgram_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
+int inet_dgram_connect(struct socket *sock, struct sockaddr *uaddr,
 		       int addr_len, int flags);
-int inet_accept(struct socket *sock, struct socket *newsock,
-		struct proto_accept_arg *arg);
-void __inet_accept(struct socket *sock, struct socket *newsock,
-		   struct sock *newsk);
+int inet_accept(struct socket *sock, struct socket *newsock, int flags,
+		bool kern);
 int inet_send_prepare(struct sock *sk);
 int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size);
-void inet_splice_eof(struct socket *sock);
+ssize_t inet_sendpage(struct socket *sock, struct page *page, int offset,
+		      size_t size, int flags);
 int inet_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		 int flags);
 int inet_shutdown(struct socket *sock, int how);
 int inet_listen(struct socket *sock, int backlog);
-int __inet_listen_sk(struct sock *sk, int backlog);
 void inet_sock_destruct(struct sock *sk);
-int inet_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len);
-int inet_bind_sk(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len);
+int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len);
 /* Don't allocate port at this moment, defer to connect. */
 #define BIND_FORCE_ADDRESS_NO_PORT	(1 << 0)
 /* Grab and release socket lock. */
@@ -51,7 +49,7 @@ int inet_bind_sk(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len);
 #define BIND_FROM_BPF			(1 << 2)
 /* Skip CAP_NET_BIND_SERVICE check. */
 #define BIND_NO_CAP_NET_BIND_SERVICE	(1 << 3)
-int __inet_bind(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len,
+int __inet_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len,
 		u32 flags);
 int inet_getname(struct socket *sock, struct sockaddr *uaddr,
 		 int peer);

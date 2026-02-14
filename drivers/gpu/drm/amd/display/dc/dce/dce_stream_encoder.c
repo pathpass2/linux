@@ -277,6 +277,7 @@ static void dce110_stream_encoder_dp_set_stream_attribute(
 	uint32_t misc1 = 0;
 	uint32_t h_blank;
 	uint32_t h_back_porch;
+	uint8_t synchronous_clock = 0; /* asynchronous mode */
 	uint8_t colorimetry_bpc;
 	uint8_t dynamic_range_rgb = 0; /*full range*/
 	uint8_t dynamic_range_ycbcr = 1; /*bt709*/
@@ -379,6 +380,7 @@ static void dce110_stream_encoder_dp_set_stream_attribute(
 		break;
 	}
 
+	misc0 = misc0 | synchronous_clock;
 	misc0 = colorimetry_bpc << 5;
 
 	if (REG(DP_MSA_TIMING_PARAM1)) {
@@ -418,7 +420,7 @@ static void dce110_stream_encoder_dp_set_stream_attribute(
 			dynamic_range_rgb = 1; /*limited range*/
 			break;
 		case COLOR_SPACE_2020_RGB_FULLRANGE:
-		case COLOR_SPACE_2020_YCBCR_LIMITED:
+		case COLOR_SPACE_2020_YCBCR:
 		case COLOR_SPACE_XR_RGB:
 		case COLOR_SPACE_MSREF_SCRGB:
 		case COLOR_SPACE_ADOBERGB:
@@ -430,7 +432,6 @@ static void dce110_stream_encoder_dp_set_stream_attribute(
 		case COLOR_SPACE_APPCTRL:
 		case COLOR_SPACE_CUSTOMPOINTS:
 		case COLOR_SPACE_UNKNOWN:
-		default:
 			/* do nothing */
 			break;
 		}
@@ -1024,7 +1025,6 @@ static void dce110_reset_hdmi_stream_attribute(
 	struct stream_encoder *enc)
 {
 	struct dce110_stream_encoder *enc110 = DCE110STRENC_FROM_STRENC(enc);
-
 	if (enc110->se_mask->HDMI_DATA_SCRAMBLE_EN)
 		REG_UPDATE_5(HDMI_CONTROL,
 			HDMI_PACKET_GEN_VERSION, 1,
@@ -1566,18 +1566,4 @@ void dce110_stream_encoder_construct(
 	enc110->regs = regs;
 	enc110->se_shift = se_shift;
 	enc110->se_mask = se_mask;
-}
-
-static const struct stream_encoder_funcs dce110_an_str_enc_funcs = {};
-
-void dce110_analog_stream_encoder_construct(
-	struct dce110_stream_encoder *enc110,
-	struct dc_context *ctx,
-	struct dc_bios *bp,
-	enum engine_id eng_id)
-{
-	enc110->base.funcs = &dce110_an_str_enc_funcs;
-	enc110->base.ctx = ctx;
-	enc110->base.id = eng_id;
-	enc110->base.bp = bp;
 }

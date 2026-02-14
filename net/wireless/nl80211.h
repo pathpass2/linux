@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Portions of this file
- * Copyright (C) 2018, 2020-2024 Intel Corporation
+ * Copyright (C) 2018, 2020-2022 Intel Corporation
  */
 #ifndef __NET_WIRELESS_NL80211_H
 #define __NET_WIRELESS_NL80211_H
@@ -60,7 +60,7 @@ void nl80211_send_rx_auth(struct cfg80211_registered_device *rdev,
 			  const u8 *buf, size_t len, gfp_t gfp);
 void nl80211_send_rx_assoc(struct cfg80211_registered_device *rdev,
 			   struct net_device *netdev,
-			   const struct cfg80211_rx_assoc_resp_data *data);
+			   struct cfg80211_rx_assoc_resp *data);
 void nl80211_send_deauth(struct cfg80211_registered_device *rdev,
 			 struct net_device *netdev,
 			 const u8 *buf, size_t len,
@@ -82,11 +82,8 @@ void nl80211_send_connect_result(struct cfg80211_registered_device *rdev,
 void nl80211_send_roamed(struct cfg80211_registered_device *rdev,
 			 struct net_device *netdev,
 			 struct cfg80211_roam_info *info, gfp_t gfp);
-/* For STA/GC, indicate port authorized with AP/GO bssid.
- * For GO/AP, use peer GC/STA mac_addr.
- */
 void nl80211_send_port_authorized(struct cfg80211_registered_device *rdev,
-				  struct net_device *netdev, const u8 *peer_addr,
+				  struct net_device *netdev, const u8 *bssid,
 				  const u8 *td_bitmap, u8 td_bitmap_len);
 void nl80211_send_disconnected(struct cfg80211_registered_device *rdev,
 			       struct net_device *netdev, u16 reason,
@@ -119,12 +116,10 @@ nl80211_radar_notify(struct cfg80211_registered_device *rdev,
 
 void nl80211_send_ap_stopped(struct wireless_dev *wdev, unsigned int link_id);
 
-void cfg80211_free_coalesce(struct cfg80211_coalesce *coalesce);
+void cfg80211_rdev_free_coalesce(struct cfg80211_registered_device *rdev);
 
 /* peer measurement */
 int nl80211_pmsr_start(struct sk_buff *skb, struct genl_info *info);
-
-void nl80211_mlo_reconf_add_done(struct net_device *dev,
-				 struct cfg80211_mlo_reconf_done_data *data);
+int nl80211_pmsr_dump_results(struct sk_buff *skb, struct netlink_callback *cb);
 
 #endif /* __NET_WIRELESS_NL80211_H */

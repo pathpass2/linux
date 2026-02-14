@@ -23,7 +23,6 @@
 #include "i82092aa.h"
 #include "i82365.h"
 
-MODULE_DESCRIPTION("Driver for Intel I82092AA PCI-PCMCIA bridge");
 MODULE_LICENSE("GPL");
 
 /* PCI core routines */

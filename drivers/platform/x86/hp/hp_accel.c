@@ -267,7 +267,7 @@ static struct delayed_led_classdev hpled_led = {
 };
 
 static bool hp_accel_i8042_filter(unsigned char data, unsigned char str,
-				  struct serio *port, void *context)
+				  struct serio *port)
 {
 	static bool extended;
 
@@ -326,7 +326,7 @@ static int lis3lv02d_probe(struct platform_device *device)
 	/* filter to remove HPQ6000 accelerometer data
 	 * from keyboard bus stream */
 	if (strstr(dev_name(&device->dev), "HPQ6000"))
-		i8042_install_filter(hp_accel_i8042_filter, NULL);
+		i8042_install_filter(hp_accel_i8042_filter);
 
 	INIT_WORK(&hpled_led.work, delayed_set_status_worker);
 	ret = led_classdev_register(NULL, &hpled_led.led_classdev);
@@ -342,7 +342,7 @@ static int lis3lv02d_probe(struct platform_device *device)
 	return ret;
 }
 
-static void lis3lv02d_remove(struct platform_device *device)
+static int lis3lv02d_remove(struct platform_device *device)
 {
 	i8042_remove_filter(hp_accel_i8042_filter);
 	lis3lv02d_joystick_disable(&lis3_dev);
@@ -352,6 +352,7 @@ static void lis3lv02d_remove(struct platform_device *device)
 	flush_work(&hpled_led.work);
 
 	lis3lv02d_remove_fs(&lis3_dev);
+	return 0;
 }
 
 static int __maybe_unused lis3lv02d_suspend(struct device *dev)

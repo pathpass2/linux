@@ -2,6 +2,15 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010 - 2015, Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 #include "input_system.h"
@@ -9,10 +18,13 @@
 #include "ia_css_isys.h"
 #include "platform_support.h"
 
+#ifdef ISP2401
 #include "isys_dma_public.h"	/* isys2401_dma_set_max_burst_size() */
 #include "isys_irq.h"
+#endif
 
-static input_system_err_t ia_css_isys_2400_init(void)
+#if !defined(ISP2401)
+input_system_err_t ia_css_isys_init(void)
 {
 	backend_channel_cfg_t backend_ch0;
 	backend_channel_cfg_t backend_ch1;
@@ -74,8 +86,8 @@ static input_system_err_t ia_css_isys_2400_init(void)
 
 	return error;
 }
-
-static input_system_err_t ia_css_isys_2401_init(void)
+#elif defined(ISP2401)
+input_system_err_t ia_css_isys_init(void)
 {
 	ia_css_isys_csi_rx_lut_rmgr_init();
 	ia_css_isys_ibuf_rmgr_init();
@@ -92,21 +104,19 @@ static input_system_err_t ia_css_isys_2401_init(void)
 
 	return INPUT_SYSTEM_ERR_NO_ERROR;
 }
+#endif
 
-input_system_err_t ia_css_isys_init(void)
-{
-	if (IS_ISP2401)
-		return ia_css_isys_2401_init();
-
-	return ia_css_isys_2400_init();
-}
-
+#if !defined(ISP2401)
 void ia_css_isys_uninit(void)
 {
-	if (IS_ISP2401) {
-		ia_css_isys_csi_rx_lut_rmgr_uninit();
-		ia_css_isys_ibuf_rmgr_uninit();
-		ia_css_isys_dma_channel_rmgr_uninit();
-		ia_css_isys_stream2mmio_sid_rmgr_uninit();
-	}
 }
+#elif defined(ISP2401)
+void ia_css_isys_uninit(void)
+{
+	ia_css_isys_csi_rx_lut_rmgr_uninit();
+	ia_css_isys_ibuf_rmgr_uninit();
+	ia_css_isys_dma_channel_rmgr_uninit();
+	ia_css_isys_stream2mmio_sid_rmgr_uninit();
+}
+#endif
+

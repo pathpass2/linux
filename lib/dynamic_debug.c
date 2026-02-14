@@ -88,14 +88,12 @@ static inline const char *trim_prefix(const char *path)
 	return path + skip;
 }
 
-static const struct { unsigned flag:8; char opt_char; } opt_array[] = {
+static struct { unsigned flag:8; char opt_char; } opt_array[] = {
 	{ _DPRINTK_FLAGS_PRINT, 'p' },
 	{ _DPRINTK_FLAGS_INCL_MODNAME, 'm' },
 	{ _DPRINTK_FLAGS_INCL_FUNCNAME, 'f' },
-	{ _DPRINTK_FLAGS_INCL_SOURCENAME, 's' },
 	{ _DPRINTK_FLAGS_INCL_LINENO, 'l' },
 	{ _DPRINTK_FLAGS_INCL_TID, 't' },
-	{ _DPRINTK_FLAGS_INCL_STACK, 'd' },
 	{ _DPRINTK_FLAGS_NONE, '_' },
 };
 
@@ -303,11 +301,7 @@ static int ddebug_tokenize(char *buf, char *words[], int maxwords)
 		} else {
 			for (end = buf; *end && !isspace(*end); end++)
 				;
-			if (end == buf) {
-				pr_err("parse err after word:%d=%s\n", nwords,
-				       nwords ? words[nwords - 1] : "<none>");
-				return -EINVAL;
-			}
+			BUG_ON(end == buf);
 		}
 
 		/* `buf' is start of word, `end' is one past its end */
@@ -645,9 +639,10 @@ static int param_set_dyndbg_classnames(const char *instr, const struct kernel_pa
 	int cls_id, totct = 0;
 	bool wanted;
 
-	cl_str = tmp = kstrdup_and_replace(instr, '\n', '\0', GFP_KERNEL);
-	if (!tmp)
-		return -ENOMEM;
+	cl_str = tmp = kstrdup(instr, GFP_KERNEL);
+	p = strchr(cl_str, '\n');
+	if (p)
+		*p = '\0';
 
 	/* start with previously set state-bits, then modify */
 	curr_bits = old_bits = *dcp->bits;
@@ -813,7 +808,7 @@ const struct kernel_param_ops param_ops_dyndbg_classes = {
 };
 EXPORT_SYMBOL(param_ops_dyndbg_classes);
 
-#define PREFIX_SIZE 128
+#define PREFIX_SIZE 64
 
 static int remaining(int wrote)
 {
@@ -841,9 +836,6 @@ static char *__dynamic_emit_prefix(const struct _ddebug *desc, char *buf)
 	if (desc->flags & _DPRINTK_FLAGS_INCL_FUNCNAME)
 		pos += snprintf(buf + pos, remaining(pos), "%s:",
 				desc->function);
-	if (desc->flags & _DPRINTK_FLAGS_INCL_SOURCENAME)
-		pos += snprintf(buf + pos, remaining(pos), "%s:",
-				trim_prefix(desc->filename));
 	if (desc->flags & _DPRINTK_FLAGS_INCL_LINENO)
 		pos += snprintf(buf + pos, remaining(pos), "%d:",
 				desc->lineno);
@@ -1148,7 +1140,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		   iter->table->mod_name, dp->function,
 		   ddebug_describe_flags(dp->flags, &flags));
 	seq_escape_str(m, dp->format, ESCAPE_SPACE, "\t\r\n\"");
-	seq_putc(m, '"');
+	seq_puts(m, "\"");
 
 	if (dp->class_id != _DPRINTK_CLASS_DFLT) {
 		class = ddebug_class_name(iter, dp);
@@ -1157,7 +1149,7 @@ static int ddebug_proc_show(struct seq_file *m, void *p)
 		else
 			seq_printf(m, " class unknown, _id:%d", dp->class_id);
 	}
-	seq_putc(m, '\n');
+	seq_puts(m, "\n");
 
 	return 0;
 }
@@ -1231,7 +1223,8 @@ static void ddebug_attach_module_classes(struct ddebug_table *dt,
  * Allocate a new ddebug_table for the given module
  * and add it to the global list.
  */
-static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
+static int __ddebug_add_module(struct _ddebug_info *di, unsigned int base,
+			       const char *modname)
 {
 	struct ddebug_table *dt;
 
@@ -1268,6 +1261,11 @@ static int ddebug_add_module(struct _ddebug_info *di, const char *modname)
 
 	vpr_info("%3u debug prints in module %s\n", di->num_descs, modname);
 	return 0;
+}
+
+int ddebug_add_module(struct _ddebug_info *di, const char *modname)
+{
+	return __ddebug_add_module(di, 0, modname);
 }
 
 /* helper for ddebug_dyndbg_(boot|module)_param_cb */
@@ -1316,13 +1314,11 @@ static void ddebug_table_free(struct ddebug_table *dt)
 	kfree(dt);
 }
 
-#ifdef CONFIG_MODULES
-
 /*
  * Called in response to a module being unloaded.  Removes
  * any ddebug_table's which point at the module.
  */
-static int ddebug_remove_module(const char *mod_name)
+int ddebug_remove_module(const char *mod_name)
 {
 	struct ddebug_table *dt, *nextdt;
 	int ret = -ENOENT;
@@ -1340,33 +1336,6 @@ static int ddebug_remove_module(const char *mod_name)
 		v2pr_info("removed module \"%s\"\n", mod_name);
 	return ret;
 }
-
-static int ddebug_module_notify(struct notifier_block *self, unsigned long val,
-				void *data)
-{
-	struct module *mod = data;
-	int ret = 0;
-
-	switch (val) {
-	case MODULE_STATE_COMING:
-		ret = ddebug_add_module(&mod->dyndbg_info, mod->name);
-		if (ret)
-			WARN(1, "Failed to allocate memory: dyndbg may not work properly.\n");
-		break;
-	case MODULE_STATE_GOING:
-		ddebug_remove_module(mod->name);
-		break;
-	}
-
-	return notifier_from_errno(ret);
-}
-
-static struct notifier_block ddebug_module_nb = {
-	.notifier_call = ddebug_module_notify,
-	.priority = 0, /* dynamic debug depends on jump label */
-};
-
-#endif /* CONFIG_MODULES */
 
 static void ddebug_remove_all_tables(void)
 {
@@ -1419,14 +1388,6 @@ static int __init dynamic_debug_init(void)
 		.num_classes = __stop___dyndbg_classes - __start___dyndbg_classes,
 	};
 
-#ifdef CONFIG_MODULES
-	ret = register_module_notifier(&ddebug_module_nb);
-	if (ret) {
-		pr_warn("Failed to register dynamic debug module notifier\n");
-		return ret;
-	}
-#endif /* CONFIG_MODULES */
-
 	if (&__start___dyndbg == &__stop___dyndbg) {
 		if (IS_ENABLED(CONFIG_DYNAMIC_DEBUG)) {
 			pr_warn("_ddebug table is empty in a CONFIG_DYNAMIC_DEBUG build\n");
@@ -1447,7 +1408,7 @@ static int __init dynamic_debug_init(void)
 			mod_ct++;
 			di.num_descs = mod_sites;
 			di.descs = iter_mod_start;
-			ret = ddebug_add_module(&di, modname);
+			ret = __ddebug_add_module(&di, i - mod_sites, modname);
 			if (ret)
 				goto out_err;
 
@@ -1458,7 +1419,7 @@ static int __init dynamic_debug_init(void)
 	}
 	di.num_descs = mod_sites;
 	di.descs = iter_mod_start;
-	ret = ddebug_add_module(&di, modname);
+	ret = __ddebug_add_module(&di, i - mod_sites, modname);
 	if (ret)
 		goto out_err;
 

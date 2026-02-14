@@ -80,7 +80,11 @@ command results in a shift count error.'
     NPROC=1
 else
     ONLINE=0
-    OPTIONS="--dir $srcroot $COCCIINCLUDE"
+    if [ "$KBUILD_EXTMOD" = "" ] ; then
+        OPTIONS="--dir $srctree $COCCIINCLUDE"
+    else
+        OPTIONS="--dir $KBUILD_EXTMOD $COCCIINCLUDE"
+    fi
 
     # Use only one thread per core by default if hyperthreading is enabled
     THREADS_PER_CORE=$(LANG=C lscpu | grep "Thread(s) per core: " | tr -cd "[:digit:]")
@@ -270,11 +274,7 @@ fi
 
 if [ "$COCCI" = "" ] ; then
     for f in `find $srctree/scripts/coccinelle/ -name '*.cocci' -type f | sort`; do
-        if grep -q "virtual[[:space:]]\+$MODE" "$f"; then
-                coccinelle $f
-        else
-                echo "warning: Skipping $f as it does not match mode '$MODE'"
-        fi
+	coccinelle $f
     done
 else
     coccinelle $COCCI

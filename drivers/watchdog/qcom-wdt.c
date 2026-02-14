@@ -11,6 +11,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/watchdog.h>
+#include <linux/of_device.h>
 
 enum wdt_reg {
 	WDT_RST,
@@ -41,7 +42,6 @@ static const u32 reg_offset_data_kpss[] = {
 struct qcom_wdt_match_data {
 	const u32 *offset;
 	bool pretimeout;
-	u32 max_tick_count;
 };
 
 struct qcom_wdt {
@@ -178,19 +178,11 @@ static const struct watchdog_info qcom_wdt_pt_info = {
 static const struct qcom_wdt_match_data match_data_apcs_tmr = {
 	.offset = reg_offset_data_apcs_tmr,
 	.pretimeout = false,
-	.max_tick_count = 0x10000000U,
-};
-
-static const struct qcom_wdt_match_data match_data_ipq5424 = {
-	.offset = reg_offset_data_kpss,
-	.pretimeout = true,
-	.max_tick_count = 0xFFFFFU,
 };
 
 static const struct qcom_wdt_match_data match_data_kpss = {
 	.offset = reg_offset_data_kpss,
 	.pretimeout = true,
-	.max_tick_count = 0xFFFFFU,
 };
 
 static int qcom_wdt_probe(struct platform_device *pdev)
@@ -245,7 +237,7 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	 */
 	wdt->rate = clk_get_rate(clk);
 	if (wdt->rate == 0 ||
-	    wdt->rate > data->max_tick_count) {
+	    wdt->rate > 0x10000000U) {
 		dev_err(dev, "invalid clock rate\n");
 		return -EINVAL;
 	}
@@ -269,7 +261,7 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 
 	wdt->wdd.ops = &qcom_wdt_ops;
 	wdt->wdd.min_timeout = 1;
-	wdt->wdd.max_timeout = data->max_tick_count / wdt->rate;
+	wdt->wdd.max_timeout = 0x10000000U / wdt->rate;
 	wdt->wdd.parent = dev;
 	wdt->layout = data->offset;
 
@@ -328,7 +320,6 @@ static const struct dev_pm_ops qcom_wdt_pm_ops = {
 };
 
 static const struct of_device_id qcom_wdt_of_table[] = {
-	{ .compatible = "qcom,apss-wdt-ipq5424", .data = &match_data_ipq5424 },
 	{ .compatible = "qcom,kpss-timer", .data = &match_data_apcs_tmr },
 	{ .compatible = "qcom,scss-timer", .data = &match_data_apcs_tmr },
 	{ .compatible = "qcom,kpss-wdt", .data = &match_data_kpss },

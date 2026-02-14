@@ -16,17 +16,14 @@ int hfs_find_init(struct hfs_btree *tree, struct hfs_find_data *fd)
 {
 	void *ptr;
 
-	if (!tree || !fd)
-		return -EINVAL;
-
 	fd->tree = tree;
 	fd->bnode = NULL;
-	ptr = kzalloc(tree->max_key_len * 2 + 4, GFP_KERNEL);
+	ptr = kmalloc(tree->max_key_len * 2 + 4, GFP_KERNEL);
 	if (!ptr)
 		return -ENOMEM;
 	fd->search_key = ptr;
 	fd->key = ptr + tree->max_key_len + 2;
-	hfs_dbg("cnid %d, caller %ps\n",
+	hfs_dbg(BNODE_REFS, "find_init: %d (%p)\n",
 		tree->cnid, __builtin_return_address(0));
 	switch (tree->cnid) {
 	case HFS_CAT_CNID:
@@ -48,7 +45,7 @@ void hfs_find_exit(struct hfs_find_data *fd)
 {
 	hfs_bnode_put(fd->bnode);
 	kfree(fd->search_key);
-	hfs_dbg("cnid %d, caller %ps\n",
+	hfs_dbg(BNODE_REFS, "find_exit: %d (%p)\n",
 		fd->tree->cnid, __builtin_return_address(0));
 	mutex_unlock(&fd->tree->tree_lock);
 	fd->tree = NULL;
@@ -115,12 +112,6 @@ int hfs_brec_find(struct hfs_find_data *fd)
 	__be32 data;
 	int height, res;
 
-	fd->record = -1;
-	fd->keyoffset = -1;
-	fd->keylength = -1;
-	fd->entryoffset = -1;
-	fd->entrylength = -1;
-
 	tree = fd->tree;
 	if (fd->bnode)
 		hfs_bnode_put(fd->bnode);
@@ -167,7 +158,7 @@ release:
 	return res;
 }
 
-int hfs_brec_read(struct hfs_find_data *fd, void *rec, u32 rec_len)
+int hfs_brec_read(struct hfs_find_data *fd, void *rec, int rec_len)
 {
 	int res;
 

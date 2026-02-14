@@ -74,7 +74,7 @@ static void
 nfp_nfd3_tx_tso(struct nfp_net_r_vector *r_vec, struct nfp_nfd3_tx_buf *txbuf,
 		struct nfp_nfd3_tx_desc *txd, struct sk_buff *skb, u32 md_bytes)
 {
-	u32 l3_offset, l4_offset, hdrlen, l4_hdrlen;
+	u32 l3_offset, l4_offset, hdrlen;
 	u16 mss;
 
 	if (!skb_is_gso(skb))
@@ -83,16 +83,13 @@ nfp_nfd3_tx_tso(struct nfp_net_r_vector *r_vec, struct nfp_nfd3_tx_buf *txbuf,
 	if (!skb->encapsulation) {
 		l3_offset = skb_network_offset(skb);
 		l4_offset = skb_transport_offset(skb);
-		l4_hdrlen = (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_L4) ?
-			    sizeof(struct udphdr) : tcp_hdrlen(skb);
+		hdrlen = skb_tcp_all_headers(skb);
 	} else {
 		l3_offset = skb_inner_network_offset(skb);
 		l4_offset = skb_inner_transport_offset(skb);
-		l4_hdrlen = (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_L4) ?
-			    sizeof(struct udphdr) : inner_tcp_hdrlen(skb);
+		hdrlen = skb_inner_tcp_all_headers(skb);
 	}
 
-	hdrlen = l4_offset + l4_hdrlen;
 	txbuf->pkt_cnt = skb_shinfo(skb)->gso_segs;
 	txbuf->real_len += hdrlen * (txbuf->pkt_cnt - 1);
 
@@ -779,7 +776,7 @@ nfp_nfd3_parse_meta(struct net_device *netdev, struct nfp_meta_parsed *meta,
 		case NFP_NET_META_CSUM:
 			meta->csum_type = CHECKSUM_COMPLETE;
 			meta->csum =
-				(__force __wsum)get_unaligned((u32 *)data);
+				(__force __wsum)__get_unaligned_cpu32(data);
 			data += 4;
 			break;
 		case NFP_NET_META_RESYNC_INFO:
@@ -1073,7 +1070,7 @@ static int nfp_nfd3_rx(struct nfp_net_rx_ring *rx_ring, int budget)
 				nfp_repr_inc_rx_stats(netdev, pkt_len);
 		}
 
-		skb = napi_build_skb(rxbuf->frag, true_bufsz);
+		skb = build_skb(rxbuf->frag, true_bufsz);
 		if (unlikely(!skb)) {
 			nfp_nfd3_rx_drop(dp, r_vec, rx_ring, rxbuf, NULL);
 			continue;
@@ -1169,24 +1166,32 @@ int nfp_nfd3_poll(struct napi_struct *napi, int budget)
 
 	if (r_vec->nfp_net->rx_coalesce_adapt_on && r_vec->rx_ring) {
 		struct dim_sample dim_sample = {};
+		unsigned int start;
 		u64 pkts, bytes;
 
-		pkts = r_vec->rx_pkts;
-		bytes = r_vec->rx_bytes;
+		do {
+			start = u64_stats_fetch_begin(&r_vec->rx_sync);
+			pkts = r_vec->rx_pkts;
+			bytes = r_vec->rx_bytes;
+		} while (u64_stats_fetch_retry(&r_vec->rx_sync, start));
 
 		dim_update_sample(r_vec->event_ctr, pkts, bytes, &dim_sample);
-		net_dim(&r_vec->rx_dim, &dim_sample);
+		net_dim(&r_vec->rx_dim, dim_sample);
 	}
 
 	if (r_vec->nfp_net->tx_coalesce_adapt_on && r_vec->tx_ring) {
 		struct dim_sample dim_sample = {};
+		unsigned int start;
 		u64 pkts, bytes;
 
-		pkts = r_vec->tx_pkts;
-		bytes = r_vec->tx_bytes;
+		do {
+			start = u64_stats_fetch_begin(&r_vec->tx_sync);
+			pkts = r_vec->tx_pkts;
+			bytes = r_vec->tx_bytes;
+		} while (u64_stats_fetch_retry(&r_vec->tx_sync, start));
 
 		dim_update_sample(r_vec->event_ctr, pkts, bytes, &dim_sample);
-		net_dim(&r_vec->tx_dim, &dim_sample);
+		net_dim(&r_vec->tx_dim, dim_sample);
 	}
 
 	return pkts_polled;

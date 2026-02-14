@@ -9,7 +9,6 @@
  * - Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  */
 
-#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_blend.h>
@@ -19,9 +18,8 @@
 #include <drm/drm_crtc.h>
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_dumb_buffers.h>
 #include <drm/drm_encoder.h>
-#include <drm/drm_fbdev_dma.h>
+#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_dma_helper.h>
@@ -29,6 +27,7 @@
 #include <drm/drm_managed.h>
 #include <drm/drm_mode_config.h>
 #include <drm/drm_plane.h>
+#include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
@@ -122,13 +121,9 @@ static void zynqmp_dpsub_plane_atomic_update(struct drm_plane *plane,
 		zynqmp_disp_blend_set_global_alpha(dpsub->disp, true,
 						   plane->state->alpha >> 8);
 
-	/*
-	 * Unconditionally enable the layer, as it may have been disabled
-	 * previously either explicitly to reconfigure layer format, or
-	 * implicitly after DPSUB reset during display mode change. DRM
-	 * framework calls this callback for enabled planes only.
-	 */
-	zynqmp_disp_layer_enable(layer);
+	/* Enable or re-enable the plane if the format has changed. */
+	if (format_changed)
+		zynqmp_disp_layer_enable(layer, ZYNQMP_DPSUB_LAYER_NONLIVE);
 }
 
 static const struct drm_plane_helper_funcs zynqmp_dpsub_plane_helper_funcs = {
@@ -364,19 +359,16 @@ static int zynqmp_dpsub_dumb_create(struct drm_file *file_priv,
 				    struct drm_mode_create_dumb *args)
 {
 	struct zynqmp_dpsub *dpsub = to_zynqmp_dpsub(drm);
-	int ret;
+	unsigned int pitch = DIV_ROUND_UP(args->width * args->bpp, 8);
 
 	/* Enforce the alignment constraints of the DMA engine. */
-	ret = drm_mode_size_dumb(drm, args, dpsub->dma_align, 0);
-	if (ret)
-		return ret;
+	args->pitch = ALIGN(pitch, dpsub->dma_align);
 
 	return drm_gem_dma_dumb_create_internal(file_priv, drm, args);
 }
 
 static struct drm_framebuffer *
 zynqmp_dpsub_fb_create(struct drm_device *drm, struct drm_file *file_priv,
-		       const struct drm_format_info *info,
 		       const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	struct zynqmp_dpsub *dpsub = to_zynqmp_dpsub(drm);
@@ -387,7 +379,7 @@ zynqmp_dpsub_fb_create(struct drm_device *drm, struct drm_file *file_priv,
 	for (i = 0; i < ARRAY_SIZE(cmd.pitches); ++i)
 		cmd.pitches[i] = ALIGN(cmd.pitches[i], dpsub->dma_align);
 
-	return drm_gem_fb_create(drm, file_priv, info, &cmd);
+	return drm_gem_fb_create(drm, file_priv, &cmd);
 }
 
 static const struct drm_mode_config_funcs zynqmp_dpsub_mode_config_funcs = {
@@ -407,12 +399,12 @@ static const struct drm_driver zynqmp_dpsub_drm_driver = {
 					  DRIVER_ATOMIC,
 
 	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(zynqmp_dpsub_dumb_create),
-	DRM_FBDEV_DMA_DRIVER_OPS,
 
 	.fops				= &zynqmp_dpsub_drm_fops,
 
 	.name				= "zynqmp-dpsub",
 	.desc				= "Xilinx DisplayPort Subsystem Driver",
+	.date				= "20130509",
 	.major				= 1,
 	.minor				= 0,
 };
@@ -442,28 +434,23 @@ static int zynqmp_dpsub_kms_init(struct zynqmp_dpsub *dpsub)
 				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
 	if (ret) {
 		dev_err(dpsub->dev, "failed to attach bridge to encoder\n");
-		goto err_encoder;
+		return ret;
 	}
 
 	/* Create the connector for the chain of bridges. */
 	connector = drm_bridge_connector_init(&dpsub->drm->dev, encoder);
 	if (IS_ERR(connector)) {
 		dev_err(dpsub->dev, "failed to created connector\n");
-		ret = PTR_ERR(connector);
-		goto err_encoder;
+		return PTR_ERR(connector);
 	}
 
 	ret = drm_connector_attach_encoder(connector, encoder);
 	if (ret < 0) {
 		dev_err(dpsub->dev, "failed to attach connector to encoder\n");
-		goto err_encoder;
+		return ret;
 	}
 
 	return 0;
-
-err_encoder:
-	drm_encoder_cleanup(encoder);
-	return ret;
 }
 
 static void zynqmp_dpsub_drm_release(struct drm_device *drm, void *res)
@@ -514,11 +501,11 @@ int zynqmp_dpsub_drm_init(struct zynqmp_dpsub *dpsub)
 	if (ret)
 		return ret;
 
+	drm_kms_helper_poll_init(drm);
+
 	ret = zynqmp_dpsub_kms_init(dpsub);
 	if (ret < 0)
 		goto err_poll_fini;
-
-	drm_kms_helper_poll_init(drm);
 
 	/* Reset all components and register the DRM device. */
 	drm_mode_config_reset(drm);
@@ -528,7 +515,7 @@ int zynqmp_dpsub_drm_init(struct zynqmp_dpsub *dpsub)
 		goto err_poll_fini;
 
 	/* Initialize fbdev generic emulation. */
-	drm_client_setup_with_fourcc(drm, DRM_FORMAT_RGB888);
+	drm_fbdev_generic_setup(drm, 24);
 
 	return 0;
 
@@ -541,8 +528,7 @@ void zynqmp_dpsub_drm_cleanup(struct zynqmp_dpsub *dpsub)
 {
 	struct drm_device *drm = &dpsub->drm->dev;
 
-	drm_dev_unplug(drm);
+	drm_dev_unregister(drm);
 	drm_atomic_helper_shutdown(drm);
-	drm_encoder_cleanup(&dpsub->drm->encoder);
 	drm_kms_helper_poll_fini(drm);
 }

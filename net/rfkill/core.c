@@ -48,7 +48,6 @@ struct rfkill {
 	bool			persistent;
 	bool			polling_paused;
 	bool			suspended;
-	bool			need_sync;
 
 	const struct rfkill_ops	*ops;
 	void			*data;
@@ -369,17 +368,6 @@ static void rfkill_set_block(struct rfkill *rfkill, bool blocked)
 		rfkill_event(rfkill);
 }
 
-static void rfkill_sync(struct rfkill *rfkill)
-{
-	lockdep_assert_held(&rfkill_global_mutex);
-
-	if (!rfkill->need_sync)
-		return;
-
-	rfkill_set_block(rfkill, rfkill_global_states[rfkill->type].cur);
-	rfkill->need_sync = false;
-}
-
 static void rfkill_update_global_state(enum rfkill_type type, bool blocked)
 {
 	int i;
@@ -539,13 +527,17 @@ bool rfkill_get_global_sw_state(const enum rfkill_type type)
 #endif
 
 bool rfkill_set_hw_state_reason(struct rfkill *rfkill,
-				bool blocked,
-				enum rfkill_hard_block_reasons reason)
+				bool blocked, unsigned long reason)
 {
 	unsigned long flags;
 	bool ret, prev;
 
 	BUG_ON(!rfkill);
+
+	if (WARN(reason &
+	    ~(RFKILL_HARD_BLOCK_SIGNAL | RFKILL_HARD_BLOCK_NOT_OWNER),
+	    "hw_state reason not supported: 0x%lx", reason))
+		return blocked;
 
 	spin_lock_irqsave(&rfkill->lock, flags);
 	prev = !!(rfkill->hard_block_reasons & reason);
@@ -738,10 +730,6 @@ static ssize_t soft_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
-	mutex_unlock(&rfkill_global_mutex);
-
 	return sysfs_emit(buf, "%d\n", (rfkill->state & RFKILL_BLOCK_SW) ? 1 : 0);
 }
 
@@ -763,7 +751,6 @@ static ssize_t soft_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
 	rfkill_set_block(rfkill, state);
 	mutex_unlock(&rfkill_global_mutex);
 
@@ -796,10 +783,6 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 {
 	struct rfkill *rfkill = to_rfkill(dev);
 
-	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
-	mutex_unlock(&rfkill_global_mutex);
-
 	return sysfs_emit(buf, "%d\n", user_state_from_blocked(rfkill->state));
 }
 
@@ -822,7 +805,6 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
 	rfkill_set_block(rfkill, state == RFKILL_USER_STATE_SOFT_BLOCKED);
 	mutex_unlock(&rfkill_global_mutex);
 
@@ -1050,10 +1032,14 @@ static void rfkill_uevent_work(struct work_struct *work)
 
 static void rfkill_sync_work(struct work_struct *work)
 {
-	struct rfkill *rfkill = container_of(work, struct rfkill, sync_work);
+	struct rfkill *rfkill;
+	bool cur;
+
+	rfkill = container_of(work, struct rfkill, sync_work);
 
 	mutex_lock(&rfkill_global_mutex);
-	rfkill_sync(rfkill);
+	cur = rfkill_global_states[rfkill->type].cur;
+	rfkill_set_block(rfkill, cur);
 	mutex_unlock(&rfkill_global_mutex);
 }
 
@@ -1101,7 +1087,6 @@ int __must_check rfkill_register(struct rfkill *rfkill)
 			round_jiffies_relative(POLL_INTERVAL));
 
 	if (!rfkill->persistent || rfkill_epo_lock_active) {
-		rfkill->need_sync = true;
 		schedule_work(&rfkill->sync_work);
 	} else {
 #ifdef CONFIG_RFKILL_INPUT
@@ -1176,6 +1161,7 @@ static int rfkill_fop_open(struct inode *inode, struct file *file)
 	init_waitqueue_head(&data->read_wait);
 
 	mutex_lock(&rfkill_global_mutex);
+	mutex_lock(&data->mtx);
 	/*
 	 * start getting events from elsewhere but hold mtx to get
 	 * startup events added first
@@ -1185,13 +1171,11 @@ static int rfkill_fop_open(struct inode *inode, struct file *file)
 		ev = kzalloc(sizeof(*ev), GFP_KERNEL);
 		if (!ev)
 			goto free;
-		rfkill_sync(rfkill);
 		rfkill_fill_event(&ev->ev, rfkill, RFKILL_OP_ADD);
-		mutex_lock(&data->mtx);
 		list_add_tail(&ev->list, &data->events);
-		mutex_unlock(&data->mtx);
 	}
 	list_add(&data->list, &rfkill_fds);
+	mutex_unlock(&data->mtx);
 	mutex_unlock(&rfkill_global_mutex);
 
 	file->private_data = data;
@@ -1199,6 +1183,7 @@ static int rfkill_fop_open(struct inode *inode, struct file *file)
 	return stream_open(inode, file);
 
  free:
+	mutex_unlock(&data->mtx);
 	mutex_unlock(&rfkill_global_mutex);
 	mutex_destroy(&data->mtx);
 	list_for_each_entry_safe(ev, tmp, &data->events, list)
@@ -1347,11 +1332,11 @@ static long rfkill_fop_ioctl(struct file *file, unsigned int cmd,
 			     unsigned long arg)
 {
 	struct rfkill_data *data = file->private_data;
-	int ret = -ENOTTY;
+	int ret = -ENOSYS;
 	u32 size;
 
 	if (_IOC_TYPE(cmd) != RFKILL_IOC_MAGIC)
-		return -ENOTTY;
+		return -ENOSYS;
 
 	mutex_lock(&data->mtx);
 	switch (_IOC_NR(cmd)) {
@@ -1394,6 +1379,7 @@ static const struct file_operations rfkill_fops = {
 	.release	= rfkill_fop_release,
 	.unlocked_ioctl	= rfkill_fop_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
+	.llseek		= no_llseek,
 };
 
 #define RFKILL_NAME "rfkill"

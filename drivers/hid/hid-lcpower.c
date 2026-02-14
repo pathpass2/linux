@@ -53,5 +53,4 @@ static struct hid_driver ts_driver = {
 };
 module_hid_driver(ts_driver);
 
-MODULE_DESCRIPTION("HID driver for LC Power Model RC1000MCE");
 MODULE_LICENSE("GPL");

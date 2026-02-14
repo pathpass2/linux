@@ -5,8 +5,8 @@
  * Copyright IBM Corp. 2012
  */
 
-#include <linux/export.h>
 #include <linux/linkage.h>
+#include <asm/export.h>
 #include <asm/nospec-insn.h>
 
 	GEN_BR_THUNK %r14
@@ -14,7 +14,8 @@
 /*
  * void *memmove(void *dest, const void *src, size_t n)
  */
-SYM_FUNC_START(__memmove)
+WEAK(memmove)
+ENTRY(__memmove)
 	ltgr	%r4,%r4
 	lgr	%r1,%r2
 	jz	.Lmemmove_exit
@@ -34,7 +35,8 @@ SYM_FUNC_START(__memmove)
 	la	%r3,256(%r3)
 	brctg	%r0,.Lmemmove_forward_loop
 .Lmemmove_forward_remainder:
-	exrl	%r4,.Lmemmove_mvc
+	larl	%r5,.Lmemmove_mvc
+	ex	%r4,0(%r5)
 .Lmemmove_exit:
 	BR_EX	%r14
 .Lmemmove_reverse:
@@ -46,10 +48,7 @@ SYM_FUNC_START(__memmove)
 	BR_EX	%r14
 .Lmemmove_mvc:
 	mvc	0(1,%r1),0(%r3)
-SYM_FUNC_END(__memmove)
-EXPORT_SYMBOL(__memmove)
-
-SYM_FUNC_ALIAS(memmove, __memmove)
+ENDPROC(__memmove)
 EXPORT_SYMBOL(memmove)
 
 /*
@@ -67,7 +66,8 @@ EXPORT_SYMBOL(memmove)
  *	return __builtin_memset(s, c, n);
  * }
  */
-SYM_FUNC_START(__memset)
+WEAK(memset)
+ENTRY(__memset)
 	ltgr	%r4,%r4
 	jz	.Lmemset_exit
 	ltgr	%r3,%r3
@@ -82,7 +82,8 @@ SYM_FUNC_START(__memset)
 	la	%r1,256(%r1)
 	brctg	%r3,.Lmemset_clear_loop
 .Lmemset_clear_remainder:
-	exrl	%r4,.Lmemset_xc
+	larl	%r3,.Lmemset_xc
+	ex	%r4,0(%r3)
 .Lmemset_exit:
 	BR_EX	%r14
 .Lmemset_fill:
@@ -100,7 +101,8 @@ SYM_FUNC_START(__memset)
 	brctg	%r5,.Lmemset_fill_loop
 .Lmemset_fill_remainder:
 	stc	%r3,0(%r1)
-	exrl	%r4,.Lmemset_mvc
+	larl	%r5,.Lmemset_mvc
+	ex	%r4,0(%r5)
 	BR_EX	%r14
 .Lmemset_fill_exit:
 	stc	%r3,0(%r1)
@@ -109,10 +111,7 @@ SYM_FUNC_START(__memset)
 	xc	0(1,%r1),0(%r1)
 .Lmemset_mvc:
 	mvc	1(1,%r1),0(%r1)
-SYM_FUNC_END(__memset)
-EXPORT_SYMBOL(__memset)
-
-SYM_FUNC_ALIAS(memset, __memset)
+ENDPROC(__memset)
 EXPORT_SYMBOL(memset)
 
 /*
@@ -120,7 +119,8 @@ EXPORT_SYMBOL(memset)
  *
  * void *memcpy(void *dest, const void *src, size_t n)
  */
-SYM_FUNC_START(__memcpy)
+WEAK(memcpy)
+ENTRY(__memcpy)
 	ltgr	%r4,%r4
 	jz	.Lmemcpy_exit
 	aghi	%r4,-1
@@ -129,7 +129,8 @@ SYM_FUNC_START(__memcpy)
 	lgr	%r1,%r2
 	jnz	.Lmemcpy_loop
 .Lmemcpy_remainder:
-	exrl	%r4,.Lmemcpy_mvc
+	larl	%r5,.Lmemcpy_mvc
+	ex	%r4,0(%r5)
 .Lmemcpy_exit:
 	BR_EX	%r14
 .Lmemcpy_loop:
@@ -140,10 +141,7 @@ SYM_FUNC_START(__memcpy)
 	j	.Lmemcpy_remainder
 .Lmemcpy_mvc:
 	mvc	0(1,%r1),0(%r3)
-SYM_FUNC_END(__memcpy)
-EXPORT_SYMBOL(__memcpy)
-
-SYM_FUNC_ALIAS(memcpy, __memcpy)
+ENDPROC(__memcpy)
 EXPORT_SYMBOL(memcpy)
 
 /*
@@ -154,7 +152,7 @@ EXPORT_SYMBOL(memcpy)
  * void *__memset64(uint64_t *s, uint64_t v, size_t count)
  */
 .macro __MEMSET bits,bytes,insn
-SYM_FUNC_START(__memset\bits)
+ENTRY(__memset\bits)
 	ltgr	%r4,%r4
 	jz	.L__memset_exit\bits
 	cghi	%r4,\bytes
@@ -171,7 +169,8 @@ SYM_FUNC_START(__memset\bits)
 	brctg	%r5,.L__memset_loop\bits
 .L__memset_remainder\bits:
 	\insn	%r3,0(%r1)
-	exrl	%r4,.L__memset_mvc\bits
+	larl	%r5,.L__memset_mvc\bits
+	ex	%r4,0(%r5)
 	BR_EX	%r14
 .L__memset_store\bits:
 	\insn	%r3,0(%r2)
@@ -179,7 +178,7 @@ SYM_FUNC_START(__memset\bits)
 	BR_EX	%r14
 .L__memset_mvc\bits:
 	mvc	\bytes(1,%r1),0(%r1)
-SYM_FUNC_END(__memset\bits)
+ENDPROC(__memset\bits)
 .endm
 
 __MEMSET 16,2,sth

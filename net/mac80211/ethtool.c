@@ -5,7 +5,7 @@
  * Copied from cfg.c - originally
  * Copyright 2006-2010	Johannes Berg <johannes@sipsolutions.net>
  * Copyright 2014	Intel Corporation (Author: Johannes Berg)
- * Copyright (C) 2018, 2022-2023 Intel Corporation
+ * Copyright (C) 2018, 2022 Intel Corporation
  */
 #include <linux/types.h>
 #include <net/cfg80211.h>
@@ -23,8 +23,6 @@ static int ieee80211_set_ringparam(struct net_device *dev,
 	if (rp->rx_mini_pending != 0 || rp->rx_jumbo_pending != 0)
 		return -EINVAL;
 
-	guard(wiphy)(local->hw.wiphy);
-
 	return drv_set_ringparam(local, rp->tx_pending, rp->rx_pending);
 }
 
@@ -37,8 +35,6 @@ static void ieee80211_get_ringparam(struct net_device *dev,
 
 	memset(rp, 0, sizeof(*rp));
 
-	guard(wiphy)(local->hw.wiphy);
-
 	drv_get_ringparam(local, &rp->tx_pending, &rp->tx_max_pending,
 			  &rp->rx_pending, &rp->rx_max_pending);
 }
@@ -48,8 +44,8 @@ static const char ieee80211_gstrings_sta_stats[][ETH_GSTRING_LEN] = {
 	"rx_duplicates", "rx_fragments", "rx_dropped",
 	"tx_packets", "tx_bytes",
 	"tx_filtered", "tx_retry_failed", "tx_retries",
-	"tx_handlers_drop", "sta_state", "txrate", "rxrate",
-	"signal", "channel", "noise", "ch_time", "ch_time_busy",
+	"sta_state", "txrate", "rxrate", "signal",
+	"channel", "noise", "ch_time", "ch_time_busy",
 	"ch_time_ext_busy", "ch_time_rx", "ch_time_tx"
 };
 #define STA_STATS_LEN	ARRAY_SIZE(ieee80211_gstrings_sta_stats)
@@ -106,7 +102,7 @@ static void ieee80211_get_stats(struct net_device *dev,
 	 * network device.
 	 */
 
-	guard(wiphy)(local->hw.wiphy);
+	mutex_lock(&local->sta_mtx);
 
 	if (sdata->vif.type == NL80211_IFTYPE_STATION) {
 		sta = sta_info_get_bss(sdata, sdata->deflink.u.mgd.bssid);
@@ -120,7 +116,6 @@ static void ieee80211_get_stats(struct net_device *dev,
 		i = 0;
 		ADD_STA_STATS(&sta->deflink);
 
-		data[i++] = sdata->tx_handlers_drop;
 		data[i++] = sta->sta_state;
 
 
@@ -146,7 +141,6 @@ static void ieee80211_get_stats(struct net_device *dev,
 			sta_set_sinfo(sta, &sinfo, false);
 			i = 0;
 			ADD_STA_STATS(&sta->deflink);
-			data[i++] = sdata->tx_handlers_drop;
 		}
 	}
 
@@ -159,10 +153,6 @@ do_survey:
 	chanctx_conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
 	if (chanctx_conf)
 		channel = chanctx_conf->def.chan;
-	else if (local->open_count > 0 &&
-		 local->open_count == local->virt_monitors &&
-		 sdata->vif.type == NL80211_IFTYPE_MONITOR)
-		channel = local->monitor_chanreq.oper.chan;
 	else
 		channel = NULL;
 	rcu_read_unlock();
@@ -207,6 +197,8 @@ do_survey:
 		data[i++] = survey.time_tx;
 	else
 		data[i++] = -1LL;
+
+	mutex_unlock(&local->sta_mtx);
 
 	if (WARN_ON(i != STA_STATS_LEN))
 		return;

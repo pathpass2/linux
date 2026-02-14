@@ -37,83 +37,22 @@ prototype in a header for the wrapper kfunc.
 An example is given below::
 
         /* Disables missing prototype warnings */
-        __bpf_kfunc_start_defs();
+        __diag_push();
+        __diag_ignore_all("-Wmissing-prototypes",
+                          "Global kfuncs as their definitions will be in BTF");
 
         __bpf_kfunc struct task_struct *bpf_find_get_task_by_vpid(pid_t nr)
         {
                 return find_get_task_by_vpid(nr);
         }
 
-        __bpf_kfunc_end_defs();
+        __diag_pop();
 
 A wrapper kfunc is often needed when we need to annotate parameters of the
 kfunc. Otherwise one may directly make the kfunc visible to the BPF program by
 registering it with the BPF subsystem. See :ref:`BPF_kfunc_nodef`.
 
-2.2 kfunc Parameters
---------------------
-
-All kfuncs now require trusted arguments by default. This means that all
-pointer arguments must be valid, and all pointers to BTF objects must be
-passed in their unmodified form (at a zero offset, and without having been
-obtained from walking another pointer, with exceptions described below).
-
-There are two types of pointers to kernel objects which are considered "trusted":
-
-1. Pointers which are passed as tracepoint or struct_ops callback arguments.
-2. Pointers which were returned from a KF_ACQUIRE kfunc.
-
-Pointers to non-BTF objects (e.g. scalar pointers) may also be passed to
-kfuncs, and may have a non-zero offset.
-
-The definition of "valid" pointers is subject to change at any time, and has
-absolutely no ABI stability guarantees.
-
-As mentioned above, a nested pointer obtained from walking a trusted pointer is
-no longer trusted, with one exception. If a struct type has a field that is
-guaranteed to be valid (trusted or rcu, as in KF_RCU description below) as long
-as its parent pointer is valid, the following macros can be used to express
-that to the verifier:
-
-* ``BTF_TYPE_SAFE_TRUSTED``
-* ``BTF_TYPE_SAFE_RCU``
-* ``BTF_TYPE_SAFE_RCU_OR_NULL``
-
-For example,
-
-.. code-block:: c
-
-	BTF_TYPE_SAFE_TRUSTED(struct socket) {
-		struct sock *sk;
-	};
-
-or
-
-.. code-block:: c
-
-	BTF_TYPE_SAFE_RCU(struct task_struct) {
-		const cpumask_t *cpus_ptr;
-		struct css_set __rcu *cgroups;
-		struct task_struct __rcu *real_parent;
-		struct task_struct *group_leader;
-	};
-
-In other words, you must:
-
-1. Wrap the valid pointer type in a ``BTF_TYPE_SAFE_*`` macro.
-
-2. Specify the type and name of the valid nested field. This field must match
-   the field in the original type definition exactly.
-
-A new type declared by a ``BTF_TYPE_SAFE_*`` macro also needs to be emitted so
-that it appears in BTF. For example, ``BTF_TYPE_SAFE_TRUSTED(struct socket)``
-is emitted in the ``type_is_trusted()`` function as follows:
-
-.. code-block:: c
-
-	BTF_TYPE_EMIT(BTF_TYPE_SAFE_TRUSTED(struct socket));
-
-2.3 Annotating kfunc parameters
+2.2 Annotating kfunc parameters
 -------------------------------
 
 Similar to BPF helpers, there is sometime need for additional context required
@@ -121,7 +60,7 @@ by the verifier to make the usage of kernel functions safer and more useful.
 Hence, we can annotate a parameter by suffixing the name of the argument of the
 kfunc with a __tag, where tag may be one of the supported annotations.
 
-2.3.1 __sz Annotation
+2.2.1 __sz Annotation
 ---------------------
 
 This annotation is used to indicate a memory and size pair in the argument list.
@@ -137,7 +76,7 @@ argument as its size. By default, without __sz annotation, the size of the type
 of the pointer is used. Without __sz annotation, a kfunc cannot accept a void
 pointer.
 
-2.3.2 __k Annotation
+2.2.2 __k Annotation
 --------------------
 
 This annotation is only understood for scalar arguments, where it indicates that
@@ -161,80 +100,9 @@ Hence, whenever a constant scalar argument is accepted by a kfunc which is not a
 size parameter, and the value of the constant matters for program safety, __k
 suffix should be used.
 
-2.3.3 __uninit Annotation
--------------------------
-
-This annotation is used to indicate that the argument will be treated as
-uninitialized.
-
-An example is given below::
-
-        __bpf_kfunc int bpf_dynptr_from_skb(..., struct bpf_dynptr_kern *ptr__uninit)
-        {
-        ...
-        }
-
-Here, the dynptr will be treated as an uninitialized dynptr. Without this
-annotation, the verifier will reject the program if the dynptr passed in is
-not initialized.
-
-2.3.4 __nullable Annotation
----------------------------
-
-This annotation is used to indicate that the pointer argument may be NULL.
-The verifier will allow passing NULL for such arguments.
-
-An example is given below::
-
-        __bpf_kfunc void bpf_task_release(struct task_struct *task__nullable)
-        {
-        ...
-        }
-
-Here, the task pointer may be NULL. The kfunc is responsible for checking if
-the pointer is NULL before dereferencing it.
-
-The __nullable annotation can be combined with other annotations. For example,
-when used with __sz or __szk annotations for memory and size pairs, the
-verifier will skip size validation when a NULL pointer is passed, but will
-still process the size argument to extract constant size information when
-needed::
-
-        __bpf_kfunc void *bpf_dynptr_slice(..., void *buffer__nullable,
-                                           u32 buffer__szk)
-
-Here, the buffer may be NULL. If the buffer is not NULL, it must be at least
-buffer__szk bytes in size. The kfunc is responsible for checking if the buffer
-is NULL before using it.
-
-2.3.5 __str Annotation
-----------------------------
-This annotation is used to indicate that the argument is a constant string.
-
-An example is given below::
-
-        __bpf_kfunc bpf_get_file_xattr(..., const char *name__str, ...)
-        {
-        ...
-        }
-
-In this case, ``bpf_get_file_xattr()`` can be called as::
-
-        bpf_get_file_xattr(..., "xattr_name", ...);
-
-Or::
-
-        const char name[] = "xattr_name";  /* This need to be global */
-        int BPF_PROG(...)
-        {
-                ...
-                bpf_get_file_xattr(..., name, ...);
-                ...
-        }
-
 .. _BPF_kfunc_nodef:
 
-2.4 Using an existing kernel function
+2.3 Using an existing kernel function
 -------------------------------------
 
 When an existing function in the kernel is fit for consumption by BPF programs,
@@ -242,17 +110,17 @@ it can be directly registered with the BPF subsystem. However, care must still
 be taken to review the context in which it will be invoked by the BPF program
 and whether it is safe to do so.
 
-2.5 Annotating kfuncs
+2.4 Annotating kfuncs
 ---------------------
 
 In addition to kfuncs' arguments, verifier may need more information about the
 type of kfunc(s) being registered with the BPF subsystem. To do so, we define
 flags on a set of kfuncs as follows::
 
-        BTF_KFUNCS_START(bpf_task_set)
+        BTF_SET8_START(bpf_task_set)
         BTF_ID_FLAGS(func, bpf_get_task_pid, KF_ACQUIRE | KF_RET_NULL)
         BTF_ID_FLAGS(func, bpf_put_pid, KF_RELEASE)
-        BTF_KFUNCS_END(bpf_task_set)
+        BTF_SET8_END(bpf_task_set)
 
 This set encodes the BTF ID of each kfunc listed above, and encodes the flags
 along with it. Ofcourse, it is also allowed to specify no flags.
@@ -271,7 +139,7 @@ protected. An example is given below::
         ...
         }
 
-2.5.1 KF_ACQUIRE flag
+2.4.1 KF_ACQUIRE flag
 ---------------------
 
 The KF_ACQUIRE flag is used to indicate that the kfunc returns a pointer to a
@@ -281,7 +149,7 @@ referenced kptr (by invoking bpf_kptr_xchg). If not, the verifier fails the
 loading of the BPF program until no lingering references remain in all possible
 explored states of the program.
 
-2.5.2 KF_RET_NULL flag
+2.4.2 KF_RET_NULL flag
 ----------------------
 
 The KF_RET_NULL flag is used to indicate that the pointer returned by the kfunc
@@ -290,21 +158,69 @@ returned from the kfunc before making use of it (dereferencing or passing to
 another helper). This flag is often used in pairing with KF_ACQUIRE flag, but
 both are orthogonal to each other.
 
-2.5.3 KF_RELEASE flag
+2.4.3 KF_RELEASE flag
 ---------------------
 
 The KF_RELEASE flag is used to indicate that the kfunc releases the pointer
-passed in to it. There can be only one referenced pointer that can be passed
-in. All copies of the pointer being released are invalidated as a result of
-invoking kfunc with this flag.
+passed in to it. There can be only one referenced pointer that can be passed in.
+All copies of the pointer being released are invalidated as a result of invoking
+kfunc with this flag.
 
-2.5.4 KF_SLEEPABLE flag
+2.4.4 KF_KPTR_GET flag
+----------------------
+
+The KF_KPTR_GET flag is used to indicate that the kfunc takes the first argument
+as a pointer to kptr, safely increments the refcount of the object it points to,
+and returns a reference to the user. The rest of the arguments may be normal
+arguments of a kfunc. The KF_KPTR_GET flag should be used in conjunction with
+KF_ACQUIRE and KF_RET_NULL flags.
+
+2.4.5 KF_TRUSTED_ARGS flag
+--------------------------
+
+The KF_TRUSTED_ARGS flag is used for kfuncs taking pointer arguments. It
+indicates that the all pointer arguments are valid, and that all pointers to
+BTF objects have been passed in their unmodified form (that is, at a zero
+offset, and without having been obtained from walking another pointer, with one
+exception described below).
+
+There are two types of pointers to kernel objects which are considered "valid":
+
+1. Pointers which are passed as tracepoint or struct_ops callback arguments.
+2. Pointers which were returned from a KF_ACQUIRE or KF_KPTR_GET kfunc.
+
+Pointers to non-BTF objects (e.g. scalar pointers) may also be passed to
+KF_TRUSTED_ARGS kfuncs, and may have a non-zero offset.
+
+The definition of "valid" pointers is subject to change at any time, and has
+absolutely no ABI stability guarantees.
+
+As mentioned above, a nested pointer obtained from walking a trusted pointer is
+no longer trusted, with one exception. If a struct type has a field that is
+guaranteed to be valid as long as its parent pointer is trusted, the
+``BTF_TYPE_SAFE_NESTED`` macro can be used to express that to the verifier as
+follows:
+
+.. code-block:: c
+
+	BTF_TYPE_SAFE_NESTED(struct task_struct) {
+		const cpumask_t *cpus_ptr;
+	};
+
+In other words, you must:
+
+1. Wrap the trusted pointer type in the ``BTF_TYPE_SAFE_NESTED`` macro.
+
+2. Specify the type and name of the trusted nested field. This field must match
+   the field in the original type definition exactly.
+
+2.4.6 KF_SLEEPABLE flag
 -----------------------
 
 The KF_SLEEPABLE flag is used for kfuncs that may sleep. Such kfuncs can only
 be called by sleepable BPF programs (BPF_F_SLEEPABLE).
 
-2.5.5 KF_DESTRUCTIVE flag
+2.4.7 KF_DESTRUCTIVE flag
 --------------------------
 
 The KF_DESTRUCTIVE flag is used to indicate functions calling which is
@@ -313,38 +229,18 @@ rebooting or panicking. Due to this additional restrictions apply to these
 calls. At the moment they only require CAP_SYS_BOOT capability, but more can be
 added later.
 
-2.5.6 KF_RCU flag
+2.4.8 KF_RCU flag
 -----------------
 
-The KF_RCU flag allows kfuncs to opt out of the default trusted args
-requirement and accept RCU pointers with weaker guarantees. The kfuncs marked
-with KF_RCU expect either PTR_TRUSTED or MEM_RCU arguments. The verifier
-guarantees that the objects are valid and there is no use-after-free. The
-pointers are not NULL, but the object's refcount could have reached zero. The
-kfuncs need to consider doing refcnt != 0 check, especially when returning a
-KF_ACQUIRE pointer. Note as well that a KF_ACQUIRE kfunc that is KF_RCU should
-very likely also be KF_RET_NULL.
-
-2.5.7 KF_RCU_PROTECTED flag
----------------------------
-
-The KF_RCU_PROTECTED flag is used to indicate that the kfunc must be invoked in
-an RCU critical section. This is assumed by default in non-sleepable programs,
-and must be explicitly ensured by calling ``bpf_rcu_read_lock`` for sleepable
-ones.
-
-If the kfunc returns a pointer value, this flag also enforces that the returned
-pointer is RCU protected, and can only be used while the RCU critical section is
-active.
-
-The flag is distinct from the ``KF_RCU`` flag, which only ensures that its
-arguments are at least RCU protected pointers. This may transitively imply that
-RCU protection is ensured, but it does not work in cases of kfuncs which require
-RCU protection but do not take RCU protected arguments.
+The KF_RCU flag is used for kfuncs which have a rcu ptr as its argument.
+When used together with KF_ACQUIRE, it indicates the kfunc should have a
+single argument which must be a trusted argument or a MEM_RCU pointer.
+The argument may have reference count of 0 and the kfunc must take this
+into consideration.
 
 .. _KF_deprecated_flag:
 
-2.5.8 KF_DEPRECATED flag
+2.4.9 KF_DEPRECATED flag
 ------------------------
 
 The KF_DEPRECATED flag is used for kfuncs which are scheduled to be
@@ -364,49 +260,17 @@ encouraged to make their use-cases known as early as possible, and participate
 in upstream discussions regarding whether to keep, change, deprecate, or remove
 those kfuncs if and when such discussions occur.
 
-2.5.9 KF_IMPLICIT_ARGS flag
-------------------------------------
-
-The KF_IMPLICIT_ARGS flag is used to indicate that the BPF signature
-of the kfunc is different from it's kernel signature, and the values
-for implicit arguments are provided at load time by the verifier.
-
-Only arguments of specific types are implicit.
-Currently only ``struct bpf_prog_aux *`` type is supported.
-
-A kfunc with KF_IMPLICIT_ARGS flag therefore has two types in BTF: one
-function matching the kernel declaration (with _impl suffix in the
-name by convention), and another matching the intended BPF API.
-
-Verifier only allows calls to the non-_impl version of a kfunc, that
-uses a signature without the implicit arguments.
-
-Example declaration:
-
-.. code-block:: c
-
-	__bpf_kfunc int bpf_task_work_schedule_signal(struct task_struct *task, struct bpf_task_work *tw,
-						      void *map__map, bpf_task_work_callback_t callback,
-						      struct bpf_prog_aux *aux) { ... }
-
-Example usage in BPF program:
-
-.. code-block:: c
-
-	/* note that the last argument is omitted */
-        bpf_task_work_schedule_signal(task, &work->tw, &arrmap, task_work_callback);
-
-2.6 Registering the kfuncs
+2.5 Registering the kfuncs
 --------------------------
 
 Once the kfunc is prepared for use, the final step to making it visible is
 registering it with the BPF subsystem. Registration is done per BPF program
 type. An example is shown below::
 
-        BTF_KFUNCS_START(bpf_task_set)
+        BTF_SET8_START(bpf_task_set)
         BTF_ID_FLAGS(func, bpf_get_task_pid, KF_ACQUIRE | KF_RET_NULL)
         BTF_ID_FLAGS(func, bpf_put_pid, KF_RELEASE)
-        BTF_KFUNCS_END(bpf_task_set)
+        BTF_SET8_END(bpf_task_set)
 
         static const struct btf_kfunc_id_set bpf_task_kfunc_set = {
                 .owner = THIS_MODULE,
@@ -419,7 +283,7 @@ type. An example is shown below::
         }
         late_initcall(init_subsystem);
 
-2.7  Specifying no-cast aliases with ___init
+2.6  Specifying no-cast aliases with ___init
 --------------------------------------------
 
 The verifier will always enforce that the BTF type of a pointer passed to a
@@ -587,50 +451,13 @@ struct_ops callback arg. For example:
 		struct task_struct *acquired;
 
 		acquired = bpf_task_acquire(task);
-		if (acquired)
-			/*
-			 * In a typical program you'd do something like store
-			 * the task in a map, and the map will automatically
-			 * release it later. Here, we release it manually.
-			 */
-			bpf_task_release(acquired);
-		return 0;
-	}
 
-
-References acquired on ``struct task_struct *`` objects are RCU protected.
-Therefore, when in an RCU read region, you can obtain a pointer to a task
-embedded in a map value without having to acquire a reference:
-
-.. code-block:: c
-
-	#define private(name) SEC(".data." #name) __hidden __attribute__((aligned(8)))
-	private(TASK) static struct task_struct *global;
-
-	/**
-	 * A trivial example showing how to access a task stored
-	 * in a map using RCU.
-	 */
-	SEC("tp_btf/task_newtask")
-	int BPF_PROG(task_rcu_read_example, struct task_struct *task, u64 clone_flags)
-	{
-		struct task_struct *local_copy;
-
-		bpf_rcu_read_lock();
-		local_copy = global;
-		if (local_copy)
-			/*
-			 * We could also pass local_copy to kfuncs or helper functions here,
-			 * as we're guaranteed that local_copy will be valid until we exit
-			 * the RCU read region below.
-			 */
-			bpf_printk("Global task %s is valid", local_copy->comm);
-		else
-			bpf_printk("No global task found");
-		bpf_rcu_read_unlock();
-
-		/* At this point we can no longer reference local_copy. */
-
+		/*
+		 * In a typical program you'd do something like store
+		 * the task in a map, and the map will automatically
+		 * release it later. Here, we release it manually.
+		 */
+		bpf_task_release(acquired);
 		return 0;
 	}
 
@@ -688,16 +515,80 @@ bpf_task_release() respectively, so we won't provide examples for them.
 
 ----
 
-Other kfuncs available for interacting with ``struct cgroup *`` objects are
-bpf_cgroup_ancestor() and bpf_cgroup_from_id(), allowing callers to access
-the ancestor of a cgroup and find a cgroup by its ID, respectively. Both
-return a cgroup kptr.
+You may also acquire a reference to a ``struct cgroup`` kptr that's already
+stored in a map using bpf_cgroup_kptr_get():
+
+.. kernel-doc:: kernel/bpf/helpers.c
+   :identifiers: bpf_cgroup_kptr_get
+
+Here's an example of how it can be used:
+
+.. code-block:: c
+
+	/* struct containing the struct task_struct kptr which is actually stored in the map. */
+	struct __cgroups_kfunc_map_value {
+		struct cgroup __kptr_ref * cgroup;
+	};
+
+	/* The map containing struct __cgroups_kfunc_map_value entries. */
+	struct {
+		__uint(type, BPF_MAP_TYPE_HASH);
+		__type(key, int);
+		__type(value, struct __cgroups_kfunc_map_value);
+		__uint(max_entries, 1);
+	} __cgroups_kfunc_map SEC(".maps");
+
+	/* ... */
+
+	/**
+	 * A simple example tracepoint program showing how a
+	 * struct cgroup kptr that is stored in a map can
+	 * be acquired using the bpf_cgroup_kptr_get() kfunc.
+	 */
+	 SEC("tp_btf/cgroup_mkdir")
+	 int BPF_PROG(cgroup_kptr_get_example, struct cgroup *cgrp, const char *path)
+	 {
+		struct cgroup *kptr;
+		struct __cgroups_kfunc_map_value *v;
+		s32 id = cgrp->self.id;
+
+		/* Assume a cgroup kptr was previously stored in the map. */
+		v = bpf_map_lookup_elem(&__cgroups_kfunc_map, &id);
+		if (!v)
+			return -ENOENT;
+
+		/* Acquire a reference to the cgroup kptr that's already stored in the map. */
+		kptr = bpf_cgroup_kptr_get(&v->cgroup);
+		if (!kptr)
+			/* If no cgroup was present in the map, it's because
+			 * we're racing with another CPU that removed it with
+			 * bpf_kptr_xchg() between the bpf_map_lookup_elem()
+			 * above, and our call to bpf_cgroup_kptr_get().
+			 * bpf_cgroup_kptr_get() internally safely handles this
+			 * race, and will return NULL if the task is no longer
+			 * present in the map by the time we invoke the kfunc.
+			 */
+			return -EBUSY;
+
+		/* Free the reference we just took above. Note that the
+		 * original struct cgroup kptr is still in the map. It will
+		 * be freed either at a later time if another context deletes
+		 * it from the map, or automatically by the BPF subsystem if
+		 * it's still present when the map is destroyed.
+		 */
+		bpf_cgroup_release(kptr);
+
+		return 0;
+        }
+
+----
+
+Another kfunc available for interacting with ``struct cgroup *`` objects is
+bpf_cgroup_ancestor(). This allows callers to access the ancestor of a cgroup,
+and return it as a cgroup kptr.
 
 .. kernel-doc:: kernel/bpf/helpers.c
    :identifiers: bpf_cgroup_ancestor
-
-.. kernel-doc:: kernel/bpf/helpers.c
-   :identifiers: bpf_cgroup_from_id
 
 Eventually, BPF should be updated to allow this to happen with a normal memory
 load in the program itself. This is currently not possible without more work in

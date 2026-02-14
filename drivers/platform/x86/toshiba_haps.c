@@ -183,7 +183,7 @@ static int toshiba_haps_add(struct acpi_device *acpi_dev)
 
 	pr_info("Toshiba HDD Active Protection Sensor device\n");
 
-	haps = devm_kzalloc(&acpi_dev->dev, sizeof(*haps), GFP_KERNEL);
+	haps = kzalloc(sizeof(struct toshiba_haps_dev), GFP_KERNEL);
 	if (!haps)
 		return -ENOMEM;
 
@@ -251,6 +251,7 @@ MODULE_DEVICE_TABLE(acpi, haps_device_ids);
 
 static struct acpi_driver toshiba_haps_driver = {
 	.name = "Toshiba HAPS",
+	.owner = THIS_MODULE,
 	.ids = haps_device_ids,
 	.flags = ACPI_DRIVER_ALL_NOTIFY_EVENTS,
 	.ops = {

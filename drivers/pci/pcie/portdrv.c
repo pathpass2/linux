@@ -6,7 +6,6 @@
  * Copyright (C) Tom Long Nguyen (tom.l.nguyen@intel.com)
  */
 
-#include <linux/bitfield.h>
 #include <linux/dmi.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -68,9 +67,9 @@ static int pcie_message_numbers(struct pci_dev *dev, int mask,
 	 */
 
 	if (mask & (PCIE_PORT_SERVICE_PME | PCIE_PORT_SERVICE_HP |
-		    PCIE_PORT_SERVICE_BWCTRL)) {
+		    PCIE_PORT_SERVICE_BWNOTIF)) {
 		pcie_capability_read_word(dev, PCI_EXP_FLAGS, &reg16);
-		*pme = FIELD_GET(PCI_EXP_FLAGS_IRQ, reg16);
+		*pme = (reg16 & PCI_EXP_FLAGS_IRQ) >> 9;
 		nvec = *pme + 1;
 	}
 
@@ -82,7 +81,7 @@ static int pcie_message_numbers(struct pci_dev *dev, int mask,
 		if (pos) {
 			pci_read_config_dword(dev, pos + PCI_ERR_ROOT_STATUS,
 					      &reg32);
-			*aer = FIELD_GET(PCI_ERR_ROOT_AER_IRQ, reg32);
+			*aer = (reg32 & PCI_ERR_ROOT_AER_IRQ) >> 27;
 			nvec = max(nvec, *aer + 1);
 		}
 	}
@@ -93,7 +92,7 @@ static int pcie_message_numbers(struct pci_dev *dev, int mask,
 		if (pos) {
 			pci_read_config_word(dev, pos + PCI_EXP_DPC_CAP,
 					     &reg16);
-			*dpc = FIELD_GET(PCI_EXP_DPC_IRQ, reg16);
+			*dpc = reg16 & PCI_EXP_DPC_IRQ;
 			nvec = max(nvec, *dpc + 1);
 		}
 	}
@@ -150,11 +149,11 @@ static int pcie_port_enable_irq_vec(struct pci_dev *dev, int *irqs, int mask)
 
 	/* PME, hotplug and bandwidth notification share an MSI/MSI-X vector */
 	if (mask & (PCIE_PORT_SERVICE_PME | PCIE_PORT_SERVICE_HP |
-		    PCIE_PORT_SERVICE_BWCTRL)) {
+		    PCIE_PORT_SERVICE_BWNOTIF)) {
 		pcie_irq = pci_irq_vector(dev, pme);
 		irqs[PCIE_PORT_SERVICE_PME_SHIFT] = pcie_irq;
 		irqs[PCIE_PORT_SERVICE_HP_SHIFT] = pcie_irq;
-		irqs[PCIE_PORT_SERVICE_BWCTRL_SHIFT] = pcie_irq;
+		irqs[PCIE_PORT_SERVICE_BWNOTIF_SHIFT] = pcie_irq;
 	}
 
 	if (mask & PCIE_PORT_SERVICE_AER)
@@ -187,15 +186,15 @@ static int pcie_init_service_irqs(struct pci_dev *dev, int *irqs, int mask)
 	 * interrupt.
 	 */
 	if ((mask & PCIE_PORT_SERVICE_PME) && pcie_pme_no_msi())
-		goto intx_irq;
+		goto legacy_irq;
 
 	/* Try to use MSI-X or MSI if supported */
 	if (pcie_port_enable_irq_vec(dev, irqs, mask) == 0)
 		return 0;
 
-intx_irq:
-	/* fall back to INTX IRQ */
-	ret = pci_alloc_irq_vectors(dev, 1, 1, PCI_IRQ_INTX);
+legacy_irq:
+	/* fall back to legacy IRQ */
+	ret = pci_alloc_irq_vectors(dev, 1, 1, PCI_IRQ_LEGACY);
 	if (ret < 0)
 		return -ENODEV;
 
@@ -220,7 +219,7 @@ static int get_port_device_capability(struct pci_dev *dev)
 	struct pci_host_bridge *host = pci_find_host_bridge(dev->bus);
 	int services = 0;
 
-	if (dev->is_pciehp &&
+	if (dev->is_hotplug_bridge &&
 	    (pci_pcie_type(dev) == PCI_EXP_TYPE_ROOT_PORT ||
 	     pci_pcie_type(dev) == PCI_EXP_TYPE_DOWNSTREAM) &&
 	    (pcie_ports_native || host->native_pcie_hotplug)) {
@@ -228,12 +227,10 @@ static int get_port_device_capability(struct pci_dev *dev)
 
 		/*
 		 * Disable hot-plug interrupts in case they have been enabled
-		 * by the BIOS and the hot-plug service driver won't be loaded
-		 * to handle them.
+		 * by the BIOS and the hot-plug service driver is not loaded.
 		 */
-		if (!IS_ENABLED(CONFIG_HOTPLUG_PCI_PCIE))
-			pcie_capability_clear_word(dev, PCI_EXP_SLTCTL,
-				PCI_EXP_SLTCTL_CCIE | PCI_EXP_SLTCTL_HPIE);
+		pcie_capability_clear_word(dev, PCI_EXP_SLTCTL,
+			  PCI_EXP_SLTCTL_CCIE | PCI_EXP_SLTCTL_HPIE);
 	}
 
 #ifdef CONFIG_PCIEAER
@@ -267,15 +264,13 @@ static int get_port_device_capability(struct pci_dev *dev)
 	    (pcie_ports_dpc_native || (services & PCIE_PORT_SERVICE_AER)))
 		services |= PCIE_PORT_SERVICE_DPC;
 
-	/* Enable bandwidth control if more than one speed is supported. */
 	if (pci_pcie_type(dev) == PCI_EXP_TYPE_DOWNSTREAM ||
 	    pci_pcie_type(dev) == PCI_EXP_TYPE_ROOT_PORT) {
 		u32 linkcap;
 
 		pcie_capability_read_dword(dev, PCI_EXP_LNKCAP, &linkcap);
-		if (linkcap & PCI_EXP_LNKCAP_LBNC &&
-		    hweight8(dev->supported_speeds) > 1)
-			services |= PCIE_PORT_SERVICE_BWCTRL;
+		if (linkcap & PCI_EXP_LNKCAP_LBNC)
+			services |= PCIE_PORT_SERVICE_BWNOTIF;
 	}
 
 	return services;
@@ -508,34 +503,22 @@ static void pcie_port_device_remove(struct pci_dev *dev)
 	pci_free_irq_vectors(dev);
 }
 
-static int pcie_port_bus_match(struct device *dev, const struct device_driver *drv)
-{
-	struct pcie_device *pciedev = to_pcie_device(dev);
-	const struct pcie_port_service_driver *driver = to_service_driver(drv);
-
-	if (driver->service != pciedev->service)
-		return 0;
-
-	if (driver->port_type != PCIE_ANY_PORT &&
-	    driver->port_type != pci_pcie_type(pciedev->port))
-		return 0;
-
-	return 1;
-}
-
 /**
- * pcie_port_bus_probe - probe driver for given PCI Express port service
+ * pcie_port_probe_service - probe driver for given PCI Express port service
  * @dev: PCI Express port service device to probe against
  *
  * If PCI Express port service driver is registered with
  * pcie_port_service_register(), this function will be called by the driver core
  * whenever match is found between the driver and a port service device.
  */
-static int pcie_port_bus_probe(struct device *dev)
+static int pcie_port_probe_service(struct device *dev)
 {
 	struct pcie_device *pciedev;
 	struct pcie_port_service_driver *driver;
 	int status;
+
+	if (!dev || !dev->driver)
+		return -ENODEV;
 
 	driver = to_service_driver(dev->driver);
 	if (!driver || !driver->probe)
@@ -551,7 +534,7 @@ static int pcie_port_bus_probe(struct device *dev)
 }
 
 /**
- * pcie_port_bus_remove - detach driver from given PCI Express port service
+ * pcie_port_remove_service - detach driver from given PCI Express port service
  * @dev: PCI Express port service device to handle
  *
  * If PCI Express port service driver is registered with
@@ -559,25 +542,33 @@ static int pcie_port_bus_probe(struct device *dev)
  * when device_unregister() is called for the port service device associated
  * with the driver.
  */
-static void pcie_port_bus_remove(struct device *dev)
+static int pcie_port_remove_service(struct device *dev)
 {
 	struct pcie_device *pciedev;
 	struct pcie_port_service_driver *driver;
 
+	if (!dev || !dev->driver)
+		return 0;
+
 	pciedev = to_pcie_device(dev);
 	driver = to_service_driver(dev->driver);
-	if (driver && driver->remove)
+	if (driver && driver->remove) {
 		driver->remove(pciedev);
-
-	put_device(dev);
+		put_device(dev);
+	}
+	return 0;
 }
 
-const struct bus_type pcie_port_bus_type = {
-	.name = "pci_express",
-	.match = pcie_port_bus_match,
-	.probe = pcie_port_bus_probe,
-	.remove = pcie_port_bus_remove,
-};
+/**
+ * pcie_port_shutdown_service - shut down given PCI Express port service
+ * @dev: PCI Express port service device to handle
+ *
+ * If PCI Express port service driver is registered with
+ * pcie_port_service_register(), this function will be called by the driver core
+ * when device_shutdown() is called for the port service device associated
+ * with the driver.
+ */
+static void pcie_port_shutdown_service(struct device *dev) {}
 
 /**
  * pcie_port_service_register - register PCI Express port service driver
@@ -590,6 +581,9 @@ int pcie_port_service_register(struct pcie_port_service_driver *new)
 
 	new->driver.name = new->name;
 	new->driver.bus = &pcie_port_bus_type;
+	new->driver.probe = pcie_port_probe_service;
+	new->driver.remove = pcie_port_remove_service;
+	new->driver.shutdown = pcie_port_shutdown_service;
 
 	return driver_register(&new->driver);
 }
@@ -761,6 +755,7 @@ static pci_ers_result_t pcie_portdrv_slot_reset(struct pci_dev *dev)
 	device_for_each_child(&dev->dev, &off, pcie_port_device_iter);
 
 	pci_restore_state(dev);
+	pci_save_state(dev);
 	return PCI_ERS_RESULT_RECOVERED;
 }
 
@@ -790,7 +785,7 @@ static const struct pci_error_handlers pcie_portdrv_err_handler = {
 
 static struct pci_driver pcie_portdriver = {
 	.name		= "pcieport",
-	.id_table	= port_pci_ids,
+	.id_table	= &port_pci_ids[0],
 
 	.probe		= pcie_portdrv_probe,
 	.remove		= pcie_portdrv_remove,
@@ -832,7 +827,6 @@ static void __init pcie_init_services(void)
 	pcie_aer_init();
 	pcie_pme_init();
 	pcie_dpc_init();
-	pcie_bwctrl_init();
 	pcie_hp_init();
 }
 

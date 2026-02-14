@@ -80,7 +80,7 @@ Al fine di verificare che i commenti siano formattati correttamente, potete
 eseguire il programma ``kernel-doc`` con un livello di verbosità alto e senza
 che questo produca alcuna documentazione. Per esempio::
 
-	tools/docs/kernel-doc -v -none drivers/foo/bar.c
+	scripts/kernel-doc -v -none drivers/foo/bar.c
 
 Il formato della documentazione è verificato della procedura di generazione
 del kernel quando viene richiesto di effettuare dei controlli extra con GCC::
@@ -180,9 +180,9 @@ Il valore di ritorno, se c'è, viene descritto in una sezione dedicata di nome
      se provate a formattare bene il vostro testo come nel seguente esempio::
 
 	* Return:
-	* %0 - OK
-	* %-EINVAL - invalid argument
-	* %-ENOMEM - out of memory
+	* 0 - OK
+	* -EINVAL - invalid argument
+	* -ENOMEM - out of memory
 
      le righe verranno unite e il risultato sarà::
 
@@ -192,8 +192,8 @@ Il valore di ritorno, se c'è, viene descritto in una sezione dedicata di nome
      utilizzare una lista ReST, ad esempio::
 
       * Return:
-      * * %0		- OK to runtime suspend the device
-      * * %-EBUSY	- Device should not be runtime suspended
+      * * 0		- OK to runtime suspend the device
+      * * -EBUSY	- Device should not be runtime suspended
 
   #) Se il vostro testo ha delle righe che iniziano con una frase seguita dai
      due punti, allora ognuna di queste frasi verrà considerata come il nome
@@ -369,50 +369,6 @@ Anche i tipi di dato per prototipi di funzione possono essere documentati::
    * Return: Meaning of the return value.
    */
    typedef void (*type_name)(struct v4l2_ctrl *arg1, void *arg2);
-
-Documentazione di macro simili a oggetti
-----------------------------------------
-
-Le macro simili a oggetti si distinguono dalle macro simili a funzione. Esse si
-distinguono in base al fatto che il nome della macro simile a funzione sia
-immediatamente seguito da una parentesi sinistra ('(') mentre in quelle simili a
-oggetti no.
-
-Le macro simili a funzioni sono gestite come funzioni da ``tools/docs/kernel-doc``.
-Possono avere un elenco di parametri. Le macro simili a oggetti non hanno un
-elenco di parametri.
-
-Il formato generale di un commento kernel-doc per una macro simile a oggetti è::
-
-  /**
-   * define object_name - Brief description.
-   *
-   * Description of the object.
-   */
-
-Esempio::
-
-  /**
-   * define MAX_ERRNO - maximum errno value that is supported
-   *
-   * Kernel pointers have redundant information, so we can use a
-   * scheme where we can return either an error code or a normal
-   * pointer with the same return value.
-   */
-  #define MAX_ERRNO	4095
-
-Esempio::
-
-  /**
-   * define DRM_GEM_VRAM_PLANE_HELPER_FUNCS - \
-   *	Initializes struct drm_plane_helper_funcs for VRAM handling
-   *
-   * This macro initializes struct drm_plane_helper_funcs to use the
-   * respective helper functions.
-   */
-  #define DRM_GEM_VRAM_PLANE_HELPER_FUNCS \
-	.prepare_fb = drm_gem_vram_plane_helper_prepare_fb, \
-	.cleanup_fb = drm_gem_vram_plane_helper_cleanup_fb
 
 Marcatori e riferimenti
 -----------------------
@@ -595,7 +551,7 @@ documentazione presenti nel file sorgente (*source*).
 
 L'estensione kernel-doc fa parte dei sorgenti del kernel, la si può trovare
 in ``Documentation/sphinx/kerneldoc.py``. Internamente, viene utilizzato
-lo script ``tools/docs/kernel-doc`` per estrarre i commenti di documentazione
+lo script ``scripts/kernel-doc`` per estrarre i commenti di documentazione
 dai file sorgenti.
 
 Come utilizzare kernel-doc per generare pagine man
@@ -604,4 +560,4 @@ Come utilizzare kernel-doc per generare pagine man
 Se volete utilizzare kernel-doc solo per generare delle pagine man, potete
 farlo direttamente dai sorgenti del kernel::
 
-  $ tools/docs/kernel-doc -man $(git grep -l '/\*\*' -- :^Documentation :^tools) | scripts/split-man.pl /tmp/man
+  $ scripts/kernel-doc -man $(git grep -l '/\*\*' -- :^Documentation :^tools) | scripts/split-man.pl /tmp/man

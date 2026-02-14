@@ -9,8 +9,6 @@
  * for more details.
  *
  */
-
-#include <linux/export.h>
 #include <linux/fb.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
@@ -21,14 +19,10 @@ ssize_t fb_sys_read(struct fb_info *info, char __user *buf, size_t count,
 	unsigned long p = *ppos;
 	void *src;
 	int err = 0;
-	unsigned long total_size, c;
-	ssize_t ret;
+	unsigned long total_size;
 
-	if (!(info->flags & FBINFO_VIRTFB))
-		fb_warn_once(info, "Framebuffer is not in virtual address space.");
-
-	if (!info->screen_buffer)
-		return -ENODEV;
+	if (info->state != FBINFO_STATE_RUNNING)
+		return -EPERM;
 
 	total_size = info->screen_size;
 
@@ -44,19 +38,18 @@ ssize_t fb_sys_read(struct fb_info *info, char __user *buf, size_t count,
 	if (count + p > total_size)
 		count = total_size - p;
 
-	src = info->screen_buffer + p;
+	src = (void __force *)(info->screen_base + p);
 
 	if (info->fbops->fb_sync)
 		info->fbops->fb_sync(info);
 
-	c = copy_to_user(buf, src, count);
-	if (c)
+	if (copy_to_user(buf, src, count))
 		err = -EFAULT;
-	ret = count - c;
 
-	*ppos += ret;
+	if  (!err)
+		*ppos += count;
 
-	return ret ? ret : err;
+	return (err) ? err : count;
 }
 EXPORT_SYMBOL_GPL(fb_sys_read);
 
@@ -66,14 +59,10 @@ ssize_t fb_sys_write(struct fb_info *info, const char __user *buf,
 	unsigned long p = *ppos;
 	void *dst;
 	int err = 0;
-	unsigned long total_size, c;
-	size_t ret;
+	unsigned long total_size;
 
-	if (!(info->flags & FBINFO_VIRTFB))
-		fb_warn_once(info, "Framebuffer is not in virtual address space.");
-
-	if (!info->screen_buffer)
-		return -ENODEV;
+	if (info->state != FBINFO_STATE_RUNNING)
+		return -EPERM;
 
 	total_size = info->screen_size;
 
@@ -95,19 +84,18 @@ ssize_t fb_sys_write(struct fb_info *info, const char __user *buf,
 		count = total_size - p;
 	}
 
-	dst = info->screen_buffer + p;
+	dst = (void __force *) (info->screen_base + p);
 
 	if (info->fbops->fb_sync)
 		info->fbops->fb_sync(info);
 
-	c = copy_from_user(dst, buf, count);
-	if (c)
+	if (copy_from_user(dst, buf, count))
 		err = -EFAULT;
-	ret = count - c;
 
-	*ppos += ret;
+	if  (!err)
+		*ppos += count;
 
-	return ret ? ret : err;
+	return (err) ? err : count;
 }
 EXPORT_SYMBOL_GPL(fb_sys_write);
 

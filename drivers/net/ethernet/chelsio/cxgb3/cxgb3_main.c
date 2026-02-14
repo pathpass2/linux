@@ -380,18 +380,19 @@ static irqreturn_t t3_async_intr_handler(int irq, void *cookie)
  */
 static void name_msix_vecs(struct adapter *adap)
 {
-	int i, j, msi_idx = 1;
+	int i, j, msi_idx = 1, n = sizeof(adap->msix_info[0].desc) - 1;
 
-	strscpy(adap->msix_info[0].desc, adap->name, sizeof(adap->msix_info[0].desc));
+	snprintf(adap->msix_info[0].desc, n, "%s", adap->name);
+	adap->msix_info[0].desc[n] = 0;
 
 	for_each_port(adap, j) {
 		struct net_device *d = adap->port[j];
 		const struct port_info *pi = netdev_priv(d);
 
 		for (i = 0; i < pi->nqsets; i++, msi_idx++) {
-			snprintf(adap->msix_info[msi_idx].desc,
-				 sizeof(adap->msix_info[0].desc),
+			snprintf(adap->msix_info[msi_idx].desc, n,
 				 "%s-%d", d->name, pi->first_qset + i);
+			adap->msix_info[msi_idx].desc[n] = 0;
 		}
 	}
 }
@@ -2125,7 +2126,7 @@ static const struct ethtool_ops cxgb_ethtool_ops = {
 	.set_link_ksettings = set_link_ksettings,
 };
 
-static int cxgb_in_range(int val, int lo, int hi)
+static int in_range(int val, int lo, int hi)
 {
 	return val < 0 || (val <= hi && val >= lo);
 }
@@ -2161,19 +2162,19 @@ static int cxgb_siocdevprivate(struct net_device *dev,
 			return -EINVAL;
 		if (t.qset_idx >= SGE_QSETS)
 			return -EINVAL;
-		if (!cxgb_in_range(t.intr_lat, 0, M_NEWTIMER) ||
-		    !cxgb_in_range(t.cong_thres, 0, 255) ||
-		    !cxgb_in_range(t.txq_size[0], MIN_TXQ_ENTRIES,
+		if (!in_range(t.intr_lat, 0, M_NEWTIMER) ||
+		    !in_range(t.cong_thres, 0, 255) ||
+		    !in_range(t.txq_size[0], MIN_TXQ_ENTRIES,
 			      MAX_TXQ_ENTRIES) ||
-		    !cxgb_in_range(t.txq_size[1], MIN_TXQ_ENTRIES,
+		    !in_range(t.txq_size[1], MIN_TXQ_ENTRIES,
 			      MAX_TXQ_ENTRIES) ||
-		    !cxgb_in_range(t.txq_size[2], MIN_CTRL_TXQ_ENTRIES,
+		    !in_range(t.txq_size[2], MIN_CTRL_TXQ_ENTRIES,
 			      MAX_CTRL_TXQ_ENTRIES) ||
-		    !cxgb_in_range(t.fl_size[0], MIN_FL_ENTRIES,
+		    !in_range(t.fl_size[0], MIN_FL_ENTRIES,
 			      MAX_RX_BUFFERS) ||
-		    !cxgb_in_range(t.fl_size[1], MIN_FL_ENTRIES,
+		    !in_range(t.fl_size[1], MIN_FL_ENTRIES,
 			      MAX_RX_JUMBO_BUFFERS) ||
-		    !cxgb_in_range(t.rspq_size, MIN_RSPQ_ENTRIES,
+		    !in_range(t.rspq_size, MIN_RSPQ_ENTRIES,
 			      MAX_RSPQ_ENTRIES))
 			return -EINVAL;
 
@@ -2559,7 +2560,7 @@ static int cxgb_change_mtu(struct net_device *dev, int new_mtu)
 
 	if ((ret = t3_mac_set_mtu(&pi->mac, new_mtu)))
 		return ret;
-	WRITE_ONCE(dev->mtu, new_mtu);
+	dev->mtu = new_mtu;
 	init_port_mtus(adapter);
 	if (adapter->params.rev == 0 && offload_running(adapter))
 		t3_load_mtus(adapter, adapter->params.mtus,
@@ -2933,6 +2934,7 @@ static int t3_reenable_adapter(struct adapter *adapter)
 	}
 	pci_set_master(adapter->pdev);
 	pci_restore_state(adapter->pdev);
+	pci_save_state(adapter->pdev);
 
 	/* Free sge resources */
 	t3_free_sge_resources(adapter);

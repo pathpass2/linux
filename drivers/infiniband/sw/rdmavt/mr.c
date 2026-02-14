@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
 /*
  * Copyright(c) 2016 Intel Corporation.
  */
@@ -329,14 +329,12 @@ bail:
  * @length: length of region to register
  * @virt_addr: associated virtual address
  * @mr_access_flags: access flags for this memory region
- * @dmah: dma handle
  * @udata: unused by the driver
  *
  * Return: the memory region on success, otherwise returns an errno.
  */
 struct ib_mr *rvt_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 			      u64 virt_addr, int mr_access_flags,
-			      struct ib_dmah *dmah,
 			      struct ib_udata *udata)
 {
 	struct rvt_mr *mr;
@@ -345,21 +343,18 @@ struct ib_mr *rvt_reg_user_mr(struct ib_pd *pd, u64 start, u64 length,
 	int n, m;
 	struct ib_mr *ret;
 
-	if (dmah)
-		return ERR_PTR(-EOPNOTSUPP);
-
 	if (length == 0)
 		return ERR_PTR(-EINVAL);
 
 	umem = ib_umem_get(pd->device, start, length, mr_access_flags);
 	if (IS_ERR(umem))
-		return ERR_CAST(umem);
+		return (void *)umem;
 
 	n = ib_umem_num_pages(umem);
 
 	mr = __rvt_alloc_mr(n, pd);
 	if (IS_ERR(mr)) {
-		ret = ERR_CAST(mr);
+		ret = (struct ib_mr *)mr;
 		goto bail_umem;
 	}
 
@@ -547,7 +542,7 @@ struct ib_mr *rvt_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
 
 	mr = __rvt_alloc_mr(max_num_sg, pd);
 	if (IS_ERR(mr))
-		return ERR_CAST(mr);
+		return (struct ib_mr *)mr;
 
 	return &mr->ibmr;
 }

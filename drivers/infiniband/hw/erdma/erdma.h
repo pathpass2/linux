@@ -16,7 +16,7 @@
 #include "erdma_hw.h"
 
 #define DRV_MODULE_NAME "erdma"
-#define ERDMA_NODE_DESC "Elastic RDMA Adapter stack"
+#define ERDMA_NODE_DESC "Elastic RDMA(iWARP) stack"
 
 struct erdma_eq {
 	void *qbuf;
@@ -32,9 +32,8 @@ struct erdma_eq {
 	atomic64_t event_num;
 	atomic64_t notify_num;
 
-	void __iomem *db;
-	u64 *dbrec;
-	dma_addr_t dbrec_dma;
+	u64 __iomem *db_addr;
+	u64 *db_record;
 };
 
 struct erdma_cmdq_sq {
@@ -49,8 +48,7 @@ struct erdma_cmdq_sq {
 
 	u16 wqebb_cnt;
 
-	u64 *dbrec;
-	dma_addr_t dbrec_dma;
+	u64 *db_record;
 };
 
 struct erdma_cmdq_cq {
@@ -63,8 +61,7 @@ struct erdma_cmdq_cq {
 	u32 ci;
 	u32 cmdsn;
 
-	u64 *dbrec;
-	dma_addr_t dbrec_dma;
+	u64 *db_record;
 
 	atomic64_t armed_num;
 };
@@ -101,6 +98,8 @@ struct erdma_cmdq {
 	struct erdma_comp_wait *wait_pool;
 	spinlock_t lock;
 
+	bool use_event;
+
 	struct erdma_cmdq_sq sq;
 	struct erdma_cmdq_cq cq;
 	struct erdma_eq eq;
@@ -129,7 +128,12 @@ struct erdma_devattr {
 
 	int numa_node;
 	enum erdma_cc_alg cc;
+	u32 grp_num;
 	u32 irq_num;
+
+	bool disable_dwqe;
+	u16 dwqe_pages;
+	u16 dwqe_entries;
 
 	u32 max_qp;
 	u32 max_send_wr;
@@ -146,8 +150,6 @@ struct erdma_devattr {
 	u32 max_mr;
 	u32 max_pd;
 	u32 max_mw;
-	u32 max_gid;
-	u32 max_ah;
 	u32 local_dma_key;
 };
 
@@ -177,9 +179,11 @@ struct erdma_resource_cb {
 enum {
 	ERDMA_RES_TYPE_PD = 0,
 	ERDMA_RES_TYPE_STAG_IDX = 1,
-	ERDMA_RES_TYPE_AH = 2,
-	ERDMA_RES_CNT = 3,
+	ERDMA_RES_CNT = 2,
 };
+
+#define ERDMA_EXTRA_BUFFER_SIZE ERDMA_DB_SIZE
+#define WARPPED_BUFSIZE(size) ((size) + ERDMA_EXTRA_BUFFER_SIZE)
 
 struct erdma_dev {
 	struct ib_device ibdev;
@@ -193,6 +197,8 @@ struct erdma_dev {
 	u8 __iomem *func_bar;
 
 	struct erdma_devattr attrs;
+	/* physical port state (only one port per device) */
+	enum ib_port_state state;
 	u32 mtu;
 
 	/* cmdq and aeq use the same msix vector */
@@ -209,12 +215,17 @@ struct erdma_dev {
 	u32 next_alloc_qpn;
 	u32 next_alloc_cqn;
 
+	spinlock_t db_bitmap_lock;
+	/* We provide max 64 uContexts that each has one SQ doorbell Page. */
+	DECLARE_BITMAP(sdb_page, ERDMA_DWQE_TYPE0_CNT);
+	/*
+	 * We provide max 496 uContexts that each has one SQ normal Db,
+	 * and one directWQE db.
+	 */
+	DECLARE_BITMAP(sdb_entry, ERDMA_DWQE_TYPE1_CNT);
+
 	atomic_t num_ctx;
 	struct list_head cep_list;
-
-	struct dma_pool *db_pool;
-	struct dma_pool *resp_pool;
-	enum erdma_proto_type proto;
 };
 
 static inline void *get_queue_entry(void *qbuf, u32 idx, u32 depth, u32 shift)
@@ -257,15 +268,13 @@ static inline u32 erdma_reg_read32_filed(struct erdma_dev *dev, u32 reg,
 	return FIELD_GET(filed_mask, val);
 }
 
-#define ERDMA_GET(val, name) FIELD_GET(ERDMA_CMD_##name##_MASK, val)
-
 int erdma_cmdq_init(struct erdma_dev *dev);
 void erdma_finish_cmdq_init(struct erdma_dev *dev);
 void erdma_cmdq_destroy(struct erdma_dev *dev);
 
 void erdma_cmdq_build_reqhdr(u64 *hdr, u32 mod, u32 op);
 int erdma_post_cmd_wait(struct erdma_cmdq *cmdq, void *req, u32 req_size,
-			u64 *resp0, u64 *resp1, bool sleepable);
+			u64 *resp0, u64 *resp1);
 void erdma_cmdq_completion_handler(struct erdma_cmdq *cmdq);
 
 int erdma_ceqs_init(struct erdma_dev *dev);
@@ -274,8 +283,7 @@ void notify_eq(struct erdma_eq *eq);
 void *get_next_valid_eqe(struct erdma_eq *eq);
 
 int erdma_aeq_init(struct erdma_dev *dev);
-int erdma_eq_common_init(struct erdma_dev *dev, struct erdma_eq *eq, u32 depth);
-void erdma_eq_destroy(struct erdma_dev *dev, struct erdma_eq *eq);
+void erdma_aeq_destroy(struct erdma_dev *dev);
 
 void erdma_aeq_event_handler(struct erdma_dev *dev);
 void erdma_ceq_completion_handler(struct erdma_eq_cb *ceq_cb);

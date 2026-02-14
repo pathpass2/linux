@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0+
 // Copyright 2018 IBM Corp
 /*
- * A FSI master based on Aspeed ColdFire coprocessor
+ * A FSI master controller, using a simple GPIO bit-banging interface
  */
 
 #include <linux/crc4.h>
@@ -13,13 +13,13 @@
 #include <linux/irqflags.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/regmap.h>
 #include <linux/firmware.h>
 #include <linux/gpio/aspeed.h>
 #include <linux/mfd/syscon.h>
+#include <linux/of_address.h>
 #include <linux/genalloc.h>
 
 #include "fsi-master.h"
@@ -1133,7 +1133,7 @@ static int fsi_master_acf_gpio_request(void *data)
 
 	/* Note: This doesn't require holding out mutex */
 
-	/* Write request */
+	/* Write reqest */
 	iowrite8(ARB_ARM_REQ, master->sram + ARB_REG);
 
 	/*
@@ -1190,7 +1190,7 @@ static int fsi_master_acf_gpio_release(void *data)
 
 static void fsi_master_acf_release(struct device *dev)
 {
-	struct fsi_master_acf *master = to_fsi_master_acf(to_fsi_master(dev));
+	struct fsi_master_acf *master = to_fsi_master_acf(dev_to_fsi_master(dev));
 
 	/* Cleanup, stop coprocessor */
 	mutex_lock(&master->lock);
@@ -1285,7 +1285,14 @@ static int fsi_master_acf_probe(struct platform_device *pdev)
 	master->gpio_mux = gpio;
 
 	/* Grab the reserved memory region (use DMA API instead ?) */
-	rc = of_reserved_mem_region_to_resource(mnode, 0, &res);
+	np = of_parse_phandle(mnode, "memory-region", 0);
+	if (!np) {
+		dev_err(&pdev->dev, "Didn't find reserved memory\n");
+		rc = -EINVAL;
+		goto err_free;
+	}
+	rc = of_address_to_resource(np, 0, &res);
+	of_node_put(np);
 	if (rc) {
 		dev_err(&pdev->dev, "Couldn't address to resource for reserved memory\n");
 		rc = -ENOMEM;
@@ -1405,13 +1412,15 @@ static int fsi_master_acf_probe(struct platform_device *pdev)
 }
 
 
-static void fsi_master_acf_remove(struct platform_device *pdev)
+static int fsi_master_acf_remove(struct platform_device *pdev)
 {
 	struct fsi_master_acf *master = platform_get_drvdata(pdev);
 
 	device_remove_file(master->dev, &dev_attr_external_mode);
 
 	fsi_master_unregister(&master->master);
+
+	return 0;
 }
 
 static const struct of_device_id fsi_master_acf_match[] = {
@@ -1431,6 +1440,4 @@ static struct platform_driver fsi_master_acf = {
 };
 
 module_platform_driver(fsi_master_acf);
-MODULE_DESCRIPTION("A FSI master based on Aspeed ColdFire coprocessor");
 MODULE_LICENSE("GPL");
-MODULE_FIRMWARE(FW_FILE_NAME);

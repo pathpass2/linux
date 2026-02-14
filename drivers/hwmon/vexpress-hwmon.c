@@ -13,6 +13,7 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/vexpress.h>
 
@@ -72,7 +73,7 @@ static umode_t vexpress_hwmon_attr_is_visible(struct kobject *kobj,
 				struct device_attribute, attr);
 
 	if (dev_attr->show == vexpress_hwmon_label_show &&
-			!of_property_present(dev->of_node, "label"))
+			!of_get_property(dev->of_node, "label", NULL))
 		return 0;
 
 	return attr->mode;

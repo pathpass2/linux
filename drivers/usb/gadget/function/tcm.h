@@ -4,7 +4,6 @@
 
 #include <linux/kref.h>
 /* #include <linux/usb/uas.h> */
-#include <linux/hashtable.h>
 #include <linux/usb/composite.h>
 #include <linux/usb/uas.h>
 #include <linux/usb/storage.h>
@@ -14,10 +13,8 @@
 #define USBG_NAMELEN 32
 
 #define fuas_to_gadget(f)	(f->function.config->cdev->gadget)
-#define UASP_SS_EP_COMP_LOG_STREAMS 5
+#define UASP_SS_EP_COMP_LOG_STREAMS 4
 #define UASP_SS_EP_COMP_NUM_STREAMS (1 << UASP_SS_EP_COMP_LOG_STREAMS)
-
-#define USBG_NUM_CMDS		(UASP_SS_EP_COMP_NUM_STREAMS + 1)
 
 enum {
 	USB_G_STR_INT_UAS = 0,
@@ -27,7 +24,7 @@ enum {
 #define USB_G_ALT_INT_BBB       0
 #define USB_G_ALT_INT_UAS       1
 
-#define USB_G_DEFAULT_SESSION_TAGS	USBG_NUM_CMDS
+#define USB_G_DEFAULT_SESSION_TAGS	128
 
 struct tcm_usbg_nexus {
 	struct se_session *tvn_se_sess;
@@ -75,23 +72,15 @@ struct usbg_cmd {
 	struct se_cmd se_cmd;
 	void *data_buf; /* used if no sg support available */
 	struct f_uas *fu;
+	struct completion write_complete;
 	struct kref ref;
-
-	struct usb_request *req;
-
-	u32 flags;
-#define USBG_CMD_PENDING_DATA_WRITE	BIT(0)
 
 	/* UAS only */
 	u16 tag;
 	u16 prio_attr;
 	struct sense_iu sense_iu;
-	struct response_iu response_iu;
 	enum uas_state state;
-
-	int tmr_func;
-	int tmr_rsp;
-#define	RC_RESPONSE_UNKNOWN	0xff
+	struct uas_stream *stream;
 
 	/* BOT only */
 	__le32 bot_tag;
@@ -104,9 +93,6 @@ struct uas_stream {
 	struct usb_request	*req_in;
 	struct usb_request	*req_out;
 	struct usb_request	*req_status;
-
-	struct completion	cmd_completion;
-	struct hlist_node	node;
 };
 
 struct usbg_cdb {
@@ -130,17 +116,15 @@ struct f_uas {
 #define USBG_USE_STREAMS	(1 << 2)
 #define USBG_IS_BOT		(1 << 3)
 #define USBG_BOT_CMD_PEND	(1 << 4)
-#define USBG_BOT_WEDGED		(1 << 5)
 
-	struct usbg_cdb		cmd[USBG_NUM_CMDS];
+	struct usbg_cdb		cmd;
 	struct usb_ep		*ep_in;
 	struct usb_ep		*ep_out;
 
 	/* UAS */
 	struct usb_ep		*ep_status;
 	struct usb_ep		*ep_cmd;
-	struct uas_stream	stream[USBG_NUM_CMDS];
-	DECLARE_HASHTABLE(stream_hash, UASP_SS_EP_COMP_LOG_STREAMS);
+	struct uas_stream	stream[UASP_SS_EP_COMP_NUM_STREAMS];
 
 	/* BOT */
 	struct bot_status	bot_status;

@@ -7,13 +7,12 @@
  */
 #define pr_fmt(fmt) "cpuidle cooling: " fmt
 
-#include <linux/cpu.h>
 #include <linux/cpu_cooling.h>
 #include <linux/cpuidle.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/idle_inject.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/slab.h>
 #include <linux/thermal.h>
 
@@ -66,7 +65,7 @@ static unsigned int cpuidle_cooling_runtime(unsigned int idle_duration_us,
  * @state : a pointer to the state variable to be filled
  *
  * The function always returns 100 as the injection ratio. It is
- * percentile based for consistency across different platforms.
+ * percentile based for consistency accross different platforms.
  *
  * Return: The function can not fail, it is always zero
  */
@@ -146,7 +145,7 @@ static int cpuidle_cooling_set_cur_state(struct thermal_cooling_device *cdev,
 	return 0;
 }
 
-/*
+/**
  * cpuidle_cooling_ops - thermal cooling device ops
  */
 static struct thermal_cooling_device_ops cpuidle_cooling_ops = {
@@ -237,6 +236,9 @@ out:
  *
  * This function is in charge of creating a cooling device per cpuidle
  * driver and register it to the thermal framework.
+ *
+ * Return: zero on success, or negative value corresponding to the
+ * error detected in the underlying subsystems.
  */
 void cpuidle_cooling_register(struct cpuidle_driver *drv)
 {

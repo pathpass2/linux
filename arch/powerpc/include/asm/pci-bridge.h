@@ -8,7 +8,6 @@
 #include <linux/list.h>
 #include <linux/ioport.h>
 #include <linux/numa.h>
-#include <linux/iommu.h>
 
 struct device_node;
 
@@ -45,9 +44,6 @@ struct pci_controller_ops {
 #endif
 
 	void		(*shutdown)(struct pci_controller *hose);
-
-	struct iommu_group *(*device_group)(struct pci_controller *hose,
-					    struct pci_dev *pdev);
 };
 
 /*
@@ -133,9 +129,8 @@ struct pci_controller {
 
 	/* IRQ domain hierarchy */
 	struct irq_domain	*dev_domain;
-
-	/* iommu_ops support */
-	struct iommu_device	iommu;
+	struct irq_domain	*msi_domain;
+	struct fwnode_handle	*fwnode;
 };
 
 /* These are used for config access before all the PCI probing

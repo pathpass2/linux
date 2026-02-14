@@ -15,10 +15,9 @@
  */
 
 #include <linux/signal.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 
 static int
 ohci_ppc_of_start(struct usb_hcd *hcd)
@@ -177,7 +176,7 @@ err_rmr:
 	return rv;
 }
 
-static void ohci_hcd_ppc_of_remove(struct platform_device *op)
+static int ohci_hcd_ppc_of_remove(struct platform_device *op)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(op);
 
@@ -188,6 +187,8 @@ static void ohci_hcd_ppc_of_remove(struct platform_device *op)
 	irq_dispose_mapping(hcd->irq);
 
 	usb_put_hcd(hcd);
+
+	return 0;
 }
 
 static const struct of_device_id ohci_hcd_ppc_of_match[] = {
@@ -202,6 +203,10 @@ static const struct of_device_id ohci_hcd_ppc_of_match[] = {
 	},
 #endif
 #ifdef CONFIG_USB_OHCI_HCD_PPC_OF_LE
+	{
+		.name = "usb",
+		.compatible = "ohci-littledian",
+	},
 	{
 		.name = "usb",
 		.compatible = "ohci-le",

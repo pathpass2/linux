@@ -11,19 +11,14 @@
 #include <linux/list.h>
 
 struct syscore_ops {
-	int (*suspend)(void *data);
-	void (*resume)(void *data);
-	void (*shutdown)(void *data);
-};
-
-struct syscore {
 	struct list_head node;
-	const struct syscore_ops *ops;
-	void *data;
+	int (*suspend)(void);
+	void (*resume)(void);
+	void (*shutdown)(void);
 };
 
-extern void register_syscore(struct syscore *syscore);
-extern void unregister_syscore(struct syscore *syscore);
+extern void register_syscore_ops(struct syscore_ops *ops);
+extern void unregister_syscore_ops(struct syscore_ops *ops);
 #ifdef CONFIG_PM_SLEEP
 extern int syscore_suspend(void);
 extern void syscore_resume(void);

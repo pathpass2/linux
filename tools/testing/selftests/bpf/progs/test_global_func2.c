@@ -18,8 +18,6 @@ int f1(struct __sk_buff *skb)
 {
 	volatile char buf[MAX_STACK] = {};
 
-	__sink(buf[MAX_STACK - 1]);
-
 	return f0(0, skb) + skb->len;
 }
 
@@ -35,8 +33,6 @@ __attribute__ ((noinline))
 int f3(int val, struct __sk_buff *skb, int var)
 {
 	volatile char buf[MAX_STACK] = {};
-
-	__sink(buf[MAX_STACK - 1]);
 
 	return skb->ifindex * val * var;
 }

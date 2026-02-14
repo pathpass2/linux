@@ -168,8 +168,7 @@ static void free_command_queues(struct otx_cptvf *cptvf,
 			chunk = list_first_entry(&cqinfo->queue[i].chead,
 					struct otx_cpt_cmd_chunk, nextchunk);
 
-			dma_free_coherent(&pdev->dev,
-					  chunk->size + OTX_CPT_NEXT_CHUNK_PTR_SIZE,
+			dma_free_coherent(&pdev->dev, chunk->size,
 					  chunk->head,
 					  chunk->dma_addr);
 			chunk->head = NULL;

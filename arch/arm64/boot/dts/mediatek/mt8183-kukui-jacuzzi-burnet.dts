@@ -9,7 +9,6 @@
 
 / {
 	model = "Google burnet board";
-	chassis-type = "convertible";
 	compatible = "google,burnet", "mediatek,mt8183";
 };
 
@@ -30,6 +29,3 @@
 	};
 };
 
-&i2c2 {
-	i2c-scl-internal-delay-ns = <4100>;
-};

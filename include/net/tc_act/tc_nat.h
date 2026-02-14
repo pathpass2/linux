@@ -6,7 +6,6 @@
 #include <net/act_api.h>
 
 struct tcf_nat_parms {
-	int action;
 	__be32 old_addr;
 	__be32 new_addr;
 	__be32 mask;

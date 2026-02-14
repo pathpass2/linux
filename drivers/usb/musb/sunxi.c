@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/phy/phy-sun4i-usb.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
@@ -292,6 +293,8 @@ static int sunxi_musb_exit(struct musb *musb)
 	clk_disable_unprepare(glue->clk);
 	if (test_bit(SUNXI_MUSB_FL_HAS_SRAM, &glue->flags))
 		sunxi_sram_release(musb->controller->parent);
+
+	devm_usb_put_phy(glue->dev, glue->xceiv);
 
 	return 0;
 }
@@ -629,7 +632,7 @@ static const struct musb_platform_ops sunxi_musb_ops = {
 #define SUNXI_MUSB_RAM_BITS	11
 
 /* Allwinner OTG supports up to 5 endpoints */
-static const struct musb_fifo_cfg sunxi_musb_mode_cfg_5eps[] = {
+static struct musb_fifo_cfg sunxi_musb_mode_cfg_5eps[] = {
 	MUSB_EP_FIFO_SINGLE(1, FIFO_TX, 512),
 	MUSB_EP_FIFO_SINGLE(1, FIFO_RX, 512),
 	MUSB_EP_FIFO_SINGLE(2, FIFO_TX, 512),
@@ -643,7 +646,7 @@ static const struct musb_fifo_cfg sunxi_musb_mode_cfg_5eps[] = {
 };
 
 /* H3/V3s OTG supports only 4 endpoints */
-static const struct musb_fifo_cfg sunxi_musb_mode_cfg_4eps[] = {
+static struct musb_fifo_cfg sunxi_musb_mode_cfg_4eps[] = {
 	MUSB_EP_FIFO_SINGLE(1, FIFO_TX, 512),
 	MUSB_EP_FIFO_SINGLE(1, FIFO_RX, 512),
 	MUSB_EP_FIFO_SINGLE(2, FIFO_TX, 512),
@@ -802,13 +805,15 @@ err_unregister_usb_phy:
 	return ret;
 }
 
-static void sunxi_musb_remove(struct platform_device *pdev)
+static int sunxi_musb_remove(struct platform_device *pdev)
 {
 	struct sunxi_glue *glue = platform_get_drvdata(pdev);
 	struct platform_device *usb_phy = glue->usb_phy;
 
 	platform_device_unregister(glue->musb_pdev);
 	usb_phy_generic_unregister(usb_phy);
+
+	return 0;
 }
 
 static const struct sunxi_musb_cfg sun4i_a10_musb_cfg = {

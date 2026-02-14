@@ -6,7 +6,9 @@
  * Author: Jingoo Han  <jg1.han@samsung.com>
  */
 
+#include <linux/backlight.h>
 #include <linux/delay.h>
+#include <linux/fb.h>
 #include <linux/lcd.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
@@ -204,7 +206,7 @@ static int lms501kf03_ldi_disable(struct lms501kf03 *lcd)
 
 static int lms501kf03_power_is_on(int power)
 {
-	return (power) <= LCD_POWER_REDUCED;
+	return (power) <= FB_BLANK_NORMAL;
 }
 
 static int lms501kf03_power_on(struct lms501kf03 *lcd)
@@ -293,8 +295,8 @@ static int lms501kf03_set_power(struct lcd_device *ld, int power)
 {
 	struct lms501kf03 *lcd = lcd_get_data(ld);
 
-	if (power != LCD_POWER_ON && power != LCD_POWER_OFF &&
-		power != LCD_POWER_REDUCED) {
+	if (power != FB_BLANK_UNBLANK && power != FB_BLANK_POWERDOWN &&
+		power != FB_BLANK_NORMAL) {
 		dev_err(lcd->dev, "power value should be 0, 1 or 4.\n");
 		return -EINVAL;
 	}
@@ -302,7 +304,7 @@ static int lms501kf03_set_power(struct lcd_device *ld, int power)
 	return lms501kf03_power(lcd, power);
 }
 
-static const struct lcd_ops lms501kf03_lcd_ops = {
+static struct lcd_ops lms501kf03_lcd_ops = {
 	.get_power = lms501kf03_get_power,
 	.set_power = lms501kf03_set_power,
 };
@@ -348,11 +350,11 @@ static int lms501kf03_probe(struct spi_device *spi)
 		 * current lcd status is powerdown and then
 		 * it enables lcd panel.
 		 */
-		lcd->power = LCD_POWER_OFF;
+		lcd->power = FB_BLANK_POWERDOWN;
 
-		lms501kf03_power(lcd, LCD_POWER_ON);
+		lms501kf03_power(lcd, FB_BLANK_UNBLANK);
 	} else {
-		lcd->power = LCD_POWER_ON;
+		lcd->power = FB_BLANK_UNBLANK;
 	}
 
 	spi_set_drvdata(spi, lcd);
@@ -366,7 +368,7 @@ static void lms501kf03_remove(struct spi_device *spi)
 {
 	struct lms501kf03 *lcd = spi_get_drvdata(spi);
 
-	lms501kf03_power(lcd, LCD_POWER_OFF);
+	lms501kf03_power(lcd, FB_BLANK_POWERDOWN);
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -380,16 +382,16 @@ static int lms501kf03_suspend(struct device *dev)
 	 * when lcd panel is suspend, lcd panel becomes off
 	 * regardless of status.
 	 */
-	return lms501kf03_power(lcd, LCD_POWER_OFF);
+	return lms501kf03_power(lcd, FB_BLANK_POWERDOWN);
 }
 
 static int lms501kf03_resume(struct device *dev)
 {
 	struct lms501kf03 *lcd = dev_get_drvdata(dev);
 
-	lcd->power = LCD_POWER_OFF;
+	lcd->power = FB_BLANK_POWERDOWN;
 
-	return lms501kf03_power(lcd, LCD_POWER_ON);
+	return lms501kf03_power(lcd, FB_BLANK_UNBLANK);
 }
 #endif
 
@@ -400,7 +402,7 @@ static void lms501kf03_shutdown(struct spi_device *spi)
 {
 	struct lms501kf03 *lcd = spi_get_drvdata(spi);
 
-	lms501kf03_power(lcd, LCD_POWER_OFF);
+	lms501kf03_power(lcd, FB_BLANK_POWERDOWN);
 }
 
 static struct spi_driver lms501kf03_driver = {

@@ -6,7 +6,7 @@
 
 #include <uapi/asm/mman.h>
 
-#if defined(CONFIG_PPC64) && !defined(BUILD_VDSO)
+#ifdef CONFIG_PPC64
 
 #include <asm/cputable.h>
 #include <linux/mm.h>
@@ -14,7 +14,7 @@
 #include <asm/cpu_has_feature.h>
 #include <asm/firmware.h>
 
-static inline vm_flags_t arch_calc_vm_prot_bits(unsigned long prot,
+static inline unsigned long arch_calc_vm_prot_bits(unsigned long prot,
 		unsigned long pkey)
 {
 #ifdef CONFIG_PPC_MEM_KEYS

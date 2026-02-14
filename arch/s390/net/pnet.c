@@ -6,7 +6,6 @@
  */
 
 #include <linux/device.h>
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/types.h>

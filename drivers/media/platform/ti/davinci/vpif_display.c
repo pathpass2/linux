@@ -115,7 +115,6 @@ static int vpif_buffer_queue_setup(struct vb2_queue *vq,
 	struct channel_obj *ch = vb2_get_drv_priv(vq);
 	struct common_obj *common = &ch->common[VPIF_VIDEO_INDEX];
 	unsigned size = common->fmt.fmt.pix.sizeimage;
-	unsigned int q_num_bufs = vb2_get_num_buffers(vq);
 
 	if (*nplanes) {
 		if (sizes[0] < size)
@@ -123,8 +122,8 @@ static int vpif_buffer_queue_setup(struct vb2_queue *vq,
 		size = sizes[0];
 	}
 
-	if (q_num_bufs + *nbuffers < 3)
-		*nbuffers = 3 - q_num_bufs;
+	if (vq->num_buffers + *nbuffers < 3)
+		*nbuffers = 3 - vq->num_buffers;
 
 	*nplanes = 1;
 	sizes[0] = size;
@@ -293,6 +292,8 @@ static void vpif_stop_streaming(struct vb2_queue *vq)
 
 static const struct vb2_ops video_qops = {
 	.queue_setup		= vpif_buffer_queue_setup,
+	.wait_prepare		= vb2_ops_wait_prepare,
+	.wait_finish		= vb2_ops_wait_finish,
 	.buf_prepare		= vpif_buffer_prepare,
 	.start_streaming	= vpif_start_streaming,
 	.stop_streaming		= vpif_stop_streaming,
@@ -932,7 +933,7 @@ static int vpif_s_dv_timings(struct file *file, void *priv,
 	}
 
 	/* Configure subdevice timings, if any */
-	ret = v4l2_subdev_call(ch->sd, pad, s_dv_timings, 0, timings);
+	ret = v4l2_subdev_call(ch->sd, video, s_dv_timings, timings);
 	if (ret == -ENOIOCTLCMD || ret == -ENODEV)
 		ret = 0;
 	if (ret < 0) {
@@ -1167,7 +1168,7 @@ static int vpif_probe_complete(void)
 		q->mem_ops = &vb2_dma_contig_memops;
 		q->buf_struct_size = sizeof(struct vpif_disp_buffer);
 		q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-		q->min_queued_buffers = 1;
+		q->min_buffers_needed = 1;
 		q->lock = &common->lock;
 		q->dev = vpif_dev;
 		err = vb2_queue_init(q);
@@ -1214,7 +1215,7 @@ probe_out:
  * vpif_probe: This function creates device entries by register itself to the
  * V4L2 driver and initializes fields of each channel objects
  */
-static int vpif_probe(struct platform_device *pdev)
+static __init int vpif_probe(struct platform_device *pdev)
 {
 	struct vpif_subdev_info *subdevdata;
 	struct i2c_adapter *i2c_adap;
@@ -1304,7 +1305,7 @@ vpif_free:
 /*
  * vpif_remove: It un-register channels from V4L2 driver
  */
-static void vpif_remove(struct platform_device *device)
+static int vpif_remove(struct platform_device *device)
 {
 	struct channel_obj *ch;
 	int i;
@@ -1320,6 +1321,8 @@ static void vpif_remove(struct platform_device *device)
 		video_unregister_device(&ch->video_dev);
 	}
 	free_vpif_objs();
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -1390,13 +1393,13 @@ static int vpif_resume(struct device *dev)
 
 static SIMPLE_DEV_PM_OPS(vpif_pm_ops, vpif_suspend, vpif_resume);
 
-static struct platform_driver vpif_driver = {
+static __refdata struct platform_driver vpif_driver = {
 	.driver	= {
 			.name	= VPIF_DRIVER_NAME,
 			.pm	= &vpif_pm_ops,
 	},
 	.probe	= vpif_probe,
-	.remove = vpif_remove,
+	.remove	= vpif_remove,
 };
 
 module_platform_driver(vpif_driver);

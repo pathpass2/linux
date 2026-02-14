@@ -10,21 +10,50 @@
 #include <linux/of_net.h>
 #include <linux/netdevice.h>
 #include <linux/phylink.h>
-#include <linux/of.h>
 #include <linux/of_mdio.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/mfd/syscon.h>
 #include <linux/skbuff.h>
 #include <net/switchdev.h>
 
 #include <soc/mscc/ocelot.h>
 #include <soc/mscc/ocelot_vcap.h>
+#include <soc/mscc/ocelot_hsio.h>
 #include <soc/mscc/vsc7514_regs.h>
 #include "ocelot_fdma.h"
 #include "ocelot.h"
 
 #define VSC7514_VCAP_POLICER_BASE			128
 #define VSC7514_VCAP_POLICER_MAX			191
+
+static void ocelot_pll5_init(struct ocelot *ocelot)
+{
+	/* Configure PLL5. This will need a proper CCF driver
+	 * The values are coming from the VTSS API for Ocelot
+	 */
+	regmap_write(ocelot->targets[HSIO], HSIO_PLL5G_CFG4,
+		     HSIO_PLL5G_CFG4_IB_CTRL(0x7600) |
+		     HSIO_PLL5G_CFG4_IB_BIAS_CTRL(0x8));
+	regmap_write(ocelot->targets[HSIO], HSIO_PLL5G_CFG0,
+		     HSIO_PLL5G_CFG0_CORE_CLK_DIV(0x11) |
+		     HSIO_PLL5G_CFG0_CPU_CLK_DIV(2) |
+		     HSIO_PLL5G_CFG0_ENA_BIAS |
+		     HSIO_PLL5G_CFG0_ENA_VCO_BUF |
+		     HSIO_PLL5G_CFG0_ENA_CP1 |
+		     HSIO_PLL5G_CFG0_SELCPI(2) |
+		     HSIO_PLL5G_CFG0_LOOP_BW_RES(0xe) |
+		     HSIO_PLL5G_CFG0_SELBGV820(4) |
+		     HSIO_PLL5G_CFG0_DIV4 |
+		     HSIO_PLL5G_CFG0_ENA_CLKTREE |
+		     HSIO_PLL5G_CFG0_ENA_LANE);
+	regmap_write(ocelot->targets[HSIO], HSIO_PLL5G_CFG2,
+		     HSIO_PLL5G_CFG2_EN_RESET_FRQ_DET |
+		     HSIO_PLL5G_CFG2_EN_RESET_OVERRUN |
+		     HSIO_PLL5G_CFG2_GAIN_TEST(0x8) |
+		     HSIO_PLL5G_CFG2_ENA_AMPCTRL |
+		     HSIO_PLL5G_CFG2_PWD_AMPCTRL_N |
+		     HSIO_PLL5G_CFG2_AMPC_SEL(0x10));
+}
 
 static int ocelot_chip_init(struct ocelot *ocelot, const struct ocelot_ops *ops)
 {
@@ -51,8 +80,6 @@ static irqreturn_t ocelot_xtr_irq_handler(int irq, void *arg)
 	struct ocelot *ocelot = arg;
 	int grp = 0, err;
 
-	ocelot_lock_xtr_grp(ocelot, grp);
-
 	while (ocelot_read(ocelot, QS_XTR_DATA_PRESENT) & BIT(grp)) {
 		struct sk_buff *skb;
 
@@ -70,8 +97,6 @@ static irqreturn_t ocelot_xtr_irq_handler(int irq, void *arg)
 out:
 	if (err < 0)
 		ocelot_drain_cpu_queue(ocelot, 0);
-
-	ocelot_unlock_xtr_grp(ocelot, grp);
 
 	return IRQ_HANDLED;
 }
@@ -108,8 +133,6 @@ static struct ptp_clock_info ocelot_ptp_clock_info = {
 	.n_ext_ts	= 0,
 	.n_per_out	= OCELOT_PTP_PINS_NUM,
 	.n_pins		= OCELOT_PTP_PINS_NUM,
-	.supported_perout_flags = PTP_PEROUT_DUTY_CYCLE |
-				  PTP_PEROUT_PHASE,
 	.pps		= 0,
 	.gettime64	= ocelot_ptp_gettime64,
 	.settime64	= ocelot_ptp_settime64,
@@ -398,7 +421,7 @@ out_free_devlink:
 	return err;
 }
 
-static void mscc_ocelot_remove(struct platform_device *pdev)
+static int mscc_ocelot_remove(struct platform_device *pdev)
 {
 	struct ocelot *ocelot = platform_get_drvdata(pdev);
 
@@ -414,6 +437,8 @@ static void mscc_ocelot_remove(struct platform_device *pdev)
 	unregister_switchdev_notifier(&ocelot_switchdev_nb);
 	unregister_netdevice_notifier(&ocelot_netdevice_nb);
 	devlink_free(ocelot->devlink);
+
+	return 0;
 }
 
 static struct platform_driver mscc_ocelot_driver = {

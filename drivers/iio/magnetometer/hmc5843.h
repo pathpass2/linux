@@ -34,7 +34,7 @@ enum hmc5843_ids {
  * @regmap:		hardware access register maps
  * @variant:		describe chip variants
  * @scan:		buffer to pack data for passing to
- *			iio_push_to_buffers_with_ts()
+ *			iio_push_to_buffers_with_timestamp()
  */
 struct hmc5843_data {
 	struct device *dev;
@@ -44,7 +44,7 @@ struct hmc5843_data {
 	struct iio_mount_matrix orientation;
 	struct {
 		__be16 chans[3];
-		aligned_s64 timestamp;
+		s64 timestamp __aligned(8);
 	} scan;
 };
 

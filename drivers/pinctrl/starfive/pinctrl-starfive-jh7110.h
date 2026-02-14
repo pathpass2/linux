@@ -21,7 +21,6 @@ struct jh7110_pinctrl {
 	/* register read/write mutex */
 	struct mutex mutex;
 	const struct jh7110_pinctrl_soc_info *info;
-	u32 *saved_regs;
 };
 
 struct jh7110_gpio_irq_reg {
@@ -38,6 +37,7 @@ struct jh7110_pinctrl_soc_info {
 	const struct pinctrl_pin_desc *pins;
 	unsigned int npins;
 	unsigned int ngpios;
+	unsigned int gc_base;
 
 	/* gpio dout/doen/din/gpioinput register */
 	unsigned int dout_reg_base;
@@ -49,8 +49,6 @@ struct jh7110_pinctrl_soc_info {
 	unsigned int gpioin_reg_base;
 
 	const struct jh7110_gpio_irq_reg *irq_reg;
-
-	unsigned int nsaved_regs;
 
 	/* generic pinmux */
 	int (*jh7110_set_one_pin_mux)(struct jh7110_pinctrl *sfp,
@@ -68,6 +66,5 @@ void jh7110_set_gpiomux(struct jh7110_pinctrl *sfp, unsigned int pin,
 			unsigned int din, u32 dout, u32 doen);
 int jh7110_pinctrl_probe(struct platform_device *pdev);
 struct jh7110_pinctrl *jh7110_from_irq_desc(struct irq_desc *desc);
-extern const struct dev_pm_ops jh7110_pinctrl_pm_ops;
 
 #endif /* __PINCTRL_STARFIVE_JH7110_H__ */

@@ -10,7 +10,7 @@ maintainers:
   - Krzysztof Kozlowski <krzk@kernel.org>
 
 allOf:
-  - $ref: jedec,sdram-props.yaml#
+  - $ref: jedec,lpddr-props.yaml#
 
 properties:
   compatible:

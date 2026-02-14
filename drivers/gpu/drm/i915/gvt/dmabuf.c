@@ -33,14 +33,12 @@
 
 #include <drm/drm_fourcc.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_print.h>
-
-#include "display/skl_universal_plane_regs.h"
 
 #include "gem/i915_gem_dmabuf.h"
 
-#include "gvt.h"
 #include "i915_drv.h"
+#include "i915_reg.h"
+#include "gvt.h"
 
 #define GEN8_DECODE_PTE(pte) (pte & GENMASK_ULL(63, 12))
 
@@ -437,7 +435,7 @@ int intel_vgpu_query_plane(struct intel_vgpu *vgpu, void *args)
 			dmabuf_obj_get(dmabuf_obj);
 		}
 		ret = 0;
-		gvt_dbg_dpy("vgpu%d: reuse dmabuf_obj ref %d, id %d\n",
+		gvt_dbg_dpy("vgpu%d: re-use dmabuf_obj ref %d, id %d\n",
 			    vgpu->id, kref_read(&dmabuf_obj->kref),
 			    gfx_plane_info->dmabuf_id);
 		mutex_unlock(&vgpu->dmabuf_lock);

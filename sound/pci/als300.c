@@ -402,7 +402,7 @@ static int snd_als300_playback_prepare(struct snd_pcm_substream *substream)
 	unsigned short period_bytes = snd_pcm_lib_period_bytes(substream);
 	unsigned short buffer_bytes = snd_pcm_lib_buffer_bytes(substream);
 	
-	guard(spinlock_irq)(&chip->reg_lock);
+	spin_lock_irq(&chip->reg_lock);
 	tmp = snd_als300_gcr_read(chip->port, PLAYBACK_CONTROL);
 	tmp &= ~TRANSFER_START;
 
@@ -419,6 +419,7 @@ static int snd_als300_playback_prepare(struct snd_pcm_substream *substream)
 					runtime->dma_addr);
 	snd_als300_gcr_write(chip->port, PLAYBACK_END,
 					runtime->dma_addr + buffer_bytes - 1);
+	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
@@ -430,7 +431,7 @@ static int snd_als300_capture_prepare(struct snd_pcm_substream *substream)
 	unsigned short period_bytes = snd_pcm_lib_period_bytes(substream);
 	unsigned short buffer_bytes = snd_pcm_lib_buffer_bytes(substream);
 
-	guard(spinlock_irq)(&chip->reg_lock);
+	spin_lock_irq(&chip->reg_lock);
 	tmp = snd_als300_gcr_read(chip->port, RECORD_CONTROL);
 	tmp &= ~TRANSFER_START;
 
@@ -447,6 +448,7 @@ static int snd_als300_capture_prepare(struct snd_pcm_substream *substream)
 					runtime->dma_addr);
 	snd_als300_gcr_write(chip->port, RECORD_END,
 					runtime->dma_addr + buffer_bytes - 1);
+	spin_unlock_irq(&chip->reg_lock);
 	return 0;
 }
 
@@ -461,7 +463,7 @@ static int snd_als300_trigger(struct snd_pcm_substream *substream, int cmd)
 	data = substream->runtime->private_data;
 	reg = data->control_register;
 
-	guard(spinlock)(&chip->reg_lock);
+	spin_lock(&chip->reg_lock);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -490,6 +492,7 @@ static int snd_als300_trigger(struct snd_pcm_substream *substream, int cmd)
 		snd_als300_dbgplay("TRIGGER INVALID\n");
 		ret = -EINVAL;
 	}
+	spin_unlock(&chip->reg_lock);
 	return ret;
 }
 
@@ -503,10 +506,10 @@ static snd_pcm_uframes_t snd_als300_pointer(struct snd_pcm_substream *substream)
 	data = substream->runtime->private_data;
 	period_bytes = snd_pcm_lib_period_bytes(substream);
 	
-	scoped_guard(spinlock, &chip->reg_lock) {
-		current_ptr = (u16) snd_als300_gcr_read(chip->port,
-							data->block_counter_register) + 4;
-	}
+	spin_lock(&chip->reg_lock);
+	current_ptr = (u16) snd_als300_gcr_read(chip->port,
+					data->block_counter_register) + 4;
+	spin_unlock(&chip->reg_lock);
 	if (current_ptr > period_bytes)
 		current_ptr = 0;
 	else
@@ -543,7 +546,7 @@ static int snd_als300_new_pcm(struct snd_als300 *chip)
 	if (err < 0)
 		return err;
 	pcm->private_data = chip;
-	strscpy(pcm->name, "ALS300");
+	strcpy(pcm->name, "ALS300");
 	chip->pcm = pcm;
 
 	/* set operators */
@@ -560,9 +563,10 @@ static int snd_als300_new_pcm(struct snd_als300 *chip)
 
 static void snd_als300_init(struct snd_als300 *chip)
 {
+	unsigned long flags;
 	u32 tmp;
 	
-	guard(spinlock_irqsave)(&chip->reg_lock);
+	spin_lock_irqsave(&chip->reg_lock, flags);
 	chip->revision = (snd_als300_gcr_read(chip->port, MISC_CONTROL) >> 16)
 								& 0x0000000F;
 	/* Setup DRAM */
@@ -587,6 +591,7 @@ static void snd_als300_init(struct snd_als300 *chip)
 	tmp = snd_als300_gcr_read(chip->port, PLAYBACK_CONTROL);
 	snd_als300_gcr_write(chip->port, PLAYBACK_CONTROL,
 			tmp & ~TRANSFER_START);
+	spin_unlock_irqrestore(&chip->reg_lock, flags);
 }
 
 static int snd_als300_create(struct snd_card *card,
@@ -612,7 +617,7 @@ static int snd_als300_create(struct snd_card *card,
 	chip->chip_type = chip_type;
 	spin_lock_init(&chip->reg_lock);
 
-	err = pcim_request_all_regions(pci, "ALS300");
+	err = pci_request_regions(pci, "ALS300");
 	if (err < 0)
 		return err;
 
@@ -649,6 +654,7 @@ static int snd_als300_create(struct snd_card *card,
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int snd_als300_suspend(struct device *dev)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
@@ -671,7 +677,11 @@ static int snd_als300_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(snd_als300_pm, snd_als300_suspend, snd_als300_resume);
+static SIMPLE_DEV_PM_OPS(snd_als300_pm, snd_als300_suspend, snd_als300_resume);
+#define SND_ALS300_PM_OPS	&snd_als300_pm
+#else
+#define SND_ALS300_PM_OPS	NULL
+#endif
 
 static int snd_als300_probe(struct pci_dev *pci,
                              const struct pci_device_id *pci_id)
@@ -700,7 +710,7 @@ static int snd_als300_probe(struct pci_dev *pci,
 	if (err < 0)
 		goto error;
 
-	strscpy(card->driver, "ALS300");
+	strcpy(card->driver, "ALS300");
 	if (chip->chip_type == DEVICE_ALS300_PLUS)
 		/* don't know much about ALS300+ yet
 		 * print revision number for now */
@@ -729,7 +739,7 @@ static struct pci_driver als300_driver = {
 	.id_table = snd_als300_ids,
 	.probe = snd_als300_probe,
 	.driver = {
-		.pm = &snd_als300_pm,
+		.pm = SND_ALS300_PM_OPS,
 	},
 };
 

@@ -1012,7 +1012,7 @@ int cvm_mmc_of_slot_probe(struct device *dev, struct cvm_mmc_host *host)
 	struct mmc_host *mmc;
 	int ret, id;
 
-	mmc = devm_mmc_alloc_host(dev, sizeof(*slot));
+	mmc = mmc_alloc_host(sizeof(struct cvm_mmc_slot), dev);
 	if (!mmc)
 		return -ENOMEM;
 
@@ -1022,7 +1022,7 @@ int cvm_mmc_of_slot_probe(struct device *dev, struct cvm_mmc_host *host)
 
 	ret = cvm_mmc_of_parse(dev, slot);
 	if (ret < 0)
-		return ret;
+		goto error;
 	id = ret;
 
 	/* Set up host parameters */
@@ -1066,7 +1066,12 @@ int cvm_mmc_of_slot_probe(struct device *dev, struct cvm_mmc_host *host)
 	if (ret) {
 		dev_err(dev, "mmc_add_host() returned %d\n", ret);
 		slot->host->slot[id] = NULL;
+		goto error;
 	}
+	return 0;
+
+error:
+	mmc_free_host(slot->mmc);
 	return ret;
 }
 
@@ -1074,5 +1079,6 @@ int cvm_mmc_of_slot_remove(struct cvm_mmc_slot *slot)
 {
 	mmc_remove_host(slot->mmc);
 	slot->host->slot[slot->bus_id] = NULL;
+	mmc_free_host(slot->mmc);
 	return 0;
 }

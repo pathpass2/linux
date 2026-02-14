@@ -23,9 +23,9 @@ static int stderr_id;
 static struct tty_port nfcon_tty_port;
 static struct tty_driver *nfcon_tty_driver;
 
-static void nfputs(const u8 *str, size_t count)
+static void nfputs(const char *str, unsigned int count)
 {
-	u8 buf[68];
+	char buf[68];
 	unsigned long phys = virt_to_phys(buf);
 
 	buf[64] = 0;
@@ -70,16 +70,16 @@ static void nfcon_tty_close(struct tty_struct *tty, struct file *filp)
 {
 }
 
-static ssize_t nfcon_tty_write(struct tty_struct *tty, const u8 *buf,
-			       size_t count)
+static int nfcon_tty_write(struct tty_struct *tty, const unsigned char *buf,
+			   int count)
 {
 	nfputs(buf, count);
 	return count;
 }
 
-static int nfcon_tty_put_char(struct tty_struct *tty, u8 ch)
+static int nfcon_tty_put_char(struct tty_struct *tty, unsigned char ch)
 {
-	u8 temp[2] = { ch, 0 };
+	char temp[2] = { ch, 0 };
 
 	nf_call(stderr_id, virt_to_phys(temp));
 	return 1;
@@ -173,5 +173,4 @@ static void __exit nfcon_exit(void)
 module_init(nfcon_init);
 module_exit(nfcon_exit);
 
-MODULE_DESCRIPTION("Atari NatFeat console driver");
 MODULE_LICENSE("GPL");

@@ -14,6 +14,7 @@
 #include <linux/kstrtox.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
@@ -924,5 +925,4 @@ static struct platform_driver moortec_pvt_driver = {
 };
 module_platform_driver(moortec_pvt_driver);
 
-MODULE_DESCRIPTION("Moortec Semiconductor MR75203 PVT Controller driver");
 MODULE_LICENSE("GPL v2");

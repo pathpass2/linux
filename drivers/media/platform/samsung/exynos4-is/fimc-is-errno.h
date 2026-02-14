@@ -156,7 +156,7 @@ enum fimc_is_error {
 	ERROR_DMA_INPUT_BIT_WIDTH	= 34,
 	/* invalid order(DRC: YYCbCrorYCbYCr, FD:NO,YYCbCr,YCbYCr,CbCr,CrCb) */
 	ERROR_DMA_INPUT_ORDER		= 35,
-	/* invalid plane (DRC: 3, FD: 1, 2, 3) */
+	/* invalid palne (DRC: 3, FD: 1, 2, 3) */
 	ERROR_DMA_INPUT_PLANE		= 36,
 
 	ERROR_OTF_OUTPUT_NONE		= ERROR_COMMON_NONE,
@@ -240,5 +240,6 @@ enum fimc_is_error {
 };
 
 const char *fimc_is_strerr(unsigned int error);
+const char *fimc_is_param_strerr(unsigned int error);
 
 #endif /* FIMC_IS_ERR_H_ */

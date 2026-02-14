@@ -12,6 +12,7 @@
 #include "io_uring.h"
 #include "epoll.h"
 
+#if defined(CONFIG_EPOLL)
 struct io_epoll {
 	struct file			*file;
 	int				epfd;
@@ -20,15 +21,13 @@ struct io_epoll {
 	struct epoll_event		event;
 };
 
-struct io_epoll_wait {
-	struct file			*file;
-	int				maxevents;
-	struct epoll_event __user	*events;
-};
-
 int io_epoll_ctl_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
 	struct io_epoll *epoll = io_kiocb_to_cmd(req, struct io_epoll);
+
+	pr_warn_once("%s: epoll_ctl support in io_uring is deprecated and will "
+		     "be removed in a future Linux kernel version.\n",
+		     current->comm);
 
 	if (sqe->buf_index || sqe->splice_fd_in)
 		return -EINVAL;
@@ -61,32 +60,6 @@ int io_epoll_ctl(struct io_kiocb *req, unsigned int issue_flags)
 	if (ret < 0)
 		req_set_fail(req);
 	io_req_set_res(req, ret, 0);
-	return IOU_COMPLETE;
+	return IOU_OK;
 }
-
-int io_epoll_wait_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
-{
-	struct io_epoll_wait *iew = io_kiocb_to_cmd(req, struct io_epoll_wait);
-
-	if (sqe->off || sqe->rw_flags || sqe->buf_index || sqe->splice_fd_in)
-		return -EINVAL;
-
-	iew->maxevents = READ_ONCE(sqe->len);
-	iew->events = u64_to_user_ptr(READ_ONCE(sqe->addr));
-	return 0;
-}
-
-int io_epoll_wait(struct io_kiocb *req, unsigned int issue_flags)
-{
-	struct io_epoll_wait *iew = io_kiocb_to_cmd(req, struct io_epoll_wait);
-	int ret;
-
-	ret = epoll_sendevents(req->file, iew->events, iew->maxevents);
-	if (ret == 0)
-		return -EAGAIN;
-	if (ret < 0)
-		req_set_fail(req);
-
-	io_req_set_res(req, ret, 0);
-	return IOU_COMPLETE;
-}
+#endif

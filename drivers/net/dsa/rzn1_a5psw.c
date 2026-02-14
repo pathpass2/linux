@@ -120,22 +120,6 @@ static void a5psw_port_mgmtfwd_set(struct a5psw *a5psw, int port, bool enable)
 	a5psw_port_pattern_set(a5psw, port, A5PSW_PATTERN_MGMTFWD, enable);
 }
 
-static void a5psw_port_tx_enable(struct a5psw *a5psw, int port, bool enable)
-{
-	u32 mask = A5PSW_PORT_ENA_TX(port);
-	u32 reg = enable ? mask : 0;
-
-	/* Even though the port TX is disabled through TXENA bit in the
-	 * PORT_ENA register, it can still send BPDUs. This depends on the tag
-	 * configuration added when sending packets from the CPU port to the
-	 * switch port. Indeed, when using forced forwarding without filtering,
-	 * even disabled ports will be able to send packets that are tagged.
-	 * This allows to implement STP support when ports are in a state where
-	 * forwarding traffic should be stopped but BPDUs should still be sent.
-	 */
-	a5psw_reg_rmw(a5psw, A5PSW_PORT_ENA, mask, reg);
-}
-
 static void a5psw_port_enable_set(struct a5psw *a5psw, int port, bool enable)
 {
 	u32 port_ena = 0;
@@ -239,31 +223,23 @@ static void a5psw_phylink_get_caps(struct dsa_switch *ds, int port,
 }
 
 static struct phylink_pcs *
-a5psw_phylink_mac_select_pcs(struct phylink_config *config,
+a5psw_phylink_mac_select_pcs(struct dsa_switch *ds, int port,
 			     phy_interface_t interface)
 {
-	struct dsa_port *dp = dsa_phylink_to_port(config);
-	struct a5psw *a5psw = dp->ds->priv;
+	struct dsa_port *dp = dsa_to_port(ds, port);
+	struct a5psw *a5psw = ds->priv;
 
-	if (dsa_port_is_cpu(dp))
-		return NULL;
+	if (!dsa_port_is_cpu(dp) && a5psw->pcs[port])
+		return a5psw->pcs[port];
 
-	return a5psw->pcs[dp->index];
+	return NULL;
 }
 
-static void a5psw_phylink_mac_config(struct phylink_config *config,
-				     unsigned int mode,
-				     const struct phylink_link_state *state)
-{
-}
-
-static void a5psw_phylink_mac_link_down(struct phylink_config *config,
+static void a5psw_phylink_mac_link_down(struct dsa_switch *ds, int port,
 					unsigned int mode,
 					phy_interface_t interface)
 {
-	struct dsa_port *dp = dsa_phylink_to_port(config);
-	struct a5psw *a5psw = dp->ds->priv;
-	int port = dp->index;
+	struct a5psw *a5psw = ds->priv;
 	u32 cmd_cfg;
 
 	cmd_cfg = a5psw_reg_readl(a5psw, A5PSW_CMD_CFG(port));
@@ -271,17 +247,15 @@ static void a5psw_phylink_mac_link_down(struct phylink_config *config,
 	a5psw_reg_writel(a5psw, A5PSW_CMD_CFG(port), cmd_cfg);
 }
 
-static void a5psw_phylink_mac_link_up(struct phylink_config *config,
-				      struct phy_device *phydev,
+static void a5psw_phylink_mac_link_up(struct dsa_switch *ds, int port,
 				      unsigned int mode,
 				      phy_interface_t interface,
-				      int speed, int duplex, bool tx_pause,
-				      bool rx_pause)
+				      struct phy_device *phydev, int speed,
+				      int duplex, bool tx_pause, bool rx_pause)
 {
 	u32 cmd_cfg = A5PSW_CMD_CFG_RX_ENA | A5PSW_CMD_CFG_TX_ENA |
 		      A5PSW_CMD_CFG_TX_CRC_APPEND;
-	struct dsa_port *dp = dsa_phylink_to_port(config);
-	struct a5psw *a5psw = dp->ds->priv;
+	struct a5psw *a5psw = ds->priv;
 
 	if (speed == SPEED_1000)
 		cmd_cfg |= A5PSW_CMD_CFG_ETH_SPEED;
@@ -294,7 +268,7 @@ static void a5psw_phylink_mac_link_up(struct phylink_config *config,
 	if (!rx_pause)
 		cmd_cfg &= ~A5PSW_CMD_CFG_PAUSE_IGNORE;
 
-	a5psw_reg_writel(a5psw, A5PSW_CMD_CFG(dp->index), cmd_cfg);
+	a5psw_reg_writel(a5psw, A5PSW_CMD_CFG(port), cmd_cfg);
 }
 
 static int a5psw_set_ageing_time(struct dsa_switch *ds, unsigned int msecs)
@@ -318,41 +292,20 @@ static int a5psw_set_ageing_time(struct dsa_switch *ds, unsigned int msecs)
 	return 0;
 }
 
-static void a5psw_port_learning_set(struct a5psw *a5psw, int port, bool learn)
-{
-	u32 mask = A5PSW_INPUT_LEARN_DIS(port);
-	u32 reg = !learn ? mask : 0;
-
-	a5psw_reg_rmw(a5psw, A5PSW_INPUT_LEARN, mask, reg);
-}
-
-static void a5psw_port_rx_block_set(struct a5psw *a5psw, int port, bool block)
-{
-	u32 mask = A5PSW_INPUT_LEARN_BLOCK(port);
-	u32 reg = block ? mask : 0;
-
-	a5psw_reg_rmw(a5psw, A5PSW_INPUT_LEARN, mask, reg);
-}
-
 static void a5psw_flooding_set_resolution(struct a5psw *a5psw, int port,
 					  bool set)
 {
-	static const u8 offsets[] = {
-		A5PSW_UCAST_DEF_MASK, A5PSW_BCAST_DEF_MASK, A5PSW_MCAST_DEF_MASK
-	};
+	u8 offsets[] = {A5PSW_UCAST_DEF_MASK, A5PSW_BCAST_DEF_MASK,
+			A5PSW_MCAST_DEF_MASK};
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(offsets); i++)
-		a5psw_reg_rmw(a5psw, offsets[i], BIT(port),
-			      set ? BIT(port) : 0);
-}
+	if (set)
+		a5psw->bridged_ports |= BIT(port);
+	else
+		a5psw->bridged_ports &= ~BIT(port);
 
-static void a5psw_port_set_standalone(struct a5psw *a5psw, int port,
-				      bool standalone)
-{
-	a5psw_port_learning_set(a5psw, port, !standalone);
-	a5psw_flooding_set_resolution(a5psw, port, !standalone);
-	a5psw_port_mgmtfwd_set(a5psw, port, standalone);
+	for (i = 0; i < ARRAY_SIZE(offsets); i++)
+		a5psw_reg_writel(a5psw, offsets[i], a5psw->bridged_ports);
 }
 
 static int a5psw_port_bridge_join(struct dsa_switch *ds, int port,
@@ -370,9 +323,8 @@ static int a5psw_port_bridge_join(struct dsa_switch *ds, int port,
 	}
 
 	a5psw->br_dev = bridge.dev;
-	a5psw_port_set_standalone(a5psw, port, false);
-
-	a5psw->bridged_ports |= BIT(port);
+	a5psw_flooding_set_resolution(a5psw, port, true);
+	a5psw_port_mgmtfwd_set(a5psw, port, false);
 
 	return 0;
 }
@@ -382,100 +334,38 @@ static void a5psw_port_bridge_leave(struct dsa_switch *ds, int port,
 {
 	struct a5psw *a5psw = ds->priv;
 
-	a5psw->bridged_ports &= ~BIT(port);
-
-	a5psw_port_set_standalone(a5psw, port, true);
+	a5psw_flooding_set_resolution(a5psw, port, false);
+	a5psw_port_mgmtfwd_set(a5psw, port, true);
 
 	/* No more ports bridged */
 	if (a5psw->bridged_ports == BIT(A5PSW_CPU_PORT))
 		a5psw->br_dev = NULL;
 }
 
-static int a5psw_port_pre_bridge_flags(struct dsa_switch *ds, int port,
-				       struct switchdev_brport_flags flags,
-				       struct netlink_ext_ack *extack)
-{
-	if (flags.mask & ~(BR_LEARNING | BR_FLOOD | BR_MCAST_FLOOD |
-			   BR_BCAST_FLOOD))
-		return -EINVAL;
-
-	return 0;
-}
-
-static int
-a5psw_port_bridge_flags(struct dsa_switch *ds, int port,
-			struct switchdev_brport_flags flags,
-			struct netlink_ext_ack *extack)
-{
-	struct a5psw *a5psw = ds->priv;
-	u32 val;
-
-	/* If a port is set as standalone, we do not want to be able to
-	 * configure flooding nor learning which would result in joining the
-	 * unique bridge. This can happen when a port leaves the bridge, in
-	 * which case the DSA core will try to "clear" all flags for the
-	 * standalone port (ie enable flooding, disable learning). In that case
-	 * do not fail but do not apply the flags.
-	 */
-	if (!(a5psw->bridged_ports & BIT(port)))
-		return 0;
-
-	if (flags.mask & BR_LEARNING) {
-		val = flags.val & BR_LEARNING ? 0 : A5PSW_INPUT_LEARN_DIS(port);
-		a5psw_reg_rmw(a5psw, A5PSW_INPUT_LEARN,
-			      A5PSW_INPUT_LEARN_DIS(port), val);
-	}
-
-	if (flags.mask & BR_FLOOD) {
-		val = flags.val & BR_FLOOD ? BIT(port) : 0;
-		a5psw_reg_rmw(a5psw, A5PSW_UCAST_DEF_MASK, BIT(port), val);
-	}
-
-	if (flags.mask & BR_MCAST_FLOOD) {
-		val = flags.val & BR_MCAST_FLOOD ? BIT(port) : 0;
-		a5psw_reg_rmw(a5psw, A5PSW_MCAST_DEF_MASK, BIT(port), val);
-	}
-
-	if (flags.mask & BR_BCAST_FLOOD) {
-		val = flags.val & BR_BCAST_FLOOD ? BIT(port) : 0;
-		a5psw_reg_rmw(a5psw, A5PSW_BCAST_DEF_MASK, BIT(port), val);
-	}
-
-	return 0;
-}
-
 static void a5psw_port_stp_state_set(struct dsa_switch *ds, int port, u8 state)
 {
-	bool learning_enabled, rx_enabled, tx_enabled;
-	struct dsa_port *dp = dsa_to_port(ds, port);
+	u32 mask = A5PSW_INPUT_LEARN_DIS(port) | A5PSW_INPUT_LEARN_BLOCK(port);
 	struct a5psw *a5psw = ds->priv;
+	u32 reg = 0;
 
 	switch (state) {
 	case BR_STATE_DISABLED:
 	case BR_STATE_BLOCKING:
+		reg |= A5PSW_INPUT_LEARN_DIS(port);
+		reg |= A5PSW_INPUT_LEARN_BLOCK(port);
+		break;
 	case BR_STATE_LISTENING:
-		rx_enabled = false;
-		tx_enabled = false;
-		learning_enabled = false;
+		reg |= A5PSW_INPUT_LEARN_DIS(port);
 		break;
 	case BR_STATE_LEARNING:
-		rx_enabled = false;
-		tx_enabled = false;
-		learning_enabled = dp->learning;
+		reg |= A5PSW_INPUT_LEARN_BLOCK(port);
 		break;
 	case BR_STATE_FORWARDING:
-		rx_enabled = true;
-		tx_enabled = true;
-		learning_enabled = dp->learning;
-		break;
 	default:
-		dev_err(ds->dev, "invalid STP state: %d\n", state);
-		return;
+		break;
 	}
 
-	a5psw_port_learning_set(a5psw, port, learning_enabled);
-	a5psw_port_rx_block_set(a5psw, port, !rx_enabled);
-	a5psw_port_tx_enable(a5psw, port, tx_enabled);
+	a5psw_reg_rmw(a5psw, A5PSW_INPUT_LEARN, mask, reg);
 }
 
 static void a5psw_port_fast_age(struct dsa_switch *ds, int port)
@@ -650,140 +540,6 @@ out_unlock:
 	return ret;
 }
 
-static int a5psw_port_vlan_filtering(struct dsa_switch *ds, int port,
-				     bool vlan_filtering,
-				     struct netlink_ext_ack *extack)
-{
-	u32 mask = BIT(port + A5PSW_VLAN_VERI_SHIFT) |
-		   BIT(port + A5PSW_VLAN_DISC_SHIFT);
-	u32 val = vlan_filtering ? mask : 0;
-	struct a5psw *a5psw = ds->priv;
-
-	/* Disable/enable vlan tagging */
-	a5psw_reg_rmw(a5psw, A5PSW_VLAN_IN_MODE_ENA, BIT(port),
-		      vlan_filtering ? BIT(port) : 0);
-
-	/* Disable/enable vlan input filtering */
-	a5psw_reg_rmw(a5psw, A5PSW_VLAN_VERIFY, mask, val);
-
-	return 0;
-}
-
-static int a5psw_find_vlan_entry(struct a5psw *a5psw, u16 vid)
-{
-	u32 vlan_res;
-	int i;
-
-	/* Find vlan for this port */
-	for (i = 0; i < A5PSW_VLAN_COUNT; i++) {
-		vlan_res = a5psw_reg_readl(a5psw, A5PSW_VLAN_RES(i));
-		if (FIELD_GET(A5PSW_VLAN_RES_VLANID, vlan_res) == vid)
-			return i;
-	}
-
-	return -1;
-}
-
-static int a5psw_new_vlan_res_entry(struct a5psw *a5psw, u16 newvid)
-{
-	u32 vlan_res;
-	int i;
-
-	/* Find a free VLAN entry */
-	for (i = 0; i < A5PSW_VLAN_COUNT; i++) {
-		vlan_res = a5psw_reg_readl(a5psw, A5PSW_VLAN_RES(i));
-		if (!(FIELD_GET(A5PSW_VLAN_RES_PORTMASK, vlan_res))) {
-			vlan_res = FIELD_PREP(A5PSW_VLAN_RES_VLANID, newvid);
-			a5psw_reg_writel(a5psw, A5PSW_VLAN_RES(i), vlan_res);
-			return i;
-		}
-	}
-
-	return -1;
-}
-
-static void a5psw_port_vlan_tagged_cfg(struct a5psw *a5psw,
-				       unsigned int vlan_res_id, int port,
-				       bool set)
-{
-	u32 mask = A5PSW_VLAN_RES_WR_PORTMASK | A5PSW_VLAN_RES_RD_TAGMASK |
-		   BIT(port);
-	u32 vlan_res_off = A5PSW_VLAN_RES(vlan_res_id);
-	u32 val = A5PSW_VLAN_RES_WR_TAGMASK, reg;
-
-	if (set)
-		val |= BIT(port);
-
-	/* Toggle tag mask read */
-	a5psw_reg_writel(a5psw, vlan_res_off, A5PSW_VLAN_RES_RD_TAGMASK);
-	reg = a5psw_reg_readl(a5psw, vlan_res_off);
-	a5psw_reg_writel(a5psw, vlan_res_off, A5PSW_VLAN_RES_RD_TAGMASK);
-
-	reg &= ~mask;
-	reg |= val;
-	a5psw_reg_writel(a5psw, vlan_res_off, reg);
-}
-
-static void a5psw_port_vlan_cfg(struct a5psw *a5psw, unsigned int vlan_res_id,
-				int port, bool set)
-{
-	u32 mask = A5PSW_VLAN_RES_WR_TAGMASK | BIT(port);
-	u32 reg = A5PSW_VLAN_RES_WR_PORTMASK;
-
-	if (set)
-		reg |= BIT(port);
-
-	a5psw_reg_rmw(a5psw, A5PSW_VLAN_RES(vlan_res_id), mask, reg);
-}
-
-static int a5psw_port_vlan_add(struct dsa_switch *ds, int port,
-			       const struct switchdev_obj_port_vlan *vlan,
-			       struct netlink_ext_ack *extack)
-{
-	bool tagged = !(vlan->flags & BRIDGE_VLAN_INFO_UNTAGGED);
-	bool pvid = vlan->flags & BRIDGE_VLAN_INFO_PVID;
-	struct a5psw *a5psw = ds->priv;
-	u16 vid = vlan->vid;
-	int vlan_res_id;
-
-	vlan_res_id = a5psw_find_vlan_entry(a5psw, vid);
-	if (vlan_res_id < 0) {
-		vlan_res_id = a5psw_new_vlan_res_entry(a5psw, vid);
-		if (vlan_res_id < 0)
-			return -ENOSPC;
-	}
-
-	a5psw_port_vlan_cfg(a5psw, vlan_res_id, port, true);
-	if (tagged)
-		a5psw_port_vlan_tagged_cfg(a5psw, vlan_res_id, port, true);
-
-	/* Configure port to tag with corresponding VID, but do not enable it
-	 * yet: wait for vlan filtering to be enabled to enable vlan port
-	 * tagging
-	 */
-	if (pvid)
-		a5psw_reg_writel(a5psw, A5PSW_SYSTEM_TAGINFO(port), vid);
-
-	return 0;
-}
-
-static int a5psw_port_vlan_del(struct dsa_switch *ds, int port,
-			       const struct switchdev_obj_port_vlan *vlan)
-{
-	struct a5psw *a5psw = ds->priv;
-	u16 vid = vlan->vid;
-	int vlan_res_id;
-
-	vlan_res_id = a5psw_find_vlan_entry(a5psw, vid);
-	if (vlan_res_id < 0)
-		return -EINVAL;
-
-	a5psw_port_vlan_cfg(a5psw, vlan_res_id, port, false);
-	a5psw_port_vlan_tagged_cfg(a5psw, vlan_res_id, port, false);
-
-	return 0;
-}
-
 static u64 a5psw_read_stat(struct a5psw *a5psw, u32 offset, int port)
 {
 	u32 reg_lo, reg_hi;
@@ -803,8 +559,10 @@ static void a5psw_get_strings(struct dsa_switch *ds, int port, u32 stringset,
 	if (stringset != ETH_SS_STATS)
 		return;
 
-	for (u = 0; u < ARRAY_SIZE(a5psw_stats); u++)
-		ethtool_puts(&data, a5psw_stats[u].name);
+	for (u = 0; u < ARRAY_SIZE(a5psw_stats); u++) {
+		memcpy(data + u * ETH_GSTRING_LEN, a5psw_stats[u].name,
+		       ETH_GSTRING_LEN);
+	}
 }
 
 static void a5psw_get_ethtool_stats(struct dsa_switch *ds, int port,
@@ -899,27 +657,6 @@ static void a5psw_get_eth_ctrl_stats(struct dsa_switch *ds, int port,
 	ctrl_stats->MACControlFramesReceived = stat;
 }
 
-static void a5psw_vlan_setup(struct a5psw *a5psw, int port)
-{
-	u32 reg;
-
-	/* Enable TAG always mode for the port, this is actually controlled
-	 * by VLAN_IN_MODE_ENA field which will be used for PVID insertion
-	 */
-	reg = A5PSW_VLAN_IN_MODE_TAG_ALWAYS;
-	reg <<= A5PSW_VLAN_IN_MODE_PORT_SHIFT(port);
-	a5psw_reg_rmw(a5psw, A5PSW_VLAN_IN_MODE, A5PSW_VLAN_IN_MODE_PORT(port),
-		      reg);
-
-	/* Set transparent mode for output frame manipulation, this will depend
-	 * on the VLAN_RES configuration mode
-	 */
-	reg = A5PSW_VLAN_OUT_MODE_TRANSPARENT;
-	reg <<= A5PSW_VLAN_OUT_MODE_PORT_SHIFT(port);
-	a5psw_reg_rmw(a5psw, A5PSW_VLAN_OUT_MODE,
-		      A5PSW_VLAN_OUT_MODE_PORT(port), reg);
-}
-
 static int a5psw_setup(struct dsa_switch *ds)
 {
 	struct a5psw *a5psw = ds->priv;
@@ -936,7 +673,7 @@ static int a5psw_setup(struct dsa_switch *ds)
 	}
 
 	/* Configure management port */
-	reg = A5PSW_CPU_PORT | A5PSW_MGMT_CFG_ENABLE;
+	reg = A5PSW_CPU_PORT | A5PSW_MGMT_CFG_DISCARD;
 	a5psw_reg_writel(a5psw, A5PSW_MGMT_CFG, reg);
 
 	/* Set pattern 0 to forward all frame to mgmt port */
@@ -985,28 +722,17 @@ static int a5psw_setup(struct dsa_switch *ds)
 		if (dsa_port_is_unused(dp))
 			continue;
 
-		/* Enable egress flooding and learning for CPU port */
-		if (dsa_port_is_cpu(dp)) {
+		/* Enable egress flooding for CPU port */
+		if (dsa_port_is_cpu(dp))
 			a5psw_flooding_set_resolution(a5psw, port, true);
-			a5psw_port_learning_set(a5psw, port, true);
-		}
 
-		/* Enable standalone mode for user ports */
+		/* Enable management forward only for user ports */
 		if (dsa_port_is_user(dp))
-			a5psw_port_set_standalone(a5psw, port, true);
-
-		a5psw_vlan_setup(a5psw, port);
+			a5psw_port_mgmtfwd_set(a5psw, port, true);
 	}
 
 	return 0;
 }
-
-static const struct phylink_mac_ops a5psw_phylink_mac_ops = {
-	.mac_select_pcs = a5psw_phylink_mac_select_pcs,
-	.mac_config = a5psw_phylink_mac_config,
-	.mac_link_down = a5psw_phylink_mac_link_down,
-	.mac_link_up = a5psw_phylink_mac_link_up,
-};
 
 static const struct dsa_switch_ops a5psw_switch_ops = {
 	.get_tag_protocol = a5psw_get_tag_protocol,
@@ -1014,6 +740,9 @@ static const struct dsa_switch_ops a5psw_switch_ops = {
 	.port_disable = a5psw_port_disable,
 	.port_enable = a5psw_port_enable,
 	.phylink_get_caps = a5psw_phylink_get_caps,
+	.phylink_mac_select_pcs = a5psw_phylink_mac_select_pcs,
+	.phylink_mac_link_down = a5psw_phylink_mac_link_down,
+	.phylink_mac_link_up = a5psw_phylink_mac_link_up,
 	.port_change_mtu = a5psw_port_change_mtu,
 	.port_max_mtu = a5psw_port_max_mtu,
 	.get_sset_count = a5psw_get_sset_count,
@@ -1025,18 +754,11 @@ static const struct dsa_switch_ops a5psw_switch_ops = {
 	.set_ageing_time = a5psw_set_ageing_time,
 	.port_bridge_join = a5psw_port_bridge_join,
 	.port_bridge_leave = a5psw_port_bridge_leave,
-	.port_pre_bridge_flags = a5psw_port_pre_bridge_flags,
-	.port_bridge_flags = a5psw_port_bridge_flags,
 	.port_stp_state_set = a5psw_port_stp_state_set,
 	.port_fast_age = a5psw_port_fast_age,
-	.port_vlan_filtering = a5psw_port_vlan_filtering,
-	.port_vlan_add = a5psw_port_vlan_add,
-	.port_vlan_del = a5psw_port_vlan_del,
 	.port_fdb_add = a5psw_port_fdb_add,
 	.port_fdb_del = a5psw_port_fdb_del,
 	.port_fdb_dump = a5psw_port_fdb_dump,
-	.port_hsr_join = dsa_port_simple_hsr_join,
-	.port_hsr_leave = dsa_port_simple_hsr_leave,
 };
 
 static int a5psw_mdio_wait_busy(struct a5psw *a5psw)
@@ -1223,66 +945,81 @@ static int a5psw_probe(struct platform_device *pdev)
 	if (IS_ERR(a5psw->base))
 		return PTR_ERR(a5psw->base);
 
-	a5psw->bridged_ports = BIT(A5PSW_CPU_PORT);
-
 	ret = a5psw_pcs_get(a5psw);
 	if (ret)
 		return ret;
 
-	a5psw->hclk = devm_clk_get_enabled(dev, "hclk");
+	a5psw->hclk = devm_clk_get(dev, "hclk");
 	if (IS_ERR(a5psw->hclk)) {
 		dev_err(dev, "failed get hclk clock\n");
 		ret = PTR_ERR(a5psw->hclk);
 		goto free_pcs;
 	}
 
-	a5psw->clk = devm_clk_get_enabled(dev, "clk");
+	a5psw->clk = devm_clk_get(dev, "clk");
 	if (IS_ERR(a5psw->clk)) {
 		dev_err(dev, "failed get clk_switch clock\n");
 		ret = PTR_ERR(a5psw->clk);
 		goto free_pcs;
 	}
 
-	mdio = of_get_available_child_by_name(dev->of_node, "mdio");
-	if (mdio) {
+	ret = clk_prepare_enable(a5psw->clk);
+	if (ret)
+		goto free_pcs;
+
+	ret = clk_prepare_enable(a5psw->hclk);
+	if (ret)
+		goto clk_disable;
+
+	mdio = of_get_child_by_name(dev->of_node, "mdio");
+	if (of_device_is_available(mdio)) {
 		ret = a5psw_probe_mdio(a5psw, mdio);
-		of_node_put(mdio);
 		if (ret) {
+			of_node_put(mdio);
 			dev_err(dev, "Failed to register MDIO: %d\n", ret);
-			goto free_pcs;
+			goto hclk_disable;
 		}
 	}
+
+	of_node_put(mdio);
 
 	ds = &a5psw->ds;
 	ds->dev = dev;
 	ds->num_ports = A5PSW_PORTS_NUM;
 	ds->ops = &a5psw_switch_ops;
-	ds->phylink_mac_ops = &a5psw_phylink_mac_ops;
 	ds->priv = a5psw;
 
 	ret = dsa_register_switch(ds);
 	if (ret) {
 		dev_err(dev, "Failed to register DSA switch: %d\n", ret);
-		goto free_pcs;
+		goto hclk_disable;
 	}
 
 	return 0;
 
+hclk_disable:
+	clk_disable_unprepare(a5psw->hclk);
+clk_disable:
+	clk_disable_unprepare(a5psw->clk);
 free_pcs:
 	a5psw_pcs_free(a5psw);
 
 	return ret;
 }
 
-static void a5psw_remove(struct platform_device *pdev)
+static int a5psw_remove(struct platform_device *pdev)
 {
 	struct a5psw *a5psw = platform_get_drvdata(pdev);
 
 	if (!a5psw)
-		return;
+		return 0;
 
 	dsa_unregister_switch(&a5psw->ds);
 	a5psw_pcs_free(a5psw);
+	clk_disable_unprepare(a5psw->hclk);
+	clk_disable_unprepare(a5psw->clk);
+
+	return 0;
 }
 
 static void a5psw_shutdown(struct platform_device *pdev)
@@ -1306,7 +1043,7 @@ MODULE_DEVICE_TABLE(of, a5psw_of_mtable);
 static struct platform_driver a5psw_driver = {
 	.driver = {
 		.name	 = "rzn1_a5psw",
-		.of_match_table = a5psw_of_mtable,
+		.of_match_table = of_match_ptr(a5psw_of_mtable),
 	},
 	.probe = a5psw_probe,
 	.remove = a5psw_remove,

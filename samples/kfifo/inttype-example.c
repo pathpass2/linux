@@ -182,6 +182,5 @@ static void __exit example_exit(void)
 
 module_init(example_init);
 module_exit(example_exit);
-MODULE_DESCRIPTION("Sample kfifo int type implementation");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Stefani Seibold <stefani@seibold.net>");

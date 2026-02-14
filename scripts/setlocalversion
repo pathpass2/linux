@@ -2,15 +2,13 @@
 # SPDX-License-Identifier: GPL-2.0
 #
 # This scripts adds local version information from the version
-# control system git.
+# control systems git, mercurial (hg) and subversion (svn).
 #
 # If something goes wrong, send a mail the kernel build mailinglist
 # (see MAINTAINERS) and CC Nico Schottelius
 # <nico-linuxsetlocalversion -at- schottelius.org>.
 #
 #
-
-set -e
 
 usage() {
 	echo "Usage: $0 [--no-local] [srctree]" >&2
@@ -31,29 +29,6 @@ fi
 if test $# -gt 0 -o ! -d "$srctree"; then
 	usage
 fi
-
-try_tag() {
-	tag="$1"
-
-	# Is $tag an annotated tag?
-	if [ "$(git cat-file -t "$tag" 2> /dev/null)" != tag ]; then
-		 return
-	fi
-
-	# Is it an ancestor of HEAD, and if so, how many commits are in $tag..HEAD?
-	# shellcheck disable=SC2046 # word splitting is the point here
-	set -- $(git rev-list --count --left-right "$tag"...HEAD 2> /dev/null)
-
-	# $1 is 0 if and only if $tag is an ancestor of HEAD. Use
-	# string comparison, because $1 is empty if the 'git rev-list'
-	# command somehow failed.
-	if [ "$1" != 0 ]; then
-		return
-	fi
-
-	# $2 is the number of commits in the range $tag..HEAD, possibly 0.
-	count="$2"
-}
 
 scm_version()
 {
@@ -82,37 +57,21 @@ scm_version()
 		return
 	fi
 
-	# mainline kernel:  6.2.0-rc5  ->  v6.2-rc5
-	# stable kernel:    6.1.7      ->  v6.1.7
-	version_tag=v$(echo "${KERNELVERSION}" | sed -E 's/^([0-9]+\.[0-9]+)\.0(.*)$/\1\2/')
-
-	# try_tag initializes count if the tag is usable.
-	count=
-
-	# If a localversion* file exists, and the corresponding
-	# annotated tag exists and is an ancestor of HEAD, use
-	# it. This is the case in linux-next.
-	if [ -n "${file_localversion#-}" ] ; then
-		try_tag "${file_localversion#-}"
-	fi
-
-	# Otherwise, if a localversion* file exists, and the tag
-	# obtained by appending it to the tag derived from
-	# KERNELVERSION exists and is an ancestor of HEAD, use
-	# it. This is e.g. the case in linux-rt.
-	if [ -z "${count}" ] && [ -n "${file_localversion}" ]; then
-		try_tag "${version_tag}${file_localversion}"
-	fi
+	# If a localversion*' file and the corresponding annotated tag exist,
+	# use it. This is the case in linux-next.
+	tag=${file_localversion#-}
+	tag=$(git describe --exact-match --match=$tag $tag 2>/dev/null)
 
 	# Otherwise, default to the annotated tag derived from KERNELVERSION.
-	if [ -z "${count}" ]; then
-		try_tag "${version_tag}"
+	#   mainline kernel:  6.2.0-rc5  ->  v6.2-rc5
+	#   stable kernel:    6.1.7      ->  v6.1.7
+	if [ -z "${tag}" ]; then
+		tag=v$(echo "${KERNELVERSION}" | sed -E 's/^([0-9]+\.[0-9]+)\.0(.*)$/\1\2/')
 	fi
 
-	# If we are at the tagged commit, we ignore it because the
-	# version is well-defined. If none of the attempted tags exist
-	# or were usable, $count is still empty.
-	if [ -z "${count}" ] || [ "${count}" -gt 0 ]; then
+	# If we are at the tagged commit, we ignore it because the version is
+	# well-defined.
+	if [ -z "$(git describe --exact-match --match=$tag 2>/dev/null)" ]; then
 
 		# If only the short version is requested, don't bother
 		# running further git commands
@@ -120,15 +79,14 @@ scm_version()
 		#	echo "+"
 			return
 		fi
-
 		# If we are past the tagged commit, we pretty print it.
 		# (like 6.1.0-14595-g292a089d78d3)
-		if [ -n "${count}" ]; then
-			printf "%s%05d" "-" "${count}"
+		if atag="$(git describe --match=$tag 2>/dev/null)"; then
+			echo "$atag" | awk -F- '{printf("-%05d", $(NF-1))}'
 		fi
 
 		# Add -g and exactly 12 hex chars.
-		printf '%s%.12s' -g "$head"
+		printf '%s%s' -g "$(echo $head | cut -c1-12)"
 	fi
 
 	if ${no_dirty}; then

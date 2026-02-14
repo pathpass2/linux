@@ -16,7 +16,6 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/firmware.h>
-#include <linux/pci.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_qos.h>
 #include <linux/async.h>
@@ -64,7 +63,7 @@ static irqreturn_t intel_sst_interrupt_mrfld(int irq, void *context)
 		header.p.header_high.part.done = 0;
 		sst_shim_write64(drv->shim, drv->ipc_reg.ipcx, header.full);
 
-		/* write 1 to clear status register */
+		/* write 1 to clear status register */;
 		isr.part.done_interrupt = 1;
 		sst_shim_write64(drv->shim, SST_ISRX, isr.full);
 		spin_unlock(&drv->ipc_spin_lock);
@@ -175,9 +174,9 @@ int sst_driver_ops(struct intel_sst_drv *sst)
 {
 
 	switch (sst->dev_id) {
-	case PCI_DEVICE_ID_INTEL_SST_TNG:
-	case PCI_DEVICE_ID_INTEL_SST_BYT:
-	case PCI_DEVICE_ID_INTEL_SST_BSW:
+	case SST_MRFLD_PCI_ID:
+	case SST_BYT_ACPI_ID:
+	case SST_CHV_ACPI_ID:
 		sst->tstamp = SST_TIME_STAMP_MRFLD;
 		sst->ops = &mrfld_ops;
 		return 0;
@@ -222,13 +221,8 @@ static void sst_init_locks(struct intel_sst_drv *ctx)
 	spin_lock_init(&ctx->block_lock);
 }
 
-/*
- * Driver handles PCI IDs in ACPI - sst_acpi_probe() - and we are using only
- * device ID part. If real ACPI ID appears, the kstrtouint() returns error, so
- * we are fine with using unsigned short as dev_id type.
- */
 int sst_alloc_drv_context(struct intel_sst_drv **ctx,
-		struct device *dev, unsigned short dev_id)
+		struct device *dev, unsigned int dev_id)
 {
 	*ctx = devm_kzalloc(dev, sizeof(struct intel_sst_drv), GFP_KERNEL);
 	if (!(*ctx))

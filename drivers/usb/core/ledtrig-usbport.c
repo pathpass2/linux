@@ -10,7 +10,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/slab.h>
-#include <linux/sysfs.h>
 #include <linux/usb.h>
 #include <linux/usb/of.h>
 
@@ -88,7 +87,7 @@ static ssize_t usbport_trig_port_show(struct device *dev,
 						      struct usbport_trig_port,
 						      attr);
 
-	return sysfs_emit(buf, "%d\n", port->observed) + 1;
+	return sprintf(buf, "%d\n", port->observed) + 1;
 }
 
 static ssize_t usbport_trig_port_store(struct device *dev,
@@ -351,7 +350,18 @@ static struct led_trigger usbport_led_trigger = {
 	.deactivate = usbport_trig_deactivate,
 };
 
-module_led_trigger(usbport_led_trigger);
+static int __init usbport_trig_init(void)
+{
+	return led_trigger_register(&usbport_led_trigger);
+}
+
+static void __exit usbport_trig_exit(void)
+{
+	led_trigger_unregister(&usbport_led_trigger);
+}
+
+module_init(usbport_trig_init);
+module_exit(usbport_trig_exit);
 
 MODULE_AUTHOR("Rafał Miłecki <rafal@milecki.pl>");
 MODULE_DESCRIPTION("USB port trigger");

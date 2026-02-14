@@ -29,6 +29,7 @@
 
 MODULE_DESCRIPTION("Watch queue");
 MODULE_AUTHOR("Red Hat, Inc.");
+MODULE_LICENSE("GPL");
 
 #define WATCH_QUEUE_NOTE_SIZE 128
 #define WATCH_QUEUE_NOTES_PER_PAGE (PAGE_SIZE / WATCH_QUEUE_NOTE_SIZE)
@@ -42,7 +43,7 @@ MODULE_AUTHOR("Red Hat, Inc.");
 static inline bool lock_wqueue(struct watch_queue *wqueue)
 {
 	spin_lock_bh(&wqueue->lock);
-	if (unlikely(!wqueue->pipe)) {
+	if (unlikely(wqueue->defunct)) {
 		spin_unlock_bh(&wqueue->lock);
 		return false;
 	}
@@ -71,7 +72,7 @@ static void watch_queue_pipe_buf_release(struct pipe_inode_info *pipe,
 	bit /= WATCH_QUEUE_NOTE_SIZE;
 
 	page = buf->page;
-	bit += page->private;
+	bit += page->index;
 
 	set_bit(bit, wqueue->notes_bitmap);
 	generic_pipe_buf_release(pipe, buf);
@@ -101,11 +102,15 @@ static bool post_one_notification(struct watch_queue *wqueue,
 	struct pipe_inode_info *pipe = wqueue->pipe;
 	struct pipe_buffer *buf;
 	struct page *page;
-	unsigned int head, tail, note, offset, len;
+	unsigned int head, tail, mask, note, offset, len;
 	bool done = false;
+
+	if (!pipe)
+		return false;
 
 	spin_lock_irq(&pipe->rd_wait.lock);
 
+	mask = pipe->ring_size - 1;
 	head = pipe->head;
 	tail = pipe->tail;
 	if (pipe_full(head, tail, pipe->ring_size))
@@ -119,11 +124,11 @@ static bool post_one_notification(struct watch_queue *wqueue,
 	offset = note % WATCH_QUEUE_NOTES_PER_PAGE * WATCH_QUEUE_NOTE_SIZE;
 	get_page(page);
 	len = n->info & WATCH_INFO_LENGTH;
-	p = kmap_local_page(page);
+	p = kmap_atomic(page);
 	memcpy(p + offset, n, len);
-	kunmap_local(p);
+	kunmap_atomic(p);
 
-	buf = pipe_buf(pipe, head);
+	buf = &pipe->bufs[head & mask];
 	buf->page = page;
 	buf->private = (unsigned long)wqueue;
 	buf->ops = &watch_queue_pipe_buf_ops;
@@ -146,7 +151,7 @@ out:
 	return done;
 
 lost:
-	buf = pipe_buf(pipe, head - 1);
+	buf = &pipe->bufs[(head - 1) & mask];
 	buf->flags |= PIPE_BUF_FLAG_LOSS;
 	goto out;
 }
@@ -268,17 +273,8 @@ long watch_queue_set_size(struct pipe_inode_info *pipe, unsigned int nr_notes)
 	if (ret < 0)
 		goto error;
 
-	/*
-	 * pipe_resize_ring() does not update nr_accounted for watch_queue
-	 * pipes, because the above vastly overprovisions. Set nr_accounted on
-	 * and max_usage this pipe to the number that was actually charged to
-	 * the user above via account_pipe_buffers.
-	 */
-	pipe->max_usage = nr_pages;
-	pipe->nr_accounted = nr_pages;
-
 	ret = -ENOMEM;
-	pages = kcalloc(nr_pages, sizeof(struct page *), GFP_KERNEL);
+	pages = kcalloc(sizeof(struct page *), nr_pages, GFP_KERNEL);
 	if (!pages)
 		goto error;
 
@@ -286,7 +282,7 @@ long watch_queue_set_size(struct pipe_inode_info *pipe, unsigned int nr_notes)
 		pages[i] = alloc_page(GFP_KERNEL);
 		if (!pages[i])
 			goto error_p;
-		pages[i]->private = i * WATCH_QUEUE_NOTES_PER_PAGE;
+		pages[i]->index = i * WATCH_QUEUE_NOTES_PER_PAGE;
 	}
 
 	bitmap = bitmap_alloc(nr_notes, GFP_KERNEL);
@@ -339,7 +335,7 @@ long watch_queue_set_filter(struct pipe_inode_info *pipe,
 	    filter.__reserved != 0)
 		return -EINVAL;
 
-	tf = memdup_array_user(_filter->filters, filter.nr_filters, sizeof(*tf));
+	tf = memdup_user(_filter->filters, filter.nr_filters * sizeof(*tf));
 	if (IS_ERR(tf))
 		return PTR_ERR(tf);
 
@@ -608,11 +604,8 @@ void watch_queue_clear(struct watch_queue *wqueue)
 	rcu_read_lock();
 	spin_lock_bh(&wqueue->lock);
 
-	/*
-	 * This pipe can be freed by callers like free_pipe_info().
-	 * Removing this reference also prevents new notifications.
-	 */
-	wqueue->pipe = NULL;
+	/* Prevent new notifications from being stored. */
+	wqueue->defunct = true;
 
 	while (!hlist_empty(&wqueue->watches)) {
 		watch = hlist_entry(wqueue->watches.first, struct watch, queue_node);
@@ -671,14 +664,16 @@ struct watch_queue *get_watch_queue(int fd)
 {
 	struct pipe_inode_info *pipe;
 	struct watch_queue *wqueue = ERR_PTR(-EINVAL);
-	CLASS(fd, f)(fd);
+	struct fd f;
 
-	if (!fd_empty(f)) {
-		pipe = get_pipe_info(fd_file(f), false);
+	f = fdget(fd);
+	if (f.file) {
+		pipe = get_pipe_info(f.file, false);
 		if (pipe && pipe->watch_queue) {
 			wqueue = pipe->watch_queue;
 			kref_get(&wqueue->usage);
 		}
+		fdput(f);
 	}
 
 	return wqueue;

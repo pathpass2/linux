@@ -525,7 +525,7 @@ struct dvb_frontend *ts2020_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL_GPL(ts2020_attach);
+EXPORT_SYMBOL(ts2020_attach);
 
 /*
  * We implement own regmap locking due to legacy DVB attach which uses frontend
@@ -553,19 +553,13 @@ static void ts2020_regmap_unlock(void *__dev)
 static int ts2020_probe(struct i2c_client *client)
 {
 	struct ts2020_config *pdata = client->dev.platform_data;
-	struct dvb_frontend *fe;
+	struct dvb_frontend *fe = pdata->fe;
 	struct ts2020_priv *dev;
 	int ret;
 	u8 u8tmp;
 	unsigned int utmp;
 	char *chip_str;
 
-	if (!pdata) {
-		dev_err(&client->dev, "platform data is mandatory\n");
-		return -EINVAL;
-	}
-
-	fe = pdata->fe;
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
 		ret = -ENOMEM;
@@ -716,8 +710,8 @@ static void ts2020_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ts2020_id_table[] = {
-	{ "ts2020" },
-	{ "ts2022" },
+	{"ts2020", 0},
+	{"ts2022", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ts2020_id_table);
@@ -726,7 +720,7 @@ static struct i2c_driver ts2020_driver = {
 	.driver = {
 		.name	= "ts2020",
 	},
-	.probe		= ts2020_probe,
+	.probe_new	= ts2020_probe,
 	.remove		= ts2020_remove,
 	.id_table	= ts2020_id_table,
 };

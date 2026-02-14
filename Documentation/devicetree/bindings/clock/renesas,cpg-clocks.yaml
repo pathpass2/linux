@@ -32,16 +32,12 @@ properties:
   reg:
     maxItems: 1
 
-  clocks:
-    minItems: 1
-    maxItems: 3
+  clocks: true
 
   '#clock-cells':
     const: 1
 
-  clock-output-names:
-    minItems: 3
-    maxItems: 17
+  clock-output-names: true
 
   renesas,mode:
     description: Board-specific settings of the MD_CK* bits on R-Mobile A1

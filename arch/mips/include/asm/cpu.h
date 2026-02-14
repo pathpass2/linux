@@ -248,7 +248,8 @@
 #define PRID_REV_VR4181A		0x0070	/* Same as VR4122 */
 #define PRID_REV_VR4130			0x0080
 #define PRID_REV_34K_V1_0_2		0x0022
-#define PRID_REV_LOONGSON1		0x0020
+#define PRID_REV_LOONGSON1B		0x0020
+#define PRID_REV_LOONGSON1C		0x0020	/* Same as Loongson-1B */
 #define PRID_REV_LOONGSON2E		0x0002
 #define PRID_REV_LOONGSON2F		0x0003
 #define PRID_REV_LOONGSON2K_R1_0	0x0000
@@ -287,7 +288,7 @@
 
 #define FPIR_IMP_NONE		0x0000
 
-#if !defined(__ASSEMBLER__)
+#if !defined(__ASSEMBLY__)
 
 enum cpu_type_enum {
 	CPU_UNKNOWN,
@@ -328,7 +329,7 @@ enum cpu_type_enum {
 	CPU_LAST
 };
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY */
 
 /*
  * ISA Level encodings

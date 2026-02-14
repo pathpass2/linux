@@ -11,8 +11,11 @@
 #include <linux/err.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/fsl/ftm.h>
 #include <linux/rtc.h>
@@ -309,7 +312,7 @@ static const struct of_device_id ftm_rtc_match[] = {
 };
 MODULE_DEVICE_TABLE(of, ftm_rtc_match);
 
-static const struct acpi_device_id ftm_imx_acpi_ids[] __maybe_unused = {
+static const struct acpi_device_id ftm_imx_acpi_ids[] = {
 	{"NXP0014",},
 	{ }
 };

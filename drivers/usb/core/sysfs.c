@@ -161,6 +161,9 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr,
 	case USB_SPEED_HIGH:
 		speed = "480";
 		break;
+	case USB_SPEED_WIRELESS:
+		speed = "480";
+		break;
 	case USB_SPEED_SUPER:
 		speed = "5000";
 		break;
@@ -273,10 +276,9 @@ static ssize_t avoid_reset_quirk_store(struct device *dev,
 				      const char *buf, size_t count)
 {
 	struct usb_device	*udev = to_usb_device(dev);
-	bool			val;
-	int			rc;
+	int			val, rc;
 
-	if (kstrtobool(buf, &val) != 0)
+	if (sscanf(buf, "%d", &val) != 1 || val < 0 || val > 1)
 		return -EINVAL;
 	rc = usb_lock_device_interruptible(udev);
 	if (rc < 0)
@@ -323,14 +325,13 @@ static ssize_t persist_store(struct device *dev, struct device_attribute *attr,
 			     const char *buf, size_t count)
 {
 	struct usb_device *udev = to_usb_device(dev);
-	bool value;
-	int rc;
+	int value, rc;
 
 	/* Hubs are always enabled for USB_PERSIST */
 	if (udev->descriptor.bDeviceClass == USB_CLASS_HUB)
 		return -EPERM;
 
-	if (kstrtobool(buf, &value) != 0)
+	if (sscanf(buf, "%d", &value) != 1)
 		return -EINVAL;
 
 	rc = usb_lock_device_interruptible(udev);
@@ -670,7 +671,6 @@ static int add_power_attributes(struct device *dev)
 
 static void remove_power_attributes(struct device *dev)
 {
-	sysfs_unmerge_group(&dev->kobj, &usb3_hardware_lpm_attr_group);
 	sysfs_unmerge_group(&dev->kobj, &usb2_hardware_lpm_attr_group);
 	sysfs_unmerge_group(&dev->kobj, &power_attr_group);
 }
@@ -742,14 +742,14 @@ static ssize_t authorized_store(struct device *dev,
 {
 	ssize_t result;
 	struct usb_device *usb_dev = to_usb_device(dev);
-	bool val;
-
-	if (kstrtobool(buf, &val) != 0)
+	unsigned val;
+	result = sscanf(buf, "%u\n", &val);
+	if (result != 1)
 		result = -EINVAL;
-	else if (val)
-		result = usb_authorize_device(usb_dev);
-	else
+	else if (val == 0)
 		result = usb_deauthorize_device(usb_dev);
+	else
+		result = usb_authorize_device(usb_dev);
 	return result < 0 ? result : size;
 }
 static DEVICE_ATTR_IGNORE_LOCKDEP(authorized, S_IRUGO | S_IWUSR,
@@ -850,11 +850,17 @@ static const struct attribute_group dev_string_attr_grp = {
 	.is_visible =	dev_string_attrs_are_visible,
 };
 
+const struct attribute_group *usb_device_groups[] = {
+	&dev_attr_grp,
+	&dev_string_attr_grp,
+	NULL
+};
+
 /* Binary descriptors */
 
 static ssize_t
-descriptors_read(struct file *filp, struct kobject *kobj,
-		const struct bin_attribute *attr,
+read_descriptors(struct file *filp, struct kobject *kobj,
+		struct bin_attribute *attr,
 		char *buf, loff_t off, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -875,7 +881,7 @@ descriptors_read(struct file *filp, struct kobject *kobj,
 			srclen = sizeof(struct usb_device_descriptor);
 		} else {
 			src = udev->rawdescriptors[cfgno];
-			srclen = le16_to_cpu(udev->config[cfgno].desc.
+			srclen = __le16_to_cpu(udev->config[cfgno].desc.
 					wTotalLength);
 		}
 		if (off < srclen) {
@@ -890,69 +896,11 @@ descriptors_read(struct file *filp, struct kobject *kobj,
 	}
 	return count - nleft;
 }
-static const BIN_ATTR_RO(descriptors, 18 + 65535); /* dev descr + max-size raw descriptor */
 
-static ssize_t
-bos_descriptors_read(struct file *filp, struct kobject *kobj,
-		const struct bin_attribute *attr,
-		char *buf, loff_t off, size_t count)
-{
-	struct device *dev = kobj_to_dev(kobj);
-	struct usb_device *udev = to_usb_device(dev);
-	struct usb_host_bos *bos = udev->bos;
-	struct usb_bos_descriptor *desc;
-	size_t desclen, n = 0;
-
-	if (bos) {
-		desc = bos->desc;
-		desclen = le16_to_cpu(desc->wTotalLength);
-		if (off < desclen) {
-			n = min(count, desclen - (size_t) off);
-			memcpy(buf, (void *) desc + off, n);
-		}
-	}
-	return n;
-}
-static const BIN_ATTR_RO(bos_descriptors, 65535); /* max-size BOS */
-
-/* When modifying this list, be sure to modify dev_bin_attrs_are_visible()
- * accordingly.
- */
-static const struct bin_attribute *const dev_bin_attrs[] = {
-	&bin_attr_descriptors,
-	&bin_attr_bos_descriptors,
-	NULL
-};
-
-static umode_t dev_bin_attrs_are_visible(struct kobject *kobj,
-		const struct bin_attribute *a, int n)
-{
-	struct device *dev = kobj_to_dev(kobj);
-	struct usb_device *udev = to_usb_device(dev);
-
-	/*
-	 * There's no need to check if the descriptors attribute should
-	 * be visible because all devices have a device descriptor. The
-	 * bos_descriptors attribute should be visible if and only if
-	 * the device has a BOS, so check if it exists here.
-	 */
-	if (a == &bin_attr_bos_descriptors) {
-		if (udev->bos == NULL)
-			return 0;
-	}
-	return a->attr.mode;
-}
-
-static const struct attribute_group dev_bin_attr_grp = {
-	.bin_attrs =	dev_bin_attrs,
-	.is_bin_visible =	dev_bin_attrs_are_visible,
-};
-
-const struct attribute_group *usb_device_groups[] = {
-	&dev_attr_grp,
-	&dev_string_attr_grp,
-	&dev_bin_attr_grp,
-	NULL
+static struct bin_attribute dev_bin_attr_descriptors = {
+	.attr = {.name = "descriptors", .mode = 0444},
+	.read = read_descriptors,
+	.size = 18 + 65535,	/* dev descr + max-size raw descriptor */
 };
 
 /*
@@ -1070,6 +1018,10 @@ int usb_create_sysfs_dev_files(struct usb_device *udev)
 	struct device *dev = &udev->dev;
 	int retval;
 
+	retval = device_create_bin_file(dev, &dev_bin_attr_descriptors);
+	if (retval)
+		goto error;
+
 	retval = add_persist_attributes(dev);
 	if (retval)
 		goto error;
@@ -1099,6 +1051,7 @@ void usb_remove_sysfs_dev_files(struct usb_device *udev)
 
 	remove_power_attributes(dev);
 	remove_persist_attributes(dev);
+	device_remove_bin_file(dev, &dev_bin_attr_descriptors);
 }
 
 /* Interface Association Descriptor fields */
@@ -1218,24 +1171,14 @@ static ssize_t interface_authorized_store(struct device *dev,
 {
 	struct usb_interface *intf = to_usb_interface(dev);
 	bool val;
-	struct kernfs_node *kn;
 
 	if (kstrtobool(buf, &val) != 0)
 		return -EINVAL;
 
-	if (val) {
+	if (val)
 		usb_authorize_interface(intf);
-	} else {
-		/*
-		 * Prevent deadlock if another process is concurrently
-		 * trying to unregister intf.
-		 */
-		kn = sysfs_break_active_protection(&dev->kobj, &attr->attr);
-		if (kn) {
-			usb_deauthorize_interface(intf);
-			sysfs_unbreak_active_protection(kn);
-		}
-	}
+	else
+		usb_deauthorize_interface(intf);
 
 	return count;
 }
@@ -1284,59 +1227,9 @@ static const struct attribute_group intf_assoc_attr_grp = {
 	.is_visible =	intf_assoc_attrs_are_visible,
 };
 
-static ssize_t wireless_status_show(struct device *dev,
-				    struct device_attribute *attr, char *buf)
-{
-	struct usb_interface *intf;
-
-	intf = to_usb_interface(dev);
-	if (intf->wireless_status == USB_WIRELESS_STATUS_DISCONNECTED)
-		return sysfs_emit(buf, "%s\n", "disconnected");
-	return sysfs_emit(buf, "%s\n", "connected");
-}
-static DEVICE_ATTR_RO(wireless_status);
-
-static struct attribute *intf_wireless_status_attrs[] = {
-	&dev_attr_wireless_status.attr,
-	NULL
-};
-
-static umode_t intf_wireless_status_attr_is_visible(struct kobject *kobj,
-		struct attribute *a, int n)
-{
-	struct device *dev = kobj_to_dev(kobj);
-	struct usb_interface *intf = to_usb_interface(dev);
-
-	if (a != &dev_attr_wireless_status.attr ||
-	    intf->wireless_status != USB_WIRELESS_STATUS_NA)
-		return a->mode;
-	return 0;
-}
-
-static const struct attribute_group intf_wireless_status_attr_grp = {
-	.attrs =	intf_wireless_status_attrs,
-	.is_visible =	intf_wireless_status_attr_is_visible,
-};
-
-int usb_update_wireless_status_attr(struct usb_interface *intf)
-{
-	struct device *dev = &intf->dev;
-	int ret;
-
-	ret = sysfs_update_group(&dev->kobj, &intf_wireless_status_attr_grp);
-	if (ret < 0)
-		return ret;
-
-	sysfs_notify(&dev->kobj, NULL, "wireless_status");
-	kobject_uevent(&dev->kobj, KOBJ_CHANGE);
-
-	return 0;
-}
-
 const struct attribute_group *usb_interface_groups[] = {
 	&intf_attr_grp,
 	&intf_assoc_attr_grp,
-	&intf_wireless_status_attr_grp,
 	NULL
 };
 

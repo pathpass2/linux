@@ -37,11 +37,11 @@
 #include <linux/serial_reg.h>
 #include <linux/init.h>
 #include <linux/delay.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include <linux/io.h>
 #include <asm/irq.h>
+#include <asm/prom.h>
 #include <asm/setup.h>
 
 #include <linux/serial_core.h>
@@ -151,6 +151,16 @@ static void serial_out(struct uart_sunsu_port *up, int offset, int value)
 }
 
 /*
+ * We used to support using pause I/O for certain machines.  We
+ * haven't supported this for a while, but just in case it's badly
+ * needed for certain old 386 machines, I've left these #define's
+ * in....
+ */
+#define serial_inp(up, offset)		serial_in(up, offset)
+#define serial_outp(up, offset, value)	serial_out(up, offset, value)
+
+
+/*
  * For the 16C950
  */
 static void serial_icr_write(struct uart_sunsu_port *up, int offset, int value)
@@ -158,6 +168,20 @@ static void serial_icr_write(struct uart_sunsu_port *up, int offset, int value)
 	serial_out(up, UART_SCR, offset);
 	serial_out(up, UART_ICR, value);
 }
+
+#if 0 /* Unused currently */
+static unsigned int serial_icr_read(struct uart_sunsu_port *up, int offset)
+{
+	unsigned int value;
+
+	serial_icr_write(up, UART_ACR, up->acr | UART_ACR_ICRRD);
+	serial_out(up, UART_SCR, offset);
+	value = serial_in(up, UART_ICR);
+	serial_icr_write(up, UART_ACR, up->acr);
+
+	return value;
+}
+#endif
 
 #ifdef CONFIG_SERIAL_8250_RSA
 /*
@@ -169,12 +193,12 @@ static int __enable_rsa(struct uart_sunsu_port *up)
 	unsigned char mode;
 	int result;
 
-	mode = serial_in(up, UART_RSA_MSR);
+	mode = serial_inp(up, UART_RSA_MSR);
 	result = mode & UART_RSA_MSR_FIFO;
 
 	if (!result) {
-		serial_out(up, UART_RSA_MSR, mode | UART_RSA_MSR_FIFO);
-		mode = serial_in(up, UART_RSA_MSR);
+		serial_outp(up, UART_RSA_MSR, mode | UART_RSA_MSR_FIFO);
+		mode = serial_inp(up, UART_RSA_MSR);
 		result = mode & UART_RSA_MSR_FIFO;
 	}
 
@@ -188,12 +212,12 @@ static void enable_rsa(struct uart_sunsu_port *up)
 {
 	if (up->port.type == PORT_RSA) {
 		if (up->port.uartclk != SERIAL_RSA_BAUD_BASE * 16) {
-			uart_port_lock_irq(&up->port);
+			spin_lock_irq(&up->port.lock);
 			__enable_rsa(up);
-			uart_port_unlock_irq(&up->port);
+			spin_unlock_irq(&up->port.lock);
 		}
 		if (up->port.uartclk == SERIAL_RSA_BAUD_BASE * 16)
-			serial_out(up, UART_RSA_FRR, 0);
+			serial_outp(up, UART_RSA_FRR, 0);
 	}
 }
 
@@ -210,20 +234,20 @@ static void disable_rsa(struct uart_sunsu_port *up)
 
 	if (up->port.type == PORT_RSA &&
 	    up->port.uartclk == SERIAL_RSA_BAUD_BASE * 16) {
-		uart_port_lock_irq(&up->port);
+		spin_lock_irq(&up->port.lock);
 
-		mode = serial_in(up, UART_RSA_MSR);
+		mode = serial_inp(up, UART_RSA_MSR);
 		result = !(mode & UART_RSA_MSR_FIFO);
 
 		if (!result) {
-			serial_out(up, UART_RSA_MSR, mode & ~UART_RSA_MSR_FIFO);
-			mode = serial_in(up, UART_RSA_MSR);
+			serial_outp(up, UART_RSA_MSR, mode & ~UART_RSA_MSR_FIFO);
+			mode = serial_inp(up, UART_RSA_MSR);
 			result = !(mode & UART_RSA_MSR_FIFO);
 		}
 
 		if (result)
 			up->port.uartclk = SERIAL_RSA_BAUD_BASE_LO * 16;
-		uart_port_unlock_irq(&up->port);
+		spin_unlock_irq(&up->port.lock);
 	}
 }
 #endif /* CONFIG_SERIAL_8250_RSA */
@@ -287,10 +311,10 @@ static void sunsu_enable_ms(struct uart_port *port)
 		container_of(port, struct uart_sunsu_port, port);
 	unsigned long flags;
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 	up->ier |= UART_IER_MSI;
 	serial_out(up, UART_IER, up->ier);
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 }
 
 static void
@@ -302,7 +326,7 @@ receive_chars(struct uart_sunsu_port *up, unsigned char *status)
 	int saw_console_brk = 0;
 
 	do {
-		ch = serial_in(up, UART_RX);
+		ch = serial_inp(up, UART_RX);
 		flag = TTY_NORMAL;
 		up->port.icount.rx++;
 
@@ -363,7 +387,7 @@ receive_chars(struct uart_sunsu_port *up, unsigned char *status)
 			 */
 			 tty_insert_flip_char(port, 0, TTY_OVERRUN);
 	ignore_char:
-		*status = serial_in(up, UART_LSR);
+		*status = serial_inp(up, UART_LSR);
 	} while ((*status & UART_LSR_DR) && (max_count-- > 0));
 
 	if (saw_console_brk)
@@ -372,12 +396,11 @@ receive_chars(struct uart_sunsu_port *up, unsigned char *status)
 
 static void transmit_chars(struct uart_sunsu_port *up)
 {
-	struct tty_port *tport = &up->port.state->port;
-	unsigned char ch;
+	struct circ_buf *xmit = &up->port.state->xmit;
 	int count;
 
 	if (up->port.x_char) {
-		serial_out(up, UART_TX, up->port.x_char);
+		serial_outp(up, UART_TX, up->port.x_char);
 		up->port.icount.tx++;
 		up->port.x_char = 0;
 		return;
@@ -386,23 +409,23 @@ static void transmit_chars(struct uart_sunsu_port *up)
 		sunsu_stop_tx(&up->port);
 		return;
 	}
-	if (kfifo_is_empty(&tport->xmit_fifo)) {
+	if (uart_circ_empty(xmit)) {
 		__stop_tx(up);
 		return;
 	}
 
 	count = up->port.fifosize;
 	do {
-		if (!uart_fifo_get(&up->port, &ch))
+		serial_out(up, UART_TX, xmit->buf[xmit->tail]);
+		uart_xmit_advance(&up->port, 1);
+		if (uart_circ_empty(xmit))
 			break;
-
-		serial_out(up, UART_TX, ch);
 	} while (--count > 0);
 
-	if (kfifo_len(&tport->xmit_fifo) < WAKEUP_CHARS)
+	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(&up->port);
 
-	if (kfifo_is_empty(&tport->xmit_fifo))
+	if (uart_circ_empty(xmit))
 		__stop_tx(up);
 }
 
@@ -433,10 +456,10 @@ static irqreturn_t sunsu_serial_interrupt(int irq, void *dev_id)
 	unsigned long flags;
 	unsigned char status;
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 
 	do {
-		status = serial_in(up, UART_LSR);
+		status = serial_inp(up, UART_LSR);
 		if (status & UART_LSR_DR)
 			receive_chars(up, &status);
 		check_modem_status(up);
@@ -447,7 +470,7 @@ static irqreturn_t sunsu_serial_interrupt(int irq, void *dev_id)
 
 	} while (!(serial_in(up, UART_IIR) & UART_IIR_NO_INT));
 
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 
 	return IRQ_HANDLED;
 }
@@ -474,7 +497,7 @@ static void sunsu_change_mouse_baud(struct uart_sunsu_port *up)
 static void receive_kbd_ms_chars(struct uart_sunsu_port *up, int is_break)
 {
 	do {
-		unsigned char ch = serial_in(up, UART_RX);
+		unsigned char ch = serial_inp(up, UART_RX);
 
 		/* Stop-A is handled by drivers/char/keyboard.c now. */
 		if (up->su_type == SU_PORT_KBD) {
@@ -506,7 +529,7 @@ static irqreturn_t sunsu_kbd_ms_interrupt(int irq, void *dev_id)
 	struct uart_sunsu_port *up = dev_id;
 
 	if (!(serial_in(up, UART_IIR) & UART_IIR_NO_INT)) {
-		unsigned char status = serial_in(up, UART_LSR);
+		unsigned char status = serial_inp(up, UART_LSR);
 
 		if ((status & UART_LSR_DR) || (status & UART_LSR_BI))
 			receive_kbd_ms_chars(up, (status & UART_LSR_BI) != 0);
@@ -522,9 +545,9 @@ static unsigned int sunsu_tx_empty(struct uart_port *port)
 	unsigned long flags;
 	unsigned int ret;
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 	ret = serial_in(up, UART_LSR) & UART_LSR_TEMT ? TIOCSER_TEMT : 0;
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 
 	return ret;
 }
@@ -576,13 +599,13 @@ static void sunsu_break_ctl(struct uart_port *port, int break_state)
 		container_of(port, struct uart_sunsu_port, port);
 	unsigned long flags;
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 	if (break_state == -1)
 		up->lcr |= UART_LCR_SBC;
 	else
 		up->lcr &= ~UART_LCR_SBC;
 	serial_out(up, UART_LCR, up->lcr);
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 }
 
 static int sunsu_startup(struct uart_port *port)
@@ -595,14 +618,14 @@ static int sunsu_startup(struct uart_port *port)
 	if (up->port.type == PORT_16C950) {
 		/* Wake up and initialize UART */
 		up->acr = 0;
-		serial_out(up, UART_LCR, 0xBF);
-		serial_out(up, UART_EFR, UART_EFR_ECB);
-		serial_out(up, UART_IER, 0);
-		serial_out(up, UART_LCR, 0);
+		serial_outp(up, UART_LCR, 0xBF);
+		serial_outp(up, UART_EFR, UART_EFR_ECB);
+		serial_outp(up, UART_IER, 0);
+		serial_outp(up, UART_LCR, 0);
 		serial_icr_write(up, UART_CSR, 0); /* Reset the UART */
-		serial_out(up, UART_LCR, 0xBF);
-		serial_out(up, UART_EFR, UART_EFR_ECB);
-		serial_out(up, UART_LCR, 0);
+		serial_outp(up, UART_LCR, 0xBF);
+		serial_outp(up, UART_EFR, UART_EFR_ECB);
+		serial_outp(up, UART_LCR, 0);
 	}
 
 #ifdef CONFIG_SERIAL_8250_RSA
@@ -618,19 +641,19 @@ static int sunsu_startup(struct uart_port *port)
 	 * (they will be reenabled in set_termios())
 	 */
 	if (uart_config[up->port.type].flags & UART_CLEAR_FIFO) {
-		serial_out(up, UART_FCR, UART_FCR_ENABLE_FIFO);
-		serial_out(up, UART_FCR, UART_FCR_ENABLE_FIFO |
+		serial_outp(up, UART_FCR, UART_FCR_ENABLE_FIFO);
+		serial_outp(up, UART_FCR, UART_FCR_ENABLE_FIFO |
 				UART_FCR_CLEAR_RCVR | UART_FCR_CLEAR_XMIT);
-		serial_out(up, UART_FCR, 0);
+		serial_outp(up, UART_FCR, 0);
 	}
 
 	/*
 	 * Clear the interrupt registers.
 	 */
-	(void) serial_in(up, UART_LSR);
-	(void) serial_in(up, UART_RX);
-	(void) serial_in(up, UART_IIR);
-	(void) serial_in(up, UART_MSR);
+	(void) serial_inp(up, UART_LSR);
+	(void) serial_inp(up, UART_RX);
+	(void) serial_inp(up, UART_IIR);
+	(void) serial_inp(up, UART_MSR);
 
 	/*
 	 * At this point, there's no way the LSR could still be 0xff;
@@ -638,7 +661,7 @@ static int sunsu_startup(struct uart_port *port)
 	 * here.
 	 */
 	if (!(up->port.flags & UPF_BUGGY_UART) &&
-	    (serial_in(up, UART_LSR) == 0xff)) {
+	    (serial_inp(up, UART_LSR) == 0xff)) {
 		printk("ttyS%d: LSR safety check engaged!\n", up->port.line);
 		return -ENODEV;
 	}
@@ -658,14 +681,14 @@ static int sunsu_startup(struct uart_port *port)
 	/*
 	 * Now, initialize the UART
 	 */
-	serial_out(up, UART_LCR, UART_LCR_WLEN8);
+	serial_outp(up, UART_LCR, UART_LCR_WLEN8);
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 
 	up->port.mctrl |= TIOCM_OUT2;
 
 	sunsu_set_mctrl(&up->port, up->port.mctrl);
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 
 	/*
 	 * Finally, enable interrupts.  Note: Modem status interrupts
@@ -673,7 +696,7 @@ static int sunsu_startup(struct uart_port *port)
 	 * anyway, so we don't enable them here.
 	 */
 	up->ier = UART_IER_RLSI | UART_IER_RDI;
-	serial_out(up, UART_IER, up->ier);
+	serial_outp(up, UART_IER, up->ier);
 
 	if (up->port.flags & UPF_FOURPORT) {
 		unsigned int icp;
@@ -688,10 +711,10 @@ static int sunsu_startup(struct uart_port *port)
 	/*
 	 * And clear the interrupt registers again for luck.
 	 */
-	(void) serial_in(up, UART_LSR);
-	(void) serial_in(up, UART_RX);
-	(void) serial_in(up, UART_IIR);
-	(void) serial_in(up, UART_MSR);
+	(void) serial_inp(up, UART_LSR);
+	(void) serial_inp(up, UART_RX);
+	(void) serial_inp(up, UART_IIR);
+	(void) serial_inp(up, UART_MSR);
 
 	return 0;
 }
@@ -706,9 +729,9 @@ static void sunsu_shutdown(struct uart_port *port)
 	 * Disable interrupts from this port
 	 */
 	up->ier = 0;
-	serial_out(up, UART_IER, 0);
+	serial_outp(up, UART_IER, 0);
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 	if (up->port.flags & UPF_FOURPORT) {
 		/* reset interrupts on the AST Fourport board */
 		inb((up->port.iobase & 0xfe0) | 0x1f);
@@ -717,16 +740,16 @@ static void sunsu_shutdown(struct uart_port *port)
 		up->port.mctrl &= ~TIOCM_OUT2;
 
 	sunsu_set_mctrl(&up->port, up->port.mctrl);
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 
 	/*
 	 * Disable break condition and FIFOs
 	 */
-	serial_out(up, UART_LCR, serial_in(up, UART_LCR) & ~UART_LCR_SBC);
-	serial_out(up, UART_FCR, UART_FCR_ENABLE_FIFO |
+	serial_out(up, UART_LCR, serial_inp(up, UART_LCR) & ~UART_LCR_SBC);
+	serial_outp(up, UART_FCR, UART_FCR_ENABLE_FIFO |
 				  UART_FCR_CLEAR_RCVR |
 				  UART_FCR_CLEAR_XMIT);
-	serial_out(up, UART_FCR, 0);
+	serial_outp(up, UART_FCR, 0);
 
 #ifdef CONFIG_SERIAL_8250_RSA
 	/*
@@ -803,7 +826,7 @@ sunsu_change_speed(struct uart_port *port, unsigned int cflag,
 	 * Ok, we're now changing the port state.  Do it with
 	 * interrupts disabled.
 	 */
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 
 	/*
 	 * Update the per-port timeout.
@@ -848,27 +871,27 @@ sunsu_change_speed(struct uart_port *port, unsigned int cflag,
 	serial_out(up, UART_IER, up->ier);
 
 	if (uart_config[up->port.type].flags & UART_STARTECH) {
-		serial_out(up, UART_LCR, 0xBF);
-		serial_out(up, UART_EFR, cflag & CRTSCTS ? UART_EFR_CTS :0);
+		serial_outp(up, UART_LCR, 0xBF);
+		serial_outp(up, UART_EFR, cflag & CRTSCTS ? UART_EFR_CTS :0);
 	}
-	serial_out(up, UART_LCR, cval | UART_LCR_DLAB);/* set DLAB */
-	serial_out(up, UART_DLL, quot & 0xff);		/* LS of divisor */
-	serial_out(up, UART_DLM, quot >> 8);		/* MS of divisor */
+	serial_outp(up, UART_LCR, cval | UART_LCR_DLAB);/* set DLAB */
+	serial_outp(up, UART_DLL, quot & 0xff);		/* LS of divisor */
+	serial_outp(up, UART_DLM, quot >> 8);		/* MS of divisor */
 	if (up->port.type == PORT_16750)
-		serial_out(up, UART_FCR, fcr);		/* set fcr */
-	serial_out(up, UART_LCR, cval);		/* reset DLAB */
+		serial_outp(up, UART_FCR, fcr);		/* set fcr */
+	serial_outp(up, UART_LCR, cval);		/* reset DLAB */
 	up->lcr = cval;					/* Save LCR */
 	if (up->port.type != PORT_16750) {
 		if (fcr & UART_FCR_ENABLE_FIFO) {
 			/* emulated UARTs (Lucent Venus 167x) need two steps */
-			serial_out(up, UART_FCR, UART_FCR_ENABLE_FIFO);
+			serial_outp(up, UART_FCR, UART_FCR_ENABLE_FIFO);
 		}
-		serial_out(up, UART_FCR, fcr);		/* set fcr */
+		serial_outp(up, UART_FCR, fcr);		/* set fcr */
 	}
 
 	up->cflag = cflag;
 
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 }
 
 static void
@@ -1015,7 +1038,7 @@ static void sunsu_autoconfig(struct uart_sunsu_port *up)
 	up->type_probed = PORT_UNKNOWN;
 	up->port.iotype = UPIO_MEM;
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 
 	if (!(up->port.flags & UPF_BUGGY_UART)) {
 		/*
@@ -1027,18 +1050,18 @@ static void sunsu_autoconfig(struct uart_sunsu_port *up)
 		 * 0x80 is a non-existent port; which should be safe since
 		 * include/asm/io.h also makes this assumption.
 		 */
-		scratch = serial_in(up, UART_IER);
-		serial_out(up, UART_IER, 0);
+		scratch = serial_inp(up, UART_IER);
+		serial_outp(up, UART_IER, 0);
 #ifdef __i386__
 		outb(0xff, 0x080);
 #endif
-		scratch2 = serial_in(up, UART_IER);
-		serial_out(up, UART_IER, 0x0f);
+		scratch2 = serial_inp(up, UART_IER);
+		serial_outp(up, UART_IER, 0x0f);
 #ifdef __i386__
 		outb(0, 0x080);
 #endif
-		scratch3 = serial_in(up, UART_IER);
-		serial_out(up, UART_IER, scratch);
+		scratch3 = serial_inp(up, UART_IER);
+		serial_outp(up, UART_IER, scratch);
 		if (scratch2 != 0 || scratch3 != 0x0F)
 			goto out;	/* We failed; there's nothing here */
 	}
@@ -1056,16 +1079,16 @@ static void sunsu_autoconfig(struct uart_sunsu_port *up)
 	 * that conflicts with COM 1-4 --- we hope!
 	 */
 	if (!(up->port.flags & UPF_SKIP_TEST)) {
-		serial_out(up, UART_MCR, UART_MCR_LOOP | 0x0A);
-		status1 = serial_in(up, UART_MSR) & 0xF0;
-		serial_out(up, UART_MCR, save_mcr);
+		serial_outp(up, UART_MCR, UART_MCR_LOOP | 0x0A);
+		status1 = serial_inp(up, UART_MSR) & 0xF0;
+		serial_outp(up, UART_MCR, save_mcr);
 		if (status1 != 0x90)
 			goto out;	/* We failed loopback test */
 	}
-	serial_out(up, UART_LCR, 0xBF);	/* set up for StarTech test */
-	serial_out(up, UART_EFR, 0);		/* EFR is the same as FCR */
-	serial_out(up, UART_LCR, 0);
-	serial_out(up, UART_FCR, UART_FCR_ENABLE_FIFO);
+	serial_outp(up, UART_LCR, 0xBF);	/* set up for StarTech test */
+	serial_outp(up, UART_EFR, 0);		/* EFR is the same as FCR */
+	serial_outp(up, UART_LCR, 0);
+	serial_outp(up, UART_FCR, UART_FCR_ENABLE_FIFO);
 	scratch = serial_in(up, UART_IIR) >> 6;
 	switch (scratch) {
 		case 0:
@@ -1083,19 +1106,19 @@ static void sunsu_autoconfig(struct uart_sunsu_port *up)
 	}
 	if (up->port.type == PORT_16550A) {
 		/* Check for Startech UART's */
-		serial_out(up, UART_LCR, UART_LCR_DLAB);
+		serial_outp(up, UART_LCR, UART_LCR_DLAB);
 		if (serial_in(up, UART_EFR) == 0) {
 			up->port.type = PORT_16650;
 		} else {
-			serial_out(up, UART_LCR, 0xBF);
+			serial_outp(up, UART_LCR, 0xBF);
 			if (serial_in(up, UART_EFR) == 0)
 				up->port.type = PORT_16650V2;
 		}
 	}
 	if (up->port.type == PORT_16550A) {
 		/* Check for TI 16750 */
-		serial_out(up, UART_LCR, save_lcr | UART_LCR_DLAB);
-		serial_out(up, UART_FCR,
+		serial_outp(up, UART_LCR, save_lcr | UART_LCR_DLAB);
+		serial_outp(up, UART_FCR,
 			    UART_FCR_ENABLE_FIFO | UART_FCR7_64BYTE);
 		scratch = serial_in(up, UART_IIR) >> 5;
 		if (scratch == 7) {
@@ -1105,24 +1128,24 @@ static void sunsu_autoconfig(struct uart_sunsu_port *up)
 			 * mode if the UART_FCR7_64BYTE bit was set
 			 * while UART_LCR_DLAB was latched.
 			 */
-			serial_out(up, UART_FCR, UART_FCR_ENABLE_FIFO);
-			serial_out(up, UART_LCR, 0);
-			serial_out(up, UART_FCR,
+ 			serial_outp(up, UART_FCR, UART_FCR_ENABLE_FIFO);
+			serial_outp(up, UART_LCR, 0);
+			serial_outp(up, UART_FCR,
 				    UART_FCR_ENABLE_FIFO | UART_FCR7_64BYTE);
 			scratch = serial_in(up, UART_IIR) >> 5;
 			if (scratch == 6)
 				up->port.type = PORT_16750;
 		}
-		serial_out(up, UART_FCR, UART_FCR_ENABLE_FIFO);
+		serial_outp(up, UART_FCR, UART_FCR_ENABLE_FIFO);
 	}
-	serial_out(up, UART_LCR, save_lcr);
+	serial_outp(up, UART_LCR, save_lcr);
 	if (up->port.type == PORT_16450) {
 		scratch = serial_in(up, UART_SCR);
-		serial_out(up, UART_SCR, 0xa5);
+		serial_outp(up, UART_SCR, 0xa5);
 		status1 = serial_in(up, UART_SCR);
-		serial_out(up, UART_SCR, 0x5a);
+		serial_outp(up, UART_SCR, 0x5a);
 		status2 = serial_in(up, UART_SCR);
-		serial_out(up, UART_SCR, scratch);
+		serial_outp(up, UART_SCR, scratch);
 
 		if ((status1 != 0xa5) || (status2 != 0x5a))
 			up->port.type = PORT_8250;
@@ -1139,18 +1162,18 @@ static void sunsu_autoconfig(struct uart_sunsu_port *up)
 	 */
 #ifdef CONFIG_SERIAL_8250_RSA
 	if (up->port.type == PORT_RSA)
-		serial_out(up, UART_RSA_FRR, 0);
+		serial_outp(up, UART_RSA_FRR, 0);
 #endif
-	serial_out(up, UART_MCR, save_mcr);
-	serial_out(up, UART_FCR, (UART_FCR_ENABLE_FIFO |
+	serial_outp(up, UART_MCR, save_mcr);
+	serial_outp(up, UART_FCR, (UART_FCR_ENABLE_FIFO |
 				     UART_FCR_CLEAR_RCVR |
 				     UART_FCR_CLEAR_XMIT));
-	serial_out(up, UART_FCR, 0);
+	serial_outp(up, UART_FCR, 0);
 	(void)serial_in(up, UART_RX);
-	serial_out(up, UART_IER, 0);
+	serial_outp(up, UART_IER, 0);
 
 out:
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 }
 
 static struct uart_driver sunsu_reg = {
@@ -1275,9 +1298,9 @@ static void sunsu_console_write(struct console *co, const char *s,
 	int locked = 1;
 
 	if (up->port.sysrq || oops_in_progress)
-		locked = uart_port_trylock_irqsave(&up->port, &flags);
+		locked = spin_trylock_irqsave(&up->port.lock, flags);
 	else
-		uart_port_lock_irqsave(&up->port, &flags);
+		spin_lock_irqsave(&up->port.lock, flags);
 
 	/*
 	 *	First save the UER then disable the interrupts
@@ -1295,7 +1318,7 @@ static void sunsu_console_write(struct console *co, const char *s,
 	serial_out(up, UART_IER, ier);
 
 	if (locked)
-		uart_port_unlock_irqrestore(&up->port, flags);
+		spin_unlock_irqrestore(&up->port.lock, flags);
 }
 
 /*
@@ -1358,29 +1381,44 @@ static inline struct console *SUNSU_CONSOLE(void)
 
 static enum su_type su_get_type(struct device_node *dp)
 {
-	struct device_node *ap __free(device_node) =
-			    of_find_node_by_path("/aliases");
+	struct device_node *ap = of_find_node_by_path("/aliases");
+	enum su_type rc = SU_PORT_PORT;
 
 	if (ap) {
 		const char *keyb = of_get_property(ap, "keyboard", NULL);
 		const char *ms = of_get_property(ap, "mouse", NULL);
+		struct device_node *match;
 
 		if (keyb) {
-			struct device_node *match __free(device_node) =
-					    of_find_node_by_path(keyb);
+			match = of_find_node_by_path(keyb);
 
-			if (dp == match)
-				return SU_PORT_KBD;
+			/*
+			 * The pointer is used as an identifier not
+			 * as a pointer, we can drop the refcount on
+			 * the of__node immediately after getting it.
+			 */
+			of_node_put(match);
+
+			if (dp == match) {
+				rc = SU_PORT_KBD;
+				goto out;
+			}
 		}
 		if (ms) {
-			struct device_node *match __free(device_node) =
-					    of_find_node_by_path(ms);
+			match = of_find_node_by_path(ms);
 
-			if (dp == match)
-				return SU_PORT_MS;
+			of_node_put(match);
+
+			if (dp == match) {
+				rc = SU_PORT_MS;
+				goto out;
+			}
 		}
 	}
-	return SU_PORT_PORT;
+
+out:
+	of_node_put(ap);
+	return rc;
 }
 
 static int su_probe(struct platform_device *op)
@@ -1477,7 +1515,7 @@ out_unmap:
 	return err;
 }
 
-static void su_remove(struct platform_device *op)
+static int su_remove(struct platform_device *op)
 {
 	struct uart_sunsu_port *up = platform_get_drvdata(op);
 	bool kbdms = false;
@@ -1498,6 +1536,8 @@ static void su_remove(struct platform_device *op)
 
 	if (kbdms)
 		kfree(up);
+
+	return 0;
 }
 
 static const struct of_device_id su_match[] = {

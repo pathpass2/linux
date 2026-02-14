@@ -19,8 +19,6 @@
 
 #define IOAT_DMA_DCA_ANY_CPU		~0
 
-int system_has_dca_enabled(struct pci_dev *pdev);
-
 #define to_ioatdma_device(dev) container_of(dev, struct ioatdma_device, dma_dev)
 #define to_dev(ioat_chan) (&(ioat_chan)->ioat_dma->pdev->dev)
 #define to_pdev(ioat_chan) ((ioat_chan)->ioat_dma->pdev)
@@ -76,7 +74,6 @@ struct ioatdma_device {
 	struct dca_provider *dca;
 	enum ioat_irq_mode irq_mode;
 	u32 cap;
-	int chancnt;
 
 	/* shadow version for CB3.3 chan reset errata workaround */
 	u64 msixtba0;

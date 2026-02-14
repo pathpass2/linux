@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -48,16 +48,19 @@ mt76_wmac_probe(struct platform_device *pdev)
 
 	return 0;
 error:
-	mt76_free_device(mdev);
+	ieee80211_free_hw(mt76_hw(dev));
 	return ret;
 }
 
-static void mt76_wmac_remove(struct platform_device *pdev)
+static int
+mt76_wmac_remove(struct platform_device *pdev)
 {
 	struct mt76_dev *mdev = platform_get_drvdata(pdev);
 	struct mt7603_dev *dev = container_of(mdev, struct mt7603_dev, mt76);
 
 	mt7603_unregister_device(dev);
+
+	return 0;
 }
 
 static const struct of_device_id of_wmac_match[] = {

@@ -20,7 +20,6 @@
 
 #include "pxa2xx-regs.h"
 #include "mfp-pxa2xx.h"
-#include "mfp-pxa27x.h"
 
 #include "generic.h"
 
@@ -346,7 +345,7 @@ static unsigned long saved_gpdr[4];
 static unsigned long saved_gplr[4];
 static unsigned long saved_pgsr[4];
 
-static int pxa2xx_mfp_suspend(void *data)
+static int pxa2xx_mfp_suspend(void)
 {
 	int i;
 
@@ -385,7 +384,7 @@ static int pxa2xx_mfp_suspend(void *data)
 	return 0;
 }
 
-static void pxa2xx_mfp_resume(void *data)
+static void pxa2xx_mfp_resume(void)
 {
 	int i;
 
@@ -404,13 +403,9 @@ static void pxa2xx_mfp_resume(void *data)
 #define pxa2xx_mfp_resume	NULL
 #endif
 
-static const struct syscore_ops pxa2xx_mfp_syscore_ops = {
+struct syscore_ops pxa2xx_mfp_syscore_ops = {
 	.suspend	= pxa2xx_mfp_suspend,
 	.resume		= pxa2xx_mfp_resume,
-};
-
-struct syscore pxa2xx_mfp_syscore = {
-	.ops = &pxa2xx_mfp_syscore_ops,
 };
 
 static int __init pxa2xx_mfp_init(void)

@@ -22,7 +22,7 @@ do {									\
 
 #define kretprobe_blacklist_size	0
 
-typedef u32 kprobe_opcode_t;
+typedef union loongarch_instruction kprobe_opcode_t;
 
 /* Architecture specific copy of original instruction */
 struct arch_specific_insn {
@@ -48,6 +48,9 @@ void arch_remove_kprobe(struct kprobe *p);
 bool kprobe_fault_handler(struct pt_regs *regs, int trapnr);
 bool kprobe_breakpoint_handler(struct pt_regs *regs);
 bool kprobe_singlestep_handler(struct pt_regs *regs);
+
+void __kretprobe_trampoline(void);
+void *trampoline_probe_handler(struct pt_regs *regs);
 
 #else /* !CONFIG_KPROBES */
 

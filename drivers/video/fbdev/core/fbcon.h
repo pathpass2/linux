@@ -51,23 +51,20 @@ struct fbcon_display {
     const struct fb_videomode *mode;
 };
 
-struct fbcon_bitops {
+struct fbcon_ops {
 	void (*bmove)(struct vc_data *vc, struct fb_info *info, int sy,
 		      int sx, int dy, int dx, int height, int width);
 	void (*clear)(struct vc_data *vc, struct fb_info *info, int sy,
-		      int sx, int height, int width, int fb, int bg);
+		      int sx, int height, int width);
 	void (*putcs)(struct vc_data *vc, struct fb_info *info,
 		      const unsigned short *s, int count, int yy, int xx,
 		      int fg, int bg);
 	void (*clear_margins)(struct vc_data *vc, struct fb_info *info,
 			      int color, int bottom_only);
-	void (*cursor)(struct vc_data *vc, struct fb_info *info,
-		       bool enable, int fg, int bg);
+	void (*cursor)(struct vc_data *vc, struct fb_info *info, int mode,
+		       int fg, int bg);
 	int  (*update_start)(struct fb_info *info);
 	int  (*rotate_font)(struct fb_info *info, struct vc_data *vc);
-};
-
-struct fbcon_par {
 	struct fb_var_screeninfo var;  /* copy of the current fb_var_screeninfo */
 	struct delayed_work cursor_work; /* Cursor timer */
 	struct fb_cursor cursor_state;
@@ -79,6 +76,7 @@ struct fbcon_par {
 	int    cursor_reset;
 	int    blank_state;
 	int    graphics;
+	int    save_graphics; /* for debug enter/leave */
 	bool   initialized;
 	int    rotate;
 	int    cur_rotate;
@@ -88,10 +86,7 @@ struct fbcon_par {
 	u8    *cursor_src;
 	u32    cursor_size;
 	u32    fd_size;
-
-	const struct fbcon_bitops *bitops;
 };
-
     /*
      *  Attribute Decoding
      */
@@ -111,6 +106,7 @@ struct fbcon_par {
 	((s) & 0x400)
 #define attr_blink(s) \
 	((s) & 0x8000)
+	
 
 static inline int mono_col(const struct fb_info *info)
 {
@@ -119,6 +115,42 @@ static inline int mono_col(const struct fb_info *info)
 	max_len = max(info->var.blue.length, max_len);
 	return (~(0xfff << max_len)) & 0xff;
 }
+
+static inline int attr_col_ec(int shift, struct vc_data *vc,
+			      struct fb_info *info, int is_fg)
+{
+	int is_mono01;
+	int col;
+	int fg;
+	int bg;
+
+	if (!vc)
+		return 0;
+
+	if (vc->vc_can_do_color)
+		return is_fg ? attr_fgcol(shift,vc->vc_video_erase_char)
+			: attr_bgcol(shift,vc->vc_video_erase_char);
+
+	if (!info)
+		return 0;
+
+	col = mono_col(info);
+	is_mono01 = info->fix.visual == FB_VISUAL_MONO01;
+
+	if (attr_reverse(vc->vc_video_erase_char)) {
+		fg = is_mono01 ? col : 0;
+		bg = is_mono01 ? 0 : col;
+	}
+	else {
+		fg = is_mono01 ? 0 : col;
+		bg = is_mono01 ? col : 0;
+	}
+
+	return is_fg ? fg : bg;
+}
+
+#define attr_bgcol_ec(bgshift, vc, info) attr_col_ec(bgshift, vc, info, 0)
+#define attr_fgcol_ec(fgshift, vc, info) attr_col_ec(fgshift, vc, info, 1)
 
     /*
      *  Scroll Method
@@ -190,7 +222,7 @@ static inline u_short fb_scrollmode(struct fbcon_display *fb)
 #ifdef CONFIG_FB_TILEBLITTING
 extern void fbcon_set_tileops(struct vc_data *vc, struct fb_info *info);
 #endif
-extern void fbcon_set_bitops_ur(struct fbcon_par *par);
+extern void fbcon_set_bitops(struct fbcon_ops *ops);
 extern int  soft_cursor(struct fb_info *info, struct fb_cursor *cursor);
 
 #define FBCON_ATTRIBUTE_UNDERLINE 1
@@ -227,5 +259,11 @@ static inline int get_attribute(struct fb_info *info, u16 c)
         typeof(v) _v = (v);  \
         (void) (&_r == &_v); \
         (i == FB_ROTATE_UR || i == FB_ROTATE_UD) ? _r : _v; })
+
+#ifdef CONFIG_FRAMEBUFFER_CONSOLE_ROTATION
+extern void fbcon_set_rotate(struct fbcon_ops *ops);
+#else
+#define fbcon_set_rotate(x) do {} while(0)
+#endif /* CONFIG_FRAMEBUFFER_CONSOLE_ROTATION */
 
 #endif /* _VIDEO_FBCON_H */

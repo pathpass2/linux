@@ -174,8 +174,6 @@ void print_cap(struct pfru_update_cap_info *cap)
 		exit(1);
 	}
 
-	printf("update capability:%d\n", cap->update_cap);
-
 	uuid_unparse(cap->code_type, uuid);
 	printf("code injection image type:%s\n", uuid);
 	printf("fw_version:%d\n", cap->fw_version);
@@ -222,7 +220,6 @@ int main(int argc, char *argv[])
 	fd_update_log = open("/dev/acpi_pfr_telemetry0", O_RDWR);
 	if (fd_update_log < 0) {
 		printf("PFRT device not supported - Quit...\n");
-		close(fd_update);
 		return 1;
 	}
 
@@ -266,8 +263,7 @@ int main(int argc, char *argv[])
 		printf("chunk2_size:%d\n", data_info.chunk2_size);
 		printf("rollover_cnt:%d\n", data_info.rollover_cnt);
 		printf("reset_cnt:%d\n", data_info.reset_cnt);
-		close(fd_update);
-		close(fd_update_log);
+
 		return 0;
 	}
 
@@ -360,7 +356,6 @@ int main(int argc, char *argv[])
 
 		if (ret == -1) {
 			perror("Failed to load capsule file");
-			munmap(addr_map_capsule, st.st_size);
 			close(fd_capsule);
 			close(fd_update);
 			close(fd_update_log);
@@ -423,7 +418,7 @@ int main(int argc, char *argv[])
 		if (p_mmap == MAP_FAILED) {
 			perror("mmap error.");
 			close(fd_update_log);
-			free(log_buf);
+
 			return 1;
 		}
 

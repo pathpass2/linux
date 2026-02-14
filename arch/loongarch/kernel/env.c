@@ -5,16 +5,13 @@
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
 #include <linux/acpi.h>
-#include <linux/clk.h>
 #include <linux/efi.h>
 #include <linux/export.h>
 #include <linux/memblock.h>
-#include <linux/of_clk.h>
 #include <asm/early_ioremap.h>
 #include <asm/bootinfo.h>
 #include <asm/loongson.h>
 #include <asm/setup.h>
-#include <asm/time.h>
 
 u64 efi_system_table;
 struct loongson_system_configuration loongson_sysconf;
@@ -39,19 +36,7 @@ void __init init_environ(void)
 
 static int __init init_cpu_fullname(void)
 {
-	int cpu, ret;
-	char *cpuname;
-	const char *model;
-	struct device_node *root;
-
-	/* Parsing cpuname from DTS model property */
-	root = of_find_node_by_path("/");
-	ret = of_property_read_string(root, "model", &model);
-	if (ret == 0) {
-		cpuname = kstrdup(model, GFP_KERNEL);
-		loongson_sysconf.cpuname = strsep(&cpuname, " ");
-	}
-	of_node_put(root);
+	int cpu;
 
 	if (loongson_sysconf.cpuname && !strncmp(loongson_sysconf.cpuname, "Loongson", 8)) {
 		for (cpu = 0; cpu < NR_CPUS; cpu++)
@@ -61,35 +46,10 @@ static int __init init_cpu_fullname(void)
 }
 arch_initcall(init_cpu_fullname);
 
-static int __init fdt_cpu_clk_init(void)
-{
-	struct clk *clk;
-	struct device_node *np;
-
-	np = of_get_cpu_node(0, NULL);
-	if (!np)
-		return -ENODEV;
-
-	clk = of_clk_get(np, 0);
-	of_node_put(np);
-	cpu_clock_freq = 200 * 1000 * 1000;
-
-	if (IS_ERR(clk)) {
-		pr_warn("No valid CPU clock freq, assume 200MHz.\n");
-		return -ENODEV;
-	}
-
-	cpu_clock_freq = clk_get_rate(clk);
-	clk_put(clk);
-
-	return 0;
-}
-late_initcall(fdt_cpu_clk_init);
-
 static ssize_t boardinfo_show(struct kobject *kobj,
 			      struct kobj_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf,
+	return sprintf(buf,
 		"BIOS Information\n"
 		"Vendor\t\t\t: %s\n"
 		"Version\t\t\t: %s\n"
@@ -112,8 +72,6 @@ static int __init boardinfo_init(void)
 	struct kobject *loongson_kobj;
 
 	loongson_kobj = kobject_create_and_add("loongson", firmware_kobj);
-	if (!loongson_kobj)
-		return -ENOMEM;
 
 	return sysfs_create_file(loongson_kobj, &boardinfo_attr.attr);
 }

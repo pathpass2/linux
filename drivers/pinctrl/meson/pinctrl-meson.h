@@ -110,15 +110,15 @@ struct meson_bank {
 struct meson_pinctrl_data {
 	const char *name;
 	const struct pinctrl_pin_desc *pins;
-	const struct meson_pmx_group *groups;
-	const struct meson_pmx_func *funcs;
+	struct meson_pmx_group *groups;
+	struct meson_pmx_func *funcs;
 	unsigned int num_pins;
 	unsigned int num_groups;
 	unsigned int num_funcs;
-	const struct meson_bank *banks;
+	struct meson_bank *banks;
 	unsigned int num_banks;
 	const struct pinmux_ops *pmx_ops;
-	const void *pmx_data;
+	void *pmx_data;
 	int (*parse_dt)(struct meson_pinctrl *pc);
 };
 

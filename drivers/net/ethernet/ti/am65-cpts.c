@@ -163,9 +163,7 @@ struct am65_cpts {
 	struct device_node *clk_mux_np;
 	struct clk *refclk;
 	u32 refclk_freq;
-	/* separate lists to handle TX and RX timestamp independently */
-	struct list_head events_tx;
-	struct list_head events_rx;
+	struct list_head events;
 	struct list_head pool;
 	struct am65_cpts_event pool_data[AM65_CPTS_MAX_EVENTS];
 	spinlock_t lock; /* protects events lists*/
@@ -177,7 +175,6 @@ struct am65_cpts {
 	u64 timestamp;
 	u32 genf_enable;
 	u32 hw_ts_enable;
-	u32 estf_enable;
 	struct sk_buff_head txq;
 	bool pps_enabled;
 	bool pps_present;
@@ -229,24 +226,6 @@ static void am65_cpts_disable(struct am65_cpts *cpts)
 	am65_cpts_write32(cpts, 0, int_enable);
 }
 
-static int am65_cpts_purge_event_list(struct am65_cpts *cpts,
-				      struct list_head *events)
-{
-	struct list_head *this, *next;
-	struct am65_cpts_event *event;
-	int removed = 0;
-
-	list_for_each_safe(this, next, events) {
-		event = list_entry(this, struct am65_cpts_event, list);
-		if (time_after(jiffies, event->tmo)) {
-			list_del_init(&event->list);
-			list_add(&event->list, &cpts->pool);
-			++removed;
-		}
-	}
-	return removed;
-}
-
 static int am65_cpts_event_get_port(struct am65_cpts_event *event)
 {
 	return (event->event1 & AM65_CPTS_EVENT_1_PORT_NUMBER_MASK) >>
@@ -259,12 +238,20 @@ static int am65_cpts_event_get_type(struct am65_cpts_event *event)
 		AM65_CPTS_EVENT_1_EVENT_TYPE_SHIFT;
 }
 
-static int am65_cpts_purge_events(struct am65_cpts *cpts)
+static int am65_cpts_cpts_purge_events(struct am65_cpts *cpts)
 {
+	struct list_head *this, *next;
+	struct am65_cpts_event *event;
 	int removed = 0;
 
-	removed += am65_cpts_purge_event_list(cpts, &cpts->events_tx);
-	removed += am65_cpts_purge_event_list(cpts, &cpts->events_rx);
+	list_for_each_safe(this, next, &cpts->events) {
+		event = list_entry(this, struct am65_cpts_event, list);
+		if (time_after(jiffies, event->tmo)) {
+			list_del_init(&event->list);
+			list_add(&event->list, &cpts->pool);
+			++removed;
+		}
+	}
 
 	if (removed)
 		dev_dbg(cpts->dev, "event pool cleaned up %d\n", removed);
@@ -287,19 +274,21 @@ static bool am65_cpts_fifo_pop_event(struct am65_cpts *cpts,
 	return true;
 }
 
-static int __am65_cpts_fifo_read(struct am65_cpts *cpts)
+static int am65_cpts_fifo_read(struct am65_cpts *cpts)
 {
 	struct ptp_clock_event pevent;
 	struct am65_cpts_event *event;
 	bool schedule = false;
 	int i, type, ret = 0;
+	unsigned long flags;
 
+	spin_lock_irqsave(&cpts->lock, flags);
 	for (i = 0; i < AM65_CPTS_FIFO_DEPTH; i++) {
 		event = list_first_entry_or_null(&cpts->pool,
 						 struct am65_cpts_event, list);
 
 		if (!event) {
-			if (am65_cpts_purge_events(cpts)) {
+			if (am65_cpts_cpts_purge_events(cpts)) {
 				dev_err(cpts->dev, "cpts: event pool empty\n");
 				ret = -1;
 				goto out;
@@ -318,21 +307,12 @@ static int __am65_cpts_fifo_read(struct am65_cpts *cpts)
 				cpts->timestamp);
 			break;
 		case AM65_CPTS_EV_RX:
-			event->tmo = jiffies +
-				msecs_to_jiffies(AM65_CPTS_EVENT_RX_TX_TIMEOUT);
-
-			list_move_tail(&event->list, &cpts->events_rx);
-
-			dev_dbg(cpts->dev,
-				"AM65_CPTS_EV_RX e1:%08x e2:%08x t:%lld\n",
-				event->event1, event->event2,
-				event->timestamp);
-			break;
 		case AM65_CPTS_EV_TX:
 			event->tmo = jiffies +
 				msecs_to_jiffies(AM65_CPTS_EVENT_RX_TX_TIMEOUT);
 
-			list_move_tail(&event->list, &cpts->events_tx);
+			list_del_init(&event->list);
+			list_add_tail(&event->list, &cpts->events);
 
 			dev_dbg(cpts->dev,
 				"AM65_CPTS_EV_TX e1:%08x e2:%08x t:%lld\n",
@@ -375,20 +355,10 @@ static int __am65_cpts_fifo_read(struct am65_cpts *cpts)
 	}
 
 out:
+	spin_unlock_irqrestore(&cpts->lock, flags);
+
 	if (schedule)
 		ptp_schedule_worker(cpts->ptp_clock, 0);
-
-	return ret;
-}
-
-static int am65_cpts_fifo_read(struct am65_cpts *cpts)
-{
-	unsigned long flags;
-	int ret = 0;
-
-	spin_lock_irqsave(&cpts->lock, flags);
-	ret = __am65_cpts_fifo_read(cpts);
-	spin_unlock_irqrestore(&cpts->lock, flags);
 
 	return ret;
 }
@@ -435,13 +405,13 @@ static irqreturn_t am65_cpts_interrupt(int irq, void *dev_id)
 static int am65_cpts_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 {
 	struct am65_cpts *cpts = container_of(ptp, struct am65_cpts, ptp_info);
-	u32 estf_ctrl_val = 0, estf_ppm_hi = 0, estf_ppm_low = 0;
+	u32 pps_ctrl_val = 0, pps_ppm_hi = 0, pps_ppm_low = 0;
 	s32 ppb = scaled_ppm_to_ppb(scaled_ppm);
 	int pps_index = cpts->pps_genf_idx;
 	u64 adj_period, pps_adj_period;
 	u32 ctrl_val, ppm_hi, ppm_low;
 	unsigned long flags;
-	int neg_adj = 0, i;
+	int neg_adj = 0;
 
 	if (ppb < 0) {
 		neg_adj = 1;
@@ -471,19 +441,19 @@ static int am65_cpts_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 	ppm_low = lower_32_bits(adj_period);
 
 	if (cpts->pps_enabled) {
-		estf_ctrl_val = am65_cpts_read32(cpts, genf[pps_index].control);
+		pps_ctrl_val = am65_cpts_read32(cpts, genf[pps_index].control);
 		if (neg_adj)
-			estf_ctrl_val &= ~BIT(1);
+			pps_ctrl_val &= ~BIT(1);
 		else
-			estf_ctrl_val |= BIT(1);
+			pps_ctrl_val |= BIT(1);
 
 		/* GenF PPM will do correction using cpts refclk tick which is
 		 * (cpts->ts_add_val + 1) ns, so GenF length PPM adj period
 		 * need to be corrected.
 		 */
 		pps_adj_period = adj_period * (cpts->ts_add_val + 1);
-		estf_ppm_hi = upper_32_bits(pps_adj_period) & 0x3FF;
-		estf_ppm_low = lower_32_bits(pps_adj_period);
+		pps_ppm_hi = upper_32_bits(pps_adj_period) & 0x3FF;
+		pps_ppm_low = lower_32_bits(pps_adj_period);
 	}
 
 	spin_lock_irqsave(&cpts->lock, flags);
@@ -501,18 +471,11 @@ static int am65_cpts_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 	am65_cpts_write32(cpts, ppm_low, ts_ppm_low);
 
 	if (cpts->pps_enabled) {
-		am65_cpts_write32(cpts, estf_ctrl_val, genf[pps_index].control);
-		am65_cpts_write32(cpts, estf_ppm_hi, genf[pps_index].ppm_hi);
-		am65_cpts_write32(cpts, estf_ppm_low, genf[pps_index].ppm_low);
+		am65_cpts_write32(cpts, pps_ctrl_val, genf[pps_index].control);
+		am65_cpts_write32(cpts, pps_ppm_hi, genf[pps_index].ppm_hi);
+		am65_cpts_write32(cpts, pps_ppm_low, genf[pps_index].ppm_low);
 	}
 
-	for (i = 0; i < AM65_CPTS_ESTF_MAX_NUM; i++) {
-		if (cpts->estf_enable & BIT(i)) {
-			am65_cpts_write32(cpts, estf_ctrl_val, estf[i].control);
-			am65_cpts_write32(cpts, estf_ppm_hi, estf[i].ppm_hi);
-			am65_cpts_write32(cpts, estf_ppm_low, estf[i].ppm_low);
-		}
-	}
 	/* All GenF/EstF can be updated here the same way */
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
@@ -633,11 +596,6 @@ int am65_cpts_estf_enable(struct am65_cpts *cpts, int idx,
 	am65_cpts_write32(cpts, val, estf[idx].comp_lo);
 	val = lower_32_bits(cycles);
 	am65_cpts_write32(cpts, val, estf[idx].length);
-	am65_cpts_write32(cpts, 0, estf[idx].control);
-	am65_cpts_write32(cpts, 0, estf[idx].ppm_hi);
-	am65_cpts_write32(cpts, 0, estf[idx].ppm_low);
-
-	cpts->estf_enable |= BIT(idx);
 
 	dev_dbg(cpts->dev, "%s: ESTF:%u enabled\n", __func__, idx);
 
@@ -648,7 +606,6 @@ EXPORT_SYMBOL_GPL(am65_cpts_estf_enable);
 void am65_cpts_estf_disable(struct am65_cpts *cpts, int idx)
 {
 	am65_cpts_write32(cpts, 0, estf[idx].length);
-	cpts->estf_enable &= ~BIT(idx);
 
 	dev_dbg(cpts->dev, "%s: ESTF:%u disabled\n", __func__, idx);
 }
@@ -813,11 +770,6 @@ static bool am65_cpts_match_tx_ts(struct am65_cpts *cpts,
 		struct am65_cpts_skb_cb_data *skb_cb =
 					(struct am65_cpts_skb_cb_data *)skb->cb;
 
-		if ((ptp_classify_raw(skb) & PTP_CLASS_V1) &&
-		    ((mtype_seqid & AM65_CPTS_EVENT_1_SEQUENCE_ID_MASK) ==
-		     (skb_cb->skb_mtype_seqid & AM65_CPTS_EVENT_1_SEQUENCE_ID_MASK)))
-			mtype_seqid = skb_cb->skb_mtype_seqid;
-
 		if (mtype_seqid == skb_cb->skb_mtype_seqid) {
 			u64 ns = event->timestamp;
 
@@ -850,7 +802,7 @@ static bool am65_cpts_match_tx_ts(struct am65_cpts *cpts,
 	return found;
 }
 
-static void am65_cpts_find_tx_ts(struct am65_cpts *cpts)
+static void am65_cpts_find_ts(struct am65_cpts *cpts)
 {
 	struct am65_cpts_event *event;
 	struct list_head *this, *next;
@@ -859,7 +811,7 @@ static void am65_cpts_find_tx_ts(struct am65_cpts *cpts)
 	LIST_HEAD(events);
 
 	spin_lock_irqsave(&cpts->lock, flags);
-	list_splice_init(&cpts->events_tx, &events);
+	list_splice_init(&cpts->events, &events);
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
 	list_for_each_safe(this, next, &events) {
@@ -872,7 +824,7 @@ static void am65_cpts_find_tx_ts(struct am65_cpts *cpts)
 	}
 
 	spin_lock_irqsave(&cpts->lock, flags);
-	list_splice_tail(&events, &cpts->events_tx);
+	list_splice_tail(&events, &cpts->events);
 	list_splice_tail(&events_free, &cpts->pool);
 	spin_unlock_irqrestore(&cpts->lock, flags);
 }
@@ -883,7 +835,7 @@ static long am65_cpts_ts_work(struct ptp_clock_info *ptp)
 	unsigned long flags;
 	long delay = -1;
 
-	am65_cpts_find_tx_ts(cpts);
+	am65_cpts_find_ts(cpts);
 
 	spin_lock_irqsave(&cpts->txq.lock, flags);
 	if (!skb_queue_empty(&cpts->txq))
@@ -892,6 +844,29 @@ static long am65_cpts_ts_work(struct ptp_clock_info *ptp)
 
 	return delay;
 }
+
+/**
+ * am65_cpts_rx_enable - enable rx timestamping
+ * @cpts: cpts handle
+ * @en: enable
+ *
+ * This functions enables rx packets timestamping. The CPTS can timestamp all
+ * rx packets.
+ */
+void am65_cpts_rx_enable(struct am65_cpts *cpts, bool en)
+{
+	u32 val;
+
+	mutex_lock(&cpts->ptp_clk_lock);
+	val = am65_cpts_read32(cpts, control);
+	if (en)
+		val |= AM65_CPTS_CONTROL_TSTAMP_EN;
+	else
+		val &= ~AM65_CPTS_CONTROL_TSTAMP_EN;
+	am65_cpts_write32(cpts, val, control);
+	mutex_unlock(&cpts->ptp_clk_lock);
+}
+EXPORT_SYMBOL_GPL(am65_cpts_rx_enable);
 
 static int am65_skb_get_mtype_seqid(struct sk_buff *skb, u32 *mtype_seqid)
 {
@@ -916,69 +891,6 @@ static int am65_skb_get_mtype_seqid(struct sk_buff *skb, u32 *mtype_seqid)
 
 	return 1;
 }
-
-static u64 am65_cpts_find_rx_ts(struct am65_cpts *cpts, u32 skb_mtype_seqid)
-{
-	struct list_head *this, *next;
-	struct am65_cpts_event *event;
-	unsigned long flags;
-	u32 mtype_seqid;
-	u64 ns = 0;
-
-	spin_lock_irqsave(&cpts->lock, flags);
-	__am65_cpts_fifo_read(cpts);
-	list_for_each_safe(this, next, &cpts->events_rx) {
-		event = list_entry(this, struct am65_cpts_event, list);
-		if (time_after(jiffies, event->tmo)) {
-			list_move(&event->list, &cpts->pool);
-			continue;
-		}
-
-		mtype_seqid = event->event1 &
-			      (AM65_CPTS_EVENT_1_MESSAGE_TYPE_MASK |
-			       AM65_CPTS_EVENT_1_SEQUENCE_ID_MASK |
-			       AM65_CPTS_EVENT_1_EVENT_TYPE_MASK);
-
-		if (mtype_seqid == skb_mtype_seqid) {
-			ns = event->timestamp;
-			list_move(&event->list, &cpts->pool);
-			break;
-		}
-	}
-	spin_unlock_irqrestore(&cpts->lock, flags);
-
-	return ns;
-}
-
-void am65_cpts_rx_timestamp(struct am65_cpts *cpts, struct sk_buff *skb)
-{
-	struct am65_cpts_skb_cb_data *skb_cb = (struct am65_cpts_skb_cb_data *)skb->cb;
-	struct skb_shared_hwtstamps *ssh;
-	int ret;
-	u64 ns;
-
-	/* am65_cpts_rx_timestamp() is called before eth_type_trans(), so
-	 * skb MAC Hdr properties are not configured yet. Hence need to
-	 * reset skb MAC header here
-	 */
-	skb_reset_mac_header(skb);
-	ret = am65_skb_get_mtype_seqid(skb, &skb_cb->skb_mtype_seqid);
-	if (!ret)
-		return; /* if not PTP class packet */
-
-	skb_cb->skb_mtype_seqid |= (AM65_CPTS_EV_RX << AM65_CPTS_EVENT_1_EVENT_TYPE_SHIFT);
-
-	dev_dbg(cpts->dev, "%s mtype seqid %08x\n", __func__, skb_cb->skb_mtype_seqid);
-
-	ns = am65_cpts_find_rx_ts(cpts, skb_cb->skb_mtype_seqid);
-	if (!ns)
-		return;
-
-	ssh = skb_hwtstamps(skb);
-	memset(ssh, 0, sizeof(*ssh));
-	ssh->hwtstamp = ns_to_ktime(ns);
-}
-EXPORT_SYMBOL_GPL(am65_cpts_rx_timestamp);
 
 /**
  * am65_cpts_tx_timestamp - save tx packet for timestamping
@@ -1177,8 +1089,7 @@ struct am65_cpts *am65_cpts_create(struct device *dev, void __iomem *regs,
 		return ERR_PTR(ret);
 
 	mutex_init(&cpts->ptp_clk_lock);
-	INIT_LIST_HEAD(&cpts->events_tx);
-	INIT_LIST_HEAD(&cpts->events_rx);
+	INIT_LIST_HEAD(&cpts->events);
 	INIT_LIST_HEAD(&cpts->pool);
 	spin_lock_init(&cpts->lock);
 	skb_queue_head_init(&cpts->txq);

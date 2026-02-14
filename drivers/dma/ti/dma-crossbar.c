@@ -3,15 +3,14 @@
  *  Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com
  *  Author: Peter Ujfalusi <peter.ujfalusi@ti.com>
  */
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/list.h>
 #include <linux/io.h>
-#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/of_dma.h>
-#include <linux/of_platform.h>
 
 #define TI_XBAR_DRA7		0
 #define TI_XBAR_AM335X		1
@@ -79,35 +78,34 @@ static void *ti_am335x_xbar_route_allocate(struct of_phandle_args *dma_spec,
 {
 	struct platform_device *pdev = of_find_device_by_node(ofdma->of_node);
 	struct ti_am335x_xbar_data *xbar = platform_get_drvdata(pdev);
-	struct ti_am335x_xbar_map *map = ERR_PTR(-EINVAL);
+	struct ti_am335x_xbar_map *map;
 
 	if (dma_spec->args_count != 3)
-		goto out_put_pdev;
+		return ERR_PTR(-EINVAL);
 
 	if (dma_spec->args[2] >= xbar->xbar_events) {
 		dev_err(&pdev->dev, "Invalid XBAR event number: %d\n",
 			dma_spec->args[2]);
-		goto out_put_pdev;
+		return ERR_PTR(-EINVAL);
 	}
 
 	if (dma_spec->args[0] >= xbar->dma_requests) {
 		dev_err(&pdev->dev, "Invalid DMA request line number: %d\n",
 			dma_spec->args[0]);
-		goto out_put_pdev;
+		return ERR_PTR(-EINVAL);
 	}
 
 	/* The of_node_put() will be done in the core for the node */
 	dma_spec->np = of_parse_phandle(ofdma->of_node, "dma-masters", 0);
 	if (!dma_spec->np) {
 		dev_err(&pdev->dev, "Can't get DMA master\n");
-		goto out_put_pdev;
+		return ERR_PTR(-EINVAL);
 	}
 
 	map = kzalloc(sizeof(*map), GFP_KERNEL);
 	if (!map) {
 		of_node_put(dma_spec->np);
-		map = ERR_PTR(-ENOMEM);
-		goto out_put_pdev;
+		return ERR_PTR(-ENOMEM);
 	}
 
 	map->dma_line = (u16)dma_spec->args[0];
@@ -120,9 +118,6 @@ static void *ti_am335x_xbar_route_allocate(struct of_phandle_args *dma_spec,
 		map->mux_val, map->dma_line);
 
 	ti_am335x_xbar_write(xbar->iomem, map->dma_line, map->mux_val);
-
-out_put_pdev:
-	put_device(&pdev->dev);
 
 	return map;
 }
@@ -245,26 +240,28 @@ static void *ti_dra7_xbar_route_allocate(struct of_phandle_args *dma_spec,
 {
 	struct platform_device *pdev = of_find_device_by_node(ofdma->of_node);
 	struct ti_dra7_xbar_data *xbar = platform_get_drvdata(pdev);
-	struct ti_dra7_xbar_map *map = ERR_PTR(-EINVAL);
+	struct ti_dra7_xbar_map *map;
 
 	if (dma_spec->args[0] >= xbar->xbar_requests) {
 		dev_err(&pdev->dev, "Invalid XBAR request number: %d\n",
 			dma_spec->args[0]);
-		goto out_put_pdev;
+		put_device(&pdev->dev);
+		return ERR_PTR(-EINVAL);
 	}
 
 	/* The of_node_put() will be done in the core for the node */
 	dma_spec->np = of_parse_phandle(ofdma->of_node, "dma-masters", 0);
 	if (!dma_spec->np) {
 		dev_err(&pdev->dev, "Can't get DMA master\n");
-		goto out_put_pdev;
+		put_device(&pdev->dev);
+		return ERR_PTR(-EINVAL);
 	}
 
 	map = kzalloc(sizeof(*map), GFP_KERNEL);
 	if (!map) {
 		of_node_put(dma_spec->np);
-		map = ERR_PTR(-ENOMEM);
-		goto out_put_pdev;
+		put_device(&pdev->dev);
+		return ERR_PTR(-ENOMEM);
 	}
 
 	mutex_lock(&xbar->mutex);
@@ -275,8 +272,8 @@ static void *ti_dra7_xbar_route_allocate(struct of_phandle_args *dma_spec,
 		dev_err(&pdev->dev, "Run out of free DMA requests\n");
 		kfree(map);
 		of_node_put(dma_spec->np);
-		map = ERR_PTR(-ENOMEM);
-		goto out_put_pdev;
+		put_device(&pdev->dev);
+		return ERR_PTR(-ENOMEM);
 	}
 	set_bit(map->xbar_out, xbar->dma_inuse);
 	mutex_unlock(&xbar->mutex);
@@ -289,9 +286,6 @@ static void *ti_dra7_xbar_route_allocate(struct of_phandle_args *dma_spec,
 		map->xbar_in, map->xbar_out);
 
 	ti_dra7_xbar_write(xbar->iomem, map->xbar_out, map->xbar_in);
-
-out_put_pdev:
-	put_device(&pdev->dev);
 
 	return map;
 }

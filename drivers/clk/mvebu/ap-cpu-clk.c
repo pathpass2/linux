@@ -15,6 +15,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include "armada_ap_cp_helper.h"
@@ -210,21 +211,19 @@ static int ap_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	return 0;
 }
 
-static int ap_cpu_clk_determine_rate(struct clk_hw *hw,
-				     struct clk_rate_request *req)
+static long ap_cpu_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+				  unsigned long *parent_rate)
 {
-	int divider = req->best_parent_rate / req->rate;
+	int divider = *parent_rate / rate;
 
 	divider = min(divider, APN806_MAX_DIVIDER);
 
-	req->rate = req->best_parent_rate / divider;
-
-	return 0;
+	return *parent_rate / divider;
 }
 
 static const struct clk_ops ap_cpu_clk_ops = {
 	.recalc_rate	= ap_cpu_clk_recalc_rate,
-	.determine_rate = ap_cpu_clk_determine_rate,
+	.round_rate	= ap_cpu_clk_round_rate,
 	.set_rate	= ap_cpu_clk_set_rate,
 };
 
@@ -254,12 +253,12 @@ static int ap_cpu_clock_probe(struct platform_device *pdev)
 	 */
 	nclusters = 1;
 	for_each_of_cpu_node(dn) {
-		u64 cpu;
+		int cpu, err;
 
-		cpu = of_get_cpu_hwid(dn, 0);
-		if (WARN_ON(cpu == OF_BAD_ADDR)) {
+		err = of_property_read_u32(dn, "reg", &cpu);
+		if (WARN_ON(err)) {
 			of_node_put(dn);
-			return -EINVAL;
+			return err;
 		}
 
 		/* If cpu2 or cpu3 is enabled */
@@ -289,12 +288,12 @@ static int ap_cpu_clock_probe(struct platform_device *pdev)
 		struct clk_init_data init;
 		const char *parent_name;
 		struct clk *parent;
-		u64 cpu;
+		int cpu, err;
 
-		cpu = of_get_cpu_hwid(dn, 0);
-		if (WARN_ON(cpu == OF_BAD_ADDR)) {
+		err = of_property_read_u32(dn, "reg", &cpu);
+		if (WARN_ON(err)) {
 			of_node_put(dn);
-			return -EINVAL;
+			return err;
 		}
 
 		cluster_index = cpu & APN806_CLUSTER_NUM_MASK;

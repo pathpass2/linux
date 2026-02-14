@@ -15,15 +15,7 @@ description:
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - enum:
-              - qcom,pm7550ba-eusb2-repeater
-          - const: qcom,pm8550b-eusb2-repeater
-      - enum:
-          - qcom,pm8550b-eusb2-repeater
-          - qcom,pmiv0104-eusb2-repeater
-          - qcom,smb2360-eusb2-repeater
+    const: qcom,pm8550b-eusb2-repeater
 
   reg:
     maxItems: 1
@@ -34,30 +26,6 @@ properties:
   vdd18-supply: true
 
   vdd3-supply: true
-
-  qcom,tune-usb2-disc-thres:
-    $ref: /schemas/types.yaml#/definitions/uint8
-    description: High-Speed disconnect threshold
-    minimum: 0
-    maximum: 7
-
-  qcom,tune-usb2-amplitude:
-    $ref: /schemas/types.yaml#/definitions/uint8
-    description: High-Speed transmit amplitude
-    minimum: 0
-    maximum: 15
-
-  qcom,tune-usb2-preem:
-    $ref: /schemas/types.yaml#/definitions/uint8
-    description: High-Speed TX pre-emphasis tuning
-    minimum: 0
-    maximum: 7
-
-  qcom,tune-res-fsdif:
-    $ref: /schemas/types.yaml#/definitions/uint8
-    description: FS Differential TX Output Resistance Tuning
-    minimum: 0
-    maximum: 7
 
 required:
   - compatible

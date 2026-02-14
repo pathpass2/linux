@@ -35,11 +35,6 @@ properties:
           - enum:
               - dell,wyse-ariel
           - const: marvell,mmp3
-      - description: PXA1908 based boards
-        items:
-          - enum:
-              - samsung,coreprimevelte
-          - const: marvell,pxa1908
 
 additionalProperties: true
 

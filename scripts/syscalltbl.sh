@@ -54,7 +54,7 @@ nxt=0
 
 grep -E "^[0-9]+[[:space:]]+$abis" "$infile" | {
 
-	while read nr abi name native compat noreturn; do
+	while read nr abi name native compat ; do
 
 		if [ $nxt -gt $nr ]; then
 			echo "error: $infile: syscall table is not sorted or duplicates the same syscall number" >&2
@@ -66,21 +66,7 @@ grep -E "^[0-9]+[[:space:]]+$abis" "$infile" | {
 			nxt=$((nxt + 1))
 		done
 
-		if [ "$compat" = "-" ]; then
-			unset compat
-		fi
-
-		if [ -n "$noreturn" ]; then
-			if [ "$noreturn" != "noreturn" ]; then
-				echo "error: $infile: invalid string \"$noreturn\" in 'noreturn' column"
-				exit 1
-			fi
-			if [ -n "$compat" ]; then
-				echo "__SYSCALL_COMPAT_NORETURN($nr, $native, $compat)"
-			else
-				echo "__SYSCALL_NORETURN($nr, $native)"
-			fi
-		elif [ -n "$compat" ]; then
+		if [ -n "$compat" ]; then
 			echo "__SYSCALL_WITH_COMPAT($nr, $native, $compat)"
 		elif [ -n "$native" ]; then
 			echo "__SYSCALL($nr, $native)"

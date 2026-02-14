@@ -6,16 +6,15 @@
 
 #include <linux/list.h>
 #include <linux/parman.h>
-#include <linux/idr.h>
 
 #include "reg.h"
 #include "spectrum.h"
 #include "core_acl_flex_keys.h"
 
 struct mlxsw_sp_acl_tcam {
-	struct ida used_regions;
+	unsigned long *used_regions; /* bit array */
 	unsigned int max_regions;
-	struct ida used_groups;
+	unsigned long *used_groups;  /* bit array */
 	unsigned int max_groups;
 	unsigned int max_group_size;
 	struct mutex lock; /* guards vregion list */
@@ -167,9 +166,9 @@ struct mlxsw_sp_acl_atcam_region {
 };
 
 struct mlxsw_sp_acl_atcam_entry_ht_key {
-	char enc_key[MLXSW_REG_PTCEX_FLEX_KEY_BLOCKS_LEN]; /* Encoded key, minus
-							    * delta bits.
-							    */
+	char full_enc_key[MLXSW_REG_PTCEX_FLEX_KEY_BLOCKS_LEN]; /* Encoded
+								 * key.
+								 */
 	u8 erp_id;
 };
 
@@ -181,6 +180,9 @@ struct mlxsw_sp_acl_atcam_entry {
 	struct rhash_head ht_node;
 	struct list_head list; /* Member in entries_list */
 	struct mlxsw_sp_acl_atcam_entry_ht_key ht_key;
+	char enc_key[MLXSW_REG_PTCEX_FLEX_KEY_BLOCKS_LEN]; /* Encoded key,
+							    * minus delta bits.
+							    */
 	struct {
 		u16 start;
 		u8 mask;

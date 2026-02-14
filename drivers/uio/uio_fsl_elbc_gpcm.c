@@ -384,11 +384,6 @@ static int uio_fsl_elbc_gpcm_probe(struct platform_device *pdev)
 
 	/* set all UIO data */
 	info->mem[0].name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%pOFn", node);
-	if (!info->mem[0].name) {
-		ret = -ENODEV;
-		goto out_err3;
-	}
-
 	info->mem[0].addr = res.start;
 	info->mem[0].size = resource_size(&res);
 	info->mem[0].memtype = UIO_MEM_PHYS;
@@ -428,13 +423,11 @@ static int uio_fsl_elbc_gpcm_probe(struct platform_device *pdev)
 out_err2:
 	if (priv->shutdown)
 		priv->shutdown(info, true);
-
-out_err3:
 	iounmap(info->mem[0].internal_addr);
 	return ret;
 }
 
-static void uio_fsl_elbc_gpcm_remove(struct platform_device *pdev)
+static int uio_fsl_elbc_gpcm_remove(struct platform_device *pdev)
 {
 	struct uio_info *info = platform_get_drvdata(pdev);
 	struct fsl_elbc_gpcm *priv = info->priv;
@@ -444,6 +437,8 @@ static void uio_fsl_elbc_gpcm_remove(struct platform_device *pdev)
 	if (priv->shutdown)
 		priv->shutdown(info, false);
 	iounmap(info->mem[0].internal_addr);
+
+	return 0;
 
 }
 

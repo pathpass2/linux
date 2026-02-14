@@ -56,5 +56,4 @@ static struct hid_driver xinmo_driver = {
 };
 
 module_hid_driver(xinmo_driver);
-MODULE_DESCRIPTION("HID driver for Xin-Mo devices");
 MODULE_LICENSE("GPL");

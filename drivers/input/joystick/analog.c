@@ -582,8 +582,7 @@ static int analog_connect(struct gameport *gameport, struct gameport_driver *drv
 	int i;
 	int err;
 
-	port = kzalloc(sizeof(*port), GFP_KERNEL);
-	if (!port)
+	if (!(port = kzalloc(sizeof(struct analog_port), GFP_KERNEL)))
 		return -ENOMEM;
 
 	err = analog_init_port(gameport, drv, port);

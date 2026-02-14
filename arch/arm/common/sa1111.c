@@ -416,9 +416,9 @@ static int sa1111_setup_irq(struct sa1111 *sachip, unsigned irq_base)
 	writel_relaxed(~0, irqbase + SA1111_INTSTATCLR0);
 	writel_relaxed(~0, irqbase + SA1111_INTSTATCLR1);
 
-	sachip->irqdomain = irq_domain_create_linear(NULL, SA1111_IRQ_NR,
-						     &sa1111_irqdomain_ops,
-						     sachip);
+	sachip->irqdomain = irq_domain_add_linear(NULL, SA1111_IRQ_NR,
+						  &sa1111_irqdomain_ops,
+						  sachip);
 	if (!sachip->irqdomain) {
 		irq_free_descs(sachip->irq_base, SA1111_IRQ_NR);
 		return -ENOMEM;
@@ -563,7 +563,7 @@ static int sa1111_gpio_get(struct gpio_chip *gc, unsigned offset)
 	return !!(readl_relaxed(reg + SA1111_GPIO_PXDRR) & mask);
 }
 
-static int sa1111_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
+static void sa1111_gpio_set(struct gpio_chip *gc, unsigned offset, int value)
 {
 	struct sa1111 *sachip = gc_to_sa1111(gc);
 	unsigned long flags;
@@ -574,12 +574,10 @@ static int sa1111_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
 	sa1111_gpio_modify(reg + SA1111_GPIO_PXDWR, mask, value ? mask : 0);
 	sa1111_gpio_modify(reg + SA1111_GPIO_PXSSR, mask, value ? mask : 0);
 	spin_unlock_irqrestore(&sachip->lock, flags);
-
-	return 0;
 }
 
-static int sa1111_gpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
-				    unsigned long *bits)
+static void sa1111_gpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
+	unsigned long *bits)
 {
 	struct sa1111 *sachip = gc_to_sa1111(gc);
 	unsigned long flags;
@@ -597,8 +595,6 @@ static int sa1111_gpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
 	sa1111_gpio_modify(reg + SA1111_GPIO_PCDWR, (msk >> 12) & 255, val >> 12);
 	sa1111_gpio_modify(reg + SA1111_GPIO_PCSSR, (msk >> 12) & 255, val >> 12);
 	spin_unlock_irqrestore(&sachip->lock, flags);
-
-	return 0;
 }
 
 static int sa1111_gpio_to_irq(struct gpio_chip *gc, unsigned offset)
@@ -699,7 +695,7 @@ static u32 sa1111_dma_mask[] = {
 /*
  * Configure the SA1111 shared memory controller.
  */
-static void
+void
 sa1111_configure_smc(struct sa1111 *sachip, int sdram, unsigned int drac,
 		     unsigned int cas_latency)
 {
@@ -789,6 +785,19 @@ sa1111_init_one_child(struct sa1111 *sachip, struct resource *parent,
 	return ret;
 }
 
+/**
+ *	sa1111_probe - probe for a single SA1111 chip.
+ *	@phys_addr: physical address of device.
+ *
+ *	Probe for a SA1111 chip.  This must be called
+ *	before any other SA1111-specific code.
+ *
+ *	Returns:
+ *	%-ENODEV	device not found.
+ *	%-EBUSY		physical address already marked in-use.
+ *	%-EINVAL	no platform data passed
+ *	%0		successful.
+ */
 static int __sa1111_probe(struct device *me, struct resource *mem, int irq)
 {
 	struct sa1111_platform_data *pd = me->platform_data;
@@ -1099,20 +1108,6 @@ static int sa1111_resume_noirq(struct device *dev)
 #define sa1111_resume_noirq  NULL
 #endif
 
-/**
- *	sa1111_probe - probe for a single SA1111 chip.
- *	@pdev: platform device.
- *
- *	Probe for a SA1111 chip.  This must be called
- *	before any other SA1111-specific code.
- *
- *	Returns:
- *	* %-ENODEV	- device not found.
- *	* %-ENOMEM	- memory allocation failure.
- *	* %-EBUSY	- physical address already marked in-use.
- *	* %-EINVAL	- no platform data passed
- *	* %0		- successful.
- */
 static int sa1111_probe(struct platform_device *pdev)
 {
 	struct resource *mem;
@@ -1128,7 +1123,7 @@ static int sa1111_probe(struct platform_device *pdev)
 	return __sa1111_probe(&pdev->dev, mem, irq);
 }
 
-static void sa1111_remove(struct platform_device *pdev)
+static int sa1111_remove(struct platform_device *pdev)
 {
 	struct sa1111 *sachip = platform_get_drvdata(pdev);
 
@@ -1140,6 +1135,8 @@ static void sa1111_remove(struct platform_device *pdev)
 		__sa1111_remove(sachip);
 		platform_set_drvdata(pdev, NULL);
 	}
+
+	return 0;
 }
 
 static struct dev_pm_ops sa1111_pm_ops = {
@@ -1343,10 +1340,10 @@ EXPORT_SYMBOL_GPL(sa1111_get_irq);
  *	We model this as a regular bus type, and hang devices directly
  *	off this.
  */
-static int sa1111_match(struct device *_dev, const struct device_driver *_drv)
+static int sa1111_match(struct device *_dev, struct device_driver *_drv)
 {
 	struct sa1111_dev *dev = to_sa1111_device(_dev);
-	const struct sa1111_driver *drv = SA1111_DRV(_drv);
+	struct sa1111_driver *drv = SA1111_DRV(_drv);
 
 	return !!(dev->devid & drv->devid);
 }
@@ -1371,7 +1368,7 @@ static void sa1111_bus_remove(struct device *dev)
 		drv->remove(sadev);
 }
 
-const struct bus_type sa1111_bus_type = {
+struct bus_type sa1111_bus_type = {
 	.name		= "sa1111-rab",
 	.match		= sa1111_match,
 	.probe		= sa1111_bus_probe,

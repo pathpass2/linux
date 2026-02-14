@@ -20,12 +20,10 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
 #include <linux/debugfs.h>
 #include <linux/list_sort.h>
-
-#include "gvt.h"
 #include "i915_drv.h"
+#include "gvt.h"
 
 struct mmio_diff_param {
 	struct intel_vgpu *vgpu;
@@ -93,17 +91,16 @@ static int vgpu_mmio_diff_show(struct seq_file *s, void *unused)
 		.diff = 0,
 	};
 	struct diff_mmio *node, *next;
-	intel_wakeref_t wakeref;
 
 	INIT_LIST_HEAD(&param.diff_mmio_list);
 
 	mutex_lock(&gvt->lock);
 	spin_lock_bh(&gvt->scheduler.mmio_context_lock);
 
-	wakeref = mmio_hw_access_pre(gvt->gt);
+	mmio_hw_access_pre(gvt->gt);
 	/* Recognize all the diff mmios to list. */
 	intel_gvt_for_each_tracked_mmio(gvt, mmio_diff_handler, &param);
-	mmio_hw_access_post(gvt->gt, wakeref);
+	mmio_hw_access_post(gvt->gt);
 
 	spin_unlock_bh(&gvt->scheduler.mmio_context_lock);
 	mutex_unlock(&gvt->lock);
@@ -196,9 +193,9 @@ void intel_gvt_debugfs_add_vgpu(struct intel_vgpu *vgpu)
 void intel_gvt_debugfs_remove_vgpu(struct intel_vgpu *vgpu)
 {
 	struct intel_gvt *gvt = vgpu->gvt;
-	struct dentry *debugfs_root = gvt->gt->i915->drm.debugfs_root;
+	struct drm_minor *minor = gvt->gt->i915->drm.primary;
 
-	if (debugfs_root && gvt->debugfs_root) {
+	if (minor->debugfs_root && gvt->debugfs_root) {
 		debugfs_remove_recursive(vgpu->debugfs);
 		vgpu->debugfs = NULL;
 	}
@@ -210,9 +207,9 @@ void intel_gvt_debugfs_remove_vgpu(struct intel_vgpu *vgpu)
  */
 void intel_gvt_debugfs_init(struct intel_gvt *gvt)
 {
-	struct dentry *debugfs_root = gvt->gt->i915->drm.debugfs_root;
+	struct drm_minor *minor = gvt->gt->i915->drm.primary;
 
-	gvt->debugfs_root = debugfs_create_dir("gvt", debugfs_root);
+	gvt->debugfs_root = debugfs_create_dir("gvt", minor->debugfs_root);
 
 	debugfs_create_ulong("num_tracked_mmio", 0444, gvt->debugfs_root,
 			     &gvt->mmio.num_tracked_mmio);
@@ -224,9 +221,9 @@ void intel_gvt_debugfs_init(struct intel_gvt *gvt)
  */
 void intel_gvt_debugfs_clean(struct intel_gvt *gvt)
 {
-	struct dentry *debugfs_root = gvt->gt->i915->drm.debugfs_root;
+	struct drm_minor *minor = gvt->gt->i915->drm.primary;
 
-	if (debugfs_root) {
+	if (minor->debugfs_root) {
 		debugfs_remove_recursive(gvt->debugfs_root);
 		gvt->debugfs_root = NULL;
 	}

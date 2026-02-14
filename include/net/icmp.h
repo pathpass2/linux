@@ -37,10 +37,10 @@ struct sk_buff;
 struct net;
 
 void __icmp_send(struct sk_buff *skb_in, int type, int code, __be32 info,
-		 const struct inet_skb_parm *parm);
+		 const struct ip_options *opt);
 static inline void icmp_send(struct sk_buff *skb_in, int type, int code, __be32 info)
 {
-	__icmp_send(skb_in, type, code, info, IPCB(skb_in));
+	__icmp_send(skb_in, type, code, info, &IPCB(skb_in)->opt);
 }
 
 #if IS_ENABLED(CONFIG_NF_NAT)
@@ -48,10 +48,8 @@ void icmp_ndo_send(struct sk_buff *skb_in, int type, int code, __be32 info);
 #else
 static inline void icmp_ndo_send(struct sk_buff *skb_in, int type, int code, __be32 info)
 {
-	struct inet_skb_parm parm;
-
-	memset(&parm, 0, sizeof(parm));
-	__icmp_send(skb_in, type, code, info, &parm);
+	struct ip_options opts = { 0 };
+	__icmp_send(skb_in, type, code, info, &opts);
 }
 #endif
 

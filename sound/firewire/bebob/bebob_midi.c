@@ -16,15 +16,15 @@ static int midi_open(struct snd_rawmidi_substream *substream)
 	if (err < 0)
 		return err;
 
-	scoped_guard(mutex, &bebob->mutex) {
-		err = snd_bebob_stream_reserve_duplex(bebob, 0, 0, 0);
-		if (err >= 0) {
-			++bebob->substreams_counter;
-			err = snd_bebob_stream_start_duplex(bebob);
-			if (err < 0)
-				--bebob->substreams_counter;
-		}
+	mutex_lock(&bebob->mutex);
+	err = snd_bebob_stream_reserve_duplex(bebob, 0, 0, 0);
+	if (err >= 0) {
+		++bebob->substreams_counter;
+		err = snd_bebob_stream_start_duplex(bebob);
+		if (err < 0)
+			--bebob->substreams_counter;
 	}
+	mutex_unlock(&bebob->mutex);
 	if (err < 0)
 		snd_bebob_stream_lock_release(bebob);
 
@@ -35,10 +35,10 @@ static int midi_close(struct snd_rawmidi_substream *substream)
 {
 	struct snd_bebob *bebob = substream->rmidi->private_data;
 
-	scoped_guard(mutex, &bebob->mutex) {
-		bebob->substreams_counter--;
-		snd_bebob_stream_stop_duplex(bebob);
-	}
+	mutex_lock(&bebob->mutex);
+	bebob->substreams_counter--;
+	snd_bebob_stream_stop_duplex(bebob);
+	mutex_unlock(&bebob->mutex);
 
 	snd_bebob_stream_lock_release(bebob);
 	return 0;
@@ -47,8 +47,9 @@ static int midi_close(struct snd_rawmidi_substream *substream)
 static void midi_capture_trigger(struct snd_rawmidi_substream *substrm, int up)
 {
 	struct snd_bebob *bebob = substrm->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&bebob->lock);
+	spin_lock_irqsave(&bebob->lock, flags);
 
 	if (up)
 		amdtp_am824_midi_trigger(&bebob->tx_stream,
@@ -56,13 +57,16 @@ static void midi_capture_trigger(struct snd_rawmidi_substream *substrm, int up)
 	else
 		amdtp_am824_midi_trigger(&bebob->tx_stream,
 					 substrm->number, NULL);
+
+	spin_unlock_irqrestore(&bebob->lock, flags);
 }
 
 static void midi_playback_trigger(struct snd_rawmidi_substream *substrm, int up)
 {
 	struct snd_bebob *bebob = substrm->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&bebob->lock);
+	spin_lock_irqsave(&bebob->lock, flags);
 
 	if (up)
 		amdtp_am824_midi_trigger(&bebob->rx_stream,
@@ -70,6 +74,8 @@ static void midi_playback_trigger(struct snd_rawmidi_substream *substrm, int up)
 	else
 		amdtp_am824_midi_trigger(&bebob->rx_stream,
 					 substrm->number, NULL);
+
+	spin_unlock_irqrestore(&bebob->lock, flags);
 }
 
 static void set_midi_substream_names(struct snd_bebob *bebob,
@@ -78,9 +84,9 @@ static void set_midi_substream_names(struct snd_bebob *bebob,
 	struct snd_rawmidi_substream *subs;
 
 	list_for_each_entry(subs, &str->substreams, list) {
-		scnprintf(subs->name, sizeof(subs->name),
-			  "%s MIDI %d",
-			  bebob->card->shortname, subs->number + 1);
+		snprintf(subs->name, sizeof(subs->name),
+			 "%s MIDI %d",
+			 bebob->card->shortname, subs->number + 1);
 	}
 }
 

@@ -21,7 +21,7 @@
 #include <linux/kernel.h>
 #include <linux/math64.h>
 #include <linux/dvb/frontend.h>
-#include <linux/int_log.h>
+#include <media/dvb_math.h>
 #include "tc90522.h"
 
 #define TC90522_I2C_THRU_REG 0xfe
@@ -840,7 +840,7 @@ static struct i2c_driver tc90522_driver = {
 	.driver = {
 		.name	= "tc90522",
 	},
-	.probe		= tc90522_probe,
+	.probe_new	= tc90522_probe,
 	.remove		= tc90522_remove,
 	.id_table	= tc90522_id,
 };

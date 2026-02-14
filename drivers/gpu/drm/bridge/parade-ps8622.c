@@ -12,6 +12,7 @@
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pm.h>
 #include <linux/regulator/consumer.h>
 
@@ -19,6 +20,7 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_of.h>
+#include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
@@ -418,7 +420,6 @@ static void ps8622_post_disable(struct drm_bridge *bridge)
 }
 
 static int ps8622_attach(struct drm_bridge *bridge,
-			 struct drm_encoder *encoder,
 			 enum drm_bridge_attach_flags flags)
 {
 	struct ps8622_bridge *ps8622 = bridge_to_ps8622(bridge);
@@ -449,10 +450,9 @@ static int ps8622_probe(struct i2c_client *client)
 	struct drm_bridge *panel_bridge;
 	int ret;
 
-	ps8622 = devm_drm_bridge_alloc(dev, struct ps8622_bridge, bridge,
-				       &ps8622_bridge_funcs);
-	if (IS_ERR(ps8622))
-		return PTR_ERR(ps8622);
+	ps8622 = devm_kzalloc(dev, sizeof(*ps8622), GFP_KERNEL);
+	if (!ps8622)
+		return -ENOMEM;
 
 	panel_bridge = devm_drm_of_get_bridge(dev, dev->of_node, 0, 0);
 	if (IS_ERR(panel_bridge))
@@ -496,7 +496,7 @@ static int ps8622_probe(struct i2c_client *client)
 		ps8622->lane_count = ps8622->max_lane_count;
 	}
 
-	if (!of_property_read_bool(dev->of_node, "use-external-pwm")) {
+	if (!of_find_property(dev->of_node, "use-external-pwm", NULL)) {
 		ps8622->bl = backlight_device_register("ps8622-backlight",
 				dev, ps8622, &ps8622_backlight_ops,
 				NULL);
@@ -510,6 +510,7 @@ static int ps8622_probe(struct i2c_client *client)
 		ps8622->bl->props.brightness = PS8622_MAX_BRIGHTNESS;
 	}
 
+	ps8622->bridge.funcs = &ps8622_bridge_funcs;
 	ps8622->bridge.type = DRM_MODE_CONNECTOR_LVDS;
 	ps8622->bridge.of_node = dev->of_node;
 	drm_bridge_add(&ps8622->bridge);
@@ -537,7 +538,7 @@ MODULE_DEVICE_TABLE(i2c, ps8622_i2c_table);
 
 static struct i2c_driver ps8622_driver = {
 	.id_table	= ps8622_i2c_table,
-	.probe		= ps8622_probe,
+	.probe_new	= ps8622_probe,
 	.remove		= ps8622_remove,
 	.driver		= {
 		.name	= "ps8622",

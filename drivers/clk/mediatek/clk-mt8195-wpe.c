@@ -132,7 +132,6 @@ static const struct of_device_id of_match_clk_mt8195_wpe[] = {
 		/* sentinel */
 	}
 };
-MODULE_DEVICE_TABLE(of, of_match_clk_mt8195_wpe);
 
 static struct platform_driver clk_mt8195_wpe_drv = {
 	.probe = mtk_clk_simple_probe,
@@ -142,7 +141,4 @@ static struct platform_driver clk_mt8195_wpe_drv = {
 		.of_match_table = of_match_clk_mt8195_wpe,
 	},
 };
-module_platform_driver(clk_mt8195_wpe_drv);
-
-MODULE_DESCRIPTION("MediaTek MT8195 Warp Engine clocks driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(clk_mt8195_wpe_drv);

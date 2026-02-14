@@ -5,7 +5,7 @@
 
 #include <linux/component.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #include <drm/drm_modeset_helper_vtables.h>
@@ -235,9 +235,11 @@ static int sun8i_dw_hdmi_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sun8i_dw_hdmi_ops);
 }
 
-static void sun8i_dw_hdmi_remove(struct platform_device *pdev)
+static int sun8i_dw_hdmi_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sun8i_dw_hdmi_ops);
+
+	return 0;
 }
 
 static const struct sun8i_dw_hdmi_quirks sun8i_a83t_quirks = {

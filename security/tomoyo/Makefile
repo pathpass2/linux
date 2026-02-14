@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0
-CONTEXT_ANALYSIS := y
-
 obj-y = audit.o common.o condition.o domain.o environ.o file.o gc.o group.o load_policy.o memory.o mount.o network.o realpath.o securityfs_if.o tomoyo.o util.o
 
 targets += builtin-policy.h
@@ -13,7 +11,7 @@ quiet_cmd_policy = POLICY  $@
 	printf '\t"";\n';) \
 	} > $@
 
-$(obj)/builtin-policy.h: $(wildcard $(obj)/policy/*.conf $(src)/policy/*.conf.default) FORCE
+$(obj)/builtin-policy.h: $(wildcard $(obj)/policy/*.conf $(srctree)/$(src)/policy/*.conf.default) FORCE
 	$(call if_changed,policy)
 
 ifndef CONFIG_SECURITY_TOMOYO_INSECURE_BUILTIN_SETTING

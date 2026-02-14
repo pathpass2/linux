@@ -14,7 +14,6 @@
 #include <linux/mutex.h>
 #include <linux/string.h>
 #include <linux/power_supply.h>
-#include <linux/string_choices.h>
 #include <linux/mfd/88pm860x.h>
 #include <linux/delay.h>
 
@@ -423,7 +422,7 @@ static irqreturn_t pm860x_batt_handler(int irq, void *data)
 		info->temp_type = PM860X_TEMP_TINT;
 	}
 	mutex_unlock(&info->lock);
-	/* clear ccnt since battery is attached or detached */
+	/* clear ccnt since battery is attached or dettached */
 	clear_ccnt(info, &ccnt_data);
 	return IRQ_HANDLED;
 }
@@ -504,7 +503,8 @@ static void pm860x_init_battery(struct pm860x_battery_info *info)
 	data = pm860x_reg_read(info->i2c, PM8607_POWER_UP_LOG);
 	bat_remove = data & BAT_WU_LOG;
 
-	dev_dbg(info->dev, "battery wake up? %s\n", str_yes_no(bat_remove));
+	dev_dbg(info->dev, "battery wake up? %s\n",
+		bat_remove != 0 ? "yes" : "no");
 
 	/* restore SOC from RTC domain register */
 	if (bat_remove == 0) {
@@ -566,7 +566,7 @@ static int measure_temp(struct pm860x_battery_info *info, int *data)
 		ret = measure_12bit_voltage(info, PM8607_GPADC1_MEAS1, data);
 		if (ret)
 			return ret;
-		/* measured Vtbat(mV) / Ibias_current(11uA)*/
+		/* meausered Vtbat(mV) / Ibias_current(11uA)*/
 		*data = (*data * 1000) / GPBIAS2_GPADC1_UA;
 
 		if (*data > TBAT_NEG_25D) {
@@ -921,12 +921,12 @@ static int pm860x_battery_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	info->irq_cc = platform_get_irq(pdev, 0);
-	if (info->irq_cc < 0)
-		return info->irq_cc;
+	if (info->irq_cc <= 0)
+		return -EINVAL;
 
 	info->irq_batt = platform_get_irq(pdev, 1);
-	if (info->irq_batt < 0)
-		return info->irq_batt;
+	if (info->irq_batt <= 0)
+		return -EINVAL;
 
 	info->chip = chip;
 	info->i2c =

@@ -15,8 +15,6 @@ description: |
   controlled through an I2C-compatible SCCB bus. The sensor transmits images
   on a MIPI CSI-2 output interface with up to 4 data lanes.
 
-$ref: /schemas/media/video-interface-devices.yaml#
-
 properties:
   compatible:
     const: ovti,ov8858
@@ -71,7 +69,7 @@ required:
   - clocks
   - port
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

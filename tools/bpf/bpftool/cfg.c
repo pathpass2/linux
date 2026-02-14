@@ -302,7 +302,6 @@ static bool func_add_bb_edges(struct func_node *func)
 
 		insn = bb->tail;
 		if (!is_jmp_insn(insn->code) ||
-		    BPF_OP(insn->code) == BPF_CALL ||
 		    BPF_OP(insn->code) == BPF_EXIT) {
 			e->dst = bb_next(bb);
 			e->flags |= EDGE_FLAG_FALLTHROUGH;
@@ -381,9 +380,7 @@ static void cfg_destroy(struct cfg *cfg)
 	}
 }
 
-static void
-draw_bb_node(struct func_node *func, struct bb_node *bb, struct dump_data *dd,
-	     bool opcodes, bool linum)
+static void draw_bb_node(struct func_node *func, struct bb_node *bb)
 {
 	const char *shape;
 
@@ -401,10 +398,13 @@ draw_bb_node(struct func_node *func, struct bb_node *bb, struct dump_data *dd,
 		printf("EXIT");
 	} else {
 		unsigned int start_idx;
-		printf("{\\\n");
+		struct dump_data dd = {};
+
+		printf("{");
+		kernel_syms_load(&dd);
 		start_idx = bb->head - func->start;
-		dump_xlated_for_graph(dd, bb->head, bb->tail, start_idx,
-				      opcodes, linum);
+		dump_xlated_for_graph(&dd, bb->head, bb->tail, start_idx);
+		kernel_syms_destroy(&dd);
 		printf("}");
 	}
 
@@ -430,14 +430,12 @@ static void draw_bb_succ_edges(struct func_node *func, struct bb_node *bb)
 	}
 }
 
-static void
-func_output_bb_def(struct func_node *func, struct dump_data *dd,
-		   bool opcodes, bool linum)
+static void func_output_bb_def(struct func_node *func)
 {
 	struct bb_node *bb;
 
 	list_for_each_entry(bb, &func->bbs, l) {
-		draw_bb_node(func, bb, dd, opcodes, linum);
+		draw_bb_node(func, bb);
 	}
 }
 
@@ -457,8 +455,7 @@ static void func_output_edges(struct func_node *func)
 	       func_idx, ENTRY_BLOCK_INDEX, func_idx, EXIT_BLOCK_INDEX);
 }
 
-static void
-cfg_dump(struct cfg *cfg, struct dump_data *dd, bool opcodes, bool linum)
+static void cfg_dump(struct cfg *cfg)
 {
 	struct func_node *func;
 
@@ -466,15 +463,14 @@ cfg_dump(struct cfg *cfg, struct dump_data *dd, bool opcodes, bool linum)
 	list_for_each_entry(func, &cfg->funcs, l) {
 		printf("subgraph \"cluster_%d\" {\n\tstyle=\"dashed\";\n\tcolor=\"black\";\n\tlabel=\"func_%d ()\";\n",
 		       func->idx, func->idx);
-		func_output_bb_def(func, dd, opcodes, linum);
+		func_output_bb_def(func);
 		func_output_edges(func);
 		printf("}\n");
 	}
 	printf("}\n");
 }
 
-void dump_xlated_cfg(struct dump_data *dd, void *buf, unsigned int len,
-		     bool opcodes, bool linum)
+void dump_xlated_cfg(void *buf, unsigned int len)
 {
 	struct bpf_insn *insn = buf;
 	struct cfg cfg;
@@ -483,7 +479,7 @@ void dump_xlated_cfg(struct dump_data *dd, void *buf, unsigned int len,
 	if (cfg_build(&cfg, insn, len))
 		return;
 
-	cfg_dump(&cfg, dd, opcodes, linum);
+	cfg_dump(&cfg);
 
 	cfg_destroy(&cfg);
 }

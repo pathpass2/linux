@@ -16,7 +16,7 @@ Bus-Independent Device Accesses
 Introduction
 ============
 
-Linux provides an API which abstracts performing IO across all buses
+Linux provides an API which abstracts performing IO across all busses
 and devices, allowing device drivers to be written independently of bus
 type.
 
@@ -71,7 +71,7 @@ can be compiler optimised, you can use __readb() and friends to
 indicate the relaxed ordering. Use this with care.
 
 While the basic functions are defined to be synchronous with respect to
-each other and ordered with respect to each other the buses the devices
+each other and ordered with respect to each other the busses the devices
 sit on may themselves have asynchronicity. In particular many authors
 are burned by the fact that PCI bus writes are posted asynchronously. A
 driver author must issue a read from the same device to ensure that
@@ -408,12 +408,11 @@ functions for details on the CPU side of things.
 ioremap_uc()
 ------------
 
-ioremap_uc() is only meaningful on old x86-32 systems with the PAT extension,
-and on ia64 with its slightly unconventional ioremap() behavior, everywhere
-elss ioremap_uc() defaults to return NULL.
+ioremap_uc() behaves like ioremap() except that on the x86 architecture without
+'PAT' mode, it marks memory as uncached even when the MTRR has designated
+it as cacheable, see Documentation/x86/pat.rst.
 
-
-Portable drivers should avoid the use of ioremap_uc(), use ioremap() instead.
+Portable drivers should avoid the use of ioremap_uc().
 
 ioremap_cache()
 ---------------
@@ -517,3 +516,6 @@ Public Functions Provided
 
 .. kernel-doc:: arch/x86/include/asm/io.h
    :internal:
+
+.. kernel-doc:: lib/pci_iomap.c
+   :export:

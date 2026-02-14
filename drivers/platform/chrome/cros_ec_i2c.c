@@ -289,19 +289,23 @@ done:
 static int cros_ec_i2c_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
-	struct cros_ec_device *ec_dev;
+	struct cros_ec_device *ec_dev = NULL;
 	int err;
 
-	ec_dev = cros_ec_device_alloc(dev);
+	ec_dev = devm_kzalloc(dev, sizeof(*ec_dev), GFP_KERNEL);
 	if (!ec_dev)
 		return -ENOMEM;
 
 	i2c_set_clientdata(client, ec_dev);
+	ec_dev->dev = dev;
 	ec_dev->priv = client;
 	ec_dev->irq = client->irq;
 	ec_dev->cmd_xfer = cros_ec_cmd_xfer_i2c;
 	ec_dev->pkt_xfer = cros_ec_pkt_xfer_i2c;
 	ec_dev->phys_name = client->adapter->name;
+	ec_dev->din_size = sizeof(struct ec_host_response_i2c) +
+			   sizeof(struct ec_response_get_protocol_info);
+	ec_dev->dout_size = sizeof(struct ec_host_request_i2c);
 
 	err = cros_ec_register(ec_dev);
 	if (err) {
@@ -348,7 +352,7 @@ MODULE_DEVICE_TABLE(of, cros_ec_i2c_of_match);
 #endif
 
 static const struct i2c_device_id cros_ec_i2c_id[] = {
-	{ "cros-ec-i2c" },
+	{ "cros-ec-i2c", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, cros_ec_i2c_id);
@@ -368,7 +372,7 @@ static struct i2c_driver cros_ec_driver = {
 		.of_match_table = of_match_ptr(cros_ec_i2c_of_match),
 		.pm	= &cros_ec_i2c_pm_ops,
 	},
-	.probe		= cros_ec_i2c_probe,
+	.probe_new	= cros_ec_i2c_probe,
 	.remove		= cros_ec_i2c_remove,
 	.id_table	= cros_ec_i2c_id,
 };

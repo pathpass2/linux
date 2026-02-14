@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <linux/kvm_types.h>
 #include <linux/perf_event.h>
 #include <linux/types.h>
 
-#include <asm/cpu_device_id.h>
 #include <asm/perf_event.h>
 #include <asm/msr.h>
 
@@ -138,9 +136,9 @@ static void __intel_pmu_lbr_enable(bool pmi)
 	if (cpuc->lbr_sel)
 		lbr_select = cpuc->lbr_sel->config & x86_pmu.lbr_sel_mask;
 	if (!static_cpu_has(X86_FEATURE_ARCH_LBR) && !pmi && cpuc->lbr_sel)
-		wrmsrq(MSR_LBR_SELECT, lbr_select);
+		wrmsrl(MSR_LBR_SELECT, lbr_select);
 
-	rdmsrq(MSR_IA32_DEBUGCTLMSR, debugctl);
+	rdmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
 	orig_debugctl = debugctl;
 
 	if (!static_cpu_has(X86_FEATURE_ARCH_LBR))
@@ -156,10 +154,10 @@ static void __intel_pmu_lbr_enable(bool pmi)
 		debugctl |= DEBUGCTLMSR_FREEZE_LBRS_ON_PMI;
 
 	if (orig_debugctl != debugctl)
-		wrmsrq(MSR_IA32_DEBUGCTLMSR, debugctl);
+		wrmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
 
 	if (static_cpu_has(X86_FEATURE_ARCH_LBR))
-		wrmsrq(MSR_ARCH_LBR_CTL, lbr_select | ARCH_LBR_CTL_LBREN);
+		wrmsrl(MSR_ARCH_LBR_CTL, lbr_select | ARCH_LBR_CTL_LBREN);
 }
 
 void intel_pmu_lbr_reset_32(void)
@@ -167,7 +165,7 @@ void intel_pmu_lbr_reset_32(void)
 	int i;
 
 	for (i = 0; i < x86_pmu.lbr_nr; i++)
-		wrmsrq(x86_pmu.lbr_from + i, 0);
+		wrmsrl(x86_pmu.lbr_from + i, 0);
 }
 
 void intel_pmu_lbr_reset_64(void)
@@ -175,17 +173,17 @@ void intel_pmu_lbr_reset_64(void)
 	int i;
 
 	for (i = 0; i < x86_pmu.lbr_nr; i++) {
-		wrmsrq(x86_pmu.lbr_from + i, 0);
-		wrmsrq(x86_pmu.lbr_to   + i, 0);
+		wrmsrl(x86_pmu.lbr_from + i, 0);
+		wrmsrl(x86_pmu.lbr_to   + i, 0);
 		if (x86_pmu.lbr_has_info)
-			wrmsrq(x86_pmu.lbr_info + i, 0);
+			wrmsrl(x86_pmu.lbr_info + i, 0);
 	}
 }
 
 static void intel_pmu_arch_lbr_reset(void)
 {
 	/* Write to ARCH_LBR_DEPTH MSR, all LBR entries are reset to 0 */
-	wrmsrq(MSR_ARCH_LBR_DEPTH, x86_pmu.lbr_nr);
+	wrmsrl(MSR_ARCH_LBR_DEPTH, x86_pmu.lbr_nr);
 }
 
 void intel_pmu_lbr_reset(void)
@@ -200,7 +198,7 @@ void intel_pmu_lbr_reset(void)
 	cpuc->last_task_ctx = NULL;
 	cpuc->last_log_id = 0;
 	if (!static_cpu_has(X86_FEATURE_ARCH_LBR) && cpuc->lbr_select)
-		wrmsrq(MSR_LBR_SELECT, 0);
+		wrmsrl(MSR_LBR_SELECT, 0);
 }
 
 /*
@@ -210,7 +208,7 @@ static inline u64 intel_pmu_lbr_tos(void)
 {
 	u64 tos;
 
-	rdmsrq(x86_pmu.lbr_tos, tos);
+	rdmsrl(x86_pmu.lbr_tos, tos);
 	return tos;
 }
 
@@ -283,17 +281,17 @@ static u64 lbr_from_signext_quirk_rd(u64 val)
 static __always_inline void wrlbr_from(unsigned int idx, u64 val)
 {
 	val = lbr_from_signext_quirk_wr(val);
-	wrmsrq(x86_pmu.lbr_from + idx, val);
+	wrmsrl(x86_pmu.lbr_from + idx, val);
 }
 
 static __always_inline void wrlbr_to(unsigned int idx, u64 val)
 {
-	wrmsrq(x86_pmu.lbr_to + idx, val);
+	wrmsrl(x86_pmu.lbr_to + idx, val);
 }
 
 static __always_inline void wrlbr_info(unsigned int idx, u64 val)
 {
-	wrmsrq(x86_pmu.lbr_info + idx, val);
+	wrmsrl(x86_pmu.lbr_info + idx, val);
 }
 
 static __always_inline u64 rdlbr_from(unsigned int idx, struct lbr_entry *lbr)
@@ -303,7 +301,7 @@ static __always_inline u64 rdlbr_from(unsigned int idx, struct lbr_entry *lbr)
 	if (lbr)
 		return lbr->from;
 
-	rdmsrq(x86_pmu.lbr_from + idx, val);
+	rdmsrl(x86_pmu.lbr_from + idx, val);
 
 	return lbr_from_signext_quirk_rd(val);
 }
@@ -315,7 +313,7 @@ static __always_inline u64 rdlbr_to(unsigned int idx, struct lbr_entry *lbr)
 	if (lbr)
 		return lbr->to;
 
-	rdmsrq(x86_pmu.lbr_to + idx, val);
+	rdmsrl(x86_pmu.lbr_to + idx, val);
 
 	return val;
 }
@@ -327,7 +325,7 @@ static __always_inline u64 rdlbr_info(unsigned int idx, struct lbr_entry *lbr)
 	if (lbr)
 		return lbr->info;
 
-	rdmsrq(x86_pmu.lbr_info + idx, val);
+	rdmsrl(x86_pmu.lbr_info + idx, val);
 
 	return val;
 }
@@ -381,10 +379,10 @@ void intel_pmu_lbr_restore(void *ctx)
 			wrlbr_info(lbr_idx, 0);
 	}
 
-	wrmsrq(x86_pmu.lbr_tos, tos);
+	wrmsrl(x86_pmu.lbr_tos, tos);
 
 	if (cpuc->lbr_select)
-		wrmsrq(MSR_LBR_SELECT, task_ctx->lbr_sel);
+		wrmsrl(MSR_LBR_SELECT, task_ctx->lbr_sel);
 }
 
 static void intel_pmu_arch_lbr_restore(void *ctx)
@@ -423,17 +421,11 @@ static __always_inline bool lbr_is_reset_in_cstate(void *ctx)
 	return !rdlbr_from(((struct x86_perf_task_context *)ctx)->tos, NULL);
 }
 
-static inline bool has_lbr_callstack_users(void *ctx)
-{
-	return task_context_opt(ctx)->lbr_callstack_users ||
-	       x86_pmu.lbr_callstack_users;
-}
-
 static void __intel_pmu_lbr_restore(void *ctx)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 
-	if (!has_lbr_callstack_users(ctx) ||
+	if (task_context_opt(ctx)->lbr_callstack_users == 0 ||
 	    task_context_opt(ctx)->lbr_stack_state == LBR_NONE) {
 		intel_pmu_lbr_reset();
 		return;
@@ -476,7 +468,7 @@ void intel_pmu_lbr_save(void *ctx)
 	task_ctx->tos = tos;
 
 	if (cpuc->lbr_select)
-		rdmsrq(MSR_LBR_SELECT, task_ctx->lbr_sel);
+		rdmsrl(MSR_LBR_SELECT, task_ctx->lbr_sel);
 }
 
 static void intel_pmu_arch_lbr_save(void *ctx)
@@ -510,7 +502,7 @@ static void __intel_pmu_lbr_save(void *ctx)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
 
-	if (!has_lbr_callstack_users(ctx)) {
+	if (task_context_opt(ctx)->lbr_callstack_users == 0) {
 		task_context_opt(ctx)->lbr_stack_state = LBR_NONE;
 		return;
 	}
@@ -523,11 +515,32 @@ static void __intel_pmu_lbr_save(void *ctx)
 	cpuc->last_log_id = ++task_context_opt(ctx)->log_id;
 }
 
-void intel_pmu_lbr_sched_task(struct perf_event_pmu_context *pmu_ctx,
-			      struct task_struct *task, bool sched_in)
+void intel_pmu_lbr_swap_task_ctx(struct perf_event_pmu_context *prev_epc,
+				 struct perf_event_pmu_context *next_epc)
+{
+	void *prev_ctx_data, *next_ctx_data;
+
+	swap(prev_epc->task_ctx_data, next_epc->task_ctx_data);
+
+	/*
+	 * Architecture specific synchronization makes sense in case
+	 * both prev_epc->task_ctx_data and next_epc->task_ctx_data
+	 * pointers are allocated.
+	 */
+
+	prev_ctx_data = next_epc->task_ctx_data;
+	next_ctx_data = prev_epc->task_ctx_data;
+
+	if (!prev_ctx_data || !next_ctx_data)
+		return;
+
+	swap(task_context_opt(prev_ctx_data)->lbr_callstack_users,
+	     task_context_opt(next_ctx_data)->lbr_callstack_users);
+}
+
+void intel_pmu_lbr_sched_task(struct perf_event_pmu_context *pmu_ctx, bool sched_in)
 {
 	struct cpu_hw_events *cpuc = this_cpu_ptr(&cpu_hw_events);
-	struct perf_ctx_data *ctx_data;
 	void *task_ctx;
 
 	if (!cpuc->lbr_users)
@@ -538,18 +551,14 @@ void intel_pmu_lbr_sched_task(struct perf_event_pmu_context *pmu_ctx,
 	 * the task was scheduled out, restore the stack. Otherwise flush
 	 * the LBR stack.
 	 */
-	rcu_read_lock();
-	ctx_data = rcu_dereference(task->perf_ctx_data);
-	task_ctx = ctx_data ? ctx_data->data : NULL;
+	task_ctx = pmu_ctx ? pmu_ctx->task_ctx_data : NULL;
 	if (task_ctx) {
 		if (sched_in)
 			__intel_pmu_lbr_restore(task_ctx);
 		else
 			__intel_pmu_lbr_save(task_ctx);
-		rcu_read_unlock();
 		return;
 	}
-	rcu_read_unlock();
 
 	/*
 	 * Since a context switch can flip the address space and LBR entries
@@ -578,19 +587,9 @@ void intel_pmu_lbr_add(struct perf_event *event)
 
 	cpuc->br_sel = event->hw.branch_reg.reg;
 
-	if (branch_user_callstack(cpuc->br_sel)) {
-		if (event->attach_state & PERF_ATTACH_TASK) {
-			struct task_struct *task = event->hw.target;
-			struct perf_ctx_data *ctx_data;
+	if (branch_user_callstack(cpuc->br_sel) && event->pmu_ctx->task_ctx_data)
+		task_context_opt(event->pmu_ctx->task_ctx_data)->lbr_callstack_users++;
 
-			rcu_read_lock();
-			ctx_data = rcu_dereference(task->perf_ctx_data);
-			if (ctx_data)
-				task_context_opt(ctx_data->data)->lbr_callstack_users++;
-			rcu_read_unlock();
-		} else
-			x86_pmu.lbr_callstack_users++;
-	}
 	/*
 	 * Request pmu::sched_task() callback, which will fire inside the
 	 * regular perf event scheduling, so that call will:
@@ -664,19 +663,9 @@ void intel_pmu_lbr_del(struct perf_event *event)
 	if (!x86_pmu.lbr_nr)
 		return;
 
-	if (branch_user_callstack(cpuc->br_sel)) {
-		if (event->attach_state & PERF_ATTACH_TASK) {
-			struct task_struct *task = event->hw.target;
-			struct perf_ctx_data *ctx_data;
-
-			rcu_read_lock();
-			ctx_data = rcu_dereference(task->perf_ctx_data);
-			if (ctx_data)
-				task_context_opt(ctx_data->data)->lbr_callstack_users--;
-			rcu_read_unlock();
-		} else
-			x86_pmu.lbr_callstack_users--;
-	}
+	if (branch_user_callstack(cpuc->br_sel) &&
+	    event->pmu_ctx->task_ctx_data)
+		task_context_opt(event->pmu_ctx->task_ctx_data)->lbr_callstack_users--;
 
 	if (event->hw.flags & PERF_X86_EVENT_LBR_SELECT)
 		cpuc->lbr_select = 0;
@@ -687,25 +676,6 @@ void intel_pmu_lbr_del(struct perf_event *event)
 	WARN_ON_ONCE(cpuc->lbr_users < 0);
 	WARN_ON_ONCE(cpuc->lbr_pebs_users < 0);
 	perf_sched_cb_dec(event->pmu);
-
-	/*
-	 * The logged occurrences information is only valid for the
-	 * current LBR group. If another LBR group is scheduled in
-	 * later, the information from the stale LBRs will be wrongly
-	 * interpreted. Reset the LBRs here.
-	 *
-	 * Only clear once for a branch counter group with the leader
-	 * event. Because
-	 * - Cannot simply reset the LBRs with the !cpuc->lbr_users.
-	 *   Because it's possible that the last LBR user is not in a
-	 *   branch counter group, e.g., a branch_counters group +
-	 *   several normal LBR events.
-	 * - The LBR reset can be done with any one of the events in a
-	 *   branch counter group, since they are always scheduled together.
-	 *   It's easy to force the leader event an LBR event.
-	 */
-	if (is_branch_counters_group(event) && event == event->group_leader)
-		intel_pmu_lbr_reset();
 }
 
 static inline bool vlbr_exclude_host(void)
@@ -753,7 +723,7 @@ void intel_pmu_lbr_read_32(struct cpu_hw_events *cpuc)
 			u64     lbr;
 		} msr_lastbranch;
 
-		rdmsrq(x86_pmu.lbr_from + lbr_idx, msr_lastbranch.lbr);
+		rdmsrl(x86_pmu.lbr_from + lbr_idx, msr_lastbranch.lbr);
 
 		perf_clear_branch_entry_bitfields(br);
 
@@ -896,8 +866,6 @@ static __always_inline u16 get_lbr_cycles(u64 info)
 	return cycles;
 }
 
-static_assert((64 - PERF_BRANCH_ENTRY_INFO_BITS_MAX) > LBR_INFO_BR_CNTR_NUM * LBR_INFO_BR_CNTR_BITS);
-
 static void intel_pmu_store_lbr(struct cpu_hw_events *cpuc,
 				struct lbr_entry *entries)
 {
@@ -930,65 +898,9 @@ static void intel_pmu_store_lbr(struct cpu_hw_events *cpuc,
 		e->abort	= !!(info & LBR_INFO_ABORT);
 		e->cycles	= get_lbr_cycles(info);
 		e->type		= get_lbr_br_type(info);
-
-		/*
-		 * Leverage the reserved field of cpuc->lbr_entries[i] to
-		 * temporarily store the branch counters information.
-		 * The later code will decide what content can be disclosed
-		 * to the perf tool. Pleae see intel_pmu_lbr_counters_reorder().
-		 */
-		e->reserved	= (info >> LBR_INFO_BR_CNTR_OFFSET) & LBR_INFO_BR_CNTR_FULL_MASK;
 	}
 
 	cpuc->lbr_stack.nr = i;
-}
-
-/*
- * The enabled order may be different from the counter order.
- * Update the lbr_counters with the enabled order.
- */
-static void intel_pmu_lbr_counters_reorder(struct cpu_hw_events *cpuc,
-					   struct perf_event *event)
-{
-	int i, j, pos = 0, order[X86_PMC_IDX_MAX];
-	struct perf_event *leader, *sibling;
-	u64 src, dst, cnt;
-
-	leader = event->group_leader;
-	if (branch_sample_counters(leader))
-		order[pos++] = leader->hw.idx;
-
-	for_each_sibling_event(sibling, leader) {
-		if (!branch_sample_counters(sibling))
-			continue;
-		order[pos++] = sibling->hw.idx;
-	}
-
-	WARN_ON_ONCE(!pos);
-
-	for (i = 0; i < cpuc->lbr_stack.nr; i++) {
-		src = cpuc->lbr_entries[i].reserved;
-		dst = 0;
-		for (j = 0; j < pos; j++) {
-			cnt = (src >> (order[j] * LBR_INFO_BR_CNTR_BITS)) & LBR_INFO_BR_CNTR_MASK;
-			dst |= cnt << j * LBR_INFO_BR_CNTR_BITS;
-		}
-		cpuc->lbr_counters[i] = dst;
-		cpuc->lbr_entries[i].reserved = 0;
-	}
-}
-
-void intel_pmu_lbr_save_brstack(struct perf_sample_data *data,
-				struct cpu_hw_events *cpuc,
-				struct perf_event *event)
-{
-	if (is_branch_counters_group(event)) {
-		intel_pmu_lbr_counters_reorder(cpuc, event);
-		perf_sample_save_brstack(data, event, &cpuc->lbr_stack, cpuc->lbr_counters);
-		return;
-	}
-
-	perf_sample_save_brstack(data, event, &cpuc->lbr_stack, NULL);
 }
 
 static void intel_pmu_arch_lbr_read(struct cpu_hw_events *cpuc)
@@ -1261,10 +1173,8 @@ intel_pmu_lbr_filter(struct cpu_hw_events *cpuc)
 	for (i = 0; i < cpuc->lbr_stack.nr; ) {
 		if (!cpuc->lbr_entries[i].from) {
 			j = i;
-			while (++j < cpuc->lbr_stack.nr) {
+			while (++j < cpuc->lbr_stack.nr)
 				cpuc->lbr_entries[j-1] = cpuc->lbr_entries[j];
-				cpuc->lbr_counters[j-1] = cpuc->lbr_counters[j];
-			}
 			cpuc->lbr_stack.nr--;
 			if (!cpuc->lbr_entries[i].from)
 				continue;
@@ -1468,7 +1378,7 @@ void __init intel_pmu_lbr_init_atom(void)
 	 * to have an operational LBR which can freeze
 	 * on PMU interrupt
 	 */
-	if (boot_cpu_data.x86_vfm == INTEL_ATOM_BONNELL
+	if (boot_cpu_data.x86_model == 28
 	    && boot_cpu_data.x86_stepping < 10) {
 		pr_cont("LBR disabled due to erratum");
 		return;
@@ -1603,7 +1513,7 @@ void __init intel_pmu_arch_lbr_init(void)
 		goto clear_arch_lbr;
 
 	/* Apply the max depth of Arch LBR */
-	if (wrmsrq_safe(MSR_ARCH_LBR_DEPTH, lbr_nr))
+	if (wrmsrl_safe(MSR_ARCH_LBR_DEPTH, lbr_nr))
 		goto clear_arch_lbr;
 
 	x86_pmu.lbr_depth_mask = eax.split.lbr_depth_mask;
@@ -1615,11 +1525,7 @@ void __init intel_pmu_arch_lbr_init(void)
 	x86_pmu.lbr_mispred = ecx.split.lbr_mispred;
 	x86_pmu.lbr_timed_lbr = ecx.split.lbr_timed_lbr;
 	x86_pmu.lbr_br_type = ecx.split.lbr_br_type;
-	x86_pmu.lbr_counters = ecx.split.lbr_counters;
 	x86_pmu.lbr_nr = lbr_nr;
-
-	if (!!x86_pmu.lbr_counters)
-		x86_pmu.flags |= PMU_FL_BR_CNTR | PMU_FL_DYN_CONSTRAINT;
 
 	if (x86_pmu.lbr_mispred)
 		static_branch_enable(&x86_lbr_mispred);
@@ -1704,9 +1610,8 @@ void x86_perf_get_lbr(struct x86_pmu_lbr *lbr)
 	lbr->from = x86_pmu.lbr_from;
 	lbr->to = x86_pmu.lbr_to;
 	lbr->info = x86_pmu.lbr_info;
-	lbr->has_callstack = x86_pmu_has_lbr_callstack();
 }
-EXPORT_SYMBOL_FOR_KVM(x86_perf_get_lbr);
+EXPORT_SYMBOL_GPL(x86_perf_get_lbr);
 
 struct event_constraint vlbr_constraint =
 	__EVENT_CONSTRAINT(INTEL_FIXED_VLBR_EVENT, (1ULL << INTEL_PMC_IDX_FIXED_VLBR),

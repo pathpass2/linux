@@ -77,6 +77,8 @@ struct rm68200 {
 	struct drm_panel panel;
 	struct gpio_desc *reset_gpio;
 	struct regulator *supply;
+	bool prepared;
+	bool enabled;
 };
 
 static const struct drm_display_mode default_mode = {
@@ -229,11 +231,26 @@ static void rm68200_init_sequence(struct rm68200 *ctx)
 	dcs_write_seq(ctx, MCS_CMD_MODE_SW, MCS_CMD1_UCS);
 }
 
+static int rm68200_disable(struct drm_panel *panel)
+{
+	struct rm68200 *ctx = panel_to_rm68200(panel);
+
+	if (!ctx->enabled)
+		return 0;
+
+	ctx->enabled = false;
+
+	return 0;
+}
+
 static int rm68200_unprepare(struct drm_panel *panel)
 {
 	struct rm68200 *ctx = panel_to_rm68200(panel);
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 	int ret;
+
+	if (!ctx->prepared)
+		return 0;
 
 	ret = mipi_dsi_dcs_set_display_off(dsi);
 	if (ret)
@@ -252,6 +269,8 @@ static int rm68200_unprepare(struct drm_panel *panel)
 
 	regulator_disable(ctx->supply);
 
+	ctx->prepared = false;
+
 	return 0;
 }
 
@@ -260,6 +279,9 @@ static int rm68200_prepare(struct drm_panel *panel)
 	struct rm68200 *ctx = panel_to_rm68200(panel);
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 	int ret;
+
+	if (ctx->prepared)
+		return 0;
 
 	ret = regulator_enable(ctx->supply);
 	if (ret < 0) {
@@ -287,6 +309,20 @@ static int rm68200_prepare(struct drm_panel *panel)
 		return ret;
 
 	msleep(20);
+
+	ctx->prepared = true;
+
+	return 0;
+}
+
+static int rm68200_enable(struct drm_panel *panel)
+{
+	struct rm68200 *ctx = panel_to_rm68200(panel);
+
+	if (ctx->enabled)
+		return 0;
+
+	ctx->enabled = true;
 
 	return 0;
 }
@@ -316,8 +352,10 @@ static int rm68200_get_modes(struct drm_panel *panel,
 }
 
 static const struct drm_panel_funcs rm68200_drm_funcs = {
+	.disable = rm68200_disable,
 	.unprepare = rm68200_unprepare,
 	.prepare = rm68200_prepare,
+	.enable = rm68200_enable,
 	.get_modes = rm68200_get_modes,
 };
 
@@ -327,11 +365,9 @@ static int rm68200_probe(struct mipi_dsi_device *dsi)
 	struct rm68200 *ctx;
 	int ret;
 
-	ctx = devm_drm_panel_alloc(dev, struct rm68200, panel,
-				   &rm68200_drm_funcs,
-				   DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
 
 	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(ctx->reset_gpio)) {
@@ -356,6 +392,9 @@ static int rm68200_probe(struct mipi_dsi_device *dsi)
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS;
+
+	drm_panel_init(&ctx->panel, dev, &rm68200_drm_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 
 	ret = drm_panel_of_backlight(&ctx->panel);
 	if (ret)

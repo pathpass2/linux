@@ -42,11 +42,8 @@ properties:
       - const: otg
       - const: wakeup
 
-  port:
-    $ref: /schemas/graph.yaml#/properties/port
-    description:
-      This port is used with the 'usb-role-switch' property to connect the
-      cdns3 to type C connector.
+  dr_mode:
+    enum: [host, otg, peripheral]
 
   maximum-speed:
     enum: [super-speed, high-speed, full-speed]
@@ -67,14 +64,11 @@ properties:
     description:
       size of memory intended as internal memory for endpoints
       buffers expressed in KB
-    $ref: /schemas/types.yaml#/definitions/uint16
+    $ref: /schemas/types.yaml#/definitions/uint32
 
   cdns,phyrst-a-enable:
     description: Enable resetting of PHY if Rx fail is detected
     type: boolean
-
-dependencies:
-  port: [ usb-role-switch ]
 
 required:
   - compatible
@@ -83,10 +77,7 @@ required:
   - interrupts
   - interrupt-names
 
-allOf:
-  - $ref: usb-drd.yaml#
-
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

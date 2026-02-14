@@ -132,8 +132,6 @@ struct sja1105_info {
 	int max_frame_mem;
 	int num_ports;
 	bool multiple_cascade_ports;
-	/* Every {port, TXQ} has its own CBS shaper */
-	bool fixed_cbs_mapping;
 	enum dsa_tag_protocol tag_proto;
 	const struct sja1105_dynamic_table_ops *dyn_ops;
 	const struct sja1105_table_ops *static_ops;
@@ -254,7 +252,6 @@ struct sja1105_private {
 	unsigned long ucast_egress_floods;
 	unsigned long bcast_egress_floods;
 	unsigned long hwts_tx_en;
-	unsigned long hwts_rx_en;
 	const struct sja1105_info *info;
 	size_t max_xfer_len;
 	struct spi_device *spidev;
@@ -266,8 +263,6 @@ struct sja1105_private {
 	 * the switch doesn't confuse them with one another.
 	 */
 	struct mutex mgmt_lock;
-	/* Serializes accesses to the FDB */
-	struct mutex fdb_lock;
 	/* PTP two-step TX timestamp ID, and its serialization lock */
 	spinlock_t ts_id_lock;
 	u8 ts_id;
@@ -278,7 +273,7 @@ struct sja1105_private {
 	struct mii_bus *mdio_base_t1;
 	struct mii_bus *mdio_base_tx;
 	struct mii_bus *mdio_pcs;
-	struct phylink_pcs *pcs[SJA1105_MAX_NUM_PORTS];
+	struct dw_xpcs *xpcs[SJA1105_MAX_NUM_PORTS];
 	struct sja1105_ptp_data ptp_data;
 	struct sja1105_tas_data tas_data;
 };
@@ -294,6 +289,7 @@ struct sja1105_spi_message {
 /* From sja1105_main.c */
 enum sja1105_reset_reason {
 	SJA1105_VLAN_FILTERING = 0,
+	SJA1105_RX_HWTSTAMPING,
 	SJA1105_AGEING_TIME,
 	SJA1105_SCHEDULING,
 	SJA1105_BEST_EFFORT_POLICING,

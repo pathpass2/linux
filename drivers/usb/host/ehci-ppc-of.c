@@ -151,13 +151,13 @@ static int ehci_hcd_ppc_of_probe(struct platform_device *op)
 		of_node_put(np);
 	}
 
-	if (of_property_read_bool(dn, "big-endian")) {
+	if (of_get_property(dn, "big-endian", NULL)) {
 		ehci->big_endian_mmio = 1;
 		ehci->big_endian_desc = 1;
 	}
-	if (of_property_read_bool(dn, "big-endian-regs"))
+	if (of_get_property(dn, "big-endian-regs", NULL))
 		ehci->big_endian_mmio = 1;
-	if (of_property_read_bool(dn, "big-endian-desc"))
+	if (of_get_property(dn, "big-endian-desc", NULL))
 		ehci->big_endian_desc = 1;
 
 	ehci->caps = hcd->regs;
@@ -184,7 +184,7 @@ err_irq:
 }
 
 
-static void ehci_hcd_ppc_of_remove(struct platform_device *op)
+static int ehci_hcd_ppc_of_remove(struct platform_device *op)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(op);
 	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
@@ -216,6 +216,8 @@ static void ehci_hcd_ppc_of_remove(struct platform_device *op)
 		}
 	}
 	usb_put_hcd(hcd);
+
+	return 0;
 }
 
 

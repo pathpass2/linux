@@ -3,9 +3,7 @@
 #include <asm/asmmacro.h>
 #include <asm/core.h>
 
-#if XCHAL_HAVE_MUL16 || XCHAL_HAVE_MUL32 || XCHAL_HAVE_MAC16
-#define XCHAL_NO_MUL 0
-#else
+#if !XCHAL_HAVE_MUL16 && !XCHAL_HAVE_MUL32 && !XCHAL_HAVE_MAC16
 #define XCHAL_NO_MUL 1
 #endif
 
@@ -230,4 +228,3 @@ ENTRY(__umulsidi3)
 #endif /* XCHAL_NO_MUL */
 
 ENDPROC(__umulsidi3)
-EXPORT_SYMBOL(__umulsidi3)

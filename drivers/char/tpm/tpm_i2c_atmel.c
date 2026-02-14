@@ -37,8 +37,7 @@ struct priv_data {
 	u8 buffer[sizeof(struct tpm_header) + 25];
 };
 
-static int i2c_atmel_send(struct tpm_chip *chip, u8 *buf, size_t bufsiz,
-			  size_t len)
+static int i2c_atmel_send(struct tpm_chip *chip, u8 *buf, size_t len)
 {
 	struct priv_data *priv = dev_get_drvdata(&chip->dev);
 	struct i2c_client *client = to_i2c_client(chip->dev.parent);
@@ -187,7 +186,7 @@ static void i2c_atmel_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id i2c_atmel_id[] = {
-	{ I2C_DRIVER_NAME },
+	{I2C_DRIVER_NAME, 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, i2c_atmel_id);
@@ -204,7 +203,7 @@ static SIMPLE_DEV_PM_OPS(i2c_atmel_pm_ops, tpm_pm_suspend, tpm_pm_resume);
 
 static struct i2c_driver i2c_atmel_driver = {
 	.id_table = i2c_atmel_id,
-	.probe = i2c_atmel_probe,
+	.probe_new = i2c_atmel_probe,
 	.remove = i2c_atmel_remove,
 	.driver = {
 		.name = I2C_DRIVER_NAME,

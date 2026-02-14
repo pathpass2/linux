@@ -2,9 +2,6 @@
 /* Copyright (c) 2014 Mahesh Bandewar <maheshb@google.com>
  */
 
-#include <net/flow.h>
-#include <net/ip.h>
-
 #include "ipvlan.h"
 
 static u32 ipvlan_jhash_secret __read_mostly;
@@ -48,10 +45,12 @@ static u8 ipvlan_get_v6_hash(const void *iaddr)
 }
 #endif
 
-static u8 ipvlan_get_v4_hash(__be32 addr)
+static u8 ipvlan_get_v4_hash(const void *iaddr)
 {
-	return jhash_1word((__force u32)addr, ipvlan_jhash_secret) &
-			   IPVLAN_HASH_MASK;
+	const struct in_addr *ip4_addr = iaddr;
+
+	return jhash_1word(ip4_addr->s_addr, ipvlan_jhash_secret) &
+	       IPVLAN_HASH_MASK;
 }
 
 static bool addr_equal(bool is_v6, struct ipvl_addr *addr, const void *iaddr)
@@ -71,30 +70,16 @@ static bool addr_equal(bool is_v6, struct ipvl_addr *addr, const void *iaddr)
 	return false;
 }
 
-#if IS_ENABLED(CONFIG_IPV6)
-static struct ipvl_addr *ipvlan_ht_addr_lookup6(const struct ipvl_port *port,
-						const void *iaddr)
+static struct ipvl_addr *ipvlan_ht_addr_lookup(const struct ipvl_port *port,
+					       const void *iaddr, bool is_v6)
 {
 	struct ipvl_addr *addr;
 	u8 hash;
 
-	hash = ipvlan_get_v6_hash(iaddr);
+	hash = is_v6 ? ipvlan_get_v6_hash(iaddr) :
+	       ipvlan_get_v4_hash(iaddr);
 	hlist_for_each_entry_rcu(addr, &port->hlhead[hash], hlnode)
-		if (addr_equal(true, addr, iaddr))
-			return addr;
-	return NULL;
-}
-#endif
-
-static struct ipvl_addr *ipvlan_ht_addr_lookup4(const struct ipvl_port *port,
-						__be32 addr4)
-{
-	struct ipvl_addr *addr;
-	u8 hash;
-
-	hash = ipvlan_get_v4_hash(addr4);
-	hlist_for_each_entry_rcu(addr, &port->hlhead[hash], hlnode)
-		if (addr->atype == IPVL_IPV4 && addr->ip4addr.s_addr == addr4)
+		if (addr_equal(is_v6, addr, iaddr))
 			return addr;
 	return NULL;
 }
@@ -106,7 +91,7 @@ void ipvlan_ht_addr_add(struct ipvl_dev *ipvlan, struct ipvl_addr *addr)
 
 	hash = (addr->atype == IPVL_IPV6) ?
 	       ipvlan_get_v6_hash(&addr->ip6addr) :
-	       ipvlan_get_v4_hash(addr->ip4addr.s_addr);
+	       ipvlan_get_v4_hash(&addr->ip4addr);
 	if (hlist_unhashed(&addr->hlnode))
 		hlist_add_head_rcu(&addr->hlnode, &port->hlhead[hash]);
 }
@@ -119,15 +104,17 @@ void ipvlan_ht_addr_del(struct ipvl_addr *addr)
 struct ipvl_addr *ipvlan_find_addr(const struct ipvl_dev *ipvlan,
 				   const void *iaddr, bool is_v6)
 {
-	struct ipvl_addr *addr;
+	struct ipvl_addr *addr, *ret = NULL;
 
-	assert_spin_locked(&ipvlan->port->addrs_lock);
-
-	list_for_each_entry(addr, &ipvlan->addrs, anode) {
-		if (addr_equal(is_v6, addr, iaddr))
-			return addr;
+	rcu_read_lock();
+	list_for_each_entry_rcu(addr, &ipvlan->addrs, anode) {
+		if (addr_equal(is_v6, addr, iaddr)) {
+			ret = addr;
+			break;
+		}
 	}
-	return NULL;
+	rcu_read_unlock();
+	return ret;
 }
 
 bool ipvlan_addr_busy(struct ipvl_port *port, void *iaddr, bool is_v6)
@@ -229,7 +216,7 @@ void *ipvlan_get_L3_hdr(struct ipvl_port *port, struct sk_buff *skb, int *type)
 
 unsigned int ipvlan_mac_hash(const unsigned char *addr)
 {
-	u32 hash = jhash_1word(get_unaligned((u32 *)(addr + 2)),
+	u32 hash = jhash_1word(__get_unaligned_cpu32(addr+2),
 			       ipvlan_jhash_secret);
 
 	return hash & IPVLAN_MAC_FILTER_MASK;
@@ -367,24 +354,21 @@ struct ipvl_addr *ipvlan_addr_lookup(struct ipvl_port *port, void *lyr3h,
 				     int addr_type, bool use_dest)
 {
 	struct ipvl_addr *addr = NULL;
-#if IS_ENABLED(CONFIG_IPV6)
-	struct in6_addr *i6addr;
-#endif
-	__be32 addr4;
 
 	switch (addr_type) {
 #if IS_ENABLED(CONFIG_IPV6)
 	case IPVL_IPV6: {
 		struct ipv6hdr *ip6h;
+		struct in6_addr *i6addr;
 
 		ip6h = (struct ipv6hdr *)lyr3h;
 		i6addr = use_dest ? &ip6h->daddr : &ip6h->saddr;
-lookup6:
-		addr = ipvlan_ht_addr_lookup6(port, i6addr);
+		addr = ipvlan_ht_addr_lookup(port, i6addr, true);
 		break;
 	}
 	case IPVL_ICMPV6: {
 		struct nd_msg *ndmh;
+		struct in6_addr *i6addr;
 
 		/* Make sure that the NeighborSolicitation ICMPv6 packets
 		 * are handled to avoid DAD issue.
@@ -392,23 +376,24 @@ lookup6:
 		ndmh = (struct nd_msg *)lyr3h;
 		if (ndmh->icmph.icmp6_type == NDISC_NEIGHBOUR_SOLICITATION) {
 			i6addr = &ndmh->target;
-			goto lookup6;
+			addr = ipvlan_ht_addr_lookup(port, i6addr, true);
 		}
 		break;
 	}
 #endif
 	case IPVL_IPV4: {
 		struct iphdr *ip4h;
+		__be32 *i4addr;
 
 		ip4h = (struct iphdr *)lyr3h;
-		addr4 = use_dest ? ip4h->daddr : ip4h->saddr;
-lookup4:
-		addr = ipvlan_ht_addr_lookup4(port, addr4);
+		i4addr = use_dest ? &ip4h->daddr : &ip4h->saddr;
+		addr = ipvlan_ht_addr_lookup(port, i4addr, false);
 		break;
 	}
 	case IPVL_ARP: {
 		struct arphdr *arph;
 		unsigned char *arp_ptr;
+		__be32 dip;
 
 		arph = (struct arphdr *)lyr3h;
 		arp_ptr = (unsigned char *)(arph + 1);
@@ -417,34 +402,30 @@ lookup4:
 		else
 			arp_ptr += port->dev->addr_len;
 
-		addr4 = get_unaligned((__be32 *)arp_ptr);
-		goto lookup4;
+		memcpy(&dip, arp_ptr, 4);
+		addr = ipvlan_ht_addr_lookup(port, &dip, false);
+		break;
 	}
 	}
 
 	return addr;
 }
 
-static noinline_for_stack int ipvlan_process_v4_outbound(struct sk_buff *skb)
+static int ipvlan_process_v4_outbound(struct sk_buff *skb)
 {
+	const struct iphdr *ip4h = ip_hdr(skb);
 	struct net_device *dev = skb->dev;
 	struct net *net = dev_net(dev);
-	int err, ret = NET_XMIT_DROP;
-	const struct iphdr *ip4h;
 	struct rtable *rt;
+	int err, ret = NET_XMIT_DROP;
 	struct flowi4 fl4 = {
 		.flowi4_oif = dev->ifindex,
+		.flowi4_tos = RT_TOS(ip4h->tos),
 		.flowi4_flags = FLOWI_FLAG_ANYSRC,
 		.flowi4_mark = skb->mark,
+		.daddr = ip4h->daddr,
+		.saddr = ip4h->saddr,
 	};
-
-	if (!pskb_network_may_pull(skb, sizeof(struct iphdr)))
-		goto err;
-
-	ip4h = ip_hdr(skb);
-	fl4.daddr = ip4h->daddr;
-	fl4.saddr = ip4h->saddr;
-	fl4.flowi4_dscp = ip4h_dscp(ip4h);
 
 	rt = ip_route_output_flow(net, &fl4, NULL);
 	if (IS_ERR(rt))
@@ -455,28 +436,27 @@ static noinline_for_stack int ipvlan_process_v4_outbound(struct sk_buff *skb)
 		goto err;
 	}
 	skb_dst_set(skb, &rt->dst);
-
-	memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
-
-	err = ip_local_out(net, NULL, skb);
+	err = ip_local_out(net, skb->sk, skb);
 	if (unlikely(net_xmit_eval(err)))
-		DEV_STATS_INC(dev, tx_errors);
+		dev->stats.tx_errors++;
 	else
 		ret = NET_XMIT_SUCCESS;
 	goto out;
 err:
-	DEV_STATS_INC(dev, tx_errors);
+	dev->stats.tx_errors++;
 	kfree_skb(skb);
 out:
 	return ret;
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
-
-static noinline_for_stack int
-ipvlan_route_v6_outbound(struct net_device *dev, struct sk_buff *skb)
+static int ipvlan_process_v6_outbound(struct sk_buff *skb)
 {
 	const struct ipv6hdr *ip6h = ipv6_hdr(skb);
+	struct net_device *dev = skb->dev;
+	struct net *net = dev_net(dev);
+	struct dst_entry *dst;
+	int err, ret = NET_XMIT_DROP;
 	struct flowi6 fl6 = {
 		.flowi6_oif = dev->ifindex,
 		.daddr = ip6h->daddr,
@@ -486,44 +466,24 @@ ipvlan_route_v6_outbound(struct net_device *dev, struct sk_buff *skb)
 		.flowi6_mark = skb->mark,
 		.flowi6_proto = ip6h->nexthdr,
 	};
-	struct dst_entry *dst;
-	int err;
 
-	dst = ip6_route_output(dev_net(dev), NULL, &fl6);
-	err = dst->error;
-	if (err) {
+	dst = ip6_route_output(net, NULL, &fl6);
+	if (dst->error) {
+		ret = dst->error;
 		dst_release(dst);
-		return err;
+		goto err;
 	}
 	skb_dst_set(skb, dst);
-	return 0;
-}
-
-static int ipvlan_process_v6_outbound(struct sk_buff *skb)
-{
-	struct net_device *dev = skb->dev;
-	int err, ret = NET_XMIT_DROP;
-
-	if (!pskb_network_may_pull(skb, sizeof(struct ipv6hdr))) {
-		DEV_STATS_INC(dev, tx_errors);
-		kfree_skb(skb);
-		return ret;
-	}
-
-	err = ipvlan_route_v6_outbound(dev, skb);
-	if (unlikely(err)) {
-		DEV_STATS_INC(dev, tx_errors);
-		kfree_skb(skb);
-		return err;
-	}
-
-	memset(IP6CB(skb), 0, sizeof(*IP6CB(skb)));
-
-	err = ip6_local_out(dev_net(dev), NULL, skb);
+	err = ip6_local_out(net, skb->sk, skb);
 	if (unlikely(net_xmit_eval(err)))
-		DEV_STATS_INC(dev, tx_errors);
+		dev->stats.tx_errors++;
 	else
 		ret = NET_XMIT_SUCCESS;
+	goto out;
+err:
+	dev->stats.tx_errors++;
+	kfree_skb(skb);
+out:
 	return ret;
 }
 #else
@@ -589,7 +549,8 @@ static void ipvlan_multicast_enqueue(struct ipvl_port *port,
 
 	spin_lock(&port->backlog.lock);
 	if (skb_queue_len(&port->backlog) < IPVLAN_QBACKLOG_LIMIT) {
-		dev_hold(skb->dev);
+		if (skb->dev)
+			dev_hold(skb->dev);
 		__skb_queue_tail(&port->backlog, skb);
 		spin_unlock(&port->backlog.lock);
 		schedule_work(&port->wq);
@@ -618,8 +579,7 @@ static int ipvlan_xmit_mode_l3(struct sk_buff *skb, struct net_device *dev)
 				consume_skb(skb);
 				return NET_XMIT_DROP;
 			}
-			ipvlan_rcv_frame(addr, &skb, true);
-			return NET_XMIT_SUCCESS;
+			return ipvlan_rcv_frame(addr, &skb, true);
 		}
 	}
 out:
@@ -645,8 +605,7 @@ static int ipvlan_xmit_mode_l2(struct sk_buff *skb, struct net_device *dev)
 					consume_skb(skb);
 					return NET_XMIT_DROP;
 				}
-				ipvlan_rcv_frame(addr, &skb, true);
-				return NET_XMIT_SUCCESS;
+				return ipvlan_rcv_frame(addr, &skb, true);
 			}
 		}
 		skb = skb_share_check(skb, GFP_ATOMIC);
@@ -658,8 +617,7 @@ static int ipvlan_xmit_mode_l2(struct sk_buff *skb, struct net_device *dev)
 		 * the skb for the main-dev. At the RX side we just return
 		 * RX_PASS for it to be processed further on the stack.
 		 */
-		dev_forward_skb(ipvlan->phy_dev, skb);
-		return NET_XMIT_SUCCESS;
+		return dev_forward_skb(ipvlan->phy_dev, skb);
 
 	} else if (is_multicast_ether_addr(eth->h_dest)) {
 		skb_reset_mac_header(skb);
@@ -747,9 +705,6 @@ static rx_handler_result_t ipvlan_handle_mode_l2(struct sk_buff **pskb,
 	struct sk_buff *skb = *pskb;
 	struct ethhdr *eth = eth_hdr(skb);
 	rx_handler_result_t ret = RX_HANDLER_PASS;
-
-	if (unlikely(skb->pkt_type == PACKET_LOOPBACK))
-		return RX_HANDLER_PASS;
 
 	if (is_multicast_ether_addr(eth->h_dest)) {
 		if (ipvlan_external_frame(skb, port)) {

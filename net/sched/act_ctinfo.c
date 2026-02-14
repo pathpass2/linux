@@ -16,7 +16,6 @@
 #include <net/pkt_sched.h>
 #include <net/act_api.h>
 #include <net/pkt_cls.h>
-#include <net/inet_ecn.h>
 #include <uapi/linux/tc_act/tc_ctinfo.h>
 #include <net/tc_act/tc_ctinfo.h>
 #include <net/tc_wrapper.h>
@@ -45,9 +44,9 @@ static void tcf_ctinfo_dscp_set(struct nf_conn *ct, struct tcf_ctinfo *ca,
 				ipv4_change_dsfield(ip_hdr(skb),
 						    INET_ECN_MASK,
 						    newdscp);
-				atomic64_inc(&ca->stats_dscp_set);
+				ca->stats_dscp_set++;
 			} else {
-				atomic64_inc(&ca->stats_dscp_error);
+				ca->stats_dscp_error++;
 			}
 		}
 		break;
@@ -58,9 +57,9 @@ static void tcf_ctinfo_dscp_set(struct nf_conn *ct, struct tcf_ctinfo *ca,
 				ipv6_change_dsfield(ipv6_hdr(skb),
 						    INET_ECN_MASK,
 						    newdscp);
-				atomic64_inc(&ca->stats_dscp_set);
+				ca->stats_dscp_set++;
 			} else {
-				atomic64_inc(&ca->stats_dscp_error);
+				ca->stats_dscp_error++;
 			}
 		}
 		break;
@@ -73,7 +72,7 @@ static void tcf_ctinfo_cpmark_set(struct nf_conn *ct, struct tcf_ctinfo *ca,
 				  struct tcf_ctinfo_params *cp,
 				  struct sk_buff *skb)
 {
-	atomic64_inc(&ca->stats_cpmark_set);
+	ca->stats_cpmark_set++;
 	skb->mark = READ_ONCE(ct->mark) & cp->cpmarkmask;
 }
 
@@ -89,11 +88,13 @@ TC_INDIRECT_SCOPE int tcf_ctinfo_act(struct sk_buff *skb,
 	struct tcf_ctinfo_params *cp;
 	struct nf_conn *ct;
 	int proto, wlen;
+	int action;
 
 	cp = rcu_dereference_bh(ca->params);
 
 	tcf_lastuse_update(&ca->tcf_tm);
 	tcf_action_update_bstats(&ca->common, skb);
+	action = READ_ONCE(ca->tcf_action);
 
 	wlen = skb_network_offset(skb);
 	switch (skb_protocol(skb, true)) {
@@ -140,7 +141,7 @@ TC_INDIRECT_SCOPE int tcf_ctinfo_act(struct sk_buff *skb,
 	if (thash)
 		nf_ct_put(ct);
 out:
-	return cp->action;
+	return action;
 }
 
 static const struct nla_policy ctinfo_policy[TCA_CTINFO_MAX + 1] = {
@@ -196,9 +197,8 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 					    "dscp mask must be 6 contiguous bits");
 			return -EINVAL;
 		}
-		dscpstatemask =
-			nla_get_u32_default(tb[TCA_CTINFO_PARMS_DSCP_STATEMASK],
-					    0);
+		dscpstatemask = tb[TCA_CTINFO_PARMS_DSCP_STATEMASK] ?
+			nla_get_u32(tb[TCA_CTINFO_PARMS_DSCP_STATEMASK]) : 0;
 		/* mask & statemask must not overlap */
 		if (dscpmask & dscpstatemask) {
 			NL_SET_ERR_MSG_ATTR(extack,
@@ -221,7 +221,7 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 		ret = ACT_P_CREATED;
 	} else if (err > 0) {
 		if (bind) /* don't override defaults */
-			return ACT_P_BOUND;
+			return 0;
 		if (!(flags & TCA_ACT_FLAGS_REPLACE)) {
 			tcf_idr_release(*a, bind);
 			return -EEXIST;
@@ -243,7 +243,8 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 	}
 
 	cp_new->net = net;
-	cp_new->zone = nla_get_u16_default(tb[TCA_CTINFO_ZONE], 0);
+	cp_new->zone = tb[TCA_CTINFO_ZONE] ?
+			nla_get_u16(tb[TCA_CTINFO_ZONE]) : 0;
 	if (dscpmask) {
 		cp_new->dscpmask = dscpmask;
 		cp_new->dscpmaskshift = dscpmaskshift;
@@ -256,8 +257,6 @@ static int tcf_ctinfo_init(struct net *net, struct nlattr *nla,
 				nla_get_u32(tb[TCA_CTINFO_PARMS_CPMARK_MASK]);
 		cp_new->mode |= CTINFO_MODE_CPMARK;
 	}
-
-	cp_new->action = actparm->action;
 
 	spin_lock_bh(&ci->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, actparm->action, goto_ch);
@@ -283,24 +282,25 @@ release_idr:
 static int tcf_ctinfo_dump(struct sk_buff *skb, struct tc_action *a,
 			   int bind, int ref)
 {
-	const struct tcf_ctinfo *ci = to_ctinfo(a);
-	unsigned char *b = skb_tail_pointer(skb);
-	const struct tcf_ctinfo_params *cp;
+	struct tcf_ctinfo *ci = to_ctinfo(a);
 	struct tc_ctinfo opt = {
 		.index   = ci->tcf_index,
 		.refcnt  = refcount_read(&ci->tcf_refcnt) - ref,
 		.bindcnt = atomic_read(&ci->tcf_bindcnt) - bind,
 	};
+	unsigned char *b = skb_tail_pointer(skb);
+	struct tcf_ctinfo_params *cp;
 	struct tcf_t t;
 
-	rcu_read_lock();
-	cp = rcu_dereference(ci->params);
+	spin_lock_bh(&ci->tcf_lock);
+	cp = rcu_dereference_protected(ci->params,
+				       lockdep_is_held(&ci->tcf_lock));
 
 	tcf_tm_dump(&t, &ci->tcf_tm);
 	if (nla_put_64bit(skb, TCA_CTINFO_TM, sizeof(t), &t, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
-	opt.action = cp->action;
+	opt.action = ci->tcf_action;
 	if (nla_put(skb, TCA_CTINFO_ACT, sizeof(opt), &opt))
 		goto nla_put_failure;
 
@@ -323,25 +323,22 @@ static int tcf_ctinfo_dump(struct sk_buff *skb, struct tc_action *a,
 	}
 
 	if (nla_put_u64_64bit(skb, TCA_CTINFO_STATS_DSCP_SET,
-			      atomic64_read(&ci->stats_dscp_set),
-			      TCA_CTINFO_PAD))
+			      ci->stats_dscp_set, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
 	if (nla_put_u64_64bit(skb, TCA_CTINFO_STATS_DSCP_ERROR,
-			      atomic64_read(&ci->stats_dscp_error),
-			      TCA_CTINFO_PAD))
+			      ci->stats_dscp_error, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
 	if (nla_put_u64_64bit(skb, TCA_CTINFO_STATS_CPMARK_SET,
-			      atomic64_read(&ci->stats_cpmark_set),
-			      TCA_CTINFO_PAD))
+			      ci->stats_cpmark_set, TCA_CTINFO_PAD))
 		goto nla_put_failure;
 
-	rcu_read_unlock();
+	spin_unlock_bh(&ci->tcf_lock);
 	return skb->len;
 
 nla_put_failure:
-	rcu_read_unlock();
+	spin_unlock_bh(&ci->tcf_lock);
 	nlmsg_trim(skb, b);
 	return -1;
 }
@@ -366,7 +363,6 @@ static struct tc_action_ops act_ctinfo_ops = {
 	.cleanup= tcf_ctinfo_cleanup,
 	.size	= sizeof(struct tcf_ctinfo),
 };
-MODULE_ALIAS_NET_ACT("ctinfo");
 
 static __net_init int ctinfo_init_net(struct net *net)
 {

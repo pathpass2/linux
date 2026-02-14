@@ -36,8 +36,7 @@ superset of parent/child/pids.current.
 
 The pids.events file contains event counters:
 
-  - max: Number of times fork failed in the cgroup because limit was hit in
-    self or ancestors.
+  - max: Number of times fork failed because limit was hit.
 
 Example
 -------

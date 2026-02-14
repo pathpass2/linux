@@ -4,7 +4,6 @@
 #include <linux/device.h>
 #include <linux/iopoll.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 
 #include "ipu3.h"
 #include "ipu3-css.h"
@@ -227,7 +226,7 @@ int imgu_css_set_powerup(struct device *dev, void __iomem *base,
 	state = readl(base + IMGU_REG_STATE);
 
 	dev_dbg(dev, "CSS pm_ctrl 0x%x state 0x%x (power %s)\n",
-		pm_ctrl, state, str_down_up(state & IMGU_STATE_POWER_DOWN));
+		pm_ctrl, state, state & IMGU_STATE_POWER_DOWN ? "down" : "up");
 
 	/* Power up CSS using wrapper */
 	if (state & IMGU_STATE_POWER_DOWN) {
@@ -1194,14 +1193,14 @@ static int imgu_css_binary_preallocate(struct imgu_css *css, unsigned int pipe)
 
 	for (i = 0; i < IPU3_CSS_AUX_FRAMES; i++)
 		if (!imgu_dmamap_alloc(imgu,
-				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_REF].mem[i],
-				       CSS_BDS_SIZE))
+				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_REF].
+				       mem[i], CSS_BDS_SIZE))
 			goto out_of_memory;
 
 	for (i = 0; i < IPU3_CSS_AUX_FRAMES; i++)
 		if (!imgu_dmamap_alloc(imgu,
-				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_TNR].mem[i],
-				       CSS_GDC_SIZE))
+				       &css_pipe->aux_frames[IPU3_CSS_AUX_FRAME_TNR].
+				       mem[i], CSS_GDC_SIZE))
 			goto out_of_memory;
 
 	return 0;
@@ -1429,11 +1428,13 @@ static int imgu_css_map_init(struct imgu_css *css, unsigned int pipe)
 	for (p = 0; p < IPU3_CSS_PIPE_ID_NUM; p++)
 		for (i = 0; i < IMGU_ABI_MAX_STAGES; i++) {
 			if (!imgu_dmamap_alloc(imgu,
-					       &css_pipe->xmem_sp_stage_ptrs[p][i],
+					       &css_pipe->
+					       xmem_sp_stage_ptrs[p][i],
 					       sizeof(struct imgu_abi_sp_stage)))
 				return -ENOMEM;
 			if (!imgu_dmamap_alloc(imgu,
-					       &css_pipe->xmem_isp_stage_ptrs[p][i],
+					       &css_pipe->
+					       xmem_isp_stage_ptrs[p][i],
 					       sizeof(struct imgu_abi_isp_stage)))
 				return -ENOMEM;
 		}
@@ -2056,6 +2057,7 @@ struct imgu_css_buffer *imgu_css_buf_dequeue(struct imgu_css *css)
 			return ERR_PTR(-EIO);
 		}
 
+		css_pipe = &css->pipes[pipe];
 		dev_dbg(css->dev, "event: pipeline done 0x%8x for pipe %d\n",
 			event, pipe);
 		break;

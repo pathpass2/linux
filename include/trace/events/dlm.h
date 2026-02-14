@@ -7,7 +7,6 @@
 
 #include <linux/dlm.h>
 #include <linux/dlmconstants.h>
-#include <uapi/linux/dlm_plock.h>
 #include <linux/tracepoint.h>
 
 #include "../../../fs/dlm/dlm_internal.h"
@@ -48,8 +47,16 @@
 	{ DLM_SBF_ALTMODE,	"ALTMODE" })
 
 #define show_lkb_flags(flags) __print_flags(flags, "|",		\
-	{ BIT(DLM_DFL_USER_BIT), "USER" },			\
-	{ BIT(DLM_DFL_ORPHAN_BIT), "ORPHAN" })
+	{ DLM_IFL_MSTCPY,	"MSTCPY" },			\
+	{ DLM_IFL_RESEND,	"RESEND" },			\
+	{ DLM_IFL_DEAD,		"DEAD" },			\
+	{ DLM_IFL_OVERLAP_UNLOCK, "OVERLAP_UNLOCK" },		\
+	{ DLM_IFL_OVERLAP_CANCEL, "OVERLAP_CANCEL" },		\
+	{ DLM_IFL_ENDOFLIFE,	"ENDOFLIFE" },			\
+	{ DLM_IFL_DEADLOCK_CANCEL, "DEADLOCK_CANCEL" },		\
+	{ DLM_IFL_STUB_MS,	"STUB_MS" },			\
+	{ DLM_IFL_USER,		"USER" },			\
+	{ DLM_IFL_ORPHAN,	"ORPHAN" })
 
 #define show_header_cmd(cmd) __print_symbolic(cmd,		\
 	{ DLM_MSG,		"MSG"},				\
@@ -189,25 +196,29 @@ TRACE_EVENT(dlm_lock_end,
 
 TRACE_EVENT(dlm_bast,
 
-	TP_PROTO(__u32 ls_id, __u32 lkb_id, int mode,
-		 const char *res_name, size_t res_length),
+	TP_PROTO(struct dlm_ls *ls, struct dlm_lkb *lkb, int mode),
 
-	TP_ARGS(ls_id, lkb_id, mode, res_name, res_length),
+	TP_ARGS(ls, lkb, mode),
 
 	TP_STRUCT__entry(
 		__field(__u32, ls_id)
 		__field(__u32, lkb_id)
 		__field(int, mode)
-		__dynamic_array(unsigned char, res_name, res_length)
+		__dynamic_array(unsigned char, res_name,
+				lkb->lkb_resource ? lkb->lkb_resource->res_length : 0)
 	),
 
 	TP_fast_assign(
-		__entry->ls_id = ls_id;
-		__entry->lkb_id = lkb_id;
+		struct dlm_rsb *r;
+
+		__entry->ls_id = ls->ls_global_id;
+		__entry->lkb_id = lkb->lkb_id;
 		__entry->mode = mode;
 
-		memcpy(__get_dynamic_array(res_name), res_name,
-		       __get_dynamic_array_len(res_name));
+		r = lkb->lkb_resource;
+		if (r)
+			memcpy(__get_dynamic_array(res_name), r->res_name,
+			       __get_dynamic_array_len(res_name));
 	),
 
 	TP_printk("ls_id=%u lkb_id=%x mode=%s res_name=%s",
@@ -220,27 +231,31 @@ TRACE_EVENT(dlm_bast,
 
 TRACE_EVENT(dlm_ast,
 
-	TP_PROTO(__u32 ls_id, __u32 lkb_id, __u8 sb_flags, int sb_status,
-		 const char *res_name, size_t res_length),
+	TP_PROTO(struct dlm_ls *ls, struct dlm_lkb *lkb),
 
-	TP_ARGS(ls_id, lkb_id, sb_flags, sb_status, res_name, res_length),
+	TP_ARGS(ls, lkb),
 
 	TP_STRUCT__entry(
 		__field(__u32, ls_id)
 		__field(__u32, lkb_id)
-		__field(__u8, sb_flags)
+		__field(u8, sb_flags)
 		__field(int, sb_status)
-		__dynamic_array(unsigned char, res_name, res_length)
+		__dynamic_array(unsigned char, res_name,
+				lkb->lkb_resource ? lkb->lkb_resource->res_length : 0)
 	),
 
 	TP_fast_assign(
-		__entry->ls_id = ls_id;
-		__entry->lkb_id = lkb_id;
-		__entry->sb_flags = sb_flags;
-		__entry->sb_status = sb_status;
+		struct dlm_rsb *r;
 
-		memcpy(__get_dynamic_array(res_name), res_name,
-		       __get_dynamic_array_len(res_name));
+		__entry->ls_id = ls->ls_global_id;
+		__entry->lkb_id = lkb->lkb_id;
+		__entry->sb_flags = lkb->lkb_lksb->sb_flags;
+		__entry->sb_status = lkb->lkb_lksb->sb_status;
+
+		r = lkb->lkb_resource;
+		if (r)
+			memcpy(__get_dynamic_array(res_name), r->res_name,
+			       __get_dynamic_array_len(res_name));
 	),
 
 	TP_printk("ls_id=%u lkb_id=%x sb_flags=%s sb_status=%d res_name=%s",
@@ -577,56 +592,6 @@ TRACE_EVENT(dlm_recv_message,
 				  __get_dynamic_array_len(m_extra)))
 
 );
-
-DECLARE_EVENT_CLASS(dlm_plock_template,
-
-	TP_PROTO(const struct dlm_plock_info *info),
-
-	TP_ARGS(info),
-
-	TP_STRUCT__entry(
-		__field(uint8_t, optype)
-		__field(uint8_t, ex)
-		__field(uint8_t, wait)
-		__field(uint8_t, flags)
-		__field(uint32_t, pid)
-		__field(int32_t, nodeid)
-		__field(int32_t, rv)
-		__field(uint32_t, fsid)
-		__field(uint64_t, number)
-		__field(uint64_t, start)
-		__field(uint64_t, end)
-		__field(uint64_t, owner)
-	),
-
-	TP_fast_assign(
-		__entry->optype = info->optype;
-		__entry->ex = info->ex;
-		__entry->wait = info->wait;
-		__entry->flags = info->flags;
-		__entry->pid = info->pid;
-		__entry->nodeid = info->nodeid;
-		__entry->rv = info->rv;
-		__entry->fsid = info->fsid;
-		__entry->number = info->number;
-		__entry->start = info->start;
-		__entry->end = info->end;
-		__entry->owner = info->owner;
-	),
-
-	TP_printk("fsid=%u number=%llx owner=%llx optype=%d ex=%d wait=%d flags=%x pid=%u nodeid=%d rv=%d start=%llx end=%llx",
-		  __entry->fsid, __entry->number, __entry->owner,
-		  __entry->optype, __entry->ex, __entry->wait,
-		  __entry->flags, __entry->pid, __entry->nodeid,
-		  __entry->rv, __entry->start, __entry->end)
-
-);
-
-DEFINE_EVENT(dlm_plock_template, dlm_plock_read,
-	     TP_PROTO(const struct dlm_plock_info *info), TP_ARGS(info));
-
-DEFINE_EVENT(dlm_plock_template, dlm_plock_write,
-	     TP_PROTO(const struct dlm_plock_info *info), TP_ARGS(info));
 
 TRACE_EVENT(dlm_send,
 

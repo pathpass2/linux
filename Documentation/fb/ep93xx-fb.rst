@@ -41,6 +41,7 @@ your board initialisation function::
 
 	ep93xx_register_fb(&some_board_fb_info);
 
+=====================
 Video Attribute Flags
 =====================
 
@@ -78,6 +79,7 @@ EP93XXFB_USE_SDCSN2		Use SDCSn[2] for the framebuffer.
 EP93XXFB_USE_SDCSN3		Use SDCSn[3] for the framebuffer.
 =============================== ======================================
 
+==================
 Platform callbacks
 ==================
 
@@ -99,6 +101,7 @@ obtained as follows::
 		/* Board specific framebuffer setup */
 	}
 
+======================
 Setting the video mode
 ======================
 
@@ -116,6 +119,7 @@ set when the module is installed::
 
 	modprobe ep93xx-fb video=320x240
 
+==============
 Screenpage bug
 ==============
 

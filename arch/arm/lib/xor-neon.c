@@ -8,7 +8,6 @@
 #include <linux/raid/xor.h>
 #include <linux/module.h>
 
-MODULE_DESCRIPTION("NEON accelerated XOR implementation");
 MODULE_LICENSE("GPL");
 
 #ifndef __ARM_NEON__

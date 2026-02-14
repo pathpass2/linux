@@ -24,11 +24,6 @@
 #include "vpu_msgs.h"
 #include "vpu_helpers.h"
 
-static char *vpu_type_name(u32 type)
-{
-	return V4L2_TYPE_IS_OUTPUT(type) ? "output" : "capture";
-}
-
 void vpu_inst_lock(struct vpu_inst *inst)
 {
 	mutex_lock(&inst->lock);
@@ -47,7 +42,7 @@ dma_addr_t vpu_get_vb_phy_addr(struct vb2_buffer *vb, u32 plane_no)
 			vb->planes[plane_no].data_offset;
 }
 
-static unsigned int vpu_get_vb_length(struct vb2_buffer *vb, u32 plane_no)
+unsigned int vpu_get_vb_length(struct vb2_buffer *vb, u32 plane_no)
 {
 	if (plane_no >= vb->num_planes)
 		return 0;
@@ -68,13 +63,6 @@ unsigned int vpu_get_buffer_state(struct vb2_v4l2_buffer *vbuf)
 	return vpu_buf->state;
 }
 
-void vpu_set_buffer_average_qp(struct vb2_v4l2_buffer *vbuf, u32 qp)
-{
-	struct vpu_vb2_buffer *vpu_buf = to_vpu_vb2_buffer(vbuf);
-
-	vpu_buf->average_qp = qp;
-}
-
 void vpu_v4l2_set_error(struct vpu_inst *inst)
 {
 	vpu_inst_lock(inst);
@@ -86,7 +74,7 @@ void vpu_v4l2_set_error(struct vpu_inst *inst)
 	vpu_inst_unlock(inst);
 }
 
-static int vpu_notify_eos(struct vpu_inst *inst)
+int vpu_notify_eos(struct vpu_inst *inst)
 {
 	static const struct v4l2_event ev = {
 		.id = 0,
@@ -102,6 +90,7 @@ static int vpu_notify_eos(struct vpu_inst *inst)
 int vpu_notify_source_change(struct vpu_inst *inst)
 {
 	static const struct v4l2_event ev = {
+		.id = 0,
 		.type = V4L2_EVENT_SOURCE_CHANGE,
 		.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION
 	};
@@ -111,7 +100,7 @@ int vpu_notify_source_change(struct vpu_inst *inst)
 	return 0;
 }
 
-int vpu_set_last_buffer_dequeued(struct vpu_inst *inst, bool eos)
+int vpu_set_last_buffer_dequeued(struct vpu_inst *inst)
 {
 	struct vb2_queue *q;
 
@@ -127,8 +116,7 @@ int vpu_set_last_buffer_dequeued(struct vpu_inst *inst, bool eos)
 	vpu_trace(inst->dev, "last buffer dequeued\n");
 	q->last_buffer_dequeued = true;
 	wake_up(&q->done_wq);
-	if (eos)
-		vpu_notify_eos(inst);
+	vpu_notify_eos(inst);
 	return 0;
 }
 
@@ -348,6 +336,16 @@ struct vb2_v4l2_buffer *vpu_next_src_buf(struct vpu_inst *inst)
 	if (!src_buf || vpu_get_buffer_state(src_buf) == VPU_BUF_STATE_IDLE)
 		return NULL;
 
+	while (vpu_vb_is_codecconfig(src_buf)) {
+		v4l2_m2m_src_buf_remove(inst->fh.m2m_ctx);
+		vpu_set_buffer_state(src_buf, VPU_BUF_STATE_IDLE);
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+
+		src_buf = v4l2_m2m_next_src_buf(inst->fh.m2m_ctx);
+		if (!src_buf || vpu_get_buffer_state(src_buf) == VPU_BUF_STATE_IDLE)
+			return NULL;
+	}
+
 	return src_buf;
 }
 
@@ -440,7 +438,7 @@ int vpu_get_num_buffers(struct vpu_inst *inst, u32 type)
 	else
 		q = v4l2_m2m_get_dst_vq(inst->fh.m2m_ctx);
 
-	return vb2_get_num_buffers(q);
+	return q->num_buffers;
 }
 
 static void vpu_m2m_device_run(void *priv)
@@ -490,30 +488,14 @@ static int vpu_vb2_queue_setup(struct vb2_queue *vq,
 	for (i = 0; i < cur_fmt->mem_planes; i++)
 		psize[i] = vpu_get_fmt_plane_size(cur_fmt, i);
 
-	if (V4L2_TYPE_IS_OUTPUT(vq->type) && inst->state == VPU_CODEC_STATE_SEEK) {
-		vpu_trace(inst->dev, "reinit when VIDIOC_REQBUFS(OUTPUT, 0)\n");
-		call_void_vop(inst, release);
-	}
-
-	if (V4L2_TYPE_IS_CAPTURE(vq->type))
-		call_void_vop(inst, reset_frame_store);
-
 	return 0;
 }
 
 static int vpu_vb2_buf_init(struct vb2_buffer *vb)
 {
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
-	struct vpu_vb2_buffer *vpu_buf = to_vpu_vb2_buffer(vbuf);
-	struct vpu_inst *inst = vb2_get_drv_priv(vb->vb2_queue);
 
-	vpu_buf->fs_id = -1;
 	vpu_set_buffer_state(vbuf, VPU_BUF_STATE_IDLE);
-
-	if (!inst->ops->attach_frame_store || V4L2_TYPE_IS_OUTPUT(vb->type))
-		return 0;
-
-	call_void_vop(inst, attach_frame_store, vb);
 	return 0;
 }
 
@@ -551,15 +533,6 @@ static void vpu_vb2_buf_finish(struct vb2_buffer *vb)
 	struct vpu_inst *inst = vb2_get_drv_priv(vb->vb2_queue);
 	struct vb2_queue *q = vb->vb2_queue;
 
-	if (V4L2_TYPE_IS_CAPTURE(vb->type)) {
-		struct vpu_vb2_buffer *vpu_buf = to_vpu_vb2_buffer(vbuf);
-		struct v4l2_ctrl *ctrl = v4l2_ctrl_find(&inst->ctrl_handler,
-							V4L2_CID_MPEG_VIDEO_AVERAGE_QP);
-
-		if (ctrl)
-			v4l2_ctrl_s_ctrl(ctrl, vpu_buf->average_qp);
-	}
-
 	if (vbuf->flags & V4L2_BUF_FLAG_LAST)
 		vpu_notify_eos(inst);
 
@@ -567,8 +540,7 @@ static void vpu_vb2_buf_finish(struct vb2_buffer *vb)
 		call_void_vop(inst, on_queue_empty, q->type);
 }
 
-static void vpu_vb2_buffers_return(struct vpu_inst *inst, unsigned int type,
-				   enum vb2_buffer_state state)
+void vpu_vb2_buffers_return(struct vpu_inst *inst, unsigned int type, enum vb2_buffer_state state)
 {
 	struct vb2_v4l2_buffer *buf;
 
@@ -609,7 +581,7 @@ static int vpu_vb2_start_streaming(struct vb2_queue *q, unsigned int count)
 		  fmt->sizeimage[0], fmt->bytesperline[0],
 		  fmt->sizeimage[1], fmt->bytesperline[1],
 		  fmt->sizeimage[2], fmt->bytesperline[2],
-		  vb2_get_num_buffers(q));
+		  q->num_buffers);
 	vb2_clear_last_buffer_dequeued(q);
 	ret = call_vop(inst, start, q->type);
 	if (ret)
@@ -652,6 +624,8 @@ static const struct vb2_ops vpu_vb2_ops = {
 	.start_streaming    = vpu_vb2_start_streaming,
 	.stop_streaming     = vpu_vb2_stop_streaming,
 	.buf_queue          = vpu_vb2_buf_queue,
+	.wait_prepare       = vb2_ops_wait_prepare,
+	.wait_finish        = vb2_ops_wait_finish,
 };
 
 static int vpu_m2m_queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_queue *dst_vq)
@@ -669,6 +643,7 @@ static int vpu_m2m_queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_q
 		src_vq->mem_ops = &vb2_vmalloc_memops;
 	src_vq->drv_priv = inst;
 	src_vq->buf_struct_size = sizeof(struct vpu_vb2_buffer);
+	src_vq->min_buffers_needed = 1;
 	src_vq->dev = inst->vpu->dev;
 	src_vq->lock = &inst->lock;
 	ret = vb2_queue_init(src_vq);
@@ -685,6 +660,7 @@ static int vpu_m2m_queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_q
 		dst_vq->mem_ops = &vb2_vmalloc_memops;
 	dst_vq->drv_priv = inst;
 	dst_vq->buf_struct_size = sizeof(struct vpu_vb2_buffer);
+	dst_vq->min_buffers_needed = 1;
 	dst_vq->dev = inst->vpu->dev;
 	dst_vq->lock = &inst->lock;
 	ret = vb2_queue_init(dst_vq);
@@ -700,17 +676,19 @@ static int vpu_v4l2_release(struct vpu_inst *inst)
 {
 	vpu_trace(inst->vpu->dev, "%p\n", inst);
 
+	vpu_release_core(inst->core);
+	put_device(inst->dev);
+
 	if (inst->workqueue) {
 		cancel_work_sync(&inst->msg_work);
 		destroy_workqueue(inst->workqueue);
 		inst->workqueue = NULL;
 	}
 
-	vpu_release_core(inst->core);
-	put_device(inst->dev);
-
 	v4l2_ctrl_handler_free(&inst->ctrl_handler);
 	mutex_destroy(&inst->lock);
+	v4l2_fh_del(&inst->fh);
+	v4l2_fh_exit(&inst->fh);
 
 	call_void_vop(inst, cleanup);
 
@@ -732,7 +710,6 @@ int vpu_v4l2_open(struct file *file, struct vpu_inst *inst)
 		func = &vpu->decoder;
 
 	atomic_set(&inst->ref_count, 0);
-	atomic_long_set(&inst->last_response_cmd, 0);
 	vpu_inst_get(inst);
 	inst->vpu = vpu;
 	inst->core = vpu_request_core(vpu, inst->type);
@@ -747,7 +724,7 @@ int vpu_v4l2_open(struct file *file, struct vpu_inst *inst)
 	inst->min_buffer_cap = 2;
 	inst->min_buffer_out = 2;
 	v4l2_fh_init(&inst->fh, func->vfd);
-	v4l2_fh_add(&inst->fh, file);
+	v4l2_fh_add(&inst->fh);
 
 	ret = call_vop(inst, ctrl_init);
 	if (ret)
@@ -761,8 +738,9 @@ int vpu_v4l2_open(struct file *file, struct vpu_inst *inst)
 	}
 
 	inst->fh.ctrl_handler = &inst->ctrl_handler;
+	file->private_data = &inst->fh;
 	inst->state = VPU_CODEC_STATE_DEINIT;
-	inst->workqueue = alloc_ordered_workqueue("vpu_inst", WQ_MEM_RECLAIM);
+	inst->workqueue = alloc_workqueue("vpu_inst", WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
 	if (inst->workqueue) {
 		INIT_WORK(&inst->msg_work, vpu_inst_run_work);
 		ret = kfifo_init(&inst->msg_fifo,
@@ -778,8 +756,6 @@ int vpu_v4l2_open(struct file *file, struct vpu_inst *inst)
 
 	return 0;
 error:
-	v4l2_fh_del(&inst->fh, file);
-	v4l2_fh_exit(&inst->fh);
 	vpu_inst_put(inst);
 	return ret;
 }
@@ -796,12 +772,9 @@ int vpu_v4l2_close(struct file *file)
 		v4l2_m2m_ctx_release(inst->fh.m2m_ctx);
 		inst->fh.m2m_ctx = NULL;
 	}
-	call_void_vop(inst, release);
 	vpu_inst_unlock(inst);
 
-	v4l2_fh_del(&inst->fh, file);
-	v4l2_fh_exit(&inst->fh);
-
+	call_void_vop(inst, release);
 	vpu_inst_unregister(inst);
 	vpu_inst_put(inst);
 
@@ -845,7 +818,6 @@ int vpu_add_func(struct vpu_dev *vpu, struct vpu_func *func)
 		vfd->fops = vdec_get_fops();
 		vfd->ioctl_ops = vdec_get_ioctl_ops();
 	}
-	video_set_drvdata(vfd, vpu);
 
 	ret = video_register_device(vfd, VFL_TYPE_VIDEO, -1);
 	if (ret) {
@@ -853,6 +825,7 @@ int vpu_add_func(struct vpu_dev *vpu, struct vpu_func *func)
 		v4l2_m2m_release(func->m2m_dev);
 		return ret;
 	}
+	video_set_drvdata(vfd, vpu);
 	func->vfd = vfd;
 
 	ret = v4l2_m2m_register_media_controller(func->m2m_dev, func->vfd, func->function);

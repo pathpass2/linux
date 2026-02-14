@@ -268,7 +268,7 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 			combined_hash = fscrypt_fname_siphash(dir, &qname);
 		} else {
 			ext4_warning_inode(dir, "Siphash requires key");
-			return -EINVAL;
+			return -1;
 		}
 
 		hash = (__u32)(combined_hash >> 32);
@@ -277,11 +277,7 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 	}
 	default:
 		hinfo->hash = 0;
-		hinfo->minor_hash = 0;
-		ext4_warning(dir->i_sb,
-			     "invalid/unsupported hash tree version %u",
-			     hinfo->hash_version);
-		return -EINVAL;
+		return -1;
 	}
 	hash = hash & ~1;
 	if (hash == (EXT4_HTREE_EOF_32BIT << 1))
@@ -300,9 +296,9 @@ int ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 	unsigned char *buff;
 	struct qstr qstr = {.name = name, .len = len };
 
-	if (len && IS_CASEFOLDED(dir) &&
+	if (len && IS_CASEFOLDED(dir) && um &&
 	   (!IS_ENCRYPTED(dir) || fscrypt_has_encryption_key(dir))) {
-		buff = kzalloc(PATH_MAX, GFP_KERNEL);
+		buff = kzalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 		if (!buff)
 			return -ENOMEM;
 

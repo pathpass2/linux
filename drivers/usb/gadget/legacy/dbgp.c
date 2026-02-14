@@ -434,7 +434,6 @@ static void __exit dbgp_exit(void)
 }
 
 MODULE_AUTHOR("Stephane Duverger");
-MODULE_DESCRIPTION("EHCI Debug Port device gadget");
 MODULE_LICENSE("GPL");
 module_init(dbgp_init);
 module_exit(dbgp_exit);

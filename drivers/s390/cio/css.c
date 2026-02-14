@@ -8,7 +8,8 @@
  *	      Cornelia Huck (cornelia.huck@de.ibm.com)
  */
 
-#define pr_fmt(fmt) "cio: " fmt
+#define KMSG_COMPONENT "cio"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/export.h>
 #include <linux/init.h>
@@ -38,7 +39,7 @@ int max_ssid;
 
 #define MAX_CSS_IDX 0
 struct channel_subsystem *channel_subsystems[MAX_CSS_IDX + 1];
-static const struct bus_type css_bus_type;
+static struct bus_type css_bus_type;
 
 int
 for_each_subchannel(int(*fn)(struct subchannel_id, void *), void *data)
@@ -147,10 +148,16 @@ out:
 
 static void css_sch_todo(struct work_struct *work);
 
-static void css_sch_create_locks(struct subchannel *sch)
+static int css_sch_create_locks(struct subchannel *sch)
 {
-	spin_lock_init(&sch->lock);
+	sch->lock = kmalloc(sizeof(*sch->lock), GFP_KERNEL);
+	if (!sch->lock)
+		return -ENOMEM;
+
+	spin_lock_init(sch->lock);
 	mutex_init(&sch->reg_mutex);
+
+	return 0;
 }
 
 static void css_subchannel_release(struct device *dev)
@@ -160,6 +167,7 @@ static void css_subchannel_release(struct device *dev)
 	sch->config.intparm = 0;
 	cio_commit_config(sch);
 	kfree(sch->driver_override);
+	kfree(sch->lock);
 	kfree(sch);
 }
 
@@ -211,7 +219,9 @@ struct subchannel *css_alloc_subchannel(struct subchannel_id schid,
 	sch->schib = *schib;
 	sch->st = schib->pmcw.st;
 
-	css_sch_create_locks(sch);
+	ret = css_sch_create_locks(sch);
+	if (ret)
+		goto err;
 
 	INIT_WORK(&sch->todo_work, css_sch_todo);
 	sch->dev.release = &css_subchannel_release;
@@ -235,7 +245,7 @@ struct subchannel *css_alloc_subchannel(struct subchannel_id schid,
 	return sch;
 
 err:
-	put_device(&sch->dev);
+	kfree(sch);
 	return ERR_PTR(ret);
 }
 
@@ -308,7 +318,7 @@ static ssize_t type_show(struct device *dev, struct device_attribute *attr,
 {
 	struct subchannel *sch = to_subchannel(dev);
 
-	return sysfs_emit(buf, "%01x\n", sch->st);
+	return sprintf(buf, "%01x\n", sch->st);
 }
 
 static DEVICE_ATTR_RO(type);
@@ -318,7 +328,7 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 {
 	struct subchannel *sch = to_subchannel(dev);
 
-	return sysfs_emit(buf, "css:t%01X\n", sch->st);
+	return sprintf(buf, "css:t%01X\n", sch->st);
 }
 
 static DEVICE_ATTR_RO(modalias);
@@ -344,7 +354,7 @@ static ssize_t driver_override_show(struct device *dev,
 	ssize_t len;
 
 	device_lock(dev);
-	len = sysfs_emit(buf, "%s\n", sch->driver_override);
+	len = snprintf(buf, PAGE_SIZE, "%s\n", sch->driver_override);
 	device_unlock(dev);
 	return len;
 }
@@ -379,11 +389,11 @@ static ssize_t chpids_show(struct device *dev,
 	for (chp = 0; chp < 8; chp++) {
 		mask = 0x80 >> chp;
 		if (ssd->path_mask & mask)
-			ret += sysfs_emit_at(buf, ret, "%02x ", ssd->chpid[chp].id);
+			ret += sprintf(buf + ret, "%02x ", ssd->chpid[chp].id);
 		else
-			ret += sysfs_emit_at(buf, ret, "00 ");
+			ret += sprintf(buf + ret, "00 ");
 	}
-	ret += sysfs_emit_at(buf, ret, "\n");
+	ret += sprintf(buf + ret, "\n");
 	return ret;
 }
 static DEVICE_ATTR_RO(chpids);
@@ -395,8 +405,8 @@ static ssize_t pimpampom_show(struct device *dev,
 	struct subchannel *sch = to_subchannel(dev);
 	struct pmcw *pmcw = &sch->schib.pmcw;
 
-	return sysfs_emit(buf, "%02x %02x %02x\n",
-			  pmcw->pim, pmcw->pam, pmcw->pom);
+	return sprintf(buf, "%02x %02x %02x\n",
+		       pmcw->pim, pmcw->pam, pmcw->pom);
 }
 static DEVICE_ATTR_RO(pimpampom);
 
@@ -592,12 +602,12 @@ static void css_sch_todo(struct work_struct *work)
 
 	sch = container_of(work, struct subchannel, todo_work);
 	/* Find out todo. */
-	spin_lock_irq(&sch->lock);
+	spin_lock_irq(sch->lock);
 	todo = sch->todo;
 	CIO_MSG_EVENT(4, "sch_todo: sch=0.%x.%04x, todo=%d\n", sch->schid.ssid,
 		      sch->schid.sch_no, todo);
 	sch->todo = SCH_TODO_NOTHING;
-	spin_unlock_irq(&sch->lock);
+	spin_unlock_irq(sch->lock);
 	/* Perform todo. */
 	switch (todo) {
 	case SCH_TODO_NOTHING:
@@ -605,9 +615,9 @@ static void css_sch_todo(struct work_struct *work)
 	case SCH_TODO_EVAL:
 		ret = css_evaluate_known_subchannel(sch, 1);
 		if (ret == -EAGAIN) {
-			spin_lock_irq(&sch->lock);
+			spin_lock_irq(sch->lock);
 			css_sched_sch_todo(sch, todo);
-			spin_unlock_irq(&sch->lock);
+			spin_unlock_irq(sch->lock);
 		}
 		break;
 	case SCH_TODO_UNREG:
@@ -880,7 +890,7 @@ static ssize_t real_cssid_show(struct device *dev, struct device_attribute *a,
 	if (!css->id_valid)
 		return -EINVAL;
 
-	return sysfs_emit(buf, "%x\n", css->cssid);
+	return sprintf(buf, "%x\n", css->cssid);
 }
 static DEVICE_ATTR_RO(real_cssid);
 
@@ -903,7 +913,7 @@ static ssize_t cm_enable_show(struct device *dev, struct device_attribute *a,
 	int ret;
 
 	mutex_lock(&css->mutex);
-	ret = sysfs_emit(buf, "%x\n", css->cm_enabled);
+	ret = sprintf(buf, "%x\n", css->cm_enabled);
 	mutex_unlock(&css->mutex);
 	return ret;
 }
@@ -1016,7 +1026,12 @@ static int __init setup_css(int nr)
 	css->pseudo_subchannel->dev.parent = &css->device;
 	css->pseudo_subchannel->dev.release = css_subchannel_release;
 	mutex_init(&css->pseudo_subchannel->reg_mutex);
-	css_sch_create_locks(css->pseudo_subchannel);
+	ret = css_sch_create_locks(css->pseudo_subchannel);
+	if (ret) {
+		kfree(css->pseudo_subchannel);
+		device_unregister(&css->device);
+		goto out_err;
+	}
 
 	dev_set_name(&css->pseudo_subchannel->dev, "defunct");
 	ret = device_register(&css->pseudo_subchannel->dev);
@@ -1113,33 +1128,26 @@ static int cio_dma_pool_init(void)
 	return 0;
 }
 
-void *__cio_gp_dma_zalloc(struct gen_pool *gp_dma, struct device *dma_dev,
-			  size_t size, dma32_t *dma_handle)
-{
-	dma_addr_t dma_addr;
-	size_t chunk_size;
-	void *addr;
-
-	if (!gp_dma)
-		return NULL;
-	addr = gen_pool_dma_alloc(gp_dma, size, &dma_addr);
-	while (!addr) {
-		chunk_size = round_up(size, PAGE_SIZE);
-		addr = dma_alloc_coherent(dma_dev, chunk_size, &dma_addr, CIO_DMA_GFP);
-		if (!addr)
-			return NULL;
-		gen_pool_add_virt(gp_dma, (unsigned long)addr, dma_addr, chunk_size, -1);
-		addr = gen_pool_dma_alloc(gp_dma, size, dma_handle ? &dma_addr : NULL);
-	}
-	if (dma_handle)
-		*dma_handle = (__force dma32_t)dma_addr;
-	return addr;
-}
-
 void *cio_gp_dma_zalloc(struct gen_pool *gp_dma, struct device *dma_dev,
 			size_t size)
 {
-	return __cio_gp_dma_zalloc(gp_dma, dma_dev, size, NULL);
+	dma_addr_t dma_addr;
+	unsigned long addr;
+	size_t chunk_size;
+
+	if (!gp_dma)
+		return NULL;
+	addr = gen_pool_alloc(gp_dma, size);
+	while (!addr) {
+		chunk_size = round_up(size, PAGE_SIZE);
+		addr = (unsigned long) dma_alloc_coherent(dma_dev,
+					 chunk_size, &dma_addr, CIO_DMA_GFP);
+		if (!addr)
+			return NULL;
+		gen_pool_add_virt(gp_dma, addr, dma_addr, chunk_size, -1);
+		addr = gen_pool_alloc(gp_dma, size);
+	}
+	return (void *) addr;
 }
 
 void cio_gp_dma_free(struct gen_pool *gp_dma, void *cpu_addr, size_t size)
@@ -1331,6 +1339,7 @@ static ssize_t cio_settle_write(struct file *file, const char __user *buf,
 static const struct proc_ops cio_settle_proc_ops = {
 	.proc_open	= nonseekable_open,
 	.proc_write	= cio_settle_write,
+	.proc_lseek	= no_llseek,
 };
 
 static int __init cio_settle_init(void)
@@ -1352,10 +1361,10 @@ int sch_is_pseudo_sch(struct subchannel *sch)
 	return sch == to_css(sch->dev.parent)->pseudo_subchannel;
 }
 
-static int css_bus_match(struct device *dev, const struct device_driver *drv)
+static int css_bus_match(struct device *dev, struct device_driver *drv)
 {
 	struct subchannel *sch = to_subchannel(dev);
-	const struct css_driver *driver = to_cssdriver(drv);
+	struct css_driver *driver = to_cssdriver(drv);
 	struct css_device_id *id;
 
 	/* When driver_override is set, only bind to the matching driver */
@@ -1414,7 +1423,7 @@ static int css_uevent(const struct device *dev, struct kobj_uevent_env *env)
 	return ret;
 }
 
-static const struct bus_type css_bus_type = {
+static struct bus_type css_bus_type = {
 	.name     = "css",
 	.match    = css_bus_match,
 	.probe    = css_probe,

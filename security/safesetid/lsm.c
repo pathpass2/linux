@@ -19,7 +19,6 @@
 #include <linux/ptrace.h>
 #include <linux/sched/task_stack.h>
 #include <linux/security.h>
-#include <uapi/linux/lsm.h>
 #include "lsm.h"
 
 /* Flag indicating whether initialization completed */
@@ -132,7 +131,7 @@ static int safesetid_security_capable(const struct cred *cred,
 		 * set*gid() (e.g. setting up userns gid mappings).
 		 */
 		pr_warn("Operation requires CAP_SETGID, which is not available to GID %u for operations besides approved set*gid transitions\n",
-			__kgid_val(cred->gid));
+			__kuid_val(cred->uid));
 		return -EPERM;
 	default:
 		/* Error, the only capabilities were checking for is CAP_SETUID/GID */
@@ -262,11 +261,6 @@ static int safesetid_task_fix_setgroups(struct cred *new, const struct cred *old
 	return 0;
 }
 
-static const struct lsm_id safesetid_lsmid = {
-	.name = "safesetid",
-	.id = LSM_ID_SAFESETID,
-};
-
 static struct security_hook_list safesetid_security_hooks[] = {
 	LSM_HOOK_INIT(task_fix_setuid, safesetid_task_fix_setuid),
 	LSM_HOOK_INIT(task_fix_setgid, safesetid_task_fix_setgid),
@@ -277,8 +271,7 @@ static struct security_hook_list safesetid_security_hooks[] = {
 static int __init safesetid_security_init(void)
 {
 	security_add_hooks(safesetid_security_hooks,
-			   ARRAY_SIZE(safesetid_security_hooks),
-			   &safesetid_lsmid);
+			   ARRAY_SIZE(safesetid_security_hooks), "safesetid");
 
 	/* Report that SafeSetID successfully initialized */
 	safesetid_initialized = 1;
@@ -287,7 +280,6 @@ static int __init safesetid_security_init(void)
 }
 
 DEFINE_LSM(safesetid_security_init) = {
-	.id = &safesetid_lsmid,
 	.init = safesetid_security_init,
-	.initcall_fs = safesetid_init_securityfs,
+	.name = "safesetid",
 };

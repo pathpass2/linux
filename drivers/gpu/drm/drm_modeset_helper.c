@@ -20,10 +20,8 @@
  * OF THIS SOFTWARE.
  */
 
-#include <linux/export.h>
-
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_client_event.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_modeset_helper.h>
@@ -74,7 +72,6 @@ EXPORT_SYMBOL(drm_helper_move_panel_connectors_to_head);
  * drm_helper_mode_fill_fb_struct - fill out framebuffer metadata
  * @dev: DRM device
  * @fb: drm_framebuffer object to fill out
- * @info: pixel format information
  * @mode_cmd: metadata from the userspace fb creation request
  *
  * This helper can be used in a drivers fb_create callback to pre-fill the fb's
@@ -82,13 +79,12 @@ EXPORT_SYMBOL(drm_helper_move_panel_connectors_to_head);
  */
 void drm_helper_mode_fill_fb_struct(struct drm_device *dev,
 				    struct drm_framebuffer *fb,
-				    const struct drm_format_info *info,
 				    const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	int i;
 
 	fb->dev = dev;
-	fb->format = info;
+	fb->format = drm_get_format_info(dev, mode_cmd);
 	fb->width = mode_cmd->width;
 	fb->height = mode_cmd->height;
 	for (i = 0; i < 4; i++) {
@@ -189,7 +185,7 @@ EXPORT_SYMBOL(drm_crtc_init);
  * Zero on success, negative error code on error.
  *
  * See also:
- * drm_kms_helper_poll_disable() and drm_client_dev_suspend().
+ * drm_kms_helper_poll_disable() and drm_fb_helper_set_suspend_unlocked().
  */
 int drm_mode_config_helper_suspend(struct drm_device *dev)
 {
@@ -197,23 +193,13 @@ int drm_mode_config_helper_suspend(struct drm_device *dev)
 
 	if (!dev)
 		return 0;
-	/*
-	 * Don't disable polling if it was never initialized
-	 */
-	if (dev->mode_config.poll_enabled)
-		drm_kms_helper_poll_disable(dev);
 
-	drm_client_dev_suspend(dev);
+	drm_kms_helper_poll_disable(dev);
+	drm_fb_helper_set_suspend_unlocked(dev->fb_helper, 1);
 	state = drm_atomic_helper_suspend(dev);
 	if (IS_ERR(state)) {
-		drm_client_dev_resume(dev);
-
-		/*
-		 * Don't enable polling if it was never initialized
-		 */
-		if (dev->mode_config.poll_enabled)
-			drm_kms_helper_poll_enable(dev);
-
+		drm_fb_helper_set_suspend_unlocked(dev->fb_helper, 0);
+		drm_kms_helper_poll_enable(dev);
 		return PTR_ERR(state);
 	}
 
@@ -235,7 +221,7 @@ EXPORT_SYMBOL(drm_mode_config_helper_suspend);
  * Zero on success, negative error code on error.
  *
  * See also:
- * drm_client_dev_resume() and drm_kms_helper_poll_enable().
+ * drm_fb_helper_set_suspend_unlocked() and drm_kms_helper_poll_enable().
  */
 int drm_mode_config_helper_resume(struct drm_device *dev)
 {
@@ -252,13 +238,8 @@ int drm_mode_config_helper_resume(struct drm_device *dev)
 		DRM_ERROR("Failed to resume (%d)\n", ret);
 	dev->mode_config.suspend_state = NULL;
 
-	drm_client_dev_resume(dev);
-
-	/*
-	 * Don't enable polling if it is not initialized
-	 */
-	if (dev->mode_config.poll_enabled)
-		drm_kms_helper_poll_enable(dev);
+	drm_fb_helper_set_suspend_unlocked(dev->fb_helper, 0);
+	drm_kms_helper_poll_enable(dev);
 
 	return ret;
 }

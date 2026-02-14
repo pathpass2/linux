@@ -10,7 +10,7 @@
 
 #define ARCH_DMA_MINALIGN	L1_CACHE_BYTES
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 void dcache_wb_line(unsigned long start);
 

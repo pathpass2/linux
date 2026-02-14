@@ -425,7 +425,7 @@ static int fsi_spi_transfer_one_message(struct spi_controller *ctlr,
 					struct spi_message *mesg)
 {
 	int rc;
-	u8 seq_slave = SPI_FSI_SEQUENCE_SEL_SLAVE(spi_get_chipselect(mesg->spi, 0) + 1);
+	u8 seq_slave = SPI_FSI_SEQUENCE_SEL_SLAVE(mesg->spi->chip_select + 1);
 	unsigned int len;
 	struct spi_transfer *transfer;
 	struct fsi_spi *ctx = spi_controller_get_devdata(ctlr);
@@ -479,19 +479,6 @@ static int fsi_spi_transfer_one_message(struct spi_controller *ctlr,
 
 				shift = SPI_FSI_SEQUENCE_SHIFT_IN(next->len);
 				fsi_spi_sequence_add(&seq, shift);
-			} else if (next->tx_buf) {
-				if ((next->len + transfer->len) > (SPI_FSI_MAX_TX_SIZE + 8)) {
-					rc = -EINVAL;
-					goto error;
-				}
-
-				len = next->len;
-				while (len > 8) {
-					fsi_spi_sequence_add(&seq,
-							     SPI_FSI_SEQUENCE_SHIFT_OUT(8));
-					len -= 8;
-				}
-				fsi_spi_sequence_add(&seq, SPI_FSI_SEQUENCE_SHIFT_OUT(len));
 			} else {
 				next = NULL;
 			}
@@ -531,6 +518,7 @@ static size_t fsi_spi_max_transfer_size(struct spi_device *spi)
 static int fsi_spi_probe(struct device *dev)
 {
 	int rc;
+	struct device_node *np;
 	int num_controllers_registered = 0;
 	struct fsi2spi *bridge;
 	struct fsi_device *fsi = to_fsi_dev(dev);
@@ -546,7 +534,7 @@ static int fsi_spi_probe(struct device *dev)
 	bridge->fsi = fsi;
 	mutex_init(&bridge->lock);
 
-	for_each_available_child_of_node_scoped(dev->of_node, np) {
+	for_each_available_child_of_node(dev->of_node, np) {
 		u32 base;
 		struct fsi_spi *ctx;
 		struct spi_controller *ctlr;
@@ -554,9 +542,11 @@ static int fsi_spi_probe(struct device *dev)
 		if (of_property_read_u32(np, "reg", &base))
 			continue;
 
-		ctlr = spi_alloc_host(dev, sizeof(*ctx));
-		if (!ctlr)
+		ctlr = spi_alloc_master(dev, sizeof(*ctx));
+		if (!ctlr) {
+			of_node_put(np);
 			break;
+		}
 
 		ctlr->dev.of_node = np;
 		ctlr->num_chipselect = of_get_available_child_count(np) ?: 1;

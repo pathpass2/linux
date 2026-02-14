@@ -39,6 +39,7 @@ struct mmap {
 #endif
 	struct mmap_cpu_mask	affinity_mask;
 	void		*data;
+	int		comp_level;
 	struct perf_data_file *file;
 	struct zstd_data      zstd_data;
 };
@@ -60,5 +61,8 @@ int perf_mmap__push(struct mmap *md, void *to,
 size_t mmap__mmap_len(struct mmap *map);
 
 void mmap_cpu_mask__scnprintf(struct mmap_cpu_mask *mask, const char *tag);
+
+int mmap_cpu_mask__duplicate(struct mmap_cpu_mask *original,
+				struct mmap_cpu_mask *clone);
 
 #endif /*__PERF_MMAP_H */

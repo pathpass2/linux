@@ -35,13 +35,12 @@
  * with this program; if not, write  to the Free Software Foundation, Inc.,
  * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
+#include <linux/gpio.h>
 #include <linux/init.h>
-#include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/irqdomain.h>
 
 #include <asm/irq.h>
 #include <asm/exception.h>
@@ -220,7 +219,8 @@ void __init omap1_init_irq(void)
 	omap_l2_irq = irq_base;
 	omap_l2_irq -= NR_IRQS_LEGACY;
 
-	domain = irq_domain_create_legacy(NULL, nr_irqs, irq_base, 0, &irq_domain_simple_ops, NULL);
+	domain = irq_domain_add_legacy(NULL, nr_irqs, irq_base, 0,
+				       &irq_domain_simple_ops, NULL);
 
 	pr_info("Total of %lu interrupts in %i interrupt banks\n",
 		nr_irqs, irq_bank_count);
@@ -253,6 +253,4 @@ void __init omap1_init_irq(void)
 		ct = irq_data_get_chip_type(d);
 		ct->chip.irq_unmask(d);
 	}
-
-	set_handle_irq(omap1_handle_irq);
 }

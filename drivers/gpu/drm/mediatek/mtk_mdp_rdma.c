@@ -6,7 +6,8 @@
 #include <drm/drm_fourcc.h>
 #include <linux/clk.h>
 #include <linux/component.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
@@ -60,20 +61,6 @@
 
 #define RDMA_CSC_FULL709_TO_RGB			5
 #define RDMA_CSC_BT601_TO_RGB			6
-
-static const u32 formats[] = {
-	DRM_FORMAT_XRGB8888,
-	DRM_FORMAT_ARGB8888,
-	DRM_FORMAT_BGRX8888,
-	DRM_FORMAT_BGRA8888,
-	DRM_FORMAT_ABGR8888,
-	DRM_FORMAT_XBGR8888,
-	DRM_FORMAT_RGB888,
-	DRM_FORMAT_BGR888,
-	DRM_FORMAT_RGB565,
-	DRM_FORMAT_UYVY,
-	DRM_FORMAT_YUYV,
-};
 
 enum rdma_format {
 	RDMA_INPUT_FORMAT_RGB565 = 0,
@@ -232,37 +219,12 @@ void mtk_mdp_rdma_config(struct device *dev, struct mtk_mdp_rdma_cfg *cfg,
 			   MDP_RDMA_MF_CLIP_SIZE, FLD_MF_CLIP_H);
 }
 
-const u32 *mtk_mdp_rdma_get_formats(struct device *dev)
-{
-	return formats;
-}
-
-size_t mtk_mdp_rdma_get_num_formats(struct device *dev)
-{
-	return ARRAY_SIZE(formats);
-}
-
-int mtk_mdp_rdma_power_on(struct device *dev)
-{
-	int ret = pm_runtime_resume_and_get(dev);
-
-	if (ret < 0) {
-		dev_err(dev, "Failed to power on: %d\n", ret);
-		return ret;
-	}
-	return 0;
-}
-
-void mtk_mdp_rdma_power_off(struct device *dev)
-{
-	pm_runtime_put(dev);
-}
-
 int mtk_mdp_rdma_clk_enable(struct device *dev)
 {
 	struct mtk_mdp_rdma *rdma = dev_get_drvdata(dev);
 
-	return clk_prepare_enable(rdma->clk);
+	clk_prepare_enable(rdma->clk);
+	return 0;
 }
 
 void mtk_mdp_rdma_clk_disable(struct device *dev)
@@ -291,6 +253,7 @@ static const struct component_ops mtk_mdp_rdma_component_ops = {
 static int mtk_mdp_rdma_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 	struct mtk_mdp_rdma *priv;
 	int ret = 0;
 
@@ -298,15 +261,18 @@ static int mtk_mdp_rdma_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
-	priv->regs = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(priv->regs))
-		return dev_err_probe(dev, PTR_ERR(priv->regs),
-				     "failed to ioremap rdma\n");
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	priv->regs = devm_ioremap_resource(dev, res);
+	if (IS_ERR(priv->regs)) {
+		dev_err(dev, "failed to ioremap rdma\n");
+		return PTR_ERR(priv->regs);
+	}
 
 	priv->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(priv->clk))
-		return dev_err_probe(dev, PTR_ERR(priv->clk),
-				     "failed to get rdma clk\n");
+	if (IS_ERR(priv->clk)) {
+		dev_err(dev, "failed to get rdma clk\n");
+		return PTR_ERR(priv->clk);
+	}
 
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	ret = cmdq_dev_get_client_reg(dev, &priv->cmdq_reg, 0);
@@ -320,15 +286,16 @@ static int mtk_mdp_rdma_probe(struct platform_device *pdev)
 	ret = component_add(dev, &mtk_mdp_rdma_component_ops);
 	if (ret != 0) {
 		pm_runtime_disable(dev);
-		return dev_err_probe(dev, ret, "Failed to add component\n");
+		dev_err(dev, "Failed to add component: %d\n", ret);
 	}
-	return 0;
+	return ret;
 }
 
-static void mtk_mdp_rdma_remove(struct platform_device *pdev)
+static int mtk_mdp_rdma_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &mtk_mdp_rdma_component_ops);
 	pm_runtime_disable(&pdev->dev);
+	return 0;
 }
 
 static const struct of_device_id mtk_mdp_rdma_driver_dt_match[] = {
@@ -342,6 +309,7 @@ struct platform_driver mtk_mdp_rdma_driver = {
 	.remove = mtk_mdp_rdma_remove,
 	.driver = {
 		.name = "mediatek-mdp-rdma",
+		.owner = THIS_MODULE,
 		.of_match_table = mtk_mdp_rdma_driver_dt_match,
 	},
 };

@@ -35,6 +35,12 @@ enum {
 	ERR_UNKNOWN	= 3,
 };
 
+#define MAX_SYNDROME_REGS 4
+
+struct error_syndrome {
+	u64 reg[MAX_SYNDROME_REGS];
+};
+
 struct error_descr {
 	int	type;
 	u64	mask;
@@ -475,7 +481,7 @@ static int thunderx_create_debugfs_nodes(struct dentry *parent,
 		ent = edac_debugfs_create_file(attrs[i]->name, attrs[i]->mode,
 					       parent, data, &attrs[i]->fops);
 
-		if (IS_ERR(ent))
+		if (!ent)
 			break;
 	}
 
@@ -1127,7 +1133,7 @@ static irqreturn_t thunderx_ocx_com_threaded_isr(int irq, void *irq_id)
 		decode_register(other, OCX_OTHER_SIZE,
 				ocx_com_errors, ctx->reg_com_int);
 
-		strlcat(msg, other, OCX_MESSAGE_SIZE);
+		strncat(msg, other, OCX_MESSAGE_SIZE);
 
 		for (lane = 0; lane < OCX_RX_LANES; lane++)
 			if (ctx->reg_com_int & BIT(lane)) {
@@ -1136,12 +1142,12 @@ static irqreturn_t thunderx_ocx_com_threaded_isr(int irq, void *irq_id)
 					 lane, ctx->reg_lane_int[lane],
 					 lane, ctx->reg_lane_stat11[lane]);
 
-				strlcat(msg, other, OCX_MESSAGE_SIZE);
+				strncat(msg, other, OCX_MESSAGE_SIZE);
 
 				decode_register(other, OCX_OTHER_SIZE,
 						ocx_lane_errors,
 						ctx->reg_lane_int[lane]);
-				strlcat(msg, other, OCX_MESSAGE_SIZE);
+				strncat(msg, other, OCX_MESSAGE_SIZE);
 			}
 
 		if (ctx->reg_com_int & OCX_COM_INT_CE)
@@ -1211,7 +1217,7 @@ static irqreturn_t thunderx_ocx_lnk_threaded_isr(int irq, void *irq_id)
 		decode_register(other, OCX_OTHER_SIZE,
 				ocx_com_link_errors, ctx->reg_com_link_int);
 
-		strlcat(msg, other, OCX_MESSAGE_SIZE);
+		strncat(msg, other, OCX_MESSAGE_SIZE);
 
 		if (ctx->reg_com_link_int & OCX_COM_LINK_INT_UE)
 			edac_device_handle_ue(ocx->edac_dev, 0, 0, msg);
@@ -1359,7 +1365,8 @@ static int thunderx_ocx_probe(struct pci_dev *pdev,
 	idx = edac_device_alloc_index();
 	snprintf(name, sizeof(name), "OCX%d", idx);
 	edac_dev = edac_device_alloc_ctl_info(sizeof(struct thunderx_ocx),
-					      name, 1, "CCPI", 1, 0, idx);
+					      name, 1, "CCPI", 1,
+					      0, NULL, 0, idx);
 	if (!edac_dev) {
 		dev_err(&pdev->dev, "Cannot allocate EDAC device\n");
 		return -ENOMEM;
@@ -1889,7 +1896,7 @@ static irqreturn_t thunderx_l2c_threaded_isr(int irq, void *irq_id)
 
 		decode_register(other, L2C_OTHER_SIZE, l2_errors, ctx->reg_int);
 
-		strlcat(msg, other, L2C_MESSAGE_SIZE);
+		strncat(msg, other, L2C_MESSAGE_SIZE);
 
 		if (ctx->reg_int & mask_ue)
 			edac_device_handle_ue(l2c->edac_dev, 0, 0, msg);
@@ -1997,7 +2004,8 @@ static int thunderx_l2c_probe(struct pci_dev *pdev,
 	snprintf(name, sizeof(name), fmt, idx);
 
 	edac_dev = edac_device_alloc_ctl_info(sizeof(struct thunderx_l2c),
-					      name, 1, "L2C", 1, 0, idx);
+					      name, 1, "L2C", 1, 0,
+					      NULL, 0, idx);
 	if (!edac_dev) {
 		dev_err(&pdev->dev, "Cannot allocate EDAC device\n");
 		return -ENOMEM;

@@ -5,6 +5,7 @@
 
 #include <linux/backlight.h>
 #include <linux/err.h>
+#include <linux/fb.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -16,7 +17,7 @@
 #include <linux/slab.h>
 
 struct gpio_backlight {
-	struct device *dev;
+	struct device *fbdev;
 	struct gpio_desc *gpiod;
 };
 
@@ -29,18 +30,18 @@ static int gpio_backlight_update_status(struct backlight_device *bl)
 	return 0;
 }
 
-static bool gpio_backlight_controls_device(struct backlight_device *bl,
-					   struct device *display_dev)
+static int gpio_backlight_check_fb(struct backlight_device *bl,
+				   struct fb_info *info)
 {
 	struct gpio_backlight *gbl = bl_get_data(bl);
 
-	return !gbl->dev || gbl->dev == display_dev;
+	return gbl->fbdev == NULL || gbl->fbdev == info->dev;
 }
 
 static const struct backlight_ops gpio_backlight_ops = {
-	.options	 = BL_CORE_SUSPENDRESUME,
-	.update_status	 = gpio_backlight_update_status,
-	.controls_device = gpio_backlight_controls_device,
+	.options	= BL_CORE_SUSPENDRESUME,
+	.update_status	= gpio_backlight_update_status,
+	.check_fb	= gpio_backlight_check_fb,
 };
 
 static int gpio_backlight_probe(struct platform_device *pdev)
@@ -58,14 +59,18 @@ static int gpio_backlight_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	if (pdata)
-		gbl->dev = pdata->dev;
+		gbl->fbdev = pdata->fbdev;
 
 	def_value = device_property_read_bool(dev, "default-on");
 
 	gbl->gpiod = devm_gpiod_get(dev, NULL, GPIOD_ASIS);
-	if (IS_ERR(gbl->gpiod))
-		return dev_err_probe(dev, PTR_ERR(gbl->gpiod),
-				     "The gpios parameter is missing or invalid\n");
+	if (IS_ERR(gbl->gpiod)) {
+		ret = PTR_ERR(gbl->gpiod);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev,
+				"Error: The gpios parameter is missing or invalid.\n");
+		return ret;
+	}
 
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_RAW;
@@ -80,12 +85,13 @@ static int gpio_backlight_probe(struct platform_device *pdev)
 	/* Set the initial power state */
 	if (!of_node || !of_node->phandle)
 		/* Not booted with device tree or no phandle link to the node */
-		bl->props.power = def_value ? BACKLIGHT_POWER_ON
-					    : BACKLIGHT_POWER_OFF;
-	else if (gpiod_get_value_cansleep(gbl->gpiod) == 0)
-		bl->props.power = BACKLIGHT_POWER_OFF;
+		bl->props.power = def_value ? FB_BLANK_UNBLANK
+					    : FB_BLANK_POWERDOWN;
+	else if (gpiod_get_direction(gbl->gpiod) == 0 &&
+		 gpiod_get_value_cansleep(gbl->gpiod) == 0)
+		bl->props.power = FB_BLANK_POWERDOWN;
 	else
-		bl->props.power = BACKLIGHT_POWER_ON;
+		bl->props.power = FB_BLANK_UNBLANK;
 
 	bl->props.brightness = 1;
 

@@ -47,13 +47,6 @@
 #define FSM_MD_EX_PASS_TIMEOUT_MS		45000
 #define FSM_CMD_TIMEOUT_MS			2000
 
-#define wait_for_expected_dev_stage(status)	\
-	read_poll_timeout(ioread32, status,	\
-			  ((status & MISC_STAGE_MASK) == T7XX_DEV_STAGE_LINUX) ||	\
-			  ((status & MISC_STAGE_MASK) == T7XX_DEV_STAGE_LK), 100000,	\
-			  20000000, false, IREG_BASE(md->t7xx_dev) +	\
-			  T7XX_PCIE_MISC_DEV_STATUS)
-
 void t7xx_fsm_notifier_register(struct t7xx_modem *md, struct t7xx_fsm_notifier *notifier)
 {
 	struct t7xx_fsm_ctl *ctl = md->fsm_ctl;
@@ -104,21 +97,14 @@ void t7xx_fsm_broadcast_state(struct t7xx_fsm_ctl *ctl, enum md_state state)
 	fsm_state_notify(ctl->md, state);
 }
 
-static void fsm_release_command(struct kref *ref)
-{
-	struct t7xx_fsm_command *cmd = container_of(ref, typeof(*cmd), refcnt);
-
-	kfree(cmd);
-}
-
 static void fsm_finish_command(struct t7xx_fsm_ctl *ctl, struct t7xx_fsm_command *cmd, int result)
 {
 	if (cmd->flag & FSM_CMD_FLAG_WAIT_FOR_COMPLETION) {
-		cmd->result = result;
-		complete_all(&cmd->done);
+		*cmd->ret = result;
+		complete_all(cmd->done);
 	}
 
-	kref_put(&cmd->refcnt, fsm_release_command);
+	kfree(cmd);
 }
 
 static void fsm_del_kf_event(struct t7xx_fsm_event *event)
@@ -220,54 +206,9 @@ static void fsm_routine_exception(struct t7xx_fsm_ctl *ctl, struct t7xx_fsm_comm
 		fsm_finish_command(ctl, cmd, 0);
 }
 
-static void t7xx_lk_stage_event_handling(struct t7xx_fsm_ctl *ctl, unsigned int status)
-{
-	struct t7xx_modem *md = ctl->md;
-	struct cldma_ctrl *md_ctrl;
-	enum lk_event_id lk_event;
-	struct device *dev;
-	struct t7xx_port *port;
-
-	dev = &md->t7xx_dev->pdev->dev;
-	lk_event = FIELD_GET(MISC_LK_EVENT_MASK, status);
-	switch (lk_event) {
-	case LK_EVENT_NORMAL:
-	case LK_EVENT_RESET:
-		break;
-
-	case LK_EVENT_CREATE_PD_PORT:
-	case LK_EVENT_CREATE_POST_DL_PORT:
-		md_ctrl = md->md_ctrl[CLDMA_ID_AP];
-		t7xx_cldma_hif_hw_init(md_ctrl);
-		t7xx_cldma_stop(md_ctrl);
-		t7xx_cldma_switch_cfg(md_ctrl, CLDMA_DEDICATED_Q_CFG);
-
-		port = &ctl->md->port_prox->ports[0];
-		port->port_conf->ops->enable_chl(port);
-
-		t7xx_cldma_start(md_ctrl);
-
-		if (lk_event == LK_EVENT_CREATE_POST_DL_PORT)
-			t7xx_mode_update(md->t7xx_dev, T7XX_FASTBOOT_DOWNLOAD);
-		else
-			t7xx_mode_update(md->t7xx_dev, T7XX_FASTBOOT_DUMP);
-		break;
-
-	default:
-		dev_err(dev, "Invalid LK event %d\n", lk_event);
-		break;
-	}
-}
-
 static int fsm_stopped_handler(struct t7xx_fsm_ctl *ctl)
 {
-	enum t7xx_mode mode;
-
 	ctl->curr_state = FSM_STATE_STOPPED;
-
-	mode = READ_ONCE(ctl->md->t7xx_dev->mode);
-	if (mode == T7XX_FASTBOOT_DOWNLOAD || mode == T7XX_FASTBOOT_DUMP)
-		return 0;
 
 	t7xx_fsm_broadcast_state(ctl, MD_STATE_STOPPED);
 	return t7xx_md_reset(ctl->md->t7xx_dev);
@@ -285,21 +226,31 @@ static void fsm_routine_stopped(struct t7xx_fsm_ctl *ctl, struct t7xx_fsm_comman
 
 static void fsm_routine_stopping(struct t7xx_fsm_ctl *ctl, struct t7xx_fsm_command *cmd)
 {
-	struct cldma_ctrl *md_ctrl = ctl->md->md_ctrl[CLDMA_ID_MD];
-	struct t7xx_pci_dev *t7xx_dev = ctl->md->t7xx_dev;
+	struct t7xx_pci_dev *t7xx_dev;
+	struct cldma_ctrl *md_ctrl;
+	int err;
 
 	if (ctl->curr_state == FSM_STATE_STOPPED || ctl->curr_state == FSM_STATE_STOPPING) {
 		fsm_finish_command(ctl, cmd, -EINVAL);
 		return;
 	}
 
+	md_ctrl = ctl->md->md_ctrl[CLDMA_ID_MD];
+	t7xx_dev = ctl->md->t7xx_dev;
+
 	ctl->curr_state = FSM_STATE_STOPPING;
 	t7xx_fsm_broadcast_state(ctl, MD_STATE_WAITING_TO_STOP);
 	t7xx_cldma_stop(md_ctrl);
 
-	t7xx_mhccif_h2d_swint_trigger(t7xx_dev, H2D_CH_DRM_DISABLE_AP);
-	/* Wait for the DRM disable to take effect */
-	msleep(FSM_DRM_DISABLE_DELAY_MS);
+	if (!ctl->md->rgu_irq_asserted) {
+		t7xx_mhccif_h2d_swint_trigger(t7xx_dev, H2D_CH_DRM_DISABLE_AP);
+		/* Wait for the DRM disable to take effect */
+		msleep(FSM_DRM_DISABLE_DELAY_MS);
+
+		err = t7xx_acpi_fldr_func(t7xx_dev);
+		if (err)
+			t7xx_mhccif_h2d_swint_trigger(t7xx_dev, H2D_CH_DEVICE_RESET);
+	}
 
 	fsm_finish_command(ctl, cmd, fsm_stopped_handler(ctl));
 }
@@ -321,7 +272,6 @@ static void fsm_routine_ready(struct t7xx_fsm_ctl *ctl)
 
 	ctl->curr_state = FSM_STATE_READY;
 	t7xx_fsm_broadcast_ready_state(ctl);
-	t7xx_mode_update(md->t7xx_dev, T7XX_READY);
 	t7xx_md_event_notify(md, FSM_READY);
 }
 
@@ -335,9 +285,8 @@ static int fsm_routine_starting(struct t7xx_fsm_ctl *ctl)
 	t7xx_fsm_broadcast_state(ctl, MD_STATE_WAITING_FOR_HS1);
 	t7xx_md_event_notify(md, FSM_START);
 
-	wait_event_interruptible_timeout(ctl->async_hk_wq,
-					 (md->core_md.ready && md->core_ap.ready) ||
-					  ctl->exp_flg, HZ * 60);
+	wait_event_interruptible_timeout(ctl->async_hk_wq, md->core_md.ready || ctl->exp_flg,
+					 HZ * 60);
 	dev = &md->t7xx_dev->pdev->dev;
 
 	if (ctl->exp_flg)
@@ -347,13 +296,6 @@ static int fsm_routine_starting(struct t7xx_fsm_ctl *ctl)
 		dev_err(dev, "MD handshake timeout\n");
 		if (md->core_md.handshake_ongoing)
 			t7xx_fsm_append_event(ctl, FSM_EVENT_MD_HS2_EXIT, NULL, 0);
-
-		fsm_routine_exception(ctl, NULL, EXCEPTION_HS_TIMEOUT);
-		return -ETIMEDOUT;
-	} else if (!md->core_ap.ready) {
-		dev_err(dev, "AP handshake timeout\n");
-		if (md->core_ap.handshake_ongoing)
-			t7xx_fsm_append_event(ctl, FSM_EVENT_AP_HS2_EXIT, NULL, 0);
 
 		fsm_routine_exception(ctl, NULL, EXCEPTION_HS_TIMEOUT);
 		return -ETIMEDOUT;
@@ -367,8 +309,7 @@ static int fsm_routine_starting(struct t7xx_fsm_ctl *ctl)
 static void fsm_routine_start(struct t7xx_fsm_ctl *ctl, struct t7xx_fsm_command *cmd)
 {
 	struct t7xx_modem *md = ctl->md;
-	struct device *dev;
-	u32 status;
+	u32 dev_status;
 	int ret;
 
 	if (!md)
@@ -380,58 +321,22 @@ static void fsm_routine_start(struct t7xx_fsm_ctl *ctl, struct t7xx_fsm_command 
 		return;
 	}
 
-	dev = &md->t7xx_dev->pdev->dev;
 	ctl->curr_state = FSM_STATE_PRE_START;
 	t7xx_md_event_notify(md, FSM_PRE_START);
 
-	ret = wait_for_expected_dev_stage(status);
-
+	ret = read_poll_timeout(ioread32, dev_status,
+				(dev_status & MISC_STAGE_MASK) == LINUX_STAGE, 20000, 2000000,
+				false, IREG_BASE(md->t7xx_dev) + T7XX_PCIE_MISC_DEV_STATUS);
 	if (ret) {
-		dev_err(dev, "read poll timeout %d\n", ret);
-		goto finish_command;
+		struct device *dev = &md->t7xx_dev->pdev->dev;
+
+		fsm_finish_command(ctl, cmd, -ETIMEDOUT);
+		dev_err(dev, "Invalid device status 0x%lx\n", dev_status & MISC_STAGE_MASK);
+		return;
 	}
 
-	if (status != ctl->status || cmd->flag != 0) {
-		u32 stage = FIELD_GET(MISC_STAGE_MASK, status);
-
-		switch (stage) {
-		case T7XX_DEV_STAGE_INIT:
-		case T7XX_DEV_STAGE_BROM_PRE:
-		case T7XX_DEV_STAGE_BROM_POST:
-			dev_dbg(dev, "BROM_STAGE Entered\n");
-			ret = t7xx_fsm_append_cmd(ctl, FSM_CMD_START, 0);
-			break;
-
-		case T7XX_DEV_STAGE_LK:
-			dev_dbg(dev, "LK_STAGE Entered\n");
-			t7xx_port_proxy_set_cfg(md, PORT_CFG_ID_EARLY);
-			t7xx_lk_stage_event_handling(ctl, status);
-
-			break;
-
-		case T7XX_DEV_STAGE_LINUX:
-			dev_dbg(dev, "LINUX_STAGE Entered\n");
-			t7xx_mhccif_mask_clr(md->t7xx_dev, D2H_INT_PORT_ENUM |
-					     D2H_INT_ASYNC_MD_HK | D2H_INT_ASYNC_AP_HK);
-			if (cmd->flag == 0)
-				break;
-			t7xx_cldma_hif_hw_init(md->md_ctrl[CLDMA_ID_AP]);
-			t7xx_cldma_hif_hw_init(md->md_ctrl[CLDMA_ID_MD]);
-			t7xx_port_proxy_set_cfg(md, PORT_CFG_ID_NORMAL);
-			ret = fsm_routine_starting(ctl);
-			break;
-
-		default:
-			break;
-		}
-		ctl->status = status;
-	}
-
-finish_command:
-	if (ret)
-		t7xx_mode_update(md->t7xx_dev, T7XX_UNKNOWN);
-
-	fsm_finish_command(ctl, cmd, ret);
+	t7xx_cldma_hif_hw_init(md->md_ctrl[CLDMA_ID_MD]);
+	fsm_finish_command(ctl, cmd, fsm_routine_starting(ctl));
 }
 
 static int fsm_main_thread(void *data)
@@ -482,6 +387,7 @@ static int fsm_main_thread(void *data)
 
 int t7xx_fsm_append_cmd(struct t7xx_fsm_ctl *ctl, enum t7xx_fsm_cmd_state cmd_id, unsigned int flag)
 {
+	DECLARE_COMPLETION_ONSTACK(done);
 	struct t7xx_fsm_command *cmd;
 	unsigned long flags;
 	int ret;
@@ -493,13 +399,11 @@ int t7xx_fsm_append_cmd(struct t7xx_fsm_ctl *ctl, enum t7xx_fsm_cmd_state cmd_id
 	INIT_LIST_HEAD(&cmd->entry);
 	cmd->cmd_id = cmd_id;
 	cmd->flag = flag;
-	kref_init(&cmd->refcnt);
 	if (flag & FSM_CMD_FLAG_WAIT_FOR_COMPLETION) {
-		init_completion(&cmd->done);
-		kref_get(&cmd->refcnt);
+		cmd->done = &done;
+		cmd->ret = &ret;
 	}
 
-	kref_get(&cmd->refcnt);
 	spin_lock_irqsave(&ctl->command_lock, flags);
 	list_add_tail(&cmd->entry, &ctl->command_queue);
 	spin_unlock_irqrestore(&ctl->command_lock, flags);
@@ -509,11 +413,11 @@ int t7xx_fsm_append_cmd(struct t7xx_fsm_ctl *ctl, enum t7xx_fsm_cmd_state cmd_id
 	if (flag & FSM_CMD_FLAG_WAIT_FOR_COMPLETION) {
 		unsigned long wait_ret;
 
-		wait_ret = wait_for_completion_timeout(&cmd->done,
+		wait_ret = wait_for_completion_timeout(&done,
 						       msecs_to_jiffies(FSM_CMD_TIMEOUT_MS));
+		if (!wait_ret)
+			return -ETIMEDOUT;
 
-		ret = wait_ret ? cmd->result : -ETIMEDOUT;
-		kref_put(&cmd->refcnt, fsm_release_command);
 		return ret;
 	}
 
@@ -532,8 +436,7 @@ int t7xx_fsm_append_event(struct t7xx_fsm_ctl *ctl, enum t7xx_fsm_event_state ev
 		return -EINVAL;
 	}
 
-	event = kmalloc(struct_size(event, data, length),
-			in_interrupt() ? GFP_ATOMIC : GFP_KERNEL);
+	event = kmalloc(sizeof(*event) + length, in_interrupt() ? GFP_ATOMIC : GFP_KERNEL);
 	if (!event)
 		return -ENOMEM;
 
@@ -604,7 +507,6 @@ void t7xx_fsm_reset(struct t7xx_modem *md)
 	fsm_flush_event_cmd_qs(ctl);
 	ctl->curr_state = FSM_STATE_STOPPED;
 	ctl->exp_flg = false;
-	ctl->status = T7XX_DEV_STAGE_INIT;
 }
 
 int t7xx_fsm_init(struct t7xx_modem *md)

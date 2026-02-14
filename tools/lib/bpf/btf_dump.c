@@ -67,7 +67,6 @@ struct btf_dump_data {
 	bool compact;
 	bool skip_names;
 	bool emit_zeroes;
-	bool emit_strings;
 	__u8 indent_lvl;	/* base indent level */
 	char indent_str[BTF_DATA_INDENT_STR_LEN];
 	/* below are used during iteration */
@@ -226,9 +225,6 @@ static void btf_dump_free_names(struct hashmap *map)
 	size_t bkt;
 	struct hashmap_entry *cur;
 
-	if (!map)
-		return;
-
 	hashmap__for_each_entry(map, cur, bkt)
 		free((void *)cur->pkey);
 
@@ -308,7 +304,7 @@ int btf_dump__dump_type(struct btf_dump *d, __u32 id)
  * definition, in which case they have to be declared inline as part of field
  * type declaration; or as a top-level anonymous enum, typically used for
  * declaring global constants. It's impossible to distinguish between two
- * without knowing whether given enum type was referenced from other type:
+ * without knowning whether given enum type was referenced from other type:
  * top-level anonymous enum won't be referenced by anything, while embedded
  * one will.
  */
@@ -871,8 +867,8 @@ static void btf_dump_emit_bit_padding(const struct btf_dump *d,
 	} pads[] = {
 		{"long", d->ptr_sz * 8}, {"int", 32}, {"short", 16}, {"char", 8}
 	};
-	int new_off = 0, pad_bits = 0, bits, i;
-	const char *pad_type = NULL;
+	int new_off, pad_bits, bits, i;
+	const char *pad_type;
 
 	if (cur_off >= next_off)
 		return; /* no gap */
@@ -1308,7 +1304,7 @@ static void btf_dump_emit_type_decl(struct btf_dump *d, __u32 id,
 			 * chain, restore stack, emit warning, and try to
 			 * proceed nevertheless
 			 */
-			pr_warn("not enough memory for decl stack: %s\n", errstr(err));
+			pr_warn("not enough memory for decl stack:%d", err);
 			d->decl_stack_cnt = stack_start;
 			return;
 		}
@@ -1497,10 +1493,7 @@ static void btf_dump_emit_type_chain(struct btf_dump *d,
 		case BTF_KIND_TYPE_TAG:
 			btf_dump_emit_mods(d, decls);
 			name = btf_name_of(d, t->name_off);
-			if (btf_kflag(t))
-				btf_dump_printf(d, " __attribute__((%s))", name);
-			else
-				btf_dump_printf(d, " __attribute__((btf_type_tag(\"%s\")))", name);
+			btf_dump_printf(d, " __attribute__((btf_type_tag(\"%s\")))", name);
 			break;
 		case BTF_KIND_ARRAY: {
 			const struct btf_array *a = btf_array(t);
@@ -1566,12 +1559,10 @@ static void btf_dump_emit_type_chain(struct btf_dump *d,
 			 * Clang for BPF target generates func_proto with no
 			 * args as a func_proto with a single void arg (e.g.,
 			 * `int (*f)(void)` vs just `int (*f)()`). We are
-			 * going to emit valid empty args (void) syntax for
-			 * such case. Similarly and conveniently, valid
-			 * no args case can be special-cased here as well.
+			 * going to pretend there are no args for such case.
 			 */
-			if (vlen == 0 || (vlen == 1 && p->type == 0)) {
-				btf_dump_printf(d, "void)");
+			if (vlen == 1 && p->type == 0) {
+				btf_dump_printf(d, ")");
 				return;
 			}
 
@@ -1762,17 +1753,8 @@ static int btf_dump_get_bitfield_value(struct btf_dump *d,
 	__u16 left_shift_bits, right_shift_bits;
 	const __u8 *bytes = data;
 	__u8 nr_copy_bits;
-	__u8 start_bit, nr_bytes;
 	__u64 num = 0;
 	int i;
-
-	/* Calculate how many bytes cover the bitfield */
-	start_bit = bits_offset % 8;
-	nr_bytes = (start_bit + bit_sz + 7) / 8;
-
-	/* Bound check */
-	if (data + nr_bytes > d->typed_dump->data_end)
-		return -E2BIG;
 
 	/* Maximum supported bitfield size is 64 bits */
 	if (t->size > 8) {
@@ -1947,7 +1929,6 @@ static int btf_dump_int_data(struct btf_dump *d,
 			if (d->typed_dump->is_array_terminated)
 				break;
 			if (*(char *)data == '\0') {
-				btf_dump_type_values(d, "'\\0'");
 				d->typed_dump->is_array_terminated = true;
 				break;
 			}
@@ -2040,52 +2021,6 @@ static int btf_dump_var_data(struct btf_dump *d,
 	return btf_dump_dump_type_data(d, NULL, t, type_id, data, 0, 0);
 }
 
-static int btf_dump_string_data(struct btf_dump *d,
-				const struct btf_type *t,
-				__u32 id,
-				const void *data)
-{
-	const struct btf_array *array = btf_array(t);
-	const char *chars = data;
-	__u32 i;
-
-	/* Make sure it is a NUL-terminated string. */
-	for (i = 0; i < array->nelems; i++) {
-		if ((void *)(chars + i) >= d->typed_dump->data_end)
-			return -E2BIG;
-		if (chars[i] == '\0')
-			break;
-	}
-	if (i == array->nelems) {
-		/* The caller will print this as a regular array. */
-		return -EINVAL;
-	}
-
-	btf_dump_data_pfx(d);
-	btf_dump_printf(d, "\"");
-
-	for (i = 0; i < array->nelems; i++) {
-		char c = chars[i];
-
-		if (c == '\0') {
-			/*
-			 * When printing character arrays as strings, NUL bytes
-			 * are always treated as string terminators; they are
-			 * never printed.
-			 */
-			break;
-		}
-		if (isprint(c))
-			btf_dump_printf(d, "%c", c);
-		else
-			btf_dump_printf(d, "\\x%02x", (__u8)c);
-	}
-
-	btf_dump_printf(d, "\"");
-
-	return 0;
-}
-
 static int btf_dump_array_data(struct btf_dump *d,
 			       const struct btf_type *t,
 			       __u32 id,
@@ -2096,7 +2031,6 @@ static int btf_dump_array_data(struct btf_dump *d,
 	__u32 i, elem_type_id;
 	__s64 elem_size;
 	bool is_array_member;
-	bool is_array_terminated;
 
 	elem_type_id = array->type;
 	elem_type = skip_mods_and_typedefs(d->btf, elem_type_id, NULL);
@@ -2113,13 +2047,8 @@ static int btf_dump_array_data(struct btf_dump *d,
 		 * char arrays, so if size is 1 and element is
 		 * printable as a char, we'll do that.
 		 */
-		if (elem_size == 1) {
-			if (d->typed_dump->emit_strings &&
-			    btf_dump_string_data(d, t, id, data) == 0) {
-				return 0;
-			}
+		if (elem_size == 1)
 			d->typed_dump->is_array_char = true;
-		}
 	}
 
 	/* note that we increment depth before calling btf_dump_print() below;
@@ -2137,15 +2066,12 @@ static int btf_dump_array_data(struct btf_dump *d,
 	 */
 	is_array_member = d->typed_dump->is_array_member;
 	d->typed_dump->is_array_member = true;
-	is_array_terminated = d->typed_dump->is_array_terminated;
-	d->typed_dump->is_array_terminated = false;
 	for (i = 0; i < array->nelems; i++, data += elem_size) {
 		if (d->typed_dump->is_array_terminated)
 			break;
 		btf_dump_dump_type_data(d, NULL, elem_type, elem_type_id, data, 0, 0);
 	}
 	d->typed_dump->is_array_member = is_array_member;
-	d->typed_dump->is_array_terminated = is_array_terminated;
 	d->typed_dump->depth--;
 	btf_dump_data_pfx(d);
 	btf_dump_type_values(d, "]");
@@ -2324,25 +2250,9 @@ static int btf_dump_type_data_check_overflow(struct btf_dump *d,
 					     const struct btf_type *t,
 					     __u32 id,
 					     const void *data,
-					     __u8 bits_offset,
-					     __u8 bit_sz)
+					     __u8 bits_offset)
 {
-	__s64 size;
-
-	if (bit_sz) {
-		/* bits_offset is at most 7. bit_sz is at most 128. */
-		__u8 nr_bytes = (bits_offset + bit_sz + 7) / 8;
-
-		/* When bit_sz is non zero, it is called from
-		 * btf_dump_struct_data() where it only cares about
-		 * negative error value.
-		 * Return nr_bytes in success case to make it
-		 * consistent as the regular integer case below.
-		 */
-		return data + nr_bytes > d->typed_dump->data_end ? -E2BIG : nr_bytes;
-	}
-
-	size = btf__resolve_size(d->btf, id);
+	__s64 size = btf__resolve_size(d->btf, id);
 
 	if (size < 0 || size >= INT_MAX) {
 		pr_warn("unexpected size [%zu] for id [%u]\n",
@@ -2497,7 +2407,7 @@ static int btf_dump_dump_type_data(struct btf_dump *d,
 {
 	int size, err = 0;
 
-	size = btf_dump_type_data_check_overflow(d, t, id, data, bits_offset, bit_sz);
+	size = btf_dump_type_data_check_overflow(d, t, id, data, bits_offset);
 	if (size < 0)
 		return size;
 	err = btf_dump_type_data_check_zero(d, t, id, data, bits_offset, bit_sz);
@@ -2607,7 +2517,6 @@ int btf_dump__dump_type_data(struct btf_dump *d, __u32 id,
 	d->typed_dump->compact = OPTS_GET(opts, compact, false);
 	d->typed_dump->skip_names = OPTS_GET(opts, skip_names, false);
 	d->typed_dump->emit_zeroes = OPTS_GET(opts, emit_zeroes, false);
-	d->typed_dump->emit_strings = OPTS_GET(opts, emit_strings, false);
 
 	ret = btf_dump_dump_type_data(d, NULL, t, id, data, 0, 0);
 

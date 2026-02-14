@@ -3,7 +3,6 @@
  * Copyright (C) 2022 Loongson Technology Corporation Limited
  */
 #include <asm/unwind.h>
-#include <linux/export.h>
 
 unsigned long unwind_get_return_address(struct unwind_state *state)
 {

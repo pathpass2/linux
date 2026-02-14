@@ -221,8 +221,10 @@ static int ds4424_probe(struct i2c_client *client)
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&client->dev, "iio dev alloc failed.\n");
 		return -ENOMEM;
+	}
 
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
@@ -299,7 +301,7 @@ MODULE_DEVICE_TABLE(i2c, ds4424_id);
 static const struct of_device_id ds4424_of_match[] = {
 	{ .compatible = "maxim,ds4422" },
 	{ .compatible = "maxim,ds4424" },
-	{ }
+	{ },
 };
 
 MODULE_DEVICE_TABLE(of, ds4424_of_match);
@@ -310,7 +312,7 @@ static struct i2c_driver ds4424_driver = {
 		.of_match_table = ds4424_of_match,
 		.pm     = pm_sleep_ptr(&ds4424_pm_ops),
 	},
-	.probe		= ds4424_probe,
+	.probe_new	= ds4424_probe,
 	.remove		= ds4424_remove,
 	.id_table	= ds4424_id,
 };

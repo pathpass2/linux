@@ -23,7 +23,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
-#include <linux/unaligned.h>
+#include <asm/byteorder.h>
 #include <linux/types.h>
 
 #define KHAZAD_KEY_SIZE		16
@@ -757,12 +757,14 @@ static int khazad_setkey(struct crypto_tfm *tfm, const u8 *in_key,
 			 unsigned int key_len)
 {
 	struct khazad_ctx *ctx = crypto_tfm_ctx(tfm);
+	const __be32 *key = (const __be32 *)in_key;
 	int r;
 	const u64 *S = T7;
 	u64 K2, K1;
 
-	K2 = get_unaligned_be64(&in_key[0]);
-	K1 = get_unaligned_be64(&in_key[8]);
+	/* key is supposed to be 32-bit aligned */
+	K2 = ((u64)be32_to_cpu(key[0]) << 32) | be32_to_cpu(key[1]);
+	K1 = ((u64)be32_to_cpu(key[2]) << 32) | be32_to_cpu(key[3]);
 
 	/* setup the encrypt key */
 	for (r = 0; r <= KHAZAD_ROUNDS; r++) {
@@ -798,12 +800,14 @@ static int khazad_setkey(struct crypto_tfm *tfm, const u8 *in_key,
 }
 
 static void khazad_crypt(const u64 roundKey[KHAZAD_ROUNDS + 1],
-			 u8 *dst, const u8 *src)
+		u8 *ciphertext, const u8 *plaintext)
 {
+	const __be64 *src = (const __be64 *)plaintext;
+	__be64 *dst = (__be64 *)ciphertext;
 	int r;
 	u64 state;
 
-	state = get_unaligned_be64(src) ^ roundKey[0];
+	state = be64_to_cpu(*src) ^ roundKey[0];
 
 	for (r = 1; r < KHAZAD_ROUNDS; r++) {
 		state = T0[(int)(state >> 56)       ] ^
@@ -827,7 +831,7 @@ static void khazad_crypt(const u64 roundKey[KHAZAD_ROUNDS + 1],
 		(T7[(int)(state      ) & 0xff] & 0x00000000000000ffULL) ^
 		roundKey[KHAZAD_ROUNDS];
 
-	put_unaligned_be64(state, dst);
+	*dst = cpu_to_be64(state);
 }
 
 static void khazad_encrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
@@ -848,6 +852,7 @@ static struct crypto_alg khazad_alg = {
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	KHAZAD_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof (struct khazad_ctx),
+	.cra_alignmask		=	7,
 	.cra_module		=	THIS_MODULE,
 	.cra_u			=	{ .cipher = {
 	.cia_min_keysize	=	KHAZAD_KEY_SIZE,
@@ -859,7 +864,10 @@ static struct crypto_alg khazad_alg = {
 
 static int __init khazad_mod_init(void)
 {
-	return crypto_register_alg(&khazad_alg);
+	int ret = 0;
+	
+	ret = crypto_register_alg(&khazad_alg);
+	return ret;
 }
 
 static void __exit khazad_mod_fini(void)
@@ -868,7 +876,7 @@ static void __exit khazad_mod_fini(void)
 }
 
 
-module_init(khazad_mod_init);
+subsys_initcall(khazad_mod_init);
 module_exit(khazad_mod_fini);
 
 MODULE_LICENSE("GPL");

@@ -7,7 +7,6 @@
 #include "test_unpriv_bpf_disabled.skel.h"
 
 #include "cap_helpers.h"
-#include "bpf_util.h"
 
 /* Using CAP_LAST_CAP is risky here, since it can get pulled in from
  * an old /usr/include/linux/capability.h and be < CAP_BPF; as a result
@@ -147,7 +146,7 @@ static void test_unpriv_bpf_disabled_negative(struct test_unpriv_bpf_disabled *s
 		BPF_MOV64_IMM(BPF_REG_0, 0),
 		BPF_EXIT_INSN(),
 	};
-	const size_t prog_insn_cnt = ARRAY_SIZE(prog_insns);
+	const size_t prog_insn_cnt = sizeof(prog_insns) / sizeof(struct bpf_insn);
 	LIBBPF_OPTS(bpf_prog_load_opts, load_opts);
 	struct bpf_map_info map_info = {};
 	__u32 map_info_len = sizeof(map_info);
@@ -172,11 +171,7 @@ static void test_unpriv_bpf_disabled_negative(struct test_unpriv_bpf_disabled *s
 				prog_insns, prog_insn_cnt, &load_opts),
 		  -EPERM, "prog_load_fails");
 
-	/* some map types require particular correct parameters which could be
-	 * sanity-checked before enforcing -EPERM, so only validate that
-	 * the simple ARRAY and HASH maps are failing with -EPERM
-	 */
-	for (i = BPF_MAP_TYPE_HASH; i <= BPF_MAP_TYPE_ARRAY; i++)
+	for (i = BPF_MAP_TYPE_HASH; i <= BPF_MAP_TYPE_BLOOM_FILTER; i++)
 		ASSERT_EQ(bpf_map_create(i, NULL, sizeof(int), sizeof(int), 1, NULL),
 			  -EPERM, "map_create_fails");
 

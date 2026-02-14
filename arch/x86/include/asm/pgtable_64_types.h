@@ -4,7 +4,7 @@
 
 #include <asm/sparsemem.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <linux/types.h>
 #include <asm/kaslr.h>
 
@@ -21,6 +21,7 @@ typedef unsigned long	pgprotval_t;
 typedef struct { pteval_t pte; } pte_t;
 typedef struct { pmdval_t pmd; } pmd_t;
 
+#ifdef CONFIG_X86_5LEVEL
 extern unsigned int __pgtable_l5_enabled;
 
 #ifdef USE_EARLY_PGTABLE_L5
@@ -36,13 +37,18 @@ static inline bool pgtable_l5_enabled(void)
 #define pgtable_l5_enabled() cpu_feature_enabled(X86_FEATURE_LA57)
 #endif /* USE_EARLY_PGTABLE_L5 */
 
-#define ARCH_PAGE_TABLE_SYNC_MASK \
-	(pgtable_l5_enabled() ? PGTBL_PGD_MODIFIED : PGTBL_P4D_MODIFIED)
+#else
+#define pgtable_l5_enabled() 0
+#endif /* CONFIG_X86_5LEVEL */
 
 extern unsigned int pgdir_shift;
 extern unsigned int ptrs_per_p4d;
 
-#endif	/* !__ASSEMBLER__ */
+#endif	/* !__ASSEMBLY__ */
+
+#define SHARED_KERNEL_PMD	0
+
+#ifdef CONFIG_X86_5LEVEL
 
 /*
  * PGDIR_SHIFT determines what a top-level page table entry can map
@@ -60,6 +66,17 @@ extern unsigned int ptrs_per_p4d;
 #define P4D_MASK		(~(P4D_SIZE - 1))
 
 #define MAX_POSSIBLE_PHYSMEM_BITS	52
+
+#else /* CONFIG_X86_5LEVEL */
+
+/*
+ * PGDIR_SHIFT determines what a top-level page table entry can map
+ */
+#define PGDIR_SHIFT		39
+#define PTRS_PER_PGD		512
+#define MAX_PTRS_PER_P4D	1
+
+#endif /* CONFIG_X86_5LEVEL */
 
 /*
  * 3rd level page
@@ -87,7 +104,7 @@ extern unsigned int ptrs_per_p4d;
 #define PGDIR_MASK	(~(PGDIR_SIZE - 1))
 
 /*
- * See Documentation/arch/x86/x86_64/mm.rst for a description of the memory map.
+ * See Documentation/x86/x86_64/mm.rst for a description of the memory map.
  *
  * Be very careful vs. KASLR when changing anything here. The KASLR address
  * range must not overlap with anything except the KASAN shadow area, which
@@ -113,13 +130,15 @@ extern unsigned int ptrs_per_p4d;
 #define __VMEMMAP_BASE_L4	0xffffea0000000000UL
 #define __VMEMMAP_BASE_L5	0xffd4000000000000UL
 
+#ifdef CONFIG_DYNAMIC_MEMORY_LAYOUT
 # define VMALLOC_START		vmalloc_base
 # define VMALLOC_SIZE_TB	(pgtable_l5_enabled() ? VMALLOC_SIZE_TB_L5 : VMALLOC_SIZE_TB_L4)
 # define VMEMMAP_START		vmemmap_base
-
-#ifdef CONFIG_RANDOMIZE_MEMORY
-# define DIRECT_MAP_PHYSMEM_END	direct_map_physmem_end
-#endif
+#else
+# define VMALLOC_START		__VMALLOC_BASE_L4
+# define VMALLOC_SIZE_TB	VMALLOC_SIZE_TB_L4
+# define VMEMMAP_START		__VMEMMAP_BASE_L4
+#endif /* CONFIG_DYNAMIC_MEMORY_LAYOUT */
 
 /*
  * End of the region for which vmalloc page tables are pre-allocated.

@@ -13,7 +13,6 @@
 #include <linux/sched.h>
 #include <linux/ctype.h>
 #include <linux/err.h>
-#include <linux/hex.h>
 #include <linux/seq_file.h>
 #include <linux/uidgid.h>
 #include <keys/asymmetric-type.h>

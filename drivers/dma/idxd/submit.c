@@ -61,7 +61,6 @@ struct idxd_desc *idxd_alloc_desc(struct idxd_wq *wq, enum idxd_op_type optype)
 
 	return __get_desc(wq, idx, cpu);
 }
-EXPORT_SYMBOL_NS_GPL(idxd_alloc_desc, "IDXD");
 
 void idxd_free_desc(struct idxd_wq *wq, struct idxd_desc *desc)
 {
@@ -70,7 +69,6 @@ void idxd_free_desc(struct idxd_wq *wq, struct idxd_desc *desc)
 	desc->cpu = -1;
 	sbitmap_queue_clear(&wq->sbq, desc->id, cpu);
 }
-EXPORT_SYMBOL_NS_GPL(idxd_free_desc, "IDXD");
 
 static struct idxd_desc *list_abort_desc(struct idxd_wq *wq, struct idxd_irq_entry *ie,
 					 struct idxd_desc *desc)
@@ -127,19 +125,17 @@ static void llist_abort_desc(struct idxd_wq *wq, struct idxd_irq_entry *ie,
 	spin_unlock(&ie->list_lock);
 
 	if (found)
-		idxd_dma_complete_txd(found, IDXD_COMPLETE_ABORT, false,
-				      NULL, NULL);
+		idxd_dma_complete_txd(found, IDXD_COMPLETE_ABORT, false);
 
 	/*
 	 * completing the descriptor will return desc to allocator and
 	 * the desc can be acquired by a different process and the
 	 * desc->list can be modified.  Delete desc from list so the
-	 * list traversing does not get corrupted by the other process.
+	 * list trasversing does not get corrupted by the other process.
 	 */
 	list_for_each_entry_safe(d, t, &flist, list) {
 		list_del_init(&d->list);
-		idxd_dma_complete_txd(found, IDXD_COMPLETE_ABORT, true,
-				      NULL, NULL);
+		idxd_dma_complete_txd(found, IDXD_COMPLETE_ABORT, true);
 	}
 }
 
@@ -187,6 +183,13 @@ int idxd_submit_desc(struct idxd_wq *wq, struct idxd_desc *desc)
 	portal = idxd_wq_portal_addr(wq);
 
 	/*
+	 * The wmb() flushes writes to coherent DMA data before
+	 * possibly triggering a DMA read. The wmb() is necessary
+	 * even on UP because the recipient is a device.
+	 */
+	wmb();
+
+	/*
 	 * Pending the descriptor to the lockless list for the irq_entry
 	 * that we designated the descriptor to.
 	 */
@@ -195,13 +198,6 @@ int idxd_submit_desc(struct idxd_wq *wq, struct idxd_desc *desc)
 		desc->hw->int_handle = ie->int_handle;
 		llist_add(&desc->llnode, &ie->pending_llist);
 	}
-
-	/*
-	 * The wmb() flushes writes to coherent DMA data before
-	 * possibly triggering a DMA read. The wmb() is necessary
-	 * even on UP because the recipient is a device.
-	 */
-	wmb();
 
 	if (wq_dedicated(wq)) {
 		iosubmit_cmds512(portal, desc->hw, 1);
@@ -219,4 +215,3 @@ int idxd_submit_desc(struct idxd_wq *wq, struct idxd_desc *desc)
 	percpu_ref_put(&wq->wq_active);
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(idxd_submit_desc, "IDXD");

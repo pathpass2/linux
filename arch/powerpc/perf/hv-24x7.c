@@ -425,6 +425,16 @@ static char *memdup_to_str(char *maybe_str, int max_len, gfp_t gfp)
 	return kasprintf(gfp, "%.*s", max_len, maybe_str);
 }
 
+static ssize_t device_show_string(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct dev_ext_attribute *d;
+
+	d = container_of(attr, struct dev_ext_attribute, attr);
+
+	return sprintf(buf, "%s\n", (char *)d->var);
+}
+
 static ssize_t cpumask_show(struct device *dev,
 			    struct device_attribute *attr, char *buf)
 {
@@ -713,12 +723,12 @@ static ssize_t catalog_event_len_validate(struct hv_24x7_event_data *event,
 	ev_len = be16_to_cpu(event->length);
 
 	if (ev_len % 16)
-		pr_info("event %zu has length %zu not divisible by 16: event=%p\n",
+		pr_info("event %zu has length %zu not divisible by 16: event=%pK\n",
 				event_idx, ev_len, event);
 
 	ev_end = (__u8 *)event + ev_len;
 	if (ev_end > end) {
-		pr_warn("event %zu has .length=%zu, ends after buffer end: ev_end=%p > end=%p, offset=%zu\n",
+		pr_warn("event %zu has .length=%zu, ends after buffer end: ev_end=%pK > end=%pK, offset=%zu\n",
 				event_idx, ev_len, ev_end, end,
 				offset);
 		return -1;
@@ -726,14 +736,14 @@ static ssize_t catalog_event_len_validate(struct hv_24x7_event_data *event,
 
 	calc_ev_end = event_end(event, end);
 	if (!calc_ev_end) {
-		pr_warn("event %zu has a calculated length which exceeds buffer length %zu: event=%p end=%p, offset=%zu\n",
+		pr_warn("event %zu has a calculated length which exceeds buffer length %zu: event=%pK end=%pK, offset=%zu\n",
 			event_idx, event_data_bytes, event, end,
 			offset);
 		return -1;
 	}
 
 	if (calc_ev_end > ev_end) {
-		pr_warn("event %zu exceeds its own length: event=%p, end=%p, offset=%zu, calc_ev_end=%p\n",
+		pr_warn("event %zu exceeds its own length: event=%pK, end=%pK, offset=%zu, calc_ev_end=%pK\n",
 			event_idx, event, ev_end, offset, calc_ev_end);
 		return -1;
 	}
@@ -998,7 +1008,7 @@ e_out:
 }
 
 static ssize_t catalog_read(struct file *filp, struct kobject *kobj,
-			    const struct bin_attribute *bin_attr, char *buf,
+			    struct bin_attribute *bin_attr, char *buf,
 			    loff_t offset, size_t count)
 {
 	long hret;
@@ -1108,14 +1118,14 @@ PAGE_0_ATTR(catalog_version, "%lld\n",
 		(unsigned long long)be64_to_cpu(page_0->version));
 PAGE_0_ATTR(catalog_len, "%lld\n",
 		(unsigned long long)be32_to_cpu(page_0->length) * 4096);
-static const BIN_ATTR_RO(catalog, 0/* real length varies */);
+static BIN_ATTR_RO(catalog, 0/* real length varies */);
 static DEVICE_ATTR_RO(domains);
 static DEVICE_ATTR_RO(sockets);
 static DEVICE_ATTR_RO(chipspersocket);
 static DEVICE_ATTR_RO(coresperchip);
 static DEVICE_ATTR_RO(cpumask);
 
-static const struct bin_attribute *const if_bin_attrs[] = {
+static struct bin_attribute *if_bin_attrs[] = {
 	&bin_attr_catalog,
 	NULL,
 };
@@ -1328,7 +1338,7 @@ static int get_count_from_result(struct perf_event *event,
 	for (i = count = 0, element_data = res->elements + data_offset;
 	     i < num_elements;
 	     i++, element_data += data_size + data_offset)
-		count += be64_to_cpu(*((__be64 *)element_data));
+		count += be64_to_cpu(*((u64 *) element_data));
 
 	*countp = count;
 
@@ -1408,7 +1418,7 @@ static int h_24x7_event_init(struct perf_event *event)
 	}
 
 	domain = event_get_domain(event);
-	if (domain  == 0 || domain >= HV_PERF_DOMAIN_MAX) {
+	if (domain >= HV_PERF_DOMAIN_MAX) {
 		pr_devel("invalid domain %d\n", domain);
 		return -EINVAL;
 	}

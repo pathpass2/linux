@@ -6,4 +6,8 @@
 
 obj-$(CONFIG_IGBVF) += igbvf.o
 
-igbvf-y := vf.o mbx.o ethtool.o netdev.o
+igbvf-objs := vf.o \
+              mbx.o \
+              ethtool.o \
+              netdev.o
+

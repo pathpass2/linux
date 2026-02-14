@@ -21,14 +21,8 @@ static int lan966x_tc_setup_qdisc_mqprio(struct lan966x_port *port,
 static int lan966x_tc_setup_qdisc_taprio(struct lan966x_port *port,
 					 struct tc_taprio_qopt_offload *taprio)
 {
-	switch (taprio->cmd) {
-	case TAPRIO_CMD_REPLACE:
-		return lan966x_taprio_add(port, taprio);
-	case TAPRIO_CMD_DESTROY:
-		return lan966x_taprio_del(port);
-	default:
-		return -EOPNOTSUPP;
-	}
+	return taprio->enable ? lan966x_taprio_add(port, taprio) :
+				lan966x_taprio_del(port);
 }
 
 static int lan966x_tc_setup_qdisc_tbf(struct lan966x_port *port,

@@ -16,7 +16,6 @@
 
 / {
 	model = "Bananapi BPI-R3";
-	chassis-type = "embedded";
 	compatible = "bananapi,bpi-r3", "mediatek,mt7986a";
 
 	aliases {
@@ -38,15 +37,6 @@
 		regulator-always-on;
 	};
 
-	fan: pwm-fan {
-		compatible = "pwm-fan";
-		#cooling-cells = <2>;
-		/* cooling level (0, 1, 2) - pwm inverted */
-		cooling-levels = <255 40 0>;
-		pwms = <&pwm 0 10000>;
-		status = "okay";
-	};
-
 	gpio-keys {
 		compatible = "gpio-keys";
 
@@ -64,19 +54,23 @@
 	};
 
 	/* i2c of the left SFP cage (wan) */
-	i2c_sfp1: i2c-0 {
+	i2c_sfp1: i2c-gpio-0 {
 		compatible = "i2c-gpio";
 		sda-gpios = <&pio 16 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 		scl-gpios = <&pio 17 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 	};
 
 	/* i2c of the right SFP cage (lan) */
-	i2c_sfp2: i2c-1 {
+	i2c_sfp2: i2c-gpio-1 {
 		compatible = "i2c-gpio";
 		sda-gpios = <&pio 18 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 		scl-gpios = <&pio 19 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 		i2c-gpio,delay-us = <2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 	};
 
 	leds {
@@ -122,7 +116,6 @@
 		compatible = "sff,sfp";
 		i2c-bus = <&i2c_sfp1>;
 		los-gpios = <&pio 46 GPIO_ACTIVE_HIGH>;
-		maximum-power-milliwatt = <3000>;
 		mod-def0-gpios = <&pio 49 GPIO_ACTIVE_LOW>;
 		tx-disable-gpios = <&pio 20 GPIO_ACTIVE_HIGH>;
 		tx-fault-gpios = <&pio 7 GPIO_ACTIVE_HIGH>;
@@ -134,31 +127,8 @@
 		i2c-bus = <&i2c_sfp2>;
 		los-gpios = <&pio 31 GPIO_ACTIVE_HIGH>;
 		mod-def0-gpios = <&pio 47 GPIO_ACTIVE_LOW>;
-		maximum-power-milliwatt = <3000>;
 		tx-disable-gpios = <&pio 15 GPIO_ACTIVE_HIGH>;
 		tx-fault-gpios = <&pio 48 GPIO_ACTIVE_HIGH>;
-	};
-};
-
-&cpu_thermal {
-	cooling-maps {
-		map-cpu-active-high {
-			/* active: set fan to cooling level 2 */
-			cooling-device = <&fan 2 2>;
-			trip = <&cpu_trip_active_high>;
-		};
-
-		map-cpu-active-med {
-			/* active: set fan to cooling level 1 */
-			cooling-device = <&fan 1 1>;
-			trip = <&cpu_trip_active_med>;
-		};
-
-		map-cpu-active-low {
-			/* active: set fan to cooling level 0 */
-			cooling-device = <&fan 0 0>;
-			trip = <&cpu_trip_active_low>;
-		};
 	};
 };
 
@@ -200,9 +170,9 @@
 		compatible = "mediatek,mt7531";
 		reg = <31>;
 		interrupt-controller;
+		#interrupt-cells = <1>;
 		interrupt-parent = <&pio>;
 		interrupts = <66 IRQ_TYPE_LEVEL_HIGH>;
-		#interrupt-cells = <1>;
 		reset-gpios = <&pio 5 GPIO_ACTIVE_HIGH>;
 	};
 };
@@ -304,13 +274,6 @@
 		};
 	};
 
-	pwm_pins: pwm-pins {
-		mux {
-			function = "pwm";
-			groups = "pwm0", "pwm1_0";
-		};
-	};
-
 	spi_flash_pins: spi-flash-pins {
 		mux {
 			function = "spi";
@@ -379,12 +342,6 @@
 			groups = "wifi_led";
 		};
 	};
-};
-
-&pwm {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pwm_pins>;
-	status = "okay";
 };
 
 &spi0 {
@@ -489,9 +446,5 @@
 	pinctrl-names = "default", "dbdc";
 	pinctrl-0 = <&wf_2g_5g_pins>, <&wf_led_pins>;
 	pinctrl-1 = <&wf_dbdc_pins>, <&wf_led_pins>;
-
-	led {
-		led-active-low;
-	};
 };
 

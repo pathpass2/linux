@@ -7,9 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Freescale Low Power SPI (LPSPI) for i.MX
 
 maintainers:
-  - Shawn Guo <shawnguo@kernel.org>
-  - Sascha Hauer <s.hauer@pengutronix.de>
-  - Fabio Estevam <festevam@gmail.com>
+  - Anson Huang <Anson.Huang@nxp.com>
 
 allOf:
   - $ref: /schemas/spi/spi-controller.yaml#
@@ -20,18 +18,11 @@ properties:
       - enum:
           - fsl,imx7ulp-spi
           - fsl,imx8qxp-spi
-          - nxp,s32g2-lpspi
       - items:
           - enum:
               - fsl,imx8ulp-spi
               - fsl,imx93-spi
-              - fsl,imx94-spi
-              - fsl,imx95-spi
           - const: fsl,imx7ulp-spi
-      - items:
-          - const: nxp,s32g3-lpspi
-          - const: nxp,s32g2-lpspi
-
   reg:
     maxItems: 1
 
@@ -71,9 +62,6 @@ properties:
     minimum: 1
     maximum: 2
     default: 1
-
-  power-domains:
-    maxItems: 1
 
 required:
   - compatible

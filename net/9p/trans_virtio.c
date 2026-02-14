@@ -26,7 +26,7 @@
 #include <linux/highmem.h>
 #include <linux/slab.h>
 #include <net/9p/9p.h>
-#include <linux/fs_context.h>
+#include <linux/parser.h>
 #include <net/9p/client.h>
 #include <net/9p/transport.h>
 #include <linux/scatterlist.h>
@@ -384,7 +384,7 @@ static void handle_rerror(struct p9_req_t *req, int in_hdr_len,
 	void *to = req->rc.sdata + in_hdr_len;
 
 	// Fits entirely into the static data?  Nothing to do.
-	if (req->rc.size < in_hdr_len || !pages)
+	if (req->rc.size < in_hdr_len)
 		return;
 
 	// Really long error message?  Tough, truncate the reply.  Might get
@@ -428,7 +428,7 @@ p9_virtio_zc_request(struct p9_client *client, struct p9_req_t *req,
 	struct page **in_pages = NULL, **out_pages = NULL;
 	struct virtio_chan *chan = client->trans;
 	struct scatterlist *sgs[4];
-	size_t offs = 0;
+	size_t offs;
 	int need_drop = 0;
 	int kicked = 0;
 
@@ -501,8 +501,8 @@ req_retry_pinned:
 
 	if (in_pages) {
 		sgs[out_sgs + in_sgs++] = chan->sg + out + in;
-		pack_sg_list_p(chan->sg, out + in, VIRTQUEUE_NUM,
-			       in_pages, in_nr_pages, offs, inlen);
+		in += pack_sg_list_p(chan->sg, out + in, VIRTQUEUE_NUM,
+				     in_pages, in_nr_pages, offs, inlen);
 	}
 
 	BUG_ON(out_sgs + in_sgs > ARRAY_SIZE(sgs));
@@ -679,7 +679,8 @@ fail:
 /**
  * p9_virtio_create - allocate a new virtio channel
  * @client: client instance invoking this transport
- * @fc: the filesystem context
+ * @devname: string identifying the channel to connect to (unused)
+ * @args: args passed from sys_mount() for per-transport options (unused)
  *
  * This sets up a transport channel for 9p communication.  Right now
  * we only match the first available channel, but eventually we could look up
@@ -690,9 +691,8 @@ fail:
  */
 
 static int
-p9_virtio_create(struct p9_client *client, struct fs_context *fc)
+p9_virtio_create(struct p9_client *client, const char *devname, char *args)
 {
-	const char *devname = fc->source;
 	struct virtio_chan *chan;
 	int ret = -ENOENT;
 	int found = 0;
@@ -781,6 +781,7 @@ static struct virtio_driver p9_virtio_drv = {
 	.feature_table  = features,
 	.feature_table_size = ARRAY_SIZE(features),
 	.driver.name    = KBUILD_MODNAME,
+	.driver.owner	= THIS_MODULE,
 	.id_table	= id_table,
 	.probe		= p9_virtio_probe,
 	.remove		= p9_virtio_remove,
@@ -802,8 +803,7 @@ static struct p9_trans_module p9_virtio_trans = {
 	 */
 	.maxsize = PAGE_SIZE * (VIRTQUEUE_NUM - 3),
 	.pooled_rbuffers = false,
-	.def = true,
-	.supports_vmalloc = false,
+	.def = 1,
 	.owner = THIS_MODULE,
 };
 

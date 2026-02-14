@@ -2,7 +2,7 @@
 /*
  * vp27smpx - driver version 0.0.1
  *
- * Copyright (C) 2007 Hans Verkuil <hverkuil@kernel.org>
+ * Copyright (C) 2007 Hans Verkuil <hverkuil@xs4all.nl>
  *
  * Based on a tvaudio patch from Takahiro Adachi <tadachi@tadachi-net.com>
  * and Kazuhiko Kawakami <kazz-0@mail.goo.ne.jp>
@@ -172,7 +172,7 @@ static void vp27smpx_remove(struct i2c_client *client)
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id vp27smpx_id[] = {
-	{ "vp27smpx" },
+	{ "vp27smpx", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, vp27smpx_id);
@@ -181,7 +181,7 @@ static struct i2c_driver vp27smpx_driver = {
 	.driver = {
 		.name	= "vp27smpx",
 	},
-	.probe		= vp27smpx_probe,
+	.probe_new	= vp27smpx_probe,
 	.remove		= vp27smpx_remove,
 	.id_table	= vp27smpx_id,
 };

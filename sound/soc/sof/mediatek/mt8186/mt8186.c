@@ -12,6 +12,7 @@
 #include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/io.h>
+#include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
@@ -21,8 +22,8 @@
 #include <sound/sof/xtensa.h>
 #include "../../ops.h"
 #include "../../sof-of-dev.h"
+#include "../../sof-audio.h"
 #include "../adsp_helper.h"
-#include "../mtk-adsp-common.h"
 #include "mt8186.h"
 #include "mt8186-clk.h"
 
@@ -36,18 +37,112 @@ static int mt8186_get_window_offset(struct snd_sof_dev *sdev, u32 id)
 	return MBOX_OFFSET;
 }
 
-static const struct mtk_adsp_ipc_ops dsp_ops = {
-	.handle_reply		= mtk_adsp_handle_reply,
-	.handle_request		= mtk_adsp_handle_request,
+static int mt8186_send_msg(struct snd_sof_dev *sdev,
+			   struct snd_sof_ipc_msg *msg)
+{
+	struct adsp_priv *priv = sdev->pdata->hw_pdata;
+
+	sof_mailbox_write(sdev, sdev->host_box.offset, msg->msg_data,
+			  msg->msg_size);
+
+	return mtk_adsp_ipc_send(priv->dsp_ipc, MTK_ADSP_IPC_REQ, MTK_ADSP_IPC_OP_REQ);
+}
+
+static void mt8186_get_reply(struct snd_sof_dev *sdev)
+{
+	struct snd_sof_ipc_msg *msg = sdev->msg;
+	struct sof_ipc_reply reply;
+	int ret = 0;
+
+	if (!msg) {
+		dev_warn(sdev->dev, "unexpected ipc interrupt\n");
+		return;
+	}
+
+	/* get reply */
+	sof_mailbox_read(sdev, sdev->host_box.offset, &reply, sizeof(reply));
+	if (reply.error < 0) {
+		memcpy(msg->reply_data, &reply, sizeof(reply));
+		ret = reply.error;
+	} else {
+		/* reply has correct size? */
+		if (reply.hdr.size != msg->reply_size) {
+			dev_err(sdev->dev, "error: reply expected %zu got %u bytes\n",
+				msg->reply_size, reply.hdr.size);
+			ret = -EINVAL;
+		}
+
+		/* read the message */
+		if (msg->reply_size > 0)
+			sof_mailbox_read(sdev, sdev->host_box.offset,
+					 msg->reply_data, msg->reply_size);
+	}
+
+	msg->reply_error = ret;
+}
+
+static void mt8186_dsp_handle_reply(struct mtk_adsp_ipc *ipc)
+{
+	struct adsp_priv *priv = mtk_adsp_ipc_get_data(ipc);
+	unsigned long flags;
+
+	spin_lock_irqsave(&priv->sdev->ipc_lock, flags);
+	mt8186_get_reply(priv->sdev);
+	snd_sof_ipc_reply(priv->sdev, 0);
+	spin_unlock_irqrestore(&priv->sdev->ipc_lock, flags);
+}
+
+static void mt8186_dsp_handle_request(struct mtk_adsp_ipc *ipc)
+{
+	struct adsp_priv *priv = mtk_adsp_ipc_get_data(ipc);
+	u32 p; /* panic code */
+	int ret;
+
+	/* Read the message from the debug box. */
+	sof_mailbox_read(priv->sdev, priv->sdev->debug_box.offset + 4,
+			 &p, sizeof(p));
+
+	/* Check to see if the message is a panic code 0x0dead*** */
+	if ((p & SOF_IPC_PANIC_MAGIC_MASK) == SOF_IPC_PANIC_MAGIC) {
+		snd_sof_dsp_panic(priv->sdev, p, true);
+	} else {
+		snd_sof_ipc_msgs_rx(priv->sdev);
+
+		/* tell DSP cmd is done */
+		ret = mtk_adsp_ipc_send(priv->dsp_ipc, MTK_ADSP_IPC_RSP, MTK_ADSP_IPC_OP_RSP);
+		if (ret)
+			dev_err(priv->dev, "request send ipc failed");
+	}
+}
+
+static struct mtk_adsp_ipc_ops dsp_ops = {
+	.handle_reply		= mt8186_dsp_handle_reply,
+	.handle_request		= mt8186_dsp_handle_request,
 };
 
 static int platform_parse_resource(struct platform_device *pdev, void *data)
 {
 	struct resource *mmio;
 	struct resource res;
+	struct device_node *mem_region;
 	struct device *dev = &pdev->dev;
 	struct mtk_adsp_chip_info *adsp = data;
 	int ret;
+
+	mem_region = of_parse_phandle(dev->of_node, "memory-region", 0);
+	if (!mem_region) {
+		dev_err(dev, "no dma memory-region phandle\n");
+		return -ENODEV;
+	}
+
+	ret = of_address_to_resource(mem_region, 0, &res);
+	of_node_put(mem_region);
+	if (ret) {
+		dev_err(dev, "of_address_to_resource dma failed\n");
+		return ret;
+	}
+
+	dev_dbg(dev, "DMA %pR\n", &res);
 
 	ret = of_reserved_mem_device_init(dev);
 	if (ret) {
@@ -55,7 +150,14 @@ static int platform_parse_resource(struct platform_device *pdev, void *data)
 		return ret;
 	}
 
-	ret = of_reserved_mem_region_to_resource(dev->of_node, 1, &res);
+	mem_region = of_parse_phandle(dev->of_node, "memory-region", 1);
+	if (!mem_region) {
+		dev_err(dev, "no memory-region sysmem phandle\n");
+		return -ENODEV;
+	}
+
+	ret = of_address_to_resource(mem_region, 0, &res);
+	of_node_put(mem_region);
 	if (ret) {
 		dev_err(dev, "of_address_to_resource sysmem failed\n");
 		return ret;
@@ -171,6 +273,31 @@ static int adsp_memory_remap_init(struct snd_sof_dev *sdev, struct mtk_adsp_chip
 	return 0;
 }
 
+static int adsp_shared_base_ioremap(struct platform_device *pdev, void *data)
+{
+	struct device *dev = &pdev->dev;
+	struct mtk_adsp_chip_info *adsp = data;
+	u32 shared_size;
+
+	/* remap shared-dram base to be non-cachable */
+	shared_size = TOTAL_SIZE_SHARED_DRAM_FROM_TAIL;
+	adsp->pa_shared_dram = adsp->pa_dram + adsp->dramsize - shared_size;
+	if (adsp->va_dram) {
+		adsp->shared_dram = adsp->va_dram + DSP_DRAM_SIZE - shared_size;
+	} else {
+		adsp->shared_dram = devm_ioremap(dev, adsp->pa_shared_dram,
+						 shared_size);
+		if (!adsp->shared_dram) {
+			dev_err(dev, "ioremap failed for shared DRAM\n");
+			return -ENOMEM;
+		}
+	}
+	dev_dbg(dev, "shared-dram vbase=%p, phy addr :%pa, size=%#x\n",
+		adsp->shared_dram, &adsp->pa_shared_dram, shared_size);
+
+	return 0;
+}
+
 static int mt8186_run(struct snd_sof_dev *sdev)
 {
 	u32 adsp_bootup_addr;
@@ -184,7 +311,7 @@ static int mt8186_run(struct snd_sof_dev *sdev)
 
 static int mt8186_dsp_probe(struct snd_sof_dev *sdev)
 {
-	struct platform_device *pdev = to_platform_device(sdev->dev);
+	struct platform_device *pdev = container_of(sdev->dev, struct platform_device, dev);
 	struct adsp_priv *priv;
 	int ret;
 
@@ -213,12 +340,9 @@ static int mt8186_dsp_probe(struct snd_sof_dev *sdev)
 		return -ENOMEM;
 	}
 
-	priv->adsp->va_sram = sdev->bar[SOF_FW_BLK_TYPE_IRAM];
-
-	sdev->bar[SOF_FW_BLK_TYPE_SRAM] = devm_ioremap(sdev->dev,
-						       priv->adsp->pa_dram,
-						       priv->adsp->dramsize);
-
+	sdev->bar[SOF_FW_BLK_TYPE_SRAM] = devm_ioremap_wc(sdev->dev,
+							  priv->adsp->pa_dram,
+							  priv->adsp->dramsize);
 	if (!sdev->bar[SOF_FW_BLK_TYPE_SRAM]) {
 		dev_err(sdev->dev, "failed to ioremap base %pa size %#x\n",
 			&priv->adsp->pa_dram, priv->adsp->dramsize);
@@ -226,6 +350,12 @@ static int mt8186_dsp_probe(struct snd_sof_dev *sdev)
 	}
 
 	priv->adsp->va_dram = sdev->bar[SOF_FW_BLK_TYPE_SRAM];
+
+	ret = adsp_shared_base_ioremap(pdev, priv->adsp);
+	if (ret) {
+		dev_err(sdev->dev, "adsp_shared_base_ioremap fail!\n");
+		return ret;
+	}
 
 	sdev->bar[DSP_REG_BAR] = priv->adsp->va_cfgreg;
 	sdev->bar[DSP_SECREG_BAR] = priv->adsp->va_secreg;
@@ -288,7 +418,7 @@ err_adsp_off:
 	return ret;
 }
 
-static void mt8186_dsp_remove(struct snd_sof_dev *sdev)
+static int mt8186_dsp_remove(struct snd_sof_dev *sdev)
 {
 	struct adsp_priv *priv = sdev->pdata->hw_pdata;
 
@@ -296,6 +426,8 @@ static void mt8186_dsp_remove(struct snd_sof_dev *sdev)
 	mt8186_sof_hifixdsp_shutdown(sdev);
 	adsp_sram_power_off(sdev);
 	mt8186_adsp_clock_off(sdev);
+
+	return 0;
 }
 
 static int mt8186_dsp_shutdown(struct snd_sof_dev *sdev)
@@ -327,24 +459,52 @@ static int mt8186_dsp_resume(struct snd_sof_dev *sdev)
 	return ret;
 }
 
-static void mt8186_adsp_dump(struct snd_sof_dev *sdev, u32 flags)
+/* on mt8186 there is 1 to 1 match between type and BAR idx */
+static int mt8186_get_bar_index(struct snd_sof_dev *sdev, u32 type)
 {
-	u32 dbg_pc, dbg_data, dbg_inst, dbg_ls0stat, dbg_status, faultinfo;
+	return type;
+}
 
-	/* dump debug registers */
-	dbg_pc = snd_sof_dsp_read(sdev, DSP_REG_BAR, DSP_PDEBUGPC);
-	dbg_data = snd_sof_dsp_read(sdev, DSP_REG_BAR, DSP_PDEBUGDATA);
-	dbg_inst = snd_sof_dsp_read(sdev, DSP_REG_BAR, DSP_PDEBUGINST);
-	dbg_ls0stat = snd_sof_dsp_read(sdev, DSP_REG_BAR, DSP_PDEBUGLS0STAT);
-	dbg_status = snd_sof_dsp_read(sdev, DSP_REG_BAR, DSP_PDEBUGSTATUS);
-	faultinfo = snd_sof_dsp_read(sdev, DSP_REG_BAR, DSP_PFAULTINFO);
+static int mt8186_pcm_hw_params(struct snd_sof_dev *sdev,
+				struct snd_pcm_substream *substream,
+				struct snd_pcm_hw_params *params,
+				struct snd_sof_platform_stream_params *platform_params)
+{
+	platform_params->cont_update_posn = 1;
 
-	dev_info(sdev->dev, "adsp dump : pc %#x, data %#x, dbg_inst %#x,",
-		 dbg_pc, dbg_data, dbg_inst);
-	dev_info(sdev->dev, "ls0stat %#x, status %#x, faultinfo %#x",
-		 dbg_ls0stat, dbg_status, faultinfo);
+	return 0;
+}
 
-	mtk_adsp_dump(sdev, flags);
+static snd_pcm_uframes_t mt8186_pcm_pointer(struct snd_sof_dev *sdev,
+					    struct snd_pcm_substream *substream)
+{
+	int ret;
+	snd_pcm_uframes_t pos;
+	struct snd_sof_pcm *spcm;
+	struct sof_ipc_stream_posn posn;
+	struct snd_sof_pcm_stream *stream;
+	struct snd_soc_component *scomp = sdev->component;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+
+	spcm = snd_sof_find_spcm_dai(scomp, rtd);
+	if (!spcm) {
+		dev_warn_ratelimited(sdev->dev, "warn: can't find PCM with DAI ID %d\n",
+				     rtd->dai_link->id);
+		return 0;
+	}
+
+	stream = &spcm->stream[substream->stream];
+	ret = snd_sof_ipc_msg_data(sdev, stream, &posn, sizeof(posn));
+	if (ret < 0) {
+		dev_warn(sdev->dev, "failed to read stream position: %d\n", ret);
+		return 0;
+	}
+
+	memcpy(&stream->posn, &posn, sizeof(posn));
+	pos = spcm->stream[substream->stream].posn.host_posn;
+	pos = bytes_to_frames(substream->runtime, pos);
+
+	return pos;
 }
 
 static struct snd_soc_dai_driver mt8186_dai[] = {
@@ -379,7 +539,7 @@ static struct snd_soc_dai_driver mt8186_dai[] = {
 };
 
 /* mt8186 ops */
-static const struct snd_sof_dsp_ops sof_mt8186_ops = {
+static struct snd_sof_dsp_ops sof_mt8186_ops = {
 	/* probe and remove */
 	.probe		= mt8186_dsp_probe,
 	.remove		= mt8186_dsp_remove,
@@ -403,19 +563,19 @@ static const struct snd_sof_dsp_ops sof_mt8186_ops = {
 	.read64		= sof_io_read64,
 
 	/* ipc */
-	.send_msg		= mtk_adsp_send_msg,
+	.send_msg		= mt8186_send_msg,
 	.get_mailbox_offset	= mt8186_get_mailbox_offset,
 	.get_window_offset	= mt8186_get_window_offset,
 	.ipc_msg_data		= sof_ipc_msg_data,
 	.set_stream_data_offset = sof_set_stream_data_offset,
 
 	/* misc */
-	.get_bar_index	= mtk_adsp_get_bar_index,
+	.get_bar_index	= mt8186_get_bar_index,
 
 	/* stream callbacks */
 	.pcm_open	= sof_stream_pcm_open,
-	.pcm_hw_params	= mtk_adsp_stream_pcm_hw_params,
-	.pcm_pointer	= mtk_adsp_stream_pcm_pointer,
+	.pcm_hw_params	= mt8186_pcm_hw_params,
+	.pcm_pointer	= mt8186_pcm_pointer,
 	.pcm_close	= sof_stream_pcm_close,
 
 	/* firmware loading */
@@ -429,7 +589,6 @@ static const struct snd_sof_dsp_ops sof_mt8186_ops = {
 	.num_drv	= ARRAY_SIZE(mt8186_dai),
 
 	/* Debug information */
-	.dbg_dump = mt8186_adsp_dump,
 	.debugfs_add_region_item = snd_sof_debugfs_add_region_item_iomem,
 
 	/* PM */
@@ -454,94 +613,35 @@ static struct snd_sof_of_mach sof_mt8186_machs[] = {
 
 static const struct sof_dev_desc sof_of_mt8186_desc = {
 	.of_machines = sof_mt8186_machs,
-	.ipc_supported_mask	= BIT(SOF_IPC_TYPE_3),
-	.ipc_default		= SOF_IPC_TYPE_3,
+	.ipc_supported_mask	= BIT(SOF_IPC),
+	.ipc_default		= SOF_IPC,
 	.default_fw_path = {
-		[SOF_IPC_TYPE_3] = "mediatek/sof",
+		[SOF_IPC] = "mediatek/sof",
 	},
 	.default_tplg_path = {
-		[SOF_IPC_TYPE_3] = "mediatek/sof-tplg",
+		[SOF_IPC] = "mediatek/sof-tplg",
 	},
 	.default_fw_filename = {
-		[SOF_IPC_TYPE_3] = "sof-mt8186.ri",
+		[SOF_IPC] = "sof-mt8186.ri",
 	},
 	.nocodec_tplg_filename = "sof-mt8186-nocodec.tplg",
 	.ops = &sof_mt8186_ops,
 };
 
-/*
- * DL2, DL3, UL4, UL5 are registered as SOF FE, so creating the corresponding
- * SOF BE to complete the pipeline.
- */
-static struct snd_soc_dai_driver mt8188_dai[] = {
-{
-	.name = "SOF_DL2",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 2,
-	},
-},
-{
-	.name = "SOF_DL3",
-	.playback = {
-		.channels_min = 1,
-		.channels_max = 2,
-	},
-},
-{
-	.name = "SOF_UL4",
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 2,
-	},
-},
-{
-	.name = "SOF_UL5",
-	.capture = {
-		.channels_min = 1,
-		.channels_max = 2,
-	},
-},
-};
-
-/* mt8188 ops */
-static struct snd_sof_dsp_ops sof_mt8188_ops;
-
-static int sof_mt8188_ops_init(struct snd_sof_dev *sdev)
-{
-	/* common defaults */
-	memcpy(&sof_mt8188_ops, &sof_mt8186_ops, sizeof(sof_mt8188_ops));
-
-	sof_mt8188_ops.drv = mt8188_dai;
-	sof_mt8188_ops.num_drv = ARRAY_SIZE(mt8188_dai);
-
-	return 0;
-}
-
-static struct snd_sof_of_mach sof_mt8188_machs[] = {
-	{
-		.compatible = "mediatek,mt8188",
-		.sof_tplg_filename = "sof-mt8188.tplg",
-	},
-	{}
-};
-
 static const struct sof_dev_desc sof_of_mt8188_desc = {
-	.of_machines = sof_mt8188_machs,
-	.ipc_supported_mask	= BIT(SOF_IPC_TYPE_3),
-	.ipc_default		= SOF_IPC_TYPE_3,
+	.ipc_supported_mask	= BIT(SOF_IPC),
+	.ipc_default		= SOF_IPC,
 	.default_fw_path = {
-		[SOF_IPC_TYPE_3] = "mediatek/sof",
+		[SOF_IPC] = "mediatek/sof",
 	},
 	.default_tplg_path = {
-		[SOF_IPC_TYPE_3] = "mediatek/sof-tplg",
+		[SOF_IPC] = "mediatek/sof-tplg",
 	},
 	.default_fw_filename = {
-		[SOF_IPC_TYPE_3] = "sof-mt8188.ri",
+		[SOF_IPC] = "sof-mt8188.ri",
 	},
 	.nocodec_tplg_filename = "sof-mt8188-nocodec.tplg",
-	.ops = &sof_mt8188_ops,
-	.ops_init = sof_mt8188_ops_init,
+	.ops = &sof_mt8186_ops,
 };
 
 static const struct of_device_id sof_of_mt8186_ids[] = {
@@ -558,13 +658,12 @@ static struct platform_driver snd_sof_of_mt8186_driver = {
 	.shutdown = sof_of_shutdown,
 	.driver = {
 	.name = "sof-audio-of-mt8186",
-		.pm = pm_ptr(&sof_of_pm),
+		.pm = &sof_of_pm,
 		.of_match_table = sof_of_mt8186_ids,
 	},
 };
 module_platform_driver(snd_sof_of_mt8186_driver);
 
+MODULE_IMPORT_NS(SND_SOC_SOF_XTENSA);
+MODULE_IMPORT_NS(SND_SOC_SOF_MTK_COMMON);
 MODULE_LICENSE("Dual BSD/GPL");
-MODULE_DESCRIPTION("SOF support for MT8186/MT8188 platforms");
-MODULE_IMPORT_NS("SND_SOC_SOF_XTENSA");
-MODULE_IMPORT_NS("SND_SOC_SOF_MTK_COMMON");

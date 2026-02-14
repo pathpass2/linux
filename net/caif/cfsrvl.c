@@ -183,6 +183,12 @@ bool cfsrvl_ready(struct cfsrvl *service, int *err)
 	return true;
 }
 
+u8 cfsrvl_getphyid(struct cflayer *layer)
+{
+	struct cfsrvl *servl = container_obj(layer);
+	return servl->dev_info.id;
+}
+
 bool cfsrvl_phyid_match(struct cflayer *layer, int phyid)
 {
 	struct cfsrvl *servl = container_obj(layer);

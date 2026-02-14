@@ -15,9 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/of_platform.h>
 #include <linux/syscore_ops.h>
-
-#include "irq-loongson.h"
 
 /* Registers */
 #define HTVEC_EN_OFF		0x20
@@ -159,7 +158,7 @@ static void htvec_reset(struct htvec *priv)
 	}
 }
 
-static int htvec_suspend(void *data)
+static int htvec_suspend(void)
 {
 	int i;
 
@@ -169,7 +168,7 @@ static int htvec_suspend(void *data)
 	return 0;
 }
 
-static void htvec_resume(void *data)
+static void htvec_resume(void)
 {
 	int i;
 
@@ -177,13 +176,9 @@ static void htvec_resume(void *data)
 		writel(htvec_priv->saved_vec_en[i], htvec_priv->base + HTVEC_EN_OFF + 4 * i);
 }
 
-static const struct syscore_ops htvec_syscore_ops = {
+static struct syscore_ops htvec_syscore_ops = {
 	.suspend = htvec_suspend,
 	.resume = htvec_resume,
-};
-
-static struct syscore htvec_syscore = {
-	.ops = &htvec_syscore_ops,
 };
 
 static int htvec_init(phys_addr_t addr, unsigned long size,
@@ -218,7 +213,7 @@ static int htvec_init(phys_addr_t addr, unsigned long size,
 
 	htvec_priv = priv;
 
-	register_syscore(&htvec_syscore);
+	register_syscore_ops(&htvec_syscore_ops);
 
 	return 0;
 
@@ -252,7 +247,7 @@ static int htvec_of_init(struct device_node *node,
 	}
 
 	err = htvec_init(res.start, resource_size(&res),
-			num_parents, parent_irq, of_fwnode_handle(node));
+			num_parents, parent_irq, of_node_to_fwnode(node));
 	if (err < 0)
 		return err;
 
@@ -295,19 +290,19 @@ static int __init acpi_cascade_irqdomain_init(void)
 	return 0;
 }
 
-int __init htvec_acpi_init(struct irq_domain *parent, struct acpi_madt_ht_pic *acpi_htvec)
+int __init htvec_acpi_init(struct irq_domain *parent,
+				   struct acpi_madt_ht_pic *acpi_htvec)
 {
-	int i, ret, num_parents, parent_irq[8];
+	int i, ret;
+	int num_parents, parent_irq[8];
 	struct fwnode_handle *domain_handle;
-	phys_addr_t addr;
 
 	if (!acpi_htvec)
 		return -EINVAL;
 
 	num_parents = HTVEC_MAX_PARENT_IRQ;
-	addr = (phys_addr_t)acpi_htvec->address;
 
-	domain_handle = irq_domain_alloc_fwnode(&addr);
+	domain_handle = irq_domain_alloc_fwnode(&acpi_htvec->address);
 	if (!domain_handle) {
 		pr_err("Unable to allocate domain handle\n");
 		return -ENOMEM;
@@ -317,7 +312,9 @@ int __init htvec_acpi_init(struct irq_domain *parent, struct acpi_madt_ht_pic *a
 	for (i = 0; i < HTVEC_MAX_PARENT_IRQ; i++)
 		parent_irq[i] = irq_create_mapping(parent, acpi_htvec->cascade[i]);
 
-	ret = htvec_init(addr, acpi_htvec->size, num_parents, parent_irq, domain_handle);
+	ret = htvec_init(acpi_htvec->address, acpi_htvec->size,
+			num_parents, parent_irq, domain_handle);
+
 	if (ret == 0)
 		ret = acpi_cascade_irqdomain_init();
 	else

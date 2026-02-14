@@ -8,7 +8,7 @@
 #ifndef _ASM_MICROBLAZE_FLAT_H
 #define _ASM_MICROBLAZE_FLAT_H
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /*
  * Microblaze works a little differently from other arches, because

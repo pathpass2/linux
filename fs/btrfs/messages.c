@@ -3,28 +3,28 @@
 #include "fs.h"
 #include "messages.h"
 #include "discard.h"
+#include "transaction.h"
+#include "space-info.h"
 #include "super.h"
 
 #ifdef CONFIG_PRINTK
 
-#define STATE_STRING_PREFACE	" state "
-#define STATE_STRING_BUF_LEN	(sizeof(STATE_STRING_PREFACE) + BTRFS_FS_STATE_COUNT + 1)
+#define STATE_STRING_PREFACE	": state "
+#define STATE_STRING_BUF_LEN	(sizeof(STATE_STRING_PREFACE) + BTRFS_FS_STATE_COUNT)
 
 /*
  * Characters to print to indicate error conditions or uncommon filesystem state.
  * RO is not an error.
  */
 static const char fs_state_chars[] = {
+	[BTRFS_FS_STATE_ERROR]			= 'E',
 	[BTRFS_FS_STATE_REMOUNTING]		= 'M',
 	[BTRFS_FS_STATE_RO]			= 0,
 	[BTRFS_FS_STATE_TRANS_ABORTED]		= 'A',
-	[BTRFS_FS_STATE_LOG_REPLAY_ABORTED]	= 'O',
 	[BTRFS_FS_STATE_DEV_REPLACING]		= 'R',
 	[BTRFS_FS_STATE_DUMMY_FS_INFO]		= 0,
-	[BTRFS_FS_STATE_NO_DATA_CSUMS]		= 'C',
-	[BTRFS_FS_STATE_SKIP_META_CSUMS]	= 'S',
+	[BTRFS_FS_STATE_NO_CSUMS]		= 'C',
 	[BTRFS_FS_STATE_LOG_CLEANUP_ERROR]	= 'L',
-	[BTRFS_FS_STATE_EMERGENCY_SHUTDOWN]	= 'E',
 };
 
 static void btrfs_state_to_string(const struct btrfs_fs_info *info, char *buf)
@@ -36,11 +36,6 @@ static void btrfs_state_to_string(const struct btrfs_fs_info *info, char *buf)
 
 	memcpy(curr, STATE_STRING_PREFACE, sizeof(STATE_STRING_PREFACE));
 	curr += sizeof(STATE_STRING_PREFACE) - 1;
-
-	if (BTRFS_FS_ERROR(info)) {
-		*curr++ = 'E';
-		states_printed = true;
-	}
 
 	for_each_set_bit(bit, &fs_state, sizeof(fs_state)) {
 		WARN_ON_ONCE(bit >= BTRFS_FS_STATE_COUNT);
@@ -73,11 +68,11 @@ static void btrfs_state_to_string(const struct btrfs_fs_info *info, char *buf)
  *        over the error.  Each subsequent error that doesn't have any context
  *        of the original error should use EROFS when handling BTRFS_FS_STATE_ERROR.
  */
-const char * __attribute_const__ btrfs_decode_error(int error)
+const char * __attribute_const__ btrfs_decode_error(int errno)
 {
 	char *errstr = "unknown";
 
-	switch (error) {
+	switch (errno) {
 	case -ENOENT:		/* -2 */
 		errstr = "No such entry";
 		break;
@@ -111,12 +106,12 @@ const char * __attribute_const__ btrfs_decode_error(int error)
 }
 
 /*
- * Decodes expected errors from the caller and invokes the appropriate error
- * response.
+ * __btrfs_handle_fs_error decodes expected errors from the caller and
+ * invokes the appropriate error response.
  */
 __cold
 void __btrfs_handle_fs_error(struct btrfs_fs_info *fs_info, const char *function,
-		       unsigned int line, int error, const char *fmt, ...)
+		       unsigned int line, int errno, const char *fmt, ...)
 {
 	struct super_block *sb = fs_info->sb;
 #ifdef CONFIG_PRINTK
@@ -133,11 +128,11 @@ void __btrfs_handle_fs_error(struct btrfs_fs_info *fs_info, const char *function
 	 * Special case: if the error is EROFS, and we're already under
 	 * SB_RDONLY, then it is safe here.
 	 */
-	if (error == -EROFS && sb_rdonly(sb))
+	if (errno == -EROFS && sb_rdonly(sb))
 		return;
 
 #ifdef CONFIG_PRINTK
-	errstr = btrfs_decode_error(error);
+	errstr = btrfs_decode_error(errno);
 	btrfs_state_to_string(fs_info, statestr);
 	if (fmt) {
 		struct va_format vaf;
@@ -148,11 +143,11 @@ void __btrfs_handle_fs_error(struct btrfs_fs_info *fs_info, const char *function
 		vaf.va = &args;
 
 		pr_crit("BTRFS: error (device %s%s) in %s:%d: errno=%d %s (%pV)\n",
-			sb->s_id, statestr, function, line, error, errstr, &vaf);
+			sb->s_id, statestr, function, line, errno, errstr, &vaf);
 		va_end(args);
 	} else {
 		pr_crit("BTRFS: error (device %s%s) in %s:%d: errno=%d %s\n",
-			sb->s_id, statestr, function, line, error, errstr);
+			sb->s_id, statestr, function, line, errno, errstr);
 	}
 #endif
 
@@ -160,7 +155,7 @@ void __btrfs_handle_fs_error(struct btrfs_fs_info *fs_info, const char *function
 	 * Today we only save the error info to memory.  Long term we'll also
 	 * send it down to the disk.
 	 */
-	WRITE_ONCE(fs_info->fs_error, error);
+	set_bit(BTRFS_FS_STATE_ERROR, &fs_info->fs_state);
 
 	/* Don't go through full error handling during mount. */
 	if (!(sb->s_flags & SB_BORN))
@@ -211,38 +206,65 @@ static struct ratelimit_state printk_limits[] = {
 	RATELIMIT_STATE_INIT(printk_limits[7], DEFAULT_RATELIMIT_INTERVAL, 100),
 };
 
-__printf(3, 4) __cold
-void _btrfs_printk(const struct btrfs_fs_info *fs_info, unsigned int level, const char *fmt, ...)
+void __cold _btrfs_printk(const struct btrfs_fs_info *fs_info, const char *fmt, ...)
 {
+	char lvl[PRINTK_MAX_SINGLE_HEADER_LEN + 1] = "\0";
 	struct va_format vaf;
 	va_list args;
-	const char *type = logtypes[level];
-	struct ratelimit_state *ratelimit = &printk_limits[level];
+	int kern_level;
+	const char *type = logtypes[4];
+	struct ratelimit_state *ratelimit = &printk_limits[4];
 
 #ifdef CONFIG_PRINTK_INDEX
 	printk_index_subsys_emit("%sBTRFS %s (device %s): ", NULL, fmt);
 #endif
 
 	va_start(args, fmt);
+
+	while ((kern_level = printk_get_level(fmt)) != 0) {
+		size_t size = printk_skip_level(fmt) - fmt;
+
+		if (kern_level >= '0' && kern_level <= '7') {
+			memcpy(lvl, fmt,  size);
+			lvl[size] = '\0';
+			type = logtypes[kern_level - '0'];
+			ratelimit = &printk_limits[kern_level - '0'];
+		}
+		fmt += size;
+	}
+
 	vaf.fmt = fmt;
 	vaf.va = &args;
 
-	/* Do not ratelimit if CONFIG_BTRFS_DEBUG is enabled. */
-	if (IS_ENABLED(CONFIG_BTRFS_DEBUG) || __ratelimit(ratelimit)) {
+	if (__ratelimit(ratelimit)) {
 		if (fs_info) {
 			char statestr[STATE_STRING_BUF_LEN];
 
 			btrfs_state_to_string(fs_info, statestr);
-			_printk(KERN_SOH "%dBTRFS %s (device %s%s): %pV\n", level, type,
+			_printk("%sBTRFS %s (device %s%s): %pV\n", lvl, type,
 				fs_info->sb->s_id, statestr, &vaf);
 		} else {
-			_printk(KERN_SOH "%dBTRFS %s: %pV\n", level, type, &vaf);
+			_printk("%sBTRFS %s: %pV\n", lvl, type, &vaf);
 		}
 	}
 
 	va_end(args);
 }
 #endif
+
+#ifdef CONFIG_BTRFS_ASSERT
+void __cold btrfs_assertfail(const char *expr, const char *file, int line)
+{
+	pr_err("assertion failed: %s, in %s:%d\n", expr, file, line);
+	BUG();
+}
+#endif
+
+void __cold btrfs_print_v0_err(struct btrfs_fs_info *fs_info)
+{
+	btrfs_err(fs_info,
+"Unsupported V0 extent filesystem detected. Aborting. Please re-create your filesystem with a newer kernel");
+}
 
 #if BITS_PER_LONG == 32
 void __cold btrfs_warn_32bit_limit(struct btrfs_fs_info *fs_info)
@@ -271,12 +293,12 @@ void __cold btrfs_err_32bit_limit(struct btrfs_fs_info *fs_info)
 #endif
 
 /*
- * Decode unexpected, fatal errors from the caller, issue an alert, and either
- * panic or BUGs, depending on mount options.
+ * __btrfs_panic decodes unexpected, fatal errors from the caller, issues an
+ * alert, and either panics or BUGs, depending on mount options.
  */
 __cold
-void __btrfs_panic(const struct btrfs_fs_info *fs_info, const char *function,
-		   unsigned int line, int error, const char *fmt, ...)
+void __btrfs_panic(struct btrfs_fs_info *fs_info, const char *function,
+		   unsigned int line, int errno, const char *fmt, ...)
 {
 	char *s_id = "<unknown>";
 	const char *errstr;
@@ -289,13 +311,13 @@ void __btrfs_panic(const struct btrfs_fs_info *fs_info, const char *function,
 	va_start(args, fmt);
 	vaf.va = &args;
 
-	errstr = btrfs_decode_error(error);
+	errstr = btrfs_decode_error(errno);
 	if (fs_info && (btrfs_test_opt(fs_info, PANIC_ON_FATAL_ERROR)))
 		panic(KERN_CRIT "BTRFS panic (device %s) in %s:%d: %pV (errno=%d %s)\n",
-			s_id, function, line, &vaf, error, errstr);
+			s_id, function, line, &vaf, errno, errstr);
 
 	btrfs_crit(fs_info, "panic in %s:%d: %pV (errno=%d %s)",
-		   function, line, &vaf, error, errstr);
+		   function, line, &vaf, errno, errstr);
 	va_end(args);
 	/* Caller calls BUG() */
 }

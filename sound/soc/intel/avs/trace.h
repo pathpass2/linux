@@ -24,7 +24,7 @@ TRACE_EVENT(avs_dsp_core_op,
 	TP_fast_assign(
 		__entry->reg = reg;
 		__entry->mask = mask;
-		__assign_str(op);
+		__assign_str(op, op);
 		__entry->flag = flag;
 	),
 
@@ -37,62 +37,60 @@ TRACE_EVENT(avs_dsp_core_op,
 
 void trace_avs_msg_payload(const void *data, size_t size);
 
-#define trace_avs_request(msg, sts, lec) \
+#define trace_avs_request(msg, fwregs) \
 ({ \
-	trace_avs_ipc_request_msg((msg)->header, sts, lec); \
+	trace_avs_ipc_request_msg((msg)->header, fwregs); \
 	trace_avs_msg_payload((msg)->data, (msg)->size); \
 })
 
-#define trace_avs_reply(msg, sts, lec) \
+#define trace_avs_reply(msg, fwregs) \
 ({ \
-	trace_avs_ipc_reply_msg((msg)->header, sts, lec); \
+	trace_avs_ipc_reply_msg((msg)->header, fwregs); \
 	trace_avs_msg_payload((msg)->data, (msg)->size); \
 })
 
-#define trace_avs_notify(msg, sts, lec) \
+#define trace_avs_notify(msg, fwregs) \
 ({ \
-	trace_avs_ipc_notify_msg((msg)->header, sts, lec); \
+	trace_avs_ipc_notify_msg((msg)->header, fwregs); \
 	trace_avs_msg_payload((msg)->data, (msg)->size); \
 })
 #endif
 
 DECLARE_EVENT_CLASS(avs_ipc_msg_hdr,
 
-	TP_PROTO(u64 header, u32 sts, u32 lec),
+	TP_PROTO(u64 header, u64 fwregs),
 
-	TP_ARGS(header, sts, lec),
+	TP_ARGS(header, fwregs),
 
 	TP_STRUCT__entry(
 		__field(u64,	header)
-		__field(u32,	sts)
-		__field(u32,	lec)
+		__field(u64,	fwregs)
 	),
 
 	TP_fast_assign(
 		__entry->header = header;
-		__entry->sts = sts;
-		__entry->lec = lec;
+		__entry->fwregs = fwregs;
 	),
 
 	TP_printk("primary: 0x%08X, extension: 0x%08X,\n"
-		  "status: 0x%08X, error: 0x%08X",
+		  "fwstatus: 0x%08X, fwerror: 0x%08X",
 		  lower_32_bits(__entry->header), upper_32_bits(__entry->header),
-		  __entry->sts, __entry->lec)
+		  lower_32_bits(__entry->fwregs), upper_32_bits(__entry->fwregs))
 );
 
 DEFINE_EVENT(avs_ipc_msg_hdr, avs_ipc_request_msg,
-	TP_PROTO(u64 header, u32 sts, u32 lec),
-	TP_ARGS(header, sts, lec)
+	TP_PROTO(u64 header, u64 fwregs),
+	TP_ARGS(header, fwregs)
 );
 
 DEFINE_EVENT(avs_ipc_msg_hdr, avs_ipc_reply_msg,
-	TP_PROTO(u64 header, u32 sts, u32 lec),
-	TP_ARGS(header, sts, lec)
+	TP_PROTO(u64 header, u64 fwregs),
+	TP_ARGS(header, fwregs)
 );
 
 DEFINE_EVENT(avs_ipc_msg_hdr, avs_ipc_notify_msg,
-	TP_PROTO(u64 header, u32 sts, u32 lec),
-	TP_ARGS(header, sts, lec)
+	TP_PROTO(u64 header, u64 fwregs),
+	TP_ARGS(header, fwregs)
 );
 
 TRACE_EVENT_CONDITION(avs_ipc_msg_payload,
@@ -137,7 +135,7 @@ TRACE_EVENT(avs_d0ix,
 	),
 
 	TP_fast_assign(
-		__assign_str(op);
+		__assign_str(op, op);
 		__entry->proceed = proceed;
 		__entry->header = header;
 	),

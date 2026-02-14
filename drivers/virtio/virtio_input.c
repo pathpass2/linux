@@ -4,7 +4,6 @@
 #include <linux/virtio_config.h>
 #include <linux/input.h>
 #include <linux/slab.h>
-#include <linux/dma-mapping.h>
 
 #include <uapi/linux/virtio_ids.h>
 #include <uapi/linux/virtio_input.h>
@@ -17,9 +16,7 @@ struct virtio_input {
 	char                       serial[64];
 	char                       phys[64];
 	struct virtqueue           *evt, *sts;
-	__dma_from_device_group_begin();
 	struct virtio_input_event  evts[64];
-	__dma_from_device_group_end();
 	spinlock_t                 lock;
 	bool                       ready;
 };
@@ -30,7 +27,7 @@ static void virtinput_queue_evtbuf(struct virtio_input *vi,
 	struct scatterlist sg[1];
 
 	sg_init_one(sg, evtbuf, sizeof(*evtbuf));
-	virtqueue_add_inbuf_cache_clean(vi->evt, sg, 1, evtbuf, GFP_ATOMIC);
+	virtqueue_add_inbuf(vi->evt, sg, 1, evtbuf, GFP_ATOMIC);
 }
 
 static void virtinput_recv_events(struct virtqueue *vq)
@@ -188,14 +185,13 @@ static void virtinput_cfg_abs(struct virtio_input *vi, int abs)
 
 static int virtinput_init_vqs(struct virtio_input *vi)
 {
-	struct virtqueue_info vqs_info[] = {
-		{ "events", virtinput_recv_events },
-		{ "status", virtinput_recv_status },
-	};
 	struct virtqueue *vqs[2];
+	vq_callback_t *cbs[] = { virtinput_recv_events,
+				 virtinput_recv_status };
+	static const char * const names[] = { "events", "status" };
 	int err;
 
-	err = virtio_find_vqs(vi->vdev, 2, vqs, vqs_info, NULL);
+	err = virtio_find_vqs(vi->vdev, 2, vqs, cbs, names, NULL);
 	if (err)
 		return err;
 	vi->evt = vqs[0];
@@ -363,15 +359,11 @@ static int virtinput_freeze(struct virtio_device *vdev)
 {
 	struct virtio_input *vi = vdev->priv;
 	unsigned long flags;
-	void *buf;
 
 	spin_lock_irqsave(&vi->lock, flags);
 	vi->ready = false;
 	spin_unlock_irqrestore(&vi->lock, flags);
 
-	virtio_reset_device(vdev);
-	while ((buf = virtqueue_detach_unused_buf(vi->sts)) != NULL)
-		kfree(buf);
 	vdev->config->del_vqs(vdev);
 	return 0;
 }
@@ -402,6 +394,7 @@ static const struct virtio_device_id id_table[] = {
 
 static struct virtio_driver virtio_input_driver = {
 	.driver.name         = KBUILD_MODNAME,
+	.driver.owner        = THIS_MODULE,
 	.feature_table       = features,
 	.feature_table_size  = ARRAY_SIZE(features),
 	.id_table            = id_table,

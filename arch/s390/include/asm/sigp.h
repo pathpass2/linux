@@ -36,9 +36,7 @@
 #define SIGP_STATUS_INCORRECT_STATE	0x00000200UL
 #define SIGP_STATUS_NOT_RUNNING		0x00000400UL
 
-#ifndef __ASSEMBLER__
-
-#include <asm/asm.h>
+#ifndef __ASSEMBLY__
 
 static inline int ____pcpu_sigp(u16 addr, u8 order, unsigned long parm,
 				u32 *status)
@@ -48,12 +46,13 @@ static inline int ____pcpu_sigp(u16 addr, u8 order, unsigned long parm,
 
 	asm volatile(
 		"	sigp	%[r1],%[addr],0(%[order])\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, cc), [r1] "+d" (r1.pair)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
+		: [cc] "=&d" (cc), [r1] "+&d" (r1.pair)
 		: [addr] "d" (addr), [order] "a" (order)
-		: CC_CLOBBER);
+		: "cc");
 	*status = r1.even;
-	return CC_TRANSFORM(cc);
+	return cc;
 }
 
 static inline int __pcpu_sigp(u16 addr, u8 order, unsigned long parm,
@@ -68,6 +67,6 @@ static inline int __pcpu_sigp(u16 addr, u8 order, unsigned long parm,
 	return cc;
 }
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* __S390_ASM_SIGP_H */

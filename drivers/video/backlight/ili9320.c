@@ -10,6 +10,7 @@
 
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/fb.h>
 #include <linux/init.h>
 #include <linux/lcd.h>
 #include <linux/module.h>
@@ -120,7 +121,7 @@ static inline int ili9320_power_off(struct ili9320 *lcd)
 	return 0;
 }
 
-#define POWER_IS_ON(pwr)	((pwr) <= LCD_POWER_REDUCED)
+#define POWER_IS_ON(pwr)	((pwr) <= FB_BLANK_NORMAL)
 
 static int ili9320_power(struct ili9320 *lcd, int power)
 {
@@ -160,7 +161,7 @@ static int ili9320_get_power(struct lcd_device *ld)
 	return lcd->power;
 }
 
-static const struct lcd_ops ili9320_ops = {
+static struct lcd_ops ili9320_ops = {
 	.get_power	= ili9320_get_power,
 	.set_power	= ili9320_set_power,
 };
@@ -222,7 +223,7 @@ int ili9320_probe_spi(struct spi_device *spi,
 
 	ili->dev = dev;
 	ili->client = client;
-	ili->power = LCD_POWER_OFF;
+	ili->power = FB_BLANK_POWERDOWN;
 	ili->platdata = cfg;
 
 	spi_set_drvdata(spi, ili);
@@ -240,7 +241,7 @@ int ili9320_probe_spi(struct spi_device *spi,
 
 	dev_info(dev, "initialising %s\n", client->name);
 
-	ret = ili9320_power(ili, LCD_POWER_ON);
+	ret = ili9320_power(ili, FB_BLANK_UNBLANK);
 	if (ret != 0) {
 		dev_err(dev, "failed to set lcd power state\n");
 		return ret;
@@ -252,7 +253,7 @@ EXPORT_SYMBOL_GPL(ili9320_probe_spi);
 
 void ili9320_remove(struct ili9320 *ili)
 {
-	ili9320_power(ili, LCD_POWER_OFF);
+	ili9320_power(ili, FB_BLANK_POWERDOWN);
 }
 EXPORT_SYMBOL_GPL(ili9320_remove);
 
@@ -261,7 +262,7 @@ int ili9320_suspend(struct ili9320 *lcd)
 {
 	int ret;
 
-	ret = ili9320_power(lcd, LCD_POWER_OFF);
+	ret = ili9320_power(lcd, FB_BLANK_POWERDOWN);
 
 	if (lcd->platdata->suspend == ILI9320_SUSPEND_DEEP) {
 		ili9320_write(lcd, ILI9320_POWER1, lcd->power1 |
@@ -281,7 +282,7 @@ int ili9320_resume(struct ili9320 *lcd)
 	if (lcd->platdata->suspend == ILI9320_SUSPEND_DEEP)
 		ili9320_write(lcd, ILI9320_POWER1, 0x00);
 
-	return ili9320_power(lcd, LCD_POWER_ON);
+	return ili9320_power(lcd, FB_BLANK_UNBLANK);
 }
 EXPORT_SYMBOL_GPL(ili9320_resume);
 #endif
@@ -289,7 +290,7 @@ EXPORT_SYMBOL_GPL(ili9320_resume);
 /* Power down all displays on reboot, poweroff or halt */
 void ili9320_shutdown(struct ili9320 *lcd)
 {
-	ili9320_power(lcd, LCD_POWER_OFF);
+	ili9320_power(lcd, FB_BLANK_POWERDOWN);
 }
 EXPORT_SYMBOL_GPL(ili9320_shutdown);
 

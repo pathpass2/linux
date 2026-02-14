@@ -34,7 +34,6 @@ struct netlink_skb_parms {
 
 #define NETLINK_CB(skb)		(*(struct netlink_skb_parms*)&((skb)->cb))
 #define NETLINK_CREDS(skb)	(&NETLINK_CB((skb)).creds)
-#define NETLINK_CTX_SIZE	48
 
 
 void netlink_table_grab(void);
@@ -48,9 +47,10 @@ struct netlink_kernel_cfg {
 	unsigned int	groups;
 	unsigned int	flags;
 	void		(*input)(struct sk_buff *skb);
+	struct mutex	*cb_mutex;
 	int		(*bind)(struct net *net, int group);
 	void		(*unbind)(struct net *net, int group);
-	void            (*release) (struct sock *sk, unsigned long *groups);
+	bool		(*compare)(struct net *net, struct sock *sk);
 };
 
 struct sock *__netlink_kernel_create(struct net *net, int unit,
@@ -63,7 +63,7 @@ netlink_kernel_create(struct net *net, int unit, struct netlink_kernel_cfg *cfg)
 }
 
 /* this can be increased when necessary - don't expose to userland */
-#define NETLINK_MAX_COOKIE_LEN	8
+#define NETLINK_MAX_COOKIE_LEN	20
 #define NETLINK_MAX_FMTMSG_LEN	80
 
 /**
@@ -162,30 +162,8 @@ struct netlink_ext_ack {
 	}							\
 } while (0)
 
-#define NL_SET_ERR_MSG_ATTR_POL_FMT(extack, attr, pol, fmt, args...) do {	\
-	struct netlink_ext_ack *__extack = (extack);				\
-										\
-	if (!__extack)								\
-		break;								\
-										\
-	if (snprintf(__extack->_msg_buf, NETLINK_MAX_FMTMSG_LEN,		\
-		     "%s" fmt "%s", "", ##args, "") >=				\
-	    NETLINK_MAX_FMTMSG_LEN)						\
-		net_warn_ratelimited("%s" fmt "%s", "truncated extack: ",       \
-				     ##args, "\n");				\
-										\
-	do_trace_netlink_extack(__extack->_msg_buf);				\
-										\
-	__extack->_msg = __extack->_msg_buf;					\
-	__extack->bad_attr = (attr);						\
-	__extack->policy = (pol);						\
-} while (0)
-
 #define NL_SET_ERR_MSG_ATTR(extack, attr, msg)		\
 	NL_SET_ERR_MSG_ATTR_POL(extack, attr, NULL, msg)
-
-#define NL_SET_ERR_MSG_ATTR_FMT(extack, attr, msg, args...) \
-	NL_SET_ERR_MSG_ATTR_POL_FMT(extack, attr, NULL, msg, ##args)
 
 #define NL_SET_ERR_ATTR_MISS(extack, nest, type)  do {	\
 	struct netlink_ext_ack *__extack = (extack);	\
@@ -212,7 +190,6 @@ static inline void nl_set_extack_cookie_u64(struct netlink_ext_ack *extack,
 {
 	if (!extack)
 		return;
-	BUILD_BUG_ON(sizeof(extack->cookie) < sizeof(cookie));
 	memcpy(extack->cookie, &cookie, sizeof(cookie));
 	extack->cookie_len = sizeof(cookie);
 }
@@ -229,19 +206,12 @@ bool netlink_strict_get_check(struct sk_buff *skb);
 int netlink_unicast(struct sock *ssk, struct sk_buff *skb, __u32 portid, int nonblock);
 int netlink_broadcast(struct sock *ssk, struct sk_buff *skb, __u32 portid,
 		      __u32 group, gfp_t allocation);
-
-typedef int (*netlink_filter_fn)(struct sock *dsk, struct sk_buff *skb, void *data);
-
-int netlink_broadcast_filtered(struct sock *ssk, struct sk_buff *skb,
-			       __u32 portid, __u32 group, gfp_t allocation,
-			       netlink_filter_fn filter,
-			       void *filter_data);
 int netlink_set_err(struct sock *ssk, __u32 portid, __u32 group, int code);
 int netlink_register_notifier(struct notifier_block *nb);
 int netlink_unregister_notifier(struct notifier_block *nb);
 
 /* finegrained unicast helpers: */
-struct sock *netlink_getsockbyfd(int fd);
+struct sock *netlink_getsockbyfilp(struct file *filp);
 int netlink_attachskb(struct sock *sk, struct sk_buff *skb,
 		      long *timeo, struct sock *ssk);
 void netlink_detachskb(struct sock *sk, struct sk_buff *skb);
@@ -292,10 +262,9 @@ struct netlink_callback {
 	u16			answer_flags;
 	u32			min_dump_alloc;
 	unsigned int		prev_seq, seq;
-	int			flags;
 	bool			strict_check;
 	union {
-		u8		ctx[NETLINK_CTX_SIZE];
+		u8		ctx[48];
 
 		/* args is deprecated. Cast a struct over ctx instead
 		 * for proper type safety.
@@ -304,7 +273,7 @@ struct netlink_callback {
 	};
 };
 
-#define NL_ASSERT_CTX_FITS(type_name)					\
+#define NL_ASSERT_DUMP_CTX_FITS(type_name)				\
 	BUILD_BUG_ON(sizeof(type_name) >				\
 		     sizeof_field(struct netlink_callback, ctx))
 
@@ -321,11 +290,9 @@ struct netlink_dump_control {
 	int (*start)(struct netlink_callback *);
 	int (*dump)(struct sk_buff *skb, struct netlink_callback *);
 	int (*done)(struct netlink_callback *);
-	struct netlink_ext_ack *extack;
 	void *data;
 	struct module *module;
 	u32 min_dump_alloc;
-	int flags;
 };
 
 int __netlink_dump_start(struct sock *ssk, struct sk_buff *skb,
@@ -356,6 +323,5 @@ bool netlink_ns_capable(const struct sk_buff *skb,
 			struct user_namespace *ns, int cap);
 bool netlink_capable(const struct sk_buff *skb, int cap);
 bool netlink_net_capable(const struct sk_buff *skb, int cap);
-struct sk_buff *netlink_alloc_large_skb(unsigned int size, int broadcast);
 
 #endif	/* __LINUX_NETLINK_H */

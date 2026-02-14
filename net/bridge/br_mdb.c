@@ -144,8 +144,6 @@ static void __mdb_entry_fill_flags(struct br_mdb_entry *e, unsigned char flags)
 		e->flags |= MDB_FLAGS_STAR_EXCL;
 	if (flags & MDB_PG_FLAGS_BLOCKED)
 		e->flags |= MDB_FLAGS_BLOCKED;
-	if (flags & MDB_PG_FLAGS_OFFLOAD_FAILED)
-		e->flags |= MDB_FLAGS_OFFLOAD_FAILED;
 }
 
 static void __mdb_entry_to_br_ip(struct br_mdb_entry *entry, struct br_ip *ip,
@@ -325,6 +323,9 @@ static int br_mdb_fill_info(struct sk_buff *skb, struct netlink_callback *cb,
 	struct net_bridge_mdb_entry *mp;
 	struct nlattr *nest, *nest2;
 
+	if (!br_opt_get(br, BROPT_MULTICAST_ENABLED))
+		return 0;
+
 	nest = nla_nest_start_noflag(skb, MDBA_MDB);
 	if (nest == NULL)
 		return -EMSGSIZE;
@@ -379,37 +380,82 @@ out:
 	return err;
 }
 
-int br_mdb_dump(struct net_device *dev, struct sk_buff *skb,
-		struct netlink_callback *cb)
+static int br_mdb_valid_dump_req(const struct nlmsghdr *nlh,
+				 struct netlink_ext_ack *extack)
 {
-	struct net_bridge *br = netdev_priv(dev);
 	struct br_port_msg *bpm;
-	struct nlmsghdr *nlh;
-	int err;
 
-	nlh = nlmsg_put(skb, NETLINK_CB(cb->skb).portid,
-			cb->nlh->nlmsg_seq, RTM_GETMDB, sizeof(*bpm),
-			NLM_F_MULTI);
-	if (!nlh)
-		return -EMSGSIZE;
+	if (nlh->nlmsg_len < nlmsg_msg_size(sizeof(*bpm))) {
+		NL_SET_ERR_MSG_MOD(extack, "Invalid header for mdb dump request");
+		return -EINVAL;
+	}
 
 	bpm = nlmsg_data(nlh);
-	memset(bpm, 0, sizeof(*bpm));
-	bpm->ifindex = dev->ifindex;
+	if (bpm->ifindex) {
+		NL_SET_ERR_MSG_MOD(extack, "Filtering by device index is not supported for mdb dump request");
+		return -EINVAL;
+	}
+	if (nlmsg_attrlen(nlh, sizeof(*bpm))) {
+		NL_SET_ERR_MSG(extack, "Invalid data after header in mdb dump request");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int br_mdb_dump(struct sk_buff *skb, struct netlink_callback *cb)
+{
+	struct net_device *dev;
+	struct net *net = sock_net(skb->sk);
+	struct nlmsghdr *nlh = NULL;
+	int idx = 0, s_idx;
+
+	if (cb->strict_check) {
+		int err = br_mdb_valid_dump_req(cb->nlh, cb->extack);
+
+		if (err < 0)
+			return err;
+	}
+
+	s_idx = cb->args[0];
 
 	rcu_read_lock();
 
-	err = br_mdb_fill_info(skb, cb, dev);
-	if (err)
-		goto out;
-	err = br_rports_fill_info(skb, &br->multicast_ctx);
-	if (err)
-		goto out;
+	for_each_netdev_rcu(net, dev) {
+		if (netif_is_bridge_master(dev)) {
+			struct net_bridge *br = netdev_priv(dev);
+			struct br_port_msg *bpm;
+
+			if (idx < s_idx)
+				goto skip;
+
+			nlh = nlmsg_put(skb, NETLINK_CB(cb->skb).portid,
+					cb->nlh->nlmsg_seq, RTM_GETMDB,
+					sizeof(*bpm), NLM_F_MULTI);
+			if (nlh == NULL)
+				break;
+
+			bpm = nlmsg_data(nlh);
+			memset(bpm, 0, sizeof(*bpm));
+			bpm->ifindex = dev->ifindex;
+			if (br_mdb_fill_info(skb, cb, dev) < 0)
+				goto out;
+			if (br_rports_fill_info(skb, &br->multicast_ctx) < 0)
+				goto out;
+
+			cb->args[1] = 0;
+			nlmsg_end(skb, nlh);
+		skip:
+			idx++;
+		}
+	}
 
 out:
+	if (nlh)
+		nlmsg_end(skb, nlh);
 	rcu_read_unlock();
-	nlmsg_end(skb, nlh);
-	return err;
+	cb->args[0] = idx;
+	return skb->len;
 }
 
 static int nlmsg_populate_mdb_fill(struct sk_buff *skb,
@@ -452,15 +498,13 @@ cancel:
 	return -EMSGSIZE;
 }
 
-static size_t rtnl_mdb_nlmsg_pg_size(const struct net_bridge_port_group *pg)
+static size_t rtnl_mdb_nlmsg_size(struct net_bridge_port_group *pg)
 {
+	size_t nlmsg_size = NLMSG_ALIGN(sizeof(struct br_port_msg)) +
+			    nla_total_size(sizeof(struct br_mdb_entry)) +
+			    nla_total_size(sizeof(u32));
 	struct net_bridge_group_src *ent;
-	size_t nlmsg_size, addr_size = 0;
-
-		     /* MDBA_MDB_ENTRY_INFO */
-	nlmsg_size = nla_total_size(sizeof(struct br_mdb_entry)) +
-		     /* MDBA_MDB_EATTR_TIMER */
-		     nla_total_size(sizeof(u32));
+	size_t addr_size = 0;
 
 	if (!pg)
 		goto out;
@@ -508,28 +552,16 @@ out:
 	return nlmsg_size;
 }
 
-static size_t rtnl_mdb_nlmsg_size(const struct net_bridge_port_group *pg)
-{
-	return NLMSG_ALIGN(sizeof(struct br_port_msg)) +
-	       /* MDBA_MDB */
-	       nla_total_size(0) +
-	       /* MDBA_MDB_ENTRY */
-	       nla_total_size(0) +
-	       /* Port group entry */
-	       rtnl_mdb_nlmsg_pg_size(pg);
-}
-
-static void __br_mdb_notify(struct net_device *dev,
-			    struct net_bridge_mdb_entry *mp,
-			    struct net_bridge_port_group *pg,
-			    int type, bool notify_switchdev)
+void br_mdb_notify(struct net_device *dev,
+		   struct net_bridge_mdb_entry *mp,
+		   struct net_bridge_port_group *pg,
+		   int type)
 {
 	struct net *net = dev_net(dev);
 	struct sk_buff *skb;
 	int err = -ENOBUFS;
 
-	if (notify_switchdev)
-		br_switchdev_mdb_notify(dev, mp, pg, type);
+	br_switchdev_mdb_notify(dev, mp, pg, type);
 
 	skb = nlmsg_new(rtnl_mdb_nlmsg_size(pg), GFP_ATOMIC);
 	if (!skb)
@@ -545,21 +577,6 @@ static void __br_mdb_notify(struct net_device *dev,
 	return;
 errout:
 	rtnl_set_sk_err(net, RTNLGRP_MDB, err);
-}
-
-void br_mdb_notify(struct net_device *dev,
-		   struct net_bridge_mdb_entry *mp,
-		   struct net_bridge_port_group *pg,
-		   int type)
-{
-	__br_mdb_notify(dev, mp, pg, type, true);
-}
-
-void br_mdb_flag_change_notify(struct net_device *dev,
-			       struct net_bridge_mdb_entry *mp,
-			       struct net_bridge_port_group *pg)
-{
-	__br_mdb_notify(dev, mp, pg, RTM_NEWMDB, false);
 }
 
 static int nlmsg_populate_rtr_fill(struct sk_buff *skb,
@@ -666,6 +683,60 @@ static const struct nla_policy br_mdbe_attrs_pol[MDBE_ATTR_MAX + 1] = {
 	[MDBE_ATTR_RTPROT] = NLA_POLICY_MIN(NLA_U8, RTPROT_STATIC),
 };
 
+static int validate_mdb_entry(const struct nlattr *attr,
+			      struct netlink_ext_ack *extack)
+{
+	struct br_mdb_entry *entry = nla_data(attr);
+
+	if (nla_len(attr) != sizeof(struct br_mdb_entry)) {
+		NL_SET_ERR_MSG_MOD(extack, "Invalid MDBA_SET_ENTRY attribute length");
+		return -EINVAL;
+	}
+
+	if (entry->ifindex == 0) {
+		NL_SET_ERR_MSG_MOD(extack, "Zero entry ifindex is not allowed");
+		return -EINVAL;
+	}
+
+	if (entry->addr.proto == htons(ETH_P_IP)) {
+		if (!ipv4_is_multicast(entry->addr.u.ip4)) {
+			NL_SET_ERR_MSG_MOD(extack, "IPv4 entry group address is not multicast");
+			return -EINVAL;
+		}
+		if (ipv4_is_local_multicast(entry->addr.u.ip4)) {
+			NL_SET_ERR_MSG_MOD(extack, "IPv4 entry group address is local multicast");
+			return -EINVAL;
+		}
+#if IS_ENABLED(CONFIG_IPV6)
+	} else if (entry->addr.proto == htons(ETH_P_IPV6)) {
+		if (ipv6_addr_is_ll_all_nodes(&entry->addr.u.ip6)) {
+			NL_SET_ERR_MSG_MOD(extack, "IPv6 entry group address is link-local all nodes");
+			return -EINVAL;
+		}
+#endif
+	} else if (entry->addr.proto == 0) {
+		/* L2 mdb */
+		if (!is_multicast_ether_addr(entry->addr.u.mac_addr)) {
+			NL_SET_ERR_MSG_MOD(extack, "L2 entry group is not multicast");
+			return -EINVAL;
+		}
+	} else {
+		NL_SET_ERR_MSG_MOD(extack, "Unknown entry protocol");
+		return -EINVAL;
+	}
+
+	if (entry->state != MDB_PERMANENT && entry->state != MDB_TEMPORARY) {
+		NL_SET_ERR_MSG_MOD(extack, "Unknown entry state");
+		return -EINVAL;
+	}
+	if (entry->vid >= VLAN_VID_MASK) {
+		NL_SET_ERR_MSG_MOD(extack, "Invalid entry VLAN id");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static bool is_valid_mdb_source(struct nlattr *attr, __be16 proto,
 				struct netlink_ext_ack *extack)
 {
@@ -750,7 +821,7 @@ static int br_mdb_replace_group_sg(const struct br_mdb_config *cfg,
 		mod_timer(&pg->timer,
 			  now + brmctx->multicast_membership_interval);
 	else
-		timer_delete(&pg->timer);
+		del_timer(&pg->timer);
 
 	br_mdb_notify(cfg->br->dev, mp, pg, RTM_NEWMDB);
 
@@ -871,7 +942,7 @@ static int br_mdb_add_group_src(const struct br_mdb_config *cfg,
 	    cfg->entry->state == MDB_TEMPORARY)
 		mod_timer(&ent->timer, now + br_multicast_gmi(brmctx));
 	else
-		timer_delete(&ent->timer);
+		del_timer(&ent->timer);
 
 	/* Install a (S, G) forwarding entry for the source. */
 	err = br_mdb_add_group_src_fwd(cfg, &src->addr, brmctx, extack);
@@ -971,7 +1042,7 @@ static int br_mdb_replace_group_star_g(const struct br_mdb_config *cfg,
 		mod_timer(&pg->timer,
 			  now + brmctx->multicast_membership_interval);
 	else
-		timer_delete(&pg->timer);
+		del_timer(&pg->timer);
 
 	br_mdb_notify(cfg->br->dev, mp, pg, RTM_NEWMDB);
 
@@ -1058,7 +1129,7 @@ static int br_mdb_add_group(const struct br_mdb_config *cfg,
 
 	/* host join */
 	if (!port) {
-		if (mp->host_joined && !(cfg->nlflags & NLM_F_REPLACE)) {
+		if (mp->host_joined) {
 			NL_SET_ERR_MSG_MOD(extack, "Group is already joined by host");
 			return -EEXIST;
 		}
@@ -1228,16 +1299,49 @@ static int br_mdb_config_attrs_init(struct nlattr *set_attrs,
 	return 0;
 }
 
-static int br_mdb_config_init(struct br_mdb_config *cfg, struct net_device *dev,
-			      struct nlattr *tb[], u16 nlmsg_flags,
+static const struct nla_policy mdba_policy[MDBA_SET_ENTRY_MAX + 1] = {
+	[MDBA_SET_ENTRY_UNSPEC] = { .strict_start_type = MDBA_SET_ENTRY_ATTRS + 1 },
+	[MDBA_SET_ENTRY] = NLA_POLICY_VALIDATE_FN(NLA_BINARY,
+						  validate_mdb_entry,
+						  sizeof(struct br_mdb_entry)),
+	[MDBA_SET_ENTRY_ATTRS] = { .type = NLA_NESTED },
+};
+
+static int br_mdb_config_init(struct net *net, const struct nlmsghdr *nlh,
+			      struct br_mdb_config *cfg,
 			      struct netlink_ext_ack *extack)
 {
-	struct net *net = dev_net(dev);
+	struct nlattr *tb[MDBA_SET_ENTRY_MAX + 1];
+	struct br_port_msg *bpm;
+	struct net_device *dev;
+	int err;
+
+	err = nlmsg_parse_deprecated(nlh, sizeof(*bpm), tb,
+				     MDBA_SET_ENTRY_MAX, mdba_policy, extack);
+	if (err)
+		return err;
 
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->filter_mode = MCAST_EXCLUDE;
 	cfg->rt_protocol = RTPROT_STATIC;
-	cfg->nlflags = nlmsg_flags;
+	cfg->nlflags = nlh->nlmsg_flags;
+
+	bpm = nlmsg_data(nlh);
+	if (!bpm->ifindex) {
+		NL_SET_ERR_MSG_MOD(extack, "Invalid bridge ifindex");
+		return -EINVAL;
+	}
+
+	dev = __dev_get_by_index(net, bpm->ifindex);
+	if (!dev) {
+		NL_SET_ERR_MSG_MOD(extack, "Bridge device doesn't exist");
+		return -ENODEV;
+	}
+
+	if (!netif_is_bridge_master(dev)) {
+		NL_SET_ERR_MSG_MOD(extack, "Device is not a bridge");
+		return -EOPNOTSUPP;
+	}
 
 	cfg->br = netdev_priv(dev);
 
@@ -1248,6 +1352,11 @@ static int br_mdb_config_init(struct br_mdb_config *cfg, struct net_device *dev,
 
 	if (!br_opt_get(cfg->br, BROPT_MULTICAST_ENABLED)) {
 		NL_SET_ERR_MSG_MOD(extack, "Bridge's multicast processing is disabled");
+		return -EINVAL;
+	}
+
+	if (NL_REQ_ATTR_CHECK(extack, NULL, tb, MDBA_SET_ENTRY)) {
+		NL_SET_ERR_MSG_MOD(extack, "Missing MDBA_SET_ENTRY attribute");
 		return -EINVAL;
 	}
 
@@ -1274,12 +1383,6 @@ static int br_mdb_config_init(struct br_mdb_config *cfg, struct net_device *dev,
 		}
 	}
 
-	if (cfg->entry->addr.proto == htons(ETH_P_IP) &&
-	    ipv4_is_zeronet(cfg->entry->addr.u.ip4)) {
-		NL_SET_ERR_MSG_MOD(extack, "IPv4 entry group address 0.0.0.0 is not allowed");
-		return -EINVAL;
-	}
-
 	if (tb[MDBA_SET_ENTRY_ATTRS])
 		return br_mdb_config_attrs_init(tb[MDBA_SET_ENTRY_ATTRS], cfg,
 						extack);
@@ -1294,15 +1397,16 @@ static void br_mdb_config_fini(struct br_mdb_config *cfg)
 	br_mdb_config_src_list_fini(cfg);
 }
 
-int br_mdb_add(struct net_device *dev, struct nlattr *tb[], u16 nlmsg_flags,
-	       struct netlink_ext_ack *extack)
+static int br_mdb_add(struct sk_buff *skb, struct nlmsghdr *nlh,
+		      struct netlink_ext_ack *extack)
 {
+	struct net *net = sock_net(skb->sk);
 	struct net_bridge_vlan_group *vg;
 	struct net_bridge_vlan *v;
 	struct br_mdb_config cfg;
 	int err;
 
-	err = br_mdb_config_init(&cfg, dev, tb, nlmsg_flags, extack);
+	err = br_mdb_config_init(net, nlh, &cfg, extack);
 	if (err)
 		return err;
 
@@ -1396,15 +1500,16 @@ unlock:
 	return err;
 }
 
-int br_mdb_del(struct net_device *dev, struct nlattr *tb[],
-	       struct netlink_ext_ack *extack)
+static int br_mdb_del(struct sk_buff *skb, struct nlmsghdr *nlh,
+		      struct netlink_ext_ack *extack)
 {
+	struct net *net = sock_net(skb->sk);
 	struct net_bridge_vlan_group *vg;
 	struct net_bridge_vlan *v;
 	struct br_mdb_config cfg;
 	int err;
 
-	err = br_mdb_config_init(&cfg, dev, tb, 0, extack);
+	err = br_mdb_config_init(net, nlh, &cfg, extack);
 	if (err)
 		return err;
 
@@ -1430,293 +1535,16 @@ int br_mdb_del(struct net_device *dev, struct nlattr *tb[],
 	return err;
 }
 
-struct br_mdb_flush_desc {
-	u32 port_ifindex;
-	u16 vid;
-	u8 rt_protocol;
-	u8 state;
-	u8 state_mask;
-};
-
-static const struct nla_policy br_mdbe_attrs_del_bulk_pol[MDBE_ATTR_MAX + 1] = {
-	[MDBE_ATTR_RTPROT] = NLA_POLICY_MIN(NLA_U8, RTPROT_STATIC),
-	[MDBE_ATTR_STATE_MASK] = NLA_POLICY_MASK(NLA_U8, MDB_PERMANENT),
-};
-
-static int br_mdb_flush_desc_init(struct br_mdb_flush_desc *desc,
-				  struct nlattr *tb[],
-				  struct netlink_ext_ack *extack)
+void br_mdb_init(void)
 {
-	struct br_mdb_entry *entry = nla_data(tb[MDBA_SET_ENTRY]);
-	struct nlattr *mdbe_attrs[MDBE_ATTR_MAX + 1];
-	int err;
-
-	desc->port_ifindex = entry->ifindex;
-	desc->vid = entry->vid;
-	desc->state = entry->state;
-
-	if (!tb[MDBA_SET_ENTRY_ATTRS])
-		return 0;
-
-	err = nla_parse_nested(mdbe_attrs, MDBE_ATTR_MAX,
-			       tb[MDBA_SET_ENTRY_ATTRS],
-			       br_mdbe_attrs_del_bulk_pol, extack);
-	if (err)
-		return err;
-
-	if (mdbe_attrs[MDBE_ATTR_STATE_MASK])
-		desc->state_mask = nla_get_u8(mdbe_attrs[MDBE_ATTR_STATE_MASK]);
-
-	if (mdbe_attrs[MDBE_ATTR_RTPROT])
-		desc->rt_protocol = nla_get_u8(mdbe_attrs[MDBE_ATTR_RTPROT]);
-
-	return 0;
+	rtnl_register_module(THIS_MODULE, PF_BRIDGE, RTM_GETMDB, NULL, br_mdb_dump, 0);
+	rtnl_register_module(THIS_MODULE, PF_BRIDGE, RTM_NEWMDB, br_mdb_add, NULL, 0);
+	rtnl_register_module(THIS_MODULE, PF_BRIDGE, RTM_DELMDB, br_mdb_del, NULL, 0);
 }
 
-static void br_mdb_flush_host(struct net_bridge *br,
-			      struct net_bridge_mdb_entry *mp,
-			      const struct br_mdb_flush_desc *desc)
+void br_mdb_uninit(void)
 {
-	u8 state;
-
-	if (desc->port_ifindex && desc->port_ifindex != br->dev->ifindex)
-		return;
-
-	if (desc->rt_protocol)
-		return;
-
-	state = br_group_is_l2(&mp->addr) ? MDB_PERMANENT : 0;
-	if (desc->state_mask && (state & desc->state_mask) != desc->state)
-		return;
-
-	br_multicast_host_leave(mp, true);
-	if (!mp->ports && netif_running(br->dev))
-		mod_timer(&mp->timer, jiffies);
-}
-
-static void br_mdb_flush_pgs(struct net_bridge *br,
-			     struct net_bridge_mdb_entry *mp,
-			     const struct br_mdb_flush_desc *desc)
-{
-	struct net_bridge_port_group __rcu **pp;
-	struct net_bridge_port_group *p;
-
-	for (pp = &mp->ports; (p = mlock_dereference(*pp, br)) != NULL;) {
-		u8 state;
-
-		if (desc->port_ifindex &&
-		    desc->port_ifindex != p->key.port->dev->ifindex) {
-			pp = &p->next;
-			continue;
-		}
-
-		if (desc->rt_protocol && desc->rt_protocol != p->rt_protocol) {
-			pp = &p->next;
-			continue;
-		}
-
-		state = p->flags & MDB_PG_FLAGS_PERMANENT ? MDB_PERMANENT : 0;
-		if (desc->state_mask &&
-		    (state & desc->state_mask) != desc->state) {
-			pp = &p->next;
-			continue;
-		}
-
-		br_multicast_del_pg(mp, p, pp);
-	}
-}
-
-static void br_mdb_flush(struct net_bridge *br,
-			 const struct br_mdb_flush_desc *desc)
-{
-	struct net_bridge_mdb_entry *mp;
-
-	spin_lock_bh(&br->multicast_lock);
-
-	/* Safe variant is not needed because entries are removed from the list
-	 * upon group timer expiration or bridge deletion.
-	 */
-	hlist_for_each_entry(mp, &br->mdb_list, mdb_node) {
-		if (desc->vid && desc->vid != mp->addr.vid)
-			continue;
-
-		br_mdb_flush_host(br, mp, desc);
-		br_mdb_flush_pgs(br, mp, desc);
-	}
-
-	spin_unlock_bh(&br->multicast_lock);
-}
-
-int br_mdb_del_bulk(struct net_device *dev, struct nlattr *tb[],
-		    struct netlink_ext_ack *extack)
-{
-	struct net_bridge *br = netdev_priv(dev);
-	struct br_mdb_flush_desc desc = {};
-	int err;
-
-	err = br_mdb_flush_desc_init(&desc, tb, extack);
-	if (err)
-		return err;
-
-	br_mdb_flush(br, &desc);
-
-	return 0;
-}
-
-static const struct nla_policy br_mdbe_attrs_get_pol[MDBE_ATTR_MAX + 1] = {
-	[MDBE_ATTR_SOURCE] = NLA_POLICY_RANGE(NLA_BINARY,
-					      sizeof(struct in_addr),
-					      sizeof(struct in6_addr)),
-};
-
-static int br_mdb_get_parse(struct net_device *dev, struct nlattr *tb[],
-			    struct br_ip *group, struct netlink_ext_ack *extack)
-{
-	struct br_mdb_entry *entry = nla_data(tb[MDBA_GET_ENTRY]);
-	struct nlattr *mdbe_attrs[MDBE_ATTR_MAX + 1];
-	int err;
-
-	if (!tb[MDBA_GET_ENTRY_ATTRS]) {
-		__mdb_entry_to_br_ip(entry, group, NULL);
-		return 0;
-	}
-
-	err = nla_parse_nested(mdbe_attrs, MDBE_ATTR_MAX,
-			       tb[MDBA_GET_ENTRY_ATTRS], br_mdbe_attrs_get_pol,
-			       extack);
-	if (err)
-		return err;
-
-	if (mdbe_attrs[MDBE_ATTR_SOURCE] &&
-	    !is_valid_mdb_source(mdbe_attrs[MDBE_ATTR_SOURCE],
-				 entry->addr.proto, extack))
-		return -EINVAL;
-
-	__mdb_entry_to_br_ip(entry, group, mdbe_attrs);
-
-	return 0;
-}
-
-static struct sk_buff *
-br_mdb_get_reply_alloc(const struct net_bridge_mdb_entry *mp)
-{
-	struct net_bridge_port_group *pg;
-	size_t nlmsg_size;
-
-	nlmsg_size = NLMSG_ALIGN(sizeof(struct br_port_msg)) +
-		     /* MDBA_MDB */
-		     nla_total_size(0) +
-		     /* MDBA_MDB_ENTRY */
-		     nla_total_size(0);
-
-	if (mp->host_joined)
-		nlmsg_size += rtnl_mdb_nlmsg_pg_size(NULL);
-
-	for (pg = mlock_dereference(mp->ports, mp->br); pg;
-	     pg = mlock_dereference(pg->next, mp->br))
-		nlmsg_size += rtnl_mdb_nlmsg_pg_size(pg);
-
-	return nlmsg_new(nlmsg_size, GFP_ATOMIC);
-}
-
-static int br_mdb_get_reply_fill(struct sk_buff *skb,
-				 struct net_bridge_mdb_entry *mp, u32 portid,
-				 u32 seq)
-{
-	struct nlattr *mdb_nest, *mdb_entry_nest;
-	struct net_bridge_port_group *pg;
-	struct br_port_msg *bpm;
-	struct nlmsghdr *nlh;
-	int err;
-
-	nlh = nlmsg_put(skb, portid, seq, RTM_NEWMDB, sizeof(*bpm), 0);
-	if (!nlh)
-		return -EMSGSIZE;
-
-	bpm = nlmsg_data(nlh);
-	memset(bpm, 0, sizeof(*bpm));
-	bpm->family  = AF_BRIDGE;
-	bpm->ifindex = mp->br->dev->ifindex;
-	mdb_nest = nla_nest_start_noflag(skb, MDBA_MDB);
-	if (!mdb_nest) {
-		err = -EMSGSIZE;
-		goto cancel;
-	}
-	mdb_entry_nest = nla_nest_start_noflag(skb, MDBA_MDB_ENTRY);
-	if (!mdb_entry_nest) {
-		err = -EMSGSIZE;
-		goto cancel;
-	}
-
-	if (mp->host_joined) {
-		err = __mdb_fill_info(skb, mp, NULL);
-		if (err)
-			goto cancel;
-	}
-
-	for (pg = mlock_dereference(mp->ports, mp->br); pg;
-	     pg = mlock_dereference(pg->next, mp->br)) {
-		err = __mdb_fill_info(skb, mp, pg);
-		if (err)
-			goto cancel;
-	}
-
-	nla_nest_end(skb, mdb_entry_nest);
-	nla_nest_end(skb, mdb_nest);
-	nlmsg_end(skb, nlh);
-
-	return 0;
-
-cancel:
-	nlmsg_cancel(skb, nlh);
-	return err;
-}
-
-int br_mdb_get(struct net_device *dev, struct nlattr *tb[], u32 portid, u32 seq,
-	       struct netlink_ext_ack *extack)
-{
-	struct net_bridge *br = netdev_priv(dev);
-	struct net_bridge_mdb_entry *mp;
-	struct sk_buff *skb;
-	struct br_ip group;
-	int err;
-
-	err = br_mdb_get_parse(dev, tb, &group, extack);
-	if (err)
-		return err;
-
-	/* Hold the multicast lock to ensure that the MDB entry does not change
-	 * between the time the reply size is determined and when the reply is
-	 * filled in.
-	 */
-	spin_lock_bh(&br->multicast_lock);
-
-	mp = br_mdb_ip_get(br, &group);
-	if (!mp || (!mp->ports && !mp->host_joined)) {
-		NL_SET_ERR_MSG_MOD(extack, "MDB entry not found");
-		err = -ENOENT;
-		goto unlock;
-	}
-
-	skb = br_mdb_get_reply_alloc(mp);
-	if (!skb) {
-		err = -ENOMEM;
-		goto unlock;
-	}
-
-	err = br_mdb_get_reply_fill(skb, mp, portid, seq);
-	if (err) {
-		NL_SET_ERR_MSG_MOD(extack, "Failed to fill MDB get reply");
-		goto free;
-	}
-
-	spin_unlock_bh(&br->multicast_lock);
-
-	return rtnl_unicast(skb, dev_net(dev), portid);
-
-free:
-	kfree_skb(skb);
-unlock:
-	spin_unlock_bh(&br->multicast_lock);
-	return err;
+	rtnl_unregister(PF_BRIDGE, RTM_GETMDB);
+	rtnl_unregister(PF_BRIDGE, RTM_NEWMDB);
+	rtnl_unregister(PF_BRIDGE, RTM_DELMDB);
 }

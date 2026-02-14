@@ -9,6 +9,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/perf_event.h>
 #include <linux/platform_device.h>
 #include <linux/printk.h>
@@ -154,14 +156,10 @@ static int meson_ddr_perf_event_add(struct perf_event *event, int flags)
 	u64 config2 = event->attr.config2;
 	int i;
 
-	for_each_set_bit(i,
-			 (const unsigned long *)&config1,
-			 BITS_PER_TYPE(config1))
+	for_each_set_bit(i, (const unsigned long *)&config1, sizeof(config1))
 		meson_ddr_set_axi_filter(event, i);
 
-	for_each_set_bit(i,
-			 (const unsigned long *)&config2,
-			 BITS_PER_TYPE(config2))
+	for_each_set_bit(i, (const unsigned long *)&config2, sizeof(config2))
 		meson_ddr_set_axi_filter(event, i + 64);
 
 	if (flags & PERF_EF_START)
@@ -492,7 +490,6 @@ int meson_ddr_pmu_create(struct platform_device *pdev)
 	*pmu = (struct ddr_pmu) {
 		.pmu = {
 			.module		= THIS_MODULE,
-			.parent		= &pdev->dev,
 			.capabilities	= PERF_PMU_CAP_NO_EXCLUDE,
 			.task_ctx_nr	= perf_invalid_context,
 			.attr_groups	= attr_groups,
@@ -511,7 +508,7 @@ int meson_ddr_pmu_create(struct platform_device *pdev)
 
 	fmt_attr_fill(pmu->info.hw_info->fmt_attr);
 
-	pmu->cpu = raw_smp_processor_id();
+	pmu->cpu = smp_processor_id();
 
 	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, DDR_PERF_DEV_NAME);
 	if (!name)

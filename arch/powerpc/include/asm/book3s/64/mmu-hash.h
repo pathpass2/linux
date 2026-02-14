@@ -130,7 +130,7 @@
 #define POWER9_TLB_SETS_HASH	256	/* # sets in POWER9 TLB Hash mode */
 #define POWER9_TLB_SETS_RADIX	128	/* # sets in POWER9 TLB Radix mode */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct mmu_hash_ops {
 	void            (*hpte_invalidate)(unsigned long slot,
@@ -220,7 +220,7 @@ static inline unsigned long get_sllp_encoding(int psize)
 	return sllp;
 }
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 /*
  * Segment sizes.
@@ -248,7 +248,7 @@ static inline unsigned long get_sllp_encoding(int psize)
 #define LP_BITS		8
 #define LP_MASK(i)	((0xFF >> (i)) << LP_SHIFT)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 static inline int slb_vsid_shift(int ssize)
 {
@@ -524,6 +524,7 @@ void slb_save_contents(struct slb_entry *slb_ptr);
 void slb_dump_contents(struct slb_entry *slb_ptr);
 
 extern void slb_vmalloc_update(void);
+void preload_new_slb_context(unsigned long start, unsigned long sp);
 
 #ifdef CONFIG_PPC_64S_HASH_MMU
 void slb_set_size(u16 size);
@@ -531,7 +532,7 @@ void slb_set_size(u16 size);
 static inline void slb_set_size(u16 size) { }
 #endif
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 /*
  * VSID allocation (256MB segment)
@@ -667,7 +668,7 @@ static inline void slb_set_size(u16 size) { }
 #define SLICE_ARRAY_SIZE	(H_PGTABLE_RANGE >> 41)
 #define LOW_SLICE_ARRAY_SZ	(BITS_PER_LONG / BITS_PER_BYTE)
 #define TASK_SLICE_ARRAY_SZ(x)	((x)->hash_context->slb_addr_limit >> 41)
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #ifdef CONFIG_PPC_SUBPAGE_PROT
 /*
@@ -880,5 +881,5 @@ static inline unsigned long mk_vsid_data(unsigned long ea, int ssize,
 	return __mk_vsid_data(get_kernel_vsid(ea, ssize), ssize, flags);
 }
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* _ASM_POWERPC_BOOK3S_64_MMU_HASH_H_ */

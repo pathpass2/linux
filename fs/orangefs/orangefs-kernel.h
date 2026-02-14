@@ -32,8 +32,6 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/fs.h>
-#include <linux/fs_context.h>
-#include <linux/fs_parser.h>
 #include <linux/vmalloc.h>
 
 #include <linux/aio.h>
@@ -55,7 +53,7 @@
 #include <linux/exportfs.h>
 #include <linux/hashtable.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "orangefs-dev-proto.h"
 
@@ -95,7 +93,17 @@ enum orangefs_vfs_op_states {
 	OP_VFS_STATE_GIVEN_UP = 16,
 };
 
-extern const struct xattr_handler * const orangefs_xattr_handlers[];
+/*
+ * orangefs kernel memory related flags
+ */
+
+#if (defined CONFIG_DEBUG_SLAB)
+#define ORANGEFS_CACHE_CREATE_FLAGS SLAB_RED_ZONE
+#else
+#define ORANGEFS_CACHE_CREATE_FLAGS 0
+#endif
+
+extern const struct xattr_handler *orangefs_xattr_handlers[];
 
 extern struct posix_acl *orangefs_get_acl(struct inode *inode, int type, bool rcu);
 extern int orangefs_set_acl(struct mnt_idmap *idmap,
@@ -330,9 +338,11 @@ void purge_waiting_ops(void);
  * defined in super.c
  */
 extern uint64_t orangefs_features;
-extern const struct fs_parameter_spec orangefs_fs_param_spec[];
 
-int orangefs_init_fs_context(struct fs_context *fc);
+struct dentry *orangefs_mount(struct file_system_type *fst,
+			   int flags,
+			   const char *devname,
+			   void *data);
 
 void orangefs_kill_sb(struct super_block *sb);
 int orangefs_remount(struct orangefs_sb_info_s *);
@@ -360,8 +370,7 @@ int orangefs_getattr(struct mnt_idmap *idmap, const struct path *path,
 int orangefs_permission(struct mnt_idmap *idmap,
 			struct inode *inode, int mask);
 
-int orangefs_update_time(struct inode *inode, enum fs_update_time type,
-		unsigned int flags);
+int orangefs_update_time(struct inode *, struct timespec64 *, int);
 
 /*
  * defined in xattr.c
@@ -463,7 +472,7 @@ int service_operation(struct orangefs_kernel_op_s *op,
 	((ORANGEFS_SB(inode->i_sb)->flags & ORANGEFS_OPT_INTR) ? \
 		ORANGEFS_OP_INTERRUPTIBLE : 0)
 
-#define fill_default_sys_attrs(sys_attr, mode)			\
+#define fill_default_sys_attrs(sys_attr, type, mode)			\
 do {									\
 	sys_attr.owner = from_kuid(&init_user_ns, current_fsuid()); \
 	sys_attr.group = from_kgid(&init_user_ns, current_fsgid()); \

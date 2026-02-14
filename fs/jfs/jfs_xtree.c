@@ -49,6 +49,26 @@
 
 #define XT_PAGE(IP, MP) BT_PAGE(IP, MP, xtpage_t, i_xtroot)
 
+/* get page buffer for specified block address */
+/* ToDo: Replace this ugly macro with a function */
+#define XT_GETPAGE(IP, BN, MP, SIZE, P, RC)				\
+do {									\
+	BT_GETPAGE(IP, BN, MP, xtpage_t, SIZE, P, RC, i_xtroot);	\
+	if (!(RC)) {							\
+		if ((le16_to_cpu((P)->header.nextindex) < XTENTRYSTART) || \
+		    (le16_to_cpu((P)->header.nextindex) >		\
+		     le16_to_cpu((P)->header.maxentry)) ||		\
+		    (le16_to_cpu((P)->header.maxentry) >		\
+		     (((BN) == 0) ? XTROOTMAXSLOT : PSIZE >> L2XTSLOTSIZE))) { \
+			jfs_error((IP)->i_sb,				\
+				  "XT_GETPAGE: xtree page corrupt\n");	\
+			BT_PUTPAGE(MP);					\
+			MP = NULL;					\
+			RC = -EIO;					\
+		}							\
+	}								\
+} while (0)
+
 /* for consistency */
 #define XT_PUTPAGE(MP) BT_PUTPAGE(MP)
 
@@ -93,42 +113,6 @@ static int xtSplitPage(tid_t tid, struct inode *ip, struct xtsplit * split,
 
 static int xtSplitRoot(tid_t tid, struct inode *ip,
 		       struct xtsplit * split, struct metapage ** rmpp);
-
-/*
- *	xt_getpage()
- *
- * function:	get the page buffer for a specified block address.
- *
- * parameters:
- *	ip      - pointer to the inode
- *	bn      - block number (s64) of the xtree page to be retrieved;
- *	mp      - pointer to a metapage pointer where the page buffer is returned;
- *
- * returns:
- *      A pointer to the xtree page (xtpage_t) on success, -EIO on error.
- */
-
-static inline xtpage_t *xt_getpage(struct inode *ip, s64 bn, struct metapage **mp)
-{
-	xtpage_t *p;
-	int rc;
-
-	BT_GETPAGE(ip, bn, *mp, xtpage_t, PSIZE, p, rc, i_xtroot);
-
-	if (rc)
-		return ERR_PTR(rc);
-	if ((le16_to_cpu(p->header.nextindex) < XTENTRYSTART) ||
-		(le16_to_cpu(p->header.nextindex) >
-			le16_to_cpu(p->header.maxentry)) ||
-		(le16_to_cpu(p->header.maxentry) >
-			((bn == 0) ? XTROOTMAXSLOT : PSIZE >> L2XTSLOTSIZE))) {
-		jfs_error(ip->i_sb, "xt_getpage: xtree page corrupt\n");
-		BT_PUTPAGE(*mp);
-		*mp = NULL;
-		return ERR_PTR(-EIO);
-	}
-	return p;
-}
 
 /*
  *	xtLookup()
@@ -232,6 +216,7 @@ static int xtSearch(struct inode *ip, s64 xoff,	s64 *nextp,
 		    int *cmpp, struct btstack * btstack, int flag)
 {
 	struct jfs_inode_info *jfs_ip = JFS_IP(ip);
+	int rc = 0;
 	int cmp = 1;		/* init for empty page */
 	s64 bn;			/* block number */
 	struct metapage *mp;	/* page buffer */
@@ -267,9 +252,9 @@ static int xtSearch(struct inode *ip, s64 xoff,	s64 *nextp,
 	 */
 	for (bn = 0;;) {
 		/* get/pin the page to search */
-		p = xt_getpage(ip, bn, &mp);
-		if (IS_ERR(p))
-			return PTR_ERR(p);
+		XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+		if (rc)
+			return rc;
 
 		/* try sequential access heuristics with the previous
 		 * access entry in target leaf page:
@@ -822,10 +807,10 @@ xtSplitUp(tid_t tid,
 		 * insert router entry in parent for new right child page <rp>
 		 */
 		/* get/pin the parent page <sp> */
-		sp = xt_getpage(ip, parent->bn, &smp);
-		if (IS_ERR(sp)) {
+		XT_GETPAGE(ip, parent->bn, smp, PSIZE, sp, rc);
+		if (rc) {
 			XT_PUTPAGE(rcmp);
-			return PTR_ERR(sp);
+			return rc;
 		}
 
 		/*
@@ -1077,10 +1062,10 @@ xtSplitPage(tid_t tid, struct inode *ip,
 	 * update previous pointer of old next/right page of <sp>
 	 */
 	if (nextbn != 0) {
-		p = xt_getpage(ip, nextbn, &mp);
-		if (IS_ERR(p)) {
+		XT_GETPAGE(ip, nextbn, mp, PSIZE, p, rc);
+		if (rc) {
 			XT_PUTPAGE(rmp);
-			return PTR_ERR(p);
+			goto clean_up;
 		}
 
 		BT_MARK_DIRTY(mp, ip);
@@ -1228,7 +1213,7 @@ xtSplitRoot(tid_t tid,
 	struct xtlock *xtlck;
 	int rc;
 
-	sp = (xtpage_t *) &JFS_IP(ip)->i_xtroot;
+	sp = &JFS_IP(ip)->i_xtroot;
 
 	INCREMENT(xtStat.split);
 
@@ -1432,9 +1417,9 @@ int xtExtend(tid_t tid,		/* transaction id */
 			return rc;
 
 		/* get back old page */
-		p = xt_getpage(ip, bn, &mp);
-		if (IS_ERR(p))
-			return PTR_ERR(p);
+		XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+		if (rc)
+			return rc;
 		/*
 		 * if leaf root has been split, original root has been
 		 * copied to new child page, i.e., original entry now
@@ -1448,9 +1433,9 @@ int xtExtend(tid_t tid,		/* transaction id */
 			XT_PUTPAGE(mp);
 
 			/* get new child page */
-			p = xt_getpage(ip, bn, &mp);
-			if (IS_ERR(p))
-				return PTR_ERR(p);
+			XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+			if (rc)
+				return rc;
 
 			BT_MARK_DIRTY(mp, ip);
 			if (!test_cflag(COMMIT_Nolink, ip)) {
@@ -1726,9 +1711,9 @@ int xtUpdate(tid_t tid, struct inode *ip, xad_t * nxad)
 			return rc;
 
 		/* get back old page */
-		p = xt_getpage(ip, bn, &mp);
-		if (IS_ERR(p))
-			return PTR_ERR(p);
+		XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+		if (rc)
+			return rc;
 		/*
 		 * if leaf root has been split, original root has been
 		 * copied to new child page, i.e., original entry now
@@ -1742,9 +1727,9 @@ int xtUpdate(tid_t tid, struct inode *ip, xad_t * nxad)
 			XT_PUTPAGE(mp);
 
 			/* get new child page */
-			p = xt_getpage(ip, bn, &mp);
-			if (IS_ERR(p))
-				return PTR_ERR(p);
+			XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+			if (rc)
+				return rc;
 
 			BT_MARK_DIRTY(mp, ip);
 			if (!test_cflag(COMMIT_Nolink, ip)) {
@@ -1803,9 +1788,9 @@ int xtUpdate(tid_t tid, struct inode *ip, xad_t * nxad)
 		XT_PUTPAGE(mp);
 
 		/* get new right page */
-		p = xt_getpage(ip, bn, &mp);
-		if (IS_ERR(p))
-			return PTR_ERR(p);
+		XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+		if (rc)
+			return rc;
 
 		BT_MARK_DIRTY(mp, ip);
 		if (!test_cflag(COMMIT_Nolink, ip)) {
@@ -1879,9 +1864,9 @@ printf("xtUpdate.updateLeft.split p:0x%p\n", p);
 			return rc;
 
 		/* get back old page */
-		p = xt_getpage(ip, bn, &mp);
-		if (IS_ERR(p))
-			return PTR_ERR(p);
+		XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+		if (rc)
+			return rc;
 
 		/*
 		 * if leaf root has been split, original root has been
@@ -1896,9 +1881,9 @@ printf("xtUpdate.updateLeft.split p:0x%p\n", p);
 			XT_PUTPAGE(mp);
 
 			/* get new child page */
-			p = xt_getpage(ip, bn, &mp);
-			if (IS_ERR(p))
-				return PTR_ERR(p);
+			XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+			if (rc)
+				return rc;
 
 			BT_MARK_DIRTY(mp, ip);
 			if (!test_cflag(COMMIT_Nolink, ip)) {
@@ -2113,7 +2098,7 @@ int xtAppend(tid_t tid,		/* transaction id */
  */
 void xtInitRoot(tid_t tid, struct inode *ip)
 {
-	xtroot_t *p;
+	xtpage_t *p;
 
 	/*
 	 * acquire a transaction lock on the root
@@ -2202,6 +2187,7 @@ void xtInitRoot(tid_t tid, struct inode *ip)
  */
 s64 xtTruncate(tid_t tid, struct inode *ip, s64 newsize, int flag)
 {
+	int rc = 0;
 	s64 teof;
 	struct metapage *mp;
 	xtpage_t *p;
@@ -2282,9 +2268,9 @@ s64 xtTruncate(tid_t tid, struct inode *ip, s64 newsize, int flag)
 	 * first access of each page:
 	 */
       getPage:
-	p = xt_getpage(ip, bn, &mp);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
+	XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+	if (rc)
+		return rc;
 
 	/* process entries backward from last index */
 	index = le16_to_cpu(p->header.nextindex) - 1;
@@ -2520,9 +2506,9 @@ s64 xtTruncate(tid_t tid, struct inode *ip, s64 newsize, int flag)
 
 	/* get back the parent page */
 	bn = parent->bn;
-	p = xt_getpage(ip, bn, &mp);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
+	XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+	if (rc)
+		return rc;
 
 	index = parent->index;
 
@@ -2805,9 +2791,9 @@ s64 xtTruncate_pmap(tid_t tid, struct inode *ip, s64 committed_size)
 		 * first access of each page:
 		 */
       getPage:
-		p = xt_getpage(ip, bn, &mp);
-		if (IS_ERR(p))
-			return PTR_ERR(p);
+		XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+		if (rc)
+			return rc;
 
 		/* process entries backward from last index */
 		index = le16_to_cpu(p->header.nextindex) - 1;
@@ -2850,9 +2836,9 @@ s64 xtTruncate_pmap(tid_t tid, struct inode *ip, s64 committed_size)
 
 	/* get back the parent page */
 	bn = parent->bn;
-	p = xt_getpage(ip, bn, &mp);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
+	XT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
+	if (rc)
+		return rc;
 
 	index = parent->index;
 

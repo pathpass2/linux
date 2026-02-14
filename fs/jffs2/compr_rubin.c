@@ -276,6 +276,11 @@ static int rubin_do_compress(int bit_divider, int *bits, unsigned char *data_in,
 
 	end_rubin(&rs);
 
+	if (outpos > pos) {
+		/* We failed */
+		return -1;
+	}
+
 	/* Tell the caller how much we managed to compress,
 	 * and how much space it took */
 

@@ -31,28 +31,30 @@ struct snd_seq_port_info32 {
 static int snd_seq_call_port_info_ioctl(struct snd_seq_client *client, unsigned int cmd,
 					struct snd_seq_port_info32 __user *data32)
 {
-	int err;
-	struct snd_seq_port_info *data __free(kfree) =
-		kmalloc(sizeof(*data), GFP_KERNEL);
+	int err = -EFAULT;
+	struct snd_seq_port_info *data;
 
+	data = kmalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
 	if (copy_from_user(data, data32, sizeof(*data32)) ||
 	    get_user(data->flags, &data32->flags) ||
 	    get_user(data->time_queue, &data32->time_queue))
-		return -EFAULT;
+		goto error;
 	data->kernel = NULL;
 
 	err = snd_seq_kernel_client_ctl(client->number, cmd, data);
 	if (err < 0)
-		return err;
+		goto error;
 
 	if (copy_to_user(data32, data, sizeof(*data32)) ||
 	    put_user(data->flags, &data32->flags) ||
 	    put_user(data->time_queue, &data32->time_queue))
-		return -EFAULT;
+		err = -EFAULT;
 
+ error:
+	kfree(data);
 	return err;
 }
 
@@ -79,13 +81,10 @@ static long snd_seq_ioctl_compat(struct file *file, unsigned int cmd, unsigned l
 
 	switch (cmd) {
 	case SNDRV_SEQ_IOCTL_PVERSION:
-	case SNDRV_SEQ_IOCTL_USER_PVERSION:
 	case SNDRV_SEQ_IOCTL_CLIENT_ID:
 	case SNDRV_SEQ_IOCTL_SYSTEM_INFO:
 	case SNDRV_SEQ_IOCTL_GET_CLIENT_INFO:
 	case SNDRV_SEQ_IOCTL_SET_CLIENT_INFO:
-	case SNDRV_SEQ_IOCTL_GET_CLIENT_UMP_INFO:
-	case SNDRV_SEQ_IOCTL_SET_CLIENT_UMP_INFO:
 	case SNDRV_SEQ_IOCTL_SUBSCRIBE_PORT:
 	case SNDRV_SEQ_IOCTL_UNSUBSCRIBE_PORT:
 	case SNDRV_SEQ_IOCTL_CREATE_QUEUE:

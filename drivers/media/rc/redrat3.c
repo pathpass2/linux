@@ -31,7 +31,7 @@
  * --
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/device.h>
 #include <linux/leds.h>
 #include <linux/module.h>
@@ -422,7 +422,7 @@ static int redrat3_send_cmd(int cmd, struct redrat3_dev *rr3)
 static int redrat3_enable_detector(struct redrat3_dev *rr3)
 {
 	struct device *dev = rr3->dev;
-	int ret;
+	u8 ret;
 
 	ret = redrat3_send_cmd(RR3_RC_DET_ENABLE, rr3);
 	if (ret != 0)

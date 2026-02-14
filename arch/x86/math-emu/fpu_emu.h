@@ -20,7 +20,7 @@
  */
 #define PECULIAR_486
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 #include "fpu_asm.h"
 #define	Const(x)	$##x
 #else
@@ -68,7 +68,7 @@
 
 #define FPU_Exception   Const(0x80000000)	/* Added to tag returns. */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include "fpu_system.h"
 
@@ -213,6 +213,6 @@ asmlinkage int FPU_round(FPU_REG *arg, unsigned int extent, int dummy,
 #include "fpu_proto.h"
 #endif
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _FPU_EMU_H_ */

@@ -11,7 +11,7 @@
 #ifndef __ASM_ARC_PROCESSOR_H
 #define __ASM_ARC_PROCESSOR_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/ptrace.h>
 #include <asm/dsp.h>
@@ -22,6 +22,7 @@
  * struct thread_info
  */
 struct thread_struct {
+	unsigned long ksp;	/* kernel mode stack pointer */
 	unsigned long callee_reg;	/* pointer to callee regs */
 	unsigned long fault_address;	/* dbls as brkpt holder as well */
 #ifdef CONFIG_ARC_DSP_SAVE_RESTORE_REGS
@@ -32,7 +33,9 @@ struct thread_struct {
 #endif
 };
 
-#define INIT_THREAD  { }
+#define INIT_THREAD  {                          \
+	.ksp = sizeof(init_stack) + (unsigned long) init_stack, \
+}
 
 /* Forward declaration, a strange C thing */
 struct task_struct;
@@ -53,7 +56,7 @@ struct task_struct;
  * Where about of Task's sp, fp, blink when it was last seen in kernel mode.
  * Look in process.c for details of kernel stack layout
  */
-#define TSK_K_ESP(tsk)		(task_thread_info(tsk)->ksp)
+#define TSK_K_ESP(tsk)		(tsk->thread.ksp)
 
 #define TSK_K_REG(tsk, off)	(*((unsigned long *)(TSK_K_ESP(tsk) + \
 					sizeof(struct callee_regs) + off)))
@@ -66,7 +69,7 @@ extern void start_thread(struct pt_regs * regs, unsigned long pc,
 
 extern unsigned int __get_wchan(struct task_struct *p);
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /*
  * Default System Memory Map on ARC

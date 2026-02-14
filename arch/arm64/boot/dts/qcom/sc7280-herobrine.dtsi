@@ -464,7 +464,11 @@ ap_i2c_tpm: &i2c14 {
 
 &mdss_dp_out {
 	data-lanes = <0 1>;
-	link-frequencies = /bits/ 64 <1620000000 2700000000 5400000000>;
+	link-frequencies = /bits/ 64 <1620000000 2700000000 5400000000 8100000000>;
+};
+
+&mdss_mdp {
+	status = "okay";
 };
 
 /* NVMe drive, enabled on a per-board basis */
@@ -548,7 +552,6 @@ ap_ec_spi: &spi10 {
 		pinctrl-names = "default";
 		pinctrl-0 = <&ap_ec_int_l>;
 		spi-max-frequency = <3000000>;
-		wakeup-source;
 
 		cros_ec_pwm: pwm {
 			compatible = "google,cros-ec-pwm";
@@ -621,12 +624,14 @@ ap_ec_spi: &spi10 {
 };
 
 &usb_1 {
+	status = "okay";
+};
+
+&usb_1_dwc3 {
 	dr_mode = "host";
 
 	#address-cells = <1>;
 	#size-cells = <0>;
-
-	status = "okay";
 
 	/* 2.x hub on port 1 */
 	usb_hub_2_x: hub@1 {
@@ -687,22 +692,18 @@ ap_ec_spi: &spi10 {
 };
 
 &qspi_cs0 {
-	bias-disable;		/* External pullup */
+	bias-disable;
 	drive-strength = <8>;
 };
 
 &qspi_clk {
-	bias-pull-down;		/* No external pulls */
+	bias-disable;
 	drive-strength = <8>;
 };
 
-&qspi_data0 {
-	bias-pull-down;		/* No external pulls */
-	drive-strength = <8>;
-};
-
-&qspi_data1 {
-	bias-disable;		/* External pulldown */
+&qspi_data01 {
+	/* High-Z when no transfers; nice to park the lines */
+	bias-pull-up;
 	drive-strength = <8>;
 };
 

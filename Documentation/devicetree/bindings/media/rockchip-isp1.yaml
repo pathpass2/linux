@@ -16,7 +16,6 @@ description: |
 properties:
   compatible:
     enum:
-      - fsl,imx8mp-isp
       - rockchip,px30-cif-isp
       - rockchip,rk3399-cif-isp
 
@@ -37,9 +36,9 @@ properties:
     minItems: 3
     items:
       # isp0 and isp1
-      - description: ISP clock (for imx8mp, clk)
-      - description: ISP AXI clock (for imx8mp, m_hclk)
-      - description: ISP AHB clock (for imx8mp, hclk)
+      - description: ISP clock
+      - description: ISP AXI clock
+      - description: ISP AHB clock
       # only for isp1
       - description: ISP Pixel clock
 
@@ -53,13 +52,6 @@ properties:
       # only for isp1
       - const: pclk
 
-  fsl,blk-ctrl:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    maxItems: 1
-    description:
-      A phandle to the media block control for the ISP, followed by a cell
-      containing the index of the gasket.
-
   iommus:
     maxItems: 1
 
@@ -71,16 +63,7 @@ properties:
     const: dphy
 
   power-domains:
-    minItems: 1
-    items:
-      - description: ISP power domain
-      - description: MIPI CSI-2 power domain
-
-  power-domain-names:
-    minItems: 1
-    items:
-      - const: isp
-      - const: csi2
+    maxItems: 1
 
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
@@ -107,16 +90,15 @@ properties:
         description: connection point for input on the parallel interface
 
         properties:
+          bus-type:
+            enum: [5, 6]
+
           endpoint:
             $ref: video-interfaces.yaml#
             unevaluatedProperties: false
 
-            properties:
-              bus-type:
-                enum: [5, 6]
-
-            required:
-              - bus-type
+        required:
+          - bus-type
 
     anyOf:
       - required:
@@ -130,6 +112,9 @@ required:
   - interrupts
   - clocks
   - clock-names
+  - iommus
+  - phys
+  - phy-names
   - power-domains
   - ports
 
@@ -156,38 +141,6 @@ allOf:
     then:
       required:
         - interrupt-names
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: fsl,imx8mp-isp
-    then:
-      properties:
-        clocks:
-          minItems: 4
-        clock-names:
-          minItems: 4
-        iommus: false
-        phys: false
-        phy-names: false
-        power-domains:
-          minItems: 2
-        power-domain-names:
-          minItems: 2
-      required:
-        - fsl,blk-ctrl
-        - power-domain-names
-    else:
-      properties:
-        fsl,blk-ctrl: false
-        power-domains:
-          maxItems: 1
-        power-domain-names: false
-      required:
-        - iommus
-        - phys
-        - phy-names
 
 additionalProperties: false
 
@@ -246,7 +199,6 @@ examples:
             wcam: camera@36 {
                 compatible = "ovti,ov5695";
                 reg = <0x36>;
-                clocks = <&cru SCLK_TESTCLKOUT1>;
 
                 port {
                     wcam_out: endpoint {
@@ -260,19 +212,12 @@ examples:
                 compatible = "ovti,ov2685";
                 reg = <0x3c>;
 
-                clocks = <&cru SCLK_TESTCLKOUT1>;
-                clock-names = "xvclk";
-
-                avdd-supply = <&pp2800_cam>;
-                dovdd-supply = <&pp1800>;
-                dvdd-supply = <&pp1800>;
-
-                port {
-                    ucam_out: endpoint {
-                        remote-endpoint = <&mipi_in_ucam>;
-                        data-lanes = <1>;
-                    };
-                };
+                  port {
+                      ucam_out: endpoint {
+                          remote-endpoint = <&mipi_in_ucam>;
+                          data-lanes = <1>;
+                      };
+                  };
             };
         };
     };

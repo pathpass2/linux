@@ -99,14 +99,25 @@
 			no-map;
 		};
 
-		rmtfs_mem: rmtfs-region@f0800000 {
+		/* rmtfs lower guard */
+		memory@f0800000 {
+			reg = <0 0xf0800000 0 0x1000>;
+			no-map;
+		};
+
+		rmtfs_mem: memory@f0801000 {
 			compatible = "qcom,rmtfs-mem";
-			reg = <0 0xf0800000 0 0x202000>;
-			qcom,use-guard-pages;
+			reg = <0 0xf0801000 0 0x200000>;
 			no-map;
 
 			qcom,client-id = <1>;
-			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
+			qcom,vmid = <15>;
+		};
+
+		/* rmtfs upper guard */
+		memory@f0a01000 {
+			reg = <0 0xf0a01000 0 0x1000>;
+			no-map;
 		};
 	};
 
@@ -456,6 +467,10 @@
 
 &gpu {
 	status = "okay";
+
+	zap-shader {
+		memory-region = <&gpu_mem>;
+	};
 };
 
 &ipa {

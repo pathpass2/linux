@@ -5,10 +5,7 @@
 
 #include <linux/string_helpers.h>
 
-#include <drm/drm_print.h>
-
 #include "i915_drv.h"
-#include "i915_perf_types.h"
 #include "intel_engine_regs.h"
 #include "intel_gt_regs.h"
 #include "intel_sseu.h"
@@ -216,8 +213,13 @@ static void xehp_sseu_info_init(struct intel_gt *gt)
 	int num_compute_regs, num_geometry_regs;
 	int eu;
 
-	num_geometry_regs = 1;
-	num_compute_regs = 1;
+	if (IS_PONTEVECCHIO(gt->i915)) {
+		num_geometry_regs = 0;
+		num_compute_regs = 2;
+	} else {
+		num_geometry_regs = 1;
+		num_compute_regs = 1;
+	}
 
 	/*
 	 * The concept of slice has been removed in Xe_HP.  To be compatible
@@ -238,8 +240,7 @@ static void xehp_sseu_info_init(struct intel_gt *gt)
 			   GEN12_GT_COMPUTE_DSS_ENABLE,
 			   XEHPC_GT_COMPUTE_DSS_ENABLE_EXT);
 
-	eu_en_fuse = REG_FIELD_GET(XEHP_EU_ENA_MASK,
-				   intel_uncore_read(uncore, XEHP_EU_ENABLE));
+	eu_en_fuse = intel_uncore_read(uncore, XEHP_EU_ENABLE) & XEHP_EU_ENA_MASK;
 
 	if (HAS_ONE_EU_PER_FUSE_BIT(gt->i915))
 		eu_en = eu_en_fuse;
@@ -272,15 +273,15 @@ static void gen12_sseu_info_init(struct intel_gt *gt)
 	 * Although gen12 architecture supported multiple slices, TGL, RKL,
 	 * DG1, and ADL only had a single slice.
 	 */
-	s_en = REG_FIELD_GET(GEN11_GT_S_ENA_MASK,
-			     intel_uncore_read(uncore, GEN11_GT_SLICE_ENABLE));
+	s_en = intel_uncore_read(uncore, GEN11_GT_SLICE_ENABLE) &
+		GEN11_GT_S_ENA_MASK;
 	drm_WARN_ON(&gt->i915->drm, s_en != 0x1);
 
 	g_dss_en = intel_uncore_read(uncore, GEN12_GT_GEOMETRY_DSS_ENABLE);
 
 	/* one bit per pair of EUs */
-	eu_en_fuse = ~REG_FIELD_GET(GEN11_EU_DIS_MASK,
-				    intel_uncore_read(uncore, GEN11_EU_DISABLE));
+	eu_en_fuse = ~(intel_uncore_read(uncore, GEN11_EU_DISABLE) &
+		       GEN11_EU_DIS_MASK);
 
 	for (eu = 0; eu < sseu->max_eus_per_subslice / 2; eu++)
 		if (eu_en_fuse & BIT(eu))
@@ -300,7 +301,7 @@ static void gen11_sseu_info_init(struct intel_gt *gt)
 	u8 eu_en;
 	u8 s_en;
 
-	if (IS_JASPERLAKE(gt->i915) || IS_ELKHARTLAKE(gt->i915))
+	if (IS_JSL_EHL(gt->i915))
 		intel_sseu_set_info(sseu, 1, 4, 8);
 	else
 		intel_sseu_set_info(sseu, 1, 8, 8);
@@ -309,14 +310,14 @@ static void gen11_sseu_info_init(struct intel_gt *gt)
 	 * Although gen11 architecture supported multiple slices, ICL and
 	 * EHL/JSL only had a single slice in practice.
 	 */
-	s_en = REG_FIELD_GET(GEN11_GT_S_ENA_MASK,
-			     intel_uncore_read(uncore, GEN11_GT_SLICE_ENABLE));
+	s_en = intel_uncore_read(uncore, GEN11_GT_SLICE_ENABLE) &
+		GEN11_GT_S_ENA_MASK;
 	drm_WARN_ON(&gt->i915->drm, s_en != 0x1);
 
 	ss_en = ~intel_uncore_read(uncore, GEN11_GT_SUBSLICE_DISABLE);
 
-	eu_en = ~REG_FIELD_GET(GEN11_EU_DIS_MASK,
-			       intel_uncore_read(uncore, GEN11_EU_DISABLE));
+	eu_en = ~(intel_uncore_read(uncore, GEN11_EU_DISABLE) &
+		  GEN11_EU_DIS_MASK);
 
 	gen11_compute_sseu_info(sseu, ss_en, eu_en);
 
@@ -338,8 +339,10 @@ static void cherryview_sseu_info_init(struct intel_gt *gt)
 
 	if (!(fuse & CHV_FGT_DISABLE_SS0)) {
 		u8 disabled_mask =
-			REG_FIELD_GET(CHV_FGT_EU_DIS_SS0_R0_MASK, fuse) |
-			REG_FIELD_GET(CHV_FGT_EU_DIS_SS0_R1_MASK, fuse) << hweight32(CHV_FGT_EU_DIS_SS0_R0_MASK);
+			((fuse & CHV_FGT_EU_DIS_SS0_R0_MASK) >>
+			 CHV_FGT_EU_DIS_SS0_R0_SHIFT) |
+			(((fuse & CHV_FGT_EU_DIS_SS0_R1_MASK) >>
+			  CHV_FGT_EU_DIS_SS0_R1_SHIFT) << 4);
 
 		sseu->subslice_mask.hsw[0] |= BIT(0);
 		sseu_set_eus(sseu, 0, 0, ~disabled_mask & 0xFF);
@@ -347,8 +350,10 @@ static void cherryview_sseu_info_init(struct intel_gt *gt)
 
 	if (!(fuse & CHV_FGT_DISABLE_SS1)) {
 		u8 disabled_mask =
-			REG_FIELD_GET(CHV_FGT_EU_DIS_SS1_R0_MASK, fuse) |
-			REG_FIELD_GET(CHV_FGT_EU_DIS_SS1_R1_MASK, fuse) << hweight32(CHV_FGT_EU_DIS_SS1_R0_MASK);
+			((fuse & CHV_FGT_EU_DIS_SS1_R0_MASK) >>
+			 CHV_FGT_EU_DIS_SS1_R0_SHIFT) |
+			(((fuse & CHV_FGT_EU_DIS_SS1_R1_MASK) >>
+			  CHV_FGT_EU_DIS_SS1_R1_SHIFT) << 4);
 
 		sseu->subslice_mask.hsw[0] |= BIT(1);
 		sseu_set_eus(sseu, 0, 1, ~disabled_mask & 0xFF);
@@ -384,7 +389,7 @@ static void gen9_sseu_info_init(struct intel_gt *gt)
 	int s, ss;
 
 	fuse2 = intel_uncore_read(uncore, GEN8_FUSE2);
-	sseu->slice_mask = REG_FIELD_GET(GEN8_F2_S_ENA_MASK, fuse2);
+	sseu->slice_mask = (fuse2 & GEN8_F2_S_ENA_MASK) >> GEN8_F2_S_ENA_SHIFT;
 
 	/* BXT has a single slice and at most 3 subslices. */
 	intel_sseu_set_info(sseu, IS_GEN9_LP(i915) ? 1 : 3,
@@ -395,7 +400,8 @@ static void gen9_sseu_info_init(struct intel_gt *gt)
 	 * to each of the enabled slices.
 	 */
 	subslice_mask = (1 << sseu->max_subslices) - 1;
-	subslice_mask &= ~REG_FIELD_GET(GEN9_F2_SS_DIS_MASK, fuse2);
+	subslice_mask &= ~((fuse2 & GEN9_F2_SS_DIS_MASK) >>
+			   GEN9_F2_SS_DIS_SHIFT);
 
 	/*
 	 * Iterate through enabled slices and subslices to
@@ -488,7 +494,7 @@ static void bdw_sseu_info_init(struct intel_gt *gt)
 	u32 eu_disable0, eu_disable1, eu_disable2;
 
 	fuse2 = intel_uncore_read(uncore, GEN8_FUSE2);
-	sseu->slice_mask = REG_FIELD_GET(GEN8_F2_S_ENA_MASK, fuse2);
+	sseu->slice_mask = (fuse2 & GEN8_F2_S_ENA_MASK) >> GEN8_F2_S_ENA_SHIFT;
 	intel_sseu_set_info(sseu, 3, 3, 8);
 
 	/*
@@ -496,18 +502,18 @@ static void bdw_sseu_info_init(struct intel_gt *gt)
 	 * to each of the enabled slices.
 	 */
 	subslice_mask = GENMASK(sseu->max_subslices - 1, 0);
-	subslice_mask &= ~REG_FIELD_GET(GEN8_F2_SS_DIS_MASK, fuse2);
+	subslice_mask &= ~((fuse2 & GEN8_F2_SS_DIS_MASK) >>
+			   GEN8_F2_SS_DIS_SHIFT);
 	eu_disable0 = intel_uncore_read(uncore, GEN8_EU_DISABLE0);
 	eu_disable1 = intel_uncore_read(uncore, GEN8_EU_DISABLE1);
 	eu_disable2 = intel_uncore_read(uncore, GEN8_EU_DISABLE2);
-	eu_disable[0] =
-		REG_FIELD_GET(GEN8_EU_DIS0_S0_MASK, eu_disable0);
-	eu_disable[1] =
-		REG_FIELD_GET(GEN8_EU_DIS0_S1_MASK, eu_disable0) |
-		REG_FIELD_GET(GEN8_EU_DIS1_S1_MASK, eu_disable1) << hweight32(GEN8_EU_DIS0_S1_MASK);
-	eu_disable[2] =
-		REG_FIELD_GET(GEN8_EU_DIS1_S2_MASK, eu_disable1) |
-		REG_FIELD_GET(GEN8_EU_DIS2_S2_MASK, eu_disable2) << hweight32(GEN8_EU_DIS1_S2_MASK);
+	eu_disable[0] = eu_disable0 & GEN8_EU_DIS0_S0_MASK;
+	eu_disable[1] = (eu_disable0 >> GEN8_EU_DIS0_S1_SHIFT) |
+		((eu_disable1 & GEN8_EU_DIS1_S1_MASK) <<
+		 (32 - GEN8_EU_DIS0_S1_SHIFT));
+	eu_disable[2] = (eu_disable1 >> GEN8_EU_DIS1_S2_SHIFT) |
+		((eu_disable2 & GEN8_EU_DIS2_S2_MASK) <<
+		 (32 - GEN8_EU_DIS1_S2_SHIFT));
 
 	/*
 	 * Iterate through enabled slices and subslices to
@@ -635,7 +641,7 @@ void intel_sseu_info_init(struct intel_gt *gt)
 {
 	struct drm_i915_private *i915 = gt->i915;
 
-	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 55))
+	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 50))
 		xehp_sseu_info_init(gt);
 	else if (GRAPHICS_VER(i915) >= 12)
 		gen12_sseu_info_init(gt);
@@ -671,7 +677,7 @@ u32 intel_sseu_make_rpcs(struct intel_gt *gt,
 	 * If i915/perf is active, we want a stable powergating configuration
 	 * on the system. Use the configuration pinned by i915/perf.
 	 */
-	if (gt->perf.group && gt->perf.group[PERF_GROUP_OAG].exclusive_stream)
+	if (gt->perf.exclusive_stream)
 		req_sseu = &gt->perf.sseu;
 
 	slices = hweight8(req_sseu->slice_mask);
@@ -685,7 +691,7 @@ u32 intel_sseu_make_rpcs(struct intel_gt *gt,
 	 * According to documentation software must consider the configuration
 	 * as 2x4x8 and hardware will translate this to 1x8x8.
 	 *
-	 * Furthermore, even though SScount is three bits, maximum documented
+	 * Furthemore, even though SScount is three bits, maximum documented
 	 * value for it is four. From this some rules/restrictions follow:
 	 *
 	 * 1.
@@ -842,12 +848,13 @@ void intel_sseu_print_topology(struct drm_i915_private *i915,
 			       const struct sseu_dev_info *sseu,
 			       struct drm_printer *p)
 {
-	if (sseu->max_slices == 0)
+	if (sseu->max_slices == 0) {
 		drm_printf(p, "Unavailable\n");
-	else if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 55))
+	} else if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 50)) {
 		sseu_print_xehp_topology(sseu, p);
-	else
+	} else {
 		sseu_print_hsw_topology(sseu, p);
+	}
 }
 
 void intel_sseu_print_ss_info(const char *type,

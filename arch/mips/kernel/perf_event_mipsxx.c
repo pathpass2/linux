@@ -791,7 +791,8 @@ static void handle_associated_event(struct cpu_hw_events *cpuc,
 	if (!mipspmu_event_set_period(event, hwc, idx))
 		return;
 
-	perf_event_overflow(event, data, regs);
+	if (perf_event_overflow(event, data, regs))
+		mipsxx_pmu_disable_event(idx);
 }
 
 

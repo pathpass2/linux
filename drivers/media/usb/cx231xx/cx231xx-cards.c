@@ -679,7 +679,8 @@ struct cx231xx_board cx231xx_boards[] = {
 			}, {
 				.type = CX231XX_VMUX_SVIDEO,
 				.vmux = CX231XX_VIN_1_1 |
-					(CX231XX_VIN_3_2 << 8),
+					(CX231XX_VIN_1_2 << 8) |
+					CX25840_SVIDEO_ON,
 				.amux = CX231XX_AMUX_LINE_IN,
 				.gpio = NULL,
 			}
@@ -989,11 +990,10 @@ struct cx231xx_board cx231xx_boards[] = {
 		} },
 	},
 };
+const unsigned int cx231xx_bcount = ARRAY_SIZE(cx231xx_boards);
 
 /* table of devices that work with this driver */
 struct usb_device_id cx231xx_id_table[] = {
-	{USB_DEVICE(0x1D19, 0x6108),
-	.driver_info = CX231XX_BOARD_PV_XCAPTURE_USB},
 	{USB_DEVICE(0x1D19, 0x6109),
 	.driver_info = CX231XX_BOARD_PV_XCAPTURE_USB},
 	{USB_DEVICE(0x0572, 0x5A3C),

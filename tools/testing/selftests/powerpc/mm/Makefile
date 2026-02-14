@@ -13,7 +13,6 @@ TEST_GEN_FILES := tempfile
 
 top_srcdir = ../../../../..
 include ../../lib.mk
-include ../flags.mk
 
 $(TEST_GEN_PROGS): ../harness.c ../utils.c
 
@@ -33,7 +32,7 @@ $(OUTPUT)/stack_expansion_ldst: CFLAGS += -fno-stack-protector
 $(OUTPUT)/stack_expansion_ldst: ../utils.c
 
 $(OUTPUT)/tempfile:
-	dd if=/dev/zero of=$@ bs=64k count=1 status=none
+	dd if=/dev/zero of=$@ bs=64k count=1
 
 $(OUTPUT)/tlbie_test: LDLIBS += -lpthread
 $(OUTPUT)/pkey_siginfo: LDLIBS += -lpthread

@@ -32,13 +32,12 @@
 #define IMX93_ADC_PCDR0		0x100
 #define IMX93_ADC_PCDR1		0x104
 #define IMX93_ADC_PCDR2		0x108
-#define IMX93_ADC_PCDR3		0x10C
+#define IMX93_ADC_PCDR3		0x10c
 #define IMX93_ADC_PCDR4		0x110
 #define IMX93_ADC_PCDR5		0x114
 #define IMX93_ADC_PCDR6		0x118
-#define IMX93_ADC_PCDR7		0x11C
+#define IMX93_ADC_PCDR7		0x11c
 #define IMX93_ADC_CALSTAT	0x39C
-#define IMX93_ADC_CALCFG0	0x3A0
 
 /* ADC bit shift */
 #define IMX93_ADC_MCR_MODE_MASK			BIT(29)
@@ -58,8 +57,6 @@
 #define IMX93_ADC_IMR_EOC_MASK			BIT(1)
 #define IMX93_ADC_IMR_ECH_MASK			BIT(0)
 #define IMX93_ADC_PCDR_CDATA_MASK		GENMASK(11, 0)
-
-#define IMX93_ADC_CALCFG0_LDFAIL_MASK		BIT(4)
 
 /* ADC status */
 #define IMX93_ADC_MSR_ADCSTATUS_IDLE			0
@@ -96,10 +93,6 @@ static const struct iio_chan_spec imx93_adc_iio_channels[] = {
 	IMX93_ADC_CHAN(1),
 	IMX93_ADC_CHAN(2),
 	IMX93_ADC_CHAN(3),
-	IMX93_ADC_CHAN(4),
-	IMX93_ADC_CHAN(5),
-	IMX93_ADC_CHAN(6),
-	IMX93_ADC_CHAN(7),
 };
 
 static void imx93_adc_power_down(struct imx93_adc *adc)
@@ -148,7 +141,7 @@ static void imx93_adc_config_ad_clk(struct imx93_adc *adc)
 
 static int imx93_adc_calibration(struct imx93_adc *adc)
 {
-	u32 mcr, msr, calcfg;
+	u32 mcr, msr;
 	int ret;
 
 	/* make sure ADC in power down mode */
@@ -160,11 +153,6 @@ static int imx93_adc_calibration(struct imx93_adc *adc)
 	writel(mcr, adc->regs + IMX93_ADC_MCR);
 
 	imx93_adc_power_up(adc);
-
-	/* Enable loading of calibrated values even in fail condition */
-	calcfg = readl(adc->regs + IMX93_ADC_CALCFG0);
-	calcfg |= IMX93_ADC_CALCFG0_LDFAIL_MASK;
-	writel(calcfg, adc->regs + IMX93_ADC_CALCFG0);
 
 	/*
 	 * TODO: we use the default TSAMP/NRSMPL/AVGEN in MCR,
@@ -188,13 +176,9 @@ static int imx93_adc_calibration(struct imx93_adc *adc)
 	/* check whether calbration is success or not */
 	msr = readl(adc->regs + IMX93_ADC_MSR);
 	if (msr & IMX93_ADC_MSR_CALFAIL_MASK) {
-		/*
-		 * Only give warning here, this means the noise of the
-		 * reference voltage do not meet the requirement:
-		 *     ADC reference voltage Noise < 1.8V * 1/2^ENOB
-		 * And the resault of ADC is not that accurate.
-		 */
 		dev_warn(adc->dev, "ADC calibration failed!\n");
+		imx93_adc_power_down(adc);
+		return -EAGAIN;
 	}
 
 	return 0;
@@ -252,7 +236,8 @@ static int imx93_adc_read_raw(struct iio_dev *indio_dev,
 {
 	struct imx93_adc *adc = iio_priv(indio_dev);
 	struct device *dev = adc->dev;
-	int ret;
+	long ret;
+	u32 vref_uv;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
@@ -260,6 +245,7 @@ static int imx93_adc_read_raw(struct iio_dev *indio_dev,
 		mutex_lock(&adc->lock);
 		ret = imx93_adc_read_channel_conversion(adc, chan->channel, val);
 		mutex_unlock(&adc->lock);
+		pm_runtime_mark_last_busy(dev);
 		pm_runtime_put_sync_autosuspend(dev);
 		if (ret < 0)
 			return ret;
@@ -267,10 +253,10 @@ static int imx93_adc_read_raw(struct iio_dev *indio_dev,
 		return IIO_VAL_INT;
 
 	case IIO_CHAN_INFO_SCALE:
-		ret = regulator_get_voltage(adc->vref);
+		ret = vref_uv = regulator_get_voltage(adc->vref);
 		if (ret < 0)
 			return ret;
-		*val = ret / 1000;
+		*val = vref_uv / 1000;
 		*val2 = 12;
 		return IIO_VAL_FRACTIONAL_LOG2;
 
@@ -319,7 +305,8 @@ static int imx93_adc_probe(struct platform_device *pdev)
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*adc));
 	if (!indio_dev)
-		return -ENOMEM;
+		return dev_err_probe(dev, -ENOMEM,
+				     "Failed allocating iio device\n");
 
 	adc = iio_priv(indio_dev);
 	adc->dev = dev;
@@ -406,7 +393,7 @@ error_regulator_disable:
 	return ret;
 }
 
-static void imx93_adc_remove(struct platform_device *pdev)
+static int imx93_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct imx93_adc *adc = iio_priv(indio_dev);
@@ -424,6 +411,8 @@ static void imx93_adc_remove(struct platform_device *pdev)
 	free_irq(adc->irq, adc);
 	clk_disable_unprepare(adc->ipg_clk);
 	regulator_disable(adc->vref);
+
+	return 0;
 }
 
 static int imx93_adc_runtime_suspend(struct device *dev)
@@ -474,7 +463,7 @@ static DEFINE_RUNTIME_DEV_PM_OPS(imx93_adc_pm_ops,
 
 static const struct of_device_id imx93_adc_match[] = {
 	{ .compatible = "nxp,imx93-adc", },
-	{ }
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, imx93_adc_match);
 

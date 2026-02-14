@@ -294,7 +294,7 @@ static int mixel_lvds_phy_reset(struct device *dev)
 }
 
 static struct phy *mixel_lvds_phy_xlate(struct device *dev,
-					const struct of_phandle_args *args)
+					struct of_phandle_args *args)
 {
 	struct mixel_lvds_phy_priv *priv = dev_get_drvdata(dev);
 	unsigned int phy_id;
@@ -391,9 +391,11 @@ err:
 	return ret;
 }
 
-static void mixel_lvds_phy_remove(struct platform_device *pdev)
+static int mixel_lvds_phy_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static int __maybe_unused mixel_lvds_phy_runtime_suspend(struct device *dev)
@@ -433,12 +435,12 @@ static const struct of_device_id mixel_lvds_phy_of_match[] = {
 MODULE_DEVICE_TABLE(of, mixel_lvds_phy_of_match);
 
 static struct platform_driver mixel_lvds_phy_driver = {
-	.probe = mixel_lvds_phy_probe,
-	.remove = mixel_lvds_phy_remove,
+	.probe	= mixel_lvds_phy_probe,
+	.remove	= mixel_lvds_phy_remove,
 	.driver = {
 		.pm = &mixel_lvds_phy_pm_ops,
 		.name = "mixel-lvds-phy",
-		.of_match_table = mixel_lvds_phy_of_match,
+		.of_match_table	= mixel_lvds_phy_of_match,
 	}
 };
 module_platform_driver(mixel_lvds_phy_driver);

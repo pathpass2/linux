@@ -328,7 +328,9 @@ static int si476x_radio_querycap(struct file *file, void *priv,
 
 	strscpy(capability->driver, radio->v4l2dev.name,
 		sizeof(capability->driver));
-	strscpy(capability->card, DRIVER_CARD, sizeof(capability->card));
+	strscpy(capability->card,   DRIVER_CARD, sizeof(capability->card));
+	snprintf(capability->bus_info, sizeof(capability->bus_info),
+		 "platform:%s", radio->v4l2dev.name);
 	return 0;
 }
 
@@ -1496,7 +1498,7 @@ exit:
 	return rval;
 }
 
-static void si476x_radio_remove(struct platform_device *pdev)
+static int si476x_radio_remove(struct platform_device *pdev)
 {
 	struct si476x_radio *radio = platform_get_drvdata(pdev);
 
@@ -1504,6 +1506,8 @@ static void si476x_radio_remove(struct platform_device *pdev)
 	video_unregister_device(&radio->videodev);
 	v4l2_device_unregister(&radio->v4l2dev);
 	debugfs_remove_recursive(radio->debugfs);
+
+	return 0;
 }
 
 MODULE_ALIAS("platform:si476x-radio");

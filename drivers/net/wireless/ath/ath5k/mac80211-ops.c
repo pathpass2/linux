@@ -44,7 +44,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <net/mac80211.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "ath5k.h"
 #include "base.h"
@@ -192,7 +192,7 @@ ath5k_remove_interface(struct ieee80211_hw *hw,
  * TODO: Phy disable/diversity etc
  */
 static int
-ath5k_config(struct ieee80211_hw *hw, int radio_idx, u32 changed)
+ath5k_config(struct ieee80211_hw *hw, u32 changed)
 {
 	struct ath5k_hw *ah = hw->priv;
 	struct ieee80211_conf *conf = &hw->conf;
@@ -382,6 +382,7 @@ ath5k_configure_filter(struct ieee80211_hw *hw, unsigned int changed_flags,
 	mfilt[1] = multicast >> 32;
 
 	/* Only deal with supported flags */
+	changed_flags &= SUPPORTED_FIF_FLAGS;
 	*new_flags &= SUPPORTED_FIF_FLAGS;
 
 	/* If HW detects any phy or radar errors, leave those filters on.
@@ -686,7 +687,6 @@ ath5k_get_survey(struct ieee80211_hw *hw, int idx, struct survey_info *survey)
  * ath5k_set_coverage_class - Set IEEE 802.11 coverage class
  *
  * @hw: struct ieee80211_hw pointer
- * @radio_idx: Radio index
  * @coverage_class: IEEE 802.11 coverage class number
  *
  * Mac80211 callback. Sets slot time, ACK timeout and CTS timeout for given
@@ -694,8 +694,7 @@ ath5k_get_survey(struct ieee80211_hw *hw, int idx, struct survey_info *survey)
  * reset.
  */
 static void
-ath5k_set_coverage_class(struct ieee80211_hw *hw, int radio_idx,
-			 s16 coverage_class)
+ath5k_set_coverage_class(struct ieee80211_hw *hw, s16 coverage_class)
 {
 	struct ath5k_hw *ah = hw->priv;
 
@@ -706,8 +705,7 @@ ath5k_set_coverage_class(struct ieee80211_hw *hw, int radio_idx,
 
 
 static int
-ath5k_set_antenna(struct ieee80211_hw *hw, int radio_idx, u32 tx_ant,
-		  u32 rx_ant)
+ath5k_set_antenna(struct ieee80211_hw *hw, u32 tx_ant, u32 rx_ant)
 {
 	struct ath5k_hw *ah = hw->priv;
 
@@ -724,8 +722,7 @@ ath5k_set_antenna(struct ieee80211_hw *hw, int radio_idx, u32 tx_ant,
 
 
 static int
-ath5k_get_antenna(struct ieee80211_hw *hw, int radio_idx,
-		  u32 *tx_ant, u32 *rx_ant)
+ath5k_get_antenna(struct ieee80211_hw *hw, u32 *tx_ant, u32 *rx_ant)
 {
 	struct ath5k_hw *ah = hw->priv;
 
@@ -783,10 +780,6 @@ static int ath5k_set_ringparam(struct ieee80211_hw *hw, u32 tx, u32 rx)
 
 
 const struct ieee80211_ops ath5k_hw_ops = {
-	.add_chanctx = ieee80211_emulate_add_chanctx,
-	.remove_chanctx = ieee80211_emulate_remove_chanctx,
-	.change_chanctx = ieee80211_emulate_change_chanctx,
-	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx			= ath5k_tx,
 	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.start			= ath5k_start,

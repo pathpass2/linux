@@ -41,25 +41,20 @@ static const struct snmp_mib xfrm_mib_list[] = {
 	SNMP_MIB_ITEM("XfrmFwdHdrError", LINUX_MIB_XFRMFWDHDRERROR),
 	SNMP_MIB_ITEM("XfrmOutStateInvalid", LINUX_MIB_XFRMOUTSTATEINVALID),
 	SNMP_MIB_ITEM("XfrmAcquireError", LINUX_MIB_XFRMACQUIREERROR),
-	SNMP_MIB_ITEM("XfrmOutStateDirError", LINUX_MIB_XFRMOUTSTATEDIRERROR),
-	SNMP_MIB_ITEM("XfrmInStateDirError", LINUX_MIB_XFRMINSTATEDIRERROR),
-	SNMP_MIB_ITEM("XfrmInIptfsError", LINUX_MIB_XFRMINIPTFSERROR),
-	SNMP_MIB_ITEM("XfrmOutNoQueueSpace", LINUX_MIB_XFRMOUTNOQSPACE),
+	SNMP_MIB_SENTINEL
 };
 
 static int xfrm_statistics_seq_show(struct seq_file *seq, void *v)
 {
-	unsigned long buff[ARRAY_SIZE(xfrm_mib_list)];
-	const int cnt = ARRAY_SIZE(xfrm_mib_list);
+	unsigned long buff[LINUX_MIB_XFRMMAX];
 	struct net *net = seq->private;
 	int i;
 
-	memset(buff, 0, sizeof(buff));
+	memset(buff, 0, sizeof(unsigned long) * LINUX_MIB_XFRMMAX);
 
-	xfrm_state_update_stats(net);
-	snmp_get_cpu_field_batch_cnt(buff, xfrm_mib_list, cnt,
-				     net->mib.xfrm_statistics);
-	for (i = 0; i < cnt; i++)
+	snmp_get_cpu_field_batch(buff, xfrm_mib_list,
+				 net->mib.xfrm_statistics);
+	for (i = 0; xfrm_mib_list[i].name; i++)
 		seq_printf(seq, "%-24s\t%lu\n", xfrm_mib_list[i].name,
 						buff[i]);
 

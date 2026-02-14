@@ -26,9 +26,9 @@ module_param(host_mode, bool, 0444);
 
 static DEFINE_IDA(intel_th_ida);
 
-static int intel_th_match(struct device *dev, const struct device_driver *driver)
+static int intel_th_match(struct device *dev, struct device_driver *driver)
 {
-	const struct intel_th_driver *thdrv = to_intel_th_driver(driver);
+	struct intel_th_driver *thdrv = to_intel_th_driver(driver);
 	struct intel_th_device *thdev = to_intel_th_device(dev);
 
 	if (thdev->type == INTEL_TH_SWITCH &&
@@ -166,7 +166,7 @@ static void intel_th_remove(struct device *dev)
 	pm_runtime_enable(dev);
 }
 
-static const struct bus_type intel_th_bus = {
+static struct bus_type intel_th_bus = {
 	.name		= "intel_th",
 	.match		= intel_th_match,
 	.probe		= intel_th_probe,
@@ -180,7 +180,7 @@ static void intel_th_device_release(struct device *dev)
 	intel_th_device_free(to_intel_th_device(dev));
 }
 
-static const struct device_type intel_th_source_device_type = {
+static struct device_type intel_th_source_device_type = {
 	.name		= "intel_th_source_device",
 	.release	= intel_th_device_release,
 };
@@ -333,19 +333,19 @@ static struct attribute *intel_th_output_attrs[] = {
 
 ATTRIBUTE_GROUPS(intel_th_output);
 
-static const struct device_type intel_th_output_device_type = {
+static struct device_type intel_th_output_device_type = {
 	.name		= "intel_th_output_device",
 	.groups		= intel_th_output_groups,
 	.release	= intel_th_device_release,
 	.devnode	= intel_th_output_devnode,
 };
 
-static const struct device_type intel_th_switch_device_type = {
+static struct device_type intel_th_switch_device_type = {
 	.name		= "intel_th_switch_device",
 	.release	= intel_th_device_release,
 };
 
-static const struct device_type *intel_th_device_type[] = {
+static struct device_type *intel_th_device_type[] = {
 	[INTEL_TH_SOURCE]	= &intel_th_source_device_type,
 	[INTEL_TH_OUTPUT]	= &intel_th_output_device_type,
 	[INTEL_TH_SWITCH]	= &intel_th_switch_device_type,
@@ -810,20 +810,13 @@ static int intel_th_output_open(struct inode *inode, struct file *file)
 	int err;
 
 	dev = bus_find_device_by_devt(&intel_th_bus, inode->i_rdev);
-	if (!dev)
+	if (!dev || !dev->driver)
 		return -ENODEV;
-
-	if (!dev->driver) {
-		err = -ENODEV;
-		goto err_put_dev;
-	}
 
 	thdrv = to_intel_th_driver(dev->driver);
 	fops = fops_get(thdrv->fops);
-	if (!fops) {
-		err = -ENODEV;
-		goto err_put_dev;
-	}
+	if (!fops)
+		return -ENODEV;
 
 	replace_fops(file, fops);
 
@@ -831,30 +824,14 @@ static int intel_th_output_open(struct inode *inode, struct file *file)
 
 	if (file->f_op->open) {
 		err = file->f_op->open(inode, file);
-		if (err)
-			goto err_put_dev;
+		return err;
 	}
-
-	return 0;
-
-err_put_dev:
-	put_device(dev);
-
-	return err;
-}
-
-static int intel_th_output_release(struct inode *inode, struct file *file)
-{
-	struct intel_th_device *thdev = file->private_data;
-
-	put_device(&thdev->dev);
 
 	return 0;
 }
 
 static const struct file_operations intel_th_output_fops = {
 	.open	= intel_th_output_open,
-	.release = intel_th_output_release,
 	.llseek	= noop_llseek,
 };
 
@@ -880,9 +857,8 @@ static irqreturn_t intel_th_irq(int irq, void *data)
 /**
  * intel_th_alloc() - allocate a new Intel TH device and its subdevices
  * @dev:	parent device
- * @drvdata:	data private to the driver
  * @devres:	resources indexed by th_mmio_idx
- * @ndevres:	number of entries in the @devres resources
+ * @irq:	irq number
  */
 struct intel_th *
 intel_th_alloc(struct device *dev, const struct intel_th_drvdata *drvdata,
@@ -895,7 +871,7 @@ intel_th_alloc(struct device *dev, const struct intel_th_drvdata *drvdata,
 	if (!th)
 		return ERR_PTR(-ENOMEM);
 
-	th->id = ida_alloc(&intel_th_ida, GFP_KERNEL);
+	th->id = ida_simple_get(&intel_th_ida, 0, 0, GFP_KERNEL);
 	if (th->id < 0) {
 		err = th->id;
 		goto err_alloc;
@@ -955,7 +931,7 @@ err_chrdev:
 			    "intel_th/output");
 
 err_ida:
-	ida_free(&intel_th_ida, th->id);
+	ida_simple_remove(&intel_th_ida, th->id);
 
 err_alloc:
 	kfree(th);
@@ -988,7 +964,7 @@ void intel_th_free(struct intel_th *th)
 	__unregister_chrdev(th->major, 0, TH_POSSIBLE_OUTPUTS,
 			    "intel_th/output");
 
-	ida_free(&intel_th_ida, th->id);
+	ida_simple_remove(&intel_th_ida, th->id);
 
 	kfree(th);
 }

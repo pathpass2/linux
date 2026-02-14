@@ -39,7 +39,7 @@
     We make sure that the SMB is enabled. We leave the ACPI alone.
 
     This driver controls the SMB Host only.
-    The SMB Target controller on the M15X3 is not enabled.
+    The SMB Slave controller on the M15X3 is not enabled.
 
     This driver does not use interrupts.
 */
@@ -165,15 +165,14 @@ static int ali15x3_setup(struct pci_dev *ALI15X3_dev)
 	}
 
 	if(force_addr) {
-		int ret;
-
 		dev_info(&ALI15X3_dev->dev, "forcing ISA address 0x%04X\n",
 			ali15x3_smba);
-		ret = pci_write_config_word(ALI15X3_dev, SMBBA, ali15x3_smba);
-		if (ret != PCIBIOS_SUCCESSFUL)
+		if (PCIBIOS_SUCCESSFUL != pci_write_config_word(ALI15X3_dev,
+								SMBBA,
+								ali15x3_smba))
 			goto error;
-		ret = pci_read_config_word(ALI15X3_dev, SMBBA, &a);
-		if (ret != PCIBIOS_SUCCESSFUL)
+		if (PCIBIOS_SUCCESSFUL != pci_read_config_word(ALI15X3_dev,
+								SMBBA, &a))
 			goto error;
 		if ((a & ~(ALI15X3_SMB_IOSIZE - 1)) != ali15x3_smba) {
 			/* make sure it works */
@@ -294,8 +293,10 @@ static int ali15x3_transaction(struct i2c_adapter *adap)
 		 && (timeout++ < MAX_TIMEOUT));
 
 	/* If the SMBus is still busy, we give up */
-	if (timeout > MAX_TIMEOUT)
+	if (timeout > MAX_TIMEOUT) {
 		result = -ETIMEDOUT;
+		dev_err(&adap->dev, "SMBus Timeout!\n");
+	}
 
 	if (temp & ALI15X3_STS_TERM) {
 		result = -EIO;
@@ -459,7 +460,7 @@ static const struct i2c_algorithm smbus_algorithm = {
 
 static struct i2c_adapter ali15x3_adapter = {
 	.owner		= THIS_MODULE,
-	.class          = I2C_CLASS_HWMON,
+	.class          = I2C_CLASS_HWMON | I2C_CLASS_SPD,
 	.algo		= &smbus_algorithm,
 };
 
@@ -472,8 +473,6 @@ MODULE_DEVICE_TABLE (pci, ali15x3_ids);
 
 static int ali15x3_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
-	int ret;
-
 	if (ali15x3_setup(dev)) {
 		dev_err(&dev->dev,
 			"ALI15X3 not detected, module not inserted.\n");
@@ -485,15 +484,7 @@ static int ali15x3_probe(struct pci_dev *dev, const struct pci_device_id *id)
 
 	snprintf(ali15x3_adapter.name, sizeof(ali15x3_adapter.name),
 		"SMBus ALI15X3 adapter at %04x", ali15x3_smba);
-	ret = i2c_add_adapter(&ali15x3_adapter);
-	if (ret)
-		goto release_region;
-
-	return 0;
-
-release_region:
-	release_region(ali15x3_smba, ALI15X3_SMB_IOSIZE);
-	return ret;
+	return i2c_add_adapter(&ali15x3_adapter);
 }
 
 static void ali15x3_remove(struct pci_dev *dev)

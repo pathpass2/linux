@@ -50,7 +50,7 @@
 #define ISA_INIT_STATUS_BITS	(STATUS_IE_MASK | __AD_ENB | \
 					(ARCV2_IRQ_DEF_PRIO << 1))
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /*
  * Save IRQ state and disable IRQs
@@ -170,6 +170,6 @@ static inline void arc_softirq_clear(int irq)
 	seti
 .endm
 
-#endif	/* __ASSEMBLER__ */
+#endif	/* __ASSEMBLY__ */
 
 #endif

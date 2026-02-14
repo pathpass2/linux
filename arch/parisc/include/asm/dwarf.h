@@ -6,7 +6,7 @@
 #ifndef _ASM_PARISC_DWARF_H
 #define _ASM_PARISC_DWARF_H
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 #define CFI_STARTPROC	.cfi_startproc
 #define CFI_ENDPROC	.cfi_endproc
@@ -15,6 +15,6 @@
 #define CFI_REL_OFFSET	.cfi_rel_offset
 #define CFI_UNDEFINED	.cfi_undefined
 
-#endif	/* __ASSEMBLER__ */
+#endif	/* __ASSEMBLY__ */
 
 #endif	/* _ASM_PARISC_DWARF_H */

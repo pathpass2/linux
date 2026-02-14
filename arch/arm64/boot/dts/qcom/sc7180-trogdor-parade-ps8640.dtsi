@@ -46,6 +46,10 @@
 
 /* ADDITIONS TO NODES DEFINED IN PARENT DEVICE TREE FILES */
 
+&dsi0_out {
+	remote-endpoint = <&ps8640_in>;
+};
+
 edp_brij_i2c: &i2c2 {
 	status = "okay";
 	clock-frequency = <400000>;
@@ -70,7 +74,7 @@ edp_brij_i2c: &i2c2 {
 			port@0 {
 				reg = <0>;
 				ps8640_in: endpoint {
-					remote-endpoint = <&mdss_dsi0_out>;
+					remote-endpoint = <&dsi0_out>;
 				};
 			};
 
@@ -96,10 +100,6 @@ edp_brij_i2c: &i2c2 {
 			};
 		};
 	};
-};
-
-&mdss_dsi0_out {
-	remote-endpoint = <&ps8640_in>;
 };
 
 &tlmm {

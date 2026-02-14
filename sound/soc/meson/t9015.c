@@ -48,6 +48,7 @@
 #define POWER_CFG	0x10
 
 struct t9015 {
+	struct clk *pclk;
 	struct regulator *avdd;
 };
 
@@ -57,11 +58,11 @@ static int t9015_dai_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int val;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		val = I2S_MODE;
 		break;
 
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		val = 0;
 		break;
 
@@ -177,8 +178,8 @@ static int t9015_set_bias_level(struct snd_soc_component *component,
 				enum snd_soc_bias_level level)
 {
 	struct t9015 *priv = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
-	enum snd_soc_bias_level now = snd_soc_dapm_get_bias_level(dapm);
+	enum snd_soc_bias_level now =
+		snd_soc_component_get_bias_level(component);
 	int ret;
 
 	switch (level) {
@@ -248,7 +249,6 @@ static int t9015_probe(struct platform_device *pdev)
 	struct t9015 *priv;
 	void __iomem *regs;
 	struct regmap *regmap;
-	struct clk *pclk;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -256,13 +256,25 @@ static int t9015_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	platform_set_drvdata(pdev, priv);
 
-	pclk = devm_clk_get_enabled(dev, "pclk");
-	if (IS_ERR(pclk))
-		return dev_err_probe(dev, PTR_ERR(pclk), "failed to get core clock\n");
+	priv->pclk = devm_clk_get(dev, "pclk");
+	if (IS_ERR(priv->pclk))
+		return dev_err_probe(dev, PTR_ERR(priv->pclk), "failed to get core clock\n");
 
 	priv->avdd = devm_regulator_get(dev, "AVDD");
 	if (IS_ERR(priv->avdd))
 		return dev_err_probe(dev, PTR_ERR(priv->avdd), "failed to AVDD\n");
+
+	ret = clk_prepare_enable(priv->pclk);
+	if (ret) {
+		dev_err(dev, "core clock enable failed\n");
+		return ret;
+	}
+
+	ret = devm_add_action_or_reset(dev,
+			(void(*)(void *))clk_disable_unprepare,
+			priv->pclk);
+	if (ret)
+		return ret;
 
 	ret = device_reset(dev);
 	if (ret) {

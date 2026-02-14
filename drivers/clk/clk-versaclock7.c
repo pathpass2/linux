@@ -14,7 +14,7 @@
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/property.h>
+#include <linux/of_platform.h>
 #include <linux/regmap.h>
 #include <linux/swab.h>
 
@@ -900,18 +900,17 @@ static unsigned long vc7_fod_recalc_rate(struct clk_hw *hw, unsigned long parent
 	return fod_rate;
 }
 
-static int vc7_fod_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long vc7_fod_round_rate(struct clk_hw *hw, unsigned long rate, unsigned long *parent_rate)
 {
 	struct vc7_fod_data *fod = container_of(hw, struct vc7_fod_data, hw);
 	unsigned long fod_rate;
 
 	pr_debug("%s - %s: requested rate: %lu, parent_rate: %lu\n",
-		 __func__, clk_hw_get_name(hw), req->rate, req->best_parent_rate);
+		 __func__, clk_hw_get_name(hw), rate, *parent_rate);
 
-	vc7_calc_fod_divider(req->rate, req->best_parent_rate,
+	vc7_calc_fod_divider(rate, *parent_rate,
 			     &fod->fod_1st_int, &fod->fod_2nd_int, &fod->fod_frac);
-	fod_rate = vc7_calc_fod_2nd_stage_rate(req->best_parent_rate, fod->fod_1st_int,
+	fod_rate = vc7_calc_fod_2nd_stage_rate(*parent_rate, fod->fod_1st_int,
 					       fod->fod_2nd_int, fod->fod_frac);
 
 	pr_debug("%s - %s: fod_1st_int: %u, fod_2nd_int: %u, fod_frac: %llu\n",
@@ -919,9 +918,7 @@ static int vc7_fod_determine_rate(struct clk_hw *hw,
 		 fod->fod_1st_int, fod->fod_2nd_int, fod->fod_frac);
 	pr_debug("%s - %s rate: %lu\n", __func__, clk_hw_get_name(hw), fod_rate);
 
-	req->rate = fod_rate;
-
-	return 0;
+	return fod_rate;
 }
 
 static int vc7_fod_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long parent_rate)
@@ -955,7 +952,7 @@ static int vc7_fod_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long
 
 static const struct clk_ops vc7_fod_ops = {
 	.recalc_rate = vc7_fod_recalc_rate,
-	.determine_rate = vc7_fod_determine_rate,
+	.round_rate = vc7_fod_round_rate,
 	.set_rate = vc7_fod_set_rate,
 };
 
@@ -981,24 +978,21 @@ static unsigned long vc7_iod_recalc_rate(struct clk_hw *hw, unsigned long parent
 	return iod_rate;
 }
 
-static int vc7_iod_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long vc7_iod_round_rate(struct clk_hw *hw, unsigned long rate, unsigned long *parent_rate)
 {
 	struct vc7_iod_data *iod = container_of(hw, struct vc7_iod_data, hw);
 	unsigned long iod_rate;
 
 	pr_debug("%s - %s: requested rate: %lu, parent_rate: %lu\n",
-		 __func__, clk_hw_get_name(hw), req->rate, req->best_parent_rate);
+		 __func__, clk_hw_get_name(hw), rate, *parent_rate);
 
-	vc7_calc_iod_divider(req->rate, req->best_parent_rate, &iod->iod_int);
-	iod_rate = div64_u64(req->best_parent_rate, iod->iod_int);
+	vc7_calc_iod_divider(rate, *parent_rate, &iod->iod_int);
+	iod_rate = div64_u64(*parent_rate, iod->iod_int);
 
 	pr_debug("%s - %s: iod_int: %u\n", __func__, clk_hw_get_name(hw), iod->iod_int);
 	pr_debug("%s - %s rate: %ld\n", __func__, clk_hw_get_name(hw), iod_rate);
 
-	req->rate = iod_rate;
-
-	return 0;
+	return iod_rate;
 }
 
 static int vc7_iod_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long parent_rate)
@@ -1029,7 +1023,7 @@ static int vc7_iod_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long
 
 static const struct clk_ops vc7_iod_ops = {
 	.recalc_rate = vc7_iod_recalc_rate,
-	.determine_rate = vc7_iod_determine_rate,
+	.round_rate = vc7_iod_round_rate,
 	.set_rate = vc7_iod_set_rate,
 };
 
@@ -1114,7 +1108,7 @@ static int vc7_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, vc7);
 	vc7->client = client;
-	vc7->chip_info = i2c_get_match_data(client);
+	vc7->chip_info = of_device_get_match_data(&client->dev);
 
 	vc7->pin_xin = devm_clk_get(&client->dev, "xin");
 	if (PTR_ERR(vc7->pin_xin) == -EPROBE_DEFER) {
@@ -1263,7 +1257,7 @@ static const struct vc7_chip_info vc7_rc21008a_info = {
 	.num_outputs = 8,
 };
 
-static const struct regmap_range_cfg vc7_range_cfg[] = {
+static struct regmap_range_cfg vc7_range_cfg[] = {
 {
 	.range_min = 0,
 	.range_max = VC7_MAX_REG,
@@ -1281,14 +1275,14 @@ static const struct regmap_config vc7_regmap_config = {
 	.ranges = vc7_range_cfg,
 	.num_ranges = ARRAY_SIZE(vc7_range_cfg),
 	.volatile_reg = vc7_volatile_reg,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.can_multi_write = true,
 	.reg_format_endian = REGMAP_ENDIAN_LITTLE,
 	.val_format_endian = REGMAP_ENDIAN_LITTLE,
 };
 
 static const struct i2c_device_id vc7_i2c_id[] = {
-	{ "rc21008a", .driver_data = (kernel_ulong_t)&vc7_rc21008a_info },
+	{ "rc21008a", VC7_RC21008A },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, vc7_i2c_id);
@@ -1304,7 +1298,7 @@ static struct i2c_driver vc7_i2c_driver = {
 		.name = "vc7",
 		.of_match_table = vc7_of_match,
 	},
-	.probe = vc7_probe,
+	.probe_new = vc7_probe,
 	.remove = vc7_remove,
 	.id_table = vc7_i2c_id,
 };

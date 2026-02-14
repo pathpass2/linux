@@ -414,8 +414,7 @@ static int cdnsp_ep0_std_request(struct cdnsp_device *pdev,
 void cdnsp_setup_analyze(struct cdnsp_device *pdev)
 {
 	struct usb_ctrlrequest *ctrl = &pdev->setup;
-	struct cdnsp_ep *pep;
-	int ret = -EINVAL;
+	int ret = 0;
 	u16 len;
 
 	trace_cdnsp_ctrl_req(ctrl);
@@ -425,24 +424,14 @@ void cdnsp_setup_analyze(struct cdnsp_device *pdev)
 
 	if (pdev->gadget.state == USB_STATE_NOTATTACHED) {
 		dev_err(pdev->dev, "ERR: Setup detected in unattached state\n");
+		ret = -EINVAL;
 		goto out;
 	}
 
-	pep = &pdev->eps[0];
-
 	/* Restore the ep0 to Stopped/Running state. */
-	if (pep->ep_state & EP_HALTED) {
-		if (GET_EP_CTX_STATE(pep->out_ctx) == EP_STATE_HALTED)
-			cdnsp_halt_endpoint(pdev, pep, 0);
-
-		/*
-		 * Halt Endpoint Command for SSP2 for ep0 preserve current
-		 * endpoint state and driver has to synchronize the
-		 * software endpoint state with endpoint output context
-		 * state.
-		 */
-		pep->ep_state &= ~EP_HALTED;
-		pep->ep_state |= EP_STOPPED;
+	if (pdev->eps[0].ep_state & EP_HALTED) {
+		trace_cdnsp_ep0_halted("Restore to normal state");
+		cdnsp_halt_endpoint(pdev, &pdev->eps[0], 0);
 	}
 
 	/*

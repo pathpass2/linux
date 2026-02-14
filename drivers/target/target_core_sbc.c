@@ -12,7 +12,7 @@
 #include <linux/ratelimit.h>
 #include <linux/crc-t10dif.h>
 #include <linux/t10-pi.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <scsi/scsi_proto.h>
 #include <scsi/scsi_tcq.h>
 
@@ -192,7 +192,7 @@ EXPORT_SYMBOL(sbc_get_write_same_sectors);
 static sense_reason_t
 sbc_execute_write_same_unmap(struct se_cmd *cmd)
 {
-	struct exec_cmd_ops *ops = cmd->protocol_data;
+	struct sbc_ops *ops = cmd->protocol_data;
 	sector_t nolb = sbc_get_write_same_sectors(cmd);
 	sense_reason_t ret;
 
@@ -271,8 +271,7 @@ static inline unsigned long long transport_lba_64(unsigned char *cdb)
 }
 
 static sense_reason_t
-sbc_setup_write_same(struct se_cmd *cmd, unsigned char flags,
-		     struct exec_cmd_ops *ops)
+sbc_setup_write_same(struct se_cmd *cmd, unsigned char flags, struct sbc_ops *ops)
 {
 	struct se_device *dev = cmd->se_dev;
 	sector_t end_lba = dev->transport->get_blocks(dev) + 1;
@@ -341,7 +340,7 @@ sbc_setup_write_same(struct se_cmd *cmd, unsigned char flags,
 static sense_reason_t
 sbc_execute_rw(struct se_cmd *cmd)
 {
-	struct exec_cmd_ops *ops = cmd->protocol_data;
+	struct sbc_ops *ops = cmd->protocol_data;
 
 	return ops->execute_rw(cmd, cmd->t_data_sg, cmd->t_data_nents,
 			       cmd->data_direction);
@@ -567,7 +566,7 @@ out:
 static sense_reason_t
 sbc_compare_and_write(struct se_cmd *cmd)
 {
-	struct exec_cmd_ops *ops = cmd->protocol_data;
+	struct sbc_ops *ops = cmd->protocol_data;
 	struct se_device *dev = cmd->se_dev;
 	sense_reason_t ret;
 	int rc;
@@ -764,51 +763,8 @@ sbc_check_dpofua(struct se_device *dev, struct se_cmd *cmd, unsigned char *cdb)
 	return 0;
 }
 
-static sense_reason_t
-sbc_check_atomic(struct se_device *dev, struct se_cmd *cmd, unsigned char *cdb)
-{
-	struct se_dev_attrib *attrib = &dev->dev_attrib;
-	u16 boundary, transfer_len;
-	u64 lba;
-
-	lba = transport_lba_64(cdb);
-	boundary = get_unaligned_be16(&cdb[10]);
-	transfer_len = get_unaligned_be16(&cdb[12]);
-
-	if (!attrib->atomic_max_len)
-		return TCM_UNSUPPORTED_SCSI_OPCODE;
-
-	if (boundary) {
-		if (transfer_len > attrib->atomic_max_with_boundary)
-			return TCM_INVALID_CDB_FIELD;
-
-		if (boundary > attrib->atomic_max_boundary)
-			return TCM_INVALID_CDB_FIELD;
-	} else {
-		if (transfer_len > attrib->atomic_max_len)
-			return TCM_INVALID_CDB_FIELD;
-	}
-
-	if (attrib->atomic_granularity) {
-		if (transfer_len % attrib->atomic_granularity)
-			return TCM_INVALID_CDB_FIELD;
-
-		if (boundary && boundary % attrib->atomic_granularity)
-			return TCM_INVALID_CDB_FIELD;
-	}
-
-	if (dev->dev_attrib.atomic_alignment) {
-		u64 _lba = lba;
-
-		if (do_div(_lba, dev->dev_attrib.atomic_alignment))
-			return TCM_INVALID_CDB_FIELD;
-	}
-
-	return 0;
-}
-
 sense_reason_t
-sbc_parse_cdb(struct se_cmd *cmd, struct exec_cmd_ops *ops)
+sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 {
 	struct se_device *dev = cmd->se_dev;
 	unsigned char *cdb = cmd->t_task_cdb;
@@ -904,7 +860,6 @@ sbc_parse_cdb(struct se_cmd *cmd, struct exec_cmd_ops *ops)
 		break;
 	case WRITE_16:
 	case WRITE_VERIFY_16:
-	case WRITE_ATOMIC_16:
 		sectors = transport_get_sectors_16(cdb);
 		cmd->t_task_lba = transport_lba_64(cdb);
 
@@ -916,13 +871,6 @@ sbc_parse_cdb(struct se_cmd *cmd, struct exec_cmd_ops *ops)
 			return ret;
 
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
-		if (cdb[0] == WRITE_ATOMIC_16) {
-			cmd->se_cmd_flags |= SCF_ATOMIC;
-
-			ret = sbc_check_atomic(dev, cmd, cdb);
-			if (ret)
-				return ret;
-		}
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case VARIABLE_LENGTH_CMD:
@@ -1128,7 +1076,7 @@ EXPORT_SYMBOL(sbc_get_device_type);
 static sense_reason_t
 sbc_execute_unmap(struct se_cmd *cmd)
 {
-	struct exec_cmd_ops *ops = cmd->protocol_data;
+	struct sbc_ops *ops = cmd->protocol_data;
 	struct se_device *dev = cmd->se_dev;
 	unsigned char *buf, *ptr = NULL;
 	sector_t lba;

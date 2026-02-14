@@ -19,9 +19,9 @@ static void tb_dump_hop(const struct tb_path_hop *hop, const struct tb_regs_hop 
 
 	tb_port_dbg(port, " In HopID: %d => Out port: %d Out HopID: %d\n",
 		    hop->in_hop_index, regs->out_port, regs->next_hop);
-	tb_port_dbg(port, "  Weight: %d Priority: %d Credits: %d Drop: %d PM: %d\n",
-		    regs->weight, regs->priority, regs->initial_credits,
-		    regs->drop_packages, regs->pmps);
+	tb_port_dbg(port, "  Weight: %d Priority: %d Credits: %d Drop: %d\n",
+		    regs->weight, regs->priority,
+		    regs->initial_credits, regs->drop_packages);
 	tb_port_dbg(port, "   Counter enabled: %d Counter index: %d\n",
 		    regs->counter_enable, regs->counter);
 	tb_port_dbg(port, "  Flow Control (In/Eg): %d/%d Shared Buffer (In/Eg): %d/%d\n",
@@ -96,7 +96,7 @@ static int tb_path_find_src_hopid(struct tb_port *src,
  * that the @dst port is the expected one. If it is not, the path can be
  * cleaned up by calling tb_path_deactivate() before tb_path_free().
  *
- * Return: Pointer to &struct tb_path, %NULL in case of failure.
+ * Return: Discovered path on success, %NULL in case of failure
  */
 struct tb_path *tb_path_discover(struct tb_port *src, int src_hopid,
 				 struct tb_port *dst, int dst_hopid,
@@ -233,7 +233,7 @@ err:
  * links on the path, prioritizes using @link_nr but takes into account
  * that the lanes may be bonded.
  *
- * Return: Pointer to &struct tb_path, %NULL in case of failure.
+ * Return: Returns a tb_path on success or NULL on failure.
  */
 struct tb_path *tb_path_alloc(struct tb *tb, struct tb_port *src, int src_hopid,
 			      struct tb_port *dst, int dst_hopid, int link_nr,
@@ -446,21 +446,6 @@ static int __tb_path_deactivate_hop(struct tb_port *port, int hop_index,
 	return -ETIMEDOUT;
 }
 
-/**
- * tb_path_deactivate_hop() - Deactivate one path in path config space
- * @port: Lane or protocol adapter
- * @hop_index: HopID of the path to be cleared
- *
- * This deactivates or clears a single path config space entry at
- * @hop_index.
- *
- * Return: %0 on success, negative errno otherwise.
- */
-int tb_path_deactivate_hop(struct tb_port *port, int hop_index)
-{
-	return __tb_path_deactivate_hop(port, hop_index, true);
-}
-
 static void __tb_path_deactivate_hops(struct tb_path *path, int first_hop)
 {
 	int i, res;
@@ -500,7 +485,7 @@ void tb_path_deactivate(struct tb_path *path)
  * Activate a path starting with the last hop and iterating backwards. The
  * caller must fill path->hops before calling tb_path_activate().
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: Returns 0 on success or an error code on failure.
  */
 int tb_path_activate(struct tb_path *path)
 {
@@ -550,7 +535,6 @@ int tb_path_activate(struct tb_path *path)
 		hop.next_hop = path->hops[i].next_hop_index;
 		hop.out_port = path->hops[i].out_port->port;
 		hop.initial_credits = path->hops[i].initial_credits;
-		hop.pmps = path->hops[i].pm_support;
 		hop.unknown1 = 0;
 		hop.enable = 1;
 
@@ -583,10 +567,10 @@ int tb_path_activate(struct tb_path *path)
 		}
 	}
 	path->activated = true;
-	tb_dbg(path->tb, "%s path activation complete\n", path->name);
+	tb_dbg(path->tb, "path activation complete\n");
 	return 0;
 err:
-	tb_WARN(path->tb, "%s path activation failed\n", path->name);
+	tb_WARN(path->tb, "path activation failed\n");
 	return res;
 }
 
@@ -594,7 +578,7 @@ err:
  * tb_path_is_invalid() - check whether any ports on the path are invalid
  * @path: Path to check
  *
- * Return: %true if the path is invalid, %false otherwise.
+ * Return: Returns true if the path is invalid, false otherwise.
  */
 bool tb_path_is_invalid(struct tb_path *path)
 {
@@ -615,8 +599,6 @@ bool tb_path_is_invalid(struct tb_path *path)
  *
  * Goes over all hops on path and checks if @port is any of them.
  * Direction does not matter.
- *
- * Return: %true if port is on the path, %false otherwise.
  */
 bool tb_path_port_on_path(const struct tb_path *path, const struct tb_port *port)
 {

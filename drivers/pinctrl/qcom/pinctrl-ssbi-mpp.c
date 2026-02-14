@@ -7,13 +7,12 @@
 #include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinconf.h>
@@ -127,6 +126,7 @@ struct pm8xxx_mpp {
 	struct regmap *regmap;
 	struct pinctrl_dev *pctrl;
 	struct gpio_chip chip;
+	struct irq_chip irq;
 
 	struct pinctrl_desc desc;
 	unsigned npins;
@@ -337,7 +337,7 @@ static int pm8xxx_pin_config_get(struct pinctrl_dev *pctldev,
 	case PIN_CONFIG_INPUT_ENABLE:
 		arg = pin->input;
 		break;
-	case PIN_CONFIG_LEVEL:
+	case PIN_CONFIG_OUTPUT:
 		arg = pin->output_value;
 		break;
 	case PIN_CONFIG_POWER_SOURCE:
@@ -392,7 +392,7 @@ static int pm8xxx_pin_config_set(struct pinctrl_dev *pctldev,
 		case PIN_CONFIG_INPUT_ENABLE:
 			pin->input = true;
 			break;
-		case PIN_CONFIG_LEVEL:
+		case PIN_CONFIG_OUTPUT:
 			pin->output = true;
 			pin->output_value = !!arg;
 			break;
@@ -511,15 +511,14 @@ static int pm8xxx_mpp_get(struct gpio_chip *chip, unsigned offset)
 	return ret;
 }
 
-static int pm8xxx_mpp_set(struct gpio_chip *chip, unsigned int offset,
-			  int value)
+static void pm8xxx_mpp_set(struct gpio_chip *chip, unsigned offset, int value)
 {
 	struct pm8xxx_mpp *pctrl = gpiochip_get_data(chip);
 	struct pm8xxx_pin_data *pin = pctrl->desc.pins[offset].drv_data;
 
 	pin->output_value = !!value;
 
-	return pm8xxx_mpp_update(pctrl, pin);
+	pm8xxx_mpp_update(pctrl, pin);
 }
 
 static int pm8xxx_mpp_of_xlate(struct gpio_chip *chip,
@@ -578,7 +577,8 @@ static void pm8xxx_mpp_dbg_show_one(struct seq_file *s,
 			seq_puts(s, "out ");
 
 			if (!pin->paired) {
-				seq_puts(s, str_high_low(pin->output_value));
+				seq_puts(s, pin->output_value ?
+					 "high" : "low");
 			} else {
 				seq_puts(s, pin->output_value ?
 					 "inverted" : "follow");
@@ -590,7 +590,8 @@ static void pm8xxx_mpp_dbg_show_one(struct seq_file *s,
 		if (pin->output) {
 			seq_printf(s, "out %s ", aout_lvls[pin->aout_level]);
 			if (!pin->paired) {
-				seq_puts(s, str_high_low(pin->output_value));
+				seq_puts(s, pin->output_value ?
+					 "high" : "low");
 			} else {
 				seq_puts(s, pin->output_value ?
 					 "inverted" : "follow");
@@ -605,7 +606,8 @@ static void pm8xxx_mpp_dbg_show_one(struct seq_file *s,
 			seq_printf(s, "dtest%d", pin->dtest);
 		} else {
 			if (!pin->paired) {
-				seq_puts(s, str_high_low(pin->output_value));
+				seq_puts(s, pin->output_value ?
+					 "high" : "low");
 			} else {
 				seq_puts(s, pin->output_value ?
 					 "inverted" : "follow");
@@ -776,32 +778,6 @@ static int pm8xxx_mpp_child_to_parent_hwirq(struct gpio_chip *chip,
 	return 0;
 }
 
-static void pm8xxx_mpp_irq_disable(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-
-	gpiochip_disable_irq(gc, irqd_to_hwirq(d));
-}
-
-static void pm8xxx_mpp_irq_enable(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-
-	gpiochip_enable_irq(gc, irqd_to_hwirq(d));
-}
-
-static const struct irq_chip pm8xxx_mpp_irq_chip = {
-	.name = "ssbi-mpp",
-	.irq_mask_ack = irq_chip_mask_ack_parent,
-	.irq_unmask = irq_chip_unmask_parent,
-	.irq_disable = pm8xxx_mpp_irq_disable,
-	.irq_enable = pm8xxx_mpp_irq_enable,
-	.irq_set_type = irq_chip_set_type_parent,
-	.flags = IRQCHIP_MASK_ON_SUSPEND | IRQCHIP_SKIP_SET_WAKE |
-		IRQCHIP_IMMUTABLE,
-	GPIOCHIP_IRQ_RESOURCE_HELPERS,
-};
-
 static const struct of_device_id pm8xxx_mpp_of_match[] = {
 	{ .compatible = "qcom,pm8018-mpp", .data = (void *) 6 },
 	{ .compatible = "qcom,pm8038-mpp", .data = (void *) 6 },
@@ -895,8 +871,14 @@ static int pm8xxx_mpp_probe(struct platform_device *pdev)
 	if (!parent_domain)
 		return -ENXIO;
 
+	pctrl->irq.name = "ssbi-mpp";
+	pctrl->irq.irq_mask_ack = irq_chip_mask_ack_parent;
+	pctrl->irq.irq_unmask = irq_chip_unmask_parent;
+	pctrl->irq.irq_set_type = irq_chip_set_type_parent;
+	pctrl->irq.flags = IRQCHIP_MASK_ON_SUSPEND | IRQCHIP_SKIP_SET_WAKE;
+
 	girq = &pctrl->chip.irq;
-	gpio_irq_chip_set_chip(girq, &pm8xxx_mpp_irq_chip);
+	girq->chip = &pctrl->irq;
 	girq->default_type = IRQ_TYPE_NONE;
 	girq->handler = handle_level_irq;
 	girq->fwnode = dev_fwnode(pctrl->dev);
@@ -935,11 +917,13 @@ unregister_gpiochip:
 	return ret;
 }
 
-static void pm8xxx_mpp_remove(struct platform_device *pdev)
+static int pm8xxx_mpp_remove(struct platform_device *pdev)
 {
 	struct pm8xxx_mpp *pctrl = platform_get_drvdata(pdev);
 
 	gpiochip_remove(&pctrl->chip);
+
+	return 0;
 }
 
 static struct platform_driver pm8xxx_mpp_driver = {

@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/phy.h>
 #include <linux/platform_device.h>
-#include <linux/rtnetlink.h>
 #include <linux/skbuff.h>
 
 #include "mlxbf_gige.h"
@@ -131,21 +130,16 @@ static int mlxbf_gige_open(struct net_device *netdev)
 {
 	struct mlxbf_gige *priv = netdev_priv(netdev);
 	struct phy_device *phydev = netdev->phydev;
-	u64 control;
 	u64 int_en;
 	int err;
 
-	/* Perform general init of GigE block */
-	control = readq(priv->base + MLXBF_GIGE_CONTROL);
-	control |= MLXBF_GIGE_CONTROL_PORT_EN;
-	writeq(control, priv->base + MLXBF_GIGE_CONTROL);
-
+	err = mlxbf_gige_request_irqs(priv);
+	if (err)
+		return err;
 	mlxbf_gige_cache_stats(priv);
 	err = mlxbf_gige_clean_port(priv);
-	if (err) {
-		dev_err(priv->dev, "open: clean_port failed: %pe\n", ERR_PTR(err));
-		return err;
-	}
+	if (err)
+		goto free_irqs;
 
 	/* Clear driver's valid_polarity to match hardware,
 	 * since the above call to clean_port() resets the
@@ -153,32 +147,18 @@ static int mlxbf_gige_open(struct net_device *netdev)
 	 */
 	priv->valid_polarity = 0;
 
-	phy_start(phydev);
-
-	err = mlxbf_gige_tx_init(priv);
-	if (err) {
-		dev_err(priv->dev, "open: tx_init failed: %pe\n", ERR_PTR(err));
-		goto phy_deinit;
-	}
 	err = mlxbf_gige_rx_init(priv);
-	if (err) {
-		dev_err(priv->dev, "open: rx_init failed: %pe\n", ERR_PTR(err));
-		goto tx_deinit;
-	}
+	if (err)
+		goto free_irqs;
+	err = mlxbf_gige_tx_init(priv);
+	if (err)
+		goto rx_deinit;
+
+	phy_start(phydev);
 
 	netif_napi_add(netdev, &priv->napi, mlxbf_gige_poll);
 	napi_enable(&priv->napi);
 	netif_start_queue(netdev);
-
-	err = mlxbf_gige_request_irqs(priv);
-	if (err) {
-		dev_err(priv->dev, "open: request_irqs failed: %pe\n", ERR_PTR(err));
-		goto napi_deinit;
-	}
-
-	mlxbf_gige_enable_mac_rx_filter(priv, MLXBF_GIGE_BCAST_MAC_FILTER_IDX);
-	mlxbf_gige_enable_mac_rx_filter(priv, MLXBF_GIGE_LOCAL_MAC_FILTER_IDX);
-	mlxbf_gige_enable_multicast_rx(priv);
 
 	/* Set bits in INT_EN that we care about */
 	int_en = MLXBF_GIGE_INT_EN_HW_ACCESS_ERROR |
@@ -196,17 +176,11 @@ static int mlxbf_gige_open(struct net_device *netdev)
 
 	return 0;
 
-napi_deinit:
-	netif_stop_queue(netdev);
-	napi_disable(&priv->napi);
-	netif_napi_del(&priv->napi);
+rx_deinit:
 	mlxbf_gige_rx_deinit(priv);
 
-tx_deinit:
-	mlxbf_gige_tx_deinit(priv);
-
-phy_deinit:
-	phy_stop(phydev);
+free_irqs:
+	mlxbf_gige_free_irqs(priv);
 	return err;
 }
 
@@ -391,7 +365,7 @@ static int mlxbf_gige_probe(struct platform_device *pdev)
 	void __iomem *plu_base;
 	void __iomem *base;
 	int addr, phy_irq;
-	unsigned int i;
+	u64 control;
 	int err;
 
 	base = devm_platform_ioremap_resource(pdev, MLXBF_GIGE_RES_MAC);
@@ -405,6 +379,11 @@ static int mlxbf_gige_probe(struct platform_device *pdev)
 	plu_base = devm_platform_ioremap_resource(pdev, MLXBF_GIGE_RES_PLU);
 	if (IS_ERR(plu_base))
 		return PTR_ERR(plu_base);
+
+	/* Perform general init of GigE block */
+	control = readq(base + MLXBF_GIGE_CONTROL);
+	control |= MLXBF_GIGE_CONTROL_PORT_EN;
+	writeq(control, base + MLXBF_GIGE_CONTROL);
 
 	netdev = devm_alloc_etherdev(&pdev->dev, sizeof(*priv));
 	if (!netdev)
@@ -426,10 +405,8 @@ static int mlxbf_gige_probe(struct platform_device *pdev)
 
 	/* Attach MDIO device */
 	err = mlxbf_gige_mdio_probe(pdev, priv);
-	if (err) {
-		dev_err(priv->dev, "probe: mdio_probe failed: %pe\n", ERR_PTR(err));
+	if (err)
 		return err;
-	}
 
 	priv->base = base;
 	priv->llu_base = llu_base;
@@ -438,17 +415,12 @@ static int mlxbf_gige_probe(struct platform_device *pdev)
 	priv->rx_q_entries = MLXBF_GIGE_DEFAULT_RXQ_SZ;
 	priv->tx_q_entries = MLXBF_GIGE_DEFAULT_TXQ_SZ;
 
-	for (i = 0; i <= MLXBF_GIGE_MAX_FILTER_IDX; i++)
-		mlxbf_gige_disable_mac_rx_filter(priv, i);
-	mlxbf_gige_disable_multicast_rx(priv);
-	mlxbf_gige_disable_promisc(priv);
-
 	/* Write initial MAC address to hardware */
 	mlxbf_gige_initial_mac(priv);
 
 	err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (err) {
-		dev_err(&pdev->dev, "DMA configuration failed: %pe\n", ERR_PTR(err));
+		dev_err(&pdev->dev, "DMA configuration failed: 0x%x\n", err);
 		goto out;
 	}
 
@@ -456,11 +428,9 @@ static int mlxbf_gige_probe(struct platform_device *pdev)
 	priv->rx_irq = platform_get_irq(pdev, MLXBF_GIGE_RECEIVE_PKT_INTR_IDX);
 	priv->llu_plu_irq = platform_get_irq(pdev, MLXBF_GIGE_LLU_PLU_INTR_IDX);
 
-	phy_irq = acpi_dev_gpio_irq_get_by(ACPI_COMPANION(&pdev->dev), "phy", 0);
-	if (phy_irq == -EPROBE_DEFER) {
-		err = -EPROBE_DEFER;
-		goto out;
-	} else if (phy_irq < 0) {
+	phy_irq = acpi_dev_gpio_irq_get_by(ACPI_COMPANION(&pdev->dev), "phy-gpios", 0);
+	if (phy_irq < 0) {
+		dev_err(&pdev->dev, "Error getting PHY irq. Use polling instead");
 		phy_irq = PHY_POLL;
 	}
 
@@ -478,7 +448,7 @@ static int mlxbf_gige_probe(struct platform_device *pdev)
 				 mlxbf_gige_link_cfgs[priv->hw_version].adjust_link,
 				 mlxbf_gige_link_cfgs[priv->hw_version].phy_mode);
 	if (err) {
-		dev_err(&pdev->dev, "Could not attach to PHY: %pe\n", ERR_PTR(err));
+		dev_err(&pdev->dev, "Could not attach to PHY\n");
 		goto out;
 	}
 
@@ -489,7 +459,7 @@ static int mlxbf_gige_probe(struct platform_device *pdev)
 
 	err = register_netdev(netdev);
 	if (err) {
-		dev_err(&pdev->dev, "Failed to register netdev: %pe\n", ERR_PTR(err));
+		dev_err(&pdev->dev, "Failed to register netdev\n");
 		phy_disconnect(phydev);
 		goto out;
 	}
@@ -501,7 +471,7 @@ out:
 	return err;
 }
 
-static void mlxbf_gige_remove(struct platform_device *pdev)
+static int mlxbf_gige_remove(struct platform_device *pdev)
 {
 	struct mlxbf_gige *priv = platform_get_drvdata(pdev);
 
@@ -509,19 +479,16 @@ static void mlxbf_gige_remove(struct platform_device *pdev)
 	phy_disconnect(priv->netdev->phydev);
 	mlxbf_gige_mdio_remove(priv);
 	platform_set_drvdata(pdev, NULL);
+
+	return 0;
 }
 
 static void mlxbf_gige_shutdown(struct platform_device *pdev)
 {
 	struct mlxbf_gige *priv = platform_get_drvdata(pdev);
 
-	rtnl_lock();
-	netif_device_detach(priv->netdev);
-
-	if (netif_running(priv->netdev))
-		dev_close(priv->netdev);
-
-	rtnl_unlock();
+	writeq(0, priv->base + MLXBF_GIGE_INT_EN);
+	mlxbf_gige_clean_port(priv);
 }
 
 static const struct acpi_device_id __maybe_unused mlxbf_gige_acpi_match[] = {

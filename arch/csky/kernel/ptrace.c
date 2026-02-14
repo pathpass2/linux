@@ -166,7 +166,7 @@ static int fpr_set(struct task_struct *target,
 
 static const struct user_regset csky_regsets[] = {
 	[REGSET_GPR] = {
-		USER_REGSET_NOTE_TYPE(PRSTATUS),
+		.core_note_type = NT_PRSTATUS,
 		.n = sizeof(struct pt_regs) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),
@@ -174,7 +174,7 @@ static const struct user_regset csky_regsets[] = {
 		.set = gpr_set,
 	},
 	[REGSET_FPR] = {
-		USER_REGSET_NOTE_TYPE(PRFPREG),
+		.core_note_type = NT_PRFPREG,
 		.n = sizeof(struct user_fp) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),

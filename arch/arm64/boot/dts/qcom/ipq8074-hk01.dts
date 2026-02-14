@@ -62,11 +62,11 @@
 	perst-gpios = <&tlmm 58 GPIO_ACTIVE_LOW>;
 };
 
-&pcie_qmp0 {
+&pcie_phy0 {
 	status = "okay";
 };
 
-&pcie_qmp1 {
+&pcie_phy1 {
 	status = "okay";
 };
 

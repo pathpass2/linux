@@ -1488,7 +1488,7 @@ static const struct regmap_config smb347_regmap = {
 	.max_register	= SMB347_MAX_REGISTER,
 	.volatile_reg	= smb347_volatile_reg,
 	.readable_reg	= smb347_readable_reg,
-	.cache_type	= REGCACHE_MAPLE,
+	.cache_type	= REGCACHE_RBTREE,
 };
 
 static const struct regulator_ops smb347_usb_vbus_regulator_ops = {
@@ -1553,7 +1553,7 @@ static int smb347_probe(struct i2c_client *client)
 		return PTR_ERR(smb->regmap);
 
 	mains_usb_cfg.drv_data = smb;
-	mains_usb_cfg.fwnode = dev_fwnode(dev);
+	mains_usb_cfg.of_node = dev->of_node;
 	if (smb->use_mains) {
 		smb->mains = devm_power_supply_register(dev, &smb347_mains_desc,
 							&mains_usb_cfg);
@@ -1629,7 +1629,7 @@ static struct i2c_driver smb347_driver = {
 		.name = "smb347",
 		.of_match_table = smb3xx_of_match,
 	},
-	.probe = smb347_probe,
+	.probe_new = smb347_probe,
 	.remove = smb347_remove,
 	.shutdown = smb347_shutdown,
 	.id_table = smb347_id,

@@ -75,7 +75,7 @@ struct adxrs290_state {
 	/* Ensure correct alignment of timestamp when present */
 	struct {
 		s16 channels[3];
-		aligned_s64 ts;
+		s64 ts __aligned(8);
 	} buffer;
 };
 
@@ -290,8 +290,9 @@ static int adxrs290_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 
 		switch (chan->type) {
 		case IIO_ANGL_VEL:
@@ -315,7 +316,7 @@ static int adxrs290_read_raw(struct iio_dev *indio_dev,
 			break;
 		}
 
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		return ret;
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
@@ -365,8 +366,9 @@ static int adxrs290_write_raw(struct iio_dev *indio_dev,
 	struct adxrs290_state *st = iio_priv(indio_dev);
 	int ret, lpf_idx, hpf_idx;
 
-	if (!iio_device_claim_direct(indio_dev))
-		return -EBUSY;
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret)
+		return ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_LOW_PASS_FILTER_3DB_FREQUENCY:
@@ -406,7 +408,7 @@ static int adxrs290_write_raw(struct iio_dev *indio_dev,
 		break;
 	}
 
-	iio_device_release_direct(indio_dev);
+	iio_device_release_direct_mode(indio_dev);
 	return ret;
 }
 

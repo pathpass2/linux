@@ -13,9 +13,10 @@
  * This file contains the functions and defines necessary to modify and use
  * the i386 page table tree.
  */
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <asm/processor.h>
 #include <linux/threads.h>
+#include <asm/paravirt.h>
 
 #include <linux/bitops.h>
 #include <linux/list.h>
@@ -44,7 +45,7 @@ do {						\
 	flush_tlb_one_kernel((vaddr));		\
 } while (0)
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /*
  * This is used to calculate the .brk reservation for initial pagetables.

@@ -4,7 +4,6 @@
 #define _GNU_SOURCE
 #include <linux/compiler.h>
 #include <linux/ring_buffer.h>
-#include <linux/build_bug.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +20,8 @@
 #include "../progs/test_user_ringbuf.h"
 
 static const long c_sample_size = sizeof(struct sample) + BPF_RINGBUF_HDR_SZ;
-static long c_ringbuf_size, c_max_entries;
+static const long c_ringbuf_size = 1 << 12; /* 1 small page */
+static const long c_max_entries = c_ringbuf_size / c_sample_size;
 
 static void drain_current_samples(void)
 {
@@ -423,9 +423,7 @@ static void test_user_ringbuf_loop(void)
 	uint32_t remaining_samples = total_samples;
 	int err;
 
-	if (!ASSERT_LT(c_max_entries, total_samples, "compare_c_max_entries"))
-		return;
-
+	BUILD_BUG_ON(total_samples <= c_max_entries);
 	err = load_skel_create_user_ringbuf(&skel, &ringbuf);
 	if (err)
 		return;
@@ -592,7 +590,7 @@ static void *kick_kernel_cb(void *arg)
 	/* Kick the kernel, causing it to drain the ring buffer and then wake
 	 * up the test thread waiting on epoll.
 	 */
-	syscall(__NR_prlimit64);
+	syscall(__NR_getrlimit);
 
 	return NULL;
 }
@@ -644,7 +642,7 @@ static void test_user_ringbuf_blocking_reserve(void)
 	if (!ASSERT_EQ(err, 0, "deferred_kick_thread\n"))
 		goto cleanup;
 
-	/* After spawning another thread that asynchronously kicks the kernel to
+	/* After spawning another thread that asychronously kicks the kernel to
 	 * drain the messages, we're able to block and successfully get a
 	 * sample once we receive an event notification.
 	 */
@@ -686,9 +684,6 @@ static struct {
 void test_user_ringbuf(void)
 {
 	int i;
-
-	c_ringbuf_size = getpagesize(); /* 1 page */
-	c_max_entries = c_ringbuf_size / c_sample_size;
 
 	for (i = 0; i < ARRAY_SIZE(success_tests); i++) {
 		if (!test__start_subtest(success_tests[i].test_name))

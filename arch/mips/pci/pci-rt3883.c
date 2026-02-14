@@ -208,10 +208,9 @@ static int rt3883_pci_irq_init(struct device *dev,
 	rt3883_pci_w32(rpc, 0, RT3883_PCI_REG_PCIENA);
 
 	rpc->irq_domain =
-		irq_domain_create_linear(of_fwnode_handle(rpc->intc_of_node),
-					 RT3883_PCI_IRQ_COUNT,
-					 &rt3883_pci_irq_domain_ops,
-					 rpc);
+		irq_domain_add_linear(rpc->intc_of_node, RT3883_PCI_IRQ_COUNT,
+				      &rt3883_pci_irq_domain_ops,
+				      rpc);
 	if (!rpc->irq_domain) {
 		dev_err(dev, "unable to add IRQ domain\n");
 		return -ENODEV;
@@ -420,7 +419,7 @@ static int rt3883_pci_probe(struct platform_device *pdev)
 
 	/* find the interrupt controller child node */
 	for_each_child_of_node(np, child) {
-		if (of_property_read_bool(child, "interrupt-controller")) {
+		if (of_get_property(child, "interrupt-controller", NULL)) {
 			rpc->intc_of_node = child;
 			break;
 		}

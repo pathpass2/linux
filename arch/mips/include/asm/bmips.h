@@ -42,7 +42,7 @@
 
 #define ZSCM_REG_BASE			0x97000000
 
-#if !defined(__ASSEMBLER__)
+#if !defined(__ASSEMBLY__)
 
 #include <linux/cpumask.h>
 #include <asm/r4kcache.h>
@@ -81,7 +81,6 @@ extern char bmips_smp_movevec[];
 extern char bmips_smp_int_vec[];
 extern char bmips_smp_int_vec_end[];
 
-extern void __iomem *bmips_cbr_addr;
 extern int bmips_smp_enabled;
 extern int bmips_cpu_offset;
 extern cpumask_t bmips_booted_mask;
@@ -124,6 +123,6 @@ static inline void bmips_write_zscm_reg(unsigned int offset, unsigned long data)
 	barrier();
 }
 
-#endif /* !defined(__ASSEMBLER__) */
+#endif /* !defined(__ASSEMBLY__) */
 
 #endif /* _ASM_BMIPS_H */

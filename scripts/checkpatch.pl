@@ -28,7 +28,6 @@ my %verbose_messages = ();
 my %verbose_emitted = ();
 my $tree = 1;
 my $chk_signoff = 1;
-my $chk_fixes_tag = 1;
 my $chk_patch = 1;
 my $tst_only;
 my $emacs = 0;
@@ -75,8 +74,6 @@ my $git_command ='export LANGUAGE=en_US.UTF-8; git';
 my $tabsize = 8;
 my ${CONFIG_} = "CONFIG_";
 
-my %maybe_linker_symbol; # for externs in c exceptions, when seen in *vmlinux.lds.h
-
 sub help {
 	my ($exitcode) = @_;
 
@@ -89,7 +86,6 @@ Options:
   -v, --verbose              verbose mode
   --no-tree                  run without a kernel tree
   --no-signoff               do not check for 'Signed-off-by' line
-  --no-fixes-tag             do not check for 'Fixes:' tag
   --patch                    treat FILE as patchfile (default)
   --emacs                    emacs compile window format
   --terse                    one line per report
@@ -113,8 +109,7 @@ Options:
   --max-line-length=n        set the maximum line length, (default $max_line_length)
                              if exceeded, warn on patches
                              requires --strict for use with --file
-  --min-conf-desc-length=n   set the minimum description length for config symbols
-                             in lines, if shorter, warn (default $min_conf_desc_length)
+  --min-conf-desc-length=n   set the min description length, if shorter, warn
   --tab-size=n               set the number of spaces for tab (default $tabsize)
   --root=PATH                PATH to the kernel tree root
   --no-summary               suppress the per-file summary
@@ -150,24 +145,6 @@ EOM
 
 	exit($exitcode);
 }
-
-my $DO_WHILE_0_ADVICE = q{
-   do {} while (0) advice is over-stated in a few situations:
-
-   The more obvious case is macros, like MODULE_PARM_DESC, invoked at
-   file-scope, where C disallows code (it must be in functions).  See
-   $exceptions if you have one to add by name.
-
-   More troublesome is declarative macros used at top of new scope,
-   like DECLARE_PER_CPU.  These might just compile with a do-while-0
-   wrapper, but would be incorrect.  Most of these are handled by
-   detecting struct,union,etc declaration primitives in $exceptions.
-
-   Theres also macros called inside an if (block), which "return" an
-   expression.  These cannot do-while, and need a ({}) wrapper.
-
-   Enjoy this qualification while we work to improve our heuristics.
-};
 
 sub uniq {
 	my %seen;
@@ -316,7 +293,6 @@ GetOptions(
 	'v|verbose!'	=> \$verbose,
 	'tree!'		=> \$tree,
 	'signoff!'	=> \$chk_signoff,
-	'fixes-tag!'	=> \$chk_fixes_tag,
 	'patch!'	=> \$chk_patch,
 	'emacs!'	=> \$emacs,
 	'terse!'	=> \$terse,
@@ -534,7 +510,6 @@ our $Attribute	= qr{
 			__ro_after_init|
 			__kprobes|
 			$InitAttribute|
-			__aligned\s*\(.*\)|
 			____cacheline_aligned|
 			____cacheline_aligned_in_smp|
 			____cacheline_internodealigned_in_smp|
@@ -645,22 +620,6 @@ our $signature_tags = qr{(?xi:
 	Cc:
 )};
 
-our @link_tags = qw(Link Closes);
-
-#Create a search and print patterns for all these strings to be used directly below
-our $link_tags_search = "";
-our $link_tags_print = "";
-foreach my $entry (@link_tags) {
-	if ($link_tags_search ne "") {
-		$link_tags_search .= '|';
-		$link_tags_print .= ' or ';
-	}
-	$entry .= ':';
-	$link_tags_search .= $entry;
-	$link_tags_print .= "'$entry'";
-}
-$link_tags_search = "(?:${link_tags_search})";
-
 our $tracing_logging_tags = qr{(?xi:
 	[=-]*> |
 	<[=-]* |
@@ -684,9 +643,6 @@ our $tracing_logging_tags = qr{(?xi:
 	return |
 	[\.\!:\s]*
 )};
-
-# Device ID types like found in include/linux/mod_devicetable.h.
-our $dev_id_types = qr{\b[a-z]\w*_device_id\b};
 
 sub edit_distance_min {
 	my (@arr) = @_;
@@ -856,16 +812,20 @@ foreach my $entry (@mode_permission_funcs) {
 $mode_perms_search = "(?:${mode_perms_search})";
 
 our %deprecated_apis = (
+	"synchronize_rcu_bh"			=> "synchronize_rcu",
+	"synchronize_rcu_bh_expedited"		=> "synchronize_rcu_expedited",
+	"call_rcu_bh"				=> "call_rcu",
+	"rcu_barrier_bh"			=> "rcu_barrier",
+	"synchronize_sched"			=> "synchronize_rcu",
+	"synchronize_sched_expedited"		=> "synchronize_rcu_expedited",
+	"call_rcu_sched"			=> "call_rcu",
+	"rcu_barrier_sched"			=> "rcu_barrier",
+	"get_state_synchronize_sched"		=> "get_state_synchronize_rcu",
+	"cond_synchronize_sched"		=> "cond_synchronize_rcu",
 	"kmap"					=> "kmap_local_page",
 	"kunmap"				=> "kunmap_local",
 	"kmap_atomic"				=> "kmap_local_page",
 	"kunmap_atomic"				=> "kunmap_local",
-	#These should be enough to drive away new IDR users
-	"DEFINE_IDR"				=> "DEFINE_XARRAY",
-	"idr_init"				=> "xa_init",
-	"idr_init_base"				=> "xa_init_flags",
-	"rcu_read_lock_trace"			=> "rcu_read_lock_tasks_trace",
-	"rcu_read_unlock_trace"			=> "rcu_read_unlock_tasks_trace",
 );
 
 #Create a search pattern for all these strings to speed up a loop below
@@ -1102,9 +1062,7 @@ our $declaration_macros = qr{(?x:
 	(?:$Storage\s+)?(?:[A-Z_][A-Z0-9]*_){0,2}(?:DEFINE|DECLARE)(?:_[A-Z0-9]+){1,6}\s*\(|
 	(?:$Storage\s+)?[HLP]?LIST_HEAD\s*\(|
 	(?:SKCIPHER_REQUEST|SHASH_DESC|AHASH_REQUEST)_ON_STACK\s*\(|
-	(?:$Storage\s+)?(?:XA_STATE|XA_STATE_ORDER)\s*\(|
-	__cacheline_group_(?:begin|end)(?:_aligned)?\s*\(|
-	__dma_from_device_group_(?:begin|end)\s*\(
+	(?:$Storage\s+)?(?:XA_STATE|XA_STATE_ORDER)\s*\(
 )};
 
 our %allow_repeated_words = (
@@ -1280,7 +1238,6 @@ sub git_commit_info {
 }
 
 $chk_signoff = 0 if ($file);
-$chk_fixes_tag = 0 if ($file);
 
 my @rawlines = ();
 my @lines = ();
@@ -2644,11 +2601,6 @@ sub exclude_global_initialisers {
 		$realfile =~ m@/bpf/.*\.bpf\.c$@;
 }
 
-sub is_userspace {
-    my ($realfile) = @_;
-    return ($realfile =~ m@^tools/@ || $realfile =~ m@^scripts/@);
-}
-
 sub process {
 	my $filename = shift;
 
@@ -2665,9 +2617,6 @@ sub process {
 
 	our $clean = 1;
 	my $signoff = 0;
-	my $fixes_tag = 0;
-	my $is_revert = 0;
-	my $needs_fixes_tag = "";
 	my $author = '';
 	my $authorsignoff = 0;
 	my $author_sob = '';
@@ -2900,7 +2849,7 @@ sub process {
 
 			if ($realfile =~ m@^include/asm/@) {
 				ERROR("MODIFIED_INCLUDE_ASM",
-				      "do not modify files in include/asm, change architecture specific files in arch/<architecture>/include/asm\n" . "$here$rawline\n");
+				      "do not modify files in include/asm, change architecture specific files in include/asm-<architecture>\n" . "$here$rawline\n");
 			}
 			$found_file = 1;
 		}
@@ -3032,16 +2981,6 @@ sub process {
 						}
 					}
 				}
-			}
-		}
-
-# Check for invalid patch separator
-		if ($in_commit_log &&
-		    $line =~ /^---.+/) {
-			if (ERROR("BAD_COMMIT_SEPARATOR",
-				  "Invalid commit separator - some tools may have problems applying this\n" . $herecurr) &&
-			    $fix) {
-				$fixed[$fixlinenr] =~ s/-/=/g;
 			}
 		}
 
@@ -3219,65 +3158,59 @@ sub process {
 				}
 			}
 
-# check if Reported-by: is followed by a Closes: tag
+# check if Reported-by: is followed by a Link:
 			if ($sign_off =~ /^reported(?:|-and-tested)-by:$/i) {
 				if (!defined $lines[$linenr]) {
 					WARN("BAD_REPORTED_BY_LINK",
-					     "Reported-by: should be immediately followed by Closes: with a URL to the report\n" . $herecurr . "\n");
-				} elsif ($rawlines[$linenr] !~ /^closes:\s*/i) {
+					     "Reported-by: should be immediately followed by Link: to the report\n" . $herecurr . $rawlines[$linenr] . "\n");
+				} elsif ($rawlines[$linenr] !~ m{^link:\s*https?://}i) {
 					WARN("BAD_REPORTED_BY_LINK",
-					     "Reported-by: should be immediately followed by Closes: with a URL to the report\n" . $herecurr . $rawlines[$linenr] . "\n");
+					     "Reported-by: should be immediately followed by Link: with a URL to the report\n" . $herecurr . $rawlines[$linenr] . "\n");
 				}
 			}
 		}
 
-# These indicate a bug fix
-		if (!$in_header_lines && !$is_patch &&
-			$line =~ /^This reverts commit/) {
-			$is_revert = 1;
-		}
-
-		if (!$in_header_lines && !$is_patch &&
-		    $line =~ /((?:(?:BUG: K.|UB)SAN: |Call Trace:|stable\@|syzkaller))/) {
-			$needs_fixes_tag = $1;
-		}
 
 # Check Fixes: styles is correct
 		if (!$in_header_lines &&
-		    $line =~ /^\s*(fixes:?)\s*(?:commit\s*)?([0-9a-f]{5,40})(?:\s*($balanced_parens))?/i) {
-			my $tag = $1;
-			my $orig_commit = $2;
-			my $title;
+		    $line =~ /^\s*fixes:?\s*(?:commit\s*)?[0-9a-f]{5,}\b/i) {
+			my $orig_commit = "";
+			my $id = "0123456789ab";
+			my $title = "commit title";
+			my $tag_case = 1;
+			my $tag_space = 1;
+			my $id_length = 1;
+			my $id_case = 1;
 			my $title_has_quotes = 0;
-			$fixes_tag = 1;
-			if (defined $3) {
+
+			if ($line =~ /(\s*fixes:?)\s+([0-9a-f]{5,})\s+($balanced_parens)/i) {
+				my $tag = $1;
+				$orig_commit = $2;
+				$title = $3;
+
+				$tag_case = 0 if $tag eq "Fixes:";
+				$tag_space = 0 if ($line =~ /^fixes:? [0-9a-f]{5,} ($balanced_parens)/i);
+
+				$id_length = 0 if ($orig_commit =~ /^[0-9a-f]{12}$/i);
+				$id_case = 0 if ($orig_commit !~ /[A-F]/);
+
 				# Always strip leading/trailing parens then double quotes if existing
-				$title = substr($3, 1, -1);
+				$title = substr($title, 1, -1);
 				if ($title =~ /^".*"$/) {
 					$title = substr($title, 1, -1);
 					$title_has_quotes = 1;
 				}
-			} else {
-				$title = "commit title"
 			}
 
-
-			my $tag_case = not ($tag eq "Fixes:");
-			my $tag_space = not ($line =~ /^fixes:? [0-9a-f]{5,40} ($balanced_parens)/i);
-
-			my $id_length = not ($orig_commit =~ /^[0-9a-f]{12,40}$/i);
-			my $id_case = not ($orig_commit !~ /[A-F]/);
-
-			my $id = "0123456789ab";
 			my ($cid, $ctitle) = git_commit_info($orig_commit, $id,
 							     $title);
 
-			if (defined($cid) && ($ctitle ne $title || $tag_case || $tag_space || $id_length || $id_case || !$title_has_quotes)) {
-				my $fixed = "Fixes: $cid (\"$ctitle\")";
+			if ($ctitle ne $title || $tag_case || $tag_space ||
+			    $id_length || $id_case || !$title_has_quotes) {
 				if (WARN("BAD_FIXES_TAG",
-				     "Please use correct Fixes: style 'Fixes: <12+ chars of sha1> (\"<title line>\")' - ie: '$fixed'\n" . $herecurr) &&
+				     "Please use correct Fixes: style 'Fixes: <12 chars of sha1> (\"<title line>\")' - ie: 'Fixes: $cid (\"$ctitle\")'\n" . $herecurr) &&
 				    $fix) {
-					$fixed[$fixlinenr] = $fixed;
+					$fixed[$fixlinenr] = "Fixes: $cid (\"$ctitle\")";
 				}
 			}
 		}
@@ -3317,11 +3250,11 @@ sub process {
 					# file delta changes
 		      $line =~ /^\s*(?:[\w\.\-\+]*\/)++[\w\.\-\+]+:/ ||
 					# filename then :
-		      $line =~ /^\s*(?:Fixes:|https?:|$link_tags_search|$signature_tags)/i ||
-					# A Fixes:, link or signature tag line
+		      $line =~ /^\s*(?:Fixes:|Link:|$signature_tags)/i ||
+					# A Fixes: or Link: line or signature tag line
 		      $commit_log_possible_stack_dump)) {
 			WARN("COMMIT_LOG_LONG_LINE",
-			     "Prefer a maximum 75 chars per line (possible unwrapped commit description?)\n" . $herecurr);
+			     "Possible unwrapped commit description (prefer a maximum 75 chars per line)\n" . $herecurr);
 			$commit_log_long_line = 1;
 		}
 
@@ -3333,24 +3266,13 @@ sub process {
 
 # Check for odd tags before a URI/URL
 		if ($in_commit_log &&
-		    $line =~ /^\s*(\w+:)\s*http/ && $1 !~ /^$link_tags_search$/) {
+		    $line =~ /^\s*(\w+):\s*http/ && $1 ne 'Link') {
 			if ($1 =~ /^v(?:ersion)?\d+/i) {
 				WARN("COMMIT_LOG_VERSIONING",
 				     "Patch version information should be after the --- line\n" . $herecurr);
 			} else {
 				WARN("COMMIT_LOG_USE_LINK",
-				     "Unknown link reference '$1', use $link_tags_print instead\n" . $herecurr);
-			}
-		}
-
-# Check for misuse of the link tags
-		if ($in_commit_log &&
-		    $line =~ /^\s*(\w+:)\s*(\S+)/) {
-			my $tag = $1;
-			my $value = $2;
-			if ($tag =~ /^$link_tags_search$/ && $value !~ m{^https?://}) {
-				WARN("COMMIT_LOG_WRONG_LINK",
-				     "'$tag' should be followed by a public http(s) link\n" . $herecurr);
+				     "Unknown link reference '$1:', use 'Link:' instead\n" . $herecurr);
 			}
 		}
 
@@ -3361,13 +3283,6 @@ sub process {
 			    $fix) {
 				$fixed[$fixlinenr] =~ s/^/ /;
 			}
-		}
-
-# Check for auto-generated unhandled placeholder text (mostly for cover letters)
-		if (($in_commit_log || $in_header_lines) &&
-		    $rawline =~ /(?:SUBJECT|BLURB) HERE/) {
-			ERROR("PLACEHOLDER_USE",
-			      "Placeholder text detected\n" . $herecurr);
 		}
 
 # Check for git id commit length and improperly formed commit descriptions
@@ -3533,10 +3448,9 @@ sub process {
 # Check for various typo / spelling mistakes
 		if (defined($misspellings) &&
 		    ($in_commit_log || $line =~ /^(?:\+|Subject:)/i)) {
-			my $rawline_utf8 = decode("utf8", $rawline);
-			while ($rawline_utf8 =~ /(?:^|[^\w\-'`])($misspellings)(?:[^\w\-'`]|$)/gi) {
+			while ($rawline =~ /(?:^|[^\w\-'`])($misspellings)(?:[^\w\-'`]|$)/gi) {
 				my $typo = $1;
-				my $blank = copy_spacing($rawline_utf8);
+				my $blank = copy_spacing($rawline);
 				my $ptr = substr($blank, 0, $-[1]) . "^" x length($typo);
 				my $hereptr = "$hereline$ptr\n";
 				my $typo_fix = $spelling_fix{lc($typo)};
@@ -3698,7 +3612,7 @@ sub process {
 			    $help_length < $min_conf_desc_length) {
 				my $stat_real = get_stat_real($linenr, $ln - 1);
 				WARN("CONFIG_DESCRIPTION",
-				     "please write a help paragraph that fully describes the config symbol with at least $min_conf_desc_length lines\n" . "$here\n$stat_real\n");
+				     "please write a help paragraph that fully describes the config symbol\n" . "$here\n$stat_real\n");
 			}
 		}
 
@@ -3742,6 +3656,20 @@ sub process {
 			}
 		}
 
+		if (($realfile =~ /Makefile.*/ || $realfile =~ /Kbuild.*/) &&
+		    ($line =~ /\+(EXTRA_[A-Z]+FLAGS).*/)) {
+			my $flag = $1;
+			my $replacement = {
+				'EXTRA_AFLAGS' =>   'asflags-y',
+				'EXTRA_CFLAGS' =>   'ccflags-y',
+				'EXTRA_CPPFLAGS' => 'cppflags-y',
+				'EXTRA_LDFLAGS' =>  'ldflags-y',
+			};
+
+			WARN("DEPRECATED_VARIABLE",
+			     "Use of $flag is deprecated, please use \`$replacement->{$flag} instead.\n" . $herecurr) if ($replacement->{$flag});
+		}
+
 # check for DT compatible documentation
 		if (defined $root &&
 			(($realfile =~ /\.dtsi?$/ && $line =~ /^\+\s*compatible\s*=\s*\"/) ||
@@ -3770,18 +3698,6 @@ sub process {
 					WARN("UNDOCUMENTED_DT_STRING",
 					     "DT compatible string vendor \"$vendor\" appears un-documented -- check $vp_file\n" . $herecurr);
 				}
-			}
-		}
-
-# Check for RGMII phy-mode with delay on PCB
-		if ($realfile =~ /\.(dts|dtsi|dtso)$/ &&
-		    $line =~ /^\+\s*(phy-mode|phy-connection-type)\s*=\s*"/ &&
-		    !ctx_has_comment($first_line, $linenr)) {
-			my $prop = $1;
-			my $mode = get_quoted_string($line, $rawline);
-			if ($mode =~ /^"rgmii(?:|-rxid|-txid)"$/) {
-				WARN("UNCOMMENTED_RGMII_MODE",
-				     "$prop $mode without comment -- delays on the PCB should be described, otherwise use \"rgmii-id\"\n" . $herecurr);
 			}
 		}
 
@@ -3820,7 +3736,7 @@ sub process {
 						     "'$spdx_license' is not supported in LICENSES/...\n" . $herecurr);
 					}
 					if ($realfile =~ m@^Documentation/devicetree/bindings/@ &&
-					    $spdx_license !~ /GPL-2\.0(?:-only)? OR BSD-2-Clause/) {
+					    not $spdx_license =~ /GPL-2\.0.*BSD-2-Clause/) {
 						my $msg_level = \&WARN;
 						$msg_level = \&CHK if ($file);
 						if (&{$msg_level}("SPDX_LICENSE_TAG",
@@ -3829,11 +3745,6 @@ sub process {
 						    $fix) {
 							$fixed[$fixlinenr] =~ s/SPDX-License-Identifier: .*/SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)/;
 						}
-					}
-					if ($realfile =~ m@^include/dt-bindings/@ &&
-					    $spdx_license !~ /GPL-2\.0(?:-only)? OR \S+/) {
-						WARN("SPDX_LICENSE_TAG",
-						     "DT binding headers should be licensed (GPL-2.0-only OR .*)\n" . $herecurr);
 					}
 				}
 			}
@@ -3912,7 +3823,7 @@ sub process {
 			}
 
 			if ($msg_type ne "" &&
-			    show_type("LONG_LINE") && show_type($msg_type)) {
+			    (show_type("LONG_LINE") || show_type($msg_type))) {
 				my $msg_level = \&WARN;
 				$msg_level = \&CHK if ($file);
 				&{$msg_level}($msg_type,
@@ -4051,6 +3962,16 @@ sub process {
 			}
 		}
 
+# Block comment styles
+# Networking with an initial /*
+		if ($realfile =~ m@^(drivers/net/|net/)@ &&
+		    $prevrawline =~ /^\+[ \t]*\/\*[ \t]*$/ &&
+		    $rawline =~ /^\+[ \t]*\*/ &&
+		    $realline > 3) { # Do not warn about the initial copyright comment block after SPDX-License-Identifier
+			WARN("NETWORKING_BLOCK_COMMENT_STYLE",
+			     "networking block comments don't use an empty /* line, use /* Comment...\n" . $hereprev);
+		}
+
 # Block comments use * on subsequent lines
 		if ($prevline =~ /$;[ \t]*$/ &&			#ends in comment
 		    $prevrawline =~ /^\+.*?\/\*/ &&		#starting /*
@@ -4099,7 +4020,7 @@ sub process {
 		if ($prevline =~ /^[\+ ]};?\s*$/ &&
 		    $line =~ /^\+/ &&
 		    !($line =~ /^\+\s*$/ ||
-		      $line =~ /^\+\s*(?:EXPORT_SYMBOL|early_param|ALLOW_ERROR_INJECTION)/ ||
+		      $line =~ /^\+\s*(?:EXPORT_SYMBOL|early_param)/ ||
 		      $line =~ /^\+\s*MODULE_/i ||
 		      $line =~ /^\+\s*\#\s*(?:end|elif|else)/ ||
 		      $line =~ /^\+[a-z_]*init/ ||
@@ -4868,7 +4789,7 @@ sub process {
 		}
 
 # do not use BUG() or variants
-		if ($line =~ /\b(?!AA_|BUILD_|IDA_|KVM_|RWLOCK_|snd_|SPIN_)(?:[a-zA-Z_]*_)?BUG(?:_ON)?(?:_[A-Z_]+)?\s*\(/) {
+		if ($line =~ /\b(?!AA_|BUILD_|DCCP_|IDA_|KVM_|RWLOCK_|snd_|SPIN_)(?:[a-zA-Z_]*_)?BUG(?:_ON)?(?:_[A-Z_]+)?\s*\(/) {
 			my $msg_level = \&WARN;
 			$msg_level = \&CHK if ($file);
 			&{$msg_level}("AVOID_BUG",
@@ -5093,7 +5014,7 @@ sub process {
 				if|for|while|switch|return|case|
 				volatile|__volatile__|
 				__attribute__|format|__extension__|
-				asm|__asm__|scoped_guard)$/x)
+				asm|__asm__)$/x)
 			{
 			# cpp #define statements have non-optional spaces, ie
 			# if there is a space between the name and the open
@@ -5554,9 +5475,9 @@ sub process {
 			}
 		}
 
-# check for unnecessary parentheses around comparisons
-# except in drivers/staging
-		if (($realfile !~ m@^(?:drivers/staging/)@) &&
+# check for unnecessary parentheses around comparisons in if uses
+# when !drivers/staging or command-line uses --strict
+		if (($realfile !~ m@^(?:drivers/staging/)@ || $check_orig) &&
 		    $perl_version_ok && defined($stat) &&
 		    $stat =~ /(^.\s*if\s*($balanced_parens))/) {
 			my $if_stat = $1;
@@ -5884,14 +5805,10 @@ sub process {
 #CamelCase
 			if ($var !~ /^$Constant$/ &&
 			    $var =~ /[A-Z][a-z]|[a-z][A-Z]/ &&
-#Ignore C keywords
-			    $var !~ /^_Generic$/ &&
 #Ignore some autogenerated defines and enum values
 			    $var !~ /^(?:[A-Z]+_){1,5}[A-Z]{1,3}[a-z]/ &&
 #Ignore Page<foo> variants
 			    $var !~ /^(?:Clear|Set|TestClear|TestSet|)Page[A-Z]/ &&
-#Ignore ETHTOOL_LINK_MODE_<foo> variants
-			    $var !~ /^ETHTOOL_LINK_MODE_/ &&
 #Ignore SI style variants like nS, mV and dB
 #(ie: max_uV, regulator_min_uA_show, RANGE_mA_VALUE)
 			    $var !~ /^(?:[a-z0-9_]*|[A-Z0-9_]*)?_?[a-z][A-Z](?:_[a-z0-9_]+|_[A-Z0-9_]+)?$/ &&
@@ -5947,9 +5864,9 @@ sub process {
 			}
 		}
 
-# Usually multi-statement macros should be enclosed in a do {} while
-# (0) loop.  Grab the first statement and ensure its the whole macro
-# if its not enclosed in a known good container
+# multi-statement macros should be enclosed in a do while loop, grab the
+# first statement and ensure its the whole macro if its not enclosed
+# in a known good container
 		if ($realfile !~ m@/vmlinux.lds.h$@ &&
 		    $line =~ /^.\s*\#\s*define\s*$Ident(\()?/) {
 			my $ln = $linenr;
@@ -6002,13 +5919,10 @@ sub process {
 
 			my $exceptions = qr{
 				$Declare|
-				# named exceptions
 				module_param_named|
 				MODULE_PARM_DESC|
 				DECLARE_PER_CPU|
 				DEFINE_PER_CPU|
-				static_assert|
-				# declaration primitives
 				__typeof__\(|
 				union|
 				struct|
@@ -6043,11 +5957,11 @@ sub process {
 					ERROR("MULTISTATEMENT_MACRO_USE_DO_WHILE",
 					      "Macros starting with if should be enclosed by a do - while loop to avoid possible if/else logic defects\n" . "$herectx");
 				} elsif ($dstat =~ /;/) {
-					WARN("MULTISTATEMENT_MACRO_USE_DO_WHILE",
-					      "Non-declarative macros with multiple statements should be enclosed in a do - while loop\n" . "$herectx\nBUT SEE:\n$DO_WHILE_0_ADVICE");
+					ERROR("MULTISTATEMENT_MACRO_USE_DO_WHILE",
+					      "Macros with multiple statements should be enclosed in a do - while loop\n" . "$herectx");
 				} else {
 					ERROR("COMPLEX_MACRO",
-					      "Macros with complex values should be enclosed in parentheses\n" . "$herectx\nBUT SEE:\n$DO_WHILE_0_ADVICE");
+					      "Macros with complex values should be enclosed in parentheses\n" . "$herectx");
 				}
 
 			}
@@ -6089,12 +6003,6 @@ sub process {
 					CHK("MACRO_ARG_PRECEDENCE",
 					    "Macro argument '$arg' may be better as '($arg)' to avoid precedence issues\n" . "$herectx");
 				}
-
-# check if this is an unused argument
-				if ($define_stmt !~ /\b$arg\b/ && $define_stmt) {
-					WARN("MACRO_ARG_UNUSED",
-					     "Argument '$arg' is not used in function-like macro\n" . "$herectx");
-				}
 			}
 
 # check for macros with flow control, but without ## concatenation
@@ -6109,9 +6017,6 @@ sub process {
 
 # check for line continuations outside of #defines, preprocessor #, and asm
 
-		} elsif ($realfile =~ m@/vmlinux.lds.h$@) {
-		    $line =~ s/(\w+)/$maybe_linker_symbol{$1}++/ge;
-		    #print "REAL: $realfile\nln: $line\nkeys:", sort keys %maybe_linker_symbol;
 		} else {
 			if ($prevline !~ /^..*\\$/ &&
 			    $line !~ /^\+\s*\#.*\\$/ &&		# preprocessor
@@ -6638,11 +6543,11 @@ sub process {
 			# ignore udelay's < 10, however
 			if (! ($delay < 10) ) {
 				CHK("USLEEP_RANGE",
-				    "usleep_range is preferred over udelay; see function description of usleep_range() and udelay().\n" . $herecurr);
+				    "usleep_range is preferred over udelay; see Documentation/timers/timers-howto.rst\n" . $herecurr);
 			}
 			if ($delay > 2000) {
 				WARN("LONG_UDELAY",
-				     "long udelay - prefer mdelay; see function description of mdelay().\n" . $herecurr);
+				     "long udelay - prefer mdelay; see arch/arm/include/asm/delay.h\n" . $herecurr);
 			}
 		}
 
@@ -6650,7 +6555,7 @@ sub process {
 		if ($line =~ /\bmsleep\s*\((\d+)\);/) {
 			if ($1 < 20) {
 				WARN("MSLEEP",
-				     "msleep < 20ms can sleep for up to 20ms; see function description of msleep().\n" . $herecurr);
+				     "msleep < 20ms can sleep for up to 20ms; see Documentation/timers/timers-howto.rst\n" . $herecurr);
 			}
 		}
 
@@ -6745,13 +6650,6 @@ sub process {
 				WARN("DATA_RACE",
 				     "data_race without comment\n" . $herecurr);
 			}
-		}
-
-# check for context_unsafe without a comment.
-		if ($line =~ /\bcontext_unsafe\b/ &&
-		    !ctx_has_comment($first_line, $linenr)) {
-			WARN("CONTEXT_UNSAFE",
-			     "context_unsafe without comment\n" . $herecurr);
 		}
 
 # check of hardware specific defines
@@ -6965,7 +6863,7 @@ sub process {
 					    ($extension eq "f" &&
 					     defined $qualifier && $qualifier !~ /^w/) ||
 					    ($extension eq "4" &&
-					     defined $qualifier && $qualifier !~ /^c(?:[hlbc]|hR)$/)) {
+					     defined $qualifier && $qualifier !~ /^cc/)) {
 						$bad_specifier = $specifier;
 						last;
 					}
@@ -7055,42 +6953,12 @@ sub process {
 #				}
 #			}
 #		}
-# strcpy uses that should likely be strscpy
-		if ($line =~ /\bstrcpy\s*\(/ && !is_userspace($realfile)) {
-			WARN("STRCPY",
-			     "Prefer strscpy over strcpy - see: https://github.com/KSPP/linux/issues/88\n" . $herecurr);
-		}
 
 # strlcpy uses that should likely be strscpy
-		if ($line =~ /\bstrlcpy\s*\(/ && !is_userspace($realfile)) {
+		if ($line =~ /\bstrlcpy\s*\(/) {
 			WARN("STRLCPY",
-			     "Prefer strscpy over strlcpy - see: https://github.com/KSPP/linux/issues/89\n" . $herecurr);
+			     "Prefer strscpy over strlcpy - see: https://lore.kernel.org/r/CAHk-=wgfRnXz0W3D37d01q3JFkr_i_uTL=V6A6G1oUZcprmknw\@mail.gmail.com/\n" . $herecurr);
 		}
-
-# strncpy uses that should likely be strscpy or strscpy_pad
-		if ($line =~ /\bstrncpy\s*\(/ && !is_userspace($realfile)) {
-			WARN("STRNCPY",
-			     "Prefer strscpy, strscpy_pad, or __nonstring over strncpy - see: https://github.com/KSPP/linux/issues/90\n" . $herecurr);
-		}
-
-# ethtool_sprintf uses that should likely be ethtool_puts
-		if ($line =~ /\bethtool_sprintf\s*\(\s*$FuncArg\s*,\s*$FuncArg\s*\)/) {
-			if (WARN("PREFER_ETHTOOL_PUTS",
-				 "Prefer ethtool_puts over ethtool_sprintf with only two arguments\n" . $herecurr) &&
-			    $fix) {
-				$fixed[$fixlinenr] =~ s/\bethtool_sprintf\s*\(\s*($FuncArg)\s*,\s*($FuncArg)/ethtool_puts($1, $7)/;
-			}
-		}
-
-		# use $rawline because $line loses %s via sanitization and thus we can't match against it.
-		if ($rawline =~ /\bethtool_sprintf\s*\(\s*$FuncArg\s*,\s*\"\%s\"\s*,\s*$FuncArg\s*\)/) {
-			if (WARN("PREFER_ETHTOOL_PUTS",
-				 "Prefer ethtool_puts over ethtool_sprintf with standalone \"%s\" specifier\n" . $herecurr) &&
-			    $fix) {
-				$fixed[$fixlinenr] =~ s/\bethtool_sprintf\s*\(\s*($FuncArg)\s*,\s*"\%s"\s*,\s*($FuncArg)/ethtool_puts($1, $7)/;
-			}
-		}
-
 
 # typecasts on min/max could be min_t/max_t
 		if ($perl_version_ok &&
@@ -7124,11 +6992,11 @@ sub process {
 			my $max = $7;
 			if ($min eq $max) {
 				WARN("USLEEP_RANGE",
-				     "usleep_range should not use min == max args;  see function description of usleep_range().\n" . "$here\n$stat\n");
+				     "usleep_range should not use min == max args; see Documentation/timers/timers-howto.rst\n" . "$here\n$stat\n");
 			} elsif ($min =~ /^\d+$/ && $max =~ /^\d+$/ &&
 				 $min > $max) {
 				WARN("USLEEP_RANGE",
-				     "usleep_range args reversed, use min then max;  see function description of usleep_range().\n" . "$here\n$stat\n");
+				     "usleep_range args reversed, use min then max; see Documentation/timers/timers-howto.rst\n" . "$here\n$stat\n");
 			}
 		}
 
@@ -7195,21 +7063,6 @@ sub process {
 				WARN("FUNCTION_ARGUMENTS",
 				     "arguments for function declarations should follow identifier\n" . $herecurr);
 			}
-
-		} elsif ($realfile =~ /\.c$/ && defined $stat &&
-		    $stat =~ /^\+extern struct\s+(\w+)\s+(\w+)\[\];/)
-		{
-			my ($st_type, $st_name) = ($1, $2);
-
-			for my $s (keys %maybe_linker_symbol) {
-			    #print "Linker symbol? $st_name : $s\n";
-			    goto LIKELY_LINKER_SYMBOL
-				if $st_name =~ /$s/;
-			}
-			WARN("AVOID_EXTERNS",
-			     "found a file-scoped extern type:$st_type name:$st_name in .c file\n"
-			     . "is this a linker symbol ?\n" . $herecurr);
-		  LIKELY_LINKER_SYMBOL:
 
 		} elsif ($realfile =~ /\.c$/ && defined $stat &&
 		    $stat =~ /^.\s*extern\s+/)
@@ -7279,42 +7132,17 @@ sub process {
 			    "Prefer $3(sizeof(*$1)...) over $3($4...)\n" . $herecurr);
 		}
 
-# check for (kv|k)[mz]alloc that could be kmalloc_obj/kvmalloc_obj/kzalloc_obj/kvzalloc_obj
-		if ($perl_version_ok &&
-		    defined $stat &&
-		    $stat =~ /^\+\s*($Lval)\s*\=\s*(?:$balanced_parens)?\s*((?:kv|k)[mz]alloc)\s*\(\s*($FuncArg)\s*,/) {
-			my $oldfunc = $3;
-			my $a1 = $4;
-			my $newfunc = "kmalloc_obj";
-			$newfunc = "kvmalloc_obj" if ($oldfunc eq "kvmalloc");
-			$newfunc = "kvzalloc_obj" if ($oldfunc eq "kvzalloc");
-			$newfunc = "kzalloc_obj" if ($oldfunc eq "kzalloc");
-
-			if ($a1 =~ s/^sizeof\s*\S\(?([^\)]*)\)?$/$1/) {
-				my $cnt = statement_rawlines($stat);
-				my $herectx = get_stat_here($linenr, $cnt, $here);
-
-				if (WARN("ALLOC_WITH_SIZEOF",
-					 "Prefer $newfunc over $oldfunc with sizeof\n" . $herectx) &&
-				    $cnt == 1 &&
-				    $fix) {
-					$fixed[$fixlinenr] =~ s/\b($Lval)\s*\=\s*(?:$balanced_parens)?\s*((?:kv|k)[mz]alloc)\s*\(\s*($FuncArg)\s*,/$1 = $newfunc($a1,/;
-				}
-			}
-		}
-
-
-# check for (kv|k)[mz]alloc with multiplies that could be kmalloc_objs/kvmalloc_objs/kzalloc_objs/kvzalloc_objs
+# check for (kv|k)[mz]alloc with multiplies that could be kmalloc_array/kvmalloc_array/kvcalloc/kcalloc
 		if ($perl_version_ok &&
 		    defined $stat &&
 		    $stat =~ /^\+\s*($Lval)\s*\=\s*(?:$balanced_parens)?\s*((?:kv|k)[mz]alloc)\s*\(\s*($FuncArg)\s*\*\s*($FuncArg)\s*,/) {
 			my $oldfunc = $3;
 			my $a1 = $4;
 			my $a2 = $10;
-			my $newfunc = "kmalloc_objs";
-			$newfunc = "kvmalloc_objs" if ($oldfunc eq "kvmalloc");
-			$newfunc = "kvzalloc_objs" if ($oldfunc eq "kvzalloc");
-			$newfunc = "kzalloc_objs" if ($oldfunc eq "kzalloc");
+			my $newfunc = "kmalloc_array";
+			$newfunc = "kvmalloc_array" if ($oldfunc eq "kvmalloc");
+			$newfunc = "kvcalloc" if ($oldfunc eq "kvzalloc");
+			$newfunc = "kcalloc" if ($oldfunc eq "kzalloc");
 			my $r1 = $a1;
 			my $r2 = $a2;
 			if ($a1 =~ /^sizeof\s*\S/) {
@@ -7330,9 +7158,7 @@ sub process {
 					 "Prefer $newfunc over $oldfunc with multiply\n" . $herectx) &&
 				    $cnt == 1 &&
 				    $fix) {
-					my $sized = trim($r2);
-					$sized =~ s/^sizeof\s*\S\(?([^\)]*)\)?$/$1/;
-					$fixed[$fixlinenr] =~ s/\b($Lval)\s*\=\s*(?:$balanced_parens)?\s*((?:kv|k)[mz]alloc)\s*\(\s*($FuncArg)\s*\*\s*($FuncArg)/$1 . ' = ' . "$newfunc(" . $sized . ', ' . trim($r1)/e;
+					$fixed[$fixlinenr] =~ s/\b($Lval)\s*\=\s*(?:$balanced_parens)?\s*((?:kv|k)[mz]alloc)\s*\(\s*($FuncArg)\s*\*\s*($FuncArg)/$1 . ' = ' . "$newfunc(" . trim($r1) . ', ' . trim($r2)/e;
 				}
 			}
 		}
@@ -7549,16 +7375,6 @@ sub process {
 			}
 		}
 
-# check for array definition/declarations that should use flexible arrays instead
-		if ($sline =~ /^[\+ ]\s*\}(?:\s*__packed)?\s*;\s*$/ &&
-		    $prevline =~ /^\+\s*(?:\}(?:\s*__packed\s*)?|$Type)\s*$Ident\s*\[\s*(0|1)\s*\]\s*;\s*$/) {
-			if (ERROR("FLEXIBLE_ARRAY",
-				  "Use C99 flexible arrays - see https://docs.kernel.org/process/deprecated.html#zero-length-and-one-element-arrays\n" . $hereprev) &&
-			    $1 == '0' && $fix) {
-				$fixed[$fixlinenr - 1] =~ s/\[\s*0\s*\]/[]/;
-			}
-		}
-
 # nested likely/unlikely calls
 		if ($line =~ /\b(?:(?:un)?likely)\s*\(\s*!?\s*(IS_ERR(?:_OR_NULL|_VALUE)?|WARN)/) {
 			WARN("LIKELY_MISUSE",
@@ -7573,30 +7389,6 @@ sub process {
 			} elsif ($realfile !~ m@^kernel/@) {
 				WARN("IN_ATOMIC",
 				     "use of in_atomic() is incorrect outside core kernel code\n" . $herecurr);
-			}
-		}
-
-# Complain about RCU Tasks Trace used outside of BPF (and of course, RCU).
-		our $rcu_trace_funcs = qr{(?x:
-			rcu_read_lock_trace |
-			rcu_read_lock_trace_held |
-			rcu_read_unlock_trace |
-			call_rcu_tasks_trace |
-			synchronize_rcu_tasks_trace |
-			rcu_barrier_tasks_trace |
-			rcu_request_urgent_qs_task
-		)};
-		our $rcu_trace_paths = qr{(?x:
-			kernel/bpf/ |
-			include/linux/bpf |
-			net/bpf/ |
-			kernel/rcu/ |
-			include/linux/rcu
-		)};
-		if ($line =~ /\b($rcu_trace_funcs)\s*\(/) {
-			if ($realfile !~ m{^$rcu_trace_paths}) {
-				WARN("RCU_TASKS_TRACE",
-				     "use of RCU tasks trace is incorrect outside BPF or core RCU code\n" . $herecurr);
 			}
 		}
 
@@ -7755,37 +7547,6 @@ sub process {
 			WARN("DUPLICATED_SYSCTL_CONST",
 				"duplicated sysctl range checking value '$1', consider using the shared one in include/linux/sysctl.h\n" . $herecurr);
 		}
-
-# Check that *_device_id tables have sentinel entries.
-		if (defined $stat && $line =~ /struct\s+$dev_id_types\s+\w+\s*\[\s*\]\s*=\s*\{/) {
-			my $stripped = $stat;
-
-			# Strip diff line prefixes.
-			$stripped =~ s/(^|\n)./$1/g;
-			# Line continuations.
-			$stripped =~ s/\\\n/\n/g;
-			# Strip whitespace, empty strings, zeroes, and commas.
-			$stripped =~ s/""//g;
-			$stripped =~ s/0x0//g;
-			$stripped =~ s/[\s$;,0]//g;
-			# Strip field assignments.
-			$stripped =~ s/\.$Ident=//g;
-
-			if (!(substr($stripped, -4) eq "{}};" ||
-			      substr($stripped, -6) eq "{{}}};" ||
-			      $stripped =~ /ISAPNP_DEVICE_SINGLE_END}};$/ ||
-			      $stripped =~ /ISAPNP_CARD_END}};$/ ||
-			      $stripped =~ /NULL};$/ ||
-			      $stripped =~ /PCMCIA_DEVICE_NULL};$/)) {
-				ERROR("MISSING_SENTINEL", "missing sentinel in ID array\n" . "$here\n$stat\n");
-			}
-		}
-
-# check for uninitialized pointers with __free attribute
-		while ($line =~ /\*\s*($Ident)\s+__free\s*\(\s*$Ident\s*\)\s*[,;]/g) {
-			ERROR("UNINITIALIZED_PTR_WITH_FREE",
-			      "pointer '$1' with __free attribute should be initialized\n" . $herecurr);
-		}
 	}
 
 	# If we have no input at all, then there is nothing to report on
@@ -7809,12 +7570,6 @@ sub process {
 	if (!$is_patch && $filename !~ /cover-letter\.patch$/) {
 		ERROR("NOT_UNIFIED_DIFF",
 		      "Does not appear to be a unified-diff format patch\n");
-	}
-	if ($is_patch && $has_commit_log && $chk_fixes_tag) {
-		if ($needs_fixes_tag ne "" && !$is_revert && !$fixes_tag) {
-			WARN("MISSING_FIXES_TAG",
-				 "The commit message has '$needs_fixes_tag', perhaps it also needs a 'Fixes:' tag?\n");
-		}
 	}
 	if ($is_patch && $has_commit_log && $chk_signoff) {
 		if ($signoff == 0) {

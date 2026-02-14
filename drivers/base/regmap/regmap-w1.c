@@ -234,5 +234,4 @@ struct regmap *__devm_regmap_init_w1(struct device *w1_dev,
 }
 EXPORT_SYMBOL_GPL(__devm_regmap_init_w1);
 
-MODULE_DESCRIPTION("Register map access API - W1 (1-Wire) support");
 MODULE_LICENSE("GPL");

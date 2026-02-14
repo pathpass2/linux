@@ -24,24 +24,22 @@
 #include <linux/tick.h>
 #include <linux/personality.h>
 #include <linux/syscalls.h>
+#include <linux/compat.h>
 #include <linux/kprobes.h>
 #include <linux/random.h>
+#include <linux/export.h>
 #include <linux/init_task.h>
 #include <linux/entry-common.h>
-#include <linux/io.h>
-#include <asm/guarded_storage.h>
-#include <asm/access-regs.h>
-#include <asm/switch_to.h>
 #include <asm/cpu_mf.h>
+#include <asm/io.h>
 #include <asm/processor.h>
-#include <asm/ptrace.h>
 #include <asm/vtimer.h>
 #include <asm/exec.h>
-#include <asm/fpu.h>
 #include <asm/irq.h>
 #include <asm/nmi.h>
 #include <asm/smp.h>
 #include <asm/stacktrace.h>
+#include <asm/switch_to.h>
 #include <asm/runtime_instr.h>
 #include <asm/unwind.h>
 #include "entry.h"
@@ -69,10 +67,10 @@ void flush_thread(void)
 
 void arch_setup_new_exec(void)
 {
-	if (get_lowcore()->current_pid != current->pid) {
-		get_lowcore()->current_pid = current->pid;
+	if (S390_lowcore.current_pid != current->pid) {
+		S390_lowcore.current_pid = current->pid;
 		if (test_facility(40))
-			lpp(&get_lowcore()->lpp);
+			lpp(&S390_lowcore.lpp);
 	}
 }
 
@@ -84,10 +82,15 @@ void arch_release_task_struct(struct task_struct *tsk)
 
 int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
-	save_user_fpu_regs();
+	/*
+	 * Save the floating-point or vector register state of the current
+	 * task and set the CIF_FPU flag to lazy restore the FPU register
+	 * state when returning to user space.
+	 */
+	save_fpu_regs();
 
-	*dst = *src;
-	dst->thread.kfpu_flags = 0;
+	memcpy(dst, src, arch_task_struct_size);
+	dst->thread.fpu.regs = dst->thread.fpu.fprs;
 
 	/*
 	 * Don't transfer over the runtime instrumentation or the guarded
@@ -105,7 +108,7 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 
 int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
-	u64 clone_flags = args->flags;
+	unsigned long clone_flags = args->flags;
 	unsigned long new_stackp = args->stack;
 	unsigned long tls = args->tls;
 	struct fake_frame
@@ -133,12 +136,12 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 	p->thread.last_break = 1;
 
 	frame->sf.back_chain = 0;
-	frame->sf.gprs[11 - 6] = (unsigned long)&frame->childregs;
-	frame->sf.gprs[12 - 6] = (unsigned long)p;
+	frame->sf.gprs[5] = (unsigned long)frame + sizeof(struct stack_frame);
+	frame->sf.gprs[6] = (unsigned long)p;
 	/* new return point is ret_from_fork */
-	frame->sf.gprs[14 - 6] = (unsigned long)ret_from_fork;
+	frame->sf.gprs[8] = (unsigned long)ret_from_fork;
 	/* fake return stack for resume(), don't go back to schedule */
-	frame->sf.gprs[15 - 6] = (unsigned long)frame;
+	frame->sf.gprs[9] = (unsigned long)frame;
 
 	/* Store access registers to kernel stack of new process. */
 	if (unlikely(args->fn)) {
@@ -146,6 +149,8 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 		memset(&frame->childregs, 0, sizeof(struct pt_regs));
 		frame->childregs.psw.mask = PSW_KERNEL_BITS | PSW_MASK_IO |
 					    PSW_MASK_EXT | PSW_MASK_MCHECK;
+		frame->childregs.psw.addr =
+				(unsigned long)__ret_from_fork;
 		frame->childregs.gprs[9] = (unsigned long)args->fn;
 		frame->childregs.gprs[10] = (unsigned long)args->fn_arg;
 		frame->childregs.orig_gpr2 = -1;
@@ -165,8 +170,12 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 
 	/* Set a new TLS ?  */
 	if (clone_flags & CLONE_SETTLS) {
-		p->thread.acrs[0] = (unsigned int)(tls >> 32);
-		p->thread.acrs[1] = (unsigned int)tls;
+		if (is_compat_task()) {
+			p->thread.acrs[0] = (unsigned int)tls;
+		} else {
+			p->thread.acrs[0] = (unsigned int)(tls >> 32);
+			p->thread.acrs[1] = (unsigned int)tls;
+		}
 	}
 	/*
 	 * s390 stores the svc return address in arch_data when calling
@@ -179,23 +188,8 @@ int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 
 void execve_tail(void)
 {
-	current->thread.ufpu.fpc = 0;
-	fpu_sfpc(0);
-}
-
-struct task_struct *__switch_to(struct task_struct *prev, struct task_struct *next)
-{
-	save_user_fpu_regs();
-	save_kernel_fpu_regs(&prev->thread);
-	save_access_regs(&prev->thread.acrs[0]);
-	save_ri_cb(prev->thread.ri_cb);
-	save_gs_cb(prev->thread.gs_cb);
-	update_cr_regs(next);
-	restore_kernel_fpu_regs(&next->thread);
-	restore_access_regs(&next->thread.acrs[0]);
-	restore_ri_cb(next->thread.ri_cb, prev->thread.ri_cb);
-	restore_gs_cb(next->thread.gs_cb);
-	return __switch_to_asm(prev, next);
+	current->thread.fpu.fpc = 0;
+	asm volatile("sfpc %0" : : "d" (0));
 }
 
 unsigned long __get_wchan(struct task_struct *p)

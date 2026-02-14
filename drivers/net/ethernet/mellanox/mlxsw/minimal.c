@@ -140,20 +140,6 @@ mlxsw_m_get_module_eeprom_by_page(struct net_device *netdev,
 						   page, extack);
 }
 
-static int
-mlxsw_m_set_module_eeprom_by_page(struct net_device *netdev,
-				  const struct ethtool_module_eeprom *page,
-				  struct netlink_ext_ack *extack)
-{
-	struct mlxsw_m_port *mlxsw_m_port = netdev_priv(netdev);
-	struct mlxsw_core *core = mlxsw_m_port->mlxsw_m->core;
-
-	return mlxsw_env_set_module_eeprom_by_page(core,
-						   mlxsw_m_port->slot_index,
-						   mlxsw_m_port->module,
-						   page, extack);
-}
-
 static int mlxsw_m_reset(struct net_device *netdev, u32 *flags)
 {
 	struct mlxsw_m_port *mlxsw_m_port = netdev_priv(netdev);
@@ -195,7 +181,6 @@ static const struct ethtool_ops mlxsw_m_port_ethtool_ops = {
 	.get_module_info	= mlxsw_m_get_module_info,
 	.get_module_eeprom	= mlxsw_m_get_module_eeprom,
 	.get_module_eeprom_by_page = mlxsw_m_get_module_eeprom_by_page,
-	.set_module_eeprom_by_page = mlxsw_m_set_module_eeprom_by_page,
 	.reset			= mlxsw_m_reset,
 	.get_module_power_mode	= mlxsw_m_get_module_power_mode,
 	.set_module_power_mode	= mlxsw_m_set_module_power_mode,
@@ -432,7 +417,6 @@ static int mlxsw_m_linecards_init(struct mlxsw_m *mlxsw_m)
 err_kmalloc_array:
 	for (i--; i >= 0; i--)
 		kfree(mlxsw_m->line_cards[i]);
-	kfree(mlxsw_m->line_cards);
 err_kcalloc:
 	kfree(mlxsw_m->ports);
 	return err;
@@ -717,12 +701,13 @@ static struct mlxsw_driver mlxsw_m_driver = {
 };
 
 static const struct i2c_device_id mlxsw_m_i2c_id[] = {
-	{ "mlxsw_minimal" },
-	{ }
+	{ "mlxsw_minimal", 0},
+	{ },
 };
 
 static struct i2c_driver mlxsw_m_i2c_driver = {
 	.driver.name = "mlxsw_minimal",
+	.class = I2C_CLASS_HWMON,
 	.id_table = mlxsw_m_i2c_id,
 };
 

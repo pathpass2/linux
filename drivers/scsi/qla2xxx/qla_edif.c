@@ -94,8 +94,7 @@ static struct edif_list_entry *qla_edif_list_find_sa_index(fc_port_t *fcport,
 /* timeout called when no traffic and delayed rx sa_index delete */
 static void qla2x00_sa_replace_iocb_timeout(struct timer_list *t)
 {
-	struct edif_list_entry *edif_entry = timer_container_of(edif_entry, t,
-								timer);
+	struct edif_list_entry *edif_entry = from_timer(edif_entry, t, timer);
 	fc_port_t *fcport = edif_entry->fcport;
 	struct scsi_qla_host *vha = fcport->vha;
 	struct  edif_sa_ctl *sa_ctl;
@@ -1101,7 +1100,7 @@ qla_edif_app_getstats(scsi_qla_host_t *vha, struct bsg_job *bsg_job)
 
 		list_for_each_entry_safe(fcport, tf, &vha->vp_fcports, list) {
 			if (fcport->edif.enable) {
-				if (pcnt >= app_req.num_ports)
+				if (pcnt > app_req.num_ports)
 					break;
 
 				app_reply->elem[pcnt].rekey_count =
@@ -1798,7 +1797,7 @@ retry:
 	switch (rval) {
 	case QLA_SUCCESS:
 		break;
-	case -EAGAIN:
+	case EAGAIN:
 		msleep(EDIF_MSLEEP_INTERVAL);
 		cnt++;
 		if (cnt < EDIF_RETRY_COUNT)
@@ -2362,8 +2361,8 @@ qla24xx_issue_sa_replace_iocb(scsi_qla_host_t *vha, struct qla_work_evt *e)
 	if (!sa_ctl) {
 		ql_dbg(ql_dbg_edif, vha, 0x70e6,
 		    "sa_ctl allocation failed\n");
-		rval = -ENOMEM;
-		return rval;
+		rval =  -ENOMEM;
+		goto done;
 	}
 
 	fcport = sa_ctl->fcport;
@@ -3649,7 +3648,7 @@ retry:
 		       p->e.extra_rx_xchg_address, p->e.extra_control_flags,
 		       sp->handle, sp->remap.req.len, bsg_job);
 		break;
-	case -EAGAIN:
+	case EAGAIN:
 		msleep(EDIF_MSLEEP_INTERVAL);
 		cnt++;
 		if (cnt < EDIF_RETRY_COUNT)

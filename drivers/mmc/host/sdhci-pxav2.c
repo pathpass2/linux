@@ -19,6 +19,7 @@
 #include <linux/platform_data/pxa_sdhci.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/mmc/sdio.h>
 #include <linux/mmc/mmc.h>
 #include <linux/pinctrl/consumer.h>
@@ -126,7 +127,7 @@ static void pxav1_request_done(struct sdhci_host *host, struct mmc_request *mrq)
 	struct sdhci_pxav2_host *pxav2_host;
 
 	/* If this is an SDIO command, perform errata workaround for silicon bug */
-	if (!mrq->cmd->error &&
+	if (mrq->cmd && !mrq->cmd->error &&
 	    (mrq->cmd->opcode == SD_IO_RW_DIRECT ||
 	     mrq->cmd->opcode == SD_IO_RW_EXTENDED)) {
 		/* Reset data port */
@@ -227,7 +228,7 @@ static struct sdhci_pxa_platdata *pxav2_get_mmc_pdata(struct device *dev)
 	if (!pdata)
 		return NULL;
 
-	if (of_property_read_bool(np, "non-removable"))
+	if (of_find_property(np, "non-removable", NULL))
 		pdata->flags |= PXA_FLAG_CARD_PERMANENT;
 
 	of_property_read_u32(np, "bus-width", &bus_width);
@@ -258,6 +259,7 @@ static int sdhci_pxav2_probe(struct platform_device *pdev)
 	struct sdhci_host *host = NULL;
 	const struct sdhci_pxa_variant *variant;
 
+	int ret;
 	struct clk *clk, *clk_core;
 
 	host = sdhci_pltfm_init(pdev, NULL, sizeof(*pxav2_host));
@@ -267,17 +269,27 @@ static int sdhci_pxav2_probe(struct platform_device *pdev)
 	pltfm_host = sdhci_priv(host);
 	pxav2_host = sdhci_pltfm_priv(pltfm_host);
 
-	clk = devm_clk_get_optional_enabled(dev, "io");
-	if (!clk)
-		clk = devm_clk_get_enabled(dev, NULL);
-	if (IS_ERR(clk))
-		return dev_err_probe(dev, PTR_ERR(clk), "failed to get io clock\n");
+	clk = devm_clk_get(dev, "io");
+	if (IS_ERR(clk) && PTR_ERR(clk) != -EPROBE_DEFER)
+		clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(clk)) {
+		ret = PTR_ERR(clk);
+		dev_err_probe(dev, ret, "failed to get io clock\n");
+		goto free;
+	}
 	pltfm_host->clk = clk;
+	ret = clk_prepare_enable(clk);
+	if (ret) {
+		dev_err(dev, "failed to enable io clock\n");
+		goto free;
+	}
 
 	clk_core = devm_clk_get_optional_enabled(dev, "core");
-	if (IS_ERR(clk_core))
-		return dev_err_probe(dev, PTR_ERR(clk_core),
-				     "failed to enable core clock\n");
+	if (IS_ERR(clk_core)) {
+		ret = PTR_ERR(clk_core);
+		dev_err_probe(dev, ret, "failed to enable core clock\n");
+		goto disable_clk;
+	}
 
 	host->quirks = SDHCI_QUIRK_BROKEN_ADMA
 		| SDHCI_QUIRK_BROKEN_TIMEOUT_VAL
@@ -326,7 +338,17 @@ static int sdhci_pxav2_probe(struct platform_device *pdev)
 		pxav2_host->pinctrl = NULL;
 	}
 
-	return sdhci_add_host(host);
+	ret = sdhci_add_host(host);
+	if (ret)
+		goto disable_clk;
+
+	return 0;
+
+disable_clk:
+	clk_disable_unprepare(clk);
+free:
+	sdhci_pltfm_free(pdev);
+	return ret;
 }
 
 static struct platform_driver sdhci_pxav2_driver = {
@@ -337,7 +359,7 @@ static struct platform_driver sdhci_pxav2_driver = {
 		.pm	= &sdhci_pltfm_pmops,
 	},
 	.probe		= sdhci_pxav2_probe,
-	.remove		= sdhci_pltfm_remove,
+	.remove		= sdhci_pltfm_unregister,
 };
 
 module_platform_driver(sdhci_pxav2_driver);

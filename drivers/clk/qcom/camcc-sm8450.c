@@ -54,10 +54,6 @@ static const struct pll_vco rivian_evo_vco[] = {
 	{ 864000000, 1056000000, 0 },
 };
 
-static const struct pll_vco rivian_ole_vco[] = {
-	{ 864000000, 1075000000, 0 },
-};
-
 static const struct clk_parent_data pll_parent_data_tcxo = { .index = DT_BI_TCXO };
 
 static const struct alpha_pll_config cam_cc_pll0_config = {
@@ -70,23 +66,8 @@ static const struct alpha_pll_config cam_cc_pll0_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll0_config = {
-	.l = 0x3e,
-	.alpha = 0x8000,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00008400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll0 = {
 	.offset = 0x0,
-	.config = &cam_cc_pll0_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -103,16 +84,6 @@ static struct clk_alpha_pll cam_cc_pll0 = {
 static const struct clk_div_table post_div_table_cam_cc_pll0_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll0_out_even_init = {
-	.name = "cam_cc_pll0_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll0.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll0_out_even = {
@@ -136,16 +107,6 @@ static struct clk_alpha_pll_postdiv cam_cc_pll0_out_even = {
 static const struct clk_div_table post_div_table_cam_cc_pll0_out_odd[] = {
 	{ 0x2, 3 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll0_out_odd_init = {
-	.name = "cam_cc_pll0_out_odd",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll0.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll0_out_odd = {
@@ -176,23 +137,8 @@ static const struct alpha_pll_config cam_cc_pll1_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll1_config = {
-	.l = 0x25,
-	.alpha = 0xeaaa,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00000400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll1 = {
 	.offset = 0x1000,
-	.config = &cam_cc_pll1_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -209,16 +155,6 @@ static struct clk_alpha_pll cam_cc_pll1 = {
 static const struct clk_div_table post_div_table_cam_cc_pll1_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll1_out_even_init = {
-	.name = "cam_cc_pll1_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll1.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll1_out_even = {
@@ -247,19 +183,8 @@ static const struct alpha_pll_config cam_cc_pll2_config = {
 	.config_ctl_hi1_val = 0x00000217,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll2_config = {
-	.l = 0x32,
-	.alpha = 0x0,
-	.config_ctl_val = 0x10000030,
-	.config_ctl_hi_val = 0x80890263,
-	.config_ctl_hi1_val = 0x00000217,
-	.user_ctl_val = 0x00000001,
-	.user_ctl_hi_val = 0x00000000,
-};
-
 static struct clk_alpha_pll cam_cc_pll2 = {
 	.offset = 0x2000,
-	.config = &cam_cc_pll2_config,
 	.vco_table = rivian_evo_vco,
 	.num_vco = ARRAY_SIZE(rivian_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_RIVIAN_EVO],
@@ -283,23 +208,8 @@ static const struct alpha_pll_config cam_cc_pll3_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll3_config = {
-	.l = 0x2d,
-	.alpha = 0x0,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00000400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll3 = {
 	.offset = 0x3000,
-	.config = &cam_cc_pll3_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -316,16 +226,6 @@ static struct clk_alpha_pll cam_cc_pll3 = {
 static const struct clk_div_table post_div_table_cam_cc_pll3_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll3_out_even_init = {
-	.name = "cam_cc_pll3_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll3.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll3_out_even = {
@@ -356,23 +256,8 @@ static const struct alpha_pll_config cam_cc_pll4_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll4_config = {
-	.l = 0x2d,
-	.alpha = 0x0,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00000400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll4 = {
 	.offset = 0x4000,
-	.config = &cam_cc_pll4_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -389,16 +274,6 @@ static struct clk_alpha_pll cam_cc_pll4 = {
 static const struct clk_div_table post_div_table_cam_cc_pll4_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll4_out_even_init = {
-	.name = "cam_cc_pll4_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll4.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll4_out_even = {
@@ -429,23 +304,8 @@ static const struct alpha_pll_config cam_cc_pll5_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll5_config = {
-	.l = 0x2d,
-	.alpha = 0x0,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00000400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll5 = {
 	.offset = 0x5000,
-	.config = &cam_cc_pll5_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -462,16 +322,6 @@ static struct clk_alpha_pll cam_cc_pll5 = {
 static const struct clk_div_table post_div_table_cam_cc_pll5_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll5_out_even_init = {
-	.name = "cam_cc_pll5_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll5.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll5_out_even = {
@@ -502,23 +352,8 @@ static const struct alpha_pll_config cam_cc_pll6_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll6_config = {
-	.l = 0x2d,
-	.alpha = 0x0,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00000400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll6 = {
 	.offset = 0x6000,
-	.config = &cam_cc_pll6_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -535,16 +370,6 @@ static struct clk_alpha_pll cam_cc_pll6 = {
 static const struct clk_div_table post_div_table_cam_cc_pll6_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll6_out_even_init = {
-	.name = "cam_cc_pll6_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll6.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll6_out_even = {
@@ -575,23 +400,8 @@ static const struct alpha_pll_config cam_cc_pll7_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll7_config = {
-	.l = 0x2d,
-	.alpha = 0x0,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00000400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll7 = {
 	.offset = 0x7000,
-	.config = &cam_cc_pll7_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -608,16 +418,6 @@ static struct clk_alpha_pll cam_cc_pll7 = {
 static const struct clk_div_table post_div_table_cam_cc_pll7_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll7_out_even_init = {
-	.name = "cam_cc_pll7_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll7.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll7_out_even = {
@@ -648,23 +448,8 @@ static const struct alpha_pll_config cam_cc_pll8_config = {
 	.user_ctl_hi_val = 0x00000805,
 };
 
-static const struct alpha_pll_config sm8475_cam_cc_pll8_config = {
-	.l = 0x32,
-	.alpha = 0x0,
-	.config_ctl_val = 0x20485699,
-	.config_ctl_hi_val = 0x00182261,
-	.config_ctl_hi1_val = 0x82aa299c,
-	.test_ctl_val = 0x00000000,
-	.test_ctl_hi_val = 0x00000003,
-	.test_ctl_hi1_val = 0x00009000,
-	.test_ctl_hi2_val = 0x00000034,
-	.user_ctl_val = 0x00000400,
-	.user_ctl_hi_val = 0x00000005,
-};
-
 static struct clk_alpha_pll cam_cc_pll8 = {
 	.offset = 0x8000,
-	.config = &cam_cc_pll8_config,
 	.vco_table = lucid_evo_vco,
 	.num_vco = ARRAY_SIZE(lucid_evo_vco),
 	.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_EVO],
@@ -681,16 +466,6 @@ static struct clk_alpha_pll cam_cc_pll8 = {
 static const struct clk_div_table post_div_table_cam_cc_pll8_out_even[] = {
 	{ 0x1, 2 },
 	{ }
-};
-
-static struct clk_init_data sm8475_cam_cc_pll8_out_even_init = {
-	.name = "cam_cc_pll8_out_even",
-	.parent_hws = (const struct clk_hw*[]) {
-		&cam_cc_pll8.clkr.hw,
-	},
-	.num_parents = 1,
-	.flags = CLK_SET_RATE_PARENT,
-	.ops = &clk_alpha_pll_postdiv_lucid_ole_ops,
 };
 
 static struct clk_alpha_pll_postdiv cam_cc_pll8_out_even = {
@@ -1482,6 +1257,24 @@ static struct clk_rcg2 cam_cc_xo_clk_src = {
 		.num_parents = ARRAY_SIZE(cam_cc_parent_data_9_ao),
 		.flags = CLK_SET_RATE_PARENT,
 		.ops = &clk_rcg2_ops,
+	},
+};
+
+static struct clk_branch cam_cc_gdsc_clk = {
+	.halt_reg = 0x1320c,
+	.halt_check = BRANCH_HALT,
+	.clkr = {
+		.enable_reg = 0x1320c,
+		.enable_mask = BIT(0),
+		.hw.init = &(const struct clk_init_data) {
+			.name = "cam_cc_gdsc_clk",
+			.parent_hws = (const struct clk_hw*[]) {
+				&cam_cc_xo_clk_src.clkr.hw,
+			},
+			.num_parents = 1,
+			.flags = CLK_IS_CRITICAL | CLK_SET_RATE_PARENT,
+			.ops = &clk_branch2_ops,
+		},
 	},
 };
 
@@ -2810,6 +2603,7 @@ static struct clk_regmap *cam_cc_sm8450_clocks[] = {
 	[CAM_CC_CSIPHY4_CLK] = &cam_cc_csiphy4_clk.clkr,
 	[CAM_CC_CSIPHY5_CLK] = &cam_cc_csiphy5_clk.clkr,
 	[CAM_CC_FAST_AHB_CLK_SRC] = &cam_cc_fast_ahb_clk_src.clkr,
+	[CAM_CC_GDSC_CLK] = &cam_cc_gdsc_clk.clkr,
 	[CAM_CC_ICP_AHB_CLK] = &cam_cc_icp_ahb_clk.clkr,
 	[CAM_CC_ICP_CLK] = &cam_cc_icp_clk.clkr,
 	[CAM_CC_ICP_CLK_SRC] = &cam_cc_icp_clk_src.clkr,
@@ -2903,22 +2697,6 @@ static const struct qcom_reset_map cam_cc_sm8450_resets[] = {
 	[CAM_CC_SFE_1_BCR] = { 0x13094 },
 };
 
-static struct clk_alpha_pll *cam_cc_sm8450_plls[] = {
-	&cam_cc_pll0,
-	&cam_cc_pll1,
-	&cam_cc_pll2,
-	&cam_cc_pll3,
-	&cam_cc_pll4,
-	&cam_cc_pll5,
-	&cam_cc_pll6,
-	&cam_cc_pll7,
-	&cam_cc_pll8,
-};
-
-static u32 cam_cc_sm8450_critical_cbcrs[] = {
-	0x1320c, /* CAM_CC_GDSC_CLK */
-};
-
 static const struct regmap_config cam_cc_sm8450_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = 4,
@@ -2935,7 +2713,6 @@ static struct gdsc bps_gdsc = {
 		.name = "bps_gdsc",
 	},
 	.flags = HW_CTRL | POLL_CFG_GDSCR,
-	.parent = &titan_top_gdsc.pd,
 	.pwrsts = PWRSTS_OFF_ON,
 };
 
@@ -2945,7 +2722,6 @@ static struct gdsc ipe_0_gdsc = {
 		.name = "ipe_0_gdsc",
 	},
 	.flags = HW_CTRL | POLL_CFG_GDSCR,
-	.parent = &titan_top_gdsc.pd,
 	.pwrsts = PWRSTS_OFF_ON,
 };
 
@@ -2955,7 +2731,6 @@ static struct gdsc sbi_gdsc = {
 		.name = "sbi_gdsc",
 	},
 	.flags = POLL_CFG_GDSCR,
-	.parent = &titan_top_gdsc.pd,
 	.pwrsts = PWRSTS_OFF_ON,
 };
 
@@ -3030,13 +2805,6 @@ static struct gdsc *cam_cc_sm8450_gdscs[] = {
 	[TITAN_TOP_GDSC] = &titan_top_gdsc,
 };
 
-static struct qcom_cc_driver_data cam_cc_sm8450_driver_data = {
-	.alpha_plls = cam_cc_sm8450_plls,
-	.num_alpha_plls = ARRAY_SIZE(cam_cc_sm8450_plls),
-	.clk_cbcrs = cam_cc_sm8450_critical_cbcrs,
-	.num_clk_cbcrs = ARRAY_SIZE(cam_cc_sm8450_critical_cbcrs),
-};
-
 static const struct qcom_cc_desc cam_cc_sm8450_desc = {
 	.config = &cam_cc_sm8450_regmap_config,
 	.clks = cam_cc_sm8450_clocks,
@@ -3045,77 +2813,33 @@ static const struct qcom_cc_desc cam_cc_sm8450_desc = {
 	.num_resets = ARRAY_SIZE(cam_cc_sm8450_resets),
 	.gdscs = cam_cc_sm8450_gdscs,
 	.num_gdscs = ARRAY_SIZE(cam_cc_sm8450_gdscs),
-	.use_rpm = true,
-	.driver_data = &cam_cc_sm8450_driver_data,
 };
 
 static const struct of_device_id cam_cc_sm8450_match_table[] = {
 	{ .compatible = "qcom,sm8450-camcc" },
-	{ .compatible = "qcom,sm8475-camcc" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, cam_cc_sm8450_match_table);
 
 static int cam_cc_sm8450_probe(struct platform_device *pdev)
 {
-	if (of_device_is_compatible(pdev->dev.of_node, "qcom,sm8475-camcc")) {
-		/* Update CAMCC PLL0 */
-		cam_cc_pll0.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll0_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll0_out_even.clkr.hw.init = &sm8475_cam_cc_pll0_out_even_init;
-		cam_cc_pll0_out_odd.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll0_out_odd.clkr.hw.init = &sm8475_cam_cc_pll0_out_odd_init;
+	struct regmap *regmap;
 
-		/* Update CAMCC PLL1 */
-		cam_cc_pll1.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll1_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll1_out_even.clkr.hw.init = &sm8475_cam_cc_pll1_out_even_init;
+	regmap = qcom_cc_map(pdev, &cam_cc_sm8450_desc);
+	if (IS_ERR(regmap))
+		return PTR_ERR(regmap);
 
-		/* Update CAMCC PLL2 */
-		cam_cc_pll2.vco_table = rivian_ole_vco;
+	clk_lucid_evo_pll_configure(&cam_cc_pll0, regmap, &cam_cc_pll0_config);
+	clk_lucid_evo_pll_configure(&cam_cc_pll1, regmap, &cam_cc_pll1_config);
+	clk_rivian_evo_pll_configure(&cam_cc_pll2, regmap, &cam_cc_pll2_config);
+	clk_lucid_evo_pll_configure(&cam_cc_pll3, regmap, &cam_cc_pll3_config);
+	clk_lucid_evo_pll_configure(&cam_cc_pll4, regmap, &cam_cc_pll4_config);
+	clk_lucid_evo_pll_configure(&cam_cc_pll5, regmap, &cam_cc_pll5_config);
+	clk_lucid_evo_pll_configure(&cam_cc_pll6, regmap, &cam_cc_pll6_config);
+	clk_lucid_evo_pll_configure(&cam_cc_pll7, regmap, &cam_cc_pll7_config);
+	clk_lucid_evo_pll_configure(&cam_cc_pll8, regmap, &cam_cc_pll8_config);
 
-		/* Update CAMCC PLL3 */
-		cam_cc_pll3.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll3_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll3_out_even.clkr.hw.init = &sm8475_cam_cc_pll3_out_even_init;
-
-		/* Update CAMCC PLL4 */
-		cam_cc_pll4.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll4_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll4_out_even.clkr.hw.init = &sm8475_cam_cc_pll4_out_even_init;
-
-		/* Update CAMCC PLL5 */
-		cam_cc_pll5.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll5_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll5_out_even.clkr.hw.init = &sm8475_cam_cc_pll5_out_even_init;
-
-		/* Update CAMCC PLL6 */
-		cam_cc_pll6.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll6_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll6_out_even.clkr.hw.init = &sm8475_cam_cc_pll6_out_even_init;
-
-		/* Update CAMCC PLL7 */
-		cam_cc_pll7.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll7_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll7_out_even.clkr.hw.init = &sm8475_cam_cc_pll7_out_even_init;
-
-		/* Update CAMCC PLL8 */
-		cam_cc_pll8.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll8_out_even.regs = clk_alpha_pll_regs[CLK_ALPHA_PLL_TYPE_LUCID_OLE];
-		cam_cc_pll8_out_even.clkr.hw.init = &sm8475_cam_cc_pll8_out_even_init;
-
-		cam_cc_pll0.config = &sm8475_cam_cc_pll0_config;
-		cam_cc_pll1.config = &sm8475_cam_cc_pll1_config;
-		cam_cc_pll2.config = &sm8475_cam_cc_pll2_config;
-		cam_cc_pll3.config = &sm8475_cam_cc_pll3_config;
-		cam_cc_pll4.config = &sm8475_cam_cc_pll4_config;
-		cam_cc_pll5.config = &sm8475_cam_cc_pll5_config;
-		cam_cc_pll6.config = &sm8475_cam_cc_pll6_config;
-		cam_cc_pll7.config = &sm8475_cam_cc_pll7_config;
-		cam_cc_pll8.config = &sm8475_cam_cc_pll8_config;
-	}
-
-	return qcom_cc_probe(pdev, &cam_cc_sm8450_desc);
+	return qcom_cc_really_probe(pdev, &cam_cc_sm8450_desc, regmap);
 }
 
 static struct platform_driver cam_cc_sm8450_driver = {
@@ -3128,5 +2852,5 @@ static struct platform_driver cam_cc_sm8450_driver = {
 
 module_platform_driver(cam_cc_sm8450_driver);
 
-MODULE_DESCRIPTION("QCOM CAMCC SM8450 / SM8475 Driver");
+MODULE_DESCRIPTION("QCOM CAMCC SM8450 Driver");
 MODULE_LICENSE("GPL");

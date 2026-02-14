@@ -6,10 +6,7 @@
  * to control the PIN resources on SCU domain.
  */
 
-#include <linux/cleanup.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/gpio/driver.h>
 #include <linux/platform_device.h>
 #include <linux/firmware/imx/svc/rm.h>
@@ -39,11 +36,16 @@ static int imx_scu_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	int level;
 	int err;
 
-	scoped_guard(mutex, &priv->lock) {
-		/* to read PIN state via scu api */
-		err = imx_sc_misc_get_control(priv->handle,
-					      scu_rsrc_arr[offset], 0, &level);
-	}
+	if (offset >= chip->ngpio)
+		return -EINVAL;
+
+	mutex_lock(&priv->lock);
+
+	/* to read PIN state via scu api */
+	err = imx_sc_misc_get_control(priv->handle,
+			scu_rsrc_arr[offset], 0, &level);
+	mutex_unlock(&priv->lock);
+
 	if (err) {
 		dev_err(priv->dev, "SCU get failed: %d\n", err);
 		return err;
@@ -52,26 +54,31 @@ static int imx_scu_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return level;
 }
 
-static int imx_scu_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			    int value)
+static void imx_scu_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct scu_gpio_priv *priv = gpiochip_get_data(chip);
 	int err;
 
-	scoped_guard(mutex, &priv->lock) {
-		/* to set PIN output level via scu api */
-		err = imx_sc_misc_set_control(priv->handle,
-					      scu_rsrc_arr[offset], 0, value);
-	}
+	if (offset >= chip->ngpio)
+		return;
+
+	mutex_lock(&priv->lock);
+
+	/* to set PIN output level via scu api */
+	err = imx_sc_misc_set_control(priv->handle,
+			scu_rsrc_arr[offset], 0, value);
+	mutex_unlock(&priv->lock);
+
 	if (err)
 		dev_err(priv->dev, "SCU set (%d) failed: %d\n",
 				scu_rsrc_arr[offset], err);
-
-	return err;
 }
 
 static int imx_scu_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 {
+	if (offset >= chip->ngpio)
+		return -EINVAL;
+
 	return GPIO_LINE_DIRECTION_OUT;
 }
 
@@ -91,15 +98,12 @@ static int imx_scu_gpio_probe(struct platform_device *pdev)
 		return ret;
 
 	priv->dev = dev;
-
-	ret = devm_mutex_init(&pdev->dev, &priv->lock);
-	if (ret)
-		return ret;
+	mutex_init(&priv->lock);
 
 	gc = &priv->chip;
 	gc->base = -1;
 	gc->parent = dev;
-	gc->ngpio = ARRAY_SIZE(scu_rsrc_arr);
+	gc->ngpio = sizeof(scu_rsrc_arr)/sizeof(unsigned int);
 	gc->label = dev_name(dev);
 	gc->get = imx_scu_gpio_get;
 	gc->set = imx_scu_gpio_set;
@@ -132,3 +136,4 @@ subsys_initcall_sync(_imx_scu_gpio_init);
 
 MODULE_AUTHOR("Shenwei Wang <shenwei.wang@nxp.com>");
 MODULE_DESCRIPTION("NXP GPIO over IMX SCU API");
+MODULE_LICENSE("GPL");

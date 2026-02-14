@@ -8,7 +8,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/led-class-multicolor.h>
 #include <linux/leds.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -26,7 +25,7 @@ EXPORT_SYMBOL_GPL(leds_list_lock);
 LIST_HEAD(leds_list);
 EXPORT_SYMBOL_GPL(leds_list);
 
-static const char * const led_colors[LED_COLOR_ID_MAX] = {
+const char * const led_colors[LED_COLOR_ID_MAX] = {
 	[LED_COLOR_ID_WHITE] = "white",
 	[LED_COLOR_ID_RED] = "red",
 	[LED_COLOR_ID_GREEN] = "green",
@@ -37,12 +36,8 @@ static const char * const led_colors[LED_COLOR_ID_MAX] = {
 	[LED_COLOR_ID_IR] = "ir",
 	[LED_COLOR_ID_MULTI] = "multicolor",
 	[LED_COLOR_ID_RGB] = "rgb",
-	[LED_COLOR_ID_PURPLE] = "purple",
-	[LED_COLOR_ID_ORANGE] = "orange",
-	[LED_COLOR_ID_PINK] = "pink",
-	[LED_COLOR_ID_CYAN] = "cyan",
-	[LED_COLOR_ID_LIME] = "lime",
 };
+EXPORT_SYMBOL_GPL(led_colors);
 
 static int __led_set_brightness(struct led_classdev *led_cdev, unsigned int value)
 {
@@ -64,8 +59,7 @@ static int __led_set_brightness_blocking(struct led_classdev *led_cdev, unsigned
 
 static void led_timer_function(struct timer_list *t)
 {
-	struct led_classdev *led_cdev = timer_container_of(led_cdev, t,
-							   blink_timer);
+	struct led_classdev *led_cdev = from_timer(led_cdev, t, blink_timer);
 	unsigned long brightness;
 	unsigned long delay;
 
@@ -120,69 +114,27 @@ static void led_timer_function(struct timer_list *t)
 	mod_timer(&led_cdev->blink_timer, jiffies + msecs_to_jiffies(delay));
 }
 
-static void set_brightness_delayed_set_brightness(struct led_classdev *led_cdev,
-						  unsigned int value)
-{
-	int ret;
-
-	ret = __led_set_brightness(led_cdev, value);
-	if (ret == -ENOTSUPP) {
-		ret = __led_set_brightness_blocking(led_cdev, value);
-		if (ret == -ENOTSUPP)
-			/* No back-end support to set a fixed brightness value */
-			return;
-	}
-
-	/* LED HW might have been unplugged, therefore don't warn */
-	if (ret == -ENODEV && led_cdev->flags & LED_UNREGISTERING &&
-	    led_cdev->flags & LED_HW_PLUGGABLE)
-		return;
-
-	if (ret < 0)
-		dev_err(led_cdev->dev,
-			"Setting an LED's brightness failed (%d)\n", ret);
-}
-
 static void set_brightness_delayed(struct work_struct *ws)
 {
 	struct led_classdev *led_cdev =
 		container_of(ws, struct led_classdev, set_brightness_work);
+	int ret = 0;
 
 	if (test_and_clear_bit(LED_BLINK_DISABLE, &led_cdev->work_flags)) {
+		led_cdev->delayed_set_value = LED_OFF;
 		led_stop_software_blink(led_cdev);
-		set_bit(LED_SET_BRIGHTNESS_OFF, &led_cdev->work_flags);
 	}
 
-	/*
-	 * Triggers may call led_set_brightness(LED_OFF),
-	 * led_set_brightness(LED_FULL) in quick succession to disable blinking
-	 * and turn the LED on. Both actions may have been scheduled to run
-	 * before this work item runs once. To make sure this works properly
-	 * handle LED_SET_BRIGHTNESS_OFF first.
-	 */
-	if (test_and_clear_bit(LED_SET_BRIGHTNESS_OFF, &led_cdev->work_flags)) {
-		set_brightness_delayed_set_brightness(led_cdev, LED_OFF);
-		/*
-		 * The consecutives led_set_brightness(LED_OFF),
-		 * led_set_brightness(LED_FULL) could have been executed out of
-		 * order (LED_FULL first), if the work_flags has been set
-		 * between LED_SET_BRIGHTNESS_OFF and LED_SET_BRIGHTNESS of this
-		 * work. To avoid ending with the LED turned off, turn the LED
-		 * on again.
-		 */
-		if (led_cdev->delayed_set_value != LED_OFF)
-			set_bit(LED_SET_BRIGHTNESS, &led_cdev->work_flags);
-	}
-
-	if (test_and_clear_bit(LED_SET_BRIGHTNESS, &led_cdev->work_flags))
-		set_brightness_delayed_set_brightness(led_cdev, led_cdev->delayed_set_value);
-
-	if (test_and_clear_bit(LED_SET_BLINK, &led_cdev->work_flags)) {
-		unsigned long delay_on = led_cdev->delayed_delay_on;
-		unsigned long delay_off = led_cdev->delayed_delay_off;
-
-		led_blink_set(led_cdev, &delay_on, &delay_off);
-	}
+	ret = __led_set_brightness(led_cdev, led_cdev->delayed_set_value);
+	if (ret == -ENOTSUPP)
+		ret = __led_set_brightness_blocking(led_cdev,
+					led_cdev->delayed_set_value);
+	if (ret < 0 &&
+	    /* LED HW might have been unplugged, therefore don't warn */
+	    !(ret == -ENODEV && (led_cdev->flags & LED_UNREGISTERING) &&
+	    (led_cdev->flags & LED_HW_PLUGGABLE)))
+		dev_err(led_cdev->dev,
+			"Setting an LED's brightness failed (%d)\n", ret);
 }
 
 static void led_set_software_blink(struct led_classdev *led_cdev,
@@ -246,7 +198,7 @@ void led_blink_set(struct led_classdev *led_cdev,
 		   unsigned long *delay_on,
 		   unsigned long *delay_off)
 {
-	timer_delete_sync(&led_cdev->blink_timer);
+	del_timer_sync(&led_cdev->blink_timer);
 
 	clear_bit(LED_BLINK_SW, &led_cdev->work_flags);
 	clear_bit(LED_BLINK_ONESHOT, &led_cdev->work_flags);
@@ -277,25 +229,9 @@ void led_blink_set_oneshot(struct led_classdev *led_cdev,
 }
 EXPORT_SYMBOL_GPL(led_blink_set_oneshot);
 
-void led_blink_set_nosleep(struct led_classdev *led_cdev, unsigned long delay_on,
-			   unsigned long delay_off)
-{
-	/* If necessary delegate to a work queue task. */
-	if (led_cdev->blink_set && led_cdev->brightness_set_blocking) {
-		led_cdev->delayed_delay_on = delay_on;
-		led_cdev->delayed_delay_off = delay_off;
-		set_bit(LED_SET_BLINK, &led_cdev->work_flags);
-		queue_work(led_cdev->wq, &led_cdev->set_brightness_work);
-		return;
-	}
-
-	led_blink_set(led_cdev, &delay_on, &delay_off);
-}
-EXPORT_SYMBOL_GPL(led_blink_set_nosleep);
-
 void led_stop_software_blink(struct led_classdev *led_cdev)
 {
-	timer_delete_sync(&led_cdev->blink_timer);
+	del_timer_sync(&led_cdev->blink_timer);
 	led_cdev->blink_delay_on = 0;
 	led_cdev->blink_delay_off = 0;
 	clear_bit(LED_BLINK_SW, &led_cdev->work_flags);
@@ -316,7 +252,7 @@ void led_set_brightness(struct led_classdev *led_cdev, unsigned int brightness)
 		 */
 		if (!brightness) {
 			set_bit(LED_BLINK_DISABLE, &led_cdev->work_flags);
-			queue_work(led_cdev->wq, &led_cdev->set_brightness_work);
+			schedule_work(&led_cdev->set_brightness_work);
 		} else {
 			set_bit(LED_BLINK_BRIGHTNESS_CHANGE,
 				&led_cdev->work_flags);
@@ -335,27 +271,9 @@ void led_set_brightness_nopm(struct led_classdev *led_cdev, unsigned int value)
 	if (!__led_set_brightness(led_cdev, value))
 		return;
 
-	/*
-	 * Brightness setting can sleep, delegate it to a work queue task.
-	 * value 0 / LED_OFF is special, since it also disables hw-blinking
-	 * (sw-blink disable is handled in led_set_brightness()).
-	 * To avoid a hw-blink-disable getting lost when a second brightness
-	 * change is done immediately afterwards (before the work runs),
-	 * it uses a separate work_flag.
-	 */
+	/* If brightness setting can sleep, delegate it to a work queue task */
 	led_cdev->delayed_set_value = value;
-	/* Ensure delayed_set_value is seen before work_flags modification */
-	smp_mb__before_atomic();
-
-	if (value)
-		set_bit(LED_SET_BRIGHTNESS, &led_cdev->work_flags);
-	else {
-		clear_bit(LED_SET_BRIGHTNESS, &led_cdev->work_flags);
-		clear_bit(LED_SET_BLINK, &led_cdev->work_flags);
-		set_bit(LED_SET_BRIGHTNESS_OFF, &led_cdev->work_flags);
-	}
-
-	queue_work(led_cdev->wq, &led_cdev->set_brightness_work);
+	schedule_work(&led_cdev->set_brightness_work);
 }
 EXPORT_SYMBOL_GPL(led_set_brightness_nopm);
 
@@ -384,49 +302,19 @@ int led_set_brightness_sync(struct led_classdev *led_cdev, unsigned int value)
 }
 EXPORT_SYMBOL_GPL(led_set_brightness_sync);
 
-/*
- * This is a led-core function because just like led_set_brightness()
- * it is used in the kernel by e.g. triggers.
- */
-void led_mc_set_brightness(struct led_classdev *led_cdev,
-			   unsigned int *intensity_value, unsigned int num_colors,
-			   unsigned int brightness)
-{
-	struct led_classdev_mc *mcled_cdev;
-	unsigned int i;
-
-	if (!(led_cdev->flags & LED_MULTI_COLOR)) {
-		dev_err_once(led_cdev->dev, "error not a multi-color LED\n");
-		return;
-	}
-
-	mcled_cdev = lcdev_to_mccdev(led_cdev);
-	if (num_colors != mcled_cdev->num_colors) {
-		dev_err_once(led_cdev->dev, "error num_colors mismatch %u != %u\n",
-			     num_colors, mcled_cdev->num_colors);
-		return;
-	}
-
-	for (i = 0; i < mcled_cdev->num_colors; i++)
-		mcled_cdev->subled_info[i].intensity = intensity_value[i];
-
-	led_set_brightness(led_cdev, brightness);
-}
-EXPORT_SYMBOL_GPL(led_mc_set_brightness);
-
 int led_update_brightness(struct led_classdev *led_cdev)
 {
-	int ret;
+	int ret = 0;
 
 	if (led_cdev->brightness_get) {
 		ret = led_cdev->brightness_get(led_cdev);
-		if (ret < 0)
-			return ret;
-
-		led_cdev->brightness = ret;
+		if (ret >= 0) {
+			led_cdev->brightness = ret;
+			return 0;
+		}
 	}
 
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(led_update_brightness);
 
@@ -530,7 +418,10 @@ int led_compose_name(struct device *dev, struct led_init_data *init_data,
 	struct led_properties props = {};
 	struct fwnode_handle *fwnode = init_data->fwnode;
 	const char *devicename = init_data->devicename;
-	int n;
+
+	/* We want to label LEDs that can produce full range of colors
+	 * as RGB, not multicolor */
+	BUG_ON(props.color == LED_COLOR_ID_MULTI);
 
 	if (!led_classdev_name)
 		return -EINVAL;
@@ -544,61 +435,48 @@ int led_compose_name(struct device *dev, struct led_init_data *init_data,
 		 * Otherwise the label is prepended with devicename to compose
 		 * the final LED class device name.
 		 */
-		if (devicename) {
-			n = snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s:%s",
-				     devicename, props.label);
+		if (!devicename) {
+			strscpy(led_classdev_name, props.label,
+				LED_MAX_NAME_SIZE);
 		} else {
-			n = snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s", props.label);
+			snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s:%s",
+				 devicename, props.label);
 		}
 	} else if (props.function || props.color_present) {
 		char tmp_buf[LED_MAX_NAME_SIZE];
 
 		if (props.func_enum_present) {
-			n = snprintf(tmp_buf, LED_MAX_NAME_SIZE, "%s:%s-%d",
-				     props.color_present ? led_colors[props.color] : "",
-				     props.function ?: "", props.func_enum);
+			snprintf(tmp_buf, LED_MAX_NAME_SIZE, "%s:%s-%d",
+				 props.color_present ? led_colors[props.color] : "",
+				 props.function ?: "", props.func_enum);
 		} else {
-			n = snprintf(tmp_buf, LED_MAX_NAME_SIZE, "%s:%s",
-				     props.color_present ? led_colors[props.color] : "",
-				     props.function ?: "");
+			snprintf(tmp_buf, LED_MAX_NAME_SIZE, "%s:%s",
+				 props.color_present ? led_colors[props.color] : "",
+				 props.function ?: "");
 		}
-		if (n >= LED_MAX_NAME_SIZE)
-			return -E2BIG;
-
 		if (init_data->devname_mandatory) {
-			n = snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s:%s",
-				     devicename, tmp_buf);
+			snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s:%s",
+				 devicename, tmp_buf);
 		} else {
-			n = snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s", tmp_buf);
+			strscpy(led_classdev_name, tmp_buf, LED_MAX_NAME_SIZE);
+
 		}
 	} else if (init_data->default_label) {
 		if (!devicename) {
 			dev_err(dev, "Legacy LED naming requires devicename segment");
 			return -EINVAL;
 		}
-		n = snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s:%s",
-			     devicename, init_data->default_label);
+		snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s:%s",
+			 devicename, init_data->default_label);
 	} else if (is_of_node(fwnode)) {
-		n = snprintf(led_classdev_name, LED_MAX_NAME_SIZE, "%s",
-			     to_of_node(fwnode)->name);
+		strscpy(led_classdev_name, to_of_node(fwnode)->name,
+			LED_MAX_NAME_SIZE);
 	} else
 		return -EINVAL;
-
-	if (n >= LED_MAX_NAME_SIZE)
-		return -E2BIG;
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(led_compose_name);
-
-const char *led_get_color_name(u8 color_id)
-{
-	if (color_id >= ARRAY_SIZE(led_colors))
-		return NULL;
-
-	return led_colors[color_id];
-}
-EXPORT_SYMBOL_GPL(led_get_color_name);
 
 enum led_default_state led_init_default_state_get(struct fwnode_handle *fwnode)
 {

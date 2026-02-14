@@ -124,7 +124,7 @@ static int ahci_dm816_softreset(struct ata_link *link,
 
 static struct ata_port_operations ahci_dm816_port_ops = {
 	.inherits = &ahci_platform_ops,
-	.reset.softreset = ahci_dm816_softreset,
+	.softreset = ahci_dm816_softreset,
 };
 
 static const struct ata_port_info ahci_dm816_port_info = {
@@ -134,7 +134,7 @@ static const struct ata_port_info ahci_dm816_port_info = {
 	.port_ops	= &ahci_dm816_port_ops,
 };
 
-static const struct scsi_host_template ahci_dm816_platform_sht = {
+static struct scsi_host_template ahci_dm816_platform_sht = {
 	AHCI_SHT(AHCI_DM816_DRV_NAME),
 };
 

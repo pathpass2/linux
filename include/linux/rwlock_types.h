@@ -22,7 +22,7 @@
  * portions Copyright 2005, Red Hat, Inc., Ingo Molnar
  * Released under the General Public License (GPL).
  */
-context_lock_struct(rwlock) {
+typedef struct {
 	arch_rwlock_t raw_lock;
 #ifdef CONFIG_DEBUG_SPINLOCK
 	unsigned int magic, owner_cpu;
@@ -31,8 +31,7 @@ context_lock_struct(rwlock) {
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map dep_map;
 #endif
-};
-typedef struct rwlock rwlock_t;
+} rwlock_t;
 
 #define RWLOCK_MAGIC		0xdeaf1eed
 
@@ -55,14 +54,13 @@ typedef struct rwlock rwlock_t;
 
 #include <linux/rwbase_rt.h>
 
-context_lock_struct(rwlock) {
+typedef struct {
 	struct rwbase_rt	rwbase;
 	atomic_t		readers;
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	dep_map;
 #endif
-};
-typedef struct rwlock rwlock_t;
+} rwlock_t;
 
 #define __RWLOCK_RT_INITIALIZER(name)					\
 {									\

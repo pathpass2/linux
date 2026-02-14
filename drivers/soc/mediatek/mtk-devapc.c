@@ -8,7 +8,7 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 
@@ -273,39 +273,32 @@ static int mtk_devapc_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	devapc_irq = irq_of_parse_and_map(node, 0);
-	if (!devapc_irq) {
-		ret = -EINVAL;
-		goto err;
-	}
+	if (!devapc_irq)
+		return -EINVAL;
 
 	ctx->infra_clk = devm_clk_get_enabled(&pdev->dev, "devapc-infra-clock");
-	if (IS_ERR(ctx->infra_clk)) {
-		ret = -EINVAL;
-		goto err;
-	}
+	if (IS_ERR(ctx->infra_clk))
+		return -EINVAL;
 
 	ret = devm_request_irq(&pdev->dev, devapc_irq, devapc_violation_irq,
 			       IRQF_TRIGGER_NONE, "devapc", ctx);
 	if (ret)
-		goto err;
+		return ret;
 
 	platform_set_drvdata(pdev, ctx);
 
 	start_devapc(ctx);
 
 	return 0;
-
-err:
-	iounmap(ctx->infra_base);
-	return ret;
 }
 
-static void mtk_devapc_remove(struct platform_device *pdev)
+static int mtk_devapc_remove(struct platform_device *pdev)
 {
 	struct mtk_devapc_context *ctx = platform_get_drvdata(pdev);
 
 	stop_devapc(ctx);
-	iounmap(ctx->infra_base);
+
+	return 0;
 }
 
 static struct platform_driver mtk_devapc_driver = {

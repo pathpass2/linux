@@ -56,6 +56,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/kernel.h>
@@ -68,6 +69,13 @@
 #include <linux/types.h>
 
 #include "bd99954-charger.h"
+
+struct battery_data {
+	u16 precharge_current;	/* Trickle-charge Current */
+	u16 fc_reg_voltage;	/* Fast Charging Regulation Voltage */
+	u16 voltage_min;
+	u16 voltage_max;
+};
 
 /* Initial field values, converted to initial register values */
 struct bd9995x_init_data {
@@ -155,7 +163,7 @@ static const struct regmap_config bd9995x_regmap_config = {
 	.reg_stride = 1,
 
 	.max_register = 3 * 0x100,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.ranges = regmap_range_cfg,
 	.num_ranges = ARRAY_SIZE(regmap_range_cfg),
@@ -528,7 +536,7 @@ static irqreturn_t bd9995x_irq_handler_thread(int irq, void *private)
 
 	for_each_set_bit(i, &tmp, 7) {
 		int sub_status, sub_mask;
-		static const int sub_status_reg[] = {
+		int sub_status_reg[] = {
 			INT1_STATUS, INT2_STATUS, INT3_STATUS, INT4_STATUS,
 			INT5_STATUS, INT6_STATUS, INT7_STATUS,
 		};
@@ -981,7 +989,7 @@ static int bd9995x_probe(struct i2c_client *client)
 	bd->client = client;
 	bd->dev = dev;
 	psy_cfg.drv_data = bd;
-	psy_cfg.fwnode = dev_fwnode(dev);
+	psy_cfg.of_node = dev->of_node;
 
 	mutex_init(&bd->lock);
 
@@ -1069,7 +1077,7 @@ static struct i2c_driver bd9995x_driver = {
 		.name = "bd9995x-charger",
 		.of_match_table = bd9995x_of_match,
 	},
-	.probe = bd9995x_probe,
+	.probe_new = bd9995x_probe,
 };
 module_i2c_driver(bd9995x_driver);
 

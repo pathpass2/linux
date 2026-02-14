@@ -24,7 +24,7 @@ struct metapage {
 	wait_queue_head_t wait;
 
 	/* implementation */
-	struct folio *folio;
+	struct page *page;
 	struct super_block *sb;
 	unsigned int logical_size;
 
@@ -90,14 +90,14 @@ static inline void discard_metapage(struct metapage *mp)
 
 static inline void metapage_nohomeok(struct metapage *mp)
 {
-	struct folio *folio = mp->folio;
-	folio_lock(folio);
+	struct page *page = mp->page;
+	lock_page(page);
 	if (!mp->nohomeok++) {
 		mark_metapage_dirty(mp);
-		folio_get(folio);
-		folio_wait_writeback(folio);
+		get_page(page);
+		wait_on_page_writeback(page);
 	}
-	folio_unlock(folio);
+	unlock_page(page);
 }
 
 /*
@@ -107,7 +107,7 @@ static inline void metapage_nohomeok(struct metapage *mp)
 static inline void metapage_wait_for_io(struct metapage *mp)
 {
 	if (test_bit(META_io, &mp->flag))
-		folio_wait_writeback(mp->folio);
+		wait_on_page_writeback(mp->page);
 }
 
 /*
@@ -116,7 +116,7 @@ static inline void metapage_wait_for_io(struct metapage *mp)
 static inline void _metapage_homeok(struct metapage *mp)
 {
 	if (!--mp->nohomeok)
-		folio_put(mp->folio);
+		put_page(mp->page);
 }
 
 static inline void metapage_homeok(struct metapage *mp)

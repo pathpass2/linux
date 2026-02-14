@@ -2,7 +2,7 @@
 #ifndef _ASM_PARISC_THREAD_INFO_H
 #define _ASM_PARISC_THREAD_INFO_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <asm/processor.h>
 #include <asm/special_insns.h>
 
@@ -20,7 +20,7 @@ struct thread_info {
 	.preempt_count	= INIT_PREEMPT_COUNT,	\
 }
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY */
 
 /* thread information allocation */
 

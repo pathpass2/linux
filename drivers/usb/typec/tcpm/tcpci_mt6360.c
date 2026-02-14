@@ -43,6 +43,12 @@ struct mt6360_tcpc_info {
 	int irq;
 };
 
+static inline int mt6360_tcpc_read16(struct regmap *regmap,
+				     unsigned int reg, u16 *val)
+{
+	return regmap_raw_read(regmap, reg, val, sizeof(u16));
+}
+
 static inline int mt6360_tcpc_write16(struct regmap *regmap,
 				      unsigned int reg, u16 val)
 {
@@ -178,12 +184,13 @@ static int mt6360_tcpc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void mt6360_tcpc_remove(struct platform_device *pdev)
+static int mt6360_tcpc_remove(struct platform_device *pdev)
 {
 	struct mt6360_tcpc_info *mti = platform_get_drvdata(pdev);
 
 	disable_irq(mti->irq);
 	tcpci_unregister_port(mti->tcpci);
+	return 0;
 }
 
 static int __maybe_unused mt6360_tcpc_suspend(struct device *dev)

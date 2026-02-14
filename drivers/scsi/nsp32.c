@@ -66,7 +66,7 @@ static const char *nsp32_release_version = "1.2";
 /****************************************************************************
  * Supported hardware
  */
-static const struct pci_device_id nsp32_pci_table[] = {
+static struct pci_device_id nsp32_pci_table[] = {
 	{
 		.vendor      = PCI_VENDOR_ID_IODATA,
 		.device      = PCI_DEVICE_ID_NINJASCSI_32BI_CBSC_II,
@@ -185,8 +185,7 @@ static void __exit exit_nsp32  (void);
 static int	   nsp32_show_info   (struct seq_file *, struct Scsi_Host *);
 
 static int	   nsp32_detect      (struct pci_dev *pdev);
-static enum scsi_qc_status nsp32_queuecommand(struct Scsi_Host *,
-					      struct scsi_cmnd *);
+static int	   nsp32_queuecommand(struct Scsi_Host *, struct scsi_cmnd *);
 static const char *nsp32_info	     (struct Scsi_Host *);
 static int	   nsp32_release     (struct Scsi_Host *);
 
@@ -260,7 +259,7 @@ static void nsp32_dmessage(const char *, int, int,    char *, ...);
 /*
  * max_sectors is currently limited up to 128.
  */
-static const struct scsi_host_template nsp32_template = {
+static struct scsi_host_template nsp32_template = {
 	.proc_name			= "nsp32",
 	.name				= "Workbit NinjaSCSI-32Bi/UDE",
 	.show_info			= nsp32_show_info,
@@ -906,7 +905,7 @@ static int nsp32_setup_sg_table(struct scsi_cmnd *SCpnt)
 	return TRUE;
 }
 
-static enum scsi_qc_status nsp32_queuecommand_lck(struct scsi_cmnd *SCpnt)
+static int nsp32_queuecommand_lck(struct scsi_cmnd *SCpnt)
 {
 	void (*done)(struct scsi_cmnd *) = scsi_done;
 	nsp32_hw_data *data = (nsp32_hw_data *)SCpnt->device->host->hostdata;

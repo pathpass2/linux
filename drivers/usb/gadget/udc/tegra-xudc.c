@@ -16,6 +16,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/phy/tegra/xusb.h>
 #include <linux/pm_domain.h>
@@ -502,7 +503,6 @@ struct tegra_xudc {
 	struct clk_bulk_data *clks;
 
 	bool device_mode;
-	bool current_device_mode;
 	struct work_struct usb_role_sw_work;
 
 	struct phy **usb3_phy;
@@ -716,8 +716,6 @@ static void tegra_xudc_device_mode_on(struct tegra_xudc *xudc)
 
 	phy_set_mode_ext(xudc->curr_utmi_phy, PHY_MODE_USB_OTG,
 			 USB_ROLE_DEVICE);
-
-	xudc->current_device_mode = true;
 }
 
 static void tegra_xudc_device_mode_off(struct tegra_xudc *xudc)
@@ -727,8 +725,6 @@ static void tegra_xudc_device_mode_off(struct tegra_xudc *xudc)
 	int err;
 
 	dev_dbg(xudc->dev, "device mode off\n");
-
-	xudc->current_device_mode = false;
 
 	connected = !!(xudc_readl(xudc, PORTSC) & PORTSC_CCS);
 
@@ -812,7 +808,8 @@ static void tegra_xudc_update_data_role(struct tegra_xudc *xudc,
 		return;
 	}
 
-	xudc->device_mode = usbphy->last_event == USB_EVENT_VBUS;
+	xudc->device_mode = (usbphy->last_event == USB_EVENT_VBUS) ? true :
+								     false;
 
 	phy_index = tegra_xudc_get_phy_index(xudc, usbphy);
 	dev_dbg(xudc->dev, "%s(): current phy index is %d\n", __func__,
@@ -1558,6 +1555,12 @@ static int __tegra_xudc_ep_set_halt(struct tegra_xudc_ep *ep, bool halt)
 		return -ENOTSUPP;
 	}
 
+	if (!!(xudc_readl(xudc, EP_HALT) & BIT(ep->index)) == halt) {
+		dev_dbg(xudc->dev, "EP %u already %s\n", ep->index,
+			halt ? "halted" : "not halted");
+		return 0;
+	}
+
 	if (halt) {
 		ep_halt(xudc, ep->index);
 	} else {
@@ -1747,10 +1750,6 @@ static int __tegra_xudc_ep_disable(struct tegra_xudc_ep *ep)
 		val = xudc_readl(xudc, CTRL);
 		val &= ~CTRL_RUN;
 		xudc_writel(xudc, val, CTRL);
-
-		val = xudc_readl(xudc, ST);
-		if (val & ST_RC)
-			xudc_writel(xudc, ST_RC, ST);
 	}
 
 	dev_info(xudc->dev, "ep %u disabled\n", ep->index);
@@ -2163,14 +2162,15 @@ static int tegra_xudc_gadget_stop(struct usb_gadget *gadget)
 static int tegra_xudc_gadget_vbus_draw(struct usb_gadget *gadget,
 						unsigned int m_a)
 {
+	int ret = 0;
 	struct tegra_xudc *xudc = to_xudc(gadget);
 
 	dev_dbg(xudc->dev, "%s: %u mA\n", __func__, m_a);
 
-	if (xudc->curr_usbphy && xudc->curr_usbphy->chg_type == SDP_TYPE)
-		return usb_phy_set_power(xudc->curr_usbphy, m_a);
+	if (xudc->curr_usbphy->chg_type == SDP_TYPE)
+		ret = usb_phy_set_power(xudc->curr_usbphy, m_a);
 
-	return 0;
+	return ret;
 }
 
 static int tegra_xudc_set_selfpowered(struct usb_gadget *gadget, int is_on)
@@ -3493,8 +3493,8 @@ static void tegra_xudc_device_params_init(struct tegra_xudc *xudc)
 
 static int tegra_xudc_phy_get(struct tegra_xudc *xudc)
 {
-	int err = 0, usb3_companion_port;
-	unsigned int i, j;
+	int err = 0, usb3;
+	unsigned int i;
 
 	xudc->utmi_phy = devm_kcalloc(xudc->dev, xudc->soc->num_phys,
 					   sizeof(*xudc->utmi_phy), GFP_KERNEL);
@@ -3522,7 +3522,7 @@ static int tegra_xudc_phy_get(struct tegra_xudc *xudc)
 		if (IS_ERR(xudc->utmi_phy[i])) {
 			err = PTR_ERR(xudc->utmi_phy[i]);
 			dev_err_probe(xudc->dev, err,
-				"failed to get PHY for phy-name usb2-%d\n", i);
+				      "failed to get usb2-%d PHY\n", i);
 			goto clean_up;
 		} else if (xudc->utmi_phy[i]) {
 			/* Get usb-phy, if utmi phy is available */
@@ -3541,30 +3541,19 @@ static int tegra_xudc_phy_get(struct tegra_xudc *xudc)
 		}
 
 		/* Get USB3 phy */
-		usb3_companion_port = tegra_xusb_padctl_get_usb3_companion(xudc->padctl, i);
-		if (usb3_companion_port < 0)
+		usb3 = tegra_xusb_padctl_get_usb3_companion(xudc->padctl, i);
+		if (usb3 < 0)
 			continue;
 
-		for (j = 0; j < xudc->soc->num_phys; j++) {
-			snprintf(phy_name, sizeof(phy_name), "usb3-%d", j);
-			xudc->usb3_phy[i] = devm_phy_optional_get(xudc->dev, phy_name);
-			if (IS_ERR(xudc->usb3_phy[i])) {
-				err = PTR_ERR(xudc->usb3_phy[i]);
-				dev_err_probe(xudc->dev, err,
-					"failed to get PHY for phy-name usb3-%d\n", j);
-				goto clean_up;
-			} else if (xudc->usb3_phy[i]) {
-				int usb2_port =
-					tegra_xusb_padctl_get_port_number(xudc->utmi_phy[i]);
-				int usb3_port =
-					tegra_xusb_padctl_get_port_number(xudc->usb3_phy[i]);
-				if (usb3_port == usb3_companion_port) {
-					dev_dbg(xudc->dev, "USB2 port %d is paired with USB3 port %d for device mode port %d\n",
-					 usb2_port, usb3_port, i);
-					break;
-				}
-			}
-		}
+		snprintf(phy_name, sizeof(phy_name), "usb3-%d", usb3);
+		xudc->usb3_phy[i] = devm_phy_optional_get(xudc->dev, phy_name);
+		if (IS_ERR(xudc->usb3_phy[i])) {
+			err = PTR_ERR(xudc->usb3_phy[i]);
+			dev_err_probe(xudc->dev, err,
+				      "failed to get usb3-%d PHY\n", usb3);
+			goto clean_up;
+		} else if (xudc->usb3_phy[i])
+			dev_dbg(xudc->dev, "usb3-%d PHY registered", usb3);
 	}
 
 	return err;
@@ -3730,15 +3719,15 @@ static int tegra_xudc_powerdomain_init(struct tegra_xudc *xudc)
 	int err;
 
 	xudc->genpd_dev_device = dev_pm_domain_attach_by_name(dev, "dev");
-	if (IS_ERR(xudc->genpd_dev_device)) {
-		err = PTR_ERR(xudc->genpd_dev_device);
+	if (IS_ERR_OR_NULL(xudc->genpd_dev_device)) {
+		err = PTR_ERR(xudc->genpd_dev_device) ? : -ENODATA;
 		dev_err(dev, "failed to get device power domain: %d\n", err);
 		return err;
 	}
 
 	xudc->genpd_dev_ss = dev_pm_domain_attach_by_name(dev, "ss");
-	if (IS_ERR(xudc->genpd_dev_ss)) {
-		err = PTR_ERR(xudc->genpd_dev_ss);
+	if (IS_ERR_OR_NULL(xudc->genpd_dev_ss)) {
+		err = PTR_ERR(xudc->genpd_dev_ss) ? : -ENODATA;
 		dev_err(dev, "failed to get SuperSpeed power domain: %d\n", err);
 		return err;
 	}
@@ -3918,7 +3907,7 @@ put_padctl:
 	return err;
 }
 
-static void tegra_xudc_remove(struct platform_device *pdev)
+static int tegra_xudc_remove(struct platform_device *pdev)
 {
 	struct tegra_xudc *xudc = platform_get_drvdata(pdev);
 	unsigned int i;
@@ -3948,6 +3937,8 @@ static void tegra_xudc_remove(struct platform_device *pdev)
 	pm_runtime_put(xudc->dev);
 
 	tegra_xusb_padctl_put(xudc->padctl);
+
+	return 0;
 }
 
 static int __maybe_unused tegra_xudc_powergate(struct tegra_xudc *xudc)
@@ -4042,9 +4033,9 @@ static int __maybe_unused tegra_xudc_resume(struct device *dev)
 
 	spin_lock_irqsave(&xudc->lock, flags);
 	xudc->suspended = false;
-	if (xudc->device_mode != xudc->current_device_mode)
-		schedule_work(&xudc->usb_role_sw_work);
 	spin_unlock_irqrestore(&xudc->lock, flags);
+
+	schedule_work(&xudc->usb_role_sw_work);
 
 	pm_runtime_enable(dev);
 

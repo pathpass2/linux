@@ -85,8 +85,6 @@ enum probe_type {
  *		uevent.
  * @p:		Driver core's private data, no one other than the driver
  *		core can touch this.
- * @p_cb:	Callbacks private to the driver core; no one other than the
- *		driver core is allowed to touch this.
  *
  * The device driver-model tracks all of the drivers known to the system.
  * The main reason for this tracking is to enable the driver core to match
@@ -97,7 +95,7 @@ enum probe_type {
  */
 struct device_driver {
 	const char		*name;
-	const struct bus_type	*bus;
+	struct bus_type		*bus;
 
 	struct module		*owner;
 	const char		*mod_name;	/* used for built-in modules */
@@ -121,22 +119,16 @@ struct device_driver {
 	void (*coredump) (struct device *dev);
 
 	struct driver_private *p;
-	struct {
-		/*
-		 * Called after remove() and after all devres entries have been
-		 * processed. This is a Rust only callback.
-		 */
-		void (*post_unbind_rust)(struct device *dev);
-	} p_cb;
 };
 
 
-int __must_check driver_register(struct device_driver *drv);
-void driver_unregister(struct device_driver *drv);
+extern int __must_check driver_register(struct device_driver *drv);
+extern void driver_unregister(struct device_driver *drv);
 
-struct device_driver *driver_find(const char *name, const struct bus_type *bus);
-bool __init driver_probe_done(void);
-void wait_for_device_probe(void);
+extern struct device_driver *driver_find(const char *name,
+					 struct bus_type *bus);
+extern int driver_probe_done(void);
+extern void wait_for_device_probe(void);
 void __init wait_for_init_devices_probe(void);
 
 /* sysfs interface for exporting driver attributes */
@@ -155,18 +147,21 @@ struct driver_attribute {
 #define DRIVER_ATTR_WO(_name) \
 	struct driver_attribute driver_attr_##_name = __ATTR_WO(_name)
 
-int __must_check driver_create_file(const struct device_driver *driver,
-				    const struct driver_attribute *attr);
-void driver_remove_file(const struct device_driver *driver,
-			const struct driver_attribute *attr);
+extern int __must_check driver_create_file(struct device_driver *driver,
+					const struct driver_attribute *attr);
+extern void driver_remove_file(struct device_driver *driver,
+			       const struct driver_attribute *attr);
 
 int driver_set_override(struct device *dev, const char **override,
 			const char *s, size_t len);
-int __must_check driver_for_each_device(struct device_driver *drv, struct device *start,
-					void *data, device_iter_t fn);
-struct device *driver_find_device(const struct device_driver *drv,
+extern int __must_check driver_for_each_device(struct device_driver *drv,
+					       struct device *start,
+					       void *data,
+					       int (*fn)(struct device *dev,
+							 void *));
+struct device *driver_find_device(struct device_driver *drv,
 				  struct device *start, const void *data,
-				  device_match_t match);
+				  int (*match)(struct device *dev, const void *data));
 
 /**
  * driver_find_device_by_name - device iterator for locating a particular device
@@ -174,7 +169,7 @@ struct device *driver_find_device(const struct device_driver *drv,
  * @drv: the driver we're iterating
  * @name: name of the device to match
  */
-static inline struct device *driver_find_device_by_name(const struct device_driver *drv,
+static inline struct device *driver_find_device_by_name(struct device_driver *drv,
 							const char *name)
 {
 	return driver_find_device(drv, NULL, name, device_match_name);
@@ -187,7 +182,7 @@ static inline struct device *driver_find_device_by_name(const struct device_driv
  * @np: of_node pointer to match.
  */
 static inline struct device *
-driver_find_device_by_of_node(const struct device_driver *drv,
+driver_find_device_by_of_node(struct device_driver *drv,
 			      const struct device_node *np)
 {
 	return driver_find_device(drv, NULL, np, device_match_of_node);
@@ -212,13 +207,13 @@ driver_find_device_by_fwnode(struct device_driver *drv,
  * @drv: the driver we're iterating
  * @devt: devt pointer to match.
  */
-static inline struct device *driver_find_device_by_devt(const struct device_driver *drv,
+static inline struct device *driver_find_device_by_devt(struct device_driver *drv,
 							dev_t devt)
 {
 	return driver_find_device(drv, NULL, &devt, device_match_devt);
 }
 
-static inline struct device *driver_find_next_device(const struct device_driver *drv,
+static inline struct device *driver_find_next_device(struct device_driver *drv,
 						     struct device *start)
 {
 	return driver_find_device(drv, start, NULL, device_match_any);
@@ -232,14 +227,14 @@ static inline struct device *driver_find_next_device(const struct device_driver 
  * @adev: ACPI_COMPANION device to match.
  */
 static inline struct device *
-driver_find_device_by_acpi_dev(const struct device_driver *drv,
+driver_find_device_by_acpi_dev(struct device_driver *drv,
 			       const struct acpi_device *adev)
 {
 	return driver_find_device(drv, NULL, adev, device_match_acpi_dev);
 }
 #else
 static inline struct device *
-driver_find_device_by_acpi_dev(const struct device_driver *drv, const void *adev)
+driver_find_device_by_acpi_dev(struct device_driver *drv, const void *adev)
 {
 	return NULL;
 }

@@ -14,25 +14,12 @@
 #define NFSDDBG_FACILITY	NFSDDBG_PNFS
 
 
-/**
- * nfsd4_block_encode_layoutget - encode block/scsi layout extent array
- * @xdr: stream for data encoding
- * @lgp: layoutget content, actually an array of extents to encode
- *
- * Encode the opaque loc_body field in the layoutget response. Since the
- * pnfs_block_layout4 and pnfs_scsi_layout4 structures on the wire are
- * the same, this function is used by both layout drivers.
- *
- * Return values:
- *   %nfs_ok: Success, all extents encoded into @xdr
- *   %nfserr_toosmall: Not enough space in @xdr to encode all the data
- */
 __be32
 nfsd4_block_encode_layoutget(struct xdr_stream *xdr,
-		const struct nfsd4_layoutget *lgp)
+		struct nfsd4_layoutget *lgp)
 {
-	const struct pnfs_block_layout *bl = lgp->lg_content;
-	u32 i, len = sizeof(__be32) + bl->nr_extents * PNFS_BLOCK_EXTENT_SIZE;
+	struct pnfs_block_extent *b = lgp->lg_content;
+	int len = sizeof(__be32) + 5 * sizeof(__be64) + sizeof(__be32);
 	__be32 *p;
 
 	p = xdr_reserve_space(xdr, sizeof(__be32) + len);
@@ -40,19 +27,15 @@ nfsd4_block_encode_layoutget(struct xdr_stream *xdr,
 		return nfserr_toosmall;
 
 	*p++ = cpu_to_be32(len);
-	*p++ = cpu_to_be32(bl->nr_extents);
+	*p++ = cpu_to_be32(1);		/* we always return a single extent */
 
-	for (i = 0; i < bl->nr_extents; i++) {
-		const struct pnfs_block_extent *bex = bl->extents + i;
-
-		p = svcxdr_encode_deviceid4(p, &bex->vol_id);
-		p = xdr_encode_hyper(p, bex->foff);
-		p = xdr_encode_hyper(p, bex->len);
-		p = xdr_encode_hyper(p, bex->soff);
-		*p++ = cpu_to_be32(bex->es);
-	}
-
-	return nfs_ok;
+	p = xdr_encode_opaque_fixed(p, &b->vol_id,
+			sizeof(struct nfsd4_deviceid));
+	p = xdr_encode_hyper(p, b->foff);
+	p = xdr_encode_hyper(p, b->len);
+	p = xdr_encode_hyper(p, b->soff);
+	*p++ = cpu_to_be32(b->es);
+	return 0;
 }
 
 static int
@@ -94,20 +77,11 @@ nfsd4_block_encode_volume(struct xdr_stream *xdr, struct pnfs_block_volume *b)
 
 __be32
 nfsd4_block_encode_getdeviceinfo(struct xdr_stream *xdr,
-		const struct nfsd4_getdeviceinfo *gdp)
+		struct nfsd4_getdeviceinfo *gdp)
 {
 	struct pnfs_block_deviceaddr *dev = gdp->gd_device;
 	int len = sizeof(__be32), ret, i;
 	__be32 *p;
-
-	/*
-	 * See paragraph 5 of RFC 8881 S18.40.3.
-	 */
-	if (!gdp->gd_maxcount) {
-		if (xdr_stream_encode_u32(xdr, 0) != XDR_UNIT)
-			return nfserr_resource;
-		return nfs_ok;
-	}
 
 	p = xdr_reserve_space(xdr, len + sizeof(__be32));
 	if (!p)
@@ -129,86 +103,64 @@ nfsd4_block_encode_getdeviceinfo(struct xdr_stream *xdr,
 	return 0;
 }
 
-/**
- * nfsd4_block_decode_layoutupdate - decode the block layout extent array
- * @xdr: subbuf set to the encoded array
- * @iomapp: pointer to store the decoded extent array
- * @nr_iomapsp: pointer to store the number of extents
- * @block_size: alignment of extent offset and length
- *
- * This function decodes the opaque field of the layoutupdate4 structure
- * in a layoutcommit request for the block layout driver. The field is
- * actually an array of extents sent by the client. It also checks that
- * the file offset, storage offset and length of each extent are aligned
- * by @block_size.
- *
- * Return values:
- *   %nfs_ok: Successful decoding, @iomapp and @nr_iomapsp are valid
- *   %nfserr_bad_xdr: The encoded array in @xdr is invalid
- *   %nfserr_inval: An unaligned extent found
- *   %nfserr_delay: Failed to allocate memory for @iomapp
- */
-__be32
-nfsd4_block_decode_layoutupdate(struct xdr_stream *xdr, struct iomap **iomapp,
-		int *nr_iomapsp, u32 block_size)
+int
+nfsd4_block_decode_layoutupdate(__be32 *p, u32 len, struct iomap **iomapp,
+		u32 block_size)
 {
 	struct iomap *iomaps;
-	u32 nr_iomaps, expected, len, i;
-	__be32 nfserr;
+	u32 nr_iomaps, i;
 
-	if (xdr_stream_decode_u32(xdr, &nr_iomaps))
-		return nfserr_bad_xdr;
+	if (len < sizeof(u32)) {
+		dprintk("%s: extent array too small: %u\n", __func__, len);
+		return -EINVAL;
+	}
+	len -= sizeof(u32);
+	if (len % PNFS_BLOCK_EXTENT_SIZE) {
+		dprintk("%s: extent array invalid: %u\n", __func__, len);
+		return -EINVAL;
+	}
 
-	len = sizeof(__be32) + xdr_stream_remaining(xdr);
-	expected = sizeof(__be32) + nr_iomaps * PNFS_BLOCK_EXTENT_SIZE;
-	if (len != expected)
-		return nfserr_bad_xdr;
+	nr_iomaps = be32_to_cpup(p++);
+	if (nr_iomaps != len / PNFS_BLOCK_EXTENT_SIZE) {
+		dprintk("%s: extent array size mismatch: %u/%u\n",
+			__func__, len, nr_iomaps);
+		return -EINVAL;
+	}
 
 	iomaps = kcalloc(nr_iomaps, sizeof(*iomaps), GFP_KERNEL);
-	if (!iomaps)
-		return nfserr_delay;
+	if (!iomaps) {
+		dprintk("%s: failed to allocate extent array\n", __func__);
+		return -ENOMEM;
+	}
 
 	for (i = 0; i < nr_iomaps; i++) {
 		struct pnfs_block_extent bex;
 
-		if (nfsd4_decode_deviceid4(xdr, &bex.vol_id)) {
-			nfserr = nfserr_bad_xdr;
-			goto fail;
-		}
+		memcpy(&bex.vol_id, p, sizeof(struct nfsd4_deviceid));
+		p += XDR_QUADLEN(sizeof(struct nfsd4_deviceid));
 
-		if (xdr_stream_decode_u64(xdr, &bex.foff)) {
-			nfserr = nfserr_bad_xdr;
-			goto fail;
-		}
+		p = xdr_decode_hyper(p, &bex.foff);
 		if (bex.foff & (block_size - 1)) {
-			nfserr = nfserr_inval;
+			dprintk("%s: unaligned offset 0x%llx\n",
+				__func__, bex.foff);
 			goto fail;
 		}
-
-		if (xdr_stream_decode_u64(xdr, &bex.len)) {
-			nfserr = nfserr_bad_xdr;
-			goto fail;
-		}
+		p = xdr_decode_hyper(p, &bex.len);
 		if (bex.len & (block_size - 1)) {
-			nfserr = nfserr_inval;
+			dprintk("%s: unaligned length 0x%llx\n",
+				__func__, bex.foff);
 			goto fail;
 		}
-
-		if (xdr_stream_decode_u64(xdr, &bex.soff)) {
-			nfserr = nfserr_bad_xdr;
-			goto fail;
-		}
+		p = xdr_decode_hyper(p, &bex.soff);
 		if (bex.soff & (block_size - 1)) {
-			nfserr = nfserr_inval;
+			dprintk("%s: unaligned disk offset 0x%llx\n",
+				__func__, bex.soff);
 			goto fail;
 		}
-
-		if (xdr_stream_decode_u32(xdr, &bex.es)) {
-			nfserr = nfserr_bad_xdr;
-			goto fail;
-		}
+		bex.es = be32_to_cpup(p++);
 		if (bex.es != PNFS_BLOCK_READWRITE_DATA) {
-			nfserr = nfserr_inval;
+			dprintk("%s: incorrect extent state %d\n",
+				__func__, bex.es);
 			goto fail;
 		}
 
@@ -217,79 +169,59 @@ nfsd4_block_decode_layoutupdate(struct xdr_stream *xdr, struct iomap **iomapp,
 	}
 
 	*iomapp = iomaps;
-	*nr_iomapsp = nr_iomaps;
-	return nfs_ok;
+	return nr_iomaps;
 fail:
 	kfree(iomaps);
-	return nfserr;
+	return -EINVAL;
 }
 
-/**
- * nfsd4_scsi_decode_layoutupdate - decode the scsi layout extent array
- * @xdr: subbuf set to the encoded array
- * @iomapp: pointer to store the decoded extent array
- * @nr_iomapsp: pointer to store the number of extents
- * @block_size: alignment of extent offset and length
- *
- * This function decodes the opaque field of the layoutupdate4 structure
- * in a layoutcommit request for the scsi layout driver. The field is
- * actually an array of extents sent by the client. It also checks that
- * the offset and length of each extent are aligned by @block_size.
- *
- * Return values:
- *   %nfs_ok: Successful decoding, @iomapp and @nr_iomapsp are valid
- *   %nfserr_bad_xdr: The encoded array in @xdr is invalid
- *   %nfserr_inval: An unaligned extent found
- *   %nfserr_delay: Failed to allocate memory for @iomapp
- */
-__be32
-nfsd4_scsi_decode_layoutupdate(struct xdr_stream *xdr, struct iomap **iomapp,
-		int *nr_iomapsp, u32 block_size)
+int
+nfsd4_scsi_decode_layoutupdate(__be32 *p, u32 len, struct iomap **iomapp,
+		u32 block_size)
 {
 	struct iomap *iomaps;
-	u32 nr_iomaps, expected, len, i;
-	__be32 nfserr;
+	u32 nr_iomaps, expected, i;
 
-	if (xdr_stream_decode_u32(xdr, &nr_iomaps))
-		return nfserr_bad_xdr;
+	if (len < sizeof(u32)) {
+		dprintk("%s: extent array too small: %u\n", __func__, len);
+		return -EINVAL;
+	}
 
-	len = sizeof(__be32) + xdr_stream_remaining(xdr);
+	nr_iomaps = be32_to_cpup(p++);
 	expected = sizeof(__be32) + nr_iomaps * PNFS_SCSI_RANGE_SIZE;
-	if (len != expected)
-		return nfserr_bad_xdr;
+	if (len != expected) {
+		dprintk("%s: extent array size mismatch: %u/%u\n",
+			__func__, len, expected);
+		return -EINVAL;
+	}
 
 	iomaps = kcalloc(nr_iomaps, sizeof(*iomaps), GFP_KERNEL);
-	if (!iomaps)
-		return nfserr_delay;
+	if (!iomaps) {
+		dprintk("%s: failed to allocate extent array\n", __func__);
+		return -ENOMEM;
+	}
 
 	for (i = 0; i < nr_iomaps; i++) {
 		u64 val;
 
-		if (xdr_stream_decode_u64(xdr, &val)) {
-			nfserr = nfserr_bad_xdr;
-			goto fail;
-		}
+		p = xdr_decode_hyper(p, &val);
 		if (val & (block_size - 1)) {
-			nfserr = nfserr_inval;
+			dprintk("%s: unaligned offset 0x%llx\n", __func__, val);
 			goto fail;
 		}
 		iomaps[i].offset = val;
 
-		if (xdr_stream_decode_u64(xdr, &val)) {
-			nfserr = nfserr_bad_xdr;
-			goto fail;
-		}
+		p = xdr_decode_hyper(p, &val);
 		if (val & (block_size - 1)) {
-			nfserr = nfserr_inval;
+			dprintk("%s: unaligned length 0x%llx\n", __func__, val);
 			goto fail;
 		}
 		iomaps[i].length = val;
 	}
 
 	*iomapp = iomaps;
-	*nr_iomapsp = nr_iomaps;
-	return nfs_ok;
+	return nr_iomaps;
 fail:
 	kfree(iomaps);
-	return nfserr;
+	return -EINVAL;
 }

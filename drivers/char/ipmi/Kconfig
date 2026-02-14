@@ -84,13 +84,6 @@ config IPMI_IPMB
 	  bus, and it also supports direct messaging on the bus using
 	  IPMB direct messages.  This module requires I2C support.
 
-config IPMI_LS2K
-	bool 'Loongson-2K IPMI interface'
-	depends on LOONGARCH
-	select MFD_LS2K_BMC_CORE
-	help
-	  Provides a driver for Loongson-2K IPMI interfaces.
-
 config IPMI_POWERNV
 	depends on PPC_POWERNV
 	tristate 'POWERNV (OPAL firmware) IPMI interface'
@@ -169,8 +162,7 @@ config IPMI_KCS_BMC_SERIO
 
 config ASPEED_BT_IPMI_BMC
 	depends on ARCH_ASPEED || COMPILE_TEST
-	depends on MFD_SYSCON
-	select REGMAP_MMIO
+	depends on REGMAP && REGMAP_MMIO && MFD_SYSCON
 	tristate "BT IPMI bmc driver"
 	help
 	  Provides a driver for the BT (Block Transfer) IPMI interface

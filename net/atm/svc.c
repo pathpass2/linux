@@ -28,11 +28,6 @@
 #include "signaling.h"
 #include "addr.h"
 
-#ifdef CONFIG_COMPAT
-/* It actually takes struct sockaddr_atmsvc, not struct atm_iobuf */
-#define COMPAT_ATM_ADDPARTY _IOW('a', ATMIOC_SPECIAL + 4, struct compat_atm_iobuf)
-#endif
-
 static int svc_create(struct net *net, struct socket *sock, int protocol,
 		      int kern);
 
@@ -97,7 +92,7 @@ static int svc_release(struct socket *sock)
 	return 0;
 }
 
-static int svc_bind(struct socket *sock, struct sockaddr_unsized *sockaddr,
+static int svc_bind(struct socket *sock, struct sockaddr *sockaddr,
 		    int sockaddr_len)
 {
 	DEFINE_WAIT(wait);
@@ -153,7 +148,7 @@ out:
 	return error;
 }
 
-static int svc_connect(struct socket *sock, struct sockaddr_unsized *sockaddr,
+static int svc_connect(struct socket *sock, struct sockaddr *sockaddr,
 		       int sockaddr_len, int flags)
 {
 	DEFINE_WAIT(wait);
@@ -324,8 +319,8 @@ out:
 	return error;
 }
 
-static int svc_accept(struct socket *sock, struct socket *newsock,
-		      struct proto_accept_arg *arg)
+static int svc_accept(struct socket *sock, struct socket *newsock, int flags,
+		      bool kern)
 {
 	struct sock *sk = sock->sk;
 	struct sk_buff *skb;
@@ -336,7 +331,7 @@ static int svc_accept(struct socket *sock, struct socket *newsock,
 
 	lock_sock(sk);
 
-	error = svc_create(sock_net(sk), newsock, 0, arg->kern);
+	error = svc_create(sock_net(sk), newsock, 0, kern);
 	if (error)
 		goto out;
 
@@ -355,7 +350,7 @@ static int svc_accept(struct socket *sock, struct socket *newsock,
 				error = -sk->sk_err;
 				break;
 			}
-			if (arg->flags & O_NONBLOCK) {
+			if (flags & O_NONBLOCK) {
 				error = -EAGAIN;
 				break;
 			}
@@ -654,6 +649,7 @@ static const struct proto_ops svc_proto_ops = {
 	.sendmsg =	vcc_sendmsg,
 	.recvmsg =	vcc_recvmsg,
 	.mmap =		sock_no_mmap,
+	.sendpage =	sock_no_sendpage,
 };
 
 

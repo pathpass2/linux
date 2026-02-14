@@ -26,41 +26,8 @@ config SND_RAWMIDI
 	tristate
 	select SND_SEQ_DEVICE if SND_SEQUENCER != n
 
-config SND_UMP
-	tristate
-	select SND_RAWMIDI
-
-config SND_UMP_LEGACY_RAWMIDI
-	bool "Legacy raw MIDI support for UMP streams"
-	depends on SND_UMP
-	help
-	  This option enables the legacy raw MIDI support for UMP streams.
-	  When this option is set, an additional rawmidi device for the
-	  legacy MIDI 1.0 byte streams is created for each UMP Endpoint.
-	  The device contains 16 substreams corresponding to UMP groups.
-
-config SND_CORE_TEST
-	tristate "Sound core KUnit test"
-	depends on KUNIT
-	select SND_PCM
-	default KUNIT_ALL_TESTS
-	help
-	  This options enables the sound core functions KUnit test.
-
-	  KUnit tests run during boot and output the results to the debug
-	  log in TAP format (https://testanything.org/). Only useful for
-	  kernel devs running KUnit test harness and are not for inclusion
-	  into a production build.
-
-	  For more information on KUnit and unit tests in general, refer
-	  to the KUnit documentation in Documentation/dev-tools/kunit/.
-
-
 config SND_COMPRESS_OFFLOAD
 	tristate
-
-config SND_COMPRESS_ACCEL
-	bool
 
 config SND_JACK
 	bool
@@ -155,7 +122,7 @@ config SND_MAX_CARDS
 
 config SND_SUPPORT_OLD_API
 	bool "Support old ALSA API"
-	default n
+	default y
 	help
 	  Say Y here to support the obsolete ALSA PCM API (ver.0.9.0 rc3
 	  or older).
@@ -177,6 +144,15 @@ config SND_VERBOSE_PROCFS
 	  Say Y here to include code for verbose procfs contents (provides
 	  useful information to developers when a problem occurs).  On the
 	  other side, it makes the ALSA subsystem larger.
+
+config SND_VERBOSE_PRINTK
+	bool "Verbose printk"
+	help
+	  Say Y here to enable verbose log messages.  These messages
+	  will help to identify source file and position containing
+	  printed messages.
+
+	  You don't need this unless you're debugging ALSA.
 
 config SND_CTL_FAST_LOOKUP
 	bool "Fast lookup of control elements" if EXPERT
@@ -245,16 +221,6 @@ config SND_JACK_INJECTION_DEBUG
 	  Say Y if you are debugging via jack injection interface.
 	  If unsure select "N".
 
-config SND_UTIMER
-	bool "Enable support for userspace-controlled virtual timers"
-	depends on SND_TIMER
-	help
-	  Say Y to enable the support of userspace-controlled timers. These
-	  timers are purely virtual, and they are supposed to be triggered
-	  from userspace. They could be quite useful when synchronizing the
-	  sound timing with userspace applications (for instance, when sending
-	  data through snd-aloop).
-
 config SND_VMASTER
 	bool
 
@@ -266,5 +232,6 @@ config SND_CTL_LED
 	tristate
 	select NEW_LEDS if SND_CTL_LED
 	select LEDS_TRIGGERS if SND_CTL_LED
+	select LEDS_TRIGGER_AUDIO if SND_CTL_LED
 
 source "sound/core/seq/Kconfig"

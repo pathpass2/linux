@@ -61,7 +61,7 @@ struct cpuidle_state {
 			struct cpuidle_driver *drv,
 			int index);
 
-	void (*enter_dead) (struct cpuidle_device *dev, int index);
+	int (*enter_dead) (struct cpuidle_device *dev, int index);
 
 	/*
 	 * CPUs execute ->enter_s2idle with the local tick or entire timekeeping
@@ -248,8 +248,7 @@ extern int cpuidle_find_deepest_state(struct cpuidle_driver *drv,
 				      struct cpuidle_device *dev,
 				      u64 latency_limit_ns);
 extern int cpuidle_enter_s2idle(struct cpuidle_driver *drv,
-				struct cpuidle_device *dev,
-				u64 latency_limit_ns);
+				struct cpuidle_device *dev);
 extern void cpuidle_use_deepest_state(u64 latency_limit_ns);
 #else
 static inline int cpuidle_find_deepest_state(struct cpuidle_driver *drv,
@@ -257,8 +256,7 @@ static inline int cpuidle_find_deepest_state(struct cpuidle_driver *drv,
 					     u64 latency_limit_ns)
 {return -ENODEV; }
 static inline int cpuidle_enter_s2idle(struct cpuidle_driver *drv,
-				       struct cpuidle_device *dev,
-				       u64 latency_limit_ns)
+				       struct cpuidle_device *dev)
 {return -ENODEV; }
 static inline void cpuidle_use_deepest_state(u64 latency_limit_ns)
 {

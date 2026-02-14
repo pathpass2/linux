@@ -4,7 +4,6 @@
 /* Copyright (c) 2021 Google */
 
 #include <assert.h>
-#include <errno.h>
 #include <limits.h>
 #include <unistd.h>
 #include <sys/file.h>
@@ -14,7 +13,6 @@
 #include <linux/zalloc.h>
 #include <linux/perf_event.h>
 #include <api/fs/fs.h>
-#include <bpf/bpf.h>
 #include <perf/bpf_perf.h>
 
 #include "affinity.h"
@@ -28,7 +26,6 @@
 #include "cpumap.h"
 #include "thread_map.h"
 
-#include "bpf_skel/bperf_cgroup.h"
 #include "bpf_skel/bperf_cgroup.skel.h"
 
 static struct perf_event_attr cgrp_switch_attr = {
@@ -44,55 +41,6 @@ static struct bperf_cgroup_bpf *skel;
 
 #define FD(evt, cpu) (*(int *)xyarray__entry(evt->core.fd, cpu, 0))
 
-static void setup_rodata(struct bperf_cgroup_bpf *sk, int evlist_size)
-{
-	int map_size, total_cpus = cpu__max_cpu().cpu;
-
-	sk->rodata->num_cpus = total_cpus;
-	sk->rodata->num_events = evlist_size / nr_cgroups;
-
-	if (cgroup_is_v2("perf_event") > 0)
-		sk->rodata->use_cgroup_v2 = 1;
-
-	BUG_ON(evlist_size % nr_cgroups != 0);
-
-	/* we need one copy of events per cpu for reading */
-	map_size = total_cpus * evlist_size / nr_cgroups;
-	bpf_map__set_max_entries(sk->maps.events, map_size);
-	bpf_map__set_max_entries(sk->maps.cgrp_idx, nr_cgroups);
-	/* previous result is saved in a per-cpu array */
-	map_size = evlist_size / nr_cgroups;
-	bpf_map__set_max_entries(sk->maps.prev_readings, map_size);
-	/* cgroup result needs all events (per-cpu) */
-	map_size = evlist_size;
-	bpf_map__set_max_entries(sk->maps.cgrp_readings, map_size);
-}
-
-static void test_max_events_program_load(void)
-{
-#ifndef NDEBUG
-	/*
-	 * Test that the program verifies with the maximum number of events. If
-	 * this test fails unfortunately perf needs recompiling with a lower
-	 * BPERF_CGROUP__MAX_EVENTS to avoid BPF verifier issues.
-	 */
-	int err, max_events = BPERF_CGROUP__MAX_EVENTS * nr_cgroups;
-	struct bperf_cgroup_bpf *test_skel = bperf_cgroup_bpf__open();
-
-	if (!test_skel) {
-		pr_err("Failed to open cgroup skeleton\n");
-		return;
-	}
-	setup_rodata(test_skel, max_events);
-	err = bperf_cgroup_bpf__load(test_skel);
-	if (err) {
-		pr_err("Failed to load cgroup skeleton with max events %d.\n",
-			BPERF_CGROUP__MAX_EVENTS);
-	}
-	bperf_cgroup_bpf__destroy(test_skel);
-#endif
-}
-
 static int bperf_load_program(struct evlist *evlist)
 {
 	struct bpf_link *link;
@@ -101,24 +49,41 @@ static int bperf_load_program(struct evlist *evlist)
 	int i, j;
 	struct perf_cpu cpu;
 	int total_cpus = cpu__max_cpu().cpu;
-	int map_fd, prog_fd, err;
-
-	set_max_rlimit();
-
-	test_max_events_program_load();
+	int map_size, map_fd;
+	int prog_fd, err;
 
 	skel = bperf_cgroup_bpf__open();
 	if (!skel) {
 		pr_err("Failed to open cgroup skeleton\n");
 		return -1;
 	}
-	setup_rodata(skel, evlist->core.nr_entries);
+
+	skel->rodata->num_cpus = total_cpus;
+	skel->rodata->num_events = evlist->core.nr_entries / nr_cgroups;
+
+	BUG_ON(evlist->core.nr_entries % nr_cgroups != 0);
+
+	/* we need one copy of events per cpu for reading */
+	map_size = total_cpus * evlist->core.nr_entries / nr_cgroups;
+	bpf_map__set_max_entries(skel->maps.events, map_size);
+	bpf_map__set_max_entries(skel->maps.cgrp_idx, nr_cgroups);
+	/* previous result is saved in a per-cpu array */
+	map_size = evlist->core.nr_entries / nr_cgroups;
+	bpf_map__set_max_entries(skel->maps.prev_readings, map_size);
+	/* cgroup result needs all events (per-cpu) */
+	map_size = evlist->core.nr_entries;
+	bpf_map__set_max_entries(skel->maps.cgrp_readings, map_size);
+
+	set_max_rlimit();
 
 	err = bperf_cgroup_bpf__load(skel);
 	if (err) {
 		pr_err("Failed to load cgroup skeleton\n");
 		goto out;
 	}
+
+	if (cgroup_is_v2("perf_event") > 0)
+		skel->bss->use_cgroup_v2 = 1;
 
 	err = -1;
 
@@ -171,8 +136,9 @@ static int bperf_load_program(struct evlist *evlist)
 		cgrp = evsel->cgrp;
 
 		if (read_cgroup_id(cgrp) < 0) {
-			pr_debug("Failed to get cgroup id for %s\n", cgrp->name);
-			cgrp->id = 0;
+			pr_err("Failed to get cgroup id\n");
+			err = -1;
+			goto out;
 		}
 
 		map_fd = bpf_map__fd(skel->maps.cgrp_idx);
@@ -220,8 +186,7 @@ static int bperf_cgrp__load(struct evsel *evsel,
 }
 
 static int bperf_cgrp__install_pe(struct evsel *evsel __maybe_unused,
-				  int cpu_map_idx __maybe_unused,
-				  int fd __maybe_unused)
+				  int cpu __maybe_unused, int fd __maybe_unused)
 {
 	/* nothing to do */
 	return 0;

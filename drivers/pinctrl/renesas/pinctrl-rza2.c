@@ -14,11 +14,8 @@
 #include <linux/gpio/driver.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/of.h>
-#include <linux/pinctrl/consumer.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/pinmux.h>
-#include <linux/platform_device.h>
 
 #include "../core.h"
 #include "../pinmux.h"
@@ -49,7 +46,6 @@ struct rza2_pinctrl_priv {
 	struct pinctrl_dev *pctl;
 	struct pinctrl_gpio_range gpio_range;
 	int npins;
-	struct mutex mutex; /* serialize adding groups and functions */
 };
 
 #define RZA2_PDR(port)		(0x0000 + (port) * 2)	/* Direction 16-bit */
@@ -172,7 +168,8 @@ static int rza2_chip_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(readb(priv->base + RZA2_PIDR(port)) & BIT(pin));
 }
 
-static int rza2_chip_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void rza2_chip_set(struct gpio_chip *chip, unsigned int offset,
+			  int value)
 {
 	struct rza2_pinctrl_priv *priv = gpiochip_get_data(chip);
 	u8 port = RZA2_PIN_ID_TO_PORT(offset);
@@ -187,8 +184,6 @@ static int rza2_chip_set(struct gpio_chip *chip, unsigned int offset, int value)
 		new_value &= ~BIT(pin);
 
 	writeb(new_value, priv->base + RZA2_PODR(port));
-
-	return 0;
 }
 
 static int rza2_chip_direction_output(struct gpio_chip *chip,
@@ -231,8 +226,6 @@ static const char * const rza2_gpio_names[] = {
 static struct gpio_chip chip = {
 	.names = rza2_gpio_names,
 	.base = -1,
-	.request = pinctrl_gpio_request,
-	.free = pinctrl_gpio_free,
 	.get_direction = rza2_chip_get_direction,
 	.direction_input = rza2_chip_direction_input,
 	.direction_output = rza2_chip_direction_output,
@@ -247,9 +240,6 @@ static int rza2_gpio_register(struct rza2_pinctrl_priv *priv)
 	int ret;
 
 	chip.label = devm_kasprintf(priv->dev, GFP_KERNEL, "%pOFn", np);
-	if (!chip.label)
-		return -ENOMEM;
-
 	chip.parent = priv->dev;
 	chip.ngpio = priv->npins;
 
@@ -259,8 +249,6 @@ static int rza2_gpio_register(struct rza2_pinctrl_priv *priv)
 		dev_err(priv->dev, "Unable to parse gpio-ranges\n");
 		return ret;
 	}
-
-	of_node_put(of_args.np);
 
 	if ((of_args.args[0] != 0) ||
 	    (of_args.args[1] != 0) ||
@@ -370,14 +358,10 @@ static int rza2_dt_node_to_map(struct pinctrl_dev *pctldev,
 		psel_val[i] = MUX_FUNC(value);
 	}
 
-	mutex_lock(&priv->mutex);
-
 	/* Register a single pin group listing all the pins we read from DT */
 	gsel = pinctrl_generic_add_group(pctldev, np->name, pins, npins, NULL);
-	if (gsel < 0) {
-		ret = gsel;
-		goto unlock;
-	}
+	if (gsel < 0)
+		return gsel;
 
 	/*
 	 * Register a single group function where the 'data' is an array PSEL
@@ -406,8 +390,6 @@ static int rza2_dt_node_to_map(struct pinctrl_dev *pctldev,
 	(*map)->data.mux.function = np->name;
 	*num_maps = 1;
 
-	mutex_unlock(&priv->mutex);
-
 	return 0;
 
 remove_function:
@@ -415,9 +397,6 @@ remove_function:
 
 remove_group:
 	pinctrl_generic_remove_group(pctldev, gsel);
-
-unlock:
-	mutex_unlock(&priv->mutex);
 
 	dev_err(priv->dev, "Unable to parse DT node %s\n", np->name);
 
@@ -442,7 +421,7 @@ static int rza2_set_mux(struct pinctrl_dev *pctldev, unsigned int selector,
 			unsigned int group)
 {
 	struct rza2_pinctrl_priv *priv = pinctrl_dev_get_drvdata(pctldev);
-	const struct function_desc *func;
+	struct function_desc *func;
 	unsigned int i, *psel_val;
 	struct group_desc *grp;
 
@@ -456,15 +435,15 @@ static int rza2_set_mux(struct pinctrl_dev *pctldev, unsigned int selector,
 
 	psel_val = func->data;
 
-	for (i = 0; i < grp->grp.npins; ++i) {
+	for (i = 0; i < grp->num_pins; ++i) {
 		dev_dbg(priv->dev, "Setting P%c_%d to PSEL=%d\n",
-			port_names[RZA2_PIN_ID_TO_PORT(grp->grp.pins[i])],
-			RZA2_PIN_ID_TO_PIN(grp->grp.pins[i]),
+			port_names[RZA2_PIN_ID_TO_PORT(grp->pins[i])],
+			RZA2_PIN_ID_TO_PIN(grp->pins[i]),
 			psel_val[i]);
 		rza2_set_pin_function(
 			priv->base,
-			RZA2_PIN_ID_TO_PORT(grp->grp.pins[i]),
-			RZA2_PIN_ID_TO_PIN(grp->grp.pins[i]),
+			RZA2_PIN_ID_TO_PORT(grp->pins[i]),
+			RZA2_PIN_ID_TO_PIN(grp->pins[i]),
 			psel_val[i]);
 	}
 
@@ -493,8 +472,6 @@ static int rza2_pinctrl_probe(struct platform_device *pdev)
 	priv->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(priv->base))
 		return PTR_ERR(priv->base);
-
-	mutex_init(&priv->mutex);
 
 	platform_set_drvdata(pdev, priv);
 
@@ -537,3 +514,4 @@ core_initcall(rza2_pinctrl_init);
 
 MODULE_AUTHOR("Chris Brandt <chris.brandt@renesas.com>");
 MODULE_DESCRIPTION("Pin and gpio controller driver for RZ/A2 SoC");
+MODULE_LICENSE("GPL v2");

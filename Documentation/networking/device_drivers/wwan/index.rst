@@ -10,3 +10,10 @@ Contents:
 
    iosm
    t7xx
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

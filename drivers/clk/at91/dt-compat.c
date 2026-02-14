@@ -171,7 +171,7 @@ static void __init of_sama5d2_clk_generated_setup(struct device_node *np)
 
 		hw = at91_clk_register_generated(regmap, &pmc_pcr_lock,
 						 &dt_pcr_layout, name,
-						 parent_names, NULL, NULL,
+						 parent_names, NULL,
 						 num_parents, id, &range,
 						 chg_pid);
 		if (IS_ERR(hw))
@@ -269,7 +269,7 @@ static void __init of_at91rm9200_clk_main_osc_setup(struct device_node *np)
 	if (IS_ERR(regmap))
 		return;
 
-	hw = at91_clk_register_main_osc(regmap, name, parent_name, NULL, bypass);
+	hw = at91_clk_register_main_osc(regmap, name, parent_name, bypass);
 	if (IS_ERR(hw))
 		return;
 
@@ -323,7 +323,7 @@ static void __init of_at91rm9200_clk_main_setup(struct device_node *np)
 	if (IS_ERR(regmap))
 		return;
 
-	hw = at91_clk_register_rm9200_main(regmap, name, parent_name, NULL);
+	hw = at91_clk_register_rm9200_main(regmap, name, parent_name);
 	if (IS_ERR(hw))
 		return;
 
@@ -354,7 +354,7 @@ static void __init of_at91sam9x5_clk_main_setup(struct device_node *np)
 
 	of_property_read_string(np, "clock-output-names", &name);
 
-	hw = at91_clk_register_sam9x5_main(regmap, name, parent_names, NULL,
+	hw = at91_clk_register_sam9x5_main(regmap, name, parent_names,
 					   num_parents);
 	if (IS_ERR(hw))
 		return;
@@ -420,12 +420,12 @@ of_at91_clk_master_setup(struct device_node *np,
 		return;
 
 	hw = at91_clk_register_master_pres(regmap, "masterck_pres", num_parents,
-					   parent_names, NULL, layout,
+					   parent_names, layout,
 					   characteristics, &mck_lock);
 	if (IS_ERR(hw))
 		goto out_free_characteristics;
 
-	hw = at91_clk_register_master_div(regmap, name, "masterck_pres", NULL,
+	hw = at91_clk_register_master_div(regmap, name, "masterck_pres",
 					  layout, characteristics,
 					  &mck_lock, CLK_SET_RATE_GATE, 0);
 	if (IS_ERR(hw))
@@ -490,7 +490,7 @@ of_at91_clk_periph_setup(struct device_node *np, u8 type)
 
 		if (type == PERIPHERAL_AT91RM9200) {
 			hw = at91_clk_register_peripheral(regmap, name,
-							  parent_name, NULL, id);
+							  parent_name, id);
 		} else {
 			struct clk_range range = CLK_RANGE(0, 0);
 			unsigned long flags = 0;
@@ -512,7 +512,6 @@ of_at91_clk_periph_setup(struct device_node *np, u8 type)
 								 &dt_pcr_layout,
 								 name,
 								 parent_name,
-								 NULL,
 								 id, &range,
 								 INT_MIN,
 								 flags);
@@ -563,10 +562,9 @@ of_at91_clk_pll_get_characteristics(struct device_node *np)
 	if (num_cells < 2 || num_cells > 4)
 		return NULL;
 
-	num_output = of_property_count_u32_elems(np, "atmel,pll-clk-output-ranges");
-	if (num_output <= 0)
+	if (!of_get_property(np, "atmel,pll-clk-output-ranges", &tmp))
 		return NULL;
-	num_output /= num_cells;
+	num_output = tmp / (sizeof(u32) * num_cells);
 
 	characteristics = kzalloc(sizeof(*characteristics), GFP_KERNEL);
 	if (!characteristics)
@@ -771,7 +769,7 @@ of_at91_clk_prog_setup(struct device_node *np,
 			name = progclknp->name;
 
 		hw = at91_clk_register_programmable(regmap, name,
-						    parent_names, NULL, num_parents,
+						    parent_names, num_parents,
 						    id, layout, mux_table);
 		if (IS_ERR(hw))
 			continue;
@@ -909,8 +907,8 @@ static void __init of_at91rm9200_clk_sys_setup(struct device_node *np)
 		if (!strcmp(sysclknp->name, "ddrck"))
 			flags = CLK_IS_CRITICAL;
 
-		hw = at91_clk_register_system(regmap, name, parent_name, NULL,
-					      id, flags);
+		hw = at91_clk_register_system(regmap, name, parent_name, id,
+					      flags);
 		if (IS_ERR(hw))
 			continue;
 
@@ -1056,7 +1054,7 @@ static void __init of_at91sam9x5_clk_utmi_setup(struct device_node *np)
 			regmap_sfr = NULL;
 	}
 
-	hw = at91_clk_register_utmi(regmap_pmc, regmap_sfr, name, parent_name, NULL);
+	hw = at91_clk_register_utmi(regmap_pmc, regmap_sfr, name, parent_name);
 	if (IS_ERR(hw))
 		return;
 

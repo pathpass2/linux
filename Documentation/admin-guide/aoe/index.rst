@@ -8,3 +8,10 @@ ATA over Ethernet (AoE)
     aoe
     todo
     examples
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

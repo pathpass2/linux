@@ -202,13 +202,13 @@ spurious_8259A_irq:
 	}
 }
 
-static void i8259A_resume(void *data)
+static void i8259A_resume(void)
 {
 	if (i8259A_auto_eoi >= 0)
 		init_8259A(i8259A_auto_eoi);
 }
 
-static void i8259A_shutdown(void *data)
+static void i8259A_shutdown(void)
 {
 	/* Put the i8259A into a quiescent state that
 	 * the kernel initialization code can get it
@@ -220,13 +220,9 @@ static void i8259A_shutdown(void *data)
 	}
 }
 
-static const struct syscore_ops i8259_syscore_ops = {
+static struct syscore_ops i8259_syscore_ops = {
 	.resume = i8259A_resume,
 	.shutdown = i8259A_shutdown,
-};
-
-static struct syscore i8259_syscore = {
-	.ops = &i8259_syscore_ops,
 };
 
 static void init_8259A(int auto_eoi)
@@ -317,14 +313,14 @@ struct irq_domain * __init __init_i8259_irqs(struct device_node *node)
 
 	init_8259A(0);
 
-	domain = irq_domain_create_legacy(of_fwnode_handle(node), 16, I8259A_IRQ_BASE, 0,
-					  &i8259A_ops, NULL);
+	domain = irq_domain_add_legacy(node, 16, I8259A_IRQ_BASE, 0,
+				       &i8259A_ops, NULL);
 	if (!domain)
 		panic("Failed to add i8259 IRQ domain");
 
 	if (request_irq(irq, no_action, IRQF_NO_THREAD, "cascade", NULL))
 		pr_err("Failed to register cascade interrupt\n");
-	register_syscore(&i8259_syscore);
+	register_syscore_ops(&i8259_syscore_ops);
 	return domain;
 }
 
@@ -344,7 +340,7 @@ static void i8259_irq_dispatch(struct irq_desc *desc)
 	generic_handle_domain_irq(domain, hwirq);
 }
 
-static int __init i8259_of_init(struct device_node *node, struct device_node *parent)
+int __init i8259_of_init(struct device_node *node, struct device_node *parent)
 {
 	struct irq_domain *domain;
 	unsigned int parent_irq;

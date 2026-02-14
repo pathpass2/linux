@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
 /*
  * Copyright(c) 2015 - 2020 Intel Corporation.
  * Copyright(c) 2021 Cornelis Networks.
@@ -342,7 +342,7 @@ int hfi1_create_ctxtdata(struct hfi1_pportdata *ppd, int numa,
 		INIT_LIST_HEAD(&rcd->flow_queue.queue_head);
 		INIT_LIST_HEAD(&rcd->rarr_queue.queue_head);
 
-		hfi1_cdbg(PROC, "setting up context %u", rcd->ctxt);
+		hfi1_cdbg(PROC, "setting up context %u\n", rcd->ctxt);
 
 		/*
 		 * Calculate the context's RcvArray entry starting point.
@@ -400,7 +400,7 @@ int hfi1_create_ctxtdata(struct hfi1_pportdata *ppd, int numa,
 			rcd->egrbufs.count = MAX_EAGER_ENTRIES;
 		}
 		hfi1_cdbg(PROC,
-			  "ctxt%u: max Eager buffer RcvArray entries: %u",
+			  "ctxt%u: max Eager buffer RcvArray entries: %u\n",
 			  rcd->ctxt, rcd->egrbufs.count);
 
 		/*
@@ -432,7 +432,7 @@ int hfi1_create_ctxtdata(struct hfi1_pportdata *ppd, int numa,
 		if (rcd->egrbufs.size < hfi1_max_mtu) {
 			rcd->egrbufs.size = __roundup_pow_of_two(hfi1_max_mtu);
 			hfi1_cdbg(PROC,
-				  "ctxt%u: eager bufs size too small. Adjusting to %u",
+				  "ctxt%u: eager bufs size too small. Adjusting to %u\n",
 				    rcd->ctxt, rcd->egrbufs.size);
 		}
 		rcd->egrbufs.rcvtid_size = HFI1_MAX_EAGER_BUFFER_SIZE;
@@ -635,11 +635,12 @@ void hfi1_init_pportdata(struct pci_dev *pdev, struct hfi1_pportdata *ppd,
 	spin_lock_init(&ppd->cca_timer_lock);
 
 	for (i = 0; i < OPA_MAX_SLS; i++) {
+		hrtimer_init(&ppd->cca_timer[i].hrtimer, CLOCK_MONOTONIC,
+			     HRTIMER_MODE_REL);
 		ppd->cca_timer[i].ppd = ppd;
 		ppd->cca_timer[i].sl = i;
 		ppd->cca_timer[i].ccti = 0;
-		hrtimer_setup(&ppd->cca_timer[i].hrtimer, cca_timer_fn, CLOCK_MONOTONIC,
-			      HRTIMER_MODE_REL);
+		ppd->cca_timer[i].hrtimer.function = cca_timer_fn;
 	}
 
 	ppd->cc_max_table_entries = IB_CC_TABLE_CAP_DEFAULT;
@@ -745,8 +746,8 @@ static int create_workqueues(struct hfi1_devdata *dd)
 			ppd->hfi1_wq =
 				alloc_workqueue(
 				    "hfi%d_%d",
-				    WQ_SYSFS | WQ_HIGHPRI | WQ_CPU_INTENSIVE | WQ_MEM_RECLAIM |
-				    WQ_PERCPU,
+				    WQ_SYSFS | WQ_HIGHPRI | WQ_CPU_INTENSIVE |
+				    WQ_MEM_RECLAIM,
 				    HFI1_MAX_ACTIVE_WORKQUEUE_ENTRIES,
 				    dd->unit, pidx);
 			if (!ppd->hfi1_wq)
@@ -985,7 +986,7 @@ static void stop_timers(struct hfi1_devdata *dd)
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
 		ppd = dd->pport + pidx;
 		if (ppd->led_override_timer.function) {
-			timer_delete_sync(&ppd->led_override_timer);
+			del_timer_sync(&ppd->led_override_timer);
 			atomic_set(&ppd->led_override_timer_active, 0);
 		}
 	}
@@ -1026,6 +1027,7 @@ static void shutdown_device(struct hfi1_devdata *dd)
 	msix_clean_up_interrupts(dd);
 
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
+		ppd = dd->pport + pidx;
 		for (i = 0; i < dd->num_rcv_contexts; i++) {
 			rcd = hfi1_rcd_get_by_index(dd, i);
 			hfi1_rcvctrl(dd, HFI1_RCVCTRL_TAILUPD_DIS |
@@ -1918,7 +1920,7 @@ int hfi1_setup_eagerbufs(struct hfi1_ctxtdata *rcd)
 	rcd->egrbufs.size = alloced_bytes;
 
 	hfi1_cdbg(PROC,
-		  "ctxt%u: Alloced %u rcv tid entries @ %uKB, total %uKB",
+		  "ctxt%u: Alloced %u rcv tid entries @ %uKB, total %uKB\n",
 		  rcd->ctxt, rcd->egrbufs.alloced,
 		  rcd->egrbufs.rcvtid_size / 1024, rcd->egrbufs.size / 1024);
 
@@ -1941,13 +1943,13 @@ int hfi1_setup_eagerbufs(struct hfi1_ctxtdata *rcd)
 		rcd->expected_count = MAX_TID_PAIR_ENTRIES * 2;
 
 	rcd->expected_base = rcd->eager_base + egrtop;
-	hfi1_cdbg(PROC, "ctxt%u: eager:%u, exp:%u, egrbase:%u, expbase:%u",
+	hfi1_cdbg(PROC, "ctxt%u: eager:%u, exp:%u, egrbase:%u, expbase:%u\n",
 		  rcd->ctxt, rcd->egrbufs.alloced, rcd->expected_count,
 		  rcd->eager_base, rcd->expected_base);
 
 	if (!hfi1_rcvbuf_validate(rcd->egrbufs.rcvtid_size, PT_EAGER, &order)) {
 		hfi1_cdbg(PROC,
-			  "ctxt%u: current Eager buffer size is invalid %u",
+			  "ctxt%u: current Eager buffer size is invalid %u\n",
 			  rcd->ctxt, rcd->egrbufs.rcvtid_size);
 		ret = -EINVAL;
 		goto bail_rcvegrbuf_phys;

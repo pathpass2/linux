@@ -15,7 +15,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
-#include "bpf_compiler.h"
 #include "xdping.h"
 
 struct {
@@ -90,6 +89,7 @@ static __always_inline int icmp_check(struct xdp_md *ctx, int type)
 SEC("xdp")
 int xdping_client(struct xdp_md *ctx)
 {
+	void *data_end = (void *)(long)ctx->data_end;
 	void *data = (void *)(long)ctx->data;
 	struct pinginfo *pinginfo = NULL;
 	struct ethhdr *eth = data;
@@ -117,7 +117,7 @@ int xdping_client(struct xdp_md *ctx)
 		return XDP_PASS;
 
 	if (pinginfo->start) {
-		__pragma_loop_unroll_full
+#pragma clang loop unroll(full)
 		for (i = 0; i < XDPING_MAX_COUNT; i++) {
 			if (pinginfo->times[i] == 0)
 				break;
@@ -153,6 +153,7 @@ int xdping_client(struct xdp_md *ctx)
 SEC("xdp")
 int xdping_server(struct xdp_md *ctx)
 {
+	void *data_end = (void *)(long)ctx->data_end;
 	void *data = (void *)(long)ctx->data;
 	struct ethhdr *eth = data;
 	struct icmphdr *icmph;

@@ -66,19 +66,23 @@ static LIST_HEAD(module_bug_list);
 
 static struct bug_entry *module_find_bug(unsigned long bugaddr)
 {
-	struct bug_entry *bug;
 	struct module *mod;
+	struct bug_entry *bug = NULL;
 
-	guard(rcu)();
+	rcu_read_lock_sched();
 	list_for_each_entry_rcu(mod, &module_bug_list, bug_list) {
 		unsigned i;
 
 		bug = mod->bug_table;
 		for (i = 0; i < mod->num_bugs; ++i, ++bug)
 			if (bugaddr == bug_addr(bug))
-				return bug;
+				goto out;
 	}
-	return NULL;
+	bug = NULL;
+out:
+	rcu_read_unlock_sched();
+
+	return bug;
 }
 
 void module_bug_finalize(const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs,
@@ -139,29 +143,6 @@ void bug_get_file_line(struct bug_entry *bug, const char **file,
 #endif
 }
 
-static const char *bug_get_format(struct bug_entry *bug)
-{
-	const char *format = NULL;
-#ifdef HAVE_ARCH_BUG_FORMAT
-#ifdef CONFIG_GENERIC_BUG_RELATIVE_POINTERS
-	/*
-	 * Allow an architecture to:
-	 *  - relative encode NULL (difficult vs KASLR);
-	 *  - use a literal 0 (there are no valid objects inside
-	 *    the __bug_table itself to refer to after all);
-	 *  - use an empty string.
-	 */
-	if (bug->format_disp)
-		format = (const char *)&bug->format_disp + bug->format_disp;
-	if (format && format[0] == '\0')
-		format = NULL;
-#else
-	format = bug->format;
-#endif
-#endif
-	return format;
-}
-
 struct bug_entry *find_bug(unsigned long bugaddr)
 {
 	struct bug_entry *bug;
@@ -173,55 +154,26 @@ struct bug_entry *find_bug(unsigned long bugaddr)
 	return module_find_bug(bugaddr);
 }
 
-__diag_push();
-__diag_ignore(GCC, all, "-Wsuggest-attribute=format",
-	      "Not a valid __printf() conversion candidate.");
-static void __warn_printf(const char *fmt, struct pt_regs *regs)
+static enum bug_trap_type __report_bug(unsigned long bugaddr, struct pt_regs *regs)
 {
-	if (!fmt)
-		return;
+	struct bug_entry *bug;
+	const char *file;
+	unsigned line, warning, once, done;
 
-#ifdef HAVE_ARCH_BUG_FORMAT_ARGS
-	if (regs) {
-		struct arch_va_list _args;
-		va_list *args = __warn_args(&_args, regs);
+	if (!is_valid_bugaddr(bugaddr))
+		return BUG_TRAP_TYPE_NONE;
 
-		if (args) {
-			vprintk(fmt, *args);
-			return;
-		}
-	}
-#endif
-
-	printk("%s", fmt);
-}
-__diag_pop();
-
-static enum bug_trap_type __report_bug(struct bug_entry *bug, unsigned long bugaddr, struct pt_regs *regs)
-{
-	bool warning, once, done, no_cut, has_args;
-	const char *file, *fmt;
-	unsigned line;
-
-	if (!bug) {
-		if (!is_valid_bugaddr(bugaddr))
-			return BUG_TRAP_TYPE_NONE;
-
-		bug = find_bug(bugaddr);
-		if (!bug)
-			return BUG_TRAP_TYPE_NONE;
-	}
+	bug = find_bug(bugaddr);
+	if (!bug)
+		return BUG_TRAP_TYPE_NONE;
 
 	disable_trace_on_warning();
 
 	bug_get_file_line(bug, &file, &line);
-	fmt = bug_get_format(bug);
 
-	warning  = bug->flags & BUGFLAG_WARNING;
-	once     = bug->flags & BUGFLAG_ONCE;
-	done     = bug->flags & BUGFLAG_DONE;
-	no_cut   = bug->flags & BUGFLAG_NO_CUT_HERE;
-	has_args = bug->flags & BUGFLAG_ARGS;
+	warning = (bug->flags & BUGFLAG_WARNING) != 0;
+	once = (bug->flags & BUGFLAG_ONCE) != 0;
+	done = (bug->flags & BUGFLAG_DONE) != 0;
 
 	if (warning && once) {
 		if (done)
@@ -239,10 +191,8 @@ static enum bug_trap_type __report_bug(struct bug_entry *bug, unsigned long buga
 	 * "cut here" line now. WARN() issues its own "cut here" before the
 	 * extra debugging message it writes before triggering the handler.
 	 */
-	if (!no_cut) {
+	if ((bug->flags & BUGFLAG_NO_CUT_HERE) == 0)
 		printk(KERN_DEFAULT CUT_HERE);
-		__warn_printf(fmt, has_args ? regs : NULL);
-	}
 
 	if (warning) {
 		/* this is a WARN_ON rather than BUG/BUG_ON */
@@ -260,25 +210,13 @@ static enum bug_trap_type __report_bug(struct bug_entry *bug, unsigned long buga
 	return BUG_TRAP_TYPE_BUG;
 }
 
-enum bug_trap_type report_bug_entry(struct bug_entry *bug, struct pt_regs *regs)
-{
-	enum bug_trap_type ret;
-	bool rcu = false;
-
-	rcu = warn_rcu_enter();
-	ret = __report_bug(bug, bug_addr(bug), regs);
-	warn_rcu_exit(rcu);
-
-	return ret;
-}
-
 enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 {
 	enum bug_trap_type ret;
 	bool rcu = false;
 
 	rcu = warn_rcu_enter();
-	ret = __report_bug(NULL, bugaddr, regs);
+	ret = __report_bug(bugaddr, regs);
 	warn_rcu_exit(rcu);
 
 	return ret;
@@ -297,11 +235,11 @@ void generic_bug_clear_once(void)
 #ifdef CONFIG_MODULES
 	struct module *mod;
 
-	scoped_guard(rcu) {
-		list_for_each_entry_rcu(mod, &module_bug_list, bug_list)
-			clear_once_table(mod->bug_table,
-					 mod->bug_table + mod->num_bugs);
-	}
+	rcu_read_lock_sched();
+	list_for_each_entry_rcu(mod, &module_bug_list, bug_list)
+		clear_once_table(mod->bug_table,
+				 mod->bug_table + mod->num_bugs);
+	rcu_read_unlock_sched();
 #endif
 
 	clear_once_table(__start___bug_table, __stop___bug_table);

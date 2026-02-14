@@ -92,9 +92,6 @@ run_udp() {
 	echo "udp"
 	run_in_netns ${args}
 
-	echo "udp sendmmsg"
-	run_in_netns ${args} -m
-
 	echo "udp gso"
 	run_in_netns ${args} -S 0
 

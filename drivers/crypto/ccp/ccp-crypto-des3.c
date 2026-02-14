@@ -7,15 +7,14 @@
  * Author: Gary R Hook <ghook@amd.com>
  */
 
-#include <crypto/internal/des.h>
-#include <crypto/internal/skcipher.h>
-#include <linux/err.h>
-#include <linux/kernel.h>
-#include <linux/list.h>
 #include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/delay.h>
 #include <linux/scatterlist.h>
-#include <linux/slab.h>
-#include <linux/string.h>
+#include <linux/crypto.h>
+#include <crypto/algapi.h>
+#include <crypto/scatterwalk.h>
+#include <crypto/internal/des.h>
 
 #include "ccp-crypto.h"
 

@@ -40,35 +40,41 @@ static int bpf_sk_storage_del(struct sock *sk, struct bpf_map *map)
 	if (!sdata)
 		return -ENOENT;
 
-	return bpf_selem_unlink(SELEM(sdata));
+	bpf_selem_unlink(SELEM(sdata), true);
+
+	return 0;
 }
 
 /* Called by __sk_destruct() & bpf_sk_storage_clone() */
 void bpf_sk_storage_free(struct sock *sk)
 {
 	struct bpf_local_storage *sk_storage;
-	u32 uncharge;
+	bool free_sk_storage = false;
 
-	rcu_read_lock_dont_migrate();
+	rcu_read_lock();
 	sk_storage = rcu_dereference(sk->sk_bpf_storage);
-	if (!sk_storage)
-		goto out;
+	if (!sk_storage) {
+		rcu_read_unlock();
+		return;
+	}
 
-	uncharge = bpf_local_storage_destroy(sk_storage);
-	if (uncharge)
-		atomic_sub(uncharge, &sk->sk_omem_alloc);
-out:
-	rcu_read_unlock_migrate();
+	raw_spin_lock_bh(&sk_storage->lock);
+	free_sk_storage = bpf_local_storage_unlink_nolock(sk_storage);
+	raw_spin_unlock_bh(&sk_storage->lock);
+	rcu_read_unlock();
+
+	if (free_sk_storage)
+		kfree_rcu(sk_storage, rcu);
 }
 
 static void bpf_sk_storage_map_free(struct bpf_map *map)
 {
-	bpf_local_storage_map_free(map, &sk_cache);
+	bpf_local_storage_map_free(map, &sk_cache, NULL);
 }
 
 static struct bpf_map *bpf_sk_storage_map_alloc(union bpf_attr *attr)
 {
-	return bpf_local_storage_map_alloc(attr, &sk_cache, false);
+	return bpf_local_storage_map_alloc(attr, &sk_cache);
 }
 
 static int notsupp_get_next_key(struct bpf_map *map, void *key,
@@ -94,8 +100,8 @@ static void *bpf_fd_sk_storage_lookup_elem(struct bpf_map *map, void *key)
 	return ERR_PTR(err);
 }
 
-static long bpf_fd_sk_storage_update_elem(struct bpf_map *map, void *key,
-					  void *value, u64 map_flags)
+static int bpf_fd_sk_storage_update_elem(struct bpf_map *map, void *key,
+					 void *value, u64 map_flags)
 {
 	struct bpf_local_storage_data *sdata;
 	struct socket *sock;
@@ -106,7 +112,7 @@ static long bpf_fd_sk_storage_update_elem(struct bpf_map *map, void *key,
 	if (sock) {
 		sdata = bpf_local_storage_update(
 			sock->sk, (struct bpf_local_storage_map *)map, value,
-			map_flags, false, GFP_ATOMIC);
+			map_flags, GFP_ATOMIC);
 		sockfd_put(sock);
 		return PTR_ERR_OR_ZERO(sdata);
 	}
@@ -114,7 +120,7 @@ static long bpf_fd_sk_storage_update_elem(struct bpf_map *map, void *key,
 	return err;
 }
 
-static long bpf_fd_sk_storage_delete_elem(struct bpf_map *map, void *key)
+static int bpf_fd_sk_storage_delete_elem(struct bpf_map *map, void *key)
 {
 	struct socket *sock;
 	int fd, err;
@@ -137,7 +143,7 @@ bpf_sk_storage_clone_elem(struct sock *newsk,
 {
 	struct bpf_local_storage_elem *copy_selem;
 
-	copy_selem = bpf_selem_alloc(smap, newsk, NULL, false, GFP_ATOMIC);
+	copy_selem = bpf_selem_alloc(smap, newsk, NULL, true, GFP_ATOMIC);
 	if (!copy_selem)
 		return NULL;
 
@@ -160,7 +166,7 @@ int bpf_sk_storage_clone(const struct sock *sk, struct sock *newsk)
 
 	RCU_INIT_POINTER(newsk->sk_bpf_storage, NULL);
 
-	rcu_read_lock_dont_migrate();
+	rcu_read_lock();
 	sk_storage = rcu_dereference(sk->sk_bpf_storage);
 
 	if (!sk_storage || hlist_empty(&sk_storage->list))
@@ -192,19 +198,12 @@ int bpf_sk_storage_clone(const struct sock *sk, struct sock *newsk)
 		}
 
 		if (new_sk_storage) {
-			ret = bpf_selem_link_map(smap, new_sk_storage, copy_selem);
-			if (ret) {
-				bpf_selem_free(copy_selem, true);
-				atomic_sub(smap->elem_size,
-					   &newsk->sk_omem_alloc);
-				bpf_map_put(map);
-				goto out;
-			}
+			bpf_selem_link_map(smap, copy_selem);
 			bpf_selem_link_storage_nolock(new_sk_storage, copy_selem);
 		} else {
 			ret = bpf_local_storage_alloc(newsk, smap, copy_selem, GFP_ATOMIC);
 			if (ret) {
-				bpf_selem_free(copy_selem, true);
+				kfree(copy_selem);
 				atomic_sub(smap->elem_size,
 					   &newsk->sk_omem_alloc);
 				bpf_map_put(map);
@@ -218,7 +217,7 @@ int bpf_sk_storage_clone(const struct sock *sk, struct sock *newsk)
 	}
 
 out:
-	rcu_read_unlock_migrate();
+	rcu_read_unlock();
 
 	/* In case of an error, don't free anything explicitly here, the
 	 * caller is responsible to call bpf_sk_storage_free.
@@ -250,7 +249,7 @@ BPF_CALL_5(bpf_sk_storage_get, struct bpf_map *, map, struct sock *, sk,
 	    refcount_inc_not_zero(&sk->sk_refcnt)) {
 		sdata = bpf_local_storage_update(
 			sk, (struct bpf_local_storage_map *)map, value,
-			BPF_NOEXIST, false, gfp_flags);
+			BPF_NOEXIST, gfp_flags);
 		/* sk must be a fullsock (guaranteed by verifier),
 		 * so sock_gen_put() is unnecessary.
 		 */
@@ -282,10 +281,9 @@ BPF_CALL_2(bpf_sk_storage_delete, struct bpf_map *, map, struct sock *, sk)
 static int bpf_sk_storage_charge(struct bpf_local_storage_map *smap,
 				 void *owner, u32 size)
 {
+	int optmem_max = READ_ONCE(sysctl_optmem_max);
 	struct sock *sk = (struct sock *)owner;
-	int optmem_max;
 
-	optmem_max = READ_ONCE(sock_net(sk)->core.sysctl_optmem_max);
 	/* same check as in sock_kmalloc() */
 	if (size <= optmem_max &&
 	    atomic_read(&sk->sk_omem_alloc) + size < optmem_max) {
@@ -326,7 +324,6 @@ const struct bpf_map_ops sk_storage_map_ops = {
 	.map_local_storage_charge = bpf_sk_storage_charge,
 	.map_local_storage_uncharge = bpf_sk_storage_uncharge,
 	.map_owner_storage_ptr = bpf_sk_storage_ptr,
-	.map_mem_usage = bpf_local_storage_map_mem_usage,
 };
 
 const struct bpf_func_proto bpf_sk_storage_get_proto = {
@@ -359,6 +356,11 @@ const struct bpf_func_proto bpf_sk_storage_delete_proto = {
 
 static bool bpf_sk_storage_tracing_allowed(const struct bpf_prog *prog)
 {
+	const struct btf *btf_vmlinux;
+	const struct btf_type *t;
+	const char *tname;
+	u32 btf_id;
+
 	if (prog->aux->dst_prog)
 		return false;
 
@@ -373,8 +375,13 @@ static bool bpf_sk_storage_tracing_allowed(const struct bpf_prog *prog)
 		return true;
 	case BPF_TRACE_FENTRY:
 	case BPF_TRACE_FEXIT:
-	case BPF_TRACE_FSESSION:
-		return !!strncmp(prog->aux->attach_func_name, "bpf_sk_storage",
+		btf_vmlinux = bpf_get_btf_vmlinux();
+		if (IS_ERR_OR_NULL(btf_vmlinux))
+			return false;
+		btf_id = prog->aux->attach_btf_id;
+		t = btf_type_by_id(btf_vmlinux, btf_id);
+		tname = btf_name_by_offset(btf_vmlinux, t->name_off);
+		return !!strncmp(tname, "bpf_sk_storage",
 				 strlen("bpf_sk_storage"));
 	default:
 		return false;
@@ -410,7 +417,7 @@ const struct bpf_func_proto bpf_sk_storage_get_tracing_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_PTR_TO_MAP_VALUE_OR_NULL,
 	.arg1_type	= ARG_CONST_MAP_PTR,
-	.arg2_type	= ARG_PTR_TO_BTF_ID_OR_NULL,
+	.arg2_type	= ARG_PTR_TO_BTF_ID,
 	.arg2_btf_id	= &btf_sock_ids[BTF_SOCK_TYPE_SOCK_COMMON],
 	.arg3_type	= ARG_PTR_TO_MAP_VALUE_OR_NULL,
 	.arg4_type	= ARG_ANYTHING,
@@ -422,7 +429,7 @@ const struct bpf_func_proto bpf_sk_storage_delete_tracing_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_CONST_MAP_PTR,
-	.arg2_type	= ARG_PTR_TO_BTF_ID_OR_NULL,
+	.arg2_type	= ARG_PTR_TO_BTF_ID,
 	.arg2_btf_id	= &btf_sock_ids[BTF_SOCK_TYPE_SOCK_COMMON],
 	.allowed	= bpf_sk_storage_tracing_allowed,
 };
@@ -493,22 +500,24 @@ bpf_sk_storage_diag_alloc(const struct nlattr *nla_stgs)
 	if (!bpf_capable())
 		return ERR_PTR(-EPERM);
 
-	nla_for_each_nested_type(nla, SK_DIAG_BPF_STORAGE_REQ_MAP_FD,
-				 nla_stgs, rem) {
-		if (nla_len(nla) != sizeof(u32))
-			return ERR_PTR(-EINVAL);
-		nr_maps++;
+	nla_for_each_nested(nla, nla_stgs, rem) {
+		if (nla_type(nla) == SK_DIAG_BPF_STORAGE_REQ_MAP_FD)
+			nr_maps++;
 	}
 
 	diag = kzalloc(struct_size(diag, maps, nr_maps), GFP_KERNEL);
 	if (!diag)
 		return ERR_PTR(-ENOMEM);
 
-	nla_for_each_nested_type(nla, SK_DIAG_BPF_STORAGE_REQ_MAP_FD,
-				 nla_stgs, rem) {
-		int map_fd = nla_get_u32(nla);
-		struct bpf_map *map = bpf_map_get(map_fd);
+	nla_for_each_nested(nla, nla_stgs, rem) {
+		struct bpf_map *map;
+		int map_fd;
 
+		if (nla_type(nla) != SK_DIAG_BPF_STORAGE_REQ_MAP_FD)
+			continue;
+
+		map_fd = nla_get_u32(nla);
+		map = bpf_map_get(map_fd);
 		if (IS_ERR(map)) {
 			err = PTR_ERR(map);
 			goto err_free;

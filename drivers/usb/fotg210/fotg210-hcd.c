@@ -36,7 +36,7 @@
 
 #include <asm/byteorder.h>
 #include <asm/irq.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "fotg210.h"
 
@@ -404,9 +404,9 @@ static void qh_lines(struct fotg210_hcd *fotg210, struct fotg210_qh *qh,
 			else if (td->hw_alt_next != list_end)
 				mark = '/';
 		}
-		temp = scnprintf(next, size,
-				 "\n\t%p%c%s len=%d %08x urb %p",
-				 td, mark, ({ char *tmp;
+		temp = snprintf(next, size,
+				"\n\t%p%c%s len=%d %08x urb %p",
+				td, mark, ({ char *tmp;
 				switch ((scratch>>8)&0x03) {
 				case 0:
 					tmp = "out";
@@ -424,15 +424,22 @@ static void qh_lines(struct fotg210_hcd *fotg210, struct fotg210_qh *qh,
 				(scratch >> 16) & 0x7fff,
 				scratch,
 				td->urb);
+		if (size < temp)
+			temp = size;
 		size -= temp;
 		next += temp;
+		if (temp == size)
+			goto done;
 	}
 
-	temp = scnprintf(next, size, "\n");
+	temp = snprintf(next, size, "\n");
+	if (size < temp)
+		temp = size;
 
 	size -= temp;
 	next += temp;
 
+done:
 	*sizep = size;
 	*nextp = next;
 }
@@ -4901,7 +4908,8 @@ static int hcd_fotg210_init(struct usb_hcd *hcd)
 	 */
 	fotg210->need_io_watchdog = 1;
 
-	hrtimer_setup(&fotg210->hrtimer, fotg210_hrtimer_func, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	hrtimer_init(&fotg210->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	fotg210->hrtimer.function = fotg210_hrtimer_func;
 	fotg210->next_hrtimer_event = FOTG210_HRTIMER_NO_EVENT;
 
 	hcc_params = fotg210_readl(fotg210, &fotg210->caps->hcc_params);

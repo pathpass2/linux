@@ -95,9 +95,9 @@ ssize_t usb_store_new_id(struct usb_dynids *dynids,
 		}
 	}
 
-	mutex_lock(&usb_dynids_lock);
+	spin_lock(&dynids->lock);
 	list_add_tail(&dynid->node, &dynids->list);
-	mutex_unlock(&usb_dynids_lock);
+	spin_unlock(&dynids->lock);
 
 	retval = driver_attach(driver);
 
@@ -116,14 +116,13 @@ ssize_t usb_show_dynids(struct usb_dynids *dynids, char *buf)
 	struct usb_dynid *dynid;
 	size_t count = 0;
 
-	guard(mutex)(&usb_dynids_lock);
 	list_for_each_entry(dynid, &dynids->list, node)
 		if (dynid->id.bInterfaceClass != 0)
-			count += sysfs_emit_at(buf, count, "%04x %04x %02x\n",
+			count += scnprintf(&buf[count], PAGE_SIZE - count, "%04x %04x %02x\n",
 					   dynid->id.idVendor, dynid->id.idProduct,
 					   dynid->id.bInterfaceClass);
 		else
-			count += sysfs_emit_at(buf, count, "%04x %04x\n",
+			count += scnprintf(&buf[count], PAGE_SIZE - count, "%04x %04x\n",
 					   dynid->id.idVendor, dynid->id.idProduct);
 	return count;
 }
@@ -161,7 +160,7 @@ static ssize_t remove_id_store(struct device_driver *driver, const char *buf,
 	if (fields < 2)
 		return -EINVAL;
 
-	guard(mutex)(&usb_dynids_lock);
+	spin_lock(&usb_driver->dynids.lock);
 	list_for_each_entry_safe(dynid, n, &usb_driver->dynids.list, node) {
 		struct usb_device_id *id = &dynid->id;
 
@@ -172,6 +171,7 @@ static ssize_t remove_id_store(struct device_driver *driver, const char *buf,
 			break;
 		}
 	}
+	spin_unlock(&usb_driver->dynids.lock);
 	return count;
 }
 
@@ -189,13 +189,13 @@ static int usb_create_newid_files(struct usb_driver *usb_drv)
 		goto exit;
 
 	if (usb_drv->probe != NULL) {
-		error = driver_create_file(&usb_drv->driver,
+		error = driver_create_file(&usb_drv->drvwrap.driver,
 					   &driver_attr_new_id);
 		if (error == 0) {
-			error = driver_create_file(&usb_drv->driver,
+			error = driver_create_file(&usb_drv->drvwrap.driver,
 					&driver_attr_remove_id);
 			if (error)
-				driver_remove_file(&usb_drv->driver,
+				driver_remove_file(&usb_drv->drvwrap.driver,
 						&driver_attr_new_id);
 		}
 	}
@@ -209,9 +209,9 @@ static void usb_remove_newid_files(struct usb_driver *usb_drv)
 		return;
 
 	if (usb_drv->probe != NULL) {
-		driver_remove_file(&usb_drv->driver,
+		driver_remove_file(&usb_drv->drvwrap.driver,
 				&driver_attr_remove_id);
-		driver_remove_file(&usb_drv->driver,
+		driver_remove_file(&usb_drv->drvwrap.driver,
 				   &driver_attr_new_id);
 	}
 }
@@ -220,24 +220,27 @@ static void usb_free_dynids(struct usb_driver *usb_drv)
 {
 	struct usb_dynid *dynid, *n;
 
-	guard(mutex)(&usb_dynids_lock);
+	spin_lock(&usb_drv->dynids.lock);
 	list_for_each_entry_safe(dynid, n, &usb_drv->dynids.list, node) {
 		list_del(&dynid->node);
 		kfree(dynid);
 	}
+	spin_unlock(&usb_drv->dynids.lock);
 }
 
 static const struct usb_device_id *usb_match_dynamic_id(struct usb_interface *intf,
-							const struct usb_driver *drv)
+							struct usb_driver *drv)
 {
 	struct usb_dynid *dynid;
 
-	guard(mutex)(&usb_dynids_lock);
+	spin_lock(&drv->dynids.lock);
 	list_for_each_entry(dynid, &drv->dynids.list, node) {
 		if (usb_match_one_id(intf, &dynid->id)) {
+			spin_unlock(&drv->dynids.lock);
 			return &dynid->id;
 		}
 	}
+	spin_unlock(&drv->dynids.lock);
 	return NULL;
 }
 
@@ -287,10 +290,7 @@ static int usb_probe_device(struct device *dev)
 	 * specialised device drivers prior to setting the
 	 * use_generic_driver bit.
 	 */
-	if (udriver->probe)
-		error = udriver->probe(udev);
-	else if (!udriver->generic_subclass)
-		error = -EINVAL;
+	error = udriver->probe(udev);
 	if (error == -ENODEV && udriver != &usb_generic_driver &&
 	    (udriver->id_table || udriver->match)) {
 		udev->use_generic_driver = 1;
@@ -332,10 +332,10 @@ static int usb_probe_interface(struct device *dev)
 		return error;
 
 	if (udev->authorized == 0) {
-		dev_info(&intf->dev, "Device is not authorized for usage\n");
+		dev_err(&intf->dev, "Device is not authorized for usage\n");
 		return error;
 	} else if (intf->authorized == 0) {
-		dev_info(&intf->dev, "Interface %d is not authorized for usage\n",
+		dev_err(&intf->dev, "Interface %d is not authorized for usage\n",
 				intf->altsetting->desc.bInterfaceNumber);
 		return error;
 	}
@@ -514,19 +514,6 @@ static int usb_unbind_interface(struct device *dev)
 	return 0;
 }
 
-static void usb_shutdown_interface(struct device *dev)
-{
-	struct usb_interface *intf = to_usb_interface(dev);
-	struct usb_driver *driver;
-
-	if (!dev->driver)
-		return;
-
-	driver = to_usb_driver(dev->driver);
-	if (driver->shutdown)
-		driver->shutdown(intf);
-}
-
 /**
  * usb_driver_claim_interface - bind a driver to an interface
  * @driver: the driver to be bound
@@ -562,7 +549,7 @@ int usb_driver_claim_interface(struct usb_driver *driver,
 	if (!iface->authorized)
 		return -ENODEV;
 
-	dev->driver = &driver->driver;
+	dev->driver = &driver->drvwrap.driver;
 	usb_set_intfdata(iface, data);
 	iface->needs_binding = 0;
 
@@ -625,7 +612,7 @@ void usb_driver_release_interface(struct usb_driver *driver,
 	struct device *dev = &iface->dev;
 
 	/* this should never happen, don't release something that's not ours */
-	if (!dev->driver || dev->driver != &driver->driver)
+	if (!dev->driver || dev->driver != &driver->drvwrap.driver)
 		return;
 
 	/* don't release from within disconnect() */
@@ -850,7 +837,7 @@ const struct usb_device_id *usb_device_match_id(struct usb_device *udev,
 EXPORT_SYMBOL_GPL(usb_device_match_id);
 
 bool usb_driver_applicable(struct usb_device *udev,
-			   const struct usb_device_driver *udrv)
+			   struct usb_device_driver *udrv)
 {
 	if (udrv->id_table && udrv->match)
 		return usb_device_match_id(udev, udrv->id_table) != NULL &&
@@ -865,12 +852,12 @@ bool usb_driver_applicable(struct usb_device *udev,
 	return false;
 }
 
-static int usb_device_match(struct device *dev, const struct device_driver *drv)
+static int usb_device_match(struct device *dev, struct device_driver *drv)
 {
 	/* devices and interfaces are handled separately */
 	if (is_usb_device(dev)) {
 		struct usb_device *udev;
-		const struct usb_device_driver *udrv;
+		struct usb_device_driver *udrv;
 
 		/* interface drivers never match devices */
 		if (!is_usb_device_driver(drv))
@@ -890,7 +877,7 @@ static int usb_device_match(struct device *dev, const struct device_driver *drv)
 
 	} else if (is_usb_interface(dev)) {
 		struct usb_interface *intf;
-		const struct usb_driver *usb_drv;
+		struct usb_driver *usb_drv;
 		const struct usb_device_id *id;
 
 		/* device drivers never match interfaces */
@@ -960,7 +947,7 @@ static int __usb_bus_reprobe_drivers(struct device *dev, void *data)
 	int ret;
 
 	/* Don't reprobe if current driver isn't usb_generic_driver */
-	if (dev->driver != &usb_generic_driver.driver)
+	if (dev->driver != &usb_generic_driver.drvwrap.driver)
 		return 0;
 
 	udev = to_usb_device(dev);
@@ -972,11 +959,6 @@ static int __usb_bus_reprobe_drivers(struct device *dev, void *data)
 		dev_err(dev, "Failed to reprobe device (error %d)\n", ret);
 
 	return 0;
-}
-
-bool is_usb_device_driver(const struct device_driver *drv)
-{
-	return drv->probe == usb_probe_device;
 }
 
 /**
@@ -998,14 +980,15 @@ int usb_register_device_driver(struct usb_device_driver *new_udriver,
 	if (usb_disabled())
 		return -ENODEV;
 
-	new_udriver->driver.name = new_udriver->name;
-	new_udriver->driver.bus = &usb_bus_type;
-	new_udriver->driver.probe = usb_probe_device;
-	new_udriver->driver.remove = usb_unbind_device;
-	new_udriver->driver.owner = owner;
-	new_udriver->driver.dev_groups = new_udriver->dev_groups;
+	new_udriver->drvwrap.for_devices = 1;
+	new_udriver->drvwrap.driver.name = new_udriver->name;
+	new_udriver->drvwrap.driver.bus = &usb_bus_type;
+	new_udriver->drvwrap.driver.probe = usb_probe_device;
+	new_udriver->drvwrap.driver.remove = usb_unbind_device;
+	new_udriver->drvwrap.driver.owner = owner;
+	new_udriver->drvwrap.driver.dev_groups = new_udriver->dev_groups;
 
-	retval = driver_register(&new_udriver->driver);
+	retval = driver_register(&new_udriver->drvwrap.driver);
 
 	if (!retval) {
 		pr_info("%s: registered new device driver %s\n",
@@ -1037,7 +1020,7 @@ void usb_deregister_device_driver(struct usb_device_driver *udriver)
 	pr_info("%s: deregistering device driver %s\n",
 			usbcore_name, udriver->name);
 
-	driver_unregister(&udriver->driver);
+	driver_unregister(&udriver->drvwrap.driver);
 }
 EXPORT_SYMBOL_GPL(usb_deregister_device_driver);
 
@@ -1065,17 +1048,18 @@ int usb_register_driver(struct usb_driver *new_driver, struct module *owner,
 	if (usb_disabled())
 		return -ENODEV;
 
-	new_driver->driver.name = new_driver->name;
-	new_driver->driver.bus = &usb_bus_type;
-	new_driver->driver.probe = usb_probe_interface;
-	new_driver->driver.remove = usb_unbind_interface;
-	new_driver->driver.shutdown = usb_shutdown_interface;
-	new_driver->driver.owner = owner;
-	new_driver->driver.mod_name = mod_name;
-	new_driver->driver.dev_groups = new_driver->dev_groups;
+	new_driver->drvwrap.for_devices = 0;
+	new_driver->drvwrap.driver.name = new_driver->name;
+	new_driver->drvwrap.driver.bus = &usb_bus_type;
+	new_driver->drvwrap.driver.probe = usb_probe_interface;
+	new_driver->drvwrap.driver.remove = usb_unbind_interface;
+	new_driver->drvwrap.driver.owner = owner;
+	new_driver->drvwrap.driver.mod_name = mod_name;
+	new_driver->drvwrap.driver.dev_groups = new_driver->dev_groups;
+	spin_lock_init(&new_driver->dynids.lock);
 	INIT_LIST_HEAD(&new_driver->dynids.list);
 
-	retval = driver_register(&new_driver->driver);
+	retval = driver_register(&new_driver->drvwrap.driver);
 	if (retval)
 		goto out;
 
@@ -1086,14 +1070,15 @@ int usb_register_driver(struct usb_driver *new_driver, struct module *owner,
 	pr_info("%s: registered new interface driver %s\n",
 			usbcore_name, new_driver->name);
 
-	return 0;
+out:
+	return retval;
 
 out_newid:
-	driver_unregister(&new_driver->driver);
-out:
+	driver_unregister(&new_driver->drvwrap.driver);
+
 	pr_err("%s: error %d registering interface driver %s\n",
 		usbcore_name, retval, new_driver->name);
-	return retval;
+	goto out;
 }
 EXPORT_SYMBOL_GPL(usb_register_driver);
 
@@ -1114,7 +1099,7 @@ void usb_deregister(struct usb_driver *driver)
 			usbcore_name, driver->name);
 
 	usb_remove_newid_files(driver);
-	driver_unregister(&driver->driver);
+	driver_unregister(&driver->drvwrap.driver);
 	usb_free_dynids(driver);
 }
 EXPORT_SYMBOL_GPL(usb_deregister);
@@ -1420,28 +1405,11 @@ static int usb_suspend_both(struct usb_device *udev, pm_message_t msg)
 			udev->state == USB_STATE_SUSPENDED)
 		goto done;
 
-	if (msg.event == PM_EVENT_SUSPEND && usb_offload_check(udev)) {
-		dev_dbg(&udev->dev, "device offloaded, skip suspend.\n");
-		udev->offload_at_suspend = 1;
-	}
-
 	/* Suspend all the interfaces and then udev itself */
 	if (udev->actconfig) {
 		n = udev->actconfig->desc.bNumInterfaces;
 		for (i = n - 1; i >= 0; --i) {
 			intf = udev->actconfig->interface[i];
-			/*
-			 * Don't suspend interfaces with remote wakeup while
-			 * the controller is active. This preserves pending
-			 * interrupt urbs, allowing interrupt events to be
-			 * handled during system suspend.
-			 */
-			if (udev->offload_at_suspend &&
-			    intf->needs_remote_wakeup) {
-				dev_dbg(&intf->dev,
-					"device offloaded, skip suspend.\n");
-				continue;
-			}
 			status = usb_suspend_interface(udev, intf, msg);
 
 			/* Ignore errors during system sleep transitions */
@@ -1452,8 +1420,7 @@ static int usb_suspend_both(struct usb_device *udev, pm_message_t msg)
 		}
 	}
 	if (status == 0) {
-		if (!udev->offload_at_suspend)
-			status = usb_suspend_device(udev, msg);
+		status = usb_suspend_device(udev, msg);
 
 		/*
 		 * Ignore errors from non-root-hub devices during
@@ -1498,11 +1465,9 @@ static int usb_suspend_both(struct usb_device *udev, pm_message_t msg)
 	 */
 	} else {
 		udev->can_submit = 0;
-		if (!udev->offload_at_suspend) {
-			for (i = 0; i < 16; ++i) {
-				usb_hcd_flush_endpoint(udev, udev->ep_out[i]);
-				usb_hcd_flush_endpoint(udev, udev->ep_in[i]);
-			}
+		for (i = 0; i < 16; ++i) {
+			usb_hcd_flush_endpoint(udev, udev->ep_out[i]);
+			usb_hcd_flush_endpoint(udev, udev->ep_in[i]);
 		}
 	}
 
@@ -1544,35 +1509,17 @@ static int usb_resume_both(struct usb_device *udev, pm_message_t msg)
 	udev->can_submit = 1;
 
 	/* Resume the device */
-	if (udev->state == USB_STATE_SUSPENDED || udev->reset_resume) {
-		if (!udev->offload_at_suspend)
-			status = usb_resume_device(udev, msg);
-		else
-			dev_dbg(&udev->dev,
-				"device offloaded, skip resume.\n");
-	}
+	if (udev->state == USB_STATE_SUSPENDED || udev->reset_resume)
+		status = usb_resume_device(udev, msg);
 
 	/* Resume the interfaces */
 	if (status == 0 && udev->actconfig) {
 		for (i = 0; i < udev->actconfig->desc.bNumInterfaces; i++) {
 			intf = udev->actconfig->interface[i];
-			/*
-			 * Interfaces with remote wakeup aren't suspended
-			 * while the controller is active. This preserves
-			 * pending interrupt urbs, allowing interrupt events
-			 * to be handled during system suspend.
-			 */
-			if (udev->offload_at_suspend &&
-			    intf->needs_remote_wakeup) {
-				dev_dbg(&intf->dev,
-					"device offloaded, skip resume.\n");
-				continue;
-			}
 			usb_resume_interface(udev, intf, msg,
 					udev->reset_resume);
 		}
 	}
-	udev->offload_at_suspend = 0;
 	usb_mark_last_busy(udev);
 
  done:
@@ -1757,10 +1704,14 @@ int usb_autoresume_device(struct usb_device *udev)
 {
 	int	status;
 
-	status = pm_runtime_resume_and_get(&udev->dev);
+	status = pm_runtime_get_sync(&udev->dev);
+	if (status < 0)
+		pm_runtime_put_sync(&udev->dev);
 	dev_vdbg(&udev->dev, "%s: cnt %d -> %d\n",
 			__func__, atomic_read(&udev->dev.power.usage_count),
 			status);
+	if (status > 0)
+		status = 0;
 	return status;
 }
 
@@ -1810,11 +1761,13 @@ EXPORT_SYMBOL_GPL(usb_autopm_put_interface);
 void usb_autopm_put_interface_async(struct usb_interface *intf)
 {
 	struct usb_device	*udev = interface_to_usbdev(intf);
+	int			status;
 
 	usb_mark_last_busy(udev);
-	pm_runtime_put(&intf->dev);
-	dev_vdbg(&intf->dev, "%s: cnt %d\n",
-			__func__, atomic_read(&intf->dev.power.usage_count));
+	status = pm_runtime_put(&intf->dev);
+	dev_vdbg(&intf->dev, "%s: cnt %d -> %d\n",
+			__func__, atomic_read(&intf->dev.power.usage_count),
+			status);
 }
 EXPORT_SYMBOL_GPL(usb_autopm_put_interface_async);
 
@@ -1859,10 +1812,14 @@ int usb_autopm_get_interface(struct usb_interface *intf)
 {
 	int	status;
 
-	status = pm_runtime_resume_and_get(&intf->dev);
+	status = pm_runtime_get_sync(&intf->dev);
+	if (status < 0)
+		pm_runtime_put_sync(&intf->dev);
 	dev_vdbg(&intf->dev, "%s: cnt %d -> %d\n",
 			__func__, atomic_read(&intf->dev.power.usage_count),
 			status);
+	if (status > 0)
+		status = 0;
 	return status;
 }
 EXPORT_SYMBOL_GPL(usb_autopm_get_interface);
@@ -2068,7 +2025,7 @@ int usb_disable_usb2_hardware_lpm(struct usb_device *udev)
 
 #endif /* CONFIG_PM */
 
-const struct bus_type usb_bus_type = {
+struct bus_type usb_bus_type = {
 	.name =		"usb",
 	.match =	usb_device_match,
 	.uevent =	usb_uevent,

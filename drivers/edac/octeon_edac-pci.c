@@ -87,12 +87,14 @@ err:
 	return res;
 }
 
-static void octeon_pci_remove(struct platform_device *pdev)
+static int octeon_pci_remove(struct platform_device *pdev)
 {
 	struct edac_pci_ctl_info *pci = platform_get_drvdata(pdev);
 
 	edac_pci_del_device(&pdev->dev);
 	edac_pci_free_ctl_info(pci);
+
+	return 0;
 }
 
 static struct platform_driver octeon_pci_driver = {
@@ -104,6 +106,5 @@ static struct platform_driver octeon_pci_driver = {
 };
 module_platform_driver(octeon_pci_driver);
 
-MODULE_DESCRIPTION("Cavium Octeon PCI Controller EDAC driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ralf Baechle <ralf@linux-mips.org>");

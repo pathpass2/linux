@@ -14,7 +14,6 @@
 
 #include <linux/types.h>
 #include <linux/ioctl.h>
-#include <linux/stddef.h>
 
 #define VFIO_API_VERSION	0
 
@@ -36,7 +35,7 @@
 #define VFIO_EEH			5
 
 /* Two-stage IOMMU */
-#define __VFIO_RESERVED_TYPE1_NESTING_IOMMU	6	/* Implies v2 */
+#define VFIO_TYPE1_NESTING_IOMMU	6	/* Implies v2 */
 
 #define VFIO_SPAPR_TCE_v2_IOMMU		7
 
@@ -214,11 +213,9 @@ struct vfio_device_info {
 #define VFIO_DEVICE_FLAGS_AP	(1 << 5)	/* vfio-ap device */
 #define VFIO_DEVICE_FLAGS_FSL_MC (1 << 6)	/* vfio-fsl-mc device */
 #define VFIO_DEVICE_FLAGS_CAPS	(1 << 7)	/* Info supports caps */
-#define VFIO_DEVICE_FLAGS_CDX	(1 << 8)	/* vfio-cdx device */
 	__u32	num_regions;	/* Max region index + 1 */
 	__u32	num_irqs;	/* Max IRQ index + 1 */
 	__u32   cap_offset;	/* Offset within info struct of first cap */
-	__u32   pad;
 };
 #define VFIO_DEVICE_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 7)
 
@@ -243,20 +240,6 @@ struct vfio_device_info {
 #define VFIO_DEVICE_INFO_CAP_ZPCI_UTIL		3
 #define VFIO_DEVICE_INFO_CAP_ZPCI_PFIP		4
 
-/*
- * The following VFIO_DEVICE_INFO capability reports support for PCIe AtomicOp
- * completion to the root bus with supported widths provided via flags.
- */
-#define VFIO_DEVICE_INFO_CAP_PCI_ATOMIC_COMP	5
-struct vfio_device_info_cap_pci_atomic_comp {
-	struct vfio_info_cap_header header;
-	__u32 flags;
-#define VFIO_PCI_ATOMIC_COMP32	(1 << 0)
-#define VFIO_PCI_ATOMIC_COMP64	(1 << 1)
-#define VFIO_PCI_ATOMIC_COMP128	(1 << 2)
-	__u32 reserved;
-};
-
 /**
  * VFIO_DEVICE_GET_REGION_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 8,
  *				       struct vfio_region_info)
@@ -278,8 +261,8 @@ struct vfio_region_info {
 #define VFIO_REGION_INFO_FLAG_CAPS	(1 << 3) /* Info supports caps */
 	__u32	index;		/* Region index */
 	__u32	cap_offset;	/* Offset within info struct of first cap */
-	__aligned_u64	size;	/* Region size (bytes) */
-	__aligned_u64	offset;	/* Region offset from start of device fd */
+	__u64	size;		/* Region size (bytes) */
+	__u64	offset;		/* Region offset from start of device fd */
 };
 #define VFIO_DEVICE_GET_REGION_INFO	_IO(VFIO_TYPE, VFIO_BASE + 8)
 
@@ -295,8 +278,8 @@ struct vfio_region_info {
 #define VFIO_REGION_INFO_CAP_SPARSE_MMAP	1
 
 struct vfio_region_sparse_mmap_area {
-	__aligned_u64	offset;	/* Offset of mmap'able area within region */
-	__aligned_u64	size;	/* Size of mmap'able area */
+	__u64	offset;	/* Offset of mmap'able area within region */
+	__u64	size;	/* Size of mmap'able area */
 };
 
 struct vfio_region_info_cap_sparse_mmap {
@@ -451,9 +434,9 @@ struct vfio_device_migration_info {
 					     VFIO_DEVICE_STATE_V1_RESUMING)
 
 	__u32 reserved;
-	__aligned_u64 pending_bytes;
-	__aligned_u64 data_offset;
-	__aligned_u64 data_size;
+	__u64 pending_bytes;
+	__u64 data_offset;
+	__u64 data_size;
 };
 
 /*
@@ -477,7 +460,7 @@ struct vfio_device_migration_info {
 
 struct vfio_region_info_cap_nvlink2_ssatgt {
 	struct vfio_info_cap_header header;
-	__aligned_u64 tgt;
+	__u64 tgt;
 };
 
 /*
@@ -528,9 +511,6 @@ struct vfio_region_info_cap_nvlink2_lnkspd {
  * then add and unmask vectors, it's up to userspace to make the decision
  * whether to allocate the maximum supported number of vectors or tear
  * down setup and incrementally increase the vectors as each is enabled.
- * Absence of the NORESIZE flag indicates that vectors can be enabled
- * and disabled dynamically without impacting other vectors within the
- * index.
  */
 struct vfio_irq_info {
 	__u32	argsz;
@@ -666,74 +646,15 @@ enum {
 	VFIO_CCW_NUM_IRQS
 };
 
-/*
- * The vfio-ap bus driver makes use of the following IRQ index mapping.
- * Unimplemented IRQ types return a count of zero.
- */
-enum {
-	VFIO_AP_REQ_IRQ_INDEX,
-	VFIO_AP_CFG_CHG_IRQ_INDEX,
-	VFIO_AP_NUM_IRQS
-};
-
 /**
  * VFIO_DEVICE_GET_PCI_HOT_RESET_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 12,
  *					      struct vfio_pci_hot_reset_info)
- *
- * This command is used to query the affected devices in the hot reset for
- * a given device.
- *
- * This command always reports the segment, bus, and devfn information for
- * each affected device, and selectively reports the group_id or devid per
- * the way how the calling device is opened.
- *
- *	- If the calling device is opened via the traditional group/container
- *	  API, group_id is reported.  User should check if it has owned all
- *	  the affected devices and provides a set of group fds to prove the
- *	  ownership in VFIO_DEVICE_PCI_HOT_RESET ioctl.
- *
- *	- If the calling device is opened as a cdev, devid is reported.
- *	  Flag VFIO_PCI_HOT_RESET_FLAG_DEV_ID is set to indicate this
- *	  data type.  All the affected devices should be represented in
- *	  the dev_set, ex. bound to a vfio driver, and also be owned by
- *	  this interface which is determined by the following conditions:
- *	  1) Has a valid devid within the iommufd_ctx of the calling device.
- *	     Ownership cannot be determined across separate iommufd_ctx and
- *	     the cdev calling conventions do not support a proof-of-ownership
- *	     model as provided in the legacy group interface.  In this case
- *	     valid devid with value greater than zero is provided in the return
- *	     structure.
- *	  2) Does not have a valid devid within the iommufd_ctx of the calling
- *	     device, but belongs to the same IOMMU group as the calling device
- *	     or another opened device that has a valid devid within the
- *	     iommufd_ctx of the calling device.  This provides implicit ownership
- *	     for devices within the same DMA isolation context.  In this case
- *	     the devid value of VFIO_PCI_DEVID_OWNED is provided in the return
- *	     structure.
- *
- *	  A devid value of VFIO_PCI_DEVID_NOT_OWNED is provided in the return
- *	  structure for affected devices where device is NOT represented in the
- *	  dev_set or ownership is not available.  Such devices prevent the use
- *	  of VFIO_DEVICE_PCI_HOT_RESET ioctl outside of the proof-of-ownership
- *	  calling conventions (ie. via legacy group accessed devices).  Flag
- *	  VFIO_PCI_HOT_RESET_FLAG_DEV_ID_OWNED would be set when all the
- *	  affected devices are represented in the dev_set and also owned by
- *	  the user.  This flag is available only when
- *	  flag VFIO_PCI_HOT_RESET_FLAG_DEV_ID is set, otherwise reserved.
- *	  When set, user could invoke VFIO_DEVICE_PCI_HOT_RESET with a zero
- *	  length fd array on the calling device as the ownership is validated
- *	  by iommufd_ctx.
  *
  * Return: 0 on success, -errno on failure:
  *	-enospc = insufficient buffer, -enodev = unsupported for device.
  */
 struct vfio_pci_dependent_device {
-	union {
-		__u32   group_id;
-		__u32	devid;
-#define VFIO_PCI_DEVID_OWNED		0
-#define VFIO_PCI_DEVID_NOT_OWNED	-1
-	};
+	__u32	group_id;
 	__u16	segment;
 	__u8	bus;
 	__u8	devfn; /* Use PCI_SLOT/PCI_FUNC */
@@ -742,8 +663,6 @@ struct vfio_pci_dependent_device {
 struct vfio_pci_hot_reset_info {
 	__u32	argsz;
 	__u32	flags;
-#define VFIO_PCI_HOT_RESET_FLAG_DEV_ID		(1 << 0)
-#define VFIO_PCI_HOT_RESET_FLAG_DEV_ID_OWNED	(1 << 1)
 	__u32	count;
 	struct vfio_pci_dependent_device	devices[];
 };
@@ -753,24 +672,6 @@ struct vfio_pci_hot_reset_info {
 /**
  * VFIO_DEVICE_PCI_HOT_RESET - _IOW(VFIO_TYPE, VFIO_BASE + 13,
  *				    struct vfio_pci_hot_reset)
- *
- * A PCI hot reset results in either a bus or slot reset which may affect
- * other devices sharing the bus/slot.  The calling user must have
- * ownership of the full set of affected devices as determined by the
- * VFIO_DEVICE_GET_PCI_HOT_RESET_INFO ioctl.
- *
- * When called on a device file descriptor acquired through the vfio
- * group interface, the user is required to provide proof of ownership
- * of those affected devices via the group_fds array in struct
- * vfio_pci_hot_reset.
- *
- * When called on a direct cdev opened vfio device, the flags field of
- * struct vfio_pci_hot_reset_info reports the ownership status of the
- * affected devices and this ioctl must be called with an empty group_fds
- * array.  See above INFO ioctl definition for ownership requirements.
- *
- * Mixed usage of legacy groups and cdevs across the set of affected
- * devices is not supported.
  *
  * Return: 0 on success, -errno on failure.
  */
@@ -818,7 +719,7 @@ struct vfio_device_gfx_plane_info {
 	__u32 drm_plane_type;	/* type of plane: DRM_PLANE_TYPE_* */
 	/* out */
 	__u32 drm_format;	/* drm format of plane */
-	__aligned_u64 drm_format_mod;   /* tiled mode */
+	__u64 drm_format_mod;   /* tiled mode */
 	__u32 width;	/* width of plane */
 	__u32 height;	/* height of plane */
 	__u32 stride;	/* stride of plane */
@@ -831,7 +732,6 @@ struct vfio_device_gfx_plane_info {
 		__u32 region_index;	/* region index */
 		__u32 dmabuf_id;	/* dma-buf id */
 	};
-	__u32 reserved;
 };
 
 #define VFIO_DEVICE_QUERY_GFX_PLANE _IO(VFIO_TYPE, VFIO_BASE + 14)
@@ -866,10 +766,9 @@ struct vfio_device_ioeventfd {
 #define VFIO_DEVICE_IOEVENTFD_32	(1 << 2) /* 4-byte write */
 #define VFIO_DEVICE_IOEVENTFD_64	(1 << 3) /* 8-byte write */
 #define VFIO_DEVICE_IOEVENTFD_SIZE_MASK	(0xf)
-	__aligned_u64	offset;		/* device fd offset of write */
-	__aligned_u64	data;		/* data to be written */
+	__u64	offset;			/* device fd offset of write */
+	__u64	data;			/* data to be written */
 	__s32	fd;			/* -1 for de-assignment */
-	__u32	reserved;
 };
 
 #define VFIO_DEVICE_IOEVENTFD		_IO(VFIO_TYPE, VFIO_BASE + 16)
@@ -901,106 +800,6 @@ struct vfio_device_feature {
 };
 
 #define VFIO_DEVICE_FEATURE		_IO(VFIO_TYPE, VFIO_BASE + 17)
-
-/*
- * VFIO_DEVICE_BIND_IOMMUFD - _IOR(VFIO_TYPE, VFIO_BASE + 18,
- *				   struct vfio_device_bind_iommufd)
- * @argsz:	 User filled size of this data.
- * @flags:	 Must be 0 or a bit flags of VFIO_DEVICE_BIND_*
- * @iommufd:	 iommufd to bind.
- * @out_devid:	 The device id generated by this bind. devid is a handle for
- *		 this device/iommufd bond and can be used in IOMMUFD commands.
- * @token_uuid_ptr: Valid if VFIO_DEVICE_BIND_FLAG_TOKEN. Points to a 16 byte
- *                  UUID in the same format as VFIO_DEVICE_FEATURE_PCI_VF_TOKEN.
- *
- * Bind a vfio_device to the specified iommufd.
- *
- * User is restricted from accessing the device before the binding operation
- * is completed.  Only allowed on cdev fds.
- *
- * Unbind is automatically conducted when device fd is closed.
- *
- * A token is sometimes required to open the device, unless this is known to be
- * needed VFIO_DEVICE_BIND_FLAG_TOKEN should not be set and token_uuid_ptr is
- * ignored. The only case today is a PF/VF relationship where the VF bind must
- * be provided the same token as VFIO_DEVICE_FEATURE_PCI_VF_TOKEN provided to
- * the PF.
- *
- * Return: 0 on success, -errno on failure.
- */
-struct vfio_device_bind_iommufd {
-	__u32		argsz;
-	__u32		flags;
-#define VFIO_DEVICE_BIND_FLAG_TOKEN (1 << 0)
-	__s32		iommufd;
-	__u32		out_devid;
-	__aligned_u64	token_uuid_ptr;
-};
-
-#define VFIO_DEVICE_BIND_IOMMUFD	_IO(VFIO_TYPE, VFIO_BASE + 18)
-
-/*
- * VFIO_DEVICE_ATTACH_IOMMUFD_PT - _IOW(VFIO_TYPE, VFIO_BASE + 19,
- *					struct vfio_device_attach_iommufd_pt)
- * @argsz:	User filled size of this data.
- * @flags:	Flags for attach.
- * @pt_id:	Input the target id which can represent an ioas or a hwpt
- *		allocated via iommufd subsystem.
- *		Output the input ioas id or the attached hwpt id which could
- *		be the specified hwpt itself or a hwpt automatically created
- *		for the specified ioas by kernel during the attachment.
- * @pasid:	The pasid to be attached, only meaningful when
- *		VFIO_DEVICE_ATTACH_PASID is set in @flags
- *
- * Associate the device with an address space within the bound iommufd.
- * Undo by VFIO_DEVICE_DETACH_IOMMUFD_PT or device fd close.  This is only
- * allowed on cdev fds.
- *
- * If a vfio device or a pasid of this device is currently attached to a valid
- * hw_pagetable (hwpt), without doing a VFIO_DEVICE_DETACH_IOMMUFD_PT, a second
- * VFIO_DEVICE_ATTACH_IOMMUFD_PT ioctl passing in another hwpt id is allowed.
- * This action, also known as a hw_pagetable replacement, will replace the
- * currently attached hwpt of the device or the pasid of this device with a new
- * hwpt corresponding to the given pt_id.
- *
- * Return: 0 on success, -errno on failure.
- *
- * When a device is resetting, -EBUSY will be returned to reject any concurrent
- * attachment to the resetting device itself or any sibling device in the IOMMU
- * group having the resetting device.
- */
-struct vfio_device_attach_iommufd_pt {
-	__u32	argsz;
-	__u32	flags;
-#define VFIO_DEVICE_ATTACH_PASID	(1 << 0)
-	__u32	pt_id;
-	__u32	pasid;
-};
-
-#define VFIO_DEVICE_ATTACH_IOMMUFD_PT		_IO(VFIO_TYPE, VFIO_BASE + 19)
-
-/*
- * VFIO_DEVICE_DETACH_IOMMUFD_PT - _IOW(VFIO_TYPE, VFIO_BASE + 20,
- *					struct vfio_device_detach_iommufd_pt)
- * @argsz:	User filled size of this data.
- * @flags:	Flags for detach.
- * @pasid:	The pasid to be detached, only meaningful when
- *		VFIO_DEVICE_DETACH_PASID is set in @flags
- *
- * Remove the association of the device or a pasid of the device and its current
- * associated address space.  After it, the device or the pasid should be in a
- * blocking DMA state.  This is only allowed on cdev fds.
- *
- * Return: 0 on success, -errno on failure.
- */
-struct vfio_device_detach_iommufd_pt {
-	__u32	argsz;
-	__u32	flags;
-#define VFIO_DEVICE_DETACH_PASID	(1 << 0)
-	__u32	pasid;
-};
-
-#define VFIO_DEVICE_DETACH_IOMMUFD_PT		_IO(VFIO_TYPE, VFIO_BASE + 20)
 
 /*
  * Provide support for setting a PCI VF Token, which is used as a shared
@@ -1244,7 +1043,6 @@ enum vfio_device_mig_state {
 	VFIO_DEVICE_STATE_RUNNING_P2P = 5,
 	VFIO_DEVICE_STATE_PRE_COPY = 6,
 	VFIO_DEVICE_STATE_PRE_COPY_P2P = 7,
-	VFIO_DEVICE_STATE_NR,
 };
 
 /**
@@ -1462,54 +1260,6 @@ struct vfio_device_feature_mig_data_size {
 
 #define VFIO_DEVICE_FEATURE_MIG_DATA_SIZE 9
 
-/**
- * Upon VFIO_DEVICE_FEATURE_SET, set or clear the BUS mastering for the device
- * based on the operation specified in op flag.
- *
- * The functionality is incorporated for devices that needs bus master control,
- * but the in-band device interface lacks the support. Consequently, it is not
- * applicable to PCI devices, as bus master control for PCI devices is managed
- * in-band through the configuration space. At present, this feature is supported
- * only for CDX devices.
- * When the device's BUS MASTER setting is configured as CLEAR, it will result in
- * blocking all incoming DMA requests from the device. On the other hand, configuring
- * the device's BUS MASTER setting as SET (enable) will grant the device the
- * capability to perform DMA to the host memory.
- */
-struct vfio_device_feature_bus_master {
-	__u32 op;
-#define		VFIO_DEVICE_FEATURE_CLEAR_MASTER	0	/* Clear Bus Master */
-#define		VFIO_DEVICE_FEATURE_SET_MASTER		1	/* Set Bus Master */
-};
-#define VFIO_DEVICE_FEATURE_BUS_MASTER 10
-
-/**
- * Upon VFIO_DEVICE_FEATURE_GET create a dma_buf fd for the
- * regions selected.
- *
- * open_flags are the typical flags passed to open(2), eg O_RDWR, O_CLOEXEC,
- * etc. offset/length specify a slice of the region to create the dmabuf from.
- * nr_ranges is the total number of (P2P DMA) ranges that comprise the dmabuf.
- *
- * flags should be 0.
- *
- * Return: The fd number on success, -1 and errno is set on failure.
- */
-#define VFIO_DEVICE_FEATURE_DMA_BUF 11
-
-struct vfio_region_dma_range {
-	__u64 offset;
-	__u64 length;
-};
-
-struct vfio_device_feature_dma_buf {
-	__u32	region_index;
-	__u32	open_flags;
-	__u32   flags;
-	__u32   nr_ranges;
-	struct vfio_region_dma_range dma_ranges[] __counted_by(nr_ranges);
-};
-
 /* -------- API for Type1 VFIO IOMMU -------- */
 
 /**
@@ -1525,9 +1275,8 @@ struct vfio_iommu_type1_info {
 	__u32	flags;
 #define VFIO_IOMMU_INFO_PGSIZES (1 << 0)	/* supported page sizes info */
 #define VFIO_IOMMU_INFO_CAPS	(1 << 1)	/* Info supports caps */
-	__aligned_u64	iova_pgsizes;		/* Bitmap of supported page sizes */
+	__u64	iova_pgsizes;	/* Bitmap of supported page sizes */
 	__u32   cap_offset;	/* Offset within info struct of first cap */
-	__u32   pad;
 };
 
 /*

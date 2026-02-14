@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 %YAML 1.2
 ---
-$id: http://devicetree.org/schemas/phy/qcom,usb-snps-femto-v2.yaml#
-$schema: http://devicetree.org/meta-schemas/core.yaml#
+$id: "http://devicetree.org/schemas/phy/qcom,usb-snps-femto-v2.yaml#"
+$schema: "http://devicetree.org/meta-schemas/core.yaml#"
 
 title: Qualcomm Synopsys Femto High-Speed USB PHY V2
 
@@ -15,17 +15,16 @@ description: |
 properties:
   compatible:
     oneOf:
+      - enum:
+          - qcom,sc8180x-usb-hs-phy
+          - qcom,usb-snps-femto-v2-phy
       - items:
           - enum:
-              - qcom,sa8775p-usb-hs-phy
               - qcom,sc8280xp-usb-hs-phy
           - const: qcom,usb-snps-hs-5nm-phy
       - items:
           - enum:
-              - qcom,qcs8300-usb-hs-phy
-              - qcom,qdu1000-usb-hs-phy
               - qcom,sc7280-usb-hs-phy
-              - qcom,sc8180x-usb-hs-phy
               - qcom,sdx55-usb-hs-phy
               - qcom,sdx65-usb-hs-phy
               - qcom,sm6375-usb-hs-phy

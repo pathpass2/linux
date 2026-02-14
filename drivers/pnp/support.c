@@ -9,7 +9,6 @@
 
 #include <linux/module.h>
 #include <linux/ctype.h>
-#include <linux/hex.h>
 #include <linux/pnp.h>
 #include "base.h"
 

@@ -182,7 +182,7 @@ struct pstore_info {
 	struct module	*owner;
 	const char	*name;
 
-	raw_spinlock_t	buf_lock;
+	spinlock_t	buf_lock;
 	char		*buf;
 	size_t		bufsize;
 

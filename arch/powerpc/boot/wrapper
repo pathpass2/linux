@@ -21,7 +21,7 @@
 #		(default ./arch/powerpc/boot)
 # -W dir	specify working directory for temporary files (default .)
 # -z		use gzip (legacy)
-# -Z zsuffix    compression to use (gz, xz, lzma, lzo or none)
+# -Z zsuffix    compression to use (gz, xz or none)
 
 # Stop execution if any command fails
 set -e
@@ -69,7 +69,7 @@ usage() {
     echo 'Usage: wrapper [-o output] [-p platform] [-i initrd]' >&2
     echo '       [-d devtree] [-s tree.dts] [-e esm_blob]' >&2
     echo '       [-c] [-C cross-prefix] [-D datadir] [-W workingdir]' >&2
-    echo '       [-Z (gz|xz|lzma|lzo|none)] [--no-compression] [vmlinux]' >&2
+    echo '       [-Z (gz|xz|none)] [--no-compression] [vmlinux]' >&2
     exit 1
 }
 
@@ -226,12 +226,18 @@ ld_is_lld()
 
 # Do not include PT_INTERP segment when linking pie. Non-pie linking
 # just ignores this option.
-nodl="--no-dynamic-linker"
+LD_VERSION=$(${CROSS}ld --version | ld_version)
+LD_NO_DL_MIN_VERSION=$(echo 2.26 | ld_version)
+if [ "$LD_VERSION" -ge "$LD_NO_DL_MIN_VERSION" ] ; then
+	nodl="--no-dynamic-linker"
+fi
 
 # suppress some warnings in recent ld versions
 nowarn="-z noexecstack"
-if "${CROSS}ld" -v --no-warn-rwx-segments >/dev/null 2>&1; then
-	nowarn="$nowarn --no-warn-rwx-segments"
+if ! ld_is_lld; then
+	if [ "$LD_VERSION" -ge "$(echo 2.39 | ld_version)" ]; then
+		nowarn="$nowarn --no-warn-rwx-segments"
+	fi
 fi
 
 platformo=$object/"$platform".o
@@ -263,6 +269,11 @@ pseries)
 	link_address=
 	pie=-pie
     fi
+    make_space=n
+    ;;
+maple)
+    platformo="$object/of.o $object/epapr.o"
+    link_address='0x400000'
     make_space=n
     ;;
 pmac|chrp)
@@ -326,7 +337,7 @@ ps3)
     make_space=n
     pie=
     ;;
-ep88xc|ep8248e)
+ep88xc|ep405|ep8248e)
     platformo="$object/fixed-head.o $object/$platform.o"
     binary=y
     ;;
@@ -457,6 +468,26 @@ uboot)
     fi
     exit 0
     ;;
+uboot-obs600)
+    rm -f "$ofile"
+    # obs600 wants a multi image with an initrd, so we need to put a fake
+    # one in even when building a "normal" image.
+    if [ -n "$initrd" ]; then
+	real_rd="$initrd"
+    else
+	real_rd=`mktemp`
+	echo "\0" >>"$real_rd"
+    fi
+    ${MKIMAGE} -A ppc -O linux -T multi -C gzip -a $membase -e $membase \
+	$uboot_version -d "$vmz":"$real_rd":"$dtb" "$ofile"
+    if [ -z "$initrd" ]; then
+	rm -f "$real_rd"
+    fi
+    if [ -z "$cacheit" ]; then
+	rm -f "$vmz"
+    fi
+    exit 0
+    ;;
 esac
 
 addsec() {
@@ -506,7 +537,7 @@ fi
 
 # post-processing needed for some platforms
 case "$platform" in
-pseries|chrp)
+pseries|chrp|maple)
     $objbin/addnote "$ofile"
     ;;
 coff)

@@ -7,7 +7,7 @@
 
 #include <dt-bindings/iio/qcom,spmi-adc7-pmk8350.h>
 #include <dt-bindings/input/linux-event-codes.h>
-#include "kodiak.dtsi"
+#include "sc7280.dtsi"
 #include "pm7325.dtsi"
 #include "pm8350c.dtsi"
 #include "pmk8350.dtsi"
@@ -70,7 +70,7 @@
 			gpios = <&pm7325_gpios 6 GPIO_ACTIVE_LOW>;
 			linux,input-type = <1>;
 			linux,code = <KEY_VOLUMEUP>;
-			wakeup-source;
+			gpio-key,wakeup;
 			debounce-interval = <15>;
 			linux,can-disable;
 		};
@@ -184,7 +184,7 @@
 };
 
 &apps_rsc {
-	regulators-0 {
+	pm7325-regulators {
 		compatible = "qcom,pm7325-rpmh-regulators";
 		qcom,pmic-id = "b";
 
@@ -279,7 +279,7 @@
 		};
 	};
 
-	regulators-1 {
+	pm8350c-regulators {
 		compatible = "qcom,pm8350c-rpmh-regulators";
 		qcom,pmic-id = "c";
 
@@ -412,8 +412,6 @@
 &lpass_va_macro {
 	status = "okay";
 	vdd-micb-supply = <&vreg_bob>;
-	pinctrl-0 = <&lpass_dmic01_clk>, <&lpass_dmic01_data>;
-	pinctrl-names = "default";
 };
 
 &pcie1 {
@@ -434,7 +432,7 @@
 };
 
 &pmk8350_vadc {
-	channel@3 {
+	pmk8350-die-temp@3 {
 		reg = <PMK8350_ADC7_DIE_TEMP>;
 		label = "pmk8350_die_temp";
 		qcom,pre-scaling = <1 1>;
@@ -482,6 +480,7 @@
 	wcd_rx: codec@0,4 {
 		compatible = "sdw20217010d00";
 		reg = <0 4>;
+		#sound-dai-cells = <1>;
 		qcom,rx-port-mapping = <1 2 3 4 5>;
 	};
 };
@@ -492,37 +491,22 @@
 	wcd_tx: codec@0,3 {
 		compatible = "sdw20217010d00";
 		reg = <0 3>;
+		#sound-dai-cells = <1>;
 		qcom,tx-port-mapping = <1 2 3 4>;
 	};
 };
 
 &uart5 {
-	status = "okay";
-};
-
-&ufs_mem_hc {
-	reset-gpios = <&tlmm 175 GPIO_ACTIVE_LOW>;
-	vcc-supply = <&vreg_l7b_2p9>;
-	vcc-max-microamp = <800000>;
-	vccq-supply = <&vreg_l9b_1p2>;
-	vccq-max-microamp = <900000>;
-	vccq2-supply = <&vreg_l9b_1p2>;
-	vccq2-max-microamp = <900000>;
-
-	status = "okay";
-};
-
-&ufs_mem_phy {
-	vdda-phy-supply = <&vreg_l10c_0p8>;
-	vdda-pll-supply = <&vreg_l6b_1p2>;
-
+	compatible = "qcom,geni-debug-uart";
 	status = "okay";
 };
 
 &usb_1 {
-	dr_mode = "host";
-
 	status = "okay";
+};
+
+&usb_1_dwc3 {
+	dr_mode = "host";
 };
 
 &usb_1_hsphy {
@@ -573,7 +557,7 @@
 	};
 };
 
-/* PINCTRL - additions to nodes defined in kodiak.dtsi */
+/* PINCTRL - additions to nodes defined in sc7280.dtsi */
 
 &dp_hot_plug_det {
 	bias-disable;
@@ -652,19 +636,16 @@
 };
 
 &qspi_cs0 {
-	bias-disable;		/* External pullup */
+	bias-disable;
 };
 
 &qspi_clk {
-	bias-pull-down;		/* No external pulls or external pulldown */
+	bias-disable;
 };
 
-&qspi_data0 {
-	bias-pull-down;		/* No external pulls or external pulldown */
-};
-
-&qspi_data1 {
-	bias-pull-down;		/* No external pulls or external pulldown */
+&qspi_data01 {
+	/* High-Z when no transfers; nice to park the lines */
+	bias-pull-up;
 };
 
 &qup_uart5_tx {

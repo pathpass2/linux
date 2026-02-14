@@ -14,6 +14,7 @@ the PLDM for Firmware Update standard
    file-format
    driver-ops
 
+==================================
 Overview of the ``pldmfw`` library
 ==================================
 

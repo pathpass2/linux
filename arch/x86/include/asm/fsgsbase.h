@@ -2,11 +2,11 @@
 #ifndef _ASM_FSGSBASE_H
 #define _ASM_FSGSBASE_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #ifdef CONFIG_X86_64
 
-#include <asm/msr.h>
+#include <asm/msr-index.h>
 
 /*
  * Read/write a task's FSBASE or GSBASE. This returns the value that
@@ -60,7 +60,7 @@ static inline unsigned long x86_fsbase_read_cpu(void)
 	if (boot_cpu_has(X86_FEATURE_FSGSBASE))
 		fsbase = rdfsbase();
 	else
-		rdmsrq(MSR_FS_BASE, fsbase);
+		rdmsrl(MSR_FS_BASE, fsbase);
 
 	return fsbase;
 }
@@ -70,7 +70,7 @@ static inline void x86_fsbase_write_cpu(unsigned long fsbase)
 	if (boot_cpu_has(X86_FEATURE_FSGSBASE))
 		wrfsbase(fsbase);
 	else
-		wrmsrq(MSR_FS_BASE, fsbase);
+		wrmsrl(MSR_FS_BASE, fsbase);
 }
 
 extern unsigned long x86_gsbase_read_cpu_inactive(void);
@@ -80,6 +80,6 @@ extern unsigned long x86_fsgsbase_read_task(struct task_struct *task,
 
 #endif /* CONFIG_X86_64 */
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_FSGSBASE_H */

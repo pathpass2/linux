@@ -197,7 +197,7 @@ enum {
 	TERRATEC_CINERGY_T2,
 };
 
-static const struct usb_device_id cinergyt2_usb_table[] = {
+static struct usb_device_id cinergyt2_usb_table[] = {
 	DVB_USB_DEV(TERRATEC, TERRATEC_CINERGY_T2),
 	{ }
 };

@@ -61,6 +61,7 @@ struct etnaviv_iommu_global {
 			/* P(age) T(able) A(rray) */
 			u64 *pta_cpu;
 			dma_addr_t pta_dma;
+			struct spinlock pta_lock;
 			DECLARE_BITMAP(pta_alloc, ETNAVIV_PTA_ENTRIES);
 		} v2;
 	};

@@ -90,12 +90,14 @@ static int adv_swbutton_probe(struct platform_device *device)
 	return 0;
 }
 
-static void adv_swbutton_remove(struct platform_device *device)
+static int adv_swbutton_remove(struct platform_device *device)
 {
 	acpi_handle handle = ACPI_HANDLE(&device->dev);
 
 	acpi_remove_notify_handler(handle, ACPI_DEVICE_NOTIFY,
 				   adv_swbutton_notify);
+
+	return 0;
 }
 
 static const struct acpi_device_id button_device_ids[] = {

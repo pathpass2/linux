@@ -2,8 +2,6 @@
 /*
  * Copyright (C) 2021 Rafał Miłecki <rafal@milecki.pl>
  */
-#include <linux/bits.h>
-#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/leds.h>
@@ -21,10 +19,8 @@
 #define BCM63138_LEDS_PER_REG				(32 / BCM63138_LED_BITS)	/* 8 */
 
 #define BCM63138_GLB_CTRL				0x00
-#define  BCM63138_GLB_CTRL_SERIAL_LED_DATA_PPOL		BIT(1)
-#define  BCM63138_GLB_CTRL_SERIAL_LED_CLK_POL		BIT(2)
-#define  BCM63138_GLB_CTRL_SERIAL_LED_EN_POL		BIT(3)
-#define  BCM63138_GLB_CTRL_SERIAL_LED_MSB_FIRST		BIT(4)
+#define  BCM63138_GLB_CTRL_SERIAL_LED_DATA_PPOL		0x00000002
+#define  BCM63138_GLB_CTRL_SERIAL_LED_EN_POL		0x00000008
 #define BCM63138_MASK					0x04
 #define BCM63138_HW_LED_EN				0x08
 #define BCM63138_SERIAL_LED_SHIFT_SEL			0x0c
@@ -37,7 +33,6 @@
 #define BCM63138_BRIGHT_CTRL3				0x28
 #define BCM63138_BRIGHT_CTRL4				0x2c
 #define BCM63138_POWER_LED_CFG				0x30
-#define BCM63138_POWER_LUT_BASE0			0x34 /* -> b0 */
 #define BCM63138_HW_POLARITY				0xb4
 #define BCM63138_SW_DATA				0xb8
 #define BCM63138_SW_POLARITY				0xbc
@@ -130,14 +125,17 @@ static void bcm63138_leds_brightness_set(struct led_classdev *led_cdev,
 {
 	struct bcm63138_led *led = container_of(led_cdev, struct bcm63138_led, cdev);
 	struct bcm63138_leds *leds = led->leds;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&leds->lock);
+	spin_lock_irqsave(&leds->lock, flags);
 
 	bcm63138_leds_enable_led(leds, led, value);
 	if (!value)
 		bcm63138_leds_set_flash_rate(leds, led, 0);
 	else
 		bcm63138_leds_set_bright(leds, led, value);
+
+	spin_unlock_irqrestore(&leds->lock, flags);
 }
 
 static int bcm63138_leds_blink_set(struct led_classdev *led_cdev,
@@ -146,6 +144,7 @@ static int bcm63138_leds_blink_set(struct led_classdev *led_cdev,
 {
 	struct bcm63138_led *led = container_of(led_cdev, struct bcm63138_led, cdev);
 	struct bcm63138_leds *leds = led->leds;
+	unsigned long flags;
 	u8 value;
 
 	if (!*delay_on && !*delay_off) {
@@ -180,10 +179,12 @@ static int bcm63138_leds_blink_set(struct led_classdev *led_cdev,
 		return -EINVAL;
 	}
 
-	guard(spinlock_irqsave)(&leds->lock);
+	spin_lock_irqsave(&leds->lock, flags);
 
 	bcm63138_leds_enable_led(leds, led, BCM63138_MAX_BRIGHTNESS);
 	bcm63138_leds_set_flash_rate(leds, led, value);
+
+	spin_unlock_irqrestore(&leds->lock, flags);
 
 	return 0;
 }
@@ -258,7 +259,7 @@ static int bcm63138_leds_probe(struct platform_device *pdev)
 	struct device_node *np = dev_of_node(&pdev->dev);
 	struct device *dev = &pdev->dev;
 	struct bcm63138_leds *leds;
-	u32 shift_bits;
+	struct device_node *child;
 
 	leds = devm_kzalloc(dev, sizeof(*leds), GFP_KERNEL);
 	if (!leds)
@@ -272,12 +273,6 @@ static int bcm63138_leds_probe(struct platform_device *pdev)
 
 	spin_lock_init(&leds->lock);
 
-	/* If this property is not present, we use boot defaults */
-	if (!of_property_read_u32(np, "brcm,serial-shift-bits", &shift_bits)) {
-		bcm63138_leds_write(leds, BCM63138_SERIAL_LED_SHIFT_SEL,
-				    GENMASK(shift_bits - 1, 0));
-	}
-
 	bcm63138_leds_write(leds, BCM63138_GLB_CTRL,
 			    BCM63138_GLB_CTRL_SERIAL_LED_DATA_PPOL |
 			    BCM63138_GLB_CTRL_SERIAL_LED_EN_POL);
@@ -285,7 +280,7 @@ static int bcm63138_leds_probe(struct platform_device *pdev)
 	bcm63138_leds_write(leds, BCM63138_SERIAL_LED_POLARITY, 0);
 	bcm63138_leds_write(leds, BCM63138_PARALLEL_LED_POLARITY, 0);
 
-	for_each_available_child_of_node_scoped(np, child) {
+	for_each_available_child_of_node(np, child) {
 		bcm63138_leds_create_led(leds, child);
 	}
 
@@ -308,6 +303,5 @@ static struct platform_driver bcm63138_leds_driver = {
 module_platform_driver(bcm63138_leds_driver);
 
 MODULE_AUTHOR("Rafał Miłecki");
-MODULE_DESCRIPTION("Broadcom BCM63138 SoC LED driver");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(of, bcm63138_leds_of_match_table);

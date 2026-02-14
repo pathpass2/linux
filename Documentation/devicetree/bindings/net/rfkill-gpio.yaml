@@ -32,10 +32,6 @@ properties:
   shutdown-gpios:
     maxItems: 1
 
-  default-blocked:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description: configure rfkill state as blocked at boot
-
 required:
   - compatible
   - radio-type
@@ -52,5 +48,4 @@ examples:
         label = "rfkill-pcie-wlan";
         radio-type = "wlan";
         shutdown-gpios = <&gpio2 25 GPIO_ACTIVE_HIGH>;
-        default-blocked;
     };

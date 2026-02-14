@@ -257,11 +257,11 @@ static int rsi_parse(struct cache_detail *cd,
 
 	rsii.h.flags = 0;
 	/* expiry */
-	status = get_expiry(&mesg, &expiry);
-	if (status)
+	expiry = get_expiry(&mesg);
+	status = -EINVAL;
+	if (expiry == 0)
 		goto out;
 
-	status = -EINVAL;
 	/* major/minor */
 	len = qword_get(&mesg, buf, mlen);
 	if (len <= 0)
@@ -483,11 +483,11 @@ static int rsc_parse(struct cache_detail *cd,
 
 	rsci.h.flags = 0;
 	/* expiry */
-	status = get_expiry(&mesg, &expiry);
-	if (status)
+	expiry = get_expiry(&mesg);
+	status = -EINVAL;
+	if (expiry == 0)
 		goto out;
 
-	status = -EINVAL;
 	rscp = rsc_lookup(cd, &rsci);
 	if (!rscp)
 		goto out;
@@ -724,7 +724,7 @@ svcauth_gss_verify_header(struct svc_rqst *rqstp, struct rsc *rsci,
 		rqstp->rq_auth_stat = rpc_autherr_badverf;
 		return SVC_DENIED;
 	}
-	if (flavor != RPC_AUTH_GSS || checksum.len < XDR_UNIT) {
+	if (flavor != RPC_AUTH_GSS) {
 		rqstp->rq_auth_stat = rpc_autherr_badverf;
 		return SVC_DENIED;
 	}
@@ -866,6 +866,14 @@ svcauth_gss_unwrap_integ(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
 	struct xdr_buf databody_integ;
 	struct xdr_netobj checksum;
 
+	/* NFS READ normally uses splice to send data in-place. However
+	 * the data in cache can change after the reply's MIC is computed
+	 * but before the RPC reply is sent. To prevent the client from
+	 * rejecting the server-computed MIC in this somewhat rare case,
+	 * do not use splice with the GSS integrity service.
+	 */
+	clear_bit(RQ_SPLICE_OK, &rqstp->rq_flags);
+
 	/* Did we already verify the signature on the original pass through? */
 	if (rqstp->rq_deferred)
 		return 0;
@@ -940,6 +948,8 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
 	struct xdr_buf *buf = xdr->buf;
 	unsigned int saved_len;
 
+	clear_bit(RQ_SPLICE_OK, &rqstp->rq_flags);
+
 	if (xdr_stream_decode_u32(xdr, &len) < 0)
 		goto unwrap_failed;
 	if (rqstp->rq_deferred) {
@@ -976,7 +986,7 @@ bad_unwrap:
 	return -EINVAL;
 }
 
-static enum svc_auth_status
+static int
 svcauth_gss_set_client(struct svc_rqst *rqstp)
 {
 	struct gss_svc_data *svcdata = rqstp->rq_auth_data;
@@ -1033,11 +1043,17 @@ null_verifier:
 
 static void gss_free_in_token_pages(struct gssp_in_token *in_token)
 {
+	u32 inlen;
 	int i;
 
 	i = 0;
-	while (in_token->pages[i])
-		put_page(in_token->pages[i++]);
+	inlen = in_token->page_len;
+	while (inlen) {
+		if (in_token->pages[i])
+			put_page(in_token->pages[i]);
+		inlen -= inlen > PAGE_SIZE ? PAGE_SIZE : inlen;
+	}
+
 	kfree(in_token->pages);
 	in_token->pages = NULL;
 }
@@ -1069,7 +1085,7 @@ static int gss_read_proxy_verf(struct svc_rqst *rqstp,
 		goto out_denied_free;
 
 	pages = DIV_ROUND_UP(inlen, PAGE_SIZE);
-	in_token->pages = kcalloc(pages + 1, sizeof(struct page *), GFP_KERNEL);
+	in_token->pages = kcalloc(pages, sizeof(struct page *), GFP_KERNEL);
 	if (!in_token->pages)
 		goto out_denied_free;
 	in_token->page_base = 0;
@@ -1083,8 +1099,7 @@ static int gss_read_proxy_verf(struct svc_rqst *rqstp,
 	}
 
 	length = min_t(unsigned int, inlen, (char *)xdr->end - (char *)xdr->p);
-	if (length)
-		memcpy(page_address(in_token->pages[0]), xdr->p, length);
+	memcpy(page_address(in_token->pages[0]), xdr->p, length);
 	inlen -= length;
 
 	to_offs = length;
@@ -1619,7 +1634,7 @@ svcauth_gss_decode_credbody(struct xdr_stream *xdr,
  *
  * The rqstp->rq_auth_stat field is also set (see RFCs 2203 and 5531).
  */
-static enum svc_auth_status
+static int
 svcauth_gss_accept(struct svc_rqst *rqstp)
 {
 	struct gss_svc_data *svcdata = rqstp->rq_auth_data;
@@ -1629,7 +1644,7 @@ svcauth_gss_accept(struct svc_rqst *rqstp)
 	int		ret;
 	struct sunrpc_net *sn = net_generic(SVC_NET(rqstp), sunrpc_net_id);
 
-	rqstp->rq_auth_stat = rpc_autherr_failed;
+	rqstp->rq_auth_stat = rpc_autherr_badcred;
 	if (!svcdata)
 		svcdata = kmalloc(sizeof(*svcdata), GFP_KERNEL);
 	if (!svcdata)
@@ -1639,7 +1654,6 @@ svcauth_gss_accept(struct svc_rqst *rqstp)
 	svcdata->rsci = NULL;
 	gc = &svcdata->clcred;
 
-	rqstp->rq_auth_stat = rpc_autherr_badcred;
 	if (!svcauth_gss_decode_credbody(&rqstp->rq_arg_stream, gc, &rpcstart))
 		goto auth_err;
 	if (gc->gc_v != RPC_GSS_VERSION)
@@ -1931,6 +1945,9 @@ bad_wrap:
  *    %0: the Reply is ready to be sent
  *    %-ENOMEM: failed to allocate memory
  *    %-EINVAL: encoding error
+ *
+ * XXX: These return values do not match the return values documented
+ *      for the auth_ops ->release method in linux/sunrpc/svcauth.h.
  */
 static int
 svcauth_gss_release(struct svc_rqst *rqstp)
@@ -2000,11 +2017,6 @@ svcauth_gss_domain_release(struct auth_domain *dom)
 	call_rcu(&dom->rcu_head, svcauth_gss_domain_release_rcu);
 }
 
-static rpc_authflavor_t svcauth_gss_pseudoflavor(struct svc_rqst *rqstp)
-{
-	return svcauth_gss_flavor(rqstp->rq_gssclient);
-}
-
 static struct auth_ops svcauthops_gss = {
 	.name		= "rpcsec_gss",
 	.owner		= THIS_MODULE,
@@ -2013,7 +2025,6 @@ static struct auth_ops svcauthops_gss = {
 	.release	= svcauth_gss_release,
 	.domain_release = svcauth_gss_domain_release,
 	.set_client	= svcauth_gss_set_client,
-	.pseudoflavor	= svcauth_gss_pseudoflavor,
 };
 
 static int rsi_cache_create_net(struct net *net)

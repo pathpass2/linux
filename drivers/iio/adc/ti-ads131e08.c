@@ -23,7 +23,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /* Commands */
 #define ADS131E08_CMD_RESET		0x06
@@ -102,7 +102,7 @@ struct ads131e08_state {
 	struct completion completion;
 	struct {
 		u8 data[ADS131E08_NUM_DATA_BYTES_MAX];
-		aligned_s64 ts;
+		s64 ts __aligned(8);
 	} tmp_buf;
 
 	u8 tx_buf[3] __aligned(IIO_DMA_MINALIGN);
@@ -505,11 +505,12 @@ static int ads131e08_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 
 		ret = ads131e08_read_direct(indio_dev, channel, value);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		if (ret)
 			return ret;
 
@@ -550,11 +551,12 @@ static int ads131e08_write_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 
 		ret = ads131e08_set_data_rate(st, value);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		return ret;
 
 	default:
@@ -625,7 +627,7 @@ static irqreturn_t ads131e08_trigger_handler(int irq, void *private)
 	 * 16 bits of data into the buffer.
 	 */
 	unsigned int num_bytes = ADS131E08_NUM_DATA_BYTES(st->data_rate);
-	u8 tweak_offset = num_bytes == 2 ? 1 : 0;
+	u8 tweek_offset = num_bytes == 2 ? 1 : 0;
 
 	if (iio_trigger_using_own(indio_dev))
 		ret = ads131e08_read_data(st, st->readback_len);
@@ -635,37 +637,37 @@ static irqreturn_t ads131e08_trigger_handler(int irq, void *private)
 	if (ret)
 		goto out;
 
-	iio_for_each_active_channel(indio_dev, chn) {
+	for_each_set_bit(chn, indio_dev->active_scan_mask, indio_dev->masklength) {
 		src = st->rx_buf + ADS131E08_NUM_STATUS_BYTES + chn * num_bytes;
 		dest = st->tmp_buf.data + i * ADS131E08_NUM_STORAGE_BYTES;
 
 		/*
-		 * Tweak offset is 0:
+		 * Tweek offset is 0:
 		 * +---+---+---+---+
 		 * |D0 |D1 |D2 | X | (3 data bytes)
 		 * +---+---+---+---+
 		 *  a+0 a+1 a+2 a+3
 		 *
-		 * Tweak offset is 1:
+		 * Tweek offset is 1:
 		 * +---+---+---+---+
 		 * |P0 |D0 |D1 | X | (one padding byte and 2 data bytes)
 		 * +---+---+---+---+
 		 *  a+0 a+1 a+2 a+3
 		 */
-		memcpy(dest + tweak_offset, src, num_bytes);
+		memcpy(dest + tweek_offset, src, num_bytes);
 
 		/*
 		 * Data conversion from 16 bits of data to 24 bits of data
 		 * is done by sign extension (properly filling padding byte).
 		 */
-		if (tweak_offset)
+		if (tweek_offset)
 			*dest = *src & BIT(7) ? 0xff : 0x00;
 
 		i++;
 	}
 
-	iio_push_to_buffers_with_ts(indio_dev, &st->tmp_buf, sizeof(st->tmp_buf),
-				    iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, st->tmp_buf.data,
+		iio_get_time_ns(indio_dev));
 
 out:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -692,6 +694,7 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 	struct ads131e08_channel_config *channel_config;
 	struct device *dev = &st->spi->dev;
 	struct iio_chan_spec *channels;
+	struct fwnode_handle *node;
 	unsigned int channel, tmp;
 	int num_channels, i, ret;
 
@@ -733,10 +736,10 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 		return -ENOMEM;
 
 	i = 0;
-	device_for_each_child_node_scoped(dev, node) {
+	device_for_each_child_node(dev, node) {
 		ret = fwnode_property_read_u32(node, "reg", &channel);
 		if (ret)
-			return ret;
+			goto err_child_out;
 
 		ret = fwnode_property_read_u32(node, "ti,gain", &tmp);
 		if (ret) {
@@ -744,7 +747,7 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 		} else {
 			ret = ads131e08_pga_gain_to_field_value(st, tmp);
 			if (ret < 0)
-				return ret;
+				goto err_child_out;
 
 			channel_config[i].pga_gain = tmp;
 		}
@@ -755,7 +758,7 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 		} else {
 			ret = ads131e08_validate_channel_mux(st, tmp);
 			if (ret)
-				return ret;
+				goto err_child_out;
 
 			channel_config[i].mux = tmp;
 		}
@@ -782,6 +785,9 @@ static int ads131e08_alloc_channels(struct iio_dev *indio_dev)
 
 	return 0;
 
+err_child_out:
+	fwnode_handle_put(node);
+	return ret;
 }
 
 static void ads131e08_regulator_disable(void *data)
@@ -800,15 +806,19 @@ static int ads131e08_probe(struct spi_device *spi)
 	unsigned long adc_clk_ns;
 	int ret;
 
-	info = spi_get_device_match_data(spi);
+	info = device_get_match_data(&spi->dev);
+	if (!info)
+		info = (void *)spi_get_device_id(spi)->driver_data;
 	if (!info) {
 		dev_err(&spi->dev, "failed to get match data\n");
 		return -ENODEV;
 	}
 
 	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&spi->dev, "failed to allocate IIO device\n");
 		return -ENOMEM;
+	}
 
 	st = iio_priv(indio_dev);
 	st->info = info;
@@ -839,8 +849,10 @@ static int ads131e08_probe(struct spi_device *spi)
 
 	st->trig = devm_iio_trigger_alloc(&spi->dev, "%s-dev%d",
 		indio_dev->name, iio_device_id(indio_dev));
-	if (!st->trig)
+	if (!st->trig) {
+		dev_err(&spi->dev, "failed to allocate IIO trigger\n");
 		return -ENOMEM;
+	}
 
 	st->trig->ops = &ads131e08_trigger_ops;
 	st->trig->dev.parent = &spi->dev;
@@ -848,7 +860,7 @@ static int ads131e08_probe(struct spi_device *spi)
 	ret = devm_iio_trigger_register(&spi->dev, st->trig);
 	if (ret) {
 		dev_err(&spi->dev, "failed to register IIO trigger\n");
-		return ret;
+		return -ENOMEM;
 	}
 
 	indio_dev->trig = iio_trigger_get(st->trig);
@@ -912,7 +924,7 @@ static const struct of_device_id ads131e08_of_match[] = {
 	  .data = &ads131e08_info_tbl[ads131e06], },
 	{ .compatible = "ti,ads131e08",
 	  .data = &ads131e08_info_tbl[ads131e08], },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, ads131e08_of_match);
 
@@ -920,7 +932,7 @@ static const struct spi_device_id ads131e08_ids[] = {
 	{ "ads131e04", (kernel_ulong_t)&ads131e08_info_tbl[ads131e04] },
 	{ "ads131e06", (kernel_ulong_t)&ads131e08_info_tbl[ads131e06] },
 	{ "ads131e08", (kernel_ulong_t)&ads131e08_info_tbl[ads131e08] },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(spi, ads131e08_ids);
 

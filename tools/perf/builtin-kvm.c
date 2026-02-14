@@ -23,9 +23,6 @@
 #include "util/data.h"
 #include "util/ordered-events.h"
 #include "util/kvm-stat.h"
-#include "util/util.h"
-#include "ui/browsers/hists.h"
-#include "ui/progress.h"
 #include "ui/ui.h"
 #include "util/string2.h"
 
@@ -52,553 +49,6 @@
 #include <math.h>
 #include <perf/mmap.h>
 
-#if defined(HAVE_KVM_STAT_SUPPORT) && defined(HAVE_LIBTRACEEVENT)
-#define GET_EVENT_KEY(func, field)					\
-static u64 get_event_ ##func(struct kvm_event *event, int vcpu)		\
-{									\
-	if (vcpu == -1)							\
-		return event->total.field;				\
-									\
-	if (vcpu >= event->max_vcpu)					\
-		return 0;						\
-									\
-	return event->vcpu[vcpu].field;					\
-}
-
-#define COMPARE_EVENT_KEY(func, field)					\
-GET_EVENT_KEY(func, field)						\
-static int64_t cmp_event_ ## func(struct kvm_event *one,		\
-			      struct kvm_event *two, int vcpu)		\
-{									\
-	return get_event_ ##func(one, vcpu) -				\
-	       get_event_ ##func(two, vcpu);				\
-}
-
-COMPARE_EVENT_KEY(time, time);
-COMPARE_EVENT_KEY(max, stats.max);
-COMPARE_EVENT_KEY(min, stats.min);
-COMPARE_EVENT_KEY(count, stats.n);
-COMPARE_EVENT_KEY(mean, stats.mean);
-
-struct kvm_hists {
-	struct hists		hists;
-	struct perf_hpp_list	list;
-};
-
-struct kvm_dimension {
-	const char *name;
-	const char *header;
-	int width;
-	int64_t (*cmp)(struct perf_hpp_fmt *fmt, struct hist_entry *left,
-		       struct hist_entry *right);
-	int (*entry)(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
-		     struct hist_entry *he);
-};
-
-struct kvm_fmt {
-	struct perf_hpp_fmt	fmt;
-	struct kvm_dimension	*dim;
-};
-
-static struct kvm_hists kvm_hists;
-
-static int64_t ev_name_cmp(struct perf_hpp_fmt *fmt __maybe_unused,
-			   struct hist_entry *left,
-			   struct hist_entry *right)
-{
-	/* Return opposite number for sorting in alphabetical order */
-	return -strcmp(left->kvm_info->name, right->kvm_info->name);
-}
-
-static int fmt_width(struct perf_hpp_fmt *fmt,
-		     struct perf_hpp *hpp __maybe_unused,
-		     struct hists *hists __maybe_unused);
-
-static int ev_name_entry(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
-			 struct hist_entry *he)
-{
-	int width = fmt_width(fmt, hpp, he->hists);
-
-	return scnprintf(hpp->buf, hpp->size, "%*s", width, he->kvm_info->name);
-}
-
-static struct kvm_dimension dim_event = {
-	.header		= "Event name",
-	.name		= "ev_name",
-	.cmp		= ev_name_cmp,
-	.entry		= ev_name_entry,
-	.width		= 40,
-};
-
-#define EV_METRIC_CMP(metric)						\
-static int64_t ev_cmp_##metric(struct perf_hpp_fmt *fmt __maybe_unused,	\
-			       struct hist_entry *left,			\
-			       struct hist_entry *right)		\
-{									\
-	struct kvm_event *event_left;					\
-	struct kvm_event *event_right;					\
-	struct perf_kvm_stat *perf_kvm;					\
-									\
-	event_left  = container_of(left, struct kvm_event, he);		\
-	event_right = container_of(right, struct kvm_event, he);	\
-									\
-	perf_kvm = event_left->perf_kvm;				\
-	return cmp_event_##metric(event_left, event_right,		\
-				  perf_kvm->trace_vcpu);		\
-}
-
-EV_METRIC_CMP(time)
-EV_METRIC_CMP(count)
-EV_METRIC_CMP(max)
-EV_METRIC_CMP(min)
-EV_METRIC_CMP(mean)
-
-#define EV_METRIC_ENTRY(metric)						\
-static int ev_entry_##metric(struct perf_hpp_fmt *fmt,			\
-			     struct perf_hpp *hpp,			\
-			     struct hist_entry *he)			\
-{									\
-	struct kvm_event *event;					\
-	int width = fmt_width(fmt, hpp, he->hists);			\
-	struct perf_kvm_stat *perf_kvm;					\
-									\
-	event = container_of(he, struct kvm_event, he);			\
-	perf_kvm = event->perf_kvm;					\
-	return scnprintf(hpp->buf, hpp->size, "%*lu", width,		\
-		get_event_##metric(event, perf_kvm->trace_vcpu));	\
-}
-
-EV_METRIC_ENTRY(time)
-EV_METRIC_ENTRY(count)
-EV_METRIC_ENTRY(max)
-EV_METRIC_ENTRY(min)
-
-static struct kvm_dimension dim_time = {
-	.header		= "Time (ns)",
-	.name		= "time",
-	.cmp		= ev_cmp_time,
-	.entry		= ev_entry_time,
-	.width		= 12,
-};
-
-static struct kvm_dimension dim_count = {
-	.header		= "Samples",
-	.name		= "sample",
-	.cmp		= ev_cmp_count,
-	.entry		= ev_entry_count,
-	.width		= 12,
-};
-
-static struct kvm_dimension dim_max_time = {
-	.header		= "Max Time (ns)",
-	.name		= "max_t",
-	.cmp		= ev_cmp_max,
-	.entry		= ev_entry_max,
-	.width		= 14,
-};
-
-static struct kvm_dimension dim_min_time = {
-	.header		= "Min Time (ns)",
-	.name		= "min_t",
-	.cmp		= ev_cmp_min,
-	.entry		= ev_entry_min,
-	.width		= 14,
-};
-
-static int ev_entry_mean(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
-			 struct hist_entry *he)
-{
-	struct kvm_event *event;
-	int width = fmt_width(fmt, hpp, he->hists);
-	struct perf_kvm_stat *perf_kvm;
-
-	event = container_of(he, struct kvm_event, he);
-	perf_kvm = event->perf_kvm;
-	return scnprintf(hpp->buf, hpp->size, "%*lu", width,
-			 get_event_mean(event, perf_kvm->trace_vcpu));
-}
-
-static struct kvm_dimension dim_mean_time = {
-	.header		= "Mean Time (ns)",
-	.name		= "mean_t",
-	.cmp		= ev_cmp_mean,
-	.entry		= ev_entry_mean,
-	.width		= 14,
-};
-
-#define PERC_STR(__s, __v)				\
-({							\
-	scnprintf(__s, sizeof(__s), "%.2F%%", __v);	\
-	__s;						\
-})
-
-static double percent(u64 st, u64 tot)
-{
-	return tot ? 100. * (double) st / (double) tot : 0;
-}
-
-#define EV_METRIC_PERCENT(metric)					\
-static int ev_percent_##metric(struct hist_entry *he)			\
-{									\
-	struct kvm_event *event;					\
-	struct perf_kvm_stat *perf_kvm;					\
-									\
-	event = container_of(he, struct kvm_event, he);			\
-	perf_kvm = event->perf_kvm;					\
-									\
-	return percent(get_event_##metric(event, perf_kvm->trace_vcpu),	\
-		       perf_kvm->total_##metric);			\
-}
-
-EV_METRIC_PERCENT(time)
-EV_METRIC_PERCENT(count)
-
-static int ev_entry_time_precent(struct perf_hpp_fmt *fmt,
-				 struct perf_hpp *hpp,
-				 struct hist_entry *he)
-{
-	int width = fmt_width(fmt, hpp, he->hists);
-	double per;
-	char buf[10];
-
-	per = ev_percent_time(he);
-	return scnprintf(hpp->buf, hpp->size, "%*s", width, PERC_STR(buf, per));
-}
-
-static int64_t
-ev_cmp_time_precent(struct perf_hpp_fmt *fmt __maybe_unused,
-		    struct hist_entry *left, struct hist_entry *right)
-{
-	double per_left;
-	double per_right;
-
-	per_left  = ev_percent_time(left);
-	per_right = ev_percent_time(right);
-
-	return per_left - per_right;
-}
-
-static struct kvm_dimension dim_time_percent = {
-	.header		= "Time%",
-	.name		= "percent_time",
-	.cmp		= ev_cmp_time_precent,
-	.entry		= ev_entry_time_precent,
-	.width		= 12,
-};
-
-static int ev_entry_count_precent(struct perf_hpp_fmt *fmt,
-				  struct perf_hpp *hpp,
-				  struct hist_entry *he)
-{
-	int width = fmt_width(fmt, hpp, he->hists);
-	double per;
-	char buf[10];
-
-	per = ev_percent_count(he);
-	return scnprintf(hpp->buf, hpp->size, "%*s", width, PERC_STR(buf, per));
-}
-
-static int64_t
-ev_cmp_count_precent(struct perf_hpp_fmt *fmt __maybe_unused,
-		     struct hist_entry *left, struct hist_entry *right)
-{
-	double per_left;
-	double per_right;
-
-	per_left  = ev_percent_count(left);
-	per_right = ev_percent_count(right);
-
-	return per_left - per_right;
-}
-
-static struct kvm_dimension dim_count_percent = {
-	.header		= "Sample%",
-	.name		= "percent_sample",
-	.cmp		= ev_cmp_count_precent,
-	.entry		= ev_entry_count_precent,
-	.width		= 12,
-};
-
-static struct kvm_dimension *dimensions[] = {
-	&dim_event,
-	&dim_time,
-	&dim_time_percent,
-	&dim_count,
-	&dim_count_percent,
-	&dim_max_time,
-	&dim_min_time,
-	&dim_mean_time,
-	NULL,
-};
-
-static int fmt_width(struct perf_hpp_fmt *fmt,
-		     struct perf_hpp *hpp __maybe_unused,
-		     struct hists *hists __maybe_unused)
-{
-	struct kvm_fmt *kvm_fmt;
-
-	kvm_fmt = container_of(fmt, struct kvm_fmt, fmt);
-	return kvm_fmt->dim->width;
-}
-
-static int fmt_header(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
-		      struct hists *hists, int line __maybe_unused,
-		      int *span __maybe_unused)
-{
-	struct kvm_fmt *kvm_fmt;
-	struct kvm_dimension *dim;
-	int width = fmt_width(fmt, hpp, hists);
-
-	kvm_fmt = container_of(fmt, struct kvm_fmt, fmt);
-	dim = kvm_fmt->dim;
-
-	return scnprintf(hpp->buf, hpp->size, "%*s", width, dim->header);
-}
-
-static bool fmt_equal(struct perf_hpp_fmt *a, struct perf_hpp_fmt *b)
-{
-	struct kvm_fmt *kvm_fmt_a = container_of(a, struct kvm_fmt, fmt);
-	struct kvm_fmt *kvm_fmt_b = container_of(b, struct kvm_fmt, fmt);
-
-	return kvm_fmt_a->dim == kvm_fmt_b->dim;
-}
-
-static void fmt_free(struct perf_hpp_fmt *fmt)
-{
-	struct kvm_fmt *kvm_fmt;
-
-	kvm_fmt = container_of(fmt, struct kvm_fmt, fmt);
-	free(kvm_fmt);
-}
-
-static struct kvm_dimension *get_dimension(const char *name)
-{
-	unsigned int i;
-
-	for (i = 0; dimensions[i] != NULL; i++) {
-		if (!strcmp(dimensions[i]->name, name))
-			return dimensions[i];
-	}
-
-	return NULL;
-}
-
-static struct kvm_fmt *get_format(const char *name)
-{
-	struct kvm_dimension *dim = get_dimension(name);
-	struct kvm_fmt *kvm_fmt;
-	struct perf_hpp_fmt *fmt;
-
-	if (!dim)
-		return NULL;
-
-	kvm_fmt = zalloc(sizeof(*kvm_fmt));
-	if (!kvm_fmt)
-		return NULL;
-
-	kvm_fmt->dim = dim;
-
-	fmt = &kvm_fmt->fmt;
-	INIT_LIST_HEAD(&fmt->list);
-	INIT_LIST_HEAD(&fmt->sort_list);
-	fmt->cmp	= dim->cmp;
-	fmt->sort	= dim->cmp;
-	fmt->color	= NULL;
-	fmt->entry	= dim->entry;
-	fmt->header	= fmt_header;
-	fmt->width	= fmt_width;
-	fmt->collapse	= dim->cmp;
-	fmt->equal	= fmt_equal;
-	fmt->free	= fmt_free;
-
-	return kvm_fmt;
-}
-
-static int kvm_hists__init_output(struct perf_hpp_list *hpp_list, char *name)
-{
-	struct kvm_fmt *kvm_fmt = get_format(name);
-
-	if (!kvm_fmt) {
-		pr_warning("Fail to find format for output field %s.\n", name);
-		return -EINVAL;
-	}
-
-	perf_hpp_list__column_register(hpp_list, &kvm_fmt->fmt);
-	return 0;
-}
-
-static int kvm_hists__init_sort(struct perf_hpp_list *hpp_list, char *name)
-{
-	struct kvm_fmt *kvm_fmt = get_format(name);
-
-	if (!kvm_fmt) {
-		pr_warning("Fail to find format for sorting %s.\n", name);
-		return -EINVAL;
-	}
-
-	perf_hpp_list__register_sort_field(hpp_list, &kvm_fmt->fmt);
-	return 0;
-}
-
-static int kvm_hpp_list__init(char *list,
-			      struct perf_hpp_list *hpp_list,
-			      int (*fn)(struct perf_hpp_list *hpp_list,
-					char *name))
-{
-	char *tmp, *tok;
-	int ret;
-
-	if (!list || !fn)
-		return 0;
-
-	for (tok = strtok_r(list, ", ", &tmp); tok;
-	     tok = strtok_r(NULL, ", ", &tmp)) {
-		ret = fn(hpp_list, tok);
-		if (!ret)
-			continue;
-
-		/* Handle errors */
-		if (ret == -EINVAL)
-			pr_err("Invalid field key: '%s'", tok);
-		else if (ret == -ESRCH)
-			pr_err("Unknown field key: '%s'", tok);
-		else
-			pr_err("Fail to initialize for field key: '%s'", tok);
-
-		break;
-	}
-
-	return ret;
-}
-
-static int kvm_hpp_list__parse(struct perf_hpp_list *hpp_list,
-			       const char *output_, const char *sort_)
-{
-	char *output = output_ ? strdup(output_) : NULL;
-	char *sort = sort_ ? strdup(sort_) : NULL;
-	int ret;
-
-	ret = kvm_hpp_list__init(output, hpp_list, kvm_hists__init_output);
-	if (ret)
-		goto out;
-
-	ret = kvm_hpp_list__init(sort, hpp_list, kvm_hists__init_sort);
-	if (ret)
-		goto out;
-
-	/* Copy sort keys to output fields */
-	perf_hpp__setup_output_field(hpp_list);
-
-	/* and then copy output fields to sort keys */
-	perf_hpp__append_sort_keys(hpp_list);
-out:
-	free(output);
-	free(sort);
-	return ret;
-}
-
-static int kvm_hists__init(void)
-{
-	kvm_hists.list.nr_header_lines = 1;
-	__hists__init(&kvm_hists.hists, &kvm_hists.list);
-	perf_hpp_list__init(&kvm_hists.list);
-	return kvm_hpp_list__parse(&kvm_hists.list, NULL, "ev_name");
-}
-
-static int kvm_hists__reinit(const char *output, const char *sort)
-{
-	perf_hpp__reset_output_field(&kvm_hists.list);
-	return kvm_hpp_list__parse(&kvm_hists.list, output, sort);
-}
-static void print_result(struct perf_kvm_stat *kvm);
-
-#ifdef HAVE_SLANG_SUPPORT
-static void kvm_browser__update_nr_entries(struct hist_browser *hb)
-{
-	struct rb_node *nd = rb_first_cached(&hb->hists->entries);
-	u64 nr_entries = 0;
-
-	for (; nd; nd = rb_next(nd)) {
-		struct hist_entry *he = rb_entry(nd, struct hist_entry,
-						 rb_node);
-
-		if (!he->filtered)
-			nr_entries++;
-	}
-
-	hb->nr_non_filtered_entries = nr_entries;
-}
-
-static int kvm_browser__title(struct hist_browser *browser,
-			      char *buf, size_t size)
-{
-	scnprintf(buf, size, "KVM event statistics (%lu entries)",
-		  browser->nr_non_filtered_entries);
-	return 0;
-}
-
-static struct hist_browser*
-perf_kvm_browser__new(struct hists *hists)
-{
-	struct hist_browser *browser = hist_browser__new(hists);
-
-	if (browser)
-		browser->title = kvm_browser__title;
-
-	return browser;
-}
-
-static int kvm__hists_browse(struct hists *hists)
-{
-	struct hist_browser *browser;
-	int key = -1;
-
-	browser = perf_kvm_browser__new(hists);
-	if (browser == NULL)
-		return -1;
-
-	/* reset abort key so that it can get Ctrl-C as a key */
-	SLang_reset_tty();
-	SLang_init_tty(0, 0, 0);
-
-	kvm_browser__update_nr_entries(browser);
-
-	while (1) {
-		key = hist_browser__run(browser, "? - help", true, 0);
-
-		switch (key) {
-		case 'q':
-			goto out;
-		default:
-			break;
-		}
-	}
-
-out:
-	hist_browser__delete(browser);
-	return 0;
-}
-
-static void kvm_display(struct perf_kvm_stat *kvm)
-{
-	if (!use_browser)
-		print_result(kvm);
-	else
-		kvm__hists_browse(&kvm_hists.hists);
-}
-
-#else
-
-static void kvm_display(struct perf_kvm_stat *kvm)
-{
-	use_browser = 0;
-	print_result(kvm);
-}
-
-#endif /* HAVE_SLANG_SUPPORT */
-
-#endif // defined(HAVE_KVM_STAT_SUPPORT) && defined(HAVE_LIBTRACEEVENT)
-
 static const char *get_filename_for_perf_kvm(void)
 {
 	const char *filename;
@@ -614,6 +64,67 @@ static const char *get_filename_for_perf_kvm(void)
 }
 
 #if defined(HAVE_KVM_STAT_SUPPORT) && defined(HAVE_LIBTRACEEVENT)
+
+void exit_event_get_key(struct evsel *evsel,
+			struct perf_sample *sample,
+			struct event_key *key)
+{
+	key->info = 0;
+	key->key  = evsel__intval(evsel, sample, kvm_exit_reason);
+}
+
+bool kvm_exit_event(struct evsel *evsel)
+{
+	return !strcmp(evsel->name, kvm_exit_trace);
+}
+
+bool exit_event_begin(struct evsel *evsel,
+		      struct perf_sample *sample, struct event_key *key)
+{
+	if (kvm_exit_event(evsel)) {
+		exit_event_get_key(evsel, sample, key);
+		return true;
+	}
+
+	return false;
+}
+
+bool kvm_entry_event(struct evsel *evsel)
+{
+	return !strcmp(evsel->name, kvm_entry_trace);
+}
+
+bool exit_event_end(struct evsel *evsel,
+		    struct perf_sample *sample __maybe_unused,
+		    struct event_key *key __maybe_unused)
+{
+	return kvm_entry_event(evsel);
+}
+
+static const char *get_exit_reason(struct perf_kvm_stat *kvm,
+				   struct exit_reasons_table *tbl,
+				   u64 exit_code)
+{
+	while (tbl->reason != NULL) {
+		if (tbl->exit_code == exit_code)
+			return tbl->reason;
+		tbl++;
+	}
+
+	pr_err("unknown kvm exit code:%lld on %s\n",
+		(unsigned long long)exit_code, kvm->exit_reasons_isa);
+	return "UNKNOWN";
+}
+
+void exit_event_decode_key(struct perf_kvm_stat *kvm,
+			   struct event_key *key,
+			   char *decode)
+{
+	const char *exit_reason = get_exit_reason(kvm, key->exit_reasons,
+						  key->key);
+
+	scnprintf(decode, decode_str_len, "%s", exit_reason);
+}
 
 static bool register_kvm_events_ops(struct perf_kvm_stat *kvm)
 {
@@ -635,36 +146,43 @@ struct vcpu_event_record {
 	struct kvm_event *last_event;
 };
 
-#ifdef HAVE_TIMERFD_SUPPORT
-static void clear_events_cache_stats(void)
+
+static void init_kvm_event_record(struct perf_kvm_stat *kvm)
 {
-	struct rb_root_cached *root;
-	struct rb_node *nd;
+	unsigned int i;
+
+	for (i = 0; i < EVENTS_CACHE_SIZE; i++)
+		INIT_LIST_HEAD(&kvm->kvm_events_cache[i]);
+}
+
+#ifdef HAVE_TIMERFD_SUPPORT
+static void clear_events_cache_stats(struct list_head *kvm_events_cache)
+{
+	struct list_head *head;
 	struct kvm_event *event;
-	int i;
+	unsigned int i;
+	int j;
 
-	if (hists__has(&kvm_hists.hists, need_collapse))
-		root = &kvm_hists.hists.entries_collapsed;
-	else
-		root = kvm_hists.hists.entries_in;
+	for (i = 0; i < EVENTS_CACHE_SIZE; i++) {
+		head = &kvm_events_cache[i];
+		list_for_each_entry(event, head, hash_entry) {
+			/* reset stats for event */
+			event->total.time = 0;
+			init_stats(&event->total.stats);
 
-	for (nd = rb_first_cached(root); nd; nd = rb_next(nd)) {
-		struct hist_entry *he;
-
-		he = rb_entry(nd, struct hist_entry, rb_node_in);
-		event = container_of(he, struct kvm_event, he);
-
-		/* reset stats for event */
-		event->total.time = 0;
-		init_stats(&event->total.stats);
-
-		for (i = 0; i < event->max_vcpu; ++i) {
-			event->vcpu[i].time = 0;
-			init_stats(&event->vcpu[i].stats);
+			for (j = 0; j < event->max_vcpu; ++j) {
+				event->vcpu[j].time = 0;
+				init_stats(&event->vcpu[j].stats);
+			}
 		}
 	}
 }
 #endif
+
+static int kvm_events_hash_fn(u64 key)
+{
+	return key & (EVENTS_CACHE_SIZE - 1);
+}
 
 static bool kvm_event_expand(struct kvm_event *event, int vcpu_id)
 {
@@ -691,78 +209,54 @@ static bool kvm_event_expand(struct kvm_event *event, int vcpu_id)
 	return true;
 }
 
-static void *kvm_he_zalloc(size_t size)
-{
-	struct kvm_event *kvm_ev;
-
-	kvm_ev = zalloc(size + sizeof(*kvm_ev));
-	if (!kvm_ev)
-		return NULL;
-
-	init_stats(&kvm_ev->total.stats);
-	hists__inc_nr_samples(&kvm_hists.hists, 0);
-	return &kvm_ev->he;
-}
-
-static void kvm_he_free(void *he)
-{
-	struct kvm_event *kvm_ev;
-
-	kvm_ev = container_of(he, struct kvm_event, he);
-	free(kvm_ev);
-}
-
-static struct hist_entry_ops kvm_ev_entry_ops = {
-	.new	= kvm_he_zalloc,
-	.free	= kvm_he_free,
-};
-
-static struct kvm_event *find_create_kvm_event(struct perf_kvm_stat *kvm,
-					       struct event_key *key,
-					       struct perf_sample *sample)
+static struct kvm_event *kvm_alloc_init_event(struct event_key *key)
 {
 	struct kvm_event *event;
-	struct hist_entry *he;
-	struct kvm_info *ki;
+
+	event = zalloc(sizeof(*event));
+	if (!event) {
+		pr_err("Not enough memory\n");
+		return NULL;
+	}
+
+	event->key = *key;
+	init_stats(&event->total.stats);
+	return event;
+}
+
+static struct kvm_event *find_create_kvm_event(struct perf_kvm_stat *kvm,
+					       struct event_key *key)
+{
+	struct kvm_event *event;
+	struct list_head *head;
 
 	BUG_ON(key->key == INVALID_KEY);
 
-	ki = kvm_info__new();
-	if (!ki) {
-		pr_err("Failed to allocate kvm info\n");
+	head = &kvm->kvm_events_cache[kvm_events_hash_fn(key->key)];
+	list_for_each_entry(event, head, hash_entry) {
+		if (event->key.key == key->key && event->key.info == key->info)
+			return event;
+	}
+
+	event = kvm_alloc_init_event(key);
+	if (!event)
 		return NULL;
-	}
 
-	kvm->events_ops->decode_key(kvm, key, ki->name);
-	he = hists__add_entry_ops(&kvm_hists.hists, &kvm_ev_entry_ops,
-				  &kvm->al, NULL, NULL, NULL, ki, sample, true);
-	if (he == NULL) {
-		pr_err("Failed to allocate hist entry\n");
-		free(ki);
-		return NULL;
-	}
-
-	event = container_of(he, struct kvm_event, he);
-	if (!event->perf_kvm) {
-		event->perf_kvm = kvm;
-		event->key = *key;
-	}
-
+	list_add(&event->hash_entry, head);
 	return event;
 }
 
 static bool handle_begin_event(struct perf_kvm_stat *kvm,
 			       struct vcpu_event_record *vcpu_record,
-			       struct event_key *key,
-			       struct perf_sample *sample)
+			       struct event_key *key, u64 timestamp)
 {
 	struct kvm_event *event = NULL;
 
 	if (key->key != INVALID_KEY)
-		event = find_create_kvm_event(kvm, key, sample);
+		event = find_create_kvm_event(kvm, key);
 
 	vcpu_record->last_event = event;
-	vcpu_record->start_time = sample->time;
+	vcpu_record->start_time = timestamp;
 	return true;
 }
 
@@ -784,14 +278,9 @@ static double kvm_event_rel_stddev(int vcpu_id, struct kvm_event *event)
 				avg_stats(&kvm_stats->stats));
 }
 
-static bool update_kvm_event(struct perf_kvm_stat *kvm,
-			     struct kvm_event *event, int vcpu_id,
+static bool update_kvm_event(struct kvm_event *event, int vcpu_id,
 			     u64 time_diff)
 {
-	/* Update overall statistics */
-	kvm->total_count++;
-	kvm->total_time += time_diff;
-
 	if (vcpu_id == -1) {
 		kvm_update_event_stats(&event->total, time_diff);
 		return true;
@@ -817,7 +306,7 @@ static bool is_child_event(struct perf_kvm_stat *kvm,
 		return false;
 
 	for (; child_ops->name; child_ops++) {
-		if (evsel__name_is(evsel, child_ops->name)) {
+		if (!strcmp(evsel->name, child_ops->name)) {
 			child_ops->get_key(evsel, sample, key);
 			return true;
 		}
@@ -829,12 +318,12 @@ static bool is_child_event(struct perf_kvm_stat *kvm,
 static bool handle_child_event(struct perf_kvm_stat *kvm,
 			       struct vcpu_event_record *vcpu_record,
 			       struct event_key *key,
-			       struct perf_sample *sample)
+			       struct perf_sample *sample __maybe_unused)
 {
 	struct kvm_event *event = NULL;
 
 	if (key->key != INVALID_KEY)
-		event = find_create_kvm_event(kvm, key, sample);
+		event = find_create_kvm_event(kvm, key);
 
 	vcpu_record->last_event = event;
 
@@ -883,7 +372,7 @@ static bool handle_end_event(struct perf_kvm_stat *kvm,
 		return true;
 
 	if (!event)
-		event = find_create_kvm_event(kvm, key, sample);
+		event = find_create_kvm_event(kvm, key);
 
 	if (!event)
 		return false;
@@ -900,7 +389,7 @@ static bool handle_end_event(struct perf_kvm_stat *kvm,
 	time_diff = sample->time - time_begin;
 
 	if (kvm->duration && time_diff > kvm->duration) {
-		char decode[KVM_EVENT_NAME_LEN];
+		char decode[decode_str_len];
 
 		kvm->events_ops->decode_key(kvm, &event->key, decode);
 		if (!skip_event(decode)) {
@@ -910,7 +399,7 @@ static bool handle_end_event(struct perf_kvm_stat *kvm,
 		}
 	}
 
-	return update_kvm_event(kvm, event, vcpu, time_diff);
+	return update_kvm_event(event, vcpu, time_diff);
 }
 
 static
@@ -954,7 +443,7 @@ static bool handle_kvm_event(struct perf_kvm_stat *kvm,
 		return true;
 
 	if (kvm->events_ops->is_begin_event(evsel, sample, &key))
-		return handle_begin_event(kvm, vcpu_record, &key, sample);
+		return handle_begin_event(kvm, vcpu_record, &key, sample->time);
 
 	if (is_child_event(kvm, evsel, sample, &key))
 		return handle_child_event(kvm, vcpu_record, &key, sample);
@@ -965,19 +454,85 @@ static bool handle_kvm_event(struct perf_kvm_stat *kvm,
 	return true;
 }
 
-static bool is_valid_key(struct perf_kvm_stat *kvm)
+#define GET_EVENT_KEY(func, field)					\
+static u64 get_event_ ##func(struct kvm_event *event, int vcpu)		\
+{									\
+	if (vcpu == -1)							\
+		return event->total.field;				\
+									\
+	if (vcpu >= event->max_vcpu)					\
+		return 0;						\
+									\
+	return event->vcpu[vcpu].field;					\
+}
+
+#define COMPARE_EVENT_KEY(func, field)					\
+GET_EVENT_KEY(func, field)						\
+static int compare_kvm_event_ ## func(struct kvm_event *one,		\
+					struct kvm_event *two, int vcpu)\
+{									\
+	return get_event_ ##func(one, vcpu) >				\
+				get_event_ ##func(two, vcpu);		\
+}
+
+GET_EVENT_KEY(time, time);
+COMPARE_EVENT_KEY(count, stats.n);
+COMPARE_EVENT_KEY(mean, stats.mean);
+GET_EVENT_KEY(max, stats.max);
+GET_EVENT_KEY(min, stats.min);
+
+#define DEF_SORT_NAME_KEY(name, compare_key)				\
+	{ #name, compare_kvm_event_ ## compare_key }
+
+static struct kvm_event_key keys[] = {
+	DEF_SORT_NAME_KEY(sample, count),
+	DEF_SORT_NAME_KEY(time, mean),
+	{ NULL, NULL }
+};
+
+static bool select_key(struct perf_kvm_stat *kvm)
 {
-	static const char *key_array[] = {
-		"ev_name", "sample", "time", "max_t", "min_t", "mean_t",
-	};
-	unsigned int i;
+	int i;
 
-	for (i = 0; i < ARRAY_SIZE(key_array); i++)
-		if (!strcmp(key_array[i], kvm->sort_key))
+	for (i = 0; keys[i].name; i++) {
+		if (!strcmp(keys[i].name, kvm->sort_key)) {
+			kvm->compare = keys[i].key;
 			return true;
+		}
+	}
 
-	pr_err("Unsupported sort key: %s\n", kvm->sort_key);
+	pr_err("Unknown compare key:%s\n", kvm->sort_key);
 	return false;
+}
+
+static void insert_to_result(struct rb_root *result, struct kvm_event *event,
+			     key_cmp_fun bigger, int vcpu)
+{
+	struct rb_node **rb = &result->rb_node;
+	struct rb_node *parent = NULL;
+	struct kvm_event *p;
+
+	while (*rb) {
+		p = container_of(*rb, struct kvm_event, rb);
+		parent = *rb;
+
+		if (bigger(event, p, vcpu))
+			rb = &(*rb)->rb_left;
+		else
+			rb = &(*rb)->rb_right;
+	}
+
+	rb_link_node(&event->rb, parent, rb);
+	rb_insert_color(&event->rb, result);
+}
+
+static void
+update_total_count(struct perf_kvm_stat *kvm, struct kvm_event *event)
+{
+	int vcpu = kvm->trace_vcpu;
+
+	kvm->total_count += get_event_count(event, vcpu);
+	kvm->total_time += get_event_time(event, vcpu);
 }
 
 static bool event_is_valid(struct kvm_event *event, int vcpu)
@@ -985,31 +540,33 @@ static bool event_is_valid(struct kvm_event *event, int vcpu)
 	return !!get_event_count(event, vcpu);
 }
 
-static int filter_cb(struct hist_entry *he, void *arg __maybe_unused)
-{
-	struct kvm_event *event;
-	struct perf_kvm_stat *perf_kvm;
-
-	event = container_of(he, struct kvm_event, he);
-	perf_kvm = event->perf_kvm;
-	if (!event_is_valid(event, perf_kvm->trace_vcpu))
-		he->filtered = 1;
-	else
-		he->filtered = 0;
-	return 0;
-}
-
 static void sort_result(struct perf_kvm_stat *kvm)
 {
-	struct ui_progress prog;
-	const char *output_columns = "ev_name,sample,percent_sample,"
-				     "time,percent_time,max_t,min_t,mean_t";
+	unsigned int i;
+	int vcpu = kvm->trace_vcpu;
+	struct kvm_event *event;
 
-	kvm_hists__reinit(output_columns, kvm->sort_key);
-	ui_progress__init(&prog, kvm_hists.hists.nr_entries, "Sorting...");
-	hists__collapse_resort(&kvm_hists.hists, NULL);
-	hists__output_resort_cb(&kvm_hists.hists, NULL, filter_cb);
-	ui_progress__finish();
+	for (i = 0; i < EVENTS_CACHE_SIZE; i++) {
+		list_for_each_entry(event, &kvm->kvm_events_cache[i], hash_entry) {
+			if (event_is_valid(event, vcpu)) {
+				update_total_count(kvm, event);
+				insert_to_result(&kvm->result, event,
+						 kvm->compare, vcpu);
+			}
+		}
+	}
+}
+
+/* returns left most element of result, and erase it */
+static struct kvm_event *pop_from_result(struct rb_root *result)
+{
+	struct rb_node *node = rb_first(result);
+
+	if (!node)
+		return NULL;
+
+	rb_erase(node, result);
+	return container_of(node, struct kvm_event, rb);
 }
 
 static void print_vcpu_info(struct perf_kvm_stat *kvm)
@@ -1049,10 +606,9 @@ static void show_timeofday(void)
 
 static void print_result(struct perf_kvm_stat *kvm)
 {
-	char decode[KVM_EVENT_NAME_LEN];
+	char decode[decode_str_len];
 	struct kvm_event *event;
 	int vcpu = kvm->trace_vcpu;
-	struct rb_node *nd;
 
 	if (kvm->live) {
 		puts(CONSOLE_CLEAR);
@@ -1061,7 +617,7 @@ static void print_result(struct perf_kvm_stat *kvm)
 
 	pr_info("\n\n");
 	print_vcpu_info(kvm);
-	pr_info("%*s ", KVM_EVENT_NAME_LEN, kvm->events_ops->name);
+	pr_info("%*s ", decode_str_len, kvm->events_ops->name);
 	pr_info("%10s ", "Samples");
 	pr_info("%9s ", "Samples%");
 
@@ -1071,22 +627,16 @@ static void print_result(struct perf_kvm_stat *kvm)
 	pr_info("%16s ", "Avg time");
 	pr_info("\n\n");
 
-	for (nd = rb_first_cached(&kvm_hists.hists.entries); nd; nd = rb_next(nd)) {
-		struct hist_entry *he;
+	while ((event = pop_from_result(&kvm->result))) {
 		u64 ecount, etime, max, min;
 
-		he = rb_entry(nd, struct hist_entry, rb_node);
-		if (he->filtered)
-			continue;
-
-		event = container_of(he, struct kvm_event, he);
 		ecount = get_event_count(event, vcpu);
 		etime = get_event_time(event, vcpu);
 		max = get_event_max(event, vcpu);
 		min = get_event_min(event, vcpu);
 
 		kvm->events_ops->decode_key(kvm, &event->key, decode);
-		pr_info("%*s ", KVM_EVENT_NAME_LEN, decode);
+		pr_info("%*s ", decode_str_len, decode);
 		pr_info("%10llu ", (unsigned long long)ecount);
 		pr_info("%8.2f%% ", (double)ecount / kvm->total_count * 100);
 		pr_info("%8.2f%% ", (double)etime / kvm->total_time * 100);
@@ -1105,7 +655,7 @@ static void print_result(struct perf_kvm_stat *kvm)
 }
 
 #if defined(HAVE_TIMERFD_SUPPORT) && defined(HAVE_LIBTRACEEVENT)
-static int process_lost_event(const struct perf_tool *tool,
+static int process_lost_event(struct perf_tool *tool,
 			      union perf_event *event __maybe_unused,
 			      struct perf_sample *sample __maybe_unused,
 			      struct machine *machine __maybe_unused)
@@ -1126,7 +676,7 @@ static bool skip_sample(struct perf_kvm_stat *kvm,
 	return false;
 }
 
-static int process_sample_event(const struct perf_tool *tool,
+static int process_sample_event(struct perf_tool *tool,
 				union perf_event *event,
 				struct perf_sample *sample,
 				struct evsel *evsel,
@@ -1139,11 +689,6 @@ static int process_sample_event(const struct perf_tool *tool,
 
 	if (skip_sample(kvm, sample))
 		return 0;
-
-	if (machine__resolve(machine, &kvm->al, sample) < 0) {
-		pr_warning("Fail to resolve address location, skip sample.\n");
-		return 0;
-	}
 
 	thread = machine__findnew_thread(machine, sample->pid, sample->tid);
 	if (thread == NULL) {
@@ -1165,9 +710,7 @@ static int cpu_isa_config(struct perf_kvm_stat *kvm)
 	int err;
 
 	if (kvm->live) {
-		struct perf_cpu cpu = {-1};
-
-		err = get_cpuid(buf, sizeof(buf), cpu);
+		err = get_cpuid(buf, sizeof(buf));
 		if (err != 0) {
 			pr_err("Failed to look up CPU type: %s\n",
 			       str_error_r(err, buf, sizeof(buf)));
@@ -1175,7 +718,7 @@ static int cpu_isa_config(struct perf_kvm_stat *kvm)
 		}
 		cpuid = buf;
 	} else
-		cpuid = perf_session__env(kvm->session)->cpuid;
+		cpuid = kvm->session->header.env.cpuid;
 
 	if (!cpuid) {
 		pr_err("Failed to look up CPU type\n");
@@ -1358,11 +901,8 @@ static int perf_kvm__handle_timerfd(struct perf_kvm_stat *kvm)
 	sort_result(kvm);
 	print_result(kvm);
 
-	/* Reset sort list to "ev_name" */
-	kvm_hists__reinit(NULL, "ev_name");
-
 	/* reset counts */
-	clear_events_cache_stats();
+	clear_events_cache_stats(kvm->kvm_events_cache);
 	kvm->total_count = 0;
 	kvm->total_time = 0;
 	kvm->lost_events = 0;
@@ -1412,14 +952,13 @@ static int kvm_events_live_report(struct perf_kvm_stat *kvm)
 		return ret;
 
 	if (!verify_vcpu(kvm->trace_vcpu) ||
-	    !is_valid_key(kvm) ||
+	    !select_key(kvm) ||
 	    !register_kvm_events_ops(kvm)) {
 		goto out;
 	}
 
 	set_term_quiet_input(&save);
-
-	kvm_hists__init();
+	init_kvm_event_record(kvm);
 
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
@@ -1470,8 +1009,6 @@ static int kvm_events_live_report(struct perf_kvm_stat *kvm)
 	}
 
 out:
-	hists__delete_entries(&kvm_hists.hists);
-
 	if (kvm->timerfd >= 0)
 		close(kvm->timerfd);
 
@@ -1544,24 +1081,26 @@ static int read_events(struct perf_kvm_stat *kvm)
 {
 	int ret;
 
+	struct perf_tool eops = {
+		.sample			= process_sample_event,
+		.comm			= perf_event__process_comm,
+		.namespaces		= perf_event__process_namespaces,
+		.ordered_events		= true,
+	};
 	struct perf_data file = {
 		.path  = kvm->file_name,
 		.mode  = PERF_DATA_MODE_READ,
 		.force = kvm->force,
 	};
 
-	perf_tool__init(&kvm->tool, /*ordered_events=*/true);
-	kvm->tool.sample	= process_sample_event;
-	kvm->tool.comm		= perf_event__process_comm;
-	kvm->tool.namespaces	= perf_event__process_namespaces;
-
+	kvm->tool = eops;
 	kvm->session = perf_session__new(&file, &kvm->tool);
 	if (IS_ERR(kvm->session)) {
 		pr_err("Initializing perf session failed\n");
 		return PTR_ERR(kvm->session);
 	}
 
-	symbol__init(perf_session__env(kvm->session));
+	symbol__init(&kvm->session->header.env);
 
 	if (!perf_session__has_traces(kvm->session, "kvm record")) {
 		ret = -EINVAL;
@@ -1607,34 +1146,33 @@ static int kvm_events_report_vcpu(struct perf_kvm_stat *kvm)
 	if (!verify_vcpu(vcpu))
 		goto exit;
 
-	if (!is_valid_key(kvm))
+	if (!select_key(kvm))
 		goto exit;
 
 	if (!register_kvm_events_ops(kvm))
 		goto exit;
 
-	if (kvm->use_stdio) {
-		use_browser = 0;
-		setup_pager();
-	} else {
-		use_browser = 1;
-	}
-
-	setup_browser(false);
-
-	kvm_hists__init();
+	init_kvm_event_record(kvm);
+	setup_pager();
 
 	ret = read_events(kvm);
 	if (ret)
 		goto exit;
 
 	sort_result(kvm);
-	kvm_display(kvm);
+	print_result(kvm);
 
 exit:
-	hists__delete_entries(&kvm_hists.hists);
 	return ret;
 }
+
+#define STRDUP_FAIL_EXIT(s)		\
+	({	char *_p;		\
+	_p = strdup(s);		\
+		if (!_p)		\
+			return -ENOMEM;	\
+		_p;			\
+	})
 
 int __weak setup_kvm_events_tp(struct perf_kvm_stat *kvm __maybe_unused)
 {
@@ -1680,7 +1218,7 @@ kvm_events_record(struct perf_kvm_stat *kvm, int argc, const char **argv)
 		rec_argv[i] = STRDUP_FAIL_EXIT(record_args[i]);
 
 	for (j = 0; j < events_tp_size; j++) {
-		rec_argv[i++] = STRDUP_FAIL_EXIT("-e");
+		rec_argv[i++] = "-e";
 		rec_argv[i++] = STRDUP_FAIL_EXIT(kvm_events_tp[j]);
 	}
 
@@ -1688,7 +1226,7 @@ kvm_events_record(struct perf_kvm_stat *kvm, int argc, const char **argv)
 	rec_argv[i++] = STRDUP_FAIL_EXIT(kvm->file_name);
 
 	for (j = 1; j < (unsigned int)argc; j++, i++)
-		rec_argv[i] = STRDUP_FAIL_EXIT(argv[j]);
+		rec_argv[i] = argv[j];
 
 	set_option_flag(record_options, 'e', "event", PARSE_OPT_HIDDEN);
 	set_option_flag(record_options, 0, "filter", PARSE_OPT_HIDDEN);
@@ -1711,13 +1249,7 @@ kvm_events_record(struct perf_kvm_stat *kvm, int argc, const char **argv)
 	set_option_flag(record_options, 0, "transaction", PARSE_OPT_DISABLED);
 
 	record_usage = kvm_stat_record_usage;
-	ret = cmd_record(i, rec_argv);
-
-EXIT:
-	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
-	free(rec_argv);
-	return ret;
+	return cmd_record(i, rec_argv);
 }
 
 static int
@@ -1735,7 +1267,6 @@ kvm_events_report(struct perf_kvm_stat *kvm, int argc, const char **argv)
 		OPT_STRING('p', "pid", &kvm->opts.target.pid, "pid",
 			   "analyze events only for given process id(s)"),
 		OPT_BOOLEAN('f', "force", &kvm->force, "don't complain, do it"),
-		OPT_BOOLEAN(0, "stdio", &kvm->use_stdio, "use the stdio interface"),
 		OPT_END()
 	};
 
@@ -1752,10 +1283,6 @@ kvm_events_report(struct perf_kvm_stat *kvm, int argc, const char **argv)
 			usage_with_options(kvm_events_report_usage,
 					   kvm_events_report_options);
 	}
-
-#ifndef HAVE_SLANG_SUPPORT
-	kvm->use_stdio = true;
-#endif
 
 	if (!kvm->opts.target.pid)
 		kvm->opts.target.system_wide = true;
@@ -1856,19 +1383,22 @@ static int kvm_events_live(struct perf_kvm_stat *kvm,
 
 
 	/* event handling */
-	perf_tool__init(&kvm->tool, /*ordered_events=*/true);
 	kvm->tool.sample = process_sample_event;
 	kvm->tool.comm   = perf_event__process_comm;
 	kvm->tool.exit   = perf_event__process_exit;
 	kvm->tool.fork   = perf_event__process_fork;
 	kvm->tool.lost   = process_lost_event;
 	kvm->tool.namespaces  = perf_event__process_namespaces;
+	kvm->tool.ordered_events = true;
+	perf_tool__fill_defaults(&kvm->tool);
 
 	/* set defaults */
 	kvm->display_time = 1;
 	kvm->opts.user_interval = 1;
 	kvm->opts.mmap_pages = 512;
 	kvm->opts.target.uses_mmap = false;
+	kvm->opts.target.uid_str = NULL;
+	kvm->opts.target.uid = UINT_MAX;
 
 	symbol__init(NULL);
 	disable_buildid_cache();
@@ -1998,122 +1528,58 @@ static int __cmd_record(const char *file_name, int argc, const char **argv)
 	int rec_argc, i = 0, j, ret;
 	const char **rec_argv;
 
-	/*
-	 * Besides the 2 more options "-o" and "filename",
-	 * kvm_add_default_arch_event() may add 2 extra options,
-	 * so allocate 4 more items.
-	 */
-	rec_argc = argc + 2 + 2;
-	rec_argv = calloc(rec_argc + 1, sizeof(char *));
-	if (!rec_argv)
-		return -ENOMEM;
-
-	rec_argv[i++] = STRDUP_FAIL_EXIT("record");
-	rec_argv[i++] = STRDUP_FAIL_EXIT("-o");
-	rec_argv[i++] = STRDUP_FAIL_EXIT(file_name);
-	for (j = 1; j < argc; j++, i++)
-		rec_argv[i] = STRDUP_FAIL_EXIT(argv[j]);
-
-	BUG_ON(i + 2 != rec_argc);
-
-	ret = kvm_add_default_arch_event(&i, rec_argv);
+	ret = kvm_add_default_arch_event(&argc, argv);
 	if (ret)
-		goto EXIT;
+		return -EINVAL;
 
-	ret = cmd_record(i, rec_argv);
+	rec_argc = argc + 2;
+	rec_argv = calloc(rec_argc + 1, sizeof(char *));
+	rec_argv[i++] = strdup("record");
+	rec_argv[i++] = strdup("-o");
+	rec_argv[i++] = strdup(file_name);
+	for (j = 1; j < argc; j++, i++)
+		rec_argv[i] = argv[j];
 
-EXIT:
-	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
-	free(rec_argv);
-	return ret;
+	BUG_ON(i != rec_argc);
+
+	return cmd_record(i, rec_argv);
 }
 
 static int __cmd_report(const char *file_name, int argc, const char **argv)
 {
-	int rec_argc, i = 0, j, ret;
+	int rec_argc, i = 0, j;
 	const char **rec_argv;
 
 	rec_argc = argc + 2;
 	rec_argv = calloc(rec_argc + 1, sizeof(char *));
-	if (!rec_argv)
-		return -ENOMEM;
-
-	rec_argv[i++] = STRDUP_FAIL_EXIT("report");
-	rec_argv[i++] = STRDUP_FAIL_EXIT("-i");
-	rec_argv[i++] = STRDUP_FAIL_EXIT(file_name);
+	rec_argv[i++] = strdup("report");
+	rec_argv[i++] = strdup("-i");
+	rec_argv[i++] = strdup(file_name);
 	for (j = 1; j < argc; j++, i++)
-		rec_argv[i] = STRDUP_FAIL_EXIT(argv[j]);
+		rec_argv[i] = argv[j];
 
 	BUG_ON(i != rec_argc);
 
-	ret = cmd_report(i, rec_argv);
-
-EXIT:
-	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
-	free(rec_argv);
-	return ret;
+	return cmd_report(i, rec_argv);
 }
 
 static int
 __cmd_buildid_list(const char *file_name, int argc, const char **argv)
 {
-	int rec_argc, i = 0, j, ret;
+	int rec_argc, i = 0, j;
 	const char **rec_argv;
 
 	rec_argc = argc + 2;
 	rec_argv = calloc(rec_argc + 1, sizeof(char *));
-	if (!rec_argv)
-		return -ENOMEM;
-
-	rec_argv[i++] = STRDUP_FAIL_EXIT("buildid-list");
-	rec_argv[i++] = STRDUP_FAIL_EXIT("-i");
-	rec_argv[i++] = STRDUP_FAIL_EXIT(file_name);
+	rec_argv[i++] = strdup("buildid-list");
+	rec_argv[i++] = strdup("-i");
+	rec_argv[i++] = strdup(file_name);
 	for (j = 1; j < argc; j++, i++)
-		rec_argv[i] = STRDUP_FAIL_EXIT(argv[j]);
+		rec_argv[i] = argv[j];
 
 	BUG_ON(i != rec_argc);
 
-	ret = cmd_buildid_list(i, rec_argv);
-
-EXIT:
-	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
-	free(rec_argv);
-	return ret;
-}
-
-static int __cmd_top(int argc, const char **argv)
-{
-	int rec_argc, i = 0, ret;
-	const char **rec_argv;
-
-	/*
-	 * kvm_add_default_arch_event() may add 2 extra options, so
-	 * allocate 2 more pointers in adavance.
-	 */
-	rec_argc = argc + 2;
-	rec_argv = calloc(rec_argc + 1, sizeof(char *));
-	if (!rec_argv)
-		return -ENOMEM;
-
-	for (i = 0; i < argc; i++)
-		rec_argv[i] = STRDUP_FAIL_EXIT(argv[i]);
-
-	BUG_ON(i != argc);
-
-	ret = kvm_add_default_arch_event(&i, rec_argv);
-	if (ret)
-		goto EXIT;
-
-	ret = cmd_top(i, rec_argv);
-
-EXIT:
-	for (i = 0; i < rec_argc; i++)
-		free((void *)rec_argv[i]);
-	free(rec_argv);
-	return ret;
+	return cmd_buildid_list(i, rec_argv);
 }
 
 int cmd_kvm(int argc, const char **argv)
@@ -2148,7 +1614,6 @@ int cmd_kvm(int argc, const char **argv)
 						"buildid-list", "stat", NULL };
 	const char *kvm_usage[] = { NULL, NULL };
 
-	exclude_GH_default = true;
 	perf_host  = 0;
 	perf_guest = 1;
 
@@ -2176,7 +1641,7 @@ int cmd_kvm(int argc, const char **argv)
 	else if (strlen(argv[0]) > 2 && strstarts("diff", argv[0]))
 		return cmd_diff(argc, argv);
 	else if (!strcmp(argv[0], "top"))
-		return __cmd_top(argc, argv);
+		return cmd_top(argc, argv);
 	else if (strlen(argv[0]) > 2 && strstarts("buildid-list", argv[0]))
 		return __cmd_buildid_list(file_name, argc, argv);
 #if defined(HAVE_KVM_STAT_SUPPORT) && defined(HAVE_LIBTRACEEVENT)
@@ -2185,9 +1650,6 @@ int cmd_kvm(int argc, const char **argv)
 #endif
 	else
 		usage_with_options(kvm_usage, kvm_options);
-
-	/* free usage string allocated by parse_options_subcommand */
-	free((void *)kvm_usage[0]);
 
 	return 0;
 }

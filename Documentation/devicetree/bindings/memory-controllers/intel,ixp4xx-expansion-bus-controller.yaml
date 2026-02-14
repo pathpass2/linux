@@ -12,7 +12,7 @@ description: |
   including IXP42x, IXP43x, IXP45x and IXP46x.
 
 maintainers:
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
 
 properties:
   $nodename:
@@ -57,7 +57,6 @@ patternProperties:
       subnodes.
     type: object
     $ref: /schemas/memory-controllers/intel,ixp4xx-expansion-peripheral-props.yaml#
-    additionalProperties: true
 
 required:
   - compatible

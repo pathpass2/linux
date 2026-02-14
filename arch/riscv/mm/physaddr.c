@@ -12,7 +12,7 @@ phys_addr_t __virt_to_phys(unsigned long x)
 	 * Boundary checking aginst the kernel linear mapping space.
 	 */
 	WARN(!is_linear_mapping(x) && !is_kernel_mapping(x),
-	     "virt_to_phys used for non-linear address: %p (%pS)\n",
+	     "virt_to_phys used for non-linear address: %pK (%pS)\n",
 	     (void *)x, (void *)x);
 
 	return __va_to_pa_nodebug(x);
@@ -33,19 +33,3 @@ phys_addr_t __phys_addr_symbol(unsigned long x)
 	return __va_to_pa_nodebug(x);
 }
 EXPORT_SYMBOL(__phys_addr_symbol);
-
-phys_addr_t linear_mapping_va_to_pa(unsigned long x)
-{
-	BUG_ON(!kernel_map.va_pa_offset);
-
-	return ((unsigned long)(x) - kernel_map.va_pa_offset);
-}
-EXPORT_SYMBOL(linear_mapping_va_to_pa);
-
-void *linear_mapping_pa_to_va(unsigned long x)
-{
-	BUG_ON(!kernel_map.va_pa_offset);
-
-	return ((void *)((unsigned long)(x) + kernel_map.va_pa_offset));
-}
-EXPORT_SYMBOL(linear_mapping_pa_to_va);

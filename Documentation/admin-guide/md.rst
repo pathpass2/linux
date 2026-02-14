@@ -238,16 +238,6 @@ All md devices contain:
      the number of devices in a raid4/5/6, or to support external
      metadata formats which mandate such clipping.
 
-  logical_block_size
-     Configure the array's logical block size in bytes. This attribute
-     is only supported for 1.x meta. Write the value before starting
-     array. The final array LBS uses the maximum between this
-     configuration and LBS of all combined devices. Note that
-     LBS cannot exceed PAGE_SIZE before RAID supports folio.
-     WARNING: Arrays created on new kernel cannot be assembled at old
-     kernel due to padding check, Set module parameter 'check_new_feature'
-     to false to bypass, but data loss may occur.
-
   reshape_position
      This is either ``none`` or a sector number within the devices of
      the array where ``reshape`` is up to.  If this is set, the three
@@ -357,54 +347,6 @@ All md devices contain:
      active-idle
          like active, but no writes have been seen for a while (safe_mode_delay).
 
-  consistency_policy
-     This indicates how the array maintains consistency in case of unexpected
-     shutdown. It can be:
-
-     none
-       Array has no redundancy information, e.g. raid0, linear.
-
-     resync
-       Full resync is performed and all redundancy is regenerated when the
-       array is started after unclean shutdown.
-
-     bitmap
-       Resync assisted by a write-intent bitmap.
-
-     journal
-       For raid4/5/6, journal device is used to log transactions and replay
-       after unclean shutdown.
-
-     ppl
-       For raid5 only, Partial Parity Log is used to close the write hole and
-       eliminate resync.
-
-     The accepted values when writing to this file are ``ppl`` and ``resync``,
-     used to enable and disable PPL.
-
-  uuid
-     This indicates the UUID of the array in the following format:
-     xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-
-  bitmap_type
-     [RW] When read, this file will display the current and available
-     bitmap for this array. The currently active bitmap will be enclosed
-     in [] brackets. Writing an bitmap name or ID to this file will switch
-     control of this array to that new bitmap. Note that writing a new
-     bitmap for created array is forbidden.
-
-     none
-         No bitmap
-     bitmap
-         The default internal bitmap
-     llbitmap
-         The lockless internal bitmap
-
-If bitmap_type is not none, then additional bitmap attributes bitmap/xxx or
-llbitmap/xxx will be created after md device KOBJ_CHANGE event.
-
-If bitmap_type is bitmap, then the md device will also contain:
-
   bitmap/location
      This indicates where the write-intent bitmap for the array is
      stored.
@@ -459,23 +401,35 @@ If bitmap_type is bitmap, then the md device will also contain:
      once the array becomes non-degraded, and this fact has been
      recorded in the metadata.
 
-If bitmap_type is llbitmap, then the md device will also contain:
+  consistency_policy
+     This indicates how the array maintains consistency in case of unexpected
+     shutdown. It can be:
 
-  llbitmap/bits
-     This is read-only, show status of bitmap bits, the number of each
-     value.
+     none
+       Array has no redundancy information, e.g. raid0, linear.
 
-  llbitmap/metadata
-     This is read-only, show bitmap metadata, include chunksize, chunkshift,
-     chunks, offset and daemon_sleep.
+     resync
+       Full resync is performed and all redundancy is regenerated when the
+       array is started after unclean shutdown.
 
-  llbitmap/daemon_sleep
-     This is read-write, time in seconds that daemon function will be
-     triggered to clear dirty bits.
+     bitmap
+       Resync assisted by a write-intent bitmap.
 
-  llbitmap/barrier_idle
-     This is read-write, time in seconds that page barrier will be idled,
-     means dirty bits in the page will be cleared.
+     journal
+       For raid4/5/6, journal device is used to log transactions and replay
+       after unclean shutdown.
+
+     ppl
+       For raid5 only, Partial Parity Log is used to close the write hole and
+       eliminate resync.
+
+     The accepted values when writing to this file are ``ppl`` and ``resync``,
+     used to enable and disable PPL.
+
+  uuid
+     This indicates the UUID of the array in the following format:
+     xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
 
 As component devices are added to an md array, they appear in the ``md``
 directory as new directories named::
@@ -804,7 +758,7 @@ These currently include:
 
   journal_mode (currently raid5 only)
       The cache mode for raid5. raid5 could include an extra disk for
-      caching. The mode can be "write-through" or "write-back". The
+      caching. The mode can be "write-throuth" and "write-back". The
       default is "write-through".
 
   ppl_write_hint

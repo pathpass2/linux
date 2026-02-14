@@ -13,6 +13,7 @@
 #include <linux/err.h>
 #include <linux/irq.h>
 #include <linux/interrupt.h>
+#include <linux/gpio.h>
 #include <linux/regmap.h>
 #include <linux/uaccess.h>
 #include <linux/regulator/driver.h>
@@ -430,7 +431,7 @@ static void lp8755_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lp8755_id[] = {
-	{ LP8755_NAME },
+	{LP8755_NAME, 0},
 	{}
 };
 
@@ -439,9 +440,8 @@ MODULE_DEVICE_TABLE(i2c, lp8755_id);
 static struct i2c_driver lp8755_i2c_driver = {
 	.driver = {
 		   .name = LP8755_NAME,
-		   .probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		   },
-	.probe = lp8755_probe,
+	.probe_new = lp8755_probe,
 	.remove = lp8755_remove,
 	.id_table = lp8755_id,
 };

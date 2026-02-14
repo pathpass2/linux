@@ -198,8 +198,6 @@
 		#clock-cells = <1>;
 		clocks = <&x304_clk>;
 		clock-names = "xin";
-		idt,shutdown = <0>;
-		idt,output-enable-active = <1>;
 	};
 };
 
@@ -289,7 +287,6 @@
 &scif2 {
 	pinctrl-0 = <&scif2_pins>;
 	pinctrl-names = "default";
-	bootph-all;
 
 	status = "okay";
 };
@@ -328,7 +325,8 @@
 	wlcore: wlcore@2 {
 		compatible = "ti,wl1837";
 		reg = <2>;
-		interrupts-extended = <&gpio2 5 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-parent = <&gpio2>;
+		interrupts = <5 IRQ_TYPE_LEVEL_HIGH>;
 	};
 };
 

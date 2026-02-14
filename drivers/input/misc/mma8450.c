@@ -11,7 +11,7 @@
 #include <linux/delay.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of_device.h>
 
 #define MMA8450_DRV_NAME	"mma8450"
 
@@ -38,8 +38,6 @@
 
 #define MMA8450_CTRL_REG1	0x38
 #define MMA8450_CTRL_REG2	0x39
-#define MMA8450_ID		0xc6
-#define MMA8450_WHO_AM_I	0x0f
 
 static int mma8450_read(struct i2c_client *c, unsigned int off)
 {
@@ -150,20 +148,8 @@ static void mma8450_close(struct input_dev *input)
  */
 static int mma8450_probe(struct i2c_client *c)
 {
-	struct i2c_adapter *adapter = c->adapter;
 	struct input_dev *input;
-	int err, client_id;
-
-	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE |
-						I2C_FUNC_SMBUS_BYTE_DATA))
-		return dev_err_probe(&c->dev, -EINVAL,
-				     "I2C adapter doesn't support SMBUS BYTE");
-
-	client_id = i2c_smbus_read_byte_data(c, MMA8450_WHO_AM_I);
-	if (client_id != MMA8450_ID)
-		return dev_err_probe(&c->dev, -EINVAL,
-				     "unexpected chip ID 0x%x (vs 0x%x)\n",
-				     client_id, MMA8450_ID);
+	int err;
 
 	input = devm_input_allocate_device(&c->dev);
 	if (!input)
@@ -200,8 +186,8 @@ static int mma8450_probe(struct i2c_client *c)
 }
 
 static const struct i2c_device_id mma8450_id[] = {
-	{ MMA8450_DRV_NAME },
-	{ }
+	{ MMA8450_DRV_NAME, 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, mma8450_id);
 
@@ -216,7 +202,7 @@ static struct i2c_driver mma8450_driver = {
 		.name	= MMA8450_DRV_NAME,
 		.of_match_table = mma8450_dt_ids,
 	},
-	.probe		= mma8450_probe,
+	.probe_new	= mma8450_probe,
 	.id_table	= mma8450_id,
 };
 

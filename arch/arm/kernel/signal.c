@@ -18,7 +18,6 @@
 #include <asm/traps.h>
 #include <asm/unistd.h>
 #include <asm/vfp.h>
-#include <asm/syscalls.h>
 
 #include "signal.h"
 
@@ -337,8 +336,7 @@ setup_return(struct pt_regs *regs, struct ksignal *ksig,
 			return 1;
 	}
 
-	if (IS_ENABLED(CONFIG_CPU_ENDIAN_BE8))
-		cpsr |= PSR_E_BIT;
+	cpsr |= PSR_ENDSTATE;
 
 	/*
 	 * Maybe we need to deliver a 32-bit signal to a 26-bit task.
@@ -683,7 +681,7 @@ asmlinkage void do_rseq_syscall(struct pt_regs *regs)
  */
 static_assert(NSIGILL	== 11);
 static_assert(NSIGFPE	== 15);
-static_assert(NSIGSEGV	== 10);
+static_assert(NSIGSEGV	== 9);
 static_assert(NSIGBUS	== 5);
 static_assert(NSIGTRAP	== 6);
 static_assert(NSIGCHLD	== 6);

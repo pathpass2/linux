@@ -139,7 +139,7 @@ END_BTB_FLUSH_SECTION
 	 * kvmppc_get_last_inst().
 	 */
 	li	r9, KVM_INST_FETCH_FAILED
-	PPC_STL	r9, VCPU_LAST_INST(r4)
+	stw	r9, VCPU_LAST_INST(r4)
 	.endif
 
 	.if	\flags & NEED_ESR

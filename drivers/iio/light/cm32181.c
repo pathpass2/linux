@@ -217,7 +217,8 @@ static int cm32181_reg_init(struct cm32181_chip *cm32181)
 	cm32181->lux_per_bit = CM32181_LUX_PER_BIT;
 	cm32181->lux_per_bit_base_it = CM32181_LUX_PER_BIT_BASE_IT;
 
-	cm32181_acpi_parse_cpm_tables(cm32181);
+	if (ACPI_HANDLE(cm32181->dev))
+		cm32181_acpi_parse_cpm_tables(cm32181);
 
 	/* Initialize registers*/
 	for_each_set_bit(i, &cm32181->init_regs_bitmap, CM32181_CONF_REG_NUM) {
@@ -428,14 +429,6 @@ static const struct iio_info cm32181_info = {
 	.attrs			= &cm32181_attribute_group,
 };
 
-static void cm32181_unregister_dummy_client(void *data)
-{
-	struct i2c_client *client = data;
-
-	/* Unregister the dummy client */
-	i2c_unregister_device(client);
-}
-
 static int cm32181_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -467,10 +460,6 @@ static int cm32181_probe(struct i2c_client *client)
 		client = i2c_acpi_new_device(dev, 1, &board_info);
 		if (IS_ERR(client))
 			return PTR_ERR(client);
-
-		ret = devm_add_action_or_reset(dev, cm32181_unregister_dummy_client, client);
-		if (ret)
-			return ret;
 	}
 
 	cm32181 = iio_priv(indio_dev);
@@ -492,7 +481,7 @@ static int cm32181_probe(struct i2c_client *client)
 
 	ret = devm_iio_device_register(dev, indio_dev);
 	if (ret) {
-		dev_err(dev, "%s: register device failed\n", __func__);
+		dev_err(dev, "%s: regist device failed\n", __func__);
 		return ret;
 	}
 
@@ -541,7 +530,7 @@ static struct i2c_driver cm32181_driver = {
 		.of_match_table = cm32181_of_match,
 		.pm = pm_sleep_ptr(&cm32181_pm_ops),
 	},
-	.probe		= cm32181_probe,
+	.probe_new	= cm32181_probe,
 };
 
 module_i2c_driver(cm32181_driver);

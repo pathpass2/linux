@@ -8,7 +8,7 @@ title: Qualcomm Multimedia Clock & Reset Controller
 
 maintainers:
   - Jeffrey Hugo <quic_jhugo@quicinc.com>
-  - Taniya Das <quic_tdas@quicinc.com>
+  - Taniya Das <tdas@codeaurora.org>
 
 description: |
   Qualcomm multimedia clock control module provides the clocks, resets and
@@ -31,12 +31,28 @@ properties:
       - qcom,mmcc-sdm660
 
   clocks:
-    minItems: 7
+    minItems: 8
     maxItems: 13
 
   clock-names:
-    minItems: 7
+    minItems: 8
     maxItems: 13
+
+  '#clock-cells':
+    const: 1
+
+  '#reset-cells':
+    const: 1
+
+  '#power-domain-cells':
+    const: 1
+
+  reg:
+    maxItems: 1
+
+  protected-clocks:
+    description:
+      Protected clock specifier list as per common clock binding
 
   vdd-gfx-supply:
     description:
@@ -44,10 +60,14 @@ properties:
 
 required:
   - compatible
+  - reg
+  - '#clock-cells'
+  - '#reset-cells'
   - '#power-domain-cells'
 
+additionalProperties: false
+
 allOf:
-  - $ref: qcom,gcc.yaml#
   - if:
       properties:
         compatible:
@@ -58,7 +78,6 @@ allOf:
     then:
       properties:
         clocks:
-          minItems: 8
           items:
             - description: Board PXO source
             - description: PLL 3 clock
@@ -68,10 +87,8 @@ allOf:
             - description: DSI phy instance 2 dsi clock
             - description: DSI phy instance 2 byte clock
             - description: HDMI phy PLL clock
-            - description: LVDS PLL clock
 
         clock-names:
-          minItems: 8
           items:
             - const: pxo
             - const: pll3
@@ -81,35 +98,6 @@ allOf:
             - const: dsi2pll
             - const: dsi2pllbyte
             - const: hdmipll
-            - const: lvdspll
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - qcom,mmcc-msm8226
-    then:
-      properties:
-        clocks:
-          items:
-            - description: Board XO source
-            - description: MMSS GPLL0 voted clock
-            - description: GPLL0 voted clock
-            - description: GPLL1 voted clock
-            - description: GFX3D clock source
-            - description: DSI phy instance 0 dsi clock
-            - description: DSI phy instance 0 byte clock
-
-        clock-names:
-          items:
-            - const: xo
-            - const: mmss_gpll0_vote
-            - const: gpll0_vote
-            - const: gpll1_vote
-            - const: gfx3d_clk_src
-            - const: dsi0pll
-            - const: dsi0pllbyte
 
   - if:
       properties:
@@ -281,7 +269,6 @@ allOf:
             - description: HDMI phy PLL clock
             - description: DisplayPort phy PLL link clock
             - description: DisplayPort phy PLL vco clock
-            - description: Global PLL 0 DIV clock
 
         clock-names:
           items:
@@ -294,7 +281,6 @@ allOf:
             - const: hdmipll
             - const: dplink
             - const: dpvco
-            - const: gpll0_div
 
   - if:
       properties:
@@ -330,8 +316,6 @@ allOf:
             - const: dsi1pllbyte
             - const: dp_link_2x_clk_divsel_five
             - const: dp_vco_divided_clk_src_mux
-
-unevaluatedProperties: false
 
 examples:
   # Example for MMCC for MSM8960:

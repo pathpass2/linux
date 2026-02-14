@@ -3,7 +3,6 @@ Linux USB API
 =============
 
 .. toctree::
-   :maxdepth: 1
 
    usb
    gadget
@@ -22,3 +21,10 @@ Linux USB API
    typec
    typec_bus
    usb3-debug-port
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

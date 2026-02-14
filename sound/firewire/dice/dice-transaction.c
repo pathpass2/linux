@@ -136,6 +136,7 @@ static void dice_notification(struct fw_card *card, struct fw_request *request,
 {
 	struct snd_dice *dice = callback_data;
 	u32 bits;
+	unsigned long flags;
 
 	if (tcode != TCODE_WRITE_QUADLET_REQUEST) {
 		fw_send_response(card, request, RCODE_TYPE_ERROR);
@@ -148,9 +149,9 @@ static void dice_notification(struct fw_card *card, struct fw_request *request,
 
 	bits = be32_to_cpup(data);
 
-	scoped_guard(spinlock_irqsave, &dice->lock) {
-		dice->notification_bits |= bits;
-	}
+	spin_lock_irqsave(&dice->lock, flags);
+	dice->notification_bits |= bits;
+	spin_unlock_irqrestore(&dice->lock, flags);
 
 	fw_send_response(card, request, RCODE_COMPLETE);
 

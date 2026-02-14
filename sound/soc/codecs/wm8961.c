@@ -627,10 +627,10 @@ static int wm8961_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		 WM8961_MS | WM8961_FORMAT_MASK);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		aif |= WM8961_MS;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		break;
 	default:
 		return -EINVAL;
@@ -743,7 +743,6 @@ static int wm8961_set_clkdiv(struct snd_soc_dai *dai, int div_id, int div)
 static int wm8961_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	u16 reg;
 
 	/* This is all slightly unusual since we have no bypass paths
@@ -756,7 +755,7 @@ static int wm8961_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_PREPARE:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_STANDBY) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_STANDBY) {
 			/* Enable bias generation */
 			reg = snd_soc_component_read(component, WM8961_ANTI_POP);
 			reg |= WM8961_BUFIOEN | WM8961_BUFDCOPEN;
@@ -771,7 +770,7 @@ static int wm8961_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_PREPARE) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_PREPARE) {
 			/* VREF off */
 			reg = snd_soc_component_read(component, WM8961_PWR_MGMT_1);
 			reg &= ~WM8961_VREF;
@@ -905,7 +904,7 @@ static const struct regmap_config wm8961_regmap = {
 
 	.reg_defaults = wm8961_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8961_reg_defaults),
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.volatile_reg = wm8961_volatile,
 	.readable_reg = wm8961_readable,
@@ -967,7 +966,7 @@ static int wm8961_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm8961_i2c_id[] = {
-	{ "wm8961" },
+	{ "wm8961", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8961_i2c_id);
@@ -983,7 +982,7 @@ static struct i2c_driver wm8961_i2c_driver = {
 		.name = "wm8961",
 		.of_match_table = of_match_ptr(wm8961_of_match),
 	},
-	.probe = wm8961_i2c_probe,
+	.probe_new = wm8961_i2c_probe,
 	.id_table = wm8961_i2c_id,
 };
 

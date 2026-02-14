@@ -1,7 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
 /*
  *   Copyright (c) 2011, 2012, Qualcomm Atheros Communications Inc.
  *   Copyright (c) 2014, I2SE GmbH
+ *
+ *   Permission to use, copy, modify, and/or distribute this software
+ *   for any purpose with or without fee is hereby granted, provided
+ *   that the above copyright notice and this permission notice appear
+ *   in all copies.
+ *
+ *   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
+ *   WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
+ *   WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL
+ *   THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
+ *   CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+ *   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+ *   NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
+ *   CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
 /*   This module implements the Qualcomm Atheros SPI protocol for
@@ -22,6 +35,7 @@
 #include <linux/moduleparam.h>
 #include <linux/netdevice.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_net.h>
 #include <linux/sched.h>
 #include <linux/skbuff.h>
@@ -34,9 +48,6 @@
 #include "qca_spi.h"
 
 #define MAX_DMA_BURST_LEN 5000
-
-#define SPI_INTR	0
-#define SPI_RESET	1
 
 /*   Modules parameters     */
 #define QCASPI_CLK_SPEED_MIN 1000000
@@ -54,7 +65,7 @@ MODULE_PARM_DESC(qcaspi_burst_len, "Number of data bytes per burst. Use 1-5000."
 
 #define QCASPI_PLUGGABLE_MIN 0
 #define QCASPI_PLUGGABLE_MAX 1
-static int qcaspi_pluggable = QCASPI_PLUGGABLE_MAX;
+static int qcaspi_pluggable = QCASPI_PLUGGABLE_MIN;
 module_param(qcaspi_pluggable, int, 0);
 MODULE_PARM_DESC(qcaspi_pluggable, "Pluggable SPI connection (yes/no).");
 
@@ -349,7 +360,7 @@ qcaspi_receive(struct qcaspi *qca)
 	/* Read the packet size. */
 	qcaspi_read_register(qca, SPI_REG_RDBUF_BYTE_AVA, &available);
 
-	netdev_dbg(net_dev, "qcaspi_receive: SPI_REG_RDBUF_BYTE_AVA: Value: %04x\n",
+	netdev_dbg(net_dev, "qcaspi_receive: SPI_REG_RDBUF_BYTE_AVA: Value: %08x\n",
 		   available);
 
 	if (available > QCASPI_HW_BUF_LEN + QCASPI_HW_PKT_LEN) {
@@ -466,7 +477,7 @@ qcaspi_flush_tx_ring(struct qcaspi *qca)
 	 * has been replaced by netif_tx_lock_bh() and so on.
 	 */
 	netif_tx_lock_bh(qca->net_dev);
-	for (i = 0; i < QCASPI_TX_RING_MAX_LEN; i++) {
+	for (i = 0; i < TX_RING_MAX_LEN; i++) {
 		if (qca->txr.skb[i]) {
 			dev_kfree_skb(qca->txr.skb[i]);
 			qca->txr.skb[i] = NULL;
@@ -496,7 +507,7 @@ qcaspi_qca7k_sync(struct qcaspi *qca, int event)
 			if (qca->sync == QCASPI_SYNC_READY)
 				qca->stats.bad_signature++;
 
-			set_bit(SPI_RESET, &qca->flags);
+			qca->sync = QCASPI_SYNC_UNKNOWN;
 			netdev_dbg(qca->net_dev, "sync: got CPU on, but signature was invalid, restart\n");
 			return;
 		} else {
@@ -506,17 +517,12 @@ qcaspi_qca7k_sync(struct qcaspi *qca, int event)
 			if (wrbuf_space != QCASPI_HW_BUF_LEN) {
 				netdev_dbg(qca->net_dev, "sync: got CPU on, but wrbuf not empty. reset!\n");
 				qca->sync = QCASPI_SYNC_UNKNOWN;
-				qca->stats.buf_avail_err++;
 			} else {
 				netdev_dbg(qca->net_dev, "sync: got CPU on, now in sync\n");
 				qca->sync = QCASPI_SYNC_READY;
 				return;
 			}
 		}
-	} else {
-		/* Handle reset only on QCASPI_EVENT_UPDATE */
-		if (test_and_clear_bit(SPI_RESET, &qca->flags))
-			qca->sync = QCASPI_SYNC_UNKNOWN;
 	}
 
 	switch (qca->sync) {
@@ -527,7 +533,7 @@ qcaspi_qca7k_sync(struct qcaspi *qca, int event)
 			qcaspi_read_register(qca, SPI_REG_SIGNATURE, &signature);
 
 		if (signature != QCASPI_GOOD_SIGNATURE) {
-			set_bit(SPI_RESET, &qca->flags);
+			qca->sync = QCASPI_SYNC_UNKNOWN;
 			qca->stats.bad_signature++;
 			netdev_dbg(qca->net_dev, "sync: bad signature, restart\n");
 			/* don't reset right away */
@@ -558,7 +564,7 @@ qcaspi_qca7k_sync(struct qcaspi *qca, int event)
 			   qca->reset_count);
 		if (qca->reset_count >= QCASPI_RESET_TIMEOUT) {
 			/* reset did not seem to take place, try again */
-			set_bit(SPI_RESET, &qca->flags);
+			qca->sync = QCASPI_SYNC_UNKNOWN;
 			qca->stats.reset_timeout++;
 			netdev_dbg(qca->net_dev, "sync: reset timeout, restarting process.\n");
 		}
@@ -575,26 +581,15 @@ qcaspi_spi_thread(void *data)
 	netdev_info(qca->net_dev, "SPI thread created\n");
 	while (!kthread_should_stop()) {
 		set_current_state(TASK_INTERRUPTIBLE);
-		if (kthread_should_park()) {
-			netif_tx_disable(qca->net_dev);
-			netif_carrier_off(qca->net_dev);
-			qcaspi_flush_tx_ring(qca);
-			kthread_parkme();
-			if (qca->sync == QCASPI_SYNC_READY) {
-				netif_carrier_on(qca->net_dev);
-				netif_wake_queue(qca->net_dev);
-			}
-			continue;
-		}
-
-		if (!qca->flags &&
-		    !qca->txr.skb[qca->txr.head])
+		if ((qca->intr_req == qca->intr_svc) &&
+		    (qca->txr.skb[qca->txr.head] == NULL) &&
+		    (qca->sync == QCASPI_SYNC_READY))
 			schedule();
 
 		set_current_state(TASK_RUNNING);
 
-		netdev_dbg(qca->net_dev, "have work to do. int: %lu, tx_skb: %p\n",
-			   qca->flags,
+		netdev_dbg(qca->net_dev, "have work to do. int: %d, tx_skb: %p\n",
+			   qca->intr_req - qca->intr_svc,
 			   qca->txr.skb[qca->txr.head]);
 
 		qcaspi_qca7k_sync(qca, QCASPI_EVENT_UPDATE);
@@ -608,23 +603,18 @@ qcaspi_spi_thread(void *data)
 			msleep(QCASPI_QCA7K_REBOOT_TIME_MS);
 		}
 
-		if (test_and_clear_bit(SPI_INTR, &qca->flags)) {
+		if (qca->intr_svc != qca->intr_req) {
+			qca->intr_svc = qca->intr_req;
 			start_spi_intr_handling(qca, &intr_cause);
 
 			if (intr_cause & SPI_INT_CPU_ON) {
 				qcaspi_qca7k_sync(qca, QCASPI_EVENT_CPUON);
 
-				/* Frame decoding in progress */
-				if (qca->frm_handle.state != qca->frm_handle.init)
-					qca->net_dev->stats.rx_dropped++;
-
-				qcafrm_fsm_init_spi(&qca->frm_handle);
-				qca->stats.device_reset++;
-
 				/* not synced. */
 				if (qca->sync != QCASPI_SYNC_READY)
 					continue;
 
+				qca->stats.device_reset++;
 				netif_wake_queue(qca->net_dev);
 				netif_carrier_on(qca->net_dev);
 			}
@@ -633,7 +623,7 @@ qcaspi_spi_thread(void *data)
 				/* restart sync */
 				netdev_dbg(qca->net_dev, "===> rdbuf error!\n");
 				qca->stats.read_buf_err++;
-				set_bit(SPI_RESET, &qca->flags);
+				qca->sync = QCASPI_SYNC_UNKNOWN;
 				continue;
 			}
 
@@ -641,7 +631,7 @@ qcaspi_spi_thread(void *data)
 				/* restart sync */
 				netdev_dbg(qca->net_dev, "===> wrbuf error!\n");
 				qca->stats.write_buf_err++;
-				set_bit(SPI_RESET, &qca->flags);
+				qca->sync = QCASPI_SYNC_UNKNOWN;
 				continue;
 			}
 
@@ -670,7 +660,7 @@ qcaspi_intr_handler(int irq, void *data)
 {
 	struct qcaspi *qca = data;
 
-	set_bit(SPI_INTR, &qca->flags);
+	qca->intr_req++;
 	if (qca->spi_thread)
 		wake_up_process(qca->spi_thread);
 
@@ -681,27 +671,33 @@ static int
 qcaspi_netdev_open(struct net_device *dev)
 {
 	struct qcaspi *qca = netdev_priv(dev);
-	struct task_struct *thread;
+	int ret = 0;
 
 	if (!qca)
 		return -EINVAL;
 
-	set_bit(SPI_INTR, &qca->flags);
+	qca->intr_req = 1;
+	qca->intr_svc = 0;
 	qca->sync = QCASPI_SYNC_UNKNOWN;
 	qcafrm_fsm_init_spi(&qca->frm_handle);
 
-	thread = kthread_run((void *)qcaspi_spi_thread,
-			     qca, "%s", dev->name);
+	qca->spi_thread = kthread_run((void *)qcaspi_spi_thread,
+				      qca, "%s", dev->name);
 
-	if (IS_ERR(thread)) {
+	if (IS_ERR(qca->spi_thread)) {
 		netdev_err(dev, "%s: unable to start kernel thread.\n",
 			   QCASPI_DRV_NAME);
-		return PTR_ERR(thread);
+		return PTR_ERR(qca->spi_thread);
 	}
 
-	qca->spi_thread = thread;
-
-	enable_irq(qca->spi_dev->irq);
+	ret = request_irq(qca->spi_dev->irq, qcaspi_intr_handler, 0,
+			  dev->name, qca);
+	if (ret) {
+		netdev_err(dev, "%s: unable to get IRQ %d (irqval=%d).\n",
+			   QCASPI_DRV_NAME, qca->spi_dev->irq, ret);
+		kthread_stop(qca->spi_thread);
+		return ret;
+	}
 
 	/* SPI thread takes care of TX queue */
 
@@ -716,12 +712,10 @@ qcaspi_netdev_close(struct net_device *dev)
 	netif_stop_queue(dev);
 
 	qcaspi_write_register(qca, SPI_REG_INTR_ENABLE, 0, wr_verify);
-	disable_irq(qca->spi_dev->irq);
+	free_irq(qca->spi_dev->irq, qca);
 
-	if (qca->spi_thread) {
-		kthread_stop(qca->spi_thread);
-		qca->spi_thread = NULL;
-	}
+	kthread_stop(qca->spi_thread);
+	qca->spi_thread = NULL;
 	qcaspi_flush_tx_ring(qca);
 
 	return 0;
@@ -805,7 +799,7 @@ qcaspi_netdev_tx_timeout(struct net_device *dev, unsigned int txqueue)
 		    jiffies, jiffies - dev_trans_start(dev));
 	qca->net_dev->stats.tx_errors++;
 	/* Trigger tx queue flush and QCA7000 reset */
-	set_bit(SPI_RESET, &qca->flags);
+	qca->sync = QCASPI_SYNC_UNKNOWN;
 
 	if (qca->spi_thread)
 		wake_up_process(qca->spi_thread);
@@ -818,10 +812,11 @@ qcaspi_netdev_init(struct net_device *dev)
 
 	dev->mtu = QCAFRM_MAX_MTU;
 	dev->type = ARPHRD_ETHER;
+	qca->clkspeed = qcaspi_clkspeed;
 	qca->burst_len = qcaspi_burst_len;
 	qca->spi_thread = NULL;
-	qca->buffer_size = (QCAFRM_MAX_MTU + VLAN_ETH_HLEN + QCAFRM_HEADER_LEN +
-		QCAFRM_FOOTER_LEN + QCASPI_HW_PKT_LEN) * QCASPI_RX_MAX_FRAMES;
+	qca->buffer_size = (dev->mtu + VLAN_ETH_HLEN + QCAFRM_HEADER_LEN +
+		QCAFRM_FOOTER_LEN + 4) * 4;
 
 	memset(&qca->stats, 0, sizeof(struct qcaspi_stats));
 
@@ -870,8 +865,6 @@ qcaspi_netdev_setup(struct net_device *dev)
 	qcaspi_set_ethtool_ops(dev);
 	dev->watchdog_timeo = QCASPI_TX_TIMEOUT;
 	dev->priv_flags &= ~IFF_TX_SKB_SHARING;
-	dev->needed_tailroom = ALIGN(QCAFRM_FOOTER_LEN + QCAFRM_MIN_LEN, 4);
-	dev->needed_headroom = ALIGN(QCAFRM_HEADER_LEN, 4);
 	dev->tx_queue_len = 100;
 
 	/* MTU range: 46 - 1500 */
@@ -882,7 +875,7 @@ qcaspi_netdev_setup(struct net_device *dev)
 	memset(qca, 0, sizeof(struct qcaspi));
 
 	memset(&qca->txr, 0, sizeof(qca->txr));
-	qca->txr.count = QCASPI_TX_RING_MAX_LEN;
+	qca->txr.count = TX_RING_MAX_LEN;
 }
 
 static const struct of_device_id qca_spi_of_match[] = {
@@ -908,15 +901,17 @@ qca_spi_probe(struct spi_device *spi)
 	legacy_mode = of_property_read_bool(spi->dev.of_node,
 					    "qca,legacy-mode");
 
-	if (qcaspi_clkspeed)
-		spi->max_speed_hz = qcaspi_clkspeed;
-	else if (!spi->max_speed_hz)
-		spi->max_speed_hz = QCASPI_CLK_SPEED;
+	if (qcaspi_clkspeed == 0) {
+		if (spi->max_speed_hz)
+			qcaspi_clkspeed = spi->max_speed_hz;
+		else
+			qcaspi_clkspeed = QCASPI_CLK_SPEED;
+	}
 
-	if (spi->max_speed_hz < QCASPI_CLK_SPEED_MIN ||
-	    spi->max_speed_hz > QCASPI_CLK_SPEED_MAX) {
-		dev_err(&spi->dev, "Invalid clkspeed: %u\n",
-			spi->max_speed_hz);
+	if ((qcaspi_clkspeed < QCASPI_CLK_SPEED_MIN) ||
+	    (qcaspi_clkspeed > QCASPI_CLK_SPEED_MAX)) {
+		dev_err(&spi->dev, "Invalid clkspeed: %d\n",
+			qcaspi_clkspeed);
 		return -EINVAL;
 	}
 
@@ -941,13 +936,14 @@ qca_spi_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	dev_info(&spi->dev, "ver=%s, clkspeed=%u, burst_len=%d, pluggable=%d\n",
+	dev_info(&spi->dev, "ver=%s, clkspeed=%d, burst_len=%d, pluggable=%d\n",
 		 QCASPI_DRV_VERSION,
-		 spi->max_speed_hz,
+		 qcaspi_clkspeed,
 		 qcaspi_burst_len,
 		 qcaspi_pluggable);
 
 	spi->mode = SPI_MODE_3;
+	spi->max_speed_hz = qcaspi_clkspeed;
 	if (spi_setup(spi) < 0) {
 		dev_err(&spi->dev, "Unable to setup SPI device\n");
 		return -EFAULT;
@@ -972,15 +968,6 @@ qca_spi_probe(struct spi_device *spi)
 
 	spi_set_drvdata(spi, qcaspi_devs);
 
-	ret = devm_request_irq(&spi->dev, spi->irq, qcaspi_intr_handler,
-			       IRQF_NO_AUTOEN, qca->net_dev->name, qca);
-	if (ret) {
-		dev_err(&spi->dev, "Unable to get IRQ %d (irqval=%d).\n",
-			spi->irq, ret);
-		free_netdev(qcaspi_devs);
-		return ret;
-	}
-
 	ret = of_get_ethdev_address(spi->dev.of_node, qca->net_dev);
 	if (ret) {
 		eth_hw_addr_random(qca->net_dev);
@@ -995,8 +982,8 @@ qca_spi_probe(struct spi_device *spi)
 		qcaspi_read_register(qca, SPI_REG_SIGNATURE, &signature);
 
 		if (signature != QCASPI_GOOD_SIGNATURE) {
-			dev_err(&spi->dev, "Invalid signature (expected 0x%04x, read 0x%04x)\n",
-				QCASPI_GOOD_SIGNATURE, signature);
+			dev_err(&spi->dev, "Invalid signature (0x%04X)\n",
+				signature);
 			free_netdev(qcaspi_devs);
 			return -EFAULT;
 		}
@@ -1045,6 +1032,6 @@ module_spi_driver(qca_spi_driver);
 
 MODULE_DESCRIPTION("Qualcomm Atheros QCA7000 SPI Driver");
 MODULE_AUTHOR("Qualcomm Atheros Communications");
-MODULE_AUTHOR("Stefan Wahren <wahrenst@gmx.net>");
+MODULE_AUTHOR("Stefan Wahren <stefan.wahren@i2se.com>");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_VERSION(QCASPI_DRV_VERSION);

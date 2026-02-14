@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2019 MediaTek Inc.
  *
  * Author: Roy Luo <royluo@google.com>
@@ -122,7 +122,7 @@ void mt7615_unregister_device(struct mt7615_dev *dev)
 
 	mt7615_tx_token_put(dev);
 	mt7615_dma_cleanup(dev);
-	tasklet_disable(&dev->mt76.irq_tasklet);
+	tasklet_disable(&dev->irq_tasklet);
 
 	mt76_free_device(&dev->mt76);
 }

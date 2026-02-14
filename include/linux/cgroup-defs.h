@@ -71,6 +71,9 @@ enum {
 
 	/* Cgroup is frozen. */
 	CGRP_FROZEN,
+
+	/* Control group has to be killed. */
+	CGRP_KILL,
 };
 
 /* cgroup_root->flags */
@@ -90,12 +93,6 @@ enum {
 	 * migrations and controller on/offs by disabling percpu operation on
 	 * cgroup_threadgroup_rwsem. This makes hot path operations such as
 	 * forks and exits into the slow path and more expensive.
-	 *
-	 * Alleviate the contention between fork, exec, exit operations and
-	 * writing to cgroup.procs by taking a per threadgroup rwsem instead of
-	 * the global cgroup_threadgroup_rwsem. Fork and other operations
-	 * from threads in different thread groups no longer contend with
-	 * writing to cgroup.procs.
 	 *
 	 * The static usage pattern of creating a cgroup, enabling controllers,
 	 * and then seeding it with CLONE_INTO_CGROUP doesn't require write
@@ -118,16 +115,6 @@ enum {
 	 * Enable recursive subtree protection
 	 */
 	CGRP_ROOT_MEMORY_RECURSIVE_PROT = (1 << 18),
-
-	/*
-	 * Enable hugetlb accounting for the memory controller.
-	 */
-	CGRP_ROOT_MEMORY_HUGETLB_ACCOUNTING = (1 << 19),
-
-	/*
-	 * Enable legacy local pids.events.
-	 */
-	CGRP_ROOT_PIDS_LOCAL_EVENTS = (1 << 20),
 };
 
 /* cftype->flags */
@@ -144,17 +131,6 @@ enum {
 	__CFTYPE_ONLY_ON_DFL	= (1 << 16),	/* only on default hierarchy */
 	__CFTYPE_NOT_ON_DFL	= (1 << 17),	/* not on default hierarchy */
 	__CFTYPE_ADDED		= (1 << 18),
-};
-
-enum cgroup_attach_lock_mode {
-	/* Default */
-	CGRP_ATTACH_LOCK_GLOBAL,
-
-	/* When pid=0 && threadgroup=false, see comments in cgroup_procs_write_start */
-	CGRP_ATTACH_LOCK_NONE,
-
-	/* When favordynmods is on, see comments above CGRP_ROOT_FAVOR_DYNMODS */
-	CGRP_ATTACH_LOCK_PER_THREADGROUP,
 };
 
 /*
@@ -186,30 +162,12 @@ struct cgroup_subsys_state {
 	/* reference count - access via css_[try]get() and css_put() */
 	struct percpu_ref refcnt;
 
-	/*
-	 * Depending on the context, this field is initialized
-	 * via css_rstat_init() at different places:
-	 *
-	 * when css is associated with cgroup::self
-	 *   when css->cgroup is the root cgroup
-	 *     performed in cgroup_init()
-	 *   when css->cgroup is not the root cgroup
-	 *     performed in cgroup_create()
-	 * when css is associated with a subsystem
-	 *   when css->cgroup is the root cgroup
-	 *     performed in cgroup_init_subsys() in the non-early path
-	 *   when css->cgroup is not the root cgroup
-	 *     performed in css_create()
-	 */
-	struct css_rstat_cpu __percpu *rstat_cpu;
-
-	/*
-	 * siblings list anchored at the parent's ->children
-	 *
-	 * linkage is protected by cgroup_mutex or RCU
-	 */
+	/* siblings list anchored at the parent's ->children */
 	struct list_head sibling;
 	struct list_head children;
+
+	/* flush target list anchored at cgrp->rstat_css_list */
+	struct list_head rstat_css_node;
 
 	/*
 	 * PI: Subsys-unique ID.  0 is unused and root is always 1.  The
@@ -242,24 +200,6 @@ struct cgroup_subsys_state {
 	 * fields of the containing structure.
 	 */
 	struct cgroup_subsys_state *parent;
-
-	/*
-	 * Keep track of total numbers of visible descendant CSSes.
-	 * The total number of dying CSSes is tracked in
-	 * css->cgroup->nr_dying_subsys[ssid].
-	 * Protected by cgroup_mutex.
-	 */
-	int nr_descendants;
-
-	/*
-	 * A singly-linked list of css structures to be rstat flushed.
-	 * This is a scratch field to be used exclusively by
-	 * css_rstat_flush().
-	 *
-	 * Protected by rstat_base_lock when css is cgroup::self.
-	 * Protected by css->ss->rstat_ss_lock otherwise.
-	 */
-	struct cgroup_subsys_state *rstat_flush_next;
 };
 
 /*
@@ -298,7 +238,7 @@ struct css_set {
 	 * Lists running through all tasks using this cgroup group.
 	 * mg_tasks lists tasks which belong to this cset but are in the
 	 * process of being migrated out or in.  Protected by
-	 * css_set_lock, but, during migration, once tasks are moved to
+	 * css_set_rwsem, but, during migration, once tasks are moved to
 	 * mg_tasks, it can be read safely while holding cgroup_mutex.
 	 */
 	struct list_head tasks;
@@ -365,15 +305,14 @@ struct cgroup_base_stat {
 #ifdef CONFIG_SCHED_CORE
 	u64 forceidle_sum;
 #endif
-	u64 ntime;
 };
 
 /*
  * rstat - cgroup scalable recursive statistics.  Accounting is done
- * per-cpu in css_rstat_cpu which is then lazily propagated up the
+ * per-cpu in cgroup_rstat_cpu which is then lazily propagated up the
  * hierarchy on reads.
  *
- * When a stat gets updated, the css_rstat_cpu and its ancestors are
+ * When a stat gets updated, the cgroup_rstat_cpu and its ancestors are
  * linked into the updated tree.  On the following read, propagation only
  * considers and consumes the updated tree.  This makes reading O(the
  * number of descendants which have been active since last read) instead of
@@ -385,26 +324,10 @@ struct cgroup_base_stat {
  * frequency decreases the cost of each read.
  *
  * This struct hosts both the fields which implement the above -
- * updated_children and updated_next.
+ * updated_children and updated_next - and the fields which track basic
+ * resource statistics on top of it - bsync, bstat and last_bstat.
  */
-struct css_rstat_cpu {
-	/*
-	 * Child cgroups with stat updates on this cpu since the last read
-	 * are linked on the parent's ->updated_children through
-	 * ->updated_next. updated_children is terminated by its container css.
-	 */
-	struct cgroup_subsys_state *updated_children;
-	struct cgroup_subsys_state *updated_next;	/* NULL if not on the list */
-
-	struct llist_node lnode;		/* lockless list for update */
-	struct cgroup_subsys_state *owner;	/* back pointer */
-};
-
-/*
- * This struct hosts the fields which track basic resource statistics on
- * top of it - bsync, bstat and last_bstat.
- */
-struct cgroup_rstat_base_cpu {
+struct cgroup_rstat_cpu {
 	/*
 	 * ->bsync protects ->bstat.  These are the only fields which get
 	 * updated in the hot path.
@@ -419,18 +342,18 @@ struct cgroup_rstat_base_cpu {
 	struct cgroup_base_stat last_bstat;
 
 	/*
-	 * This field is used to record the cumulative per-cpu time of
-	 * the cgroup and its descendants. Currently it can be read via
-	 * eBPF/drgn etc, and we are still trying to determine how to
-	 * expose it in the cgroupfs interface.
+	 * Child cgroups with stat updates on this cpu since the last read
+	 * are linked on the parent's ->updated_children through
+	 * ->updated_next.
+	 *
+	 * In addition to being more compact, singly-linked list pointing
+	 * to the cgroup makes it unnecessary for each per-cpu struct to
+	 * point back to the associated cgroup.
+	 *
+	 * Protected by per-cpu cgroup_rstat_cpu_lock.
 	 */
-	struct cgroup_base_stat subtree_bstat;
-
-	/*
-	 * Snapshots at the last reading. These are used to calculate the
-	 * deltas to propagate to the per-cpu subtree_bstat.
-	 */
-	struct cgroup_base_stat last_subtree_bstat;
+	struct cgroup *updated_children;	/* terminated by self cgroup */
+	struct cgroup *updated_next;		/* NULL iff not on the list */
 };
 
 struct cgroup_freezer_state {
@@ -438,7 +361,7 @@ struct cgroup_freezer_state {
 	bool freeze;
 
 	/* Should the cgroup actually be frozen? */
-	bool e_freeze;
+	int e_freeze;
 
 	/* Fields below are protected by css_set_lock */
 
@@ -450,23 +373,6 @@ struct cgroup_freezer_state {
 	 * frozen, SIGSTOPped, and PTRACEd.
 	 */
 	int nr_frozen_tasks;
-
-	/* Freeze time data consistency protection */
-	seqcount_spinlock_t freeze_seq;
-
-	/*
-	 * Most recent time the cgroup was requested to freeze.
-	 * Accesses guarded by freeze_seq counter. Writes serialized
-	 * by css_set_lock.
-	 */
-	u64 freeze_start_nsec;
-
-	/*
-	 * Total duration the cgroup has spent freezing.
-	 * Accesses guarded by freeze_seq counter. Writes serialized
-	 * by css_set_lock.
-	 */
-	u64 frozen_nsec;
 };
 
 struct cgroup {
@@ -518,9 +424,6 @@ struct cgroup {
 
 	int nr_threaded_children;	/* # of live threaded child cgroups */
 
-	/* sequence number for cgroup.kill, serialized by css_set_lock. */
-	unsigned int kill_seq;
-
 	struct kernfs_node *kn;		/* cgroup kernfs entry */
 	struct cgroup_file procs_file;	/* handle for "cgroup.procs" */
 	struct cgroup_file events_file;	/* handle for "cgroup.events" */
@@ -535,19 +438,13 @@ struct cgroup {
 	 * one which may have more subsystems enabled.  Controller knobs
 	 * are made available iff it's enabled in ->subtree_control.
 	 */
-	u32 subtree_control;
-	u32 subtree_ss_mask;
-	u32 old_subtree_control;
-	u32 old_subtree_ss_mask;
+	u16 subtree_control;
+	u16 subtree_ss_mask;
+	u16 old_subtree_control;
+	u16 old_subtree_ss_mask;
 
 	/* Private pointers for each registered subsystem */
 	struct cgroup_subsys_state __rcu *subsys[CGROUP_SUBSYS_COUNT];
-
-	/*
-	 * Keep track of total number of dying CSSes at and below this cgroup.
-	 * Protected by cgroup_mutex.
-	 */
-	int nr_dying_subsys[CGROUP_SUBSYS_COUNT];
 
 	struct cgroup_root *root;
 
@@ -576,23 +473,9 @@ struct cgroup {
 	struct cgroup *dom_cgrp;
 	struct cgroup *old_dom_cgrp;		/* used while enabling threaded */
 
-	/*
-	 * Depending on the context, this field is initialized via
-	 * css_rstat_init() at different places:
-	 *
-	 * when cgroup is the root cgroup
-	 *   performed in cgroup_setup_root()
-	 * otherwise
-	 *   performed in cgroup_create()
-	 */
-	struct cgroup_rstat_base_cpu __percpu *rstat_base_cpu;
-
-	/*
-	 * Add padding to keep the read mostly rstat per-cpu pointer on a
-	 * different cacheline than the following *bstat fields which can have
-	 * frequent updates.
-	 */
-	CACHELINE_PADDING(_pad_);
+	/* per-cpu recursive resource statistics */
+	struct cgroup_rstat_cpu __percpu *rstat_cpu;
+	struct list_head rstat_css_list;
 
 	/* cgroup basic resource statistics */
 	struct cgroup_base_stat last_bstat;
@@ -618,6 +501,9 @@ struct cgroup {
 	/* used to store eBPF programs */
 	struct cgroup_bpf bpf;
 
+	/* If there is block congestion on this cgroup. */
+	atomic_t congestion_count;
+
 	/* Used to store internal freezer state */
 	struct cgroup_freezer_state freezer;
 
@@ -626,13 +512,7 @@ struct cgroup {
 #endif
 
 	/* All ancestors including self */
-	union {
-		DECLARE_FLEX_ARRAY(struct cgroup *, ancestors);
-		struct {
-			struct cgroup *_root_ancestor;
-			DECLARE_FLEX_ARRAY(struct cgroup *, _low_ancestors);
-		};
-	};
+	struct cgroup *ancestors[];
 };
 
 /*
@@ -649,12 +529,21 @@ struct cgroup_root {
 	/* Unique id for this hierarchy. */
 	int hierarchy_id;
 
-	/* A list running through the active hierarchies */
-	struct list_head root_list;
-	struct rcu_head rcu;	/* Must be near the top */
+	/*
+	 * The root cgroup. The containing cgroup_root will be destroyed on its
+	 * release. cgrp->ancestors[0] will be used overflowing into the
+	 * following field. cgrp_ancestor_storage must immediately follow.
+	 */
+	struct cgroup cgrp;
+
+	/* must follow cgrp for cgrp->ancestors[0], see above */
+	struct cgroup *cgrp_ancestor_storage;
 
 	/* Number of cgroups in the hierarchy, used only for /proc/cgroups */
 	atomic_t nr_cgrps;
+
+	/* A list running through the active hierarchies */
+	struct list_head root_list;
 
 	/* Hierarchy-specific flags */
 	unsigned int flags;
@@ -664,13 +553,6 @@ struct cgroup_root {
 
 	/* The name for this hierarchy - may be empty */
 	char name[MAX_CGROUP_ROOT_NAMELEN];
-
-	/*
-	 * The root cgroup. The containing cgroup_root will be destroyed on its
-	 * release. This must be embedded last due to flexible array at the end
-	 * of struct cgroup.
-	 */
-	struct cgroup cgrp;
 };
 
 /*
@@ -682,8 +564,9 @@ struct cgroup_root {
  */
 struct cftype {
 	/*
-	 * Name of the subsystem is prepended in cgroup_file_name().
-	 * Zero length string indicates end of cftype array.
+	 * By convention, the name should begin with the name of the
+	 * subsystem, followed by a period.  Zero length string indicates
+	 * end of cftype array.
 	 */
 	char name[MAX_CFTYPE_NAME];
 	unsigned long private;
@@ -759,7 +642,9 @@ struct cftype {
 	__poll_t (*poll)(struct kernfs_open_file *of,
 			 struct poll_table_struct *pt);
 
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lock_class_key	lockdep_key;
+#endif
 };
 
 /*
@@ -773,16 +658,14 @@ struct cgroup_subsys {
 	void (*css_released)(struct cgroup_subsys_state *css);
 	void (*css_free)(struct cgroup_subsys_state *css);
 	void (*css_reset)(struct cgroup_subsys_state *css);
-	void (*css_killed)(struct cgroup_subsys_state *css);
 	void (*css_rstat_flush)(struct cgroup_subsys_state *css, int cpu);
 	int (*css_extra_stat_show)(struct seq_file *seq,
-				   struct cgroup_subsys_state *css);
-	int (*css_local_stat_show)(struct seq_file *seq,
 				   struct cgroup_subsys_state *css);
 
 	int (*can_attach)(struct cgroup_taskset *tset);
 	void (*cancel_attach)(struct cgroup_taskset *tset);
 	void (*attach)(struct cgroup_taskset *tset);
+	void (*post_attach)(void);
 	int (*can_fork)(struct task_struct *task,
 			struct css_set *cset);
 	void (*cancel_fork)(struct task_struct *task, struct css_set *cset);
@@ -852,32 +735,20 @@ struct cgroup_subsys {
 	 * specifies the mask of subsystems that this one depends on.
 	 */
 	unsigned int depends_on;
-
-	spinlock_t rstat_ss_lock;
-	struct llist_head __percpu *lhead; /* lockless update list head */
 };
 
 extern struct percpu_rw_semaphore cgroup_threadgroup_rwsem;
-extern bool cgroup_enable_per_threadgroup_rwsem;
-
-struct cgroup_of_peak {
-	unsigned long		value;
-	struct list_head	list;
-};
 
 /**
  * cgroup_threadgroup_change_begin - threadgroup exclusion for cgroups
  * @tsk: target task
  *
  * Allows cgroup operations to synchronize against threadgroup changes
- * using a global percpu_rw_semaphore and a per threadgroup rw_semaphore when
- * favordynmods is on. See the comment above CGRP_ROOT_FAVOR_DYNMODS definition.
+ * using a percpu_rw_semaphore.
  */
 static inline void cgroup_threadgroup_change_begin(struct task_struct *tsk)
 {
 	percpu_down_read(&cgroup_threadgroup_rwsem);
-	if (cgroup_enable_per_threadgroup_rwsem)
-		down_read(&tsk->signal->cgroup_threadgroup_rwsem);
 }
 
 /**
@@ -888,8 +759,6 @@ static inline void cgroup_threadgroup_change_begin(struct task_struct *tsk)
  */
 static inline void cgroup_threadgroup_change_end(struct task_struct *tsk)
 {
-	if (cgroup_enable_per_threadgroup_rwsem)
-		up_read(&tsk->signal->cgroup_threadgroup_rwsem);
 	percpu_up_read(&cgroup_threadgroup_rwsem);
 }
 
@@ -937,12 +806,14 @@ static inline u16 sock_cgroup_prioidx(const struct sock_cgroup_data *skcd)
 #endif
 }
 
-#ifdef CONFIG_CGROUP_NET_CLASSID
 static inline u32 sock_cgroup_classid(const struct sock_cgroup_data *skcd)
 {
+#ifdef CONFIG_CGROUP_NET_CLASSID
 	return READ_ONCE(skcd->classid);
-}
+#else
+	return 0;
 #endif
+}
 
 static inline void sock_cgroup_set_prioidx(struct sock_cgroup_data *skcd,
 					   u16 prioidx)
@@ -952,13 +823,13 @@ static inline void sock_cgroup_set_prioidx(struct sock_cgroup_data *skcd,
 #endif
 }
 
-#ifdef CONFIG_CGROUP_NET_CLASSID
 static inline void sock_cgroup_set_classid(struct sock_cgroup_data *skcd,
 					   u32 classid)
 {
+#ifdef CONFIG_CGROUP_NET_CLASSID
 	WRITE_ONCE(skcd->classid, classid);
-}
 #endif
+}
 
 #else	/* CONFIG_SOCK_CGROUP_DATA */
 

@@ -13,8 +13,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/platform_device.h>
-#include <linux/property.h>
+#include <linux/of_device.h>
 #include <linux/perf_event.h>
 #include <linux/slab.h>
 
@@ -104,7 +103,7 @@ struct mmdc_pmu {
 	struct device *dev;
 	struct perf_event *mmdc_events[MMDC_NUM_COUNTERS];
 	struct hlist_node node;
-	const struct fsl_mmdc_devtype_data *devtype_data;
+	struct fsl_mmdc_devtype_data *devtype_data;
 	struct clk *mmdc_ipg_clk;
 };
 
@@ -437,7 +436,6 @@ static int mmdc_pmu_init(struct mmdc_pmu *pmu_mmdc,
 {
 	*pmu_mmdc = (struct mmdc_pmu) {
 		.pmu = (struct pmu) {
-			.parent		= dev,
 			.task_ctx_nr    = perf_invalid_context,
 			.attr_groups    = attr_groups,
 			.event_init     = mmdc_pmu_event_init,
@@ -453,21 +451,22 @@ static int mmdc_pmu_init(struct mmdc_pmu *pmu_mmdc,
 		.active_events = 0,
 	};
 
-	pmu_mmdc->id = ida_alloc(&mmdc_ida, GFP_KERNEL);
+	pmu_mmdc->id = ida_simple_get(&mmdc_ida, 0, 0, GFP_KERNEL);
 
 	return pmu_mmdc->id;
 }
 
-static void imx_mmdc_remove(struct platform_device *pdev)
+static int imx_mmdc_remove(struct platform_device *pdev)
 {
 	struct mmdc_pmu *pmu_mmdc = platform_get_drvdata(pdev);
 
-	ida_free(&mmdc_ida, pmu_mmdc->id);
+	ida_simple_remove(&mmdc_ida, pmu_mmdc->id);
 	cpuhp_state_remove_instance_nocalls(cpuhp_mmdc_state, &pmu_mmdc->node);
 	perf_pmu_unregister(&pmu_mmdc->pmu);
 	iounmap(pmu_mmdc->mmdc_base);
 	clk_disable_unprepare(pmu_mmdc->mmdc_ipg_clk);
 	kfree(pmu_mmdc);
+	return 0;
 }
 
 static int imx_mmdc_perf_init(struct platform_device *pdev, void __iomem *mmdc_base,
@@ -476,6 +475,8 @@ static int imx_mmdc_perf_init(struct platform_device *pdev, void __iomem *mmdc_b
 	struct mmdc_pmu *pmu_mmdc;
 	char *name;
 	int ret;
+	const struct of_device_id *of_id =
+		of_match_device(imx_mmdc_dt_ids, &pdev->dev);
 
 	pmu_mmdc = kzalloc(sizeof(*pmu_mmdc), GFP_KERNEL);
 	if (!pmu_mmdc) {
@@ -501,16 +502,13 @@ static int imx_mmdc_perf_init(struct platform_device *pdev, void __iomem *mmdc_b
 
 	name = devm_kasprintf(&pdev->dev,
 				GFP_KERNEL, "mmdc%d", ret);
-	if (!name) {
-		ret = -ENOMEM;
-		goto pmu_release_id;
-	}
 
 	pmu_mmdc->mmdc_ipg_clk = mmdc_ipg_clk;
-	pmu_mmdc->devtype_data = device_get_match_data(&pdev->dev);
+	pmu_mmdc->devtype_data = (struct fsl_mmdc_devtype_data *)of_id->data;
 
-	hrtimer_setup(&pmu_mmdc->hrtimer, mmdc_pmu_timer_handler, CLOCK_MONOTONIC,
-		      HRTIMER_MODE_REL);
+	hrtimer_init(&pmu_mmdc->hrtimer, CLOCK_MONOTONIC,
+			HRTIMER_MODE_REL);
+	pmu_mmdc->hrtimer.function = mmdc_pmu_timer_handler;
 
 	cpumask_set_cpu(raw_smp_processor_id(), &pmu_mmdc->cpu);
 
@@ -526,10 +524,9 @@ static int imx_mmdc_perf_init(struct platform_device *pdev, void __iomem *mmdc_b
 
 pmu_register_err:
 	pr_warn("MMDC Perf PMU failed (%d), disabled\n", ret);
+	ida_simple_remove(&mmdc_ida, pmu_mmdc->id);
 	cpuhp_state_remove_instance_nocalls(cpuhp_mmdc_state, &pmu_mmdc->node);
 	hrtimer_cancel(&pmu_mmdc->hrtimer);
-pmu_release_id:
-	ida_free(&mmdc_ida, pmu_mmdc->id);
 pmu_free:
 	kfree(pmu_mmdc);
 	return ret;

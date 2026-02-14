@@ -23,6 +23,7 @@
 #include <linux/qed/qed_if.h>
 #include <linux/qed/qed_ll2_if.h>
 #include <net/devlink.h>
+#include <linux/aer.h>
 #include <linux/phylink.h>
 
 #include "qed.h"
@@ -258,6 +259,8 @@ static void qed_free_pci(struct qed_dev *cdev)
 {
 	struct pci_dev *pdev = cdev->pdev;
 
+	pci_disable_pcie_error_reporting(pdev);
+
 	if (cdev->doorbells && cdev->db_size)
 		iounmap(cdev->doorbells);
 	if (cdev->regview)
@@ -323,7 +326,8 @@ static int qed_init_pci(struct qed_dev *cdev, struct pci_dev *pdev)
 		goto err2;
 	}
 
-	if (IS_PF(cdev) && !pdev->pm_cap)
+	cdev->pci_params.pm_cap = pci_find_capability(pdev, PCI_CAP_ID_PM);
+	if (IS_PF(cdev) && !cdev->pci_params.pm_cap)
 		DP_NOTICE(cdev, "Cannot find power management capability\n");
 
 	rc = dma_set_mask_and_coherent(&cdev->pdev->dev, DMA_BIT_MASK(64));
@@ -361,6 +365,12 @@ static int qed_init_pci(struct qed_dev *cdev, struct pci_dev *pdev)
 		DP_NOTICE(cdev, "Cannot map doorbell space\n");
 		return -ENOMEM;
 	}
+
+	/* AER (Advanced Error reporting) configuration */
+	rc = pci_enable_pcie_error_reporting(pdev);
+	if (rc)
+		DP_VERBOSE(cdev, NETIF_MSG_DRV,
+			   "Failed to configure PCIe AER [%d]\n", rc);
 
 	return 0;
 
@@ -454,7 +464,7 @@ int qed_fill_dev_info(struct qed_dev *cdev,
 
 static void qed_free_cdev(struct qed_dev *cdev)
 {
-	kfree(cdev);
+	kfree((void *)cdev);
 }
 
 static struct qed_dev *qed_alloc_cdev(struct pci_dev *pdev)
@@ -1205,6 +1215,7 @@ out:
 static int qed_slowpath_wq_start(struct qed_dev *cdev)
 {
 	struct qed_hwfn *hwfn;
+	char name[NAME_SIZE];
 	int i;
 
 	if (IS_VF(cdev))
@@ -1213,12 +1224,11 @@ static int qed_slowpath_wq_start(struct qed_dev *cdev)
 	for_each_hwfn(cdev, i) {
 		hwfn = &cdev->hwfns[i];
 
-		hwfn->slowpath_wq = alloc_workqueue("slowpath-%02x:%02x.%02x",
-					 WQ_PERCPU, 0,
-					 cdev->pdev->bus->number,
-					 PCI_SLOT(cdev->pdev->devfn),
-					 hwfn->abs_pf_id);
+		snprintf(name, NAME_SIZE, "slowpath-%02x:%02x.%02x",
+			 cdev->pdev->bus->number,
+			 PCI_SLOT(cdev->pdev->devfn), hwfn->abs_pf_id);
 
+		hwfn->slowpath_wq = alloc_workqueue(name, 0, 0);
 		if (!hwfn->slowpath_wq) {
 			DP_NOTICE(hwfn, "Cannot create slowpath workqueue\n");
 			return -ENOMEM;
@@ -1350,7 +1360,7 @@ static int qed_slowpath_start(struct qed_dev *cdev,
 				      (params->drv_rev << 8) |
 				      (params->drv_eng);
 		strscpy(drv_version.name, params->name,
-			sizeof(drv_version.name));
+			MCP_DRV_VER_STR_SIZE - 4);
 		rc = qed_mcp_send_drv_version(hwfn, hwfn->p_main_ptt,
 					      &drv_version);
 		if (rc) {
@@ -3091,7 +3101,7 @@ void qed_get_protocol_stats(struct qed_dev *cdev,
 
 	switch (type) {
 	case QED_MCP_LAN_STATS:
-		qed_get_vport_stats_context(cdev, &eth_stats, true);
+		qed_get_vport_stats(cdev, &eth_stats);
 		stats->lan_stats.ucast_rx_pkts =
 					eth_stats.common.rx_ucast_pkts;
 		stats->lan_stats.ucast_tx_pkts =
@@ -3099,10 +3109,10 @@ void qed_get_protocol_stats(struct qed_dev *cdev,
 		stats->lan_stats.fcs_err = -1;
 		break;
 	case QED_MCP_FCOE_STATS:
-		qed_get_protocol_stats_fcoe(cdev, &stats->fcoe_stats, true);
+		qed_get_protocol_stats_fcoe(cdev, &stats->fcoe_stats);
 		break;
 	case QED_MCP_ISCSI_STATS:
-		qed_get_protocol_stats_iscsi(cdev, &stats->iscsi_stats, true);
+		qed_get_protocol_stats_iscsi(cdev, &stats->iscsi_stats);
 		break;
 	default:
 		DP_VERBOSE(cdev, QED_MSG_SP,

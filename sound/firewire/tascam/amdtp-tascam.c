@@ -157,14 +157,15 @@ static void read_status_messages(struct amdtp_stream *s,
 			if ((before ^ after) & mask) {
 				struct snd_firewire_tascam_change *entry =
 						&tscm->queue[tscm->push_pos];
+				unsigned long flag;
 
-				scoped_guard(spinlock_irqsave, &tscm->lock) {
-					entry->index = index;
-					entry->before = before;
-					entry->after = after;
-					if (++tscm->push_pos >= SND_TSCM_QUEUE_COUNT)
-						tscm->push_pos = 0;
-				}
+				spin_lock_irqsave(&tscm->lock, flag);
+				entry->index = index;
+				entry->before = before;
+				entry->after = after;
+				if (++tscm->push_pos >= SND_TSCM_QUEUE_COUNT)
+					tscm->push_pos = 0;
+				spin_unlock_irqrestore(&tscm->lock, flag);
 
 				wake_up(&tscm->hwdep_wait);
 			}
@@ -237,7 +238,7 @@ int amdtp_tscm_init(struct amdtp_stream *s, struct fw_unit *unit,
 	err = amdtp_stream_init(s, unit, dir, flags, fmt,
 			process_ctx_payloads, sizeof(struct amdtp_tscm));
 	if (err < 0)
-		return err;
+		return 0;
 
 	if (dir == AMDTP_OUT_STREAM) {
 		// Use fixed value for FDF field.

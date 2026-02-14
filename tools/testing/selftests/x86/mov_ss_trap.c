@@ -36,7 +36,7 @@
 #include <setjmp.h>
 #include <sys/prctl.h>
 
-#include "helpers.h"
+#define X86_EFLAGS_RF (1UL << 16)
 
 #if __x86_64__
 # define REG_IP REG_RIP
@@ -92,6 +92,18 @@ static void enable_watchpoint(void)
 
 		exit(0);
 	}
+}
+
+static void sethandler(int sig, void (*handler)(int, siginfo_t *, void *),
+		       int flags)
+{
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_sigaction = handler;
+	sa.sa_flags = SA_SIGINFO | flags;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(sig, &sa, 0))
+		err(1, "sigaction");
 }
 
 static char const * const signames[] = {

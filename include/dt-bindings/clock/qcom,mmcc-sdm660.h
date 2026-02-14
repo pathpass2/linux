@@ -157,7 +157,6 @@
 #define BIMC_SMMU_GDSC							7
 
 #define CAMSS_MICRO_BCR				 0
-#define MDSS_BCR				1
 
 #endif
 

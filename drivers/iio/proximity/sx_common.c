@@ -53,7 +53,7 @@ const struct iio_event_spec sx_common_events[3] = {
 				 BIT(IIO_EV_INFO_VALUE),
 	},
 };
-EXPORT_SYMBOL_NS_GPL(sx_common_events, "SEMTECH_PROX");
+EXPORT_SYMBOL_NS_GPL(sx_common_events, SEMTECH_PROX);
 
 static irqreturn_t sx_common_irq_handler(int irq, void *private)
 {
@@ -111,16 +111,17 @@ static int sx_common_enable_irq(struct sx_common_data *data, unsigned int irq)
 {
 	if (!data->client->irq)
 		return 0;
-	return regmap_set_bits(data->regmap, data->chip_info->reg_irq_msk,
-			       irq << data->chip_info->irq_msk_offset);
+	return regmap_update_bits(data->regmap, data->chip_info->reg_irq_msk,
+				  irq << data->chip_info->irq_msk_offset,
+				  irq << data->chip_info->irq_msk_offset);
 }
 
 static int sx_common_disable_irq(struct sx_common_data *data, unsigned int irq)
 {
 	if (!data->client->irq)
 		return 0;
-	return regmap_clear_bits(data->regmap, data->chip_info->reg_irq_msk,
-				 irq << data->chip_info->irq_msk_offset);
+	return regmap_update_bits(data->regmap, data->chip_info->reg_irq_msk,
+				  irq << data->chip_info->irq_msk_offset, 0);
 }
 
 static int sx_common_update_chan_en(struct sx_common_data *data,
@@ -233,7 +234,7 @@ out:
 
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_read_proximity, "SEMTECH_PROX");
+EXPORT_SYMBOL_NS_GPL(sx_common_read_proximity, SEMTECH_PROX);
 
 /**
  * sx_common_read_event_config() - Configure event setting.
@@ -253,7 +254,7 @@ int sx_common_read_event_config(struct iio_dev *indio_dev,
 
 	return !!(data->chan_event & BIT(chan->channel));
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_read_event_config, "SEMTECH_PROX");
+EXPORT_SYMBOL_NS_GPL(sx_common_read_event_config, SEMTECH_PROX);
 
 /**
  * sx_common_write_event_config() - Configure event setting.
@@ -268,7 +269,7 @@ EXPORT_SYMBOL_NS_GPL(sx_common_read_event_config, "SEMTECH_PROX");
 int sx_common_write_event_config(struct iio_dev *indio_dev,
 				 const struct iio_chan_spec *chan,
 				 enum iio_event_type type,
-				 enum iio_event_direction dir, bool state)
+				 enum iio_event_direction dir, int state)
 {
 	struct sx_common_data *data = iio_priv(indio_dev);
 	unsigned int eventirq = SX_COMMON_FAR_IRQ | SX_COMMON_CLOSE_IRQ;
@@ -303,7 +304,7 @@ out_unlock:
 	mutex_unlock(&data->mutex);
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_write_event_config, "SEMTECH_PROX");
+EXPORT_SYMBOL_NS_GPL(sx_common_write_event_config, SEMTECH_PROX);
 
 static int sx_common_set_trigger_state(struct iio_trigger *trig, bool state)
 {
@@ -369,7 +370,8 @@ static irqreturn_t sx_common_trigger_handler(int irq, void *private)
 
 	mutex_lock(&data->mutex);
 
-	iio_for_each_active_channel(indio_dev, bit) {
+	for_each_set_bit(bit, indio_dev->active_scan_mask,
+			 indio_dev->masklength) {
 		ret = data->chip_info->ops.read_prox_data(data,
 						     &indio_dev->channels[bit],
 						     &val);
@@ -379,8 +381,8 @@ static irqreturn_t sx_common_trigger_handler(int irq, void *private)
 		data->buffer.channels[i++] = val;
 	}
 
-	iio_push_to_buffers_with_ts(indio_dev, &data->buffer,
-				    sizeof(data->buffer), pf->timestamp);
+	iio_push_to_buffers_with_timestamp(indio_dev, &data->buffer,
+					   pf->timestamp);
 
 out:
 	mutex_unlock(&data->mutex);
@@ -397,7 +399,8 @@ static int sx_common_buffer_preenable(struct iio_dev *indio_dev)
 	int bit, ret;
 
 	mutex_lock(&data->mutex);
-	iio_for_each_active_channel(indio_dev, bit)
+	for_each_set_bit(bit, indio_dev->active_scan_mask,
+			 indio_dev->masklength)
 		__set_bit(indio_dev->channels[bit].channel, &channels);
 
 	ret = sx_common_update_chan_en(data, channels, data->chan_event);
@@ -542,7 +545,7 @@ int sx_common_probe(struct i2c_client *client,
 
 	return devm_iio_device_register(dev, indio_dev);
 }
-EXPORT_SYMBOL_NS_GPL(sx_common_probe, "SEMTECH_PROX");
+EXPORT_SYMBOL_NS_GPL(sx_common_probe, SEMTECH_PROX);
 
 MODULE_AUTHOR("Gwendal Grignou <gwendal@chromium.org>");
 MODULE_DESCRIPTION("Common functions and structures for Semtech sensor");

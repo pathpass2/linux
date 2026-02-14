@@ -16,12 +16,11 @@
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
 #define SCU_MU_CHAN_NUM		8
-#define MAX_RX_TIMEOUT		(msecs_to_jiffies(3000))
+#define MAX_RX_TIMEOUT		(msecs_to_jiffies(30))
 
 struct imx_sc_chan {
 	struct imx_sc_ipc *sc_ipc;
@@ -73,9 +72,9 @@ static int imx_sc_linux_errmap[IMX_SC_ERR_LAST] = {
 	-EACCES, /* IMX_SC_ERR_NOACCESS */
 	-EACCES, /* IMX_SC_ERR_LOCKED */
 	-ERANGE, /* IMX_SC_ERR_UNAVAILABLE */
-	-ENOENT, /* IMX_SC_ERR_NOTFOUND */
-	-ENODEV, /* IMX_SC_ERR_NOPOWER */
-	-ECOMM,	 /* IMX_SC_ERR_IPC */
+	-EEXIST, /* IMX_SC_ERR_NOTFOUND */
+	-EPERM,	 /* IMX_SC_ERR_NOPOWER */
+	-EPIPE,	 /* IMX_SC_ERR_IPC */
 	-EBUSY,	 /* IMX_SC_ERR_BUSY */
 	-EIO,	 /* IMX_SC_ERR_FAIL */
 };
@@ -280,7 +279,6 @@ static int imx_scu_probe(struct platform_device *pdev)
 		return ret;
 
 	sc_ipc->fast_ipc = of_device_is_compatible(args.np, "fsl,imx8-mu-scu");
-	of_node_put(args.np);
 
 	num_channel = sc_ipc->fast_ipc ? 2 : SCU_MU_CHAN_NUM;
 	for (i = 0; i < num_channel; i++) {
@@ -312,8 +310,9 @@ static int imx_scu_probe(struct platform_device *pdev)
 		sc_chan->ch = mbox_request_channel_byname(cl, chan_name);
 		if (IS_ERR(sc_chan->ch)) {
 			ret = PTR_ERR(sc_chan->ch);
-			dev_err_probe(dev, ret, "Failed to request mbox chan %s\n",
-				      chan_name);
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Failed to request mbox chan %s ret %d\n",
+					chan_name, ret);
 			kfree(chan_name);
 			return ret;
 		}
@@ -324,9 +323,7 @@ static int imx_scu_probe(struct platform_device *pdev)
 	}
 
 	sc_ipc->dev = dev;
-	ret = devm_mutex_init(dev, &sc_ipc->lock);
-	if (ret)
-		return ret;
+	mutex_init(&sc_ipc->lock);
 	init_completion(&sc_ipc->done);
 
 	imx_sc_ipc_handle = sc_ipc;
@@ -354,16 +351,10 @@ static struct platform_driver imx_scu_driver = {
 	.driver = {
 		.name = "imx-scu",
 		.of_match_table = imx_scu_match,
-		.suppress_bind_attrs = true,
 	},
 	.probe = imx_scu_probe,
 };
-
-static int __init imx_scu_driver_init(void)
-{
-	return platform_driver_register(&imx_scu_driver);
-}
-subsys_initcall_sync(imx_scu_driver_init);
+builtin_platform_driver(imx_scu_driver);
 
 MODULE_AUTHOR("Dong Aisheng <aisheng.dong@nxp.com>");
 MODULE_DESCRIPTION("IMX SCU firmware protocol driver");

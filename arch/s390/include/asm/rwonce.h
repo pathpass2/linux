@@ -19,7 +19,7 @@
 							\
 	BUILD_BUG_ON(sizeof(x) != 16);			\
 	asm volatile(					\
-		"	lpq	%[val],%[_x]"		\
+		"	lpq	%[val],%[_x]\n"		\
 		: [val] "=d" (__u.val)			\
 		: [_x] "QS" (x)				\
 		: "memory");				\

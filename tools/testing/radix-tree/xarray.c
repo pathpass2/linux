@@ -4,9 +4,16 @@
  * Copyright (c) 2018 Matthew Wilcox <willy@infradead.org>
  */
 
-#include "xarray-shared.h"
+#define XA_DEBUG
 #include "test.h"
 
+#define module_init(x)
+#define module_exit(x)
+#define MODULE_AUTHOR(x)
+#define MODULE_LICENSE(x)
+#define dump_stack()	assert(0)
+
+#include "../../../lib/xarray.c"
 #undef XA_DEBUG
 #include "../../../lib/test_xarray.c"
 

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2024 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef ATH11K_QMI_H
@@ -37,7 +37,7 @@
 
 #define QMI_WLANFW_MAX_DATA_SIZE_V01		6144
 #define ATH11K_FIRMWARE_MODE_OFF		4
-#define ATH11K_COLD_BOOT_FW_RESET_DELAY		(60 * HZ)
+#define ATH11K_COLD_BOOT_FW_RESET_DELAY		(40 * HZ)
 
 #define ATH11K_QMI_DEVICE_BAR_SIZE		0x200000
 
@@ -102,11 +102,8 @@ struct target_mem_chunk {
 	u32 prev_size;
 	u32 prev_type;
 	dma_addr_t paddr;
-	union {
-		u32 *vaddr;
-		void __iomem *iaddr;
-		void *anyaddr;
-	};
+	u32 *vaddr;
+	void __iomem *iaddr;
 };
 
 struct target_info {
@@ -157,7 +154,6 @@ struct ath11k_qmi {
 #define BDF_MEM_REGION_TYPE				0x2
 #define M3_DUMP_REGION_TYPE				0x3
 #define CALDB_MEM_REGION_TYPE				0x4
-#define PAGEABLE_MEM_REGION_TYPE			0x9
 
 struct qmi_wlanfw_host_cap_req_msg_v01 {
 	u8 num_clients_valid;
@@ -518,9 +514,10 @@ struct qmi_wlanfw_wlan_ini_resp_msg_v01 {
 int ath11k_qmi_firmware_start(struct ath11k_base *ab,
 			      u32 mode);
 void ath11k_qmi_firmware_stop(struct ath11k_base *ab);
+void ath11k_qmi_event_work(struct work_struct *work);
+void ath11k_qmi_msg_recv_work(struct work_struct *work);
 void ath11k_qmi_deinit_service(struct ath11k_base *ab);
 int ath11k_qmi_init_service(struct ath11k_base *ab);
 void ath11k_qmi_free_resource(struct ath11k_base *ab);
-int ath11k_qmi_fwreset_from_cold_boot(struct ath11k_base *ab);
 
 #endif

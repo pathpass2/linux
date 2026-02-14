@@ -255,7 +255,7 @@
 /* VIC register to handle during MBIST WAR */
 #define NV_PVIC_THI_SLCG_OVERRIDE_LOW 0x8c
 
-/* APE, DISPA and VIC base addresses needed for MBIST WAR */
+/* APE, DISPA and VIC base addesses needed for MBIST WAR */
 #define TEGRA210_AHUB_BASE  0x702d0000
 #define TEGRA210_DISPA_BASE 0x54200000
 #define TEGRA210_VIC_BASE  0x54340000
@@ -3444,7 +3444,7 @@ static void tegra210_disable_cpu_clock(u32 cpu)
 static u32 spare_reg_ctx, misc_clk_enb_ctx, clk_msk_arm_ctx;
 static u32 cpu_softrst_ctx[3];
 
-static int tegra210_clk_suspend(void *data)
+static int tegra210_clk_suspend(void)
 {
 	unsigned int i;
 
@@ -3465,7 +3465,7 @@ static int tegra210_clk_suspend(void *data)
 	return 0;
 }
 
-static void tegra210_clk_resume(void *data)
+static void tegra210_clk_resume(void)
 {
 	unsigned int i;
 
@@ -3523,15 +3523,11 @@ static void tegra210_cpu_clock_resume(void)
 }
 #endif
 
-static const struct syscore_ops tegra_clk_syscore_ops = {
+static struct syscore_ops tegra_clk_syscore_ops = {
 #ifdef CONFIG_PM_SLEEP
 	.suspend = tegra210_clk_suspend,
 	.resume = tegra210_clk_resume,
 #endif
-};
-
-static struct syscore tegra_clk_syscore = {
-	.ops = &tegra_clk_syscore_ops,
 };
 
 static struct tegra_cpu_car_ops tegra210_cpu_car_ops = {
@@ -3817,6 +3813,6 @@ static void __init tegra210_clock_init(struct device_node *np)
 
 	tegra_cpu_car_ops = &tegra210_cpu_car_ops;
 
-	register_syscore(&tegra_clk_syscore);
+	register_syscore_ops(&tegra_clk_syscore_ops);
 }
 CLK_OF_DECLARE(tegra210, "nvidia,tegra210-car", tegra210_clock_init);

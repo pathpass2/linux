@@ -15,20 +15,19 @@
  */
 
 #define __NO_FORTIFY
-#include <linux/bits.h>
-#include <linux/bug.h>
-#include <linux/ctype.h>
-#include <linux/errno.h>
-#include <linux/limits.h>
-#include <linux/linkage.h>
-#include <linux/stddef.h>
-#include <linux/string.h>
 #include <linux/types.h>
+#include <linux/string.h>
+#include <linux/ctype.h>
+#include <linux/kernel.h>
+#include <linux/export.h>
+#include <linux/bug.h>
+#include <linux/errno.h>
+#include <linux/slab.h>
 
-#include <asm/page.h>
-#include <asm/rwonce.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
+#include <asm/byteorder.h>
 #include <asm/word-at-a-time.h>
+#include <asm/page.h>
 
 #ifndef __HAVE_ARCH_STRNCASECMP
 /**
@@ -104,13 +103,23 @@ char *strncpy(char *dest, const char *src, size_t count)
 EXPORT_SYMBOL(strncpy);
 #endif
 
-#ifdef __BIG_ENDIAN
-# define ALLBUTLAST_BYTE_MASK (~255ul)
-#else
-# define ALLBUTLAST_BYTE_MASK (~0ul >> 8)
+#ifndef __HAVE_ARCH_STRLCPY
+size_t strlcpy(char *dest, const char *src, size_t size)
+{
+	size_t ret = strlen(src);
+
+	if (size) {
+		size_t len = (ret >= size) ? size - 1 : ret;
+		memcpy(dest, src, len);
+		dest[len] = '\0';
+	}
+	return ret;
+}
+EXPORT_SYMBOL(strlcpy);
 #endif
 
-ssize_t sized_strscpy(char *dest, const char *src, size_t count)
+#ifndef __HAVE_ARCH_STRSCPY
+ssize_t strscpy(char *dest, const char *src, size_t count)
 {
 	const struct word_at_a_time constants = WORD_AT_A_TIME_CONSTANTS;
 	size_t max = count;
@@ -119,7 +128,6 @@ ssize_t sized_strscpy(char *dest, const char *src, size_t count)
 	if (count == 0 || WARN_ON_ONCE(count > INT_MAX))
 		return -E2BIG;
 
-#ifndef CONFIG_DCACHE_WORD_ACCESS
 #ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
 	/*
 	 * If src is unaligned, don't cross a page boundary,
@@ -135,13 +143,11 @@ ssize_t sized_strscpy(char *dest, const char *src, size_t count)
 	if (((long) dest | (long) src) & (sizeof(long) - 1))
 		max = 0;
 #endif
-#endif
 
 	/*
-	 * load_unaligned_zeropad() or read_word_at_a_time() below may read
-	 * uninitialized bytes after the trailing zero and use them in
-	 * comparisons. Disable this optimization under KMSAN to prevent
-	 * false positive reports.
+	 * read_word_at_a_time() below may read uninitialized bytes after the
+	 * trailing zero and use them in comparisons. Disable this optimization
+	 * under KMSAN to prevent false positive reports.
 	 */
 	if (IS_ENABLED(CONFIG_KMSAN))
 		max = 0;
@@ -149,29 +155,20 @@ ssize_t sized_strscpy(char *dest, const char *src, size_t count)
 	while (max >= sizeof(unsigned long)) {
 		unsigned long c, data;
 
-#ifdef CONFIG_DCACHE_WORD_ACCESS
-		c = load_unaligned_zeropad(src+res);
-#else
 		c = read_word_at_a_time(src+res);
-#endif
 		if (has_zero(c, &data, &constants)) {
 			data = prep_zero_mask(c, data, &constants);
 			data = create_zero_mask(data);
 			*(unsigned long *)(dest+res) = c & zero_bytemask(data);
 			return res + find_zero(data);
 		}
-		count -= sizeof(unsigned long);
-		if (unlikely(!count)) {
-			c &= ALLBUTLAST_BYTE_MASK;
-			*(unsigned long *)(dest+res) = c;
-			return -E2BIG;
-		}
 		*(unsigned long *)(dest+res) = c;
 		res += sizeof(unsigned long);
+		count -= sizeof(unsigned long);
 		max -= sizeof(unsigned long);
 	}
 
-	while (count > 1) {
+	while (count) {
 		char c;
 
 		c = src[res];
@@ -182,13 +179,14 @@ ssize_t sized_strscpy(char *dest, const char *src, size_t count)
 		count--;
 	}
 
-	/* Force NUL-termination. */
-	dest[res] = '\0';
+	/* Hit buffer length without finding a NUL; force NUL-termination. */
+	if (res)
+		dest[res-1] = '\0';
 
-	/* Return E2BIG if the source didn't stop */
-	return src[res] ? -E2BIG : res;
+	return -E2BIG;
 }
-EXPORT_SYMBOL(sized_strscpy);
+EXPORT_SYMBOL(strscpy);
+#endif
 
 /**
  * stpcpy - copy a string from src to dest returning a pointer to the new end
@@ -262,7 +260,7 @@ size_t strlcat(char *dest, const char *src, size_t count)
 	count -= dsize;
 	if (len >= count)
 		len = count-1;
-	__builtin_memcpy(dest, src, len);
+	memcpy(dest, src, len);
 	dest[len] = 0;
 	return res;
 }

@@ -242,7 +242,7 @@ struct inic_port_priv {
 	dma_addr_t	cpb_tbl_dma;
 };
 
-static const struct scsi_host_template inic_sht = {
+static struct scsi_host_template inic_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= LIBATA_MAX_PRD, /* maybe it can be larger? */
 
@@ -619,7 +619,7 @@ static int inic_hardreset(struct ata_link *link, unsigned int *class,
 	struct ata_port *ap = link->ap;
 	void __iomem *port_base = inic_port_base(ap);
 	void __iomem *idma_ctl = port_base + PORT_IDMA_CTL;
-	const unsigned int *timing = sata_ehc_deb_timing(&link->eh_context);
+	const unsigned long *timing = sata_ehc_deb_timing(&link->eh_context);
 	int rc;
 
 	/* hammer it into sane state */
@@ -730,7 +730,7 @@ static struct ata_port_operations inic_port_ops = {
 
 	.freeze			= inic_freeze,
 	.thaw			= inic_thaw,
-	.reset.hardreset	= inic_hardreset,
+	.hardreset		= inic_hardreset,
 	.error_handler		= inic_error_handler,
 	.post_internal_cmd	= inic_post_internal_cmd,
 

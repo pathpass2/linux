@@ -30,7 +30,7 @@ const struct file_operations afs_mntpt_file_operations = {
 
 const struct inode_operations afs_mntpt_inode_operations = {
 	.lookup		= afs_mntpt_lookup,
-	.readlink	= afs_readlink,
+	.readlink	= page_readlink,
 	.getattr	= afs_getattr,
 };
 
@@ -87,7 +87,7 @@ static int afs_mntpt_set_params(struct fs_context *fc, struct dentry *mntpt)
 		ctx->force = true;
 	}
 	if (ctx->cell) {
-		afs_unuse_cell(ctx->cell, afs_cell_trace_unuse_mntpt);
+		afs_unuse_cell(ctx->net, ctx->cell, afs_cell_trace_unuse_mntpt);
 		ctx->cell = NULL;
 	}
 	if (test_bit(AFS_VNODE_PSEUDODIR, &vnode->flags)) {
@@ -107,9 +107,7 @@ static int afs_mntpt_set_params(struct fs_context *fc, struct dentry *mntpt)
 		if (size > AFS_MAXCELLNAME)
 			return -ENAMETOOLONG;
 
-		cell = afs_lookup_cell(ctx->net, p, size, NULL,
-				       AFS_LOOKUP_CELL_MOUNTPOINT,
-				       afs_cell_trace_use_lookup_mntpt);
+		cell = afs_lookup_cell(ctx->net, p, size, NULL, false);
 		if (IS_ERR(cell)) {
 			pr_err("kAFS: unable to lookup cell '%pd'\n", mntpt);
 			return PTR_ERR(cell);
@@ -120,9 +118,9 @@ static int afs_mntpt_set_params(struct fs_context *fc, struct dentry *mntpt)
 		ctx->volnamesz = sizeof(afs_root_volume) - 1;
 	} else {
 		/* read the contents of the AFS special symlink */
-		DEFINE_DELAYED_CALL(cleanup);
-		const char *content;
+		struct page *page;
 		loff_t size = i_size_read(d_inode(mntpt));
+		char *buf;
 
 		if (src_as->cell)
 			ctx->cell = afs_use_cell(src_as->cell, afs_cell_trace_use_mntpt);
@@ -130,24 +128,18 @@ static int afs_mntpt_set_params(struct fs_context *fc, struct dentry *mntpt)
 		if (size < 2 || size > PAGE_SIZE - 1)
 			return -EINVAL;
 
-		content = afs_get_link(mntpt, d_inode(mntpt), &cleanup);
-		if (IS_ERR(content)) {
-			do_delayed_call(&cleanup);
-			return PTR_ERR(content);
-		}
+		page = read_mapping_page(d_inode(mntpt)->i_mapping, 0, NULL);
+		if (IS_ERR(page))
+			return PTR_ERR(page);
 
+		buf = kmap(page);
 		ret = -EINVAL;
-		if (content[size - 1] == '.')
-			ret = vfs_parse_fs_qstr(fc, "source",
-						&QSTR_LEN(content, size - 1));
-		do_delayed_call(&cleanup);
+		if (buf[size - 1] == '.')
+			ret = vfs_parse_fs_string(fc, "source", buf, size - 1);
+		kunmap(page);
+		put_page(page);
 		if (ret < 0)
 			return ret;
-
-		/* Don't cross a backup volume mountpoint from a backup volume */
-		if (src_as->volume && src_as->volume->type == AFSVL_BACKVOL &&
-		    ctx->type == AFSVL_BACKVOL)
-			return -ENODEV;
 	}
 
 	return 0;
@@ -191,6 +183,7 @@ struct vfsmount *afs_d_automount(struct path *path)
 	if (IS_ERR(newmnt))
 		return newmnt;
 
+	mntget(newmnt); /* prevent immediate expiration */
 	mnt_set_expiry(newmnt, &afs_vfsmounts);
 	queue_delayed_work(afs_wq, &afs_mntpt_expiry_timer,
 			   afs_mntpt_expiry_timeout * HZ);

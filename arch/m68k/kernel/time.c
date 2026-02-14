@@ -62,7 +62,7 @@ void timer_heartbeat(void)
 }
 #endif /* CONFIG_HEARTBEAT */
 
-#if defined(CONFIG_M68KCLASSIC) || defined(CONFIG_SUN3)
+#ifdef CONFIG_M68KCLASSIC
 /* machine dependent timer functions */
 int (*mach_hwclk) (int, struct rtc_time*);
 EXPORT_SYMBOL(mach_hwclk);
@@ -149,7 +149,7 @@ static int __init rtc_init(void)
 
 module_init(rtc_init);
 #endif /* CONFIG_RTC_DRV_GENERIC */
-#endif /* CONFIG_M68KCLASSIC || SUN3 */
+#endif /* CONFIG M68KCLASSIC */
 
 void __init time_init(void)
 {

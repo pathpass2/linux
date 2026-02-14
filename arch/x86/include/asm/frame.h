@@ -11,7 +11,7 @@
 
 #ifdef CONFIG_FRAME_POINTER
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 .macro FRAME_BEGIN
 	push %_ASM_BP
@@ -51,7 +51,7 @@
 .endm
 #endif /* CONFIG_X86_64 */
 
-#else /* !__ASSEMBLER__ */
+#else /* !__ASSEMBLY__ */
 
 #define FRAME_BEGIN				\
 	"push %" _ASM_BP "\n"			\
@@ -82,18 +82,18 @@ static inline unsigned long encode_frame_pointer(struct pt_regs *regs)
 
 #endif /* CONFIG_X86_64 */
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #define FRAME_OFFSET __ASM_SEL(4, 8)
 
 #else /* !CONFIG_FRAME_POINTER */
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 .macro ENCODE_FRAME_POINTER ptregs_offset=0
 .endm
 
-#else /* !__ASSEMBLER__ */
+#else /* !__ASSEMBLY */
 
 #define ENCODE_FRAME_POINTER
 

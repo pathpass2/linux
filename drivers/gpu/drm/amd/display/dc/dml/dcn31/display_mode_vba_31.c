@@ -24,6 +24,7 @@
  */
 
 #include "dc.h"
+#include "dc_link.h"
 #include "../display_mode_lib.h"
 #include "../dcn30/display_mode_vba_30.h"
 #include "display_mode_vba_31.h"
@@ -532,8 +533,7 @@ static void CalculateStutterEfficiency(
 static void CalculateSwathAndDETConfiguration(
 		bool ForceSingleDPP,
 		int NumberOfActivePlanes,
-		bool DETSharedByAllDPP,
-		unsigned int DETBufferSizeInKByte[],
+		unsigned int DETBufferSizeInKByte,
 		double MaximumSwathWidthLuma[],
 		double MaximumSwathWidthChroma[],
 		enum scan_direction_class SourceScan[],
@@ -1105,7 +1105,6 @@ static bool CalculatePrefetchSchedule(
 	Tr0_oto_lines = dml_ceil(4.0 * Tr0_oto / LineTime, 1) / 4.0;
 	dst_y_prefetch_oto = Tvm_oto_lines + 2 * Tr0_oto_lines + Lsw_oto;
 	dst_y_prefetch_equ =  VStartup - (*TSetup + dml_max(TWait + TCalc, *Tdmdl)) / LineTime - (*DSTYAfterScaler + *DSTXAfterScaler / myPipe->HTotal);
-	dst_y_prefetch_equ = dml_min(dst_y_prefetch_equ, 63.75); // limit to the reg limit of U6.2 for DST_Y_PREFETCH
 	dst_y_prefetch_equ = dml_floor(4.0 * (dst_y_prefetch_equ + 0.125), 1) / 4.0;
 	Tpre_rounded = dst_y_prefetch_equ * LineTime;
 
@@ -1445,9 +1444,12 @@ static bool CalculatePrefetchSchedule(
 
 	if (MyError) {
 		*PrefetchBandwidth = 0;
+		TimeForFetchingMetaPTE = 0;
+		TimeForFetchingRowInVBlank = 0;
 		*DestinationLinesToRequestVMInVBlank = 0;
 		*DestinationLinesToRequestRowInVBlank = 0;
 		*DestinationLinesForPrefetch = 0;
+		LinesToRequestPrefetchPixelData = 0;
 		*VRatioPrefetchY = 0;
 		*VRatioPrefetchC = 0;
 		*RequiredPrefetchPixDataBWLuma = 0;
@@ -1922,6 +1924,15 @@ static unsigned int CalculateVMAndRowBytes(
 		*PixelPTEReqWidth = 32768.0 / BytePerPixel;
 		*PTERequestSize = 64;
 		FractionOfPTEReturnDrop = 0;
+	} else if (MacroTileSizeBytes == 4096) {
+		PixelPTEReqHeightPTEs = 1;
+		*PixelPTEReqHeight = MacroTileHeight;
+		*PixelPTEReqWidth = 8 * *MacroTileWidth;
+		*PTERequestSize = 64;
+		if (ScanDirection != dm_vert)
+			FractionOfPTEReturnDrop = 0;
+		else
+			FractionOfPTEReturnDrop = 7 / 8;
 	} else if (GPUVMMinPageSize == 4 && MacroTileSizeBytes > 4096) {
 		PixelPTEReqHeightPTEs = 16;
 		*PixelPTEReqHeight = 16 * BlockHeight256Bytes;
@@ -3108,7 +3119,7 @@ static void DISPCLKDPPCLKDCFCLKDeepSleepPrefetchParametersWatermarksAndPerforman
 				v->SurfaceWidthC[k],
 				v->SurfaceHeightY[k],
 				v->SurfaceHeightC[k],
-				v->DETBufferSizeInKByte[k] * 1024,
+				v->DETBufferSizeInKByte[0] * 1024,
 				v->BlockHeight256BytesY[k],
 				v->BlockHeight256BytesC[k],
 				v->SurfaceTiling[k],
@@ -3303,8 +3314,7 @@ static void DisplayPipeConfiguration(struct display_mode_lib *mode_lib)
 	CalculateSwathAndDETConfiguration(
 			false,
 			v->NumberOfActivePlanes,
-			mode_lib->project == DML_PROJECT_DCN315 && v->DETSizeOverride[0],
-			v->DETBufferSizeInKByte,
+			v->DETBufferSizeInKByte[0],
 			dummy1,
 			dummy2,
 			v->SourceScan,
@@ -3494,7 +3504,7 @@ static void CalculateFlipSchedule(
 	unsigned int HostVMDynamicLevelsTrips;
 	double TimeForFetchingMetaPTEImmediateFlip;
 	double TimeForFetchingRowInVBlankImmediateFlip;
-	double ImmediateFlipBW = 1.0;
+	double ImmediateFlipBW;
 	double LineTime = v->HTotal[k] / v->PixelClock[k];
 
 	if (v->GPUVMEnable == true && v->HostVMEnable == true) {
@@ -3606,7 +3616,7 @@ static double TruncToValidBPP(
 		NonDSCBPP1 = 15;
 		NonDSCBPP2 = 18;
 		MinDSCBPP = 6;
-		MaxDSCBPP = 1.5 * DSCInputBitPerComponent - 1.0 / 16;
+		MaxDSCBPP = 1.5 * DSCInputBitPerComponent - 1 / 16;
 	} else if (Format == dm_444) {
 		NonDSCBPP0 = 24;
 		NonDSCBPP1 = 30;
@@ -3668,6 +3678,7 @@ static double TruncToValidBPP(
 			return DesiredBPP;
 		}
 	}
+	return BPP_INVALID;
 }
 
 static noinline void CalculatePrefetchSchedulePerPlane(
@@ -3769,16 +3780,14 @@ static noinline void CalculatePrefetchSchedulePerPlane(
 		&v->VReadyOffsetPix[k]);
 }
 
-static void PatchDETBufferSizeInKByte(unsigned int NumberOfActivePlanes, int NoOfDPPThisState[], unsigned int config_return_buffer_size_in_kbytes, unsigned int DETBufferSizeInKByte[])
+static void PatchDETBufferSizeInKByte(unsigned int NumberOfActivePlanes, int NoOfDPPThisState[], unsigned int config_return_buffer_size_in_kbytes, unsigned int *DETBufferSizeInKByte)
 {
 	int i, total_pipes = 0;
 	for (i = 0; i < NumberOfActivePlanes; i++)
 		total_pipes += NoOfDPPThisState[i];
-	DETBufferSizeInKByte[0] = ((config_return_buffer_size_in_kbytes - DCN3_15_MIN_COMPBUF_SIZE_KB) / 64 / total_pipes) * 64;
-	if (DETBufferSizeInKByte[0] > DCN3_15_MAX_DET_SIZE)
-		DETBufferSizeInKByte[0] = DCN3_15_MAX_DET_SIZE;
-	for (i = 1; i < NumberOfActivePlanes; i++)
-		DETBufferSizeInKByte[i] = DETBufferSizeInKByte[0];
+	*DETBufferSizeInKByte = ((config_return_buffer_size_in_kbytes - DCN3_15_MIN_COMPBUF_SIZE_KB) / 64 / total_pipes) * 64;
+	if (*DETBufferSizeInKByte > DCN3_15_MAX_DET_SIZE)
+		*DETBufferSizeInKByte = DCN3_15_MAX_DET_SIZE;
 }
 
 
@@ -4018,8 +4027,7 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 	CalculateSwathAndDETConfiguration(
 			true,
 			v->NumberOfActivePlanes,
-			mode_lib->project == DML_PROJECT_DCN315 && v->DETSizeOverride[0],
-			v->DETBufferSizeInKByte,
+			v->DETBufferSizeInKByte[0],
 			v->MaximumSwathWidthLuma,
 			v->MaximumSwathWidthChroma,
 			v->SourceScan,
@@ -4123,9 +4131,7 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 				}
 				if (v->OutputFormat[k] == dm_420 && v->HActive[k] > DCN31_MAX_FMT_420_BUFFER_WIDTH
 						&& v->ODMCombineEnablePerState[i][k] != dm_odm_combine_mode_4to1) {
-					if (v->Output[k] == dm_hdmi) {
-						FMTBufferExceeded = true;
-					} else if (v->HActive[k] / 2 > DCN31_MAX_FMT_420_BUFFER_WIDTH) {
+					if (v->HActive[k] / 2 > DCN31_MAX_FMT_420_BUFFER_WIDTH) {
 						v->ODMCombineEnablePerState[i][k] = dm_odm_combine_mode_4to1;
 						v->PlaneRequiredDISPCLK = v->PlaneRequiredDISPCLKWithODMCombine4To1;
 
@@ -4160,10 +4166,6 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 						> v->MaxDppclkRoundedDownToDFSGranularity)
 						|| (v->PlaneRequiredDISPCLK > v->MaxDispclkRoundedDownToDFSGranularity)) {
 					v->DISPCLK_DPPCLK_Support[i][j] = false;
-				}
-				if (mode_lib->project == DML_PROJECT_DCN315 && v->DETSizeOverride[k] > DCN3_15_MAX_DET_SIZE && v->NoOfDPP[i][j][k] < 2) {
-					v->MPCCombine[i][j][k] = true;
-					v->NoOfDPP[i][j][k] = 2;
 				}
 			}
 			v->TotalNumberOfActiveDPP[i][j] = 0;
@@ -4306,11 +4308,11 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 							v->AudioSampleRate[k],
 							v->AudioSampleLayout[k],
 							v->ODMCombineEnablePerState[i][k]);
-				} else if (v->Output[k] == dm_dp || v->Output[k] == dm_edp || v->Output[k] == dm_dp2p0) {
+				} else if (v->Output[k] == dm_dp || v->Output[k] == dm_edp) {
 					if (v->DSCEnable[k] == true) {
 						v->RequiresDSC[i][k] = true;
 						v->LinkDSCEnable = true;
-						if (v->Output[k] == dm_dp || v->Output[k] == dm_dp2p0) {
+						if (v->Output[k] == dm_dp) {
 							v->RequiresFEC[i][k] = true;
 						} else {
 							v->RequiresFEC[i][k] = false;
@@ -4318,201 +4320,107 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 					} else {
 						v->RequiresDSC[i][k] = false;
 						v->LinkDSCEnable = false;
-						if (v->Output[k] == dm_dp2p0) {
-							v->RequiresFEC[i][k] = true;
-						} else {
-							v->RequiresFEC[i][k] = false;
-						}
+						v->RequiresFEC[i][k] = false;
 					}
-					if (v->Output[k] == dm_dp2p0) {
-						v->Outbpp = BPP_INVALID;
-						if ((v->OutputLinkDPRate[k] == dm_dp_rate_na || v->OutputLinkDPRate[k] == dm_dp_rate_uhbr10) &&
-							v->PHYCLKD18PerState[k] >= 10000.0 / 18.0) {
-							v->Outbpp = TruncToValidBPP(
-									(1.0 - v->Downspreading / 100.0) * 10000,
-									v->OutputLinkDPLanes[k],
-									v->HTotal[k],
-									v->HActive[k],
-									v->PixelClockBackEnd[k],
-									v->ForcedOutputLinkBPP[k],
-									v->LinkDSCEnable,
-									v->Output[k],
-									v->OutputFormat[k],
-									v->DSCInputBitPerComponent[k],
-									v->NumberOfDSCSlices[k],
-									v->AudioSampleRate[k],
-									v->AudioSampleLayout[k],
-									v->ODMCombineEnablePerState[i][k]);
-							if (v->Outbpp == BPP_INVALID && v->PHYCLKD18PerState[k] < 13500.0 / 18.0 &&
-								v->DSCEnable[k] == true && v->ForcedOutputLinkBPP[k] == 0) {
-								v->RequiresDSC[i][k] = true;
-								v->LinkDSCEnable = true;
-								v->Outbpp = TruncToValidBPP(
-										(1.0 - v->Downspreading / 100.0) * 10000,
-										v->OutputLinkDPLanes[k],
-										v->HTotal[k],
-										v->HActive[k],
-										v->PixelClockBackEnd[k],
-										v->ForcedOutputLinkBPP[k],
-										v->LinkDSCEnable,
-										v->Output[k],
-										v->OutputFormat[k],
-										v->DSCInputBitPerComponent[k],
-										v->NumberOfDSCSlices[k],
-										v->AudioSampleRate[k],
-										v->AudioSampleLayout[k],
-										v->ODMCombineEnablePerState[i][k]);
-							}
-							v->OutputBppPerState[i][k] = v->Outbpp;
-							// TODO: Need some other way to handle this nonsense
-							// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " UHBR10"
-						}
-						if (v->Outbpp == BPP_INVALID &&
-							(v->OutputLinkDPRate[k] == dm_dp_rate_na || v->OutputLinkDPRate[k] == dm_dp_rate_uhbr13p5) &&
-							v->PHYCLKD18PerState[k] >= 13500.0 / 18.0) {
-							v->Outbpp = TruncToValidBPP(
-									(1.0 - v->Downspreading / 100.0) * 13500,
-									v->OutputLinkDPLanes[k],
-									v->HTotal[k],
-									v->HActive[k],
-									v->PixelClockBackEnd[k],
-									v->ForcedOutputLinkBPP[k],
-									v->LinkDSCEnable,
-									v->Output[k],
-									v->OutputFormat[k],
-									v->DSCInputBitPerComponent[k],
-									v->NumberOfDSCSlices[k],
-									v->AudioSampleRate[k],
-									v->AudioSampleLayout[k],
-									v->ODMCombineEnablePerState[i][k]);
-							if (v->Outbpp == BPP_INVALID && v->PHYCLKD18PerState[k] < 20000.0 / 18.0 &&
-								v->DSCEnable[k] == true && v->ForcedOutputLinkBPP[k] == 0) {
-								v->RequiresDSC[i][k] = true;
-								v->LinkDSCEnable = true;
-								v->Outbpp = TruncToValidBPP(
-										(1.0 - v->Downspreading / 100.0) * 13500,
-										v->OutputLinkDPLanes[k],
-										v->HTotal[k],
-										v->HActive[k],
-										v->PixelClockBackEnd[k],
-										v->ForcedOutputLinkBPP[k],
-										v->LinkDSCEnable,
-										v->Output[k],
-										v->OutputFormat[k],
-										v->DSCInputBitPerComponent[k],
-										v->NumberOfDSCSlices[k],
-										v->AudioSampleRate[k],
-										v->AudioSampleLayout[k],
-										v->ODMCombineEnablePerState[i][k]);
-							}
-							v->OutputBppPerState[i][k] = v->Outbpp;
-							// TODO: Need some other way to handle this nonsense
-							// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " UHBR13p5"
-						}
-						if (v->Outbpp == BPP_INVALID &&
-							(v->OutputLinkDPRate[k] == dm_dp_rate_na || v->OutputLinkDPRate[k] == dm_dp_rate_uhbr20) &&
-							v->PHYCLKD18PerState[k] >= 20000.0 / 18.0) {
-							v->Outbpp = TruncToValidBPP(
-									(1.0 - v->Downspreading / 100.0) * 20000,
-									v->OutputLinkDPLanes[k],
-									v->HTotal[k],
-									v->HActive[k],
-									v->PixelClockBackEnd[k],
-									v->ForcedOutputLinkBPP[k],
-									v->LinkDSCEnable,
-									v->Output[k],
-									v->OutputFormat[k],
-									v->DSCInputBitPerComponent[k],
-									v->NumberOfDSCSlices[k],
-									v->AudioSampleRate[k],
-									v->AudioSampleLayout[k],
-									v->ODMCombineEnablePerState[i][k]);
-							if (v->Outbpp == BPP_INVALID && v->DSCEnable[k] == true &&
-								v->ForcedOutputLinkBPP[k] == 0) {
-								v->RequiresDSC[i][k] = true;
-								v->LinkDSCEnable = true;
-								v->Outbpp = TruncToValidBPP(
-										(1.0 - v->Downspreading / 100.0) * 20000,
-										v->OutputLinkDPLanes[k],
-										v->HTotal[k],
-										v->HActive[k],
-										v->PixelClockBackEnd[k],
-										v->ForcedOutputLinkBPP[k],
-										v->LinkDSCEnable,
-										v->Output[k],
-										v->OutputFormat[k],
-										v->DSCInputBitPerComponent[k],
-										v->NumberOfDSCSlices[k],
-										v->AudioSampleRate[k],
-										v->AudioSampleLayout[k],
-										v->ODMCombineEnablePerState[i][k]);
-							}
-							v->OutputBppPerState[i][k] = v->Outbpp;
-							// TODO: Need some other way to handle this nonsense
-							// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " UHBR20"
-						}
-					} else {
-						v->Outbpp = BPP_INVALID;
-						if (v->PHYCLKPerState[i] >= 270.0) {
-							v->Outbpp = TruncToValidBPP(
-									(1.0 - v->Downspreading / 100.0) * 2700,
-									v->OutputLinkDPLanes[k],
-									v->HTotal[k],
-									v->HActive[k],
-									v->PixelClockBackEnd[k],
-									v->ForcedOutputLinkBPP[k],
-									v->LinkDSCEnable,
-									v->Output[k],
-									v->OutputFormat[k],
-									v->DSCInputBitPerComponent[k],
-									v->NumberOfDSCSlices[k],
-									v->AudioSampleRate[k],
-									v->AudioSampleLayout[k],
-									v->ODMCombineEnablePerState[i][k]);
-							v->OutputBppPerState[i][k] = v->Outbpp;
-							// TODO: Need some other way to handle this nonsense
-							// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " HBR"
-						}
-						if (v->Outbpp == BPP_INVALID && v->PHYCLKPerState[i] >= 540.0) {
-							v->Outbpp = TruncToValidBPP(
-									(1.0 - v->Downspreading / 100.0) * 5400,
-									v->OutputLinkDPLanes[k],
-									v->HTotal[k],
-									v->HActive[k],
-									v->PixelClockBackEnd[k],
-									v->ForcedOutputLinkBPP[k],
-									v->LinkDSCEnable,
-									v->Output[k],
-									v->OutputFormat[k],
-									v->DSCInputBitPerComponent[k],
-									v->NumberOfDSCSlices[k],
-									v->AudioSampleRate[k],
-									v->AudioSampleLayout[k],
-									v->ODMCombineEnablePerState[i][k]);
-							v->OutputBppPerState[i][k] = v->Outbpp;
-							// TODO: Need some other way to handle this nonsense
-							// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " HBR2"
-						}
-						if (v->Outbpp == BPP_INVALID && v->PHYCLKPerState[i] >= 810.0) {
-							v->Outbpp = TruncToValidBPP(
-									(1.0 - v->Downspreading / 100.0) * 8100,
-									v->OutputLinkDPLanes[k],
-									v->HTotal[k],
-									v->HActive[k],
-									v->PixelClockBackEnd[k],
-									v->ForcedOutputLinkBPP[k],
-									v->LinkDSCEnable,
-									v->Output[k],
-									v->OutputFormat[k],
-									v->DSCInputBitPerComponent[k],
-									v->NumberOfDSCSlices[k],
-									v->AudioSampleRate[k],
-									v->AudioSampleLayout[k],
-									v->ODMCombineEnablePerState[i][k]);
-							v->OutputBppPerState[i][k] = v->Outbpp;
-							// TODO: Need some other way to handle this nonsense
-							// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " HBR3"
-						}
+
+					v->Outbpp = BPP_INVALID;
+					if (v->PHYCLKPerState[i] >= 270.0) {
+						v->Outbpp = TruncToValidBPP(
+								(1.0 - v->Downspreading / 100.0) * 2700,
+								v->OutputLinkDPLanes[k],
+								v->HTotal[k],
+								v->HActive[k],
+								v->PixelClockBackEnd[k],
+								v->ForcedOutputLinkBPP[k],
+								v->LinkDSCEnable,
+								v->Output[k],
+								v->OutputFormat[k],
+								v->DSCInputBitPerComponent[k],
+								v->NumberOfDSCSlices[k],
+								v->AudioSampleRate[k],
+								v->AudioSampleLayout[k],
+								v->ODMCombineEnablePerState[i][k]);
+						v->OutputBppPerState[i][k] = v->Outbpp;
+						// TODO: Need some other way to handle this nonsense
+						// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " HBR"
+					}
+					if (v->Outbpp == BPP_INVALID && v->PHYCLKPerState[i] >= 540.0) {
+						v->Outbpp = TruncToValidBPP(
+								(1.0 - v->Downspreading / 100.0) * 5400,
+								v->OutputLinkDPLanes[k],
+								v->HTotal[k],
+								v->HActive[k],
+								v->PixelClockBackEnd[k],
+								v->ForcedOutputLinkBPP[k],
+								v->LinkDSCEnable,
+								v->Output[k],
+								v->OutputFormat[k],
+								v->DSCInputBitPerComponent[k],
+								v->NumberOfDSCSlices[k],
+								v->AudioSampleRate[k],
+								v->AudioSampleLayout[k],
+								v->ODMCombineEnablePerState[i][k]);
+						v->OutputBppPerState[i][k] = v->Outbpp;
+						// TODO: Need some other way to handle this nonsense
+						// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " HBR2"
+					}
+					if (v->Outbpp == BPP_INVALID && v->PHYCLKPerState[i] >= 810.0) {
+						v->Outbpp = TruncToValidBPP(
+								(1.0 - v->Downspreading / 100.0) * 8100,
+								v->OutputLinkDPLanes[k],
+								v->HTotal[k],
+								v->HActive[k],
+								v->PixelClockBackEnd[k],
+								v->ForcedOutputLinkBPP[k],
+								v->LinkDSCEnable,
+								v->Output[k],
+								v->OutputFormat[k],
+								v->DSCInputBitPerComponent[k],
+								v->NumberOfDSCSlices[k],
+								v->AudioSampleRate[k],
+								v->AudioSampleLayout[k],
+								v->ODMCombineEnablePerState[i][k]);
+						v->OutputBppPerState[i][k] = v->Outbpp;
+						// TODO: Need some other way to handle this nonsense
+						// v->OutputTypeAndRatePerState[i][k] = v->Output[k] & " HBR3"
+					}
+					if (v->Outbpp == BPP_INVALID && v->PHYCLKD18PerState[i] >= 10000.0 / 18) {
+						v->Outbpp = TruncToValidBPP(
+								(1.0 - v->Downspreading / 100.0) * 10000,
+								4,
+								v->HTotal[k],
+								v->HActive[k],
+								v->PixelClockBackEnd[k],
+								v->ForcedOutputLinkBPP[k],
+								v->LinkDSCEnable,
+								v->Output[k],
+								v->OutputFormat[k],
+								v->DSCInputBitPerComponent[k],
+								v->NumberOfDSCSlices[k],
+								v->AudioSampleRate[k],
+								v->AudioSampleLayout[k],
+								v->ODMCombineEnablePerState[i][k]);
+						v->OutputBppPerState[i][k] = v->Outbpp;
+						//v->OutputTypeAndRatePerState[i][k] = v->Output[k] & "10x4";
+					}
+					if (v->Outbpp == BPP_INVALID && v->PHYCLKD18PerState[i] >= 12000.0 / 18) {
+						v->Outbpp = TruncToValidBPP(
+								12000,
+								4,
+								v->HTotal[k],
+								v->HActive[k],
+								v->PixelClockBackEnd[k],
+								v->ForcedOutputLinkBPP[k],
+								v->LinkDSCEnable,
+								v->Output[k],
+								v->OutputFormat[k],
+								v->DSCInputBitPerComponent[k],
+								v->NumberOfDSCSlices[k],
+								v->AudioSampleRate[k],
+								v->AudioSampleLayout[k],
+								v->ODMCombineEnablePerState[i][k]);
+						v->OutputBppPerState[i][k] = v->Outbpp;
+						//v->OutputTypeAndRatePerState[i][k] = v->Output[k] & "12x4";
 					}
 				}
 			} else {
@@ -4641,13 +4549,12 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 				v->ODMCombineEnableThisState[k] = v->ODMCombineEnablePerState[i][k];
 			}
 
-			if (v->NumberOfActivePlanes > 1 && mode_lib->project == DML_PROJECT_DCN315 && !v->DETSizeOverride[0])
-				PatchDETBufferSizeInKByte(v->NumberOfActivePlanes, v->NoOfDPPThisState, v->ip.config_return_buffer_size_in_kbytes, v->DETBufferSizeInKByte);
+			if (v->NumberOfActivePlanes > 1 && mode_lib->project == DML_PROJECT_DCN315)
+				PatchDETBufferSizeInKByte(v->NumberOfActivePlanes, v->NoOfDPPThisState, v->ip.config_return_buffer_size_in_kbytes, &v->DETBufferSizeInKByte[0]);
 			CalculateSwathAndDETConfiguration(
 					false,
 					v->NumberOfActivePlanes,
-					mode_lib->project == DML_PROJECT_DCN315 && v->DETSizeOverride[0],
-					v->DETBufferSizeInKByte,
+					v->DETBufferSizeInKByte[0],
 					v->MaximumSwathWidthLuma,
 					v->MaximumSwathWidthChroma,
 					v->SourceScan,
@@ -5191,7 +5098,7 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 							v->DETBufferSizeCThisState[k],
 							&v->UrgentBurstFactorCursorPre[k],
 							&v->UrgentBurstFactorLumaPre[k],
-							&v->UrgentBurstFactorChromaPre[k],
+							&v->UrgentBurstFactorChroma[k],
 							&v->NotUrgentLatencyHidingPre[k]);
 				}
 
@@ -5274,8 +5181,8 @@ void dml31_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 					v->TotImmediateFlipBytes = 0.0;
 					for (k = 0; k < v->NumberOfActivePlanes; k++) {
 						v->TotImmediateFlipBytes = v->TotImmediateFlipBytes
-								+ v->NoOfDPP[i][j][k] * (v->PDEAndMetaPTEBytesPerFrame[i][j][k] + v->MetaRowBytes[i][j][k]
-								+ v->DPTEBytesPerRow[i][j][k]);
+								+ v->NoOfDPP[i][j][k] * v->PDEAndMetaPTEBytesPerFrame[i][j][k] + v->MetaRowBytes[i][j][k]
+								+ v->DPTEBytesPerRow[i][j][k];
 					}
 
 					for (k = 0; k < v->NumberOfActivePlanes; k++) {
@@ -6611,8 +6518,7 @@ static void CalculateStutterEfficiency(
 static void CalculateSwathAndDETConfiguration(
 		bool ForceSingleDPP,
 		int NumberOfActivePlanes,
-		bool DETSharedByAllDPP,
-		unsigned int DETBufferSizeInKByteA[],
+		unsigned int DETBufferSizeInKByte,
 		double MaximumSwathWidthLuma[],
 		double MaximumSwathWidthChroma[],
 		enum scan_direction_class SourceScan[],
@@ -6696,10 +6602,6 @@ static void CalculateSwathAndDETConfiguration(
 
 	*ViewportSizeSupport = true;
 	for (k = 0; k < NumberOfActivePlanes; ++k) {
-		unsigned int DETBufferSizeInKByte = DETBufferSizeInKByteA[k];
-
-		if (DETSharedByAllDPP && DPPPerPlane[k])
-			DETBufferSizeInKByte /= DPPPerPlane[k];
 		if ((SourcePixelFormat[k] == dm_444_64 || SourcePixelFormat[k] == dm_444_32 || SourcePixelFormat[k] == dm_444_16 || SourcePixelFormat[k] == dm_mono_16
 				|| SourcePixelFormat[k] == dm_mono_8 || SourcePixelFormat[k] == dm_rgbe)) {
 			if (SurfaceTiling[k] == dm_sw_linear
@@ -7022,7 +6924,7 @@ static double CalculateUrgentLatency(
 	return ret;
 }
 
-static noinline_for_stack void UseMinimumDCFCLK(
+static void UseMinimumDCFCLK(
 		struct display_mode_lib *mode_lib,
 		int MaxPrefetchMode,
 		int ReorderingBytes)

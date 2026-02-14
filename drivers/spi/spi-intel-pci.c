@@ -44,7 +44,6 @@ static int intel_spi_pci_probe(struct pci_dev *pdev,
 			       const struct pci_device_id *id)
 {
 	struct intel_spi_boardinfo *info;
-	void __iomem *base;
 	int ret;
 
 	ret = pcim_enable_device(pdev);
@@ -57,12 +56,7 @@ static int intel_spi_pci_probe(struct pci_dev *pdev,
 		return -ENOMEM;
 
 	info->data = pdev;
-
-	base = pcim_iomap_region(pdev, 0, KBUILD_MODNAME);
-	if (IS_ERR(base))
-		return PTR_ERR(base);
-
-	return intel_spi_probe(&pdev->dev, base, info);
+	return intel_spi_probe(&pdev->dev, &pdev->resource[0], info);
 }
 
 static const struct pci_device_id intel_spi_pci_ids[] = {
@@ -75,18 +69,12 @@ static const struct pci_device_id intel_spi_pci_ids[] = {
 	{ PCI_VDEVICE(INTEL, 0x38a4), (unsigned long)&bxt_info },
 	{ PCI_VDEVICE(INTEL, 0x43a4), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x4b24), (unsigned long)&bxt_info },
-	{ PCI_VDEVICE(INTEL, 0x4d23), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x4da4), (unsigned long)&bxt_info },
 	{ PCI_VDEVICE(INTEL, 0x51a4), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x54a4), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0x5794), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0x5825), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0x6e24), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0x7723), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x7a24), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x7aa4), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x7e23), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0x7f24), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x9d24), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0x9da4), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0xa0a4), (unsigned long)&cnl_info },
@@ -95,9 +83,6 @@ static const struct pci_device_id intel_spi_pci_ids[] = {
 	{ PCI_VDEVICE(INTEL, 0xa2a4), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0xa324), (unsigned long)&cnl_info },
 	{ PCI_VDEVICE(INTEL, 0xa3a4), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0xa823), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0xe323), (unsigned long)&cnl_info },
-	{ PCI_VDEVICE(INTEL, 0xe423), (unsigned long)&cnl_info },
 	{ },
 };
 MODULE_DEVICE_TABLE(pci, intel_spi_pci_ids);
@@ -106,7 +91,6 @@ static struct pci_driver intel_spi_pci_driver = {
 	.name = "intel-spi",
 	.id_table = intel_spi_pci_ids,
 	.probe = intel_spi_pci_probe,
-	.dev_groups = intel_spi_groups,
 };
 
 module_pci_driver(intel_spi_pci_driver);

@@ -2,9 +2,15 @@
 
 config FS_VERITY
 	bool "FS Verity (read-only file-based authenticity protection)"
+	select CRYPTO
 	select CRYPTO_HASH_INFO
-	select CRYPTO_LIB_SHA256
-	select CRYPTO_LIB_SHA512
+	# SHA-256 is implied as it's intended to be the default hash algorithm.
+	# To avoid bloat, other wanted algorithms must be selected explicitly.
+	# Note that CRYPTO_SHA256 denotes the generic C implementation, but
+	# some architectures provided optimized implementations of the same
+	# algorithm that may be used instead. In this case, CRYPTO_SHA256 may
+	# be omitted even if SHA-256 is being used.
+	imply CRYPTO_SHA256
 	help
 	  This option enables fs-verity.  fs-verity is the dm-verity
 	  mechanism implemented at the file level.  On supported
@@ -33,14 +39,14 @@ config FS_VERITY_BUILTIN_SIGNATURES
 	depends on FS_VERITY
 	select SYSTEM_DATA_VERIFICATION
 	help
-	  This option adds support for in-kernel verification of
-	  fs-verity builtin signatures.
+	  Support verifying signatures of verity files against the X.509
+	  certificates that have been loaded into the ".fs-verity"
+	  kernel keyring.
 
-	  Please take great care before using this feature.  It is not
-	  the only way to do signatures with fs-verity, and the
-	  alternatives (such as userspace signature verification, and
-	  IMA appraisal) can be much better.  For details about the
-	  limitations of this feature, see
-	  Documentation/filesystems/fsverity.rst.
+	  This is meant as a relatively simple mechanism that can be
+	  used to provide an authenticity guarantee for verity files, as
+	  an alternative to IMA appraisal.  Userspace programs still
+	  need to check that the verity bit is set in order to get an
+	  authenticity guarantee.
 
 	  If unsure, say N.

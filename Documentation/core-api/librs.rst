@@ -209,4 +209,4 @@ testing. Thanks a lot.
 
 The following people have contributed to this document:
 
-Thomas Gleixner\ tglx@kernel.org
+Thomas Gleixner\ tglx@linutronix.de

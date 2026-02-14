@@ -113,6 +113,7 @@ static void snd_wavefront_midi_output_write(snd_wavefront_card_t *card)
 {
 	snd_wavefront_midi_t *midi = &card->wavefront.midi;
 	snd_wavefront_mpu_id  mpu;
+	unsigned long flags;
 	unsigned char midi_byte;
 	int max = 256, mask = 1;
 	int timeout;
@@ -141,9 +142,11 @@ static void snd_wavefront_midi_output_write(snd_wavefront_card_t *card)
 				break;
 		}
 	
-		guard(spinlock_irqsave)(&midi->virtual);
-		if ((midi->mode[midi->output_mpu] & MPU401_MODE_OUTPUT) == 0)
+		spin_lock_irqsave (&midi->virtual, flags);
+		if ((midi->mode[midi->output_mpu] & MPU401_MODE_OUTPUT) == 0) {
+			spin_unlock_irqrestore (&midi->virtual, flags);
 			goto __second;
+		}
 		if (output_ready (midi)) {
 			if (snd_rawmidi_transmit(midi->substream_output[midi->output_mpu], &midi_byte, 1) == 1) {
 				if (!midi->isvirtual ||
@@ -154,14 +157,17 @@ static void snd_wavefront_midi_output_write(snd_wavefront_card_t *card)
 			} else {
 				if (midi->istimer) {
 					if (--midi->istimer <= 0)
-						timer_delete(&midi->timer);
+						del_timer(&midi->timer);
 				}
 				midi->mode[midi->output_mpu] &= ~MPU401_MODE_OUTPUT_TRIGGER;
+				spin_unlock_irqrestore (&midi->virtual, flags);
 				goto __second;
 			}
 		} else {
+			spin_unlock_irqrestore (&midi->virtual, flags);
 			return;
 		}
+		spin_unlock_irqrestore (&midi->virtual, flags);
 	}
 
       __second:
@@ -179,13 +185,15 @@ static void snd_wavefront_midi_output_write(snd_wavefront_card_t *card)
 				break;
 		}
 	
-		guard(spinlock_irqsave)(&midi->virtual);
+		spin_lock_irqsave (&midi->virtual, flags);
 		if (!midi->isvirtual)
 			mask = 0;
 		mpu = midi->output_mpu ^ mask;
 		mask = 0;	/* don't invert the value from now */
-		if ((midi->mode[mpu] & MPU401_MODE_OUTPUT) == 0)
+		if ((midi->mode[mpu] & MPU401_MODE_OUTPUT) == 0) {
+			spin_unlock_irqrestore (&midi->virtual, flags);
 			return;
+		}
 		if (snd_rawmidi_transmit_empty(midi->substream_output[mpu]))
 			goto __timer;
 		if (output_ready (midi)) {
@@ -204,19 +212,23 @@ static void snd_wavefront_midi_output_write(snd_wavefront_card_t *card)
 			      __timer:
 				if (midi->istimer) {
 					if (--midi->istimer <= 0)
-						timer_delete(&midi->timer);
+						del_timer(&midi->timer);
 				}
 				midi->mode[mpu] &= ~MPU401_MODE_OUTPUT_TRIGGER;
+				spin_unlock_irqrestore (&midi->virtual, flags);
 				return;
 			}
 		} else {
+			spin_unlock_irqrestore (&midi->virtual, flags);
 			return;
 		}
+		spin_unlock_irqrestore (&midi->virtual, flags);
 	}
 }
 
 static int snd_wavefront_midi_input_open(struct snd_rawmidi_substream *substream)
 {
+	unsigned long flags;
 	snd_wavefront_midi_t *midi;
 	snd_wavefront_mpu_id mpu;
 
@@ -231,15 +243,17 @@ static int snd_wavefront_midi_input_open(struct snd_rawmidi_substream *substream
 	if (!midi)
 	        return -EIO;
 
-	guard(spinlock_irqsave)(&midi->open);
+	spin_lock_irqsave (&midi->open, flags);
 	midi->mode[mpu] |= MPU401_MODE_INPUT;
 	midi->substream_input[mpu] = substream;
+	spin_unlock_irqrestore (&midi->open, flags);
 
 	return 0;
 }
 
 static int snd_wavefront_midi_output_open(struct snd_rawmidi_substream *substream)
 {
+	unsigned long flags;
 	snd_wavefront_midi_t *midi;
 	snd_wavefront_mpu_id mpu;
 
@@ -254,15 +268,17 @@ static int snd_wavefront_midi_output_open(struct snd_rawmidi_substream *substrea
 	if (!midi)
 	        return -EIO;
 
-	guard(spinlock_irqsave)(&midi->open);
+	spin_lock_irqsave (&midi->open, flags);
 	midi->mode[mpu] |= MPU401_MODE_OUTPUT;
 	midi->substream_output[mpu] = substream;
+	spin_unlock_irqrestore (&midi->open, flags);
 
 	return 0;
 }
 
 static int snd_wavefront_midi_input_close(struct snd_rawmidi_substream *substream)
 {
+	unsigned long flags;
 	snd_wavefront_midi_t *midi;
 	snd_wavefront_mpu_id mpu;
 
@@ -277,15 +293,16 @@ static int snd_wavefront_midi_input_close(struct snd_rawmidi_substream *substrea
 	if (!midi)
 	        return -EIO;
 
-	guard(spinlock_irqsave)(&midi->open);
-	midi->substream_input[mpu] = NULL;
+	spin_lock_irqsave (&midi->open, flags);
 	midi->mode[mpu] &= ~MPU401_MODE_INPUT;
+	spin_unlock_irqrestore (&midi->open, flags);
 
 	return 0;
 }
 
 static int snd_wavefront_midi_output_close(struct snd_rawmidi_substream *substream)
 {
+	unsigned long flags;
 	snd_wavefront_midi_t *midi;
 	snd_wavefront_mpu_id mpu;
 
@@ -300,14 +317,15 @@ static int snd_wavefront_midi_output_close(struct snd_rawmidi_substream *substre
 	if (!midi)
 	        return -EIO;
 
-	guard(spinlock_irqsave)(&midi->open);
-	midi->substream_output[mpu] = NULL;
+	spin_lock_irqsave (&midi->open, flags);
 	midi->mode[mpu] &= ~MPU401_MODE_OUTPUT;
+	spin_unlock_irqrestore (&midi->open, flags);
 	return 0;
 }
 
 static void snd_wavefront_midi_input_trigger(struct snd_rawmidi_substream *substream, int up)
 {
+	unsigned long flags;
 	snd_wavefront_midi_t *midi;
 	snd_wavefront_mpu_id mpu;
 
@@ -323,27 +341,30 @@ static void snd_wavefront_midi_input_trigger(struct snd_rawmidi_substream *subst
 	if (!midi)
 		return;
 
-	guard(spinlock_irqsave)(&midi->virtual);
+	spin_lock_irqsave (&midi->virtual, flags);
 	if (up) {
 		midi->mode[mpu] |= MPU401_MODE_INPUT_TRIGGER;
 	} else {
 		midi->mode[mpu] &= ~MPU401_MODE_INPUT_TRIGGER;
 	}
+	spin_unlock_irqrestore (&midi->virtual, flags);
 }
 
 static void snd_wavefront_midi_output_timer(struct timer_list *t)
 {
-	snd_wavefront_midi_t *midi = timer_container_of(midi, t, timer);
+	snd_wavefront_midi_t *midi = from_timer(midi, t, timer);
 	snd_wavefront_card_t *card = midi->timer_card;
+	unsigned long flags;
 	
-	scoped_guard(spinlock_irqsave, &midi->virtual) {
-		mod_timer(&midi->timer, 1 + jiffies);
-	}
+	spin_lock_irqsave (&midi->virtual, flags);
+	mod_timer(&midi->timer, 1 + jiffies);
+	spin_unlock_irqrestore (&midi->virtual, flags);
 	snd_wavefront_midi_output_write(card);
 }
 
 static void snd_wavefront_midi_output_trigger(struct snd_rawmidi_substream *substream, int up)
 {
+	unsigned long flags;
 	snd_wavefront_midi_t *midi;
 	snd_wavefront_mpu_id mpu;
 
@@ -359,22 +380,22 @@ static void snd_wavefront_midi_output_trigger(struct snd_rawmidi_substream *subs
 	if (!midi)
 		return;
 
-	scoped_guard(spinlock_irqsave, &midi->virtual) {
-		if (up) {
-			if ((midi->mode[mpu] & MPU401_MODE_OUTPUT_TRIGGER) == 0) {
-				if (!midi->istimer) {
-					timer_setup(&midi->timer,
-						    snd_wavefront_midi_output_timer,
-						    0);
-					mod_timer(&midi->timer, 1 + jiffies);
-				}
-				midi->istimer++;
-				midi->mode[mpu] |= MPU401_MODE_OUTPUT_TRIGGER;
+	spin_lock_irqsave (&midi->virtual, flags);
+	if (up) {
+		if ((midi->mode[mpu] & MPU401_MODE_OUTPUT_TRIGGER) == 0) {
+			if (!midi->istimer) {
+				timer_setup(&midi->timer,
+					    snd_wavefront_midi_output_timer,
+					    0);
+				mod_timer(&midi->timer, 1 + jiffies);
 			}
-		} else {
-			midi->mode[mpu] &= ~MPU401_MODE_OUTPUT_TRIGGER;
+			midi->istimer++;
+			midi->mode[mpu] |= MPU401_MODE_OUTPUT_TRIGGER;
 		}
+	} else {
+		midi->mode[mpu] &= ~MPU401_MODE_OUTPUT_TRIGGER;
 	}
+	spin_unlock_irqrestore (&midi->virtual, flags);
 
 	if (up)
 		snd_wavefront_midi_output_write((snd_wavefront_card_t *)substream->rmidi->card->private_data);
@@ -384,6 +405,7 @@ void
 snd_wavefront_midi_interrupt (snd_wavefront_card_t *card)
 
 {
+	unsigned long flags;
 	snd_wavefront_midi_t *midi;
 	static struct snd_rawmidi_substream *substream = NULL;
 	static int mpu = external_mpu; 
@@ -397,37 +419,37 @@ snd_wavefront_midi_interrupt (snd_wavefront_card_t *card)
 		return;
 	}
 
-	scoped_guard(spinlock_irqsave, &midi->virtual) {
-		while (--max) {
+	spin_lock_irqsave (&midi->virtual, flags);
+	while (--max) {
 
-			if (input_avail(midi)) {
-				byte = read_data(midi);
+		if (input_avail (midi)) {
+			byte = read_data (midi);
 
-				if (midi->isvirtual) {
-					if (byte == WF_EXTERNAL_SWITCH) {
-						substream = midi->substream_input[external_mpu];
-						mpu = external_mpu;
-					} else if (byte == WF_INTERNAL_SWITCH) {
-						substream = midi->substream_output[internal_mpu];
-						mpu = internal_mpu;
-					} /* else just leave it as it is */
-				} else {
-					substream = midi->substream_input[internal_mpu];
+			if (midi->isvirtual) {				
+				if (byte == WF_EXTERNAL_SWITCH) {
+					substream = midi->substream_input[external_mpu];
+					mpu = external_mpu;
+				} else if (byte == WF_INTERNAL_SWITCH) { 
+					substream = midi->substream_output[internal_mpu];
 					mpu = internal_mpu;
-				}
-
-				if (substream == NULL) {
-					continue;
-				}
-
-				if (midi->mode[mpu] & MPU401_MODE_INPUT_TRIGGER) {
-					snd_rawmidi_receive(substream, &byte, 1);
-				}
+				} /* else just leave it as it is */
 			} else {
-				break;
+				substream = midi->substream_input[internal_mpu];
+				mpu = internal_mpu;
 			}
+
+			if (substream == NULL) {
+				continue;
+			}
+
+			if (midi->mode[mpu] & MPU401_MODE_INPUT_TRIGGER) {
+				snd_rawmidi_receive(substream, &byte, 1);
+			}
+		} else {
+			break;
 		}
-	}
+	} 
+	spin_unlock_irqrestore (&midi->virtual, flags);
 
 	snd_wavefront_midi_output_write(card);
 }
@@ -449,10 +471,13 @@ void
 snd_wavefront_midi_disable_virtual (snd_wavefront_card_t *card)
 
 {
-	guard(spinlock_irqsave)(&card->wavefront.midi.virtual);
+	unsigned long flags;
+
+	spin_lock_irqsave (&card->wavefront.midi.virtual, flags);
 	// snd_wavefront_midi_input_close (card->ics2115_external_rmidi);
 	// snd_wavefront_midi_output_close (card->ics2115_external_rmidi);
 	card->wavefront.midi.isvirtual = 0;
+	spin_unlock_irqrestore (&card->wavefront.midi.virtual, flags);
 }
 
 int
@@ -476,8 +501,7 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	for (i = 0; i < 30000 && !output_ready (midi); i++);
 
 	if (!output_ready (midi)) {
-		dev_err(card->wavefront.card->dev,
-			"MIDI interface not ready for command\n");
+		snd_printk ("MIDI interface not ready for command\n");
 		return -1;
 	}
 
@@ -499,8 +523,7 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	}
 
 	if (!ok) {
-		dev_err(card->wavefront.card->dev,
-			"cannot set UART mode for MIDI interface");
+		snd_printk ("cannot set UART mode for MIDI interface");
 		dev->interrupts_are_midi = 0;
 		return -1;
 	}
@@ -508,8 +531,7 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	/* Route external MIDI to WaveFront synth (by default) */
     
 	if (snd_wavefront_cmd (dev, WFC_MISYNTH_ON, rbuf, wbuf)) {
-		dev_warn(card->wavefront.card->dev,
-			 "can't enable MIDI-IN-2-synth routing.\n");
+		snd_printk ("can't enable MIDI-IN-2-synth routing.\n");
 		/* XXX error ? */
 	}
 
@@ -525,16 +547,14 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 	*/
 
 	if (snd_wavefront_cmd (dev, WFC_VMIDI_OFF, rbuf, wbuf)) { 
-		dev_warn(card->wavefront.card->dev,
-			 "virtual MIDI mode not disabled\n");
+		snd_printk ("virtual MIDI mode not disabled\n");
 		return 0; /* We're OK, but missing the external MIDI dev */
 	}
 
 	snd_wavefront_midi_enable_virtual (card);
 
 	if (snd_wavefront_cmd (dev, WFC_VMIDI_ON, rbuf, wbuf)) {
-		dev_warn(card->wavefront.card->dev,
-			 "cannot enable virtual MIDI mode.\n");
+		snd_printk ("cannot enable virtual MIDI mode.\n");
 		snd_wavefront_midi_disable_virtual (card);
 	} 
 	return 0;

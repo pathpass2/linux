@@ -40,11 +40,13 @@ int snd_opl3_synth_setup(struct snd_opl3 * opl3)
 	int idx;
 	struct snd_hwdep *hwdep = opl3->hwdep;
 
-	scoped_guard(mutex, &hwdep->open_mutex) {
-		if (hwdep->used)
-			return -EBUSY;
-		hwdep->used++;
+	mutex_lock(&hwdep->open_mutex);
+	if (hwdep->used) {
+		mutex_unlock(&hwdep->open_mutex);
+		return -EBUSY;
 	}
+	hwdep->used++;
+	mutex_unlock(&hwdep->open_mutex);
 
 	snd_opl3_reset(opl3);
 
@@ -66,21 +68,22 @@ int snd_opl3_synth_setup(struct snd_opl3 * opl3)
 
 void snd_opl3_synth_cleanup(struct snd_opl3 * opl3)
 {
+	unsigned long flags;
 	struct snd_hwdep *hwdep;
 
 	/* Stop system timer */
-	scoped_guard(spinlock_irq, &opl3->sys_timer_lock) {
-		if (opl3->sys_timer_status) {
-			timer_delete(&opl3->tlist);
-			opl3->sys_timer_status = 0;
-		}
+	spin_lock_irqsave(&opl3->sys_timer_lock, flags);
+	if (opl3->sys_timer_status) {
+		del_timer(&opl3->tlist);
+		opl3->sys_timer_status = 0;
 	}
+	spin_unlock_irqrestore(&opl3->sys_timer_lock, flags);
 
 	snd_opl3_reset(opl3);
 	hwdep = opl3->hwdep;
-	scoped_guard(mutex, &hwdep->open_mutex) {
-		hwdep->used--;
-	}
+	mutex_lock(&hwdep->open_mutex);
+	hwdep->used--;
+	mutex_unlock(&hwdep->open_mutex);
 	wake_up(&hwdep->open_wait);
 }
 
@@ -201,8 +204,9 @@ static int snd_opl3_synth_create_port(struct snd_opl3 * opl3)
 
 /* ------------------------------ */
 
-static int snd_opl3_seq_probe(struct snd_seq_device *dev)
+static int snd_opl3_seq_probe(struct device *_dev)
 {
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_opl3 *opl3;
 	int client, err;
 	char name[32];
@@ -243,13 +247,14 @@ static int snd_opl3_seq_probe(struct snd_seq_device *dev)
 	return 0;
 }
 
-static void snd_opl3_seq_remove(struct snd_seq_device *dev)
+static int snd_opl3_seq_remove(struct device *_dev)
 {
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_opl3 *opl3;
 
 	opl3 = *(struct snd_opl3 **)SNDRV_SEQ_DEVICE_ARGPTR(dev);
 	if (opl3 == NULL)
-		return;
+		return -EINVAL;
 
 #if IS_ENABLED(CONFIG_SND_SEQUENCER_OSS)
 	snd_opl3_free_seq_oss(opl3);
@@ -258,13 +263,14 @@ static void snd_opl3_seq_remove(struct snd_seq_device *dev)
 		snd_seq_delete_kernel_client(opl3->seq_client);
 		opl3->seq_client = -1;
 	}
+	return 0;
 }
 
 static struct snd_seq_driver opl3_seq_driver = {
-	.probe = snd_opl3_seq_probe,
-	.remove = snd_opl3_seq_remove,
 	.driver = {
 		.name = KBUILD_MODNAME,
+		.probe = snd_opl3_seq_probe,
+		.remove = snd_opl3_seq_remove,
 	},
 	.id = SNDRV_SEQ_DEV_ID_OPL3,
 	.argsize = sizeof(struct snd_opl3 *),

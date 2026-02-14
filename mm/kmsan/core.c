@@ -33,7 +33,7 @@ bool kmsan_enabled __read_mostly;
 
 /*
  * Per-CPU KMSAN context to be used in interrupts, where current->kmsan is
- * unavailable.
+ * unavaliable.
  */
 DEFINE_PER_CPU(struct kmsan_ctx, kmsan_percpu_ctx);
 
@@ -43,6 +43,7 @@ void kmsan_internal_task_create(struct task_struct *task)
 	struct thread_info *info = current_thread_info();
 
 	__memset(ctx, 0, sizeof(*ctx));
+	ctx->allow_reporting = true;
 	kmsan_internal_unpoison_memory(info, sizeof(*info), false);
 }
 
@@ -72,73 +73,141 @@ depot_stack_handle_t kmsan_save_stack_with_flags(gfp_t flags,
 
 	nr_entries = stack_trace_save(entries, KMSAN_STACK_DEPTH, 0);
 
-	handle = stack_depot_save(entries, nr_entries, flags);
+	/* Don't sleep (see might_sleep_if() in __alloc_pages_nodemask()). */
+	flags &= ~__GFP_DIRECT_RECLAIM;
+
+	handle = __stack_depot_save(entries, nr_entries, flags, true);
 	return stack_depot_set_extra_bits(handle, extra);
 }
 
 /* Copy the metadata following the memmove() behavior. */
 void kmsan_internal_memmove_metadata(void *dst, void *src, size_t n)
 {
-	depot_stack_handle_t prev_old_origin = 0, prev_new_origin = 0;
-	int i, iter, step, src_off, dst_off, oiter_src, oiter_dst;
 	depot_stack_handle_t old_origin = 0, new_origin = 0;
+	int src_slots, dst_slots, i, iter, step, skip_bits;
 	depot_stack_handle_t *origin_src, *origin_dst;
-	u8 *shadow_src, *shadow_dst;
-	u32 *align_shadow_dst;
+	void *shadow_src, *shadow_dst;
+	u32 *align_shadow_src, shadow;
 	bool backwards;
 
 	shadow_dst = kmsan_get_metadata(dst, KMSAN_META_SHADOW);
 	if (!shadow_dst)
 		return;
 	KMSAN_WARN_ON(!kmsan_metadata_is_contiguous(dst, n));
-	align_shadow_dst =
-		(u32 *)ALIGN_DOWN((u64)shadow_dst, KMSAN_ORIGIN_SIZE);
 
 	shadow_src = kmsan_get_metadata(src, KMSAN_META_SHADOW);
 	if (!shadow_src) {
-		/* @src is untracked: mark @dst as initialized. */
-		kmsan_internal_unpoison_memory(dst, n, /*checked*/ false);
+		/*
+		 * @src is untracked: zero out destination shadow, ignore the
+		 * origins, we're done.
+		 */
+		__memset(shadow_dst, 0, n);
 		return;
 	}
 	KMSAN_WARN_ON(!kmsan_metadata_is_contiguous(src, n));
 
+	__memmove(shadow_dst, shadow_src, n);
+
 	origin_dst = kmsan_get_metadata(dst, KMSAN_META_ORIGIN);
 	origin_src = kmsan_get_metadata(src, KMSAN_META_ORIGIN);
 	KMSAN_WARN_ON(!origin_dst || !origin_src);
+	src_slots = (ALIGN((u64)src + n, KMSAN_ORIGIN_SIZE) -
+		     ALIGN_DOWN((u64)src, KMSAN_ORIGIN_SIZE)) /
+		    KMSAN_ORIGIN_SIZE;
+	dst_slots = (ALIGN((u64)dst + n, KMSAN_ORIGIN_SIZE) -
+		     ALIGN_DOWN((u64)dst, KMSAN_ORIGIN_SIZE)) /
+		    KMSAN_ORIGIN_SIZE;
+	KMSAN_WARN_ON((src_slots < 1) || (dst_slots < 1));
+	KMSAN_WARN_ON((src_slots - dst_slots > 1) ||
+		      (dst_slots - src_slots < -1));
 
 	backwards = dst > src;
-	step = backwards ? -1 : 1;
-	iter = backwards ? n - 1 : 0;
-	src_off = (u64)src % KMSAN_ORIGIN_SIZE;
-	dst_off = (u64)dst % KMSAN_ORIGIN_SIZE;
+	i = backwards ? min(src_slots, dst_slots) - 1 : 0;
+	iter = backwards ? -1 : 1;
 
-	/* Copy shadow bytes one by one, updating the origins if necessary. */
-	for (i = 0; i < n; i++, iter += step) {
-		oiter_src = (iter + src_off) / KMSAN_ORIGIN_SIZE;
-		oiter_dst = (iter + dst_off) / KMSAN_ORIGIN_SIZE;
-		if (!shadow_src[iter]) {
-			shadow_dst[iter] = 0;
-			if (!align_shadow_dst[oiter_dst])
-				origin_dst[oiter_dst] = 0;
-			continue;
+	align_shadow_src =
+		(u32 *)ALIGN_DOWN((u64)shadow_src, KMSAN_ORIGIN_SIZE);
+	for (step = 0; step < min(src_slots, dst_slots); step++, i += iter) {
+		KMSAN_WARN_ON(i < 0);
+		shadow = align_shadow_src[i];
+		if (i == 0) {
+			/*
+			 * If @src isn't aligned on KMSAN_ORIGIN_SIZE, don't
+			 * look at the first @src % KMSAN_ORIGIN_SIZE bytes
+			 * of the first shadow slot.
+			 */
+			skip_bits = ((u64)src % KMSAN_ORIGIN_SIZE) * 8;
+			shadow = (shadow >> skip_bits) << skip_bits;
 		}
-		shadow_dst[iter] = shadow_src[iter];
-		old_origin = origin_src[oiter_src];
-		if (old_origin == prev_old_origin)
-			new_origin = prev_new_origin;
-		else {
+		if (i == src_slots - 1) {
+			/*
+			 * If @src + n isn't aligned on
+			 * KMSAN_ORIGIN_SIZE, don't look at the last
+			 * (@src + n) % KMSAN_ORIGIN_SIZE bytes of the
+			 * last shadow slot.
+			 */
+			skip_bits = (((u64)src + n) % KMSAN_ORIGIN_SIZE) * 8;
+			shadow = (shadow << skip_bits) >> skip_bits;
+		}
+		/*
+		 * Overwrite the origin only if the corresponding
+		 * shadow is nonempty.
+		 */
+		if (origin_src[i] && (origin_src[i] != old_origin) && shadow) {
+			old_origin = origin_src[i];
+			new_origin = kmsan_internal_chain_origin(old_origin);
 			/*
 			 * kmsan_internal_chain_origin() may return
 			 * NULL, but we don't want to lose the previous
 			 * origin value.
 			 */
-			new_origin = kmsan_internal_chain_origin(old_origin);
 			if (!new_origin)
 				new_origin = old_origin;
 		}
-		origin_dst[oiter_dst] = new_origin;
-		prev_new_origin = new_origin;
-		prev_old_origin = old_origin;
+		if (shadow)
+			origin_dst[i] = new_origin;
+		else
+			origin_dst[i] = 0;
+	}
+	/*
+	 * If dst_slots is greater than src_slots (i.e.
+	 * dst_slots == src_slots + 1), there is an extra origin slot at the
+	 * beginning or end of the destination buffer, for which we take the
+	 * origin from the previous slot.
+	 * This is only done if the part of the source shadow corresponding to
+	 * slot is non-zero.
+	 *
+	 * E.g. if we copy 8 aligned bytes that are marked as uninitialized
+	 * and have origins o111 and o222, to an unaligned buffer with offset 1,
+	 * these two origins are copied to three origin slots, so one of then
+	 * needs to be duplicated, depending on the copy direction (@backwards)
+	 *
+	 *   src shadow: |uuuu|uuuu|....|
+	 *   src origin: |o111|o222|....|
+	 *
+	 * backwards = 0:
+	 *   dst shadow: |.uuu|uuuu|u...|
+	 *   dst origin: |....|o111|o222| - fill the empty slot with o111
+	 * backwards = 1:
+	 *   dst shadow: |.uuu|uuuu|u...|
+	 *   dst origin: |o111|o222|....| - fill the empty slot with o222
+	 */
+	if (src_slots < dst_slots) {
+		if (backwards) {
+			shadow = align_shadow_src[src_slots - 1];
+			skip_bits = (((u64)dst + n) % KMSAN_ORIGIN_SIZE) * 8;
+			shadow = (shadow << skip_bits) >> skip_bits;
+			if (shadow)
+				/* src_slots > 0, therefore dst_slots is at least 2 */
+				origin_dst[dst_slots - 1] =
+					origin_dst[dst_slots - 2];
+		} else {
+			shadow = align_shadow_src[0];
+			skip_bits = ((u64)dst % KMSAN_ORIGIN_SIZE) * 8;
+			shadow = (shadow >> skip_bits) << skip_bits;
+			if (shadow)
+				origin_dst[0] = origin_dst[1];
+		}
 	}
 }
 
@@ -156,8 +225,8 @@ depot_stack_handle_t kmsan_internal_chain_origin(depot_stack_handle_t id)
 	 * Make sure we have enough spare bits in @id to hold the UAF bit and
 	 * the chain depth.
 	 */
-	BUILD_BUG_ON((1 << STACK_DEPOT_EXTRA_BITS) <=
-		     (KMSAN_MAX_ORIGIN_DEPTH << 1));
+	BUILD_BUG_ON(
+		(1 << STACK_DEPOT_EXTRA_BITS) <= (KMSAN_MAX_ORIGIN_DEPTH << 1));
 
 	extra_bits = stack_depot_get_extra_bits(id);
 	depth = kmsan_depth_from_eb(extra_bits);
@@ -176,15 +245,16 @@ depot_stack_handle_t kmsan_internal_chain_origin(depot_stack_handle_t id)
 	extra_bits = kmsan_extra_bits(depth, uaf);
 
 	entries[0] = KMSAN_CHAIN_MAGIC_ORIGIN;
-	entries[1] = kmsan_save_stack_with_flags(__GFP_HIGH, 0);
+	entries[1] = kmsan_save_stack_with_flags(GFP_ATOMIC, 0);
 	entries[2] = id;
 	/*
 	 * @entries is a local var in non-instrumented code, so KMSAN does not
 	 * know it is initialized. Explicitly unpoison it to avoid false
-	 * positives when stack_depot_save() passes it to instrumented code.
+	 * positives when __stack_depot_save() passes it to instrumented code.
 	 */
 	kmsan_internal_unpoison_memory(entries, sizeof(entries), false);
-	handle = stack_depot_save(entries, ARRAY_SIZE(entries), __GFP_HIGH);
+	handle = __stack_depot_save(entries, ARRAY_SIZE(entries), GFP_ATOMIC,
+				    true);
 	return stack_depot_set_extra_bits(handle, extra_bits);
 }
 
@@ -193,7 +263,7 @@ void kmsan_internal_set_shadow_origin(void *addr, size_t size, int b,
 {
 	u64 address = (u64)addr;
 	void *shadow_start;
-	u32 *aligned_shadow, *origin_start;
+	u32 *origin_start;
 	size_t pad = 0;
 
 	KMSAN_WARN_ON(!kmsan_metadata_is_contiguous(addr, size));
@@ -212,28 +282,17 @@ void kmsan_internal_set_shadow_origin(void *addr, size_t size, int b,
 	}
 	__memset(shadow_start, b, size);
 
-	if (IS_ALIGNED(address, KMSAN_ORIGIN_SIZE)) {
-		aligned_shadow = shadow_start;
-	} else {
+	if (!IS_ALIGNED(address, KMSAN_ORIGIN_SIZE)) {
 		pad = address % KMSAN_ORIGIN_SIZE;
 		address -= pad;
-		aligned_shadow = shadow_start - pad;
 		size += pad;
 	}
 	size = ALIGN(size, KMSAN_ORIGIN_SIZE);
 	origin_start =
 		(u32 *)kmsan_get_metadata((void *)address, KMSAN_META_ORIGIN);
 
-	/*
-	 * If the new origin is non-zero, assume that the shadow byte is also non-zero,
-	 * and unconditionally overwrite the old origin slot.
-	 * If the new origin is zero, overwrite the old origin slot iff the
-	 * corresponding shadow slot is zero.
-	 */
-	for (int i = 0; i < size / KMSAN_ORIGIN_SIZE; i++) {
-		if (origin || !aligned_shadow[i])
-			origin_start[i] = origin;
-	}
+	for (int i = 0; i < size / KMSAN_ORIGIN_SIZE; i++)
+		origin_start[i] = origin;
 }
 
 struct page *kmsan_vmalloc_to_page_or_null(void *vaddr)
@@ -250,8 +309,8 @@ struct page *kmsan_vmalloc_to_page_or_null(void *vaddr)
 		return NULL;
 }
 
-void kmsan_internal_check_memory(void *addr, size_t size,
-				 const void __user *user_addr, int reason)
+void kmsan_internal_check_memory(void *addr, size_t size, const void *user_addr,
+				 int reason)
 {
 	depot_stack_handle_t cur_origin = 0, new_origin = 0;
 	unsigned long addr64 = (unsigned long)addr;
@@ -275,9 +334,11 @@ void kmsan_internal_check_memory(void *addr, size_t size,
 			 * bytes before, report them.
 			 */
 			if (cur_origin) {
+				kmsan_enter_runtime();
 				kmsan_report(cur_origin, addr, size,
 					     cur_off_start, pos - 1, user_addr,
 					     reason);
+				kmsan_leave_runtime();
 			}
 			cur_origin = 0;
 			cur_off_start = -1;
@@ -291,9 +352,11 @@ void kmsan_internal_check_memory(void *addr, size_t size,
 				 * poisoned bytes before, report them.
 				 */
 				if (cur_origin) {
+					kmsan_enter_runtime();
 					kmsan_report(cur_origin, addr, size,
 						     cur_off_start, pos + i - 1,
 						     user_addr, reason);
+					kmsan_leave_runtime();
 				}
 				cur_origin = 0;
 				cur_off_start = -1;
@@ -309,9 +372,11 @@ void kmsan_internal_check_memory(void *addr, size_t size,
 			 */
 			if (cur_origin != new_origin) {
 				if (cur_origin) {
+					kmsan_enter_runtime();
 					kmsan_report(cur_origin, addr, size,
 						     cur_off_start, pos + i - 1,
 						     user_addr, reason);
+					kmsan_leave_runtime();
 				}
 				cur_origin = new_origin;
 				cur_off_start = pos + i;
@@ -321,8 +386,10 @@ void kmsan_internal_check_memory(void *addr, size_t size,
 	}
 	KMSAN_WARN_ON(pos != size);
 	if (cur_origin) {
+		kmsan_enter_runtime();
 		kmsan_report(cur_origin, addr, size, cur_off_start, pos - 1,
 			     user_addr, reason);
+		kmsan_leave_runtime();
 	}
 }
 

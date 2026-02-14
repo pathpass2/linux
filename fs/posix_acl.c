@@ -26,6 +26,7 @@
 #include <linux/mnt_idmapping.h>
 #include <linux/iversion.h>
 #include <linux/security.h>
+#include <linux/evm.h>
 #include <linux/fsnotify.h>
 #include <linux/filelock.h>
 
@@ -200,11 +201,11 @@ EXPORT_SYMBOL(posix_acl_init);
  * Allocate a new ACL with the specified number of entries.
  */
 struct posix_acl *
-posix_acl_alloc(unsigned int count, gfp_t flags)
+posix_acl_alloc(int count, gfp_t flags)
 {
-	struct posix_acl *acl;
-
-	acl = kmalloc(struct_size(acl, a_entries, count), flags);
+	const size_t size = sizeof(struct posix_acl) +
+	                    count * sizeof(struct posix_acl_entry);
+	struct posix_acl *acl = kmalloc(size, flags);
 	if (acl)
 		posix_acl_init(acl, count);
 	return acl;
@@ -220,8 +221,9 @@ posix_acl_clone(const struct posix_acl *acl, gfp_t flags)
 	struct posix_acl *clone = NULL;
 
 	if (acl) {
-		clone = kmemdup(acl, struct_size(acl, a_entries, acl->a_count),
-				flags);
+		int size = sizeof(struct posix_acl) + acl->a_count *
+		           sizeof(struct posix_acl_entry);
+		clone = kmemdup(acl, size, flags);
 		if (clone)
 			refcount_set(&clone->a_refcount, 1);
 	}
@@ -598,7 +600,7 @@ EXPORT_SYMBOL(__posix_acl_chmod);
  * the vfsmount must be passed through @idmap. This function will then
  * take care to map the inode according to @idmap before checking
  * permissions. On non-idmapped mounts or if permission checking is to be
- * performed on the raw inode simply pass @nop_mnt_idmap.
+ * performed on the raw inode simply passs @nop_mnt_idmap.
  */
 int
  posix_acl_chmod(struct mnt_idmap *idmap, struct dentry *dentry,
@@ -698,7 +700,7 @@ EXPORT_SYMBOL_GPL(posix_acl_create);
  * the vfsmount must be passed through @idmap. This function will then
  * take care to map the inode according to @idmap before checking
  * permissions. On non-idmapped mounts or if permission checking is to be
- * performed on the raw inode simply pass @nop_mnt_idmap.
+ * performed on the raw inode simply passs @nop_mnt_idmap.
  *
  * Called from set_acl inode operations.
  */
@@ -714,8 +716,8 @@ int posix_acl_update_mode(struct mnt_idmap *idmap,
 		return error;
 	if (error == 0)
 		*acl = NULL;
-	if (!in_group_or_capable(idmap, inode,
-				 i_gid_into_vfsgid(idmap, inode)))
+	if (!vfsgid_in_group_p(i_gid_into_vfsgid(idmap, inode)) &&
+	    !capable_wrt_inode_uidgid(idmap, inode, CAP_FSETID))
 		mode &= ~S_ISGID;
 	*mode_p = mode;
 	return 0;
@@ -784,12 +786,12 @@ struct posix_acl *posix_acl_from_xattr(struct user_namespace *userns,
 		return ERR_PTR(count);
 	if (count == 0)
 		return NULL;
-
+	
 	acl = posix_acl_alloc(count, GFP_NOFS);
 	if (!acl)
 		return ERR_PTR(-ENOMEM);
 	acl_e = acl->a_entries;
-
+	
 	for (end = entry + count; entry != end; acl_e++, entry++) {
 		acl_e->e_tag  = le16_to_cpu(entry->e_tag);
 		acl_e->e_perm = le16_to_cpu(entry->e_perm);
@@ -829,19 +831,19 @@ EXPORT_SYMBOL (posix_acl_from_xattr);
 /*
  * Convert from in-memory to extended attribute representation.
  */
-void *
+int
 posix_acl_to_xattr(struct user_namespace *user_ns, const struct posix_acl *acl,
-		   size_t *sizep, gfp_t gfp)
+		   void *buffer, size_t size)
 {
-	struct posix_acl_xattr_header *ext_acl;
+	struct posix_acl_xattr_header *ext_acl = buffer;
 	struct posix_acl_xattr_entry *ext_entry;
-	size_t size;
-	int n;
+	int real_size, n;
 
-	size = posix_acl_xattr_size(acl->a_count);
-	ext_acl = kmalloc(size, gfp);
-	if (!ext_acl)
-		return NULL;
+	real_size = posix_acl_xattr_size(acl->a_count);
+	if (!buffer)
+		return real_size;
+	if (real_size > size)
+		return -ERANGE;
 
 	ext_entry = (void *)(ext_acl + 1);
 	ext_acl->a_version = cpu_to_le32(POSIX_ACL_XATTR_VERSION);
@@ -864,8 +866,7 @@ posix_acl_to_xattr(struct user_namespace *user_ns, const struct posix_acl *acl,
 			break;
 		}
 	}
-	*sizep = size;
-	return ext_acl;
+	return real_size;
 }
 EXPORT_SYMBOL (posix_acl_to_xattr);
 
@@ -956,62 +957,25 @@ set_posix_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 }
 EXPORT_SYMBOL(set_posix_acl);
 
-int posix_acl_listxattr(struct inode *inode, char **buffer,
-			ssize_t *remaining_size)
-{
-	int err;
-
-	if (!IS_POSIXACL(inode))
-		return 0;
-
-	if (inode->i_acl) {
-		err = xattr_list_one(buffer, remaining_size,
-				     XATTR_NAME_POSIX_ACL_ACCESS);
-		if (err)
-			return err;
-	}
-
-	if (inode->i_default_acl) {
-		err = xattr_list_one(buffer, remaining_size,
-				     XATTR_NAME_POSIX_ACL_DEFAULT);
-		if (err)
-			return err;
-	}
-
-	return 0;
-}
-
 static bool
 posix_acl_xattr_list(struct dentry *dentry)
 {
 	return IS_POSIXACL(d_backing_inode(dentry));
 }
 
-/*
- * nop_posix_acl_access - legacy xattr handler for access POSIX ACLs
- *
- * This is the legacy POSIX ACL access xattr handler. It is used by some
- * filesystems to implement their ->listxattr() inode operation. New code
- * should never use them.
- */
-const struct xattr_handler nop_posix_acl_access = {
+const struct xattr_handler posix_acl_access_xattr_handler = {
 	.name = XATTR_NAME_POSIX_ACL_ACCESS,
+	.flags = ACL_TYPE_ACCESS,
 	.list = posix_acl_xattr_list,
 };
-EXPORT_SYMBOL_GPL(nop_posix_acl_access);
+EXPORT_SYMBOL_GPL(posix_acl_access_xattr_handler);
 
-/*
- * nop_posix_acl_default - legacy xattr handler for default POSIX ACLs
- *
- * This is the legacy POSIX ACL default xattr handler. It is used by some
- * filesystems to implement their ->listxattr() inode operation. New code
- * should never use them.
- */
-const struct xattr_handler nop_posix_acl_default = {
+const struct xattr_handler posix_acl_default_xattr_handler = {
 	.name = XATTR_NAME_POSIX_ACL_DEFAULT,
+	.flags = ACL_TYPE_DEFAULT,
 	.list = posix_acl_xattr_list,
 };
-EXPORT_SYMBOL_GPL(nop_posix_acl_default);
+EXPORT_SYMBOL_GPL(posix_acl_default_xattr_handler);
 
 int simple_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		   struct posix_acl *acl, int type)
@@ -1026,7 +990,7 @@ int simple_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 			return error;
 	}
 
-	inode_set_ctime_current(inode);
+	inode->i_ctime = current_time(inode);
 	if (IS_I_VERSION(inode))
 		inode_inc_iversion(inode);
 	set_cached_acl(inode, type, acl);
@@ -1092,7 +1056,7 @@ int vfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 	int acl_type;
 	int error;
 	struct inode *inode = d_inode(dentry);
-	struct delegated_inode delegated_inode = { };
+	struct inode *delegated_inode = NULL;
 
 	acl_type = posix_acl_type(acl_name);
 	if (acl_type < 0)
@@ -1130,19 +1094,21 @@ retry_deleg:
 	if (error)
 		goto out_inode_unlock;
 
-	if (likely(!is_bad_inode(inode)))
+	if (inode->i_opflags & IOP_XATTR)
 		error = set_posix_acl(idmap, dentry, acl_type, kacl);
-	else
+	else if (unlikely(is_bad_inode(inode)))
 		error = -EIO;
+	else
+		error = -EOPNOTSUPP;
 	if (!error) {
 		fsnotify_xattr(dentry);
-		security_inode_post_set_acl(dentry, acl_name, kacl);
+		evm_inode_post_set_acl(dentry, acl_name, kacl);
 	}
 
 out_inode_unlock:
 	inode_unlock(inode);
 
-	if (is_delegated(&delegated_inode)) {
+	if (delegated_inode) {
 		error = break_deleg_wait(&delegated_inode);
 		if (!error)
 			goto retry_deleg;
@@ -1213,7 +1179,7 @@ int vfs_remove_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 	int acl_type;
 	int error;
 	struct inode *inode = d_inode(dentry);
-	struct delegated_inode delegated_inode = { };
+	struct inode *delegated_inode = NULL;
 
 	acl_type = posix_acl_type(acl_name);
 	if (acl_type < 0)
@@ -1238,19 +1204,21 @@ retry_deleg:
 	if (error)
 		goto out_inode_unlock;
 
-	if (likely(!is_bad_inode(inode)))
+	if (inode->i_opflags & IOP_XATTR)
 		error = set_posix_acl(idmap, dentry, acl_type, NULL);
-	else
+	else if (unlikely(is_bad_inode(inode)))
 		error = -EIO;
+	else
+		error = -EOPNOTSUPP;
 	if (!error) {
 		fsnotify_xattr(dentry);
-		security_inode_post_remove_acl(idmap, dentry, acl_name);
+		evm_inode_post_remove_acl(idmap, dentry, acl_name);
 	}
 
 out_inode_unlock:
 	inode_unlock(inode);
 
-	if (is_delegated(&delegated_inode)) {
+	if (delegated_inode) {
 		error = break_deleg_wait(&delegated_inode);
 		if (!error)
 			goto retry_deleg;

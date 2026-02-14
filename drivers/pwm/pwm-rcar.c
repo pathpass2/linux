@@ -8,7 +8,6 @@
  * - The hardware cannot generate a 0% duty cycle.
  */
 
-#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/io.h>
@@ -39,13 +38,14 @@
 #define  RCAR_PWMCNT_PH0_SHIFT	0
 
 struct rcar_pwm_chip {
+	struct pwm_chip chip;
 	void __iomem *base;
 	struct clk *clk;
 };
 
 static inline struct rcar_pwm_chip *to_rcar_pwm_chip(struct pwm_chip *chip)
 {
-	return pwmchip_get_drvdata(chip);
+	return container_of(chip, struct rcar_pwm_chip, chip);
 }
 
 static void rcar_pwm_write(struct rcar_pwm_chip *rp, u32 data,
@@ -103,24 +103,23 @@ static void rcar_pwm_set_clock_control(struct rcar_pwm_chip *rp,
 	rcar_pwm_write(rp, value, RCAR_PWMCR);
 }
 
-static int rcar_pwm_set_counter(struct rcar_pwm_chip *rp, int div, u64 duty_ns,
-				u64 period_ns)
+static int rcar_pwm_set_counter(struct rcar_pwm_chip *rp, int div, int duty_ns,
+				int period_ns)
 {
-	unsigned long long tmp;
+	unsigned long long one_cycle, tmp;	/* 0.01 nanoseconds */
 	unsigned long clk_rate = clk_get_rate(rp->clk);
 	u32 cyc, ph;
 
-	/* div <= 24 == RCAR_PWM_MAX_DIVISION, so the shift doesn't overflow. */
-	tmp = mul_u64_u64_div_u64(period_ns, clk_rate, (u64)NSEC_PER_SEC << div);
-	if (tmp > FIELD_MAX(RCAR_PWMCNT_CYC0_MASK))
-		tmp = FIELD_MAX(RCAR_PWMCNT_CYC0_MASK);
+	one_cycle = NSEC_PER_SEC * 100ULL << div;
+	do_div(one_cycle, clk_rate);
 
-	cyc = FIELD_PREP(RCAR_PWMCNT_CYC0_MASK, tmp);
+	tmp = period_ns * 100ULL;
+	do_div(tmp, one_cycle);
+	cyc = (tmp << RCAR_PWMCNT_CYC0_SHIFT) & RCAR_PWMCNT_CYC0_MASK;
 
-	tmp = mul_u64_u64_div_u64(duty_ns, clk_rate, (u64)NSEC_PER_SEC << div);
-	if (tmp > FIELD_MAX(RCAR_PWMCNT_PH0_MASK))
-		tmp = FIELD_MAX(RCAR_PWMCNT_PH0_MASK);
-	ph = FIELD_PREP(RCAR_PWMCNT_PH0_MASK, tmp);
+	tmp = duty_ns * 100ULL;
+	do_div(tmp, one_cycle);
+	ph = tmp & RCAR_PWMCNT_PH0_MASK;
 
 	/* Avoid prohibited setting */
 	if (cyc == 0 || ph == 0)
@@ -133,12 +132,12 @@ static int rcar_pwm_set_counter(struct rcar_pwm_chip *rp, int div, u64 duty_ns,
 
 static int rcar_pwm_request(struct pwm_chip *chip, struct pwm_device *pwm)
 {
-	return pm_runtime_get_sync(pwmchip_parent(chip));
+	return pm_runtime_get_sync(chip->dev);
 }
 
 static void rcar_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
 {
-	pm_runtime_put(pwmchip_parent(chip));
+	pm_runtime_put(chip->dev);
 }
 
 static int rcar_pwm_enable(struct rcar_pwm_chip *rp)
@@ -199,18 +198,17 @@ static const struct pwm_ops rcar_pwm_ops = {
 	.request = rcar_pwm_request,
 	.free = rcar_pwm_free,
 	.apply = rcar_pwm_apply,
+	.owner = THIS_MODULE,
 };
 
 static int rcar_pwm_probe(struct platform_device *pdev)
 {
-	struct pwm_chip *chip;
 	struct rcar_pwm_chip *rcar_pwm;
 	int ret;
 
-	chip = devm_pwmchip_alloc(&pdev->dev, 1, sizeof(*rcar_pwm));
-	if (IS_ERR(chip))
-		return PTR_ERR(chip);
-	rcar_pwm = to_rcar_pwm_chip(chip);
+	rcar_pwm = devm_kzalloc(&pdev->dev, sizeof(*rcar_pwm), GFP_KERNEL);
+	if (rcar_pwm == NULL)
+		return -ENOMEM;
 
 	rcar_pwm->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(rcar_pwm->base))
@@ -222,13 +220,15 @@ static int rcar_pwm_probe(struct platform_device *pdev)
 		return PTR_ERR(rcar_pwm->clk);
 	}
 
-	chip->ops = &rcar_pwm_ops;
+	platform_set_drvdata(pdev, rcar_pwm);
 
-	platform_set_drvdata(pdev, chip);
+	rcar_pwm->chip.dev = &pdev->dev;
+	rcar_pwm->chip.ops = &rcar_pwm_ops;
+	rcar_pwm->chip.npwm = 1;
 
 	pm_runtime_enable(&pdev->dev);
 
-	ret = pwmchip_add(chip);
+	ret = pwmchip_add(&rcar_pwm->chip);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to register PWM chip: %d\n", ret);
 		pm_runtime_disable(&pdev->dev);
@@ -238,13 +238,15 @@ static int rcar_pwm_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void rcar_pwm_remove(struct platform_device *pdev)
+static int rcar_pwm_remove(struct platform_device *pdev)
 {
-	struct pwm_chip *chip = platform_get_drvdata(pdev);
+	struct rcar_pwm_chip *rcar_pwm = platform_get_drvdata(pdev);
 
-	pwmchip_remove(chip);
+	pwmchip_remove(&rcar_pwm->chip);
 
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static const struct of_device_id rcar_pwm_of_table[] = {
@@ -258,7 +260,7 @@ static struct platform_driver rcar_pwm_driver = {
 	.remove = rcar_pwm_remove,
 	.driver = {
 		.name = "pwm-rcar",
-		.of_match_table = rcar_pwm_of_table,
+		.of_match_table = of_match_ptr(rcar_pwm_of_table),
 	}
 };
 module_platform_driver(rcar_pwm_driver);

@@ -2,6 +2,15 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010 - 2015, Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 #ifndef __IA_CSS_FRAME_H__
@@ -128,7 +137,5 @@ bool ia_css_frame_is_same_type(
  */
 int ia_css_dma_configure_from_info(struct dma_port_config *config,
 				   const struct ia_css_frame_info *info);
-
-unsigned int ia_css_frame_pad_width(unsigned int width, enum ia_css_frame_format format);
 
 #endif /* __IA_CSS_FRAME_H__ */

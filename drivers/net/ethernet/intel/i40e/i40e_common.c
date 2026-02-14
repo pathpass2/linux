@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright(c) 2013 - 2021 Intel Corporation. */
 
-#include <linux/avf/virtchnl.h>
-#include <linux/bitfield.h>
-#include <linux/delay.h>
-#include <linux/etherdevice.h>
-#include <linux/pci.h>
-#include "i40e_adminq_cmd.h"
-#include "i40e_devids.h"
+#include "i40e.h"
+#include "i40e_type.h"
+#include "i40e_adminq.h"
 #include "i40e_prototype.h"
-#include "i40e_register.h"
+#include <linux/avf/virtchnl.h>
 
 /**
  * i40e_set_mac_type - Sets MAC type
@@ -60,12 +56,72 @@ int i40e_set_mac_type(struct i40e_hw *hw)
 			break;
 		}
 	} else {
-		status = -ENODEV;
+		status = I40E_ERR_DEVICE_NOT_SUPPORTED;
 	}
 
 	hw_dbg(hw, "i40e_set_mac_type found mac: %d, returns: %d\n",
 		  hw->mac.type, status);
 	return status;
+}
+
+/**
+ * i40e_aq_str - convert AQ err code to a string
+ * @hw: pointer to the HW structure
+ * @aq_err: the AQ error code to convert
+ **/
+const char *i40e_aq_str(struct i40e_hw *hw, enum i40e_admin_queue_err aq_err)
+{
+	switch (aq_err) {
+	case I40E_AQ_RC_OK:
+		return "OK";
+	case I40E_AQ_RC_EPERM:
+		return "I40E_AQ_RC_EPERM";
+	case I40E_AQ_RC_ENOENT:
+		return "I40E_AQ_RC_ENOENT";
+	case I40E_AQ_RC_ESRCH:
+		return "I40E_AQ_RC_ESRCH";
+	case I40E_AQ_RC_EINTR:
+		return "I40E_AQ_RC_EINTR";
+	case I40E_AQ_RC_EIO:
+		return "I40E_AQ_RC_EIO";
+	case I40E_AQ_RC_ENXIO:
+		return "I40E_AQ_RC_ENXIO";
+	case I40E_AQ_RC_E2BIG:
+		return "I40E_AQ_RC_E2BIG";
+	case I40E_AQ_RC_EAGAIN:
+		return "I40E_AQ_RC_EAGAIN";
+	case I40E_AQ_RC_ENOMEM:
+		return "I40E_AQ_RC_ENOMEM";
+	case I40E_AQ_RC_EACCES:
+		return "I40E_AQ_RC_EACCES";
+	case I40E_AQ_RC_EFAULT:
+		return "I40E_AQ_RC_EFAULT";
+	case I40E_AQ_RC_EBUSY:
+		return "I40E_AQ_RC_EBUSY";
+	case I40E_AQ_RC_EEXIST:
+		return "I40E_AQ_RC_EEXIST";
+	case I40E_AQ_RC_EINVAL:
+		return "I40E_AQ_RC_EINVAL";
+	case I40E_AQ_RC_ENOTTY:
+		return "I40E_AQ_RC_ENOTTY";
+	case I40E_AQ_RC_ENOSPC:
+		return "I40E_AQ_RC_ENOSPC";
+	case I40E_AQ_RC_ENOSYS:
+		return "I40E_AQ_RC_ENOSYS";
+	case I40E_AQ_RC_ERANGE:
+		return "I40E_AQ_RC_ERANGE";
+	case I40E_AQ_RC_EFLUSHED:
+		return "I40E_AQ_RC_EFLUSHED";
+	case I40E_AQ_RC_BAD_ADDR:
+		return "I40E_AQ_RC_BAD_ADDR";
+	case I40E_AQ_RC_EMODE:
+		return "I40E_AQ_RC_EMODE";
+	case I40E_AQ_RC_EFBIG:
+		return "I40E_AQ_RC_EFBIG";
+	}
+
+	snprintf(hw->err_str, sizeof(hw->err_str), "%d", aq_err);
+	return hw->err_str;
 }
 
 /**
@@ -81,7 +137,7 @@ int i40e_set_mac_type(struct i40e_hw *hw)
 void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
 		   void *buffer, u16 buf_len)
 {
-	struct libie_aq_desc *aq_desc = (struct libie_aq_desc *)desc;
+	struct i40e_aq_desc *aq_desc = (struct i40e_aq_desc *)desc;
 	u32 effective_mask = hw->debug_mask & mask;
 	char prefix[27];
 	u16 len;
@@ -104,12 +160,12 @@ void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
 		   le32_to_cpu(aq_desc->cookie_low));
 	i40e_debug(hw, mask & I40E_DEBUG_AQ_DESCRIPTOR,
 		   "\tparam (0,1)  0x%08X 0x%08X\n",
-		   le32_to_cpu(aq_desc->params.generic.param0),
-		   le32_to_cpu(aq_desc->params.generic.param1));
+		   le32_to_cpu(aq_desc->params.internal.param0),
+		   le32_to_cpu(aq_desc->params.internal.param1));
 	i40e_debug(hw, mask & I40E_DEBUG_AQ_DESCRIPTOR,
 		   "\taddr (h,l)   0x%08X 0x%08X\n",
-		   le32_to_cpu(aq_desc->params.generic.addr_high),
-		   le32_to_cpu(aq_desc->params.generic.addr_low));
+		   le32_to_cpu(aq_desc->params.external.addr_high),
+		   le32_to_cpu(aq_desc->params.external.addr_low));
 
 	if (buffer && buf_len != 0 && len != 0 &&
 	    (effective_mask & I40E_DEBUG_AQ_DESC_BUFFER)) {
@@ -136,11 +192,11 @@ void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
  **/
 bool i40e_check_asq_alive(struct i40e_hw *hw)
 {
-	/* Check if the queue is initialized */
-	if (!hw->aq.asq.count)
+	if (hw->aq.asq.len)
+		return !!(rd32(hw, hw->aq.asq.len) &
+			  I40E_PF_ATQLEN_ATQENABLE_MASK);
+	else
 		return false;
-
-	return !!(rd32(hw, I40E_PF_ATQLEN) & I40E_PF_ATQLEN_ATQENABLE_MASK);
 }
 
 /**
@@ -154,14 +210,14 @@ bool i40e_check_asq_alive(struct i40e_hw *hw)
 int i40e_aq_queue_shutdown(struct i40e_hw *hw,
 			   bool unloading)
 {
-	struct i40e_aqc_queue_shutdown *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_queue_shutdown *cmd =
+		(struct i40e_aqc_queue_shutdown *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_queue_shutdown);
 
-	cmd = libie_aq_raw(&desc);
 	if (unloading)
 		cmd->driver_unloading = cpu_to_le32(I40E_AQ_DRIVER_UNLOADING);
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, NULL);
@@ -185,10 +241,10 @@ static int i40e_aq_get_set_rss_lut(struct i40e_hw *hw,
 				   u8 *lut, u16 lut_size,
 				   bool set)
 {
-	struct i40e_aqc_get_set_rss_lut *cmd_resp;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_get_set_rss_lut *cmd_resp =
+		   (struct i40e_aqc_get_set_rss_lut *)&desc.params.raw;
 	int status;
-	u16 flags;
 
 	if (set)
 		i40e_fill_default_direct_cmd_desc(&desc,
@@ -197,23 +253,27 @@ static int i40e_aq_get_set_rss_lut(struct i40e_hw *hw,
 		i40e_fill_default_direct_cmd_desc(&desc,
 						  i40e_aqc_opc_get_rss_lut);
 
-	cmd_resp = libie_aq_raw(&desc);
 	/* Indirect command */
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_RD);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_RD);
 
-	vsi_id = FIELD_PREP(I40E_AQC_SET_RSS_LUT_VSI_ID_MASK, vsi_id) |
-		 FIELD_PREP(I40E_AQC_SET_RSS_LUT_VSI_VALID, 1);
-	cmd_resp->vsi_id = cpu_to_le16(vsi_id);
+	cmd_resp->vsi_id =
+			cpu_to_le16((u16)((vsi_id <<
+					  I40E_AQC_SET_RSS_LUT_VSI_ID_SHIFT) &
+					  I40E_AQC_SET_RSS_LUT_VSI_ID_MASK));
+	cmd_resp->vsi_id |= cpu_to_le16((u16)I40E_AQC_SET_RSS_LUT_VSI_VALID);
 
 	if (pf_lut)
-		flags = FIELD_PREP(I40E_AQC_SET_RSS_LUT_TABLE_TYPE_MASK,
-				   I40E_AQC_SET_RSS_LUT_TABLE_TYPE_PF);
+		cmd_resp->flags |= cpu_to_le16((u16)
+					((I40E_AQC_SET_RSS_LUT_TABLE_TYPE_PF <<
+					I40E_AQC_SET_RSS_LUT_TABLE_TYPE_SHIFT) &
+					I40E_AQC_SET_RSS_LUT_TABLE_TYPE_MASK));
 	else
-		flags = FIELD_PREP(I40E_AQC_SET_RSS_LUT_TABLE_TYPE_MASK,
-				   I40E_AQC_SET_RSS_LUT_TABLE_TYPE_VSI);
+		cmd_resp->flags |= cpu_to_le16((u16)
+					((I40E_AQC_SET_RSS_LUT_TABLE_TYPE_VSI <<
+					I40E_AQC_SET_RSS_LUT_TABLE_TYPE_SHIFT) &
+					I40E_AQC_SET_RSS_LUT_TABLE_TYPE_MASK));
 
-	cmd_resp->flags = cpu_to_le16(flags);
 	status = i40e_asq_send_command(hw, &desc, lut, lut_size, NULL);
 
 	return status;
@@ -266,9 +326,10 @@ static int i40e_aq_get_set_rss_key(struct i40e_hw *hw,
 				   struct i40e_aqc_get_set_rss_key_data *key,
 				   bool set)
 {
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_get_set_rss_key *cmd_resp =
+			(struct i40e_aqc_get_set_rss_key *)&desc.params.raw;
 	u16 key_size = sizeof(struct i40e_aqc_get_set_rss_key_data);
-	struct i40e_aqc_get_set_rss_key *cmd_resp;
-	struct libie_aq_desc desc;
 	int status;
 
 	if (set)
@@ -278,14 +339,15 @@ static int i40e_aq_get_set_rss_key(struct i40e_hw *hw,
 		i40e_fill_default_direct_cmd_desc(&desc,
 						  i40e_aqc_opc_get_rss_key);
 
-	cmd_resp = libie_aq_raw(&desc);
 	/* Indirect command */
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_RD);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_RD);
 
-	vsi_id = FIELD_PREP(I40E_AQC_SET_RSS_KEY_VSI_ID_MASK, vsi_id) |
-		 FIELD_PREP(I40E_AQC_SET_RSS_KEY_VSI_VALID, 1);
-	cmd_resp->vsi_id = cpu_to_le16(vsi_id);
+	cmd_resp->vsi_id =
+			cpu_to_le16((u16)((vsi_id <<
+					  I40E_AQC_SET_RSS_KEY_VSI_ID_SHIFT) &
+					  I40E_AQC_SET_RSS_KEY_VSI_ID_MASK));
+	cmd_resp->vsi_id |= cpu_to_le16((u16)I40E_AQC_SET_RSS_KEY_VSI_VALID);
 
 	status = i40e_asq_send_command(hw, &desc, key, key_size, NULL);
 
@@ -321,6 +383,259 @@ int i40e_aq_set_rss_key(struct i40e_hw *hw,
 	return i40e_aq_get_set_rss_key(hw, vsi_id, key, true);
 }
 
+/* The i40e_ptype_lookup table is used to convert from the 8-bit ptype in the
+ * hardware to a bit-field that can be used by SW to more easily determine the
+ * packet type.
+ *
+ * Macros are used to shorten the table lines and make this table human
+ * readable.
+ *
+ * We store the PTYPE in the top byte of the bit field - this is just so that
+ * we can check that the table doesn't have a row missing, as the index into
+ * the table should be the PTYPE.
+ *
+ * Typical work flow:
+ *
+ * IF NOT i40e_ptype_lookup[ptype].known
+ * THEN
+ *      Packet is unknown
+ * ELSE IF i40e_ptype_lookup[ptype].outer_ip == I40E_RX_PTYPE_OUTER_IP
+ *      Use the rest of the fields to look at the tunnels, inner protocols, etc
+ * ELSE
+ *      Use the enum i40e_rx_l2_ptype to decode the packet type
+ * ENDIF
+ */
+
+/* macro to make the table lines short, use explicit indexing with [PTYPE] */
+#define I40E_PTT(PTYPE, OUTER_IP, OUTER_IP_VER, OUTER_FRAG, T, TE, TEF, I, PL)\
+	[PTYPE] = { \
+		1, \
+		I40E_RX_PTYPE_OUTER_##OUTER_IP, \
+		I40E_RX_PTYPE_OUTER_##OUTER_IP_VER, \
+		I40E_RX_PTYPE_##OUTER_FRAG, \
+		I40E_RX_PTYPE_TUNNEL_##T, \
+		I40E_RX_PTYPE_TUNNEL_END_##TE, \
+		I40E_RX_PTYPE_##TEF, \
+		I40E_RX_PTYPE_INNER_PROT_##I, \
+		I40E_RX_PTYPE_PAYLOAD_LAYER_##PL }
+
+#define I40E_PTT_UNUSED_ENTRY(PTYPE) [PTYPE] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+
+/* shorter macros makes the table fit but are terse */
+#define I40E_RX_PTYPE_NOF		I40E_RX_PTYPE_NOT_FRAG
+#define I40E_RX_PTYPE_FRG		I40E_RX_PTYPE_FRAG
+#define I40E_RX_PTYPE_INNER_PROT_TS	I40E_RX_PTYPE_INNER_PROT_TIMESYNC
+
+/* Lookup table mapping in the 8-bit HW PTYPE to the bit field for decoding */
+struct i40e_rx_ptype_decoded i40e_ptype_lookup[BIT(8)] = {
+	/* L2 Packet types */
+	I40E_PTT_UNUSED_ENTRY(0),
+	I40E_PTT(1,  L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY2),
+	I40E_PTT(2,  L2, NONE, NOF, NONE, NONE, NOF, TS,   PAY2),
+	I40E_PTT(3,  L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY2),
+	I40E_PTT_UNUSED_ENTRY(4),
+	I40E_PTT_UNUSED_ENTRY(5),
+	I40E_PTT(6,  L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY2),
+	I40E_PTT(7,  L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY2),
+	I40E_PTT_UNUSED_ENTRY(8),
+	I40E_PTT_UNUSED_ENTRY(9),
+	I40E_PTT(10, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY2),
+	I40E_PTT(11, L2, NONE, NOF, NONE, NONE, NOF, NONE, NONE),
+	I40E_PTT(12, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(13, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(14, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(15, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(16, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(17, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(18, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(19, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(20, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(21, L2, NONE, NOF, NONE, NONE, NOF, NONE, PAY3),
+
+	/* Non Tunneled IPv4 */
+	I40E_PTT(22, IP, IPV4, FRG, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(23, IP, IPV4, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(24, IP, IPV4, NOF, NONE, NONE, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(25),
+	I40E_PTT(26, IP, IPV4, NOF, NONE, NONE, NOF, TCP,  PAY4),
+	I40E_PTT(27, IP, IPV4, NOF, NONE, NONE, NOF, SCTP, PAY4),
+	I40E_PTT(28, IP, IPV4, NOF, NONE, NONE, NOF, ICMP, PAY4),
+
+	/* IPv4 --> IPv4 */
+	I40E_PTT(29, IP, IPV4, NOF, IP_IP, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(30, IP, IPV4, NOF, IP_IP, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(31, IP, IPV4, NOF, IP_IP, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(32),
+	I40E_PTT(33, IP, IPV4, NOF, IP_IP, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(34, IP, IPV4, NOF, IP_IP, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(35, IP, IPV4, NOF, IP_IP, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv4 --> IPv6 */
+	I40E_PTT(36, IP, IPV4, NOF, IP_IP, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(37, IP, IPV4, NOF, IP_IP, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(38, IP, IPV4, NOF, IP_IP, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(39),
+	I40E_PTT(40, IP, IPV4, NOF, IP_IP, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(41, IP, IPV4, NOF, IP_IP, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(42, IP, IPV4, NOF, IP_IP, IPV6, NOF, ICMP, PAY4),
+
+	/* IPv4 --> GRE/NAT */
+	I40E_PTT(43, IP, IPV4, NOF, IP_GRENAT, NONE, NOF, NONE, PAY3),
+
+	/* IPv4 --> GRE/NAT --> IPv4 */
+	I40E_PTT(44, IP, IPV4, NOF, IP_GRENAT, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(45, IP, IPV4, NOF, IP_GRENAT, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(46, IP, IPV4, NOF, IP_GRENAT, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(47),
+	I40E_PTT(48, IP, IPV4, NOF, IP_GRENAT, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(49, IP, IPV4, NOF, IP_GRENAT, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(50, IP, IPV4, NOF, IP_GRENAT, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv4 --> GRE/NAT --> IPv6 */
+	I40E_PTT(51, IP, IPV4, NOF, IP_GRENAT, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(52, IP, IPV4, NOF, IP_GRENAT, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(53, IP, IPV4, NOF, IP_GRENAT, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(54),
+	I40E_PTT(55, IP, IPV4, NOF, IP_GRENAT, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(56, IP, IPV4, NOF, IP_GRENAT, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(57, IP, IPV4, NOF, IP_GRENAT, IPV6, NOF, ICMP, PAY4),
+
+	/* IPv4 --> GRE/NAT --> MAC */
+	I40E_PTT(58, IP, IPV4, NOF, IP_GRENAT_MAC, NONE, NOF, NONE, PAY3),
+
+	/* IPv4 --> GRE/NAT --> MAC --> IPv4 */
+	I40E_PTT(59, IP, IPV4, NOF, IP_GRENAT_MAC, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(60, IP, IPV4, NOF, IP_GRENAT_MAC, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(61, IP, IPV4, NOF, IP_GRENAT_MAC, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(62),
+	I40E_PTT(63, IP, IPV4, NOF, IP_GRENAT_MAC, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(64, IP, IPV4, NOF, IP_GRENAT_MAC, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(65, IP, IPV4, NOF, IP_GRENAT_MAC, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv4 --> GRE/NAT -> MAC --> IPv6 */
+	I40E_PTT(66, IP, IPV4, NOF, IP_GRENAT_MAC, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(67, IP, IPV4, NOF, IP_GRENAT_MAC, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(68, IP, IPV4, NOF, IP_GRENAT_MAC, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(69),
+	I40E_PTT(70, IP, IPV4, NOF, IP_GRENAT_MAC, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(71, IP, IPV4, NOF, IP_GRENAT_MAC, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(72, IP, IPV4, NOF, IP_GRENAT_MAC, IPV6, NOF, ICMP, PAY4),
+
+	/* IPv4 --> GRE/NAT --> MAC/VLAN */
+	I40E_PTT(73, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, NONE, NOF, NONE, PAY3),
+
+	/* IPv4 ---> GRE/NAT -> MAC/VLAN --> IPv4 */
+	I40E_PTT(74, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(75, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(76, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(77),
+	I40E_PTT(78, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(79, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(80, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv4 -> GRE/NAT -> MAC/VLAN --> IPv6 */
+	I40E_PTT(81, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(82, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(83, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(84),
+	I40E_PTT(85, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(86, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(87, IP, IPV4, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, ICMP, PAY4),
+
+	/* Non Tunneled IPv6 */
+	I40E_PTT(88, IP, IPV6, FRG, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(89, IP, IPV6, NOF, NONE, NONE, NOF, NONE, PAY3),
+	I40E_PTT(90, IP, IPV6, NOF, NONE, NONE, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(91),
+	I40E_PTT(92, IP, IPV6, NOF, NONE, NONE, NOF, TCP,  PAY4),
+	I40E_PTT(93, IP, IPV6, NOF, NONE, NONE, NOF, SCTP, PAY4),
+	I40E_PTT(94, IP, IPV6, NOF, NONE, NONE, NOF, ICMP, PAY4),
+
+	/* IPv6 --> IPv4 */
+	I40E_PTT(95,  IP, IPV6, NOF, IP_IP, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(96,  IP, IPV6, NOF, IP_IP, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(97,  IP, IPV6, NOF, IP_IP, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(98),
+	I40E_PTT(99,  IP, IPV6, NOF, IP_IP, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(100, IP, IPV6, NOF, IP_IP, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(101, IP, IPV6, NOF, IP_IP, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv6 --> IPv6 */
+	I40E_PTT(102, IP, IPV6, NOF, IP_IP, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(103, IP, IPV6, NOF, IP_IP, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(104, IP, IPV6, NOF, IP_IP, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(105),
+	I40E_PTT(106, IP, IPV6, NOF, IP_IP, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(107, IP, IPV6, NOF, IP_IP, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(108, IP, IPV6, NOF, IP_IP, IPV6, NOF, ICMP, PAY4),
+
+	/* IPv6 --> GRE/NAT */
+	I40E_PTT(109, IP, IPV6, NOF, IP_GRENAT, NONE, NOF, NONE, PAY3),
+
+	/* IPv6 --> GRE/NAT -> IPv4 */
+	I40E_PTT(110, IP, IPV6, NOF, IP_GRENAT, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(111, IP, IPV6, NOF, IP_GRENAT, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(112, IP, IPV6, NOF, IP_GRENAT, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(113),
+	I40E_PTT(114, IP, IPV6, NOF, IP_GRENAT, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(115, IP, IPV6, NOF, IP_GRENAT, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(116, IP, IPV6, NOF, IP_GRENAT, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv6 --> GRE/NAT -> IPv6 */
+	I40E_PTT(117, IP, IPV6, NOF, IP_GRENAT, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(118, IP, IPV6, NOF, IP_GRENAT, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(119, IP, IPV6, NOF, IP_GRENAT, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(120),
+	I40E_PTT(121, IP, IPV6, NOF, IP_GRENAT, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(122, IP, IPV6, NOF, IP_GRENAT, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(123, IP, IPV6, NOF, IP_GRENAT, IPV6, NOF, ICMP, PAY4),
+
+	/* IPv6 --> GRE/NAT -> MAC */
+	I40E_PTT(124, IP, IPV6, NOF, IP_GRENAT_MAC, NONE, NOF, NONE, PAY3),
+
+	/* IPv6 --> GRE/NAT -> MAC -> IPv4 */
+	I40E_PTT(125, IP, IPV6, NOF, IP_GRENAT_MAC, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(126, IP, IPV6, NOF, IP_GRENAT_MAC, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(127, IP, IPV6, NOF, IP_GRENAT_MAC, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(128),
+	I40E_PTT(129, IP, IPV6, NOF, IP_GRENAT_MAC, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(130, IP, IPV6, NOF, IP_GRENAT_MAC, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(131, IP, IPV6, NOF, IP_GRENAT_MAC, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv6 --> GRE/NAT -> MAC -> IPv6 */
+	I40E_PTT(132, IP, IPV6, NOF, IP_GRENAT_MAC, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(133, IP, IPV6, NOF, IP_GRENAT_MAC, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(134, IP, IPV6, NOF, IP_GRENAT_MAC, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(135),
+	I40E_PTT(136, IP, IPV6, NOF, IP_GRENAT_MAC, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(137, IP, IPV6, NOF, IP_GRENAT_MAC, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(138, IP, IPV6, NOF, IP_GRENAT_MAC, IPV6, NOF, ICMP, PAY4),
+
+	/* IPv6 --> GRE/NAT -> MAC/VLAN */
+	I40E_PTT(139, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, NONE, NOF, NONE, PAY3),
+
+	/* IPv6 --> GRE/NAT -> MAC/VLAN --> IPv4 */
+	I40E_PTT(140, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV4, FRG, NONE, PAY3),
+	I40E_PTT(141, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, NONE, PAY3),
+	I40E_PTT(142, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(143),
+	I40E_PTT(144, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, TCP,  PAY4),
+	I40E_PTT(145, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, SCTP, PAY4),
+	I40E_PTT(146, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV4, NOF, ICMP, PAY4),
+
+	/* IPv6 --> GRE/NAT -> MAC/VLAN --> IPv6 */
+	I40E_PTT(147, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV6, FRG, NONE, PAY3),
+	I40E_PTT(148, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, NONE, PAY3),
+	I40E_PTT(149, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, UDP,  PAY4),
+	I40E_PTT_UNUSED_ENTRY(150),
+	I40E_PTT(151, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, TCP,  PAY4),
+	I40E_PTT(152, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, SCTP, PAY4),
+	I40E_PTT(153, IP, IPV6, NOF, IP_GRENAT_MAC_VLAN, IPV6, NOF, ICMP, PAY4),
+
+	/* unused entries */
+	[154 ... 255] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+};
+
 /**
  * i40e_init_shared_code - Initialize the shared code
  * @hw: pointer to hardware structure
@@ -345,17 +660,17 @@ int i40e_init_shared_code(struct i40e_hw *hw)
 	case I40E_MAC_X722:
 		break;
 	default:
-		return -ENODEV;
+		return I40E_ERR_DEVICE_NOT_SUPPORTED;
 	}
 
 	hw->phy.get_link_info = true;
 
 	/* Determine port number and PF number*/
-	port = FIELD_GET(I40E_PFGEN_PORTNUM_PORT_NUM_MASK,
-			 rd32(hw, I40E_PFGEN_PORTNUM));
+	port = (rd32(hw, I40E_PFGEN_PORTNUM) & I40E_PFGEN_PORTNUM_PORT_NUM_MASK)
+					   >> I40E_PFGEN_PORTNUM_PORT_NUM_SHIFT;
 	hw->port = (u8)port;
-	ari = FIELD_GET(I40E_GLPCI_CAPSUP_ARI_EN_MASK,
-			rd32(hw, I40E_GLPCI_CAPSUP));
+	ari = (rd32(hw, I40E_GLPCI_CAPSUP) & I40E_GLPCI_CAPSUP_ARI_EN_MASK) >>
+						 I40E_GLPCI_CAPSUP_ARI_EN_SHIFT;
 	func_rid = rd32(hw, I40E_PF_FUNC_RID);
 	if (ari)
 		hw->pf_id = (u8)(func_rid & 0xff);
@@ -379,13 +694,13 @@ i40e_aq_mac_address_read(struct i40e_hw *hw,
 			 struct i40e_aqc_mac_address_read_data *addrs,
 			 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_mac_address_read *cmd_data;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_mac_address_read *cmd_data =
+		(struct i40e_aqc_mac_address_read *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_mac_address_read);
-	cmd_data = libie_aq_raw(&desc);
-	desc.flags |= cpu_to_le16(LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16(I40E_AQ_FLAG_BUF);
 
 	status = i40e_asq_send_command(hw, &desc, addrs,
 				       sizeof(*addrs), cmd_details);
@@ -405,13 +720,13 @@ int i40e_aq_mac_address_write(struct i40e_hw *hw,
 			      u16 flags, u8 *mac_addr,
 			      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_mac_address_write *cmd_data;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_mac_address_write *cmd_data =
+		(struct i40e_aqc_mac_address_write *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_mac_address_write);
-	cmd_data = libie_aq_raw(&desc);
 	cmd_data->command_flags = cpu_to_le16(flags);
 	cmd_data->mac_sah = cpu_to_le16((u16)mac_addr[0] << 8 | mac_addr[1]);
 	cmd_data->mac_sal = cpu_to_le32(((u32)mac_addr[2] << 24) |
@@ -465,7 +780,7 @@ int i40e_get_port_mac_addr(struct i40e_hw *hw, u8 *mac_addr)
 	if (flags & I40E_AQC_PORT_ADDR_VALID)
 		ether_addr_copy(mac_addr, addrs.port_mac);
 	else
-		status = -EINVAL;
+		status = I40E_ERR_INVALID_MAC_ADDR;
 
 	return status;
 }
@@ -503,72 +818,62 @@ void i40e_pre_tx_queue_cfg(struct i40e_hw *hw, u32 queue, bool enable)
 }
 
 /**
- *  i40e_get_pba_string - Reads part number string from EEPROM
+ *  i40e_read_pba_string - Reads part number string from EEPROM
  *  @hw: pointer to hardware structure
+ *  @pba_num: stores the part number string from the EEPROM
+ *  @pba_num_size: part number string buffer length
  *
- *  Reads the part number string from the EEPROM and stores it
- *  into newly allocated buffer and saves resulting pointer
- *  to i40e_hw->pba_id field.
+ *  Reads the part number string from the EEPROM.
  **/
-void i40e_get_pba_string(struct i40e_hw *hw)
+int i40e_read_pba_string(struct i40e_hw *hw, u8 *pba_num,
+			 u32 pba_num_size)
 {
-#define I40E_NVM_PBA_FLAGS_BLK_PRESENT	0xFAFA
 	u16 pba_word = 0;
 	u16 pba_size = 0;
 	u16 pba_ptr = 0;
-	int status;
-	char *ptr;
-	u16 i;
+	int status = 0;
+	u16 i = 0;
 
 	status = i40e_read_nvm_word(hw, I40E_SR_PBA_FLAGS, &pba_word);
-	if (status) {
-		hw_dbg(hw, "Failed to read PBA flags.\n");
-		return;
-	}
-	if (pba_word != I40E_NVM_PBA_FLAGS_BLK_PRESENT) {
-		hw_dbg(hw, "PBA block is not present.\n");
-		return;
+	if (status || (pba_word != 0xFAFA)) {
+		hw_dbg(hw, "Failed to read PBA flags or flag is invalid.\n");
+		return status;
 	}
 
 	status = i40e_read_nvm_word(hw, I40E_SR_PBA_BLOCK_PTR, &pba_ptr);
 	if (status) {
 		hw_dbg(hw, "Failed to read PBA Block pointer.\n");
-		return;
+		return status;
 	}
 
 	status = i40e_read_nvm_word(hw, pba_ptr, &pba_size);
 	if (status) {
 		hw_dbg(hw, "Failed to read PBA Block size.\n");
-		return;
+		return status;
 	}
 
 	/* Subtract one to get PBA word count (PBA Size word is included in
-	 * total size) and advance pointer to first PBA word.
+	 * total size)
 	 */
 	pba_size--;
-	pba_ptr++;
-	if (!pba_size) {
-		hw_dbg(hw, "PBA ID is empty.\n");
-		return;
+	if (pba_num_size < (((u32)pba_size * 2) + 1)) {
+		hw_dbg(hw, "Buffer too small for PBA data.\n");
+		return I40E_ERR_PARAM;
 	}
-
-	ptr = devm_kzalloc(i40e_hw_to_dev(hw), pba_size * 2 + 1, GFP_KERNEL);
-	if (!ptr)
-		return;
-	hw->pba_id = ptr;
 
 	for (i = 0; i < pba_size; i++) {
-		status = i40e_read_nvm_word(hw, pba_ptr + i, &pba_word);
+		status = i40e_read_nvm_word(hw, (pba_ptr + 1) + i, &pba_word);
 		if (status) {
 			hw_dbg(hw, "Failed to read PBA Block word %d.\n", i);
-			devm_kfree(i40e_hw_to_dev(hw), hw->pba_id);
-			hw->pba_id = NULL;
-			return;
+			return status;
 		}
 
-		*ptr++ = (pba_word >> 8) & 0xFF;
-		*ptr++ = pba_word & 0xFF;
+		pba_num[(i * 2)] = (pba_word >> 8) & 0xFF;
+		pba_num[(i * 2) + 1] = pba_word & 0xFF;
 	}
+	pba_num[(pba_size * 2)] = '\0';
+
+	return status;
 }
 
 /**
@@ -650,7 +955,7 @@ static int i40e_poll_globr(struct i40e_hw *hw,
 	hw_dbg(hw, "Global reset failed.\n");
 	hw_dbg(hw, "I40E_GLGEN_RSTAT = 0x%x\n", reg);
 
-	return -EIO;
+	return I40E_ERR_RESET_FAILED;
 }
 
 #define I40E_PF_RESET_WAIT_COUNT_A0	200
@@ -673,8 +978,9 @@ int i40e_pf_reset(struct i40e_hw *hw)
 	 * The grst delay value is in 100ms units, and we'll wait a
 	 * couple counts longer to be sure we don't just miss the end.
 	 */
-	grst_del = FIELD_GET(I40E_GLGEN_RSTCTL_GRSTDEL_MASK,
-			     rd32(hw, I40E_GLGEN_RSTCTL));
+	grst_del = (rd32(hw, I40E_GLGEN_RSTCTL) &
+		    I40E_GLGEN_RSTCTL_GRSTDEL_MASK) >>
+		    I40E_GLGEN_RSTCTL_GRSTDEL_SHIFT;
 
 	/* It can take upto 15 secs for GRST steady state.
 	 * Bump it to 16 secs max to be safe.
@@ -689,7 +995,7 @@ int i40e_pf_reset(struct i40e_hw *hw)
 	}
 	if (reg & I40E_GLGEN_RSTAT_DEVSTATE_MASK) {
 		hw_dbg(hw, "Global reset polling failed to complete.\n");
-		return -EIO;
+		return I40E_ERR_RESET_FAILED;
 	}
 
 	/* Now Wait for the FW to be ready */
@@ -708,7 +1014,7 @@ int i40e_pf_reset(struct i40e_hw *hw)
 		     I40E_GLNVM_ULD_CONF_GLOBAL_DONE_MASK))) {
 		hw_dbg(hw, "wait for FW Reset complete timedout\n");
 		hw_dbg(hw, "I40E_GLNVM_ULD = 0x%x\n", reg);
-		return -EIO;
+		return I40E_ERR_RESET_FAILED;
 	}
 
 	/* If there was a Global Reset in progress when we got here,
@@ -734,10 +1040,10 @@ int i40e_pf_reset(struct i40e_hw *hw)
 		}
 		if (reg2 & I40E_GLGEN_RSTAT_DEVSTATE_MASK) {
 			if (i40e_poll_globr(hw, grst_del))
-				return -EIO;
+				return I40E_ERR_RESET_FAILED;
 		} else if (reg & I40E_PFGEN_CTRL_PFSWR_MASK) {
 			hw_dbg(hw, "PF reset polling failed to complete.\n");
-			return -EIO;
+			return I40E_ERR_RESET_FAILED;
 		}
 	}
 
@@ -757,31 +1063,36 @@ int i40e_pf_reset(struct i40e_hw *hw)
 void i40e_clear_hw(struct i40e_hw *hw)
 {
 	u32 num_queues, base_queue;
-	s32 num_pf_int;
-	s32 num_vf_int;
+	u32 num_pf_int;
+	u32 num_vf_int;
 	u32 num_vfs;
-	s32 i;
-	u32 j;
+	u32 i, j;
 	u32 val;
 	u32 eol = 0x7ff;
 
 	/* get number of interrupts, queues, and VFs */
 	val = rd32(hw, I40E_GLPCI_CNF2);
-	num_pf_int = FIELD_GET(I40E_GLPCI_CNF2_MSI_X_PF_N_MASK, val);
-	num_vf_int = FIELD_GET(I40E_GLPCI_CNF2_MSI_X_VF_N_MASK, val);
+	num_pf_int = (val & I40E_GLPCI_CNF2_MSI_X_PF_N_MASK) >>
+		     I40E_GLPCI_CNF2_MSI_X_PF_N_SHIFT;
+	num_vf_int = (val & I40E_GLPCI_CNF2_MSI_X_VF_N_MASK) >>
+		     I40E_GLPCI_CNF2_MSI_X_VF_N_SHIFT;
 
 	val = rd32(hw, I40E_PFLAN_QALLOC);
-	base_queue = FIELD_GET(I40E_PFLAN_QALLOC_FIRSTQ_MASK, val);
-	j = FIELD_GET(I40E_PFLAN_QALLOC_LASTQ_MASK, val);
-	if (val & I40E_PFLAN_QALLOC_VALID_MASK && j >= base_queue)
+	base_queue = (val & I40E_PFLAN_QALLOC_FIRSTQ_MASK) >>
+		     I40E_PFLAN_QALLOC_FIRSTQ_SHIFT;
+	j = (val & I40E_PFLAN_QALLOC_LASTQ_MASK) >>
+	    I40E_PFLAN_QALLOC_LASTQ_SHIFT;
+	if (val & I40E_PFLAN_QALLOC_VALID_MASK)
 		num_queues = (j - base_queue) + 1;
 	else
 		num_queues = 0;
 
 	val = rd32(hw, I40E_PF_VT_PFALLOC);
-	i = FIELD_GET(I40E_PF_VT_PFALLOC_FIRSTVF_MASK, val);
-	j = FIELD_GET(I40E_PF_VT_PFALLOC_LASTVF_MASK, val);
-	if (val & I40E_PF_VT_PFALLOC_VALID_MASK && j >= i)
+	i = (val & I40E_PF_VT_PFALLOC_FIRSTVF_MASK) >>
+	    I40E_PF_VT_PFALLOC_FIRSTVF_SHIFT;
+	j = (val & I40E_PF_VT_PFALLOC_LASTVF_MASK) >>
+	    I40E_PF_VT_PFALLOC_LASTVF_SHIFT;
+	if (val & I40E_PF_VT_PFALLOC_VALID_MASK)
 		num_vfs = (j - i) + 1;
 	else
 		num_vfs = 0;
@@ -875,7 +1186,8 @@ static u32 i40e_led_is_mine(struct i40e_hw *hw, int idx)
 	    !hw->func_caps.led[idx])
 		return 0;
 	gpio_val = rd32(hw, I40E_GLGEN_GPIO_CTL(idx));
-	port = FIELD_GET(I40E_GLGEN_GPIO_CTL_PRT_NUM_MASK, gpio_val);
+	port = (gpio_val & I40E_GLGEN_GPIO_CTL_PRT_NUM_MASK) >>
+		I40E_GLGEN_GPIO_CTL_PRT_NUM_SHIFT;
 
 	/* if PRT_NUM_NA is 1 then this LED is not port specific, OR
 	 * if it is not our port then ignore
@@ -919,7 +1231,8 @@ u32 i40e_led_get(struct i40e_hw *hw)
 		if (!gpio_val)
 			continue;
 
-		mode = FIELD_GET(I40E_GLGEN_GPIO_CTL_LED_MODE_MASK, gpio_val);
+		mode = (gpio_val & I40E_GLGEN_GPIO_CTL_LED_MODE_MASK) >>
+			I40E_GLGEN_GPIO_CTL_LED_MODE_SHIFT;
 		break;
 	}
 
@@ -962,14 +1275,14 @@ void i40e_led_set(struct i40e_hw *hw, u32 mode, bool blink)
 				pin_func = I40E_PIN_FUNC_LED;
 
 			gpio_val &= ~I40E_GLGEN_GPIO_CTL_PIN_FUNC_MASK;
-			gpio_val |=
-				FIELD_PREP(I40E_GLGEN_GPIO_CTL_PIN_FUNC_MASK,
-					   pin_func);
+			gpio_val |= ((pin_func <<
+				     I40E_GLGEN_GPIO_CTL_PIN_FUNC_SHIFT) &
+				     I40E_GLGEN_GPIO_CTL_PIN_FUNC_MASK);
 		}
 		gpio_val &= ~I40E_GLGEN_GPIO_CTL_LED_MODE_MASK;
 		/* this & is a bit of paranoia, but serves as a range check */
-		gpio_val |= FIELD_PREP(I40E_GLGEN_GPIO_CTL_LED_MODE_MASK,
-				       mode);
+		gpio_val |= ((mode << I40E_GLGEN_GPIO_CTL_LED_MODE_SHIFT) &
+			     I40E_GLGEN_GPIO_CTL_LED_MODE_MASK);
 
 		if (blink)
 			gpio_val |= BIT(I40E_GLGEN_GPIO_CTL_LED_BLINK_SHIFT);
@@ -1001,46 +1314,46 @@ i40e_aq_get_phy_capabilities(struct i40e_hw *hw,
 {
 	u16 abilities_size = sizeof(struct i40e_aq_get_phy_abilities_resp);
 	u16 max_delay = I40E_MAX_PHY_TIMEOUT, total_delay = 0;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	int status;
 
 	if (!abilities)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	do {
 		i40e_fill_default_direct_cmd_desc(&desc,
 					       i40e_aqc_opc_get_phy_abilities);
 
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 		if (abilities_size > I40E_AQ_LARGE_BUF)
-			desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+			desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 		if (qualified_modules)
-			desc.params.generic.param0 |=
+			desc.params.external.param0 |=
 			cpu_to_le32(I40E_AQ_PHY_REPORT_QUALIFIED_MODULES);
 
 		if (report_init)
-			desc.params.generic.param0 |=
+			desc.params.external.param0 |=
 			cpu_to_le32(I40E_AQ_PHY_REPORT_INITIAL_VALUES);
 
 		status = i40e_asq_send_command(hw, &desc, abilities,
 					       abilities_size, cmd_details);
 
 		switch (hw->aq.asq_last_status) {
-		case LIBIE_AQ_RC_EIO:
-			status = -EIO;
+		case I40E_AQ_RC_EIO:
+			status = I40E_ERR_UNKNOWN_PHY;
 			break;
-		case LIBIE_AQ_RC_EAGAIN:
+		case I40E_AQ_RC_EAGAIN:
 			usleep_range(1000, 2000);
 			total_delay++;
-			status = -EIO;
+			status = I40E_ERR_TIMEOUT;
 			break;
-		/* also covers LIBIE_AQ_RC_OK */
+		/* also covers I40E_AQ_RC_OK */
 		default:
 			break;
 		}
 
-	} while ((hw->aq.asq_last_status == LIBIE_AQ_RC_EAGAIN) &&
+	} while ((hw->aq.asq_last_status == I40E_AQ_RC_EAGAIN) &&
 		(total_delay < max_delay));
 
 	if (status)
@@ -1048,8 +1361,8 @@ i40e_aq_get_phy_capabilities(struct i40e_hw *hw,
 
 	if (report_init) {
 		if (hw->mac.type ==  I40E_MAC_XL710 &&
-		    i40e_is_aq_api_ver_ge(hw, I40E_FW_API_VERSION_MAJOR,
-					  I40E_MINOR_VER_GET_LINK_INFO_XL710)) {
+		    hw->aq.api_maj_ver == I40E_FW_API_VERSION_MAJOR &&
+		    hw->aq.api_min_ver >= I40E_MINOR_VER_GET_LINK_INFO_XL710) {
 			status = i40e_aq_get_link_info(hw, true, NULL, NULL);
 		} else {
 			hw->phy.phy_types = le32_to_cpu(abilities->phy_type);
@@ -1077,17 +1390,17 @@ int i40e_aq_set_phy_config(struct i40e_hw *hw,
 			   struct i40e_aq_set_phy_config *config,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aq_set_phy_config *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aq_set_phy_config *cmd =
+			(struct i40e_aq_set_phy_config *)&desc.params.raw;
 	int status;
 
 	if (!config)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_phy_config);
 
-	cmd = libie_aq_raw(&desc);
 	*cmd = *config;
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -1190,40 +1503,6 @@ int i40e_set_fc(struct i40e_hw *hw, u8 *aq_failures,
 }
 
 /**
- * i40e_aq_set_mac_config - Configure MAC settings
- * @hw: pointer to the hw struct
- * @max_frame_size: Maximum Frame Size to be supported by the port
- * @cmd_details: pointer to command details structure or NULL
- *
- * Set MAC configuration (0x0603). Note that max_frame_size must be greater
- * than zero.
- *
- * Return: 0 on success, or a negative error code on failure.
- */
-int i40e_aq_set_mac_config(struct i40e_hw *hw, u16 max_frame_size,
-			   struct i40e_asq_cmd_details *cmd_details)
-{
-	struct i40e_aq_set_mac_config *cmd;
-	struct libie_aq_desc desc;
-
-	cmd = libie_aq_raw(&desc);
-
-	if (max_frame_size == 0)
-		return -EINVAL;
-
-	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_set_mac_config);
-
-	cmd->max_frame_size = cpu_to_le16(max_frame_size);
-	cmd->params = I40E_AQ_SET_MAC_CONFIG_CRC_EN;
-
-#define I40E_AQ_SET_MAC_CONFIG_FC_DEFAULT_THRESHOLD	0x7FFF
-	cmd->fc_refresh_threshold =
-		cpu_to_le16(I40E_AQ_SET_MAC_CONFIG_FC_DEFAULT_THRESHOLD);
-
-	return i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
-}
-
-/**
  * i40e_aq_clear_pxe_mode
  * @hw: pointer to the hw struct
  * @cmd_details: pointer to command details structure or NULL
@@ -1233,14 +1512,14 @@ int i40e_aq_set_mac_config(struct i40e_hw *hw, u16 max_frame_size,
 int i40e_aq_clear_pxe_mode(struct i40e_hw *hw,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_clear_pxe *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_clear_pxe *cmd =
+		(struct i40e_aqc_clear_pxe *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_clear_pxe_mode);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->rx_cnt = 0x2;
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -1262,14 +1541,14 @@ int i40e_aq_set_link_restart_an(struct i40e_hw *hw,
 				bool enable_link,
 				struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_link_restart_an *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_link_restart_an *cmd =
+		(struct i40e_aqc_set_link_restart_an *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_link_restart_an);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->command = I40E_AQ_PHY_RESTART_AN;
 	if (enable_link)
 		cmd->command |= I40E_AQ_PHY_LINK_ENABLE;
@@ -1294,16 +1573,16 @@ int i40e_aq_get_link_info(struct i40e_hw *hw,
 			  bool enable_lse, struct i40e_link_status *link,
 			  struct i40e_asq_cmd_details *cmd_details)
 {
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_get_link_status *resp =
+		(struct i40e_aqc_get_link_status *)&desc.params.raw;
 	struct i40e_link_status *hw_link_info = &hw->phy.link_info;
-	struct i40e_aqc_get_link_status *resp;
-	struct libie_aq_desc desc;
 	bool tx_pause, rx_pause;
 	u16 command_flags;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_get_link_status);
 
-	resp = libie_aq_raw(&desc);
 	if (enable_lse)
 		command_flags = I40E_AQ_LSE_ENABLE;
 	else
@@ -1353,11 +1632,12 @@ int i40e_aq_get_link_info(struct i40e_hw *hw,
 	else
 		hw_link_info->lse_enable = false;
 
-	if (hw->mac.type == I40E_MAC_XL710 && i40e_is_fw_ver_lt(hw, 4, 40) &&
-	    hw_link_info->phy_type == 0xE)
+	if ((hw->mac.type == I40E_MAC_XL710) &&
+	    (hw->aq.fw_maj_ver < 4 || (hw->aq.fw_maj_ver == 4 &&
+	     hw->aq.fw_min_ver < 40)) && hw_link_info->phy_type == 0xE)
 		hw_link_info->phy_type = I40E_PHY_TYPE_10GBASE_SFPP_CU;
 
-	if (test_bit(I40E_HW_CAP_AQ_PHY_ACCESS, hw->caps) &&
+	if (hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE &&
 	    hw->mac.type != I40E_MAC_X722) {
 		__le32 tmp;
 
@@ -1389,14 +1669,14 @@ int i40e_aq_set_phy_int_mask(struct i40e_hw *hw,
 			     u16 mask,
 			     struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_phy_int_mask *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_phy_int_mask *cmd =
+		(struct i40e_aqc_set_phy_int_mask *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_phy_int_mask);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->event_mask = cpu_to_le16(mask);
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -1415,11 +1695,11 @@ int i40e_aq_set_phy_int_mask(struct i40e_hw *hw,
 int i40e_aq_set_mac_loopback(struct i40e_hw *hw, bool ena_lpbk,
 			     struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_lb_mode *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_lb_mode *cmd =
+		(struct i40e_aqc_set_lb_mode *)&desc.params.raw;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_set_lb_modes);
-	cmd = libie_aq_raw(&desc);
 	if (ena_lpbk) {
 		if (hw->nvm.version <= I40E_LEGACY_LOOPBACK_NVM_VER)
 			cmd->lb_mode = cpu_to_le16(I40E_AQ_LB_MAC_LOCAL_LEGACY);
@@ -1441,19 +1721,34 @@ int i40e_aq_set_mac_loopback(struct i40e_hw *hw, bool ena_lpbk,
 int i40e_aq_set_phy_debug(struct i40e_hw *hw, u8 cmd_flags,
 			  struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_phy_debug *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_phy_debug *cmd =
+		(struct i40e_aqc_set_phy_debug *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_phy_debug);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->command_flags = cmd_flags;
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
 
 	return status;
+}
+
+/**
+ * i40e_is_aq_api_ver_ge
+ * @aq: pointer to AdminQ info containing HW API version to compare
+ * @maj: API major value
+ * @min: API minor value
+ *
+ * Assert whether current HW API version is greater/equal than provided.
+ **/
+static bool i40e_is_aq_api_ver_ge(struct i40e_adminq_info *aq, u16 maj,
+				  u16 min)
+{
+	return (aq->api_maj_ver > maj ||
+		(aq->api_maj_ver == maj && aq->api_min_ver >= min));
 }
 
 /**
@@ -1468,22 +1763,23 @@ int i40e_aq_add_vsi(struct i40e_hw *hw,
 		    struct i40e_vsi_context *vsi_ctx,
 		    struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_add_get_update_vsi_completion *resp;
-	struct i40e_aqc_add_get_update_vsi *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_get_update_vsi *cmd =
+		(struct i40e_aqc_add_get_update_vsi *)&desc.params.raw;
+	struct i40e_aqc_add_get_update_vsi_completion *resp =
+		(struct i40e_aqc_add_get_update_vsi_completion *)
+		&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_add_vsi);
 
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	cmd->uplink_seid = cpu_to_le16(vsi_ctx->uplink_seid);
 	cmd->connection_type = vsi_ctx->connection_type;
 	cmd->vf_id = vsi_ctx->vf_num;
 	cmd->vsi_flags = cpu_to_le16(vsi_ctx->flags);
 
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 
 	status = i40e_asq_send_command_atomic(hw, &desc, &vsi_ctx->info,
 					      sizeof(vsi_ctx->info),
@@ -1511,14 +1807,15 @@ int i40e_aq_set_default_vsi(struct i40e_hw *hw,
 			    u16 seid,
 			    struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)
+		&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_vsi_promiscuous_modes);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->promiscuous_flags = cpu_to_le16(I40E_AQC_SET_VSI_DEFAULT);
 	cmd->valid_flags = cpu_to_le16(I40E_AQC_SET_VSI_DEFAULT);
 	cmd->seid = cpu_to_le16(seid);
@@ -1538,14 +1835,15 @@ int i40e_aq_clear_default_vsi(struct i40e_hw *hw,
 			      u16 seid,
 			      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)
+		&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_vsi_promiscuous_modes);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->promiscuous_flags = cpu_to_le16(0);
 	cmd->valid_flags = cpu_to_le16(I40E_AQC_SET_VSI_DEFAULT);
 	cmd->seid = cpu_to_le16(seid);
@@ -1568,25 +1866,25 @@ int i40e_aq_set_vsi_unicast_promiscuous(struct i40e_hw *hw,
 					struct i40e_asq_cmd_details *cmd_details,
 					bool rx_only_promisc)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)&desc.params.raw;
 	u16 flags = 0;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					i40e_aqc_opc_set_vsi_promiscuous_modes);
 
-	cmd = libie_aq_raw(&desc);
 	if (set) {
 		flags |= I40E_AQC_SET_VSI_PROMISC_UNICAST;
-		if (rx_only_promisc && i40e_is_aq_api_ver_ge(hw, 1, 5))
+		if (rx_only_promisc && i40e_is_aq_api_ver_ge(&hw->aq, 1, 5))
 			flags |= I40E_AQC_SET_VSI_PROMISC_RX_ONLY;
 	}
 
 	cmd->promiscuous_flags = cpu_to_le16(flags);
 
 	cmd->valid_flags = cpu_to_le16(I40E_AQC_SET_VSI_PROMISC_UNICAST);
-	if (i40e_is_aq_api_ver_ge(hw, 1, 5))
+	if (i40e_is_aq_api_ver_ge(&hw->aq, 1, 5))
 		cmd->valid_flags |=
 			cpu_to_le16(I40E_AQC_SET_VSI_PROMISC_RX_ONLY);
 
@@ -1607,15 +1905,15 @@ int i40e_aq_set_vsi_multicast_promiscuous(struct i40e_hw *hw,
 					  u16 seid, bool set,
 					  struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)&desc.params.raw;
 	u16 flags = 0;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					i40e_aqc_opc_set_vsi_promiscuous_modes);
 
-	cmd = libie_aq_raw(&desc);
 	if (set)
 		flags |= I40E_AQC_SET_VSI_PROMISC_MULTICAST;
 
@@ -1642,15 +1940,15 @@ int i40e_aq_set_vsi_mc_promisc_on_vlan(struct i40e_hw *hw,
 				       u16 vid,
 				       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)&desc.params.raw;
 	u16 flags = 0;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_vsi_promiscuous_modes);
 
-	cmd = libie_aq_raw(&desc);
 	if (enable)
 		flags |= I40E_AQC_SET_VSI_PROMISC_MULTICAST;
 
@@ -1678,24 +1976,24 @@ int i40e_aq_set_vsi_uc_promisc_on_vlan(struct i40e_hw *hw,
 				       u16 vid,
 				       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)&desc.params.raw;
 	u16 flags = 0;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_vsi_promiscuous_modes);
 
-	cmd = libie_aq_raw(&desc);
 	if (enable) {
 		flags |= I40E_AQC_SET_VSI_PROMISC_UNICAST;
-		if (i40e_is_aq_api_ver_ge(hw, 1, 5))
+		if (i40e_is_aq_api_ver_ge(&hw->aq, 1, 5))
 			flags |= I40E_AQC_SET_VSI_PROMISC_RX_ONLY;
 	}
 
 	cmd->promiscuous_flags = cpu_to_le16(flags);
 	cmd->valid_flags = cpu_to_le16(I40E_AQC_SET_VSI_PROMISC_UNICAST);
-	if (i40e_is_aq_api_ver_ge(hw, 1, 5))
+	if (i40e_is_aq_api_ver_ge(&hw->aq, 1, 5))
 		cmd->valid_flags |=
 			cpu_to_le16(I40E_AQC_SET_VSI_PROMISC_RX_ONLY);
 	cmd->seid = cpu_to_le16(seid);
@@ -1719,8 +2017,9 @@ int i40e_aq_set_vsi_bc_promisc_on_vlan(struct i40e_hw *hw,
 				       u16 seid, bool enable, u16 vid,
 				       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)&desc.params.raw;
 	u16 flags = 0;
 	int status;
 
@@ -1730,7 +2029,6 @@ int i40e_aq_set_vsi_bc_promisc_on_vlan(struct i40e_hw *hw,
 	if (enable)
 		flags |= I40E_AQC_SET_VSI_PROMISC_BROADCAST;
 
-	cmd = libie_aq_raw(&desc);
 	cmd->promiscuous_flags = cpu_to_le16(flags);
 	cmd->valid_flags = cpu_to_le16(I40E_AQC_SET_VSI_PROMISC_BROADCAST);
 	cmd->seid = cpu_to_le16(seid);
@@ -1754,14 +2052,14 @@ int i40e_aq_set_vsi_broadcast(struct i40e_hw *hw,
 			      u16 seid, bool set_filter,
 			      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_vsi_promiscuous_modes *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					i40e_aqc_opc_set_vsi_promiscuous_modes);
 
-	cmd = libie_aq_raw(&desc);
 	if (set_filter)
 		cmd->promiscuous_flags
 			    |= cpu_to_le16(I40E_AQC_SET_VSI_PROMISC_BROADCAST);
@@ -1777,6 +2075,37 @@ int i40e_aq_set_vsi_broadcast(struct i40e_hw *hw,
 }
 
 /**
+ * i40e_aq_set_vsi_vlan_promisc - control the VLAN promiscuous setting
+ * @hw: pointer to the hw struct
+ * @seid: vsi number
+ * @enable: set MAC L2 layer unicast promiscuous enable/disable for a given VLAN
+ * @cmd_details: pointer to command details structure or NULL
+ **/
+int i40e_aq_set_vsi_vlan_promisc(struct i40e_hw *hw,
+				 u16 seid, bool enable,
+				 struct i40e_asq_cmd_details *cmd_details)
+{
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
+		(struct i40e_aqc_set_vsi_promiscuous_modes *)&desc.params.raw;
+	u16 flags = 0;
+	int status;
+
+	i40e_fill_default_direct_cmd_desc(&desc,
+					i40e_aqc_opc_set_vsi_promiscuous_modes);
+	if (enable)
+		flags |= I40E_AQC_SET_VSI_PROMISC_VLAN;
+
+	cmd->promiscuous_flags = cpu_to_le16(flags);
+	cmd->valid_flags = cpu_to_le16(I40E_AQC_SET_VSI_PROMISC_VLAN);
+	cmd->seid = cpu_to_le16(seid);
+
+	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
+
+	return status;
+}
+
+/**
  * i40e_aq_get_vsi_params - get VSI configuration info
  * @hw: pointer to the hw struct
  * @vsi_ctx: pointer to a vsi context struct
@@ -1786,19 +2115,20 @@ int i40e_aq_get_vsi_params(struct i40e_hw *hw,
 			   struct i40e_vsi_context *vsi_ctx,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_add_get_update_vsi_completion *resp;
-	struct i40e_aqc_add_get_update_vsi *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_get_update_vsi *cmd =
+		(struct i40e_aqc_add_get_update_vsi *)&desc.params.raw;
+	struct i40e_aqc_add_get_update_vsi_completion *resp =
+		(struct i40e_aqc_add_get_update_vsi_completion *)
+		&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_get_vsi_parameters);
 
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	cmd->uplink_seid = cpu_to_le16(vsi_ctx->seid);
 
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 
 	status = i40e_asq_send_command(hw, &desc, &vsi_ctx->info,
 				    sizeof(vsi_ctx->info), NULL);
@@ -1827,18 +2157,19 @@ int i40e_aq_update_vsi_params(struct i40e_hw *hw,
 			      struct i40e_vsi_context *vsi_ctx,
 			      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_add_get_update_vsi_completion *resp;
-	struct i40e_aqc_add_get_update_vsi *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_get_update_vsi *cmd =
+		(struct i40e_aqc_add_get_update_vsi *)&desc.params.raw;
+	struct i40e_aqc_add_get_update_vsi_completion *resp =
+		(struct i40e_aqc_add_get_update_vsi_completion *)
+		&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_update_vsi_parameters);
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	cmd->uplink_seid = cpu_to_le16(vsi_ctx->seid);
 
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 
 	status = i40e_asq_send_command_atomic(hw, &desc, &vsi_ctx->info,
 					      sizeof(vsi_ctx->info),
@@ -1865,16 +2196,16 @@ int i40e_aq_get_switch_config(struct i40e_hw *hw,
 			      u16 buf_size, u16 *start_seid,
 			      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_switch_seid *scfg;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_switch_seid *scfg =
+		(struct i40e_aqc_switch_seid *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_get_switch_config);
-	scfg = libie_aq_raw(&desc);
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	if (buf_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 	scfg->seid = cpu_to_le16(*start_seid);
 
 	status = i40e_asq_send_command(hw, &desc, buf, buf_size, cmd_details);
@@ -1899,17 +2230,17 @@ int i40e_aq_set_switch_config(struct i40e_hw *hw,
 			      u16 valid_flags, u8 mode,
 			      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_switch_config *scfg;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_switch_config *scfg =
+		(struct i40e_aqc_set_switch_config *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_switch_config);
-	scfg = libie_aq_raw(&desc);
 	scfg->flags = cpu_to_le16(flags);
 	scfg->valid_flags = cpu_to_le16(valid_flags);
 	scfg->mode = mode;
-	if (test_bit(I40E_HW_CAP_802_1AD, hw->caps)) {
+	if (hw->flags & I40E_HW_FLAG_802_1AD_CAPABLE) {
 		scfg->switch_tag = cpu_to_le16(hw->switch_tag);
 		scfg->first_tag = cpu_to_le16(hw->first_tag);
 		scfg->second_tag = cpu_to_le16(hw->second_tag);
@@ -1937,11 +2268,11 @@ int i40e_aq_get_firmware_version(struct i40e_hw *hw,
 				 u16 *api_major_version, u16 *api_minor_version,
 				 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_get_version *resp;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_get_version *resp =
+		(struct i40e_aqc_get_version *)&desc.params.raw;
 	int status;
 
-	resp = libie_aq_raw(&desc);
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_get_version);
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -1974,22 +2305,22 @@ int i40e_aq_send_driver_version(struct i40e_hw *hw,
 				struct i40e_driver_version *dv,
 				struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aqc_driver_ver *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_driver_version *cmd =
+		(struct i40e_aqc_driver_version *)&desc.params.raw;
 	int status;
 	u16 len;
 
 	if (dv == NULL)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
-	cmd = libie_aq_raw(&desc);
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_driver_version);
 
-	desc.flags |= cpu_to_le16(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD);
-	cmd->major_ver = dv->major_version;
-	cmd->minor_ver = dv->minor_version;
-	cmd->build_ver = dv->build_version;
-	cmd->subbuild_ver = dv->subbuild_version;
+	desc.flags |= cpu_to_le16(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD);
+	cmd->driver_major_ver = dv->major_version;
+	cmd->driver_minor_ver = dv->minor_version;
+	cmd->driver_build_ver = dv->build_version;
+	cmd->driver_subbuild_ver = dv->subbuild_version;
 
 	len = 0;
 	while (len < sizeof(dv->driver_string) &&
@@ -2089,18 +2420,18 @@ int i40e_aq_add_veb(struct i40e_hw *hw, u16 uplink_seid,
 		    bool enable_stats,
 		    struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_add_veb_completion *resp;
-	struct i40e_aqc_add_veb *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_veb *cmd =
+		(struct i40e_aqc_add_veb *)&desc.params.raw;
+	struct i40e_aqc_add_veb_completion *resp =
+		(struct i40e_aqc_add_veb_completion *)&desc.params.raw;
 	u16 veb_flags = 0;
 	int status;
 
 	/* SEIDs need to either both be set or both be 0 for floating VEB */
 	if (!!uplink_seid != !!downlink_seid)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_add_veb);
 
 	cmd->uplink_seid = cpu_to_le16(uplink_seid);
@@ -2147,14 +2478,15 @@ int i40e_aq_get_veb_parameters(struct i40e_hw *hw,
 			       u16 *vebs_used, u16 *vebs_free,
 			       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_get_veb_parameters_completion *cmd_resp;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_get_veb_parameters_completion *cmd_resp =
+		(struct i40e_aqc_get_veb_parameters_completion *)
+		&desc.params.raw;
 	int status;
 
 	if (veb_seid == 0)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
-	cmd_resp = libie_aq_raw(&desc);
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_get_veb_parameters);
 	cmd_resp->seid = cpu_to_le16(veb_seid);
@@ -2196,9 +2528,10 @@ get_veb_exit:
  **/
 static u16
 i40e_prepare_add_macvlan(struct i40e_aqc_add_macvlan_element_data *mv_list,
-			 struct libie_aq_desc *desc, u16 count, u16 seid)
+			 struct i40e_aq_desc *desc, u16 count, u16 seid)
 {
-	struct i40e_aqc_macvlan *cmd = libie_aq_raw(desc);
+	struct i40e_aqc_macvlan *cmd =
+		(struct i40e_aqc_macvlan *)&desc->params.raw;
 	u16 buf_size;
 	int i;
 
@@ -2216,9 +2549,9 @@ i40e_prepare_add_macvlan(struct i40e_aqc_add_macvlan_element_data *mv_list,
 			mv_list[i].flags |=
 			       cpu_to_le16(I40E_AQC_MACVLAN_ADD_USE_SHARED_MAC);
 
-	desc->flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc->flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	if (buf_size > I40E_AQ_LARGE_BUF)
-		desc->flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc->flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	return buf_size;
 }
@@ -2238,11 +2571,11 @@ i40e_aq_add_macvlan(struct i40e_hw *hw, u16 seid,
 		    struct i40e_aqc_add_macvlan_element_data *mv_list,
 		    u16 count, struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	u16 buf_size;
 
 	if (count == 0 || !mv_list || !hw)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	buf_size = i40e_prepare_add_macvlan(mv_list, &desc, count, seid);
 
@@ -2269,13 +2602,13 @@ int
 i40e_aq_add_macvlan_v2(struct i40e_hw *hw, u16 seid,
 		       struct i40e_aqc_add_macvlan_element_data *mv_list,
 		       u16 count, struct i40e_asq_cmd_details *cmd_details,
-		       enum libie_aq_err *aq_status)
+		       enum i40e_admin_queue_err *aq_status)
 {
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	u16 buf_size;
 
 	if (count == 0 || !mv_list || !hw)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	buf_size = i40e_prepare_add_macvlan(mv_list, &desc, count, seid);
 
@@ -2298,27 +2631,27 @@ i40e_aq_remove_macvlan(struct i40e_hw *hw, u16 seid,
 		       struct i40e_aqc_remove_macvlan_element_data *mv_list,
 		       u16 count, struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_macvlan *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_macvlan *cmd =
+		(struct i40e_aqc_macvlan *)&desc.params.raw;
 	u16 buf_size;
 	int status;
 
 	if (count == 0 || !mv_list || !hw)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	buf_size = count * sizeof(*mv_list);
 
 	/* prep the rest of the request */
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_remove_macvlan);
-	cmd = libie_aq_raw(&desc);
 	cmd->num_addresses = cpu_to_le16(count);
 	cmd->seid[0] = cpu_to_le16(I40E_AQC_MACVLAN_CMD_SEID_VALID | seid);
 	cmd->seid[1] = 0;
 	cmd->seid[2] = 0;
 
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	if (buf_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	status = i40e_asq_send_command_atomic(hw, &desc, mv_list, buf_size,
 					      cmd_details, true);
@@ -2345,31 +2678,161 @@ int
 i40e_aq_remove_macvlan_v2(struct i40e_hw *hw, u16 seid,
 			  struct i40e_aqc_remove_macvlan_element_data *mv_list,
 			  u16 count, struct i40e_asq_cmd_details *cmd_details,
-			  enum libie_aq_err *aq_status)
+			  enum i40e_admin_queue_err *aq_status)
 {
 	struct i40e_aqc_macvlan *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	u16 buf_size;
 
 	if (count == 0 || !mv_list || !hw)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	buf_size = count * sizeof(*mv_list);
 
 	/* prep the rest of the request */
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_remove_macvlan);
-	cmd = libie_aq_raw(&desc);
+	cmd = (struct i40e_aqc_macvlan *)&desc.params.raw;
 	cmd->num_addresses = cpu_to_le16(count);
 	cmd->seid[0] = cpu_to_le16(I40E_AQC_MACVLAN_CMD_SEID_VALID | seid);
 	cmd->seid[1] = 0;
 	cmd->seid[2] = 0;
 
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	if (buf_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	return i40e_asq_send_command_atomic_v2(hw, &desc, mv_list, buf_size,
 						 cmd_details, true, aq_status);
+}
+
+/**
+ * i40e_mirrorrule_op - Internal helper function to add/delete mirror rule
+ * @hw: pointer to the hw struct
+ * @opcode: AQ opcode for add or delete mirror rule
+ * @sw_seid: Switch SEID (to which rule refers)
+ * @rule_type: Rule Type (ingress/egress/VLAN)
+ * @id: Destination VSI SEID or Rule ID
+ * @count: length of the list
+ * @mr_list: list of mirrored VSI SEIDs or VLAN IDs
+ * @cmd_details: pointer to command details structure or NULL
+ * @rule_id: Rule ID returned from FW
+ * @rules_used: Number of rules used in internal switch
+ * @rules_free: Number of rules free in internal switch
+ *
+ * Add/Delete a mirror rule to a specific switch. Mirror rules are supported for
+ * VEBs/VEPA elements only
+ **/
+static int i40e_mirrorrule_op(struct i40e_hw *hw,
+			      u16 opcode, u16 sw_seid, u16 rule_type, u16 id,
+			      u16 count, __le16 *mr_list,
+			      struct i40e_asq_cmd_details *cmd_details,
+			      u16 *rule_id, u16 *rules_used, u16 *rules_free)
+{
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_delete_mirror_rule *cmd =
+		(struct i40e_aqc_add_delete_mirror_rule *)&desc.params.raw;
+	struct i40e_aqc_add_delete_mirror_rule_completion *resp =
+	(struct i40e_aqc_add_delete_mirror_rule_completion *)&desc.params.raw;
+	u16 buf_size;
+	int status;
+
+	buf_size = count * sizeof(*mr_list);
+
+	/* prep the rest of the request */
+	i40e_fill_default_direct_cmd_desc(&desc, opcode);
+	cmd->seid = cpu_to_le16(sw_seid);
+	cmd->rule_type = cpu_to_le16(rule_type &
+				     I40E_AQC_MIRROR_RULE_TYPE_MASK);
+	cmd->num_entries = cpu_to_le16(count);
+	/* Dest VSI for add, rule_id for delete */
+	cmd->destination = cpu_to_le16(id);
+	if (mr_list) {
+		desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF |
+						I40E_AQ_FLAG_RD));
+		if (buf_size > I40E_AQ_LARGE_BUF)
+			desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
+	}
+
+	status = i40e_asq_send_command(hw, &desc, mr_list, buf_size,
+				       cmd_details);
+	if (!status ||
+	    hw->aq.asq_last_status == I40E_AQ_RC_ENOSPC) {
+		if (rule_id)
+			*rule_id = le16_to_cpu(resp->rule_id);
+		if (rules_used)
+			*rules_used = le16_to_cpu(resp->mirror_rules_used);
+		if (rules_free)
+			*rules_free = le16_to_cpu(resp->mirror_rules_free);
+	}
+	return status;
+}
+
+/**
+ * i40e_aq_add_mirrorrule - add a mirror rule
+ * @hw: pointer to the hw struct
+ * @sw_seid: Switch SEID (to which rule refers)
+ * @rule_type: Rule Type (ingress/egress/VLAN)
+ * @dest_vsi: SEID of VSI to which packets will be mirrored
+ * @count: length of the list
+ * @mr_list: list of mirrored VSI SEIDs or VLAN IDs
+ * @cmd_details: pointer to command details structure or NULL
+ * @rule_id: Rule ID returned from FW
+ * @rules_used: Number of rules used in internal switch
+ * @rules_free: Number of rules free in internal switch
+ *
+ * Add mirror rule. Mirror rules are supported for VEBs or VEPA elements only
+ **/
+int i40e_aq_add_mirrorrule(struct i40e_hw *hw, u16 sw_seid,
+			   u16 rule_type, u16 dest_vsi, u16 count,
+			   __le16 *mr_list,
+			   struct i40e_asq_cmd_details *cmd_details,
+			   u16 *rule_id, u16 *rules_used, u16 *rules_free)
+{
+	if (!(rule_type == I40E_AQC_MIRROR_RULE_TYPE_ALL_INGRESS ||
+	    rule_type == I40E_AQC_MIRROR_RULE_TYPE_ALL_EGRESS)) {
+		if (count == 0 || !mr_list)
+			return I40E_ERR_PARAM;
+	}
+
+	return i40e_mirrorrule_op(hw, i40e_aqc_opc_add_mirror_rule, sw_seid,
+				  rule_type, dest_vsi, count, mr_list,
+				  cmd_details, rule_id, rules_used, rules_free);
+}
+
+/**
+ * i40e_aq_delete_mirrorrule - delete a mirror rule
+ * @hw: pointer to the hw struct
+ * @sw_seid: Switch SEID (to which rule refers)
+ * @rule_type: Rule Type (ingress/egress/VLAN)
+ * @count: length of the list
+ * @rule_id: Rule ID that is returned in the receive desc as part of
+ *		add_mirrorrule.
+ * @mr_list: list of mirrored VLAN IDs to be removed
+ * @cmd_details: pointer to command details structure or NULL
+ * @rules_used: Number of rules used in internal switch
+ * @rules_free: Number of rules free in internal switch
+ *
+ * Delete a mirror rule. Mirror rules are supported for VEBs/VEPA elements only
+ **/
+int i40e_aq_delete_mirrorrule(struct i40e_hw *hw, u16 sw_seid,
+			      u16 rule_type, u16 rule_id, u16 count,
+			      __le16 *mr_list,
+			      struct i40e_asq_cmd_details *cmd_details,
+			      u16 *rules_used, u16 *rules_free)
+{
+	/* Rule ID has to be valid except rule_type: INGRESS VLAN mirroring */
+	if (rule_type == I40E_AQC_MIRROR_RULE_TYPE_VLAN) {
+		/* count and mr_list shall be valid for rule_type INGRESS VLAN
+		 * mirroring. For other rule_type, count and rule_type should
+		 * not matter.
+		 */
+		if (count == 0 || !mr_list)
+			return I40E_ERR_PARAM;
+	}
+
+	return i40e_mirrorrule_op(hw, i40e_aqc_opc_delete_mirror_rule, sw_seid,
+				  rule_type, rule_id, count, mr_list,
+				  cmd_details, NULL, rules_used, rules_free);
 }
 
 /**
@@ -2388,21 +2851,21 @@ int i40e_aq_send_msg_to_vf(struct i40e_hw *hw, u16 vfid,
 			   u32 v_opcode, u32 v_retval, u8 *msg, u16 msglen,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_pf_vf_message *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_pf_vf_message *cmd =
+		(struct i40e_aqc_pf_vf_message *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_send_msg_to_vf);
-	cmd = libie_aq_raw(&desc);
 	cmd->id = cpu_to_le32(vfid);
 	desc.cookie_high = cpu_to_le32(v_opcode);
 	desc.cookie_low = cpu_to_le32(v_retval);
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_SI);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_SI);
 	if (msglen) {
-		desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF |
-						LIBIE_AQ_FLAG_RD));
+		desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF |
+						I40E_AQ_FLAG_RD));
 		if (msglen > I40E_AQ_LARGE_BUF)
-			desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+			desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 		desc.datalen = cpu_to_le16(msglen);
 	}
 	status = i40e_asq_send_command(hw, &desc, msg, msglen, cmd_details);
@@ -2423,16 +2886,16 @@ int i40e_aq_debug_read_register(struct i40e_hw *hw,
 				u32 reg_addr, u64 *reg_val,
 				struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_debug_reg_read_write *cmd_resp;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_debug_reg_read_write *cmd_resp =
+		(struct i40e_aqc_debug_reg_read_write *)&desc.params.raw;
 	int status;
 
 	if (reg_val == NULL)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_debug_read_reg);
 
-	cmd_resp = libie_aq_raw(&desc);
 	cmd_resp->address = cpu_to_le32(reg_addr);
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -2458,13 +2921,13 @@ int i40e_aq_debug_write_register(struct i40e_hw *hw,
 				 u32 reg_addr, u64 reg_val,
 				 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_debug_reg_read_write *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_debug_reg_read_write *cmd =
+		(struct i40e_aqc_debug_reg_read_write *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_debug_write_reg);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->address = cpu_to_le32(reg_addr);
 	cmd->value_high = cpu_to_le32((u32)(reg_val >> 32));
 	cmd->value_low = cpu_to_le32((u32)(reg_val & 0xFFFFFFFF));
@@ -2491,16 +2954,16 @@ int i40e_aq_request_resource(struct i40e_hw *hw,
 			     u8 sdp_number, u64 *timeout,
 			     struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aqc_req_res *cmd_resp;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_request_resource *cmd_resp =
+		(struct i40e_aqc_request_resource *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_request_resource);
 
-	cmd_resp = libie_aq_raw(&desc);
-	cmd_resp->res_id = cpu_to_le16(resource);
+	cmd_resp->resource_id = cpu_to_le16(resource);
 	cmd_resp->access_type = cpu_to_le16(access);
-	cmd_resp->res_number = cpu_to_le32(sdp_number);
+	cmd_resp->resource_number = cpu_to_le32(sdp_number);
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
 	/* The completion specifies the maximum time in ms that the driver
@@ -2509,7 +2972,7 @@ int i40e_aq_request_resource(struct i40e_hw *hw,
 	 * busy return value and the timeout field indicates the maximum time
 	 * the current owner of the resource has to free it.
 	 */
-	if (!status || hw->aq.asq_last_status == LIBIE_AQ_RC_EBUSY)
+	if (!status || hw->aq.asq_last_status == I40E_AQ_RC_EBUSY)
 		*timeout = le32_to_cpu(cmd_resp->timeout);
 
 	return status;
@@ -2529,15 +2992,15 @@ int i40e_aq_release_resource(struct i40e_hw *hw,
 			     u8 sdp_number,
 			     struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aqc_req_res *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_request_resource *cmd =
+		(struct i40e_aqc_request_resource *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_release_resource);
 
-	cmd = libie_aq_raw(&desc);
-	cmd->res_id = cpu_to_le16(resource);
-	cmd->res_number = cpu_to_le32(sdp_number);
+	cmd->resource_id = cpu_to_le16(resource);
+	cmd->resource_number = cpu_to_le32(sdp_number);
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
 
@@ -2561,19 +3024,19 @@ int i40e_aq_read_nvm(struct i40e_hw *hw, u8 module_pointer,
 		     bool last_command,
 		     struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_nvm_update *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_nvm_update *cmd =
+		(struct i40e_aqc_nvm_update *)&desc.params.raw;
 	int status;
 
 	/* In offset the highest byte must be zeroed. */
 	if (offset & 0xFF000000) {
-		status = -EINVAL;
+		status = I40E_ERR_PARAM;
 		goto i40e_aq_read_nvm_exit;
 	}
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_nvm_read);
 
-	cmd = libie_aq_raw(&desc);
 	/* If this is the last command in a series, set the proper flag. */
 	if (last_command)
 		cmd->command_flags |= I40E_AQ_NVM_LAST_CMD;
@@ -2581,9 +3044,9 @@ int i40e_aq_read_nvm(struct i40e_hw *hw, u8 module_pointer,
 	cmd->offset = cpu_to_le32(offset);
 	cmd->length = cpu_to_le16(length);
 
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	if (length > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	status = i40e_asq_send_command(hw, &desc, data, length, cmd_details);
 
@@ -2606,19 +3069,19 @@ int i40e_aq_erase_nvm(struct i40e_hw *hw, u8 module_pointer,
 		      u32 offset, u16 length, bool last_command,
 		      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_nvm_update *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_nvm_update *cmd =
+		(struct i40e_aqc_nvm_update *)&desc.params.raw;
 	int status;
 
 	/* In offset the highest byte must be zeroed. */
 	if (offset & 0xFF000000) {
-		status = -EINVAL;
+		status = I40E_ERR_PARAM;
 		goto i40e_aq_erase_nvm_exit;
 	}
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_nvm_erase);
 
-	cmd = libie_aq_raw(&desc);
 	/* If this is the last command in a series, set the proper flag. */
 	if (last_command)
 		cmd->command_flags |= I40E_AQ_NVM_LAST_CMD;
@@ -2645,7 +3108,7 @@ static void i40e_parse_discover_capabilities(struct i40e_hw *hw, void *buff,
 				     u32 cap_count,
 				     enum i40e_admin_queue_opc list_type_opc)
 {
-	struct libie_aqc_list_caps_elem *cap;
+	struct i40e_aqc_list_capabilities_element_resp *cap;
 	u32 valid_functions, num_functions;
 	u32 number, logical_id, phys_id;
 	struct i40e_hw_capabilities *p;
@@ -2654,7 +3117,7 @@ static void i40e_parse_discover_capabilities(struct i40e_hw *hw, void *buff,
 	int status;
 	u32 i = 0;
 
-	cap = (struct libie_aqc_list_caps_elem *)buff;
+	cap = (struct i40e_aqc_list_capabilities_element_resp *) buff;
 
 	if (list_type_opc == i40e_aqc_opc_list_dev_capabilities)
 		p = &hw->dev_caps;
@@ -2664,17 +3127,17 @@ static void i40e_parse_discover_capabilities(struct i40e_hw *hw, void *buff,
 		return;
 
 	for (i = 0; i < cap_count; i++, cap++) {
-		id = le16_to_cpu(cap->cap);
+		id = le16_to_cpu(cap->id);
 		number = le32_to_cpu(cap->number);
 		logical_id = le32_to_cpu(cap->logical_id);
 		phys_id = le32_to_cpu(cap->phys_id);
-		major_rev = cap->major_ver;
+		major_rev = cap->major_rev;
 
 		switch (id) {
-		case LIBIE_AQC_CAPS_SWITCH_MODE:
+		case I40E_AQ_CAP_ID_SWITCH_MODE:
 			p->switch_mode = number;
 			break;
-		case LIBIE_AQC_CAPS_MNG_MODE:
+		case I40E_AQ_CAP_ID_MNG_MODE:
 			p->management_mode = number;
 			if (major_rev > 1) {
 				p->mng_protocols_over_mctp = logical_id;
@@ -2685,76 +3148,76 @@ static void i40e_parse_discover_capabilities(struct i40e_hw *hw, void *buff,
 				p->mng_protocols_over_mctp = 0;
 			}
 			break;
-		case LIBIE_AQC_CAPS_NPAR_ACTIVE:
+		case I40E_AQ_CAP_ID_NPAR_ACTIVE:
 			p->npar_enable = number;
 			break;
-		case LIBIE_AQC_CAPS_OS2BMC_CAP:
+		case I40E_AQ_CAP_ID_OS2BMC_CAP:
 			p->os2bmc = number;
 			break;
-		case LIBIE_AQC_CAPS_VALID_FUNCTIONS:
+		case I40E_AQ_CAP_ID_FUNCTIONS_VALID:
 			p->valid_functions = number;
 			break;
-		case LIBIE_AQC_CAPS_SRIOV:
+		case I40E_AQ_CAP_ID_SRIOV:
 			if (number == 1)
 				p->sr_iov_1_1 = true;
 			break;
-		case LIBIE_AQC_CAPS_VF:
+		case I40E_AQ_CAP_ID_VF:
 			p->num_vfs = number;
 			p->vf_base_id = logical_id;
 			break;
-		case LIBIE_AQC_CAPS_VMDQ:
+		case I40E_AQ_CAP_ID_VMDQ:
 			if (number == 1)
 				p->vmdq = true;
 			break;
-		case LIBIE_AQC_CAPS_8021QBG:
+		case I40E_AQ_CAP_ID_8021QBG:
 			if (number == 1)
 				p->evb_802_1_qbg = true;
 			break;
-		case LIBIE_AQC_CAPS_8021QBR:
+		case I40E_AQ_CAP_ID_8021QBR:
 			if (number == 1)
 				p->evb_802_1_qbh = true;
 			break;
-		case LIBIE_AQC_CAPS_VSI:
+		case I40E_AQ_CAP_ID_VSI:
 			p->num_vsis = number;
 			break;
-		case LIBIE_AQC_CAPS_DCB:
+		case I40E_AQ_CAP_ID_DCB:
 			if (number == 1) {
 				p->dcb = true;
 				p->enabled_tcmap = logical_id;
 				p->maxtc = phys_id;
 			}
 			break;
-		case LIBIE_AQC_CAPS_FCOE:
+		case I40E_AQ_CAP_ID_FCOE:
 			if (number == 1)
 				p->fcoe = true;
 			break;
-		case LIBIE_AQC_CAPS_ISCSI:
+		case I40E_AQ_CAP_ID_ISCSI:
 			if (number == 1)
 				p->iscsi = true;
 			break;
-		case LIBIE_AQC_CAPS_RSS:
+		case I40E_AQ_CAP_ID_RSS:
 			p->rss = true;
 			p->rss_table_size = number;
 			p->rss_table_entry_width = logical_id;
 			break;
-		case LIBIE_AQC_CAPS_RXQS:
+		case I40E_AQ_CAP_ID_RXQ:
 			p->num_rx_qp = number;
 			p->base_queue = phys_id;
 			break;
-		case LIBIE_AQC_CAPS_TXQS:
+		case I40E_AQ_CAP_ID_TXQ:
 			p->num_tx_qp = number;
 			p->base_queue = phys_id;
 			break;
-		case LIBIE_AQC_CAPS_MSIX:
+		case I40E_AQ_CAP_ID_MSIX:
 			p->num_msix_vectors = number;
 			i40e_debug(hw, I40E_DEBUG_INIT,
 				   "HW Capability: MSIX vector count = %d\n",
 				   p->num_msix_vectors);
 			break;
-		case LIBIE_AQC_CAPS_VF_MSIX:
+		case I40E_AQ_CAP_ID_VF_MSIX:
 			p->num_msix_vectors_vf = number;
 			break;
-		case LIBIE_AQC_CAPS_FLEX10:
+		case I40E_AQ_CAP_ID_FLEX10:
 			if (major_rev == 1) {
 				if (number == 1) {
 					p->flex10_enable = true;
@@ -2770,42 +3233,42 @@ static void i40e_parse_discover_capabilities(struct i40e_hw *hw, void *buff,
 			p->flex10_mode = logical_id;
 			p->flex10_status = phys_id;
 			break;
-		case LIBIE_AQC_CAPS_CEM:
+		case I40E_AQ_CAP_ID_CEM:
 			if (number == 1)
 				p->mgmt_cem = true;
 			break;
-		case LIBIE_AQC_CAPS_RDMA:
+		case I40E_AQ_CAP_ID_IWARP:
 			if (number == 1)
 				p->iwarp = true;
 			break;
-		case LIBIE_AQC_CAPS_LED:
+		case I40E_AQ_CAP_ID_LED:
 			if (phys_id < I40E_HW_CAP_MAX_GPIO)
 				p->led[phys_id] = true;
 			break;
-		case LIBIE_AQC_CAPS_SDP:
+		case I40E_AQ_CAP_ID_SDP:
 			if (phys_id < I40E_HW_CAP_MAX_GPIO)
 				p->sdp[phys_id] = true;
 			break;
-		case LIBIE_AQC_CAPS_MDIO:
+		case I40E_AQ_CAP_ID_MDIO:
 			if (number == 1) {
 				p->mdio_port_num = phys_id;
 				p->mdio_port_mode = logical_id;
 			}
 			break;
-		case LIBIE_AQC_CAPS_1588:
+		case I40E_AQ_CAP_ID_1588:
 			if (number == 1)
 				p->ieee_1588 = true;
 			break;
-		case LIBIE_AQC_CAPS_FD:
+		case I40E_AQ_CAP_ID_FLOW_DIRECTOR:
 			p->fd = true;
 			p->fd_filters_guaranteed = number;
 			p->fd_filters_best_effort = logical_id;
 			break;
-		case LIBIE_AQC_CAPS_WSR_PROT:
+		case I40E_AQ_CAP_ID_WSR_PROT:
 			p->wr_csr_prot = (u64)number;
 			p->wr_csr_prot |= (u64)logical_id << 32;
 			break;
-		case LIBIE_AQC_CAPS_NVM_MGMT:
+		case I40E_AQ_CAP_ID_NVM_MGMT:
 			if (number & I40E_NVM_MGMT_SEC_REV_DISABLED)
 				p->sec_rev_disabled = true;
 			if (number & I40E_NVM_MGMT_UPDATE_DISABLED)
@@ -2897,23 +3360,23 @@ int i40e_aq_discover_capabilities(struct i40e_hw *hw,
 				  enum i40e_admin_queue_opc list_type_opc,
 				  struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aqc_list_caps *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aqc_list_capabilites *cmd;
+	struct i40e_aq_desc desc;
 	int status = 0;
 
-	cmd = libie_aq_raw(&desc);
+	cmd = (struct i40e_aqc_list_capabilites *)&desc.params.raw;
 
 	if (list_type_opc != i40e_aqc_opc_list_func_capabilities &&
 		list_type_opc != i40e_aqc_opc_list_dev_capabilities) {
-		status = -EINVAL;
+		status = I40E_ERR_PARAM;
 		goto exit;
 	}
 
 	i40e_fill_default_direct_cmd_desc(&desc, list_type_opc);
 
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	if (buff_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	status = i40e_asq_send_command(hw, &desc, buff, buff_size, cmd_details);
 	*data_size = le16_to_cpu(desc.datalen);
@@ -2946,19 +3409,19 @@ int i40e_aq_update_nvm(struct i40e_hw *hw, u8 module_pointer,
 		       bool last_command, u8 preservation_flags,
 		       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_nvm_update *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_nvm_update *cmd =
+		(struct i40e_aqc_nvm_update *)&desc.params.raw;
 	int status;
 
 	/* In offset the highest byte must be zeroed. */
 	if (offset & 0xFF000000) {
-		status = -EINVAL;
+		status = I40E_ERR_PARAM;
 		goto i40e_aq_update_nvm_exit;
 	}
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_nvm_update);
 
-	cmd = libie_aq_raw(&desc);
 	/* If this is the last command in a series, set the proper flag. */
 	if (last_command)
 		cmd->command_flags |= I40E_AQ_NVM_LAST_CMD;
@@ -2976,13 +3439,48 @@ int i40e_aq_update_nvm(struct i40e_hw *hw, u8 module_pointer,
 	cmd->offset = cpu_to_le32(offset);
 	cmd->length = cpu_to_le16(length);
 
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	if (length > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	status = i40e_asq_send_command(hw, &desc, data, length, cmd_details);
 
 i40e_aq_update_nvm_exit:
+	return status;
+}
+
+/**
+ * i40e_aq_rearrange_nvm
+ * @hw: pointer to the hw struct
+ * @rearrange_nvm: defines direction of rearrangement
+ * @cmd_details: pointer to command details structure or NULL
+ *
+ * Rearrange NVM structure, available only for transition FW
+ **/
+int i40e_aq_rearrange_nvm(struct i40e_hw *hw,
+			  u8 rearrange_nvm,
+			  struct i40e_asq_cmd_details *cmd_details)
+{
+	struct i40e_aqc_nvm_update *cmd;
+	struct i40e_aq_desc desc;
+	int status;
+
+	cmd = (struct i40e_aqc_nvm_update *)&desc.params.raw;
+
+	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_nvm_update);
+
+	rearrange_nvm &= (I40E_AQ_NVM_REARRANGE_TO_FLAT |
+			 I40E_AQ_NVM_REARRANGE_TO_STRUCT);
+
+	if (!rearrange_nvm) {
+		status = I40E_ERR_PARAM;
+		goto i40e_aq_rearrange_nvm_exit;
+	}
+
+	cmd->command_flags |= rearrange_nvm;
+	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
+
+i40e_aq_rearrange_nvm_exit:
 	return status;
 }
 
@@ -3004,28 +3502,29 @@ int i40e_aq_get_lldp_mib(struct i40e_hw *hw, u8 bridge_type,
 			 u16 *local_len, u16 *remote_len,
 			 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_lldp_get_mib *resp;
-	struct i40e_aqc_lldp_get_mib *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_lldp_get_mib *cmd =
+		(struct i40e_aqc_lldp_get_mib *)&desc.params.raw;
+	struct i40e_aqc_lldp_get_mib *resp =
+		(struct i40e_aqc_lldp_get_mib *)&desc.params.raw;
 	int status;
 
 	if (buff_size == 0 || !buff)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_lldp_get_mib);
 	/* Indirect Command */
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	cmd->type = mib_type & I40E_AQ_LLDP_MIB_TYPE_MASK;
-	cmd->type |= FIELD_PREP(I40E_AQ_LLDP_BRIDGE_TYPE_MASK, bridge_type);
+	cmd->type |= ((bridge_type << I40E_AQ_LLDP_BRIDGE_TYPE_SHIFT) &
+		       I40E_AQ_LLDP_BRIDGE_TYPE_MASK);
 
 	desc.datalen = cpu_to_le16(buff_size);
 
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	if (buff_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	status = i40e_asq_send_command(hw, &desc, buff, buff_size, cmd_details);
 	if (!status) {
@@ -3054,19 +3553,19 @@ i40e_aq_set_lldp_mib(struct i40e_hw *hw,
 		     struct i40e_asq_cmd_details *cmd_details)
 {
 	struct i40e_aqc_lldp_set_local_mib *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	int status;
 
-	cmd = libie_aq_raw(&desc);
+	cmd = (struct i40e_aqc_lldp_set_local_mib *)&desc.params.raw;
 	if (buff_size == 0 || !buff)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_lldp_set_local_mib);
 	/* Indirect Command */
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	if (buff_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 	desc.datalen = cpu_to_le16(buff_size);
 
 	cmd->type = mib_type;
@@ -3091,17 +3590,55 @@ int i40e_aq_cfg_lldp_mib_change_event(struct i40e_hw *hw,
 				      bool enable_update,
 				      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_lldp_update_mib *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_lldp_update_mib *cmd =
+		(struct i40e_aqc_lldp_update_mib *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_lldp_update_mib);
 
-	cmd = libie_aq_raw(&desc);
 	if (!enable_update)
 		cmd->command |= I40E_AQ_LLDP_MIB_UPDATE_DISABLE;
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
+
+	return status;
+}
+
+/**
+ * i40e_aq_restore_lldp
+ * @hw: pointer to the hw struct
+ * @setting: pointer to factory setting variable or NULL
+ * @restore: True if factory settings should be restored
+ * @cmd_details: pointer to command details structure or NULL
+ *
+ * Restore LLDP Agent factory settings if @restore set to True. In other case
+ * only returns factory setting in AQ response.
+ **/
+int
+i40e_aq_restore_lldp(struct i40e_hw *hw, u8 *setting, bool restore,
+		     struct i40e_asq_cmd_details *cmd_details)
+{
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_lldp_restore *cmd =
+		(struct i40e_aqc_lldp_restore *)&desc.params.raw;
+	int status;
+
+	if (!(hw->flags & I40E_HW_FLAG_FW_LLDP_PERSISTENT)) {
+		i40e_debug(hw, I40E_DEBUG_ALL,
+			   "Restore LLDP not supported by current FW version.\n");
+		return I40E_ERR_DEVICE_NOT_SUPPORTED;
+	}
+
+	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_lldp_restore);
+
+	if (restore)
+		cmd->command |= I40E_AQ_LLDP_AGENT_RESTORE;
+
+	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
+
+	if (setting)
+		*setting = cmd->command & 1;
 
 	return status;
 }
@@ -3119,18 +3656,18 @@ int i40e_aq_stop_lldp(struct i40e_hw *hw, bool shutdown_agent,
 		      bool persist,
 		      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_lldp_stop *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_lldp_stop *cmd =
+		(struct i40e_aqc_lldp_stop *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_lldp_stop);
 
-	cmd = libie_aq_raw(&desc);
 	if (shutdown_agent)
 		cmd->command |= I40E_AQ_LLDP_AGENT_SHUTDOWN;
 
 	if (persist) {
-		if (test_bit(I40E_HW_CAP_FW_LLDP_PERSISTENT, hw->caps))
+		if (hw->flags & I40E_HW_FLAG_FW_LLDP_PERSISTENT)
 			cmd->command |= I40E_AQ_LLDP_AGENT_STOP_PERSIST;
 		else
 			i40e_debug(hw, I40E_DEBUG_ALL,
@@ -3153,17 +3690,17 @@ int i40e_aq_stop_lldp(struct i40e_hw *hw, bool shutdown_agent,
 int i40e_aq_start_lldp(struct i40e_hw *hw, bool persist,
 		       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_lldp_start *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_lldp_start *cmd =
+		(struct i40e_aqc_lldp_start *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_lldp_start);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->command = I40E_AQ_LLDP_AGENT_START;
 
 	if (persist) {
-		if (test_bit(I40E_HW_CAP_FW_LLDP_PERSISTENT, hw->caps))
+		if (hw->flags & I40E_HW_FLAG_FW_LLDP_PERSISTENT)
 			cmd->command |= I40E_AQ_LLDP_AGENT_START_PERSIST;
 		else
 			i40e_debug(hw, I40E_DEBUG_ALL,
@@ -3186,17 +3723,17 @@ int
 i40e_aq_set_dcb_parameters(struct i40e_hw *hw, bool dcb_enable,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_set_dcb_parameters *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_set_dcb_parameters *cmd =
+		(struct i40e_aqc_set_dcb_parameters *)&desc.params.raw;
 	int status;
 
-	if (!test_bit(I40E_HW_CAP_FW_LLDP_STOPPABLE, hw->caps))
-		return -ENODEV;
+	if (!(hw->flags & I40E_HW_FLAG_FW_LLDP_STOPPABLE))
+		return I40E_ERR_DEVICE_NOT_SUPPORTED;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_dcb_parameters);
 
-	cmd = libie_aq_raw(&desc);
 	if (dcb_enable) {
 		cmd->valid_flags = I40E_DCB_VALID;
 		cmd->command = I40E_AQ_DCB_SET_AGENT;
@@ -3219,15 +3756,15 @@ int i40e_aq_get_cee_dcb_config(struct i40e_hw *hw,
 			       void *buff, u16 buff_size,
 			       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	int status;
 
 	if (buff_size == 0 || !buff)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_get_cee_dcb_cfg);
 
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	status = i40e_asq_send_command(hw, &desc, (void *)buff, buff_size,
 				       cmd_details);
 
@@ -3251,15 +3788,15 @@ int i40e_aq_add_udp_tunnel(struct i40e_hw *hw,
 			   u8 *filter_index,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_del_udp_tunnel_completion *resp;
-	struct i40e_aqc_add_udp_tunnel *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_udp_tunnel *cmd =
+		(struct i40e_aqc_add_udp_tunnel *)&desc.params.raw;
+	struct i40e_aqc_del_udp_tunnel_completion *resp =
+		(struct i40e_aqc_del_udp_tunnel_completion *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_add_udp_tunnel);
 
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	cmd->udp_port = cpu_to_le16(udp_port);
 	cmd->protocol_type = protocol_index;
 
@@ -3280,13 +3817,13 @@ int i40e_aq_add_udp_tunnel(struct i40e_hw *hw,
 int i40e_aq_del_udp_tunnel(struct i40e_hw *hw, u8 index,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_remove_udp_tunnel *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_remove_udp_tunnel *cmd =
+		(struct i40e_aqc_remove_udp_tunnel *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_del_udp_tunnel);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->index = index;
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -3305,16 +3842,16 @@ int i40e_aq_del_udp_tunnel(struct i40e_hw *hw, u8 index,
 int i40e_aq_delete_element(struct i40e_hw *hw, u16 seid,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_switch_seid *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_switch_seid *cmd =
+		(struct i40e_aqc_switch_seid *)&desc.params.raw;
 	int status;
 
 	if (seid == 0)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_delete_element);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->seid = cpu_to_le16(seid);
 
 	status = i40e_asq_send_command_atomic(hw, &desc, NULL, 0,
@@ -3335,7 +3872,7 @@ int i40e_aq_delete_element(struct i40e_hw *hw, u16 seid,
 int i40e_aq_dcb_updated(struct i40e_hw *hw,
 			struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_dcb_updated);
@@ -3361,8 +3898,9 @@ static int i40e_aq_tx_sched_cmd(struct i40e_hw *hw, u16 seid,
 				enum i40e_admin_queue_opc opcode,
 				struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_tx_sched_ind *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_tx_sched_ind *cmd =
+		(struct i40e_aqc_tx_sched_ind *)&desc.params.raw;
 	int status;
 	bool cmd_param_flag = false;
 
@@ -3384,18 +3922,17 @@ static int i40e_aq_tx_sched_cmd(struct i40e_hw *hw, u16 seid,
 		cmd_param_flag = false;
 		break;
 	default:
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 	}
 
 	i40e_fill_default_direct_cmd_desc(&desc, opcode);
 
-	cmd = libie_aq_raw(&desc);
 	/* Indirect command */
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	if (cmd_param_flag)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_RD);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_RD);
 	if (buff_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	desc.datalen = cpu_to_le16(buff_size);
 
@@ -3418,14 +3955,14 @@ int i40e_aq_config_vsi_bw_limit(struct i40e_hw *hw,
 				u16 seid, u16 credit, u8 max_credit,
 				struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_configure_vsi_bw_limit *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_configure_vsi_bw_limit *cmd =
+		(struct i40e_aqc_configure_vsi_bw_limit *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_configure_vsi_bw_limit);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->vsi_seid = cpu_to_le16(seid);
 	cmd->credit = cpu_to_le16(credit);
 	cmd->max_credit = max_credit;
@@ -3611,7 +4148,7 @@ i40e_validate_filter_settings(struct i40e_hw *hw,
 		fcoe_filt_size <<= (u32)settings->fcoe_filt_num;
 		break;
 	default:
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 	}
 
 	switch (settings->fcoe_cntx_num) {
@@ -3623,7 +4160,7 @@ i40e_validate_filter_settings(struct i40e_hw *hw,
 		fcoe_cntx_size <<= (u32)settings->fcoe_cntx_num;
 		break;
 	default:
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 	}
 
 	/* Validate PE settings passed */
@@ -3641,7 +4178,7 @@ i40e_validate_filter_settings(struct i40e_hw *hw,
 	case I40E_HASH_FILTER_SIZE_1M:
 		break;
 	default:
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 	}
 
 	switch (settings->pe_cntx_num) {
@@ -3657,14 +4194,15 @@ i40e_validate_filter_settings(struct i40e_hw *hw,
 	case I40E_DMA_CNTX_SIZE_256K:
 		break;
 	default:
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 	}
 
 	/* FCHSIZE + FCDSIZE should not be greater than PMFCOEFMAX */
 	val = rd32(hw, I40E_GLHMC_FCOEFMAX);
-	fcoe_fmax = FIELD_GET(I40E_GLHMC_FCOEFMAX_PMFCOEFMAX_MASK, val);
+	fcoe_fmax = (val & I40E_GLHMC_FCOEFMAX_PMFCOEFMAX_MASK)
+		     >> I40E_GLHMC_FCOEFMAX_PMFCOEFMAX_SHIFT;
 	if (fcoe_filt_size + fcoe_cntx_size >  fcoe_fmax)
-		return -EINVAL;
+		return I40E_ERR_INVALID_SIZE;
 
 	return 0;
 }
@@ -3686,7 +4224,7 @@ int i40e_set_filter_control(struct i40e_hw *hw,
 	u32 val;
 
 	if (!settings)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	/* Validate the input settings */
 	ret = i40e_validate_filter_settings(hw, settings);
@@ -3698,25 +4236,30 @@ int i40e_set_filter_control(struct i40e_hw *hw,
 
 	/* Program required PE hash buckets for the PF */
 	val &= ~I40E_PFQF_CTL_0_PEHSIZE_MASK;
-	val |= FIELD_PREP(I40E_PFQF_CTL_0_PEHSIZE_MASK, settings->pe_filt_num);
+	val |= ((u32)settings->pe_filt_num << I40E_PFQF_CTL_0_PEHSIZE_SHIFT) &
+		I40E_PFQF_CTL_0_PEHSIZE_MASK;
 	/* Program required PE contexts for the PF */
 	val &= ~I40E_PFQF_CTL_0_PEDSIZE_MASK;
-	val |= FIELD_PREP(I40E_PFQF_CTL_0_PEDSIZE_MASK, settings->pe_cntx_num);
+	val |= ((u32)settings->pe_cntx_num << I40E_PFQF_CTL_0_PEDSIZE_SHIFT) &
+		I40E_PFQF_CTL_0_PEDSIZE_MASK;
 
 	/* Program required FCoE hash buckets for the PF */
 	val &= ~I40E_PFQF_CTL_0_PFFCHSIZE_MASK;
-	val |= FIELD_PREP(I40E_PFQF_CTL_0_PFFCHSIZE_MASK,
-			  settings->fcoe_filt_num);
+	val |= ((u32)settings->fcoe_filt_num <<
+			I40E_PFQF_CTL_0_PFFCHSIZE_SHIFT) &
+		I40E_PFQF_CTL_0_PFFCHSIZE_MASK;
 	/* Program required FCoE DDP contexts for the PF */
 	val &= ~I40E_PFQF_CTL_0_PFFCDSIZE_MASK;
-	val |= FIELD_PREP(I40E_PFQF_CTL_0_PFFCDSIZE_MASK,
-			  settings->fcoe_cntx_num);
+	val |= ((u32)settings->fcoe_cntx_num <<
+			I40E_PFQF_CTL_0_PFFCDSIZE_SHIFT) &
+		I40E_PFQF_CTL_0_PFFCDSIZE_MASK;
 
 	/* Program Hash LUT size for the PF */
 	val &= ~I40E_PFQF_CTL_0_HASHLUTSIZE_MASK;
 	if (settings->hash_lut_size == I40E_HASH_LUT_SIZE_512)
 		hash_lut_size = 1;
-	val |= FIELD_PREP(I40E_PFQF_CTL_0_HASHLUTSIZE_MASK, hash_lut_size);
+	val |= (hash_lut_size << I40E_PFQF_CTL_0_HASHLUTSIZE_SHIFT) &
+		I40E_PFQF_CTL_0_HASHLUTSIZE_MASK;
 
 	/* Enable FDIR, Ethertype and MACVLAN filters for PF and VFs */
 	if (settings->enable_fdir)
@@ -3753,16 +4296,18 @@ int i40e_aq_add_rem_control_packet_filter(struct i40e_hw *hw,
 					  struct i40e_control_filter_stats *stats,
 					  struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_add_remove_control_packet_filter_completion *resp;
-	struct i40e_aqc_add_remove_control_packet_filter *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_remove_control_packet_filter *cmd =
+		(struct i40e_aqc_add_remove_control_packet_filter *)
+		&desc.params.raw;
+	struct i40e_aqc_add_remove_control_packet_filter_completion *resp =
+		(struct i40e_aqc_add_remove_control_packet_filter_completion *)
+		&desc.params.raw;
 	int status;
 
 	if (vsi_seid == 0)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	if (is_add) {
 		i40e_fill_default_direct_cmd_desc(&desc,
 				i40e_aqc_opc_add_control_packet_filter);
@@ -3830,15 +4375,15 @@ static int i40e_aq_alternate_read(struct i40e_hw *hw,
 				  u32 reg_addr0, u32 *reg_val0,
 				  u32 reg_addr1, u32 *reg_val1)
 {
-	struct i40e_aqc_alternate_write *cmd_resp;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_alternate_write *cmd_resp =
+		(struct i40e_aqc_alternate_write *)&desc.params.raw;
 	int status;
 
 	if (!reg_val0)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_alternate_read);
-	cmd_resp = libie_aq_raw(&desc);
 	cmd_resp->address0 = cpu_to_le32(reg_addr0);
 	cmd_resp->address1 = cpu_to_le32(reg_addr1);
 
@@ -3866,10 +4411,10 @@ int i40e_aq_suspend_port_tx(struct i40e_hw *hw, u16 seid,
 			    struct i40e_asq_cmd_details *cmd_details)
 {
 	struct i40e_aqc_tx_sched_ind *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	int status;
 
-	cmd = libie_aq_raw(&desc);
+	cmd = (struct i40e_aqc_tx_sched_ind *)&desc.params.raw;
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_suspend_port_tx);
 	cmd->vsi_seid = cpu_to_le16(seid);
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -3887,7 +4432,7 @@ int i40e_aq_suspend_port_tx(struct i40e_hw *hw, u16 seid,
 int i40e_aq_resume_port_tx(struct i40e_hw *hw,
 			   struct i40e_asq_cmd_details *cmd_details)
 {
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_resume_port_tx);
@@ -3964,22 +4509,22 @@ int i40e_aq_debug_dump(struct i40e_hw *hw, u8 cluster_id,
 		       u8 *ret_next_table, u32 *ret_next_index,
 		       struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_debug_dump_internals *resp;
-	struct i40e_aqc_debug_dump_internals *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_debug_dump_internals *cmd =
+		(struct i40e_aqc_debug_dump_internals *)&desc.params.raw;
+	struct i40e_aqc_debug_dump_internals *resp =
+		(struct i40e_aqc_debug_dump_internals *)&desc.params.raw;
 	int status;
 
 	if (buff_size == 0 || !buff)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_debug_dump_internals);
-	resp = libie_aq_raw(&desc);
-	cmd = libie_aq_raw(&desc);
 	/* Indirect Command */
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	if (buff_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	cmd->cluster_id = cluster_id;
 	cmd->table_id = table_id;
@@ -4056,18 +4601,18 @@ i40e_aq_configure_partition_bw(struct i40e_hw *hw,
 			       struct i40e_asq_cmd_details *cmd_details)
 {
 	u16 bwd_size = sizeof(*bw_data);
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_configure_partition_bw);
 
 	/* Indirect command */
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_RD);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_RD);
 
 	if (bwd_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	desc.datalen = cpu_to_le16(bwd_size);
 
@@ -4090,7 +4635,7 @@ int i40e_read_phy_register_clause22(struct i40e_hw *hw,
 				    u16 reg, u8 phy_addr, u16 *value)
 {
 	u8 port_num = (u8)hw->func_caps.mdio_port_num;
-	int status = -EIO;
+	int status = I40E_ERR_TIMEOUT;
 	u32 command = 0;
 	u16 retry = 1000;
 
@@ -4115,7 +4660,8 @@ int i40e_read_phy_register_clause22(struct i40e_hw *hw,
 			   "PHY: Can't write command to external PHY.\n");
 	} else {
 		command = rd32(hw, I40E_GLGEN_MSRWD(port_num));
-		*value = FIELD_GET(I40E_GLGEN_MSRWD_MDIRDDATA_MASK, command);
+		*value = (command & I40E_GLGEN_MSRWD_MDIRDDATA_MASK) >>
+			 I40E_GLGEN_MSRWD_MDIRDDATA_SHIFT;
 	}
 
 	return status;
@@ -4134,7 +4680,7 @@ int i40e_write_phy_register_clause22(struct i40e_hw *hw,
 				     u16 reg, u8 phy_addr, u16 value)
 {
 	u8 port_num = (u8)hw->func_caps.mdio_port_num;
-	int status = -EIO;
+	int status = I40E_ERR_TIMEOUT;
 	u32 command  = 0;
 	u16 retry = 1000;
 
@@ -4175,7 +4721,7 @@ int i40e_read_phy_register_clause45(struct i40e_hw *hw,
 				    u8 page, u16 reg, u8 phy_addr, u16 *value)
 {
 	u8 port_num = hw->func_caps.mdio_port_num;
-	int status = -EIO;
+	int status = I40E_ERR_TIMEOUT;
 	u32 command = 0;
 	u16 retry = 1000;
 
@@ -4209,7 +4755,7 @@ int i40e_read_phy_register_clause45(struct i40e_hw *hw,
 		  (I40E_MDIO_CLAUSE45_STCODE_MASK) |
 		  (I40E_GLGEN_MSCA_MDICMD_MASK) |
 		  (I40E_GLGEN_MSCA_MDIINPROGEN_MASK);
-	status = -EIO;
+	status = I40E_ERR_TIMEOUT;
 	retry = 1000;
 	wr32(hw, I40E_GLGEN_MSCA(port_num), command);
 	do {
@@ -4224,7 +4770,8 @@ int i40e_read_phy_register_clause45(struct i40e_hw *hw,
 
 	if (!status) {
 		command = rd32(hw, I40E_GLGEN_MSRWD(port_num));
-		*value = FIELD_GET(I40E_GLGEN_MSRWD_MDIRDDATA_MASK, command);
+		*value = (command & I40E_GLGEN_MSRWD_MDIRDDATA_MASK) >>
+			 I40E_GLGEN_MSRWD_MDIRDDATA_SHIFT;
 	} else {
 		i40e_debug(hw, I40E_DEBUG_PHY,
 			   "PHY: Can't read register value from external PHY.\n");
@@ -4248,7 +4795,7 @@ int i40e_write_phy_register_clause45(struct i40e_hw *hw,
 				     u8 page, u16 reg, u8 phy_addr, u16 value)
 {
 	u8 port_num = hw->func_caps.mdio_port_num;
-	int status = -EIO;
+	int status = I40E_ERR_TIMEOUT;
 	u16 retry = 1000;
 	u32 command = 0;
 
@@ -4284,7 +4831,7 @@ int i40e_write_phy_register_clause45(struct i40e_hw *hw,
 		  (I40E_MDIO_CLAUSE45_STCODE_MASK) |
 		  (I40E_GLGEN_MSCA_MDICMD_MASK) |
 		  (I40E_GLGEN_MSCA_MDIINPROGEN_MASK);
-	status = -EIO;
+	status = I40E_ERR_TIMEOUT;
 	retry = 1000;
 	wr32(hw, I40E_GLGEN_MSCA(port_num), command);
 	do {
@@ -4298,6 +4845,84 @@ int i40e_write_phy_register_clause45(struct i40e_hw *hw,
 	} while (retry);
 
 phy_write_end:
+	return status;
+}
+
+/**
+ * i40e_write_phy_register
+ * @hw: pointer to the HW structure
+ * @page: registers page number
+ * @reg: register address in the page
+ * @phy_addr: PHY address on MDIO interface
+ * @value: PHY register value
+ *
+ * Writes value to specified PHY register
+ **/
+int i40e_write_phy_register(struct i40e_hw *hw,
+			    u8 page, u16 reg, u8 phy_addr, u16 value)
+{
+	int status;
+
+	switch (hw->device_id) {
+	case I40E_DEV_ID_1G_BASE_T_X722:
+		status = i40e_write_phy_register_clause22(hw, reg, phy_addr,
+							  value);
+		break;
+	case I40E_DEV_ID_1G_BASE_T_BC:
+	case I40E_DEV_ID_5G_BASE_T_BC:
+	case I40E_DEV_ID_10G_BASE_T:
+	case I40E_DEV_ID_10G_BASE_T4:
+	case I40E_DEV_ID_10G_BASE_T_BC:
+	case I40E_DEV_ID_10G_BASE_T_X722:
+	case I40E_DEV_ID_25G_B:
+	case I40E_DEV_ID_25G_SFP28:
+		status = i40e_write_phy_register_clause45(hw, page, reg,
+							  phy_addr, value);
+		break;
+	default:
+		status = I40E_ERR_UNKNOWN_PHY;
+		break;
+	}
+
+	return status;
+}
+
+/**
+ * i40e_read_phy_register
+ * @hw: pointer to the HW structure
+ * @page: registers page number
+ * @reg: register address in the page
+ * @phy_addr: PHY address on MDIO interface
+ * @value: PHY register value
+ *
+ * Reads specified PHY register value
+ **/
+int i40e_read_phy_register(struct i40e_hw *hw,
+			   u8 page, u16 reg, u8 phy_addr, u16 *value)
+{
+	int status;
+
+	switch (hw->device_id) {
+	case I40E_DEV_ID_1G_BASE_T_X722:
+		status = i40e_read_phy_register_clause22(hw, reg, phy_addr,
+							 value);
+		break;
+	case I40E_DEV_ID_1G_BASE_T_BC:
+	case I40E_DEV_ID_5G_BASE_T_BC:
+	case I40E_DEV_ID_10G_BASE_T:
+	case I40E_DEV_ID_10G_BASE_T4:
+	case I40E_DEV_ID_10G_BASE_T_BC:
+	case I40E_DEV_ID_10G_BASE_T_X722:
+	case I40E_DEV_ID_25G_B:
+	case I40E_DEV_ID_25G_SFP28:
+		status = i40e_read_phy_register_clause45(hw, page, reg,
+							 phy_addr, value);
+		break;
+	default:
+		status = I40E_ERR_UNKNOWN_PHY;
+		break;
+	}
+
 	return status;
 }
 
@@ -4317,6 +4942,80 @@ u8 i40e_get_phy_address(struct i40e_hw *hw, u8 dev_num)
 }
 
 /**
+ * i40e_blink_phy_link_led
+ * @hw: pointer to the HW structure
+ * @time: time how long led will blinks in secs
+ * @interval: gap between LED on and off in msecs
+ *
+ * Blinks PHY link LED
+ **/
+int i40e_blink_phy_link_led(struct i40e_hw *hw,
+			    u32 time, u32 interval)
+{
+	u16 led_addr = I40E_PHY_LED_PROV_REG_1;
+	u16 gpio_led_port;
+	u8 phy_addr = 0;
+	int status = 0;
+	u16 led_ctl;
+	u8 port_num;
+	u16 led_reg;
+	u32 i;
+
+	i = rd32(hw, I40E_PFGEN_PORTNUM);
+	port_num = (u8)(i & I40E_PFGEN_PORTNUM_PORT_NUM_MASK);
+	phy_addr = i40e_get_phy_address(hw, port_num);
+
+	for (gpio_led_port = 0; gpio_led_port < 3; gpio_led_port++,
+	     led_addr++) {
+		status = i40e_read_phy_register_clause45(hw,
+							 I40E_PHY_COM_REG_PAGE,
+							 led_addr, phy_addr,
+							 &led_reg);
+		if (status)
+			goto phy_blinking_end;
+		led_ctl = led_reg;
+		if (led_reg & I40E_PHY_LED_LINK_MODE_MASK) {
+			led_reg = 0;
+			status = i40e_write_phy_register_clause45(hw,
+							 I40E_PHY_COM_REG_PAGE,
+							 led_addr, phy_addr,
+							 led_reg);
+			if (status)
+				goto phy_blinking_end;
+			break;
+		}
+	}
+
+	if (time > 0 && interval > 0) {
+		for (i = 0; i < time * 1000; i += interval) {
+			status = i40e_read_phy_register_clause45(hw,
+						I40E_PHY_COM_REG_PAGE,
+						led_addr, phy_addr, &led_reg);
+			if (status)
+				goto restore_config;
+			if (led_reg & I40E_PHY_LED_MANUAL_ON)
+				led_reg = 0;
+			else
+				led_reg = I40E_PHY_LED_MANUAL_ON;
+			status = i40e_write_phy_register_clause45(hw,
+						I40E_PHY_COM_REG_PAGE,
+						led_addr, phy_addr, led_reg);
+			if (status)
+				goto restore_config;
+			msleep(interval);
+		}
+	}
+
+restore_config:
+	status = i40e_write_phy_register_clause45(hw,
+						  I40E_PHY_COM_REG_PAGE,
+						  led_addr, phy_addr, led_ctl);
+
+phy_blinking_end:
+	return status;
+}
+
+/**
  * i40e_led_get_reg - read LED register
  * @hw: pointer to the HW structure
  * @led_addr: LED register address
@@ -4331,7 +5030,7 @@ static int i40e_led_get_reg(struct i40e_hw *hw, u16 led_addr,
 	u32 i;
 
 	*reg_val = 0;
-	if (test_bit(I40E_HW_CAP_AQ_PHY_ACCESS, hw->caps)) {
+	if (hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE) {
 		status =
 		       i40e_aq_get_phy_register(hw,
 						I40E_AQ_PHY_REG_ACCESS_EXTERNAL,
@@ -4364,7 +5063,7 @@ static int i40e_led_set_reg(struct i40e_hw *hw, u16 led_addr,
 	int status;
 	u32 i;
 
-	if (test_bit(I40E_HW_CAP_AQ_PHY_ACCESS, hw->caps)) {
+	if (hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE) {
 		status =
 		       i40e_aq_set_phy_register(hw,
 						I40E_AQ_PHY_REG_ACCESS_EXTERNAL,
@@ -4403,14 +5102,14 @@ int i40e_led_get_phy(struct i40e_hw *hw, u16 *led_addr,
 	u8 port_num;
 	u32 i;
 
-	if (test_bit(I40E_HW_CAP_AQ_PHY_ACCESS, hw->caps)) {
+	if (hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE) {
 		status =
 		      i40e_aq_get_phy_register(hw,
 					       I40E_AQ_PHY_REG_ACCESS_EXTERNAL,
 					       I40E_PHY_COM_REG_PAGE, true,
 					       I40E_PHY_LED_PROV_REG_1,
 					       &reg_val_aq, NULL);
-		if (status == 0)
+		if (status == I40E_SUCCESS)
 			*val = (u16)reg_val_aq;
 		return status;
 	}
@@ -4499,16 +5198,16 @@ int i40e_aq_rx_ctl_read_register(struct i40e_hw *hw,
 				 u32 reg_addr, u32 *reg_val,
 				 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_rx_ctl_reg_read_write *cmd_resp;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_rx_ctl_reg_read_write *cmd_resp =
+		(struct i40e_aqc_rx_ctl_reg_read_write *)&desc.params.raw;
 	int status;
 
 	if (!reg_val)
-		return -EINVAL;
+		return I40E_ERR_PARAM;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_rx_ctl_reg_read);
 
-	cmd_resp = libie_aq_raw(&desc);
 	cmd_resp->address = cpu_to_le32(reg_addr);
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
@@ -4526,18 +5225,18 @@ int i40e_aq_rx_ctl_read_register(struct i40e_hw *hw,
  **/
 u32 i40e_read_rx_ctl(struct i40e_hw *hw, u32 reg_addr)
 {
-	bool use_register = false;
+	bool use_register;
 	int status = 0;
 	int retry = 5;
 	u32 val = 0;
 
-	if (i40e_is_aq_api_ver_lt(hw, 1, 5) || hw->mac.type == I40E_MAC_X722)
-		use_register = true;
-
+	use_register = (((hw->aq.api_maj_ver == 1) &&
+			(hw->aq.api_min_ver < 5)) ||
+			(hw->mac.type == I40E_MAC_X722));
 	if (!use_register) {
 do_retry:
 		status = i40e_aq_rx_ctl_read_register(hw, reg_addr, &val, NULL);
-		if (hw->aq.asq_last_status == LIBIE_AQ_RC_EAGAIN && retry) {
+		if (hw->aq.asq_last_status == I40E_AQ_RC_EAGAIN && retry) {
 			usleep_range(1000, 2000);
 			retry--;
 			goto do_retry;
@@ -4565,13 +5264,13 @@ int i40e_aq_rx_ctl_write_register(struct i40e_hw *hw,
 				  u32 reg_addr, u32 reg_val,
 				  struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_rx_ctl_reg_read_write *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_rx_ctl_reg_read_write *cmd =
+		(struct i40e_aqc_rx_ctl_reg_read_write *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc, i40e_aqc_opc_rx_ctl_reg_write);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->address = cpu_to_le32(reg_addr);
 	cmd->value = cpu_to_le32(reg_val);
 
@@ -4588,18 +5287,18 @@ int i40e_aq_rx_ctl_write_register(struct i40e_hw *hw,
  **/
 void i40e_write_rx_ctl(struct i40e_hw *hw, u32 reg_addr, u32 reg_val)
 {
-	bool use_register = false;
+	bool use_register;
 	int status = 0;
 	int retry = 5;
 
-	if (i40e_is_aq_api_ver_lt(hw, 1, 5) || hw->mac.type == I40E_MAC_X722)
-		use_register = true;
-
+	use_register = (((hw->aq.api_maj_ver == 1) &&
+			(hw->aq.api_min_ver < 5)) ||
+			(hw->mac.type == I40E_MAC_X722));
 	if (!use_register) {
 do_retry:
 		status = i40e_aq_rx_ctl_write_register(hw, reg_addr,
 						       reg_val, NULL);
-		if (hw->aq.asq_last_status == LIBIE_AQ_RC_EAGAIN && retry) {
+		if (hw->aq.asq_last_status == I40E_AQ_RC_EAGAIN && retry) {
 			usleep_range(1000, 2000);
 			retry--;
 			goto do_retry;
@@ -4622,17 +5321,16 @@ static void i40e_mdio_if_number_selection(struct i40e_hw *hw, bool set_mdio,
 					  u8 mdio_num,
 					  struct i40e_aqc_phy_register_access *cmd)
 {
-	if (!set_mdio ||
-	    cmd->phy_interface != I40E_AQ_PHY_REG_ACCESS_EXTERNAL)
-		return;
-
-	if (test_bit(I40E_HW_CAP_AQ_PHY_ACCESS_EXTENDED, hw->caps)) {
-		cmd->cmd_flags |=
-			I40E_AQ_PHY_REG_ACCESS_SET_MDIO_IF_NUMBER |
-			FIELD_PREP(I40E_AQ_PHY_REG_ACCESS_MDIO_IF_NUMBER_MASK,
-				   mdio_num);
-	} else {
-		i40e_debug(hw, I40E_DEBUG_PHY, "MDIO I/F number selection not supported by current FW version.\n");
+	if (set_mdio && cmd->phy_interface == I40E_AQ_PHY_REG_ACCESS_EXTERNAL) {
+		if (hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_EXTENDED)
+			cmd->cmd_flags |=
+				I40E_AQ_PHY_REG_ACCESS_SET_MDIO_IF_NUMBER |
+				((mdio_num <<
+				I40E_AQ_PHY_REG_ACCESS_MDIO_IF_NUMBER_SHIFT) &
+				I40E_AQ_PHY_REG_ACCESS_MDIO_IF_NUMBER_MASK);
+		else
+			i40e_debug(hw, I40E_DEBUG_PHY,
+				   "MDIO I/F number selection not supported by current FW version.\n");
 	}
 }
 
@@ -4658,14 +5356,14 @@ int i40e_aq_set_phy_register_ext(struct i40e_hw *hw,
 				 u32 reg_addr, u32 reg_val,
 				 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_phy_register_access *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_phy_register_access *cmd =
+		(struct i40e_aqc_phy_register_access *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_set_phy_register);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->phy_interface = phy_select;
 	cmd->dev_address = dev_addr;
 	cmd->reg_address = cpu_to_le32(reg_addr);
@@ -4703,14 +5401,14 @@ int i40e_aq_get_phy_register_ext(struct i40e_hw *hw,
 				 u32 reg_addr, u32 *reg_val,
 				 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_phy_register_access *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_phy_register_access *cmd =
+		(struct i40e_aqc_phy_register_access *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_get_phy_register);
 
-	cmd = libie_aq_raw(&desc);
 	cmd->phy_interface = phy_select;
 	cmd->dev_address = dev_addr;
 	cmd->reg_address = cpu_to_le32(reg_addr);
@@ -4742,18 +5440,19 @@ int i40e_aq_write_ddp(struct i40e_hw *hw, void *buff,
 		      u32 *error_offset, u32 *error_info,
 		      struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_write_personalization_profile *cmd;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_write_personalization_profile *cmd =
+		(struct i40e_aqc_write_personalization_profile *)
+		&desc.params.raw;
 	struct i40e_aqc_write_ddp_resp *resp;
-	struct libie_aq_desc desc;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_write_personalization_profile);
 
-	cmd = libie_aq_raw(&desc);
-	desc.flags |= cpu_to_le16(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD);
+	desc.flags |= cpu_to_le16(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD);
 	if (buff_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 
 	desc.datalen = cpu_to_le16(buff_size);
 
@@ -4761,7 +5460,7 @@ int i40e_aq_write_ddp(struct i40e_hw *hw, void *buff,
 
 	status = i40e_asq_send_command(hw, &desc, buff, buff_size, cmd_details);
 	if (!status) {
-		resp = libie_aq_raw(&desc);
+		resp = (struct i40e_aqc_write_ddp_resp *)&desc.params.raw;
 		if (error_offset)
 			*error_offset = le32_to_cpu(resp->error_offset);
 		if (error_info)
@@ -4783,17 +5482,17 @@ int i40e_aq_get_ddp_list(struct i40e_hw *hw, void *buff,
 			 u16 buff_size, u8 flags,
 			 struct i40e_asq_cmd_details *cmd_details)
 {
-	struct i40e_aqc_get_applied_profiles *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_get_applied_profiles *cmd =
+		(struct i40e_aqc_get_applied_profiles *)&desc.params.raw;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_get_personalization_profile_list);
 
-	cmd = libie_aq_raw(&desc);
-	desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_BUF);
+	desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_BUF);
 	if (buff_size > I40E_AQ_LARGE_BUF)
-		desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+		desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 	desc.datalen = cpu_to_le16(buff_size);
 
 	cmd->flags = flags;
@@ -4848,6 +5547,39 @@ i40e_find_segment_in_package(u32 segment_type,
 	(struct i40e_profile_section_header *)((u8 *)(profile) + (offset))
 
 /**
+ * i40e_find_section_in_profile
+ * @section_type: the section type to search for (i.e., SECTION_TYPE_NOTE)
+ * @profile: pointer to the i40e segment header to be searched
+ *
+ * This function searches i40e segment for a particular section type. On
+ * success it returns a pointer to the section header, otherwise it will
+ * return NULL.
+ **/
+struct i40e_profile_section_header *
+i40e_find_section_in_profile(u32 section_type,
+			     struct i40e_profile_segment *profile)
+{
+	struct i40e_profile_section_header *sec;
+	struct i40e_section_table *sec_tbl;
+	u32 sec_off;
+	u32 i;
+
+	if (profile->header.type != SEGMENT_TYPE_I40E)
+		return NULL;
+
+	I40E_SECTION_TABLE(profile, sec_tbl);
+
+	for (i = 0; i < sec_tbl->section_count; i++) {
+		sec_off = sec_tbl->section_offset[i];
+		sec = I40E_SECTION_HEADER(profile, sec_off);
+		if (sec->section.type == section_type)
+			return sec;
+	}
+
+	return NULL;
+}
+
+/**
  * i40e_ddp_exec_aq_section - Execute generic AQ for DDP
  * @hw: pointer to the hw struct
  * @aq: command buffer containing all data to execute AQ
@@ -4855,7 +5587,7 @@ i40e_find_segment_in_package(u32 segment_type,
 static int i40e_ddp_exec_aq_section(struct i40e_hw *hw,
 				    struct i40e_profile_aq_section *aq)
 {
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
 	u8 *msg = NULL;
 	u16 msglen;
 	int status;
@@ -4866,10 +5598,10 @@ static int i40e_ddp_exec_aq_section(struct i40e_hw *hw,
 
 	msglen = aq->datalen;
 	if (msglen) {
-		desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF |
-						LIBIE_AQ_FLAG_RD));
+		desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF |
+						I40E_AQ_FLAG_RD));
 		if (msglen > I40E_AQ_LARGE_BUF)
-			desc.flags |= cpu_to_le16((u16)LIBIE_AQ_FLAG_LB);
+			desc.flags |= cpu_to_le16((u16)I40E_AQ_FLAG_LB);
 		desc.datalen = cpu_to_le16(msglen);
 		msg = &aq->data[0];
 	}
@@ -4912,7 +5644,7 @@ i40e_validate_profile(struct i40e_hw *hw, struct i40e_profile_segment *profile,
 
 	if (track_id == I40E_DDP_TRACKID_INVALID) {
 		i40e_debug(hw, I40E_DEBUG_PACKAGE, "Invalid track_id\n");
-		return -EOPNOTSUPP;
+		return I40E_NOT_SUPPORTED;
 	}
 
 	dev_cnt = profile->device_table_count;
@@ -4925,7 +5657,7 @@ i40e_validate_profile(struct i40e_hw *hw, struct i40e_profile_segment *profile,
 	if (dev_cnt && i == dev_cnt) {
 		i40e_debug(hw, I40E_DEBUG_PACKAGE,
 			   "Device doesn't support DDP\n");
-		return -ENODEV;
+		return I40E_ERR_DEVICE_NOT_SUPPORTED;
 	}
 
 	I40E_SECTION_TABLE(profile, sec_tbl);
@@ -4940,14 +5672,14 @@ i40e_validate_profile(struct i40e_hw *hw, struct i40e_profile_segment *profile,
 			    sec->section.type == SECTION_TYPE_RB_AQ) {
 				i40e_debug(hw, I40E_DEBUG_PACKAGE,
 					   "Not a roll-back package\n");
-				return -EOPNOTSUPP;
+				return I40E_NOT_SUPPORTED;
 			}
 		} else {
 			if (sec->section.type == SECTION_TYPE_RB_AQ ||
 			    sec->section.type == SECTION_TYPE_RB_MMIO) {
 				i40e_debug(hw, I40E_DEBUG_PACKAGE,
 					   "Not an original package\n");
-				return -EOPNOTSUPP;
+				return I40E_NOT_SUPPORTED;
 			}
 		}
 	}
@@ -5070,6 +5802,45 @@ i40e_rollback_profile(struct i40e_hw *hw, struct i40e_profile_segment *profile,
 }
 
 /**
+ * i40e_add_pinfo_to_list
+ * @hw: pointer to the hardware structure
+ * @profile: pointer to the profile segment of the package
+ * @profile_info_sec: buffer for information section
+ * @track_id: package tracking id
+ *
+ * Register a profile to the list of loaded profiles.
+ */
+int
+i40e_add_pinfo_to_list(struct i40e_hw *hw,
+		       struct i40e_profile_segment *profile,
+		       u8 *profile_info_sec, u32 track_id)
+{
+	struct i40e_profile_section_header *sec = NULL;
+	struct i40e_profile_info *pinfo;
+	u32 offset = 0, info = 0;
+	int status = 0;
+
+	sec = (struct i40e_profile_section_header *)profile_info_sec;
+	sec->tbl_size = 1;
+	sec->data_end = sizeof(struct i40e_profile_section_header) +
+			sizeof(struct i40e_profile_info);
+	sec->section.type = SECTION_TYPE_INFO;
+	sec->section.offset = sizeof(struct i40e_profile_section_header);
+	sec->section.size = sizeof(struct i40e_profile_info);
+	pinfo = (struct i40e_profile_info *)(profile_info_sec +
+					     sec->section.offset);
+	pinfo->track_id = track_id;
+	pinfo->version = profile->version;
+	pinfo->op = I40E_DDP_ADD_TRACKID;
+	memcpy(pinfo->name, profile->name, I40E_DDP_NAME_SIZE);
+
+	status = i40e_aq_write_ddp(hw, (void *)sec, sec->data_end,
+				   track_id, &offset, &info, NULL);
+
+	return status;
+}
+
+/**
  * i40e_aq_add_cloud_filters
  * @hw: pointer to the hardware structure
  * @seid: VSI seid to add cloud filters from
@@ -5086,18 +5857,18 @@ i40e_aq_add_cloud_filters(struct i40e_hw *hw, u16 seid,
 			  struct i40e_aqc_cloud_filters_element_data *filters,
 			  u8 filter_count)
 {
-	struct i40e_aqc_add_remove_cloud_filters *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_remove_cloud_filters *cmd =
+	(struct i40e_aqc_add_remove_cloud_filters *)&desc.params.raw;
 	u16 buff_len;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_add_cloud_filters);
 
-	cmd = libie_aq_raw(&desc);
 	buff_len = filter_count * sizeof(*filters);
 	desc.datalen = cpu_to_le16(buff_len);
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	cmd->num_filters = filter_count;
 	cmd->seid = cpu_to_le16(seid);
 
@@ -5123,8 +5894,9 @@ i40e_aq_add_cloud_filters_bb(struct i40e_hw *hw, u16 seid,
 			     struct i40e_aqc_cloud_filters_element_bb *filters,
 			     u8 filter_count)
 {
-	struct i40e_aqc_add_remove_cloud_filters *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_remove_cloud_filters *cmd =
+	(struct i40e_aqc_add_remove_cloud_filters *)&desc.params.raw;
 	u16 buff_len;
 	int status;
 	int i;
@@ -5132,10 +5904,9 @@ i40e_aq_add_cloud_filters_bb(struct i40e_hw *hw, u16 seid,
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_add_cloud_filters);
 
-	cmd = libie_aq_raw(&desc);
 	buff_len = filter_count * sizeof(*filters);
 	desc.datalen = cpu_to_le16(buff_len);
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	cmd->num_filters = filter_count;
 	cmd->seid = cpu_to_le16(seid);
 	cmd->big_buffer_flag = I40E_AQC_ADD_CLOUD_CMD_BB;
@@ -5144,8 +5915,9 @@ i40e_aq_add_cloud_filters_bb(struct i40e_hw *hw, u16 seid,
 		u16 tnl_type;
 		u32 ti;
 
-		tnl_type = le16_get_bits(filters[i].element.flags,
-					 I40E_AQC_ADD_CLOUD_TNL_TYPE_MASK);
+		tnl_type = (le16_to_cpu(filters[i].element.flags) &
+			   I40E_AQC_ADD_CLOUD_TNL_TYPE_MASK) >>
+			   I40E_AQC_ADD_CLOUD_TNL_TYPE_SHIFT;
 
 		/* Due to hardware eccentricities, the VNI for Geneve is shifted
 		 * one more byte further than normally used for Tenant ID in
@@ -5179,18 +5951,18 @@ i40e_aq_rem_cloud_filters(struct i40e_hw *hw, u16 seid,
 			  struct i40e_aqc_cloud_filters_element_data *filters,
 			  u8 filter_count)
 {
-	struct i40e_aqc_add_remove_cloud_filters *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_remove_cloud_filters *cmd =
+	(struct i40e_aqc_add_remove_cloud_filters *)&desc.params.raw;
 	u16 buff_len;
 	int status;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_remove_cloud_filters);
 
-	cmd = libie_aq_raw(&desc);
 	buff_len = filter_count * sizeof(*filters);
 	desc.datalen = cpu_to_le16(buff_len);
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	cmd->num_filters = filter_count;
 	cmd->seid = cpu_to_le16(seid);
 
@@ -5216,8 +5988,9 @@ i40e_aq_rem_cloud_filters_bb(struct i40e_hw *hw, u16 seid,
 			     struct i40e_aqc_cloud_filters_element_bb *filters,
 			     u8 filter_count)
 {
-	struct i40e_aqc_add_remove_cloud_filters *cmd;
-	struct libie_aq_desc desc;
+	struct i40e_aq_desc desc;
+	struct i40e_aqc_add_remove_cloud_filters *cmd =
+	(struct i40e_aqc_add_remove_cloud_filters *)&desc.params.raw;
 	u16 buff_len;
 	int status;
 	int i;
@@ -5225,10 +5998,9 @@ i40e_aq_rem_cloud_filters_bb(struct i40e_hw *hw, u16 seid,
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_remove_cloud_filters);
 
-	cmd = libie_aq_raw(&desc);
 	buff_len = filter_count * sizeof(*filters);
 	desc.datalen = cpu_to_le16(buff_len);
-	desc.flags |= cpu_to_le16((u16)(LIBIE_AQ_FLAG_BUF | LIBIE_AQ_FLAG_RD));
+	desc.flags |= cpu_to_le16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	cmd->num_filters = filter_count;
 	cmd->seid = cpu_to_le16(seid);
 	cmd->big_buffer_flag = I40E_AQC_ADD_CLOUD_CMD_BB;
@@ -5237,8 +6009,9 @@ i40e_aq_rem_cloud_filters_bb(struct i40e_hw *hw, u16 seid,
 		u16 tnl_type;
 		u32 ti;
 
-		tnl_type = le16_get_bits(filters[i].element.flags,
-					 I40E_AQC_ADD_CLOUD_TNL_TYPE_MASK);
+		tnl_type = (le16_to_cpu(filters[i].element.flags) &
+			   I40E_AQC_ADD_CLOUD_TNL_TYPE_MASK) >>
+			   I40E_AQC_ADD_CLOUD_TNL_TYPE_SHIFT;
 
 		/* Due to hardware eccentricities, the VNI for Geneve is shifted
 		 * one more byte further than normally used for Tenant ID in

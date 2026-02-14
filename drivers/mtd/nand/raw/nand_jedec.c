@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright (C) 2000 Steven J. Hill (sjhill@realitydiluted.com)
- *		  2002-2006 Thomas Gleixner (tglx@kernel.org)
+ *		  2002-2006 Thomas Gleixner (tglx@linutronix.de)
  *
  *  Credits:
  *	David Woodhouse for adding multichip support
@@ -93,9 +93,6 @@ int nand_jedec_detect(struct nand_chip *chip)
 		ret = -ENOMEM;
 		goto free_jedec_param_page;
 	}
-
-	if (p->opt_cmd[0] & JEDEC_OPT_CMD_READ_CACHE)
-		chip->parameters.supports_read_cache = true;
 
 	memorg->pagesize = le32_to_cpu(p->byte_per_page);
 	mtd->writesize = memorg->pagesize;

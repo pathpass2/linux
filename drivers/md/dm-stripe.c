@@ -44,7 +44,7 @@ struct stripe_c {
 	/* Work struct used for triggering events*/
 	struct work_struct trigger_event;
 
-	struct stripe stripe[] __counted_by(stripes);
+	struct stripe stripe[];
 };
 
 /*
@@ -157,7 +157,6 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_discard_bios = stripes;
 	ti->num_secure_erase_bios = stripes;
 	ti->num_write_zeroes_bios = stripes;
-	ti->flush_bypasses_map = true;
 
 	sc->chunk_size = chunk_size;
 	if (chunk_size & (chunk_size - 1))
@@ -190,7 +189,7 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 static void stripe_dtr(struct dm_target *ti)
 {
 	unsigned int i;
-	struct stripe_c *sc = ti->private;
+	struct stripe_c *sc = (struct stripe_c *) ti->private;
 
 	for (i = 0; i < sc->stripes; i++)
 		dm_put_device(ti, sc->stripe[i].dev);
@@ -269,7 +268,7 @@ static int stripe_map_range(struct stripe_c *sc, struct bio *bio,
 	return DM_MAPIO_SUBMITTED;
 }
 
-int stripe_map(struct dm_target *ti, struct bio *bio)
+static int stripe_map(struct dm_target *ti, struct bio *bio)
 {
 	struct stripe_c *sc = ti->private;
 	uint32_t stripe;
@@ -316,7 +315,7 @@ static struct dax_device *stripe_dax_pgoff(struct dm_target *ti, pgoff_t *pgoff)
 
 static long stripe_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		unsigned long *pfn)
+		pfn_t *pfn)
 {
 	struct dax_device *dax_dev = stripe_dax_pgoff(ti, &pgoff);
 
@@ -361,7 +360,7 @@ static size_t stripe_dax_recovery_write(struct dm_target *ti, pgoff_t pgoff,
 static void stripe_status(struct dm_target *ti, status_type_t type,
 			  unsigned int status_flags, char *result, unsigned int maxlen)
 {
-	struct stripe_c *sc = ti->private;
+	struct stripe_c *sc = (struct stripe_c *) ti->private;
 	unsigned int sz = 0;
 	unsigned int i;
 
@@ -405,7 +404,7 @@ static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 		blk_status_t *error)
 {
 	unsigned int i;
-	char major_minor[22];
+	char major_minor[16];
 	struct stripe_c *sc = ti->private;
 
 	if (!*error)
@@ -417,7 +416,8 @@ static int stripe_end_io(struct dm_target *ti, struct bio *bio,
 	if (*error == BLK_STS_NOTSUPP)
 		return DM_ENDIO_DONE;
 
-	format_dev_t(major_minor, bio_dev(bio));
+	memset(major_minor, 0, sizeof(major_minor));
+	sprintf(major_minor, "%d:%d", MAJOR(bio_dev(bio)), MINOR(bio_dev(bio)));
 
 	/*
 	 * Test to see which stripe drive triggered the event
@@ -456,30 +456,16 @@ static void stripe_io_hints(struct dm_target *ti,
 			    struct queue_limits *limits)
 {
 	struct stripe_c *sc = ti->private;
-	unsigned int io_min, io_opt, max_hw_discard_sectors = limits->max_hw_discard_sectors;
+	unsigned int chunk_size = sc->chunk_size << SECTOR_SHIFT;
 
-	limits->chunk_sectors = sc->chunk_size;
-
-	if (!check_shl_overflow(sc->chunk_size, SECTOR_SHIFT, &io_min) &&
-	    !check_mul_overflow(io_min, sc->stripes, &io_opt)) {
-		limits->io_min = io_min;
-		limits->io_opt = io_opt;
-	}
-	if (max_hw_discard_sectors >= sc->chunk_size) {
-		if (!check_mul_overflow(max_hw_discard_sectors, sc->stripes, &max_hw_discard_sectors)) {
-			max_hw_discard_sectors = rounddown(max_hw_discard_sectors,
-					sc->chunk_size * sc->stripes);
-			limits->max_hw_discard_sectors = max_hw_discard_sectors;
-		} else
-			limits->max_hw_discard_sectors = UINT_MAX >> SECTOR_SHIFT;
-	}
+	blk_limits_io_min(limits, chunk_size);
+	blk_limits_io_opt(limits, chunk_size * sc->stripes);
 }
 
 static struct target_type stripe_target = {
 	.name   = "striped",
-	.version = {1, 7, 0},
-	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT |
-		    DM_TARGET_ATOMIC_WRITES | DM_TARGET_PASSES_CRYPTO,
+	.version = {1, 6, 0},
+	.features = DM_TARGET_PASSES_INTEGRITY | DM_TARGET_NOWAIT,
 	.module = THIS_MODULE,
 	.ctr    = stripe_ctr,
 	.dtr    = stripe_dtr,
@@ -497,7 +483,7 @@ int __init dm_stripe_init(void)
 {
 	int r;
 
-	dm_stripe_wq = alloc_workqueue("dm_stripe_wq", WQ_PERCPU, 0);
+	dm_stripe_wq = alloc_workqueue("dm_stripe_wq", 0, 0);
 	if (!dm_stripe_wq)
 		return -ENOMEM;
 	r = dm_register_target(&stripe_target);

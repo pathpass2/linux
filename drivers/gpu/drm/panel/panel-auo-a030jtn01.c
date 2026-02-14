@@ -11,8 +11,8 @@
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
 #include <linux/media-bus-format.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
@@ -200,10 +200,9 @@ static int a030jtn01_probe(struct spi_device *spi)
 
 	spi->mode |= SPI_MODE_3 | SPI_3WIRE;
 
-	priv = devm_drm_panel_alloc(dev, struct a030jtn01, panel,
-				    &a030jtn01_funcs, DRM_MODE_CONNECTOR_DPI);
-	if (IS_ERR(priv))
-		return PTR_ERR(priv);
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
 
 	priv->spi = spi;
 	spi_set_drvdata(spi, priv);
@@ -223,6 +222,9 @@ static int a030jtn01_probe(struct spi_device *spi)
 	priv->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(priv->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(priv->reset_gpio), "Failed to get reset GPIO");
+
+	drm_panel_init(&priv->panel, dev, &a030jtn01_funcs,
+		       DRM_MODE_CONNECTOR_DPI);
 
 	err = drm_panel_of_backlight(&priv->panel);
 	if (err)
@@ -303,5 +305,4 @@ module_spi_driver(a030jtn01_driver);
 
 MODULE_AUTHOR("Paul Cercueil <paul@crapouillou.net>");
 MODULE_AUTHOR("Christophe Branchereau <cbranchereau@gmail.com>");
-MODULE_DESCRIPTION("AU Optronics A030JTN01.0 TFT LCD panel driver");
 MODULE_LICENSE("GPL");

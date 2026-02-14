@@ -9,7 +9,6 @@
 #include <linux/sched/clock.h>
 #include <asm/qspinlock.h>
 #include <asm/paravirt.h>
-#include <trace/events/lock.h>
 
 #define MAX_NODES	4
 
@@ -17,8 +16,7 @@ struct qnode {
 	struct qnode	*next;
 	struct qspinlock *lock;
 	int		cpu;
-	u8		sleepy; /* 1 if the previous vCPU was preempted or
-				 * if the previous node was sleepy */
+	int		yield_cpu;
 	u8		locked; /* 1 if lock acquired */
 };
 
@@ -45,7 +43,7 @@ static bool pv_sleepy_lock_sticky __read_mostly = false;
 static u64 pv_sleepy_lock_interval_ns __read_mostly = 0;
 static int pv_sleepy_lock_factor __read_mostly = 256;
 static bool pv_yield_prev __read_mostly = true;
-static bool pv_yield_sleepy_owner __read_mostly = true;
+static bool pv_yield_propagate_owner __read_mostly = true;
 static bool pv_prod_head __read_mostly = false;
 
 static DEFINE_PER_CPU_ALIGNED(struct qnodes, qnodes);
@@ -163,8 +161,6 @@ static __always_inline u32 publish_tail_cpu(struct qspinlock *lock, u32 tail)
 {
 	u32 prev, tmp;
 
-	kcsan_release();
-
 	asm volatile(
 "\t"	PPC_RELEASE_BARRIER "						\n"
 "1:	lwarx	%0,0,%2		# publish_tail_cpu			\n"
@@ -249,18 +245,22 @@ static __always_inline void seen_sleepy_lock(void)
 		this_cpu_write(sleepy_lock_seen_clock, sched_clock());
 }
 
-static __always_inline void seen_sleepy_node(void)
+static __always_inline void seen_sleepy_node(struct qspinlock *lock, u32 val)
 {
 	if (pv_sleepy_lock) {
 		if (pv_sleepy_lock_interval_ns)
 			this_cpu_write(sleepy_lock_seen_clock, sched_clock());
-		/* Don't set sleepy because we likely have a stale val */
+		if (val & _Q_LOCKED_VAL) {
+			if (!(val & _Q_SLEEPY_VAL))
+				try_set_sleepy(lock, val);
+		}
 	}
 }
 
-static struct qnode *get_tail_qnode(struct qspinlock *lock, int prev_cpu)
+static struct qnode *get_tail_qnode(struct qspinlock *lock, u32 val)
 {
-	struct qnodes *qnodesp = per_cpu_ptr(&qnodes, prev_cpu);
+	int cpu = decode_tail_cpu(val);
+	struct qnodes *qnodesp = per_cpu_ptr(&qnodes, cpu);
 	int idx;
 
 	/*
@@ -351,66 +351,74 @@ static __always_inline bool yield_head_to_locked_owner(struct qspinlock *lock, u
 	return __yield_to_locked_owner(lock, val, paravirt, mustq);
 }
 
-static __always_inline void propagate_sleepy(struct qnode *node, u32 val, bool paravirt)
+static __always_inline void propagate_yield_cpu(struct qnode *node, u32 val, int *set_yield_cpu, bool paravirt)
 {
 	struct qnode *next;
 	int owner;
 
 	if (!paravirt)
 		return;
-	if (!pv_yield_sleepy_owner)
+	if (!pv_yield_propagate_owner)
+		return;
+
+	owner = get_owner_cpu(val);
+	if (*set_yield_cpu == owner)
 		return;
 
 	next = READ_ONCE(node->next);
 	if (!next)
 		return;
 
-	if (next->sleepy)
-		return;
-
-	owner = get_owner_cpu(val);
-	if (vcpu_is_preempted(owner))
-		next->sleepy = 1;
+	if (vcpu_is_preempted(owner)) {
+		next->yield_cpu = owner;
+		*set_yield_cpu = owner;
+	} else if (*set_yield_cpu != -1) {
+		next->yield_cpu = owner;
+		*set_yield_cpu = owner;
+	}
 }
 
 /* Called inside spin_begin() */
-static __always_inline bool yield_to_prev(struct qspinlock *lock, struct qnode *node, int prev_cpu, bool paravirt)
+static __always_inline bool yield_to_prev(struct qspinlock *lock, struct qnode *node, u32 val, bool paravirt)
 {
+	int prev_cpu = decode_tail_cpu(val);
 	u32 yield_count;
+	int yield_cpu;
 	bool preempted = false;
 
 	if (!paravirt)
 		goto relax;
 
-	if (!pv_yield_sleepy_owner)
+	if (!pv_yield_propagate_owner)
 		goto yield_prev;
 
-	/*
-	 * If the previous waiter was preempted it might not be able to
-	 * propagate sleepy to us, so check the lock in that case too.
-	 */
-	if (node->sleepy || vcpu_is_preempted(prev_cpu)) {
-		u32 val = READ_ONCE(lock->val);
-
-		if (val & _Q_LOCKED_VAL) {
-			if (node->next && !node->next->sleepy) {
-				/*
-				 * Propagate sleepy to next waiter. Only if
-				 * owner is preempted, which allows the queue
-				 * to become "non-sleepy" if vCPU preemption
-				 * ceases to occur, even if the lock remains
-				 * highly contended.
-				 */
-				if (vcpu_is_preempted(get_owner_cpu(val)))
-					node->next->sleepy = 1;
-			}
-
-			preempted = yield_to_locked_owner(lock, val, paravirt);
-			if (preempted)
-				return preempted;
-		}
-		node->sleepy = false;
+	yield_cpu = READ_ONCE(node->yield_cpu);
+	if (yield_cpu == -1) {
+		/* Propagate back the -1 CPU */
+		if (node->next && node->next->yield_cpu != -1)
+			node->next->yield_cpu = yield_cpu;
+		goto yield_prev;
 	}
+
+	yield_count = yield_count_of(yield_cpu);
+	if ((yield_count & 1) == 0)
+		goto yield_prev; /* owner vcpu is running */
+
+	spin_end();
+
+	preempted = true;
+	seen_sleepy_node(lock, val);
+
+	smp_rmb();
+
+	if (yield_cpu == node->yield_cpu) {
+		if (node->next && node->next->yield_cpu != yield_cpu)
+			node->next->yield_cpu = yield_cpu;
+		yield_to_preempted(yield_cpu, yield_count);
+		spin_begin();
+		return preempted;
+	}
+	spin_begin();
 
 yield_prev:
 	if (!pv_yield_prev)
@@ -423,11 +431,11 @@ yield_prev:
 	spin_end();
 
 	preempted = true;
-	seen_sleepy_node();
+	seen_sleepy_node(lock, val);
 
 	smp_rmb(); /* See __yield_to_locked_owner comment */
 
-	if (!READ_ONCE(node->locked)) {
+	if (!node->locked) {
 		yield_to_preempted(prev_cpu, yield_count);
 		spin_begin();
 		return preempted;
@@ -533,6 +541,7 @@ static __always_inline void queued_spin_lock_mcs_queue(struct qspinlock *lock, b
 	bool sleepy = false;
 	bool mustq = false;
 	int idx;
+	int set_yield_cpu = -1;
 	int iters = 0;
 
 	BUILD_BUG_ON(CONFIG_NR_CPUS >= (1U << _Q_TAIL_CPU_BITS));
@@ -556,16 +565,11 @@ static __always_inline void queued_spin_lock_mcs_queue(struct qspinlock *lock, b
 	node->next = NULL;
 	node->lock = lock;
 	node->cpu = smp_processor_id();
-	node->sleepy = 0;
+	node->yield_cpu = -1;
 	node->locked = 0;
 
 	tail = encode_tail_cpu(node->cpu);
 
-	/*
-	 * Assign all attributes of a node before it can be published.
-	 * Issues an lwsync, serving as a release barrier, as well as a
-	 * compiler barrier.
-	 */
 	old = publish_tail_cpu(lock, tail);
 
 	/*
@@ -573,22 +577,25 @@ static __always_inline void queued_spin_lock_mcs_queue(struct qspinlock *lock, b
 	 * head of the waitqueue.
 	 */
 	if (old & _Q_TAIL_CPU_MASK) {
-		int prev_cpu = decode_tail_cpu(old);
-		struct qnode *prev = get_tail_qnode(lock, prev_cpu);
+		struct qnode *prev = get_tail_qnode(lock, old);
 
 		/* Link @node into the waitqueue. */
 		WRITE_ONCE(prev->next, node);
 
 		/* Wait for mcs node lock to be released */
 		spin_begin();
-		while (!READ_ONCE(node->locked)) {
+		while (!node->locked) {
 			spec_barrier();
 
-			if (yield_to_prev(lock, node, prev_cpu, paravirt))
+			if (yield_to_prev(lock, node, old, paravirt))
 				seen_preempted = true;
 		}
 		spec_barrier();
 		spin_end();
+
+		/* Clear out stale propagated yield_cpu */
+		if (paravirt && pv_yield_propagate_owner && node->yield_cpu != -1)
+			node->yield_cpu = -1;
 
 		smp_rmb(); /* acquire barrier for the mcs lock */
 
@@ -631,7 +638,7 @@ again:
 			}
 		}
 
-		propagate_sleepy(node, val, paravirt);
+		propagate_yield_cpu(node, val, &set_yield_cpu, paravirt);
 		preempted = yield_head_to_locked_owner(lock, val, paravirt);
 		if (!maybe_stealers)
 			continue;
@@ -698,37 +705,29 @@ again:
 	}
 
 release:
-	/*
-	 * Clear the lock before releasing the node, as another CPU might see stale
-	 * values if an interrupt occurs after we increment qnodesp->count
-	 * but before node->lock is initialized. The barrier ensures that
-	 * there are no further stores to the node after it has been released.
-	 */
-	node->lock = NULL;
-	barrier();
-	qnodesp->count--;
+	qnodesp->count--; /* release the node */
 }
 
-void __lockfunc queued_spin_lock_slowpath(struct qspinlock *lock)
+void queued_spin_lock_slowpath(struct qspinlock *lock)
 {
-	trace_contention_begin(lock, LCB_F_SPIN);
 	/*
 	 * This looks funny, but it induces the compiler to inline both
 	 * sides of the branch rather than share code as when the condition
 	 * is passed as the paravirt argument to the functions.
 	 */
 	if (IS_ENABLED(CONFIG_PARAVIRT_SPINLOCKS) && is_shared_processor()) {
-		if (try_to_steal_lock(lock, true))
+		if (try_to_steal_lock(lock, true)) {
 			spec_barrier();
-		else
-			queued_spin_lock_mcs_queue(lock, true);
+			return;
+		}
+		queued_spin_lock_mcs_queue(lock, true);
 	} else {
-		if (try_to_steal_lock(lock, false))
+		if (try_to_steal_lock(lock, false)) {
 			spec_barrier();
-		else
-			queued_spin_lock_mcs_queue(lock, false);
+			return;
+		}
+		queued_spin_lock_mcs_queue(lock, false);
 	}
-	trace_contention_end(lock, 0);
 }
 EXPORT_SYMBOL(queued_spin_lock_slowpath);
 
@@ -943,21 +942,21 @@ static int pv_yield_prev_get(void *data, u64 *val)
 
 DEFINE_SIMPLE_ATTRIBUTE(fops_pv_yield_prev, pv_yield_prev_get, pv_yield_prev_set, "%llu\n");
 
-static int pv_yield_sleepy_owner_set(void *data, u64 val)
+static int pv_yield_propagate_owner_set(void *data, u64 val)
 {
-	pv_yield_sleepy_owner = !!val;
+	pv_yield_propagate_owner = !!val;
 
 	return 0;
 }
 
-static int pv_yield_sleepy_owner_get(void *data, u64 *val)
+static int pv_yield_propagate_owner_get(void *data, u64 *val)
 {
-	*val = pv_yield_sleepy_owner;
+	*val = pv_yield_propagate_owner;
 
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(fops_pv_yield_sleepy_owner, pv_yield_sleepy_owner_get, pv_yield_sleepy_owner_set, "%llu\n");
+DEFINE_SIMPLE_ATTRIBUTE(fops_pv_yield_propagate_owner, pv_yield_propagate_owner_get, pv_yield_propagate_owner_set, "%llu\n");
 
 static int pv_prod_head_set(void *data, u64 val)
 {
@@ -989,7 +988,7 @@ static __init int spinlock_debugfs_init(void)
 		debugfs_create_file("qspl_pv_sleepy_lock_interval_ns", 0600, arch_debugfs_dir, NULL, &fops_pv_sleepy_lock_interval_ns);
 		debugfs_create_file("qspl_pv_sleepy_lock_factor", 0600, arch_debugfs_dir, NULL, &fops_pv_sleepy_lock_factor);
 		debugfs_create_file("qspl_pv_yield_prev", 0600, arch_debugfs_dir, NULL, &fops_pv_yield_prev);
-		debugfs_create_file("qspl_pv_yield_sleepy_owner", 0600, arch_debugfs_dir, NULL, &fops_pv_yield_sleepy_owner);
+		debugfs_create_file("qspl_pv_yield_propagate_owner", 0600, arch_debugfs_dir, NULL, &fops_pv_yield_propagate_owner);
 		debugfs_create_file("qspl_pv_prod_head", 0600, arch_debugfs_dir, NULL, &fops_pv_prod_head);
 	}
 

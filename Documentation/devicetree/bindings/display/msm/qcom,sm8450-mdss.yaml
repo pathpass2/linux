@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0-only or BSD-2-Clause
 %YAML 1.2
 ---
 $id: http://devicetree.org/schemas/display/msm/qcom,sm8450-mdss.yaml#
@@ -30,34 +30,20 @@ properties:
     maxItems: 1
 
   interconnects:
-    maxItems: 3
+    maxItems: 2
 
   interconnect-names:
-    maxItems: 3
+    maxItems: 2
 
 patternProperties:
   "^display-controller@[0-9a-f]+$":
     type: object
-    additionalProperties: true
-
     properties:
       compatible:
         const: qcom,sm8450-dpu
 
-  "^displayport-controller@[0-9a-f]+$":
-    type: object
-    additionalProperties: true
-
-    properties:
-      compatible:
-        items:
-          - const: qcom,sm8450-dp
-          - const: qcom,sm8350-dp
-
   "^dsi@[0-9a-f]+$":
     type: object
-    additionalProperties: true
-
     properties:
       compatible:
         items:
@@ -66,11 +52,9 @@ patternProperties:
 
   "^phy@[0-9a-f]+$":
     type: object
-    additionalProperties: true
-
     properties:
       compatible:
-        const: qcom,sm8450-dsi-phy-5nm
+        const: qcom,dsi-phy-5nm-8450
 
 required:
   - compatible
@@ -84,19 +68,16 @@ examples:
     #include <dt-bindings/clock/qcom,rpmh.h>
     #include <dt-bindings/interrupt-controller/arm-gic.h>
     #include <dt-bindings/interconnect/qcom,sm8450.h>
-    #include <dt-bindings/power/qcom,rpmhpd.h>
+    #include <dt-bindings/power/qcom-rpmpd.h>
 
     display-subsystem@ae00000 {
         compatible = "qcom,sm8450-mdss";
         reg = <0x0ae00000 0x1000>;
         reg-names = "mdss";
 
-        interconnects = <&mmss_noc MASTER_MDP_DISP &mc_virt SLAVE_EBI1_DISP>,
-                        <&mmss_noc MASTER_MDP_DISP &mc_virt SLAVE_EBI1_DISP>,
-                        <&gem_noc MASTER_APPSS_PROC &config_noc SLAVE_DISPLAY_CFG>;
-        interconnect-names = "mdp0-mem",
-                             "mdp1-mem",
-                             "cpu-cfg";
+        interconnects = <&mmss_noc MASTER_MDP_DISP 0 &mc_virt SLAVE_EBI1_DISP 0>,
+                        <&mmss_noc MASTER_MDP_DISP 0 &mc_virt SLAVE_EBI1_DISP 0>;
+        interconnect-names = "mdp0-mem", "mdp1-mem";
 
         resets = <&dispcc DISP_CC_MDSS_CORE_BCR>;
 
@@ -141,7 +122,7 @@ examples:
             assigned-clock-rates = <19200000>;
 
             operating-points-v2 = <&mdp_opp_table>;
-            power-domains = <&rpmhpd RPMHPD_MMCX>;
+            power-domains = <&rpmhpd SM8450_MMCX>;
 
             interrupt-parent = <&mdss>;
             interrupts = <0>;
@@ -221,7 +202,7 @@ examples:
             assigned-clock-parents = <&dsi0_phy 0>, <&dsi0_phy 1>;
 
             operating-points-v2 = <&dsi_opp_table>;
-            power-domains = <&rpmhpd RPMHPD_MMCX>;
+            power-domains = <&rpmhpd SM8450_MMCX>;
 
             phys = <&dsi0_phy>;
             phy-names = "dsi";
@@ -273,7 +254,7 @@ examples:
         };
 
         dsi0_phy: phy@ae94400 {
-            compatible = "qcom,sm8450-dsi-phy-5nm";
+            compatible = "qcom,dsi-phy-5nm-8450";
             reg = <0x0ae94400 0x200>,
                   <0x0ae94600 0x280>,
                   <0x0ae94900 0x260>;
@@ -316,7 +297,7 @@ examples:
             assigned-clock-parents = <&dsi1_phy 0>, <&dsi1_phy 1>;
 
             operating-points-v2 = <&dsi_opp_table>;
-            power-domains = <&rpmhpd RPMHPD_MMCX>;
+            power-domains = <&rpmhpd SM8450_MMCX>;
 
             phys = <&dsi1_phy>;
             phy-names = "dsi";
@@ -344,7 +325,7 @@ examples:
         };
 
         dsi1_phy: phy@ae96400 {
-            compatible = "qcom,sm8450-dsi-phy-5nm";
+            compatible = "qcom,dsi-phy-5nm-8450";
             reg = <0x0ae96400 0x200>,
                   <0x0ae96600 0x280>,
                   <0x0ae96900 0x260>;

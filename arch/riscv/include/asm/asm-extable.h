@@ -6,11 +6,8 @@
 #define EX_TYPE_FIXUP			1
 #define EX_TYPE_BPF			2
 #define EX_TYPE_UACCESS_ERR_ZERO	3
-#define EX_TYPE_LOAD_UNALIGNED_ZEROPAD	4
 
-#ifdef CONFIG_MMU
-
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 #define __ASM_EXTABLE_RAW(insn, fixup, type, data)	\
 	.pushsection	__ex_table, "a";		\
@@ -25,7 +22,7 @@
 	__ASM_EXTABLE_RAW(\insn, \fixup, EX_TYPE_FIXUP, 0)
 	.endm
 
-#else /* __ASSEMBLER__ */
+#else /* __ASSEMBLY__ */
 
 #include <linux/bits.h>
 #include <linux/stringify.h>
@@ -48,11 +45,6 @@
 #define EX_DATA_REG_ZERO_SHIFT	5
 #define EX_DATA_REG_ZERO	GENMASK(9, 5)
 
-#define EX_DATA_REG_DATA_SHIFT	0
-#define EX_DATA_REG_DATA	GENMASK(4, 0)
-#define EX_DATA_REG_ADDR_SHIFT	5
-#define EX_DATA_REG_ADDR	GENMASK(9, 5)
-
 #define EX_DATA_REG(reg, gpr)						\
 	"((.L__gpr_num_" #gpr ") << " __stringify(EX_DATA_REG_##reg##_SHIFT) ")"
 
@@ -68,19 +60,6 @@
 #define _ASM_EXTABLE_UACCESS_ERR(insn, fixup, err)			\
 	_ASM_EXTABLE_UACCESS_ERR_ZERO(insn, fixup, err, zero)
 
-#define _ASM_EXTABLE_LOAD_UNALIGNED_ZEROPAD(insn, fixup, data, addr)		\
-	__DEFINE_ASM_GPR_NUMS							\
-	__ASM_EXTABLE_RAW(#insn, #fixup,					\
-			  __stringify(EX_TYPE_LOAD_UNALIGNED_ZEROPAD),		\
-			  "("							\
-			    EX_DATA_REG(DATA, data) " | "			\
-			    EX_DATA_REG(ADDR, addr)				\
-			  ")")
-
-#endif /* __ASSEMBLER__ */
-
-#else /* CONFIG_MMU */
-	#define _ASM_EXTABLE_UACCESS_ERR(insn, fixup, err)
-#endif /* CONFIG_MMU */
+#endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_ASM_EXTABLE_H */

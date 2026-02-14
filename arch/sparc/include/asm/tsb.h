@@ -59,7 +59,7 @@
  * The kernel TSB is locked into the TLB by virtue of being in the
  * kernel image, so we don't play these games for swapper_tsb access.
  */
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 struct tsb_ldquad_phys_patch_entry {
 	unsigned int	addr;
 	unsigned int	sun4u_insn;

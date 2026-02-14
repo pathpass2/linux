@@ -266,14 +266,14 @@ static int hp03_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id hp03_id[] = {
-	{ "hp03" },
-	{ }
+	{ "hp03", 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, hp03_id);
 
 static const struct of_device_id hp03_of_match[] = {
 	{ .compatible = "hoperf,hp03" },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(of, hp03_of_match);
 
@@ -282,7 +282,7 @@ static struct i2c_driver hp03_driver = {
 		.name	= "hp03",
 		.of_match_table = hp03_of_match,
 	},
-	.probe		= hp03_probe,
+	.probe_new	= hp03_probe,
 	.id_table	= hp03_id,
 };
 module_i2c_driver(hp03_driver);

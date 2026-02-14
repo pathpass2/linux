@@ -8,8 +8,6 @@
 #include <errno.h>
 #include <string.h>
 #include <limits.h>
-
-#include <xalloc.h>
 #include "modpost.h"
 
 /*
@@ -307,13 +305,18 @@ static int parse_source_files(const char *objfile, struct md4_ctx *md)
 	const char *base;
 	int dirlen, ret = 0, check_files = 0;
 
-	cmd = xmalloc(strlen(objfile) + sizeof("..cmd"));
+	cmd = NOFAIL(malloc(strlen(objfile) + sizeof("..cmd")));
 
-	base = get_basename(objfile);
-	dirlen = base - objfile;
-	sprintf(cmd, "%.*s.%s.cmd", dirlen, objfile, base);
-
-	dir = xmalloc(dirlen + 1);
+	base = strrchr(objfile, '/');
+	if (base) {
+		base++;
+		dirlen = base - objfile;
+		sprintf(cmd, "%.*s.%s.cmd", dirlen, objfile, base);
+	} else {
+		dirlen = 0;
+		sprintf(cmd, ".%s.cmd", objfile);
+	}
+	dir = NOFAIL(malloc(dirlen + 1));
 	strncpy(dir, objfile, dirlen);
 	dir[dirlen] = '\0';
 
@@ -323,14 +326,9 @@ static int parse_source_files(const char *objfile, struct md4_ctx *md)
 
 	/* Sum all files in the same dir or subdirs. */
 	while ((line = get_line(&pos))) {
-		char* p;
+		char* p = line;
 
-		/* trim the leading spaces away */
-		while (isspace(*line))
-			line++;
-		p = line;
-
-		if (strstarts(line, "source_")) {
+		if (strncmp(line, "source_", sizeof("source_")-1) == 0) {
 			p = strrchr(line, ' ');
 			if (!p) {
 				warn("malformed line: %s\n", line);
@@ -344,7 +342,7 @@ static int parse_source_files(const char *objfile, struct md4_ctx *md)
 			}
 			continue;
 		}
-		if (strstarts(line, "deps_")) {
+		if (strncmp(line, "deps_", sizeof("deps_")-1) == 0) {
 			check_files = 1;
 			continue;
 		}
@@ -387,7 +385,7 @@ out_file:
 /* Calc and record src checksum. */
 void get_src_version(const char *modname, char sum[], unsigned sumlen)
 {
-	char *buf, *pos;
+	char *buf;
 	struct md4_ctx md;
 	char *fname;
 	char filelist[PATH_MAX + 1];
@@ -396,10 +394,9 @@ void get_src_version(const char *modname, char sum[], unsigned sumlen)
 	snprintf(filelist, sizeof(filelist), "%s.mod", modname);
 
 	buf = read_text_file(filelist);
-	pos = buf;
 
 	md4_init(&md);
-	while ((fname = strsep(&pos, "\n"))) {
+	while ((fname = strsep(&buf, "\n"))) {
 		if (!*fname)
 			continue;
 		if (!(is_static_library(fname)) &&

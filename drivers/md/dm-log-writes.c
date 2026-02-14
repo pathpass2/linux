@@ -414,7 +414,7 @@ static int log_super(struct log_writes_c *lc)
 	}
 
 	/*
-	 * Super sector should be written in-order, otherwise the
+	 * Super sector should be writen in-order, otherwise the
 	 * nr_entries could be rewritten incorrectly by an old bio.
 	 */
 	wait_for_completion_io(&lc->super_done);
@@ -429,10 +429,9 @@ static inline sector_t logdev_last_sector(struct log_writes_c *lc)
 
 static int log_writes_kthread(void *arg)
 {
-	struct log_writes_c *lc = arg;
+	struct log_writes_c *lc = (struct log_writes_c *)arg;
 	sector_t sector = 0;
 
-	set_freezable();
 	while (!kthread_should_stop()) {
 		bool super = false;
 		bool logging_enabled;
@@ -819,9 +818,7 @@ static void log_writes_status(struct dm_target *ti, status_type_t type,
 }
 
 static int log_writes_prepare_ioctl(struct dm_target *ti,
-				    struct block_device **bdev,
-				    unsigned int cmd, unsigned long arg,
-				    bool *forward)
+				    struct block_device **bdev)
 {
 	struct log_writes_c *lc = ti->private;
 	struct dm_dev *dev = lc->dev;
@@ -874,7 +871,7 @@ static void log_writes_io_hints(struct dm_target *ti, struct queue_limits *limit
 	if (!bdev_max_discard_sectors(lc->dev->bdev)) {
 		lc->device_supports_discard = false;
 		limits->discard_granularity = lc->sectorsize;
-		limits->max_hw_discard_sectors = (UINT_MAX >> SECTOR_SHIFT);
+		limits->max_discard_sectors = (UINT_MAX >> SECTOR_SHIFT);
 	}
 	limits->logical_block_size = bdev_logical_block_size(lc->dev->bdev);
 	limits->physical_block_size = bdev_physical_block_size(lc->dev->bdev);
@@ -894,7 +891,7 @@ static struct dax_device *log_writes_dax_pgoff(struct dm_target *ti,
 
 static long log_writes_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		unsigned long *pfn)
+		pfn_t *pfn)
 {
 	struct dax_device *dax_dev = log_writes_dax_pgoff(ti, &pgoff);
 
@@ -940,7 +937,24 @@ static struct target_type log_writes_target = {
 	.dax_zero_page_range = log_writes_dax_zero_page_range,
 	.dax_recovery_write = log_writes_dax_recovery_write,
 };
-module_dm(log_writes);
+
+static int __init dm_log_writes_init(void)
+{
+	int r = dm_register_target(&log_writes_target);
+
+	if (r < 0)
+		DMERR("register failed %d", r);
+
+	return r;
+}
+
+static void __exit dm_log_writes_exit(void)
+{
+	dm_unregister_target(&log_writes_target);
+}
+
+module_init(dm_log_writes_init);
+module_exit(dm_log_writes_exit);
 
 MODULE_DESCRIPTION(DM_NAME " log writes target");
 MODULE_AUTHOR("Josef Bacik <jbacik@fb.com>");

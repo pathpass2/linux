@@ -3,9 +3,8 @@
 // Freescale i.MX7ULP LPSPI driver
 //
 // Copyright 2016 Freescale Semiconductor, Inc.
-// Copyright 2018, 2023, 2025 NXP
+// Copyright 2018 NXP Semiconductors
 
-#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
@@ -18,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/dma/imx-dma.h>
@@ -26,7 +26,6 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/spi_bitbang.h>
 #include <linux/types.h>
-#include <linux/minmax.h>
 
 #define DRIVER_NAME "fsl_lpspi"
 
@@ -72,9 +71,9 @@
 #define DER_TDDE	BIT(0)
 #define CFGR1_PCSCFG	BIT(27)
 #define CFGR1_PINCFG	(BIT(24)|BIT(25))
-#define CFGR1_PCSPOL_MASK	GENMASK(11, 8)
+#define CFGR1_PCSPOL	BIT(8)
 #define CFGR1_NOSTALL	BIT(3)
-#define CFGR1_HOST	BIT(0)
+#define CFGR1_MASTER	BIT(0)
 #define FSR_TXCOUNT	(0xFF)
 #define RSR_RXEMPTY	BIT(1)
 #define TCR_CPOL	BIT(31)
@@ -84,20 +83,12 @@
 #define TCR_RXMSK	BIT(19)
 #define TCR_TXMSK	BIT(18)
 
-#define SR_CLEAR_MASK	GENMASK(13, 8)
-
-struct fsl_lpspi_devtype_data {
-	u8 prescale_max : 3; /* 0 == no limit */
-	bool query_hw_for_num_cs : 1;
-};
-
 struct lpspi_config {
 	u8 bpw;
 	u8 chip_select;
 	u8 prescale;
 	u16 mode;
 	u32 speed_hz;
-	u32 effective_speed_hz;
 };
 
 struct fsl_lpspi_data {
@@ -106,7 +97,8 @@ struct fsl_lpspi_data {
 	unsigned long base_phys;
 	struct clk *clk_ipg;
 	struct clk *clk_per;
-	bool is_target;
+	bool is_slave;
+	u32 num_cs;
 	bool is_only_cs1;
 	bool is_first_byte;
 
@@ -123,37 +115,16 @@ struct fsl_lpspi_data {
 	struct lpspi_config config;
 	struct completion xfer_done;
 
-	bool target_aborted;
+	bool slave_aborted;
 
 	/* DMA */
 	bool usedma;
 	struct completion dma_rx_completion;
 	struct completion dma_tx_completion;
-
-	const struct fsl_lpspi_devtype_data *devtype_data;
-};
-
-/*
- * Devices with ERR051608 have a max TCR_PRESCALE value of 1, otherwise there is
- * no prescale limit: https://www.nxp.com/docs/en/errata/i.MX93_1P87f.pdf
- */
-static const struct fsl_lpspi_devtype_data imx93_lpspi_devtype_data = {
-	.prescale_max = 1,
-	.query_hw_for_num_cs = true,
-};
-
-static const struct fsl_lpspi_devtype_data imx7ulp_lpspi_devtype_data = {
-	/* All defaults */
-};
-
-static const struct fsl_lpspi_devtype_data s32g_lpspi_devtype_data = {
-	.query_hw_for_num_cs = true,
 };
 
 static const struct of_device_id fsl_lpspi_dt_ids[] = {
-	{ .compatible = "fsl,imx7ulp-spi", .data = &imx7ulp_lpspi_devtype_data,},
-	{ .compatible = "fsl,imx93-spi", .data = &imx93_lpspi_devtype_data,},
-	{ .compatible = "nxp,s32g2-lpspi", .data = &s32g_lpspi_devtype_data,},
+	{ .compatible = "fsl,imx7ulp-spi", },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, fsl_lpspi_dt_ids);
@@ -244,6 +215,7 @@ static int lpspi_unprepare_xfer_hardware(struct spi_controller *controller)
 	struct fsl_lpspi_data *fsl_lpspi =
 				spi_controller_get_devdata(controller);
 
+	pm_runtime_mark_last_busy(fsl_lpspi->dev);
 	pm_runtime_put_autosuspend(fsl_lpspi->dev);
 
 	return 0;
@@ -264,7 +236,7 @@ static void fsl_lpspi_write_tx_fifo(struct fsl_lpspi_data *fsl_lpspi)
 	}
 
 	if (txfifo_cnt < fsl_lpspi->txfifosize) {
-		if (!fsl_lpspi->is_target) {
+		if (!fsl_lpspi->is_slave) {
 			temp = readl(fsl_lpspi->base + IMX7ULP_TCR);
 			temp &= ~TCR_CONTC;
 			writel(temp, fsl_lpspi->base + IMX7ULP_TCR);
@@ -281,15 +253,14 @@ static void fsl_lpspi_read_rx_fifo(struct fsl_lpspi_data *fsl_lpspi)
 		fsl_lpspi->rx(fsl_lpspi);
 }
 
-static void fsl_lpspi_set_cmd(struct fsl_lpspi_data *fsl_lpspi,
-			      struct spi_device *spi)
+static void fsl_lpspi_set_cmd(struct fsl_lpspi_data *fsl_lpspi)
 {
 	u32 temp = 0;
 
 	temp |= fsl_lpspi->config.bpw - 1;
 	temp |= (fsl_lpspi->config.mode & 0x3) << 30;
 	temp |= (fsl_lpspi->config.chip_select & 0x3) << 24;
-	if (!fsl_lpspi->is_target) {
+	if (!fsl_lpspi->is_slave) {
 		temp |= fsl_lpspi->config.prescale << 27;
 		/*
 		 * Set TCR_CONT will keep SS asserted after current transfer.
@@ -304,13 +275,6 @@ static void fsl_lpspi_set_cmd(struct fsl_lpspi_data *fsl_lpspi,
 				temp |= TCR_CONTC;
 		}
 	}
-
-	if (spi->mode & SPI_CPOL)
-		temp |= TCR_CPOL;
-
-	if (spi->mode & SPI_CPHA)
-		temp |= TCR_CPHA;
-
 	writel(temp, fsl_lpspi->base + IMX7ULP_TCR);
 
 	dev_dbg(fsl_lpspi->dev, "TCR=0x%x\n", temp);
@@ -334,44 +298,32 @@ static void fsl_lpspi_set_watermark(struct fsl_lpspi_data *fsl_lpspi)
 static int fsl_lpspi_set_bitrate(struct fsl_lpspi_data *fsl_lpspi)
 {
 	struct lpspi_config config = fsl_lpspi->config;
-	unsigned int perclk_rate, div;
-	u8 prescale_max;
+	unsigned int perclk_rate, scldiv;
 	u8 prescale;
-	int scldiv;
 
 	perclk_rate = clk_get_rate(fsl_lpspi->clk_per);
-	prescale_max = fsl_lpspi->devtype_data->prescale_max ?: 7;
 
-	if (!config.speed_hz) {
+	if (config.speed_hz > perclk_rate / 2) {
 		dev_err(fsl_lpspi->dev,
-			"error: the transmission speed provided is 0!\n");
+		      "per-clk should be at least two times of transfer speed");
 		return -EINVAL;
 	}
 
-	if (config.speed_hz > perclk_rate / 2) {
-		div = 2;
-	} else {
-		div = DIV_ROUND_UP(perclk_rate, config.speed_hz);
-	}
-
-	for (prescale = 0; prescale <= prescale_max; prescale++) {
-		scldiv = div / (1 << prescale) - 2;
-		if (scldiv >= 0 && scldiv < 256) {
+	for (prescale = 0; prescale < 8; prescale++) {
+		scldiv = perclk_rate / config.speed_hz / (1 << prescale) - 2;
+		if (scldiv < 256) {
 			fsl_lpspi->config.prescale = prescale;
 			break;
 		}
 	}
 
-	if (scldiv < 0 || scldiv >= 256)
+	if (scldiv >= 256)
 		return -EINVAL;
 
 	writel(scldiv | (scldiv << 8) | ((scldiv >> 1) << 16),
 					fsl_lpspi->base + IMX7ULP_CCR);
 
-	fsl_lpspi->config.effective_speed_hz = perclk_rate / (scldiv + 2) *
-					       (1 << prescale);
-
-	dev_dbg(fsl_lpspi->dev, "perclk=%u, speed=%u, prescale=%u, scldiv=%d\n",
+	dev_dbg(fsl_lpspi->dev, "perclk=%d, speed=%d, prescale=%d, scldiv=%d\n",
 		perclk_rate, config.speed_hz, prescale, scldiv);
 
 	return 0;
@@ -429,7 +381,7 @@ static int fsl_lpspi_config(struct fsl_lpspi_data *fsl_lpspi)
 	u32 temp;
 	int ret;
 
-	if (!fsl_lpspi->is_target) {
+	if (!fsl_lpspi->is_slave) {
 		ret = fsl_lpspi_set_bitrate(fsl_lpspi);
 		if (ret)
 			return ret;
@@ -437,14 +389,12 @@ static int fsl_lpspi_config(struct fsl_lpspi_data *fsl_lpspi)
 
 	fsl_lpspi_set_watermark(fsl_lpspi);
 
-	if (!fsl_lpspi->is_target)
-		temp = CFGR1_HOST;
+	if (!fsl_lpspi->is_slave)
+		temp = CFGR1_MASTER;
 	else
 		temp = CFGR1_PINCFG;
 	if (fsl_lpspi->config.mode & SPI_CS_HIGH)
-		temp |= FIELD_PREP(CFGR1_PCSPOL_MASK,
-				   BIT(fsl_lpspi->config.chip_select));
-
+		temp |= CFGR1_PCSPOL;
 	writel(temp, fsl_lpspi->base + IMX7ULP_CFGR1);
 
 	temp = readl(fsl_lpspi->base + IMX7ULP_CR);
@@ -475,7 +425,7 @@ static int fsl_lpspi_setup_transfer(struct spi_controller *controller,
 	if (fsl_lpspi->is_only_cs1)
 		fsl_lpspi->config.chip_select = 1;
 	else
-		fsl_lpspi->config.chip_select = spi_get_chipselect(spi, 0);
+		fsl_lpspi->config.chip_select = spi->chip_select;
 
 	if (!fsl_lpspi->config.speed_hz)
 		fsl_lpspi->config.speed_hz = spi->max_speed_hz;
@@ -494,55 +444,25 @@ static int fsl_lpspi_setup_transfer(struct spi_controller *controller,
 		fsl_lpspi->tx = fsl_lpspi_buf_tx_u32;
 	}
 
-	fsl_lpspi->watermark = min(fsl_lpspi->txfifosize, t->len);
-
-	return fsl_lpspi_config(fsl_lpspi);
-}
-
-static int fsl_lpspi_prepare_message(struct spi_controller *controller,
-				     struct spi_message *msg)
-{
-	struct fsl_lpspi_data *fsl_lpspi =
-				spi_controller_get_devdata(controller);
-	struct spi_device *spi = msg->spi;
-	struct spi_transfer *t;
-	int ret;
-
-	t = list_first_entry_or_null(&msg->transfers, struct spi_transfer,
-				     transfer_list);
-	if (!t)
-		return 0;
-
-	fsl_lpspi->is_first_byte = true;
-	fsl_lpspi->usedma = false;
-	ret = fsl_lpspi_setup_transfer(controller, spi, t);
+	if (t->len <= fsl_lpspi->txfifosize)
+		fsl_lpspi->watermark = t->len;
+	else
+		fsl_lpspi->watermark = fsl_lpspi->txfifosize;
 
 	if (fsl_lpspi_can_dma(controller, spi, t))
 		fsl_lpspi->usedma = true;
 	else
 		fsl_lpspi->usedma = false;
 
-	if (ret < 0)
-		return ret;
-
-	fsl_lpspi_set_cmd(fsl_lpspi, spi);
-
-	/* No IRQs */
-	writel(0, fsl_lpspi->base + IMX7ULP_IER);
-
-	/* Controller disable, clear FIFOs, clear status */
-	writel(CR_RRF | CR_RTF, fsl_lpspi->base + IMX7ULP_CR);
-	writel(SR_CLEAR_MASK, fsl_lpspi->base + IMX7ULP_SR);
-
-	return 0;
+	return fsl_lpspi_config(fsl_lpspi);
 }
 
-static int fsl_lpspi_target_abort(struct spi_controller *controller)
+static int fsl_lpspi_slave_abort(struct spi_controller *controller)
 {
 	struct fsl_lpspi_data *fsl_lpspi =
 				spi_controller_get_devdata(controller);
 
-	fsl_lpspi->target_aborted = true;
+	fsl_lpspi->slave_aborted = true;
 	if (!fsl_lpspi->usedma)
 		complete(&fsl_lpspi->xfer_done);
 	else {
@@ -558,9 +478,9 @@ static int fsl_lpspi_wait_for_completion(struct spi_controller *controller)
 	struct fsl_lpspi_data *fsl_lpspi =
 				spi_controller_get_devdata(controller);
 
-	if (fsl_lpspi->is_target) {
+	if (fsl_lpspi->is_slave) {
 		if (wait_for_completion_interruptible(&fsl_lpspi->xfer_done) ||
-			fsl_lpspi->target_aborted) {
+			fsl_lpspi->slave_aborted) {
 			dev_dbg(fsl_lpspi->dev, "interrupted\n");
 			return -EINTR;
 		}
@@ -583,12 +503,13 @@ static int fsl_lpspi_reset(struct fsl_lpspi_data *fsl_lpspi)
 		fsl_lpspi_intctrl(fsl_lpspi, 0);
 	}
 
+	/* W1C for all flags in SR */
+	temp = 0x3F << 8;
+	writel(temp, fsl_lpspi->base + IMX7ULP_SR);
+
 	/* Clear FIFO and disable module */
 	temp = CR_RRF | CR_RTF;
 	writel(temp, fsl_lpspi->base + IMX7ULP_CR);
-
-	/* W1C for all flags in SR */
-	writel(SR_CLEAR_MASK, fsl_lpspi->base + IMX7ULP_SR);
 
 	return 0;
 }
@@ -619,7 +540,7 @@ static int fsl_lpspi_calculate_timeout(struct fsl_lpspi_data *fsl_lpspi,
 	timeout += 1;
 
 	/* Double calculated timeout */
-	return secs_to_jiffies(2 * timeout);
+	return msecs_to_jiffies(2 * timeout * MSEC_PER_SEC);
 }
 
 static int fsl_lpspi_dma_transfer(struct spi_controller *controller,
@@ -628,7 +549,7 @@ static int fsl_lpspi_dma_transfer(struct spi_controller *controller,
 {
 	struct dma_async_tx_descriptor *desc_tx, *desc_rx;
 	unsigned long transfer_timeout;
-	unsigned long time_left;
+	unsigned long timeout;
 	struct sg_table *tx = &transfer->tx_sg, *rx = &transfer->rx_sg;
 	int ret;
 
@@ -662,16 +583,16 @@ static int fsl_lpspi_dma_transfer(struct spi_controller *controller,
 	reinit_completion(&fsl_lpspi->dma_tx_completion);
 	dma_async_issue_pending(controller->dma_tx);
 
-	fsl_lpspi->target_aborted = false;
+	fsl_lpspi->slave_aborted = false;
 
-	if (!fsl_lpspi->is_target) {
+	if (!fsl_lpspi->is_slave) {
 		transfer_timeout = fsl_lpspi_calculate_timeout(fsl_lpspi,
 							       transfer->len);
 
 		/* Wait eDMA to finish the data transfer.*/
-		time_left = wait_for_completion_timeout(&fsl_lpspi->dma_tx_completion,
-							transfer_timeout);
-		if (!time_left) {
+		timeout = wait_for_completion_timeout(&fsl_lpspi->dma_tx_completion,
+						      transfer_timeout);
+		if (!timeout) {
 			dev_err(fsl_lpspi->dev, "I/O Error in DMA TX\n");
 			dmaengine_terminate_all(controller->dma_tx);
 			dmaengine_terminate_all(controller->dma_rx);
@@ -679,9 +600,9 @@ static int fsl_lpspi_dma_transfer(struct spi_controller *controller,
 			return -ETIMEDOUT;
 		}
 
-		time_left = wait_for_completion_timeout(&fsl_lpspi->dma_rx_completion,
-							transfer_timeout);
-		if (!time_left) {
+		timeout = wait_for_completion_timeout(&fsl_lpspi->dma_rx_completion,
+						      transfer_timeout);
+		if (!timeout) {
 			dev_err(fsl_lpspi->dev, "I/O Error in DMA RX\n");
 			dmaengine_terminate_all(controller->dma_tx);
 			dmaengine_terminate_all(controller->dma_rx);
@@ -690,7 +611,7 @@ static int fsl_lpspi_dma_transfer(struct spi_controller *controller,
 		}
 	} else {
 		if (wait_for_completion_interruptible(&fsl_lpspi->dma_tx_completion) ||
-			fsl_lpspi->target_aborted) {
+			fsl_lpspi->slave_aborted) {
 			dev_dbg(fsl_lpspi->dev,
 				"I/O Error in DMA TX interrupted\n");
 			dmaengine_terminate_all(controller->dma_tx);
@@ -700,7 +621,7 @@ static int fsl_lpspi_dma_transfer(struct spi_controller *controller,
 		}
 
 		if (wait_for_completion_interruptible(&fsl_lpspi->dma_rx_completion) ||
-			fsl_lpspi->target_aborted) {
+			fsl_lpspi->slave_aborted) {
 			dev_dbg(fsl_lpspi->dev,
 				"I/O Error in DMA RX interrupted\n");
 			dmaengine_terminate_all(controller->dma_tx);
@@ -775,15 +696,17 @@ static int fsl_lpspi_pio_transfer(struct spi_controller *controller,
 	fsl_lpspi->remain = t->len;
 
 	reinit_completion(&fsl_lpspi->xfer_done);
-	fsl_lpspi->target_aborted = false;
+	fsl_lpspi->slave_aborted = false;
 
 	fsl_lpspi_write_tx_fifo(fsl_lpspi);
 
 	ret = fsl_lpspi_wait_for_completion(controller);
+	if (ret)
+		return ret;
 
 	fsl_lpspi_reset(fsl_lpspi);
 
-	return ret;
+	return 0;
 }
 
 static int fsl_lpspi_transfer_one(struct spi_controller *controller,
@@ -794,18 +717,12 @@ static int fsl_lpspi_transfer_one(struct spi_controller *controller,
 					spi_controller_get_devdata(controller);
 	int ret;
 
-	if (fsl_lpspi_can_dma(controller, spi, t))
-		fsl_lpspi->usedma = true;
-	else
-		fsl_lpspi->usedma = false;
-
+	fsl_lpspi->is_first_byte = true;
 	ret = fsl_lpspi_setup_transfer(controller, spi, t);
 	if (ret < 0)
 		return ret;
 
-	t->effective_speed_hz = fsl_lpspi->config.effective_speed_hz;
-
-	fsl_lpspi_set_cmd(fsl_lpspi, spi);
+	fsl_lpspi_set_cmd(fsl_lpspi);
 	fsl_lpspi->is_first_byte = false;
 
 	if (fsl_lpspi->usedma)
@@ -837,7 +754,7 @@ static irqreturn_t fsl_lpspi_isr(int irq, void *dev_id)
 	if (temp_SR & SR_MBF ||
 	    readl(fsl_lpspi->base + IMX7ULP_FSR) & FSR_TXCOUNT) {
 		writel(SR_FCF, fsl_lpspi->base + IMX7ULP_SR);
-		fsl_lpspi_intctrl(fsl_lpspi, IER_FCIE | (temp_IER & IER_TDIE));
+		fsl_lpspi_intctrl(fsl_lpspi, IER_FCIE);
 		return IRQ_HANDLED;
 	}
 
@@ -899,26 +816,20 @@ static int fsl_lpspi_init_rpm(struct fsl_lpspi_data *fsl_lpspi)
 
 static int fsl_lpspi_probe(struct platform_device *pdev)
 {
-	const struct fsl_lpspi_devtype_data *devtype_data;
 	struct fsl_lpspi_data *fsl_lpspi;
 	struct spi_controller *controller;
 	struct resource *res;
 	int ret, irq;
-	u32 num_cs;
 	u32 temp;
-	bool is_target;
+	bool is_slave;
 
-	devtype_data = of_device_get_match_data(&pdev->dev);
-	if (!devtype_data)
-		return -ENODEV;
-
-	is_target = of_property_read_bool((&pdev->dev)->of_node, "spi-slave");
-	if (is_target)
-		controller = devm_spi_alloc_target(&pdev->dev,
-						   sizeof(struct fsl_lpspi_data));
+	is_slave = of_property_read_bool((&pdev->dev)->of_node, "spi-slave");
+	if (is_slave)
+		controller = spi_alloc_slave(&pdev->dev,
+					sizeof(struct fsl_lpspi_data));
 	else
-		controller = devm_spi_alloc_host(&pdev->dev,
-						 sizeof(struct fsl_lpspi_data));
+		controller = spi_alloc_master(&pdev->dev,
+					sizeof(struct fsl_lpspi_data));
 
 	if (!controller)
 		return -ENOMEM;
@@ -927,49 +838,64 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 
 	fsl_lpspi = spi_controller_get_devdata(controller);
 	fsl_lpspi->dev = &pdev->dev;
-	fsl_lpspi->is_target = is_target;
+	fsl_lpspi->is_slave = is_slave;
 	fsl_lpspi->is_only_cs1 = of_property_read_bool((&pdev->dev)->of_node,
 						"fsl,spi-only-use-cs1-sel");
-	fsl_lpspi->devtype_data = devtype_data;
+	if (of_property_read_u32((&pdev->dev)->of_node, "num-cs",
+				 &fsl_lpspi->num_cs))
+		fsl_lpspi->num_cs = 1;
+
+	controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(8, 32);
+	controller->transfer_one = fsl_lpspi_transfer_one;
+	controller->prepare_transfer_hardware = lpspi_prepare_xfer_hardware;
+	controller->unprepare_transfer_hardware = lpspi_unprepare_xfer_hardware;
+	controller->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
+	controller->flags = SPI_MASTER_MUST_RX | SPI_MASTER_MUST_TX;
+	controller->dev.of_node = pdev->dev.of_node;
+	controller->bus_num = pdev->id;
+	controller->num_chipselect = fsl_lpspi->num_cs;
+	controller->slave_abort = fsl_lpspi_slave_abort;
+	if (!fsl_lpspi->is_slave)
+		controller->use_gpio_descriptors = true;
 
 	init_completion(&fsl_lpspi->xfer_done);
 
 	fsl_lpspi->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(fsl_lpspi->base)) {
 		ret = PTR_ERR(fsl_lpspi->base);
-		return ret;
+		goto out_controller_put;
 	}
 	fsl_lpspi->base_phys = res->start;
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		ret = irq;
-		return ret;
+		goto out_controller_put;
 	}
 
-	ret = devm_request_irq(&pdev->dev, irq, fsl_lpspi_isr, IRQF_NO_AUTOEN,
+	ret = devm_request_irq(&pdev->dev, irq, fsl_lpspi_isr, 0,
 			       dev_name(&pdev->dev), fsl_lpspi);
 	if (ret) {
 		dev_err(&pdev->dev, "can't get irq%d: %d\n", irq, ret);
-		return ret;
+		goto out_controller_put;
 	}
 
 	fsl_lpspi->clk_per = devm_clk_get(&pdev->dev, "per");
 	if (IS_ERR(fsl_lpspi->clk_per)) {
 		ret = PTR_ERR(fsl_lpspi->clk_per);
-		return ret;
+		goto out_controller_put;
 	}
 
 	fsl_lpspi->clk_ipg = devm_clk_get(&pdev->dev, "ipg");
 	if (IS_ERR(fsl_lpspi->clk_ipg)) {
 		ret = PTR_ERR(fsl_lpspi->clk_ipg);
-		return ret;
+		goto out_controller_put;
 	}
 
 	/* enable the clock */
 	ret = fsl_lpspi_init_rpm(fsl_lpspi);
 	if (ret)
-		return ret;
+		goto out_controller_put;
 
 	ret = pm_runtime_get_sync(fsl_lpspi->dev);
 	if (ret < 0) {
@@ -980,34 +906,13 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 	temp = readl(fsl_lpspi->base + IMX7ULP_PARAM);
 	fsl_lpspi->txfifosize = 1 << (temp & 0x0f);
 	fsl_lpspi->rxfifosize = 1 << ((temp >> 8) & 0x0f);
-	if (of_property_read_u32((&pdev->dev)->of_node, "num-cs",
-				 &num_cs)) {
-		if (devtype_data->query_hw_for_num_cs)
-			num_cs = ((temp >> 16) & 0xf);
-		else
-			num_cs = 1;
-	}
-
-	controller->bits_per_word_mask = SPI_BPW_RANGE_MASK(8, 32);
-	controller->prepare_message = fsl_lpspi_prepare_message;
-	controller->transfer_one = fsl_lpspi_transfer_one;
-	controller->prepare_transfer_hardware = lpspi_prepare_xfer_hardware;
-	controller->unprepare_transfer_hardware = lpspi_unprepare_xfer_hardware;
-	controller->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
-	controller->flags = SPI_CONTROLLER_MUST_RX | SPI_CONTROLLER_MUST_TX;
-	controller->bus_num = pdev->id;
-	controller->num_chipselect = num_cs;
-	controller->target_abort = fsl_lpspi_target_abort;
-	if (!fsl_lpspi->is_target)
-		controller->use_gpio_descriptors = true;
 
 	ret = fsl_lpspi_dma_init(&pdev->dev, fsl_lpspi, controller);
 	if (ret == -EPROBE_DEFER)
 		goto out_pm_get;
-	if (ret < 0) {
-		dev_warn(&pdev->dev, "dma setup error %d, use pio\n", ret);
-		enable_irq(irq);
-	}
+
+	if (ret < 0)
+		dev_err(&pdev->dev, "dma setup error %d, use pio\n", ret);
 
 	ret = devm_spi_register_controller(&pdev->dev, controller);
 	if (ret < 0) {
@@ -1015,6 +920,7 @@ static int fsl_lpspi_probe(struct platform_device *pdev)
 		goto free_dma;
 	}
 
+	pm_runtime_mark_last_busy(fsl_lpspi->dev);
 	pm_runtime_put_autosuspend(fsl_lpspi->dev);
 
 	return 0;
@@ -1025,11 +931,13 @@ out_pm_get:
 	pm_runtime_dont_use_autosuspend(fsl_lpspi->dev);
 	pm_runtime_put_sync(fsl_lpspi->dev);
 	pm_runtime_disable(fsl_lpspi->dev);
+out_controller_put:
+	spi_controller_put(controller);
 
 	return ret;
 }
 
-static void fsl_lpspi_remove(struct platform_device *pdev)
+static int fsl_lpspi_remove(struct platform_device *pdev)
 {
 	struct spi_controller *controller = platform_get_drvdata(pdev);
 	struct fsl_lpspi_data *fsl_lpspi =
@@ -1037,17 +945,17 @@ static void fsl_lpspi_remove(struct platform_device *pdev)
 
 	fsl_lpspi_dma_exit(controller);
 
-	pm_runtime_dont_use_autosuspend(fsl_lpspi->dev);
 	pm_runtime_disable(fsl_lpspi->dev);
+	return 0;
 }
 
-static int fsl_lpspi_suspend(struct device *dev)
+static int __maybe_unused fsl_lpspi_suspend(struct device *dev)
 {
 	pinctrl_pm_select_sleep_state(dev);
 	return pm_runtime_force_suspend(dev);
 }
 
-static int fsl_lpspi_resume(struct device *dev)
+static int __maybe_unused fsl_lpspi_resume(struct device *dev)
 {
 	int ret;
 
@@ -1065,14 +973,14 @@ static int fsl_lpspi_resume(struct device *dev)
 static const struct dev_pm_ops fsl_lpspi_pm_ops = {
 	SET_RUNTIME_PM_OPS(fsl_lpspi_runtime_suspend,
 				fsl_lpspi_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(fsl_lpspi_suspend, fsl_lpspi_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(fsl_lpspi_suspend, fsl_lpspi_resume)
 };
 
 static struct platform_driver fsl_lpspi_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
 		.of_match_table = fsl_lpspi_dt_ids,
-		.pm = pm_ptr(&fsl_lpspi_pm_ops),
+		.pm = &fsl_lpspi_pm_ops,
 	},
 	.probe = fsl_lpspi_probe,
 	.remove = fsl_lpspi_remove,

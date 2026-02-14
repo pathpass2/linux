@@ -16,6 +16,7 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
+#include <linux/mutex.h>
 #include <linux/delay.h>
 
 #define ADC_STEP_MV			2
@@ -74,6 +75,7 @@ enum powr1220_adc_values {
 
 struct powr1220_data {
 	struct i2c_client *client;
+	struct mutex update_lock;
 	u8 max_channels;
 	bool adc_valid[MAX_POWR1220_ADC_VALUES];
 	 /* the next value is in jiffies */
@@ -109,6 +111,8 @@ static int powr1220_read_adc(struct device *dev, int ch_num)
 	int result;
 	int adc_range = 0;
 
+	mutex_lock(&data->update_lock);
+
 	if (time_after(jiffies, data->adc_last_updated[ch_num] + HZ) ||
 	    !data->adc_valid[ch_num]) {
 		/*
@@ -124,8 +128,8 @@ static int powr1220_read_adc(struct device *dev, int ch_num)
 		/* set the attenuator and mux */
 		result = i2c_smbus_write_byte_data(data->client, ADC_MUX,
 						   adc_range | ch_num);
-		if (result < 0)
-			return result;
+		if (result)
+			goto exit;
 
 		/*
 		 * wait at least Tconvert time (200 us) for the
@@ -136,14 +140,14 @@ static int powr1220_read_adc(struct device *dev, int ch_num)
 		/* get the ADC reading */
 		result = i2c_smbus_read_byte_data(data->client, ADC_VALUE_LOW);
 		if (result < 0)
-			return result;
+			goto exit;
 
 		reading = result >> 4;
 
 		/* get the upper half of the reading */
 		result = i2c_smbus_read_byte_data(data->client, ADC_VALUE_HIGH);
 		if (result < 0)
-			return result;
+			goto exit;
 
 		reading |= result << 4;
 
@@ -159,6 +163,10 @@ static int powr1220_read_adc(struct device *dev, int ch_num)
 	} else {
 		result = data->adc_values[ch_num];
 	}
+
+exit:
+	mutex_unlock(&data->update_lock);
+
 	return result;
 }
 
@@ -240,7 +248,7 @@ powr1220_read(struct device *dev, enum hwmon_sensor_types type, u32
 	return 0;
 }
 
-static const struct hwmon_channel_info * const powr1220_info[] = {
+static const struct hwmon_channel_info *powr1220_info[] = {
 	HWMON_CHANNEL_INFO(in,
 			   HWMON_I_INPUT | HWMON_I_HIGHEST | HWMON_I_LABEL,
 			   HWMON_I_INPUT | HWMON_I_HIGHEST | HWMON_I_LABEL,
@@ -271,11 +279,12 @@ static const struct hwmon_chip_info powr1220_chip_info = {
 	.info = powr1220_info,
 };
 
+static const struct i2c_device_id powr1220_ids[];
+
 static int powr1220_probe(struct i2c_client *client)
 {
 	struct powr1220_data *data;
 	struct device *hwmon_dev;
-	enum powr1xxx_chips chip;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
@@ -284,8 +293,7 @@ static int powr1220_probe(struct i2c_client *client)
 	if (!data)
 		return -ENOMEM;
 
-	chip = (uintptr_t)i2c_get_match_data(client);
-	switch (chip) {
+	switch (i2c_match_id(powr1220_ids, client)->driver_data) {
 	case powr1014:
 		data->max_channels = 10;
 		break;
@@ -294,6 +302,7 @@ static int powr1220_probe(struct i2c_client *client)
 		break;
 	}
 
+	mutex_init(&data->update_lock);
 	data->client = client;
 
 	hwmon_dev = devm_hwmon_device_register_with_info(&client->dev,
@@ -314,10 +323,11 @@ static const struct i2c_device_id powr1220_ids[] = {
 MODULE_DEVICE_TABLE(i2c, powr1220_ids);
 
 static struct i2c_driver powr1220_driver = {
+	.class		= I2C_CLASS_HWMON,
 	.driver = {
 		.name	= "powr1220",
 	},
-	.probe		= powr1220_probe,
+	.probe_new	= powr1220_probe,
 	.id_table	= powr1220_ids,
 };
 

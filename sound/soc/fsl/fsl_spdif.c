@@ -12,7 +12,9 @@
 #include <linux/bitrev.h>
 #include <linux/clk.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/regmap.h>
 #include <linux/pm_runtime.h>
 
@@ -148,7 +150,7 @@ struct fsl_spdif_priv {
 	struct clk *pll11k_clk;
 };
 
-static const struct fsl_spdif_soc_data fsl_spdif_vf610 = {
+static struct fsl_spdif_soc_data fsl_spdif_vf610 = {
 	.imx = false,
 	.shared_root_clock = false,
 	.raw_capture_mode = false,
@@ -158,7 +160,7 @@ static const struct fsl_spdif_soc_data fsl_spdif_vf610 = {
 	.tx_formats = FSL_SPDIF_FORMATS_PLAYBACK,
 };
 
-static const struct fsl_spdif_soc_data fsl_spdif_imx35 = {
+static struct fsl_spdif_soc_data fsl_spdif_imx35 = {
 	.imx = true,
 	.shared_root_clock = false,
 	.raw_capture_mode = false,
@@ -168,7 +170,7 @@ static const struct fsl_spdif_soc_data fsl_spdif_imx35 = {
 	.tx_formats = FSL_SPDIF_FORMATS_PLAYBACK,
 };
 
-static const struct fsl_spdif_soc_data fsl_spdif_imx6sx = {
+static struct fsl_spdif_soc_data fsl_spdif_imx6sx = {
 	.imx = true,
 	.shared_root_clock = true,
 	.raw_capture_mode = false,
@@ -179,7 +181,7 @@ static const struct fsl_spdif_soc_data fsl_spdif_imx6sx = {
 
 };
 
-static const struct fsl_spdif_soc_data fsl_spdif_imx8qm = {
+static struct fsl_spdif_soc_data fsl_spdif_imx8qm = {
 	.imx = true,
 	.shared_root_clock = true,
 	.raw_capture_mode = false,
@@ -189,7 +191,7 @@ static const struct fsl_spdif_soc_data fsl_spdif_imx8qm = {
 	.tx_formats = SNDRV_PCM_FMTBIT_S24_LE,  /* Applied for EDMA */
 };
 
-static const struct fsl_spdif_soc_data fsl_spdif_imx8mm = {
+static struct fsl_spdif_soc_data fsl_spdif_imx8mm = {
 	.imx = true,
 	.shared_root_clock = false,
 	.raw_capture_mode = true,
@@ -199,7 +201,7 @@ static const struct fsl_spdif_soc_data fsl_spdif_imx8mm = {
 	.tx_formats = FSL_SPDIF_FORMATS_PLAYBACK,
 };
 
-static const struct fsl_spdif_soc_data fsl_spdif_imx8ulp = {
+static struct fsl_spdif_soc_data fsl_spdif_imx8ulp = {
 	.imx = true,
 	.shared_root_clock = true,
 	.raw_capture_mode = false,
@@ -500,8 +502,8 @@ static int fsl_spdif_probe_txclk(struct fsl_spdif_priv *spdif_priv, enum spdif_t
 static int spdif_set_sample_rate(struct snd_pcm_substream *substream,
 				int sample_rate)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(snd_soc_rtd_to_cpu(rtd, 0));
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
 	struct spdif_mixer_control *ctrl = &spdif_priv->fsl_spdif_control;
 	struct regmap *regmap = spdif_priv->regmap;
 	struct platform_device *pdev = spdif_priv->pdev;
@@ -512,10 +514,6 @@ static int spdif_set_sample_rate(struct snd_pcm_substream *substream,
 	int ret;
 
 	switch (sample_rate) {
-	case 22050:
-		rate = SPDIF_TXRATE_22050;
-		csfs = IEC958_AES3_CON_FS_22050;
-		break;
 	case 32000:
 		rate = SPDIF_TXRATE_32000;
 		csfs = IEC958_AES3_CON_FS_32000;
@@ -603,8 +601,8 @@ clk_set_bypass:
 static int fsl_spdif_startup(struct snd_pcm_substream *substream,
 			     struct snd_soc_dai *cpu_dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(snd_soc_rtd_to_cpu(rtd, 0));
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
 	struct platform_device *pdev = spdif_priv->pdev;
 	struct regmap *regmap = spdif_priv->regmap;
 	u32 scr, mask;
@@ -645,8 +643,8 @@ static int fsl_spdif_startup(struct snd_pcm_substream *substream,
 static void fsl_spdif_shutdown(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *cpu_dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(snd_soc_rtd_to_cpu(rtd, 0));
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
 	struct regmap *regmap = spdif_priv->regmap;
 	u32 scr, mask;
 
@@ -699,8 +697,8 @@ static int fsl_spdif_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params,
 				struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(snd_soc_rtd_to_cpu(rtd, 0));
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
 	struct spdif_mixer_control *ctrl = &spdif_priv->fsl_spdif_control;
 	struct platform_device *pdev = spdif_priv->pdev;
 	u32 sample_rate = params_rate(params);
@@ -734,8 +732,8 @@ static int fsl_spdif_hw_params(struct snd_pcm_substream *substream,
 static int fsl_spdif_trigger(struct snd_pcm_substream *substream,
 				int cmd, struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(snd_soc_rtd_to_cpu(rtd, 0));
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct fsl_spdif_priv *spdif_priv = snd_soc_dai_get_drvdata(asoc_rtd_to_cpu(rtd, 0));
 	struct regmap *regmap = spdif_priv->regmap;
 	bool tx = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
 	u32 intr = SIE_INTR_FOR(tx);
@@ -753,8 +751,6 @@ static int fsl_spdif_trigger(struct snd_pcm_substream *substream,
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		regmap_update_bits(regmap, REG_SPDIF_SCR, dmaen, 0);
 		regmap_update_bits(regmap, REG_SPDIF_SIE, intr, 0);
-		regmap_write(regmap, REG_SPDIF_STL, 0x0);
-		regmap_write(regmap, REG_SPDIF_STR, 0x0);
 		break;
 	default:
 		return -EINVAL;
@@ -762,6 +758,14 @@ static int fsl_spdif_trigger(struct snd_pcm_substream *substream,
 
 	return 0;
 }
+
+static const struct snd_soc_dai_ops fsl_spdif_dai_ops = {
+	.startup = fsl_spdif_startup,
+	.hw_params = fsl_spdif_hw_params,
+	.trigger = fsl_spdif_trigger,
+	.shutdown = fsl_spdif_shutdown,
+};
+
 
 /*
  * FSL SPDIF IEC958 controller(mixer) functions
@@ -1146,7 +1150,7 @@ static int fsl_spdif_usync_put(struct snd_kcontrol *kcontrol,
 }
 
 /* FSL SPDIF IEC958 controller defines */
-static const struct snd_kcontrol_new fsl_spdif_ctrls[] = {
+static struct snd_kcontrol_new fsl_spdif_ctrls[] = {
 	/* Status cchanel controller */
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -1204,7 +1208,7 @@ static const struct snd_kcontrol_new fsl_spdif_ctrls[] = {
 	},
 	/* DPLL lock info get controller */
 	{
-		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
 		.name = RX_SAMPLE_RATE_KCONTROL,
 		.access = SNDRV_CTL_ELEM_ACCESS_READ |
 			SNDRV_CTL_ELEM_ACCESS_VOLATILE,
@@ -1233,7 +1237,7 @@ static const struct snd_kcontrol_new fsl_spdif_ctrls[] = {
 	},
 };
 
-static const struct snd_kcontrol_new fsl_spdif_ctrls_rcm[] = {
+static struct snd_kcontrol_new fsl_spdif_ctrls_rcm[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
 		.name = "IEC958 Raw Capture Mode",
@@ -1273,15 +1277,8 @@ static int fsl_spdif_dai_probe(struct snd_soc_dai *dai)
 	return 0;
 }
 
-static const struct snd_soc_dai_ops fsl_spdif_dai_ops = {
-	.probe		= fsl_spdif_dai_probe,
-	.startup	= fsl_spdif_startup,
-	.hw_params	= fsl_spdif_hw_params,
-	.trigger	= fsl_spdif_trigger,
-	.shutdown	= fsl_spdif_shutdown,
-};
-
 static struct snd_soc_dai_driver fsl_spdif_dai = {
+	.probe = &fsl_spdif_dai_probe,
 	.playback = {
 		.stream_name = "CPU-Playback",
 		.channels_min = 2,
@@ -1425,7 +1422,7 @@ static u32 fsl_spdif_txclk_caldiv(struct fsl_spdif_priv *spdif_priv,
 				struct clk *clk, u64 savesub,
 				enum spdif_txrate index, bool round)
 {
-	static const u32 rate[] = { 22050, 32000, 44100, 48000, 88200, 96000, 176400,
+	static const u32 rate[] = { 32000, 44100, 48000, 88200, 96000, 176400,
 				    192000, };
 	bool is_sysclk = clk_is_match(clk, spdif_priv->sysclk);
 	u64 rate_ideal, rate_actual, sub;
@@ -1486,7 +1483,7 @@ out:
 static int fsl_spdif_probe_txclk(struct fsl_spdif_priv *spdif_priv,
 				enum spdif_txrate index)
 {
-	static const u32 rate[] = { 22050, 32000, 44100, 48000, 88200, 96000, 176400,
+	static const u32 rate[] = { 32000, 44100, 48000, 88200, 96000, 176400,
 				    192000, };
 	struct platform_device *pdev = spdif_priv->pdev;
 	struct device *dev = &pdev->dev;
@@ -1662,11 +1659,14 @@ err_pm_disable:
 	return ret;
 }
 
-static void fsl_spdif_remove(struct platform_device *pdev)
+static int fsl_spdif_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
+#ifdef CONFIG_PM
 static int fsl_spdif_runtime_suspend(struct device *dev)
 {
 	struct fsl_spdif_priv *spdif_priv = dev_get_drvdata(dev);
@@ -1738,11 +1738,13 @@ disable_core_clk:
 
 	return ret;
 }
+#endif /* CONFIG_PM */
 
 static const struct dev_pm_ops fsl_spdif_pm = {
-	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
-	RUNTIME_PM_OPS(fsl_spdif_runtime_suspend, fsl_spdif_runtime_resume,
-		       NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(fsl_spdif_runtime_suspend, fsl_spdif_runtime_resume,
+			   NULL)
 };
 
 static const struct of_device_id fsl_spdif_dt_ids[] = {
@@ -1760,7 +1762,7 @@ static struct platform_driver fsl_spdif_driver = {
 	.driver = {
 		.name = "fsl-spdif-dai",
 		.of_match_table = fsl_spdif_dt_ids,
-		.pm = pm_ptr(&fsl_spdif_pm),
+		.pm = &fsl_spdif_pm,
 	},
 	.probe = fsl_spdif_probe,
 	.remove = fsl_spdif_remove,

@@ -41,32 +41,17 @@ properties:
       - renesas,du-r8a77995 # for R-Car D3 compatible DU
       - renesas,du-r8a779a0 # for R-Car V3U compatible DU
       - renesas,du-r8a779g0 # for R-Car V4H compatible DU
-      - renesas,du-r8a779h0 # for R-Car V4M compatible DU
 
   reg:
     maxItems: 1
 
   # See compatible-specific constraints below.
-  clocks:
-    minItems: 1
-    maxItems: 8
-
-  clock-names:
-    minItems: 1
-    maxItems: 8
-
+  clocks: true
+  clock-names: true
   interrupts:
-    minItems: 1
-    maxItems: 4
     description: Interrupt specifiers, one per DU channel
-
-  resets:
-    minItems: 1
-    maxItems: 2
-
-  reset-names:
-    minItems: 1
-    maxItems: 2
+  resets: true
+  reset-names: true
 
   power-domains:
     maxItems: 1
@@ -84,12 +69,14 @@ properties:
         $ref: /schemas/graph.yaml#/properties/port
         unevaluatedProperties: false
 
+    required:
+      - port@0
+      - port@1
+
     unevaluatedProperties: false
 
   renesas,cmms:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    minItems: 2
-    maxItems: 4
+    $ref: "/schemas/types.yaml#/definitions/phandle-array"
     items:
       maxItems: 1
     description:
@@ -97,9 +84,7 @@ properties:
       available DU channel.
 
   renesas,vsps:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    minItems: 1
-    maxItems: 4
+    $ref: "/schemas/types.yaml#/definitions/phandle-array"
     items:
       items:
         - description: phandle to VSP instance that serves the DU channel
@@ -188,7 +173,6 @@ allOf:
             - pattern: '^dclkin\.[01]$'
 
         interrupts:
-          minItems: 2
           maxItems: 2
 
         resets:
@@ -244,7 +228,6 @@ allOf:
             - pattern: '^dclkin\.[01]$'
 
         interrupts:
-          minItems: 2
           maxItems: 2
 
         resets:
@@ -298,7 +281,6 @@ allOf:
             - pattern: '^dclkin\.[01]$'
 
         interrupts:
-          minItems: 2
           maxItems: 2
 
         resets:
@@ -353,7 +335,6 @@ allOf:
             - pattern: '^dclkin\.[01]$'
 
         interrupts:
-          minItems: 2
           maxItems: 2
 
         resets:
@@ -415,7 +396,6 @@ allOf:
             - pattern: '^dclkin\.[012]$'
 
         interrupts:
-          minItems: 3
           maxItems: 3
 
         resets:
@@ -480,11 +460,9 @@ allOf:
             - pattern: '^dclkin\.[0123]$'
 
         interrupts:
-          minItems: 4
           maxItems: 4
 
         resets:
-          minItems: 2
           maxItems: 2
 
         reset-names:
@@ -511,11 +489,9 @@ allOf:
 
         renesas,cmms:
           minItems: 4
-          maxItems: 4
 
         renesas,vsps:
           minItems: 4
-          maxItems: 4
 
       required:
         - clock-names
@@ -555,11 +531,9 @@ allOf:
             - pattern: '^dclkin\.[012]$'
 
         interrupts:
-          minItems: 3
           maxItems: 3
 
         resets:
-          minItems: 2
           maxItems: 2
 
         reset-names:
@@ -584,11 +558,9 @@ allOf:
 
         renesas,cmms:
           minItems: 3
-          maxItems: 3
 
         renesas,vsps:
           minItems: 3
-          maxItems: 3
 
       required:
         - clock-names
@@ -628,11 +600,9 @@ allOf:
             - pattern: '^dclkin\.[013]$'
 
         interrupts:
-          minItems: 3
           maxItems: 3
 
         resets:
-          minItems: 2
           maxItems: 2
 
         reset-names:
@@ -657,11 +627,9 @@ allOf:
 
         renesas,cmms:
           minItems: 3
-          maxItems: 3
 
         renesas,vsps:
           minItems: 3
-          maxItems: 3
 
       required:
         - clock-names
@@ -715,7 +683,7 @@ allOf:
             - port@1
 
         renesas,vsps:
-          maxItems: 1
+          minItems: 1
 
       required:
         - clock-names
@@ -751,7 +719,6 @@ allOf:
             - pattern: '^dclkin\.[01]$'
 
         interrupts:
-          minItems: 2
           maxItems: 2
 
         resets:
@@ -779,11 +746,9 @@ allOf:
 
         renesas,cmms:
           minItems: 2
-          maxItems: 2
 
         renesas,vsps:
           minItems: 2
-          maxItems: 2
 
       required:
         - clock-names
@@ -834,54 +799,6 @@ allOf:
 
         renesas,vsps:
           minItems: 2
-          maxItems: 2
-
-      required:
-        - clock-names
-        - interrupts
-        - resets
-        - reset-names
-        - renesas,vsps
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - renesas,du-r8a779h0
-    then:
-      properties:
-        clocks:
-          items:
-            - description: Functional clock
-
-        clock-names:
-          items:
-            - const: du.0
-
-        interrupts:
-          maxItems: 1
-
-        resets:
-          maxItems: 1
-
-        reset-names:
-          items:
-            - const: du.0
-
-        ports:
-          properties:
-            port@0:
-              description: DSI 0
-            port@1: false
-            port@2: false
-            port@3: false
-
-          required:
-            - port@0
-
-        renesas,vsps:
-          maxItems: 1
 
       required:
         - clock-names

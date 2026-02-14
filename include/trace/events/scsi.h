@@ -29,8 +29,8 @@
 		scsi_opcode_name(INQUIRY),			\
 		scsi_opcode_name(RECOVER_BUFFERED_DATA),	\
 		scsi_opcode_name(MODE_SELECT),			\
-		scsi_opcode_name(RESERVE_6),			\
-		scsi_opcode_name(RELEASE_6),			\
+		scsi_opcode_name(RESERVE),			\
+		scsi_opcode_name(RELEASE),			\
 		scsi_opcode_name(COPY),				\
 		scsi_opcode_name(ERASE),			\
 		scsi_opcode_name(MODE_SENSE),			\
@@ -102,7 +102,6 @@
 		scsi_opcode_name(WRITE_32),			\
 		scsi_opcode_name(WRITE_SAME_32),		\
 		scsi_opcode_name(ATA_16),			\
-		scsi_opcode_name(WRITE_ATOMIC_16),		\
 		scsi_opcode_name(ATA_12))
 
 #define scsi_hostbyte_name(result)	{ result, #result }
@@ -200,14 +199,6 @@ TRACE_EVENT(scsi_dispatch_cmd_start,
 		  __print_hex(__get_dynamic_array(cmnd), __entry->cmd_len))
 );
 
-#define scsi_rtn_name(result)	{ result, #result }
-#define show_rtn_name(val)					\
-	__print_symbolic(val,					\
-		scsi_rtn_name(SCSI_MLQUEUE_HOST_BUSY),		\
-		scsi_rtn_name(SCSI_MLQUEUE_DEVICE_BUSY),	\
-		scsi_rtn_name(SCSI_MLQUEUE_EH_RETRY),		\
-		scsi_rtn_name(SCSI_MLQUEUE_TARGET_BUSY))
-
 TRACE_EVENT(scsi_dispatch_cmd_error,
 
 	TP_PROTO(struct scsi_cmnd *cmd, int rtn),
@@ -248,15 +239,14 @@ TRACE_EVENT(scsi_dispatch_cmd_error,
 
 	TP_printk("host_no=%u channel=%u id=%u lun=%u data_sgl=%u prot_sgl=%u" \
 		  " prot_op=%s driver_tag=%d scheduler_tag=%d cmnd=(%s %s raw=%s)" \
-		  " rtn=%s",
+		  " rtn=%d",
 		  __entry->host_no, __entry->channel, __entry->id,
 		  __entry->lun, __entry->data_sglen, __entry->prot_sglen,
 		  show_prot_op_name(__entry->prot_op), __entry->driver_tag,
 		  __entry->scheduler_tag, show_opcode_name(__entry->opcode),
 		  __parse_cdb(__get_dynamic_array(cmnd), __entry->cmd_len),
 		  __print_hex(__get_dynamic_array(cmnd), __entry->cmd_len),
-		  show_rtn_name(__entry->rtn)
-	  )
+		  __entry->rtn)
 );
 
 DECLARE_EVENT_CLASS(scsi_cmd_done_timeout_template,
@@ -279,14 +269,9 @@ DECLARE_EVENT_CLASS(scsi_cmd_done_timeout_template,
 		__field( unsigned int,	prot_sglen )
 		__field( unsigned char,	prot_op )
 		__dynamic_array(unsigned char,	cmnd, cmd->cmd_len)
-		__field( u8, sense_key )
-		__field( u8, asc )
-		__field( u8, ascq )
 	),
 
 	TP_fast_assign(
-		struct scsi_sense_hdr sshdr;
-
 		__entry->host_no	= cmd->device->host->host_no;
 		__entry->channel	= cmd->device->channel;
 		__entry->id		= cmd->device->id;
@@ -300,22 +285,11 @@ DECLARE_EVENT_CLASS(scsi_cmd_done_timeout_template,
 		__entry->prot_sglen	= scsi_prot_sg_count(cmd);
 		__entry->prot_op	= scsi_get_prot_op(cmd);
 		memcpy(__get_dynamic_array(cmnd), cmd->cmnd, cmd->cmd_len);
-		if (cmd->sense_buffer && SCSI_SENSE_VALID(cmd) &&
-		    scsi_command_normalize_sense(cmd, &sshdr)) {
-			__entry->sense_key = sshdr.sense_key;
-			__entry->asc = sshdr.asc;
-			__entry->ascq = sshdr.ascq;
-		} else {
-			__entry->sense_key = 0;
-			__entry->asc = 0;
-			__entry->ascq = 0;
-		}
 	),
 
 	TP_printk("host_no=%u channel=%u id=%u lun=%u data_sgl=%u prot_sgl=%u " \
 		  "prot_op=%s driver_tag=%d scheduler_tag=%d cmnd=(%s %s raw=%s) " \
-		  "result=(driver=%s host=%s message=%s status=%s) "
-		  "sense=(key=%#x asc=%#x ascq=%#x)",
+		  "result=(driver=%s host=%s message=%s status=%s)",
 		  __entry->host_no, __entry->channel, __entry->id,
 		  __entry->lun, __entry->data_sglen, __entry->prot_sglen,
 		  show_prot_op_name(__entry->prot_op), __entry->driver_tag,
@@ -325,8 +299,7 @@ DECLARE_EVENT_CLASS(scsi_cmd_done_timeout_template,
 		  "DRIVER_OK",
 		  show_hostbyte_name(((__entry->result) >> 16) & 0xff),
 		  "COMMAND_COMPLETE",
-		  show_statusbyte_name(__entry->result & 0xff),
-		  __entry->sense_key, __entry->asc, __entry->ascq)
+		  show_statusbyte_name(__entry->result & 0xff))
 );
 
 DEFINE_EVENT(scsi_cmd_done_timeout_template, scsi_dispatch_cmd_done,

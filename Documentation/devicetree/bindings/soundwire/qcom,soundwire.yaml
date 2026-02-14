@@ -15,19 +15,12 @@ description:
 
 properties:
   compatible:
-    oneOf:
-      - enum:
-          - qcom,soundwire-v1.3.0
-          - qcom,soundwire-v1.5.0
-          - qcom,soundwire-v1.5.1
-          - qcom,soundwire-v1.6.0
-          - qcom,soundwire-v1.7.0
-          - qcom,soundwire-v2.0.0
-          - qcom,soundwire-v3.1.0
-      - items:
-          - enum:
-              - qcom,soundwire-v2.1.0
-          - const: qcom,soundwire-v2.0.0
+    enum:
+      - qcom,soundwire-v1.3.0
+      - qcom,soundwire-v1.5.0
+      - qcom,soundwire-v1.5.1
+      - qcom,soundwire-v1.6.0
+      - qcom,soundwire-v1.7.0
 
   reg:
     maxItems: 1
@@ -74,12 +67,10 @@ properties:
   qcom,din-ports:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: count of data in ports
-    deprecated: true
 
   qcom,dout-ports:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: count of data out ports
-    deprecated: true
 
   qcom,ports-word-length:
     $ref: /schemas/types.yaml#/definitions/uint8-array
@@ -89,29 +80,18 @@ properties:
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
 
   qcom,ports-sinterval-low:
     $ref: /schemas/types.yaml#/definitions/uint8-array
     description:
-      Sample interval (only lowest byte) of each data port.
+      Sample interval low of each data port.
       Out ports followed by In ports. Used for Sample Interval calculation.
       Value of 0xff indicates that this option is not implemented
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
-
-  qcom,ports-sinterval:
-    $ref: /schemas/types.yaml#/definitions/uint16-array
-    description:
-      Sample interval of each data port.
-      Out ports followed by In ports. Used for Sample Interval calculation.
-      Value of 0xffff indicates that this option is not implemented
-      or applicable for the respective data port.
-      More info in MIPI Alliance SoundWire 1.0 Specifications.
-    minItems: 3
-    maxItems: 16
+    maxItems: 8
 
   qcom,ports-offset1:
     $ref: /schemas/types.yaml#/definitions/uint8-array
@@ -122,7 +102,7 @@ properties:
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
 
   qcom,ports-offset2:
     $ref: /schemas/types.yaml#/definitions/uint8-array
@@ -133,7 +113,7 @@ properties:
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
 
   qcom,ports-lane-control:
     $ref: /schemas/types.yaml#/definitions/uint8-array
@@ -144,7 +124,7 @@ properties:
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
 
   qcom,ports-block-pack-mode:
     $ref: /schemas/types.yaml#/definitions/uint8-array
@@ -157,7 +137,7 @@ properties:
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
     items:
       oneOf:
         - minimum: 0
@@ -167,14 +147,14 @@ properties:
   qcom,ports-hstart:
     $ref: /schemas/types.yaml#/definitions/uint8-array
     description:
-      Identifying lowerst numbered column in SoundWire Frame,
+      Identifying lowerst numbered coloum in SoundWire Frame,
       i.e. left edge of the Transport sub-frame for each port.
       Out ports followed by In ports.
       Value of 0xff indicates that this option is not implemented
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
     items:
       oneOf:
         - minimum: 0
@@ -184,14 +164,14 @@ properties:
   qcom,ports-hstop:
     $ref: /schemas/types.yaml#/definitions/uint8-array
     description:
-      Identifying highest numbered column in SoundWire Frame,
+      Identifying highest numbered coloum in SoundWire Frame,
       i.e. the right edge of the Transport
       sub-frame for each port. Out ports followed by In ports.
       Value of 0xff indicates that this option is not implemented
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
     items:
       oneOf:
         - minimum: 0
@@ -207,7 +187,7 @@ properties:
       or applicable for the respective data port.
       More info in MIPI Alliance SoundWire 1.0 Specifications.
     minItems: 3
-    maxItems: 16
+    maxItems: 8
     items:
       oneOf:
         - minimum: 0
@@ -216,6 +196,16 @@ properties:
 
   label:
     maxItems: 1
+
+patternProperties:
+  "^.*@[0-9a-f],[0-9a-f]$":
+    type: object
+    description:
+      Child nodes for a standalone audio codec or speaker amplifier IC.
+      It has RX and TX Soundwire secondary devices.
+    properties:
+      compatible:
+        pattern: "^sdw[0-9a-f]{1}[0-9a-f]{4}[0-9a-f]{4}[0-9a-f]{2}$"
 
 required:
   - compatible
@@ -226,19 +216,13 @@ required:
   - '#sound-dai-cells'
   - '#address-cells'
   - '#size-cells'
+  - qcom,dout-ports
+  - qcom,din-ports
+  - qcom,ports-sinterval-low
   - qcom,ports-offset1
   - qcom,ports-offset2
 
-oneOf:
-  - required:
-      - qcom,ports-sinterval-low
-  - required:
-      - qcom,ports-sinterval
-
-allOf:
-  - $ref: soundwire-controller.yaml#
-
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |
@@ -257,6 +241,9 @@ examples:
 
         clocks = <&lpass_rx_macro>;
         clock-names = "iface";
+
+        qcom,din-ports = <0>;
+        qcom,dout-ports = <5>;
 
         resets = <&lpass_audiocc LPASS_AUDIO_SWR_RX_CGCR>;
         reset-names = "swr_audio_cgcr";

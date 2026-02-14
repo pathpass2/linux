@@ -44,7 +44,7 @@ struct mp2629_adc {
 	struct device *dev;
 };
 
-static const struct iio_chan_spec mp2629_channels[] = {
+static struct iio_chan_spec mp2629_channels[] = {
 	MP2629_ADC_CHAN(BATT_VOLT, IIO_VOLTAGE),
 	MP2629_ADC_CHAN(SYSTEM_VOLT, IIO_VOLTAGE),
 	MP2629_ADC_CHAN(INPUT_VOLT, IIO_VOLTAGE),
@@ -52,7 +52,7 @@ static const struct iio_chan_spec mp2629_channels[] = {
 	MP2629_ADC_CHAN(INPUT_CURRENT, IIO_CURRENT)
 };
 
-static const struct iio_map mp2629_adc_maps[] = {
+static struct iio_map mp2629_adc_maps[] = {
 	MP2629_MAP(BATT_VOLT, "batt-volt"),
 	MP2629_MAP(SYSTEM_VOLT, "system-volt"),
 	MP2629_MAP(INPUT_VOLT, "input-volt"),
@@ -131,8 +131,9 @@ static int mp2629_adc_probe(struct platform_device *pdev)
 	info->dev = dev;
 	platform_set_drvdata(pdev, indio_dev);
 
-	ret = regmap_set_bits(info->regmap, MP2629_REG_ADC_CTRL,
-			      MP2629_ADC_START | MP2629_ADC_CONTINUOUS);
+	ret = regmap_update_bits(info->regmap, MP2629_REG_ADC_CTRL,
+				MP2629_ADC_START | MP2629_ADC_CONTINUOUS,
+				MP2629_ADC_START | MP2629_ADC_CONTINUOUS);
 	if (ret) {
 		dev_err(dev, "adc enable fail: %d\n", ret);
 		return ret;
@@ -162,14 +163,15 @@ fail_map_unregister:
 	iio_map_array_unregister(indio_dev);
 
 fail_disable:
-	regmap_clear_bits(info->regmap, MP2629_REG_ADC_CTRL,
-			  MP2629_ADC_CONTINUOUS);
-	regmap_clear_bits(info->regmap, MP2629_REG_ADC_CTRL, MP2629_ADC_START);
+	regmap_update_bits(info->regmap, MP2629_REG_ADC_CTRL,
+					 MP2629_ADC_CONTINUOUS, 0);
+	regmap_update_bits(info->regmap, MP2629_REG_ADC_CTRL,
+					 MP2629_ADC_START, 0);
 
 	return ret;
 }
 
-static void mp2629_adc_remove(struct platform_device *pdev)
+static int mp2629_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct mp2629_adc *info = iio_priv(indio_dev);
@@ -178,14 +180,17 @@ static void mp2629_adc_remove(struct platform_device *pdev)
 
 	iio_map_array_unregister(indio_dev);
 
-	regmap_clear_bits(info->regmap, MP2629_REG_ADC_CTRL,
-			  MP2629_ADC_CONTINUOUS);
-	regmap_clear_bits(info->regmap, MP2629_REG_ADC_CTRL, MP2629_ADC_START);
+	regmap_update_bits(info->regmap, MP2629_REG_ADC_CTRL,
+					 MP2629_ADC_CONTINUOUS, 0);
+	regmap_update_bits(info->regmap, MP2629_REG_ADC_CTRL,
+					 MP2629_ADC_START, 0);
+
+	return 0;
 }
 
 static const struct of_device_id mp2629_adc_of_match[] = {
-	{ .compatible = "mps,mp2629_adc" },
-	{ }
+	{ .compatible = "mps,mp2629_adc"},
+	{}
 };
 MODULE_DEVICE_TABLE(of, mp2629_adc_of_match);
 

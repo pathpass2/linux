@@ -369,19 +369,23 @@ static int bcd2000_probe(struct usb_interface *interface,
 	char usb_path[32];
 	int err;
 
-	guard(mutex)(&devices_mutex);
+	mutex_lock(&devices_mutex);
 
 	for (card_index = 0; card_index < SNDRV_CARDS; ++card_index)
 		if (!test_bit(card_index, devices_used))
 			break;
 
-	if (card_index >= SNDRV_CARDS)
+	if (card_index >= SNDRV_CARDS) {
+		mutex_unlock(&devices_mutex);
 		return -ENOENT;
+	}
 
 	err = snd_card_new(&interface->dev, index[card_index], id[card_index],
 			THIS_MODULE, sizeof(*bcd2k), &card);
-	if (err < 0)
+	if (err < 0) {
+		mutex_unlock(&devices_mutex);
 		return err;
+	}
 
 	bcd2k = card->private_data;
 	bcd2k->dev = interface_to_usbdev(interface);
@@ -391,8 +395,8 @@ static int bcd2000_probe(struct usb_interface *interface,
 
 	snd_card_set_dev(card, &interface->dev);
 
-	strscpy(card->driver, "snd-bcd2000", sizeof(card->driver));
-	strscpy(card->shortname, "BCD2000", sizeof(card->shortname));
+	strncpy(card->driver, "snd-bcd2000", sizeof(card->driver));
+	strncpy(card->shortname, "BCD2000", sizeof(card->shortname));
 	usb_make_path(bcd2k->dev, usb_path, sizeof(usb_path));
 	snprintf(bcd2k->card->longname, sizeof(bcd2k->card->longname),
 		    "Behringer BCD2000 at %s",
@@ -409,12 +413,14 @@ static int bcd2000_probe(struct usb_interface *interface,
 	usb_set_intfdata(interface, bcd2k);
 	set_bit(card_index, devices_used);
 
+	mutex_unlock(&devices_mutex);
 	return 0;
 
 probe_error:
 	dev_info(&bcd2k->dev->dev, PREFIX "error during probing");
 	bcd2000_free_usb_related_resources(bcd2k, interface);
 	snd_card_free(card);
+	mutex_unlock(&devices_mutex);
 	return err;
 }
 
@@ -425,7 +431,7 @@ static void bcd2000_disconnect(struct usb_interface *interface)
 	if (!bcd2k)
 		return;
 
-	guard(mutex)(&devices_mutex);
+	mutex_lock(&devices_mutex);
 
 	/* make sure that userspace cannot create new requests */
 	snd_card_disconnect(bcd2k->card);
@@ -435,6 +441,8 @@ static void bcd2000_disconnect(struct usb_interface *interface)
 	clear_bit(bcd2k->card_index, devices_used);
 
 	snd_card_free_when_closed(bcd2k->card);
+
+	mutex_unlock(&devices_mutex);
 }
 
 static struct usb_driver bcd2000_driver = {

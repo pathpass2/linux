@@ -33,29 +33,28 @@
  *    Zhi Wang <zhi.a.wang@intel.com>
  */
 
-#include <linux/debugfs.h>
-#include <linux/eventfd.h>
 #include <linux/init.h>
-#include <linux/kthread.h>
-#include <linux/list.h>
-#include <linux/mdev.h>
 #include <linux/mm.h>
-#include <linux/nospec.h>
-#include <linux/rbtree.h>
+#include <linux/kthread.h>
 #include <linux/sched/mm.h>
-#include <linux/spinlock.h>
 #include <linux/types.h>
+#include <linux/list.h>
+#include <linux/rbtree.h>
+#include <linux/spinlock.h>
+#include <linux/eventfd.h>
+#include <linux/mdev.h>
+#include <linux/debugfs.h>
+
+#include <linux/nospec.h>
 
 #include <drm/drm_edid.h>
-#include <drm/drm_print.h>
 
-#include "gvt.h"
 #include "i915_drv.h"
 #include "intel_gvt.h"
-#include "sched_policy.h"
+#include "gvt.h"
 
-MODULE_IMPORT_NS("DMA_BUF");
-MODULE_IMPORT_NS("I915_GVT");
+MODULE_IMPORT_NS(DMA_BUF);
+MODULE_IMPORT_NS(I915_GVT);
 
 /* helper macros copied from vfio-pci */
 #define VFIO_PCI_OFFSET_SHIFT   40
@@ -107,10 +106,12 @@ struct gvt_dma {
 #define vfio_dev_to_vgpu(vfio_dev) \
 	container_of((vfio_dev), struct intel_vgpu, vfio_device)
 
-static void kvmgt_page_track_write(gpa_t gpa, const u8 *val, int len,
-				   struct kvm_page_track_notifier_node *node);
-static void kvmgt_page_track_remove_region(gfn_t gfn, unsigned long nr_pages,
-					   struct kvm_page_track_notifier_node *node);
+static void kvmgt_page_track_write(struct kvm_vcpu *vcpu, gpa_t gpa,
+		const u8 *val, int len,
+		struct kvm_page_track_notifier_node *node);
+static void kvmgt_page_track_flush_slot(struct kvm *kvm,
+		struct kvm_memory_slot *slot,
+		struct kvm_page_track_notifier_node *node);
 
 static ssize_t intel_vgpu_show_description(struct mdev_type *mtype, char *buf)
 {
@@ -143,7 +144,7 @@ static int gvt_pin_guest_page(struct intel_vgpu *vgpu, unsigned long gfn,
 	int ret;
 
 	/*
-	 * We pin the pages one-by-one to avoid allocating a big array
+	 * We pin the pages one-by-one to avoid allocating a big arrary
 	 * on stack to hold pfns.
 	 */
 	for (npage = 0; npage < total_pages; npage++) {
@@ -160,7 +161,8 @@ static int gvt_pin_guest_page(struct intel_vgpu *vgpu, unsigned long gfn,
 
 		if (npage == 0)
 			base_page = cur_page;
-		else if (page_to_pfn(base_page) + npage != page_to_pfn(cur_page)) {
+		else if (base_page + npage != cur_page) {
+			gvt_vgpu_err("The pages are not continuous\n");
 			ret = -EINVAL;
 			npage++;
 			goto err;
@@ -170,8 +172,7 @@ static int gvt_pin_guest_page(struct intel_vgpu *vgpu, unsigned long gfn,
 	*page = base_page;
 	return 0;
 err:
-	if (npage)
-		gvt_unpin_guest_page(vgpu, gfn, npage * PAGE_SIZE);
+	gvt_unpin_guest_page(vgpu, gfn, npage * PAGE_SIZE);
 	return ret;
 }
 
@@ -351,8 +352,6 @@ __kvmgt_protect_table_find(struct intel_vgpu *info, gfn_t gfn)
 {
 	struct kvmgt_pgfn *p, *res = NULL;
 
-	lockdep_assert_held(&info->vgpu_lock);
-
 	hash_for_each_possible(info->ptable, p, hnode, gfn) {
 		if (gfn == p->gfn) {
 			res = p;
@@ -426,18 +425,6 @@ static const struct intel_vgpu_regops intel_vgpu_regops_opregion = {
 	.release = intel_vgpu_reg_release_opregion,
 };
 
-static bool edid_valid(const void *edid, size_t size)
-{
-	const struct drm_edid *drm_edid;
-	bool is_valid;
-
-	drm_edid = drm_edid_alloc(edid, size);
-	is_valid = drm_edid_valid(drm_edid);
-	drm_edid_free(drm_edid);
-
-	return is_valid;
-}
-
 static int handle_edid_regs(struct intel_vgpu *vgpu,
 			struct vfio_edid_region *region, char *buf,
 			size_t count, u16 offset, bool is_write)
@@ -456,7 +443,11 @@ static int handle_edid_regs(struct intel_vgpu *vgpu,
 		switch (offset) {
 		case offsetof(struct vfio_region_gfx_edid, link_state):
 			if (data == VFIO_DEVICE_GFX_LINK_STATE_UP) {
-				if (!edid_valid(region->edid_blob, EDID_SIZE)) {
+				if (!drm_edid_block_valid(
+					(u8 *)region->edid_blob,
+					0,
+					true,
+					NULL)) {
 					gvt_vgpu_err("invalid EDID blob\n");
 					return -EINVAL;
 				}
@@ -583,7 +574,7 @@ int intel_gvt_set_opregion(struct intel_vgpu *vgpu)
 	ret = intel_vgpu_register_reg(vgpu,
 			PCI_VENDOR_ID_INTEL | VFIO_REGION_TYPE_PCI_VENDOR_TYPE,
 			VFIO_REGION_SUBTYPE_INTEL_IGD_OPREGION,
-			&intel_vgpu_regops_opregion, INTEL_GVT_OPREGION_SIZE,
+			&intel_vgpu_regops_opregion, OPREGION_SIZE,
 			VFIO_REGION_INFO_FLAG_READ, base);
 
 	return ret;
@@ -663,19 +654,21 @@ out:
 static int intel_vgpu_open_device(struct vfio_device *vfio_dev)
 {
 	struct intel_vgpu *vgpu = vfio_dev_to_vgpu(vfio_dev);
-	int ret;
+
+	if (!vgpu->vfio_device.kvm ||
+	    vgpu->vfio_device.kvm->mm != current->mm) {
+		gvt_vgpu_err("KVM is required to use Intel vGPU\n");
+		return -ESRCH;
+	}
 
 	if (__kvmgt_vgpu_exist(vgpu))
 		return -EEXIST;
 
 	vgpu->track_node.track_write = kvmgt_page_track_write;
-	vgpu->track_node.track_remove_region = kvmgt_page_track_remove_region;
-	ret = kvm_page_track_register_notifier(vgpu->vfio_device.kvm,
-					       &vgpu->track_node);
-	if (ret) {
-		gvt_vgpu_err("KVM is required to use Intel vGPU\n");
-		return ret;
-	}
+	vgpu->track_node.track_flush_slot = kvmgt_page_track_flush_slot;
+	kvm_get_kvm(vgpu->vfio_device.kvm);
+	kvm_page_track_register_notifier(vgpu->vfio_device.kvm,
+					 &vgpu->track_node);
 
 	set_bit(INTEL_VGPU_STATUS_ATTACHED, vgpu->status);
 
@@ -710,6 +703,7 @@ static void intel_vgpu_close_device(struct vfio_device *vfio_dev)
 
 	kvm_page_track_unregister_notifier(vgpu->vfio_device.kvm,
 					   &vgpu->track_node);
+	kvm_put_kvm(vgpu->vfio_device.kvm);
 
 	kvmgt_protect_table_destroy(vgpu);
 	gvt_cache_destroy(vgpu);
@@ -1141,122 +1135,6 @@ static int intel_vgpu_set_irqs(struct intel_vgpu *vgpu, u32 flags,
 	return func(vgpu, index, start, count, flags, data);
 }
 
-static int intel_vgpu_ioctl_get_region_info(struct vfio_device *vfio_dev,
-					    struct vfio_region_info *info,
-					    struct vfio_info_cap *caps)
-{
-	struct vfio_region_info_cap_sparse_mmap *sparse = NULL;
-	struct intel_vgpu *vgpu = vfio_dev_to_vgpu(vfio_dev);
-	int nr_areas = 1;
-	int cap_type_id;
-	unsigned int i;
-	int ret;
-
-	switch (info->index) {
-	case VFIO_PCI_CONFIG_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = vgpu->gvt->device_info.cfg_space_size;
-		info->flags = VFIO_REGION_INFO_FLAG_READ |
-			      VFIO_REGION_INFO_FLAG_WRITE;
-		break;
-	case VFIO_PCI_BAR0_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = vgpu->cfg_space.bar[info->index].size;
-		if (!info->size) {
-			info->flags = 0;
-			break;
-		}
-
-		info->flags = VFIO_REGION_INFO_FLAG_READ |
-			      VFIO_REGION_INFO_FLAG_WRITE;
-		break;
-	case VFIO_PCI_BAR1_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = 0;
-		info->flags = 0;
-		break;
-	case VFIO_PCI_BAR2_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->flags = VFIO_REGION_INFO_FLAG_CAPS |
-			      VFIO_REGION_INFO_FLAG_MMAP |
-			      VFIO_REGION_INFO_FLAG_READ |
-			      VFIO_REGION_INFO_FLAG_WRITE;
-		info->size = gvt_aperture_sz(vgpu->gvt);
-
-		sparse = kzalloc(struct_size(sparse, areas, nr_areas),
-				 GFP_KERNEL);
-		if (!sparse)
-			return -ENOMEM;
-
-		sparse->header.id = VFIO_REGION_INFO_CAP_SPARSE_MMAP;
-		sparse->header.version = 1;
-		sparse->nr_areas = nr_areas;
-		cap_type_id = VFIO_REGION_INFO_CAP_SPARSE_MMAP;
-		sparse->areas[0].offset =
-			PAGE_ALIGN(vgpu_aperture_offset(vgpu));
-		sparse->areas[0].size = vgpu_aperture_sz(vgpu);
-		break;
-
-	case VFIO_PCI_BAR3_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = 0;
-		info->flags = 0;
-
-		gvt_dbg_core("get region info bar:%d\n", info->index);
-		break;
-
-	case VFIO_PCI_ROM_REGION_INDEX:
-	case VFIO_PCI_VGA_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = 0;
-		info->flags = 0;
-
-		gvt_dbg_core("get region info index:%d\n", info->index);
-		break;
-	default: {
-		struct vfio_region_info_cap_type cap_type = {
-			.header.id = VFIO_REGION_INFO_CAP_TYPE,
-			.header.version = 1
-		};
-
-		if (info->index >= VFIO_PCI_NUM_REGIONS + vgpu->num_regions)
-			return -EINVAL;
-		info->index = array_index_nospec(
-			info->index, VFIO_PCI_NUM_REGIONS + vgpu->num_regions);
-
-		i = info->index - VFIO_PCI_NUM_REGIONS;
-
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = vgpu->region[i].size;
-		info->flags = vgpu->region[i].flags;
-
-		cap_type.type = vgpu->region[i].type;
-		cap_type.subtype = vgpu->region[i].subtype;
-
-		ret = vfio_info_add_capability(caps, &cap_type.header,
-					       sizeof(cap_type));
-		if (ret)
-			return ret;
-	}
-	}
-
-	if ((info->flags & VFIO_REGION_INFO_FLAG_CAPS) && sparse) {
-		ret = -EINVAL;
-		if (cap_type_id == VFIO_REGION_INFO_CAP_SPARSE_MMAP) {
-			ret = vfio_info_add_capability(
-				caps, &sparse->header,
-				struct_size(sparse, areas, sparse->nr_areas));
-		}
-		if (ret) {
-			kfree(sparse);
-			return ret;
-		}
-	}
-
-	kfree(sparse);
-	return 0;
-}
-
 static long intel_vgpu_ioctl(struct vfio_device *vfio_dev, unsigned int cmd,
 			     unsigned long arg)
 {
@@ -1285,6 +1163,157 @@ static long intel_vgpu_ioctl(struct vfio_device *vfio_dev, unsigned int cmd,
 		return copy_to_user((void __user *)arg, &info, minsz) ?
 			-EFAULT : 0;
 
+	} else if (cmd == VFIO_DEVICE_GET_REGION_INFO) {
+		struct vfio_region_info info;
+		struct vfio_info_cap caps = { .buf = NULL, .size = 0 };
+		unsigned int i;
+		int ret;
+		struct vfio_region_info_cap_sparse_mmap *sparse = NULL;
+		int nr_areas = 1;
+		int cap_type_id;
+
+		minsz = offsetofend(struct vfio_region_info, offset);
+
+		if (copy_from_user(&info, (void __user *)arg, minsz))
+			return -EFAULT;
+
+		if (info.argsz < minsz)
+			return -EINVAL;
+
+		switch (info.index) {
+		case VFIO_PCI_CONFIG_REGION_INDEX:
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.size = vgpu->gvt->device_info.cfg_space_size;
+			info.flags = VFIO_REGION_INFO_FLAG_READ |
+				     VFIO_REGION_INFO_FLAG_WRITE;
+			break;
+		case VFIO_PCI_BAR0_REGION_INDEX:
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.size = vgpu->cfg_space.bar[info.index].size;
+			if (!info.size) {
+				info.flags = 0;
+				break;
+			}
+
+			info.flags = VFIO_REGION_INFO_FLAG_READ |
+				     VFIO_REGION_INFO_FLAG_WRITE;
+			break;
+		case VFIO_PCI_BAR1_REGION_INDEX:
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.size = 0;
+			info.flags = 0;
+			break;
+		case VFIO_PCI_BAR2_REGION_INDEX:
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.flags = VFIO_REGION_INFO_FLAG_CAPS |
+					VFIO_REGION_INFO_FLAG_MMAP |
+					VFIO_REGION_INFO_FLAG_READ |
+					VFIO_REGION_INFO_FLAG_WRITE;
+			info.size = gvt_aperture_sz(vgpu->gvt);
+
+			sparse = kzalloc(struct_size(sparse, areas, nr_areas),
+					 GFP_KERNEL);
+			if (!sparse)
+				return -ENOMEM;
+
+			sparse->header.id = VFIO_REGION_INFO_CAP_SPARSE_MMAP;
+			sparse->header.version = 1;
+			sparse->nr_areas = nr_areas;
+			cap_type_id = VFIO_REGION_INFO_CAP_SPARSE_MMAP;
+			sparse->areas[0].offset =
+					PAGE_ALIGN(vgpu_aperture_offset(vgpu));
+			sparse->areas[0].size = vgpu_aperture_sz(vgpu);
+			break;
+
+		case VFIO_PCI_BAR3_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.size = 0;
+			info.flags = 0;
+
+			gvt_dbg_core("get region info bar:%d\n", info.index);
+			break;
+
+		case VFIO_PCI_ROM_REGION_INDEX:
+		case VFIO_PCI_VGA_REGION_INDEX:
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.size = 0;
+			info.flags = 0;
+
+			gvt_dbg_core("get region info index:%d\n", info.index);
+			break;
+		default:
+			{
+				struct vfio_region_info_cap_type cap_type = {
+					.header.id = VFIO_REGION_INFO_CAP_TYPE,
+					.header.version = 1 };
+
+				if (info.index >= VFIO_PCI_NUM_REGIONS +
+						vgpu->num_regions)
+					return -EINVAL;
+				info.index =
+					array_index_nospec(info.index,
+							VFIO_PCI_NUM_REGIONS +
+							vgpu->num_regions);
+
+				i = info.index - VFIO_PCI_NUM_REGIONS;
+
+				info.offset =
+					VFIO_PCI_INDEX_TO_OFFSET(info.index);
+				info.size = vgpu->region[i].size;
+				info.flags = vgpu->region[i].flags;
+
+				cap_type.type = vgpu->region[i].type;
+				cap_type.subtype = vgpu->region[i].subtype;
+
+				ret = vfio_info_add_capability(&caps,
+							&cap_type.header,
+							sizeof(cap_type));
+				if (ret)
+					return ret;
+			}
+		}
+
+		if ((info.flags & VFIO_REGION_INFO_FLAG_CAPS) && sparse) {
+			switch (cap_type_id) {
+			case VFIO_REGION_INFO_CAP_SPARSE_MMAP:
+				ret = vfio_info_add_capability(&caps,
+					&sparse->header,
+					struct_size(sparse, areas,
+						    sparse->nr_areas));
+				if (ret) {
+					kfree(sparse);
+					return ret;
+				}
+				break;
+			default:
+				kfree(sparse);
+				return -EINVAL;
+			}
+		}
+
+		if (caps.size) {
+			info.flags |= VFIO_REGION_INFO_FLAG_CAPS;
+			if (info.argsz < sizeof(info) + caps.size) {
+				info.argsz = sizeof(info) + caps.size;
+				info.cap_offset = 0;
+			} else {
+				vfio_info_cap_shift(&caps, sizeof(info));
+				if (copy_to_user((void __user *)arg +
+						  sizeof(info), caps.buf,
+						  caps.size)) {
+					kfree(caps.buf);
+					kfree(sparse);
+					return -EFAULT;
+				}
+				info.cap_offset = sizeof(info);
+			}
+
+			kfree(caps.buf);
+		}
+
+		kfree(sparse);
+		return copy_to_user((void __user *)arg, &info, minsz) ?
+			-EFAULT : 0;
 	} else if (cmd == VFIO_DEVICE_GET_IRQ_INFO) {
 		struct vfio_irq_info info;
 
@@ -1327,27 +1356,21 @@ static long intel_vgpu_ioctl(struct vfio_device *vfio_dev, unsigned int cmd,
 		if (copy_from_user(&hdr, (void __user *)arg, minsz))
 			return -EFAULT;
 
-		if (!is_power_of_2(hdr.flags & VFIO_IRQ_SET_DATA_TYPE_MASK) ||
-		    !is_power_of_2(hdr.flags & VFIO_IRQ_SET_ACTION_TYPE_MASK))
-			return -EINVAL;
-
 		if (!(hdr.flags & VFIO_IRQ_SET_DATA_NONE)) {
 			int max = intel_vgpu_get_irq_count(vgpu, hdr.index);
-
-			if (!hdr.count)
-				return -EINVAL;
 
 			ret = vfio_set_irqs_validate_and_prepare(&hdr, max,
 						VFIO_PCI_NUM_IRQS, &data_size);
 			if (ret) {
-				gvt_vgpu_err("vfio_set_irqs_validate_and_prepare failed\n");
-				return ret;
+				gvt_vgpu_err("intel:vfio_set_irqs_validate_and_prepare failed\n");
+				return -EINVAL;
 			}
-
-			data = memdup_user((void __user *)(arg + minsz),
-					   data_size);
-			if (IS_ERR(data))
-				return PTR_ERR(data);
+			if (data_size) {
+				data = memdup_user((void __user *)(arg + minsz),
+						   data_size);
+				if (IS_ERR(data))
+					return PTR_ERR(data);
+			}
 		}
 
 		ret = intel_vgpu_set_irqs(vgpu, hdr.flags, hdr.index,
@@ -1359,7 +1382,7 @@ static long intel_vgpu_ioctl(struct vfio_device *vfio_dev, unsigned int cmd,
 		intel_gvt_reset_vgpu(vgpu);
 		return 0;
 	} else if (cmd == VFIO_DEVICE_QUERY_GFX_PLANE) {
-		struct vfio_device_gfx_plane_info dmabuf = {};
+		struct vfio_device_gfx_plane_info dmabuf;
 		int ret = 0;
 
 		minsz = offsetofend(struct vfio_device_gfx_plane_info,
@@ -1447,12 +1470,10 @@ static const struct vfio_device_ops intel_vgpu_dev_ops = {
 	.write		= intel_vgpu_write,
 	.mmap		= intel_vgpu_mmap,
 	.ioctl		= intel_vgpu_ioctl,
-	.get_region_info_caps = intel_vgpu_ioctl_get_region_info,
 	.dma_unmap	= intel_vgpu_dma_unmap,
 	.bind_iommufd	= vfio_iommufd_emulated_bind,
 	.unbind_iommufd = vfio_iommufd_emulated_unbind,
 	.attach_ioas	= vfio_iommufd_emulated_attach_ioas,
-	.detach_ioas	= vfio_iommufd_emulated_detach_ioas,
 };
 
 static int intel_vgpu_probe(struct mdev_device *mdev)
@@ -1525,70 +1546,95 @@ static struct mdev_driver intel_vgpu_mdev_driver = {
 
 int intel_gvt_page_track_add(struct intel_vgpu *info, u64 gfn)
 {
-	int r;
+	struct kvm *kvm = info->vfio_device.kvm;
+	struct kvm_memory_slot *slot;
+	int idx;
 
 	if (!test_bit(INTEL_VGPU_STATUS_ATTACHED, info->status))
 		return -ESRCH;
 
+	idx = srcu_read_lock(&kvm->srcu);
+	slot = gfn_to_memslot(kvm, gfn);
+	if (!slot) {
+		srcu_read_unlock(&kvm->srcu, idx);
+		return -EINVAL;
+	}
+
+	write_lock(&kvm->mmu_lock);
+
 	if (kvmgt_gfn_is_write_protected(info, gfn))
-		return 0;
+		goto out;
 
-	r = kvm_write_track_add_gfn(info->vfio_device.kvm, gfn);
-	if (r)
-		return r;
-
+	kvm_slot_page_track_add_page(kvm, slot, gfn, KVM_PAGE_TRACK_WRITE);
 	kvmgt_protect_table_add(info, gfn);
+
+out:
+	write_unlock(&kvm->mmu_lock);
+	srcu_read_unlock(&kvm->srcu, idx);
 	return 0;
 }
 
 int intel_gvt_page_track_remove(struct intel_vgpu *info, u64 gfn)
 {
-	int r;
+	struct kvm *kvm = info->vfio_device.kvm;
+	struct kvm_memory_slot *slot;
+	int idx;
 
 	if (!test_bit(INTEL_VGPU_STATUS_ATTACHED, info->status))
 		return -ESRCH;
 
+	idx = srcu_read_lock(&kvm->srcu);
+	slot = gfn_to_memslot(kvm, gfn);
+	if (!slot) {
+		srcu_read_unlock(&kvm->srcu, idx);
+		return -EINVAL;
+	}
+
+	write_lock(&kvm->mmu_lock);
+
 	if (!kvmgt_gfn_is_write_protected(info, gfn))
-		return 0;
+		goto out;
 
-	r = kvm_write_track_remove_gfn(info->vfio_device.kvm, gfn);
-	if (r)
-		return r;
-
+	kvm_slot_page_track_remove_page(kvm, slot, gfn, KVM_PAGE_TRACK_WRITE);
 	kvmgt_protect_table_del(info, gfn);
+
+out:
+	write_unlock(&kvm->mmu_lock);
+	srcu_read_unlock(&kvm->srcu, idx);
 	return 0;
 }
 
-static void kvmgt_page_track_write(gpa_t gpa, const u8 *val, int len,
-				   struct kvm_page_track_notifier_node *node)
+static void kvmgt_page_track_write(struct kvm_vcpu *vcpu, gpa_t gpa,
+		const u8 *val, int len,
+		struct kvm_page_track_notifier_node *node)
 {
 	struct intel_vgpu *info =
 		container_of(node, struct intel_vgpu, track_node);
 
-	mutex_lock(&info->vgpu_lock);
-
-	if (kvmgt_gfn_is_write_protected(info, gpa >> PAGE_SHIFT))
+	if (kvmgt_gfn_is_write_protected(info, gpa_to_gfn(gpa)))
 		intel_vgpu_page_track_handler(info, gpa,
 						     (void *)val, len);
-
-	mutex_unlock(&info->vgpu_lock);
 }
 
-static void kvmgt_page_track_remove_region(gfn_t gfn, unsigned long nr_pages,
-					   struct kvm_page_track_notifier_node *node)
+static void kvmgt_page_track_flush_slot(struct kvm *kvm,
+		struct kvm_memory_slot *slot,
+		struct kvm_page_track_notifier_node *node)
 {
-	unsigned long i;
+	int i;
+	gfn_t gfn;
 	struct intel_vgpu *info =
 		container_of(node, struct intel_vgpu, track_node);
 
-	mutex_lock(&info->vgpu_lock);
-
-	for (i = 0; i < nr_pages; i++) {
-		if (kvmgt_gfn_is_write_protected(info, gfn + i))
-			kvmgt_protect_table_del(info, gfn + i);
+	write_lock(&kvm->mmu_lock);
+	for (i = 0; i < slot->npages; i++) {
+		gfn = slot->base_gfn + i;
+		if (kvmgt_gfn_is_write_protected(info, gfn)) {
+			kvm_slot_page_track_remove_page(kvm, slot, gfn,
+						KVM_PAGE_TRACK_WRITE);
+			kvmgt_protect_table_del(info, gfn);
+		}
 	}
-
-	mutex_unlock(&info->vgpu_lock);
+	write_unlock(&kvm->mmu_lock);
 }
 
 void intel_vgpu_detach_regions(struct intel_vgpu *vgpu)
@@ -1966,6 +2012,5 @@ static void __exit kvmgt_exit(void)
 module_init(kvmgt_init);
 module_exit(kvmgt_exit);
 
-MODULE_DESCRIPTION("Intel mediated pass-through framework for KVM");
 MODULE_LICENSE("GPL and additional rights");
 MODULE_AUTHOR("Intel Corporation");

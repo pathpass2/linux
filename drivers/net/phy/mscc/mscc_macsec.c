@@ -504,15 +504,15 @@ static u32 vsc8584_macsec_flow_context_id(struct macsec_flow *flow)
 static int vsc8584_macsec_derive_key(const u8 *key, u16 key_len, u8 hkey[16])
 {
 	const u8 input[AES_BLOCK_SIZE] = {0};
-	struct aes_enckey aes;
+	struct crypto_aes_ctx ctx;
 	int ret;
 
-	ret = aes_prepareenckey(&aes, key, key_len);
+	ret = aes_expandkey(&ctx, key, key_len);
 	if (ret)
 		return ret;
 
-	aes_encrypt(&aes, hkey, input);
-	memzero_explicit(&aes, sizeof(aes));
+	aes_encrypt(&ctx, hkey, input);
+	memzero_explicit(&ctx, sizeof(ctx));
 	return 0;
 }
 
@@ -849,9 +849,6 @@ static int vsc8584_macsec_upd_rxsa(struct macsec_context *ctx)
 	struct macsec_flow *flow;
 	int ret;
 
-	if (ctx->sa.update_pn)
-		return -EINVAL;
-
 	flow = vsc8584_macsec_find_flow(ctx, MACSEC_INGR);
 	if (IS_ERR(flow))
 		return PTR_ERR(flow);
@@ -902,9 +899,6 @@ static int vsc8584_macsec_upd_txsa(struct macsec_context *ctx)
 {
 	struct macsec_flow *flow;
 	int ret;
-
-	if (ctx->sa.update_pn)
-		return -EINVAL;
 
 	flow = vsc8584_macsec_find_flow(ctx, MACSEC_EGR);
 	if (IS_ERR(flow))

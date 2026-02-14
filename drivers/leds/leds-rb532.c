@@ -42,9 +42,10 @@ static int rb532_led_probe(struct platform_device *pdev)
 	return led_classdev_register(&pdev->dev, &rb532_uled);
 }
 
-static void rb532_led_remove(struct platform_device *pdev)
+static int rb532_led_remove(struct platform_device *pdev)
 {
 	led_classdev_unregister(&rb532_uled);
+	return 0;
 }
 
 static struct platform_driver rb532_led_driver = {

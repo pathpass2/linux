@@ -3,15 +3,8 @@
 #ifndef BTRFS_BLOCK_RSV_H
 #define BTRFS_BLOCK_RSV_H
 
-#include <linux/types.h>
-#include <linux/compiler.h>
-#include <linux/spinlock.h>
-
 struct btrfs_trans_handle;
 struct btrfs_root;
-struct btrfs_space_info;
-struct btrfs_block_rsv;
-struct btrfs_fs_info;
 enum btrfs_reserve_flush_enum;
 
 /*
@@ -22,10 +15,8 @@ enum btrfs_rsv_type {
 	BTRFS_BLOCK_RSV_DELALLOC,
 	BTRFS_BLOCK_RSV_TRANS,
 	BTRFS_BLOCK_RSV_CHUNK,
-	BTRFS_BLOCK_RSV_REMAP,
 	BTRFS_BLOCK_RSV_DELOPS,
 	BTRFS_BLOCK_RSV_DELREFS,
-	BTRFS_BLOCK_RSV_TREELOG,
 	BTRFS_BLOCK_RSV_EMPTY,
 	BTRFS_BLOCK_RSV_TEMP,
 };
@@ -74,7 +65,7 @@ int btrfs_block_rsv_add(struct btrfs_fs_info *fs_info,
 			enum btrfs_reserve_flush_enum flush);
 int btrfs_block_rsv_check(struct btrfs_block_rsv *block_rsv, int min_percent);
 int btrfs_block_rsv_refill(struct btrfs_fs_info *fs_info,
-			   struct btrfs_block_rsv *block_rsv, u64 num_bytes,
+			   struct btrfs_block_rsv *block_rsv, u64 min_reserved,
 			   enum btrfs_reserve_flush_enum flush);
 int btrfs_block_rsv_migrate(struct btrfs_block_rsv *src_rsv,
 			    struct btrfs_block_rsv *dst_rsv, u64 num_bytes,
@@ -91,8 +82,6 @@ void btrfs_release_global_block_rsv(struct btrfs_fs_info *fs_info);
 struct btrfs_block_rsv *btrfs_use_block_rsv(struct btrfs_trans_handle *trans,
 					    struct btrfs_root *root,
 					    u32 blocksize);
-int btrfs_check_trunc_cache_free_space(const struct btrfs_fs_info *fs_info,
-				       struct btrfs_block_rsv *rsv);
 static inline void btrfs_unuse_block_rsv(struct btrfs_fs_info *fs_info,
 					 struct btrfs_block_rsv *block_rsv,
 					 u32 blocksize)
@@ -108,38 +97,6 @@ static inline void btrfs_unuse_block_rsv(struct btrfs_fs_info *fs_info,
 static inline bool btrfs_block_rsv_full(const struct btrfs_block_rsv *rsv)
 {
 	return data_race(rsv->full);
-}
-
-/*
- * Get the reserved mount of a block reserve in a context where getting a stale
- * value is acceptable, instead of accessing it directly and trigger data race
- * warning from KCSAN.
- */
-static inline u64 btrfs_block_rsv_reserved(struct btrfs_block_rsv *rsv)
-{
-	u64 ret;
-
-	spin_lock(&rsv->lock);
-	ret = rsv->reserved;
-	spin_unlock(&rsv->lock);
-
-	return ret;
-}
-
-/*
- * Get the size of a block reserve in a context where getting a stale value is
- * acceptable, instead of accessing it directly and trigger data race warning
- * from KCSAN.
- */
-static inline u64 btrfs_block_rsv_size(struct btrfs_block_rsv *rsv)
-{
-	u64 ret;
-
-	spin_lock(&rsv->lock);
-	ret = rsv->size;
-	spin_unlock(&rsv->lock);
-
-	return ret;
 }
 
 #endif /* BTRFS_BLOCK_RSV_H */

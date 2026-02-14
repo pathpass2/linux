@@ -36,14 +36,14 @@ static int bme680_i2c_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id bme680_i2c_id[] = {
-	{ "bme680" },
-	{ }
+	{"bme680", 0},
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, bme680_i2c_id);
 
 static const struct of_device_id bme680_of_i2c_match[] = {
 	{ .compatible = "bosch,bme680", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, bme680_of_i2c_match);
 
@@ -51,9 +51,8 @@ static struct i2c_driver bme680_i2c_driver = {
 	.driver = {
 		.name			= "bme680_i2c",
 		.of_match_table		= bme680_of_i2c_match,
-		.pm = pm_ptr(&bme680_dev_pm_ops),
 	},
-	.probe = bme680_i2c_probe,
+	.probe_new = bme680_i2c_probe,
 	.id_table = bme680_i2c_id,
 };
 module_i2c_driver(bme680_i2c_driver);
@@ -61,4 +60,4 @@ module_i2c_driver(bme680_i2c_driver);
 MODULE_AUTHOR("Himanshu Jha <himanshujha199640@gmail.com>");
 MODULE_DESCRIPTION("BME680 I2C driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_BME680");
+MODULE_IMPORT_NS(IIO_BME680);

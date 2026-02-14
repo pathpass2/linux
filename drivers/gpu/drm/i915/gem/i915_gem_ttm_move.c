@@ -155,7 +155,7 @@ void i915_ttm_adjust_gem_after_move(struct drm_i915_gem_object *obj)
  * @bo: The ttm buffer object.
  *
  * This function prepares an object for move by removing all GPU bindings,
- * removing all CPU mappings and finally releasing the pages sg-table.
+ * removing all CPU mapings and finally releasing the pages sg-table.
  *
  * Return: 0 if successful, negative error code on error.
  */
@@ -214,8 +214,7 @@ static struct dma_fence *i915_ttm_accel_move(struct ttm_buffer_object *bo,
 
 		intel_engine_pm_get(to_gt(i915)->migrate.context->engine);
 		ret = intel_context_migrate_clear(to_gt(i915)->migrate.context, deps,
-						  dst_st->sgl,
-						  i915_gem_get_pat_index(i915, dst_level),
+						  dst_st->sgl, dst_level,
 						  i915_ttm_gtt_binds_lmem(dst_mem),
 						  0, &rq);
 	} else {
@@ -229,10 +228,9 @@ static struct dma_fence *i915_ttm_accel_move(struct ttm_buffer_object *bo,
 		intel_engine_pm_get(to_gt(i915)->migrate.context->engine);
 		ret = intel_context_migrate_copy(to_gt(i915)->migrate.context,
 						 deps, src_rsgt->table.sgl,
-						 i915_gem_get_pat_index(i915, src_level),
+						 src_level,
 						 i915_ttm_gtt_binds_lmem(bo->resource),
-						 dst_st->sgl,
-						 i915_gem_get_pat_index(i915, dst_level),
+						 dst_st->sgl, dst_level,
 						 i915_ttm_gtt_binds_lmem(dst_mem),
 						 &rq);
 
@@ -255,7 +253,6 @@ static struct dma_fence *i915_ttm_accel_move(struct ttm_buffer_object *bo,
  * @_src_iter: Storage space for the source kmap iterator.
  * @dst_iter: Pointer to the destination kmap iterator.
  * @src_iter: Pointer to the source kmap iterator.
- * @num_pages: Number of pages
  * @clear: Whether to clear instead of copy.
  * @src_rsgt: Refcounted scatter-gather list of source memory.
  * @dst_rsgt: Refcounted scatter-gather list of destination memory.
@@ -560,8 +557,6 @@ out:
  * i915_ttm_move - The TTM move callback used by i915.
  * @bo: The buffer object.
  * @evict: Whether this is an eviction.
- * @ctx: Pointer to a struct ttm_operation_ctx indicating how the waits should be
- *       performed if waiting
  * @dst_mem: The destination ttm resource.
  * @hop: If we need multihop, what temporary memory type to move to.
  *
@@ -578,7 +573,7 @@ int i915_ttm_move(struct ttm_buffer_object *bo, bool evict,
 	struct dma_fence *migration_fence = NULL;
 	struct ttm_tt *ttm = bo->ttm;
 	struct i915_refct_sgt *dst_rsgt;
-	bool clear, prealloc_bo;
+	bool clear;
 	int ret;
 
 	if (GEM_WARN_ON(i915_ttm_is_ghost_object(bo))) {
@@ -603,7 +598,7 @@ int i915_ttm_move(struct ttm_buffer_object *bo, bool evict,
 		 * sequence, where at the end we can do the move for real.
 		 *
 		 * The special case here is when the dst_mem is TTM_PL_SYSTEM,
-		 * which doesn't require any kind of move, so it should be safe
+		 * which doens't require any kind of move, so it should be safe
 		 * to skip all the below and call ttm_bo_move_null() here, where
 		 * the caller in __i915_ttm_get_pages() will take care of the
 		 * rest, since we should have a valid ttm_tt.
@@ -624,7 +619,7 @@ int i915_ttm_move(struct ttm_buffer_object *bo, bool evict,
 
 	/* Populate ttm with pages if needed. Typically system memory. */
 	if (ttm && (dst_man->use_tt || (ttm->page_flags & TTM_TT_FLAG_SWAPPED))) {
-		ret = ttm_bo_populate(bo, ctx);
+		ret = ttm_tt_populate(bo->bdev, ttm, ctx);
 		if (ret)
 			return ret;
 	}
@@ -634,8 +629,7 @@ int i915_ttm_move(struct ttm_buffer_object *bo, bool evict,
 		return PTR_ERR(dst_rsgt);
 
 	clear = !i915_ttm_cpu_maps_iomem(bo->resource) && (!ttm || !ttm_tt_is_populated(ttm));
-	prealloc_bo = obj->flags & I915_BO_PREALLOC;
-	if (!(clear && ttm && !((ttm->page_flags & TTM_TT_FLAG_ZERO_ALLOC) && !prealloc_bo))) {
+	if (!(clear && ttm && !(ttm->page_flags & TTM_TT_FLAG_ZERO_ALLOC))) {
 		struct i915_deps deps;
 
 		i915_deps_init(&deps, GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN);
@@ -717,10 +711,6 @@ int i915_gem_obj_copy_ttm(struct drm_i915_gem_object *dst,
 
 	assert_object_held(dst);
 	assert_object_held(src);
-
-	if (GEM_WARN_ON(!src_bo->resource || !dst_bo->resource))
-		return -EINVAL;
-
 	i915_deps_init(&deps, GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN);
 
 	ret = dma_resv_reserve_fences(src_bo->base.resv, 1);

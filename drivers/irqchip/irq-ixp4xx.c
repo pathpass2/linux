@@ -105,7 +105,8 @@ static void ixp4xx_irq_unmask(struct irq_data *d)
 	}
 }
 
-static void __exception_irq_entry ixp4xx_handle_irq(struct pt_regs *regs)
+static asmlinkage void __exception_irq_entry
+ixp4xx_handle_irq(struct pt_regs *regs)
 {
 	struct ixp4xx_irq *ixi = &ixirq;
 	unsigned long status;
@@ -261,7 +262,7 @@ static int __init ixp4xx_of_init_irq(struct device_node *np,
 		pr_crit("IXP4XX: could not ioremap interrupt controller\n");
 		return -ENODEV;
 	}
-	fwnode = of_fwnode_handle(np);
+	fwnode = of_node_to_fwnode(np);
 
 	/* These chip variants have 64 interrupts */
 	is_356 = of_device_is_compatible(np, "intel,ixp43x-interrupt") ||

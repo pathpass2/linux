@@ -135,18 +135,12 @@ char *sync_file_get_name(struct sync_file *sync_file, char *buf, int len)
 		strscpy(buf, sync_file->user_name, len);
 	} else {
 		struct dma_fence *fence = sync_file->fence;
-		const char __rcu *timeline;
-		const char __rcu *driver;
 
-		rcu_read_lock();
-		driver = dma_fence_driver_name(fence);
-		timeline = dma_fence_timeline_name(fence);
 		snprintf(buf, len, "%s-%s%llu-%lld",
-			 rcu_dereference(driver),
-			 rcu_dereference(timeline),
+			 fence->ops->get_driver_name(fence),
+			 fence->ops->get_timeline_name(fence),
 			 fence->context,
 			 fence->seqno);
-		rcu_read_unlock();
 	}
 
 	return buf;
@@ -268,26 +262,19 @@ err_put_fd:
 static int sync_fill_fence_info(struct dma_fence *fence,
 				 struct sync_fence_info *info)
 {
-	const char __rcu *timeline;
-	const char __rcu *driver;
-
-	rcu_read_lock();
-
-	driver = dma_fence_driver_name(fence);
-	timeline = dma_fence_timeline_name(fence);
-
-	strscpy(info->obj_name, rcu_dereference(timeline),
+	strscpy(info->obj_name, fence->ops->get_timeline_name(fence),
 		sizeof(info->obj_name));
-	strscpy(info->driver_name, rcu_dereference(driver),
+	strscpy(info->driver_name, fence->ops->get_driver_name(fence),
 		sizeof(info->driver_name));
 
 	info->status = dma_fence_get_status(fence);
+	while (test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags) &&
+	       !test_bit(DMA_FENCE_FLAG_TIMESTAMP_BIT, &fence->flags))
+		cpu_relax();
 	info->timestamp_ns =
-		dma_fence_is_signaled(fence) ?
-			ktime_to_ns(dma_fence_timestamp(fence)) :
-			ktime_set(0, 0);
-
-	rcu_read_unlock();
+		test_bit(DMA_FENCE_FLAG_TIMESTAMP_BIT, &fence->flags) ?
+		ktime_to_ns(fence->timestamp) :
+		ktime_set(0, 0);
 
 	return info->status;
 }
@@ -363,22 +350,6 @@ out:
 	return ret;
 }
 
-static int sync_file_ioctl_set_deadline(struct sync_file *sync_file,
-					unsigned long arg)
-{
-	struct sync_set_deadline ts;
-
-	if (copy_from_user(&ts, (void __user *)arg, sizeof(ts)))
-		return -EFAULT;
-
-	if (ts.pad)
-		return -EINVAL;
-
-	dma_fence_set_deadline(sync_file->fence, ns_to_ktime(ts.deadline_ns));
-
-	return 0;
-}
-
 static long sync_file_ioctl(struct file *file, unsigned int cmd,
 			    unsigned long arg)
 {
@@ -390,9 +361,6 @@ static long sync_file_ioctl(struct file *file, unsigned int cmd,
 
 	case SYNC_IOC_FILE_INFO:
 		return sync_file_ioctl_fence_info(sync_file, arg);
-
-	case SYNC_IOC_SET_DEADLINE:
-		return sync_file_ioctl_set_deadline(sync_file, arg);
 
 	default:
 		return -ENOTTY;

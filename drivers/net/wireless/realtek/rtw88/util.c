@@ -101,8 +101,7 @@ void rtw_desc_to_mcsrate(u16 rate, u8 *mcs, u8 *nss)
 		*nss = 4;
 		*mcs = rate - DESC_RATEVHT4SS_MCS0;
 	} else if (rate >= DESC_RATEMCS0 &&
-		   rate <= DESC_RATEMCS31) {
-		*nss = 0;
+		   rate <= DESC_RATEMCS15) {
 		*mcs = rate - DESC_RATEMCS0;
 	}
 }
@@ -160,6 +159,7 @@ void rtw_iterate_stas(struct rtw_dev *rtwdev,
 struct rtw_vifs_entry {
 	struct list_head list;
 	struct ieee80211_vif *vif;
+	u8 mac[ETH_ALEN];
 };
 
 struct rtw_iter_vifs_data {
@@ -177,11 +177,13 @@ static void rtw_collect_vif_iter(void *data, u8 *mac, struct ieee80211_vif *vif)
 		return;
 
 	vifs_entry->vif = vif;
+	ether_addr_copy(vifs_entry->mac, mac);
 	list_add_tail(&vifs_entry->list, &iter_stas->list);
 }
 
 void rtw_iterate_vifs(struct rtw_dev *rtwdev,
-		      void (*iterator)(void *data, struct ieee80211_vif *vif),
+		      void (*iterator)(void *data, u8 *mac,
+				       struct ieee80211_vif *vif),
 		      void *data)
 {
 	struct rtw_iter_vifs_data iter_data;
@@ -202,7 +204,7 @@ void rtw_iterate_vifs(struct rtw_dev *rtwdev,
 	list_for_each_entry_safe(vif_entry, tmp, &iter_data.list,
 				 list) {
 		list_del_init(&vif_entry->list);
-		iterator(data, vif_entry->vif);
+		iterator(data, vif_entry->mac, vif_entry->vif);
 		kfree(vif_entry);
 	}
 }

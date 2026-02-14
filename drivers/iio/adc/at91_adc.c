@@ -7,7 +7,6 @@
 
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
-#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/io.h>
@@ -17,6 +16,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -269,7 +269,9 @@ static irqreturn_t at91_adc_trigger_handler(int irq, void *p)
 	struct iio_chan_spec const *chan;
 	int i, j = 0;
 
-	iio_for_each_active_channel(idev, i) {
+	for (i = 0; i < idev->masklength; i++) {
+		if (!test_bit(i, idev->active_scan_mask))
+			continue;
 		chan = idev->channels + i;
 		st->buffer[j] = at91_adc_readl(st, AT91_ADC_CHAN(st, chan->channel));
 		j++;
@@ -542,18 +544,22 @@ static int at91_adc_get_trigger_value_by_name(struct iio_dev *idev,
 	int i;
 
 	for (i = 0; i < st->caps->trigger_number; i++) {
-		char *name __free(kfree) = kasprintf(GFP_KERNEL, "%s-dev%d-%s",
-						     idev->name,
-						     iio_device_id(idev),
-						     triggers[i].name);
+		char *name = kasprintf(GFP_KERNEL,
+				"%s-dev%d-%s",
+				idev->name,
+				iio_device_id(idev),
+				triggers[i].name);
 		if (!name)
 			return -ENOMEM;
 
 		if (strcmp(trigger_name, name) == 0) {
+			kfree(name);
 			if (triggers[i].value == 0)
 				return -EINVAL;
 			return triggers[i].value;
 		}
+
+		kfree(name);
 	}
 
 	return -EINVAL;
@@ -979,7 +985,7 @@ static int at91_ts_register(struct iio_dev *idev,
 	return ret;
 
 err:
-	input_free_device(input);
+	input_free_device(st->ts_input);
 	return ret;
 }
 
@@ -1008,25 +1014,28 @@ static int at91_adc_probe(struct platform_device *pdev)
 
 	st->use_external = of_property_read_bool(node, "atmel,adc-use-external-triggers");
 
-	if (of_property_read_u32(node, "atmel,adc-channels-used", &prop))
-		return dev_err_probe(&idev->dev, -EINVAL,
-				     "Missing adc-channels-used property in the DT.\n");
+	if (of_property_read_u32(node, "atmel,adc-channels-used", &prop)) {
+		dev_err(&idev->dev, "Missing adc-channels-used property in the DT.\n");
+		return -EINVAL;
+	}
 	st->channels_mask = prop;
 
 	st->sleep_mode = of_property_read_bool(node, "atmel,adc-sleep-mode");
 
-	if (of_property_read_u32(node, "atmel,adc-startup-time", &prop))
-		return dev_err_probe(&idev->dev, -EINVAL,
-				     "Missing adc-startup-time property in the DT.\n");
+	if (of_property_read_u32(node, "atmel,adc-startup-time", &prop)) {
+		dev_err(&idev->dev, "Missing adc-startup-time property in the DT.\n");
+		return -EINVAL;
+	}
 	st->startup_time = prop;
 
 	prop = 0;
 	of_property_read_u32(node, "atmel,adc-sample-hold-time", &prop);
 	st->sample_hold_time = prop;
 
-	if (of_property_read_u32(node, "atmel,adc-vref", &prop))
-		return dev_err_probe(&idev->dev, -EINVAL,
-				     "Missing adc-vref property in the DT.\n");
+	if (of_property_read_u32(node, "atmel,adc-vref", &prop)) {
+		dev_err(&idev->dev, "Missing adc-vref property in the DT.\n");
+		return -EINVAL;
+	}
 	st->vref_mv = prop;
 
 	st->res = st->caps->high_res_bits;
@@ -1061,6 +1070,7 @@ static int at91_adc_probe(struct platform_device *pdev)
 	if (IS_ERR(st->reg_base))
 		return PTR_ERR(st->reg_base);
 
+
 	/*
 	 * Disable all IRQs before setting up the handler
 	 */
@@ -1068,26 +1078,43 @@ static int at91_adc_probe(struct platform_device *pdev)
 	at91_adc_writel(st, AT91_ADC_IDR, 0xFFFFFFFF);
 
 	if (st->caps->has_tsmr)
-		ret = devm_request_irq(&pdev->dev, st->irq,
-				       at91_adc_9x5_interrupt, 0,
-				       pdev->dev.driver->name, idev);
+		ret = request_irq(st->irq, at91_adc_9x5_interrupt, 0,
+				  pdev->dev.driver->name, idev);
 	else
-		ret = devm_request_irq(&pdev->dev, st->irq,
-				       at91_adc_rl_interrupt, 0,
-				       pdev->dev.driver->name, idev);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "Failed to allocate IRQ.\n");
+		ret = request_irq(st->irq, at91_adc_rl_interrupt, 0,
+				  pdev->dev.driver->name, idev);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to allocate IRQ.\n");
+		return ret;
+	}
 
-	st->clk = devm_clk_get_enabled(&pdev->dev, "adc_clk");
-	if (IS_ERR(st->clk))
-		return dev_err_probe(&pdev->dev, PTR_ERR(st->clk),
-				     "Could not prepare or enable the clock.\n");
+	st->clk = devm_clk_get(&pdev->dev, "adc_clk");
+	if (IS_ERR(st->clk)) {
+		dev_err(&pdev->dev, "Failed to get the clock.\n");
+		ret = PTR_ERR(st->clk);
+		goto error_free_irq;
+	}
 
-	st->adc_clk = devm_clk_get_enabled(&pdev->dev, "adc_op_clk");
-	if (IS_ERR(st->adc_clk))
-		return dev_err_probe(&pdev->dev, PTR_ERR(st->adc_clk),
-				     "Could not prepare or enable the ADC clock.\n");
+	ret = clk_prepare_enable(st->clk);
+	if (ret) {
+		dev_err(&pdev->dev,
+			"Could not prepare or enable the clock.\n");
+		goto error_free_irq;
+	}
+
+	st->adc_clk = devm_clk_get(&pdev->dev, "adc_op_clk");
+	if (IS_ERR(st->adc_clk)) {
+		dev_err(&pdev->dev, "Failed to get the ADC clock.\n");
+		ret = PTR_ERR(st->adc_clk);
+		goto error_disable_clk;
+	}
+
+	ret = clk_prepare_enable(st->adc_clk);
+	if (ret) {
+		dev_err(&pdev->dev,
+			"Could not prepare or enable the ADC clock.\n");
+		goto error_disable_clk;
+	}
 
 	/*
 	 * Prescaler rate computation using the formula from the Atmel's
@@ -1103,9 +1130,11 @@ static int at91_adc_probe(struct platform_device *pdev)
 
 	prsc = (mstrclk / (2 * adc_clk)) - 1;
 
-	if (!st->startup_time)
-		return dev_err_probe(&pdev->dev, -EINVAL,
-				     "No startup time available.\n");
+	if (!st->startup_time) {
+		dev_err(&pdev->dev, "No startup time available.\n");
+		ret = -EINVAL;
+		goto error_disable_adc_clk;
+	}
 	ticks = (*st->caps->calc_startup_ticks)(st->startup_time, adc_clk_khz);
 
 	/*
@@ -1130,9 +1159,10 @@ static int at91_adc_probe(struct platform_device *pdev)
 
 	/* Setup the ADC channels available on the board */
 	ret = at91_adc_channel_init(idev);
-	if (ret < 0)
-		return dev_err_probe(&pdev->dev, ret,
-				     "Couldn't initialize the channels.\n");
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Couldn't initialize the channels.\n");
+		goto error_disable_adc_clk;
+	}
 
 	init_waitqueue_head(&st->wq_data_avail);
 	mutex_init(&st->lock);
@@ -1144,20 +1174,21 @@ static int at91_adc_probe(struct platform_device *pdev)
 	 */
 	if (!st->touchscreen_type) {
 		ret = at91_adc_buffer_init(idev);
-		if (ret < 0)
-			return dev_err_probe(&pdev->dev, ret,
-					     "Couldn't initialize the buffer.\n");
+		if (ret < 0) {
+			dev_err(&pdev->dev, "Couldn't initialize the buffer.\n");
+			goto error_disable_adc_clk;
+		}
 
 		ret = at91_adc_trigger_init(idev);
 		if (ret < 0) {
 			dev_err(&pdev->dev, "Couldn't setup the triggers.\n");
 			at91_adc_buffer_remove(idev);
-			return ret;
+			goto error_disable_adc_clk;
 		}
 	} else {
 		ret = at91_ts_register(idev, pdev);
 		if (ret)
-			return ret;
+			goto error_disable_adc_clk;
 
 		at91_ts_hw_init(idev, adc_clk_khz);
 	}
@@ -1177,10 +1208,16 @@ error_iio_device_register:
 	} else {
 		at91_ts_unregister(st);
 	}
+error_disable_adc_clk:
+	clk_disable_unprepare(st->adc_clk);
+error_disable_clk:
+	clk_disable_unprepare(st->clk);
+error_free_irq:
+	free_irq(st->irq, idev);
 	return ret;
 }
 
-static void at91_adc_remove(struct platform_device *pdev)
+static int at91_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *idev = platform_get_drvdata(pdev);
 	struct at91_adc_state *st = iio_priv(idev);
@@ -1192,6 +1229,11 @@ static void at91_adc_remove(struct platform_device *pdev)
 	} else {
 		at91_ts_unregister(st);
 	}
+	clk_disable_unprepare(st->adc_clk);
+	clk_disable_unprepare(st->clk);
+	free_irq(st->irq, idev);
+
+	return 0;
 }
 
 static int at91_adc_suspend(struct device *dev)
@@ -1226,7 +1268,7 @@ static const struct at91_adc_trigger at91sam9260_triggers[] = {
 	{ .name = "external", .value = 0xd, .is_external = true },
 };
 
-static const struct at91_adc_caps at91sam9260_caps = {
+static struct at91_adc_caps at91sam9260_caps = {
 	.calc_startup_ticks = calc_startup_ticks_9260,
 	.num_channels = 4,
 	.low_res_bits = 8,
@@ -1250,7 +1292,7 @@ static const struct at91_adc_trigger at91sam9x5_triggers[] = {
 	{ .name = "continuous", .value = 0x6 },
 };
 
-static const struct at91_adc_caps at91sam9rl_caps = {
+static struct at91_adc_caps at91sam9rl_caps = {
 	.has_ts = true,
 	.calc_startup_ticks = calc_startup_ticks_9260,	/* same as 9260 */
 	.num_channels = 6,
@@ -1268,7 +1310,7 @@ static const struct at91_adc_caps at91sam9rl_caps = {
 	.trigger_number = ARRAY_SIZE(at91sam9x5_triggers),
 };
 
-static const struct at91_adc_caps at91sam9g45_caps = {
+static struct at91_adc_caps at91sam9g45_caps = {
 	.has_ts = true,
 	.calc_startup_ticks = calc_startup_ticks_9260,	/* same as 9260 */
 	.num_channels = 8,
@@ -1286,7 +1328,7 @@ static const struct at91_adc_caps at91sam9g45_caps = {
 	.trigger_number = ARRAY_SIZE(at91sam9x5_triggers),
 };
 
-static const struct at91_adc_caps at91sam9x5_caps = {
+static struct at91_adc_caps at91sam9x5_caps = {
 	.has_ts = true,
 	.has_tsmr = true,
 	.ts_filter_average = 3,
@@ -1308,7 +1350,7 @@ static const struct at91_adc_caps at91sam9x5_caps = {
 	.trigger_number = ARRAY_SIZE(at91sam9x5_triggers),
 };
 
-static const struct at91_adc_caps sama5d3_caps = {
+static struct at91_adc_caps sama5d3_caps = {
 	.has_ts = true,
 	.has_tsmr = true,
 	.ts_filter_average = 3,
@@ -1335,7 +1377,7 @@ static const struct of_device_id at91_adc_dt_ids[] = {
 	{ .compatible = "atmel,at91sam9g45-adc", .data = &at91sam9g45_caps },
 	{ .compatible = "atmel,at91sam9x5-adc", .data = &at91sam9x5_caps },
 	{ .compatible = "atmel,sama5d3-adc", .data = &sama5d3_caps },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, at91_adc_dt_ids);
 

@@ -186,7 +186,7 @@ SOC_DAPM_SINGLE("PCM Playback Switch", WM8974_MONOMIX, 0, 1, 0),
 
 /* Boost mixer */
 static const struct snd_kcontrol_new wm8974_boost_mixer[] = {
-SOC_DAPM_SINGLE("PGA Switch", WM8974_INPPGA, 6, 1, 1),
+SOC_DAPM_SINGLE("Aux Switch", WM8974_INPPGA, 6, 1, 1),
 };
 
 /* Input PGA */
@@ -246,8 +246,8 @@ static const struct snd_soc_dapm_route wm8974_dapm_routes[] = {
 
 	/* Boost Mixer */
 	{"ADC", NULL, "Boost Mixer"},
-	{"Boost Mixer", NULL, "Aux Input"},
-	{"Boost Mixer", "PGA Switch", "Input PGA"},
+	{"Boost Mixer", "Aux Switch", "Aux Input"},
+	{"Boost Mixer", NULL, "Input PGA"},
 	{"Boost Mixer", NULL, "MICP"},
 
 	/* Input PGA */
@@ -419,14 +419,10 @@ static int wm8974_update_clocks(struct snd_soc_dai *dai)
 	fs256 = 256 * priv->fs;
 
 	f = wm8974_get_mclkdiv(priv->mclk, fs256, &mclkdiv);
+
 	if (f != priv->mclk) {
 		/* The PLL performs best around 90MHz */
-		if (fs256 % 8000)
-			f = 22579200;
-		else
-			f = 24576000;
-
-		fpll = wm8974_get_mclkdiv(f, fs256, &mclkdiv);
+		fpll = wm8974_get_mclkdiv(22500000, fs256, &mclkdiv);
 	}
 
 	wm8974_set_dai_pll(dai, 0, 0, priv->mclk, fpll);
@@ -458,10 +454,10 @@ static int wm8974_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		clk |= 0x0001;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		break;
 	default:
 		return -EINVAL;
@@ -583,7 +579,6 @@ static int wm8974_mute(struct snd_soc_dai *dai, int mute, int direction)
 static int wm8974_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	u16 power1 = snd_soc_component_read(component, WM8974_POWER1) & ~0x3;
 
 	switch (level) {
@@ -596,7 +591,7 @@ static int wm8974_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_STANDBY:
 		power1 |= WM8974_POWER1_BIASEN | WM8974_POWER1_BUFIOEN;
 
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			regcache_sync(dev_get_regmap(component->dev, NULL));
 
 			/* Initial cap charge at VMID 5k */
@@ -712,7 +707,7 @@ static int wm8974_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm8974_i2c_id[] = {
-	{ "wm8974" },
+	{ "wm8974", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8974_i2c_id);
@@ -728,7 +723,7 @@ static struct i2c_driver wm8974_i2c_driver = {
 		.name = "wm8974",
 		.of_match_table = wm8974_of_match,
 	},
-	.probe = wm8974_i2c_probe,
+	.probe_new = wm8974_i2c_probe,
 	.id_table = wm8974_i2c_id,
 };
 

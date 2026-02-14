@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: (GPL-2.0 OR MIT) */
+/* SPDX-License-Identifier: (GPL-2.0 or MIT) */
 /*
  * DSA driver for:
  * Hirschmann Hellcreek TSN switch.
@@ -12,16 +12,14 @@
 
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
-#include <linux/container_of.h>
 #include <linux/device.h>
-#include <linux/leds.h>
+#include <linux/kernel.h>
 #include <linux/mutex.h>
+#include <linux/workqueue.h>
+#include <linux/leds.h>
 #include <linux/platform_data/hirschmann-hellcreek.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/timecounter.h>
-#include <linux/types.h>
-#include <linux/workqueue.h>
-
 #include <net/dsa.h>
 #include <net/pkt_sched.h>
 
@@ -244,7 +242,7 @@ struct hellcreek_port_hwtstamp {
 	struct sk_buff *tx_skb;
 
 	/* Current timestamp configuration */
-	struct kernel_hwtstamp_config tstamp_config;
+	struct hwtstamp_config tstamp_config;
 };
 
 struct hellcreek_port {

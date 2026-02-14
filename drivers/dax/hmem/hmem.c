@@ -2,6 +2,7 @@
 #include <linux/platform_device.h>
 #include <linux/memregion.h>
 #include <linux/module.h>
+#include <linux/pfn_t.h>
 #include <linux/dax.h>
 #include "../bus.h"
 
@@ -15,6 +16,7 @@ static int dax_hmem_probe(struct platform_device *pdev)
 	struct dax_region *dax_region;
 	struct memregion_info *mri;
 	struct dev_dax_data data;
+	struct dev_dax *dev_dax;
 
 	/*
 	 * @region_idle == true indicates that an administrative agent
@@ -35,10 +37,14 @@ static int dax_hmem_probe(struct platform_device *pdev)
 		.dax_region = dax_region,
 		.id = -1,
 		.size = region_idle ? 0 : range_len(&mri->range),
-		.memmap_on_memory = false,
 	};
+	dev_dax = devm_create_dev_dax(&data);
+	if (IS_ERR(dev_dax))
+		return PTR_ERR(dev_dax);
 
-	return PTR_ERR_OR_ZERO(devm_create_dev_dax(&data));
+	/* child dev_dax instances now own the lifetime of the dax_region */
+	dax_region_put(dax_region);
+	return 0;
 }
 
 static struct platform_driver dax_hmem_driver = {
@@ -73,11 +79,10 @@ static int hmem_register_device(struct device *host, int target_nid,
 		return 0;
 	}
 
-	rc = region_intersects_soft_reserve(res->start, resource_size(res));
+	rc = region_intersects(res->start, resource_size(res), IORESOURCE_MEM,
+			       IORES_DESC_SOFT_RESERVED);
 	if (rc != REGION_INTERSECTS)
 		return 0;
-
-	/* TODO: Add Soft-Reserved memory back to iomem */
 
 	id = memregion_alloc(GFP_KERNEL);
 	if (id < 0) {
@@ -168,6 +173,5 @@ MODULE_SOFTDEP("pre: cxl_acpi");
 
 MODULE_ALIAS("platform:hmem*");
 MODULE_ALIAS("platform:hmem_platform*");
-MODULE_DESCRIPTION("HMEM DAX: direct access to 'specific purpose' memory");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Intel Corporation");

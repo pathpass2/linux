@@ -74,24 +74,6 @@
 #define V4L2_MBUS_CSI2_MAX_DATA_LANES		8
 
 /**
- * enum v4l2_mbus_csi2_cphy_line_orders_type - CSI-2 C-PHY line order
- * @V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ABC: C-PHY line order ABC (default)
- * @V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ACB: C-PHY line order ACB
- * @V4L2_MBUS_CSI2_CPHY_LINE_ORDER_BAC: C-PHY line order BAC
- * @V4L2_MBUS_CSI2_CPHY_LINE_ORDER_BCA: C-PHY line order BCA
- * @V4L2_MBUS_CSI2_CPHY_LINE_ORDER_CAB: C-PHY line order CAB
- * @V4L2_MBUS_CSI2_CPHY_LINE_ORDER_CBA: C-PHY line order CBA
- */
-enum v4l2_mbus_csi2_cphy_line_orders_type {
-	V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ABC,
-	V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ACB,
-	V4L2_MBUS_CSI2_CPHY_LINE_ORDER_BAC,
-	V4L2_MBUS_CSI2_CPHY_LINE_ORDER_BCA,
-	V4L2_MBUS_CSI2_CPHY_LINE_ORDER_CAB,
-	V4L2_MBUS_CSI2_CPHY_LINE_ORDER_CBA,
-};
-
-/**
  * struct v4l2_mbus_config_mipi_csi2 - MIPI CSI-2 data bus configuration
  * @flags: media bus (V4L2_MBUS_*) flags
  * @data_lanes: an array of physical data lane indexes
@@ -99,8 +81,6 @@ enum v4l2_mbus_csi2_cphy_line_orders_type {
  * @num_data_lanes: number of data lanes
  * @lane_polarities: polarity of the lanes. The order is the same of
  *		   the physical lanes.
- * @line_orders: line order of the data lanes. The order is the same of the
- *		   physical lanes.
  */
 struct v4l2_mbus_config_mipi_csi2 {
 	unsigned int flags;
@@ -108,7 +88,6 @@ struct v4l2_mbus_config_mipi_csi2 {
 	unsigned char clock_lane;
 	unsigned char num_data_lanes;
 	bool lane_polarities[1 + V4L2_MBUS_CSI2_MAX_DATA_LANES];
-	enum v4l2_mbus_csi2_cphy_line_orders_type line_orders[V4L2_MBUS_CSI2_MAX_DATA_LANES];
 };
 
 /**
@@ -169,7 +148,6 @@ enum v4l2_mbus_type {
 /**
  * struct v4l2_mbus_config - media bus configuration
  * @type: interface type
- * @link_freq: The link frequency. See also V4L2_CID_LINK_FREQ control.
  * @bus: bus configuration data structure
  * @bus.parallel: embedded &struct v4l2_mbus_config_parallel.
  *		  Used if the bus is parallel or BT.656.
@@ -184,7 +162,6 @@ enum v4l2_mbus_type {
  */
 struct v4l2_mbus_config {
 	enum v4l2_mbus_type type;
-	u64 link_freq;
 	union {
 		struct v4l2_mbus_config_parallel parallel;
 		struct v4l2_mbus_config_mipi_csi1 mipi_csi1;

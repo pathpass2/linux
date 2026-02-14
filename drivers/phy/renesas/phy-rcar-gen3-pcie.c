@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/phy/phy.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
 
@@ -125,17 +126,19 @@ error:
 	return error;
 }
 
-static void rcar_gen3_phy_pcie_remove(struct platform_device *pdev)
+static int rcar_gen3_phy_pcie_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
-}
+
+	return 0;
+};
 
 static struct platform_driver rcar_gen3_phy_driver = {
 	.driver = {
-		.name = "phy_rcar_gen3_pcie",
-		.of_match_table = rcar_gen3_phy_pcie_match_table,
+		.name		= "phy_rcar_gen3_pcie",
+		.of_match_table	= rcar_gen3_phy_pcie_match_table,
 	},
-	.probe = rcar_gen3_phy_pcie_probe,
+	.probe	= rcar_gen3_phy_pcie_probe,
 	.remove = rcar_gen3_phy_pcie_remove,
 };
 

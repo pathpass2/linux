@@ -12,13 +12,15 @@
 #include <linux/module.h>
 #include <linux/spi/spi.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <linux/iio/buffer.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
+
+#define SCA3300_ALIAS "sca3300"
 
 #define SCA3300_CRC8_POLYNOMIAL 0x1d
 
@@ -55,6 +57,15 @@ enum sca3300_scan_indexes {
 	SCA3300_INCLI_Z,
 	SCA3300_SCAN_MAX
 };
+
+/*
+ * Buffer size max case:
+ * Three accel channels, two bytes per channel.
+ * Temperature channel, two bytes.
+ * Three incli channels, two bytes per channel.
+ * Timestamp channel, eight bytes.
+ */
+#define SCA3300_MAX_BUFFER_SIZE (ALIGN(sizeof(s16) * SCA3300_SCAN_MAX, sizeof(s64)) + sizeof(s64))
 
 #define SCA3300_ACCEL_CHANNEL(index, reg, axis) {			\
 	.type = IIO_ACCEL,						\
@@ -182,6 +193,9 @@ struct sca3300_chip_info {
  * @spi: SPI device structure
  * @lock: Data buffer lock
  * @chip: Sensor chip specific information
+ * @buffer: Triggered buffer:
+ *          -SCA3300: 4 channel 16-bit data + 64-bit timestamp
+ *          -SCL3300: 7 channel 16-bit data + 64-bit timestamp
  * @txbuf: Transmit buffer
  * @rxbuf: Receive buffer
  */
@@ -189,6 +203,7 @@ struct sca3300_data {
 	struct spi_device *spi;
 	struct mutex lock;
 	const struct sca3300_chip_info *chip;
+	u8 buffer[SCA3300_MAX_BUFFER_SIZE] __aligned(sizeof(s64));
 	u8 txbuf[4] __aligned(IIO_DMA_MINALIGN);
 	u8 rxbuf[4];
 };
@@ -477,9 +492,10 @@ static irqreturn_t sca3300_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct sca3300_data *data = iio_priv(indio_dev);
 	int bit, ret, val, i = 0;
-	IIO_DECLARE_BUFFER_WITH_TS(s16, channels, SCA3300_SCAN_MAX) = { };
+	s16 *channels = (s16 *)data->buffer;
 
-	iio_for_each_active_channel(indio_dev, bit) {
+	for_each_set_bit(bit, indio_dev->active_scan_mask,
+			 indio_dev->masklength) {
 		ret = sca3300_read_reg(data, indio_dev->channels[bit].address, &val);
 		if (ret) {
 			dev_err_ratelimited(&data->spi->dev,
@@ -490,8 +506,8 @@ static irqreturn_t sca3300_trigger_handler(int irq, void *p)
 		channels[i++] = val;
 	}
 
-	iio_push_to_buffers_with_ts(indio_dev, channels, sizeof(channels),
-				    iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, data->buffer,
+					   iio_get_time_ns(indio_dev));
 out:
 	iio_trigger_notify_done(indio_dev->trig);
 
@@ -659,20 +675,20 @@ static int sca3300_probe(struct spi_device *spi)
 static const struct of_device_id sca3300_dt_ids[] = {
 	{ .compatible = "murata,sca3300"},
 	{ .compatible = "murata,scl3300"},
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, sca3300_dt_ids);
 
 static const struct spi_device_id sca3300_ids[] = {
 	{ "sca3300" },
 	{ "scl3300" },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(spi, sca3300_ids);
 
 static struct spi_driver sca3300_driver = {
 	.driver   = {
-		.name		= "sca3300",
+		.name		= SCA3300_ALIAS,
 		.of_match_table = sca3300_dt_ids,
 	},
 	.probe	  = sca3300_probe,

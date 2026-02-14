@@ -51,6 +51,7 @@ static void handle_message(struct fw_card *card, struct fw_request *request,
 {
 	struct snd_motu *motu = callback_data;
 	__be32 *buf = (__be32 *)data;
+	unsigned long flags;
 
 	if (tcode != TCODE_WRITE_QUADLET_REQUEST) {
 		fw_send_response(card, request, RCODE_COMPLETE);
@@ -62,9 +63,9 @@ static void handle_message(struct fw_card *card, struct fw_request *request,
 		return;
 	}
 
-	scoped_guard(spinlock_irqsave, &motu->lock) {
-		motu->msg = be32_to_cpu(*buf);
-	}
+	spin_lock_irqsave(&motu->lock, flags);
+	motu->msg = be32_to_cpu(*buf);
+	spin_unlock_irqrestore(&motu->lock, flags);
 
 	fw_send_response(card, request, RCODE_COMPLETE);
 

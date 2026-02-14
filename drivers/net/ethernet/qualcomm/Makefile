@@ -11,5 +11,4 @@ qcauart-objs := qca_uart.o
 
 obj-y += emac/
 
-obj-$(CONFIG_QCOM_PPE) += ppe/
 obj-$(CONFIG_RMNET) += rmnet/

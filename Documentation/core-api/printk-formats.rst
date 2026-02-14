@@ -15,10 +15,9 @@ Integer types
 
 	If variable is of Type,		use printk format specifier:
 	------------------------------------------------------------
-		signed char		%d or %hhx
+		char			%d or %x
 		unsigned char		%u or %x
-		char			%u or %x
-		short int		%d or %hx
+		short int		%d or %x
 		unsigned short int	%u or %x
 		int			%d or %x
 		unsigned int		%u or %x
@@ -28,9 +27,9 @@ Integer types
 		unsigned long long	%llu or %llx
 		size_t			%zu or %zx
 		ssize_t			%zd or %zx
-		s8			%d or %hhx
+		s8			%d or %x
 		u8			%u or %x
-		s16			%d or %hx
+		s16			%d or %x
 		u16			%u or %x
 		s32			%d or %x
 		u32			%u or %x
@@ -209,17 +208,12 @@ Struct Resources
 ::
 
 	%pr	[mem 0x60000000-0x6fffffff flags 0x2200] or
-		[mem 0x60000000 flags 0x2200] or
 		[mem 0x0000000060000000-0x000000006fffffff flags 0x2200]
-		[mem 0x0000000060000000 flags 0x2200]
 	%pR	[mem 0x60000000-0x6fffffff pref] or
-		[mem 0x60000000 pref] or
 		[mem 0x0000000060000000-0x000000006fffffff pref]
-		[mem 0x0000000060000000 pref]
 
 For printing struct resources. The ``R`` and ``r`` specifiers result in a
-printed resource with (R) or without (r) a decoded flags member.  If start is
-equal to end only print the start value.
+printed resource with (R) or without (r) a decoded flags member.
 
 Passed by reference.
 
@@ -233,19 +227,6 @@ Physical address types phys_addr_t
 For printing a phys_addr_t type (and its derivatives, such as
 resource_size_t) which can vary based on build options, regardless of the
 width of the CPU data path.
-
-Passed by reference.
-
-Struct Range
-------------
-
-::
-
-	%pra    [range 0x0000000060000000-0x000000006fffffff] or
-		[range 0x0000000060000000]
-
-For printing struct range.  struct range holds an arbitrary range of u64
-values.  If start is equal to end only print the start value.
 
 Passed by reference.
 
@@ -521,7 +502,7 @@ Fwnode handles
 
 	%pfw[fP]
 
-For printing information on an fwnode_handle. The default is to print the full
+For printing information on fwnode handles. The default is to print the full
 node name, including the path. The modifiers are functionally equivalent to
 %pOF above.
 
@@ -547,13 +528,11 @@ Time and date
 	%pt[RT]s		YYYY-mm-dd HH:MM:SS
 	%pt[RT]d		YYYY-mm-dd
 	%pt[RT]t		HH:MM:SS
-	%ptSp			<seconds>.<nanoseconds>
-	%pt[RST][dt][r][s]
+	%pt[RT][dt][r][s]
 
 For printing date and time as represented by::
 
-	R  content of struct rtc_time
-	S  content of struct timespec64
+	R  struct rtc_time structure
 	T  time64_t type
 
 in human readable format.
@@ -565,11 +544,6 @@ The %pt[RT]s (space) will override ISO 8601 separator by using ' ' (space)
 instead of 'T' (Capital T) between date and time. It won't have any effect
 when date or time is omitted.
 
-The %ptSp is equivalent to %lld.%09ld for the content of the struct timespec64.
-When the other specifiers are given, it becomes the respective equivalent of
-%ptT[dt][r][s].%09ld. In other words, the seconds are being printed in
-the human readable format followed by a dot and nanoseconds.
-
 Passed by reference.
 
 struct clk
@@ -578,8 +552,9 @@ struct clk
 ::
 
 	%pC	pll1
+	%pCn	pll1
 
-For printing struct clk structures. %pC prints the name of the clock
+For printing struct clk structures. %pC and %pCn print the name of the clock
 (Common Clock Framework) or a unique 32-bit ID (legacy clock framework).
 
 Passed by reference.
@@ -600,8 +575,8 @@ The field width is passed by value, the bitmap is passed by reference.
 Helper macros cpumask_pr_args() and nodemask_pr_args() are available to ease
 printing cpumask and nodemask.
 
-Flags bitfields such as page flags and gfp_flags
---------------------------------------------------------
+Flags bitfields such as page flags, gfp_flags
+---------------------------------------------
 
 ::
 
@@ -611,13 +586,9 @@ Flags bitfields such as page flags and gfp_flags
 
 For printing flags bitfields as a collection of symbolic constants that
 would construct the value. The type of flags is given by the third
-character. Currently supported are:
-
-        - p - [p]age flags, expects value of type (``unsigned long *``)
-        - v - [v]ma_flags, expects value of type (``unsigned long *``)
-        - g - [g]fp_flags, expects value of type (``gfp_t *``)
-
-The flag names and print order depends on the particular type.
+character. Currently supported are [p]age flags, [v]ma_flags (both
+expect ``unsigned long *``) and [g]fp_flags (expects ``gfp_t *``). The flag
+names and print order depends on the particular	type.
 
 Note that this format should not be used directly in the
 :c:func:`TP_printk()` part of a tracepoint. Instead, use the show_*_flags()
@@ -654,38 +625,6 @@ Examples::
 	%p4cc	Y10  little-endian (0x20303159)
 	%p4cc	NV12 big-endian (0xb231564e)
 
-Generic FourCC code
--------------------
-
-::
-	%p4c[h[R]lb]	gP00 (0x67503030)
-
-Print a generic FourCC code, as both ASCII characters and its numerical
-value as hexadecimal.
-
-The generic FourCC code is always printed in the big-endian format,
-the most significant byte first. This is the opposite of V4L/DRM FourCCs.
-
-The additional ``h``, ``hR``, ``l``, and ``b`` specifiers define what
-endianness is used to load the stored bytes. The data might be interpreted
-using the host, reversed host byte order, little-endian, or big-endian.
-
-Passed by reference.
-
-Examples for a little-endian machine, given &(u32)0x67503030::
-
-	%p4ch	gP00 (0x67503030)
-	%p4chR	00Pg (0x30305067)
-	%p4cl	gP00 (0x67503030)
-	%p4cb	00Pg (0x30305067)
-
-Examples for a big-endian machine, given &(u32)0x67503030::
-
-	%p4ch	gP00 (0x67503030)
-	%p4chR	00Pg (0x30305067)
-	%p4cl	00Pg (0x30305067)
-	%p4cb	gP00 (0x67503030)
-
 Rust
 ----
 
@@ -699,7 +638,7 @@ Do *not* use it from C.
 Thanks
 ======
 
-If you add other %p extensions, please extend <lib/tests/printf_kunit.c>
-with one or more test cases, if at all feasible.
+If you add other %p extensions, please extend <lib/test_printf.c> with
+one or more test cases, if at all feasible.
 
 Thank you for your cooperation and attention.

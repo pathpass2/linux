@@ -12,7 +12,6 @@
 	compatible = "rockchip,r88", "rockchip,rk3368";
 
 	aliases {
-		ethernet0 = &gmac;
 		mmc0 = &sdio0;
 		mmc1 = &emmc;
 	};
@@ -21,7 +20,7 @@
 		stdout-path = "serial2:115200n8";
 	};
 
-	memory@0 {
+	memory {
 		device_type = "memory";
 		reg = <0x0 0x0 0x0 0x40000000>;
 	};
@@ -79,7 +78,7 @@
 			<&gpio3 RK_PA4 GPIO_ACTIVE_LOW>;
 	};
 
-	vcc_18: regulator-vcc18 {
+	vcc_18: vcc18-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_18";
 		regulator-min-microvolt = <1800000>;
@@ -90,7 +89,7 @@
 	};
 
 	/* supplies both host and otg */
-	vcc_host: regulator-vcc-host {
+	vcc_host: vcc-host-regulator {
 		compatible = "regulator-fixed";
 		enable-active-high;
 		gpio = <&gpio0 RK_PA4 GPIO_ACTIVE_HIGH>;
@@ -102,7 +101,7 @@
 		vin-supply = <&vcc_sys>;
 	};
 
-	vcc_io: regulator-vcc-io {
+	vcc_io: vcc-io-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_io";
 		regulator-min-microvolt = <3300000>;
@@ -112,7 +111,7 @@
 		vin-supply = <&vcc_sys>;
 	};
 
-	vcc_lan: regulator-vcc-lan {
+	vcc_lan: vcc-lan-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_lan";
 		regulator-min-microvolt = <3300000>;
@@ -122,7 +121,7 @@
 		vin-supply = <&vcc_io>;
 	};
 
-	vcc_sys: regulator-vcc-sys {
+	vcc_sys: vcc-sys-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_sys";
 		regulator-min-microvolt = <5000000>;
@@ -131,7 +130,7 @@
 		regulator-boot-on;
 	};
 
-	vccio_wl: regulator-vccio-wl {
+	vccio_wl: vccio-wl-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vccio_wl";
 		regulator-min-microvolt = <3300000>;
@@ -141,7 +140,7 @@
 		vin-supply = <&vcc_io>;
 	};
 
-	vdd_10: regulator-vdd-10 {
+	vdd_10: vdd-10-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vdd_10";
 		regulator-min-microvolt = <1000000>;

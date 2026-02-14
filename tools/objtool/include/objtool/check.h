@@ -34,21 +34,6 @@ struct alt_group {
 	 * This is shared with the other alt_groups in the same alternative.
 	 */
 	struct cfi_state **cfi;
-
-	bool ignore;
-	unsigned int feature;
-};
-
-enum alternative_type {
-	ALT_TYPE_INSTRUCTIONS,
-	ALT_TYPE_JUMP_TABLE,
-	ALT_TYPE_EX_TABLE,
-};
-
-struct alternative {
-	struct alternative *next;
-	struct instruction *insn;
-	enum alternative_type type;
 };
 
 #define INSN_CHUNK_BITS		8
@@ -69,29 +54,24 @@ struct instruction {
 
 	u32 idx			: INSN_CHUNK_BITS,
 	    dead_end		: 1,
+	    ignore		: 1,
 	    ignore_alts		: 1,
 	    hint		: 1,
 	    save		: 1,
 	    restore		: 1,
 	    retpoline_safe	: 1,
 	    noendbr		: 1,
-	    unret		: 1,
+	    entry		: 1,
 	    visited		: 4,
-	    no_reloc		: 1,
-	    hole		: 1,
-	    fake		: 1,
-	    trace		: 1;
-		/* 9 bit hole */
+	    no_reloc		: 1;
+		/* 10 bit hole */
 
 	struct alt_group *alt_group;
 	struct instruction *jump_dest;
 	struct instruction *first_jump_src;
 	union {
 		struct symbol *_call_dest;
-		struct {
-			struct reloc *_jump_table;
-			unsigned long _jump_table_size;
-		};
+		struct reloc *_jump_table;
 	};
 	struct alternative *alts;
 	struct symbol *sym;
@@ -112,7 +92,7 @@ static inline struct symbol *insn_func(struct instruction *insn)
 #define VISITED_BRANCH		0x01
 #define VISITED_BRANCH_UACCESS	0x02
 #define VISITED_BRANCH_MASK	0x03
-#define VISITED_UNRET		0x04
+#define VISITED_ENTRY		0x04
 
 static inline bool is_static_jump(struct instruction *insn)
 {
@@ -131,15 +111,6 @@ static inline bool is_jump(struct instruction *insn)
 	return is_static_jump(insn) || is_dynamic_jump(insn);
 }
 
-static inline struct symbol *insn_call_dest(struct instruction *insn)
-{
-	if (insn->type == INSN_JUMP_DYNAMIC ||
-	    insn->type == INSN_CALL_DYNAMIC)
-		return NULL;
-
-	return insn->_call_dest;
-}
-
 struct instruction *find_insn(struct objtool_file *file,
 			      struct section *sec, unsigned long offset);
 
@@ -149,16 +120,5 @@ struct instruction *next_insn_same_sec(struct objtool_file *file, struct instruc
 	for (insn = find_insn(file, _sec, 0);				\
 	     insn && insn->sec == _sec;					\
 	     insn = next_insn_same_sec(file, insn))
-
-#define sym_for_each_insn(file, sym, insn)				\
-	for (insn = find_insn(file, sym->sec, sym->offset);		\
-	     insn && insn->offset < sym->offset + sym->len;		\
-	     insn = next_insn_same_sec(file, insn))
-
-const char *objtool_disas_insn(struct instruction *insn);
-
-extern size_t sym_name_max_len;
-extern struct disas_context *objtool_disas_ctx;
-int pv_ops_idx_off(const char *symname);
 
 #endif /* _CHECK_H */

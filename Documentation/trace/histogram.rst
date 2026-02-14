@@ -35,7 +35,7 @@ Documentation written by Tom Zanussi
   in place of an explicit value field - this is simply a count of
   event hits.  If 'values' isn't specified, an implicit 'hitcount'
   value will be automatically created and used as the only value.
-  Keys can be any field, or the special string 'common_stacktrace', which
+  Keys can be any field, or the special string 'stacktrace', which
   will use the event's kernel stacktrace as the key.  The keywords
   'keys' or 'key' can be used to specify keys, and the keywords
   'values', 'vals', or 'val' can be used to specify values.  Compound
@@ -54,7 +54,7 @@ Documentation written by Tom Zanussi
   'compatible' if the fields named in the trigger share the same
   number and type of fields and those fields also have the same names.
   Note that any two events always share the compatible 'hitcount' and
-  'common_stacktrace' fields and can therefore be combined using those
+  'stacktrace' fields and can therefore be combined using those
   fields, however pointless that may be.
 
   'hist' triggers add a 'hist' file to each event's subdirectory.
@@ -81,7 +81,7 @@ Documentation written by Tom Zanussi
 	.usecs         display a common_timestamp in microseconds
         .percent       display a number of percentage value
         .graph         display a bar-graph of a value
-	.stacktrace    display as a stacktrace (must be a long[] type)
+	.stacktrace    display as a stacktrace (must by a long[] type)
 	=============  =================================================
 
   Note that in general the semantics of a given field aren't
@@ -186,8 +186,8 @@ Documentation written by Tom Zanussi
   The examples below provide a more concrete illustration of the
   concepts and typical usage patterns discussed above.
 
-2.1. 'special' event fields
----------------------------
+'special' event fields
+------------------------
 
   There are a number of 'special event fields' available for use as
   keys or values in a hist trigger.  These look like and behave as if
@@ -204,16 +204,16 @@ Documentation written by Tom Zanussi
     common_cpu             int  the cpu on which the event occurred.
     ====================== ==== =======================================
 
-2.2. Extended error information
--------------------------------
+Extended error information
+--------------------------
 
   For some error conditions encountered when invoking a hist trigger
   command, extended error information is available via the
-  tracing/error_log file.  See "Error conditions" section in
-  Documentation/trace/ftrace.rst for details.
+  tracing/error_log file.  See Error Conditions in
+  :file:`Documentation/trace/ftrace.rst` for details.
 
-2.3. 'hist' trigger examples
-----------------------------
+6.2 'hist' trigger examples
+---------------------------
 
   The first set of examples creates aggregations using the kmalloc
   event.  The fields that can be used for the hist trigger are listed
@@ -249,7 +249,7 @@ Documentation written by Tom Zanussi
   table, it should keep a running total of the number of bytes
   requested by that call_site.
 
-  We'll let it run for a while and then dump the contents of the 'hist'
+  We'll let it run for awhile and then dump the contents of the 'hist'
   file in the kmalloc event's subdirectory (for readability, a number
   of entries have been omitted)::
 
@@ -547,9 +547,9 @@ Documentation written by Tom Zanussi
   the hist trigger display symbolic call_sites, we can have the hist
   trigger additionally display the complete set of kernel stack traces
   that led to each call_site.  To do that, we simply use the special
-  value 'common_stacktrace' for the key parameter::
+  value 'stacktrace' for the key parameter::
 
-    # echo 'hist:keys=common_stacktrace:values=bytes_req,bytes_alloc:sort=bytes_alloc' > \
+    # echo 'hist:keys=stacktrace:values=bytes_req,bytes_alloc:sort=bytes_alloc' > \
            /sys/kernel/tracing/events/kmem/kmalloc/trigger
 
   The above trigger will use the kernel stack trace in effect when an
@@ -561,9 +561,9 @@ Documentation written by Tom Zanussi
   every callpath to a kmalloc for a kernel compile)::
 
     # cat /sys/kernel/tracing/events/kmem/kmalloc/hist
-    # trigger info: hist:keys=common_stacktrace:vals=bytes_req,bytes_alloc:sort=bytes_alloc:size=2048 [active]
+    # trigger info: hist:keys=stacktrace:vals=bytes_req,bytes_alloc:sort=bytes_alloc:size=2048 [active]
 
-    { common_stacktrace:
+    { stacktrace:
          __kmalloc_track_caller+0x10b/0x1a0
          kmemdup+0x20/0x50
          hidraw_report_event+0x8a/0x120 [hid]
@@ -581,7 +581,7 @@ Documentation written by Tom Zanussi
          cpu_startup_entry+0x315/0x3e0
          rest_init+0x7c/0x80
     } hitcount:          3  bytes_req:         21  bytes_alloc:         24
-    { common_stacktrace:
+    { stacktrace:
          __kmalloc_track_caller+0x10b/0x1a0
          kmemdup+0x20/0x50
          hidraw_report_event+0x8a/0x120 [hid]
@@ -596,7 +596,7 @@ Documentation written by Tom Zanussi
          do_IRQ+0x5a/0xf0
          ret_from_intr+0x0/0x30
     } hitcount:          3  bytes_req:         21  bytes_alloc:         24
-    { common_stacktrace:
+    { stacktrace:
          kmem_cache_alloc_trace+0xeb/0x150
          aa_alloc_task_context+0x27/0x40
          apparmor_cred_prepare+0x1f/0x50
@@ -608,7 +608,7 @@ Documentation written by Tom Zanussi
     .
     .
     .
-    { common_stacktrace:
+    { stacktrace:
          __kmalloc+0x11b/0x1b0
          i915_gem_execbuffer2+0x6c/0x2c0 [i915]
          drm_ioctl+0x349/0x670 [drm]
@@ -616,7 +616,7 @@ Documentation written by Tom Zanussi
          SyS_ioctl+0x81/0xa0
          system_call_fastpath+0x12/0x6a
     } hitcount:      17726  bytes_req:   13944120  bytes_alloc:   19593808
-    { common_stacktrace:
+    { stacktrace:
          __kmalloc+0x11b/0x1b0
          load_elf_phdrs+0x76/0xa0
          load_elf_binary+0x102/0x1650
@@ -625,7 +625,7 @@ Documentation written by Tom Zanussi
          SyS_execve+0x3a/0x50
          return_from_execve+0x0/0x23
     } hitcount:      33348  bytes_req:   17152128  bytes_alloc:   20226048
-    { common_stacktrace:
+    { stacktrace:
          kmem_cache_alloc_trace+0xeb/0x150
          apparmor_file_alloc_security+0x27/0x40
          security_file_alloc+0x16/0x20
@@ -636,7 +636,7 @@ Documentation written by Tom Zanussi
          SyS_open+0x1e/0x20
          system_call_fastpath+0x12/0x6a
     } hitcount:    4766422  bytes_req:    9532844  bytes_alloc:   38131376
-    { common_stacktrace:
+    { stacktrace:
          __kmalloc+0x11b/0x1b0
          seq_buf_alloc+0x1b/0x50
          seq_read+0x2cc/0x370
@@ -840,7 +840,7 @@ Documentation written by Tom Zanussi
 
   The compound key examples used a key and a sum value (hitcount) to
   sort the output, but we can just as easily use two keys instead.
-  Here's an example where we use a compound key composed of the
+  Here's an example where we use a compound key composed of the the
   common_pid and size event fields.  Sorting with pid as the primary
   key and 'size' as the secondary key allows us to display an
   ordered summary of the recvfrom sizes, with counts, received by
@@ -1026,7 +1026,7 @@ Documentation written by Tom Zanussi
   First we set up an initially paused stacktrace trigger on the
   netif_receive_skb event::
 
-    # echo 'hist:key=common_stacktrace:vals=len:pause' > \
+    # echo 'hist:key=stacktrace:vals=len:pause' > \
            /sys/kernel/tracing/events/net/netif_receive_skb/trigger
 
   Next, we set up an 'enable_hist' trigger on the sched_process_exec
@@ -1060,9 +1060,9 @@ Documentation written by Tom Zanussi
     $ wget https://www.kernel.org/pub/linux/kernel/v3.x/patch-3.19.xz
 
     # cat /sys/kernel/tracing/events/net/netif_receive_skb/hist
-    # trigger info: hist:keys=common_stacktrace:vals=len:sort=hitcount:size=2048 [paused]
+    # trigger info: hist:keys=stacktrace:vals=len:sort=hitcount:size=2048 [paused]
 
-    { common_stacktrace:
+    { stacktrace:
          __netif_receive_skb_core+0x46d/0x990
          __netif_receive_skb+0x18/0x60
          netif_receive_skb_internal+0x23/0x90
@@ -1079,7 +1079,7 @@ Documentation written by Tom Zanussi
          kthread+0xd2/0xf0
          ret_from_fork+0x42/0x70
     } hitcount:         85  len:      28884
-    { common_stacktrace:
+    { stacktrace:
          __netif_receive_skb_core+0x46d/0x990
          __netif_receive_skb+0x18/0x60
          netif_receive_skb_internal+0x23/0x90
@@ -1097,7 +1097,7 @@ Documentation written by Tom Zanussi
          irq_thread+0x11f/0x150
          kthread+0xd2/0xf0
     } hitcount:         98  len:     664329
-    { common_stacktrace:
+    { stacktrace:
          __netif_receive_skb_core+0x46d/0x990
          __netif_receive_skb+0x18/0x60
          process_backlog+0xa8/0x150
@@ -1115,7 +1115,7 @@ Documentation written by Tom Zanussi
          inet_sendmsg+0x64/0xa0
          sock_sendmsg+0x3d/0x50
     } hitcount:        115  len:      13030
-    { common_stacktrace:
+    { stacktrace:
          __netif_receive_skb_core+0x46d/0x990
          __netif_receive_skb+0x18/0x60
          netif_receive_skb_internal+0x23/0x90
@@ -1142,14 +1142,14 @@ Documentation written by Tom Zanussi
   into the histogram.  In order to avoid having to set everything up
   again, we can just clear the histogram first::
 
-    # echo 'hist:key=common_stacktrace:vals=len:clear' >> \
+    # echo 'hist:key=stacktrace:vals=len:clear' >> \
            /sys/kernel/tracing/events/net/netif_receive_skb/trigger
 
   Just to verify that it is in fact cleared, here's what we now see in
   the hist file::
 
     # cat /sys/kernel/tracing/events/net/netif_receive_skb/hist
-    # trigger info: hist:keys=common_stacktrace:vals=len:sort=hitcount:size=2048 [paused]
+    # trigger info: hist:keys=stacktrace:vals=len:sort=hitcount:size=2048 [paused]
 
     Totals:
         Hits: 0
@@ -1485,12 +1485,12 @@ Documentation written by Tom Zanussi
 
   And here's an example that shows how to combine histogram data from
   any two events even if they don't share any 'compatible' fields
-  other than 'hitcount' and 'common_stacktrace'.  These commands create a
+  other than 'hitcount' and 'stacktrace'.  These commands create a
   couple of triggers named 'bar' using those fields::
 
-    # echo 'hist:name=bar:key=common_stacktrace:val=hitcount' > \
+    # echo 'hist:name=bar:key=stacktrace:val=hitcount' > \
            /sys/kernel/tracing/events/sched/sched_process_fork/trigger
-    # echo 'hist:name=bar:key=common_stacktrace:val=hitcount' > \
+    # echo 'hist:name=bar:key=stacktrace:val=hitcount' > \
           /sys/kernel/tracing/events/net/netif_rx/trigger
 
   And displaying the output of either shows some interesting if
@@ -1501,16 +1501,16 @@ Documentation written by Tom Zanussi
 
     # event histogram
     #
-    # trigger info: hist:name=bar:keys=common_stacktrace:vals=hitcount:sort=hitcount:size=2048 [active]
+    # trigger info: hist:name=bar:keys=stacktrace:vals=hitcount:sort=hitcount:size=2048 [active]
     #
 
-    { common_stacktrace:
+    { stacktrace:
              kernel_clone+0x18e/0x330
              kernel_thread+0x29/0x30
              kthreadd+0x154/0x1b0
              ret_from_fork+0x3f/0x70
     } hitcount:          1
-    { common_stacktrace:
+    { stacktrace:
              netif_rx_internal+0xb2/0xd0
              netif_rx_ni+0x20/0x70
              dev_loopback_xmit+0xaa/0xd0
@@ -1528,7 +1528,7 @@ Documentation written by Tom Zanussi
              call_cpuidle+0x3b/0x60
              cpu_startup_entry+0x22d/0x310
     } hitcount:          1
-    { common_stacktrace:
+    { stacktrace:
              netif_rx_internal+0xb2/0xd0
              netif_rx_ni+0x20/0x70
              dev_loopback_xmit+0xaa/0xd0
@@ -1543,7 +1543,7 @@ Documentation written by Tom Zanussi
              SyS_sendto+0xe/0x10
              entry_SYSCALL_64_fastpath+0x12/0x6a
     } hitcount:          2
-    { common_stacktrace:
+    { stacktrace:
              netif_rx_internal+0xb2/0xd0
              netif_rx+0x1c/0x60
              loopback_xmit+0x6c/0xb0
@@ -1561,7 +1561,7 @@ Documentation written by Tom Zanussi
              sock_sendmsg+0x38/0x50
              ___sys_sendmsg+0x14e/0x270
     } hitcount:         76
-    { common_stacktrace:
+    { stacktrace:
              netif_rx_internal+0xb2/0xd0
              netif_rx+0x1c/0x60
              loopback_xmit+0x6c/0xb0
@@ -1579,7 +1579,7 @@ Documentation written by Tom Zanussi
              sock_sendmsg+0x38/0x50
              ___sys_sendmsg+0x269/0x270
     } hitcount:         77
-    { common_stacktrace:
+    { stacktrace:
              netif_rx_internal+0xb2/0xd0
              netif_rx+0x1c/0x60
              loopback_xmit+0x6c/0xb0
@@ -1597,7 +1597,7 @@ Documentation written by Tom Zanussi
              sock_sendmsg+0x38/0x50
              SYSC_sendto+0xef/0x170
     } hitcount:         88
-    { common_stacktrace:
+    { stacktrace:
              kernel_clone+0x18e/0x330
              SyS_clone+0x19/0x20
              entry_SYSCALL_64_fastpath+0x12/0x6a
@@ -1608,8 +1608,8 @@ Documentation written by Tom Zanussi
         Entries: 7
         Dropped: 0
 
-2.4. Inter-event hist triggers
-------------------------------
+2.2 Inter-event hist triggers
+-----------------------------
 
 Inter-event hist triggers are hist triggers that combine values from
 one or more other events and create a histogram using that data.  Data
@@ -1685,8 +1685,8 @@ pseudo-file.
 
 These features are described in more detail in the following sections.
 
-2.5. Histogram Variables
-------------------------
+2.2.1 Histogram Variables
+-------------------------
 
 Variables are simply named locations used for saving and retrieving
 values between matching events.  A 'matching' event is defined as an
@@ -1789,8 +1789,8 @@ or assigned to a variable and referenced in a subsequent expression::
 
 Variables can even hold stacktraces, which are useful with synthetic events.
 
-2.6. Synthetic Events
----------------------
+2.2.2 Synthetic Events
+----------------------
 
 Synthetic events are user-defined events generated from hist trigger
 variables or fields associated with one or more other events.  Their
@@ -1846,7 +1846,7 @@ the command that defined it with a '!'::
 At this point, there isn't yet an actual 'wakeup_latency' event
 instantiated in the event subsystem - for this to happen, a 'hist
 trigger action' needs to be instantiated and bound to actual fields
-and variables defined on other events (see Section 2.7. below on
+and variables defined on other events (see Section 2.2.3 below on
 how that is done using hist trigger 'onmatch' action). Once that is
 done, the 'wakeup_latency' synthetic event instance is created.
 
@@ -1949,7 +1949,7 @@ uninterruptible state::
 
   # cd /sys/kernel/tracing
   # echo 's:block_lat pid_t pid; u64 delta; unsigned long[] stack;' > dynamic_events
-  # echo 'hist:keys=next_pid:ts=common_timestamp.usecs,st=common_stacktrace  if prev_state == 2' >> events/sched/sched_switch/trigger
+  # echo 'hist:keys=next_pid:ts=common_timestamp.usecs,st=stacktrace  if prev_state == 2' >> events/sched/sched_switch/trigger
   # echo 'hist:keys=prev_pid:delta=common_timestamp.usecs-$ts,s=$st:onmax($delta).trace(block_lat,prev_pid,$delta,$s)' >> events/sched/sched_switch/trigger
   # echo 1 > events/synthetic/block_lat/enable
   # cat trace
@@ -2094,8 +2094,8 @@ histogram::
     Entries: 7
     Dropped: 0
 
-2.7. Hist trigger 'handlers' and 'actions'
-------------------------------------------
+2.2.3 Hist trigger 'handlers' and 'actions'
+-------------------------------------------
 
 A hist trigger 'action' is a function that's executed (in most cases
 conditionally) whenever a histogram entry is added or updated.
@@ -2526,8 +2526,8 @@ The following commonly-used handler.action pairs are available:
          kworker/3:2-135   [003] d..3    49.823123: sched_switch: prev_comm=kworker/3:2 prev_pid=135 prev_prio=120 prev_state=T ==> next_comm=swapper/3 next_pid=0 next_prio=120
               <idle>-0     [004] ..s7    49.823798: tcp_probe: src=10.0.0.10:54326 dest=23.215.104.193:80 mark=0x0 length=32 snd_nxt=0xe3ae2ff5 snd_una=0xe3ae2ecd snd_cwnd=10 ssthresh=2147483647 snd_wnd=28960 srtt=19604 rcv_wnd=29312
 
-2.8. User space creating a trigger
-----------------------------------
+3. User space creating a trigger
+--------------------------------
 
 Writing into /sys/kernel/tracing/trace_marker writes into the ftrace
 ring buffer. This can also act like an event, by writing into the trigger

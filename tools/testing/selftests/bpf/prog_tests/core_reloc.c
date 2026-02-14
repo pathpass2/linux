@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
-#define _GNU_SOURCE
 #include <test_progs.h>
 #include "progs/core_reloc_types.h"
-#include "test_kmods/bpf_testmod.h"
+#include "bpf_testmod/bpf_testmod.h"
 #include <linux/limits.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -85,11 +84,11 @@ static int duration = 0;
 #define NESTING_ERR_CASE(name) {					\
 	NESTING_CASE_COMMON(name),					\
 	.fails = true,							\
-	.run_btfgen_fails = true,					\
+	.run_btfgen_fails = true,							\
 }
 
 #define ARRAYS_DATA(struct_name) STRUCT_TO_CHAR_PTR(struct_name) {	\
-	.a = { [2] = 1, [3] = 11 },					\
+	.a = { [2] = 1 },						\
 	.b = { [1] = { [2] = { [3] = 2 } } },				\
 	.c = { [1] = { .c =  3 } },					\
 	.d = { [0] = { [0] = { .d = 4 } } },				\
@@ -108,7 +107,6 @@ static int duration = 0;
 	.input_len = sizeof(struct core_reloc_##name),			\
 	.output = STRUCT_TO_CHAR_PTR(core_reloc_arrays_output) {	\
 		.a2   = 1,						\
-		.a3   = 12,						\
 		.b123 = 2,						\
 		.c1c  = 3,						\
 		.d00d = 4,						\
@@ -603,7 +601,6 @@ static const struct core_reloc_test_case test_cases[] = {
 	ARRAYS_ERR_CASE(arrays___err_non_array),
 	ARRAYS_ERR_CASE(arrays___err_wrong_val_type),
 	ARRAYS_ERR_CASE(arrays___err_bad_zero_sz_arr),
-	ARRAYS_ERR_CASE(arrays___err_bad_signed_arr_elem_sz),
 
 	/* enum/ptr/int handling scenarios */
 	PRIMITIVES_CASE(primitives),
@@ -1012,7 +1009,7 @@ static void run_core_reloc_tests(bool use_btfgen)
 	struct data *data;
 	void *mmap_data = NULL;
 
-	my_pid_tgid = getpid() | ((uint64_t)sys_gettid() << 32);
+	my_pid_tgid = getpid() | ((uint64_t)syscall(SYS_gettid) << 32);
 
 	for (i = 0; i < ARRAY_SIZE(test_cases); i++) {
 		char btf_file[] = "/tmp/core_reloc.btf.XXXXXX";

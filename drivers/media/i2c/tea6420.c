@@ -3,7 +3,7 @@
     tea6420 - i2c-driver for the tea6420 by SGS Thomson
 
     Copyright (C) 1998-2003 Michael Hunold <michael@mihu.de>
-    Copyright (C) 2008 Hans Verkuil <hverkuil@kernel.org>
+    Copyright (C) 2008 Hans Verkuil <hverkuil@xs4all.nl>
 
     The tea6420 is a bus controlled audio-matrix with 5 stereo inputs,
     4 stereo outputs and gain control for each output.
@@ -123,7 +123,7 @@ static void tea6420_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tea6420_id[] = {
-	{ "tea6420" },
+	{ "tea6420", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tea6420_id);
@@ -132,7 +132,7 @@ static struct i2c_driver tea6420_driver = {
 	.driver = {
 		.name	= "tea6420",
 	},
-	.probe		= tea6420_probe,
+	.probe_new	= tea6420_probe,
 	.remove		= tea6420_remove,
 	.id_table	= tea6420_id,
 };

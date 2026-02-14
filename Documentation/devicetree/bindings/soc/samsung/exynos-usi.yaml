@@ -11,21 +11,11 @@ maintainers:
   - Krzysztof Kozlowski <krzk@kernel.org>
 
 description: |
-  The USI IP-core provides configurable support for serial protocols, enabling
-  different serial communication modes depending on the version.
-
-  In USIv1, configurations are available to enable either one or two protocols
-  simultaneously in select combinations - High-Speed I2C0, High-Speed
-  I2C1, SPI, UART, High-Speed I2C0 and I2C1 or both High-Speed
-  I2C1 and UART.
-
-  In USIv2, only one protocol can be active at a time, either UART, SPI, or
-  High-Speed I2C.
-
-  The USI core shares internal circuits across protocols, meaning only the
-  selected configuration is active at any given time. USI is modeled as a node
-  with zero or more child nodes, each representing a serial sub-node device. The
-  mode setting selects which particular function will be used.
+  USI IP-core provides selectable serial protocol (UART, SPI or High-Speed I2C).
+  USI shares almost all internal circuits within each protocol, so only one
+  protocol can be chosen at a time. USI is modeled as a node with zero or more
+  child nodes, each representing a serial sub-node device. The mode setting
+  selects which particular function will be used.
 
 properties:
   $nodename:
@@ -34,26 +24,16 @@ properties:
   compatible:
     oneOf:
       - items:
-          - enum:
-              - google,gs101-usi
-              - samsung,exynos2200-usi
-              - samsung,exynosautov9-usi
-              - samsung,exynosautov920-usi
+          - const: samsung,exynosautov9-usi
           - const: samsung,exynos850-usi
       - enum:
           - samsung,exynos850-usi
-          - samsung,exynos8895-usi
 
-  reg:
-    maxItems: 1
+  reg: true
 
-  clocks:
-    maxItems: 2
+  clocks: true
 
-  clock-names:
-    items:
-      - const: pclk
-      - const: ipclk
+  clock-names: true
 
   ranges: true
 
@@ -76,7 +56,6 @@ properties:
 
   samsung,mode:
     $ref: /schemas/types.yaml#/definitions/uint32
-    enum: [0, 1, 2, 3, 4, 5, 6]
     description:
       Selects USI function (which serial protocol to use). Refer to
       <include/dt-bindings/soc/samsung,exynos-usi.h> for valid USI mode values.
@@ -113,59 +92,39 @@ required:
   - samsung,sysreg
   - samsung,mode
 
-allOf:
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - samsung,exynos850-usi
+if:
+  properties:
+    compatible:
+      contains:
+        enum:
+          - samsung,exynos850-usi
 
-    then:
-      properties:
-        reg:
-          maxItems: 1
+then:
+  properties:
+    reg:
+      maxItems: 1
 
-        clocks:
-          items:
-            - description: Bus (APB) clock
-            - description: Operating clock for UART/SPI/I2C protocol
+    clocks:
+      items:
+        - description: Bus (APB) clock
+        - description: Operating clock for UART/SPI/I2C protocol
 
-        clock-names:
-          maxItems: 2
+    clock-names:
+      items:
+        - const: pclk
+        - const: ipclk
 
-        samsung,mode:
-          enum: [0, 1, 2, 3]
+  required:
+    - reg
+    - clocks
+    - clock-names
 
-      required:
-        - reg
-        - clocks
-        - clock-names
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - samsung,exynos8895-usi
-
-    then:
-      properties:
-        reg: false
-
-        clocks:
-          items:
-            - description: Bus (APB) clock
-            - description: Operating clock for UART/SPI protocol
-
-        clock-names:
-          maxItems: 2
-
-        samsung,clkreq-on: false
-
-      required:
-        - clocks
-        - clock-names
+else:
+  properties:
+    reg: false
+    clocks: false
+    clock-names: false
+    samsung,clkreq-on: false
 
 additionalProperties: false
 
@@ -178,7 +137,7 @@ examples:
         compatible = "samsung,exynos850-usi";
         reg = <0x138200c0 0x20>;
         samsung,sysreg = <&sysreg_peri 0x1010>;
-        samsung,mode = <USI_MODE_UART>;
+        samsung,mode = <USI_V2_UART>;
         samsung,clkreq-on; /* needed for UART mode */
         #address-cells = <1>;
         #size-cells = <1>;
@@ -192,10 +151,11 @@ examples:
             interrupts = <GIC_SPI 227 IRQ_TYPE_LEVEL_HIGH>;
             clocks = <&cmu_peri 32>, <&cmu_peri 31>;
             clock-names = "uart", "clk_uart_baud0";
+            status = "disabled";
         };
 
         hsi2c_0: i2c@13820000 {
-            compatible = "samsung,exynos850-hsi2c", "samsung,exynosautov9-hsi2c";
+            compatible = "samsung,exynosautov9-hsi2c";
             reg = <0x13820000 0xc0>;
             interrupts = <GIC_SPI 227 IRQ_TYPE_LEVEL_HIGH>;
             #address-cells = <1>;

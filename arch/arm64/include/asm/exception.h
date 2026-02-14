@@ -8,11 +8,16 @@
 #define __ASM_EXCEPTION_H
 
 #include <asm/esr.h>
+#include <asm/kprobes.h>
 #include <asm/ptrace.h>
 
 #include <linux/interrupt.h>
 
+#ifdef CONFIG_FUNCTION_GRAPH_TRACER
 #define __exception_irq_entry	__irq_entry
+#else
+#define __exception_irq_entry	__kprobes
+#endif
 
 static inline unsigned long disr_to_esr(u64 disr)
 {
@@ -26,7 +31,7 @@ static inline unsigned long disr_to_esr(u64 disr)
 	return esr;
 }
 
-asmlinkage void __noreturn handle_bad_stack(struct pt_regs *regs);
+asmlinkage void handle_bad_stack(struct pt_regs *regs);
 
 asmlinkage void el1t_64_sync_handler(struct pt_regs *regs);
 asmlinkage void el1t_64_irq_handler(struct pt_regs *regs);
@@ -57,22 +62,8 @@ void do_el0_undef(struct pt_regs *regs, unsigned long esr);
 void do_el1_undef(struct pt_regs *regs, unsigned long esr);
 void do_el0_bti(struct pt_regs *regs);
 void do_el1_bti(struct pt_regs *regs, unsigned long esr);
-void do_el0_gcs(struct pt_regs *regs, unsigned long esr);
-void do_el1_gcs(struct pt_regs *regs, unsigned long esr);
-#ifdef CONFIG_HAVE_HW_BREAKPOINT
-void do_breakpoint(unsigned long esr, struct pt_regs *regs);
-void do_watchpoint(unsigned long addr, unsigned long esr,
+void do_debug_exception(unsigned long addr_if_watchpoint, unsigned long esr,
 			struct pt_regs *regs);
-#else
-static inline void do_breakpoint(unsigned long esr, struct pt_regs *regs) {}
-static inline void do_watchpoint(unsigned long addr, unsigned long esr,
-			struct pt_regs *regs) {}
-#endif /* CONFIG_HAVE_HW_BREAKPOINT */
-void do_el0_softstep(unsigned long esr, struct pt_regs *regs);
-void do_el1_softstep(unsigned long esr, struct pt_regs *regs);
-void do_el0_brk64(unsigned long esr, struct pt_regs *regs);
-void do_el1_brk64(unsigned long esr, struct pt_regs *regs);
-void do_bkpt32(unsigned long esr, struct pt_regs *regs);
 void do_fpsimd_acc(unsigned long esr, struct pt_regs *regs);
 void do_sve_acc(unsigned long esr, struct pt_regs *regs);
 void do_sme_acc(unsigned long esr, struct pt_regs *regs);
@@ -86,9 +77,8 @@ void do_el0_svc(struct pt_regs *regs);
 void do_el0_svc_compat(struct pt_regs *regs);
 void do_el0_fpac(struct pt_regs *regs, unsigned long esr);
 void do_el1_fpac(struct pt_regs *regs, unsigned long esr);
-void do_el0_mops(struct pt_regs *regs, unsigned long esr);
-void do_el1_mops(struct pt_regs *regs, unsigned long esr);
 void do_serror(struct pt_regs *regs, unsigned long esr);
+void do_notify_resume(struct pt_regs *regs, unsigned long thread_flags);
 
-void __noreturn panic_bad_stack(struct pt_regs *regs, unsigned long esr, unsigned long far);
+void panic_bad_stack(struct pt_regs *regs, unsigned long esr, unsigned long far);
 #endif	/* __ASM_EXCEPTION_H */

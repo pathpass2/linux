@@ -256,9 +256,9 @@ static ssize_t picolcd_operation_mode_show(struct device *dev,
 	struct picolcd_data *data = dev_get_drvdata(dev);
 
 	if (data->status & PICOLCD_BOOTLOADER)
-		return sysfs_emit(buf, "[bootloader] lcd\n");
+		return snprintf(buf, PAGE_SIZE, "[bootloader] lcd\n");
 	else
-		return sysfs_emit(buf, "bootloader [lcd]\n");
+		return snprintf(buf, PAGE_SIZE, "bootloader [lcd]\n");
 }
 
 static ssize_t picolcd_operation_mode_store(struct device *dev,
@@ -301,7 +301,7 @@ static ssize_t picolcd_operation_mode_delay_show(struct device *dev,
 {
 	struct picolcd_data *data = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%hu\n", data->opmode_delay);
+	return snprintf(buf, PAGE_SIZE, "%hu\n", data->opmode_delay);
 }
 
 static ssize_t picolcd_operation_mode_delay_store(struct device *dev,
@@ -363,6 +363,7 @@ static int picolcd_raw_event(struct hid_device *hdev,
 	return 1;
 }
 
+#ifdef CONFIG_PM
 static int picolcd_suspend(struct hid_device *hdev, pm_message_t message)
 {
 	if (PMSG_IS_AUTO(message))
@@ -400,6 +401,7 @@ static int picolcd_reset_resume(struct hid_device *hdev)
 	picolcd_leds_set(hid_get_drvdata(hdev));
 	return 0;
 }
+#endif
 
 /* initialize keypad input device */
 static int picolcd_init_keys(struct picolcd_data *data,
@@ -472,6 +474,11 @@ static int picolcd_probe_lcd(struct hid_device *hdev, struct picolcd_data *data)
 	if (error)
 		goto err;
 
+	/* Set up the framebuffer device */
+	error = picolcd_init_framebuffer(data);
+	if (error)
+		goto err;
+
 	/* Setup lcd class device */
 	error = picolcd_init_lcd(data, picolcd_out_report(REPORT_CONTRAST, hdev));
 	if (error)
@@ -479,11 +486,6 @@ static int picolcd_probe_lcd(struct hid_device *hdev, struct picolcd_data *data)
 
 	/* Setup backlight class device */
 	error = picolcd_init_backlight(data, picolcd_out_report(REPORT_BRIGHTNESS, hdev));
-	if (error)
-		goto err;
-
-	/* Set up the framebuffer device */
-	error = picolcd_init_framebuffer(data);
 	if (error)
 		goto err;
 
@@ -500,9 +502,9 @@ static int picolcd_probe_lcd(struct hid_device *hdev, struct picolcd_data *data)
 	return 0;
 err:
 	picolcd_exit_leds(data);
-	picolcd_exit_framebuffer(data);
 	picolcd_exit_backlight(data);
 	picolcd_exit_lcd(data);
+	picolcd_exit_framebuffer(data);
 	picolcd_exit_cir(data);
 	picolcd_exit_keys(data);
 	return error;
@@ -621,9 +623,9 @@ static void picolcd_remove(struct hid_device *hdev)
 	/* Cleanup LED */
 	picolcd_exit_leds(data);
 	/* Clean up the framebuffer */
-	picolcd_exit_framebuffer(data);
 	picolcd_exit_backlight(data);
 	picolcd_exit_lcd(data);
+	picolcd_exit_framebuffer(data);
 	/* Cleanup input */
 	picolcd_exit_cir(data);
 	picolcd_exit_keys(data);
@@ -646,9 +648,11 @@ static struct hid_driver picolcd_driver = {
 	.probe =         picolcd_probe,
 	.remove =        picolcd_remove,
 	.raw_event =     picolcd_raw_event,
-	.suspend =       pm_ptr(picolcd_suspend),
-	.resume =        pm_ptr(picolcd_resume),
-	.reset_resume =  pm_ptr(picolcd_reset_resume),
+#ifdef CONFIG_PM
+	.suspend =       picolcd_suspend,
+	.resume =        picolcd_resume,
+	.reset_resume =  picolcd_reset_resume,
+#endif
 };
 module_hid_driver(picolcd_driver);
 

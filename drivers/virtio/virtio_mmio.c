@@ -61,10 +61,10 @@
 #include <linux/io.h>
 #include <linux/list.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
 #include <uapi/linux/virtio_mmio.h>
@@ -87,7 +87,21 @@ struct virtio_mmio_device {
 
 	void __iomem *base;
 	unsigned long version;
+
+	/* a list of queues so we can dispatch IRQs */
+	spinlock_t lock;
+	struct list_head virtqueues;
 };
+
+struct virtio_mmio_vq_info {
+	/* the actual virtqueue */
+	struct virtqueue *vq;
+
+	/* the list node for the virtqueues list */
+	struct list_head node;
+};
+
+
 
 /* Configuration interface */
 
@@ -271,22 +285,13 @@ static bool vm_notify(struct virtqueue *vq)
 	return true;
 }
 
-static bool vm_notify_with_data(struct virtqueue *vq)
-{
-	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
-	u32 data = vring_notification_data(vq);
-
-	writel(data, vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
-
-	return true;
-}
-
 /* Notify all virtqueues on an interrupt. */
 static irqreturn_t vm_interrupt(int irq, void *opaque)
 {
 	struct virtio_mmio_device *vm_dev = opaque;
-	struct virtqueue *vq;
+	struct virtio_mmio_vq_info *info;
 	unsigned long status;
+	unsigned long flags;
 	irqreturn_t ret = IRQ_NONE;
 
 	/* Read and acknowledge interrupts */
@@ -299,8 +304,10 @@ static irqreturn_t vm_interrupt(int irq, void *opaque)
 	}
 
 	if (likely(status & VIRTIO_MMIO_INT_VRING)) {
-		virtio_device_for_each_vq(&vm_dev->vdev, vq)
-			ret |= vring_interrupt(irq, vq);
+		spin_lock_irqsave(&vm_dev->lock, flags);
+		list_for_each_entry(info, &vm_dev->virtqueues, node)
+			ret |= vring_interrupt(irq, info->vq);
+		spin_unlock_irqrestore(&vm_dev->lock, flags);
 	}
 
 	return ret;
@@ -311,7 +318,13 @@ static irqreturn_t vm_interrupt(int irq, void *opaque)
 static void vm_del_vq(struct virtqueue *vq)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
+	struct virtio_mmio_vq_info *info = vq->priv;
+	unsigned long flags;
 	unsigned int index = vq->index;
+
+	spin_lock_irqsave(&vm_dev->lock, flags);
+	list_del(&info->node);
+	spin_unlock_irqrestore(&vm_dev->lock, flags);
 
 	/* Select and deactivate the queue */
 	writel(index, vm_dev->base + VIRTIO_MMIO_QUEUE_SEL);
@@ -323,6 +336,8 @@ static void vm_del_vq(struct virtqueue *vq)
 	}
 
 	vring_del_virtqueue(vq);
+
+	kfree(info);
 }
 
 static void vm_del_vqs(struct virtio_device *vdev)
@@ -348,15 +363,11 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int in
 				  const char *name, bool ctx)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
-	bool (*notify)(struct virtqueue *vq);
+	struct virtio_mmio_vq_info *info;
 	struct virtqueue *vq;
+	unsigned long flags;
 	unsigned int num;
 	int err;
-
-	if (__virtio_test_bit(vdev, VIRTIO_F_NOTIFICATION_DATA))
-		notify = vm_notify_with_data;
-	else
-		notify = vm_notify;
 
 	if (!name)
 		return NULL;
@@ -371,6 +382,13 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int in
 		goto error_available;
 	}
 
+	/* Allocate and fill out our active queue description */
+	info = kmalloc(sizeof(*info), GFP_KERNEL);
+	if (!info) {
+		err = -ENOMEM;
+		goto error_kmalloc;
+	}
+
 	num = readl(vm_dev->base + VIRTIO_MMIO_QUEUE_NUM_MAX);
 	if (num == 0) {
 		err = -ENOENT;
@@ -379,7 +397,7 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int in
 
 	/* Create the vring */
 	vq = vring_create_virtqueue(index, num, VIRTIO_MMIO_VRING_ALIGN, vdev,
-				 true, true, ctx, notify, callback, name);
+				 true, true, ctx, vm_notify, callback, name);
 	if (!vq) {
 		err = -ENOMEM;
 		goto error_new_virtqueue;
@@ -428,6 +446,13 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned int in
 		writel(1, vm_dev->base + VIRTIO_MMIO_QUEUE_READY);
 	}
 
+	vq->priv = info;
+	info->vq = vq;
+
+	spin_lock_irqsave(&vm_dev->lock, flags);
+	list_add(&info->node, &vm_dev->virtqueues);
+	spin_unlock_irqrestore(&vm_dev->lock, flags);
+
 	return vq;
 
 error_bad_pfn:
@@ -439,13 +464,17 @@ error_new_virtqueue:
 		writel(0, vm_dev->base + VIRTIO_MMIO_QUEUE_READY);
 		WARN_ON(readl(vm_dev->base + VIRTIO_MMIO_QUEUE_READY));
 	}
+	kfree(info);
+error_kmalloc:
 error_available:
 	return ERR_PTR(err);
 }
 
 static int vm_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		       struct virtqueue *vqs[],
-		       struct virtqueue_info vqs_info[],
+		       vq_callback_t *callbacks[],
+		       const char * const names[],
+		       const bool *ctx,
 		       struct irq_affinity *desc)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
@@ -464,15 +493,13 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned int nvqs,
 		enable_irq_wake(irq);
 
 	for (i = 0; i < nvqs; ++i) {
-		struct virtqueue_info *vqi = &vqs_info[i];
-
-		if (!vqi->name) {
+		if (!names[i]) {
 			vqs[i] = NULL;
 			continue;
 		}
 
-		vqs[i] = vm_setup_vq(vdev, queue_idx++, vqi->callback,
-				     vqi->name, vqi->ctx);
+		vqs[i] = vm_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
+				     ctx ? ctx[i] : false);
 		if (IS_ERR(vqs[i])) {
 			vm_del_vqs(vdev);
 			return PTR_ERR(vqs[i]);
@@ -563,8 +590,9 @@ static void virtio_mmio_release_dev(struct device *_d)
 	struct virtio_device *vdev =
 			container_of(_d, struct virtio_device, dev);
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+	struct platform_device *pdev = vm_dev->pdev;
 
-	kfree(vm_dev);
+	devm_kfree(&pdev->dev, vm_dev);
 }
 
 /* Platform device */
@@ -575,7 +603,7 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 	unsigned long magic;
 	int rc;
 
-	vm_dev = kzalloc(sizeof(*vm_dev), GFP_KERNEL);
+	vm_dev = devm_kzalloc(&pdev->dev, sizeof(*vm_dev), GFP_KERNEL);
 	if (!vm_dev)
 		return -ENOMEM;
 
@@ -583,19 +611,18 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 	vm_dev->vdev.dev.release = virtio_mmio_release_dev;
 	vm_dev->vdev.config = &virtio_mmio_config_ops;
 	vm_dev->pdev = pdev;
+	INIT_LIST_HEAD(&vm_dev->virtqueues);
+	spin_lock_init(&vm_dev->lock);
 
 	vm_dev->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(vm_dev->base)) {
-		rc = PTR_ERR(vm_dev->base);
-		goto free_vm_dev;
-	}
+	if (IS_ERR(vm_dev->base))
+		return PTR_ERR(vm_dev->base);
 
 	/* Check magic value */
 	magic = readl(vm_dev->base + VIRTIO_MMIO_MAGIC_VALUE);
 	if (magic != ('v' | 'i' << 8 | 'r' << 16 | 't' << 24)) {
 		dev_warn(&pdev->dev, "Wrong magic value 0x%08lx!\n", magic);
-		rc = -ENODEV;
-		goto free_vm_dev;
+		return -ENODEV;
 	}
 
 	/* Check device version */
@@ -603,8 +630,7 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 	if (vm_dev->version < 1 || vm_dev->version > 2) {
 		dev_err(&pdev->dev, "Version %ld not supported!\n",
 				vm_dev->version);
-		rc = -ENXIO;
-		goto free_vm_dev;
+		return -ENXIO;
 	}
 
 	vm_dev->vdev.id.device = readl(vm_dev->base + VIRTIO_MMIO_DEVICE_ID);
@@ -613,8 +639,7 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 		 * virtio-mmio device with an ID 0 is a (dummy) placeholder
 		 * with no function. End probing now with no error reported.
 		 */
-		rc = -ENODEV;
-		goto free_vm_dev;
+		return -ENODEV;
 	}
 	vm_dev->vdev.id.vendor = readl(vm_dev->base + VIRTIO_MMIO_VENDOR_ID);
 
@@ -644,16 +669,14 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 		put_device(&vm_dev->vdev.dev);
 
 	return rc;
-
-free_vm_dev:
-	kfree(vm_dev);
-	return rc;
 }
 
-static void virtio_mmio_remove(struct platform_device *pdev)
+static int virtio_mmio_remove(struct platform_device *pdev)
 {
 	struct virtio_mmio_device *vm_dev = platform_get_drvdata(pdev);
 	unregister_virtio_device(&vm_dev->vdev);
+
+	return 0;
 }
 
 

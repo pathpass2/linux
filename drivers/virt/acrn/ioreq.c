@@ -351,7 +351,7 @@ static bool handle_cf8cfc(struct acrn_vm *vm,
 	return is_handled;
 }
 
-static bool acrn_in_range(struct acrn_ioreq_range *range,
+static bool in_range(struct acrn_ioreq_range *range,
 		     struct acrn_io_request *req)
 {
 	bool ret = false;
@@ -389,7 +389,7 @@ static struct acrn_ioreq_client *find_ioreq_client(struct acrn_vm *vm,
 	list_for_each_entry(client, &vm->ioreq_clients, list) {
 		read_lock_bh(&client->range_lock);
 		list_for_each_entry(range, &client->range_list, list) {
-			if (acrn_in_range(range, req)) {
+			if (in_range(range, req)) {
 				found = client;
 				break;
 			}
@@ -433,7 +433,7 @@ struct acrn_ioreq_client *acrn_ioreq_client_create(struct acrn_vm *vm,
 	client->priv = priv;
 	client->is_default = is_default;
 	if (name)
-		strscpy(client->name, name);
+		strncpy(client->name, name, sizeof(client->name) - 1);
 	rwlock_init(&client->range_lock);
 	INIT_LIST_HEAD(&client->range_list);
 	init_waitqueue_head(&client->wq);
@@ -576,8 +576,8 @@ static void ioreq_resume(void)
 int acrn_ioreq_intr_setup(void)
 {
 	acrn_setup_intr_handler(ioreq_intr_handler);
-	ioreq_wq = alloc_ordered_workqueue("ioreq_wq",
-					   WQ_HIGHPRI | WQ_MEM_RECLAIM);
+	ioreq_wq = alloc_workqueue("ioreq_wq",
+				   WQ_HIGHPRI | WQ_MEM_RECLAIM | WQ_UNBOUND, 1);
 	if (!ioreq_wq) {
 		dev_err(acrn_dev.this_device, "Failed to alloc workqueue!\n");
 		acrn_remove_intr_handler();
@@ -626,7 +626,7 @@ int acrn_ioreq_init(struct acrn_vm *vm, u64 buf_vma)
 	}
 
 	dev_dbg(acrn_dev.this_device,
-		"Init ioreq buffer %p!\n", vm->ioreq_buf);
+		"Init ioreq buffer %pK!\n", vm->ioreq_buf);
 	ret = 0;
 free_buf:
 	kfree(set_buffer);
@@ -638,7 +638,7 @@ void acrn_ioreq_deinit(struct acrn_vm *vm)
 	struct acrn_ioreq_client *client, *next;
 
 	dev_dbg(acrn_dev.this_device,
-		"Deinit ioreq buffer %p!\n", vm->ioreq_buf);
+		"Deinit ioreq buffer %pK!\n", vm->ioreq_buf);
 	/* Destroy all clients belonging to this VM */
 	list_for_each_entry_safe(client, next, &vm->ioreq_clients, list)
 		acrn_ioreq_client_destroy(client);

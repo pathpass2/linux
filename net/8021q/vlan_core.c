@@ -407,8 +407,6 @@ int vlan_vids_add_by_dev(struct net_device *dev,
 		return 0;
 
 	list_for_each_entry(vid_info, &vlan_info->vid_list, list) {
-		if (!vlan_hw_filter_capable(by_dev, vid_info->proto))
-			continue;
 		err = vlan_vid_add(dev, vid_info->proto, vid_info->vid);
 		if (err)
 			goto unwind;
@@ -419,8 +417,6 @@ unwind:
 	list_for_each_entry_continue_reverse(vid_info,
 					     &vlan_info->vid_list,
 					     list) {
-		if (!vlan_hw_filter_capable(by_dev, vid_info->proto))
-			continue;
 		vlan_vid_del(dev, vid_info->proto, vid_info->vid);
 	}
 
@@ -440,11 +436,8 @@ void vlan_vids_del_by_dev(struct net_device *dev,
 	if (!vlan_info)
 		return;
 
-	list_for_each_entry(vid_info, &vlan_info->vid_list, list) {
-		if (!vlan_hw_filter_capable(by_dev, vid_info->proto))
-			continue;
+	list_for_each_entry(vid_info, &vlan_info->vid_list, list)
 		vlan_vid_del(dev, vid_info->proto, vid_info->vid);
-	}
 }
 EXPORT_SYMBOL(vlan_vids_del_by_dev);
 
@@ -477,8 +470,6 @@ static struct sk_buff *vlan_gro_receive(struct list_head *head,
 	vhdr = skb_gro_header(skb, hlen, off_vlan);
 	if (unlikely(!vhdr))
 		goto out;
-
-	NAPI_GRO_CB(skb)->network_offsets[NAPI_GRO_CB(skb)->encap_mark] = hlen;
 
 	type = vhdr->h_vlan_encapsulated_proto;
 

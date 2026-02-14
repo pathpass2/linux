@@ -335,7 +335,6 @@ static const struct of_device_id brcmstb_usb_pinmap_of_match[] = {
 	{ .compatible = "brcm,usb-pinmap" },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, brcmstb_usb_pinmap_of_match);
 
 static struct platform_driver brcmstb_usb_pinmap_driver = {
 	.driver = {

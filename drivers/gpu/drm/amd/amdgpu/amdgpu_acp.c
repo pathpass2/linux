@@ -98,9 +98,9 @@ enum {
 	ACP_TILE_DSP2,
 };
 
-static int acp_sw_init(struct amdgpu_ip_block *ip_block)
+static int acp_sw_init(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	adev->acp.parent = adev->dev;
 
@@ -112,9 +112,9 @@ static int acp_sw_init(struct amdgpu_ip_block *ip_block)
 	return 0;
 }
 
-static int acp_sw_fini(struct amdgpu_ip_block *ip_block)
+static int acp_sw_fini(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	if (adev->acp.cgs_device)
 		amdgpu_cgs_destroy_device(adev->acp.cgs_device);
@@ -140,7 +140,7 @@ static int acp_poweroff(struct generic_pm_domain *genpd)
 	 * 2. power off the acp tiles
 	 * 3. check and enter ulv state
 	 */
-	amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, true, 0);
+	amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, true);
 	return 0;
 }
 
@@ -157,7 +157,7 @@ static int acp_poweron(struct generic_pm_domain *genpd)
 	 * 2. turn on acp clock
 	 * 3. power on acp tiles
 	 */
-	amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, false, 0);
+	amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, false);
 	return 0;
 }
 
@@ -219,10 +219,10 @@ static const struct dmi_system_id acp_quirk_table[] = {
 /**
  * acp_hw_init - start and test ACP block
  *
- * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
+ * @handle: handle used to pass amdgpu_device pointer
  *
  */
-static int acp_hw_init(struct amdgpu_ip_block *ip_block)
+static int acp_hw_init(void *handle)
 {
 	int r;
 	u64 acp_base;
@@ -230,13 +230,19 @@ static int acp_hw_init(struct amdgpu_ip_block *ip_block)
 	u32 count = 0;
 	struct i2s_platform_data *i2s_pdata = NULL;
 
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	const struct amdgpu_ip_block *ip_block =
+		amdgpu_device_ip_get_ip_block(adev, AMD_IP_BLOCK_TYPE_ACP);
+
+	if (!ip_block)
+		return -EINVAL;
 
 	r = amd_acp_hw_init(adev->acp.cgs_device,
 			    ip_block->version->major, ip_block->version->minor);
 	/* -ENODEV means board uses AZ rather than ACP */
 	if (r == -ENODEV) {
-		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, true, 0);
+		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, true);
 		return 0;
 	} else if (r) {
 		return r;
@@ -302,19 +308,17 @@ static int acp_hw_init(struct amdgpu_ip_block *ip_block)
 		adev->acp.acp_res[2].end = adev->acp.acp_res[2].start;
 
 		adev->acp.acp_cell[0].name = "acp_audio_dma";
-		adev->acp.acp_cell[0].id = 0;
 		adev->acp.acp_cell[0].num_resources = 3;
 		adev->acp.acp_cell[0].resources = &adev->acp.acp_res[0];
 		adev->acp.acp_cell[0].platform_data = &adev->asic_type;
 		adev->acp.acp_cell[0].pdata_size = sizeof(adev->asic_type);
 
 		adev->acp.acp_cell[1].name = "designware-i2s";
-		adev->acp.acp_cell[1].id = 1;
 		adev->acp.acp_cell[1].num_resources = 1;
 		adev->acp.acp_cell[1].resources = &adev->acp.acp_res[1];
 		adev->acp.acp_cell[1].platform_data = &i2s_pdata[0];
 		adev->acp.acp_cell[1].pdata_size = sizeof(struct i2s_platform_data);
-		r = mfd_add_devices(adev->acp.parent, 0, adev->acp.acp_cell, 2, NULL, 0, NULL);
+		r = mfd_add_hotplug_devices(adev->acp.parent, adev->acp.acp_cell, 2);
 		if (r)
 			goto failure;
 		r = device_for_each_child(adev->acp.parent, &adev->acp.acp_genpd->gpd,
@@ -412,34 +416,30 @@ static int acp_hw_init(struct amdgpu_ip_block *ip_block)
 		adev->acp.acp_res[4].end = adev->acp.acp_res[4].start;
 
 		adev->acp.acp_cell[0].name = "acp_audio_dma";
-		adev->acp.acp_cell[0].id = 0;
 		adev->acp.acp_cell[0].num_resources = 5;
 		adev->acp.acp_cell[0].resources = &adev->acp.acp_res[0];
 		adev->acp.acp_cell[0].platform_data = &adev->asic_type;
 		adev->acp.acp_cell[0].pdata_size = sizeof(adev->asic_type);
 
 		adev->acp.acp_cell[1].name = "designware-i2s";
-		adev->acp.acp_cell[1].id = 1;
 		adev->acp.acp_cell[1].num_resources = 1;
 		adev->acp.acp_cell[1].resources = &adev->acp.acp_res[1];
 		adev->acp.acp_cell[1].platform_data = &i2s_pdata[0];
 		adev->acp.acp_cell[1].pdata_size = sizeof(struct i2s_platform_data);
 
 		adev->acp.acp_cell[2].name = "designware-i2s";
-		adev->acp.acp_cell[2].id = 2;
 		adev->acp.acp_cell[2].num_resources = 1;
 		adev->acp.acp_cell[2].resources = &adev->acp.acp_res[2];
 		adev->acp.acp_cell[2].platform_data = &i2s_pdata[1];
 		adev->acp.acp_cell[2].pdata_size = sizeof(struct i2s_platform_data);
 
 		adev->acp.acp_cell[3].name = "designware-i2s";
-		adev->acp.acp_cell[3].id = 3;
 		adev->acp.acp_cell[3].num_resources = 1;
 		adev->acp.acp_cell[3].resources = &adev->acp.acp_res[3];
 		adev->acp.acp_cell[3].platform_data = &i2s_pdata[2];
 		adev->acp.acp_cell[3].pdata_size = sizeof(struct i2s_platform_data);
 
-		r = mfd_add_devices(adev->acp.parent, 0, adev->acp.acp_cell, ACP_DEVS, NULL, 0, NULL);
+		r = mfd_add_hotplug_devices(adev->acp.parent, adev->acp.acp_cell, ACP_DEVS);
 		if (r)
 			goto failure;
 
@@ -503,18 +503,18 @@ failure:
 /**
  * acp_hw_fini - stop the hardware block
  *
- * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
+ * @handle: handle used to pass amdgpu_device pointer
  *
  */
-static int acp_hw_fini(struct amdgpu_ip_block *ip_block)
+static int acp_hw_fini(void *handle)
 {
 	u32 val = 0;
 	u32 count = 0;
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	/* return early if no ACP */
 	if (!adev->acp.acp_genpd) {
-		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, false, 0);
+		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, false);
 		return 0;
 	}
 
@@ -565,50 +565,67 @@ static int acp_hw_fini(struct amdgpu_ip_block *ip_block)
 	return 0;
 }
 
-static int acp_suspend(struct amdgpu_ip_block *ip_block)
+static int acp_suspend(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	/* power up on suspend */
 	if (!adev->acp.acp_cell)
-		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, false, 0);
+		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, false);
 	return 0;
 }
 
-static int acp_resume(struct amdgpu_ip_block *ip_block)
+static int acp_resume(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	/* power down again on resume */
 	if (!adev->acp.acp_cell)
-		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, true, 0);
+		amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, true);
 	return 0;
 }
 
-static bool acp_is_idle(struct amdgpu_ip_block *ip_block)
+static int acp_early_init(void *handle)
+{
+	return 0;
+}
+
+static bool acp_is_idle(void *handle)
 {
 	return true;
 }
 
-static int acp_set_clockgating_state(struct amdgpu_ip_block *ip_block,
+static int acp_wait_for_idle(void *handle)
+{
+	return 0;
+}
+
+static int acp_soft_reset(void *handle)
+{
+	return 0;
+}
+
+static int acp_set_clockgating_state(void *handle,
 				     enum amd_clockgating_state state)
 {
 	return 0;
 }
 
-static int acp_set_powergating_state(struct amdgpu_ip_block *ip_block,
+static int acp_set_powergating_state(void *handle,
 				     enum amd_powergating_state state)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	bool enable = (state == AMD_PG_STATE_GATE);
 
-	amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, enable, 0);
+	amdgpu_dpm_set_powergating_by_smu(adev, AMD_IP_BLOCK_TYPE_ACP, enable);
 
 	return 0;
 }
 
 static const struct amd_ip_funcs acp_ip_funcs = {
 	.name = "acp_ip",
+	.early_init = acp_early_init,
+	.late_init = NULL,
 	.sw_init = acp_sw_init,
 	.sw_fini = acp_sw_fini,
 	.hw_init = acp_hw_init,
@@ -616,6 +633,8 @@ static const struct amd_ip_funcs acp_ip_funcs = {
 	.suspend = acp_suspend,
 	.resume = acp_resume,
 	.is_idle = acp_is_idle,
+	.wait_for_idle = acp_wait_for_idle,
+	.soft_reset = acp_soft_reset,
 	.set_clockgating_state = acp_set_clockgating_state,
 	.set_powergating_state = acp_set_powergating_state,
 };

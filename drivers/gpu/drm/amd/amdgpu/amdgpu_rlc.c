@@ -31,13 +31,12 @@
  * amdgpu_gfx_rlc_enter_safe_mode - Set RLC into safe mode
  *
  * @adev: amdgpu_device pointer
- * @xcc_id: xcc accelerated compute core id
  *
  * Set RLC enter into safe mode if RLC is enabled and haven't in safe mode.
  */
-void amdgpu_gfx_rlc_enter_safe_mode(struct amdgpu_device *adev, int xcc_id)
+void amdgpu_gfx_rlc_enter_safe_mode(struct amdgpu_device *adev)
 {
-	if (adev->gfx.rlc.in_safe_mode[xcc_id])
+	if (adev->gfx.rlc.in_safe_mode)
 		return;
 
 	/* if RLC is not enabled, do nothing */
@@ -47,8 +46,8 @@ void amdgpu_gfx_rlc_enter_safe_mode(struct amdgpu_device *adev, int xcc_id)
 	if (adev->cg_flags &
 	    (AMD_CG_SUPPORT_GFX_CGCG | AMD_CG_SUPPORT_GFX_MGCG |
 	     AMD_CG_SUPPORT_GFX_3D_CGCG)) {
-		adev->gfx.rlc.funcs->set_safe_mode(adev, xcc_id);
-		adev->gfx.rlc.in_safe_mode[xcc_id] = true;
+		adev->gfx.rlc.funcs->set_safe_mode(adev);
+		adev->gfx.rlc.in_safe_mode = true;
 	}
 }
 
@@ -56,13 +55,12 @@ void amdgpu_gfx_rlc_enter_safe_mode(struct amdgpu_device *adev, int xcc_id)
  * amdgpu_gfx_rlc_exit_safe_mode - Set RLC out of safe mode
  *
  * @adev: amdgpu_device pointer
- * @xcc_id: xcc accelerated compute core id
  *
  * Set RLC exit safe mode if RLC is enabled and have entered into safe mode.
  */
-void amdgpu_gfx_rlc_exit_safe_mode(struct amdgpu_device *adev, int xcc_id)
+void amdgpu_gfx_rlc_exit_safe_mode(struct amdgpu_device *adev)
 {
-	if (!(adev->gfx.rlc.in_safe_mode[xcc_id]))
+	if (!(adev->gfx.rlc.in_safe_mode))
 		return;
 
 	/* if RLC is not enabled, do nothing */
@@ -72,8 +70,8 @@ void amdgpu_gfx_rlc_exit_safe_mode(struct amdgpu_device *adev, int xcc_id)
 	if (adev->cg_flags &
 	    (AMD_CG_SUPPORT_GFX_CGCG | AMD_CG_SUPPORT_GFX_MGCG |
 	     AMD_CG_SUPPORT_GFX_3D_CGCG)) {
-		adev->gfx.rlc.funcs->unset_safe_mode(adev, xcc_id);
-		adev->gfx.rlc.in_safe_mode[xcc_id] = false;
+		adev->gfx.rlc.funcs->unset_safe_mode(adev);
+		adev->gfx.rlc.in_safe_mode = false;
 	}
 }
 
@@ -89,7 +87,7 @@ void amdgpu_gfx_rlc_exit_safe_mode(struct amdgpu_device *adev, int xcc_id)
 int amdgpu_gfx_rlc_init_sr(struct amdgpu_device *adev, u32 dws)
 {
 	const u32 *src_ptr;
-	u32 *dst_ptr;
+	volatile u32 *dst_ptr;
 	u32 i;
 	int r;
 
@@ -189,7 +187,7 @@ int amdgpu_gfx_rlc_init_cpt(struct amdgpu_device *adev)
 void amdgpu_gfx_rlc_setup_cp_table(struct amdgpu_device *adev)
 {
 	const __le32 *fw_data;
-	u32 *dst_ptr;
+	volatile u32 *dst_ptr;
 	int me, i, max_me;
 	u32 bo_offset = 0;
 	u32 table_offset, table_size;
@@ -241,7 +239,7 @@ void amdgpu_gfx_rlc_setup_cp_table(struct amdgpu_device *adev)
 			table_size = le32_to_cpu(hdr->jt_size);
 		}
 
-		for (i = 0; i < table_size; i++) {
+		for (i = 0; i < table_size; i ++) {
 			dst_ptr[bo_offset + i] =
 				cpu_to_le32(le32_to_cpu(fw_data[table_offset + i]));
 		}
@@ -515,40 +513,6 @@ static void amdgpu_gfx_rlc_init_microcode_v2_4(struct amdgpu_device *adev)
 	}
 }
 
-static void amdgpu_gfx_rlc_init_microcode_v2_5(struct amdgpu_device *adev)
-{
-	const struct rlc_firmware_header_v2_5 *rlc_hdr;
-	struct amdgpu_firmware_info *info;
-
-	rlc_hdr = (const struct rlc_firmware_header_v2_5 *)adev->gfx.rlc_fw->data;
-	adev->gfx.rlc.rlc_1_iram_ucode_size_bytes =
-		le32_to_cpu(rlc_hdr->rlc_1_iram_ucode_size_bytes);
-	adev->gfx.rlc.rlc_1_iram_ucode = (u8 *)rlc_hdr +
-		le32_to_cpu(rlc_hdr->rlc_1_iram_ucode_offset_bytes);
-	adev->gfx.rlc.rlc_1_dram_ucode_size_bytes =
-		le32_to_cpu(rlc_hdr->rlc_1_dram_ucode_size_bytes);
-	adev->gfx.rlc.rlc_1_dram_ucode = (u8 *)rlc_hdr +
-		le32_to_cpu(rlc_hdr->rlc_1_dram_ucode_offset_bytes);
-
-	if (adev->firmware.load_type == AMDGPU_FW_LOAD_PSP) {
-		if (adev->gfx.rlc.rlc_1_iram_ucode_size_bytes) {
-			info = &adev->firmware.ucode[AMDGPU_UCODE_ID_RLC_IRAM_1];
-			info->ucode_id = AMDGPU_UCODE_ID_RLC_IRAM_1;
-			info->fw = adev->gfx.rlc_fw;
-			adev->firmware.fw_size +=
-				ALIGN(adev->gfx.rlc.rlc_1_iram_ucode_size_bytes, PAGE_SIZE);
-		}
-
-		if (adev->gfx.rlc.rlc_1_dram_ucode_size_bytes) {
-			info = &adev->firmware.ucode[AMDGPU_UCODE_ID_RLC_DRAM_1];
-			info->ucode_id = AMDGPU_UCODE_ID_RLC_DRAM_1;
-			info->fw = adev->gfx.rlc_fw;
-			adev->firmware.fw_size +=
-				ALIGN(adev->gfx.rlc.rlc_1_dram_ucode_size_bytes, PAGE_SIZE);
-		}
-	}
-}
-
 int amdgpu_gfx_rlc_init_microcode(struct amdgpu_device *adev,
 				  uint16_t version_major,
 				  uint16_t version_minor)
@@ -565,12 +529,13 @@ int amdgpu_gfx_rlc_init_microcode(struct amdgpu_device *adev,
 	if (version_major == 2 && version_minor == 1)
 		adev->gfx.rlc.is_rlc_v2_1 = true;
 
-	err = amdgpu_gfx_rlc_init_microcode_v2_0(adev);
-	if (err) {
-		dev_err(adev->dev, "fail to init rlc v2_0 microcode\n");
-		return err;
+	if (version_minor >= 0) {
+		err = amdgpu_gfx_rlc_init_microcode_v2_0(adev);
+		if (err) {
+			dev_err(adev->dev, "fail to init rlc v2_0 microcode\n");
+			return err;
+		}
 	}
-
 	if (version_minor >= 1)
 		amdgpu_gfx_rlc_init_microcode_v2_1(adev);
 	if (version_minor >= 2)
@@ -579,7 +544,6 @@ int amdgpu_gfx_rlc_init_microcode(struct amdgpu_device *adev,
 		amdgpu_gfx_rlc_init_microcode_v2_3(adev);
 	if (version_minor == 4)
 		amdgpu_gfx_rlc_init_microcode_v2_4(adev);
-	if (version_minor == 5)
-		amdgpu_gfx_rlc_init_microcode_v2_5(adev);
+
 	return 0;
 }

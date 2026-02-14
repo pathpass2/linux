@@ -13,7 +13,6 @@
 int intel_tcc_get_tjmax(int cpu);
 int intel_tcc_get_offset(int cpu);
 int intel_tcc_set_offset(int cpu, int offset);
-int intel_tcc_get_temp(int cpu, int *temp, bool pkg);
-u32 intel_tcc_get_offset_mask(void);
+int intel_tcc_get_temp(int cpu, bool pkg);
 
 #endif /* __INTEL_TCC_H__ */

@@ -93,7 +93,7 @@ static int sgi_w1_probe(struct platform_device *pdev)
 
 	pdata = dev_get_platdata(&pdev->dev);
 	if (pdata) {
-		strscpy(sdev->dev_id, pdata->dev_id, sizeof(sdev->dev_id));
+		strlcpy(sdev->dev_id, pdata->dev_id, sizeof(sdev->dev_id));
 		sdev->bus_master.dev_id = sdev->dev_id;
 	}
 
@@ -105,11 +105,13 @@ static int sgi_w1_probe(struct platform_device *pdev)
 /*
  * disassociate the w1 device from the driver
  */
-static void sgi_w1_remove(struct platform_device *pdev)
+static int sgi_w1_remove(struct platform_device *pdev)
 {
 	struct sgi_w1_device *sdev = platform_get_drvdata(pdev);
 
 	w1_remove_master_device(&sdev->bus_master);
+
+	return 0;
 }
 
 static struct platform_driver sgi_w1_driver = {

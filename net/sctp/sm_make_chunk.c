@@ -30,7 +30,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <crypto/utils.h>
+#include <crypto/hash.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/ip.h>
@@ -113,6 +113,14 @@ static void sctp_control_set_owner_w(struct sctp_chunk *chunk)
 	skb->sk = asoc ? asoc->base.sk : NULL;
 	skb_shinfo(skb)->destructor_arg = chunk;
 	skb->destructor = sctp_control_release_owner;
+}
+
+/* What was the inbound interface for this chunk? */
+int sctp_chunk_iif(const struct sctp_chunk *chunk)
+{
+	struct sk_buff *skb = chunk->skb;
+
+	return SCTP_INPUT_CB(skb)->af->skb_iif(skb);
 }
 
 /* RFC 2960 3.3.2 Initiation (INIT) (1)
@@ -1319,7 +1327,7 @@ struct sctp_chunk *sctp_make_auth(const struct sctp_association *asoc,
 				  __u16 key_id)
 {
 	struct sctp_authhdr auth_hdr;
-	const struct sctp_hmac *hmac_desc;
+	struct sctp_hmac *hmac_desc;
 	struct sctp_chunk *retval;
 
 	/* Get the first hmac that the peer told us to use */
@@ -1674,10 +1682,8 @@ static struct sctp_cookie_param *sctp_pack_cookie(
 	 * out on the network.
 	 */
 	retval = kzalloc(*cookie_len, GFP_ATOMIC);
-	if (!retval) {
-		*cookie_len = 0;
-		return NULL;
-	}
+	if (!retval)
+		goto nodata;
 
 	cookie = (struct sctp_signed_cookie *) retval->body;
 
@@ -1701,21 +1707,33 @@ static struct sctp_cookie_param *sctp_pack_cookie(
 					 ktime_get_real());
 
 	/* Copy the peer's init packet.  */
-	memcpy(cookie + 1, init_chunk->chunk_hdr,
+	memcpy(&cookie->c.peer_init[0], init_chunk->chunk_hdr,
 	       ntohs(init_chunk->chunk_hdr->length));
 
 	/* Copy the raw local address list of the association. */
-	memcpy((__u8 *)(cookie + 1) +
+	memcpy((__u8 *)&cookie->c.peer_init[0] +
 	       ntohs(init_chunk->chunk_hdr->length), raw_addrs, addrs_len);
 
-	/* Sign the cookie, if cookie authentication is enabled. */
-	if (sctp_sk(ep->base.sk)->cookie_auth_enable) {
-		static_assert(sizeof(cookie->mac) == SHA256_DIGEST_SIZE);
-		hmac_sha256(&ep->cookie_auth_key, (const u8 *)&cookie->c,
-			    bodysize, cookie->mac);
+	if (sctp_sk(ep->base.sk)->hmac) {
+		struct crypto_shash *tfm = sctp_sk(ep->base.sk)->hmac;
+		int err;
+
+		/* Sign the message.  */
+		err = crypto_shash_setkey(tfm, ep->secret_key,
+					  sizeof(ep->secret_key)) ?:
+		      crypto_shash_tfm_digest(tfm, (u8 *)&cookie->c, bodysize,
+					      cookie->signature);
+		if (err)
+			goto free_cookie;
 	}
 
 	return retval;
+
+free_cookie:
+	kfree(retval);
+nodata:
+	*cookie_len = 0;
+	return NULL;
 }
 
 /* Unpack the cookie from COOKIE ECHO chunk, recreating the association.  */
@@ -1730,6 +1748,7 @@ struct sctp_association *sctp_unpack_cookie(
 	struct sctp_signed_cookie *cookie;
 	struct sk_buff *skb = chunk->skb;
 	struct sctp_cookie *bear_cookie;
+	__u8 *digest = ep->digest;
 	enum sctp_scope scope;
 	unsigned int len;
 	ktime_t kt;
@@ -1759,19 +1778,30 @@ struct sctp_association *sctp_unpack_cookie(
 	cookie = chunk->subh.cookie_hdr;
 	bear_cookie = &cookie->c;
 
-	/* Verify the cookie's MAC, if cookie authentication is enabled. */
-	if (sctp_sk(ep->base.sk)->cookie_auth_enable) {
-		u8 mac[SHA256_DIGEST_SIZE];
+	if (!sctp_sk(ep->base.sk)->hmac)
+		goto no_hmac;
 
-		hmac_sha256(&ep->cookie_auth_key, (const u8 *)bear_cookie,
-			    bodysize, mac);
-		static_assert(sizeof(cookie->mac) == sizeof(mac));
-		if (crypto_memneq(mac, cookie->mac, sizeof(mac))) {
-			*error = -SCTP_IERROR_BAD_SIG;
+	/* Check the signature.  */
+	{
+		struct crypto_shash *tfm = sctp_sk(ep->base.sk)->hmac;
+		int err;
+
+		err = crypto_shash_setkey(tfm, ep->secret_key,
+					  sizeof(ep->secret_key)) ?:
+		      crypto_shash_tfm_digest(tfm, (u8 *)bear_cookie, bodysize,
+					      digest);
+		if (err) {
+			*error = -SCTP_IERROR_NOMEM;
 			goto fail;
 		}
 	}
 
+	if (memcmp(digest, cookie->signature, SCTP_SIGNATURE_SIZE)) {
+		*error = -SCTP_IERROR_BAD_SIG;
+		goto fail;
+	}
+
+no_hmac:
 	/* IG Section 2.35.2:
 	 *  3) Compare the port numbers and the verification tag contained
 	 *     within the COOKIE ECHO chunk to the actual port numbers and the
@@ -2177,7 +2207,7 @@ static enum sctp_ierror sctp_verify_param(struct net *net,
 		break;
 
 	case SCTP_PARAM_HOST_NAME_ADDRESS:
-		/* This param has been Deprecated, send ABORT.  */
+		/* Tell the peer, we won't support this param.  */
 		sctp_process_hn_param(asoc, param, chunk, err_chunk);
 		retval = SCTP_IERROR_ABORT;
 		break;
@@ -2276,7 +2306,7 @@ int sctp_verify_init(struct net *net, const struct sctp_endpoint *ep,
 	    ntohl(peer_init->init_hdr.a_rwnd) < SCTP_DEFAULT_MINWINDOW)
 		return sctp_process_inv_mandatory(asoc, chunk, errp);
 
-	sctp_walk_params(param, peer_init) {
+	sctp_walk_params(param, peer_init, init_hdr.params) {
 		if (param.p->type == SCTP_PARAM_STATE_COOKIE)
 			has_cookie = true;
 	}
@@ -2299,7 +2329,7 @@ int sctp_verify_init(struct net *net, const struct sctp_endpoint *ep,
 						  chunk, errp);
 
 	/* Verify all the variable length parameters */
-	sctp_walk_params(param, peer_init) {
+	sctp_walk_params(param, peer_init, init_hdr.params) {
 		result = sctp_verify_param(net, ep, asoc, param, cid,
 					   chunk, errp);
 		switch (result) {
@@ -2351,7 +2381,7 @@ int sctp_process_init(struct sctp_association *asoc, struct sctp_chunk *chunk,
 		src_match = 1;
 
 	/* Process the initialization parameters.  */
-	sctp_walk_params(param, peer_init) {
+	sctp_walk_params(param, peer_init, init_hdr.params) {
 		if (!src_match &&
 		    (param.p->type == SCTP_PARAM_IPV4_ADDRESS ||
 		     param.p->type == SCTP_PARAM_IPV6_ADDRESS)) {
@@ -2559,6 +2589,10 @@ do_addr_param:
 		asoc->cookie_life = ktime_add_ms(asoc->cookie_life, stale);
 		break;
 
+	case SCTP_PARAM_HOST_NAME_ADDRESS:
+		pr_debug("%s: unimplemented SCTP_HOST_NAME_ADDRESS\n", __func__);
+		break;
+
 	case SCTP_PARAM_SUPPORTED_ADDRESS_TYPES:
 		/* Turn off the default values first so we'll know which
 		 * ones are really set by the peer.
@@ -2588,6 +2622,10 @@ do_addr_param:
 			case SCTP_PARAM_IPV6_ADDRESS:
 				if (PF_INET6 == asoc->base.sk->sk_family)
 					asoc->peer.ipv6_address = 1;
+				break;
+
+			case SCTP_PARAM_HOST_NAME_ADDRESS:
+				asoc->peer.hostname_address = 1;
 				break;
 
 			default: /* Just ignore anything else.  */
@@ -3172,7 +3210,7 @@ bool sctp_verify_asconf(const struct sctp_association *asoc,
 	union sctp_params param;
 
 	addip = (struct sctp_addip_chunk *)chunk->chunk_hdr;
-	sctp_walk_params(param, addip) {
+	sctp_walk_params(param, addip, addip_hdr.params) {
 		size_t length = ntohs(param.p->length);
 
 		*errp = param.p;
@@ -3185,14 +3223,14 @@ bool sctp_verify_asconf(const struct sctp_association *asoc,
 			/* ensure there is only one addr param and it's in the
 			 * beginning of addip_hdr params, or we reject it.
 			 */
-			if (param.v != (addip + 1))
+			if (param.v != addip->addip_hdr.params)
 				return false;
 			addr_param_seen = true;
 			break;
 		case SCTP_PARAM_IPV6_ADDRESS:
 			if (length != sizeof(struct sctp_ipv6addr_param))
 				return false;
-			if (param.v != (addip + 1))
+			if (param.v != addip->addip_hdr.params)
 				return false;
 			addr_param_seen = true;
 			break;
@@ -3272,8 +3310,8 @@ struct sctp_chunk *sctp_process_asconf(struct sctp_association *asoc,
 		goto done;
 
 	/* Process the TLVs contained within the ASCONF chunk. */
-	sctp_walk_params(param, addip) {
-		/* Skip preceding address parameters. */
+	sctp_walk_params(param, addip, addip_hdr.params) {
+		/* Skip preceeding address parameters. */
 		if (param.p->type == SCTP_PARAM_IPV4_ADDRESS ||
 		    param.p->type == SCTP_PARAM_IPV6_ADDRESS)
 			continue;
@@ -3606,7 +3644,7 @@ static struct sctp_chunk *sctp_make_reconf(const struct sctp_association *asoc,
 		return NULL;
 
 	reconf = (struct sctp_reconf_chunk *)retval->chunk_hdr;
-	retval->param_hdr.v = (u8 *)(reconf + 1);
+	retval->param_hdr.v = reconf->params;
 
 	return retval;
 }
@@ -3848,7 +3886,7 @@ bool sctp_verify_reconf(const struct sctp_association *asoc,
 	__u16 cnt = 0;
 
 	hdr = (struct sctp_reconf_chunk *)chunk->chunk_hdr;
-	sctp_walk_params(param, hdr) {
+	sctp_walk_params(param, hdr, params) {
 		__u16 length = ntohs(param.p->length);
 
 		*errp = param.p;

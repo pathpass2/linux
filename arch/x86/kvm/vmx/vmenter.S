@@ -59,7 +59,8 @@
 	 * without the explicit restore, thinks the stack is getting walloped.
 	 * Using an unwind hint is problematic due to x86-64's dynamic alignment.
 	 */
-	leave
+	mov %_ASM_BP, %_ASM_SP
+	pop %_ASM_BP
 	RET
 .endm
 
@@ -71,7 +72,6 @@
  * @regs:	unsigned long * (to guest registers)
  * @flags:	VMX_RUN_VMRESUME:	use VMRESUME instead of VMLAUNCH
  *		VMX_RUN_SAVE_SPEC_CTRL: save guest SPEC_CTRL into vmx->spec_ctrl
- *		VMX_RUN_CLEAR_CPU_BUFFERS_FOR_MMIO: vCPU can access host MMIO
  *
  * Returns:
  *	0 on VM-Exit, 1 on VM-Fail
@@ -93,7 +93,7 @@ SYM_FUNC_START(__vmx_vcpu_run)
 	/* Save @vmx for SPEC_CTRL handling */
 	push %_ASM_ARG1
 
-	/* Save @flags (used for VMLAUNCH vs. VMRESUME and mitigations). */
+	/* Save @flags for SPEC_CTRL handling */
 	push %_ASM_ARG3
 
 	/*
@@ -101,6 +101,9 @@ SYM_FUNC_START(__vmx_vcpu_run)
 	 * @regs is needed after VM-Exit to save the guest's register values.
 	 */
 	push %_ASM_ARG2
+
+	/* Copy @flags to EBX, _ASM_ARG3 is volatile. */
+	mov %_ASM_ARG3L, %ebx
 
 	lea (%_ASM_SP), %_ASM_ARG2
 	call vmx_update_host_rsp
@@ -116,23 +119,13 @@ SYM_FUNC_START(__vmx_vcpu_run)
 	 * and vmentry.
 	 */
 	mov 2*WORD_SIZE(%_ASM_SP), %_ASM_DI
-#ifdef CONFIG_X86_64
-	mov VMX_spec_ctrl(%rdi), %rdx
-	cmp PER_CPU_VAR(x86_spec_ctrl_current), %rdx
+	movl VMX_spec_ctrl(%_ASM_DI), %edi
+	movl PER_CPU_VAR(x86_spec_ctrl_current), %esi
+	cmp %edi, %esi
 	je .Lspec_ctrl_done
-	movl %edx, %eax
-	shr $32, %rdx
-#else
-	mov VMX_spec_ctrl(%edi), %eax
-	mov PER_CPU_VAR(x86_spec_ctrl_current), %ecx
-	xor %eax, %ecx
-	mov VMX_spec_ctrl + 4(%edi), %edx
-	mov PER_CPU_VAR(x86_spec_ctrl_current + 4), %edi
-	xor %edx, %edi
-	or %edi, %ecx
-	je .Lspec_ctrl_done
-#endif
 	mov $MSR_IA32_SPEC_CTRL, %ecx
+	xor %edx, %edx
+	mov %edi, %eax
 	wrmsr
 
 .Lspec_ctrl_done:
@@ -144,6 +137,9 @@ SYM_FUNC_START(__vmx_vcpu_run)
 
 	/* Load @regs to RAX. */
 	mov (%_ASM_SP), %_ASM_AX
+
+	/* Check if vmlaunch or vmresume is needed */
+	test $VMX_RUN_VMRESUME, %ebx
 
 	/* Load guest registers.  Don't clobber flags. */
 	mov VCPU_RCX(%_ASM_AX), %_ASM_CX
@@ -165,22 +161,7 @@ SYM_FUNC_START(__vmx_vcpu_run)
 	/* Load guest RAX.  This kills the @regs pointer! */
 	mov VCPU_RAX(%_ASM_AX), %_ASM_AX
 
-	/*
-	 * Note, ALTERNATIVE_2 works in reverse order.  If CLEAR_CPU_BUF_VM is
-	 * enabled, do VERW unconditionally.  If CPU_BUF_VM_MMIO is enabled,
-	 * check @flags to see if the vCPU has access to host MMIO, and if so,
-	 * do VERW.  Else, do nothing (no mitigations needed/enabled).
-	 */
-	ALTERNATIVE_2 "",									  \
-		      __stringify(testl $VMX_RUN_CLEAR_CPU_BUFFERS_FOR_MMIO, WORD_SIZE(%_ASM_SP); \
-				  jz .Lskip_mmio_verw;						  \
-				  VERW;								  \
-				  .Lskip_mmio_verw:),					  	  \
-		      X86_FEATURE_CLEAR_CPU_BUF_VM_MMIO,					  \
-		      __stringify(VERW), X86_FEATURE_CLEAR_CPU_BUF_VM
-
-	/* Check @flags to see if VMLAUNCH or VMRESUME is needed. */
-	testl $VMX_RUN_VMRESUME, WORD_SIZE(%_ASM_SP)
+	/* Check EFLAGS.ZF from 'test VMX_RUN_VMRESUME' above */
 	jz .Lvmlaunch
 
 	/*
@@ -206,7 +187,7 @@ SYM_FUNC_START(__vmx_vcpu_run)
 	_ASM_EXTABLE(.Lvmresume, .Lfixup)
 	_ASM_EXTABLE(.Lvmlaunch, .Lfixup)
 
-SYM_INNER_LABEL_ALIGN(vmx_vmexit, SYM_L_GLOBAL)
+SYM_INNER_LABEL(vmx_vmexit, SYM_L_GLOBAL)
 
 	/* Restore unwind state from before the VMRESUME/VMLAUNCH. */
 	UNWIND_HINT_RESTORE
@@ -291,8 +272,6 @@ SYM_INNER_LABEL_ALIGN(vmx_vmexit, SYM_L_GLOBAL)
 
 	call vmx_spec_ctrl_restore_host
 
-	CLEAR_BRANCH_HISTORY_VMEXIT
-
 	/* Put return value in AX */
 	mov %_ASM_BX, %_ASM_AX
 
@@ -310,7 +289,7 @@ SYM_INNER_LABEL_ALIGN(vmx_vmexit, SYM_L_GLOBAL)
 	RET
 
 .Lfixup:
-	cmpb $0, _ASM_RIP(kvm_rebooting)
+	cmpb $0, kvm_rebooting
 	jne .Lvmfail
 	ud2
 .Lvmfail:
@@ -324,8 +303,10 @@ SYM_FUNC_START(vmx_do_nmi_irqoff)
 	VMX_DO_EVENT_IRQOFF call asm_exc_nmi_kvm_vmx
 SYM_FUNC_END(vmx_do_nmi_irqoff)
 
-#ifndef CONFIG_CC_HAS_ASM_GOTO_OUTPUT
 
+.section .text, "ax"
+
+#ifndef CONFIG_CC_HAS_ASM_GOTO_OUTPUT
 /**
  * vmread_error_trampoline - Trampoline from inline asm to vmread_error()
  * @field:	VMCS field encoding that failed
@@ -354,7 +335,7 @@ SYM_FUNC_START(vmread_error_trampoline)
 	mov 3*WORD_SIZE(%_ASM_BP), %_ASM_ARG2
 	mov 2*WORD_SIZE(%_ASM_BP), %_ASM_ARG1
 
-	call vmread_error_trampoline2
+	call vmread_error
 
 	/* Zero out @fault, which will be popped into the result register. */
 	_ASM_MOV $0, 3*WORD_SIZE(%_ASM_BP)
@@ -376,12 +357,6 @@ SYM_FUNC_START(vmread_error_trampoline)
 SYM_FUNC_END(vmread_error_trampoline)
 #endif
 
-.section .text, "ax"
-
-#ifndef CONFIG_X86_FRED
-
 SYM_FUNC_START(vmx_do_interrupt_irqoff)
 	VMX_DO_EVENT_IRQOFF CALL_NOSPEC _ASM_ARG1
 SYM_FUNC_END(vmx_do_interrupt_irqoff)
-
-#endif

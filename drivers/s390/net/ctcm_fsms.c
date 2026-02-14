@@ -12,7 +12,8 @@
 #undef DEBUGDATA
 #undef DEBUGCCW
 
-#define pr_fmt(fmt) "ctcm: " fmt
+#define KMSG_COMPONENT "ctcm"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -881,13 +882,6 @@ static void ctcm_chx_rxiniterr(fsm_instance *fi, int event, void *arg)
 			fsm_newstate(fi, CTC_STATE_RXERR);
 			fsm_event(priv->fsm, DEV_EVENT_RXDOWN, dev);
 		}
-	} else if (event == CTC_EVENT_UC_RCRESET) {
-		CTCM_DBF_TEXT_(TRACE, CTC_DBF_NOTICE,
-			       "%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
-			       ctc_ch_event_names[event], fsm_getstate_str(fi));
-
-		dev_info(&dev->dev,
-			 "Init handshake not received, peer not ready yet\n");
 	} else {
 		CTCM_DBF_TEXT_(ERROR, CTC_DBF_ERROR,
 			"%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
@@ -973,13 +967,6 @@ static void ctcm_chx_txiniterr(fsm_instance *fi, int event, void *arg)
 			fsm_newstate(fi, CTC_STATE_TXERR);
 			fsm_event(priv->fsm, DEV_EVENT_TXDOWN, dev);
 		}
-	} else if (event == CTC_EVENT_UC_RCRESET) {
-		CTCM_DBF_TEXT_(TRACE, CTC_DBF_NOTICE,
-			       "%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
-			       ctc_ch_event_names[event], fsm_getstate_str(fi));
-
-		dev_info(&dev->dev,
-			 "Init handshake not sent, peer not ready yet\n");
 	} else {
 		CTCM_DBF_TEXT_(ERROR, CTC_DBF_ERROR,
 			"%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
@@ -1338,7 +1325,7 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	clear_normalized_cda(&ch->ccw[1]);
 
 	CTCM_PR_DBGDATA("ccwcda=0x%p data=0x%p\n",
-			(void *)(u64)dma32_to_u32(ch->ccw[1].cda),
+			(void *)(unsigned long)ch->ccw[1].cda,
 			ch->trans_skb->data);
 	ch->ccw[1].count = ch->max_bufsize;
 
@@ -1353,7 +1340,7 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	}
 
 	CTCM_PR_DBGDATA("ccwcda=0x%p data=0x%p\n",
-			(void *)(u64)dma32_to_u32(ch->ccw[1].cda),
+			(void *)(unsigned long)ch->ccw[1].cda,
 			ch->trans_skb->data);
 
 	ch->ccw[1].count = ch->trans_skb->len;

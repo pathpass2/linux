@@ -3,9 +3,7 @@
  * Copyright 2007 Jon Loeliger, Freescale Semiconductor, Inc.
  */
 
-#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
-#endif
 
 #include <stdio.h>
 
@@ -89,26 +87,6 @@ static char *shorten_to_initial_path(char *fname)
 }
 
 /**
- * Returns true if the given path is an absolute one.
- *
- * On Windows, it either needs to begin with a forward slash or with a drive
- * letter (e.g. "C:").
- * On all other operating systems, it must begin with a forward slash to be
- * considered an absolute path.
- */
-static bool is_absolute_path(const char *path)
-{
-#ifdef WIN32
-	return (
-		path[0] == '/' ||
-		(((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':')
-	);
-#else
-	return (path[0] == '/');
-#endif
-}
-
-/**
  * Try to open a file in a given directory.
  *
  * If the filename is an absolute path, then dirname is ignored. If it is a
@@ -123,7 +101,7 @@ static char *try_open(const char *dirname, const char *fname, FILE **fp)
 {
 	char *fullname;
 
-	if (!dirname || is_absolute_path(fname))
+	if (!dirname || fname[0] == '/')
 		fullname = xstrdup(fname);
 	else
 		fullname = join_path(dirname, fname);
@@ -180,10 +158,8 @@ FILE *srcfile_relative_open(const char *fname, char **fullnamep)
 			    strerror(errno));
 	}
 
-	if (depfile) {
-		fputc(' ', depfile);
-		fprint_path_escaped(depfile, fullname);
-	}
+	if (depfile)
+		fprintf(depfile, " %s", fullname);
 
 	if (fullnamep)
 		*fullnamep = fullname;
@@ -307,17 +283,6 @@ struct srcpos *srcpos_extend(struct srcpos *pos, struct srcpos *newtail)
 	return pos;
 }
 
-void srcpos_free(struct srcpos *pos)
-{
-	struct srcpos *p_next;
-
-	while (pos) {
-		p_next = pos->next;
-		free(pos);
-		pos = p_next;
-	}
-}
-
 char *
 srcpos_string(struct srcpos *pos)
 {
@@ -346,8 +311,8 @@ srcpos_string(struct srcpos *pos)
 static char *
 srcpos_string_comment(struct srcpos *pos, bool first_line, int level)
 {
-	char *pos_str, *fresh_fname = NULL, *first, *rest;
-	const char *fname;
+	char *pos_str, *fname, *first, *rest;
+	bool fresh_fname = false;
 
 	if (!pos) {
 		if (level > 1) {
@@ -365,9 +330,9 @@ srcpos_string_comment(struct srcpos *pos, bool first_line, int level)
 	else if (level > 1)
 		fname = pos->file->name;
 	else {
-		fresh_fname = shorten_to_initial_path(pos->file->name);
-		if (fresh_fname)
-			fname = fresh_fname;
+		fname = shorten_to_initial_path(pos->file->name);
+		if (fname)
+			fresh_fname = true;
 		else
 			fname = pos->file->name;
 	}
@@ -381,7 +346,7 @@ srcpos_string_comment(struct srcpos *pos, bool first_line, int level)
 			  first_line ? pos->first_line : pos->last_line);
 
 	if (fresh_fname)
-		free(fresh_fname);
+		free(fname);
 
 	if (pos->next != NULL) {
 		rest = srcpos_string_comment(pos->next, first_line, level);

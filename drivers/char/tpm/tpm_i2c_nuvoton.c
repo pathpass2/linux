@@ -19,8 +19,7 @@
 #include <linux/interrupt.h>
 #include <linux/wait.h>
 #include <linux/i2c.h>
-#include <linux/of.h>
-#include <linux/property.h>
+#include <linux/of_device.h>
 #include "tpm.h"
 
 /* I2C interface offsets */
@@ -350,8 +349,7 @@ static int i2c_nuvoton_recv(struct tpm_chip *chip, u8 *buf, size_t count)
  * tpm.c can skip polling for the data to be available as the interrupt is
  * waited for here
  */
-static int i2c_nuvoton_send(struct tpm_chip *chip, u8 *buf, size_t bufsiz,
-			    size_t len)
+static int i2c_nuvoton_send(struct tpm_chip *chip, u8 *buf, size_t len)
 {
 	struct priv_data *priv = dev_get_drvdata(&chip->dev);
 	struct device *dev = chip->dev.parent;
@@ -526,6 +524,7 @@ static int get_vid(struct i2c_client *client, u32 *res)
 
 static int i2c_nuvoton_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int rc;
 	struct tpm_chip *chip;
 	struct device *dev = &client->dev;
@@ -547,8 +546,15 @@ static int i2c_nuvoton_probe(struct i2c_client *client)
 	if (!priv)
 		return -ENOMEM;
 
-	if (i2c_get_match_data(client))
-		chip->flags |= TPM_CHIP_FLAG_TPM2;
+	if (dev->of_node) {
+		const struct of_device_id *of_id;
+
+		of_id = of_match_device(dev->driver->of_match_table, dev);
+		if (of_id && of_id->data == OF_IS_TPM2)
+			chip->flags |= TPM_CHIP_FLAG_TPM2;
+	} else
+		if (id->driver_data == I2C_IS_TPM2)
+			chip->flags |= TPM_CHIP_FLAG_TPM2;
 
 	init_waitqueue_head(&priv->read_queue);
 
@@ -644,7 +650,7 @@ static SIMPLE_DEV_PM_OPS(i2c_nuvoton_pm_ops, tpm_pm_suspend, tpm_pm_resume);
 
 static struct i2c_driver i2c_nuvoton_driver = {
 	.id_table = i2c_nuvoton_id,
-	.probe = i2c_nuvoton_probe,
+	.probe_new = i2c_nuvoton_probe,
 	.remove = i2c_nuvoton_remove,
 	.driver = {
 		.name = "tpm_i2c_nuvoton",
@@ -655,6 +661,6 @@ static struct i2c_driver i2c_nuvoton_driver = {
 
 module_i2c_driver(i2c_nuvoton_driver);
 
-MODULE_AUTHOR("Dan Morav <dan.morav@nuvoton.com>");
+MODULE_AUTHOR("Dan Morav (dan.morav@nuvoton.com)");
 MODULE_DESCRIPTION("Nuvoton TPM I2C Driver");
 MODULE_LICENSE("GPL");

@@ -42,7 +42,8 @@
 	OPP_MASK_SH_LIST_DCN20(mask_sh)
 
 #define OPP_DCN201_REG_FIELD_LIST(type) \
-	OPP_DCN20_REG_FIELD_LIST(type)
+	OPP_DCN20_REG_FIELD_LIST(type);
+
 struct dcn201_opp_shift {
 	OPP_DCN201_REG_FIELD_LIST(uint8_t);
 };

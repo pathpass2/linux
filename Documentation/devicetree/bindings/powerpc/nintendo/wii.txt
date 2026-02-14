@@ -53,7 +53,7 @@ Nintendo Wii device tree
   - compatible : should be "nintendo,flipper-pic"
   - interrupt-controller
 
-1.c) The Digital Signal Processor (DSP) node
+1.c) The Digital Signal Procesor (DSP) node
 
   Represents the digital signal processor interface, designed to offload
   audio related tasks.
@@ -138,6 +138,10 @@ Nintendo Wii device tree
   - reg : should contain the controller registers location and length
   - interrupt-controller
   - interrupts : should contain the cascade interrupt of the "flipper" pic
+
+1.l) The General Purpose I/O (GPIO) controller node
+
+  see Documentation/devicetree/bindings/gpio/nintendo,hollywood-gpio.txt
 
 1.m) The control node
 

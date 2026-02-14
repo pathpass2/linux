@@ -19,8 +19,7 @@ enum insn_type {
 	INSN_CALL,
 	INSN_CALL_DYNAMIC,
 	INSN_RETURN,
-	INSN_SYSCALL,
-	INSN_SYSRET,
+	INSN_CONTEXT_SWITCH,
 	INSN_BUG,
 	INSN_NOP,
 	INSN_STAC,
@@ -29,7 +28,6 @@ enum insn_type {
 	INSN_CLD,
 	INSN_TRAP,
 	INSN_ENDBR,
-	INSN_LEA_RIP,
 	INSN_OTHER,
 };
 
@@ -71,7 +69,7 @@ struct stack_op {
 
 struct instruction;
 
-int arch_ftrace_match(const char *name);
+int arch_ftrace_match(char *name);
 
 void arch_initial_func_cfi_state(struct cfi_init_state *state);
 
@@ -83,8 +81,7 @@ bool arch_callee_saved_reg(unsigned char reg);
 
 unsigned long arch_jump_destination(struct instruction *insn);
 
-s64 arch_insn_adjusted_addend(struct instruction *insn, struct reloc *reloc);
-u64 arch_adjusted_addend(struct reloc *reloc);
+unsigned long arch_dest_reloc_offset(int addend);
 
 const char *arch_nop_insn(int len);
 const char *arch_ret_insn(int len);
@@ -93,25 +90,9 @@ int arch_decode_hint_reg(u8 sp_reg, int *base);
 
 bool arch_is_retpoline(struct symbol *sym);
 bool arch_is_rethunk(struct symbol *sym);
-bool arch_is_embedded_insn(struct symbol *sym);
 
 int arch_rewrite_retpolines(struct objtool_file *file);
 
 bool arch_pc_relative_reloc(struct reloc *reloc);
-bool arch_absolute_reloc(struct elf *elf, struct reloc *reloc);
-
-unsigned int arch_reloc_size(struct reloc *reloc);
-unsigned long arch_jump_table_sym_offset(struct reloc *reloc, struct reloc *table);
-
-extern const char *arch_reg_name[CFI_NUM_REGS];
-
-#ifdef DISAS
-
-#include <bfd.h>
-#include <dis-asm.h>
-
-int arch_disas_info_init(struct disassemble_info *dinfo);
-
-#endif /* DISAS */
 
 #endif /* _ARCH_H */

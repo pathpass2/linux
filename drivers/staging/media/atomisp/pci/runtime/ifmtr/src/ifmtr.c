@@ -2,11 +2,21 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010 - 2015, Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
-#include <linux/math.h>
-
 #include "system_global.h"
+#include <linux/kernel.h>
+
+#ifndef ISP2401
 
 #include "ia_css_ifmtr.h"
 #include <math_support.h>
@@ -149,9 +159,10 @@ int ia_css_ifmtr_configure(struct ia_css_stream_config *config,
 		left_padding = 2 * ISP_VEC_NELEMS - config->left_padding;
 
 	if (left_padding) {
-		num_vectors = DIV_ROUND_UP(cropped_width + left_padding, ISP_VEC_NELEMS);
+		num_vectors = CEIL_DIV(cropped_width + left_padding,
+				       ISP_VEC_NELEMS);
 	} else {
-		num_vectors = DIV_ROUND_UP(cropped_width, ISP_VEC_NELEMS);
+		num_vectors = CEIL_DIV(cropped_width, ISP_VEC_NELEMS);
 		num_vectors *= buffer_height;
 		/* todo: in case of left padding,
 		   num_vectors is vectors per line,
@@ -304,7 +315,7 @@ int ia_css_ifmtr_configure(struct ia_css_stream_config *config,
 		if ((!binary) || config->continuous)
 			/* !binary -> sp raw copy pipe */
 			buffer_height *= 2;
-		vectors_per_line = DIV_ROUND_UP(cropped_width, ISP_VEC_NELEMS);
+		vectors_per_line = CEIL_DIV(cropped_width, ISP_VEC_NELEMS);
 		vectors_per_line = CEIL_MUL(vectors_per_line, deinterleaving);
 		break;
 	case ATOMISP_INPUT_FORMAT_RAW_14:
@@ -371,6 +382,17 @@ int ia_css_ifmtr_configure(struct ia_css_stream_config *config,
 			      * vmem_increment);
 
 	vectors_per_buffer = buffer_height * buffer_width / ISP_VEC_NELEMS;
+
+	if (config->mode == IA_CSS_INPUT_MODE_TPG &&
+	    ((binary && binary->info->sp.pipeline.mode == IA_CSS_BINARY_MODE_VIDEO) ||
+	     (!binary))) {
+		/* !binary -> sp raw copy pipe */
+		/* workaround for TPG in video mode */
+		start_line = 0;
+		start_column = 0;
+		cropped_height -= start_line;
+		width_a -= start_column;
+	}
 
 	if_a_config.start_line = start_line;
 	if_a_config.start_column = start_column;
@@ -528,3 +550,4 @@ static int ifmtr_input_start_line(
 	return 0;
 }
 
+#endif

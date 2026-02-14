@@ -344,12 +344,12 @@ static int cs4265_set_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 	u8 iface = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		snd_soc_component_update_bits(component, CS4265_ADC_CTL,
 				CS4265_ADC_MASTER,
 				CS4265_ADC_MASTER);
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		snd_soc_component_update_bits(component, CS4265_ADC_CTL,
 				CS4265_ADC_MASTER,
 				0);
@@ -564,7 +564,7 @@ static const struct regmap_config cs4265_regmap = {
 	.num_reg_defaults = ARRAY_SIZE(cs4265_reg_defaults),
 	.readable_reg = cs4265_readable_register,
 	.volatile_reg = cs4265_volatile_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 };
 
 static int cs4265_i2c_probe(struct i2c_client *i2c_client)
@@ -638,7 +638,7 @@ static const struct of_device_id cs4265_of_match[] = {
 MODULE_DEVICE_TABLE(of, cs4265_of_match);
 
 static const struct i2c_device_id cs4265_id[] = {
-	{ "cs4265" },
+	{ "cs4265", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, cs4265_id);
@@ -649,7 +649,7 @@ static struct i2c_driver cs4265_i2c_driver = {
 		.of_match_table = cs4265_of_match,
 	},
 	.id_table = cs4265_id,
-	.probe =    cs4265_i2c_probe,
+	.probe_new = cs4265_i2c_probe,
 	.remove =   cs4265_i2c_remove,
 };
 

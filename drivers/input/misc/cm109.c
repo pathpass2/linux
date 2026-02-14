@@ -355,35 +355,6 @@ static void cm109_submit_buzz_toggle(struct cm109_dev *dev)
 			__func__, error);
 }
 
-static void cm109_submit_ctl(struct cm109_dev *dev)
-{
-	int error;
-
-	guard(spinlock_irqsave)(&dev->ctl_submit_lock);
-
-	dev->irq_urb_pending = 0;
-
-	if (unlikely(dev->shutdown))
-		return;
-
-	if (dev->buzzer_state)
-		dev->ctl_data->byte[HID_OR0] |= BUZZER_ON;
-	else
-		dev->ctl_data->byte[HID_OR0] &= ~BUZZER_ON;
-
-	dev->ctl_data->byte[HID_OR1] = dev->keybit;
-	dev->ctl_data->byte[HID_OR2] = dev->keybit;
-
-	dev->buzzer_pending = 0;
-	dev->ctl_urb_pending = 1;
-
-	error = usb_submit_urb(dev->urb_ctl, GFP_ATOMIC);
-	if (error)
-		dev_err(&dev->intf->dev,
-			"%s: usb_submit_urb (urb_ctl) failed %d\n",
-			__func__, error);
-}
-
 /*
  * IRQ handler
  */
@@ -391,6 +362,8 @@ static void cm109_urb_irq_callback(struct urb *urb)
 {
 	struct cm109_dev *dev = urb->context;
 	const int status = urb->status;
+	int error;
+	unsigned long flags;
 
 	dev_dbg(&dev->intf->dev, "### URB IRQ: [0x%02x 0x%02x 0x%02x 0x%02x] keybit=0x%02x\n",
 	     dev->irq_data->byte[0],
@@ -428,7 +401,32 @@ static void cm109_urb_irq_callback(struct urb *urb)
 	}
 
  out:
-	cm109_submit_ctl(dev);
+
+	spin_lock_irqsave(&dev->ctl_submit_lock, flags);
+
+	dev->irq_urb_pending = 0;
+
+	if (likely(!dev->shutdown)) {
+
+		if (dev->buzzer_state)
+			dev->ctl_data->byte[HID_OR0] |= BUZZER_ON;
+		else
+			dev->ctl_data->byte[HID_OR0] &= ~BUZZER_ON;
+
+		dev->ctl_data->byte[HID_OR1] = dev->keybit;
+		dev->ctl_data->byte[HID_OR2] = dev->keybit;
+
+		dev->buzzer_pending = 0;
+		dev->ctl_urb_pending = 1;
+
+		error = usb_submit_urb(dev->urb_ctl, GFP_ATOMIC);
+		if (error)
+			dev_err(&dev->intf->dev,
+				"%s: usb_submit_urb (urb_ctl) failed %d\n",
+				__func__, error);
+	}
+
+	spin_unlock_irqrestore(&dev->ctl_submit_lock, flags);
 }
 
 static void cm109_urb_ctl_callback(struct urb *urb)
@@ -436,6 +434,7 @@ static void cm109_urb_ctl_callback(struct urb *urb)
 	struct cm109_dev *dev = urb->context;
 	const int status = urb->status;
 	int error;
+	unsigned long flags;
 
 	dev_dbg(&dev->intf->dev, "### URB CTL: [0x%02x 0x%02x 0x%02x 0x%02x]\n",
 	     dev->ctl_data->byte[0],
@@ -450,31 +449,35 @@ static void cm109_urb_ctl_callback(struct urb *urb)
 				    __func__, status);
 	}
 
-	guard(spinlock_irqsave)(&dev->ctl_submit_lock);
+	spin_lock_irqsave(&dev->ctl_submit_lock, flags);
 
 	dev->ctl_urb_pending = 0;
 
-	if (unlikely(dev->shutdown))
-		return;
+	if (likely(!dev->shutdown)) {
 
-	if (dev->buzzer_pending || status) {
-		dev->buzzer_pending = 0;
-		dev->ctl_urb_pending = 1;
-		cm109_submit_buzz_toggle(dev);
-	} else if (likely(!dev->irq_urb_pending)) {
-		/* ask for key data */
-		dev->irq_urb_pending = 1;
-		error = usb_submit_urb(dev->urb_irq, GFP_ATOMIC);
-		if (error)
-			dev_err(&dev->intf->dev,
-				"%s: usb_submit_urb (urb_irq) failed %d\n",
-				__func__, error);
+		if (dev->buzzer_pending || status) {
+			dev->buzzer_pending = 0;
+			dev->ctl_urb_pending = 1;
+			cm109_submit_buzz_toggle(dev);
+		} else if (likely(!dev->irq_urb_pending)) {
+			/* ask for key data */
+			dev->irq_urb_pending = 1;
+			error = usb_submit_urb(dev->urb_irq, GFP_ATOMIC);
+			if (error)
+				dev_err(&dev->intf->dev,
+					"%s: usb_submit_urb (urb_irq) failed %d\n",
+					__func__, error);
+		}
 	}
+
+	spin_unlock_irqrestore(&dev->ctl_submit_lock, flags);
 }
 
 static void cm109_toggle_buzzer_async(struct cm109_dev *dev)
 {
-	guard(spinlock_irqsave)(&dev->ctl_submit_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dev->ctl_submit_lock, flags);
 
 	if (dev->ctl_urb_pending) {
 		/* URB completion will resubmit */
@@ -483,6 +486,8 @@ static void cm109_toggle_buzzer_async(struct cm109_dev *dev)
 		dev->ctl_urb_pending = 1;
 		cm109_submit_buzz_toggle(dev);
 	}
+
+	spin_unlock_irqrestore(&dev->ctl_submit_lock, flags);
 }
 
 static void cm109_toggle_buzzer_sync(struct cm109_dev *dev, int on)
@@ -551,30 +556,32 @@ static int cm109_input_open(struct input_dev *idev)
 		return error;
 	}
 
-	scoped_guard(mutex, &dev->pm_mutex) {
-		dev->buzzer_state = 0;
-		dev->key_code = -1;	/* no keys pressed */
-		dev->keybit = 0xf;
+	mutex_lock(&dev->pm_mutex);
 
-		/* issue INIT */
-		dev->ctl_data->byte[HID_OR0] = HID_OR_GPO_BUZ_SPDIF;
-		dev->ctl_data->byte[HID_OR1] = dev->keybit;
-		dev->ctl_data->byte[HID_OR2] = dev->keybit;
-		dev->ctl_data->byte[HID_OR3] = 0x00;
+	dev->buzzer_state = 0;
+	dev->key_code = -1;	/* no keys pressed */
+	dev->keybit = 0xf;
 
-		dev->ctl_urb_pending = 1;
-		error = usb_submit_urb(dev->urb_ctl, GFP_KERNEL);
-		if (!error) {
-			dev->open = 1;
-			return 0;
-		}
+	/* issue INIT */
+	dev->ctl_data->byte[HID_OR0] = HID_OR_GPO_BUZ_SPDIF;
+	dev->ctl_data->byte[HID_OR1] = dev->keybit;
+	dev->ctl_data->byte[HID_OR2] = dev->keybit;
+	dev->ctl_data->byte[HID_OR3] = 0x00;
+
+	dev->ctl_urb_pending = 1;
+	error = usb_submit_urb(dev->urb_ctl, GFP_KERNEL);
+	if (error) {
+		dev->ctl_urb_pending = 0;
+		dev_err(&dev->intf->dev, "%s: usb_submit_urb (urb_ctl) failed %d\n",
+			__func__, error);
+	} else {
+		dev->open = 1;
 	}
 
-	dev->ctl_urb_pending = 0;
-	usb_autopm_put_interface(dev->intf);
+	mutex_unlock(&dev->pm_mutex);
 
-	dev_err(&dev->intf->dev, "%s: usb_submit_urb (urb_ctl) failed %d\n",
-		__func__, error);
+	if (error)
+		usb_autopm_put_interface(dev->intf);
 
 	return error;
 }
@@ -583,15 +590,17 @@ static void cm109_input_close(struct input_dev *idev)
 {
 	struct cm109_dev *dev = input_get_drvdata(idev);
 
-	scoped_guard(mutex, &dev->pm_mutex) {
-		/*
-		 * Once we are here event delivery is stopped so we
-		 * don't need to worry about someone starting buzzer
-		 * again
-		 */
-		cm109_stop_traffic(dev);
-		dev->open = 0;
-	}
+	mutex_lock(&dev->pm_mutex);
+
+	/*
+	 * Once we are here event delivery is stopped so we
+	 * don't need to worry about someone starting buzzer
+	 * again
+	 */
+	cm109_stop_traffic(dev);
+	dev->open = 0;
+
+	mutex_unlock(&dev->pm_mutex);
 
 	usb_autopm_put_interface(dev->intf);
 }
@@ -814,9 +823,9 @@ static int cm109_usb_suspend(struct usb_interface *intf, pm_message_t message)
 
 	dev_info(&intf->dev, "cm109: usb_suspend (event=%d)\n", message.event);
 
-	guard(mutex)(&dev->pm_mutex);
-
+	mutex_lock(&dev->pm_mutex);
 	cm109_stop_traffic(dev);
+	mutex_unlock(&dev->pm_mutex);
 
 	return 0;
 }
@@ -827,9 +836,9 @@ static int cm109_usb_resume(struct usb_interface *intf)
 
 	dev_info(&intf->dev, "cm109: usb_resume\n");
 
-	guard(mutex)(&dev->pm_mutex);
-
+	mutex_lock(&dev->pm_mutex);
 	cm109_restore_state(dev);
+	mutex_unlock(&dev->pm_mutex);
 
 	return 0;
 }

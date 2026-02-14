@@ -20,7 +20,6 @@
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
 #include <asm/hardirq.h>
-#include <asm/traps.h>
 
 void bad_page_fault(struct pt_regs*, unsigned long, int);
 
@@ -131,14 +130,23 @@ void do_page_fault(struct pt_regs *regs)
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
 
 retry:
-	vma = lock_mm_and_find_vma(mm, address, regs);
+	mmap_read_lock(mm);
+	vma = find_vma(mm, address);
+
 	if (!vma)
-		goto bad_area_nosemaphore;
+		goto bad_area;
+	if (vma->vm_start <= address)
+		goto good_area;
+	if (!(vma->vm_flags & VM_GROWSDOWN))
+		goto bad_area;
+	if (expand_stack(vma, address))
+		goto bad_area;
 
 	/* Ok, we have a good vm_area for this memory access, so
 	 * we can handle it..
 	 */
 
+good_area:
 	code = SEGV_ACCERR;
 
 	if (is_write) {
@@ -197,7 +205,6 @@ retry:
 	 */
 bad_area:
 	mmap_read_unlock(mm);
-bad_area_nosemaphore:
 	if (user_mode(regs)) {
 		force_sig_fault(SIGSEGV, code, (void *) address);
 		return;

@@ -6,9 +6,7 @@
 #include "evsel.h"
 #include "evlist.h"
 #include "machine.h"
-#include "map.h"
 #include "parse-events.h"
-#include "thread.h"
 #include "hists_common.h"
 #include "util/mmap.h"
 #include <errno.h>
@@ -71,7 +69,6 @@ static int add_hist_entries(struct evlist *evlist, struct machine *machine)
 	struct perf_sample sample = { .period = 1, .weight = 1, };
 	size_t i = 0, k;
 
-	addr_location__init(&al);
 	/*
 	 * each evsel will have 10 samples - 5 common and 5 distinct.
 	 * However the second evsel also has a collapsed entry for
@@ -90,15 +87,14 @@ static int add_hist_entries(struct evlist *evlist, struct machine *machine)
 				goto out;
 
 			he = hists__add_entry(hists, &al, NULL,
-					      NULL, NULL, NULL, &sample, true);
+						NULL, NULL, &sample, true);
 			if (he == NULL) {
+				addr_location__put(&al);
 				goto out;
 			}
 
-			thread__put(fake_common_samples[k].thread);
-			fake_common_samples[k].thread = thread__get(al.thread);
-			map__put(fake_common_samples[k].map);
-			fake_common_samples[k].map = map__get(al.map);
+			fake_common_samples[k].thread = al.thread;
+			fake_common_samples[k].map = al.map;
 			fake_common_samples[k].sym = al.sym;
 		}
 
@@ -110,46 +106,31 @@ static int add_hist_entries(struct evlist *evlist, struct machine *machine)
 				goto out;
 
 			he = hists__add_entry(hists, &al, NULL,
-					      NULL, NULL, NULL, &sample, true);
+						NULL, NULL, &sample, true);
 			if (he == NULL) {
+				addr_location__put(&al);
 				goto out;
 			}
 
-			thread__put(fake_samples[i][k].thread);
-			fake_samples[i][k].thread = thread__get(al.thread);
-			map__put(fake_samples[i][k].map);
-			fake_samples[i][k].map = map__get(al.map);
+			fake_samples[i][k].thread = al.thread;
+			fake_samples[i][k].map = al.map;
 			fake_samples[i][k].sym = al.sym;
 		}
 		i++;
 	}
 
-	addr_location__exit(&al);
 	return 0;
+
 out:
-	addr_location__exit(&al);
 	pr_debug("Not enough memory for adding a hist entry\n");
 	return -1;
-}
-
-static void put_fake_samples(void)
-{
-	size_t i, j;
-
-	for (i = 0; i < ARRAY_SIZE(fake_common_samples); i++)
-		map__put(fake_common_samples[i].map);
-	for (i = 0; i < ARRAY_SIZE(fake_samples); i++) {
-		for (j = 0; j < ARRAY_SIZE(fake_samples[0]); j++)
-			map__put(fake_samples[i][j].map);
-	}
 }
 
 static int find_sample(struct sample *samples, size_t nr_samples,
 		       struct thread *t, struct map *m, struct symbol *s)
 {
 	while (nr_samples--) {
-		if (RC_CHK_EQUAL(samples->thread, t) &&
-		    RC_CHK_EQUAL(samples->map, m) &&
+		if (samples->thread == t && samples->map == m &&
 		    samples->sym == s)
 			return 1;
 		samples++;
@@ -303,6 +284,10 @@ static int test__hists_link(struct test_suite *test __maybe_unused, int subtest 
 		goto out;
 
 	err = TEST_FAIL;
+	/* default sort order (comm,dso,sym) will be used */
+	if (setup_sorting(NULL) < 0)
+		goto out;
+
 	machines__init(&machines);
 
 	/* setup threads/dso/map/symbols also */
@@ -312,10 +297,6 @@ static int test__hists_link(struct test_suite *test __maybe_unused, int subtest 
 
 	if (verbose > 1)
 		machine__fprintf(machine, stderr);
-
-	/* default sort order (comm,dso,sym) will be used */
-	if (setup_sorting(evlist, machine->env) < 0)
-		goto out;
 
 	/* process sample events */
 	err = add_hist_entries(evlist, machine);
@@ -355,7 +336,6 @@ out:
 	evlist__delete(evlist);
 	reset_output_field();
 	machines__exit(&machines);
-	put_fake_samples();
 
 	return err;
 }

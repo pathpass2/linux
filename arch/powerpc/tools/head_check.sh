@@ -1,4 +1,3 @@
-#!/bin/sh
 # Copyright © 2016 IBM Corporation
 
 # This program is free software; you can redistribute it and/or

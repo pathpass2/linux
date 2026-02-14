@@ -27,11 +27,11 @@
 #include <linux/err.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/dmtimer-omap.h>
 
 #include <clocksource/timer-ti-dm.h>
-#include <linux/delay.h>
 
 /*
  * timer errata flags
@@ -130,6 +130,7 @@ struct dmtimer {
 	void __iomem	*func_base;	/* function register base */
 
 	atomic_t enabled;
+	unsigned long rate;
 	unsigned reserved:1;
 	unsigned posted:1;
 	unsigned omap1:1;
@@ -140,8 +141,6 @@ struct dmtimer {
 	struct platform_device *pdev;
 	struct list_head node;
 	struct notifier_block nb;
-	struct notifier_block fclk_nb;
-	unsigned long fclk_rate;
 };
 
 static u32 omap_reserved_systimers;
@@ -183,7 +182,7 @@ static inline u32 dmtimer_read(struct dmtimer *timer, u32 reg)
  * dmtimer_write - write timer registers in posted and non-posted mode
  * @timer:      timer pointer over which write operation is to perform
  * @reg:        lowest byte holds the register offset
- * @val:        data to write into the register
+ * @value:      data to write into the register
  *
  * The posted mode bit is encoded in reg. Note that in posted mode, the write
  * pending bit must be checked. Otherwise a write on a register which has a
@@ -255,7 +254,8 @@ static inline void __omap_dm_timer_enable_posted(struct dmtimer *timer)
 	timer->posted = OMAP_TIMER_POSTED;
 }
 
-static inline void __omap_dm_timer_stop(struct dmtimer *timer)
+static inline void __omap_dm_timer_stop(struct dmtimer *timer,
+					unsigned long rate)
 {
 	u32 l;
 
@@ -270,7 +270,7 @@ static inline void __omap_dm_timer_stop(struct dmtimer *timer)
 		 * Wait for functional clock period x 3.5 to make sure that
 		 * timer is stopped
 		 */
-		udelay(3500000 / timer->fclk_rate + 1);
+		udelay(3500000 / rate + 1);
 #endif
 	}
 
@@ -347,21 +347,6 @@ static int omap_timer_context_notifier(struct notifier_block *nb,
 	}
 
 	return NOTIFY_OK;
-}
-
-static int omap_timer_fclk_notifier(struct notifier_block *nb,
-				    unsigned long event, void *data)
-{
-	struct clk_notifier_data *clk_data = data;
-	struct dmtimer *timer = container_of(nb, struct dmtimer, fclk_nb);
-
-	switch (event) {
-	case POST_RATE_CHANGE:
-		timer->fclk_rate = clk_data->new_rate;
-		return NOTIFY_OK;
-	default:
-		return NOTIFY_DONE;
-	}
 }
 
 static int omap_dm_timer_reset(struct dmtimer *timer)
@@ -770,6 +755,7 @@ static int omap_dm_timer_stop(struct omap_dm_timer *cookie)
 {
 	struct dmtimer *timer;
 	struct device *dev;
+	unsigned long rate = 0;
 
 	timer = to_dmtimer(cookie);
 	if (unlikely(!timer))
@@ -777,7 +763,10 @@ static int omap_dm_timer_stop(struct omap_dm_timer *cookie)
 
 	dev = &timer->pdev->dev;
 
-	__omap_dm_timer_stop(timer);
+	if (!timer->omap1)
+		rate = clk_get_rate(timer->fclk);
+
+	__omap_dm_timer_stop(timer, rate);
 
 	pm_runtime_put_sync(dev);
 
@@ -830,48 +819,6 @@ static int omap_dm_timer_set_match(struct omap_dm_timer *cookie, int enable,
 	else
 		l &= ~OMAP_TIMER_CTRL_CE;
 	dmtimer_write(timer, OMAP_TIMER_MATCH_REG, match);
-	dmtimer_write(timer, OMAP_TIMER_CTRL_REG, l);
-
-	pm_runtime_put_sync(dev);
-
-	return 0;
-}
-
-static int omap_dm_timer_set_cap(struct omap_dm_timer *cookie,
-					int autoreload, bool config_period)
-{
-	struct dmtimer *timer;
-	struct device *dev;
-	int rc;
-	u32 l;
-
-	timer = to_dmtimer(cookie);
-	if (unlikely(!timer))
-		return -EINVAL;
-
-	dev = &timer->pdev->dev;
-	rc = pm_runtime_resume_and_get(dev);
-	if (rc)
-		return rc;
-	/*
-	 *  1. Select autoreload mode. TIMER_TCLR[1] AR bit.
-	 *  2. TIMER_TCLR[14]: Sets the functionality of the TIMER IO pin.
-	 *  3. TIMER_TCLR[13] : Capture mode select bit.
-	 *  3. TIMER_TCLR[9-8] : Select transition capture mode.
-	 */
-
-	l = dmtimer_read(timer, OMAP_TIMER_CTRL_REG);
-
-	if (autoreload)
-		l |= OMAP_TIMER_CTRL_AR;
-
-	l |= OMAP_TIMER_CTRL_CAPTMODE | OMAP_TIMER_CTRL_GPOCFG;
-
-	if (config_period == true)
-		l |= OMAP_TIMER_CTRL_TCM_LOWTOHIGH; /* Time Period config */
-	else
-		l |= OMAP_TIMER_CTRL_TCM_BOTHEDGES; /* Duty Cycle config */
-
 	dmtimer_write(timer, OMAP_TIMER_CTRL_REG, l);
 
 	pm_runtime_put_sync(dev);
@@ -991,7 +938,7 @@ static int omap_dm_timer_set_int_enable(struct omap_dm_timer *cookie,
 
 /**
  * omap_dm_timer_set_int_disable - disable timer interrupts
- * @cookie:	pointer to timer cookie
+ * @timer:	pointer to timer handle
  * @mask:	bit mask of interrupts to be disabled
  *
  * Disables the specified timer interrupts for a timer.
@@ -1066,90 +1013,21 @@ static unsigned int omap_dm_timer_read_counter(struct omap_dm_timer *cookie)
 	return __omap_dm_timer_read_counter(timer);
 }
 
-static inline unsigned int __omap_dm_timer_cap(struct dmtimer *timer, int idx)
-{
-	return idx == 0 ? dmtimer_read(timer, OMAP_TIMER_CAPTURE_REG) :
-			  dmtimer_read(timer, OMAP_TIMER_CAPTURE2_REG);
-}
-
 static int omap_dm_timer_write_counter(struct omap_dm_timer *cookie, unsigned int value)
 {
 	struct dmtimer *timer;
-	struct device *dev;
 
 	timer = to_dmtimer(cookie);
-	if (unlikely(!timer)) {
-		pr_err("%s: timer not available.\n", __func__);
+	if (unlikely(!timer || !atomic_read(&timer->enabled))) {
+		pr_err("%s: timer not available or enabled.\n", __func__);
 		return -EINVAL;
 	}
 
-	dev = &timer->pdev->dev;
-
-	pm_runtime_resume_and_get(dev);
 	dmtimer_write(timer, OMAP_TIMER_COUNTER_REG, value);
-	pm_runtime_put_sync(dev);
 
 	/* Save the context */
 	timer->context.tcrr = value;
 	return 0;
-}
-
-/**
- * omap_dm_timer_cap_counter() - Calculate the high count or period count depending on the
- * configuration.
- * @cookie:Pointer to OMAP DM timer
- * @is_period:Whether to configure timer in period or duty cycle mode
- *
- * Return high count or period count if timer is enabled else appropriate error.
- */
-static unsigned int omap_dm_timer_cap_counter(struct omap_dm_timer *cookie,	bool is_period)
-{
-	struct dmtimer *timer;
-	unsigned int cap1 = 0;
-	unsigned int cap2 = 0;
-	u32 l, ret;
-
-	timer = to_dmtimer(cookie);
-	if (unlikely(!timer || !atomic_read(&timer->enabled))) {
-		pr_err("%s:timer is not available or enabled.%p\n", __func__, (void *)timer);
-		return -EINVAL;
-	}
-
-	/* Stop the timer */
-	omap_dm_timer_stop(cookie);
-
-	/* Clear the timer counter value to 0 */
-	ret = omap_dm_timer_write_counter(cookie, 0);
-	if (ret)
-		return ret;
-
-	/* Sets the timer capture configuration for period/duty cycle calculation */
-	ret = omap_dm_timer_set_cap(cookie, true, is_period);
-	if (ret) {
-		pr_err("%s: Failed to set timer capture configuration.\n", __func__);
-		return ret;
-	}
-	/* Start the timer */
-	omap_dm_timer_start(cookie);
-
-	/*
-	 * 1 sec delay is given so as to provide
-	 * enough time to capture low frequency signals.
-	 */
-	msleep(1000);
-
-	cap1 = __omap_dm_timer_cap(timer, 0);
-	cap2 = __omap_dm_timer_cap(timer, 1);
-
-	/*
-	 *  Clears the TCLR configuration.
-	 *  The start bit must be set to 1 as the timer is already in start mode.
-	 */
-	l = dmtimer_read(timer, OMAP_TIMER_CTRL_REG);
-	l &= ~(0xffff) | 0x1;
-	dmtimer_write(timer, OMAP_TIMER_CTRL_REG, l);
-
-	return (cap2-cap1);
 }
 
 static int __maybe_unused omap_dm_timer_runtime_suspend(struct device *dev)
@@ -1216,12 +1094,8 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 		return  -ENOMEM;
 
 	timer->irq = platform_get_irq(pdev, 0);
-	if (timer->irq < 0) {
-		if (of_property_read_bool(dev->of_node, "ti,timer-pwm"))
-			dev_info(dev, "Did not find timer interrupt, timer usable in PWM mode only\n");
-		else
-			return timer->irq;
-	}
+	if (timer->irq < 0)
+		return timer->irq;
 
 	timer->io_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(timer->io_base))
@@ -1230,13 +1104,13 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, timer);
 
 	if (dev->of_node) {
-		if (of_property_read_bool(dev->of_node, "ti,timer-alwon"))
+		if (of_find_property(dev->of_node, "ti,timer-alwon", NULL))
 			timer->capability |= OMAP_TIMER_ALWON;
-		if (of_property_read_bool(dev->of_node, "ti,timer-dsp"))
+		if (of_find_property(dev->of_node, "ti,timer-dsp", NULL))
 			timer->capability |= OMAP_TIMER_HAS_DSP_IRQ;
-		if (of_property_read_bool(dev->of_node, "ti,timer-pwm"))
+		if (of_find_property(dev->of_node, "ti,timer-pwm", NULL))
 			timer->capability |= OMAP_TIMER_HAS_PWM;
-		if (of_property_read_bool(dev->of_node, "ti,timer-secure"))
+		if (of_find_property(dev->of_node, "ti,timer-secure", NULL))
 			timer->capability |= OMAP_TIMER_SECURE;
 	} else {
 		timer->id = pdev->id;
@@ -1251,14 +1125,6 @@ static int omap_dm_timer_probe(struct platform_device *pdev)
 		timer->fclk = devm_clk_get(dev, "fck");
 		if (IS_ERR(timer->fclk))
 			return PTR_ERR(timer->fclk);
-
-		timer->fclk_nb.notifier_call = omap_timer_fclk_notifier;
-		ret = devm_clk_notifier_register(dev, timer->fclk,
-						 &timer->fclk_nb);
-		if (ret)
-			return ret;
-
-		timer->fclk_rate = clk_get_rate(timer->fclk);
 	} else {
 		timer->fclk = ERR_PTR(-ENODEV);
 	}
@@ -1311,7 +1177,7 @@ err_disable:
  * In addition to freeing platform resources it also deletes the timer
  * entry from the local list.
  */
-static void omap_dm_timer_remove(struct platform_device *pdev)
+static int omap_dm_timer_remove(struct platform_device *pdev)
 {
 	struct dmtimer *timer;
 	unsigned long flags;
@@ -1331,8 +1197,7 @@ static void omap_dm_timer_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 
-	if (ret)
-		dev_err(&pdev->dev, "Unable to determine timer entry in list of drivers on remove\n");
+	return ret;
 }
 
 static const struct omap_dm_timer_ops dmtimer_ops = {
@@ -1358,9 +1223,6 @@ static const struct omap_dm_timer_ops dmtimer_ops = {
 	.write_counter = omap_dm_timer_write_counter,
 	.read_status = omap_dm_timer_read_status,
 	.write_status = omap_dm_timer_write_status,
-	.set_cap = omap_dm_timer_set_cap,
-	.get_cap_status = omap_dm_timer_get_pwm_status,
-	.read_cap = omap_dm_timer_cap_counter,
 };
 
 static const struct dmtimer_platform_data omap3plus_pdata = {
@@ -1421,4 +1283,5 @@ static struct platform_driver omap_dm_timer_driver = {
 module_platform_driver(omap_dm_timer_driver);
 
 MODULE_DESCRIPTION("OMAP Dual-Mode Timer Driver");
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Texas Instruments Inc");

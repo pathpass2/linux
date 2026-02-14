@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/acpi.h>
-#include <linux/platform_device.h>
 #include <acpi/hed.h>
 
 static const struct acpi_device_id acpi_hed_ids[] = {
@@ -43,52 +42,36 @@ EXPORT_SYMBOL_GPL(unregister_acpi_hed_notifier);
  * it is used by HEST Generic Hardware Error Source with notify type
  * SCI.
  */
-static void acpi_hed_notify(acpi_handle handle, u32 event, void *data)
+static void acpi_hed_notify(struct acpi_device *device, u32 event)
 {
 	blocking_notifier_call_chain(&acpi_hed_notify_list, 0, NULL);
 }
 
-static int acpi_hed_probe(struct platform_device *pdev)
+static int acpi_hed_add(struct acpi_device *device)
 {
-	struct acpi_device *device = ACPI_COMPANION(&pdev->dev);
-	int err;
-
 	/* Only one hardware error device */
 	if (hed_handle)
 		return -EINVAL;
 	hed_handle = device->handle;
-
-	err = acpi_dev_install_notify_handler(device, ACPI_DEVICE_NOTIFY,
-					      acpi_hed_notify, device);
-	if (err)
-		hed_handle = NULL;
-
-	return err;
+	return 0;
 }
 
-static void acpi_hed_remove(struct platform_device *pdev)
+static void acpi_hed_remove(struct acpi_device *device)
 {
-	struct acpi_device *device = ACPI_COMPANION(&pdev->dev);
-
-	acpi_dev_remove_notify_handler(device, ACPI_DEVICE_NOTIFY,
-				       acpi_hed_notify);
 	hed_handle = NULL;
 }
 
-static struct platform_driver acpi_hed_driver = {
-	.probe = acpi_hed_probe,
-	.remove = acpi_hed_remove,
-	.driver = {
-		.name = "acpi-hardware-error-device",
-		.acpi_match_table = acpi_hed_ids,
+static struct acpi_driver acpi_hed_driver = {
+	.name = "hardware_error_device",
+	.class = "hardware_error",
+	.ids = acpi_hed_ids,
+	.ops = {
+		.add = acpi_hed_add,
+		.remove = acpi_hed_remove,
+		.notify = acpi_hed_notify,
 	},
 };
-
-static int __init acpi_hed_driver_init(void)
-{
-	return platform_driver_register(&acpi_hed_driver);
-}
-subsys_initcall(acpi_hed_driver_init);
+module_acpi_driver(acpi_hed_driver);
 
 MODULE_AUTHOR("Huang Ying");
 MODULE_DESCRIPTION("ACPI Hardware Error Device Driver");

@@ -26,6 +26,11 @@ struct sharp_nt_panel {
 
 	struct regulator *supply;
 	struct gpio_desc *reset_gpio;
+
+	bool prepared;
+	bool enabled;
+
+	const struct drm_display_mode *mode;
 };
 
 static inline struct sharp_nt_panel *to_sharp_nt_panel(struct drm_panel *panel)
@@ -36,55 +41,82 @@ static inline struct sharp_nt_panel *to_sharp_nt_panel(struct drm_panel *panel)
 static int sharp_nt_panel_init(struct sharp_nt_panel *sharp_nt)
 {
 	struct mipi_dsi_device *dsi = sharp_nt->dsi;
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	int ret;
 
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
-	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
+	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
+	if (ret < 0)
+		return ret;
 
-	mipi_dsi_msleep(&dsi_ctx, 120);
+	msleep(120);
 
 	/* Novatek two-lane operation */
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xae,  0x03);
+	ret = mipi_dsi_dcs_write(dsi, 0xae, (u8[]){ 0x03 }, 1);
+	if (ret < 0)
+		return ret;
 
 	/* Set both MCU and RGB I/F to 24bpp */
-	mipi_dsi_dcs_set_pixel_format_multi(&dsi_ctx,
-					    MIPI_DCS_PIXEL_FMT_24BIT |
-					    (MIPI_DCS_PIXEL_FMT_24BIT << 4));
+	ret = mipi_dsi_dcs_set_pixel_format(dsi, MIPI_DCS_PIXEL_FMT_24BIT |
+					(MIPI_DCS_PIXEL_FMT_24BIT << 4));
+	if (ret < 0)
+		return ret;
 
-	return dsi_ctx.accum_err;
+	return 0;
 }
 
 static int sharp_nt_panel_on(struct sharp_nt_panel *sharp_nt)
 {
 	struct mipi_dsi_device *dsi = sharp_nt->dsi;
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	int ret;
 
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 
-	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
+	ret = mipi_dsi_dcs_set_display_on(dsi);
+	if (ret < 0)
+		return ret;
 
-	return dsi_ctx.accum_err;
+	return 0;
 }
 
 static int sharp_nt_panel_off(struct sharp_nt_panel *sharp_nt)
 {
 	struct mipi_dsi_device *dsi = sharp_nt->dsi;
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	int ret;
 
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
 
-	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+	ret = mipi_dsi_dcs_set_display_off(dsi);
+	if (ret < 0)
+		return ret;
 
-	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
+	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
+	if (ret < 0)
+		return ret;
 
-	return dsi_ctx.accum_err;
+	return 0;
+}
+
+
+static int sharp_nt_panel_disable(struct drm_panel *panel)
+{
+	struct sharp_nt_panel *sharp_nt = to_sharp_nt_panel(panel);
+
+	if (!sharp_nt->enabled)
+		return 0;
+
+	sharp_nt->enabled = false;
+
+	return 0;
 }
 
 static int sharp_nt_panel_unprepare(struct drm_panel *panel)
 {
 	struct sharp_nt_panel *sharp_nt = to_sharp_nt_panel(panel);
 	int ret;
+
+	if (!sharp_nt->prepared)
+		return 0;
 
 	ret = sharp_nt_panel_off(sharp_nt);
 	if (ret < 0) {
@@ -96,6 +128,8 @@ static int sharp_nt_panel_unprepare(struct drm_panel *panel)
 	if (sharp_nt->reset_gpio)
 		gpiod_set_value(sharp_nt->reset_gpio, 0);
 
+	sharp_nt->prepared = false;
+
 	return 0;
 }
 
@@ -103,6 +137,9 @@ static int sharp_nt_panel_prepare(struct drm_panel *panel)
 {
 	struct sharp_nt_panel *sharp_nt = to_sharp_nt_panel(panel);
 	int ret;
+
+	if (sharp_nt->prepared)
+		return 0;
 
 	ret = regulator_enable(sharp_nt->supply);
 	if (ret < 0)
@@ -131,6 +168,8 @@ static int sharp_nt_panel_prepare(struct drm_panel *panel)
 		goto poweroff;
 	}
 
+	sharp_nt->prepared = true;
+
 	return 0;
 
 poweroff:
@@ -140,16 +179,28 @@ poweroff:
 	return ret;
 }
 
+static int sharp_nt_panel_enable(struct drm_panel *panel)
+{
+	struct sharp_nt_panel *sharp_nt = to_sharp_nt_panel(panel);
+
+	if (sharp_nt->enabled)
+		return 0;
+
+	sharp_nt->enabled = true;
+
+	return 0;
+}
+
 static const struct drm_display_mode default_mode = {
-	.clock = (540 + 48 + 32 + 80) * (960 + 3 + 10 + 15) * 60 / 1000,
+	.clock = 41118,
 	.hdisplay = 540,
 	.hsync_start = 540 + 48,
-	.hsync_end = 540 + 48 + 32,
-	.htotal = 540 + 48 + 32 + 80,
+	.hsync_end = 540 + 48 + 80,
+	.htotal = 540 + 48 + 80 + 32,
 	.vdisplay = 960,
 	.vsync_start = 960 + 3,
-	.vsync_end = 960 + 3 + 10,
-	.vtotal = 960 + 3 + 10 + 15,
+	.vsync_end = 960 + 3 + 15,
+	.vtotal = 960 + 3 + 15 + 1,
 };
 
 static int sharp_nt_panel_get_modes(struct drm_panel *panel,
@@ -176,8 +227,10 @@ static int sharp_nt_panel_get_modes(struct drm_panel *panel,
 }
 
 static const struct drm_panel_funcs sharp_nt_panel_funcs = {
+	.disable = sharp_nt_panel_disable,
 	.unprepare = sharp_nt_panel_unprepare,
 	.prepare = sharp_nt_panel_prepare,
+	.enable = sharp_nt_panel_enable,
 	.get_modes = sharp_nt_panel_get_modes,
 };
 
@@ -185,6 +238,8 @@ static int sharp_nt_panel_add(struct sharp_nt_panel *sharp_nt)
 {
 	struct device *dev = &sharp_nt->dsi->dev;
 	int ret;
+
+	sharp_nt->mode = &default_mode;
 
 	sharp_nt->supply = devm_regulator_get(dev, "avdd");
 	if (IS_ERR(sharp_nt->supply))
@@ -225,7 +280,6 @@ static int sharp_nt_panel_probe(struct mipi_dsi_device *dsi)
 	dsi->lanes = 2;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
-			MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
 			MIPI_DSI_MODE_VIDEO_HSE |
 			MIPI_DSI_CLOCK_NON_CONTINUOUS |
 			MIPI_DSI_MODE_NO_EOT_PACKET;
@@ -256,11 +310,22 @@ static void sharp_nt_panel_remove(struct mipi_dsi_device *dsi)
 	struct sharp_nt_panel *sharp_nt = mipi_dsi_get_drvdata(dsi);
 	int ret;
 
+	ret = drm_panel_disable(&sharp_nt->base);
+	if (ret < 0)
+		dev_err(&dsi->dev, "failed to disable panel: %d\n", ret);
+
 	ret = mipi_dsi_detach(dsi);
 	if (ret < 0)
 		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", ret);
 
 	sharp_nt_panel_del(sharp_nt);
+}
+
+static void sharp_nt_panel_shutdown(struct mipi_dsi_device *dsi)
+{
+	struct sharp_nt_panel *sharp_nt = mipi_dsi_get_drvdata(dsi);
+
+	drm_panel_disable(&sharp_nt->base);
 }
 
 static const struct of_device_id sharp_nt_of_match[] = {
@@ -276,6 +341,7 @@ static struct mipi_dsi_driver sharp_nt_panel_driver = {
 	},
 	.probe = sharp_nt_panel_probe,
 	.remove = sharp_nt_panel_remove,
+	.shutdown = sharp_nt_panel_shutdown,
 };
 module_mipi_dsi_driver(sharp_nt_panel_driver);
 

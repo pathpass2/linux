@@ -21,8 +21,6 @@ static const struct regmap_config adxl31x_i2c_regmap_config[] = {
 		.rd_table	= &adxl312_readable_regs_table,
 		.wr_table	= &adxl312_writable_regs_table,
 		.max_register	= 0x39,
-		.volatile_reg	= adxl313_is_volatile_reg,
-		.cache_type	= REGCACHE_MAPLE,
 	},
 	[ADXL313] = {
 		.reg_bits	= 8,
@@ -30,8 +28,6 @@ static const struct regmap_config adxl31x_i2c_regmap_config[] = {
 		.rd_table	= &adxl313_readable_regs_table,
 		.wr_table	= &adxl313_writable_regs_table,
 		.max_register	= 0x39,
-		.volatile_reg	= adxl313_is_volatile_reg,
-		.cache_type	= REGCACHE_MAPLE,
 	},
 	[ADXL314] = {
 		.reg_bits	= 8,
@@ -39,15 +35,13 @@ static const struct regmap_config adxl31x_i2c_regmap_config[] = {
 		.rd_table	= &adxl314_readable_regs_table,
 		.wr_table	= &adxl314_writable_regs_table,
 		.max_register	= 0x39,
-		.volatile_reg	= adxl313_is_volatile_reg,
-		.cache_type	= REGCACHE_MAPLE,
 	},
 };
 
 static const struct i2c_device_id adxl313_i2c_id[] = {
 	{ .name = "adxl312", .driver_data = (kernel_ulong_t)&adxl31x_chip_info[ADXL312] },
-	{ .name = "adxl313", .driver_data = (kernel_ulong_t)&adxl31x_chip_info[ADXL313] },
-	{ .name = "adxl314", .driver_data = (kernel_ulong_t)&adxl31x_chip_info[ADXL314] },
+	{ .name = "adxl313", .driver_data = (kernel_ulong_t)&adxl31x_chip_info[ADXL312] },
+	{ .name = "adxl314", .driver_data = (kernel_ulong_t)&adxl31x_chip_info[ADXL312] },
 	{ }
 };
 
@@ -71,7 +65,9 @@ static int adxl313_i2c_probe(struct i2c_client *client)
 	 * Retrieves device specific data as a pointer to a
 	 * adxl313_chip_info structure
 	 */
-	chip_data = i2c_get_match_data(client);
+	chip_data = device_get_match_data(&client->dev);
+	if (!chip_data)
+		chip_data = (const struct adxl313_chip_info *)i2c_match_id(adxl313_i2c_id, client)->driver_data;
 
 	regmap = devm_regmap_init_i2c(client,
 				      &adxl31x_i2c_regmap_config[chip_data->type]);
@@ -89,7 +85,7 @@ static struct i2c_driver adxl313_i2c_driver = {
 		.name	= "adxl313_i2c",
 		.of_match_table = adxl313_of_match,
 	},
-	.probe		= adxl313_i2c_probe,
+	.probe_new	= adxl313_i2c_probe,
 	.id_table	= adxl313_i2c_id,
 };
 
@@ -98,4 +94,4 @@ module_i2c_driver(adxl313_i2c_driver);
 MODULE_AUTHOR("Lucas Stankus <lucas.p.stankus@gmail.com>");
 MODULE_DESCRIPTION("ADXL313 3-Axis Digital Accelerometer I2C driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_ADXL313");
+MODULE_IMPORT_NS(IIO_ADXL313);

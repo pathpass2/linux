@@ -89,7 +89,7 @@ static void lan9303_i2c_shutdown(struct i2c_client *client)
 /*-------------------------------------------------------------------------*/
 
 static const struct i2c_device_id lan9303_i2c_id[] = {
-	{ "lan9303" },
+	{ "lan9303", 0 },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, lan9303_i2c_id);
@@ -103,9 +103,9 @@ MODULE_DEVICE_TABLE(of, lan9303_i2c_of_match);
 static struct i2c_driver lan9303_i2c_driver = {
 	.driver = {
 		.name = "LAN9303_I2C",
-		.of_match_table = lan9303_i2c_of_match,
+		.of_match_table = of_match_ptr(lan9303_i2c_of_match),
 	},
-	.probe = lan9303_i2c_probe,
+	.probe_new = lan9303_i2c_probe,
 	.remove = lan9303_i2c_remove,
 	.shutdown = lan9303_i2c_shutdown,
 	.id_table = lan9303_i2c_id,

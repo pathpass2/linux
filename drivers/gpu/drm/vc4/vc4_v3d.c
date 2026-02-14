@@ -10,8 +10,6 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
-#include <drm/drm_print.h>
-
 #include "vc4_drv.h"
 #include "vc4_regs.h"
 
@@ -129,7 +127,7 @@ static int vc4_v3d_debugfs_ident(struct seq_file *m, void *unused)
 int
 vc4_v3d_pm_get(struct vc4_dev *vc4)
 {
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return -ENODEV;
 
 	mutex_lock(&vc4->power_lock);
@@ -150,7 +148,7 @@ vc4_v3d_pm_get(struct vc4_dev *vc4)
 void
 vc4_v3d_pm_put(struct vc4_dev *vc4)
 {
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return;
 
 	mutex_lock(&vc4->power_lock);
@@ -180,7 +178,7 @@ int vc4_v3d_get_bin_slot(struct vc4_dev *vc4)
 	uint64_t seqno = 0;
 	struct vc4_exec_info *exec;
 
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return -ENODEV;
 
 try_again:
@@ -327,7 +325,7 @@ int vc4_v3d_bin_bo_get(struct vc4_dev *vc4, bool *used)
 {
 	int ret = 0;
 
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return -ENODEV;
 
 	mutex_lock(&vc4->bin_bo_lock);
@@ -362,7 +360,7 @@ static void bin_bo_release(struct kref *ref)
 
 void vc4_v3d_bin_bo_put(struct vc4_dev *vc4)
 {
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return;
 
 	mutex_lock(&vc4->bin_bo_lock);
@@ -443,9 +441,21 @@ static int vc4_v3d_bind(struct device *dev, struct device *master, void *data)
 	vc4->v3d = v3d;
 	v3d->vc4 = vc4;
 
-	v3d->clk = devm_clk_get_optional(dev, NULL);
-	if (IS_ERR(v3d->clk))
-		return dev_err_probe(dev, PTR_ERR(v3d->clk), "Failed to get V3D clock\n");
+	v3d->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(v3d->clk)) {
+		int ret = PTR_ERR(v3d->clk);
+
+		if (ret == -ENOENT) {
+			/* bcm2835 didn't have a clock reference in the DT. */
+			ret = 0;
+			v3d->clk = NULL;
+		} else {
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Failed to get V3D clock: %d\n",
+					ret);
+			return ret;
+		}
+	}
 
 	ret = platform_get_irq(pdev, 0);
 	if (ret < 0)
@@ -461,8 +471,8 @@ static int vc4_v3d_bind(struct device *dev, struct device *master, void *data)
 		return ret;
 
 	if (V3D_READ(V3D_IDENT0) != V3D_EXPECTED_IDENT0) {
-		drm_err(drm, "V3D_IDENT0 read 0x%08x instead of 0x%08x\n",
-			V3D_READ(V3D_IDENT0), V3D_EXPECTED_IDENT0);
+		DRM_ERROR("V3D_IDENT0 read 0x%08x instead of 0x%08x\n",
+			  V3D_READ(V3D_IDENT0), V3D_EXPECTED_IDENT0);
 		ret = -EINVAL;
 		goto err_put_runtime_pm;
 	}
@@ -475,7 +485,7 @@ static int vc4_v3d_bind(struct device *dev, struct device *master, void *data)
 
 	ret = vc4_irq_install(drm, vc4->irq);
 	if (ret) {
-		drm_err(drm, "Failed to install IRQ handler\n");
+		DRM_ERROR("Failed to install IRQ handler\n");
 		goto err_put_runtime_pm;
 	}
 
@@ -522,9 +532,10 @@ static int vc4_v3d_dev_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &vc4_v3d_ops);
 }
 
-static void vc4_v3d_dev_remove(struct platform_device *pdev)
+static int vc4_v3d_dev_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &vc4_v3d_ops);
+	return 0;
 }
 
 const struct of_device_id vc4_v3d_dt_match[] = {

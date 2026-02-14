@@ -13,7 +13,7 @@
 		compatible = "google,sc7280-herobrine";
 		model = "sc7280-rt5682-max98360a-3mic";
 
-		audio-routing = "VA DMIC0", "vdd-micb",
+		audio-routing =	"VA DMIC0", "vdd-micb",
 				"VA DMIC1", "vdd-micb",
 				"VA DMIC2", "vdd-micb",
 				"VA DMIC3", "vdd-micb",
@@ -94,8 +94,6 @@ hp_i2c: &i2c2 {
 		interrupts = <101 IRQ_TYPE_EDGE_BOTH>;
 
 		AVDD-supply = <&pp1800_alc5682>;
-		DBVDD-supply = <&pp1800_alc5682>;
-		LDO1-IN-supply = <&pp1800_alc5682>;
 		MICVDD-supply = <&pp3300_codec>;
 
 		realtek,dmic1-data-pin = <1>;
@@ -139,7 +137,6 @@ hp_i2c: &i2c2 {
 	vdd-micb-supply = <&pp1800_l2c>;
 	pinctrl-0 = <&lpass_dmic01_clk>, <&lpass_dmic01_data>, <&lpass_dmic23_clk>,
 			<&lpass_dmic23_data>;
-	pinctrl-names = "default";
 
 	status = "okay";
 };

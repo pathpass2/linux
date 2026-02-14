@@ -2,166 +2,19 @@
 
 //! String representations.
 
+use alloc::vec::Vec;
+use core::fmt::{self, Write};
+use core::ops::{self, Deref, Index};
+
 use crate::{
-    alloc::{flags::*, AllocError, KVec},
-    error::{to_result, Result},
-    fmt::{self, Write},
-    prelude::*,
+    bindings,
+    error::{code::*, Error},
 };
-use core::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut, Index},
-};
-
-pub use crate::prelude::CStr;
-
-pub mod parse_int;
 
 /// Byte string without UTF-8 validity guarantee.
-#[repr(transparent)]
-pub struct BStr([u8]);
-
-impl BStr {
-    /// Returns the length of this string.
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Returns `true` if the string is empty.
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Creates a [`BStr`] from a `[u8]`.
-    #[inline]
-    pub const fn from_bytes(bytes: &[u8]) -> &Self {
-        // SAFETY: `BStr` is transparent to `[u8]`.
-        unsafe { &*(core::ptr::from_ref(bytes) as *const BStr) }
-    }
-
-    /// Strip a prefix from `self`. Delegates to [`slice::strip_prefix`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use kernel::b_str;
-    /// assert_eq!(Some(b_str!("bar")), b_str!("foobar").strip_prefix(b_str!("foo")));
-    /// assert_eq!(None, b_str!("foobar").strip_prefix(b_str!("bar")));
-    /// assert_eq!(Some(b_str!("foobar")), b_str!("foobar").strip_prefix(b_str!("")));
-    /// assert_eq!(Some(b_str!("")), b_str!("foobar").strip_prefix(b_str!("foobar")));
-    /// ```
-    pub fn strip_prefix(&self, pattern: impl AsRef<Self>) -> Option<&BStr> {
-        self.deref()
-            .strip_prefix(pattern.as_ref().deref())
-            .map(Self::from_bytes)
-    }
-}
-
-impl fmt::Display for BStr {
-    /// Formats printable ASCII characters, escaping the rest.
-    ///
-    /// ```
-    /// # use kernel::{prelude::fmt, b_str, str::{BStr, CString}};
-    /// let ascii = b_str!("Hello, BStr!");
-    /// let s = CString::try_from_fmt(fmt!("{ascii}"))?;
-    /// assert_eq!(s.to_bytes(), "Hello, BStr!".as_bytes());
-    ///
-    /// let non_ascii = b_str!("🦀");
-    /// let s = CString::try_from_fmt(fmt!("{non_ascii}"))?;
-    /// assert_eq!(s.to_bytes(), "\\xf0\\x9f\\xa6\\x80".as_bytes());
-    /// # Ok::<(), kernel::error::Error>(())
-    /// ```
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for &b in &self.0 {
-            match b {
-                // Common escape codes.
-                b'\t' => f.write_str("\\t")?,
-                b'\n' => f.write_str("\\n")?,
-                b'\r' => f.write_str("\\r")?,
-                // Printable characters.
-                0x20..=0x7e => f.write_char(b as char)?,
-                _ => write!(f, "\\x{b:02x}")?,
-            }
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Debug for BStr {
-    /// Formats printable ASCII characters with a double quote on either end,
-    /// escaping the rest.
-    ///
-    /// ```
-    /// # use kernel::{prelude::fmt, b_str, str::{BStr, CString}};
-    /// // Embedded double quotes are escaped.
-    /// let ascii = b_str!("Hello, \"BStr\"!");
-    /// let s = CString::try_from_fmt(fmt!("{ascii:?}"))?;
-    /// assert_eq!(s.to_bytes(), "\"Hello, \\\"BStr\\\"!\"".as_bytes());
-    ///
-    /// let non_ascii = b_str!("😺");
-    /// let s = CString::try_from_fmt(fmt!("{non_ascii:?}"))?;
-    /// assert_eq!(s.to_bytes(), "\"\\xf0\\x9f\\x98\\xba\"".as_bytes());
-    /// # Ok::<(), kernel::error::Error>(())
-    /// ```
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_char('"')?;
-        for &b in &self.0 {
-            match b {
-                // Common escape codes.
-                b'\t' => f.write_str("\\t")?,
-                b'\n' => f.write_str("\\n")?,
-                b'\r' => f.write_str("\\r")?,
-                // String escape characters.
-                b'\"' => f.write_str("\\\"")?,
-                b'\\' => f.write_str("\\\\")?,
-                // Printable characters.
-                0x20..=0x7e => f.write_char(b as char)?,
-                _ => write!(f, "\\x{b:02x}")?,
-            }
-        }
-        f.write_char('"')
-    }
-}
-
-impl Deref for BStr {
-    type Target = [u8];
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl PartialEq for BStr {
-    fn eq(&self, other: &Self) -> bool {
-        self.deref().eq(other.deref())
-    }
-}
-
-impl<Idx> Index<Idx> for BStr
-where
-    [u8]: Index<Idx, Output = [u8]>,
-{
-    type Output = Self;
-
-    fn index(&self, index: Idx) -> &Self::Output {
-        BStr::from_bytes(&self.0[index])
-    }
-}
-
-impl AsRef<BStr> for [u8] {
-    fn as_ref(&self) -> &BStr {
-        BStr::from_bytes(self)
-    }
-}
-
-impl AsRef<BStr> for BStr {
-    fn as_ref(&self) -> &BStr {
-        self
-    }
-}
+///
+/// `BStr` is simply an alias to `[u8]`, but has a more evident semantical meaning.
+pub type BStr = [u8];
 
 /// Creates a new [`BStr`] from a string literal.
 ///
@@ -179,28 +32,60 @@ impl AsRef<BStr> for BStr {
 macro_rules! b_str {
     ($str:literal) => {{
         const S: &'static str = $str;
-        const C: &'static $crate::str::BStr = $crate::str::BStr::from_bytes(S.as_bytes());
+        const C: &'static $crate::str::BStr = S.as_bytes();
         C
     }};
 }
 
-/// Returns a C pointer to the string.
-// It is a free function rather than a method on an extension trait because:
-//
-// - error[E0379]: functions in trait impls cannot be declared const
-#[inline]
-pub const fn as_char_ptr_in_const_context(c_str: &CStr) -> *const c_char {
-    c_str.as_ptr().cast()
+/// Possible errors when using conversion functions in [`CStr`].
+#[derive(Debug, Clone, Copy)]
+pub enum CStrConvertError {
+    /// Supplied bytes contain an interior `NUL`.
+    InteriorNul,
+
+    /// Supplied bytes are not terminated by `NUL`.
+    NotNulTerminated,
 }
 
-mod private {
-    pub trait Sealed {}
-
-    impl Sealed for super::CStr {}
+impl From<CStrConvertError> for Error {
+    #[inline]
+    fn from(_: CStrConvertError) -> Error {
+        EINVAL
+    }
 }
 
-/// Extensions to [`CStr`].
-pub trait CStrExt: private::Sealed {
+/// A string that is guaranteed to have exactly one `NUL` byte, which is at the
+/// end.
+///
+/// Used for interoperability with kernel APIs that take C strings.
+#[repr(transparent)]
+pub struct CStr([u8]);
+
+impl CStr {
+    /// Returns the length of this string excluding `NUL`.
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len_with_nul() - 1
+    }
+
+    /// Returns the length of this string with `NUL`.
+    #[inline]
+    pub const fn len_with_nul(&self) -> usize {
+        // SAFETY: This is one of the invariant of `CStr`.
+        // We add a `unreachable_unchecked` here to hint the optimizer that
+        // the value returned from this function is non-zero.
+        if self.0.is_empty() {
+            unsafe { core::hint::unreachable_unchecked() };
+        }
+        self.0.len()
+    }
+
+    /// Returns `true` if the string only includes `NUL`.
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Wraps a raw C string pointer.
     ///
     /// # Safety
@@ -208,171 +93,232 @@ pub trait CStrExt: private::Sealed {
     /// `ptr` must be a valid pointer to a `NUL`-terminated C string, and it must
     /// last at least `'a`. When `CStr` is alive, the memory pointed by `ptr`
     /// must not be mutated.
-    // This function exists to paper over the fact that `CStr::from_ptr` takes a `*const
-    // core::ffi::c_char` rather than a `*const crate::ffi::c_char`.
-    unsafe fn from_char_ptr<'a>(ptr: *const c_char) -> &'a Self;
+    #[inline]
+    pub unsafe fn from_char_ptr<'a>(ptr: *const core::ffi::c_char) -> &'a Self {
+        // SAFETY: The safety precondition guarantees `ptr` is a valid pointer
+        // to a `NUL`-terminated C string.
+        let len = unsafe { bindings::strlen(ptr) } + 1;
+        // SAFETY: Lifetime guaranteed by the safety precondition.
+        let bytes = unsafe { core::slice::from_raw_parts(ptr as _, len as _) };
+        // SAFETY: As `len` is returned by `strlen`, `bytes` does not contain interior `NUL`.
+        // As we have added 1 to `len`, the last byte is known to be `NUL`.
+        unsafe { Self::from_bytes_with_nul_unchecked(bytes) }
+    }
 
-    /// Creates a mutable [`CStr`] from a `[u8]` without performing any
-    /// additional checks.
+    /// Creates a [`CStr`] from a `[u8]`.
+    ///
+    /// The provided slice must be `NUL`-terminated, does not contain any
+    /// interior `NUL` bytes.
+    pub const fn from_bytes_with_nul(bytes: &[u8]) -> Result<&Self, CStrConvertError> {
+        if bytes.is_empty() {
+            return Err(CStrConvertError::NotNulTerminated);
+        }
+        if bytes[bytes.len() - 1] != 0 {
+            return Err(CStrConvertError::NotNulTerminated);
+        }
+        let mut i = 0;
+        // `i + 1 < bytes.len()` allows LLVM to optimize away bounds checking,
+        // while it couldn't optimize away bounds checks for `i < bytes.len() - 1`.
+        while i + 1 < bytes.len() {
+            if bytes[i] == 0 {
+                return Err(CStrConvertError::InteriorNul);
+            }
+            i += 1;
+        }
+        // SAFETY: We just checked that all properties hold.
+        Ok(unsafe { Self::from_bytes_with_nul_unchecked(bytes) })
+    }
+
+    /// Creates a [`CStr`] from a `[u8]` without performing any additional
+    /// checks.
     ///
     /// # Safety
     ///
     /// `bytes` *must* end with a `NUL` byte, and should only have a single
     /// `NUL` byte (or the string will be truncated).
-    unsafe fn from_bytes_with_nul_unchecked_mut(bytes: &mut [u8]) -> &mut Self;
+    #[inline]
+    pub const unsafe fn from_bytes_with_nul_unchecked(bytes: &[u8]) -> &CStr {
+        // SAFETY: Properties of `bytes` guaranteed by the safety precondition.
+        unsafe { core::mem::transmute(bytes) }
+    }
 
     /// Returns a C pointer to the string.
-    // This function exists to paper over the fact that `CStr::as_ptr` returns a `*const
-    // core::ffi::c_char` rather than a `*const crate::ffi::c_char`.
-    fn as_char_ptr(&self) -> *const c_char;
+    #[inline]
+    pub const fn as_char_ptr(&self) -> *const core::ffi::c_char {
+        self.0.as_ptr() as _
+    }
 
-    /// Convert this [`CStr`] into a [`CString`] by allocating memory and
-    /// copying over the string data.
-    fn to_cstring(&self) -> Result<CString, AllocError>;
+    /// Convert the string to a byte slice without the trailing 0 byte.
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0[..self.len()]
+    }
 
-    /// Converts this [`CStr`] to its ASCII lower case equivalent in-place.
-    ///
-    /// ASCII letters 'A' to 'Z' are mapped to 'a' to 'z',
-    /// but non-ASCII letters are unchanged.
-    ///
-    /// To return a new lowercased value without modifying the existing one, use
-    /// [`to_ascii_lowercase()`].
-    ///
-    /// [`to_ascii_lowercase()`]: #method.to_ascii_lowercase
-    fn make_ascii_lowercase(&mut self);
+    /// Convert the string to a byte slice containing the trailing 0 byte.
+    #[inline]
+    pub const fn as_bytes_with_nul(&self) -> &[u8] {
+        &self.0
+    }
 
-    /// Converts this [`CStr`] to its ASCII upper case equivalent in-place.
+    /// Yields a [`&str`] slice if the [`CStr`] contains valid UTF-8.
     ///
-    /// ASCII letters 'a' to 'z' are mapped to 'A' to 'Z',
-    /// but non-ASCII letters are unchanged.
+    /// If the contents of the [`CStr`] are valid UTF-8 data, this
+    /// function will return the corresponding [`&str`] slice. Otherwise,
+    /// it will return an error with details of where UTF-8 validation failed.
     ///
-    /// To return a new uppercased value without modifying the existing one, use
-    /// [`to_ascii_uppercase()`].
+    /// # Examples
     ///
-    /// [`to_ascii_uppercase()`]: #method.to_ascii_uppercase
-    fn make_ascii_uppercase(&mut self);
+    /// ```
+    /// # use kernel::str::CStr;
+    /// let cstr = CStr::from_bytes_with_nul(b"foo\0").unwrap();
+    /// assert_eq!(cstr.to_str(), Ok("foo"));
+    /// ```
+    #[inline]
+    pub fn to_str(&self) -> Result<&str, core::str::Utf8Error> {
+        core::str::from_utf8(self.as_bytes())
+    }
 
-    /// Returns a copy of this [`CString`] where each character is mapped to its
-    /// ASCII lower case equivalent.
+    /// Unsafely convert this [`CStr`] into a [`&str`], without checking for
+    /// valid UTF-8.
     ///
-    /// ASCII letters 'A' to 'Z' are mapped to 'a' to 'z',
-    /// but non-ASCII letters are unchanged.
+    /// # Safety
     ///
-    /// To lowercase the value in-place, use [`make_ascii_lowercase`].
+    /// The contents must be valid UTF-8.
     ///
-    /// [`make_ascii_lowercase`]: str::make_ascii_lowercase
-    fn to_ascii_lowercase(&self) -> Result<CString, AllocError>;
-
-    /// Returns a copy of this [`CString`] where each character is mapped to its
-    /// ASCII upper case equivalent.
+    /// # Examples
     ///
-    /// ASCII letters 'a' to 'z' are mapped to 'A' to 'Z',
-    /// but non-ASCII letters are unchanged.
-    ///
-    /// To uppercase the value in-place, use [`make_ascii_uppercase`].
-    ///
-    /// [`make_ascii_uppercase`]: str::make_ascii_uppercase
-    fn to_ascii_uppercase(&self) -> Result<CString, AllocError>;
+    /// ```
+    /// # use kernel::c_str;
+    /// # use kernel::str::CStr;
+    /// // SAFETY: String literals are guaranteed to be valid UTF-8
+    /// // by the Rust compiler.
+    /// let bar = c_str!("ツ");
+    /// assert_eq!(unsafe { bar.as_str_unchecked() }, "ツ");
+    /// ```
+    #[inline]
+    pub unsafe fn as_str_unchecked(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(self.as_bytes()) }
+    }
 }
 
 impl fmt::Display for CStr {
     /// Formats printable ASCII characters, escaping the rest.
     ///
     /// ```
-    /// # use kernel::prelude::fmt;
+    /// # use kernel::c_str;
     /// # use kernel::str::CStr;
     /// # use kernel::str::CString;
-    /// let penguin = c"🐧";
-    /// let s = CString::try_from_fmt(fmt!("{penguin}"))?;
-    /// assert_eq!(s.to_bytes_with_nul(), "\\xf0\\x9f\\x90\\xa7\0".as_bytes());
+    /// let penguin = c_str!("🐧");
+    /// let s = CString::try_from_fmt(fmt!("{}", penguin)).unwrap();
+    /// assert_eq!(s.as_bytes_with_nul(), "\\xf0\\x9f\\x90\\xa7\0".as_bytes());
     ///
-    /// let ascii = c"so \"cool\"";
-    /// let s = CString::try_from_fmt(fmt!("{ascii}"))?;
-    /// assert_eq!(s.to_bytes_with_nul(), "so \"cool\"\0".as_bytes());
-    /// # Ok::<(), kernel::error::Error>(())
+    /// let ascii = c_str!("so \"cool\"");
+    /// let s = CString::try_from_fmt(fmt!("{}", ascii)).unwrap();
+    /// assert_eq!(s.as_bytes_with_nul(), "so \"cool\"\0".as_bytes());
     /// ```
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for &c in self.to_bytes() {
+        for &c in self.as_bytes() {
             if (0x20..0x7f).contains(&c) {
                 // Printable character.
                 f.write_char(c as char)?;
             } else {
-                write!(f, "\\x{c:02x}")?;
+                write!(f, "\\x{:02x}", c)?;
             }
         }
         Ok(())
     }
 }
 
-/// Converts a mutable C string to a mutable byte slice.
-///
-/// # Safety
-///
-/// The caller must ensure that the slice ends in a NUL byte and contains no other NUL bytes before
-/// the borrow ends and the underlying [`CStr`] is used.
-unsafe fn to_bytes_mut(s: &mut CStr) -> &mut [u8] {
-    // SAFETY: the cast from `&CStr` to `&[u8]` is safe since `CStr` has the same layout as `&[u8]`
-    // (this is technically not guaranteed, but we rely on it here). The pointer dereference is
-    // safe since it comes from a mutable reference which is guaranteed to be valid for writes.
-    unsafe { &mut *(core::ptr::from_mut(s) as *mut [u8]) }
-}
-
-impl CStrExt for CStr {
-    #[inline]
-    unsafe fn from_char_ptr<'a>(ptr: *const c_char) -> &'a Self {
-        // SAFETY: The safety preconditions are the same as for `CStr::from_ptr`.
-        unsafe { CStr::from_ptr(ptr.cast()) }
-    }
-
-    #[inline]
-    unsafe fn from_bytes_with_nul_unchecked_mut(bytes: &mut [u8]) -> &mut Self {
-        // SAFETY: the cast from `&[u8]` to `&CStr` is safe since the properties of `bytes` are
-        // guaranteed by the safety precondition and `CStr` has the same layout as `&[u8]` (this is
-        // technically not guaranteed, but we rely on it here). The pointer dereference is safe
-        // since it comes from a mutable reference which is guaranteed to be valid for writes.
-        unsafe { &mut *(core::ptr::from_mut(bytes) as *mut CStr) }
-    }
-
-    #[inline]
-    fn as_char_ptr(&self) -> *const c_char {
-        self.as_ptr().cast()
-    }
-
-    fn to_cstring(&self) -> Result<CString, AllocError> {
-        CString::try_from(self)
-    }
-
-    fn make_ascii_lowercase(&mut self) {
-        // SAFETY: This doesn't introduce or remove NUL bytes in the C string.
-        unsafe { to_bytes_mut(self) }.make_ascii_lowercase();
-    }
-
-    fn make_ascii_uppercase(&mut self) {
-        // SAFETY: This doesn't introduce or remove NUL bytes in the C string.
-        unsafe { to_bytes_mut(self) }.make_ascii_uppercase();
-    }
-
-    fn to_ascii_lowercase(&self) -> Result<CString, AllocError> {
-        let mut s = self.to_cstring()?;
-
-        s.make_ascii_lowercase();
-
-        Ok(s)
-    }
-
-    fn to_ascii_uppercase(&self) -> Result<CString, AllocError> {
-        let mut s = self.to_cstring()?;
-
-        s.make_ascii_uppercase();
-
-        Ok(s)
+impl fmt::Debug for CStr {
+    /// Formats printable ASCII characters with a double quote on either end, escaping the rest.
+    ///
+    /// ```
+    /// # use kernel::c_str;
+    /// # use kernel::str::CStr;
+    /// # use kernel::str::CString;
+    /// let penguin = c_str!("🐧");
+    /// let s = CString::try_from_fmt(fmt!("{:?}", penguin)).unwrap();
+    /// assert_eq!(s.as_bytes_with_nul(), "\"\\xf0\\x9f\\x90\\xa7\"\0".as_bytes());
+    ///
+    /// // Embedded double quotes are escaped.
+    /// let ascii = c_str!("so \"cool\"");
+    /// let s = CString::try_from_fmt(fmt!("{:?}", ascii)).unwrap();
+    /// assert_eq!(s.as_bytes_with_nul(), "\"so \\\"cool\\\"\"\0".as_bytes());
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("\"")?;
+        for &c in self.as_bytes() {
+            match c {
+                // Printable characters.
+                b'\"' => f.write_str("\\\"")?,
+                0x20..=0x7e => f.write_char(c as char)?,
+                _ => write!(f, "\\x{:02x}", c)?,
+            }
+        }
+        f.write_str("\"")
     }
 }
 
 impl AsRef<BStr> for CStr {
     #[inline]
     fn as_ref(&self) -> &BStr {
-        BStr::from_bytes(self.to_bytes())
+        self.as_bytes()
+    }
+}
+
+impl Deref for CStr {
+    type Target = BStr;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
+}
+
+impl Index<ops::RangeFrom<usize>> for CStr {
+    type Output = CStr;
+
+    #[inline]
+    fn index(&self, index: ops::RangeFrom<usize>) -> &Self::Output {
+        // Delegate bounds checking to slice.
+        // Assign to _ to mute clippy's unnecessary operation warning.
+        let _ = &self.as_bytes()[index.start..];
+        // SAFETY: We just checked the bounds.
+        unsafe { Self::from_bytes_with_nul_unchecked(&self.0[index.start..]) }
+    }
+}
+
+impl Index<ops::RangeFull> for CStr {
+    type Output = CStr;
+
+    #[inline]
+    fn index(&self, _index: ops::RangeFull) -> &Self::Output {
+        self
+    }
+}
+
+mod private {
+    use core::ops;
+
+    // Marker trait for index types that can be forward to `BStr`.
+    pub trait CStrIndex {}
+
+    impl CStrIndex for usize {}
+    impl CStrIndex for ops::Range<usize> {}
+    impl CStrIndex for ops::RangeInclusive<usize> {}
+    impl CStrIndex for ops::RangeToInclusive<usize> {}
+}
+
+impl<Idx> Index<Idx> for CStr
+where
+    Idx: private::CStrIndex,
+    BStr: Index<Idx>,
+{
+    type Output = <BStr as Index<Idx>>::Output;
+
+    #[inline]
+    fn index(&self, index: Idx) -> &Self::Output {
+        &self.as_bytes()[index]
     }
 }
 
@@ -399,116 +345,32 @@ macro_rules! c_str {
     }};
 }
 
-#[kunit_tests(rust_kernel_str)]
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    impl From<core::ffi::FromBytesWithNulError> for Error {
-        #[inline]
-        fn from(_: core::ffi::FromBytesWithNulError) -> Error {
-            EINVAL
-        }
-    }
-
-    macro_rules! format {
-        ($($f:tt)*) => ({
-            CString::try_from_fmt(fmt!($($f)*))?.to_str()?
-        })
-    }
-
-    const ALL_ASCII_CHARS: &str =
-        "\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\x09\\x0a\\x0b\\x0c\\x0d\\x0e\\x0f\
-        \\x10\\x11\\x12\\x13\\x14\\x15\\x16\\x17\\x18\\x19\\x1a\\x1b\\x1c\\x1d\\x1e\\x1f \
-        !\"#$%&'()*+,-./0123456789:;<=>?@\
-        ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\\x7f\
-        \\x80\\x81\\x82\\x83\\x84\\x85\\x86\\x87\\x88\\x89\\x8a\\x8b\\x8c\\x8d\\x8e\\x8f\
-        \\x90\\x91\\x92\\x93\\x94\\x95\\x96\\x97\\x98\\x99\\x9a\\x9b\\x9c\\x9d\\x9e\\x9f\
-        \\xa0\\xa1\\xa2\\xa3\\xa4\\xa5\\xa6\\xa7\\xa8\\xa9\\xaa\\xab\\xac\\xad\\xae\\xaf\
-        \\xb0\\xb1\\xb2\\xb3\\xb4\\xb5\\xb6\\xb7\\xb8\\xb9\\xba\\xbb\\xbc\\xbd\\xbe\\xbf\
-        \\xc0\\xc1\\xc2\\xc3\\xc4\\xc5\\xc6\\xc7\\xc8\\xc9\\xca\\xcb\\xcc\\xcd\\xce\\xcf\
-        \\xd0\\xd1\\xd2\\xd3\\xd4\\xd5\\xd6\\xd7\\xd8\\xd9\\xda\\xdb\\xdc\\xdd\\xde\\xdf\
-        \\xe0\\xe1\\xe2\\xe3\\xe4\\xe5\\xe6\\xe7\\xe8\\xe9\\xea\\xeb\\xec\\xed\\xee\\xef\
-        \\xf0\\xf1\\xf2\\xf3\\xf4\\xf5\\xf6\\xf7\\xf8\\xf9\\xfa\\xfb\\xfc\\xfd\\xfe\\xff";
-
     #[test]
-    fn test_cstr_to_str() -> Result {
-        let cstr = c"\xf0\x9f\xa6\x80";
-        let checked_str = cstr.to_str()?;
+    fn test_cstr_to_str() {
+        let good_bytes = b"\xf0\x9f\xa6\x80\0";
+        let checked_cstr = CStr::from_bytes_with_nul(good_bytes).unwrap();
+        let checked_str = checked_cstr.to_str().unwrap();
         assert_eq!(checked_str, "🦀");
-        Ok(())
     }
 
     #[test]
-    fn test_cstr_to_str_invalid_utf8() -> Result {
-        let cstr = c"\xc3\x28";
-        assert!(cstr.to_str().is_err());
-        Ok(())
+    #[should_panic]
+    fn test_cstr_to_str_panic() {
+        let bad_bytes = b"\xc3\x28\0";
+        let checked_cstr = CStr::from_bytes_with_nul(bad_bytes).unwrap();
+        checked_cstr.to_str().unwrap();
     }
 
     #[test]
-    fn test_cstr_display() -> Result {
-        let hello_world = c"hello, world!";
-        assert_eq!(format!("{hello_world}"), "hello, world!");
-        let non_printables = c"\x01\x09\x0a";
-        assert_eq!(format!("{non_printables}"), "\\x01\\x09\\x0a");
-        let non_ascii = c"d\xe9j\xe0 vu";
-        assert_eq!(format!("{non_ascii}"), "d\\xe9j\\xe0 vu");
-        let good_bytes = c"\xf0\x9f\xa6\x80";
-        assert_eq!(format!("{good_bytes}"), "\\xf0\\x9f\\xa6\\x80");
-        Ok(())
-    }
-
-    #[test]
-    fn test_cstr_display_all_bytes() -> Result {
-        let mut bytes: [u8; 256] = [0; 256];
-        // fill `bytes` with [1..=255] + [0]
-        for i in u8::MIN..=u8::MAX {
-            bytes[i as usize] = i.wrapping_add(1);
-        }
-        let cstr = CStr::from_bytes_with_nul(&bytes)?;
-        assert_eq!(format!("{cstr}"), ALL_ASCII_CHARS);
-        Ok(())
-    }
-
-    #[test]
-    fn test_cstr_debug() -> Result {
-        let hello_world = c"hello, world!";
-        assert_eq!(format!("{hello_world:?}"), "\"hello, world!\"");
-        let non_printables = c"\x01\x09\x0a";
-        assert_eq!(format!("{non_printables:?}"), "\"\\x01\\t\\n\"");
-        let non_ascii = c"d\xe9j\xe0 vu";
-        assert_eq!(format!("{non_ascii:?}"), "\"d\\xe9j\\xe0 vu\"");
-        Ok(())
-    }
-
-    #[test]
-    fn test_bstr_display() -> Result {
-        let hello_world = BStr::from_bytes(b"hello, world!");
-        assert_eq!(format!("{hello_world}"), "hello, world!");
-        let escapes = BStr::from_bytes(b"_\t_\n_\r_\\_\'_\"_");
-        assert_eq!(format!("{escapes}"), "_\\t_\\n_\\r_\\_'_\"_");
-        let others = BStr::from_bytes(b"\x01");
-        assert_eq!(format!("{others}"), "\\x01");
-        let non_ascii = BStr::from_bytes(b"d\xe9j\xe0 vu");
-        assert_eq!(format!("{non_ascii}"), "d\\xe9j\\xe0 vu");
-        let good_bytes = BStr::from_bytes(b"\xf0\x9f\xa6\x80");
-        assert_eq!(format!("{good_bytes}"), "\\xf0\\x9f\\xa6\\x80");
-        Ok(())
-    }
-
-    #[test]
-    fn test_bstr_debug() -> Result {
-        let hello_world = BStr::from_bytes(b"hello, world!");
-        assert_eq!(format!("{hello_world:?}"), "\"hello, world!\"");
-        let escapes = BStr::from_bytes(b"_\t_\n_\r_\\_\'_\"_");
-        assert_eq!(format!("{escapes:?}"), "\"_\\t_\\n_\\r_\\\\_'_\\\"_\"");
-        let others = BStr::from_bytes(b"\x01");
-        assert_eq!(format!("{others:?}"), "\"\\x01\"");
-        let non_ascii = BStr::from_bytes(b"d\xe9j\xe0 vu");
-        assert_eq!(format!("{non_ascii:?}"), "\"d\\xe9j\\xe0 vu\"");
-        let good_bytes = BStr::from_bytes(b"\xf0\x9f\xa6\x80");
-        assert_eq!(format!("{good_bytes:?}"), "\"\\xf0\\x9f\\xa6\\x80\"");
-        Ok(())
+    fn test_cstr_as_str_unchecked() {
+        let good_bytes = b"\xf0\x9f\x90\xA7\0";
+        let checked_cstr = CStr::from_bytes_with_nul(good_bytes).unwrap();
+        let unchecked_str = unsafe { checked_cstr.as_str_unchecked() };
+        assert_eq!(unchecked_str, "🐧");
     }
 }
 
@@ -521,7 +383,7 @@ mod tests {
 ///
 /// The memory region between `pos` (inclusive) and `end` (exclusive) is valid for writes if `pos`
 /// is less than `end`.
-pub struct RawFormatter {
+pub(crate) struct RawFormatter {
     // Use `usize` to use `saturating_*` functions.
     beg: usize,
     pos: usize,
@@ -546,11 +408,11 @@ impl RawFormatter {
     /// If `pos` is less than `end`, then the region between `pos` (inclusive) and `end`
     /// (exclusive) must be valid for writes for the lifetime of the returned [`RawFormatter`].
     pub(crate) unsafe fn from_ptrs(pos: *mut u8, end: *mut u8) -> Self {
-        // INVARIANT: The safety requirements guarantee the type invariants.
+        // INVARIANT: The safety requierments guarantee the type invariants.
         Self {
-            beg: pos as usize,
-            pos: pos as usize,
-            end: end as usize,
+            beg: pos as _,
+            pos: pos as _,
+            end: end as _,
         }
     }
 
@@ -562,7 +424,7 @@ impl RawFormatter {
     /// for the lifetime of the returned [`RawFormatter`].
     pub(crate) unsafe fn from_buffer(buf: *mut u8, len: usize) -> Self {
         let pos = buf as usize;
-        // INVARIANT: We ensure that `end` is never less than `buf`, and the safety requirements
+        // INVARIANT: We ensure that `end` is never less then `buf`, and the safety requirements
         // guarantees that the memory region is valid for writes.
         Self {
             pos,
@@ -575,11 +437,11 @@ impl RawFormatter {
     ///
     /// N.B. It may point to invalid memory.
     pub(crate) fn pos(&self) -> *mut u8 {
-        self.pos as *mut u8
+        self.pos as _
     }
 
-    /// Returns the number of bytes written to the formatter.
-    pub fn bytes_written(&self) -> usize {
+    /// Return the number of bytes written to the formatter.
+    pub(crate) fn bytes_written(&self) -> usize {
         self.pos - self.beg
     }
 }
@@ -613,9 +475,9 @@ impl fmt::Write for RawFormatter {
 /// Allows formatting of [`fmt::Arguments`] into a raw buffer.
 ///
 /// Fails if callers attempt to write more than will fit in the buffer.
-pub struct Formatter<'a>(RawFormatter, PhantomData<&'a mut ()>);
+pub(crate) struct Formatter(RawFormatter);
 
-impl Formatter<'_> {
+impl Formatter {
     /// Creates a new instance of [`Formatter`] with the given buffer.
     ///
     /// # Safety
@@ -624,18 +486,11 @@ impl Formatter<'_> {
     /// for the lifetime of the returned [`Formatter`].
     pub(crate) unsafe fn from_buffer(buf: *mut u8, len: usize) -> Self {
         // SAFETY: The safety requirements of this function satisfy those of the callee.
-        Self(unsafe { RawFormatter::from_buffer(buf, len) }, PhantomData)
-    }
-
-    /// Create a new [`Self`] instance.
-    pub fn new(buffer: &mut [u8]) -> Self {
-        // SAFETY: `buffer` is valid for writes for the entire length for
-        // the lifetime of `Self`.
-        unsafe { Formatter::from_buffer(buffer.as_mut_ptr(), buffer.len()) }
+        Self(unsafe { RawFormatter::from_buffer(buf, len) })
     }
 }
 
-impl Deref for Formatter<'_> {
+impl Deref for Formatter {
     type Target = RawFormatter;
 
     fn deref(&self) -> &Self::Target {
@@ -643,7 +498,7 @@ impl Deref for Formatter<'_> {
     }
 }
 
-impl fmt::Write for Formatter<'_> {
+impl fmt::Write for Formatter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.0.write_str(s)?;
 
@@ -654,132 +509,6 @@ impl fmt::Write for Formatter<'_> {
             Ok(())
         }
     }
-}
-
-/// A mutable reference to a byte buffer where a string can be written into.
-///
-/// The buffer will be automatically null terminated after the last written character.
-///
-/// # Invariants
-///
-/// * The first byte of `buffer` is always zero.
-/// * The length of `buffer` is at least 1.
-pub(crate) struct NullTerminatedFormatter<'a> {
-    buffer: &'a mut [u8],
-}
-
-impl<'a> NullTerminatedFormatter<'a> {
-    /// Create a new [`Self`] instance.
-    pub(crate) fn new(buffer: &'a mut [u8]) -> Option<NullTerminatedFormatter<'a>> {
-        *(buffer.first_mut()?) = 0;
-
-        // INVARIANT:
-        //  - We wrote zero to the first byte above.
-        //  - If buffer was not at least length 1, `buffer.first_mut()` would return None.
-        Some(Self { buffer })
-    }
-}
-
-impl Write for NullTerminatedFormatter<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let bytes = s.as_bytes();
-        let len = bytes.len();
-
-        // We want space for a zero. By type invariant, buffer length is always at least 1, so no
-        // underflow.
-        if len > self.buffer.len() - 1 {
-            return Err(fmt::Error);
-        }
-
-        let buffer = core::mem::take(&mut self.buffer);
-        // We break the zero start invariant for a short while.
-        buffer[..len].copy_from_slice(bytes);
-        // INVARIANT: We checked above that buffer will have size at least 1 after this assignment.
-        self.buffer = &mut buffer[len..];
-
-        // INVARIANT: We write zero to the first byte of the buffer.
-        self.buffer[0] = 0;
-
-        Ok(())
-    }
-}
-
-/// # Safety
-///
-/// - `string` must point to a null terminated string that is valid for read.
-unsafe fn kstrtobool_raw(string: *const u8) -> Result<bool> {
-    let mut result: bool = false;
-
-    // SAFETY:
-    // - By function safety requirement, `string` is a valid null-terminated string.
-    // - `result` is a valid `bool` that we own.
-    to_result(unsafe { bindings::kstrtobool(string, &mut result) })?;
-    Ok(result)
-}
-
-/// Convert common user inputs into boolean values using the kernel's `kstrtobool` function.
-///
-/// This routine returns `Ok(bool)` if the first character is one of 'YyTt1NnFf0', or
-/// \[oO\]\[NnFf\] for "on" and "off". Otherwise it will return `Err(EINVAL)`.
-///
-/// # Examples
-///
-/// ```
-/// # use kernel::str::kstrtobool;
-///
-/// // Lowercase
-/// assert_eq!(kstrtobool(c"true"), Ok(true));
-/// assert_eq!(kstrtobool(c"tr"), Ok(true));
-/// assert_eq!(kstrtobool(c"t"), Ok(true));
-/// assert_eq!(kstrtobool(c"twrong"), Ok(true));
-/// assert_eq!(kstrtobool(c"false"), Ok(false));
-/// assert_eq!(kstrtobool(c"f"), Ok(false));
-/// assert_eq!(kstrtobool(c"yes"), Ok(true));
-/// assert_eq!(kstrtobool(c"no"), Ok(false));
-/// assert_eq!(kstrtobool(c"on"), Ok(true));
-/// assert_eq!(kstrtobool(c"off"), Ok(false));
-///
-/// // Camel case
-/// assert_eq!(kstrtobool(c"True"), Ok(true));
-/// assert_eq!(kstrtobool(c"False"), Ok(false));
-/// assert_eq!(kstrtobool(c"Yes"), Ok(true));
-/// assert_eq!(kstrtobool(c"No"), Ok(false));
-/// assert_eq!(kstrtobool(c"On"), Ok(true));
-/// assert_eq!(kstrtobool(c"Off"), Ok(false));
-///
-/// // All caps
-/// assert_eq!(kstrtobool(c"TRUE"), Ok(true));
-/// assert_eq!(kstrtobool(c"FALSE"), Ok(false));
-/// assert_eq!(kstrtobool(c"YES"), Ok(true));
-/// assert_eq!(kstrtobool(c"NO"), Ok(false));
-/// assert_eq!(kstrtobool(c"ON"), Ok(true));
-/// assert_eq!(kstrtobool(c"OFF"), Ok(false));
-///
-/// // Numeric
-/// assert_eq!(kstrtobool(c"1"), Ok(true));
-/// assert_eq!(kstrtobool(c"0"), Ok(false));
-///
-/// // Invalid input
-/// assert_eq!(kstrtobool(c"invalid"), Err(EINVAL));
-/// assert_eq!(kstrtobool(c"2"), Err(EINVAL));
-/// ```
-pub fn kstrtobool(string: &CStr) -> Result<bool> {
-    // SAFETY:
-    // - The pointer returned by `CStr::as_char_ptr` is guaranteed to be
-    //   null terminated.
-    // - `string` is live and thus the string is valid for read.
-    unsafe { kstrtobool_raw(string.as_char_ptr()) }
-}
-
-/// Convert `&[u8]` to `bool` by deferring to [`kernel::str::kstrtobool`].
-///
-/// Only considers at most the first two bytes of `bytes`.
-pub fn kstrtobool_bytes(bytes: &[u8]) -> Result<bool> {
-    // `ktostrbool` only considers the first two bytes of the input.
-    let stack_string = [*bytes.first().unwrap_or(&0), *bytes.get(1).unwrap_or(&0), 0];
-    // SAFETY: `stack_string` is null terminated and it is live on the stack so
-    // it is valid for read.
-    unsafe { kstrtobool_raw(stack_string.as_ptr()) }
 }
 
 /// An owned string that is guaranteed to have exactly one `NUL` byte, which is at the end.
@@ -793,22 +522,21 @@ pub fn kstrtobool_bytes(bytes: &[u8]) -> Result<bool> {
 /// # Examples
 ///
 /// ```
-/// use kernel::{str::CString, prelude::fmt};
+/// use kernel::str::CString;
 ///
-/// let s = CString::try_from_fmt(fmt!("{}{}{}", "abc", 10, 20))?;
-/// assert_eq!(s.to_bytes_with_nul(), "abc1020\0".as_bytes());
+/// let s = CString::try_from_fmt(fmt!("{}{}{}", "abc", 10, 20)).unwrap();
+/// assert_eq!(s.as_bytes_with_nul(), "abc1020\0".as_bytes());
 ///
 /// let tmp = "testing";
-/// let s = CString::try_from_fmt(fmt!("{tmp}{}", 123))?;
-/// assert_eq!(s.to_bytes_with_nul(), "testing123\0".as_bytes());
+/// let s = CString::try_from_fmt(fmt!("{tmp}{}", 123)).unwrap();
+/// assert_eq!(s.as_bytes_with_nul(), "testing123\0".as_bytes());
 ///
 /// // This fails because it has an embedded `NUL` byte.
 /// let s = CString::try_from_fmt(fmt!("a\0b{}", 123));
 /// assert_eq!(s.is_ok(), false);
-/// # Ok::<(), kernel::error::Error>(())
 /// ```
 pub struct CString {
-    buf: KVec<u8>,
+    buf: Vec<u8>,
 }
 
 impl CString {
@@ -821,7 +549,7 @@ impl CString {
         let size = f.bytes_written();
 
         // Allocate a vector with the required number of bytes, and write to it.
-        let mut buf = KVec::with_capacity(size, GFP_KERNEL)?;
+        let mut buf = Vec::try_with_capacity(size)?;
         // SAFETY: The buffer stored in `buf` is at least of size `size` and is valid for writes.
         let mut f = unsafe { Formatter::from_buffer(buf.as_mut_ptr(), size) };
         f.write_fmt(args)?;
@@ -829,13 +557,13 @@ impl CString {
 
         // SAFETY: The number of bytes that can be written to `f` is bounded by `size`, which is
         // `buf`'s capacity. The contents of the buffer have been initialised by writes to `f`.
-        unsafe { buf.inc_len(f.bytes_written()) };
+        unsafe { buf.set_len(f.bytes_written()) };
 
         // Check that there are no `NUL` bytes before the end.
         // SAFETY: The buffer is valid for read because `f.bytes_written()` is bounded by `size`
         // (which the minimum buffer size) and is non-zero (we wrote at least the `NUL` terminator)
         // so `f.bytes_written() - 1` doesn't underflow.
-        let ptr = unsafe { bindings::memchr(buf.as_ptr().cast(), 0, f.bytes_written() - 1) };
+        let ptr = unsafe { bindings::memchr(buf.as_ptr().cast(), 0, (f.bytes_written() - 1) as _) };
         if !ptr.is_null() {
             return Err(EINVAL);
         }
@@ -856,30 +584,8 @@ impl Deref for CString {
     }
 }
 
-impl DerefMut for CString {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: A `CString` is always NUL-terminated and contains no other
-        // NUL bytes.
-        unsafe { CStr::from_bytes_with_nul_unchecked_mut(self.buf.as_mut_slice()) }
-    }
-}
-
-impl<'a> TryFrom<&'a CStr> for CString {
-    type Error = AllocError;
-
-    fn try_from(cstr: &'a CStr) -> Result<CString, AllocError> {
-        let mut buf = KVec::new();
-
-        buf.extend_from_slice(cstr.to_bytes_with_nul(), GFP_KERNEL)?;
-
-        // INVARIANT: The `CStr` and `CString` types have the same invariants for
-        // the string data, and we copied it over without changes.
-        Ok(CString { buf })
-    }
-}
-
-impl fmt::Debug for CString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&**self, f)
-    }
+/// A convenience alias for [`core::format_args`].
+#[macro_export]
+macro_rules! fmt {
+    ($($f:tt)*) => ( core::format_args!($($f)*) )
 }

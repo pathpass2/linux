@@ -24,8 +24,6 @@ Parameters
      - Permanent
    * - ``enable_remote_dev_reset``
      - Runtime
-   * - ``enable_roce``
-     - Permanent
 
 The ``bnxt`` driver also implements the following driver-specific
 parameters.

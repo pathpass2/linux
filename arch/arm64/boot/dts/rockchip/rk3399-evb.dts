@@ -5,14 +5,13 @@
 
 /dts-v1/;
 #include <dt-bindings/pwm/pwm.h>
-#include "rk3399-base.dtsi"
+#include "rk3399.dtsi"
 
 / {
 	model = "Rockchip RK3399 Evaluation Board";
 	compatible = "rockchip,rk3399-evb", "rockchip,rk3399";
 
 	aliases {
-		ethernet0 = &gmac;
 		mmc0 = &sdhci;
 	};
 
@@ -75,7 +74,7 @@
 		#clock-cells = <0>;
 	};
 
-	vdd_center: regulator-vdd-center {
+	vdd_center: vdd-center {
 		compatible = "pwm-regulator";
 		pwms = <&pwm3 0 25000 0>;
 		regulator-name = "vdd_center";
@@ -86,7 +85,7 @@
 		status = "okay";
 	};
 
-	vcc3v3_sys: regulator-vcc3v3-sys {
+	vcc3v3_sys: vcc3v3-sys {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_sys";
 		regulator-always-on;
@@ -95,7 +94,7 @@
 		regulator-max-microvolt = <3300000>;
 	};
 
-	vcc5v0_sys: regulator-vcc5v0-sys {
+	vcc5v0_sys: vcc5v0-sys {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc5v0_sys";
 		regulator-always-on;
@@ -104,7 +103,7 @@
 		regulator-max-microvolt = <5000000>;
 	};
 
-	vcc5v0_host: regulator-vcc5v0-host {
+	vcc5v0_host: vcc5v0-host-regulator {
 		compatible = "regulator-fixed";
 		enable-active-high;
 		gpio = <&gpio4 RK_PD1 GPIO_ACTIVE_HIGH>;
@@ -114,14 +113,14 @@
 		vin-supply = <&vcc5v0_sys>;
 	};
 
-	vcc_phy: regulator-vcc-phy {
+	vcc_phy: vcc-phy-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_phy";
 		regulator-always-on;
 		regulator-boot-on;
 	};
 
-	vcc_phy: regulator-vcc-phy {
+	vcc_phy: vcc-phy-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_phy";
 		regulator-always-on;
@@ -178,7 +177,7 @@
 		interrupts = <21 IRQ_TYPE_LEVEL_LOW>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pmic_int_l>;
-		system-power-controller;
+		rockchip,system-power-controller;
 		wakeup-source;
 		#clock-cells = <1>;
 		clock-output-names = "rk808-clkout1", "rk808-clkout2";

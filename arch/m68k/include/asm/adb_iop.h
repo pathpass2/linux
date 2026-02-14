@@ -33,7 +33,7 @@
 #define ADB_IOP_SRQ		0x04	/* SRQ detected                */
 #define ADB_IOP_TIMEOUT		0x02	/* nonzero if timeout          */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct adb_iopmsg {
 	__u8 flags;		/* ADB flags         */
@@ -43,4 +43,4 @@ struct adb_iopmsg {
 	__u8 spare[21];		/* spare             */
 };
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */

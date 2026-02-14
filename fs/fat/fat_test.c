@@ -193,5 +193,4 @@ static struct kunit_suite fat_test_suite = {
 
 kunit_test_suites(&fat_test_suite);
 
-MODULE_DESCRIPTION("KUnit tests for FAT filesystems");
 MODULE_LICENSE("GPL v2");

@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-only OR MIT
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Device Tree Source for AM62A7 SoC family in Quad core configuration
  *
  * TRM: https://www.ti.com/lit/zip/spruj16
  *
- * Copyright (C) 2020-2024 Texas Instruments Incorporated - https://www.ti.com/
+ * Copyright (C) 2020-2022 Texas Instruments Incorporated - https://www.ti.com/
  */
 
 /dts-v1/;
@@ -48,9 +48,6 @@
 			d-cache-line-size = <64>;
 			d-cache-sets = <128>;
 			next-level-cache = <&L2_0>;
-			operating-points-v2 = <&a53_opp_table>;
-			clocks = <&k3_clks 135 0>;
-			#cooling-cells = <2>;
 		};
 
 		cpu1: cpu@1 {
@@ -65,9 +62,6 @@
 			d-cache-line-size = <64>;
 			d-cache-sets = <128>;
 			next-level-cache = <&L2_0>;
-			operating-points-v2 = <&a53_opp_table>;
-			clocks = <&k3_clks 136 0>;
-			#cooling-cells = <2>;
 		};
 
 		cpu2: cpu@2 {
@@ -82,9 +76,6 @@
 			d-cache-line-size = <64>;
 			d-cache-sets = <128>;
 			next-level-cache = <&L2_0>;
-			operating-points-v2 = <&a53_opp_table>;
-			clocks = <&k3_clks 137 0>;
-			#cooling-cells = <2>;
 		};
 
 		cpu3: cpu@3 {
@@ -99,52 +90,6 @@
 			d-cache-line-size = <64>;
 			d-cache-sets = <128>;
 			next-level-cache = <&L2_0>;
-			operating-points-v2 = <&a53_opp_table>;
-			clocks = <&k3_clks 138 0>;
-			#cooling-cells = <2>;
-		};
-	};
-
-	a53_opp_table: opp-table {
-		compatible = "operating-points-v2-ti-cpu";
-		opp-shared;
-		syscon = <&opp_efuse_table>;
-
-		opp-200000000 {
-			opp-hz = /bits/ 64 <200000000>;
-			opp-supported-hw = <0x01 0x0007>;
-			clock-latency-ns = <6000000>;
-		};
-
-		opp-400000000 {
-			opp-hz = /bits/ 64 <400000000>;
-			opp-supported-hw = <0x01 0x0007>;
-			clock-latency-ns = <6000000>;
-		};
-
-		opp-600000000 {
-			opp-hz = /bits/ 64 <600000000>;
-			opp-supported-hw = <0x01 0x0007>;
-			clock-latency-ns = <6000000>;
-		};
-
-		opp-800000000 {
-			opp-hz = /bits/ 64 <800000000>;
-			opp-supported-hw = <0x01 0x0007>;
-			clock-latency-ns = <6000000>;
-		};
-
-		opp-1000000000 {
-			opp-hz = /bits/ 64 <1000000000>;
-			opp-supported-hw = <0x01 0x0006>;
-			clock-latency-ns = <6000000>;
-		};
-
-		opp-1250000000 {
-			opp-hz = /bits/ 64 <1250000000>;
-			opp-supported-hw = <0x01 0x0004>;
-			clock-latency-ns = <6000000>;
-			opp-suspend;
 		};
 	};
 
@@ -152,7 +97,7 @@
 		compatible = "cache";
 		cache-unified;
 		cache-level = <2>;
-		cache-size = <0x80000>;
+		cache-size = <0x40000>;
 		cache-line-size = <64>;
 		cache-sets = <512>;
 	};

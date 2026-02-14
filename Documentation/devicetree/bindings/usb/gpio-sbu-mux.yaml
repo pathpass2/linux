@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 %YAML 1.2
 ---
-$id: http://devicetree.org/schemas/usb/gpio-sbu-mux.yaml#
-$schema: http://devicetree.org/meta-schemas/core.yaml#
+$id: "http://devicetree.org/schemas/usb/gpio-sbu-mux.yaml#"
+$schema: "http://devicetree.org/meta-schemas/core.yaml#"
 
 title: GPIO-based SBU mux
 
@@ -19,11 +19,8 @@ properties:
   compatible:
     items:
       - enum:
-          - nxp,cbdtu02043
-          - onnn,fsusb42
           - onnn,fsusb43l10x
           - pericom,pi3usb102
-          - ti,tmuxhs4212
       - const: gpio-sbu-mux
 
   enable-gpios:
@@ -35,8 +32,13 @@ properties:
   vcc-supply:
     description: power supply
 
-  mode-switch: true
-  orientation-switch: true
+  mode-switch:
+    description: Flag the port as possible handle of altmode switching
+    type: boolean
+
+  orientation-switch:
+    description: Flag the port as possible handler of orientation switching
+    type: boolean
 
   port:
     $ref: /schemas/graph.yaml#/properties/port
@@ -46,19 +48,11 @@ properties:
 
 required:
   - compatible
+  - enable-gpios
   - select-gpios
+  - mode-switch
   - orientation-switch
   - port
-
-allOf:
-  - $ref: usb-switch.yaml#
-  - $ref: usb-switch-ports.yaml#
-  - if:
-      required:
-        - mode-switch
-    then:
-      required:
-        - enable-gpios
 
 additionalProperties: false
 

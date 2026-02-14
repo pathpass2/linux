@@ -790,5 +790,4 @@ const struct video_device si470x_viddev_template = {
 };
 EXPORT_SYMBOL_GPL(si470x_viddev_template);
 
-MODULE_DESCRIPTION("Core radio driver for Si470x FM Radio Receivers");
 MODULE_LICENSE("GPL");

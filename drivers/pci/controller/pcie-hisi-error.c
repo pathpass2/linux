@@ -299,11 +299,13 @@ static int hisi_pcie_error_handler_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void hisi_pcie_error_handler_remove(struct platform_device *pdev)
+static int hisi_pcie_error_handler_remove(struct platform_device *pdev)
 {
 	struct hisi_pcie_error_private *priv = platform_get_drvdata(pdev);
 
 	ghes_unregister_vendor_record_notifier(&priv->nb);
+
+	return 0;
 }
 
 static const struct acpi_device_id hisi_pcie_acpi_match[] = {

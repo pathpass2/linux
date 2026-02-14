@@ -87,9 +87,10 @@ void snd_motu_command_dsp_message_parser_parse(const struct amdtp_stream *s,
 	unsigned int data_block_quadlets = s->data_block_quadlets;
 	struct msg_parser *parser = motu->message_parser;
 	unsigned int interval = parser->interval;
+	unsigned long flags;
 	int i;
 
-	guard(spinlock_irqsave)(&parser->lock);
+	spin_lock_irqsave(&parser->lock, flags);
 
 	for (i = 0; i < count; ++i) {
 		__be32 *buffer = desc->ctx_payload;
@@ -167,13 +168,17 @@ void snd_motu_command_dsp_message_parser_parse(const struct amdtp_stream *s,
 			}
 		}
 	}
+
+	spin_unlock_irqrestore(&parser->lock, flags);
 }
 
 void snd_motu_command_dsp_message_parser_copy_meter(struct snd_motu *motu,
 					struct snd_firewire_motu_command_dsp_meter *meter)
 {
 	struct msg_parser *parser = motu->message_parser;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&parser->lock);
+	spin_lock_irqsave(&parser->lock, flags);
 	memcpy(meter, &parser->meter, sizeof(*meter));
+	spin_unlock_irqrestore(&parser->lock, flags);
 }

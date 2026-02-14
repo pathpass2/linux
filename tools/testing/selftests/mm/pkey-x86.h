@@ -5,19 +5,33 @@
 
 #ifdef __i386__
 
+#ifndef SYS_mprotect_key
+# define SYS_mprotect_key	380
+#endif
+
+#ifndef SYS_pkey_alloc
+# define SYS_pkey_alloc		381
+# define SYS_pkey_free		382
+#endif
+
 #define REG_IP_IDX		REG_EIP
 #define si_pkey_offset		0x14
 
 #else
 
+#ifndef SYS_mprotect_key
+# define SYS_mprotect_key	329
+#endif
+
+#ifndef SYS_pkey_alloc
+# define SYS_pkey_alloc		330
+# define SYS_pkey_free		331
+#endif
+
 #define REG_IP_IDX		REG_RIP
 #define si_pkey_offset		0x20
 
 #endif
-
-#define MCONTEXT_IP(mc)		mc.gregs[REG_IP_IDX]
-#define MCONTEXT_TRAPNO(mc)	mc.gregs[REG_TRAPNO]
-#define MCONTEXT_FPREGS
 
 #ifndef PKEY_DISABLE_ACCESS
 # define PKEY_DISABLE_ACCESS	0x1
@@ -33,8 +47,6 @@
 #define HPAGE_SIZE		(1UL<<21)
 #define PAGE_SIZE		4096
 #define MB			(1<<20)
-
-#define PKEY_REG_ALLOW_NONE	0x55555555
 
 static inline void __page_o_noops(void)
 {
@@ -113,14 +125,14 @@ static inline u32 pkey_bit_position(int pkey)
 #define XSTATE_PKEY	0x200
 #define XSTATE_BV_OFFSET	512
 
-static inline int pkey_reg_xstate_offset(void)
+int pkey_reg_xstate_offset(void)
 {
 	unsigned int eax;
 	unsigned int ebx;
 	unsigned int ecx;
 	unsigned int edx;
 	int xstate_offset;
-	int xstate_size = 0;
+	int xstate_size;
 	unsigned long XSTATE_CPUID = 0xd;
 	int leaf;
 
@@ -148,7 +160,7 @@ static inline int get_arch_reserved_keys(void)
 	return NR_RESERVED_PKEYS;
 }
 
-static inline void expect_fault_on_read_execonly_key(void *p1, int pkey)
+void expect_fault_on_read_execonly_key(void *p1, int pkey)
 {
 	int ptr_contents;
 
@@ -157,7 +169,7 @@ static inline void expect_fault_on_read_execonly_key(void *p1, int pkey)
 	expected_pkey_fault(pkey);
 }
 
-static inline void *malloc_pkey_with_mprotect_subpage(long size, int prot, u16 pkey)
+void *malloc_pkey_with_mprotect_subpage(long size, int prot, u16 pkey)
 {
 	return PTR_ERR_ENOTSUP;
 }

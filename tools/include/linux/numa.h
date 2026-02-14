@@ -13,9 +13,4 @@
 
 #define	NUMA_NO_NODE	(-1)
 
-static inline bool numa_valid_node(int nid)
-{
-	return nid >= 0 && nid < MAX_NUMNODES;
-}
-
 #endif /* _LINUX_NUMA_H */

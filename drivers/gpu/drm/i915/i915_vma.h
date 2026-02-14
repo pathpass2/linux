@@ -30,12 +30,12 @@
 
 #include <drm/drm_mm.h>
 
-#include "gem/i915_gem_object.h"
 #include "gt/intel_ggtt_fencing.h"
+#include "gem/i915_gem_object.h"
+
+#include "i915_gem_gtt.h"
 
 #include "i915_active.h"
-#include "i915_gem_gtt.h"
-#include "i915_ptr_util.h"
 #include "i915_request.h"
 #include "i915_vma_resource.h"
 #include "i915_vma_types.h"
@@ -132,7 +132,7 @@ static inline u64 __i915_vma_size(const struct i915_vma *vma)
 }
 
 /**
- * i915_vma_size - Obtain the va range size of the vma
+ * i915_vma_offset - Obtain the va range size of the vma
  * @vma: The vma
  *
  * GPU virtual address space may be allocated with padding. This
@@ -250,7 +250,7 @@ i915_vma_compare(struct i915_vma *vma,
 
 struct i915_vma_work *i915_vma_work(void);
 int i915_vma_bind(struct i915_vma *vma,
-		  unsigned int pat_index,
+		  enum i915_cache_level cache_level,
 		  u32 flags,
 		  struct i915_vma_work *work,
 		  struct i915_vma_resource *vma_res);
@@ -289,8 +289,26 @@ int __must_check
 i915_vma_pin_ww(struct i915_vma *vma, struct i915_gem_ww_ctx *ww,
 		u64 size, u64 alignment, u64 flags);
 
-int __must_check
-i915_vma_pin(struct i915_vma *vma, u64 size, u64 alignment, u64 flags);
+static inline int __must_check
+i915_vma_pin(struct i915_vma *vma, u64 size, u64 alignment, u64 flags)
+{
+	struct i915_gem_ww_ctx ww;
+	int err;
+
+	i915_gem_ww_ctx_init(&ww, true);
+retry:
+	err = i915_gem_object_lock(vma->obj, &ww);
+	if (!err)
+		err = i915_vma_pin_ww(vma, &ww, size, alignment, flags);
+	if (err == -EDEADLK) {
+		err = i915_gem_ww_ctx_backoff(&ww);
+		if (!err)
+			goto retry;
+	}
+	i915_gem_ww_ctx_fini(&ww);
+
+	return err;
+}
 
 int i915_ggtt_pin(struct i915_vma *vma, struct i915_gem_ww_ctx *ww,
 		  u32 align, unsigned int flags);
@@ -335,11 +353,6 @@ static inline bool i915_node_color_differs(const struct drm_mm_node *node,
 	return drm_mm_node_allocated(node) && node->color != color;
 }
 
-static inline void __iomem *i915_vma_get_iomap(struct i915_vma *vma)
-{
-	return READ_ONCE(vma->iomap);
-}
-
 /**
  * i915_vma_pin_iomap - calls ioremap_wc to map the GGTT VMA via the aperture
  * @vma: VMA to iomap
@@ -376,6 +389,7 @@ void i915_vma_unpin_iomap(struct i915_vma *vma);
  * i915_vma_unpin_fence().
  *
  * Returns:
+ *
  * True if the vma has a fence, false otherwise.
  */
 int __must_check i915_vma_pin_fence(struct i915_vma *vma);
@@ -404,11 +418,6 @@ i915_vma_unpin_fence(struct i915_vma *vma)
 		__i915_vma_unpin_fence(vma);
 }
 
-static inline int i915_vma_fence_id(const struct i915_vma *vma)
-{
-	return vma->fence ? vma->fence->id : -1;
-}
-
 void i915_vma_parked(struct intel_gt *gt);
 
 static inline bool i915_vma_is_scanout(const struct i915_vma *vma)
@@ -425,8 +434,6 @@ static inline void i915_vma_clear_scanout(struct i915_vma *vma)
 {
 	clear_bit(I915_VMA_SCANOUT_BIT, __i915_vma_flags(vma));
 }
-
-void i915_ggtt_clear_scanout(struct drm_i915_gem_object *obj);
 
 #define for_each_until(cond) if (cond) break; else
 

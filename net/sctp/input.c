@@ -117,7 +117,7 @@ int sctp_rcv(struct sk_buff *skb)
 	 * it's better to just linearize it otherwise crc computing
 	 * takes longer.
 	 */
-	if (((!is_gso || skb_cloned(skb)) && skb_linearize(skb)) ||
+	if ((!is_gso && skb_linearize(skb)) ||
 	    !pskb_may_pull(skb, sizeof(struct sctphdr)))
 		goto discard_it;
 
@@ -190,7 +190,7 @@ int sctp_rcv(struct sk_buff *skb)
 		goto discard_release;
 	nf_reset_ct(skb);
 
-	if (sk_filter(sk, skb) || skb->len < sizeof(struct sctp_chunkhdr))
+	if (sk_filter(sk, skb))
 		goto discard_release;
 
 	/* Create an SCTP packet structure. */
@@ -446,7 +446,7 @@ void sctp_icmp_proto_unreachable(struct sock *sk,
 		pr_debug("%s: unrecognized next header type "
 			 "encountered!\n", __func__);
 
-		if (timer_delete(&t->proto_unreach_timer))
+		if (del_timer(&t->proto_unreach_timer))
 			sctp_transport_put(t);
 
 		sctp_do_sm(net, SCTP_EVENT_T_OTHER,
@@ -581,11 +581,11 @@ static void sctp_v4_err_handle(struct sctp_transport *t, struct sk_buff *skb,
 	default:
 		return;
 	}
-	if (!sock_owned_by_user(sk) && inet_test_bit(RECVERR, sk)) {
+	if (!sock_owned_by_user(sk) && inet_sk(sk)->recverr) {
 		sk->sk_err = err;
 		sk_error_report(sk);
 	} else {  /* Only an error on timeout */
-		WRITE_ONCE(sk->sk_err_soft, err);
+		sk->sk_err_soft = err;
 	}
 }
 
@@ -735,19 +735,15 @@ static int __sctp_hash_endpoint(struct sctp_endpoint *ep)
 	struct sock *sk = ep->base.sk;
 	struct net *net = sock_net(sk);
 	struct sctp_hashbucket *head;
-	int err = 0;
 
 	ep->hashent = sctp_ep_hashfn(net, ep->base.bind_addr.port);
 	head = &sctp_ep_hashtable[ep->hashent];
 
-	write_lock(&head->lock);
 	if (sk->sk_reuseport) {
 		bool any = sctp_is_ep_boundall(sk);
 		struct sctp_endpoint *ep2;
 		struct list_head *list;
-		int cnt = 0;
-
-		err = 1;
+		int cnt = 0, err = 1;
 
 		list_for_each(list, &ep->base.bind_addr.address_list)
 			cnt++;
@@ -756,7 +752,7 @@ static int __sctp_hash_endpoint(struct sctp_endpoint *ep)
 			struct sock *sk2 = ep2->base.sk;
 
 			if (!net_eq(sock_net(sk2), net) || sk2 == sk ||
-			    !uid_eq(sk_uid(sk2), sk_uid(sk)) ||
+			    !uid_eq(sock_i_uid(sk2), sock_i_uid(sk)) ||
 			    !sk2->sk_reuseport)
 				continue;
 
@@ -765,24 +761,24 @@ static int __sctp_hash_endpoint(struct sctp_endpoint *ep)
 			if (!err) {
 				err = reuseport_add_sock(sk, sk2, any);
 				if (err)
-					goto out;
+					return err;
 				break;
 			} else if (err < 0) {
-				goto out;
+				return err;
 			}
 		}
 
 		if (err) {
 			err = reuseport_alloc(sk, any);
 			if (err)
-				goto out;
+				return err;
 		}
 	}
 
+	write_lock(&head->lock);
 	hlist_add_head(&ep->node, &head->chain);
-out:
 	write_unlock(&head->lock);
-	return err;
+	return 0;
 }
 
 /* Add an endpoint to the hash. Local BH-safe. */
@@ -807,9 +803,10 @@ static void __sctp_unhash_endpoint(struct sctp_endpoint *ep)
 
 	head = &sctp_ep_hashtable[ep->hashent];
 
-	write_lock(&head->lock);
 	if (rcu_access_pointer(sk->sk_reuseport_cb))
 		reuseport_detach_sock(sk);
+
+	write_lock(&head->lock);
 	hlist_del_init(&ep->node);
 	write_unlock(&head->lock);
 }
@@ -1153,7 +1150,7 @@ static struct sctp_association *__sctp_rcv_init_lookup(struct net *net,
 	init = (struct sctp_init_chunk *)skb->data;
 
 	/* Walk the parameters looking for embedded addresses. */
-	sctp_walk_params(params, init) {
+	sctp_walk_params(params, init, init_hdr.params) {
 
 		/* Note: Ignoring hostname addresses. */
 		af = sctp_get_af_specific(param_type2af(params.p->type));

@@ -14,8 +14,6 @@
 #include <soc/mscc/ocelot.h>
 #include "ocelot.h"
 
-#define OCELOT_PTP_TX_TSTAMP_TIMEOUT		(5 * HZ)
-
 int ocelot_ptp_gettime64(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	struct ocelot *ocelot = container_of(ptp, struct ocelot, ptp_info);
@@ -211,6 +209,11 @@ int ocelot_ptp_enable(struct ptp_clock_info *ptp,
 
 	switch (rq->type) {
 	case PTP_CLK_REQ_PEROUT:
+		/* Reject requests with unsupported flags */
+		if (rq->perout.flags & ~(PTP_PEROUT_DUTY_CYCLE |
+					 PTP_PEROUT_PHASE))
+			return -EOPNOTSUPP;
+
 		pin = ptp_find_pin(ocelot->ptp_clock, PTP_PF_PEROUT,
 				   rq->perout.index);
 		if (pin == 0)
@@ -436,11 +439,7 @@ static int ocelot_ipv6_ptp_trap_del(struct ocelot *ocelot, int port)
 static int ocelot_setup_ptp_traps(struct ocelot *ocelot, int port,
 				  bool l2, bool l4)
 {
-	struct ocelot_port *ocelot_port = ocelot->ports[port];
 	int err;
-
-	ocelot_port->trap_proto &= ~(OCELOT_PROTO_PTP_L2 |
-				     OCELOT_PROTO_PTP_L4);
 
 	if (l2)
 		err = ocelot_l2_ptp_trap_add(ocelot, port);
@@ -465,11 +464,6 @@ static int ocelot_setup_ptp_traps(struct ocelot *ocelot, int port,
 	if (err)
 		return err;
 
-	if (l2)
-		ocelot_port->trap_proto |= OCELOT_PROTO_PTP_L2;
-	if (l4)
-		ocelot_port->trap_proto |= OCELOT_PROTO_PTP_L4;
-
 	return 0;
 
 err_ipv6:
@@ -480,76 +474,44 @@ err_ipv4:
 	return err;
 }
 
-static int ocelot_traps_to_ptp_rx_filter(unsigned int proto)
+int ocelot_hwstamp_get(struct ocelot *ocelot, int port, struct ifreq *ifr)
 {
-	if ((proto & OCELOT_PROTO_PTP_L2) && (proto & OCELOT_PROTO_PTP_L4))
-		return HWTSTAMP_FILTER_PTP_V2_EVENT;
-	else if (proto & OCELOT_PROTO_PTP_L2)
-		return HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
-	else if (proto & OCELOT_PROTO_PTP_L4)
-		return HWTSTAMP_FILTER_PTP_V2_L4_EVENT;
-
-	return HWTSTAMP_FILTER_NONE;
+	return copy_to_user(ifr->ifr_data, &ocelot->hwtstamp_config,
+			    sizeof(ocelot->hwtstamp_config)) ? -EFAULT : 0;
 }
+EXPORT_SYMBOL(ocelot_hwstamp_get);
 
-static int ocelot_ptp_tx_type_to_cmd(int tx_type, int *ptp_cmd)
+int ocelot_hwstamp_set(struct ocelot *ocelot, int port, struct ifreq *ifr)
 {
-	switch (tx_type) {
+	struct ocelot_port *ocelot_port = ocelot->ports[port];
+	bool l2 = false, l4 = false;
+	struct hwtstamp_config cfg;
+	int err;
+
+	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
+		return -EFAULT;
+
+	/* Tx type sanity check */
+	switch (cfg.tx_type) {
 	case HWTSTAMP_TX_ON:
-		*ptp_cmd = IFH_REW_OP_TWO_STEP_PTP;
+		ocelot_port->ptp_cmd = IFH_REW_OP_TWO_STEP_PTP;
 		break;
 	case HWTSTAMP_TX_ONESTEP_SYNC:
-		/* IFH_REW_OP_ONE_STEP_PTP updates the correctionField,
-		 * what we need to update is the originTimestamp.
+		/* IFH_REW_OP_ONE_STEP_PTP updates the correctional field, we
+		 * need to update the origin time.
 		 */
-		*ptp_cmd = IFH_REW_OP_ORIGIN_PTP;
+		ocelot_port->ptp_cmd = IFH_REW_OP_ORIGIN_PTP;
 		break;
 	case HWTSTAMP_TX_OFF:
-		*ptp_cmd = 0;
+		ocelot_port->ptp_cmd = 0;
 		break;
 	default:
 		return -ERANGE;
 	}
 
-	return 0;
-}
+	mutex_lock(&ocelot->ptp_lock);
 
-void ocelot_hwstamp_get(struct ocelot *ocelot, int port,
-			struct kernel_hwtstamp_config *cfg)
-{
-	struct ocelot_port *ocelot_port = ocelot->ports[port];
-
-	switch (ocelot_port->ptp_cmd) {
-	case IFH_REW_OP_TWO_STEP_PTP:
-		cfg->tx_type = HWTSTAMP_TX_ON;
-		break;
-	case IFH_REW_OP_ORIGIN_PTP:
-		cfg->tx_type = HWTSTAMP_TX_ONESTEP_SYNC;
-		break;
-	default:
-		cfg->tx_type = HWTSTAMP_TX_OFF;
-		break;
-	}
-
-	cfg->rx_filter = ocelot_traps_to_ptp_rx_filter(ocelot_port->trap_proto);
-}
-EXPORT_SYMBOL(ocelot_hwstamp_get);
-
-int ocelot_hwstamp_set(struct ocelot *ocelot, int port,
-		       struct kernel_hwtstamp_config *cfg,
-		       struct netlink_ext_ack *extack)
-{
-	struct ocelot_port *ocelot_port = ocelot->ports[port];
-	bool l2 = false, l4 = false;
-	int ptp_cmd;
-	int err;
-
-	/* Tx type sanity check */
-	err = ocelot_ptp_tx_type_to_cmd(cfg->tx_type, &ptp_cmd);
-	if (err)
-		return err;
-
-	switch (cfg->rx_filter) {
+	switch (cfg.rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
@@ -569,31 +531,47 @@ int ocelot_hwstamp_set(struct ocelot *ocelot, int port,
 		l4 = true;
 		break;
 	default:
+		mutex_unlock(&ocelot->ptp_lock);
 		return -ERANGE;
 	}
 
 	err = ocelot_setup_ptp_traps(ocelot, port, l2, l4);
-	if (err)
+	if (err) {
+		mutex_unlock(&ocelot->ptp_lock);
 		return err;
+	}
 
-	ocelot_port->ptp_cmd = ptp_cmd;
+	if (l2 && l4)
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+	else if (l2)
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
+	else if (l4)
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_L4_EVENT;
+	else
+		cfg.rx_filter = HWTSTAMP_FILTER_NONE;
 
-	cfg->rx_filter = ocelot_traps_to_ptp_rx_filter(ocelot_port->trap_proto);
+	/* Commit back the result & save it */
+	memcpy(&ocelot->hwtstamp_config, &cfg, sizeof(cfg));
+	mutex_unlock(&ocelot->ptp_lock);
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
 }
 EXPORT_SYMBOL(ocelot_hwstamp_set);
 
 int ocelot_get_ts_info(struct ocelot *ocelot, int port,
-		       struct kernel_ethtool_ts_info *info)
+		       struct ethtool_ts_info *info)
 {
-	if (ocelot->ptp_clock) {
-		info->phc_index = ptp_clock_index(ocelot->ptp_clock);
-	} else {
-		info->so_timestamping |= SOF_TIMESTAMPING_TX_SOFTWARE;
+	info->phc_index = ocelot->ptp_clock ?
+			  ptp_clock_index(ocelot->ptp_clock) : -1;
+	if (info->phc_index == -1) {
+		info->so_timestamping |= SOF_TIMESTAMPING_TX_SOFTWARE |
+					 SOF_TIMESTAMPING_RX_SOFTWARE |
+					 SOF_TIMESTAMPING_SOFTWARE;
 		return 0;
 	}
 	info->so_timestamping |= SOF_TIMESTAMPING_TX_SOFTWARE |
+				 SOF_TIMESTAMPING_RX_SOFTWARE |
+				 SOF_TIMESTAMPING_SOFTWARE |
 				 SOF_TIMESTAMPING_TX_HARDWARE |
 				 SOF_TIMESTAMPING_RX_HARDWARE |
 				 SOF_TIMESTAMPING_RAW_HARDWARE;
@@ -608,92 +586,34 @@ int ocelot_get_ts_info(struct ocelot *ocelot, int port,
 }
 EXPORT_SYMBOL(ocelot_get_ts_info);
 
-static struct sk_buff *ocelot_port_dequeue_ptp_tx_skb(struct ocelot *ocelot,
-						      int port, u8 ts_id,
-						      u32 seqid)
-{
-	struct ocelot_port *ocelot_port = ocelot->ports[port];
-	struct sk_buff *skb, *skb_tmp, *skb_match = NULL;
-	struct ptp_header *hdr;
-
-	spin_lock(&ocelot->ts_id_lock);
-
-	skb_queue_walk_safe(&ocelot_port->tx_skbs, skb, skb_tmp) {
-		if (OCELOT_SKB_CB(skb)->ts_id != ts_id)
-			continue;
-
-		/* Check that the timestamp ID is for the expected PTP
-		 * sequenceId. We don't have to test ptp_parse_header() against
-		 * NULL, because we've pre-validated the packet's ptp_class.
-		 */
-		hdr = ptp_parse_header(skb, OCELOT_SKB_CB(skb)->ptp_class);
-		if (seqid != ntohs(hdr->sequence_id))
-			continue;
-
-		__skb_unlink(skb, &ocelot_port->tx_skbs);
-		ocelot->ptp_skbs_in_flight--;
-		skb_match = skb;
-		break;
-	}
-
-	spin_unlock(&ocelot->ts_id_lock);
-
-	return skb_match;
-}
-
-static int ocelot_port_queue_ptp_tx_skb(struct ocelot *ocelot, int port,
+static int ocelot_port_add_txtstamp_skb(struct ocelot *ocelot, int port,
 					struct sk_buff *clone)
 {
 	struct ocelot_port *ocelot_port = ocelot->ports[port];
-	DECLARE_BITMAP(ts_id_in_flight, OCELOT_MAX_PTP_ID);
-	struct sk_buff *skb, *skb_tmp;
-	unsigned long n;
+	unsigned long flags;
 
-	spin_lock(&ocelot->ts_id_lock);
+	spin_lock_irqsave(&ocelot->ts_id_lock, flags);
 
-	/* To get a better chance of acquiring a timestamp ID, first flush the
-	 * stale packets still waiting in the TX timestamping queue. They are
-	 * probably lost.
-	 */
-	skb_queue_walk_safe(&ocelot_port->tx_skbs, skb, skb_tmp) {
-		if (time_before(OCELOT_SKB_CB(skb)->ptp_tx_time +
-				OCELOT_PTP_TX_TSTAMP_TIMEOUT, jiffies)) {
-			u64_stats_update_begin(&ocelot_port->ts_stats->syncp);
-			ocelot_port->ts_stats->lost++;
-			u64_stats_update_end(&ocelot_port->ts_stats->syncp);
-
-			dev_dbg_ratelimited(ocelot->dev,
-					    "port %d invalidating stale timestamp ID %u which seems lost\n",
-					    port, OCELOT_SKB_CB(skb)->ts_id);
-
-			__skb_unlink(skb, &ocelot_port->tx_skbs);
-			kfree_skb(skb);
-			ocelot->ptp_skbs_in_flight--;
-		} else {
-			__set_bit(OCELOT_SKB_CB(skb)->ts_id, ts_id_in_flight);
-		}
-	}
-
-	if (ocelot->ptp_skbs_in_flight == OCELOT_PTP_FIFO_SIZE) {
-		spin_unlock(&ocelot->ts_id_lock);
+	if (ocelot_port->ptp_skbs_in_flight == OCELOT_MAX_PTP_ID ||
+	    ocelot->ptp_skbs_in_flight == OCELOT_PTP_FIFO_SIZE) {
+		spin_unlock_irqrestore(&ocelot->ts_id_lock, flags);
 		return -EBUSY;
 	}
 
-	n = find_first_zero_bit(ts_id_in_flight, OCELOT_MAX_PTP_ID);
-	if (n == OCELOT_MAX_PTP_ID) {
-		spin_unlock(&ocelot->ts_id_lock);
-		return -EBUSY;
-	}
+	skb_shinfo(clone)->tx_flags |= SKBTX_IN_PROGRESS;
+	/* Store timestamp ID in OCELOT_SKB_CB(clone)->ts_id */
+	OCELOT_SKB_CB(clone)->ts_id = ocelot_port->ts_id;
 
-	/* Found an available timestamp ID, use it */
-	OCELOT_SKB_CB(clone)->ts_id = n;
-	OCELOT_SKB_CB(clone)->ptp_tx_time = jiffies;
+	ocelot_port->ts_id++;
+	if (ocelot_port->ts_id == OCELOT_MAX_PTP_ID)
+		ocelot_port->ts_id = 0;
+
+	ocelot_port->ptp_skbs_in_flight++;
 	ocelot->ptp_skbs_in_flight++;
-	__skb_queue_tail(&ocelot_port->tx_skbs, clone);
 
-	spin_unlock(&ocelot->ts_id_lock);
+	skb_queue_tail(&ocelot_port->tx_skbs, clone);
 
-	dev_dbg_ratelimited(ocelot->dev, "port %d timestamp id %lu\n", port, n);
+	spin_unlock_irqrestore(&ocelot->ts_id_lock, flags);
 
 	return 0;
 }
@@ -731,20 +651,13 @@ int ocelot_port_txtstamp_request(struct ocelot *ocelot, int port,
 		return 0;
 
 	ptp_class = ptp_classify_raw(skb);
-	if (ptp_class == PTP_CLASS_NONE) {
-		err = -EINVAL;
-		goto error;
-	}
+	if (ptp_class == PTP_CLASS_NONE)
+		return -EINVAL;
 
 	/* Store ptp_cmd in OCELOT_SKB_CB(skb)->ptp_cmd */
 	if (ptp_cmd == IFH_REW_OP_ORIGIN_PTP) {
 		if (ocelot_ptp_is_onestep_sync(skb, ptp_class)) {
 			OCELOT_SKB_CB(skb)->ptp_cmd = ptp_cmd;
-
-			u64_stats_update_begin(&ocelot_port->ts_stats->syncp);
-			ocelot_port->ts_stats->onestep_pkts_unconfirmed++;
-			u64_stats_update_end(&ocelot_port->ts_stats->syncp);
-
 			return 0;
 		}
 
@@ -754,30 +667,18 @@ int ocelot_port_txtstamp_request(struct ocelot *ocelot, int port,
 
 	if (ptp_cmd == IFH_REW_OP_TWO_STEP_PTP) {
 		*clone = skb_clone_sk(skb);
-		if (!(*clone)) {
-			err = -ENOMEM;
-			goto error;
-		}
+		if (!(*clone))
+			return -ENOMEM;
 
-		/* Store timestamp ID in OCELOT_SKB_CB(clone)->ts_id */
-		err = ocelot_port_queue_ptp_tx_skb(ocelot, port, *clone);
-		if (err) {
-			kfree_skb(*clone);
-			goto error;
-		}
+		err = ocelot_port_add_txtstamp_skb(ocelot, port, *clone);
+		if (err)
+			return err;
 
-		skb_shinfo(*clone)->tx_flags |= SKBTX_IN_PROGRESS;
 		OCELOT_SKB_CB(skb)->ptp_cmd = ptp_cmd;
 		OCELOT_SKB_CB(*clone)->ptp_class = ptp_class;
 	}
 
 	return 0;
-
-error:
-	u64_stats_update_begin(&ocelot_port->ts_stats->syncp);
-	ocelot_port->ts_stats->err++;
-	u64_stats_update_end(&ocelot_port->ts_stats->syncp);
-	return err;
 }
 EXPORT_SYMBOL(ocelot_port_txtstamp_request);
 
@@ -808,16 +709,28 @@ static void ocelot_get_hwtimestamp(struct ocelot *ocelot,
 	spin_unlock_irqrestore(&ocelot->ptp_clock_lock, flags);
 }
 
+static bool ocelot_validate_ptp_skb(struct sk_buff *clone, u16 seqid)
+{
+	struct ptp_header *hdr;
+
+	hdr = ptp_parse_header(clone, OCELOT_SKB_CB(clone)->ptp_class);
+	if (WARN_ON(!hdr))
+		return false;
+
+	return seqid == ntohs(hdr->sequence_id);
+}
+
 void ocelot_get_txtstamp(struct ocelot *ocelot)
 {
 	int budget = OCELOT_PTP_QUEUE_SZ;
 
 	while (budget--) {
+		struct sk_buff *skb, *skb_tmp, *skb_match = NULL;
 		struct skb_shared_hwtstamps shhwtstamps;
-		struct ocelot_port *ocelot_port;
 		u32 val, id, seqid, txport;
-		struct sk_buff *skb_match;
+		struct ocelot_port *port;
 		struct timespec64 ts;
+		unsigned long flags;
 
 		val = ocelot_read(ocelot, SYS_PTP_STATUS);
 
@@ -831,26 +744,38 @@ void ocelot_get_txtstamp(struct ocelot *ocelot)
 		id = SYS_PTP_STATUS_PTP_MESS_ID_X(val);
 		txport = SYS_PTP_STATUS_PTP_MESS_TXPORT_X(val);
 		seqid = SYS_PTP_STATUS_PTP_MESS_SEQ_ID(val);
-		ocelot_port = ocelot->ports[txport];
+
+		port = ocelot->ports[txport];
+
+		spin_lock(&ocelot->ts_id_lock);
+		port->ptp_skbs_in_flight--;
+		ocelot->ptp_skbs_in_flight--;
+		spin_unlock(&ocelot->ts_id_lock);
 
 		/* Retrieve its associated skb */
-		skb_match = ocelot_port_dequeue_ptp_tx_skb(ocelot, txport, id,
-							   seqid);
-		if (!skb_match) {
-			u64_stats_update_begin(&ocelot_port->ts_stats->syncp);
-			ocelot_port->ts_stats->err++;
-			u64_stats_update_end(&ocelot_port->ts_stats->syncp);
+try_again:
+		spin_lock_irqsave(&port->tx_skbs.lock, flags);
 
-			dev_dbg_ratelimited(ocelot->dev,
-					    "port %d received TX timestamp (seqid %d, ts id %u) for packet previously declared stale\n",
-					    txport, seqid, id);
-
-			goto next_ts;
+		skb_queue_walk_safe(&port->tx_skbs, skb, skb_tmp) {
+			if (OCELOT_SKB_CB(skb)->ts_id != id)
+				continue;
+			__skb_unlink(skb, &port->tx_skbs);
+			skb_match = skb;
+			break;
 		}
 
-		u64_stats_update_begin(&ocelot_port->ts_stats->syncp);
-		ocelot_port->ts_stats->pkts++;
-		u64_stats_update_end(&ocelot_port->ts_stats->syncp);
+		spin_unlock_irqrestore(&port->tx_skbs.lock, flags);
+
+		if (WARN_ON(!skb_match))
+			continue;
+
+		if (!ocelot_validate_ptp_skb(skb_match, seqid)) {
+			dev_err_ratelimited(ocelot->dev,
+					    "port %d received stale TX timestamp for seqid %d, discarding\n",
+					    txport, seqid);
+			dev_kfree_skb_any(skb);
+			goto try_again;
+		}
 
 		/* Get the h/w timestamp */
 		ocelot_get_hwtimestamp(ocelot, &ts);
@@ -860,7 +785,7 @@ void ocelot_get_txtstamp(struct ocelot *ocelot)
 		shhwtstamps.hwtstamp = ktime_set(ts.tv_sec, ts.tv_nsec);
 		skb_complete_tx_timestamp(skb_match, &shhwtstamps);
 
-next_ts:
+		/* Next ts */
 		ocelot_write(ocelot, SYS_PTP_NXT_PTP_NXT, SYS_PTP_NXT);
 	}
 }
@@ -898,6 +823,11 @@ int ocelot_init_timestamp(struct ocelot *ocelot,
 	ocelot_write(ocelot, 0xffffffff, ANA_TABLES_PTP_ID_HIGH);
 
 	ocelot_write(ocelot, PTP_CFG_MISC_PTP_EN, PTP_CFG_MISC);
+
+	/* There is no device reconfiguration, PTP Rx stamping is always
+	 * enabled.
+	 */
+	ocelot->hwtstamp_config.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
 
 	return 0;
 }

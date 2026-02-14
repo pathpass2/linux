@@ -4,7 +4,6 @@
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  */
 
-#include <linux/cleanup.h>
 #include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/export.h>
@@ -14,6 +13,7 @@
 #include <linux/mutex.h>
 #include <linux/mfd/qcom_rpm.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #include <dt-bindings/mfd/qcom-rpm.h>
@@ -99,6 +99,7 @@ struct clk_rpm {
 };
 
 struct rpm_cc {
+	struct qcom_rpm *rpm;
 	struct clk_rpm **clks;
 	size_t num_clks;
 	u32 xo_buffer_value;
@@ -225,10 +226,10 @@ static void clk_rpm_unprepare(struct clk_hw *hw)
 	unsigned long active_rate, sleep_rate;
 	int ret;
 
-	guard(mutex)(&rpm_clk_lock);
+	mutex_lock(&rpm_clk_lock);
 
 	if (!r->rate)
-		return;
+		goto out;
 
 	/* Take peer clock's rate into account only if it's enabled. */
 	if (peer->enabled)
@@ -238,14 +239,17 @@ static void clk_rpm_unprepare(struct clk_hw *hw)
 	active_rate = r->branch ? !!peer_rate : peer_rate;
 	ret = clk_rpm_set_rate_active(r, active_rate);
 	if (ret)
-		return;
+		goto out;
 
 	sleep_rate = r->branch ? !!peer_sleep_rate : peer_sleep_rate;
 	ret = clk_rpm_set_rate_sleep(r, sleep_rate);
 	if (ret)
-		return;
+		goto out;
 
 	r->enabled = false;
+
+out:
+	mutex_unlock(&rpm_clk_lock);
 }
 
 static int clk_rpm_xo_prepare(struct clk_hw *hw)
@@ -322,12 +326,12 @@ static int clk_rpm_set_rate(struct clk_hw *hw,
 	unsigned long active_rate, sleep_rate;
 	unsigned long this_rate = 0, this_sleep_rate = 0;
 	unsigned long peer_rate = 0, peer_sleep_rate = 0;
-	int ret;
+	int ret = 0;
 
-	guard(mutex)(&rpm_clk_lock);
+	mutex_lock(&rpm_clk_lock);
 
 	if (!r->enabled)
-		return 0;
+		goto out;
 
 	to_active_sleep(r, rate, &this_rate, &this_sleep_rate);
 
@@ -339,27 +343,30 @@ static int clk_rpm_set_rate(struct clk_hw *hw,
 	active_rate = max(this_rate, peer_rate);
 	ret = clk_rpm_set_rate_active(r, active_rate);
 	if (ret)
-		return ret;
+		goto out;
 
 	sleep_rate = max(this_sleep_rate, peer_sleep_rate);
 	ret = clk_rpm_set_rate_sleep(r, sleep_rate);
 	if (ret)
-		return ret;
+		goto out;
 
 	r->rate = rate;
 
-	return 0;
+out:
+	mutex_unlock(&rpm_clk_lock);
+
+	return ret;
 }
 
-static int clk_rpm_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long clk_rpm_round_rate(struct clk_hw *hw, unsigned long rate,
+			       unsigned long *parent_rate)
 {
 	/*
 	 * RPM handles rate rounding and we don't have a way to
 	 * know what the rate will be, so just return whatever
 	 * rate is requested.
 	 */
-	return 0;
+	return rate;
 }
 
 static unsigned long clk_rpm_recalc_rate(struct clk_hw *hw,
@@ -383,7 +390,7 @@ static const struct clk_ops clk_rpm_xo_ops = {
 static const struct clk_ops clk_rpm_fixed_ops = {
 	.prepare	= clk_rpm_fixed_prepare,
 	.unprepare	= clk_rpm_fixed_unprepare,
-	.determine_rate = clk_rpm_determine_rate,
+	.round_rate	= clk_rpm_round_rate,
 	.recalc_rate	= clk_rpm_recalc_rate,
 };
 
@@ -391,7 +398,7 @@ static const struct clk_ops clk_rpm_ops = {
 	.prepare	= clk_rpm_prepare,
 	.unprepare	= clk_rpm_unprepare,
 	.set_rate	= clk_rpm_set_rate,
-	.determine_rate = clk_rpm_determine_rate,
+	.round_rate	= clk_rpm_round_rate,
 	.recalc_rate	= clk_rpm_recalc_rate,
 };
 
@@ -573,8 +580,8 @@ static int rpm_clk_probe(struct platform_device *pdev)
 			goto err;
 	}
 
-	ret = devm_of_clk_add_hw_provider(&pdev->dev, qcom_rpm_clk_hw_get,
-					  rcc);
+	ret = of_clk_add_hw_provider(pdev->dev.of_node, qcom_rpm_clk_hw_get,
+				     rcc);
 	if (ret)
 		goto err;
 
@@ -584,12 +591,19 @@ err:
 	return ret;
 }
 
+static int rpm_clk_remove(struct platform_device *pdev)
+{
+	of_clk_del_provider(pdev->dev.of_node);
+	return 0;
+}
+
 static struct platform_driver rpm_clk_driver = {
 	.driver = {
 		.name = "qcom-clk-rpm",
 		.of_match_table = rpm_clk_match_table,
 	},
 	.probe = rpm_clk_probe,
+	.remove = rpm_clk_remove,
 };
 
 static int __init rpm_clk_init(void)

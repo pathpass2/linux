@@ -14,8 +14,8 @@
 
 /*
  * This module shows how to create a kset in sysfs called
- * /sys/kernel/kset_example
- * Then three kobjects are created and assigned to this kset, "foo", "baz",
+ * /sys/kernel/kset-example
+ * Then tree kobjects are created and assigned to this kset, "foo", "baz",
  * and "bar".  In those kobjects, attributes of the same name are also
  * created and if an integer is written to these files, it can be later
  * read out of it.
@@ -37,11 +37,10 @@ struct foo_obj {
 /* a custom attribute that works just for a struct foo_obj. */
 struct foo_attribute {
 	struct attribute attr;
-	ssize_t (*show)(struct foo_obj *foo, const struct foo_attribute *attr, char *buf);
-	ssize_t (*store)(struct foo_obj *foo, const struct foo_attribute *attr,
-			 const char *buf, size_t count);
+	ssize_t (*show)(struct foo_obj *foo, struct foo_attribute *attr, char *buf);
+	ssize_t (*store)(struct foo_obj *foo, struct foo_attribute *attr, const char *buf, size_t count);
 };
-#define to_foo_attr(x) container_of_const(x, struct foo_attribute, attr)
+#define to_foo_attr(x) container_of(x, struct foo_attribute, attr)
 
 /*
  * The default show function that must be passed to sysfs.  This will be
@@ -54,7 +53,7 @@ static ssize_t foo_attr_show(struct kobject *kobj,
 			     struct attribute *attr,
 			     char *buf)
 {
-	const struct foo_attribute *attribute;
+	struct foo_attribute *attribute;
 	struct foo_obj *foo;
 
 	attribute = to_foo_attr(attr);
@@ -74,7 +73,7 @@ static ssize_t foo_attr_store(struct kobject *kobj,
 			      struct attribute *attr,
 			      const char *buf, size_t len)
 {
-	const struct foo_attribute *attribute;
+	struct foo_attribute *attribute;
 	struct foo_obj *foo;
 
 	attribute = to_foo_attr(attr);
@@ -110,13 +109,13 @@ static void foo_release(struct kobject *kobj)
 /*
  * The "foo" file where the .foo variable is read from and written to.
  */
-static ssize_t foo_show(struct foo_obj *foo_obj, const struct foo_attribute *attr,
+static ssize_t foo_show(struct foo_obj *foo_obj, struct foo_attribute *attr,
 			char *buf)
 {
 	return sysfs_emit(buf, "%d\n", foo_obj->foo);
 }
 
-static ssize_t foo_store(struct foo_obj *foo_obj, const struct foo_attribute *attr,
+static ssize_t foo_store(struct foo_obj *foo_obj, struct foo_attribute *attr,
 			 const char *buf, size_t count)
 {
 	int ret;
@@ -129,14 +128,14 @@ static ssize_t foo_store(struct foo_obj *foo_obj, const struct foo_attribute *at
 }
 
 /* Sysfs attributes cannot be world-writable. */
-static const struct foo_attribute foo_attribute =
+static struct foo_attribute foo_attribute =
 	__ATTR(foo, 0664, foo_show, foo_store);
 
 /*
  * More complex function where we determine which variable is being accessed by
  * looking at the attribute for the "baz" and "bar" files.
  */
-static ssize_t b_show(struct foo_obj *foo_obj, const struct foo_attribute *attr,
+static ssize_t b_show(struct foo_obj *foo_obj, struct foo_attribute *attr,
 		      char *buf)
 {
 	int var;
@@ -148,7 +147,7 @@ static ssize_t b_show(struct foo_obj *foo_obj, const struct foo_attribute *attr,
 	return sysfs_emit(buf, "%d\n", var);
 }
 
-static ssize_t b_store(struct foo_obj *foo_obj, const struct foo_attribute *attr,
+static ssize_t b_store(struct foo_obj *foo_obj, struct foo_attribute *attr,
 		       const char *buf, size_t count)
 {
 	int var, ret;
@@ -164,37 +163,22 @@ static ssize_t b_store(struct foo_obj *foo_obj, const struct foo_attribute *attr
 	return count;
 }
 
-static const struct foo_attribute baz_attribute =
+static struct foo_attribute baz_attribute =
 	__ATTR(baz, 0664, b_show, b_store);
-static const struct foo_attribute bar_attribute =
+static struct foo_attribute bar_attribute =
 	__ATTR(bar, 0664, b_show, b_store);
 
 /*
  * Create a group of attributes so that we can create and destroy them all
  * at once.
  */
-static const struct attribute *const foo_default_attrs[] = {
+static struct attribute *foo_default_attrs[] = {
 	&foo_attribute.attr,
 	&baz_attribute.attr,
 	&bar_attribute.attr,
 	NULL,	/* need to NULL terminate the list of attributes */
 };
-
-static umode_t foo_default_attrs_is_visible(struct kobject *kobj,
-					    const struct attribute *attr,
-					    int n)
-{
-	/* Hide attributes with the same name as the kobject. */
-	if (strcmp(kobject_name(kobj), attr->name) == 0)
-		return 0;
-	return attr->mode;
-}
-
-static const struct attribute_group foo_default_group = {
-	.attrs_const		= foo_default_attrs,
-	.is_visible_const	= foo_default_attrs_is_visible,
-};
-__ATTRIBUTE_GROUPS(foo_default);
+ATTRIBUTE_GROUPS(foo_default);
 
 /*
  * Our own ktype for our kobjects.  Here we specify our sysfs ops, the
@@ -300,6 +284,5 @@ static void __exit example_exit(void)
 
 module_init(example_init);
 module_exit(example_exit);
-MODULE_DESCRIPTION("Sample kset and ktype implementation");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Greg Kroah-Hartman <greg@kroah.com>");

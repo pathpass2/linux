@@ -48,7 +48,7 @@ nilfs_sufile_get_blkoff(const struct inode *sufile, __u64 segnum)
 {
 	__u64 t = segnum + NILFS_MDT(sufile)->mi_first_entry_offset;
 
-	t = div64_ul(t, nilfs_sufile_segment_usages_per_block(sufile));
+	do_div(t, nilfs_sufile_segment_usages_per_block(sufile));
 	return (unsigned long)t;
 }
 
@@ -70,35 +70,19 @@ nilfs_sufile_segment_usages_in_block(const struct inode *sufile, __u64 curr,
 		     max - curr + 1);
 }
 
-/**
- * nilfs_sufile_segment_usage_offset - calculate the byte offset of a segment
- *                                     usage entry in the folio containing it
- * @sufile: segment usage file inode
- * @segnum: number of segment usage
- * @bh:     buffer head of block containing segment usage indexed by @segnum
- *
- * Return: Byte offset in the folio of the segment usage entry.
- */
-static size_t nilfs_sufile_segment_usage_offset(const struct inode *sufile,
-						__u64 segnum,
-						struct buffer_head *bh)
+static struct nilfs_segment_usage *
+nilfs_sufile_block_get_segment_usage(const struct inode *sufile, __u64 segnum,
+				     struct buffer_head *bh, void *kaddr)
 {
-	return offset_in_folio(bh->b_folio, bh->b_data) +
+	return kaddr + bh_offset(bh) +
 		nilfs_sufile_get_offset(sufile, segnum) *
 		NILFS_MDT(sufile)->mi_entry_size;
 }
 
-static int nilfs_sufile_get_header_block(struct inode *sufile,
-					 struct buffer_head **bhp)
+static inline int nilfs_sufile_get_header_block(struct inode *sufile,
+						struct buffer_head **bhp)
 {
-	int err = nilfs_mdt_get_block(sufile, 0, 0, NULL, bhp);
-
-	if (unlikely(err == -ENOENT)) {
-		nilfs_error(sufile->i_sb,
-			    "missing header block in segment usage metadata");
-		err = -EIO;
-	}
-	return err;
+	return nilfs_mdt_get_block(sufile, 0, 0, NULL, bhp);
 }
 
 static inline int
@@ -121,11 +105,13 @@ static void nilfs_sufile_mod_counter(struct buffer_head *header_bh,
 				     u64 ncleanadd, u64 ndirtyadd)
 {
 	struct nilfs_sufile_header *header;
+	void *kaddr;
 
-	header = kmap_local_folio(header_bh->b_folio, 0);
+	kaddr = kmap_atomic(header_bh->b_page);
+	header = kaddr + bh_offset(header_bh);
 	le64_add_cpu(&header->sh_ncleansegs, ncleanadd);
 	le64_add_cpu(&header->sh_ndirtysegs, ndirtyadd);
-	kunmap_local(header);
+	kunmap_atomic(kaddr);
 
 	mark_buffer_dirty(header_bh);
 }
@@ -133,8 +119,6 @@ static void nilfs_sufile_mod_counter(struct buffer_head *header_bh,
 /**
  * nilfs_sufile_get_ncleansegs - return the number of clean segments
  * @sufile: inode of segment usage file
- *
- * Return: Number of clean segments.
  */
 unsigned long nilfs_sufile_get_ncleansegs(struct inode *sufile)
 {
@@ -157,13 +141,17 @@ unsigned long nilfs_sufile_get_ncleansegs(struct inode *sufile)
  * of successfully modified segments from the head is stored in the
  * place @ndone points to.
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EINVAL	- Invalid segment usage number
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOENT	- Given segment usage is in hole block (may be returned if
- *		  @create is zero)
- * * %-ENOMEM	- Insufficient memory available.
+ * Return Value: On success, zero is returned.  On error, one of the
+ * following negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
+ *
+ * %-ENOENT - Given segment usage is in hole block (may be returned if
+ *            @create is zero)
+ *
+ * %-EINVAL - Invalid segment usage number
  */
 int nilfs_sufile_updatev(struct inode *sufile, __u64 *segnumv, size_t nsegs,
 			 int create, size_t *ndone,
@@ -270,7 +258,10 @@ int nilfs_sufile_update(struct inode *sufile, __u64 segnum, int create,
  * @start: minimum segment number of allocatable region (inclusive)
  * @end: maximum segment number of allocatable region (inclusive)
  *
- * Return: 0 on success, or %-ERANGE if segment range is invalid.
+ * Return Value: On success, 0 is returned.  On error, one of the
+ * following negative error codes is returned.
+ *
+ * %-ERANGE - invalid segment region
  */
 int nilfs_sufile_set_alloc_range(struct inode *sufile, __u64 start, __u64 end)
 {
@@ -295,14 +286,17 @@ int nilfs_sufile_set_alloc_range(struct inode *sufile, __u64 start, __u64 end)
  * @sufile: inode of segment usage file
  * @segnump: pointer to segment number
  *
- * Description: nilfs_sufile_alloc() allocates a clean segment, and stores
- * its segment number in the place pointed to by @segnump.
+ * Description: nilfs_sufile_alloc() allocates a clean segment.
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOMEM	- Insufficient memory available.
- * * %-ENOSPC	- No clean segment left.
+ * Return Value: On success, 0 is returned and the segment number of the
+ * allocated segment is stored in the place pointed by @segnump. On error, one
+ * of the following negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
+ *
+ * %-ENOSPC - No clean segment left.
  */
 int nilfs_sufile_alloc(struct inode *sufile, __u64 *segnump)
 {
@@ -312,7 +306,6 @@ int nilfs_sufile_alloc(struct inode *sufile, __u64 *segnump)
 	struct nilfs_sufile_info *sui = NILFS_SUI(sufile);
 	size_t susz = NILFS_MDT(sufile)->mi_entry_size;
 	__u64 segnum, maxsegnum, last_alloc;
-	size_t offset;
 	void *kaddr;
 	unsigned long nsegments, nsus, cnt;
 	int ret, j;
@@ -322,9 +315,10 @@ int nilfs_sufile_alloc(struct inode *sufile, __u64 *segnump)
 	ret = nilfs_sufile_get_header_block(sufile, &header_bh);
 	if (ret < 0)
 		goto out_sem;
-	header = kmap_local_folio(header_bh->b_folio, 0);
+	kaddr = kmap_atomic(header_bh->b_page);
+	header = kaddr + bh_offset(header_bh);
 	last_alloc = le64_to_cpu(header->sh_last_alloc);
-	kunmap_local(header);
+	kunmap_atomic(kaddr);
 
 	nsegments = nilfs_sufile_get_nsegments(sufile);
 	maxsegnum = sui->allocmax;
@@ -358,10 +352,9 @@ int nilfs_sufile_alloc(struct inode *sufile, __u64 *segnump)
 							   &su_bh);
 		if (ret < 0)
 			goto out_header;
-
-		offset = nilfs_sufile_segment_usage_offset(sufile, segnum,
-							   su_bh);
-		su = kaddr = kmap_local_folio(su_bh->b_folio, offset);
+		kaddr = kmap_atomic(su_bh->b_page);
+		su = nilfs_sufile_block_get_segment_usage(
+			sufile, segnum, su_bh, kaddr);
 
 		nsus = nilfs_sufile_segment_usages_in_block(
 			sufile, segnum, maxsegnum);
@@ -370,13 +363,14 @@ int nilfs_sufile_alloc(struct inode *sufile, __u64 *segnump)
 				continue;
 			/* found a clean segment */
 			nilfs_segment_usage_set_dirty(su);
-			kunmap_local(kaddr);
+			kunmap_atomic(kaddr);
 
-			header = kmap_local_folio(header_bh->b_folio, 0);
+			kaddr = kmap_atomic(header_bh->b_page);
+			header = kaddr + bh_offset(header_bh);
 			le64_add_cpu(&header->sh_ncleansegs, -1);
 			le64_add_cpu(&header->sh_ndirtysegs, 1);
 			header->sh_last_alloc = cpu_to_le64(segnum);
-			kunmap_local(header);
+			kunmap_atomic(kaddr);
 
 			sui->ncleansegs--;
 			mark_buffer_dirty(header_bh);
@@ -390,7 +384,7 @@ int nilfs_sufile_alloc(struct inode *sufile, __u64 *segnump)
 			goto out_header;
 		}
 
-		kunmap_local(kaddr);
+		kunmap_atomic(kaddr);
 		brelse(su_bh);
 	}
 
@@ -410,18 +404,18 @@ void nilfs_sufile_do_cancel_free(struct inode *sufile, __u64 segnum,
 				 struct buffer_head *su_bh)
 {
 	struct nilfs_segment_usage *su;
-	size_t offset;
+	void *kaddr;
 
-	offset = nilfs_sufile_segment_usage_offset(sufile, segnum, su_bh);
-	su = kmap_local_folio(su_bh->b_folio, offset);
+	kaddr = kmap_atomic(su_bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, su_bh, kaddr);
 	if (unlikely(!nilfs_segment_usage_clean(su))) {
 		nilfs_warn(sufile->i_sb, "%s: segment %llu must be clean",
 			   __func__, (unsigned long long)segnum);
-		kunmap_local(su);
+		kunmap_atomic(kaddr);
 		return;
 	}
 	nilfs_segment_usage_set_dirty(su);
-	kunmap_local(su);
+	kunmap_atomic(kaddr);
 
 	nilfs_sufile_mod_counter(header_bh, -1, 1);
 	NILFS_SUI(sufile)->ncleansegs--;
@@ -435,14 +429,14 @@ void nilfs_sufile_do_scrap(struct inode *sufile, __u64 segnum,
 			   struct buffer_head *su_bh)
 {
 	struct nilfs_segment_usage *su;
-	size_t offset;
+	void *kaddr;
 	int clean, dirty;
 
-	offset = nilfs_sufile_segment_usage_offset(sufile, segnum, su_bh);
-	su = kmap_local_folio(su_bh->b_folio, offset);
+	kaddr = kmap_atomic(su_bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, su_bh, kaddr);
 	if (su->su_flags == cpu_to_le32(BIT(NILFS_SEGMENT_USAGE_DIRTY)) &&
 	    su->su_nblocks == cpu_to_le32(0)) {
-		kunmap_local(su);
+		kunmap_atomic(kaddr);
 		return;
 	}
 	clean = nilfs_segment_usage_clean(su);
@@ -452,7 +446,7 @@ void nilfs_sufile_do_scrap(struct inode *sufile, __u64 segnum,
 	su->su_lastmod = cpu_to_le64(0);
 	su->su_nblocks = cpu_to_le32(0);
 	su->su_flags = cpu_to_le32(BIT(NILFS_SEGMENT_USAGE_DIRTY));
-	kunmap_local(su);
+	kunmap_atomic(kaddr);
 
 	nilfs_sufile_mod_counter(header_bh, clean ? (u64)-1 : 0, dirty ? 0 : 1);
 	NILFS_SUI(sufile)->ncleansegs -= clean;
@@ -466,28 +460,23 @@ void nilfs_sufile_do_free(struct inode *sufile, __u64 segnum,
 			  struct buffer_head *su_bh)
 {
 	struct nilfs_segment_usage *su;
-	size_t offset;
+	void *kaddr;
 	int sudirty;
 
-	offset = nilfs_sufile_segment_usage_offset(sufile, segnum, su_bh);
-	su = kmap_local_folio(su_bh->b_folio, offset);
+	kaddr = kmap_atomic(su_bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, su_bh, kaddr);
 	if (nilfs_segment_usage_clean(su)) {
 		nilfs_warn(sufile->i_sb, "%s: segment %llu is already clean",
 			   __func__, (unsigned long long)segnum);
-		kunmap_local(su);
+		kunmap_atomic(kaddr);
 		return;
 	}
-	if (unlikely(nilfs_segment_usage_error(su)))
-		nilfs_warn(sufile->i_sb, "free segment %llu marked in error",
-			   (unsigned long long)segnum);
+	WARN_ON(nilfs_segment_usage_error(su));
+	WARN_ON(!nilfs_segment_usage_dirty(su));
 
 	sudirty = nilfs_segment_usage_dirty(su);
-	if (unlikely(!sudirty))
-		nilfs_warn(sufile->i_sb, "free unallocated segment %llu",
-			   (unsigned long long)segnum);
-
 	nilfs_segment_usage_set_clean(su);
-	kunmap_local(su);
+	kunmap_atomic(kaddr);
 	mark_buffer_dirty(su_bh);
 
 	nilfs_sufile_mod_counter(header_bh, 1, sudirty ? (u64)-1 : 0);
@@ -502,57 +491,25 @@ void nilfs_sufile_do_free(struct inode *sufile, __u64 segnum,
  * nilfs_sufile_mark_dirty - mark the buffer having a segment usage dirty
  * @sufile: inode of segment usage file
  * @segnum: segment number
- *
- * Return: 0 on success, or a negative error code on failure.
  */
 int nilfs_sufile_mark_dirty(struct inode *sufile, __u64 segnum)
 {
 	struct buffer_head *bh;
-	size_t offset;
+	void *kaddr;
 	struct nilfs_segment_usage *su;
 	int ret;
 
 	down_write(&NILFS_MDT(sufile)->mi_sem);
 	ret = nilfs_sufile_get_segment_usage_block(sufile, segnum, 0, &bh);
-	if (unlikely(ret)) {
-		if (ret == -ENOENT) {
-			nilfs_error(sufile->i_sb,
-				    "segment usage for segment %llu is unreadable due to a hole block",
-				    (unsigned long long)segnum);
-			ret = -EIO;
-		}
-		goto out_sem;
-	}
-
-	offset = nilfs_sufile_segment_usage_offset(sufile, segnum, bh);
-	su = kmap_local_folio(bh->b_folio, offset);
-	if (unlikely(nilfs_segment_usage_error(su))) {
-		struct the_nilfs *nilfs = sufile->i_sb->s_fs_info;
-
-		kunmap_local(su);
-		brelse(bh);
-		if (nilfs_segment_is_active(nilfs, segnum)) {
-			nilfs_error(sufile->i_sb,
-				    "active segment %llu is erroneous",
-				    (unsigned long long)segnum);
-		} else {
-			/*
-			 * Segments marked erroneous are never allocated by
-			 * nilfs_sufile_alloc(); only active segments, ie,
-			 * the segments indexed by ns_segnum or ns_nextnum,
-			 * can be erroneous here.
-			 */
-			WARN_ON_ONCE(1);
-		}
-		ret = -EIO;
-	} else {
-		nilfs_segment_usage_set_dirty(su);
-		kunmap_local(su);
+	if (!ret) {
 		mark_buffer_dirty(bh);
 		nilfs_mdt_mark_dirty(sufile);
+		kaddr = kmap_atomic(bh->b_page);
+		su = nilfs_sufile_block_get_segment_usage(sufile, segnum, bh, kaddr);
+		nilfs_segment_usage_set_dirty(su);
+		kunmap_atomic(kaddr);
 		brelse(bh);
 	}
-out_sem:
 	up_write(&NILFS_MDT(sufile)->mi_sem);
 	return ret;
 }
@@ -563,15 +520,13 @@ out_sem:
  * @segnum: segment number
  * @nblocks: number of live blocks in the segment
  * @modtime: modification time (option)
- *
- * Return: 0 on success, or a negative error code on failure.
  */
 int nilfs_sufile_set_segment_usage(struct inode *sufile, __u64 segnum,
 				   unsigned long nblocks, time64_t modtime)
 {
 	struct buffer_head *bh;
 	struct nilfs_segment_usage *su;
-	size_t offset;
+	void *kaddr;
 	int ret;
 
 	down_write(&NILFS_MDT(sufile)->mi_sem);
@@ -579,18 +534,13 @@ int nilfs_sufile_set_segment_usage(struct inode *sufile, __u64 segnum,
 	if (ret < 0)
 		goto out_sem;
 
-	offset = nilfs_sufile_segment_usage_offset(sufile, segnum, bh);
-	su = kmap_local_folio(bh->b_folio, offset);
-	if (modtime) {
-		/*
-		 * Check segusage error and set su_lastmod only when updating
-		 * this entry with a valid timestamp, not for cancellation.
-		 */
-		WARN_ON_ONCE(nilfs_segment_usage_error(su));
+	kaddr = kmap_atomic(bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, bh, kaddr);
+	WARN_ON(nilfs_segment_usage_error(su));
+	if (modtime)
 		su->su_lastmod = cpu_to_le64(modtime);
-	}
 	su->su_nblocks = cpu_to_le32(nblocks);
-	kunmap_local(su);
+	kunmap_atomic(kaddr);
 
 	mark_buffer_dirty(bh);
 	nilfs_mdt_mark_dirty(sufile);
@@ -606,19 +556,23 @@ int nilfs_sufile_set_segment_usage(struct inode *sufile, __u64 segnum,
  * @sufile: inode of segment usage file
  * @sustat: pointer to a structure of segment usage statistics
  *
- * Description: nilfs_sufile_get_stat() retrieves segment usage statistics
- * and stores them in the location pointed to by @sustat.
+ * Description: nilfs_sufile_get_stat() returns information about segment
+ * usage.
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOMEM	- Insufficient memory available.
+ * Return Value: On success, 0 is returned, and segment usage information is
+ * stored in the place pointed by @sustat. On error, one of the following
+ * negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
  */
 int nilfs_sufile_get_stat(struct inode *sufile, struct nilfs_sustat *sustat)
 {
 	struct buffer_head *header_bh;
 	struct nilfs_sufile_header *header;
 	struct the_nilfs *nilfs = sufile->i_sb->s_fs_info;
+	void *kaddr;
 	int ret;
 
 	down_read(&NILFS_MDT(sufile)->mi_sem);
@@ -627,7 +581,8 @@ int nilfs_sufile_get_stat(struct inode *sufile, struct nilfs_sustat *sustat)
 	if (ret < 0)
 		goto out_sem;
 
-	header = kmap_local_folio(header_bh->b_folio, 0);
+	kaddr = kmap_atomic(header_bh->b_page);
+	header = kaddr + bh_offset(header_bh);
 	sustat->ss_nsegs = nilfs_sufile_get_nsegments(sufile);
 	sustat->ss_ncleansegs = le64_to_cpu(header->sh_ncleansegs);
 	sustat->ss_ndirtysegs = le64_to_cpu(header->sh_ndirtysegs);
@@ -636,7 +591,7 @@ int nilfs_sufile_get_stat(struct inode *sufile, struct nilfs_sustat *sustat)
 	spin_lock(&nilfs->ns_last_segment_lock);
 	sustat->ss_prot_seq = nilfs->ns_prot_seq;
 	spin_unlock(&nilfs->ns_last_segment_lock);
-	kunmap_local(header);
+	kunmap_atomic(kaddr);
 	brelse(header_bh);
 
  out_sem:
@@ -649,18 +604,18 @@ void nilfs_sufile_do_set_error(struct inode *sufile, __u64 segnum,
 			       struct buffer_head *su_bh)
 {
 	struct nilfs_segment_usage *su;
-	size_t offset;
+	void *kaddr;
 	int suclean;
 
-	offset = nilfs_sufile_segment_usage_offset(sufile, segnum, su_bh);
-	su = kmap_local_folio(su_bh->b_folio, offset);
+	kaddr = kmap_atomic(su_bh->b_page);
+	su = nilfs_sufile_block_get_segment_usage(sufile, segnum, su_bh, kaddr);
 	if (nilfs_segment_usage_error(su)) {
-		kunmap_local(su);
+		kunmap_atomic(kaddr);
 		return;
 	}
 	suclean = nilfs_segment_usage_clean(su);
 	nilfs_segment_usage_set_error(su);
-	kunmap_local(su);
+	kunmap_atomic(kaddr);
 
 	if (suclean) {
 		nilfs_sufile_mod_counter(header_bh, -1, 0);
@@ -676,12 +631,16 @@ void nilfs_sufile_do_set_error(struct inode *sufile, __u64 segnum,
  * @start: start segment number (inclusive)
  * @end: end segment number (inclusive)
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EBUSY	- Dirty or active segments are present in the range.
- * * %-EINVAL	- Invalid number of segments specified.
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOMEM	- Insufficient memory available.
+ * Return Value: On success, 0 is returned.  On error, one of the
+ * following negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
+ *
+ * %-EINVAL - Invalid number of segments specified
+ *
+ * %-EBUSY - Dirty or active segments are present in the range
  */
 static int nilfs_sufile_truncate_range(struct inode *sufile,
 				       __u64 start, __u64 end)
@@ -694,7 +653,7 @@ static int nilfs_sufile_truncate_range(struct inode *sufile,
 	unsigned long segusages_per_block;
 	unsigned long nsegs, ncleaned;
 	__u64 segnum;
-	size_t offset;
+	void *kaddr;
 	ssize_t n, nc;
 	int ret;
 	int j;
@@ -725,16 +684,16 @@ static int nilfs_sufile_truncate_range(struct inode *sufile,
 			/* hole */
 			continue;
 		}
-		offset = nilfs_sufile_segment_usage_offset(sufile, segnum,
-							   su_bh);
-		su = kmap_local_folio(su_bh->b_folio, offset);
+		kaddr = kmap_atomic(su_bh->b_page);
+		su = nilfs_sufile_block_get_segment_usage(
+			sufile, segnum, su_bh, kaddr);
 		su2 = su;
 		for (j = 0; j < n; j++, su = (void *)su + susz) {
 			if ((le32_to_cpu(su->su_flags) &
 			     ~BIT(NILFS_SEGMENT_USAGE_ERROR)) ||
 			    nilfs_segment_is_active(nilfs, segnum + j)) {
 				ret = -EBUSY;
-				kunmap_local(su2);
+				kunmap_atomic(kaddr);
 				brelse(su_bh);
 				goto out_header;
 			}
@@ -746,7 +705,7 @@ static int nilfs_sufile_truncate_range(struct inode *sufile,
 				nc++;
 			}
 		}
-		kunmap_local(su2);
+		kunmap_atomic(kaddr);
 		if (nc > 0) {
 			mark_buffer_dirty(su_bh);
 			ncleaned += nc;
@@ -776,12 +735,16 @@ out:
  * @sufile: inode of segment usage file
  * @newnsegs: new number of segments
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EBUSY	- Dirty or active segments exist in the region to be truncated.
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOMEM	- Insufficient memory available.
- * * %-ENOSPC	- Enough free space is not left for shrinking.
+ * Return Value: On success, 0 is returned.  On error, one of the
+ * following negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
+ *
+ * %-ENOSPC - Enough free space is not left for shrinking
+ *
+ * %-EBUSY - Dirty or active segments exist in the region to be truncated
  */
 int nilfs_sufile_resize(struct inode *sufile, __u64 newnsegs)
 {
@@ -789,6 +752,7 @@ int nilfs_sufile_resize(struct inode *sufile, __u64 newnsegs)
 	struct buffer_head *header_bh;
 	struct nilfs_sufile_header *header;
 	struct nilfs_sufile_info *sui = NILFS_SUI(sufile);
+	void *kaddr;
 	unsigned long nsegs, nrsvsegs;
 	int ret = 0;
 
@@ -815,20 +779,12 @@ int nilfs_sufile_resize(struct inode *sufile, __u64 newnsegs)
 			goto out_header;
 
 		sui->ncleansegs -= nsegs - newnsegs;
-
-		/*
-		 * If the sufile is successfully truncated, immediately adjust
-		 * the segment allocation space while locking the semaphore
-		 * "mi_sem" so that nilfs_sufile_alloc() never allocates
-		 * segments in the truncated space.
-		 */
-		sui->allocmax = newnsegs - 1;
-		sui->allocmin = 0;
 	}
 
-	header = kmap_local_folio(header_bh->b_folio, 0);
+	kaddr = kmap_atomic(header_bh->b_page);
+	header = kaddr + bh_offset(header_bh);
 	header->sh_ncleansegs = cpu_to_le64(sui->ncleansegs);
-	kunmap_local(header);
+	kunmap_atomic(kaddr);
 
 	mark_buffer_dirty(header_bh);
 	nilfs_mdt_mark_dirty(sufile);
@@ -842,17 +798,21 @@ out:
 }
 
 /**
- * nilfs_sufile_get_suinfo - get segment usage information
+ * nilfs_sufile_get_suinfo -
  * @sufile: inode of segment usage file
  * @segnum: segment number to start looking
- * @buf:    array of suinfo
- * @sisz:   byte size of suinfo
- * @nsi:    size of suinfo array
+ * @buf: array of suinfo
+ * @sisz: byte size of suinfo
+ * @nsi: size of suinfo array
  *
- * Return: Count of segment usage info items stored in the output buffer on
- * success, or one of the following negative error codes on failure:
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOMEM	- Insufficient memory available.
+ * Description:
+ *
+ * Return Value: On success, 0 is returned and .... On error, one of the
+ * following negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
  */
 ssize_t nilfs_sufile_get_suinfo(struct inode *sufile, __u64 segnum, void *buf,
 				unsigned int sisz, size_t nsi)
@@ -862,7 +822,6 @@ ssize_t nilfs_sufile_get_suinfo(struct inode *sufile, __u64 segnum, void *buf,
 	struct nilfs_suinfo *si = buf;
 	size_t susz = NILFS_MDT(sufile)->mi_entry_size;
 	struct the_nilfs *nilfs = sufile->i_sb->s_fs_info;
-	size_t offset;
 	void *kaddr;
 	unsigned long nsegs, segusages_per_block;
 	ssize_t n;
@@ -890,9 +849,9 @@ ssize_t nilfs_sufile_get_suinfo(struct inode *sufile, __u64 segnum, void *buf,
 			continue;
 		}
 
-		offset = nilfs_sufile_segment_usage_offset(sufile, segnum,
-							   su_bh);
-		su = kaddr = kmap_local_folio(su_bh->b_folio, offset);
+		kaddr = kmap_atomic(su_bh->b_page);
+		su = nilfs_sufile_block_get_segment_usage(
+			sufile, segnum, su_bh, kaddr);
 		for (j = 0; j < n;
 		     j++, su = (void *)su + susz, si = (void *)si + sisz) {
 			si->sui_lastmod = le64_to_cpu(su->su_lastmod);
@@ -903,7 +862,7 @@ ssize_t nilfs_sufile_get_suinfo(struct inode *sufile, __u64 segnum, void *buf,
 				si->sui_flags |=
 					BIT(NILFS_SEGMENT_USAGE_ACTIVE);
 		}
-		kunmap_local(kaddr);
+		kunmap_atomic(kaddr);
 		brelse(su_bh);
 	}
 	ret = nsegs;
@@ -924,11 +883,14 @@ ssize_t nilfs_sufile_get_suinfo(struct inode *sufile, __u64 segnum, void *buf,
  * segment usage accordingly. Only the fields indicated by the sup_flags
  * are updated.
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EINVAL	- Invalid values in input (segment number, flags or nblocks).
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOMEM	- Insufficient memory available.
+ * Return Value: On success, 0 is returned. On error, one of the
+ * following negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
+ *
+ * %-EINVAL - Invalid values in input (segment number, flags or nblocks)
  */
 ssize_t nilfs_sufile_set_suinfo(struct inode *sufile, void *buf,
 				unsigned int supsz, size_t nsup)
@@ -937,7 +899,7 @@ ssize_t nilfs_sufile_set_suinfo(struct inode *sufile, void *buf,
 	struct buffer_head *header_bh, *bh;
 	struct nilfs_suinfo_update *sup, *supend = buf + supsz * nsup;
 	struct nilfs_segment_usage *su;
-	size_t offset;
+	void *kaddr;
 	unsigned long blkoff, prev_blkoff;
 	int cleansi, cleansu, dirtysi, dirtysu;
 	long ncleaned = 0, ndirtied = 0;
@@ -969,9 +931,9 @@ ssize_t nilfs_sufile_set_suinfo(struct inode *sufile, void *buf,
 		goto out_header;
 
 	for (;;) {
-		offset = nilfs_sufile_segment_usage_offset(
-			sufile, sup->sup_segnum, bh);
-		su = kmap_local_folio(bh->b_folio, offset);
+		kaddr = kmap_atomic(bh->b_page);
+		su = nilfs_sufile_block_get_segment_usage(
+			sufile, sup->sup_segnum, bh, kaddr);
 
 		if (nilfs_suinfo_update_lastmod(sup))
 			su->su_lastmod = cpu_to_le64(sup->sup_sui.sui_lastmod);
@@ -1006,7 +968,7 @@ ssize_t nilfs_sufile_set_suinfo(struct inode *sufile, void *buf,
 			su->su_flags = cpu_to_le32(sup->sup_sui.sui_flags);
 		}
 
-		kunmap_local(su);
+		kunmap_atomic(kaddr);
 
 		sup = (void *)sup + supsz;
 		if (sup >= supend)
@@ -1055,14 +1017,13 @@ ssize_t nilfs_sufile_set_suinfo(struct inode *sufile, void *buf,
  * and start+len is rounded down. For each clean segment blkdev_issue_discard
  * function is invoked.
  *
- * Return: 0 on success, or a negative error code on failure.
+ * Return Value: On success, 0 is returned or negative error code, otherwise.
  */
 int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 {
 	struct the_nilfs *nilfs = sufile->i_sb->s_fs_info;
 	struct buffer_head *su_bh;
 	struct nilfs_segment_usage *su;
-	size_t offset;
 	void *kaddr;
 	size_t n, i, susz = NILFS_MDT(sufile)->mi_entry_size;
 	sector_t seg_start, seg_end, start_block, end_block;
@@ -1093,9 +1054,6 @@ int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 	else
 		end_block = start_block + len - 1;
 
-	if (end_block < nilfs->ns_first_data_block)
-		goto out;
-
 	segnum = nilfs_get_segnum_of_block(nilfs, start_block);
 	segnum_end = nilfs_get_segnum_of_block(nilfs, end_block);
 
@@ -1115,9 +1073,9 @@ int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 			continue;
 		}
 
-		offset = nilfs_sufile_segment_usage_offset(sufile, segnum,
-							   su_bh);
-		su = kaddr = kmap_local_folio(su_bh->b_folio, offset);
+		kaddr = kmap_atomic(su_bh->b_page);
+		su = nilfs_sufile_block_get_segment_usage(sufile, segnum,
+				su_bh, kaddr);
 		for (i = 0; i < n; ++i, ++segnum, su = (void *)su + susz) {
 			if (!nilfs_segment_usage_clean(su))
 				continue;
@@ -1145,7 +1103,7 @@ int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 			}
 
 			if (nblocks >= minlen) {
-				kunmap_local(kaddr);
+				kunmap_atomic(kaddr);
 
 				ret = blkdev_issue_discard(nilfs->ns_bdev,
 						start * sects_per_block,
@@ -1157,17 +1115,16 @@ int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 				}
 
 				ndiscarded += nblocks;
-				offset = nilfs_sufile_segment_usage_offset(
-					sufile, segnum, su_bh);
-				su = kaddr = kmap_local_folio(su_bh->b_folio,
-							      offset);
+				kaddr = kmap_atomic(su_bh->b_page);
+				su = nilfs_sufile_block_get_segment_usage(
+					sufile, segnum, su_bh, kaddr);
 			}
 
 			/* start new extent */
 			start = seg_start;
 			nblocks = seg_end - seg_start + 1;
 		}
-		kunmap_local(kaddr);
+		kunmap_atomic(kaddr);
 		put_bh(su_bh);
 	}
 
@@ -1194,7 +1151,6 @@ int nilfs_sufile_trim_fs(struct inode *sufile, struct fstrim_range *range)
 out_sem:
 	up_read(&NILFS_MDT(sufile)->mi_sem);
 
-out:
 	range->len = ndiscarded << nilfs->ns_blocksize_bits;
 	return ret;
 }
@@ -1205,8 +1161,6 @@ out:
  * @susize: size of a segment usage entry
  * @raw_inode: on-disk sufile inode
  * @inodep: buffer to store the inode
- *
- * Return: 0 on success, or a negative error code on failure.
  */
 int nilfs_sufile_read(struct super_block *sb, size_t susize,
 		      struct nilfs_inode *raw_inode, struct inode **inodep)
@@ -1215,6 +1169,7 @@ int nilfs_sufile_read(struct super_block *sb, size_t susize,
 	struct nilfs_sufile_info *sui;
 	struct buffer_head *header_bh;
 	struct nilfs_sufile_header *header;
+	void *kaddr;
 	int err;
 
 	if (susize > sb->s_blocksize) {
@@ -1230,7 +1185,7 @@ int nilfs_sufile_read(struct super_block *sb, size_t susize,
 	sufile = nilfs_iget_locked(sb, NULL, NILFS_SUFILE_INO);
 	if (unlikely(!sufile))
 		return -ENOMEM;
-	if (!(inode_state_read_once(sufile) & I_NEW))
+	if (!(sufile->i_state & I_NEW))
 		goto out;
 
 	err = nilfs_mdt_init(sufile, NILFS_MDT_GFP, sizeof(*sui));
@@ -1244,20 +1199,15 @@ int nilfs_sufile_read(struct super_block *sb, size_t susize,
 	if (err)
 		goto failed;
 
-	err = nilfs_mdt_get_block(sufile, 0, 0, NULL, &header_bh);
-	if (unlikely(err)) {
-		if (err == -ENOENT) {
-			nilfs_err(sb,
-				  "missing header block in segment usage metadata");
-			err = -EINVAL;
-		}
+	err = nilfs_sufile_get_header_block(sufile, &header_bh);
+	if (err)
 		goto failed;
-	}
 
 	sui = NILFS_SUI(sufile);
-	header = kmap_local_folio(header_bh->b_folio, 0);
+	kaddr = kmap_atomic(header_bh->b_page);
+	header = kaddr + bh_offset(header_bh);
 	sui->ncleansegs = le64_to_cpu(header->sh_ncleansegs);
-	kunmap_local(header);
+	kunmap_atomic(kaddr);
 	brelse(header_bh);
 
 	sui->allocmax = nilfs_sufile_get_nsegments(sufile) - 1;

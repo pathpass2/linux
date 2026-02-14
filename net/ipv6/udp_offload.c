@@ -14,7 +14,6 @@
 #include <net/ip6_checksum.h>
 #include "ip6_offload.h"
 #include <net/gro.h>
-#include <net/gso.h>
 
 static struct sk_buff *udp6_ufo_fragment(struct sk_buff *skb,
 					 netdev_features_t features)
@@ -43,7 +42,8 @@ static struct sk_buff *udp6_ufo_fragment(struct sk_buff *skb,
 		if (!pskb_may_pull(skb, sizeof(struct udphdr)))
 			goto out;
 
-		if (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_L4)
+		if (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_L4 &&
+		    !skb_gso_ok(skb, features | NETIF_F_GSO_ROBUST))
 			return __udp_gso_segment(skb, features, true);
 
 		mss = skb_shinfo(skb)->gso_size;
@@ -117,21 +117,14 @@ static struct sock *udp6_gro_lookup_skb(struct sk_buff *skb, __be16 sport,
 					__be16 dport)
 {
 	const struct ipv6hdr *iph = skb_gro_network_header(skb);
-	struct net *net = dev_net_rcu(skb->dev);
-	struct sock *sk;
-	int iif, sdif;
-
-	sk = udp_tunnel_sk(net, true);
-	if (sk && dport == htons(sk->sk_num))
-		return sk;
-
-	inet6_get_iif_sdif(skb, &iif, &sdif);
+	struct net *net = dev_net(skb->dev);
 
 	return __udp6_lib_lookup(net, &iph->saddr, sport,
-				 &iph->daddr, dport, iif,
-				 sdif, net->ipv4.udp_table, NULL);
+				 &iph->daddr, dport, inet6_iif(skb),
+				 inet6_sdif(skb), net->ipv4.udp_table, NULL);
 }
 
+INDIRECT_CALLABLE_SCOPE
 struct sk_buff *udp6_gro_receive(struct list_head *head, struct sk_buff *skb)
 {
 	struct udphdr *uh = udp_gro_udphdr(skb);
@@ -153,6 +146,8 @@ struct sk_buff *udp6_gro_receive(struct list_head *head, struct sk_buff *skb)
 					     ip6_gro_compute_pseudo);
 
 skip:
+	NAPI_GRO_CB(skb)->is_ipv6 = 1;
+
 	if (static_branch_unlikely(&udpv6_encap_needed_key))
 		sk = udp6_gro_lookup_skb(skb, uh->source, uh->dest);
 
@@ -164,10 +159,9 @@ flush:
 	return NULL;
 }
 
-int udp6_gro_complete(struct sk_buff *skb, int nhoff)
+INDIRECT_CALLABLE_SCOPE int udp6_gro_complete(struct sk_buff *skb, int nhoff)
 {
-	const u16 offset = NAPI_GRO_CB(skb)->network_offsets[skb->encapsulation];
-	const struct ipv6hdr *ipv6h = (struct ipv6hdr *)(skb->data + offset);
+	const struct ipv6hdr *ipv6h = ipv6_hdr(skb);
 	struct udphdr *uh = (struct udphdr *)(skb->data + nhoff);
 
 	/* do fraglist only if there is no outer UDP encap (or we already processed it) */
@@ -177,7 +171,13 @@ int udp6_gro_complete(struct sk_buff *skb, int nhoff)
 		skb_shinfo(skb)->gso_type |= (SKB_GSO_FRAGLIST|SKB_GSO_UDP_L4);
 		skb_shinfo(skb)->gso_segs = NAPI_GRO_CB(skb)->count;
 
-		__skb_incr_checksum_unnecessary(skb);
+		if (skb->ip_summed == CHECKSUM_UNNECESSARY) {
+			if (skb->csum_level < SKB_MAX_CSUM_LEVEL)
+				skb->csum_level++;
+		} else {
+			skb->ip_summed = CHECKSUM_UNNECESSARY;
+			skb->csum_level = 0;
+		}
 
 		return 0;
 	}
@@ -189,19 +189,20 @@ int udp6_gro_complete(struct sk_buff *skb, int nhoff)
 	return udp_gro_complete(skb, nhoff, udp6_lib_lookup_skb);
 }
 
-int __init udpv6_offload_init(void)
+static const struct net_offload udpv6_offload = {
+	.callbacks = {
+		.gso_segment	=	udp6_ufo_fragment,
+		.gro_receive	=	udp6_gro_receive,
+		.gro_complete	=	udp6_gro_complete,
+	},
+};
+
+int udpv6_offload_init(void)
 {
-	net_hotdata.udpv6_offload = (struct net_offload) {
-		.callbacks = {
-			.gso_segment	=	udp6_ufo_fragment,
-			.gro_receive	=	udp6_gro_receive,
-			.gro_complete	=	udp6_gro_complete,
-		},
-	};
-	return inet6_add_offload(&net_hotdata.udpv6_offload, IPPROTO_UDP);
+	return inet6_add_offload(&udpv6_offload, IPPROTO_UDP);
 }
 
 int udpv6_offload_exit(void)
 {
-	return inet6_del_offload(&net_hotdata.udpv6_offload, IPPROTO_UDP);
+	return inet6_del_offload(&udpv6_offload, IPPROTO_UDP);
 }

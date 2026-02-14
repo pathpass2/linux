@@ -352,20 +352,6 @@ static const struct dmi_system_id acpisleep_dmi_table[] __initconst = {
 		},
 	},
 	/*
-	 * The ASUS ROG M16 from 2023 has many events which wake it from s2idle
-	 * resulting in excessive battery drain and risk of laptop overheating,
-	 * these events can be caused by the MMC or  y AniMe display if installed.
-	 * The match is valid for all of the GU604V<x> range.
-	 */
-	{
-	.callback = init_default_s3,
-	.ident = "ASUS ROG Zephyrus M16 (2023)",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "ROG Zephyrus M16 GU604V"),
-		},
-	},
-	/*
 	 * https://bugzilla.kernel.org/show_bug.cgi?id=189431
 	 * Lenovo G50-45 is a platform later than 2012, but needs nvs memory
 	 * saving during S3.
@@ -397,6 +383,18 @@ static const struct dmi_system_id acpisleep_dmi_table[] __initconst = {
 	.matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
 		DMI_MATCH(DMI_PRODUCT_NAME, "20GGA00L00"),
+		},
+	},
+	/*
+	 * ASUS B1400CEAE hangs on resume from suspend (see
+	 * https://bugzilla.kernel.org/show_bug.cgi?id=215742).
+	 */
+	{
+	.callback = init_default_s3,
+	.ident = "ASUS B1400CEAE",
+	.matches = {
+		DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
+		DMI_MATCH(DMI_PRODUCT_NAME, "ASUS EXPERTBOOK B1400CEAE"),
 		},
 	},
 	{},
@@ -516,7 +514,6 @@ static void acpi_pm_finish(void)
 
 /**
  * acpi_pm_start - Start system PM transition.
- * @acpi_state: The target ACPI power state to transition to.
  */
 static void acpi_pm_start(u32 acpi_state)
 {
@@ -555,9 +552,8 @@ static u32 acpi_suspend_states[] = {
 };
 
 /**
- * acpi_suspend_begin - Set the target system sleep state to the state
- *	associated with given @pm_state, if supported.
- * @pm_state: The target system power management state.
+ *	acpi_suspend_begin - Set the target system sleep state to the state
+ *		associated with given @pm_state, if supported.
  */
 static int acpi_suspend_begin(suspend_state_t pm_state)
 {
@@ -640,19 +636,11 @@ static int acpi_suspend_enter(suspend_state_t pm_state)
 	}
 
 	/*
-	 * Disable all GPE and clear their status bits before interrupts are
-	 * enabled. Some GPEs (like wakeup GPEs) have no handlers and this can
-	 * prevent them from producing spurious interrupts.
-	 *
-	 * acpi_leave_sleep_state() will reenable specific GPEs later.
-	 *
-	 * Because this code runs on one CPU with disabled interrupts (all of
-	 * the other CPUs are offline at this time), it need not acquire any
-	 * sleeping locks which may trigger an implicit preemption point even
-	 * if there is no contention, so avoid doing that by using a low-level
-	 * library routine here.
+	 * Disable and clear GPE status before interrupt is enabled. Some GPEs
+	 * (like wakeup GPE) haven't handler, this can avoid such GPE misfire.
+	 * acpi_leave_sleep_state will reenable specific GPEs later
 	 */
-	acpi_hw_disable_all_gpes();
+	acpi_disable_all_gpes();
 	/* Allow EC transactions to happen. */
 	acpi_ec_unblock_transactions();
 
@@ -687,11 +675,10 @@ static const struct platform_suspend_ops acpi_suspend_ops = {
 };
 
 /**
- * acpi_suspend_begin_old - Set the target system sleep state to the
- *	state associated with given @pm_state, if supported, and
- *	execute the _PTS control method.  This function is used if the
- *	pre-ACPI 2.0 suspend ordering has been requested.
- * @pm_state: The target suspend state for the system.
+ *	acpi_suspend_begin_old - Set the target system sleep state to the
+ *		state associated with given @pm_state, if supported, and
+ *		execute the _PTS control method.  This function is used if the
+ *		pre-ACPI 2.0 suspend ordering has been requested.
  */
 static int acpi_suspend_begin_old(suspend_state_t pm_state)
 {
@@ -727,13 +714,7 @@ int acpi_s2idle_begin(void)
 int acpi_s2idle_prepare(void)
 {
 	if (acpi_sci_irq_valid()) {
-		int error;
-
-		error = enable_irq_wake(acpi_sci_irq);
-		if (error)
-			pr_warn("Warning: Failed to enable wakeup from IRQ %d: %d\n",
-				acpi_sci_irq, error);
-
+		enable_irq_wake(acpi_sci_irq);
 		acpi_ec_set_gpe_wake_mask(ACPI_GPE_ENABLE);
 	}
 
@@ -853,7 +834,7 @@ void __weak acpi_s2idle_setup(void)
 	s2idle_set_ops(&acpi_s2idle_ops);
 }
 
-static void __init acpi_sleep_suspend_setup(void)
+static void acpi_sleep_suspend_setup(void)
 {
 	bool suspend_ops_needed = false;
 	int i;
@@ -884,13 +865,13 @@ bool acpi_s2idle_wakeup(void)
 #ifdef CONFIG_PM_SLEEP
 static u32 saved_bm_rld;
 
-static int  acpi_save_bm_rld(void *data)
+static int  acpi_save_bm_rld(void)
 {
 	acpi_read_bit_register(ACPI_BITREG_BUS_MASTER_RLD, &saved_bm_rld);
 	return 0;
 }
 
-static void  acpi_restore_bm_rld(void *data)
+static void  acpi_restore_bm_rld(void)
 {
 	u32 resumed_bm_rld = 0;
 
@@ -901,18 +882,14 @@ static void  acpi_restore_bm_rld(void *data)
 	acpi_write_bit_register(ACPI_BITREG_BUS_MASTER_RLD, saved_bm_rld);
 }
 
-static const struct syscore_ops acpi_sleep_syscore_ops = {
+static struct syscore_ops acpi_sleep_syscore_ops = {
 	.suspend = acpi_save_bm_rld,
 	.resume = acpi_restore_bm_rld,
 };
 
-static struct syscore acpi_sleep_syscore = {
-	.ops = &acpi_sleep_syscore_ops,
-};
-
 static void acpi_sleep_syscore_init(void)
 {
-	register_syscore(&acpi_sleep_syscore);
+	register_syscore_ops(&acpi_sleep_syscore_ops);
 }
 #else
 static inline void acpi_sleep_syscore_init(void) {}
@@ -988,11 +965,10 @@ static const struct platform_hibernation_ops acpi_hibernation_ops = {
 };
 
 /**
- * acpi_hibernation_begin_old - Set the target system sleep state to
- *	ACPI_STATE_S4 and execute the _PTS control method.  This
- *	function is used if the pre-ACPI 2.0 suspend ordering has been
- *	requested.
- * @stage: The power management event message.
+ *	acpi_hibernation_begin_old - Set the target system sleep state to
+ *		ACPI_STATE_S4 and execute the _PTS control method.  This
+ *		function is used if the pre-ACPI 2.0 suspend ordering has been
+ *		requested.
  */
 static int acpi_hibernation_begin_old(pm_message_t stage)
 {

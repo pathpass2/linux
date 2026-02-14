@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2020 MediaTek Inc. */
 
 #include <linux/kernel.h>
@@ -138,7 +138,6 @@ static const u32 mt7915_offs[] = {
 	[AGG_ACR0]		= 0x084,
 	[AGG_ACR4]		= 0x08c,
 	[AGG_MRCR]		= 0x098,
-	[AGG_ATCR0]		= 0x0ec,
 	[AGG_ATCR1]		= 0x0f0,
 	[AGG_ATCR3]		= 0x0f4,
 	[LPON_UTTR0]		= 0x080,
@@ -213,7 +212,6 @@ static const u32 mt7916_offs[] = {
 	[AGG_ACR0]		= 0x054,
 	[AGG_ACR4]		= 0x05c,
 	[AGG_MRCR]		= 0x068,
-	[AGG_ATCR0]		= 0x1a4,
 	[AGG_ATCR1]		= 0x1a8,
 	[AGG_ATCR3]		= 0x080,
 	[LPON_UTTR0]		= 0x360,
@@ -419,7 +417,7 @@ static u32 mt7915_reg_map_l1(struct mt7915_dev *dev, u32 addr)
 	u32 base = FIELD_GET(MT_HIF_REMAP_L1_BASE, addr);
 	u32 l1_remap;
 
-	if (is_mt798x(&dev->mt76))
+	if (is_mt7986(&dev->mt76))
 		return MT_CONN_INFRA_OFFSET(addr);
 
 	l1_remap = is_mt7915(&dev->mt76) ?
@@ -449,7 +447,7 @@ static u32 mt7915_reg_map_l2(struct mt7915_dev *dev, u32 addr)
 		/* use read to push write */
 		dev->bus_ops->rr(&dev->mt76, MT_HIF_REMAP_L2);
 	} else {
-		u32 ofs = is_mt798x(&dev->mt76) ? 0x400000 : 0;
+		u32 ofs = is_mt7986(&dev->mt76) ? 0x400000 : 0;
 
 		offset = FIELD_GET(MT_HIF_REMAP_L2_OFFSET_MT7916, addr);
 		base = FIELD_GET(MT_HIF_REMAP_L2_BASE_MT7916, addr);
@@ -486,17 +484,12 @@ static u32 __mt7915_reg_addr(struct mt7915_dev *dev, u32 addr)
 			continue;
 
 		ofs = addr - dev->reg.map[i].phys;
-		if (ofs >= dev->reg.map[i].size)
+		if (ofs > dev->reg.map[i].size)
 			continue;
 
 		return dev->reg.map[i].maps + ofs;
 	}
 
-	return 0;
-}
-
-static u32 __mt7915_reg_remap_addr(struct mt7915_dev *dev, u32 addr)
-{
 	if ((addr >= MT_INFRA_BASE && addr < MT_WFSYS0_PHY_START) ||
 	    (addr >= MT_WFSYS0_PHY_START && addr < MT_WFSYS1_PHY_START) ||
 	    (addr >= MT_WFSYS1_PHY_START && addr <= MT_WFSYS1_PHY_END))
@@ -521,30 +514,15 @@ void mt7915_memcpy_fromio(struct mt7915_dev *dev, void *buf, u32 offset,
 {
 	u32 addr = __mt7915_reg_addr(dev, offset);
 
-	if (addr) {
-		memcpy_fromio(buf, dev->mt76.mmio.regs + addr, len);
-		return;
-	}
-
-	spin_lock_bh(&dev->reg_lock);
-	memcpy_fromio(buf, dev->mt76.mmio.regs +
-			   __mt7915_reg_remap_addr(dev, offset), len);
-	spin_unlock_bh(&dev->reg_lock);
+	memcpy_fromio(buf, dev->mt76.mmio.regs + addr, len);
 }
 
 static u32 mt7915_rr(struct mt76_dev *mdev, u32 offset)
 {
 	struct mt7915_dev *dev = container_of(mdev, struct mt7915_dev, mt76);
-	u32 addr = __mt7915_reg_addr(dev, offset), val;
+	u32 addr = __mt7915_reg_addr(dev, offset);
 
-	if (addr)
-		return dev->bus_ops->rr(mdev, addr);
-
-	spin_lock_bh(&dev->reg_lock);
-	val = dev->bus_ops->rr(mdev, __mt7915_reg_remap_addr(dev, offset));
-	spin_unlock_bh(&dev->reg_lock);
-
-	return val;
+	return dev->bus_ops->rr(mdev, addr);
 }
 
 static void mt7915_wr(struct mt76_dev *mdev, u32 offset, u32 val)
@@ -552,14 +530,7 @@ static void mt7915_wr(struct mt76_dev *mdev, u32 offset, u32 val)
 	struct mt7915_dev *dev = container_of(mdev, struct mt7915_dev, mt76);
 	u32 addr = __mt7915_reg_addr(dev, offset);
 
-	if (addr) {
-		dev->bus_ops->wr(mdev, addr, val);
-		return;
-	}
-
-	spin_lock_bh(&dev->reg_lock);
-	dev->bus_ops->wr(mdev, __mt7915_reg_remap_addr(dev, offset), val);
-	spin_unlock_bh(&dev->reg_lock);
+	dev->bus_ops->wr(mdev, addr, val);
 }
 
 static u32 mt7915_rmw(struct mt76_dev *mdev, u32 offset, u32 mask, u32 val)
@@ -567,17 +538,135 @@ static u32 mt7915_rmw(struct mt76_dev *mdev, u32 offset, u32 mask, u32 val)
 	struct mt7915_dev *dev = container_of(mdev, struct mt7915_dev, mt76);
 	u32 addr = __mt7915_reg_addr(dev, offset);
 
-	if (addr)
-		return dev->bus_ops->rmw(mdev, addr, mask, val);
-
-	spin_lock_bh(&dev->reg_lock);
-	val = dev->bus_ops->rmw(mdev, __mt7915_reg_remap_addr(dev, offset), mask, val);
-	spin_unlock_bh(&dev->reg_lock);
-
-	return val;
+	return dev->bus_ops->rmw(mdev, addr, mask, val);
 }
 
 #ifdef CONFIG_NET_MEDIATEK_SOC_WED
+static int mt7915_mmio_wed_offload_enable(struct mtk_wed_device *wed)
+{
+	struct mt7915_dev *dev;
+	struct mt7915_phy *phy;
+	int ret;
+
+	dev = container_of(wed, struct mt7915_dev, mt76.mmio.wed);
+
+	spin_lock_bh(&dev->mt76.token_lock);
+	dev->mt76.token_size = wed->wlan.token_start;
+	spin_unlock_bh(&dev->mt76.token_lock);
+
+	ret = wait_event_timeout(dev->mt76.tx_wait,
+				 !dev->mt76.wed_token_count, HZ);
+	if (!ret)
+		return -EAGAIN;
+
+	phy = &dev->phy;
+	mt76_set(dev, MT_AGG_ACR4(phy->mt76->band_idx), MT_AGG_ACR_PPDU_TXS2H);
+
+	phy = dev->mt76.phys[MT_BAND1] ? dev->mt76.phys[MT_BAND1]->priv : NULL;
+	if (phy)
+		mt76_set(dev, MT_AGG_ACR4(phy->mt76->band_idx),
+			 MT_AGG_ACR_PPDU_TXS2H);
+
+	return 0;
+}
+
+static void mt7915_mmio_wed_offload_disable(struct mtk_wed_device *wed)
+{
+	struct mt7915_dev *dev;
+	struct mt7915_phy *phy;
+
+	dev = container_of(wed, struct mt7915_dev, mt76.mmio.wed);
+
+	spin_lock_bh(&dev->mt76.token_lock);
+	dev->mt76.token_size = MT7915_TOKEN_SIZE;
+	spin_unlock_bh(&dev->mt76.token_lock);
+
+	/* MT_TXD5_TX_STATUS_HOST (MPDU format) has higher priority than
+	 * MT_AGG_ACR_PPDU_TXS2H (PPDU format) even though ACR bit is set.
+	 */
+	phy = &dev->phy;
+	mt76_clear(dev, MT_AGG_ACR4(phy->mt76->band_idx), MT_AGG_ACR_PPDU_TXS2H);
+
+	phy = dev->mt76.phys[MT_BAND1] ? dev->mt76.phys[MT_BAND1]->priv : NULL;
+	if (phy)
+		mt76_clear(dev, MT_AGG_ACR4(phy->mt76->band_idx),
+			   MT_AGG_ACR_PPDU_TXS2H);
+}
+
+static void mt7915_mmio_wed_release_rx_buf(struct mtk_wed_device *wed)
+{
+	struct mt7915_dev *dev;
+	int i;
+
+	dev = container_of(wed, struct mt7915_dev, mt76.mmio.wed);
+	for (i = 0; i < dev->mt76.rx_token_size; i++) {
+		struct mt76_txwi_cache *t;
+
+		t = mt76_rx_token_release(&dev->mt76, i);
+		if (!t || !t->ptr)
+			continue;
+
+		mt76_put_page_pool_buf(t->ptr, false);
+		t->ptr = NULL;
+
+		mt76_put_rxwi(&dev->mt76, t);
+	}
+
+	mt76_free_pending_rxwi(&dev->mt76);
+}
+
+static u32 mt7915_mmio_wed_init_rx_buf(struct mtk_wed_device *wed, int size)
+{
+	struct mtk_rxbm_desc *desc = wed->rx_buf_ring.desc;
+	struct mt76_txwi_cache *t = NULL;
+	struct mt7915_dev *dev;
+	struct mt76_queue *q;
+	int i, len;
+
+	dev = container_of(wed, struct mt7915_dev, mt76.mmio.wed);
+	q = &dev->mt76.q_rx[MT_RXQ_MAIN];
+	len = SKB_WITH_OVERHEAD(q->buf_size);
+
+	for (i = 0; i < size; i++) {
+		enum dma_data_direction dir;
+		dma_addr_t addr;
+		u32 offset;
+		int token;
+		void *buf;
+
+		t = mt76_get_rxwi(&dev->mt76);
+		if (!t)
+			goto unmap;
+
+		buf = mt76_get_page_pool_buf(q, &offset, q->buf_size);
+		if (!buf)
+			goto unmap;
+
+		addr = page_pool_get_dma_addr(virt_to_head_page(buf)) + offset;
+		dir = page_pool_get_dma_dir(q->page_pool);
+		dma_sync_single_for_device(dev->mt76.dma_dev, addr, len, dir);
+
+		desc->buf0 = cpu_to_le32(addr);
+		token = mt76_rx_token_consume(&dev->mt76, buf, t, addr);
+		if (token < 0) {
+			mt76_put_page_pool_buf(buf, false);
+			goto unmap;
+		}
+
+		desc->token |= cpu_to_le32(FIELD_PREP(MT_DMA_CTL_TOKEN,
+						      token));
+		desc++;
+	}
+
+	return 0;
+
+unmap:
+	if (t)
+		mt76_put_rxwi(&dev->mt76, t);
+	mt7915_mmio_wed_release_rx_buf(wed);
+	return -ENOMEM;
+}
+
 static void mt7915_mmio_wed_update_rx_stats(struct mtk_wed_device *wed,
 					    struct mtk_wed_wo_rx_stats *stats)
 {
@@ -587,9 +676,12 @@ static void mt7915_mmio_wed_update_rx_stats(struct mtk_wed_device *wed,
 
 	dev = container_of(wed, struct mt7915_dev, mt76.mmio.wed);
 
+	if (idx >= mt7915_wtbl_size(dev))
+		return;
+
 	rcu_read_lock();
 
-	wcid = mt76_wcid_ptr(dev, idx);
+	wcid = rcu_dereference(dev->mt76.wcid[idx]);
 	if (wcid) {
 		wcid->stats.rx_bytes += le32_to_cpu(stats->rx_byte_cnt);
 		wcid->stats.rx_packets += le32_to_cpu(stats->rx_pkt_cnt);
@@ -628,6 +720,13 @@ out:
 
 	return ret;
 }
+
+static void mt7915_mmio_wed_reset_complete(struct mtk_wed_device *wed)
+{
+	struct mt76_dev *dev = container_of(wed, struct mt76_dev, mmio.wed);
+
+	complete(&dev->mmio.wed_reset_complete);
+}
 #endif
 
 int mt7915_mmio_wed_init(struct mt7915_dev *dev, void *pdev_ptr,
@@ -648,9 +747,6 @@ int mt7915_mmio_wed_init(struct mt7915_dev *dev, void *pdev_ptr,
 		wed->wlan.base = devm_ioremap(dev->mt76.dev,
 					      pci_resource_start(pci_dev, 0),
 					      pci_resource_len(pci_dev, 0));
-		if (!wed->wlan.base)
-			return -ENOMEM;
-
 		wed->wlan.phy_base = pci_resource_start(pci_dev, 0);
 		wed->wlan.wpdma_int = pci_resource_start(pci_dev, 0) +
 				      MT_INT_WED_SOURCE_CSR;
@@ -664,35 +760,32 @@ int mt7915_mmio_wed_init(struct mt7915_dev *dev, void *pdev_ptr,
 					 MT_RXQ_WED_RING_BASE;
 		wed->wlan.wpdma_rx_glo = pci_resource_start(pci_dev, 0) +
 					 MT_WPDMA_GLO_CFG;
-		wed->wlan.wpdma_rx[0] = pci_resource_start(pci_dev, 0) +
-					MT_RXQ_WED_DATA_RING_BASE;
+		wed->wlan.wpdma_rx = pci_resource_start(pci_dev, 0) +
+				     MT_RXQ_WED_DATA_RING_BASE;
 	} else {
 		struct platform_device *plat_dev = pdev_ptr;
 		struct resource *res;
 
 		res = platform_get_resource(plat_dev, IORESOURCE_MEM, 0);
 		if (!res)
-			return 0;
+			return -ENOMEM;
 
 		wed->wlan.platform_dev = plat_dev;
 		wed->wlan.bus_type = MTK_WED_BUS_AXI;
 		wed->wlan.base = devm_ioremap(dev->mt76.dev, res->start,
 					      resource_size(res));
-		if (!wed->wlan.base)
-			return -ENOMEM;
-
 		wed->wlan.phy_base = res->start;
 		wed->wlan.wpdma_int = res->start + MT_INT_SOURCE_CSR;
 		wed->wlan.wpdma_mask = res->start + MT_INT_MASK_CSR;
 		wed->wlan.wpdma_tx = res->start + MT_TXQ_WED_RING_BASE;
 		wed->wlan.wpdma_txfree = res->start + MT_RXQ_WED_RING_BASE;
 		wed->wlan.wpdma_rx_glo = res->start + MT_WPDMA_GLO_CFG;
-		wed->wlan.wpdma_rx[0] = res->start + MT_RXQ_WED_DATA_RING_BASE;
+		wed->wlan.wpdma_rx = res->start + MT_RXQ_WED_DATA_RING_BASE;
 	}
 	wed->wlan.nbuf = MT7915_HW_TOKEN_SIZE;
 	wed->wlan.tx_tbit[0] = is_mt7915(&dev->mt76) ? 4 : 30;
 	wed->wlan.tx_tbit[1] = is_mt7915(&dev->mt76) ? 5 : 31;
-	wed->wlan.txfree_tbit = is_mt798x(&dev->mt76) ? 2 : 1;
+	wed->wlan.txfree_tbit = is_mt7986(&dev->mt76) ? 2 : 1;
 	wed->wlan.token_start = MT7915_TOKEN_SIZE - wed->wlan.nbuf;
 	wed->wlan.wcid_512 = !is_mt7915(&dev->mt76);
 
@@ -702,7 +795,7 @@ int mt7915_mmio_wed_init(struct mt7915_dev *dev, void *pdev_ptr,
 	if (is_mt7915(&dev->mt76)) {
 		wed->wlan.rx_tbit[0] = 16;
 		wed->wlan.rx_tbit[1] = 17;
-	} else if (is_mt798x(&dev->mt76)) {
+	} else if (is_mt7986(&dev->mt76)) {
 		wed->wlan.rx_tbit[0] = 22;
 		wed->wlan.rx_tbit[1] = 23;
 	} else {
@@ -711,13 +804,13 @@ int mt7915_mmio_wed_init(struct mt7915_dev *dev, void *pdev_ptr,
 	}
 
 	wed->wlan.init_buf = mt7915_wed_init_buf;
-	wed->wlan.offload_enable = mt76_wed_offload_enable;
-	wed->wlan.offload_disable = mt76_wed_offload_disable;
-	wed->wlan.init_rx_buf = mt76_wed_init_rx_buf;
-	wed->wlan.release_rx_buf = mt76_wed_release_rx_buf;
+	wed->wlan.offload_enable = mt7915_mmio_wed_offload_enable;
+	wed->wlan.offload_disable = mt7915_mmio_wed_offload_disable;
+	wed->wlan.init_rx_buf = mt7915_mmio_wed_init_rx_buf;
+	wed->wlan.release_rx_buf = mt7915_mmio_wed_release_rx_buf;
 	wed->wlan.update_wo_rx_stats = mt7915_mmio_wed_update_rx_stats;
 	wed->wlan.reset = mt7915_mmio_wed_reset;
-	wed->wlan.reset_complete = mt76_wed_reset_complete;
+	wed->wlan.reset_complete = mt7915_mmio_wed_reset_complete;
 
 	dev->mt76.rx_token_size = wed->wlan.rx_npkt;
 
@@ -746,7 +839,6 @@ static int mt7915_mmio_init(struct mt76_dev *mdev,
 
 	dev = container_of(mdev, struct mt7915_dev, mt76);
 	mt76_mmio_init(&dev->mt76, mem_base);
-	spin_lock_init(&dev->reg_lock);
 
 	switch (device_id) {
 	case 0x7915:
@@ -761,7 +853,6 @@ static int mt7915_mmio_init(struct mt76_dev *mdev,
 		dev->reg.map = mt7916_reg_map;
 		dev->reg.map_size = ARRAY_SIZE(mt7916_reg_map);
 		break;
-	case 0x7981:
 	case 0x7986:
 		dev->reg.reg_rev = mt7986_reg;
 		dev->reg.offs_rev = mt7916_offs;
@@ -825,7 +916,7 @@ static void mt7915_rx_poll_complete(struct mt76_dev *mdev,
 /* TODO: support 2/4/6/8 MSI-X vectors */
 static void mt7915_irq_tasklet(struct tasklet_struct *t)
 {
-	struct mt7915_dev *dev = from_tasklet(dev, t, mt76.irq_tasklet);
+	struct mt7915_dev *dev = from_tasklet(dev, t, irq_tasklet);
 	struct mtk_wed_device *wed = &dev->mt76.mmio.wed;
 	u32 intr, intr1, mask;
 
@@ -898,18 +989,18 @@ irqreturn_t mt7915_irq_handler(int irq, void *dev_instance)
 	struct mt7915_dev *dev = dev_instance;
 	struct mtk_wed_device *wed = &dev->mt76.mmio.wed;
 
-	if (mtk_wed_device_active(wed))
+	if (mtk_wed_device_active(wed)) {
 		mtk_wed_device_irq_set_mask(wed, 0);
-	else
+	} else {
 		mt76_wr(dev, MT_INT_MASK_CSR, 0);
-
-	if (dev->hif2)
-		mt76_wr(dev, MT_INT1_MASK_CSR, 0);
+		if (dev->hif2)
+			mt76_wr(dev, MT_INT1_MASK_CSR, 0);
+	}
 
 	if (!test_bit(MT76_STATE_INITIALIZED, &dev->mphy.state))
 		return IRQ_NONE;
 
-	tasklet_schedule(&dev->mt76.irq_tasklet);
+	tasklet_schedule(&dev->irq_tasklet);
 
 	return IRQ_HANDLED;
 }
@@ -931,11 +1022,10 @@ struct mt7915_dev *mt7915_mmio_probe(struct device *pdev,
 		.rx_skb = mt7915_queue_rx_skb,
 		.rx_check = mt7915_rx_check,
 		.rx_poll_complete = mt7915_rx_poll_complete,
+		.sta_ps = mt7915_sta_ps,
 		.sta_add = mt7915_mac_sta_add,
-		.sta_event = mt7915_mac_sta_event,
 		.sta_remove = mt7915_mac_sta_remove,
 		.update_survey = mt7915_update_channel,
-		.set_channel = mt7915_set_channel,
 	};
 	struct mt7915_dev *dev;
 	struct mt76_dev *mdev;
@@ -951,7 +1041,7 @@ struct mt7915_dev *mt7915_mmio_probe(struct device *pdev,
 	if (ret)
 		goto error;
 
-	tasklet_setup(&mdev->irq_tasklet, mt7915_irq_tasklet);
+	tasklet_setup(&dev->irq_tasklet, mt7915_irq_tasklet);
 
 	return dev;
 
@@ -973,8 +1063,8 @@ static int __init mt7915_init(void)
 	if (ret)
 		goto error_pci;
 
-	if (IS_ENABLED(CONFIG_MT798X_WMAC)) {
-		ret = platform_driver_register(&mt798x_wmac_driver);
+	if (IS_ENABLED(CONFIG_MT7986_WMAC)) {
+		ret = platform_driver_register(&mt7986_wmac_driver);
 		if (ret)
 			goto error_wmac;
 	}
@@ -991,8 +1081,8 @@ error_pci:
 
 static void __exit mt7915_exit(void)
 {
-	if (IS_ENABLED(CONFIG_MT798X_WMAC))
-		platform_driver_unregister(&mt798x_wmac_driver);
+	if (IS_ENABLED(CONFIG_MT7986_WMAC))
+		platform_driver_unregister(&mt7986_wmac_driver);
 
 	pci_unregister_driver(&mt7915_pci_driver);
 	pci_unregister_driver(&mt7915_hif_driver);
@@ -1000,5 +1090,4 @@ static void __exit mt7915_exit(void)
 
 module_init(mt7915_init);
 module_exit(mt7915_exit);
-MODULE_DESCRIPTION("MediaTek MT7915E MMIO helpers");
 MODULE_LICENSE("Dual BSD/GPL");

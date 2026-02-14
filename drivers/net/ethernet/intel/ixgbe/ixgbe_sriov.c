@@ -18,7 +18,6 @@
 
 #include "ixgbe.h"
 #include "ixgbe_type.h"
-#include "ixgbe_mbx.h"
 #include "ixgbe_sriov.h"
 
 #ifdef CONFIG_PCI_IOV
@@ -29,9 +28,6 @@ static inline void ixgbe_alloc_vf_macvlans(struct ixgbe_adapter *adapter,
 	struct vf_macvlans *mv_list;
 	int num_vf_macvlans, i;
 
-	/* Initialize list of VF macvlans */
-	INIT_LIST_HEAD(&adapter->vf_mvs.l);
-
 	num_vf_macvlans = hw->mac.num_rar_entries -
 			  (IXGBE_MAX_PF_MACVLANS + 1 + num_vfs);
 	if (!num_vf_macvlans)
@@ -40,6 +36,8 @@ static inline void ixgbe_alloc_vf_macvlans(struct ixgbe_adapter *adapter,
 	mv_list = kcalloc(num_vf_macvlans, sizeof(struct vf_macvlans),
 			  GFP_KERNEL);
 	if (mv_list) {
+		/* Initialize list of VF macvlans */
+		INIT_LIST_HEAD(&adapter->vf_mvs.l);
 		for (i = 0; i < num_vf_macvlans; i++) {
 			mv_list[i].vf = -1;
 			mv_list[i].free = true;
@@ -207,7 +205,6 @@ void ixgbe_enable_sriov(struct ixgbe_adapter *adapter, unsigned int max_vfs)
 int ixgbe_disable_sriov(struct ixgbe_adapter *adapter)
 {
 	unsigned int num_vfs = adapter->num_vfs, vf;
-	struct ixgbe_hw *hw = &adapter->hw;
 	unsigned long flags;
 	int rss;
 
@@ -237,9 +234,6 @@ int ixgbe_disable_sriov(struct ixgbe_adapter *adapter)
 	/* if SR-IOV is already disabled then there is nothing to do */
 	if (!(adapter->flags & IXGBE_FLAG_SRIOV_ENABLED))
 		return 0;
-
-	if (hw->mac.ops.disable_mdd)
-		hw->mac.ops.disable_mdd(hw);
 
 #ifdef CONFIG_PCI_IOV
 	/*
@@ -368,7 +362,8 @@ int ixgbe_pci_sriov_configure(struct pci_dev *dev, int num_vfs)
 static int ixgbe_set_vf_multicasts(struct ixgbe_adapter *adapter,
 				   u32 *msgbuf, u32 vf)
 {
-	int entries = FIELD_GET(IXGBE_VT_MSGINFO_MASK, msgbuf[0]);
+	int entries = (msgbuf[0] & IXGBE_VT_MSGINFO_MASK)
+		       >> IXGBE_VT_MSGINFO_SHIFT;
 	u16 *hash_list = (u16 *)&msgbuf[1];
 	struct vf_data_storage *vfinfo = &adapter->vfinfo[vf];
 	struct ixgbe_hw *hw = &adapter->hw;
@@ -497,10 +492,10 @@ static int ixgbe_set_vf_lpe(struct ixgbe_adapter *adapter, u32 max_frame, u32 vf
 		struct net_device *dev = adapter->netdev;
 		int pf_max_frame = dev->mtu + ETH_HLEN;
 		u32 reg_offset, vf_shift, vfre;
-		int err = 0;
+		s32 err = 0;
 
 #ifdef CONFIG_FCOE
-		if (dev->fcoe_mtu)
+		if (dev->features & NETIF_F_FCOE_MTU)
 			pf_max_frame = max_t(int, pf_max_frame,
 					     IXGBE_FCOE_JUMBO_FRAME_SIZE);
 
@@ -510,8 +505,6 @@ static int ixgbe_set_vf_lpe(struct ixgbe_adapter *adapter, u32 max_frame, u32 vf
 		case ixgbe_mbox_api_12:
 		case ixgbe_mbox_api_13:
 		case ixgbe_mbox_api_14:
-		case ixgbe_mbox_api_16:
-		case ixgbe_mbox_api_17:
 			/* Version 1.1 supports jumbo frames on VFs if PF has
 			 * jumbo frames enabled which means legacy VFs are
 			 * disabled
@@ -646,11 +639,12 @@ static int ixgbe_set_vf_macvlan(struct ixgbe_adapter *adapter,
 				int vf, int index, unsigned char *mac_addr)
 {
 	struct vf_macvlans *entry;
-	bool found = false;
+	struct list_head *pos;
 	int retval = 0;
 
 	if (index <= 1) {
-		list_for_each_entry(entry, &adapter->vf_mvs.l, l) {
+		list_for_each(pos, &adapter->vf_mvs.l) {
+			entry = list_entry(pos, struct vf_macvlans, l);
 			if (entry->vf == vf) {
 				entry->vf = -1;
 				entry->free = true;
@@ -668,22 +662,23 @@ static int ixgbe_set_vf_macvlan(struct ixgbe_adapter *adapter,
 	if (!index)
 		return 0;
 
-	list_for_each_entry(entry, &adapter->vf_mvs.l, l) {
-		if (entry->free) {
-			found = true;
+	entry = NULL;
+
+	list_for_each(pos, &adapter->vf_mvs.l) {
+		entry = list_entry(pos, struct vf_macvlans, l);
+		if (entry->free)
 			break;
-		}
 	}
 
 	/*
 	 * If we traversed the entire list and didn't find a free entry
-	 * then we're out of space on the RAR table.  It's also possible
-	 * for the &adapter->vf_mvs.l list to be empty because the original
-	 * memory allocation for the list failed, which is not fatal but does
-	 * mean we can't support VF requests for MACVLAN because we couldn't
-	 * allocate memory for the list management required.
+	 * then we're out of space on the RAR table.  Also entry may
+	 * be NULL because the original memory allocation for the list
+	 * failed, which is not fatal but does mean we can't support
+	 * VF requests for MACVLAN because we couldn't allocate
+	 * memory for the list management required.
 	 */
-	if (!found)
+	if (!entry || !entry->free)
 		return -ENOSPC;
 
 	retval = ixgbe_add_mac_filter(adapter, mac_addr, vf);
@@ -708,7 +703,7 @@ static inline void ixgbe_vf_reset_event(struct ixgbe_adapter *adapter, u32 vf)
 	u32 reg_val;
 	u32 queue;
 
-	/* remove VLAN filters belonging to this VF */
+	/* remove VLAN filters beloning to this VF */
 	ixgbe_clear_vf_vlans(adapter, vf);
 
 	/* add back PF assigned VLAN or VLAN 0 */
@@ -782,7 +777,7 @@ static void ixgbe_vf_clear_mbx(struct ixgbe_adapter *adapter, u32 vf)
 static int ixgbe_set_vf_mac(struct ixgbe_adapter *adapter,
 			    int vf, unsigned char *mac_addr)
 {
-	int retval;
+	s32 retval;
 
 	ixgbe_del_mac_filter(adapter, adapter->vfinfo[vf].vf_mac_addresses, vf);
 	retval = ixgbe_add_mac_filter(adapter, mac_addr, vf);
@@ -864,7 +859,7 @@ static void ixgbe_set_vf_rx_tx(struct ixgbe_adapter *adapter, int vf)
 		int pf_max_frame = dev->mtu + ETH_HLEN;
 
 #if IS_ENABLED(CONFIG_FCOE)
-		if (dev->fcoe_mtu)
+		if (dev->features & NETIF_F_FCOE_MTU)
 			pf_max_frame = max_t(int, pf_max_frame,
 					     IXGBE_FCOE_JUMBO_FRAME_SIZE);
 #endif /* CONFIG_FCOE */
@@ -975,7 +970,7 @@ static int ixgbe_set_vf_mac_addr(struct ixgbe_adapter *adapter,
 static int ixgbe_set_vf_vlan_msg(struct ixgbe_adapter *adapter,
 				 u32 *msgbuf, u32 vf)
 {
-	u32 add = FIELD_GET(IXGBE_VT_MSGINFO_MASK, msgbuf[0]);
+	u32 add = (msgbuf[0] & IXGBE_VT_MSGINFO_MASK) >> IXGBE_VT_MSGINFO_SHIFT;
 	u32 vid = (msgbuf[1] & IXGBE_VLVF_VLANID_MASK);
 	u8 tcs = adapter->hw_tcs;
 
@@ -998,7 +993,8 @@ static int ixgbe_set_vf_macvlan_msg(struct ixgbe_adapter *adapter,
 				    u32 *msgbuf, u32 vf)
 {
 	u8 *new_mac = ((u8 *)(&msgbuf[1]));
-	int index = FIELD_GET(IXGBE_VT_MSGINFO_MASK, msgbuf[0]);
+	int index = (msgbuf[0] & IXGBE_VT_MSGINFO_MASK) >>
+		    IXGBE_VT_MSGINFO_SHIFT;
 	int err;
 
 	if (adapter->vfinfo[vf].pf_set_mac && !adapter->vfinfo[vf].trusted &&
@@ -1048,15 +1044,13 @@ static int ixgbe_negotiate_vf_api(struct ixgbe_adapter *adapter,
 	case ixgbe_mbox_api_12:
 	case ixgbe_mbox_api_13:
 	case ixgbe_mbox_api_14:
-	case ixgbe_mbox_api_16:
-	case ixgbe_mbox_api_17:
 		adapter->vfinfo[vf].vf_api = api;
 		return 0;
 	default:
 		break;
 	}
 
-	e_dbg(drv, "VF %d requested unsupported api version %u\n", vf, api);
+	e_info(drv, "VF %d requested invalid api version %u\n", vf, api);
 
 	return -1;
 }
@@ -1076,8 +1070,6 @@ static int ixgbe_get_vf_queues(struct ixgbe_adapter *adapter,
 	case ixgbe_mbox_api_12:
 	case ixgbe_mbox_api_13:
 	case ixgbe_mbox_api_14:
-	case ixgbe_mbox_api_16:
-	case ixgbe_mbox_api_17:
 		break;
 	default:
 		return -1;
@@ -1118,8 +1110,6 @@ static int ixgbe_get_vf_reta(struct ixgbe_adapter *adapter, u32 *msgbuf, u32 vf)
 
 	/* verify the PF is supporting the correct API */
 	switch (adapter->vfinfo[vf].vf_api) {
-	case ixgbe_mbox_api_17:
-	case ixgbe_mbox_api_16:
 	case ixgbe_mbox_api_14:
 	case ixgbe_mbox_api_13:
 	case ixgbe_mbox_api_12:
@@ -1153,8 +1143,6 @@ static int ixgbe_get_vf_rss_key(struct ixgbe_adapter *adapter,
 
 	/* verify the PF is supporting the correct API */
 	switch (adapter->vfinfo[vf].vf_api) {
-	case ixgbe_mbox_api_17:
-	case ixgbe_mbox_api_16:
 	case ixgbe_mbox_api_14:
 	case ixgbe_mbox_api_13:
 	case ixgbe_mbox_api_12:
@@ -1184,8 +1172,6 @@ static int ixgbe_update_vf_xcast_mode(struct ixgbe_adapter *adapter,
 		fallthrough;
 	case ixgbe_mbox_api_13:
 	case ixgbe_mbox_api_14:
-	case ixgbe_mbox_api_16:
-	case ixgbe_mbox_api_17:
 		break;
 	default:
 		return -EOPNOTSUPP;
@@ -1256,8 +1242,6 @@ static int ixgbe_get_vf_link_state(struct ixgbe_adapter *adapter,
 	case ixgbe_mbox_api_12:
 	case ixgbe_mbox_api_13:
 	case ixgbe_mbox_api_14:
-	case ixgbe_mbox_api_16:
-	case ixgbe_mbox_api_17:
 		break;
 	default:
 		return -EOPNOTSUPP;
@@ -1268,71 +1252,12 @@ static int ixgbe_get_vf_link_state(struct ixgbe_adapter *adapter,
 	return 0;
 }
 
-/**
- * ixgbe_send_vf_link_status - send link status data to VF
- * @adapter: pointer to adapter struct
- * @msgbuf: pointer to message buffers
- * @vf: VF identifier
- *
- * Reply for IXGBE_VF_GET_PF_LINK_STATE mbox command sending link status data.
- *
- * Return: 0 on success or -EOPNOTSUPP when operation is not supported.
- */
-static int ixgbe_send_vf_link_status(struct ixgbe_adapter *adapter,
-				     u32 *msgbuf, u32 vf)
-{
-	struct ixgbe_hw *hw = &adapter->hw;
-
-	switch (adapter->vfinfo[vf].vf_api) {
-	case ixgbe_mbox_api_16:
-	case ixgbe_mbox_api_17:
-		if (hw->mac.type != ixgbe_mac_e610)
-			return -EOPNOTSUPP;
-		break;
-	default:
-		return -EOPNOTSUPP;
-	}
-	/* Simply provide stored values as watchdog & link status events take
-	 * care of its freshness.
-	 */
-	msgbuf[1] = adapter->link_speed;
-	msgbuf[2] = adapter->link_up;
-
-	return 0;
-}
-
-/**
- * ixgbe_negotiate_vf_features -  negotiate supported features with VF driver
- * @adapter: pointer to adapter struct
- * @msgbuf: pointer to message buffers
- * @vf: VF identifier
- *
- * Return: 0 on success or -EOPNOTSUPP when operation is not supported.
- */
-static int ixgbe_negotiate_vf_features(struct ixgbe_adapter *adapter,
-				       u32 *msgbuf, u32 vf)
-{
-	u32 features = msgbuf[1];
-
-	switch (adapter->vfinfo[vf].vf_api) {
-	case ixgbe_mbox_api_17:
-		break;
-	default:
-		return -EOPNOTSUPP;
-	}
-
-	features &= IXGBE_SUPPORTED_FEATURES;
-	msgbuf[1] = features;
-
-	return 0;
-}
-
 static int ixgbe_rcv_msg_from_vf(struct ixgbe_adapter *adapter, u32 vf)
 {
 	u32 mbx_size = IXGBE_VFMAILBOX_SIZE;
 	u32 msgbuf[IXGBE_VFMAILBOX_SIZE];
 	struct ixgbe_hw *hw = &adapter->hw;
-	int retval;
+	s32 retval;
 
 	retval = ixgbe_read_mbx(hw, msgbuf, mbx_size, vf);
 
@@ -1401,15 +1326,9 @@ static int ixgbe_rcv_msg_from_vf(struct ixgbe_adapter *adapter, u32 vf)
 	case IXGBE_VF_IPSEC_DEL:
 		retval = ixgbe_ipsec_vf_del_sa(adapter, msgbuf, vf);
 		break;
-	case IXGBE_VF_GET_PF_LINK_STATE:
-		retval = ixgbe_send_vf_link_status(adapter, msgbuf, vf);
-		break;
-	case IXGBE_VF_FEATURES_NEGOTIATE:
-		retval = ixgbe_negotiate_vf_features(adapter, msgbuf, vf);
-		break;
 	default:
 		e_err(drv, "Unhandled Msg %8.8x\n", msgbuf[0]);
-		retval = -EIO;
+		retval = IXGBE_ERR_MBX;
 		break;
 	}
 
@@ -1436,58 +1355,11 @@ static void ixgbe_rcv_ack_from_vf(struct ixgbe_adapter *adapter, u32 vf)
 		ixgbe_write_mbx(hw, &msg, 1, vf);
 }
 
-/**
- * ixgbe_check_mdd_event - check for MDD event on all VFs
- * @adapter: pointer to ixgbe adapter
- *
- * Return: true if there is a VF on which MDD event occurred, false otherwise.
- */
-bool ixgbe_check_mdd_event(struct ixgbe_adapter *adapter)
-{
-	struct ixgbe_hw *hw = &adapter->hw;
-	DECLARE_BITMAP(vf_bitmap, 64);
-	bool ret = false;
-	int i;
-
-	if (!hw->mac.ops.handle_mdd)
-		return false;
-
-	/* Did we have a malicious event */
-	bitmap_zero(vf_bitmap, 64);
-	hw->mac.ops.handle_mdd(hw, vf_bitmap);
-
-	/* Log any blocked queues and release lock */
-	for_each_set_bit(i, vf_bitmap, 64) {
-		dev_warn(&adapter->pdev->dev,
-			 "Malicious event on VF %d tx:%x rx:%x\n", i,
-			 IXGBE_READ_REG(hw, IXGBE_LVMMC_TX),
-			 IXGBE_READ_REG(hw, IXGBE_LVMMC_RX));
-
-		if (hw->mac.ops.restore_mdd_vf) {
-			u32 ping;
-
-			hw->mac.ops.restore_mdd_vf(hw, i);
-
-			/* get the VF to rebuild its queues */
-			adapter->vfinfo[i].clear_to_send = 0;
-			ping = IXGBE_PF_CONTROL_MSG |
-			       IXGBE_VT_MSGTYPE_CTS;
-			ixgbe_write_mbx(hw, &ping, 1, i);
-		}
-
-		ret = true;
-	}
-
-	return ret;
-}
-
 void ixgbe_msg_task(struct ixgbe_adapter *adapter)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
 	unsigned long flags;
 	u32 vf;
-
-	ixgbe_check_mdd_event(adapter);
 
 	spin_lock_irqsave(&adapter->vfs_lock, flags);
 	for (vf = 0; vf < adapter->num_vfs; vf++) {
@@ -1548,8 +1420,8 @@ void ixgbe_set_all_vfs(struct ixgbe_adapter *adapter)
 
 int ixgbe_ndo_set_vf_mac(struct net_device *netdev, int vf, u8 *mac)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
-	int retval;
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
+	s32 retval;
 
 	if (vf >= adapter->num_vfs)
 		return -EINVAL;
@@ -1656,7 +1528,7 @@ int ixgbe_ndo_set_vf_vlan(struct net_device *netdev, int vf, u16 vlan,
 			  u8 qos, __be16 vlan_proto)
 {
 	int err = 0;
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 
 	if ((vf >= adapter->num_vfs) || (vlan > 4095) || (qos > 7))
 		return -EINVAL;
@@ -1774,7 +1646,7 @@ void ixgbe_check_vf_rate_limit(struct ixgbe_adapter *adapter)
 int ixgbe_ndo_set_vf_bw(struct net_device *netdev, int vf, int min_tx_rate,
 			int max_tx_rate)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 	int link_speed;
 
 	/* verify VF is active */
@@ -1809,7 +1681,7 @@ int ixgbe_ndo_set_vf_bw(struct net_device *netdev, int vf, int min_tx_rate,
 
 int ixgbe_ndo_set_vf_spoofchk(struct net_device *netdev, int vf, bool setting)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 	struct ixgbe_hw *hw = &adapter->hw;
 
 	if (vf >= adapter->num_vfs)
@@ -1887,7 +1759,7 @@ void ixgbe_set_vf_link_state(struct ixgbe_adapter *adapter, int vf, int state)
  **/
 int ixgbe_ndo_set_vf_link_state(struct net_device *netdev, int vf, int state)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 	int ret = 0;
 
 	if (vf < 0 || vf >= adapter->num_vfs) {
@@ -1924,7 +1796,7 @@ int ixgbe_ndo_set_vf_link_state(struct net_device *netdev, int vf, int state)
 int ixgbe_ndo_set_vf_rss_query_en(struct net_device *netdev, int vf,
 				  bool setting)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 
 	/* This operation is currently supported only for 82599 and x540
 	 * devices.
@@ -1943,7 +1815,7 @@ int ixgbe_ndo_set_vf_rss_query_en(struct net_device *netdev, int vf,
 
 int ixgbe_ndo_set_vf_trust(struct net_device *netdev, int vf, bool setting)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 
 	if (vf >= adapter->num_vfs)
 		return -EINVAL;
@@ -1966,7 +1838,7 @@ int ixgbe_ndo_set_vf_trust(struct net_device *netdev, int vf, bool setting)
 int ixgbe_ndo_get_vf_config(struct net_device *netdev,
 			    int vf, struct ifla_vf_info *ivi)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct ixgbe_adapter *adapter = netdev_priv(netdev);
 	if (vf >= adapter->num_vfs)
 		return -EINVAL;
 	ivi->vf = vf;
@@ -1978,6 +1850,5 @@ int ixgbe_ndo_get_vf_config(struct net_device *netdev,
 	ivi->spoofchk = adapter->vfinfo[vf].spoofchk_enabled;
 	ivi->rss_query_en = adapter->vfinfo[vf].rss_query_enabled;
 	ivi->trusted = adapter->vfinfo[vf].trusted;
-	ivi->linkstate = adapter->vfinfo[vf].link_state;
 	return 0;
 }

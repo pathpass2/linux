@@ -40,7 +40,7 @@ struct hts221_hw {
 	/* Ensure natural alignment of timestamp */
 	struct {
 		__le16 channels[2];
-		aligned_s64 ts;
+		s64 ts __aligned(8);
 	} scan;
 };
 

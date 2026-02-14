@@ -24,20 +24,13 @@ struct vimc_sensor_device {
 	struct vimc_ent_device ved;
 	struct v4l2_subdev sd;
 	struct tpg_data tpg;
+	u8 *frame;
+	enum vimc_sensor_osd_mode osd_value;
+	u64 start_stream_ts;
+	/* The active format */
+	struct v4l2_mbus_framefmt mbus_format;
 	struct v4l2_ctrl_handler hdl;
 	struct media_pad pad;
-
-	u8 *frame;
-
-	/*
-	 * Virtual "hardware" configuration, filled when the stream starts or
-	 * when controls are set.
-	 */
-	struct {
-		struct v4l2_area size;
-		enum vimc_sensor_osd_mode osd_value;
-		u64 start_stream_ts;
-	} hw;
 };
 
 static const struct v4l2_mbus_framefmt fmt_default = {
@@ -48,13 +41,17 @@ static const struct v4l2_mbus_framefmt fmt_default = {
 	.colorspace = V4L2_COLORSPACE_SRGB,
 };
 
-static int vimc_sensor_init_state(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_state *sd_state)
+static int vimc_sensor_init_cfg(struct v4l2_subdev *sd,
+				struct v4l2_subdev_state *sd_state)
 {
-	struct v4l2_mbus_framefmt *mf;
+	unsigned int i;
 
-	mf = v4l2_subdev_state_get_format(sd_state, 0);
-	*mf = fmt_default;
+	for (i = 0; i < sd->entity.num_pads; i++) {
+		struct v4l2_mbus_framefmt *mf;
+
+		mf = v4l2_subdev_get_try_format(sd, sd_state, i);
+		*mf = fmt_default;
+	}
 
 	return 0;
 }
@@ -95,22 +92,36 @@ static int vimc_sensor_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static void vimc_sensor_tpg_s_format(struct vimc_sensor_device *vsensor,
-				     const struct v4l2_mbus_framefmt *format)
+static int vimc_sensor_get_fmt(struct v4l2_subdev *sd,
+			       struct v4l2_subdev_state *sd_state,
+			       struct v4l2_subdev_format *fmt)
 {
-	const struct vimc_pix_map *vpix = vimc_pix_map_by_code(format->code);
+	struct vimc_sensor_device *vsensor =
+				container_of(sd, struct vimc_sensor_device, sd);
 
-	tpg_reset_source(&vsensor->tpg, format->width, format->height,
-			 format->field);
-	tpg_s_bytesperline(&vsensor->tpg, 0, format->width * vpix->bpp);
-	tpg_s_buf_height(&vsensor->tpg, format->height);
+	fmt->format = fmt->which == V4L2_SUBDEV_FORMAT_TRY ?
+		      *v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) :
+		      vsensor->mbus_format;
+
+	return 0;
+}
+
+static void vimc_sensor_tpg_s_format(struct vimc_sensor_device *vsensor)
+{
+	const struct vimc_pix_map *vpix =
+				vimc_pix_map_by_code(vsensor->mbus_format.code);
+
+	tpg_reset_source(&vsensor->tpg, vsensor->mbus_format.width,
+			 vsensor->mbus_format.height, vsensor->mbus_format.field);
+	tpg_s_bytesperline(&vsensor->tpg, 0, vsensor->mbus_format.width * vpix->bpp);
+	tpg_s_buf_height(&vsensor->tpg, vsensor->mbus_format.height);
 	tpg_s_fourcc(&vsensor->tpg, vpix->pixelformat);
 	/* TODO: add support for V4L2_FIELD_ALTERNATE */
-	tpg_s_field(&vsensor->tpg, format->field, false);
-	tpg_s_colorspace(&vsensor->tpg, format->colorspace);
-	tpg_s_ycbcr_enc(&vsensor->tpg, format->ycbcr_enc);
-	tpg_s_quantization(&vsensor->tpg, format->quantization);
-	tpg_s_xfer_func(&vsensor->tpg, format->xfer_func);
+	tpg_s_field(&vsensor->tpg, vsensor->mbus_format.field, false);
+	tpg_s_colorspace(&vsensor->tpg, vsensor->mbus_format.colorspace);
+	tpg_s_ycbcr_enc(&vsensor->tpg, vsensor->mbus_format.ycbcr_enc);
+	tpg_s_quantization(&vsensor->tpg, vsensor->mbus_format.quantization);
+	tpg_s_xfer_func(&vsensor->tpg, vsensor->mbus_format.xfer_func);
 }
 
 static void vimc_sensor_adjust_fmt(struct v4l2_mbus_framefmt *fmt)
@@ -141,11 +152,15 @@ static int vimc_sensor_set_fmt(struct v4l2_subdev *sd,
 	struct vimc_sensor_device *vsensor = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *mf;
 
-	/* Do not change the format while stream is on */
-	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE && vsensor->frame)
-		return -EBUSY;
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
+		/* Do not change the format while stream is on */
+		if (vsensor->frame)
+			return -EBUSY;
 
-	mf = v4l2_subdev_state_get_format(sd_state, fmt->pad);
+		mf = &vsensor->mbus_format;
+	} else {
+		mf = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
+	}
 
 	/* Set the new format */
 	vimc_sensor_adjust_fmt(&fmt->format);
@@ -168,9 +183,10 @@ static int vimc_sensor_set_fmt(struct v4l2_subdev *sd,
 }
 
 static const struct v4l2_subdev_pad_ops vimc_sensor_pad_ops = {
+	.init_cfg		= vimc_sensor_init_cfg,
 	.enum_mbus_code		= vimc_sensor_enum_mbus_code,
 	.enum_frame_size	= vimc_sensor_enum_frame_size,
-	.get_fmt		= v4l2_subdev_get_fmt,
+	.get_fmt		= vimc_sensor_get_fmt,
 	.set_fmt		= vimc_sensor_set_fmt,
 };
 
@@ -187,7 +203,7 @@ static void *vimc_sensor_process_frame(struct vimc_ent_device *ved,
 
 	tpg_fill_plane_buffer(&vsensor->tpg, 0, 0, vsensor->frame);
 	tpg_calc_text_basep(&vsensor->tpg, basep, 0, vsensor->frame);
-	switch (vsensor->hw.osd_value) {
+	switch (vsensor->osd_value) {
 	case VIMC_SENSOR_OSD_SHOW_ALL: {
 		const char *order = tpg_g_color_order(&vsensor->tpg);
 
@@ -201,14 +217,15 @@ static void *vimc_sensor_process_frame(struct vimc_ent_device *ved,
 			 vsensor->tpg.hue);
 		tpg_gen_text(&vsensor->tpg, basep, line++ * line_height, 16, str);
 		snprintf(str, sizeof(str), "sensor size: %dx%d",
-			 vsensor->hw.size.width, vsensor->hw.size.height);
+			 vsensor->mbus_format.width,
+			 vsensor->mbus_format.height);
 		tpg_gen_text(&vsensor->tpg, basep, line++ * line_height, 16, str);
 		fallthrough;
 	}
 	case VIMC_SENSOR_OSD_SHOW_COUNTERS: {
 		unsigned int ms;
 
-		ms = div_u64(ktime_get_ns() - vsensor->hw.start_stream_ts, 1000000);
+		ms = div_u64(ktime_get_ns() - vsensor->start_stream_ts, 1000000);
 		snprintf(str, sizeof(str), "%02d:%02d:%02d:%03d",
 			 (ms / (60 * 60 * 1000)) % 24,
 			 (ms / (60 * 1000)) % 60,
@@ -231,25 +248,15 @@ static int vimc_sensor_s_stream(struct v4l2_subdev *sd, int enable)
 				container_of(sd, struct vimc_sensor_device, sd);
 
 	if (enable) {
-		const struct v4l2_mbus_framefmt *format;
-		struct v4l2_subdev_state *state;
 		const struct vimc_pix_map *vpix;
 		unsigned int frame_size;
 
-		state = v4l2_subdev_lock_and_get_active_state(sd);
-		format = v4l2_subdev_state_get_format(state, 0);
+		vsensor->start_stream_ts = ktime_get_ns();
 
-		/* Configure the test pattern generator. */
-		vimc_sensor_tpg_s_format(vsensor, format);
-
-		/* Calculate the frame size. */
-		vpix = vimc_pix_map_by_code(format->code);
-		frame_size = format->width * vpix->bpp * format->height;
-
-		vsensor->hw.size.width = format->width;
-		vsensor->hw.size.height = format->height;
-
-		v4l2_subdev_unlock_state(state);
+		/* Calculate the frame size */
+		vpix = vimc_pix_map_by_code(vsensor->mbus_format.code);
+		frame_size = vsensor->mbus_format.width * vpix->bpp *
+			     vsensor->mbus_format.height;
 
 		/*
 		 * Allocate the frame buffer. Use vmalloc to be able to
@@ -259,7 +266,9 @@ static int vimc_sensor_s_stream(struct v4l2_subdev *sd, int enable)
 		if (!vsensor->frame)
 			return -ENOMEM;
 
-		vsensor->hw.start_stream_ts = ktime_get_ns();
+		/* configure the test pattern generator */
+		vimc_sensor_tpg_s_format(vsensor);
+
 	} else {
 
 		vfree(vsensor->frame);
@@ -283,10 +292,6 @@ static const struct v4l2_subdev_ops vimc_sensor_ops = {
 	.core = &vimc_sensor_core_ops,
 	.pad = &vimc_sensor_pad_ops,
 	.video = &vimc_sensor_video_ops,
-};
-
-static const struct v4l2_subdev_internal_ops vimc_sensor_internal_ops = {
-	.init_state = vimc_sensor_init_state,
 };
 
 static int vimc_sensor_s_ctrl(struct v4l2_ctrl *ctrl)
@@ -317,7 +322,7 @@ static int vimc_sensor_s_ctrl(struct v4l2_ctrl *ctrl)
 		tpg_s_saturation(&vsensor->tpg, ctrl->val);
 		break;
 	case VIMC_CID_OSD_TEXT_MODE:
-		vsensor->hw.osd_value = ctrl->val;
+		vsensor->osd_value = ctrl->val;
 		break;
 	default:
 		return -EINVAL;
@@ -336,7 +341,6 @@ static void vimc_sensor_release(struct vimc_ent_device *ved)
 
 	v4l2_ctrl_handler_free(&vsensor->hdl);
 	tpg_free(&vsensor->tpg);
-	v4l2_subdev_cleanup(&vsensor->sd);
 	media_entity_cleanup(vsensor->ved.ent);
 	kfree(vsensor);
 }
@@ -410,7 +414,8 @@ static struct vimc_ent_device *vimc_sensor_add(struct vimc_device *vimc,
 	}
 
 	/* Initialize the test pattern generator */
-	tpg_init(&vsensor->tpg, fmt_default.width, fmt_default.height);
+	tpg_init(&vsensor->tpg, vsensor->mbus_format.width,
+		 vsensor->mbus_format.height);
 	ret = tpg_alloc(&vsensor->tpg, VIMC_FRAME_MAX_WIDTH);
 	if (ret)
 		goto err_free_hdl;
@@ -420,12 +425,15 @@ static struct vimc_ent_device *vimc_sensor_add(struct vimc_device *vimc,
 	ret = vimc_ent_sd_register(&vsensor->ved, &vsensor->sd, v4l2_dev,
 				   vcfg_name,
 				   MEDIA_ENT_F_CAM_SENSOR, 1, &vsensor->pad,
-				   &vimc_sensor_internal_ops, &vimc_sensor_ops);
+				   &vimc_sensor_ops);
 	if (ret)
 		goto err_free_tpg;
 
 	vsensor->ved.process_frame = vimc_sensor_process_frame;
 	vsensor->ved.dev = vimc->mdev.dev;
+
+	/* Initialize the frame format */
+	vsensor->mbus_format = fmt_default;
 
 	return &vsensor->ved;
 
@@ -439,7 +447,7 @@ err_free_vsensor:
 	return ERR_PTR(ret);
 }
 
-const struct vimc_ent_type vimc_sensor_type = {
+struct vimc_ent_type vimc_sensor_type = {
 	.add = vimc_sensor_add,
 	.release = vimc_sensor_release
 };

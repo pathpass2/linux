@@ -88,7 +88,6 @@
 #define STORE_LE32(addr, val)	(*(u32 *)addr = val)
 
 
-MODULE_DESCRIPTION("Mediated virtual PCI display host device driver");
 MODULE_LICENSE("GPL v2");
 
 static int max_mbytes = 256;
@@ -134,14 +133,17 @@ static struct mdev_type *mbochs_mdev_types[] = {
 };
 
 static dev_t		mbochs_devt;
-static const struct class mbochs_class = {
-	.name = MBOCHS_CLASS_NAME,
-};
+static struct class	*mbochs_class;
 static struct cdev	mbochs_cdev;
 static struct device	mbochs_dev;
 static struct mdev_parent mbochs_parent;
 static atomic_t mbochs_avail_mbytes;
 static const struct vfio_device_ops mbochs_dev_ops;
+
+struct vfio_region_info_ext {
+	struct vfio_region_info          base;
+	struct vfio_region_info_cap_type type;
+};
 
 struct mbochs_mode {
 	u32 drm_format;
@@ -1028,12 +1030,10 @@ static int mbochs_dmabuf_export(struct mbochs_dmabuf *dmabuf)
 	return 0;
 }
 
-static int mbochs_ioctl_get_region_info(struct vfio_device *vdev,
-					struct vfio_region_info *region_info,
-					struct vfio_info_cap *caps)
+static int mbochs_get_region_info(struct mdev_state *mdev_state,
+				  struct vfio_region_info_ext *ext)
 {
-	struct mdev_state *mdev_state =
-		container_of(vdev, struct mdev_state, vdev);
+	struct vfio_region_info *region_info = &ext->base;
 
 	if (region_info->index >= MBOCHS_NUM_REGIONS)
 		return -EINVAL;
@@ -1058,23 +1058,20 @@ static int mbochs_ioctl_get_region_info(struct vfio_device *vdev,
 		region_info->flags  = (VFIO_REGION_INFO_FLAG_READ  |
 				       VFIO_REGION_INFO_FLAG_WRITE);
 		break;
-	case MBOCHS_EDID_REGION_INDEX: {
-		struct vfio_region_info_cap_type cap_type = {
-			.header.id = VFIO_REGION_INFO_CAP_TYPE,
-			.header.version = 1,
-			.type = VFIO_REGION_TYPE_GFX,
-			.subtype = VFIO_REGION_SUBTYPE_GFX_EDID,
-		};
-
-		region_info->offset = MBOCHS_EDID_OFFSET;
-		region_info->size = MBOCHS_EDID_SIZE;
-		region_info->flags = (VFIO_REGION_INFO_FLAG_READ |
-				      VFIO_REGION_INFO_FLAG_WRITE |
-				      VFIO_REGION_INFO_FLAG_CAPS);
-
-		return vfio_info_add_capability(caps, &cap_type.header,
-						sizeof(cap_type));
-	}
+	case MBOCHS_EDID_REGION_INDEX:
+		ext->base.argsz = sizeof(*ext);
+		ext->base.offset = MBOCHS_EDID_OFFSET;
+		ext->base.size = MBOCHS_EDID_SIZE;
+		ext->base.flags = (VFIO_REGION_INFO_FLAG_READ  |
+				   VFIO_REGION_INFO_FLAG_WRITE |
+				   VFIO_REGION_INFO_FLAG_CAPS);
+		ext->base.cap_offset = offsetof(typeof(*ext), type);
+		ext->type.header.id = VFIO_REGION_INFO_CAP_TYPE;
+		ext->type.header.version = 1;
+		ext->type.header.next = 0;
+		ext->type.type = VFIO_REGION_TYPE_GFX;
+		ext->type.subtype = VFIO_REGION_SUBTYPE_GFX_EDID;
+		break;
 	default:
 		region_info->size   = 0;
 		region_info->offset = 0;
@@ -1191,7 +1188,7 @@ static long mbochs_ioctl(struct vfio_device *vdev, unsigned int cmd,
 	struct mdev_state *mdev_state =
 		container_of(vdev, struct mdev_state, vdev);
 	int ret = 0;
-	unsigned long minsz;
+	unsigned long minsz, outsz;
 
 	switch (cmd) {
 	case VFIO_DEVICE_GET_INFO:
@@ -1211,6 +1208,30 @@ static long mbochs_ioctl(struct vfio_device *vdev, unsigned int cmd,
 			return ret;
 
 		if (copy_to_user((void __user *)arg, &info, minsz))
+			return -EFAULT;
+
+		return 0;
+	}
+	case VFIO_DEVICE_GET_REGION_INFO:
+	{
+		struct vfio_region_info_ext info;
+
+		minsz = offsetofend(typeof(info), base.offset);
+
+		if (copy_from_user(&info, (void __user *)arg, minsz))
+			return -EFAULT;
+
+		outsz = info.base.argsz;
+		if (outsz < minsz)
+			return -EINVAL;
+		if (outsz > sizeof(info))
+			return -EINVAL;
+
+		ret = mbochs_get_region_info(mdev_state, &info);
+		if (ret)
+			return ret;
+
+		if (copy_to_user((void __user *)arg, &info, outsz))
 			return -EFAULT;
 
 		return 0;
@@ -1241,7 +1262,7 @@ static long mbochs_ioctl(struct vfio_device *vdev, unsigned int cmd,
 
 	case VFIO_DEVICE_QUERY_GFX_PLANE:
 	{
-		struct vfio_device_gfx_plane_info plane = {};
+		struct vfio_device_gfx_plane_info plane;
 
 		minsz = offsetofend(struct vfio_device_gfx_plane_info,
 				    region_index);
@@ -1352,12 +1373,7 @@ static const struct vfio_device_ops mbochs_dev_ops = {
 	.read = mbochs_read,
 	.write = mbochs_write,
 	.ioctl = mbochs_ioctl,
-	.get_region_info_caps = mbochs_ioctl_get_region_info,
 	.mmap = mbochs_mmap,
-	.bind_iommufd	= vfio_iommufd_emulated_bind,
-	.unbind_iommufd	= vfio_iommufd_emulated_unbind,
-	.attach_ioas	= vfio_iommufd_emulated_attach_ioas,
-	.detach_ioas	= vfio_iommufd_emulated_detach_ioas,
 };
 
 static struct mdev_driver mbochs_driver = {
@@ -1402,10 +1418,13 @@ static int __init mbochs_dev_init(void)
 	if (ret)
 		goto err_cdev;
 
-	ret = class_register(&mbochs_class);
-	if (ret)
+	mbochs_class = class_create(THIS_MODULE, MBOCHS_CLASS_NAME);
+	if (IS_ERR(mbochs_class)) {
+		pr_err("Error: failed to register mbochs_dev class\n");
+		ret = PTR_ERR(mbochs_class);
 		goto err_driver;
-	mbochs_dev.class = &mbochs_class;
+	}
+	mbochs_dev.class = mbochs_class;
 	mbochs_dev.release = mbochs_device_release;
 	dev_set_name(&mbochs_dev, "%s", MBOCHS_NAME);
 
@@ -1425,7 +1444,7 @@ err_device:
 	device_del(&mbochs_dev);
 err_put:
 	put_device(&mbochs_dev);
-	class_unregister(&mbochs_class);
+	class_destroy(mbochs_class);
 err_driver:
 	mdev_unregister_driver(&mbochs_driver);
 err_cdev:
@@ -1443,9 +1462,10 @@ static void __exit mbochs_dev_exit(void)
 	mdev_unregister_driver(&mbochs_driver);
 	cdev_del(&mbochs_cdev);
 	unregister_chrdev_region(mbochs_devt, MINORMASK + 1);
-	class_unregister(&mbochs_class);
+	class_destroy(mbochs_class);
+	mbochs_class = NULL;
 }
 
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);
 module_init(mbochs_dev_init)
 module_exit(mbochs_dev_exit)

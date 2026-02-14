@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
 
 /* Authors: Bernard Metzler <bmt@zurich.ibm.com> */
 /* Copyright (c) 2008-2019, IBM Corporation */
@@ -72,7 +72,7 @@ int siw_reap_cqe(struct siw_cq *cq, struct ib_wc *wc)
 			wc->opcode = map_wc_opcode[cqe->opcode];
 			wc->status = map_cqe_status[cqe->status].ib;
 			siw_dbg_cq(cq,
-				   "idx %u, type %d, flags %2x, id 0x%p\n",
+				   "idx %u, type %d, flags %2x, id 0x%pK\n",
 				   cq->cq_get % cq->num_cqe, cqe->opcode,
 				   cqe->flags, (void *)(uintptr_t)cqe->id);
 		} else {

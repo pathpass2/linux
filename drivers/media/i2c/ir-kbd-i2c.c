@@ -35,7 +35,7 @@
  *	Copyright (C) 2011 Andy Walls <awalls@md.metrocast.net>
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -321,9 +321,9 @@ static int get_key_avermedia_cardbus(struct IR_i2c *ir, enum rc_proto *protocol,
 
 static int ir_key_poll(struct IR_i2c *ir)
 {
-	enum rc_proto protocol = 0;
-	u32 scancode = 0;
-	u8 toggle = 0;
+	enum rc_proto protocol;
+	u32 scancode;
+	u8 toggle;
 	int rc;
 
 	dev_dbg(&ir->rc->dev, "%s\n", __func__);
@@ -988,7 +988,7 @@ static struct i2c_driver ir_kbd_driver = {
 	.driver = {
 		.name   = "ir-kbd-i2c",
 	},
-	.probe          = ir_probe,
+	.probe_new      = ir_probe,
 	.remove         = ir_remove,
 	.id_table       = ir_kbd_id,
 };

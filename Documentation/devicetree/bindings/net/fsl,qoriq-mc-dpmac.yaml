@@ -14,7 +14,7 @@ description:
   located under the 'dpmacs' node for the fsl-mc bus DTS node.
 
 allOf:
-  - $ref: ethernet-controller.yaml#
+  - $ref: "ethernet-controller.yaml#"
 
 properties:
   compatible:
@@ -24,20 +24,24 @@ properties:
     maxItems: 1
     description: The DPMAC number
 
+  phy-handle: true
+
+  phy-connection-type: true
+
+  phy-mode: true
+
   pcs-handle:
     maxItems: 1
     description:
       A reference to a node representing a PCS PHY device found on
       the internal MDIO bus.
 
-  phys:
-    description: A reference to the SerDes lane(s)
-    maxItems: 1
+  managed: true
 
 required:
   - reg
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

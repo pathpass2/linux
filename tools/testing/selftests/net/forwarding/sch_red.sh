@@ -52,61 +52,72 @@ PKTSZ=1400
 
 h1_create()
 {
-	adf_simple_if_init $h1 192.0.2.1/28
-
+	simple_if_init $h1 192.0.2.1/28
 	mtu_set $h1 10000
-	defer mtu_restore $h1
-
 	tc qdisc replace dev $h1 root handle 1: tbf \
 	   rate 10Mbit burst 10K limit 1M
-	defer tc qdisc del dev $h1 root
+}
+
+h1_destroy()
+{
+	tc qdisc del dev $h1 root
+	mtu_restore $h1
+	simple_if_fini $h1 192.0.2.1/28
 }
 
 h2_create()
 {
-	adf_simple_if_init $h2 192.0.2.2/28
-
+	simple_if_init $h2 192.0.2.2/28
 	mtu_set $h2 10000
-	defer mtu_restore $h2
+}
+
+h2_destroy()
+{
+	mtu_restore $h2
+	simple_if_fini $h2 192.0.2.2/28
 }
 
 h3_create()
 {
-	adf_simple_if_init $h3 192.0.2.3/28
-
+	simple_if_init $h3 192.0.2.3/28
 	mtu_set $h3 10000
-	defer mtu_restore $h3
+}
+
+h3_destroy()
+{
+	mtu_restore $h3
+	simple_if_fini $h3 192.0.2.3/28
 }
 
 switch_create()
 {
 	ip link add dev br up type bridge
-	defer ip link del dev br
-
 	ip link set dev $swp1 up master br
-	defer ip link set dev $swp1 down nomaster
-
 	ip link set dev $swp2 up master br
-	defer ip link set dev $swp2 down nomaster
-
 	ip link set dev $swp3 up master br
-	defer ip link set dev $swp3 down nomaster
 
 	mtu_set $swp1 10000
-	defer mtu_restore $h1
-
 	mtu_set $swp2 10000
-	defer mtu_restore $h2
-
 	mtu_set $swp3 10000
-	defer mtu_restore $h3
 
 	tc qdisc replace dev $swp3 root handle 1: tbf \
 	   rate 10Mbit burst 10K limit 1M
-	defer tc qdisc del dev $swp3 root
-
 	ip link add name _drop_test up type dummy
-	defer ip link del dev _drop_test
+}
+
+switch_destroy()
+{
+	ip link del dev _drop_test
+	tc qdisc del dev $swp3 root
+
+	mtu_restore $h3
+	mtu_restore $h2
+	mtu_restore $h1
+
+	ip link set dev $swp3 down nomaster
+	ip link set dev $swp2 down nomaster
+	ip link set dev $swp1 down nomaster
+	ip link del dev br
 }
 
 setup_prepare()
@@ -122,12 +133,24 @@ setup_prepare()
 
 	h3_mac=$(mac_get $h3)
 
-	adf_vrf_prepare
+	vrf_prepare
 
 	h1_create
 	h2_create
 	h3_create
 	switch_create
+}
+
+cleanup()
+{
+	pre_cleanup
+
+	switch_destroy
+	h3_destroy
+	h2_destroy
+	h1_destroy
+
+	vrf_cleanup
 }
 
 ping_ipv4()
@@ -264,7 +287,6 @@ do_ecn_test()
 
 	$MZ $h1 -p $PKTSZ -A 192.0.2.1 -B 192.0.2.3 -c 0 \
 		-a own -b $h3_mac -t tcp -q tos=0x01 &
-	defer stop_traffic $!
 	sleep 1
 
 	ecn_test_common "$name" $limit
@@ -276,6 +298,9 @@ do_ecn_test()
 	build_backlog $((2 * limit)) udp >/dev/null
 	check_fail $? "UDP traffic went into backlog instead of being early-dropped"
 	log_test "$name backlog > limit: UDP early-dropped"
+
+	stop_traffic
+	sleep 1
 }
 
 do_ecn_nodrop_test()
@@ -285,7 +310,6 @@ do_ecn_nodrop_test()
 
 	$MZ $h1 -p $PKTSZ -A 192.0.2.1 -B 192.0.2.3 -c 0 \
 		-a own -b $h3_mac -t tcp -q tos=0x01 &
-	defer stop_traffic $!
 	sleep 1
 
 	ecn_test_common "$name" $limit
@@ -297,6 +321,9 @@ do_ecn_nodrop_test()
 	build_backlog $((2 * limit)) udp >/dev/null
 	check_err $? "UDP traffic was early-dropped instead of getting into backlog"
 	log_test "$name backlog > limit: UDP not dropped"
+
+	stop_traffic
+	sleep 1
 }
 
 do_red_test()
@@ -309,7 +336,6 @@ do_red_test()
 	# is above limit.
 	$MZ $h1 -p $PKTSZ -A 192.0.2.1 -B 192.0.2.3 -c 0 \
 		-a own -b $h3_mac -t tcp -q tos=0x01 &
-	defer stop_traffic $!
 
 	# Pushing below the queue limit should work.
 	RET=0
@@ -326,6 +352,9 @@ do_red_test()
 	pct=$(check_marking "== 0")
 	check_err $? "backlog $backlog / $limit Got $pct% marked packets, expected == 0."
 	log_test "RED backlog > limit"
+
+	stop_traffic
+	sleep 1
 }
 
 do_red_qevent_test()
@@ -340,7 +369,6 @@ do_red_qevent_test()
 
 	$MZ $h1 -p $PKTSZ -A 192.0.2.1 -B 192.0.2.3 -c 0 \
 		-a own -b $h3_mac -t udp -q &
-	defer stop_traffic $!
 	sleep 1
 
 	tc filter add block 10 pref 1234 handle 102 matchall skip_hw \
@@ -368,6 +396,9 @@ do_red_qevent_test()
 	check_err $? "Dropped packets still observed: 0 expected, $((now - base)) seen"
 
 	log_test "RED early_dropped packets mirrored"
+
+	stop_traffic
+	sleep 1
 }
 
 do_ecn_qevent_test()
@@ -379,7 +410,6 @@ do_ecn_qevent_test()
 
 	$MZ $h1 -p $PKTSZ -A 192.0.2.1 -B 192.0.2.3 -c 0 \
 		-a own -b $h3_mac -t tcp -q tos=0x01 &
-	defer stop_traffic $!
 	sleep 1
 
 	tc filter add block 10 pref 1234 handle 102 matchall skip_hw \
@@ -398,6 +428,9 @@ do_ecn_qevent_test()
 	tc filter del block 10 pref 1234 handle 102 matchall
 
 	log_test "ECN marked packets mirrored"
+
+	stop_traffic
+	sleep 1
 }
 
 install_qdisc()
@@ -418,36 +451,36 @@ uninstall_qdisc()
 ecn_test()
 {
 	install_qdisc ecn
-	defer uninstall_qdisc
-	xfail_on_slow do_ecn_test $BACKLOG
+	do_ecn_test $BACKLOG
+	uninstall_qdisc
 }
 
 ecn_nodrop_test()
 {
 	install_qdisc ecn nodrop
-	defer uninstall_qdisc
-	xfail_on_slow do_ecn_nodrop_test $BACKLOG
+	do_ecn_nodrop_test $BACKLOG
+	uninstall_qdisc
 }
 
 red_test()
 {
 	install_qdisc
-	defer uninstall_qdisc
-	xfail_on_slow do_red_test $BACKLOG
+	do_red_test $BACKLOG
+	uninstall_qdisc
 }
 
 red_qevent_test()
 {
 	install_qdisc qevent early_drop block 10
-	defer uninstall_qdisc
-	xfail_on_slow do_red_qevent_test $BACKLOG
+	do_red_qevent_test $BACKLOG
+	uninstall_qdisc
 }
 
 ecn_qevent_test()
 {
 	install_qdisc ecn qevent mark block 10
-	defer uninstall_qdisc
-	xfail_on_slow do_ecn_qevent_test $BACKLOG
+	do_ecn_qevent_test $BACKLOG
+	uninstall_qdisc
 }
 
 trap cleanup EXIT

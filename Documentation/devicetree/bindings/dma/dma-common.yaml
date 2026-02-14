@@ -32,9 +32,10 @@ properties:
       The first item in the array is for channels 0-31, the second is for
       channels 32-63, etc.
     $ref: /schemas/types.yaml#/definitions/uint32-array
-    minItems: 1
-    # Should be enough
-    maxItems: 255
+    items:
+      minItems: 1
+      # Should be enough
+      maxItems: 255
 
   dma-channels:
     $ref: /schemas/types.yaml#/definitions/uint32

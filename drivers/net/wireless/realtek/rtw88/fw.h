@@ -29,8 +29,6 @@
 #define BCN_FILTER_CONNECTION_LOSS	1
 #define BCN_FILTER_CONNECTED		2
 #define BCN_FILTER_NOTIFY_BEACON_LOSS	3
-#define RTW_DEFAULT_CQM_THOLD		-70
-#define RTW_DEFAULT_CQM_HYST		4
 
 #define SCAN_NOTIFY_TIMEOUT  msecs_to_jiffies(10)
 
@@ -45,8 +43,6 @@
 #define RTW_PRI_CH_IDX			1
 #define RTW_OLD_PROBE_PG_CNT		2
 #define RTW_PROBE_PG_CNT		4
-
-#define RTW_DEBUG_DUMP_TIMES		10
 
 enum rtw_c2h_cmd_id {
 	C2H_CCX_TX_RPT = 0x03,
@@ -84,30 +80,6 @@ struct rtw_c2h_adaptivity {
 	u8 h2l;
 	u8 option;
 } __packed;
-
-struct rtw_c2h_ra_rpt {
-	u8 rate_sgi;
-	u8 mac_id;
-	u8 byte2;
-	u8 status;
-	u8 byte4;
-	u8 ra_ratio;
-	u8 bw;
-} __packed;
-
-#define RTW_C2H_RA_RPT_RATE	GENMASK(6, 0)
-#define RTW_C2H_RA_RPT_SGI	BIT(7)
-
-struct rtw_h2c_register {
-	u32 w0;
-	u32 w1;
-} __packed;
-
-#define RTW_H2C_W0_CMDID		GENMASK(7, 0)
-
-/* H2C_CMD_DEFAULT_PORT command */
-#define RTW_H2C_DEFAULT_PORT_W0_PORTID	GENMASK(15, 8)
-#define RTW_H2C_DEFAULT_PORT_W0_MACID	GENMASK(23, 16)
 
 struct rtw_h2c_cmd {
 	__le32 msg;
@@ -377,6 +349,10 @@ struct rtw_fw_hdr_legacy {
 #define GET_CHAN_SWITCH_CENTRAL_CH(c2h_payload)	(c2h_payload[2])
 #define GET_CHAN_SWITCH_ID(c2h_payload)		(c2h_payload[3])
 #define GET_CHAN_SWITCH_STATUS(c2h_payload)	(c2h_payload[4])
+#define GET_RA_REPORT_RATE(c2h_payload)		(c2h_payload[0] & 0x7f)
+#define GET_RA_REPORT_SGI(c2h_payload)		((c2h_payload[0] & 0x80) >> 7)
+#define GET_RA_REPORT_BW(c2h_payload)		(c2h_payload[6])
+#define GET_RA_REPORT_MACID(c2h_payload)	(c2h_payload[1])
 
 #define GET_BCN_FILTER_NOTIFY_TYPE(c2h_payload)	(c2h_payload[1] & 0xf)
 #define GET_BCN_FILTER_NOTIFY_EVENT(c2h_payload)	(c2h_payload[1] & 0x10)
@@ -554,10 +530,8 @@ static inline void rtw_h2c_pkt_set_header(u8 *h2c_pkt, u8 sub_id)
 #define H2C_CMD_MEDIA_STATUS_RPT	0x01
 #define H2C_CMD_SET_PWR_MODE		0x20
 #define H2C_CMD_LPS_PG_INFO		0x2b
-#define H2C_CMD_DEFAULT_PORT		0x2c
 #define H2C_CMD_RA_INFO			0x40
 #define H2C_CMD_RSSI_MONITOR		0x42
-#define H2C_CMD_RA_INFO_HI		0x46
 #define H2C_CMD_BCN_FILTER_OFFLOAD_P0	0x56
 #define H2C_CMD_BCN_FILTER_OFFLOAD_P1	0x57
 #define H2C_CMD_WL_PHY_INFO		0x58
@@ -822,13 +796,11 @@ static inline bool rtw_fw_feature_ext_check(struct rtw_fw_state *fw,
 	return !!(fw->feature_ext & feature);
 }
 
-void rtw_fw_dump_dbg_info(struct rtw_dev *rtwdev);
 void rtw_fw_c2h_cmd_rx_irqsafe(struct rtw_dev *rtwdev, u32 pkt_offset,
 			       struct sk_buff *skb);
 void rtw_fw_c2h_cmd_handle(struct rtw_dev *rtwdev, struct sk_buff *skb);
 void rtw_fw_send_general_info(struct rtw_dev *rtwdev);
 void rtw_fw_send_phydm_info(struct rtw_dev *rtwdev);
-void rtw_fw_default_port(struct rtw_dev *rtwdev, struct rtw_vif *rtwvif);
 
 void rtw_fw_do_iqk(struct rtw_dev *rtwdev, struct rtw_iqk_para *para);
 void rtw_fw_inform_rfk_status(struct rtw_dev *rtwdev, bool start);
@@ -896,5 +868,5 @@ int rtw_hw_scan_offload(struct rtw_dev *rtwdev, struct ieee80211_vif *vif,
 			bool enable);
 void rtw_hw_scan_status_report(struct rtw_dev *rtwdev, struct sk_buff *skb);
 void rtw_hw_scan_chan_switch(struct rtw_dev *rtwdev, struct sk_buff *skb);
-void rtw_hw_scan_abort(struct rtw_dev *rtwdev);
+void rtw_hw_scan_abort(struct rtw_dev *rtwdev, struct ieee80211_vif *vif);
 #endif

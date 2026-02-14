@@ -180,7 +180,7 @@ static void __init combiner_init(void __iomem *combiner_base,
 	if (!combiner_data)
 		return;
 
-	combiner_irq_domain = irq_domain_create_linear(of_fwnode_handle(np), nr_irq,
+	combiner_irq_domain = irq_domain_add_linear(np, nr_irq,
 				&combiner_irq_domain_ops, combiner_data);
 	if (WARN_ON(!combiner_irq_domain)) {
 		pr_warn("%s: irq domain init failed\n", __func__);
@@ -200,13 +200,12 @@ static void __init combiner_init(void __iomem *combiner_base,
 
 /**
  * combiner_suspend - save interrupt combiner state before suspend
- * @data: syscore context
  *
  * Save the interrupt enable set register for all combiner groups since
  * the state is lost when the system enters into a sleep state.
  *
  */
-static int combiner_suspend(void *data)
+static int combiner_suspend(void)
 {
 	int i;
 
@@ -219,13 +218,12 @@ static int combiner_suspend(void *data)
 
 /**
  * combiner_resume - restore interrupt combiner state after resume
- * @data: syscore context
  *
  * Restore the interrupt enable set register for all combiner groups since
  * the state is lost when the system enters into a sleep state on suspend.
  *
  */
-static void combiner_resume(void *data)
+static void combiner_resume(void)
 {
 	int i;
 
@@ -242,13 +240,9 @@ static void combiner_resume(void *data)
 #define combiner_resume		NULL
 #endif
 
-static const struct syscore_ops combiner_syscore_ops = {
+static struct syscore_ops combiner_syscore_ops = {
 	.suspend	= combiner_suspend,
 	.resume		= combiner_resume,
-};
-
-static struct syscore combiner_syscore = {
-	.ops = &combiner_syscore_ops,
 };
 
 static int __init combiner_of_init(struct device_node *np,
@@ -270,7 +264,7 @@ static int __init combiner_of_init(struct device_node *np,
 
 	combiner_init(combiner_base, np);
 
-	register_syscore(&combiner_syscore);
+	register_syscore_ops(&combiner_syscore_ops);
 
 	return 0;
 }

@@ -81,10 +81,13 @@ enum {
 struct mtk_base_afe;
 int mt8186_set_audio_int_bus_parent(struct mtk_base_afe *afe, int clk_id);
 int mt8186_init_clock(struct mtk_base_afe *afe);
+void mt8186_deinit_clock(void *priv);
 int mt8186_afe_enable_cgs(struct mtk_base_afe *afe);
 void mt8186_afe_disable_cgs(struct mtk_base_afe *afe);
 int mt8186_afe_enable_clock(struct mtk_base_afe *afe);
 void mt8186_afe_disable_clock(struct mtk_base_afe *afe);
+int mt8186_afe_suspend_clock(struct mtk_base_afe *afe);
+int mt8186_afe_resume_clock(struct mtk_base_afe *afe);
 
 int mt8186_apll1_enable(struct mtk_base_afe *afe);
 void mt8186_apll1_disable(struct mtk_base_afe *afe);

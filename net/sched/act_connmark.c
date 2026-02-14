@@ -88,7 +88,7 @@ count:
 	/* using overlimits stats to count how many packets marked */
 	tcf_action_inc_overlimit_qstats(&ca->common);
 out:
-	return parms->action;
+	return READ_ONCE(ca->tcf_action);
 }
 
 static const struct nla_policy connmark_policy[TCA_CONNMARK_MAX + 1] = {
@@ -146,7 +146,7 @@ static int tcf_connmark_init(struct net *net, struct nlattr *nla,
 	} else if (ret > 0) {
 		ci = to_connmark(*a);
 		if (bind) {
-			err = ACT_P_BOUND;
+			err = 0;
 			goto out_free;
 		}
 		if (!(flags & TCA_ACT_FLAGS_REPLACE)) {
@@ -166,8 +166,6 @@ static int tcf_connmark_init(struct net *net, struct nlattr *nla,
 	err = tcf_action_check_ctrlact(parm->action, tp, &goto_ch, extack);
 	if (err < 0)
 		goto release_idr;
-
-	nparms->action = parm->action;
 
 	spin_lock_bh(&ci->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, parm->action, goto_ch);
@@ -192,22 +190,20 @@ out_free:
 static inline int tcf_connmark_dump(struct sk_buff *skb, struct tc_action *a,
 				    int bind, int ref)
 {
-	const struct tcf_connmark_info *ci = to_connmark(a);
 	unsigned char *b = skb_tail_pointer(skb);
-	const struct tcf_connmark_parms *parms;
-	struct tc_connmark opt;
+	struct tcf_connmark_info *ci = to_connmark(a);
+	struct tc_connmark opt = {
+		.index   = ci->tcf_index,
+		.refcnt  = refcount_read(&ci->tcf_refcnt) - ref,
+		.bindcnt = atomic_read(&ci->tcf_bindcnt) - bind,
+	};
+	struct tcf_connmark_parms *parms;
 	struct tcf_t t;
 
-	memset(&opt, 0, sizeof(opt));
+	spin_lock_bh(&ci->tcf_lock);
+	parms = rcu_dereference_protected(ci->parms, lockdep_is_held(&ci->tcf_lock));
 
-	opt.index   = ci->tcf_index;
-	opt.refcnt  = refcount_read(&ci->tcf_refcnt) - ref;
-	opt.bindcnt = atomic_read(&ci->tcf_bindcnt) - bind;
-
-	rcu_read_lock();
-	parms = rcu_dereference(ci->parms);
-
-	opt.action = parms->action;
+	opt.action = ci->tcf_action;
 	opt.zone = parms->zone;
 	if (nla_put(skb, TCA_CONNMARK_PARMS, sizeof(opt), &opt))
 		goto nla_put_failure;
@@ -216,12 +212,12 @@ static inline int tcf_connmark_dump(struct sk_buff *skb, struct tc_action *a,
 	if (nla_put_64bit(skb, TCA_CONNMARK_TM, sizeof(t), &t,
 			  TCA_CONNMARK_PAD))
 		goto nla_put_failure;
-	rcu_read_unlock();
+	spin_unlock_bh(&ci->tcf_lock);
 
 	return skb->len;
 
 nla_put_failure:
-	rcu_read_unlock();
+	spin_unlock_bh(&ci->tcf_lock);
 	nlmsg_trim(skb, b);
 	return -1;
 }
@@ -246,7 +242,6 @@ static struct tc_action_ops act_connmark_ops = {
 	.cleanup	=	tcf_connmark_cleanup,
 	.size		=	sizeof(struct tcf_connmark_info),
 };
-MODULE_ALIAS_NET_ACT("connmark");
 
 static __net_init int connmark_init_net(struct net *net)
 {

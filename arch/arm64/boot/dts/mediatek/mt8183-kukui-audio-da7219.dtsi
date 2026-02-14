@@ -11,7 +11,8 @@
 		pinctrl-0 = <&da7219_pins>;
 		compatible = "dlg,da7219";
 		reg = <0x1a>;
-		interrupts-extended = <&pio 165 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-parent = <&pio>;
+		interrupts = <165 IRQ_TYPE_LEVEL_LOW 165 0>;
 
 		dlg,micbias-lvl = <2600>;
 		dlg,mic-amp-in-sel = "diff";
@@ -27,7 +28,7 @@
 			dlg,btn-cfg = <50>;
 			dlg,mic-det-thr = <500>;
 			dlg,jack-ins-deb = <20>;
-			dlg,jack-det-rate = "32_64";
+			dlg,jack-det-rate = "32ms_64ms";
 			dlg,jack-rem-deb = <1>;
 
 			dlg,a-d-btn-thr = <0xa>;
@@ -39,8 +40,8 @@
 };
 
 &pio {
-	da7219_pins: da7219-pins {
-		pins-intn {
+	da7219_pins: da7219_pins {
+		pins1 {
 			pinmux = <PINMUX_GPIO165__FUNC_GPIO165>;
 			input-enable;
 			bias-pull-up;

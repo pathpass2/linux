@@ -2,7 +2,6 @@
 /* Copyright (c) 2016 Tom Herbert <tom@herbertland.com> */
 
 #include <linux/skbuff.h>
-#include <linux/skbuff_ref.h>
 #include <linux/workqueue.h>
 #include <net/strparser.h>
 #include <net/tcp.h>
@@ -13,7 +12,7 @@
 
 static struct workqueue_struct *tls_strp_wq;
 
-void tls_strp_abort_strp(struct tls_strparser *strp, int err)
+static void tls_strp_abort_strp(struct tls_strparser *strp, int err)
 {
 	if (strp->stopped)
 		return;
@@ -21,9 +20,7 @@ void tls_strp_abort_strp(struct tls_strparser *strp, int err)
 	strp->stopped = 1;
 
 	/* Report an error on the lower socket */
-	WRITE_ONCE(strp->sk->sk_err, -err);
-	/* Paired with smp_rmb() in tcp_poll() */
-	smp_wmb();
+	strp->sk->sk_err = -err;
 	sk_error_report(strp->sk);
 }
 
@@ -32,37 +29,9 @@ static void tls_strp_anchor_free(struct tls_strparser *strp)
 	struct skb_shared_info *shinfo = skb_shinfo(strp->anchor);
 
 	DEBUG_NET_WARN_ON_ONCE(atomic_read(&shinfo->dataref) != 1);
-	if (!strp->copy_mode)
-		shinfo->frag_list = NULL;
+	shinfo->frag_list = NULL;
 	consume_skb(strp->anchor);
 	strp->anchor = NULL;
-}
-
-static struct sk_buff *
-tls_strp_skb_copy(struct tls_strparser *strp, struct sk_buff *in_skb,
-		  int offset, int len)
-{
-	struct sk_buff *skb;
-	int i, err;
-
-	skb = alloc_skb_with_frags(0, len, TLS_PAGE_ORDER,
-				   &err, strp->sk->sk_allocation);
-	if (!skb)
-		return NULL;
-
-	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
-		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
-
-		WARN_ON_ONCE(skb_copy_bits(in_skb, offset,
-					   skb_frag_address(frag),
-					   skb_frag_size(frag)));
-		offset += skb_frag_size(frag);
-	}
-
-	skb->len = len;
-	skb->data_len = len;
-	skb_copy_header(skb, in_skb);
-	return skb;
 }
 
 /* Create a new skb with the contents of input copied to its page frags */
@@ -70,12 +39,24 @@ static struct sk_buff *tls_strp_msg_make_copy(struct tls_strparser *strp)
 {
 	struct strp_msg *rxm;
 	struct sk_buff *skb;
+	int i, err, offset;
 
-	skb = tls_strp_skb_copy(strp, strp->anchor, strp->stm.offset,
-				strp->stm.full_len);
+	skb = alloc_skb_with_frags(0, strp->stm.full_len, TLS_PAGE_ORDER,
+				   &err, strp->sk->sk_allocation);
 	if (!skb)
 		return NULL;
 
+	offset = strp->stm.offset;
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+
+		WARN_ON_ONCE(skb_copy_bits(strp->anchor, offset,
+					   skb_frag_address(frag),
+					   skb_frag_size(frag)));
+		offset += skb_frag_size(frag);
+	}
+
+	skb_copy_header(skb, strp->anchor);
 	rxm = strp_msg(skb);
 	rxm->offset = 0;
 	return skb;
@@ -199,29 +180,23 @@ static void tls_strp_flush_anchor_copy(struct tls_strparser *strp)
 	for (i = 0; i < shinfo->nr_frags; i++)
 		__skb_frag_unref(&shinfo->frags[i], false);
 	shinfo->nr_frags = 0;
-	if (strp->copy_mode) {
-		kfree_skb_list(shinfo->frag_list);
-		shinfo->frag_list = NULL;
-	}
 	strp->copy_mode = 0;
-	strp->mixed_decrypted = 0;
 }
 
-static int tls_strp_copyin_frag(struct tls_strparser *strp, struct sk_buff *skb,
-				struct sk_buff *in_skb, unsigned int offset,
-				size_t in_len)
+static int tls_strp_copyin(read_descriptor_t *desc, struct sk_buff *in_skb,
+			   unsigned int offset, size_t in_len)
 {
-	unsigned int nfrag = skb->len / PAGE_SIZE;
-	size_t len, chunk;
+	struct tls_strparser *strp = (struct tls_strparser *)desc->arg.data;
+	struct sk_buff *skb;
 	skb_frag_t *frag;
+	size_t len, chunk;
 	int sz;
 
-	if (unlikely(nfrag >= skb_shinfo(skb)->nr_frags)) {
-		DEBUG_NET_WARN_ON_ONCE(1);
-		return -EMSGSIZE;
-	}
+	if (strp->msg_ready)
+		return 0;
 
-	frag = &skb_shinfo(skb)->frags[nfrag];
+	skb = strp->anchor;
+	frag = &skb_shinfo(skb)->frags[skb->len / PAGE_SIZE];
 
 	len = in_len;
 	/* First make sure we got the header */
@@ -233,26 +208,19 @@ static int tls_strp_copyin_frag(struct tls_strparser *strp, struct sk_buff *skb,
 					   skb_frag_size(frag),
 					   chunk));
 
+		sz = tls_rx_msg_size(strp, strp->anchor);
+		if (sz < 0) {
+			desc->error = sz;
+			return 0;
+		}
+
+		/* We may have over-read, sz == 0 is guaranteed under-read */
+		if (sz > 0)
+			chunk =	min_t(size_t, chunk, sz - skb->len);
+
 		skb->len += chunk;
 		skb->data_len += chunk;
 		skb_frag_size_add(frag, chunk);
-
-		sz = tls_rx_msg_size(strp, skb);
-		if (sz < 0)
-			return sz;
-
-		/* We may have over-read, sz == 0 is guaranteed under-read */
-		if (unlikely(sz && sz < skb->len)) {
-			int over = skb->len - sz;
-
-			WARN_ON_ONCE(over > chunk);
-			skb->len -= over;
-			skb->data_len -= over;
-			skb_frag_size_add(frag, -over);
-
-			chunk -= over;
-		}
-
 		frag++;
 		len -= chunk;
 		offset += chunk;
@@ -279,103 +247,20 @@ static int tls_strp_copyin_frag(struct tls_strparser *strp, struct sk_buff *skb,
 		offset += chunk;
 	}
 
+	if (strp->stm.full_len == skb->len) {
+		desc->count = 0;
+
+		strp->msg_ready = 1;
+		tls_rx_msg_ready(strp);
+	}
+
 read_done:
 	return in_len - len;
 }
 
-static int tls_strp_copyin_skb(struct tls_strparser *strp, struct sk_buff *skb,
-			       struct sk_buff *in_skb, unsigned int offset,
-			       size_t in_len)
-{
-	struct sk_buff *nskb, *first, *last;
-	struct skb_shared_info *shinfo;
-	size_t chunk;
-	int sz;
-
-	if (strp->stm.full_len)
-		chunk = strp->stm.full_len - skb->len;
-	else
-		chunk = TLS_MAX_PAYLOAD_SIZE + PAGE_SIZE;
-	chunk = min(chunk, in_len);
-
-	nskb = tls_strp_skb_copy(strp, in_skb, offset, chunk);
-	if (!nskb)
-		return -ENOMEM;
-
-	shinfo = skb_shinfo(skb);
-	if (!shinfo->frag_list) {
-		shinfo->frag_list = nskb;
-		nskb->prev = nskb;
-	} else {
-		first = shinfo->frag_list;
-		last = first->prev;
-		last->next = nskb;
-		first->prev = nskb;
-	}
-
-	skb->len += chunk;
-	skb->data_len += chunk;
-
-	if (!strp->stm.full_len) {
-		sz = tls_rx_msg_size(strp, skb);
-		if (sz < 0)
-			return sz;
-
-		/* We may have over-read, sz == 0 is guaranteed under-read */
-		if (unlikely(sz && sz < skb->len)) {
-			int over = skb->len - sz;
-
-			WARN_ON_ONCE(over > chunk);
-			skb->len -= over;
-			skb->data_len -= over;
-			__pskb_trim(nskb, nskb->len - over);
-
-			chunk -= over;
-		}
-
-		strp->stm.full_len = sz;
-	}
-
-	return chunk;
-}
-
-static int tls_strp_copyin(read_descriptor_t *desc, struct sk_buff *in_skb,
-			   unsigned int offset, size_t in_len)
-{
-	struct tls_strparser *strp = (struct tls_strparser *)desc->arg.data;
-	struct sk_buff *skb;
-	int ret;
-
-	if (strp->msg_ready)
-		return 0;
-
-	skb = strp->anchor;
-	if (!skb->len)
-		skb_copy_decrypted(skb, in_skb);
-	else
-		strp->mixed_decrypted |= !!skb_cmp_decrypted(skb, in_skb);
-
-	if (IS_ENABLED(CONFIG_TLS_DEVICE) && strp->mixed_decrypted)
-		ret = tls_strp_copyin_skb(strp, skb, in_skb, offset, in_len);
-	else
-		ret = tls_strp_copyin_frag(strp, skb, in_skb, offset, in_len);
-	if (ret < 0) {
-		desc->error = ret;
-		ret = 0;
-	}
-
-	if (strp->stm.full_len && strp->stm.full_len == skb->len) {
-		desc->count = 0;
-
-		WRITE_ONCE(strp->msg_ready, 1);
-		tls_rx_msg_ready(strp);
-	}
-
-	return ret;
-}
-
 static int tls_strp_read_copyin(struct tls_strparser *strp)
 {
+	struct socket *sock = strp->sk->sk_socket;
 	read_descriptor_t desc;
 
 	desc.arg.data = strp;
@@ -383,7 +268,7 @@ static int tls_strp_read_copyin(struct tls_strparser *strp)
 	desc.count = 1; /* give more than one skb per call */
 
 	/* sk should be locked here, so okay to do read_sock */
-	tcp_read_sock(strp->sk, &desc, tls_strp_copyin);
+	sock->ops->read_sock(strp->sk, &desc, tls_strp_copyin);
 
 	return desc.error;
 }
@@ -402,6 +287,7 @@ static int tls_strp_read_copy(struct tls_strparser *strp, bool qshort)
 		return 0;
 
 	shinfo = skb_shinfo(strp->anchor);
+	shinfo->frag_list = NULL;
 
 	/* If we don't know the length go max plus page for cipher overhead */
 	need_spc = strp->stm.full_len ?: TLS_MAX_PAYLOAD_SIZE + PAGE_SIZE;
@@ -417,8 +303,6 @@ static int tls_strp_read_copy(struct tls_strparser *strp, bool qshort)
 				   page, 0, 0);
 	}
 
-	shinfo->frag_list = NULL;
-
 	strp->copy_mode = 1;
 	strp->stm.offset = 0;
 
@@ -431,27 +315,21 @@ static int tls_strp_read_copy(struct tls_strparser *strp, bool qshort)
 	return 0;
 }
 
-static bool tls_strp_check_queue_ok(struct tls_strparser *strp)
+static bool tls_strp_check_no_dup(struct tls_strparser *strp)
 {
 	unsigned int len = strp->stm.offset + strp->stm.full_len;
-	struct sk_buff *first, *skb;
+	struct sk_buff *skb;
 	u32 seq;
 
-	first = skb_shinfo(strp->anchor)->frag_list;
-	skb = first;
-	seq = TCP_SKB_CB(first)->seq;
+	skb = skb_shinfo(strp->anchor)->frag_list;
+	seq = TCP_SKB_CB(skb)->seq;
 
-	/* Make sure there's no duplicate data in the queue,
-	 * and the decrypted status matches.
-	 */
 	while (skb->len < len) {
 		seq += skb->len;
 		len -= skb->len;
 		skb = skb->next;
 
 		if (TCP_SKB_CB(skb)->seq != seq)
-			return false;
-		if (skb_cmp_decrypted(first, skb))
 			return false;
 	}
 
@@ -481,7 +359,7 @@ static void tls_strp_load_anchor_with_queue(struct tls_strparser *strp, int len)
 	strp->stm.offset = offset;
 }
 
-bool tls_strp_msg_load(struct tls_strparser *strp, bool force_refresh)
+void tls_strp_msg_load(struct tls_strparser *strp, bool force_refresh)
 {
 	struct strp_msg *rxm;
 	struct tls_msg *tlm;
@@ -490,11 +368,8 @@ bool tls_strp_msg_load(struct tls_strparser *strp, bool force_refresh)
 	DEBUG_NET_WARN_ON_ONCE(!strp->stm.full_len);
 
 	if (!strp->copy_mode && force_refresh) {
-		if (unlikely(tcp_inq(strp->sk) < strp->stm.full_len)) {
-			WRITE_ONCE(strp->msg_ready, 0);
-			memset(&strp->stm, 0, sizeof(strp->stm));
-			return false;
-		}
+		if (WARN_ON(tcp_inq(strp->sk) < strp->stm.full_len))
+			return;
 
 		tls_strp_load_anchor_with_queue(strp, strp->stm.full_len);
 	}
@@ -504,8 +379,6 @@ bool tls_strp_msg_load(struct tls_strparser *strp, bool force_refresh)
 	rxm->offset	= strp->stm.offset;
 	tlm = tls_msg(strp->anchor);
 	tlm->control	= strp->mark;
-
-	return true;
 }
 
 /* Called with lock held on lower socket */
@@ -523,11 +396,14 @@ static int tls_strp_read_sock(struct tls_strparser *strp)
 	if (inq < strp->stm.full_len)
 		return tls_strp_read_copy(strp, true);
 
-	tls_strp_load_anchor_with_queue(strp, inq);
 	if (!strp->stm.full_len) {
+		tls_strp_load_anchor_with_queue(strp, inq);
+
 		sz = tls_rx_msg_size(strp, strp->anchor);
-		if (sz < 0)
+		if (sz < 0) {
+			tls_strp_abort_strp(strp, sz);
 			return sz;
+		}
 
 		strp->stm.full_len = sz;
 
@@ -535,10 +411,10 @@ static int tls_strp_read_sock(struct tls_strparser *strp)
 			return tls_strp_read_copy(strp, true);
 	}
 
-	if (!tls_strp_check_queue_ok(strp))
+	if (!tls_strp_check_no_dup(strp))
 		return tls_strp_read_copy(strp, false);
 
-	WRITE_ONCE(strp->msg_ready, 1);
+	strp->msg_ready = 1;
 	tls_rx_msg_ready(strp);
 
 	return 0;
@@ -590,7 +466,7 @@ void tls_strp_msg_done(struct tls_strparser *strp)
 	else
 		tls_strp_flush_anchor_copy(strp);
 
-	WRITE_ONCE(strp->msg_ready, 0);
+	strp->msg_ready = 0;
 	memset(&strp->stm, 0, sizeof(strp->stm));
 
 	tls_strp_check_rcv(strp);

@@ -123,6 +123,7 @@ static int spew_debug_info(struct controller *ctrl, char *data, int size)
 struct ctrl_dbg {
 	int size;
 	char *data;
+	struct controller *ctrl;
 };
 
 #define MAX_OUTPUT	(4*PAGE_SIZE)

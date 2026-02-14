@@ -8,7 +8,7 @@ title: Qualcomm SDM630 and SDM660 TLMM pin controller
 
 maintainers:
   - Bjorn Andersson <andersson@kernel.org>
-  - Krzysztof Kozlowski <krzk@kernel.org>
+  - Krzysztof Kozlowski <krzysztof.kozlowski@linaro.org>
 
 description:
   Top Level Mode Multiplexer pin controller in Qualcomm SDM630 and SDM660 SoC.
@@ -34,12 +34,20 @@ properties:
   interrupts:
     maxItems: 1
 
+  interrupt-controller: true
+  "#interrupt-cells": true
+  gpio-controller: true
+
   gpio-reserved-ranges:
     minItems: 1
     maxItems: 57
 
   gpio-line-names:
     maxItems: 114
+
+  "#gpio-cells": true
+  gpio-ranges: true
+  wakeup-parent: true
 
 patternProperties:
   "-state$":
@@ -57,7 +65,6 @@ $defs:
       Pinctrl node's client devices use subnodes for desired pin configuration.
       Client device subnodes use below standard properties.
     $ref: qcom,tlmm-common.yaml#/$defs/qcom-tlmm-state
-    unevaluatedProperties: false
 
     properties:
       pins:
@@ -115,14 +122,24 @@ $defs:
                 vsense_data0, vsense_data1, vsense_mode, wlan1_adc0,
                 wlan1_adc1, wlan2_adc0, wlan2_adc1 ]
 
+      bias-disable: true
+      bias-pull-down: true
+      bias-pull-up: true
+      drive-strength: true
+      input-enable: true
+      output-high: true
+      output-low: true
+
     required:
       - pins
+
+    additionalProperties: false
 
 required:
   - compatible
   - reg
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

@@ -14,12 +14,8 @@ description: |
 
 properties:
   compatible:
-    oneOf:
-      - const: microchip,sparx5-temp
-      - items:
-          - enum:
-              - microchip,lan9691-temp
-          - const: microchip,sparx5-temp
+    enum:
+      - microchip,sparx5-temp
 
   reg:
     maxItems: 1

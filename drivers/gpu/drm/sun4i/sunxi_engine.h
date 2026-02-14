@@ -7,7 +7,6 @@
 #define _SUNXI_ENGINE_H_
 
 struct drm_plane;
-struct drm_crtc;
 struct drm_device;
 struct drm_crtc_state;
 struct drm_display_mode;
@@ -60,9 +59,7 @@ struct sunxi_engine_ops {
 	 *
 	 * This function is optional.
 	 */
-	void (*commit)(struct sunxi_engine *engine,
-		       struct drm_crtc *crtc,
-		       struct drm_atomic_state *state);
+	void (*commit)(struct sunxi_engine *engine);
 
 	/**
 	 * @layers_init:
@@ -147,16 +144,12 @@ struct sunxi_engine {
 /**
  * sunxi_engine_commit() - commit all changes of the engine
  * @engine:	pointer to the engine
- * @crtc:	pointer to crtc the engine is associated with
- * @state:	atomic state
  */
 static inline void
-sunxi_engine_commit(struct sunxi_engine *engine,
-		    struct drm_crtc *crtc,
-		    struct drm_atomic_state *state)
+sunxi_engine_commit(struct sunxi_engine *engine)
 {
 	if (engine->ops && engine->ops->commit)
-		engine->ops->commit(engine, crtc, state);
+		engine->ops->commit(engine);
 }
 
 /**

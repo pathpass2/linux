@@ -5,13 +5,13 @@ void sparx5_pgid_init(struct sparx5 *spx5)
 {
 	int i;
 
-	for (i = 0; i < spx5->data->consts->n_pgids; i++)
+	for (i = 0; i < PGID_TABLE_SIZE; i++)
 		spx5->pgid_map[i] = SPX5_PGID_FREE;
 
 	/* Reserved for unicast, flood control, broadcast, and CPU.
 	 * These cannot be freed.
 	 */
-	for (i = 0; i <= sparx5_get_pgid(spx5, PGID_CPU); i++)
+	for (i = 0; i <= PGID_CPU; i++)
 		spx5->pgid_map[i] = SPX5_PGID_RESERVED;
 }
 
@@ -22,8 +22,7 @@ int sparx5_pgid_alloc_mcast(struct sparx5 *spx5, u16 *idx)
 	/* The multicast area starts at index 65, but the first 7
 	 * are reserved for flood masks and CPU. Start alloc after that.
 	 */
-	for (i = sparx5_get_pgid(spx5, PGID_MCAST_START);
-	     i < spx5->data->consts->n_pgids; i++) {
+	for (i = PGID_MCAST_START; i < PGID_TABLE_SIZE; i++) {
 		if (spx5->pgid_map[i] == SPX5_PGID_FREE) {
 			spx5->pgid_map[i] = SPX5_PGID_MULTICAST;
 			*idx = i;
@@ -36,8 +35,7 @@ int sparx5_pgid_alloc_mcast(struct sparx5 *spx5, u16 *idx)
 
 int sparx5_pgid_free(struct sparx5 *spx5, u16 idx)
 {
-	if (idx <= sparx5_get_pgid(spx5, PGID_CPU) ||
-	    idx >= spx5->data->consts->n_pgids)
+	if (idx <= PGID_CPU || idx >= PGID_TABLE_SIZE)
 		return -EINVAL;
 
 	if (spx5->pgid_map[idx] == SPX5_PGID_FREE)
@@ -45,9 +43,4 @@ int sparx5_pgid_free(struct sparx5 *spx5, u16 idx)
 
 	spx5->pgid_map[idx] = SPX5_PGID_FREE;
 	return 0;
-}
-
-int sparx5_get_pgid(struct sparx5 *sparx5, int pgid)
-{
-	return sparx5->data->consts->n_ports + pgid;
 }

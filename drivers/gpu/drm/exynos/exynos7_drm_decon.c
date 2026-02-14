@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
@@ -20,7 +21,6 @@
 
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
-#include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
 #include <drm/exynos_drm.h>
 
@@ -38,24 +38,6 @@
 
 #define WINDOWS_NR	2
 
-struct decon_data {
-	unsigned int vidw_buf_start_base;
-	unsigned int shadowcon_win_protect_shift;
-	unsigned int wincon_burstlen_shift;
-};
-
-static const struct decon_data exynos7_decon_data = {
-	.vidw_buf_start_base = 0x80,
-	.shadowcon_win_protect_shift = 10,
-	.wincon_burstlen_shift = 11,
-};
-
-static const struct decon_data exynos7870_decon_data = {
-	.vidw_buf_start_base = 0x880,
-	.shadowcon_win_protect_shift = 8,
-	.wincon_burstlen_shift = 10,
-};
-
 struct decon_context {
 	struct device			*dev;
 	struct drm_device		*drm_dev;
@@ -70,22 +52,15 @@ struct decon_context {
 	void __iomem			*regs;
 	unsigned long			irq_flags;
 	bool				i80_if;
+	bool				suspended;
 	wait_queue_head_t		wait_vsync_queue;
 	atomic_t			wait_vsync_event;
 
-	const struct decon_data *data;
 	struct drm_encoder *encoder;
 };
 
 static const struct of_device_id decon_driver_dt_match[] = {
-	{
-		.compatible = "samsung,exynos7-decon",
-		.data = &exynos7_decon_data,
-	},
-	{
-		.compatible = "samsung,exynos7870-decon",
-		.data = &exynos7870_decon_data,
-	},
+	{.compatible = "samsung,exynos7-decon"},
 	{},
 };
 MODULE_DEVICE_TABLE(of, decon_driver_dt_match);
@@ -107,31 +82,13 @@ static const enum drm_plane_type decon_win_types[WINDOWS_NR] = {
 	DRM_PLANE_TYPE_CURSOR,
 };
 
-/**
- * decon_shadow_protect_win() - disable updating values from shadow registers at vsync
- *
- * @ctx: display and enhancement controller context
- * @win: window to protect registers for
- * @protect: 1 to protect (disable updates)
- */
-static void decon_shadow_protect_win(struct decon_context *ctx,
-				     unsigned int win, bool protect)
+static void decon_wait_for_vblank(struct exynos_drm_crtc *crtc)
 {
-	u32 bits, val;
-	unsigned int shift = ctx->data->shadowcon_win_protect_shift;
+	struct decon_context *ctx = crtc->ctx;
 
-	bits = SHADOWCON_WINx_PROTECT(shift, win);
+	if (ctx->suspended)
+		return;
 
-	val = readl(ctx->regs + SHADOWCON);
-	if (protect)
-		val |= bits;
-	else
-		val &= ~bits;
-	writel(val, ctx->regs + SHADOWCON);
-}
-
-static void decon_wait_for_vblank(struct decon_context *ctx)
-{
 	atomic_set(&ctx->wait_vsync_event, 1);
 
 	/*
@@ -144,33 +101,25 @@ static void decon_wait_for_vblank(struct decon_context *ctx)
 		DRM_DEV_DEBUG_KMS(ctx->dev, "vblank wait timed out.\n");
 }
 
-static void decon_clear_channels(struct decon_context *ctx)
+static void decon_clear_channels(struct exynos_drm_crtc *crtc)
 {
+	struct decon_context *ctx = crtc->ctx;
 	unsigned int win, ch_enabled = 0;
-	u32 val;
 
 	/* Check if any channel is enabled. */
 	for (win = 0; win < WINDOWS_NR; win++) {
-		val = readl(ctx->regs + WINCON(win));
+		u32 val = readl(ctx->regs + WINCON(win));
 
 		if (val & WINCONx_ENWIN) {
-			decon_shadow_protect_win(ctx, win, true);
-
 			val &= ~WINCONx_ENWIN;
 			writel(val, ctx->regs + WINCON(win));
 			ch_enabled = 1;
-
-			decon_shadow_protect_win(ctx, win, false);
 		}
 	}
 
-	val = readl(ctx->regs + DECON_UPDATE);
-	val |= DECON_UPDATE_STANDALONE_F;
-	writel(val, ctx->regs + DECON_UPDATE);
-
 	/* Wait for vsync, as disable channel takes effect at next vsync */
 	if (ch_enabled)
-		decon_wait_for_vblank(ctx);
+		decon_wait_for_vblank(ctx->crtc);
 }
 
 static int decon_ctx_initialize(struct decon_context *ctx,
@@ -178,7 +127,7 @@ static int decon_ctx_initialize(struct decon_context *ctx,
 {
 	ctx->drm_dev = drm_dev;
 
-	decon_clear_channels(ctx);
+	decon_clear_channels(ctx->crtc);
 
 	return exynos_drm_register_dma(drm_dev, ctx->dev, &ctx->dma_priv);
 }
@@ -192,7 +141,7 @@ static void decon_ctx_remove(struct decon_context *ctx)
 static u32 decon_calc_clkdiv(struct decon_context *ctx,
 		const struct drm_display_mode *mode)
 {
-	unsigned long ideal_clk = mode->clock * 1000;
+	unsigned long ideal_clk = mode->clock;
 	u32 clkdiv;
 
 	/* Find the clock divider value that gets us closest to ideal_clk */
@@ -206,6 +155,9 @@ static void decon_commit(struct exynos_drm_crtc *crtc)
 	struct decon_context *ctx = crtc->ctx;
 	struct drm_display_mode *mode = &crtc->base.state->adjusted_mode;
 	u32 val, clkdiv;
+
+	if (ctx->suspended)
+		return;
 
 	/* nothing to do if we haven't set the mode yet */
 	if (mode->htotal == 0 || mode->vtotal == 0)
@@ -268,6 +220,9 @@ static int decon_enable_vblank(struct exynos_drm_crtc *crtc)
 	struct decon_context *ctx = crtc->ctx;
 	u32 val;
 
+	if (ctx->suspended)
+		return -EPERM;
+
 	if (!test_and_set_bit(0, &ctx->irq_flags)) {
 		val = readl(ctx->regs + VIDINTCON0);
 
@@ -290,6 +245,9 @@ static void decon_disable_vblank(struct exynos_drm_crtc *crtc)
 	struct decon_context *ctx = crtc->ctx;
 	u32 val;
 
+	if (ctx->suspended)
+		return;
+
 	if (test_and_clear_bit(0, &ctx->irq_flags)) {
 		val = readl(ctx->regs + VIDINTCON0);
 
@@ -306,7 +264,6 @@ static void decon_win_set_pixfmt(struct decon_context *ctx, unsigned int win,
 {
 	unsigned long val;
 	int padding;
-	unsigned int shift = ctx->data->wincon_burstlen_shift;
 
 	val = readl(ctx->regs + WINCON(win));
 	val &= ~WINCONx_BPPMODE_MASK;
@@ -314,44 +271,44 @@ static void decon_win_set_pixfmt(struct decon_context *ctx, unsigned int win,
 	switch (fb->format->format) {
 	case DRM_FORMAT_RGB565:
 		val |= WINCONx_BPPMODE_16BPP_565;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_XRGB8888:
 		val |= WINCONx_BPPMODE_24BPP_xRGB;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_XBGR8888:
 		val |= WINCONx_BPPMODE_24BPP_xBGR;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_RGBX8888:
 		val |= WINCONx_BPPMODE_24BPP_RGBx;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_BGRX8888:
 		val |= WINCONx_BPPMODE_24BPP_BGRx;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_ARGB8888:
 		val |= WINCONx_BPPMODE_32BPP_ARGB | WINCONx_BLD_PIX |
 			WINCONx_ALPHA_SEL;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_ABGR8888:
 		val |= WINCONx_BPPMODE_32BPP_ABGR | WINCONx_BLD_PIX |
 			WINCONx_ALPHA_SEL;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_RGBA8888:
 		val |= WINCONx_BPPMODE_32BPP_RGBA | WINCONx_BLD_PIX |
 			WINCONx_ALPHA_SEL;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	case DRM_FORMAT_BGRA8888:
 	default:
 		val |= WINCONx_BPPMODE_32BPP_BGRA | WINCONx_BLD_PIX |
 			WINCONx_ALPHA_SEL;
-		val |= WINCONx_BURSTLEN_16WORD(shift);
+		val |= WINCONx_BURSTLEN_16WORD;
 		break;
 	}
 
@@ -367,8 +324,8 @@ static void decon_win_set_pixfmt(struct decon_context *ctx, unsigned int win,
 
 	padding = (fb->pitches[0] / fb->format->cpp[0]) - fb->width;
 	if (fb->width + padding < MIN_FB_WIDTH_FOR_16WORD_BURST) {
-		val &= ~WINCONx_BURSTLEN_MASK(shift);
-		val |= WINCONx_BURSTLEN_8WORD(shift);
+		val &= ~WINCONx_BURSTLEN_MASK;
+		val |= WINCONx_BURSTLEN_8WORD;
 	}
 
 	writel(val, ctx->regs + WINCON(win));
@@ -387,10 +344,35 @@ static void decon_win_set_colkey(struct decon_context *ctx, unsigned int win)
 	writel(keycon1, ctx->regs + WKEYCON1_BASE(win));
 }
 
+/**
+ * decon_shadow_protect_win() - disable updating values from shadow registers at vsync
+ *
+ * @ctx: display and enhancement controller context
+ * @win: window to protect registers for
+ * @protect: 1 to protect (disable updates)
+ */
+static void decon_shadow_protect_win(struct decon_context *ctx,
+				     unsigned int win, bool protect)
+{
+	u32 bits, val;
+
+	bits = SHADOWCON_WINx_PROTECT(win);
+
+	val = readl(ctx->regs + SHADOWCON);
+	if (protect)
+		val |= bits;
+	else
+		val &= ~bits;
+	writel(val, ctx->regs + SHADOWCON);
+}
+
 static void decon_atomic_begin(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
 	int i;
+
+	if (ctx->suspended)
+		return;
 
 	for (i = 0; i < WINDOWS_NR; i++)
 		decon_shadow_protect_win(ctx, i, true);
@@ -410,7 +392,9 @@ static void decon_update_plane(struct exynos_drm_crtc *crtc,
 	unsigned int win = plane->index;
 	unsigned int cpp = fb->format->cpp[0];
 	unsigned int pitch = fb->pitches[0];
-	unsigned int vidw_addr0_base = ctx->data->vidw_buf_start_base;
+
+	if (ctx->suspended)
+		return;
 
 	/*
 	 * SHADOWCON/PRTCON register is used for enabling timing.
@@ -424,7 +408,7 @@ static void decon_update_plane(struct exynos_drm_crtc *crtc,
 
 	/* buffer start address */
 	val = (unsigned long)exynos_drm_fb_dma_addr(fb, 0);
-	writel(val, ctx->regs + VIDW_BUF_START(vidw_addr0_base, win));
+	writel(val, ctx->regs + VIDW_BUF_START(win));
 
 	padding = (pitch / cpp) - fb->width;
 
@@ -499,6 +483,9 @@ static void decon_disable_plane(struct exynos_drm_crtc *crtc,
 	unsigned int win = plane->index;
 	u32 val;
 
+	if (ctx->suspended)
+		return;
+
 	/* protect windows */
 	decon_shadow_protect_win(ctx, win, true);
 
@@ -516,6 +503,9 @@ static void decon_atomic_flush(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
 	int i;
+
+	if (ctx->suspended)
+		return;
 
 	for (i = 0; i < WINDOWS_NR; i++)
 		decon_shadow_protect_win(ctx, i, false);
@@ -544,6 +534,9 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 	struct decon_context *ctx = crtc->ctx;
 	int ret;
 
+	if (!ctx->suspended)
+		return;
+
 	ret = pm_runtime_resume_and_get(ctx->dev);
 	if (ret < 0) {
 		DRM_DEV_ERROR(ctx->dev, "failed to enable DECON device.\n");
@@ -557,12 +550,17 @@ static void decon_atomic_enable(struct exynos_drm_crtc *crtc)
 		decon_enable_vblank(ctx->crtc);
 
 	decon_commit(ctx->crtc);
+
+	ctx->suspended = false;
 }
 
 static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 {
 	struct decon_context *ctx = crtc->ctx;
 	int i;
+
+	if (ctx->suspended)
+		return;
 
 	/*
 	 * We need to make sure that all windows are disabled before we
@@ -573,6 +571,8 @@ static void decon_atomic_disable(struct exynos_drm_crtc *crtc)
 		decon_disable_plane(crtc, &ctx->planes[i]);
 
 	pm_runtime_put_sync(ctx->dev);
+
+	ctx->suspended = true;
 }
 
 static const struct exynos_drm_crtc_ops decon_crtc_ops = {
@@ -600,10 +600,6 @@ static irqreturn_t decon_irq_handler(int irq, void *dev_id)
 
 	/* check the crtc is detached already from encoder */
 	if (!ctx->drm_dev)
-		goto out;
-
-	/* check if crtc and vblank have been initialized properly */
-	if (!drm_dev_has_vblank(ctx->drm_dev))
 		goto out;
 
 	if (!ctx->i80_if) {
@@ -693,7 +689,7 @@ static int decon_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ctx->dev = dev;
-	ctx->data = of_device_get_match_data(dev);
+	ctx->suspended = true;
 
 	i80_if_timings = of_get_child_by_name(dev->of_node, "i80-if-timings");
 	if (i80_if_timings)
@@ -770,7 +766,7 @@ err_iounmap:
 	return ret;
 }
 
-static void decon_remove(struct platform_device *pdev)
+static int decon_remove(struct platform_device *pdev)
 {
 	struct decon_context *ctx = dev_get_drvdata(&pdev->dev);
 
@@ -779,6 +775,8 @@ static void decon_remove(struct platform_device *pdev)
 	iounmap(ctx->regs);
 
 	component_del(&pdev->dev, &decon_component_ops);
+
+	return 0;
 }
 
 static int exynos7_decon_suspend(struct device *dev)

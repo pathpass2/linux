@@ -40,11 +40,6 @@ static const struct acpi_device_id i2c_hid_acpi_blacklist[] = {
 	 * ICN8505 controller, has a _CID of PNP0C50 but is not HID compatible.
 	 */
 	{ "CHPN0001" },
-	/*
-	 * The IDEA5002 ACPI device causes high interrupt usage and spurious
-	 * wakeups from suspend.
-	 */
-	{ "IDEA5002" },
 	{ }
 };
 
@@ -76,13 +71,6 @@ static int i2c_hid_acpi_get_descriptor(struct i2c_hid_acpi *ihid_acpi)
 	return hid_descriptor_address;
 }
 
-static void i2c_hid_acpi_restore_sequence(struct i2chid_ops *ops)
-{
-	struct i2c_hid_acpi *ihid_acpi = container_of(ops, struct i2c_hid_acpi, ops);
-
-	i2c_hid_acpi_get_descriptor(ihid_acpi);
-}
-
 static void i2c_hid_acpi_shutdown_tail(struct i2chid_ops *ops)
 {
 	struct i2c_hid_acpi *ihid_acpi = container_of(ops, struct i2c_hid_acpi, ops);
@@ -103,7 +91,6 @@ static int i2c_hid_acpi_probe(struct i2c_client *client)
 
 	ihid_acpi->adev = ACPI_COMPANION(dev);
 	ihid_acpi->ops.shutdown_tail = i2c_hid_acpi_shutdown_tail;
-	ihid_acpi->ops.restore_sequence = i2c_hid_acpi_restore_sequence;
 
 	ret = i2c_hid_acpi_get_descriptor(ihid_acpi);
 	if (ret < 0)
@@ -131,7 +118,7 @@ static struct i2c_driver i2c_hid_acpi_driver = {
 		.acpi_match_table = i2c_hid_acpi_match,
 	},
 
-	.probe		= i2c_hid_acpi_probe,
+	.probe_new	= i2c_hid_acpi_probe,
 	.remove		= i2c_hid_core_remove,
 	.shutdown	= i2c_hid_core_shutdown,
 };

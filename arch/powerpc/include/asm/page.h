@@ -6,10 +6,9 @@
  * Copyright (C) 2001,2005 IBM Corporation.
  */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <linux/types.h>
 #include <linux/kernel.h>
-#include <linux/bug.h>
 #else
 #include <asm/types.h>
 #endif
@@ -21,9 +20,10 @@
  * page size. When using 64K pages however, whether we are really supporting
  * 64K pages in HW or not is irrelevant to those definitions.
  */
-#include <vdso/page.h>
+#define PAGE_SHIFT		CONFIG_PPC_PAGE_SHIFT
+#define PAGE_SIZE		(ASM_CONST(1) << PAGE_SHIFT)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #ifndef CONFIG_HUGETLB_PAGE
 #define HPAGE_SHIFT PAGE_SHIFT
 #elif defined(CONFIG_PPC_BOOK3S_64)
@@ -39,6 +39,13 @@ extern unsigned int hpage_shift;
 #define HUGETLB_PAGE_ORDER	(HPAGE_SHIFT - PAGE_SHIFT)
 #define HUGE_MAX_HSTATE		(MMU_PAGE_COUNT-1)
 #endif
+
+/*
+ * Subtle: (1 << PAGE_SHIFT) is an int, not an unsigned long. So if we
+ * assign PAGE_MASK to a larger type it gets extended the way we want
+ * (i.e. with 1s in the high bits)
+ */
+#define PAGE_MASK      (~((1 << PAGE_SHIFT) - 1))
 
 /*
  * KERNELBASE is the virtual address of the start of the kernel, it's often
@@ -75,7 +82,7 @@ extern unsigned int hpage_shift;
 #define LOAD_OFFSET	ASM_CONST((CONFIG_KERNEL_START-CONFIG_PHYSICAL_START))
 
 #if defined(CONFIG_NONSTATIC_KERNEL)
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 extern phys_addr_t memstart_addr;
 extern phys_addr_t kernstart_addr;
@@ -84,7 +91,7 @@ extern phys_addr_t kernstart_addr;
 extern long long virt_phys_offset;
 #endif
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #define PHYSICAL_START	kernstart_addr
 
 #else	/* !CONFIG_NONSTATIC_KERNEL */
@@ -111,6 +118,16 @@ extern long long virt_phys_offset;
 #ifdef CONFIG_FLATMEM
 #define ARCH_PFN_OFFSET		((unsigned long)(MEMORY_START >> PAGE_SHIFT))
 #endif
+
+#define virt_to_pfn(kaddr)	(__pa(kaddr) >> PAGE_SHIFT)
+#define virt_to_page(kaddr)	pfn_to_page(virt_to_pfn(kaddr))
+#define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
+
+#define virt_addr_valid(vaddr)	({					\
+	unsigned long _addr = (unsigned long)vaddr;			\
+	_addr >= PAGE_OFFSET && _addr < (unsigned long)high_memory &&	\
+	pfn_valid(virt_to_pfn(_addr));					\
+})
 
 /*
  * On Book-E parts we need __va to parse the device tree and we can't
@@ -216,25 +233,6 @@ extern long long virt_phys_offset;
 #endif
 #endif
 
-#ifndef __ASSEMBLER__
-static inline unsigned long virt_to_pfn(const void *kaddr)
-{
-	return __pa(kaddr) >> PAGE_SHIFT;
-}
-
-static inline const void *pfn_to_kaddr(unsigned long pfn)
-{
-	return __va(pfn << PAGE_SHIFT);
-}
-#endif
-
-#define virt_to_page(kaddr)	pfn_to_page(virt_to_pfn(kaddr))
-#define virt_addr_valid(vaddr)	({					\
-	unsigned long _addr = (unsigned long)vaddr;			\
-	_addr >= PAGE_OFFSET && _addr < (unsigned long)high_memory &&	\
-	pfn_valid(virt_to_pfn((void *)_addr));				\
-})
-
 /*
  * Unfortunately the PLT is in the BSS in the PPC32 ELF ABI,
  * and needs to be executable.  This means the whole heap ends
@@ -261,7 +259,39 @@ static inline const void *pfn_to_kaddr(unsigned long pfn)
 #define is_kernel_addr(x)	((x) >= TASK_SIZE)
 #endif
 
-#ifndef __ASSEMBLER__
+#ifndef CONFIG_PPC_BOOK3S_64
+/*
+ * Use the top bit of the higher-level page table entries to indicate whether
+ * the entries we point to contain hugepages.  This works because we know that
+ * the page tables live in kernel space.  If we ever decide to support having
+ * page tables at arbitrary addresses, this breaks and will have to change.
+ */
+#ifdef CONFIG_PPC64
+#define PD_HUGE 0x8000000000000000UL
+#else
+#define PD_HUGE 0x80000000
+#endif
+
+#else	/* CONFIG_PPC_BOOK3S_64 */
+/*
+ * Book3S 64 stores real addresses in the hugepd entries to
+ * avoid overlaps with _PAGE_PRESENT and _PAGE_PTE.
+ */
+#define HUGEPD_ADDR_MASK	(0x0ffffffffffffffful & ~HUGEPD_SHIFT_MASK)
+#endif /* CONFIG_PPC_BOOK3S_64 */
+
+/*
+ * Some number of bits at the level of the page table that points to
+ * a hugepte are used to encode the size.  This masks those bits.
+ * On 8xx, HW assistance requires 4k alignment for the hugepte.
+ */
+#ifdef CONFIG_PPC_8xx
+#define HUGEPD_SHIFT_MASK     0xfff
+#else
+#define HUGEPD_SHIFT_MASK     0x3f
+#endif
+
+#ifndef __ASSEMBLY__
 
 #ifdef CONFIG_PPC_BOOK3S_64
 #include <asm/pgtable-be-types.h>
@@ -271,7 +301,6 @@ static inline const void *pfn_to_kaddr(unsigned long pfn)
 
 struct page;
 extern void clear_user_page(void *page, unsigned long vaddr, struct page *pg);
-#define clear_user_page clear_user_page
 extern void copy_user_page(void *to, void *from, unsigned long vaddr,
 		struct page *p);
 extern int devmem_is_allowed(unsigned long pfn);
@@ -291,6 +320,6 @@ static inline unsigned long kaslr_offset(void)
 }
 
 #include <asm-generic/memory_model.h>
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_POWERPC_PAGE_H */

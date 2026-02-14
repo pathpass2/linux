@@ -8,6 +8,9 @@
 #ifndef _ASM_RISCV_HWCAP_H
 #define _ASM_RISCV_HWCAP_H
 
+#include <asm/alternative-macros.h>
+#include <asm/errno.h>
+#include <linux/bits.h>
 #include <uapi/asm/hwcap.h>
 
 #define RISCV_ISA_EXT_a		('a' - 'a')
@@ -17,8 +20,8 @@
 #define RISCV_ISA_EXT_h		('h' - 'a')
 #define RISCV_ISA_EXT_i		('i' - 'a')
 #define RISCV_ISA_EXT_m		('m' - 'a')
-#define RISCV_ISA_EXT_q		('q' - 'a')
-#define RISCV_ISA_EXT_v		('v' - 'a')
+#define RISCV_ISA_EXT_s		('s' - 'a')
+#define RISCV_ISA_EXT_u		('u' - 'a')
 
 /*
  * These macros represent the logical IDs of each multi-letter RISC-V ISA
@@ -39,91 +42,75 @@
 #define RISCV_ISA_EXT_ZBB		30
 #define RISCV_ISA_EXT_ZICBOM		31
 #define RISCV_ISA_EXT_ZIHINTPAUSE	32
-#define RISCV_ISA_EXT_SVNAPOT		33
-#define RISCV_ISA_EXT_ZICBOZ		34
-#define RISCV_ISA_EXT_SMAIA		35
-#define RISCV_ISA_EXT_SSAIA		36
-#define RISCV_ISA_EXT_ZBA		37
-#define RISCV_ISA_EXT_ZBS		38
-#define RISCV_ISA_EXT_ZICNTR		39
-#define RISCV_ISA_EXT_ZICSR		40
-#define RISCV_ISA_EXT_ZIFENCEI		41
-#define RISCV_ISA_EXT_ZIHPM		42
-#define RISCV_ISA_EXT_SMSTATEEN		43
-#define RISCV_ISA_EXT_ZICOND		44
-#define RISCV_ISA_EXT_ZBC		45
-#define RISCV_ISA_EXT_ZBKB		46
-#define RISCV_ISA_EXT_ZBKC		47
-#define RISCV_ISA_EXT_ZBKX		48
-#define RISCV_ISA_EXT_ZKND		49
-#define RISCV_ISA_EXT_ZKNE		50
-#define RISCV_ISA_EXT_ZKNH		51
-#define RISCV_ISA_EXT_ZKR		52
-#define RISCV_ISA_EXT_ZKSED		53
-#define RISCV_ISA_EXT_ZKSH		54
-#define RISCV_ISA_EXT_ZKT		55
-#define RISCV_ISA_EXT_ZVBB		56
-#define RISCV_ISA_EXT_ZVBC		57
-#define RISCV_ISA_EXT_ZVKB		58
-#define RISCV_ISA_EXT_ZVKG		59
-#define RISCV_ISA_EXT_ZVKNED		60
-#define RISCV_ISA_EXT_ZVKNHA		61
-#define RISCV_ISA_EXT_ZVKNHB		62
-#define RISCV_ISA_EXT_ZVKSED		63
-#define RISCV_ISA_EXT_ZVKSH		64
-#define RISCV_ISA_EXT_ZVKT		65
-#define RISCV_ISA_EXT_ZFH		66
-#define RISCV_ISA_EXT_ZFHMIN		67
-#define RISCV_ISA_EXT_ZIHINTNTL		68
-#define RISCV_ISA_EXT_ZVFH		69
-#define RISCV_ISA_EXT_ZVFHMIN		70
-#define RISCV_ISA_EXT_ZFA		71
-#define RISCV_ISA_EXT_ZTSO		72
-#define RISCV_ISA_EXT_ZACAS		73
-#define RISCV_ISA_EXT_ZVE32X		74
-#define RISCV_ISA_EXT_ZVE32F		75
-#define RISCV_ISA_EXT_ZVE64X		76
-#define RISCV_ISA_EXT_ZVE64F		77
-#define RISCV_ISA_EXT_ZVE64D		78
-#define RISCV_ISA_EXT_ZIMOP		79
-#define RISCV_ISA_EXT_ZCA		80
-#define RISCV_ISA_EXT_ZCB		81
-#define RISCV_ISA_EXT_ZCD		82
-#define RISCV_ISA_EXT_ZCF		83
-#define RISCV_ISA_EXT_ZCMOP		84
-#define RISCV_ISA_EXT_ZAWRS		85
-#define RISCV_ISA_EXT_SVVPTC		86
-#define RISCV_ISA_EXT_SMMPM		87
-#define RISCV_ISA_EXT_SMNPM		88
-#define RISCV_ISA_EXT_SSNPM		89
-#define RISCV_ISA_EXT_ZABHA		90
-#define RISCV_ISA_EXT_ZICCRSE		91
-#define RISCV_ISA_EXT_SVADE		92
-#define RISCV_ISA_EXT_SVADU		93
-#define RISCV_ISA_EXT_ZFBFMIN		94
-#define RISCV_ISA_EXT_ZVFBFMIN		95
-#define RISCV_ISA_EXT_ZVFBFWMA		96
-#define RISCV_ISA_EXT_ZAAMO		97
-#define RISCV_ISA_EXT_ZALRSC		98
-#define RISCV_ISA_EXT_ZICBOP		99
-#define RISCV_ISA_EXT_SVRSW60T59B	100
-#define RISCV_ISA_EXT_ZALASR		101
-#define RISCV_ISA_EXT_ZILSD		102
-#define RISCV_ISA_EXT_ZCLSD		103
-#define RISCV_ISA_EXT_ZICFILP		104
-#define RISCV_ISA_EXT_ZICFISS		105
 
-#define RISCV_ISA_EXT_XLINUXENVCFG	127
+#define RISCV_ISA_EXT_MAX		64
+#define RISCV_ISA_EXT_NAME_LEN_MAX	32
 
-#define RISCV_ISA_EXT_MAX		128
-#define RISCV_ISA_EXT_INVALID		U32_MAX
+#ifndef __ASSEMBLY__
 
-#ifdef CONFIG_RISCV_M_MODE
-#define RISCV_ISA_EXT_SxAIA		RISCV_ISA_EXT_SMAIA
-#define RISCV_ISA_EXT_SUPM		RISCV_ISA_EXT_SMNPM
-#else
-#define RISCV_ISA_EXT_SxAIA		RISCV_ISA_EXT_SSAIA
-#define RISCV_ISA_EXT_SUPM		RISCV_ISA_EXT_SSNPM
+#include <linux/jump_label.h>
+
+struct riscv_isa_ext_data {
+	/* Name of the extension displayed to userspace via /proc/cpuinfo */
+	char uprop[RISCV_ISA_EXT_NAME_LEN_MAX];
+	/* The logical ISA extension ID */
+	unsigned int isa_ext_id;
+};
+
+unsigned long riscv_isa_extension_base(const unsigned long *isa_bitmap);
+
+#define riscv_isa_extension_mask(ext) BIT_MASK(RISCV_ISA_EXT_##ext)
+
+bool __riscv_isa_extension_available(const unsigned long *isa_bitmap, int bit);
+#define riscv_isa_extension_available(isa_bitmap, ext)	\
+	__riscv_isa_extension_available(isa_bitmap, RISCV_ISA_EXT_##ext)
+
+static __always_inline bool
+riscv_has_extension_likely(const unsigned long ext)
+{
+	compiletime_assert(ext < RISCV_ISA_EXT_MAX,
+			   "ext must be < RISCV_ISA_EXT_MAX");
+
+	if (IS_ENABLED(CONFIG_RISCV_ALTERNATIVE)) {
+		asm_volatile_goto(
+		ALTERNATIVE("j	%l[l_no]", "nop", 0, %[ext], 1)
+		:
+		: [ext] "i" (ext)
+		:
+		: l_no);
+	} else {
+		if (!__riscv_isa_extension_available(NULL, ext))
+			goto l_no;
+	}
+
+	return true;
+l_no:
+	return false;
+}
+
+static __always_inline bool
+riscv_has_extension_unlikely(const unsigned long ext)
+{
+	compiletime_assert(ext < RISCV_ISA_EXT_MAX,
+			   "ext must be < RISCV_ISA_EXT_MAX");
+
+	if (IS_ENABLED(CONFIG_RISCV_ALTERNATIVE)) {
+		asm_volatile_goto(
+		ALTERNATIVE("nop", "j	%l[l_yes]", 0, %[ext], 1)
+		:
+		: [ext] "i" (ext)
+		:
+		: l_yes);
+	} else {
+		if (__riscv_isa_extension_available(NULL, ext))
+			goto l_yes;
+	}
+
+	return false;
+l_yes:
+	return true;
+}
+
 #endif
 
 #endif /* _ASM_RISCV_HWCAP_H */

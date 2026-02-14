@@ -12,7 +12,7 @@
 #include <asm/ps3.h>
 
 /**
- * Statically linked routines that allow late binding of a loaded sys-manager
+ * Staticly linked routines that allow late binding of a loaded sys-manager
  * module.
  */
 

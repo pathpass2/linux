@@ -54,7 +54,7 @@
 				reg = <0x42 0x2>;
 			};
 
-			swm: soundwire@c85 {
+			swm: swm@c85 {
 				compatible = "qcom,soundwire-v1.3.0";
 				reg = <0xc85 0x40>;
 				interrupts-extended = <&wcd9340 20>;
@@ -80,6 +80,7 @@
 		pins = "gpio54";
 		function = "gpio";
 
+		input-enable;
 		bias-pull-down;
 		drive-strength = <2>;
 	};

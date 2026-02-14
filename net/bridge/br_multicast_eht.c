@@ -207,9 +207,7 @@ void br_multicast_eht_clean_sets(struct net_bridge_port_group *pg)
 
 static void br_multicast_eht_set_entry_expired(struct timer_list *t)
 {
-	struct net_bridge_group_eht_set_entry *set_h = timer_container_of(set_h,
-									  t,
-									  timer);
+	struct net_bridge_group_eht_set_entry *set_h = from_timer(set_h, t, timer);
 	struct net_bridge *br = set_h->br;
 
 	spin_lock(&br->multicast_lock);
@@ -225,9 +223,8 @@ out:
 
 static void br_multicast_eht_set_expired(struct timer_list *t)
 {
-	struct net_bridge_group_eht_set *eht_set = timer_container_of(eht_set,
-								      t,
-								      timer);
+	struct net_bridge_group_eht_set *eht_set = from_timer(eht_set, t,
+							      timer);
 	struct net_bridge *br = eht_set->br;
 
 	spin_lock(&br->multicast_lock);

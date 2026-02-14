@@ -4,7 +4,6 @@
  * Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
-#include <linux/cpufeature.h>
 #include <linux/kernel.h>
 #include <linux/syscalls.h>
 #include <linux/signal.h>
@@ -29,7 +28,7 @@ static int gs_enable(void)
 			return -ENOMEM;
 		gs_cb->gsd = 25;
 		preempt_disable();
-		local_ctl_set_bit(2, CR2_GUARDED_STORAGE_BIT);
+		__ctl_set_bit(2, 4);
 		load_gs_cb(gs_cb);
 		current->thread.gs_cb = gs_cb;
 		preempt_enable();
@@ -43,7 +42,7 @@ static int gs_disable(void)
 		preempt_disable();
 		kfree(current->thread.gs_cb);
 		current->thread.gs_cb = NULL;
-		local_ctl_clear_bit(2, CR2_GUARDED_STORAGE_BIT);
+		__ctl_clear_bit(2, 4);
 		preempt_enable();
 	}
 	return 0;
@@ -85,7 +84,7 @@ void gs_load_bc_cb(struct pt_regs *regs)
 	if (gs_cb) {
 		kfree(current->thread.gs_cb);
 		current->thread.gs_bc_cb = NULL;
-		local_ctl_set_bit(2, CR2_GUARDED_STORAGE_BIT);
+		__ctl_set_bit(2, 4);
 		load_gs_cb(gs_cb);
 		current->thread.gs_cb = gs_cb;
 	}
@@ -110,7 +109,7 @@ static int gs_broadcast(void)
 SYSCALL_DEFINE2(s390_guarded_storage, int, command,
 		struct gs_cb __user *, gs_cb)
 {
-	if (!cpu_has_gs())
+	if (!MACHINE_HAS_GS)
 		return -EOPNOTSUPP;
 	switch (command) {
 	case GS_ENABLE:

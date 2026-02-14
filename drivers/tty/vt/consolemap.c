@@ -205,7 +205,7 @@ static enum translation_map inv_translate[MAX_NR_CONSOLES];
 				 FIELD_PREP(UNI_GLYPH_BITS, (glyph)))
 
 /**
- * struct uni_pagedict - unicode directory
+ * struct uni_pagedict -- unicode directory
  *
  * @uni_pgdir: 32*32*64 table with glyphs
  * @refcount: reference count of this structure
@@ -361,10 +361,10 @@ int con_set_trans_old(unsigned char __user * arg)
 		inbuf[i] = UNI_DIRECT_BASE | ch;
 	}
 
-	guard(console_lock)();
+	console_lock();
 	memcpy(translations[USER_MAP], inbuf, sizeof(inbuf));
 	update_user_maps();
-
+	console_unlock();
 	return 0;
 }
 
@@ -374,11 +374,13 @@ int con_get_trans_old(unsigned char __user * arg)
 	unsigned short *p = translations[USER_MAP];
 	unsigned char outbuf[E_TABSZ];
 
-	scoped_guard(console_lock)
-		for (i = 0; i < ARRAY_SIZE(outbuf); i++) {
-			ch = conv_uni_to_pc(vc_cons[fg_console].d, p[i]);
-			outbuf[i] = (ch & ~0xff) ? 0 : ch;
-		}
+	console_lock();
+	for (i = 0; i < ARRAY_SIZE(outbuf); i++)
+	{
+		ch = conv_uni_to_pc(vc_cons[fg_console].d, p[i]);
+		outbuf[i] = (ch & ~0xff) ? 0 : ch;
+	}
+	console_unlock();
 
 	return copy_to_user(arg, outbuf, sizeof(outbuf)) ? -EFAULT : 0;
 }
@@ -390,10 +392,10 @@ int con_set_trans_new(ushort __user * arg)
 	if (copy_from_user(inbuf, arg, sizeof(inbuf)))
 		return -EFAULT;
 
-	guard(console_lock)();
+	console_lock();
 	memcpy(translations[USER_MAP], inbuf, sizeof(inbuf));
 	update_user_maps();
-
+	console_unlock();
 	return 0;
 }
 
@@ -401,8 +403,9 @@ int con_get_trans_new(ushort __user * arg)
 {
 	unsigned short outbuf[E_TABSZ];
 
-	scoped_guard(console_lock)
-		memcpy(outbuf, translations[USER_MAP], sizeof(outbuf));
+	console_lock();
+	memcpy(outbuf, translations[USER_MAP], sizeof(outbuf));
+	console_unlock();
 
 	return copy_to_user(arg, outbuf, sizeof(outbuf)) ? -EFAULT : 0;
 }
@@ -568,8 +571,11 @@ static int con_do_clear_unimap(struct vc_data *vc)
 
 int con_clear_unimap(struct vc_data *vc)
 {
-	guard(console_lock)();
-	return con_do_clear_unimap(vc);
+	int ret;
+	console_lock();
+	ret = con_do_clear_unimap(vc);
+	console_unlock();
+	return ret;
 }
 
 static struct uni_pagedict *con_unshare_unimap(struct vc_data *vc,
@@ -631,28 +637,32 @@ static struct uni_pagedict *con_unshare_unimap(struct vc_data *vc,
 
 int con_set_unimap(struct vc_data *vc, ushort ct, struct unipair __user *list)
 {
+	int err = 0, err1;
 	struct uni_pagedict *dict;
-	struct unipair *plist;
-	int err = 0;
+	struct unipair *unilist, *plist;
 
 	if (!ct)
 		return 0;
 
-	struct unipair *unilist __free(kvfree) = vmemdup_array_user(list, ct, sizeof(*unilist));
+	unilist = vmemdup_user(list, array_size(sizeof(*unilist), ct));
 	if (IS_ERR(unilist))
 		return PTR_ERR(unilist);
 
-	guard(console_lock)();
+	console_lock();
 
 	/* Save original vc_unipagdir_loc in case we allocate a new one */
 	dict = *vc->uni_pagedict_loc;
-	if (!dict)
-		return -EINVAL;
+	if (!dict) {
+		err = -EINVAL;
+		goto out_unlock;
+	}
 
 	if (dict->refcount > 1) {
 		dict = con_unshare_unimap(vc, dict);
-		if (IS_ERR(dict))
-			return PTR_ERR(dict);
+		if (IS_ERR(dict)) {
+			err = PTR_ERR(dict);
+			goto out_unlock;
+		}
 	} else if (dict == dflt) {
 		dflt = NULL;
 	}
@@ -661,7 +671,7 @@ int con_set_unimap(struct vc_data *vc, ushort ct, struct unipair __user *list)
 	 * Insert user specified unicode pairs into new table.
 	 */
 	for (plist = unilist; ct; ct--, plist++) {
-		int err1 = con_insert_unipair(dict, plist->unicode, plist->fontpos);
+		err1 = con_insert_unipair(dict, plist->unicode, plist->fontpos);
 		if (err1)
 			err = err1;
 	}
@@ -670,12 +680,15 @@ int con_set_unimap(struct vc_data *vc, ushort ct, struct unipair __user *list)
 	 * Merge with fontmaps of any other virtual consoles.
 	 */
 	if (con_unify_unimap(vc, dict))
-		return err;
+		goto out_unlock;
 
 	for (enum translation_map m = FIRST_MAP; m <= LAST_MAP; m++)
 		set_inverse_transl(vc, dict, m);
 	set_inverse_trans_unicode(dict);
 
+out_unlock:
+	console_unlock();
+	kvfree(unilist);
 	return err;
 }
 
@@ -774,49 +787,50 @@ int con_get_unimap(struct vc_data *vc, ushort ct, ushort __user *uct,
 {
 	ushort ect;
 	struct uni_pagedict *dict;
+	struct unipair *unilist;
 	unsigned int d, r, g;
+	int ret = 0;
 
-	struct unipair *unilist __free(kvfree) = kvmalloc_array(ct, sizeof(*unilist), GFP_KERNEL);
+	unilist = kvmalloc_array(ct, sizeof(*unilist), GFP_KERNEL);
 	if (!unilist)
 		return -ENOMEM;
 
-	scoped_guard(console_lock) {
-		ect = 0;
-		dict = *vc->uni_pagedict_loc;
-		if (!dict)
-			break;
+	console_lock();
 
-		for (d = 0; d < UNI_DIRS; d++) {
-			u16 **dir = dict->uni_pgdir[d];
-			if (!dir)
+	ect = 0;
+	dict = *vc->uni_pagedict_loc;
+	if (!dict)
+		goto unlock;
+
+	for (d = 0; d < UNI_DIRS; d++) {
+		u16 **dir = dict->uni_pgdir[d];
+		if (!dir)
+			continue;
+
+		for (r = 0; r < UNI_DIR_ROWS; r++) {
+			u16 *row = dir[r];
+			if (!row)
 				continue;
 
-			for (r = 0; r < UNI_DIR_ROWS; r++) {
-				u16 *row = dir[r];
-				if (!row)
+			for (g = 0; g < UNI_ROW_GLYPHS; g++, row++) {
+				if (*row >= MAX_GLYPH)
 					continue;
-
-				for (g = 0; g < UNI_ROW_GLYPHS; g++, row++) {
-					if (*row >= MAX_GLYPH)
-						continue;
-					if (ect < ct) {
-						unilist[ect].unicode = UNI(d, r, g);
-						unilist[ect].fontpos = *row;
-					}
-					ect++;
+				if (ect < ct) {
+					unilist[ect].unicode = UNI(d, r, g);
+					unilist[ect].fontpos = *row;
 				}
+				ect++;
 			}
 		}
 	}
-
+unlock:
+	console_unlock();
 	if (copy_to_user(list, unilist, min(ect, ct) * sizeof(*unilist)))
-		return -EFAULT;
+		ret = -EFAULT;
 	if (put_user(ect, uct))
-		return -EFAULT;
-	if (ect > ct)
-		return -ENOMEM;
-
-	return 0;
+		ret = -EFAULT;
+	kvfree(unilist);
+	return ret ? ret : (ect <= ct) ? 0 : -ENOMEM;
 }
 
 /*
@@ -856,6 +870,8 @@ int conv_uni_to_pc(struct vc_data *conp, long ucs)
 		return -4;		/* Not found */
 	else if (ucs < 0x20)
 		return -1;		/* Not a printable character */
+	else if (ucs == 0xfeff || (ucs >= 0x200b && ucs <= 0x200f))
+		return -2;			/* Zero-width space */
 	/*
 	 * UNI_DIRECT_BASE indicates the start of the region in the User Zone
 	 * which always has a 1:1 mapping to the currently loaded font.  The

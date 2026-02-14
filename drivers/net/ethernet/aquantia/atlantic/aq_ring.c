@@ -132,8 +132,8 @@ static int aq_get_rxpages(struct aq_ring_s *self, struct aq_ring_buff_s *rxbuf)
 	return 0;
 }
 
-static int aq_ring_alloc(struct aq_ring_s *self,
-			 struct aq_nic_s *aq_nic)
+static struct aq_ring_s *aq_ring_alloc(struct aq_ring_s *self,
+				       struct aq_nic_s *aq_nic)
 {
 	int err = 0;
 
@@ -156,29 +156,46 @@ static int aq_ring_alloc(struct aq_ring_s *self,
 err_exit:
 	if (err < 0) {
 		aq_ring_free(self);
+		self = NULL;
 	}
 
-	return err;
+	return self;
 }
 
-int aq_ring_tx_alloc(struct aq_ring_s *self,
-		     struct aq_nic_s *aq_nic,
-		     unsigned int idx,
-		     struct aq_nic_cfg_s *aq_nic_cfg)
+struct aq_ring_s *aq_ring_tx_alloc(struct aq_ring_s *self,
+				   struct aq_nic_s *aq_nic,
+				   unsigned int idx,
+				   struct aq_nic_cfg_s *aq_nic_cfg)
 {
+	int err = 0;
+
 	self->aq_nic = aq_nic;
 	self->idx = idx;
 	self->size = aq_nic_cfg->txds;
 	self->dx_size = aq_nic_cfg->aq_hw_caps->txd_size;
 
-	return aq_ring_alloc(self, aq_nic);
+	self = aq_ring_alloc(self, aq_nic);
+	if (!self) {
+		err = -ENOMEM;
+		goto err_exit;
+	}
+
+err_exit:
+	if (err < 0) {
+		aq_ring_free(self);
+		self = NULL;
+	}
+
+	return self;
 }
 
-int aq_ring_rx_alloc(struct aq_ring_s *self,
-		     struct aq_nic_s *aq_nic,
-		     unsigned int idx,
-		     struct aq_nic_cfg_s *aq_nic_cfg)
+struct aq_ring_s *aq_ring_rx_alloc(struct aq_ring_s *self,
+				   struct aq_nic_s *aq_nic,
+				   unsigned int idx,
+				   struct aq_nic_cfg_s *aq_nic_cfg)
 {
+	int err = 0;
+
 	self->aq_nic = aq_nic;
 	self->idx = idx;
 	self->size = aq_nic_cfg->rxds;
@@ -200,10 +217,22 @@ int aq_ring_rx_alloc(struct aq_ring_s *self,
 		self->tail_size = 0;
 	}
 
-	return aq_ring_alloc(self, aq_nic);
+	self = aq_ring_alloc(self, aq_nic);
+	if (!self) {
+		err = -ENOMEM;
+		goto err_exit;
+	}
+
+err_exit:
+	if (err < 0) {
+		aq_ring_free(self);
+		self = NULL;
+	}
+
+	return self;
 }
 
-int
+struct aq_ring_s *
 aq_ring_hwts_rx_alloc(struct aq_ring_s *self, struct aq_nic_s *aq_nic,
 		      unsigned int idx, unsigned int size, unsigned int dx_size)
 {
@@ -221,10 +250,10 @@ aq_ring_hwts_rx_alloc(struct aq_ring_s *self, struct aq_nic_s *aq_nic,
 					   GFP_KERNEL);
 	if (!self->dx_ring) {
 		aq_ring_free(self);
-		return -ENOMEM;
+		return NULL;
 	}
 
-	return 0;
+	return self;
 }
 
 int aq_ring_init(struct aq_ring_s *self, const enum atl_ring_type ring_type)
@@ -503,10 +532,10 @@ static bool aq_add_rx_fragment(struct device *dev,
 					      buff_->rxdata.pg_off,
 					      buff_->len,
 					      DMA_FROM_DEVICE);
+		skb_frag_off_set(frag, buff_->rxdata.pg_off);
+		skb_frag_size_set(frag, buff_->len);
 		sinfo->xdp_frags_size += buff_->len;
-		skb_frag_fill_page_desc(frag, buff_->rxdata.page,
-					buff_->rxdata.pg_off,
-					buff_->len);
+		__skb_frag_set_page(frag, buff_->rxdata.page);
 
 		buff_->is_cleaned = 1;
 
@@ -547,11 +576,6 @@ static int __aq_ring_rx_clean(struct aq_ring_s *self, struct napi_struct *napi,
 
 		if (!buff->is_eop) {
 			unsigned int frag_cnt = 0U;
-
-			/* There will be an extra fragment */
-			if (buff->len > AQ_CFG_RX_HDR_SIZE)
-				frag_cnt++;
-
 			buff_ = buff;
 			do {
 				bool is_rsc_completed = true;
@@ -562,7 +586,7 @@ static int __aq_ring_rx_clean(struct aq_ring_s *self, struct napi_struct *napi,
 				}
 
 				frag_cnt++;
-				next_ = buff_->next;
+				next_ = buff_->next,
 				buff_ = &self->buff_ring[next_];
 				is_rsc_completed =
 					aq_ring_dx_in_range(self->sw_head,
@@ -588,7 +612,7 @@ static int __aq_ring_rx_clean(struct aq_ring_s *self, struct napi_struct *napi,
 						err = -EIO;
 						goto err_exit;
 					}
-					next_ = buff_->next;
+					next_ = buff_->next,
 					buff_ = &self->buff_ring[next_];
 
 					buff_->is_cleaned = true;
@@ -623,7 +647,7 @@ static int __aq_ring_rx_clean(struct aq_ring_s *self, struct napi_struct *napi,
 		}
 		if (is_ptp_ring)
 			buff->len -=
-				aq_ptp_extract_ts(self->aq_nic, skb_hwtstamps(skb),
+				aq_ptp_extract_ts(self->aq_nic, skb,
 						  aq_buf_vaddr(&buff->rxdata),
 						  buff->len);
 
@@ -718,8 +742,6 @@ static int __aq_ring_xdp_clean(struct aq_ring_s *rx_ring,
 		struct aq_ring_buff_s *buff = &rx_ring->buff_ring[rx_ring->sw_head];
 		bool is_ptp_ring = aq_ptp_ring(rx_ring->aq_nic, rx_ring);
 		struct aq_ring_buff_s *buff_ = NULL;
-		u16 ptp_hwtstamp_len = 0;
-		struct skb_shared_hwtstamps shhwtstamps;
 		struct sk_buff *skb = NULL;
 		unsigned int next_ = 0U;
 		struct xdp_buff xdp;
@@ -788,12 +810,11 @@ static int __aq_ring_xdp_clean(struct aq_ring_s *rx_ring,
 		hard_start = page_address(buff->rxdata.page) +
 			     buff->rxdata.pg_off - rx_ring->page_offset;
 
-		if (is_ptp_ring) {
-			ptp_hwtstamp_len = aq_ptp_extract_ts(rx_ring->aq_nic, &shhwtstamps,
-							     aq_buf_vaddr(&buff->rxdata),
-							     buff->len);
-			buff->len -= ptp_hwtstamp_len;
-		}
+		if (is_ptp_ring)
+			buff->len -=
+				aq_ptp_extract_ts(rx_ring->aq_nic, skb,
+						  aq_buf_vaddr(&buff->rxdata),
+						  buff->len);
 
 		xdp_init_buff(&xdp, frame_sz, &rx_ring->xdp_rxq);
 		xdp_prepare_buff(&xdp, hard_start, rx_ring->page_offset,
@@ -812,9 +833,6 @@ static int __aq_ring_xdp_clean(struct aq_ring_s *rx_ring,
 		skb = aq_xdp_run_prog(aq_nic, &xdp, rx_ring, buff);
 		if (IS_ERR(skb) || !skb)
 			continue;
-
-		if (ptp_hwtstamp_len > 0)
-			*skb_hwtstamps(skb) = shhwtstamps;
 
 		if (buff->is_vlan)
 			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
@@ -914,27 +932,11 @@ void aq_ring_free(struct aq_ring_s *self)
 		return;
 
 	kfree(self->buff_ring);
-	self->buff_ring = NULL;
 
-	if (self->dx_ring) {
+	if (self->dx_ring)
 		dma_free_coherent(aq_nic_get_dev(self->aq_nic),
 				  self->size * self->dx_size, self->dx_ring,
 				  self->dx_ring_pa);
-		self->dx_ring = NULL;
-	}
-}
-
-void aq_ring_hwts_rx_free(struct aq_ring_s *self)
-{
-	if (!self)
-		return;
-
-	if (self->dx_ring) {
-		dma_free_coherent(aq_nic_get_dev(self->aq_nic),
-				  self->size * self->dx_size + AQ_CFG_RXDS_DEF,
-				  self->dx_ring, self->dx_ring_pa);
-		self->dx_ring = NULL;
-	}
 }
 
 unsigned int aq_ring_fill_stats_data(struct aq_ring_s *self, u64 *data)

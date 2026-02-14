@@ -32,7 +32,7 @@
 #include <linux/io.h>
 #include <linux/math.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <dt-bindings/clock/bcm2835.h>
@@ -570,23 +570,18 @@ static long bcm2835_pll_rate_from_divisors(unsigned long parent_rate,
 	return rate >> A2W_PLL_FRAC_BITS;
 }
 
-static int bcm2835_pll_determine_rate(struct clk_hw *hw,
-				      struct clk_rate_request *req)
+static long bcm2835_pll_round_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long *parent_rate)
 {
 	struct bcm2835_pll *pll = container_of(hw, struct bcm2835_pll, hw);
 	const struct bcm2835_pll_data *data = pll->data;
 	u32 ndiv, fdiv;
 
-	req->rate = clamp(req->rate, data->min_rate, data->max_rate);
+	rate = clamp(rate, data->min_rate, data->max_rate);
 
-	bcm2835_pll_choose_ndiv_and_fdiv(req->rate, req->best_parent_rate,
-					 &ndiv, &fdiv);
+	bcm2835_pll_choose_ndiv_and_fdiv(rate, *parent_rate, &ndiv, &fdiv);
 
-	req->rate = bcm2835_pll_rate_from_divisors(req->best_parent_rate,
-						   ndiv, fdiv,
-						   1);
-
-	return 0;
+	return bcm2835_pll_rate_from_divisors(*parent_rate, ndiv, fdiv, 1);
 }
 
 static unsigned long bcm2835_pll_get_rate(struct clk_hw *hw,
@@ -788,7 +783,7 @@ static const struct clk_ops bcm2835_pll_clk_ops = {
 	.unprepare = bcm2835_pll_off,
 	.recalc_rate = bcm2835_pll_get_rate,
 	.set_rate = bcm2835_pll_set_rate,
-	.determine_rate = bcm2835_pll_determine_rate,
+	.round_rate = bcm2835_pll_round_rate,
 	.debug_init = bcm2835_pll_debug_init,
 };
 
@@ -1555,7 +1550,7 @@ static const char *const bcm2835_clock_osc_parents[] = {
 	.parents = bcm2835_clock_osc_parents,				\
 	__VA_ARGS__)
 
-/* main peripheral parent mux */
+/* main peripherial parent mux */
 static const char *const bcm2835_clock_per_parents[] = {
 	"gnd",
 	"xosc",

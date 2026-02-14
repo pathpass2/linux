@@ -25,10 +25,7 @@
 #include <asm-generic/pgtable-nopmd.h>
 
 #define VMALLOC_START		CONFIG_NIOS2_KERNEL_MMU_REGION_BASE
-#define VMALLOC_END		(CONFIG_NIOS2_KERNEL_REGION_BASE - SZ_32M - 1)
-
-#define MODULES_VADDR		(CONFIG_NIOS2_KERNEL_REGION_BASE - SZ_32M)
-#define MODULES_END		(CONFIG_NIOS2_KERNEL_REGION_BASE - 1)
+#define VMALLOC_END		(CONFIG_NIOS2_KERNEL_REGION_BASE - 1)
 
 struct mm_struct;
 
@@ -132,7 +129,7 @@ static inline pte_t pte_mkold(pte_t pte)
 	return pte;
 }
 
-static inline pte_t pte_mkwrite_novma(pte_t pte)
+static inline pte_t pte_mkwrite(pte_t pte)
 {
 	pte_val(pte) |= _PAGE_WRITE;
 	return pte;
@@ -181,23 +178,14 @@ static inline void set_pte(pte_t *ptep, pte_t pteval)
 	*ptep = pteval;
 }
 
-#define PFN_PTE_SHIFT		0
-
-static inline void set_ptes(struct mm_struct *mm, unsigned long addr,
-		pte_t *ptep, pte_t pte, unsigned int nr)
+static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
+			      pte_t *ptep, pte_t pteval)
 {
-	unsigned long paddr = (unsigned long)page_to_virt(pte_page(pte));
+	unsigned long paddr = (unsigned long)page_to_virt(pte_page(pteval));
 
-	flush_dcache_range(paddr, paddr + nr * PAGE_SIZE);
-	for (;;) {
-		set_pte(ptep, pte);
-		if (--nr == 0)
-			break;
-		ptep++;
-		pte_val(pte) += 1;
-	}
+	flush_dcache_range(paddr, paddr + PAGE_SIZE);
+	set_pte(ptep, pteval);
 }
-#define set_ptes set_ptes
 
 static inline int pmd_none(pmd_t pmd)
 {
@@ -214,8 +202,14 @@ static inline void pte_clear(struct mm_struct *mm,
 
 	pte_val(null) = (addr >> PAGE_SHIFT) & 0xf;
 
-	set_pte(ptep, null);
+	set_pte_at(mm, addr, ptep, null);
 }
+
+/*
+ * Conversion functions: convert a page and protection to a page entry,
+ * and a page entry and page directory to the page they refer to.
+ */
+#define mk_pte(page, prot)	(pfn_pte(page_to_pfn(page), prot))
 
 /*
  * Conversion functions: convert a page and protection to a page entry,
@@ -259,7 +253,7 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 #define __swp_entry_to_pte(swp)	((pte_t) { (swp).val })
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) })
 
-static inline bool pte_swp_exclusive(pte_t pte)
+static inline int pte_swp_exclusive(pte_t pte)
 {
 	return pte_val(pte) & _PAGE_SWP_EXCLUSIVE;
 }
@@ -279,26 +273,7 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 extern void __init paging_init(void);
 extern void __init mmu_init(void);
 
-void update_mmu_cache_range(struct vm_fault *vmf, struct vm_area_struct *vma,
-		unsigned long address, pte_t *ptep, unsigned int nr);
-
-#define update_mmu_cache(vma, addr, ptep) \
-	update_mmu_cache_range(NULL, vma, addr, ptep, 1)
-
-static inline int pte_same(pte_t pte_a, pte_t pte_b);
-
-#define __HAVE_ARCH_PTEP_SET_ACCESS_FLAGS
-static inline int ptep_set_access_flags(struct vm_area_struct *vma,
-					unsigned long address, pte_t *ptep,
-					pte_t entry, int dirty)
-{
-	if (!pte_same(*ptep, entry))
-		set_ptes(vma->vm_mm, address, ptep, entry, 1);
-	/*
-	 * update_mmu_cache will unconditionally execute, handling both
-	 * the case that the PTE changed and the spurious fault case.
-	 */
-	return true;
-}
+extern void update_mmu_cache(struct vm_area_struct *vma,
+			     unsigned long address, pte_t *pte);
 
 #endif /* _ASM_NIOS2_PGTABLE_H */

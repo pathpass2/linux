@@ -305,7 +305,7 @@ static int dsp_set_digital_mode(struct echoaudio *chip, u8 mode)
 		return -EINVAL;
 	}
 
-	guard(spinlock_irq)(&chip->lock);
+	spin_lock_irq(&chip->lock);
 
 	if (incompatible_clock) {	/* Switch to 48KHz, internal */
 		chip->sample_rate = 48000;
@@ -336,6 +336,7 @@ static int dsp_set_digital_mode(struct echoaudio *chip, u8 mode)
 	}
 
 	err = write_control_reg(chip, control_reg, true);
+	spin_unlock_irq(&chip->lock);
 	if (err < 0)
 		return err;
 	chip->digital_mode = mode;

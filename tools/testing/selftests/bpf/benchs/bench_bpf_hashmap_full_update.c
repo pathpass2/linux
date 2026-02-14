@@ -14,8 +14,8 @@ static struct ctx {
 
 static void validate(void)
 {
-	if (env.consumer_cnt != 0) {
-		fprintf(stderr, "benchmark doesn't support consumer!\n");
+	if (env.consumer_cnt != 1) {
+		fprintf(stderr, "benchmark doesn't support multi-consumer!\n");
 		exit(1);
 	}
 }
@@ -27,6 +27,11 @@ static void *producer(void *input)
 		syscall(__NR_getpgid);
 	}
 
+	return NULL;
+}
+
+static void *consumer(void *input)
+{
 	return NULL;
 }
 
@@ -83,6 +88,7 @@ const struct bench bench_bpf_hashmap_full_update = {
 	.validate = validate,
 	.setup = setup,
 	.producer_thread = producer,
+	.consumer_thread = consumer,
 	.measure = measure,
 	.report_progress = NULL,
 	.report_final = hashmap_report_final,

@@ -53,15 +53,9 @@ int test_nr;
 
 u64 shadow_pkey_reg;
 int dprint_in_signal;
+char dprint_in_signal_buffer[DPRINT_IN_SIGNAL_BUF_SIZE];
 
-noinline int read_ptr(int *ptr)
-{
-	/* Keep GCC from optimizing this away somehow */
-	barrier();
-	return *ptr;
-}
-
-static void cat_into_file(char *str, char *file)
+void cat_into_file(char *str, char *file)
 {
 	int fd = open(file, O_RDWR);
 	int ret;
@@ -88,7 +82,7 @@ static void cat_into_file(char *str, char *file)
 
 #if CONTROL_TRACING > 0
 static int warned_tracing;
-static int tracing_root_ok(void)
+int tracing_root_ok(void)
 {
 	if (geteuid() != 0) {
 		if (!warned_tracing)
@@ -101,10 +95,10 @@ static int tracing_root_ok(void)
 }
 #endif
 
-static void tracing_on(void)
+void tracing_on(void)
 {
 #if CONTROL_TRACING > 0
-#define TRACEDIR "/sys/kernel/tracing"
+#define TRACEDIR "/sys/kernel/debug/tracing"
 	char pidstr[32];
 
 	if (!tracing_root_ok())
@@ -125,12 +119,12 @@ static void tracing_on(void)
 #endif
 }
 
-static void tracing_off(void)
+void tracing_off(void)
 {
 #if CONTROL_TRACING > 0
 	if (!tracing_root_ok())
 		return;
-	cat_into_file("0", "/sys/kernel/tracing/tracing_on");
+	cat_into_file("0", "/sys/kernel/debug/tracing/tracing_on");
 #endif
 }
 
@@ -153,13 +147,13 @@ void abort_hooks(void)
  * will then fault, which makes sure that the fault code handles
  * execute-only memory properly.
  */
-#if defined(__powerpc64__) || defined(__aarch64__)
+#ifdef __powerpc64__
 /* This way, both 4K and 64K alignment are maintained */
 __attribute__((__aligned__(65536)))
 #else
 __attribute__((__aligned__(PAGE_SIZE)))
 #endif
-static void lots_o_noops_around_write(int *write_to_me)
+void lots_o_noops_around_write(int *write_to_me)
 {
 	dprintf3("running %s()\n", __func__);
 	__page_o_noops();
@@ -170,7 +164,7 @@ static void lots_o_noops_around_write(int *write_to_me)
 	dprintf3("%s() done\n", __func__);
 }
 
-static void dump_mem(void *dumpme, int len_bytes)
+void dump_mem(void *dumpme, int len_bytes)
 {
 	char *c = (void *)dumpme;
 	int i;
@@ -213,11 +207,12 @@ static int hw_pkey_set(int pkey, unsigned long rights, unsigned long flags)
 	return 0;
 }
 
-static void pkey_disable_set(int pkey, int flags)
+void pkey_disable_set(int pkey, int flags)
 {
 	unsigned long syscall_flags = 0;
 	int ret;
 	int pkey_rights;
+	u64 orig_pkey_reg = read_pkey_reg();
 
 	dprintf1("START->%s(%d, 0x%x)\n", __func__,
 		pkey, flags);
@@ -247,15 +242,18 @@ static void pkey_disable_set(int pkey, int flags)
 
 	dprintf1("%s(%d) pkey_reg: 0x%016llx\n",
 		__func__, pkey, read_pkey_reg());
+	if (flags)
+		pkey_assert(read_pkey_reg() >= orig_pkey_reg);
 	dprintf1("END<---%s(%d, 0x%x)\n", __func__,
 		pkey, flags);
 }
 
-static void pkey_disable_clear(int pkey, int flags)
+void pkey_disable_clear(int pkey, int flags)
 {
 	unsigned long syscall_flags = 0;
 	int ret;
 	int pkey_rights = hw_pkey_get(pkey, syscall_flags);
+	u64 orig_pkey_reg = read_pkey_reg();
 
 	pkey_assert(flags & (PKEY_DISABLE_ACCESS | PKEY_DISABLE_WRITE));
 
@@ -275,24 +273,35 @@ static void pkey_disable_clear(int pkey, int flags)
 
 	dprintf1("%s(%d) pkey_reg: 0x%016llx\n", __func__,
 			pkey, read_pkey_reg());
+	if (flags)
+		assert(read_pkey_reg() <= orig_pkey_reg);
 }
 
-__maybe_unused static void pkey_write_allow(int pkey)
+void pkey_write_allow(int pkey)
 {
 	pkey_disable_clear(pkey, PKEY_DISABLE_WRITE);
 }
-__maybe_unused static void pkey_write_deny(int pkey)
+void pkey_write_deny(int pkey)
 {
 	pkey_disable_set(pkey, PKEY_DISABLE_WRITE);
 }
-__maybe_unused static void pkey_access_allow(int pkey)
+void pkey_access_allow(int pkey)
 {
 	pkey_disable_clear(pkey, PKEY_DISABLE_ACCESS);
 }
-__maybe_unused static void pkey_access_deny(int pkey)
+void pkey_access_deny(int pkey)
 {
 	pkey_disable_set(pkey, PKEY_DISABLE_ACCESS);
 }
+
+/* Failed address bound checks: */
+#ifndef SEGV_BNDERR
+# define SEGV_BNDERR		3
+#endif
+
+#ifndef SEGV_PKUERR
+# define SEGV_PKUERR		4
+#endif
 
 static char *si_code_str(int si_code)
 {
@@ -307,16 +316,14 @@ static char *si_code_str(int si_code)
 	return "UNKNOWN";
 }
 
-static int pkey_faults;
-static int last_si_pkey = -1;
-static void signal_handler(int signum, siginfo_t *si, void *vucontext)
+int pkey_faults;
+int last_si_pkey = -1;
+void signal_handler(int signum, siginfo_t *si, void *vucontext)
 {
 	ucontext_t *uctxt = vucontext;
 	int trapno;
 	unsigned long ip;
-#ifdef MCONTEXT_FPREGS
 	char *fpregs;
-#endif
 #if defined(__i386__) || defined(__x86_64__) /* arch */
 	u32 *pkey_reg_ptr;
 	int pkey_reg_offset;
@@ -330,11 +337,9 @@ static void signal_handler(int signum, siginfo_t *si, void *vucontext)
 			__func__, __LINE__,
 			__read_pkey_reg(), shadow_pkey_reg);
 
-	trapno = MCONTEXT_TRAPNO(uctxt->uc_mcontext);
-	ip = MCONTEXT_IP(uctxt->uc_mcontext);
-#ifdef MCONTEXT_FPREGS
+	trapno = uctxt->uc_mcontext.gregs[REG_TRAPNO];
+	ip = uctxt->uc_mcontext.gregs[REG_IP_IDX];
 	fpregs = (char *) uctxt->uc_mcontext.fpregs;
-#endif
 
 	dprintf2("%s() trapno: %d ip: 0x%016lx info->si_code: %s/%d\n",
 			__func__, trapno, ip, si_code_str(si->si_code),
@@ -363,9 +368,7 @@ static void signal_handler(int signum, siginfo_t *si, void *vucontext)
 #endif /* arch */
 
 	dprintf1("siginfo: %p\n", si);
-#ifdef MCONTEXT_FPREGS
 	dprintf1(" fpregs: %p\n", fpregs);
-#endif
 
 	if ((si->si_code == SEGV_MAPERR) ||
 	    (si->si_code == SEGV_ACCERR) ||
@@ -395,22 +398,26 @@ static void signal_handler(int signum, siginfo_t *si, void *vucontext)
 #elif defined(__powerpc64__) /* arch */
 	/* restore access and let the faulting instruction continue */
 	pkey_access_allow(siginfo_pkey);
-#elif defined(__aarch64__)
-	aarch64_write_signal_pkey(uctxt, PKEY_REG_ALLOW_ALL);
 #endif /* arch */
 	pkey_faults++;
 	dprintf1("<<<<==================================================\n");
 	dprint_in_signal = 0;
 }
 
-static void sig_chld(int x)
+int wait_all_children(void)
+{
+	int status;
+	return waitpid(-1, &status, 0);
+}
+
+void sig_chld(int x)
 {
 	dprint_in_signal = 1;
 	dprintf2("[%d] SIGCHLD: %d\n", getpid(), x);
 	dprint_in_signal = 0;
 }
 
-static void setup_sigsegv_handler(void)
+void setup_sigsegv_handler(void)
 {
 	int r, rs;
 	struct sigaction newact;
@@ -436,13 +443,13 @@ static void setup_sigsegv_handler(void)
 	pkey_assert(r == 0);
 }
 
-static void setup_handlers(void)
+void setup_handlers(void)
 {
 	signal(SIGCHLD, &sig_chld);
 	setup_sigsegv_handler();
 }
 
-static pid_t fork_lazy_child(void)
+pid_t fork_lazy_child(void)
 {
 	pid_t forkret;
 
@@ -460,10 +467,38 @@ static pid_t fork_lazy_child(void)
 	return forkret;
 }
 
-static int alloc_pkey(void)
+int sys_mprotect_pkey(void *ptr, size_t size, unsigned long orig_prot,
+		unsigned long pkey)
+{
+	int sret;
+
+	dprintf2("%s(0x%p, %zx, prot=%lx, pkey=%lx)\n", __func__,
+			ptr, size, orig_prot, pkey);
+
+	errno = 0;
+	sret = syscall(SYS_mprotect_key, ptr, size, orig_prot, pkey);
+	if (errno) {
+		dprintf2("SYS_mprotect_key sret: %d\n", sret);
+		dprintf2("SYS_mprotect_key prot: 0x%lx\n", orig_prot);
+		dprintf2("SYS_mprotect_key failed, errno: %d\n", errno);
+		if (DEBUG_LEVEL >= 2)
+			perror("SYS_mprotect_pkey");
+	}
+	return sret;
+}
+
+int sys_pkey_alloc(unsigned long flags, unsigned long init_val)
+{
+	int ret = syscall(SYS_pkey_alloc, flags, init_val);
+	dprintf1("%s(flags=%lx, init_val=%lx) syscall ret: %d errno: %d\n",
+			__func__, flags, init_val, ret, errno);
+	return ret;
+}
+
+int alloc_pkey(void)
 {
 	int ret;
-	unsigned long init_val = PKEY_UNRESTRICTED;
+	unsigned long init_val = 0x0;
 
 	dprintf1("%s()::%d, pkey_reg: 0x%016llx shadow: %016llx\n",
 			__func__, __LINE__, __read_pkey_reg(), shadow_pkey_reg);
@@ -506,12 +541,19 @@ static int alloc_pkey(void)
 	return ret;
 }
 
+int sys_pkey_free(unsigned long pkey)
+{
+	int ret = syscall(SYS_pkey_free, pkey);
+	dprintf1("%s(pkey=%ld) syscall ret: %d\n", __func__, pkey, ret);
+	return ret;
+}
+
 /*
  * I had a bug where pkey bits could be set by mprotect() but
  * not cleared.  This ensures we get lots of random bit sets
  * and clears on the vma and pte pkey bits.
  */
-static int alloc_random_pkey(void)
+int alloc_random_pkey(void)
 {
 	int max_nr_pkey_allocs;
 	int ret;
@@ -557,11 +599,13 @@ int mprotect_pkey(void *ptr, size_t size, unsigned long orig_prot,
 	int nr_iterations = random() % 100;
 	int ret;
 
-	while (nr_iterations-- >= 0) {
+	while (0) {
 		int rpkey = alloc_random_pkey();
 		ret = sys_mprotect_pkey(ptr, size, orig_prot, pkey);
 		dprintf1("sys_mprotect_pkey(%p, %zx, prot=0x%lx, pkey=%ld) ret: %d\n",
 				ptr, size, orig_prot, pkey, ret);
+		if (nr_iterations-- < 0)
+			break;
 
 		dprintf1("%s()::%d, ret: %d pkey_reg: 0x%016llx"
 			" shadow: 0x%016llx\n",
@@ -592,7 +636,7 @@ struct pkey_malloc_record {
 };
 struct pkey_malloc_record *pkey_malloc_records;
 struct pkey_malloc_record *pkey_last_malloc_record;
-static long nr_pkey_malloc_records;
+long nr_pkey_malloc_records;
 void record_pkey_malloc(void *ptr, long size, int prot)
 {
 	long i;
@@ -630,7 +674,7 @@ void record_pkey_malloc(void *ptr, long size, int prot)
 	nr_pkey_malloc_records++;
 }
 
-static void free_pkey_malloc(void *ptr)
+void free_pkey_malloc(void *ptr)
 {
 	long i;
 	int ret;
@@ -657,7 +701,8 @@ static void free_pkey_malloc(void *ptr)
 	pkey_assert(false);
 }
 
-static void *malloc_pkey_with_mprotect(long size, int prot, u16 pkey)
+
+void *malloc_pkey_with_mprotect(long size, int prot, u16 pkey)
 {
 	void *ptr;
 	int ret;
@@ -677,7 +722,7 @@ static void *malloc_pkey_with_mprotect(long size, int prot, u16 pkey)
 	return ptr;
 }
 
-static void *malloc_pkey_anon_huge(long size, int prot, u16 pkey)
+void *malloc_pkey_anon_huge(long size, int prot, u16 pkey)
 {
 	int ret;
 	void *ptr;
@@ -707,10 +752,10 @@ static void *malloc_pkey_anon_huge(long size, int prot, u16 pkey)
 	return ptr;
 }
 
-static int hugetlb_setup_ok;
+int hugetlb_setup_ok;
 #define SYSFS_FMT_NR_HUGE_PAGES "/sys/kernel/mm/hugepages/hugepages-%ldkB/nr_hugepages"
 #define GET_NR_HUGE_PAGES 10
-static void setup_hugetlbfs(void)
+void setup_hugetlbfs(void)
 {
 	int err;
 	int fd;
@@ -758,7 +803,7 @@ static void setup_hugetlbfs(void)
 	hugetlb_setup_ok = 1;
 }
 
-static void *malloc_pkey_hugetlb(long size, int prot, u16 pkey)
+void *malloc_pkey_hugetlb(long size, int prot, u16 pkey)
 {
 	void *ptr;
 	int flags = MAP_ANONYMOUS|MAP_PRIVATE|MAP_HUGETLB;
@@ -779,15 +824,42 @@ static void *malloc_pkey_hugetlb(long size, int prot, u16 pkey)
 	return ptr;
 }
 
-static void *(*pkey_malloc[])(long size, int prot, u16 pkey) = {
+void *malloc_pkey_mmap_dax(long size, int prot, u16 pkey)
+{
+	void *ptr;
+	int fd;
+
+	dprintf1("doing %s(size=%ld, prot=0x%x, pkey=%d)\n", __func__,
+			size, prot, pkey);
+	pkey_assert(pkey < NR_PKEYS);
+	fd = open("/dax/foo", O_RDWR);
+	pkey_assert(fd >= 0);
+
+	ptr = mmap(0, size, prot, MAP_SHARED, fd, 0);
+	pkey_assert(ptr != (void *)-1);
+
+	mprotect_pkey(ptr, size, prot, pkey);
+
+	record_pkey_malloc(ptr, size, prot);
+
+	dprintf1("mmap()'d for pkey %d @ %p\n", pkey, ptr);
+	close(fd);
+	return ptr;
+}
+
+void *(*pkey_malloc[])(long size, int prot, u16 pkey) = {
 
 	malloc_pkey_with_mprotect,
 	malloc_pkey_with_mprotect_subpage,
 	malloc_pkey_anon_huge,
 	malloc_pkey_hugetlb
+/* can not do direct with the pkey_mprotect() API:
+	malloc_pkey_mmap_direct,
+	malloc_pkey_mmap_dax,
+*/
 };
 
-static void *malloc_pkey(long size, int prot, u16 pkey)
+void *malloc_pkey(long size, int prot, u16 pkey)
 {
 	void *ret;
 	static int malloc_type;
@@ -817,7 +889,7 @@ static void *malloc_pkey(long size, int prot, u16 pkey)
 	return ret;
 }
 
-static int last_pkey_faults;
+int last_pkey_faults;
 #define UNKNOWN_PKEY -2
 void expected_pkey_fault(int pkey)
 {
@@ -839,9 +911,7 @@ void expected_pkey_fault(int pkey)
 	 * test program continue.  We now have to restore it.
 	 */
 	if (__read_pkey_reg() != 0)
-#elif defined(__aarch64__)
-	if (__read_pkey_reg() != PKEY_REG_ALLOW_ALL)
-#else
+#else /* arch */
 	if (__read_pkey_reg() != shadow_pkey_reg)
 #endif /* arch */
 		pkey_assert(0);
@@ -859,9 +929,9 @@ void expected_pkey_fault(int pkey)
 	pkey_assert(last_pkey_faults == pkey_faults);		\
 } while (0)
 
-static int test_fds[10] = { -1 };
-static int nr_test_fds;
-static void __save_test_fd(int fd)
+int test_fds[10] = { -1 };
+int nr_test_fds;
+void __save_test_fd(int fd)
 {
 	pkey_assert(fd >= 0);
 	pkey_assert(nr_test_fds < ARRAY_SIZE(test_fds));
@@ -869,14 +939,14 @@ static void __save_test_fd(int fd)
 	nr_test_fds++;
 }
 
-static int get_test_read_fd(void)
+int get_test_read_fd(void)
 {
 	int test_fd = open("/etc/passwd", O_RDONLY);
 	__save_test_fd(test_fd);
 	return test_fd;
 }
 
-static void close_test_fds(void)
+void close_test_fds(void)
 {
 	int i;
 
@@ -889,7 +959,17 @@ static void close_test_fds(void)
 	nr_test_fds = 0;
 }
 
-static void test_pkey_alloc_free_attach_pkey0(int *ptr, u16 pkey)
+#define barrier() __asm__ __volatile__("": : :"memory")
+__attribute__((noinline)) int read_ptr(int *ptr)
+{
+	/*
+	 * Keep GCC from optimizing this away somehow
+	 */
+	barrier();
+	return *ptr;
+}
+
+void test_pkey_alloc_free_attach_pkey0(int *ptr, u16 pkey)
 {
 	int i, err;
 	int max_nr_pkey_allocs;
@@ -941,7 +1021,7 @@ static void test_pkey_alloc_free_attach_pkey0(int *ptr, u16 pkey)
 	pkey_assert(!err);
 }
 
-static void test_read_of_write_disabled_region(int *ptr, u16 pkey)
+void test_read_of_write_disabled_region(int *ptr, u16 pkey)
 {
 	int ptr_contents;
 
@@ -951,7 +1031,7 @@ static void test_read_of_write_disabled_region(int *ptr, u16 pkey)
 	dprintf1("*ptr: %d\n", ptr_contents);
 	dprintf1("\n");
 }
-static void test_read_of_access_disabled_region(int *ptr, u16 pkey)
+void test_read_of_access_disabled_region(int *ptr, u16 pkey)
 {
 	int ptr_contents;
 
@@ -963,7 +1043,7 @@ static void test_read_of_access_disabled_region(int *ptr, u16 pkey)
 	expected_pkey_fault(pkey);
 }
 
-static void test_read_of_access_disabled_region_with_page_already_mapped(int *ptr,
+void test_read_of_access_disabled_region_with_page_already_mapped(int *ptr,
 		u16 pkey)
 {
 	int ptr_contents;
@@ -980,7 +1060,7 @@ static void test_read_of_access_disabled_region_with_page_already_mapped(int *pt
 	expected_pkey_fault(pkey);
 }
 
-static void test_write_of_write_disabled_region_with_page_already_mapped(int *ptr,
+void test_write_of_write_disabled_region_with_page_already_mapped(int *ptr,
 		u16 pkey)
 {
 	*ptr = __LINE__;
@@ -991,14 +1071,14 @@ static void test_write_of_write_disabled_region_with_page_already_mapped(int *pt
 	expected_pkey_fault(pkey);
 }
 
-static void test_write_of_write_disabled_region(int *ptr, u16 pkey)
+void test_write_of_write_disabled_region(int *ptr, u16 pkey)
 {
 	dprintf1("disabling write access to PKEY[%02d], doing write\n", pkey);
 	pkey_write_deny(pkey);
 	*ptr = __LINE__;
 	expected_pkey_fault(pkey);
 }
-static void test_write_of_access_disabled_region(int *ptr, u16 pkey)
+void test_write_of_access_disabled_region(int *ptr, u16 pkey)
 {
 	dprintf1("disabling access to PKEY[%02d], doing write\n", pkey);
 	pkey_access_deny(pkey);
@@ -1006,7 +1086,7 @@ static void test_write_of_access_disabled_region(int *ptr, u16 pkey)
 	expected_pkey_fault(pkey);
 }
 
-static void test_write_of_access_disabled_region_with_page_already_mapped(int *ptr,
+void test_write_of_access_disabled_region_with_page_already_mapped(int *ptr,
 			u16 pkey)
 {
 	*ptr = __LINE__;
@@ -1017,7 +1097,7 @@ static void test_write_of_access_disabled_region_with_page_already_mapped(int *p
 	expected_pkey_fault(pkey);
 }
 
-static void test_kernel_write_of_access_disabled_region(int *ptr, u16 pkey)
+void test_kernel_write_of_access_disabled_region(int *ptr, u16 pkey)
 {
 	int ret;
 	int test_fd = get_test_read_fd();
@@ -1029,8 +1109,7 @@ static void test_kernel_write_of_access_disabled_region(int *ptr, u16 pkey)
 	dprintf1("read ret: %d\n", ret);
 	pkey_assert(ret);
 }
-
-static void test_kernel_write_of_write_disabled_region(int *ptr, u16 pkey)
+void test_kernel_write_of_write_disabled_region(int *ptr, u16 pkey)
 {
 	int ret;
 	int test_fd = get_test_read_fd();
@@ -1043,7 +1122,7 @@ static void test_kernel_write_of_write_disabled_region(int *ptr, u16 pkey)
 	pkey_assert(ret);
 }
 
-static void test_kernel_gup_of_access_disabled_region(int *ptr, u16 pkey)
+void test_kernel_gup_of_access_disabled_region(int *ptr, u16 pkey)
 {
 	int pipe_ret, vmsplice_ret;
 	struct iovec iov;
@@ -1065,7 +1144,7 @@ static void test_kernel_gup_of_access_disabled_region(int *ptr, u16 pkey)
 	close(pipe_fds[1]);
 }
 
-static void test_kernel_gup_write_to_write_disabled_region(int *ptr, u16 pkey)
+void test_kernel_gup_write_to_write_disabled_region(int *ptr, u16 pkey)
 {
 	int ignored = 0xdada;
 	int futex_ret;
@@ -1083,7 +1162,7 @@ static void test_kernel_gup_write_to_write_disabled_region(int *ptr, u16 pkey)
 }
 
 /* Assumes that all pkeys other than 'pkey' are unallocated */
-static void test_pkey_syscalls_on_non_allocated_pkey(int *ptr, u16 pkey)
+void test_pkey_syscalls_on_non_allocated_pkey(int *ptr, u16 pkey)
 {
 	int err;
 	int i;
@@ -1106,7 +1185,7 @@ static void test_pkey_syscalls_on_non_allocated_pkey(int *ptr, u16 pkey)
 }
 
 /* Assumes that all pkeys other than 'pkey' are unallocated */
-static void test_pkey_syscalls_bad_args(int *ptr, u16 pkey)
+void test_pkey_syscalls_bad_args(int *ptr, u16 pkey)
 {
 	int err;
 	int bad_pkey = NR_PKEYS+99;
@@ -1116,7 +1195,7 @@ static void test_pkey_syscalls_bad_args(int *ptr, u16 pkey)
 	pkey_assert(err);
 }
 
-static void become_child(void)
+void become_child(void)
 {
 	pid_t forkret;
 
@@ -1132,7 +1211,7 @@ static void become_child(void)
 }
 
 /* Assumes that all pkeys other than 'pkey' are unallocated */
-static void test_pkey_alloc_exhaust(int *ptr, u16 pkey)
+void test_pkey_alloc_exhaust(int *ptr, u16 pkey)
 {
 	int err;
 	int allocated_pkeys[NR_PKEYS] = {0};
@@ -1199,7 +1278,7 @@ static void test_pkey_alloc_exhaust(int *ptr, u16 pkey)
 	}
 }
 
-static void arch_force_pkey_reg_init(void)
+void arch_force_pkey_reg_init(void)
 {
 #if defined(__i386__) || defined(__x86_64__) /* arch */
 	u64 *buf;
@@ -1238,7 +1317,7 @@ static void arch_force_pkey_reg_init(void)
  * a long-running test that continually checks the pkey
  * register.
  */
-static void test_pkey_init_state(int *ptr, u16 pkey)
+void test_pkey_init_state(int *ptr, u16 pkey)
 {
 	int err;
 	int allocated_pkeys[NR_PKEYS] = {0};
@@ -1276,7 +1355,7 @@ static void test_pkey_init_state(int *ptr, u16 pkey)
  * have to call pkey_alloc() to use it first.  Make sure that it
  * is usable.
  */
-static void test_mprotect_with_pkey_0(int *ptr, u16 pkey)
+void test_mprotect_with_pkey_0(int *ptr, u16 pkey)
 {
 	long size;
 	int prot;
@@ -1300,9 +1379,9 @@ static void test_mprotect_with_pkey_0(int *ptr, u16 pkey)
 	mprotect_pkey(ptr, size, prot, pkey);
 }
 
-static void test_ptrace_of_child(int *ptr, u16 pkey)
+void test_ptrace_of_child(int *ptr, u16 pkey)
 {
-	__always_unused int peek_result;
+	__attribute__((__unused__)) int peek_result;
 	pid_t child_pid;
 	void *ignored = 0;
 	long ret;
@@ -1376,7 +1455,7 @@ static void test_ptrace_of_child(int *ptr, u16 pkey)
 	free(plain_ptr_unaligned);
 }
 
-static void *get_pointer_to_instructions(void)
+void *get_pointer_to_instructions(void)
 {
 	void *p1;
 
@@ -1397,7 +1476,7 @@ static void *get_pointer_to_instructions(void)
 	return p1;
 }
 
-static void test_executing_on_unreadable_memory(int *ptr, u16 pkey)
+void test_executing_on_unreadable_memory(int *ptr, u16 pkey)
 {
 	void *p1;
 	int scratch;
@@ -1422,14 +1501,9 @@ static void test_executing_on_unreadable_memory(int *ptr, u16 pkey)
 	lots_o_noops_around_write(&scratch);
 	do_not_expect_pkey_fault("executing on PROT_EXEC memory");
 	expect_fault_on_read_execonly_key(p1, pkey);
-
-	// Reset back to PROT_EXEC | PROT_READ for architectures that support
-	// non-PKEY execute-only permissions.
-	ret = mprotect_pkey(p1, PAGE_SIZE, PROT_EXEC | PROT_READ, (u64)pkey);
-	pkey_assert(!ret);
 }
 
-static void test_implicit_mprotect_exec_only_memory(int *ptr, u16 pkey)
+void test_implicit_mprotect_exec_only_memory(int *ptr, u16 pkey)
 {
 	void *p1;
 	int scratch;
@@ -1478,7 +1552,7 @@ static void test_implicit_mprotect_exec_only_memory(int *ptr, u16 pkey)
 }
 
 #if defined(__i386__) || defined(__x86_64__)
-static void test_ptrace_modifies_pkru(int *ptr, u16 pkey)
+void test_ptrace_modifies_pkru(int *ptr, u16 pkey)
 {
 	u32 new_pkru;
 	pid_t child;
@@ -1600,85 +1674,7 @@ static void test_ptrace_modifies_pkru(int *ptr, u16 pkey)
 }
 #endif
 
-#if defined(__aarch64__)
-static void test_ptrace_modifies_pkru(int *ptr, u16 pkey)
-{
-	pid_t child;
-	int status, ret;
-	struct iovec iov;
-	u64 trace_pkey;
-	/* Just a random pkey value.. */
-	u64 new_pkey = (POE_X << PKEY_BITS_PER_PKEY * 2) |
-			(POE_NONE << PKEY_BITS_PER_PKEY) |
-			POE_RWX;
-
-	child = fork();
-	pkey_assert(child >= 0);
-	dprintf3("[%d] fork() ret: %d\n", getpid(), child);
-	if (!child) {
-		ptrace(PTRACE_TRACEME, 0, 0, 0);
-
-		/* Stop and allow the tracer to modify PKRU directly */
-		raise(SIGSTOP);
-
-		/*
-		 * need __read_pkey_reg() version so we do not do shadow_pkey_reg
-		 * checking
-		 */
-		if (__read_pkey_reg() != new_pkey)
-			exit(1);
-
-		raise(SIGSTOP);
-
-		exit(0);
-	}
-
-	pkey_assert(child == waitpid(child, &status, 0));
-	dprintf3("[%d] waitpid(%d) status: %x\n", getpid(), child, status);
-	pkey_assert(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
-
-	iov.iov_base = &trace_pkey;
-	iov.iov_len = 8;
-	ret = ptrace(PTRACE_GETREGSET, child, (void *)NT_ARM_POE, &iov);
-	pkey_assert(ret == 0);
-	pkey_assert(trace_pkey == read_pkey_reg());
-
-	trace_pkey = new_pkey;
-
-	ret = ptrace(PTRACE_SETREGSET, child, (void *)NT_ARM_POE, &iov);
-	pkey_assert(ret == 0);
-
-	/* Test that the modification is visible in ptrace before any execution */
-	memset(&trace_pkey, 0, sizeof(trace_pkey));
-	ret = ptrace(PTRACE_GETREGSET, child, (void *)NT_ARM_POE, &iov);
-	pkey_assert(ret == 0);
-	pkey_assert(trace_pkey == new_pkey);
-
-	/* Execute the tracee */
-	ret = ptrace(PTRACE_CONT, child, 0, 0);
-	pkey_assert(ret == 0);
-
-	/* Test that the tracee saw the PKRU value change */
-	pkey_assert(child == waitpid(child, &status, 0));
-	dprintf3("[%d] waitpid(%d) status: %x\n", getpid(), child, status);
-	pkey_assert(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
-
-	/* Test that the modification is visible in ptrace after execution */
-	memset(&trace_pkey, 0, sizeof(trace_pkey));
-	ret = ptrace(PTRACE_GETREGSET, child, (void *)NT_ARM_POE, &iov);
-	pkey_assert(ret == 0);
-	pkey_assert(trace_pkey == new_pkey);
-
-	ret = ptrace(PTRACE_CONT, child, 0, 0);
-	pkey_assert(ret == 0);
-	pkey_assert(child == waitpid(child, &status, 0));
-	dprintf3("[%d] waitpid(%d) status: %x\n", getpid(), child, status);
-	pkey_assert(WIFEXITED(status));
-	pkey_assert(WEXITSTATUS(status) == 0);
-}
-#endif
-
-static void test_mprotect_pkey_on_unsupported_cpu(int *ptr, u16 pkey)
+void test_mprotect_pkey_on_unsupported_cpu(int *ptr, u16 pkey)
 {
 	int size = PAGE_SIZE;
 	int sret;
@@ -1688,11 +1684,11 @@ static void test_mprotect_pkey_on_unsupported_cpu(int *ptr, u16 pkey)
 		return;
 	}
 
-	sret = syscall(__NR_pkey_mprotect, ptr, size, PROT_READ, pkey);
+	sret = syscall(SYS_mprotect_key, ptr, size, PROT_READ, pkey);
 	pkey_assert(sret < 0);
 }
 
-static void (*pkey_tests[])(int *ptr, u16 pkey) = {
+void (*pkey_tests[])(int *ptr, u16 pkey) = {
 	test_read_of_write_disabled_region,
 	test_read_of_access_disabled_region,
 	test_read_of_access_disabled_region_with_page_already_mapped,
@@ -1713,12 +1709,12 @@ static void (*pkey_tests[])(int *ptr, u16 pkey) = {
 	test_pkey_syscalls_bad_args,
 	test_pkey_alloc_exhaust,
 	test_pkey_alloc_free_attach_pkey0,
-#if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
+#if defined(__i386__) || defined(__x86_64__)
 	test_ptrace_modifies_pkru,
 #endif
 };
 
-static void run_tests_once(void)
+void run_tests_once(void)
 {
 	int *ptr;
 	int prot = PROT_READ|PROT_WRITE;
@@ -1752,7 +1748,7 @@ static void run_tests_once(void)
 	iteration_nr++;
 }
 
-static void pkey_setup_shadow(void)
+void pkey_setup_shadow(void)
 {
 	shadow_pkey_reg = __read_pkey_reg();
 }

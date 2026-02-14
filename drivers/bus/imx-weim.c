@@ -10,11 +10,7 @@
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/io.h>
-#include <linux/of_address.h>
-#include <linux/of.h>
-#include <linux/of_platform.h>
-#include <linux/platform_device.h>
-#include <linux/property.h>
+#include <linux/of_device.h>
 #include <linux/mfd/syscon.h>
 #include <linux/mfd/syscon/imx6q-iomuxc-gpr.h>
 #include <linux/regmap.h>
@@ -90,8 +86,8 @@ MODULE_DEVICE_TABLE(of, weim_id_table);
 static int imx_weim_gpr_setup(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	struct of_range_parser parser;
-	struct of_range range;
+	struct property *prop;
+	const __be32 *p;
 	struct regmap *gpr;
 	u32 gprvals[4] = {
 		05,	/* CS0(128M) CS1(0M)  CS2(0M)  CS3(0M)  */
@@ -110,17 +106,17 @@ static int imx_weim_gpr_setup(struct platform_device *pdev)
 		return 0;
 	}
 
-	if (of_range_parser_init(&parser, np))
-		goto err;
-
-	for_each_of_range(&parser, &range) {
-		cs = range.bus_addr >> 32;
-		val = (range.size / SZ_32M) | 1;
-		gprval |= val << cs * 3;
+	of_property_for_each_u32(np, "ranges", prop, p, val) {
+		if (i % 4 == 0) {
+			cs = val;
+		} else if (i % 4 == 3 && val) {
+			val = (val / SZ_32M) | 1;
+			gprval |= val << cs * 3;
+		}
 		i++;
 	}
 
-	if (i == 0)
+	if (i == 0 || i % 4)
 		goto err;
 
 	for (i = 0; i < ARRAY_SIZE(gprvals); i++) {
@@ -205,7 +201,9 @@ static int weim_timing_setup(struct device *dev, struct device_node *np,
 
 static int weim_parse_dt(struct platform_device *pdev)
 {
-	const struct imx_weim_devtype *devtype = device_get_match_data(&pdev->dev);
+	const struct of_device_id *of_id = of_match_device(weim_id_table,
+							   &pdev->dev);
+	const struct imx_weim_devtype *devtype = of_id->data;
 	int ret = 0, have_child = 0;
 	struct device_node *child;
 	struct weim_priv *priv;
@@ -274,7 +272,7 @@ static int weim_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	/* get the resource */
-	base = devm_platform_ioremap_resource(pdev, 0);
+	base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -282,18 +280,22 @@ static int weim_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, priv);
 
 	/* get the clock */
-	clk = devm_clk_get_enabled(&pdev->dev, NULL);
+	clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk))
 		return PTR_ERR(clk);
+
+	ret = clk_prepare_enable(clk);
+	if (ret)
+		return ret;
 
 	/* parse the device node */
 	ret = weim_parse_dt(pdev);
 	if (ret)
-		return ret;
+		clk_disable_unprepare(clk);
+	else
+		dev_info(&pdev->dev, "Driver registered.\n");
 
-	dev_info(&pdev->dev, "Driver registered.\n");
-
-	return 0;
+	return ret;
 }
 
 #if IS_ENABLED(CONFIG_OF_DYNAMIC)
@@ -327,12 +329,6 @@ static int of_weim_notify(struct notifier_block *nb, unsigned long action,
 				 "Failed to setup timing for '%pOF'\n", rd->dn);
 
 		if (!of_node_check_flag(rd->dn, OF_POPULATED)) {
-			/*
-			 * Clear the flag before adding the device so that
-			 * fw_devlink doesn't skip adding consumers to this
-			 * device.
-			 */
-			rd->dn->fwnode.flags &= ~FWNODE_FLAG_NOT_DEVICE;
 			if (!of_platform_device_create(rd->dn, NULL, &pdev->dev)) {
 				dev_err(&pdev->dev,
 					"Failed to create child device '%pOF'\n",

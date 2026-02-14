@@ -15,7 +15,7 @@
 
 	chosen { };
 
-	memory@100000000 {
+	memory {
 		device_type = "memory";
 		reg = < 0x1 0x00000000 0x0 0x80000000 >;
 	};
@@ -32,13 +32,12 @@
 	};
 
 	poweroff_mbox: poweroff_mbox@10548000 {
-		compatible = "apm,merlin-poweroff-mailbox", "syscon";
+		compatible = "syscon";
 		reg = <0x0 0x10548000 0x0 0x30>;
 	};
 
 	poweroff: poweroff@10548010 {
 		compatible = "syscon-poweroff";
-		reg = <0x0 0x10548010 0x0 0x4>;
 		regmap = <&poweroff_mbox>;
 		offset = <0x10>;
 		mask = <0x1>;

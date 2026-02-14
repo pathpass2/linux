@@ -35,10 +35,10 @@ struct sctp_sched_ops {
 	struct sctp_chunk *(*dequeue)(struct sctp_outq *q);
 	/* Called only if the chunk fit the packet */
 	void (*dequeue_done)(struct sctp_outq *q, struct sctp_chunk *chunk);
-	/* Schedule all chunks already enqueued */
-	void (*sched_all)(struct sctp_stream *stream);
-	/* Unschedule all chunks already enqueued */
-	void (*unsched_all)(struct sctp_stream *stream);
+	/* Sched all chunks already enqueued */
+	void (*sched_all)(struct sctp_stream *steam);
+	/* Unched all chunks already enqueued */
+	void (*unsched_all)(struct sctp_stream *steam);
 };
 
 int sctp_sched_set_sched(struct sctp_association *asoc,
@@ -52,13 +52,11 @@ void sctp_sched_dequeue_done(struct sctp_outq *q, struct sctp_chunk *ch);
 
 void sctp_sched_dequeue_common(struct sctp_outq *q, struct sctp_chunk *ch);
 int sctp_sched_init_sid(struct sctp_stream *stream, __u16 sid, gfp_t gfp);
-const struct sctp_sched_ops *sctp_sched_ops_from_stream(struct sctp_stream *stream);
+struct sctp_sched_ops *sctp_sched_ops_from_stream(struct sctp_stream *stream);
 
 void sctp_sched_ops_register(enum sctp_sched_type sched,
-			     const struct sctp_sched_ops *sched_ops);
+			     struct sctp_sched_ops *sched_ops);
 void sctp_sched_ops_prio_init(void);
 void sctp_sched_ops_rr_init(void);
-void sctp_sched_ops_fc_init(void);
-void sctp_sched_ops_wfq_init(void);
 
 #endif /* __sctp_stream_sched_h__ */

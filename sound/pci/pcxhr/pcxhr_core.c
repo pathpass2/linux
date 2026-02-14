@@ -754,8 +754,12 @@ void pcxhr_set_pipe_cmd_params(struct pcxhr_rmh *rmh, int capture,
  */
 int pcxhr_send_msg(struct pcxhr_mgr *mgr, struct pcxhr_rmh *rmh)
 {
-	guard(mutex)(&mgr->msg_lock);
-	return pcxhr_send_msg_nolock(mgr, rmh);
+	int err;
+
+	mutex_lock(&mgr->msg_lock);
+	err = pcxhr_send_msg_nolock(mgr, rmh);
+	mutex_unlock(&mgr->msg_lock);
+	return err;
 }
 
 static inline int pcxhr_pipes_running(struct pcxhr_mgr *mgr)
@@ -958,13 +962,14 @@ int pcxhr_write_io_num_reg_cont(struct pcxhr_mgr *mgr, unsigned int mask,
 	struct pcxhr_rmh rmh;
 	int err;
 
-	guard(mutex)(&mgr->msg_lock);
+	mutex_lock(&mgr->msg_lock);
 	if ((mgr->io_num_reg_cont & mask) == value) {
 		dev_dbg(&mgr->pci->dev,
 			"IO_NUM_REG_CONT mask %x already is set to %x\n",
 			    mask, value);
 		if (changed)
 			*changed = 0;
+		mutex_unlock(&mgr->msg_lock);
 		return 0;	/* already programmed */
 	}
 	pcxhr_init_rmh(&rmh, CMD_ACCESS_IO_WRITE);
@@ -979,6 +984,7 @@ int pcxhr_write_io_num_reg_cont(struct pcxhr_mgr *mgr, unsigned int mask,
 		if (changed)
 			*changed = 1;
 	}
+	mutex_unlock(&mgr->msg_lock);
 	return err;
 }
 
@@ -1263,7 +1269,7 @@ irqreturn_t pcxhr_threaded_irq(int irq, void *dev_id)
 	int i, j;
 	struct snd_pcxhr *chip;
 
-	guard(mutex)(&mgr->lock);
+	mutex_lock(&mgr->lock);
 	if (mgr->src_it_dsp & PCXHR_IRQ_TIMER) {
 		/* is a 24 bit counter */
 		int dsp_time_new =
@@ -1322,5 +1328,6 @@ irqreturn_t pcxhr_threaded_irq(int irq, void *dev_id)
 	}
 
 	pcxhr_msg_thread(mgr);
+	mutex_unlock(&mgr->lock);
 	return IRQ_HANDLED;
 }

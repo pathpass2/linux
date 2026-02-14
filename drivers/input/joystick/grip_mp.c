@@ -632,8 +632,7 @@ static int grip_connect(struct gameport *gameport, struct gameport_driver *drv)
 	struct grip_mp *grip;
 	int err;
 
-	grip = kzalloc(sizeof(*grip), GFP_KERNEL);
-	if (!grip)
+	if (!(grip = kzalloc(sizeof(struct grip_mp), GFP_KERNEL)))
 		return -ENOMEM;
 
 	grip->gameport = gameport;

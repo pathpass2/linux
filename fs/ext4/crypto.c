@@ -31,10 +31,9 @@ int ext4_fname_setup_filename(struct inode *dir, const struct qstr *iname,
 
 	ext4_fname_from_fscrypt_name(fname, &name);
 
+#if IS_ENABLED(CONFIG_UNICODE)
 	err = ext4_fname_setup_ci_filename(dir, iname, fname);
-	if (err)
-		ext4_fname_free_filename(fname);
-
+#endif
 	return err;
 }
 
@@ -50,9 +49,9 @@ int ext4_fname_prepare_lookup(struct inode *dir, struct dentry *dentry,
 
 	ext4_fname_from_fscrypt_name(fname, &name);
 
+#if IS_ENABLED(CONFIG_UNICODE)
 	err = ext4_fname_setup_ci_filename(dir, &dentry->d_name, fname);
-	if (err)
-		ext4_fname_free_filename(fname);
+#endif
 	return err;
 }
 
@@ -67,7 +66,10 @@ void ext4_fname_free_filename(struct ext4_filename *fname)
 	fname->usr_fname = NULL;
 	fname->disk_name.name = NULL;
 
-	ext4_fname_free_ci_filename(fname);
+#if IS_ENABLED(CONFIG_UNICODE)
+	kfree(fname->cf_name.name);
+	fname->cf_name.name = NULL;
+#endif
 }
 
 static bool uuid_is_zero(__u8 u[16])
@@ -226,16 +228,19 @@ static bool ext4_has_stable_inodes(struct super_block *sb)
 	return ext4_has_feature_stable_inodes(sb);
 }
 
+static void ext4_get_ino_and_lblk_bits(struct super_block *sb,
+				       int *ino_bits_ret, int *lblk_bits_ret)
+{
+	*ino_bits_ret = 8 * sizeof(EXT4_SB(sb)->s_es->s_inodes_count);
+	*lblk_bits_ret = 8 * sizeof(ext4_lblk_t);
+}
+
 const struct fscrypt_operations ext4_cryptops = {
-	.inode_info_offs	= (int)offsetof(struct ext4_inode_info, i_crypt_info) -
-				  (int)offsetof(struct ext4_inode_info, vfs_inode),
-	.needs_bounce_pages	= 1,
-	.has_32bit_inodes	= 1,
-	.supports_subblock_data_units = 1,
-	.legacy_key_prefix	= "ext4:",
+	.key_prefix		= "ext4:",
 	.get_context		= ext4_get_context,
 	.set_context		= ext4_set_context,
 	.get_dummy_policy	= ext4_get_dummy_policy,
 	.empty_dir		= ext4_empty_dir,
 	.has_stable_inodes	= ext4_has_stable_inodes,
+	.get_ino_and_lblk_bits	= ext4_get_ino_and_lblk_bits,
 };

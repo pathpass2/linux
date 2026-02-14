@@ -38,9 +38,11 @@ static void ci_leaf_init(struct cacheinfo *this_leaf,
 	this_leaf->type = type;
 }
 
-static void detect_cache_level(unsigned int *level_p, unsigned int *leaves_p)
+int init_cache_level(unsigned int cpu)
 {
 	unsigned int ctype, level, leaves;
+	int fw_level, ret;
+	struct cpu_cacheinfo *this_cpu_ci = get_cpu_cacheinfo(cpu);
 
 	for (level = 1, leaves = 0; level <= MAX_CACHE_LEVEL; level++) {
 		ctype = get_cache_type(level);
@@ -51,27 +53,6 @@ static void detect_cache_level(unsigned int *level_p, unsigned int *leaves_p)
 		/* Separate instruction and data caches */
 		leaves += (ctype == CACHE_TYPE_SEPARATE) ? 2 : 1;
 	}
-
-	*level_p = level;
-	*leaves_p = leaves;
-}
-
-int early_cache_level(unsigned int cpu)
-{
-	struct cpu_cacheinfo *this_cpu_ci = get_cpu_cacheinfo(cpu);
-
-	detect_cache_level(&this_cpu_ci->num_levels, &this_cpu_ci->num_leaves);
-
-	return 0;
-}
-
-int init_cache_level(unsigned int cpu)
-{
-	unsigned int level, leaves;
-	int fw_level, ret;
-	struct cpu_cacheinfo *this_cpu_ci = get_cpu_cacheinfo(cpu);
-
-	detect_cache_level(&level, &leaves);
 
 	if (acpi_disabled) {
 		fw_level = of_find_last_cache_level(cpu);
@@ -101,18 +82,16 @@ int populate_cache_leaves(unsigned int cpu)
 	unsigned int level, idx;
 	enum cache_type type;
 	struct cpu_cacheinfo *this_cpu_ci = get_cpu_cacheinfo(cpu);
-	struct cacheinfo *infos = this_cpu_ci->info_list;
+	struct cacheinfo *this_leaf = this_cpu_ci->info_list;
 
 	for (idx = 0, level = 1; level <= this_cpu_ci->num_levels &&
-	     idx < this_cpu_ci->num_leaves; level++) {
+	     idx < this_cpu_ci->num_leaves; idx++, level++) {
 		type = get_cache_type(level);
 		if (type == CACHE_TYPE_SEPARATE) {
-			if (idx + 1 >= this_cpu_ci->num_leaves)
-				break;
-			ci_leaf_init(&infos[idx++], CACHE_TYPE_DATA, level);
-			ci_leaf_init(&infos[idx++], CACHE_TYPE_INST, level);
+			ci_leaf_init(this_leaf++, CACHE_TYPE_DATA, level);
+			ci_leaf_init(this_leaf++, CACHE_TYPE_INST, level);
 		} else {
-			ci_leaf_init(&infos[idx++], type, level);
+			ci_leaf_init(this_leaf++, type, level);
 		}
 	}
 	return 0;

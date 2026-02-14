@@ -12,9 +12,9 @@
 #include <linux/io.h>
 #include <linux/irqchip.h>
 #include <linux/irqdomain.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
 #include <linux/soc/ti/ti_sci_protocol.h>
 
 /**
@@ -61,21 +61,12 @@ static int ti_sci_intr_irq_domain_translate(struct irq_domain *domain,
 {
 	struct ti_sci_intr_irq_domain *intr = domain->host_data;
 
-	if (intr->type) {
-		/* Global interrupt-type */
-		if (fwspec->param_count != 1)
-			return -EINVAL;
+	if (fwspec->param_count != 1)
+		return -EINVAL;
 
-		*hwirq = fwspec->param[0];
-		*type = intr->type;
-	} else {
-		/* Per-Line interrupt-type */
-		if (fwspec->param_count != 2)
-			return -EINVAL;
+	*hwirq = fwspec->param[0];
+	*type = intr->type;
 
-		*hwirq = fwspec->param[0];
-		*type = fwspec->param[1];
-	}
 	return 0;
 }
 
@@ -137,12 +128,11 @@ static void ti_sci_intr_irq_domain_free(struct irq_domain *domain,
  * @domain:	Pointer to the interrupt router IRQ domain
  * @virq:	Corresponding Linux virtual IRQ number
  * @hwirq:	Corresponding hwirq for the IRQ within this IRQ domain
- * @hwirq_type:	Corresponding hwirq trigger type for the IRQ within this IRQ domain
  *
  * Returns intr output irq if all went well else appropriate error pointer.
  */
-static int ti_sci_intr_alloc_parent_irq(struct irq_domain *domain, unsigned int virq,
-					u32 hwirq, u32 hwirq_type)
+static int ti_sci_intr_alloc_parent_irq(struct irq_domain *domain,
+					unsigned int virq, u32 hwirq)
 {
 	struct ti_sci_intr_irq_domain *intr = domain->host_data;
 	struct device_node *parent_node;
@@ -159,29 +149,18 @@ static int ti_sci_intr_alloc_parent_irq(struct irq_domain *domain, unsigned int 
 		goto err_irqs;
 
 	parent_node = of_irq_find_parent(dev_of_node(intr->dev));
-	fwspec.fwnode = of_fwnode_handle(parent_node);
+	fwspec.fwnode = of_node_to_fwnode(parent_node);
 
 	if (of_device_is_compatible(parent_node, "arm,gic-v3")) {
 		/* Parent is GIC */
 		fwspec.param_count = 3;
 		fwspec.param[0] = 0;	/* SPI */
 		fwspec.param[1] = p_hwirq - 32; /* SPI offset */
-		fwspec.param[2] = hwirq_type;
+		fwspec.param[2] = intr->type;
 	} else {
 		/* Parent is Interrupt Router */
-		u32 parent_trigger_type;
-
-		if (!of_property_read_u32(parent_node, "ti,intr-trigger-type",
-					  &parent_trigger_type)) {
-			/* Parent has global trigger type */
-			fwspec.param_count = 1;
-			fwspec.param[0] = p_hwirq;
-		} else {
-			/* Parent supports per-line trigger types */
-			fwspec.param_count = 2;
-			fwspec.param[0] = p_hwirq;
-			fwspec.param[1] = hwirq_type;
-		}
+		fwspec.param_count = 1;
+		fwspec.param[0] = p_hwirq;
 	}
 
 	err = irq_domain_alloc_irqs_parent(domain, virq, 1, &fwspec);
@@ -217,15 +196,15 @@ static int ti_sci_intr_irq_domain_alloc(struct irq_domain *domain,
 					void *data)
 {
 	struct irq_fwspec *fwspec = data;
-	unsigned int hwirq_type;
 	unsigned long hwirq;
+	unsigned int flags;
 	int err, out_irq;
 
-	err = ti_sci_intr_irq_domain_translate(domain, fwspec, &hwirq, &hwirq_type);
+	err = ti_sci_intr_irq_domain_translate(domain, fwspec, &hwirq, &flags);
 	if (err)
 		return err;
 
-	out_irq = ti_sci_intr_alloc_parent_irq(domain, virq, hwirq, hwirq_type);
+	out_irq = ti_sci_intr_alloc_parent_irq(domain, virq, hwirq);
 	if (out_irq < 0)
 		return out_irq;
 
@@ -268,9 +247,12 @@ static int ti_sci_intr_irq_domain_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	intr->dev = dev;
-
-	if (of_property_read_u32(dev_of_node(dev), "ti,intr-trigger-type", &intr->type))
-		intr->type = IRQ_TYPE_NONE;
+	ret = of_property_read_u32(dev_of_node(dev), "ti,intr-trigger-type",
+				   &intr->type);
+	if (ret) {
+		dev_err(dev, "missing ti,intr-trigger-type property\n");
+		return -EINVAL;
+	}
 
 	intr->sci = devm_ti_sci_get_by_phandle(dev, "ti,sci");
 	if (IS_ERR(intr->sci))
@@ -292,8 +274,8 @@ static int ti_sci_intr_irq_domain_probe(struct platform_device *pdev)
 		return PTR_ERR(intr->out_irqs);
 	}
 
-	domain = irq_domain_create_hierarchy(parent_domain, 0, 0, dev_fwnode(dev),
-					     &ti_sci_intr_irq_domain_ops, intr);
+	domain = irq_domain_add_hierarchy(parent_domain, 0, 0, dev_of_node(dev),
+					  &ti_sci_intr_irq_domain_ops, intr);
 	if (!domain) {
 		dev_err(dev, "Failed to allocate IRQ domain\n");
 		return -ENOMEM;
@@ -321,4 +303,4 @@ module_platform_driver(ti_sci_intr_irq_domain_driver);
 
 MODULE_AUTHOR("Lokesh Vutla <lokeshvutla@ticom>");
 MODULE_DESCRIPTION("K3 Interrupt Router driver over TI SCI protocol");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

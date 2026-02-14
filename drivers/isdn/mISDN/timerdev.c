@@ -109,14 +109,14 @@ mISDN_read(struct file *filep, char __user *buf, size_t count, loff_t *off)
 		spin_unlock_irq(&dev->lock);
 		if (filep->f_flags & O_NONBLOCK)
 			return -EAGAIN;
-		wait_event_interruptible(dev->wait, (READ_ONCE(dev->work) ||
+		wait_event_interruptible(dev->wait, (dev->work ||
 						     !list_empty(list)));
 		if (signal_pending(current))
 			return -ERESTARTSYS;
 		spin_lock_irq(&dev->lock);
 	}
 	if (dev->work)
-		WRITE_ONCE(dev->work, 0);
+		dev->work = 0;
 	if (!list_empty(list)) {
 		timer = list_first_entry(list, struct mISDNtimer, list);
 		list_del(&timer->list);
@@ -141,16 +141,13 @@ mISDN_poll(struct file *filep, poll_table *wait)
 	if (*debug & DEBUG_TIMER)
 		printk(KERN_DEBUG "%s(%p, %p)\n", __func__, filep, wait);
 	if (dev) {
-		u32 work;
-
 		poll_wait(filep, &dev->wait, wait);
 		mask = 0;
-		work = READ_ONCE(dev->work);
-		if (work || !list_empty(&dev->expired))
+		if (dev->work || !list_empty(&dev->expired))
 			mask |= (EPOLLIN | EPOLLRDNORM);
 		if (*debug & DEBUG_TIMER)
 			printk(KERN_DEBUG "%s work(%d) empty(%d)\n", __func__,
-			       work, list_empty(&dev->expired));
+			       dev->work, list_empty(&dev->expired));
 	}
 	return mask;
 }
@@ -158,7 +155,7 @@ mISDN_poll(struct file *filep, poll_table *wait)
 static void
 dev_expire_timer(struct timer_list *t)
 {
-	struct mISDNtimer *timer = timer_container_of(timer, t, tl);
+	struct mISDNtimer *timer = from_timer(timer, t, tl);
 	u_long			flags;
 
 	spin_lock_irqsave(&timer->dev->lock, flags);
@@ -175,7 +172,7 @@ misdn_add_timer(struct mISDNtimerdev *dev, int timeout)
 	struct mISDNtimer	*timer;
 
 	if (!timeout) {
-		WRITE_ONCE(dev->work, 1);
+		dev->work = 1;
 		wake_up_interruptible(&dev->wait);
 		id = 0;
 	} else {
@@ -269,6 +266,7 @@ static const struct file_operations mISDN_fops = {
 	.unlocked_ioctl	= mISDN_ioctl,
 	.open		= mISDN_open,
 	.release	= mISDN_close,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice mISDNtimer = {

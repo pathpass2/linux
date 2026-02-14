@@ -14,6 +14,8 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
+#include "bpf_tcp_helpers.h"
+
 #define SRC_REWRITE_IP4		0x7f000004U
 #define DST_REWRITE_IP4		0x7f000001U
 #define DST_REWRITE_PORT4	4444
@@ -30,14 +32,7 @@
 #define IFNAMSIZ 16
 #endif
 
-#ifndef SOL_TCP
-#define SOL_TCP 6
-#endif
-
-const char reno[] = "reno";
-const char cubic[] = "cubic";
-
-__attribute__ ((noinline)) __weak
+__attribute__ ((noinline))
 int do_bind(struct bpf_sock_addr *ctx)
 {
 	struct sockaddr_in sa = {};
@@ -53,27 +48,35 @@ int do_bind(struct bpf_sock_addr *ctx)
 }
 
 static __inline int verify_cc(struct bpf_sock_addr *ctx,
-			      const char expected[])
+			      char expected[TCP_CA_NAME_MAX])
 {
 	char buf[TCP_CA_NAME_MAX];
+	int i;
 
 	if (bpf_getsockopt(ctx, SOL_TCP, TCP_CONGESTION, &buf, sizeof(buf)))
 		return 1;
 
-	if (bpf_strncmp(buf, TCP_CA_NAME_MAX, expected))
-		return 1;
+	for (i = 0; i < TCP_CA_NAME_MAX; i++) {
+		if (buf[i] != expected[i])
+			return 1;
+		if (buf[i] == 0)
+			break;
+	}
 
 	return 0;
 }
 
 static __inline int set_cc(struct bpf_sock_addr *ctx)
 {
-	if (bpf_setsockopt(ctx, SOL_TCP, TCP_CONGESTION, (void *)reno, sizeof(reno)))
+	char reno[TCP_CA_NAME_MAX] = "reno";
+	char cubic[TCP_CA_NAME_MAX] = "cubic";
+
+	if (bpf_setsockopt(ctx, SOL_TCP, TCP_CONGESTION, &reno, sizeof(reno)))
 		return 1;
 	if (verify_cc(ctx, reno))
 		return 1;
 
-	if (bpf_setsockopt(ctx, SOL_TCP, TCP_CONGESTION, (void *)cubic, sizeof(cubic)))
+	if (bpf_setsockopt(ctx, SOL_TCP, TCP_CONGESTION, &cubic, sizeof(cubic)))
 		return 1;
 	if (verify_cc(ctx, cubic))
 		return 1;
@@ -192,12 +195,6 @@ int connect_v4_prog(struct bpf_sock_addr *ctx)
 	ctx->user_port = bpf_htons(DST_REWRITE_PORT4);
 
 	return do_bind(ctx) ? 1 : 0;
-}
-
-SEC("cgroup/connect4")
-int connect_v4_deny_prog(struct bpf_sock_addr *ctx)
-{
-	return 0;
 }
 
 char _license[] SEC("license") = "GPL";

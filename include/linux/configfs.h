@@ -64,8 +64,8 @@ extern void config_item_put(struct config_item *);
 
 struct config_item_type {
 	struct module				*ct_owner;
-	const struct configfs_item_operations	*ct_item_ops;
-	const struct configfs_group_operations	*ct_group_ops;
+	struct configfs_item_operations		*ct_item_ops;
+	struct configfs_group_operations	*ct_group_ops;
 	struct configfs_attribute		**ct_attrs;
 	struct configfs_bin_attribute		**ct_bin_attrs;
 };
@@ -120,18 +120,14 @@ struct configfs_attribute {
 	ssize_t (*store)(struct config_item *, const char *, size_t);
 };
 
-#define CONFIGFS_ATTR_PERM(_pfx, _name, _perm)		\
+#define CONFIGFS_ATTR(_pfx, _name)			\
 static struct configfs_attribute _pfx##attr_##_name = {	\
 	.ca_name	= __stringify(_name),		\
-	.ca_mode	= _perm,			\
+	.ca_mode	= S_IRUGO | S_IWUSR,		\
 	.ca_owner	= THIS_MODULE,			\
 	.show		= _pfx##_name##_show,		\
 	.store		= _pfx##_name##_store,		\
 }
-
-#define CONFIGFS_ATTR(_pfx, _name) CONFIGFS_ATTR_PERM(	\
-		_pfx, _name, S_IRUGO | S_IWUSR		\
-)
 
 #define CONFIGFS_ATTR_RO(_pfx, _name)			\
 static struct configfs_attribute _pfx##attr_##_name = {	\
@@ -220,9 +216,6 @@ struct configfs_group_operations {
 	struct config_group *(*make_group)(struct config_group *group, const char *name);
 	void (*disconnect_notify)(struct config_group *group, struct config_item *item);
 	void (*drop_item)(struct config_group *group, struct config_item *item);
-	bool (*is_visible)(struct config_item *item, struct configfs_attribute *attr, int n);
-	bool (*is_bin_visible)(struct config_item *item, struct configfs_bin_attribute *attr,
-			       int n);
 };
 
 struct configfs_subsystem {

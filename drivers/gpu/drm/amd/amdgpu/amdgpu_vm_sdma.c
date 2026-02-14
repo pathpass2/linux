@@ -35,12 +35,21 @@
  */
 static int amdgpu_vm_sdma_map_table(struct amdgpu_bo_vm *table)
 {
-	return amdgpu_ttm_alloc_gart(&table->bo.tbo);
+	int r;
+
+	r = amdgpu_ttm_alloc_gart(&table->bo.tbo);
+	if (r)
+		return r;
+
+	if (table->shadow)
+		r = amdgpu_ttm_alloc_gart(&table->shadow->tbo);
+
+	return r;
 }
 
 /* Allocate a new job for @count PTE updates */
 static int amdgpu_vm_sdma_alloc_job(struct amdgpu_vm_update_params *p,
-				    unsigned int count, u64 k_job_id)
+				    unsigned int count)
 {
 	enum amdgpu_ib_pool_type pool = p->immediate ? AMDGPU_IB_POOL_IMMEDIATE
 		: AMDGPU_IB_POOL_DELAYED;
@@ -56,7 +65,7 @@ static int amdgpu_vm_sdma_alloc_job(struct amdgpu_vm_update_params *p,
 	ndw = min(ndw, AMDGPU_VM_SDMA_MAX_NUM_DW);
 
 	r = amdgpu_job_alloc_with_ib(p->adev, entity, AMDGPU_FENCE_OWNER_VM,
-				     ndw * 4, pool, &p->job, k_job_id);
+				     ndw * 4, pool, &p->job);
 	if (r)
 		return r;
 
@@ -68,29 +77,31 @@ static int amdgpu_vm_sdma_alloc_job(struct amdgpu_vm_update_params *p,
  * amdgpu_vm_sdma_prepare - prepare SDMA command submission
  *
  * @p: see amdgpu_vm_update_params definition
- * @sync: amdgpu_sync object with fences to wait for
- * @k_job_id: identifier of the job, for tracing purpose
+ * @resv: reservation object with embedded fence
+ * @sync_mode: synchronization mode
  *
  * Returns:
  * Negativ errno, 0 for success.
  */
 static int amdgpu_vm_sdma_prepare(struct amdgpu_vm_update_params *p,
-				  struct amdgpu_sync *sync, u64 k_job_id)
+				  struct dma_resv *resv,
+				  enum amdgpu_sync_mode sync_mode)
 {
+	struct amdgpu_sync sync;
 	int r;
 
-	r = amdgpu_vm_sdma_alloc_job(p, 0, k_job_id);
+	r = amdgpu_vm_sdma_alloc_job(p, 0);
 	if (r)
 		return r;
 
-	if (!sync)
+	if (!resv)
 		return 0;
 
-	r = amdgpu_sync_push_to_job(sync, p->job);
-	if (r) {
-		p->num_dw_left = 0;
-		amdgpu_job_free(p->job);
-	}
+	amdgpu_sync_create(&sync);
+	r = amdgpu_sync_resv(p->adev, &sync, resv, sync_mode, p->vm);
+	if (!r)
+		r = amdgpu_sync_push_to_job(&sync, p->job);
+	amdgpu_sync_free(&sync);
 	return r;
 }
 
@@ -115,10 +126,6 @@ static int amdgpu_vm_sdma_commit(struct amdgpu_vm_update_params *p,
 
 	WARN_ON(ib->length_dw == 0);
 	amdgpu_ring_pad_ib(ring, ib);
-
-	if (p->needs_flush)
-		atomic64_inc(&p->vm->tlb_seq);
-
 	WARN_ON(ib->length_dw > p->num_dw_left);
 	f = amdgpu_job_submit(p->job);
 
@@ -164,7 +171,7 @@ static void amdgpu_vm_sdma_copy_ptes(struct amdgpu_vm_update_params *p,
 
 	src += p->num_dw_left * 4;
 
-	pe += amdgpu_bo_gpu_offset_no_check(bo);
+	pe += amdgpu_gmc_sign_extend(amdgpu_bo_gpu_offset_no_check(bo));
 	trace_amdgpu_vm_copy_ptes(pe, src, count, p->immediate);
 
 	amdgpu_vm_copy_pte(p->adev, ib, pe, src, count);
@@ -191,7 +198,7 @@ static void amdgpu_vm_sdma_set_ptes(struct amdgpu_vm_update_params *p,
 {
 	struct amdgpu_ib *ib = p->job->ibs;
 
-	pe += amdgpu_bo_gpu_offset_no_check(bo);
+	pe += amdgpu_gmc_sign_extend(amdgpu_bo_gpu_offset_no_check(bo));
 	trace_amdgpu_vm_set_ptes(pe, addr, count, incr, flags, p->immediate);
 	if (count < 3) {
 		amdgpu_vm_write_pte(p->adev, ib, pe, addr | flags,
@@ -250,21 +257,24 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 			if (r)
 				return r;
 
-			r = amdgpu_vm_sdma_alloc_job(p, count,
-						     AMDGPU_KERNEL_JOB_ID_VM_UPDATE);
+			r = amdgpu_vm_sdma_alloc_job(p, count);
 			if (r)
 				return r;
 		}
 
 		if (!p->pages_addr) {
 			/* set page commands needed */
+			if (vmbo->shadow)
+				amdgpu_vm_sdma_set_ptes(p, vmbo->shadow, pe, addr,
+							count, incr, flags);
 			amdgpu_vm_sdma_set_ptes(p, bo, pe, addr, count,
 						incr, flags);
 			return 0;
 		}
 
 		/* copy commands needed */
-		ndw -= p->adev->vm_manager.vm_pte_funcs->copy_pte_num_dw;
+		ndw -= p->adev->vm_manager.vm_pte_funcs->copy_pte_num_dw *
+			(vmbo->shadow ? 2 : 1);
 
 		/* for padding */
 		ndw -= 7;
@@ -279,6 +289,8 @@ static int amdgpu_vm_sdma_update(struct amdgpu_vm_update_params *p,
 			pte[i] |= flags;
 		}
 
+		if (vmbo->shadow)
+			amdgpu_vm_sdma_copy_ptes(p, vmbo->shadow, pe, nptes);
 		amdgpu_vm_sdma_copy_ptes(p, bo, pe, nptes);
 
 		pe += nptes * 8;

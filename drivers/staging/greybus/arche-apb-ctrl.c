@@ -419,11 +419,13 @@ static int arche_apb_ctrl_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void arche_apb_ctrl_remove(struct platform_device *pdev)
+static int arche_apb_ctrl_remove(struct platform_device *pdev)
 {
 	device_remove_file(&pdev->dev, &dev_attr_state);
 	poweroff_seq(pdev);
 	platform_set_drvdata(pdev, NULL);
+
+	return 0;
 }
 
 static int __maybe_unused arche_apb_ctrl_suspend(struct device *dev)
@@ -466,7 +468,6 @@ static const struct of_device_id arche_apb_ctrl_of_match[] = {
 	{ .compatible = "usbffff,2", },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, arche_apb_ctrl_of_match);
 
 static struct platform_driver arche_apb_ctrl_device_driver = {
 	.probe		= arche_apb_ctrl_probe,

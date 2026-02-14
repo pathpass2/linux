@@ -1,6 +1,6 @@
-==================================
-udlfb - DisplayLink USB 2.0 driver
-==================================
+==============
+What is udlfb?
+==============
 
 This is a driver for DisplayLink USB 2.0 era graphics chips.
 

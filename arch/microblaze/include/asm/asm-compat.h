@@ -4,7 +4,7 @@
 
 #include <asm/types.h>
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 #  define stringify_in_c(...)	__VA_ARGS__
 #  define ASM_CONST(x)		x
 #else

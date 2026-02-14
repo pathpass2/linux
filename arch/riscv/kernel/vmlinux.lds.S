@@ -27,6 +27,9 @@ ENTRY(_start)
 
 jiffies = jiffies_64;
 
+PECOFF_SECTION_ALIGNMENT = 0x1000;
+PECOFF_FILE_ALIGNMENT = 0x200;
+
 SECTIONS
 {
 	/* Beginning of code and text segment */
@@ -69,12 +72,10 @@ SECTIONS
 		__soc_builtin_dtb_table_end = .;
 	}
 	/* we have to discard exit text and such at runtime, not link time */
-	__exittext_begin = .;
 	.exit.text :
 	{
 		EXIT_TEXT
 	}
-	__exittext_end = .;
 
 	__init_text_end = .;
 	. = ALIGN(SECTION_ALIGN);
@@ -85,31 +86,21 @@ SECTIONS
 	/* Start of init data section */
 	__init_data_begin = .;
 	INIT_DATA_SECTION(16)
-
-	.init.pi : {
-		KEEP(*(.init.pi*))
-	}
-
 	.init.bss : {
-		KEEP(*(.init.bss*))	/* from the EFI stub */
+		*(.init.bss)	/* from the EFI stub */
 	}
 	.exit.data :
 	{
 		EXIT_DATA
 	}
-
-	RUNTIME_CONST_VARIABLES
-
 	PERCPU_SECTION(L1_CACHE_BYTES)
 
 	.rel.dyn : {
 		*(.rel.dyn*)
 	}
 
-	.rela.dyn : ALIGN(8) {
-		__rela_dyn_start = .;
-		*(.rela .rela*)
-		__rela_dyn_end = .;
+	.rela.dyn : {
+		*(.rela*)
 	}
 
 	__init_data_end = .;
@@ -117,7 +108,7 @@ SECTIONS
 	. = ALIGN(8);
 	.alternative : {
 		__alt_start = .;
-		KEEP(*(.alternative))
+		*(.alternative)
 		__alt_end = .;
 	}
 	__init_end = .;
@@ -138,22 +129,9 @@ SECTIONS
 		*(.sdata*)
 	}
 
-	.got : { *(.got*) }
-
-#ifdef CONFIG_RELOCATABLE
-	.data.rel : { *(.data.rel*) }
-	.plt : { *(.plt) }
-	.dynamic : { *(.dynamic) }
-	.dynsym : { *(.dynsym) }
-	.dynstr : { *(.dynstr) }
-	.hash : { *(.hash) }
-	.gnu.hash : { *(.gnu.hash) }
-#endif
-
 #ifdef CONFIG_EFI
 	.pecoff_edata_padding : { BYTE(0); . = ALIGN(PECOFF_FILE_ALIGNMENT); }
 	__pecoff_data_raw_size = ABSOLUTE(. - __pecoff_text_end);
-	__pecoff_data_raw_end = ABSOLUTE(.);
 #endif
 
 	/* End of data section */
@@ -164,7 +142,6 @@ SECTIONS
 #ifdef CONFIG_EFI
 	. = ALIGN(PECOFF_SECTION_ALIGNMENT);
 	__pecoff_data_virt_size = ABSOLUTE(. - __pecoff_text_end);
-	__pecoff_data_virt_end = ABSOLUTE(.);
 #endif
 	_end = .;
 

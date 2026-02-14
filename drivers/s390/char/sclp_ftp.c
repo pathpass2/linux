@@ -7,7 +7,8 @@
  *
  */
 
-#define pr_fmt(fmt) "hmcdrv: " fmt
+#define KMSG_COMPONENT "hmcdrv"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/mm.h>

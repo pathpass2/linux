@@ -13,7 +13,7 @@
  * Protects against simultaneous tests on multiple cores, or
  * reloading can file while a test is in progress
  */
-static DEFINE_SEMAPHORE(ifs_sem, 1);
+static DEFINE_SEMAPHORE(ifs_sem);
 
 /*
  * The sysfs interface to check additional details of last test
@@ -64,6 +64,7 @@ static ssize_t run_test_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
+	struct ifs_data *ifsd = ifs_get_data(dev);
 	unsigned int cpu;
 	int rc;
 
@@ -74,7 +75,10 @@ static ssize_t run_test_store(struct device *dev,
 	if (down_interruptible(&ifs_sem))
 		return -EINTR;
 
-	rc = do_core_test(cpu, dev);
+	if (!ifsd->loaded)
+		rc = -EPERM;
+	else
+		rc = do_core_test(cpu, dev);
 
 	up(&ifs_sem);
 
@@ -137,7 +141,7 @@ static ssize_t image_version_show(struct device *dev,
 static DEVICE_ATTR_RO(image_version);
 
 /* global scan sysfs attributes */
-struct attribute *plat_ifs_attrs[] = {
+static struct attribute *plat_ifs_attrs[] = {
 	&dev_attr_details.attr,
 	&dev_attr_status.attr,
 	&dev_attr_run_test.attr,
@@ -146,10 +150,9 @@ struct attribute *plat_ifs_attrs[] = {
 	NULL
 };
 
-/* global array sysfs attributes */
-struct attribute *plat_ifs_array_attrs[] = {
-	&dev_attr_details.attr,
-	&dev_attr_status.attr,
-	&dev_attr_run_test.attr,
-	NULL
-};
+ATTRIBUTE_GROUPS(plat_ifs);
+
+const struct attribute_group **ifs_get_groups(void)
+{
+	return plat_ifs_groups;
+}

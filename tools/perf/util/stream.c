@@ -52,6 +52,7 @@ static struct evlist_streams *evlist_streams__new(int nr_evsel,
 			goto err;
 
 		s->nr_streams_max = nr_streams_max;
+		s->evsel_idx = -1;
 	}
 
 	els->ev_streams = es;
@@ -138,7 +139,7 @@ static int evlist__init_callchain_streams(struct evlist *evlist,
 
 		hists__output_resort(hists, NULL);
 		init_hot_callchain(hists, &es[i]);
-		es[i].evsel = pos;
+		es[i].evsel_idx = pos->core.idx;
 		i++;
 	}
 
@@ -165,12 +166,12 @@ struct evlist_streams *evlist__create_streams(struct evlist *evlist,
 }
 
 struct evsel_streams *evsel_streams__entry(struct evlist_streams *els,
-					   const struct evsel *evsel)
+					   int evsel_idx)
 {
 	struct evsel_streams *es = els->ev_streams;
 
 	for (int i = 0; i < els->nr_evsel; i++) {
-		if (es[i].evsel == evsel)
+		if (es[i].evsel_idx == evsel_idx)
 			return &es[i];
 	}
 

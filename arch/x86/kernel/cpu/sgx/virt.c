@@ -5,7 +5,6 @@
  * Copyright(c) 2021 Intel Corporation.
  */
 
-#include <linux/kvm_types.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
@@ -205,7 +204,6 @@ static int sgx_vepc_release(struct inode *inode, struct file *file)
 			continue;
 
 		xa_erase(&vepc->page_array, index);
-		cond_resched();
 	}
 
 	/*
@@ -224,7 +222,6 @@ static int sgx_vepc_release(struct inode *inode, struct file *file)
 			list_add_tail(&epc_page->list, &secs_pages);
 
 		xa_erase(&vepc->page_array, index);
-		cond_resched();
 	}
 
 	/*
@@ -246,7 +243,6 @@ static int sgx_vepc_release(struct inode *inode, struct file *file)
 
 		if (sgx_vepc_free_page(epc_page))
 			list_add_tail(&epc_page->list, &secs_pages);
-		cond_resched();
 	}
 
 	if (!list_empty(&secs_pages))
@@ -256,11 +252,10 @@ static int sgx_vepc_release(struct inode *inode, struct file *file)
 	xa_destroy(&vepc->page_array);
 	kfree(vepc);
 
-	sgx_dec_usage_count();
 	return 0;
 }
 
-static int __sgx_vepc_open(struct inode *inode, struct file *file)
+static int sgx_vepc_open(struct inode *inode, struct file *file)
 {
 	struct sgx_vepc *vepc;
 
@@ -271,23 +266,6 @@ static int __sgx_vepc_open(struct inode *inode, struct file *file)
 	xa_init(&vepc->page_array);
 
 	file->private_data = vepc;
-
-	return 0;
-}
-
-static int sgx_vepc_open(struct inode *inode, struct file *file)
-{
-	int ret;
-
-	ret = sgx_inc_usage_count();
-	if (ret)
-		return ret;
-
-	ret =  __sgx_vepc_open(inode, file);
-	if (ret) {
-		sgx_dec_usage_count();
-		return ret;
-	}
 
 	return 0;
 }
@@ -382,7 +360,7 @@ int sgx_virt_ecreate(struct sgx_pageinfo *pageinfo, void __user *secs,
 	WARN_ON_ONCE(ret);
 	return 0;
 }
-EXPORT_SYMBOL_FOR_KVM(sgx_virt_ecreate);
+EXPORT_SYMBOL_GPL(sgx_virt_ecreate);
 
 static int __sgx_virt_einit(void __user *sigstruct, void __user *token,
 			    void __user *secs)
@@ -451,4 +429,4 @@ int sgx_virt_einit(void __user *sigstruct, void __user *token,
 
 	return ret;
 }
-EXPORT_SYMBOL_FOR_KVM(sgx_virt_einit);
+EXPORT_SYMBOL_GPL(sgx_virt_einit);

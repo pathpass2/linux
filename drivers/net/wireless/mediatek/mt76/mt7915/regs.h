@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause-Clear */
+/* SPDX-License-Identifier: ISC */
 /* Copyright (C) 2020 MediaTek Inc. */
 
 #ifndef __MT7915_REGS_H
@@ -66,7 +66,6 @@ enum offs_rev {
 	AGG_ACR0,
 	AGG_ACR4,
 	AGG_MRCR,
-	AGG_ATCR0,
 	AGG_ATCR1,
 	AGG_ATCR3,
 	LPON_UTTR0,
@@ -146,9 +145,6 @@ enum offs_rev {
 #define MT_PLE_BASE			0x820c0000
 #define MT_PLE(ofs)			(MT_PLE_BASE + (ofs))
 
-#define MT_PLE_HOST_RPT0		MT_PLE(0x030)
-#define MT_PLE_HOST_RPT0_TX_LATENCY	BIT(3)
-
 #define MT_FL_Q_EMPTY			MT_PLE(__OFFS(PLE_FL_Q_EMPTY))
 #define MT_FL_Q0_CTRL			MT_PLE(__OFFS(PLE_FL_Q_CTRL))
 #define MT_FL_Q2_CTRL			MT_PLE(__OFFS(PLE_FL_Q_CTRL) + 0x8)
@@ -173,7 +169,6 @@ enum offs_rev {
 
 #define MT_MDP_DCR0			MT_MDP(0x000)
 #define MT_MDP_DCR0_DAMSDU_EN		BIT(15)
-#define MT_MDP_DCR0_RX_HDR_TRANS_EN	BIT(19)
 
 #define MT_MDP_DCR1			MT_MDP(0x004)
 #define MT_MDP_DCR1_MAX_RX_LEN		GENMASK(15, 3)
@@ -254,9 +249,6 @@ enum offs_rev {
 #define MT_WTBLOFF_TOP_RSCR(_band)	MT_WTBLOFF_TOP(_band, 0x008)
 #define MT_WTBLOFF_TOP_RSCR_RCPI_MODE	GENMASK(31, 30)
 #define MT_WTBLOFF_TOP_RSCR_RCPI_PARAM	GENMASK(25, 24)
-
-#define MT_WTBLOFF_TOP_ACR(_band)	MT_WTBLOFF_TOP(_band, 0x010)
-#define MT_WTBLOFF_TOP_ADM_BACKOFFTIME	BIT(29)
 
 /* ETBF: band 0(0x820ea000), band 1(0x820fa000) */
 #define MT_WF_ETBF_BASE(_band)		((_band) ? 0x820fa000 : 0x820ea000)
@@ -508,9 +500,6 @@ enum offs_rev {
 #define MT_AGG_MRCR_LAST_RTS_CTS_RN		BIT(6)
 #define MT_AGG_MRCR_RTS_FAIL_LIMIT		GENMASK(11, 7)
 #define MT_AGG_MRCR_TXCMD_RTS_FAIL_LIMIT	GENMASK(28, 24)
-
-#define MT_AGG_ATCR0(_band)			MT_WF_AGG(_band, __OFFS(AGG_ATCR0))
-#define MT_AGG_ATCR_MAC_BFF_TIME_EN	BIT(30)
 
 #define MT_AGG_ATCR1(_band)		MT_WF_AGG(_band, __OFFS(AGG_ATCR1))
 #define MT_AGG_ATCR3(_band)		MT_WF_AGG(_band, __OFFS(AGG_ATCR3))
@@ -882,12 +871,7 @@ enum offs_rev {
 #define MT_AFE_RG_WBG_EN_WPLL_UP_MASK	BIT(20)
 #define MT_AFE_RG_WBG_EN_PLL_UP_MASK	(MT_AFE_RG_WBG_EN_BPLL_UP_MASK | \
 					 MT_AFE_RG_WBG_EN_WPLL_UP_MASK)
-#define MT_AFE_RG_WBG_EN_TXCAL_WF4	BIT(29)
-#define MT_AFE_RG_WBG_EN_TXCAL_BT	BIT(21)
-#define MT_AFE_RG_WBG_EN_TXCAL_WF3	BIT(20)
-#define MT_AFE_RG_WBG_EN_TXCAL_WF2	BIT(19)
-#define MT_AFE_RG_WBG_EN_TXCAL_WF1	BIT(18)
-#define MT_AFE_RG_WBG_EN_TXCAL_WF0	BIT(17)
+#define MT_AFE_RG_WBG_EN_TXCAL_MASK	GENMASK(21, 17)
 
 #define MT_ADIE_SLP_CTRL_BASE(_band)	(0x18005000 + ((_band) << 19))
 #define MT_ADIE_SLP_CTRL(_band, ofs)	(MT_ADIE_SLP_CTRL_BASE(_band) + (ofs))
@@ -1111,12 +1095,6 @@ enum offs_rev {
 
 #define MT_TOP_MCU_EMI_BASE		MT_TOP(0x1c4)
 #define MT_TOP_MCU_EMI_BASE_MASK	GENMASK(19, 0)
-
-#define MT_TOP_WF_AP_PERI_BASE		MT_TOP(0x1c8)
-#define MT_TOP_WF_AP_PERI_BASE_MASK	GENMASK(19, 0)
-
-#define MT_TOP_EFUSE_BASE		MT_TOP(0x1cc)
-#define MT_TOP_EFUSE_BASE_MASK		GENMASK(19, 0)
 
 #define MT_TOP_CONN_INFRA_WAKEUP	MT_TOP(0x1a0)
 #define MT_TOP_CONN_INFRA_WAKEUP_MASK	BIT(0)

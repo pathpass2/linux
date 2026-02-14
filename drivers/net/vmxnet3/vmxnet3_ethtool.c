@@ -1,7 +1,7 @@
 /*
  * Linux driver for VMware's vmxnet3 ethernet NIC.
  *
- * Copyright (C) 2008-2024, VMware, Inc. All Rights Reserved.
+ * Copyright (C) 2008-2022, VMware, Inc. All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -28,7 +28,6 @@
 #include "vmxnet3_int.h"
 #include <net/vxlan.h>
 #include <net/geneve.h>
-#include "vmxnet3_xdp.h"
 
 #define VXLAN_UDP_PORT 8472
 
@@ -77,10 +76,6 @@ vmxnet3_tq_driver_stats[] = {
 					 copy_skb_header) },
 	{ "  giant hdr",	offsetof(struct vmxnet3_tq_driver_stats,
 					 oversized_hdr) },
-	{ "  xdp xmit",		offsetof(struct vmxnet3_tq_driver_stats,
-					 xdp_xmit) },
-	{ "  xdp xmit err",	offsetof(struct vmxnet3_tq_driver_stats,
-					 xdp_xmit_err) },
 };
 
 /* per rq stats maintained by the device */
@@ -111,16 +106,6 @@ vmxnet3_rq_driver_stats[] = {
 					 drop_fcs) },
 	{ "  rx buf alloc fail", offsetof(struct vmxnet3_rq_driver_stats,
 					  rx_buf_alloc_failure) },
-	{ "     xdp packets", offsetof(struct vmxnet3_rq_driver_stats,
-				       xdp_packets) },
-	{ "     xdp tx", offsetof(struct vmxnet3_rq_driver_stats,
-				  xdp_tx) },
-	{ "     xdp redirects", offsetof(struct vmxnet3_rq_driver_stats,
-					 xdp_redirects) },
-	{ "     xdp drops", offsetof(struct vmxnet3_rq_driver_stats,
-				     xdp_drops) },
-	{ "     xdp aborted", offsetof(struct vmxnet3_rq_driver_stats,
-				       xdp_aborted) },
 };
 
 /* global stats maintained by the driver */
@@ -245,36 +230,28 @@ vmxnet3_get_strings(struct net_device *netdev, u32 stringset, u8 *buf)
 
 	for (j = 0; j < adapter->num_tx_queues; j++) {
 		for (i = 0; i < ARRAY_SIZE(vmxnet3_tq_dev_stats); i++)
-			ethtool_puts(&buf, vmxnet3_tq_dev_stats[i].desc);
+			ethtool_sprintf(&buf, vmxnet3_tq_dev_stats[i].desc);
 		for (i = 0; i < ARRAY_SIZE(vmxnet3_tq_driver_stats); i++)
-			ethtool_puts(&buf, vmxnet3_tq_driver_stats[i].desc);
+			ethtool_sprintf(&buf, vmxnet3_tq_driver_stats[i].desc);
 	}
 
 	for (j = 0; j < adapter->num_rx_queues; j++) {
 		for (i = 0; i < ARRAY_SIZE(vmxnet3_rq_dev_stats); i++)
-			ethtool_puts(&buf, vmxnet3_rq_dev_stats[i].desc);
+			ethtool_sprintf(&buf, vmxnet3_rq_dev_stats[i].desc);
 		for (i = 0; i < ARRAY_SIZE(vmxnet3_rq_driver_stats); i++)
-			ethtool_puts(&buf, vmxnet3_rq_driver_stats[i].desc);
+			ethtool_sprintf(&buf, vmxnet3_rq_driver_stats[i].desc);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(vmxnet3_global_stats); i++)
-		ethtool_puts(&buf, vmxnet3_global_stats[i].desc);
+		ethtool_sprintf(&buf, vmxnet3_global_stats[i].desc);
 }
 
 netdev_features_t vmxnet3_fix_features(struct net_device *netdev,
 				       netdev_features_t features)
 {
-	struct vmxnet3_adapter *adapter = netdev_priv(netdev);
-
 	/* If Rx checksum is disabled, then LRO should also be disabled */
 	if (!(features & NETIF_F_RXCSUM))
 		features &= ~NETIF_F_LRO;
-
-	/* If XDP is enabled, then LRO should not be enabled */
-	if (vmxnet3_xdp_enabled(adapter) && (features & NETIF_F_LRO)) {
-		netdev_err(netdev, "LRO is not supported with XDP");
-		features &= ~NETIF_F_LRO;
-	}
 
 	return features;
 }
@@ -833,18 +810,10 @@ out:
 }
 
 static int
-vmxnet3_get_rss_hash_opts(struct net_device *netdev,
-			  struct ethtool_rxfh_fields *info)
+vmxnet3_get_rss_hash_opts(struct vmxnet3_adapter *adapter,
+			  struct ethtool_rxnfc *info)
 {
-	struct vmxnet3_adapter *adapter = netdev_priv(netdev);
 	enum Vmxnet3_RSSField rss_fields;
-
-	if (!VMXNET3_VERSION_GE_4(adapter))
-		return -EOPNOTSUPP;
-#ifdef VMXNET3_RSS
-	if (!adapter->rss)
-		return -EOPNOTSUPP;
-#endif
 
 	if (netif_running(adapter->netdev)) {
 		unsigned long flags;
@@ -908,20 +877,10 @@ vmxnet3_get_rss_hash_opts(struct net_device *netdev,
 
 static int
 vmxnet3_set_rss_hash_opt(struct net_device *netdev,
-			 const struct ethtool_rxfh_fields *nfc,
-			 struct netlink_ext_ack *extack)
+			 struct vmxnet3_adapter *adapter,
+			 struct ethtool_rxnfc *nfc)
 {
-	struct vmxnet3_adapter *adapter = netdev_priv(netdev);
-	enum Vmxnet3_RSSField rss_fields;
-
-	if (!VMXNET3_VERSION_GE_4(adapter))
-		return -EOPNOTSUPP;
-#ifdef VMXNET3_RSS
-	if (!adapter->rss)
-		return -EOPNOTSUPP;
-#endif
-
-	rss_fields = adapter->rss_fields;
+	enum Vmxnet3_RSSField rss_fields = adapter->rss_fields;
 
 	/* RSS does not support anything other than hashing
 	 * to queues on src and dst IPs and ports
@@ -1081,11 +1040,66 @@ vmxnet3_set_rss_hash_opt(struct net_device *netdev,
 	return 0;
 }
 
-static u32 vmxnet3_get_rx_ring_count(struct net_device *netdev)
+static int
+vmxnet3_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info,
+		  u32 *rules)
 {
 	struct vmxnet3_adapter *adapter = netdev_priv(netdev);
+	int err = 0;
 
-	return adapter->num_rx_queues;
+	switch (info->cmd) {
+	case ETHTOOL_GRXRINGS:
+		info->data = adapter->num_rx_queues;
+		break;
+	case ETHTOOL_GRXFH:
+		if (!VMXNET3_VERSION_GE_4(adapter)) {
+			err = -EOPNOTSUPP;
+			break;
+		}
+#ifdef VMXNET3_RSS
+		if (!adapter->rss) {
+			err = -EOPNOTSUPP;
+			break;
+		}
+#endif
+		err = vmxnet3_get_rss_hash_opts(adapter, info);
+		break;
+	default:
+		err = -EOPNOTSUPP;
+		break;
+	}
+
+	return err;
+}
+
+static int
+vmxnet3_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info)
+{
+	struct vmxnet3_adapter *adapter = netdev_priv(netdev);
+	int err = 0;
+
+	if (!VMXNET3_VERSION_GE_4(adapter)) {
+		err = -EOPNOTSUPP;
+		goto done;
+	}
+#ifdef VMXNET3_RSS
+	if (!adapter->rss) {
+		err = -EOPNOTSUPP;
+		goto done;
+	}
+#endif
+
+	switch (info->cmd) {
+	case ETHTOOL_SRXFH:
+		err = vmxnet3_set_rss_hash_opt(netdev, adapter, info);
+		break;
+	default:
+		err = -EOPNOTSUPP;
+		break;
+	}
+
+done:
+	return err;
 }
 
 #ifdef VMXNET3_RSS
@@ -1099,26 +1113,27 @@ vmxnet3_get_rss_indir_size(struct net_device *netdev)
 }
 
 static int
-vmxnet3_get_rss(struct net_device *netdev, struct ethtool_rxfh_param *rxfh)
+vmxnet3_get_rss(struct net_device *netdev, u32 *p, u8 *key, u8 *hfunc)
 {
 	struct vmxnet3_adapter *adapter = netdev_priv(netdev);
 	struct UPT1_RSSConf *rssConf = adapter->rss_conf;
 	unsigned int n = rssConf->indTableSize;
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
-	if (!rxfh->indir)
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
+	if (!p)
 		return 0;
 	if (n > UPT1_RSS_MAX_IND_TABLE_SIZE)
 		return 0;
 	while (n--)
-		rxfh->indir[n] = rssConf->indTable[n];
+		p[n] = rssConf->indTable[n];
 	return 0;
 
 }
 
 static int
-vmxnet3_set_rss(struct net_device *netdev, struct ethtool_rxfh_param *rxfh,
-		struct netlink_ext_ack *extack)
+vmxnet3_set_rss(struct net_device *netdev, const u32 *p, const u8 *key,
+		const u8 hfunc)
 {
 	unsigned int i;
 	unsigned long flags;
@@ -1126,14 +1141,13 @@ vmxnet3_set_rss(struct net_device *netdev, struct ethtool_rxfh_param *rxfh,
 	struct UPT1_RSSConf *rssConf = adapter->rss_conf;
 
 	/* We do not allow change in unsupported parameters */
-	if (rxfh->key ||
-	    (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	     rxfh->hfunc != ETH_RSS_HASH_TOP))
+	if (key ||
+	    (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP))
 		return -EOPNOTSUPP;
-	if (!rxfh->indir)
+	if (!p)
 		return 0;
 	for (i = 0; i < rssConf->indTableSize; i++)
-		rssConf->indTable[i] = rxfh->indir[i];
+		rssConf->indTable[i] = p[i];
 
 	spin_lock_irqsave(&adapter->cmd_lock, flags);
 	VMXNET3_WRITE_BAR1_REG(adapter, VMXNET3_REG_CMD,
@@ -1323,14 +1337,13 @@ static const struct ethtool_ops vmxnet3_ethtool_ops = {
 	.get_ethtool_stats = vmxnet3_get_ethtool_stats,
 	.get_ringparam     = vmxnet3_get_ringparam,
 	.set_ringparam     = vmxnet3_set_ringparam,
-	.get_rx_ring_count = vmxnet3_get_rx_ring_count,
+	.get_rxnfc         = vmxnet3_get_rxnfc,
+	.set_rxnfc         = vmxnet3_set_rxnfc,
 #ifdef VMXNET3_RSS
 	.get_rxfh_indir_size = vmxnet3_get_rss_indir_size,
 	.get_rxfh          = vmxnet3_get_rss,
 	.set_rxfh          = vmxnet3_set_rss,
 #endif
-	.get_rxfh_fields   = vmxnet3_get_rss_hash_opts,
-	.set_rxfh_fields   = vmxnet3_set_rss_hash_opt,
 	.get_link_ksettings = vmxnet3_get_link_ksettings,
 	.get_channels      = vmxnet3_get_channels,
 };

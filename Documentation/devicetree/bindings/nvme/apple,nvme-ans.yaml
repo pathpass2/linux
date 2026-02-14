@@ -11,18 +11,11 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - const: apple,t8015-nvme-ans2
-      - items:
-          - const: apple,t6020-nvme-ans2
-          - const: apple,t8103-nvme-ans2
-      - items:
-          - enum:
-              # Do not add additional SoC to this list.
-              - apple,t8103-nvme-ans2
-              - apple,t8112-nvme-ans2
-              - apple,t6000-nvme-ans2
-          - const: apple,nvme-ans2
+    items:
+      - enum:
+          - apple,t8103-nvme-ans2
+          - apple,t6000-nvme-ans2
+      - const: apple,nvme-ans2
 
   reg:
     items:
@@ -72,21 +65,19 @@ if:
   properties:
     compatible:
       contains:
-        enum:
-          - apple,t6000-nvme-ans2
-          - apple,t6020-nvme-ans2
+        const: apple,t8103-nvme-ans2
 then:
   properties:
     power-domains:
-      minItems: 3
+      maxItems: 2
     power-domain-names:
-      minItems: 3
+      maxItems: 2
 else:
   properties:
     power-domains:
-      maxItems: 2
+      minItems: 3
     power-domain-names:
-      maxItems: 2
+      minItems: 3
 
 required:
   - compatible

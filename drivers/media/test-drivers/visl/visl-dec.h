@@ -7,7 +7,6 @@
 #ifndef _VISL_DEC_H_
 #define _VISL_DEC_H_
 
-#include "linux/v4l2-controls.h"
 #include "visl.h"
 
 struct visl_fwht_run {
@@ -44,15 +43,6 @@ struct visl_hevc_run {
 	const struct v4l2_ctrl_hevc_slice_params *spram;
 	const struct v4l2_ctrl_hevc_scaling_matrix *sm;
 	const struct v4l2_ctrl_hevc_decode_params *dpram;
-	const struct v4l2_ctrl_hevc_ext_sps_lt_rps *rps_lt;
-	const struct v4l2_ctrl_hevc_ext_sps_st_rps *rps_st;
-};
-
-struct visl_av1_run {
-	const struct v4l2_ctrl_av1_sequence *seq;
-	const struct v4l2_ctrl_av1_frame *frame;
-	const struct v4l2_ctrl_av1_tile_group_entry *tge;
-	const struct v4l2_ctrl_av1_film_grain *grain;
 };
 
 struct visl_run {
@@ -66,7 +56,6 @@ struct visl_run {
 		struct visl_vp9_run	vp9;
 		struct visl_h264_run	h264;
 		struct visl_hevc_run	hevc;
-		struct visl_av1_run	av1;
 	};
 };
 

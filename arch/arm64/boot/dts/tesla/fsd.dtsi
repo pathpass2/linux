@@ -92,7 +92,7 @@
 				reg = <0x0 0x000>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -108,7 +108,7 @@
 				reg = <0x0 0x001>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -124,7 +124,7 @@
 				reg = <0x0 0x002>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -139,7 +139,7 @@
 				compatible = "arm,cortex-a72";
 				reg = <0x0 0x003>;
 				enable-method = "psci";
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -156,7 +156,7 @@
 				reg = <0x0 0x100>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -172,7 +172,7 @@
 				reg = <0x0 0x101>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -188,7 +188,7 @@
 				reg = <0x0 0x102>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -204,7 +204,7 @@
 				reg = <0x0 0x103>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -221,7 +221,7 @@
 				reg = <0x0 0x200>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -237,7 +237,7 @@
 				reg = <0x0 0x201>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -253,7 +253,7 @@
 				reg = <0x0 0x202>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -269,7 +269,7 @@
 				reg = <0x0 0x203>;
 				enable-method = "psci";
 				clock-frequency = <2400000000>;
-				cpu-idle-states = <&cpu_sleep>;
+				cpu-idle-states = <&CPU_SLEEP>;
 				i-cache-size = <0xc000>;
 				i-cache-line-size = <64>;
 				i-cache-sets = <256>;
@@ -291,7 +291,7 @@
 		idle-states {
 			entry-method = "psci";
 
-			cpu_sleep: cpu-sleep {
+			CPU_SLEEP: cpu-sleep {
 				idle-state-name = "c2";
 				compatible = "arm,idle-state";
 				local-timer-stop;
@@ -304,7 +304,7 @@
 	};
 
 	arm-pmu {
-		compatible = "arm,cortex-a72-pmu";
+		compatible = "arm,armv8-pmuv3";
 		interrupts = <GIC_SPI 356 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 357 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 358 IRQ_TYPE_LEVEL_HIGH>,
@@ -342,18 +342,6 @@
 		#clock-cells = <0>;
 	};
 
-	reserved-memory {
-		#address-cells = <2>;
-		#size-cells = <2>;
-		ranges;
-
-		mfc_left: region@84000000 {
-			compatible = "shared-dma-pool";
-			no-map;
-			reg = <0 0x84000000 0 0x8000000>;
-		};
-	};
-
 	soc: soc@0 {
 		compatible = "simple-bus";
 		#address-cells = <2>;
@@ -363,11 +351,10 @@
 
 		gic: interrupt-controller@10400000 {
 			compatible = "arm,gic-v3";
-			#address-cells = <0>;
 			#interrupt-cells = <3>;
 			interrupt-controller;
-			reg = <0x0 0x10400000 0x0 0x10000>, /* GICD */
-			      <0x0 0x10600000 0x0 0x200000>; /* GICR_RD+GICR_SGI */
+			reg =	<0x0 0x10400000 0x0 0x10000>, /* GICD */
+				<0x0 0x10600000 0x0 0x200000>; /* GICR_RD+GICR_SGI */
 			interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
@@ -594,7 +581,7 @@
 		};
 
 		serial_0: serial@14180000 {
-			compatible = "tesla,fsd-uart", "samsung,exynos4210-uart";
+			compatible = "samsung,exynos4210-uart";
 			reg = <0x0 0x14180000 0x0 0x100>;
 			interrupts = <GIC_SPI 171 IRQ_TYPE_LEVEL_HIGH>;
 			dmas = <&pdma1 1>, <&pdma1 0>;
@@ -602,12 +589,11 @@
 			clocks = <&clock_peric PERIC_PCLK_UART0>,
 				 <&clock_peric PERIC_SCLK_UART0>;
 			clock-names = "uart", "clk_uart_baud0";
-			samsung,uart-fifosize = <64>;
 			status = "disabled";
 		};
 
 		serial_1: serial@14190000 {
-			compatible = "tesla,fsd-uart", "samsung,exynos4210-uart";
+			compatible = "samsung,exynos4210-uart";
 			reg = <0x0 0x14190000 0x0 0x100>;
 			interrupts = <GIC_SPI 172 IRQ_TYPE_LEVEL_HIGH>;
 			dmas = <&pdma1 3>, <&pdma1 2>;
@@ -615,17 +601,16 @@
 			clocks = <&clock_peric PERIC_PCLK_UART1>,
 				 <&clock_peric PERIC_SCLK_UART1>;
 			clock-names = "uart", "clk_uart_baud0";
-			samsung,uart-fifosize = <64>;
 			status = "disabled";
 		};
 
 		pmu_system_controller: system-controller@11400000 {
-			compatible = "tesla,fsd-pmu", "samsung,exynos7-pmu", "syscon";
+			compatible = "samsung,exynos7-pmu", "syscon";
 			reg = <0x0 0x11400000 0x0 0x5000>;
 		};
 
 		watchdog_0: watchdog@100a0000 {
-			compatible = "tesla,fsd-wdt", "samsung,exynos7-wdt";
+			compatible = "samsung,exynos7-wdt";
 			reg = <0x0 0x100a0000 0x0 0x100>;
 			interrupts = <GIC_SPI 471 IRQ_TYPE_LEVEL_HIGH>;
 			samsung,syscon-phandle = <&pmu_system_controller>;
@@ -634,7 +619,7 @@
 		};
 
 		watchdog_1: watchdog@100b0000 {
-			compatible = "tesla,fsd-wdt", "samsung,exynos7-wdt";
+			compatible = "samsung,exynos7-wdt";
 			reg = <0x0 0x100b0000 0x0 0x100>;
 			interrupts = <GIC_SPI 472 IRQ_TYPE_LEVEL_HIGH>;
 			samsung,syscon-phandle = <&pmu_system_controller>;
@@ -643,7 +628,7 @@
 		};
 
 		watchdog_2: watchdog@100c0000 {
-			compatible = "tesla,fsd-wdt", "samsung,exynos7-wdt";
+			compatible = "samsung,exynos7-wdt";
 			reg = <0x0 0x100c0000 0x0 0x100>;
 			interrupts = <GIC_SPI 473 IRQ_TYPE_LEVEL_HIGH>;
 			samsung,syscon-phandle = <&pmu_system_controller>;
@@ -652,7 +637,7 @@
 		};
 
 		pwm_0: pwm@14100000 {
-			compatible = "tesla,fsd-pwm", "samsung,exynos4210-pwm";
+			compatible = "samsung,exynos4210-pwm";
 			reg = <0x0 0x14100000 0x0 0x100>;
 			samsung,pwm-outputs = <0>, <1>, <2>, <3>;
 			#pwm-cells = <3>;
@@ -662,7 +647,7 @@
 		};
 
 		pwm_1: pwm@14110000 {
-			compatible = "tesla,fsd-pwm", "samsung,exynos4210-pwm";
+			compatible = "samsung,exynos4210-pwm";
 			reg = <0x0 0x14110000 0x0 0x100>;
 			samsung,pwm-outputs = <0>, <1>, <2>, <3>;
 			#pwm-cells = <3>;
@@ -672,7 +657,7 @@
 		};
 
 		hsi2c_0: i2c@14200000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14200000 0x0 0x1000>;
 			interrupts = <GIC_SPI 148 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -685,7 +670,7 @@
 		};
 
 		hsi2c_1: i2c@14210000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14210000 0x0 0x1000>;
 			interrupts = <GIC_SPI 149 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -698,7 +683,7 @@
 		};
 
 		hsi2c_2: i2c@14220000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14220000 0x0 0x1000>;
 			interrupts = <GIC_SPI 150 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -711,7 +696,7 @@
 		};
 
 		hsi2c_3: i2c@14230000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14230000 0x0 0x1000>;
 			interrupts = <GIC_SPI 151 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -724,7 +709,7 @@
 		};
 
 		hsi2c_4: i2c@14240000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14240000 0x0 0x1000>;
 			interrupts = <GIC_SPI 152 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -737,7 +722,7 @@
 		};
 
 		hsi2c_5: i2c@14250000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14250000 0x0 0x1000>;
 			interrupts = <GIC_SPI 153 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -750,7 +735,7 @@
 		};
 
 		hsi2c_6: i2c@14260000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14260000 0x0 0x1000>;
 			interrupts = <GIC_SPI 154 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -763,7 +748,7 @@
 		};
 
 		hsi2c_7: i2c@14270000 {
-			compatible = "tesla,fsd-hsi2c", "samsung,exynos7-hsi2c";
+			compatible = "samsung,exynos7-hsi2c";
 			reg = <0x0 0x14270000 0x0 0x1000>;
 			interrupts = <GIC_SPI 155 IRQ_TYPE_LEVEL_HIGH>;
 			#address-cells = <1>;
@@ -971,45 +956,6 @@
 			clock-names = "fin_pll", "mct";
 		};
 
-		mfc: mfc@12880000 {
-			compatible = "tesla,fsd-mfc";
-			reg = <0x0 0x12880000 0x0 0x10000>;
-			interrupts = <GIC_SPI 137 IRQ_TYPE_LEVEL_HIGH>;
-			clock-names = "mfc";
-			clocks = <&clock_mfc MFC_MFC_IPCLKPORT_ACLK>;
-			memory-region = <&mfc_left>;
-		};
-
-		ethernet1: ethernet@14300000 {
-			compatible = "tesla,fsd-ethqos";
-			reg = <0x0 0x14300000 0x0 0x10000>;
-			interrupts = <GIC_SPI 176 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "macirq";
-			clocks = <&clock_peric PERIC_EQOS_TOP_IPCLKPORT_CLK_PTP_REF_I>,
-				 <&clock_peric PERIC_EQOS_TOP_IPCLKPORT_ACLK_I>,
-				 <&clock_peric PERIC_EQOS_TOP_IPCLKPORT_HCLK_I>,
-				 <&clock_peric PERIC_EQOS_TOP_IPCLKPORT_RGMII_CLK_I>,
-				 <&clock_peric PERIC_EQOS_TOP_IPCLKPORT_CLK_RX_I>,
-				 <&clock_peric PERIC_BUS_D_PERIC_IPCLKPORT_EQOSCLK>,
-				 <&clock_peric PERIC_BUS_P_PERIC_IPCLKPORT_EQOSCLK>,
-				 <&clock_peric PERIC_EQOS_PHYRXCLK_MUX>,
-				 <&clock_peric PERIC_EQOS_PHYRXCLK>,
-				 <&clock_peric PERIC_DOUT_RGMII_CLK>;
-			clock-names = "ptp_ref", "master_bus", "slave_bus", "tx", "rx",
-				      "master2_bus", "slave2_bus", "eqos_rxclk_mux",
-				      "eqos_phyrxclk", "dout_peric_rgmii_clk";
-			assigned-clocks = <&clock_peric PERIC_EQOS_PHYRXCLK_MUX>,
-					  <&clock_peric PERIC_EQOS_PHYRXCLK>;
-			assigned-clock-parents = <&clock_peric PERIC_EQOS_PHYRXCLK>;
-			pinctrl-names = "default";
-			pinctrl-0 = <&eth1_tx_clk>, <&eth1_tx_data>, <&eth1_tx_ctrl>,
-				    <&eth1_phy_intr>, <&eth1_rx_clk>, <&eth1_rx_data>,
-				    <&eth1_rx_ctrl>, <&eth1_mdio>;
-			local-mac-address = [00 00 00 00 00 00];
-			iommus = <&smmu_peric 0x0 0x1>;
-			status = "disabled";
-		};
-
 		ufs: ufs@15120000 {
 			compatible = "tesla,fsd-ufs";
 			reg = <0x0 0x15120000 0x0 0x200>,  /* 0: HCI standard */
@@ -1037,26 +983,6 @@
 			#phy-cells = <0>;
 			clocks = <&clock_fsys0 UFS0_MPHY_REFCLK_IXTAL26>;
 			clock-names = "ref_clk";
-		};
-
-		ethernet0: ethernet@15300000 {
-			compatible = "tesla,fsd-ethqos";
-			reg = <0x0 0x15300000 0x0 0x10000>;
-			interrupts = <GIC_SPI 102 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "macirq";
-			clocks = <&clock_fsys0 FSYS0_EQOS_TOP0_IPCLKPORT_CLK_PTP_REF_I>,
-				 <&clock_fsys0 FSYS0_EQOS_TOP0_IPCLKPORT_ACLK_I>,
-				 <&clock_fsys0 FSYS0_EQOS_TOP0_IPCLKPORT_HCLK_I>,
-				 <&clock_fsys0 FSYS0_EQOS_TOP0_IPCLKPORT_RGMII_CLK_I>,
-				 <&clock_fsys0 FSYS0_EQOS_TOP0_IPCLKPORT_CLK_RX_I>;
-			clock-names = "ptp_ref", "master_bus", "slave_bus", "tx", "rx";
-			pinctrl-names = "default";
-			pinctrl-0 = <&eth0_tx_clk>, <&eth0_tx_data>, <&eth0_tx_ctrl>,
-				    <&eth0_phy_intr>, <&eth0_rx_clk>, <&eth0_rx_data>,
-				    <&eth0_rx_ctrl>, <&eth0_mdio>;
-			local-mac-address = [00 00 00 00 00 00];
-			iommus = <&smmu_fsys0 0x0 0x1>;
-			status = "disabled";
 		};
 	};
 };

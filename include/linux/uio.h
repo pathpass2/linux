@@ -6,12 +6,12 @@
 #define __LINUX_UIO_H
 
 #include <linux/kernel.h>
+#include <linux/thread_info.h>
 #include <linux/mm_types.h>
-#include <linux/ucopysize.h>
 #include <uapi/linux/uio.h>
 
 struct page;
-struct folio_queue;
+struct pipe_inode_info;
 
 typedef unsigned int __bitwise iov_iter_extraction_t;
 
@@ -22,13 +22,13 @@ struct kvec {
 
 enum iter_type {
 	/* iter types */
-	ITER_UBUF,
 	ITER_IOVEC,
-	ITER_BVEC,
 	ITER_KVEC,
-	ITER_FOLIOQ,
+	ITER_BVEC,
+	ITER_PIPE,
 	ITER_XARRAY,
 	ITER_DISCARD,
+	ITER_UBUF,
 };
 
 #define ITER_SOURCE	1	// == WRITE
@@ -44,68 +44,29 @@ struct iov_iter {
 	u8 iter_type;
 	bool nofault;
 	bool data_source;
-	size_t iov_offset;
-	/*
-	 * Hack alert: overlay ubuf_iovec with iovec + count, so
-	 * that the members resolve correctly regardless of the type
-	 * of iterator used. This means that you can use:
-	 *
-	 * &iter->__ubuf_iovec or iter->__iov
-	 *
-	 * interchangably for the user_backed cases, hence simplifying
-	 * some of the cases that need to deal with both.
-	 */
+	bool user_backed;
 	union {
-		/*
-		 * This really should be a const, but we cannot do that without
-		 * also modifying any of the zero-filling iter init functions.
-		 * Leave it non-const for now, but it should be treated as such.
-		 */
-		struct iovec __ubuf_iovec;
-		struct {
-			union {
-				/* use iter_iov() to get the current vec */
-				const struct iovec *__iov;
-				const struct kvec *kvec;
-				const struct bio_vec *bvec;
-				const struct folio_queue *folioq;
-				struct xarray *xarray;
-				void __user *ubuf;
-			};
-			size_t count;
-		};
+		size_t iov_offset;
+		int last_offset;
+	};
+	size_t count;
+	union {
+		const struct iovec *iov;
+		const struct kvec *kvec;
+		const struct bio_vec *bvec;
+		struct xarray *xarray;
+		struct pipe_inode_info *pipe;
+		void __user *ubuf;
 	};
 	union {
 		unsigned long nr_segs;
-		u8 folioq_slot;
+		struct {
+			unsigned int head;
+			unsigned int start_head;
+		};
 		loff_t xarray_start;
 	};
 };
-
-typedef __u16 uio_meta_flags_t;
-
-struct uio_meta {
-	uio_meta_flags_t	flags;
-	u16			app_tag;
-	u64			seed;
-	struct iov_iter		iter;
-};
-
-static inline const struct iovec *iter_iov(const struct iov_iter *iter)
-{
-	if (iter->iter_type == ITER_UBUF)
-		return (const struct iovec *) &iter->__ubuf_iovec;
-	return iter->__iov;
-}
-
-#define iter_iov_addr(iter)	(iter_iov(iter)->iov_base + (iter)->iov_offset)
-
-static inline size_t iter_iov_len(const struct iov_iter *i)
-{
-	if (i->iter_type == ITER_UBUF)
-		return i->count;
-	return iter_iov(i)->iov_len - i->iov_offset;
-}
 
 static inline enum iter_type iov_iter_type(const struct iov_iter *i)
 {
@@ -140,14 +101,14 @@ static inline bool iov_iter_is_bvec(const struct iov_iter *i)
 	return iov_iter_type(i) == ITER_BVEC;
 }
 
+static inline bool iov_iter_is_pipe(const struct iov_iter *i)
+{
+	return iov_iter_type(i) == ITER_PIPE;
+}
+
 static inline bool iov_iter_is_discard(const struct iov_iter *i)
 {
 	return iov_iter_type(i) == ITER_DISCARD;
-}
-
-static inline bool iov_iter_is_folioq(const struct iov_iter *i)
-{
-	return iov_iter_type(i) == ITER_FOLIOQ;
 }
 
 static inline bool iov_iter_is_xarray(const struct iov_iter *i)
@@ -162,7 +123,7 @@ static inline unsigned char iov_iter_rw(const struct iov_iter *i)
 
 static inline bool user_backed_iter(const struct iov_iter *i)
 {
-	return iter_is_ubuf(i) || iter_is_iovec(i);
+	return i->user_backed;
 }
 
 /*
@@ -182,6 +143,17 @@ static inline size_t iov_length(const struct iovec *iov, unsigned long nr_segs)
 	return ret;
 }
 
+static inline struct iovec iov_iter_iovec(const struct iov_iter *iter)
+{
+	return (struct iovec) {
+		.iov_base = iter->iov->iov_base + iter->iov_offset,
+		.iov_len = min(iter->count,
+			       iter->iov->iov_len - iter->iov_offset),
+	};
+}
+
+size_t copy_page_from_iter_atomic(struct page *page, unsigned offset,
+				  size_t bytes, struct iov_iter *i);
 void iov_iter_advance(struct iov_iter *i, size_t bytes);
 void iov_iter_revert(struct iov_iter *i, size_t bytes);
 size_t fault_in_iov_iter_readable(const struct iov_iter *i, size_t bytes);
@@ -191,8 +163,6 @@ size_t copy_page_to_iter(struct page *page, size_t offset, size_t bytes,
 			 struct iov_iter *i);
 size_t copy_page_from_iter(struct page *page, size_t offset, size_t bytes,
 			 struct iov_iter *i);
-size_t copy_folio_from_iter_atomic(struct folio *folio, size_t offset,
-		size_t bytes, struct iov_iter *i);
 
 size_t _copy_to_iter(const void *addr, size_t bytes, struct iov_iter *i);
 size_t _copy_from_iter(void *addr, size_t bytes, struct iov_iter *i);
@@ -203,15 +173,6 @@ static inline size_t copy_folio_to_iter(struct folio *folio, size_t offset,
 {
 	return copy_page_to_iter(&folio->page, offset, bytes, i);
 }
-
-static inline size_t copy_folio_from_iter(struct folio *folio, size_t offset,
-					  size_t bytes, struct iov_iter *i)
-{
-	return copy_page_from_iter(&folio->page, offset, bytes, i);
-}
-
-size_t copy_page_to_iter_nofault(struct page *page, unsigned offset,
-				 size_t bytes, struct iov_iter *i);
 
 static __always_inline __must_check
 size_t copy_to_iter(const void *addr, size_t bytes, struct iov_iter *i)
@@ -227,16 +188,6 @@ size_t copy_from_iter(void *addr, size_t bytes, struct iov_iter *i)
 	if (check_copy_size(addr, bytes, false))
 		return _copy_from_iter(addr, bytes, i);
 	return 0;
-}
-
-static __always_inline __must_check
-bool copy_to_iter_full(const void *addr, size_t bytes, struct iov_iter *i)
-{
-	size_t copied = copy_to_iter(addr, bytes, i);
-	if (likely(copied == bytes))
-		return true;
-	iov_iter_revert(i, copied);
-	return false;
 }
 
 static __always_inline __must_check
@@ -286,6 +237,8 @@ size_t _copy_mc_to_iter(const void *addr, size_t bytes, struct iov_iter *i);
 #endif
 
 size_t iov_iter_zero(size_t bytes, struct iov_iter *);
+bool iov_iter_is_aligned(const struct iov_iter *i, unsigned addr_mask,
+			unsigned len_mask);
 unsigned long iov_iter_alignment(const struct iov_iter *i);
 unsigned long iov_iter_gap_alignment(const struct iov_iter *i);
 void iov_iter_init(struct iov_iter *i, unsigned int direction, const struct iovec *iov,
@@ -294,14 +247,19 @@ void iov_iter_kvec(struct iov_iter *i, unsigned int direction, const struct kvec
 			unsigned long nr_segs, size_t count);
 void iov_iter_bvec(struct iov_iter *i, unsigned int direction, const struct bio_vec *bvec,
 			unsigned long nr_segs, size_t count);
+void iov_iter_pipe(struct iov_iter *i, unsigned int direction, struct pipe_inode_info *pipe,
+			size_t count);
 void iov_iter_discard(struct iov_iter *i, unsigned int direction, size_t count);
-void iov_iter_folio_queue(struct iov_iter *i, unsigned int direction,
-			  const struct folio_queue *folioq,
-			  unsigned int first_slot, unsigned int offset, size_t count);
 void iov_iter_xarray(struct iov_iter *i, unsigned int direction, struct xarray *xarray,
 		     loff_t start, size_t count);
+ssize_t iov_iter_get_pages(struct iov_iter *i, struct page **pages,
+		size_t maxsize, unsigned maxpages, size_t *start,
+		iov_iter_extraction_t extraction_flags);
 ssize_t iov_iter_get_pages2(struct iov_iter *i, struct page **pages,
 			size_t maxsize, unsigned maxpages, size_t *start);
+ssize_t iov_iter_get_pages_alloc(struct iov_iter *i,
+		struct page ***pages, size_t maxsize, size_t *start,
+		iov_iter_extraction_t extraction_flags);
 ssize_t iov_iter_get_pages_alloc2(struct iov_iter *i, struct page ***pages,
 			size_t maxsize, size_t *start);
 int iov_iter_npages(const struct iov_iter *i, int maxpages);
@@ -358,6 +316,27 @@ iov_iter_npages_cap(struct iov_iter *i, int maxpages, size_t max_bytes)
 	return npages;
 }
 
+struct csum_state {
+	__wsum csum;
+	size_t off;
+};
+
+size_t csum_and_copy_to_iter(const void *addr, size_t bytes, void *csstate, struct iov_iter *i);
+size_t csum_and_copy_from_iter(void *addr, size_t bytes, __wsum *csum, struct iov_iter *i);
+
+static __always_inline __must_check
+bool csum_and_copy_from_iter_full(void *addr, size_t bytes,
+				  __wsum *csum, struct iov_iter *i)
+{
+	size_t copied = csum_and_copy_from_iter(addr, bytes, csum, i);
+	if (likely(copied == bytes))
+		return true;
+	iov_iter_revert(i, copied);
+	return false;
+}
+size_t hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
+		struct iov_iter *i);
+
 struct iovec *iovec_from_user(const struct iovec __user *uvector,
 		unsigned long nr_segs, unsigned long fast_segs,
 		struct iovec *fast_iov, bool compat);
@@ -367,6 +346,8 @@ ssize_t import_iovec(int type, const struct iovec __user *uvec,
 ssize_t __import_iovec(int type, const struct iovec __user *uvec,
 		 unsigned nr_segs, unsigned fast_segs, struct iovec **iovp,
 		 struct iov_iter *i, bool compat);
+int import_single_range(int type, void __user *buf, size_t len,
+		 struct iovec *iov, struct iov_iter *i);
 int import_ubuf(int type, void __user *buf, size_t len, struct iov_iter *i);
 
 static inline void iov_iter_ubuf(struct iov_iter *i, unsigned int direction,
@@ -375,10 +356,10 @@ static inline void iov_iter_ubuf(struct iov_iter *i, unsigned int direction,
 	WARN_ON(direction & ~(READ | WRITE));
 	*i = (struct iov_iter) {
 		.iter_type = ITER_UBUF,
+		.user_backed = true,
 		.data_source = direction,
 		.ubuf = buf,
-		.count = count,
-		.nr_segs = 1
+		.count = count
 	};
 }
 /* Flags for iov_iter_get/extract_pages*() */
@@ -389,9 +370,6 @@ ssize_t iov_iter_extract_pages(struct iov_iter *i, struct page ***pages,
 			       size_t maxsize, unsigned int maxpages,
 			       iov_iter_extraction_t extraction_flags,
 			       size_t *offset0);
-ssize_t iov_iter_extract_bvecs(struct iov_iter *iter, struct bio_vec *bv,
-		size_t max_size, unsigned short *nr_vecs,
-		unsigned short max_vecs, iov_iter_extraction_t extraction_flags);
 
 /**
  * iov_iter_extract_will_pin - Indicate how pages from the iterator will be retained
@@ -413,10 +391,5 @@ static inline bool iov_iter_extract_will_pin(const struct iov_iter *iter)
 {
 	return user_backed_iter(iter);
 }
-
-struct sg_table;
-ssize_t extract_iter_to_sg(struct iov_iter *iter, size_t len,
-			   struct sg_table *sgtable, unsigned int sg_max,
-			   iov_iter_extraction_t extraction_flags);
 
 #endif

@@ -353,7 +353,7 @@ static int ef4_ethtool_fill_self_tests(struct ef4_nic *efx,
 	return n;
 }
 
-static size_t ef4_describe_per_queue_stats(struct ef4_nic *efx, u8 **strings)
+static size_t ef4_describe_per_queue_stats(struct ef4_nic *efx, u8 *strings)
 {
 	size_t n_stats = 0;
 	struct ef4_channel *channel;
@@ -361,22 +361,24 @@ static size_t ef4_describe_per_queue_stats(struct ef4_nic *efx, u8 **strings)
 	ef4_for_each_channel(channel, efx) {
 		if (ef4_channel_has_tx_queues(channel)) {
 			n_stats++;
-			if (!strings)
-				continue;
+			if (strings != NULL) {
+				snprintf(strings, ETH_GSTRING_LEN,
+					 "tx-%u.tx_packets",
+					 channel->tx_queue[0].queue /
+					 EF4_TXQ_TYPES);
 
-			ethtool_sprintf(strings, "tx-%u.tx_packets",
-					channel->tx_queue[0].queue /
-						EF4_TXQ_TYPES);
+				strings += ETH_GSTRING_LEN;
+			}
 		}
 	}
 	ef4_for_each_channel(channel, efx) {
 		if (ef4_channel_has_rx_queue(channel)) {
 			n_stats++;
-			if (!strings)
-				continue;
-
-			ethtool_sprintf(strings, "rx-%d.rx_packets",
-					channel->channel);
+			if (strings != NULL) {
+				snprintf(strings, ETH_GSTRING_LEN,
+					 "rx-%d.rx_packets", channel->channel);
+				strings += ETH_GSTRING_LEN;
+			}
 		}
 	}
 	return n_stats;
@@ -407,10 +409,14 @@ static void ef4_ethtool_get_strings(struct net_device *net_dev,
 
 	switch (string_set) {
 	case ETH_SS_STATS:
-		efx->type->describe_stats(efx, &strings);
+		strings += (efx->type->describe_stats(efx, strings) *
+			    ETH_GSTRING_LEN);
 		for (i = 0; i < EF4_ETHTOOL_SW_STAT_COUNT; i++)
-			ethtool_puts(&strings, ef4_sw_stat_desc[i].name);
-		ef4_describe_per_queue_stats(efx, &strings);
+			strscpy(strings + i * ETH_GSTRING_LEN,
+				ef4_sw_stat_desc[i].name, ETH_GSTRING_LEN);
+		strings += EF4_ETHTOOL_SW_STAT_COUNT * ETH_GSTRING_LEN;
+		strings += (ef4_describe_per_queue_stats(efx, strings) *
+			    ETH_GSTRING_LEN);
 		break;
 	case ETH_SS_TEST:
 		ef4_ethtool_fill_self_tests(efx, NULL, strings, NULL);
@@ -944,50 +950,39 @@ static int ef4_ethtool_get_class_rule(struct ef4_nic *efx,
 }
 
 static int
-ef4_ethtool_get_rxfh_fields(struct net_device *net_dev,
-			    struct ethtool_rxfh_fields *info)
-{
-	struct ef4_nic *efx = netdev_priv(net_dev);
-
-	info->data = 0;
-	/* Falcon A0 and A1 had a 4-tuple hash for TCP and UDP, but it was
-	 * broken so we do not enable it.
-	 * Falcon B0 adds a Toeplitz hash, 4-tuple for TCP and 2-tuple for
-	 * other IPv4, including UDP.
-	 * See falcon_init_rx_cfg().
-	 */
-	if (ef4_nic_rev(efx) < EF4_REV_FALCON_B0)
-		return 0;
-	switch (info->flow_type) {
-	case TCP_V4_FLOW:
-		info->data |= RXH_L4_B_0_1 | RXH_L4_B_2_3;
-		fallthrough;
-	case UDP_V4_FLOW:
-	case SCTP_V4_FLOW:
-	case AH_ESP_V4_FLOW:
-	case IPV4_FLOW:
-		info->data |= RXH_IP_SRC | RXH_IP_DST;
-		break;
-	default:
-		break;
-	}
-	return 0;
-}
-
-static u32 ef4_ethtool_get_rx_ring_count(struct net_device *net_dev)
-{
-	struct ef4_nic *efx = netdev_priv(net_dev);
-
-	return efx->n_rx_channels;
-}
-
-static int
 ef4_ethtool_get_rxnfc(struct net_device *net_dev,
 		      struct ethtool_rxnfc *info, u32 *rule_locs)
 {
 	struct ef4_nic *efx = netdev_priv(net_dev);
 
 	switch (info->cmd) {
+	case ETHTOOL_GRXRINGS:
+		info->data = efx->n_rx_channels;
+		return 0;
+
+	case ETHTOOL_GRXFH: {
+		unsigned min_revision = 0;
+
+		info->data = 0;
+		switch (info->flow_type) {
+		case TCP_V4_FLOW:
+			info->data |= RXH_L4_B_0_1 | RXH_L4_B_2_3;
+			fallthrough;
+		case UDP_V4_FLOW:
+		case SCTP_V4_FLOW:
+		case AH_ESP_V4_FLOW:
+		case IPV4_FLOW:
+			info->data |= RXH_IP_SRC | RXH_IP_DST;
+			min_revision = EF4_REV_FALCON_B0;
+			break;
+		default:
+			break;
+		}
+		if (ef4_nic_rev(efx) < min_revision)
+			info->data = 0;
+		return 0;
+	}
+
 	case ETHTOOL_GRXCLSRLCNT:
 		info->data = ef4_filter_get_rx_id_limit(efx);
 		if (info->data == 0)
@@ -1262,33 +1257,31 @@ static u32 ef4_ethtool_get_rxfh_indir_size(struct net_device *net_dev)
 		0 : ARRAY_SIZE(efx->rx_indir_table));
 }
 
-static int ef4_ethtool_get_rxfh(struct net_device *net_dev,
-				struct ethtool_rxfh_param *rxfh)
+static int ef4_ethtool_get_rxfh(struct net_device *net_dev, u32 *indir, u8 *key,
+				u8 *hfunc)
 {
 	struct ef4_nic *efx = netdev_priv(net_dev);
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
-	if (rxfh->indir)
-		memcpy(rxfh->indir, efx->rx_indir_table,
-		       sizeof(efx->rx_indir_table));
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
+	if (indir)
+		memcpy(indir, efx->rx_indir_table, sizeof(efx->rx_indir_table));
 	return 0;
 }
 
-static int ef4_ethtool_set_rxfh(struct net_device *net_dev,
-				struct ethtool_rxfh_param *rxfh,
-				struct netlink_ext_ack *extack)
+static int ef4_ethtool_set_rxfh(struct net_device *net_dev, const u32 *indir,
+				const u8 *key, const u8 hfunc)
 {
 	struct ef4_nic *efx = netdev_priv(net_dev);
 
 	/* We do not allow change in unsupported parameters */
-	if (rxfh->key ||
-	    (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	     rxfh->hfunc != ETH_RSS_HASH_TOP))
+	if (key ||
+	    (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP))
 		return -EOPNOTSUPP;
-	if (!rxfh->indir)
+	if (!indir)
 		return 0;
 
-	return efx->type->rx_push_rss_config(efx, true, rxfh->indir);
+	return efx->type->rx_push_rss_config(efx, true, indir);
 }
 
 static int ef4_ethtool_get_module_eeprom(struct net_device *net_dev,
@@ -1351,11 +1344,9 @@ const struct ethtool_ops ef4_ethtool_ops = {
 	.reset			= ef4_ethtool_reset,
 	.get_rxnfc		= ef4_ethtool_get_rxnfc,
 	.set_rxnfc		= ef4_ethtool_set_rxnfc,
-	.get_rx_ring_count	= ef4_ethtool_get_rx_ring_count,
 	.get_rxfh_indir_size	= ef4_ethtool_get_rxfh_indir_size,
 	.get_rxfh		= ef4_ethtool_get_rxfh,
 	.set_rxfh		= ef4_ethtool_set_rxfh,
-	.get_rxfh_fields	= ef4_ethtool_get_rxfh_fields,
 	.get_module_info	= ef4_ethtool_get_module_info,
 	.get_module_eeprom	= ef4_ethtool_get_module_eeprom,
 	.get_link_ksettings	= ef4_ethtool_get_link_ksettings,

@@ -22,7 +22,6 @@
 #include <linux/gpio/consumer.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pm_runtime.h>
-#include <linux/iopoll.h>
 #include <trace/events/spi.h>
 
 /* SPI register offsets */
@@ -234,6 +233,8 @@
  */
 #define DMA_MIN_BYTES	16
 
+#define SPI_DMA_TIMEOUT		(msecs_to_jiffies(1000))
+
 #define AUTOSUSPEND_TIMEOUT	2000
 
 struct atmel_spi_caps {
@@ -256,7 +257,6 @@ struct atmel_spi {
 	void __iomem		*regs;
 	int			irq;
 	struct clk		*clk;
-	struct clk		*gclk;
 	struct platform_device	*pdev;
 	unsigned long		spi_clk;
 
@@ -278,7 +278,6 @@ struct atmel_spi {
 	bool			keep_cs;
 
 	u32			fifo_size;
-	bool			last_polarity;
 	u8			native_cs_free;
 	u8			native_cs_for_gpio;
 };
@@ -292,22 +291,6 @@ struct atmel_spi_device {
 #define INVALID_DMA_ADDRESS	0xffffffff
 
 /*
- * This frequency can be anything supported by the controller, but to avoid
- * unnecessary delay, the highest possible frequency is chosen.
- *
- * This frequency is the highest possible which is not interfering with other
- * chip select registers (see Note for Serial Clock Bit Rate configuration in
- * Atmel-11121F-ATARM-SAMA5D3-Series-Datasheet_02-Feb-16, page 1283)
- */
-#define DUMMY_MSG_FREQUENCY	0x02
-/*
- * 8 bits is the minimum data the controller is capable of sending.
- *
- * This message can be anything as it should not be treated by any SPI device.
- */
-#define DUMMY_MSG		0xAA
-
-/*
  * Version 2 of the SPI controller has
  *  - CR.LASTXFER
  *  - SPI_MR.DIV32 may become FDIV or must-be-zero (here: always zero)
@@ -319,43 +302,6 @@ static bool atmel_spi_is_v2(struct atmel_spi *as)
 {
 	return as->caps.is_spi2;
 }
-
-/*
- * Send a dummy message.
- *
- * This is sometimes needed when using a CS GPIO to force clock transition when
- * switching between devices with different polarities.
- */
-static void atmel_spi_send_dummy(struct atmel_spi *as, struct spi_device *spi, int chip_select)
-{
-	u32 status;
-	u32 csr;
-
-	/*
-	 * Set a clock frequency to allow sending message on SPI bus.
-	 * The frequency here can be anything, but is needed for
-	 * the controller to send the data.
-	 */
-	csr = spi_readl(as, CSR0 + 4 * chip_select);
-	csr = SPI_BFINS(SCBR, DUMMY_MSG_FREQUENCY, csr);
-	spi_writel(as, CSR0 + 4 * chip_select, csr);
-
-	/*
-	 * Read all data coming from SPI bus, needed to be able to send
-	 * the message.
-	 */
-	spi_readl(as, RDR);
-	while (spi_readl(as, SR) & SPI_BIT(RDRF)) {
-		spi_readl(as, RDR);
-		cpu_relax();
-	}
-
-	spi_writel(as, TDR, DUMMY_MSG);
-
-	readl_poll_timeout_atomic(as->regs + SPI_SR, status,
-				  (status & SPI_BIT(TXEMPTY)), 1, 1000);
-}
-
 
 /*
  * Earlier SPI controllers (e.g. on at91rm9200) have a design bug whereby
@@ -373,24 +319,18 @@ static void atmel_spi_send_dummy(struct atmel_spi *as, struct spi_device *spi, i
  * Master on Chip Select 0.")  No workaround exists for that ... so for
  * nCS0 on that chip, we (a) don't use the GPIO, (b) can't support CS_HIGH,
  * and (c) will trigger that first erratum in some cases.
- *
- * When changing the clock polarity, the SPI controller waits for the next
- * transmission to enforce the default clock state. This may be an issue when
- * using a GPIO as Chip Select: the clock level is applied only when the first
- * packet is sent, once the CS has already been asserted. The workaround is to
- * avoid this by sending a first (dummy) message before toggling the CS state.
  */
+
 static void cs_activate(struct atmel_spi *as, struct spi_device *spi)
 {
 	struct atmel_spi_device *asd = spi->controller_state;
-	bool new_polarity;
 	int chip_select;
 	u32 mr;
 
-	if (spi_get_csgpiod(spi, 0))
+	if (spi->cs_gpiod)
 		chip_select = as->native_cs_for_gpio;
 	else
-		chip_select = spi_get_chipselect(spi, 0);
+		chip_select = spi->chip_select;
 
 	if (atmel_spi_is_v2(as)) {
 		spi_writel(as, CSR0 + 4 * chip_select, asd->csr);
@@ -398,29 +338,20 @@ static void cs_activate(struct atmel_spi *as, struct spi_device *spi)
 		 * on CS1,2,3 needs SPI_CSR0.BITS config as SPI_CSR1,2,3.BITS
 		 */
 		spi_writel(as, CSR0, asd->csr);
+		if (as->caps.has_wdrbt) {
+			spi_writel(as, MR,
+					SPI_BF(PCS, ~(0x01 << chip_select))
+					| SPI_BIT(WDRBT)
+					| SPI_BIT(MODFDIS)
+					| SPI_BIT(MSTR));
+		} else {
+			spi_writel(as, MR,
+					SPI_BF(PCS, ~(0x01 << chip_select))
+					| SPI_BIT(MODFDIS)
+					| SPI_BIT(MSTR));
+		}
 
 		mr = spi_readl(as, MR);
-		mr = SPI_BFINS(PCS, ~(0x01 << chip_select), mr);
-		spi_writel(as, MR, mr);
-
-		/*
-		 * Ensures the clock polarity is valid before we actually
-		 * assert the CS to avoid spurious clock edges to be
-		 * processed by the spi devices.
-		 */
-		if (spi_get_csgpiod(spi, 0)) {
-			new_polarity = (asd->csr & SPI_BIT(CPOL)) != 0;
-			if (new_polarity != as->last_polarity) {
-				/*
-				 * Need to disable the GPIO before sending the dummy
-				 * message because it is already set by the spi core.
-				 */
-				gpiod_set_value_cansleep(spi_get_csgpiod(spi, 0), 0);
-				atmel_spi_send_dummy(as, spi, chip_select);
-				as->last_polarity = new_polarity;
-				gpiod_set_value_cansleep(spi_get_csgpiod(spi, 0), 1);
-			}
-		}
 	} else {
 		u32 cpol = (spi->mode & SPI_CPOL) ? SPI_BIT(CPOL) : 0;
 		int i;
@@ -447,10 +378,10 @@ static void cs_deactivate(struct atmel_spi *as, struct spi_device *spi)
 	int chip_select;
 	u32 mr;
 
-	if (spi_get_csgpiod(spi, 0))
+	if (spi->cs_gpiod)
 		chip_select = as->native_cs_for_gpio;
 	else
-		chip_select = spi_get_chipselect(spi, 0);
+		chip_select = spi->chip_select;
 
 	/* only deactivate *this* device; sometimes transfers to
 	 * another device may be active when this routine is called.
@@ -463,7 +394,7 @@ static void cs_deactivate(struct atmel_spi *as, struct spi_device *spi)
 
 	dev_dbg(&spi->dev, "DEactivate NPCS, mr %08x\n", mr);
 
-	if (!spi_get_csgpiod(spi, 0))
+	if (!spi->cs_gpiod)
 		spi_writel(as, CR, SPI_BIT(LASTXFER));
 }
 
@@ -869,10 +800,10 @@ static int atmel_spi_set_xfer_speed(struct atmel_spi *as,
 	unsigned long		bus_hz;
 	int chip_select;
 
-	if (spi_get_csgpiod(spi, 0))
+	if (spi->cs_gpiod)
 		chip_select = as->native_cs_for_gpio;
 	else
-		chip_select = spi_get_chipselect(spi, 0);
+		chip_select = spi->chip_select;
 
 	/* v1 chips start out at half the peripheral bus speed. */
 	bus_hz = as->spi_clk;
@@ -978,6 +909,8 @@ static void atmel_spi_pdc_next_xfer(struct spi_controller *host,
  * For DMA, tx_buf/tx_dma have the same relationship as rx_buf/rx_dma:
  *  - The buffer is either valid for CPU access, else NULL
  *  - If the buffer is valid, so is its DMA address
+ *
+ * This driver manages the dma address unless message->is_dma_mapped.
  */
 static int
 atmel_spi_dma_map_xfer(struct atmel_spi *as, struct spi_transfer *xfer)
@@ -1256,7 +1189,7 @@ static int atmel_spi_setup(struct spi_device *spi)
 	as = spi_controller_get_devdata(spi->controller);
 
 	/* see notes above re chipselect */
-	if (!spi_get_csgpiod(spi, 0) && (spi->mode & SPI_CS_HIGH)) {
+	if (!spi->cs_gpiod && (spi->mode & SPI_CS_HIGH)) {
 		dev_warn(&spi->dev, "setup: non GPIO CS can't be active-high\n");
 		return -EINVAL;
 	}
@@ -1268,16 +1201,16 @@ static int atmel_spi_setup(struct spi_device *spi)
 	 */
 	initialize_native_cs_for_gpio(as);
 
-	if (spi_get_csgpiod(spi, 0) && as->native_cs_free) {
+	if (spi->cs_gpiod && as->native_cs_free) {
 		dev_err(&spi->dev,
 			"No native CS available to support this GPIO CS\n");
 		return -EBUSY;
 	}
 
-	if (spi_get_csgpiod(spi, 0))
+	if (spi->cs_gpiod)
 		chip_select = as->native_cs_for_gpio;
 	else
-		chip_select = spi_get_chipselect(spi, 0);
+		chip_select = spi->chip_select;
 
 	csr = SPI_BF(BITS, bits - 8);
 	if (spi->mode & SPI_CPOL)
@@ -1285,7 +1218,7 @@ static int atmel_spi_setup(struct spi_device *spi)
 	if (!(spi->mode & SPI_CPHA))
 		csr |= SPI_BIT(NCPHA);
 
-	if (!spi_get_csgpiod(spi, 0))
+	if (!spi->cs_gpiod)
 		csr |= SPI_BIT(CSAAT);
 	csr |= SPI_BF(DLYBS, 0);
 
@@ -1311,7 +1244,7 @@ static int atmel_spi_setup(struct spi_device *spi)
 
 	dev_dbg(&spi->dev,
 		"setup: bpw %u mode 0x%x -> csr%d %08x\n",
-		bits, spi->mode, spi_get_chipselect(spi, 0), csr);
+		bits, spi->mode, spi->chip_select, csr);
 
 	if (!atmel_spi_is_v2(as))
 		spi_writel(as, CSR0 + 4 * chip_select, csr);
@@ -1346,8 +1279,7 @@ static int atmel_spi_one_transfer(struct spi_controller *host,
 	struct atmel_spi_device	*asd;
 	int			timeout;
 	int			ret;
-	unsigned int		dma_timeout;
-	long			ret_timeout;
+	unsigned long		dma_timeout;
 
 	as = spi_controller_get_devdata(host);
 
@@ -1363,7 +1295,8 @@ static int atmel_spi_one_transfer(struct spi_controller *host,
 	 * DMA map early, for performance (empties dcache ASAP) and
 	 * better fault reporting.
 	 */
-	if (as->use_pdc) {
+	if ((!host->cur_msg->is_dma_mapped)
+		&& as->use_pdc) {
 		if (atmel_spi_dma_map_xfer(as, xfer) < 0)
 			return -ENOMEM;
 	}
@@ -1400,9 +1333,9 @@ static int atmel_spi_one_transfer(struct spi_controller *host,
 			atmel_spi_unlock(as);
 		}
 
-		dma_timeout = msecs_to_jiffies(spi_controller_xfer_timeout(host, xfer));
-		ret_timeout = wait_for_completion_timeout(&as->xfer_completion, dma_timeout);
-		if (!ret_timeout) {
+		dma_timeout = wait_for_completion_timeout(&as->xfer_completion,
+							  SPI_DMA_TIMEOUT);
+		if (WARN_ON(dma_timeout == 0)) {
 			dev_err(&spi->dev, "spi transfer timeout\n");
 			as->done_status = -EIO;
 		}
@@ -1442,7 +1375,8 @@ static int atmel_spi_one_transfer(struct spi_controller *host,
 		}
 	}
 
-	if (as->use_pdc)
+	if (!host->cur_msg->is_dma_mapped
+		&& as->use_pdc)
 		atmel_spi_dma_unmap_xfer(host, xfer);
 
 	if (as->use_pdc)
@@ -1481,8 +1415,6 @@ static void atmel_get_caps(struct atmel_spi *as)
 
 static void atmel_spi_init(struct atmel_spi *as)
 {
-	u32 mr = 0;
-
 	spi_writel(as, CR, SPI_BIT(SWRST));
 	spi_writel(as, CR, SPI_BIT(SWRST)); /* AT91SAM9263 Rev B workaround */
 
@@ -1490,17 +1422,12 @@ static void atmel_spi_init(struct atmel_spi *as)
 	if (as->fifo_size)
 		spi_writel(as, CR, SPI_BIT(FIFOEN));
 
-	/*
-	 * If GCLK is selected as the source clock for the bit rate generation
-	 * Enable the BRSRCCLK/FDIV/DIV32 bit
-	 */
-	if (as->gclk)
-		mr |= SPI_BIT(FDIV);
-
-	if (as->caps.has_wdrbt)
-		mr |= SPI_BIT(WDRBT);
-
-	spi_writel(as, MR, mr | SPI_BIT(MODFDIS) | SPI_BIT(MSTR));
+	if (as->caps.has_wdrbt) {
+		spi_writel(as, MR, SPI_BIT(WDRBT) | SPI_BIT(MODFDIS)
+				| SPI_BIT(MSTR));
+	} else {
+		spi_writel(as, MR, SPI_BIT(MSTR) | SPI_BIT(MODFDIS));
+	}
 
 	if (as->use_pdc)
 		spi_writel(as, PTCR, SPI_BIT(RXTDIS) | SPI_BIT(TXTDIS));
@@ -1519,6 +1446,10 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	/* Select default pin state */
 	pinctrl_pm_select_default_state(&pdev->dev);
 
+	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!regs)
+		return -ENXIO;
+
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
@@ -1536,11 +1467,12 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	host->use_gpio_descriptors = true;
 	host->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
 	host->bits_per_word_mask = SPI_BPW_RANGE_MASK(8, 16);
+	host->dev.of_node = pdev->dev.of_node;
 	host->bus_num = pdev->id;
 	host->num_chipselect = 4;
 	host->setup = atmel_spi_setup;
-	host->flags = (SPI_CONTROLLER_MUST_RX | SPI_CONTROLLER_MUST_TX |
-			SPI_CONTROLLER_GPIO_SS);
+	host->flags = (SPI_MASTER_MUST_RX | SPI_MASTER_MUST_TX |
+			SPI_MASTER_GPIO_SS);
 	host->transfer_one = atmel_spi_one_transfer;
 	host->set_cs = atmel_spi_set_cs;
 	host->cleanup = atmel_spi_cleanup;
@@ -1554,7 +1486,7 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	spin_lock_init(&as->lock);
 
 	as->pdev = pdev;
-	as->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &regs);
+	as->regs = devm_ioremap_resource(&pdev->dev, regs);
 	if (IS_ERR(as->regs)) {
 		ret = PTR_ERR(as->regs);
 		goto out_unmap_regs;
@@ -1562,11 +1494,6 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	as->phybase = regs->start;
 	as->irq = irq;
 	as->clk = clk;
-	as->gclk = devm_clk_get_optional(&pdev->dev, "spi_gclk");
-	if (IS_ERR(as->gclk)) {
-		ret = PTR_ERR(as->gclk);
-		goto out_unmap_regs;
-	}
 
 	init_completion(&as->xfer_completion);
 
@@ -1627,19 +1554,7 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_free_irq;
 
-	/*
-	 * In cases where the peripheral clock is higher,the FLEX_SPI_CSRx.SCBR
-	 * exceeds the threshold (SCBR ≤ 255), the GCLK is used as the source clock
-	 * for the SPCK (SPI Serial Clock) bit rate generation
-	 */
-	if (as->gclk) {
-		ret = clk_prepare_enable(as->gclk);
-		if (ret)
-			goto out_disable_clk;
-		as->spi_clk = clk_get_rate(as->gclk);
-	} else {
-		as->spi_clk = clk_get_rate(clk);
-	}
+	as->spi_clk = clk_get_rate(clk);
 
 	as->fifo_size = 0;
 	if (!of_property_read_u32(pdev->dev.of_node, "atmel,fifo-size",
@@ -1674,8 +1589,6 @@ out_free_dma:
 
 	spi_writel(as, CR, SPI_BIT(SWRST));
 	spi_writel(as, CR, SPI_BIT(SWRST)); /* AT91SAM9263 Rev B workaround */
-	clk_disable_unprepare(as->gclk);
-out_disable_clk:
 	clk_disable_unprepare(clk);
 out_free_irq:
 out_unmap_regs:
@@ -1683,7 +1596,7 @@ out_unmap_regs:
 	return ret;
 }
 
-static void atmel_spi_remove(struct platform_device *pdev)
+static int atmel_spi_remove(struct platform_device *pdev)
 {
 	struct spi_controller	*host = platform_get_drvdata(pdev);
 	struct atmel_spi	*as = spi_controller_get_devdata(host);
@@ -1711,11 +1624,11 @@ static void atmel_spi_remove(struct platform_device *pdev)
 	spin_unlock_irq(&as->lock);
 
 	clk_disable_unprepare(as->clk);
-	if (as->gclk)
-		clk_disable_unprepare(as->gclk);
 
 	pm_runtime_put_noidle(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static int atmel_spi_runtime_suspend(struct device *dev)
@@ -1724,8 +1637,6 @@ static int atmel_spi_runtime_suspend(struct device *dev)
 	struct atmel_spi *as = spi_controller_get_devdata(host);
 
 	clk_disable_unprepare(as->clk);
-	if (as->gclk)
-		clk_disable_unprepare(as->gclk);
 	pinctrl_pm_select_sleep_state(dev);
 
 	return 0;
@@ -1735,20 +1646,10 @@ static int atmel_spi_runtime_resume(struct device *dev)
 {
 	struct spi_controller *host = dev_get_drvdata(dev);
 	struct atmel_spi *as = spi_controller_get_devdata(host);
-	int ret;
 
 	pinctrl_pm_select_default_state(dev);
 
-	ret = clk_prepare_enable(as->clk);
-	if (ret)
-		return ret;
-	if (as->gclk) {
-		ret = clk_prepare_enable(as->gclk);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
+	return clk_prepare_enable(as->clk);
 }
 
 static int atmel_spi_suspend(struct device *dev)
@@ -1776,17 +1677,10 @@ static int atmel_spi_resume(struct device *dev)
 	ret = clk_prepare_enable(as->clk);
 	if (ret)
 		return ret;
-	if (as->gclk) {
-		ret = clk_prepare_enable(as->gclk);
-		if (ret)
-			return ret;
-	}
 
 	atmel_spi_init(as);
 
 	clk_disable_unprepare(as->clk);
-	if (as->gclk)
-		clk_disable_unprepare(as->gclk);
 
 	if (!pm_runtime_suspended(dev)) {
 		ret = atmel_spi_runtime_resume(dev);

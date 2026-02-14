@@ -5,14 +5,13 @@
  * Copyright 2016 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
  */
 
-#include <linux/debugfs.h>
 #include <linux/errno.h>
 #include <linux/init.h>
+#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/kmod.h>
-#include <linux/mm.h>
-#include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/mm.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
@@ -52,6 +51,35 @@ static struct dentry *top_cec_dir;
 /* dev to cec_devnode */
 #define to_cec_devnode(cd) container_of(cd, struct cec_devnode, dev)
 
+int cec_get_device(struct cec_devnode *devnode)
+{
+	/*
+	 * Check if the cec device is available. This needs to be done with
+	 * the devnode->lock held to prevent an open/unregister race:
+	 * without the lock, the device could be unregistered and freed between
+	 * the devnode->registered check and get_device() calls, leading to
+	 * a crash.
+	 */
+	mutex_lock(&devnode->lock);
+	/*
+	 * return ENXIO if the cec device has been removed
+	 * already or if it is not registered anymore.
+	 */
+	if (!devnode->registered) {
+		mutex_unlock(&devnode->lock);
+		return -ENXIO;
+	}
+	/* and increase the device refcount */
+	get_device(&devnode->dev);
+	mutex_unlock(&devnode->lock);
+	return 0;
+}
+
+void cec_put_device(struct cec_devnode *devnode)
+{
+	put_device(&devnode->dev);
+}
+
 /* Called when the last user of the cec device exits. */
 static void cec_devnode_release(struct device *cd)
 {
@@ -65,7 +93,7 @@ static void cec_devnode_release(struct device *cd)
 	cec_delete_adapter(to_cec_adapter(devnode));
 }
 
-static const struct bus_type cec_bus_type = {
+static struct bus_type cec_bus_type = {
 	.name = CEC_NAME,
 };
 
@@ -163,8 +191,6 @@ static void cec_devnode_unregister(struct cec_adapter *adap)
 	mutex_lock(&adap->lock);
 	__cec_s_phys_addr(adap, CEC_PHYS_ADDR_INVALID, false);
 	__cec_s_log_addrs(adap, NULL, false);
-	// Disable the adapter (since adap->devnode.unregistered is true)
-	cec_adap_enable(adap);
 	mutex_unlock(&adap->lock);
 
 	cdev_device_del(&devnode->cdev, &devnode->dev);
@@ -245,7 +271,7 @@ struct cec_adapter *cec_allocate_adapter(const struct cec_adap_ops *ops,
 	adap->cec_pin_is_high = true;
 	adap->log_addrs.cec_version = CEC_OP_CEC_VERSION_2_0;
 	adap->log_addrs.vendor_id = CEC_VENDOR_ID_NONE;
-	adap->capabilities = caps | CEC_CAP_REPLY_VENDOR_ID;
+	adap->capabilities = caps;
 	if (debug_phys_addr)
 		adap->capabilities |= CEC_CAP_PHYS_ADDR;
 	adap->needs_hpd = caps & CEC_CAP_NEEDS_HPD;
@@ -421,7 +447,6 @@ static int __init cec_devnode_init(void)
 
 	ret = bus_register(&cec_bus_type);
 	if (ret < 0) {
-		debugfs_remove_recursive(top_cec_dir);
 		unregister_chrdev_region(cec_dev_t, CEC_NUM_DEVICES);
 		pr_warn("cec: bus_register failed\n");
 		return -EIO;
@@ -440,6 +465,6 @@ static void __exit cec_devnode_exit(void)
 subsys_initcall(cec_devnode_init);
 module_exit(cec_devnode_exit)
 
-MODULE_AUTHOR("Hans Verkuil <hverkuil@kernel.org>");
+MODULE_AUTHOR("Hans Verkuil <hans.verkuil@cisco.com>");
 MODULE_DESCRIPTION("Device node registration for cec drivers");
 MODULE_LICENSE("GPL");

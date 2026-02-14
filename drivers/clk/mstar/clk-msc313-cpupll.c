@@ -140,22 +140,20 @@ static unsigned long msc313_cpupll_recalc_rate(struct clk_hw *hw, unsigned long 
 					     parent_rate);
 }
 
-static int msc313_cpupll_determine_rate(struct clk_hw *hw,
-					struct clk_rate_request *req)
+static long msc313_cpupll_round_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long *parent_rate)
 {
-	u32 reg = msc313_cpupll_regforfrequecy(req->rate, req->best_parent_rate);
-	long rounded = msc313_cpupll_frequencyforreg(reg, req->best_parent_rate);
+	u32 reg = msc313_cpupll_regforfrequecy(rate, *parent_rate);
+	long rounded = msc313_cpupll_frequencyforreg(reg, *parent_rate);
 
 	/*
 	 * This is my poor attempt at making sure the resulting
 	 * rate doesn't overshoot the requested rate.
 	 */
-	for (; rounded >= req->rate && reg > 0; reg--)
-		rounded = msc313_cpupll_frequencyforreg(reg, req->best_parent_rate);
+	for (; rounded >= rate && reg > 0; reg--)
+		rounded = msc313_cpupll_frequencyforreg(reg, *parent_rate);
 
-	req->rate = rounded;
-
-	return 0;
+	return rounded;
 }
 
 static int msc313_cpupll_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long parent_rate)
@@ -170,7 +168,7 @@ static int msc313_cpupll_set_rate(struct clk_hw *hw, unsigned long rate, unsigne
 
 static const struct clk_ops msc313_cpupll_ops = {
 	.recalc_rate	= msc313_cpupll_recalc_rate,
-	.determine_rate = msc313_cpupll_determine_rate,
+	.round_rate	= msc313_cpupll_round_rate,
 	.set_rate	= msc313_cpupll_set_rate,
 };
 

@@ -3,34 +3,22 @@
  * Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  */
 
-#include <linux/device.h>
 #include <linux/dmaengine.h>
 #include <crypto/scatterwalk.h>
 
 #include "dma.h"
 
-static void qce_dma_release(void *data)
-{
-	struct qce_dma_data *dma = data;
-
-	dma_release_channel(dma->txchan);
-	dma_release_channel(dma->rxchan);
-	kfree(dma->result_buf);
-}
-
-int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma)
+int qce_dma_request(struct device *dev, struct qce_dma_data *dma)
 {
 	int ret;
 
 	dma->txchan = dma_request_chan(dev, "tx");
 	if (IS_ERR(dma->txchan))
-		return dev_err_probe(dev, PTR_ERR(dma->txchan),
-				     "Failed to get TX DMA channel\n");
+		return PTR_ERR(dma->txchan);
 
 	dma->rxchan = dma_request_chan(dev, "rx");
 	if (IS_ERR(dma->rxchan)) {
-		ret = dev_err_probe(dev, PTR_ERR(dma->rxchan),
-				    "Failed to get RX DMA channel\n");
+		ret = PTR_ERR(dma->rxchan);
 		goto error_rx;
 	}
 
@@ -43,13 +31,19 @@ int devm_qce_dma_request(struct device *dev, struct qce_dma_data *dma)
 
 	dma->ignore_buf = dma->result_buf + QCE_RESULT_BUF_SZ;
 
-	return devm_add_action_or_reset(dev, qce_dma_release, dma);
-
+	return 0;
 error_nomem:
 	dma_release_channel(dma->rxchan);
 error_rx:
 	dma_release_channel(dma->txchan);
 	return ret;
+}
+
+void qce_dma_release(struct qce_dma_data *dma)
+{
+	dma_release_channel(dma->txchan);
+	dma_release_channel(dma->rxchan);
+	kfree(dma->result_buf);
 }
 
 struct scatterlist *

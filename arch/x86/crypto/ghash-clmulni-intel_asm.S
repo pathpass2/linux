@@ -93,7 +93,7 @@ SYM_FUNC_START(clmul_ghash_mul)
 	FRAME_BEGIN
 	movups (%rdi), DATA
 	movups (%rsi), SHASH
-	movaps .Lbswap_mask(%rip), BSWAP
+	movaps .Lbswap_mask, BSWAP
 	pshufb BSWAP, DATA
 	call __clmul_gf128mul_ble
 	pshufb BSWAP, DATA
@@ -103,14 +103,14 @@ SYM_FUNC_START(clmul_ghash_mul)
 SYM_FUNC_END(clmul_ghash_mul)
 
 /*
- * int clmul_ghash_update(char *dst, const char *src, unsigned int srclen,
- *			  const le128 *shash);
+ * void clmul_ghash_update(char *dst, const char *src, unsigned int srclen,
+ *			   const le128 *shash);
  */
 SYM_FUNC_START(clmul_ghash_update)
 	FRAME_BEGIN
 	cmp $16, %rdx
 	jb .Lupdate_just_ret	# check length
-	movaps .Lbswap_mask(%rip), BSWAP
+	movaps .Lbswap_mask, BSWAP
 	movups (%rdi), DATA
 	movups (%rcx), SHASH
 	pshufb BSWAP, DATA
@@ -127,7 +127,6 @@ SYM_FUNC_START(clmul_ghash_update)
 	pshufb BSWAP, DATA
 	movups DATA, (%rdi)
 .Lupdate_just_ret:
-	mov %rdx, %rax
 	FRAME_END
 	RET
 SYM_FUNC_END(clmul_ghash_update)

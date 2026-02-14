@@ -76,13 +76,6 @@ static int imx93_clk_composite_gate_enable(struct clk_hw *hw)
 
 static void imx93_clk_composite_gate_disable(struct clk_hw *hw)
 {
-	/*
-	 * Skip disable the root clock gate if mcore enabled.
-	 * The root clock may be used by the mcore.
-	 */
-	if (mcore_booted)
-		return;
-
 	imx93_clk_composite_gate_endisable(hw, 0);
 }
 
@@ -96,6 +89,12 @@ static unsigned long
 imx93_clk_composite_divider_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 {
 	return clk_divider_ops.recalc_rate(hw, parent_rate);
+}
+
+static long
+imx93_clk_composite_divider_round_rate(struct clk_hw *hw, unsigned long rate, unsigned long *prate)
+{
+	return clk_divider_ops.round_rate(hw, rate, prate);
 }
 
 static int
@@ -135,6 +134,7 @@ static int imx93_clk_composite_divider_set_rate(struct clk_hw *hw, unsigned long
 
 static const struct clk_ops imx93_clk_composite_divider_ops = {
 	.recalc_rate = imx93_clk_composite_divider_recalc_rate,
+	.round_rate = imx93_clk_composite_divider_round_rate,
 	.determine_rate = imx93_clk_composite_divider_determine_rate,
 	.set_rate = imx93_clk_composite_divider_set_rate,
 };

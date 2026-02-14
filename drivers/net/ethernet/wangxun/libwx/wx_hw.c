@@ -4,107 +4,12 @@
 #include <linux/etherdevice.h>
 #include <linux/netdevice.h>
 #include <linux/if_ether.h>
-#include <linux/if_vlan.h>
 #include <linux/iopoll.h>
 #include <linux/pci.h>
 
 #include "wx_type.h"
 #include "wx_lib.h"
-#include "wx_sriov.h"
-#include "wx_vf.h"
 #include "wx_hw.h"
-
-static int wx_phy_read_reg_mdi(struct mii_bus *bus, int phy_addr, int devnum, int regnum)
-{
-	struct wx *wx = bus->priv;
-	u32 command, val;
-	int ret;
-
-	/* setup and write the address cycle command */
-	command = WX_MSCA_RA(regnum) |
-		  WX_MSCA_PA(phy_addr) |
-		  WX_MSCA_DA(devnum);
-	wr32(wx, WX_MSCA, command);
-
-	command = WX_MSCC_CMD(WX_MSCA_CMD_READ) | WX_MSCC_BUSY;
-	if (wx->mac.type == wx_mac_em)
-		command |= WX_MDIO_CLK(6);
-	wr32(wx, WX_MSCC, command);
-
-	/* wait to complete */
-	ret = read_poll_timeout(rd32, val, !(val & WX_MSCC_BUSY), 1000,
-				100000, false, wx, WX_MSCC);
-	if (ret) {
-		wx_err(wx, "Mdio read c22 command did not complete.\n");
-		return ret;
-	}
-
-	return (u16)rd32(wx, WX_MSCC);
-}
-
-static int wx_phy_write_reg_mdi(struct mii_bus *bus, int phy_addr,
-				int devnum, int regnum, u16 value)
-{
-	struct wx *wx = bus->priv;
-	u32 command, val;
-	int ret;
-
-	/* setup and write the address cycle command */
-	command = WX_MSCA_RA(regnum) |
-		  WX_MSCA_PA(phy_addr) |
-		  WX_MSCA_DA(devnum);
-	wr32(wx, WX_MSCA, command);
-
-	command = value | WX_MSCC_CMD(WX_MSCA_CMD_WRITE) | WX_MSCC_BUSY;
-	if (wx->mac.type == wx_mac_em)
-		command |= WX_MDIO_CLK(6);
-	wr32(wx, WX_MSCC, command);
-
-	/* wait to complete */
-	ret = read_poll_timeout(rd32, val, !(val & WX_MSCC_BUSY), 1000,
-				100000, false, wx, WX_MSCC);
-	if (ret)
-		wx_err(wx, "Mdio write c22 command did not complete.\n");
-
-	return ret;
-}
-
-int wx_phy_read_reg_mdi_c22(struct mii_bus *bus, int phy_addr, int regnum)
-{
-	struct wx *wx = bus->priv;
-
-	wr32(wx, WX_MDIO_CLAUSE_SELECT, 0xF);
-	return wx_phy_read_reg_mdi(bus, phy_addr, 0, regnum);
-}
-EXPORT_SYMBOL(wx_phy_read_reg_mdi_c22);
-
-int wx_phy_write_reg_mdi_c22(struct mii_bus *bus, int phy_addr, int regnum, u16 value)
-{
-	struct wx *wx = bus->priv;
-
-	wr32(wx, WX_MDIO_CLAUSE_SELECT, 0xF);
-	return wx_phy_write_reg_mdi(bus, phy_addr, 0, regnum, value);
-}
-EXPORT_SYMBOL(wx_phy_write_reg_mdi_c22);
-
-int wx_phy_read_reg_mdi_c45(struct mii_bus *bus, int phy_addr, int devnum, int regnum)
-{
-	struct wx *wx = bus->priv;
-
-	wr32(wx, WX_MDIO_CLAUSE_SELECT, 0);
-	return wx_phy_read_reg_mdi(bus, phy_addr, devnum, regnum);
-}
-EXPORT_SYMBOL(wx_phy_read_reg_mdi_c45);
-
-int wx_phy_write_reg_mdi_c45(struct mii_bus *bus, int phy_addr,
-			     int devnum, int regnum, u16 value)
-{
-	struct wx *wx = bus->priv;
-
-	wr32(wx, WX_MDIO_CLAUSE_SELECT, 0);
-	return wx_phy_write_reg_mdi(bus, phy_addr, devnum, regnum, value);
-}
-EXPORT_SYMBOL(wx_phy_write_reg_mdi_c45);
 
 static void wx_intr_disable(struct wx *wx, u64 qmask)
 {
@@ -114,7 +19,7 @@ static void wx_intr_disable(struct wx *wx, u64 qmask)
 	if (mask)
 		wr32(wx, WX_PX_IMS(0), mask);
 
-	if (test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
+	if (wx->mac.type == wx_mac_sp) {
 		mask = (qmask >> 32);
 		if (mask)
 			wr32(wx, WX_PX_IMS(1), mask);
@@ -125,16 +30,10 @@ void wx_intr_enable(struct wx *wx, u64 qmask)
 {
 	u32 mask;
 
-	if (wx->pdev->is_virtfn) {
-		wr32(wx, WX_VXIMC, qmask);
-		return;
-	}
-
 	mask = (qmask & U32_MAX);
 	if (mask)
 		wr32(wx, WX_PX_IMC(0), mask);
-
-	if (test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
+	if (wx->mac.type == wx_mac_sp) {
 		mask = (qmask >> 32);
 		if (mask)
 			wr32(wx, WX_PX_IMC(1), mask);
@@ -157,9 +56,9 @@ void wx_irq_disable(struct wx *wx)
 		int vector;
 
 		for (vector = 0; vector < wx->num_q_vectors; vector++)
-			synchronize_irq(wx->msix_q_entries[vector].vector);
+			synchronize_irq(wx->msix_entries[vector].vector);
 
-		synchronize_irq(wx->msix_entry->vector);
+		synchronize_irq(wx->msix_entries[vector].vector);
 	} else {
 		synchronize_irq(pdev->irq);
 	}
@@ -286,8 +185,22 @@ static int wx_acquire_sw_sync(struct wx *wx, u32 mask)
 	return ret;
 }
 
-static int wx_host_interface_command_s(struct wx *wx, u32 *buffer,
-				       u32 length, u32 timeout, bool return_data)
+/**
+ *  wx_host_interface_command - Issue command to manageability block
+ *  @wx: pointer to the HW structure
+ *  @buffer: contains the command to write and where the return status will
+ *   be placed
+ *  @length: length of buffer, must be multiple of 4 bytes
+ *  @timeout: time in ms to wait for command completion
+ *  @return_data: read and return data from the buffer (true) or not (false)
+ *   Needed because FW structures are big endian and decoding of
+ *   these fields can be 8 bit or 16 bit based on command. Decoding
+ *   is not easily understood without making a table of commands.
+ *   So we will leave this up to the caller to read back the data
+ *   in these cases.
+ **/
+int wx_host_interface_command(struct wx *wx, u32 *buffer,
+			      u32 length, u32 timeout, bool return_data)
 {
 	u32 hdr_size = sizeof(struct wx_hic_hdr);
 	u32 hicr, i, bi, buf[64] = {};
@@ -295,9 +208,21 @@ static int wx_host_interface_command_s(struct wx *wx, u32 *buffer,
 	u32 dword_len;
 	u16 buf_len;
 
+	if (length == 0 || length > WX_HI_MAX_BLOCK_BYTE_LENGTH) {
+		wx_err(wx, "Buffer length failure buffersize=%d.\n", length);
+		return -EINVAL;
+	}
+
 	status = wx_acquire_sw_sync(wx, WX_MNG_SWFW_SYNC_SW_MB);
 	if (status != 0)
 		return status;
+
+	/* Calculate length in DWORDs. We must be DWORD aligned */
+	if ((length % (sizeof(u32))) != 0) {
+		wx_err(wx, "Buffer length failure, not aligned to dword");
+		status = -EINVAL;
+		goto rel_out;
+	}
 
 	dword_len = length >> 2;
 
@@ -316,25 +241,27 @@ static int wx_host_interface_command_s(struct wx *wx, u32 *buffer,
 	status = read_poll_timeout(rd32, hicr, hicr & WX_MNG_MBOX_CTL_FWRDY, 1000,
 				   timeout * 1000, false, wx, WX_MNG_MBOX_CTL);
 
-	buf[0] = rd32(wx, WX_MNG_MBOX);
-	if ((buf[0] & 0xff0000) >> 16 == 0x80) {
-		wx_err(wx, "Unknown FW command: 0x%x\n", buffer[0] & 0xff);
-		status = -EINVAL;
-		goto rel_out;
-	}
-
 	/* Check command completion */
 	if (status) {
-		wx_err(wx, "Command has failed with no status valid.\n");
+		wx_dbg(wx, "Command has failed with no status valid.\n");
+
+		buf[0] = rd32(wx, WX_MNG_MBOX);
+		if ((buffer[0] & 0xff) != (~buf[0] >> 24)) {
+			status = -EINVAL;
+			goto rel_out;
+		}
+		if ((buf[0] & 0xff0000) >> 16 == 0x80) {
+			wx_dbg(wx, "It's unknown cmd.\n");
+			status = -EINVAL;
+			goto rel_out;
+		}
+
 		wx_dbg(wx, "write value:\n");
 		for (i = 0; i < dword_len; i++)
 			wx_dbg(wx, "%x ", buffer[i]);
 		wx_dbg(wx, "read value:\n");
 		for (i = 0; i < dword_len; i++)
 			wx_dbg(wx, "%x ", buf[i]);
-		wx_dbg(wx, "\ncheck: %x %x\n", buffer[0] & 0xff, ~buf[0] >> 24);
-
-		goto rel_out;
 	}
 
 	if (!return_data)
@@ -373,165 +300,7 @@ rel_out:
 	wx_release_sw_sync(wx, WX_MNG_SWFW_SYNC_SW_MB);
 	return status;
 }
-
-static bool wx_poll_fw_reply(struct wx *wx, u32 *buffer, u8 send_cmd)
-{
-	u32 dword_len = sizeof(struct wx_hic_hdr) >> 2;
-	struct wx_hic_hdr *recv_hdr;
-	u32 i;
-
-	/* read hdr */
-	for (i = 0; i < dword_len; i++) {
-		buffer[i] = rd32a(wx, WX_FW2SW_MBOX, i);
-		le32_to_cpus(&buffer[i]);
-	}
-
-	/* check hdr */
-	recv_hdr = (struct wx_hic_hdr *)buffer;
-	if (recv_hdr->cmd == send_cmd &&
-	    recv_hdr->index == wx->swfw_index)
-		return true;
-
-	return false;
-}
-
-static int wx_host_interface_command_r(struct wx *wx, u32 *buffer,
-				       u32 length, u32 timeout, bool return_data)
-{
-	struct wx_hic_hdr *hdr = (struct wx_hic_hdr *)buffer;
-	u32 hdr_size = sizeof(struct wx_hic_hdr);
-	bool busy, reply;
-	u32 dword_len;
-	u16 buf_len;
-	int err = 0;
-	u8 send_cmd;
-	u32 i;
-
-	/* wait to get lock */
-	might_sleep();
-	err = read_poll_timeout(test_and_set_bit, busy, !busy, 1000, timeout * 1000,
-				false, WX_STATE_SWFW_BUSY, wx->state);
-	if (err)
-		return err;
-
-	/* index to unique seq id for each mbox message */
-	hdr->index = wx->swfw_index;
-	send_cmd = hdr->cmd;
-
-	dword_len = length >> 2;
-	/* write data to SW-FW mbox array */
-	for (i = 0; i < dword_len; i++) {
-		wr32a(wx, WX_SW2FW_MBOX, i, (__force u32)cpu_to_le32(buffer[i]));
-		/* write flush */
-		rd32a(wx, WX_SW2FW_MBOX, i);
-	}
-
-	/* generate interrupt to notify FW */
-	wr32m(wx, WX_SW2FW_MBOX_CMD, WX_SW2FW_MBOX_CMD_VLD, 0);
-	wr32m(wx, WX_SW2FW_MBOX_CMD, WX_SW2FW_MBOX_CMD_VLD, WX_SW2FW_MBOX_CMD_VLD);
-
-	/* polling reply from FW */
-	err = read_poll_timeout(wx_poll_fw_reply, reply, reply, 2000,
-				timeout * 1000, true, wx, buffer, send_cmd);
-	if (err) {
-		wx_err(wx, "Polling from FW messages timeout, cmd: 0x%x, index: %d\n",
-		       send_cmd, wx->swfw_index);
-		goto rel_out;
-	}
-
-	if (hdr->cmd_or_resp.ret_status == 0x80) {
-		wx_err(wx, "Unknown FW command: 0x%x\n", send_cmd);
-		err = -EINVAL;
-		goto rel_out;
-	}
-
-	/* expect no reply from FW then return */
-	if (!return_data)
-		goto rel_out;
-
-	/* If there is any thing in data position pull it in */
-	buf_len = hdr->buf_len;
-	if (buf_len == 0)
-		goto rel_out;
-
-	if (length < buf_len + hdr_size) {
-		wx_err(wx, "Buffer not large enough for reply message.\n");
-		err = -EFAULT;
-		goto rel_out;
-	}
-
-	/* Calculate length in DWORDs, add 3 for odd lengths */
-	dword_len = (buf_len + 3) >> 2;
-	for (i = hdr_size >> 2; i <= dword_len; i++) {
-		buffer[i] = rd32a(wx, WX_FW2SW_MBOX, i);
-		le32_to_cpus(&buffer[i]);
-	}
-
-rel_out:
-	/* index++, index replace wx_hic_hdr.checksum */
-	if (wx->swfw_index == WX_HIC_HDR_INDEX_MAX)
-		wx->swfw_index = 0;
-	else
-		wx->swfw_index++;
-
-	clear_bit(WX_STATE_SWFW_BUSY, wx->state);
-	return err;
-}
-
-/**
- *  wx_host_interface_command - Issue command to manageability block
- *  @wx: pointer to the HW structure
- *  @buffer: contains the command to write and where the return status will
- *   be placed
- *  @length: length of buffer, must be multiple of 4 bytes
- *  @timeout: time in ms to wait for command completion
- *  @return_data: read and return data from the buffer (true) or not (false)
- *   Needed because FW structures are big endian and decoding of
- *   these fields can be 8 bit or 16 bit based on command. Decoding
- *   is not easily understood without making a table of commands.
- *   So we will leave this up to the caller to read back the data
- *   in these cases.
- **/
-int wx_host_interface_command(struct wx *wx, u32 *buffer,
-			      u32 length, u32 timeout, bool return_data)
-{
-	if (length == 0 || length > WX_HI_MAX_BLOCK_BYTE_LENGTH) {
-		wx_err(wx, "Buffer length failure buffersize=%d.\n", length);
-		return -EINVAL;
-	}
-
-	/* Calculate length in DWORDs. We must be DWORD aligned */
-	if ((length % (sizeof(u32))) != 0) {
-		wx_err(wx, "Buffer length failure, not aligned to dword");
-		return -EINVAL;
-	}
-
-	if (test_bit(WX_FLAG_SWFW_RING, wx->flags))
-		return wx_host_interface_command_r(wx, buffer, length,
-						   timeout, return_data);
-
-	return wx_host_interface_command_s(wx, buffer, length, timeout, return_data);
-}
 EXPORT_SYMBOL(wx_host_interface_command);
-
-int wx_set_pps(struct wx *wx, bool enable, u64 nsec, u64 cycles)
-{
-	struct wx_hic_set_pps pps_cmd;
-
-	pps_cmd.hdr.cmd = FW_PPS_SET_CMD;
-	pps_cmd.hdr.buf_len = FW_PPS_SET_LEN;
-	pps_cmd.hdr.cmd_or_resp.cmd_resv = FW_CEM_CMD_RESERVED;
-	pps_cmd.lan_id = wx->bus.func;
-	pps_cmd.enable = (u8)enable;
-	pps_cmd.nsec = nsec;
-	pps_cmd.cycles = cycles;
-	pps_cmd.hdr.checksum = FW_DEFAULT_CHECKSUM;
-
-	return wx_host_interface_command(wx, (u32 *)&pps_cmd,
-					 sizeof(pps_cmd),
-					 WX_HI_COMMAND_TIMEOUT,
-					 false);
-}
 
 /**
  *  wx_read_ee_hostif_data - Read EEPROM word using a host interface cmd
@@ -563,10 +332,7 @@ static int wx_read_ee_hostif_data(struct wx *wx, u16 offset, u16 *data)
 	if (status != 0)
 		return status;
 
-	if (!test_bit(WX_FLAG_SWFW_RING, wx->flags))
-		*data = (u16)rd32a(wx, WX_MNG_MBOX, FW_NVM_DATA_OFFSET);
-	else
-		*data = (u16)rd32a(wx, WX_FW2SW_MBOX, FW_NVM_DATA_OFFSET);
+	*data = (u16)rd32a(wx, WX_MNG_MBOX, FW_NVM_DATA_OFFSET);
 
 	return status;
 }
@@ -610,7 +376,6 @@ int wx_read_ee_hostif_buffer(struct wx *wx,
 	u16 words_to_read;
 	u32 value = 0;
 	int status;
-	u32 mbox;
 	u32 i;
 
 	/* Take semaphore for the entire operation. */
@@ -643,12 +408,8 @@ int wx_read_ee_hostif_buffer(struct wx *wx,
 			goto out;
 		}
 
-		if (!test_bit(WX_FLAG_SWFW_RING, wx->flags))
-			mbox = WX_MNG_MBOX;
-		else
-			mbox = WX_FW2SW_MBOX;
 		for (i = 0; i < words_to_read; i++) {
-			u32 reg = mbox + (FW_NVM_DATA_OFFSET << 2) + 2 * i;
+			u32 reg = WX_MNG_MBOX + (FW_NVM_DATA_OFFSET << 2) + 2 * i;
 
 			value = rd32(wx, reg);
 			data[current_word] = (u16)(value & 0xffff);
@@ -668,6 +429,71 @@ out:
 	return status;
 }
 EXPORT_SYMBOL(wx_read_ee_hostif_buffer);
+
+/**
+ *  wx_calculate_checksum - Calculate checksum for buffer
+ *  @buffer: pointer to EEPROM
+ *  @length: size of EEPROM to calculate a checksum for
+ *  Calculates the checksum for some buffer on a specified length.  The
+ *  checksum calculated is returned.
+ **/
+static u8 wx_calculate_checksum(u8 *buffer, u32 length)
+{
+	u8 sum = 0;
+	u32 i;
+
+	if (!buffer)
+		return 0;
+
+	for (i = 0; i < length; i++)
+		sum += buffer[i];
+
+	return (u8)(0 - sum);
+}
+
+/**
+ *  wx_reset_hostif - send reset cmd to fw
+ *  @wx: pointer to hardware structure
+ *
+ *  Sends reset cmd to firmware through the manageability
+ *  block.
+ **/
+int wx_reset_hostif(struct wx *wx)
+{
+	struct wx_hic_reset reset_cmd;
+	int ret_val = 0;
+	int i;
+
+	reset_cmd.hdr.cmd = FW_RESET_CMD;
+	reset_cmd.hdr.buf_len = FW_RESET_LEN;
+	reset_cmd.hdr.cmd_or_resp.cmd_resv = FW_CEM_CMD_RESERVED;
+	reset_cmd.lan_id = wx->bus.func;
+	reset_cmd.reset_type = (u16)wx->reset_type;
+	reset_cmd.hdr.checksum = 0;
+	reset_cmd.hdr.checksum = wx_calculate_checksum((u8 *)&reset_cmd,
+						       (FW_CEM_HDR_LEN +
+							reset_cmd.hdr.buf_len));
+
+	for (i = 0; i <= FW_CEM_MAX_RETRIES; i++) {
+		ret_val = wx_host_interface_command(wx, (u32 *)&reset_cmd,
+						    sizeof(reset_cmd),
+						    WX_HI_COMMAND_TIMEOUT,
+						    true);
+		if (ret_val != 0)
+			continue;
+
+		if (reset_cmd.hdr.cmd_or_resp.ret_status ==
+		    FW_CEM_RESP_STATUS_SUCCESS)
+			ret_val = 0;
+		else
+			ret_val = -EFAULT;
+
+		break;
+	}
+
+	return ret_val;
+}
+EXPORT_SYMBOL(wx_reset_hostif);
 
 /**
  *  wx_init_eeprom_params - Initialize EEPROM params
@@ -698,18 +524,12 @@ void wx_init_eeprom_params(struct wx *wx)
 		}
 	}
 
-	switch (wx->mac.type) {
-	case wx_mac_sp:
-	case wx_mac_aml:
-	case wx_mac_aml40:
+	if (wx->mac.type == wx_mac_sp) {
 		if (wx_read_ee_hostif(wx, WX_SW_REGION_PTR, &data)) {
 			wx_err(wx, "NVM Read Error\n");
 			return;
 		}
 		data = data >> 1;
-		break;
-	default:
-		break;
 	}
 
 	eeprom->sw_region_offset = data;
@@ -770,8 +590,7 @@ static int wx_set_rar(struct wx *wx, u32 index, u8 *addr, u64 pools,
 
 	/* setup VMDq pool mapping */
 	wr32(wx, WX_PSR_MAC_SWC_VM_L, pools & 0xFFFFFFFF);
-
-	if (test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags))
+	if (wx->mac.type == wx_mac_sp)
 		wr32(wx, WX_PSR_MAC_SWC_VM_H, pools >> 32);
 
 	/* HW expects these in little endian so we reverse the byte
@@ -910,7 +729,7 @@ void wx_init_rx_addrs(struct wx *wx)
 
 		wx_set_rar(wx, 0, wx->mac.addr, 0, WX_PSR_MAC_SWC_AD_H_AV);
 
-		if (test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
+		if (wx->mac.type == wx_mac_sp) {
 			/* clear VMDq pool/queue selection for RAR 0 */
 			wx_clear_vmdq(wx, 0, WX_CLEAR_VMDQ_ALL);
 		}
@@ -957,28 +776,11 @@ static void wx_sync_mac_table(struct wx *wx)
 	}
 }
 
-static void wx_full_sync_mac_table(struct wx *wx)
-{
-	int i;
-
-	for (i = 0; i < wx->mac.num_rar_entries; i++) {
-		if (wx->mac_table[i].state & WX_MAC_STATE_IN_USE) {
-			wx_set_rar(wx, i,
-				   wx->mac_table[i].addr,
-				   wx->mac_table[i].pools,
-				   WX_PSR_MAC_SWC_AD_H_AV);
-		} else {
-			wx_clear_rar(wx, i);
-		}
-		wx->mac_table[i].state &= ~(WX_MAC_STATE_MODIFIED);
-	}
-}
-
 /* this function destroys the first RAR entry */
 void wx_mac_set_default_filter(struct wx *wx, u8 *addr)
 {
 	memcpy(&wx->mac_table[0].addr, addr, ETH_ALEN);
-	wx->mac_table[0].pools = BIT(VMDQ_P(0));
+	wx->mac_table[0].pools = 1ULL;
 	wx->mac_table[0].state = (WX_MAC_STATE_DEFAULT | WX_MAC_STATE_IN_USE);
 	wx_set_rar(wx, 0, wx->mac_table[0].addr,
 		   wx->mac_table[0].pools,
@@ -1003,7 +805,7 @@ void wx_flush_sw_mac_table(struct wx *wx)
 }
 EXPORT_SYMBOL(wx_flush_sw_mac_table);
 
-int wx_add_mac_filter(struct wx *wx, u8 *addr, u16 pool)
+static int wx_add_mac_filter(struct wx *wx, u8 *addr, u16 pool)
 {
 	u32 i;
 
@@ -1034,7 +836,7 @@ int wx_add_mac_filter(struct wx *wx, u8 *addr, u16 pool)
 	return -ENOMEM;
 }
 
-int wx_del_mac_filter(struct wx *wx, u8 *addr, u16 pool)
+static int wx_del_mac_filter(struct wx *wx, u8 *addr, u16 pool)
 {
 	u32 i;
 
@@ -1113,7 +915,7 @@ static int wx_write_uc_addr_list(struct net_device *netdev, int pool)
  *  by the MO field of the MCSTCTRL. The MO field is set during initialization
  *  to mc_filter_type.
  **/
-u32 wx_mta_vector(struct wx *wx, u8 *mc_addr)
+static u32 wx_mta_vector(struct wx *wx, u8 *mc_addr)
 {
 	u32 vector = 0;
 
@@ -1216,35 +1018,6 @@ static void wx_update_mc_addr_list(struct wx *wx, struct net_device *netdev)
 	wx_dbg(wx, "Update mc addr list Complete\n");
 }
 
-static void wx_restore_vf_multicasts(struct wx *wx)
-{
-	u32 i, j, vector_bit, vector_reg;
-	struct vf_data_storage *vfinfo;
-
-	for (i = 0; i < wx->num_vfs; i++) {
-		u32 vmolr = rd32(wx, WX_PSR_VM_L2CTL(i));
-
-		vfinfo = &wx->vfinfo[i];
-		for (j = 0; j < vfinfo->num_vf_mc_hashes; j++) {
-			wx->addr_ctrl.mta_in_use++;
-			vector_reg = WX_PSR_MC_TBL_REG(vfinfo->vf_mc_hashes[j]);
-			vector_bit = WX_PSR_MC_TBL_BIT(vfinfo->vf_mc_hashes[j]);
-			wr32m(wx, WX_PSR_MC_TBL(vector_reg),
-			      BIT(vector_bit), BIT(vector_bit));
-			/* errata 5: maintain a copy of the reg table conf */
-			wx->mac.mta_shadow[vector_reg] |= BIT(vector_bit);
-		}
-		if (vfinfo->num_vf_mc_hashes)
-			vmolr |= WX_PSR_VM_L2CTL_ROMPE;
-		else
-			vmolr &= ~WX_PSR_VM_L2CTL_ROMPE;
-		wr32(wx, WX_PSR_VM_L2CTL(i), vmolr);
-	}
-
-	/* Restore any VF macvlans */
-	wx_full_sync_mac_table(wx);
-}
-
 /**
  * wx_write_mc_addr_list - write multicast addresses to MTA
  * @netdev: network interface device structure
@@ -1261,9 +1034,6 @@ static int wx_write_mc_addr_list(struct net_device *netdev)
 		return 0;
 
 	wx_update_mc_addr_list(wx, netdev);
-
-	if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags))
-		wx_restore_vf_multicasts(wx);
 
 	return netdev_mc_count(netdev);
 }
@@ -1285,7 +1055,7 @@ int wx_set_mac(struct net_device *netdev, void *p)
 	if (retval)
 		return retval;
 
-	wx_del_mac_filter(wx, wx->mac.addr, VMDQ_P(0));
+	wx_del_mac_filter(wx, wx->mac.addr, 0);
 	eth_hw_addr_set(netdev, addr->sa_data);
 	memcpy(wx->mac.addr, addr->sa_data, netdev->addr_len);
 
@@ -1349,15 +1119,8 @@ static void wx_enable_rx(struct wx *wx)
 static void wx_set_rxpba(struct wx *wx)
 {
 	u32 rxpktsize, txpktsize, txpbthresh;
-	u32 pbsize = wx->mac.rx_pb_size;
 
-	if (test_bit(WX_FLAG_FDIR_CAPABLE, wx->flags)) {
-		if (test_bit(WX_FLAG_FDIR_HASH, wx->flags) ||
-		    test_bit(WX_FLAG_FDIR_PERFECT, wx->flags))
-			pbsize -= 64; /* Default 64KB */
-	}
-
-	rxpktsize = pbsize << WX_RDB_PB_SZ_SHIFT;
+	rxpktsize = wx->mac.rx_pb_size << WX_RDB_PB_SZ_SHIFT;
 	wr32(wx, WX_RDB_PB_SZ(0), rxpktsize);
 
 	/* Only support an equally distributed Tx packet buffer strategy. */
@@ -1367,186 +1130,12 @@ static void wx_set_rxpba(struct wx *wx)
 	wr32(wx, WX_TDM_PB_THRE(0), txpbthresh);
 }
 
-#define WX_ETH_FRAMING 20
-
-/**
- * wx_hpbthresh - calculate high water mark for flow control
- *
- * @wx: board private structure to calculate for
- **/
-static int wx_hpbthresh(struct wx *wx)
-{
-	struct net_device *dev = wx->netdev;
-	int link, tc, kb, marker;
-	u32 dv_id, rx_pba;
-
-	/* Calculate max LAN frame size */
-	link = dev->mtu + ETH_HLEN + ETH_FCS_LEN + WX_ETH_FRAMING;
-	tc = link;
-
-	/* Calculate delay value for device */
-	dv_id = WX_DV(link, tc);
-
-	/* Loopback switch introduces additional latency */
-	if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags))
-		dv_id += WX_B2BT(tc);
-
-	/* Delay value is calculated in bit times convert to KB */
-	kb = WX_BT2KB(dv_id);
-	rx_pba = rd32(wx, WX_RDB_PB_SZ(0)) >> WX_RDB_PB_SZ_SHIFT;
-
-	marker = rx_pba - kb;
-
-	/* It is possible that the packet buffer is not large enough
-	 * to provide required headroom. In this case throw an error
-	 * to user and a do the best we can.
-	 */
-	if (marker < 0) {
-		dev_warn(&wx->pdev->dev,
-			 "Packet Buffer can not provide enough headroom to support flow control. Decrease MTU or number of traffic classes\n");
-		marker = tc + 1;
-	}
-
-	return marker;
-}
-
-/**
- * wx_lpbthresh - calculate low water mark for flow control
- *
- * @wx: board private structure to calculate for
- **/
-static int wx_lpbthresh(struct wx *wx)
-{
-	struct net_device *dev = wx->netdev;
-	u32 dv_id;
-	int tc;
-
-	/* Calculate max LAN frame size */
-	tc = dev->mtu + ETH_HLEN + ETH_FCS_LEN;
-
-	/* Calculate delay value for device */
-	dv_id = WX_LOW_DV(tc);
-
-	/* Delay value is calculated in bit times convert to KB */
-	return WX_BT2KB(dv_id);
-}
-
-/**
- * wx_pbthresh_setup - calculate and setup high low water marks
- *
- * @wx: board private structure to calculate for
- **/
-static void wx_pbthresh_setup(struct wx *wx)
-{
-	wx->fc.high_water = wx_hpbthresh(wx);
-	wx->fc.low_water = wx_lpbthresh(wx);
-
-	/* Low water marks must not be larger than high water marks */
-	if (wx->fc.low_water > wx->fc.high_water)
-		wx->fc.low_water = 0;
-}
-
-static void wx_set_ethertype_anti_spoofing(struct wx *wx, bool enable, int vf)
-{
-	u32 pfvfspoof, reg_offset, vf_shift;
-
-	vf_shift = WX_VF_IND_SHIFT(vf);
-	reg_offset = WX_VF_REG_OFFSET(vf);
-
-	pfvfspoof = rd32(wx, WX_TDM_ETYPE_AS(reg_offset));
-	if (enable)
-		pfvfspoof |= BIT(vf_shift);
-	else
-		pfvfspoof &= ~BIT(vf_shift);
-	wr32(wx, WX_TDM_ETYPE_AS(reg_offset), pfvfspoof);
-}
-
-int wx_set_vf_spoofchk(struct net_device *netdev, int vf, bool setting)
-{
-	u32 index = WX_VF_REG_OFFSET(vf), vf_bit = WX_VF_IND_SHIFT(vf);
-	struct wx *wx = netdev_priv(netdev);
-	u32 regval;
-
-	if (vf >= wx->num_vfs)
-		return -EINVAL;
-
-	wx->vfinfo[vf].spoofchk_enabled = setting;
-
-	regval = (setting << vf_bit);
-	wr32m(wx, WX_TDM_MAC_AS(index), regval | BIT(vf_bit), regval);
-
-	if (wx->vfinfo[vf].vlan_count)
-		wr32m(wx, WX_TDM_VLAN_AS(index), regval | BIT(vf_bit), regval);
-
-	return 0;
-}
-
-static void wx_configure_virtualization(struct wx *wx)
-{
-	u16 pool = wx->num_rx_pools;
-	u32 reg_offset, vf_shift;
-	u32 i;
-
-	if (!test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags))
-		return;
-
-	wr32m(wx, WX_PSR_VM_CTL,
-	      WX_PSR_VM_CTL_POOL_MASK | WX_PSR_VM_CTL_REPLEN,
-	      FIELD_PREP(WX_PSR_VM_CTL_POOL_MASK, VMDQ_P(0)) |
-	      WX_PSR_VM_CTL_REPLEN);
-	while (pool--)
-		wr32m(wx, WX_PSR_VM_L2CTL(pool),
-		      WX_PSR_VM_L2CTL_AUPE, WX_PSR_VM_L2CTL_AUPE);
-
-	if (!test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
-		vf_shift = BIT(VMDQ_P(0));
-		/* Enable only the PF pools for Tx/Rx */
-		wr32(wx, WX_RDM_VF_RE(0), vf_shift);
-		wr32(wx, WX_TDM_VF_TE(0), vf_shift);
-	} else {
-		vf_shift = WX_VF_IND_SHIFT(VMDQ_P(0));
-		reg_offset = WX_VF_REG_OFFSET(VMDQ_P(0));
-
-		/* Enable only the PF pools for Tx/Rx */
-		wr32(wx, WX_RDM_VF_RE(reg_offset), GENMASK(31, vf_shift));
-		wr32(wx, WX_RDM_VF_RE(reg_offset ^ 1), reg_offset - 1);
-		wr32(wx, WX_TDM_VF_TE(reg_offset), GENMASK(31, vf_shift));
-		wr32(wx, WX_TDM_VF_TE(reg_offset ^ 1), reg_offset - 1);
-	}
-
-	/* clear VLAN promisc flag so VFTA will be updated if necessary */
-	clear_bit(WX_FLAG_VLAN_PROMISC, wx->flags);
-
-	for (i = 0; i < wx->num_vfs; i++) {
-		if (!wx->vfinfo[i].spoofchk_enabled)
-			wx_set_vf_spoofchk(wx->netdev, i, false);
-		/* enable ethertype anti spoofing if hw supports it */
-		wx_set_ethertype_anti_spoofing(wx, true, i);
-	}
-}
-
 static void wx_configure_port(struct wx *wx)
 {
 	u32 value, i;
 
-	if (!test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
-		value = (wx->num_vfs == 0) ?
-			WX_CFG_PORT_CTL_NUM_VT_NONE :
-			WX_CFG_PORT_CTL_NUM_VT_8;
-	} else {
-		if (test_bit(WX_FLAG_VMDQ_ENABLED, wx->flags)) {
-			if (wx->ring_feature[RING_F_RSS].indices == 4)
-				value = WX_CFG_PORT_CTL_NUM_VT_32;
-			else
-				value = WX_CFG_PORT_CTL_NUM_VT_64;
-		} else {
-			value = 0;
-		}
-	}
-
-	value |= WX_CFG_PORT_CTL_D_VLAN | WX_CFG_PORT_CTL_QINQ;
+	value = WX_CFG_PORT_CTL_D_VLAN | WX_CFG_PORT_CTL_QINQ;
 	wr32m(wx, WX_CFG_PORT_CTL,
-	      WX_CFG_PORT_CTL_NUM_VT_MASK |
 	      WX_CFG_PORT_CTL_D_VLAN |
 	      WX_CFG_PORT_CTL_QINQ,
 	      value);
@@ -1569,7 +1158,7 @@ static void wx_configure_port(struct wx *wx)
  *  Stops the receive data path and waits for the HW to internally empty
  *  the Rx security block
  **/
-int wx_disable_sec_rx_path(struct wx *wx)
+static int wx_disable_sec_rx_path(struct wx *wx)
 {
 	u32 secrx;
 
@@ -1579,7 +1168,6 @@ int wx_disable_sec_rx_path(struct wx *wx)
 	return read_poll_timeout(rd32, secrx, secrx & WX_RSC_ST_RSEC_RDY,
 				 1000, 40000, false, wx, WX_RSC_ST);
 }
-EXPORT_SYMBOL(wx_disable_sec_rx_path);
 
 /**
  *  wx_enable_sec_rx_path - Enables the receive data path
@@ -1587,116 +1175,22 @@ EXPORT_SYMBOL(wx_disable_sec_rx_path);
  *
  *  Enables the receive data path.
  **/
-void wx_enable_sec_rx_path(struct wx *wx)
+static void wx_enable_sec_rx_path(struct wx *wx)
 {
 	wr32m(wx, WX_RSC_CTL, WX_RSC_CTL_RX_DIS, 0);
 	WX_WRITE_FLUSH(wx);
-}
-EXPORT_SYMBOL(wx_enable_sec_rx_path);
-
-static void wx_vlan_strip_control(struct wx *wx, bool enable)
-{
-	int i, j;
-
-	for (i = 0; i < wx->num_rx_queues; i++) {
-		struct wx_ring *ring = wx->rx_ring[i];
-
-		j = ring->reg_idx;
-		wr32m(wx, WX_PX_RR_CFG(j), WX_PX_RR_CFG_VLAN,
-		      enable ? WX_PX_RR_CFG_VLAN : 0);
-	}
-}
-
-static void wx_vlan_promisc_enable(struct wx *wx)
-{
-	u32 vlnctrl, i, vind, bits, reg_idx;
-
-	vlnctrl = rd32(wx, WX_PSR_VLAN_CTL);
-	if (test_bit(WX_FLAG_VMDQ_ENABLED, wx->flags)) {
-		/* we need to keep the VLAN filter on in SRIOV */
-		vlnctrl |= WX_PSR_VLAN_CTL_VFE;
-		wr32(wx, WX_PSR_VLAN_CTL, vlnctrl);
-	} else {
-		vlnctrl &= ~WX_PSR_VLAN_CTL_VFE;
-		wr32(wx, WX_PSR_VLAN_CTL, vlnctrl);
-		return;
-	}
-	/* We are already in VLAN promisc, nothing to do */
-	if (test_bit(WX_FLAG_VLAN_PROMISC, wx->flags))
-		return;
-	/* Set flag so we don't redo unnecessary work */
-	set_bit(WX_FLAG_VLAN_PROMISC, wx->flags);
-	/* Add PF to all active pools */
-	for (i = WX_PSR_VLAN_SWC_ENTRIES; --i;) {
-		wr32(wx, WX_PSR_VLAN_SWC_IDX, i);
-		vind = WX_VF_IND_SHIFT(VMDQ_P(0));
-		reg_idx = WX_VF_REG_OFFSET(VMDQ_P(0));
-		bits = rd32(wx, WX_PSR_VLAN_SWC_VM(reg_idx));
-		bits |= BIT(vind);
-		wr32(wx, WX_PSR_VLAN_SWC_VM(reg_idx), bits);
-	}
-	/* Set all bits in the VLAN filter table array */
-	for (i = 0; i < wx->mac.vft_size; i++)
-		wr32(wx, WX_PSR_VLAN_TBL(i), U32_MAX);
-}
-
-static void wx_scrub_vfta(struct wx *wx)
-{
-	u32 i, vid, bits, vfta, vind, vlvf, reg_idx;
-
-	for (i = WX_PSR_VLAN_SWC_ENTRIES; --i;) {
-		wr32(wx, WX_PSR_VLAN_SWC_IDX, i);
-		vlvf = rd32(wx, WX_PSR_VLAN_SWC_IDX);
-		/* pull VLAN ID from VLVF */
-		vid = vlvf & ~WX_PSR_VLAN_SWC_VIEN;
-		if (vlvf & WX_PSR_VLAN_SWC_VIEN) {
-			/* if PF is part of this then continue */
-			if (test_bit(vid, wx->active_vlans))
-				continue;
-		}
-		/* remove PF from the pool */
-		vind = WX_VF_IND_SHIFT(VMDQ_P(0));
-		reg_idx = WX_VF_REG_OFFSET(VMDQ_P(0));
-		bits = rd32(wx, WX_PSR_VLAN_SWC_VM(reg_idx));
-		bits &= ~BIT(vind);
-		wr32(wx, WX_PSR_VLAN_SWC_VM(reg_idx), bits);
-	}
-	/* extract values from vft_shadow and write back to VFTA */
-	for (i = 0; i < wx->mac.vft_size; i++) {
-		vfta = wx->mac.vft_shadow[i];
-		wr32(wx, WX_PSR_VLAN_TBL(i), vfta);
-	}
-}
-
-static void wx_vlan_promisc_disable(struct wx *wx)
-{
-	u32 vlnctrl;
-
-	/* configure vlan filtering */
-	vlnctrl = rd32(wx, WX_PSR_VLAN_CTL);
-	vlnctrl |= WX_PSR_VLAN_CTL_VFE;
-	wr32(wx, WX_PSR_VLAN_CTL, vlnctrl);
-	/* We are not in VLAN promisc, nothing to do */
-	if (!test_bit(WX_FLAG_VLAN_PROMISC, wx->flags))
-		return;
-	/* Set flag so we don't redo unnecessary work */
-	clear_bit(WX_FLAG_VLAN_PROMISC, wx->flags);
-	wx_scrub_vfta(wx);
 }
 
 void wx_set_rx_mode(struct net_device *netdev)
 {
 	struct wx *wx = netdev_priv(netdev);
-	netdev_features_t features;
 	u32 fctrl, vmolr, vlnctrl;
 	int count;
-
-	features = netdev->features;
 
 	/* Check for Promiscuous and All Multicast modes */
 	fctrl = rd32(wx, WX_PSR_CTL);
 	fctrl &= ~(WX_PSR_CTL_UPE | WX_PSR_CTL_MPE);
-	vmolr = rd32(wx, WX_PSR_VM_L2CTL(VMDQ_P(0)));
+	vmolr = rd32(wx, WX_PSR_VM_L2CTL(0));
 	vmolr &= ~(WX_PSR_VM_L2CTL_UPE |
 		   WX_PSR_VM_L2CTL_MPE |
 		   WX_PSR_VM_L2CTL_ROPE |
@@ -1717,10 +1211,7 @@ void wx_set_rx_mode(struct net_device *netdev)
 		fctrl |= WX_PSR_CTL_UPE | WX_PSR_CTL_MPE;
 		/* pf don't want packets routing to vf, so clear UPE */
 		vmolr |= WX_PSR_VM_L2CTL_MPE;
-		if (test_bit(WX_FLAG_VMDQ_ENABLED, wx->flags) &&
-		    test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags))
-			vlnctrl |= WX_PSR_VLAN_CTL_VFE;
-		features &= ~NETIF_F_HW_VLAN_CTAG_FILTER;
+		vlnctrl &= ~WX_PSR_VLAN_CTL_VFE;
 	}
 
 	if (netdev->flags & IFF_ALLMULTI) {
@@ -1743,7 +1234,7 @@ void wx_set_rx_mode(struct net_device *netdev)
 	 * sufficient space to store all the addresses then enable
 	 * unicast promiscuous mode
 	 */
-	count = wx_write_uc_addr_list(netdev, VMDQ_P(0));
+	count = wx_write_uc_addr_list(netdev, 0);
 	if (count < 0) {
 		vmolr &= ~WX_PSR_VM_L2CTL_ROPE;
 		vmolr |= WX_PSR_VM_L2CTL_UPE;
@@ -1761,29 +1252,16 @@ void wx_set_rx_mode(struct net_device *netdev)
 
 	wr32(wx, WX_PSR_VLAN_CTL, vlnctrl);
 	wr32(wx, WX_PSR_CTL, fctrl);
-	wr32(wx, WX_PSR_VM_L2CTL(VMDQ_P(0)), vmolr);
-
-	if ((features & NETIF_F_HW_VLAN_CTAG_RX) &&
-	    (features & NETIF_F_HW_VLAN_STAG_RX))
-		wx_vlan_strip_control(wx, true);
-	else
-		wx_vlan_strip_control(wx, false);
-
-	if (features & NETIF_F_HW_VLAN_CTAG_FILTER)
-		wx_vlan_promisc_disable(wx);
-	else
-		wx_vlan_promisc_enable(wx);
+	wr32(wx, WX_PSR_VM_L2CTL(0), vmolr);
 }
 EXPORT_SYMBOL(wx_set_rx_mode);
 
 static void wx_set_rx_buffer_len(struct wx *wx)
 {
 	struct net_device *netdev = wx->netdev;
-	struct wx_ring *rx_ring;
 	u32 mhadd, max_frame;
-	int i;
 
-	max_frame = netdev->mtu + ETH_HLEN + ETH_FCS_LEN + VLAN_HLEN;
+	max_frame = netdev->mtu + ETH_HLEN + ETH_FCS_LEN;
 	/* adjust max frame to be at least the size of a standard frame */
 	if (max_frame < (ETH_FRAME_LEN + ETH_FCS_LEN))
 		max_frame = (ETH_FRAME_LEN + ETH_FCS_LEN);
@@ -1791,38 +1269,7 @@ static void wx_set_rx_buffer_len(struct wx *wx)
 	mhadd = rd32(wx, WX_PSR_MAX_SZ);
 	if (max_frame != mhadd)
 		wr32(wx, WX_PSR_MAX_SZ, max_frame);
-
-	/*
-	 * Setup the HW Rx Head and Tail Descriptor Pointers and
-	 * the Base and Length of the Rx Descriptor Ring
-	 */
-	for (i = 0; i < wx->num_rx_queues; i++) {
-		rx_ring = wx->rx_ring[i];
-		rx_ring->rx_buf_len = WX_RXBUFFER_2K;
-#if (PAGE_SIZE < 8192)
-		if (test_bit(WX_FLAG_RSC_ENABLED, wx->flags))
-			rx_ring->rx_buf_len = WX_RXBUFFER_3K;
-#endif
-	}
 }
-
-/**
- * wx_change_mtu - Change the Maximum Transfer Unit
- * @netdev: network interface device structure
- * @new_mtu: new value for maximum frame size
- *
- * Returns 0 on success, negative on failure
- **/
-int wx_change_mtu(struct net_device *netdev, int new_mtu)
-{
-	struct wx *wx = netdev_priv(netdev);
-
-	WRITE_ONCE(netdev->mtu, new_mtu);
-	wx_set_rx_buffer_len(wx);
-
-	return 0;
-}
-EXPORT_SYMBOL(wx_change_mtu);
 
 /* Disable the specified rx queue */
 void wx_disable_rx_queue(struct wx *wx, struct wx_ring *ring)
@@ -1848,7 +1295,7 @@ void wx_disable_rx_queue(struct wx *wx, struct wx_ring *ring)
 }
 EXPORT_SYMBOL(wx_disable_rx_queue);
 
-void wx_enable_rx_queue(struct wx *wx, struct wx_ring *ring)
+static void wx_enable_rx_queue(struct wx *wx, struct wx_ring *ring)
 {
 	u8 reg_idx = ring->reg_idx;
 	u32 rxdctl;
@@ -1864,7 +1311,6 @@ void wx_enable_rx_queue(struct wx *wx, struct wx_ring *ring)
 		       reg_idx);
 	}
 }
-EXPORT_SYMBOL(wx_enable_rx_queue);
 
 static void wx_configure_srrctl(struct wx *wx,
 				struct wx_ring *rx_ring)
@@ -1880,25 +1326,9 @@ static void wx_configure_srrctl(struct wx *wx,
 	srrctl |= WX_RXBUFFER_256 << WX_PX_RR_CFG_BHDRSIZE_SHIFT;
 
 	/* configure the packet buffer length */
-	srrctl |= rx_ring->rx_buf_len >> WX_PX_RR_CFG_BSIZEPKT_SHIFT;
+	srrctl |= WX_RX_BUFSZ >> WX_PX_RR_CFG_BSIZEPKT_SHIFT;
 
 	wr32(wx, WX_PX_RR_CFG(reg_idx), srrctl);
-}
-
-static void wx_configure_rscctl(struct wx *wx,
-				struct wx_ring *ring)
-{
-	u8 reg_idx = ring->reg_idx;
-	u32 rscctrl;
-
-	if (!test_bit(WX_FLAG_RSC_ENABLED, wx->flags))
-		return;
-
-	rscctrl = rd32(wx, WX_PX_RR_CFG(reg_idx));
-	rscctrl |= WX_PX_RR_CFG_RSC;
-	rscctrl |= WX_PX_RR_CFG_MAX_RSCBUF_16;
-
-	wr32(wx, WX_PX_RR_CFG(reg_idx), rscctrl);
 }
 
 static void wx_configure_tx_ring(struct wx *wx,
@@ -1925,25 +1355,9 @@ static void wx_configure_tx_ring(struct wx *wx,
 		txdctl |= ring->count / 128 << WX_PX_TR_CFG_TR_SIZE_SHIFT;
 	txdctl |= 0x20 << WX_PX_TR_CFG_WTHRESH_SHIFT;
 
-	ring->atr_count = 0;
-	if (test_bit(WX_FLAG_FDIR_CAPABLE, wx->flags) &&
-	    test_bit(WX_FLAG_FDIR_HASH, wx->flags))
-		ring->atr_sample_rate = wx->atr_sample_rate;
-	else
-		ring->atr_sample_rate = 0;
-
 	/* reinitialize tx_buffer_info */
 	memset(ring->tx_buffer_info, 0,
 	       sizeof(struct wx_tx_buffer) * ring->count);
-
-	if (ring->headwb_mem) {
-		wr32(wx, WX_PX_TR_HEAD_ADDRL(reg_idx),
-		     ring->headwb_dma & DMA_BIT_MASK(32));
-		wr32(wx, WX_PX_TR_HEAD_ADDRH(reg_idx),
-		     upper_32_bits(ring->headwb_dma));
-
-		txdctl |= WX_PX_TR_CFG_HEAD_WB;
-	}
 
 	/* enable queue */
 	wr32(wx, WX_PX_TR_CFG(reg_idx), txdctl);
@@ -1959,6 +1373,7 @@ static void wx_configure_rx_ring(struct wx *wx,
 				 struct wx_ring *ring)
 {
 	u16 reg_idx = ring->reg_idx;
+	union wx_rx_desc *rx_desc;
 	u64 rdba = ring->dma;
 	u32 rxdctl;
 
@@ -1975,10 +1390,6 @@ static void wx_configure_rx_ring(struct wx *wx,
 		rxdctl |= (ring->count / 128) << WX_PX_RR_CFG_RR_SIZE_SHIFT;
 
 	rxdctl |= 0x1 << WX_PX_RR_CFG_RR_THER_SHIFT;
-
-	if (test_bit(WX_FLAG_RX_MERGE_ENABLED, wx->flags))
-		rxdctl |= WX_PX_RR_CFG_DESC_MERGE;
-
 	wr32(wx, WX_PX_RR_CFG(reg_idx), rxdctl);
 
 	/* reset head and tail pointers */
@@ -1987,15 +1398,14 @@ static void wx_configure_rx_ring(struct wx *wx,
 	ring->tail = wx->hw_addr + WX_PX_RR_WP(reg_idx);
 
 	wx_configure_srrctl(wx, ring);
-	wx_configure_rscctl(wx, ring);
 
 	/* initialize rx_buffer_info */
 	memset(ring->rx_buffer_info, 0,
 	       sizeof(struct wx_rx_buffer) * ring->count);
 
-	/* reset ntu and ntc to place SW in sync with hardware */
-	ring->next_to_clean = 0;
-	ring->next_to_use = 0;
+	/* initialize Rx descriptor 0 */
+	rx_desc = WX_RX_DESC(ring, 0);
+	rx_desc->wb.upper.length = 0;
 
 	/* enable receive descriptor ring */
 	wr32m(wx, WX_PX_RR_CFG(reg_idx),
@@ -2033,216 +1443,42 @@ static void wx_configure_tx(struct wx *wx)
 	      WX_MAC_TX_CFG_TE, WX_MAC_TX_CFG_TE);
 }
 
-static void wx_restore_vlan(struct wx *wx)
-{
-	u16 vid = 1;
-
-	wx_vlan_rx_add_vid(wx->netdev, htons(ETH_P_8021Q), 0);
-
-	for_each_set_bit_from(vid, wx->active_vlans, VLAN_N_VID)
-		wx_vlan_rx_add_vid(wx->netdev, htons(ETH_P_8021Q), vid);
-}
-
-u32 wx_rss_indir_tbl_entries(struct wx *wx)
-{
-	if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags))
-		return 64;
-	else
-		return 128;
-}
-
-void wx_store_reta(struct wx *wx)
-{
-	u32 reta_entries = wx_rss_indir_tbl_entries(wx);
-	u8 *indir_tbl = wx->rss_indir_tbl;
-	u32 reta = 0;
-	u32 i;
-
-	/* Fill out the redirection table as follows:
-	 *  - 8 bit wide entries containing 4 bit RSS index
-	 */
-	for (i = 0; i < reta_entries; i++) {
-		reta |= indir_tbl[i] << (i & 0x3) * 8;
-		if ((i & 3) == 3) {
-			if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags) &&
-			    test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags))
-				wr32(wx, WX_RDB_VMRSSTBL(i >> 2, wx->num_vfs), reta);
-			else
-				wr32(wx, WX_RDB_RSSTBL(i >> 2), reta);
-			reta = 0;
-		}
-	}
-}
-
-void wx_store_rsskey(struct wx *wx)
-{
-	u32 key_size = WX_RSS_KEY_SIZE / 4;
-	u32 i;
-
-	if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags) &&
-	    test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
-		for (i = 0; i < key_size; i++)
-			wr32(wx, WX_RDB_VMRSSRK(i, wx->num_vfs),
-			     wx->rss_key[i]);
-	} else {
-		for (i = 0; i < key_size; i++)
-			wr32(wx, WX_RDB_RSSRK(i), wx->rss_key[i]);
-	}
-}
-
-static void wx_setup_reta(struct wx *wx)
-{
-	/* Fill out hash function seeds */
-	wx_store_rsskey(wx);
-
-	/* Fill out redirection table */
-	if (!netif_is_rxfh_configured(wx->netdev)) {
-		u16 rss_i = wx->ring_feature[RING_F_RSS].indices;
-		u32 reta_entries = wx_rss_indir_tbl_entries(wx);
-		u32 i, j;
-
-		memset(wx->rss_indir_tbl, 0, sizeof(wx->rss_indir_tbl));
-
-		if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags)) {
-			if (test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags))
-				rss_i = rss_i < 2 ? 2 : rss_i;
-			else
-				rss_i = 1;
-		}
-
-		for (i = 0, j = 0; i < reta_entries; i++, j++) {
-			if (j == rss_i)
-				j = 0;
-
-			wx->rss_indir_tbl[i] = j;
-		}
-	}
-
-	wx_store_reta(wx);
-}
-
-void wx_config_rss_field(struct wx *wx)
-{
-	u32 rss_field;
-
-	if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags) &&
-	    test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
-		rss_field = rd32(wx, WX_RDB_PL_CFG(wx->num_vfs));
-		rss_field &= ~WX_RDB_PL_CFG_RSS_MASK;
-		rss_field |= FIELD_PREP(WX_RDB_PL_CFG_RSS_MASK, wx->rss_flags);
-		wr32(wx, WX_RDB_PL_CFG(wx->num_vfs), rss_field);
-
-		/* Enable global RSS and multiple RSS to make the RSS
-		 * field of each pool take effect.
-		 */
-		wr32m(wx, WX_RDB_RA_CTL,
-		      WX_RDB_RA_CTL_MULTI_RSS | WX_RDB_RA_CTL_RSS_EN,
-		      WX_RDB_RA_CTL_MULTI_RSS | WX_RDB_RA_CTL_RSS_EN);
-	} else {
-		rss_field = rd32(wx, WX_RDB_RA_CTL);
-		rss_field &= ~WX_RDB_RA_CTL_RSS_MASK;
-		rss_field |= FIELD_PREP(WX_RDB_RA_CTL_RSS_MASK, wx->rss_flags);
-		wr32(wx, WX_RDB_RA_CTL, rss_field);
-	}
-}
-
-void wx_enable_rss(struct wx *wx, bool enable)
-{
-	if (test_bit(WX_FLAG_SRIOV_ENABLED, wx->flags) &&
-	    test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
-		if (enable)
-			wr32m(wx, WX_RDB_PL_CFG(wx->num_vfs),
-			      WX_RDB_PL_CFG_RSS_EN, WX_RDB_PL_CFG_RSS_EN);
-		else
-			wr32m(wx, WX_RDB_PL_CFG(wx->num_vfs),
-			      WX_RDB_PL_CFG_RSS_EN, 0);
-	} else {
-		if (enable)
-			wr32m(wx, WX_RDB_RA_CTL, WX_RDB_RA_CTL_RSS_EN,
-			      WX_RDB_RA_CTL_RSS_EN);
-		else
-			wr32m(wx, WX_RDB_RA_CTL, WX_RDB_RA_CTL_RSS_EN, 0);
-	}
-}
-
-#define WX_RDB_RSS_PL_2		FIELD_PREP(GENMASK(31, 29), 1)
-#define WX_RDB_RSS_PL_4		FIELD_PREP(GENMASK(31, 29), 2)
-static void wx_setup_psrtype(struct wx *wx)
-{
-	int rss_i = wx->ring_feature[RING_F_RSS].indices;
-	u32 psrtype;
-	int pool;
-
-	psrtype = WX_RDB_PL_CFG_L4HDR |
-		  WX_RDB_PL_CFG_L3HDR |
-		  WX_RDB_PL_CFG_L2HDR |
-		  WX_RDB_PL_CFG_TUN_OUTL2HDR |
-		  WX_RDB_PL_CFG_TUN_TUNHDR;
-
-	if (!test_bit(WX_FLAG_MULTI_64_FUNC, wx->flags)) {
-		for_each_set_bit(pool, &wx->fwd_bitmask, 8)
-			wr32(wx, WX_RDB_PL_CFG(VMDQ_P(pool)), psrtype);
-	} else {
-		if (rss_i > 3)
-			psrtype |= WX_RDB_RSS_PL_4;
-		else if (rss_i > 1)
-			psrtype |= WX_RDB_RSS_PL_2;
-
-		for_each_set_bit(pool, &wx->fwd_bitmask, 32)
-			wr32(wx, WX_RDB_PL_CFG(VMDQ_P(pool)), psrtype);
-	}
-}
-
-static void wx_setup_mrqc(struct wx *wx)
-{
-	/* Disable indicating checksum in descriptor, enables RSS hash */
-	wr32m(wx, WX_PSR_CTL, WX_PSR_CTL_PCSD, WX_PSR_CTL_PCSD);
-
-	wx_config_rss_field(wx);
-	wx_enable_rss(wx, wx->rss_enabled);
-	wx_setup_reta(wx);
-}
-
 /**
  * wx_configure_rx - Configure Receive Unit after Reset
  * @wx: pointer to private structure
  *
  * Configure the Rx unit of the MAC after a reset.
  **/
-void wx_configure_rx(struct wx *wx)
+static void wx_configure_rx(struct wx *wx)
 {
+	u32 psrtype, i;
 	int ret;
-	u32 i;
 
 	wx_disable_rx(wx);
-	wx_setup_psrtype(wx);
+
+	psrtype = WX_RDB_PL_CFG_L4HDR |
+		  WX_RDB_PL_CFG_L3HDR |
+		  WX_RDB_PL_CFG_L2HDR |
+		  WX_RDB_PL_CFG_TUN_TUNHDR |
+		  WX_RDB_PL_CFG_TUN_TUNHDR;
+	wr32(wx, WX_RDB_PL_CFG(0), psrtype);
 
 	/* enable hw crc stripping */
 	wr32m(wx, WX_RSC_CTL, WX_RSC_CTL_CRC_STRIP, WX_RSC_CTL_CRC_STRIP);
 
-	if (test_bit(WX_FLAG_RSC_CAPABLE, wx->flags)) {
+	if (wx->mac.type == wx_mac_sp) {
 		u32 psrctl;
 
 		/* RSC Setup */
 		psrctl = rd32(wx, WX_PSR_CTL);
 		psrctl |= WX_PSR_CTL_RSC_ACK; /* Disable RSC for ACK packets */
-		psrctl &= ~WX_PSR_CTL_RSC_DIS;
-		if (!test_bit(WX_FLAG_RSC_ENABLED, wx->flags))
-			psrctl |= WX_PSR_CTL_RSC_DIS;
+		psrctl |= WX_PSR_CTL_RSC_DIS;
 		wr32(wx, WX_PSR_CTL, psrctl);
 	}
-
-	wx_setup_mrqc(wx);
 
 	/* set_rx_buffer_len must be called before ring initialization */
 	wx_set_rx_buffer_len(wx);
 
-	if (test_bit(WX_FLAG_RX_MERGE_ENABLED, wx->flags)) {
-		wr32(wx, WX_RDM_DCACHE_CTL, WX_RDM_DCACHE_CTL_EN);
-		wr32m(wx, WX_RDM_RSC_CTL,
-		      WX_RDM_RSC_CTL_FREE_CTL | WX_RDM_RSC_CTL_FREE_CNT_DIS,
-		      WX_RDM_RSC_CTL_FREE_CTL);
-	}
 	/* Setup the HW Rx Head and Tail Descriptor Pointers and
 	 * the Base and Length of the Rx Descriptor Ring
 	 */
@@ -2257,7 +1493,6 @@ void wx_configure_rx(struct wx *wx)
 	wx_enable_rx(wx);
 	wx_enable_sec_rx_path(wx);
 }
-EXPORT_SYMBOL(wx_configure_rx);
 
 static void wx_configure_isb(struct wx *wx)
 {
@@ -2270,15 +1505,11 @@ static void wx_configure_isb(struct wx *wx)
 void wx_configure(struct wx *wx)
 {
 	wx_set_rxpba(wx);
-	wx_pbthresh_setup(wx);
-	wx_configure_virtualization(wx);
 	wx_configure_port(wx);
 
 	wx_set_rx_mode(wx->netdev);
-	wx_restore_vlan(wx);
 
-	if (test_bit(WX_FLAG_FDIR_CAPABLE, wx->flags))
-		wx->configure_fdir(wx);
+	wx_enable_sec_rx_path(wx);
 
 	wx_configure_tx(wx);
 	wx_configure_rx(wx);
@@ -2366,8 +1597,10 @@ int wx_stop_adapter(struct wx *wx)
 }
 EXPORT_SYMBOL(wx_stop_adapter);
 
-void wx_reset_mac(struct wx *wx)
+void wx_reset_misc(struct wx *wx)
 {
+	int i;
+
 	/* receive packets that size > 2048 */
 	wr32m(wx, WX_MAC_RX_CFG, WX_MAC_RX_CFG_JE, WX_MAC_RX_CFG_JE);
 
@@ -2379,14 +1612,6 @@ void wx_reset_mac(struct wx *wx)
 	      WX_MAC_RX_FLOW_CTRL_RFE, WX_MAC_RX_FLOW_CTRL_RFE);
 
 	wr32(wx, WX_MAC_PKT_FLT, WX_MAC_PKT_FLT_PR);
-}
-EXPORT_SYMBOL(wx_reset_mac);
-
-void wx_reset_misc(struct wx *wx)
-{
-	int i;
-
-	wx_reset_mac(wx);
 
 	wr32m(wx, WX_MIS_RST_ST,
 	      WX_MIS_RST_ST_RST_INIT, 0x1E00);
@@ -2446,28 +1671,6 @@ int wx_get_pcie_msix_counts(struct wx *wx, u16 *msix_count, u16 max_msix_count)
 }
 EXPORT_SYMBOL(wx_get_pcie_msix_counts);
 
-/**
- * wx_init_rss_key - Initialize wx RSS key
- * @wx: device handle
- *
- * Allocates and initializes the RSS key if it is not allocated.
- **/
-static int wx_init_rss_key(struct wx *wx)
-{
-	u32 *rss_key;
-
-	if (!wx->rss_key) {
-		rss_key = kzalloc(WX_RSS_KEY_SIZE, GFP_KERNEL);
-		if (unlikely(!rss_key))
-			return -ENOMEM;
-
-		netdev_rss_key_fill(rss_key, WX_RSS_KEY_SIZE);
-		wx->rss_key = rss_key;
-	}
-
-	return 0;
-}
-
 int wx_sw_init(struct wx *wx)
 {
 	struct pci_dev *pdev = wx->pdev;
@@ -2480,498 +1683,29 @@ int wx_sw_init(struct wx *wx)
 	wx->oem_svid = pdev->subsystem_vendor;
 	wx->oem_ssid = pdev->subsystem_device;
 	wx->bus.device = PCI_SLOT(pdev->devfn);
-	wx->bus.func = FIELD_GET(WX_CFG_PORT_ST_LANID,
-				 rd32(wx, WX_CFG_PORT_ST));
+	wx->bus.func = PCI_FUNC(pdev->devfn);
 
-	if (wx->oem_svid == PCI_VENDOR_ID_WANGXUN ||
-	    pdev->is_virtfn) {
+	if (wx->oem_svid == PCI_VENDOR_ID_WANGXUN) {
 		wx->subsystem_vendor_id = pdev->subsystem_vendor;
 		wx->subsystem_device_id = pdev->subsystem_device;
 	} else {
 		err = wx_flash_read_dword(wx, 0xfffdc, &ssid);
-		if (err < 0) {
-			wx_err(wx, "read of internal subsystem device id failed\n");
-			return err;
-		}
+		if (!err)
+			wx->subsystem_device_id = swab16((u16)ssid);
 
-		wx->subsystem_device_id = swab16((u16)ssid);
-	}
-
-	err = wx_init_rss_key(wx);
-	if (err < 0) {
-		wx_err(wx, "rss key allocation failed\n");
 		return err;
 	}
-	wx->rss_flags = WX_RSS_FIELD_IPV4 | WX_RSS_FIELD_IPV4_TCP |
-			WX_RSS_FIELD_IPV6 | WX_RSS_FIELD_IPV6_TCP;
 
 	wx->mac_table = kcalloc(wx->mac.num_rar_entries,
 				sizeof(struct wx_mac_addr),
 				GFP_KERNEL);
 	if (!wx->mac_table) {
 		wx_err(wx, "mac_table allocation failed\n");
-		kfree(wx->rss_key);
 		return -ENOMEM;
 	}
-
-	bitmap_zero(wx->state, WX_STATE_NBITS);
-	bitmap_zero(wx->flags, WX_PF_FLAGS_NBITS);
-	wx->misc_irq_domain = false;
 
 	return 0;
 }
 EXPORT_SYMBOL(wx_sw_init);
-
-/**
- *  wx_find_vlvf_slot - find the vlanid or the first empty slot
- *  @wx: pointer to hardware structure
- *  @vlan: VLAN id to write to VLAN filter
- *
- *  return the VLVF index where this VLAN id should be placed
- *
- **/
-static int wx_find_vlvf_slot(struct wx *wx, u32 vlan)
-{
-	u32 bits = 0, first_empty_slot = 0;
-	int regindex;
-
-	/* short cut the special case */
-	if (vlan == 0)
-		return 0;
-
-	/* Search for the vlan id in the VLVF entries. Save off the first empty
-	 * slot found along the way
-	 */
-	for (regindex = 1; regindex < WX_PSR_VLAN_SWC_ENTRIES; regindex++) {
-		wr32(wx, WX_PSR_VLAN_SWC_IDX, regindex);
-		bits = rd32(wx, WX_PSR_VLAN_SWC);
-		if (!bits && !(first_empty_slot))
-			first_empty_slot = regindex;
-		else if ((bits & 0x0FFF) == vlan)
-			break;
-	}
-
-	if (regindex >= WX_PSR_VLAN_SWC_ENTRIES) {
-		if (first_empty_slot)
-			regindex = first_empty_slot;
-		else
-			regindex = -ENOMEM;
-	}
-
-	return regindex;
-}
-
-/**
- *  wx_set_vlvf - Set VLAN Pool Filter
- *  @wx: pointer to hardware structure
- *  @vlan: VLAN id to write to VLAN filter
- *  @vind: VMDq output index that maps queue to VLAN id in VFVFB
- *  @vlan_on: boolean flag to turn on/off VLAN in VFVF
- *  @vfta_changed: pointer to boolean flag which indicates whether VFTA
- *                 should be changed
- *
- *  Turn on/off specified bit in VLVF table.
- **/
-static int wx_set_vlvf(struct wx *wx, u32 vlan, u32 vind, bool vlan_on,
-		       bool *vfta_changed)
-{
-	int vlvf_index;
-	u32 vt, bits;
-
-	/* If VT Mode is set
-	 *   Either vlan_on
-	 *     make sure the vlan is in VLVF
-	 *     set the vind bit in the matching VLVFB
-	 *   Or !vlan_on
-	 *     clear the pool bit and possibly the vind
-	 */
-	vt = rd32(wx, WX_CFG_PORT_CTL);
-	if (!(vt & WX_CFG_PORT_CTL_NUM_VT_MASK))
-		return 0;
-
-	vlvf_index = wx_find_vlvf_slot(wx, vlan);
-	if (vlvf_index < 0)
-		return vlvf_index;
-
-	wr32(wx, WX_PSR_VLAN_SWC_IDX, vlvf_index);
-	if (vlan_on) {
-		/* set the pool bit */
-		if (vind < 32) {
-			bits = rd32(wx, WX_PSR_VLAN_SWC_VM_L);
-			bits |= (1 << vind);
-			wr32(wx, WX_PSR_VLAN_SWC_VM_L, bits);
-		} else {
-			bits = rd32(wx, WX_PSR_VLAN_SWC_VM_H);
-			bits |= (1 << (vind - 32));
-			wr32(wx, WX_PSR_VLAN_SWC_VM_H, bits);
-		}
-	} else {
-		/* clear the pool bit */
-		if (vind < 32) {
-			bits = rd32(wx, WX_PSR_VLAN_SWC_VM_L);
-			bits &= ~(1 << vind);
-			wr32(wx, WX_PSR_VLAN_SWC_VM_L, bits);
-			bits |= rd32(wx, WX_PSR_VLAN_SWC_VM_H);
-		} else {
-			bits = rd32(wx, WX_PSR_VLAN_SWC_VM_H);
-			bits &= ~(1 << (vind - 32));
-			wr32(wx, WX_PSR_VLAN_SWC_VM_H, bits);
-			bits |= rd32(wx, WX_PSR_VLAN_SWC_VM_L);
-		}
-	}
-
-	if (bits) {
-		wr32(wx, WX_PSR_VLAN_SWC, (WX_PSR_VLAN_SWC_VIEN | vlan));
-		if (!vlan_on && vfta_changed)
-			*vfta_changed = false;
-	} else {
-		wr32(wx, WX_PSR_VLAN_SWC, 0);
-	}
-
-	return 0;
-}
-
-/**
- *  wx_set_vfta - Set VLAN filter table
- *  @wx: pointer to hardware structure
- *  @vlan: VLAN id to write to VLAN filter
- *  @vind: VMDq output index that maps queue to VLAN id in VFVFB
- *  @vlan_on: boolean flag to turn on/off VLAN in VFVF
- *
- *  Turn on/off specified VLAN in the VLAN filter table.
- **/
-int wx_set_vfta(struct wx *wx, u32 vlan, u32 vind, bool vlan_on)
-{
-	u32 bitindex, vfta, targetbit;
-	bool vfta_changed = false;
-	int regindex, ret;
-
-	/* this is a 2 part operation - first the VFTA, then the
-	 * VLVF and VLVFB if VT Mode is set
-	 * We don't write the VFTA until we know the VLVF part succeeded.
-	 */
-
-	/* Part 1
-	 * The VFTA is a bitstring made up of 128 32-bit registers
-	 * that enable the particular VLAN id, much like the MTA:
-	 *    bits[11-5]: which register
-	 *    bits[4-0]:  which bit in the register
-	 */
-	regindex = (vlan >> 5) & 0x7F;
-	bitindex = vlan & 0x1F;
-	targetbit = (1 << bitindex);
-	/* errata 5 */
-	vfta = wx->mac.vft_shadow[regindex];
-	if (vlan_on) {
-		if (!(vfta & targetbit)) {
-			vfta |= targetbit;
-			vfta_changed = true;
-		}
-	} else {
-		if ((vfta & targetbit)) {
-			vfta &= ~targetbit;
-			vfta_changed = true;
-		}
-	}
-	/* Part 2
-	 * Call wx_set_vlvf to set VLVFB and VLVF
-	 */
-	ret = wx_set_vlvf(wx, vlan, vind, vlan_on, &vfta_changed);
-	if (ret != 0)
-		return ret;
-
-	if (vfta_changed)
-		wr32(wx, WX_PSR_VLAN_TBL(regindex), vfta);
-	wx->mac.vft_shadow[regindex] = vfta;
-
-	return 0;
-}
-
-/**
- *  wx_clear_vfta - Clear VLAN filter table
- *  @wx: pointer to hardware structure
- *
- *  Clears the VLAN filer table, and the VMDq index associated with the filter
- **/
-static void wx_clear_vfta(struct wx *wx)
-{
-	u32 offset;
-
-	for (offset = 0; offset < wx->mac.vft_size; offset++) {
-		wr32(wx, WX_PSR_VLAN_TBL(offset), 0);
-		wx->mac.vft_shadow[offset] = 0;
-	}
-
-	for (offset = 0; offset < WX_PSR_VLAN_SWC_ENTRIES; offset++) {
-		wr32(wx, WX_PSR_VLAN_SWC_IDX, offset);
-		wr32(wx, WX_PSR_VLAN_SWC, 0);
-		wr32(wx, WX_PSR_VLAN_SWC_VM_L, 0);
-		wr32(wx, WX_PSR_VLAN_SWC_VM_H, 0);
-	}
-}
-
-int wx_vlan_rx_add_vid(struct net_device *netdev,
-		       __be16 proto, u16 vid)
-{
-	struct wx *wx = netdev_priv(netdev);
-
-	/* add VID to filter table */
-	wx_set_vfta(wx, vid, VMDQ_P(0), true);
-	set_bit(vid, wx->active_vlans);
-
-	return 0;
-}
-EXPORT_SYMBOL(wx_vlan_rx_add_vid);
-
-int wx_vlan_rx_kill_vid(struct net_device *netdev, __be16 proto, u16 vid)
-{
-	struct wx *wx = netdev_priv(netdev);
-
-	/* remove VID from filter table */
-	if (vid)
-		wx_set_vfta(wx, vid, VMDQ_P(0), false);
-	clear_bit(vid, wx->active_vlans);
-
-	return 0;
-}
-EXPORT_SYMBOL(wx_vlan_rx_kill_vid);
-
-static void wx_enable_rx_drop(struct wx *wx, struct wx_ring *ring)
-{
-	u16 reg_idx = ring->reg_idx;
-	u32 srrctl;
-
-	srrctl = rd32(wx, WX_PX_RR_CFG(reg_idx));
-	srrctl |= WX_PX_RR_CFG_DROP_EN;
-
-	wr32(wx, WX_PX_RR_CFG(reg_idx), srrctl);
-}
-
-static void wx_disable_rx_drop(struct wx *wx, struct wx_ring *ring)
-{
-	u16 reg_idx = ring->reg_idx;
-	u32 srrctl;
-
-	srrctl = rd32(wx, WX_PX_RR_CFG(reg_idx));
-	srrctl &= ~WX_PX_RR_CFG_DROP_EN;
-
-	wr32(wx, WX_PX_RR_CFG(reg_idx), srrctl);
-}
-
-int wx_fc_enable(struct wx *wx, bool tx_pause, bool rx_pause)
-{
-	u16 pause_time = WX_DEFAULT_FCPAUSE;
-	u32 mflcn_reg, fccfg_reg, reg;
-	u32 fcrtl, fcrth;
-	int i;
-
-	/* Low water mark of zero causes XOFF floods */
-	if (tx_pause && wx->fc.high_water) {
-		if (!wx->fc.low_water || wx->fc.low_water >= wx->fc.high_water) {
-			wx_err(wx, "Invalid water mark configuration\n");
-			return -EINVAL;
-		}
-	}
-
-	/* Disable any previous flow control settings */
-	mflcn_reg = rd32(wx, WX_MAC_RX_FLOW_CTRL);
-	mflcn_reg &= ~WX_MAC_RX_FLOW_CTRL_RFE;
-
-	fccfg_reg = rd32(wx, WX_RDB_RFCC);
-	fccfg_reg &= ~WX_RDB_RFCC_RFCE_802_3X;
-
-	if (rx_pause)
-		mflcn_reg |= WX_MAC_RX_FLOW_CTRL_RFE;
-	if (tx_pause)
-		fccfg_reg |= WX_RDB_RFCC_RFCE_802_3X;
-
-	/* Set 802.3x based flow control settings. */
-	wr32(wx, WX_MAC_RX_FLOW_CTRL, mflcn_reg);
-	wr32(wx, WX_RDB_RFCC, fccfg_reg);
-
-	/* Set up and enable Rx high/low water mark thresholds, enable XON. */
-	if (tx_pause && wx->fc.high_water) {
-		fcrtl = (wx->fc.low_water << 10) | WX_RDB_RFCL_XONE;
-		wr32(wx, WX_RDB_RFCL, fcrtl);
-		fcrth = (wx->fc.high_water << 10) | WX_RDB_RFCH_XOFFE;
-	} else {
-		wr32(wx, WX_RDB_RFCL, 0);
-		/* In order to prevent Tx hangs when the internal Tx
-		 * switch is enabled we must set the high water mark
-		 * to the Rx packet buffer size - 24KB.  This allows
-		 * the Tx switch to function even under heavy Rx
-		 * workloads.
-		 */
-		fcrth = rd32(wx, WX_RDB_PB_SZ(0)) - 24576;
-	}
-
-	wr32(wx, WX_RDB_RFCH, fcrth);
-
-	/* Configure pause time */
-	reg = pause_time * 0x00010001;
-	wr32(wx, WX_RDB_RFCV, reg);
-
-	/* Configure flow control refresh threshold value */
-	wr32(wx, WX_RDB_RFCRT, pause_time / 2);
-
-	/*  We should set the drop enable bit if:
-	 *  Number of Rx queues > 1 and flow control is disabled
-	 *
-	 *  This allows us to avoid head of line blocking for security
-	 *  and performance reasons.
-	 */
-	if (wx->num_rx_queues > 1 && !tx_pause) {
-		for (i = 0; i < wx->num_rx_queues; i++)
-			wx_enable_rx_drop(wx, wx->rx_ring[i]);
-	} else {
-		for (i = 0; i < wx->num_rx_queues; i++)
-			wx_disable_rx_drop(wx, wx->rx_ring[i]);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(wx_fc_enable);
-
-/**
- * wx_update_stats - Update the board statistics counters.
- * @wx: board private structure
- **/
-void wx_update_stats(struct wx *wx)
-{
-	struct wx_hw_stats *hwstats = &wx->stats;
-
-	u64 non_eop_descs = 0, alloc_rx_buff_failed = 0;
-	u64 hw_csum_rx_good = 0, hw_csum_rx_error = 0;
-	u64 restart_queue = 0, tx_busy = 0;
-	u32 i;
-
-	/* gather some stats to the wx struct that are per queue */
-	for (i = 0; i < wx->num_rx_queues; i++) {
-		struct wx_ring *rx_ring = wx->rx_ring[i];
-
-		non_eop_descs += rx_ring->rx_stats.non_eop_descs;
-		alloc_rx_buff_failed += rx_ring->rx_stats.alloc_rx_buff_failed;
-		hw_csum_rx_good += rx_ring->rx_stats.csum_good_cnt;
-		hw_csum_rx_error += rx_ring->rx_stats.csum_err;
-	}
-	wx->non_eop_descs = non_eop_descs;
-	wx->alloc_rx_buff_failed = alloc_rx_buff_failed;
-	wx->hw_csum_rx_error = hw_csum_rx_error;
-	wx->hw_csum_rx_good = hw_csum_rx_good;
-
-	if (test_bit(WX_FLAG_RSC_ENABLED, wx->flags)) {
-		u64 rsc_count = 0;
-		u64 rsc_flush = 0;
-
-		for (i = 0; i < wx->num_rx_queues; i++) {
-			rsc_count += wx->rx_ring[i]->rx_stats.rsc_count;
-			rsc_flush += wx->rx_ring[i]->rx_stats.rsc_flush;
-		}
-		wx->rsc_count = rsc_count;
-		wx->rsc_flush = rsc_flush;
-	}
-
-	for (i = 0; i < wx->num_tx_queues; i++) {
-		struct wx_ring *tx_ring = wx->tx_ring[i];
-
-		restart_queue += tx_ring->tx_stats.restart_queue;
-		tx_busy += tx_ring->tx_stats.tx_busy;
-	}
-	wx->restart_queue = restart_queue;
-	wx->tx_busy = tx_busy;
-
-	hwstats->gprc += rd32(wx, WX_RDM_PKT_CNT);
-	hwstats->gptc += rd32(wx, WX_TDM_PKT_CNT);
-	hwstats->gorc += rd64(wx, WX_RDM_BYTE_CNT_LSB);
-	hwstats->gotc += rd64(wx, WX_TDM_BYTE_CNT_LSB);
-	hwstats->tpr += rd64(wx, WX_RX_FRAME_CNT_GOOD_BAD_L);
-	hwstats->tpt += rd64(wx, WX_TX_FRAME_CNT_GOOD_BAD_L);
-	hwstats->crcerrs += rd64(wx, WX_RX_CRC_ERROR_FRAMES_L);
-	hwstats->rlec += rd64(wx, WX_RX_LEN_ERROR_FRAMES_L);
-	hwstats->bprc += rd64(wx, WX_RX_BC_FRAMES_GOOD_L);
-	hwstats->bptc += rd64(wx, WX_TX_BC_FRAMES_GOOD_L);
-	hwstats->mprc += rd64(wx, WX_RX_MC_FRAMES_GOOD_L);
-	hwstats->mptc += rd64(wx, WX_TX_MC_FRAMES_GOOD_L);
-	hwstats->roc += rd32(wx, WX_RX_OVERSIZE_FRAMES_GOOD);
-	hwstats->ruc += rd32(wx, WX_RX_UNDERSIZE_FRAMES_GOOD);
-	hwstats->lxonoffrxc += rd32(wx, WX_MAC_LXONOFFRXC);
-	hwstats->lxontxc += rd32(wx, WX_RDB_LXONTXC);
-	hwstats->lxofftxc += rd32(wx, WX_RDB_LXOFFTXC);
-	hwstats->o2bgptc += rd32(wx, WX_TDM_OS2BMC_CNT);
-	hwstats->b2ospc += rd32(wx, WX_MNG_BMC2OS_CNT);
-	hwstats->o2bspc += rd32(wx, WX_MNG_OS2BMC_CNT);
-	hwstats->b2ogprc += rd32(wx, WX_RDM_BMC2OS_CNT);
-	hwstats->rdmdrop += rd32(wx, WX_RDM_DRP_PKT);
-
-	if (test_bit(WX_FLAG_FDIR_CAPABLE, wx->flags)) {
-		hwstats->fdirmatch += rd32(wx, WX_RDB_FDIR_MATCH);
-		hwstats->fdirmiss += rd32(wx, WX_RDB_FDIR_MISS);
-	}
-
-	/* qmprc is not cleared on read, manual reset it */
-	hwstats->qmprc = 0;
-	for (i = wx->num_vfs * wx->num_rx_queues_per_pool;
-	     i < wx->mac.max_rx_queues; i++)
-		hwstats->qmprc += rd32(wx, WX_PX_MPRC(i));
-}
-EXPORT_SYMBOL(wx_update_stats);
-
-/**
- *  wx_clear_hw_cntrs - Generic clear hardware counters
- *  @wx: board private structure
- *
- *  Clears all hardware statistics counters by reading them from the hardware
- *  Statistics counters are clear on read.
- **/
-void wx_clear_hw_cntrs(struct wx *wx)
-{
-	u16 i = 0;
-
-	for (i = 0; i < wx->mac.max_rx_queues; i++)
-		wr32(wx, WX_PX_MPRC(i), 0);
-
-	rd32(wx, WX_RDM_PKT_CNT);
-	rd32(wx, WX_TDM_PKT_CNT);
-	rd64(wx, WX_RDM_BYTE_CNT_LSB);
-	rd32(wx, WX_TDM_BYTE_CNT_LSB);
-	rd32(wx, WX_RDM_DRP_PKT);
-	rd32(wx, WX_RX_UNDERSIZE_FRAMES_GOOD);
-	rd32(wx, WX_RX_OVERSIZE_FRAMES_GOOD);
-	rd64(wx, WX_RX_FRAME_CNT_GOOD_BAD_L);
-	rd64(wx, WX_TX_FRAME_CNT_GOOD_BAD_L);
-	rd64(wx, WX_RX_MC_FRAMES_GOOD_L);
-	rd64(wx, WX_TX_MC_FRAMES_GOOD_L);
-	rd64(wx, WX_RX_BC_FRAMES_GOOD_L);
-	rd64(wx, WX_TX_BC_FRAMES_GOOD_L);
-	rd64(wx, WX_RX_CRC_ERROR_FRAMES_L);
-	rd64(wx, WX_RX_LEN_ERROR_FRAMES_L);
-	rd32(wx, WX_RDB_LXONTXC);
-	rd32(wx, WX_RDB_LXOFFTXC);
-	rd32(wx, WX_MAC_LXONOFFRXC);
-}
-EXPORT_SYMBOL(wx_clear_hw_cntrs);
-
-/**
- *  wx_start_hw - Prepare hardware for Tx/Rx
- *  @wx: pointer to hardware structure
- *
- *  Starts the hardware using the generic start_hw function
- *  and the generation start_hw function.
- *  Then performs revision-specific operations, if any.
- **/
-void wx_start_hw(struct wx *wx)
-{
-	int i;
-
-	/* Clear the VLAN filter table */
-	wx_clear_vfta(wx);
-	WX_WRITE_FLUSH(wx);
-	/* Clear the rate limiters */
-	for (i = 0; i < wx->mac.max_tx_queues; i++) {
-		wr32(wx, WX_TDM_RP_IDX, i);
-		wr32(wx, WX_TDM_RP_RATE, 0);
-	}
-}
-EXPORT_SYMBOL(wx_start_hw);
 
 MODULE_LICENSE("GPL");

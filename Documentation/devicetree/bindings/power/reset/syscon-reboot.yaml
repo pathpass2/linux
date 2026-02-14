@@ -21,9 +21,7 @@ description: |+
 
 properties:
   compatible:
-    enum:
-      - syscon-reboot
-      - google,gs101-reboot
+    const: syscon-reboot
 
   mask:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -32,10 +30,6 @@ properties:
   offset:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: Offset in the register map for the reboot register (in bytes).
-
-  reg:
-    maxItems: 1
-    description: Base address and size for the reboot register.
 
   regmap:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -53,35 +47,19 @@ properties:
 
 required:
   - compatible
+  - offset
 
 additionalProperties: false
 
 allOf:
   - $ref: restart-handler.yaml#
   - if:
-      properties:
-        compatible:
-          contains:
-            const: google,gs101-reboot
-    then:
-      properties:
-        mask: false
-        offset: false
-        reg: false
-        value: false
-
-    else:
-      if:
-        not:
-          required:
-            - mask
-      then:
+      not:
         required:
-          - value
-
-      anyOf:
-        - required: [offset]
-        - required: [reg]
+          - mask
+    then:
+      required:
+        - value
 
 examples:
   - |
@@ -90,9 +68,4 @@ examples:
         regmap = <&regmapnode>;
         offset = <0x0>;
         mask = <0x1>;
-    };
-
-  - |
-    reboot {
-        compatible = "google,gs101-reboot";
     };

@@ -9,7 +9,7 @@
  */
 
 /*
- * This driver supports the asynchronous DMA copy and RAID engines available
+ * This driver supports the asynchrounous DMA copy and RAID engines available
  * on the AMCC PPC440SPe Processors.
  * Based on the Intel Xscale(R) family of I/O Processors (IOP 32x, 33x, 134x)
  * ADMA driver written by D.Williams.
@@ -28,7 +28,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <asm/dcr.h>
 #include <asm/dcr-regs.h>
 #include "adma.h"
@@ -874,7 +874,7 @@ static int ppc440spe_dma2_pq_slot_count(dma_addr_t *srcs,
 		pr_err("%s: src_cnt=%d, state=%d, addr_count=%d, order=%lld\n",
 			__func__, src_cnt, state, addr_count, order);
 		for (i = 0; i < src_cnt; i++)
-			pr_err("\t[%d] 0x%llx\n", i, srcs[i]);
+			pr_err("\t[%d] 0x%llx \n", i, srcs[i]);
 		BUG();
 	}
 
@@ -3636,7 +3636,7 @@ static void ppc440spe_adma_issue_pending(struct dma_chan *chan)
 
 	ppc440spe_chan = to_ppc440spe_adma_chan(chan);
 	dev_dbg(ppc440spe_chan->device->common.dev,
-		"ppc440spe adma%d: %s %d\n", ppc440spe_chan->device->id,
+		"ppc440spe adma%d: %s %d \n", ppc440spe_chan->device->id,
 		__func__, ppc440spe_chan->pending);
 
 	if (ppc440spe_chan->pending) {
@@ -4230,7 +4230,7 @@ out:
 /**
  * ppc440spe_adma_remove - remove the asynch device
  */
-static void ppc440spe_adma_remove(struct platform_device *ofdev)
+static int ppc440spe_adma_remove(struct platform_device *ofdev)
 {
 	struct ppc440spe_adma_device *adev = platform_get_drvdata(ofdev);
 	struct device_node *np = ofdev->dev.of_node;
@@ -4278,6 +4278,7 @@ static void ppc440spe_adma_remove(struct platform_device *ofdev)
 	of_address_to_resource(np, 0, &res);
 	release_mem_region(res.start, resource_size(&res));
 	kfree(adev);
+	return 0;
 }
 
 /*

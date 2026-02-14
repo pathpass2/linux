@@ -167,7 +167,6 @@ struct _vcs_dpi_voltage_scaling_st {
 	double phyclk_mhz;
 	double dppclk_mhz;
 	double dtbclk_mhz;
-	float net_bw_in_kbytes_sec;
 };
 
 /**
@@ -523,7 +522,6 @@ struct _vcs_dpi_display_pipe_dest_params_st {
 	unsigned int vupdate_offset;
 	unsigned int vupdate_width;
 	unsigned int vready_offset;
-	unsigned int pstate_keepout;
 	unsigned char interlaced;
 	double pixel_rate_mhz;
 	unsigned char synchronized_vblank_all_planes;
@@ -621,7 +619,8 @@ struct _vcs_dpi_display_dlg_regs_st {
 	unsigned int refcyc_h_blank_end;
 	unsigned int dlg_vblank_end;
 	unsigned int min_dst_y_next_start;
-	unsigned int min_dst_y_next_start_us;
+	unsigned int optimized_min_dst_y_next_start;
+	unsigned int optimized_min_dst_y_next_start_us;
 	unsigned int refcyc_per_htotal;
 	unsigned int refcyc_x_after_scaler;
 	unsigned int dst_y_after_scaler;
@@ -633,7 +632,6 @@ struct _vcs_dpi_display_dlg_regs_st {
 	unsigned int ref_freq_to_pix_freq;
 	unsigned int vratio_prefetch;
 	unsigned int vratio_prefetch_c;
-	unsigned int refcyc_per_tdlut_group;
 	unsigned int refcyc_per_pte_group_vblank_l;
 	unsigned int refcyc_per_pte_group_vblank_c;
 	unsigned int refcyc_per_meta_chunk_vblank_l;

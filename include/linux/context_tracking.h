@@ -26,26 +26,26 @@ extern void user_exit_callable(void);
 static inline void user_enter(void)
 {
 	if (context_tracking_enabled())
-		ct_user_enter(CT_STATE_USER);
+		ct_user_enter(CONTEXT_USER);
 
 }
 static inline void user_exit(void)
 {
 	if (context_tracking_enabled())
-		ct_user_exit(CT_STATE_USER);
+		ct_user_exit(CONTEXT_USER);
 }
 
 /* Called with interrupts disabled.  */
 static __always_inline void user_enter_irqoff(void)
 {
 	if (context_tracking_enabled())
-		__ct_user_enter(CT_STATE_USER);
+		__ct_user_enter(CONTEXT_USER);
 
 }
 static __always_inline void user_exit_irqoff(void)
 {
 	if (context_tracking_enabled())
-		__ct_user_exit(CT_STATE_USER);
+		__ct_user_exit(CONTEXT_USER);
 }
 
 static inline enum ctx_state exception_enter(void)
@@ -57,7 +57,7 @@ static inline enum ctx_state exception_enter(void)
 		return 0;
 
 	prev_ctx = __ct_state();
-	if (prev_ctx != CT_STATE_KERNEL)
+	if (prev_ctx != CONTEXT_KERNEL)
 		ct_user_exit(prev_ctx);
 
 	return prev_ctx;
@@ -67,7 +67,7 @@ static inline void exception_exit(enum ctx_state prev_ctx)
 {
 	if (!IS_ENABLED(CONFIG_HAVE_CONTEXT_TRACKING_USER_OFFSTACK) &&
 	    context_tracking_enabled()) {
-		if (prev_ctx != CT_STATE_KERNEL)
+		if (prev_ctx != CONTEXT_KERNEL)
 			ct_user_enter(prev_ctx);
 	}
 }
@@ -75,17 +75,15 @@ static inline void exception_exit(enum ctx_state prev_ctx)
 static __always_inline bool context_tracking_guest_enter(void)
 {
 	if (context_tracking_enabled())
-		__ct_user_enter(CT_STATE_GUEST);
+		__ct_user_enter(CONTEXT_GUEST);
 
 	return context_tracking_enabled_this_cpu();
 }
 
-static __always_inline bool context_tracking_guest_exit(void)
+static __always_inline void context_tracking_guest_exit(void)
 {
 	if (context_tracking_enabled())
-		__ct_user_exit(CT_STATE_GUEST);
-
-	return context_tracking_enabled_this_cpu();
+		__ct_user_exit(CONTEXT_GUEST);
 }
 
 #define CT_WARN_ON(cond) WARN_ON(context_tracking_enabled() && (cond))
@@ -100,7 +98,7 @@ static inline void exception_exit(enum ctx_state prev_ctx) { }
 static inline int ct_state(void) { return -1; }
 static inline int __ct_state(void) { return -1; }
 static __always_inline bool context_tracking_guest_enter(void) { return false; }
-static __always_inline bool context_tracking_guest_exit(void) { return false; }
+static inline void context_tracking_guest_exit(void) { }
 #define CT_WARN_ON(cond) do { } while (0)
 #endif /* !CONFIG_CONTEXT_TRACKING_USER */
 
@@ -115,17 +113,13 @@ extern void ct_idle_enter(void);
 extern void ct_idle_exit(void);
 
 /*
- * Is RCU watching the current CPU (IOW, it is not in an extended quiescent state)?
- *
- * Note that this returns the actual boolean data (watching / not watching),
- * whereas ct_rcu_watching() returns the RCU_WATCHING subvariable of
- * context_tracking.state.
+ * Is the current CPU in an extended quiescent state?
  *
  * No ordering, as we are sampling CPU-local information.
  */
-static __always_inline bool rcu_is_watching_curr_cpu(void)
+static __always_inline bool rcu_dynticks_curr_cpu_in_eqs(void)
 {
-	return raw_atomic_read(this_cpu_ptr(&context_tracking.state)) & CT_RCU_WATCHING;
+	return !(arch_atomic_read(this_cpu_ptr(&context_tracking.state)) & RCU_DYNTICKS_IDX);
 }
 
 /*
@@ -134,7 +128,7 @@ static __always_inline bool rcu_is_watching_curr_cpu(void)
  */
 static __always_inline unsigned long ct_state_inc(int incby)
 {
-	return raw_atomic_add_return(incby, this_cpu_ptr(&context_tracking.state));
+	return arch_atomic_add_return(incby, this_cpu_ptr(&context_tracking.state));
 }
 
 static __always_inline bool warn_rcu_enter(void)
@@ -146,9 +140,9 @@ static __always_inline bool warn_rcu_enter(void)
 	 * lots of the actual reporting also relies on RCU.
 	 */
 	preempt_disable_notrace();
-	if (!rcu_is_watching_curr_cpu()) {
+	if (rcu_dynticks_curr_cpu_in_eqs()) {
 		ret = true;
-		ct_state_inc(CT_RCU_WATCHING);
+		ct_state_inc(RCU_DYNTICKS_IDX);
 	}
 
 	return ret;
@@ -157,7 +151,7 @@ static __always_inline bool warn_rcu_enter(void)
 static __always_inline void warn_rcu_exit(bool rcu)
 {
 	if (rcu)
-		ct_state_inc(CT_RCU_WATCHING);
+		ct_state_inc(RCU_DYNTICKS_IDX);
 	preempt_enable_notrace();
 }
 

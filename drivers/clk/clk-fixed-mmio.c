@@ -71,12 +71,14 @@ static int of_fixed_mmio_clk_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void of_fixed_mmio_clk_remove(struct platform_device *pdev)
+static int of_fixed_mmio_clk_remove(struct platform_device *pdev)
 {
 	struct clk_hw *clk = platform_get_drvdata(pdev);
 
 	of_clk_del_provider(pdev->dev.of_node);
 	clk_hw_unregister_fixed_rate(clk);
+
+	return 0;
 }
 
 static const struct of_device_id of_fixed_mmio_clk_ids[] = {

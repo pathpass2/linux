@@ -57,7 +57,8 @@
 
 static struct irq_domain *aic_domain;
 
-static void __exception_irq_entry aic_handle(struct pt_regs *regs)
+static asmlinkage void __exception_irq_entry
+aic_handle(struct pt_regs *regs)
 {
 	struct irq_domain_chip_generic *dgc = aic_domain->gc;
 	struct irq_chip_generic *gc = dgc->gc[0];
@@ -78,8 +79,9 @@ static int aic_retrigger(struct irq_data *d)
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
 
 	/* Enable interrupt on AIC5 */
-	guard(raw_spinlock)(&gc->lock);
+	irq_gc_lock(gc);
 	irq_reg_writel(gc, d->mask, AT91_AIC_ISCR);
+	irq_gc_unlock(gc);
 
 	return 1;
 }
@@ -105,27 +107,30 @@ static void aic_suspend(struct irq_data *d)
 {
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
 
-	guard(raw_spinlock)(&gc->lock);
+	irq_gc_lock(gc);
 	irq_reg_writel(gc, gc->mask_cache, AT91_AIC_IDCR);
 	irq_reg_writel(gc, gc->wake_active, AT91_AIC_IECR);
+	irq_gc_unlock(gc);
 }
 
 static void aic_resume(struct irq_data *d)
 {
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
 
-	guard(raw_spinlock)(&gc->lock);
+	irq_gc_lock(gc);
 	irq_reg_writel(gc, gc->wake_active, AT91_AIC_IDCR);
 	irq_reg_writel(gc, gc->mask_cache, AT91_AIC_IECR);
+	irq_gc_unlock(gc);
 }
 
 static void aic_pm_shutdown(struct irq_data *d)
 {
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
 
-	guard(raw_spinlock)(&gc->lock);
+	irq_gc_lock(gc);
 	irq_reg_writel(gc, 0xffffffff, AT91_AIC_IDCR);
 	irq_reg_writel(gc, 0xffffffff, AT91_AIC_ICCR);
+	irq_gc_unlock(gc);
 }
 #else
 #define aic_suspend		NULL
@@ -171,8 +176,10 @@ static int aic_irq_domain_xlate(struct irq_domain *d,
 {
 	struct irq_domain_chip_generic *dgc = d->gc;
 	struct irq_chip_generic *gc;
+	unsigned long flags;
 	unsigned smr;
-	int idx, ret;
+	int idx;
+	int ret;
 
 	if (!dgc)
 		return -EINVAL;
@@ -188,10 +195,11 @@ static int aic_irq_domain_xlate(struct irq_domain *d,
 
 	gc = dgc->gc[idx];
 
-	guard(raw_spinlock_irqsave)(&gc->lock);
+	irq_gc_lock_irqsave(gc, flags);
 	smr = irq_reg_readl(gc, AT91_AIC_SMR(*out_hwirq));
 	aic_common_set_priority(intspec[2], &smr);
 	irq_reg_writel(gc, smr, AT91_AIC_SMR(*out_hwirq));
+	irq_gc_unlock_irqrestore(gc, flags);
 
 	return ret;
 }

@@ -259,7 +259,7 @@ static struct i2c_driver pismo_driver = {
 	.driver	= {
 		.name	= "pismo",
 	},
-	.probe		= pismo_probe,
+	.probe_new	= pismo_probe,
 	.remove		= pismo_remove,
 	.id_table	= pismo_id,
 };

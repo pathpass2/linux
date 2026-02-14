@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2021-2022 Intel Corporation
+// Copyright(c) 2021-2022 Intel Corporation. All rights reserved.
 //
 // Authors: Cezary Rojewski <cezary.rojewski@intel.com>
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -16,28 +16,19 @@
 #include <sound/soc-component.h>
 #include "avs.h"
 #include "path.h"
-#include "pcm.h"
 #include "topology.h"
-#include "utils.h"
-#include "../../codecs/hda.h"
 
 struct avs_dma_data {
 	struct avs_tplg_path_template *template;
 	struct avs_path *path;
-	struct avs_dev *adev;
+	/*
+	 * link stream is stored within substream's runtime
+	 * private_data to fulfill the needs of codec BE path
+	 *
+	 * host stream assigned
+	 */
+	struct hdac_ext_stream *host_stream;
 
-	/* LINK-stream utilized in BE operations while HOST in FE ones. */
-	union {
-		struct hdac_ext_stream *link_stream;
-		struct hdac_ext_stream *host_stream;
-	};
-
-	struct snd_pcm_hw_constraint_list rate_list;
-	struct snd_pcm_hw_constraint_list channels_list;
-	struct snd_pcm_hw_constraint_list sample_bits_list;
-
-	struct work_struct period_elapsed_work;
-	struct hdac_ext_link *link;
 	struct snd_pcm_substream *substream;
 };
 
@@ -64,66 +55,15 @@ avs_dai_find_path_template(struct snd_soc_dai *dai, bool is_fe, int direction)
 	return dw->priv;
 }
 
-static void avs_period_elapsed_work(struct work_struct *work)
+static int avs_dai_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai, bool is_fe,
+			   const struct snd_soc_dai_ops *ops)
 {
-	struct avs_dma_data *data = container_of(work, struct avs_dma_data, period_elapsed_work);
-
-	snd_pcm_period_elapsed(data->substream);
-}
-
-void avs_period_elapsed(struct snd_pcm_substream *substream)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *dai = snd_soc_rtd_to_cpu(rtd, 0);
-	struct avs_dma_data *data = snd_soc_dai_get_dma_data(dai, substream);
-
-	schedule_work(&data->period_elapsed_work);
-}
-
-static int hw_rule_param_size(struct snd_pcm_hw_params *params, struct snd_pcm_hw_rule *rule);
-static int avs_hw_constraints_init(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct snd_pcm_hw_constraint_list *r, *c, *s;
-	struct avs_dma_data *data;
-	int ret;
-
-	ret = snd_pcm_hw_constraint_integer(runtime, SNDRV_PCM_HW_PARAM_PERIODS);
-	if (ret < 0)
-		return ret;
-
-	data = snd_soc_dai_get_dma_data(dai, substream);
-	r = &(data->rate_list);
-	c = &(data->channels_list);
-	s = &(data->sample_bits_list);
-
-	ret = avs_path_set_constraint(data->adev, data->template, r, c, s);
-	if (ret <= 0)
-		return ret;
-
-	ret = snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_RATE, r);
-	if (ret < 0)
-		return ret;
-
-	ret = snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_CHANNELS, c);
-	if (ret < 0)
-		return ret;
-
-	ret = snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_SAMPLE_BITS, s);
-	if (ret < 0)
-		return ret;
-
-	return 0;
-}
-
-static int avs_dai_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct avs_dev *adev = to_avs_dev(dai->component->dev);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct avs_dev *adev = to_avs_dev(dai->dev);
 	struct avs_tplg_path_template *template;
 	struct avs_dma_data *data;
 
-	template = avs_dai_find_path_template(dai, !rtd->dai_link->no_pcm, substream->stream);
+	template = avs_dai_find_path_template(dai, is_fe, substream->stream);
 	if (!template) {
 		dev_err(dai->dev, "no %s path for dai %s, invalid tplg?\n",
 			snd_pcm_stream_str(substream), dai->name);
@@ -136,32 +76,12 @@ static int avs_dai_startup(struct snd_pcm_substream *substream, struct snd_soc_d
 
 	data->substream = substream;
 	data->template = template;
-	data->adev = adev;
-	INIT_WORK(&data->period_elapsed_work, avs_period_elapsed_work);
 	snd_soc_dai_set_dma_data(dai, substream, data);
 
 	if (rtd->dai_link->ignore_suspend)
 		adev->num_lp_paths++;
 
-	return avs_hw_constraints_init(substream, dai);
-}
-
-static void avs_dai_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
-{
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct avs_dma_data *data;
-
-	data = snd_soc_dai_get_dma_data(dai, substream);
-
-	if (rtd->dai_link->ignore_suspend)
-		data->adev->num_lp_paths--;
-
-	kfree(data->rate_list.list);
-	kfree(data->channels_list.list);
-	kfree(data->sample_bits_list.list);
-
-	snd_soc_dai_set_dma_data(dai, substream, NULL);
-	kfree(data);
+	return 0;
 }
 
 static int avs_dai_hw_params(struct snd_pcm_substream *substream,
@@ -171,6 +91,7 @@ static int avs_dai_hw_params(struct snd_pcm_substream *substream,
 {
 	struct avs_dma_data *data;
 	struct avs_path *path;
+	struct avs_dev *adev = to_avs_dev(dai->dev);
 	int ret;
 
 	data = snd_soc_dai_get_dma_data(dai, substream);
@@ -187,7 +108,7 @@ static int avs_dai_hw_params(struct snd_pcm_substream *substream,
 		params_rate(be_hw_params), params_channels(be_hw_params),
 		params_width(be_hw_params), params_physical_width(be_hw_params));
 
-	path = avs_path_create(data->adev, dma_id, data->template, fe_hw_params, be_hw_params);
+	path = avs_path_create(adev, dma_id, data->template, fe_hw_params, be_hw_params);
 	if (IS_ERR(path)) {
 		ret = PTR_ERR(path);
 		dev_err(dai->dev, "create path failed: %d\n", ret);
@@ -206,8 +127,7 @@ static int avs_dai_be_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_pcm_runtime *fe, *be;
 	struct snd_soc_dpcm *dpcm;
 
-	be = snd_soc_substream_to_rtd(substream);
-	/* dpcm_fe_dai_open() guarantees the list is not empty at this point. */
+	be = asoc_substream_to_rtd(substream);
 	for_each_dpcm_fe(be, substream->stream, dpcm) {
 		fe = dpcm->fe;
 		fe_hw_params = &fe->dpcm[substream->stream].hw_params;
@@ -216,7 +136,8 @@ static int avs_dai_be_hw_params(struct snd_pcm_substream *substream,
 	return avs_dai_hw_params(substream, fe_hw_params, be_hw_params, dai, dma_id);
 }
 
-static int avs_dai_prepare(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
+static int avs_dai_prepare(struct avs_dev *adev, struct snd_pcm_substream *substream,
+			   struct snd_soc_dai *dai)
 {
 	struct avs_dma_data *data;
 	int ret;
@@ -235,6 +156,28 @@ static int avs_dai_prepare(struct snd_pcm_substream *substream, struct snd_soc_d
 	if (ret < 0)
 		dev_err(dai->dev, "pause path failed: %d\n", ret);
 	return ret;
+}
+
+static const struct snd_soc_dai_ops avs_dai_nonhda_be_ops;
+
+static int avs_dai_nonhda_be_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
+{
+	return avs_dai_startup(substream, dai, false, &avs_dai_nonhda_be_ops);
+}
+
+static void avs_dai_nonhda_be_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
+{
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct avs_dev *adev = to_avs_dev(dai->dev);
+	struct avs_dma_data *data;
+
+	if (rtd->dai_link->ignore_suspend)
+		adev->num_lp_paths--;
+
+	data = snd_soc_dai_get_dma_data(dai, substream);
+
+	snd_soc_dai_set_dma_data(dai, substream, NULL);
+	kfree(data);
 }
 
 static int avs_dai_nonhda_be_hw_params(struct snd_pcm_substream *substream,
@@ -265,10 +208,15 @@ static int avs_dai_nonhda_be_hw_free(struct snd_pcm_substream *substream, struct
 	return 0;
 }
 
+static int avs_dai_nonhda_be_prepare(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
+{
+	return avs_dai_prepare(to_avs_dev(dai->dev), substream, dai);
+}
+
 static int avs_dai_nonhda_be_trigger(struct snd_pcm_substream *substream, int cmd,
 				     struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct avs_dma_data *data;
 	int ret = 0;
 
@@ -316,167 +264,104 @@ static int avs_dai_nonhda_be_trigger(struct snd_pcm_substream *substream, int cm
 }
 
 static const struct snd_soc_dai_ops avs_dai_nonhda_be_ops = {
-	.startup = avs_dai_startup,
-	.shutdown = avs_dai_shutdown,
+	.startup = avs_dai_nonhda_be_startup,
+	.shutdown = avs_dai_nonhda_be_shutdown,
 	.hw_params = avs_dai_nonhda_be_hw_params,
 	.hw_free = avs_dai_nonhda_be_hw_free,
-	.prepare = avs_dai_prepare,
+	.prepare = avs_dai_nonhda_be_prepare,
 	.trigger = avs_dai_nonhda_be_trigger,
 };
 
-static int __avs_dai_hda_be_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai,
-				    struct hdac_ext_link *link)
-{
-	struct hdac_ext_stream *link_stream;
-	struct avs_dma_data *data;
-	int ret;
-
-	ret = avs_dai_startup(substream, dai);
-	if (ret)
-		return ret;
-
-	data = snd_soc_dai_get_dma_data(dai, substream);
-	link_stream = snd_hdac_ext_stream_assign(&data->adev->base.core, substream,
-						 HDAC_EXT_STREAM_TYPE_LINK);
-	if (!link_stream) {
-		avs_dai_shutdown(substream, dai);
-		return -EBUSY;
-	}
-
-	data->link_stream = link_stream;
-	data->link = link;
-	return 0;
-}
+static const struct snd_soc_dai_ops avs_dai_hda_be_ops;
 
 static int avs_dai_hda_be_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct hdac_ext_link *link;
-	struct avs_dma_data *data;
-	struct hda_codec *codec;
-	int ret;
-
-	codec = dev_to_hda_codec(snd_soc_rtd_to_codec(rtd, 0)->dev);
-
-	link = snd_hdac_ext_bus_get_hlink_by_addr(&codec->bus->core, codec->core.addr);
-	if (!link)
-		return -EINVAL;
-
-	ret = __avs_dai_hda_be_startup(substream, dai, link);
-	if (!ret) {
-		data = snd_soc_dai_get_dma_data(dai, substream);
-		substream->runtime->private_data = data->link_stream;
-	}
-
-	return ret;
-}
-
-static int avs_dai_i2shda_be_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
-{
-	struct avs_dev *adev = to_avs_dev(dai->component->dev);
-	struct hdac_ext_link *link;
-
-	link = snd_hdac_ext_bus_get_hlink_by_id(&adev->base.core, AZX_REG_ML_LEPTR_ID_INTEL_SSP);
-	if (!link)
-		return -EINVAL;
-	return __avs_dai_hda_be_startup(substream, dai, link);
-}
-
-static int avs_dai_dmichda_be_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
-{
-	struct avs_dev *adev = to_avs_dev(dai->component->dev);
-	struct hdac_ext_link *link;
-
-	link = snd_hdac_ext_bus_get_hlink_by_id(&adev->base.core, AZX_REG_ML_LEPTR_ID_INTEL_DMIC);
-	if (!link)
-		return -EINVAL;
-	return __avs_dai_hda_be_startup(substream, dai, link);
+	return avs_dai_startup(substream, dai, false, &avs_dai_hda_be_ops);
 }
 
 static void avs_dai_hda_be_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
-	struct avs_dma_data *data = snd_soc_dai_get_dma_data(dai, substream);
-
-	snd_hdac_ext_stream_release(data->link_stream, HDAC_EXT_STREAM_TYPE_LINK);
-	substream->runtime->private_data = NULL;
-	avs_dai_shutdown(substream, dai);
-}
-
-static void avs_dai_althda_be_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
-{
-	struct avs_dma_data *data = snd_soc_dai_get_dma_data(dai, substream);
-
-	snd_hdac_ext_stream_release(data->link_stream, HDAC_EXT_STREAM_TYPE_LINK);
-	avs_dai_shutdown(substream, dai);
+	return avs_dai_nonhda_be_shutdown(substream, dai);
 }
 
 static int avs_dai_hda_be_hw_params(struct snd_pcm_substream *substream,
 				    struct snd_pcm_hw_params *hw_params, struct snd_soc_dai *dai)
 {
 	struct avs_dma_data *data;
+	struct hdac_ext_stream *link_stream;
 
 	data = snd_soc_dai_get_dma_data(dai, substream);
 	if (data->path)
 		return 0;
 
+	link_stream = substream->runtime->private_data;
+
 	return avs_dai_be_hw_params(substream, hw_params, dai,
-				    hdac_stream(data->link_stream)->stream_tag - 1);
+				    hdac_stream(link_stream)->stream_tag - 1);
 }
 
 static int avs_dai_hda_be_hw_free(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
-	struct hdac_ext_stream *link_stream;
 	struct avs_dma_data *data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct hdac_ext_stream *link_stream;
+	struct hdac_ext_link *link;
+	struct hda_codec *codec;
+
+	dev_dbg(dai->dev, "%s: %s\n", __func__, dai->name);
 
 	data = snd_soc_dai_get_dma_data(dai, substream);
 	if (!data->path)
 		return 0;
 
-	link_stream = data->link_stream;
+	link_stream = substream->runtime->private_data;
 	link_stream->link_prepared = false;
 	avs_path_free(data->path);
 	data->path = NULL;
 
 	/* clear link <-> stream mapping */
+	codec = dev_to_hda_codec(asoc_rtd_to_codec(rtd, 0)->dev);
+	link = snd_hdac_ext_bus_get_hlink_by_addr(&codec->bus->core, codec->core.addr);
+	if (!link)
+		return -EINVAL;
+
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		snd_hdac_ext_bus_link_clear_stream_id(data->link,
-						      hdac_stream(link_stream)->stream_tag);
+		snd_hdac_ext_bus_link_clear_stream_id(link, hdac_stream(link_stream)->stream_tag);
 
 	return 0;
 }
 
 static int avs_dai_hda_be_prepare(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *be = snd_soc_substream_to_rtd(substream);
-	const struct snd_soc_pcm_stream *stream_info;
-	struct hdac_ext_stream *link_stream;
-	const struct snd_pcm_hw_params *p;
-	struct avs_dma_data *data;
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct hdac_ext_stream *link_stream = runtime->private_data;
+	struct hdac_ext_link *link;
+	struct hda_codec *codec;
+	struct hdac_bus *bus;
 	unsigned int format_val;
-	unsigned int bits;
 	int ret;
-
-	data = snd_soc_dai_get_dma_data(dai, substream);
-	link_stream = data->link_stream;
-	p = &be->dpcm[substream->stream].hw_params;
 
 	if (link_stream->link_prepared)
 		return 0;
 
-	stream_info = snd_soc_dai_get_pcm_stream(dai, substream->stream);
-	bits = snd_hdac_stream_format_bits(params_format(p), params_subformat(p),
-					   stream_info->sig_bits);
-	format_val = snd_hdac_stream_format(params_channels(p), bits, params_rate(p));
+	codec = dev_to_hda_codec(asoc_rtd_to_codec(rtd, 0)->dev);
+	bus = &codec->bus->core;
+	format_val = snd_hdac_calc_stream_format(runtime->rate, runtime->channels, runtime->format,
+						 runtime->sample_bits, 0);
 
-	snd_hdac_ext_stream_decouple(&data->adev->base.core, link_stream, true);
+	snd_hdac_ext_stream_decouple(bus, link_stream, true);
 	snd_hdac_ext_stream_reset(link_stream);
 	snd_hdac_ext_stream_setup(link_stream, format_val);
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-		snd_hdac_ext_bus_link_set_stream_id(data->link,
-						    hdac_stream(link_stream)->stream_tag);
+	link = snd_hdac_ext_bus_get_hlink_by_addr(bus, codec->core.addr);
+	if (!link)
+		return -EINVAL;
 
-	ret = avs_dai_prepare(substream, dai);
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		snd_hdac_ext_bus_link_set_stream_id(link, hdac_stream(link_stream)->stream_tag);
+
+	ret = avs_dai_prepare(to_avs_dev(dai->dev), substream, dai);
 	if (ret)
 		return ret;
 
@@ -487,13 +372,15 @@ static int avs_dai_hda_be_prepare(struct snd_pcm_substream *substream, struct sn
 static int avs_dai_hda_be_trigger(struct snd_pcm_substream *substream, int cmd,
 				  struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct hdac_ext_stream *link_stream;
 	struct avs_dma_data *data;
 	int ret = 0;
 
 	dev_dbg(dai->dev, "entry %s cmd=%d\n", __func__, cmd);
 
 	data = snd_soc_dai_get_dma_data(dai, substream);
+	link_stream = substream->runtime->private_data;
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -502,7 +389,7 @@ static int avs_dai_hda_be_trigger(struct snd_pcm_substream *substream, int cmd,
 		fallthrough;
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		snd_hdac_ext_stream_start(data->link_stream);
+		snd_hdac_ext_stream_start(link_stream);
 
 		ret = avs_path_pause(data->path);
 		if (ret < 0) {
@@ -525,7 +412,7 @@ static int avs_dai_hda_be_trigger(struct snd_pcm_substream *substream, int cmd,
 		if (ret < 0)
 			dev_err(dai->dev, "pause BE path failed: %d\n", ret);
 
-		snd_hdac_ext_stream_clear(data->link_stream);
+		snd_hdac_ext_stream_clear(link_stream);
 
 		ret = avs_path_reset(data->path);
 		if (ret < 0)
@@ -549,94 +436,47 @@ static const struct snd_soc_dai_ops avs_dai_hda_be_ops = {
 	.trigger = avs_dai_hda_be_trigger,
 };
 
-static const struct snd_soc_dai_ops avs_dai_i2shda_be_ops = {
-	.startup = avs_dai_i2shda_be_startup,
-	.shutdown = avs_dai_althda_be_shutdown,
-	.hw_params = avs_dai_hda_be_hw_params,
-	.hw_free = avs_dai_hda_be_hw_free,
-	.prepare = avs_dai_hda_be_prepare,
-	.trigger = avs_dai_hda_be_trigger,
+static const unsigned int rates[] = {
+	8000, 11025, 12000, 16000,
+	22050, 24000, 32000, 44100,
+	48000, 64000, 88200, 96000,
+	128000, 176400, 192000,
 };
 
-static const struct snd_soc_dai_ops avs_dai_dmichda_be_ops = {
-	.startup = avs_dai_dmichda_be_startup,
-	.shutdown = avs_dai_althda_be_shutdown,
-	.hw_params = avs_dai_hda_be_hw_params,
-	.hw_free = avs_dai_hda_be_hw_free,
-	.prepare = avs_dai_hda_be_prepare,
-	.trigger = avs_dai_hda_be_trigger,
+static const struct snd_pcm_hw_constraint_list hw_rates = {
+	.count = ARRAY_SIZE(rates),
+	.list = rates,
+	.mask = 0,
 };
 
-static int hw_rule_param_size(struct snd_pcm_hw_params *params, struct snd_pcm_hw_rule *rule)
-{
-	struct snd_interval *interval = hw_param_interval(params, rule->var);
-	struct snd_interval to;
-
-	snd_interval_any(&to);
-	to.integer = interval->integer;
-	to.max = interval->max;
-	/*
-	 * Commonly 2ms buffer size is used in HDA scenarios whereas 4ms is used
-	 * when streaming through GPDMA. Align to the latter to account for both.
-	 */
-	to.min = params_rate(params) / 1000 * 4;
-
-	if (rule->var == SNDRV_PCM_HW_PARAM_PERIOD_SIZE)
-		to.min /= params_periods(params);
-
-	return snd_interval_refine(interval, &to);
-}
-
-static int avs_pcm_hw_constraints_init(struct snd_pcm_substream *substream)
-{
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	int ret;
-
-	ret = snd_pcm_hw_constraint_integer(runtime, SNDRV_PCM_HW_PARAM_PERIODS);
-	if (ret < 0)
-		return ret;
-
-	/* Avoid wrap-around with wall-clock. */
-	ret = snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_BUFFER_TIME, 20, 178000000);
-	if (ret < 0)
-		return ret;
-
-	/* Adjust buffer and period size based on the audio format. */
-	snd_pcm_hw_rule_add(runtime, 0, SNDRV_PCM_HW_PARAM_BUFFER_SIZE, hw_rule_param_size, NULL,
-			    SNDRV_PCM_HW_PARAM_FORMAT, SNDRV_PCM_HW_PARAM_CHANNELS,
-			    SNDRV_PCM_HW_PARAM_RATE, -1);
-	snd_pcm_hw_rule_add(runtime, 0, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, hw_rule_param_size, NULL,
-			    SNDRV_PCM_HW_PARAM_FORMAT, SNDRV_PCM_HW_PARAM_CHANNELS,
-			    SNDRV_PCM_HW_PARAM_RATE, -1);
-
-	return 0;
-}
+const struct snd_soc_dai_ops avs_dai_fe_ops;
 
 static int avs_dai_fe_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
-	struct hdac_ext_stream *host_stream;
+	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct avs_dma_data *data;
-	struct hdac_bus *bus;
+	struct avs_dev *adev = to_avs_dev(dai->dev);
+	struct hdac_bus *bus = &adev->base.core;
+	struct hdac_ext_stream *host_stream;
 	int ret;
 
-	ret = avs_pcm_hw_constraints_init(substream);
-	if (ret)
-		return ret;
-
-	ret = avs_dai_startup(substream, dai);
+	ret = avs_dai_startup(substream, dai, true, &avs_dai_fe_ops);
 	if (ret)
 		return ret;
 
 	data = snd_soc_dai_get_dma_data(dai, substream);
-	bus = &data->adev->base.core;
 
 	host_stream = snd_hdac_ext_stream_assign(bus, substream, HDAC_EXT_STREAM_TYPE_HOST);
 	if (!host_stream) {
-		avs_dai_shutdown(substream, dai);
+		kfree(data);
 		return -EBUSY;
 	}
 
 	data->host_stream = host_stream;
+	snd_pcm_hw_constraint_integer(runtime, SNDRV_PCM_HW_PARAM_PERIODS);
+	/* avoid wrap-around with wall-clock */
+	snd_pcm_hw_constraint_minmax(runtime, SNDRV_PCM_HW_PARAM_BUFFER_TIME, 20, 178000000);
+	snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_RATE, &hw_rates);
 	snd_pcm_set_sync(substream);
 
 	dev_dbg(dai->dev, "%s fe STARTUP tag %d str %p",
@@ -647,13 +487,18 @@ static int avs_dai_fe_startup(struct snd_pcm_substream *substream, struct snd_so
 
 static void avs_dai_fe_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct avs_dev *adev = to_avs_dev(dai->dev);
 	struct avs_dma_data *data;
+
+	if (rtd->dai_link->ignore_suspend)
+		adev->num_lp_paths--;
 
 	data = snd_soc_dai_get_dma_data(dai, substream);
 
-	disable_work_sync(&data->period_elapsed_work);
+	snd_soc_dai_set_dma_data(dai, substream, NULL);
 	snd_hdac_ext_stream_release(data->host_stream, HDAC_EXT_STREAM_TYPE_HOST);
-	avs_dai_shutdown(substream, dai);
+	kfree(data);
 }
 
 static int avs_dai_fe_hw_params(struct snd_pcm_substream *substream,
@@ -676,8 +521,7 @@ static int avs_dai_fe_hw_params(struct snd_pcm_substream *substream,
 	hdac_stream(host_stream)->period_bytes = 0;
 	hdac_stream(host_stream)->format_val = 0;
 
-	fe = snd_soc_substream_to_rtd(substream);
-	/* dpcm_fe_dai_open() guarantees the list is not empty at this point. */
+	fe = asoc_substream_to_rtd(substream);
 	for_each_dpcm_be(fe, substream->stream, dpcm) {
 		be = dpcm->be;
 		be_hw_params = &be->dpcm[substream->stream].hw_params;
@@ -744,19 +588,16 @@ static int avs_dai_fe_hw_free(struct snd_pcm_substream *substream, struct snd_so
 static int avs_dai_fe_prepare(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	const struct snd_soc_pcm_stream *stream_info;
 	struct avs_dma_data *data;
+	struct avs_dev *adev = to_avs_dev(dai->dev);
 	struct hdac_ext_stream *host_stream;
-	unsigned int format_val;
 	struct hdac_bus *bus;
-	unsigned int bits;
+	unsigned int format_val;
 	int ret;
 
 	data = snd_soc_dai_get_dma_data(dai, substream);
 	host_stream = data->host_stream;
 
-	if (runtime->state == SNDRV_PCM_STATE_XRUN)
-		hdac_stream(host_stream)->prepared = false;
 	if (hdac_stream(host_stream)->prepared)
 		return 0;
 
@@ -764,20 +605,18 @@ static int avs_dai_fe_prepare(struct snd_pcm_substream *substream, struct snd_so
 	snd_hdac_ext_stream_decouple(bus, data->host_stream, true);
 	snd_hdac_stream_reset(hdac_stream(host_stream));
 
-	stream_info = snd_soc_dai_get_pcm_stream(dai, substream->stream);
-	bits = snd_hdac_stream_format_bits(runtime->format, runtime->subformat,
-					   stream_info->sig_bits);
-	format_val = snd_hdac_stream_format(runtime->channels, bits, runtime->rate);
+	format_val = snd_hdac_calc_stream_format(runtime->rate, runtime->channels, runtime->format,
+						 runtime->sample_bits, 0);
 
 	ret = snd_hdac_stream_set_params(hdac_stream(host_stream), format_val);
 	if (ret < 0)
 		return ret;
 
-	ret = snd_hdac_ext_host_stream_setup(host_stream, false);
+	ret = snd_hdac_stream_setup(hdac_stream(host_stream));
 	if (ret < 0)
 		return ret;
 
-	ret = avs_dai_prepare(substream, dai);
+	ret = avs_dai_prepare(adev, substream, dai);
 	if (ret)
 		return ret;
 
@@ -785,82 +624,9 @@ static int avs_dai_fe_prepare(struct snd_pcm_substream *substream, struct snd_so
 	return 0;
 }
 
-static void avs_hda_stream_start(struct hdac_bus *bus, struct hdac_ext_stream *host_stream)
-{
-	struct hdac_stream *first_running = NULL;
-	struct hdac_stream *pos;
-	struct avs_dev *adev = hdac_to_avs(bus);
-
-	list_for_each_entry(pos, &bus->stream_list, list) {
-		if (pos->running) {
-			if (first_running)
-				break; /* more than one running */
-			first_running = pos;
-		}
-	}
-
-	/*
-	 * If host_stream is a CAPTURE stream and will be the only one running,
-	 * disable L1SEN to avoid sound clipping.
-	 */
-	if (!first_running) {
-		if (hdac_stream(host_stream)->direction == SNDRV_PCM_STREAM_CAPTURE)
-			avs_hda_l1sen_enable(adev, false);
-		snd_hdac_stream_start(hdac_stream(host_stream));
-		return;
-	}
-
-	snd_hdac_stream_start(hdac_stream(host_stream));
-	/*
-	 * If host_stream is the first stream to break the rule above,
-	 * re-enable L1SEN.
-	 */
-	if (list_entry_is_head(pos, &bus->stream_list, list) &&
-	    first_running->direction == SNDRV_PCM_STREAM_CAPTURE)
-		avs_hda_l1sen_enable(adev, true);
-}
-
-static void avs_hda_stream_stop(struct hdac_bus *bus, struct hdac_ext_stream *host_stream)
-{
-	struct hdac_stream *first_running = NULL;
-	struct hdac_stream *pos;
-	struct avs_dev *adev = hdac_to_avs(bus);
-
-	list_for_each_entry(pos, &bus->stream_list, list) {
-		if (pos == hdac_stream(host_stream))
-			continue; /* ignore stream that is about to be stopped */
-		if (pos->running) {
-			if (first_running)
-				break; /* more than one running */
-			first_running = pos;
-		}
-	}
-
-	/*
-	 * If host_stream is a CAPTURE stream and is the only one running,
-	 * re-enable L1SEN.
-	 */
-	if (!first_running) {
-		snd_hdac_stream_stop(hdac_stream(host_stream));
-		if (hdac_stream(host_stream)->direction == SNDRV_PCM_STREAM_CAPTURE)
-			avs_hda_l1sen_enable(adev, true);
-		return;
-	}
-
-	/*
-	 * If by stopping host_stream there is only a single, CAPTURE stream running
-	 * left, disable L1SEN to avoid sound clipping.
-	 */
-	if (list_entry_is_head(pos, &bus->stream_list, list) &&
-	    first_running->direction == SNDRV_PCM_STREAM_CAPTURE)
-		avs_hda_l1sen_enable(adev, false);
-
-	snd_hdac_stream_stop(hdac_stream(host_stream));
-}
-
 static int avs_dai_fe_trigger(struct snd_pcm_substream *substream, int cmd, struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct avs_dma_data *data;
 	struct hdac_ext_stream *host_stream;
 	struct hdac_bus *bus;
@@ -879,7 +645,7 @@ static int avs_dai_fe_trigger(struct snd_pcm_substream *substream, int cmd, stru
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
 		spin_lock_irqsave(&bus->reg_lock, flags);
-		avs_hda_stream_start(bus, host_stream);
+		snd_hdac_stream_start(hdac_stream(host_stream));
 		spin_unlock_irqrestore(&bus->reg_lock, flags);
 
 		/* Timeout on DRSM poll shall not stop the resume so ignore the result. */
@@ -909,7 +675,7 @@ static int avs_dai_fe_trigger(struct snd_pcm_substream *substream, int cmd, stru
 			dev_err(dai->dev, "pause FE path failed: %d\n", ret);
 
 		spin_lock_irqsave(&bus->reg_lock, flags);
-		avs_hda_stream_stop(bus, host_stream);
+		snd_hdac_stream_stop(hdac_stream(host_stream));
 		spin_unlock_irqrestore(&bus->reg_lock, flags);
 
 		ret = avs_path_reset(data->path);
@@ -982,6 +748,7 @@ static int avs_component_load_libraries(struct avs_soc_component *acomp)
 	if (!ret)
 		ret = avs_module_info_init(adev, false);
 
+	pm_runtime_mark_last_busy(adev->dev);
 	pm_runtime_put_autosuspend(adev->dev);
 
 	return ret;
@@ -1016,29 +783,6 @@ static int avs_component_probe(struct snd_soc_component *component)
 
 	ret = avs_load_topology(component, filename);
 	kfree(filename);
-	if (ret == -ENOENT && !strncmp(mach->tplg_filename, "hda-", 4)) {
-		unsigned int vendor_id;
-
-		if (sscanf(mach->tplg_filename, "hda-%08x-tplg.bin", &vendor_id) != 1)
-			return ret;
-
-		if (((vendor_id >> 16) & 0xFFFF) == 0x8086)
-			mach->tplg_filename = devm_kasprintf(adev->dev, GFP_KERNEL,
-							     "hda-8086-generic-tplg.bin");
-		else
-			mach->tplg_filename = devm_kasprintf(adev->dev, GFP_KERNEL,
-							     "hda-generic-tplg.bin");
-		if (!mach->tplg_filename)
-			return -ENOMEM;
-		filename = kasprintf(GFP_KERNEL, "%s/%s", component->driver->topology_name_prefix,
-				     mach->tplg_filename);
-		if (!filename)
-			return -ENOMEM;
-
-		dev_info(card->dev, "trying to load fallback topology %s\n", mach->tplg_filename);
-		ret = avs_load_topology(component, filename);
-		kfree(filename);
-	}
 	if (ret < 0)
 		return ret;
 
@@ -1090,7 +834,7 @@ static int avs_dai_resume_hw_params(struct snd_soc_dai *dai, struct avs_dma_data
 	int ret;
 
 	substream = data->substream;
-	rtd = snd_soc_substream_to_rtd(substream);
+	rtd = asoc_substream_to_rtd(substream);
 
 	ret = dai->driver->ops->hw_params(substream, &rtd->dpcm[substream->stream].hw_params, dai);
 	if (ret)
@@ -1185,7 +929,7 @@ static int avs_component_pm_op(struct snd_soc_component *component, bool be,
 	for_each_component_dais(component, dai) {
 		data = snd_soc_dai_dma_data_get_playback(dai);
 		if (data) {
-			rtd = snd_soc_substream_to_rtd(data->substream);
+			rtd = asoc_substream_to_rtd(data->substream);
 			if (rtd->dai_link->no_pcm == be && !rtd->dai_link->ignore_suspend) {
 				ret = op(dai, data);
 				if (ret < 0) {
@@ -1198,7 +942,7 @@ static int avs_component_pm_op(struct snd_soc_component *component, bool be,
 
 		data = snd_soc_dai_dma_data_get_capture(dai);
 		if (data) {
-			rtd = snd_soc_substream_to_rtd(data->substream);
+			rtd = asoc_substream_to_rtd(data->substream);
 			if (rtd->dai_link->no_pcm == be && !rtd->dai_link->ignore_suspend) {
 				ret = op(dai, data);
 				if (ret < 0) {
@@ -1289,10 +1033,8 @@ static const struct snd_pcm_hardware avs_pcm_hardware = {
 				  SNDRV_PCM_INFO_RESUME |
 				  SNDRV_PCM_INFO_NO_PERIOD_WAKEUP,
 	.formats		= SNDRV_PCM_FMTBIT_S16_LE |
+				  SNDRV_PCM_FMTBIT_S24_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
-	.subformats		= SNDRV_PCM_SUBFMTBIT_MSBITS_20 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_24 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_MAX,
 	.buffer_bytes_max	= AZX_MAX_BUF_SIZE,
 	.period_bytes_min	= 128,
 	.period_bytes_max	= AZX_MAX_BUF_SIZE / 2,
@@ -1304,7 +1046,7 @@ static const struct snd_pcm_hardware avs_pcm_hardware = {
 static int avs_component_open(struct snd_soc_component *component,
 			      struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 
 	/* only FE DAI links are handled here */
 	if (rtd->dai_link->no_pcm)
@@ -1322,12 +1064,12 @@ static unsigned int avs_hda_stream_dpib_read(struct hdac_ext_stream *stream)
 static snd_pcm_uframes_t
 avs_component_pointer(struct snd_soc_component *component, struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct avs_dma_data *data;
 	struct hdac_ext_stream *host_stream;
 	unsigned int pos;
 
-	data = snd_soc_dai_get_dma_data(snd_soc_rtd_to_cpu(rtd, 0), substream);
+	data = snd_soc_dai_get_dma_data(asoc_rtd_to_cpu(rtd, 0), substream);
 	if (!data->host_stream)
 		return 0;
 
@@ -1352,7 +1094,7 @@ static int avs_component_mmap(struct snd_soc_component *component,
 static int avs_component_construct(struct snd_soc_component *component,
 				   struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_dai *dai = snd_soc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_dai *dai = asoc_rtd_to_cpu(rtd, 0);
 	struct snd_pcm *pcm = rtd->pcm;
 
 	if (dai->driver->playback.channels_min)
@@ -1368,7 +1110,7 @@ static int avs_component_construct(struct snd_soc_component *component,
 	return 0;
 }
 
-static struct snd_soc_component_driver avs_component_driver = {
+static const struct snd_soc_component_driver avs_component_driver = {
 	.name			= "avs-pcm",
 	.probe			= avs_component_probe,
 	.remove			= avs_component_remove,
@@ -1382,9 +1124,9 @@ static struct snd_soc_component_driver avs_component_driver = {
 	.topology_name_prefix	= "intel/avs",
 };
 
-int avs_register_component(struct device *dev, const char *name,
-			   struct snd_soc_component_driver *drv,
-			   struct snd_soc_dai_driver *cpu_dais, int num_cpu_dais)
+int avs_soc_component_register(struct device *dev, const char *name,
+			       const struct snd_soc_component_driver *drv,
+			       struct snd_soc_dai_driver *cpu_dais, int num_cpu_dais)
 {
 	struct avs_soc_component *acomp;
 	int ret;
@@ -1393,17 +1135,13 @@ int avs_register_component(struct device *dev, const char *name,
 	if (!acomp)
 		return -ENOMEM;
 
-	acomp->base.name = devm_kstrdup(dev, name, GFP_KERNEL);
-	if (!acomp->base.name)
-		return -ENOMEM;
-
-	INIT_LIST_HEAD(&acomp->node);
-
-	drv->use_dai_pcm_id = !obsolete_card_names;
-
 	ret = snd_soc_component_initialize(&acomp->base, drv, dev);
 	if (ret < 0)
 		return ret;
+
+	/* force name change after ASoC is done with its init */
+	acomp->base.name = name;
+	INIT_LIST_HEAD(&acomp->node);
 
 	return snd_soc_add_component(&acomp->base, cpu_dais, num_cpu_dais);
 }
@@ -1411,6 +1149,7 @@ int avs_register_component(struct device *dev, const char *name,
 static struct snd_soc_dai_driver dmic_cpu_dais[] = {
 {
 	.name = "DMIC Pin",
+	.ops = &avs_dai_nonhda_be_ops,
 	.capture = {
 		.stream_name	= "DMIC Rx",
 		.channels_min	= 1,
@@ -1421,6 +1160,7 @@ static struct snd_soc_dai_driver dmic_cpu_dais[] = {
 },
 {
 	.name = "DMIC WoV Pin",
+	.ops = &avs_dai_nonhda_be_ops,
 	.capture = {
 		.stream_name	= "DMIC WoV Rx",
 		.channels_min	= 1,
@@ -1431,100 +1171,72 @@ static struct snd_soc_dai_driver dmic_cpu_dais[] = {
 },
 };
 
-int avs_register_dmic_component(struct avs_dev *adev, const char *name)
+int avs_dmic_platform_register(struct avs_dev *adev, const char *name)
 {
-	const struct snd_soc_dai_ops *ops;
-
-	if (avs_platattr_test(adev, ALTHDA))
-		ops = &avs_dai_dmichda_be_ops;
-	else
-		ops = &avs_dai_nonhda_be_ops;
-
-	dmic_cpu_dais[0].ops = ops;
-	dmic_cpu_dais[1].ops = ops;
-	return avs_register_component(adev->dev, name, &avs_component_driver, dmic_cpu_dais,
-				      ARRAY_SIZE(dmic_cpu_dais));
+	return avs_soc_component_register(adev->dev, name, &avs_component_driver, dmic_cpu_dais,
+					  ARRAY_SIZE(dmic_cpu_dais));
 }
 
 static const struct snd_soc_dai_driver i2s_dai_template = {
+	.ops = &avs_dai_nonhda_be_ops,
 	.playback = {
 		.channels_min	= 1,
-		.channels_max	= AVS_CHANNELS_MAX,
+		.channels_max	= 8,
 		.rates		= SNDRV_PCM_RATE_8000_192000 |
-				  SNDRV_PCM_RATE_12000 |
-				  SNDRV_PCM_RATE_24000 |
-				  SNDRV_PCM_RATE_128000,
+				  SNDRV_PCM_RATE_KNOT,
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
+				  SNDRV_PCM_FMTBIT_S24_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
-		.subformats	= SNDRV_PCM_SUBFMTBIT_MSBITS_20 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_24 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_MAX,
 	},
 	.capture = {
 		.channels_min	= 1,
-		.channels_max	= AVS_CHANNELS_MAX,
+		.channels_max	= 8,
 		.rates		= SNDRV_PCM_RATE_8000_192000 |
-				  SNDRV_PCM_RATE_12000 |
-				  SNDRV_PCM_RATE_24000 |
-				  SNDRV_PCM_RATE_128000,
+				  SNDRV_PCM_RATE_KNOT,
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
+				  SNDRV_PCM_FMTBIT_S24_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
-		.subformats	= SNDRV_PCM_SUBFMTBIT_MSBITS_20 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_24 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_MAX,
 	},
 };
 
-int avs_register_i2s_component(struct avs_dev *adev, const char *name, unsigned long port_mask,
-			       unsigned long *tdms)
+int avs_i2s_platform_register(struct avs_dev *adev, const char *name, unsigned long port_mask,
+			      unsigned long *tdms)
 {
 	struct snd_soc_dai_driver *cpus, *dai;
-	const struct snd_soc_dai_ops *ops;
 	size_t ssp_count, cpu_count;
 	int i, j;
 
 	ssp_count = adev->hw_cfg.i2s_caps.ctrl_count;
-	if (avs_platattr_test(adev, ALTHDA))
-		ops = &avs_dai_i2shda_be_ops;
-	else
-		ops = &avs_dai_nonhda_be_ops;
-
-	cpu_count = 0;
-	for_each_set_bit(i, &port_mask, ssp_count)
-		if (!tdms || test_bit(0, &tdms[i]))
-			cpu_count++;
+	cpu_count = hweight_long(port_mask);
 	if (tdms)
 		for_each_set_bit(i, &port_mask, ssp_count)
 			cpu_count += hweight_long(tdms[i]);
 
-	cpus = devm_kcalloc(adev->dev, cpu_count, sizeof(*cpus), GFP_KERNEL);
+	cpus = devm_kzalloc(adev->dev, sizeof(*cpus) * cpu_count, GFP_KERNEL);
 	if (!cpus)
 		return -ENOMEM;
 
 	dai = cpus;
 	for_each_set_bit(i, &port_mask, ssp_count) {
-		if (!tdms || test_bit(0, &tdms[i])) {
-			memcpy(dai, &i2s_dai_template, sizeof(*dai));
+		memcpy(dai, &i2s_dai_template, sizeof(*dai));
 
-			dai->name =
-				devm_kasprintf(adev->dev, GFP_KERNEL, "SSP%d Pin", i);
-			dai->playback.stream_name =
-				devm_kasprintf(adev->dev, GFP_KERNEL, "ssp%d Tx", i);
-			dai->capture.stream_name =
-				devm_kasprintf(adev->dev, GFP_KERNEL, "ssp%d Rx", i);
+		dai->name =
+			devm_kasprintf(adev->dev, GFP_KERNEL, "SSP%d Pin", i);
+		dai->playback.stream_name =
+			devm_kasprintf(adev->dev, GFP_KERNEL, "ssp%d Tx", i);
+		dai->capture.stream_name =
+			devm_kasprintf(adev->dev, GFP_KERNEL, "ssp%d Rx", i);
 
-			if (!dai->name || !dai->playback.stream_name || !dai->capture.stream_name)
-				return -ENOMEM;
-			dai->ops = ops;
-			dai++;
-		}
+		if (!dai->name || !dai->playback.stream_name || !dai->capture.stream_name)
+			return -ENOMEM;
+		dai++;
 	}
 
 	if (!tdms)
 		goto plat_register;
 
 	for_each_set_bit(i, &port_mask, ssp_count) {
-		for_each_set_bit(j, &tdms[i], AVS_CHANNELS_MAX) {
+		for_each_set_bit(j, &tdms[i], ssp_count) {
 			memcpy(dai, &i2s_dai_template, sizeof(*dai));
 
 			dai->name =
@@ -1536,13 +1248,12 @@ int avs_register_i2s_component(struct avs_dev *adev, const char *name, unsigned 
 
 			if (!dai->name || !dai->playback.stream_name || !dai->capture.stream_name)
 				return -ENOMEM;
-			dai->ops = ops;
 			dai++;
 		}
 	}
 
 plat_register:
-	return avs_register_component(adev->dev, name, &avs_component_driver, cpus, cpu_count);
+	return avs_soc_component_register(adev->dev, name, &avs_component_driver, cpus, cpu_count);
 }
 
 /* HD-Audio CPU DAI template */
@@ -1550,23 +1261,19 @@ static const struct snd_soc_dai_driver hda_cpu_dai = {
 	.ops = &avs_dai_hda_be_ops,
 	.playback = {
 		.channels_min	= 1,
-		.channels_max	= AVS_CHANNELS_MAX,
+		.channels_max	= 8,
 		.rates		= SNDRV_PCM_RATE_8000_192000,
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
+				  SNDRV_PCM_FMTBIT_S24_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
-		.subformats	= SNDRV_PCM_SUBFMTBIT_MSBITS_20 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_24 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_MAX,
 	},
 	.capture = {
 		.channels_min	= 1,
-		.channels_max	= AVS_CHANNELS_MAX,
+		.channels_max	= 8,
 		.rates		= SNDRV_PCM_RATE_8000_192000,
 		.formats	= SNDRV_PCM_FMTBIT_S16_LE |
+				  SNDRV_PCM_FMTBIT_S24_LE |
 				  SNDRV_PCM_FMTBIT_S32_LE,
-		.subformats	= SNDRV_PCM_SUBFMTBIT_MSBITS_20 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_24 |
-				  SNDRV_PCM_SUBFMTBIT_MSBITS_MAX,
 	},
 };
 
@@ -1574,14 +1281,12 @@ static void avs_component_hda_unregister_dais(struct snd_soc_component *componen
 {
 	struct snd_soc_acpi_mach *mach;
 	struct snd_soc_dai *dai, *save;
-	struct avs_mach_pdata *pdata;
 	struct hda_codec *codec;
 	char name[32];
 
 	mach = dev_get_platdata(component->card->dev);
-	pdata = mach->pdata;
-	codec = pdata->codec;
-	snprintf(name, sizeof(name), "%s-cpu", dev_name(&codec->core.dev));
+	codec = mach->pdata;
+	sprintf(name, "%s-cpu", dev_name(&codec->core.dev));
 
 	for_each_component_dais_safe(component, dai, save) {
 		int stream;
@@ -1601,7 +1306,6 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 	struct snd_soc_dapm_context *dapm;
 	struct snd_soc_dai_driver *dais;
 	struct snd_soc_acpi_mach *mach;
-	struct avs_mach_pdata *pdata;
 	struct hda_codec *codec;
 	struct hda_pcm *pcm;
 	const char *cname;
@@ -1611,8 +1315,7 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 	if (!mach)
 		return -EINVAL;
 
-	pdata = mach->pdata;
-	codec = pdata->codec;
+	codec = mach->pdata;
 	if (list_empty(&codec->pcm_list_head))
 		return -EINVAL;
 	list_for_each_entry(pcm, &codec->pcm_list_head, list)
@@ -1624,7 +1327,7 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 		return -ENOMEM;
 
 	cname = dev_name(&codec->core.dev);
-	dapm = snd_soc_component_to_dapm(component);
+	dapm = snd_soc_component_get_dapm(component);
 	pcm = list_first_entry(&codec->pcm_list_head, struct hda_pcm, list);
 
 	for (i = 0; i < pcm_count; i++, pcm = list_next_entry(pcm, list)) {
@@ -1647,15 +1350,6 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 				ret = -ENOMEM;
 				goto exit;
 			}
-
-			if (!hda_codec_is_display(codec)) {
-				dais[i].playback.formats = pcm->stream[0].formats;
-				dais[i].playback.subformats = pcm->stream[0].subformats;
-				dais[i].playback.rates = pcm->stream[0].rates;
-				dais[i].playback.channels_min = pcm->stream[0].channels_min;
-				dais[i].playback.channels_max = pcm->stream[0].channels_max;
-				dais[i].playback.sig_bits = pcm->stream[0].maxbps;
-			}
 		}
 
 		if (pcm->stream[1].substreams) {
@@ -1665,15 +1359,6 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 			if (!dais[i].capture.stream_name) {
 				ret = -ENOMEM;
 				goto exit;
-			}
-
-			if (!hda_codec_is_display(codec)) {
-				dais[i].capture.formats = pcm->stream[1].formats;
-				dais[i].capture.subformats = pcm->stream[1].subformats;
-				dais[i].capture.rates = pcm->stream[1].rates;
-				dais[i].capture.channels_min = pcm->stream[1].channels_min;
-				dais[i].capture.channels_max = pcm->stream[1].channels_max;
-				dais[i].capture.sig_bits = pcm->stream[1].maxbps;
 			}
 		}
 
@@ -1689,7 +1374,6 @@ static int avs_component_hda_probe(struct snd_soc_component *component)
 		if (ret < 0) {
 			dev_err(component->dev, "create widgets failed: %d\n",
 				ret);
-			snd_soc_unregister_dai(dai);
 			goto exit;
 		}
 	}
@@ -1704,14 +1388,16 @@ exit:
 
 static void avs_component_hda_remove(struct snd_soc_component *component)
 {
-	avs_component_remove(component);
 	avs_component_hda_unregister_dais(component);
+	avs_component_remove(component);
 }
 
 static int avs_component_hda_open(struct snd_soc_component *component,
 				  struct snd_pcm_substream *substream)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct hdac_ext_stream *link_stream;
+	struct hda_codec *codec;
 
 	if (!rtd->dai_link->no_pcm) {
 		struct snd_pcm_hardware hwparams = avs_pcm_hardware;
@@ -1743,16 +1429,41 @@ static int avs_component_hda_open(struct snd_soc_component *component,
 		return snd_soc_set_runtime_hwparams(substream, &hwparams);
 	}
 
+	codec = dev_to_hda_codec(asoc_rtd_to_codec(rtd, 0)->dev);
+	link_stream = snd_hdac_ext_stream_assign(&codec->bus->core, substream,
+					     HDAC_EXT_STREAM_TYPE_LINK);
+	if (!link_stream)
+		return -EBUSY;
+
+	substream->runtime->private_data = link_stream;
 	return 0;
 }
 
-static struct snd_soc_component_driver avs_hda_component_driver = {
+static int avs_component_hda_close(struct snd_soc_component *component,
+				   struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct hdac_ext_stream *link_stream;
+
+	/* only BE DAI links are handled here */
+	if (!rtd->dai_link->no_pcm)
+		return 0;
+
+	link_stream = substream->runtime->private_data;
+	snd_hdac_ext_stream_release(link_stream, HDAC_EXT_STREAM_TYPE_LINK);
+	substream->runtime->private_data = NULL;
+
+	return 0;
+}
+
+static const struct snd_soc_component_driver avs_hda_component_driver = {
 	.name			= "avs-hda-pcm",
 	.probe			= avs_component_hda_probe,
 	.remove			= avs_component_hda_remove,
 	.suspend		= avs_component_suspend,
 	.resume			= avs_component_resume,
 	.open			= avs_component_hda_open,
+	.close			= avs_component_hda_close,
 	.pointer		= avs_component_pointer,
 	.mmap			= avs_component_mmap,
 	.pcm_construct		= avs_component_construct,
@@ -1767,7 +1478,8 @@ static struct snd_soc_component_driver avs_hda_component_driver = {
 	.topology_name_prefix	= "intel/avs",
 };
 
-int avs_register_hda_component(struct avs_dev *adev, const char *name)
+int avs_hda_platform_register(struct avs_dev *adev, const char *name)
 {
-	return avs_register_component(adev->dev, name, &avs_hda_component_driver, NULL, 0);
+	return avs_soc_component_register(adev->dev, name,
+					  &avs_hda_component_driver, NULL, 0);
 }

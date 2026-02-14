@@ -2,7 +2,7 @@
 /******************************************************************************
  *
  * Copyright(c) 2005 - 2014 Intel Corporation. All rights reserved.
- * Copyright (C) 2019 - 2020, 2022 - 2023 Intel Corporation
+ * Copyright (C) 2019 - 2020, 2022 Intel Corporation
  *****************************************************************************/
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
@@ -125,7 +125,7 @@ static int iwl_hwrate_to_plcp_idx(u32 rate_n_flags)
 				return idx;
 	}
 
-	return IWL_RATE_INVALID;
+	return -1;
 }
 
 static void rs_rate_scale_perform(struct iwl_priv *priv,
@@ -201,6 +201,23 @@ static const u16 expected_tpt_mimo3_40MHz[4][IWL_RATE_COUNT] = {
 	{0, 0, 0, 0, 160, 0, 219, 245, 261, 284,  294,  297,  300}, /* SGI */
 	{0, 0, 0, 0, 254, 0, 443, 584, 695, 868,  984, 1030, 1070}, /* AGG */
 	{0, 0, 0, 0, 277, 0, 478, 624, 737, 911, 1026, 1070, 1109}, /* AGG+SGI */
+};
+
+/* mbps, mcs */
+static const struct iwl_rate_mcs_info iwl_rate_mcs[IWL_RATE_COUNT] = {
+	{  "1", "BPSK DSSS"},
+	{  "2", "QPSK DSSS"},
+	{"5.5", "BPSK CCK"},
+	{ "11", "QPSK CCK"},
+	{  "6", "BPSK 1/2"},
+	{  "9", "BPSK 1/2"},
+	{ "12", "QPSK 1/2"},
+	{ "18", "QPSK 3/4"},
+	{ "24", "16QAM 1/2"},
+	{ "36", "16QAM 3/4"},
+	{ "48", "64QAM 2/3"},
+	{ "54", "64QAM 3/4"},
+	{ "60", "64QAM 5/6"},
 };
 
 #define MCS_INDEX_PER_STREAM	(8)
@@ -2673,16 +2690,20 @@ static void rs_get_rate(void *priv_r, struct ieee80211_sta *sta, void *priv_sta,
 	IWL_DEBUG_RATE_LIMIT(priv, "rate scale calculate new rate for skb\n");
 
 	/* Get max rate if user set max rate */
-	lq_sta->max_rate_idx = fls(txrc->rate_idx_mask) - 1;
-	if (sband->band == NL80211_BAND_5GHZ && lq_sta->max_rate_idx != -1)
-		lq_sta->max_rate_idx += IWL_FIRST_OFDM_RATE;
-	if (lq_sta->max_rate_idx < 0 || lq_sta->max_rate_idx >= IWL_RATE_COUNT)
-		lq_sta->max_rate_idx = -1;
+	if (lq_sta) {
+		lq_sta->max_rate_idx = fls(txrc->rate_idx_mask) - 1;
+		if ((sband->band == NL80211_BAND_5GHZ) &&
+		    (lq_sta->max_rate_idx != -1))
+			lq_sta->max_rate_idx += IWL_FIRST_OFDM_RATE;
+		if ((lq_sta->max_rate_idx < 0) ||
+		    (lq_sta->max_rate_idx >= IWL_RATE_COUNT))
+			lq_sta->max_rate_idx = -1;
+	}
 
-	if (!lq_sta->drv) {
+	/* Treat uninitialized rate scaling data same as non-existing. */
+	if (lq_sta && !lq_sta->drv) {
 		IWL_DEBUG_RATE(priv, "Rate scaling not initialized yet.\n");
-		/* mac80211 already set up the data for using low rates */
-		return;
+		priv_sta = NULL;
 	}
 
 	rate_idx  = lq_sta->last_txrate_idx;
@@ -2751,6 +2772,7 @@ void iwl_rs_rate_init(struct iwl_priv *priv, struct ieee80211_sta *sta, u8 sta_i
 	sta_priv = (struct iwl_station_priv *) sta->drv_priv;
 	lq_sta = &sta_priv->lq_sta;
 	sband = hw->wiphy->bands[conf->chandef.chan->band];
+
 
 	lq_sta->lq.sta_id = sta_id;
 
@@ -2899,7 +2921,7 @@ static void rs_fill_link_cmd(struct iwl_priv *priv,
 		/* Repeat initial/next rate.
 		 * For legacy IWL_NUMBER_TRY == 1, this loop will not execute.
 		 * For HT IWL_HT_NUMBER_TRY == 3, this executes twice. */
-		while (repeat_rate > 0 && index < (LINK_QUAL_MAX_RETRY_NUM - 1)) {
+		while (repeat_rate > 0 && (index < LINK_QUAL_MAX_RETRY_NUM)) {
 			if (is_legacy(tbl_type.lq_type)) {
 				if (ant_toggle_cnt < NUM_TRY_BEFORE_ANT_TOGGLE)
 					ant_toggle_cnt++;
@@ -3067,23 +3089,6 @@ static ssize_t rs_sta_dbgfs_scale_table_read(struct file *file,
 	int index = 0;
 	ssize_t ret;
 
-	/* mbps, mcs */
-	static const struct iwl_rate_mcs_info iwl_rate_mcs[IWL_RATE_COUNT] = {
-		{  "1", "BPSK DSSS"},
-		{  "2", "QPSK DSSS"},
-		{"5.5", "BPSK CCK"},
-		{ "11", "QPSK CCK"},
-		{  "6", "BPSK 1/2"},
-		{  "9", "BPSK 1/2"},
-		{ "12", "QPSK 1/2"},
-		{ "18", "QPSK 3/4"},
-		{ "24", "16QAM 1/2"},
-		{ "36", "16QAM 3/4"},
-		{ "48", "64QAM 2/3"},
-		{ "54", "64QAM 3/4"},
-		{ "60", "64QAM 5/6"},
-	};
-
 	struct iwl_lq_sta *lq_sta = file->private_data;
 	struct iwl_priv *priv;
 	struct iwl_scale_tbl_info *tbl = &(lq_sta->lq_info[lq_sta->active_tbl]);
@@ -3141,10 +3146,7 @@ static ssize_t rs_sta_dbgfs_scale_table_read(struct file *file,
 	for (i = 0; i < LINK_QUAL_MAX_RETRY_NUM; i++) {
 		index = iwl_hwrate_to_plcp_idx(
 			le32_to_cpu(lq_sta->lq.rs_table[i].rate_n_flags));
-		if (index == IWL_RATE_INVALID) {
-			desc += sprintf(buff + desc, " rate[%d] 0x%X invalid rate\n",
-				i, le32_to_cpu(lq_sta->lq.rs_table[i].rate_n_flags));
-		} else if (is_legacy(tbl->lq_type)) {
+		if (is_legacy(tbl->lq_type)) {
 			desc += sprintf(buff+desc, " rate[%d] 0x%X %smbps\n",
 				i, le32_to_cpu(lq_sta->lq.rs_table[i].rate_n_flags),
 				iwl_rate_mcs[index].mbps);

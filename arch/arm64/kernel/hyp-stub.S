@@ -54,11 +54,6 @@ SYM_CODE_START_LOCAL(elx_sync)
 1:	cmp	x0, #HVC_FINALISE_EL2
 	b.eq	__finalise_el2
 
-	cmp	x0, #HVC_GET_ICH_VTR_EL2
-	b.ne	2f
-	mrs_s	x1, SYS_ICH_VTR_EL2
-	b	9f
-
 2:	cmp	x0, #HVC_SOFT_RESTART
 	b.ne	3f
 	mov	x0, x2
@@ -87,22 +82,14 @@ SYM_CODE_START_LOCAL(__finalise_el2)
 	tbnz	x1, #0, 1f
 
 	// Needs to be VHE capable, obviously
-	check_override id_aa64mmfr1 ID_AA64MMFR1_EL1_VH_SHIFT 0f 1f x1 x2
-
-0:	// Check whether we only want the hypervisor to run VHE, not the kernel
-	adr_l	x1, arm64_sw_feature_override
-	ldr	x2, [x1, FTR_OVR_VAL_OFFSET]
-	ldr	x1, [x1, FTR_OVR_MASK_OFFSET]
-	and	x2, x2, x1
-	ubfx	x2, x2, #ARM64_SW_FEATURE_OVERRIDE_HVHE, #4
-	cbz	x2, 2f
+	check_override id_aa64mmfr1 ID_AA64MMFR1_EL1_VH_SHIFT 2f 1f x1 x2
 
 1:	mov_q	x0, HVC_STUB_ERR
 	eret
 2:
 	// Engage the VHE magic!
 	mov_q	x0, HCR_HOST_VHE_FLAGS
-	msr_hcr_el2 x0
+	msr	hcr_el2, x0
 	isb
 
 	// Use the EL1 allocated stack, per-cpu offset
@@ -119,8 +106,8 @@ SYM_CODE_START_LOCAL(__finalise_el2)
 
 	// Use EL2 translations for SPE & TRBE and disable access from EL1
 	mrs	x0, mdcr_el2
-	bic	x0, x0, #MDCR_EL2_E2PB_MASK
-	bic	x0, x0, #MDCR_EL2_E2TB_MASK
+	bic	x0, x0, #(MDCR_EL2_E2PB_MASK << MDCR_EL2_E2PB_SHIFT)
+	bic	x0, x0, #(MDCR_EL2_E2TB_MASK << MDCR_EL2_E2TB_SHIFT)
 	msr	mdcr_el2, x0
 
 	// Transfer the MM state from EL1 to EL2
@@ -132,24 +119,6 @@ SYM_CODE_START_LOCAL(__finalise_el2)
 	msr	ttbr1_el1, x0
 	mrs_s	x0, SYS_MAIR_EL12
 	msr	mair_el1, x0
-	mrs	x1, REG_ID_AA64MMFR3_EL1
-	ubfx	x1, x1, #ID_AA64MMFR3_EL1_TCRX_SHIFT, #4
-	cbz	x1, .Lskip_tcr2
-	mrs	x0, REG_TCR2_EL12
-	msr	REG_TCR2_EL1, x0
-
-	// Transfer permission indirection state
-	mrs	x1, REG_ID_AA64MMFR3_EL1
-	ubfx	x1, x1, #ID_AA64MMFR3_EL1_S1PIE_SHIFT, #4
-	cbz	x1, .Lskip_indirection
-	mrs	x0, REG_PIRE0_EL12
-	msr	REG_PIRE0_EL1, x0
-	mrs	x0, REG_PIR_EL12
-	msr	REG_PIR_EL1, x0
-
-.Lskip_indirection:
-.Lskip_tcr2:
-
 	isb
 
 	// Hack the exception return to stay at EL2

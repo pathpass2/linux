@@ -23,12 +23,6 @@ properties:
     description: I2C slave address of the microcontroller.
     maxItems: 1
 
-  interrupts:
-    description:
-      Specifier for the global LED brightness changed by front button press
-      interrupt.
-    maxItems: 1
-
   "#address-cells":
     const: 1
 
@@ -62,17 +56,15 @@ additionalProperties: false
 examples:
   - |
 
-    #include <dt-bindings/interrupt-controller/irq.h>
     #include <dt-bindings/leds/common.h>
 
-    i2c {
+    i2c0 {
         #address-cells = <1>;
         #size-cells = <0>;
 
         led-controller@2b {
             compatible = "cznic,turris-omnia-leds";
             reg = <0x2b>;
-            interrupts-extended = <&mcu 11 IRQ_TYPE_NONE>;
             #address-cells = <1>;
             #size-cells = <0>;
 

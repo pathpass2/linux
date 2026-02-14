@@ -17,8 +17,15 @@
 #include <linux/mman.h>
 #include <sys/mman.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 #include "vm_util.h"
+
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ	22
+#endif /* MADV_POPULATE_READ */
+#ifndef MADV_POPULATE_WRITE
+#define MADV_POPULATE_WRITE	23
+#endif /* MADV_POPULATE_WRITE */
 
 /*
  * For now, we're using 2 MiB of private anonymous memory for all tests.
@@ -172,12 +179,12 @@ static void test_populate_read(void)
 	if (addr == MAP_FAILED)
 		ksft_exit_fail_msg("mmap failed\n");
 	ksft_test_result(range_is_not_populated(addr, SIZE),
-			 "read range initially not populated\n");
+			 "range initially not populated\n");
 
 	ret = madvise(addr, SIZE, MADV_POPULATE_READ);
 	ksft_test_result(!ret, "MADV_POPULATE_READ\n");
 	ksft_test_result(range_is_populated(addr, SIZE),
-			 "read range is populated\n");
+			 "range is populated\n");
 
 	munmap(addr, SIZE);
 }
@@ -194,12 +201,12 @@ static void test_populate_write(void)
 	if (addr == MAP_FAILED)
 		ksft_exit_fail_msg("mmap failed\n");
 	ksft_test_result(range_is_not_populated(addr, SIZE),
-			 "write range initially not populated\n");
+			 "range initially not populated\n");
 
 	ret = madvise(addr, SIZE, MADV_POPULATE_WRITE);
 	ksft_test_result(!ret, "MADV_POPULATE_WRITE\n");
 	ksft_test_result(range_is_populated(addr, SIZE),
-			 "write range is populated\n");
+			 "range is populated\n");
 
 	munmap(addr, SIZE);
 }
@@ -247,35 +254,31 @@ static void test_softdirty(void)
 	/* Clear any softdirty bits. */
 	clear_softdirty();
 	ksft_test_result(range_is_not_softdirty(addr, SIZE),
-			 "cleared range is not softdirty\n");
+			 "range is not softdirty\n");
 
 	/* Populating READ should set softdirty. */
 	ret = madvise(addr, SIZE, MADV_POPULATE_READ);
-	ksft_test_result(!ret, "softdirty MADV_POPULATE_READ\n");
+	ksft_test_result(!ret, "MADV_POPULATE_READ\n");
 	ksft_test_result(range_is_not_softdirty(addr, SIZE),
-			 "range is not softdirty after MADV_POPULATE_READ\n");
+			 "range is not softdirty\n");
 
 	/* Populating WRITE should set softdirty. */
 	ret = madvise(addr, SIZE, MADV_POPULATE_WRITE);
-	ksft_test_result(!ret, "softdirty MADV_POPULATE_WRITE\n");
+	ksft_test_result(!ret, "MADV_POPULATE_WRITE\n");
 	ksft_test_result(range_is_softdirty(addr, SIZE),
-			 "range is softdirty after MADV_POPULATE_WRITE \n");
+			 "range is softdirty\n");
 
 	munmap(addr, SIZE);
 }
 
 int main(int argc, char **argv)
 {
-	int nr_tests = 16;
 	int err;
 
 	pagesize = getpagesize();
 
-	if (softdirty_supported())
-		nr_tests += 5;
-
 	ksft_print_header();
-	ksft_set_plan(nr_tests);
+	ksft_set_plan(21);
 
 	sense_support();
 	test_prot_read();
@@ -283,12 +286,11 @@ int main(int argc, char **argv)
 	test_holes();
 	test_populate_read();
 	test_populate_write();
-	if (softdirty_supported())
-		test_softdirty();
+	test_softdirty();
 
 	err = ksft_get_fail_cnt();
 	if (err)
 		ksft_exit_fail_msg("%d out of %d tests failed\n",
 				   err, ksft_test_num());
-	ksft_exit_pass();
+	return ksft_exit_pass();
 }

@@ -13,7 +13,7 @@
 #define THREAD_SIZE		(1 << THREAD_SHIFT)
 #define THREAD_SIZE_ORDER	1
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 # include <linux/types.h>
 # include <asm/processor.h>
 
@@ -86,7 +86,7 @@ static inline struct thread_info *current_thread_info(void)
 }
 
 /* thread information allocation */
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 /*
  * thread information flags

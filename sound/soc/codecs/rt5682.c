@@ -15,7 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 #include <linux/acpi.h>
-#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <linux/mutex.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -395,7 +396,6 @@ bool rt5682_volatile_register(struct device *dev, unsigned int reg)
 	case RT5682_4BTN_IL_CMD_1:
 	case RT5682_AJD1_CTRL:
 	case RT5682_HP_CALIB_CTRL_1:
-	case RT5682_INT_DEVICE_ID:
 	case RT5682_DEVICE_ID:
 	case RT5682_I2C_MODE:
 	case RT5682_HP_CALIB_CTRL_10:
@@ -420,7 +420,6 @@ bool rt5682_readable_register(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
 	case RT5682_RESET:
-	case RT5682_INT_DEVICE_ID:
 	case RT5682_VERSION_ID:
 	case RT5682_VENDOR_ID:
 	case RT5682_DEVICE_ID:
@@ -928,7 +927,7 @@ static void rt5682_enable_push_button_irq(struct snd_soc_component *component,
 static int rt5682_headset_detect(struct snd_soc_component *component, int jack_insert)
 {
 	struct rt5682_priv *rt5682 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm = &component->dapm;
 	unsigned int val, count;
 
 	if (jack_insert) {
@@ -1017,9 +1016,6 @@ static int rt5682_set_jack_detect(struct snd_soc_component *component,
 	struct rt5682_priv *rt5682 = snd_soc_component_get_drvdata(component);
 
 	rt5682->hs_jack = hs_jack;
-
-	if (rt5682->is_sdw && !rt5682->first_hw_init)
-		return 0;
 
 	if (!hs_jack) {
 		regmap_update_bits(rt5682->regmap, RT5682_IRQ_CTRL_2,
@@ -1115,7 +1111,7 @@ void rt5682_jack_detect_handler(struct work_struct *work)
 		}
 	}
 
-	dapm = snd_soc_component_to_dapm(rt5682->component);
+	dapm = snd_soc_component_get_dapm(rt5682->component);
 
 	snd_soc_dapm_mutex_lock(dapm);
 	mutex_lock(&rt5682->calibrate_mutex);
@@ -2225,10 +2221,10 @@ static int rt5682_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0, tdm_ctrl = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		rt5682->master[dai->id] = 1;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		rt5682->master[dai->id] = 0;
 		break;
 	default:
@@ -2595,7 +2591,7 @@ static int rt5682_wclk_prepare(struct clk_hw *hw)
 		return -EINVAL;
 
 	component = rt5682->component;
-	dapm = snd_soc_component_to_dapm(component);
+	dapm = snd_soc_component_get_dapm(component);
 
 	snd_soc_dapm_mutex_lock(dapm);
 
@@ -2633,7 +2629,7 @@ static void rt5682_wclk_unprepare(struct clk_hw *hw)
 		return;
 
 	component = rt5682->component;
-	dapm = snd_soc_component_to_dapm(component);
+	dapm = snd_soc_component_get_dapm(component);
 
 	snd_soc_dapm_mutex_lock(dapm);
 
@@ -2675,8 +2671,8 @@ static unsigned long rt5682_wclk_recalc_rate(struct clk_hw *hw,
 	return rt5682->lrck[RT5682_AIF1];
 }
 
-static int rt5682_wclk_determine_rate(struct clk_hw *hw,
-				      struct clk_rate_request *req)
+static long rt5682_wclk_round_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long *parent_rate)
 {
 	struct rt5682_priv *rt5682 =
 		container_of(hw, struct rt5682_priv,
@@ -2689,13 +2685,13 @@ static int rt5682_wclk_determine_rate(struct clk_hw *hw,
 	 * Only accept to set wclk rate to 44.1k or 48kHz.
 	 * It will force to 48kHz if not both.
 	 */
-	if (req->rate != CLK_48 && req->rate != CLK_44) {
+	if (rate != CLK_48 && rate != CLK_44) {
 		dev_warn(rt5682->i2c_dev, "%s: clk %s only support %d or %d Hz output\n",
 			__func__, clk_name, CLK_44, CLK_48);
-		req->rate = CLK_48;
+		rate = CLK_48;
 	}
 
-	return 0;
+	return rate;
 }
 
 static int rt5682_wclk_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -2795,15 +2791,15 @@ static unsigned long rt5682_bclk_get_factor(unsigned long rate,
 		return 256;
 }
 
-static int rt5682_bclk_determine_rate(struct clk_hw *hw,
-				      struct clk_rate_request *req)
+static long rt5682_bclk_round_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long *parent_rate)
 {
 	struct rt5682_priv *rt5682 =
 		container_of(hw, struct rt5682_priv,
 			     dai_clks_hw[RT5682_DAI_BCLK_IDX]);
 	unsigned long factor;
 
-	if (!req->best_parent_rate || !rt5682_clk_check(rt5682))
+	if (!*parent_rate || !rt5682_clk_check(rt5682))
 		return -EINVAL;
 
 	/*
@@ -2813,11 +2809,9 @@ static int rt5682_bclk_determine_rate(struct clk_hw *hw,
 	 * and find the appropriate multiplier of BCLK to
 	 * get the rounded down BCLK value.
 	 */
-	factor = rt5682_bclk_get_factor(req->rate, req->best_parent_rate);
+	factor = rt5682_bclk_get_factor(rate, *parent_rate);
 
-	req->rate = req->best_parent_rate * factor;
-
-	return 0;
+	return *parent_rate * factor;
 }
 
 static int rt5682_bclk_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -2851,12 +2845,12 @@ static const struct clk_ops rt5682_dai_clk_ops[RT5682_DAI_NUM_CLKS] = {
 		.prepare = rt5682_wclk_prepare,
 		.unprepare = rt5682_wclk_unprepare,
 		.recalc_rate = rt5682_wclk_recalc_rate,
-		.determine_rate = rt5682_wclk_determine_rate,
+		.round_rate = rt5682_wclk_round_rate,
 		.set_rate = rt5682_wclk_set_rate,
 	},
 	[RT5682_DAI_BCLK_IDX] = {
 		.recalc_rate = rt5682_bclk_recalc_rate,
-		.determine_rate = rt5682_bclk_determine_rate,
+		.round_rate = rt5682_bclk_round_rate,
 		.set_rate = rt5682_bclk_set_rate,
 	},
 };
@@ -2907,10 +2901,8 @@ int rt5682_register_dai_clks(struct rt5682_priv *rt5682)
 		}
 
 		if (dev->of_node) {
-			ret = devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get,
+			devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get,
 						    dai_clk_hw);
-			if (ret)
-				return ret;
 		} else {
 			ret = devm_clk_hw_register_clkdev(dev, dai_clk_hw,
 							  init.name,
@@ -2928,9 +2920,9 @@ EXPORT_SYMBOL_GPL(rt5682_register_dai_clks);
 static int rt5682_probe(struct snd_soc_component *component)
 {
 	struct rt5682_priv *rt5682 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct sdw_slave *slave;
 	unsigned long time;
+	struct snd_soc_dapm_context *dapm = &component->dapm;
 
 	rt5682->component = component;
 
@@ -2966,9 +2958,6 @@ static int rt5682_suspend(struct snd_soc_component *component)
 
 	if (rt5682->is_sdw)
 		return 0;
-
-	if (rt5682->irq)
-		disable_irq(rt5682->irq);
 
 	cancel_delayed_work_sync(&rt5682->jack_detect_work);
 	cancel_delayed_work_sync(&rt5682->jd_check_work);
@@ -3038,9 +3027,6 @@ static int rt5682_resume(struct snd_soc_component *component)
 	mod_delayed_work(system_power_efficient_wq,
 		&rt5682->jack_detect_work, msecs_to_jiffies(0));
 
-	if (rt5682->irq)
-		enable_irq(rt5682->irq);
-
 	return 0;
 }
 #else
@@ -3099,6 +3085,9 @@ int rt5682_parse_dt(struct rt5682_priv *rt5682, struct device *dev)
 	device_property_read_u32(dev, "realtek,dmic-delay-ms",
 		&rt5682->pdata.dmic_delay);
 
+	rt5682->pdata.ldo1_en = of_get_named_gpio(dev->of_node,
+		"realtek,ldo1-en-gpios", 0);
+
 	if (device_property_read_string_array(dev, "clock-output-names",
 					      rt5682->pdata.dai_clk_names,
 					      RT5682_DAI_NUM_CLKS) < 0)
@@ -3112,20 +3101,6 @@ int rt5682_parse_dt(struct rt5682_priv *rt5682, struct device *dev)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rt5682_parse_dt);
-
-int rt5682_get_ldo1(struct rt5682_priv *rt5682, struct device *dev)
-{
-	rt5682->ldo1_en = devm_gpiod_get_optional(dev,
-						  "realtek,ldo1-en",
-						  GPIOD_OUT_HIGH);
-	if (IS_ERR(rt5682->ldo1_en)) {
-		dev_err(dev, "Fail gpio request ldo1_en\n");
-		return PTR_ERR(rt5682->ldo1_en);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(rt5682_get_ldo1);
 
 void rt5682_calibrate(struct rt5682_priv *rt5682)
 {
@@ -3143,10 +3118,7 @@ void rt5682_calibrate(struct rt5682_priv *rt5682)
 	regmap_write(rt5682->regmap, RT5682_PWR_DIG_1, 0x0100);
 	regmap_write(rt5682->regmap, RT5682_HP_IMP_SENS_CTRL_19, 0x3800);
 	regmap_write(rt5682->regmap, RT5682_CHOP_DAC, 0x3000);
-	if (rt5682->ve_ic)
-		regmap_write(rt5682->regmap, RT5682_CHOP_ADC, 0x7005);
-	else
-		regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x7005);
+	regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x7005);
 	regmap_write(rt5682->regmap, RT5682_STO1_ADC_MIXER, 0x686c);
 	regmap_write(rt5682->regmap, RT5682_CAL_REC, 0x0d0d);
 	regmap_write(rt5682->regmap, RT5682_HP_CALIB_CTRL_2, 0x0321);
@@ -3175,10 +3147,7 @@ void rt5682_calibrate(struct rt5682_priv *rt5682)
 	regmap_write(rt5682->regmap, RT5682_GLB_CLK, 0x0000);
 	regmap_write(rt5682->regmap, RT5682_PWR_DIG_1, 0x0000);
 	regmap_write(rt5682->regmap, RT5682_CHOP_DAC, 0x2000);
-	if (rt5682->ve_ic)
-		regmap_write(rt5682->regmap, RT5682_CHOP_ADC, 0x2005);
-	else
-		regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x2005);
+	regmap_write(rt5682->regmap, RT5682_CALIB_ADC_CTRL, 0x2005);
 	regmap_write(rt5682->regmap, RT5682_STO1_ADC_MIXER, 0xc0c4);
 	regmap_write(rt5682->regmap, RT5682_CAL_REC, 0x0c0c);
 

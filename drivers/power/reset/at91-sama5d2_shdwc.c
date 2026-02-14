@@ -107,7 +107,7 @@ static const unsigned long long sdwc_dbc_period[] = {
 	0, 3, 32, 512, 4096, 32768,
 };
 
-static void at91_wakeup_status(struct platform_device *pdev)
+static void __init at91_wakeup_status(struct platform_device *pdev)
 {
 	struct shdwc *shdw = platform_get_drvdata(pdev);
 	const struct reg_config *rcfg = shdw->rcfg;
@@ -129,7 +129,7 @@ static void at91_wakeup_status(struct platform_device *pdev)
 	else if (SHDW_RTTWK(reg, &rcfg->shdwc))
 		reason = "RTT";
 
-	dev_info(&pdev->dev, "Wake-Up source: %s\n", reason);
+	pr_info("AT91: Wake-Up source: %s\n", reason);
 }
 
 static void at91_poweroff(void)
@@ -326,13 +326,12 @@ static const struct of_device_id at91_pmc_ids[] = {
 	{ .compatible = "atmel,sama5d2-pmc" },
 	{ .compatible = "microchip,sam9x60-pmc" },
 	{ .compatible = "microchip,sama7g5-pmc" },
-	{ .compatible = "microchip,sam9x7-pmc" },
-	{ .compatible = "microchip,sama7d65-pmc" },
 	{ /* Sentinel. */ }
 };
 
-static int at91_shdwc_probe(struct platform_device *pdev)
+static int __init at91_shdwc_probe(struct platform_device *pdev)
 {
+	struct resource *res;
 	const struct of_device_id *match;
 	struct device_node *np;
 	u32 ddr_type;
@@ -350,7 +349,8 @@ static int at91_shdwc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, at91_shdwc);
 
-	at91_shdwc->shdwc_base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	at91_shdwc->shdwc_base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(at91_shdwc->shdwc_base))
 		return PTR_ERR(at91_shdwc->shdwc_base);
 
@@ -423,7 +423,7 @@ clk_disable:
 	return ret;
 }
 
-static void at91_shdwc_remove(struct platform_device *pdev)
+static int __exit at91_shdwc_remove(struct platform_device *pdev)
 {
 	struct shdwc *shdw = platform_get_drvdata(pdev);
 
@@ -439,17 +439,18 @@ static void at91_shdwc_remove(struct platform_device *pdev)
 	iounmap(shdw->pmc_base);
 
 	clk_disable_unprepare(shdw->sclk);
+
+	return 0;
 }
 
 static struct platform_driver at91_shdwc_driver = {
-	.probe = at91_shdwc_probe,
-	.remove = at91_shdwc_remove,
+	.remove = __exit_p(at91_shdwc_remove),
 	.driver = {
 		.name = "at91-shdwc",
 		.of_match_table = at91_shdwc_of_match,
 	},
 };
-module_platform_driver(at91_shdwc_driver);
+module_platform_driver_probe(at91_shdwc_driver, at91_shdwc_probe);
 
 MODULE_AUTHOR("Nicolas Ferre <nicolas.ferre@atmel.com>");
 MODULE_DESCRIPTION("Atmel shutdown controller driver");

@@ -284,7 +284,7 @@
 #define SLIC_INC_STATS_COUNTER(st, counter)	\
 do {						\
 	u64_stats_update_begin(&(st)->syncp);	\
-	u64_stats_inc(&(st)->counter);		\
+	(st)->counter++;			\
 	u64_stats_update_end(&(st)->syncp);	\
 } while (0)
 
@@ -293,7 +293,7 @@ do {						\
 	unsigned int start;					\
 	do {							\
 		start = u64_stats_fetch_begin(&(st)->syncp);	\
-		newst = u64_stats_read(&(st)->counter);		\
+		newst = (st)->counter;				\
 	} while (u64_stats_fetch_retry(&(st)->syncp, start));	\
 }
 
@@ -407,34 +407,34 @@ struct slic_oasis_eeprom {
 };
 
 struct slic_stats {
-	u64_stats_t rx_packets;
-	u64_stats_t rx_bytes;
-	u64_stats_t rx_mcasts;
-	u64_stats_t rx_errors;
-	u64_stats_t tx_packets;
-	u64_stats_t tx_bytes;
+	u64 rx_packets;
+	u64 rx_bytes;
+	u64 rx_mcasts;
+	u64 rx_errors;
+	u64 tx_packets;
+	u64 tx_bytes;
 	/* HW STATS */
-	u64_stats_t rx_buff_miss;
-	u64_stats_t tx_dropped;
-	u64_stats_t irq_errs;
+	u64 rx_buff_miss;
+	u64 tx_dropped;
+	u64 irq_errs;
 	/* transport layer */
-	u64_stats_t rx_tpcsum;
-	u64_stats_t rx_tpoflow;
-	u64_stats_t rx_tphlen;
+	u64 rx_tpcsum;
+	u64 rx_tpoflow;
+	u64 rx_tphlen;
 	/* ip layer */
-	u64_stats_t rx_ipcsum;
-	u64_stats_t rx_iplen;
-	u64_stats_t rx_iphlen;
+	u64 rx_ipcsum;
+	u64 rx_iplen;
+	u64 rx_iphlen;
 	/* link layer */
-	u64_stats_t rx_early;
-	u64_stats_t rx_buffoflow;
-	u64_stats_t rx_lcode;
-	u64_stats_t rx_drbl;
-	u64_stats_t rx_crc;
-	u64_stats_t rx_oflow802;
-	u64_stats_t rx_uflow802;
+	u64 rx_early;
+	u64 rx_buffoflow;
+	u64 rx_lcode;
+	u64 rx_drbl;
+	u64 rx_crc;
+	u64 rx_oflow802;
+	u64 rx_uflow802;
 	/* oasis only */
-	u64_stats_t tx_carrier;
+	u64 tx_carrier;
 	struct u64_stats_sync syncp;
 };
 

@@ -1,11 +1,6 @@
 extends: relaxed
 
 rules:
-  quoted-strings:
-    required: only-when-needed
-    extra-allowed:
-      - '[$^[]'
-      - '^/$'
   line-length:
     # 80 chars should be enough, but don't fail if a line is longer
     max: 110
@@ -24,13 +19,13 @@ rules:
   colons: {max-spaces-before: 0, max-spaces-after: 1}
   commas: {min-spaces-after: 1, max-spaces-after: 1}
   comments:
-    require-starting-space: true
+    require-starting-space: false
     min-spaces-from-content: 1
   comments-indentation: disable
   document-start:
     present: true
   empty-lines:
-    max: 1
+    max: 3
     max-end: 1
   empty-values:
     forbid-in-block-mappings: true

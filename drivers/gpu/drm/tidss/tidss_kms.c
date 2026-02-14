@@ -4,6 +4,8 @@
  * Author: Tomi Valkeinen <tomi.valkeinen@ti.com>
  */
 
+#include <linux/dma-fence.h>
+
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
@@ -23,38 +25,18 @@ static void tidss_atomic_commit_tail(struct drm_atomic_state *old_state)
 {
 	struct drm_device *ddev = old_state->dev;
 	struct tidss_device *tidss = to_tidss(ddev);
+	bool fence_cookie = dma_fence_begin_signalling();
+
+	dev_dbg(ddev->dev, "%s\n", __func__);
 
 	tidss_runtime_get(tidss);
 
-	/*
-	 * TI's OLDI and DSI encoders need to be set up before the crtc is
-	 * enabled. Thus drm_atomic_helper_commit_modeset_enables() and
-	 * drm_atomic_helper_commit_modeset_disables() cannot be used here, as
-	 * they enable the crtc before bridges' pre-enable, and disable the crtc
-	 * after bridges' post-disable.
-	 *
-	 * Open code the functions here and first call the bridges' pre-enables,
-	 * then crtc enable, then bridges' post-enable (and vice versa for
-	 * disable).
-	 */
-
-	drm_atomic_helper_commit_encoder_bridge_disable(ddev, old_state);
-	drm_atomic_helper_commit_crtc_disable(ddev, old_state);
-	drm_atomic_helper_commit_encoder_bridge_post_disable(ddev, old_state);
-
-	drm_atomic_helper_update_legacy_modeset_state(ddev, old_state);
-	drm_atomic_helper_calc_timestamping_constants(old_state);
-	drm_atomic_helper_commit_crtc_set_mode(ddev, old_state);
-
-	drm_atomic_helper_commit_planes(ddev, old_state,
-					DRM_PLANE_COMMIT_ACTIVE_ONLY);
-
-	drm_atomic_helper_commit_encoder_bridge_pre_enable(ddev, old_state);
-	drm_atomic_helper_commit_crtc_enable(ddev, old_state);
-	drm_atomic_helper_commit_encoder_bridge_enable(ddev, old_state);
-	drm_atomic_helper_commit_writebacks(ddev, old_state);
+	drm_atomic_helper_commit_modeset_disables(ddev, old_state);
+	drm_atomic_helper_commit_planes(ddev, old_state, 0);
+	drm_atomic_helper_commit_modeset_enables(ddev, old_state);
 
 	drm_atomic_helper_commit_hw_done(old_state);
+	dma_fence_end_signalling(fence_cookie);
 	drm_atomic_helper_wait_for_flip_done(ddev, old_state);
 
 	drm_atomic_helper_cleanup_planes(ddev, old_state);
@@ -137,7 +119,7 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 
 	const struct dispc_features *feat = tidss->feat;
 	u32 max_vps = feat->num_vps;
-	u32 max_planes = feat->num_vids;
+	u32 max_planes = feat->num_planes;
 
 	struct pipe pipes[TIDSS_MAX_PORTS];
 	u32 num_pipes = 0;
@@ -157,7 +139,8 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 			dev_dbg(dev, "no panel/bridge for port %d\n", i);
 			continue;
 		} else if (ret) {
-			return dev_err_probe(dev, ret, "port %d probe failed\n", i);
+			dev_dbg(dev, "port %d probe returned %d\n", i, ret);
+			return ret;
 		}
 
 		if (panel) {
@@ -166,7 +149,7 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 			dev_dbg(dev, "Setting up panel for port %d\n", i);
 
 			switch (feat->vp_bus_type[i]) {
-			case DISPC_VP_OLDI_AM65X:
+			case DISPC_VP_OLDI:
 				enc_type = DRM_MODE_ENCODER_LVDS;
 				conn_type = DRM_MODE_CONNECTOR_LVDS;
 				break;
@@ -210,6 +193,7 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 	for (i = 0; i < num_pipes; ++i) {
 		struct tidss_plane *tplane;
 		struct tidss_crtc *tcrtc;
+		struct drm_encoder *enc;
 		u32 hw_plane_id = feat->vid_order[tidss->num_planes];
 		int ret;
 
@@ -232,13 +216,16 @@ static int tidss_dispc_modeset_init(struct tidss_device *tidss)
 
 		tidss->crtcs[tidss->num_crtcs++] = &tcrtc->crtc;
 
-		ret = tidss_encoder_create(tidss, pipes[i].bridge,
-					   pipes[i].enc_type,
+		enc = tidss_encoder_create(tidss, pipes[i].enc_type,
 					   1 << tcrtc->crtc.index);
-		if (ret) {
+		if (IS_ERR(enc)) {
 			dev_err(tidss->dev, "encoder create failed\n");
-			return ret;
+			return PTR_ERR(enc);
 		}
+
+		ret = drm_bridge_attach(enc, pipes[i].bridge, NULL, 0);
+		if (ret)
+			return ret;
 	}
 
 	/* create overlay planes of the leftover planes */
@@ -266,6 +253,8 @@ int tidss_modeset_init(struct tidss_device *tidss)
 {
 	struct drm_device *ddev = &tidss->ddev;
 	int ret;
+
+	dev_dbg(tidss->dev, "%s\n", __func__);
 
 	ret = drmm_mode_config_init(ddev);
 	if (ret)

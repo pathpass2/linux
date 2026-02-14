@@ -8,7 +8,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/errno.h>
-#include <crypto/krb5.h>
 #include "internal.h"
 #include "afs_fs.h"
 #include "protocol_uae.h"
@@ -104,34 +103,7 @@ int afs_abort_to_error(u32 abort_code)
 	case RXKADDATALEN:	return -EKEYREJECTED;
 	case RXKADILLEGALLEVEL:	return -EKEYREJECTED;
 
-	case RXGK_INCONSISTENCY:	return -EPROTO;
-	case RXGK_PACKETSHORT:		return -EPROTO;
-	case RXGK_BADCHALLENGE:		return -EPROTO;
-	case RXGK_SEALEDINCON:		return -EKEYREJECTED;
-	case RXGK_NOTAUTH:		return -EKEYREJECTED;
-	case RXGK_EXPIRED:		return -EKEYEXPIRED;
-	case RXGK_BADLEVEL:		return -EKEYREJECTED;
-	case RXGK_BADKEYNO:		return -EKEYREJECTED;
-	case RXGK_NOTRXGK:		return -EKEYREJECTED;
-	case RXGK_UNSUPPORTED:		return -EKEYREJECTED;
-	case RXGK_GSSERROR:		return -EKEYREJECTED;
-#ifdef RXGK_BADETYPE
-	case RXGK_BADETYPE:		return -ENOPKG;
-#endif
-#ifdef RXGK_BADTOKEN
-	case RXGK_BADTOKEN:		return -EKEYREJECTED;
-#endif
-#ifdef RXGK_BADETYPE
-	case RXGK_DATALEN:		return -EPROTO;
-#endif
-#ifdef RXGK_BADQOP
-	case RXGK_BADQOP:		return -EKEYREJECTED;
-#endif
-
-	case KRB5_PROG_KEYTYPE_NOSUPP:	return -ENOPKG;
-
 	case RXGEN_OPCODE:	return -ENOTSUPP;
-	case RX_INVALID_OPERATION:	return -ENOTSUPP;
 
 	default:		return -EREMOTEIO;
 	}
@@ -144,8 +116,6 @@ void afs_prioritise_error(struct afs_error *e, int error, u32 abort_code)
 {
 	switch (error) {
 	case 0:
-		e->aborted = false;
-		e->error = 0;
 		return;
 	default:
 		if (e->error == -ETIMEDOUT ||
@@ -191,16 +161,12 @@ void afs_prioritise_error(struct afs_error *e, int error, u32 abort_code)
 		if (e->responded)
 			return;
 		e->error = error;
-		e->aborted = false;
 		return;
 
 	case -ECONNABORTED:
-		e->error = afs_abort_to_error(abort_code);
-		e->aborted = true;
-		e->responded = true;
-		return;
+		error = afs_abort_to_error(abort_code);
+		fallthrough;
 	case -ENETRESET: /* Responded, but we seem to have changed address */
-		e->aborted = false;
 		e->responded = true;
 		e->error = error;
 		return;

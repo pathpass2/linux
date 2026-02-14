@@ -7,6 +7,9 @@
 
 #include <uapi/asm/setup.h>
 
+void *get_early_fdt_ptr(void);
+void early_fdt_map(u64 dt_phys);
+
 /*
  * These two variables are used in the head.S file.
  */
@@ -18,22 +21,9 @@ static inline bool arch_parse_debug_rodata(char *arg)
 	extern bool rodata_enabled;
 	extern bool rodata_full;
 
-	if (!arg)
-		return false;
-
-	if (!strcmp(arg, "on")) {
-		rodata_enabled = rodata_full = true;
-		return true;
-	}
-
-	if (!strcmp(arg, "off")) {
-		rodata_enabled = rodata_full = false;
-		return true;
-	}
-
-	if (!strcmp(arg, "noalias")) {
+	if (arg && !strcmp(arg, "full")) {
 		rodata_enabled = true;
-		rodata_full = false;
+		rodata_full = true;
 		return true;
 	}
 

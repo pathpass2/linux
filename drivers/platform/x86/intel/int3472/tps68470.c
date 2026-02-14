@@ -8,10 +8,10 @@
 #include <linux/mfd/tps68470.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/tps68470.h>
-#include <linux/platform_data/x86/int3472.h>
 #include <linux/regmap.h>
 #include <linux/string.h>
 
+#include "common.h"
 #include "tps68470.h"
 
 #define DESIGNED_FOR_CHROMEOS		1
@@ -152,9 +152,6 @@ static int skl_int3472_tps68470_probe(struct i2c_client *client)
 	int ret;
 	int i;
 
-	if (!adev)
-		return -ENODEV;
-
 	n_consumers = skl_int3472_fill_clk_pdata(&client->dev, &clk_pdata);
 	if (n_consumers < 0)
 		return n_consumers;
@@ -253,7 +250,7 @@ static struct i2c_driver int3472_tps68470 = {
 		.name = "int3472-tps68470",
 		.acpi_match_table = int3472_device_id,
 	},
-	.probe = skl_int3472_tps68470_probe,
+	.probe_new = skl_int3472_tps68470_probe,
 	.remove = skl_int3472_tps68470_remove,
 };
 module_i2c_driver(int3472_tps68470);
@@ -261,5 +258,4 @@ module_i2c_driver(int3472_tps68470);
 MODULE_DESCRIPTION("Intel SkyLake INT3472 ACPI TPS68470 Device Driver");
 MODULE_AUTHOR("Daniel Scally <djrscally@gmail.com>");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("INTEL_INT3472");
 MODULE_SOFTDEP("pre: clk-tps68470 tps68470-regulator");

@@ -1,6 +1,3 @@
-Authenticated Encryption With Associated Data (AEAD)
-====================================================
-
 Authenticated Encryption With Associated Data (AEAD) Algorithm Definitions
 --------------------------------------------------------------------------
 

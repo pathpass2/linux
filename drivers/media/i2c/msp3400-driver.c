@@ -309,15 +309,23 @@ static void msp_wake_thread(struct i2c_client *client)
 	wake_up_interruptible(&state->wq);
 }
 
-int msp_sleep(struct msp_state *state, int msec)
+int msp_sleep(struct msp_state *state, int timeout)
 {
-	long timeout;
+	DECLARE_WAITQUEUE(wait, current);
 
-	timeout = msec < 0 ? MAX_SCHEDULE_TIMEOUT : msecs_to_jiffies(msec);
+	add_wait_queue(&state->wq, &wait);
+	if (!kthread_should_stop()) {
+		if (timeout < 0) {
+			set_current_state(TASK_INTERRUPTIBLE);
+			schedule();
+		} else {
+			schedule_timeout_interruptible
+						(msecs_to_jiffies(timeout));
+		}
+	}
 
-	wait_event_freezable_timeout(state->wq, kthread_should_stop() ||
-				     state->restart, timeout);
-
+	remove_wait_queue(&state->wq, &wait);
+	try_to_freeze();
 	return state->restart;
 }
 
@@ -553,7 +561,7 @@ static int msp_log_status(struct v4l2_subdev *sd)
 	struct msp_state *state = to_state(sd);
 	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	const char *p;
-	char prefix[sizeof(sd->name) + 20];
+	char prefix[V4L2_SUBDEV_NAME_SIZE + 20];
 
 	if (state->opmode == OPMODE_AUTOSELECT)
 		msp_detect_stereo(client);
@@ -874,7 +882,7 @@ static const struct dev_pm_ops msp3400_pm_ops = {
 };
 
 static const struct i2c_device_id msp_id[] = {
-	{ "msp3400" },
+	{ "msp3400", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, msp_id);
@@ -884,7 +892,7 @@ static struct i2c_driver msp_driver = {
 		.name	= "msp3400",
 		.pm	= &msp3400_pm_ops,
 	},
-	.probe		= msp_probe,
+	.probe_new	= msp_probe,
 	.remove		= msp_remove,
 	.id_table	= msp_id,
 };

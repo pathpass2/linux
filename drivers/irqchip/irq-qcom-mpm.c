@@ -14,8 +14,7 @@
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/slab.h>
@@ -227,9 +226,6 @@ static int qcom_mpm_alloc(struct irq_domain *domain, unsigned int virq,
 	if (ret)
 		return ret;
 
-	if (pin == GPIO_NO_WAKE_IRQ)
-		return irq_domain_disconnect_hierarchy(domain, virq);
-
 	ret = irq_domain_set_hwirq_and_chip(domain, virq, pin,
 					    &qcom_mpm_chip, priv);
 	if (ret)
@@ -320,16 +316,14 @@ static bool gic_hwirq_is_mapped(struct mpm_gic_map *maps, int cnt, u32 hwirq)
 	return false;
 }
 
-static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *parent)
+static int qcom_mpm_init(struct device_node *np, struct device_node *parent)
 {
-	struct device_node *np = pdev->dev.of_node;
+	struct platform_device *pdev = of_find_device_by_node(np);
 	struct device *dev = &pdev->dev;
 	struct irq_domain *parent_domain;
 	struct generic_pm_domain *genpd;
-	struct device_node *msgram_np;
 	struct qcom_mpm_priv *priv;
 	unsigned int pin_cnt;
-	struct resource res;
 	int i, irq;
 	int ret;
 
@@ -380,26 +374,9 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 
 	raw_spin_lock_init(&priv->lock);
 
-	/* If we have a handle to an RPM message ram partition, use it. */
-	msgram_np = of_parse_phandle(np, "qcom,rpm-msg-ram", 0);
-	if (msgram_np) {
-		ret = of_address_to_resource(msgram_np, 0, &res);
-		if (ret) {
-			of_node_put(msgram_np);
-			return ret;
-		}
-
-		/* Don't use devm_ioremap_resource, as we're accessing a shared region. */
-		priv->base = devm_ioremap(dev, res.start, resource_size(&res));
-		of_node_put(msgram_np);
-		if (!priv->base)
-			return -ENOMEM;
-	} else {
-		/* Otherwise, fall back to simple MMIO. */
-		priv->base = devm_platform_ioremap_resource(pdev, 0);
-		if (IS_ERR(priv->base))
-			return PTR_ERR(priv->base);
-	}
+	priv->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(priv->base))
+		return PTR_ERR(priv->base);
 
 	for (i = 0; i < priv->reg_stride; i++) {
 		qcom_mpm_write(priv, MPM_REG_ENABLE, i, 0);
@@ -450,7 +427,7 @@ static int qcom_mpm_probe(struct platform_device *pdev, struct device_node *pare
 
 	priv->domain = irq_domain_create_hierarchy(parent_domain,
 				IRQ_DOMAIN_FLAG_QCOM_MPM_WAKEUP, pin_cnt,
-				of_fwnode_handle(np), &qcom_mpm_ops, priv);
+				of_node_to_fwnode(np), &qcom_mpm_ops, priv);
 	if (!priv->domain) {
 		dev_err(dev, "failed to create MPM domain\n");
 		ret = -ENOMEM;
@@ -478,7 +455,7 @@ remove_genpd:
 }
 
 IRQCHIP_PLATFORM_DRIVER_BEGIN(qcom_mpm)
-IRQCHIP_MATCH("qcom,mpm", qcom_mpm_probe)
+IRQCHIP_MATCH("qcom,mpm", qcom_mpm_init)
 IRQCHIP_PLATFORM_DRIVER_END(qcom_mpm)
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. MSM Power Manager");
 MODULE_LICENSE("GPL v2");

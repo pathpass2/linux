@@ -22,7 +22,7 @@
 #include <linux/mmc/slot-gpio.h>
 
 #include <linux/sizes.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "mvsdio.h"
 
@@ -292,7 +292,7 @@ static u32 mvsd_finish_data(struct mvsd_host *host, struct mmc_data *data,
 		host->pio_ptr = NULL;
 		host->pio_size = 0;
 	} else {
-		dma_unmap_sg(mmc_dev(host->mmc), data->sg, data->sg_len,
+		dma_unmap_sg(mmc_dev(host->mmc), data->sg, host->sg_frags,
 			     mmc_get_dma_dir(data));
 	}
 
@@ -464,7 +464,7 @@ static irqreturn_t mvsd_irq(int irq, void *dev)
 		struct mmc_command *cmd = mrq->cmd;
 		u32 err_status = 0;
 
-		timer_delete(&host->timer);
+		del_timer(&host->timer);
 		host->mrq = NULL;
 
 		host->intr_en &= MVSD_NOR_CARD_INT;
@@ -509,7 +509,7 @@ static irqreturn_t mvsd_irq(int irq, void *dev)
 
 static void mvsd_timeout_timer(struct timer_list *t)
 {
-	struct mvsd_host *host = timer_container_of(host, t, timer);
+	struct mvsd_host *host = from_timer(host, t, timer);
 	void __iomem *iobase = host->base;
 	struct mmc_request *mrq;
 	unsigned long flags;
@@ -704,11 +704,13 @@ static int mvsd_probe(struct platform_device *pdev)
 	}
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		return irq;
+		return -ENXIO;
 
-	mmc = devm_mmc_alloc_host(&pdev->dev, sizeof(*host));
-	if (!mmc)
-		return -ENOMEM;
+	mmc = mmc_alloc_host(sizeof(struct mvsd_host), &pdev->dev);
+	if (!mmc) {
+		ret = -ENOMEM;
+		goto out;
+	}
 
 	host = mmc_priv(mmc);
 	host->mmc = mmc;
@@ -722,9 +724,11 @@ static int mvsd_probe(struct platform_device *pdev)
 	 * fixed rate clock).
 	 */
 	host->clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(host->clk))
-		return dev_err_probe(&pdev->dev, -EINVAL, "no clock associated\n");
-
+	if (IS_ERR(host->clk)) {
+		dev_err(&pdev->dev, "no clock associated\n");
+		ret = -EINVAL;
+		goto out;
+	}
 	clk_prepare_enable(host->clk);
 
 	mmc->ops = &mvsd_ops;
@@ -783,22 +787,30 @@ static int mvsd_probe(struct platform_device *pdev)
 	return 0;
 
 out:
-	clk_disable_unprepare(host->clk);
+	if (mmc) {
+		if (!IS_ERR(host->clk))
+			clk_disable_unprepare(host->clk);
+		mmc_free_host(mmc);
+	}
+
 	return ret;
 }
 
-static void mvsd_remove(struct platform_device *pdev)
+static int mvsd_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc = platform_get_drvdata(pdev);
 
 	struct mvsd_host *host = mmc_priv(mmc);
 
 	mmc_remove_host(mmc);
-	timer_delete_sync(&host->timer);
+	del_timer_sync(&host->timer);
 	mvsd_power_down(host);
 
 	if (!IS_ERR(host->clk))
 		clk_disable_unprepare(host->clk);
+	mmc_free_host(mmc);
+
+	return 0;
 }
 
 static const struct of_device_id mvsdio_dt_ids[] = {

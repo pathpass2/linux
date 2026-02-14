@@ -14,7 +14,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
 #include <linux/pci.h>
 #include "cavium.h"
 
@@ -72,7 +71,7 @@ static int thunder_mmc_probe(struct pci_dev *pdev,
 	if (ret)
 		return ret;
 
-	ret = pcim_request_all_regions(pdev, KBUILD_MODNAME);
+	ret = pci_request_regions(pdev, KBUILD_MODNAME);
 	if (ret)
 		return ret;
 
@@ -164,6 +163,7 @@ error:
 		}
 	}
 	clk_disable_unprepare(host->clk);
+	pci_release_regions(pdev);
 	return ret;
 }
 
@@ -182,6 +182,7 @@ static void thunder_mmc_remove(struct pci_dev *pdev)
 	writeq(dma_cfg, host->dma_base + MIO_EMM_DMA_CFG(host));
 
 	clk_disable_unprepare(host->clk);
+	pci_release_regions(pdev);
 }
 
 static const struct pci_device_id thunder_mmc_id_table[] = {

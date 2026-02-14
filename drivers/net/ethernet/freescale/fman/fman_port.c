@@ -6,7 +6,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/io.h>
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
@@ -987,7 +986,7 @@ static int init_low_level_driver(struct fman_port *port)
 		return -ENODEV;
 	}
 
-	/* The code below is a trick so the FM will not release the buffer
+	/* The code bellow is a trick so the FM will not release the buffer
 	 * to BM nor will try to enqueue the frame to QM
 	 */
 	if (port->port_type == FMAN_PORT_TYPE_TX) {
@@ -1748,7 +1747,7 @@ static int fman_port_probe(struct platform_device *of_dev)
 	struct resource res;
 	struct resource *dev_res;
 	u32 val;
-	int err = 0;
+	int err = 0, lenp;
 	enum fman_port_type port_type;
 	u16 port_speed;
 	u8 port_id;
@@ -1795,7 +1794,7 @@ static int fman_port_probe(struct platform_device *of_dev)
 	if (of_device_is_compatible(port_node, "fsl,fman-v3-port-tx")) {
 		port_type = FMAN_PORT_TYPE_TX;
 		port_speed = 1000;
-		if (of_property_read_bool(port_node, "fsl,fman-10g-port"))
+		if (of_find_property(port_node, "fsl,fman-10g-port", &lenp))
 			port_speed = 10000;
 
 	} else if (of_device_is_compatible(port_node, "fsl,fman-v2-port-tx")) {
@@ -1808,7 +1807,7 @@ static int fman_port_probe(struct platform_device *of_dev)
 	} else if (of_device_is_compatible(port_node, "fsl,fman-v3-port-rx")) {
 		port_type = FMAN_PORT_TYPE_RX;
 		port_speed = 1000;
-		if (of_property_read_bool(port_node, "fsl,fman-10g-port"))
+		if (of_find_property(port_node, "fsl,fman-10g-port", &lenp))
 			port_speed = 10000;
 
 	} else if (of_device_is_compatible(port_node, "fsl,fman-v2-port-rx")) {

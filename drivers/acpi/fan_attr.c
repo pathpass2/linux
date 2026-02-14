@@ -22,9 +22,9 @@ static ssize_t show_state(struct device *dev, struct device_attribute *attr, cha
 	int count;
 
 	if (fps->control == 0xFFFFFFFF || fps->control > 100)
-		count = sysfs_emit(buf, "not-defined:");
+		count = scnprintf(buf, PAGE_SIZE, "not-defined:");
 	else
-		count = sysfs_emit(buf, "%lld:", fps->control);
+		count = scnprintf(buf, PAGE_SIZE, "%lld:", fps->control);
 
 	if (fps->trip_point == 0xFFFFFFFF || fps->trip_point > 9)
 		count += sysfs_emit_at(buf, count, "not-defined:");
@@ -55,11 +55,11 @@ static ssize_t show_fan_speed(struct device *dev, struct device_attribute *attr,
 	struct acpi_fan_fst fst;
 	int status;
 
-	status = acpi_fan_get_fst(acpi_dev->handle, &fst);
+	status = acpi_fan_get_fst(acpi_dev, &fst);
 	if (status)
 		return status;
 
-	return sysfs_emit(buf, "%lld\n", fst.speed);
+	return sprintf(buf, "%lld\n", fst.speed);
 }
 
 static ssize_t show_fine_grain_control(struct device *dev, struct device_attribute *attr, char *buf)
@@ -67,13 +67,22 @@ static ssize_t show_fine_grain_control(struct device *dev, struct device_attribu
 	struct acpi_device *acpi_dev = container_of(dev, struct acpi_device, dev);
 	struct acpi_fan *fan = acpi_driver_data(acpi_dev);
 
-	return sysfs_emit(buf, "%d\n", fan->fif.fine_grain_ctrl);
+	return sprintf(buf, "%d\n", fan->fif.fine_grain_ctrl);
 }
 
 int acpi_fan_create_attributes(struct acpi_device *device)
 {
 	struct acpi_fan *fan = acpi_driver_data(device);
 	int i, status;
+
+	sysfs_attr_init(&fan->fine_grain_control.attr);
+	fan->fine_grain_control.show = show_fine_grain_control;
+	fan->fine_grain_control.store = NULL;
+	fan->fine_grain_control.attr.name = "fine_grain_control";
+	fan->fine_grain_control.attr.mode = 0444;
+	status = sysfs_create_file(&device->dev.kobj, &fan->fine_grain_control.attr);
+	if (status)
+		return status;
 
 	/* _FST is present if we are here */
 	sysfs_attr_init(&fan->fst_speed.attr);
@@ -83,19 +92,7 @@ int acpi_fan_create_attributes(struct acpi_device *device)
 	fan->fst_speed.attr.mode = 0444;
 	status = sysfs_create_file(&device->dev.kobj, &fan->fst_speed.attr);
 	if (status)
-		return status;
-
-	if (!fan->acpi4)
-		return 0;
-
-	sysfs_attr_init(&fan->fine_grain_control.attr);
-	fan->fine_grain_control.show = show_fine_grain_control;
-	fan->fine_grain_control.store = NULL;
-	fan->fine_grain_control.attr.name = "fine_grain_control";
-	fan->fine_grain_control.attr.mode = 0444;
-	status = sysfs_create_file(&device->dev.kobj, &fan->fine_grain_control.attr);
-	if (status)
-		goto rem_fst_attr;
+		goto rem_fine_grain_attr;
 
 	for (i = 0; i < fan->fps_count; ++i) {
 		struct acpi_fan_fps *fps = &fan->fps[i];
@@ -112,17 +109,17 @@ int acpi_fan_create_attributes(struct acpi_device *device)
 
 			for (j = 0; j < i; ++j)
 				sysfs_remove_file(&device->dev.kobj, &fan->fps[j].dev_attr.attr);
-			goto rem_fine_grain_attr;
+			goto rem_fst_attr;
 		}
 	}
 
 	return 0;
 
-rem_fine_grain_attr:
-	sysfs_remove_file(&device->dev.kobj, &fan->fine_grain_control.attr);
-
 rem_fst_attr:
 	sysfs_remove_file(&device->dev.kobj, &fan->fst_speed.attr);
+
+rem_fine_grain_attr:
+	sysfs_remove_file(&device->dev.kobj, &fan->fine_grain_control.attr);
 
 	return status;
 }
@@ -132,13 +129,9 @@ void acpi_fan_delete_attributes(struct acpi_device *device)
 	struct acpi_fan *fan = acpi_driver_data(device);
 	int i;
 
-	sysfs_remove_file(&device->dev.kobj, &fan->fst_speed.attr);
-
-	if (!fan->acpi4)
-		return;
-
 	for (i = 0; i < fan->fps_count; ++i)
 		sysfs_remove_file(&device->dev.kobj, &fan->fps[i].dev_attr.attr);
 
+	sysfs_remove_file(&device->dev.kobj, &fan->fst_speed.attr);
 	sysfs_remove_file(&device->dev.kobj, &fan->fine_grain_control.attr);
 }

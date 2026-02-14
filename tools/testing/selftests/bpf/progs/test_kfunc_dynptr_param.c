@@ -36,7 +36,7 @@ char _license[] SEC("license") = "GPL";
 
 SEC("?lsm.s/bpf")
 __failure __msg("cannot pass in dynptr at an offset=-8")
-int BPF_PROG(not_valid_dynptr, int cmd, union bpf_attr *attr, unsigned int size, bool kernel)
+int BPF_PROG(not_valid_dynptr, int cmd, union bpf_attr *attr, unsigned int size)
 {
 	unsigned long val;
 
@@ -45,16 +45,17 @@ int BPF_PROG(not_valid_dynptr, int cmd, union bpf_attr *attr, unsigned int size,
 }
 
 SEC("?lsm.s/bpf")
-__failure __msg("arg#0 expected pointer to stack or const struct bpf_dynptr")
-int BPF_PROG(not_ptr_to_stack, int cmd, union bpf_attr *attr, unsigned int size, bool kernel)
+__failure __msg("arg#0 expected pointer to stack or dynptr_ptr")
+int BPF_PROG(not_ptr_to_stack, int cmd, union bpf_attr *attr, unsigned int size)
 {
-	static struct bpf_dynptr val;
+	unsigned long val;
 
-	return bpf_verify_pkcs7_signature(&val, &val, NULL);
+	return bpf_verify_pkcs7_signature((struct bpf_dynptr *)val,
+					  (struct bpf_dynptr *)val, NULL);
 }
 
 SEC("lsm.s/bpf")
-int BPF_PROG(dynptr_data_null, int cmd, union bpf_attr *attr, unsigned int size, bool kernel)
+int BPF_PROG(dynptr_data_null, int cmd, union bpf_attr *attr, unsigned int size)
 {
 	struct bpf_key *trusted_keyring;
 	struct bpf_dynptr ptr;

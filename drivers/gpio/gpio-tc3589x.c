@@ -49,7 +49,7 @@ static int tc3589x_gpio_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(ret & mask);
 }
 
-static int tc3589x_gpio_set(struct gpio_chip *chip, unsigned int offset, int val)
+static void tc3589x_gpio_set(struct gpio_chip *chip, unsigned int offset, int val)
 {
 	struct tc3589x_gpio *tc3589x_gpio = gpiochip_get_data(chip);
 	struct tc3589x *tc3589x = tc3589x_gpio->tc3589x;
@@ -57,7 +57,7 @@ static int tc3589x_gpio_set(struct gpio_chip *chip, unsigned int offset, int val
 	unsigned int pos = offset % 8;
 	u8 data[] = {val ? BIT(pos) : 0, BIT(pos)};
 
-	return tc3589x_block_write(tc3589x, reg, ARRAY_SIZE(data), data);
+	tc3589x_block_write(tc3589x, reg, ARRAY_SIZE(data), data);
 }
 
 static int tc3589x_gpio_direction_output(struct gpio_chip *chip,
@@ -67,11 +67,8 @@ static int tc3589x_gpio_direction_output(struct gpio_chip *chip,
 	struct tc3589x *tc3589x = tc3589x_gpio->tc3589x;
 	u8 reg = TC3589x_GPIODIR0 + offset / 8;
 	unsigned int pos = offset % 8;
-	int ret;
 
-	ret = tc3589x_gpio_set(chip, offset, val);
-	if (ret)
-		return ret;
+	tc3589x_gpio_set(chip, offset, val);
 
 	return tc3589x_set_bits(tc3589x, reg, BIT(pos), BIT(pos));
 }

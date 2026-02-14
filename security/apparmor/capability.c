@@ -12,7 +12,6 @@
 #include <linux/errno.h>
 #include <linux/gfp.h>
 #include <linux/security.h>
-#include <linux/timekeeping.h>
 
 #include "include/apparmor.h"
 #include "include/capability.h"
@@ -27,22 +26,20 @@
 
 struct aa_sfs_entry aa_sfs_entry_caps[] = {
 	AA_SFS_FILE_STRING("mask", AA_SFS_CAPS_MASK),
-	AA_SFS_FILE_BOOLEAN("extended", 1),
 	{ }
 };
 
 struct audit_cache {
-	const struct cred *ad_subj_cred;
-	/* Capabilities go from 0 to CAP_LAST_CAP */
-	u64 ktime_ns_expiration[CAP_LAST_CAP+1];
+	struct aa_profile *profile;
+	kernel_cap_t caps;
 };
 
 static DEFINE_PER_CPU(struct audit_cache, audit_cache);
 
 /**
  * audit_cb - call back for capability components of audit struct
- * @ab: audit buffer   (NOT NULL)
- * @va: audit struct to audit data from  (NOT NULL)
+ * @ab - audit buffer   (NOT NULL)
+ * @va - audit struct to audit data from  (NOT NULL)
  */
 static void audit_cb(struct audit_buffer *ab, void *va)
 {
@@ -54,7 +51,7 @@ static void audit_cb(struct audit_buffer *ab, void *va)
 
 /**
  * audit_caps - audit a capability
- * @ad: audit data
+ * @sa: audit data
  * @profile: profile being tested for confinement (NOT NULL)
  * @cap: capability tested
  * @error: error code returned by test
@@ -62,18 +59,17 @@ static void audit_cb(struct audit_buffer *ab, void *va)
  * Do auditing of capability and handle, audit/complain/kill modes switching
  * and duplicate message elimination.
  *
- * Returns: 0 or ad->error on success,  error code on failure
+ * Returns: 0 or sa->error on success,  error code on failure
  */
-static int audit_caps(struct apparmor_audit_data *ad, struct aa_profile *profile,
+static int audit_caps(struct common_audit_data *sa, struct aa_profile *profile,
 		      int cap, int error)
 {
-	const u64 AUDIT_CACHE_TIMEOUT_NS = 1000*1000*1000; /* 1 second */
-
-	struct aa_ruleset *rules = profile->label.rules[0];
+	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+						    typeof(*rules), list);
 	struct audit_cache *ent;
 	int type = AUDIT_APPARMOR_AUTO;
 
-	ad->error = error;
+	aad(sa)->error = error;
 
 	if (likely(!error)) {
 		/* test if auditing is being forced */
@@ -93,20 +89,19 @@ static int audit_caps(struct apparmor_audit_data *ad, struct aa_profile *profile
 
 	/* Do simple duplicate message elimination */
 	ent = &get_cpu_var(audit_cache);
-	/* If the capability was never raised the timestamp check would also catch that */
-	if (ad->subj_cred == ent->ad_subj_cred && ktime_get_ns() <= ent->ktime_ns_expiration[cap]) {
+	if (profile == ent->profile && cap_raised(ent->caps, cap)) {
 		put_cpu_var(audit_cache);
 		if (COMPLAIN_MODE(profile))
 			return complain_error(error);
 		return error;
 	} else {
-		put_cred(ent->ad_subj_cred);
-		ent->ad_subj_cred = get_cred(ad->subj_cred);
-		ent->ktime_ns_expiration[cap] = ktime_get_ns() + AUDIT_CACHE_TIMEOUT_NS;
+		aa_put_profile(ent->profile);
+		ent->profile = aa_get_profile(profile);
+		cap_raise(ent->caps, cap);
 	}
 	put_cpu_var(audit_cache);
 
-	return aa_audit(type, profile, ad, audit_cb);
+	return aa_audit(type, profile, sa, audit_cb);
 }
 
 /**
@@ -114,39 +109,17 @@ static int audit_caps(struct apparmor_audit_data *ad, struct aa_profile *profile
  * @profile: profile being enforced    (NOT NULL, NOT unconfined)
  * @cap: capability to test if allowed
  * @opts: CAP_OPT_NOAUDIT bit determines whether audit record is generated
- * @ad: audit data (NOT NULL)
+ * @sa: audit data (MAY BE NULL indicating no auditing)
  *
  * Returns: 0 if allowed else -EPERM
  */
 static int profile_capable(struct aa_profile *profile, int cap,
-			   unsigned int opts, struct apparmor_audit_data *ad)
+			   unsigned int opts, struct common_audit_data *sa)
 {
-	struct aa_ruleset *rules = profile->label.rules[0];
-	aa_state_t state;
+	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+						    typeof(*rules), list);
 	int error;
 
-	state = RULE_MEDIATES(rules, ad->class);
-	if (state) {
-		struct aa_perms perms = { };
-		u32 request;
-
-		/* caps broken into 256 x 32 bit permission chunks */
-		state = aa_dfa_next(rules->policy->dfa, state, cap >> 5);
-		request = 1 << (cap & 0x1f);
-		perms = *aa_lookup_perms(rules->policy, state);
-		aa_apply_modes_to_perms(profile, &perms);
-
-		if (opts & CAP_OPT_NOAUDIT) {
-			if (perms.complain & request)
-				ad->info = "optional: no audit";
-			else
-				ad = NULL;
-		}
-		return aa_check_perms(profile, &perms, request, ad,
-				      audit_cb);
-	}
-
-	/* fallback to old caps mediation that doesn't support conditionals */
 	if (cap_raised(rules->caps.allow, cap) &&
 	    !cap_raised(rules->caps.denied, cap))
 		error = 0;
@@ -159,15 +132,14 @@ static int profile_capable(struct aa_profile *profile, int cap,
 		/* audit the cap request in complain mode but note that it
 		 * should be optional.
 		 */
-		ad->info = "optional: no audit";
+		aad(sa)->info = "optional: no audit";
 	}
 
-	return audit_caps(ad, profile, cap, error);
+	return audit_caps(sa, profile, cap, error);
 }
 
 /**
  * aa_capable - test permission to use capability
- * @subj_cred: cred we are testing capability against
  * @label: label being tested for capability (NOT NULL)
  * @cap: capability to be tested
  * @opts: CAP_OPT_NOAUDIT bit determines whether audit record is generated
@@ -176,48 +148,15 @@ static int profile_capable(struct aa_profile *profile, int cap,
  *
  * Returns: 0 on success, or else an error code.
  */
-int aa_capable(const struct cred *subj_cred, struct aa_label *label,
-	       int cap, unsigned int opts)
+int aa_capable(struct aa_label *label, int cap, unsigned int opts)
 {
 	struct aa_profile *profile;
 	int error = 0;
-	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_CAP, AA_CLASS_CAP, OP_CAPABLE);
+	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_CAP, AA_CLASS_CAP, OP_CAPABLE);
 
-	ad.subj_cred = subj_cred;
-	ad.common.u.cap = cap;
+	sa.u.cap = cap;
 	error = fn_for_each_confined(label, profile,
-			profile_capable(profile, cap, opts, &ad));
+			profile_capable(profile, cap, opts, &sa));
 
 	return error;
-}
-
-kernel_cap_t aa_profile_capget(struct aa_profile *profile)
-{
-	struct aa_ruleset *rules = profile->label.rules[0];
-	aa_state_t state;
-
-	state = RULE_MEDIATES(rules, AA_CLASS_CAP);
-	if (state) {
-		kernel_cap_t caps = CAP_EMPTY_SET;
-		int i;
-
-		/* caps broken into up to 256, 32 bit permission chunks */
-		for (i = 0; i < (CAP_LAST_CAP >> 5); i++) {
-			struct aa_perms perms = { };
-			aa_state_t tmp;
-
-			tmp = aa_dfa_next(rules->policy->dfa, state, i);
-			perms = *aa_lookup_perms(rules->policy, tmp);
-			aa_apply_modes_to_perms(profile, &perms);
-			caps.val |= ((u64)(perms.allow)) << (i * 5);
-			caps.val |= ((u64)(perms.complain)) << (i * 5);
-		}
-		return caps;
-	}
-
-	/* fallback to old caps */
-	if (COMPLAIN_MODE(profile))
-		return CAP_FULL_SET;
-
-	return rules->caps.allow;
 }

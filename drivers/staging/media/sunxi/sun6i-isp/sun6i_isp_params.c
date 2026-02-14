@@ -379,11 +379,13 @@ static const struct vb2_ops sun6i_isp_params_queue_ops = {
 	.buf_queue		= sun6i_isp_params_buffer_queue,
 	.start_streaming	= sun6i_isp_params_start_streaming,
 	.stop_streaming		= sun6i_isp_params_stop_streaming,
+	.wait_prepare		= vb2_ops_wait_prepare,
+	.wait_finish		= vb2_ops_wait_finish,
 };
 
 /* Video Device */
 
-static int sun6i_isp_params_querycap(struct file *file, void *priv,
+static int sun6i_isp_params_querycap(struct file *file, void *private,
 				     struct v4l2_capability *capability)
 {
 	struct sun6i_isp_device *isp_dev = video_drvdata(file);
@@ -397,7 +399,7 @@ static int sun6i_isp_params_querycap(struct file *file, void *priv,
 	return 0;
 }
 
-static int sun6i_isp_params_enum_fmt(struct file *file, void *priv,
+static int sun6i_isp_params_enum_fmt(struct file *file, void *private,
 				     struct v4l2_fmtdesc *fmtdesc)
 {
 	struct sun6i_isp_device *isp_dev = video_drvdata(file);
@@ -412,7 +414,7 @@ static int sun6i_isp_params_enum_fmt(struct file *file, void *priv,
 	return 0;
 }
 
-static int sun6i_isp_params_g_fmt(struct file *file, void *priv,
+static int sun6i_isp_params_g_fmt(struct file *file, void *private,
 				  struct v4l2_format *format)
 {
 	struct sun6i_isp_device *isp_dev = video_drvdata(file);
@@ -487,7 +489,7 @@ int sun6i_isp_params_setup(struct sun6i_isp_device *isp_dev)
 	queue->buf_struct_size = sizeof(struct sun6i_isp_buffer);
 	queue->ops = &sun6i_isp_params_queue_ops;
 	queue->mem_ops = &vb2_vmalloc_memops;
-	queue->min_queued_buffers = 1;
+	queue->min_buffers_needed = 1;
 	queue->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	queue->lock = &params->lock;
 	queue->dev = isp_dev->dev;

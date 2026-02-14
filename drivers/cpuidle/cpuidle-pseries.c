@@ -22,7 +22,6 @@
 #include <asm/idle.h>
 #include <asm/plpar_wrappers.h>
 #include <asm/rtas.h>
-#include <asm/time.h>
 
 static struct cpuidle_driver pseries_idle_driver = {
 	.name             = "pseries_idle",
@@ -34,16 +33,16 @@ static struct cpuidle_state *cpuidle_state_table __read_mostly;
 static u64 snooze_timeout __read_mostly;
 static bool snooze_timeout_en __read_mostly;
 
-static __cpuidle
-int snooze_loop(struct cpuidle_device *dev, struct cpuidle_driver *drv,
-		int index)
+static int snooze_loop(struct cpuidle_device *dev,
+			struct cpuidle_driver *drv,
+			int index)
 {
 	u64 snooze_exit_time;
 
 	set_thread_flag(TIF_POLLING_NRFLAG);
 
 	pseries_idle_prolog();
-	raw_local_irq_enable();
+	local_irq_enable();
 	snooze_exit_time = get_tb() + snooze_timeout;
 	dev->poll_time_limit = false;
 
@@ -66,14 +65,14 @@ int snooze_loop(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 	HMT_medium();
 	clear_thread_flag(TIF_POLLING_NRFLAG);
 
-	raw_local_irq_disable();
+	local_irq_disable();
 
 	pseries_idle_epilog();
 
 	return index;
 }
 
-static __cpuidle void check_and_cede_processor(void)
+static void check_and_cede_processor(void)
 {
 	/*
 	 * Ensure our interrupt state is properly tracked,
@@ -217,9 +216,9 @@ static int __init parse_cede_parameters(void)
 #define NR_DEDICATED_STATES	2 /* snooze, CEDE */
 static u8 cede_latency_hint[NR_DEDICATED_STATES];
 
-static __cpuidle
-int dedicated_cede_loop(struct cpuidle_device *dev, struct cpuidle_driver *drv,
-			int index)
+static int dedicated_cede_loop(struct cpuidle_device *dev,
+				struct cpuidle_driver *drv,
+				int index)
 {
 	u8 old_latency_hint;
 
@@ -231,7 +230,7 @@ int dedicated_cede_loop(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 	HMT_medium();
 	check_and_cede_processor();
 
-	raw_local_irq_disable();
+	local_irq_disable();
 	get_lppaca()->donate_dedicated_cpu = 0;
 	get_lppaca()->cede_latency_hint = old_latency_hint;
 
@@ -240,9 +239,9 @@ int dedicated_cede_loop(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 	return index;
 }
 
-static __cpuidle
-int shared_cede_loop(struct cpuidle_device *dev, struct cpuidle_driver *drv,
-		     int index)
+static int shared_cede_loop(struct cpuidle_device *dev,
+			struct cpuidle_driver *drv,
+			int index)
 {
 
 	pseries_idle_prolog();
@@ -256,7 +255,7 @@ int shared_cede_loop(struct cpuidle_device *dev, struct cpuidle_driver *drv,
 	 */
 	check_and_cede_processor();
 
-	raw_local_irq_disable();
+	local_irq_disable();
 	pseries_idle_epilog();
 
 	return index;
@@ -415,7 +414,13 @@ static int __init pseries_idle_probe(void)
 		return -ENODEV;
 
 	if (firmware_has_feature(FW_FEATURE_SPLPAR)) {
-		if (lppaca_shared_proc()) {
+		/*
+		 * Use local_paca instead of get_lppaca() since
+		 * preemption is not disabled, and it is not required in
+		 * fact, since lppaca_ptr does not need to be the value
+		 * associated to the current CPU, it can be from any CPU.
+		 */
+		if (lppaca_shared_proc(local_paca->lppaca_ptr)) {
 			cpuidle_state_table = shared_states;
 			max_idle_state = ARRAY_SIZE(shared_states);
 		} else {

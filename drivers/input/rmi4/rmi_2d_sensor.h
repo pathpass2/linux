@@ -7,9 +7,6 @@
 #ifndef _RMI_2D_SENSOR_H
 #define _RMI_2D_SENSOR_H
 
-#include <linux/rmi.h>
-#include <linux/types.h>
-
 enum rmi_2d_sensor_object_type {
 	RMI_2D_OBJECT_NONE,
 	RMI_2D_OBJECT_FINGER,

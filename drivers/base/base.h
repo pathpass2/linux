@@ -27,13 +27,11 @@
  *                 on this bus.
  * @bus - pointer back to the struct bus_type that this structure is associated
  *        with.
- * @dev_root: Default device to use as the parent.
  *
  * @glue_dirs - "glue" directory to put in-between the parent device to
  *              avoid namespace conflicts
  * @class - pointer back to the struct class that this structure is associated
  *          with.
- * @lock_key:	Lock class key for use by the lock validator
  *
  * This structure is the one that is the actual kobject allowing struct
  * bus_type/class to be statically allocated safely.  Nothing outside of the
@@ -50,11 +48,10 @@ struct subsys_private {
 	struct klist klist_drivers;
 	struct blocking_notifier_head bus_notifier;
 	unsigned int drivers_autoprobe:1;
-	const struct bus_type *bus;
-	struct device *dev_root;
+	struct bus_type *bus;
 
 	struct kset glue_dirs;
-	const struct class *class;
+	struct class *class;
 
 	struct lock_class_key lock_key;
 };
@@ -73,9 +70,6 @@ static inline void subsys_put(struct subsys_private *sp)
 		kset_put(&sp->subsys);
 }
 
-struct subsys_private *bus_to_subsys(const struct bus_type *bus);
-struct subsys_private *class_to_subsys(const struct class *class);
-
 struct driver_private {
 	struct kobject kobj;
 	struct klist klist_devices;
@@ -84,18 +78,6 @@ struct driver_private {
 	struct device_driver *driver;
 };
 #define to_driver(obj) container_of(obj, struct driver_private, kobj)
-
-#ifdef CONFIG_RUST
-/**
- * struct driver_type - Representation of a Rust driver type.
- */
-struct driver_type {
-	/**
-	 * @id: Representation of core::any::TypeId.
-	 */
-	u8 id[16];
-} __packed;
-#endif
 
 /**
  * struct device_private - structure to hold the private to the driver core portions of the device structure.
@@ -112,7 +94,6 @@ struct driver_type {
  * @async_driver - pointer to device driver awaiting probe via async_probe
  * @device - pointer back to the struct device that this structure is
  * associated with.
- * @driver_type - The type of the bound Rust driver.
  * @dead - This device is currently either in the process of or has been
  *	removed from the system. Any asynchronous events scheduled for this
  *	device should exit without taking any action.
@@ -126,12 +107,9 @@ struct device_private {
 	struct klist_node knode_bus;
 	struct klist_node knode_class;
 	struct list_head deferred_probe;
-	const struct device_driver *async_driver;
+	struct device_driver *async_driver;
 	char *deferred_probe_reason;
 	struct device *device;
-#ifdef CONFIG_RUST
-	struct driver_type driver_type;
-#endif
 	u8 dead:1;
 };
 #define to_device_private_parent(obj)	\
@@ -144,150 +122,93 @@ struct device_private {
 	container_of(obj, struct device_private, knode_class)
 
 /* initialisation functions */
-int devices_init(void);
-int buses_init(void);
-int classes_init(void);
-int firmware_init(void);
+extern int devices_init(void);
+extern int buses_init(void);
+extern int classes_init(void);
+extern int firmware_init(void);
 #ifdef CONFIG_SYS_HYPERVISOR
-int hypervisor_init(void);
+extern int hypervisor_init(void);
 #else
 static inline int hypervisor_init(void) { return 0; }
 #endif
-int platform_bus_init(void);
-int faux_bus_init(void);
-void cpu_dev_init(void);
-void container_dev_init(void);
+extern int platform_bus_init(void);
+extern void cpu_dev_init(void);
+extern void container_dev_init(void);
 #ifdef CONFIG_AUXILIARY_BUS
-void auxiliary_bus_init(void);
+extern void auxiliary_bus_init(void);
 #else
 static inline void auxiliary_bus_init(void) { }
 #endif
 
-struct kobject *virtual_device_parent(void);
+struct kobject *virtual_device_parent(struct device *dev);
 
-int bus_add_device(struct device *dev);
-void bus_probe_device(struct device *dev);
-void bus_remove_device(struct device *dev);
+extern int bus_add_device(struct device *dev);
+extern void bus_probe_device(struct device *dev);
+extern void bus_remove_device(struct device *dev);
 void bus_notify(struct device *dev, enum bus_notifier_event value);
 bool bus_is_registered(const struct bus_type *bus);
 
-int bus_add_driver(struct device_driver *drv);
-void bus_remove_driver(struct device_driver *drv);
-void device_release_driver_internal(struct device *dev, const struct device_driver *drv,
-				    struct device *parent);
+extern int bus_add_driver(struct device_driver *drv);
+extern void bus_remove_driver(struct device_driver *drv);
+extern void device_release_driver_internal(struct device *dev,
+					   struct device_driver *drv,
+					   struct device *parent);
 
-void driver_detach(const struct device_driver *drv);
-void driver_deferred_probe_del(struct device *dev);
-void device_set_deferred_probe_reason(const struct device *dev, struct va_format *vaf);
-static inline int driver_match_device_locked(const struct device_driver *drv,
-					     struct device *dev)
+extern void driver_detach(struct device_driver *drv);
+extern void driver_deferred_probe_del(struct device *dev);
+extern void device_set_deferred_probe_reason(const struct device *dev,
+					     struct va_format *vaf);
+static inline int driver_match_device(struct device_driver *drv,
+				      struct device *dev)
 {
-	device_lock_assert(dev);
-
 	return drv->bus->match ? drv->bus->match(dev, drv) : 1;
 }
 
-static inline int driver_match_device(const struct device_driver *drv,
-				      struct device *dev)
-{
-	guard(device)(dev);
-	return driver_match_device_locked(drv, dev);
-}
-
-static inline void dev_sync_state(struct device *dev)
-{
-	if (dev->bus->sync_state)
-		dev->bus->sync_state(dev);
-	else if (dev->driver && dev->driver->sync_state)
-		dev->driver->sync_state(dev);
-}
-
-int driver_add_groups(const struct device_driver *drv, const struct attribute_group **groups);
-void driver_remove_groups(const struct device_driver *drv, const struct attribute_group **groups);
+extern int driver_add_groups(struct device_driver *drv,
+			     const struct attribute_group **groups);
+extern void driver_remove_groups(struct device_driver *drv,
+				 const struct attribute_group **groups);
 void device_driver_detach(struct device *dev);
 
-static inline void device_set_driver(struct device *dev, const struct device_driver *drv)
-{
-	/*
-	 * Majority (all?) read accesses to dev->driver happens either
-	 * while holding device lock or in bus/driver code that is only
-	 * invoked when the device is bound to a driver and there is no
-	 * concern of the pointer being changed while it is being read.
-	 * However when reading device's uevent file we read driver pointer
-	 * without taking device lock (so we do not block there for
-	 * arbitrary amount of time). We use WRITE_ONCE() here to prevent
-	 * tearing so that READ_ONCE() can safely be used in uevent code.
-	 */
-	// FIXME - this cast should not be needed "soon"
-	WRITE_ONCE(dev->driver, (struct device_driver *)drv);
-}
-
-void devres_for_each_res(struct device *dev, dr_release_t release,
-			 dr_match_t match, void *match_data,
-			 void (*fn)(struct device *, void *, void *),
-			 void *data);
-int devres_release_all(struct device *dev);
-void device_block_probing(void);
-void device_unblock_probing(void);
-void deferred_probe_extend_timeout(void);
-void driver_deferred_probe_trigger(void);
+extern int devres_release_all(struct device *dev);
+extern void device_block_probing(void);
+extern void device_unblock_probing(void);
+extern void deferred_probe_extend_timeout(void);
+extern void driver_deferred_probe_trigger(void);
 const char *device_get_devnode(const struct device *dev, umode_t *mode,
 			       kuid_t *uid, kgid_t *gid, const char **tmp);
 
 /* /sys/devices directory */
 extern struct kset *devices_kset;
-void devices_kset_move_last(struct device *dev);
+extern void devices_kset_move_last(struct device *dev);
 
 #if defined(CONFIG_MODULES) && defined(CONFIG_SYSFS)
-int module_add_driver(struct module *mod, const struct device_driver *drv);
-void module_remove_driver(const struct device_driver *drv);
+extern void module_add_driver(struct module *mod, struct device_driver *drv);
+extern void module_remove_driver(struct device_driver *drv);
 #else
-static inline int module_add_driver(struct module *mod,
-				    struct device_driver *drv)
-{
-	return 0;
-}
+static inline void module_add_driver(struct module *mod,
+				     struct device_driver *drv) { }
 static inline void module_remove_driver(struct device_driver *drv) { }
 #endif
 
 #ifdef CONFIG_DEVTMPFS
-int devtmpfs_init(void);
+extern int devtmpfs_init(void);
 #else
 static inline int devtmpfs_init(void) { return 0; }
 #endif
 
-#ifdef CONFIG_BLOCK
-extern const struct class block_class;
-static inline bool is_blockdev(struct device *dev)
-{
-	return dev->class == &block_class;
-}
-#else
-static inline bool is_blockdev(struct device *dev) { return false; }
-#endif
-
 /* Device links support */
-int device_links_read_lock(void);
-void device_links_read_unlock(int idx);
-int device_links_read_lock_held(void);
-int device_links_check_suppliers(struct device *dev);
-void device_links_force_bind(struct device *dev);
-void device_links_driver_bound(struct device *dev);
-void device_links_driver_cleanup(struct device *dev);
-void device_links_no_driver(struct device *dev);
-bool device_links_busy(struct device *dev);
-void device_links_unbind_consumers(struct device *dev);
-bool device_link_flag_is_sync_state_only(u32 flags);
-void fw_devlink_drivers_done(void);
-void fw_devlink_probing_done(void);
-
-#define dev_for_each_link_to_supplier(__link, __dev)	\
-	list_for_each_entry_srcu(__link, &(__dev)->links.suppliers, c_node, \
-				 device_links_read_lock_held())
-
-#define dev_for_each_link_to_consumer(__link, __dev)	\
-	list_for_each_entry_srcu(__link, &(__dev)->links.consumers, s_node, \
-				 device_links_read_lock_held())
+extern int device_links_read_lock(void);
+extern void device_links_read_unlock(int idx);
+extern int device_links_read_lock_held(void);
+extern int device_links_check_suppliers(struct device *dev);
+extern void device_links_force_bind(struct device *dev);
+extern void device_links_driver_bound(struct device *dev);
+extern void device_links_driver_cleanup(struct device *dev);
+extern void device_links_no_driver(struct device *dev);
+extern bool device_links_busy(struct device *dev);
+extern void device_links_unbind_consumers(struct device *dev);
+extern void fw_devlink_drivers_done(void);
 
 /* device pm support */
 void device_pm_move_to_tail(struct device *dev);

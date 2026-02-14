@@ -23,7 +23,9 @@
 
 #include <uapi/linux/nfsd/debug.h>
 
+#include "netns.h"
 #include "export.h"
+#include "stats.h"
 
 #undef ifdebug
 #ifdef CONFIG_SUNRPC_DEBUG
@@ -35,50 +37,38 @@
 /*
  * nfsd version
  */
-#define NFSD_MINVERS			2
-#define	NFSD_MAXVERS			4
 #define NFSD_SUPPORTED_MINOR_VERSION	2
-bool nfsd_support_version(int vers);
+/*
+ * Maximum blocksizes supported by daemon under various circumstances.
+ */
+#define NFSSVC_MAXBLKSIZE       RPCSVC_MAXPAYLOAD
+/* NFSv2 is limited by the protocol specification, see RFC 1094 */
+#define NFSSVC_MAXBLKSIZE_V2    (8*1024)
 
-#include "netns.h"
-#include "stats.h"
 
 /*
- * Default and maximum payload size (NFS READ or WRITE), in bytes.
- * The default is historical, and the maximum is an implementation
- * limit.
+ * Largest number of bytes we need to allocate for an NFS
+ * call or reply.  Used to control buffer sizes.  We use
+ * the length of v3 WRITE, READDIR and READDIR replies
+ * which are an RPC header, up to 26 XDR units of reply
+ * data, and some page data.
+ *
+ * Note that accuracy here doesn't matter too much as the
+ * size is rounded up to a page size when allocating space.
  */
-enum {
-	NFSSVC_DEFBLKSIZE       = 1 * 1024 * 1024,
-	NFSSVC_MAXBLKSIZE       = RPCSVC_MAXPAYLOAD,
-};
+#define NFSD_BUFSIZE            ((RPC_MAX_HEADER_WITH_AUTH+26)*XDR_UNIT + NFSSVC_MAXBLKSIZE)
 
 struct readdir_cd {
 	__be32			err;	/* 0, nfserr, or nfserr_eof */
 };
 
-/* Maximum number of operations per session compound */
-#define NFSD_MAX_OPS_PER_COMPOUND	200
 
-struct nfsd_genl_rqstp {
-	struct sockaddr		rq_daddr;
-	struct sockaddr		rq_saddr;
-	unsigned long		rq_flags;
-	ktime_t			rq_stime;
-	__be32			rq_xid;
-	u32			rq_vers;
-	u32			rq_prog;
-	u32			rq_proc;
-
-	/* NFSv4 compound */
-	u32			rq_opcnt;
-	u32			rq_opnum[16];
-};
-
-extern struct svc_program	nfsd_programs[];
+extern struct svc_program	nfsd_program;
 extern const struct svc_version	nfsd_version2, nfsd_version3, nfsd_version4;
 extern struct mutex		nfsd_mutex;
-extern atomic_t			nfsd_th_cnt;		/* number of available threads */
+extern spinlock_t		nfsd_drc_lock;
+extern unsigned long		nfsd_drc_max_mem;
+extern unsigned long		nfsd_drc_mem_used;
 
 extern const struct seq_operations nfs_exports_op;
 
@@ -95,17 +85,20 @@ bool		nfssvc_encode_voidres(struct svc_rqst *rqstp,
 /*
  * Function prototypes.
  */
-int		nfsd_svc(int n, int *nservers, struct net *net,
-			 const struct cred *cred, const char *scope);
+int		nfsd_svc(int nrservs, struct net *net, const struct cred *cred);
 int		nfsd_dispatch(struct svc_rqst *rqstp);
 
 int		nfsd_nrthreads(struct net *);
 int		nfsd_nrpools(struct net *);
 int		nfsd_get_nrthreads(int n, int *, struct net *);
 int		nfsd_set_nrthreads(int n, int *, struct net *);
+int		nfsd_pool_stats_open(struct inode *, struct file *);
+int		nfsd_pool_stats_release(struct inode *, struct file *);
 void		nfsd_shutdown_threads(struct net *net);
 
-struct svc_rqst *nfsd_current_rqst(void);
+void		nfsd_put(struct net *net);
+
+bool		i_am_nfsd(void);
 
 struct nfsdfs_client {
 	struct kref cl_ref;
@@ -133,10 +126,6 @@ extern const struct svc_version nfsd_acl_version3;
 #endif
 #endif
 
-#if IS_ENABLED(CONFIG_NFS_LOCALIO)
-extern const struct svc_version localio_version1;
-#endif
-
 struct nfsd_net;
 
 enum vers_op {NFSD_SET, NFSD_CLEAR, NFSD_TEST, NFSD_AVAIL };
@@ -144,33 +133,12 @@ int nfsd_vers(struct nfsd_net *nn, int vers, enum vers_op change);
 int nfsd_minorversion(struct nfsd_net *nn, u32 minorversion, enum vers_op change);
 void nfsd_reset_versions(struct nfsd_net *nn);
 int nfsd_create_serv(struct net *net);
-void nfsd_destroy_serv(struct net *net);
-
-#ifdef CONFIG_DEBUG_FS
-void nfsd_debugfs_init(void);
-void nfsd_debugfs_exit(void);
-#else
-static inline void nfsd_debugfs_init(void) {}
-static inline void nfsd_debugfs_exit(void) {}
-#endif
-
-extern bool nfsd_disable_splice_read __read_mostly;
-
-enum {
-	/* Any new NFSD_IO enum value must be added at the end */
-	NFSD_IO_BUFFERED,
-	NFSD_IO_DONTCACHE,
-	NFSD_IO_DIRECT,
-};
-
-extern u64 nfsd_io_cache_read __read_mostly;
-extern u64 nfsd_io_cache_write __read_mostly;
 
 extern int nfsd_max_blksize;
 
 static inline int nfsd_v4client(struct svc_rqst *rq)
 {
-	return rq && rq->rq_prog == NFS_PROGRAM && rq->rq_vers == 4;
+	return rq->rq_prog == NFS_PROGRAM && rq->rq_vers == 4;
 }
 static inline struct user_namespace *
 nfsd_user_namespace(const struct svc_rqst *rqstp)
@@ -233,6 +201,7 @@ void		nfsd_lockd_shutdown(void);
 #define	nfserr_noent		cpu_to_be32(NFSERR_NOENT)
 #define	nfserr_io		cpu_to_be32(NFSERR_IO)
 #define	nfserr_nxio		cpu_to_be32(NFSERR_NXIO)
+#define	nfserr_eagain		cpu_to_be32(NFSERR_EAGAIN)
 #define	nfserr_acces		cpu_to_be32(NFSERR_ACCES)
 #define	nfserr_exist		cpu_to_be32(NFSERR_EXIST)
 #define	nfserr_xdev		cpu_to_be32(NFSERR_XDEV)
@@ -244,6 +213,7 @@ void		nfsd_lockd_shutdown(void);
 #define	nfserr_nospc		cpu_to_be32(NFSERR_NOSPC)
 #define	nfserr_rofs		cpu_to_be32(NFSERR_ROFS)
 #define	nfserr_mlink		cpu_to_be32(NFSERR_MLINK)
+#define	nfserr_opnotsupp	cpu_to_be32(NFSERR_OPNOTSUPP)
 #define	nfserr_nametoolong	cpu_to_be32(NFSERR_NAMETOOLONG)
 #define	nfserr_notempty		cpu_to_be32(NFSERR_NOTEMPTY)
 #define	nfserr_dquot		cpu_to_be32(NFSERR_DQUOT)
@@ -288,11 +258,9 @@ void		nfsd_lockd_shutdown(void);
 #define	nfserr_no_grace		cpu_to_be32(NFSERR_NO_GRACE)
 #define	nfserr_reclaim_bad	cpu_to_be32(NFSERR_RECLAIM_BAD)
 #define	nfserr_badname		cpu_to_be32(NFSERR_BADNAME)
-#define	nfserr_admin_revoked	cpu_to_be32(NFS4ERR_ADMIN_REVOKED)
 #define	nfserr_cb_path_down	cpu_to_be32(NFSERR_CB_PATH_DOWN)
 #define	nfserr_locked		cpu_to_be32(NFSERR_LOCKED)
 #define	nfserr_wrongsec		cpu_to_be32(NFSERR_WRONGSEC)
-#define nfserr_delay			cpu_to_be32(NFS4ERR_DELAY)
 #define nfserr_badiomode		cpu_to_be32(NFS4ERR_BADIOMODE)
 #define nfserr_badlayout		cpu_to_be32(NFS4ERR_BADLAYOUT)
 #define nfserr_bad_session_digest	cpu_to_be32(NFS4ERR_BAD_SESSION_DIGEST)
@@ -341,30 +309,17 @@ void		nfsd_lockd_shutdown(void);
 #define nfserr_xattr2big		cpu_to_be32(NFS4ERR_XATTR2BIG)
 #define nfserr_noxattr			cpu_to_be32(NFS4ERR_NOXATTR)
 
-/*
- * Error codes for internal use.  We use enum to choose numbers that are
- * not already assigned, then covert to be32 resulting in a number that
- * cannot conflict with any existing be32 nfserr value.
+/* error codes for internal use */
+/* if a request fails due to kmalloc failure, it gets dropped.
+ *  Client should resend eventually
  */
-enum {
+#define	nfserr_dropit		cpu_to_be32(30000)
 /* end-of-file indicator in readdir */
-	NFSERR_EOF = NFS4ERR_FIRST_FREE,
-#define	nfserr_eof		cpu_to_be32(NFSERR_EOF)
-
+#define	nfserr_eof		cpu_to_be32(30001)
 /* replay detected */
-	NFSERR_REPLAY_ME,
-#define	nfserr_replay_me	cpu_to_be32(NFSERR_REPLAY_ME)
-
+#define	nfserr_replay_me	cpu_to_be32(11001)
 /* nfs41 replay detected */
-	NFSERR_REPLAY_CACHE,
-#define	nfserr_replay_cache	cpu_to_be32(NFSERR_REPLAY_CACHE)
-
-/* symlink found where dir expected - handled differently to
- * other symlink found errors by NFSv3.
- */
-	NFSERR_SYMLINK_NOT_DIR,
-#define	nfserr_symlink_not_dir	cpu_to_be32(NFSERR_SYMLINK_NOT_DIR)
-};
+#define	nfserr_replay_cache	cpu_to_be32(11002)
 
 /* Check for dir entries '.' and '..' */
 #define isdotent(n, l)	(l < 3 && n[0] == '.' && (l == 1 || n[1] == '.'))
@@ -394,16 +349,16 @@ enum {
 #define	NFSD_CLIENT_MAX_TRIM_PER_RUN	128
 #define	NFS4_CLIENTS_PER_GB		1024
 #define NFSD_DELEGRETURN_TIMEOUT	(HZ / 34)	/* 30ms */
-#define	NFSD_CB_GETATTR_TIMEOUT		NFSD_DELEGRETURN_TIMEOUT
 
 /*
- * The following attributes are not implemented by NFSD:
+ * The following attributes are currently not supported by the NFSv4 server:
  *    ARCHIVE       (deprecated anyway)
  *    HIDDEN        (unlikely to be supported any time soon)
  *    MIMETYPE      (unlikely to be supported any time soon)
  *    QUOTA_*       (will be supported in a forthcoming patch)
  *    SYSTEM        (unlikely to be supported any time soon)
  *    TIME_BACKUP   (unlikely to be supported any time soon)
+ *    TIME_CREATE   (unlikely to be supported any time soon)
  */
 #define NFSD4_SUPPORTED_ATTRS_WORD0                                                         \
 (FATTR4_WORD0_SUPPORTED_ATTRS   | FATTR4_WORD0_TYPE         | FATTR4_WORD0_FH_EXPIRE_TYPE   \
@@ -454,26 +409,11 @@ enum {
 #define NFSD4_2_SECURITY_ATTRS		0
 #endif
 
-#ifdef CONFIG_NFSD_V4_POSIX_ACLS
-#define NFSD4_2_POSIX_ACL_ATTRS \
-	(FATTR4_WORD2_ACL_TRUEFORM | \
-	FATTR4_WORD2_ACL_TRUEFORM_SCOPE | \
-	FATTR4_WORD2_POSIX_DEFAULT_ACL | \
-	FATTR4_WORD2_POSIX_ACCESS_ACL)
-#else
-#define NFSD4_2_POSIX_ACL_ATTRS		0
-#endif
-
 #define NFSD4_2_SUPPORTED_ATTRS_WORD2 \
 	(NFSD4_1_SUPPORTED_ATTRS_WORD2 | \
 	FATTR4_WORD2_MODE_UMASK | \
-	FATTR4_WORD2_CLONE_BLKSIZE | \
 	NFSD4_2_SECURITY_ATTRS | \
-	FATTR4_WORD2_XATTR_SUPPORT | \
-	FATTR4_WORD2_TIME_DELEG_ACCESS | \
-	FATTR4_WORD2_TIME_DELEG_MODIFY | \
-	FATTR4_WORD2_OPEN_ARGUMENTS | \
-	NFSD4_2_POSIX_ACL_ATTRS)
+	FATTR4_WORD2_XATTR_SUPPORT)
 
 extern const u32 nfsd_suppattrs[3][3];
 
@@ -541,19 +481,9 @@ static inline bool nfsd_attrs_supported(u32 minorversion, const u32 *bmval)
 #else
 #define MAYBE_FATTR4_WORD2_SECURITY_LABEL 0
 #endif
-#ifdef CONFIG_NFSD_V4_POSIX_ACLS
-#define MAYBE_FATTR4_WORD2_POSIX_ACL_ATTRS \
-	FATTR4_WORD2_POSIX_DEFAULT_ACL | FATTR4_WORD2_POSIX_ACCESS_ACL
-#else
-#define MAYBE_FATTR4_WORD2_POSIX_ACL_ATTRS 0
-#endif
 #define NFSD_WRITEABLE_ATTRS_WORD2 \
 	(FATTR4_WORD2_MODE_UMASK \
-	| MAYBE_FATTR4_WORD2_SECURITY_LABEL \
-	| FATTR4_WORD2_TIME_DELEG_ACCESS \
-	| FATTR4_WORD2_TIME_DELEG_MODIFY \
-	| MAYBE_FATTR4_WORD2_POSIX_ACL_ATTRS \
-	)
+	| MAYBE_FATTR4_WORD2_SECURITY_LABEL)
 
 #define NFSD_SUPPATTR_EXCLCREAT_WORD0 \
 	NFSD_WRITEABLE_ATTRS_WORD0
@@ -564,18 +494,8 @@ static inline bool nfsd_attrs_supported(u32 minorversion, const u32 *bmval)
 #define NFSD_SUPPATTR_EXCLCREAT_WORD1 \
 	(NFSD_WRITEABLE_ATTRS_WORD1 & \
 	 ~(FATTR4_WORD1_TIME_ACCESS_SET | FATTR4_WORD1_TIME_MODIFY_SET))
-/*
- * The FATTR4_WORD2_TIME_DELEG attributes are not to be allowed for
- * OPEN(create) with EXCLUSIVE4_1. It doesn't make sense to set a
- * delegated timestamp on a new file.
- *
- * This mask includes NFSv4.2-only attributes (e.g., POSIX ACLs).
- * Version filtering occurs via nfsd_suppattrs[] before this mask
- * is applied, so pre-4.2 clients never see unsupported attributes.
- */
 #define NFSD_SUPPATTR_EXCLCREAT_WORD2 \
-	(NFSD_WRITEABLE_ATTRS_WORD2 & \
-	~(FATTR4_WORD2_TIME_DELEG_ACCESS | FATTR4_WORD2_TIME_DELEG_MODIFY))
+	NFSD_WRITEABLE_ATTRS_WORD2
 
 extern int nfsd4_is_junction(struct dentry *dentry);
 extern int register_cld_notifier(void);

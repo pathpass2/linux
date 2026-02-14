@@ -196,7 +196,7 @@ static const struct iio_info npcm_adc_iio_info = {
 static const struct of_device_id npcm_adc_match[] = {
 	{ .compatible = "nuvoton,npcm750-adc", .data = &npxm7xx_adc_info},
 	{ .compatible = "nuvoton,npcm845-adc", .data = &npxm8xx_adc_info},
-	{ }
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, npcm_adc_match);
 
@@ -244,8 +244,8 @@ static int npcm_adc_probe(struct platform_device *pdev)
 	info->adc_sample_hz = clk_get_rate(info->adc_clk) / ((div + 1) * 2);
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		ret = irq;
+	if (irq <= 0) {
+		ret = -EINVAL;
 		goto err_disable_clk;
 	}
 
@@ -320,7 +320,7 @@ err_disable_clk:
 	return ret;
 }
 
-static void npcm_adc_remove(struct platform_device *pdev)
+static int npcm_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct npcm_adc *info = iio_priv(indio_dev);
@@ -333,6 +333,8 @@ static void npcm_adc_remove(struct platform_device *pdev)
 	if (!IS_ERR(info->vref))
 		regulator_disable(info->vref);
 	clk_disable_unprepare(info->adc_clk);
+
+	return 0;
 }
 
 static struct platform_driver npcm_adc_driver = {

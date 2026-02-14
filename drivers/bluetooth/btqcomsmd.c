@@ -117,7 +117,7 @@ static int btqcomsmd_setup(struct hci_dev *hdev)
 	/* Devices do not have persistent storage for BD address. Retrieve
 	 * it from the firmware node property.
 	 */
-	hci_set_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
+	set_bit(HCI_QUIRK_USE_BDADDR_PROPERTY, &hdev->quirks);
 
 	return 0;
 }
@@ -197,7 +197,7 @@ destroy_acl_channel:
 	return ret;
 }
 
-static void btqcomsmd_remove(struct platform_device *pdev)
+static int btqcomsmd_remove(struct platform_device *pdev)
 {
 	struct btqcomsmd *btq = platform_get_drvdata(pdev);
 
@@ -206,6 +206,8 @@ static void btqcomsmd_remove(struct platform_device *pdev)
 
 	rpmsg_destroy_ept(btq->cmd_channel);
 	rpmsg_destroy_ept(btq->acl_channel);
+
+	return 0;
 }
 
 static const struct of_device_id btqcomsmd_of_match[] = {

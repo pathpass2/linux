@@ -9,7 +9,6 @@
 #include <linux/capability.h>
 #include <linux/types.h>
 #include <linux/errno.h>
-#include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -23,7 +22,7 @@
 
 #include "internal.h"
 
-MODULE_IMPORT_NS("EFIVAR");
+MODULE_IMPORT_NS(EFIVAR);
 
 static bool
 validate_device_path(efi_char16_t *var_name, int match, u8 *buffer,
@@ -226,31 +225,6 @@ variable_matches(const char *var_name, size_t len, const char *match_name,
 	}
 }
 
-char *
-efivar_get_utf8name(const efi_char16_t *name16, efi_guid_t *vendor)
-{
-	int len = ucs2_utf8size(name16);
-	char *name;
-
-	/* name, plus '-', plus GUID, plus NUL*/
-	name = kmalloc(len + 1 + EFI_VARIABLE_GUID_LEN + 1, GFP_KERNEL);
-	if (!name)
-		return NULL;
-
-	ucs2_as_utf8(name, name16, len);
-
-	name[len] = '-';
-
-	efi_guid_to_str(vendor, name + len + 1);
-
-	name[len + EFI_VARIABLE_GUID_LEN+1] = '\0';
-
-	/* replace invalid slashes like kobject_set_name_vargs does for /sys/firmware/efi/vars. */
-	strreplace(name, '/', '!');
-
-	return name;
-}
-
 bool
 efivar_validate(efi_guid_t vendor, efi_char16_t *var_name, u8 *data,
 		unsigned long data_size)
@@ -314,6 +288,28 @@ efivar_variable_is_removable(efi_guid_t vendor, const char *var_name,
 	return found;
 }
 
+static bool variable_is_present(efi_char16_t *variable_name, efi_guid_t *vendor,
+				struct list_head *head)
+{
+	struct efivar_entry *entry, *n;
+	unsigned long strsize1, strsize2;
+	bool found = false;
+
+	strsize1 = ucs2_strsize(variable_name, 1024);
+	list_for_each_entry_safe(entry, n, head, list) {
+		strsize2 = ucs2_strsize(entry->var.VariableName, 1024);
+		if (strsize1 == strsize2 &&
+			!memcmp(variable_name, &(entry->var.VariableName),
+				strsize2) &&
+			!efi_guidcmp(entry->var.VendorGuid,
+				*vendor)) {
+			found = true;
+			break;
+		}
+	}
+	return found;
+}
+
 /*
  * Returns the size of variable_name, in bytes, including the
  * terminating NULL character, or variable_name_size if no NULL
@@ -365,17 +361,18 @@ static void dup_variable_bug(efi_char16_t *str16, efi_guid_t *vendor_guid,
  * efivar_init - build the initial list of EFI variables
  * @func: callback function to invoke for every variable
  * @data: function-specific data to pass to @func
- * @duplicate_check: fail if a duplicate variable is found
+ * @duplicates: error if we encounter duplicates on @head?
+ * @head: initialised head of variable list
  *
  * Get every EFI variable from the firmware and invoke @func. @func
- * should populate the initial dentry and inode tree.
+ * should call efivar_entry_add() to build the list of variables.
  *
  * Returns 0 on success, or a kernel error code on failure.
  */
 int efivar_init(int (*func)(efi_char16_t *, efi_guid_t, unsigned long, void *),
-		void *data, bool duplicate_check)
+		void *data, bool duplicates, struct list_head *head)
 {
-	unsigned long variable_name_size = 512;
+	unsigned long variable_name_size = 1024;
 	efi_char16_t *variable_name;
 	efi_status_t status;
 	efi_guid_t vendor_guid;
@@ -392,14 +389,12 @@ int efivar_init(int (*func)(efi_char16_t *, efi_guid_t, unsigned long, void *),
 		goto free;
 
 	/*
-	 * A small set of old UEFI implementations reject sizes
-	 * above a certain threshold, the lowest seen in the wild
-	 * is 512.
+	 * Per EFI spec, the maximum storage allocated for both
+	 * the variable name and variable data is 1024 bytes.
 	 */
 
 	do {
-		variable_name_size = 512;
-		BUILD_BUG_ON(EFI_VAR_NAME_LEN < 512);
+		variable_name_size = 1024;
 
 		status = efivar_get_next_variable(&variable_name_size,
 						  variable_name,
@@ -417,9 +412,9 @@ int efivar_init(int (*func)(efi_char16_t *, efi_guid_t, unsigned long, void *),
 			 * we'll ever see a different variable name,
 			 * and may end up looping here forever.
 			 */
-			if (duplicate_check &&
-			    efivarfs_variable_is_present(variable_name,
-							 &vendor_guid, data)) {
+			if (duplicates &&
+			    variable_is_present(variable_name, &vendor_guid,
+						head)) {
 				dup_variable_bug(variable_name, &vendor_guid,
 						 variable_name_size);
 				status = EFI_NOT_FOUND;
@@ -436,13 +431,9 @@ int efivar_init(int (*func)(efi_char16_t *, efi_guid_t, unsigned long, void *),
 			break;
 		case EFI_NOT_FOUND:
 			break;
-		case EFI_BUFFER_TOO_SMALL:
-			pr_warn("efivars: Variable name size exceeds maximum (%lu > 512)\n",
-				variable_name_size);
-			status = EFI_NOT_FOUND;
-			break;
 		default:
-			pr_warn("efivars: get_next_variable: status=%lx\n", status);
+			printk(KERN_WARNING "efivars: get_next_variable: status=%lx\n",
+				status);
 			status = EFI_NOT_FOUND;
 			break;
 		}
@@ -457,12 +448,70 @@ free:
 }
 
 /**
- * efivar_entry_delete - delete variable
+ * efivar_entry_add - add entry to variable list
+ * @entry: entry to add to list
+ * @head: list head
+ *
+ * Returns 0 on success, or a kernel error code on failure.
+ */
+int efivar_entry_add(struct efivar_entry *entry, struct list_head *head)
+{
+	int err;
+
+	err = efivar_lock();
+	if (err)
+		return err;
+	list_add(&entry->list, head);
+	efivar_unlock();
+
+	return 0;
+}
+
+/**
+ * __efivar_entry_add - add entry to variable list
+ * @entry: entry to add to list
+ * @head: list head
+ */
+void __efivar_entry_add(struct efivar_entry *entry, struct list_head *head)
+{
+	list_add(&entry->list, head);
+}
+
+/**
+ * efivar_entry_remove - remove entry from variable list
+ * @entry: entry to remove from list
+ *
+ * Returns 0 on success, or a kernel error code on failure.
+ */
+void efivar_entry_remove(struct efivar_entry *entry)
+{
+	list_del(&entry->list);
+}
+
+/*
+ * efivar_entry_list_del_unlock - remove entry from variable list
+ * @entry: entry to remove
+ *
+ * Remove @entry from the variable list and release the list lock.
+ *
+ * NOTE: slightly weird locking semantics here - we expect to be
+ * called with the efivars lock already held, and we release it before
+ * returning. This is because this function is usually called after
+ * set_variable() while the lock is still held.
+ */
+static void efivar_entry_list_del_unlock(struct efivar_entry *entry)
+{
+	list_del(&entry->list);
+	efivar_unlock();
+}
+
+/**
+ * efivar_entry_delete - delete variable and remove entry from list
  * @entry: entry containing variable to delete
  *
- * Delete the variable from the firmware. It is the caller's
- * responsibility to free @entry (by deleting the dentry/inode) once
- * we return.
+ * Delete the variable from the firmware and remove @entry from the
+ * variable list. It is the caller's responsibility to free @entry
+ * once we return.
  *
  * Returns 0 on success, -EINTR if we can't grab the semaphore,
  * converted EFI status code if set_variable() fails.
@@ -479,10 +528,12 @@ int efivar_entry_delete(struct efivar_entry *entry)
 	status = efivar_set_variable_locked(entry->var.VariableName,
 					    &entry->var.VendorGuid,
 					    0, 0, NULL, false);
-	efivar_unlock();
-	if (!(status == EFI_SUCCESS || status == EFI_NOT_FOUND))
+	if (!(status == EFI_SUCCESS || status == EFI_NOT_FOUND)) {
+		efivar_unlock();
 		return efi_status_to_err(status);
+	}
 
+	efivar_entry_list_del_unlock(entry);
 	return 0;
 }
 
@@ -553,7 +604,7 @@ int efivar_entry_get(struct efivar_entry *entry, u32 *attributes,
 	err = __efivar_entry_get(entry, attributes, size, data);
 	efivar_unlock();
 
-	return err;
+	return 0;
 }
 
 /**
@@ -576,7 +627,7 @@ int efivar_entry_get(struct efivar_entry *entry, u32 *attributes,
  * get_variable() fail.
  *
  * If the EFI variable does not exist when calling set_variable()
- * (EFI_NOT_FOUND).
+ * (EFI_NOT_FOUND), @entry is removed from the variable list.
  */
 int efivar_entry_set_get_size(struct efivar_entry *entry, u32 attributes,
 			      unsigned long *size, void *data, bool *set)
@@ -592,8 +643,9 @@ int efivar_entry_set_get_size(struct efivar_entry *entry, u32 attributes,
 		return -EINVAL;
 
 	/*
-	 * The lock here protects the get_variable call and the
-	 * conditional set_variable call
+	 * The lock here protects the get_variable call, the conditional
+	 * set_variable call, and removal of the variable from the efivars
+	 * list (in the case of an authenticated delete).
 	 */
 	err = efivar_lock();
 	if (err)
@@ -619,7 +671,10 @@ int efivar_entry_set_get_size(struct efivar_entry *entry, u32 attributes,
 				    &entry->var.VendorGuid,
 				    NULL, size, NULL);
 
-	efivar_unlock();
+	if (status == EFI_NOT_FOUND)
+		efivar_entry_list_del_unlock(entry);
+	else
+		efivar_unlock();
 
 	if (status && status != EFI_BUFFER_TOO_SMALL)
 		return efi_status_to_err(status);
@@ -630,4 +685,38 @@ out:
 	efivar_unlock();
 	return err;
 
+}
+
+/**
+ * efivar_entry_iter - iterate over variable list
+ * @func: callback function
+ * @head: head of variable list
+ * @data: function-specific data to pass to callback
+ *
+ * Iterate over the list of EFI variables and call @func with every
+ * entry on the list. It is safe for @func to remove entries in the
+ * list via efivar_entry_delete() while iterating.
+ *
+ * Some notes for the callback function:
+ *  - a non-zero return value indicates an error and terminates the loop
+ *  - @func is called from atomic context
+ */
+int efivar_entry_iter(int (*func)(struct efivar_entry *, void *),
+		      struct list_head *head, void *data)
+{
+	struct efivar_entry *entry, *n;
+	int err = 0;
+
+	err = efivar_lock();
+	if (err)
+		return err;
+
+	list_for_each_entry_safe(entry, n, head, list) {
+		err = func(entry, data);
+		if (err)
+			break;
+	}
+	efivar_unlock();
+
+	return err;
 }

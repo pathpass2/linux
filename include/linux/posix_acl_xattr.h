@@ -44,9 +44,8 @@ posix_acl_from_xattr(struct user_namespace *user_ns, const void *value,
 }
 #endif
 
-extern void *posix_acl_to_xattr(struct user_namespace *user_ns, const struct posix_acl *acl,
-				size_t *sizep, gfp_t gfp);
-
+int posix_acl_to_xattr(struct user_namespace *user_ns,
+		       const struct posix_acl *acl, void *buffer, size_t size);
 static inline const char *posix_acl_xattr_name(int type)
 {
 	switch (type) {
@@ -69,8 +68,7 @@ static inline int posix_acl_type(const char *name)
 	return -1;
 }
 
-/* These are legacy handlers. Don't use them for new code. */
-extern const struct xattr_handler nop_posix_acl_access;
-extern const struct xattr_handler nop_posix_acl_default;
+extern const struct xattr_handler posix_acl_access_xattr_handler;
+extern const struct xattr_handler posix_acl_default_xattr_handler;
 
 #endif	/* _POSIX_ACL_XATTR_H */

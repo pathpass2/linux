@@ -1,3 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0-only
+dtstree	:= $(srctree)/$(src)
 
-dtb-y = loongson-2k0500-ref.dtb loongson-2k1000-ref.dtb loongson-2k2000-ref.dtb
+dtb-y := $(patsubst $(dtstree)/%.dts,%.dtb, $(wildcard $(dtstree)/*.dts))

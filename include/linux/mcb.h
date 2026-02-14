@@ -63,6 +63,7 @@ static inline struct mcb_bus *to_mcb_bus(struct device *dev)
 struct mcb_device {
 	struct device dev;
 	struct mcb_bus *bus;
+	bool is_added;
 	struct mcb_driver *driver;
 	u16 id;
 	int inst;
@@ -94,7 +95,10 @@ struct mcb_driver {
 	void (*shutdown)(struct mcb_device *mdev);
 };
 
-#define to_mcb_driver(__drv)	container_of_const(__drv, struct mcb_driver, driver)
+static inline struct mcb_driver *to_mcb_driver(struct device_driver *drv)
+{
+	return container_of(drv, struct mcb_driver, driver);
+}
 
 static inline void *mcb_get_drvdata(struct mcb_device *dev)
 {

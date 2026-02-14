@@ -27,7 +27,6 @@
 #include <linux/context_tracking.h>
 #include <linux/entry-common.h>
 #include <linux/syscalls.h>
-#include <linux/rseq.h>
 
 #include <asm/processor.h>
 #include <asm/ucontext.h>
@@ -41,7 +40,6 @@
 #include <asm/syscall.h>
 #include <asm/sigframe.h>
 #include <asm/signal.h>
-#include <asm/shstk.h>
 
 static inline int is_ia32_compat_frame(struct ksignal *ksig)
 {
@@ -58,24 +56,6 @@ static inline int is_x32_frame(struct ksignal *ksig)
 {
 	return IS_ENABLED(CONFIG_X86_X32_ABI) &&
 		ksig->ka.sa.sa_flags & SA_X32_ABI;
-}
-
-/*
- * Enable all pkeys temporarily, so as to ensure that both the current
- * execution stack as well as the alternate signal stack are writeable.
- * The application can use any of the available pkeys to protect the
- * alternate signal stack, and we don't know which one it is, so enable
- * all. The PKRU register will be reset to init_pkru later in the flow,
- * in fpu__clear_user_states(), and it is the application's responsibility
- * to enable the appropriate pkey as the first step in the signal handler
- * so that the handler does not segfault.
- */
-static inline u32 sig_prepare_pkru(void)
-{
-	u32 orig_pkru = read_pkru();
-
-	write_pkru(0);
-	return orig_pkru;
 }
 
 /*
@@ -102,7 +82,6 @@ get_sigframe(struct ksignal *ksig, struct pt_regs *regs, size_t frame_size,
 	unsigned long math_size = 0;
 	unsigned long sp = regs->sp;
 	unsigned long buf_fx = 0;
-	u32 pkru;
 
 	/* redzone */
 	if (!ia32_frame)
@@ -157,17 +136,9 @@ get_sigframe(struct ksignal *ksig, struct pt_regs *regs, size_t frame_size,
 		return (void __user *)-1L;
 	}
 
-	/* Update PKRU to enable access to the alternate signal stack. */
-	pkru = sig_prepare_pkru();
 	/* save i387 and extended state */
-	if (!copy_fpstate_to_sigframe(*fpstate, (void __user *)buf_fx, math_size, pkru)) {
-		/*
-		 * Restore PKRU to the original, user-defined value; disable
-		 * extra pkeys enabled for the alternate signal stack, if any.
-		 */
-		write_pkru(pkru);
+	if (!copy_fpstate_to_sigframe(*fpstate, (void __user *)buf_fx, math_size))
 		return (void __user *)-1L;
-	}
 
 	return (void __user *)sp;
 }
@@ -211,7 +182,7 @@ get_sigframe(struct ksignal *ksig, struct pt_regs *regs, size_t frame_size,
 static unsigned long __ro_after_init max_frame_size;
 static unsigned int __ro_after_init fpu_default_state_size;
 
-static int __init init_sigframe_size(void)
+void __init init_sigframe_size(void)
 {
 	fpu_default_state_size = fpu__get_fpstate_size();
 
@@ -223,9 +194,7 @@ static int __init init_sigframe_size(void)
 	max_frame_size = round_up(max_frame_size, FRAME_ALIGNMENT);
 
 	pr_info("max sigframe size: %lu\n", max_frame_size);
-	return 0;
 }
-early_initcall(init_sigframe_size);
 
 unsigned long get_sigframe_size(void)
 {
@@ -255,7 +224,7 @@ static void
 handle_signal(struct ksignal *ksig, struct pt_regs *regs)
 {
 	bool stepping, failed;
-	struct fpu *fpu = x86_task_fpu(current);
+	struct fpu *fpu = &current->thread.fpu;
 
 	if (v8086_mode(regs))
 		save_v86_state((struct kernel_vm86_regs *) regs, VM86_SIGNAL);
@@ -423,14 +392,14 @@ bool sigaltstack_size_valid(size_t ss_size)
 	if (!fpu_state_size_dynamic() && !strict_sigaltstack_size)
 		return true;
 
-	fsize += x86_task_fpu(current->group_leader)->perm.__user_state_size;
+	fsize += current->group_leader->thread.fpu.perm.__user_state_size;
 	if (likely(ss_size > fsize))
 		return true;
 
 	if (strict_sigaltstack_size)
 		return ss_size > fsize;
 
-	mask = x86_task_fpu(current->group_leader)->perm.__state_perm;
+	mask = current->group_leader->thread.fpu.perm.__state_perm;
 	if (mask & XFEATURE_MASK_USER_DYNAMIC)
 		return ss_size > fsize;
 

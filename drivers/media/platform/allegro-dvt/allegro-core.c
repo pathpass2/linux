@@ -17,6 +17,7 @@
 #include <linux/mfd/syscon/xlnx-vcu.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -177,10 +178,9 @@ struct allegro_dev {
 	 */
 	unsigned long channel_user_ids;
 	struct list_head channels;
-	struct mutex channels_lock;
 };
 
-static const struct regmap_config allegro_regmap_config = {
+static struct regmap_config allegro_regmap_config = {
 	.name = "regmap",
 	.reg_bits = 32,
 	.val_bits = 32,
@@ -189,7 +189,7 @@ static const struct regmap_config allegro_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static const struct regmap_config allegro_sram_config = {
+static struct regmap_config allegro_sram_config = {
 	.name = "sram",
 	.reg_bits = 32,
 	.val_bits = 32,
@@ -198,8 +198,9 @@ static const struct regmap_config allegro_sram_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
+#define fh_to_channel(__fh) container_of(__fh, struct allegro_channel, fh)
+
 struct allegro_channel {
-	struct kref ref;
 	struct allegro_dev *dev;
 	struct v4l2_fh fh;
 	struct v4l2_ctrl_handler ctrl_handler;
@@ -301,11 +302,6 @@ struct allegro_channel {
 
 	unsigned int error;
 };
-
-static inline struct allegro_channel *file_to_channel(struct file *filp)
-{
-	return container_of(file_to_v4l2_fh(filp), struct allegro_channel, fh);
-}
 
 static inline int
 allegro_channel_get_i_frame_qp(struct allegro_channel *channel)
@@ -432,53 +428,31 @@ static unsigned long allegro_next_user_id(struct allegro_dev *dev)
 }
 
 static struct allegro_channel *
-allegro_ref_get_channel_by_user_id(struct allegro_dev *dev,
-				   unsigned int user_id)
+allegro_find_channel_by_user_id(struct allegro_dev *dev,
+				unsigned int user_id)
 {
 	struct allegro_channel *channel;
 
-	guard(mutex)(&dev->channels_lock);
-
 	list_for_each_entry(channel, &dev->channels, list) {
-		if (channel->user_id == user_id) {
-			if (kref_get_unless_zero(&channel->ref))
-				return channel;
-			break;
-		}
+		if (channel->user_id == user_id)
+			return channel;
 	}
 
 	return ERR_PTR(-EINVAL);
 }
 
 static struct allegro_channel *
-allegro_ref_get_channel_by_channel_id(struct allegro_dev *dev,
-				      unsigned int channel_id)
+allegro_find_channel_by_channel_id(struct allegro_dev *dev,
+				   unsigned int channel_id)
 {
 	struct allegro_channel *channel;
 
-	guard(mutex)(&dev->channels_lock);
-
 	list_for_each_entry(channel, &dev->channels, list) {
-		if (channel->mcu_channel_id == channel_id) {
-			if (kref_get_unless_zero(&channel->ref))
-				return channel;
-			break;
-		}
+		if (channel->mcu_channel_id == channel_id)
+			return channel;
 	}
 
 	return ERR_PTR(-EINVAL);
-}
-
-static void allegro_free_channel(struct kref *ref)
-{
-	struct allegro_channel *channel = container_of(ref, struct allegro_channel, ref);
-
-	kfree(channel);
-}
-
-static int allegro_ref_put_channel(struct allegro_channel *channel)
-{
-	return kref_put(&channel->ref, allegro_free_channel);
 }
 
 static inline bool channel_exists(struct allegro_channel *channel)
@@ -855,20 +829,6 @@ out:
 	return err;
 }
 
-static unsigned int allegro_mbox_get_available(struct allegro_mbox *mbox)
-{
-	struct regmap *sram = mbox->dev->sram;
-	unsigned int head, tail;
-
-	regmap_read(sram, mbox->head, &head);
-	regmap_read(sram, mbox->tail, &tail);
-
-	if (tail >= head)
-		return tail - head;
-	else
-		return mbox->size - (head - tail);
-}
-
 static ssize_t allegro_mbox_read(struct allegro_mbox *mbox,
 				 u32 *dst, size_t nbyte)
 {
@@ -877,14 +837,10 @@ static ssize_t allegro_mbox_read(struct allegro_mbox *mbox,
 		u16 type;
 	} __attribute__ ((__packed__)) *header;
 	struct regmap *sram = mbox->dev->sram;
-	unsigned int available, head;
+	unsigned int head;
 	ssize_t size;
 	size_t body_no_wrap;
 	int stride = regmap_get_reg_stride(sram);
-
-	available = allegro_mbox_get_available(mbox);
-	if (available < sizeof(*header))
-		return -EAGAIN;
 
 	regmap_read(sram, mbox->head, &head);
 	if (head > mbox->size)
@@ -899,8 +855,6 @@ static ssize_t allegro_mbox_read(struct allegro_mbox *mbox,
 		return -EIO;
 	if (size > nbyte)
 		return -EINVAL;
-	if (size > available)
-		return -EAGAIN;
 
 	/*
 	 * The message might wrap within the mailbox. If the message does not
@@ -960,27 +914,26 @@ out:
  * allegro_mbox_notify() - Notify the mailbox about a new message
  * @mbox: The allegro_mbox to notify
  */
-static int allegro_mbox_notify(struct allegro_mbox *mbox)
+static void allegro_mbox_notify(struct allegro_mbox *mbox)
 {
 	struct allegro_dev *dev = mbox->dev;
 	union mcu_msg_response *msg;
+	ssize_t size;
 	u32 *tmp;
 	int err;
 
 	msg = kmalloc(sizeof(*msg), GFP_KERNEL);
 	if (!msg)
-		return -ENOMEM;
+		return;
 
 	msg->header.version = dev->fw_info->mailbox_version;
 
 	tmp = kmalloc(mbox->size, GFP_KERNEL);
-	if (!tmp) {
-		err = -ENOMEM;
+	if (!tmp)
 		goto out;
-	}
 
-	err = allegro_mbox_read(mbox, tmp, mbox->size);
-	if (err < 0)
+	size = allegro_mbox_read(mbox, tmp, mbox->size);
+	if (size < 0)
 		goto out;
 
 	err = allegro_decode_mail(msg, tmp);
@@ -992,8 +945,6 @@ static int allegro_mbox_notify(struct allegro_mbox *mbox)
 out:
 	kfree(tmp);
 	kfree(msg);
-
-	return err;
 }
 
 static int allegro_encoder_buffer_init(struct allegro_dev *dev,
@@ -1465,11 +1416,11 @@ static int allegro_mcu_send_encode_frame(struct allegro_dev *dev,
 static int allegro_mcu_wait_for_init_timeout(struct allegro_dev *dev,
 					     unsigned long timeout_ms)
 {
-	unsigned long time_left;
+	unsigned long tmo;
 
-	time_left = wait_for_completion_timeout(&dev->init_complete,
-						msecs_to_jiffies(timeout_ms));
-	if (time_left == 0)
+	tmo = wait_for_completion_timeout(&dev->init_complete,
+					  msecs_to_jiffies(timeout_ms));
+	if (tmo == 0)
 		return -ETIMEDOUT;
 
 	reinit_completion(&dev->init_complete);
@@ -1559,10 +1510,8 @@ static int allocate_buffers_internal(struct allegro_channel *channel,
 		INIT_LIST_HEAD(&buffer->head);
 
 		err = allegro_alloc_buffer(dev, buffer, size);
-		if (err) {
-			kfree(buffer);
+		if (err)
 			goto err;
-		}
 		list_add(&buffer->head, list);
 	}
 
@@ -2171,7 +2120,7 @@ static void allegro_channel_finish_frame(struct allegro_channel *channel,
 
 	state = VB2_BUF_STATE_DONE;
 
-	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf);
+	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf, false);
 	if (msg->is_idr)
 		dst_buf->flags |= V4L2_BUF_FLAG_KEYFRAME;
 	else
@@ -2210,7 +2159,7 @@ allegro_handle_create_channel(struct allegro_dev *dev,
 	int err = 0;
 	struct create_channel_param param;
 
-	channel = allegro_ref_get_channel_by_user_id(dev, msg->user_id);
+	channel = allegro_find_channel_by_user_id(dev, msg->user_id);
 	if (IS_ERR(channel)) {
 		v4l2_warn(&dev->v4l2_dev,
 			  "received %s for unknown user %d\n",
@@ -2277,7 +2226,6 @@ allegro_handle_create_channel(struct allegro_dev *dev,
 out:
 	channel->error = err;
 	complete(&channel->completion);
-	allegro_ref_put_channel(channel);
 
 	/* Handled successfully, error is passed via channel->error */
 	return 0;
@@ -2289,7 +2237,7 @@ allegro_handle_destroy_channel(struct allegro_dev *dev,
 {
 	struct allegro_channel *channel;
 
-	channel = allegro_ref_get_channel_by_channel_id(dev, msg->channel_id);
+	channel = allegro_find_channel_by_channel_id(dev, msg->channel_id);
 	if (IS_ERR(channel)) {
 		v4l2_err(&dev->v4l2_dev,
 			 "received %s for unknown channel %d\n",
@@ -2302,7 +2250,6 @@ allegro_handle_destroy_channel(struct allegro_dev *dev,
 		 "user %d: vcu destroyed channel %d\n",
 		 channel->user_id, channel->mcu_channel_id);
 	complete(&channel->completion);
-	allegro_ref_put_channel(channel);
 
 	return 0;
 }
@@ -2313,7 +2260,7 @@ allegro_handle_encode_frame(struct allegro_dev *dev,
 {
 	struct allegro_channel *channel;
 
-	channel = allegro_ref_get_channel_by_channel_id(dev, msg->channel_id);
+	channel = allegro_find_channel_by_channel_id(dev, msg->channel_id);
 	if (IS_ERR(channel)) {
 		v4l2_err(&dev->v4l2_dev,
 			 "received %s for unknown channel %d\n",
@@ -2323,7 +2270,6 @@ allegro_handle_encode_frame(struct allegro_dev *dev,
 	}
 
 	allegro_channel_finish_frame(channel, msg);
-	allegro_ref_put_channel(channel);
 
 	return 0;
 }
@@ -2379,10 +2325,7 @@ static irqreturn_t allegro_irq_thread(int irq, void *data)
 	if (!dev->mbox_status)
 		return IRQ_NONE;
 
-	while (allegro_mbox_get_available(dev->mbox_status) > 0) {
-		if (allegro_mbox_notify(dev->mbox_status))
-			break;
-	}
+	allegro_mbox_notify(dev->mbox_status);
 
 	return IRQ_HANDLED;
 }
@@ -2539,14 +2482,14 @@ static void allegro_mcu_interrupt(struct allegro_dev *dev)
 static void allegro_destroy_channel(struct allegro_channel *channel)
 {
 	struct allegro_dev *dev = channel->dev;
-	unsigned long time_left;
+	unsigned long timeout;
 
 	if (channel_exists(channel)) {
 		reinit_completion(&channel->completion);
 		allegro_mcu_send_destroy_channel(dev, channel);
-		time_left = wait_for_completion_timeout(&channel->completion,
-							msecs_to_jiffies(5000));
-		if (time_left == 0)
+		timeout = wait_for_completion_timeout(&channel->completion,
+						      msecs_to_jiffies(5000));
+		if (timeout == 0)
 			v4l2_warn(&dev->v4l2_dev,
 				  "channel %d: timeout while destroying\n",
 				  channel->mcu_channel_id);
@@ -2602,7 +2545,7 @@ static void allegro_destroy_channel(struct allegro_channel *channel)
 static int allegro_create_channel(struct allegro_channel *channel)
 {
 	struct allegro_dev *dev = channel->dev;
-	unsigned long time_left;
+	unsigned long timeout;
 
 	if (channel_exists(channel)) {
 		v4l2_warn(&dev->v4l2_dev,
@@ -2653,16 +2596,10 @@ static int allegro_create_channel(struct allegro_channel *channel)
 
 	reinit_completion(&channel->completion);
 	allegro_mcu_send_create_channel(dev, channel);
-	time_left = wait_for_completion_timeout(&channel->completion,
-						msecs_to_jiffies(5000));
-	if (time_left == 0) {
-		v4l2_warn(&dev->v4l2_dev,
-			  "user %d: timeout while creating channel\n",
-			  channel->user_id);
-
+	timeout = wait_for_completion_timeout(&channel->completion,
+					      msecs_to_jiffies(5000));
+	if (timeout == 0)
 		channel->error = -ETIMEDOUT;
-	}
-
 	if (channel->error)
 		goto err;
 
@@ -2959,6 +2896,8 @@ static const struct vb2_ops allegro_queue_ops = {
 	.buf_queue = allegro_buf_queue,
 	.start_streaming = allegro_start_streaming,
 	.stop_streaming = allegro_stop_streaming,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
 };
 
 static int allegro_queue_init(void *priv,
@@ -3108,8 +3047,6 @@ static int allegro_open(struct file *file)
 	channel = kzalloc(sizeof(*channel), GFP_KERNEL);
 	if (!channel)
 		return -ENOMEM;
-
-	kref_init(&channel->ref);
 
 	v4l2_fh_init(&channel->fh, vdev);
 
@@ -3277,11 +3214,9 @@ static int allegro_open(struct file *file)
 		goto error;
 	}
 
-	scoped_guard(mutex, &dev->channels_lock) {
-		list_add(&channel->list, &dev->channels);
-	}
-
-	v4l2_fh_add(&channel->fh, file);
+	list_add(&channel->list, &dev->channels);
+	file->private_data = &channel->fh;
+	v4l2_fh_add(&channel->fh);
 
 	allegro_channel_adjust(channel);
 
@@ -3295,21 +3230,18 @@ error:
 
 static int allegro_release(struct file *file)
 {
-	struct allegro_channel *channel = file_to_channel(file);
-	struct allegro_dev *dev = channel->dev;
+	struct allegro_channel *channel = fh_to_channel(file->private_data);
 
 	v4l2_m2m_ctx_release(channel->fh.m2m_ctx);
 
-	scoped_guard(mutex, &dev->channels_lock) {
-		list_del(&channel->list);
-	}
+	list_del(&channel->list);
 
 	v4l2_ctrl_handler_free(&channel->ctrl_handler);
 
-	v4l2_fh_del(&channel->fh, file);
+	v4l2_fh_del(&channel->fh);
 	v4l2_fh_exit(&channel->fh);
 
-	allegro_ref_put_channel(channel);
+	kfree(channel);
 
 	return 0;
 }
@@ -3349,7 +3281,7 @@ static int allegro_enum_fmt_vid(struct file *file, void *fh,
 static int allegro_g_fmt_vid_cap(struct file *file, void *fh,
 				 struct v4l2_format *f)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct allegro_channel *channel = fh_to_channel(fh);
 
 	f->fmt.pix.field = V4L2_FIELD_NONE;
 	f->fmt.pix.width = channel->width;
@@ -3391,7 +3323,7 @@ static int allegro_try_fmt_vid_cap(struct file *file, void *fh,
 static int allegro_s_fmt_vid_cap(struct file *file, void *fh,
 				 struct v4l2_format *f)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct allegro_channel *channel = fh_to_channel(fh);
 	struct vb2_queue *vq;
 	int err;
 
@@ -3400,6 +3332,8 @@ static int allegro_s_fmt_vid_cap(struct file *file, void *fh,
 		return err;
 
 	vq = v4l2_m2m_get_vq(channel->fh.m2m_ctx, f->type);
+	if (!vq)
+		return -EINVAL;
 	if (vb2_is_busy(vq))
 		return -EBUSY;
 
@@ -3413,7 +3347,7 @@ static int allegro_s_fmt_vid_cap(struct file *file, void *fh,
 static int allegro_g_fmt_vid_out(struct file *file, void *fh,
 				 struct v4l2_format *f)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct allegro_channel *channel = fh_to_channel(fh);
 
 	f->fmt.pix.field = V4L2_FIELD_NONE;
 
@@ -3460,7 +3394,7 @@ static int allegro_try_fmt_vid_out(struct file *file, void *fh,
 static int allegro_s_fmt_vid_out(struct file *file, void *fh,
 				 struct v4l2_format *f)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct allegro_channel *channel = fh_to_channel(fh);
 	int err;
 
 	err = allegro_try_fmt_vid_out(file, fh, f);
@@ -3501,7 +3435,7 @@ static int allegro_channel_cmd_start(struct allegro_channel *channel)
 static int allegro_encoder_cmd(struct file *file, void *fh,
 			       struct v4l2_encoder_cmd *cmd)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct allegro_channel *channel = fh_to_channel(fh);
 	int err;
 
 	err = v4l2_m2m_ioctl_try_encoder_cmd(file, fh, cmd);
@@ -3550,7 +3484,8 @@ static int allegro_enum_framesizes(struct file *file, void *fh,
 static int allegro_ioctl_streamon(struct file *file, void *priv,
 				  enum v4l2_buf_type type)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct v4l2_fh *fh = file->private_data;
+	struct allegro_channel *channel = fh_to_channel(fh);
 	int err;
 
 	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
@@ -3559,13 +3494,13 @@ static int allegro_ioctl_streamon(struct file *file, void *priv,
 			return err;
 	}
 
-	return v4l2_m2m_streamon(file, channel->fh.m2m_ctx, type);
+	return v4l2_m2m_streamon(file, fh->m2m_ctx, type);
 }
 
 static int allegro_g_parm(struct file *file, void *fh,
 			  struct v4l2_streamparm *a)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct allegro_channel *channel = fh_to_channel(fh);
 	struct v4l2_fract *timeperframe;
 
 	if (a->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
@@ -3582,7 +3517,7 @@ static int allegro_g_parm(struct file *file, void *fh,
 static int allegro_s_parm(struct file *file, void *fh,
 			  struct v4l2_streamparm *a)
 {
-	struct allegro_channel *channel = file_to_channel(file);
+	struct allegro_channel *channel = fh_to_channel(fh);
 	struct v4l2_fract *timeperframe;
 	int div;
 
@@ -3901,7 +3836,6 @@ static int allegro_probe(struct platform_device *pdev)
 	dev->plat_dev = pdev;
 	init_completion(&dev->init_complete);
 	INIT_LIST_HEAD(&dev->channels);
-	mutex_init(&dev->channels_lock);
 
 	mutex_init(&dev->lock);
 
@@ -3979,14 +3913,13 @@ static int allegro_probe(struct platform_device *pdev)
 	if (ret < 0) {
 		v4l2_err(&dev->v4l2_dev,
 			 "failed to request firmware: %d\n", ret);
-		v4l2_device_unregister(&dev->v4l2_dev);
 		return ret;
 	}
 
 	return 0;
 }
 
-static void allegro_remove(struct platform_device *pdev)
+static int allegro_remove(struct platform_device *pdev)
 {
 	struct allegro_dev *dev = platform_get_drvdata(pdev);
 
@@ -4002,6 +3935,8 @@ static void allegro_remove(struct platform_device *pdev)
 	pm_runtime_disable(&dev->plat_dev->dev);
 
 	v4l2_device_unregister(&dev->v4l2_dev);
+
+	return 0;
 }
 
 static int allegro_runtime_resume(struct device *device)
@@ -4074,7 +4009,7 @@ static struct platform_driver allegro_driver = {
 	.remove = allegro_remove,
 	.driver = {
 		.name = "allegro",
-		.of_match_table = allegro_dt_ids,
+		.of_match_table = of_match_ptr(allegro_dt_ids),
 		.pm = &allegro_pm_ops,
 	},
 };

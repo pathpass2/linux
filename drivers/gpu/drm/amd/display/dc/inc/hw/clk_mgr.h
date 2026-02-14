@@ -29,6 +29,9 @@
 #include "dc.h"
 #include "dm_pp_smu.h"
 
+#define DCN_MINIMUM_DISPCLK_Khz 100000
+#define DCN_MINIMUM_DPPCLK_Khz 100000
+
 /* Constants */
 #define DDR4_DRAM_WIDTH   64
 #define WM_A 0
@@ -36,20 +39,17 @@
 #define WM_C 2
 #define WM_D 3
 #define WM_SET_COUNT 4
-#define WM_1A 2
-#define WM_1B 3
 
 #define DCN_MINIMUM_DISPCLK_Khz 100000
 #define DCN_MINIMUM_DPPCLK_Khz 100000
 
 struct dcn3_clk_internal {
 	int dummy;
-//	TODO:
+	/*TODO:
 	uint32_t CLK1_CLK0_CURRENT_CNT; //dispclk
 	uint32_t CLK1_CLK1_CURRENT_CNT; //dppclk
 	uint32_t CLK1_CLK2_CURRENT_CNT; //dprefclk
 	uint32_t CLK1_CLK3_CURRENT_CNT; //dcfclk
-	uint32_t CLK1_CLK4_CURRENT_CNT;
 	uint32_t CLK1_CLK3_DS_CNTL;	//dcf_deep_sleep_divider
 	uint32_t CLK1_CLK3_ALLOW_DS;	//dcf_deep_sleep_allow
 
@@ -57,27 +57,7 @@ struct dcn3_clk_internal {
 	uint32_t CLK1_CLK1_BYPASS_CNTL; //dppclk bypass
 	uint32_t CLK1_CLK2_BYPASS_CNTL; //dprefclk bypass
 	uint32_t CLK1_CLK3_BYPASS_CNTL; //dcfclk bypass
-
-	uint32_t CLK4_CLK0_CURRENT_CNT; //fclk
-};
-
-struct dcn35_clk_internal {
-	int dummy;
-	uint32_t CLK1_CLK0_CURRENT_CNT; //dispclk
-	uint32_t CLK1_CLK1_CURRENT_CNT; //dppclk
-	uint32_t CLK1_CLK2_CURRENT_CNT; //dprefclk
-	uint32_t CLK1_CLK3_CURRENT_CNT; //dcfclk
-	uint32_t CLK1_CLK4_CURRENT_CNT; //dtbclk
-	//uint32_t CLK1_CLK5_CURRENT_CNT; //dpiaclk
-	//uint32_t CLK1_CLK6_CURRENT_CNT; //srdbgclk
-	uint32_t CLK1_CLK3_DS_CNTL;	    //dcf_deep_sleep_divider
-	uint32_t CLK1_CLK3_ALLOW_DS;	//dcf_deep_sleep_allow
-
-	uint32_t CLK1_CLK0_BYPASS_CNTL; //dispclk bypass
-	uint32_t CLK1_CLK1_BYPASS_CNTL; //dppclk bypass
-	uint32_t CLK1_CLK2_BYPASS_CNTL; //dprefclk bypass
-	uint32_t CLK1_CLK3_BYPASS_CNTL; //dcfclk bypass
-	uint32_t CLK1_CLK4_BYPASS_CNTL; //dtbclk bypass
+	*/
 };
 
 struct dcn301_clk_internal {
@@ -100,17 +80,6 @@ struct dcn301_clk_internal {
 #define MAX_NUM_DPM_LVL		8
 #define WM_SET_COUNT 		4
 
-enum clk_type {
-	CLK_TYPE_DCFCLK,
-	CLK_TYPE_FCLK,
-	CLK_TYPE_MCLK,
-	CLK_TYPE_SOCCLK,
-	CLK_TYPE_DTBCLK,
-	CLK_TYPE_DISPCLK,
-	CLK_TYPE_DPPCLK,
-	CLK_TYPE_DSCCLK,
-	CLK_TYPE_COUNT
-};
 
 struct clk_limit_table_entry {
 	unsigned int voltage; /* milivolts withh 2 fractional bits */
@@ -188,7 +157,6 @@ struct clk_state_registers_and_bypass {
 	uint32_t dispclk;
 	uint32_t dppclk;
 	uint32_t dtbclk;
-	uint32_t fclk;
 
 	uint32_t dppclk_bypass;
 	uint32_t dcfclk_bypass;
@@ -253,20 +221,18 @@ struct wm_table {
 
 struct dummy_pstate_entry {
 	unsigned int dram_speed_mts;
-	unsigned int dummy_pstate_latency_us;
+	double dummy_pstate_latency_us;
 };
 
 struct clk_bw_params {
 	unsigned int vram_type;
 	unsigned int num_channels;
 	unsigned int dram_channel_width_bytes;
-	unsigned int dispclk_vco_khz;
+ 	unsigned int dispclk_vco_khz;
 	unsigned int dc_mode_softmax_memclk;
-	unsigned int max_memclk_mhz;
 	struct clk_limit_table clk_table;
 	struct wm_table wm_table;
 	struct dummy_pstate_entry dummy_pstate_table[4];
-	struct clk_limit_table_entry dc_mode_limit;
 };
 /* Public interfaces */
 
@@ -290,8 +256,6 @@ struct clk_mgr_funcs {
 	int (*get_dtb_ref_clk_frequency)(struct clk_mgr *clk_mgr);
 
 	void (*set_low_power_state)(struct clk_mgr *clk_mgr);
-	void (*exit_low_power_state)(struct clk_mgr *clk_mgr);
-	bool (*is_ips_supported)(struct clk_mgr *clk_mgr);
 
 	void (*init_clocks)(struct clk_mgr *clk_mgr);
 
@@ -317,9 +281,6 @@ struct clk_mgr_funcs {
 	 */
 	void (*set_hard_min_memclk)(struct clk_mgr *clk_mgr, bool current_mode);
 
-	int (*get_hard_min_memclk)(struct clk_mgr *clk_mgr);
-	int (*get_hard_min_fclk)(struct clk_mgr *clk_mgr);
-
 	/* Send message to PMFW to set hard max memclk frequency to highest DPM */
 	void (*set_hard_max_memclk)(struct clk_mgr *clk_mgr);
 
@@ -332,14 +293,6 @@ struct clk_mgr_funcs {
 
 	/* Get SMU present */
 	bool (*is_smu_present)(struct clk_mgr *clk_mgr);
-
-	int (*get_dispclk_from_dentist)(struct clk_mgr *clk_mgr_base);
-
-	bool (*is_dc_mode_present)(struct clk_mgr *clk_mgr);
-
-	uint32_t (*set_smartmux_switch)(struct clk_mgr *clk_mgr, uint32_t pins_to_set);
-
-	unsigned int (*get_max_clock_khz)(struct clk_mgr *clk_mgr_base, enum clk_type clk_type);
 };
 
 struct clk_mgr {
@@ -350,7 +303,6 @@ struct clk_mgr {
 	bool force_smu_not_present;
 	bool dc_mode_softmax_enabled;
 	int dprefclk_khz; // Used by program pixel clock in clock source funcs, need to figureout where this goes
-	int dp_dto_source_clock_in_khz; // Used to program DP DTO with ss adjustment on DCN314
 	int dentist_vco_freq_khz;
 	struct clk_state_registers_and_bypass boot_snapshot;
 	struct clk_bw_params *bw_params;

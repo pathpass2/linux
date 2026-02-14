@@ -18,22 +18,16 @@
 #include <linux/slab.h>
 #include <linux/acpi.h>
 #include <linux/perf_event.h>
-#include <linux/platform_device.h>
-#include <asm/cpuid/api.h>
 #include <asm/mwait.h>
 #include <xen/xen.h>
 
 #define ACPI_PROCESSOR_AGGREGATOR_CLASS	"acpi_pad"
 #define ACPI_PROCESSOR_AGGREGATOR_DEVICE_NAME "Processor Aggregator"
 #define ACPI_PROCESSOR_AGGREGATOR_NOTIFY 0x80
-
-#define ACPI_PROCESSOR_AGGREGATOR_STATUS_SUCCESS	0
-#define ACPI_PROCESSOR_AGGREGATOR_STATUS_NO_ACTION	1
-
 static DEFINE_MUTEX(isolated_cpus_lock);
 static DEFINE_MUTEX(round_robin_lock);
 
-static unsigned int power_saving_mwait_eax;
+static unsigned long power_saving_mwait_eax;
 
 static unsigned char tsc_detected_unstable;
 static unsigned char tsc_marked_unstable;
@@ -47,8 +41,10 @@ static void power_saving_mwait_init(void)
 
 	if (!boot_cpu_has(X86_FEATURE_MWAIT))
 		return;
+	if (boot_cpu_data.cpuid_level < CPUID_MWAIT_LEAF)
+		return;
 
-	cpuid(CPUID_LEAF_MWAIT, &eax, &ebx, &ecx, &edx);
+	cpuid(CPUID_MWAIT_LEAF, &eax, &ebx, &ecx, &edx);
 
 	if (!(ecx & CPUID5_ECX_EXTENSIONS_SUPPORTED) ||
 	    !(ecx & CPUID5_ECX_INTERRUPT_BREAK))
@@ -70,7 +66,6 @@ static void power_saving_mwait_init(void)
 	case X86_VENDOR_AMD:
 	case X86_VENDOR_INTEL:
 	case X86_VENDOR_ZHAOXIN:
-	case X86_VENDOR_CENTAUR:
 		/*
 		 * AMD Fam10h TSC will tick in all
 		 * C/P/S0/S1 states when this bit is set.
@@ -104,7 +99,7 @@ static void round_robin_cpu(unsigned int tsk_index)
 	for_each_cpu(cpu, pad_busy_cpus)
 		cpumask_or(tmp, tmp, topology_sibling_cpumask(cpu));
 	cpumask_andnot(tmp, cpu_online_mask, tmp);
-	/* avoid HT siblings if possible */
+	/* avoid HT sibilings if possible */
 	if (cpumask_empty(tmp))
 		cpumask_andnot(tmp, cpu_online_mask, pad_busy_cpus);
 	if (cpumask_empty(tmp)) {
@@ -135,10 +130,8 @@ static void exit_round_robin(unsigned int tsk_index)
 {
 	struct cpumask *pad_busy_cpus = to_cpumask(pad_busy_cpus_bits);
 
-	if (tsk_in_cpu[tsk_index] != -1) {
-		cpumask_clear_cpu(tsk_in_cpu[tsk_index], pad_busy_cpus);
-		tsk_in_cpu[tsk_index] = -1;
-	}
+	cpumask_clear_cpu(tsk_in_cpu[tsk_index], pad_busy_cpus);
+	tsk_in_cpu[tsk_index] = -1;
 }
 
 static unsigned int idle_pct = 5; /* percentage */
@@ -342,14 +335,33 @@ static ssize_t idlecpus_show(struct device *dev,
 
 static DEVICE_ATTR_RW(idlecpus);
 
-static struct attribute *acpi_pad_attrs[] = {
-	&dev_attr_idlecpus.attr,
-	&dev_attr_idlepct.attr,
-	&dev_attr_rrtime.attr,
-	NULL
-};
+static int acpi_pad_add_sysfs(struct acpi_device *device)
+{
+	int result;
 
-ATTRIBUTE_GROUPS(acpi_pad);
+	result = device_create_file(&device->dev, &dev_attr_idlecpus);
+	if (result)
+		return -ENODEV;
+	result = device_create_file(&device->dev, &dev_attr_idlepct);
+	if (result) {
+		device_remove_file(&device->dev, &dev_attr_idlecpus);
+		return -ENODEV;
+	}
+	result = device_create_file(&device->dev, &dev_attr_rrtime);
+	if (result) {
+		device_remove_file(&device->dev, &dev_attr_idlecpus);
+		device_remove_file(&device->dev, &dev_attr_idlepct);
+		return -ENODEV;
+	}
+	return 0;
+}
+
+static void acpi_pad_remove_sysfs(struct acpi_device *device)
+{
+	device_remove_file(&device->dev, &dev_attr_idlecpus);
+	device_remove_file(&device->dev, &dev_attr_idlepct);
+	device_remove_file(&device->dev, &dev_attr_rrtime);
+}
 
 /*
  * Query firmware how many CPUs should be idle
@@ -387,36 +399,29 @@ static void acpi_pad_handle_notify(acpi_handle handle)
 		.length = 4,
 		.pointer = (void *)&idle_cpus,
 	};
-	u32 status;
 
 	mutex_lock(&isolated_cpus_lock);
 	num_cpus = acpi_pad_pur(handle);
 	if (num_cpus < 0) {
-		/* The ACPI specification says that if no action was performed when
-		 * processing the _PUR object, _OST should still be evaluated, albeit
-		 * with a different status code.
-		 */
-		status = ACPI_PROCESSOR_AGGREGATOR_STATUS_NO_ACTION;
-	} else {
-		status = ACPI_PROCESSOR_AGGREGATOR_STATUS_SUCCESS;
-		acpi_pad_idle_cpus(num_cpus);
+		mutex_unlock(&isolated_cpus_lock);
+		return;
 	}
-
+	acpi_pad_idle_cpus(num_cpus);
 	idle_cpus = acpi_pad_idle_cpus_num();
-	acpi_evaluate_ost(handle, ACPI_PROCESSOR_AGGREGATOR_NOTIFY, status, &param);
+	acpi_evaluate_ost(handle, ACPI_PROCESSOR_AGGREGATOR_NOTIFY, 0, &param);
 	mutex_unlock(&isolated_cpus_lock);
 }
 
 static void acpi_pad_notify(acpi_handle handle, u32 event,
 	void *data)
 {
-	struct acpi_device *adev = data;
+	struct acpi_device *device = data;
 
 	switch (event) {
 	case ACPI_PROCESSOR_AGGREGATOR_NOTIFY:
 		acpi_pad_handle_notify(handle);
-		acpi_bus_generate_netlink_event(adev->pnp.device_class,
-			dev_name(&adev->dev), event, 0);
+		acpi_bus_generate_netlink_event(device->pnp.device_class,
+			dev_name(&device->dev), event, 0);
 		break;
 	default:
 		pr_warn("Unsupported event [0x%x]\n", event);
@@ -424,33 +429,35 @@ static void acpi_pad_notify(acpi_handle handle, u32 event,
 	}
 }
 
-static int acpi_pad_probe(struct platform_device *pdev)
+static int acpi_pad_add(struct acpi_device *device)
 {
-	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
 	acpi_status status;
 
-	strscpy(acpi_device_name(adev), ACPI_PROCESSOR_AGGREGATOR_DEVICE_NAME);
-	strscpy(acpi_device_class(adev), ACPI_PROCESSOR_AGGREGATOR_CLASS);
+	strcpy(acpi_device_name(device), ACPI_PROCESSOR_AGGREGATOR_DEVICE_NAME);
+	strcpy(acpi_device_class(device), ACPI_PROCESSOR_AGGREGATOR_CLASS);
 
-	status = acpi_install_notify_handler(adev->handle,
-		ACPI_DEVICE_NOTIFY, acpi_pad_notify, adev);
-
-	if (ACPI_FAILURE(status))
+	if (acpi_pad_add_sysfs(device))
 		return -ENODEV;
+
+	status = acpi_install_notify_handler(device->handle,
+		ACPI_DEVICE_NOTIFY, acpi_pad_notify, device);
+	if (ACPI_FAILURE(status)) {
+		acpi_pad_remove_sysfs(device);
+		return -ENODEV;
+	}
 
 	return 0;
 }
 
-static void acpi_pad_remove(struct platform_device *pdev)
+static void acpi_pad_remove(struct acpi_device *device)
 {
-	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
-
 	mutex_lock(&isolated_cpus_lock);
 	acpi_pad_idle_cpus(0);
 	mutex_unlock(&isolated_cpus_lock);
 
-	acpi_remove_notify_handler(adev->handle,
+	acpi_remove_notify_handler(device->handle,
 		ACPI_DEVICE_NOTIFY, acpi_pad_notify);
+	acpi_pad_remove_sysfs(device);
 }
 
 static const struct acpi_device_id pad_device_ids[] = {
@@ -459,13 +466,13 @@ static const struct acpi_device_id pad_device_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, pad_device_ids);
 
-static struct platform_driver acpi_pad_driver = {
-	.probe = acpi_pad_probe,
-	.remove = acpi_pad_remove,
-	.driver = {
-		.dev_groups = acpi_pad_groups,
-		.name = "processor_aggregator",
-		.acpi_match_table = pad_device_ids,
+static struct acpi_driver acpi_pad_driver = {
+	.name = "processor_aggregator",
+	.class = ACPI_PROCESSOR_AGGREGATOR_CLASS,
+	.ids = pad_device_ids,
+	.ops = {
+		.add = acpi_pad_add,
+		.remove = acpi_pad_remove,
 	},
 };
 
@@ -479,12 +486,12 @@ static int __init acpi_pad_init(void)
 	if (power_saving_mwait_eax == 0)
 		return -EINVAL;
 
-	return platform_driver_register(&acpi_pad_driver);
+	return acpi_bus_register_driver(&acpi_pad_driver);
 }
 
 static void __exit acpi_pad_exit(void)
 {
-	platform_driver_unregister(&acpi_pad_driver);
+	acpi_bus_unregister_driver(&acpi_pad_driver);
 }
 
 module_init(acpi_pad_init);

@@ -2,439 +2,256 @@
 /* Copyright (c) 2018 Mellanox Technologies */
 
 #include <linux/mlx5/vport.h>
-#include <linux/list.h>
 #include "lib/devcom.h"
-#include "lib/mlx5.h"
-#include "mlx5_core.h"
 
-static LIST_HEAD(devcom_dev_list);
-static LIST_HEAD(devcom_comp_list);
-/* protect device list */
-static DEFINE_MUTEX(dev_list_lock);
-/* protect component list */
-static DEFINE_MUTEX(comp_list_lock);
+static LIST_HEAD(devcom_list);
 
-#define devcom_for_each_component(iter) \
-	list_for_each_entry(iter, &devcom_comp_list, comp_list)
+#define devcom_for_each_component(priv, comp, iter) \
+	for (iter = 0; \
+	     comp = &(priv)->components[iter], iter < MLX5_DEVCOM_NUM_COMPONENTS; \
+	     iter++)
 
-struct mlx5_devcom_dev {
-	struct list_head list;
-	struct mlx5_core_dev *dev;
-	struct kref ref;
-};
+struct mlx5_devcom_component {
+	struct {
+		void *data;
+	} device[MLX5_DEVCOM_PORTS_SUPPORTED];
 
-struct mlx5_devcom_key {
-	u32 flags;
-	union mlx5_devcom_match_key key;
-	possible_net_t net;
-};
-
-struct mlx5_devcom_comp {
-	struct list_head comp_list;
-	enum mlx5_devcom_component id;
-	struct list_head comp_dev_list_head;
-	struct mlx5_devcom_key key;
 	mlx5_devcom_event_handler_t handler;
-	struct kref ref;
-	bool ready;
 	struct rw_semaphore sem;
-	struct lock_class_key lock_key;
+	bool paired;
 };
 
-struct mlx5_devcom_comp_dev {
+struct mlx5_devcom_list {
 	struct list_head list;
-	struct mlx5_devcom_comp *comp;
-	struct mlx5_devcom_dev *devc;
-	void __rcu *data;
+
+	struct mlx5_devcom_component components[MLX5_DEVCOM_NUM_COMPONENTS];
+	struct mlx5_core_dev *devs[MLX5_DEVCOM_PORTS_SUPPORTED];
 };
 
-static bool devcom_dev_exists(struct mlx5_core_dev *dev)
+struct mlx5_devcom {
+	struct mlx5_devcom_list *priv;
+	int idx;
+};
+
+static struct mlx5_devcom_list *mlx5_devcom_list_alloc(void)
 {
-	struct mlx5_devcom_dev *iter;
+	struct mlx5_devcom_component *comp;
+	struct mlx5_devcom_list *priv;
+	int i;
 
-	list_for_each_entry(iter, &devcom_dev_list, list)
-		if (iter->dev == dev)
-			return true;
-
-	return false;
-}
-
-static struct mlx5_devcom_dev *
-mlx5_devcom_dev_alloc(struct mlx5_core_dev *dev)
-{
-	struct mlx5_devcom_dev *devc;
-
-	devc = kzalloc(sizeof(*devc), GFP_KERNEL);
-	if (!devc)
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	if (!priv)
 		return NULL;
 
-	devc->dev = dev;
-	kref_init(&devc->ref);
-	return devc;
+	devcom_for_each_component(priv, comp, i)
+		init_rwsem(&comp->sem);
+
+	return priv;
 }
 
-struct mlx5_devcom_dev *
-mlx5_devcom_register_device(struct mlx5_core_dev *dev)
+static struct mlx5_devcom *mlx5_devcom_alloc(struct mlx5_devcom_list *priv,
+					     u8 idx)
 {
-	struct mlx5_devcom_dev *devc = NULL;
-
-	mutex_lock(&dev_list_lock);
-
-	if (devcom_dev_exists(dev)) {
-		mlx5_core_err(dev, "devcom device already exists");
-		goto out;
-	}
-
-	devc = mlx5_devcom_dev_alloc(dev);
-	if (!devc)
-		goto out;
-
-	list_add_tail(&devc->list, &devcom_dev_list);
-out:
-	mutex_unlock(&dev_list_lock);
-	return devc;
-}
-
-static void
-mlx5_devcom_dev_release(struct kref *ref)
-{
-	struct mlx5_devcom_dev *devc = container_of(ref, struct mlx5_devcom_dev, ref);
-
-	mutex_lock(&dev_list_lock);
-	list_del(&devc->list);
-	mutex_unlock(&dev_list_lock);
-	kfree(devc);
-}
-
-void mlx5_devcom_unregister_device(struct mlx5_devcom_dev *devc)
-{
-	if (!devc)
-		return;
-
-	kref_put(&devc->ref, mlx5_devcom_dev_release);
-}
-
-static struct mlx5_devcom_comp *
-mlx5_devcom_comp_alloc(u64 id, const struct mlx5_devcom_match_attr *attr,
-		       mlx5_devcom_event_handler_t handler)
-{
-	struct mlx5_devcom_comp *comp;
-
-	comp = kzalloc(sizeof(*comp), GFP_KERNEL);
-	if (!comp)
-		return NULL;
-
-	comp->id = id;
-	comp->key.key = attr->key;
-	comp->key.flags = attr->flags;
-	if (attr->flags & MLX5_DEVCOM_MATCH_FLAGS_NS)
-		write_pnet(&comp->key.net, attr->net);
-	comp->handler = handler;
-	init_rwsem(&comp->sem);
-	lockdep_register_key(&comp->lock_key);
-	lockdep_set_class(&comp->sem, &comp->lock_key);
-	kref_init(&comp->ref);
-	INIT_LIST_HEAD(&comp->comp_dev_list_head);
-
-	return comp;
-}
-
-static void
-mlx5_devcom_comp_release(struct kref *ref)
-{
-	struct mlx5_devcom_comp *comp = container_of(ref, struct mlx5_devcom_comp, ref);
-
-	mutex_lock(&comp_list_lock);
-	list_del(&comp->comp_list);
-	mutex_unlock(&comp_list_lock);
-	lockdep_unregister_key(&comp->lock_key);
-	kfree(comp);
-}
-
-static struct mlx5_devcom_comp_dev *
-devcom_alloc_comp_dev(struct mlx5_devcom_dev *devc,
-		      struct mlx5_devcom_comp *comp,
-		      void *data)
-{
-	struct mlx5_devcom_comp_dev *devcom;
+	struct mlx5_devcom *devcom;
 
 	devcom = kzalloc(sizeof(*devcom), GFP_KERNEL);
 	if (!devcom)
 		return NULL;
 
-	kref_get(&devc->ref);
-	devcom->devc = devc;
-	devcom->comp = comp;
-	rcu_assign_pointer(devcom->data, data);
-
-	down_write(&comp->sem);
-	list_add_tail(&devcom->list, &comp->comp_dev_list_head);
-	up_write(&comp->sem);
-
+	devcom->priv = priv;
+	devcom->idx = idx;
 	return devcom;
 }
 
-static void
-devcom_free_comp_dev(struct mlx5_devcom_comp_dev *devcom)
+/* Must be called with intf_mutex held */
+struct mlx5_devcom *mlx5_devcom_register_device(struct mlx5_core_dev *dev)
 {
-	struct mlx5_devcom_comp *comp = devcom->comp;
+	struct mlx5_devcom_list *priv = NULL, *iter;
+	struct mlx5_devcom *devcom = NULL;
+	bool new_priv = false;
+	u64 sguid0, sguid1;
+	int idx, i;
 
-	down_write(&comp->sem);
-	list_del(&devcom->list);
-	up_write(&comp->sem);
-
-	kref_put(&devcom->devc->ref, mlx5_devcom_dev_release);
-	kfree(devcom);
-	kref_put(&comp->ref, mlx5_devcom_comp_release);
-}
-
-static bool
-devcom_component_equal(struct mlx5_devcom_comp *devcom,
-		       enum mlx5_devcom_component id,
-		       const struct mlx5_devcom_match_attr *attr)
-{
-	if (devcom->id != id)
-		return false;
-
-	if (devcom->key.flags != attr->flags)
-		return false;
-
-	if (memcmp(&devcom->key.key, &attr->key, sizeof(devcom->key.key)))
-		return false;
-
-	if (devcom->key.flags & MLX5_DEVCOM_MATCH_FLAGS_NS &&
-	    !net_eq(read_pnet(&devcom->key.net), attr->net))
-		return false;
-
-	return true;
-}
-
-static struct mlx5_devcom_comp *
-devcom_component_get(struct mlx5_devcom_dev *devc,
-		     enum mlx5_devcom_component id,
-		     const struct mlx5_devcom_match_attr *attr,
-		     mlx5_devcom_event_handler_t handler)
-{
-	struct mlx5_devcom_comp *comp;
-
-	devcom_for_each_component(comp) {
-		if (devcom_component_equal(comp, id, attr)) {
-			if (handler == comp->handler) {
-				kref_get(&comp->ref);
-				return comp;
-			}
-
-			mlx5_core_err(devc->dev,
-				      "Cannot register existing devcom component with different handler\n");
-			return ERR_PTR(-EINVAL);
-		}
-	}
-
-	return NULL;
-}
-
-struct mlx5_devcom_comp_dev *
-mlx5_devcom_register_component(struct mlx5_devcom_dev *devc,
-			       enum mlx5_devcom_component id,
-			       const struct mlx5_devcom_match_attr *attr,
-			       mlx5_devcom_event_handler_t handler,
-			       void *data)
-{
-	struct mlx5_devcom_comp_dev *devcom = NULL;
-	struct mlx5_devcom_comp *comp;
-
-	if (!devc)
+	if (!mlx5_core_is_pf(dev))
+		return NULL;
+	if (MLX5_CAP_GEN(dev, num_lag_ports) != MLX5_DEVCOM_PORTS_SUPPORTED)
 		return NULL;
 
-	mutex_lock(&comp_list_lock);
-	comp = devcom_component_get(devc, id, attr, handler);
-	if (IS_ERR(comp))
-		goto out_unlock;
+	sguid0 = mlx5_query_nic_system_image_guid(dev);
+	list_for_each_entry(iter, &devcom_list, list) {
+		struct mlx5_core_dev *tmp_dev = NULL;
 
-	if (!comp) {
-		comp = mlx5_devcom_comp_alloc(id, attr, handler);
-		if (!comp)
-			goto out_unlock;
+		idx = -1;
+		for (i = 0; i < MLX5_DEVCOM_PORTS_SUPPORTED; i++) {
+			if (iter->devs[i])
+				tmp_dev = iter->devs[i];
+			else
+				idx = i;
+		}
 
-		list_add_tail(&comp->comp_list, &devcom_comp_list);
+		if (idx == -1)
+			continue;
+
+		sguid1 = mlx5_query_nic_system_image_guid(tmp_dev);
+		if (sguid0 != sguid1)
+			continue;
+
+		priv = iter;
+		break;
 	}
-	mutex_unlock(&comp_list_lock);
 
-	devcom = devcom_alloc_comp_dev(devc, comp, data);
-	if (!devcom)
-		kref_put(&comp->ref, mlx5_devcom_comp_release);
+	if (!priv) {
+		priv = mlx5_devcom_list_alloc();
+		if (!priv)
+			return ERR_PTR(-ENOMEM);
 
-	return devcom;
+		idx = 0;
+		new_priv = true;
+	}
 
-out_unlock:
-	mutex_unlock(&comp_list_lock);
+	priv->devs[idx] = dev;
+	devcom = mlx5_devcom_alloc(priv, idx);
+	if (!devcom) {
+		kfree(priv);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	if (new_priv)
+		list_add(&priv->list, &devcom_list);
+
 	return devcom;
 }
 
-void mlx5_devcom_unregister_component(struct mlx5_devcom_comp_dev *devcom)
+/* Must be called with intf_mutex held */
+void mlx5_devcom_unregister_device(struct mlx5_devcom *devcom)
 {
-	if (!devcom)
+	struct mlx5_devcom_list *priv;
+	int i;
+
+	if (IS_ERR_OR_NULL(devcom))
 		return;
 
-	devcom_free_comp_dev(devcom);
+	priv = devcom->priv;
+	priv->devs[devcom->idx] = NULL;
+
+	kfree(devcom);
+
+	for (i = 0; i < MLX5_DEVCOM_PORTS_SUPPORTED; i++)
+		if (priv->devs[i])
+			break;
+
+	if (i != MLX5_DEVCOM_PORTS_SUPPORTED)
+		return;
+
+	list_del(&priv->list);
+	kfree(priv);
 }
 
-int mlx5_devcom_comp_get_size(struct mlx5_devcom_comp_dev *devcom)
+void mlx5_devcom_register_component(struct mlx5_devcom *devcom,
+				    enum mlx5_devcom_components id,
+				    mlx5_devcom_event_handler_t handler,
+				    void *data)
 {
-	struct mlx5_devcom_comp *comp = devcom->comp;
+	struct mlx5_devcom_component *comp;
 
-	return kref_read(&comp->ref);
+	if (IS_ERR_OR_NULL(devcom))
+		return;
+
+	WARN_ON(!data);
+
+	comp = &devcom->priv->components[id];
+	down_write(&comp->sem);
+	comp->handler = handler;
+	comp->device[devcom->idx].data = data;
+	up_write(&comp->sem);
 }
 
-int mlx5_devcom_send_event(struct mlx5_devcom_comp_dev *devcom,
-			   int event, int rollback_event,
+void mlx5_devcom_unregister_component(struct mlx5_devcom *devcom,
+				      enum mlx5_devcom_components id)
+{
+	struct mlx5_devcom_component *comp;
+
+	if (IS_ERR_OR_NULL(devcom))
+		return;
+
+	comp = &devcom->priv->components[id];
+	down_write(&comp->sem);
+	comp->device[devcom->idx].data = NULL;
+	up_write(&comp->sem);
+}
+
+int mlx5_devcom_send_event(struct mlx5_devcom *devcom,
+			   enum mlx5_devcom_components id,
+			   int event,
 			   void *event_data)
 {
-	struct mlx5_devcom_comp_dev *pos;
-	struct mlx5_devcom_comp *comp;
-	int err = 0;
-	void *data;
+	struct mlx5_devcom_component *comp;
+	int err = -ENODEV, i;
 
-	if (!devcom)
-		return -ENODEV;
+	if (IS_ERR_OR_NULL(devcom))
+		return err;
 
-	comp = devcom->comp;
+	comp = &devcom->priv->components[id];
 	down_write(&comp->sem);
-	list_for_each_entry(pos, &comp->comp_dev_list_head, list) {
-		data = rcu_dereference_protected(pos->data, lockdep_is_held(&comp->sem));
-
-		if (pos != devcom && data) {
-			err = comp->handler(event, data, event_data);
-			if (err)
-				goto rollback;
+	for (i = 0; i < MLX5_DEVCOM_PORTS_SUPPORTED; i++)
+		if (i != devcom->idx && comp->device[i].data) {
+			err = comp->handler(event, comp->device[i].data,
+					    event_data);
+			break;
 		}
-	}
 
-	up_write(&comp->sem);
-	return 0;
-
-rollback:
-	if (list_entry_is_head(pos, &comp->comp_dev_list_head, list))
-		goto out;
-	pos = list_prev_entry(pos, list);
-	list_for_each_entry_from_reverse(pos, &comp->comp_dev_list_head, list) {
-		data = rcu_dereference_protected(pos->data, lockdep_is_held(&comp->sem));
-
-		if (pos != devcom && data)
-			comp->handler(rollback_event, data, event_data);
-	}
-out:
 	up_write(&comp->sem);
 	return err;
 }
 
-void mlx5_devcom_comp_set_ready(struct mlx5_devcom_comp_dev *devcom, bool ready)
+void mlx5_devcom_set_paired(struct mlx5_devcom *devcom,
+			    enum mlx5_devcom_components id,
+			    bool paired)
 {
-	WARN_ON(!rwsem_is_locked(&devcom->comp->sem));
+	struct mlx5_devcom_component *comp;
 
-	WRITE_ONCE(devcom->comp->ready, ready);
+	comp = &devcom->priv->components[id];
+	WARN_ON(!rwsem_is_locked(&comp->sem));
+
+	comp->paired = paired;
 }
 
-bool mlx5_devcom_comp_is_ready(struct mlx5_devcom_comp_dev *devcom)
+bool mlx5_devcom_is_paired(struct mlx5_devcom *devcom,
+			   enum mlx5_devcom_components id)
 {
-	if (!devcom)
+	if (IS_ERR_OR_NULL(devcom))
 		return false;
 
-	return READ_ONCE(devcom->comp->ready);
+	return devcom->priv->components[id].paired;
 }
 
-bool mlx5_devcom_for_each_peer_begin(struct mlx5_devcom_comp_dev *devcom)
+void *mlx5_devcom_get_peer_data(struct mlx5_devcom *devcom,
+				enum mlx5_devcom_components id)
 {
-	struct mlx5_devcom_comp *comp;
+	struct mlx5_devcom_component *comp;
+	int i;
 
-	if (!devcom)
-		return false;
+	if (IS_ERR_OR_NULL(devcom))
+		return NULL;
 
-	comp = devcom->comp;
+	comp = &devcom->priv->components[id];
 	down_read(&comp->sem);
-	if (!READ_ONCE(comp->ready)) {
+	if (!comp->paired) {
 		up_read(&comp->sem);
-		return false;
-	}
-
-	return true;
-}
-
-void mlx5_devcom_for_each_peer_end(struct mlx5_devcom_comp_dev *devcom)
-{
-	up_read(&devcom->comp->sem);
-}
-
-void *mlx5_devcom_get_next_peer_data(struct mlx5_devcom_comp_dev *devcom,
-				     struct mlx5_devcom_comp_dev **pos)
-{
-	struct mlx5_devcom_comp *comp = devcom->comp;
-	struct mlx5_devcom_comp_dev *tmp;
-	void *data;
-
-	tmp = list_prepare_entry(*pos, &comp->comp_dev_list_head, list);
-
-	list_for_each_entry_continue(tmp, &comp->comp_dev_list_head, list) {
-		if (tmp != devcom) {
-			data = rcu_dereference_protected(tmp->data, lockdep_is_held(&comp->sem));
-			if (data)
-				break;
-		}
-	}
-
-	if (list_entry_is_head(tmp, &comp->comp_dev_list_head, list))
 		return NULL;
-
-	*pos = tmp;
-	return data;
-}
-
-void *mlx5_devcom_get_next_peer_data_rcu(struct mlx5_devcom_comp_dev *devcom,
-					 struct mlx5_devcom_comp_dev **pos)
-{
-	struct mlx5_devcom_comp *comp = devcom->comp;
-	struct mlx5_devcom_comp_dev *tmp;
-	void *data;
-
-	tmp = list_prepare_entry(*pos, &comp->comp_dev_list_head, list);
-
-	list_for_each_entry_continue(tmp, &comp->comp_dev_list_head, list) {
-		if (tmp != devcom) {
-			/* This can change concurrently, however 'data' pointer will remain
-			 * valid for the duration of RCU read section.
-			 */
-			if (!READ_ONCE(comp->ready))
-				return NULL;
-			data = rcu_dereference(tmp->data);
-			if (data)
-				break;
-		}
 	}
 
-	if (list_entry_is_head(tmp, &comp->comp_dev_list_head, list))
-		return NULL;
+	for (i = 0; i < MLX5_DEVCOM_PORTS_SUPPORTED; i++)
+		if (i != devcom->idx)
+			break;
 
-	*pos = tmp;
-	return data;
+	return comp->device[i].data;
 }
 
-void mlx5_devcom_comp_lock(struct mlx5_devcom_comp_dev *devcom)
+void mlx5_devcom_release_peer_data(struct mlx5_devcom *devcom,
+				   enum mlx5_devcom_components id)
 {
-	if (!devcom)
-		return;
-	down_write(&devcom->comp->sem);
-}
+	struct mlx5_devcom_component *comp = &devcom->priv->components[id];
 
-void mlx5_devcom_comp_unlock(struct mlx5_devcom_comp_dev *devcom)
-{
-	if (!devcom)
-		return;
-	up_write(&devcom->comp->sem);
-}
-
-int mlx5_devcom_comp_trylock(struct mlx5_devcom_comp_dev *devcom)
-{
-	if (!devcom)
-		return 0;
-	return down_write_trylock(&devcom->comp->sem);
+	up_read(&comp->sem);
 }

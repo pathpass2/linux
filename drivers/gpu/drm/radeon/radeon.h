@@ -75,12 +75,10 @@
 
 #include <drm/ttm/ttm_bo.h>
 #include <drm/ttm/ttm_placement.h>
+#include <drm/ttm/ttm_execbuf_util.h>
 
-#include <drm/drm_exec.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_audio_component.h>
-#include <drm/drm_suballoc.h>
-#include <drm/drm_print.h>
 
 #include "radeon_family.h"
 #include "radeon_mode.h"
@@ -133,6 +131,7 @@ extern int radeon_cik_support;
 /* RADEON_IB_POOL_SIZE must be a power of 2 */
 #define RADEON_IB_POOL_SIZE			16
 #define RADEON_DEBUGFS_MAX_COMPONENTS		32
+#define RADEONFB_CONN_LIMIT			4
 #define RADEON_BIOS_NUM_SCRATCH			8
 
 /* internal ring indices */
@@ -395,6 +394,9 @@ long radeon_fence_wait_timeout(struct radeon_fence *fence, bool interruptible, l
 int radeon_fence_wait(struct radeon_fence *fence, bool interruptible);
 int radeon_fence_wait_next(struct radeon_device *rdev, int ring);
 int radeon_fence_wait_empty(struct radeon_device *rdev, int ring);
+int radeon_fence_wait_any(struct radeon_device *rdev,
+			  struct radeon_fence **fences,
+			  bool intr);
 struct radeon_fence *radeon_fence_ref(struct radeon_fence *fence);
 void radeon_fence_unref(struct radeon_fence **fence);
 unsigned radeon_fence_count_emitted(struct radeon_device *rdev, int ring);
@@ -455,8 +457,7 @@ struct radeon_mman {
 
 struct radeon_bo_list {
 	struct radeon_bo		*robj;
-	struct list_head		list;
-	bool				shared;
+	struct ttm_validate_buffer	tv;
 	uint64_t			gpu_offset;
 	unsigned			preferred_domains;
 	unsigned			allowed_domains;
@@ -510,12 +511,52 @@ struct radeon_bo {
 };
 #define gem_to_radeon_bo(gobj) container_of((gobj), struct radeon_bo, tbo.base)
 
+/* sub-allocation manager, it has to be protected by another lock.
+ * By conception this is an helper for other part of the driver
+ * like the indirect buffer or semaphore, which both have their
+ * locking.
+ *
+ * Principe is simple, we keep a list of sub allocation in offset
+ * order (first entry has offset == 0, last entry has the highest
+ * offset).
+ *
+ * When allocating new object we first check if there is room at
+ * the end total_size - (last_object_offset + last_object_size) >=
+ * alloc_size. If so we allocate new object there.
+ *
+ * When there is not enough room at the end, we start waiting for
+ * each sub object until we reach object_offset+object_size >=
+ * alloc_size, this object then become the sub object we return.
+ *
+ * Alignment can't be bigger than page size.
+ *
+ * Hole are not considered for allocation to keep things simple.
+ * Assumption is that there won't be hole (all object on same
+ * alignment).
+ */
 struct radeon_sa_manager {
-	struct drm_suballoc_manager	base;
-	struct radeon_bo		*bo;
-	uint64_t			gpu_addr;
-	void				*cpu_ptr;
-	u32 domain;
+	wait_queue_head_t	wq;
+	struct radeon_bo	*bo;
+	struct list_head	*hole;
+	struct list_head	flist[RADEON_NUM_RINGS];
+	struct list_head	olist;
+	unsigned		size;
+	uint64_t		gpu_addr;
+	void			*cpu_ptr;
+	uint32_t		domain;
+	uint32_t		align;
+};
+
+struct radeon_sa_bo;
+
+/* sub-allocation buffer */
+struct radeon_sa_bo {
+	struct list_head		olist;
+	struct list_head		flist;
+	struct radeon_sa_manager	*manager;
+	unsigned			soffset;
+	unsigned			eoffset;
+	struct radeon_fence		*fence;
 };
 
 /*
@@ -527,8 +568,6 @@ struct radeon_gem {
 };
 
 extern const struct drm_gem_object_funcs radeon_gem_object_funcs;
-
-int radeon_align_pitch(struct radeon_device *rdev, int width, int cpp, bool tiled);
 
 int radeon_gem_init(struct radeon_device *rdev);
 void radeon_gem_fini(struct radeon_device *rdev);
@@ -548,7 +587,7 @@ int radeon_mode_dumb_mmap(struct drm_file *filp,
  * Semaphores.
  */
 struct radeon_semaphore {
-	struct drm_suballoc	*sa_bo;
+	struct radeon_sa_bo	*sa_bo;
 	signed			waiters;
 	uint64_t		gpu_addr;
 };
@@ -777,7 +816,7 @@ void radeon_irq_kms_disable_hpd(struct radeon_device *rdev, unsigned hpd_mask);
  */
 
 struct radeon_ib {
-	struct drm_suballoc		*sa_bo;
+	struct radeon_sa_bo		*sa_bo;
 	uint32_t			length_dw;
 	uint64_t			gpu_addr;
 	uint32_t			*ptr;
@@ -1029,7 +1068,6 @@ struct radeon_cs_parser {
 	struct radeon_bo_list	*vm_bos;
 	struct list_head	validated;
 	unsigned		dma_reloc_idx;
-	struct drm_exec		exec;
 	/* indices of various chunks */
 	struct radeon_cs_chunk  *chunk_ib;
 	struct radeon_cs_chunk  *chunk_relocs;
@@ -1043,6 +1081,7 @@ struct radeon_cs_parser {
 	u32			cs_flags;
 	u32			ring;
 	s32			priority;
+	struct ww_acquire_ctx	ticket;
 };
 
 static inline u32 radeon_get_ib_value(struct radeon_cs_parser *p, int idx)
@@ -1353,12 +1392,14 @@ struct radeon_dpm_thermal {
 	bool               high_to_low;
 };
 
-enum radeon_clk_action {
+enum radeon_clk_action
+{
 	RADEON_SCLK_UP = 1,
 	RADEON_SCLK_DOWN
 };
 
-struct radeon_blacklist_clocks {
+struct radeon_blacklist_clocks
+{
 	u32 sclk;
 	u32 mclk;
 	enum radeon_clk_action action;
@@ -2211,6 +2252,10 @@ int radeon_gem_pin_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file_priv);
 int radeon_gem_unpin_ioctl(struct drm_device *dev, void *data,
 			   struct drm_file *file_priv);
+int radeon_gem_pwrite_ioctl(struct drm_device *dev, void *data,
+			    struct drm_file *file_priv);
+int radeon_gem_pread_ioctl(struct drm_device *dev, void *data,
+			   struct drm_file *file_priv);
 int radeon_gem_set_domain_ioctl(struct drm_device *dev, void *data,
 				struct drm_file *filp);
 int radeon_gem_mmap_ioctl(struct drm_device *dev, void *data,
@@ -2296,7 +2341,7 @@ typedef void (*radeon_wreg_t)(struct radeon_device*, uint32_t, uint32_t);
 
 struct radeon_device {
 	struct device			*dev;
-	struct drm_device		ddev;
+	struct drm_device		*ddev;
 	struct pci_dev			*pdev;
 #ifdef __alpha__
 	struct pci_controller		*hose;
@@ -2474,11 +2519,6 @@ void r100_io_wreg(struct radeon_device *rdev, u32 reg, u32 v);
 
 u32 cik_mm_rdoorbell(struct radeon_device *rdev, u32 index);
 void cik_mm_wdoorbell(struct radeon_device *rdev, u32 index, u32 v);
-
-static inline struct drm_device *rdev_to_drm(struct radeon_device *rdev)
-{
-	return &rdev->ddev;
-}
 
 /*
  * Cast helper

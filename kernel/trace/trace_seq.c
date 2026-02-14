@@ -13,9 +13,12 @@
  * trace_seq_init() more than once to reset the trace_seq to start
  * from scratch.
  * 
+ * The buffer size is currently PAGE_SIZE, although it may become dynamic
+ * in the future.
+ *
  * A write to the buffer will either succeed or fail. That is, unlike
  * sprintf() there will not be a partial write (well it may write into
- * the buffer but it won't update the pointers). This allows users to
+ * the buffer but it wont update the pointers). This allows users to
  * try to write something into the trace_seq buffer and if it fails
  * they can flush it and try again.
  *
@@ -106,7 +109,7 @@ EXPORT_SYMBOL_GPL(trace_seq_printf);
  * Writes a ASCII representation of a bitmask string into @s.
  */
 void trace_seq_bitmask(struct trace_seq *s, const unsigned long *maskp,
-		       int nmaskbits)
+		      int nmaskbits)
 {
 	unsigned int save_len = s->seq.len;
 
@@ -125,37 +128,9 @@ void trace_seq_bitmask(struct trace_seq *s, const unsigned long *maskp,
 EXPORT_SYMBOL_GPL(trace_seq_bitmask);
 
 /**
- * trace_seq_bitmask_list - write a bitmask array in its list representation
- * @s:		trace sequence descriptor
- * @maskp:	points to an array of unsigned longs that represent a bitmask
- * @nmaskbits:	The number of bits that are valid in @maskp
- *
- * Writes a list representation (e.g., 0-3,5-7) of a bitmask string into @s.
- */
-void trace_seq_bitmask_list(struct trace_seq *s, const unsigned long *maskp,
-		       int nmaskbits)
-{
-	unsigned int save_len = s->seq.len;
-
-	if (s->full)
-		return;
-
-	__trace_seq_init(s);
-
-	seq_buf_printf(&s->seq, "%*pbl", nmaskbits, maskp);
-
-	if (unlikely(seq_buf_has_overflowed(&s->seq))) {
-		s->seq.len = save_len;
-		s->full = 1;
-	}
-}
-EXPORT_SYMBOL_GPL(trace_seq_bitmask_list);
-
-/**
  * trace_seq_vprintf - sequence printing of trace information
  * @s: trace sequence descriptor
  * @fmt: printf format string
- * @args: Arguments for the format string
  *
  * The tracer may use either sequence operations or its own
  * copy to user routines. To simplify formatting of a trace
@@ -394,12 +369,8 @@ EXPORT_SYMBOL_GPL(trace_seq_path);
  */
 int trace_seq_to_user(struct trace_seq *s, char __user *ubuf, int cnt)
 {
-	int ret;
 	__trace_seq_init(s);
-	ret = seq_buf_to_user(&s->seq, ubuf, s->readpos, cnt);
-	if (ret > 0)
-		s->readpos += ret;
-	return ret;
+	return seq_buf_to_user(&s->seq, ubuf, cnt);
 }
 EXPORT_SYMBOL_GPL(trace_seq_to_user);
 

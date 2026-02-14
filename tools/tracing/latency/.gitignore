@@ -1,5 +1,2 @@
-# SPDX-License-Identifier: GPL-2.0-only
+# SPDX-License-Identifier: GPL-2.0
 latency-collector
-fixdep
-feature
-FEATURE-DUMP

@@ -1,7 +1,6 @@
 [
     {
         "BriefDescription": "Number of times HLE abort was triggered",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.ABORTED",
         "PEBS": "1",
@@ -11,7 +10,6 @@
     },
     {
         "BriefDescription": "Number of times an HLE execution aborted due to various memory events (e.g., read/write capacity and conflicts).",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.ABORTED_MISC1",
         "PublicDescription": "Number of times an HLE abort was attributed to a Memory condition (See TSX_Memory event for additional details).",
@@ -20,7 +18,6 @@
     },
     {
         "BriefDescription": "Number of times an HLE execution aborted due to uncommon conditions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.ABORTED_MISC2",
         "PublicDescription": "Number of times the TSX watchdog signaled an HLE abort.",
@@ -29,7 +26,6 @@
     },
     {
         "BriefDescription": "Number of times an HLE execution aborted due to HLE-unfriendly instructions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.ABORTED_MISC3",
         "PublicDescription": "Number of times a disallowed operation caused an HLE abort.",
@@ -38,7 +34,6 @@
     },
     {
         "BriefDescription": "Number of times an HLE execution aborted due to incompatible memory type",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.ABORTED_MISC4",
         "PublicDescription": "Number of times HLE caused a fault.",
@@ -47,7 +42,6 @@
     },
     {
         "BriefDescription": "Number of times an HLE execution aborted due to none of the previous 4 categories (e.g. interrupts)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.ABORTED_MISC5",
         "PublicDescription": "Number of times HLE aborted and was not due to the abort conditions in subevents 3-6.",
@@ -56,7 +50,6 @@
     },
     {
         "BriefDescription": "Number of times HLE commit succeeded",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.COMMIT",
         "PublicDescription": "Number of times HLE commit succeeded.",
@@ -65,25 +58,22 @@
     },
     {
         "BriefDescription": "Number of times we entered an HLE region; does not count nested transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc8",
         "EventName": "HLE_RETIRED.START",
-        "PublicDescription": "Number of times we entered an HLE region  does not count nested transactions.",
+        "PublicDescription": "Number of times we entered an HLE region\n does not count nested transactions.",
         "SampleAfterValue": "2000003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts the number of machine clears due to memory order conflicts.",
-        "Counter": "0,1,2,3",
         "EventCode": "0xC3",
         "EventName": "MACHINE_CLEARS.MEMORY_ORDERING",
-        "PublicDescription": "This event counts the number of memory ordering Machine Clears detected. Memory Ordering Machine Clears can result from one of the following: 1. memory disambiguation, 2. external snoop, or 3. cross SMT-HW-thread snoop (stores) hitting load buffer.",
+        "PublicDescription": "This event counts the number of memory ordering Machine Clears detected. Memory Ordering Machine Clears can result from one of the following:\n1. memory disambiguation,\n2. external snoop, or\n3. cross SMT-HW-thread snoop (stores) hitting load buffer.",
         "SampleAfterValue": "100003",
         "UMask": "0x2"
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 128",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -97,7 +87,6 @@
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 16",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -111,7 +100,6 @@
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 256",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -125,7 +113,6 @@
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 32",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -139,7 +126,6 @@
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 4",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -153,7 +139,6 @@
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 512",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -167,7 +152,6 @@
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 64",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -181,7 +165,6 @@
     },
     {
         "BriefDescription": "Randomly selected loads with latency value being above 8",
-        "Counter": "3",
         "Data_LA": "1",
         "Errata": "BDM100, BDM35",
         "EventCode": "0xcd",
@@ -195,7 +178,6 @@
     },
     {
         "BriefDescription": "Speculative cache line split load uops dispatched to L1 cache",
-        "Counter": "0,1,2,3",
         "EventCode": "0x05",
         "EventName": "MISALIGN_MEM_REF.LOADS",
         "PublicDescription": "This event counts speculative cache-line split load uops dispatched to the L1 cache.",
@@ -204,7 +186,6 @@
     },
     {
         "BriefDescription": "Speculative cache line split STA uops dispatched to L1 cache",
-        "Counter": "0,1,2,3",
         "EventCode": "0x05",
         "EventName": "MISALIGN_MEM_REF.STORES",
         "PublicDescription": "This event counts speculative cache line split store-address (STA) uops dispatched to the L1 cache.",
@@ -213,7 +194,6 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -223,47 +203,42 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000091",
+        "MSRValue": "0x043C000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000091",
+        "MSRValue": "0x023C000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000091",
+        "MSRValue": "0x00BC000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000091",
+        "MSRValue": "0x013C000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -273,7 +248,6 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -283,37 +257,33 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000091",
+        "MSRValue": "0x0404000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000091",
+        "MSRValue": "0x0204000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000091",
+        "MSRValue": "0x0084000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -323,17 +293,15 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000091",
+        "MSRValue": "0x0104000091",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_DATA_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -343,7 +311,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -353,47 +320,42 @@
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000240",
+        "MSRValue": "0x043C000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000240",
+        "MSRValue": "0x023C000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000240",
+        "MSRValue": "0x00BC000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000240",
+        "MSRValue": "0x013C000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -403,7 +365,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -413,37 +374,33 @@
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000240",
+        "MSRValue": "0x0404000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000240",
+        "MSRValue": "0x0204000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000240",
+        "MSRValue": "0x0084000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -453,17 +410,15 @@
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000240",
+        "MSRValue": "0x0104000240",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_CODE_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -473,7 +428,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -483,47 +437,42 @@
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000090",
+        "MSRValue": "0x043C000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000090",
+        "MSRValue": "0x023C000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000090",
+        "MSRValue": "0x00BC000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000090",
+        "MSRValue": "0x013C000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -533,7 +482,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -543,37 +491,33 @@
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000090",
+        "MSRValue": "0x0404000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000090",
+        "MSRValue": "0x0204000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000090",
+        "MSRValue": "0x0084000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -583,17 +527,15 @@
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000090",
+        "MSRValue": "0x0104000090",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_DATA_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -603,7 +545,6 @@
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -613,47 +554,42 @@
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000120",
+        "MSRValue": "0x043C000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000120",
+        "MSRValue": "0x023C000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000120",
+        "MSRValue": "0x00BC000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000120",
+        "MSRValue": "0x013C000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -663,7 +599,6 @@
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -673,37 +608,33 @@
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000120",
+        "MSRValue": "0x0404000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000120",
+        "MSRValue": "0x0204000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000120",
+        "MSRValue": "0x0084000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -713,17 +644,15 @@
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000120",
+        "MSRValue": "0x0104000120",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_PF_RFO.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -733,7 +662,6 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -743,47 +671,42 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000122",
+        "MSRValue": "0x043C000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000122",
+        "MSRValue": "0x023C000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000122",
+        "MSRValue": "0x00BC000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000122",
+        "MSRValue": "0x013C000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -793,7 +716,6 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -803,37 +725,33 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000122",
+        "MSRValue": "0x0404000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000122",
+        "MSRValue": "0x0204000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000122",
+        "MSRValue": "0x0084000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -843,17 +761,15 @@
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000122",
+        "MSRValue": "0x0104000122",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand & prefetch RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.ALL_RFO.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -863,7 +779,6 @@
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -873,47 +788,42 @@
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000008",
+        "MSRValue": "0x043C000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000008",
+        "MSRValue": "0x023C000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000008",
+        "MSRValue": "0x00BC000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000008",
+        "MSRValue": "0x013C000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -923,7 +833,6 @@
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -933,37 +842,33 @@
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000008",
+        "MSRValue": "0x0404000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000008",
+        "MSRValue": "0x0204000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000008",
+        "MSRValue": "0x0084000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -973,17 +878,15 @@
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000008",
+        "MSRValue": "0x0104000008",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts writebacks (modified to exclusive)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.COREWB.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -993,7 +896,6 @@
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1003,47 +905,42 @@
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000004",
+        "MSRValue": "0x043C000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000004",
+        "MSRValue": "0x023C000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000004",
+        "MSRValue": "0x00BC000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000004",
+        "MSRValue": "0x013C000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1053,7 +950,6 @@
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1063,37 +959,33 @@
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000004",
+        "MSRValue": "0x0404000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000004",
+        "MSRValue": "0x0204000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000004",
+        "MSRValue": "0x0084000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1103,17 +995,15 @@
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000004",
+        "MSRValue": "0x0104000004",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_CODE_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1123,7 +1013,6 @@
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1133,47 +1022,42 @@
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000001",
+        "MSRValue": "0x043C000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000001",
+        "MSRValue": "0x023C000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000001",
+        "MSRValue": "0x00BC000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000001",
+        "MSRValue": "0x013C000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1183,7 +1067,6 @@
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1193,37 +1076,33 @@
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000001",
+        "MSRValue": "0x0404000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000001",
+        "MSRValue": "0x0204000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000001",
+        "MSRValue": "0x0084000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1233,17 +1112,15 @@
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000001",
+        "MSRValue": "0x0104000001",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts demand data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_DATA_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1253,7 +1130,6 @@
     },
     {
         "BriefDescription": "Counts all demand data writes (RFOs)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1263,47 +1139,42 @@
     },
     {
         "BriefDescription": "Counts all demand data writes (RFOs)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000002",
+        "MSRValue": "0x043C000002",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand data writes (RFOs)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000002",
+        "MSRValue": "0x023C000002",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand data writes (RFOs)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000002",
+        "MSRValue": "0x00BC000002",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand data writes (RFOs)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000002",
+        "MSRValue": "0x013C000002",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all demand data writes (RFOs)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.DEMAND_RFO.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1313,7 +1184,6 @@
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1323,47 +1193,42 @@
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C008000",
+        "MSRValue": "0x043C008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C008000",
+        "MSRValue": "0x023C008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC008000",
+        "MSRValue": "0x00BC008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C008000",
+        "MSRValue": "0x013C008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1373,7 +1238,6 @@
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1383,37 +1247,33 @@
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404008000",
+        "MSRValue": "0x0404008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204008000",
+        "MSRValue": "0x0204008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84008000",
+        "MSRValue": "0x0084008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1423,17 +1283,15 @@
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104008000",
+        "MSRValue": "0x0104008000",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts any other requests",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.OTHER.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1443,7 +1301,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1453,47 +1310,42 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000040",
+        "MSRValue": "0x043C000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000040",
+        "MSRValue": "0x023C000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000040",
+        "MSRValue": "0x00BC000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000040",
+        "MSRValue": "0x013C000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1503,7 +1355,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1513,37 +1364,33 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000040",
+        "MSRValue": "0x0404000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000040",
+        "MSRValue": "0x0204000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000040",
+        "MSRValue": "0x0084000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1553,17 +1400,15 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000040",
+        "MSRValue": "0x0104000040",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_CODE_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1573,7 +1418,6 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1583,47 +1427,42 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000010",
+        "MSRValue": "0x043C000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000010",
+        "MSRValue": "0x023C000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000010",
+        "MSRValue": "0x00BC000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000010",
+        "MSRValue": "0x013C000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1633,7 +1472,6 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1643,37 +1481,33 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000010",
+        "MSRValue": "0x0404000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000010",
+        "MSRValue": "0x0204000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000010",
+        "MSRValue": "0x0084000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1683,17 +1517,15 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000010",
+        "MSRValue": "0x0104000010",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to L2) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_DATA_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1703,7 +1535,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1713,47 +1544,42 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000020",
+        "MSRValue": "0x043C000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000020",
+        "MSRValue": "0x023C000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000020",
+        "MSRValue": "0x00BC000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000020",
+        "MSRValue": "0x013C000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1763,7 +1589,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1773,37 +1598,33 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000020",
+        "MSRValue": "0x0404000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000020",
+        "MSRValue": "0x0204000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000020",
+        "MSRValue": "0x0084000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1813,17 +1634,15 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000020",
+        "MSRValue": "0x0104000020",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to L2) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L2_RFO.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1833,7 +1652,6 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1843,47 +1661,42 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000200",
+        "MSRValue": "0x043C000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000200",
+        "MSRValue": "0x023C000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000200",
+        "MSRValue": "0x00BC000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000200",
+        "MSRValue": "0x013C000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1893,7 +1706,6 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1903,37 +1715,33 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000200",
+        "MSRValue": "0x0404000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000200",
+        "MSRValue": "0x0204000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000200",
+        "MSRValue": "0x0084000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1943,17 +1751,15 @@
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000200",
+        "MSRValue": "0x0104000200",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts prefetch (that bring data to LLC only) code reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_CODE_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1963,7 +1769,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -1973,47 +1778,42 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000080",
+        "MSRValue": "0x043C000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000080",
+        "MSRValue": "0x023C000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000080",
+        "MSRValue": "0x00BC000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000080",
+        "MSRValue": "0x013C000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2023,7 +1823,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2033,37 +1832,33 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000080",
+        "MSRValue": "0x0404000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000080",
+        "MSRValue": "0x0204000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000080",
+        "MSRValue": "0x0084000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2073,17 +1868,15 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000080",
+        "MSRValue": "0x0104000080",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) data reads",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_DATA_RD.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2093,7 +1886,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_HIT.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2103,47 +1895,42 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x43C000100",
+        "MSRValue": "0x043C000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x23C000100",
+        "MSRValue": "0x023C000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0xBC000100",
+        "MSRValue": "0x00BC000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x13C000100",
+        "MSRValue": "0x013C000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS_LOCAL_DRAM.ANY_SNOOP",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2153,7 +1940,6 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HITM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2163,37 +1949,33 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS_LOCAL_DRAM.SNOOP_HIT_NO_FWD",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x404000100",
+        "MSRValue": "0x0404000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS_LOCAL_DRAM.SNOOP_MISS",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x204000100",
+        "MSRValue": "0x0204000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NONE",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x84000100",
+        "MSRValue": "0x0084000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2203,17 +1985,15 @@
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.L3_MISS_LOCAL_DRAM.SNOOP_NOT_NEEDED",
         "MSRIndex": "0x1a6,0x1a7",
-        "MSRValue": "0x104000100",
+        "MSRValue": "0x0104000100",
         "SampleAfterValue": "100003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts all prefetch (that bring data to LLC only) RFOs",
-        "Counter": "0,1,2,3",
         "EventCode": "0xB7, 0xBB",
         "EventName": "OFFCORE_RESPONSE.PF_L3_RFO.SUPPLIER_NONE.SNOOP_NON_DRAM",
         "MSRIndex": "0x1a6,0x1a7",
@@ -2223,7 +2003,6 @@
     },
     {
         "BriefDescription": "Number of times RTM abort was triggered",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.ABORTED",
         "PEBS": "1",
@@ -2233,7 +2012,6 @@
     },
     {
         "BriefDescription": "Number of times an RTM execution aborted due to various memory events (e.g. read/write capacity and conflicts)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.ABORTED_MISC1",
         "PublicDescription": "Number of times an RTM abort was attributed to a Memory condition (See TSX_Memory event for additional details).",
@@ -2242,7 +2020,6 @@
     },
     {
         "BriefDescription": "Number of times an RTM execution aborted due to various memory events (e.g., read/write capacity and conflicts).",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.ABORTED_MISC2",
         "PublicDescription": "Number of times the TSX watchdog signaled an RTM abort.",
@@ -2251,7 +2028,6 @@
     },
     {
         "BriefDescription": "Number of times an RTM execution aborted due to HLE-unfriendly instructions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.ABORTED_MISC3",
         "PublicDescription": "Number of times a disallowed operation caused an RTM abort.",
@@ -2260,7 +2036,6 @@
     },
     {
         "BriefDescription": "Number of times an RTM execution aborted due to incompatible memory type",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.ABORTED_MISC4",
         "PublicDescription": "Number of times a RTM caused a fault.",
@@ -2269,7 +2044,6 @@
     },
     {
         "BriefDescription": "Number of times an RTM execution aborted due to none of the previous 4 categories (e.g. interrupt)",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.ABORTED_MISC5",
         "PublicDescription": "Number of times RTM aborted and was not due to the abort conditions in subevents 3-6.",
@@ -2278,7 +2052,6 @@
     },
     {
         "BriefDescription": "Number of times RTM commit succeeded",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.COMMIT",
         "PublicDescription": "Number of times RTM commit succeeded.",
@@ -2287,16 +2060,14 @@
     },
     {
         "BriefDescription": "Number of times we entered an RTM region; does not count nested transactions",
-        "Counter": "0,1,2,3",
         "EventCode": "0xc9",
         "EventName": "RTM_RETIRED.START",
-        "PublicDescription": "Number of times we entered an RTM region  does not count nested transactions.",
+        "PublicDescription": "Number of times we entered an RTM region\n does not count nested transactions.",
         "SampleAfterValue": "2000003",
         "UMask": "0x1"
     },
     {
         "BriefDescription": "Counts the number of times a class of instructions that may cause a transactional abort was executed. Since this is the count of execution, it may not always cause a transactional abort.",
-        "Counter": "0,1,2,3",
         "EventCode": "0x5d",
         "EventName": "TX_EXEC.MISC1",
         "SampleAfterValue": "2000003",
@@ -2304,7 +2075,6 @@
     },
     {
         "BriefDescription": "Counts the number of times a class of instructions (e.g., vzeroupper) that may cause a transactional abort was executed inside a transactional region",
-        "Counter": "0,1,2,3",
         "EventCode": "0x5d",
         "EventName": "TX_EXEC.MISC2",
         "PublicDescription": "Unfriendly TSX abort triggered by  a vzeroupper instruction.",
@@ -2313,7 +2083,6 @@
     },
     {
         "BriefDescription": "Counts the number of times an instruction execution caused the transactional nest count supported to be exceeded",
-        "Counter": "0,1,2,3",
         "EventCode": "0x5d",
         "EventName": "TX_EXEC.MISC3",
         "PublicDescription": "Unfriendly TSX abort triggered by a nest count that is too deep.",
@@ -2322,7 +2091,6 @@
     },
     {
         "BriefDescription": "Counts the number of times a XBEGIN instruction was executed inside an HLE transactional region.",
-        "Counter": "0,1,2,3",
         "EventCode": "0x5d",
         "EventName": "TX_EXEC.MISC4",
         "PublicDescription": "RTM region detected inside HLE.",
@@ -2331,7 +2099,6 @@
     },
     {
         "BriefDescription": "Counts the number of times an HLE XACQUIRE instruction was executed inside an RTM transactional region.",
-        "Counter": "0,1,2,3",
         "EventCode": "0x5d",
         "EventName": "TX_EXEC.MISC5",
         "SampleAfterValue": "2000003",
@@ -2339,7 +2106,6 @@
     },
     {
         "BriefDescription": "Number of times a TSX Abort was triggered due to an evicted line caused by a transaction overflow",
-        "Counter": "0,1,2,3",
         "EventCode": "0x54",
         "EventName": "TX_MEM.ABORT_CAPACITY_WRITE",
         "PublicDescription": "Number of times a TSX Abort was triggered due to an evicted line caused by a transaction overflow.",
@@ -2348,7 +2114,6 @@
     },
     {
         "BriefDescription": "Number of times a TSX line had a cache conflict",
-        "Counter": "0,1,2,3",
         "EventCode": "0x54",
         "EventName": "TX_MEM.ABORT_CONFLICT",
         "PublicDescription": "Number of times a TSX line had a cache conflict.",
@@ -2357,7 +2122,6 @@
     },
     {
         "BriefDescription": "Number of times a TSX Abort was triggered due to release/commit but data and address mismatch",
-        "Counter": "0,1,2,3",
         "EventCode": "0x54",
         "EventName": "TX_MEM.ABORT_HLE_ELISION_BUFFER_MISMATCH",
         "PublicDescription": "Number of times a TSX Abort was triggered due to release/commit but data and address mismatch.",
@@ -2366,7 +2130,6 @@
     },
     {
         "BriefDescription": "Number of times a TSX Abort was triggered due to commit but Lock Buffer not empty",
-        "Counter": "0,1,2,3",
         "EventCode": "0x54",
         "EventName": "TX_MEM.ABORT_HLE_ELISION_BUFFER_NOT_EMPTY",
         "PublicDescription": "Number of times a TSX Abort was triggered due to commit but Lock Buffer not empty.",
@@ -2375,7 +2138,6 @@
     },
     {
         "BriefDescription": "Number of times a TSX Abort was triggered due to attempting an unsupported alignment from Lock Buffer",
-        "Counter": "0,1,2,3",
         "EventCode": "0x54",
         "EventName": "TX_MEM.ABORT_HLE_ELISION_BUFFER_UNSUPPORTED_ALIGNMENT",
         "PublicDescription": "Number of times a TSX Abort was triggered due to attempting an unsupported alignment from Lock Buffer.",
@@ -2384,7 +2146,6 @@
     },
     {
         "BriefDescription": "Number of times a TSX Abort was triggered due to a non-release/commit store to lock",
-        "Counter": "0,1,2,3",
         "EventCode": "0x54",
         "EventName": "TX_MEM.ABORT_HLE_STORE_TO_ELIDED_LOCK",
         "PublicDescription": "Number of times a TSX Abort was triggered due to a non-release/commit store to lock.",
@@ -2393,7 +2154,6 @@
     },
     {
         "BriefDescription": "Number of times we could not allocate Lock Buffer",
-        "Counter": "0,1,2,3",
         "EventCode": "0x54",
         "EventName": "TX_MEM.HLE_ELISION_BUFFER_FULL",
         "PublicDescription": "Number of times we could not allocate Lock Buffer.",

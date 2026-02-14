@@ -151,8 +151,7 @@ static int snd_vxpocket_assign_resources(struct vx_core *chip, int port, int irq
 	struct snd_card *card = chip->card;
 	struct snd_vxpocket *vxp = to_vxpocket(chip);
 
-	dev_dbg(chip->card->dev,
-		"vxpocket assign resources: port = 0x%x, irq = %d\n", port, irq);
+	snd_printdd(KERN_DEBUG "vxpocket assign resources: port = 0x%x, irq = %d\n", port, irq);
 	vxp->port = port;
 
 	sprintf(card->shortname, "Digigram %s", card->driver);
@@ -179,15 +178,17 @@ static int vxpocket_config(struct pcmcia_device *link)
 	struct vx_core *chip = link->priv;
 	int ret;
 
+	snd_printdd(KERN_DEBUG "vxpocket_config called\n");
+
 	/* redefine hardware record according to the VERSION1 string */
 	if (!strcmp(link->prod_id[1], "VX-POCKET")) {
-		dev_dbg(chip->card->dev, "VX-pocket is detected\n");
+		snd_printdd("VX-pocket is detected\n");
 	} else {
-		dev_dbg(chip->card->dev, "VX-pocket 440 is detected\n");
+		snd_printdd("VX-pocket 440 is detected\n");
 		/* overwrite the hardware information */
 		chip->hw = &vxp440_hw;
 		chip->type = vxp440_hw.type;
-		strscpy(chip->card->driver, vxp440_hw.name);
+		strcpy(chip->card->driver, vxp440_hw.name);
 	}
 
 	ret = pcmcia_request_io(link);
@@ -203,6 +204,8 @@ static int vxpocket_config(struct pcmcia_device *link)
 	ret = pcmcia_enable_device(link);
 	if (ret)
 		goto failed;
+
+	chip->dev = &link->dev;
 
 	if (snd_vxpocket_assign_resources(chip, link->resource[0]->start,
 						link->irq) < 0)
@@ -223,8 +226,11 @@ static int vxp_suspend(struct pcmcia_device *link)
 {
 	struct vx_core *chip = link->priv;
 
-	if (chip)
+	snd_printdd(KERN_DEBUG "SUSPEND\n");
+	if (chip) {
+		snd_printdd(KERN_DEBUG "snd_vx_suspend calling\n");
 		snd_vx_suspend(chip);
+	}
 
 	return 0;
 }
@@ -233,10 +239,15 @@ static int vxp_resume(struct pcmcia_device *link)
 {
 	struct vx_core *chip = link->priv;
 
+	snd_printdd(KERN_DEBUG "RESUME\n");
 	if (pcmcia_dev_present(link)) {
-		if (chip)
+		//struct snd_vxpocket *vxp = (struct snd_vxpocket *)chip;
+		if (chip) {
+			snd_printdd(KERN_DEBUG "calling snd_vx_resume\n");
 			snd_vx_resume(chip);
+		}
 	}
+	snd_printdd(KERN_DEBUG "resume done!\n");
 
 	return 0;
 }
@@ -258,7 +269,7 @@ static int vxpocket_probe(struct pcmcia_device *p_dev)
 			break;
 	}
 	if (i >= SNDRV_CARDS) {
-		dev_err(&p_dev->dev, "vxpocket: too many cards found\n");
+		snd_printk(KERN_ERR "vxpocket: too many cards found\n");
 		return -EINVAL;
 	}
 	if (! enable[i])
@@ -268,7 +279,7 @@ static int vxpocket_probe(struct pcmcia_device *p_dev)
 	err = snd_card_new(&p_dev->dev, index[i], id[i], THIS_MODULE,
 			   0, &card);
 	if (err < 0) {
-		dev_err(&p_dev->dev, "vxpocket: cannot create a card instance\n");
+		snd_printk(KERN_ERR "vxpocket: cannot create a card instance\n");
 		return err;
 	}
 
@@ -284,13 +295,7 @@ static int vxpocket_probe(struct pcmcia_device *p_dev)
 
 	vxp->p_dev = p_dev;
 
-	err = vxpocket_config(p_dev);
-	if (err < 0) {
-		card_alloc &= ~(1 << i);
-		snd_card_free(card);
-		return err;
-	}
-	return 0;
+	return vxpocket_config(p_dev);
 }
 
 static void vxpocket_detach(struct pcmcia_device *link)

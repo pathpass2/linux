@@ -8,7 +8,7 @@
 #ifndef _SPARC64_STARFIRE_H
 #define _SPARC64_STARFIRE_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 extern int this_is_starfire;
 

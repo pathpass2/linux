@@ -58,12 +58,13 @@ __get_cpuid(char *buffer, size_t sz, const char *fmt)
 }
 
 int
-get_cpuid(char *buffer, size_t sz, struct perf_cpu cpu __maybe_unused)
+get_cpuid(char *buffer, size_t sz)
 {
 	return __get_cpuid(buffer, sz, "%s,%u,%u,%u$");
 }
 
-char *get_cpuid_str(struct perf_cpu cpu __maybe_unused)
+char *
+get_cpuid_str(struct perf_pmu *pmu __maybe_unused)
 {
 	char *buf = malloc(128);
 

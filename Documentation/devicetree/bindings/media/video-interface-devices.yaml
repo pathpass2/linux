@@ -17,14 +17,6 @@ properties:
       An array of phandles, each referring to a flash LED, a sub-node of the LED
       driver device node.
 
-  leds:
-    minItems: 1
-    maxItems: 1
-
-  led-names:
-    enum:
-      - privacy
-
   lens-focus:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
@@ -128,6 +120,7 @@ properties:
 
       0 degrees camera rotation:
 
+
                     Y-Rp
                      ^
               Y-Rc   !
@@ -143,6 +136,7 @@ properties:
                !     0               X-Rp
              0 +------------------------------------->
                0               X-Rc
+
 
                                 X-Rc                0
                <------------------------------------+ 0
@@ -226,6 +220,7 @@ properties:
                V
               X-Rc
 
+
       Example one - Webcam
 
       A camera module installed on the user facing part of a laptop screen
@@ -269,6 +264,7 @@ properties:
       If the camera sensor is not mounted upside-down to compensate for the lens
       optical inversion, the two reference systems will not be aligned, with
       'Rp' being rotated 180 degrees relatively to 'Rc':
+
 
                         X-Rc                0
        <------------------------------------+ 0

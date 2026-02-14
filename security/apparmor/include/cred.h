@@ -63,26 +63,6 @@ static inline struct aa_label *aa_get_newest_cred_label(const struct cred *cred)
 	return aa_get_newest_label(aa_cred_raw_label(cred));
 }
 
-static inline struct aa_label *aa_get_newest_cred_label_condref(const struct cred *cred,
-								bool *needput)
-{
-	struct aa_label *l = aa_cred_raw_label(cred);
-
-	if (unlikely(label_is_stale(l))) {
-		*needput = true;
-		return aa_get_newest_label(l);
-	}
-
-	*needput = false;
-	return l;
-}
-
-static inline void aa_put_label_condref(struct aa_label *l, bool needput)
-{
-	if (unlikely(needput))
-		aa_put_label(l);
-}
-
 /**
  * aa_current_raw_label - find the current tasks confining label
  *
@@ -114,22 +94,10 @@ static inline struct aa_label *aa_get_current_label(void)
 	return aa_get_label(l);
 }
 
-/**
- * __end_current_label_crit_section - end crit section begun with __begin_...
- * @label: label obtained from __begin_current_label_crit_section
- * @needput: output: bool set by __begin_current_label_crit_section
- *
- * Returns: label to use for this crit section
- */
-static inline void __end_current_label_crit_section(struct aa_label *label,
-						    bool needput)
-{
-	if (unlikely(needput))
-		aa_put_label(label);
-}
+#define __end_current_label_crit_section(X) end_current_label_crit_section(X)
 
 /**
- * end_current_label_crit_section - put a reference found with begin_current_label..
+ * end_label_crit_section - put a reference found with begin_current_label..
  * @label: label reference to put
  *
  * Should only be used with a reference obtained with
@@ -144,7 +112,6 @@ static inline void end_current_label_crit_section(struct aa_label *label)
 
 /**
  * __begin_current_label_crit_section - current's confining label
- * @needput: store whether the label needs to be put when ending crit section
  *
  * Returns: up to date confining label or the ns unconfined label (NOT NULL)
  *
@@ -155,16 +122,13 @@ static inline void end_current_label_crit_section(struct aa_label *label)
  * critical section between __begin_current_label_crit_section() ..
  * __end_current_label_crit_section()
  */
-static inline struct aa_label *__begin_current_label_crit_section(bool *needput)
+static inline struct aa_label *__begin_current_label_crit_section(void)
 {
 	struct aa_label *label = aa_current_raw_label();
 
-	if (label_is_stale(label)) {
-		*needput = true;
-		return aa_get_newest_label(label);
-	}
+	if (label_is_stale(label))
+		label = aa_get_newest_label(label);
 
-	*needput = false;
 	return label;
 }
 
@@ -200,11 +164,10 @@ static inline struct aa_ns *aa_get_current_ns(void)
 {
 	struct aa_label *label;
 	struct aa_ns *ns;
-	bool needput;
 
-	label  = __begin_current_label_crit_section(&needput);
+	label  = __begin_current_label_crit_section();
 	ns = aa_get_ns(labels_ns(label));
-	__end_current_label_crit_section(label, needput);
+	__end_current_label_crit_section(label);
 
 	return ns;
 }

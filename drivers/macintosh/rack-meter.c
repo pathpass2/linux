@@ -387,7 +387,7 @@ static int rackmeter_probe(struct macio_dev* mdev,
 	       if (of_node_name_eq(np, "lightshow"))
 		       break;
 	       if (of_node_name_eq(np, "sound") &&
-		   of_property_present(np, "virtual"))
+		   of_get_property(np, "virtual", NULL) != NULL)
 		       break;
 	}
 	if (np == NULL) {
@@ -523,7 +523,7 @@ static int rackmeter_probe(struct macio_dev* mdev,
 	return rc;
 }
 
-static void rackmeter_remove(struct macio_dev *mdev)
+static int rackmeter_remove(struct macio_dev* mdev)
 {
 	struct rackmeter *rm = dev_get_drvdata(&mdev->ofdev.dev);
 
@@ -558,6 +558,8 @@ static void rackmeter_remove(struct macio_dev *mdev)
 
 	/* Get rid of me */
 	kfree(rm);
+
+	return 0;
 }
 
 static int rackmeter_shutdown(struct macio_dev* mdev)

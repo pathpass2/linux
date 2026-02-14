@@ -23,6 +23,8 @@
 #include "hid-roccat-common.h"
 #include "hid-roccat-isku.h"
 
+static struct class *isku_class;
+
 static void isku_profile_activated(struct isku_device *isku, uint new_profile)
 {
 	isku->actual_profile = new_profile;
@@ -61,7 +63,7 @@ static ssize_t isku_sysfs_show_actual_profile(struct device *dev,
 {
 	struct isku_device *isku =
 			hid_get_drvdata(dev_get_drvdata(dev->parent->parent));
-	return sysfs_emit(buf, "%d\n", isku->actual_profile);
+	return snprintf(buf, PAGE_SIZE, "%d\n", isku->actual_profile);
 }
 
 static ssize_t isku_sysfs_set_actual_profile(struct device *dev,
@@ -156,7 +158,7 @@ static ssize_t isku_sysfs_write(struct file *fp, struct kobject *kobj,
 
 #define ISKU_SYSFS_W(thingy, THINGY) \
 static ssize_t isku_sysfs_write_ ## thingy(struct file *fp, struct kobject *kobj, \
-		const struct bin_attribute *attr, char *buf, \
+		struct bin_attribute *attr, char *buf, \
 		loff_t off, size_t count) \
 { \
 	return isku_sysfs_write(fp, kobj, buf, off, count, \
@@ -165,7 +167,7 @@ static ssize_t isku_sysfs_write_ ## thingy(struct file *fp, struct kobject *kobj
 
 #define ISKU_SYSFS_R(thingy, THINGY) \
 static ssize_t isku_sysfs_read_ ## thingy(struct file *fp, struct kobject *kobj, \
-		const struct bin_attribute *attr, char *buf, \
+		struct bin_attribute *attr, char *buf, \
 		loff_t off, size_t count) \
 { \
 	return isku_sysfs_read(fp, kobj, buf, off, count, \
@@ -178,7 +180,7 @@ ISKU_SYSFS_W(thingy, THINGY)
 
 #define ISKU_BIN_ATTR_RW(thingy, THINGY) \
 ISKU_SYSFS_RW(thingy, THINGY); \
-static const struct bin_attribute bin_attr_##thingy = { \
+static struct bin_attribute bin_attr_##thingy = { \
 	.attr = { .name = #thingy, .mode = 0660 }, \
 	.size = ISKU_SIZE_ ## THINGY, \
 	.read = isku_sysfs_read_ ## thingy, \
@@ -187,7 +189,7 @@ static const struct bin_attribute bin_attr_##thingy = { \
 
 #define ISKU_BIN_ATTR_R(thingy, THINGY) \
 ISKU_SYSFS_R(thingy, THINGY); \
-static const struct bin_attribute bin_attr_##thingy = { \
+static struct bin_attribute bin_attr_##thingy = { \
 	.attr = { .name = #thingy, .mode = 0440 }, \
 	.size = ISKU_SIZE_ ## THINGY, \
 	.read = isku_sysfs_read_ ## thingy, \
@@ -195,7 +197,7 @@ static const struct bin_attribute bin_attr_##thingy = { \
 
 #define ISKU_BIN_ATTR_W(thingy, THINGY) \
 ISKU_SYSFS_W(thingy, THINGY); \
-static const struct bin_attribute bin_attr_##thingy = { \
+static struct bin_attribute bin_attr_##thingy = { \
 	.attr = { .name = #thingy, .mode = 0220 }, \
 	.size = ISKU_SIZE_ ## THINGY, \
 	.write = isku_sysfs_write_ ## thingy \
@@ -217,7 +219,7 @@ ISKU_BIN_ATTR_W(control, CONTROL);
 ISKU_BIN_ATTR_W(reset, RESET);
 ISKU_BIN_ATTR_R(info, INFO);
 
-static const struct bin_attribute *const isku_bin_attributes[] = {
+static struct bin_attribute *isku_bin_attributes[] = {
 	&bin_attr_macro,
 	&bin_attr_keys_function,
 	&bin_attr_keys_easyzone,
@@ -244,11 +246,6 @@ static const struct attribute_group isku_group = {
 static const struct attribute_group *isku_groups[] = {
 	&isku_group,
 	NULL,
-};
-
-static const struct class isku_class = {
-	.name = "isku",
-	.dev_groups = isku_groups,
 };
 
 static int isku_init_isku_device_struct(struct usb_device *usb_dev,
@@ -292,7 +289,7 @@ static int isku_init_specials(struct hid_device *hdev)
 		goto exit_free;
 	}
 
-	retval = roccat_connect(&isku_class, hdev,
+	retval = roccat_connect(isku_class, hdev,
 			sizeof(struct isku_roccat_report));
 	if (retval < 0) {
 		hid_err(hdev, "couldn't init char dev\n");
@@ -438,21 +435,21 @@ static struct hid_driver isku_driver = {
 static int __init isku_init(void)
 {
 	int retval;
-
-	retval = class_register(&isku_class);
-	if (retval)
-		return retval;
+	isku_class = class_create(THIS_MODULE, "isku");
+	if (IS_ERR(isku_class))
+		return PTR_ERR(isku_class);
+	isku_class->dev_groups = isku_groups;
 
 	retval = hid_register_driver(&isku_driver);
 	if (retval)
-		class_unregister(&isku_class);
+		class_destroy(isku_class);
 	return retval;
 }
 
 static void __exit isku_exit(void)
 {
 	hid_unregister_driver(&isku_driver);
-	class_unregister(&isku_class);
+	class_destroy(isku_class);
 }
 
 module_init(isku_init);

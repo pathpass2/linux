@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/errno.h>
-#include <linux/gpio/driver.h>
 #include <linux/gpio/gpio-reg.h>
 #include <linux/gpio/machine.h>
 #include <linux/gpio_keys.h>
@@ -710,7 +709,7 @@ static void __init assabet_map_io(void)
 	sa1100_register_uart(2, 3);
 }
 
-static void __init assabet_init_irq(void)
+void __init assabet_init_irq(void)
 {
 	u32 def_val;
 

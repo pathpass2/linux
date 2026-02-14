@@ -16,9 +16,8 @@
 #include <linux/debugfs.h>
 #include <linux/irqdomain.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
 #include <linux/remoteproc/pruss.h>
 #include <linux/pruss_driver.h>
 #include <linux/remoteproc.h>
@@ -83,6 +82,21 @@ enum pru_iomem {
 };
 
 /**
+ * enum pru_type - PRU core type identifier
+ *
+ * @PRU_TYPE_PRU: Programmable Real-time Unit
+ * @PRU_TYPE_RTU: Auxiliary Programmable Real-Time Unit
+ * @PRU_TYPE_TX_PRU: Transmit Programmable Real-Time Unit
+ * @PRU_TYPE_MAX: just keep this one at the end
+ */
+enum pru_type {
+	PRU_TYPE_PRU = 0,
+	PRU_TYPE_RTU,
+	PRU_TYPE_TX_PRU,
+	PRU_TYPE_MAX,
+};
+
+/**
  * struct pru_private_data - device data for a PRU core
  * @type: type of the PRU core (PRU, RTU, Tx_PRU)
  * @is_k3: flag used to identify the need for special load handling
@@ -110,7 +124,6 @@ struct pru_private_data {
  * @dbg_single_step: debug state variable to set PRU into single step mode
  * @dbg_continuous: debug state variable to restore PRU execution mode
  * @evt_count: number of mapped events
- * @gpmux_save: saved value for gpmux config
  */
 struct pru_rproc {
 	int id;
@@ -129,7 +142,6 @@ struct pru_rproc {
 	u32 dbg_single_step;
 	u32 dbg_continuous;
 	u8 evt_count;
-	u8 gpmux_save;
 };
 
 static inline u32 pru_control_read_reg(struct pru_rproc *pru, unsigned int reg)
@@ -231,7 +243,6 @@ struct rproc *pru_rproc_get(struct device_node *np, int index,
 	struct device *dev;
 	const char *fw_name;
 	int ret;
-	u32 mux;
 
 	rproc = __pru_rproc_get(np, index);
 	if (IS_ERR(rproc))
@@ -255,23 +266,6 @@ struct rproc *pru_rproc_get(struct device_node *np, int index,
 
 	if (pru_id)
 		*pru_id = pru->id;
-
-	ret = pruss_cfg_get_gpmux(pru->pruss, pru->id, &pru->gpmux_save);
-	if (ret) {
-		dev_err(dev, "failed to get cfg gpmux: %d\n", ret);
-		goto err;
-	}
-
-	/* An error here is acceptable for backward compatibility */
-	ret = of_property_read_u32_index(np, "ti,pruss-gp-mux-sel", index,
-					 &mux);
-	if (!ret) {
-		ret = pruss_cfg_set_gpmux(pru->pruss, pru->id, mux);
-		if (ret) {
-			dev_err(dev, "failed to set cfg gpmux: %d\n", ret);
-			goto err;
-		}
-	}
 
 	ret = of_property_read_string_index(np, "firmware-name", index,
 					    &fw_name);
@@ -311,8 +305,6 @@ void pru_rproc_put(struct rproc *rproc)
 
 	pru = rproc->priv;
 
-	pruss_cfg_set_gpmux(pru->pruss, pru->id, pru->gpmux_save);
-
 	pru_rproc_set_firmware(rproc, NULL);
 
 	mutex_lock(&pru->lock);
@@ -340,7 +332,7 @@ EXPORT_SYMBOL_GPL(pru_rproc_put);
  */
 int pru_rproc_set_ctable(struct rproc *rproc, enum pru_ctable_idx c, u32 addr)
 {
-	struct pru_rproc *pru;
+	struct pru_rproc *pru = rproc->priv;
 	unsigned int reg;
 	u32 mask, set;
 	u16 idx;
@@ -352,7 +344,6 @@ int pru_rproc_set_ctable(struct rproc *rproc, enum pru_ctable_idx c, u32 addr)
 	if (!rproc->dev.parent || !is_pru_rproc(rproc->dev.parent))
 		return -ENODEV;
 
-	pru = rproc->priv;
 	/* pointer is 16 bit and index is 8-bit so mask out the rest */
 	idx_mask = (c >= PRU_C28) ? 0xFFFF : 0xFF;
 
@@ -564,7 +555,7 @@ static int pru_handle_intrmap(struct rproc *rproc)
 		return -ENODEV;
 	}
 
-	fwspec.fwnode = of_fwnode_handle(irq_parent);
+	fwspec.fwnode = of_node_to_fwnode(irq_parent);
 	fwspec.param_count = 3;
 	for (i = 0; i < pru->evt_count; i++) {
 		fwspec.param[0] = rsc->pru_intc_map[i].event;
@@ -666,7 +657,7 @@ static void *pru_d_da_to_va(struct pru_rproc *pru, u32 da, size_t len)
 		swap(dram0, dram1);
 	shrd_ram = pruss->mem_regions[PRUSS_MEM_SHRD_RAM2];
 
-	if (da + len <= PRU_PDRAM_DA + dram0.size) {
+	if (da >= PRU_PDRAM_DA && da + len <= PRU_PDRAM_DA + dram0.size) {
 		offset = da - PRU_PDRAM_DA;
 		va = (__force void *)(dram0.va + offset);
 	} else if (da >= PRU_SDRAM_DA &&
@@ -715,7 +706,8 @@ static void *pru_i_da_to_va(struct pru_rproc *pru, u32 da, size_t len)
 	 */
 	da &= 0xfffff;
 
-	if (da + len <= PRU_IRAM_DA + pru->mem_regions[PRU_IOMEM_IRAM].size) {
+	if (da >= PRU_IRAM_DA &&
+	    da + len <= PRU_IRAM_DA + pru->mem_regions[PRU_IOMEM_IRAM].size) {
 		offset = da - PRU_IRAM_DA;
 		va = (__force void *)(pru->mem_regions[PRU_IOMEM_IRAM].va +
 				      offset);
@@ -1056,7 +1048,7 @@ static int pru_rproc_probe(struct platform_device *pdev)
 		pru->mem_regions[i].pa = res->start;
 		pru->mem_regions[i].size = resource_size(res);
 
-		dev_dbg(dev, "memory %8s: pa %pa size 0x%zx va %p\n",
+		dev_dbg(dev, "memory %8s: pa %pa size 0x%zx va %pK\n",
 			mem_names[i], &pru->mem_regions[i].pa,
 			pru->mem_regions[i].size, pru->mem_regions[i].va);
 	}
@@ -1080,12 +1072,14 @@ static int pru_rproc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void pru_rproc_remove(struct platform_device *pdev)
+static int pru_rproc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct rproc *rproc = platform_get_drvdata(pdev);
 
 	dev_dbg(dev, "%s: removing rproc %s\n", __func__, rproc->name);
+
+	return 0;
 }
 
 static const struct pru_private_data pru_data = {

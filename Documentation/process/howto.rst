@@ -82,7 +82,8 @@ documentation files are also added which explain how to use the feature.
 When a kernel change causes the interface that the kernel exposes to
 userspace to change, it is recommended that you send the information or
 a patch to the manual pages explaining the change to the manual pages
-maintainer at alx@kernel.org, and CC the list linux-api@vger.kernel.org.
+maintainer at mtk.manpages@gmail.com, and CC the list
+linux-api@vger.kernel.org.
 
 Here is a list of files that are in the kernel source tree that are
 required reading:
@@ -331,7 +332,7 @@ they need to be integration-tested.  For this purpose, a special
 testing repository exists into which virtually all subsystem trees are
 pulled on an almost daily basis:
 
-	https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git
+	https://git.kernel.org/?p=linux/kernel/git/next/linux-next.git
 
 This way, the linux-next gives a summary outlook onto what will be
 expected to go into the mainline kernel at the next merge period.
@@ -351,8 +352,8 @@ Managing bug reports
 --------------------
 
 One of the best ways to put into practice your hacking skills is by fixing
-bugs reported by other people. Not only will you help to make the kernel
-more stable, but you'll also learn to fix real-world problems and you will
+bugs reported by other people. Not only you will help to make the kernel
+more stable, but you'll also learn to fix real world problems and you will
 improve your skills, and other developers will be aware of your presence.
 Fixing bugs is one of the best ways to get merits among other developers,
 because not many people like wasting time fixing other people's bugs.
@@ -373,12 +374,12 @@ As some of the above documents describe, the majority of the core kernel
 developers participate on the Linux Kernel Mailing list.  Details on how
 to subscribe and unsubscribe from the list can be found at:
 
-	https://subspace.kernel.org/subscribing.html
+	http://vger.kernel.org/vger-lists.html#linux-kernel
 
 There are archives of the mailing list on the web in many different
 places.  Use a search engine to find these archives.  For example:
 
-	https://lore.kernel.org/linux-kernel/
+	https://lore.kernel.org/lkml/
 
 It is highly recommended that you search the archives about the topic
 you want to bring up, before you post it to the list. A lot of things
@@ -393,13 +394,13 @@ groups.
 Many of the lists are hosted on kernel.org. Information on them can be
 found at:
 
-	https://subspace.kernel.org
+	http://vger.kernel.org/vger-lists.html
 
 Please remember to follow good behavioral habits when using the lists.
 Though a bit cheesy, the following URL has some simple guidelines for
 interacting with the list (or any list):
 
-	https://subspace.kernel.org/etiquette.html
+	http://www.albion.com/netiquette/
 
 If multiple people respond to your mail, the CC: list of recipients may
 get pretty large. Don't remove anybody from the CC: list without a good

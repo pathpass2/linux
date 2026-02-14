@@ -70,7 +70,7 @@ static const struct loongson2_soc_die_attr *loongson2_soc_die_match(
 		if (matches->svr == (svr & matches->mask))
 			return matches;
 		matches++;
-	}
+	};
 
 	return NULL;
 }
@@ -94,6 +94,7 @@ static int loongson2_guts_probe(struct platform_device *pdev)
 {
 	struct device_node *root, *np = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 	const struct loongson2_soc_die_attr *soc_die;
 	const char *machine;
 	u32 svr;
@@ -105,7 +106,8 @@ static int loongson2_guts_probe(struct platform_device *pdev)
 
 	guts->little_endian = of_property_read_bool(np, "little-endian");
 
-	guts->regs = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	guts->regs = ioremap(res->start, res->end - res->start + 1);
 	if (IS_ERR(guts->regs))
 		return PTR_ERR(guts->regs);
 
@@ -114,11 +116,8 @@ static int loongson2_guts_probe(struct platform_device *pdev)
 	if (of_property_read_string(root, "model", &machine))
 		of_property_read_string_index(root, "compatible", 0, &machine);
 	of_node_put(root);
-	if (machine) {
+	if (machine)
 		soc_dev_attr.machine = devm_kstrdup(dev, machine, GFP_KERNEL);
-		if (!soc_dev_attr.machine)
-			return -ENOMEM;
-	}
 
 	svr = loongson2_guts_get_svr();
 	soc_die = loongson2_soc_die_match(svr, loongson2_soc_die);
@@ -151,9 +150,11 @@ static int loongson2_guts_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void loongson2_guts_remove(struct platform_device *dev)
+static int loongson2_guts_remove(struct platform_device *dev)
 {
 	soc_device_unregister(soc_dev);
+
+	return 0;
 }
 
 /*

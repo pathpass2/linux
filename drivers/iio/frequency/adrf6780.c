@@ -9,6 +9,7 @@
 #include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/clkdev.h>
+#include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/iio/iio.h>
@@ -16,7 +17,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/spi/spi.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /* ADRF6780 Register Map */
 #define ADRF6780_REG_CONTROL			0x00
@@ -487,13 +488,13 @@ static int adrf6780_probe(struct spi_device *spi)
 
 static const struct spi_device_id adrf6780_id[] = {
 	{ "adrf6780", 0 },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(spi, adrf6780_id);
 
 static const struct of_device_id adrf6780_of_match[] = {
 	{ .compatible = "adi,adrf6780" },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, adrf6780_of_match);
 

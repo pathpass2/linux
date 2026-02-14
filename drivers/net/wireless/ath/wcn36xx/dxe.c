@@ -112,8 +112,8 @@ int wcn36xx_dxe_alloc_ctl_blks(struct wcn36xx *wcn)
 	wcn->dxe_rx_l_ch.desc_num = WCN36XX_DXE_CH_DESC_NUMB_RX_L;
 	wcn->dxe_rx_h_ch.desc_num = WCN36XX_DXE_CH_DESC_NUMB_RX_H;
 
-	wcn->dxe_tx_l_ch.dxe_wq =  WCN36XX_DXE_WQ_TX_L(wcn);
-	wcn->dxe_tx_h_ch.dxe_wq =  WCN36XX_DXE_WQ_TX_H(wcn);
+	wcn->dxe_tx_l_ch.dxe_wq =  WCN36XX_DXE_WQ_TX_L;
+	wcn->dxe_tx_h_ch.dxe_wq =  WCN36XX_DXE_WQ_TX_H;
 
 	wcn->dxe_tx_l_ch.ctrl_bd = WCN36XX_DXE_CTRL_TX_L_BD;
 	wcn->dxe_tx_h_ch.ctrl_bd = WCN36XX_DXE_CTRL_TX_H_BD;
@@ -165,9 +165,8 @@ void wcn36xx_dxe_free_ctl_blks(struct wcn36xx *wcn)
 	wcn36xx_dxe_free_ctl_block(&wcn->dxe_rx_h_ch);
 }
 
-static int wcn36xx_dxe_init_descs(struct wcn36xx *wcn, struct wcn36xx_dxe_ch *wcn_ch)
+static int wcn36xx_dxe_init_descs(struct device *dev, struct wcn36xx_dxe_ch *wcn_ch)
 {
-	struct device *dev = wcn->dev;
 	struct wcn36xx_dxe_desc *cur_dxe = NULL;
 	struct wcn36xx_dxe_desc *prev_dxe = NULL;
 	struct wcn36xx_dxe_ctl *cur_ctl = NULL;
@@ -180,7 +179,7 @@ static int wcn36xx_dxe_init_descs(struct wcn36xx *wcn, struct wcn36xx_dxe_ch *wc
 	if (!wcn_ch->cpu_addr)
 		return -ENOMEM;
 
-	cur_dxe = wcn_ch->cpu_addr;
+	cur_dxe = (struct wcn36xx_dxe_desc *)wcn_ch->cpu_addr;
 	cur_ctl = wcn_ch->head_blk_ctl;
 
 	for (i = 0; i < wcn_ch->desc_num; i++) {
@@ -191,11 +190,11 @@ static int wcn36xx_dxe_init_descs(struct wcn36xx *wcn, struct wcn36xx_dxe_ch *wc
 		switch (wcn_ch->ch_type) {
 		case WCN36XX_DXE_CH_TX_L:
 			cur_dxe->ctrl = WCN36XX_DXE_CTRL_TX_L;
-			cur_dxe->dst_addr_l = WCN36XX_DXE_WQ_TX_L(wcn);
+			cur_dxe->dst_addr_l = WCN36XX_DXE_WQ_TX_L;
 			break;
 		case WCN36XX_DXE_CH_TX_H:
 			cur_dxe->ctrl = WCN36XX_DXE_CTRL_TX_H;
-			cur_dxe->dst_addr_l = WCN36XX_DXE_WQ_TX_H(wcn);
+			cur_dxe->dst_addr_l = WCN36XX_DXE_WQ_TX_H;
 			break;
 		case WCN36XX_DXE_CH_RX_L:
 			cur_dxe->ctrl = WCN36XX_DXE_CTRL_RX_L;
@@ -350,7 +349,7 @@ void wcn36xx_dxe_tx_ack_ind(struct wcn36xx *wcn, u32 status)
 	spin_lock_irqsave(&wcn->dxe_lock, flags);
 	skb = wcn->tx_ack_skb;
 	wcn->tx_ack_skb = NULL;
-	timer_delete(&wcn->tx_ack_timer);
+	del_timer(&wcn->tx_ack_timer);
 	spin_unlock_irqrestore(&wcn->dxe_lock, flags);
 
 	if (!skb) {
@@ -373,7 +372,7 @@ void wcn36xx_dxe_tx_ack_ind(struct wcn36xx *wcn, u32 status)
 
 static void wcn36xx_dxe_tx_timer(struct timer_list *t)
 {
-	struct wcn36xx *wcn = timer_container_of(wcn, t, tx_ack_timer);
+	struct wcn36xx *wcn = from_timer(wcn, t, tx_ack_timer);
 	struct ieee80211_tx_info *info;
 	unsigned long flags;
 	struct sk_buff *skb;
@@ -453,7 +452,7 @@ static void reap_tx_dxes(struct wcn36xx *wcn, struct wcn36xx_dxe_ch *ch)
 
 static irqreturn_t wcn36xx_irq_tx_complete(int irq, void *dev)
 {
-	struct wcn36xx *wcn = dev;
+	struct wcn36xx *wcn = (struct wcn36xx *)dev;
 	int int_src, int_reason;
 
 	wcn36xx_dxe_read_register(wcn, WCN36XX_DXE_INT_SRC_RAW_REG, &int_src);
@@ -541,7 +540,7 @@ static irqreturn_t wcn36xx_irq_tx_complete(int irq, void *dev)
 
 static irqreturn_t wcn36xx_irq_rx_ready(int irq, void *dev)
 {
-	struct wcn36xx *wcn = dev;
+	struct wcn36xx *wcn = (struct wcn36xx *)dev;
 
 	wcn36xx_dxe_rx_frame(wcn);
 
@@ -915,7 +914,7 @@ int wcn36xx_dxe_init(struct wcn36xx *wcn)
 	/***************************************/
 	/* Init descriptors for TX LOW channel */
 	/***************************************/
-	ret = wcn36xx_dxe_init_descs(wcn, &wcn->dxe_tx_l_ch);
+	ret = wcn36xx_dxe_init_descs(wcn->dev, &wcn->dxe_tx_l_ch);
 	if (ret) {
 		dev_err(wcn->dev, "Error allocating descriptor\n");
 		return ret;
@@ -929,14 +928,14 @@ int wcn36xx_dxe_init(struct wcn36xx *wcn)
 	/* Program DMA destination addr for TX LOW */
 	wcn36xx_dxe_write_register(wcn,
 		WCN36XX_DXE_CH_DEST_ADDR_TX_L,
-		WCN36XX_DXE_WQ_TX_L(wcn));
+		WCN36XX_DXE_WQ_TX_L);
 
 	wcn36xx_dxe_read_register(wcn, WCN36XX_DXE_REG_CH_EN, &reg_data);
 
 	/***************************************/
 	/* Init descriptors for TX HIGH channel */
 	/***************************************/
-	ret = wcn36xx_dxe_init_descs(wcn, &wcn->dxe_tx_h_ch);
+	ret = wcn36xx_dxe_init_descs(wcn->dev, &wcn->dxe_tx_h_ch);
 	if (ret) {
 		dev_err(wcn->dev, "Error allocating descriptor\n");
 		goto out_err_txh_ch;
@@ -951,14 +950,14 @@ int wcn36xx_dxe_init(struct wcn36xx *wcn)
 	/* Program DMA destination addr for TX HIGH */
 	wcn36xx_dxe_write_register(wcn,
 		WCN36XX_DXE_CH_DEST_ADDR_TX_H,
-		WCN36XX_DXE_WQ_TX_H(wcn));
+		WCN36XX_DXE_WQ_TX_H);
 
 	wcn36xx_dxe_read_register(wcn, WCN36XX_DXE_REG_CH_EN, &reg_data);
 
 	/***************************************/
 	/* Init descriptors for RX LOW channel */
 	/***************************************/
-	ret = wcn36xx_dxe_init_descs(wcn, &wcn->dxe_rx_l_ch);
+	ret = wcn36xx_dxe_init_descs(wcn->dev, &wcn->dxe_rx_l_ch);
 	if (ret) {
 		dev_err(wcn->dev, "Error allocating descriptor\n");
 		goto out_err_rxl_ch;
@@ -989,7 +988,7 @@ int wcn36xx_dxe_init(struct wcn36xx *wcn)
 	/***************************************/
 	/* Init descriptors for RX HIGH channel */
 	/***************************************/
-	ret = wcn36xx_dxe_init_descs(wcn, &wcn->dxe_rx_h_ch);
+	ret = wcn36xx_dxe_init_descs(wcn->dev, &wcn->dxe_rx_h_ch);
 	if (ret) {
 		dev_err(wcn->dev, "Error allocating descriptor\n");
 		goto out_err_rxh_ch;
@@ -1055,7 +1054,7 @@ void wcn36xx_dxe_deinit(struct wcn36xx *wcn)
 
 	free_irq(wcn->tx_irq, wcn);
 	free_irq(wcn->rx_irq, wcn);
-	timer_delete(&wcn->tx_ack_timer);
+	del_timer(&wcn->tx_ack_timer);
 
 	if (wcn->tx_ack_skb) {
 		ieee80211_tx_status_irqsafe(wcn->hw, wcn->tx_ack_skb);

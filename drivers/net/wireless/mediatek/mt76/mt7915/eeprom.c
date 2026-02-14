@@ -1,47 +1,31 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2020 MediaTek Inc. */
 
 #include <linux/firmware.h>
-#include <linux/moduleparam.h>
 #include "mt7915.h"
 #include "eeprom.h"
-
-static bool enable_6ghz;
-module_param(enable_6ghz, bool, 0644);
-MODULE_PARM_DESC(enable_6ghz, "Enable 6 GHz instead of 5 GHz on hardware that supports both");
 
 static int mt7915_eeprom_load_precal(struct mt7915_dev *dev)
 {
 	struct mt76_dev *mdev = &dev->mt76;
 	u8 *eeprom = mdev->eeprom.data;
-	u32 offs = is_mt7915(&dev->mt76) ? MT_EE_DO_PRE_CAL : MT_EE_DO_PRE_CAL_V2;
-	u32 size, val = eeprom[offs];
-	int ret;
+	u32 val = eeprom[MT_EE_DO_PRE_CAL];
+	u32 offs;
 
-	if (!dev->flash_mode || !val)
+	if (!dev->flash_mode)
 		return 0;
 
-	size = mt7915_get_cal_group_size(dev) + mt7915_get_cal_dpd_size(dev);
+	if (val != (MT_EE_WIFI_CAL_DPD | MT_EE_WIFI_CAL_GROUP))
+		return 0;
 
-	dev->cal = devm_kzalloc(mdev->dev, size, GFP_KERNEL);
+	val = MT_EE_CAL_GROUP_SIZE + MT_EE_CAL_DPD_SIZE;
+	dev->cal = devm_kzalloc(mdev->dev, val, GFP_KERNEL);
 	if (!dev->cal)
 		return -ENOMEM;
 
 	offs = is_mt7915(&dev->mt76) ? MT_EE_PRECAL : MT_EE_PRECAL_V2;
 
-	ret = mt76_get_of_data_from_mtd(mdev, dev->cal, offs, size);
-	if (!ret)
-		return ret;
-
-	ret = mt76_get_of_data_from_nvmem(mdev, dev->cal, "precal", size);
-	if (!ret)
-		return ret;
-
-	dev_warn(mdev->dev, "missing precal data, size=%d\n", size);
-	devm_kfree(mdev->dev, dev->cal);
-	dev->cal = NULL;
-
-	return ret;
+	return mt76_get_of_eeprom(mdev, dev->cal, offs, val);
 }
 
 static int mt7915_check_eeprom(struct mt7915_dev *dev)
@@ -55,8 +39,6 @@ static int mt7915_check_eeprom(struct mt7915_dev *dev)
 		return CHECK_EEPROM_ERR(is_mt7915(&dev->mt76));
 	case 0x7916:
 		return CHECK_EEPROM_ERR(is_mt7916(&dev->mt76));
-	case 0x7981:
-		return CHECK_EEPROM_ERR(is_mt7981(&dev->mt76));
 	case 0x7986:
 		return CHECK_EEPROM_ERR(is_mt7986(&dev->mt76));
 	default:
@@ -70,9 +52,6 @@ static char *mt7915_eeprom_name(struct mt7915_dev *dev)
 	case 0x7915:
 		return dev->dbdc_support ?
 		       MT7915_EEPROM_DEFAULT_DBDC : MT7915_EEPROM_DEFAULT;
-	case 0x7981:
-		/* mt7981 only supports mt7976 and only in DBDC mode */
-		return MT7981_EEPROM_MT7976_DEFAULT_DBDC;
 	case 0x7986:
 		switch (mt7915_check_adie(dev, true)) {
 		case MT7976_ONE_ADIE_DBDC:
@@ -147,7 +126,7 @@ static int mt7915_eeprom_load(struct mt7915_dev *dev)
 		/* read eeprom data from efuse */
 		block_num = DIV_ROUND_UP(eeprom_size, eeprom_blk_size);
 		for (i = 0; i < block_num; i++) {
-			ret = mt7915_mcu_get_eeprom(dev, i * eeprom_blk_size, NULL);
+			ret = mt7915_mcu_get_eeprom(dev, i * eeprom_blk_size);
 			if (ret < 0)
 				return ret;
 		}
@@ -175,20 +154,8 @@ static void mt7915_eeprom_parse_band_config(struct mt7915_phy *phy)
 			phy->mt76->cap.has_6ghz = true;
 			return;
 		case MT_EE_V2_BAND_SEL_5GHZ_6GHZ:
-			if (enable_6ghz) {
-				phy->mt76->cap.has_6ghz = true;
-				u8p_replace_bits(&eeprom[MT_EE_WIFI_CONF + band],
-						 MT_EE_V2_BAND_SEL_6GHZ,
-						 MT_EE_WIFI_CONF0_BAND_SEL);
-			} else {
-				phy->mt76->cap.has_5ghz = true;
-				u8p_replace_bits(&eeprom[MT_EE_WIFI_CONF + band],
-						 MT_EE_V2_BAND_SEL_5GHZ,
-						 MT_EE_WIFI_CONF0_BAND_SEL);
-			}
-			/* force to buffer mode */
-			dev->flash_mode = true;
-
+			phy->mt76->cap.has_5ghz = true;
+			phy->mt76->cap.has_6ghz = true;
 			return;
 		default:
 			phy->mt76->cap.has_2ghz = true;
@@ -248,7 +215,7 @@ void mt7915_eeprom_parse_hw_cap(struct mt7915_dev *dev,
 					eeprom[MT_EE_WIFI_CONF + 2 + band]);
 		}
 
-		if (!is_mt798x(&dev->mt76))
+		if (!is_mt7986(&dev->mt76))
 			nss_max = 2;
 	}
 
@@ -279,12 +246,17 @@ int mt7915_eeprom_init(struct mt7915_dev *dev)
 			return ret;
 	}
 
-	mt7915_eeprom_load_precal(dev);
+	ret = mt7915_eeprom_load_precal(dev);
+	if (ret)
+		return ret;
+
 	mt7915_eeprom_parse_hw_cap(dev, &dev->phy);
 	memcpy(dev->mphy.macaddr, dev->mt76.eeprom.data + MT_EE_MAC_ADDR,
 	       ETH_ALEN);
 
-	return mt76_eeprom_override(&dev->mphy);
+	mt76_eeprom_override(&dev->mphy);
+
+	return 0;
 }
 
 int mt7915_eeprom_get_target_power(struct mt7915_dev *dev,
@@ -357,37 +329,6 @@ s8 mt7915_eeprom_get_power_delta(struct mt7915_dev *dev, int band)
 	delta = FIELD_GET(MT_EE_RATE_DELTA_MASK, val);
 
 	return val & MT_EE_RATE_DELTA_SIGN ? delta : -delta;
-}
-
-bool
-mt7915_eeprom_has_background_radar(struct mt7915_dev *dev)
-{
-	u8 val, buf[MT7915_EEPROM_BLOCK_SIZE];
-	u8 band_sel, tx_path, rx_path;
-	int offs = MT_EE_WIFI_CONF + 1;
-
-	switch (mt76_chip(&dev->mt76)) {
-	case 0x7915:
-		return true;
-	case 0x7906:
-		/* read efuse to check background radar capability */
-		if (mt7915_mcu_get_eeprom(dev, offs, buf))
-			break;
-
-		val = buf[offs % MT7915_EEPROM_BLOCK_SIZE];
-		band_sel = u8_get_bits(val, MT_EE_WIFI_CONF0_BAND_SEL);
-		tx_path = u8_get_bits(val, MT_EE_WIFI_CONF0_TX_PATH);
-		rx_path = u8_get_bits(val, MT_EE_WIFI_CONF0_RX_PATH);
-
-		return (band_sel == MT_EE_V2_BAND_SEL_5GHZ &&
-			tx_path == rx_path && rx_path == 2);
-	case 0x7981:
-	case 0x7986:
-	default:
-		break;
-	}
-
-	return false;
 }
 
 const u8 mt7915_sku_group_len[] = {

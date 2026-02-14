@@ -57,7 +57,7 @@ static long jfs_map_ext2(unsigned long flags, int from)
 	return mapped;
 }
 
-int jfs_fileattr_get(struct dentry *dentry, struct file_kattr *fa)
+int jfs_fileattr_get(struct dentry *dentry, struct fileattr *fa)
 {
 	struct jfs_inode_info *jfs_inode = JFS_IP(d_inode(dentry));
 	unsigned int flags = jfs_inode->mode2 & JFS_FL_USER_VISIBLE;
@@ -71,7 +71,7 @@ int jfs_fileattr_get(struct dentry *dentry, struct file_kattr *fa)
 }
 
 int jfs_fileattr_set(struct mnt_idmap *idmap,
-		     struct dentry *dentry, struct file_kattr *fa)
+		     struct dentry *dentry, struct fileattr *fa)
 {
 	struct inode *inode = d_inode(dentry);
 	struct jfs_inode_info *jfs_inode = JFS_IP(inode);
@@ -96,7 +96,7 @@ int jfs_fileattr_set(struct mnt_idmap *idmap,
 	jfs_inode->mode2 = flags;
 
 	jfs_set_inode_flags(inode);
-	inode_set_ctime_current(inode);
+	inode->i_ctime = current_time(inode);
 	mark_inode_dirty(inode);
 
 	return 0;

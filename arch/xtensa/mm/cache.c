@@ -87,13 +87,12 @@ static inline void *coherent_kvaddr(struct page *page, unsigned long base,
 
 void clear_user_highpage(struct page *page, unsigned long vaddr)
 {
-	struct folio *folio = page_folio(page);
 	unsigned long paddr;
 	void *kvaddr = coherent_kvaddr(page, TLBTEMP_BASE_1, vaddr, &paddr);
 
 	preempt_disable();
 	kmap_invalidate_coherent(page, vaddr);
-	set_bit(PG_arch_1, folio_flags(folio, 0));
+	set_bit(PG_arch_1, &page->flags);
 	clear_page_alias(kvaddr, paddr);
 	preempt_enable();
 }
@@ -102,7 +101,6 @@ EXPORT_SYMBOL(clear_user_highpage);
 void copy_user_highpage(struct page *dst, struct page *src,
 			unsigned long vaddr, struct vm_area_struct *vma)
 {
-	struct folio *folio = page_folio(dst);
 	unsigned long dst_paddr, src_paddr;
 	void *dst_vaddr = coherent_kvaddr(dst, TLBTEMP_BASE_1, vaddr,
 					  &dst_paddr);
@@ -111,7 +109,7 @@ void copy_user_highpage(struct page *dst, struct page *src,
 
 	preempt_disable();
 	kmap_invalidate_coherent(dst, vaddr);
-	set_bit(PG_arch_1, folio_flags(folio, 0));
+	set_bit(PG_arch_1, &dst->flags);
 	copy_page_alias(dst_vaddr, src_vaddr, dst_paddr, src_paddr);
 	preempt_enable();
 }
@@ -123,9 +121,9 @@ EXPORT_SYMBOL(copy_user_highpage);
  *
  */
 
-void flush_dcache_folio(struct folio *folio)
+void flush_dcache_page(struct page *page)
 {
-	struct address_space *mapping = folio_flush_mapping(folio);
+	struct address_space *mapping = page_mapping_file(page);
 
 	/*
 	 * If we have a mapping but the page is not mapped to user-space
@@ -134,14 +132,14 @@ void flush_dcache_folio(struct folio *folio)
 	 */
 
 	if (mapping && !mapping_mapped(mapping)) {
-		if (!test_bit(PG_arch_1, &folio->flags.f))
-			set_bit(PG_arch_1, &folio->flags.f);
+		if (!test_bit(PG_arch_1, &page->flags))
+			set_bit(PG_arch_1, &page->flags);
 		return;
 
 	} else {
-		unsigned long phys = folio_pfn(folio) * PAGE_SIZE;
-		unsigned long temp = folio_pos(folio);
-		unsigned int i, nr = folio_nr_pages(folio);
+
+		unsigned long phys = page_to_phys(page);
+		unsigned long temp = page->index << PAGE_SHIFT;
 		unsigned long alias = !(DCACHE_ALIAS_EQ(temp, phys));
 		unsigned long virt;
 
@@ -156,26 +154,22 @@ void flush_dcache_folio(struct folio *folio)
 			return;
 
 		preempt_disable();
-		for (i = 0; i < nr; i++) {
-			virt = TLBTEMP_BASE_1 + (phys & DCACHE_ALIAS_MASK);
+		virt = TLBTEMP_BASE_1 + (phys & DCACHE_ALIAS_MASK);
+		__flush_invalidate_dcache_page_alias(virt, phys);
+
+		virt = TLBTEMP_BASE_1 + (temp & DCACHE_ALIAS_MASK);
+
+		if (alias)
 			__flush_invalidate_dcache_page_alias(virt, phys);
 
-			virt = TLBTEMP_BASE_1 + (temp & DCACHE_ALIAS_MASK);
-
-			if (alias)
-				__flush_invalidate_dcache_page_alias(virt, phys);
-
-			if (mapping)
-				__invalidate_icache_page_alias(virt, phys);
-			phys += PAGE_SIZE;
-			temp += PAGE_SIZE;
-		}
+		if (mapping)
+			__invalidate_icache_page_alias(virt, phys);
 		preempt_enable();
 	}
 
 	/* There shouldn't be an entry in the cache for this page anymore. */
 }
-EXPORT_SYMBOL(flush_dcache_folio);
+EXPORT_SYMBOL(flush_dcache_page);
 
 /*
  * For now, flush the whole cache. FIXME??
@@ -213,52 +207,45 @@ EXPORT_SYMBOL(local_flush_cache_page);
 
 #endif /* DCACHE_WAY_SIZE > PAGE_SIZE */
 
-void update_mmu_cache_range(struct vm_fault *vmf, struct vm_area_struct *vma,
-		unsigned long addr, pte_t *ptep, unsigned int nr)
+void
+update_mmu_cache(struct vm_area_struct * vma, unsigned long addr, pte_t *ptep)
 {
 	unsigned long pfn = pte_pfn(*ptep);
-	struct folio *folio;
-	unsigned int i;
+	struct page *page;
 
 	if (!pfn_valid(pfn))
 		return;
 
-	folio = page_folio(pfn_to_page(pfn));
+	page = pfn_to_page(pfn);
 
-	/* Invalidate old entries in TLBs */
-	for (i = 0; i < nr; i++)
-		flush_tlb_page(vma, addr + i * PAGE_SIZE);
-	nr = folio_nr_pages(folio);
+	/* Invalidate old entry in TLBs */
+
+	flush_tlb_page(vma, addr);
 
 #if (DCACHE_WAY_SIZE > PAGE_SIZE)
 
-	if (!folio_test_reserved(folio) && test_bit(PG_arch_1, &folio->flags.f)) {
-		unsigned long phys = folio_pfn(folio) * PAGE_SIZE;
+	if (!PageReserved(page) && test_bit(PG_arch_1, &page->flags)) {
+		unsigned long phys = page_to_phys(page);
 		unsigned long tmp;
 
 		preempt_disable();
-		for (i = 0; i < nr; i++) {
-			tmp = TLBTEMP_BASE_1 + (phys & DCACHE_ALIAS_MASK);
-			__flush_invalidate_dcache_page_alias(tmp, phys);
-			tmp = TLBTEMP_BASE_1 + (addr & DCACHE_ALIAS_MASK);
-			__flush_invalidate_dcache_page_alias(tmp, phys);
-			__invalidate_icache_page_alias(tmp, phys);
-			phys += PAGE_SIZE;
-		}
+		tmp = TLBTEMP_BASE_1 + (phys & DCACHE_ALIAS_MASK);
+		__flush_invalidate_dcache_page_alias(tmp, phys);
+		tmp = TLBTEMP_BASE_1 + (addr & DCACHE_ALIAS_MASK);
+		__flush_invalidate_dcache_page_alias(tmp, phys);
+		__invalidate_icache_page_alias(tmp, phys);
 		preempt_enable();
 
-		clear_bit(PG_arch_1, &folio->flags.f);
+		clear_bit(PG_arch_1, &page->flags);
 	}
 #else
-	if (!folio_test_reserved(folio) && !test_bit(PG_arch_1, &folio->flags.f)
+	if (!PageReserved(page) && !test_bit(PG_arch_1, &page->flags)
 	    && (vma->vm_flags & VM_EXEC) != 0) {
-		for (i = 0; i < nr; i++) {
-			void *paddr = kmap_local_folio(folio, i * PAGE_SIZE);
-			__flush_dcache_page((unsigned long)paddr);
-			__invalidate_icache_page((unsigned long)paddr);
-			kunmap_local(paddr);
-		}
-		set_bit(PG_arch_1, &folio->flags.f);
+		unsigned long paddr = (unsigned long)kmap_atomic(page);
+		__flush_dcache_page(paddr);
+		__invalidate_icache_page(paddr);
+		set_bit(PG_arch_1, &page->flags);
+		kunmap_atomic((void *)paddr);
 	}
 #endif
 }

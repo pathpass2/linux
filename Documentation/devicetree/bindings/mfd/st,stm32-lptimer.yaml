@@ -21,12 +21,7 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - const: st,stm32mp25-lptimer
-          - const: st,stm32-lptimer
-      - items:
-          - const: st,stm32-lptimer
+    const: st,stm32-lptimer
 
   reg:
     maxItems: 1
@@ -49,25 +44,13 @@ properties:
 
   wakeup-source: true
 
-  access-controllers:
-    minItems: 1
-    maxItems: 2
-
-  power-domains:
-    maxItems: 1
-
   pwm:
     type: object
     additionalProperties: false
 
     properties:
       compatible:
-        oneOf:
-          - items:
-              - const: st,stm32mp25-pwm-lp
-              - const: st,stm32-pwm-lp
-          - items:
-              - const: st,stm32-pwm-lp
+        const: st,stm32-pwm-lp
 
       "#pwm-cells":
         const: 3
@@ -82,12 +65,7 @@ properties:
 
     properties:
       compatible:
-        oneOf:
-          - items:
-              - const: st,stm32mp25-lptimer-counter
-              - const: st,stm32-lptimer-counter
-          - items:
-              - const: st,stm32-lptimer-counter
+        const: st,stm32-lptimer-counter
 
     required:
       - compatible
@@ -98,12 +76,7 @@ properties:
 
     properties:
       compatible:
-        oneOf:
-          - items:
-              - const: st,stm32mp25-lptimer-timer
-              - const: st,stm32-lptimer-timer
-          - items:
-              - const: st,stm32-lptimer-timer
+        const: st,stm32-lptimer-timer
 
     required:
       - compatible
@@ -115,18 +88,13 @@ patternProperties:
 
     properties:
       compatible:
-        oneOf:
-          - items:
-              - const: st,stm32mp25-lptimer-trigger
-              - const: st,stm32-lptimer-trigger
-          - items:
-              - const: st,stm32-lptimer-trigger
+        const: st,stm32-lptimer-trigger
 
       reg:
         description: Identify trigger hardware block.
         items:
           minimum: 0
-          maximum: 4
+          maximum: 2
 
     required:
       - compatible

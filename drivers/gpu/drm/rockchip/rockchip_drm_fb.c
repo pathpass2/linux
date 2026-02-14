@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) Rockchip Electronics Co., Ltd.
+ * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
  * Author:Mark Yao <mark.yao@rock-chips.com>
  */
 
@@ -30,18 +30,21 @@ static const struct drm_mode_config_helper_funcs rockchip_mode_config_helpers = 
 
 static struct drm_framebuffer *
 rockchip_fb_create(struct drm_device *dev, struct drm_file *file,
-		   const struct drm_format_info *info,
 		   const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	struct drm_afbc_framebuffer *afbc_fb;
+	const struct drm_format_info *info;
 	int ret;
+
+	info = drm_get_format_info(dev, mode_cmd);
+	if (!info)
+		return ERR_PTR(-ENOMEM);
 
 	afbc_fb = kzalloc(sizeof(*afbc_fb), GFP_KERNEL);
 	if (!afbc_fb)
 		return ERR_PTR(-ENOMEM);
 
-	ret = drm_gem_fb_init_with_funcs(dev, &afbc_fb->base,
-					 file, info, mode_cmd,
+	ret = drm_gem_fb_init_with_funcs(dev, &afbc_fb->base, file, mode_cmd,
 					 &rockchip_drm_fb_funcs);
 	if (ret) {
 		kfree(afbc_fb);
@@ -49,9 +52,16 @@ rockchip_fb_create(struct drm_device *dev, struct drm_file *file,
 	}
 
 	if (drm_is_afbc(mode_cmd->modifier[0])) {
-		ret = drm_gem_fb_afbc_init(dev, info, mode_cmd, afbc_fb);
+		int ret, i;
+
+		ret = drm_gem_fb_afbc_init(dev, mode_cmd, afbc_fb);
 		if (ret) {
-			drm_framebuffer_put(&afbc_fb->base);
+			struct drm_gem_object **obj = afbc_fb->base.obj;
+
+			for (i = 0; i < info->num_planes; ++i)
+				drm_gem_object_put(obj[i]);
+
+			kfree(afbc_fb);
 			return ERR_PTR(ret);
 		}
 	}

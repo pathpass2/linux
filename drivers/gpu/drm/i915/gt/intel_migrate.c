@@ -35,9 +35,9 @@ static bool engine_supports_migration(struct intel_engine_cs *engine)
 	return true;
 }
 
-static void xehp_toggle_pdes(struct i915_address_space *vm,
-			     struct i915_page_table *pt,
-			     void *data)
+static void xehpsdv_toggle_pdes(struct i915_address_space *vm,
+				struct i915_page_table *pt,
+				void *data)
 {
 	struct insert_pte_data *d = data;
 
@@ -45,16 +45,14 @@ static void xehp_toggle_pdes(struct i915_address_space *vm,
 	 * Insert a dummy PTE into every PT that will map to LMEM to ensure
 	 * we have a correctly setup PDE structure for later use.
 	 */
-	vm->insert_page(vm, 0, d->offset,
-			i915_gem_get_pat_index(vm->i915, I915_CACHE_NONE),
-			PTE_LM);
+	vm->insert_page(vm, 0, d->offset, I915_CACHE_NONE, PTE_LM);
 	GEM_BUG_ON(!pt->is_compact);
 	d->offset += SZ_2M;
 }
 
-static void xehp_insert_pte(struct i915_address_space *vm,
-			    struct i915_page_table *pt,
-			    void *data)
+static void xehpsdv_insert_pte(struct i915_address_space *vm,
+			       struct i915_page_table *pt,
+			       void *data)
 {
 	struct insert_pte_data *d = data;
 
@@ -65,9 +63,7 @@ static void xehp_insert_pte(struct i915_address_space *vm,
 	 * alignment is 64K underneath for the pt, and we are careful
 	 * not to access the space in the void.
 	 */
-	vm->insert_page(vm, px_dma(pt), d->offset,
-			i915_gem_get_pat_index(vm->i915, I915_CACHE_NONE),
-			PTE_LM);
+	vm->insert_page(vm, px_dma(pt), d->offset, I915_CACHE_NONE, PTE_LM);
 	d->offset += SZ_64K;
 }
 
@@ -77,8 +73,7 @@ static void insert_pte(struct i915_address_space *vm,
 {
 	struct insert_pte_data *d = data;
 
-	vm->insert_page(vm, px_dma(pt), d->offset,
-			i915_gem_get_pat_index(vm->i915, I915_CACHE_NONE),
+	vm->insert_page(vm, px_dma(pt), d->offset, I915_CACHE_NONE,
 			i915_gem_object_is_lmem(pt->base) ? PTE_LM : 0);
 	d->offset += PAGE_SIZE;
 }
@@ -120,7 +115,7 @@ static struct i915_address_space *migrate_vm(struct intel_gt *gt)
 	 * 512 entry layout using 4K GTT pages. The other two windows just map
 	 * lmem pages and must use the new compact 32 entry layout using 64K GTT
 	 * pages, which ensures we can address any lmem object that the user
-	 * throws at us. We then also use the xehp_toggle_pdes as a way of
+	 * throws at us. We then also use the xehpsdv_toggle_pdes as a way of
 	 * just toggling the PDE bit(GEN12_PDE_64K) for us, to enable the
 	 * compact layout for each of these page-tables, that fall within the
 	 * [CHUNK_SIZE, 3 * CHUNK_SIZE) range.
@@ -209,12 +204,12 @@ static struct i915_address_space *migrate_vm(struct intel_gt *gt)
 		/* Now allow the GPU to rewrite the PTE via its own ppGTT */
 		if (HAS_64K_PAGES(gt->i915)) {
 			vm->vm.foreach(&vm->vm, base, d.offset - base,
-				       xehp_insert_pte, &d);
+				       xehpsdv_insert_pte, &d);
 			d.offset = base + CHUNK_SZ;
 			vm->vm.foreach(&vm->vm,
 				       d.offset,
 				       2 * CHUNK_SZ,
-				       xehp_toggle_pdes, &d);
+				       xehpsdv_toggle_pdes, &d);
 		} else {
 			vm->vm.foreach(&vm->vm, base, d.offset - base,
 				       insert_pte, &d);
@@ -304,7 +299,7 @@ struct intel_context *intel_migrate_create_context(struct intel_migrate *m)
 	struct intel_context *ce;
 
 	/*
-	 * We randomly distribute contexts across the engines upon construction,
+	 * We randomly distribute contexts across the engines upon constrction,
 	 * as they all share the same pinned vm, and so in order to allow
 	 * multiple blits to run in parallel, we must construct each blit
 	 * to use a different range of the vm for its GTT. This has to be
@@ -361,13 +356,13 @@ static int max_pte_pkt_size(struct i915_request *rq, int pkt)
 
 static int emit_pte(struct i915_request *rq,
 		    struct sgt_dma *it,
-		    unsigned int pat_index,
+		    enum i915_cache_level cache_level,
 		    bool is_lmem,
 		    u64 offset,
 		    int length)
 {
-	bool has_64K_pages = HAS_64K_PAGES(rq->i915);
-	const u64 encode = rq->context->vm->pte_encode(0, pat_index,
+	bool has_64K_pages = HAS_64K_PAGES(rq->engine->i915);
+	const u64 encode = rq->context->vm->pte_encode(0, cache_level,
 						       is_lmem ? PTE_LM : 0);
 	struct intel_ring *ring = rq->ring;
 	int pkt, dword_length;
@@ -375,7 +370,7 @@ static int emit_pte(struct i915_request *rq,
 	u32 page_size;
 	u32 *hdr, *cs;
 
-	GEM_BUG_ON(GRAPHICS_VER(rq->i915) < 8);
+	GEM_BUG_ON(GRAPHICS_VER(rq->engine->i915) < 8);
 
 	page_size = I915_GTT_PAGE_SIZE;
 	dword_length = 0x400;
@@ -531,7 +526,7 @@ static int emit_copy_ccs(struct i915_request *rq,
 			 u32 dst_offset, u8 dst_access,
 			 u32 src_offset, u8 src_access, int size)
 {
-	struct drm_i915_private *i915 = rq->i915;
+	struct drm_i915_private *i915 = rq->engine->i915;
 	int mocs = rq->engine->gt->mocs.uc_index << 1;
 	u32 num_ccs_blks;
 	u32 *cs;
@@ -581,7 +576,7 @@ static int emit_copy_ccs(struct i915_request *rq,
 static int emit_copy(struct i915_request *rq,
 		     u32 dst_offset, u32 src_offset, int size)
 {
-	const int ver = GRAPHICS_VER(rq->i915);
+	const int ver = GRAPHICS_VER(rq->engine->i915);
 	u32 instance = rq->engine->instance;
 	u32 *cs;
 
@@ -646,7 +641,7 @@ calculate_chunk_sz(struct drm_i915_private *i915, bool src_is_lmem,
 		 * When CHUNK_SZ is passed all the pages upto CHUNK_SZ
 		 * will be taken for the blt. in Flat-ccs supported
 		 * platform Smem obj will have more pages than required
-		 * for main memory hence limit it to the required size
+		 * for main meory hence limit it to the required size
 		 * for main memory
 		 */
 		return min_t(u64, bytes_to_cpy, CHUNK_SZ);
@@ -678,17 +673,17 @@ int
 intel_context_migrate_copy(struct intel_context *ce,
 			   const struct i915_deps *deps,
 			   struct scatterlist *src,
-			   unsigned int src_pat_index,
+			   enum i915_cache_level src_cache_level,
 			   bool src_is_lmem,
 			   struct scatterlist *dst,
-			   unsigned int dst_pat_index,
+			   enum i915_cache_level dst_cache_level,
 			   bool dst_is_lmem,
 			   struct i915_request **out)
 {
 	struct sgt_dma it_src = sg_sgt(src), it_dst = sg_sgt(dst), it_ccs;
 	struct drm_i915_private *i915 = ce->engine->i915;
 	u64 ccs_bytes_to_cpy = 0, bytes_to_cpy;
-	unsigned int ccs_pat_index;
+	enum i915_cache_level ccs_cache_level;
 	u32 src_offset, dst_offset;
 	u8 src_access, dst_access;
 	struct i915_request *rq;
@@ -712,12 +707,12 @@ intel_context_migrate_copy(struct intel_context *ce,
 		dst_sz = scatter_list_length(dst);
 		if (src_is_lmem) {
 			it_ccs = it_dst;
-			ccs_pat_index = dst_pat_index;
+			ccs_cache_level = dst_cache_level;
 			ccs_is_src = false;
 		} else if (dst_is_lmem) {
 			bytes_to_cpy = dst_sz;
 			it_ccs = it_src;
-			ccs_pat_index = src_pat_index;
+			ccs_cache_level = src_cache_level;
 			ccs_is_src = true;
 		}
 
@@ -778,7 +773,7 @@ intel_context_migrate_copy(struct intel_context *ce,
 		src_sz = calculate_chunk_sz(i915, src_is_lmem,
 					    bytes_to_cpy, ccs_bytes_to_cpy);
 
-		len = emit_pte(rq, &it_src, src_pat_index, src_is_lmem,
+		len = emit_pte(rq, &it_src, src_cache_level, src_is_lmem,
 			       src_offset, src_sz);
 		if (!len) {
 			err = -EINVAL;
@@ -789,7 +784,7 @@ intel_context_migrate_copy(struct intel_context *ce,
 			goto out_rq;
 		}
 
-		err = emit_pte(rq, &it_dst, dst_pat_index, dst_is_lmem,
+		err = emit_pte(rq, &it_dst, dst_cache_level, dst_is_lmem,
 			       dst_offset, len);
 		if (err < 0)
 			goto out_rq;
@@ -816,7 +811,7 @@ intel_context_migrate_copy(struct intel_context *ce,
 				goto out_rq;
 
 			ccs_sz = GET_CCS_BYTES(i915, len);
-			err = emit_pte(rq, &it_ccs, ccs_pat_index, false,
+			err = emit_pte(rq, &it_ccs, ccs_cache_level, false,
 				       ccs_is_src ? src_offset : dst_offset,
 				       ccs_sz);
 			if (err < 0)
@@ -917,7 +912,7 @@ out_ce:
 static int emit_clear(struct i915_request *rq, u32 offset, int size,
 		      u32 value, bool is_lmem)
 {
-	struct drm_i915_private *i915 = rq->i915;
+	struct drm_i915_private *i915 = rq->engine->i915;
 	int mocs = rq->engine->gt->mocs.uc_index << 1;
 	const int ver = GRAPHICS_VER(i915);
 	int ring_sz;
@@ -925,7 +920,7 @@ static int emit_clear(struct i915_request *rq, u32 offset, int size,
 
 	GEM_BUG_ON(size >> PAGE_SHIFT > S16_MAX);
 
-	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 55))
+	if (HAS_FLAT_CCS(i915) && ver >= 12)
 		ring_sz = XY_FAST_COLOR_BLT_DW;
 	else if (ver >= 8)
 		ring_sz = 8;
@@ -936,7 +931,7 @@ static int emit_clear(struct i915_request *rq, u32 offset, int size,
 	if (IS_ERR(cs))
 		return PTR_ERR(cs);
 
-	if (GRAPHICS_VER_FULL(i915) >= IP_VER(12, 55)) {
+	if (HAS_FLAT_CCS(i915) && ver >= 12) {
 		*cs++ = XY_FAST_COLOR_BLT_CMD | XY_FAST_COLOR_BLT_DEPTH_32 |
 			(XY_FAST_COLOR_BLT_DW - 2);
 		*cs++ = FIELD_PREP(XY_FAST_COLOR_BLT_MOCS_MASK, mocs) |
@@ -984,7 +979,7 @@ int
 intel_context_migrate_clear(struct intel_context *ce,
 			    const struct i915_deps *deps,
 			    struct scatterlist *sg,
-			    unsigned int pat_index,
+			    enum i915_cache_level cache_level,
 			    bool is_lmem,
 			    u32 value,
 			    struct i915_request **out)
@@ -1032,7 +1027,7 @@ intel_context_migrate_clear(struct intel_context *ce,
 		if (err)
 			goto out_rq;
 
-		len = emit_pte(rq, &it, pat_index, is_lmem, offset, CHUNK_SZ);
+		len = emit_pte(rq, &it, cache_level, is_lmem, offset, CHUNK_SZ);
 		if (len <= 0) {
 			err = len;
 			goto out_rq;
@@ -1079,10 +1074,10 @@ int intel_migrate_copy(struct intel_migrate *m,
 		       struct i915_gem_ww_ctx *ww,
 		       const struct i915_deps *deps,
 		       struct scatterlist *src,
-		       unsigned int src_pat_index,
+		       enum i915_cache_level src_cache_level,
 		       bool src_is_lmem,
 		       struct scatterlist *dst,
-		       unsigned int dst_pat_index,
+		       enum i915_cache_level dst_cache_level,
 		       bool dst_is_lmem,
 		       struct i915_request **out)
 {
@@ -1103,8 +1098,8 @@ int intel_migrate_copy(struct intel_migrate *m,
 		goto out;
 
 	err = intel_context_migrate_copy(ce, deps,
-					 src, src_pat_index, src_is_lmem,
-					 dst, dst_pat_index, dst_is_lmem,
+					 src, src_cache_level, src_is_lmem,
+					 dst, dst_cache_level, dst_is_lmem,
 					 out);
 
 	intel_context_unpin(ce);
@@ -1118,7 +1113,7 @@ intel_migrate_clear(struct intel_migrate *m,
 		    struct i915_gem_ww_ctx *ww,
 		    const struct i915_deps *deps,
 		    struct scatterlist *sg,
-		    unsigned int pat_index,
+		    enum i915_cache_level cache_level,
 		    bool is_lmem,
 		    u32 value,
 		    struct i915_request **out)
@@ -1139,7 +1134,7 @@ intel_migrate_clear(struct intel_migrate *m,
 	if (err)
 		goto out;
 
-	err = intel_context_migrate_clear(ce, deps, sg, pat_index,
+	err = intel_context_migrate_clear(ce, deps, sg, cache_level,
 					  is_lmem, value, out);
 
 	intel_context_unpin(ce);

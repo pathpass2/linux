@@ -7,12 +7,10 @@
  *  Copyright (C) 2010 Alexey Charkov <alchark@gmail.com>
  */
 
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/fb.h>
-#include <linux/io.h>
 #include <linux/platform_device.h>
-
+#include "core/fb_draw.h"
 #include "wmt_ge_rops.h"
 
 #define GE_COMMAND_OFF		0x00
@@ -41,33 +39,6 @@
 
 static void __iomem *regbase;
 
-/* from the spec it seems more like depth than bits per pixel */
-static inline unsigned long pixel_to_pat(u32 depth, u32 pixel, struct fb_info *p)
-{
-	switch (depth) {
-	case 1:
-		return ~0ul*pixel;
-	case 2:
-		return ~0ul/3*pixel;
-	case 4:
-		return ~0ul/15*pixel;
-	case 8:
-		return ~0ul/255*pixel;
-	case 12:
-	case 15:
-	case 16:
-		return ~0ul/0xffff*pixel;
-	case 18:
-	case 24:
-		return 0x1000001ul*pixel;
-	case 32:
-		return pixel;
-	default:
-		fb_warn_once(p, "%s: unsupported pixelformat %d\n", __func__, depth);
-		return 0;
-	}
-}
-
 void wmt_ge_fillrect(struct fb_info *p, const struct fb_fillrect *rect)
 {
 	unsigned long fg, pat;
@@ -81,7 +52,7 @@ void wmt_ge_fillrect(struct fb_info *p, const struct fb_fillrect *rect)
 	else
 		fg = rect->color;
 
-	pat = pixel_to_pat(p->var.bits_per_pixel, fg, p);
+	pat = pixel_to_pat(p->var.bits_per_pixel, fg);
 
 	if (p->fbops->fb_sync)
 		p->fbops->fb_sync(p);
@@ -174,9 +145,10 @@ static int wmt_ge_rops_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void wmt_ge_rops_remove(struct platform_device *pdev)
+static int wmt_ge_rops_remove(struct platform_device *pdev)
 {
 	iounmap(regbase);
+	return 0;
 }
 
 static const struct of_device_id wmt_dt_ids[] = {
@@ -198,4 +170,5 @@ module_platform_driver(wmt_ge_rops_driver);
 MODULE_AUTHOR("Alexey Charkov <alchark@gmail.com>");
 MODULE_DESCRIPTION("Accelerators for raster operations using "
 		   "WonderMedia Graphics Engine");
+MODULE_LICENSE("GPL v2");
 MODULE_DEVICE_TABLE(of, wmt_dt_ids);

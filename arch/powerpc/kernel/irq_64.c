@@ -230,7 +230,7 @@ again:
 	 * This allows interrupts to be unmasked without hard disabling, and
 	 * also without new hard interrupts coming in ahead of pending ones.
 	 */
-	asm goto(
+	asm_volatile_goto(
 "1:					\n"
 "		lbz	9,%0(13)	\n"
 "		cmpwi	9,0		\n"
@@ -348,12 +348,13 @@ EXPORT_SYMBOL(arch_local_irq_restore);
  * already the case when ppc_md.power_save is called). The function
  * will return whether to enter power save or just return.
  *
- * In the former case, it will have generally sanitized the lazy irq
- * state, and in the latter case it will leave with interrupts hard
+ * In the former case, it will have notified lockdep of interrupts
+ * being re-enabled and generally sanitized the lazy irq state,
+ * and in the latter case it will leave with interrupts hard
  * disabled and marked as such, so the local_irq_enable() call
  * in arch_cpu_idle() will properly re-enable everything.
  */
-__cpuidle bool prep_irq_for_idle(void)
+bool prep_irq_for_idle(void)
 {
 	/*
 	 * First we need to hard disable to ensure no interrupt
@@ -368,6 +369,9 @@ __cpuidle bool prep_irq_for_idle(void)
 	 */
 	if (lazy_irq_pending())
 		return false;
+
+	/* Tell lockdep we are about to re-enable */
+	trace_hardirqs_on();
 
 	/*
 	 * Mark interrupts as soft-enabled and clear the

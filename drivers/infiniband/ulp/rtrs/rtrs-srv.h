@@ -89,7 +89,6 @@ struct rtrs_srv_path {
 	unsigned int		mem_bits;
 	struct kobject		kobj;
 	struct rtrs_srv_stats	*stats;
-	unsigned long		connection_timeout;
 };
 
 static inline struct rtrs_srv_path *to_srv_path(struct rtrs_path *s)
@@ -130,11 +129,9 @@ struct rtrs_srv_ib_ctx {
 	int			ib_dev_count;
 };
 
-extern const struct class rtrs_dev_class;
+extern struct class *rtrs_dev_class;
 
 void close_path(struct rtrs_srv_path *srv_path);
-void rtrs_srv_ib_event_handler(struct ib_event_handler *handler,
-			       struct ib_event *ibevent);
 
 static inline void rtrs_srv_update_rdma_stats(struct rtrs_srv_stats *s,
 					      size_t size, int d)

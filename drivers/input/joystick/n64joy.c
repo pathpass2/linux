@@ -191,32 +191,35 @@ static void n64joy_poll(struct timer_list *t)
 static int n64joy_open(struct input_dev *dev)
 {
 	struct n64joy_priv *priv = input_get_drvdata(dev);
+	int err;
 
-	scoped_guard(mutex_intr, &priv->n64joy_mutex) {
-		if (!priv->n64joy_opened) {
-			/*
-			 * We could use the vblank irq, but it's not important
-			 * if the poll point slightly changes.
-			 */
-			timer_setup(&priv->timer, n64joy_poll, 0);
-			mod_timer(&priv->timer, jiffies + msecs_to_jiffies(16));
-		}
+	err = mutex_lock_interruptible(&priv->n64joy_mutex);
+	if (err)
+		return err;
 
-		priv->n64joy_opened++;
-		return 0;
+	if (!priv->n64joy_opened) {
+		/*
+		 * We could use the vblank irq, but it's not important if
+		 * the poll point slightly changes.
+		 */
+		timer_setup(&priv->timer, n64joy_poll, 0);
+		mod_timer(&priv->timer, jiffies + msecs_to_jiffies(16));
 	}
 
-	return -EINTR;
+	priv->n64joy_opened++;
+
+	mutex_unlock(&priv->n64joy_mutex);
+	return err;
 }
 
 static void n64joy_close(struct input_dev *dev)
 {
 	struct n64joy_priv *priv = input_get_drvdata(dev);
 
-	guard(mutex)(&priv->n64joy_mutex);
-
+	mutex_lock(&priv->n64joy_mutex);
 	if (!--priv->n64joy_opened)
-		timer_delete_sync(&priv->timer);
+		del_timer_sync(&priv->timer);
+	mutex_unlock(&priv->n64joy_mutex);
 }
 
 static const u64 __initconst scandata[] ____cacheline_aligned = {
@@ -243,7 +246,7 @@ static int __init n64joy_probe(struct platform_device *pdev)
 	int err = 0;
 	u32 i, j, found = 0;
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc(sizeof(struct n64joy_priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
 	mutex_init(&priv->n64joy_mutex);

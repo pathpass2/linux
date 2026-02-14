@@ -108,21 +108,21 @@ static unsigned long i2s_pll_recalc_rate(struct clk_hw *hw,
 	return ((parent_rate / idiv) * fbdiv) / odiv;
 }
 
-static int i2s_pll_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long i2s_pll_round_rate(struct clk_hw *hw, unsigned long rate,
+			unsigned long *prate)
 {
 	struct i2s_pll_clk *clk = to_i2s_pll_clk(hw);
-	const struct i2s_pll_cfg *pll_cfg = i2s_pll_get_cfg(req->best_parent_rate);
+	const struct i2s_pll_cfg *pll_cfg = i2s_pll_get_cfg(*prate);
 	int i;
 
 	if (!pll_cfg) {
-		dev_err(clk->dev, "invalid parent rate=%ld\n", req->best_parent_rate);
+		dev_err(clk->dev, "invalid parent rate=%ld\n", *prate);
 		return -EINVAL;
 	}
 
 	for (i = 0; pll_cfg[i].rate != 0; i++)
-		if (pll_cfg[i].rate == req->rate)
-			return 0;
+		if (pll_cfg[i].rate == rate)
+			return rate;
 
 	return -EINVAL;
 }
@@ -156,7 +156,7 @@ static int i2s_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops i2s_pll_ops = {
 	.recalc_rate = i2s_pll_recalc_rate,
-	.determine_rate = i2s_pll_determine_rate,
+	.round_rate = i2s_pll_round_rate,
 	.set_rate = i2s_pll_set_rate,
 };
 
@@ -198,9 +198,10 @@ static int i2s_pll_clk_probe(struct platform_device *pdev)
 	return of_clk_add_provider(node, of_clk_src_simple_get, clk);
 }
 
-static void i2s_pll_clk_remove(struct platform_device *pdev)
+static int i2s_pll_clk_remove(struct platform_device *pdev)
 {
 	of_clk_del_provider(pdev->dev.of_node);
+	return 0;
 }
 
 static const struct of_device_id i2s_pll_clk_id[] = {

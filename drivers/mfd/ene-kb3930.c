@@ -162,7 +162,7 @@ static int kb3930_probe(struct i2c_client *client)
 			devm_gpiod_get_array_optional(dev, "off", GPIOD_IN);
 		if (IS_ERR(ddata->off_gpios))
 			return PTR_ERR(ddata->off_gpios);
-		if (ddata->off_gpios && ddata->off_gpios->ndescs < 2) {
+		if (ddata->off_gpios->ndescs < 2) {
 			dev_err(dev, "invalid off-gpios property\n");
 			return -EINVAL;
 		}
@@ -196,7 +196,7 @@ static const struct of_device_id kb3930_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, kb3930_dt_ids);
 
 static struct i2c_driver kb3930_driver = {
-	.probe = kb3930_probe,
+	.probe_new = kb3930_probe,
 	.remove = kb3930_remove,
 	.driver = {
 		.name = "ene-kb3930",

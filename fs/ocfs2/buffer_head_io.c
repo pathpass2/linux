@@ -158,7 +158,7 @@ read_failure:
 			if (new_bh && bh) {
 				/* If middle bh fails, let previous bh
 				 * finish its read and then put it to
-				 * avoid bh leak
+				 * aovoid bh leak
 				 */
 				if (!buffer_jbd(bh))
 					wait_on_buffer(bh);
@@ -235,6 +235,7 @@ int ocfs2_read_blocks(struct ocfs2_caching_info *ci, u64 block, int nr,
 		if (bhs[i] == NULL) {
 			bhs[i] = sb_getblk(sb, block++);
 			if (bhs[i] == NULL) {
+				ocfs2_metadata_cache_io_unlock(ci);
 				status = -ENOMEM;
 				mlog_errno(status);
 				/* Don't forget to put previous bh! */
@@ -344,7 +345,7 @@ read_failure:
 				if (new_bh && bh) {
 					/* If middle bh fails, let previous bh
 					 * finish its read and then put it to
-					 * avoid bh leak
+					 * aovoid bh leak
 					 */
 					if (!buffer_jbd(bh))
 						wait_on_buffer(bh);
@@ -388,8 +389,7 @@ read_failure:
 		/* Always set the buffer in the cache, even if it was
 		 * a forced read, or read-ahead which hasn't yet
 		 * completed. */
-		if (bh)
-			ocfs2_set_buffer_uptodate(ci, bh);
+		ocfs2_set_buffer_uptodate(ci, bh);
 	}
 	ocfs2_metadata_cache_io_unlock(ci);
 
@@ -434,7 +434,7 @@ int ocfs2_write_super_or_backup(struct ocfs2_super *osb,
 	BUG_ON(buffer_jbd(bh));
 	ocfs2_check_super_or_backup(osb->sb, bh->b_blocknr);
 
-	if (unlikely(ocfs2_emergency_state(osb))) {
+	if (ocfs2_is_hard_readonly(osb) || ocfs2_is_soft_readonly(osb)) {
 		ret = -EROFS;
 		mlog_errno(ret);
 		goto out;

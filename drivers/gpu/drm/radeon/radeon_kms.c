@@ -32,6 +32,7 @@
 #include <linux/uaccess.h>
 #include <linux/vga_switcheroo.h>
 
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_file.h>
 #include <drm/drm_ioctl.h>
 #include <drm/radeon_drm.h>
@@ -84,6 +85,7 @@ void radeon_driver_unload_kms(struct drm_device *dev)
 	rdev->agp = NULL;
 
 done_free:
+	kfree(rdev);
 	dev->dev_private = NULL;
 }
 
@@ -103,8 +105,14 @@ done_free:
 int radeon_driver_load_kms(struct drm_device *dev, unsigned long flags)
 {
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
-	struct radeon_device *rdev = dev->dev_private;
+	struct radeon_device *rdev;
 	int r, acpi_status;
+
+	rdev = kzalloc(sizeof(struct radeon_device), GFP_KERNEL);
+	if (rdev == NULL) {
+		return -ENOMEM;
+	}
+	dev->dev_private = (void *)rdev;
 
 #ifdef __alpha__
 	rdev->hose = pdev->sysdata;
@@ -169,6 +177,7 @@ int radeon_driver_load_kms(struct drm_device *dev, unsigned long flags)
 		pm_runtime_set_autosuspend_delay(dev->dev, 5000);
 		pm_runtime_set_active(dev->dev);
 		pm_runtime_allow(dev->dev);
+		pm_runtime_mark_last_busy(dev->dev);
 		pm_runtime_put_autosuspend(dev->dev);
 	}
 
@@ -436,7 +445,7 @@ int radeon_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 			DRM_DEBUG_KMS("timestamp is r6xx+ only!\n");
 			return -EINVAL;
 		}
-		value = (uint32_t *)&value64;
+		value = (uint32_t*)&value64;
 		value_size = sizeof(uint64_t);
 		value64 = radeon_get_gpu_clock_counter(rdev);
 		break;
@@ -535,18 +544,18 @@ int radeon_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		*value = rdev->vce.fb_version;
 		break;
 	case RADEON_INFO_NUM_BYTES_MOVED:
-		value = (uint32_t *)&value64;
+		value = (uint32_t*)&value64;
 		value_size = sizeof(uint64_t);
 		value64 = atomic64_read(&rdev->num_bytes_moved);
 		break;
 	case RADEON_INFO_VRAM_USAGE:
-		value = (uint32_t *)&value64;
+		value = (uint32_t*)&value64;
 		value_size = sizeof(uint64_t);
 		man = ttm_manager_type(&rdev->mman.bdev, TTM_PL_VRAM);
 		value64 = ttm_resource_manager_usage(man);
 		break;
 	case RADEON_INFO_GTT_USAGE:
-		value = (uint32_t *)&value64;
+		value = (uint32_t*)&value64;
 		value_size = sizeof(uint64_t);
 		man = ttm_manager_type(&rdev->mman.bdev, TTM_PL_TT);
 		value64 = ttm_resource_manager_usage(man);
@@ -606,11 +615,28 @@ int radeon_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		DRM_DEBUG_KMS("Invalid request %d\n", info->request);
 		return -EINVAL;
 	}
-	if (copy_to_user(value_ptr, (char *)value, value_size)) {
+	if (copy_to_user(value_ptr, (char*)value, value_size)) {
 		DRM_ERROR("copy_to_user %s:%u\n", __func__, __LINE__);
 		return -EFAULT;
 	}
 	return 0;
+}
+
+
+/*
+ * Outdated mess for old drm with Xorg being in charge (void function now).
+ */
+/**
+ * radeon_driver_lastclose_kms - drm callback for last close
+ *
+ * @dev: drm dev pointer
+ *
+ * Switch vga_switcheroo state after last close (all asics).
+ */
+void radeon_driver_lastclose_kms(struct drm_device *dev)
+{
+	drm_fb_helper_lastclose(dev);
+	vga_switcheroo_process_delayed_switch();
 }
 
 /**
@@ -675,6 +701,7 @@ int radeon_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
 		file_priv->driver_priv = fpriv;
 	}
 
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 	return 0;
 
@@ -684,6 +711,7 @@ err_fpriv:
 	kfree(fpriv);
 
 err_suspend:
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 	return r;
 }
@@ -733,6 +761,7 @@ void radeon_driver_postclose_kms(struct drm_device *dev,
 		kfree(fpriv);
 		file_priv->driver_priv = NULL;
 	}
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 }
 

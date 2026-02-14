@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2020 MediaTek Inc. */
 
 #include <linux/relay.h>
@@ -211,28 +211,13 @@ static const struct file_operations mt7915_sys_recovery_ops = {
 static int
 mt7915_radar_trigger(void *data, u64 val)
 {
-#define RADAR_MAIN_CHAIN	1
-#define RADAR_BACKGROUND	2
-	struct mt7915_phy *phy = data;
-	struct mt7915_dev *dev = phy->dev;
-	int rdd_idx;
+	struct mt7915_dev *dev = data;
 
-	if (!val || val > RADAR_BACKGROUND)
+	if (val > MT_RX_SEL2)
 		return -EINVAL;
-
-	if (val == RADAR_BACKGROUND && !dev->rdd2_phy) {
-		dev_err(dev->mt76.dev, "Background radar is not enabled\n");
-		return -EINVAL;
-	}
-
-	rdd_idx = mt7915_get_rdd_idx(phy, val == RADAR_BACKGROUND);
-	if (rdd_idx < 0) {
-		dev_err(dev->mt76.dev, "No RDD found\n");
-		return -EINVAL;
-	}
 
 	return mt76_connac_mcu_rdd_cmd(&dev->mt76, RDD_RADAR_EMULATE,
-				       rdd_idx, 0, 0);
+				       val, 0, 0);
 }
 
 DEFINE_DEBUGFS_ATTRIBUTE(fops_radar_trigger, NULL,
@@ -266,6 +251,7 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 {
 	struct mt7915_phy *phy = file->private;
 	struct mt7915_dev *dev = phy->dev;
+	struct mt7915_mcu_muru_stats mu_stats = {};
 	static const char * const dl_non_he_type[] = {
 		"CCK", "OFDM", "HT MIX", "HT GF",
 		"VHT SU", "VHT 2MU", "VHT 3MU", "VHT 4MU"
@@ -289,7 +275,7 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 
 	mutex_lock(&dev->mt76.mutex);
 
-	ret = mt7915_mcu_muru_debug_get(phy);
+	ret = mt7915_mcu_muru_debug_get(phy, &mu_stats);
 	if (ret)
 		goto exit;
 
@@ -299,13 +285,14 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 	for (i = 0; i < 5; i++)
 		seq_printf(file, "%8s | ", dl_non_he_type[i]);
 
+#define __dl_u32(s)     le32_to_cpu(mu_stats.dl.s)
 	seq_puts(file, "\nTotal Count:");
 	seq_printf(file, "%8u | %8u | %8u | %8u | %8u | ",
-		   phy->mib.dl_cck_cnt,
-		   phy->mib.dl_ofdm_cnt,
-		   phy->mib.dl_htmix_cnt,
-		   phy->mib.dl_htgf_cnt,
-		   phy->mib.dl_vht_su_cnt);
+		   __dl_u32(cck_cnt),
+		   __dl_u32(ofdm_cnt),
+		   __dl_u32(htmix_cnt),
+		   __dl_u32(htgf_cnt),
+		   __dl_u32(vht_su_cnt));
 
 	seq_puts(file, "\nDownlink MU-MIMO\nData Type:  ");
 
@@ -314,23 +301,23 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 
 	seq_puts(file, "\nTotal Count:");
 	seq_printf(file, "%8u | %8u | %8u | ",
-		   phy->mib.dl_vht_2mu_cnt,
-		   phy->mib.dl_vht_3mu_cnt,
-		   phy->mib.dl_vht_4mu_cnt);
+		   __dl_u32(vht_2mu_cnt),
+		   __dl_u32(vht_3mu_cnt),
+		   __dl_u32(vht_4mu_cnt));
 
-	sub_total_cnt = (u64)phy->mib.dl_vht_2mu_cnt +
-			     phy->mib.dl_vht_3mu_cnt +
-			     phy->mib.dl_vht_4mu_cnt;
+	sub_total_cnt = __dl_u32(vht_2mu_cnt) +
+		__dl_u32(vht_3mu_cnt) +
+		__dl_u32(vht_4mu_cnt);
 
 	seq_printf(file, "\nTotal non-HE MU-MIMO DL PPDU count: %lld",
 		   sub_total_cnt);
 
 	total_ppdu_cnt = sub_total_cnt +
-			 phy->mib.dl_cck_cnt +
-			 phy->mib.dl_ofdm_cnt +
-			 phy->mib.dl_htmix_cnt +
-			 phy->mib.dl_htgf_cnt +
-			 phy->mib.dl_vht_su_cnt;
+		__dl_u32(cck_cnt) +
+		__dl_u32(ofdm_cnt) +
+		__dl_u32(htmix_cnt) +
+		__dl_u32(htgf_cnt) +
+		__dl_u32(vht_su_cnt);
 
 	seq_printf(file, "\nAll non-HE DL PPDU count: %lld", total_ppdu_cnt);
 
@@ -342,7 +329,8 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 
 	seq_puts(file, "\nTotal Count:");
 	seq_printf(file, "%8u | %8u | ",
-		   phy->mib.dl_he_su_cnt, phy->mib.dl_he_ext_su_cnt);
+		   __dl_u32(he_su_cnt),
+		   __dl_u32(he_ext_su_cnt));
 
 	seq_puts(file, "\nDownlink MU-MIMO\nData Type:  ");
 
@@ -351,8 +339,9 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 
 	seq_puts(file, "\nTotal Count:");
 	seq_printf(file, "%8u | %8u | %8u | ",
-		   phy->mib.dl_he_2mu_cnt, phy->mib.dl_he_3mu_cnt,
-		   phy->mib.dl_he_4mu_cnt);
+		   __dl_u32(he_2mu_cnt),
+		   __dl_u32(he_3mu_cnt),
+		   __dl_u32(he_4mu_cnt));
 
 	seq_puts(file, "\nDownlink OFDMA\nData Type:  ");
 
@@ -361,36 +350,37 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 
 	seq_puts(file, "\nTotal Count:");
 	seq_printf(file, "%8u | %8u | %8u | %8u | %9u | %8u | ",
-		   phy->mib.dl_he_2ru_cnt,
-		   phy->mib.dl_he_3ru_cnt,
-		   phy->mib.dl_he_4ru_cnt,
-		   phy->mib.dl_he_5to8ru_cnt,
-		   phy->mib.dl_he_9to16ru_cnt,
-		   phy->mib.dl_he_gtr16ru_cnt);
+		   __dl_u32(he_2ru_cnt),
+		   __dl_u32(he_3ru_cnt),
+		   __dl_u32(he_4ru_cnt),
+		   __dl_u32(he_5to8ru_cnt),
+		   __dl_u32(he_9to16ru_cnt),
+		   __dl_u32(he_gtr16ru_cnt));
 
-	sub_total_cnt = (u64)phy->mib.dl_he_2mu_cnt +
-			     phy->mib.dl_he_3mu_cnt +
-			     phy->mib.dl_he_4mu_cnt;
+	sub_total_cnt = __dl_u32(he_2mu_cnt) +
+		__dl_u32(he_3mu_cnt) +
+		__dl_u32(he_4mu_cnt);
 	total_ppdu_cnt = sub_total_cnt;
 
 	seq_printf(file, "\nTotal HE MU-MIMO DL PPDU count: %lld",
 		   sub_total_cnt);
 
-	sub_total_cnt = (u64)phy->mib.dl_he_2ru_cnt +
-			     phy->mib.dl_he_3ru_cnt +
-			     phy->mib.dl_he_4ru_cnt +
-			     phy->mib.dl_he_5to8ru_cnt +
-			     phy->mib.dl_he_9to16ru_cnt +
-			     phy->mib.dl_he_gtr16ru_cnt;
+	sub_total_cnt = __dl_u32(he_2ru_cnt) +
+		__dl_u32(he_3ru_cnt) +
+		__dl_u32(he_4ru_cnt) +
+		__dl_u32(he_5to8ru_cnt) +
+		__dl_u32(he_9to16ru_cnt) +
+		__dl_u32(he_gtr16ru_cnt);
 	total_ppdu_cnt += sub_total_cnt;
 
 	seq_printf(file, "\nTotal HE OFDMA DL PPDU count: %lld",
 		   sub_total_cnt);
 
-	total_ppdu_cnt += (u64)phy->mib.dl_he_su_cnt +
-			       phy->mib.dl_he_ext_su_cnt;
+	total_ppdu_cnt += __dl_u32(he_su_cnt) +
+		__dl_u32(he_ext_su_cnt);
 
 	seq_printf(file, "\nAll HE DL PPDU count: %lld", total_ppdu_cnt);
+#undef __dl_u32
 
 	/* HE Uplink */
 	seq_puts(file, "\n\nUplink");
@@ -399,11 +389,12 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 	for (i = 0; i < 3; i++)
 		seq_printf(file, "%8s | ", ul_he_type[i]);
 
+#define __ul_u32(s)     le32_to_cpu(mu_stats.ul.s)
 	seq_puts(file, "\nTotal Count:");
 	seq_printf(file, "%8u | %8u | %8u | ",
-		   phy->mib.ul_hetrig_2mu_cnt,
-		   phy->mib.ul_hetrig_3mu_cnt,
-		   phy->mib.ul_hetrig_4mu_cnt);
+		   __ul_u32(hetrig_2mu_cnt),
+		   __ul_u32(hetrig_3mu_cnt),
+		   __ul_u32(hetrig_4mu_cnt));
 
 	seq_puts(file, "\nTrigger-based Uplink OFDMA\nData Type:  ");
 
@@ -412,36 +403,37 @@ static int mt7915_muru_stats_show(struct seq_file *file, void *data)
 
 	seq_puts(file, "\nTotal Count:");
 	seq_printf(file, "%8u | %8u | %8u | %8u | %8u | %9u |  %7u | ",
-		   phy->mib.ul_hetrig_su_cnt,
-		   phy->mib.ul_hetrig_2ru_cnt,
-		   phy->mib.ul_hetrig_3ru_cnt,
-		   phy->mib.ul_hetrig_4ru_cnt,
-		   phy->mib.ul_hetrig_5to8ru_cnt,
-		   phy->mib.ul_hetrig_9to16ru_cnt,
-		   phy->mib.ul_hetrig_gtr16ru_cnt);
+		   __ul_u32(hetrig_su_cnt),
+		   __ul_u32(hetrig_2ru_cnt),
+		   __ul_u32(hetrig_3ru_cnt),
+		   __ul_u32(hetrig_4ru_cnt),
+		   __ul_u32(hetrig_5to8ru_cnt),
+		   __ul_u32(hetrig_9to16ru_cnt),
+		   __ul_u32(hetrig_gtr16ru_cnt));
 
-	sub_total_cnt = (u64)phy->mib.ul_hetrig_2mu_cnt +
-			     phy->mib.ul_hetrig_3mu_cnt +
-			     phy->mib.ul_hetrig_4mu_cnt;
+	sub_total_cnt = __ul_u32(hetrig_2mu_cnt) +
+		__ul_u32(hetrig_3mu_cnt) +
+		__ul_u32(hetrig_4mu_cnt);
 	total_ppdu_cnt = sub_total_cnt;
 
 	seq_printf(file, "\nTotal HE MU-MIMO UL TB PPDU count: %lld",
 		   sub_total_cnt);
 
-	sub_total_cnt = (u64)phy->mib.ul_hetrig_2ru_cnt +
-			     phy->mib.ul_hetrig_3ru_cnt +
-			     phy->mib.ul_hetrig_4ru_cnt +
-			     phy->mib.ul_hetrig_5to8ru_cnt +
-			     phy->mib.ul_hetrig_9to16ru_cnt +
-			     phy->mib.ul_hetrig_gtr16ru_cnt;
+	sub_total_cnt = __ul_u32(hetrig_2ru_cnt) +
+		__ul_u32(hetrig_3ru_cnt) +
+		__ul_u32(hetrig_4ru_cnt) +
+		__ul_u32(hetrig_5to8ru_cnt) +
+		__ul_u32(hetrig_9to16ru_cnt) +
+		__ul_u32(hetrig_gtr16ru_cnt);
 	total_ppdu_cnt += sub_total_cnt;
 
 	seq_printf(file, "\nTotal HE OFDMA UL TB PPDU count: %lld",
 		   sub_total_cnt);
 
-	total_ppdu_cnt += phy->mib.ul_hetrig_su_cnt;
+	total_ppdu_cnt += __ul_u32(hetrig_su_cnt);
 
 	seq_printf(file, "\nAll HE UL TB PPDU count: %lld\n", total_ppdu_cnt);
+#undef __ul_u32
 
 exit:
 	mutex_unlock(&dev->mt76.mutex);
@@ -459,11 +451,6 @@ mt7915_rdd_monitor(struct seq_file *s, void *data)
 	int ret = 0;
 
 	mutex_lock(&dev->mt76.mutex);
-
-	if (!mt7915_eeprom_has_background_radar(dev)) {
-		seq_puts(s, "no background radar capability\n");
-		goto out;
-	}
 
 	if (!cfg80211_chandef_valid(chandef)) {
 		ret = -EINVAL;
@@ -544,8 +531,7 @@ mt7915_fw_debug_wm_set(void *data, u64 val)
 
 	/* WM CPU info record control */
 	mt76_clear(dev, MT_CPU_UTIL_CTRL, BIT(0));
-	mt76_wr(dev, MT_DIC_CMD_REG_CMD, BIT(2) | BIT(13) |
-		(dev->fw.debug_wm ? 0 : BIT(0)));
+	mt76_wr(dev, MT_DIC_CMD_REG_CMD, BIT(2) | BIT(13) | !dev->fw.debug_wm);
 	mt76_wr(dev, MT_MCU_WM_CIRQ_IRQ_MASK_CLR_ADDR, BIT(5));
 	mt76_wr(dev, MT_MCU_WM_CIRQ_IRQ_SOFT_ADDR, BIT(5));
 
@@ -733,10 +719,10 @@ mt7915_ampdu_stat_read_phy(struct mt7915_phy *phy,
 static void
 mt7915_txbf_stat_read_phy(struct mt7915_phy *phy, struct seq_file *s)
 {
-	struct mt76_mib_stats *mib = &phy->mib;
 	static const char * const bw[] = {
 		"BW20", "BW40", "BW80", "BW160"
 	};
+	struct mib_stats *mib = &phy->mib;
 
 	/* Tx Beamformer monitor */
 	seq_puts(s, "\nTx Beamformer applied PPDU counts: ");
@@ -782,7 +768,7 @@ mt7915_tx_stats_show(struct seq_file *file, void *data)
 {
 	struct mt7915_phy *phy = file->private;
 	struct mt7915_dev *dev = phy->dev;
-	struct mt76_mib_stats *mib = &phy->mib;
+	struct mib_stats *mib = &phy->mib;
 	int i;
 
 	mutex_lock(&dev->mt76.mutex);
@@ -972,10 +958,10 @@ mt7915_xmit_queues_show(struct seq_file *file, void *data)
 
 DEFINE_SHOW_ATTRIBUTE(mt7915_xmit_queues);
 
-#define mt7915_txpower_puts(rate)						\
+#define mt7915_txpower_puts(prefix, rate)					\
 ({										\
-	len += scnprintf(buf + len, sz - len, "%-16s:", #rate " (TMAC)");	\
-	for (i = 0; i < mt7915_sku_group_len[SKU_##rate]; i++, offs++)		\
+	len += scnprintf(buf + len, sz - len, "%-16s:", #prefix " (tmac)");	\
+	for (i = 0; i < mt7915_sku_group_len[rate]; i++, offs++)		\
 		len += scnprintf(buf + len, sz - len, " %6d", txpwr[offs]);	\
 	len += scnprintf(buf + len, sz - len, "\n");				\
 })
@@ -1008,7 +994,7 @@ mt7915_rate_txpower_get(struct file *file, char __user *user_buf,
 	if (!buf)
 		return -ENOMEM;
 
-	ret = mt7915_mcu_get_txpower_sku(phy, txpwr, sizeof(txpwr), TX_POWER_INFO_RATE);
+	ret = mt7915_mcu_get_txpower_sku(phy, txpwr, sizeof(txpwr));
 	if (ret)
 		goto out;
 
@@ -1018,41 +1004,41 @@ mt7915_rate_txpower_get(struct file *file, char __user *user_buf,
 			 phy != &dev->phy, phy->mt76->chandef.chan->hw_value);
 	len += scnprintf(buf + len, sz - len, "%-16s  %6s %6s %6s %6s\n",
 			 " ", "1m", "2m", "5m", "11m");
-	mt7915_txpower_puts(CCK);
+	mt7915_txpower_puts(CCK, SKU_CCK);
 
 	len += scnprintf(buf + len, sz - len,
 			 "%-16s  %6s %6s %6s %6s %6s %6s %6s %6s\n",
 			 " ", "6m", "9m", "12m", "18m", "24m", "36m", "48m",
 			 "54m");
-	mt7915_txpower_puts(OFDM);
+	mt7915_txpower_puts(OFDM, SKU_OFDM);
 
 	len += scnprintf(buf + len, sz - len,
 			 "%-16s  %6s %6s %6s %6s %6s %6s %6s %6s\n",
 			 " ", "mcs0", "mcs1", "mcs2", "mcs3", "mcs4",
 			 "mcs5", "mcs6", "mcs7");
-	mt7915_txpower_puts(HT_BW20);
+	mt7915_txpower_puts(HT20, SKU_HT_BW20);
 
 	len += scnprintf(buf + len, sz - len,
 			 "%-16s  %6s %6s %6s %6s %6s %6s %6s %6s %6s\n",
 			 " ", "mcs0", "mcs1", "mcs2", "mcs3", "mcs4", "mcs5",
 			 "mcs6", "mcs7", "mcs32");
-	mt7915_txpower_puts(HT_BW40);
+	mt7915_txpower_puts(HT40, SKU_HT_BW40);
 
 	len += scnprintf(buf + len, sz - len,
 			 "%-16s  %6s %6s %6s %6s %6s %6s %6s %6s %6s %6s %6s %6s\n",
 			 " ", "mcs0", "mcs1", "mcs2", "mcs3", "mcs4", "mcs5",
 			 "mcs6", "mcs7", "mcs8", "mcs9", "mcs10", "mcs11");
-	mt7915_txpower_puts(VHT_BW20);
-	mt7915_txpower_puts(VHT_BW40);
-	mt7915_txpower_puts(VHT_BW80);
-	mt7915_txpower_puts(VHT_BW160);
-	mt7915_txpower_puts(HE_RU26);
-	mt7915_txpower_puts(HE_RU52);
-	mt7915_txpower_puts(HE_RU106);
-	mt7915_txpower_puts(HE_RU242);
-	mt7915_txpower_puts(HE_RU484);
-	mt7915_txpower_puts(HE_RU996);
-	mt7915_txpower_puts(HE_RU2x996);
+	mt7915_txpower_puts(VHT20, SKU_VHT_BW20);
+	mt7915_txpower_puts(VHT40, SKU_VHT_BW40);
+	mt7915_txpower_puts(VHT80, SKU_VHT_BW80);
+	mt7915_txpower_puts(VHT160, SKU_VHT_BW160);
+	mt7915_txpower_puts(HE26, SKU_HE_RU26);
+	mt7915_txpower_puts(HE52, SKU_HE_RU52);
+	mt7915_txpower_puts(HE106, SKU_HE_RU106);
+	mt7915_txpower_puts(HE242, SKU_HE_RU242);
+	mt7915_txpower_puts(HE484, SKU_HE_RU484);
+	mt7915_txpower_puts(HE996, SKU_HE_RU996);
+	mt7915_txpower_puts(HE996x2, SKU_HE_RU2x996);
 
 	reg = is_mt7915(&dev->mt76) ? MT_WF_PHY_TPC_CTRL_STAT(band) :
 	      MT_WF_PHY_TPC_CTRL_STAT_MT7916(band);
@@ -1071,7 +1057,6 @@ static ssize_t
 mt7915_rate_txpower_set(struct file *file, const char __user *user_buf,
 			size_t count, loff_t *ppos)
 {
-	int i, ret, pwr, pwr160 = 0, pwr80 = 0, pwr40 = 0, pwr20 = 0;
 	struct mt7915_phy *phy = file->private_data;
 	struct mt7915_dev *dev = phy->dev;
 	struct mt76_phy *mphy = phy->mt76;
@@ -1080,6 +1065,7 @@ mt7915_rate_txpower_set(struct file *file, const char __user *user_buf,
 		.band_idx = phy->mt76->band_idx,
 	};
 	char buf[100];
+	int i, ret, pwr160 = 0, pwr80 = 0, pwr40 = 0, pwr20 = 0;
 	enum mac80211_rx_encoding mode;
 	u32 offs = 0, len = 0;
 
@@ -1105,20 +1091,20 @@ mt7915_rate_txpower_set(struct file *file, const char __user *user_buf,
 		return -EINVAL;
 
 	if (pwr160)
-		pwr160 = mt76_get_power_bound(mphy, pwr160);
+		pwr160 = mt7915_get_power_bound(phy, pwr160);
 	if (pwr80)
-		pwr80 = mt76_get_power_bound(mphy, pwr80);
+		pwr80 = mt7915_get_power_bound(phy, pwr80);
 	if (pwr40)
-		pwr40 = mt76_get_power_bound(mphy, pwr40);
+		pwr40 = mt7915_get_power_bound(phy, pwr40);
 	if (pwr20)
-		pwr20 = mt76_get_power_bound(mphy, pwr20);
+		pwr20 = mt7915_get_power_bound(phy, pwr20);
 
 	if (pwr160 < 0 || pwr80 < 0 || pwr40 < 0 || pwr20 < 0)
 		return -EINVAL;
 
 	mutex_lock(&dev->mt76.mutex);
 	ret = mt7915_mcu_get_txpower_sku(phy, req.txpower_sku,
-					 sizeof(req.txpower_sku), TX_POWER_INFO_RATE);
+					 sizeof(req.txpower_sku));
 	if (ret)
 		goto out;
 
@@ -1152,85 +1138,21 @@ skip:
 	if (ret)
 		goto out;
 
-	pwr = max3(pwr80, pwr40, pwr20);
-	mphy->txpower_cur = max3(mphy->txpower_cur, pwr160, pwr);
+	mphy->txpower_cur = max(mphy->txpower_cur,
+				max(pwr160, max(pwr80, max(pwr40, pwr20))));
 out:
 	mutex_unlock(&dev->mt76.mutex);
 
 	return ret ? ret : count;
 }
 
-static const struct file_operations mt7915_txpower_fops = {
+static const struct file_operations mt7915_rate_txpower_fops = {
 	.write = mt7915_rate_txpower_set,
 	.read = mt7915_rate_txpower_get,
 	.open = simple_open,
 	.owner = THIS_MODULE,
 	.llseek = default_llseek,
 };
-
-static int
-mt7915_path_txpower_show(struct seq_file *file)
-{
-	struct mt7915_phy *phy = file->private;
-	s8 txpower[MT7915_SKU_PATH_NUM], *buf = txpower;
-	int ret;
-
-#define PATH_POWER_SHOW(_name, _len, _skip) do {			\
-		size_t __len = (_len);					\
-		if (_skip) {						\
-			buf -= 1;					\
-			*buf = 0;					\
-		}							\
-		mt76_seq_puts_array(file, _name, buf, __len);		\
-		buf += __len;						\
-	} while (0)
-
-	seq_printf(file, "\n%*c", 18, ' ');
-	seq_puts(file, "1T1S/2T1S/3T1S/4T1S/2T2S/3T2S/4T2S/3T3S/4T3S/4T4S\n");
-	ret = mt7915_mcu_get_txpower_sku(phy, txpower, sizeof(txpower),
-					 TX_POWER_INFO_PATH);
-	if (ret)
-		return ret;
-
-	PATH_POWER_SHOW("CCK", 4, 0);
-	PATH_POWER_SHOW("OFDM", 4, 0);
-	PATH_POWER_SHOW("BF-OFDM", 4, 1);
-
-	PATH_POWER_SHOW("HT/VHT20", 10, 0);
-	PATH_POWER_SHOW("BF-HT/VHT20", 10, 1);
-	PATH_POWER_SHOW("HT/VHT40", 10, 0);
-	PATH_POWER_SHOW("BF-HT/VHT40", 10, 1);
-
-	PATH_POWER_SHOW("BW20/RU242", 10, 0);
-	PATH_POWER_SHOW("BF-BW20/RU242", 10, 1);
-	PATH_POWER_SHOW("BW40/RU484", 10, 0);
-	PATH_POWER_SHOW("BF-BW40/RU484", 10, 1);
-	PATH_POWER_SHOW("BW80/RU996", 10, 0);
-	PATH_POWER_SHOW("BF-BW80/RU996", 10, 1);
-	PATH_POWER_SHOW("BW160/RU2x996", 10, 0);
-	PATH_POWER_SHOW("BF-BW160/RU2x996", 10, 1);
-	PATH_POWER_SHOW("RU26", 10, 0);
-	PATH_POWER_SHOW("BF-RU26", 10, 0);
-	PATH_POWER_SHOW("RU52", 10, 0);
-	PATH_POWER_SHOW("BF-RU52", 10, 0);
-	PATH_POWER_SHOW("RU106", 10, 0);
-	PATH_POWER_SHOW("BF-RU106", 10, 0);
-#undef PATH_POWER_SHOW
-
-	return 0;
-}
-
-static int
-mt7915_txpower_path_show(struct seq_file *file, void *data)
-{
-	struct mt7915_phy *phy = file->private;
-
-	seq_printf(file, "\nBand %d\n", phy != &phy->dev->phy);
-
-	return mt7915_path_txpower_show(file);
-}
-
-DEFINE_SHOW_ATTRIBUTE(mt7915_txpower_path);
 
 static int
 mt7915_twt_stats(struct seq_file *s, void *data)
@@ -1318,9 +1240,7 @@ int mt7915_init_debugfs(struct mt7915_phy *phy)
 	debugfs_create_file("implicit_txbf", 0600, dir, dev,
 			    &fops_implicit_txbf);
 	debugfs_create_file("txpower_sku", 0400, dir, phy,
-			    &mt7915_txpower_fops);
-	debugfs_create_file("txpower_path", 0400, dir, phy,
-			    &mt7915_txpower_path_fops);
+			    &mt7915_rate_txpower_fops);
 	debugfs_create_devm_seqfile(dev->mt76.dev, "twt_stats", dir,
 				    mt7915_twt_stats);
 	debugfs_create_file("rf_regval", 0600, dir, dev, &fops_rf_regval);
@@ -1328,7 +1248,7 @@ int mt7915_init_debugfs(struct mt7915_phy *phy)
 	if (!dev->dbdc_support || phy->mt76->band_idx) {
 		debugfs_create_u32("dfs_hw_pattern", 0400, dir,
 				   &dev->hw_pattern);
-		debugfs_create_file("radar_trigger", 0200, dir, phy,
+		debugfs_create_file("radar_trigger", 0200, dir, dev,
 				    &fops_radar_trigger);
 		debugfs_create_devm_seqfile(dev->mt76.dev, "rdd_monitor", dir,
 					    mt7915_rdd_monitor);

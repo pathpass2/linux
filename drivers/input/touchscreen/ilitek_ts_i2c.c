@@ -15,11 +15,12 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
+#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/errno.h>
 #include <linux/acpi.h>
 #include <linux/input/touchscreen.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 
 #define ILITEK_TS_NAME					"ilitek_ts"
@@ -35,8 +36,6 @@
 #define ILITEK_TP_CMD_GET_PRL_VER			0x42
 #define ILITEK_TP_CMD_GET_MCU_VER			0x61
 #define ILITEK_TP_CMD_GET_IC_MODE			0xC0
-
-#define ILITEK_TP_I2C_REPORT_ID				0x48
 
 #define REPORT_COUNT_ADDRESS				61
 #define ILITEK_SUPPORT_MAX_POINT			40
@@ -161,19 +160,15 @@ static int ilitek_process_and_report_v6(struct ilitek_ts_data *ts)
 	error = ilitek_i2c_write_and_read(ts, NULL, 0, 0, buf, 64);
 	if (error) {
 		dev_err(dev, "get touch info failed, err:%d\n", error);
-		return error;
-	}
-
-	if (buf[0] != ILITEK_TP_I2C_REPORT_ID) {
-		dev_err(dev, "get touch info failed. Wrong id: 0x%02X\n", buf[0]);
-		return -EINVAL;
+		goto err_sync_frame;
 	}
 
 	report_max_point = buf[REPORT_COUNT_ADDRESS];
 	if (report_max_point > ts->max_tp) {
 		dev_err(dev, "FW report max point:%d > panel info. max:%d\n",
 			report_max_point, ts->max_tp);
-		return -EINVAL;
+		error = -EINVAL;
+		goto err_sync_frame;
 	}
 
 	count = DIV_ROUND_UP(report_max_point, packet_max_point);
@@ -183,7 +178,7 @@ static int ilitek_process_and_report_v6(struct ilitek_ts_data *ts)
 		if (error) {
 			dev_err(dev, "get touch info. failed, cnt:%d, err:%d\n",
 				count, error);
-			return error;
+			goto err_sync_frame;
 		}
 	}
 
@@ -208,10 +203,10 @@ static int ilitek_process_and_report_v6(struct ilitek_ts_data *ts)
 		ilitek_touch_down(ts, id, x, y);
 	}
 
+err_sync_frame:
 	input_mt_sync_frame(input);
 	input_sync(input);
-
-	return 0;
+	return error;
 }
 
 /* APIs of cmds for ILITEK Touch IC */
@@ -517,12 +512,12 @@ static ssize_t firmware_version_show(struct device *dev,
 	struct i2c_client *client = to_i2c_client(dev);
 	struct ilitek_ts_data *ts = i2c_get_clientdata(client);
 
-	return sysfs_emit(buf,
-			  "fw version: [%02X%02X.%02X%02X.%02X%02X.%02X%02X]\n",
-			  ts->firmware_ver[0], ts->firmware_ver[1],
-			  ts->firmware_ver[2], ts->firmware_ver[3],
-			  ts->firmware_ver[4], ts->firmware_ver[5],
-			  ts->firmware_ver[6], ts->firmware_ver[7]);
+	return scnprintf(buf, PAGE_SIZE,
+			 "fw version: [%02X%02X.%02X%02X.%02X%02X.%02X%02X]\n",
+			 ts->firmware_ver[0], ts->firmware_ver[1],
+			 ts->firmware_ver[2], ts->firmware_ver[3],
+			 ts->firmware_ver[4], ts->firmware_ver[5],
+			 ts->firmware_ver[6], ts->firmware_ver[7]);
 }
 static DEVICE_ATTR_RO(firmware_version);
 
@@ -532,8 +527,8 @@ static ssize_t product_id_show(struct device *dev,
 	struct i2c_client *client = to_i2c_client(dev);
 	struct ilitek_ts_data *ts = i2c_get_clientdata(client);
 
-	return sysfs_emit(buf, "product id: [%04X], module: [%s]\n",
-			  ts->mcu_ver, ts->product_id);
+	return scnprintf(buf, PAGE_SIZE, "product id: [%04X], module: [%s]\n",
+			 ts->mcu_ver, ts->product_id);
 }
 static DEVICE_ATTR_RO(product_id);
 
@@ -542,7 +537,10 @@ static struct attribute *ilitek_sysfs_attrs[] = {
 	&dev_attr_product_id.attr,
 	NULL
 };
-ATTRIBUTE_GROUPS(ilitek_sysfs);
+
+static struct attribute_group ilitek_attrs_group = {
+	.attrs = ilitek_sysfs_attrs,
+};
 
 static int ilitek_ts_i2c_probe(struct i2c_client *client)
 {
@@ -597,6 +595,12 @@ static int ilitek_ts_i2c_probe(struct i2c_client *client)
 		return error;
 	}
 
+	error = devm_device_add_group(dev, &ilitek_attrs_group);
+	if (error) {
+		dev_err(dev, "sysfs create group failed: %d\n", error);
+		return error;
+	}
+
 	return 0;
 }
 
@@ -639,8 +643,8 @@ static int ilitek_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(ilitek_pm_ops, ilitek_suspend, ilitek_resume);
 
 static const struct i2c_device_id ilitek_ts_i2c_id[] = {
-	{ ILITEK_TS_NAME },
-	{ }
+	{ ILITEK_TS_NAME, 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, ilitek_ts_i2c_id);
 
@@ -671,12 +675,11 @@ MODULE_DEVICE_TABLE(of, ilitek_ts_i2c_match);
 static struct i2c_driver ilitek_ts_i2c_driver = {
 	.driver = {
 		.name = ILITEK_TS_NAME,
-		.dev_groups = ilitek_sysfs_groups,
 		.pm = pm_sleep_ptr(&ilitek_pm_ops),
 		.of_match_table = of_match_ptr(ilitek_ts_i2c_match),
 		.acpi_match_table = ACPI_PTR(ilitekts_acpi_id),
 	},
-	.probe = ilitek_ts_i2c_probe,
+	.probe_new = ilitek_ts_i2c_probe,
 	.id_table = ilitek_ts_i2c_id,
 };
 module_i2c_driver(ilitek_ts_i2c_driver);

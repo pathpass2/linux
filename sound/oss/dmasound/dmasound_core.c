@@ -204,7 +204,6 @@ module_param(numWriteBufs, int, 0);
 static unsigned int writeBufSize = DEFAULT_BUFF_SIZE ;	/* in bytes */
 module_param(writeBufSize, int, 0);
 
-MODULE_DESCRIPTION("Atari/Amiga/Q40 core DMA sound driver");
 MODULE_LICENSE("GPL");
 
 static int sq_unit = -1;
@@ -381,6 +380,7 @@ static long mixer_unlocked_ioctl(struct file *file, u_int cmd, u_long arg)
 static const struct file_operations mixer_fops =
 {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.unlocked_ioctl	= mixer_unlocked_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= mixer_open,
@@ -1154,6 +1154,7 @@ static long sq_unlocked_ioctl(struct file *file, u_int cmd, u_long arg)
 static const struct file_operations sq_fops =
 {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.write		= sq_write,
 	.poll		= sq_poll,
 	.unlocked_ioctl	= sq_unlocked_ioctl,
@@ -1349,6 +1350,7 @@ static ssize_t state_read(struct file *file, char __user *buf, size_t count,
 
 static const struct file_operations state_fops = {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.read		= state_read,
 	.open		= state_open,
 	.release	= state_release,

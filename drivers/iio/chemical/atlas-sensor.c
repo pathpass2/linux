@@ -24,6 +24,7 @@
 #include <linux/iio/triggered_buffer.h>
 #include <linux/pm_runtime.h>
 
+#define ATLAS_REGMAP_NAME	"atlas_regmap"
 #define ATLAS_DRV_NAME		"atlas"
 
 #define ATLAS_REG_DEV_TYPE		0x00
@@ -86,7 +87,7 @@ enum {
 struct atlas_data {
 	struct i2c_client *client;
 	struct iio_trigger *trig;
-	const struct atlas_device *chip;
+	struct atlas_device *chip;
 	struct regmap *regmap;
 	struct irq_work work;
 	unsigned int interrupt_enabled;
@@ -95,7 +96,7 @@ struct atlas_data {
 };
 
 static const struct regmap_config atlas_regmap_config = {
-	.name = "atlas_regmap",
+	.name = ATLAS_REGMAP_NAME,
 	.reg_bits = 8,
 	.val_bits = 8,
 };
@@ -352,7 +353,7 @@ struct atlas_device {
 	int delay;
 };
 
-static const struct atlas_device atlas_devices[] = {
+static struct atlas_device atlas_devices[] = {
 	[ATLAS_PH_SM] = {
 				.channels = atlas_ph_channels,
 				.num_channels = 3,
@@ -425,6 +426,7 @@ static int atlas_buffer_predisable(struct iio_dev *indio_dev)
 	if (ret)
 		return ret;
 
+	pm_runtime_mark_last_busy(&data->client->dev);
 	ret = pm_runtime_put_autosuspend(&data->client->dev);
 	if (ret)
 		return ret;
@@ -456,9 +458,8 @@ static irqreturn_t atlas_trigger_handler(int irq, void *private)
 			      &data->buffer, sizeof(__be32) * channels);
 
 	if (!ret)
-		iio_push_to_buffers_with_ts(indio_dev, data->buffer,
-					    sizeof(data->buffer),
-					    iio_get_time_ns(indio_dev));
+		iio_push_to_buffers_with_timestamp(indio_dev, data->buffer,
+				iio_get_time_ns(indio_dev));
 
 	iio_trigger_notify_done(indio_dev->trig);
 
@@ -490,6 +491,7 @@ static int atlas_read_measurement(struct atlas_data *data, int reg, __be32 *val)
 
 	ret = regmap_bulk_read(data->regmap, reg, val, sizeof(*val));
 
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return ret;
@@ -516,12 +518,13 @@ static int atlas_read_raw(struct iio_dev *indio_dev,
 		case IIO_CONCENTRATION:
 		case IIO_ELECTRICALCONDUCTIVITY:
 		case IIO_VOLTAGE:
-			if (!iio_device_claim_direct(indio_dev))
-				return -EBUSY;
+			ret = iio_device_claim_direct_mode(indio_dev);
+			if (ret)
+				return ret;
 
 			ret = atlas_read_measurement(data, chan->address, &reg);
 
-			iio_device_release_direct(indio_dev);
+			iio_device_release_direct_mode(indio_dev);
 			break;
 		default:
 			ret = -EINVAL;
@@ -586,29 +589,30 @@ static const struct iio_info atlas_info = {
 };
 
 static const struct i2c_device_id atlas_id[] = {
-	{ "atlas-ph-sm", (kernel_ulong_t)&atlas_devices[ATLAS_PH_SM] },
-	{ "atlas-ec-sm", (kernel_ulong_t)&atlas_devices[ATLAS_EC_SM] },
-	{ "atlas-orp-sm", (kernel_ulong_t)&atlas_devices[ATLAS_ORP_SM] },
-	{ "atlas-do-sm", (kernel_ulong_t)&atlas_devices[ATLAS_DO_SM] },
-	{ "atlas-rtd-sm", (kernel_ulong_t)&atlas_devices[ATLAS_RTD_SM] },
-	{ }
+	{ "atlas-ph-sm", ATLAS_PH_SM },
+	{ "atlas-ec-sm", ATLAS_EC_SM },
+	{ "atlas-orp-sm", ATLAS_ORP_SM },
+	{ "atlas-do-sm", ATLAS_DO_SM },
+	{ "atlas-rtd-sm", ATLAS_RTD_SM },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, atlas_id);
 
 static const struct of_device_id atlas_dt_ids[] = {
-	{ .compatible = "atlas,ph-sm", .data = &atlas_devices[ATLAS_PH_SM] },
-	{ .compatible = "atlas,ec-sm", .data = &atlas_devices[ATLAS_EC_SM] },
-	{ .compatible = "atlas,orp-sm", .data = &atlas_devices[ATLAS_ORP_SM] },
-	{ .compatible = "atlas,do-sm", .data = &atlas_devices[ATLAS_DO_SM] },
-	{ .compatible = "atlas,rtd-sm", .data = &atlas_devices[ATLAS_RTD_SM] },
+	{ .compatible = "atlas,ph-sm", .data = (void *)ATLAS_PH_SM, },
+	{ .compatible = "atlas,ec-sm", .data = (void *)ATLAS_EC_SM, },
+	{ .compatible = "atlas,orp-sm", .data = (void *)ATLAS_ORP_SM, },
+	{ .compatible = "atlas,do-sm", .data = (void *)ATLAS_DO_SM, },
+	{ .compatible = "atlas,rtd-sm", .data = (void *)ATLAS_RTD_SM, },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, atlas_dt_ids);
 
 static int atlas_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct atlas_data *data;
-	const struct atlas_device *chip;
+	struct atlas_device *chip;
 	struct iio_trigger *trig;
 	struct iio_dev *indio_dev;
 	int ret;
@@ -617,7 +621,10 @@ static int atlas_probe(struct i2c_client *client)
 	if (!indio_dev)
 		return -ENOMEM;
 
-	chip = i2c_get_match_data(client);
+	if (!dev_fwnode(&client->dev))
+		chip = &atlas_devices[id->driver_data];
+	else
+		chip = &atlas_devices[(unsigned long)device_get_match_data(&client->dev)];
 
 	indio_dev->info = &atlas_info;
 	indio_dev->name = ATLAS_DRV_NAME;
@@ -760,7 +767,7 @@ static struct i2c_driver atlas_driver = {
 		.of_match_table	= atlas_dt_ids,
 		.pm	= pm_ptr(&atlas_pm_ops),
 	},
-	.probe		= atlas_probe,
+	.probe_new	= atlas_probe,
 	.remove		= atlas_remove,
 	.id_table	= atlas_id,
 };

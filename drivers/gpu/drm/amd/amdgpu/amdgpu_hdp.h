@@ -43,11 +43,5 @@ struct amdgpu_hdp {
 	struct amdgpu_hdp_ras	*ras;
 };
 
-int amdgpu_hdp_ras_sw_init(struct amdgpu_device *adev);
-void amdgpu_hdp_generic_flush(struct amdgpu_device *adev,
-			      struct amdgpu_ring *ring);
-void amdgpu_hdp_invalidate(struct amdgpu_device *adev,
-			   struct amdgpu_ring *ring);
-void amdgpu_hdp_flush(struct amdgpu_device *adev,
-		      struct amdgpu_ring *ring);
+int amdgpu_hdp_ras_late_init(struct amdgpu_device *adev, struct ras_common_if *ras_block);
 #endif /* __AMDGPU_HDP_H__ */

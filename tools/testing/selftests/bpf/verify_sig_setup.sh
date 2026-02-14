@@ -32,7 +32,7 @@ usage()
 	exit 1
 }
 
-genkey()
+setup()
 {
 	local tmp_dir="$1"
 
@@ -45,14 +45,9 @@ genkey()
 
 	openssl x509 -in ${tmp_dir}/signing_key.pem -out \
 		${tmp_dir}/signing_key.der -outform der
-}
 
-setup()
-{
-	local tmp_dir="$1"
-
-	genkey "${tmp_dir}"
 	key_id=$(cat ${tmp_dir}/signing_key.der | keyctl padd asymmetric ebpf_testing_key @s)
+
 	keyring_id=$(keyctl newring ebpf_testing_keyring @s)
 	keyctl link $key_id $keyring_id
 }
@@ -63,27 +58,6 @@ cleanup() {
 	keyctl unlink $(keyctl search @s asymmetric ebpf_testing_key) @s
 	keyctl unlink $(keyctl search @s keyring ebpf_testing_keyring) @s
 	rm -rf ${tmp_dir}
-}
-
-fsverity_create_sign_file() {
-	local tmp_dir="$1"
-
-	data_file=${tmp_dir}/data-file
-	sig_file=${tmp_dir}/sig-file
-	dd if=/dev/urandom of=$data_file bs=1 count=12345 2> /dev/null
-	fsverity sign --key ${tmp_dir}/signing_key.pem $data_file $sig_file
-
-	# We do not want to enable fsverity on $data_file yet. Try whether
-	# the file system support fsverity on a different file.
-	touch ${tmp_dir}/tmp-file
-	fsverity enable ${tmp_dir}/tmp-file
-}
-
-fsverity_enable_file() {
-	local tmp_dir="$1"
-
-	data_file=${tmp_dir}/data-file
-	fsverity enable $data_file
 }
 
 catch()
@@ -110,14 +84,8 @@ main()
 
 	if [[ "${action}" == "setup" ]]; then
 		setup "${tmp_dir}"
-	elif [[ "${action}" == "genkey" ]]; then
-		genkey "${tmp_dir}"
 	elif [[ "${action}" == "cleanup" ]]; then
 		cleanup "${tmp_dir}"
-	elif [[ "${action}" == "fsverity-create-sign" ]]; then
-		fsverity_create_sign_file "${tmp_dir}"
-	elif [[ "${action}" == "fsverity-enable" ]]; then
-		fsverity_enable_file "${tmp_dir}"
 	else
 		echo "Unknown action: ${action}"
 		exit 1

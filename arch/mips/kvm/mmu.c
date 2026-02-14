@@ -444,6 +444,36 @@ bool kvm_unmap_gfn_range(struct kvm *kvm, struct kvm_gfn_range *range)
 	return true;
 }
 
+bool kvm_set_spte_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
+{
+	gpa_t gpa = range->start << PAGE_SHIFT;
+	pte_t hva_pte = range->pte;
+	pte_t *gpa_pte = kvm_mips_pte_for_gpa(kvm, NULL, gpa);
+	pte_t old_pte;
+
+	if (!gpa_pte)
+		return false;
+
+	/* Mapping may need adjusting depending on memslot flags */
+	old_pte = *gpa_pte;
+	if (range->slot->flags & KVM_MEM_LOG_DIRTY_PAGES && !pte_dirty(old_pte))
+		hva_pte = pte_mkclean(hva_pte);
+	else if (range->slot->flags & KVM_MEM_READONLY)
+		hva_pte = pte_wrprotect(hva_pte);
+
+	set_pte(gpa_pte, hva_pte);
+
+	/* Replacing an absent or old page doesn't need flushes */
+	if (!pte_present(old_pte) || !pte_young(old_pte))
+		return false;
+
+	/* Pages swapped, aged, moved, or cleaned require flushes */
+	return !pte_present(hva_pte) ||
+	       !pte_young(hva_pte) ||
+	       pte_pfn(old_pte) != pte_pfn(hva_pte) ||
+	       (pte_dirty(old_pte) && !pte_dirty(hva_pte));
+}
+
 bool kvm_age_gfn(struct kvm *kvm, struct kvm_gfn_range *range)
 {
 	return kvm_mips_mkold_gpa_pt(kvm, range->start, range->end);
@@ -484,6 +514,8 @@ static int _kvm_mips_map_page_fast(struct kvm_vcpu *vcpu, unsigned long gpa,
 	struct kvm *kvm = vcpu->kvm;
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 	pte_t *ptep;
+	kvm_pfn_t pfn = 0;	/* silence bogus GCC warning */
+	bool pfn_valid = false;
 	int ret = 0;
 
 	spin_lock(&kvm->mmu_lock);
@@ -496,9 +528,12 @@ static int _kvm_mips_map_page_fast(struct kvm_vcpu *vcpu, unsigned long gpa,
 	}
 
 	/* Track access to pages marked old */
-	if (!pte_young(*ptep))
+	if (!pte_young(*ptep)) {
 		set_pte(ptep, pte_mkyoung(*ptep));
-
+		pfn = pte_pfn(*ptep);
+		pfn_valid = true;
+		/* call kvm_set_pfn_accessed() after unlock */
+	}
 	if (write_fault && !pte_dirty(*ptep)) {
 		if (!pte_write(*ptep)) {
 			ret = -EFAULT;
@@ -507,7 +542,9 @@ static int _kvm_mips_map_page_fast(struct kvm_vcpu *vcpu, unsigned long gpa,
 
 		/* Track dirtying of writeable pages */
 		set_pte(ptep, pte_mkdirty(*ptep));
+		pfn = pte_pfn(*ptep);
 		mark_page_dirty(kvm, gfn);
+		kvm_set_pfn_dirty(pfn);
 	}
 
 	if (out_entry)
@@ -517,6 +554,8 @@ static int _kvm_mips_map_page_fast(struct kvm_vcpu *vcpu, unsigned long gpa,
 
 out:
 	spin_unlock(&kvm->mmu_lock);
+	if (pfn_valid)
+		kvm_set_pfn_accessed(pfn);
 	return ret;
 }
 
@@ -553,11 +592,10 @@ static int kvm_mips_map_page(struct kvm_vcpu *vcpu, unsigned long gpa,
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 	int srcu_idx, err;
 	kvm_pfn_t pfn;
-	pte_t *ptep, entry;
+	pte_t *ptep, entry, old_pte;
 	bool writeable;
 	unsigned long prot_bits;
 	unsigned long mmu_seq;
-	struct page *page;
 
 	/* Try the fast path to handle old / clean pages */
 	srcu_idx = srcu_read_lock(&kvm->srcu);
@@ -579,7 +617,7 @@ retry:
 	mmu_seq = kvm->mmu_invalidate_seq;
 	/*
 	 * Ensure the read of mmu_invalidate_seq isn't reordered with PTE reads
-	 * in kvm_faultin_pfn() (which calls get_user_pages()), so that we don't
+	 * in gfn_to_pfn_prot() (which calls get_user_pages()), so that we don't
 	 * risk the page we get a reference to getting unmapped before we have a
 	 * chance to grab the mmu_lock without mmu_invalidate_retry() noticing.
 	 *
@@ -591,7 +629,7 @@ retry:
 	smp_rmb();
 
 	/* Slow path - ask KVM core whether we can access this GPA */
-	pfn = kvm_faultin_pfn(vcpu, gfn, write_fault, &writeable, &page);
+	pfn = gfn_to_pfn_prot(kvm, gfn, write_fault, &writeable);
 	if (is_error_noslot_pfn(pfn)) {
 		err = -EFAULT;
 		goto out;
@@ -603,10 +641,10 @@ retry:
 		/*
 		 * This can happen when mappings are changed asynchronously, but
 		 * also synchronously if a COW is triggered by
-		 * kvm_faultin_pfn().
+		 * gfn_to_pfn_prot().
 		 */
 		spin_unlock(&kvm->mmu_lock);
-		kvm_release_page_unused(page);
+		kvm_release_pfn_clean(pfn);
 		goto retry;
 	}
 
@@ -620,11 +658,13 @@ retry:
 		if (write_fault) {
 			prot_bits |= __WRITEABLE;
 			mark_page_dirty(kvm, gfn);
+			kvm_set_pfn_dirty(pfn);
 		}
 	}
 	entry = pfn_pte(pfn, __pgprot(prot_bits));
 
 	/* Write the PTE */
+	old_pte = *ptep;
 	set_pte(ptep, entry);
 
 	err = 0;
@@ -633,8 +673,9 @@ retry:
 	if (out_buddy)
 		*out_buddy = *ptep_buddy(ptep);
 
-	kvm_release_faultin_page(kvm, page, false, writeable);
 	spin_unlock(&kvm->mmu_lock);
+	kvm_release_pfn_clean(pfn);
+	kvm_set_pfn_accessed(pfn);
 out:
 	srcu_read_unlock(&kvm->srcu, srcu_idx);
 	return err;

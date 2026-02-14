@@ -16,6 +16,7 @@
 #include <linux/moduleparam.h>
 #include <net/9p/9p.h>
 #include <linux/fs.h>
+#include <linux/parser.h>
 #include <net/9p/client.h>
 #include <net/9p/transport.h>
 #include <linux/list.h>
@@ -170,7 +171,6 @@ void v9fs_put_trans(struct p9_trans_module *m)
 	if (m)
 		module_put(m->owner);
 }
-EXPORT_SYMBOL(v9fs_put_trans);
 
 /**
  * init_p9 - Initialize module

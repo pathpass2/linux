@@ -6,7 +6,6 @@
  * Author: Hemanth V <hemanthv@ti.com>
  */
 
-#include <linux/export.h>
 #include <linux/types.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
@@ -218,12 +217,14 @@ static int cma3000_open(struct input_dev *input_dev)
 {
 	struct cma3000_accl_data *data = input_get_drvdata(input_dev);
 
-	guard(mutex)(&data->mutex);
+	mutex_lock(&data->mutex);
 
 	if (!data->suspended)
 		cma3000_poweron(data);
 
 	data->opened = true;
+
+	mutex_unlock(&data->mutex);
 
 	return 0;
 }
@@ -232,34 +233,40 @@ static void cma3000_close(struct input_dev *input_dev)
 {
 	struct cma3000_accl_data *data = input_get_drvdata(input_dev);
 
-	guard(mutex)(&data->mutex);
+	mutex_lock(&data->mutex);
 
 	if (!data->suspended)
 		cma3000_poweroff(data);
 
 	data->opened = false;
+
+	mutex_unlock(&data->mutex);
 }
 
 void cma3000_suspend(struct cma3000_accl_data *data)
 {
-	guard(mutex)(&data->mutex);
+	mutex_lock(&data->mutex);
 
 	if (!data->suspended && data->opened)
 		cma3000_poweroff(data);
 
 	data->suspended = true;
+
+	mutex_unlock(&data->mutex);
 }
 EXPORT_SYMBOL(cma3000_suspend);
 
 
 void cma3000_resume(struct cma3000_accl_data *data)
 {
-	guard(mutex)(&data->mutex);
+	mutex_lock(&data->mutex);
 
 	if (data->suspended && data->opened)
 		cma3000_poweron(data);
 
 	data->suspended = false;
+
+	mutex_unlock(&data->mutex);
 }
 EXPORT_SYMBOL(cma3000_resume);
 
@@ -285,7 +292,7 @@ struct cma3000_accl_data *cma3000_init(struct device *dev, int irq,
 		goto err_out;
 	}
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = kzalloc(sizeof(struct cma3000_accl_data), GFP_KERNEL);
 	input_dev = input_allocate_device();
 	if (!data || !input_dev) {
 		error = -ENOMEM;
@@ -317,6 +324,8 @@ struct cma3000_accl_data *cma3000_init(struct device *dev, int irq,
 	input_dev->id.bustype = bops->bustype;
 	input_dev->open = cma3000_open;
 	input_dev->close = cma3000_close;
+
+	 __set_bit(EV_ABS, input_dev->evbit);
 
 	input_set_abs_params(input_dev, ABS_X,
 			-data->g_range, data->g_range, pdata->fuzz_x, 0);

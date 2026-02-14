@@ -608,7 +608,7 @@ static void adapter_get_asserts(struct hpi_adapter_obj *pao,
 		phr->u.ax.assert.p2 = 0;
 		phr->u.ax.assert.count = 1;	/* assert count */
 		phr->u.ax.assert.dsp_index = -1;	/* "dsp index" */
-		strscpy(phr->u.ax.assert.sz_message, "PCI2040 error");
+		strcpy(phr->u.ax.assert.sz_message, "PCI2040 error");
 		phr->u.ax.assert.dsp_msg_addr = 0;
 		gw_pci_read_asserts = 0;
 		gw_pci_write_asserts = 0;
@@ -1253,6 +1253,7 @@ static u16 hpi6000_dsp_block_read32(struct hpi_adapter_obj *pao,
 	int local_count = count;
 	int xfer_size;
 	u32 *pdata = dest;
+	u32 loop_count = 0;
 
 	while (local_count) {
 		if (local_count > c6711_burst_size)
@@ -1272,6 +1273,7 @@ static u16 hpi6000_dsp_block_read32(struct hpi_adapter_obj *pao,
 		pdata += xfer_size;
 		local_hpi_address += sizeof(u32) * xfer_size;
 		local_count -= xfer_size;
+		loop_count++;
 	}
 
 	if (time_out)

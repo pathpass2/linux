@@ -8,7 +8,7 @@
 int jit_write_elf(int fd, uint64_t code_addr, const char *sym,
 		  const void *code, int csize, void *debug, int nr_debug_entries,
 		  void *unwinding, uint64_t unwinding_header_size, uint64_t unwinding_size);
-#ifdef HAVE_LIBDW_SUPPORT
+#ifdef HAVE_DWARF_SUPPORT
 /* genelf_debug.c */
 int jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_entries);
 #endif
@@ -42,12 +42,6 @@ int jit_add_debug_info(Elf *e, uint64_t code_addr, void *debug, int nr_debug_ent
 #define GEN_ELF_CLASS	ELFCLASS64
 #elif defined(__riscv) && __riscv_xlen == 64
 #define GEN_ELF_ARCH	EM_RISCV
-#define GEN_ELF_CLASS	ELFCLASS64
-#elif defined(__riscv) && __riscv_xlen == 32
-#define GEN_ELF_ARCH	EM_RISCV
-#define GEN_ELF_CLASS	ELFCLASS32
-#elif defined(__loongarch__)
-#define GEN_ELF_ARCH	EM_LOONGARCH
 #define GEN_ELF_CLASS	ELFCLASS64
 #else
 #error "unsupported architecture"

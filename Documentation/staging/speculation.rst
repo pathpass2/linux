@@ -63,6 +63,7 @@ of an out-of-bounds address, while the second call will influence
 microarchitectural state dependent on this value. This may provide an
 arbitrary read primitive.
 
+====================================
 Mitigating speculation side-channels
 ====================================
 

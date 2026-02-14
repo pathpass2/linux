@@ -9,6 +9,7 @@
 #include <linux/sched/debug.h>
 #include <linux/kallsyms.h>
 #include <asm/ptrace.h>
+#include <asm/sysrq.h>
 
 /* This is declared by <linux/sched.h> */
 void show_regs(struct pt_regs *regs)

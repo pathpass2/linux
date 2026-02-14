@@ -13,7 +13,6 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <linux/string_choices.h>
 #include <linux/usb.h>
 #include <linux/usb/otg.h>
 
@@ -96,7 +95,6 @@ static int fotg210_gemini_init(struct fotg210 *fotg, struct resource *res,
 
 /**
  * fotg210_vbus() - Called by gadget driver to enable/disable VBUS
- * @fotg: pointer to a private fotg210 object
  * @enable: true to enable VBUS, false to disable VBUS
  */
 void fotg210_vbus(struct fotg210 *fotg, bool enable)
@@ -120,8 +118,8 @@ void fotg210_vbus(struct fotg210 *fotg, bool enable)
 	ret = regmap_update_bits(fotg->map, GEMINI_GLOBAL_MISC_CTRL, mask, val);
 	if (ret)
 		dev_err(fotg->dev, "failed to %s VBUS\n",
-			str_enable_disable(enable));
-	dev_info(fotg->dev, "%s: %s VBUS\n", __func__, str_enable_disable(enable));
+			enable ? "enable" : "disable");
+	dev_info(fotg->dev, "%s: %s VBUS\n", __func__, enable ? "enable" : "disable");
 }
 
 static int fotg210_probe(struct platform_device *pdev)
@@ -167,7 +165,7 @@ static int fotg210_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void fotg210_remove(struct platform_device *pdev)
+static int fotg210_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	enum usb_dr_mode mode;
@@ -178,6 +176,8 @@ static void fotg210_remove(struct platform_device *pdev)
 		fotg210_udc_remove(pdev);
 	else
 		fotg210_hcd_remove(pdev);
+
+	return 0;
 }
 
 #ifdef CONFIG_OF

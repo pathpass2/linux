@@ -5,13 +5,13 @@
 #include <linux/ctype.h>
 #include <linux/efi.h>
 #include <linux/kernel.h>
-#include <linux/kern_levels.h>
+#include <linux/printk.h> /* For CONSOLE_LOGLEVEL_* */
 #include <asm/efi.h>
 #include <asm/setup.h>
 
 #include "efistub.h"
 
-int efi_loglevel = LOGLEVEL_NOTICE;
+int efi_loglevel = CONSOLE_LOGLEVEL_DEFAULT;
 
 /**
  * efi_char16_puts() - Write a UCS-2 encoded string to the console

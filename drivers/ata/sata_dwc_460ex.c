@@ -18,8 +18,9 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/dmaengine.h>
-#include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/phy/phy.h>
 #include <linux/libata.h>
@@ -809,7 +810,7 @@ static int sata_dwc_dma_get_channel(struct sata_dwc_device_port *hsdevp)
 	struct device *dev = hsdev->dev;
 
 #ifdef CONFIG_SATA_DWC_OLD_DMA
-	if (!of_property_present(dev->of_node, "dmas"))
+	if (!of_find_property(dev->of_node, "dmas", NULL))
 		return sata_dwc_dma_get_channel_old(hsdevp);
 #endif
 
@@ -1075,7 +1076,7 @@ static void sata_dwc_dev_select(struct ata_port *ap, unsigned int device)
 /*
  * scsi mid-layer and libata interface structures
  */
-static const struct scsi_host_template sata_dwc_sht = {
+static struct scsi_host_template sata_dwc_sht = {
 	ATA_NCQ_SHT(DRV_NAME),
 	/*
 	 * test-only: Currently this driver doesn't handle NCQ
@@ -1097,7 +1098,7 @@ static struct ata_port_operations sata_dwc_ops = {
 	.inherits		= &ata_sff_port_ops,
 
 	.error_handler		= sata_dwc_error_handler,
-	.reset.hardreset	= sata_dwc_hardreset,
+	.hardreset		= sata_dwc_hardreset,
 
 	.qc_issue		= sata_dwc_qc_issue,
 
@@ -1179,7 +1180,7 @@ static int sata_dwc_probe(struct platform_device *ofdev)
 	}
 
 #ifdef CONFIG_SATA_DWC_OLD_DMA
-	if (!of_property_present(np, "dmas")) {
+	if (!of_find_property(np, "dmas", NULL)) {
 		err = sata_dwc_dma_init_old(ofdev, hsdev);
 		if (err)
 			return err;
@@ -1210,7 +1211,7 @@ error_out:
 	return err;
 }
 
-static void sata_dwc_remove(struct platform_device *ofdev)
+static int sata_dwc_remove(struct platform_device *ofdev)
 {
 	struct device *dev = &ofdev->dev;
 	struct ata_host *host = dev_get_drvdata(dev);
@@ -1226,6 +1227,7 @@ static void sata_dwc_remove(struct platform_device *ofdev)
 #endif
 
 	dev_dbg(dev, "done\n");
+	return 0;
 }
 
 static const struct of_device_id sata_dwc_match[] = {

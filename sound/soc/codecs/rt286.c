@@ -223,7 +223,7 @@ static int rt286_jack_detect(struct rt286_priv *rt286, bool *hp, bool *mic)
 	if (!rt286->component)
 		return -EINVAL;
 
-	dapm = snd_soc_component_to_dapm(rt286->component);
+	dapm = snd_soc_component_get_dapm(rt286->component);
 
 	if (rt286->pdata.cbj_en) {
 		regmap_read(rt286->regmap, RT286_GET_HP_SENSE, &buf);
@@ -314,7 +314,7 @@ static void rt286_jack_detect_work(struct work_struct *work)
 static int rt286_mic_detect(struct snd_soc_component *component,
 			    struct snd_soc_jack *jack, void *data)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	struct rt286_priv *rt286 = snd_soc_component_get_drvdata(component);
 
 	rt286->jack = jack;
@@ -765,11 +765,11 @@ static int rt286_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	struct snd_soc_component *component = dai->component;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		snd_soc_component_update_bits(component,
 			RT286_I2S_CTRL1, 0x800, 0x800);
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		snd_soc_component_update_bits(component,
 			RT286_I2S_CTRL1, 0x800, 0x0);
 		break;
@@ -887,11 +887,9 @@ static int rt286_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
 static int rt286_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
-
 	switch (level) {
 	case SND_SOC_BIAS_PREPARE:
-		if (SND_SOC_BIAS_STANDBY == snd_soc_dapm_get_bias_level(dapm)) {
+		if (SND_SOC_BIAS_STANDBY == snd_soc_component_get_bias_level(component)) {
 			snd_soc_component_write(component,
 				RT286_SET_AUDIO_POWER, AC_PWRST_D0);
 			snd_soc_component_update_bits(component,
@@ -1077,17 +1075,16 @@ static const struct regmap_config rt286_regmap = {
 };
 
 static const struct i2c_device_id rt286_i2c_id[] = {
-	{"rt286"},
-	{"rt288"},
+	{"rt286", 0},
+	{"rt288", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, rt286_i2c_id);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt286_acpi_match[] = {
-	{ "10EC0286" },
-	{ "INT343A" },
-	{ }
+	{ "INT343A", 0 },
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, rt286_acpi_match);
 #endif
@@ -1236,11 +1233,11 @@ static int rt286_i2c_probe(struct i2c_client *i2c)
 	}
 
 	if (rt286->i2c->irq) {
-		ret = devm_request_threaded_irq(&rt286->i2c->dev, rt286->i2c->irq, NULL, rt286_irq,
+		ret = request_threaded_irq(rt286->i2c->irq, NULL, rt286_irq,
 			IRQF_TRIGGER_HIGH | IRQF_ONESHOT, "rt286", rt286);
 		if (ret != 0) {
 			dev_err(&i2c->dev,
-				"Failed to request IRQ: %d\n", ret);
+				"Failed to reguest IRQ: %d\n", ret);
 			return ret;
 		}
 	}
@@ -1252,12 +1249,22 @@ static int rt286_i2c_probe(struct i2c_client *i2c)
 	return ret;
 }
 
+static void rt286_i2c_remove(struct i2c_client *i2c)
+{
+	struct rt286_priv *rt286 = i2c_get_clientdata(i2c);
+
+	if (i2c->irq)
+		free_irq(i2c->irq, rt286);
+}
+
+
 static struct i2c_driver rt286_i2c_driver = {
 	.driver = {
 		   .name = "rt286",
 		   .acpi_match_table = ACPI_PTR(rt286_acpi_match),
 		   },
-	.probe = rt286_i2c_probe,
+	.probe_new = rt286_i2c_probe,
+	.remove = rt286_i2c_remove,
 	.id_table = rt286_i2c_id,
 };
 

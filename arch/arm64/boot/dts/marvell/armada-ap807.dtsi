@@ -5,7 +5,13 @@
  * Copyright (C) 2019 Marvell Technology Group Ltd.
  */
 
+#define AP_NAME		ap807
 #include "armada-ap80x.dtsi"
+
+/ {
+	model = "Marvell Armada AP807";
+	compatible = "marvell,armada-ap807";
+};
 
 &ap_syscon0 {
 	ap_clk: clock {
@@ -27,6 +33,3 @@
 		     "marvell,armada-ap806-sdhci"; /* Backward compatibility */
 };
 
-&ap_thermal {
-	compatible = "marvell,armada-ap807-thermal";
-};

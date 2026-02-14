@@ -4,11 +4,20 @@
 
 #include <linux/const.h>
 
-#include <vdso/page.h>
+#if defined(CONFIG_PARISC_PAGE_SIZE_4KB)
+# define PAGE_SHIFT	12
+#elif defined(CONFIG_PARISC_PAGE_SIZE_16KB)
+# define PAGE_SHIFT	14
+#elif defined(CONFIG_PARISC_PAGE_SIZE_64KB)
+# define PAGE_SHIFT	16
+#else
+# error "unknown default kernel page size"
+#endif
+#define PAGE_SIZE	(_AC(1,UL) << PAGE_SHIFT)
+#define PAGE_MASK	(~(PAGE_SIZE-1))
 
-#define HAVE_ARCH_HUGETLB_UNMAPPED_AREA
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/types.h>
 #include <asm/cache.h>
@@ -21,6 +30,7 @@ struct vm_area_struct;
 
 void clear_page_asm(void *page);
 void copy_page_asm(void *to, void *from);
+#define clear_user_page(vto, vaddr, page) clear_page_asm(vto)
 void copy_user_highpage(struct page *to, struct page *from, unsigned long vaddr,
 		struct vm_area_struct *vma);
 #define __HAVE_ARCH_COPY_USER_HIGHPAGE
@@ -92,7 +102,7 @@ typedef struct __physmem_range {
 extern physmem_range_t pmem_ranges[];
 extern int npmem_ranges;
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /* WARNING: The definitions below must match exactly to sizeof(pte_t)
  * etc
@@ -138,7 +148,7 @@ extern int npmem_ranges;
 #define KERNEL_BINARY_TEXT_START	(__PAGE_OFFSET + 0x100000)
 
 /* These macros don't work for 64-bit C code -- don't allow in C at all */
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 #   define PA(x)	((x)-__PAGE_OFFSET)
 #   define VA(x)	((x)+__PAGE_OFFSET)
 #endif
@@ -165,6 +175,7 @@ extern int npmem_ranges;
 
 #define virt_addr_valid(kaddr)	pfn_valid(__pa(kaddr) >> PAGE_SHIFT)
 
+#define page_to_phys(page)	(page_to_pfn(page) << PAGE_SHIFT)
 #define virt_to_page(kaddr)     pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
 
 #include <asm-generic/memory_model.h>

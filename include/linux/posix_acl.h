@@ -27,16 +27,11 @@ struct posix_acl_entry {
 };
 
 struct posix_acl {
-	/* New members MUST be added within the struct_group() macro below. */
-	struct_group_tagged(posix_acl_hdr, hdr,
-		refcount_t		a_refcount;
-		unsigned int		a_count;
-		struct rcu_head		a_rcu;
-	);
-	struct posix_acl_entry	a_entries[] __counted_by(a_count);
+	refcount_t		a_refcount;
+	struct rcu_head		a_rcu;
+	unsigned int		a_count;
+	struct posix_acl_entry	a_entries[];
 };
-static_assert(offsetof(struct posix_acl, a_entries) == sizeof(struct posix_acl_hdr),
-	      "struct member likely outside of struct_group_tagged()");
 
 #define FOREACH_ACL_ENTRY(pa, acl, pe) \
 	for(pa=(acl)->a_entries, pe=pa+(acl)->a_count; pa<pe; pa++)
@@ -67,7 +62,7 @@ posix_acl_release(struct posix_acl *acl)
 /* posix_acl.c */
 
 extern void posix_acl_init(struct posix_acl *, int);
-extern struct posix_acl *posix_acl_alloc(unsigned int count, gfp_t flags);
+extern struct posix_acl *posix_acl_alloc(int, gfp_t);
 extern struct posix_acl *posix_acl_from_mode(umode_t, gfp_t);
 extern int posix_acl_equiv_mode(const struct posix_acl *, umode_t *);
 extern int __posix_acl_create(struct posix_acl **, gfp_t, umode_t *);
@@ -111,8 +106,6 @@ struct posix_acl *vfs_get_acl(struct mnt_idmap *idmap,
 			      struct dentry *dentry, const char *acl_name);
 int vfs_remove_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		   const char *acl_name);
-int posix_acl_listxattr(struct inode *inode, char **buffer,
-			ssize_t *remaining_size);
 #else
 static inline int posix_acl_chmod(struct mnt_idmap *idmap,
 				  struct dentry *dentry, umode_t mode)
@@ -159,11 +152,6 @@ static inline int vfs_remove_acl(struct mnt_idmap *idmap,
 				 struct dentry *dentry, const char *acl_name)
 {
 	return -EOPNOTSUPP;
-}
-static inline int posix_acl_listxattr(struct inode *inode, char **buffer,
-				      ssize_t *remaining_size)
-{
-	return 0;
 }
 #endif /* CONFIG_FS_POSIX_ACL */
 

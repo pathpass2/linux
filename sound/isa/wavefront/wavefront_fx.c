@@ -38,7 +38,7 @@ wavefront_fx_idle (snd_wavefront_t *dev)
 	}
 
 	if (x & 0x80) {
-		dev_err(dev->card->dev, "FX device never idle.\n");
+		snd_printk ("FX device never idle.\n");
 		return 0;
 	}
 
@@ -64,14 +64,14 @@ wavefront_fx_memset (snd_wavefront_t *dev,
 		     unsigned short *data)
 {
 	if (page < 0 || page > 7) {
-		dev_err(dev->card->dev,
-			"FX memset: page must be >= 0 and <= 7\n");
+		snd_printk ("FX memset: "
+			"page must be >= 0 and <= 7\n");
 		return -EINVAL;
 	}
 
 	if (addr < 0 || addr > 0x7f) {
-		dev_err(dev->card->dev,
-			"FX memset: addr must be >= 0 and <= 7f\n");
+		snd_printk ("FX memset: "
+			"addr must be >= 0 and <= 7f\n");
 		return -EINVAL;
 	}
 
@@ -83,7 +83,7 @@ wavefront_fx_memset (snd_wavefront_t *dev,
 		outb ((data[0] >> 8), dev->fx_dsp_msb);
 		outb ((data[0] & 0xff), dev->fx_dsp_lsb);
 
-		dev_err(dev->card->dev, "FX: addr %d:%x set to 0x%x\n",
+		snd_printk ("FX: addr %d:%x set to 0x%x\n",
 			page, addr, data[0]);
 
 	} else {
@@ -102,9 +102,9 @@ wavefront_fx_memset (snd_wavefront_t *dev,
 		}
 
 		if (i != cnt) {
-			dev_err(dev->card->dev,
-				"FX memset (0x%x, 0x%x, 0x%lx, %d) incomplete\n",
-				page, addr, (unsigned long) data, cnt);
+			snd_printk ("FX memset "
+				    "(0x%x, 0x%x, 0x%lx, %d) incomplete\n",
+				    page, addr, (unsigned long) data, cnt);
 			return -EIO;
 		}
 	}
@@ -123,7 +123,7 @@ snd_wavefront_fx_detect (snd_wavefront_t *dev)
 	*/
 
 	if (inb (dev->fx_status) & 0x80) {
-		dev_err(dev->card->dev, "Hmm, probably a Maui or Tropez.\n");
+		snd_printk ("Hmm, probably a Maui or Tropez.\n");
 		return -1;
 	}
 
@@ -180,20 +180,20 @@ snd_wavefront_fx_ioctl (struct snd_hwdep *sdev, struct file *file,
 
 	case WFFX_MEMSET:
 		if (r.data[2] <= 0) {
-			dev_err(dev->card->dev,
-				"cannot write <= 0 bytes to FX\n");
+			snd_printk ("cannot write "
+				"<= 0 bytes to FX\n");
 			return -EIO;
 		} else if (r.data[2] == 1) {
 			pd = (unsigned short *) &r.data[3];
 		} else {
 			if (r.data[2] > 256) {
-				dev_err(dev->card->dev,
-					"cannot write > 512 bytes to FX\n");
+				snd_printk ("cannot write "
+					    "> 512 bytes to FX\n");
 				return -EIO;
 			}
-			page_data = memdup_array_user((unsigned char __user *)
-						      r.data[3],
-						      r.data[2], sizeof(short));
+			page_data = memdup_user((unsigned char __user *)
+						r.data[3],
+						r.data[2] * sizeof(short));
 			if (IS_ERR(page_data))
 				return PTR_ERR(page_data);
 			pd = page_data;
@@ -208,8 +208,8 @@ snd_wavefront_fx_ioctl (struct snd_hwdep *sdev, struct file *file,
 		break;
 
 	default:
-		dev_err(dev->card->dev, "FX: ioctl %d not yet supported\n",
-			r.request);
+		snd_printk ("FX: ioctl %d not yet supported\n",
+			    r.request);
 		return -ENOTTY;
 	}
 	return err;
@@ -254,8 +254,8 @@ snd_wavefront_fx_start (snd_wavefront_t *dev)
 				goto out;
 			}
 		} else {
-			dev_err(dev->card->dev,
-				"invalid address in register data\n");
+			snd_printk(KERN_ERR "invalid address"
+				   " in register data\n");
 			err = -1;
 			goto out;
 		}

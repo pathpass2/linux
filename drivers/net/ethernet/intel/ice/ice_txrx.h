@@ -4,8 +4,6 @@
 #ifndef _ICE_TXRX_H_
 #define _ICE_TXRX_H_
 
-#include <net/libeth/types.h>
-
 #include "ice_type.h"
 
 #define ICE_DFLT_IRQ_WORK	256
@@ -29,6 +27,72 @@
 
 #define ICE_MAX_TXQ_PER_TXQG	128
 
+/* Attempt to maximize the headroom available for incoming frames. We use a 2K
+ * buffer for MTUs <= 1500 and need 1536/1534 to store the data for the frame.
+ * This leaves us with 512 bytes of room.  From that we need to deduct the
+ * space needed for the shared info and the padding needed to IP align the
+ * frame.
+ *
+ * Note: For cache line sizes 256 or larger this value is going to end
+ *	 up negative.  In these cases we should fall back to the legacy
+ *	 receive path.
+ */
+#if (PAGE_SIZE < 8192)
+#define ICE_2K_TOO_SMALL_WITH_PADDING \
+	((unsigned int)(NET_SKB_PAD + ICE_RXBUF_1536) > \
+			SKB_WITH_OVERHEAD(ICE_RXBUF_2048))
+
+/**
+ * ice_compute_pad - compute the padding
+ * @rx_buf_len: buffer length
+ *
+ * Figure out the size of half page based on given buffer length and
+ * then subtract the skb_shared_info followed by subtraction of the
+ * actual buffer length; this in turn results in the actual space that
+ * is left for padding usage
+ */
+static inline int ice_compute_pad(int rx_buf_len)
+{
+	int half_page_size;
+
+	half_page_size = ALIGN(rx_buf_len, PAGE_SIZE / 2);
+	return SKB_WITH_OVERHEAD(half_page_size) - rx_buf_len;
+}
+
+/**
+ * ice_skb_pad - determine the padding that we can supply
+ *
+ * Figure out the right Rx buffer size and based on that calculate the
+ * padding
+ */
+static inline int ice_skb_pad(void)
+{
+	int rx_buf_len;
+
+	/* If a 2K buffer cannot handle a standard Ethernet frame then
+	 * optimize padding for a 3K buffer instead of a 1.5K buffer.
+	 *
+	 * For a 3K buffer we need to add enough padding to allow for
+	 * tailroom due to NET_IP_ALIGN possibly shifting us out of
+	 * cache-line alignment.
+	 */
+	if (ICE_2K_TOO_SMALL_WITH_PADDING)
+		rx_buf_len = ICE_RXBUF_3072 + SKB_DATA_ALIGN(NET_IP_ALIGN);
+	else
+		rx_buf_len = ICE_RXBUF_1536;
+
+	/* if needed make room for NET_IP_ALIGN */
+	rx_buf_len -= NET_IP_ALIGN;
+
+	return ice_compute_pad(rx_buf_len);
+}
+
+#define ICE_SKB_PAD ice_skb_pad()
+#else
+#define ICE_2K_TOO_SMALL_WITH_PADDING false
+#define ICE_SKB_PAD (NET_SKB_PAD + NET_IP_ALIGN)
+#endif
+
 /* We are assuming that the cache line is always 64 Bytes here for ice.
  * In order to make sure that is a correct assumption there is a check in probe
  * to print a warning if the read from GLPCI_CNF2 tells us that the cache line
@@ -48,6 +112,10 @@
 	(u16)((((R)->next_to_clean > (R)->next_to_use) ? 0 : (R)->count) + \
 	      (R)->next_to_clean - (R)->next_to_use - 1)
 
+#define ICE_RX_DESC_UNUSED(R)	\
+	((((R)->first_desc > (R)->next_to_use) ? 0 : (R)->count) + \
+	      (R)->first_desc - (R)->next_to_use - 1)
+
 #define ICE_RING_QUARTER(R) ((R)->count >> 2)
 
 #define ICE_TX_FLAGS_TSO	BIT(0)
@@ -59,6 +127,10 @@
 #define ICE_TX_FLAGS_IPV6	BIT(6)
 #define ICE_TX_FLAGS_TUNNEL	BIT(7)
 #define ICE_TX_FLAGS_HW_OUTER_SINGLE_VLAN	BIT(8)
+#define ICE_TX_FLAGS_VLAN_M	0xffff0000
+#define ICE_TX_FLAGS_VLAN_PR_M	0xe0000000
+#define ICE_TX_FLAGS_VLAN_PR_S	29
+#define ICE_TX_FLAGS_VLAN_S	16
 
 #define ICE_XDP_PASS		0
 #define ICE_XDP_CONSUMED	BIT(0)
@@ -110,9 +182,8 @@ struct ice_tx_buf {
 		unsigned int gso_segs;
 		unsigned int nr_frags;	/* used for mbuf XDP */
 	};
-	u32 tx_flags:12;
-	u32 type:4;			/* &ice_tx_buf_type */
-	u32 vid:16;
+	u32 type:16;			/* &ice_tx_buf_type */
+	u32 tx_flags:16;
 	DEFINE_DMA_UNMAP_LEN(len);
 	DEFINE_DMA_UNMAP_ADDR(dma);
 };
@@ -125,68 +196,45 @@ struct ice_tx_offload_params {
 	u32 td_l2tag1;
 	u32 cd_tunnel_params;
 	u16 cd_l2tag2;
-	u16 cd_gcs_params;
 	u8 header_len;
+};
+
+struct ice_rx_buf {
+	dma_addr_t dma;
+	struct page *page;
+	unsigned int page_offset;
+	unsigned int pgcnt;
+	unsigned int act;
+	unsigned int pagecnt_bias;
+};
+
+struct ice_q_stats {
+	u64 pkts;
+	u64 bytes;
+};
+
+struct ice_txq_stats {
+	u64 restart_q;
+	u64 tx_busy;
+	u64 tx_linearize;
+	int prev_pkt; /* negative if no pending Tx descriptors */
+};
+
+struct ice_rxq_stats {
+	u64 non_eop_descs;
+	u64 alloc_page_failed;
+	u64 alloc_buf_failed;
 };
 
 struct ice_ring_stats {
 	struct rcu_head rcu;	/* to avoid race on free */
+	struct ice_q_stats stats;
 	struct u64_stats_sync syncp;
-	struct_group(stats,
-		u64_stats_t pkts;
-		u64_stats_t bytes;
-		union {
-			struct_group(tx,
-				u64_stats_t tx_restart_q;
-				u64_stats_t tx_busy;
-				u64_stats_t tx_linearize;
-				/* negative if no pending Tx descriptors */
-				int prev_pkt;
-			);
-			struct_group(rx,
-				u64_stats_t rx_non_eop_descs;
-				u64_stats_t rx_page_failed;
-				u64_stats_t rx_buf_failed;
-			);
-		};
-	);
+	union {
+		struct ice_txq_stats tx_stats;
+		struct ice_rxq_stats rx_stats;
+	};
 };
-
-/**
- * ice_stats_read - Read a single ring stat value
- * @stats: pointer to ring_stats structure for a queue
- * @member: the ice_ring_stats member to read
- *
- * Shorthand for reading a single 64-bit stat value from struct
- * ice_ring_stats.
- *
- * Return: the value of the requested stat.
- */
-#define ice_stats_read(stats, member) ({				\
-	struct ice_ring_stats *__stats = (stats);			\
-	unsigned int start;						\
-	u64 val;							\
-	do {								\
-		start = u64_stats_fetch_begin(&__stats->syncp);		\
-		val = u64_stats_read(&__stats->member);			\
-	} while (u64_stats_fetch_retry(&__stats->syncp, start));	\
-	val;								\
-})
-
-/**
- * ice_stats_inc - Increment a single ring stat value
- * @stats: pointer to the ring_stats structure for a queue
- * @member: the ice_ring_stats member to increment
- *
- * Shorthand for incrementing a single 64-bit stat value in struct
- * ice_ring_stats.
- */
-#define ice_stats_inc(stats, member) do {				\
-	struct ice_ring_stats *__stats = (stats);			\
-	u64_stats_update_begin(&__stats->syncp);			\
-	u64_stats_inc(&__stats->member);				\
-	u64_stats_update_end(&__stats->syncp);				\
-} while (0)
 
 enum ice_ring_state_t {
 	ICE_TX_XPS_INIT_DONE,
@@ -210,11 +258,6 @@ enum ice_rx_dtype {
 	ICE_RX_DTYPE_NO_SPLIT		= 0,
 	ICE_RX_DTYPE_HEADER_SPLIT	= 1,
 	ICE_RX_DTYPE_SPLIT_ALWAYS	= 2,
-};
-
-struct ice_pkt_ctx {
-	u64 cached_phctime;
-	__be16 vlan_proto;
 };
 
 /* indices into GLINT_ITR registers */
@@ -256,140 +299,107 @@ enum ice_dynamic_itr {
 #define ICE_TX_LEGACY	1
 
 /* descriptor ring, associated with a VSI */
-struct ice_tstamp_ring {
-	struct ice_tx_ring *tx_ring;	/* Backreference to associated Tx ring */
-	dma_addr_t dma;			/* physical address of ring */
-	struct rcu_head rcu;            /* to avoid race on free */
-	u8 __iomem *tail;
-	void *desc;
-	u16 next_to_use;
-	u16 count;
-} ____cacheline_internodealigned_in_smp;
-
 struct ice_rx_ring {
-	__cacheline_group_begin_aligned(read_mostly);
+	/* CL1 - 1st cacheline starts here */
+	struct ice_rx_ring *next;	/* pointer to next ring in q_vector */
 	void *desc;			/* Descriptor ring memory */
-	struct page_pool *pp;
+	struct device *dev;		/* Used for DMA mapping */
 	struct net_device *netdev;	/* netdev ring maps to */
+	struct ice_vsi *vsi;		/* Backreference to associated VSI */
 	struct ice_q_vector *q_vector;	/* Backreference to associated vector */
 	u8 __iomem *tail;
-
-	union {
-		struct libeth_fqe *rx_fqes;
-		struct xdp_buff **xdp_buf;
-	};
+	u16 q_index;			/* Queue number of ring */
 
 	u16 count;			/* Number of descriptors */
-	u8 ptp_rx;
-
-	u8 flags;
-#define ICE_RX_FLAGS_CRC_STRIP_DIS	BIT(2)
-#define ICE_RX_FLAGS_MULTIDEV		BIT(3)
-#define ICE_RX_FLAGS_RING_GCS		BIT(4)
-
-	u32 truesize;
-
-	struct page_pool *hdr_pp;
-	struct libeth_fqe *hdr_fqes;
-
+	u16 reg_idx;			/* HW register index of the ring */
+	u16 next_to_alloc;
+	/* CL2 - 2nd cacheline starts here */
+	union {
+		struct ice_rx_buf *rx_buf;
+		struct xdp_buff **xdp_buf;
+	};
+	struct xdp_buff xdp;
+	/* CL3 - 3rd cacheline starts here */
 	struct bpf_prog *xdp_prog;
-	struct ice_tx_ring *xdp_ring;
-	struct xsk_buff_pool *xsk_pool;
-
-	/* stats structs */
-	struct ice_ring_stats *ring_stats;
-	struct ice_rx_ring *next;	/* pointer to next ring in q_vector */
-
-	u32 hdr_truesize;
-
-	struct xdp_rxq_info xdp_rxq;
-	__cacheline_group_end_aligned(read_mostly);
-
-	__cacheline_group_begin_aligned(read_write);
-	union {
-		struct libeth_xdp_buff_stash xdp;
-		struct libeth_xdp_buff *xsk;
-	};
-	union {
-		struct ice_pkt_ctx pkt_ctx;
-		struct {
-			u64 cached_phctime;
-			__be16 vlan_proto;
-		};
-	};
+	u16 rx_offset;
 
 	/* used in interrupt processing */
 	u16 next_to_use;
 	u16 next_to_clean;
-	__cacheline_group_end_aligned(read_write);
+	u16 first_desc;
 
-	__cacheline_group_begin_aligned(cold);
+	/* stats structs */
+	struct ice_ring_stats *ring_stats;
+
 	struct rcu_head rcu;		/* to avoid race on free */
-	struct ice_vsi *vsi;		/* Backreference to associated VSI */
+	/* CL4 - 4th cacheline starts here */
 	struct ice_channel *ch;
-
+	struct ice_tx_ring *xdp_ring;
+	struct xsk_buff_pool *xsk_pool;
 	dma_addr_t dma;			/* physical address of ring */
-	u16 q_index;			/* Queue number of ring */
-	u16 reg_idx;			/* HW register index of the ring */
-	u8 dcb_tc;			/* Traffic class of ring */
-
-	u16 rx_hdr_len;
+	u64 cached_phctime;
 	u16 rx_buf_len;
-	__cacheline_group_end_aligned(cold);
+	u8 dcb_tc;			/* Traffic class of ring */
+	u8 ptp_rx;
+#define ICE_RX_FLAGS_RING_BUILD_SKB	BIT(1)
+#define ICE_RX_FLAGS_CRC_STRIP_DIS	BIT(2)
+	u8 flags;
+	/* CL5 - 5th cacheline starts here */
+	struct xdp_rxq_info xdp_rxq;
 } ____cacheline_internodealigned_in_smp;
 
 struct ice_tx_ring {
-	__cacheline_group_begin_aligned(read_mostly);
+	/* CL1 - 1st cacheline starts here */
+	struct ice_tx_ring *next;	/* pointer to next ring in q_vector */
 	void *desc;			/* Descriptor ring memory */
 	struct device *dev;		/* Used for DMA mapping */
 	u8 __iomem *tail;
 	struct ice_tx_buf *tx_buf;
-
 	struct ice_q_vector *q_vector;	/* Backreference to associated vector */
 	struct net_device *netdev;	/* netdev ring maps to */
 	struct ice_vsi *vsi;		/* Backreference to associated VSI */
-
-	u16 count;			/* Number of descriptors */
-	u16 q_index;			/* Queue number of ring */
-
-	u8 flags;
-#define ICE_TX_FLAGS_RING_XDP		BIT(0)
-#define ICE_TX_FLAGS_RING_VLAN_L2TAG1	BIT(1)
-#define ICE_TX_FLAGS_RING_VLAN_L2TAG2	BIT(2)
-#define ICE_TX_FLAGS_TXTIME		BIT(3)
-
+	/* CL2 - 2nd cacheline starts here */
+	dma_addr_t dma;			/* physical address of ring */
 	struct xsk_buff_pool *xsk_pool;
-
-	/* stats structs */
-	struct ice_ring_stats *ring_stats;
-	struct ice_tx_ring *next;	/* pointer to next ring in q_vector */
-
-	struct ice_tstamp_ring *tstamp_ring;
-	struct ice_ptp_tx *tx_tstamps;
-	__cacheline_group_end_aligned(read_mostly);
-
-	__cacheline_group_begin_aligned(read_write);
 	u16 next_to_use;
 	u16 next_to_clean;
-
+	u16 q_handle;			/* Queue handle per TC */
+	u16 reg_idx;			/* HW register index of the ring */
+	u16 count;			/* Number of descriptors */
+	u16 q_index;			/* Queue number of ring */
 	u16 xdp_tx_active;
-	spinlock_t tx_lock;
-	__cacheline_group_end_aligned(read_write);
-
-	__cacheline_group_begin_aligned(cold);
+	/* stats structs */
+	struct ice_ring_stats *ring_stats;
+	/* CL3 - 3rd cacheline starts here */
 	struct rcu_head rcu;		/* to avoid race on free */
 	DECLARE_BITMAP(xps_state, ICE_TX_NBITS);	/* XPS Config State */
 	struct ice_channel *ch;
-
-	dma_addr_t dma;			/* physical address of ring */
-	u16 q_handle;			/* Queue handle per TC */
-	u16 reg_idx;			/* HW register index of the ring */
-	u8 dcb_tc;			/* Traffic class of ring */
-
-	u16 quanta_prof_id;
+	struct ice_ptp_tx *tx_tstamps;
+	spinlock_t tx_lock;
 	u32 txq_teid;			/* Added Tx queue TEID */
-	__cacheline_group_end_aligned(cold);
+	/* CL4 - 4th cacheline starts here */
+#define ICE_TX_FLAGS_RING_XDP		BIT(0)
+#define ICE_TX_FLAGS_RING_VLAN_L2TAG1	BIT(1)
+#define ICE_TX_FLAGS_RING_VLAN_L2TAG2	BIT(2)
+	u8 flags;
+	u8 dcb_tc;			/* Traffic class of ring */
+	u8 ptp_tx;
 } ____cacheline_internodealigned_in_smp;
+
+static inline bool ice_ring_uses_build_skb(struct ice_rx_ring *ring)
+{
+	return !!(ring->flags & ICE_RX_FLAGS_RING_BUILD_SKB);
+}
+
+static inline void ice_set_ring_build_skb_ena(struct ice_rx_ring *ring)
+{
+	ring->flags |= ICE_RX_FLAGS_RING_BUILD_SKB;
+}
+
+static inline void ice_clear_ring_build_skb_ena(struct ice_rx_ring *ring)
+{
+	ring->flags &= ~ICE_RX_FLAGS_RING_BUILD_SKB;
+}
 
 static inline bool ice_ring_ch_enabled(struct ice_tx_ring *ring)
 {
@@ -445,13 +455,17 @@ struct ice_coalesce_stored {
 
 static inline unsigned int ice_rx_pg_order(struct ice_rx_ring *ring)
 {
+#if (PAGE_SIZE < 8192)
+	if (ring->rx_buf_len > (PAGE_SIZE / 2))
+		return 1;
+#endif
 	return 0;
 }
 
+#define ice_rx_pg_size(_ring) (PAGE_SIZE << ice_rx_pg_order(_ring))
+
 union ice_32b_rx_flex_desc;
 
-void ice_init_ctrl_rx_descs(struct ice_rx_ring *rx_ring, u32 num_descs);
-void ice_rxq_pp_destroy(struct ice_rx_ring *rq);
 bool ice_alloc_rx_bufs(struct ice_rx_ring *rxr, unsigned int cleaned_count);
 netdev_tx_t ice_start_xmit(struct sk_buff *skb, struct net_device *netdev);
 u16
@@ -461,15 +475,12 @@ void ice_clean_tx_ring(struct ice_tx_ring *tx_ring);
 void ice_clean_rx_ring(struct ice_rx_ring *rx_ring);
 int ice_setup_tx_ring(struct ice_tx_ring *tx_ring);
 int ice_setup_rx_ring(struct ice_rx_ring *rx_ring);
-int ice_alloc_setup_tstamp_ring(struct ice_tx_ring *tx_ring);
 void ice_free_tx_ring(struct ice_tx_ring *tx_ring);
 void ice_free_rx_ring(struct ice_rx_ring *rx_ring);
 int ice_napi_poll(struct napi_struct *napi, int budget);
 int
 ice_prgm_fdir_fltr(struct ice_vsi *vsi, struct ice_fltr_desc *fdir_desc,
 		   u8 *raw_packet);
+int ice_clean_rx_irq(struct ice_rx_ring *rx_ring, int budget);
 void ice_clean_ctrl_tx_irq(struct ice_tx_ring *tx_ring);
-void ice_clean_ctrl_rx_irq(struct ice_rx_ring *rx_ring);
-void ice_free_tx_tstamp_ring(struct ice_tx_ring *tx_ring);
-void ice_free_tstamp_ring(struct ice_tx_ring *tx_ring);
 #endif /* _ICE_TXRX_H_ */

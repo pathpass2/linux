@@ -124,7 +124,6 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
 {
 	struct vport *vport;
 	size_t alloc_size;
-	int err;
 
 	alloc_size = sizeof(struct vport);
 	if (priv_size) {
@@ -136,29 +135,17 @@ struct vport *ovs_vport_alloc(int priv_size, const struct vport_ops *ops,
 	if (!vport)
 		return ERR_PTR(-ENOMEM);
 
-	vport->upcall_stats = netdev_alloc_pcpu_stats(struct vport_upcall_stats_percpu);
-	if (!vport->upcall_stats) {
-		err = -ENOMEM;
-		goto err_kfree_vport;
-	}
-
 	vport->dp = parms->dp;
 	vport->port_no = parms->port_no;
 	vport->ops = ops;
 	INIT_HLIST_NODE(&vport->dp_hash_node);
 
 	if (ovs_vport_set_upcall_portids(vport, parms->upcall_portids)) {
-		err = -EINVAL;
-		goto err_free_percpu;
+		kfree(vport);
+		return ERR_PTR(-EINVAL);
 	}
 
 	return vport;
-
-err_free_percpu:
-	free_percpu(vport->upcall_stats);
-err_kfree_vport:
-	kfree(vport);
-	return ERR_PTR(err);
 }
 EXPORT_SYMBOL_GPL(ovs_vport_alloc);
 
@@ -178,7 +165,6 @@ void ovs_vport_free(struct vport *vport)
 	 * it is safe to use raw dereference.
 	 */
 	kfree(rcu_dereference_raw(vport->upcall_portids));
-	free_percpu(vport->upcall_stats);
 	kfree(vport);
 }
 EXPORT_SYMBOL_GPL(ovs_vport_free);
@@ -310,23 +296,22 @@ void ovs_vport_get_stats(struct vport *vport, struct ovs_vport_stats *stats)
  */
 int ovs_vport_get_upcall_stats(struct vport *vport, struct sk_buff *skb)
 {
-	u64 tx_success = 0, tx_fail = 0;
 	struct nlattr *nla;
 	int i;
 
+	__u64 tx_success = 0;
+	__u64 tx_fail = 0;
+
 	for_each_possible_cpu(i) {
 		const struct vport_upcall_stats_percpu *stats;
-		u64 n_success, n_fail;
 		unsigned int start;
 
 		stats = per_cpu_ptr(vport->upcall_stats, i);
 		do {
 			start = u64_stats_fetch_begin(&stats->syncp);
-			n_success = u64_stats_read(&stats->n_success);
-			n_fail = u64_stats_read(&stats->n_fail);
+			tx_success += u64_stats_read(&stats->n_success);
+			tx_fail += u64_stats_read(&stats->n_fail);
 		} while (u64_stats_fetch_retry(&stats->syncp, start));
-		tx_success += n_success;
-		tx_fail += n_fail;
 	}
 
 	nla = nla_nest_start_noflag(skb, OVS_VPORT_ATTR_UPCALL_STATS);
@@ -501,8 +486,6 @@ int ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
 	OVS_CB(skb)->input_vport = vport;
 	OVS_CB(skb)->mru = 0;
 	OVS_CB(skb)->cutlen = 0;
-	OVS_CB(skb)->probability = 0;
-	OVS_CB(skb)->upcall_pid = 0;
 	if (unlikely(dev_net(skb->dev) != ovs_dp_get_net(vport->dp))) {
 		u32 mark;
 

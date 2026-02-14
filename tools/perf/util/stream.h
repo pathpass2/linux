@@ -2,9 +2,7 @@
 #ifndef __PERF_STREAM_H
 #define __PERF_STREAM_H
 
-struct callchain_node;
-struct evlist;
-struct evsel;
+#include "callchain.h"
 
 struct stream {
 	struct callchain_node	*cnode;
@@ -13,9 +11,9 @@ struct stream {
 
 struct evsel_streams {
 	struct stream		*streams;
-	const struct evsel	*evsel;
 	int			nr_streams_max;
 	int			nr_streams;
+	int			evsel_idx;
 	u64			streams_hits;
 };
 
@@ -24,13 +22,15 @@ struct evlist_streams {
 	int			nr_evsel;
 };
 
+struct evlist;
+
 void evlist_streams__delete(struct evlist_streams *els);
 
 struct evlist_streams *evlist__create_streams(struct evlist *evlist,
 					      int nr_streams_max);
 
 struct evsel_streams *evsel_streams__entry(struct evlist_streams *els,
-					   const struct evsel *evsel);
+					   int evsel_idx);
 
 void evsel_streams__match(struct evsel_streams *es_base,
 			  struct evsel_streams *es_pair);

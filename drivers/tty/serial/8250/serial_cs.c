@@ -90,6 +90,12 @@ struct serial_info {
 	const struct serial_quirk *quirk;
 };
 
+struct serial_cfg_mem {
+	tuple_t tuple;
+	cisparse_t parse;
+	u_char buf[256];
+};
+
 /*
  * vers_1 5.0, "Brain Boxes", "2-Port RS232 card", "r6"
  * manfid 0x0160, 0x0104
@@ -864,5 +870,4 @@ static struct pcmcia_driver serial_cs_driver = {
 };
 module_pcmcia_driver(serial_cs_driver);
 
-MODULE_DESCRIPTION("driver for PCMCIA serial devices");
 MODULE_LICENSE("GPL");

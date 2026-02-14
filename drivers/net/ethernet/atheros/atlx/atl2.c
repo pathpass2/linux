@@ -752,8 +752,8 @@ static void atl2_down(struct atl2_adapter *adapter)
 
 	atl2_irq_disable(adapter);
 
-	timer_delete_sync(&adapter->watchdog_timer);
-	timer_delete_sync(&adapter->phy_config_timer);
+	del_timer_sync(&adapter->watchdog_timer);
+	del_timer_sync(&adapter->phy_config_timer);
 	clear_bit(0, &adapter->cfg_phy);
 
 	netif_carrier_off(netdev);
@@ -905,7 +905,7 @@ static int atl2_change_mtu(struct net_device *netdev, int new_mtu)
 	struct atl2_hw *hw = &adapter->hw;
 
 	/* set MTU */
-	WRITE_ONCE(netdev->mtu, new_mtu);
+	netdev->mtu = new_mtu;
 	hw->max_frame_size = new_mtu;
 	ATL2_WRITE_REG(hw, REG_MTU, new_mtu + ETH_HLEN +
 		       VLAN_HLEN + ETH_FCS_LEN);
@@ -1010,8 +1010,7 @@ static void atl2_tx_timeout(struct net_device *netdev, unsigned int txqueue)
  */
 static void atl2_watchdog(struct timer_list *t)
 {
-	struct atl2_adapter *adapter = timer_container_of(adapter, t,
-							  watchdog_timer);
+	struct atl2_adapter *adapter = from_timer(adapter, t, watchdog_timer);
 
 	if (!test_bit(__ATL2_DOWN, &adapter->flags)) {
 		u32 drop_rxd, drop_rxs;
@@ -1036,8 +1035,8 @@ static void atl2_watchdog(struct timer_list *t)
  */
 static void atl2_phy_config(struct timer_list *t)
 {
-	struct atl2_adapter *adapter = timer_container_of(adapter, t,
-							  phy_config_timer);
+	struct atl2_adapter *adapter = from_timer(adapter, t,
+						  phy_config_timer);
 	struct atl2_hw *hw = &adapter->hw;
 	unsigned long flags;
 
@@ -1378,7 +1377,7 @@ static int atl2_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	netdev->watchdog_timeo = 5 * HZ;
 	netdev->min_mtu = 40;
 	netdev->max_mtu = ETH_DATA_LEN + VLAN_HLEN;
-	strscpy(netdev->name, pci_name(pdev), sizeof(netdev->name));
+	strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
 
 	netdev->mem_start = mmio_start;
 	netdev->mem_end = mmio_start + mmio_len;
@@ -1469,8 +1468,8 @@ static void atl2_remove(struct pci_dev *pdev)
 	 * explicitly disable watchdog tasks from being rescheduled  */
 	set_bit(__ATL2_DOWN, &adapter->flags);
 
-	timer_delete_sync(&adapter->watchdog_timer);
-	timer_delete_sync(&adapter->phy_config_timer);
+	del_timer_sync(&adapter->watchdog_timer);
+	del_timer_sync(&adapter->phy_config_timer);
 	cancel_work_sync(&adapter->reset_task);
 	cancel_work_sync(&adapter->link_chg_task);
 

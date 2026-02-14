@@ -193,7 +193,7 @@ enum xtensa_regset {
 
 static const struct user_regset xtensa_regsets[] = {
 	[REGSET_GPR] = {
-		USER_REGSET_NOTE_TYPE(PRSTATUS),
+		.core_note_type = NT_PRSTATUS,
 		.n = sizeof(struct user_pt_regs) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),
@@ -201,7 +201,7 @@ static const struct user_regset xtensa_regsets[] = {
 		.set = gpr_set,
 	},
 	[REGSET_TIE] = {
-		USER_REGSET_NOTE_TYPE(PRFPREG),
+		.core_note_type = NT_PRFPREG,
 		.n = sizeof(elf_xtregs_t) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),
@@ -541,6 +541,7 @@ long arch_ptrace(struct task_struct *child, long request,
 	return ret;
 }
 
+void do_syscall_trace_leave(struct pt_regs *regs);
 int do_syscall_trace_enter(struct pt_regs *regs)
 {
 	if (regs->syscall == NO_SYSCALL)

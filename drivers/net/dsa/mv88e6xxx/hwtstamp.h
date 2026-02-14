@@ -111,10 +111,9 @@
 #ifdef CONFIG_NET_DSA_MV88E6XXX_PTP
 
 int mv88e6xxx_port_hwtstamp_set(struct dsa_switch *ds, int port,
-				struct kernel_hwtstamp_config *cfg,
-				struct netlink_ext_ack *extack);
+				struct ifreq *ifr);
 int mv88e6xxx_port_hwtstamp_get(struct dsa_switch *ds, int port,
-				struct kernel_hwtstamp_config *cfg);
+				struct ifreq *ifr);
 
 bool mv88e6xxx_port_rxtstamp(struct dsa_switch *ds, int port,
 			     struct sk_buff *clone, unsigned int type);
@@ -122,9 +121,8 @@ void mv88e6xxx_port_txtstamp(struct dsa_switch *ds, int port,
 			     struct sk_buff *skb);
 
 int mv88e6xxx_get_ts_info(struct dsa_switch *ds, int port,
-			  struct kernel_ethtool_ts_info *info);
+			  struct ethtool_ts_info *info);
 
-long mv88e6xxx_hwtstamp_work(struct ptp_clock_info *ptp);
 int mv88e6xxx_hwtstamp_setup(struct mv88e6xxx_chip *chip);
 void mv88e6xxx_hwtstamp_free(struct mv88e6xxx_chip *chip);
 int mv88e6352_hwtstamp_port_enable(struct mv88e6xxx_chip *chip, int port);
@@ -134,17 +132,14 @@ int mv88e6165_global_disable(struct mv88e6xxx_chip *chip);
 
 #else /* !CONFIG_NET_DSA_MV88E6XXX_PTP */
 
-static inline int
-mv88e6xxx_port_hwtstamp_set(struct dsa_switch *ds, int port,
-			    struct kernel_hwtstamp_config *config,
-			    struct netlink_ext_ack *extack)
+static inline int mv88e6xxx_port_hwtstamp_set(struct dsa_switch *ds,
+					      int port, struct ifreq *ifr)
 {
 	return -EOPNOTSUPP;
 }
 
-static inline int
-mv88e6xxx_port_hwtstamp_get(struct dsa_switch *ds, int port,
-			    struct kernel_hwtstamp_config *config)
+static inline int mv88e6xxx_port_hwtstamp_get(struct dsa_switch *ds,
+					      int port, struct ifreq *ifr)
 {
 	return -EOPNOTSUPP;
 }
@@ -162,7 +157,7 @@ static inline void mv88e6xxx_port_txtstamp(struct dsa_switch *ds, int port,
 }
 
 static inline int mv88e6xxx_get_ts_info(struct dsa_switch *ds, int port,
-					struct kernel_ethtool_ts_info *info)
+					struct ethtool_ts_info *info)
 {
 	return -EOPNOTSUPP;
 }

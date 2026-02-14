@@ -7,13 +7,9 @@
 #include <linux/sizes.h>
 
 	.macro	__EFI_PE_HEADER
-	.long	IMAGE_NT_SIGNATURE
+	.long	PE_MAGIC
 .Lcoff_header:
-#ifdef CONFIG_32BIT
-	.short	IMAGE_FILE_MACHINE_LOONGARCH32		/* Machine */
-#else
 	.short	IMAGE_FILE_MACHINE_LOONGARCH64		/* Machine */
-#endif
 	.short	.Lsection_count				/* NumberOfSections */
 	.long	0 					/* TimeDateStamp */
 	.long	0					/* PointerToSymbolTable */
@@ -24,11 +20,11 @@
 		IMAGE_FILE_LINE_NUMS_STRIPPED		/* Characteristics */
 
 .Loptional_header:
-	.short	IMAGE_NT_OPTIONAL_HDR64_MAGIC		/* PE32+ format */
+	.short	PE_OPT_MAGIC_PE32PLUS			/* PE32+ format */
 	.byte	0x02					/* MajorLinkerVersion */
 	.byte	0x14					/* MinorLinkerVersion */
 	.long	__inittext_end - .Lefi_header_end	/* SizeOfCode */
-	.long	_kernel_vsize				/* SizeOfInitializedData */
+	.long	_end - __initdata_begin			/* SizeOfInitializedData */
 	.long	0					/* SizeOfUninitializedData */
 	.long	__efistub_efi_pe_entry - _head		/* AddressOfEntryPoint */
 	.long	.Lefi_header_end - _head		/* BaseOfCode */
@@ -83,9 +79,9 @@
 		IMAGE_SCN_MEM_EXECUTE			/* Characteristics */
 
 	.ascii	".data\0\0\0"
-	.long	_kernel_vsize				/* VirtualSize */
+	.long	_end - __initdata_begin			/* VirtualSize */
 	.long	__initdata_begin - _head		/* VirtualAddress */
-	.long	_kernel_rsize				/* SizeOfRawData */
+	.long	_edata - __initdata_begin		/* SizeOfRawData */
 	.long	__initdata_begin - _head		/* PointerToRawData */
 
 	.long	0					/* PointerToRelocations */

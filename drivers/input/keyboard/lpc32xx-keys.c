@@ -57,13 +57,14 @@ struct lpc32xx_kscan_drv {
 	struct input_dev *input;
 	struct clk *clk;
 	void __iomem *kscan_base;
+	unsigned int irq;
 
 	u32 matrix_sz;		/* Size of matrix in XxY, ie. 3 = 3x3 */
 	u32 deb_clks;		/* Debounce clocks (based on 32KHz clock) */
 	u32 scan_delay;		/* Scan delay (based on 32KHz clock) */
 
-	unsigned int row_shift;
 	unsigned short *keymap;	/* Pointer to key map for the scan matrix */
+	unsigned int row_shift;
 
 	u8 lastkeystates[8];
 };
@@ -159,9 +160,16 @@ static int lpc32xx_kscan_probe(struct platform_device *pdev)
 {
 	struct lpc32xx_kscan_drv *kscandat;
 	struct input_dev *input;
+	struct resource *res;
 	size_t keymap_size;
 	int error;
 	int irq;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		dev_err(&pdev->dev, "failed to get platform I/O memory\n");
+		return -EINVAL;
+	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -213,7 +221,7 @@ static int lpc32xx_kscan_probe(struct platform_device *pdev)
 
 	input_set_drvdata(kscandat->input, kscandat);
 
-	kscandat->kscan_base = devm_platform_ioremap_resource(pdev, 0);
+	kscandat->kscan_base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(kscandat->kscan_base))
 		return PTR_ERR(kscandat->kscan_base);
 
@@ -262,7 +270,7 @@ static int lpc32xx_kscan_suspend(struct device *dev)
 	struct lpc32xx_kscan_drv *kscandat = platform_get_drvdata(pdev);
 	struct input_dev *input = kscandat->input;
 
-	guard(mutex)(&input->mutex);
+	mutex_lock(&input->mutex);
 
 	if (input_device_enabled(input)) {
 		/* Clear IRQ and disable clock */
@@ -270,6 +278,7 @@ static int lpc32xx_kscan_suspend(struct device *dev)
 		clk_disable_unprepare(kscandat->clk);
 	}
 
+	mutex_unlock(&input->mutex);
 	return 0;
 }
 
@@ -278,20 +287,19 @@ static int lpc32xx_kscan_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct lpc32xx_kscan_drv *kscandat = platform_get_drvdata(pdev);
 	struct input_dev *input = kscandat->input;
-	int error;
+	int retval = 0;
 
-	guard(mutex)(&input->mutex);
+	mutex_lock(&input->mutex);
 
 	if (input_device_enabled(input)) {
 		/* Enable clock and clear IRQ */
-		error = clk_prepare_enable(kscandat->clk);
-		if (error)
-			return error;
-
-		writel(1, LPC32XX_KS_IRQ(kscandat->kscan_base));
+		retval = clk_prepare_enable(kscandat->clk);
+		if (retval == 0)
+			writel(1, LPC32XX_KS_IRQ(kscandat->kscan_base));
 	}
 
-	return 0;
+	mutex_unlock(&input->mutex);
+	return retval;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(lpc32xx_kscan_pm_ops, lpc32xx_kscan_suspend,

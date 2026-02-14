@@ -2,7 +2,7 @@
 /*
  * Broadcom GENET MDIO routines
  *
- * Copyright (c) 2014-2025 Broadcom
+ * Copyright (c) 2014-2017 Broadcom
  */
 
 #include <linux/acpi.h>
@@ -20,6 +20,7 @@
 #include <linux/of.h>
 #include <linux/of_net.h>
 #include <linux/of_mdio.h>
+#include <linux/platform_data/bcmgenet.h>
 #include <linux/platform_data/mdio-bcm-unimac.h>
 
 #include "bcmgenet.h"
@@ -29,7 +30,6 @@ static void bcmgenet_mac_config(struct net_device *dev)
 	struct bcmgenet_priv *priv = netdev_priv(dev);
 	struct phy_device *phydev = dev->phydev;
 	u32 reg, cmd_bits = 0;
-	bool active;
 
 	/* speed */
 	if (phydev->speed == SPEED_1000)
@@ -75,7 +75,6 @@ static void bcmgenet_mac_config(struct net_device *dev)
 	reg |= RGMII_LINK;
 	bcmgenet_ext_writel(priv, reg, EXT_RGMII_OOB_CTRL);
 
-	spin_lock_bh(&priv->reg_lock);
 	reg = bcmgenet_umac_readl(priv, UMAC_CMD);
 	reg &= ~((CMD_SPEED_MASK << CMD_SPEED_SHIFT) |
 		       CMD_HD_EN |
@@ -88,12 +87,6 @@ static void bcmgenet_mac_config(struct net_device *dev)
 		reg |= CMD_TX_EN | CMD_RX_EN;
 	}
 	bcmgenet_umac_writel(priv, reg, UMAC_CMD);
-	spin_unlock_bh(&priv->reg_lock);
-
-	active = phy_init_eee(phydev, 0) >= 0;
-	bcmgenet_eee_enable_set(dev,
-				priv->eee.eee_enabled && active,
-				priv->eee.tx_lpi_enabled);
 }
 
 /* setup netdev link state when PHY link status change and
@@ -153,7 +146,7 @@ void bcmgenet_phy_power_set(struct net_device *dev, bool enable)
 	u32 reg = 0;
 
 	/* EXT_GPHY_CTRL is only valid for GENETv4 and onward */
-	if (GENET_IS_V4(priv) || bcmgenet_has_ephy_16nm(priv)) {
+	if (GENET_IS_V4(priv) || priv->ephy_16nm) {
 		reg = bcmgenet_ext_readl(priv, EXT_GPHY_CTRL);
 		if (enable) {
 			reg &= ~EXT_CK25_DIS;
@@ -168,15 +161,10 @@ void bcmgenet_phy_power_set(struct net_device *dev, bool enable)
 
 			reg &= ~EXT_GPHY_RESET;
 		} else {
-			reg |= EXT_GPHY_RESET;
-			bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
-			mdelay(1);
-
 			reg |= EXT_CFG_IDDQ_BIAS | EXT_CFG_PWR_DOWN |
-			       EXT_CFG_IDDQ_GLOBAL_PWR;
+			       EXT_GPHY_RESET | EXT_CFG_IDDQ_GLOBAL_PWR;
 			bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
 			mdelay(1);
-
 			reg |= EXT_CK25_DIS;
 		}
 		bcmgenet_ext_writel(priv, reg, EXT_GPHY_CTRL);
@@ -188,7 +176,7 @@ void bcmgenet_phy_power_set(struct net_device *dev, bool enable)
 
 static void bcmgenet_moca_phy_setup(struct bcmgenet_priv *priv)
 {
-	if (bcmgenet_has_moca_link_det(priv))
+	if (priv->hw_params->flags & GENET_HAS_MOCA_LINK_DET)
 		fixed_phy_set_link_update(priv->dev->phydev,
 					  bcmgenet_fixed_phy_link_update);
 }
@@ -281,7 +269,6 @@ int bcmgenet_mii_config(struct net_device *dev, bool init)
 	 * block for the interface to work, unconditionally clear the
 	 * Out-of-band disable since we do not need it.
 	 */
-	mutex_lock(&phydev->lock);
 	reg = bcmgenet_ext_readl(priv, EXT_RGMII_OOB_CTRL);
 	reg &= ~OOB_DISABLE;
 	if (priv->ext_phy) {
@@ -293,7 +280,6 @@ int bcmgenet_mii_config(struct net_device *dev, bool init)
 			reg |= RGMII_MODE_EN;
 	}
 	bcmgenet_ext_writel(priv, reg, EXT_RGMII_OOB_CTRL);
-	mutex_unlock(&phydev->lock);
 
 	if (init)
 		dev_info(kdev, "configuring instance for %s\n", phy_name);
@@ -435,6 +421,23 @@ static struct device_node *bcmgenet_mii_of_find_mdio(struct bcmgenet_priv *priv)
 	return priv->mdio_dn;
 }
 
+static void bcmgenet_mii_pdata_init(struct bcmgenet_priv *priv,
+				    struct unimac_mdio_pdata *ppd)
+{
+	struct device *kdev = &priv->pdev->dev;
+	struct bcmgenet_platform_data *pd = kdev->platform_data;
+
+	if (pd->phy_interface != PHY_INTERFACE_MODE_MOCA && pd->mdio_enabled) {
+		/*
+		 * Internal or external PHY with MDIO access
+		 */
+		if (pd->phy_address >= 0 && pd->phy_address < PHY_MAX_ADDR)
+			ppd->phy_mask = 1 << pd->phy_address;
+		else
+			ppd->phy_mask = 0;
+	}
+}
+
 static int bcmgenet_mii_wait(void *wait_func_data)
 {
 	struct bcmgenet_priv *priv = wait_func_data;
@@ -449,6 +452,7 @@ static int bcmgenet_mii_wait(void *wait_func_data)
 static int bcmgenet_mii_register(struct bcmgenet_priv *priv)
 {
 	struct platform_device *pdev = priv->pdev;
+	struct bcmgenet_platform_data *pdata = pdev->dev.platform_data;
 	struct device_node *dn = pdev->dev.of_node;
 	struct unimac_mdio_pdata ppd;
 	struct platform_device *ppdev;
@@ -466,10 +470,6 @@ static int bcmgenet_mii_register(struct bcmgenet_priv *priv)
 	ppd.wait_func = bcmgenet_mii_wait;
 	ppd.wait_func_data = priv;
 	ppd.bus_name = "bcmgenet MII bus";
-	/* Pass a reference to our "main" clock which is used for MDIO
-	 * transfers
-	 */
-	ppd.clk = priv->clk;
 
 	/* Unimac MDIO bus controller starts at UniMAC offset + MDIO_CMD
 	 * and is 2 * 32-bits word long, 8 bytes total.
@@ -492,6 +492,8 @@ static int bcmgenet_mii_register(struct bcmgenet_priv *priv)
 	ppdev->dev.parent = &pdev->dev;
 	if (dn)
 		ppdev->dev.of_node = bcmgenet_mii_of_find_mdio(priv);
+	else if (pdata)
+		bcmgenet_mii_pdata_init(priv, &ppd);
 	else
 		ppd.phy_mask = ~0;
 
@@ -573,6 +575,58 @@ static int bcmgenet_mii_of_init(struct bcmgenet_priv *priv)
 	return 0;
 }
 
+static int bcmgenet_mii_pd_init(struct bcmgenet_priv *priv)
+{
+	struct device *kdev = &priv->pdev->dev;
+	struct bcmgenet_platform_data *pd = kdev->platform_data;
+	char phy_name[MII_BUS_ID_SIZE + 3];
+	char mdio_bus_id[MII_BUS_ID_SIZE];
+	struct phy_device *phydev;
+
+	snprintf(mdio_bus_id, MII_BUS_ID_SIZE, "%s-%d",
+		 UNIMAC_MDIO_DRV_NAME, priv->pdev->id);
+
+	if (pd->phy_interface != PHY_INTERFACE_MODE_MOCA && pd->mdio_enabled) {
+		snprintf(phy_name, MII_BUS_ID_SIZE, PHY_ID_FMT,
+			 mdio_bus_id, pd->phy_address);
+
+		/*
+		 * Internal or external PHY with MDIO access
+		 */
+		phydev = phy_attach(priv->dev, phy_name, pd->phy_interface);
+		if (IS_ERR(phydev)) {
+			dev_err(kdev, "failed to register PHY device\n");
+			return PTR_ERR(phydev);
+		}
+	} else {
+		/*
+		 * MoCA port or no MDIO access.
+		 * Use fixed PHY to represent the link layer.
+		 */
+		struct fixed_phy_status fphy_status = {
+			.link = 1,
+			.speed = pd->phy_speed,
+			.duplex = pd->phy_duplex,
+			.pause = 0,
+			.asym_pause = 0,
+		};
+
+		phydev = fixed_phy_register(PHY_POLL, &fphy_status, NULL);
+		if (!phydev || IS_ERR(phydev)) {
+			dev_err(kdev, "failed to register fixed PHY device\n");
+			return -ENODEV;
+		}
+
+		/* Make sure we initialize MoCA PHYs with a link down */
+		phydev->link = 0;
+
+	}
+
+	priv->phy_interface = pd->phy_interface;
+
+	return 0;
+}
+
 static int bcmgenet_mii_bus_init(struct bcmgenet_priv *priv)
 {
 	struct device *kdev = &priv->pdev->dev;
@@ -583,7 +637,7 @@ static int bcmgenet_mii_bus_init(struct bcmgenet_priv *priv)
 	else if (has_acpi_companion(kdev))
 		return bcmgenet_phy_interface_init(priv);
 	else
-		return -EINVAL;
+		return bcmgenet_mii_pd_init(priv);
 }
 
 int bcmgenet_mii_init(struct net_device *dev)

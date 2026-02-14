@@ -235,21 +235,6 @@ static struct sgx_epc_page *sgx_encl_eldu(struct sgx_encl_page *encl_page,
 	return epc_page;
 }
 
-/*
- * Ensure the SECS page is not swapped out.  Must be called with encl->lock
- * to protect the enclave states including SECS and ensure the SECS page is
- * not swapped out again while being used.
- */
-static struct sgx_epc_page *sgx_encl_load_secs(struct sgx_encl *encl)
-{
-	struct sgx_epc_page *epc_page = encl->secs.epc_page;
-
-	if (!epc_page)
-		epc_page = sgx_encl_eldu(&encl->secs, NULL);
-
-	return epc_page;
-}
-
 static struct sgx_encl_page *__sgx_encl_load_page(struct sgx_encl *encl,
 						  struct sgx_encl_page *entry)
 {
@@ -263,9 +248,11 @@ static struct sgx_encl_page *__sgx_encl_load_page(struct sgx_encl *encl,
 		return entry;
 	}
 
-	epc_page = sgx_encl_load_secs(encl);
-	if (IS_ERR(epc_page))
-		return ERR_CAST(epc_page);
+	if (!(encl->secs.epc_page)) {
+		epc_page = sgx_encl_eldu(&encl->secs, NULL);
+		if (IS_ERR(epc_page))
+			return ERR_CAST(epc_page);
+	}
 
 	epc_page = sgx_encl_eldu(entry, encl->secs.epc_page);
 	if (IS_ERR(epc_page))
@@ -279,7 +266,7 @@ static struct sgx_encl_page *__sgx_encl_load_page(struct sgx_encl *encl,
 
 static struct sgx_encl_page *sgx_encl_load_page_in_vma(struct sgx_encl *encl,
 						       unsigned long addr,
-						       vm_flags_t vm_flags)
+						       unsigned long vm_flags)
 {
 	unsigned long vm_prot_bits = vm_flags & VM_ACCESS_FLAGS;
 	struct sgx_encl_page *entry;
@@ -351,13 +338,6 @@ static vm_fault_t sgx_encl_eaug_page(struct vm_area_struct *vma,
 		return VM_FAULT_OOM;
 
 	mutex_lock(&encl->lock);
-
-	epc_page = sgx_encl_load_secs(encl);
-	if (IS_ERR(epc_page)) {
-		if (PTR_ERR(epc_page) == -EBUSY)
-			vmret = VM_FAULT_NOPAGE;
-		goto err_out_unlock;
-	}
 
 	epc_page = sgx_alloc_epc_page(encl_page, false);
 	if (IS_ERR(epc_page)) {
@@ -520,9 +500,9 @@ static void sgx_vma_open(struct vm_area_struct *vma)
  * Return: 0 on success, -EACCES otherwise
  */
 int sgx_encl_may_map(struct sgx_encl *encl, unsigned long start,
-		     unsigned long end, vm_flags_t vm_flags)
+		     unsigned long end, unsigned long vm_flags)
 {
-	vm_flags_t vm_prot_bits = vm_flags & VM_ACCESS_FLAGS;
+	unsigned long vm_prot_bits = vm_flags & VM_ACCESS_FLAGS;
 	struct sgx_encl_page *page;
 	unsigned long count = 0;
 	int ret = 0;
@@ -605,7 +585,7 @@ static int sgx_encl_debug_write(struct sgx_encl *encl, struct sgx_encl_page *pag
  */
 static struct sgx_encl_page *sgx_encl_reserve_page(struct sgx_encl *encl,
 						   unsigned long addr,
-						   vm_flags_t vm_flags)
+						   unsigned long vm_flags)
 {
 	struct sgx_encl_page *entry;
 
@@ -765,7 +745,6 @@ void sgx_encl_release(struct kref *ref)
 	WARN_ON_ONCE(encl->secs.epc_page);
 
 	kfree(encl);
-	sgx_dec_usage_count();
 }
 
 /*
@@ -776,7 +755,6 @@ static void sgx_mmu_notifier_release(struct mmu_notifier *mn,
 {
 	struct sgx_encl_mm *encl_mm = container_of(mn, struct sgx_encl_mm, mmu_notifier);
 	struct sgx_encl_mm *tmp = NULL;
-	bool found = false;
 
 	/*
 	 * The enclave itself can remove encl_mm.  Note, objects can't be moved
@@ -786,13 +764,12 @@ static void sgx_mmu_notifier_release(struct mmu_notifier *mn,
 	list_for_each_entry(tmp, &encl_mm->encl->mm_list, list) {
 		if (tmp == encl_mm) {
 			list_del_rcu(&encl_mm->list);
-			found = true;
 			break;
 		}
 	}
 	spin_unlock(&encl_mm->encl->mm_lock);
 
-	if (found) {
+	if (tmp == encl_mm) {
 		synchronize_srcu(&encl_mm->encl->srcu);
 		mmu_notifier_put(mn);
 	}

@@ -182,8 +182,7 @@ static const struct devlink_ops dsa_devlink_ops = {
 };
 
 int dsa_devlink_param_get(struct devlink *dl, u32 id,
-			  struct devlink_param_gset_ctx *ctx,
-			  struct netlink_ext_ack *extack)
+			  struct devlink_param_gset_ctx *ctx)
 {
 	struct dsa_switch *ds = dsa_devlink_to_ds(dl);
 
@@ -195,8 +194,7 @@ int dsa_devlink_param_get(struct devlink *dl, u32 id,
 EXPORT_SYMBOL_GPL(dsa_devlink_param_get);
 
 int dsa_devlink_param_set(struct devlink *dl, u32 id,
-			  struct devlink_param_gset_ctx *ctx,
-			  struct netlink_ext_ack *extack)
+			  struct devlink_param_gset_ctx *ctx)
 {
 	struct dsa_switch *ds = dsa_devlink_to_ds(dl);
 
@@ -230,15 +228,10 @@ int dsa_devlink_resource_register(struct dsa_switch *ds,
 				  u64 parent_resource_id,
 				  const struct devlink_resource_size_params *size_params)
 {
-	int ret;
-
-	devl_lock(ds->devlink);
-	ret = devl_resource_register(ds->devlink, resource_name, resource_size,
-				     resource_id, parent_resource_id,
-				     size_params);
-	devl_unlock(ds->devlink);
-
-	return ret;
+	return devlink_resource_register(ds->devlink, resource_name,
+					 resource_size, resource_id,
+					 parent_resource_id,
+					 size_params);
 }
 EXPORT_SYMBOL_GPL(dsa_devlink_resource_register);
 
@@ -253,19 +246,15 @@ void dsa_devlink_resource_occ_get_register(struct dsa_switch *ds,
 					   devlink_resource_occ_get_t *occ_get,
 					   void *occ_get_priv)
 {
-	devl_lock(ds->devlink);
-	devl_resource_occ_get_register(ds->devlink, resource_id, occ_get,
-				       occ_get_priv);
-	devl_unlock(ds->devlink);
+	return devlink_resource_occ_get_register(ds->devlink, resource_id,
+						 occ_get, occ_get_priv);
 }
 EXPORT_SYMBOL_GPL(dsa_devlink_resource_occ_get_register);
 
 void dsa_devlink_resource_occ_get_unregister(struct dsa_switch *ds,
 					     u64 resource_id)
 {
-	devl_lock(ds->devlink);
-	devl_resource_occ_get_unregister(ds->devlink, resource_id);
-	devl_unlock(ds->devlink);
+	devlink_resource_occ_get_unregister(ds->devlink, resource_id);
 }
 EXPORT_SYMBOL_GPL(dsa_devlink_resource_occ_get_unregister);
 

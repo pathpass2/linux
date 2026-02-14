@@ -96,13 +96,11 @@ struct ath_keyval {
 	u8 kv_type;
 	u8 kv_pad;
 	u16 kv_len;
-	struct_group(kv_values,
-		u8 kv_val[16]; /* TK */
-		u8 kv_mic[8]; /* Michael MIC key */
-		u8 kv_txmic[8]; /* Michael MIC TX key (used only if the hardware
-				 * supports both MIC keys in the same key cache entry;
-				 * in that case, kv_mic is the RX key) */
-	);
+	u8 kv_val[16]; /* TK */
+	u8 kv_mic[8]; /* Michael MIC key */
+	u8 kv_txmic[8]; /* Michael MIC TX key (used only if the hardware
+			 * supports both MIC keys in the same key cache entry;
+			 * in that case, kv_mic is the RX key) */
 };
 
 enum ath_cipher {
@@ -171,10 +169,8 @@ struct ath_common {
 	unsigned int clockrate;
 
 	spinlock_t cc_lock;
-	struct_group(cc,
-		struct ath_cycle_counters cc_ani;
-		struct ath_cycle_counters cc_survey;
-	);
+	struct ath_cycle_counters cc_ani;
+	struct ath_cycle_counters cc_survey;
 
 	struct ath_regulatory regulatory;
 	struct ath_regulatory reg_world_copy;

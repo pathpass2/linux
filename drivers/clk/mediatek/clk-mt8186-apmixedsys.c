@@ -7,7 +7,6 @@
 #include <linux/platform_device.h>
 #include <dt-bindings/clock/mt8186-clk.h>
 
-#include "clk-fhctl.h"
 #include "clk-mtk.h"
 #include "clk-pll.h"
 #include "clk-pllfh.h"
@@ -99,7 +98,6 @@ enum fh_pll_id {
 		.data = {						\
 			.pll_id = _pllid,				\
 			.fh_id = _fhid,					\
-			.fh_ver = FHCTL_PLLFH_V2,			\
 			.fhx_offset = _offset,				\
 			.dds_mask = GENMASK(21, 0),			\
 			.slope0_value = 0x6003c97,			\
@@ -136,7 +134,6 @@ static const struct of_device_id of_match_clk_mt8186_apmixed[] = {
 	{ .compatible = "mediatek,mt8186-apmixedsys", },
 	{}
 };
-MODULE_DEVICE_TABLE(of, of_match_clk_mt8186_apmixed);
 
 static int clk_mt8186_apmixed_probe(struct platform_device *pdev)
 {
@@ -172,7 +169,7 @@ free_apmixed_data:
 	return r;
 }
 
-static void clk_mt8186_apmixed_remove(struct platform_device *pdev)
+static int clk_mt8186_apmixed_remove(struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
 	struct clk_hw_onecell_data *clk_data = platform_get_drvdata(pdev);
@@ -181,6 +178,8 @@ static void clk_mt8186_apmixed_remove(struct platform_device *pdev)
 	mtk_clk_unregister_pllfhs(plls, ARRAY_SIZE(plls), pllfhs,
 				  ARRAY_SIZE(pllfhs), clk_data);
 	mtk_free_clk_data(clk_data);
+
+	return 0;
 }
 
 static struct platform_driver clk_mt8186_apmixed_drv = {
@@ -191,7 +190,4 @@ static struct platform_driver clk_mt8186_apmixed_drv = {
 		.of_match_table = of_match_clk_mt8186_apmixed,
 	},
 };
-module_platform_driver(clk_mt8186_apmixed_drv);
-
-MODULE_DESCRIPTION("MediaTek MT8186 apmixedsys clocks driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(clk_mt8186_apmixed_drv);

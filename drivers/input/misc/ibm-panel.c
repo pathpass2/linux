@@ -77,11 +77,12 @@ static void ibm_panel_process_command(struct ibm_panel *panel)
 static int ibm_panel_i2c_slave_cb(struct i2c_client *client,
 				  enum i2c_slave_event event, u8 *val)
 {
+	unsigned long flags;
 	struct ibm_panel *panel = i2c_get_clientdata(client);
 
 	dev_dbg(&panel->input->dev, "event: %u data: %02x\n", event, *val);
 
-	guard(spinlock_irqsave)(&panel->lock);
+	spin_lock_irqsave(&panel->lock, flags);
 
 	switch (event) {
 	case I2C_SLAVE_STOP:
@@ -112,6 +113,8 @@ static int ibm_panel_i2c_slave_cb(struct i2c_client *client,
 	default:
 		break;
 	}
+
+	spin_unlock_irqrestore(&panel->lock, flags);
 
 	return 0;
 }
@@ -186,7 +189,7 @@ static struct i2c_driver ibm_panel_driver = {
 		.name = DEVICE_NAME,
 		.of_match_table = ibm_panel_match,
 	},
-	.probe = ibm_panel_probe,
+	.probe_new = ibm_panel_probe,
 	.remove = ibm_panel_remove,
 };
 module_i2c_driver(ibm_panel_driver);

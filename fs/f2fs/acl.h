@@ -33,17 +33,17 @@ struct f2fs_acl_header {
 
 #ifdef CONFIG_F2FS_FS_POSIX_ACL
 
-struct posix_acl *f2fs_get_acl(struct inode *, int, bool);
-int f2fs_set_acl(struct mnt_idmap *, struct dentry *,
+extern struct posix_acl *f2fs_get_acl(struct inode *, int, bool);
+extern int f2fs_set_acl(struct mnt_idmap *, struct dentry *,
 			struct posix_acl *, int);
-int f2fs_init_acl(struct inode *, struct inode *, struct folio *ifolio,
-		struct folio *dfolio);
+extern int f2fs_init_acl(struct inode *, struct inode *, struct page *,
+							struct page *);
 #else
 #define f2fs_get_acl	NULL
 #define f2fs_set_acl	NULL
 
 static inline int f2fs_init_acl(struct inode *inode, struct inode *dir,
-				struct folio *ifolio, struct folio *dfolio)
+				struct page *ipage, struct page *dpage)
 {
 	return 0;
 }

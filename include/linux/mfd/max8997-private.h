@@ -2,7 +2,7 @@
 /*
  * max8997-private.h - Voltage regulator driver for the Maxim 8997
  *
- *  Copyright (C) 2010 Samsung Electronics
+ *  Copyright (C) 2010 Samsung Electrnoics
  *  MyungJoo Ham <myungjoo.ham@samsung.com>
  */
 
@@ -397,6 +397,7 @@ enum max8997_types {
 };
 
 extern int max8997_irq_init(struct max8997_dev *max8997);
+extern void max8997_irq_exit(struct max8997_dev *max8997);
 extern int max8997_irq_resume(struct max8997_dev *max8997);
 
 extern int max8997_read_reg(struct i2c_client *i2c, u8 reg, u8 *dest);

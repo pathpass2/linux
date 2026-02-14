@@ -10,15 +10,14 @@
 //   block, shared between all GPIO banks
 
 #include <linux/device.h>
+#include <linux/fwnode.h>
 #include <linux/gpio/driver.h>
-#include <linux/gpio/generic.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/regmap.h>
 
 #include <linux/pinctrl/pinconf.h>
@@ -48,7 +47,7 @@ struct wpcm450_pinctrl;
 struct wpcm450_bank;
 
 struct wpcm450_gpio {
-	struct gpio_generic_chip chip;
+	struct gpio_chip	gc;
 	struct wpcm450_pinctrl	*pctrl;
 	const struct wpcm450_bank *bank;
 };
@@ -185,12 +184,11 @@ static void wpcm450_gpio_irq_unmask(struct irq_data *d)
 }
 
 /*
- * FIXME: This is an implementation of the gpio_chip->get() function, for use
- * in wpcm450_gpio_fix_evpol(). It was implemented back when gpio-mmio used a
- * regular spinlock internally, while wpcm450_gpio_fix_evpol() needed to work
- * in contexts with a raw spinlock held. Since then, the gpio generic chip has
- * been switched to using a raw spinlock so this should be converted to using
- * the locking interfaces provided in linux/gpio/gneneric.h.
+ * This is an implementation of the gpio_chip->get() function, for use in
+ * wpcm450_gpio_fix_evpol. Unfortunately, we can't use the bgpio-provided
+ * implementation there, because it would require taking gpio_chip->bgpio_lock,
+ * which is a spin lock, but wpcm450_gpio_fix_evpol must work in contexts where
+ * a raw spin lock is held.
  */
 static int wpcm450_gpio_get(struct wpcm450_gpio *gpio, int offset)
 {
@@ -331,7 +329,7 @@ static void wpcm450_gpio_irqhandler(struct irq_desc *desc)
 	for_each_set_bit(bit, &pending, 32) {
 		int offset = wpcm450_irq_bitnum_to_gpio(gpio, bit);
 
-		generic_handle_domain_irq(gpio->chip.gc.irq.domain, offset);
+		generic_handle_domain_irq(gpio->gc.irq.domain, offset);
 	}
 	chained_irq_exit(chip, desc);
 }
@@ -476,14 +474,22 @@ enum {
 #undef WPCM450_GRP
 };
 
-static const struct pingroup wpcm450_groups[] = {
-#define WPCM450_GRP(x) PINCTRL_PINGROUP(#x, x ## _pins, ARRAY_SIZE(x ## _pins))
+static struct group_desc wpcm450_groups[] = {
+#define WPCM450_GRP(x) { .name = #x, .pins = x ## _pins, \
+			.num_pins = ARRAY_SIZE(x ## _pins) }
 	WPCM450_GRPS
 #undef WPCM450_GRP
 };
 
 #define WPCM450_SFUNC(a) WPCM450_FUNC(a, #a)
 #define WPCM450_FUNC(a, b...) static const char *a ## _grp[] = { b }
+#define WPCM450_MKFUNC(nm) { .name = #nm, .ngroups = ARRAY_SIZE(nm ## _grp), \
+			.groups = nm ## _grp }
+struct wpcm450_func {
+	const char *name;
+	const unsigned int ngroups;
+	const char *const *groups;
+};
 
 WPCM450_SFUNC(smb3);
 WPCM450_SFUNC(smb4);
@@ -550,8 +556,7 @@ WPCM450_FUNC(gpio, WPCM450_GRPS);
 #undef WPCM450_GRP
 
 /* Function names */
-static struct pinfunction wpcm450_funcs[] = {
-#define WPCM450_MKFUNC(nm) PINCTRL_PINFUNCTION(#nm, nm ## _grp, ARRAY_SIZE(nm ## _grp))
+static struct wpcm450_func wpcm450_funcs[] = {
 	WPCM450_MKFUNC(smb3),
 	WPCM450_MKFUNC(smb4),
 	WPCM450_MKFUNC(smb5),
@@ -612,7 +617,6 @@ static struct pinfunction wpcm450_funcs[] = {
 	WPCM450_MKFUNC(hg6),
 	WPCM450_MKFUNC(hg7),
 	WPCM450_MKFUNC(gpio),
-#undef WPCM450_MKFUNC
 };
 
 #define WPCM450_PINCFG(a, b, c, d, e, f, g) \
@@ -848,10 +852,20 @@ static int wpcm450_get_group_pins(struct pinctrl_dev *pctldev,
 				  const unsigned int **pins,
 				  unsigned int *npins)
 {
-	*npins = wpcm450_groups[selector].npins;
+	*npins = wpcm450_groups[selector].num_pins;
 	*pins  = wpcm450_groups[selector].pins;
 
 	return 0;
+}
+
+static int wpcm450_dt_node_to_map(struct pinctrl_dev *pctldev,
+				  struct device_node *np_config,
+				  struct pinctrl_map **map,
+				  u32 *num_maps)
+{
+	return pinconf_generic_dt_node_to_map(pctldev, np_config,
+					      map, num_maps,
+					      PIN_MAP_TYPE_INVALID);
 }
 
 static void wpcm450_dt_free_map(struct pinctrl_dev *pctldev,
@@ -864,7 +878,7 @@ static const struct pinctrl_ops wpcm450_pinctrl_ops = {
 	.get_groups_count = wpcm450_get_groups_count,
 	.get_group_name = wpcm450_get_group_name,
 	.get_group_pins = wpcm450_get_group_pins,
-	.dt_node_to_map = pinconf_generic_dt_node_to_map_all,
+	.dt_node_to_map = wpcm450_dt_node_to_map,
 	.dt_free_map = wpcm450_dt_free_map,
 };
 
@@ -897,7 +911,7 @@ static int wpcm450_pinmux_set_mux(struct pinctrl_dev *pctldev,
 	struct wpcm450_pinctrl *pctrl = pinctrl_dev_get_drvdata(pctldev);
 
 	wpcm450_setfunc(pctrl->gcr_regmap, wpcm450_groups[group].pins,
-			wpcm450_groups[group].npins, function);
+			wpcm450_groups[group].num_pins, function);
 
 	return 0;
 }
@@ -991,7 +1005,7 @@ static const struct pinconf_ops wpcm450_pinconf_ops = {
 	.pin_config_set = wpcm450_config_set,
 };
 
-static const struct pinctrl_desc wpcm450_pinctrl_desc = {
+static struct pinctrl_desc wpcm450_pinctrl_desc = {
 	.name = "wpcm450-pinctrl",
 	.pins = wpcm450_pins,
 	.npins = ARRAY_SIZE(wpcm450_pins),
@@ -1014,7 +1028,7 @@ static int wpcm450_gpio_add_pin_ranges(struct gpio_chip *chip)
 	struct wpcm450_gpio *gpio = gpiochip_get_data(chip);
 	const struct wpcm450_bank *bank = gpio->bank;
 
-	return gpiochip_add_pin_range(&gpio->chip.gc, dev_name(gpio->pctrl->dev),
+	return gpiochip_add_pin_range(&gpio->gc, dev_name(gpio->pctrl->dev),
 				      0, bank->base, bank->length);
 }
 
@@ -1030,8 +1044,7 @@ static int wpcm450_gpio_register(struct platform_device *pdev,
 		return dev_err_probe(dev, PTR_ERR(pctrl->gpio_base),
 				     "Resource fail for GPIO controller\n");
 
-	for_each_gpiochip_node(dev, child) {
-		struct gpio_generic_chip_config config;
+	device_for_each_child_node(dev, child)  {
 		void __iomem *dat = NULL;
 		void __iomem *set = NULL;
 		void __iomem *dirout = NULL;
@@ -1042,16 +1055,19 @@ static int wpcm450_gpio_register(struct platform_device *pdev,
 		u32 reg;
 		int i;
 
+		if (!fwnode_property_read_bool(child, "gpio-controller"))
+			continue;
+
 		ret = fwnode_property_read_u32(child, "reg", &reg);
 		if (ret < 0)
 			return ret;
 
+		gpio = &pctrl->gpio_bank[reg];
+		gpio->pctrl = pctrl;
+
 		if (reg >= WPCM450_NUM_BANKS)
 			return dev_err_probe(dev, -EINVAL,
 					     "GPIO index %d out of range!\n", reg);
-
-		gpio = &pctrl->gpio_bank[reg];
-		gpio->pctrl = pctrl;
 
 		bank = &wpcm450_banks[reg];
 		gpio->bank = bank;
@@ -1061,28 +1077,19 @@ static int wpcm450_gpio_register(struct platform_device *pdev,
 			set = pctrl->gpio_base + bank->dataout;
 			dirout = pctrl->gpio_base + bank->cfg0;
 		} else {
-			flags = GPIO_GENERIC_NO_OUTPUT;
+			flags = BGPIOF_NO_OUTPUT;
 		}
-
-		config = (struct gpio_generic_chip_config) {
-			.dev = dev,
-			.sz = 4,
-			.dat = dat,
-			.set = set,
-			.dirout = dirout,
-			.flags = flags,
-		};
-
-		ret = gpio_generic_chip_init(&gpio->chip, &config);
+		ret = bgpio_init(&gpio->gc, dev, 4,
+				 dat, set, NULL, dirout, NULL, flags);
 		if (ret < 0)
 			return dev_err_probe(dev, ret, "GPIO initialization failed\n");
 
-		gpio->chip.gc.ngpio = bank->length;
-		gpio->chip.gc.set_config = wpcm450_gpio_set_config;
-		gpio->chip.gc.fwnode = child;
-		gpio->chip.gc.add_pin_ranges = wpcm450_gpio_add_pin_ranges;
+		gpio->gc.ngpio = bank->length;
+		gpio->gc.set_config = wpcm450_gpio_set_config;
+		gpio->gc.fwnode = child;
+		gpio->gc.add_pin_ranges = wpcm450_gpio_add_pin_ranges;
 
-		girq = &gpio->chip.gc.irq;
+		girq = &gpio->gc.irq;
 		gpio_irq_chip_set_chip(girq, &wpcm450_gpio_irqchip);
 		girq->parent_handler = wpcm450_gpio_irqhandler;
 		girq->parents = devm_kcalloc(dev, WPCM450_NUM_GPIO_IRQS,
@@ -1106,7 +1113,7 @@ static int wpcm450_gpio_register(struct platform_device *pdev,
 			girq->num_parents++;
 		}
 
-		ret = devm_gpiochip_add_data(dev, &gpio->chip.gc, gpio);
+		ret = devm_gpiochip_add_data(dev, &gpio->gc, gpio);
 		if (ret)
 			return dev_err_probe(dev, ret, "Failed to add GPIO chip\n");
 	}

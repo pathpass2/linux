@@ -42,10 +42,6 @@ enum {
 #define ES_SHIFT (sizeof(ext4_fsblk_t)*8 - ES_FLAGS)
 #define ES_MASK (~((ext4_fsblk_t)0) << ES_SHIFT)
 
-/*
- * Besides EXTENT_STATUS_REFERENCED, all these extent type masks
- * are exclusive, only one type can be set at a time.
- */
 #define EXTENT_STATUS_WRITTEN	(1 << ES_WRITTEN_B)
 #define EXTENT_STATUS_UNWRITTEN (1 << ES_UNWRITTEN_B)
 #define EXTENT_STATUS_DELAYED	(1 << ES_DELAYED_B)
@@ -55,9 +51,7 @@ enum {
 #define ES_TYPE_MASK	((ext4_fsblk_t)(EXTENT_STATUS_WRITTEN | \
 			  EXTENT_STATUS_UNWRITTEN | \
 			  EXTENT_STATUS_DELAYED | \
-			  EXTENT_STATUS_HOLE))
-
-#define ES_TYPE_VALID(type)	((type) && !((type) & ((type) - 1)))
+			  EXTENT_STATUS_HOLE) << ES_SHIFT)
 
 struct ext4_sb_info;
 struct ext4_extent;
@@ -133,22 +127,21 @@ extern int __init ext4_init_es(void);
 extern void ext4_exit_es(void);
 extern void ext4_es_init_tree(struct ext4_es_tree *tree);
 
-extern void ext4_es_insert_extent(struct inode *inode, ext4_lblk_t lblk,
-				  ext4_lblk_t len, ext4_fsblk_t pblk,
-				  unsigned int status,
-				  bool delalloc_reserve_used);
+extern int ext4_es_insert_extent(struct inode *inode, ext4_lblk_t lblk,
+				 ext4_lblk_t len, ext4_fsblk_t pblk,
+				 unsigned int status);
 extern void ext4_es_cache_extent(struct inode *inode, ext4_lblk_t lblk,
 				 ext4_lblk_t len, ext4_fsblk_t pblk,
 				 unsigned int status);
-extern void ext4_es_remove_extent(struct inode *inode, ext4_lblk_t lblk,
-				  ext4_lblk_t len);
+extern int ext4_es_remove_extent(struct inode *inode, ext4_lblk_t lblk,
+				 ext4_lblk_t len);
 extern void ext4_es_find_extent_range(struct inode *inode,
 				      int (*match_fn)(struct extent_status *es),
 				      ext4_lblk_t lblk, ext4_lblk_t end,
 				      struct extent_status *es);
 extern int ext4_es_lookup_extent(struct inode *inode, ext4_lblk_t lblk,
 				 ext4_lblk_t *next_lblk,
-				 struct extent_status *es, u64 *pseq);
+				 struct extent_status *es);
 extern bool ext4_es_scan_range(struct inode *inode,
 			       int (*matching_fn)(struct extent_status *es),
 			       ext4_lblk_t lblk, ext4_lblk_t end);
@@ -163,7 +156,7 @@ static inline unsigned int ext4_es_status(struct extent_status *es)
 
 static inline unsigned int ext4_es_type(struct extent_status *es)
 {
-	return (es->es_pblk >> ES_SHIFT) & ES_TYPE_MASK;
+	return (es->es_pblk & ES_TYPE_MASK) >> ES_SHIFT;
 }
 
 static inline int ext4_es_is_written(struct extent_status *es)
@@ -189,6 +182,11 @@ static inline int ext4_es_is_hole(struct extent_status *es)
 static inline int ext4_es_is_mapped(struct extent_status *es)
 {
 	return (ext4_es_is_written(es) || ext4_es_is_unwritten(es));
+}
+
+static inline int ext4_es_is_delonly(struct extent_status *es)
+{
+	return (ext4_es_is_delayed(es) && !ext4_es_is_unwritten(es));
 }
 
 static inline void ext4_es_set_referenced(struct extent_status *es)
@@ -226,12 +224,17 @@ static inline void ext4_es_store_pblock(struct extent_status *es,
 	es->es_pblk = block;
 }
 
+static inline void ext4_es_store_status(struct extent_status *es,
+					unsigned int status)
+{
+	es->es_pblk = (((ext4_fsblk_t)status << ES_SHIFT) & ES_MASK) |
+		      (es->es_pblk & ~ES_MASK);
+}
+
 static inline void ext4_es_store_pblock_status(struct extent_status *es,
 					       ext4_fsblk_t pb,
 					       unsigned int status)
 {
-	WARN_ON_ONCE(!ES_TYPE_VALID(status & ES_TYPE_MASK));
-
 	es->es_pblk = (((ext4_fsblk_t)status << ES_SHIFT) & ES_MASK) |
 		      (pb & ~ES_MASK);
 }
@@ -246,9 +249,10 @@ extern void ext4_exit_pending(void);
 extern void ext4_init_pending_tree(struct ext4_pending_tree *tree);
 extern void ext4_remove_pending(struct inode *inode, ext4_lblk_t lblk);
 extern bool ext4_is_pending(struct inode *inode, ext4_lblk_t lblk);
-extern void ext4_es_insert_delayed_extent(struct inode *inode, ext4_lblk_t lblk,
-					  ext4_lblk_t len, bool lclu_allocated,
-					  bool end_allocated);
+extern int ext4_es_insert_delayed_block(struct inode *inode, ext4_lblk_t lblk,
+					bool allocated);
+extern unsigned int ext4_es_delayed_clu(struct inode *inode, ext4_lblk_t lblk,
+					ext4_lblk_t len);
 extern void ext4_clear_inode_es(struct inode *inode);
 
 #endif /* _EXT4_EXTENTS_STATUS_H */

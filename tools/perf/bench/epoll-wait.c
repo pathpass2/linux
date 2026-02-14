@@ -309,7 +309,7 @@ static int do_threads(struct worker *worker, struct perf_cpu_map *cpu)
 	if (!noaffinity)
 		pthread_attr_init(&thread_attr);
 
-	nrcpus = cpu__max_cpu().cpu;
+	nrcpus = perf_cpu_map__nr(cpu);
 	cpuset = CPU_ALLOC(nrcpus);
 	BUG_ON(!cpuset);
 	size = CPU_ALLOC_SIZE(nrcpus);
@@ -420,12 +420,7 @@ static int cmpworker(const void *p1, const void *p2)
 
 	struct worker *w1 = (struct worker *) p1;
 	struct worker *w2 = (struct worker *) p2;
-
-	if (w1->tid > w2->tid)
-		return 1;
-	if (w1->tid < w2->tid)
-		return -1;
-	return 0;
+	return w1->tid > w2->tid;
 }
 
 int bench_epoll_wait(int argc, const char **argv)
@@ -449,7 +444,7 @@ int bench_epoll_wait(int argc, const char **argv)
 	act.sa_sigaction = toggle_done;
 	sigaction(SIGINT, &act, NULL);
 
-	cpu = perf_cpu_map__new_online_cpus();
+	cpu = perf_cpu_map__new(NULL);
 	if (!cpu)
 		goto errmem;
 
@@ -554,11 +549,6 @@ int bench_epoll_wait(int argc, const char **argv)
 	print_summary();
 
 	close(epollfd);
-	perf_cpu_map__put(cpu);
-	for (i = 0; i < nthreads; i++)
-		free(worker[i].fdmap);
-
-	free(worker);
 	return ret;
 errmem:
 	err(EXIT_FAILURE, "calloc");

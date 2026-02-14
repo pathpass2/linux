@@ -4,7 +4,7 @@
  *
  * 2003 by T.Adachi <tadachi@tadachi-net.com>
  * 2003 by Takeru KOMORIYA <komoriya@paken.org>
- * 2006 by Hans Verkuil <hverkuil@kernel.org>
+ * 2006 by Hans Verkuil <hverkuil@xs4all.nl>
  */
 
 
@@ -219,7 +219,7 @@ static void upd64031a_remove(struct i2c_client *client)
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id upd64031a_id[] = {
-	{ "upd64031a" },
+	{ "upd64031a", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, upd64031a_id);
@@ -228,7 +228,7 @@ static struct i2c_driver upd64031a_driver = {
 	.driver = {
 		.name	= "upd64031a",
 	},
-	.probe		= upd64031a_probe,
+	.probe_new	= upd64031a_probe,
 	.remove		= upd64031a_remove,
 	.id_table	= upd64031a_id,
 };

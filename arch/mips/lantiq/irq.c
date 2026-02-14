@@ -10,13 +10,12 @@
 #include <linux/sched.h>
 #include <linux/irqchip.h>
 #include <linux/irqdomain.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 
 #include <asm/bootinfo.h>
 #include <asm/irq_cpu.h>
-#include <asm/time.h>
 
 #include <lantiq_soc.h>
 #include <irq.h>
@@ -336,8 +335,7 @@ static const struct irq_domain_ops irq_domain_ops = {
 	.map = icu_map,
 };
 
-static int __init
-icu_of_init(struct device_node *node, struct device_node *parent)
+int __init icu_of_init(struct device_node *node, struct device_node *parent)
 {
 	struct device_node *eiu_node;
 	struct resource res;
@@ -379,7 +377,7 @@ icu_of_init(struct device_node *node, struct device_node *parent)
 	for (i = 0; i < MAX_IM; i++)
 		irq_set_chained_handler(i + 2, ltq_hw_irq_handler);
 
-	ltq_domain = irq_domain_create_linear(of_fwnode_handle(node),
+	ltq_domain = irq_domain_add_linear(node,
 		(MAX_IM * INT_NUM_IM_OFFSET) + MIPS_CPU_IRQ_CASCADE,
 		&irq_domain_ops, 0);
 

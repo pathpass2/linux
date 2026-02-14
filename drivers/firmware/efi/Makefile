@@ -29,7 +29,6 @@ obj-$(CONFIG_APPLE_PROPERTIES)		+= apple-properties.o
 obj-$(CONFIG_EFI_RCI2_TABLE)		+= rci2-table.o
 obj-$(CONFIG_EFI_EMBEDDED_FIRMWARE)	+= embedded-firmware.o
 obj-$(CONFIG_LOAD_UEFI_KEYS)		+= mokvar-table.o
-obj-$(CONFIG_OVMF_DEBUG_LOG)		+= ovmf-debug-log.o
 
 obj-$(CONFIG_SYSFB)			+= sysfb_efi.o
 
@@ -42,5 +41,3 @@ obj-$(CONFIG_EFI_CAPSULE_LOADER)	+= capsule-loader.o
 obj-$(CONFIG_EFI_EARLYCON)		+= earlycon.o
 obj-$(CONFIG_UEFI_CPER_ARM)		+= cper-arm.o
 obj-$(CONFIG_UEFI_CPER_X86)		+= cper-x86.o
-obj-$(CONFIG_UNACCEPTED_MEMORY)		+= unaccepted_memory.o
-obj-$(CONFIG_TEE_STMM_EFI)		+= stmm/tee_stmm_efi.o

@@ -191,8 +191,10 @@ static int dmard10_probe(struct i2c_client *client)
 		return (ret < 0) ? ret : -ENODEV;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&client->dev, "iio allocation failed!\n");
 		return -ENOMEM;
+	}
 
 	data = iio_priv(indio_dev);
 	data->client = client;
@@ -229,8 +231,8 @@ static DEFINE_SIMPLE_DEV_PM_OPS(dmard10_pm_ops, dmard10_suspend,
 				dmard10_resume);
 
 static const struct i2c_device_id dmard10_i2c_id[] = {
-	{ "dmard10" },
-	{ }
+	{"dmard10", 0},
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, dmard10_i2c_id);
 
@@ -239,7 +241,7 @@ static struct i2c_driver dmard10_driver = {
 		.name = "dmard10",
 		.pm = pm_sleep_ptr(&dmard10_pm_ops),
 	},
-	.probe		= dmard10_probe,
+	.probe_new	= dmard10_probe,
 	.id_table	= dmard10_i2c_id,
 };
 

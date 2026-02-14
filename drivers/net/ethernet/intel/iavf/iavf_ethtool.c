@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright(c) 2013 - 2018 Intel Corporation. */
 
-#include <linux/bitfield.h>
-#include <linux/uaccess.h>
-
-#include <net/netdev_lock.h>
-
 /* ethtool support for iavf */
 #include "iavf.h"
+
+#include <linux/uaccess.h>
 
 /* ethtool statistics helpers */
 
@@ -242,6 +239,29 @@ static const struct iavf_stats iavf_gstrings_stats[] = {
 
 #define IAVF_QUEUE_STATS_LEN	ARRAY_SIZE(iavf_gstrings_queue_stats)
 
+/* For now we have one and only one private flag and it is only defined
+ * when we have support for the SKIP_CPU_SYNC DMA attribute.  Instead
+ * of leaving all this code sitting around empty we will strip it unless
+ * our one private flag is actually available.
+ */
+struct iavf_priv_flags {
+	char flag_string[ETH_GSTRING_LEN];
+	u32 flag;
+	bool read_only;
+};
+
+#define IAVF_PRIV_FLAG(_name, _flag, _read_only) { \
+	.flag_string = _name, \
+	.flag = _flag, \
+	.read_only = _read_only, \
+}
+
+static const struct iavf_priv_flags iavf_gstrings_priv_flags[] = {
+	IAVF_PRIV_FLAG("legacy-rx", IAVF_FLAG_LEGACY_RX, 0),
+};
+
+#define IAVF_PRIV_FLAGS_STR_LEN ARRAY_SIZE(iavf_gstrings_priv_flags)
+
 /**
  * iavf_get_link_ksettings - Get Link Speed and Duplex settings
  * @netdev: network interface device structure
@@ -321,6 +341,8 @@ static int iavf_get_sset_count(struct net_device *netdev, int sset)
 		return IAVF_STATS_LEN +
 			(IAVF_QUEUE_STATS_LEN * 2 *
 			 netdev->real_num_tx_queues);
+	else if (sset == ETH_SS_PRIV_FLAGS)
+		return IAVF_PRIV_FLAGS_STR_LEN;
 	else
 		return -EINVAL;
 }
@@ -340,7 +362,7 @@ static void iavf_get_ethtool_stats(struct net_device *netdev,
 	unsigned int i;
 
 	/* Explicitly request stats refresh */
-	iavf_schedule_aq_request(adapter, IAVF_FLAG_AQ_REQUEST_STATS);
+	iavf_schedule_request_stats(adapter);
 
 	iavf_add_ethtool_stats(&data, adapter, iavf_gstrings_stats);
 
@@ -360,6 +382,24 @@ static void iavf_get_ethtool_stats(struct net_device *netdev,
 		iavf_add_queue_stats(&data, ring);
 	}
 	rcu_read_unlock();
+}
+
+/**
+ * iavf_get_priv_flag_strings - Get private flag strings
+ * @netdev: network interface device structure
+ * @data: buffer for string data
+ *
+ * Builds the private flags string table
+ **/
+static void iavf_get_priv_flag_strings(struct net_device *netdev, u8 *data)
+{
+	unsigned int i;
+
+	for (i = 0; i < IAVF_PRIV_FLAGS_STR_LEN; i++) {
+		snprintf(data, ETH_GSTRING_LEN, "%s",
+			 iavf_gstrings_priv_flags[i].flag_string);
+		data += ETH_GSTRING_LEN;
+	}
 }
 
 /**
@@ -400,9 +440,103 @@ static void iavf_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 	case ETH_SS_STATS:
 		iavf_get_stat_strings(netdev, data);
 		break;
+	case ETH_SS_PRIV_FLAGS:
+		iavf_get_priv_flag_strings(netdev, data);
+		break;
 	default:
 		break;
 	}
+}
+
+/**
+ * iavf_get_priv_flags - report device private flags
+ * @netdev: network interface device structure
+ *
+ * The get string set count and the string set should be matched for each
+ * flag returned.  Add new strings for each flag to the iavf_gstrings_priv_flags
+ * array.
+ *
+ * Returns a u32 bitmap of flags.
+ **/
+static u32 iavf_get_priv_flags(struct net_device *netdev)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+	u32 i, ret_flags = 0;
+
+	for (i = 0; i < IAVF_PRIV_FLAGS_STR_LEN; i++) {
+		const struct iavf_priv_flags *priv_flags;
+
+		priv_flags = &iavf_gstrings_priv_flags[i];
+
+		if (priv_flags->flag & adapter->flags)
+			ret_flags |= BIT(i);
+	}
+
+	return ret_flags;
+}
+
+/**
+ * iavf_set_priv_flags - set private flags
+ * @netdev: network interface device structure
+ * @flags: bit flags to be set
+ **/
+static int iavf_set_priv_flags(struct net_device *netdev, u32 flags)
+{
+	struct iavf_adapter *adapter = netdev_priv(netdev);
+	u32 orig_flags, new_flags, changed_flags;
+	u32 i;
+
+	orig_flags = READ_ONCE(adapter->flags);
+	new_flags = orig_flags;
+
+	for (i = 0; i < IAVF_PRIV_FLAGS_STR_LEN; i++) {
+		const struct iavf_priv_flags *priv_flags;
+
+		priv_flags = &iavf_gstrings_priv_flags[i];
+
+		if (flags & BIT(i))
+			new_flags |= priv_flags->flag;
+		else
+			new_flags &= ~(priv_flags->flag);
+
+		if (priv_flags->read_only &&
+		    ((orig_flags ^ new_flags) & ~BIT(i)))
+			return -EOPNOTSUPP;
+	}
+
+	/* Before we finalize any flag changes, any checks which we need to
+	 * perform to determine if the new flags will be supported should go
+	 * here...
+	 */
+
+	/* Compare and exchange the new flags into place. If we failed, that
+	 * is if cmpxchg returns anything but the old value, this means
+	 * something else must have modified the flags variable since we
+	 * copied it. We'll just punt with an error and log something in the
+	 * message buffer.
+	 */
+	if (cmpxchg(&adapter->flags, orig_flags, new_flags) != orig_flags) {
+		dev_warn(&adapter->pdev->dev,
+			 "Unable to update adapter->flags as it was modified by another thread...\n");
+		return -EAGAIN;
+	}
+
+	changed_flags = orig_flags ^ new_flags;
+
+	/* Process any additional changes needed as a result of flag changes.
+	 * The changed_flags value reflects the list of bits that were changed
+	 * in the code above.
+	 */
+
+	/* issue a reset to force legacy-rx change to take effect */
+	if (changed_flags & IAVF_FLAG_LEGACY_RX) {
+		if (netif_running(netdev)) {
+			adapter->flags |= IAVF_FLAG_RESET_NEEDED;
+			queue_work(adapter->wq, &adapter->reset_task);
+		}
+	}
+
+	return 0;
 }
 
 /**
@@ -450,6 +584,7 @@ static void iavf_get_drvinfo(struct net_device *netdev,
 	strscpy(drvinfo->driver, iavf_driver_name, 32);
 	strscpy(drvinfo->fw_version, "N/A", 4);
 	strscpy(drvinfo->bus_info, pci_name(adapter->pdev), 32);
+	drvinfo->n_priv_flags = IAVF_PRIV_FLAGS_STR_LEN;
 }
 
 /**
@@ -492,7 +627,6 @@ static int iavf_set_ringparam(struct net_device *netdev,
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u32 new_rx_count, new_tx_count;
-	int ret = 0;
 
 	if ((ring->rx_mini_pending) || (ring->rx_jumbo_pending))
 		return -EINVAL;
@@ -537,13 +671,11 @@ static int iavf_set_ringparam(struct net_device *netdev,
 	}
 
 	if (netif_running(netdev)) {
-		iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
-		ret = iavf_wait_for_reset(adapter);
-		if (ret)
-			netdev_warn(netdev, "Changing ring parameters timeout or interrupted waiting for reset");
+		adapter->flags |= IAVF_FLAG_RESET_NEEDED;
+		queue_work(adapter->wq, &adapter->reset_task);
 	}
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -691,10 +823,18 @@ static int __iavf_set_coalesce(struct net_device *netdev,
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	int i;
 
-	if (ec->rx_coalesce_usecs > IAVF_MAX_ITR) {
+	if (ec->rx_coalesce_usecs == 0) {
+		if (ec->use_adaptive_rx_coalesce)
+			netif_info(adapter, drv, netdev, "rx-usecs=0, need to disable adaptive-rx for a complete disable\n");
+	} else if ((ec->rx_coalesce_usecs < IAVF_MIN_ITR) ||
+		   (ec->rx_coalesce_usecs > IAVF_MAX_ITR)) {
 		netif_info(adapter, drv, netdev, "Invalid value, rx-usecs range is 0-8160\n");
 		return -EINVAL;
-	} else if (ec->tx_coalesce_usecs > IAVF_MAX_ITR) {
+	} else if (ec->tx_coalesce_usecs == 0) {
+		if (ec->use_adaptive_tx_coalesce)
+			netif_info(adapter, drv, netdev, "tx-usecs=0, need to disable adaptive-tx for a complete disable\n");
+	} else if ((ec->tx_coalesce_usecs < IAVF_MIN_ITR) ||
+		   (ec->tx_coalesce_usecs > IAVF_MAX_ITR)) {
 		netif_info(adapter, drv, netdev, "Invalid value, tx-usecs range is 0-8160\n");
 		return -EINVAL;
 	}
@@ -881,7 +1021,8 @@ iavf_parse_rx_flow_user_data(struct ethtool_rx_flow_spec *fsp,
 #define IAVF_USERDEF_FLEX_MAX_OFFS_VAL 504
 		flex = &fltr->flex_words[cnt++];
 		flex->word = value & IAVF_USERDEF_FLEX_WORD_M;
-		flex->offset = FIELD_GET(IAVF_USERDEF_FLEX_OFFS_M, value);
+		flex->offset = (value & IAVF_USERDEF_FLEX_OFFS_M) >>
+			     IAVF_USERDEF_FLEX_OFFS_S;
 		if (flex->offset > IAVF_USERDEF_FLEX_MAX_OFFS_VAL)
 			return -EINVAL;
 	}
@@ -924,12 +1065,12 @@ iavf_get_ethtool_fdir_entry(struct iavf_adapter *adapter,
 	struct iavf_fdir_fltr *rule = NULL;
 	int ret = 0;
 
-	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
+	if (!FDIR_FLTR_SUPPORT(adapter))
 		return -EOPNOTSUPP;
 
 	spin_lock_bh(&adapter->fdir_fltr_lock);
 
-	rule = iavf_find_fdir_fltr(adapter, false, fsp->location);
+	rule = iavf_find_fdir_fltr_by_loc(adapter, fsp->location);
 	if (!rule) {
 		ret = -EINVAL;
 		goto release_lock;
@@ -1066,7 +1207,7 @@ iavf_get_fdir_fltr_ids(struct iavf_adapter *adapter, struct ethtool_rxnfc *cmd,
 	unsigned int cnt = 0;
 	int val = 0;
 
-	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
+	if (!FDIR_FLTR_SUPPORT(adapter))
 		return -EOPNOTSUPP;
 
 	cmd->data = IAVF_MAX_FDIR_FILTERS;
@@ -1074,9 +1215,6 @@ iavf_get_fdir_fltr_ids(struct iavf_adapter *adapter, struct ethtool_rxnfc *cmd,
 	spin_lock_bh(&adapter->fdir_fltr_lock);
 
 	list_for_each_entry(fltr, &adapter->fdir_list_head, list) {
-		if (iavf_is_raw_fdir(fltr))
-			continue;
-
 		if (cnt == cmd->rule_cnt) {
 			val = -EMSGSIZE;
 			goto release_lock;
@@ -1145,7 +1283,6 @@ iavf_add_fdir_fltr_info(struct iavf_adapter *adapter, struct ethtool_rx_flow_spe
 		fltr->ip_mask.src_port = fsp->m_u.tcp_ip4_spec.psrc;
 		fltr->ip_mask.dst_port = fsp->m_u.tcp_ip4_spec.pdst;
 		fltr->ip_mask.tos = fsp->m_u.tcp_ip4_spec.tos;
-		fltr->ip_ver = 4;
 		break;
 	case AH_V4_FLOW:
 	case ESP_V4_FLOW:
@@ -1157,7 +1294,6 @@ iavf_add_fdir_fltr_info(struct iavf_adapter *adapter, struct ethtool_rx_flow_spe
 		fltr->ip_mask.v4_addrs.dst_ip = fsp->m_u.ah_ip4_spec.ip4dst;
 		fltr->ip_mask.spi = fsp->m_u.ah_ip4_spec.spi;
 		fltr->ip_mask.tos = fsp->m_u.ah_ip4_spec.tos;
-		fltr->ip_ver = 4;
 		break;
 	case IPV4_USER_FLOW:
 		fltr->ip_data.v4_addrs.src_ip = fsp->h_u.usr_ip4_spec.ip4src;
@@ -1170,7 +1306,6 @@ iavf_add_fdir_fltr_info(struct iavf_adapter *adapter, struct ethtool_rx_flow_spe
 		fltr->ip_mask.l4_header = fsp->m_u.usr_ip4_spec.l4_4_bytes;
 		fltr->ip_mask.tos = fsp->m_u.usr_ip4_spec.tos;
 		fltr->ip_mask.proto = fsp->m_u.usr_ip4_spec.proto;
-		fltr->ip_ver = 4;
 		break;
 	case TCP_V6_FLOW:
 	case UDP_V6_FLOW:
@@ -1189,7 +1324,6 @@ iavf_add_fdir_fltr_info(struct iavf_adapter *adapter, struct ethtool_rx_flow_spe
 		fltr->ip_mask.src_port = fsp->m_u.tcp_ip6_spec.psrc;
 		fltr->ip_mask.dst_port = fsp->m_u.tcp_ip6_spec.pdst;
 		fltr->ip_mask.tclass = fsp->m_u.tcp_ip6_spec.tclass;
-		fltr->ip_ver = 6;
 		break;
 	case AH_V6_FLOW:
 	case ESP_V6_FLOW:
@@ -1205,7 +1339,6 @@ iavf_add_fdir_fltr_info(struct iavf_adapter *adapter, struct ethtool_rx_flow_spe
 		       sizeof(struct in6_addr));
 		fltr->ip_mask.spi = fsp->m_u.ah_ip6_spec.spi;
 		fltr->ip_mask.tclass = fsp->m_u.ah_ip6_spec.tclass;
-		fltr->ip_ver = 6;
 		break;
 	case IPV6_USER_FLOW:
 		memcpy(&fltr->ip_data.v6_addrs.src_ip, fsp->h_u.usr_ip6_spec.ip6src,
@@ -1222,7 +1355,6 @@ iavf_add_fdir_fltr_info(struct iavf_adapter *adapter, struct ethtool_rx_flow_spe
 		fltr->ip_mask.l4_header = fsp->m_u.usr_ip6_spec.l4_4_bytes;
 		fltr->ip_mask.tclass = fsp->m_u.usr_ip6_spec.tclass;
 		fltr->ip_mask.proto = fsp->m_u.usr_ip6_spec.l4_proto;
-		fltr->ip_ver = 6;
 		break;
 	case ETHER_FLOW:
 		fltr->eth_data.etype = fsp->h_u.ether_spec.h_proto;
@@ -1232,10 +1364,6 @@ iavf_add_fdir_fltr_info(struct iavf_adapter *adapter, struct ethtool_rx_flow_spe
 		/* not doing un-parsed flow types */
 		return -EINVAL;
 	}
-
-	err = iavf_validate_fdir_fltr_masks(adapter, fltr);
-	if (err)
-		return err;
 
 	if (iavf_fdir_is_dup_fltr(adapter, fltr))
 		return -EEXIST;
@@ -1258,18 +1386,24 @@ static int iavf_add_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 {
 	struct ethtool_rx_flow_spec *fsp = &cmd->fs;
 	struct iavf_fdir_fltr *fltr;
+	int count = 50;
 	int err;
 
-	netdev_assert_locked(adapter->netdev);
-
-	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
+	if (!FDIR_FLTR_SUPPORT(adapter))
 		return -EOPNOTSUPP;
 
 	if (fsp->flow_type & FLOW_MAC_EXT)
 		return -EINVAL;
 
+	if (adapter->fdir_active_fltr >= IAVF_MAX_FDIR_FILTERS) {
+		dev_err(&adapter->pdev->dev,
+			"Unable to add Flow Director filter because VF reached the limit of max allowed filters (%u)\n",
+			IAVF_MAX_FDIR_FILTERS);
+		return -ENOSPC;
+	}
+
 	spin_lock_bh(&adapter->fdir_fltr_lock);
-	if (iavf_find_fdir_fltr(adapter, false, fsp->location)) {
+	if (iavf_find_fdir_fltr_by_loc(adapter, fsp->location)) {
 		dev_err(&adapter->pdev->dev, "Failed to add Flow Director filter, it already exists\n");
 		spin_unlock_bh(&adapter->fdir_fltr_lock);
 		return -EEXIST;
@@ -1280,13 +1414,32 @@ static int iavf_add_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 	if (!fltr)
 		return -ENOMEM;
 
-	err = iavf_add_fdir_fltr_info(adapter, fsp, fltr);
-	if (!err)
-		err = iavf_fdir_add_fltr(adapter, fltr);
+	while (!mutex_trylock(&adapter->crit_lock)) {
+		if (--count == 0) {
+			kfree(fltr);
+			return -EINVAL;
+		}
+		udelay(1);
+	}
 
+	err = iavf_add_fdir_fltr_info(adapter, fsp, fltr);
 	if (err)
+		goto ret;
+
+	spin_lock_bh(&adapter->fdir_fltr_lock);
+	iavf_fdir_list_add_fltr(adapter, fltr);
+	adapter->fdir_active_fltr++;
+	fltr->state = IAVF_FDIR_FLTR_ADD_REQUEST;
+	adapter->aq_required |= IAVF_FLAG_AQ_ADD_FDIR_FILTER;
+	spin_unlock_bh(&adapter->fdir_fltr_lock);
+
+	mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
+
+ret:
+	if (err && fltr)
 		kfree(fltr);
 
+	mutex_unlock(&adapter->crit_lock);
 	return err;
 }
 
@@ -1300,14 +1453,40 @@ static int iavf_add_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rx
 static int iavf_del_fdir_ethtool(struct iavf_adapter *adapter, struct ethtool_rxnfc *cmd)
 {
 	struct ethtool_rx_flow_spec *fsp = (struct ethtool_rx_flow_spec *)&cmd->fs;
+	struct iavf_fdir_fltr *fltr = NULL;
+	int err = 0;
 
-	if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
+	if (!FDIR_FLTR_SUPPORT(adapter))
 		return -EOPNOTSUPP;
 
-	return iavf_fdir_del_fltr(adapter, false, fsp->location);
+	spin_lock_bh(&adapter->fdir_fltr_lock);
+	fltr = iavf_find_fdir_fltr_by_loc(adapter, fsp->location);
+	if (fltr) {
+		if (fltr->state == IAVF_FDIR_FLTR_ACTIVE) {
+			fltr->state = IAVF_FDIR_FLTR_DEL_REQUEST;
+			adapter->aq_required |= IAVF_FLAG_AQ_DEL_FDIR_FILTER;
+		} else {
+			err = -EBUSY;
+		}
+	} else if (adapter->fdir_active_fltr) {
+		err = -EINVAL;
+	}
+	spin_unlock_bh(&adapter->fdir_fltr_lock);
+
+	if (fltr && fltr->state == IAVF_FDIR_FLTR_DEL_REQUEST)
+		mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
+
+	return err;
 }
 
-static u32 iavf_adv_rss_parse_hdrs(const struct ethtool_rxfh_fields *cmd)
+/**
+ * iavf_adv_rss_parse_hdrs - parses headers from RSS hash input
+ * @cmd: ethtool rxnfc command
+ *
+ * This function parses the rxnfc command and returns intended
+ * header types for RSS configuration
+ */
+static u32 iavf_adv_rss_parse_hdrs(struct ethtool_rxnfc *cmd)
 {
 	u32 hdrs = IAVF_ADV_RSS_FLOW_SEG_HDR_NONE;
 
@@ -1336,56 +1515,6 @@ static u32 iavf_adv_rss_parse_hdrs(const struct ethtool_rxfh_fields *cmd)
 		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_SCTP |
 			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV6;
 		break;
-	case GTPU_V4_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_IP |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV4;
-		break;
-	case GTPC_V4_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPC |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_UDP |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV4;
-		break;
-	case GTPC_TEID_V4_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPC_TEID |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_UDP |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV4;
-		break;
-	case GTPU_EH_V4_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_EH |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV4;
-		break;
-	case GTPU_UL_V4_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_UP |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV4;
-		break;
-	case GTPU_DL_V4_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_DWN |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV4;
-		break;
-	case GTPU_V6_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_IP |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV6;
-		break;
-	case GTPC_V6_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPC |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV6;
-		break;
-	case GTPC_TEID_V6_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPC_TEID |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV6;
-		break;
-	case GTPU_EH_V6_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_EH |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV6;
-		break;
-	case GTPU_UL_V6_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_UP |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV6;
-		break;
-	case GTPU_DL_V6_FLOW:
-		hdrs |= IAVF_ADV_RSS_FLOW_SEG_HDR_GTPU_DWN |
-			IAVF_ADV_RSS_FLOW_SEG_HDR_IPV6;
-		break;
 	default:
 		break;
 	}
@@ -1393,8 +1522,14 @@ static u32 iavf_adv_rss_parse_hdrs(const struct ethtool_rxfh_fields *cmd)
 	return hdrs;
 }
 
-static u64
-iavf_adv_rss_parse_hash_flds(const struct ethtool_rxfh_fields *cmd, bool symm)
+/**
+ * iavf_adv_rss_parse_hash_flds - parses hash fields from RSS hash input
+ * @cmd: ethtool rxnfc command
+ *
+ * This function parses the rxnfc command and returns intended hash fields for
+ * RSS configuration
+ */
+static u64 iavf_adv_rss_parse_hash_flds(struct ethtool_rxnfc *cmd)
 {
 	u64 hfld = IAVF_ADV_RSS_HASH_INVALID;
 
@@ -1403,12 +1538,6 @@ iavf_adv_rss_parse_hash_flds(const struct ethtool_rxfh_fields *cmd, bool symm)
 		case TCP_V4_FLOW:
 		case UDP_V4_FLOW:
 		case SCTP_V4_FLOW:
-		case GTPU_V4_FLOW:
-		case GTPC_V4_FLOW:
-		case GTPC_TEID_V4_FLOW:
-		case GTPU_EH_V4_FLOW:
-		case GTPU_UL_V4_FLOW:
-		case GTPU_DL_V4_FLOW:
 			if (cmd->data & RXH_IP_SRC)
 				hfld |= IAVF_ADV_RSS_HASH_FLD_IPV4_SA;
 			if (cmd->data & RXH_IP_DST)
@@ -1417,12 +1546,6 @@ iavf_adv_rss_parse_hash_flds(const struct ethtool_rxfh_fields *cmd, bool symm)
 		case TCP_V6_FLOW:
 		case UDP_V6_FLOW:
 		case SCTP_V6_FLOW:
-		case GTPU_V6_FLOW:
-		case GTPC_V6_FLOW:
-		case GTPC_TEID_V6_FLOW:
-		case GTPU_EH_V6_FLOW:
-		case GTPU_UL_V6_FLOW:
-		case GTPU_DL_V6_FLOW:
 			if (cmd->data & RXH_IP_SRC)
 				hfld |= IAVF_ADV_RSS_HASH_FLD_IPV6_SA;
 			if (cmd->data & RXH_IP_DST)
@@ -1444,7 +1567,6 @@ iavf_adv_rss_parse_hash_flds(const struct ethtool_rxfh_fields *cmd, bool symm)
 			break;
 		case UDP_V4_FLOW:
 		case UDP_V6_FLOW:
-		case GTPC_V4_FLOW:
 			if (cmd->data & RXH_L4_B_0_1)
 				hfld |= IAVF_ADV_RSS_HASH_FLD_UDP_SRC_PORT;
 			if (cmd->data & RXH_L4_B_2_3)
@@ -1461,61 +1583,35 @@ iavf_adv_rss_parse_hash_flds(const struct ethtool_rxfh_fields *cmd, bool symm)
 			break;
 		}
 	}
-	if (cmd->data & RXH_GTP_TEID) {
-		switch (cmd->flow_type) {
-		case GTPC_TEID_V4_FLOW:
-		case GTPC_TEID_V6_FLOW:
-			hfld |= IAVF_ADV_RSS_HASH_FLD_GTPC_TEID;
-			break;
-		case GTPU_V4_FLOW:
-		case GTPU_V6_FLOW:
-			hfld |= IAVF_ADV_RSS_HASH_FLD_GTPU_IP_TEID;
-			break;
-		case GTPU_EH_V4_FLOW:
-		case GTPU_EH_V6_FLOW:
-			hfld |= IAVF_ADV_RSS_HASH_FLD_GTPU_EH_TEID;
-			break;
-		case GTPU_UL_V4_FLOW:
-		case GTPU_UL_V6_FLOW:
-			hfld |= IAVF_ADV_RSS_HASH_FLD_GTPU_UP_TEID;
-			break;
-		case GTPU_DL_V4_FLOW:
-		case GTPU_DL_V6_FLOW:
-			hfld |= IAVF_ADV_RSS_HASH_FLD_GTPU_DWN_TEID;
-			break;
-		default:
-			break;
-		}
-	}
 
 	return hfld;
 }
 
+/**
+ * iavf_set_adv_rss_hash_opt - Enable/Disable flow types for RSS hash
+ * @adapter: pointer to the VF adapter structure
+ * @cmd: ethtool rxnfc command
+ *
+ * Returns Success if the flow input set is supported.
+ */
 static int
-iavf_set_rxfh_fields(struct net_device *netdev,
-		     const struct ethtool_rxfh_fields *cmd,
-		     struct netlink_ext_ack *extack)
+iavf_set_adv_rss_hash_opt(struct iavf_adapter *adapter,
+			  struct ethtool_rxnfc *cmd)
 {
-	struct iavf_adapter *adapter = netdev_priv(netdev);
 	struct iavf_adv_rss *rss_old, *rss_new;
 	bool rss_new_add = false;
-	bool symm = false;
+	int count = 50, err = 0;
 	u64 hash_flds;
-	int err = 0;
 	u32 hdrs;
-
-	netdev_assert_locked(adapter->netdev);
 
 	if (!ADV_RSS_SUPPORT(adapter))
 		return -EOPNOTSUPP;
-
-	symm = !!(adapter->hfunc == VIRTCHNL_RSS_ALG_TOEPLITZ_SYMMETRIC);
 
 	hdrs = iavf_adv_rss_parse_hdrs(cmd);
 	if (hdrs == IAVF_ADV_RSS_FLOW_SEG_HDR_NONE)
 		return -EINVAL;
 
-	hash_flds = iavf_adv_rss_parse_hash_flds(cmd, symm);
+	hash_flds = iavf_adv_rss_parse_hash_flds(cmd);
 	if (hash_flds == IAVF_ADV_RSS_HASH_INVALID)
 		return -EINVAL;
 
@@ -1523,10 +1619,18 @@ iavf_set_rxfh_fields(struct net_device *netdev,
 	if (!rss_new)
 		return -ENOMEM;
 
-	if (iavf_fill_adv_rss_cfg_msg(&rss_new->cfg_msg, hdrs, hash_flds,
-				      symm)) {
+	if (iavf_fill_adv_rss_cfg_msg(&rss_new->cfg_msg, hdrs, hash_flds)) {
 		kfree(rss_new);
 		return -EINVAL;
+	}
+
+	while (!mutex_trylock(&adapter->crit_lock)) {
+		if (--count == 0) {
+			kfree(rss_new);
+			return -EINVAL;
+		}
+
+		udelay(1);
 	}
 
 	spin_lock_bh(&adapter->adv_rss_lock);
@@ -1534,13 +1638,12 @@ iavf_set_rxfh_fields(struct net_device *netdev,
 	if (rss_old) {
 		if (rss_old->state != IAVF_ADV_RSS_ACTIVE) {
 			err = -EBUSY;
-		} else if (rss_old->hash_flds != hash_flds ||
-			   rss_old->symm != symm) {
+		} else if (rss_old->hash_flds != hash_flds) {
 			rss_old->state = IAVF_ADV_RSS_ADD_REQUEST;
 			rss_old->hash_flds = hash_flds;
-			rss_old->symm = symm;
 			memcpy(&rss_old->cfg_msg, &rss_new->cfg_msg,
 			       sizeof(rss_new->cfg_msg));
+			adapter->aq_required |= IAVF_FLAG_AQ_ADD_ADV_RSS_CFG;
 		} else {
 			err = -EEXIST;
 		}
@@ -1549,13 +1652,15 @@ iavf_set_rxfh_fields(struct net_device *netdev,
 		rss_new->state = IAVF_ADV_RSS_ADD_REQUEST;
 		rss_new->packet_hdrs = hdrs;
 		rss_new->hash_flds = hash_flds;
-		rss_new->symm = symm;
 		list_add_tail(&rss_new->list, &adapter->adv_rss_list_head);
+		adapter->aq_required |= IAVF_FLAG_AQ_ADD_ADV_RSS_CFG;
 	}
 	spin_unlock_bh(&adapter->adv_rss_lock);
 
 	if (!err)
-		iavf_schedule_aq_request(adapter, IAVF_FLAG_AQ_ADD_ADV_RSS_CFG);
+		mod_delayed_work(adapter->wq, &adapter->watchdog_task, 0);
+
+	mutex_unlock(&adapter->crit_lock);
 
 	if (!rss_new_add)
 		kfree(rss_new);
@@ -1563,10 +1668,17 @@ iavf_set_rxfh_fields(struct net_device *netdev,
 	return err;
 }
 
+/**
+ * iavf_get_adv_rss_hash_opt - Retrieve hash fields for a given flow-type
+ * @adapter: pointer to the VF adapter structure
+ * @cmd: ethtool rxnfc command
+ *
+ * Returns Success if the flow input set is supported.
+ */
 static int
-iavf_get_rxfh_fields(struct net_device *netdev, struct ethtool_rxfh_fields *cmd)
+iavf_get_adv_rss_hash_opt(struct iavf_adapter *adapter,
+			  struct ethtool_rxnfc *cmd)
 {
-	struct iavf_adapter *adapter = netdev_priv(netdev);
 	struct iavf_adv_rss *rss;
 	u64 hash_flds;
 	u32 hdrs;
@@ -1631,24 +1743,14 @@ static int iavf_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd)
 	case ETHTOOL_SRXCLSRLDEL:
 		ret = iavf_del_fdir_ethtool(adapter, cmd);
 		break;
+	case ETHTOOL_SRXFH:
+		ret = iavf_set_adv_rss_hash_opt(adapter, cmd);
+		break;
 	default:
 		break;
 	}
 
 	return ret;
-}
-
-/**
- * iavf_get_rx_ring_count - get RX ring count
- * @netdev: network interface device structure
- *
- * Return: number of RX rings.
- **/
-static u32 iavf_get_rx_ring_count(struct net_device *netdev)
-{
-	struct iavf_adapter *adapter = netdev_priv(netdev);
-
-	return adapter->num_active_queues;
 }
 
 /**
@@ -1666,12 +1768,14 @@ static int iavf_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
 	int ret = -EOPNOTSUPP;
 
 	switch (cmd->cmd) {
+	case ETHTOOL_GRXRINGS:
+		cmd->data = adapter->num_active_queues;
+		ret = 0;
+		break;
 	case ETHTOOL_GRXCLSRLCNT:
-		if (!(adapter->flags & IAVF_FLAG_FDIR_ENABLED))
+		if (!FDIR_FLTR_SUPPORT(adapter))
 			break;
-		spin_lock_bh(&adapter->fdir_fltr_lock);
 		cmd->rule_cnt = adapter->fdir_active_fltr;
-		spin_unlock_bh(&adapter->fdir_fltr_lock);
 		cmd->data = IAVF_MAX_FDIR_FILTERS;
 		ret = 0;
 		break;
@@ -1680,6 +1784,9 @@ static int iavf_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
 		break;
 	case ETHTOOL_GRXCLSRLALL:
 		ret = iavf_get_fdir_fltr_ids(adapter, cmd, (u32 *)rule_locs);
+		break;
+	case ETHTOOL_GRXFH:
+		ret = iavf_get_adv_rss_hash_opt(adapter, cmd);
 		break;
 	default:
 		break;
@@ -1723,7 +1830,7 @@ static int iavf_set_channels(struct net_device *netdev,
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u32 num_req = ch->combined_count;
-	int ret = 0;
+	int i;
 
 	if ((adapter->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_ADQ) &&
 	    adapter->num_tc) {
@@ -1745,13 +1852,22 @@ static int iavf_set_channels(struct net_device *netdev,
 
 	adapter->num_req_queues = num_req;
 	adapter->flags |= IAVF_FLAG_REINIT_ITR_NEEDED;
-	iavf_schedule_reset(adapter, IAVF_FLAG_RESET_NEEDED);
+	iavf_schedule_reset(adapter);
 
-	ret = iavf_wait_for_reset(adapter);
-	if (ret)
-		netdev_warn(netdev, "Changing channel count timeout or interrupted waiting for reset");
+	/* wait for the reset is done */
+	for (i = 0; i < IAVF_RESET_WAIT_COMPLETE_COUNT; i++) {
+		msleep(IAVF_RESET_WAIT_MS);
+		if (adapter->flags & IAVF_FLAG_RESET_PENDING)
+			continue;
+		break;
+	}
+	if (i == IAVF_RESET_WAIT_COMPLETE_COUNT) {
+		adapter->flags &= ~IAVF_FLAG_REINIT_ITR_NEEDED;
+		adapter->num_active_queues = num_req;
+		return -EOPNOTSUPP;
+	}
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -1783,27 +1899,27 @@ static u32 iavf_get_rxfh_indir_size(struct net_device *netdev)
 /**
  * iavf_get_rxfh - get the rx flow hash indirection table
  * @netdev: network interface device structure
- * @rxfh: pointer to param struct (indir, key, hfunc)
+ * @indir: indirection table
+ * @key: hash key
+ * @hfunc: hash function in use
  *
  * Reads the indirection table directly from the hardware. Always returns 0.
  **/
-static int iavf_get_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh)
+static int iavf_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			 u8 *hfunc)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u16 i;
 
-	rxfh->hfunc = ETH_RSS_HASH_TOP;
-	if (adapter->hfunc == VIRTCHNL_RSS_ALG_TOEPLITZ_SYMMETRIC)
-		rxfh->input_xfrm |= RXH_XFRM_SYM_XOR;
+	if (hfunc)
+		*hfunc = ETH_RSS_HASH_TOP;
+	if (key)
+		memcpy(key, adapter->rss_key, adapter->rss_key_size);
 
-	if (rxfh->key)
-		memcpy(rxfh->key, adapter->rss_key, adapter->rss_key_size);
-
-	if (rxfh->indir)
+	if (indir)
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_lut_size; i++)
-			rxfh->indir[i] = (u32)adapter->rss_lut[i];
+			indir[i] = (u32)adapter->rss_lut[i];
 
 	return 0;
 }
@@ -1811,46 +1927,33 @@ static int iavf_get_rxfh(struct net_device *netdev,
 /**
  * iavf_set_rxfh - set the rx flow hash indirection table
  * @netdev: network interface device structure
- * @rxfh: pointer to param struct (indir, key, hfunc)
- * @extack: extended ACK from the Netlink message
+ * @indir: indirection table
+ * @key: hash key
+ * @hfunc: hash function to use
  *
  * Returns -EINVAL if the table specifies an invalid queue id, otherwise
  * returns 0 after programming the table.
  **/
-static int iavf_set_rxfh(struct net_device *netdev,
-			 struct ethtool_rxfh_param *rxfh,
-			 struct netlink_ext_ack *extack)
+static int iavf_set_rxfh(struct net_device *netdev, const u32 *indir,
+			 const u8 *key, const u8 hfunc)
 {
 	struct iavf_adapter *adapter = netdev_priv(netdev);
 	u16 i;
 
 	/* Only support toeplitz hash function */
-	if (rxfh->hfunc != ETH_RSS_HASH_NO_CHANGE &&
-	    rxfh->hfunc != ETH_RSS_HASH_TOP)
+	if (hfunc != ETH_RSS_HASH_NO_CHANGE && hfunc != ETH_RSS_HASH_TOP)
 		return -EOPNOTSUPP;
 
-	if ((rxfh->input_xfrm & RXH_XFRM_SYM_XOR) &&
-	    adapter->hfunc != VIRTCHNL_RSS_ALG_TOEPLITZ_SYMMETRIC) {
-		if (!ADV_RSS_SUPPORT(adapter))
-			return -EOPNOTSUPP;
-		adapter->hfunc = VIRTCHNL_RSS_ALG_TOEPLITZ_SYMMETRIC;
-		adapter->aq_required |= IAVF_FLAG_AQ_SET_RSS_HFUNC;
-	} else if (!(rxfh->input_xfrm & RXH_XFRM_SYM_XOR) &&
-		    adapter->hfunc != VIRTCHNL_RSS_ALG_TOEPLITZ_ASYMMETRIC) {
-		adapter->hfunc = VIRTCHNL_RSS_ALG_TOEPLITZ_ASYMMETRIC;
-		adapter->aq_required |= IAVF_FLAG_AQ_SET_RSS_HFUNC;
-	}
-
-	if (!rxfh->key && !rxfh->indir)
+	if (!key && !indir)
 		return 0;
 
-	if (rxfh->key)
-		memcpy(adapter->rss_key, rxfh->key, adapter->rss_key_size);
+	if (key)
+		memcpy(adapter->rss_key, key, adapter->rss_key_size);
 
-	if (rxfh->indir) {
+	if (indir) {
 		/* Each 32 bits pointed by 'indir' is stored with a lut entry */
 		for (i = 0; i < adapter->rss_lut_size; i++)
-			adapter->rss_lut[i] = (u8)(rxfh->indir[i]);
+			adapter->rss_lut[i] = (u8)(indir[i]);
 	}
 
 	return iavf_config_rss(adapter);
@@ -1859,7 +1962,6 @@ static int iavf_set_rxfh(struct net_device *netdev,
 static const struct ethtool_ops iavf_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_USECS |
 				     ETHTOOL_COALESCE_USE_ADAPTIVE,
-	.supported_input_xfrm	= RXH_XFRM_SYM_XOR,
 	.get_drvinfo		= iavf_get_drvinfo,
 	.get_link		= ethtool_op_get_link,
 	.get_ringparam		= iavf_get_ringparam,
@@ -1867,6 +1969,8 @@ static const struct ethtool_ops iavf_ethtool_ops = {
 	.get_strings		= iavf_get_strings,
 	.get_ethtool_stats	= iavf_get_ethtool_stats,
 	.get_sset_count		= iavf_get_sset_count,
+	.get_priv_flags		= iavf_get_priv_flags,
+	.set_priv_flags		= iavf_set_priv_flags,
 	.get_msglevel		= iavf_get_msglevel,
 	.set_msglevel		= iavf_set_msglevel,
 	.get_coalesce		= iavf_get_coalesce,
@@ -1875,12 +1979,9 @@ static const struct ethtool_ops iavf_ethtool_ops = {
 	.set_per_queue_coalesce = iavf_set_per_queue_coalesce,
 	.set_rxnfc		= iavf_set_rxnfc,
 	.get_rxnfc		= iavf_get_rxnfc,
-	.get_rx_ring_count	= iavf_get_rx_ring_count,
 	.get_rxfh_indir_size	= iavf_get_rxfh_indir_size,
 	.get_rxfh		= iavf_get_rxfh,
 	.set_rxfh		= iavf_set_rxfh,
-	.get_rxfh_fields	= iavf_get_rxfh_fields,
-	.set_rxfh_fields	= iavf_set_rxfh_fields,
 	.get_channels		= iavf_get_channels,
 	.set_channels		= iavf_set_channels,
 	.get_rxfh_key_size	= iavf_get_rxfh_key_size,

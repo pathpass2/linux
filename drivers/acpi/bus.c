@@ -26,6 +26,9 @@
 #include <asm/mpspec.h>
 #include <linux/dmi.h>
 #endif
+#include <linux/acpi_agdi.h>
+#include <linux/acpi_apmt.h>
+#include <linux/acpi_iort.h>
 #include <linux/acpi_viot.h>
 #include <linux/pci.h>
 #include <acpi/apei.h>
@@ -112,17 +115,6 @@ int acpi_bus_get_status(struct acpi_device *device)
 	if (ACPI_FAILURE(status))
 		return -ENODEV;
 
-	if (!device->status.present && device->status.enabled) {
-		pr_info(FW_BUG "Device [%s] status [%08x]: not present and enabled\n",
-			device->pnp.bus_id, (u32)sta);
-		device->status.enabled = 0;
-		/*
-		 * The status is clearly invalid, so clear the functional bit as
-		 * well to avoid attempting to use the device.
-		 */
-		device->status.functional = 0;
-	}
-
 	acpi_set_device_status(device, sta);
 
 	if (device->status.functional && !device->status.present) {
@@ -180,238 +172,103 @@ void acpi_bus_detach_private_data(acpi_handle handle)
 }
 EXPORT_SYMBOL_GPL(acpi_bus_detach_private_data);
 
-static void acpi_dump_osc_data(acpi_handle handle, const guid_t *guid, int rev,
-			       struct acpi_buffer *cap)
+static void acpi_print_osc_error(acpi_handle handle,
+				 struct acpi_osc_context *context, char *error)
 {
-	u32 *capbuf = cap->pointer;
 	int i;
 
-	acpi_handle_debug(handle, "_OSC: UUID: %pUL, rev: %d\n", guid, rev);
-	for (i = 0; i < cap->length / sizeof(u32); i++)
-		acpi_handle_debug(handle, "_OSC: capabilities DWORD %i: [%08x]\n",
-				  i, capbuf[i]);
-}
+	acpi_handle_debug(handle, "(%s): %s\n", context->uuid_str, error);
 
-#define OSC_ERROR_MASK 	(OSC_REQUEST_ERROR | OSC_INVALID_UUID_ERROR | \
-			 OSC_INVALID_REVISION_ERROR | \
-			 OSC_CAPABILITIES_MASK_ERROR)
+	pr_debug("_OSC request data:");
+	for (i = 0; i < context->cap.length; i += sizeof(u32))
+		pr_debug(" %x", *((u32 *)(context->cap.pointer + i)));
 
-static int acpi_eval_osc(acpi_handle handle, guid_t *guid, int rev,
-			 struct acpi_buffer *cap,
-			 union acpi_object in_params[at_least 4],
-			 struct acpi_buffer *output)
-{
-	struct acpi_object_list input;
-	union acpi_object *out_obj;
-	acpi_status status;
-
-	in_params[0].type = ACPI_TYPE_BUFFER;
-	in_params[0].buffer.length = sizeof(*guid);
-	in_params[0].buffer.pointer = (u8 *)guid;
-	in_params[1].type = ACPI_TYPE_INTEGER;
-	in_params[1].integer.value = rev;
-	in_params[2].type = ACPI_TYPE_INTEGER;
-	in_params[2].integer.value = cap->length / sizeof(u32);
-	in_params[3].type = ACPI_TYPE_BUFFER;
-	in_params[3].buffer.length = cap->length;
-	in_params[3].buffer.pointer = cap->pointer;
-	input.pointer = in_params;
-	input.count = 4;
-
-	output->length = ACPI_ALLOCATE_BUFFER;
-	output->pointer = NULL;
-
-	status = acpi_evaluate_object(handle, "_OSC", &input, output);
-	if (ACPI_FAILURE(status) || !output->length)
-		return -ENODATA;
-
-	out_obj = output->pointer;
-	if (out_obj->type != ACPI_TYPE_BUFFER ||
-	    out_obj->buffer.length != cap->length) {
-		acpi_handle_debug(handle, "Invalid _OSC return buffer\n");
-		acpi_dump_osc_data(handle, guid, rev, cap);
-		ACPI_FREE(out_obj);
-		return -ENODATA;
-	}
-
-	return 0;
-}
-
-static bool acpi_osc_error_check(acpi_handle handle, guid_t *guid, int rev,
-				 struct acpi_buffer *cap, u32 *retbuf)
-{
-	/* Only take defined error bits into account. */
-	u32 errors = retbuf[OSC_QUERY_DWORD] & OSC_ERROR_MASK;
-	u32 *capbuf = cap->pointer;
-	bool fail;
-
-	/*
-	 * If OSC_QUERY_ENABLE is set, ignore the "capabilities masked"
-	 * bit because it merely means that some features have not been
-	 * acknowledged which is not unexpected.
-	 */
-	if (capbuf[OSC_QUERY_DWORD] & OSC_QUERY_ENABLE)
-		errors &= ~OSC_CAPABILITIES_MASK_ERROR;
-
-	if (!errors)
-		return false;
-
-	acpi_dump_osc_data(handle, guid, rev, cap);
-	/*
-	 * As a rule, fail only if OSC_QUERY_ENABLE is set because otherwise the
-	 * acknowledged features need to be controlled.
-	 */
-	fail = !!(capbuf[OSC_QUERY_DWORD] & OSC_QUERY_ENABLE);
-
-	if (errors & OSC_REQUEST_ERROR)
-		acpi_handle_debug(handle, "_OSC: request failed\n");
-
-	if (errors & OSC_INVALID_UUID_ERROR) {
-		acpi_handle_debug(handle, "_OSC: invalid UUID\n");
-		/*
-		 * Always fail if this bit is set because it means that the
-		 * request could not be processed.
-		 */
-		fail = true;
-	}
-
-	if (errors & OSC_INVALID_REVISION_ERROR)
-		acpi_handle_debug(handle, "_OSC: invalid revision\n");
-
-	if (errors & OSC_CAPABILITIES_MASK_ERROR)
-		acpi_handle_debug(handle, "_OSC: capability bits masked\n");
-
-	return fail;
+	pr_debug("\n");
 }
 
 acpi_status acpi_run_osc(acpi_handle handle, struct acpi_osc_context *context)
 {
-	union acpi_object in_params[4], *out_obj;
-	struct acpi_buffer output;
-	acpi_status status = AE_OK;
+	acpi_status status;
+	struct acpi_object_list input;
+	union acpi_object in_params[4];
+	union acpi_object *out_obj;
 	guid_t guid;
-	u32 *retbuf;
-	int ret;
+	u32 errors;
+	struct acpi_buffer output = {ACPI_ALLOCATE_BUFFER, NULL};
 
-	if (!context || !context->cap.pointer ||
-	    context->cap.length < 2 * sizeof(u32) ||
-	    guid_parse(context->uuid_str, &guid))
-		return AE_BAD_PARAMETER;
-
-	ret = acpi_eval_osc(handle, &guid, context->rev, &context->cap,
-			    in_params, &output);
-	if (ret)
+	if (!context)
 		return AE_ERROR;
+	if (guid_parse(context->uuid_str, &guid))
+		return AE_ERROR;
+	context->ret.length = ACPI_ALLOCATE_BUFFER;
+	context->ret.pointer = NULL;
+
+	/* Setting up input parameters */
+	input.count = 4;
+	input.pointer = in_params;
+	in_params[0].type 		= ACPI_TYPE_BUFFER;
+	in_params[0].buffer.length 	= 16;
+	in_params[0].buffer.pointer	= (u8 *)&guid;
+	in_params[1].type 		= ACPI_TYPE_INTEGER;
+	in_params[1].integer.value 	= context->rev;
+	in_params[2].type 		= ACPI_TYPE_INTEGER;
+	in_params[2].integer.value	= context->cap.length/sizeof(u32);
+	in_params[3].type		= ACPI_TYPE_BUFFER;
+	in_params[3].buffer.length 	= context->cap.length;
+	in_params[3].buffer.pointer 	= context->cap.pointer;
+
+	status = acpi_evaluate_object(handle, "_OSC", &input, &output);
+	if (ACPI_FAILURE(status))
+		return status;
+
+	if (!output.length)
+		return AE_NULL_OBJECT;
 
 	out_obj = output.pointer;
-	retbuf = (u32 *)out_obj->buffer.pointer;
-
-	if (acpi_osc_error_check(handle, &guid, context->rev, &context->cap, retbuf)) {
-		status = AE_ERROR;
-		goto out;
+	if (out_obj->type != ACPI_TYPE_BUFFER
+		|| out_obj->buffer.length != context->cap.length) {
+		acpi_print_osc_error(handle, context,
+			"_OSC evaluation returned wrong type");
+		status = AE_TYPE;
+		goto out_kfree;
 	}
-
+	/* Need to ignore the bit0 in result code */
+	errors = *((u32 *)out_obj->buffer.pointer) & ~(1 << 0);
+	if (errors) {
+		if (errors & OSC_REQUEST_ERROR)
+			acpi_print_osc_error(handle, context,
+				"_OSC request failed");
+		if (errors & OSC_INVALID_UUID_ERROR)
+			acpi_print_osc_error(handle, context,
+				"_OSC invalid UUID");
+		if (errors & OSC_INVALID_REVISION_ERROR)
+			acpi_print_osc_error(handle, context,
+				"_OSC invalid revision");
+		if (errors & OSC_CAPABILITIES_MASK_ERROR) {
+			if (((u32 *)context->cap.pointer)[OSC_QUERY_DWORD]
+			    & OSC_QUERY_ENABLE)
+				goto out_success;
+			status = AE_SUPPORT;
+			goto out_kfree;
+		}
+		status = AE_ERROR;
+		goto out_kfree;
+	}
+out_success:
 	context->ret.length = out_obj->buffer.length;
-	context->ret.pointer = kmemdup(retbuf, context->ret.length, GFP_KERNEL);
+	context->ret.pointer = kmemdup(out_obj->buffer.pointer,
+				       context->ret.length, GFP_KERNEL);
 	if (!context->ret.pointer) {
 		status =  AE_NO_MEMORY;
-		goto out;
+		goto out_kfree;
 	}
 	status =  AE_OK;
 
-out:
-	ACPI_FREE(out_obj);
+out_kfree:
+	kfree(output.pointer);
 	return status;
 }
 EXPORT_SYMBOL(acpi_run_osc);
-
-static int acpi_osc_handshake(acpi_handle handle, const char *uuid_str,
-			      int rev, u32 *capbuf, size_t bufsize)
-{
-	union acpi_object in_params[4], *out_obj;
-	struct acpi_object_list input;
-	struct acpi_buffer cap = {
-		.pointer = capbuf,
-		.length = bufsize * sizeof(u32),
-	};
-	struct acpi_buffer output;
-	u32 *retbuf, test;
-	guid_t guid;
-	int ret, i;
-
-	if (!capbuf || bufsize < 2 || guid_parse(uuid_str, &guid))
-		return -EINVAL;
-
-	/* First evaluate _OSC with OSC_QUERY_ENABLE set. */
-	capbuf[OSC_QUERY_DWORD] = OSC_QUERY_ENABLE;
-
-	ret = acpi_eval_osc(handle, &guid, rev, &cap, in_params, &output);
-	if (ret)
-		return ret;
-
-	out_obj = output.pointer;
-	retbuf = (u32 *)out_obj->buffer.pointer;
-
-	if (acpi_osc_error_check(handle, &guid, rev, &cap, retbuf)) {
-		ret = -ENODATA;
-		goto out;
-	}
-
-	/*
-	 * Clear the feature bits in the capabilities buffer that have not been
-	 * acknowledged and clear the return buffer.
-	 */
-	for (i = OSC_QUERY_DWORD + 1, test = 0; i < bufsize; i++) {
-		capbuf[i] &= retbuf[i];
-		test |= capbuf[i];
-		retbuf[i] = 0;
-	}
-	/*
-	 * If none of the feature bits have been acknowledged, there's nothing
-	 * more to do.  capbuf[] contains a feature mask of all zeros.
-	 */
-	if (!test)
-		goto out;
-
-	retbuf[OSC_QUERY_DWORD] = 0;
-	/*
-	 * Now evaluate _OSC again (directly) with OSC_QUERY_ENABLE clear and
-	 * the updated input and output buffers used before.  Since the feature
-	 * bits that were clear in the return buffer from the previous _OSC
-	 * evaluation are also clear in the capabilities buffer now, this _OSC
-	 * evaluation is not expected to fail.
-	 */
-	capbuf[OSC_QUERY_DWORD] = 0;
-	/* Reuse in_params[] populated by acpi_eval_osc(). */
-	input.pointer = in_params;
-	input.count = 4;
-
-	if (ACPI_FAILURE(acpi_evaluate_object(handle, "_OSC", &input, &output))) {
-		ret = -ENODATA;
-		goto out;
-	}
-
-	/*
-	 * Clear the feature bits in capbuf[] that have not been acknowledged.
-	 * After that, capbuf[] contains the resultant feature mask.
-	 */
-	for (i = OSC_QUERY_DWORD + 1; i < bufsize; i++)
-		capbuf[i] &= retbuf[i];
-
-	if (retbuf[OSC_QUERY_DWORD] & OSC_ERROR_MASK) {
-		/*
-		 * Complain about the unexpected errors and print diagnostic
-		 * information related to them.
-		 */
-		acpi_handle_err(handle, "_OSC: errors while processing control request\n");
-		acpi_handle_err(handle, "_OSC: some features may be missing\n");
-		acpi_osc_error_check(handle, &guid, rev, &cap, retbuf);
-	}
-
-out:
-	ACPI_FREE(out_obj);
-	return ret;
-}
 
 bool osc_sb_apei_support_acked;
 
@@ -444,69 +301,94 @@ EXPORT_SYMBOL_GPL(osc_sb_native_usb4_support_confirmed);
 
 bool osc_sb_cppc2_support_acked;
 
+static u8 sb_uuid_str[] = "0811B06E-4A27-44F9-8D60-3CBBC22E7B48";
 static void acpi_bus_osc_negotiate_platform_control(void)
 {
-	static const u8 sb_uuid_str[] = "0811B06E-4A27-44F9-8D60-3CBBC22E7B48";
-	u32 capbuf[2], feature_mask;
+	u32 capbuf[2], *capbuf_ret;
+	struct acpi_osc_context context = {
+		.uuid_str = sb_uuid_str,
+		.rev = 1,
+		.cap.length = 8,
+		.cap.pointer = capbuf,
+	};
 	acpi_handle handle;
 
-	feature_mask = OSC_SB_PR3_SUPPORT | OSC_SB_HOTPLUG_OST_SUPPORT |
-			OSC_SB_PCLPI_SUPPORT | OSC_SB_OVER_16_PSTATES_SUPPORT |
-			OSC_SB_GED_SUPPORT | OSC_SB_IRQ_RESOURCE_SOURCE_SUPPORT;
-
-	if (IS_ENABLED(CONFIG_ARM64) || IS_ENABLED(CONFIG_X86))
-		feature_mask |= OSC_SB_GENERIC_INITIATOR_SUPPORT;
-
-	if (IS_ENABLED(CONFIG_ACPI_CPPC_LIB)) {
-		feature_mask |= OSC_SB_CPC_SUPPORT | OSC_SB_CPCV2_SUPPORT |
-				OSC_SB_CPC_FLEXIBLE_ADR_SPACE;
-		if (IS_ENABLED(CONFIG_SCHED_MC_PRIO))
-			feature_mask |= OSC_SB_CPC_DIVERSE_HIGH_SUPPORT;
-	}
-
+	capbuf[OSC_QUERY_DWORD] = OSC_QUERY_ENABLE;
+	capbuf[OSC_SUPPORT_DWORD] = OSC_SB_PR3_SUPPORT; /* _PR3 is in use */
 	if (IS_ENABLED(CONFIG_ACPI_PROCESSOR_AGGREGATOR))
-		feature_mask |= OSC_SB_PAD_SUPPORT;
-
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PAD_SUPPORT;
 	if (IS_ENABLED(CONFIG_ACPI_PROCESSOR))
-		feature_mask |= OSC_SB_PPC_OST_SUPPORT;
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PPC_OST_SUPPORT;
 
-	if (IS_ENABLED(CONFIG_ACPI_THERMAL))
-		feature_mask |= OSC_SB_FAST_THERMAL_SAMPLING_SUPPORT;
-
-	if (IS_ENABLED(CONFIG_ACPI_BATTERY))
-		feature_mask |= OSC_SB_BATTERY_CHARGE_LIMITING_SUPPORT;
-
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_HOTPLUG_OST_SUPPORT;
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PCLPI_SUPPORT;
 	if (IS_ENABLED(CONFIG_ACPI_PRMT))
-		feature_mask |= OSC_SB_PRM_SUPPORT;
-
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_PRM_SUPPORT;
 	if (IS_ENABLED(CONFIG_ACPI_FFH))
-		feature_mask |= OSC_SB_FFH_OPR_SUPPORT;
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_FFH_OPR_SUPPORT;
+
+#ifdef CONFIG_ARM64
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_GENERIC_INITIATOR_SUPPORT;
+#endif
+#ifdef CONFIG_X86
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_GENERIC_INITIATOR_SUPPORT;
+#endif
+
+#ifdef CONFIG_ACPI_CPPC_LIB
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_CPC_SUPPORT;
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_CPCV2_SUPPORT;
+#endif
+
+	capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_CPC_FLEXIBLE_ADR_SPACE;
+
+	if (IS_ENABLED(CONFIG_SCHED_MC_PRIO))
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_CPC_DIVERSE_HIGH_SUPPORT;
 
 	if (IS_ENABLED(CONFIG_USB4))
-		feature_mask |= OSC_SB_NATIVE_USB4_SUPPORT;
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_NATIVE_USB4_SUPPORT;
 
 	if (!ghes_disable)
-		feature_mask |= OSC_SB_APEI_SUPPORT;
-
+		capbuf[OSC_SUPPORT_DWORD] |= OSC_SB_APEI_SUPPORT;
 	if (ACPI_FAILURE(acpi_get_handle(NULL, "\\_SB", &handle)))
 		return;
 
-	capbuf[OSC_SUPPORT_DWORD] = feature_mask;
-
-	acpi_handle_info(handle, "platform _OSC: OS support mask [%08x]\n", feature_mask);
-
-	if (acpi_osc_handshake(handle, sb_uuid_str, 1, capbuf, ARRAY_SIZE(capbuf)))
+	if (ACPI_FAILURE(acpi_run_osc(handle, &context)))
 		return;
 
-	feature_mask = capbuf[OSC_SUPPORT_DWORD];
+	capbuf_ret = context.ret.pointer;
+	if (context.ret.length <= OSC_SUPPORT_DWORD) {
+		kfree(context.ret.pointer);
+		return;
+	}
 
-	acpi_handle_info(handle, "platform _OSC: OS control mask [%08x]\n", feature_mask);
+	/*
+	 * Now run _OSC again with query flag clear and with the caps
+	 * supported by both the OS and the platform.
+	 */
+	capbuf[OSC_QUERY_DWORD] = 0;
+	capbuf[OSC_SUPPORT_DWORD] = capbuf_ret[OSC_SUPPORT_DWORD];
+	kfree(context.ret.pointer);
 
-	osc_sb_cppc2_support_acked = feature_mask & OSC_SB_CPCV2_SUPPORT;
-	osc_sb_apei_support_acked = feature_mask & OSC_SB_APEI_SUPPORT;
-	osc_pc_lpi_support_confirmed = feature_mask & OSC_SB_PCLPI_SUPPORT;
-	osc_sb_native_usb4_support_confirmed = feature_mask & OSC_SB_NATIVE_USB4_SUPPORT;
-	osc_cpc_flexible_adr_space_confirmed = feature_mask & OSC_SB_CPC_FLEXIBLE_ADR_SPACE;
+	if (ACPI_FAILURE(acpi_run_osc(handle, &context)))
+		return;
+
+	capbuf_ret = context.ret.pointer;
+	if (context.ret.length > OSC_SUPPORT_DWORD) {
+#ifdef CONFIG_ACPI_CPPC_LIB
+		osc_sb_cppc2_support_acked = capbuf_ret[OSC_SUPPORT_DWORD] & OSC_SB_CPCV2_SUPPORT;
+#endif
+
+		osc_sb_apei_support_acked =
+			capbuf_ret[OSC_SUPPORT_DWORD] & OSC_SB_APEI_SUPPORT;
+		osc_pc_lpi_support_confirmed =
+			capbuf_ret[OSC_SUPPORT_DWORD] & OSC_SB_PCLPI_SUPPORT;
+		osc_sb_native_usb4_support_confirmed =
+			capbuf_ret[OSC_SUPPORT_DWORD] & OSC_SB_NATIVE_USB4_SUPPORT;
+		osc_cpc_flexible_adr_space_confirmed =
+			capbuf_ret[OSC_SUPPORT_DWORD] & OSC_SB_CPC_FLEXIBLE_ADR_SPACE;
+	}
+
+	kfree(context.ret.pointer);
 }
 
 /*
@@ -526,11 +408,19 @@ static void acpi_bus_decode_usb_osc(const char *msg, u32 bits)
 	       (bits & OSC_USB_XDOMAIN) ? '+' : '-');
 }
 
+static u8 sb_usb_uuid_str[] = "23A0D13A-26AB-486C-9C5F-0FFA525A575A";
 static void acpi_bus_osc_negotiate_usb_control(void)
 {
-	static const u8 sb_usb_uuid_str[] = "23A0D13A-26AB-486C-9C5F-0FFA525A575A";
-	u32 capbuf[3], control;
+	u32 capbuf[3];
+	struct acpi_osc_context context = {
+		.uuid_str = sb_usb_uuid_str,
+		.rev = 1,
+		.cap.length = sizeof(capbuf),
+		.cap.pointer = capbuf,
+	};
 	acpi_handle handle;
+	acpi_status status;
+	u32 control;
 
 	if (!osc_sb_native_usb4_support_confirmed)
 		return;
@@ -541,16 +431,28 @@ static void acpi_bus_osc_negotiate_usb_control(void)
 	control = OSC_USB_USB3_TUNNELING | OSC_USB_DP_TUNNELING |
 		  OSC_USB_PCIE_TUNNELING | OSC_USB_XDOMAIN;
 
+	capbuf[OSC_QUERY_DWORD] = 0;
 	capbuf[OSC_SUPPORT_DWORD] = 0;
 	capbuf[OSC_CONTROL_DWORD] = control;
 
-	if (acpi_osc_handshake(handle, sb_usb_uuid_str, 1, capbuf, ARRAY_SIZE(capbuf)))
+	status = acpi_run_osc(handle, &context);
+	if (ACPI_FAILURE(status))
 		return;
 
-	osc_sb_native_usb4_control = capbuf[OSC_CONTROL_DWORD];
+	if (context.ret.length != sizeof(capbuf)) {
+		pr_info("USB4 _OSC: returned invalid length buffer\n");
+		goto out_free;
+	}
+
+	osc_sb_native_usb4_control =
+		control &  acpi_osc_ctx_get_pci_control(&context);
 
 	acpi_bus_decode_usb_osc("USB4 _OSC: OS supports", control);
-	acpi_bus_decode_usb_osc("USB4 _OSC: OS controls", osc_sb_native_usb4_control);
+	acpi_bus_decode_usb_osc("USB4 _OSC: OS controls",
+				osc_sb_native_usb4_control);
+
+out_free:
+	kfree(context.ret.pointer);
 }
 
 /* --------------------------------------------------------------------------
@@ -628,56 +530,66 @@ static void acpi_notify_device(acpi_handle handle, u32 event, void *data)
 	acpi_drv->ops.notify(device, event);
 }
 
+static void acpi_notify_device_fixed(void *data)
+{
+	struct acpi_device *device = data;
+
+	/* Fixed hardware devices have no handles */
+	acpi_notify_device(NULL, ACPI_FIXED_HARDWARE_EVENT, device);
+}
+
+static u32 acpi_device_fixed_event(void *data)
+{
+	acpi_os_execute(OSL_NOTIFY_HANDLER, acpi_notify_device_fixed, data);
+	return ACPI_INTERRUPT_HANDLED;
+}
+
 static int acpi_device_install_notify_handler(struct acpi_device *device,
 					      struct acpi_driver *acpi_drv)
 {
-	u32 type = acpi_drv->flags & ACPI_DRIVER_ALL_NOTIFY_EVENTS ?
-				ACPI_ALL_NOTIFY : ACPI_DEVICE_NOTIFY;
 	acpi_status status;
 
-	status = acpi_install_notify_handler(device->handle, type,
-					     acpi_notify_device, device);
+	if (device->device_type == ACPI_BUS_TYPE_POWER_BUTTON) {
+		status =
+		    acpi_install_fixed_event_handler(ACPI_EVENT_POWER_BUTTON,
+						     acpi_device_fixed_event,
+						     device);
+	} else if (device->device_type == ACPI_BUS_TYPE_SLEEP_BUTTON) {
+		status =
+		    acpi_install_fixed_event_handler(ACPI_EVENT_SLEEP_BUTTON,
+						     acpi_device_fixed_event,
+						     device);
+	} else {
+		u32 type = acpi_drv->flags & ACPI_DRIVER_ALL_NOTIFY_EVENTS ?
+				ACPI_ALL_NOTIFY : ACPI_DEVICE_NOTIFY;
+
+		status = acpi_install_notify_handler(device->handle, type,
+						     acpi_notify_device,
+						     device);
+	}
+
 	if (ACPI_FAILURE(status))
 		return -EINVAL;
-
 	return 0;
 }
 
 static void acpi_device_remove_notify_handler(struct acpi_device *device,
 					      struct acpi_driver *acpi_drv)
 {
-	u32 type = acpi_drv->flags & ACPI_DRIVER_ALL_NOTIFY_EVENTS ?
+	if (device->device_type == ACPI_BUS_TYPE_POWER_BUTTON) {
+		acpi_remove_fixed_event_handler(ACPI_EVENT_POWER_BUTTON,
+						acpi_device_fixed_event);
+	} else if (device->device_type == ACPI_BUS_TYPE_SLEEP_BUTTON) {
+		acpi_remove_fixed_event_handler(ACPI_EVENT_SLEEP_BUTTON,
+						acpi_device_fixed_event);
+	} else {
+		u32 type = acpi_drv->flags & ACPI_DRIVER_ALL_NOTIFY_EVENTS ?
 				ACPI_ALL_NOTIFY : ACPI_DEVICE_NOTIFY;
 
-	acpi_remove_notify_handler(device->handle, type,
-				   acpi_notify_device);
-
-	acpi_os_wait_events_complete();
+		acpi_remove_notify_handler(device->handle, type,
+					   acpi_notify_device);
+	}
 }
-
-int acpi_dev_install_notify_handler(struct acpi_device *adev,
-				    u32 handler_type,
-				    acpi_notify_handler handler, void *context)
-{
-	acpi_status status;
-
-	status = acpi_install_notify_handler(adev->handle, handler_type,
-					     handler, context);
-	if (ACPI_FAILURE(status))
-		return -ENODEV;
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(acpi_dev_install_notify_handler);
-
-void acpi_dev_remove_notify_handler(struct acpi_device *adev,
-				    u32 handler_type,
-				    acpi_notify_handler handler)
-{
-	acpi_remove_notify_handler(adev->handle, handler_type, handler);
-	acpi_os_wait_events_complete();
-}
-EXPORT_SYMBOL_GPL(acpi_dev_remove_notify_handler);
 
 /* Handle events targeting \_SB device (at present only graceful shutdown) */
 
@@ -711,9 +623,8 @@ static void acpi_sb_notify(acpi_handle handle, u32 event, void *data)
 	if (event == ACPI_SB_NOTIFY_SHUTDOWN_REQUEST) {
 		if (!work_busy(&acpi_sb_work))
 			schedule_work(&acpi_sb_work);
-	} else {
+	} else
 		pr_warn("event %x is not supported by \\_SB device\n", event);
-	}
 }
 
 static int __init acpi_setup_sb_notify_handler(void)
@@ -807,7 +718,7 @@ bool acpi_device_is_first_physical_node(struct acpi_device *adev,
  * resources available from it but they will be matched normally using functions
  * provided by their bus types (and analogously for their modalias).
  */
-const struct acpi_device *acpi_companion_match(const struct device *dev)
+struct acpi_device *acpi_companion_match(const struct device *dev)
 {
 	struct acpi_device *adev;
 
@@ -817,9 +728,6 @@ const struct acpi_device *acpi_companion_match(const struct device *dev)
 
 	if (list_empty(&adev->pnp.ids))
 		return NULL;
-
-	if (adev->pnp.type.backlight)
-		return adev;
 
 	return acpi_primary_dev_companion(adev, dev);
 }
@@ -834,7 +742,7 @@ const struct acpi_device *acpi_companion_match(const struct device *dev)
  * identifiers and a _DSD object with the "compatible" property, use that
  * property to match against the given list of identifiers.
  */
-static bool acpi_of_match_device(const struct acpi_device *adev,
+static bool acpi_of_match_device(struct acpi_device *adev,
 				 const struct of_device_id *of_match_table,
 				 const struct of_device_id **of_id)
 {
@@ -900,10 +808,9 @@ static bool acpi_of_modalias(struct acpi_device *adev,
  * @modalias:   Pointer to buffer that modalias value will be copied into
  * @len:	Length of modalias buffer
  *
- * This is a counterpart of of_alias_from_compatible() for struct acpi_device
- * objects. If there is a compatible string for @adev, it will be copied to
- * @modalias with the vendor prefix stripped; otherwise, @default_id will be
- * used.
+ * This is a counterpart of of_modalias_node() for struct acpi_device objects.
+ * If there is a compatible string for @adev, it will be copied to @modalias
+ * with the vendor prefix stripped; otherwise, @default_id will be used.
  */
 void acpi_set_modalias(struct acpi_device *adev, const char *default_id,
 		       char *modalias, size_t len)
@@ -936,7 +843,7 @@ static bool __acpi_match_device_cls(const struct acpi_device_id *id,
 	return true;
 }
 
-static bool __acpi_match_device(const struct acpi_device *device,
+static bool __acpi_match_device(struct acpi_device *device,
 				const struct acpi_device_id *acpi_ids,
 				const struct of_device_id *of_ids,
 				const struct acpi_device_id **acpi_id,
@@ -979,26 +886,6 @@ out_acpi_match:
 }
 
 /**
- * acpi_match_acpi_device - Match an ACPI device against a given list of ACPI IDs
- * @ids: Array of struct acpi_device_id objects to match against.
- * @adev: The ACPI device pointer to match.
- *
- * Match the ACPI device @adev against a given list of ACPI IDs @ids.
- *
- * Return:
- * a pointer to the first matching ACPI ID on success or %NULL on failure.
- */
-const struct acpi_device_id *acpi_match_acpi_device(const struct acpi_device_id *ids,
-						    const struct acpi_device *adev)
-{
-	const struct acpi_device_id *id = NULL;
-
-	__acpi_match_device(adev, ids, NULL, &id, NULL);
-	return id;
-}
-EXPORT_SYMBOL_GPL(acpi_match_acpi_device);
-
-/**
  * acpi_match_device - Match a struct device against a given list of ACPI IDs
  * @ids: Array of struct acpi_device_id object to match against.
  * @dev: The device structure to match.
@@ -1012,28 +899,37 @@ EXPORT_SYMBOL_GPL(acpi_match_acpi_device);
 const struct acpi_device_id *acpi_match_device(const struct acpi_device_id *ids,
 					       const struct device *dev)
 {
-	return acpi_match_acpi_device(ids, acpi_companion_match(dev));
+	const struct acpi_device_id *id = NULL;
+
+	__acpi_match_device(acpi_companion_match(dev), ids, NULL, &id, NULL);
+	return id;
 }
 EXPORT_SYMBOL_GPL(acpi_match_device);
+
+static const void *acpi_of_device_get_match_data(const struct device *dev)
+{
+	struct acpi_device *adev = ACPI_COMPANION(dev);
+	const struct of_device_id *match = NULL;
+
+	if (!acpi_of_match_device(adev, dev->driver->of_match_table, &match))
+		return NULL;
+
+	return match->data;
+}
 
 const void *acpi_device_get_match_data(const struct device *dev)
 {
 	const struct acpi_device_id *acpi_ids = dev->driver->acpi_match_table;
-	const struct of_device_id *of_ids = dev->driver->of_match_table;
-	const struct acpi_device *adev = acpi_companion_match(dev);
-	const struct acpi_device_id *acpi_id = NULL;
-	const struct of_device_id *of_id = NULL;
+	const struct acpi_device_id *match;
 
-	if (!__acpi_match_device(adev, acpi_ids, of_ids, &acpi_id, &of_id))
+	if (!acpi_ids)
+		return acpi_of_device_get_match_data(dev);
+
+	match = acpi_match_device(acpi_ids, dev);
+	if (!match)
 		return NULL;
 
-	if (acpi_id)
-		return (const void *)acpi_id->driver_data;
-
-	if (of_id)
-		return of_id->data;
-
-	return NULL;
+	return (const void *)match->driver_data;
 }
 EXPORT_SYMBOL_GPL(acpi_device_get_match_data);
 
@@ -1062,26 +958,25 @@ EXPORT_SYMBOL_GPL(acpi_driver_match_device);
    -------------------------------------------------------------------------- */
 
 /**
- * __acpi_bus_register_driver - register a driver with the ACPI bus
+ * acpi_bus_register_driver - register a driver with the ACPI bus
  * @driver: driver being registered
- * @owner: owning module/driver
  *
  * Registers a driver with the ACPI bus.  Searches the namespace for all
  * devices that match the driver's criteria and binds.  Returns zero for
  * success or a negative error status for failure.
  */
-int __acpi_bus_register_driver(struct acpi_driver *driver, struct module *owner)
+int acpi_bus_register_driver(struct acpi_driver *driver)
 {
 	if (acpi_disabled)
 		return -ENODEV;
 	driver->drv.name = driver->name;
 	driver->drv.bus = &acpi_bus_type;
-	driver->drv.owner = owner;
+	driver->drv.owner = driver->owner;
 
 	return driver_register(&driver->drv);
 }
 
-EXPORT_SYMBOL(__acpi_bus_register_driver);
+EXPORT_SYMBOL(acpi_bus_register_driver);
 
 /**
  * acpi_bus_unregister_driver - unregisters a driver with the ACPI bus
@@ -1101,10 +996,10 @@ EXPORT_SYMBOL(acpi_bus_unregister_driver);
                               ACPI Bus operations
    -------------------------------------------------------------------------- */
 
-static int acpi_bus_match(struct device *dev, const struct device_driver *drv)
+static int acpi_bus_match(struct device *dev, struct device_driver *drv)
 {
 	struct acpi_device *acpi_dev = to_acpi_device(dev);
-	const struct acpi_driver *acpi_drv = to_acpi_driver(drv);
+	struct acpi_driver *acpi_drv = to_acpi_driver(drv);
 
 	return acpi_dev->flags.match_driver
 		&& !acpi_match_device_ids(acpi_dev, acpi_drv->ids);
@@ -1128,10 +1023,8 @@ static int acpi_device_probe(struct device *dev)
 		return -ENOSYS;
 
 	ret = acpi_drv->ops.add(acpi_dev);
-	if (ret) {
-		acpi_dev->driver_data = NULL;
+	if (ret)
 		return ret;
-	}
 
 	pr_debug("Driver [%s] successfully bound to device [%s]\n",
 		 acpi_drv->name, acpi_dev->pnp.bus_id);
@@ -1170,7 +1063,7 @@ static void acpi_device_remove(struct device *dev)
 	put_device(dev);
 }
 
-const struct bus_type acpi_bus_type = {
+struct bus_type acpi_bus_type = {
 	.name		= "acpi",
 	.match		= acpi_bus_match,
 	.probe		= acpi_device_probe,
@@ -1251,17 +1144,11 @@ static int __init acpi_bus_init_irq(void)
 	case ACPI_IRQ_MODEL_GIC:
 		message = "GIC";
 		break;
-	case ACPI_IRQ_MODEL_GIC_V5:
-		message = "GICv5";
-		break;
 	case ACPI_IRQ_MODEL_PLATFORM:
 		message = "platform specific model";
 		break;
 	case ACPI_IRQ_MODEL_LPIC:
 		message = "LPIC";
-		break;
-	case ACPI_IRQ_MODEL_RINTC:
-		message = "RINTC";
 		break;
 	default:
 		pr_info("Unknown interrupt routing model\n");
@@ -1427,6 +1314,9 @@ static int __init acpi_bus_init(void)
 		goto error1;
 	}
 
+	/* Set capability bits for _OSC under processor scope */
+	acpi_early_processor_osc();
+
 	/*
 	 * _OSC method may exist in module level code,
 	 * so it must be run after ACPI_FULL_INITIALIZATION
@@ -1442,7 +1332,7 @@ static int __init acpi_bus_init(void)
 
 	acpi_sysfs_init();
 
-	acpi_early_processor_control_setup();
+	acpi_early_processor_set_pdc();
 
 	/*
 	 * Maybe EC region is required at bus_scan/acpi_get_devices. So it
@@ -1463,7 +1353,7 @@ static int __init acpi_bus_init(void)
 		goto error1;
 
 	/*
-	 * Register for all standard device notifications.
+	 * Register the for all standard device notifications.
 	 */
 	status =
 	    acpi_install_notify_handler(ACPI_ROOT_OBJECT, ACPI_SYSTEM_NOTIFY,
@@ -1491,8 +1381,6 @@ static int __init acpi_bus_init(void)
 struct kobject *acpi_kobj;
 EXPORT_SYMBOL_GPL(acpi_kobj);
 
-void __weak __init acpi_arch_init(void) { }
-
 static int __init acpi_init(void)
 {
 	int result;
@@ -1503,10 +1391,8 @@ static int __init acpi_init(void)
 	}
 
 	acpi_kobj = kobject_create_and_add("acpi", firmware_kobj);
-	if (!acpi_kobj) {
-		pr_err("Failed to register kobject\n");
-		return -ENOMEM;
-	}
+	if (!acpi_kobj)
+		pr_debug("%s: kset create error\n", __func__);
 
 	init_prmt();
 	acpi_init_pcc();
@@ -1519,10 +1405,10 @@ static int __init acpi_init(void)
 	acpi_init_ffh();
 
 	pci_mmcfg_late_init();
+	acpi_iort_init();
 	acpi_viot_early_init();
 	acpi_hest_init();
 	acpi_ghes_init();
-	acpi_arch_init();
 	acpi_scan_init();
 	acpi_ec_init();
 	acpi_debugfs_init();
@@ -1531,6 +1417,8 @@ static int __init acpi_init(void)
 	acpi_debugger_init();
 	acpi_setup_sb_notify_handler();
 	acpi_viot_init();
+	acpi_agdi_init();
+	acpi_apmt_init();
 	return 0;
 }
 

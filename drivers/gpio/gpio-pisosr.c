@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2015-2023 Texas Instruments Incorporated - https://www.ti.com/
- *	Andrew Davis <afd@ti.com>
+ * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ *	Andrew F. Davis <afd@ti.com>
  */
 
 #include <linux/bitmap.h>
@@ -67,6 +67,13 @@ static int pisosr_gpio_direction_input(struct gpio_chip *chip,
 	return 0;
 }
 
+static int pisosr_gpio_direction_output(struct gpio_chip *chip,
+					unsigned offset, int value)
+{
+	/* This device is input only */
+	return -EINVAL;
+}
+
 static int pisosr_gpio_get(struct gpio_chip *chip, unsigned offset)
 {
 	struct pisosr_gpio *gpio = gpiochip_get_data(chip);
@@ -101,6 +108,7 @@ static const struct gpio_chip template_chip = {
 	.owner			= THIS_MODULE,
 	.get_direction		= pisosr_gpio_get_direction,
 	.direction_input	= pisosr_gpio_direction_input,
+	.direction_output	= pisosr_gpio_direction_output,
 	.get			= pisosr_gpio_get,
 	.get_multiple		= pisosr_gpio_get_multiple,
 	.base			= -1,
@@ -118,6 +126,8 @@ static int pisosr_gpio_probe(struct spi_device *spi)
 	if (!gpio)
 		return -ENOMEM;
 
+	spi_set_drvdata(spi, gpio);
+
 	gpio->chip = template_chip;
 	gpio->chip.parent = dev;
 	of_property_read_u16(dev->of_node, "ngpios", &gpio->chip.ngpio);
@@ -134,17 +144,24 @@ static int pisosr_gpio_probe(struct spi_device *spi)
 		return dev_err_probe(dev, PTR_ERR(gpio->load_gpio),
 				     "Unable to allocate load GPIO\n");
 
-	ret = devm_mutex_init(dev, &gpio->lock);
-	if (ret)
-		return ret;
+	mutex_init(&gpio->lock);
 
-	ret = devm_gpiochip_add_data(dev, &gpio->chip, gpio);
+	ret = gpiochip_add_data(&gpio->chip, gpio);
 	if (ret < 0) {
 		dev_err(dev, "Unable to register gpiochip\n");
 		return ret;
 	}
 
 	return 0;
+}
+
+static void pisosr_gpio_remove(struct spi_device *spi)
+{
+	struct pisosr_gpio *gpio = spi_get_drvdata(spi);
+
+	gpiochip_remove(&gpio->chip);
+
+	mutex_destroy(&gpio->lock);
 }
 
 static const struct spi_device_id pisosr_gpio_id_table[] = {
@@ -165,10 +182,11 @@ static struct spi_driver pisosr_gpio_driver = {
 		.of_match_table = pisosr_gpio_of_match_table,
 	},
 	.probe = pisosr_gpio_probe,
+	.remove = pisosr_gpio_remove,
 	.id_table = pisosr_gpio_id_table,
 };
 module_spi_driver(pisosr_gpio_driver);
 
-MODULE_AUTHOR("Andrew Davis <afd@ti.com>");
+MODULE_AUTHOR("Andrew F. Davis <afd@ti.com>");
 MODULE_DESCRIPTION("SPI Compatible PISO Shift Register GPIO Driver");
 MODULE_LICENSE("GPL v2");

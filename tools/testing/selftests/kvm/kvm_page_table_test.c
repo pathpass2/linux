@@ -8,6 +8,9 @@
  * page size have been pre-allocated on your system, if you are planning to
  * use hugepages to back the guest memory for testing.
  */
+
+#define _GNU_SOURCE /* for program_invocation_name */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -18,7 +21,6 @@
 #include "kvm_util.h"
 #include "processor.h"
 #include "guest_modes.h"
-#include "ucall_common.h"
 
 #define TEST_MEM_SLOT_INDEX             1
 
@@ -198,13 +200,13 @@ static void *vcpu_worker(void *data)
 		if (READ_ONCE(host_quit))
 			return NULL;
 
-		clock_gettime(CLOCK_MONOTONIC, &start);
+		clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 		ret = _vcpu_run(vcpu);
 		ts_diff = timespec_elapsed(start);
 
-		TEST_ASSERT(ret == 0, "vcpu_run failed: %d", ret);
+		TEST_ASSERT(ret == 0, "vcpu_run failed: %d\n", ret);
 		TEST_ASSERT(get_ucall(vcpu, NULL) == UCALL_SYNC,
-			    "Invalid guest sync status: exit_reason=%s",
+			    "Invalid guest sync status: exit_reason=%s\n",
 			    exit_reason_str(vcpu->run->exit_reason));
 
 		pr_debug("Got sync event from vCPU %d\n", vcpu->id);
@@ -252,7 +254,7 @@ static struct kvm_vm *pre_init_before_test(enum vm_guest_mode mode, void *arg)
 
 	/* Create a VM with enough guest pages */
 	guest_num_pages = test_mem_size / guest_page_size;
-	vm = __vm_create_with_vcpus(VM_SHAPE(mode), nr_vcpus, guest_num_pages,
+	vm = __vm_create_with_vcpus(mode, nr_vcpus, guest_num_pages,
 				    guest_code, test_args.vcpus);
 
 	/* Align down GPA of the testing memslot */
@@ -365,7 +367,7 @@ static void run_test(enum vm_guest_mode mode, void *arg)
 	/* Test the stage of KVM creating mappings */
 	*current_stage = KVM_CREATE_MAPPINGS;
 
-	clock_gettime(CLOCK_MONOTONIC, &start);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 	vcpus_complete_new_stage(*current_stage);
 	ts_diff = timespec_elapsed(start);
 
@@ -378,7 +380,7 @@ static void run_test(enum vm_guest_mode mode, void *arg)
 
 	*current_stage = KVM_UPDATE_MAPPINGS;
 
-	clock_gettime(CLOCK_MONOTONIC, &start);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 	vcpus_complete_new_stage(*current_stage);
 	ts_diff = timespec_elapsed(start);
 
@@ -390,7 +392,7 @@ static void run_test(enum vm_guest_mode mode, void *arg)
 
 	*current_stage = KVM_ADJUST_MAPPINGS;
 
-	clock_gettime(CLOCK_MONOTONIC, &start);
+	clock_gettime(CLOCK_MONOTONIC_RAW, &start);
 	vcpus_complete_new_stage(*current_stage);
 	ts_diff = timespec_elapsed(start);
 

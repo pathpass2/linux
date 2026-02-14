@@ -190,7 +190,8 @@ static int __cx88_ir_start(void *priv)
 	ir = core->ir;
 
 	if (ir->polling) {
-		hrtimer_setup(&ir->timer, cx88_ir_work, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		hrtimer_init(&ir->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		ir->timer.function = cx88_ir_work;
 		hrtimer_start(&ir->timer,
 			      ktime_set(0, ir->polling * 1000000),
 			      HRTIMER_MODE_REL);

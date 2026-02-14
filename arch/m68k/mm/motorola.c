@@ -81,7 +81,7 @@ static inline void cache_page(void *vaddr)
 
 void mmu_page_ctor(void *page)
 {
-	__flush_pages_to_ram(page, 1);
+	__flush_page_to_ram(page);
 	flush_tlb_kernel_page(page);
 	nocache_page(page);
 }
@@ -92,24 +92,22 @@ void mmu_page_dtor(void *page)
 }
 
 /* ++andreas: {get,free}_pointer_table rewritten to use unused fields from
-   struct ptdesc instead of separately kmalloced struct.  Stolen from
+   struct page instead of separately kmalloced struct.  Stolen from
    arch/sparc/mm/srmmu.c ... */
 
 typedef struct list_head ptable_desc;
 
-static struct list_head ptable_list[3] = {
+static struct list_head ptable_list[2] = {
 	LIST_HEAD_INIT(ptable_list[0]),
 	LIST_HEAD_INIT(ptable_list[1]),
-	LIST_HEAD_INIT(ptable_list[2]),
 };
 
-#define PD_PTABLE(ptdesc) ((ptable_desc *)&(virt_to_ptdesc((void *)(ptdesc))->pt_list))
-#define PD_PTDESC(ptable) (list_entry(ptable, struct ptdesc, pt_list))
-#define PD_MARKBITS(dp) (*(unsigned int *)&PD_PTDESC(dp)->pt_index)
+#define PD_PTABLE(page) ((ptable_desc *)&(virt_to_page(page)->lru))
+#define PD_PAGE(ptable) (list_entry(ptable, struct page, lru))
+#define PD_MARKBITS(dp) (*(unsigned int *)&PD_PAGE(dp)->index)
 
-static const int ptable_shift[3] = {
-	7+2, /* PGD */
-	7+2, /* PMD */
+static const int ptable_shift[2] = {
+	7+2, /* PGD, PMD */
 	6+2, /* PTE */
 };
 
@@ -120,10 +118,10 @@ void __init init_pointer_table(void *table, int type)
 {
 	ptable_desc *dp;
 	unsigned long ptable = (unsigned long)table;
-	unsigned long pt_addr = ptable & PAGE_MASK;
-	unsigned int mask = 1U << ((ptable - pt_addr)/ptable_size(type));
+	unsigned long page = ptable & PAGE_MASK;
+	unsigned int mask = 1U << ((ptable - page)/ptable_size(type));
 
-	dp = PD_PTABLE(pt_addr);
+	dp = PD_PTABLE(page);
 	if (!(PD_MARKBITS(dp) & mask)) {
 		PD_MARKBITS(dp) = ptable_mask(type);
 		list_add(dp, &ptable_list[type]);
@@ -132,14 +130,14 @@ void __init init_pointer_table(void *table, int type)
 	PD_MARKBITS(dp) &= ~mask;
 	pr_debug("init_pointer_table: %lx, %x\n", ptable, PD_MARKBITS(dp));
 
-	/* unreserve the ptdesc so it's possible to free that ptdesc */
-	__ClearPageReserved(ptdesc_page(PD_PTDESC(dp)));
-	init_page_count(ptdesc_page(PD_PTDESC(dp)));
+	/* unreserve the page so it's possible to free that page */
+	__ClearPageReserved(PD_PAGE(dp));
+	init_page_count(PD_PAGE(dp));
 
 	return;
 }
 
-void *get_pointer_table(struct mm_struct *mm, int type)
+void *get_pointer_table(int type)
 {
 	ptable_desc *dp = ptable_list[type].next;
 	unsigned int mask = list_empty(&ptable_list[type]) ? 0 : PD_MARKBITS(dp);
@@ -147,44 +145,32 @@ void *get_pointer_table(struct mm_struct *mm, int type)
 
 	/*
 	 * For a pointer table for a user process address space, a
-	 * table is taken from a ptdesc allocated for the purpose.  Each
-	 * ptdesc can hold 8 pointer tables.  The ptdesc is remapped in
+	 * table is taken from a page allocated for the purpose.  Each
+	 * page can hold 8 pointer tables.  The page is remapped in
 	 * virtual address space to be noncacheable.
 	 */
 	if (mask == 0) {
-		struct ptdesc *ptdesc;
+		void *page;
 		ptable_desc *new;
-		void *pt_addr;
 
-		ptdesc = pagetable_alloc(GFP_KERNEL | __GFP_ZERO, 0);
-		if (!ptdesc)
+		if (!(page = (void *)get_zeroed_page(GFP_KERNEL)))
 			return NULL;
 
-		pt_addr = ptdesc_address(ptdesc);
-
-		switch (type) {
-		case TABLE_PTE:
+		if (type == TABLE_PTE) {
 			/*
 			 * m68k doesn't have SPLIT_PTE_PTLOCKS for not having
 			 * SMP.
 			 */
-			pagetable_pte_ctor(mm, ptdesc);
-			break;
-		case TABLE_PMD:
-			pagetable_pmd_ctor(mm, ptdesc);
-			break;
-		case TABLE_PGD:
-			pagetable_pgd_ctor(ptdesc);
-			break;
+			pgtable_pte_page_ctor(virt_to_page(page));
 		}
 
-		mmu_page_ctor(pt_addr);
+		mmu_page_ctor(page);
 
-		new = PD_PTABLE(pt_addr);
+		new = PD_PTABLE(page);
 		PD_MARKBITS(new) = ptable_mask(type) - 1;
 		list_add_tail(new, dp);
 
-		return (pmd_t *)pt_addr;
+		return (pmd_t *)page;
 	}
 
 	for (tmp = 1, off = 0; (mask & tmp) == 0; tmp <<= 1, off += ptable_size(type))
@@ -194,27 +180,29 @@ void *get_pointer_table(struct mm_struct *mm, int type)
 		/* move to end of list */
 		list_move_tail(dp, &ptable_list[type]);
 	}
-	return ptdesc_address(PD_PTDESC(dp)) + off;
+	return page_address(PD_PAGE(dp)) + off;
 }
 
 int free_pointer_table(void *table, int type)
 {
 	ptable_desc *dp;
 	unsigned long ptable = (unsigned long)table;
-	unsigned long pt_addr = ptable & PAGE_MASK;
-	unsigned int mask = 1U << ((ptable - pt_addr)/ptable_size(type));
+	unsigned long page = ptable & PAGE_MASK;
+	unsigned int mask = 1U << ((ptable - page)/ptable_size(type));
 
-	dp = PD_PTABLE(pt_addr);
+	dp = PD_PTABLE(page);
 	if (PD_MARKBITS (dp) & mask)
 		panic ("table already free!");
 
 	PD_MARKBITS (dp) |= mask;
 
 	if (PD_MARKBITS(dp) == ptable_mask(type)) {
-		/* all tables in ptdesc are free, free ptdesc */
+		/* all tables in page are free, free page */
 		list_del(dp);
-		mmu_page_dtor((void *)pt_addr);
-		pagetable_dtor_free(virt_to_ptdesc((void *)pt_addr));
+		mmu_page_dtor((void *)page);
+		if (type == TABLE_PTE)
+			pgtable_pte_page_dtor(virt_to_page(page));
+		free_page (page);
 		return 1;
 	} else if (ptable_list[type].next != dp) {
 		/*
@@ -429,6 +417,7 @@ DECLARE_VM_GET_PAGE_PROT
  */
 void __init paging_init(void)
 {
+	unsigned long max_zone_pfn[MAX_NR_ZONES] = { 0, };
 	unsigned long min_addr, max_addr;
 	unsigned long addr;
 	int i;
@@ -502,7 +491,10 @@ void __init paging_init(void)
 	 * initialize the bad page table and bad page to point
 	 * to a couple of allocated pages
 	 */
-	empty_zero_page = memblock_alloc_or_panic(PAGE_SIZE, PAGE_SIZE);
+	empty_zero_page = memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+	if (!empty_zero_page)
+		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
+		      __func__, PAGE_SIZE, PAGE_SIZE);
 
 	/*
 	 * Set up SFC/DFC registers
@@ -510,9 +502,12 @@ void __init paging_init(void)
 	set_fc(USER_DATA);
 
 #ifdef DEBUG
-	printk ("before node_set_state\n");
+	printk ("before free_area_init\n");
 #endif
 	for (i = 0; i < m68k_num_memory; i++)
 		if (node_present_pages(i))
 			node_set_state(i, N_NORMAL_MEMORY);
+
+	max_zone_pfn[ZONE_DMA] = memblock_end_of_DRAM();
+	free_area_init(max_zone_pfn);
 }

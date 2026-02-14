@@ -13,8 +13,7 @@
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/mtd.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <asm/fsl_lbc.h>
@@ -136,7 +135,7 @@ static int fun_exec_op(struct nand_chip *chip, const struct nand_operation *op,
 	unsigned int i;
 	int ret;
 
-	if (op->cs >= NAND_MAX_CHIPS)
+	if (op->cs > NAND_MAX_CHIPS)
 		return -EINVAL;
 
 	if (check_only)
@@ -173,7 +172,8 @@ static int fun_probe(struct platform_device *ofdev)
 	if (!fun)
 		return -ENOMEM;
 
-	fun->io_base = devm_platform_get_and_ioremap_resource(ofdev, 0, &io_res);
+	io_res = platform_get_resource(ofdev, IORESOURCE_MEM, 0);
+	fun->io_base = devm_ioremap_resource(&ofdev->dev, io_res);
 	if (IS_ERR(fun->io_base))
 		return PTR_ERR(fun->io_base);
 
@@ -235,7 +235,7 @@ static int fun_probe(struct platform_device *ofdev)
 	return 0;
 }
 
-static void fun_remove(struct platform_device *ofdev)
+static int fun_remove(struct platform_device *ofdev)
 {
 	struct fsl_upm_nand *fun = dev_get_drvdata(&ofdev->dev);
 	struct nand_chip *chip = &fun->chip;
@@ -245,6 +245,8 @@ static void fun_remove(struct platform_device *ofdev)
 	ret = mtd_device_unregister(mtd);
 	WARN_ON(ret);
 	nand_cleanup(chip);
+
+	return 0;
 }
 
 static const struct of_device_id of_fun_match[] = {

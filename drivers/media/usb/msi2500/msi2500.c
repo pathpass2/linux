@@ -107,7 +107,7 @@ struct msi2500_dev {
 	struct video_device vdev;
 	struct v4l2_device v4l2_dev;
 	struct v4l2_subdev *v4l2_subdev;
-	struct spi_controller *ctlr;
+	struct spi_master *master;
 
 	/* videobuf2 queue and queued buffers list */
 	struct vb2_queue vb_queue;
@@ -574,7 +574,7 @@ static void msi2500_disconnect(struct usb_interface *intf)
 	dev->udev = NULL;
 	v4l2_device_disconnect(&dev->v4l2_dev);
 	video_unregister_device(&dev->vdev);
-	spi_unregister_controller(dev->ctlr);
+	spi_unregister_master(dev->master);
 	mutex_unlock(&dev->v4l2_lock);
 	mutex_unlock(&dev->vb_queue_lock);
 
@@ -883,6 +883,8 @@ static const struct vb2_ops msi2500_vb2_ops = {
 	.buf_queue              = msi2500_buf_queue,
 	.start_streaming        = msi2500_start_streaming,
 	.stop_streaming         = msi2500_stop_streaming,
+	.wait_prepare           = vb2_ops_wait_prepare,
+	.wait_finish            = vb2_ops_wait_finish,
 };
 
 static int msi2500_enum_fmt_sdr_cap(struct file *file, void *priv,
@@ -1134,10 +1136,10 @@ static void msi2500_video_release(struct v4l2_device *v)
 	kfree(dev);
 }
 
-static int msi2500_transfer_one_message(struct spi_controller *ctlr,
+static int msi2500_transfer_one_message(struct spi_master *master,
 					struct spi_message *m)
 {
-	struct msi2500_dev *dev = spi_controller_get_devdata(ctlr);
+	struct msi2500_dev *dev = spi_master_get_devdata(master);
 	struct spi_transfer *t;
 	int ret = 0;
 	u32 data;
@@ -1152,7 +1154,7 @@ static int msi2500_transfer_one_message(struct spi_controller *ctlr,
 	}
 
 	m->status = ret;
-	spi_finalize_current_message(ctlr);
+	spi_finalize_current_message(master);
 	return ret;
 }
 
@@ -1161,7 +1163,7 @@ static int msi2500_probe(struct usb_interface *intf,
 {
 	struct msi2500_dev *dev;
 	struct v4l2_subdev *sd;
-	struct spi_controller *ctlr;
+	struct spi_master *master;
 	int ret;
 	static struct spi_board_info board_info = {
 		.modalias		= "msi001",
@@ -1197,7 +1199,6 @@ static int msi2500_probe(struct usb_interface *intf,
 	dev->vb_queue.ops = &msi2500_vb2_ops;
 	dev->vb_queue.mem_ops = &vb2_vmalloc_memops;
 	dev->vb_queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
-	dev->vb_queue.lock = &dev->vb_queue_lock;
 	ret = vb2_queue_init(&dev->vb_queue);
 	if (ret) {
 		dev_err(dev->dev, "Could not initialize vb2 queue\n");
@@ -1207,6 +1208,7 @@ static int msi2500_probe(struct usb_interface *intf,
 	/* Init video_device structure */
 	dev->vdev = msi2500_template;
 	dev->vdev.queue = &dev->vb_queue;
+	dev->vdev.queue->lock = &dev->vb_queue_lock;
 	video_set_drvdata(&dev->vdev, dev);
 
 	/* Register the v4l2_device structure */
@@ -1217,31 +1219,31 @@ static int msi2500_probe(struct usb_interface *intf,
 		goto err_free_mem;
 	}
 
-	/* SPI host adapter */
-	ctlr = spi_alloc_host(dev->dev, 0);
-	if (ctlr == NULL) {
+	/* SPI master adapter */
+	master = spi_alloc_master(dev->dev, 0);
+	if (master == NULL) {
 		ret = -ENOMEM;
 		goto err_unregister_v4l2_dev;
 	}
 
-	dev->ctlr = ctlr;
-	ctlr->bus_num = -1;
-	ctlr->num_chipselect = 1;
-	ctlr->transfer_one_message = msi2500_transfer_one_message;
-	spi_controller_set_devdata(ctlr, dev);
-	ret = spi_register_controller(ctlr);
+	dev->master = master;
+	master->bus_num = -1;
+	master->num_chipselect = 1;
+	master->transfer_one_message = msi2500_transfer_one_message;
+	spi_master_set_devdata(master, dev);
+	ret = spi_register_master(master);
 	if (ret) {
-		spi_controller_put(ctlr);
+		spi_master_put(master);
 		goto err_unregister_v4l2_dev;
 	}
 
 	/* load v4l2 subdevice */
-	sd = v4l2_spi_new_subdev(&dev->v4l2_dev, ctlr, &board_info);
+	sd = v4l2_spi_new_subdev(&dev->v4l2_dev, master, &board_info);
 	dev->v4l2_subdev = sd;
 	if (sd == NULL) {
 		dev_err(dev->dev, "cannot get v4l2 subdevice\n");
 		ret = -ENODEV;
-		goto err_unregister_controller;
+		goto err_unregister_master;
 	}
 
 	/* Register controls */
@@ -1274,8 +1276,8 @@ static int msi2500_probe(struct usb_interface *intf,
 	return 0;
 err_free_controls:
 	v4l2_ctrl_handler_free(&dev->hdl);
-err_unregister_controller:
-	spi_unregister_controller(dev->ctlr);
+err_unregister_master:
+	spi_unregister_master(dev->master);
 err_unregister_v4l2_dev:
 	v4l2_device_unregister(&dev->v4l2_dev);
 err_free_mem:

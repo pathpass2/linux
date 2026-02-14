@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0-only
-menu "Xilinx"
-
 config SND_SOC_XILINX_I2S
 	tristate "Audio support for the Xilinx I2S"
 	help
@@ -23,5 +21,3 @@ config SND_SOC_XILINX_SPDIF
 	  Select this option to enable Xilinx SPDIF Audio.
 	  This provides playback and capture of SPDIF audio in
 	  AES format.
-
-endmenu

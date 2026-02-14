@@ -11,7 +11,6 @@
 #include <linux/kernel.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 #include <linux/sysfs.h>
 #include <linux/io.h>
 #include <linux/mod_devicetable.h>
@@ -26,6 +25,8 @@
 #include <linux/timekeeping.h>
 
 #include <linux/iio/iio.h>
+
+#define DRIVER_NAME	"dht11"
 
 #define DHT11_DATA_VALID_TIME	2000000000  /* 2s in ns */
 
@@ -98,7 +99,7 @@ static void dht11_edges_print(struct dht11 *dht11)
 	for (i = 1; i < dht11->num_edges; ++i) {
 		dev_dbg(dht11->dev, "%d: %lld ns %s\n", i,
 			dht11->edges[i].ts - dht11->edges[i - 1].ts,
-			str_high_low(dht11->edges[i - 1].value));
+			dht11->edges[i - 1].value ? "high" : "low");
 	}
 }
 #endif /* CONFIG_DYNAMIC_DEBUG */
@@ -294,8 +295,10 @@ static int dht11_probe(struct platform_device *pdev)
 	struct iio_dev *iio;
 
 	iio = devm_iio_device_alloc(dev, sizeof(*dht11));
-	if (!iio)
+	if (!iio) {
+		dev_err(dev, "Failed to allocate IIO device\n");
 		return -ENOMEM;
+	}
 
 	dht11 = iio_priv(iio);
 	dht11->dev = dev;
@@ -327,7 +330,7 @@ static int dht11_probe(struct platform_device *pdev)
 
 static struct platform_driver dht11_driver = {
 	.driver = {
-		.name	= "dht11",
+		.name	= DRIVER_NAME,
 		.of_match_table = dht11_dt_ids,
 	},
 	.probe  = dht11_probe,

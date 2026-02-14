@@ -125,5 +125,4 @@ static void __exit kprobe_exit(void)
 
 module_init(kprobe_init)
 module_exit(kprobe_exit)
-MODULE_DESCRIPTION("sample kernel module showing the use of kprobes");
 MODULE_LICENSE("GPL");

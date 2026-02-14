@@ -101,7 +101,8 @@ static __used noinline struct dummy *dummy_alloc(void)
 	if (!d)
 		return NULL;
 
-	d->jiffies_expire = jiffies + secs_to_jiffies(EXPIRE_PERIOD);
+	d->jiffies_expire = jiffies +
+		msecs_to_jiffies(1000 * EXPIRE_PERIOD);
 
 	/* Oops, forgot to save leak! */
 	leak = kzalloc(sizeof(*leak), GFP_KERNEL);
@@ -151,7 +152,8 @@ static void alloc_work_func(struct work_struct *work)
 	list_add(&d->list, &dummy_list);
 	mutex_unlock(&dummy_list_mutex);
 
-	schedule_delayed_work(&alloc_dwork, secs_to_jiffies(ALLOC_PERIOD));
+	schedule_delayed_work(&alloc_dwork,
+		msecs_to_jiffies(1000 * ALLOC_PERIOD));
 }
 
 /*
@@ -182,13 +184,16 @@ static void cleanup_work_func(struct work_struct *work)
 	}
 	mutex_unlock(&dummy_list_mutex);
 
-	schedule_delayed_work(&cleanup_dwork, secs_to_jiffies(CLEANUP_PERIOD));
+	schedule_delayed_work(&cleanup_dwork,
+		msecs_to_jiffies(1000 * CLEANUP_PERIOD));
 }
 
 static int livepatch_shadow_mod_init(void)
 {
-	schedule_delayed_work(&alloc_dwork, secs_to_jiffies(ALLOC_PERIOD));
-	schedule_delayed_work(&cleanup_dwork, secs_to_jiffies(CLEANUP_PERIOD));
+	schedule_delayed_work(&alloc_dwork,
+		msecs_to_jiffies(1000 * ALLOC_PERIOD));
+	schedule_delayed_work(&cleanup_dwork,
+		msecs_to_jiffies(1000 * CLEANUP_PERIOD));
 
 	return 0;
 }

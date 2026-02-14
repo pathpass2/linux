@@ -16,6 +16,7 @@ struct tm5p5_nt35596 {
 	struct mipi_dsi_device *dsi;
 	struct regulator_bulk_data supplies[2];
 	struct gpio_desc *reset_gpio;
+	bool prepared;
 };
 
 static inline struct tm5p5_nt35596 *to_tm5p5_nt35596(struct drm_panel *panel)
@@ -33,97 +34,127 @@ static void tm5p5_nt35596_reset(struct tm5p5_nt35596 *ctx)
 	usleep_range(15000, 16000);
 }
 
-static void tm5p5_nt35596_on(struct mipi_dsi_multi_context *dsi_ctx)
+static int tm5p5_nt35596_on(struct tm5p5_nt35596 *ctx)
 {
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xff, 0x05);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xfb, 0x01);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xc5, 0x31);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xff, 0x04);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x01, 0x84);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x05, 0x25);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x06, 0x01);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x07, 0x20);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x08, 0x06);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x09, 0x08);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x0a, 0x10);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x0b, 0x10);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x0c, 0x10);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x0d, 0x14);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x0e, 0x14);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x0f, 0x14);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x10, 0x14);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x11, 0x14);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x12, 0x14);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x17, 0xf3);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x18, 0xc0);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x19, 0xc0);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x1a, 0xc0);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x1b, 0xb3);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x1c, 0xb3);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x1d, 0xb3);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x1e, 0xb3);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x1f, 0xb3);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x20, 0xb3);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xfb, 0x01);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xff, 0x00);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xfb, 0x01);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x35, 0x01);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xd3, 0x06);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0xd4, 0x04);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x5e, 0x0d);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x11, 0x00);
+	struct mipi_dsi_device *dsi = ctx->dsi;
 
-	mipi_dsi_msleep(dsi_ctx, 100);
+	mipi_dsi_generic_write_seq(dsi, 0xff, 0x05);
+	mipi_dsi_generic_write_seq(dsi, 0xfb, 0x01);
+	mipi_dsi_generic_write_seq(dsi, 0xc5, 0x31);
+	mipi_dsi_generic_write_seq(dsi, 0xff, 0x04);
+	mipi_dsi_generic_write_seq(dsi, 0x01, 0x84);
+	mipi_dsi_generic_write_seq(dsi, 0x05, 0x25);
+	mipi_dsi_generic_write_seq(dsi, 0x06, 0x01);
+	mipi_dsi_generic_write_seq(dsi, 0x07, 0x20);
+	mipi_dsi_generic_write_seq(dsi, 0x08, 0x06);
+	mipi_dsi_generic_write_seq(dsi, 0x09, 0x08);
+	mipi_dsi_generic_write_seq(dsi, 0x0a, 0x10);
+	mipi_dsi_generic_write_seq(dsi, 0x0b, 0x10);
+	mipi_dsi_generic_write_seq(dsi, 0x0c, 0x10);
+	mipi_dsi_generic_write_seq(dsi, 0x0d, 0x14);
+	mipi_dsi_generic_write_seq(dsi, 0x0e, 0x14);
+	mipi_dsi_generic_write_seq(dsi, 0x0f, 0x14);
+	mipi_dsi_generic_write_seq(dsi, 0x10, 0x14);
+	mipi_dsi_generic_write_seq(dsi, 0x11, 0x14);
+	mipi_dsi_generic_write_seq(dsi, 0x12, 0x14);
+	mipi_dsi_generic_write_seq(dsi, 0x17, 0xf3);
+	mipi_dsi_generic_write_seq(dsi, 0x18, 0xc0);
+	mipi_dsi_generic_write_seq(dsi, 0x19, 0xc0);
+	mipi_dsi_generic_write_seq(dsi, 0x1a, 0xc0);
+	mipi_dsi_generic_write_seq(dsi, 0x1b, 0xb3);
+	mipi_dsi_generic_write_seq(dsi, 0x1c, 0xb3);
+	mipi_dsi_generic_write_seq(dsi, 0x1d, 0xb3);
+	mipi_dsi_generic_write_seq(dsi, 0x1e, 0xb3);
+	mipi_dsi_generic_write_seq(dsi, 0x1f, 0xb3);
+	mipi_dsi_generic_write_seq(dsi, 0x20, 0xb3);
+	mipi_dsi_generic_write_seq(dsi, 0xfb, 0x01);
+	mipi_dsi_generic_write_seq(dsi, 0xff, 0x00);
+	mipi_dsi_generic_write_seq(dsi, 0xfb, 0x01);
+	mipi_dsi_generic_write_seq(dsi, 0x35, 0x01);
+	mipi_dsi_generic_write_seq(dsi, 0xd3, 0x06);
+	mipi_dsi_generic_write_seq(dsi, 0xd4, 0x04);
+	mipi_dsi_generic_write_seq(dsi, 0x5e, 0x0d);
+	mipi_dsi_generic_write_seq(dsi, 0x11, 0x00);
+	msleep(100);
+	mipi_dsi_generic_write_seq(dsi, 0x29, 0x00);
+	mipi_dsi_generic_write_seq(dsi, 0x53, 0x24);
 
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x29, 0x00);
-	mipi_dsi_generic_write_seq_multi(dsi_ctx, 0x53, 0x24);
+	return 0;
 }
 
-static void tm5p5_nt35596_off(struct mipi_dsi_multi_context *dsi_ctx)
+static int tm5p5_nt35596_off(struct tm5p5_nt35596 *ctx)
 {
-	mipi_dsi_dcs_set_display_off_multi(dsi_ctx);
+	struct mipi_dsi_device *dsi = ctx->dsi;
+	struct device *dev = &dsi->dev;
+	int ret;
 
-	mipi_dsi_msleep(dsi_ctx, 60);
+	ret = mipi_dsi_dcs_set_display_off(dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to set display off: %d\n", ret);
+		return ret;
+	}
+	msleep(60);
 
-	mipi_dsi_dcs_enter_sleep_mode_multi(dsi_ctx);
+	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to enter sleep mode: %d\n", ret);
+		return ret;
+	}
 
-	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x4f, 0x01);
+	mipi_dsi_dcs_write_seq(dsi, 0x4f, 0x01);
+
+	return 0;
 }
 
 static int tm5p5_nt35596_prepare(struct drm_panel *panel)
 {
 	struct tm5p5_nt35596 *ctx = to_tm5p5_nt35596(panel);
-	struct mipi_dsi_multi_context dsi_ctx =	{.dsi = ctx->dsi};
+	struct device *dev = &ctx->dsi->dev;
+	int ret;
 
-	dsi_ctx.accum_err = regulator_bulk_enable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
-	if (dsi_ctx.accum_err)
-		return dsi_ctx.accum_err;
+	if (ctx->prepared)
+		return 0;
+
+	ret = regulator_bulk_enable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
+	if (ret < 0) {
+		dev_err(dev, "Failed to enable regulators: %d\n", ret);
+		return ret;
+	}
 
 	tm5p5_nt35596_reset(ctx);
 
-	tm5p5_nt35596_on(&dsi_ctx);
-
-	if (dsi_ctx.accum_err) {
+	ret = tm5p5_nt35596_on(ctx);
+	if (ret < 0) {
+		dev_err(dev, "Failed to initialize panel: %d\n", ret);
 		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
 		regulator_bulk_disable(ARRAY_SIZE(ctx->supplies),
 				       ctx->supplies);
+		return ret;
 	}
 
-	return dsi_ctx.accum_err;
+	ctx->prepared = true;
+	return 0;
 }
 
 static int tm5p5_nt35596_unprepare(struct drm_panel *panel)
 {
 	struct tm5p5_nt35596 *ctx = to_tm5p5_nt35596(panel);
-	struct mipi_dsi_multi_context dsi_ctx =	{.dsi = ctx->dsi};
+	struct device *dev = &ctx->dsi->dev;
+	int ret;
 
-	tm5p5_nt35596_off(&dsi_ctx);
+	if (!ctx->prepared)
+		return 0;
+
+	ret = tm5p5_nt35596_off(ctx);
+	if (ret < 0)
+		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
 
 	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
 	regulator_bulk_disable(ARRAY_SIZE(ctx->supplies),
 			       ctx->supplies);
 
-	return dsi_ctx.accum_err;
+	ctx->prepared = false;
+	return 0;
 }
 
 static const struct drm_display_mode tm5p5_nt35596_mode = {
@@ -224,11 +255,9 @@ static int tm5p5_nt35596_probe(struct mipi_dsi_device *dsi)
 	struct tm5p5_nt35596 *ctx;
 	int ret;
 
-	ctx = devm_drm_panel_alloc(dev, struct tm5p5_nt35596, panel,
-				   &tm5p5_nt35596_panel_funcs,
-				   DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
 
 	ctx->supplies[0].supply = "vdd";
 	ctx->supplies[1].supply = "vddio";
@@ -254,6 +283,9 @@ static int tm5p5_nt35596_probe(struct mipi_dsi_device *dsi)
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
 			  MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_NO_EOT_PACKET |
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS | MIPI_DSI_MODE_LPM;
+
+	drm_panel_init(&ctx->panel, dev, &tm5p5_nt35596_panel_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 
 	ctx->panel.backlight = tm5p5_nt35596_create_backlight(dsi);
 	if (IS_ERR(ctx->panel.backlight)) {

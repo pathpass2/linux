@@ -21,6 +21,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/of_device.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
@@ -774,7 +775,7 @@ static int wmt_mci_probe(struct platform_device *pdev)
 		goto fail1;
 	}
 
-	mmc = devm_mmc_alloc_host(&pdev->dev, sizeof(*priv));
+	mmc = mmc_alloc_host(sizeof(struct wmt_mci_priv), &pdev->dev);
 	if (!mmc) {
 		dev_err(&pdev->dev, "Failed to allocate mmc_host\n");
 		ret = -ENOMEM;
@@ -801,14 +802,16 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	priv->power_inverted = 0;
 	priv->cd_inverted = 0;
 
-	priv->power_inverted = of_property_read_bool(np, "sdon-inverted");
-	priv->cd_inverted = of_property_read_bool(np, "cd-inverted");
+	if (of_get_property(np, "sdon-inverted", NULL))
+		priv->power_inverted = 1;
+	if (of_get_property(np, "cd-inverted", NULL))
+		priv->cd_inverted = 1;
 
 	priv->sdmmc_base = of_iomap(np, 0);
 	if (!priv->sdmmc_base) {
 		dev_err(&pdev->dev, "Failed to map IO space\n");
 		ret = -ENOMEM;
-		goto fail1;
+		goto fail2;
 	}
 
 	priv->irq_regular = regular_irq;
@@ -873,14 +876,17 @@ fail4:
 	free_irq(regular_irq, priv);
 fail3:
 	iounmap(priv->sdmmc_base);
+fail2:
+	mmc_free_host(mmc);
 fail1:
 	return ret;
 }
 
-static void wmt_mci_remove(struct platform_device *pdev)
+static int wmt_mci_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc;
 	struct wmt_mci_priv *priv;
+	struct resource *res;
 	u32 reg_tmp;
 
 	mmc = platform_get_drvdata(pdev);
@@ -908,9 +914,17 @@ static void wmt_mci_remove(struct platform_device *pdev)
 	clk_disable_unprepare(priv->clk_sdmmc);
 	clk_put(priv->clk_sdmmc);
 
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	release_mem_region(res->start, resource_size(res));
+
+	mmc_free_host(mmc);
+
 	dev_info(&pdev->dev, "WMT MCI device removed\n");
+
+	return 0;
 }
 
+#ifdef CONFIG_PM
 static int wmt_mci_suspend(struct device *dev)
 {
 	u32 reg_tmp;
@@ -962,7 +976,18 @@ static int wmt_mci_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(wmt_mci_pm_ops, wmt_mci_suspend, wmt_mci_resume);
+static const struct dev_pm_ops wmt_mci_pm = {
+	.suspend        = wmt_mci_suspend,
+	.resume         = wmt_mci_resume,
+};
+
+#define wmt_mci_pm_ops (&wmt_mci_pm)
+
+#else	/* !CONFIG_PM */
+
+#define wmt_mci_pm_ops NULL
+
+#endif
 
 static struct platform_driver wmt_mci_driver = {
 	.probe = wmt_mci_probe,
@@ -970,7 +995,7 @@ static struct platform_driver wmt_mci_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-		.pm = pm_sleep_ptr(&wmt_mci_pm_ops),
+		.pm = wmt_mci_pm_ops,
 		.of_match_table = wmt_mci_dt_ids,
 	},
 };

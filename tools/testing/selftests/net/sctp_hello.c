@@ -29,6 +29,7 @@ static void set_addr(struct sockaddr_storage *ss, char *ip, char *port, int *len
 static int do_client(int argc, char *argv[])
 {
 	struct sockaddr_storage ss;
+	char buf[] = "hello";
 	int csk, ret, len;
 
 	if (argc < 5) {
@@ -55,10 +56,16 @@ static int do_client(int argc, char *argv[])
 
 	set_addr(&ss, argv[3], argv[4], &len);
 	ret = connect(csk, (struct sockaddr *)&ss, len);
-	if (ret < 0)
+	if (ret < 0) {
+		printf("failed to connect to peer\n");
 		return -1;
+	}
 
-	recv(csk, NULL, 0, 0);
+	ret = send(csk, buf, strlen(buf) + 1, 0);
+	if (ret < 0) {
+		printf("failed to send msg %d\n", ret);
+		return -1;
+	}
 	close(csk);
 
 	return 0;
@@ -68,6 +75,7 @@ int main(int argc, char *argv[])
 {
 	struct sockaddr_storage ss;
 	int lsk, csk, ret, len;
+	char buf[20];
 
 	if (argc < 2 || (strcmp(argv[1], "server") && strcmp(argv[1], "client"))) {
 		printf("%s server|client ...\n", argv[0]);
@@ -117,6 +125,11 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
+	ret = recv(csk, buf, sizeof(buf), 0);
+	if (ret <= 0) {
+		printf("failed to recv msg %d\n", ret);
+		return -1;
+	}
 	close(csk);
 	close(lsk);
 

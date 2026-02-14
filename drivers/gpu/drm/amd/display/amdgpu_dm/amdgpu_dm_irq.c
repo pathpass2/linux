@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 /*
  * Copyright 2015 Advanced Micro Devices, Inc.
  *
@@ -121,8 +120,7 @@ static void dm_irq_work_func(struct work_struct *work)
 
 	/* Call a DAL subcomponent which registered for interrupt notification
 	 * at INTERRUPT_LOW_IRQ_CONTEXT.
-	 * (The most common use is HPD interrupt)
-	 */
+	 * (The most common use is HPD interrupt) */
 }
 
 /*
@@ -174,8 +172,7 @@ static struct list_head *remove_irq_handler(struct amdgpu_device *adev,
 
 	if (handler_removed == false) {
 		/* Not necessarily an error - caller may not
-		 * know the context.
-		 */
+		 * know the context. */
 		return NULL;
 	}
 
@@ -264,7 +261,7 @@ validate_irq_registration_params(struct dc_interrupt_params *int_params,
 static bool validate_irq_unregistration_params(enum dc_irq_source irq_source,
 					       irq_handler_idx handler_idx)
 {
-	if (handler_idx == DAL_INVALID_IRQ_HANDLER_IDX) {
+	if (DAL_INVALID_IRQ_HANDLER_IDX == handler_idx) {
 		DRM_ERROR("DM_IRQ: invalid handler_idx==NULL!\n");
 		return false;
 	}
@@ -346,8 +343,7 @@ void *amdgpu_dm_irq_register_interrupt(struct amdgpu_device *adev,
 	/* This pointer will be stored by code which requested interrupt
 	 * registration.
 	 * The same pointer will be needed in order to unregister the
-	 * interrupt.
-	 */
+	 * interrupt. */
 
 	DRM_DEBUG_KMS(
 		"DM_IRQ: added irq handler: %p for: dal_src=%d, irq context=%d\n",
@@ -394,8 +390,7 @@ void amdgpu_dm_irq_unregister_interrupt(struct amdgpu_device *adev,
 
 	if (handler_list == NULL) {
 		/* If we got here, it means we searched all irq contexts
-		 * for this irq source, but the handler was not found.
-		 */
+		 * for this irq source, but the handler was not found. */
 		DRM_ERROR(
 		"DM_IRQ: failed to find irq handler:%p for irq_source:%d!\n",
 			ih, irq_source);
@@ -455,8 +450,7 @@ void amdgpu_dm_irq_fini(struct amdgpu_device *adev)
 		DM_IRQ_TABLE_LOCK(adev, irq_table_flags);
 		/* The handler was removed from the table,
 		 * it means it is safe to flush all the 'work'
-		 * (because no code can schedule a new one).
-		 */
+		 * (because no code can schedule a new one). */
 		lh = &adev->dm.irq_handler_list_low_tab[src];
 		DM_IRQ_TABLE_UNLOCK(adev, irq_table_flags);
 
@@ -474,9 +468,8 @@ void amdgpu_dm_irq_fini(struct amdgpu_device *adev)
 	unregister_all_irq_handlers(adev);
 }
 
-void amdgpu_dm_irq_suspend(struct amdgpu_device *adev)
+int amdgpu_dm_irq_suspend(struct amdgpu_device *adev)
 {
-	struct drm_device *dev = adev_to_drm(adev);
 	int src;
 	struct list_head *hnd_list_h;
 	struct list_head *hnd_list_l;
@@ -501,7 +494,7 @@ void amdgpu_dm_irq_suspend(struct amdgpu_device *adev)
 		DM_IRQ_TABLE_UNLOCK(adev, irq_table_flags);
 
 		if (!list_empty(hnd_list_l)) {
-			list_for_each_safe(entry, tmp, hnd_list_l) {
+			list_for_each_safe (entry, tmp, hnd_list_l) {
 				handler = list_entry(
 					entry,
 					struct amdgpu_dm_irq_handler_data,
@@ -513,12 +506,10 @@ void amdgpu_dm_irq_suspend(struct amdgpu_device *adev)
 	}
 
 	DM_IRQ_TABLE_UNLOCK(adev, irq_table_flags);
-
-	if (dev->mode_config.poll_enabled)
-		drm_kms_helper_poll_disable(dev);
+	return 0;
 }
 
-void amdgpu_dm_irq_resume_early(struct amdgpu_device *adev)
+int amdgpu_dm_irq_resume_early(struct amdgpu_device *adev)
 {
 	int src;
 	struct list_head *hnd_list_h, *hnd_list_l;
@@ -526,7 +517,7 @@ void amdgpu_dm_irq_resume_early(struct amdgpu_device *adev)
 
 	DM_IRQ_TABLE_LOCK(adev, irq_table_flags);
 
-	drm_dbg(adev_to_drm(adev), "DM_IRQ: early resume\n");
+	DRM_DEBUG_KMS("DM_IRQ: early resume\n");
 
 	/* re-enable short pulse interrupts HW interrupt */
 	for (src = DC_IRQ_SOURCE_HPD1RX; src <= DC_IRQ_SOURCE_HPD6RX; src++) {
@@ -537,18 +528,19 @@ void amdgpu_dm_irq_resume_early(struct amdgpu_device *adev)
 	}
 
 	DM_IRQ_TABLE_UNLOCK(adev, irq_table_flags);
+
+	return 0;
 }
 
-void amdgpu_dm_irq_resume_late(struct amdgpu_device *adev)
+int amdgpu_dm_irq_resume_late(struct amdgpu_device *adev)
 {
-	struct drm_device *dev = adev_to_drm(adev);
 	int src;
 	struct list_head *hnd_list_h, *hnd_list_l;
 	unsigned long irq_table_flags;
 
 	DM_IRQ_TABLE_LOCK(adev, irq_table_flags);
 
-	drm_dbg(adev_to_drm(adev), "DM_IRQ: resume\n");
+	DRM_DEBUG_KMS("DM_IRQ: resume\n");
 
 	/**
 	 * Renable HW interrupt  for HPD and only since FLIP and VBLANK
@@ -562,9 +554,7 @@ void amdgpu_dm_irq_resume_late(struct amdgpu_device *adev)
 	}
 
 	DM_IRQ_TABLE_UNLOCK(adev, irq_table_flags);
-
-	if (dev->mode_config.poll_enabled)
-		drm_kms_helper_poll_enable(dev);
+	return 0;
 }
 
 /*
@@ -581,7 +571,7 @@ static void amdgpu_dm_irq_schedule_work(struct amdgpu_device *adev,
 	if (list_empty(handler_list))
 		return;
 
-	list_for_each_entry(handler_data, handler_list, list) {
+	list_for_each_entry (handler_data, handler_list, list) {
 		if (queue_work(system_highpri_wq, &handler_data->work)) {
 			work_queued = true;
 			break;
@@ -637,8 +627,7 @@ static void amdgpu_dm_irq_immediate_work(struct amdgpu_device *adev,
 			    &adev->dm.irq_handler_list_high_tab[irq_source],
 			    list) {
 		/* Call a subcomponent which registered for immediate
-		 * interrupt notification
-		 */
+		 * interrupt notification */
 		handler_data->handler(handler_data->handler_arg);
 	}
 
@@ -675,7 +664,7 @@ static int amdgpu_dm_irq_handler(struct amdgpu_device *adev,
 	return 0;
 }
 
-static enum dc_irq_source amdgpu_dm_hpd_to_dal_irq_source(unsigned int type)
+static enum dc_irq_source amdgpu_dm_hpd_to_dal_irq_source(unsigned type)
 {
 	switch (type) {
 	case AMDGPU_HPD_1:
@@ -697,7 +686,7 @@ static enum dc_irq_source amdgpu_dm_hpd_to_dal_irq_source(unsigned int type)
 
 static int amdgpu_dm_set_hpd_irq_state(struct amdgpu_device *adev,
 				       struct amdgpu_irq_src *source,
-				       unsigned int type,
+				       unsigned type,
 				       enum amdgpu_interrupt_state state)
 {
 	enum dc_irq_source src = amdgpu_dm_hpd_to_dal_irq_source(type);
@@ -709,14 +698,14 @@ static int amdgpu_dm_set_hpd_irq_state(struct amdgpu_device *adev,
 
 static inline int dm_irq_state(struct amdgpu_device *adev,
 			       struct amdgpu_irq_src *source,
-			       unsigned int crtc_id,
+			       unsigned crtc_id,
 			       enum amdgpu_interrupt_state state,
 			       const enum irq_type dal_irq_type,
 			       const char *func)
 {
 	bool st;
 	enum dc_irq_source irq_source;
-	struct dc *dc = adev->dm.dc;
+
 	struct amdgpu_crtc *acrtc = adev->mode_info.crtcs[crtc_id];
 
 	if (!acrtc) {
@@ -734,16 +723,13 @@ static inline int dm_irq_state(struct amdgpu_device *adev,
 
 	st = (state == AMDGPU_IRQ_STATE_ENABLE);
 
-	if (dc && dc->caps.ips_support && dc->idle_optimizations_allowed)
-		dc_allow_idle_optimizations(dc, false);
-
 	dc_interrupt_set(adev->dm.dc, irq_source, st);
 	return 0;
 }
 
 static int amdgpu_dm_set_pflip_irq_state(struct amdgpu_device *adev,
 					 struct amdgpu_irq_src *source,
-					 unsigned int crtc_id,
+					 unsigned crtc_id,
 					 enum amdgpu_interrupt_state state)
 {
 	return dm_irq_state(
@@ -757,7 +743,7 @@ static int amdgpu_dm_set_pflip_irq_state(struct amdgpu_device *adev,
 
 static int amdgpu_dm_set_crtc_irq_state(struct amdgpu_device *adev,
 					struct amdgpu_irq_src *source,
-					unsigned int crtc_id,
+					unsigned crtc_id,
 					enum amdgpu_interrupt_state state)
 {
 	return dm_irq_state(
@@ -899,74 +885,27 @@ void amdgpu_dm_hpd_init(struct amdgpu_device *adev)
 	struct drm_device *dev = adev_to_drm(adev);
 	struct drm_connector *connector;
 	struct drm_connector_list_iter iter;
-	int irq_type;
-	int i;
-	bool use_polling = false;
-
-	/* First, clear all hpd and hpdrx interrupts */
-	for (i = DC_IRQ_SOURCE_HPD1; i <= DC_IRQ_SOURCE_HPD6RX; i++) {
-		if (!dc_interrupt_set(adev->dm.dc, i, false))
-			drm_err(dev, "Failed to clear hpd(rx) source=%d on init\n",
-				i);
-	}
 
 	drm_connector_list_iter_begin(dev, &iter);
 	drm_for_each_connector_iter(connector, &iter) {
-		struct amdgpu_dm_connector *amdgpu_dm_connector;
-		const struct dc_link *dc_link;
+		struct amdgpu_dm_connector *amdgpu_dm_connector =
+				to_amdgpu_dm_connector(connector);
 
-		if (connector->connector_type == DRM_MODE_CONNECTOR_WRITEBACK)
-			continue;
+		const struct dc_link *dc_link = amdgpu_dm_connector->dc_link;
 
-		amdgpu_dm_connector = to_amdgpu_dm_connector(connector);
-
-		/*
-		 * Analog connectors may be hot-plugged unlike other connector
-		 * types that don't support HPD. Only poll analog connectors.
-		 */
-		use_polling |=
-			amdgpu_dm_connector->dc_link &&
-			dc_connector_supports_analog(amdgpu_dm_connector->dc_link->link_id.id);
-
-		dc_link = amdgpu_dm_connector->dc_link;
-
-		/*
-		 * Get a base driver irq reference for hpd ints for the lifetime
-		 * of dm. Note that only hpd interrupt types are registered with
-		 * base driver; hpd_rx types aren't. IOW, amdgpu_irq_get/put on
-		 * hpd_rx isn't available. DM currently controls hpd_rx
-		 * explicitly with dc_interrupt_set()
-		 */
-		if (dc_link->irq_source_hpd != DC_IRQ_SOURCE_INVALID) {
-			irq_type = dc_link->irq_source_hpd - DC_IRQ_SOURCE_HPD1;
-			/*
-			 * TODO: There's a mismatch between mode_info.num_hpd
-			 * and what bios reports as the # of connectors with hpd
-			 * sources. Since the # of hpd source types registered
-			 * with base driver == mode_info.num_hpd, we have to
-			 * fallback to dc_interrupt_set for the remaining types.
-			 */
-			if (irq_type < adev->mode_info.num_hpd) {
-				if (amdgpu_irq_get(adev, &adev->hpd_irq, irq_type))
-					drm_err(dev, "DM_IRQ: Failed get HPD for source=%d)!\n",
-						dc_link->irq_source_hpd);
-			} else {
-				dc_interrupt_set(adev->dm.dc,
-						 dc_link->irq_source_hpd,
-						 true);
-			}
+		if (DC_IRQ_SOURCE_INVALID != dc_link->irq_source_hpd) {
+			dc_interrupt_set(adev->dm.dc,
+					dc_link->irq_source_hpd,
+					true);
 		}
 
-		if (dc_link->irq_source_hpd_rx != DC_IRQ_SOURCE_INVALID) {
+		if (DC_IRQ_SOURCE_INVALID != dc_link->irq_source_hpd_rx) {
 			dc_interrupt_set(adev->dm.dc,
 					dc_link->irq_source_hpd_rx,
 					true);
 		}
 	}
 	drm_connector_list_iter_end(&iter);
-
-	if (use_polling)
-		drm_kms_helper_poll_init(dev);
 }
 
 /**
@@ -982,42 +921,24 @@ void amdgpu_dm_hpd_fini(struct amdgpu_device *adev)
 	struct drm_device *dev = adev_to_drm(adev);
 	struct drm_connector *connector;
 	struct drm_connector_list_iter iter;
-	int irq_type;
 
 	drm_connector_list_iter_begin(dev, &iter);
 	drm_for_each_connector_iter(connector, &iter) {
-		struct amdgpu_dm_connector *amdgpu_dm_connector;
-		const struct dc_link *dc_link;
+		struct amdgpu_dm_connector *amdgpu_dm_connector =
+				to_amdgpu_dm_connector(connector);
+		const struct dc_link *dc_link = amdgpu_dm_connector->dc_link;
 
-		if (connector->connector_type == DRM_MODE_CONNECTOR_WRITEBACK)
-			continue;
-
-		amdgpu_dm_connector = to_amdgpu_dm_connector(connector);
-		dc_link = amdgpu_dm_connector->dc_link;
-
-		if (dc_link->irq_source_hpd != DC_IRQ_SOURCE_INVALID) {
-			irq_type = dc_link->irq_source_hpd - DC_IRQ_SOURCE_HPD1;
-
-			/* TODO: See same TODO in amdgpu_dm_hpd_init() */
-			if (irq_type < adev->mode_info.num_hpd) {
-				if (amdgpu_irq_put(adev, &adev->hpd_irq, irq_type))
-					drm_err(dev, "DM_IRQ: Failed put HPD for source=%d!\n",
-						dc_link->irq_source_hpd);
-			} else {
-				dc_interrupt_set(adev->dm.dc,
-						 dc_link->irq_source_hpd,
-						 false);
-			}
+		if (DC_IRQ_SOURCE_INVALID != dc_link->irq_source_hpd) {
+			dc_interrupt_set(adev->dm.dc,
+					dc_link->irq_source_hpd,
+					false);
 		}
 
-		if (dc_link->irq_source_hpd_rx != DC_IRQ_SOURCE_INVALID) {
+		if (DC_IRQ_SOURCE_INVALID != dc_link->irq_source_hpd_rx) {
 			dc_interrupt_set(adev->dm.dc,
 					dc_link->irq_source_hpd_rx,
 					false);
 		}
 	}
 	drm_connector_list_iter_end(&iter);
-
-	if (dev->mode_config.poll_enabled)
-		drm_kms_helper_poll_fini(dev);
 }

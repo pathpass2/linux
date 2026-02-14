@@ -22,7 +22,7 @@
  */
 
 #include <linux/prime_numbers.h>
-#include <linux/prandom.h>
+#include <linux/random.h>
 
 #include "i915_selftest.h"
 #include "i915_utils.h"

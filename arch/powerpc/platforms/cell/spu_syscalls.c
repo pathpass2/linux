@@ -36,9 +36,6 @@ static inline struct spufs_calls *spufs_calls_get(void)
 
 static inline void spufs_calls_put(struct spufs_calls *calls)
 {
-	if (!calls)
-		return;
-
 	BUG_ON(calls != spufs_calls);
 
 	/* we don't need to rcu this, as we hold a reference to the module */
@@ -56,55 +53,82 @@ static inline void spufs_calls_put(struct spufs_calls *calls) { }
 
 #endif /* CONFIG_SPU_FS_MODULE */
 
-DEFINE_CLASS(spufs_calls, struct spufs_calls *, spufs_calls_put(_T), spufs_calls_get(), void)
-
 SYSCALL_DEFINE4(spu_create, const char __user *, name, unsigned int, flags,
 	umode_t, mode, int, neighbor_fd)
 {
-	CLASS(spufs_calls, calls)();
+	long ret;
+	struct spufs_calls *calls;
+
+	calls = spufs_calls_get();
 	if (!calls)
 		return -ENOSYS;
 
 	if (flags & SPU_CREATE_AFFINITY_SPU) {
-		CLASS(fd, neighbor)(neighbor_fd);
-		if (fd_empty(neighbor))
-			return -EBADF;
-		return calls->create_thread(name, flags, mode, fd_file(neighbor));
-	} else {
-		return calls->create_thread(name, flags, mode, NULL);
-	}
+		struct fd neighbor = fdget(neighbor_fd);
+		ret = -EBADF;
+		if (neighbor.file) {
+			ret = calls->create_thread(name, flags, mode, neighbor.file);
+			fdput(neighbor);
+		}
+	} else
+		ret = calls->create_thread(name, flags, mode, NULL);
+
+	spufs_calls_put(calls);
+	return ret;
 }
 
 SYSCALL_DEFINE3(spu_run,int, fd, __u32 __user *, unpc, __u32 __user *, ustatus)
 {
-	CLASS(spufs_calls, calls)();
+	long ret;
+	struct fd arg;
+	struct spufs_calls *calls;
+
+	calls = spufs_calls_get();
 	if (!calls)
 		return -ENOSYS;
 
-	CLASS(fd, arg)(fd);
-	if (fd_empty(arg))
-		return -EBADF;
+	ret = -EBADF;
+	arg = fdget(fd);
+	if (arg.file) {
+		ret = calls->spu_run(arg.file, unpc, ustatus);
+		fdput(arg);
+	}
 
-	return calls->spu_run(fd_file(arg), unpc, ustatus);
+	spufs_calls_put(calls);
+	return ret;
 }
 
 #ifdef CONFIG_COREDUMP
 int elf_coredump_extra_notes_size(void)
 {
-	CLASS(spufs_calls, calls)();
+	struct spufs_calls *calls;
+	int ret;
+
+	calls = spufs_calls_get();
 	if (!calls)
 		return 0;
 
-	return calls->coredump_extra_notes_size();
+	ret = calls->coredump_extra_notes_size();
+
+	spufs_calls_put(calls);
+
+	return ret;
 }
 
 int elf_coredump_extra_notes_write(struct coredump_params *cprm)
 {
-	CLASS(spufs_calls, calls)();
+	struct spufs_calls *calls;
+	int ret;
+
+	calls = spufs_calls_get();
 	if (!calls)
 		return 0;
 
-	return calls->coredump_extra_notes_write(cprm);
+	ret = calls->coredump_extra_notes_write(cprm);
+
+	spufs_calls_put(calls);
+
+	return ret;
 }
 #endif
 

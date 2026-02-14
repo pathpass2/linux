@@ -245,7 +245,7 @@ enum spmi_saw3_registers {
 	SAW3_VERSION				= 0xFD0,
 };
 
-/* Used for indexing into ctrl_reg.  These are offsets from 0x40 */
+/* Used for indexing into ctrl_reg.  These are offets from 0x40 */
 enum spmi_common_control_register_index {
 	SPMI_COMMON_IDX_VOLTAGE_RANGE		= 0,
 	SPMI_COMMON_IDX_VOLTAGE_SET		= 1,
@@ -400,7 +400,7 @@ struct spmi_voltage_range {
  * so that range[i].set_point_max_uV < range[i+1].set_point_min_uV.
  */
 struct spmi_voltage_set_points {
-	const struct spmi_voltage_range		*range;
+	struct spmi_voltage_range		*range;
 	int					count;
 	unsigned				n_voltages;
 };
@@ -474,9 +474,6 @@ struct spmi_regulator_data {
 		.set_point_max_uV	= _set_point_max_uV, \
 		.step_uV		= _step_uV, \
 		.range_sel		= _range_sel, \
-		.n_voltages		= (_set_point_max_uV != 0) ? \
-						((_set_point_max_uV - _set_point_min_uV) / _step_uV) + 1 : \
-						0, \
 	}
 
 #define DEFINE_SPMI_SET_POINTS(name) \
@@ -492,110 +489,110 @@ struct spmi_voltage_set_points name##_set_points = { \
  * increasing and unique.  The set_voltage callback functions expect these
  * properties to hold.
  */
-static const struct spmi_voltage_range pldo_ranges[] = {
+static struct spmi_voltage_range pldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(2,  750000,  750000, 1537500, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(3, 1500000, 1550000, 3075000, 3075000, 25000),
 	SPMI_VOLTAGE_RANGE(4, 1750000, 3100000, 4900000, 4900000, 50000),
 };
 
-static const struct spmi_voltage_range nldo1_ranges[] = {
+static struct spmi_voltage_range nldo1_ranges[] = {
 	SPMI_VOLTAGE_RANGE(2,  750000,  750000, 1537500, 1537500, 12500),
 };
 
-static const struct spmi_voltage_range nldo2_ranges[] = {
+static struct spmi_voltage_range nldo2_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,       0,       0, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(1,  375000,  375000,  768750,  768750,  6250),
 	SPMI_VOLTAGE_RANGE(2,  750000,  775000, 1537500, 1537500, 12500),
 };
 
-static const struct spmi_voltage_range nldo3_ranges[] = {
+static struct spmi_voltage_range nldo3_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1537500, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(1,  375000,       0,       0, 1537500, 12500),
 	SPMI_VOLTAGE_RANGE(2,  750000,       0,       0, 1537500, 12500),
 };
 
-static const struct spmi_voltage_range ln_ldo_ranges[] = {
+static struct spmi_voltage_range ln_ldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(1,  690000,  690000, 1110000, 1110000, 60000),
 	SPMI_VOLTAGE_RANGE(0, 1380000, 1380000, 2220000, 2220000, 120000),
 };
 
-static const struct spmi_voltage_range smps_ranges[] = {
+static struct spmi_voltage_range smps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1562500, 1562500, 12500),
 	SPMI_VOLTAGE_RANGE(1, 1550000, 1575000, 3125000, 3125000, 25000),
 };
 
-static const struct spmi_voltage_range ftsmps_ranges[] = {
+static struct spmi_voltage_range ftsmps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,       0,  350000, 1275000, 1275000,  5000),
 	SPMI_VOLTAGE_RANGE(1,       0, 1280000, 2040000, 2040000, 10000),
 };
 
-static const struct spmi_voltage_range ftsmps2p5_ranges[] = {
+static struct spmi_voltage_range ftsmps2p5_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,   80000,  350000, 1355000, 1355000,  5000),
 	SPMI_VOLTAGE_RANGE(1,  160000, 1360000, 2200000, 2200000, 10000),
 };
 
-static const struct spmi_voltage_range ftsmps426_ranges[] = {
+static struct spmi_voltage_range ftsmps426_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,       0,  320000, 1352000, 1352000,  4000),
 };
 
-static const struct spmi_voltage_range boost_ranges[] = {
+static struct spmi_voltage_range boost_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 4000000, 4000000, 5550000, 5550000, 50000),
 };
 
-static const struct spmi_voltage_range boost_byp_ranges[] = {
+static struct spmi_voltage_range boost_byp_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 2500000, 2500000, 5200000, 5650000, 50000),
 };
 
-static const struct spmi_voltage_range ult_lo_smps_ranges[] = {
+static struct spmi_voltage_range ult_lo_smps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1562500, 1562500, 12500),
 	SPMI_VOLTAGE_RANGE(1,  750000,       0,       0, 1525000, 25000),
 };
 
-static const struct spmi_voltage_range ult_ho_smps_ranges[] = {
+static struct spmi_voltage_range ult_ho_smps_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1550000, 1550000, 2325000, 2325000, 25000),
 };
 
-static const struct spmi_voltage_range ult_nldo_ranges[] = {
+static struct spmi_voltage_range ult_nldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  375000,  375000, 1537500, 1537500, 12500),
 };
 
-static const struct spmi_voltage_range ult_pldo_ranges[] = {
+static struct spmi_voltage_range ult_pldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1750000, 1750000, 3337500, 3337500, 12500),
 };
 
-static const struct spmi_voltage_range pldo660_ranges[] = {
+static struct spmi_voltage_range pldo660_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1504000, 1504000, 3544000, 3544000, 8000),
 };
 
-static const struct spmi_voltage_range nldo660_ranges[] = {
+static struct spmi_voltage_range nldo660_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  320000,  320000, 1304000, 1304000, 8000),
 };
 
-static const struct spmi_voltage_range ht_lvpldo_ranges[] = {
+static struct spmi_voltage_range ht_lvpldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1504000, 1504000, 2000000, 2000000, 8000),
 };
 
-static const struct spmi_voltage_range ht_nldo_ranges[] = {
+static struct spmi_voltage_range ht_nldo_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0,  312000,  312000, 1304000, 1304000, 8000),
 };
 
-static const struct spmi_voltage_range hfs430_ranges[] = {
+static struct spmi_voltage_range hfs430_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 320000, 320000, 2040000, 2040000, 8000),
 };
 
-static const struct spmi_voltage_range ht_p150_ranges[] = {
+static struct spmi_voltage_range ht_p150_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1616000, 1616000, 3304000, 3304000, 8000),
 };
 
-static const struct spmi_voltage_range ht_p600_ranges[] = {
+static struct spmi_voltage_range ht_p600_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 1704000, 1704000, 1896000, 1896000, 8000),
 };
 
-static const struct spmi_voltage_range nldo_510_ranges[] = {
+static struct spmi_voltage_range nldo_510_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 320000, 320000, 1304000, 1304000, 8000),
 };
 
-static const struct spmi_voltage_range ftsmps510_ranges[] = {
+static struct spmi_voltage_range ftsmps510_ranges[] = {
 	SPMI_VOLTAGE_RANGE(0, 300000, 300000, 1372000, 1372000, 4000),
 };
 
@@ -1679,10 +1676,18 @@ static const struct spmi_regulator_mapping supported_regulators[] = {
 
 static void spmi_calculate_num_voltages(struct spmi_voltage_set_points *points)
 {
-	const struct spmi_voltage_range *range = points->range;
+	unsigned int n;
+	struct spmi_voltage_range *range = points->range;
 
-	for (; range < points->range + points->count; range++)
-		points->n_voltages += range->n_voltages;
+	for (; range < points->range + points->count; range++) {
+		n = 0;
+		if (range->set_point_max_uV) {
+			n = range->set_point_max_uV - range->set_point_min_uV;
+			n = (n / range->step_uV) + 1;
+		}
+		range->n_voltages = n;
+		points->n_voltages += n;
+	}
 }
 
 static int spmi_regulator_match(struct spmi_regulator *vreg, u16 force_type)
@@ -2113,28 +2118,6 @@ static const struct spmi_regulator_data pm8005_regulators[] = {
 	{ }
 };
 
-static const struct spmi_regulator_data pm8019_regulators[] = {
-	{ "s1", 0x1400, "vdd_s1", },
-	{ "s2", 0x1700, "vdd_s2", },
-	{ "s3", 0x1a00, "vdd_s3", },
-	{ "s4", 0x1d00, "vdd_s4", },
-	{ "l1", 0x4000, "vdd_l1", },
-	{ "l2", 0x4100, "vdd_l2_l3", },
-	{ "l3", 0x4200, "vdd_l2_l3", },
-	{ "l4", 0x4300, "vdd_l4_l5_l6", },
-	{ "l5", 0x4400, "vdd_l4_l5_l6", },
-	{ "l6", 0x4500, "vdd_l4_l5_l6", },
-	{ "l7", 0x4600, "vdd_l7_l8_l11", },
-	{ "l8", 0x4700, "vdd_l7_l8_l11", },
-	{ "l9", 0x4800, "vdd_l9", },
-	{ "l10", 0x4900, "vdd_l10", },
-	{ "l11", 0x4a00, "vdd_l7_l8_l11", },
-	{ "l12", 0x4b00, "vdd_l12", },
-	{ "l13", 0x4c00, "vdd_l13_l14", },
-	{ "l14", 0x4d00, "vdd_l13_l14", },
-	{ }
-};
-
 static const struct spmi_regulator_data pm8226_regulators[] = {
 	{ "s1", 0x1400, "vdd_s1", },
 	{ "s2", 0x1700, "vdd_s2", },
@@ -2185,29 +2168,6 @@ static const struct spmi_regulator_data pm8841_regulators[] = {
 	{ }
 };
 
-static const struct spmi_regulator_data pm8909_regulators[] = {
-	{ "s1", 0x1400, "vdd_s1", },
-	{ "s2", 0x1700, "vdd_s2", },
-	{ "l1", 0x4000, "vdd_l1", },
-	{ "l2", 0x4100, "vdd_l2_l5", },
-	{ "l3", 0x4200, "vdd_l3_l6_l10", },
-	{ "l4", 0x4300, "vdd_l4_l7", },
-	{ "l5", 0x4400, "vdd_l2_l5", },
-	{ "l6", 0x4500, "vdd_l3_l6_l10", },
-	{ "l7", 0x4600, "vdd_l4_l7", },
-	{ "l8", 0x4700, "vdd_l8_l11_l15_l18", },
-	{ "l9", 0x4800, "vdd_l9_l12_l14_l17", },
-	{ "l10", 0x4900, "vdd_l3_l6_l10", },
-	{ "l11", 0x4a00, "vdd_l8_l11_l15_l18", },
-	{ "l12", 0x4b00, "vdd_l9_l12_l14_l17", },
-	{ "l13", 0x4c00, "vdd_l13", },
-	{ "l14", 0x4d00, "vdd_l9_l12_l14_l17", },
-	{ "l15", 0x4e00, "vdd_l8_l11_l15_l18", },
-	{ "l17", 0x5000, "vdd_l9_l12_l14_l17", },
-	{ "l18", 0x5100, "vdd_l8_l11_l15_l18", },
-	{ }
-};
-
 static const struct spmi_regulator_data pm8916_regulators[] = {
 	{ "s1", 0x1400, "vdd_s1", },
 	{ "s2", 0x1700, "vdd_s2", },
@@ -2231,39 +2191,6 @@ static const struct spmi_regulator_data pm8916_regulators[] = {
 	{ "l16", 0x4f00, "vdd_l8_l11_l14_l15_l16", },
 	{ "l17", 0x5000, "vdd_l9_l10_l12_l13_l17_l18", },
 	{ "l18", 0x5100, "vdd_l9_l10_l12_l13_l17_l18", },
-	{ }
-};
-
-static const struct spmi_regulator_data pm8937_regulators[] = {
-	{ "s1", 0x1400, "vdd_s1", },
-	{ "s2", 0x1700, "vdd_s2", },
-	{ "s3", 0x1a00, "vdd_s3", },
-	{ "s4", 0x1d00, "vdd_s4", },
-	{ "s5", 0x2000, "vdd_s5", },
-	{ "s6", 0x2300, "vdd_s6", },
-	{ "l1", 0x4000, "vdd_l1_l19", },
-	{ "l2", 0x4100, "vdd_l2_l23", },
-	{ "l3", 0x4200, "vdd_l3", },
-	{ "l4", 0x4300, "vdd_l4_l5_l6_l7_l16", },
-	{ "l5", 0x4400, "vdd_l4_l5_l6_l7_l16", },
-	{ "l6", 0x4500, "vdd_l4_l5_l6_l7_l16", },
-	{ "l7", 0x4600, "vdd_l4_l5_l6_l7_l16", },
-	{ "l8", 0x4700, "vdd_l8_l11_l12_l17_l22", },
-	{ "l9", 0x4800, "vdd_l9_l10_l13_l14_l15_l18", },
-	{ "l10", 0x4900, "vdd_l9_l10_l13_l14_l15_l18", },
-	{ "l11", 0x4a00, "vdd_l8_l11_l12_l17_l22", },
-	{ "l12", 0x4b00, "vdd_l8_l11_l12_l17_l22", },
-	{ "l13", 0x4c00, "vdd_l9_l10_l13_l14_l15_l18", },
-	{ "l14", 0x4d00, "vdd_l9_l10_l13_l14_l15_l18", },
-	{ "l15", 0x4e00, "vdd_l9_l10_l13_l14_l15_l18", },
-	{ "l16", 0x4f00, "vdd_l4_l5_l6_l7_l16", },
-	{ "l17", 0x5000, "vdd_l8_l11_l12_l17_l22", },
-	{ "l18", 0x5100, "vdd_l9_l10_l13_l14_l15_l18", },
-	{ "l19", 0x5200, "vdd_l1_l19", },
-	{ "l20", 0x5300, "vdd_l20_l21", },
-	{ "l21", 0x5400, "vdd_l21_l21", },
-	{ "l22", 0x5500, "vdd_l8_l11_l12_l17_l22", },
-	{ "l23", 0x5600, "vdd_l2_l23", },
 	{ }
 };
 
@@ -2387,54 +2314,6 @@ static const struct spmi_regulator_data pm8994_regulators[] = {
 	{ }
 };
 
-static const struct spmi_regulator_data pma8084_regulators[] = {
-	{ "s1", 0x1400, "vdd_s1", },
-	{ "s2", 0x1700, "vdd_s2", },
-	{ "s3", 0x1a00, "vdd_s3", },
-	{ "s4", 0x1d00, "vdd_s4", },
-	{ "s5", 0x2000, "vdd_s5", },
-	{ "s6", 0x2300, "vdd_s6", },
-	{ "s7", 0x2600, "vdd_s7", },
-	{ "s8", 0x2900, "vdd_s8", },
-	{ "s9", 0x2c00, "vdd_s9", },
-	{ "s10", 0x2f00, "vdd_s10", },
-	{ "s11", 0x3200, "vdd_s11", },
-	{ "s12", 0x3500, "vdd_s12", },
-	{ "l1", 0x4000, "vdd_l1_l11", },
-	{ "l2", 0x4100, "vdd_l2_l3_l4_l27", },
-	{ "l3", 0x4200, "vdd_l2_l3_l4_l27", },
-	{ "l4", 0x4300, "vdd_l2_l3_l4_l27", },
-	{ "l5", 0x4400, "vdd_l5_l7", },
-	{ "l6", 0x4500, "vdd_l6_l12_l14_l15_l26", },
-	{ "l7", 0x4600, "vdd_l5_l7", },
-	{ "l8", 0x4700, "vdd_l8", },
-	{ "l9", 0x4800, "vdd_l9_l10_l13_l20_l23_l24", },
-	{ "l10", 0x4900, "vdd_l9_l10_l13_l20_l23_l24", },
-	{ "l11", 0x4a00, "vdd_l1_l11", },
-	{ "l12", 0x4b00, "vdd_l6_l12_l14_l15_l26", },
-	{ "l13", 0x4c00, "vdd_l9_l10_l13_l20_l23_l24", },
-	{ "l14", 0x4d00, "vdd_l6_l12_l14_l15_l26", },
-	{ "l15", 0x4e00, "vdd_l6_l12_l14_l15_l26", },
-	{ "l16", 0x4f00, "vdd_l16_l25", },
-	{ "l17", 0x5000, "vdd_l17", },
-	{ "l18", 0x5100, "vdd_l18", },
-	{ "l19", 0x5200, "vdd_l19", },
-	{ "l20", 0x5300, "vdd_l9_l10_l13_l20_l23_l24", },
-	{ "l21", 0x5400, "vdd_l21", },
-	{ "l22", 0x5500, "vdd_l22", },
-	{ "l23", 0x5600, "vdd_l9_l10_l13_l20_l23_l24", },
-	{ "l24", 0x5700, "vdd_l9_l10_l13_l20_l23_l24", },
-	{ "l25", 0x5800, "vdd_l16_l25", },
-	{ "l26", 0x5900, "vdd_l6_l12_l14_l15_l26", },
-	{ "l27", 0x5a00, "vdd_l2_l3_l4_l27", },
-	{ "lvs1", 0x8000, "vdd_lvs1_2", },
-	{ "lvs2", 0x8100, "vdd_lvs1_2", },
-	{ "lvs3", 0x8200, "vdd_lvs3_4", },
-	{ "lvs4", 0x8300, "vdd_lvs3_4", },
-	{ "5vs1", 0x8400, "vdd_5vs1", },
-	{ }
-};
-
 static const struct spmi_regulator_data pmi8994_regulators[] = {
 	{ "s1", 0x1400, "vdd_s1", },
 	{ "s2", 0x1700, "vdd_s2", },
@@ -2476,16 +2355,12 @@ static const struct of_device_id qcom_spmi_regulator_match[] = {
 	{ .compatible = "qcom,pm660l-regulators", .data = &pm660l_regulators },
 	{ .compatible = "qcom,pm8004-regulators", .data = &pm8004_regulators },
 	{ .compatible = "qcom,pm8005-regulators", .data = &pm8005_regulators },
-	{ .compatible = "qcom,pm8019-regulators", .data = &pm8019_regulators },
 	{ .compatible = "qcom,pm8226-regulators", .data = &pm8226_regulators },
 	{ .compatible = "qcom,pm8841-regulators", .data = &pm8841_regulators },
-	{ .compatible = "qcom,pm8909-regulators", .data = &pm8909_regulators },
 	{ .compatible = "qcom,pm8916-regulators", .data = &pm8916_regulators },
-	{ .compatible = "qcom,pm8937-regulators", .data = &pm8937_regulators },
 	{ .compatible = "qcom,pm8941-regulators", .data = &pm8941_regulators },
 	{ .compatible = "qcom,pm8950-regulators", .data = &pm8950_regulators },
 	{ .compatible = "qcom,pm8994-regulators", .data = &pm8994_regulators },
-	{ .compatible = "qcom,pma8084-regulators", .data = &pma8084_regulators },
 	{ .compatible = "qcom,pmi8994-regulators", .data = &pmi8994_regulators },
 	{ .compatible = "qcom,pmp8074-regulators", .data = &pmp8074_regulators },
 	{ .compatible = "qcom,pms405-regulators", .data = &pms405_regulators },
@@ -2497,6 +2372,7 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 {
 	const struct spmi_regulator_data *reg;
 	const struct spmi_voltage_range *range;
+	const struct of_device_id *match;
 	struct regulator_config config = { };
 	struct regulator_dev *rdev;
 	struct spmi_regulator *vreg;
@@ -2519,19 +2395,19 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 	if (!regmap)
 		return -ENODEV;
 
-	reg = device_get_match_data(&pdev->dev);
-	if (!reg)
+	match = of_match_device(qcom_spmi_regulator_match, &pdev->dev);
+	if (!match)
 		return -ENODEV;
 
-	syscon = of_parse_phandle(node, "qcom,saw-reg", 0);
-	if (syscon) {
+	if (of_find_property(node, "qcom,saw-reg", &lenp)) {
+		syscon = of_parse_phandle(node, "qcom,saw-reg", 0);
 		saw_regmap = syscon_node_to_regmap(syscon);
 		of_node_put(syscon);
 		if (IS_ERR(saw_regmap))
 			dev_err(dev, "ERROR reading SAW regmap\n");
 	}
 
-	for (; reg->name; reg++) {
+	for (reg = match->data; reg->name; reg++) {
 
 		if (saw_regmap) {
 			reg_node = of_get_child_by_name(node, reg->name);
@@ -2572,13 +2448,15 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 
 		if (saw_regmap) {
 			reg_node = of_get_child_by_name(node, reg->name);
-			if (of_property_read_bool(reg_node, "qcom,saw-leader")) {
+			reg_prop = of_find_property(reg_node, "qcom,saw-leader",
+						    &lenp);
+			of_node_put(reg_node);
+			if (reg_prop) {
 				spmi_saw_ops = *(vreg->desc.ops);
 				spmi_saw_ops.set_voltage_sel =
 					spmi_regulator_saw_set_voltage;
 				vreg->desc.ops = &spmi_saw_ops;
 			}
-			of_node_put(reg_node);
 		}
 
 		if (vreg->set_points && vreg->set_points->count == 1) {
@@ -2606,7 +2484,6 @@ static int qcom_spmi_regulator_probe(struct platform_device *pdev)
 static struct platform_driver qcom_spmi_regulator_driver = {
 	.driver		= {
 		.name	= "qcom-spmi-regulator",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = qcom_spmi_regulator_match,
 	},
 	.probe		= qcom_spmi_regulator_probe,

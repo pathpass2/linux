@@ -228,7 +228,6 @@ static int tw9903_probe(struct i2c_client *client)
 
 	if (write_regs(sd, initial_registers) < 0) {
 		v4l2_err(client, "error initializing TW9903\n");
-		v4l2_ctrl_handler_free(hdl);
 		return -EINVAL;
 	}
 
@@ -246,7 +245,7 @@ static void tw9903_remove(struct i2c_client *client)
 /* ----------------------------------------------------------------------- */
 
 static const struct i2c_device_id tw9903_id[] = {
-	{ "tw9903" },
+	{ "tw9903", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tw9903_id);
@@ -255,7 +254,7 @@ static struct i2c_driver tw9903_driver = {
 	.driver = {
 		.name	= "tw9903",
 	},
-	.probe = tw9903_probe,
+	.probe_new = tw9903_probe,
 	.remove = tw9903_remove,
 	.id_table = tw9903_id,
 };

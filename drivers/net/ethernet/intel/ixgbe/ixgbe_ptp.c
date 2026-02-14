@@ -140,7 +140,6 @@
  * proper mult and shift to convert the cycles into nanoseconds of time.
  */
 #define IXGBE_X550_BASE_PERIOD 0xC80000000ULL
-#define IXGBE_E610_BASE_PERIOD 0x333333333ULL
 #define INCVALUE_MASK	0x7FFFFFFF
 #define ISGN		0x80000000
 
@@ -327,7 +326,7 @@ static void ixgbe_ptp_setup_sdp_X550(struct ixgbe_adapter *adapter)
  * result of SYSTIME is 32bits of "billions of cycles" and 32 bits of
  * "cycles", rather than seconds and nanoseconds.
  */
-static u64 ixgbe_ptp_read_X550(struct cyclecounter *cc)
+static u64 ixgbe_ptp_read_X550(const struct cyclecounter *cc)
 {
 	struct ixgbe_adapter *adapter =
 		container_of(cc, struct ixgbe_adapter, hw_cc);
@@ -364,7 +363,7 @@ static u64 ixgbe_ptp_read_X550(struct cyclecounter *cc)
  * cyclecounter structure used to construct a ns counter from the
  * arbitrary fixed point registers
  */
-static u64 ixgbe_ptp_read_82599(struct cyclecounter *cc)
+static u64 ixgbe_ptp_read_82599(const struct cyclecounter *cc)
 {
 	struct ixgbe_adapter *adapter =
 		container_of(cc, struct ixgbe_adapter, hw_cc);
@@ -416,7 +415,6 @@ static void ixgbe_ptp_convert_to_hwtstamp(struct ixgbe_adapter *adapter,
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_x550em_a:
-	case ixgbe_mac_e610:
 		/* Upper 32 bits represent billions of cycles, lower 32 bits
 		 * represent cycles. However, we use timespec64_to_ns for the
 		 * correct math even though the units haven't been corrected
@@ -494,13 +492,11 @@ static int ixgbe_ptp_adjfine_X550(struct ptp_clock_info *ptp, long scaled_ppm)
 	struct ixgbe_adapter *adapter =
 			container_of(ptp, struct ixgbe_adapter, ptp_caps);
 	struct ixgbe_hw *hw = &adapter->hw;
-	u64 rate, base;
 	bool neg_adj;
+	u64 rate;
 	u32 inca;
 
-	base = hw->mac.type == ixgbe_mac_e610 ? IXGBE_E610_BASE_PERIOD :
-						IXGBE_X550_BASE_PERIOD;
-	neg_adj = diff_by_scaled_ppm(base, scaled_ppm, &rate);
+	neg_adj = diff_by_scaled_ppm(IXGBE_X550_BASE_PERIOD, scaled_ppm, &rate);
 
 	/* warn if rate is too large */
 	if (rate >= INCVALUE_MASK)
@@ -563,7 +559,6 @@ static int ixgbe_ptp_gettimex(struct ptp_clock_info *ptp,
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_x550em_a:
-	case ixgbe_mac_e610:
 		/* Upper 32 bits represent billions of cycles, lower 32 bits
 		 * represent cycles. However, we use timespec64_to_ns for the
 		 * correct math even though the units haven't been corrected
@@ -641,7 +636,7 @@ static int ixgbe_ptp_feature_enable(struct ptp_clock_info *ptp,
 	 * disabled
 	 */
 	if (rq->type != PTP_CLK_REQ_PPS || !adapter->ptp_setup_sdp)
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 
 	if (on)
 		adapter->flags2 |= IXGBE_FLAG2_PTP_PPS_ENABLED;
@@ -936,22 +931,20 @@ void ixgbe_ptp_rx_rgtstamp(struct ixgbe_q_vector *q_vector,
 }
 
 /**
- * ixgbe_ptp_hwtstamp_get - get current hardware timestamping configuration
- * @netdev: pointer to net device structure
- * @config: timestamping configuration structure
+ * ixgbe_ptp_get_ts_config - get current hardware timestamping configuration
+ * @adapter: pointer to adapter structure
+ * @ifr: ioctl data
  *
  * This function returns the current timestamping settings. Rather than
  * attempt to deconstruct registers to fill in the values, simply keep a copy
  * of the old settings around, and return a copy when requested.
  */
-int ixgbe_ptp_hwtstamp_get(struct net_device *netdev,
-			   struct kernel_hwtstamp_config *config)
+int ixgbe_ptp_get_ts_config(struct ixgbe_adapter *adapter, struct ifreq *ifr)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct hwtstamp_config *config = &adapter->tstamp_config;
 
-	*config = adapter->tstamp_config;
-
-	return 0;
+	return copy_to_user(ifr->ifr_data, config,
+			    sizeof(*config)) ? -EFAULT : 0;
 }
 
 /**
@@ -980,13 +973,12 @@ int ixgbe_ptp_hwtstamp_get(struct net_device *netdev,
  * mode, if required to support the specifically requested mode.
  */
 static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
-					struct kernel_hwtstamp_config *config)
+				 struct hwtstamp_config *config)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
 	u32 tsync_tx_ctl = IXGBE_TSYNCTXCTL_ENABLED;
 	u32 tsync_rx_ctl = IXGBE_TSYNCRXCTL_ENABLED;
 	u32 tsync_rx_mtrl = PTP_EV_PORT << 16;
-	u32 aflags = adapter->flags;
 	bool is_l2 = false;
 	u32 regval;
 
@@ -1004,20 +996,20 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 	case HWTSTAMP_FILTER_NONE:
 		tsync_rx_ctl = 0;
 		tsync_rx_mtrl = 0;
-		aflags &= ~(IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
-			    IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
+		adapter->flags &= ~(IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
+				    IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
 		break;
 	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
 		tsync_rx_ctl |= IXGBE_TSYNCRXCTL_TYPE_L4_V1;
 		tsync_rx_mtrl |= IXGBE_RXMTRL_V1_SYNC_MSG;
-		aflags |= (IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
-			   IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
+		adapter->flags |= (IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
+				   IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
 		break;
 	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
 		tsync_rx_ctl |= IXGBE_TSYNCRXCTL_TYPE_L4_V1;
 		tsync_rx_mtrl |= IXGBE_RXMTRL_V1_DELAY_REQ_MSG;
-		aflags |= (IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
-			   IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
+		adapter->flags |= (IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
+				   IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
@@ -1031,8 +1023,8 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 		tsync_rx_ctl |= IXGBE_TSYNCRXCTL_TYPE_EVENT_V2;
 		is_l2 = true;
 		config->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
-		aflags |= (IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
-			   IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
+		adapter->flags |= (IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
+				   IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
 		break;
 	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
 	case HWTSTAMP_FILTER_NTP_ALL:
@@ -1043,7 +1035,7 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 		if (hw->mac.type >= ixgbe_mac_X550) {
 			tsync_rx_ctl |= IXGBE_TSYNCRXCTL_TYPE_ALL;
 			config->rx_filter = HWTSTAMP_FILTER_ALL;
-			aflags |= IXGBE_FLAG_RX_HWTSTAMP_ENABLED;
+			adapter->flags |= IXGBE_FLAG_RX_HWTSTAMP_ENABLED;
 			break;
 		}
 		fallthrough;
@@ -1054,6 +1046,8 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 		 * Delay_Req messages and hardware does not support
 		 * timestamping all packets => return error
 		 */
+		adapter->flags &= ~(IXGBE_FLAG_RX_HWTSTAMP_ENABLED |
+				    IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER);
 		config->rx_filter = HWTSTAMP_FILTER_NONE;
 		return -ERANGE;
 	}
@@ -1074,7 +1068,6 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_x550em_a:
-	case ixgbe_mac_e610:
 		/* enable timestamping all packets only if at least some
 		 * packets were requested. Otherwise, play nice and disable
 		 * timestamping
@@ -1086,8 +1079,8 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 			       IXGBE_TSYNCRXCTL_TYPE_ALL |
 			       IXGBE_TSYNCRXCTL_TSIP_UT_EN;
 		config->rx_filter = HWTSTAMP_FILTER_ALL;
-		aflags |= IXGBE_FLAG_RX_HWTSTAMP_ENABLED;
-		aflags &= ~IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER;
+		adapter->flags |= IXGBE_FLAG_RX_HWTSTAMP_ENABLED;
+		adapter->flags &= ~IXGBE_FLAG_RX_HWTSTAMP_IN_REGISTER;
 		is_l2 = true;
 		break;
 	default:
@@ -1120,9 +1113,6 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 
 	IXGBE_WRITE_FLUSH(hw);
 
-	/* configure adapter flags only when HW is actually configured */
-	adapter->flags = aflags;
-
 	/* clear TX/RX time stamp registers, just to be sure */
 	ixgbe_ptp_clear_tx_timestamp(adapter);
 	IXGBE_READ_REG(hw, IXGBE_RXSTMPH);
@@ -1131,29 +1121,31 @@ static int ixgbe_ptp_set_timestamp_mode(struct ixgbe_adapter *adapter,
 }
 
 /**
- * ixgbe_ptp_hwtstamp_set - user entry point for timestamp mode
- * @netdev: pointer to net device structure
- * @config: timestamping configuration structure
- * @extack: netlink extended ack structure for error reporting
+ * ixgbe_ptp_set_ts_config - user entry point for timestamp mode
+ * @adapter: pointer to adapter struct
+ * @ifr: ioctl data
  *
  * Set hardware to requested mode. If unsupported, return an error with no
  * changes. Otherwise, store the mode for future reference.
  */
-int ixgbe_ptp_hwtstamp_set(struct net_device *netdev,
-			   struct kernel_hwtstamp_config *config,
-			   struct netlink_ext_ack *extack)
+int ixgbe_ptp_set_ts_config(struct ixgbe_adapter *adapter, struct ifreq *ifr)
 {
-	struct ixgbe_adapter *adapter = ixgbe_from_netdev(netdev);
+	struct hwtstamp_config config;
 	int err;
 
-	err = ixgbe_ptp_set_timestamp_mode(adapter, config);
+	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	err = ixgbe_ptp_set_timestamp_mode(adapter, &config);
 	if (err)
 		return err;
 
 	/* save these settings for future reference */
-	adapter->tstamp_config = *config;
+	memcpy(&adapter->tstamp_config, &config,
+	       sizeof(adapter->tstamp_config));
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, &config, sizeof(config)) ?
+		-EFAULT : 0;
 }
 
 static void ixgbe_ptp_link_speed_adjust(struct ixgbe_adapter *adapter,
@@ -1239,7 +1231,6 @@ void ixgbe_ptp_start_cyclecounter(struct ixgbe_adapter *adapter)
 		fallthrough;
 	case ixgbe_mac_x550em_a:
 	case ixgbe_mac_X550:
-	case ixgbe_mac_e610:
 		cc.read = ixgbe_ptp_read_X550;
 		break;
 	case ixgbe_mac_X540:
@@ -1287,7 +1278,6 @@ static void ixgbe_ptp_init_systime(struct ixgbe_adapter *adapter)
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_x550em_a:
 	case ixgbe_mac_X550:
-	case ixgbe_mac_e610:
 		tsauxc = IXGBE_READ_REG(hw, IXGBE_TSAUXC);
 
 		/* Reset SYSTIME registers to 0 */
@@ -1415,7 +1405,6 @@ static long ixgbe_ptp_create_clock(struct ixgbe_adapter *adapter)
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_x550em_a:
-	case ixgbe_mac_e610:
 		snprintf(adapter->ptp_caps.name, 16, "%s", netdev->name);
 		adapter->ptp_caps.owner = THIS_MODULE;
 		adapter->ptp_caps.max_adj = 30000000;

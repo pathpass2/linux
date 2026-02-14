@@ -382,14 +382,14 @@ static int stmmac_test_phy_loopback(struct stmmac_priv *priv)
 	if (!priv->dev->phydev)
 		return -EOPNOTSUPP;
 
-	ret = phy_loopback(priv->dev->phydev, true, 0);
+	ret = phy_loopback(priv->dev->phydev, true);
 	if (ret)
 		return ret;
 
 	attr.dst = priv->dev->dev_addr;
 	ret = __stmmac_test_loopback(priv, &attr);
 
-	phy_loopback(priv->dev->phydev, false, 0);
+	phy_loopback(priv->dev->phydev, false);
 	return ret;
 }
 
@@ -802,7 +802,7 @@ static int stmmac_test_flowctrl(struct stmmac_priv *priv)
 		stmmac_start_rx(priv, priv->ioaddr, i);
 
 		local_bh_disable();
-		napi_schedule(&ch->rx_napi);
+		napi_reschedule(&ch->rx_napi);
 		local_bh_enable();
 	}
 
@@ -1355,7 +1355,7 @@ static int __stmmac_test_l3filt(struct stmmac_priv *priv, u32 dst, u32 src,
 		goto cleanup_rss;
 	}
 
-	dissector->used_keys |= (1ULL << FLOW_DISSECTOR_KEY_IPV4_ADDRS);
+	dissector->used_keys |= (1 << FLOW_DISSECTOR_KEY_IPV4_ADDRS);
 	dissector->offset[FLOW_DISSECTOR_KEY_IPV4_ADDRS] = 0;
 
 	cls = kzalloc(sizeof(*cls), GFP_KERNEL);
@@ -1481,8 +1481,8 @@ static int __stmmac_test_l4filt(struct stmmac_priv *priv, u32 dst, u32 src,
 		goto cleanup_rss;
 	}
 
-	dissector->used_keys |= (1ULL << FLOW_DISSECTOR_KEY_BASIC);
-	dissector->used_keys |= (1ULL << FLOW_DISSECTOR_KEY_PORTS);
+	dissector->used_keys |= (1 << FLOW_DISSECTOR_KEY_BASIC);
+	dissector->used_keys |= (1 << FLOW_DISSECTOR_KEY_PORTS);
 	dissector->offset[FLOW_DISSECTOR_KEY_BASIC] = 0;
 	dissector->offset[FLOW_DISSECTOR_KEY_PORTS] = offsetof(typeof(keys), key);
 
@@ -1721,7 +1721,7 @@ static int stmmac_test_sph(struct stmmac_priv *priv)
 	struct stmmac_packet_attrs attr = { };
 	int ret;
 
-	if (!priv->sph_active)
+	if (!priv->sph)
 		return -EOPNOTSUPP;
 
 	/* Check for UDP first */
@@ -1985,7 +1985,7 @@ void stmmac_selftest_run(struct net_device *dev,
 		case STMMAC_LOOPBACK_PHY:
 			ret = -EOPNOTSUPP;
 			if (dev->phydev)
-				ret = phy_loopback(dev->phydev, true, 0);
+				ret = phy_loopback(dev->phydev, true);
 			if (!ret)
 				break;
 			fallthrough;
@@ -2000,7 +2000,7 @@ void stmmac_selftest_run(struct net_device *dev,
 		}
 
 		/*
-		 * First tests will always be MAC / PHY loopback. If any of
+		 * First tests will always be MAC / PHY loobpack. If any of
 		 * them is not supported we abort earlier.
 		 */
 		if (ret) {
@@ -2018,7 +2018,7 @@ void stmmac_selftest_run(struct net_device *dev,
 		case STMMAC_LOOPBACK_PHY:
 			ret = -EOPNOTSUPP;
 			if (dev->phydev)
-				ret = phy_loopback(dev->phydev, false, 0);
+				ret = phy_loopback(dev->phydev, false);
 			if (!ret)
 				break;
 			fallthrough;

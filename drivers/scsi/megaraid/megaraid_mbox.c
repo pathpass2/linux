@@ -109,10 +109,8 @@ static int megaraid_mbox_fire_sync_cmd(adapter_t *);
 static void megaraid_mbox_display_scb(adapter_t *, scb_t *);
 static void megaraid_mbox_setup_device_map(adapter_t *);
 
-static enum scsi_qc_status megaraid_queue_command(struct Scsi_Host *,
-						  struct scsi_cmnd *);
-static scb_t *megaraid_mbox_build_cmd(adapter_t *, struct scsi_cmnd *,
-				      enum scsi_qc_status *);
+static int megaraid_queue_command(struct Scsi_Host *, struct scsi_cmnd *);
+static scb_t *megaraid_mbox_build_cmd(adapter_t *, struct scsi_cmnd *, int *);
 static void megaraid_mbox_runpendq(adapter_t *, scb_t *);
 static void megaraid_mbox_prepare_pthru(adapter_t *, scb_t *,
 		struct scsi_cmnd *);
@@ -201,7 +199,7 @@ MODULE_PARM_DESC(debug_level, "Debug level for driver (default=0)");
 /*
  * PCI table for all supported controllers.
  */
-static const struct pci_device_id pci_id_table_g[] =  {
+static struct pci_device_id pci_id_table_g[] =  {
 	{
 		PCI_VENDOR_ID_DELL,
 		PCI_DEVICE_ID_PERC4_DI_DISCOVERY,
@@ -327,7 +325,7 @@ ATTRIBUTE_GROUPS(megaraid_sdev);
 /*
  * Scsi host template for megaraid unified driver
  */
-static const struct scsi_host_template megaraid_template_g = {
+static struct scsi_host_template megaraid_template_g = {
 	.module				= THIS_MODULE,
 	.name				= "LSI Logic MegaRAID driver",
 	.proc_name			= "megaraid",
@@ -440,7 +438,7 @@ megaraid_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 
 	// set up PCI related soft state and other pre-known parameters
-	adapter->unique_id	= pci_dev_id(pdev);
+	adapter->unique_id	= pdev->bus->number << 8 | pdev->devfn;
 	adapter->irq		= pdev->irq;
 	adapter->pdev		= pdev;
 
@@ -623,7 +621,7 @@ megaraid_io_attach(adapter_t *adapter)
 	host = scsi_host_alloc(&megaraid_template_g, 8);
 	if (!host) {
 		con_log(CL_ANN, (KERN_WARNING
-			"megaraid mbox: scsi_host_alloc failed\n"));
+			"megaraid mbox: scsi_register failed\n"));
 
 		return -1;
 	}
@@ -1436,12 +1434,12 @@ mbox_post_cmd(adapter_t *adapter, scb_t *scb)
  *
  * Queue entry point for mailbox based controllers.
  */
-static enum scsi_qc_status megaraid_queue_command_lck(struct scsi_cmnd *scp)
+static int megaraid_queue_command_lck(struct scsi_cmnd *scp)
 {
 	void (*done)(struct scsi_cmnd *) = scsi_done;
 	adapter_t	*adapter;
 	scb_t		*scb;
-	enum scsi_qc_status if_busy;
+	int		if_busy;
 
 	adapter		= SCP2ADAPTER(scp);
 	scp->result	= 0;
@@ -1479,8 +1477,7 @@ static DEF_SCSI_QCMD(megaraid_queue_command)
  * firmware. We also complete certain commands without sending them to firmware.
  */
 static scb_t *
-megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
-			enum scsi_qc_status *busy)
+megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp, int *busy)
 {
 	mraid_device_t		*rdev = ADAP2RAIDDEV(adapter);
 	int			channel;
@@ -1519,7 +1516,7 @@ megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
 
 			if (!(scb = megaraid_alloc_scb(adapter, scp))) {
 				scp->result = (DID_ERROR << 16);
-				*busy = SCSI_MLQUEUE_HOST_BUSY;
+				*busy = 1;
 				return NULL;
 			}
 
@@ -1602,7 +1599,7 @@ megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
 			/* Allocate a SCB and initialize passthru */
 			if (!(scb = megaraid_alloc_scb(adapter, scp))) {
 				scp->result = (DID_ERROR << 16);
-				*busy = SCSI_MLQUEUE_HOST_BUSY;
+				*busy = 1;
 				return NULL;
 			}
 
@@ -1647,7 +1644,7 @@ megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
 			 */
 			if (!(scb = megaraid_alloc_scb(adapter, scp))) {
 				scp->result = (DID_ERROR << 16);
-				*busy = SCSI_MLQUEUE_HOST_BUSY;
+				*busy = 1;
 				return NULL;
 			}
 			ccb			= (mbox_ccb_t *)scb->ccb;
@@ -1728,8 +1725,8 @@ megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
 
 			return scb;
 
-		case RESERVE_6:
-		case RELEASE_6:
+		case RESERVE:
+		case RELEASE:
 			/*
 			 * Do we support clustering and is the support enabled
 			 */
@@ -1743,7 +1740,7 @@ megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
 			 */
 			if (!(scb = megaraid_alloc_scb(adapter, scp))) {
 				scp->result = (DID_ERROR << 16);
-				*busy = SCSI_MLQUEUE_HOST_BUSY;
+				*busy = 1;
 				return NULL;
 			}
 
@@ -1751,7 +1748,7 @@ megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
 			scb->dev_channel	= 0xFF;
 			scb->dev_target		= target;
 			ccb->raw_mbox[0]	= CLUSTER_CMD;
-			ccb->raw_mbox[2]	= scp->cmnd[0] == RESERVE_6 ?
+			ccb->raw_mbox[2]	=  (scp->cmnd[0] == RESERVE) ?
 						RESERVE_LD : RELEASE_LD;
 
 			ccb->raw_mbox[3]	= target;
@@ -1811,7 +1808,7 @@ megaraid_mbox_build_cmd(adapter_t *adapter, struct scsi_cmnd *scp,
 		// Allocate a SCB and initialize passthru
 		if (!(scb = megaraid_alloc_scb(adapter, scp))) {
 			scp->result = (DID_ERROR << 16);
-			*busy = SCSI_MLQUEUE_HOST_BUSY;
+			*busy = 1;
 			return NULL;
 		}
 
@@ -2337,8 +2334,8 @@ megaraid_mbox_dpc(unsigned long devp)
 			 * Error code returned is 1 if Reserve or Release
 			 * failed or the input parameter is invalid
 			 */
-			if (status == 1 && (scp->cmnd[0] == RESERVE_6 ||
-					    scp->cmnd[0] == RELEASE_6)) {
+			if (status == 1 && (scp->cmnd[0] == RESERVE ||
+					 scp->cmnd[0] == RELEASE)) {
 
 				scp->result = DID_ERROR << 16 |
 					SAM_STAT_RESERVATION_CONFLICT;
@@ -3839,7 +3836,7 @@ megaraid_sysfs_get_ldmap_done(uioc_t *uioc)
 static void
 megaraid_sysfs_get_ldmap_timeout(struct timer_list *t)
 {
-	struct uioc_timeout *timeout = timer_container_of(timeout, t, timer);
+	struct uioc_timeout *timeout = from_timer(timeout, t, timer);
 	uioc_t		*uioc = timeout->uioc;
 	adapter_t	*adapter = (adapter_t *)uioc->buf_vaddr;
 	mraid_device_t	*raid_dev = ADAP2RAIDDEV(adapter);
@@ -3954,8 +3951,8 @@ megaraid_sysfs_get_ldmap(adapter_t *adapter)
 	}
 
 
-	timer_delete_sync(&timeout.timer);
-	timer_destroy_on_stack(&timeout.timer);
+	del_timer_sync(&timeout.timer);
+	destroy_timer_on_stack(&timeout.timer);
 
 	mutex_unlock(&raid_dev->sysfs_mtx);
 

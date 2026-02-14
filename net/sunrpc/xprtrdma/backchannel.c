@@ -9,7 +9,6 @@
 #include <linux/sunrpc/svc.h>
 #include <linux/sunrpc/svc_xprt.h>
 #include <linux/sunrpc/svc_rdma.h>
-#include <linux/sunrpc/bc_xprt.h>
 
 #include "xprt_rdma.h"
 #include <trace/events/rpcrdma.h>
@@ -221,6 +220,7 @@ void rpcrdma_bc_receive_call(struct rpcrdma_xprt *r_xprt,
 			     struct rpcrdma_rep *rep)
 {
 	struct rpc_xprt *xprt = &r_xprt->rx_xprt;
+	struct svc_serv *bc_serv;
 	struct rpcrdma_req *req;
 	struct rpc_rqst *rqst;
 	struct xdr_buf *buf;
@@ -261,7 +261,13 @@ void rpcrdma_bc_receive_call(struct rpcrdma_xprt *r_xprt,
 	trace_xprtrdma_cb_call(r_xprt, rqst);
 
 	/* Queue rqst for ULP's callback service */
-	xprt_enqueue_bc_request(rqst);
+	bc_serv = xprt->bc_serv;
+	xprt_get(xprt);
+	spin_lock(&bc_serv->sv_cb_lock);
+	list_add(&rqst->rq_bc_list, &bc_serv->sv_cb_list);
+	spin_unlock(&bc_serv->sv_cb_lock);
+
+	wake_up(&bc_serv->sv_cb_waitq);
 
 	r_xprt->rx_stats.bcall_count++;
 	return;

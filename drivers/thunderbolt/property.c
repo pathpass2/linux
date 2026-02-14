@@ -211,13 +211,11 @@ static struct tb_property_dir *__tb_property_parse_dir(const u32 *block,
  *
  * This function parses the XDomain properties data block into format that
  * can be traversed using the helper functions provided by this module.
- *
- * The resulting &struct tb_property_dir needs to be released by
+ * Upon success returns the parsed directory. In case of error returns
+ * %NULL. The resulting &struct tb_property_dir needs to be released by
  * calling tb_property_free_dir() when not needed anymore.
  *
  * The @block is expected to be root directory.
- *
- * Return: Pointer to &struct tb_property_dir, %NULL in case of failure.
  */
 struct tb_property_dir *tb_property_parse_dir(const u32 *block,
 					      size_t block_len)
@@ -240,8 +238,6 @@ struct tb_property_dir *tb_property_parse_dir(const u32 *block,
  *
  * Creates new, empty property directory. If @uuid is %NULL then the
  * directory is assumed to be root directory.
- *
- * Return: Pointer to &struct tb_property_dir, %NULL in case of failure.
  */
 struct tb_property_dir *tb_property_create_dir(const uuid_t *uuid)
 {
@@ -485,11 +481,9 @@ static ssize_t __tb_property_format_dir(const struct tb_property_dir *dir,
  * @block_len: Length of the property block
  *
  * This function formats the directory to the packed format that can be
- * then sent over the thunderbolt fabric to receiving host.
- *
- * Passing %NULL in @block returns number of entries the block takes.
- *
- * Return: %0 on success, negative errno otherwise.
+ * then send over the thunderbolt fabric to receiving host. Returns %0 in
+ * case of success and negative errno on faulure. Passing %NULL in @block
+ * returns number of entries the block takes.
  */
 ssize_t tb_property_format_dir(const struct tb_property_dir *dir, u32 *block,
 			       size_t block_len)
@@ -511,9 +505,9 @@ ssize_t tb_property_format_dir(const struct tb_property_dir *dir, u32 *block,
  * tb_property_copy_dir() - Take a deep copy of directory
  * @dir: Directory to copy
  *
- * The resulting directory needs to be released by calling tb_property_free_dir().
- *
- * Return: Pointer to &struct tb_property_dir, %NULL in case of failure.
+ * This function takes a deep copy of @dir and returns back the copy. In
+ * case of error returns %NULL. The resulting directory needs to be
+ * released by calling tb_property_free_dir().
  */
 struct tb_property_dir *tb_property_copy_dir(const struct tb_property_dir *dir)
 {
@@ -583,8 +577,6 @@ err_free:
  * @parent: Directory to add the property
  * @key: Key for the property
  * @value: Immediate value to store with the property
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_property_add_immediate(struct tb_property_dir *parent, const char *key,
 			      u32 value)
@@ -614,8 +606,6 @@ EXPORT_SYMBOL_GPL(tb_property_add_immediate);
  * @buflen: Number of bytes in the data buffer
  *
  * Function takes a copy of @buf and adds it to the directory.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_property_add_data(struct tb_property_dir *parent, const char *key,
 			 const void *buf, size_t buflen)
@@ -652,8 +642,6 @@ EXPORT_SYMBOL_GPL(tb_property_add_data);
  * @text: String to add
  *
  * Function takes a copy of @text and adds it to the directory.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_property_add_text(struct tb_property_dir *parent, const char *key,
 			 const char *text)
@@ -688,8 +676,6 @@ EXPORT_SYMBOL_GPL(tb_property_add_text);
  * @parent: Directory to add the property
  * @key: Key for the property
  * @dir: Directory to add
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_property_add_dir(struct tb_property_dir *parent, const char *key,
 			struct tb_property_dir *dir)
@@ -730,10 +716,8 @@ EXPORT_SYMBOL_GPL(tb_property_remove);
  * @key: Key to look for
  * @type: Type of the property
  *
- * Finds and returns property from the given directory. Does not
- * recurse into sub-directories.
- *
- * Return: Pointer to &struct tb_property, %NULL if the property was not found.
+ * Finds and returns property from the given directory. Does not recurse
+ * into sub-directories. Returns %NULL if the property was not found.
  */
 struct tb_property *tb_property_find(struct tb_property_dir *dir,
 	const char *key, enum tb_property_type type)
@@ -753,8 +737,6 @@ EXPORT_SYMBOL_GPL(tb_property_find);
  * tb_property_get_next() - Get next property from directory
  * @dir: Directory holding properties
  * @prev: Previous property in the directory (%NULL returns the first)
- *
- * Return: Pointer to &struct tb_property, %NULL if property was not found.
  */
 struct tb_property *tb_property_get_next(struct tb_property_dir *dir,
 					 struct tb_property *prev)

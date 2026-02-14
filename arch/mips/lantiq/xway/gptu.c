@@ -8,9 +8,8 @@
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of_platform.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
 
 #include <lantiq_soc.h>
 #include "../clk.h"
@@ -194,7 +193,7 @@ static struct platform_driver dma_driver = {
 	},
 };
 
-static int __init gptu_init(void)
+int __init gptu_init(void)
 {
 	int ret = platform_driver_register(&dma_driver);
 

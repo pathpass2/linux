@@ -4,7 +4,7 @@
  *
  *  Copyright (C) 2008  Qumranet, Inc.
  *  Copyright (C) 2008  SGI
- *             Christoph Lameter <cl@gentwo.org>
+ *             Christoph Lameter <cl@linux.com>
  */
 
 #include <linux/rculist.h>
@@ -18,8 +18,6 @@
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
 #include <linux/slab.h>
-
-#include "vma.h"
 
 /* global SRCU for all MMs */
 DEFINE_STATIC_SRCU(srcu);
@@ -201,7 +199,7 @@ mmu_interval_read_begin(struct mmu_interval_notifier *interval_sub)
 	 * invalidate_start/end and is colliding.
 	 *
 	 * The locking looks broadly like this:
-	 *   mn_itree_inv_start():                 mmu_interval_read_begin():
+	 *   mn_tree_invalidate_start():          mmu_interval_read_begin():
 	 *                                         spin_lock
 	 *                                          seq = READ_ONCE(interval_sub->invalidate_seq);
 	 *                                          seq == subs->invalidate_seq
@@ -209,7 +207,7 @@ mmu_interval_read_begin(struct mmu_interval_notifier *interval_sub)
 	 *    spin_lock
 	 *     seq = ++subscriptions->invalidate_seq
 	 *    spin_unlock
-	 *     op->invalidate():
+	 *     op->invalidate_range():
 	 *       user_lock
 	 *        mmu_interval_set_seq()
 	 *         interval_sub->invalidate_seq = seq
@@ -426,6 +424,23 @@ int __mmu_notifier_test_young(struct mm_struct *mm,
 	return young;
 }
 
+void __mmu_notifier_change_pte(struct mm_struct *mm, unsigned long address,
+			       pte_t pte)
+{
+	struct mmu_notifier *subscription;
+	int id;
+
+	id = srcu_read_lock(&srcu);
+	hlist_for_each_entry_rcu(subscription,
+				 &mm->notifier_subscriptions->list, hlist,
+				 srcu_read_lock_held(&srcu)) {
+		if (subscription->ops->change_pte)
+			subscription->ops->change_pte(subscription, mm, address,
+						      pte);
+	}
+	srcu_read_unlock(&srcu, id);
+}
+
 static int mn_itree_invalidate(struct mmu_notifier_subscriptions *subscriptions,
 			       const struct mmu_notifier_range *range)
 {
@@ -536,7 +551,7 @@ int __mmu_notifier_invalidate_range_start(struct mmu_notifier_range *range)
 
 static void
 mn_hlist_invalidate_end(struct mmu_notifier_subscriptions *subscriptions,
-			struct mmu_notifier_range *range)
+			struct mmu_notifier_range *range, bool only_end)
 {
 	struct mmu_notifier *subscription;
 	int id;
@@ -544,6 +559,24 @@ mn_hlist_invalidate_end(struct mmu_notifier_subscriptions *subscriptions,
 	id = srcu_read_lock(&srcu);
 	hlist_for_each_entry_rcu(subscription, &subscriptions->list, hlist,
 				 srcu_read_lock_held(&srcu)) {
+		/*
+		 * Call invalidate_range here too to avoid the need for the
+		 * subsystem of having to register an invalidate_range_end
+		 * call-back when there is invalidate_range already. Usually a
+		 * subsystem registers either invalidate_range_start()/end() or
+		 * invalidate_range(), so this will be no additional overhead
+		 * (besides the pointer check).
+		 *
+		 * We skip call to invalidate_range() if we know it is safe ie
+		 * call site use mmu_notifier_invalidate_range_only_end() which
+		 * is safe to do when we know that a call to invalidate_range()
+		 * already happen under page table lock.
+		 */
+		if (!only_end && subscription->ops->invalidate_range)
+			subscription->ops->invalidate_range(subscription,
+							    range->mm,
+							    range->start,
+							    range->end);
 		if (subscription->ops->invalidate_range_end) {
 			if (!mmu_notifier_range_blockable(range))
 				non_block_start();
@@ -556,7 +589,8 @@ mn_hlist_invalidate_end(struct mmu_notifier_subscriptions *subscriptions,
 	srcu_read_unlock(&srcu, id);
 }
 
-void __mmu_notifier_invalidate_range_end(struct mmu_notifier_range *range)
+void __mmu_notifier_invalidate_range_end(struct mmu_notifier_range *range,
+					 bool only_end)
 {
 	struct mmu_notifier_subscriptions *subscriptions =
 		range->mm->notifier_subscriptions;
@@ -566,12 +600,12 @@ void __mmu_notifier_invalidate_range_end(struct mmu_notifier_range *range)
 		mn_itree_inv_end(subscriptions);
 
 	if (!hlist_empty(&subscriptions->list))
-		mn_hlist_invalidate_end(subscriptions, range);
+		mn_hlist_invalidate_end(subscriptions, range, only_end);
 	lock_map_release(&__mmu_notifier_invalidate_range_start_map);
 }
 
-void __mmu_notifier_arch_invalidate_secondary_tlbs(struct mm_struct *mm,
-					unsigned long start, unsigned long end)
+void __mmu_notifier_invalidate_range(struct mm_struct *mm,
+				  unsigned long start, unsigned long end)
 {
 	struct mmu_notifier *subscription;
 	int id;
@@ -580,10 +614,9 @@ void __mmu_notifier_arch_invalidate_secondary_tlbs(struct mm_struct *mm,
 	hlist_for_each_entry_rcu(subscription,
 				 &mm->notifier_subscriptions->list, hlist,
 				 srcu_read_lock_held(&srcu)) {
-		if (subscription->ops->arch_invalidate_secondary_tlbs)
-			subscription->ops->arch_invalidate_secondary_tlbs(
-				subscription, mm,
-				start, end);
+		if (subscription->ops->invalidate_range)
+			subscription->ops->invalidate_range(subscription, mm,
+							    start, end);
 	}
 	srcu_read_unlock(&srcu, id);
 }
@@ -601,16 +634,6 @@ int __mmu_notifier_register(struct mmu_notifier *subscription,
 
 	mmap_assert_write_locked(mm);
 	BUG_ON(atomic_read(&mm->mm_users) <= 0);
-
-	/*
-	 * Subsystems should only register for invalidate_secondary_tlbs() or
-	 * invalidate_range_start()/end() callbacks, not both.
-	 */
-	if (WARN_ON_ONCE(subscription &&
-			 (subscription->ops->arch_invalidate_secondary_tlbs &&
-			 (subscription->ops->invalidate_range_start ||
-			  subscription->ops->invalidate_range_end))))
-		return -EINVAL;
 
 	if (!mm->notifier_subscriptions) {
 		/*

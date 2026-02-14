@@ -14,7 +14,7 @@
 #include <linux/cpumask.h>
 #include <linux/export.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/pm_opp.h>
 #include <linux/scpi_protocol.h>
 #include <linux/slab.h>
@@ -29,16 +29,9 @@ static struct scpi_ops *scpi_ops;
 
 static unsigned int scpi_cpufreq_get_rate(unsigned int cpu)
 {
-	struct cpufreq_policy *policy;
-	struct scpi_data *priv;
-	unsigned long rate;
-
-	policy = cpufreq_cpu_get_raw(cpu);
-	if (unlikely(!policy))
-		return 0;
-
-	priv = policy->driver_data;
-	rate = clk_get_rate(priv->clk);
+	struct cpufreq_policy *policy = cpufreq_cpu_get_raw(cpu);
+	struct scpi_data *priv = policy->driver_data;
+	unsigned long rate = clk_get_rate(priv->clk);
 
 	return rate / 1000;
 }
@@ -46,9 +39,8 @@ static unsigned int scpi_cpufreq_get_rate(unsigned int cpu)
 static int
 scpi_cpufreq_set_target(struct cpufreq_policy *policy, unsigned int index)
 {
-	unsigned long freq_khz = policy->freq_table[index].frequency;
+	u64 rate = policy->freq_table[index].frequency * 1000;
 	struct scpi_data *priv = policy->driver_data;
-	unsigned long rate = freq_khz * 1000;
 	int ret;
 
 	ret = clk_set_rate(priv->clk, rate);
@@ -56,7 +48,7 @@ scpi_cpufreq_set_target(struct cpufreq_policy *policy, unsigned int index)
 	if (ret)
 		return ret;
 
-	if (clk_get_rate(priv->clk) / 1000 != freq_khz)
+	if (clk_get_rate(priv->clk) != rate)
 		return -EIO;
 
 	return 0;
@@ -72,7 +64,7 @@ scpi_get_sharing_cpus(struct device *cpu_dev, struct cpumask *cpumask)
 	if (domain < 0)
 		return domain;
 
-	for_each_present_cpu(cpu) {
+	for_each_possible_cpu(cpu) {
 		if (cpu == cpu_dev->id)
 			continue;
 
@@ -157,7 +149,7 @@ static int scpi_cpufreq_init(struct cpufreq_policy *policy)
 
 	latency = scpi_ops->get_transition_latency(cpu_dev);
 	if (!latency)
-		latency = CPUFREQ_DEFAULT_TRANSITION_LATENCY_NS;
+		latency = CPUFREQ_ETERNAL;
 
 	policy->cpuinfo.transition_latency = latency;
 
@@ -175,7 +167,7 @@ out_free_opp:
 	return ret;
 }
 
-static void scpi_cpufreq_exit(struct cpufreq_policy *policy)
+static int scpi_cpufreq_exit(struct cpufreq_policy *policy)
 {
 	struct scpi_data *priv = policy->driver_data;
 
@@ -183,6 +175,8 @@ static void scpi_cpufreq_exit(struct cpufreq_policy *policy)
 	dev_pm_opp_free_cpufreq_table(priv->cpu_dev, &policy->freq_table);
 	dev_pm_opp_remove_all_dynamic(priv->cpu_dev);
 	kfree(priv);
+
+	return 0;
 }
 
 static struct cpufreq_driver scpi_cpufreq_driver = {
@@ -191,6 +185,7 @@ static struct cpufreq_driver scpi_cpufreq_driver = {
 		  CPUFREQ_NEED_INITIAL_FREQ_CHECK |
 		  CPUFREQ_IS_COOLING_DEV,
 	.verify	= cpufreq_generic_frequency_table_verify,
+	.attr	= cpufreq_generic_attr,
 	.get	= scpi_cpufreq_get_rate,
 	.init	= scpi_cpufreq_init,
 	.exit	= scpi_cpufreq_exit,
@@ -213,10 +208,11 @@ static int scpi_cpufreq_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void scpi_cpufreq_remove(struct platform_device *pdev)
+static int scpi_cpufreq_remove(struct platform_device *pdev)
 {
 	cpufreq_unregister_driver(&scpi_cpufreq_driver);
 	scpi_ops = NULL;
+	return 0;
 }
 
 static struct platform_driver scpi_cpufreq_platdrv = {

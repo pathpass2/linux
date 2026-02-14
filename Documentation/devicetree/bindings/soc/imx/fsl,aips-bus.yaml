@@ -22,9 +22,6 @@ select:
   required:
     - compatible
 
-allOf:
-  - $ref: /schemas/simple-bus.yaml#
-
 properties:
   compatible:
     items:
@@ -38,7 +35,7 @@ required:
   - compatible
   - reg
 
-unevaluatedProperties: false
+additionalProperties: true
 
 examples:
   - |

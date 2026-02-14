@@ -10,7 +10,6 @@
 #include <linux/kdev_t.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/cleanup.h>
 
 #include <linux/major.h>
 #include <linux/errno.h>
@@ -26,7 +25,7 @@
 
 #include "internal.h"
 
-static struct kobj_map *cdev_map __ro_after_init;
+static struct kobj_map *cdev_map;
 
 static DEFINE_MUTEX(chrdevs_lock);
 
@@ -98,8 +97,7 @@ static struct char_device_struct *
 __register_chrdev_region(unsigned int major, unsigned int baseminor,
 			   int minorct, const char *name)
 {
-	struct char_device_struct *cd __free(kfree) = NULL;
-	struct char_device_struct *curr, *prev = NULL;
+	struct char_device_struct *cd, *curr, *prev = NULL;
 	int ret;
 	int i;
 
@@ -119,14 +117,14 @@ __register_chrdev_region(unsigned int major, unsigned int baseminor,
 	if (cd == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	guard(mutex)(&chrdevs_lock);
+	mutex_lock(&chrdevs_lock);
 
 	if (major == 0) {
 		ret = find_dynamic_major();
 		if (ret < 0) {
 			pr_err("CHRDEV \"%s\" dynamic allocation region is full\n",
 			       name);
-			return ERR_PTR(ret);
+			goto out;
 		}
 		major = ret;
 	}
@@ -146,13 +144,13 @@ __register_chrdev_region(unsigned int major, unsigned int baseminor,
 		if (curr->baseminor >= baseminor + minorct)
 			break;
 
-		return ERR_PTR(ret);
+		goto out;
 	}
 
 	cd->major = major;
 	cd->baseminor = baseminor;
 	cd->minorct = minorct;
-	strscpy(cd->name, name, sizeof(cd->name));
+	strlcpy(cd->name, name, sizeof(cd->name));
 
 	if (!prev) {
 		cd->next = curr;
@@ -162,7 +160,12 @@ __register_chrdev_region(unsigned int major, unsigned int baseminor,
 		prev->next = cd;
 	}
 
-	return_ptr(cd);
+	mutex_unlock(&chrdevs_lock);
+	return cd;
+out:
+	mutex_unlock(&chrdevs_lock);
+	kfree(cd);
+	return ERR_PTR(ret);
 }
 
 static struct char_device_struct *
@@ -340,14 +343,14 @@ void __unregister_chrdev(unsigned int major, unsigned int baseminor,
 	kfree(cd);
 }
 
-static __cacheline_aligned_in_smp DEFINE_SPINLOCK(cdev_lock);
+static DEFINE_SPINLOCK(cdev_lock);
 
 static struct kobject *cdev_get(struct cdev *p)
 {
 	struct module *owner = p->owner;
 	struct kobject *kobj;
 
-	if (!try_module_get(owner))
+	if (owner && !try_module_get(owner))
 		return NULL;
 	kobj = kobject_get_unless_zero(&p->kobj);
 	if (!kobj)
@@ -559,8 +562,8 @@ int cdev_device_add(struct cdev *cdev, struct device *dev)
 
 /**
  * cdev_device_del() - inverse of cdev_device_add
- * @cdev: the cdev structure
  * @dev: the device structure
+ * @cdev: the cdev structure
  *
  * cdev_device_del() is a helper function to call cdev_del and device_del.
  * It should be used whenever cdev_device_add is used.

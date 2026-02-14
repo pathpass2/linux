@@ -11,7 +11,7 @@
 #include <linux/crypto.h>
 #include <linux/kernel.h>
 #include <linux/cpufeature.h>
-#include <asm/simd.h>
+#include <asm/neon.h>
 #include <crypto/b128ops.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/internal/aead.h>
@@ -48,11 +48,13 @@ static int gcm_setkey(struct crypto_aead *tfm, const u8 *key,
 	if (key_len != SM4_KEY_SIZE)
 		return -EINVAL;
 
-	scoped_ksimd() {
-		sm4_ce_expand_key(key, ctx->key.rkey_enc, ctx->key.rkey_dec,
-				crypto_sm4_fk, crypto_sm4_ck);
-		sm4_ce_pmull_ghash_setup(ctx->key.rkey_enc, ctx->ghash_table);
-	}
+	kernel_neon_begin();
+
+	sm4_ce_expand_key(key, ctx->key.rkey_enc, ctx->key.rkey_dec,
+			  crypto_sm4_fk, crypto_sm4_ck);
+	sm4_ce_pmull_ghash_setup(ctx->key.rkey_enc, ctx->ghash_table);
+
+	kernel_neon_end();
 	return 0;
 }
 
@@ -80,15 +82,20 @@ static void gcm_calculate_auth_mac(struct aead_request *req, u8 ghash[])
 	scatterwalk_start(&walk, req->src);
 
 	do {
-		unsigned int n, orig_n;
-		const u8 *p;
+		u32 n = scatterwalk_clamp(&walk, assoclen);
+		u8 *p, *ptr;
 
-		orig_n = scatterwalk_next(&walk, assoclen);
-		p = walk.addr;
-		n = orig_n;
+		if (!n) {
+			scatterwalk_start(&walk, sg_next(walk.sg));
+			n = scatterwalk_clamp(&walk, assoclen);
+		}
+
+		p = ptr = scatterwalk_map(&walk);
+		assoclen -= n;
+		scatterwalk_advance(&walk, n);
 
 		if (n + buflen < GHASH_BLOCK_SIZE) {
-			memcpy(&buffer[buflen], p, n);
+			memcpy(&buffer[buflen], ptr, n);
 			buflen += n;
 		} else {
 			unsigned int nblocks;
@@ -96,8 +103,8 @@ static void gcm_calculate_auth_mac(struct aead_request *req, u8 ghash[])
 			if (buflen) {
 				unsigned int l = GHASH_BLOCK_SIZE - buflen;
 
-				memcpy(&buffer[buflen], p, l);
-				p += l;
+				memcpy(&buffer[buflen], ptr, l);
+				ptr += l;
 				n -= l;
 
 				pmull_ghash_update(ctx->ghash_table, ghash,
@@ -107,17 +114,17 @@ static void gcm_calculate_auth_mac(struct aead_request *req, u8 ghash[])
 			nblocks = n / GHASH_BLOCK_SIZE;
 			if (nblocks) {
 				pmull_ghash_update(ctx->ghash_table, ghash,
-						   p, nblocks);
-				p += nblocks * GHASH_BLOCK_SIZE;
+						   ptr, nblocks);
+				ptr += nblocks * GHASH_BLOCK_SIZE;
 			}
 
 			buflen = n % GHASH_BLOCK_SIZE;
 			if (buflen)
-				memcpy(&buffer[0], p, buflen);
+				memcpy(&buffer[0], ptr, buflen);
 		}
 
-		scatterwalk_done_src(&walk, orig_n);
-		assoclen -= orig_n;
+		scatterwalk_unmap(p);
+		scatterwalk_done(&walk, 0, assoclen);
 	} while (assoclen);
 
 	/* padding with '0' */
@@ -147,28 +154,44 @@ static int gcm_crypt(struct aead_request *req, struct skcipher_walk *walk,
 	memcpy(iv, req->iv, GCM_IV_SIZE);
 	put_unaligned_be32(2, iv + GCM_IV_SIZE);
 
-	scoped_ksimd() {
-		if (req->assoclen)
-			gcm_calculate_auth_mac(req, ghash);
+	kernel_neon_begin();
 
-		do {
-			unsigned int tail = walk->nbytes % SM4_BLOCK_SIZE;
-			const u8 *src = walk->src.virt.addr;
-			u8 *dst = walk->dst.virt.addr;
-			const u8 *l = NULL;
+	if (req->assoclen)
+		gcm_calculate_auth_mac(req, ghash);
 
-			if (walk->nbytes == walk->total) {
-				l = (const u8 *)&lengths;
-				tail = 0;
-			}
+	while (walk->nbytes) {
+		unsigned int tail = walk->nbytes % SM4_BLOCK_SIZE;
+		const u8 *src = walk->src.virt.addr;
+		u8 *dst = walk->dst.virt.addr;
 
+		if (walk->nbytes == walk->total) {
 			sm4_ce_pmull_gcm_crypt(ctx->key.rkey_enc, dst, src, iv,
-					       walk->nbytes - tail, ghash,
-					       ctx->ghash_table, l);
+					       walk->nbytes, ghash,
+					       ctx->ghash_table,
+					       (const u8 *)&lengths);
 
-			err = skcipher_walk_done(walk, tail);
-		} while (walk->nbytes);
+			kernel_neon_end();
+
+			return skcipher_walk_done(walk, 0);
+		}
+
+		sm4_ce_pmull_gcm_crypt(ctx->key.rkey_enc, dst, src, iv,
+				       walk->nbytes - tail, ghash,
+				       ctx->ghash_table, NULL);
+
+		kernel_neon_end();
+
+		err = skcipher_walk_done(walk, tail);
+
+		kernel_neon_begin();
 	}
+
+	sm4_ce_pmull_gcm_crypt(ctx->key.rkey_enc, NULL, NULL, iv,
+			       walk->nbytes, ghash, ctx->ghash_table,
+			       (const u8 *)&lengths);
+
+	kernel_neon_end();
+
 	return err;
 }
 

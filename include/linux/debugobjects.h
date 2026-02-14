@@ -23,17 +23,13 @@ struct debug_obj_descr;
  * @state:	tracked object state
  * @astate:	current active state
  * @object:	pointer to the real object
- * @batch_last:	pointer to the last hlist node in a batch
  * @descr:	pointer to an object type specific debug description structure
  */
 struct debug_obj {
-	struct hlist_node		node;
-	enum debug_obj_state		state;
-	unsigned int			astate;
-	union {
-		void			*object;
-		struct hlist_node	*batch_last;
-	};
+	struct hlist_node	node;
+	enum debug_obj_state	state;
+	unsigned int		astate;
+	void			*object;
 	const struct debug_obj_descr *descr;
 };
 

@@ -82,7 +82,7 @@ static const struct iio_chan_spec atlas_hum_ezo_channels[] = {
 	},
 };
 
-static const struct atlas_ezo_device atlas_ezo_devices[] = {
+static struct atlas_ezo_device atlas_ezo_devices[] = {
 	[ATLAS_CO2_EZO] = {
 		.channels = atlas_co2_ezo_channels,
 		.num_channels = 1,
@@ -189,7 +189,7 @@ static const struct i2c_device_id atlas_ezo_id[] = {
 	{ "atlas-co2-ezo", (kernel_ulong_t)&atlas_ezo_devices[ATLAS_CO2_EZO] },
 	{ "atlas-o2-ezo", (kernel_ulong_t)&atlas_ezo_devices[ATLAS_O2_EZO] },
 	{ "atlas-hum-ezo", (kernel_ulong_t)&atlas_ezo_devices[ATLAS_HUM_EZO] },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, atlas_ezo_id);
 
@@ -197,12 +197,13 @@ static const struct of_device_id atlas_ezo_dt_ids[] = {
 	{ .compatible = "atlas,co2-ezo", .data = &atlas_ezo_devices[ATLAS_CO2_EZO], },
 	{ .compatible = "atlas,o2-ezo", .data = &atlas_ezo_devices[ATLAS_O2_EZO], },
 	{ .compatible = "atlas,hum-ezo", .data = &atlas_ezo_devices[ATLAS_HUM_EZO], },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, atlas_ezo_dt_ids);
 
 static int atlas_ezo_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	const struct atlas_ezo_device *chip;
 	struct atlas_ezo_data *data;
 	struct iio_dev *indio_dev;
@@ -211,7 +212,10 @@ static int atlas_ezo_probe(struct i2c_client *client)
 	if (!indio_dev)
 		return -ENOMEM;
 
-	chip = i2c_get_match_data(client);
+	if (dev_fwnode(&client->dev))
+		chip = device_get_match_data(&client->dev);
+	else
+		chip = (const struct atlas_ezo_device *)id->driver_data;
 	if (!chip)
 		return -EINVAL;
 
@@ -234,7 +238,7 @@ static struct i2c_driver atlas_ezo_driver = {
 		.name	= ATLAS_EZO_DRV_NAME,
 		.of_match_table	= atlas_ezo_dt_ids,
 	},
-	.probe		= atlas_ezo_probe,
+	.probe_new	= atlas_ezo_probe,
 	.id_table	= atlas_ezo_id,
 };
 module_i2c_driver(atlas_ezo_driver);

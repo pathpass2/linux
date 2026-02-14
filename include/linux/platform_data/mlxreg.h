@@ -209,7 +209,7 @@ struct mlxreg_core_platform_data {
  * @items: same type components with the hotplug capability;
  * @irq: platform interrupt number;
  * @regmap: register map of parent device;
- * @count: number of the components with the hotplug capability;
+ * @counter: number of the components with the hotplug capability;
  * @cell: location of top aggregation interrupt register;
  * @mask: top aggregation interrupt common mask;
  * @cell_low: location of low aggregation interrupt register;
@@ -224,7 +224,7 @@ struct mlxreg_core_hotplug_platform_data {
 	struct mlxreg_core_item *items;
 	int irq;
 	void *regmap;
-	int count;
+	int counter;
 	u32 cell;
 	u32 mask;
 	u32 cell_low;

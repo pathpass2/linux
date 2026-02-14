@@ -2,7 +2,6 @@
 /* Copyright (C) 2020 Marvell. */
 
 #include <linux/firmware.h>
-#include <linux/sysfs.h>
 #include "otx2_cpt_hw_types.h"
 #include "otx2_cpt_common.h"
 #include "otx2_cpt_devlink.h"
@@ -13,10 +12,6 @@
 
 #define OTX2_CPT_DRV_NAME    "rvu_cptpf"
 #define OTX2_CPT_DRV_STRING  "Marvell RVU CPT Physical Function Driver"
-
-#define CPT_UC_RID_CN9K_B0   1
-#define CPT_UC_RID_CN10K_A   4
-#define CPT_UC_RID_CN10K_B   5
 
 static void cptpf_enable_vfpf_mbox_intr(struct otx2_cptpf_dev *cptpf,
 					int num_vfs)
@@ -362,9 +357,9 @@ static int cptpf_vfpf_mbox_init(struct otx2_cptpf_dev *cptpf, int num_vfs)
 	u64 vfpf_mbox_base;
 	int err, i;
 
-	cptpf->vfpf_mbox_wq =
-		alloc_ordered_workqueue("cpt_vfpf_mailbox",
-					WQ_HIGHPRI | WQ_MEM_RECLAIM);
+	cptpf->vfpf_mbox_wq = alloc_workqueue("cpt_vfpf_mailbox",
+					      WQ_UNBOUND | WQ_HIGHPRI |
+					      WQ_MEM_RECLAIM, 1);
 	if (!cptpf->vfpf_mbox_wq)
 		return -ENOMEM;
 
@@ -458,9 +453,9 @@ static int cptpf_afpf_mbox_init(struct otx2_cptpf_dev *cptpf)
 	resource_size_t offset;
 	int err;
 
-	cptpf->afpf_mbox_wq =
-		alloc_ordered_workqueue("cpt_afpf_mailbox",
-					WQ_HIGHPRI | WQ_MEM_RECLAIM);
+	cptpf->afpf_mbox_wq = alloc_workqueue("cpt_afpf_mailbox",
+					      WQ_UNBOUND | WQ_HIGHPRI |
+					      WQ_MEM_RECLAIM, 1);
 	if (!cptpf->afpf_mbox_wq)
 		return -ENOMEM;
 
@@ -478,19 +473,10 @@ static int cptpf_afpf_mbox_init(struct otx2_cptpf_dev *cptpf)
 	if (err)
 		goto error;
 
-	err = otx2_mbox_init(&cptpf->afpf_mbox_up, cptpf->afpf_mbox_base,
-			     pdev, cptpf->reg_base, MBOX_DIR_PFAF_UP, 1);
-	if (err)
-		goto mbox_cleanup;
-
 	INIT_WORK(&cptpf->afpf_mbox_work, otx2_cptpf_afpf_mbox_handler);
-	INIT_WORK(&cptpf->afpf_mbox_up_work, otx2_cptpf_afpf_mbox_up_handler);
 	mutex_init(&cptpf->lock);
-
 	return 0;
 
-mbox_cleanup:
-	otx2_mbox_destroy(&cptpf->afpf_mbox);
 error:
 	destroy_workqueue(cptpf->afpf_mbox_wq);
 	return err;
@@ -500,33 +486,6 @@ static void cptpf_afpf_mbox_destroy(struct otx2_cptpf_dev *cptpf)
 {
 	destroy_workqueue(cptpf->afpf_mbox_wq);
 	otx2_mbox_destroy(&cptpf->afpf_mbox);
-	otx2_mbox_destroy(&cptpf->afpf_mbox_up);
-}
-
-static ssize_t sso_pf_func_ovrd_show(struct device *dev,
-				     struct device_attribute *attr, char *buf)
-{
-	struct otx2_cptpf_dev *cptpf = dev_get_drvdata(dev);
-
-	return sysfs_emit(buf, "%d\n", cptpf->sso_pf_func_ovrd);
-}
-
-static ssize_t sso_pf_func_ovrd_store(struct device *dev,
-				      struct device_attribute *attr,
-				      const char *buf, size_t count)
-{
-	struct otx2_cptpf_dev *cptpf = dev_get_drvdata(dev);
-	u8 sso_pf_func_ovrd;
-
-	if (!(cptpf->pdev->revision == CPT_UC_RID_CN9K_B0))
-		return count;
-
-	if (kstrtou8(buf, 0, &sso_pf_func_ovrd))
-		return -EINVAL;
-
-	cptpf->sso_pf_func_ovrd = sso_pf_func_ovrd;
-
-	return count;
 }
 
 static ssize_t kvf_limits_show(struct device *dev,
@@ -534,7 +493,7 @@ static ssize_t kvf_limits_show(struct device *dev,
 {
 	struct otx2_cptpf_dev *cptpf = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%d\n", cptpf->kvf_limits);
+	return sprintf(buf, "%d\n", cptpf->kvf_limits);
 }
 
 static ssize_t kvf_limits_store(struct device *dev,
@@ -559,11 +518,8 @@ static ssize_t kvf_limits_store(struct device *dev,
 }
 
 static DEVICE_ATTR_RW(kvf_limits);
-static DEVICE_ATTR_RW(sso_pf_func_ovrd);
-
 static struct attribute *cptpf_attrs[] = {
 	&dev_attr_kvf_limits.attr,
-	&dev_attr_sso_pf_func_ovrd.attr,
 	NULL
 };
 
@@ -590,22 +546,43 @@ static int cpt_is_pf_usable(struct otx2_cptpf_dev *cptpf)
 	return 0;
 }
 
-static void cptpf_get_rid(struct pci_dev *pdev, struct otx2_cptpf_dev *cptpf)
+static int cptx_device_reset(struct otx2_cptpf_dev *cptpf, int blkaddr)
 {
-	struct otx2_cpt_eng_grps *eng_grps = &cptpf->eng_grps;
-	u64 reg_val = 0x0;
+	int timeout = 10, ret;
+	u64 reg = 0;
 
-	if (is_dev_otx2(pdev)) {
-		eng_grps->rid = pdev->revision;
-		return;
+	ret = otx2_cpt_write_af_reg(&cptpf->afpf_mbox, cptpf->pdev,
+				    CPT_AF_BLK_RST, 0x1, blkaddr);
+	if (ret)
+		return ret;
+
+	do {
+		ret = otx2_cpt_read_af_reg(&cptpf->afpf_mbox, cptpf->pdev,
+					   CPT_AF_BLK_RST, &reg, blkaddr);
+		if (ret)
+			return ret;
+
+		if (!((reg >> 63) & 0x1))
+			break;
+
+		usleep_range(10000, 20000);
+		if (timeout-- < 0)
+			return -EBUSY;
+	} while (1);
+
+	return ret;
+}
+
+static int cptpf_device_reset(struct otx2_cptpf_dev *cptpf)
+{
+	int ret = 0;
+
+	if (cptpf->has_cpt1) {
+		ret = cptx_device_reset(cptpf, BLKADDR_CPT1);
+		if (ret)
+			return ret;
 	}
-	otx2_cpt_read_af_reg(&cptpf->afpf_mbox, pdev, CPT_AF_CTL, &reg_val,
-			     BLKADDR_CPT0);
-	if ((cpt_feature_sgv2(pdev) && (reg_val & BIT_ULL(18))) ||
-	    is_dev_cn10ka_ax(pdev))
-		eng_grps->rid = CPT_UC_RID_CN10K_A;
-	else if (cpt_feature_sgv2(pdev))
-		eng_grps->rid = CPT_UC_RID_CN10K_B;
+	return cptx_device_reset(cptpf, BLKADDR_CPT0);
 }
 
 static void cptpf_check_block_implemented(struct otx2_cptpf_dev *cptpf)
@@ -625,6 +602,10 @@ static int cptpf_device_init(struct otx2_cptpf_dev *cptpf)
 
 	/* check if 'implemented' bit is set for block BLKADDR_CPT1 */
 	cptpf_check_block_implemented(cptpf);
+	/* Reset the CPT PF device */
+	ret = cptpf_device_reset(cptpf);
+	if (ret)
+		return ret;
 
 	/* Get number of SE, IE and AE engines */
 	ret = otx2_cpt_read_af_reg(&cptpf->afpf_mbox, cptpf->pdev,
@@ -640,12 +621,6 @@ static int cptpf_device_init(struct otx2_cptpf_dev *cptpf)
 	/* Disable all cores */
 	ret = otx2_cpt_disable_all_cores(cptpf);
 
-	otx2_cptlf_set_dev_info(&cptpf->lfs, cptpf->pdev, cptpf->reg_base,
-				&cptpf->afpf_mbox, BLKADDR_CPT0);
-	if (cptpf->has_cpt1)
-		otx2_cptlf_set_dev_info(&cptpf->cpt1_lfs, cptpf->pdev,
-					cptpf->reg_base, &cptpf->afpf_mbox,
-					BLKADDR_CPT1);
 	return ret;
 }
 
@@ -685,7 +660,6 @@ static int cptpf_sriov_enable(struct pci_dev *pdev, int num_vfs)
 	if (ret)
 		goto destroy_flr;
 
-	cptpf_get_rid(pdev, cptpf);
 	/* Get CPT HW capabilities using LOAD_FVC operation. */
 	ret = otx2_cpt_discover_eng_capabilities(cptpf);
 	if (ret)
@@ -729,7 +703,7 @@ static int otx2_cptpf_probe(struct pci_dev *pdev,
 {
 	struct device *dev = &pdev->dev;
 	struct otx2_cptpf_dev *cptpf;
-	int err, num_vec;
+	int err;
 
 	cptpf = devm_kzalloc(dev, sizeof(*cptpf), GFP_KERNEL);
 	if (!cptpf)
@@ -746,35 +720,26 @@ static int otx2_cptpf_probe(struct pci_dev *pdev,
 		dev_err(dev, "Unable to get usable DMA configuration\n");
 		goto clear_drvdata;
 	}
-	err = pcim_request_all_regions(pdev, OTX2_CPT_DRV_NAME);
+	/* Map PF's configuration registers */
+	err = pcim_iomap_regions_request_all(pdev, 1 << PCI_PF_REG_BAR_NUM,
+					     OTX2_CPT_DRV_NAME);
 	if (err) {
-		dev_err(dev, "Couldn't request PCI resources 0x%x\n", err);
+		dev_err(dev, "Couldn't get PCI resources 0x%x\n", err);
 		goto clear_drvdata;
 	}
 	pci_set_master(pdev);
 	pci_set_drvdata(pdev, cptpf);
 	cptpf->pdev = pdev;
 
-	/* Map PF's configuration registers */
-	cptpf->reg_base = pcim_iomap(pdev, PCI_PF_REG_BAR_NUM, 0);
-	if (!cptpf->reg_base) {
-		err = -ENOMEM;
-		dev_err(dev, "Couldn't ioremap PCI resource 0x%x\n", err);
-		goto clear_drvdata;
-	}
+	cptpf->reg_base = pcim_iomap_table(pdev)[PCI_PF_REG_BAR_NUM];
 
 	/* Check if AF driver is up, otherwise defer probe */
 	err = cpt_is_pf_usable(cptpf);
 	if (err)
 		goto clear_drvdata;
 
-	num_vec = pci_msix_vec_count(cptpf->pdev);
-	if (num_vec <= 0) {
-		err = -EINVAL;
-		goto clear_drvdata;
-	}
-
-	err = pci_alloc_irq_vectors(pdev, num_vec, num_vec, PCI_IRQ_MSIX);
+	err = pci_alloc_irq_vectors(pdev, RVU_PF_INT_VEC_CNT,
+				    RVU_PF_INT_VEC_CNT, PCI_IRQ_MSIX);
 	if (err < 0) {
 		dev_err(dev, "Request for %d msix vectors failed\n",
 			RVU_PF_INT_VEC_CNT);
@@ -791,21 +756,20 @@ static int otx2_cptpf_probe(struct pci_dev *pdev,
 		goto destroy_afpf_mbox;
 
 	cptpf->max_vfs = pci_sriov_get_totalvfs(pdev);
-	cptpf->kvf_limits = 1;
+
+	err = cn10k_cptpf_lmtst_init(cptpf);
+	if (err)
+		goto unregister_intr;
 
 	/* Initialize CPT PF device */
 	err = cptpf_device_init(cptpf);
 	if (err)
 		goto unregister_intr;
 
-	err = cn10k_cptpf_lmtst_init(cptpf);
-	if (err)
-		goto unregister_intr;
-
 	/* Initialize engine groups */
 	err = otx2_cpt_init_eng_grps(pdev, &cptpf->eng_grps);
 	if (err)
-		goto free_lmtst;
+		goto unregister_intr;
 
 	err = sysfs_create_group(&dev->kobj, &cptpf_sysfs_group);
 	if (err)
@@ -821,8 +785,6 @@ sysfs_grp_del:
 	sysfs_remove_group(&dev->kobj, &cptpf_sysfs_group);
 cleanup_eng_grps:
 	otx2_cpt_cleanup_eng_grps(pdev, &cptpf->eng_grps);
-free_lmtst:
-	cn10k_cpt_lmtst_free(pdev, &cptpf->lfs);
 unregister_intr:
 	cptpf_disable_afpf_mbox_intr(cptpf);
 destroy_afpf_mbox:
@@ -841,14 +803,6 @@ static void otx2_cptpf_remove(struct pci_dev *pdev)
 
 	cptpf_sriov_disable(pdev);
 	otx2_cpt_unregister_dl(cptpf);
-
-	/* Cleanup Inline CPT LF's if attached */
-	if (cptpf->lfs.lfs_num)
-		otx2_inline_cptlf_cleanup(&cptpf->lfs);
-
-	if (cptpf->cpt1_lfs.lfs_num)
-		otx2_inline_cptlf_cleanup(&cptpf->cpt1_lfs);
-
 	/* Delete sysfs entry created for kernel VF limits */
 	sysfs_remove_group(&pdev->dev.kobj, &cptpf_sysfs_group);
 	/* Cleanup engine groups */
@@ -857,8 +811,6 @@ static void otx2_cptpf_remove(struct pci_dev *pdev)
 	cptpf_disable_afpf_mbox_intr(cptpf);
 	/* Destroy AF-PF mbox */
 	cptpf_afpf_mbox_destroy(cptpf);
-	/* Free LMTST memory */
-	cn10k_cpt_lmtst_free(pdev, &cptpf->lfs);
 	pci_set_drvdata(pdev, NULL);
 }
 
@@ -879,7 +831,7 @@ static struct pci_driver otx2_cpt_pci_driver = {
 
 module_pci_driver(otx2_cpt_pci_driver);
 
-MODULE_IMPORT_NS("CRYPTO_DEV_OCTEONTX2_CPT");
+MODULE_IMPORT_NS(CRYPTO_DEV_OCTEONTX2_CPT);
 
 MODULE_AUTHOR("Marvell");
 MODULE_DESCRIPTION(OTX2_CPT_DRV_STRING);

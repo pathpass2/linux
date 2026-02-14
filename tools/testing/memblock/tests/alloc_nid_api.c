@@ -324,7 +324,7 @@ static int alloc_nid_min_reserved_generic_check(void)
 	min_addr = max_addr - r2_size;
 	reserved_base = min_addr - r1_size;
 
-	memblock_reserve_kern(reserved_base, r1_size);
+	memblock_reserve(reserved_base, r1_size);
 
 	allocated_ptr = run_memblock_alloc_nid(r2_size, SMP_CACHE_BYTES,
 					       min_addr, max_addr,
@@ -374,7 +374,7 @@ static int alloc_nid_max_reserved_generic_check(void)
 	max_addr = memblock_end_of_DRAM() - r1_size;
 	min_addr = max_addr - r2_size;
 
-	memblock_reserve_kern(max_addr, r1_size);
+	memblock_reserve(max_addr, r1_size);
 
 	allocated_ptr = run_memblock_alloc_nid(r2_size, SMP_CACHE_BYTES,
 					       min_addr, max_addr,
@@ -436,8 +436,8 @@ static int alloc_nid_top_down_reserved_with_space_check(void)
 	min_addr = r2.base + r2.size;
 	max_addr = r1.base;
 
-	memblock_reserve_kern(r1.base, r1.size);
-	memblock_reserve_kern(r2.base, r2.size);
+	memblock_reserve(r1.base, r1.size);
+	memblock_reserve(r2.base, r2.size);
 
 	allocated_ptr = run_memblock_alloc_nid(r3_size, SMP_CACHE_BYTES,
 					       min_addr, max_addr,
@@ -499,8 +499,8 @@ static int alloc_nid_reserved_full_merge_generic_check(void)
 	min_addr = r2.base + r2.size;
 	max_addr = r1.base;
 
-	memblock_reserve_kern(r1.base, r1.size);
-	memblock_reserve_kern(r2.base, r2.size);
+	memblock_reserve(r1.base, r1.size);
+	memblock_reserve(r2.base, r2.size);
 
 	allocated_ptr = run_memblock_alloc_nid(r3_size, SMP_CACHE_BYTES,
 					       min_addr, max_addr,
@@ -563,8 +563,8 @@ static int alloc_nid_top_down_reserved_no_space_check(void)
 	min_addr = r2.base + r2.size;
 	max_addr = r1.base;
 
-	memblock_reserve_kern(r1.base, r1.size);
-	memblock_reserve_kern(r2.base, r2.size);
+	memblock_reserve(r1.base, r1.size);
+	memblock_reserve(r2.base, r2.size);
 
 	allocated_ptr = run_memblock_alloc_nid(r3_size, SMP_CACHE_BYTES,
 					       min_addr, max_addr,
@@ -909,8 +909,8 @@ static int alloc_nid_bottom_up_reserved_with_space_check(void)
 	min_addr = r2.base + r2.size;
 	max_addr = r1.base;
 
-	memblock_reserve_kern(r1.base, r1.size);
-	memblock_reserve_kern(r2.base, r2.size);
+	memblock_reserve(r1.base, r1.size);
+	memblock_reserve(r2.base, r2.size);
 
 	allocated_ptr = run_memblock_alloc_nid(r3_size, SMP_CACHE_BYTES,
 					       min_addr, max_addr,
@@ -2494,35 +2494,6 @@ static int alloc_nid_numa_split_all_reserved_generic_check(void)
 	return 0;
 }
 
-/*
- * A simple test that tries to allocate a memory region through the
- * memblock_alloc_node() on a NUMA node with id `nid`. Expected to have the
- * correct NUMA node set for the new region.
- */
-static int alloc_node_on_correct_nid(void)
-{
-	int nid_req = 2;
-	void *allocated_ptr = NULL;
-#ifdef CONFIG_NUMA
-	struct memblock_region *req_node = &memblock.memory.regions[nid_req];
-#endif
-	phys_addr_t size = SZ_512;
-
-	PREFIX_PUSH();
-	setup_numa_memblock(node_fractions);
-
-	allocated_ptr = memblock_alloc_node(size, SMP_CACHE_BYTES, nid_req);
-
-	ASSERT_NE(allocated_ptr, NULL);
-#ifdef CONFIG_NUMA
-	ASSERT_EQ(nid_req, req_node->nid);
-#endif
-
-	test_pass_pop();
-
-	return 0;
-}
-
 /* Test case wrappers for NUMA tests */
 static int alloc_nid_numa_simple_check(void)
 {
@@ -2661,15 +2632,6 @@ static int alloc_nid_numa_split_all_reserved_check(void)
 	return 0;
 }
 
-static int alloc_node_numa_on_correct_nid(void)
-{
-	test_print("\tRunning %s...\n", __func__);
-	run_top_down(alloc_node_on_correct_nid);
-	run_bottom_up(alloc_node_on_correct_nid);
-
-	return 0;
-}
-
 int __memblock_alloc_nid_numa_checks(void)
 {
 	test_print("Running %s NUMA tests...\n",
@@ -2689,8 +2651,6 @@ int __memblock_alloc_nid_numa_checks(void)
 	alloc_nid_numa_large_region_check();
 	alloc_nid_numa_reserved_full_merge_check();
 	alloc_nid_numa_split_all_reserved_check();
-
-	alloc_node_numa_on_correct_nid();
 
 	return 0;
 }

@@ -8,30 +8,13 @@
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/cleanup.h>
 #include <linux/pci.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
-#include <linux/of.h>
-#include <linux/of_platform.h>
-#include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
 #include <linux/proc_fs.h>
 #include <linux/slab.h>
 
 #include "pci.h"
-
-/*
- * The first PCI_BRIDGE_RESOURCE_NUM PCI bus resources (those that correspond
- * to P2P or CardBus bridge windows) go in a table.  Additional ones (for
- * buses below host bridges or subtractive decode bridges) go in the list.
- * Use pci_bus_for_each_resource() to iterate through all the resources.
- */
-
-struct pci_bus_resource {
-	struct list_head	list;
-	struct resource		*res;
-};
 
 void pci_add_resource_offset(struct list_head *resources, struct resource *res,
 			     resource_size_t offset)
@@ -61,7 +44,8 @@ void pci_free_resource_list(struct list_head *resources)
 }
 EXPORT_SYMBOL(pci_free_resource_list);
 
-void pci_bus_add_resource(struct pci_bus *bus, struct resource *res)
+void pci_bus_add_resource(struct pci_bus *bus, struct resource *res,
+			  unsigned int flags)
 {
 	struct pci_bus_resource *bus_res;
 
@@ -72,6 +56,7 @@ void pci_bus_add_resource(struct pci_bus *bus, struct resource *res)
 	}
 
 	bus_res->res = res;
+	bus_res->flags = flags;
 	list_add_tail(&bus_res->list, &bus->resources);
 }
 
@@ -190,23 +175,23 @@ static void pci_clip_resource_to_region(struct pci_bus *bus,
 static int pci_bus_alloc_from_region(struct pci_bus *bus, struct resource *res,
 		resource_size_t size, resource_size_t align,
 		resource_size_t min, unsigned long type_mask,
-		resource_alignf alignf,
+		resource_size_t (*alignf)(void *,
+					  const struct resource *,
+					  resource_size_t,
+					  resource_size_t),
 		void *alignf_data,
 		struct pci_bus_region *region)
 {
+	int i, ret;
 	struct resource *r, avail;
 	resource_size_t max;
-	int ret;
 
 	type_mask |= IORESOURCE_TYPE_BITS;
 
-	pci_bus_for_each_resource(bus, r) {
+	pci_bus_for_each_resource(bus, r, i) {
 		resource_size_t min_used = min;
 
 		if (!r)
-			continue;
-
-		if (r->flags & (IORESOURCE_UNSET|IORESOURCE_DISABLED))
 			continue;
 
 		/* type_mask must match */
@@ -264,7 +249,10 @@ static int pci_bus_alloc_from_region(struct pci_bus *bus, struct resource *res,
 int pci_bus_alloc_resource(struct pci_bus *bus, struct resource *res,
 		resource_size_t size, resource_size_t align,
 		resource_size_t min, unsigned long type_mask,
-		resource_alignf alignf,
+		resource_size_t (*alignf)(void *,
+					  const struct resource *,
+					  resource_size_t,
+					  resource_size_t),
 		void *alignf_data)
 {
 #ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
@@ -301,8 +289,9 @@ bool pci_bus_clip_resource(struct pci_dev *dev, int idx)
 	struct resource *res = &dev->resource[idx];
 	struct resource orig_res = *res;
 	struct resource *r;
+	int i;
 
-	pci_bus_for_each_resource(bus, r) {
+	pci_bus_for_each_resource(bus, r, i) {
 		resource_size_t start, end;
 
 		if (!r)
@@ -344,7 +333,7 @@ void __weak pcibios_bus_add_device(struct pci_dev *pdev) { }
  */
 void pci_bus_add_device(struct pci_dev *dev)
 {
-	struct device_node *dn = dev->dev.of_node;
+	int retval;
 
 	/*
 	 * Can not put in pci_device_add yet because resources
@@ -352,28 +341,16 @@ void pci_bus_add_device(struct pci_dev *dev)
 	 */
 	pcibios_bus_add_device(dev);
 	pci_fixup_device(pci_fixup_final, dev);
-	if (pci_is_bridge(dev))
-		of_pci_make_dev_node(dev);
 	pci_create_sysfs_dev_files(dev);
 	pci_proc_attach_device(dev);
 	pci_bridge_d3_update(dev);
 
-	/* Save config space for error recoverability */
-	pci_save_state(dev);
+	dev->match_driver = true;
+	retval = device_attach(&dev->dev);
+	if (retval < 0 && retval != -EPROBE_DEFER)
+		pci_warn(dev, "device attach failed (%d)\n", retval);
 
-	/*
-	 * Enable runtime PM, which potentially allows the device to
-	 * suspend immediately, only after the PCI state has been
-	 * configured completely.
-	 */
-	pm_runtime_enable(&dev->dev);
-
-	if (!dn || of_device_is_available(dn))
-		pci_dev_allow_binding(dev);
-
-	device_initial_probe(&dev->dev);
-
-	pci_dev_assign_added(dev);
+	pci_dev_assign_added(dev, true);
 }
 EXPORT_SYMBOL_GPL(pci_bus_add_device);
 
@@ -406,51 +383,10 @@ void pci_bus_add_devices(const struct pci_bus *bus)
 }
 EXPORT_SYMBOL(pci_bus_add_devices);
 
-static int __pci_walk_bus(struct pci_bus *top, int (*cb)(struct pci_dev *, void *),
-			  void *userdata)
-{
-	struct pci_dev *dev;
-	int ret = 0;
-
-	list_for_each_entry(dev, &top->devices, bus_list) {
-		ret = cb(dev, userdata);
-		if (ret)
-			break;
-		if (dev->subordinate) {
-			ret = __pci_walk_bus(dev->subordinate, cb, userdata);
-			if (ret)
-				break;
-		}
-	}
-	return ret;
-}
-
-static int __pci_walk_bus_reverse(struct pci_bus *top,
-				  int (*cb)(struct pci_dev *, void *),
-				  void *userdata)
-{
-	struct pci_dev *dev;
-	int ret = 0;
-
-	list_for_each_entry_reverse(dev, &top->devices, bus_list) {
-		if (dev->subordinate) {
-			ret = __pci_walk_bus_reverse(dev->subordinate, cb,
-						     userdata);
-			if (ret)
-				break;
-		}
-		ret = cb(dev, userdata);
-		if (ret)
-			break;
-	}
-	return ret;
-}
-
-/**
- *  pci_walk_bus - walk devices on/under bus, calling callback.
- *  @top: bus whose devices should be walked
- *  @cb: callback to be called for each device found
- *  @userdata: arbitrary pointer to be passed to callback
+/** pci_walk_bus - walk devices on/under bus, calling callback.
+ *  @top      bus whose devices should be walked
+ *  @cb       callback to be called for each device found
+ *  @userdata arbitrary pointer to be passed to callback.
  *
  *  Walk the given bus, including any bridged devices
  *  on buses under this bus.  Call the provided callback
@@ -458,38 +394,43 @@ static int __pci_walk_bus_reverse(struct pci_bus *top,
  *
  *  We check the return of @cb each time. If it returns anything
  *  other than 0, we break out.
+ *
  */
-void pci_walk_bus(struct pci_bus *top, int (*cb)(struct pci_dev *, void *), void *userdata)
+void pci_walk_bus(struct pci_bus *top, int (*cb)(struct pci_dev *, void *),
+		  void *userdata)
 {
+	struct pci_dev *dev;
+	struct pci_bus *bus;
+	struct list_head *next;
+	int retval;
+
+	bus = top;
 	down_read(&pci_bus_sem);
-	__pci_walk_bus(top, cb, userdata);
+	next = top->devices.next;
+	for (;;) {
+		if (next == &bus->devices) {
+			/* end of this bus, go up or finish */
+			if (bus == top)
+				break;
+			next = bus->self->bus_list.next;
+			bus = bus->self->bus;
+			continue;
+		}
+		dev = list_entry(next, struct pci_dev, bus_list);
+		if (dev->subordinate) {
+			/* this is a pci-pci bridge, do its devices next */
+			next = dev->subordinate->devices.next;
+			bus = dev->subordinate;
+		} else
+			next = dev->bus_list.next;
+
+		retval = cb(dev, userdata);
+		if (retval)
+			break;
+	}
 	up_read(&pci_bus_sem);
 }
 EXPORT_SYMBOL_GPL(pci_walk_bus);
-
-/**
- * pci_walk_bus_reverse - walk devices on/under bus, calling callback.
- * @top: bus whose devices should be walked
- * @cb: callback to be called for each device found
- * @userdata: arbitrary pointer to be passed to callback
- *
- * Same semantics as pci_walk_bus(), but walks the bus in reverse order.
- */
-void pci_walk_bus_reverse(struct pci_bus *top,
-			  int (*cb)(struct pci_dev *, void *), void *userdata)
-{
-	down_read(&pci_bus_sem);
-	__pci_walk_bus_reverse(top, cb, userdata);
-	up_read(&pci_bus_sem);
-}
-EXPORT_SYMBOL_GPL(pci_walk_bus_reverse);
-
-void pci_walk_bus_locked(struct pci_bus *top, int (*cb)(struct pci_dev *, void *), void *userdata)
-{
-	lockdep_assert_held(&pci_bus_sem);
-
-	__pci_walk_bus(top, cb, userdata);
-}
 
 struct pci_bus *pci_bus_get(struct pci_bus *bus)
 {

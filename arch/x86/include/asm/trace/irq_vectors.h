@@ -6,6 +6,7 @@
 #define _TRACE_IRQ_VECTORS_H
 
 #include <linux/tracepoint.h>
+#include <asm/trace/common.h>
 
 #ifdef CONFIG_X86_LOCAL_APIC
 

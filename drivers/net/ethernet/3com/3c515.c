@@ -31,6 +31,9 @@
    Setting to > 1512 effectively disables this feature. */
 static int rx_copybreak = 200;
 
+/* Allow setting MTU to a larger size, bypassing the normal ethernet setup. */
+static const int mtu = 1500;
+
 /* Maximum events (Rx packets, etc.) to handle at each interrupt. */
 static int max_interrupt_work = 20;
 
@@ -63,10 +66,8 @@ static int max_interrupt_work = 20;
 #include <linux/timer.h>
 #include <linux/ethtool.h>
 #include <linux/bitops.h>
+
 #include <linux/uaccess.h>
-
-#include <net/Space.h>
-
 #include <asm/io.h>
 #include <asm/dma.h>
 
@@ -859,7 +860,7 @@ static int corkscrew_open(struct net_device *dev)
 static void corkscrew_timer(struct timer_list *t)
 {
 #ifdef AUTOMEDIA
-	struct corkscrew_private *vp = timer_container_of(vp, t, timer);
+	struct corkscrew_private *vp = from_timer(vp, t, timer);
 	struct net_device *dev = vp->our_dev;
 	int ioaddr = dev->base_addr;
 	unsigned long flags;
@@ -1414,7 +1415,7 @@ static int corkscrew_close(struct net_device *dev)
 			dev->name, rx_nocopy, rx_copy, queued_packet);
 	}
 
-	timer_delete_sync(&vp->timer);
+	del_timer_sync(&vp->timer);
 
 	/* Turn off statistics ASAP.  We update lp->stats below. */
 	outw(StatsDisable, ioaddr + EL3_CMD);
@@ -1547,8 +1548,9 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 	.set_msglevel		= netdev_set_msglevel,
 };
 
+
 #ifdef MODULE
-static void __exit corkscrew_exit_module(void)
+void cleanup_module(void)
 {
 	while (!list_empty(&root_corkscrew_dev)) {
 		struct net_device *dev;
@@ -1562,5 +1564,4 @@ static void __exit corkscrew_exit_module(void)
 		free_netdev(dev);
 	}
 }
-module_exit(corkscrew_exit_module);
 #endif				/* MODULE */

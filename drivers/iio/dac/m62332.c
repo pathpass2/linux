@@ -201,7 +201,7 @@ static int m62332_probe(struct i2c_client *client)
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->info = &m62332_info;
 
-	ret = iio_map_array_register(indio_dev, dev_get_platdata(&client->dev));
+	ret = iio_map_array_register(indio_dev, client->dev.platform_data);
 	if (ret < 0)
 		return ret;
 
@@ -238,7 +238,7 @@ static struct i2c_driver m62332_driver = {
 		.name	= "m62332",
 		.pm	= pm_sleep_ptr(&m62332_pm_ops),
 	},
-	.probe		= m62332_probe,
+	.probe_new	= m62332_probe,
 	.remove		= m62332_remove,
 	.id_table	= m62332_id,
 };

@@ -31,7 +31,6 @@ SECTIONS
 		_text = .;	/* Text */
 		*(.text)
 		*(.text.*)
-		INIT_TEXT
 		_etext = . ;
 	}
 	.rodata : {
@@ -39,10 +38,6 @@ SECTIONS
 		*(.rodata)	 /* read-only data */
 		*(.rodata.*)
 		_erodata = . ;
-	}
-	EXCEPTION_TABLE(16)
-	.got : {
-		*(.got)
 	}
 	NOTES
 	.data :	{
@@ -98,24 +93,8 @@ SECTIONS
 		_decompressor_syms_end = .;
 	}
 
-	_decompressor_end = .;
-
-	. = ALIGN(4);
-	.vmlinux.relocs : {
-		__vmlinux_relocs_64_start = .;
-		*(.vmlinux.relocs_64)
-		__vmlinux_relocs_64_end = .;
-	}
-
 #ifdef CONFIG_KERNEL_UNCOMPRESSED
-	. = ALIGN(PAGE_SIZE);
-	. += AMODE31_SIZE;		/* .amode31 section */
-
-	/*
-	 * Make sure the location counter is not less than TEXT_OFFSET.
-	 * _SEGMENT_SIZE is not available, use ALIGN(1 << 20) instead.
-	 */
-	. = MAX(TEXT_OFFSET, ALIGN(1 << 20));
+	. = 0x100000;
 #else
 	. = ALIGN(8);
 #endif
@@ -139,35 +118,9 @@ SECTIONS
 
 	/* Sections to be discarded */
 	/DISCARD/ : {
-		COMMON_DISCARDS
 		*(.eh_frame)
+		*(__ex_table)
 		*(*__ksymtab*)
 		*(___kcrctab*)
-		*(.modinfo)
 	}
-
-	DWARF_DEBUG
-	ELF_DETAILS
-
-	/*
-	 * Make sure that the .got.plt is either completely empty or it
-	 * contains only the three reserved double words.
-	 */
-	.got.plt : {
-		*(.got.plt)
-	}
-	ASSERT(SIZEOF(.got.plt) == 0 || SIZEOF(.got.plt) == 0x18, "Unexpected GOT/PLT entries detected!")
-
-	/*
-	 * Sections that should stay zero sized, which is safer to
-	 * explicitly check instead of blindly discarding.
-	 */
-	.plt : {
-		*(.plt) *(.plt.*) *(.iplt) *(.igot .igot.plt)
-	}
-	ASSERT(SIZEOF(.plt) == 0, "Unexpected run-time procedure linkages detected!")
-	.rela.dyn : {
-		*(.rela.*) *(.rela_*)
-	}
-	ASSERT(SIZEOF(.rela.dyn) == 0, "Unexpected run-time relocations (.rela) detected!")
 }

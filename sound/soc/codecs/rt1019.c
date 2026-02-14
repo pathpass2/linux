@@ -18,6 +18,7 @@
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
+#include <linux/gpio.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -534,27 +535,27 @@ static const struct regmap_config rt1019_regmap = {
 	.max_register = RT1019_BEEP_2,
 	.volatile_reg = rt1019_volatile_register,
 	.readable_reg = rt1019_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = rt1019_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1019_reg),
 };
 
 static const struct i2c_device_id rt1019_i2c_id[] = {
-	{ "rt1019" },
+	{ "rt1019", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1019_i2c_id);
 
-static const struct of_device_id rt1019_of_match[] __maybe_unused = {
+static const struct of_device_id rt1019_of_match[] = {
 	{ .compatible = "realtek,rt1019", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, rt1019_of_match);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1019_acpi_match[] = {
-	{ "10EC1019" },
-	{ }
+	{ "10EC1019", 0},
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, rt1019_acpi_match);
 #endif
@@ -599,7 +600,7 @@ static struct i2c_driver rt1019_i2c_driver = {
 		.of_match_table = of_match_ptr(rt1019_of_match),
 		.acpi_match_table = ACPI_PTR(rt1019_acpi_match),
 	},
-	.probe = rt1019_i2c_probe,
+	.probe_new = rt1019_i2c_probe,
 	.id_table = rt1019_i2c_id,
 };
 module_i2c_driver(rt1019_i2c_driver);

@@ -28,11 +28,13 @@
 #include <linux/ptrace.h>
 #include <linux/export.h>
 #include <linux/user.h>
+#include <linux/tty.h>
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/ioport.h>
 #include <linux/major.h>
 #include <linux/initrd.h>
+#include <linux/vt_kern.h>
 #include <linux/console.h>
 #include <linux/pci.h>
 #include <linux/adb.h>
@@ -43,8 +45,7 @@
 #include <linux/root_dev.h>
 #include <linux/bitops.h>
 #include <linux/suspend.h>
-#include <linux/string_choices.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_platform.h>
 
 #include <asm/reg.h>
@@ -75,8 +76,7 @@ int pmac_newworld;
 
 static int current_root_goodness = -1;
 
-/* sda1 - slightly silly choice */
-#define DEFAULT_ROOT_DEVICE	MKDEV(SCSI_DISK0_MAJOR, 1)
+#define DEFAULT_ROOT_DEVICE Root_SDA1	/* sda1 - slightly silly choice */
 
 sys_ctrler_t sys_ctrler = SYS_CTRLER_UNKNOWN;
 EXPORT_SYMBOL(sys_ctrler);
@@ -137,7 +137,7 @@ static void pmac_show_cpuinfo(struct seq_file *m)
 			of_get_property(np, "d-cache-size", NULL);
 		seq_printf(m, "L2 cache\t:");
 		has_l2cache = 1;
-		if (of_property_read_bool(np, "cache-unified") && dc) {
+		if (of_get_property(np, "cache-unified", NULL) && dc) {
 			seq_printf(m, " %dK unified", *dc / 1024);
 		} else {
 			if (ic)
@@ -237,7 +237,8 @@ static void __init l2cr_init(void)
 				_set_L2CR(0);
 				_set_L2CR(*l2cr);
 				pr_info("L2CR overridden (0x%x), backside cache is %s\n",
-					*l2cr, str_enabled_disabled((*l2cr) & 0x80000000));
+					*l2cr, ((*l2cr) & 0x80000000) ?
+					"enabled" : "disabled");
 			}
 			of_node_put(np);
 			break;

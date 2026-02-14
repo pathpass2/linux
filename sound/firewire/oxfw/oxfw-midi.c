@@ -16,15 +16,17 @@ static int midi_capture_open(struct snd_rawmidi_substream *substream)
 	if (err < 0)
 		return err;
 
-	scoped_guard(mutex, &oxfw->mutex) {
-		err = snd_oxfw_stream_reserve_duplex(oxfw, &oxfw->tx_stream, 0, 0, 0, 0);
-		if (err >= 0) {
-			++oxfw->substreams_count;
-			err = snd_oxfw_stream_start_duplex(oxfw);
-			if (err < 0)
-				--oxfw->substreams_count;
-		}
+	mutex_lock(&oxfw->mutex);
+
+	err = snd_oxfw_stream_reserve_duplex(oxfw, &oxfw->tx_stream, 0, 0, 0, 0);
+	if (err >= 0) {
+		++oxfw->substreams_count;
+		err = snd_oxfw_stream_start_duplex(oxfw);
+		if (err < 0)
+			--oxfw->substreams_count;
 	}
+
+	mutex_unlock(&oxfw->mutex);
 
 	if (err < 0)
 		snd_oxfw_stream_lock_release(oxfw);
@@ -41,13 +43,15 @@ static int midi_playback_open(struct snd_rawmidi_substream *substream)
 	if (err < 0)
 		return err;
 
-	scoped_guard(mutex, &oxfw->mutex) {
-		err = snd_oxfw_stream_reserve_duplex(oxfw, &oxfw->rx_stream, 0, 0, 0, 0);
-		if (err >= 0) {
-			++oxfw->substreams_count;
-			err = snd_oxfw_stream_start_duplex(oxfw);
-		}
+	mutex_lock(&oxfw->mutex);
+
+	err = snd_oxfw_stream_reserve_duplex(oxfw, &oxfw->rx_stream, 0, 0, 0, 0);
+	if (err >= 0) {
+		++oxfw->substreams_count;
+		err = snd_oxfw_stream_start_duplex(oxfw);
 	}
+
+	mutex_unlock(&oxfw->mutex);
 
 	if (err < 0)
 		snd_oxfw_stream_lock_release(oxfw);
@@ -59,10 +63,12 @@ static int midi_capture_close(struct snd_rawmidi_substream *substream)
 {
 	struct snd_oxfw *oxfw = substream->rmidi->private_data;
 
-	scoped_guard(mutex, &oxfw->mutex) {
-		--oxfw->substreams_count;
-		snd_oxfw_stream_stop_duplex(oxfw);
-	}
+	mutex_lock(&oxfw->mutex);
+
+	--oxfw->substreams_count;
+	snd_oxfw_stream_stop_duplex(oxfw);
+
+	mutex_unlock(&oxfw->mutex);
 
 	snd_oxfw_stream_lock_release(oxfw);
 	return 0;
@@ -72,10 +78,12 @@ static int midi_playback_close(struct snd_rawmidi_substream *substream)
 {
 	struct snd_oxfw *oxfw = substream->rmidi->private_data;
 
-	scoped_guard(mutex, &oxfw->mutex) {
-		--oxfw->substreams_count;
-		snd_oxfw_stream_stop_duplex(oxfw);
-	}
+	mutex_lock(&oxfw->mutex);
+
+	--oxfw->substreams_count;
+	snd_oxfw_stream_stop_duplex(oxfw);
+
+	mutex_unlock(&oxfw->mutex);
 
 	snd_oxfw_stream_lock_release(oxfw);
 	return 0;
@@ -84,8 +92,9 @@ static int midi_playback_close(struct snd_rawmidi_substream *substream)
 static void midi_capture_trigger(struct snd_rawmidi_substream *substrm, int up)
 {
 	struct snd_oxfw *oxfw = substrm->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&oxfw->lock);
+	spin_lock_irqsave(&oxfw->lock, flags);
 
 	if (up)
 		amdtp_am824_midi_trigger(&oxfw->tx_stream,
@@ -93,13 +102,16 @@ static void midi_capture_trigger(struct snd_rawmidi_substream *substrm, int up)
 	else
 		amdtp_am824_midi_trigger(&oxfw->tx_stream,
 					 substrm->number, NULL);
+
+	spin_unlock_irqrestore(&oxfw->lock, flags);
 }
 
 static void midi_playback_trigger(struct snd_rawmidi_substream *substrm, int up)
 {
 	struct snd_oxfw *oxfw = substrm->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&oxfw->lock);
+	spin_lock_irqsave(&oxfw->lock, flags);
 
 	if (up)
 		amdtp_am824_midi_trigger(&oxfw->rx_stream,
@@ -107,6 +119,8 @@ static void midi_playback_trigger(struct snd_rawmidi_substream *substrm, int up)
 	else
 		amdtp_am824_midi_trigger(&oxfw->rx_stream,
 					 substrm->number, NULL);
+
+	spin_unlock_irqrestore(&oxfw->lock, flags);
 }
 
 static void set_midi_substream_names(struct snd_oxfw *oxfw,
@@ -115,9 +129,9 @@ static void set_midi_substream_names(struct snd_oxfw *oxfw,
 	struct snd_rawmidi_substream *subs;
 
 	list_for_each_entry(subs, &str->substreams, list) {
-		scnprintf(subs->name, sizeof(subs->name),
-			  "%s MIDI %d",
-			  oxfw->card->shortname, subs->number + 1);
+		snprintf(subs->name, sizeof(subs->name),
+			 "%s MIDI %d",
+			 oxfw->card->shortname, subs->number + 1);
 	}
 }
 

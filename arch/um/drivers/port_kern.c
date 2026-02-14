@@ -45,17 +45,15 @@ struct connection {
 static irqreturn_t pipe_interrupt(int irq, void *data)
 {
 	struct connection *conn = data;
-	int n_fds = 1, fd = -1;
-	ssize_t ret;
+	int fd;
 
-	ret = os_rcv_fd_msg(conn->socket[0], &fd, n_fds, &conn->helper_pid,
-			    sizeof(conn->helper_pid));
-	if (ret != sizeof(conn->helper_pid)) {
-		if (ret == -EAGAIN)
+	fd = os_rcv_fd(conn->socket[0], &conn->helper_pid);
+	if (fd < 0) {
+		if (fd == -EAGAIN)
 			return IRQ_NONE;
 
-		printk(KERN_ERR "pipe_interrupt : os_rcv_fd_msg returned %zd\n",
-		       ret);
+		printk(KERN_ERR "pipe_interrupt : os_rcv_fd returned %d\n",
+		       -fd);
 		os_close_file(conn->fd);
 	}
 
@@ -146,7 +144,7 @@ static void port_work_proc(struct work_struct *unused)
 	local_irq_restore(flags);
 }
 
-static DECLARE_WORK(port_work, port_work_proc);
+DECLARE_WORK(port_work, port_work_proc);
 
 static irqreturn_t port_interrupt(int irq, void *data)
 {

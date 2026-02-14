@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <libgen.h>
 #include <string.h>
+#include <linux/version.h>
 #include <ctype.h>
 #include "utils.h"
 

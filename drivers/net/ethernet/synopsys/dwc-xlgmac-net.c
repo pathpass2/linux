@@ -360,8 +360,7 @@ static irqreturn_t xlgmac_dma_isr(int irq, void *data)
 
 static void xlgmac_tx_timer(struct timer_list *t)
 {
-	struct xlgmac_channel *channel = timer_container_of(channel, t,
-							    tx_timer);
+	struct xlgmac_channel *channel = from_timer(channel, t, tx_timer);
 	struct xlgmac_pdata *pdata = channel->pdata;
 	struct napi_struct *napi;
 
@@ -406,7 +405,7 @@ static void xlgmac_stop_timers(struct xlgmac_pdata *pdata)
 		if (!channel->tx_ring)
 			break;
 
-		timer_delete_sync(&channel->tx_timer);
+		del_timer_sync(&channel->tx_timer);
 	}
 }
 
@@ -824,7 +823,7 @@ static int xlgmac_change_mtu(struct net_device *netdev, int mtu)
 		return ret;
 
 	pdata->rx_buf_size = ret;
-	WRITE_ONCE(netdev->mtu, mtu);
+	netdev->mtu = mtu;
 
 	xlgmac_restart_dev(pdata);
 

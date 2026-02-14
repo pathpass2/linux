@@ -183,7 +183,7 @@ static const DECLARE_TLV_DB_RANGE(mic_bst_tlv,
 static int rt5631_dmic_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct rt5631_priv *rt5631 = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = rt5631->dmic_used_flag;
@@ -194,7 +194,7 @@ static int rt5631_dmic_get(struct snd_kcontrol *kcontrol,
 static int rt5631_dmic_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct rt5631_priv *rt5631 = snd_soc_component_get_drvdata(component);
 
 	rt5631->dmic_used_flag = ucontrol->value.integer.value[0];
@@ -1411,10 +1411,10 @@ static int rt5631_hifi_codec_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	dev_dbg(component->dev, "enter %s\n", __func__);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		rt5631->master = 1;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		iface |= RT5631_SDP_MODE_SEL_SLAVE;
 		rt5631->master = 0;
 		break;
@@ -1535,7 +1535,6 @@ static int rt5631_set_bias_level(struct snd_soc_component *component,
 			enum snd_soc_bias_level level)
 {
 	struct rt5631_priv *rt5631 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -1546,7 +1545,7 @@ static int rt5631_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			snd_soc_component_update_bits(component, RT5631_PWR_MANAG_ADD3,
 				RT5631_PWR_VREF | RT5631_PWR_MAIN_BIAS,
 				RT5631_PWR_VREF | RT5631_PWR_MAIN_BIAS);
@@ -1576,7 +1575,6 @@ static int rt5631_set_bias_level(struct snd_soc_component *component,
 static int rt5631_probe(struct snd_soc_component *component)
 {
 	struct rt5631_priv *rt5631 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	unsigned int val;
 
 	val = rt5631_read_index(component, RT5631_ADDA_MIXER_INTL_REG3);
@@ -1615,7 +1613,7 @@ static int rt5631_probe(struct snd_soc_component *component)
 			RT5631_DMIC_R_CH_LATCH_RISING);
 	}
 
-	snd_soc_dapm_init_bias_level(dapm, SND_SOC_BIAS_STANDBY);
+	snd_soc_component_init_bias_level(component, SND_SOC_BIAS_STANDBY);
 
 	return 0;
 }
@@ -1671,8 +1669,8 @@ static const struct snd_soc_component_driver soc_component_dev_rt5631 = {
 };
 
 static const struct i2c_device_id rt5631_i2c_id[] = {
-	{ "rt5631" },
-	{ "alc5631" },
+	{ "rt5631", 0 },
+	{ "alc5631", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt5631_i2c_id);
@@ -1695,7 +1693,7 @@ static const struct regmap_config rt5631_regmap_config = {
 	.max_register = RT5631_VENDOR_ID2,
 	.reg_defaults = rt5631_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt5631_reg),
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -1730,7 +1728,7 @@ static struct i2c_driver rt5631_i2c_driver = {
 		.name = "rt5631",
 		.of_match_table = of_match_ptr(rt5631_i2c_dt_ids),
 	},
-	.probe    = rt5631_i2c_probe,
+	.probe_new = rt5631_i2c_probe,
 	.remove   = rt5631_i2c_remove,
 	.id_table = rt5631_i2c_id,
 };

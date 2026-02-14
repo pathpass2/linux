@@ -1,6 +1,6 @@
-=====================================
-sisfb - SiS framebuffer device driver
-=====================================
+==============
+What is sisfb?
+==============
 
 sisfb is a framebuffer device driver for SiS (Silicon Integrated Systems)
 graphics chips. Supported are:

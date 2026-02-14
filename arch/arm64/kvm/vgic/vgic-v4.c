@@ -123,7 +123,7 @@ static void vgic_v4_enable_vsgis(struct kvm_vcpu *vcpu)
 	 * IRQ. The SGI code will do its magic.
 	 */
 	for (i = 0; i < VGIC_NR_SGIS; i++) {
-		struct vgic_irq *irq = vgic_get_vcpu_irq(vcpu, i);
+		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, i);
 		struct irq_desc *desc;
 		unsigned long flags;
 		int ret;
@@ -160,10 +160,9 @@ static void vgic_v4_disable_vsgis(struct kvm_vcpu *vcpu)
 	int i;
 
 	for (i = 0; i < VGIC_NR_SGIS; i++) {
-		struct vgic_irq *irq = vgic_get_vcpu_irq(vcpu, i);
+		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, i);
 		struct irq_desc *desc;
 		unsigned long flags;
-		bool pending;
 		int ret;
 
 		raw_spin_lock_irqsave(&irq->irq_lock, flags);
@@ -174,10 +173,8 @@ static void vgic_v4_disable_vsgis(struct kvm_vcpu *vcpu)
 		irq->hw = false;
 		ret = irq_get_irqchip_state(irq->host_irq,
 					    IRQCHIP_STATE_PENDING,
-					    &pending);
+					    &irq->pending_latch);
 		WARN_ON(ret);
-
-		irq->pending_latch = pending;
 
 		desc = irq_to_desc(irq->host_irq);
 		irq_domain_deactivate_irq(irq_desc_get_irq_data(desc));
@@ -187,13 +184,12 @@ static void vgic_v4_disable_vsgis(struct kvm_vcpu *vcpu)
 	}
 }
 
+/* Must be called with the kvm lock held */
 void vgic_v4_configure_vsgis(struct kvm *kvm)
 {
 	struct vgic_dist *dist = &kvm->arch.vgic;
 	struct kvm_vcpu *vcpu;
 	unsigned long i;
-
-	lockdep_assert_held(&kvm->arch.config_lock);
 
 	kvm_arm_halt_guest(kvm);
 
@@ -236,8 +232,9 @@ int vgic_v4_request_vpe_irq(struct kvm_vcpu *vcpu, int irq)
  * @kvm:	Pointer to the VM being initialized
  *
  * We may be called each time a vITS is created, or when the
- * vgic is initialized. In both cases, the number of vcpus
- * should now be fixed.
+ * vgic is initialized. This relies on kvm->lock to be
+ * held. In both cases, the number of vcpus should now be
+ * fixed.
  */
 int vgic_v4_init(struct kvm *kvm)
 {
@@ -245,8 +242,6 @@ int vgic_v4_init(struct kvm *kvm)
 	struct kvm_vcpu *vcpu;
 	int nr_vcpus, ret;
 	unsigned long i;
-
-	lockdep_assert_held(&kvm->arch.config_lock);
 
 	if (!kvm_vgic_global_state.has_gicv4)
 		return 0; /* Nothing to see here... move along. */
@@ -314,13 +309,13 @@ int vgic_v4_init(struct kvm *kvm)
 /**
  * vgic_v4_teardown - Free the GICv4 data structures
  * @kvm:	Pointer to the VM being destroyed
+ *
+ * Relies on kvm->lock to be held.
  */
 void vgic_v4_teardown(struct kvm *kvm)
 {
 	struct its_vm *its_vm = &kvm->arch.vgic.its_vm;
 	int i;
-
-	lockdep_assert_held(&kvm->arch.config_lock);
 
 	if (!its_vm->vpes)
 		return;
@@ -339,30 +334,14 @@ void vgic_v4_teardown(struct kvm *kvm)
 	its_vm->vpes = NULL;
 }
 
-static inline bool vgic_v4_want_doorbell(struct kvm_vcpu *vcpu)
-{
-	if (vcpu_get_flag(vcpu, IN_WFI))
-		return true;
-
-	if (likely(!vcpu_has_nv(vcpu)))
-		return false;
-
-	/*
-	 * GICv4 hardware is only ever used for the L1. Mark the vPE (i.e. the
-	 * L1 context) nonresident and request a doorbell to kick us out of the
-	 * L2 when an IRQ becomes pending.
-	 */
-	return vcpu_get_flag(vcpu, IN_NESTED_ERET);
-}
-
-int vgic_v4_put(struct kvm_vcpu *vcpu)
+int vgic_v4_put(struct kvm_vcpu *vcpu, bool need_db)
 {
 	struct its_vpe *vpe = &vcpu->arch.vgic_cpu.vgic_v3.its_vpe;
 
-	if (!vgic_supports_direct_irqs(vcpu->kvm) || !vpe->resident)
+	if (!vgic_supports_direct_msis(vcpu->kvm) || !vpe->resident)
 		return 0;
 
-	return its_make_vpe_non_resident(vpe, vgic_v4_want_doorbell(vcpu));
+	return its_make_vpe_non_resident(vpe, need_db);
 }
 
 int vgic_v4_load(struct kvm_vcpu *vcpu)
@@ -370,10 +349,7 @@ int vgic_v4_load(struct kvm_vcpu *vcpu)
 	struct its_vpe *vpe = &vcpu->arch.vgic_cpu.vgic_v3.its_vpe;
 	int err;
 
-	if (!vgic_supports_direct_irqs(vcpu->kvm) || vpe->resident)
-		return 0;
-
-	if (vcpu_get_flag(vcpu, IN_WFI))
+	if (!vgic_supports_direct_msis(vcpu->kvm) || vpe->resident)
 		return 0;
 
 	/*
@@ -434,7 +410,7 @@ int kvm_vgic_v4_set_forwarding(struct kvm *kvm, int virq,
 	struct vgic_irq *irq;
 	struct its_vlpi_map map;
 	unsigned long flags;
-	int ret = 0;
+	int ret;
 
 	if (!vgic_supports_direct_msis(kvm))
 		return 0;
@@ -447,24 +423,13 @@ int kvm_vgic_v4_set_forwarding(struct kvm *kvm, int virq,
 	if (IS_ERR(its))
 		return 0;
 
-	guard(mutex)(&its->its_lock);
+	mutex_lock(&its->its_lock);
 
-	/*
-	 * Perform the actual DevID/EventID -> LPI translation.
-	 *
-	 * Silently exit if translation fails as the guest (or userspace!) has
-	 * managed to do something stupid. Emulated LPI injection will still
-	 * work if the guest figures itself out at a later time.
-	 */
-	if (vgic_its_resolve_lpi(kvm, its, irq_entry->msi.devid,
-				 irq_entry->msi.data, &irq))
-		return 0;
-
-	raw_spin_lock_irqsave(&irq->irq_lock, flags);
-
-	/* Silently exit if the vLPI is already mapped */
-	if (irq->hw)
-		goto out_unlock_irq;
+	/* Perform the actual DevID/EventID -> LPI translation. */
+	ret = vgic_its_resolve_lpi(kvm, its, irq_entry->msi.devid,
+				   irq_entry->msi.data, &irq);
+	if (ret)
+		goto out;
 
 	/*
 	 * Emit the mapping request. If it fails, the ITS probably
@@ -484,72 +449,68 @@ int kvm_vgic_v4_set_forwarding(struct kvm *kvm, int virq,
 
 	ret = its_map_vlpi(virq, &map);
 	if (ret)
-		goto out_unlock_irq;
+		goto out;
 
 	irq->hw		= true;
 	irq->host_irq	= virq;
 	atomic_inc(&map.vpe->vlpi_count);
 
 	/* Transfer pending state */
-	if (!irq->pending_latch)
-		goto out_unlock_irq;
+	raw_spin_lock_irqsave(&irq->irq_lock, flags);
+	if (irq->pending_latch) {
+		ret = irq_set_irqchip_state(irq->host_irq,
+					    IRQCHIP_STATE_PENDING,
+					    irq->pending_latch);
+		WARN_RATELIMIT(ret, "IRQ %d", irq->host_irq);
 
-	ret = irq_set_irqchip_state(irq->host_irq, IRQCHIP_STATE_PENDING,
-				    irq->pending_latch);
-	WARN_RATELIMIT(ret, "IRQ %d", irq->host_irq);
-
-	/*
-	 * Clear pending_latch and communicate this state
-	 * change via vgic_queue_irq_unlock.
-	 */
-	irq->pending_latch = false;
-	vgic_queue_irq_unlock(kvm, irq, flags);
-	return ret;
-
-out_unlock_irq:
-	raw_spin_unlock_irqrestore(&irq->irq_lock, flags);
-	return ret;
-}
-
-static struct vgic_irq *__vgic_host_irq_get_vlpi(struct kvm *kvm, int host_irq)
-{
-	struct vgic_irq *irq;
-	unsigned long idx;
-
-	guard(rcu)();
-	xa_for_each(&kvm->arch.vgic.lpi_xa, idx, irq) {
-		if (!irq->hw || irq->host_irq != host_irq)
-			continue;
-
-		if (!vgic_try_get_irq_ref(irq))
-			return NULL;
-
-		return irq;
+		/*
+		 * Clear pending_latch and communicate this state
+		 * change via vgic_queue_irq_unlock.
+		 */
+		irq->pending_latch = false;
+		vgic_queue_irq_unlock(kvm, irq, flags);
+	} else {
+		raw_spin_unlock_irqrestore(&irq->irq_lock, flags);
 	}
 
-	return NULL;
+out:
+	mutex_unlock(&its->its_lock);
+	return ret;
 }
 
-void kvm_vgic_v4_unset_forwarding(struct kvm *kvm, int host_irq)
+int kvm_vgic_v4_unset_forwarding(struct kvm *kvm, int virq,
+				 struct kvm_kernel_irq_routing_entry *irq_entry)
 {
+	struct vgic_its *its;
 	struct vgic_irq *irq;
-	unsigned long flags;
+	int ret;
 
 	if (!vgic_supports_direct_msis(kvm))
-		return;
+		return 0;
 
-	irq = __vgic_host_irq_get_vlpi(kvm, host_irq);
-	if (!irq)
-		return;
+	/*
+	 * Get the ITS, and escape early on error (not a valid
+	 * doorbell for any of our vITSs).
+	 */
+	its = vgic_get_its(kvm, irq_entry);
+	if (IS_ERR(its))
+		return 0;
 
-	raw_spin_lock_irqsave(&irq->irq_lock, flags);
-	WARN_ON(irq->hw && irq->host_irq != host_irq);
+	mutex_lock(&its->its_lock);
+
+	ret = vgic_its_resolve_lpi(kvm, its, irq_entry->msi.devid,
+				   irq_entry->msi.data, &irq);
+	if (ret)
+		goto out;
+
+	WARN_ON(!(irq->hw && irq->host_irq == virq));
 	if (irq->hw) {
 		atomic_dec(&irq->target_vcpu->arch.vgic_cpu.vgic_v3.its_vpe.vlpi_count);
 		irq->hw = false;
-		its_unmap_vlpi(host_irq);
+		ret = its_unmap_vlpi(virq);
 	}
 
-	raw_spin_unlock_irqrestore(&irq->irq_lock, flags);
-	vgic_put_irq(kvm, irq);
+out:
+	mutex_unlock(&its->its_lock);
+	return ret;
 }

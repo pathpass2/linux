@@ -47,7 +47,6 @@
 #include <linux/slab.h>
 #include <linux/stat.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
 #include <asm/ibmebus.h>
 #include <asm/machdep.h>
 
@@ -55,7 +54,7 @@ static struct device ibmebus_bus_device = { /* fake "parent" device */
 	.init_name = "ibmebus",
 };
 
-const struct bus_type ibmebus_bus_type;
+struct bus_type ibmebus_bus_type;
 
 /* These devices will automatically be added to the bus during init */
 static const struct of_device_id ibmebus_matches[] __initconst = {
@@ -86,18 +85,17 @@ static void ibmebus_free_coherent(struct device *dev,
 	kfree(vaddr);
 }
 
-static dma_addr_t ibmebus_map_phys(struct device *dev, phys_addr_t phys,
+static dma_addr_t ibmebus_map_page(struct device *dev,
+				   struct page *page,
+				   unsigned long offset,
 				   size_t size,
 				   enum dma_data_direction direction,
 				   unsigned long attrs)
 {
-	if (attrs & DMA_ATTR_MMIO)
-		return DMA_MAPPING_ERROR;
-
-	return (dma_addr_t)(phys_to_virt(phys));
+	return (dma_addr_t)(page_address(page) + offset);
 }
 
-static void ibmebus_unmap_phys(struct device *dev,
+static void ibmebus_unmap_page(struct device *dev,
 			       dma_addr_t dma_addr,
 			       size_t size,
 			       enum dma_data_direction direction,
@@ -147,8 +145,8 @@ static const struct dma_map_ops ibmebus_dma_ops = {
 	.unmap_sg           = ibmebus_unmap_sg,
 	.dma_supported      = ibmebus_dma_supported,
 	.get_required_mask  = ibmebus_dma_get_required_mask,
-	.map_phys           = ibmebus_map_phys,
-	.unmap_phys         = ibmebus_unmap_phys,
+	.map_page           = ibmebus_map_page,
+	.unmap_page         = ibmebus_unmap_page,
 };
 
 static int ibmebus_match_path(struct device *dev, const void *data)
@@ -269,7 +267,7 @@ static char *ibmebus_chomp(const char *in, size_t count)
 	return out;
 }
 
-static ssize_t probe_store(const struct bus_type *bus, const char *buf, size_t count)
+static ssize_t probe_store(struct bus_type *bus, const char *buf, size_t count)
 {
 	struct device_node *dn = NULL;
 	struct device *dev;
@@ -307,7 +305,7 @@ out:
 }
 static BUS_ATTR_WO(probe);
 
-static ssize_t remove_store(const struct bus_type *bus, const char *buf, size_t count)
+static ssize_t remove_store(struct bus_type *bus, const char *buf, size_t count)
 {
 	struct device *dev;
 	char *path;
@@ -340,7 +338,7 @@ static struct attribute *ibmbus_bus_attrs[] = {
 };
 ATTRIBUTE_GROUPS(ibmbus_bus);
 
-static int ibmebus_bus_bus_match(struct device *dev, const struct device_driver *drv)
+static int ibmebus_bus_bus_match(struct device *dev, struct device_driver *drv)
 {
 	const struct of_device_id *matches = drv->of_match_table;
 
@@ -433,7 +431,7 @@ static int ibmebus_bus_modalias(const struct device *dev, struct kobj_uevent_env
 	return of_device_uevent_modalias(dev, env);
 }
 
-const struct bus_type ibmebus_bus_type = {
+struct bus_type ibmebus_bus_type = {
 	.name      = "ibmebus",
 	.uevent    = ibmebus_bus_modalias,
 	.bus_groups = ibmbus_bus_groups,
@@ -462,7 +460,6 @@ static int __init ibmebus_bus_init(void)
 	if (err) {
 		printk(KERN_WARNING "%s: device_register returned %i\n",
 		       __func__, err);
-		put_device(&ibmebus_bus_device);
 		bus_unregister(&ibmebus_bus_type);
 
 		return err;

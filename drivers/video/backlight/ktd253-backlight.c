@@ -7,6 +7,7 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/err.h>
+#include <linux/fb.h>
 #include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -189,10 +190,10 @@ static int ktd253_backlight_probe(struct platform_device *pdev)
 	/* When we just enable the GPIO line we set max brightness */
 	if (brightness) {
 		bl->props.brightness = brightness;
-		bl->props.power = BACKLIGHT_POWER_ON;
+		bl->props.power = FB_BLANK_UNBLANK;
 	} else {
 		bl->props.brightness = 0;
-		bl->props.power = BACKLIGHT_POWER_OFF;
+		bl->props.power = FB_BLANK_POWERDOWN;
 	}
 
 	ktd253->bl = bl;

@@ -41,12 +41,10 @@ static struct stats throughput_stats;
 static struct cond thread_parent, thread_worker;
 
 static struct bench_futex_parameters params = {
-	.nbuckets = -1,
 	.runtime  = 10,
 };
 
 static const struct option options[] = {
-	OPT_INTEGER( 'b', "buckets", &params.nbuckets, "Specify amount of hash buckets"),
 	OPT_UINTEGER('t', "threads", &params.nthreads, "Specify amount of threads"),
 	OPT_UINTEGER('r', "runtime", &params.runtime, "Specify runtime (in seconds)"),
 	OPT_BOOLEAN( 'M', "multi",   &params.multi, "Use multiple futexes"),
@@ -69,7 +67,6 @@ static void print_summary(void)
 	printf("%sAveraged %ld operations/sec (+- %.2f%%), total secs = %d\n",
 	       !params.silent ? "\n" : "", avg, rel_stddev_stats(stddev, avg),
 	       (int)bench__runtime.tv_sec);
-	futex_print_nbuckets(&params);
 }
 
 static void toggle_done(int sig __maybe_unused,
@@ -121,11 +118,12 @@ static void *workerfn(void *arg)
 	return NULL;
 }
 
-static void create_threads(struct worker *w, struct perf_cpu_map *cpu)
+static void create_threads(struct worker *w, pthread_attr_t thread_attr,
+			   struct perf_cpu_map *cpu)
 {
 	cpu_set_t *cpuset;
 	unsigned int i;
-	int nrcpus =  cpu__max_cpu().cpu;
+	int nrcpus =  perf_cpu_map__nr(cpu);
 	size_t size;
 
 	threads_starting = params.nthreads;
@@ -135,9 +133,6 @@ static void create_threads(struct worker *w, struct perf_cpu_map *cpu)
 	size = CPU_ALLOC_SIZE(nrcpus);
 
 	for (i = 0; i < params.nthreads; i++) {
-		pthread_attr_t thread_attr;
-
-		pthread_attr_init(&thread_attr);
 		worker[i].tid = i;
 
 		if (params.multi) {
@@ -159,7 +154,6 @@ static void create_threads(struct worker *w, struct perf_cpu_map *cpu)
 			CPU_FREE(cpuset);
 			err(EXIT_FAILURE, "pthread_create");
 		}
-		pthread_attr_destroy(&thread_attr);
 	}
 	CPU_FREE(cpuset);
 }
@@ -169,13 +163,14 @@ int bench_futex_lock_pi(int argc, const char **argv)
 	int ret = 0;
 	unsigned int i;
 	struct sigaction act;
+	pthread_attr_t thread_attr;
 	struct perf_cpu_map *cpu;
 
 	argc = parse_options(argc, argv, options, bench_futex_lock_pi_usage, 0);
 	if (argc)
 		goto err;
 
-	cpu = perf_cpu_map__new_online_cpus();
+	cpu = perf_cpu_map__new(NULL);
 	if (!cpu)
 		err(EXIT_FAILURE, "calloc");
 
@@ -206,12 +201,13 @@ int bench_futex_lock_pi(int argc, const char **argv)
 	mutex_init(&thread_lock);
 	cond_init(&thread_parent);
 	cond_init(&thread_worker);
-	futex_set_nbuckets_param(&params);
 
 	threads_starting = params.nthreads;
+	pthread_attr_init(&thread_attr);
 	gettimeofday(&bench__start, NULL);
 
-	create_threads(worker, cpu);
+	create_threads(worker, thread_attr, cpu);
+	pthread_attr_destroy(&thread_attr);
 
 	mutex_lock(&thread_lock);
 	while (threads_starting)

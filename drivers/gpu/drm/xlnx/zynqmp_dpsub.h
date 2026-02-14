@@ -12,8 +12,6 @@
 #ifndef _ZYNQMP_DPSUB_H_
 #define _ZYNQMP_DPSUB_H_
 
-#include <linux/types.h>
-
 struct clk;
 struct device;
 struct drm_bridge;
@@ -41,8 +39,6 @@ enum zynqmp_dpsub_format {
 	ZYNQMP_DPSUB_FORMAT_YONLY,
 };
 
-struct zynqmp_dpsub_audio;
-
 /**
  * struct zynqmp_dpsub - ZynqMP DisplayPort Subsystem
  * @dev: The physical device
@@ -57,10 +53,8 @@ struct zynqmp_dpsub_audio;
  * @drm: The DRM/KMS device data
  * @bridge: The DP encoder bridge
  * @disp: The display controller
- * @layers: Video and graphics layers
  * @dp: The DisplayPort controller
  * @dma_align: DMA alignment constraint (must be a power of 2)
- * @audio: DP audio data
  */
 struct zynqmp_dpsub {
 	struct device *dev;
@@ -82,17 +76,10 @@ struct zynqmp_dpsub {
 	struct zynqmp_dp *dp;
 
 	unsigned int dma_align;
-
-	struct zynqmp_dpsub_audio *audio;
 };
 
-#ifdef CONFIG_DRM_ZYNQMP_DPSUB_AUDIO
-int zynqmp_audio_init(struct zynqmp_dpsub *dpsub);
-void zynqmp_audio_uninit(struct zynqmp_dpsub *dpsub);
-#else
-static inline int zynqmp_audio_init(struct zynqmp_dpsub *dpsub) { return 0; }
-static inline void zynqmp_audio_uninit(struct zynqmp_dpsub *dpsub) { }
-#endif
+bool zynqmp_dpsub_audio_enabled(struct zynqmp_dpsub *dpsub);
+unsigned int zynqmp_dpsub_get_audio_clk_rate(struct zynqmp_dpsub *dpsub);
 
 void zynqmp_dpsub_release(struct zynqmp_dpsub *dpsub);
 

@@ -4,18 +4,40 @@
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
 
-#ifndef _ASM_VDSO_VDSO_H
-#define _ASM_VDSO_VDSO_H
-
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/asm.h>
 #include <asm/page.h>
 #include <asm/vdso.h>
-#include <vdso/datapage.h>
 
-#define VVAR_SIZE (VDSO_NR_PAGES << PAGE_SHIFT)
+struct vdso_pcpu_data {
+	u32 node;
+} ____cacheline_aligned_in_smp;
 
-#endif /* __ASSEMBLER__ */
+struct loongarch_vdso_data {
+	struct vdso_pcpu_data pdata[NR_CPUS];
+	struct vdso_data data[CS_BASES]; /* Arch-independent data */
+};
 
-#endif
+#define VDSO_DATA_SIZE PAGE_ALIGN(sizeof(struct loongarch_vdso_data))
+
+static inline unsigned long get_vdso_base(void)
+{
+	unsigned long addr;
+
+	__asm__(
+	" la.pcrel %0, _start\n"
+	: "=r" (addr)
+	:
+	:);
+
+	return addr;
+}
+
+static inline const struct vdso_data *get_vdso_data(void)
+{
+	return (const struct vdso_data *)(get_vdso_base()
+			- VDSO_DATA_SIZE + SMP_CACHE_BYTES * NR_CPUS);
+}
+
+#endif /* __ASSEMBLY__ */

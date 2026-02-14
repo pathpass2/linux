@@ -16,24 +16,19 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
+#include <dt-bindings/clock/microchip,lan966x.h>
+
 #define GCK_ENA         BIT(0)
 #define GCK_SRC_SEL     GENMASK(9, 8)
 #define GCK_PRESCALER   GENMASK(23, 16)
 
 #define DIV_MAX		255
 
-static const char * const lan966x_clk_names[] = {
+static const char *clk_names[N_CLOCKS] = {
 	"qspi0", "qspi1", "qspi2", "sdmmc0",
 	"pi", "mcan0", "mcan1", "flexcom0",
 	"flexcom1", "flexcom2", "flexcom3",
 	"flexcom4", "timer1", "usb_refclk",
-};
-
-static const char * const lan969x_clk_names[] = {
-	"qspi0", "qspi2", "sdmmc0", "sdmmc1",
-	"mcan0", "mcan1", "flexcom0",
-	"flexcom1", "flexcom2", "flexcom3",
-	"timer1", "usb_refclk",
 };
 
 struct lan966x_gck {
@@ -58,43 +53,12 @@ struct clk_gate_soc_desc {
 	int bit_idx;
 };
 
-static const struct clk_gate_soc_desc lan966x_clk_gate_desc[] = {
+static const struct clk_gate_soc_desc clk_gate_desc[] = {
 	{ "uhphs", 11 },
 	{ "udphs", 10 },
 	{ "mcramc", 9 },
 	{ "hmatrix", 8 },
 	{ }
-};
-
-static const struct clk_gate_soc_desc lan969x_clk_gate_desc[] = {
-	{ "usb_drd", 10 },
-	{ "mcramc", 9 },
-	{ "hmatrix", 8 },
-	{ }
-};
-
-struct lan966x_match_data {
-	char *name;
-	const char * const *clk_name;
-	const struct clk_gate_soc_desc *clk_gate_desc;
-	u8 num_generic_clks;
-	u8 num_total_clks;
-};
-
-static struct lan966x_match_data lan966x_desc = {
-	.name = "lan966x",
-	.clk_name = lan966x_clk_names,
-	.clk_gate_desc = lan966x_clk_gate_desc,
-	.num_total_clks = 18,
-	.num_generic_clks = 14,
-};
-
-static struct lan966x_match_data lan969x_desc = {
-	.name = "lan969x",
-	.clk_name = lan969x_clk_names,
-	.clk_gate_desc = lan969x_clk_gate_desc,
-	.num_total_clks = 15,
-	.num_generic_clks = 12,
 };
 
 static DEFINE_SPINLOCK(clk_gate_lock);
@@ -137,6 +101,22 @@ static int lan966x_gck_set_rate(struct clk_hw *hw,
 	writel(val, gck->reg);
 
 	return 0;
+}
+
+static long lan966x_gck_round_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long *parent_rate)
+{
+	unsigned int div;
+
+	if (rate == 0 || *parent_rate == 0)
+		return -EINVAL;
+
+	if (rate >= *parent_rate)
+		return *parent_rate;
+
+	div = DIV_ROUND_CLOSEST(*parent_rate, rate);
+
+	return *parent_rate / div;
 }
 
 static unsigned long lan966x_gck_recalc_rate(struct clk_hw *hw,
@@ -197,6 +177,7 @@ static const struct clk_ops lan966x_gck_ops = {
 	.enable         = lan966x_gck_enable,
 	.disable        = lan966x_gck_disable,
 	.set_rate       = lan966x_gck_set_rate,
+	.round_rate     = lan966x_gck_round_rate,
 	.recalc_rate    = lan966x_gck_recalc_rate,
 	.determine_rate = lan966x_gck_determine_rate,
 	.set_parent     = lan966x_gck_set_parent,
@@ -222,26 +203,24 @@ static struct clk_hw *lan966x_gck_clk_register(struct device *dev, int i)
 };
 
 static int lan966x_gate_clk_register(struct device *dev,
-				     const struct lan966x_match_data *data,
 				     struct clk_hw_onecell_data *hw_data,
 				     void __iomem *gate_base)
 {
-	for (int i = data->num_generic_clks; i < data->num_total_clks; ++i) {
-		int idx = i - data->num_generic_clks;
-		const struct clk_gate_soc_desc *desc;
+	int i;
 
-		desc = &data->clk_gate_desc[idx];
+	for (i = GCK_GATE_UHPHS; i < N_CLOCKS; ++i) {
+		int idx = i - GCK_GATE_UHPHS;
 
 		hw_data->hws[i] =
-			devm_clk_hw_register_gate(dev, desc->name,
-						  data->name, 0, gate_base,
-						  desc->bit_idx,
+			devm_clk_hw_register_gate(dev, clk_gate_desc[idx].name,
+						  "lan966x", 0, gate_base,
+						  clk_gate_desc[idx].bit_idx,
 						  0, &clk_gate_lock);
 
 		if (IS_ERR(hw_data->hws[i]))
 			return dev_err_probe(dev, PTR_ERR(hw_data->hws[i]),
 					     "failed to register %s clock\n",
-					     desc->name);
+					     clk_gate_desc[idx].name);
 	}
 
 	return 0;
@@ -249,18 +228,13 @@ static int lan966x_gate_clk_register(struct device *dev,
 
 static int lan966x_clk_probe(struct platform_device *pdev)
 {
-	const struct lan966x_match_data *data;
 	struct clk_hw_onecell_data *hw_data;
 	struct device *dev = &pdev->dev;
 	void __iomem *gate_base;
 	struct resource *res;
 	int i, ret;
 
-	data = device_get_match_data(dev);
-	if (!data)
-		return -EINVAL;
-
-	hw_data = devm_kzalloc(dev, struct_size(hw_data, hws, data->num_total_clks),
+	hw_data = devm_kzalloc(dev, struct_size(hw_data, hws, N_CLOCKS),
 			       GFP_KERNEL);
 	if (!hw_data)
 		return -ENOMEM;
@@ -271,10 +245,10 @@ static int lan966x_clk_probe(struct platform_device *pdev)
 
 	init.ops = &lan966x_gck_ops;
 
-	hw_data->num = data->num_generic_clks;
+	hw_data->num = GCK_GATE_UHPHS;
 
-	for (i = 0; i < data->num_generic_clks; i++) {
-		init.name = data->clk_name[i];
+	for (i = 0; i < GCK_GATE_UHPHS; i++) {
+		init.name = clk_names[i];
 		hw_data->hws[i] = lan966x_gck_clk_register(dev, i);
 		if (IS_ERR(hw_data->hws[i])) {
 			dev_err(dev, "failed to register %s clock\n",
@@ -289,9 +263,9 @@ static int lan966x_clk_probe(struct platform_device *pdev)
 		if (IS_ERR(gate_base))
 			return PTR_ERR(gate_base);
 
-		hw_data->num = data->num_total_clks;
+		hw_data->num = N_CLOCKS;
 
-		ret = lan966x_gate_clk_register(dev, data, hw_data, gate_base);
+		ret = lan966x_gate_clk_register(dev, hw_data, gate_base);
 		if (ret)
 			return ret;
 	}
@@ -300,8 +274,7 @@ static int lan966x_clk_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id lan966x_clk_dt_ids[] = {
-	{ .compatible = "microchip,lan966x-gck", .data = &lan966x_desc },
-	{ .compatible = "microchip,lan9691-gck", .data = &lan969x_desc },
+	{ .compatible = "microchip,lan966x-gck", },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, lan966x_clk_dt_ids);

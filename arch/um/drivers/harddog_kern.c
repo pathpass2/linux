@@ -47,9 +47,7 @@
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
 #include "mconsole.h"
-#include "harddog.h"
 
-MODULE_DESCRIPTION("UML hardware watchdog");
 MODULE_LICENSE("GPL");
 
 static DEFINE_MUTEX(harddog_mutex);
@@ -61,6 +59,8 @@ static int harddog_out_fd = -1;
 /*
  *	Allow only one person to hold it open
  */
+
+extern int start_watchdog(int *in_fd_ret, int *out_fd_ret, char *sock);
 
 static int harddog_open(struct inode *inode, struct file *file)
 {
@@ -92,6 +92,8 @@ err:
 	return err;
 }
 
+extern void stop_watchdog(int in_fd, int out_fd);
+
 static int harddog_release(struct inode *inode, struct file *file)
 {
 	/*
@@ -109,6 +111,8 @@ static int harddog_release(struct inode *inode, struct file *file)
 
 	return 0;
 }
+
+extern int ping_watchdog(int fd);
 
 static ssize_t harddog_write(struct file *file, const char __user *data, size_t len,
 			     loff_t *ppos)
@@ -164,6 +168,7 @@ static const struct file_operations harddog_fops = {
 	.compat_ioctl	= compat_ptr_ioctl,
 	.open		= harddog_open,
 	.release	= harddog_release,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice harddog_miscdev = {

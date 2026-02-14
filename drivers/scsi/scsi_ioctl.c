@@ -37,10 +37,8 @@
  * @host:	host to identify
  * @buffer:	userspace buffer for identification
  *
- * Return:
- * * if successful, %1 and an identifying string at @buffer, if @buffer
- * is non-NULL, filling to the length stored at * (int *) @buffer.
- * * <0 error code on failure.
+ * Return an identifying string at @buffer, if @buffer is non-NULL, filling
+ * to the length stored at * (int *) @buffer.
  */
 static int ioctl_probe(struct Scsi_Host *host, void __user *buffer)
 {
@@ -123,16 +121,6 @@ out:
 	return result;
 }
 
-/**
- * scsi_set_medium_removal() - send command to allow or prevent medium removal
- * @sdev: target scsi device
- * @state: removal state to set (prevent or allow)
- *
- * Returns:
- * * %0 if @sdev is not removable or not lockable or successful.
- * * non-%0 is a SCSI result code if > 0 or kernel error code if < 0.
- * * Sets @sdev->locked to the new state on success.
- */
 int scsi_set_medium_removal(struct scsi_device *sdev, char state)
 {
 	char scsi_cmd[MAX_COMMAND_SIZE];
@@ -254,17 +242,13 @@ static int scsi_send_start_stop(struct scsi_device *sdev, int data)
 				      NORMAL_RETRIES);
 }
 
-/**
- * scsi_cmd_allowed() - Check if the given command is allowed.
- * @cmd:            SCSI command to check
- * @open_for_write: is the file / block device opened for writing?
+/*
+ * Check if the given command is allowed.
  *
  * Only a subset of commands are allowed for unprivileged users. Commands used
  * to format the media, update the firmware, etc. are not permitted.
- *
- * Return: %true if the cmd is allowed, otherwise @false.
  */
-bool scsi_cmd_allowed(unsigned char *cmd, bool open_for_write)
+bool scsi_cmd_allowed(unsigned char *cmd, fmode_t mode)
 {
 	/* root can do any command. */
 	if (capable(CAP_SYS_RAWIO))
@@ -354,7 +338,7 @@ bool scsi_cmd_allowed(unsigned char *cmd, bool open_for_write)
 	case GPCMD_SET_READ_AHEAD:
 	/* ZBC */
 	case ZBC_OUT:
-		return open_for_write;
+		return (mode & FMODE_WRITE);
 	default:
 		return false;
 	}
@@ -362,7 +346,7 @@ bool scsi_cmd_allowed(unsigned char *cmd, bool open_for_write)
 EXPORT_SYMBOL(scsi_cmd_allowed);
 
 static int scsi_fill_sghdr_rq(struct scsi_device *sdev, struct request *rq,
-		struct sg_io_hdr *hdr, bool open_for_write)
+		struct sg_io_hdr *hdr, fmode_t mode)
 {
 	struct scsi_cmnd *scmd = blk_mq_rq_to_pdu(rq);
 
@@ -370,7 +354,7 @@ static int scsi_fill_sghdr_rq(struct scsi_device *sdev, struct request *rq,
 		return -EMSGSIZE;
 	if (copy_from_user(scmd->cmnd, hdr->cmdp, hdr->cmd_len))
 		return -EFAULT;
-	if (!scsi_cmd_allowed(scmd->cmnd, open_for_write))
+	if (!scsi_cmd_allowed(scmd->cmnd, mode))
 		return -EPERM;
 	scmd->cmd_len = hdr->cmd_len;
 
@@ -423,8 +407,7 @@ static int scsi_complete_sghdr_rq(struct request *rq, struct sg_io_hdr *hdr,
 	return ret;
 }
 
-static int sg_io(struct scsi_device *sdev, struct sg_io_hdr *hdr,
-		bool open_for_write)
+static int sg_io(struct scsi_device *sdev, struct sg_io_hdr *hdr, fmode_t mode)
 {
 	unsigned long start_time;
 	ssize_t ret = 0;
@@ -465,7 +448,7 @@ static int sg_io(struct scsi_device *sdev, struct sg_io_hdr *hdr,
 		goto out_put_request;
 	}
 
-	ret = scsi_fill_sghdr_rq(sdev, rq, hdr, open_for_write);
+	ret = scsi_fill_sghdr_rq(sdev, rq, hdr, mode);
 	if (ret < 0)
 		goto out_put_request;
 
@@ -494,7 +477,8 @@ out_put_request:
 /**
  * sg_scsi_ioctl  --  handle deprecated SCSI_IOCTL_SEND_COMMAND ioctl
  * @q:		request queue to send scsi commands down
- * @open_for_write: is the file / block device opened for writing?
+ * @mode:	mode used to open the file through which the ioctl has been
+ *		submitted
  * @sic:	userspace structure describing the command to perform
  *
  * Send down the scsi command described by @sic to the device below
@@ -517,7 +501,7 @@ out_put_request:
  *      Positive numbers returned are the compacted SCSI error codes (4
  *      bytes in one int) where the lowest byte is the SCSI status.
  */
-static int sg_scsi_ioctl(struct request_queue *q, bool open_for_write,
+static int sg_scsi_ioctl(struct request_queue *q, fmode_t mode,
 		struct scsi_ioctl_command __user *sic)
 {
 	struct request *rq;
@@ -570,7 +554,7 @@ static int sg_scsi_ioctl(struct request_queue *q, bool open_for_write,
 		goto error;
 
 	err = -EPERM;
-	if (!scsi_cmd_allowed(scmd->cmnd, open_for_write))
+	if (!scsi_cmd_allowed(scmd->cmnd, mode))
 		goto error;
 
 	/* default.  possible overridden later */
@@ -601,7 +585,7 @@ static int sg_scsi_ioctl(struct request_queue *q, bool open_for_write,
 	}
 
 	if (bytes) {
-		err = blk_rq_map_kern(rq, buffer, bytes, GFP_NOIO);
+		err = blk_rq_map_kern(q, rq, buffer, bytes, GFP_NOIO);
 		if (err)
 			goto error;
 	}
@@ -792,7 +776,7 @@ static int scsi_put_cdrom_generic_arg(const struct cdrom_generic_command *cgc,
 	return 0;
 }
 
-static int scsi_cdrom_send_packet(struct scsi_device *sdev, bool open_for_write,
+static int scsi_cdrom_send_packet(struct scsi_device *sdev, fmode_t mode,
 		void __user *arg)
 {
 	struct cdrom_generic_command cgc;
@@ -833,7 +817,7 @@ static int scsi_cdrom_send_packet(struct scsi_device *sdev, bool open_for_write,
 	hdr.cmdp = ((struct cdrom_generic_command __user *) arg)->cmd;
 	hdr.cmd_len = sizeof(cgc.cmd);
 
-	err = sg_io(sdev, &hdr, open_for_write);
+	err = sg_io(sdev, &hdr, mode);
 	if (err == -EFAULT)
 		return -EFAULT;
 
@@ -848,7 +832,7 @@ static int scsi_cdrom_send_packet(struct scsi_device *sdev, bool open_for_write,
 	return err;
 }
 
-static int scsi_ioctl_sg_io(struct scsi_device *sdev, bool open_for_write,
+static int scsi_ioctl_sg_io(struct scsi_device *sdev, fmode_t mode,
 		void __user *argp)
 {
 	struct sg_io_hdr hdr;
@@ -857,7 +841,7 @@ static int scsi_ioctl_sg_io(struct scsi_device *sdev, bool open_for_write,
 	error = get_sg_io_hdr(&hdr, argp);
 	if (error)
 		return error;
-	error = sg_io(sdev, &hdr, open_for_write);
+	error = sg_io(sdev, &hdr, mode);
 	if (error == -EFAULT)
 		return error;
 	if (put_sg_io_hdr(&hdr, argp))
@@ -868,17 +852,15 @@ static int scsi_ioctl_sg_io(struct scsi_device *sdev, bool open_for_write,
 /**
  * scsi_ioctl - Dispatch ioctl to scsi device
  * @sdev: scsi device receiving ioctl
- * @open_for_write: is the file / block device opened for writing?
+ * @mode: mode the block/char device is opened with
  * @cmd: which ioctl is it
  * @arg: data associated with ioctl
  *
  * Description: The scsi_ioctl() function differs from most ioctls in that it
  * does not take a major/minor number as the dev field.  Rather, it takes
  * a pointer to a &struct scsi_device.
- *
- * Return: varies depending on the @cmd
  */
-int scsi_ioctl(struct scsi_device *sdev, bool open_for_write, int cmd,
+int scsi_ioctl(struct scsi_device *sdev, fmode_t mode, int cmd,
 		void __user *arg)
 {
 	struct request_queue *q = sdev->request_queue;
@@ -914,11 +896,11 @@ int scsi_ioctl(struct scsi_device *sdev, bool open_for_write, int cmd,
 	case SG_EMULATED_HOST:
 		return sg_emulated_host(q, arg);
 	case SG_IO:
-		return scsi_ioctl_sg_io(sdev, open_for_write, arg);
+		return scsi_ioctl_sg_io(sdev, mode, arg);
 	case SCSI_IOCTL_SEND_COMMAND:
-		return sg_scsi_ioctl(q, open_for_write, arg);
+		return sg_scsi_ioctl(q, mode, arg);
 	case CDROM_SEND_PACKET:
-		return scsi_cdrom_send_packet(sdev, open_for_write, arg);
+		return scsi_cdrom_send_packet(sdev, mode, arg);
 	case CDROMCLOSETRAY:
 		return scsi_send_start_stop(sdev, 3);
 	case CDROMEJECT:
@@ -959,15 +941,8 @@ int scsi_ioctl(struct scsi_device *sdev, bool open_for_write, int cmd,
 }
 EXPORT_SYMBOL(scsi_ioctl);
 
-/**
- * scsi_ioctl_block_when_processing_errors - prevent commands from being queued
- * @sdev: target scsi device
- * @cmd: which ioctl is it
- * @ndelay: no delay (non-blocking)
- *
+/*
  * We can process a reset even when a device isn't fully operable.
- *
- * Return: %0 on success, <0 error code.
  */
 int scsi_ioctl_block_when_processing_errors(struct scsi_device *sdev, int cmd,
 		bool ndelay)

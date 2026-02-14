@@ -1,6 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2017-2018 Netronome Systems, Inc.
+ *
+ * This software is licensed under the GNU General License Version 2,
+ * June 1991 as shown in the file COPYING in the top-level directory of this
+ * source tree.
+ *
+ * THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM "AS IS"
+ * WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED OR IMPLIED, INCLUDING,
+ * BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ * FOR A PARTICULAR PURPOSE. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE
+ * OF THE PROGRAM IS WITH YOU. SHOULD THE PROGRAM PROVE DEFECTIVE, YOU ASSUME
+ * THE COST OF ALL NECESSARY SERVICING, REPAIR OR CORRECTION.
  */
 
 #include <linux/bpf.h>
@@ -15,8 +25,6 @@
 #include <linux/rhashtable.h>
 #include <linux/rtnetlink.h>
 #include <linux/rwsem.h>
-#include <net/netdev_lock.h>
-#include <net/xdp.h>
 
 /* Protects offdevs, members of bpf_offload_netdev and offload members
  * of all progs.
@@ -190,14 +198,12 @@ static int __bpf_prog_dev_bound_init(struct bpf_prog *prog, struct net_device *n
 	offload->netdev = netdev;
 
 	ondev = bpf_offload_find_netdev(offload->netdev);
-	/* When program is offloaded require presence of "true"
-	 * bpf_offload_netdev, avoid the one created for !ondev case below.
-	 */
-	if (bpf_prog_is_offloaded(prog->aux) && (!ondev || !ondev->offdev)) {
-		err = -EINVAL;
-		goto err_free;
-	}
 	if (!ondev) {
+		if (bpf_prog_is_offloaded(prog->aux)) {
+			err = -EINVAL;
+			goto err_free;
+		}
+
 		/* When only binding to the device, explicitly
 		 * create an entry in the hashtable.
 		 */
@@ -225,14 +231,7 @@ int bpf_prog_dev_bound_init(struct bpf_prog *prog, union bpf_attr *attr)
 	    attr->prog_type != BPF_PROG_TYPE_XDP)
 		return -EINVAL;
 
-	if (attr->prog_flags & ~(BPF_F_XDP_DEV_BOUND_ONLY | BPF_F_XDP_HAS_FRAGS))
-		return -EINVAL;
-
-	/* Frags are allowed only if program is dev-bound-only, but not
-	 * if it is requesting bpf offload.
-	 */
-	if (attr->prog_flags & BPF_F_XDP_HAS_FRAGS &&
-	    !(attr->prog_flags & BPF_F_XDP_DEV_BOUND_ONLY))
+	if (attr->prog_flags & ~BPF_F_XDP_DEV_BOUND_ONLY)
 		return -EINVAL;
 
 	if (attr->prog_type == BPF_PROG_TYPE_SCHED_CLS &&
@@ -519,14 +518,13 @@ struct bpf_map *bpf_map_offload_map_alloc(union bpf_attr *attr)
 		return ERR_PTR(-ENOMEM);
 
 	bpf_map_init_from_attr(&offmap->map, attr);
+
 	rtnl_lock();
+	down_write(&bpf_devs_lock);
 	offmap->netdev = __dev_get_by_index(net, attr->map_ifindex);
 	err = bpf_dev_offload_check(offmap->netdev);
 	if (err)
-		goto err_unlock_rtnl;
-
-	netdev_lock_ops(offmap->netdev);
-	down_write(&bpf_devs_lock);
+		goto err_unlock;
 
 	ondev = bpf_offload_find_netdev(offmap->netdev);
 	if (!ondev) {
@@ -540,15 +538,12 @@ struct bpf_map *bpf_map_offload_map_alloc(union bpf_attr *attr)
 
 	list_add_tail(&offmap->offloads, &ondev->maps);
 	up_write(&bpf_devs_lock);
-	netdev_unlock_ops(offmap->netdev);
 	rtnl_unlock();
 
 	return &offmap->map;
 
 err_unlock:
 	up_write(&bpf_devs_lock);
-	netdev_unlock_ops(offmap->netdev);
-err_unlock_rtnl:
 	rtnl_unlock();
 	bpf_map_area_free(offmap);
 	return ERR_PTR(err);
@@ -566,12 +561,6 @@ void bpf_map_offload_map_free(struct bpf_map *map)
 	rtnl_unlock();
 
 	bpf_map_area_free(offmap);
-}
-
-u64 bpf_map_offload_map_mem_usage(const struct bpf_map *map)
-{
-	/* The memory dynamically allocated in netdev dev_ops is not counted */
-	return sizeof(struct bpf_offloaded_map);
 }
 
 int bpf_map_offload_lookup_elem(struct bpf_map *map, void *key, void *value)
@@ -849,11 +838,10 @@ void *bpf_dev_bound_resolve_kfunc(struct bpf_prog *prog, u32 func_id)
 	if (!ops)
 		goto out;
 
-#define XDP_METADATA_KFUNC(name, _, __, xmo) \
-	if (func_id == bpf_xdp_metadata_kfunc_id(name)) p = ops->xmo;
-	XDP_METADATA_KFUNC_xxx
-#undef XDP_METADATA_KFUNC
-
+	if (func_id == bpf_xdp_metadata_kfunc_id(XDP_METADATA_KFUNC_RX_TIMESTAMP))
+		p = ops->xmo_rx_timestamp;
+	else if (func_id == bpf_xdp_metadata_kfunc_id(XDP_METADATA_KFUNC_RX_HASH))
+		p = ops->xmo_rx_hash;
 out:
 	up_read(&bpf_devs_lock);
 
@@ -865,4 +853,4 @@ static int __init bpf_offload_init(void)
 	return rhashtable_init(&offdevs, &offdevs_params);
 }
 
-core_initcall(bpf_offload_init);
+late_initcall(bpf_offload_init);

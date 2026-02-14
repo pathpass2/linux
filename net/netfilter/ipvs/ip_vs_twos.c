@@ -4,7 +4,8 @@
  * Authors:     Darby Payne <darby.payne@applovin.com>
  */
 
-#define pr_fmt(fmt) "IPVS: " fmt
+#define KMSG_COMPONENT "IPVS"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -136,4 +137,3 @@ static void __exit ip_vs_twos_cleanup(void)
 module_init(ip_vs_twos_init);
 module_exit(ip_vs_twos_cleanup);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("ipvs power of twos choice scheduler");

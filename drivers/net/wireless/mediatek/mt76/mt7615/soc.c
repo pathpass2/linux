@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2019 MediaTek Inc.
  *
  * Author: Ryder Lee <ryder.lee@mediatek.com>
@@ -45,11 +45,13 @@ static int mt7622_wmac_probe(struct platform_device *pdev)
 	return mt7615_mmio_probe(&pdev->dev, mem_base, irq, mt7615e_reg_map);
 }
 
-static void mt7622_wmac_remove(struct platform_device *pdev)
+static int mt7622_wmac_remove(struct platform_device *pdev)
 {
 	struct mt7615_dev *dev = platform_get_drvdata(pdev);
 
 	mt7615_unregister_device(dev);
+
+	return 0;
 }
 
 static const struct of_device_id mt7622_wmac_of_match[] = {

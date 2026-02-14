@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2021 - 2022, 2025 Intel Corporation
+ * Copyright (C) 2021 - 2022 Intel Corporation
  */
 
 #ifndef __sap_h__
@@ -300,11 +300,13 @@ enum iwl_sap_msg {
  * @type: See &enum iwl_sap_msg.
  * @len: The length of the message (header not included).
  * @seq_num: For debug.
+ * @payload: The payload of the message.
  */
 struct iwl_sap_hdr {
 	__le16 type;
 	__le16 len;
 	__le32 seq_num;
+	u8 payload[];
 };
 
 /**
@@ -338,12 +340,12 @@ enum iwl_sap_wifi_auth_type {
 };
 
 /**
- * enum iwl_sap_wifi_cipher_alg - MEI WiFi cipher algorithm IDs
- * @SAP_WIFI_CIPHER_ALG_NONE: No encryption
- * @SAP_WIFI_CIPHER_ALG_TKIP: TKIPO
- * @SAP_WIFI_CIPHER_ALG_CCMP: CCMP
- * @SAP_WIFI_CIPHER_ALG_GCMP: GCMP-128
- * @SAP_WIFI_CIPHER_ALG_GCMP_256: GCMP-256
+ * enum iwl_sap_wifi_cipher_alg
+ * @SAP_WIFI_CIPHER_ALG_NONE: TBD
+ * @SAP_WIFI_CIPHER_ALG_TKIP: TBD
+ * @SAP_WIFI_CIPHER_ALG_CCMP: TBD
+ * @SAP_WIFI_CIPHER_ALG_GCMP: TBD
+ * @SAP_WIFI_CIPHER_ALG_GCMP_256: TBD
  */
 enum iwl_sap_wifi_cipher_alg {
 	SAP_WIFI_CIPHER_ALG_NONE	= IWL_MEI_CIPHER_NONE,
@@ -599,7 +601,7 @@ enum iwl_sap_flex_filter_flags {
 };
 
 /**
- * struct iwl_sap_flex_filter - filter configuration
+ * struct iwl_sap_flex_filter -
  * @src_port: Source port in network format.
  * @dst_port: Destination port in network format.
  * @flags: Flags and protocol, see &enum iwl_sap_flex_filter_flags.
@@ -631,7 +633,7 @@ enum iwl_sap_ipv4_filter_flags {
 };
 
 /**
- * struct iwl_sap_ipv4_filter - IPv4 filter configuration
+ * struct iwl_sap_ipv4_filter-
  * @ipv4_addr: The IP address to filer.
  * @flags: See &enum iwl_sap_ipv4_filter_flags.
  */
@@ -641,7 +643,7 @@ struct iwl_sap_ipv4_filter {
 } __packed;
 
 /**
- * enum iwl_sap_ipv6_filter_flags - IPv6 filter flags
+ * enum iwl_sap_ipv6_filter_flags -
  * @SAP_IPV6_ADDR_FILTER_COPY: Pass packets to the host.
  * @SAP_IPV6_ADDR_FILTER_ENABLED: If false, the filter should be ignored.
  */
@@ -651,7 +653,7 @@ enum iwl_sap_ipv6_filter_flags {
 };
 
 /**
- * struct iwl_sap_ipv6_filter - IPv6 filter configuration
+ * struct iwl_sap_ipv6_filter -
  * @addr_lo24: Lowest 24 bits of the IPv6 address.
  * @flags: See &enum iwl_sap_ipv6_filter_flags.
  */
@@ -661,7 +663,7 @@ struct iwl_sap_ipv6_filter {
 } __packed;
 
 /**
- * enum iwl_sap_icmpv6_filter_flags - ICMPv6 filter flags
+ * enum iwl_sap_icmpv6_filter_flags -
  * @SAP_ICMPV6_FILTER_ENABLED: If false, the filter should be ignored.
  * @SAP_ICMPV6_FILTER_COPY: Pass packets to the host.
  */
@@ -671,8 +673,8 @@ enum iwl_sap_icmpv6_filter_flags {
 };
 
 /**
- * enum iwl_sap_vlan_filter_flags - VLAN filter flags
- * @SAP_VLAN_FILTER_VLAN_ID_MSK: VLAN ID
+ * enum iwl_sap_vlan_filter_flags -
+ * @SAP_VLAN_FILTER_VLAN_ID_MSK: TBD
  * @SAP_VLAN_FILTER_ENABLED: If false, the filter should be ignored.
  */
 enum iwl_sap_vlan_filter_flags {
@@ -749,7 +751,7 @@ struct iwl_sap_pldr_data {
 } __packed;
 
 /**
- * enum iwl_sap_pldr_status - product reset status
+ * enum iwl_sap_pldr_status -
  * @SAP_PLDR_STATUS_SUCCESS: PLDR started/ended successfully
  * @SAP_PLDR_STATUS_FAILURE: PLDR failed to start/end
  */

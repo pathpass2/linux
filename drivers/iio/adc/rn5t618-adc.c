@@ -137,8 +137,9 @@ static int rn5t618_adc_read(struct iio_dev *iio_dev,
 
 	init_completion(&adc->conv_completion);
 	/* single conversion */
-	ret = regmap_set_bits(adc->rn5t618->regmap, RN5T618_ADCCNT3,
-			      RN5T618_ADCCNT3_GODONE);
+	ret = regmap_update_bits(adc->rn5t618->regmap, RN5T618_ADCCNT3,
+				 RN5T618_ADCCNT3_GODONE,
+				 RN5T618_ADCCNT3_GODONE);
 	if (ret < 0)
 		return ret;
 
@@ -185,10 +186,10 @@ static const struct iio_chan_spec rn5t618_adc_iio_channels[] = {
 	RN5T618_ADC_CHANNEL(AIN0, IIO_VOLTAGE, "AIN0")
 };
 
-static const struct iio_map rn5t618_maps[] = {
+static struct iio_map rn5t618_maps[] = {
 	IIO_MAP("VADP", "rn5t618-power", "vadp"),
 	IIO_MAP("VUSB", "rn5t618-power", "vusb"),
-	{ }
+	{ /* sentinel */ }
 };
 
 static int rn5t618_adc_probe(struct platform_device *pdev)
@@ -199,8 +200,10 @@ static int rn5t618_adc_probe(struct platform_device *pdev)
 	struct rn5t618 *rn5t618 = dev_get_drvdata(pdev->dev.parent);
 
 	iio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*adc));
-	if (!iio_dev)
+	if (!iio_dev) {
+		dev_err(&pdev->dev, "failed allocating iio device\n");
 		return -ENOMEM;
+	}
 
 	adc = iio_priv(iio_dev);
 	adc->dev = &pdev->dev;

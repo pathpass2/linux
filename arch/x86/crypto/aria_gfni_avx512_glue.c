@@ -6,6 +6,7 @@
  */
 
 #include <crypto/algapi.h>
+#include <crypto/internal/simd.h>
 #include <crypto/aria.h>
 #include <linux/crypto.h>
 #include <linux/err.h>
@@ -164,9 +165,10 @@ static int aria_avx512_init_tfm(struct crypto_skcipher *tfm)
 
 static struct skcipher_alg aria_algs[] = {
 	{
-		.base.cra_name		= "ecb(aria)",
-		.base.cra_driver_name	= "ecb-aria-avx512",
+		.base.cra_name		= "__ecb(aria)",
+		.base.cra_driver_name	= "__ecb-aria-avx512",
 		.base.cra_priority	= 600,
+		.base.cra_flags		= CRYPTO_ALG_INTERNAL,
 		.base.cra_blocksize	= ARIA_BLOCK_SIZE,
 		.base.cra_ctxsize	= sizeof(struct aria_ctx),
 		.base.cra_module	= THIS_MODULE,
@@ -176,10 +178,11 @@ static struct skcipher_alg aria_algs[] = {
 		.encrypt		= aria_avx512_ecb_encrypt,
 		.decrypt		= aria_avx512_ecb_decrypt,
 	}, {
-		.base.cra_name		= "ctr(aria)",
-		.base.cra_driver_name	= "ctr-aria-avx512",
+		.base.cra_name		= "__ctr(aria)",
+		.base.cra_driver_name	= "__ctr-aria-avx512",
 		.base.cra_priority	= 600,
-		.base.cra_flags		= CRYPTO_ALG_SKCIPHER_REQSIZE_LARGE,
+		.base.cra_flags		= CRYPTO_ALG_INTERNAL |
+					  CRYPTO_ALG_SKCIPHER_REQSIZE_LARGE,
 		.base.cra_blocksize	= 1,
 		.base.cra_ctxsize	= sizeof(struct aria_ctx),
 		.base.cra_module	= THIS_MODULE,
@@ -193,6 +196,8 @@ static struct skcipher_alg aria_algs[] = {
 		.init                   = aria_avx512_init_tfm,
 	}
 };
+
+static struct simd_skcipher_alg *aria_simd_algs[ARRAY_SIZE(aria_algs)];
 
 static int __init aria_avx512_init(void)
 {
@@ -224,12 +229,15 @@ static int __init aria_avx512_init(void)
 	aria_ops.aria_decrypt_64way = aria_gfni_avx512_decrypt_64way;
 	aria_ops.aria_ctr_crypt_64way = aria_gfni_avx512_ctr_crypt_64way;
 
-	return crypto_register_skciphers(aria_algs, ARRAY_SIZE(aria_algs));
+	return simd_register_skciphers_compat(aria_algs,
+					      ARRAY_SIZE(aria_algs),
+					      aria_simd_algs);
 }
 
 static void __exit aria_avx512_exit(void)
 {
-	crypto_unregister_skciphers(aria_algs, ARRAY_SIZE(aria_algs));
+	simd_unregister_skciphers(aria_algs, ARRAY_SIZE(aria_algs),
+				  aria_simd_algs);
 }
 
 module_init(aria_avx512_init);

@@ -68,7 +68,8 @@ static __poll_t signalfd_poll(struct file *file, poll_table *wait)
 /*
  * Copied from copy_siginfo_to_user() in kernel/signal.c
  */
-static int signalfd_copyinfo(struct iov_iter *to, kernel_siginfo_t const *kinfo)
+static int signalfd_copyinfo(struct signalfd_siginfo __user *uinfo,
+			     kernel_siginfo_t const *kinfo)
 {
 	struct signalfd_siginfo new;
 
@@ -145,10 +146,10 @@ static int signalfd_copyinfo(struct iov_iter *to, kernel_siginfo_t const *kinfo)
 		break;
 	}
 
-	if (!copy_to_iter_full(&new, sizeof(struct signalfd_siginfo), to))
+	if (copy_to_user(uinfo, &new, sizeof(struct signalfd_siginfo)))
 		return -EFAULT;
 
-	return sizeof(struct signalfd_siginfo);
+	return sizeof(*uinfo);
 }
 
 static ssize_t signalfd_dequeue(struct signalfd_ctx *ctx, kernel_siginfo_t *info,
@@ -159,7 +160,7 @@ static ssize_t signalfd_dequeue(struct signalfd_ctx *ctx, kernel_siginfo_t *info
 	DECLARE_WAITQUEUE(wait, current);
 
 	spin_lock_irq(&current->sighand->siglock);
-	ret = dequeue_signal(&ctx->sigmask, info, &type);
+	ret = dequeue_signal(current, &ctx->sigmask, info, &type);
 	switch (ret) {
 	case 0:
 		if (!nonblock)
@@ -174,7 +175,7 @@ static ssize_t signalfd_dequeue(struct signalfd_ctx *ctx, kernel_siginfo_t *info
 	add_wait_queue(&current->sighand->signalfd_wqh, &wait);
 	for (;;) {
 		set_current_state(TASK_INTERRUPTIBLE);
-		ret = dequeue_signal(&ctx->sigmask, info, &type);
+		ret = dequeue_signal(current, &ctx->sigmask, info, &type);
 		if (ret != 0)
 			break;
 		if (signal_pending(current)) {
@@ -198,27 +199,28 @@ static ssize_t signalfd_dequeue(struct signalfd_ctx *ctx, kernel_siginfo_t *info
  * error code. The "count" parameter must be at least the size of a
  * "struct signalfd_siginfo".
  */
-static ssize_t signalfd_read_iter(struct kiocb *iocb, struct iov_iter *to)
+static ssize_t signalfd_read(struct file *file, char __user *buf, size_t count,
+			     loff_t *ppos)
 {
-	struct file *file = iocb->ki_filp;
 	struct signalfd_ctx *ctx = file->private_data;
-	size_t count = iov_iter_count(to);
+	struct signalfd_siginfo __user *siginfo;
+	int nonblock = file->f_flags & O_NONBLOCK;
 	ssize_t ret, total = 0;
 	kernel_siginfo_t info;
-	bool nonblock;
 
 	count /= sizeof(struct signalfd_siginfo);
 	if (!count)
 		return -EINVAL;
 
-	nonblock = file->f_flags & O_NONBLOCK || iocb->ki_flags & IOCB_NOWAIT;
+	siginfo = (struct signalfd_siginfo __user *) buf;
 	do {
 		ret = signalfd_dequeue(ctx, &info, nonblock);
 		if (unlikely(ret <= 0))
 			break;
-		ret = signalfd_copyinfo(to, &info);
+		ret = signalfd_copyinfo(siginfo, &info);
 		if (ret < 0)
 			break;
+		siginfo++;
 		total += ret;
 		nonblock = 1;
 	} while (--count);
@@ -244,12 +246,14 @@ static const struct file_operations signalfd_fops = {
 #endif
 	.release	= signalfd_release,
 	.poll		= signalfd_poll,
-	.read_iter	= signalfd_read_iter,
+	.read		= signalfd_read,
 	.llseek		= noop_llseek,
 };
 
 static int do_signalfd4(int ufd, sigset_t *mask, int flags)
 {
+	struct signalfd_ctx *ctx;
+
 	/* Check the SFD_* constants for consistency.  */
 	BUILD_BUG_ON(SFD_CLOEXEC != O_CLOEXEC);
 	BUILD_BUG_ON(SFD_NONBLOCK != O_NONBLOCK);
@@ -261,36 +265,35 @@ static int do_signalfd4(int ufd, sigset_t *mask, int flags)
 	signotset(mask);
 
 	if (ufd == -1) {
-		int fd;
-		struct signalfd_ctx *ctx __free(kfree) = NULL;
-
 		ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
 		if (!ctx)
 			return -ENOMEM;
 
 		ctx->sigmask = *mask;
 
-		fd = FD_ADD(flags & O_CLOEXEC,
-			    anon_inode_getfile_fmode(
-				    "[signalfd]", &signalfd_fops, ctx,
-				    O_RDWR | (flags & O_NONBLOCK), FMODE_NOWAIT));
-		if (fd >= 0)
-			retain_and_null_ptr(ctx);
-		return fd;
+		/*
+		 * When we call this, the initialization must be complete, since
+		 * anon_inode_getfd() will install the fd.
+		 */
+		ufd = anon_inode_getfd("[signalfd]", &signalfd_fops, ctx,
+				       O_RDWR | (flags & (O_CLOEXEC | O_NONBLOCK)));
+		if (ufd < 0)
+			kfree(ctx);
 	} else {
-		struct signalfd_ctx *ctx;
-
-		CLASS(fd, f)(ufd);
-		if (fd_empty(f))
+		struct fd f = fdget(ufd);
+		if (!f.file)
 			return -EBADF;
-		ctx = fd_file(f)->private_data;
-		if (fd_file(f)->f_op != &signalfd_fops)
+		ctx = f.file->private_data;
+		if (f.file->f_op != &signalfd_fops) {
+			fdput(f);
 			return -EINVAL;
+		}
 		spin_lock_irq(&current->sighand->siglock);
 		ctx->sigmask = *mask;
 		spin_unlock_irq(&current->sighand->siglock);
 
 		wake_up(&current->sighand->signalfd_wqh);
+		fdput(f);
 	}
 
 	return ufd;

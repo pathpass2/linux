@@ -34,6 +34,7 @@ struct boe_bf060y8m_aj0 {
 	struct mipi_dsi_device *dsi;
 	struct regulator_bulk_data vregs[BF060Y8M_VREG_MAX];
 	struct gpio_desc *reset_gpio;
+	bool prepared;
 };
 
 static inline
@@ -55,57 +56,81 @@ static void boe_bf060y8m_aj0_reset(struct boe_bf060y8m_aj0 *boe)
 static int boe_bf060y8m_aj0_on(struct boe_bf060y8m_aj0 *boe)
 {
 	struct mipi_dsi_device *dsi = boe->dsi;
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	struct device *dev = &dsi->dev;
+	int ret;
 
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0xa5, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb2, 0x00, 0x4c);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_SET_3D_CONTROL, 0x10);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_POWER_SAVE, DCS_ALLOW_HBM_RANGE);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf8,
-				     0x00, 0x08, 0x10, 0x00, 0x22, 0x00, 0x00, 0x2d);
+	mipi_dsi_dcs_write_seq(dsi, 0xb0, 0xa5, 0x00);
+	mipi_dsi_dcs_write_seq(dsi, 0xb2, 0x00, 0x4c);
+	mipi_dsi_dcs_write_seq(dsi, MIPI_DCS_SET_3D_CONTROL, 0x10);
+	mipi_dsi_dcs_write_seq(dsi, MIPI_DCS_WRITE_POWER_SAVE, DCS_ALLOW_HBM_RANGE);
+	mipi_dsi_dcs_write_seq(dsi, 0xf8,
+			       0x00, 0x08, 0x10, 0x00, 0x22, 0x00, 0x00, 0x2d);
 
-	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
-	mipi_dsi_msleep(&dsi_ctx, 30);
+	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to exit sleep mode: %d\n", ret);
+		return ret;
+	}
+	msleep(30);
 
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xb0, 0xa5, 0x00);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc0,
-				     0x08, 0x48, 0x65, 0x33, 0x33, 0x33,
-				     0x2a, 0x31, 0x39, 0x20, 0x09);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc1, 0x00, 0x00, 0x00, 0x1f, 0x1f,
-				     0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f,
-				     0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xe2, 0x20, 0x04, 0x10, 0x12, 0x92,
-				     0x4f, 0x8f, 0x44, 0x84, 0x83, 0x83, 0x83,
-				     0x5c, 0x5c, 0x5c);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xde, 0x01, 0x2c, 0x00, 0x77, 0x3e);
+	mipi_dsi_dcs_write_seq(dsi, 0xb0, 0xa5, 0x00);
+	mipi_dsi_dcs_write_seq(dsi, 0xc0,
+			       0x08, 0x48, 0x65, 0x33, 0x33, 0x33,
+			       0x2a, 0x31, 0x39, 0x20, 0x09);
+	mipi_dsi_dcs_write_seq(dsi, 0xc1, 0x00, 0x00, 0x00, 0x1f, 0x1f,
+			       0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f,
+			       0x1f, 0x1f, 0x1f, 0x1f, 0x1f, 0x1f);
+	mipi_dsi_dcs_write_seq(dsi, 0xe2, 0x20, 0x04, 0x10, 0x12, 0x92,
+			       0x4f, 0x8f, 0x44, 0x84, 0x83, 0x83, 0x83,
+			       0x5c, 0x5c, 0x5c);
+	mipi_dsi_dcs_write_seq(dsi, 0xde, 0x01, 0x2c, 0x00, 0x77, 0x3e);
 
-	mipi_dsi_msleep(&dsi_ctx, 30);
+	msleep(30);
 
-	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
-	mipi_dsi_msleep(&dsi_ctx, 50);
+	ret = mipi_dsi_dcs_set_display_on(dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to set display on: %d\n", ret);
+		return ret;
+	}
+	msleep(50);
 
-	return dsi_ctx.accum_err;
+	return 0;
 }
 
-static void boe_bf060y8m_aj0_off(struct boe_bf060y8m_aj0 *boe)
+static int boe_bf060y8m_aj0_off(struct boe_bf060y8m_aj0 *boe)
 {
 	struct mipi_dsi_device *dsi = boe->dsi;
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	struct device *dev = &dsi->dev;
+	int ret;
 
 	/* OFF commands sent in HS mode */
 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
-	mipi_dsi_msleep(&dsi_ctx, 20);
+	ret = mipi_dsi_dcs_set_display_off(dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to set display off: %d\n", ret);
+		return ret;
+	}
+	msleep(20);
 
-	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
-	mipi_dsi_usleep_range(&dsi_ctx, 1000, 2000);
+	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
+	if (ret < 0) {
+		dev_err(dev, "Failed to enter sleep mode: %d\n", ret);
+		return ret;
+	}
+	usleep_range(1000, 2000);
 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+
+	return 0;
 }
 
 static int boe_bf060y8m_aj0_prepare(struct drm_panel *panel)
 {
 	struct boe_bf060y8m_aj0 *boe = to_boe_bf060y8m_aj0(panel);
+	struct device *dev = &boe->dsi->dev;
 	int ret;
+
+	if (boe->prepared)
+		return 0;
 
 	/*
 	 * Enable EL Driving Voltage first - doing that at the beginning
@@ -136,14 +161,14 @@ static int boe_bf060y8m_aj0_prepare(struct drm_panel *panel)
 
 	ret = boe_bf060y8m_aj0_on(boe);
 	if (ret < 0) {
+		dev_err(dev, "Failed to initialize panel: %d\n", ret);
 		gpiod_set_value_cansleep(boe->reset_gpio, 1);
-		goto err_on;
+		return ret;
 	}
 
+	boe->prepared = true;
 	return 0;
 
-err_on:
-	regulator_disable(boe->vregs[BF060Y8M_VREG_VCI].consumer);
 err_vci:
 	regulator_disable(boe->vregs[BF060Y8M_VREG_VDDIO].consumer);
 err_vddio:
@@ -158,12 +183,20 @@ err_elvss:
 static int boe_bf060y8m_aj0_unprepare(struct drm_panel *panel)
 {
 	struct boe_bf060y8m_aj0 *boe = to_boe_bf060y8m_aj0(panel);
+	struct device *dev = &boe->dsi->dev;
+	int ret;
 
-	boe_bf060y8m_aj0_off(boe);
+	if (!boe->prepared)
+		return 0;
+
+	ret = boe_bf060y8m_aj0_off(boe);
+	if (ret < 0)
+		dev_err(dev, "Failed to un-initialize panel: %d\n", ret);
 
 	gpiod_set_value_cansleep(boe->reset_gpio, 1);
-	regulator_bulk_disable(ARRAY_SIZE(boe->vregs), boe->vregs);
+	ret = regulator_bulk_disable(ARRAY_SIZE(boe->vregs), boe->vregs);
 
+	boe->prepared = false;
 	return 0;
 }
 
@@ -210,11 +243,13 @@ static int boe_bf060y8m_aj0_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
 	u16 brightness = backlight_get_brightness(bl);
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
+	int ret;
 
-	mipi_dsi_dcs_set_display_brightness_multi(&dsi_ctx, brightness);
+	ret = mipi_dsi_dcs_set_display_brightness(dsi, brightness);
+	if (ret < 0)
+		return ret;
 
-	return dsi_ctx.accum_err;
+	return 0;
 }
 
 static int boe_bf060y8m_aj0_bl_get_brightness(struct backlight_device *bl)
@@ -324,11 +359,9 @@ static int boe_bf060y8m_aj0_probe(struct mipi_dsi_device *dsi)
 	struct boe_bf060y8m_aj0 *boe;
 	int ret;
 
-	boe = devm_drm_panel_alloc(dev, struct boe_bf060y8m_aj0, panel,
-				   &boe_bf060y8m_aj0_panel_funcs,
-				   DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(boe))
-		return PTR_ERR(boe);
+	boe = devm_kzalloc(dev, sizeof(*boe), GFP_KERNEL);
+	if (!boe)
+		return -ENOMEM;
 
 	ret = boe_bf060y8m_aj0_init_vregs(boe, dev);
 	if (ret)
@@ -350,7 +383,8 @@ static int boe_bf060y8m_aj0_probe(struct mipi_dsi_device *dsi)
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS |
 			  MIPI_DSI_MODE_LPM;
 
-	boe->panel.prepare_prev_first = true;
+	drm_panel_init(&boe->panel, dev, &boe_bf060y8m_aj0_panel_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 
 	boe->panel.backlight = boe_bf060y8m_aj0_create_backlight(dsi);
 	if (IS_ERR(boe->panel.backlight))

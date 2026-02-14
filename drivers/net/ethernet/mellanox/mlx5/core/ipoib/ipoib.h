@@ -53,7 +53,6 @@ extern const struct mlx5e_rx_handlers mlx5i_rx_handlers;
 struct mlx5i_priv {
 	struct rdma_netdev rn; /* keep this first */
 	u32 qpn;
-	u32 tisn;
 	bool   sub_interface;
 	u32    num_sub_interfaces;
 	u32    qkey;
@@ -64,7 +63,6 @@ struct mlx5i_priv {
 };
 
 int mlx5i_create_tis(struct mlx5_core_dev *mdev, u32 underlay_qpn, u32 *tisn);
-u32 mlx5i_get_tisn(struct mlx5_core_dev *mdev, struct mlx5e_priv *priv, u8 lag_port, u8 tc);
 
 /* Underlay QP create/destroy functions */
 int mlx5i_create_underlay_qp(struct mlx5e_priv *priv);
@@ -88,11 +86,7 @@ struct net_device *mlx5i_pkey_get_netdev(struct net_device *netdev, u32 qpn);
 /* Shared ndo functions */
 int mlx5i_dev_init(struct net_device *dev);
 void mlx5i_dev_cleanup(struct net_device *dev);
-int mlx5i_hwtstamp_set(struct net_device *dev,
-		       struct kernel_hwtstamp_config *config,
-		       struct netlink_ext_ack *extack);
-int mlx5i_hwtstamp_get(struct net_device *dev,
-		       struct kernel_hwtstamp_config *config);
+int mlx5i_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 
 /* Parent profile functions */
 int mlx5i_init(struct mlx5_core_dev *mdev, struct net_device *netdev);

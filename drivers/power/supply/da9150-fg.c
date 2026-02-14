@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
@@ -247,9 +248,9 @@ static int da9150_fg_current_avg(struct da9150_fg *fg,
 				      DA9150_QIF_SD_GAIN_SIZE);
 	da9150_fg_read_sync_end(fg);
 
-	div = 65536ULL * sd_gain * shunt_val;
+	div = (u64) (sd_gain * shunt_val * 65536ULL);
 	do_div(div, 1000000);
-	res = 1000000ULL * iavg;
+	res = (u64) (iavg * 1000000ULL);
 	do_div(res, div);
 
 	val->intval = (int) res;

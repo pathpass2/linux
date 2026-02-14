@@ -7,16 +7,14 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/backlight.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/input.h>
 #include <linux/input/sparse-keymap.h>
+#include <linux/fb.h>
 #include <linux/dmi.h>
 #include <linux/i8042.h>
-
-#include <acpi/video.h>
 
 #include "asus-wmi.h"
 
@@ -48,44 +46,25 @@ module_param(tablet_mode_sw, uint, 0444);
 MODULE_PARM_DESC(tablet_mode_sw, "Tablet mode detect: -1:auto 0:disable 1:kbd-dock 2:lid-flip 3:lid-flip-rog");
 
 static struct quirk_entry *quirks;
-static bool atkbd_reports_vol_keys;
 
-static bool asus_i8042_filter(unsigned char data, unsigned char str, struct serio *port,
-			      void *context)
+static bool asus_q500a_i8042_filter(unsigned char data, unsigned char str,
+			      struct serio *port)
 {
-	static bool extended_e0;
-	static bool extended_e1;
+	static bool extended;
+	bool ret = false;
 
 	if (str & I8042_STR_AUXDATA)
 		return false;
 
-	if (quirks->filter_i8042_e1_extended_codes) {
-		if (data == 0xe1) {
-			extended_e1 = true;
-			return true;
-		}
-
-		if (extended_e1) {
-			extended_e1 = false;
-			return true;
-		}
+	if (unlikely(data == 0xe1)) {
+		extended = true;
+		ret = true;
+	} else if (unlikely(extended)) {
+		extended = false;
+		ret = true;
 	}
 
-	if (data == 0xe0) {
-		extended_e0 = true;
-	} else if (extended_e0) {
-		extended_e0 = false;
-
-		switch (data & 0x7f) {
-		case 0x20: /* e0 20 / e0 a0, Volume Mute press / release */
-		case 0x2e: /* e0 2e / e0 ae, Volume Down press / release */
-		case 0x30: /* e0 30 / e0 b0, Volume Up press / release */
-			atkbd_reports_vol_keys = true;
-			break;
-		}
-	}
-
-	return false;
+	return ret;
 }
 
 static struct quirk_entry quirk_asus_unknown = {
@@ -94,7 +73,7 @@ static struct quirk_entry quirk_asus_unknown = {
 };
 
 static struct quirk_entry quirk_asus_q500a = {
-	.filter_i8042_e1_extended_codes = true,
+	.i8042_filter = asus_q500a_i8042_filter,
 	.wmi_backlight_set_devstate = true,
 };
 
@@ -144,15 +123,6 @@ static struct quirk_entry quirk_asus_tablet_mode = {
 
 static struct quirk_entry quirk_asus_ignore_fan = {
 	.wmi_ignore_fan = true,
-};
-
-static struct quirk_entry quirk_asus_zenbook_duo_kbd = {
-	.key_wlan_event = ASUS_WMI_KEY_IGNORE,
-};
-
-static struct quirk_entry quirk_asus_z13 = {
-	.key_wlan_event = ASUS_WMI_KEY_ARMOURY,
-	.tablet_switch_mode = asus_wmi_kbd_dock_devid,
 };
 
 static int dmi_matched(const struct dmi_system_id *dmi)
@@ -510,15 +480,6 @@ static const struct dmi_system_id asus_quirks[] = {
 	},
 	{
 		.callback = dmi_matched,
-		.ident = "ASUS ROG FLOW X16",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "GV601V"),
-		},
-		.driver_data = &quirk_asus_tablet_mode,
-	},
-	{
-		.callback = dmi_matched,
 		.ident = "ASUS VivoBook E410MA",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
@@ -526,43 +487,18 @@ static const struct dmi_system_id asus_quirks[] = {
 		},
 		.driver_data = &quirk_asus_ignore_fan,
 	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUS Zenbook Duo UX8406MA",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "UX8406MA"),
-		},
-		.driver_data = &quirk_asus_zenbook_duo_kbd,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUS Zenbook Duo UX8406CA",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "UX8406CA"),
-		},
-		.driver_data = &quirk_asus_zenbook_duo_kbd,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUS ROG Z13",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "ROG Flow Z13"),
-		},
-		.driver_data = &quirk_asus_z13,
-	},
 	{},
 };
 
 static void asus_nb_wmi_quirks(struct asus_wmi_driver *driver)
 {
+	int ret;
+
 	quirks = &quirk_asus_unknown;
 	dmi_check_system(asus_quirks);
 
 	driver->quirks = quirks;
-	driver->panel_power = BACKLIGHT_POWER_ON;
+	driver->panel_power = FB_BLANK_UNBLANK;
 
 	/* overwrite the wapf setting if the wapf paramater is specified */
 	if (wapf != -1)
@@ -572,15 +508,20 @@ static void asus_nb_wmi_quirks(struct asus_wmi_driver *driver)
 
 	if (tablet_mode_sw != -1)
 		quirks->tablet_switch_mode = tablet_mode_sw;
+
+	if (quirks->i8042_filter) {
+		ret = i8042_install_filter(quirks->i8042_filter);
+		if (ret) {
+			pr_warn("Unable to install key filter\n");
+			return;
+		}
+		pr_info("Using i8042 filter function for receiving events\n");
+	}
 }
 
 static const struct key_entry asus_nb_wmi_keymap[] = {
 	{ KE_KEY, ASUS_WMI_BRN_DOWN, { KEY_BRIGHTNESSDOWN } },
 	{ KE_KEY, ASUS_WMI_BRN_UP, { KEY_BRIGHTNESSUP } },
-	{ KE_KEY, 0x2a, { KEY_SELECTIVE_SCREENSHOT } },
-	{ KE_IGNORE, 0x2b, }, /* PrintScreen (also send via PS/2) on newer models */
-	{ KE_IGNORE, 0x2c, }, /* CapsLock (also send via PS/2) on newer models */
-	{ KE_KEY, 0x2d, { KEY_DISPLAYTOGGLE } },
 	{ KE_KEY, 0x30, { KEY_VOLUMEUP } },
 	{ KE_KEY, 0x31, { KEY_VOLUMEDOWN } },
 	{ KE_KEY, 0x32, { KEY_MUTE } },
@@ -614,7 +555,6 @@ static const struct key_entry asus_nb_wmi_keymap[] = {
 	{ KE_KEY, 0x71, { KEY_F13 } }, /* General-purpose button */
 	{ KE_IGNORE, 0x79, },  /* Charger type dectection notification */
 	{ KE_KEY, 0x7a, { KEY_ALS_TOGGLE } }, /* Ambient Light Sensor Toggle */
-	{ KE_IGNORE, 0x7B, }, /* Charger connect/disconnect notification */
 	{ KE_KEY, 0x7c, { KEY_MICMUTE } },
 	{ KE_KEY, 0x7D, { KEY_BLUETOOTH } }, /* Bluetooth Enable */
 	{ KE_KEY, 0x7E, { KEY_BLUETOOTH } }, /* Bluetooth Disable */
@@ -633,7 +573,6 @@ static const struct key_entry asus_nb_wmi_keymap[] = {
 	{ KE_KEY, 0x93, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + CRT + TV + DVI */
 	{ KE_KEY, 0x95, { KEY_MEDIA } },
 	{ KE_KEY, 0x99, { KEY_PHONE } }, /* Conflicts with fan mode switch */
-	{ KE_KEY, 0X9D, { KEY_FN_F } },
 	{ KE_KEY, 0xA0, { KEY_SWITCHVIDEOMODE } }, /* SDSP HDMI only */
 	{ KE_KEY, 0xA1, { KEY_SWITCHVIDEOMODE } }, /* SDSP LCD + HDMI */
 	{ KE_KEY, 0xA2, { KEY_SWITCHVIDEOMODE } }, /* SDSP CRT + HDMI */
@@ -645,43 +584,13 @@ static const struct key_entry asus_nb_wmi_keymap[] = {
 	{ KE_KEY, 0xAE, { KEY_FN_F5 } }, /* Fn+F5 fan mode on 2020+ */
 	{ KE_KEY, 0xB3, { KEY_PROG4 } }, /* AURA */
 	{ KE_KEY, 0xB5, { KEY_CALC } },
-	{ KE_IGNORE, 0xC0, }, /* External display connect/disconnect notification */
 	{ KE_KEY, 0xC4, { KEY_KBDILLUMUP } },
 	{ KE_KEY, 0xC5, { KEY_KBDILLUMDOWN } },
-	{ KE_KEY, 0xCA, { KEY_F13 } }, /* Noise cancelling on Expertbook B9 */
-	{ KE_KEY, 0xCB, { KEY_F14 } }, /* Fn+noise-cancel */
 	{ KE_IGNORE, 0xC6, },  /* Ambient Light Sensor notification */
-	{ KE_IGNORE, 0xCF, },	/* AC mode */
 	{ KE_KEY, 0xFA, { KEY_PROG2 } },           /* Lid flip action */
 	{ KE_KEY, 0xBD, { KEY_PROG2 } },           /* Lid flip action on ROG xflow laptops */
-	{ KE_KEY, ASUS_WMI_KEY_ARMOURY, { KEY_PROG3 } },
 	{ KE_END, 0},
 };
-
-static void asus_nb_wmi_key_filter(struct asus_wmi_driver *asus_wmi, int *code,
-				   unsigned int *value, bool *autorelease)
-{
-	switch (*code) {
-	case ASUS_WMI_BRN_DOWN:
-	case ASUS_WMI_BRN_UP:
-		if (acpi_video_handles_brightness_key_presses())
-			*code = ASUS_WMI_KEY_IGNORE;
-
-		break;
-	case 0x30: /* Volume Up */
-	case 0x31: /* Volume Down */
-	case 0x32: /* Volume Mute */
-		if (atkbd_reports_vol_keys)
-			*code = ASUS_WMI_KEY_IGNORE;
-		break;
-	case 0x5D: /* Wireless console Toggle */
-	case 0x5E: /* Wireless console Enable / Keyboard Attach, Detach */
-	case 0x5F: /* Wireless console Disable / Special Key */
-		if (quirks->key_wlan_event)
-			*code = quirks->key_wlan_event;
-		break;
-	}
-}
 
 static struct asus_wmi_driver asus_nb_wmi_driver = {
 	.name = ASUS_NB_WMI_FILE,
@@ -691,8 +600,6 @@ static struct asus_wmi_driver asus_nb_wmi_driver = {
 	.input_name = "Asus WMI hotkeys",
 	.input_phys = ASUS_NB_WMI_FILE "/input0",
 	.detect_quirks = asus_nb_wmi_quirks,
-	.key_filter = asus_nb_wmi_key_filter,
-	.i8042_filter = asus_i8042_filter,
 };
 
 

@@ -141,9 +141,6 @@
 };
 
 &lpass_va_macro {
-	pinctrl-0 = <&lpass_dmic01_clk>, <&lpass_dmic01_data>;
-	pinctrl-names = "default";
-
 	status = "okay";
 };
 

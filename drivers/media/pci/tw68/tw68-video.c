@@ -13,7 +13,7 @@
  *
  *  Refactored and updated to the latest v4l core frameworks:
  *
- *  Copyright (C) 2014 Hans Verkuil <hverkuil@kernel.org>
+ *  Copyright (C) 2014 Hans Verkuil <hverkuil@xs4all.nl>
  */
 
 #include <linux/module.h>
@@ -360,14 +360,13 @@ static int tw68_queue_setup(struct vb2_queue *q,
 			   unsigned int sizes[], struct device *alloc_devs[])
 {
 	struct tw68_dev *dev = vb2_get_drv_priv(q);
-	unsigned int q_num_bufs = vb2_get_num_buffers(q);
-	unsigned int tot_bufs = q_num_bufs + *num_buffers;
+	unsigned tot_bufs = q->num_buffers + *num_buffers;
 	unsigned size = (dev->fmt->depth * dev->width * dev->height) >> 3;
 
 	if (tot_bufs < 2)
 		tot_bufs = 2;
 	tot_bufs = tw68_buffer_count(size, tot_bufs);
-	*num_buffers = tot_bufs - q_num_bufs;
+	*num_buffers = tot_bufs - q->num_buffers;
 	/*
 	 * We allow create_bufs, but only if the sizeimage is >= as the
 	 * current sizeimage. The tw68_buffer_count calculation becomes quite
@@ -438,7 +437,6 @@ static void tw68_buf_queue(struct vb2_buffer *vb)
  */
 static int tw68_buf_prepare(struct vb2_buffer *vb)
 {
-	int ret;
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vb2_queue *vq = vb->vb2_queue;
 	struct tw68_dev *dev = vb2_get_drv_priv(vq);
@@ -454,30 +452,30 @@ static int tw68_buf_prepare(struct vb2_buffer *vb)
 	bpl = (dev->width * dev->fmt->depth) >> 3;
 	switch (dev->field) {
 	case V4L2_FIELD_TOP:
-		ret = tw68_risc_buffer(dev->pci, buf, dma->sgl,
+		tw68_risc_buffer(dev->pci, buf, dma->sgl,
 				 0, UNSET, bpl, 0, dev->height);
 		break;
 	case V4L2_FIELD_BOTTOM:
-		ret = tw68_risc_buffer(dev->pci, buf, dma->sgl,
+		tw68_risc_buffer(dev->pci, buf, dma->sgl,
 				 UNSET, 0, bpl, 0, dev->height);
 		break;
 	case V4L2_FIELD_SEQ_TB:
-		ret = tw68_risc_buffer(dev->pci, buf, dma->sgl,
+		tw68_risc_buffer(dev->pci, buf, dma->sgl,
 				 0, bpl * (dev->height >> 1),
 				 bpl, 0, dev->height >> 1);
 		break;
 	case V4L2_FIELD_SEQ_BT:
-		ret = tw68_risc_buffer(dev->pci, buf, dma->sgl,
+		tw68_risc_buffer(dev->pci, buf, dma->sgl,
 				 bpl * (dev->height >> 1), 0,
 				 bpl, 0, dev->height >> 1);
 		break;
 	case V4L2_FIELD_INTERLACED:
 	default:
-		ret = tw68_risc_buffer(dev->pci, buf, dma->sgl,
+		tw68_risc_buffer(dev->pci, buf, dma->sgl,
 				 0, bpl, bpl, bpl, dev->height >> 1);
 		break;
 	}
-	return ret;
+	return 0;
 }
 
 static void tw68_buf_finish(struct vb2_buffer *vb)
@@ -487,8 +485,7 @@ static void tw68_buf_finish(struct vb2_buffer *vb)
 	struct tw68_dev *dev = vb2_get_drv_priv(vq);
 	struct tw68_buf *buf = container_of(vbuf, struct tw68_buf, vb);
 
-	if (buf->cpu)
-		dma_free_coherent(&dev->pci->dev, buf->size, buf->cpu, buf->dma);
+	dma_free_coherent(&dev->pci->dev, buf->size, buf->cpu, buf->dma);
 }
 
 static int tw68_start_streaming(struct vb2_queue *q, unsigned int count)
@@ -524,6 +521,8 @@ static const struct vb2_ops tw68_video_qops = {
 	.buf_finish	= tw68_buf_finish,
 	.start_streaming = tw68_start_streaming,
 	.stop_streaming = tw68_stop_streaming,
+	.wait_prepare	= vb2_ops_wait_prepare,
+	.wait_finish	= vb2_ops_wait_finish,
 };
 
 /* ------------------------------------------------------------------ */
@@ -950,7 +949,7 @@ int tw68_video_init2(struct tw68_dev *dev, int video_nr)
 	dev->vidq.gfp_flags = __GFP_DMA32 | __GFP_KSWAPD_RECLAIM;
 	dev->vidq.buf_struct_size = sizeof(struct tw68_buf);
 	dev->vidq.lock = &dev->lock;
-	dev->vidq.min_queued_buffers = 2;
+	dev->vidq.min_buffers_needed = 2;
 	dev->vidq.dev = &dev->pci->dev;
 	ret = vb2_queue_init(&dev->vidq);
 	if (ret)

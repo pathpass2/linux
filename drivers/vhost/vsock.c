@@ -29,13 +29,11 @@
  */
 #define VHOST_VSOCK_PKT_WEIGHT 256
 
-static const int vhost_vsock_bits[] = {
-	VHOST_FEATURES,
-	VIRTIO_F_ACCESS_PLATFORM,
-	VIRTIO_VSOCK_F_SEQPACKET
+enum {
+	VHOST_VSOCK_FEATURES = VHOST_FEATURES |
+			       (1ULL << VIRTIO_F_ACCESS_PLATFORM) |
+			       (1ULL << VIRTIO_VSOCK_F_SEQPACKET)
 };
-
-#define VHOST_VSOCK_FEATURES VHOST_FEATURES_U64(vhost_vsock_bits, 0)
 
 enum {
 	VHOST_VSOCK_BACKEND_FEATURES = (1ULL << VHOST_BACKEND_F_IOTLB_MSG_V2)
@@ -48,8 +46,6 @@ static DEFINE_READ_MOSTLY_HASHTABLE(vhost_vsock_hash, 8);
 struct vhost_vsock {
 	struct vhost_dev dev;
 	struct vhost_virtqueue vqs[2];
-	struct net *net;
-	netns_tracker ns_tracker;
 
 	/* Link to global vhost_vsock_hash, writes use vhost_vsock_mutex */
 	struct hlist_node hash;
@@ -68,24 +64,23 @@ static u32 vhost_transport_get_local_cid(void)
 	return VHOST_VSOCK_DEFAULT_HOST_CID;
 }
 
-/* Callers must be in an RCU read section or hold the vhost_vsock_mutex.
- * The return value can only be dereferenced while within the section.
+/* Callers that dereference the return value must hold vhost_vsock_mutex or the
+ * RCU read lock.
  */
-static struct vhost_vsock *vhost_vsock_get(u32 guest_cid, struct net *net)
+static struct vhost_vsock *vhost_vsock_get(u32 guest_cid)
 {
 	struct vhost_vsock *vsock;
 
-	hash_for_each_possible_rcu(vhost_vsock_hash, vsock, hash, guest_cid,
-				   lockdep_is_held(&vhost_vsock_mutex)) {
+	hash_for_each_possible_rcu(vhost_vsock_hash, vsock, hash, guest_cid) {
 		u32 other_cid = vsock->guest_cid;
 
 		/* Skip instances that have no CID yet */
 		if (other_cid == 0)
 			continue;
 
-		if (other_cid == guest_cid &&
-		    vsock_net_check_mode(net, vsock->net))
+		if (other_cid == guest_cid)
 			return vsock;
+
 	}
 
 	return NULL;
@@ -119,7 +114,6 @@ vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 		struct sk_buff *skb;
 		unsigned out, in;
 		size_t nbytes;
-		u32 offset;
 		int head;
 
 		skb = virtio_vsock_skb_dequeue(&vsock->send_pkt_queue);
@@ -162,8 +156,7 @@ vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 		}
 
 		iov_iter_init(&iov_iter, ITER_DEST, &vq->iov[out], in, iov_len);
-		offset = VIRTIO_VSOCK_SKB_CB(skb)->offset;
-		payload_len = skb->len - offset;
+		payload_len = skb->len;
 		hdr = virtio_vsock_hdr(skb);
 
 		/* If the packet is greater than the space available in the
@@ -204,10 +197,8 @@ vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 			break;
 		}
 
-		if (skb_copy_datagram_iter(skb,
-					   offset,
-					   &iov_iter,
-					   payload_len)) {
+		nbytes = copy_to_iter(skb->data, payload_len, &iov_iter);
+		if (nbytes != payload_len) {
 			kfree_skb(skb);
 			vq_err(vq, "Faulted on copying pkt buf\n");
 			break;
@@ -221,13 +212,13 @@ vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 		vhost_add_used(vq, head, sizeof(*hdr) + payload_len);
 		added = true;
 
-		VIRTIO_VSOCK_SKB_CB(skb)->offset += payload_len;
+		skb_pull(skb, payload_len);
 		total_len += payload_len;
 
 		/* If we didn't send all the payload we can requeue the packet
 		 * to send it with the next available buffer.
 		 */
-		if (VIRTIO_VSOCK_SKB_CB(skb)->offset < skb->len) {
+		if (skb->len > 0) {
 			hdr->flags |= cpu_to_le32(flags_to_restore);
 
 			/* We are queueing the same skb to handle
@@ -249,7 +240,7 @@ vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 					restart_tx = true;
 			}
 
-			virtio_transport_consume_skb_sent(skb, true);
+			consume_skb(skb);
 		}
 	} while(likely(!vhost_exceeds_weight(vq, ++pkts, total_len)));
 	if (added)
@@ -274,7 +265,7 @@ static void vhost_transport_send_pkt_work(struct vhost_work *work)
 }
 
 static int
-vhost_transport_send_pkt(struct sk_buff *skb, struct net *net)
+vhost_transport_send_pkt(struct sk_buff *skb)
 {
 	struct virtio_vsock_hdr *hdr = virtio_vsock_hdr(skb);
 	struct vhost_vsock *vsock;
@@ -283,7 +274,7 @@ vhost_transport_send_pkt(struct sk_buff *skb, struct net *net)
 	rcu_read_lock();
 
 	/* Find the vhost_vsock according to guest context id  */
-	vsock = vhost_vsock_get(le64_to_cpu(hdr->dst_cid), net);
+	vsock = vhost_vsock_get(le64_to_cpu(hdr->dst_cid));
 	if (!vsock) {
 		rcu_read_unlock();
 		kfree_skb(skb);
@@ -294,7 +285,7 @@ vhost_transport_send_pkt(struct sk_buff *skb, struct net *net)
 		atomic_inc(&vsock->queued_replies);
 
 	virtio_vsock_skb_queue_tail(&vsock->send_pkt_queue, skb);
-	vhost_vq_work_queue(&vsock->vqs[VSOCK_VQ_RX], &vsock->send_pkt_work);
+	vhost_work_queue(&vsock->dev, &vsock->send_pkt_work);
 
 	rcu_read_unlock();
 	return len;
@@ -310,8 +301,7 @@ vhost_transport_cancel_pkt(struct vsock_sock *vsk)
 	rcu_read_lock();
 
 	/* Find the vhost_vsock according to guest context id  */
-	vsock = vhost_vsock_get(vsk->remote_addr.svm_cid,
-				sock_net(sk_vsock(vsk)));
+	vsock = vhost_vsock_get(vsk->remote_addr.svm_cid);
 	if (!vsock)
 		goto out;
 
@@ -350,10 +340,6 @@ vhost_vsock_alloc_skb(struct vhost_virtqueue *vq,
 
 	len = iov_length(vq->iov, out);
 
-	if (len < VIRTIO_VSOCK_SKB_HEADROOM ||
-	    len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE + VIRTIO_VSOCK_SKB_HEADROOM)
-		return NULL;
-
 	/* len contains both payload and hdr */
 	skb = virtio_vsock_alloc_skb(len, GFP_KERNEL);
 	if (!skb)
@@ -377,15 +363,18 @@ vhost_vsock_alloc_skb(struct vhost_virtqueue *vq,
 		return skb;
 
 	/* The pkt is too big or the length in the header is invalid */
-	if (payload_len + sizeof(*hdr) > len) {
+	if (payload_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE ||
+	    payload_len + sizeof(*hdr) > len) {
 		kfree_skb(skb);
 		return NULL;
 	}
 
-	virtio_vsock_skb_put(skb, payload_len);
+	virtio_vsock_skb_rx_put(skb);
 
-	if (skb_copy_datagram_from_iter(skb, 0, &iov_iter, payload_len)) {
-		vq_err(vq, "Failed to copy %zu byte payload\n", payload_len);
+	nbytes = copy_from_iter(skb->data, payload_len, &iov_iter);
+	if (nbytes != payload_len) {
+		vq_err(vq, "Expected %zu byte payload, got %zu bytes\n",
+		       payload_len, nbytes);
 		kfree_skb(skb);
 		return NULL;
 	}
@@ -405,19 +394,7 @@ static bool vhost_vsock_more_replies(struct vhost_vsock *vsock)
 	return val < vq->num;
 }
 
-static bool vhost_transport_msgzerocopy_allow(void)
-{
-	return true;
-}
-
-static bool vhost_transport_seqpacket_allow(struct vsock_sock *vsk,
-					    u32 remote_cid);
-
-static bool
-vhost_transport_stream_allow(struct vsock_sock *vsk, u32 cid, u32 port)
-{
-	return true;
-}
+static bool vhost_transport_seqpacket_allow(u32 remote_cid);
 
 static struct virtio_transport vhost_transport = {
 	.transport = {
@@ -443,14 +420,12 @@ static struct virtio_transport vhost_transport = {
 		.stream_has_space         = virtio_transport_stream_has_space,
 		.stream_rcvhiwat          = virtio_transport_stream_rcvhiwat,
 		.stream_is_active         = virtio_transport_stream_is_active,
-		.stream_allow             = vhost_transport_stream_allow,
+		.stream_allow             = virtio_transport_stream_allow,
 
 		.seqpacket_dequeue        = virtio_transport_seqpacket_dequeue,
 		.seqpacket_enqueue        = virtio_transport_seqpacket_enqueue,
 		.seqpacket_allow          = vhost_transport_seqpacket_allow,
 		.seqpacket_has_data       = virtio_transport_seqpacket_has_data,
-
-		.msgzerocopy_allow        = vhost_transport_msgzerocopy_allow,
 
 		.notify_poll_in           = virtio_transport_notify_poll_in,
 		.notify_poll_out          = virtio_transport_notify_poll_out,
@@ -463,25 +438,19 @@ static struct virtio_transport vhost_transport = {
 		.notify_send_pre_enqueue  = virtio_transport_notify_send_pre_enqueue,
 		.notify_send_post_enqueue = virtio_transport_notify_send_post_enqueue,
 		.notify_buffer_size       = virtio_transport_notify_buffer_size,
-		.notify_set_rcvlowat      = virtio_transport_notify_set_rcvlowat,
 
-		.unsent_bytes             = virtio_transport_unsent_bytes,
-
-		.read_skb = virtio_transport_read_skb,
 	},
 
 	.send_pkt = vhost_transport_send_pkt,
 };
 
-static bool vhost_transport_seqpacket_allow(struct vsock_sock *vsk,
-					    u32 remote_cid)
+static bool vhost_transport_seqpacket_allow(u32 remote_cid)
 {
-	struct net *net = sock_net(sk_vsock(vsk));
 	struct vhost_vsock *vsock;
 	bool seqpacket_allow = false;
 
 	rcu_read_lock();
-	vsock = vhost_vsock_get(remote_cid, net);
+	vsock = vhost_vsock_get(remote_cid);
 
 	if (vsock)
 		seqpacket_allow = vsock->seqpacket_allow;
@@ -552,8 +521,7 @@ static void vhost_vsock_handle_tx_kick(struct vhost_work *work)
 		if (le64_to_cpu(hdr->src_cid) == vsock->guest_cid &&
 		    le64_to_cpu(hdr->dst_cid) ==
 		    vhost_transport_get_local_cid())
-			virtio_transport_recv_pkt(&vhost_transport, skb,
-						  vsock->net);
+			virtio_transport_recv_pkt(&vhost_transport, skb);
 		else
 			kfree_skb(skb);
 
@@ -614,7 +582,7 @@ static int vhost_vsock_start(struct vhost_vsock *vsock)
 	/* Some packets may have been queued before the device was started,
 	 * let's kick the send worker to send them.
 	 */
-	vhost_vq_work_queue(&vsock->vqs[VSOCK_VQ_RX], &vsock->send_pkt_work);
+	vhost_work_queue(&vsock->dev, &vsock->send_pkt_work);
 
 	mutex_unlock(&vsock->dev.mutex);
 	return 0;
@@ -670,7 +638,6 @@ static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
 {
 	struct vhost_virtqueue **vqs;
 	struct vhost_vsock *vsock;
-	struct net *net;
 	int ret;
 
 	/* This struct is large and allocation could fail, fall back to vmalloc
@@ -686,11 +653,7 @@ static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
 		goto out;
 	}
 
-	net = current->nsproxy->net_ns;
-	vsock->net = get_net_track(net, &vsock->ns_tracker, GFP_KERNEL);
-
 	vsock->guest_cid = 0; /* no CID assigned yet */
-	vsock->seqpacket_allow = false;
 
 	atomic_set(&vsock->queued_replies, 0);
 
@@ -727,15 +690,9 @@ static void vhost_vsock_reset_orphans(struct sock *sk)
 	 * executing.
 	 */
 
-	rcu_read_lock();
-
 	/* If the peer is still valid, no need to reset connection */
-	if (vhost_vsock_get(vsk->remote_addr.svm_cid, sock_net(sk))) {
-		rcu_read_unlock();
+	if (vhost_vsock_get(vsk->remote_addr.svm_cid))
 		return;
-	}
-
-	rcu_read_unlock();
 
 	/* If the close timeout is pending, let it expire.  This avoids races
 	 * with the timeout callback.
@@ -779,7 +736,6 @@ static int vhost_vsock_dev_release(struct inode *inode, struct file *file)
 	virtio_vsock_skb_queue_purge(&vsock->send_pkt_queue);
 
 	vhost_dev_cleanup(&vsock->dev);
-	put_net_track(vsock->net, &vsock->ns_tracker);
 	kfree(vsock->dev.vqs);
 	vhost_vsock_free(vsock);
 	return 0;
@@ -806,7 +762,7 @@ static int vhost_vsock_set_cid(struct vhost_vsock *vsock, u64 guest_cid)
 
 	/* Refuse if CID is already in use */
 	mutex_lock(&vhost_vsock_mutex);
-	other = vhost_vsock_get(guest_cid, vsock->net);
+	other = vhost_vsock_get(guest_cid);
 	if (other && other != vsock) {
 		mutex_unlock(&vhost_vsock_mutex);
 		return -EADDRINUSE;
@@ -841,7 +797,8 @@ static int vhost_vsock_set_features(struct vhost_vsock *vsock, u64 features)
 			goto err;
 	}
 
-	vsock->seqpacket_allow = features & (1ULL << VIRTIO_VSOCK_F_SEQPACKET);
+	if (features & (1ULL << VIRTIO_VSOCK_F_SEQPACKET))
+		vsock->seqpacket_allow = true;
 
 	for (i = 0; i < ARRAY_SIZE(vsock->vqs); i++) {
 		vq = &vsock->vqs[i];

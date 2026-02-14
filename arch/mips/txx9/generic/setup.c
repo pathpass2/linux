@@ -200,7 +200,7 @@ static void __init preprocess_cmdline(void)
 	static char cmdline[COMMAND_LINE_SIZE] __initdata;
 	char *s;
 
-	strscpy(cmdline, arcs_cmdline);
+	strcpy(cmdline, arcs_cmdline);
 	s = cmdline;
 	arcs_cmdline[0] = '\0';
 	while (s && *s) {
@@ -270,7 +270,7 @@ void __init prom_init(void)
 	preprocess_cmdline();
 	select_board();
 
-	strscpy(txx9_system_type, txx9_board_vec->system);
+	strcpy(txx9_system_type, txx9_board_vec->system);
 
 	txx9_board_vec->prom_init();
 }
@@ -603,8 +603,8 @@ static int txx9_iocled_get(struct gpio_chip *chip, unsigned int offset)
 	return !!(data->cur_val & (1 << offset));
 }
 
-static int txx9_iocled_set(struct gpio_chip *chip, unsigned int offset,
-			   int value)
+static void txx9_iocled_set(struct gpio_chip *chip, unsigned int offset,
+			    int value)
 {
 	struct txx9_iocled_data *data = gpiochip_get_data(chip);
 	unsigned long flags;
@@ -616,8 +616,6 @@ static int txx9_iocled_set(struct gpio_chip *chip, unsigned int offset,
 	writeb(data->cur_val, data->mmioaddr);
 	mmiowb();
 	spin_unlock_irqrestore(&txx9_iocled_lock, flags);
-
-	return 0;
 }
 
 static int txx9_iocled_dir_in(struct gpio_chip *chip, unsigned int offset)
@@ -764,7 +762,7 @@ void __init txx9_aclc_init(unsigned long baseaddr, int irq,
 {
 }
 
-static const struct bus_type txx9_sramc_subsys = {
+static struct bus_type txx9_sramc_subsys = {
 	.name = "txx9_sram",
 	.dev_name = "txx9_sram",
 };
@@ -776,7 +774,7 @@ struct txx9_sramc_dev {
 };
 
 static ssize_t txx9_sram_read(struct file *filp, struct kobject *kobj,
-			      const struct bin_attribute *bin_attr,
+			      struct bin_attribute *bin_attr,
 			      char *buf, loff_t pos, size_t size)
 {
 	struct txx9_sramc_dev *dev = bin_attr->private;
@@ -791,7 +789,7 @@ static ssize_t txx9_sram_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t txx9_sram_write(struct file *filp, struct kobject *kobj,
-			       const struct bin_attribute *bin_attr,
+			       struct bin_attribute *bin_attr,
 			       char *buf, loff_t pos, size_t size)
 {
 	struct txx9_sramc_dev *dev = bin_attr->private;

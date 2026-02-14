@@ -240,11 +240,11 @@ static u32 isp_xclk_calc_divider(unsigned long *rate, unsigned long parent_rate)
 	return divider;
 }
 
-static int isp_xclk_determine_rate(struct clk_hw *hw,
-				   struct clk_rate_request *req)
+static long isp_xclk_round_rate(struct clk_hw *hw, unsigned long rate,
+				unsigned long *parent_rate)
 {
-	isp_xclk_calc_divider(&req->rate, req->best_parent_rate);
-	return 0;
+	isp_xclk_calc_divider(&rate, *parent_rate);
+	return rate;
 }
 
 static int isp_xclk_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -275,7 +275,7 @@ static const struct clk_ops isp_xclk_ops = {
 	.enable = isp_xclk_enable,
 	.disable = isp_xclk_disable,
 	.recalc_rate = isp_xclk_recalc_rate,
-	.determine_rate = isp_xclk_determine_rate,
+	.round_rate = isp_xclk_round_rate,
 	.set_rate = isp_xclk_set_rate,
 };
 
@@ -1475,6 +1475,43 @@ void omap3isp_put(struct isp_device *isp)
  * Platform device driver
  */
 
+/*
+ * omap3isp_print_status - Prints the values of the ISP Control Module registers
+ * @isp: OMAP3 ISP device
+ */
+#define ISP_PRINT_REGISTER(isp, name)\
+	dev_dbg(isp->dev, "###ISP " #name "=0x%08x\n", \
+		isp_reg_readl(isp, OMAP3_ISP_IOMEM_MAIN, ISP_##name))
+#define SBL_PRINT_REGISTER(isp, name)\
+	dev_dbg(isp->dev, "###SBL " #name "=0x%08x\n", \
+		isp_reg_readl(isp, OMAP3_ISP_IOMEM_SBL, ISPSBL_##name))
+
+void omap3isp_print_status(struct isp_device *isp)
+{
+	dev_dbg(isp->dev, "-------------ISP Register dump--------------\n");
+
+	ISP_PRINT_REGISTER(isp, SYSCONFIG);
+	ISP_PRINT_REGISTER(isp, SYSSTATUS);
+	ISP_PRINT_REGISTER(isp, IRQ0ENABLE);
+	ISP_PRINT_REGISTER(isp, IRQ0STATUS);
+	ISP_PRINT_REGISTER(isp, TCTRL_GRESET_LENGTH);
+	ISP_PRINT_REGISTER(isp, TCTRL_PSTRB_REPLAY);
+	ISP_PRINT_REGISTER(isp, CTRL);
+	ISP_PRINT_REGISTER(isp, TCTRL_CTRL);
+	ISP_PRINT_REGISTER(isp, TCTRL_FRAME);
+	ISP_PRINT_REGISTER(isp, TCTRL_PSTRB_DELAY);
+	ISP_PRINT_REGISTER(isp, TCTRL_STRB_DELAY);
+	ISP_PRINT_REGISTER(isp, TCTRL_SHUT_DELAY);
+	ISP_PRINT_REGISTER(isp, TCTRL_PSTRB_LENGTH);
+	ISP_PRINT_REGISTER(isp, TCTRL_STRB_LENGTH);
+	ISP_PRINT_REGISTER(isp, TCTRL_SHUT_LENGTH);
+
+	SBL_PRINT_REGISTER(isp, PCR);
+	SBL_PRINT_REGISTER(isp, SDR_REQ_EXP);
+
+	dev_dbg(isp->dev, "--------------------------------------------\n");
+}
+
 #ifdef CONFIG_PM
 
 /*
@@ -1924,18 +1961,11 @@ static int isp_attach_iommu(struct isp_device *isp)
 	struct dma_iommu_mapping *mapping;
 	int ret;
 
-	/* We always want to replace any default mapping from the arch code */
-	mapping = to_dma_iommu_mapping(isp->dev);
-	if (mapping) {
-		arm_iommu_detach_device(isp->dev);
-		arm_iommu_release_mapping(mapping);
-	}
-
 	/*
 	 * Create the ARM mapping, used by the ARM DMA mapping core to allocate
 	 * VAs. This will allocate a corresponding IOMMU domain.
 	 */
-	mapping = arm_iommu_create_mapping(isp->dev, SZ_1G, SZ_2G);
+	mapping = arm_iommu_create_mapping(&platform_bus_type, SZ_1G, SZ_2G);
 	if (IS_ERR(mapping)) {
 		dev_err(isp->dev, "failed to create ARM IOMMU mapping\n");
 		return PTR_ERR(mapping);
@@ -1967,12 +1997,11 @@ error:
  *
  * Always returns 0.
  */
-static void isp_remove(struct platform_device *pdev)
+static int isp_remove(struct platform_device *pdev)
 {
 	struct isp_device *isp = platform_get_drvdata(pdev);
 
 	v4l2_async_nf_unregister(&isp->notifier);
-	v4l2_async_nf_cleanup(&isp->notifier);
 	isp_unregister_entities(isp);
 	isp_cleanup_modules(isp);
 	isp_xclk_cleanup(isp);
@@ -1982,8 +2011,11 @@ static void isp_remove(struct platform_device *pdev)
 	__omap3isp_put(isp, false);
 
 	media_entity_enum_cleanup(&isp->crashed);
+	v4l2_async_nf_cleanup(&isp->notifier);
 
 	kfree(isp);
+
+	return 0;
 }
 
 enum isp_of_phy {
@@ -1992,34 +2024,35 @@ enum isp_of_phy {
 	ISP_OF_PHY_CSIPHY2,
 };
 
-static int isp_subdev_notifier_bound(struct v4l2_async_notifier *async,
-				     struct v4l2_subdev *sd,
-				     struct v4l2_async_connection *asc)
-{
-	struct isp_device *isp = container_of(async, struct isp_device,
-					      notifier);
-	struct isp_bus_cfg *bus_cfg =
-		&container_of(asc, struct isp_async_subdev, asd)->bus;
-	int ret;
-
-	mutex_lock(&isp->media_dev.graph_mutex);
-	ret = isp_link_entity(isp, &sd->entity, bus_cfg->interface);
-	mutex_unlock(&isp->media_dev.graph_mutex);
-
-	return ret;
-}
-
 static int isp_subdev_notifier_complete(struct v4l2_async_notifier *async)
 {
 	struct isp_device *isp = container_of(async, struct isp_device,
 					      notifier);
+	struct v4l2_device *v4l2_dev = &isp->v4l2_dev;
+	struct v4l2_subdev *sd;
 	int ret;
 
 	mutex_lock(&isp->media_dev.graph_mutex);
+
 	ret = media_entity_enum_init(&isp->crashed, &isp->media_dev);
-	mutex_unlock(&isp->media_dev.graph_mutex);
-	if (ret)
+	if (ret) {
+		mutex_unlock(&isp->media_dev.graph_mutex);
 		return ret;
+	}
+
+	list_for_each_entry(sd, &v4l2_dev->subdevs, list) {
+		if (sd->notifier != &isp->notifier)
+			continue;
+
+		ret = isp_link_entity(isp, &sd->entity,
+				      v4l2_subdev_to_bus_cfg(sd)->interface);
+		if (ret < 0) {
+			mutex_unlock(&isp->media_dev.graph_mutex);
+			return ret;
+		}
+	}
+
+	mutex_unlock(&isp->media_dev.graph_mutex);
 
 	ret = v4l2_device_register_subdev_nodes(&isp->v4l2_dev);
 	if (ret < 0)
@@ -2209,7 +2242,6 @@ static int isp_parse_of_endpoints(struct isp_device *isp)
 }
 
 static const struct v4l2_async_notifier_operations isp_subdev_notifier_ops = {
-	.bound = isp_subdev_notifier_bound,
 	.complete = isp_subdev_notifier_complete,
 };
 
@@ -2242,19 +2274,28 @@ static int isp_probe(struct platform_device *pdev)
 	if (ret)
 		goto error_release_isp;
 
-	isp->syscon = syscon_regmap_lookup_by_phandle_args(pdev->dev.of_node,
-							   "syscon", 1,
-							   &isp->syscon_offset);
+	isp->syscon = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+						      "syscon");
 	if (IS_ERR(isp->syscon)) {
 		ret = PTR_ERR(isp->syscon);
 		goto error_release_isp;
 	}
 
+	ret = of_property_read_u32_index(pdev->dev.of_node,
+					 "syscon", 1, &isp->syscon_offset);
+	if (ret)
+		goto error_release_isp;
+
 	isp->autoidle = autoidle;
 
 	mutex_init(&isp->isp_mutex);
 	spin_lock_init(&isp->stat_lock);
+	v4l2_async_nf_init(&isp->notifier);
 	isp->dev = &pdev->dev;
+
+	ret = isp_parse_of_endpoints(isp);
+	if (ret < 0)
+		goto error;
 
 	isp->ref_count = 0;
 
@@ -2290,8 +2331,9 @@ static int isp_probe(struct platform_device *pdev)
 	for (i = 0; i < 2; i++) {
 		unsigned int map_idx = i ? OMAP3_ISP_IOMEM_CSI2A_REGS1 : 0;
 
+		mem = platform_get_resource(pdev, IORESOURCE_MEM, i);
 		isp->mmio_base[map_idx] =
-			devm_platform_get_and_ioremap_resource(pdev, i, &mem);
+			devm_ioremap_resource(isp->dev, mem);
 		if (IS_ERR(isp->mmio_base[map_idx])) {
 			ret = PTR_ERR(isp->mmio_base[map_idx]);
 			goto error;
@@ -2358,8 +2400,10 @@ static int isp_probe(struct platform_device *pdev)
 
 	/* Interrupt */
 	ret = platform_get_irq(pdev, 0);
-	if (ret < 0)
+	if (ret <= 0) {
+		ret = -ENODEV;
 		goto error_iommu;
+	}
 	isp->irq_num = ret;
 
 	if (devm_request_irq(isp->dev, isp->irq_num, isp_isr, IRQF_SHARED,
@@ -2384,13 +2428,7 @@ static int isp_probe(struct platform_device *pdev)
 
 	isp->notifier.ops = &isp_subdev_notifier_ops;
 
-	v4l2_async_nf_init(&isp->notifier, &isp->v4l2_dev);
-
-	ret = isp_parse_of_endpoints(isp);
-	if (ret < 0)
-		goto error_register_entities;
-
-	ret = v4l2_async_nf_register(&isp->notifier);
+	ret = v4l2_async_nf_register(&isp->v4l2_dev, &isp->notifier);
 	if (ret)
 		goto error_register_entities;
 
@@ -2400,7 +2438,6 @@ static int isp_probe(struct platform_device *pdev)
 	return 0;
 
 error_register_entities:
-	v4l2_async_nf_cleanup(&isp->notifier);
 	isp_unregister_entities(isp);
 error_modules:
 	isp_cleanup_modules(isp);
@@ -2410,6 +2447,7 @@ error_isp:
 	isp_xclk_cleanup(isp);
 	__omap3isp_put(isp, false);
 error:
+	v4l2_async_nf_cleanup(&isp->notifier);
 	mutex_destroy(&isp->isp_mutex);
 error_release_isp:
 	kfree(isp);

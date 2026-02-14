@@ -2,7 +2,7 @@
 #ifndef ARCH_X86_REALMODE_RM_REALMODE_H
 #define ARCH_X86_REALMODE_RM_REALMODE_H
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 /*
  * 16-bit ljmpw to the real_mode_seg
@@ -12,7 +12,7 @@
  */
 #define LJMPW_RM(to)	.byte 0xea ; .word (to), real_mode_seg
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 /*
  * Signature at the end of the realmode region

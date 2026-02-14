@@ -1023,6 +1023,9 @@ static int rtl8180_init_rx_ring(struct ieee80211_hw *dev)
 		dma_addr_t *mapping;
 		entry = priv->rx_ring + priv->rx_ring_sz*i;
 		if (!skb) {
+			dma_free_coherent(&priv->pdev->dev,
+					  priv->rx_ring_sz * 32,
+					  priv->rx_ring, priv->rx_ring_dma);
 			wiphy_err(dev->wiphy, "Cannot allocate RX skb\n");
 			return -ENOMEM;
 		}
@@ -1034,7 +1037,9 @@ static int rtl8180_init_rx_ring(struct ieee80211_hw *dev)
 
 		if (dma_mapping_error(&priv->pdev->dev, *mapping)) {
 			kfree_skb(skb);
-			priv->rx_buf[i] = NULL;
+			dma_free_coherent(&priv->pdev->dev,
+					  priv->rx_ring_sz * 32,
+					  priv->rx_ring, priv->rx_ring_dma);
 			wiphy_err(dev->wiphy, "Cannot map DMA for RX skb\n");
 			return -ENOMEM;
 		}
@@ -1125,7 +1130,7 @@ static int rtl8180_start(struct ieee80211_hw *dev)
 
 	ret = rtl8180_init_rx_ring(dev);
 	if (ret)
-		goto err_free_rings;
+		return ret;
 
 	for (i = 0; i < (dev->queues + 1); i++)
 		if ((ret = rtl8180_init_tx_ring(dev, i, 16)))
@@ -1244,7 +1249,7 @@ static int rtl8180_start(struct ieee80211_hw *dev)
 	return ret;
 }
 
-static void rtl8180_stop(struct ieee80211_hw *dev, bool suspend)
+static void rtl8180_stop(struct ieee80211_hw *dev)
 {
 	struct rtl8180_priv *priv = dev->priv;
 	u8 reg;
@@ -1365,7 +1370,7 @@ static void rtl8180_remove_interface(struct ieee80211_hw *dev,
 	priv->vif = NULL;
 }
 
-static int rtl8180_config(struct ieee80211_hw *dev, int radio_idx, u32 changed)
+static int rtl8180_config(struct ieee80211_hw *dev, u32 changed)
 {
 	struct rtl8180_priv *priv = dev->priv;
 	struct ieee80211_conf *conf = &dev->conf;
@@ -1602,10 +1607,6 @@ static void rtl8180_configure_filter(struct ieee80211_hw *dev,
 }
 
 static const struct ieee80211_ops rtl8180_ops = {
-	.add_chanctx = ieee80211_emulate_add_chanctx,
-	.remove_chanctx = ieee80211_emulate_remove_chanctx,
-	.change_chanctx = ieee80211_emulate_change_chanctx,
-	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.tx			= rtl8180_tx,
 	.wake_tx_queue		= ieee80211_handle_wake_tx_queue,
 	.start			= rtl8180_start,

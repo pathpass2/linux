@@ -117,13 +117,7 @@ struct __packed vmcs12 {
 	natural_width host_ia32_sysenter_eip;
 	natural_width host_rsp;
 	natural_width host_rip;
-	natural_width host_s_cet;
-	natural_width host_ssp;
-	natural_width host_ssp_tbl;
-	natural_width guest_s_cet;
-	natural_width guest_ssp;
-	natural_width guest_ssp_tbl;
-	natural_width paddingl[2]; /* room for future expansion */
+	natural_width paddingl[8]; /* room for future expansion */
 	u32 pin_based_vm_exec_control;
 	u32 cpu_based_vm_exec_control;
 	u32 exception_bitmap;
@@ -194,13 +188,12 @@ struct __packed vmcs12 {
 };
 
 /*
- * VMCS12_REVISION is KVM's arbitrary ID for the layout of struct vmcs12.  KVM
- * enumerates this value to L1 via MSR_IA32_VMX_BASIC, and checks the revision
- * ID during nested VMPTRLD to verify that L1 is loading a VMCS that adhere's
- * to KVM's virtual CPU definition.
+ * VMCS12_REVISION is an arbitrary id that should be changed if the content or
+ * layout of struct vmcs12 is changed. MSR_IA32_VMX_BASIC returns this id, and
+ * VMPTRLD verifies that the VMCS region that L1 is loading contains this id.
  *
- * DO NOT change this value, as it will break save/restore compatibility with
- * older KVM releases.
+ * IMPORTANT: Changing this value will break save/restore compatibility with
+ * older kvm releases.
  */
 #define VMCS12_REVISION 0x11e57ed0
 
@@ -213,8 +206,7 @@ struct __packed vmcs12 {
 #define VMCS12_SIZE		KVM_STATE_NESTED_VMX_VMCS_SIZE
 
 /*
- * For save/restore compatibility, the vmcs12 field offsets must not change,
- * although appending fields and/or filling gaps is obviously allowed.
+ * For save/restore compatibility, the vmcs12 field offsets must not change.
  */
 #define CHECK_OFFSET(field, loc) \
 	ASSERT_STRUCT_OFFSET(struct vmcs12, field, loc)
@@ -300,12 +292,6 @@ static inline void vmx_check_vmcs12_offsets(void)
 	CHECK_OFFSET(host_ia32_sysenter_eip, 656);
 	CHECK_OFFSET(host_rsp, 664);
 	CHECK_OFFSET(host_rip, 672);
-	CHECK_OFFSET(host_s_cet, 680);
-	CHECK_OFFSET(host_ssp, 688);
-	CHECK_OFFSET(host_ssp_tbl, 696);
-	CHECK_OFFSET(guest_s_cet, 704);
-	CHECK_OFFSET(guest_ssp, 712);
-	CHECK_OFFSET(guest_ssp_tbl, 720);
 	CHECK_OFFSET(pin_based_vm_exec_control, 744);
 	CHECK_OFFSET(cpu_based_vm_exec_control, 748);
 	CHECK_OFFSET(exception_bitmap, 752);
@@ -374,10 +360,8 @@ static inline void vmx_check_vmcs12_offsets(void)
 	CHECK_OFFSET(guest_pml_index, 996);
 }
 
-extern u16 vmcs12_field_offsets[] __ro_after_init;
-extern unsigned int nr_vmcs12_fields __ro_after_init;
-
-void __init nested_vmx_setup_vmcs12_fields(void);
+extern const unsigned short vmcs12_field_offsets[];
+extern const unsigned int nr_vmcs12_fields;
 
 static inline short get_vmcs12_field_offset(unsigned long field)
 {
@@ -387,7 +371,7 @@ static inline short get_vmcs12_field_offset(unsigned long field)
 	if (field >> 15)
 		return -ENOENT;
 
-	index = ENC_TO_VMCS12_IDX(field);
+	index = ROL16(field, 6);
 	if (index >= nr_vmcs12_fields)
 		return -ENOENT;
 

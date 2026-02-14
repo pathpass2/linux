@@ -2,7 +2,7 @@
 #ifndef _ASM_SH_SUSPEND_H
 #define _ASM_SH_SUSPEND_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <linux/notifier.h>
 
 #include <asm/ptrace.h>

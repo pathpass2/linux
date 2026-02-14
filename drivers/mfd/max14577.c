@@ -9,10 +9,9 @@
 // This driver is based on max8997.c
 
 #include <linux/err.h>
-#include <linux/i2c.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
+#include <linux/of_device.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/max14577.h>
 #include <linux/mfd/max14577-private.h>
@@ -143,7 +142,6 @@ static const struct of_device_id max14577_dt_match[] = {
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, max14577_dt_match);
 
 static bool max14577_muic_volatile_reg(struct device *dev, unsigned int reg)
 {
@@ -359,6 +357,7 @@ static void max77836_remove(struct max14577 *max14577)
 
 static int max14577_i2c_probe(struct i2c_client *i2c)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	struct max14577 *max14577;
 	struct max14577_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	struct device_node *np = i2c->dev.of_node;
@@ -398,7 +397,16 @@ static int max14577_i2c_probe(struct i2c_client *i2c)
 		return ret;
 	}
 
-	max14577->dev_type = (kernel_ulong_t)i2c_get_match_data(i2c);
+	if (np) {
+		const struct of_device_id *of_id;
+
+		of_id = of_match_device(max14577_dt_match, &i2c->dev);
+		if (of_id)
+			max14577->dev_type =
+				(enum maxim_device_type)of_id->data;
+	} else {
+		max14577->dev_type = id->driver_data;
+	}
 
 	max14577_print_dev_type(max14577);
 
@@ -456,7 +464,6 @@ static void max14577_i2c_remove(struct i2c_client *i2c)
 {
 	struct max14577 *max14577 = i2c_get_clientdata(i2c);
 
-	device_init_wakeup(max14577->dev, false);
 	mfd_remove_devices(max14577->dev);
 	regmap_del_irq_chip(max14577->irq, max14577->irq_data);
 	if (max14577->dev_type == MAXIM_DEVICE_TYPE_MAX77836)
@@ -511,7 +518,7 @@ static struct i2c_driver max14577_i2c_driver = {
 		.pm = pm_sleep_ptr(&max14577_pm),
 		.of_match_table = max14577_dt_match,
 	},
-	.probe = max14577_i2c_probe,
+	.probe_new = max14577_i2c_probe,
 	.remove = max14577_i2c_remove,
 	.id_table = max14577_i2c_id,
 };

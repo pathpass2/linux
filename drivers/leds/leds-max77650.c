@@ -62,6 +62,7 @@ static int max77650_led_brightness_set(struct led_classdev *cdev,
 
 static int max77650_led_probe(struct platform_device *pdev)
 {
+	struct fwnode_handle *child;
 	struct max77650_led *leds, *led;
 	struct device *dev;
 	struct regmap *map;
@@ -83,12 +84,14 @@ static int max77650_led_probe(struct platform_device *pdev)
 	if (!num_leds || num_leds > MAX77650_LED_NUM_LEDS)
 		return -ENODEV;
 
-	device_for_each_child_node_scoped(dev, child) {
+	device_for_each_child_node(dev, child) {
 		struct led_init_data init_data = {};
 
 		rv = fwnode_property_read_u32(child, "reg", &reg);
-		if (rv || reg >= MAX77650_LED_NUM_LEDS)
-			return -EINVAL;
+		if (rv || reg >= MAX77650_LED_NUM_LEDS) {
+			rv = -EINVAL;
+			goto err_node_put;
+		}
 
 		led = &leds[reg];
 		led->map = map;
@@ -105,20 +108,23 @@ static int max77650_led_probe(struct platform_device *pdev)
 		rv = devm_led_classdev_register_ext(dev, &led->cdev,
 						    &init_data);
 		if (rv)
-			return rv;
+			goto err_node_put;
 
 		rv = regmap_write(map, led->regA, MAX77650_LED_A_DEFAULT);
 		if (rv)
-			return rv;
+			goto err_node_put;
 
 		rv = regmap_write(map, led->regB, MAX77650_LED_B_DEFAULT);
 		if (rv)
-			return rv;
+			goto err_node_put;
 	}
 
 	return regmap_write(map,
 			    MAX77650_REG_CNFG_LED_TOP,
 			    MAX77650_LED_TOP_DEFAULT);
+err_node_put:
+	fwnode_handle_put(child);
+	return rv;
 }
 
 static const struct of_device_id max77650_led_of_match[] = {

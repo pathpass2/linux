@@ -16,8 +16,6 @@
 #include "hfs_fs.h"
 #include <linux/dcache.h>
 
-#include <kunit/visibility.h>
-
 /*================ File-local variables ================*/
 
 /*
@@ -67,7 +65,6 @@ int hfs_hash_dentry(const struct dentry *dentry, struct qstr *this)
 	this->hash = end_name_hash(hash);
 	return 0;
 }
-EXPORT_SYMBOL_IF_KUNIT(hfs_hash_dentry);
 
 /*
  * Compare two strings in the HFS filename character ordering
@@ -90,7 +87,6 @@ int hfs_strcmp(const unsigned char *s1, unsigned int len1,
 	}
 	return len1 - len2;
 }
-EXPORT_SYMBOL_IF_KUNIT(hfs_strcmp);
 
 /*
  * Test for equality of two strings in the HFS filename character ordering.
@@ -116,4 +112,3 @@ int hfs_compare_dentry(const struct dentry *dentry,
 	}
 	return 0;
 }
-EXPORT_SYMBOL_IF_KUNIT(hfs_compare_dentry);

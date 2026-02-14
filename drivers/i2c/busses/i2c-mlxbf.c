@@ -12,14 +12,12 @@
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
 #include <linux/io.h>
-#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/string.h>
-#include <linux/string_choices.h>
 
 /* Defines what functionality is present. */
 #define MLXBF_I2C_FUNC_SMBUS_BLOCK \
@@ -198,7 +196,6 @@
 
 #define MLXBF_I2C_MASK_8    GENMASK(7, 0)
 #define MLXBF_I2C_MASK_16   GENMASK(15, 0)
-#define MLXBF_I2C_MASK_32   GENMASK(31, 0)
 
 #define MLXBF_I2C_MST_ADDR_OFFSET         0x200
 
@@ -225,7 +222,7 @@
 
 #define MLXBF_I2C_MASTER_ENABLE \
 	(MLXBF_I2C_MASTER_LOCK_BIT | MLXBF_I2C_MASTER_BUSY_BIT | \
-	 MLXBF_I2C_MASTER_START_BIT)
+	 MLXBF_I2C_MASTER_START_BIT | MLXBF_I2C_MASTER_STOP_BIT)
 
 #define MLXBF_I2C_MASTER_ENABLE_WRITE \
 	(MLXBF_I2C_MASTER_ENABLE | MLXBF_I2C_MASTER_CTL_WRITE_BIT)
@@ -339,7 +336,6 @@ enum {
 	MLXBF_I2C_F_SMBUS_BLOCK = BIT(5),
 	MLXBF_I2C_F_SMBUS_PEC = BIT(6),
 	MLXBF_I2C_F_SMBUS_PROCESS_CALL = BIT(7),
-	MLXBF_I2C_F_WRITE_WITHOUT_STOP = BIT(8),
 };
 
 /* Mellanox BlueField chip type. */
@@ -499,6 +495,65 @@ static u8 mlxbf_i2c_bus_count;
 
 static struct mutex mlxbf_i2c_bus_lock;
 
+/*
+ * Function to poll a set of bits at a specific address; it checks whether
+ * the bits are equal to zero when eq_zero is set to 'true', and not equal
+ * to zero when eq_zero is set to 'false'.
+ * Note that the timeout is given in microseconds.
+ */
+static u32 mlxbf_i2c_poll(void __iomem *io, u32 addr, u32 mask,
+			    bool eq_zero, u32  timeout)
+{
+	u32 bits;
+
+	timeout = (timeout / MLXBF_I2C_POLL_FREQ_IN_USEC) + 1;
+
+	do {
+		bits = readl(io + addr) & mask;
+		if (eq_zero ? bits == 0 : bits != 0)
+			return eq_zero ? 1 : bits;
+		udelay(MLXBF_I2C_POLL_FREQ_IN_USEC);
+	} while (timeout-- != 0);
+
+	return 0;
+}
+
+/*
+ * SW must make sure that the SMBus Master GW is idle before starting
+ * a transaction. Accordingly, this function polls the Master FSM stop
+ * bit; it returns false when the bit is asserted, true if not.
+ */
+static bool mlxbf_i2c_smbus_master_wait_for_idle(struct mlxbf_i2c_priv *priv)
+{
+	u32 mask = MLXBF_I2C_SMBUS_MASTER_FSM_STOP_MASK;
+	u32 addr = priv->chip->smbus_master_fsm_off;
+	u32 timeout = MLXBF_I2C_SMBUS_TIMEOUT;
+
+	if (mlxbf_i2c_poll(priv->mst->io, addr, mask, true, timeout))
+		return true;
+
+	return false;
+}
+
+/*
+ * wait for the lock to be released before acquiring it.
+ */
+static bool mlxbf_i2c_smbus_master_lock(struct mlxbf_i2c_priv *priv)
+{
+	if (mlxbf_i2c_poll(priv->mst->io, MLXBF_I2C_SMBUS_MASTER_GW,
+			   MLXBF_I2C_MASTER_LOCK_BIT, true,
+			   MLXBF_I2C_SMBUS_LOCK_POLL_TIMEOUT))
+		return true;
+
+	return false;
+}
+
+static void mlxbf_i2c_smbus_master_unlock(struct mlxbf_i2c_priv *priv)
+{
+	/* Clear the gw to clear the lock */
+	writel(0, priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW);
+}
+
 static bool mlxbf_i2c_smbus_transaction_success(u32 master_status,
 						u32 cause_status)
 {
@@ -528,7 +583,6 @@ static int mlxbf_i2c_smbus_check_status(struct mlxbf_i2c_priv *priv)
 {
 	u32 master_status_bits;
 	u32 cause_status_bits;
-	u32 bits;
 
 	/*
 	 * GW busy bit is raised by the driver and cleared by the HW
@@ -537,9 +591,9 @@ static int mlxbf_i2c_smbus_check_status(struct mlxbf_i2c_priv *priv)
 	 * then read the cause and master status bits to determine if
 	 * errors occurred during the transaction.
 	 */
-	readl_poll_timeout_atomic(priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW,
-				  bits, !(bits & MLXBF_I2C_MASTER_BUSY_BIT),
-				  MLXBF_I2C_POLL_FREQ_IN_USEC, MLXBF_I2C_SMBUS_TIMEOUT);
+	mlxbf_i2c_poll(priv->mst->io, MLXBF_I2C_SMBUS_MASTER_GW,
+			 MLXBF_I2C_MASTER_BUSY_BIT, true,
+			 MLXBF_I2C_SMBUS_TIMEOUT);
 
 	/* Read cause status bits. */
 	cause_status_bits = readl(priv->mst_cause->io +
@@ -640,19 +694,16 @@ static void mlxbf_i2c_smbus_read_data(struct mlxbf_i2c_priv *priv,
 }
 
 static int mlxbf_i2c_smbus_enable(struct mlxbf_i2c_priv *priv, u8 slave,
-				  u8 len, u8 block_en, u8 pec_en, bool read,
-				  bool stop)
+				  u8 len, u8 block_en, u8 pec_en, bool read)
 {
-	u32 command = 0;
+	u32 command;
 
 	/* Set Master GW control word. */
-	if (stop)
-		command |= MLXBF_I2C_MASTER_STOP_BIT;
 	if (read) {
-		command |= MLXBF_I2C_MASTER_ENABLE_READ;
+		command = MLXBF_I2C_MASTER_ENABLE_READ;
 		command |= rol32(len, MLXBF_I2C_MASTER_READ_SHIFT);
 	} else {
-		command |= MLXBF_I2C_MASTER_ENABLE_WRITE;
+		command = MLXBF_I2C_MASTER_ENABLE_WRITE;
 		command |= rol32(len, MLXBF_I2C_MASTER_WRITE_SHIFT);
 	}
 	command |= rol32(slave, MLXBF_I2C_MASTER_SLV_ADDR_SHIFT);
@@ -687,12 +738,9 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 	u8 op_idx, data_idx, data_len, write_len, read_len;
 	struct mlxbf_i2c_smbus_operation *operation;
 	u8 read_en, write_en, block_en, pec_en;
-	bool stop_after_write = true;
-	u8 slave, addr;
+	u8 slave, flags, addr;
 	u8 *read_buf;
-	u32 flags;
-	u32 bits;
-	int ret;
+	int ret = 0;
 
 	if (request->operation_cnt > MLXBF_I2C_SMBUS_MAX_OP_CNT)
 		return -EINVAL;
@@ -712,22 +760,11 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 	 * Try to acquire the smbus gw lock before any reads of the GW register since
 	 * a read sets the lock.
 	 */
-	ret = readl_poll_timeout_atomic(priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW,
-					bits, !(bits & MLXBF_I2C_MASTER_LOCK_BIT),
-					MLXBF_I2C_POLL_FREQ_IN_USEC,
-					MLXBF_I2C_SMBUS_LOCK_POLL_TIMEOUT);
-	if (WARN_ON(ret))
+	if (WARN_ON(!mlxbf_i2c_smbus_master_lock(priv)))
 		return -EBUSY;
 
-	/*
-	 * SW must make sure that the SMBus Master GW is idle before starting
-	 * a transaction. Accordingly, this call polls the Master FSM stop bit;
-	 * it returns -ETIMEDOUT when the bit is asserted, 0 if not.
-	 */
-	ret = readl_poll_timeout_atomic(priv->mst->io + priv->chip->smbus_master_fsm_off,
-					bits, !(bits & MLXBF_I2C_SMBUS_MASTER_FSM_STOP_MASK),
-					MLXBF_I2C_POLL_FREQ_IN_USEC, MLXBF_I2C_SMBUS_TIMEOUT);
-	if (WARN_ON(ret)) {
+	/* Check whether the HW is idle */
+	if (WARN_ON(!mlxbf_i2c_smbus_master_wait_for_idle(priv))) {
 		ret = -EBUSY;
 		goto out_unlock;
 	}
@@ -762,16 +799,7 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 			memcpy(data_desc + data_idx,
 			       operation->buffer, operation->length);
 			data_idx += operation->length;
-
-			/*
-			 * The stop condition can be skipped when writing on the bus
-			 * to implement a repeated start condition on the next read
-			 * as required for several SMBus and I2C operations.
-			 */
-			if (flags & MLXBF_I2C_F_WRITE_WITHOUT_STOP)
-				stop_after_write = false;
 		}
-
 		/*
 		 * We assume that read operations are performed only once per
 		 * SMBus transaction. *TBD* protect this statement so it won't
@@ -797,7 +825,7 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 
 	if (write_en) {
 		ret = mlxbf_i2c_smbus_enable(priv, slave, write_len, block_en,
-					 pec_en, 0, stop_after_write);
+					 pec_en, 0);
 		if (ret)
 			goto out_unlock;
 	}
@@ -807,7 +835,7 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 		mlxbf_i2c_smbus_write_data(priv, (const u8 *)&addr, 1,
 					   MLXBF_I2C_MASTER_DATA_DESC_ADDR, true);
 		ret = mlxbf_i2c_smbus_enable(priv, slave, read_len, block_en,
-					 pec_en, 1, true);
+					 pec_en, 1);
 		if (!ret) {
 			/* Get Master GW data descriptor. */
 			mlxbf_i2c_smbus_read_data(priv, data_desc, read_len + 1,
@@ -827,8 +855,7 @@ mlxbf_i2c_smbus_start_transaction(struct mlxbf_i2c_priv *priv,
 	}
 
 out_unlock:
-	/* Clear the gw to clear the lock */
-	writel(0, priv->mst->io + MLXBF_I2C_SMBUS_MASTER_GW);
+	mlxbf_i2c_smbus_master_unlock(priv);
 
 	return ret;
 }
@@ -912,9 +939,6 @@ mlxbf_i2c_smbus_i2c_block_func(struct mlxbf_i2c_smbus_request *request,
 			MLXBF_I2C_F_SMBUS_OPERATION | MLXBF_I2C_F_WRITE;
 	request->operation[0].flags |= pec_check ? MLXBF_I2C_F_SMBUS_PEC : 0;
 	request->operation[0].buffer = command;
-
-	if (read)
-		request->operation[0].flags |= MLXBF_I2C_F_WRITE_WITHOUT_STOP;
 
 	/*
 	 * As specified in the standard, the max number of bytes to read/write
@@ -1056,7 +1080,13 @@ static int mlxbf_i2c_init_resource(struct platform_device *pdev,
 	if (!tmp_res)
 		return -ENOMEM;
 
-	tmp_res->io = devm_platform_get_and_ioremap_resource(pdev, type, &tmp_res->params);
+	tmp_res->params = platform_get_resource(pdev, IORESOURCE_MEM, type);
+	if (!tmp_res->params) {
+		devm_kfree(dev, tmp_res);
+		return -EIO;
+	}
+
+	tmp_res->io = devm_ioremap_resource(dev, tmp_res->params);
 	if (IS_ERR(tmp_res->io)) {
 		devm_kfree(dev, tmp_res);
 		return PTR_ERR(tmp_res->io);
@@ -1083,7 +1113,7 @@ static u32 mlxbf_i2c_get_ticks(struct mlxbf_i2c_priv *priv, u64 nanoseconds,
 	 *         Frequency
 	 */
 	frequency = priv->frequency;
-	ticks = div_u64(nanoseconds * frequency, MLXBF_I2C_FREQUENCY_1GHZ);
+	ticks = (nanoseconds * frequency) / MLXBF_I2C_FREQUENCY_1GHZ;
 	/*
 	 * The number of ticks is rounded down and if minimum is equal to 1
 	 * then add one tick.
@@ -1150,8 +1180,7 @@ static void mlxbf_i2c_set_timings(struct mlxbf_i2c_priv *priv,
 				     MLXBF_I2C_MASK_16, MLXBF_I2C_SHIFT_16);
 	writel(timer, priv->timer->io + MLXBF_I2C_SMBUS_THIGH_MAX_TBUF);
 
-	timer = mlxbf_i2c_set_timer(priv, timings->timeout, false,
-				    MLXBF_I2C_MASK_32, MLXBF_I2C_SHIFT_0);
+	timer = timings->timeout;
 	writel(timer, priv->timer->io + MLXBF_I2C_SMBUS_SCL_LOW_TIMEOUT);
 }
 
@@ -1161,7 +1190,11 @@ enum mlxbf_i2c_timings_config {
 	MLXBF_I2C_TIMING_CONFIG_1000KHZ,
 };
 
-/* Timing values are in nanoseconds */
+/*
+ * Note that the mlxbf_i2c_timings->timeout value is not related to the
+ * bus frequency, it is impacted by the time it takes the driver to
+ * complete data transmission before transaction abort.
+ */
 static const struct mlxbf_i2c_timings mlxbf_i2c_timings[] = {
 	[MLXBF_I2C_TIMING_CONFIG_100KHZ] = {
 		.scl_high = 4810,
@@ -1176,8 +1209,8 @@ static const struct mlxbf_i2c_timings mlxbf_i2c_timings[] = {
 		.scl_fall = 50,
 		.hold_data = 300,
 		.buf = 20000,
-		.thigh_max = 50000,
-		.timeout = 35000000
+		.thigh_max = 5000,
+		.timeout = 106500
 	},
 	[MLXBF_I2C_TIMING_CONFIG_400KHZ] = {
 		.scl_high = 1011,
@@ -1192,24 +1225,24 @@ static const struct mlxbf_i2c_timings mlxbf_i2c_timings[] = {
 		.scl_fall = 50,
 		.hold_data = 300,
 		.buf = 20000,
-		.thigh_max = 50000,
-		.timeout = 35000000
+		.thigh_max = 5000,
+		.timeout = 106500
 	},
 	[MLXBF_I2C_TIMING_CONFIG_1000KHZ] = {
-		.scl_high = 383,
-		.scl_low = 460,
+		.scl_high = 600,
+		.scl_low = 1300,
 		.hold_start = 600,
-		.setup_start = 260,
-		.setup_stop = 260,
-		.setup_data = 50,
+		.setup_start = 600,
+		.setup_stop = 600,
+		.setup_data = 100,
 		.sda_rise = 50,
 		.sda_fall = 50,
 		.scl_rise = 50,
 		.scl_fall = 50,
 		.hold_data = 300,
-		.buf = 500,
-		.thigh_max = 50000,
-		.timeout = 35000000
+		.buf = 20000,
+		.thigh_max = 5000,
+		.timeout = 106500
 	}
 };
 
@@ -1460,8 +1493,9 @@ static u64 mlxbf_i2c_calculate_freq_from_tyu(struct mlxbf_i2c_resource *corepll_
 	 * and PadFrequency, respectively.
 	 */
 	core_frequency = MLXBF_I2C_PLL_IN_FREQ * (++core_f);
+	core_frequency /= (++core_r) * (++core_od);
 
-	return div_u64(core_frequency, (++core_r) * (++core_od));
+	return core_frequency;
 }
 
 static u64 mlxbf_i2c_calculate_freq_from_yu(struct mlxbf_i2c_resource *corepll_res)
@@ -1490,8 +1524,9 @@ static u64 mlxbf_i2c_calculate_freq_from_yu(struct mlxbf_i2c_resource *corepll_r
 	 * and PadFrequency, respectively.
 	 */
 	corepll_frequency = (MLXBF_I2C_PLL_IN_FREQ * core_f) / MLNXBF_I2C_COREPLL_CONST;
+	corepll_frequency /= (++core_r) * (++core_od);
 
-	return div_u64(corepll_frequency, (++core_r) * (++core_od));
+	return corepll_frequency;
 }
 
 static int mlxbf_i2c_calculate_corepll_freq(struct platform_device *pdev,
@@ -1800,6 +1835,18 @@ static bool mlxbf_i2c_has_coalesce(struct mlxbf_i2c_priv *priv, bool *read,
 	return true;
 }
 
+static bool mlxbf_i2c_slave_wait_for_idle(struct mlxbf_i2c_priv *priv,
+					    u32 timeout)
+{
+	u32 mask = MLXBF_I2C_CAUSE_S_GW_BUSY_FALL;
+	u32 addr = MLXBF_I2C_CAUSE_ARBITER;
+
+	if (mlxbf_i2c_poll(priv->slv_cause->io, addr, mask, false, timeout))
+		return true;
+
+	return false;
+}
+
 static struct i2c_client *mlxbf_i2c_get_slave_from_addr(
 			struct mlxbf_i2c_priv *priv, u8 addr)
 {
@@ -1902,9 +1949,7 @@ static int mlxbf_i2c_irq_send(struct mlxbf_i2c_priv *priv, u8 recv_bytes)
 	 * Wait until the transfer is completed; the driver will wait
 	 * until the GW is idle, a cause will rise on fall of GW busy.
 	 */
-	readl_poll_timeout_atomic(priv->slv_cause->io + MLXBF_I2C_CAUSE_ARBITER,
-				  data32, data32 & MLXBF_I2C_CAUSE_S_GW_BUSY_FALL,
-				  MLXBF_I2C_POLL_FREQ_IN_USEC, MLXBF_I2C_SMBUS_TIMEOUT);
+	mlxbf_i2c_slave_wait_for_idle(priv, MLXBF_I2C_SMBUS_TIMEOUT);
 
 clear_csr:
 	/* Release the Slave GW. */
@@ -2053,21 +2098,21 @@ static s32 mlxbf_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 					  read ? &data->byte : &command, read,
 					  pec);
 		dev_dbg(&adap->dev, "smbus %s byte, slave 0x%02x.\n",
-			str_read_write(read), addr);
+			read ? "read" : "write", addr);
 		break;
 
 	case I2C_SMBUS_BYTE_DATA:
 		mlxbf_i2c_smbus_data_byte_func(&request, &command, &data->byte,
 					       read, pec);
 		dev_dbg(&adap->dev, "smbus %s byte data at 0x%02x, slave 0x%02x.\n",
-			str_read_write(read), command, addr);
+			read ? "read" : "write", command, addr);
 		break;
 
 	case I2C_SMBUS_WORD_DATA:
 		mlxbf_i2c_smbus_data_word_func(&request, &command,
 					       (u8 *)&data->word, read, pec);
 		dev_dbg(&adap->dev, "smbus %s word data at 0x%02x, slave 0x%02x.\n",
-			str_read_write(read), command, addr);
+			read ? "read" : "write", command, addr);
 		break;
 
 	case I2C_SMBUS_I2C_BLOCK_DATA:
@@ -2075,7 +2120,7 @@ static s32 mlxbf_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 		mlxbf_i2c_smbus_i2c_block_func(&request, &command, data->block,
 					       &byte_cnt, read, pec);
 		dev_dbg(&adap->dev, "i2c %s block data, %d bytes at 0x%02x, slave 0x%02x.\n",
-			str_read_write(read), byte_cnt, command, addr);
+			read ? "read" : "write", byte_cnt, command, addr);
 		break;
 
 	case I2C_SMBUS_BLOCK_DATA:
@@ -2083,7 +2128,7 @@ static s32 mlxbf_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 		mlxbf_i2c_smbus_block_func(&request, &command, data->block,
 					   &byte_cnt, read, pec);
 		dev_dbg(&adap->dev, "smbus %s block data, %d bytes at 0x%02x, slave 0x%02x.\n",
-			str_read_write(read), byte_cnt, command, addr);
+			read ? "read" : "write", byte_cnt, command, addr);
 		break;
 
 	case I2C_FUNC_SMBUS_PROC_CALL:
@@ -2278,8 +2323,10 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 
 		ret = mlxbf_i2c_init_resource(pdev, &priv->smbus,
 					      MLXBF_I2C_SMBUS_RES);
-		if (ret < 0)
-			return dev_err_probe(dev, ret, "Cannot fetch smbus resource info");
+		if (ret < 0) {
+			dev_err(dev, "Cannot fetch smbus resource info");
+			return ret;
+		}
 
 		priv->timer->io = priv->smbus->io;
 		priv->mst->io = priv->smbus->io + MLXBF_I2C_MST_ADDR_OFFSET;
@@ -2287,29 +2334,39 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	} else {
 		ret = mlxbf_i2c_init_resource(pdev, &priv->timer,
 					      MLXBF_I2C_SMBUS_TIMER_RES);
-		if (ret < 0)
-			return dev_err_probe(dev, ret, "Cannot fetch timer resource info");
+		if (ret < 0) {
+			dev_err(dev, "Cannot fetch timer resource info");
+			return ret;
+		}
 
 		ret = mlxbf_i2c_init_resource(pdev, &priv->mst,
 					      MLXBF_I2C_SMBUS_MST_RES);
-		if (ret < 0)
-			return dev_err_probe(dev, ret, "Cannot fetch master resource info");
+		if (ret < 0) {
+			dev_err(dev, "Cannot fetch master resource info");
+			return ret;
+		}
 
 		ret = mlxbf_i2c_init_resource(pdev, &priv->slv,
 					      MLXBF_I2C_SMBUS_SLV_RES);
-		if (ret < 0)
-			return dev_err_probe(dev, ret, "Cannot fetch slave resource info");
+		if (ret < 0) {
+			dev_err(dev, "Cannot fetch slave resource info");
+			return ret;
+		}
 	}
 
 	ret = mlxbf_i2c_init_resource(pdev, &priv->mst_cause,
 				      MLXBF_I2C_MST_CAUSE_RES);
-	if (ret < 0)
-		return dev_err_probe(dev, ret, "Cannot fetch cause master resource info");
+	if (ret < 0) {
+		dev_err(dev, "Cannot fetch cause master resource info");
+		return ret;
+	}
 
 	ret = mlxbf_i2c_init_resource(pdev, &priv->slv_cause,
 				      MLXBF_I2C_SLV_CAUSE_RES);
-	if (ret < 0)
-		return dev_err_probe(dev, ret, "Cannot fetch cause slave resource info");
+	if (ret < 0) {
+		dev_err(dev, "Cannot fetch cause slave resource info");
+		return ret;
+	}
 
 	adap = &priv->adap;
 	adap->owner = THIS_MODULE;
@@ -2340,9 +2397,11 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	 * does not really hurt, then keep the code as is.
 	 */
 	ret = mlxbf_i2c_init_master(pdev, priv);
-	if (ret < 0)
-		return dev_err_probe(dev, ret, "failed to initialize smbus master %d",
-				     priv->bus);
+	if (ret < 0) {
+		dev_err(dev, "failed to initialize smbus master %d",
+			priv->bus);
+		return ret;
+	}
 
 	mlxbf_i2c_init_timings(pdev, priv);
 
@@ -2354,8 +2413,10 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	ret = devm_request_irq(dev, irq, mlxbf_i2c_irq,
 			       IRQF_SHARED | IRQF_PROBE_SHARED,
 			       dev_name(dev), priv);
-	if (ret < 0)
-		return dev_err_probe(dev, ret, "Cannot get irq %d\n", irq);
+	if (ret < 0) {
+		dev_err(dev, "Cannot get irq %d\n", irq);
+		return ret;
+	}
 
 	priv->irq = irq;
 
@@ -2372,7 +2433,7 @@ static int mlxbf_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void mlxbf_i2c_remove(struct platform_device *pdev)
+static int mlxbf_i2c_remove(struct platform_device *pdev)
 {
 	struct mlxbf_i2c_priv *priv = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -2413,6 +2474,8 @@ static void mlxbf_i2c_remove(struct platform_device *pdev)
 	devm_free_irq(dev, priv->irq, priv);
 
 	i2c_del_adapter(&priv->adap);
+
+	return 0;
 }
 
 static struct platform_driver mlxbf_i2c_driver = {

@@ -8,7 +8,7 @@
 
 #include <asm/mipsregs.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/inst.h>
 
@@ -218,7 +218,7 @@ __BUILD_MSA_CTL_REG(request, 5)
 __BUILD_MSA_CTL_REG(map, 6)
 __BUILD_MSA_CTL_REG(unmap, 7)
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #define MSA_IR		0
 #define MSA_CSR		1

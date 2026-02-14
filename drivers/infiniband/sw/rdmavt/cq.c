@@ -1,11 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
 /*
  * Copyright(c) 2016 - 2018 Intel Corporation.
  */
 
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
-#include <rdma/uverbs_ioctl.h>
 #include "cq.h"
 #include "vt.h"
 #include "trace.h"
@@ -150,16 +149,15 @@ static void send_complete(struct work_struct *work)
  * rvt_create_cq - create a completion queue
  * @ibcq: Allocated CQ
  * @attr: creation attributes
- * @attrs: uverbs bundle
+ * @udata: user data for libibverbs.so
  *
  * Called by ib_create_cq() in the generic verbs code.
  *
  * Return: 0 on success
  */
 int rvt_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		  struct uverbs_attr_bundle *attrs)
+		  struct ib_udata *udata)
 {
-	struct ib_udata *udata = &attrs->driver_udata;
 	struct ib_device *ibdev = ibcq->device;
 	struct rvt_dev_info *rdi = ib_to_rvt(ibdev);
 	struct rvt_cq *cq = ibcq_to_rvtcq(ibcq);
@@ -518,8 +516,7 @@ int rvt_poll_cq(struct ib_cq *ibcq, int num_entries, struct ib_wc *entry)
  */
 int rvt_driver_cq_init(void)
 {
-	comp_vector_wq = alloc_workqueue("%s",
-					 WQ_HIGHPRI | WQ_CPU_INTENSIVE | WQ_PERCPU,
+	comp_vector_wq = alloc_workqueue("%s", WQ_HIGHPRI | WQ_CPU_INTENSIVE,
 					 0, "rdmavt_cq");
 	if (!comp_vector_wq)
 		return -ENOMEM;

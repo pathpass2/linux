@@ -139,7 +139,7 @@ static int smu10_copy_table_from_smc(struct pp_hwmgr *hwmgr,
 			priv->smu_tables.entry[table_id].table_id,
 			NULL);
 
-	amdgpu_hdp_invalidate(adev, NULL);
+	amdgpu_asic_invalidate_hdp(adev, NULL);
 
 	memcpy(table, (uint8_t *)priv->smu_tables.entry[table_id].table,
 			priv->smu_tables.entry[table_id].size);
@@ -164,7 +164,7 @@ static int smu10_copy_table_to_smc(struct pp_hwmgr *hwmgr,
 	memcpy(priv->smu_tables.entry[table_id].table, table,
 			priv->smu_tables.entry[table_id].size);
 
-	amdgpu_hdp_flush(adev, NULL);
+	amdgpu_asic_flush_hdp(adev, NULL);
 
 	smum_send_msg_to_smc_with_parameter(hwmgr,
 			PPSMC_MSG_SetDriverDramAddrHigh,
@@ -185,13 +185,10 @@ static int smu10_copy_table_to_smc(struct pp_hwmgr *hwmgr,
 static int smu10_verify_smc_interface(struct pp_hwmgr *hwmgr)
 {
 	uint32_t smc_driver_if_version;
-	int ret = 0;
 
-	ret = smum_send_msg_to_smc(hwmgr,
+	smum_send_msg_to_smc(hwmgr,
 			PPSMC_MSG_GetDriverIfVersion,
 			&smc_driver_if_version);
-	if (ret)
-		return ret;
 
 	if ((smc_driver_if_version != SMU10_DRIVER_IF_VERSION) &&
 	    (smc_driver_if_version != SMU10_DRIVER_IF_VERSION + 1)) {

@@ -13,7 +13,7 @@ int meson_card_i2s_set_sysclk(struct snd_pcm_substream *substream,
 			      struct snd_pcm_hw_params *params,
 			      unsigned int mclk_fs)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_dai *codec_dai;
 	unsigned int mclk;
 	int ret, i;
@@ -30,7 +30,7 @@ int meson_card_i2s_set_sysclk(struct snd_pcm_substream *substream,
 			return ret;
 	}
 
-	ret = snd_soc_dai_set_sysclk(snd_soc_rtd_to_cpu(rtd, 0), 0, mclk,
+	ret = snd_soc_dai_set_sysclk(asoc_rtd_to_cpu(rtd, 0), 0, mclk,
 				     SND_SOC_CLOCK_OUT);
 	if (ret && ret != -ENOTSUPP)
 		return ret;
@@ -74,18 +74,23 @@ EXPORT_SYMBOL_GPL(meson_card_reallocate_links);
 
 int meson_card_parse_dai(struct snd_soc_card *card,
 			 struct device_node *node,
-			 struct snd_soc_dai_link_component *dlc)
+			 struct device_node **dai_of_node,
+			 const char **dai_name)
 {
+	struct of_phandle_args args;
 	int ret;
 
-	if (!dlc || !node)
+	if (!dai_name || !dai_of_node || !node)
 		return -EINVAL;
 
-	ret = snd_soc_of_get_dlc(node, NULL, dlc, 0);
+	ret = of_parse_phandle_with_args(node, "sound-dai",
+					 "#sound-dai-cells", 0, &args);
 	if (ret)
 		return dev_err_probe(card->dev, ret, "can't parse dai\n");
 
-	return ret;
+	*dai_of_node = args.np;
+
+	return snd_soc_get_dai_name(&args, dai_name);
 }
 EXPORT_SYMBOL_GPL(meson_card_parse_dai);
 
@@ -119,10 +124,10 @@ unsigned int meson_card_parse_daifmt(struct device_node *node,
 	/* If no master is provided, default to cpu master */
 	if (!bitclkmaster || bitclkmaster == cpu_node) {
 		daifmt |= (!framemaster || framemaster == cpu_node) ?
-			SND_SOC_DAIFMT_CBC_CFC : SND_SOC_DAIFMT_CBC_CFP;
+			SND_SOC_DAIFMT_CBS_CFS : SND_SOC_DAIFMT_CBS_CFM;
 	} else {
 		daifmt |= (!framemaster || framemaster == cpu_node) ?
-			SND_SOC_DAIFMT_CBP_CFC : SND_SOC_DAIFMT_CBP_CFP;
+			SND_SOC_DAIFMT_CBM_CFS : SND_SOC_DAIFMT_CBM_CFM;
 	}
 
 	of_node_put(bitclkmaster);
@@ -137,6 +142,7 @@ int meson_card_set_be_link(struct snd_soc_card *card,
 			   struct device_node *node)
 {
 	struct snd_soc_dai_link_component *codec;
+	struct device_node *np;
 	int ret, num_codecs;
 
 	num_codecs = of_get_child_count(node);
@@ -153,17 +159,20 @@ int meson_card_set_be_link(struct snd_soc_card *card,
 	link->codecs = codec;
 	link->num_codecs = num_codecs;
 
-	for_each_child_of_node_scoped(node, np) {
-		ret = meson_card_parse_dai(card, np, codec);
-		if (ret)
+	for_each_child_of_node(node, np) {
+		ret = meson_card_parse_dai(card, np, &codec->of_node,
+					   &codec->dai_name);
+		if (ret) {
+			of_node_put(np);
 			return ret;
+		}
 
 		codec++;
 	}
 
 	ret = meson_card_set_link_name(card, link, node, "be");
 	if (ret)
-		dev_err(card->dev, "error setting %pOFn link name\n", node);
+		dev_err(card->dev, "error setting %pOFn link name\n", np);
 
 	return ret;
 }
@@ -174,18 +183,26 @@ int meson_card_set_fe_link(struct snd_soc_card *card,
 			   struct device_node *node,
 			   bool is_playback)
 {
-	link->codecs = &snd_soc_dummy_dlc;
+	struct snd_soc_dai_link_component *codec;
+
+	codec = devm_kzalloc(card->dev, sizeof(*codec), GFP_KERNEL);
+	if (!codec)
+		return -ENOMEM;
+
+	link->codecs = codec;
 	link->num_codecs = 1;
 
 	link->dynamic = 1;
 	link->dpcm_merged_format = 1;
 	link->dpcm_merged_chan = 1;
 	link->dpcm_merged_rate = 1;
+	link->codecs->dai_name = "snd-soc-dummy-dai";
+	link->codecs->name = "snd-soc-dummy";
 
 	if (is_playback)
-		link->playback_only = 1;
+		link->dpcm_playback = 1;
 	else
-		link->capture_only = 1;
+		link->dpcm_capture = 1;
 
 	return meson_card_set_link_name(card, link, node, "fe");
 }
@@ -195,6 +212,7 @@ static int meson_card_add_links(struct snd_soc_card *card)
 {
 	struct meson_card *priv = snd_soc_card_get_drvdata(card);
 	struct device_node *node = card->dev->of_node;
+	struct device_node *np;
 	int num, i, ret;
 
 	num = of_get_child_count(node);
@@ -208,10 +226,12 @@ static int meson_card_add_links(struct snd_soc_card *card)
 		return ret;
 
 	i = 0;
-	for_each_child_of_node_scoped(node, np) {
+	for_each_child_of_node(node, np) {
 		ret = priv->match_data->add_link(card, np, &i);
-		if (ret)
+		if (ret) {
+			of_node_put(np);
 			return ret;
+		}
 
 		i++;
 	}
@@ -225,7 +245,7 @@ static int meson_card_parse_of_optional(struct snd_soc_card *card,
 						    const char *p))
 {
 	/* If property is not provided, don't fail ... */
-	if (!of_property_present(card->dev->of_node, propname))
+	if (!of_property_read_bool(card->dev->of_node, propname))
 		return 0;
 
 	/* ... but do fail if it is provided and the parsing fails */
@@ -321,11 +341,13 @@ out_err:
 }
 EXPORT_SYMBOL_GPL(meson_card_probe);
 
-void meson_card_remove(struct platform_device *pdev)
+int meson_card_remove(struct platform_device *pdev)
 {
 	struct meson_card *priv = platform_get_drvdata(pdev);
 
 	meson_card_clean_references(priv);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(meson_card_remove);
 

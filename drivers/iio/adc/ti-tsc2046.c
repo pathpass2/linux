@@ -6,14 +6,13 @@
  */
 
 #include <linux/bitfield.h>
-#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
 #include <linux/units.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <linux/iio/buffer.h>
 #include <linux/iio/trigger_consumer.h>
@@ -142,7 +141,7 @@ enum tsc2046_state {
 struct tsc2046_adc_priv {
 	struct spi_device *spi;
 	const struct tsc2046_adc_dcfg *dcfg;
-	bool internal_vref;
+	struct regulator *vref_reg;
 
 	struct iio_trigger *trig;
 	struct hrtimer trig_timer;
@@ -157,7 +156,7 @@ struct tsc2046_adc_priv {
 		/* Scan data for each channel */
 		u16 data[TI_TSC2046_MAX_CHAN];
 		/* Timestamp */
-		aligned_s64 ts;
+		s64 ts __aligned(8);
 	} scan_buf;
 
 	/*
@@ -258,7 +257,7 @@ static u8 tsc2046_adc_get_cmd(struct tsc2046_adc_priv *priv, int ch_idx,
 	case TI_TSC2046_ADDR_VBAT:
 	case TI_TSC2046_ADDR_TEMP0:
 		pd |= TI_TSC2046_SER;
-		if (priv->internal_vref)
+		if (!priv->vref_reg)
 			pd |= TI_TSC2046_PD1_VREF_ON;
 	}
 
@@ -274,9 +273,10 @@ static int tsc2046_adc_read_one(struct tsc2046_adc_priv *priv, int ch_idx,
 				u32 *effective_speed_hz)
 {
 	struct tsc2046_adc_ch_cfg *ch = &priv->ch_cfg[ch_idx];
+	struct tsc2046_adc_atom *rx_buf, *tx_buf;
 	unsigned int val, val_normalized = 0;
 	int ret, i, count_skip = 0, max_count;
-	struct spi_transfer xfer = { };
+	struct spi_transfer xfer;
 	struct spi_message msg;
 	u8 cmd;
 
@@ -287,20 +287,18 @@ static int tsc2046_adc_read_one(struct tsc2046_adc_priv *priv, int ch_idx,
 		max_count = 1;
 	}
 
-	if (sizeof(struct tsc2046_adc_atom) * max_count > PAGE_SIZE)
+	if (sizeof(*tx_buf) * max_count > PAGE_SIZE)
 		return -ENOSPC;
 
-	struct tsc2046_adc_atom *tx_buf __free(kfree) = kcalloc(max_count,
-								sizeof(*tx_buf),
-								GFP_KERNEL);
+	tx_buf = kcalloc(max_count, sizeof(*tx_buf), GFP_KERNEL);
 	if (!tx_buf)
 		return -ENOMEM;
 
-	struct tsc2046_adc_atom *rx_buf __free(kfree) = kcalloc(max_count,
-								sizeof(*rx_buf),
-								GFP_KERNEL);
-	if (!rx_buf)
-		return -ENOMEM;
+	rx_buf = kcalloc(max_count, sizeof(*rx_buf), GFP_KERNEL);
+	if (!rx_buf) {
+		ret = -ENOMEM;
+		goto free_tx;
+	}
 
 	/*
 	 * Do not enable automatic power down on working samples. Otherwise the
@@ -314,6 +312,7 @@ static int tsc2046_adc_read_one(struct tsc2046_adc_priv *priv, int ch_idx,
 	/* automatically power down on last sample */
 	tx_buf[i].cmd = tsc2046_adc_get_cmd(priv, ch_idx, false);
 
+	memset(&xfer, 0, sizeof(xfer));
 	xfer.tx_buf = tx_buf;
 	xfer.rx_buf = rx_buf;
 	xfer.len = sizeof(*tx_buf) * max_count;
@@ -327,7 +326,7 @@ static int tsc2046_adc_read_one(struct tsc2046_adc_priv *priv, int ch_idx,
 	if (ret) {
 		dev_err_ratelimited(&priv->spi->dev, "SPI transfer failed %pe\n",
 				    ERR_PTR(ret));
-		return ret;
+		goto free_bufs;
 	}
 
 	if (effective_speed_hz)
@@ -338,7 +337,14 @@ static int tsc2046_adc_read_one(struct tsc2046_adc_priv *priv, int ch_idx,
 		val_normalized += val;
 	}
 
-	return DIV_ROUND_UP(val_normalized, max_count - count_skip);
+	ret = DIV_ROUND_UP(val_normalized, max_count - count_skip);
+
+free_bufs:
+	kfree(rx_buf);
+free_tx:
+	kfree(tx_buf);
+
+	return ret;
 }
 
 static size_t tsc2046_adc_group_set_layout(struct tsc2046_adc_priv *priv,
@@ -417,9 +423,8 @@ static int tsc2046_adc_scan(struct iio_dev *indio_dev)
 	for (group = 0; group < priv->groups; group++)
 		priv->scan_buf.data[group] = tsc2046_adc_get_val(priv, group);
 
-	ret = iio_push_to_buffers_with_ts(indio_dev, &priv->scan_buf,
-					  sizeof(priv->scan_buf),
-					  iio_get_time_ns(indio_dev));
+	ret = iio_push_to_buffers_with_timestamp(indio_dev, &priv->scan_buf,
+						 iio_get_time_ns(indio_dev));
 	/* If the consumer is kfifo, we may get a EBUSY here - ignore it. */
 	if (ret < 0 && ret != -EBUSY) {
 		dev_err_ratelimited(dev, "Failed to push scan buffer %pe\n",
@@ -535,7 +540,8 @@ static enum hrtimer_restart tsc2046_adc_timer(struct hrtimer *hrtimer)
 		if (priv->poll_cnt < TI_TSC2046_POLL_CNT) {
 			priv->poll_cnt++;
 			hrtimer_start(&priv->trig_timer,
-				      us_to_ktime(priv->scan_interval_us),
+				      ns_to_ktime(priv->scan_interval_us *
+						  NSEC_PER_USEC),
 				      HRTIMER_MODE_REL_SOFT);
 
 			if (priv->poll_cnt >= TI_TSC2046_MIN_POLL_CNT) {
@@ -604,7 +610,8 @@ static void tsc2046_adc_reenable_trigger(struct iio_trigger *trig)
 	 * many samples. Reduce the sample rate for default (touchscreen) use
 	 * case.
 	 */
-	tim = us_to_ktime(priv->scan_interval_us - priv->time_per_scan_us);
+	tim = ns_to_ktime((priv->scan_interval_us - priv->time_per_scan_us) *
+			  NSEC_PER_USEC);
 	hrtimer_start(&priv->trig_timer, tim, HRTIMER_MODE_REL_SOFT);
 }
 
@@ -739,6 +746,49 @@ static void tsc2046_adc_parse_fwnode(struct tsc2046_adc_priv *priv)
 	}
 }
 
+static void tsc2046_adc_regulator_disable(void *data)
+{
+	struct tsc2046_adc_priv *priv = data;
+
+	regulator_disable(priv->vref_reg);
+}
+
+static int tsc2046_adc_configure_regulator(struct tsc2046_adc_priv *priv)
+{
+	struct device *dev = &priv->spi->dev;
+	int ret;
+
+	priv->vref_reg = devm_regulator_get_optional(dev, "vref");
+	if (IS_ERR(priv->vref_reg)) {
+		/* If regulator exists but can't be get, return an error */
+		if (PTR_ERR(priv->vref_reg) != -ENODEV)
+			return PTR_ERR(priv->vref_reg);
+		priv->vref_reg = NULL;
+	}
+	if (!priv->vref_reg) {
+		/* Use internal reference */
+		priv->vref_mv = TI_TSC2046_INT_VREF;
+		return 0;
+	}
+
+	ret = regulator_enable(priv->vref_reg);
+	if (ret)
+		return ret;
+
+	ret = devm_add_action_or_reset(dev, tsc2046_adc_regulator_disable,
+				       priv);
+	if (ret)
+		return ret;
+
+	ret = regulator_get_voltage(priv->vref_reg);
+	if (ret < 0)
+		return ret;
+
+	priv->vref_mv = ret / MILLI;
+
+	return 0;
+}
+
 static int tsc2046_adc_probe(struct spi_device *spi)
 {
 	const struct tsc2046_adc_dcfg *dcfg;
@@ -754,10 +804,16 @@ static int tsc2046_adc_probe(struct spi_device *spi)
 		return -EINVAL;
 	}
 
-	dcfg = spi_get_device_match_data(spi);
+	dcfg = device_get_match_data(dev);
+	if (!dcfg) {
+		const struct spi_device_id *id = spi_get_device_id(spi);
+
+		dcfg = (const struct tsc2046_adc_dcfg *)id->driver_data;
+	}
 	if (!dcfg)
 		return -EINVAL;
 
+	spi->bits_per_word = 8;
 	spi->mode &= ~SPI_MODE_X_MASK;
 	spi->mode |= SPI_MODE_0;
 	ret = spi_setup(spi);
@@ -779,12 +835,9 @@ static int tsc2046_adc_probe(struct spi_device *spi)
 	indio_dev->num_channels = dcfg->num_channels;
 	indio_dev->info = &tsc2046_adc_info;
 
-	ret = devm_regulator_get_enable_read_voltage(dev, "vref");
-	if (ret < 0 && ret != -ENODEV)
+	ret = tsc2046_adc_configure_regulator(priv);
+	if (ret)
 		return ret;
-
-	priv->internal_vref = ret == -ENODEV;
-	priv->vref_mv = priv->internal_vref ? TI_TSC2046_INT_VREF : ret / MILLI;
 
 	tsc2046_adc_parse_fwnode(priv);
 
@@ -809,7 +862,9 @@ static int tsc2046_adc_probe(struct spi_device *spi)
 
 	spin_lock_init(&priv->state_lock);
 	priv->state = TSC2046_STATE_SHUTDOWN;
-	hrtimer_setup(&priv->trig_timer, tsc2046_adc_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_SOFT);
+	hrtimer_init(&priv->trig_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL_SOFT);
+	priv->trig_timer.function = tsc2046_adc_timer;
 
 	ret = devm_iio_trigger_register(dev, trig);
 	if (ret) {

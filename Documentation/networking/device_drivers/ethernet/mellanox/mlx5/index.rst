@@ -13,6 +13,14 @@ Contents:
    :maxdepth: 2
 
    kconfig
+   devlink
    switchdev
    tracepoints
    counters
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

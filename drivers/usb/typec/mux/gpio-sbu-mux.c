@@ -3,11 +3,14 @@
  * Copyright (C) 2022 Linaro Ltd.
  */
 
-#include <linux/device.h>
+#include <linux/bits.h>
+#include <linux/i2c.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/gpio/consumer.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/usb/typec_dp.h>
 #include <linux/usb/typec_mux.h>
 
@@ -48,10 +51,10 @@ static int gpio_sbu_switch_set(struct typec_switch_dev *sw,
 	}
 
 	if (enabled != sbu_mux->enabled)
-		gpiod_set_value_cansleep(sbu_mux->enable_gpio, enabled);
+		gpiod_set_value(sbu_mux->enable_gpio, enabled);
 
 	if (swapped != sbu_mux->swapped)
-		gpiod_set_value_cansleep(sbu_mux->select_gpio, swapped);
+		gpiod_set_value(sbu_mux->select_gpio, swapped);
 
 	sbu_mux->enabled = enabled;
 	sbu_mux->swapped = swapped;
@@ -65,9 +68,6 @@ static int gpio_sbu_mux_set(struct typec_mux_dev *mux,
 			    struct typec_mux_state *state)
 {
 	struct gpio_sbu_mux *sbu_mux = typec_mux_get_drvdata(mux);
-
-	if (!sbu_mux->enable_gpio)
-		return -EOPNOTSUPP;
 
 	mutex_lock(&sbu_mux->lock);
 
@@ -85,7 +85,7 @@ static int gpio_sbu_mux_set(struct typec_mux_dev *mux,
 		break;
 	}
 
-	gpiod_set_value_cansleep(sbu_mux->enable_gpio, sbu_mux->enabled);
+	gpiod_set_value(sbu_mux->enable_gpio, sbu_mux->enabled);
 
 	mutex_unlock(&sbu_mux->lock);
 
@@ -105,8 +105,7 @@ static int gpio_sbu_mux_probe(struct platform_device *pdev)
 
 	mutex_init(&sbu_mux->lock);
 
-	sbu_mux->enable_gpio = devm_gpiod_get_optional(dev, "enable",
-						       GPIOD_OUT_LOW);
+	sbu_mux->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
 	if (IS_ERR(sbu_mux->enable_gpio))
 		return dev_err_probe(dev, PTR_ERR(sbu_mux->enable_gpio),
 				     "unable to acquire enable gpio\n");
@@ -141,14 +140,16 @@ static int gpio_sbu_mux_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void gpio_sbu_mux_remove(struct platform_device *pdev)
+static int gpio_sbu_mux_remove(struct platform_device *pdev)
 {
 	struct gpio_sbu_mux *sbu_mux = platform_get_drvdata(pdev);
 
-	gpiod_set_value_cansleep(sbu_mux->enable_gpio, 0);
+	gpiod_set_value(sbu_mux->enable_gpio, 0);
 
 	typec_mux_unregister(sbu_mux->mux);
 	typec_switch_unregister(sbu_mux->sw);
+
+	return 0;
 }
 
 static const struct of_device_id gpio_sbu_mux_match[] = {

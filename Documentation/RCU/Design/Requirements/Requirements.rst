@@ -1955,12 +1955,12 @@ if offline CPUs block an RCU grace period for too long.
 
 An offline CPU's quiescent state will be reported either:
 
-1.  As the CPU goes offline using RCU's hotplug notifier (rcutree_report_cpu_dead()).
+1.  As the CPU goes offline using RCU's hotplug notifier (rcu_report_dead()).
 2.  When grace period initialization (rcu_gp_init()) detects a
     race either with CPU offlining or with a task unblocking on a leaf
     ``rcu_node`` structure whose CPUs are all offline.
 
-The CPU-online path (rcutree_report_cpu_starting()) should never need to report
+The CPU-online path (rcu_cpu_starting()) should never need to report
 a quiescent state for an offline CPU.  However, as a debugging measure,
 it does emit a warning if a quiescent state was not already reported
 for that CPU.
@@ -1969,130 +1969,6 @@ During the checking/modification of RCU's hotplug bookkeeping, the
 corresponding CPU's leaf node lock is held. This avoids race conditions
 between RCU's hotplug notifier hooks, the grace period initialization
 code, and the FQS loop, all of which refer to or modify this bookkeeping.
-
-Note that grace period initialization (rcu_gp_init()) must carefully sequence
-CPU hotplug scanning with grace period state changes. For example, the
-following race could occur in rcu_gp_init() if rcu_seq_start() were to happen
-after the CPU hotplug scanning::
-
-   CPU0 (rcu_gp_init)                   CPU1                          CPU2
-   ---------------------                ----                          ----
-   // Hotplug scan first (WRONG ORDER)
-   rcu_for_each_leaf_node(rnp) {
-       rnp->qsmaskinit = rnp->qsmaskinitnext;
-   }
-                                        rcutree_report_cpu_starting()
-                                            rnp->qsmaskinitnext |= mask;
-                                        rcu_read_lock()
-                                        r0 = *X;
-                                                                      r1 = *X;
-                                                                      X = NULL;
-                                                                      cookie = get_state_synchronize_rcu();
-                                                                      // cookie = 8 (future GP)
-   rcu_seq_start(&rcu_state.gp_seq);
-   // gp_seq = 5
-
-   // CPU1 now invisible to this GP!
-   rcu_for_each_node_breadth_first() {
-       rnp->qsmask = rnp->qsmaskinit;
-       // CPU1 not included!
-   }
-
-   // GP completes without CPU1
-   rcu_seq_end(&rcu_state.gp_seq);
-   // gp_seq = 8
-                                                                      poll_state_synchronize_rcu(cookie);
-                                                                      // Returns true!
-                                                                      kfree(r1);
-                                        r2 = *r0; // USE-AFTER-FREE!
-
-By incrementing ``gp_seq`` first, CPU1's RCU read-side critical section
-is guaranteed to not be missed by CPU2.
-
-Concurrent Quiescent State Reporting for Offline CPUs
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-RCU must ensure that CPUs going offline report quiescent states to avoid
-blocking grace periods. This requires careful synchronization to handle
-race conditions
-
-Race condition causing Offline CPU to hang GP
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-A race between CPU offlining and new GP initialization (gp_init()) may occur
-because rcu_report_qs_rnp() in rcutree_report_cpu_dead() must temporarily
-release the ``rcu_node`` lock to wake the RCU grace-period kthread::
-
-   CPU1 (going offline)                 CPU0 (GP kthread)
-   --------------------                 -----------------
-   rcutree_report_cpu_dead()
-     rcu_report_qs_rnp()
-       // Must release rnp->lock to wake GP kthread
-       raw_spin_unlock_irqrestore_rcu_node()
-                                        // Wakes up and starts new GP
-                                        rcu_gp_init()
-                                          // First loop:
-                                          copies qsmaskinitnext->qsmaskinit
-                                          // CPU1 still in qsmaskinitnext!
-
-                                          // Second loop:
-                                          rnp->qsmask = rnp->qsmaskinit
-                                          mask = rnp->qsmask & ~rnp->qsmaskinitnext
-                                          // mask is 0! CPU1 still in both masks
-       // Reacquire lock (but too late)
-     rnp->qsmaskinitnext &= ~mask       // Finally clears bit
-
-Without ``ofl_lock``, the new grace period includes the offline CPU and waits
-forever for its quiescent state causing a GP hang.
-
-A solution with ofl_lock
-^^^^^^^^^^^^^^^^^^^^^^^^
-
-The ``ofl_lock`` (offline lock) prevents rcu_gp_init() from running during
-the vulnerable window when rcu_report_qs_rnp() has released ``rnp->lock``::
-
-   CPU0 (rcu_gp_init)                   CPU1 (rcutree_report_cpu_dead)
-   ------------------                   ------------------------------
-   rcu_for_each_leaf_node(rnp) {
-       arch_spin_lock(&ofl_lock) -----> arch_spin_lock(&ofl_lock) [BLOCKED]
-
-       // Safe: CPU1 can't interfere
-       rnp->qsmaskinit = rnp->qsmaskinitnext
-
-       arch_spin_unlock(&ofl_lock) ---> // Now CPU1 can proceed
-   }                                    // But snapshot already taken
-
-Another race causing GP hangs in rcu_gpu_init(): Reporting QS for Now-offline CPUs
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-After the first loop takes an atomic snapshot of online CPUs, as shown above,
-the second loop in rcu_gp_init() detects CPUs that went offline between
-releasing ``ofl_lock`` and acquiring the per-node ``rnp->lock``.
-This detection is crucial because:
-
-1. The CPU might have gone offline after the snapshot but before the second loop
-2. The offline CPU cannot report its own QS if it's already dead
-3. Without this detection, the grace period would wait forever for CPUs that
-   are now offline.
-
-The second loop performs this detection safely::
-
-   rcu_for_each_node_breadth_first(rnp) {
-       raw_spin_lock_irqsave_rcu_node(rnp, flags);
-       rnp->qsmask = rnp->qsmaskinit;  // Apply the snapshot
-
-       // Detect CPUs offline after snapshot
-       mask = rnp->qsmask & ~rnp->qsmaskinitnext;
-
-       if (mask && rcu_is_leaf_node(rnp))
-           rcu_report_qs_rnp(mask, ...)  // Report QS for offline CPUs
-   }
-
-This approach ensures atomicity: quiescent state reporting for offline CPUs
-happens either in rcu_gp_init() (second loop) or in rcutree_report_cpu_dead(),
-never both and never neither. The ``rnp->lock`` held throughout the sequence
-prevents races - rcutree_report_cpu_dead() also acquires this lock when
-clearing ``qsmaskinitnext``, ensuring mutual exclusion.
 
 Scheduler and RCU
 ~~~~~~~~~~~~~~~~~
@@ -2195,7 +2071,41 @@ call.
 
 Because RCU avoids interrupting idle CPUs, it is illegal to execute an
 RCU read-side critical section on an idle CPU. (Kernels built with
-``CONFIG_PROVE_RCU=y`` will splat if you try it.)
+``CONFIG_PROVE_RCU=y`` will splat if you try it.) The RCU_NONIDLE()
+macro and ``_rcuidle`` event tracing is provided to work around this
+restriction. In addition, rcu_is_watching() may be used to test
+whether or not it is currently legal to run RCU read-side critical
+sections on this CPU. I learned of the need for diagnostics on the one
+hand and RCU_NONIDLE() on the other while inspecting idle-loop code.
+Steven Rostedt supplied ``_rcuidle`` event tracing, which is used quite
+heavily in the idle loop. However, there are some restrictions on the
+code placed within RCU_NONIDLE():
+
+#. Blocking is prohibited. In practice, this is not a serious
+   restriction given that idle tasks are prohibited from blocking to
+   begin with.
+#. Although nesting RCU_NONIDLE() is permitted, they cannot nest
+   indefinitely deeply. However, given that they can be nested on the
+   order of a million deep, even on 32-bit systems, this should not be a
+   serious restriction. This nesting limit would probably be reached
+   long after the compiler OOMed or the stack overflowed.
+#. Any code path that enters RCU_NONIDLE() must sequence out of that
+   same RCU_NONIDLE(). For example, the following is grossly
+   illegal:
+
+      ::
+
+	  1     RCU_NONIDLE({
+	  2       do_something();
+	  3       goto bad_idea;  /* BUG!!! */
+	  4       do_something_else();});
+	  5   bad_idea:
+
+
+   It is just as illegal to transfer control into the middle of
+   RCU_NONIDLE()'s argument. Yes, in theory, you could transfer in
+   as long as you also transferred out, but in practice you could also
+   expect to get sharply worded review comments.
 
 It is similarly socially unacceptable to interrupt an ``nohz_full`` CPU
 running in userspace. RCU must therefore track ``nohz_full`` userspace
@@ -2481,7 +2391,6 @@ section.
 #. `Sched Flavor (Historical)`_
 #. `Sleepable RCU`_
 #. `Tasks RCU`_
-#. `Tasks Trace RCU`_
 
 Bottom-Half Flavor (Historical)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2637,16 +2546,15 @@ synchronize_srcu() for some other domain ``ss1``, and if an
 that was held across as ``ss``-domain synchronize_srcu(), deadlock
 would again be possible. Such a deadlock cycle could extend across an
 arbitrarily large number of different SRCU domains. Again, with great
-power comes great responsibility, though lockdep is now able to detect
-this sort of deadlock.
+power comes great responsibility.
 
-Unlike the other RCU flavors, SRCU read-side critical sections can run on
-idle and even offline CPUs, with the exception of srcu_read_lock_fast()
-and friends.  This ability requires that srcu_read_lock() and
-srcu_read_unlock() contain memory barriers, which means that SRCU
-readers will run a bit slower than would RCU readers. It also motivates
-the smp_mb__after_srcu_read_unlock() API, which, in combination with
-srcu_read_unlock(), guarantees a full memory barrier.
+Unlike the other RCU flavors, SRCU read-side critical sections can run
+on idle and even offline CPUs. This ability requires that
+srcu_read_lock() and srcu_read_unlock() contain memory barriers,
+which means that SRCU readers will run a bit slower than would RCU
+readers. It also motivates the smp_mb__after_srcu_read_unlock() API,
+which, in combination with srcu_read_unlock(), guarantees a full
+memory barrier.
 
 Also unlike other RCU flavors, synchronize_srcu() may **not** be
 invoked from CPU-hotplug notifiers, due to the fact that SRCU grace
@@ -2682,15 +2590,15 @@ run some tests first. SRCU just might need a few adjustment to deal with
 that sort of load. Of course, your mileage may vary based on the speed
 of your CPUs and the size of your memory.
 
-The `SRCU API
-<https://lwn.net/Articles/609973/#RCU%20Per-Flavor%20API%20Table>`__
+The `SRCU
+API <https://lwn.net/Articles/609973/#RCU%20Per-Flavor%20API%20Table>`__
 includes srcu_read_lock(), srcu_read_unlock(),
-srcu_dereference(), srcu_dereference_check(), synchronize_srcu(),
-synchronize_srcu_expedited(), call_srcu(), srcu_barrier(),
-and srcu_read_lock_held(). It also includes DEFINE_SRCU(),
-DEFINE_STATIC_SRCU(), DEFINE_SRCU_FAST(), DEFINE_STATIC_SRCU_FAST(),
-init_srcu_struct(), and init_srcu_struct_fast() APIs for defining and
-initializing ``srcu_struct`` structures.
+srcu_dereference(), srcu_dereference_check(),
+synchronize_srcu(), synchronize_srcu_expedited(),
+call_srcu(), srcu_barrier(), and srcu_read_lock_held(). It
+also includes DEFINE_SRCU(), DEFINE_STATIC_SRCU(), and
+init_srcu_struct() APIs for defining and initializing
+``srcu_struct`` structures.
 
 More recently, the SRCU API has added polling interfaces:
 
@@ -2736,16 +2644,6 @@ critical sections that are delimited by voluntary context switches, that
 is, calls to schedule(), cond_resched(), and
 synchronize_rcu_tasks(). In addition, transitions to and from
 userspace execution also delimit tasks-RCU read-side critical sections.
-Idle tasks are ignored by Tasks RCU, and Tasks Rude RCU may be used to
-interact with them.
-
-Note well that involuntary context switches are *not* Tasks-RCU quiescent
-states.  After all, in preemptible kernels, a task executing code in a
-trampoline might be preempted.  In this case, the Tasks-RCU grace period
-clearly cannot end until that task resumes and its execution leaves that
-trampoline.  This means, among other things, that cond_resched() does
-not provide a Tasks RCU quiescent state.  (Instead, use rcu_softirq_qs()
-from softirq or rcu_tasks_classic_qs() otherwise.)
 
 The tasks-RCU API is quite compact, consisting only of
 call_rcu_tasks(), synchronize_rcu_tasks(), and
@@ -2768,24 +2666,20 @@ moniker.  And this operation is considered to be quite rude by real-time
 workloads that don't want their ``nohz_full`` CPUs receiving IPIs and
 by battery-powered systems that don't want their idle CPUs to be awakened.
 
-Once kernel entry/exit and deep-idle functions have been properly tagged
-``noinstr``, Tasks RCU can start paying attention to idle tasks (except
-those that are idle from RCU's perspective) and then Tasks Rude RCU can
-be removed from the kernel.
-
 The tasks-rude-RCU API is also reader-marking-free and thus quite compact,
-consisting solely of synchronize_rcu_tasks_rude().
+consisting of call_rcu_tasks_rude(), synchronize_rcu_tasks_rude(),
+and rcu_barrier_tasks_rude().
 
 Tasks Trace RCU
 ~~~~~~~~~~~~~~~
 
 Some forms of tracing need to sleep in readers, but cannot tolerate
-SRCU's read-side overhead, which includes a full memory barrier in
-both srcu_read_lock() and srcu_read_unlock().  This need is handled by
-a Tasks Trace RCU API implemented as thin wrappers around SRCU-fast,
-which avoids the read-side memory barriers, at least for architectures
-that apply noinstr to kernel entry/exit code (or that build with
-``CONFIG_TASKS_TRACE_RCU_NO_MB=y``.
+SRCU's read-side overhead, which includes a full memory barrier in both
+srcu_read_lock() and srcu_read_unlock().  This need is handled by a
+Tasks Trace RCU that uses scheduler locking and IPIs to synchronize with
+readers.  Real-time systems that cannot tolerate IPIs may build their
+kernels with ``CONFIG_TASKS_TRACE_RCU_READ_MB=y``, which avoids the IPIs at
+the expense of adding full memory barriers to the read-side primitives.
 
 The tasks-trace-RCU API is also reasonably compact,
 consisting of rcu_read_lock_trace(), rcu_read_unlock_trace(),

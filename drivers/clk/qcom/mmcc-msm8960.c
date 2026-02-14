@@ -8,11 +8,13 @@
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
+#include <linux/reset-controller.h>
 
 #include <dt-bindings/clock/qcom,mmcc-msm8960.h>
 #include <dt-bindings/reset/qcom,mmcc-msm8960.h>
@@ -35,7 +37,6 @@ enum {
 	P_DSI2_PLL_DSICLK,
 	P_DSI1_PLL_BYTECLK,
 	P_DSI2_PLL_BYTECLK,
-	P_LVDS_PLL,
 };
 
 #define F_MN(f, s, _m, _n) { .freq = f, .src = s, .m = _m, .n = _n }
@@ -142,20 +143,6 @@ static const struct clk_parent_data mmcc_pxo_dsi2_dsi1[] = {
 	{ .fw_name = "dsi1pll", .name = "dsi1pll" },
 };
 
-static const struct parent_map mmcc_pxo_dsi2_dsi1_lvds_map[] = {
-	{ P_PXO, 0 },
-	{ P_DSI2_PLL_DSICLK, 1 },
-	{ P_LVDS_PLL, 2 },
-	{ P_DSI1_PLL_DSICLK, 3 },
-};
-
-static const struct clk_parent_data mmcc_pxo_dsi2_dsi1_lvds[] = {
-	{ .fw_name = "pxo", .name = "pxo_board" },
-	{ .fw_name = "dsi2pll", .name = "dsi2pll" },
-	{ .fw_name = "lvdspll", .name = "mpd4_lvds_pll" },
-	{ .fw_name = "dsi1pll", .name = "dsi1pll" },
-};
-
 static const struct parent_map mmcc_pxo_dsi1_dsi2_byte_map[] = {
 	{ P_PXO, 0 },
 	{ P_DSI1_PLL_BYTECLK, 1 },
@@ -168,7 +155,7 @@ static const struct clk_parent_data mmcc_pxo_dsi1_dsi2_byte[] = {
 	{ .fw_name = "dsi2pllbyte", .name = "dsi2pllbyte" },
 };
 
-static const struct freq_tbl clk_tbl_cam[] = {
+static struct freq_tbl clk_tbl_cam[] = {
 	{   6000000, P_PLL8, 4, 1, 16 },
 	{   8000000, P_PLL8, 4, 1, 12 },
 	{  12000000, P_PLL8, 4, 1,  8 },
@@ -336,7 +323,7 @@ static struct clk_branch camclk2_clk = {
 
 };
 
-static const struct freq_tbl clk_tbl_csi[] = {
+static struct freq_tbl clk_tbl_csi[] = {
 	{  27000000, P_PXO,  1, 0, 0 },
 	{  85330000, P_PLL8, 1, 2, 9 },
 	{ 177780000, P_PLL2, 1, 2, 9 },
@@ -728,7 +715,7 @@ static struct clk_pix_rdi csi_rdi2_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_csiphytimer[] = {
+static struct freq_tbl clk_tbl_csiphytimer[] = {
 	{  85330000, P_PLL8, 1, 2, 9 },
 	{ 177780000, P_PLL2, 1, 2, 9 },
 	{ }
@@ -821,7 +808,7 @@ static struct clk_branch csiphy2_timer_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_gfx2d[] = {
+static struct freq_tbl clk_tbl_gfx2d[] = {
 	F_MN( 27000000, P_PXO,  1,  0),
 	F_MN( 48000000, P_PLL8, 1,  8),
 	F_MN( 54857000, P_PLL8, 1,  7),
@@ -961,7 +948,7 @@ static struct clk_branch gfx2d1_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_gfx3d[] = {
+static struct freq_tbl clk_tbl_gfx3d[] = {
 	F_MN( 27000000, P_PXO,  1,  0),
 	F_MN( 48000000, P_PLL8, 1,  8),
 	F_MN( 54857000, P_PLL8, 1,  7),
@@ -981,7 +968,7 @@ static const struct freq_tbl clk_tbl_gfx3d[] = {
 	{ }
 };
 
-static const struct freq_tbl clk_tbl_gfx3d_8064[] = {
+static struct freq_tbl clk_tbl_gfx3d_8064[] = {
 	F_MN( 27000000, P_PXO,   0,  0),
 	F_MN( 48000000, P_PLL8,  1,  8),
 	F_MN( 54857000, P_PLL8,  1,  7),
@@ -1071,7 +1058,7 @@ static struct clk_branch gfx3d_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_vcap[] = {
+static struct freq_tbl clk_tbl_vcap[] = {
 	F_MN( 27000000, P_PXO,  0,  0),
 	F_MN( 54860000, P_PLL8, 1,  7),
 	F_MN( 64000000, P_PLL8, 1,  6),
@@ -1162,7 +1149,7 @@ static struct clk_branch vcap_npl_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_ijpeg[] = {
+static struct freq_tbl clk_tbl_ijpeg[] = {
 	{  27000000, P_PXO,  1, 0,  0 },
 	{  36570000, P_PLL8, 1, 2, 21 },
 	{  54860000, P_PLL8, 7, 0,  0 },
@@ -1227,7 +1214,7 @@ static struct clk_branch ijpeg_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_jpegd[] = {
+static struct freq_tbl clk_tbl_jpegd[] = {
 	{  64000000, P_PLL8, 6 },
 	{  76800000, P_PLL8, 5 },
 	{  96000000, P_PLL8, 4 },
@@ -1277,7 +1264,7 @@ static struct clk_branch jpegd_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_mdp[] = {
+static struct freq_tbl clk_tbl_mdp[] = {
 	{   9600000, P_PLL8, 1, 1, 40 },
 	{  13710000, P_PLL8, 1, 1, 28 },
 	{  27000000, P_PXO,  1, 0,  0 },
@@ -1394,7 +1381,7 @@ static struct clk_branch mdp_vsync_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_rot[] = {
+static struct freq_tbl clk_tbl_rot[] = {
 	{  27000000, P_PXO,   1 },
 	{  29540000, P_PLL8, 13 },
 	{  32000000, P_PLL8, 12 },
@@ -1474,7 +1461,7 @@ static const struct clk_parent_data mmcc_pxo_hdmi[] = {
 	{ .fw_name = "hdmipll", .name = "hdmi_pll" },
 };
 
-static const struct freq_tbl clk_tbl_tv[] = {
+static struct freq_tbl clk_tbl_tv[] = {
 	{  .src = P_HDMI_PLL, .pre_div = 1 },
 	{ }
 };
@@ -1637,7 +1624,7 @@ static struct clk_branch hdmi_app_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_vcodec[] = {
+static struct freq_tbl clk_tbl_vcodec[] = {
 	F_MN( 27000000, P_PXO,  1,  0),
 	F_MN( 32000000, P_PLL8, 1, 12),
 	F_MN( 48000000, P_PLL8, 1,  8),
@@ -1712,7 +1699,7 @@ static struct clk_branch vcodec_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_vpe[] = {
+static struct freq_tbl clk_tbl_vpe[] = {
 	{  27000000, P_PXO,   1 },
 	{  34909000, P_PLL8, 11 },
 	{  38400000, P_PLL8, 10 },
@@ -1765,7 +1752,7 @@ static struct clk_branch vpe_clk = {
 	},
 };
 
-static const struct freq_tbl clk_tbl_vfe[] = {
+static struct freq_tbl clk_tbl_vfe[] = {
 	{  13960000, P_PLL8,  1, 2, 55 },
 	{  27000000, P_PXO,   1, 0,  0 },
 	{  36570000, P_PLL8,  1, 2, 21 },
@@ -2452,32 +2439,16 @@ static struct clk_rcg dsi2_pixel_src = {
 	},
 	.s = {
 		.src_sel_shift = 0,
-		.parent_map = mmcc_pxo_dsi2_dsi1_lvds_map,
+		.parent_map = mmcc_pxo_dsi2_dsi1_map,
 	},
 	.clkr = {
 		.enable_reg = 0x0094,
 		.enable_mask = BIT(2),
 		.hw.init = &(struct clk_init_data){
 			.name = "dsi2_pixel_src",
-			.parent_data = mmcc_pxo_dsi2_dsi1_lvds,
-			.num_parents = ARRAY_SIZE(mmcc_pxo_dsi2_dsi1_lvds),
+			.parent_data = mmcc_pxo_dsi2_dsi1,
+			.num_parents = ARRAY_SIZE(mmcc_pxo_dsi2_dsi1),
 			.ops = &clk_rcg_pixel_ops,
-		},
-	},
-};
-
-static struct clk_branch dsi2_pixel_lvds_src = {
-	.clkr = {
-		.enable_reg = 0x0094,
-		.enable_mask = BIT(0),
-		.hw.init = &(struct clk_init_data){
-			.name = "dsi2_pixel_lvds_src",
-			.parent_hws = (const struct clk_hw*[]){
-				&dsi2_pixel_src.clkr.hw
-			},
-			.num_parents = 1,
-			.ops = &clk_branch_simple_ops,
-			.flags = CLK_SET_RATE_PARENT,
 		},
 	},
 };
@@ -2487,29 +2458,11 @@ static struct clk_branch dsi2_pixel_clk = {
 	.halt_bit = 19,
 	.clkr = {
 		.enable_reg = 0x0094,
-		.enable_mask = 0,
+		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "mdp_pclk2_clk",
 			.parent_hws = (const struct clk_hw*[]){
 				&dsi2_pixel_src.clkr.hw
-			},
-			.num_parents = 1,
-			.ops = &clk_branch_ops,
-			.flags = CLK_SET_RATE_PARENT,
-		},
-	},
-};
-
-static struct clk_branch lvds_clk = {
-	.halt_reg = 0x024c,
-	.halt_bit = 6,
-	.clkr = {
-		.enable_reg = 0x0264,
-		.enable_mask = BIT(1),
-		.hw.init = &(struct clk_init_data){
-			.name = "mdp_lvds_clk",
-			.parent_hws = (const struct clk_hw*[]){
-				&dsi2_pixel_lvds_src.clkr.hw
 			},
 			.num_parents = 1,
 			.ops = &clk_branch_ops,
@@ -2846,8 +2799,6 @@ static struct clk_regmap *mmcc_msm8960_clks[] = {
 	[CSIPHY1_TIMER_CLK] = &csiphy1_timer_clk.clkr,
 	[CSIPHY0_TIMER_CLK] = &csiphy0_timer_clk.clkr,
 	[PLL2] = &pll2.clkr,
-	[DSI2_PIXEL_LVDS_SRC] = &dsi2_pixel_lvds_src.clkr,
-	[LVDS_CLK] = &lvds_clk.clkr,
 };
 
 static const struct qcom_reset_map mmcc_msm8960_resets[] = {
@@ -3032,8 +2983,6 @@ static struct clk_regmap *mmcc_apq8064_clks[] = {
 	[VCAP_CLK] = &vcap_clk.clkr,
 	[VCAP_NPL_CLK] = &vcap_npl_clk.clkr,
 	[PLL15] = &pll15.clkr,
-	[DSI2_PIXEL_LVDS_SRC] = &dsi2_pixel_lvds_src.clkr,
-	[LVDS_CLK] = &lvds_clk.clkr,
 };
 
 static const struct qcom_reset_map mmcc_apq8064_resets[] = {
@@ -3156,24 +3105,30 @@ MODULE_DEVICE_TABLE(of, mmcc_msm8960_match_table);
 
 static int mmcc_msm8960_probe(struct platform_device *pdev)
 {
+	const struct of_device_id *match;
 	struct regmap *regmap;
+	bool is_8064;
 	struct device *dev = &pdev->dev;
-	const struct qcom_cc_desc *desc = device_get_match_data(dev);
 
-	if (desc == &mmcc_apq8064_desc) {
+	match = of_match_device(mmcc_msm8960_match_table, dev);
+	if (!match)
+		return -EINVAL;
+
+	is_8064 = of_device_is_compatible(dev->of_node, "qcom,mmcc-apq8064");
+	if (is_8064) {
 		gfx3d_src.freq_tbl = clk_tbl_gfx3d_8064;
 		gfx3d_src.clkr.hw.init = &gfx3d_8064_init;
 		gfx3d_src.s[0].parent_map = mmcc_pxo_pll8_pll2_pll15_map;
 		gfx3d_src.s[1].parent_map = mmcc_pxo_pll8_pll2_pll15_map;
 	}
 
-	regmap = qcom_cc_map(pdev, desc);
+	regmap = qcom_cc_map(pdev, match->data);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
 	clk_pll_configure_sr(&pll15, regmap, &pll15_config, false);
 
-	return qcom_cc_really_probe(&pdev->dev, desc, regmap);
+	return qcom_cc_really_probe(pdev, match->data, regmap);
 }
 
 static struct platform_driver mmcc_msm8960_driver = {

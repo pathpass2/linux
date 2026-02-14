@@ -17,6 +17,7 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/tps65090.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/err.h>
 
 #define NUM_INT_REG 2
@@ -120,7 +121,7 @@ static const struct regmap_irq tps65090_irqs[] = {
 	},
 };
 
-static const struct regmap_irq_chip tps65090_irq_chip = {
+static struct regmap_irq_chip tps65090_irq_chip = {
 	.name = "tps65090",
 	.irqs = tps65090_irqs,
 	.num_irqs = ARRAY_SIZE(tps65090_irqs),
@@ -151,7 +152,7 @@ static const struct regmap_config tps65090_regmap_config = {
 	.val_bits = 8,
 	.max_register = TPS65090_MAX_REG,
 	.num_reg_defaults_raw = TPS65090_NUM_REGS,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.volatile_reg = is_volatile_reg,
 };
 
@@ -225,8 +226,8 @@ err_irq_exit:
 
 
 static const struct i2c_device_id tps65090_id_table[] = {
-	{ "tps65090" },
-	{ }
+	{ "tps65090", 0 },
+	{ },
 };
 
 static struct i2c_driver tps65090_driver = {
@@ -235,7 +236,7 @@ static struct i2c_driver tps65090_driver = {
 		.suppress_bind_attrs = true,
 		.of_match_table = of_match_ptr(tps65090_of_match),
 	},
-	.probe		= tps65090_i2c_probe,
+	.probe_new	= tps65090_i2c_probe,
 	.id_table	= tps65090_id_table,
 };
 

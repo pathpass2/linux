@@ -3,7 +3,6 @@
  * Copyright © 2022 Intel Corporation
  */
 
-#include "gt/intel_gt_print.h"
 #include "selftests/igt_spinner.h"
 #include "selftests/igt_reset.h"
 #include "selftests/intel_scheduler_helpers.h"
@@ -46,7 +45,7 @@ static int intel_hang_guc(void *arg)
 
 	ctx = kernel_context(gt->i915, NULL);
 	if (IS_ERR(ctx)) {
-		gt_err(gt, "Failed get kernel context: %pe\n", ctx);
+		drm_err(&gt->i915->drm, "Failed get kernel context: %ld\n", PTR_ERR(ctx));
 		return PTR_ERR(ctx);
 	}
 
@@ -55,7 +54,7 @@ static int intel_hang_guc(void *arg)
 	ce = intel_context_create(engine);
 	if (IS_ERR(ce)) {
 		ret = PTR_ERR(ce);
-		gt_err(gt, "Failed to create spinner request: %pe\n", ce);
+		drm_err(&gt->i915->drm, "Failed to create spinner request: %d\n", ret);
 		goto err;
 	}
 
@@ -64,42 +63,42 @@ static int intel_hang_guc(void *arg)
 	old_beat = engine->props.heartbeat_interval_ms;
 	ret = intel_engine_set_heartbeat(engine, BEAT_INTERVAL);
 	if (ret) {
-		gt_err(gt, "Failed to boost heartbeat interval: %pe\n", ERR_PTR(ret));
+		drm_err(&gt->i915->drm, "Failed to boost heatbeat interval: %d\n", ret);
 		goto err;
 	}
 
 	ret = igt_spinner_init(&spin, engine->gt);
 	if (ret) {
-		gt_err(gt, "Failed to create spinner: %pe\n", ERR_PTR(ret));
+		drm_err(&gt->i915->drm, "Failed to create spinner: %d\n", ret);
 		goto err;
 	}
 
-	rq = igt_spinner_create_request(&spin, ce, MI_ARB_CHECK);
+	rq = igt_spinner_create_request(&spin, ce, MI_NOOP);
 	intel_context_put(ce);
 	if (IS_ERR(rq)) {
 		ret = PTR_ERR(rq);
-		gt_err(gt, "Failed to create spinner request: %pe\n", rq);
+		drm_err(&gt->i915->drm, "Failed to create spinner request: %d\n", ret);
 		goto err_spin;
 	}
 
 	ret = request_add_spin(rq, &spin);
 	if (ret) {
 		i915_request_put(rq);
-		gt_err(gt, "Failed to add Spinner request: %pe\n", ERR_PTR(ret));
+		drm_err(&gt->i915->drm, "Failed to add Spinner request: %d\n", ret);
 		goto err_spin;
 	}
 
 	ret = intel_reset_guc(gt);
 	if (ret) {
 		i915_request_put(rq);
-		gt_err(gt, "Failed to reset GuC: %pe\n", ERR_PTR(ret));
+		drm_err(&gt->i915->drm, "Failed to reset GuC, ret = %d\n", ret);
 		goto err_spin;
 	}
 
 	guc_status = intel_uncore_read(gt->uncore, GUC_STATUS);
 	if (!(guc_status & GS_MIA_IN_RESET)) {
 		i915_request_put(rq);
-		gt_err(gt, "Failed to reset GuC: status = 0x%08X\n", guc_status);
+		drm_err(&gt->i915->drm, "GuC failed to reset: status = 0x%08X\n", guc_status);
 		ret = -EIO;
 		goto err_spin;
 	}
@@ -108,12 +107,12 @@ static int intel_hang_guc(void *arg)
 	ret = intel_selftest_wait_for_rq(rq);
 	i915_request_put(rq);
 	if (ret) {
-		gt_err(gt, "Request failed to complete: %pe\n", ERR_PTR(ret));
+		drm_err(&gt->i915->drm, "Request failed to complete: %d\n", ret);
 		goto err_spin;
 	}
 
 	if (i915_reset_count(global) == reset_count) {
-		gt_err(gt, "Failed to record a GPU reset\n");
+		drm_err(&gt->i915->drm, "Failed to record a GPU reset\n");
 		ret = -EINVAL;
 		goto err_spin;
 	}
@@ -133,7 +132,7 @@ err_spin:
 		ret = intel_selftest_wait_for_rq(rq);
 		i915_request_put(rq);
 		if (ret) {
-			gt_err(gt, "No-op failed to complete: %pe\n", ERR_PTR(ret));
+			drm_err(&gt->i915->drm, "No-op failed to complete: %d\n", ret);
 			goto err;
 		}
 	}

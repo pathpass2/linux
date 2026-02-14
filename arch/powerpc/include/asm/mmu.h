@@ -16,6 +16,7 @@
  */
 #define MMU_FTR_HPTE_TABLE		ASM_CONST(0x00000001)
 #define MMU_FTR_TYPE_8xx		ASM_CONST(0x00000002)
+#define MMU_FTR_TYPE_40x		ASM_CONST(0x00000004)
 #define MMU_FTR_TYPE_44x		ASM_CONST(0x00000008)
 #define MMU_FTR_TYPE_FSL_E		ASM_CONST(0x00000010)
 #define MMU_FTR_TYPE_47x		ASM_CONST(0x00000020)
@@ -32,7 +33,7 @@
  * key 0 controlling userspace addresses on radix
  * Key 3 on hash
  */
-#define MMU_FTR_KUAP		ASM_CONST(0x00000200)
+#define MMU_FTR_BOOK3S_KUAP		ASM_CONST(0x00000200)
 
 /*
  * Supports KUEP feature
@@ -132,17 +133,21 @@
 #define MMU_FTRS_POWER8		MMU_FTRS_POWER6
 #define MMU_FTRS_POWER9		MMU_FTRS_POWER6
 #define MMU_FTRS_POWER10	MMU_FTRS_POWER6
-#define MMU_FTRS_POWER11	MMU_FTRS_POWER6
 #define MMU_FTRS_CELL		MMU_FTRS_DEFAULT_HPTE_ARCH_V2 | \
 				MMU_FTR_CI_LARGE_PAGE
 #define MMU_FTRS_PA6T		MMU_FTRS_DEFAULT_HPTE_ARCH_V2 | \
 				MMU_FTR_CI_LARGE_PAGE | MMU_FTR_NO_SLBIE_B
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <linux/bug.h>
 #include <asm/cputable.h>
 #include <asm/page.h>
 
 typedef pte_t *pgtable_t;
+
+#ifdef CONFIG_PPC_E500
+#include <asm/percpu.h>
+DECLARE_PER_CPU(int, next_tlbcam_idx);
+#endif
 
 enum {
 	MMU_FTRS_POSSIBLE =
@@ -151,6 +156,9 @@ enum {
 #endif
 #ifdef CONFIG_PPC_8xx
 		MMU_FTR_TYPE_8xx |
+#endif
+#ifdef CONFIG_40x
+		MMU_FTR_TYPE_40x |
 #endif
 #ifdef CONFIG_PPC_47x
 		MMU_FTR_TYPE_47x | MMU_FTR_USE_TLBIVAX_BCAST | MMU_FTR_LOCK_BCAST_INVAL |
@@ -180,7 +188,7 @@ enum {
 #endif /* CONFIG_PPC_RADIX_MMU */
 #endif
 #ifdef CONFIG_PPC_KUAP
-	MMU_FTR_KUAP |
+	MMU_FTR_BOOK3S_KUAP |
 #endif /* CONFIG_PPC_KUAP */
 #ifdef CONFIG_PPC_MEM_KEYS
 	MMU_FTR_PKEY |
@@ -197,6 +205,9 @@ enum {
 #endif
 #ifdef CONFIG_PPC_8xx
 #define MMU_FTRS_ALWAYS		MMU_FTR_TYPE_8xx
+#endif
+#ifdef CONFIG_40x
+#define MMU_FTRS_ALWAYS		MMU_FTR_TYPE_40x
 #endif
 #ifdef CONFIG_PPC_47x
 #define MMU_FTRS_ALWAYS		MMU_FTR_TYPE_47x
@@ -239,11 +250,12 @@ static __always_inline bool mmu_has_feature(unsigned long feature)
 {
 	int i;
 
+#ifndef __clang__ /* clang can't cope with this */
 	BUILD_BUG_ON(!__builtin_constant_p(feature));
-	BUILD_BUG_ON(__builtin_popcountl(feature) > 1);
+#endif
 
 #ifdef CONFIG_JUMP_LABEL_FEATURE_CHECK_DEBUG
-	if (!static_key_feature_checks_initialized) {
+	if (!static_key_initialized) {
 		printk("Warning! mmu_has_feature() used prior to jump label init!\n");
 		dump_stack();
 		return early_mmu_has_feature(feature);
@@ -323,16 +335,23 @@ static __always_inline bool early_radix_enabled(void)
 	return early_mmu_has_feature(MMU_FTR_TYPE_RADIX);
 }
 
+#ifdef CONFIG_STRICT_KERNEL_RWX
 static inline bool strict_kernel_rwx_enabled(void)
 {
-	return IS_ENABLED(CONFIG_STRICT_KERNEL_RWX) && rodata_enabled;
+	return rodata_enabled;
 }
+#else
+static inline bool strict_kernel_rwx_enabled(void)
+{
+	return false;
+}
+#endif
 
 static inline bool strict_module_rwx_enabled(void)
 {
 	return IS_ENABLED(CONFIG_STRICT_MODULE_RWX) && strict_kernel_rwx_enabled();
 }
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /* The kernel use the constants below to index in the page sizes array.
  * The use of fixed constants for this purpose is better for performances
@@ -377,7 +396,7 @@ static inline bool strict_module_rwx_enabled(void)
 #include <asm/book3s/64/mmu.h>
 #else /* CONFIG_PPC_BOOK3S_64 */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 /* MMU initialization */
 extern void early_init_mmu(void);
 extern void early_init_mmu_secondary(void);
@@ -388,7 +407,7 @@ static inline void mmu_early_init_devtree(void) { }
 static inline void pkey_early_init_devtree(void) {}
 
 extern void *abatron_pteptrs[2];
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif
 
 #if defined(CONFIG_PPC_BOOK3S_32)

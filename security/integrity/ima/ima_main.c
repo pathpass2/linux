@@ -24,10 +24,8 @@
 #include <linux/slab.h>
 #include <linux/xattr.h>
 #include <linux/ima.h>
-#include <linux/fs.h>
 #include <linux/iversion.h>
-#include <linux/evm.h>
-#include <linux/crash_dump.h>
+#include <linux/fs.h>
 
 #include "ima.h"
 
@@ -39,29 +37,10 @@ int ima_appraise;
 
 int __ro_after_init ima_hash_algo = HASH_ALGO_SHA1;
 static int hash_setup_done;
-static int ima_disabled __ro_after_init;
 
 static struct notifier_block ima_lsm_policy_notifier = {
 	.notifier_call = ima_lsm_policy_change,
 };
-
-static int __init ima_setup(char *str)
-{
-	if (!is_kdump_kernel()) {
-		pr_info("Warning: ima setup option only permitted in kdump");
-		return 1;
-	}
-
-	if (strncmp(str, "off", 3) == 0)
-		ima_disabled = 1;
-	else if (strncmp(str, "on", 2) == 0)
-		ima_disabled = 0;
-	else
-		pr_err("Invalid ima setup option: \"%s\" , please specify ima=on|off.", str);
-
-	return 1;
-}
-__setup("ima=", ima_setup);
 
 static int __init hash_setup(char *str)
 {
@@ -135,7 +114,7 @@ static int mmap_violation_check(enum ima_hooks func, struct file *file,
  *
  */
 static void ima_rdwr_violation_check(struct file *file,
-				     struct ima_iint_cache *iint,
+				     struct integrity_iint_cache *iint,
 				     int must_measure,
 				     char **pathbuf,
 				     const char **pathname,
@@ -148,23 +127,17 @@ static void ima_rdwr_violation_check(struct file *file,
 	if (mode & FMODE_WRITE) {
 		if (atomic_read(&inode->i_readcount) && IS_IMA(inode)) {
 			if (!iint)
-				iint = ima_iint_find(inode);
-
+				iint = integrity_iint_find(inode);
 			/* IMA_MEASURE is set from reader side */
-			if (iint && test_and_clear_bit(IMA_MAY_EMIT_TOMTOU,
-						       &iint->atomic_flags))
+			if (iint && test_bit(IMA_MUST_MEASURE,
+						&iint->atomic_flags))
 				send_tomtou = true;
 		}
 	} else {
 		if (must_measure)
-			set_bit(IMA_MAY_EMIT_TOMTOU, &iint->atomic_flags);
-
-		/* Limit number of open_writers violations */
-		if (inode_is_open_for_write(inode) && must_measure) {
-			if (!test_and_set_bit(IMA_EMITTED_OPENWRITERS,
-					      &iint->atomic_flags))
-				send_writers = true;
-		}
+			set_bit(IMA_MUST_MEASURE, &iint->atomic_flags);
+		if (inode_is_open_for_write(inode) && must_measure)
+			send_writers = true;
 	}
 
 	if (!send_tomtou && !send_writers)
@@ -180,7 +153,7 @@ static void ima_rdwr_violation_check(struct file *file,
 				  "invalid_pcr", "open_writers");
 }
 
-static void ima_check_last_writer(struct ima_iint_cache *iint,
+static void ima_check_last_writer(struct integrity_iint_cache *iint,
 				  struct inode *inode, struct file *file)
 {
 	fmode_t mode = file->f_mode;
@@ -191,18 +164,11 @@ static void ima_check_last_writer(struct ima_iint_cache *iint,
 
 	mutex_lock(&iint->mutex);
 	if (atomic_read(&inode->i_writecount) == 1) {
-		struct kstat stat;
-
-		clear_bit(IMA_EMITTED_OPENWRITERS, &iint->atomic_flags);
-
 		update = test_and_clear_bit(IMA_UPDATE_XATTR,
 					    &iint->atomic_flags);
-		if ((iint->flags & IMA_NEW_FILE) ||
-		    vfs_getattr_nosec(&file->f_path, &stat,
-				      STATX_CHANGE_COOKIE,
-				      AT_STATX_SYNC_AS_STAT) ||
-		    !(stat.result_mask & STATX_CHANGE_COOKIE) ||
-		    stat.change_cookie != iint->real_inode.version) {
+		if (!IS_I_VERSION(inode) ||
+		    !inode_eq_iversion(inode, iint->version) ||
+		    (iint->flags & IMA_NEW_FILE)) {
 			iint->flags &= ~(IMA_DONE_MASK | IMA_NEW_FILE);
 			iint->measured_pcrs = 0;
 			if (update)
@@ -218,15 +184,15 @@ static void ima_check_last_writer(struct ima_iint_cache *iint,
  *
  * Flag files that changed, based on i_version
  */
-static void ima_file_free(struct file *file)
+void ima_file_free(struct file *file)
 {
 	struct inode *inode = file_inode(file);
-	struct ima_iint_cache *iint;
+	struct integrity_iint_cache *iint;
 
 	if (!ima_policy_flag || !S_ISREG(inode->i_mode))
 		return;
 
-	iint = ima_iint_find(inode);
+	iint = integrity_iint_find(inode);
 	if (!iint)
 		return;
 
@@ -234,15 +200,12 @@ static void ima_file_free(struct file *file)
 }
 
 static int process_measurement(struct file *file, const struct cred *cred,
-			       struct lsm_prop *prop, char *buf, loff_t size,
-			       int mask, enum ima_hooks func,
-			       enum kernel_read_file_id read_id,
-			       bool bprm_is_check)
+			       u32 secid, char *buf, loff_t size, int mask,
+			       enum ima_hooks func)
 {
-	struct inode *real_inode, *inode = file_inode(file);
-	struct ima_iint_cache *iint = NULL;
+	struct inode *inode = file_inode(file);
+	struct integrity_iint_cache *iint = NULL;
 	struct ima_template_desc *template_desc = NULL;
-	struct inode *metadata_inode;
 	char *pathbuf = NULL;
 	char filename[NAME_MAX];
 	const char *pathname = NULL;
@@ -262,14 +225,12 @@ static int process_measurement(struct file *file, const struct cred *cred,
 	 * bitmask based on the appraise/audit/measurement policy.
 	 * Included is the appraise submask.
 	 */
-	action = ima_get_action(file_mnt_idmap(file), inode, cred, prop,
+	action = ima_get_action(file_mnt_idmap(file), inode, cred, secid,
 				mask, func, &pcr, &template_desc, NULL,
 				&allowed_algos);
 	violation_check = ((func == FILE_CHECK || func == MMAP_CHECK ||
 			    func == MMAP_CHECK_REQPROT) &&
-			   (ima_policy_flag & IMA_MEASURE) &&
-			   ((action & IMA_MEASURE) ||
-			    (file->f_mode & FMODE_WRITE)));
+			   (ima_policy_flag & IMA_MEASURE));
 	if (!action && !violation_check)
 		return 0;
 
@@ -282,7 +243,7 @@ static int process_measurement(struct file *file, const struct cred *cred,
 	inode_lock(inode);
 
 	if (action) {
-		iint = ima_inode_get(inode);
+		iint = integrity_inode_get(inode);
 		if (!iint)
 			rc = -ENOMEM;
 	}
@@ -301,13 +262,10 @@ static int process_measurement(struct file *file, const struct cred *cred,
 	mutex_lock(&iint->mutex);
 
 	if (test_and_clear_bit(IMA_CHANGE_ATTR, &iint->atomic_flags))
-		/*
-		 * Reset appraisal flags (action and non-action rule-specific)
-		 * if ima_inode_post_setattr was called.
-		 */
+		/* reset appraisal flags if ima_inode_post_setattr was called */
 		iint->flags &= ~(IMA_APPRAISE | IMA_APPRAISED |
 				 IMA_APPRAISE_SUBMASK | IMA_APPRAISED_SUBMASK |
-				 IMA_NONACTION_RULE_FLAGS);
+				 IMA_NONACTION_FLAGS);
 
 	/*
 	 * Re-evaulate the file if either the xattr has changed or the
@@ -320,30 +278,6 @@ static int process_measurement(struct file *file, const struct cred *cred,
 	     !(action & IMA_FAIL_UNVERIFIABLE_SIGS))) {
 		iint->flags &= ~IMA_DONE_MASK;
 		iint->measured_pcrs = 0;
-	}
-
-	/*
-	 * On stacked filesystems, detect and re-evaluate file data and
-	 * metadata changes.
-	 */
-	real_inode = d_real_inode(file_dentry(file));
-	if (real_inode != inode &&
-	    (action & IMA_DO_MASK) && (iint->flags & IMA_DONE_MASK)) {
-		if (!IS_I_VERSION(real_inode) ||
-		    integrity_inode_attrs_changed(&iint->real_inode,
-						  real_inode)) {
-			iint->flags &= ~IMA_DONE_MASK;
-			iint->measured_pcrs = 0;
-		}
-
-		/*
-		 * Reset the EVM status when metadata changed.
-		 */
-		metadata_inode = d_inode(d_real(file_dentry(file),
-					 D_REAL_METADATA));
-		if (evm_metadata_changed(inode, metadata_inode))
-			iint->flags &= ~(IMA_APPRAISED |
-					 IMA_APPRAISED_SUBMASK);
 	}
 
 	/* Determine if already appraised/measured based on bitmask
@@ -408,12 +342,6 @@ static int process_measurement(struct file *file, const struct cred *cred,
 	if (rc != 0 && rc != -EBADF && rc != -EINVAL)
 		goto out_locked;
 
-	/* Defer measuring/appraising kernel modules to READING_MODULE */
-	if (read_id == READING_MODULE_COMPRESSED) {
-		must_appraise = 0;
-		goto out_locked;
-	}
-
 	if (!pathbuf)	/* ima_rdwr_violation possibly pre-fetched */
 		pathname = ima_d_path(&file->f_path, &pathbuf, filename);
 
@@ -427,8 +355,7 @@ static int process_measurement(struct file *file, const struct cred *cred,
 			inode_lock(inode);
 			rc = ima_appraise_measurement(func, iint, file,
 						      pathname, xattr_value,
-						      xattr_len, modsig,
-						      bprm_is_check);
+						      xattr_len, modsig);
 			inode_unlock(inode);
 		}
 		if (!rc)
@@ -482,28 +409,27 @@ out:
  * On success return 0.  On integrity appraisal error, assuming the file
  * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
  */
-static int ima_file_mmap(struct file *file, unsigned long reqprot,
-			 unsigned long prot, unsigned long flags)
+int ima_file_mmap(struct file *file, unsigned long reqprot,
+		  unsigned long prot, unsigned long flags)
 {
-	struct lsm_prop prop;
+	u32 secid;
 	int ret;
 
 	if (!file)
 		return 0;
 
-	security_current_getlsmprop_subj(&prop);
+	security_current_getsecid_subj(&secid);
 
 	if (reqprot & PROT_EXEC) {
-		ret = process_measurement(file, current_cred(), &prop, NULL,
-					  0, MAY_EXEC, MMAP_CHECK_REQPROT, 0,
-					  false);
+		ret = process_measurement(file, current_cred(), secid, NULL,
+					  0, MAY_EXEC, MMAP_CHECK_REQPROT);
 		if (ret)
 			return ret;
 	}
 
 	if (prot & PROT_EXEC)
-		return process_measurement(file, current_cred(), &prop, NULL,
-					   0, MAY_EXEC, MMAP_CHECK, 0, false);
+		return process_measurement(file, current_cred(), secid, NULL,
+					   0, MAY_EXEC, MMAP_CHECK);
 
 	return 0;
 }
@@ -511,8 +437,7 @@ static int ima_file_mmap(struct file *file, unsigned long reqprot,
 /**
  * ima_file_mprotect - based on policy, limit mprotect change
  * @vma: vm_area_struct protection is set to
- * @reqprot: protection requested by the application
- * @prot: protection that will be applied by the kernel
+ * @prot: contains the protection that will be applied by the kernel.
  *
  * Files can be mmap'ed read/write and later changed to execute to circumvent
  * IMA's mmap appraisal policy rules.  Due to locking issues (mmap semaphore
@@ -522,8 +447,7 @@ static int ima_file_mmap(struct file *file, unsigned long reqprot,
  *
  * On mprotect change success, return 0.  On failure, return -EACESS.
  */
-static int ima_file_mprotect(struct vm_area_struct *vma, unsigned long reqprot,
-			     unsigned long prot)
+int ima_file_mprotect(struct vm_area_struct *vma, unsigned long prot)
 {
 	struct ima_template_desc *template = NULL;
 	struct file *file;
@@ -531,9 +455,9 @@ static int ima_file_mprotect(struct vm_area_struct *vma, unsigned long reqprot,
 	char *pathbuf = NULL;
 	const char *pathname = NULL;
 	struct inode *inode;
-	struct lsm_prop prop;
 	int result = 0;
 	int action;
+	u32 secid;
 	int pcr;
 
 	/* Is mprotect making an mmap'ed file executable? */
@@ -541,13 +465,13 @@ static int ima_file_mprotect(struct vm_area_struct *vma, unsigned long reqprot,
 	    !(prot & PROT_EXEC) || (vma->vm_flags & VM_EXEC))
 		return 0;
 
-	security_current_getlsmprop_subj(&prop);
+	security_current_getsecid_subj(&secid);
 	inode = file_inode(vma->vm_file);
 	action = ima_get_action(file_mnt_idmap(vma->vm_file), inode,
-				current_cred(), &prop, MAY_EXEC, MMAP_CHECK,
+				current_cred(), secid, MAY_EXEC, MMAP_CHECK,
 				&pcr, &template, NULL, NULL);
 	action |= ima_get_action(file_mnt_idmap(vma->vm_file), inode,
-				 current_cred(), &prop, MAY_EXEC,
+				 current_cred(), secid, MAY_EXEC,
 				 MMAP_CHECK_REQPROT, &pcr, &template, NULL,
 				 NULL);
 
@@ -581,72 +505,20 @@ static int ima_file_mprotect(struct vm_area_struct *vma, unsigned long reqprot,
  * On success return 0.  On integrity appraisal error, assuming the file
  * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
  */
-static int ima_bprm_check(struct linux_binprm *bprm)
+int ima_bprm_check(struct linux_binprm *bprm)
 {
-	struct lsm_prop prop;
+	int ret;
+	u32 secid;
 
-	security_current_getlsmprop_subj(&prop);
-	return process_measurement(bprm->file, current_cred(),
-				   &prop, NULL, 0, MAY_EXEC, BPRM_CHECK, 0,
-				   bprm->is_check);
-}
+	security_current_getsecid_subj(&secid);
+	ret = process_measurement(bprm->file, current_cred(), secid, NULL, 0,
+				  MAY_EXEC, BPRM_CHECK);
+	if (ret)
+		return ret;
 
-/**
- * ima_creds_check - based on policy, collect/store measurement.
- * @bprm: contains the linux_binprm structure
- * @file: contains the file descriptor of the binary being executed
- *
- * The OS protects against an executable file, already open for write,
- * from being executed in deny_write_access() and an executable file,
- * already open for execute, from being modified in get_write_access().
- * So we can be certain that what we verify and measure here is actually
- * what is being executed.
- *
- * The difference from ima_bprm_check() is that ima_creds_check() is invoked
- * only after determining the final binary to be executed without interpreter,
- * and not when searching for intermediate binaries. The reason is that since
- * commit 56305aa9b6fab ("exec: Compute file based creds only once"), the
- * credentials to be applied to the process are calculated only at that stage
- * (bprm_creds_from_file security hook instead of bprm_check_security).
- *
- * On success return 0.  On integrity appraisal error, assuming the file
- * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
- */
-static int ima_creds_check(struct linux_binprm *bprm, const struct file *file)
-{
-	struct lsm_prop prop;
-
-	security_current_getlsmprop_subj(&prop);
-	return process_measurement((struct file *)file, bprm->cred, &prop, NULL,
-				   0, MAY_EXEC, CREDS_CHECK, 0, false);
-}
-
-/**
- * ima_bprm_creds_for_exec - collect/store/appraise measurement.
- * @bprm: contains the linux_binprm structure
- *
- * Based on the IMA policy and the execveat(2) AT_EXECVE_CHECK flag, measure
- * and appraise the integrity of a file to be executed by script interpreters.
- * Unlike any of the other LSM hooks where the kernel enforces file integrity,
- * enforcing file integrity is left up to the discretion of the script
- * interpreter (userspace).
- *
- * On success return 0.  On integrity appraisal error, assuming the file
- * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
- */
-static int ima_bprm_creds_for_exec(struct linux_binprm *bprm)
-{
-	/*
-	 * As security_bprm_check() is called multiple times, both
-	 * the script and the shebang interpreter are measured, appraised,
-	 * and audited. Limit usage of this LSM hook to just measuring,
-	 * appraising, and auditing the indirect script execution
-	 * (e.g. ./sh example.sh).
-	 */
-	if (!bprm->is_check)
-		return 0;
-
-	return ima_bprm_check(bprm);
+	security_cred_getsecid(bprm->cred, &secid);
+	return process_measurement(bprm->file, bprm->cred, secid, NULL, 0,
+				   MAY_EXEC, CREDS_CHECK);
 }
 
 /**
@@ -659,24 +531,25 @@ static int ima_bprm_creds_for_exec(struct linux_binprm *bprm)
  * On success return 0.  On integrity appraisal error, assuming the file
  * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
  */
-static int ima_file_check(struct file *file, int mask)
+int ima_file_check(struct file *file, int mask)
 {
-	struct lsm_prop prop;
+	u32 secid;
 
-	security_current_getlsmprop_subj(&prop);
-	return process_measurement(file, current_cred(), &prop, NULL, 0,
+	security_current_getsecid_subj(&secid);
+	return process_measurement(file, current_cred(), secid, NULL, 0,
 				   mask & (MAY_READ | MAY_WRITE | MAY_EXEC |
-					   MAY_APPEND), FILE_CHECK, 0, false);
+					   MAY_APPEND), FILE_CHECK);
 }
+EXPORT_SYMBOL_GPL(ima_file_check);
 
 static int __ima_inode_hash(struct inode *inode, struct file *file, char *buf,
 			    size_t buf_size)
 {
-	struct ima_iint_cache *iint = NULL, tmp_iint;
+	struct integrity_iint_cache *iint = NULL, tmp_iint;
 	int rc, hash_algo;
 
 	if (ima_policy_flag) {
-		iint = ima_iint_find(inode);
+		iint = integrity_iint_find(inode);
 		if (iint)
 			mutex_lock(&iint->mutex);
 	}
@@ -686,6 +559,7 @@ static int __ima_inode_hash(struct inode *inode, struct file *file, char *buf,
 			mutex_unlock(&iint->mutex);
 
 		memset(&tmp_iint, 0, sizeof(tmp_iint));
+		tmp_iint.inode = inode;
 		mutex_init(&tmp_iint.mutex);
 
 		rc = ima_collect_measurement(&tmp_iint, file, NULL, 0,
@@ -791,11 +665,10 @@ EXPORT_SYMBOL_GPL(ima_inode_hash);
  * Skip calling process_measurement(), but indicate which newly, created
  * tmpfiles are in policy.
  */
-static void ima_post_create_tmpfile(struct mnt_idmap *idmap,
-				    struct inode *inode)
-
+void ima_post_create_tmpfile(struct mnt_idmap *idmap,
+			     struct inode *inode)
 {
-	struct ima_iint_cache *iint;
+	struct integrity_iint_cache *iint;
 	int must_appraise;
 
 	if (!ima_policy_flag || !S_ISREG(inode->i_mode))
@@ -807,7 +680,7 @@ static void ima_post_create_tmpfile(struct mnt_idmap *idmap,
 		return;
 
 	/* Nothing to do if we can't allocate memory */
-	iint = ima_inode_get(inode);
+	iint = integrity_inode_get(inode);
 	if (!iint)
 		return;
 
@@ -824,9 +697,10 @@ static void ima_post_create_tmpfile(struct mnt_idmap *idmap,
  * Mark files created via the mknodat syscall as new, so that the
  * file data can be written later.
  */
-static void ima_post_path_mknod(struct mnt_idmap *idmap, struct dentry *dentry)
+void ima_post_path_mknod(struct mnt_idmap *idmap,
+			 struct dentry *dentry)
 {
-	struct ima_iint_cache *iint;
+	struct integrity_iint_cache *iint;
 	struct inode *inode = dentry->d_inode;
 	int must_appraise;
 
@@ -839,7 +713,7 @@ static void ima_post_path_mknod(struct mnt_idmap *idmap, struct dentry *dentry)
 		return;
 
 	/* Nothing to do if we can't allocate memory */
-	iint = ima_inode_get(inode);
+	iint = integrity_inode_get(inode);
 	if (!iint)
 		return;
 
@@ -859,11 +733,11 @@ static void ima_post_path_mknod(struct mnt_idmap *idmap, struct dentry *dentry)
  *
  * For permission return 0, otherwise return -EACCES.
  */
-static int ima_read_file(struct file *file, enum kernel_read_file_id read_id,
-			 bool contents)
+int ima_read_file(struct file *file, enum kernel_read_file_id read_id,
+		  bool contents)
 {
 	enum ima_hooks func;
-	struct lsm_prop prop;
+	u32 secid;
 
 	/*
 	 * Do devices using pre-allocated memory run the risk of the
@@ -883,15 +757,14 @@ static int ima_read_file(struct file *file, enum kernel_read_file_id read_id,
 
 	/* Read entire file for all partial reads. */
 	func = read_idmap[read_id] ?: FILE_CHECK;
-	security_current_getlsmprop_subj(&prop);
-	return process_measurement(file, current_cred(), &prop, NULL, 0,
-				   MAY_READ, func, 0, false);
+	security_current_getsecid_subj(&secid);
+	return process_measurement(file, current_cred(), secid, NULL,
+				   0, MAY_READ, func);
 }
 
 const int read_idmap[READING_MAX_ID] = {
 	[READING_FIRMWARE] = FIRMWARE_CHECK,
 	[READING_MODULE] = MODULE_CHECK,
-	[READING_MODULE_COMPRESSED] = MODULE_CHECK,
 	[READING_KEXEC_IMAGE] = KEXEC_KERNEL_CHECK,
 	[READING_KEXEC_INITRAMFS] = KEXEC_INITRAMFS_CHECK,
 	[READING_POLICY] = POLICY_CHECK
@@ -910,11 +783,11 @@ const int read_idmap[READING_MAX_ID] = {
  * On success return 0.  On integrity appraisal error, assuming the file
  * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
  */
-static int ima_post_read_file(struct file *file, char *buf, loff_t size,
-			      enum kernel_read_file_id read_id)
+int ima_post_read_file(struct file *file, void *buf, loff_t size,
+		       enum kernel_read_file_id read_id)
 {
 	enum ima_hooks func;
-	struct lsm_prop prop;
+	u32 secid;
 
 	/* permit signed certs */
 	if (!file && read_id == READING_X509_CERTIFICATE)
@@ -927,9 +800,9 @@ static int ima_post_read_file(struct file *file, char *buf, loff_t size,
 	}
 
 	func = read_idmap[read_id] ?: FILE_CHECK;
-	security_current_getlsmprop_subj(&prop);
-	return process_measurement(file, current_cred(), &prop, buf, size,
-				   MAY_READ, func, read_id, false);
+	security_current_getsecid_subj(&secid);
+	return process_measurement(file, current_cred(), secid, buf, size,
+				   MAY_READ, func);
 }
 
 /**
@@ -944,7 +817,7 @@ static int ima_post_read_file(struct file *file, char *buf, loff_t size,
  *
  * For permission return 0, otherwise return -EACCES.
  */
-static int ima_load_data(enum kernel_load_data_id id, bool contents)
+int ima_load_data(enum kernel_load_data_id id, bool contents)
 {
 	bool ima_enforce, sig_enforce;
 
@@ -998,9 +871,9 @@ static int ima_load_data(enum kernel_load_data_id id, bool contents)
  * On success return 0.  On integrity appraisal error, assuming the file
  * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
  */
-static int ima_post_load_data(char *buf, loff_t size,
-			      enum kernel_load_data_id load_id,
-			      char *description)
+int ima_post_load_data(char *buf, loff_t size,
+		       enum kernel_load_data_id load_id,
+		       char *description)
 {
 	if (load_id == LOADING_FIRMWARE) {
 		if ((ima_appraise & IMA_APPRAISE_FIRMWARE) &&
@@ -1010,13 +883,6 @@ static int ima_post_load_data(char *buf, loff_t size,
 		}
 		return 0;
 	}
-
-	/*
-	 * Measure the init_module syscall buffer containing the ELF image.
-	 */
-	if (load_id == LOADING_MODULE)
-		ima_measure_critical_data("modules", "init_module",
-					  buf, size, true, NULL, 0);
 
 	return 0;
 }
@@ -1050,20 +916,18 @@ int process_buffer_measurement(struct mnt_idmap *idmap,
 	int ret = 0;
 	const char *audit_cause = "ENOMEM";
 	struct ima_template_entry *entry = NULL;
-	struct ima_iint_cache iint = {};
+	struct integrity_iint_cache iint = {};
 	struct ima_event_data event_data = {.iint = &iint,
 					    .filename = eventname,
 					    .buf = buf,
 					    .buf_len = size};
 	struct ima_template_desc *template;
 	struct ima_max_digest_data hash;
-	struct ima_digest_data *hash_hdr = container_of(&hash.hdr,
-						struct ima_digest_data, hdr);
 	char digest_hash[IMA_MAX_DIGEST_SIZE];
 	int digest_hash_len = hash_digest_size[ima_hash_algo];
 	int violation = 0;
 	int action = 0;
-	struct lsm_prop prop;
+	u32 secid;
 
 	if (digest && digest_len < digest_hash_len)
 		return -EINVAL;
@@ -1079,16 +943,16 @@ int process_buffer_measurement(struct mnt_idmap *idmap,
 	}
 
 	/*
-	 * Both LSM hooks and auxiliary based buffer measurements are
-	 * based on policy. To avoid code duplication, differentiate
-	 * between the LSM hooks and auxiliary buffer measurements,
+	 * Both LSM hooks and auxilary based buffer measurements are
+	 * based on policy.  To avoid code duplication, differentiate
+	 * between the LSM hooks and auxilary buffer measurements,
 	 * retrieving the policy rule information only for the LSM hook
 	 * buffer measurements.
 	 */
 	if (func) {
-		security_current_getlsmprop_subj(&prop);
+		security_current_getsecid_subj(&secid);
 		action = ima_get_action(idmap, inode, current_cred(),
-					&prop, 0, func, &pcr, &template,
+					secid, 0, func, &pcr, &template,
 					func_data, NULL);
 		if (!(action & IMA_MEASURE) && !digest)
 			return -ENOENT;
@@ -1097,7 +961,7 @@ int process_buffer_measurement(struct mnt_idmap *idmap,
 	if (!pcr)
 		pcr = CONFIG_IMA_MEASURE_PCR_IDX;
 
-	iint.ima_hash = hash_hdr;
+	iint.ima_hash = &hash.hdr;
 	iint.ima_hash->algo = ima_hash_algo;
 	iint.ima_hash->length = hash_digest_size[ima_hash_algo];
 
@@ -1108,7 +972,7 @@ int process_buffer_measurement(struct mnt_idmap *idmap,
 	}
 
 	if (buf_hash) {
-		memcpy(digest_hash, hash_hdr->digest, digest_hash_len);
+		memcpy(digest_hash, hash.hdr.digest, digest_hash_len);
 
 		ret = ima_calc_buffer_hash(digest_hash, digest_hash_len,
 					   iint.ima_hash);
@@ -1158,16 +1022,19 @@ out:
  */
 void ima_kexec_cmdline(int kernel_fd, const void *buf, int size)
 {
+	struct fd f;
+
 	if (!buf || !size)
 		return;
 
-	CLASS(fd, f)(kernel_fd);
-	if (fd_empty(f))
+	f = fdget(kernel_fd);
+	if (!f.file)
 		return;
 
-	process_buffer_measurement(file_mnt_idmap(fd_file(f)), file_inode(fd_file(f)),
+	process_buffer_measurement(file_mnt_idmap(f.file), file_inode(f.file),
 				   buf, size, "kexec-cmdline", KEXEC_CMDLINE, 0,
 				   NULL, false, NULL, 0);
+	fdput(f);
 }
 
 /**
@@ -1204,48 +1071,9 @@ int ima_measure_critical_data(const char *event_label,
 }
 EXPORT_SYMBOL_GPL(ima_measure_critical_data);
 
-#ifdef CONFIG_INTEGRITY_ASYMMETRIC_KEYS
-
-/**
- * ima_kernel_module_request - Prevent crypto-pkcs1(rsa,*) requests
- * @kmod_name: kernel module name
- *
- * Avoid a verification loop where verifying the signature of the modprobe
- * binary requires executing modprobe itself. Since the modprobe iint->mutex
- * is already held when the signature verification is performed, a deadlock
- * occurs as soon as modprobe is executed within the critical region, since
- * the same lock cannot be taken again.
- *
- * This happens when public_key_verify_signature(), in case of RSA algorithm,
- * use alg_name to store internal information in order to construct an
- * algorithm on the fly, but crypto_larval_lookup() will try to use alg_name
- * in order to load a kernel module with same name.
- *
- * Since we don't have any real "crypto-pkcs1(rsa,*)" kernel modules,
- * we are safe to fail such module request from crypto_larval_lookup(), and
- * avoid the verification loop.
- *
- * Return: Zero if it is safe to load the kernel module, -EINVAL otherwise.
- */
-static int ima_kernel_module_request(char *kmod_name)
-{
-	if (strncmp(kmod_name, "crypto-pkcs1(rsa,", 17) == 0)
-		return -EINVAL;
-
-	return 0;
-}
-
-#endif /* CONFIG_INTEGRITY_ASYMMETRIC_KEYS */
-
 static int __init init_ima(void)
 {
 	int error;
-
-	/*Note that turning IMA off is intentionally limited to kdump kernel.*/
-	if (ima_disabled && is_kdump_kernel()) {
-		pr_info("IMA functionality is disabled");
-		return 0;
-	}
 
 	ima_appraise_parse_cmdline();
 	ima_init_template_list();
@@ -1274,51 +1102,4 @@ static int __init init_ima(void)
 	return error;
 }
 
-static struct security_hook_list ima_hooks[] __ro_after_init = {
-	LSM_HOOK_INIT(bprm_check_security, ima_bprm_check),
-	LSM_HOOK_INIT(bprm_creds_for_exec, ima_bprm_creds_for_exec),
-	LSM_HOOK_INIT(bprm_creds_from_file, ima_creds_check),
-	LSM_HOOK_INIT(file_post_open, ima_file_check),
-	LSM_HOOK_INIT(inode_post_create_tmpfile, ima_post_create_tmpfile),
-	LSM_HOOK_INIT(file_release, ima_file_free),
-	LSM_HOOK_INIT(mmap_file, ima_file_mmap),
-	LSM_HOOK_INIT(file_mprotect, ima_file_mprotect),
-	LSM_HOOK_INIT(kernel_load_data, ima_load_data),
-	LSM_HOOK_INIT(kernel_post_load_data, ima_post_load_data),
-	LSM_HOOK_INIT(kernel_read_file, ima_read_file),
-	LSM_HOOK_INIT(kernel_post_read_file, ima_post_read_file),
-	LSM_HOOK_INIT(path_post_mknod, ima_post_path_mknod),
-#ifdef CONFIG_IMA_MEASURE_ASYMMETRIC_KEYS
-	LSM_HOOK_INIT(key_post_create_or_update, ima_post_key_create_or_update),
-#endif
-#ifdef CONFIG_INTEGRITY_ASYMMETRIC_KEYS
-	LSM_HOOK_INIT(kernel_module_request, ima_kernel_module_request),
-#endif
-	LSM_HOOK_INIT(inode_free_security_rcu, ima_inode_free_rcu),
-};
-
-static const struct lsm_id ima_lsmid = {
-	.name = "ima",
-	.id = LSM_ID_IMA,
-};
-
-static int __init init_ima_lsm(void)
-{
-	ima_iintcache_init();
-	security_add_hooks(ima_hooks, ARRAY_SIZE(ima_hooks), &ima_lsmid);
-	init_ima_appraise_lsm(&ima_lsmid);
-	return 0;
-}
-
-struct lsm_blob_sizes ima_blob_sizes __ro_after_init = {
-	.lbs_inode = sizeof(struct ima_iint_cache *),
-};
-
-DEFINE_LSM(ima) = {
-	.id = &ima_lsmid,
-	.init = init_ima_lsm,
-	.order = LSM_ORDER_LAST,
-	.blobs = &ima_blob_sizes,
-	/* Start IMA after the TPM is available */
-	.initcall_late = init_ima,
-};
+late_initcall(init_ima);	/* Start IMA after the TPM is available */

@@ -5,7 +5,7 @@
 #include <uapi/asm/svm.h>
 #include <uapi/asm/kvm.h>
 
-#include <hyperv/hvhdk.h>
+#include <asm/hyperv-tlfs.h>
 
 /*
  * 32-bit intercept words in the VMCB Control Area, starting
@@ -116,8 +116,6 @@ enum {
 	INTERCEPT_INVPCID,
 	INTERCEPT_MCOMMIT,
 	INTERCEPT_TLBSYNC,
-	INTERCEPT_BUSLOCK,
-	INTERCEPT_IDLE_HLT = 166,
 };
 
 
@@ -131,13 +129,13 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 	u64 tsc_offset;
 	u32 asid;
 	u8 tlb_ctl;
-	u8 erap_ctl;
-	u8 reserved_2[2];
+	u8 reserved_2[3];
 	u32 int_ctl;
 	u32 int_vector;
 	u32 int_state;
 	u8 reserved_3[4];
-	u64 exit_code;
+	u32 exit_code;
+	u32 exit_code_hi;
 	u64 exit_info_1;
 	u64 exit_info_2;
 	u32 exit_int_info;
@@ -160,12 +158,7 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 	u64 avic_physical_id;	/* Offset 0xf8 */
 	u8 reserved_7[8];
 	u64 vmsa_pa;		/* Used for an SEV-ES guest */
-	u8 reserved_8[16];
-	u16 bus_lock_counter;		/* Offset 0x120 */
-	u8 reserved_9[22];
-	u64 allowed_sev_features;	/* Offset 0x138 */
-	u64 guest_sev_features;		/* Offset 0x140 */
-	u8 reserved_10[664];
+	u8 reserved_8[720];
 	/*
 	 * Offset 0x3e0, 32 bytes reserved
 	 * for use by hypervisor/software.
@@ -182,9 +175,6 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 #define TLB_CONTROL_FLUSH_ASID 3
 #define TLB_CONTROL_FLUSH_ASID_LOCAL 7
 
-#define ERAP_CONTROL_ALLOW_LARGER_RAP BIT(0)
-#define ERAP_CONTROL_CLEAR_RAP BIT(1)
-
 #define V_TPR_MASK 0x0f
 
 #define V_IRQ_SHIFT 8
@@ -192,12 +182,6 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 
 #define V_GIF_SHIFT 9
 #define V_GIF_MASK (1 << V_GIF_SHIFT)
-
-#define V_NMI_PENDING_SHIFT 11
-#define V_NMI_PENDING_MASK (1 << V_NMI_PENDING_SHIFT)
-
-#define V_NMI_BLOCKING_SHIFT 12
-#define V_NMI_BLOCKING_MASK (1 << V_NMI_BLOCKING_SHIFT)
 
 #define V_INTR_PRIO_SHIFT 16
 #define V_INTR_PRIO_MASK (0x0f << V_INTR_PRIO_SHIFT)
@@ -212,9 +196,6 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 
 #define V_GIF_ENABLE_SHIFT 25
 #define V_GIF_ENABLE_MASK (1 << V_GIF_ENABLE_SHIFT)
-
-#define V_NMI_ENABLE_SHIFT 26
-#define V_NMI_ENABLE_MASK (1 << V_NMI_ENABLE_SHIFT)
 
 #define AVIC_ENABLE_SHIFT 31
 #define AVIC_ENABLE_MASK (1 << AVIC_ENABLE_SHIFT)
@@ -239,6 +220,10 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 #define SVM_IOIO_SIZE_MASK (7 << SVM_IOIO_SIZE_SHIFT)
 #define SVM_IOIO_ASIZE_MASK (7 << SVM_IOIO_ASIZE_SHIFT)
 
+#define SVM_VM_CR_VALID_MASK	0x001fULL
+#define SVM_VM_CR_SVM_LOCK_MASK 0x0008ULL
+#define SVM_VM_CR_SVM_DIS_MASK  0x0010ULL
+
 #define SVM_NESTED_CTL_NP_ENABLE	BIT(0)
 #define SVM_NESTED_CTL_SEV_ENABLE	BIT(1)
 #define SVM_NESTED_CTL_SEV_ES_ENABLE	BIT(2)
@@ -255,20 +240,15 @@ struct __attribute__ ((__packed__)) vmcb_control_area {
 #define AVIC_LOGICAL_ID_ENTRY_VALID_BIT			31
 #define AVIC_LOGICAL_ID_ENTRY_VALID_MASK		(1 << 31)
 
-/*
- * GA_LOG_INTR is a synthetic flag that's never propagated to hardware-visible
- * tables.  GA_LOG_INTR is set if the vCPU needs device posted IRQs to generate
- * GA log interrupts to wake the vCPU (because it's blocking or about to block).
- */
-#define AVIC_PHYSICAL_ID_ENTRY_GA_LOG_INTR		BIT_ULL(61)
-
 #define AVIC_PHYSICAL_ID_ENTRY_HOST_PHYSICAL_ID_MASK	GENMASK_ULL(11, 0)
-#define AVIC_PHYSICAL_ID_ENTRY_BACKING_PAGE_MASK	GENMASK_ULL(51, 12)
+#define AVIC_PHYSICAL_ID_ENTRY_BACKING_PAGE_MASK	(0xFFFFFFFFFFULL << 12)
 #define AVIC_PHYSICAL_ID_ENTRY_IS_RUNNING_MASK		(1ULL << 62)
 #define AVIC_PHYSICAL_ID_ENTRY_VALID_MASK		(1ULL << 63)
 #define AVIC_PHYSICAL_ID_TABLE_SIZE_MASK		(0xFFULL)
 
 #define AVIC_DOORBELL_PHYSICAL_ID_MASK			GENMASK_ULL(11, 0)
+
+#define VMCB_AVIC_APIC_BAR_MASK				0xFFFFFFFFFF000ULL
 
 #define AVIC_UNACCEL_ACCESS_WRITE_MASK		1
 #define AVIC_UNACCEL_ACCESS_OFFSET_MASK		0xFF0
@@ -279,10 +259,9 @@ enum avic_ipi_failure_cause {
 	AVIC_IPI_FAILURE_TARGET_NOT_RUNNING,
 	AVIC_IPI_FAILURE_INVALID_TARGET,
 	AVIC_IPI_FAILURE_INVALID_BACKING_PAGE,
-	AVIC_IPI_FAILURE_INVALID_IPI_VECTOR,
 };
 
-#define AVIC_PHYSICAL_MAX_INDEX_MASK	GENMASK_ULL(11, 0)
+#define AVIC_PHYSICAL_MAX_INDEX_MASK	GENMASK_ULL(8, 0)
 
 /*
  * For AVIC, the max index allowed for physical APIC ID table is 0xfe (254), as
@@ -292,22 +271,15 @@ enum avic_ipi_failure_cause {
 
 /*
  * For x2AVIC, the max index allowed for physical APIC ID table is 0x1ff (511).
- * With X86_FEATURE_X2AVIC_EXT, the max index is increased to 0xfff (4095).
  */
 #define X2AVIC_MAX_PHYSICAL_ID		0x1FFUL
-#define X2AVIC_4K_MAX_PHYSICAL_ID	0xFFFUL
 
 static_assert((AVIC_MAX_PHYSICAL_ID & AVIC_PHYSICAL_MAX_INDEX_MASK) == AVIC_MAX_PHYSICAL_ID);
 static_assert((X2AVIC_MAX_PHYSICAL_ID & AVIC_PHYSICAL_MAX_INDEX_MASK) == X2AVIC_MAX_PHYSICAL_ID);
-static_assert((X2AVIC_4K_MAX_PHYSICAL_ID & AVIC_PHYSICAL_MAX_INDEX_MASK) == X2AVIC_4K_MAX_PHYSICAL_ID);
 
-#define SVM_SEV_FEAT_SNP_ACTIVE				BIT(0)
-#define SVM_SEV_FEAT_RESTRICTED_INJECTION		BIT(3)
-#define SVM_SEV_FEAT_ALTERNATE_INJECTION		BIT(4)
-#define SVM_SEV_FEAT_DEBUG_SWAP				BIT(5)
-#define SVM_SEV_FEAT_SECURE_TSC				BIT(9)
+#define AVIC_HPA_MASK	~((0xFFFULL << 52) | 0xFFF)
+#define VMCB_AVIC_APIC_BAR_MASK		0xFFFFFFFFFF000ULL
 
-#define VMCB_ALLOWED_SEV_FEATURES_VALID			BIT_ULL(63)
 
 struct vmcb_seg {
 	u16 selector;
@@ -365,7 +337,7 @@ struct vmcb_save_area {
 	u64 last_excp_from;
 	u64 last_excp_to;
 	u8 reserved_0x298[72];
-	u64 spec_ctrl;		/* Guest version of SPEC_CTRL at 0x2E0 */
+	u32 spec_ctrl;		/* Guest version of SPEC_CTRL at 0x2E0 */
 } __packed;
 
 /* Save area definition for SEV-ES and SEV-SNP guests */
@@ -380,10 +352,10 @@ struct sev_es_save_area {
 	struct vmcb_seg ldtr;
 	struct vmcb_seg idtr;
 	struct vmcb_seg tr;
-	u64 pl0_ssp;
-	u64 pl1_ssp;
-	u64 pl2_ssp;
-	u64 pl3_ssp;
+	u64 vmpl0_ssp;
+	u64 vmpl1_ssp;
+	u64 vmpl2_ssp;
+	u64 vmpl3_ssp;
 	u64 u_cet;
 	u8 reserved_0xc8[2];
 	u8 vmpl;
@@ -432,9 +404,7 @@ struct sev_es_save_area {
 	u8 reserved_0x298[80];
 	u32 pkru;
 	u32 tsc_aux;
-	u64 tsc_scale;
-	u64 tsc_offset;
-	u8 reserved_0x300[8];
+	u8 reserved_0x2f0[24];
 	u64 rcx;
 	u64 rdx;
 	u64 rbx;
@@ -533,22 +503,8 @@ struct ghcb {
 	u32 ghcb_usage;
 } __packed;
 
-struct vmcb {
-	struct vmcb_control_area control;
-	union {
-		struct vmcb_save_area save;
 
-		/*
-		 * For SEV-ES VMs, the save area in the VMCB is used only to
-		 * save/load host state.  Guest state resides in a separate
-		 * page, the aptly named VM Save Area (VMSA), that is encrypted
-		 * with the guest's private key.
-		 */
-		struct sev_es_save_area host_sev_es_save;
-	};
-} __packed;
-
-#define EXPECTED_VMCB_SAVE_AREA_SIZE		744
+#define EXPECTED_VMCB_SAVE_AREA_SIZE		740
 #define EXPECTED_GHCB_SAVE_AREA_SIZE		1032
 #define EXPECTED_SEV_ES_SAVE_AREA_SIZE		1648
 #define EXPECTED_VMCB_CONTROL_AREA_SIZE		1024
@@ -563,7 +519,6 @@ static inline void __unused_size_checks(void)
 	BUILD_BUG_ON(sizeof(struct ghcb_save_area)	!= EXPECTED_GHCB_SAVE_AREA_SIZE);
 	BUILD_BUG_ON(sizeof(struct sev_es_save_area)	!= EXPECTED_SEV_ES_SAVE_AREA_SIZE);
 	BUILD_BUG_ON(sizeof(struct vmcb_control_area)	!= EXPECTED_VMCB_CONTROL_AREA_SIZE);
-	BUILD_BUG_ON(offsetof(struct vmcb, save)	!= EXPECTED_VMCB_CONTROL_AREA_SIZE);
 	BUILD_BUG_ON(sizeof(struct ghcb)		!= EXPECTED_GHCB_SIZE);
 
 	/* Check offsets of reserved fields */
@@ -581,7 +536,7 @@ static inline void __unused_size_checks(void)
 	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x1c0);
 	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x248);
 	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x298);
-	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x300);
+	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x2f0);
 	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x320);
 	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x380);
 	BUILD_BUG_RESERVED_OFFSET(sev_es_save_area, 0x3f0);
@@ -600,7 +555,14 @@ static inline void __unused_size_checks(void)
 	BUILD_BUG_RESERVED_OFFSET(ghcb, 0xff0);
 }
 
+struct vmcb {
+	struct vmcb_control_area control;
+	struct vmcb_save_area save;
+} __packed;
+
 #define SVM_CPUID_FUNC 0x8000000a
+
+#define SVM_VM_CR_SVM_DISABLE 4
 
 #define SVM_SELECTOR_S_SHIFT 4
 #define SVM_SELECTOR_DPL_SHIFT 5
@@ -707,6 +669,5 @@ DEFINE_GHCB_ACCESSORS(sw_exit_info_1)
 DEFINE_GHCB_ACCESSORS(sw_exit_info_2)
 DEFINE_GHCB_ACCESSORS(sw_scratch)
 DEFINE_GHCB_ACCESSORS(xcr0)
-DEFINE_GHCB_ACCESSORS(xss)
 
 #endif

@@ -199,7 +199,4 @@ static int ssl_non_raw_setup(char *str)
 	return 1;
 }
 __setup("ssl-non-raw", ssl_non_raw_setup);
-__uml_help(ssl_non_raw_setup,
-"ssl-non-raw\n"
-"    Set serial lines to non-raw mode.\n\n"
-);
+__channel_help(ssl_non_raw_setup, "set serial lines to non-raw mode");

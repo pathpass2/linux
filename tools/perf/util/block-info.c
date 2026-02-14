@@ -40,33 +40,29 @@ static struct block_header_column {
 	[PERF_HPP_REPORT__BLOCK_DSO] = {
 		.name = "Shared Object",
 		.width = 20,
-	},
-	[PERF_HPP_REPORT__BLOCK_BRANCH_COUNTER] = {
-		.name = "Branch Counter",
-		.width = 30,
 	}
 };
 
-static struct block_info *block_info__new(unsigned int br_cntr_nr)
+struct block_info *block_info__get(struct block_info *bi)
 {
-	struct block_info *bi = zalloc(sizeof(struct block_info));
-
-	if (bi && br_cntr_nr) {
-		bi->br_cntr = calloc(br_cntr_nr, sizeof(u64));
-		if (!bi->br_cntr) {
-			free(bi);
-			return NULL;
-		}
-	}
-
+	if (bi)
+		refcount_inc(&bi->refcnt);
 	return bi;
 }
 
-void block_info__delete(struct block_info *bi)
+void block_info__put(struct block_info *bi)
 {
+	if (bi && refcount_dec_and_test(&bi->refcnt))
+		free(bi);
+}
+
+struct block_info *block_info__new(void)
+{
+	struct block_info *bi = zalloc(sizeof(*bi));
+
 	if (bi)
-		free(bi->br_cntr);
-	free(bi);
+		refcount_set(&bi->refcnt, 1);
+	return bi;
 }
 
 int64_t __block_info__cmp(struct hist_entry *left, struct hist_entry *right)
@@ -102,8 +98,7 @@ int64_t block_info__cmp(struct perf_hpp_fmt *fmt __maybe_unused,
 
 static void init_block_info(struct block_info *bi, struct symbol *sym,
 			    struct cyc_hist *ch, int offset,
-			    u64 total_cycles, unsigned int br_cntr_nr,
-			    u64 *br_cntr, struct evsel *evsel)
+			    u64 total_cycles)
 {
 	bi->sym = sym;
 	bi->start = ch->start;
@@ -116,18 +111,10 @@ static void init_block_info(struct block_info *bi, struct symbol *sym,
 
 	memcpy(bi->cycles_spark, ch->cycles_spark,
 	       NUM_SPARKS * sizeof(u64));
-
-	if (br_cntr && br_cntr_nr) {
-		bi->br_cntr_nr = br_cntr_nr;
-		memcpy(bi->br_cntr, &br_cntr[offset * br_cntr_nr],
-		       br_cntr_nr * sizeof(u64));
-	}
-	bi->evsel = evsel;
 }
 
 int block_info__process_sym(struct hist_entry *he, struct block_hist *bh,
-			    u64 *block_cycles_aggr, u64 total_cycles,
-			    unsigned int br_cntr_nr)
+			    u64 *block_cycles_aggr, u64 total_cycles)
 {
 	struct annotation *notes;
 	struct cyc_hist *ch;
@@ -142,28 +129,26 @@ int block_info__process_sym(struct hist_entry *he, struct block_hist *bh,
 	al.sym = he->ms.sym;
 
 	notes = symbol__annotation(he->ms.sym);
-	if (!notes || !notes->branch || !notes->branch->cycles_hist)
+	if (!notes || !notes->src || !notes->src->cycles_hist)
 		return 0;
-	ch = notes->branch->cycles_hist;
+	ch = notes->src->cycles_hist;
 	for (unsigned int i = 0; i < symbol__size(he->ms.sym); i++) {
 		if (ch[i].num_aggr) {
 			struct block_info *bi;
 			struct hist_entry *he_block;
 
-			bi = block_info__new(br_cntr_nr);
+			bi = block_info__new();
 			if (!bi)
 				return -1;
 
 			init_block_info(bi, he->ms.sym, &ch[i], i,
-					total_cycles, br_cntr_nr,
-					notes->branch->br_cntr,
-					hists_to_evsel(he->hists));
+					total_cycles);
 			cycles += bi->cycles_aggr / bi->num_aggr;
 
 			he_block = hists__add_entry_block(&bh->block_hists,
 							  &al, bi);
 			if (!he_block) {
-				block_info__delete(bi);
+				block_info__put(bi);
 				return -1;
 			}
 		}
@@ -311,8 +296,8 @@ static int block_range_entry(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
 	end_line = map__srcline(he->ms.map, bi->sym->start + bi->end,
 				he->ms.sym);
 
-	if (start_line != SRCLINE_UNKNOWN &&
-	    end_line != SRCLINE_UNKNOWN) {
+	if ((strncmp(start_line, SRCLINE_UNKNOWN, strlen(SRCLINE_UNKNOWN)) != 0) &&
+	    (strncmp(end_line, SRCLINE_UNKNOWN, strlen(SRCLINE_UNKNOWN)) != 0)) {
 		scnprintf(buf, sizeof(buf), "[%s -> %s]",
 			  start_line, end_line);
 	} else {
@@ -320,8 +305,8 @@ static int block_range_entry(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
 			  bi->start, bi->end);
 	}
 
-	zfree_srcline(&start_line);
-	zfree_srcline(&end_line);
+	free_srcline(start_line);
+	free_srcline(end_line);
 
 	return scnprintf(hpp->buf, hpp->size, "%*s", block_fmt->width, buf);
 }
@@ -332,9 +317,9 @@ static int block_dso_entry(struct perf_hpp_fmt *fmt, struct perf_hpp *hpp,
 	struct block_fmt *block_fmt = container_of(fmt, struct block_fmt, fmt);
 	struct map *map = he->ms.map;
 
-	if (map && map__dso(map)) {
+	if (map && map->dso) {
 		return scnprintf(hpp->buf, hpp->size, "%*s", block_fmt->width,
-				 dso__short_name(map__dso(map)));
+				 map->dso->short_name);
 	}
 
 	return scnprintf(hpp->buf, hpp->size, "%*s", block_fmt->width,
@@ -352,24 +337,6 @@ static void init_block_header(struct block_fmt *block_fmt)
 
 	fmt->header = block_column_header;
 	fmt->width = block_column_width;
-}
-
-static int block_branch_counter_entry(struct perf_hpp_fmt *fmt,
-				      struct perf_hpp *hpp,
-				      struct hist_entry *he)
-{
-	struct block_fmt *block_fmt = container_of(fmt, struct block_fmt, fmt);
-	struct block_info *bi = he->block_info;
-	char *buf;
-	int ret;
-
-	if (annotation_br_cntr_entry(&buf, bi->br_cntr_nr, bi->br_cntr,
-				     bi->num_aggr, bi->evsel))
-		return 0;
-
-	ret = scnprintf(hpp->buf, hpp->size, "%*s", block_fmt->width, buf);
-	free(buf);
-	return ret;
 }
 
 static void hpp_register(struct block_fmt *block_fmt, int idx,
@@ -401,9 +368,6 @@ static void hpp_register(struct block_fmt *block_fmt, int idx,
 		break;
 	case PERF_HPP_REPORT__BLOCK_DSO:
 		fmt->entry = block_dso_entry;
-		break;
-	case PERF_HPP_REPORT__BLOCK_BRANCH_COUNTER:
-		fmt->entry = block_branch_counter_entry;
 		break;
 	default:
 		return;
@@ -438,7 +402,7 @@ static void init_block_hist(struct block_hist *bh, struct block_fmt *block_fmts,
 static int process_block_report(struct hists *hists,
 				struct block_report *block_report,
 				u64 total_cycles, int *block_hpps,
-				int nr_hpps, unsigned int br_cntr_nr)
+				int nr_hpps)
 {
 	struct rb_node *next = rb_first_cached(&hists->entries);
 	struct block_hist *bh = &block_report->hist;
@@ -453,7 +417,7 @@ static int process_block_report(struct hists *hists,
 	while (next) {
 		he = rb_entry(next, struct hist_entry, rb_node);
 		block_info__process_sym(he, bh, &block_report->cycles,
-					total_cycles, br_cntr_nr);
+					total_cycles);
 		next = rb_next(&he->rb_node);
 	}
 
@@ -483,7 +447,7 @@ struct block_report *block_info__create_report(struct evlist *evlist,
 		struct hists *hists = evsel__hists(pos);
 
 		process_block_report(hists, &block_reports[i], total_cycles,
-				     block_hpps, nr_hpps, evlist->nr_br_cntr);
+				     block_hpps, nr_hpps);
 		i++;
 	}
 
@@ -500,7 +464,8 @@ void block_info__free_report(struct block_report *reps, int nr_reps)
 }
 
 int report__browse_block_hists(struct block_hist *bh, float min_percent,
-			       struct evsel *evsel, struct perf_env *env)
+			       struct evsel *evsel, struct perf_env *env,
+			       struct annotation_options *annotation_opts)
 {
 	int ret;
 
@@ -512,7 +477,8 @@ int report__browse_block_hists(struct block_hist *bh, float min_percent,
 		return 0;
 	case 1:
 		symbol_conf.report_individual_block = true;
-		ret = block_hists_tui_browse(bh, evsel, min_percent, env);
+		ret = block_hists_tui_browse(bh, evsel, min_percent,
+					     env, annotation_opts);
 		return ret;
 	default:
 		return -1;

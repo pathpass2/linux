@@ -8,28 +8,29 @@
  * Author(s): Gerald Schaefer <gerald.schaefer@de.ibm.com>
  */
 
-#include <asm/cpacf.h>
-#include <crypto/ghash.h>
 #include <crypto/internal/hash.h>
-#include <linux/cpufeature.h>
-#include <linux/err.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/string.h>
+#include <linux/cpufeature.h>
+#include <asm/cpacf.h>
 
-struct s390_ghash_ctx {
+#define GHASH_BLOCK_SIZE	16
+#define GHASH_DIGEST_SIZE	16
+
+struct ghash_ctx {
 	u8 key[GHASH_BLOCK_SIZE];
 };
 
-struct s390_ghash_desc_ctx {
+struct ghash_desc_ctx {
 	u8 icv[GHASH_BLOCK_SIZE];
 	u8 key[GHASH_BLOCK_SIZE];
+	u8 buffer[GHASH_BLOCK_SIZE];
+	u32 bytes;
 };
 
 static int ghash_init(struct shash_desc *desc)
 {
-	struct s390_ghash_ctx *ctx = crypto_shash_ctx(desc->tfm);
-	struct s390_ghash_desc_ctx *dctx = shash_desc_ctx(desc);
+	struct ghash_desc_ctx *dctx = shash_desc_ctx(desc);
+	struct ghash_ctx *ctx = crypto_shash_ctx(desc->tfm);
 
 	memset(dctx, 0, sizeof(*dctx));
 	memcpy(dctx->key, ctx->key, GHASH_BLOCK_SIZE);
@@ -40,7 +41,7 @@ static int ghash_init(struct shash_desc *desc)
 static int ghash_setkey(struct crypto_shash *tfm,
 			const u8 *key, unsigned int keylen)
 {
-	struct s390_ghash_ctx *ctx = crypto_shash_ctx(tfm);
+	struct ghash_ctx *ctx = crypto_shash_ctx(tfm);
 
 	if (keylen != GHASH_BLOCK_SIZE)
 		return -EINVAL;
@@ -53,71 +54,80 @@ static int ghash_setkey(struct crypto_shash *tfm,
 static int ghash_update(struct shash_desc *desc,
 			 const u8 *src, unsigned int srclen)
 {
-	struct s390_ghash_desc_ctx *dctx = shash_desc_ctx(desc);
+	struct ghash_desc_ctx *dctx = shash_desc_ctx(desc);
 	unsigned int n;
+	u8 *buf = dctx->buffer;
+
+	if (dctx->bytes) {
+		u8 *pos = buf + (GHASH_BLOCK_SIZE - dctx->bytes);
+
+		n = min(srclen, dctx->bytes);
+		dctx->bytes -= n;
+		srclen -= n;
+
+		memcpy(pos, src, n);
+		src += n;
+
+		if (!dctx->bytes) {
+			cpacf_kimd(CPACF_KIMD_GHASH, dctx, buf,
+				   GHASH_BLOCK_SIZE);
+		}
+	}
 
 	n = srclen & ~(GHASH_BLOCK_SIZE - 1);
-	cpacf_kimd(CPACF_KIMD_GHASH, dctx, src, n);
-	return srclen - n;
-}
-
-static void ghash_flush(struct s390_ghash_desc_ctx *dctx, const u8 *src,
-			unsigned int len)
-{
-	if (len) {
-		u8 buf[GHASH_BLOCK_SIZE] = {};
-
-		memcpy(buf, src, len);
-		cpacf_kimd(CPACF_KIMD_GHASH, dctx, buf, GHASH_BLOCK_SIZE);
-		memzero_explicit(buf, sizeof(buf));
+	if (n) {
+		cpacf_kimd(CPACF_KIMD_GHASH, dctx, src, n);
+		src += n;
+		srclen -= n;
 	}
-}
 
-static int ghash_finup(struct shash_desc *desc, const u8 *src,
-		       unsigned int len, u8 *dst)
-{
-	struct s390_ghash_desc_ctx *dctx = shash_desc_ctx(desc);
+	if (srclen) {
+		dctx->bytes = GHASH_BLOCK_SIZE - srclen;
+		memcpy(buf, src, srclen);
+	}
 
-	ghash_flush(dctx, src, len);
-	memcpy(dst, dctx->icv, GHASH_BLOCK_SIZE);
 	return 0;
 }
 
-static int ghash_export(struct shash_desc *desc, void *out)
+static int ghash_flush(struct ghash_desc_ctx *dctx)
 {
-	struct s390_ghash_desc_ctx *dctx = shash_desc_ctx(desc);
+	u8 *buf = dctx->buffer;
 
-	memcpy(out, dctx->icv, GHASH_DIGEST_SIZE);
+	if (dctx->bytes) {
+		u8 *pos = buf + (GHASH_BLOCK_SIZE - dctx->bytes);
+
+		memset(pos, 0, dctx->bytes);
+		cpacf_kimd(CPACF_KIMD_GHASH, dctx, buf, GHASH_BLOCK_SIZE);
+		dctx->bytes = 0;
+	}
+
 	return 0;
 }
 
-static int ghash_import(struct shash_desc *desc, const void *in)
+static int ghash_final(struct shash_desc *desc, u8 *dst)
 {
-	struct s390_ghash_ctx *ctx = crypto_shash_ctx(desc->tfm);
-	struct s390_ghash_desc_ctx *dctx = shash_desc_ctx(desc);
+	struct ghash_desc_ctx *dctx = shash_desc_ctx(desc);
+	int ret;
 
-	memcpy(dctx->icv, in, GHASH_DIGEST_SIZE);
-	memcpy(dctx->key, ctx->key, GHASH_BLOCK_SIZE);
-	return 0;
+	ret = ghash_flush(dctx);
+	if (!ret)
+		memcpy(dst, dctx->icv, GHASH_BLOCK_SIZE);
+	return ret;
 }
 
 static struct shash_alg ghash_alg = {
 	.digestsize	= GHASH_DIGEST_SIZE,
 	.init		= ghash_init,
 	.update		= ghash_update,
-	.finup		= ghash_finup,
+	.final		= ghash_final,
 	.setkey		= ghash_setkey,
-	.export		= ghash_export,
-	.import		= ghash_import,
-	.statesize	= sizeof(struct ghash_desc_ctx),
-	.descsize	= sizeof(struct s390_ghash_desc_ctx),
+	.descsize	= sizeof(struct ghash_desc_ctx),
 	.base		= {
 		.cra_name		= "ghash",
 		.cra_driver_name	= "ghash-s390",
 		.cra_priority		= 300,
-		.cra_flags		= CRYPTO_AHASH_ALG_BLOCK_ONLY,
 		.cra_blocksize		= GHASH_BLOCK_SIZE,
-		.cra_ctxsize		= sizeof(struct s390_ghash_ctx),
+		.cra_ctxsize		= sizeof(struct ghash_ctx),
 		.cra_module		= THIS_MODULE,
 	},
 };

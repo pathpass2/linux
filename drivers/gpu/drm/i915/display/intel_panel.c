@@ -32,24 +32,22 @@
 #include <linux/pwm.h>
 
 #include <drm/drm_edid.h>
-#include <drm/drm_print.h>
 
+#include "i915_reg.h"
 #include "intel_backlight.h"
 #include "intel_connector.h"
-#include "intel_display_core.h"
-#include "intel_display_driver.h"
+#include "intel_de.h"
 #include "intel_display_types.h"
 #include "intel_drrs.h"
 #include "intel_panel.h"
 #include "intel_quirks.h"
-#include "intel_vrr.h"
 
-bool intel_panel_use_ssc(struct intel_display *display)
+bool intel_panel_use_ssc(struct drm_i915_private *i915)
 {
-	if (display->params.panel_use_ssc >= 0)
-		return display->params.panel_use_ssc != 0;
-	return display->vbt.lvds_use_ssc &&
-		!intel_has_quirk(display, QUIRK_LVDS_SSC_DISABLE);
+	if (i915->params.panel_use_ssc >= 0)
+		return i915->params.panel_use_ssc != 0;
+	return i915->display.vbt.lvds_use_ssc &&
+		!intel_has_quirk(i915, QUIRK_LVDS_SSC_DISABLE);
 }
 
 const struct drm_display_mode *
@@ -59,29 +57,6 @@ intel_panel_preferred_fixed_mode(struct intel_connector *connector)
 					struct drm_display_mode, head);
 }
 
-static bool is_best_fixed_mode(struct intel_connector *connector,
-			       int vrefresh, int fixed_mode_vrefresh,
-			       const struct drm_display_mode *best_mode)
-{
-	/* we want to always return something */
-	if (!best_mode)
-		return true;
-
-	/*
-	 * With VRR always pick a mode with equal/higher than requested
-	 * vrefresh, which we can then reduce to match the requested
-	 * vrefresh by extending the vblank length.
-	 */
-	if (intel_vrr_is_in_range(connector, vrefresh) &&
-	    intel_vrr_is_in_range(connector, fixed_mode_vrefresh) &&
-	    fixed_mode_vrefresh < vrefresh)
-		return false;
-
-	/* pick the fixed_mode that is closest in terms of vrefresh */
-	return abs(fixed_mode_vrefresh - vrefresh) <
-		abs(drm_mode_vrefresh(best_mode) - vrefresh);
-}
-
 const struct drm_display_mode *
 intel_panel_fixed_mode(struct intel_connector *connector,
 		       const struct drm_display_mode *mode)
@@ -89,11 +64,11 @@ intel_panel_fixed_mode(struct intel_connector *connector,
 	const struct drm_display_mode *fixed_mode, *best_mode = NULL;
 	int vrefresh = drm_mode_vrefresh(mode);
 
+	/* pick the fixed_mode that is closest in terms of vrefresh */
 	list_for_each_entry(fixed_mode, &connector->panel.fixed_modes, head) {
-		int fixed_mode_vrefresh = drm_mode_vrefresh(fixed_mode);
-
-		if (is_best_fixed_mode(connector, vrefresh,
-				       fixed_mode_vrefresh, best_mode))
+		if (!best_mode ||
+		    abs(drm_mode_vrefresh(fixed_mode) - vrefresh) <
+		    abs(drm_mode_vrefresh(best_mode) - vrefresh))
 			best_mode = fixed_mode;
 	}
 
@@ -202,45 +177,26 @@ int intel_panel_compute_config(struct intel_connector *connector,
 {
 	const struct drm_display_mode *fixed_mode =
 		intel_panel_fixed_mode(connector, adjusted_mode);
-	int vrefresh, fixed_mode_vrefresh;
-	bool is_vrr;
 
 	if (!fixed_mode)
 		return 0;
 
-	vrefresh = drm_mode_vrefresh(adjusted_mode);
-	fixed_mode_vrefresh = drm_mode_vrefresh(fixed_mode);
-
 	/*
-	 * Assume that we shouldn't muck about with the
-	 * timings if they don't land in the VRR range.
+	 * We don't want to lie too much to the user about the refresh
+	 * rate they're going to get. But we have to allow a bit of latitude
+	 * for Xorg since it likes to automagically cook up modes with slightly
+	 * off refresh rates.
 	 */
-	is_vrr = intel_vrr_is_in_range(connector, vrefresh) &&
-		intel_vrr_is_in_range(connector, fixed_mode_vrefresh);
+	if (abs(drm_mode_vrefresh(adjusted_mode) - drm_mode_vrefresh(fixed_mode)) > 1) {
+		drm_dbg_kms(connector->base.dev,
+			    "[CONNECTOR:%d:%s] Requested mode vrefresh (%d Hz) does not match fixed mode vrefresh (%d Hz)\n",
+			    connector->base.base.id, connector->base.name,
+			    drm_mode_vrefresh(adjusted_mode), drm_mode_vrefresh(fixed_mode));
 
-	if (!is_vrr) {
-		/*
-		 * We don't want to lie too much to the user about the refresh
-		 * rate they're going to get. But we have to allow a bit of latitude
-		 * for Xorg since it likes to automagically cook up modes with slightly
-		 * off refresh rates.
-		 */
-		if (abs(vrefresh - fixed_mode_vrefresh) > 1) {
-			drm_dbg_kms(connector->base.dev,
-				    "[CONNECTOR:%d:%s] Requested mode vrefresh (%d Hz) does not match fixed mode vrefresh (%d Hz)\n",
-				    connector->base.base.id, connector->base.name,
-				    vrefresh, fixed_mode_vrefresh);
-
-			return -EINVAL;
-		}
+		return -EINVAL;
 	}
 
 	drm_mode_copy(adjusted_mode, fixed_mode);
-
-	if (is_vrr && fixed_mode_vrefresh != vrefresh)
-		adjusted_mode->vtotal =
-			DIV_ROUND_CLOSEST(adjusted_mode->clock * 1000,
-					  adjusted_mode->htotal * vrefresh);
 
 	drm_mode_set_crtcinfo(adjusted_mode, 0);
 
@@ -249,7 +205,7 @@ int intel_panel_compute_config(struct intel_connector *connector,
 
 static void intel_panel_add_edid_alt_fixed_modes(struct intel_connector *connector)
 {
-	struct intel_display *display = to_intel_display(connector);
+	struct drm_i915_private *dev_priv = to_i915(connector->base.dev);
 	const struct drm_display_mode *preferred_mode =
 		intel_panel_preferred_fixed_mode(connector);
 	struct drm_display_mode *mode, *next;
@@ -258,7 +214,7 @@ static void intel_panel_add_edid_alt_fixed_modes(struct intel_connector *connect
 		if (!is_alt_fixed_mode(mode, preferred_mode))
 			continue;
 
-		drm_dbg_kms(display->drm,
+		drm_dbg_kms(&dev_priv->drm,
 			    "[CONNECTOR:%d:%s] using alternate EDID fixed mode: " DRM_MODE_FMT "\n",
 			    connector->base.base.id, connector->base.name,
 			    DRM_MODE_ARG(mode));
@@ -269,7 +225,7 @@ static void intel_panel_add_edid_alt_fixed_modes(struct intel_connector *connect
 
 static void intel_panel_add_edid_preferred_mode(struct intel_connector *connector)
 {
-	struct intel_display *display = to_intel_display(connector);
+	struct drm_i915_private *dev_priv = to_i915(connector->base.dev);
 	struct drm_display_mode *scan, *fixed_mode = NULL;
 
 	if (list_empty(&connector->base.probed_modes))
@@ -287,7 +243,7 @@ static void intel_panel_add_edid_preferred_mode(struct intel_connector *connecto
 		fixed_mode = list_first_entry(&connector->base.probed_modes,
 					      typeof(*fixed_mode), head);
 
-	drm_dbg_kms(display->drm,
+	drm_dbg_kms(&dev_priv->drm,
 		    "[CONNECTOR:%d:%s] using %s EDID fixed mode: " DRM_MODE_FMT "\n",
 		    connector->base.base.id, connector->base.name,
 		    fixed_mode->type & DRM_MODE_TYPE_PREFERRED ? "preferred" : "first",
@@ -300,16 +256,16 @@ static void intel_panel_add_edid_preferred_mode(struct intel_connector *connecto
 
 static void intel_panel_destroy_probed_modes(struct intel_connector *connector)
 {
-	struct intel_display *display = to_intel_display(connector);
+	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct drm_display_mode *mode, *next;
 
 	list_for_each_entry_safe(mode, next, &connector->base.probed_modes, head) {
-		drm_dbg_kms(display->drm,
+		drm_dbg_kms(&i915->drm,
 			    "[CONNECTOR:%d:%s] not using EDID mode: " DRM_MODE_FMT "\n",
 			    connector->base.base.id, connector->base.name,
 			    DRM_MODE_ARG(mode));
 		list_del(&mode->head);
-		drm_mode_destroy(display->drm, mode);
+		drm_mode_destroy(&i915->drm, mode);
 	}
 }
 
@@ -326,7 +282,7 @@ static void intel_panel_add_fixed_mode(struct intel_connector *connector,
 				       struct drm_display_mode *fixed_mode,
 				       const char *type)
 {
-	struct intel_display *display = to_intel_display(connector);
+	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	struct drm_display_info *info = &connector->base.display_info;
 
 	if (!fixed_mode)
@@ -337,7 +293,7 @@ static void intel_panel_add_fixed_mode(struct intel_connector *connector,
 	info->width_mm = fixed_mode->width_mm;
 	info->height_mm = fixed_mode->height_mm;
 
-	drm_dbg_kms(display->drm, "[CONNECTOR:%d:%s] using %s fixed mode: " DRM_MODE_FMT "\n",
+	drm_dbg_kms(&i915->drm, "[CONNECTOR:%d:%s] using %s fixed mode: " DRM_MODE_FMT "\n",
 		    connector->base.base.id, connector->base.name, type,
 		    DRM_MODE_ARG(fixed_mode));
 
@@ -346,21 +302,21 @@ static void intel_panel_add_fixed_mode(struct intel_connector *connector,
 
 void intel_panel_add_vbt_lfp_fixed_mode(struct intel_connector *connector)
 {
-	struct intel_display *display = to_intel_display(connector);
+	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	const struct drm_display_mode *mode;
 
-	mode = connector->panel.vbt.lfp_vbt_mode;
+	mode = connector->panel.vbt.lfp_lvds_vbt_mode;
 	if (!mode)
 		return;
 
 	intel_panel_add_fixed_mode(connector,
-				   drm_mode_duplicate(display->drm, mode),
+				   drm_mode_duplicate(&i915->drm, mode),
 				   "VBT LFP");
 }
 
 void intel_panel_add_vbt_sdvo_fixed_mode(struct intel_connector *connector)
 {
-	struct intel_display *display = to_intel_display(connector);
+	struct drm_i915_private *i915 = to_i915(connector->base.dev);
 	const struct drm_display_mode *mode;
 
 	mode = connector->panel.vbt.sdvo_lvds_vbt_mode;
@@ -368,7 +324,7 @@ void intel_panel_add_vbt_sdvo_fixed_mode(struct intel_connector *connector)
 		return;
 
 	intel_panel_add_fixed_mode(connector,
-				   drm_mode_duplicate(display->drm, mode),
+				   drm_mode_duplicate(&i915->drm, mode),
 				   "VBT SDVO");
 }
 
@@ -380,16 +336,307 @@ void intel_panel_add_encoder_fixed_mode(struct intel_connector *connector,
 				   "current (BIOS)");
 }
 
+/* adjusted_mode has been preset to be the panel's fixed mode */
+static int pch_panel_fitting(struct intel_crtc_state *crtc_state,
+			     const struct drm_connector_state *conn_state)
+{
+	const struct drm_display_mode *adjusted_mode =
+		&crtc_state->hw.adjusted_mode;
+	int pipe_src_w = drm_rect_width(&crtc_state->pipe_src);
+	int pipe_src_h = drm_rect_height(&crtc_state->pipe_src);
+	int x, y, width, height;
+
+	/* Native modes don't need fitting */
+	if (adjusted_mode->crtc_hdisplay == pipe_src_w &&
+	    adjusted_mode->crtc_vdisplay == pipe_src_h &&
+	    crtc_state->output_format != INTEL_OUTPUT_FORMAT_YCBCR420)
+		return 0;
+
+	switch (conn_state->scaling_mode) {
+	case DRM_MODE_SCALE_CENTER:
+		width = pipe_src_w;
+		height = pipe_src_h;
+		x = (adjusted_mode->crtc_hdisplay - width + 1)/2;
+		y = (adjusted_mode->crtc_vdisplay - height + 1)/2;
+		break;
+
+	case DRM_MODE_SCALE_ASPECT:
+		/* Scale but preserve the aspect ratio */
+		{
+			u32 scaled_width = adjusted_mode->crtc_hdisplay * pipe_src_h;
+			u32 scaled_height = pipe_src_w * adjusted_mode->crtc_vdisplay;
+			if (scaled_width > scaled_height) { /* pillar */
+				width = scaled_height / pipe_src_h;
+				if (width & 1)
+					width++;
+				x = (adjusted_mode->crtc_hdisplay - width + 1) / 2;
+				y = 0;
+				height = adjusted_mode->crtc_vdisplay;
+			} else if (scaled_width < scaled_height) { /* letter */
+				height = scaled_width / pipe_src_w;
+				if (height & 1)
+				    height++;
+				y = (adjusted_mode->crtc_vdisplay - height + 1) / 2;
+				x = 0;
+				width = adjusted_mode->crtc_hdisplay;
+			} else {
+				x = y = 0;
+				width = adjusted_mode->crtc_hdisplay;
+				height = adjusted_mode->crtc_vdisplay;
+			}
+		}
+		break;
+
+	case DRM_MODE_SCALE_NONE:
+		WARN_ON(adjusted_mode->crtc_hdisplay != pipe_src_w);
+		WARN_ON(adjusted_mode->crtc_vdisplay != pipe_src_h);
+		fallthrough;
+	case DRM_MODE_SCALE_FULLSCREEN:
+		x = y = 0;
+		width = adjusted_mode->crtc_hdisplay;
+		height = adjusted_mode->crtc_vdisplay;
+		break;
+
+	default:
+		MISSING_CASE(conn_state->scaling_mode);
+		return -EINVAL;
+	}
+
+	drm_rect_init(&crtc_state->pch_pfit.dst,
+		      x, y, width, height);
+	crtc_state->pch_pfit.enabled = true;
+
+	return 0;
+}
+
+static void
+centre_horizontally(struct drm_display_mode *adjusted_mode,
+		    int width)
+{
+	u32 border, sync_pos, blank_width, sync_width;
+
+	/* keep the hsync and hblank widths constant */
+	sync_width = adjusted_mode->crtc_hsync_end - adjusted_mode->crtc_hsync_start;
+	blank_width = adjusted_mode->crtc_hblank_end - adjusted_mode->crtc_hblank_start;
+	sync_pos = (blank_width - sync_width + 1) / 2;
+
+	border = (adjusted_mode->crtc_hdisplay - width + 1) / 2;
+	border += border & 1; /* make the border even */
+
+	adjusted_mode->crtc_hdisplay = width;
+	adjusted_mode->crtc_hblank_start = width + border;
+	adjusted_mode->crtc_hblank_end = adjusted_mode->crtc_hblank_start + blank_width;
+
+	adjusted_mode->crtc_hsync_start = adjusted_mode->crtc_hblank_start + sync_pos;
+	adjusted_mode->crtc_hsync_end = adjusted_mode->crtc_hsync_start + sync_width;
+}
+
+static void
+centre_vertically(struct drm_display_mode *adjusted_mode,
+		  int height)
+{
+	u32 border, sync_pos, blank_width, sync_width;
+
+	/* keep the vsync and vblank widths constant */
+	sync_width = adjusted_mode->crtc_vsync_end - adjusted_mode->crtc_vsync_start;
+	blank_width = adjusted_mode->crtc_vblank_end - adjusted_mode->crtc_vblank_start;
+	sync_pos = (blank_width - sync_width + 1) / 2;
+
+	border = (adjusted_mode->crtc_vdisplay - height + 1) / 2;
+
+	adjusted_mode->crtc_vdisplay = height;
+	adjusted_mode->crtc_vblank_start = height + border;
+	adjusted_mode->crtc_vblank_end = adjusted_mode->crtc_vblank_start + blank_width;
+
+	adjusted_mode->crtc_vsync_start = adjusted_mode->crtc_vblank_start + sync_pos;
+	adjusted_mode->crtc_vsync_end = adjusted_mode->crtc_vsync_start + sync_width;
+}
+
+static u32 panel_fitter_scaling(u32 source, u32 target)
+{
+	/*
+	 * Floating point operation is not supported. So the FACTOR
+	 * is defined, which can avoid the floating point computation
+	 * when calculating the panel ratio.
+	 */
+#define ACCURACY 12
+#define FACTOR (1 << ACCURACY)
+	u32 ratio = source * FACTOR / target;
+	return (FACTOR * ratio + FACTOR/2) / FACTOR;
+}
+
+static void i965_scale_aspect(struct intel_crtc_state *crtc_state,
+			      u32 *pfit_control)
+{
+	const struct drm_display_mode *adjusted_mode =
+		&crtc_state->hw.adjusted_mode;
+	int pipe_src_w = drm_rect_width(&crtc_state->pipe_src);
+	int pipe_src_h = drm_rect_height(&crtc_state->pipe_src);
+	u32 scaled_width = adjusted_mode->crtc_hdisplay * pipe_src_h;
+	u32 scaled_height = pipe_src_w * adjusted_mode->crtc_vdisplay;
+
+	/* 965+ is easy, it does everything in hw */
+	if (scaled_width > scaled_height)
+		*pfit_control |= PFIT_ENABLE |
+			PFIT_SCALING_PILLAR;
+	else if (scaled_width < scaled_height)
+		*pfit_control |= PFIT_ENABLE |
+			PFIT_SCALING_LETTER;
+	else if (adjusted_mode->crtc_hdisplay != pipe_src_w)
+		*pfit_control |= PFIT_ENABLE | PFIT_SCALING_AUTO;
+}
+
+static void i9xx_scale_aspect(struct intel_crtc_state *crtc_state,
+			      u32 *pfit_control, u32 *pfit_pgm_ratios,
+			      u32 *border)
+{
+	struct drm_display_mode *adjusted_mode = &crtc_state->hw.adjusted_mode;
+	int pipe_src_w = drm_rect_width(&crtc_state->pipe_src);
+	int pipe_src_h = drm_rect_height(&crtc_state->pipe_src);
+	u32 scaled_width = adjusted_mode->crtc_hdisplay * pipe_src_h;
+	u32 scaled_height = pipe_src_w * adjusted_mode->crtc_vdisplay;
+	u32 bits;
+
+	/*
+	 * For earlier chips we have to calculate the scaling
+	 * ratio by hand and program it into the
+	 * PFIT_PGM_RATIO register
+	 */
+	if (scaled_width > scaled_height) { /* pillar */
+		centre_horizontally(adjusted_mode,
+				    scaled_height / pipe_src_h);
+
+		*border = LVDS_BORDER_ENABLE;
+		if (pipe_src_h != adjusted_mode->crtc_vdisplay) {
+			bits = panel_fitter_scaling(pipe_src_h,
+						    adjusted_mode->crtc_vdisplay);
+
+			*pfit_pgm_ratios |= (bits << PFIT_HORIZ_SCALE_SHIFT |
+					     bits << PFIT_VERT_SCALE_SHIFT);
+			*pfit_control |= (PFIT_ENABLE |
+					  VERT_INTERP_BILINEAR |
+					  HORIZ_INTERP_BILINEAR);
+		}
+	} else if (scaled_width < scaled_height) { /* letter */
+		centre_vertically(adjusted_mode,
+				  scaled_width / pipe_src_w);
+
+		*border = LVDS_BORDER_ENABLE;
+		if (pipe_src_w != adjusted_mode->crtc_hdisplay) {
+			bits = panel_fitter_scaling(pipe_src_w,
+						    adjusted_mode->crtc_hdisplay);
+
+			*pfit_pgm_ratios |= (bits << PFIT_HORIZ_SCALE_SHIFT |
+					     bits << PFIT_VERT_SCALE_SHIFT);
+			*pfit_control |= (PFIT_ENABLE |
+					  VERT_INTERP_BILINEAR |
+					  HORIZ_INTERP_BILINEAR);
+		}
+	} else {
+		/* Aspects match, Let hw scale both directions */
+		*pfit_control |= (PFIT_ENABLE |
+				  VERT_AUTO_SCALE | HORIZ_AUTO_SCALE |
+				  VERT_INTERP_BILINEAR |
+				  HORIZ_INTERP_BILINEAR);
+	}
+}
+
+static int gmch_panel_fitting(struct intel_crtc_state *crtc_state,
+			      const struct drm_connector_state *conn_state)
+{
+	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+	struct drm_i915_private *dev_priv = to_i915(crtc->base.dev);
+	u32 pfit_control = 0, pfit_pgm_ratios = 0, border = 0;
+	struct drm_display_mode *adjusted_mode = &crtc_state->hw.adjusted_mode;
+	int pipe_src_w = drm_rect_width(&crtc_state->pipe_src);
+	int pipe_src_h = drm_rect_height(&crtc_state->pipe_src);
+
+	/* Native modes don't need fitting */
+	if (adjusted_mode->crtc_hdisplay == pipe_src_w &&
+	    adjusted_mode->crtc_vdisplay == pipe_src_h)
+		goto out;
+
+	switch (conn_state->scaling_mode) {
+	case DRM_MODE_SCALE_CENTER:
+		/*
+		 * For centered modes, we have to calculate border widths &
+		 * heights and modify the values programmed into the CRTC.
+		 */
+		centre_horizontally(adjusted_mode, pipe_src_w);
+		centre_vertically(adjusted_mode, pipe_src_h);
+		border = LVDS_BORDER_ENABLE;
+		break;
+	case DRM_MODE_SCALE_ASPECT:
+		/* Scale but preserve the aspect ratio */
+		if (DISPLAY_VER(dev_priv) >= 4)
+			i965_scale_aspect(crtc_state, &pfit_control);
+		else
+			i9xx_scale_aspect(crtc_state, &pfit_control,
+					  &pfit_pgm_ratios, &border);
+		break;
+	case DRM_MODE_SCALE_FULLSCREEN:
+		/*
+		 * Full scaling, even if it changes the aspect ratio.
+		 * Fortunately this is all done for us in hw.
+		 */
+		if (pipe_src_h != adjusted_mode->crtc_vdisplay ||
+		    pipe_src_w != adjusted_mode->crtc_hdisplay) {
+			pfit_control |= PFIT_ENABLE;
+			if (DISPLAY_VER(dev_priv) >= 4)
+				pfit_control |= PFIT_SCALING_AUTO;
+			else
+				pfit_control |= (VERT_AUTO_SCALE |
+						 VERT_INTERP_BILINEAR |
+						 HORIZ_AUTO_SCALE |
+						 HORIZ_INTERP_BILINEAR);
+		}
+		break;
+	default:
+		MISSING_CASE(conn_state->scaling_mode);
+		return -EINVAL;
+	}
+
+	/* 965+ wants fuzzy fitting */
+	/* FIXME: handle multiple panels by failing gracefully */
+	if (DISPLAY_VER(dev_priv) >= 4)
+		pfit_control |= PFIT_PIPE(crtc->pipe) | PFIT_FILTER_FUZZY;
+
+out:
+	if ((pfit_control & PFIT_ENABLE) == 0) {
+		pfit_control = 0;
+		pfit_pgm_ratios = 0;
+	}
+
+	/* Make sure pre-965 set dither correctly for 18bpp panels. */
+	if (DISPLAY_VER(dev_priv) < 4 && crtc_state->pipe_bpp == 18)
+		pfit_control |= PANEL_8TO6_DITHER_ENABLE;
+
+	crtc_state->gmch_pfit.control = pfit_control;
+	crtc_state->gmch_pfit.pgm_ratios = pfit_pgm_ratios;
+	crtc_state->gmch_pfit.lvds_border_bits = border;
+
+	return 0;
+}
+
+int intel_panel_fitting(struct intel_crtc_state *crtc_state,
+			const struct drm_connector_state *conn_state)
+{
+	struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
+	struct drm_i915_private *i915 = to_i915(crtc->base.dev);
+
+	if (HAS_GMCH(i915))
+		return gmch_panel_fitting(crtc_state, conn_state);
+	else
+		return pch_panel_fitting(crtc_state, conn_state);
+}
+
 enum drm_connector_status
 intel_panel_detect(struct drm_connector *connector, bool force)
 {
-	struct intel_display *display = to_intel_display(connector->dev);
+	struct drm_i915_private *i915 = to_i915(connector->dev);
 
-	if (!intel_display_device_enabled(display))
+	if (!INTEL_DISPLAY_ENABLED(i915))
 		return connector_status_disconnected;
-
-	if (!intel_display_driver_check_access(display))
-		return connector->status;
 
 	return connector_status_connected;
 }
@@ -461,136 +708,4 @@ void intel_panel_fini(struct intel_connector *connector)
 		list_del(&fixed_mode->head);
 		drm_mode_destroy(connector->base.dev, fixed_mode);
 	}
-}
-
-/*
- * If the panel was already enabled at probe, and we took over the state, the
- * panel prepared state is out of sync, and the panel followers won't be
- * notified. We need to call drm_panel_prepare() on enabled panels.
- *
- * It would be natural to handle this e.g. in the connector ->sync_state hook at
- * intel_modeset_readout_hw_state(), but that's unfortunately too early. We
- * don't have drm_connector::kdev at that time. For now, figure out the state at
- * ->late_register, and sync there.
- */
-static void intel_panel_sync_state(struct intel_connector *connector)
-{
-	struct intel_display *display = to_intel_display(connector);
-	struct drm_connector_state *conn_state;
-	struct intel_crtc *crtc;
-	int ret;
-
-	ret = drm_modeset_lock(&display->drm->mode_config.connection_mutex, NULL);
-	if (ret)
-		return;
-
-	conn_state = connector->base.state;
-
-	crtc = to_intel_crtc(conn_state->crtc);
-	if (crtc) {
-		struct intel_crtc_state *crtc_state;
-
-		crtc_state = to_intel_crtc_state(crtc->base.state);
-
-		if (crtc_state->hw.active) {
-			drm_dbg_kms(display->drm, "[CONNECTOR:%d:%s] Panel prepare\n",
-				    connector->base.base.id, connector->base.name);
-			intel_panel_prepare(crtc_state, conn_state);
-		}
-	}
-
-	drm_modeset_unlock(&display->drm->mode_config.connection_mutex);
-}
-
-static const struct drm_panel_funcs dummy_panel_funcs = {
-};
-
-int intel_panel_register(struct intel_connector *connector)
-{
-	struct intel_display *display = to_intel_display(connector);
-	struct intel_panel *panel = &connector->panel;
-	int ret;
-
-	ret = intel_backlight_device_register(connector);
-	if (ret)
-		return ret;
-
-	if (connector->base.connector_type == DRM_MODE_CONNECTOR_DSI ||
-	    connector->base.connector_type == DRM_MODE_CONNECTOR_eDP) {
-		struct device *dev = connector->base.kdev;
-		struct drm_panel *base;
-
-		/* Sanity check. */
-		if (drm_WARN_ON(display->drm, !dev))
-			goto out;
-
-		/*
-		 * We need drm_connector::kdev for allocating the panel, to make
-		 * drm_panel_add_follower() lookups work. The kdev is
-		 * initialized in drm_sysfs_connector_add(), just before the
-		 * connector .late_register() hooks. So we can't allocate the
-		 * panel at connector init time, and can't allocate struct
-		 * intel_panel with a drm_panel sub-struct. For now, use
-		 * __devm_drm_panel_alloc() directly.
-		 *
-		 * The lookups also depend on drm_connector::fwnode being set in
-		 * intel_acpi_assign_connector_fwnodes(). However, if that's
-		 * missing, it will gracefully lead to -EPROBE_DEFER in
-		 * drm_panel_add_follower().
-		 */
-		base = __devm_drm_panel_alloc(dev, sizeof(*base), 0,
-					      &dummy_panel_funcs,
-					      connector->base.connector_type);
-		if (IS_ERR(base)) {
-			ret = PTR_ERR(base);
-			goto err;
-		}
-
-		panel->base = base;
-
-		drm_panel_add(panel->base);
-
-		drm_dbg_kms(display->drm, "[CONNECTOR:%d:%s] Registered panel device '%s', has fwnode: %s\n",
-			    connector->base.base.id, connector->base.name,
-			    dev_name(dev), str_yes_no(dev_fwnode(dev)));
-
-		intel_panel_sync_state(connector);
-	}
-
-out:
-	return 0;
-
-err:
-	intel_backlight_device_unregister(connector);
-
-	return ret;
-}
-
-void intel_panel_unregister(struct intel_connector *connector)
-{
-	struct intel_panel *panel = &connector->panel;
-
-	if (panel->base)
-		drm_panel_remove(panel->base);
-
-	intel_backlight_device_unregister(connector);
-}
-
-/* Notify followers, if any, about power being up. */
-void intel_panel_prepare(const struct intel_crtc_state *crtc_state,
-			 const struct drm_connector_state *conn_state)
-{
-	struct intel_connector *connector = to_intel_connector(conn_state->connector);
-	struct intel_panel *panel = &connector->panel;
-
-	drm_panel_prepare(panel->base);
-}
-
-/* Notify followers, if any, about power going down. */
-void intel_panel_unprepare(const struct drm_connector_state *old_conn_state)
-{
-	struct intel_connector *connector = to_intel_connector(old_conn_state->connector);
-	struct intel_panel *panel = &connector->panel;
-
-	drm_panel_unprepare(panel->base);
 }

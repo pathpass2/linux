@@ -73,9 +73,10 @@ static int matrix_keypad_parse_keymap(const char *propname,
 	struct device *dev = input_dev->dev.parent;
 	unsigned int row_shift = get_count_order(cols);
 	unsigned int max_keys = rows << row_shift;
+	u32 *keys;
 	int i;
 	int size;
-	int error;
+	int retval;
 
 	if (!propname)
 		propname = "linux,keymap";
@@ -93,24 +94,30 @@ static int matrix_keypad_parse_keymap(const char *propname,
 		return -EINVAL;
 	}
 
-	u32 *keys __free(kfree) = kmalloc_array(size, sizeof(*keys), GFP_KERNEL);
+	keys = kmalloc_array(size, sizeof(u32), GFP_KERNEL);
 	if (!keys)
 		return -ENOMEM;
 
-	error = device_property_read_u32_array(dev, propname, keys, size);
-	if (error) {
+	retval = device_property_read_u32_array(dev, propname, keys, size);
+	if (retval) {
 		dev_err(dev, "failed to read %s property: %d\n",
-			propname, error);
-		return error;
+			propname, retval);
+		goto out;
 	}
 
 	for (i = 0; i < size; i++) {
 		if (!matrix_keypad_map_key(input_dev, rows, cols,
-					   row_shift, keys[i]))
-			return -EINVAL;
+					   row_shift, keys[i])) {
+			retval = -EINVAL;
+			goto out;
+		}
 	}
 
-	return 0;
+	retval = 0;
+
+out:
+	kfree(keys);
+	return retval;
 }
 
 /**
@@ -192,5 +199,4 @@ int matrix_keypad_build_keymap(const struct matrix_keymap_data *keymap_data,
 }
 EXPORT_SYMBOL(matrix_keypad_build_keymap);
 
-MODULE_DESCRIPTION("Helpers for matrix keyboard bindings");
 MODULE_LICENSE("GPL");

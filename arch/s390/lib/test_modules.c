@@ -29,5 +29,4 @@ static struct kunit_suite modules_test_suite = {
 
 kunit_test_suites(&modules_test_suite);
 
-MODULE_DESCRIPTION("KUnit test that modules with many relocations are loaded properly");
 MODULE_LICENSE("GPL");

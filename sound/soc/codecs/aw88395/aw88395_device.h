@@ -89,8 +89,8 @@ enum AW88395_DEV_DSP_CFG {
 };
 
 enum {
-	AW_DSP_16_DATA = 0,
-	AW_DSP_32_DATA = 1,
+	AW88395_DSP_16_DATA = 0,
+	AW88395_DSP_32_DATA = 1,
 };
 
 enum {
@@ -100,11 +100,6 @@ enum {
 
 struct aw_profctrl_desc {
 	unsigned int cur_mode;
-};
-
-enum {
-	CALI_RESULT_NORMAL,
-	CALI_RESULT_ERROR,
 };
 
 struct aw_volume_desc {
@@ -129,25 +124,9 @@ struct aw_cali_delay_desc {
 	unsigned int delay;
 };
 
-#define AW_CALI_CFG_NUM (4)
-struct cali_cfg {
-	uint32_t data[AW_CALI_CFG_NUM];
-};
-
-struct aw_cali_backup_desc {
-	unsigned int dsp_ng_cfg;
-	unsigned int dsp_lp_cfg;
-};
-
 struct aw_cali_desc {
 	u32 cali_re;
 	u32 ra;
-	bool cali_switch;
-	bool cali_running;
-	uint16_t cali_result;
-	uint16_t store_vol;
-	struct cali_cfg cali_cfg;
-	struct aw_cali_backup_desc backup_info;
 };
 
 struct aw_container {
@@ -162,17 +141,18 @@ struct aw_device {
 	unsigned char prof_cur;
 	unsigned char prof_index;
 	unsigned char dsp_crc_st;
-	unsigned char dsp_cfg;
 	u16 chip_id;
 
 	unsigned int channel;
 	unsigned int fade_step;
-	unsigned int prof_data_type;
 
 	struct i2c_client *i2c;
 	struct device *dev;
 	struct regmap *regmap;
 	char *acf;
+
+	u32 fade_en;
+	unsigned char dsp_cfg;
 
 	u32 dsp_fw_len;
 	u32 dsp_cfg_len;
@@ -203,16 +183,12 @@ int aw88395_dev_fw_update(struct aw_device *aw_dev, bool up_dsp_fw_en, bool forc
 void aw88395_dev_set_volume(struct aw_device *aw_dev, unsigned short set_vol);
 int aw88395_dev_get_prof_data(struct aw_device *aw_dev, int index,
 			struct aw_prof_desc **prof_desc);
-int aw88395_dev_get_prof_name(struct aw_device *aw_dev, int index, char **prof_name);
+char *aw88395_dev_get_prof_name(struct aw_device *aw_dev, int index);
 int aw88395_dev_set_profile_index(struct aw_device *aw_dev, int index);
 int aw88395_dev_get_profile_index(struct aw_device *aw_dev);
 int aw88395_dev_get_profile_count(struct aw_device *aw_dev);
 int aw88395_dev_load_acf_check(struct aw_device *aw_dev, struct aw_container *aw_cfg);
 int aw88395_dev_cfg_load(struct aw_device *aw_dev, struct aw_container *aw_cfg);
 void aw88395_dev_mute(struct aw_device *aw_dev, bool is_mute);
-int aw_dev_dsp_write(struct aw_device *aw_dev,
-		unsigned short dsp_addr, unsigned int dsp_data, unsigned char data_type);
-int aw_dev_dsp_read(struct aw_device *aw_dev,
-		unsigned short dsp_addr, unsigned int *dsp_data, unsigned char data_type);
 
 #endif

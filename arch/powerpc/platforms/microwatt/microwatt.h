@@ -3,6 +3,5 @@
 #define _MICROWATT_H
 
 void microwatt_rng_init(void);
-void microwatt_init_smp(void);
 
 #endif /* _MICROWATT_H */

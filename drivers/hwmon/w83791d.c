@@ -218,14 +218,9 @@ static u8 fan_to_reg(long rpm, int div)
 	return clamp_val((1350000 + rpm * div / 2) / (rpm * div), 1, 254);
 }
 
-static int fan_from_reg(int val, int div)
-{
-	if (val == 0)
-		return -1;
-	if (val == 255)
-		return 0;
-	return 1350000 / (val * div);
-}
+#define FAN_FROM_REG(val, div)	((val) == 0 ? -1 : \
+				((val) == 255 ? 0 : \
+					1350000 / ((val) * (div))))
 
 /* for temp1 which is 8-bit resolution, LSB = 1 degree Celsius */
 #define TEMP1_FROM_REG(val)	((val) * 1000)
@@ -333,7 +328,7 @@ static void w83791d_print_debug(struct w83791d_data *data, struct device *dev);
 static void w83791d_init_client(struct i2c_client *client);
 
 static const struct i2c_device_id w83791d_id[] = {
-	{ "w83791d" },
+	{ "w83791d", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, w83791d_id);
@@ -343,7 +338,7 @@ static struct i2c_driver w83791d_driver = {
 	.driver = {
 		.name = "w83791d",
 	},
-	.probe		= w83791d_probe,
+	.probe_new	= w83791d_probe,
 	.remove		= w83791d_remove,
 	.id_table	= w83791d_id,
 	.detect		= w83791d_detect,
@@ -526,7 +521,7 @@ static ssize_t show_##reg(struct device *dev, struct device_attribute *attr, \
 	struct w83791d_data *data = w83791d_update_device(dev); \
 	int nr = sensor_attr->index; \
 	return sprintf(buf, "%d\n", \
-		fan_from_reg(data->reg[nr], DIV_FROM_REG(data->fan_div[nr]))); \
+		FAN_FROM_REG(data->reg[nr], DIV_FROM_REG(data->fan_div[nr]))); \
 }
 
 show_fan_reg(fan);
@@ -590,10 +585,10 @@ static ssize_t store_fan_div(struct device *dev, struct device_attribute *attr,
 	if (err)
 		return err;
 
-	mutex_lock(&data->update_lock);
 	/* Save fan_min */
-	min = fan_from_reg(data->fan_min[nr], DIV_FROM_REG(data->fan_div[nr]));
+	min = FAN_FROM_REG(data->fan_min[nr], DIV_FROM_REG(data->fan_div[nr]));
 
+	mutex_lock(&data->update_lock);
 	data->fan_div[nr] = div_to_reg(nr, val);
 
 	switch (nr) {

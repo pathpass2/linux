@@ -16,5 +16,5 @@ int main(void)
 	const char *version = XSTR(__GLIBC__) "." XSTR(__GLIBC_MINOR__);
 #endif
 
-	return version == NULL;
+	return (long)version;
 }

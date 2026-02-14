@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-#include <linux/cpumask.h>
 #include <linux/gpio/driver.h>
-#include <linux/gpio/generic.h>
+#include <linux/cpumask.h>
 #include <linux/irq.h>
 #include <linux/minmax.h>
 #include <linux/mod_devicetable.h>
@@ -42,7 +41,7 @@
 /**
  * realtek_gpio_ctrl - Realtek Otto GPIO driver data
  *
- * @chip: Associated gpio_generic_chip instance
+ * @gc: Associated gpio_chip instance
  * @base: Base address of the register block for a GPIO bank
  * @lock: Lock for accessing the IRQ registers and values
  * @intr_mask: Mask for interrupts lines
@@ -65,7 +64,7 @@
  * IMR on changes.
  */
 struct realtek_gpio_ctrl {
-	struct gpio_generic_chip chip;
+	struct gpio_chip gc;
 	void __iomem *base;
 	void __iomem *cpumask_base;
 	struct cpumask cpu_irq_maskable;
@@ -102,7 +101,7 @@ static struct realtek_gpio_ctrl *irq_data_to_ctrl(struct irq_data *data)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
 
-	return container_of(to_gpio_generic_chip(gc), struct realtek_gpio_ctrl, chip);
+	return container_of(gc, struct realtek_gpio_ctrl, gc);
 }
 
 /*
@@ -195,7 +194,7 @@ static void realtek_gpio_irq_unmask(struct irq_data *data)
 	unsigned int line = irqd_to_hwirq(data);
 	unsigned long flags;
 
-	gpiochip_enable_irq(&ctrl->chip.gc, line);
+	gpiochip_enable_irq(&ctrl->gc, line);
 
 	raw_spin_lock_irqsave(&ctrl->lock, flags);
 	ctrl->intr_mask[line] = REALTEK_GPIO_IMR_LINE_MASK;
@@ -214,7 +213,7 @@ static void realtek_gpio_irq_mask(struct irq_data *data)
 	realtek_gpio_update_line_imr(ctrl, line);
 	raw_spin_unlock_irqrestore(&ctrl->lock, flags);
 
-	gpiochip_disable_irq(&ctrl->chip.gc, line);
+	gpiochip_disable_irq(&ctrl->gc, line);
 }
 
 static int realtek_gpio_irq_set_type(struct irq_data *data, unsigned int flow_type)
@@ -357,9 +356,9 @@ MODULE_DEVICE_TABLE(of, realtek_gpio_of_match);
 
 static int realtek_gpio_probe(struct platform_device *pdev)
 {
-	struct gpio_generic_chip_config config;
 	struct device *dev = &pdev->dev;
-	unsigned long gen_gc_flags, dev_flags;
+	unsigned long bgpio_flags;
+	unsigned int dev_flags;
 	struct gpio_irq_chip *girq;
 	struct realtek_gpio_ctrl *ctrl;
 	struct resource *res;
@@ -371,7 +370,7 @@ static int realtek_gpio_probe(struct platform_device *pdev)
 	if (!ctrl)
 		return -ENOMEM;
 
-	dev_flags = (uintptr_t)device_get_match_data(dev);
+	dev_flags = (unsigned int) device_get_match_data(dev);
 
 	ngpios = REALTEK_GPIO_MAX;
 	device_property_read_u32(dev, "ngpios", &ngpios);
@@ -389,37 +388,32 @@ static int realtek_gpio_probe(struct platform_device *pdev)
 	raw_spin_lock_init(&ctrl->lock);
 
 	if (dev_flags & GPIO_PORTS_REVERSED) {
-		gen_gc_flags = 0;
+		bgpio_flags = 0;
 		ctrl->bank_read = realtek_gpio_bank_read;
 		ctrl->bank_write = realtek_gpio_bank_write;
 		ctrl->line_imr_pos = realtek_gpio_line_imr_pos;
 	} else {
-		gen_gc_flags = GPIO_GENERIC_BIG_ENDIAN_BYTE_ORDER;
+		bgpio_flags = BGPIOF_BIG_ENDIAN_BYTE_ORDER;
 		ctrl->bank_read = realtek_gpio_bank_read_swapped;
 		ctrl->bank_write = realtek_gpio_bank_write_swapped;
 		ctrl->line_imr_pos = realtek_gpio_line_imr_pos_swapped;
 	}
 
-	config = (struct gpio_generic_chip_config) {
-		.dev = dev,
-		.sz = 4,
-		.dat = ctrl->base + REALTEK_GPIO_REG_DATA,
-		.dirout = ctrl->base + REALTEK_GPIO_REG_DIR,
-		.flags = gen_gc_flags,
-	};
-
-	err = gpio_generic_chip_init(&ctrl->chip, &config);
+	err = bgpio_init(&ctrl->gc, dev, 4,
+		ctrl->base + REALTEK_GPIO_REG_DATA, NULL, NULL,
+		ctrl->base + REALTEK_GPIO_REG_DIR, NULL,
+		bgpio_flags);
 	if (err) {
 		dev_err(dev, "unable to init generic GPIO");
 		return err;
 	}
 
-	ctrl->chip.gc.ngpio = ngpios;
-	ctrl->chip.gc.owner = THIS_MODULE;
+	ctrl->gc.ngpio = ngpios;
+	ctrl->gc.owner = THIS_MODULE;
 
 	irq = platform_get_irq_optional(pdev, 0);
 	if (!(dev_flags & GPIO_INTERRUPTS_DISABLED) && irq > 0) {
-		girq = &ctrl->chip.gc.irq;
+		girq = &ctrl->gc.irq;
 		gpio_irq_chip_set_chip(girq, &realtek_gpio_irq_chip);
 		girq->default_type = IRQ_TYPE_NONE;
 		girq->handler = handle_bad_irq;
@@ -448,7 +442,7 @@ static int realtek_gpio_probe(struct platform_device *pdev)
 			cpumask_set_cpu(cpu, &ctrl->cpu_irq_maskable);
 	}
 
-	return devm_gpiochip_add_data(dev, &ctrl->chip.gc, ctrl);
+	return devm_gpiochip_add_data(dev, &ctrl->gc, ctrl);
 }
 
 static struct platform_driver realtek_gpio_driver = {

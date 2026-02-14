@@ -10,7 +10,6 @@ config UNICODE
 	  be a separate loadable module that gets requested only when a file
 	  system actually use it.
 
-config UNICODE_NORMALIZATION_KUNIT_TEST
+config UNICODE_NORMALIZATION_SELFTEST
 	tristate "Test UTF-8 normalization support"
-	depends on UNICODE && KUNIT
-	default KUNIT_ALL_TESTS
+	depends on UNICODE

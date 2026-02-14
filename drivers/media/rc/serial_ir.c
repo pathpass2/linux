@@ -18,7 +18,6 @@
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
-#include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/serial_reg.h>
 #include <linux/types.h>
@@ -798,7 +797,7 @@ static int __init serial_ir_init_module(void)
 
 static void __exit serial_ir_exit_module(void)
 {
-	timer_delete_sync(&serial_ir.timeout_timer);
+	del_timer_sync(&serial_ir.timeout_timer);
 	serial_ir_exit();
 }
 

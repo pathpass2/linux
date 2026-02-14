@@ -48,7 +48,7 @@
  *
  */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 typedef struct nmi_s {
 	volatile unsigned long	 magic;		/* Magic number */
@@ -59,13 +59,13 @@ typedef struct nmi_s {
 	volatile unsigned long	 gmaster;	/* Flag true only on global master*/
 } nmi_t;
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /* Following definitions are needed both in the prom & the kernel
  * to identify the format of the nmi cpu register save area in the
  * low memory on each node.
  */
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct reg_struct {
 	unsigned long	gpr[32];
@@ -78,7 +78,7 @@ struct reg_struct {
 	unsigned long	nmi_sr;
 };
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /* These are the assembly language offsets into the reg_struct structure */
 

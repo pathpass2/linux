@@ -16,6 +16,7 @@
 #include <linux/i2c.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
+#include <linux/gpio.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -367,11 +368,11 @@ static int rt1016_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		reg_val |= RT1016_I2S_MS_M;
 		rt1016->master = 1;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		reg_val |= RT1016_I2S_MS_S;
 		break;
 	default:
@@ -608,7 +609,7 @@ static const struct regmap_config rt1016_regmap = {
 };
 
 static const struct i2c_device_id rt1016_i2c_id[] = {
-	{ "rt1016" },
+	{ "rt1016", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1016_i2c_id);
@@ -616,15 +617,15 @@ MODULE_DEVICE_TABLE(i2c, rt1016_i2c_id);
 #if defined(CONFIG_OF)
 static const struct of_device_id rt1016_of_match[] = {
 	{ .compatible = "realtek,rt1016", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, rt1016_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1016_acpi_match[] = {
-	{ "10EC1016" },
-	{ }
+	{"10EC1016", 0,},
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, rt1016_acpi_match);
 #endif
@@ -682,7 +683,7 @@ static struct i2c_driver rt1016_i2c_driver = {
 		.of_match_table = of_match_ptr(rt1016_of_match),
 		.acpi_match_table = ACPI_PTR(rt1016_acpi_match),
 	},
-	.probe = rt1016_i2c_probe,
+	.probe_new = rt1016_i2c_probe,
 	.shutdown = rt1016_i2c_shutdown,
 	.id_table = rt1016_i2c_id,
 };

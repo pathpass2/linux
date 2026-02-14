@@ -10,10 +10,53 @@
 #include "rk3566.dtsi"
 
 / {
-	chassis-type = "handset";
-
 	chosen: chosen {
 		stdout-path = "serial2:1500000n8";
+	};
+
+	adc-joystick {
+		compatible = "adc-joystick";
+		io-channels = <&adc_mux 0>,
+			      <&adc_mux 1>,
+			      <&adc_mux 2>,
+			      <&adc_mux 3>;
+		pinctrl-0 = <&joy_mux_en>;
+		pinctrl-names = "default";
+		poll-interval = <60>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		axis@0 {
+			reg = <0>;
+			abs-flat = <32>;
+			abs-fuzz = <32>;
+			abs-range = <1023 15>;
+			linux,code = <ABS_X>;
+		};
+
+		axis@1 {
+			reg = <1>;
+			abs-flat = <32>;
+			abs-fuzz = <32>;
+			abs-range = <15 1023>;
+			linux,code = <ABS_RX>;
+		};
+
+		axis@2 {
+			reg = <2>;
+			abs-flat = <32>;
+			abs-fuzz = <32>;
+			abs-range = <15 1023>;
+			linux,code = <ABS_Y>;
+		};
+
+		axis@3 {
+			reg = <3>;
+			abs-flat = <32>;
+			abs-fuzz = <32>;
+			abs-range = <1023 15>;
+			linux,code = <ABS_RY>;
+		};
 	};
 
 	adc_keys: adc-keys {
@@ -32,6 +75,16 @@
 			linux,code = <BTN_MODE>;
 			press-threshold-microvolt = <1750>;
 		};
+	};
+
+	adc_mux: adc-mux {
+		compatible = "io-channel-mux";
+		channels = "left_x", "right_x", "left_y", "right_y";
+		#io-channel-cells = <1>;
+		io-channels = <&saradc 3>;
+		io-channel-names = "parent";
+		mux-controls = <&gpio_mux>;
+		settle-time-us = <100>;
 	};
 
 	gpio_keys_control: gpio-keys-control {
@@ -75,6 +128,18 @@
 			linux,code = <BTN_START>;
 		};
 
+		button-thumbl {
+			gpios = <&gpio3 RK_PA1 GPIO_ACTIVE_LOW>;
+			label = "THUMBL";
+			linux,code = <BTN_THUMBL>;
+		};
+
+		button-thumbr {
+			gpios = <&gpio3 RK_PA2 GPIO_ACTIVE_LOW>;
+			label = "THUMBR";
+			linux,code = <BTN_THUMBR>;
+		};
+
 		button-up {
 			gpios = <&gpio3 RK_PA3 GPIO_ACTIVE_LOW>;
 			label = "DPAD-UP";
@@ -107,6 +172,13 @@
 		};
 	};
 
+	gpio_mux: mux-controller {
+		compatible = "gpio-mux";
+		mux-gpios = <&gpio0 RK_PB6 GPIO_ACTIVE_LOW>,
+			    <&gpio0 RK_PB7 GPIO_ACTIVE_LOW>;
+		#mux-control-cells = <0>;
+	};
+
 	hdmi-con {
 		compatible = "hdmi-connector";
 		ddc-i2c-bus = <&i2c5>;
@@ -119,30 +191,30 @@
 		};
 	};
 
-	leds: pwm-leds {
-		compatible = "pwm-leds";
+	leds: gpio-leds {
+		compatible = "gpio-leds";
+		pinctrl-0 = <&led_pins>;
+		pinctrl-names = "default";
 
 		green_led: led-0 {
 			color = <LED_COLOR_ID_GREEN>;
 			default-state = "on";
 			function = LED_FUNCTION_POWER;
-			max-brightness = <255>;
-			pwms = <&pwm6 0 25000 0>;
+			gpios = <&gpio0 RK_PC5 GPIO_ACTIVE_HIGH>;
 		};
 
 		amber_led: led-1 {
 			color = <LED_COLOR_ID_AMBER>;
 			function = LED_FUNCTION_CHARGING;
-			max-brightness = <255>;
-			pwms = <&pwm7 0 25000 0>;
+			gpios = <&gpio0 RK_PC6 GPIO_ACTIVE_HIGH>;
+			retain-state-suspended;
 		};
 
 		red_led: led-2 {
 			color = <LED_COLOR_ID_RED>;
 			default-state = "off";
 			function = LED_FUNCTION_STATUS;
-			max-brightness = <255>;
-			pwms = <&pwm0 0 25000 0>;
+			gpios = <&gpio0 RK_PC7 GPIO_ACTIVE_HIGH>;
 		};
 	};
 
@@ -284,6 +356,7 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1350000>;
+				regulator-init-microvolt = <900000>;
 				regulator-ramp-delay = <6001>;
 				regulator-initial-mode = <0x2>;
 				regulator-name = "vdd_logic";
@@ -298,6 +371,7 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1350000>;
+				regulator-init-microvolt = <900000>;
 				regulator-ramp-delay = <6001>;
 				regulator-initial-mode = <0x2>;
 				regulator-name = "vdd_gpu";
@@ -459,6 +533,7 @@
 		regulator-boot-on;
 		regulator-min-microvolt = <712500>;
 		regulator-max-microvolt = <1390000>;
+		regulator-init-microvolt = <900000>;
 		regulator-name = "vdd_cpu";
 		regulator-ramp-delay = <2300>;
 		vin-supply = <&vcc_sys>;
@@ -469,7 +544,7 @@
 };
 
 &i2c1 {
-	/* Unused iSmartWare SW2001 encryption device at 0x3c */
+	/* Unknown/unused device at 0x3c */
 	status = "disabled";
 };
 
@@ -522,6 +597,15 @@
 		};
 	};
 
+	gpio-led {
+		led_pins: led-pins {
+			rockchip,pins =
+				<0 RK_PC5 RK_FUNC_GPIO &pcfg_pull_none>,
+				<0 RK_PC6 RK_FUNC_GPIO &pcfg_pull_none>,
+				<0 RK_PC7 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+
 	joy-mux {
 		joy_mux_en: joy-mux-en {
 			rockchip,pins =
@@ -570,21 +654,7 @@
 	vccio7-supply = <&vcc_3v3>;
 };
 
-&pwm0 {
-	pinctrl-0 = <&pwm0m1_pins>;
-	pinctrl-names = "default";
-	status = "okay";
-};
-
 &pwm5 {
-	status = "okay";
-};
-
-&pwm6 {
-	status = "okay";
-};
-
-&pwm7 {
 	status = "okay";
 };
 
@@ -625,12 +695,9 @@
 	cap-sdio-irq;
 	keep-power-in-suspend;
 	mmc-pwrseq = <&sdio_pwrseq>;
-	no-mmc;
-	no-sd;
 	non-removable;
 	pinctrl-0 = <&sdmmc2m0_bus4 &sdmmc2m0_cmd &sdmmc2m0_clk>;
 	pinctrl-names = "default";
-	sd-uhs-sdr50;
 	vmmc-supply = <&vcc_wifi>;
 	vqmmc-supply = <&vcca1v8_pmu>;
 	status = "okay";
@@ -649,7 +716,7 @@
 	status = "okay";
 
 	bluetooth {
-		compatible = "realtek,rtl8821cs-bt", "realtek,rtl8723bs-bt";
+		compatible = "realtek,rtl8821cs-bt";
 		device-wake-gpios = <&gpio4 4 GPIO_ACTIVE_HIGH>;
 		enable-gpios = <&gpio4 3 GPIO_ACTIVE_HIGH>;
 		host-wake-gpios = <&gpio4 5 GPIO_ACTIVE_HIGH>;

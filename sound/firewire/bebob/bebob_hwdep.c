@@ -53,14 +53,18 @@ static __poll_t
 hwdep_poll(struct snd_hwdep *hwdep, struct file *file, poll_table *wait)
 {
 	struct snd_bebob *bebob = hwdep->private_data;
+	__poll_t events;
 
 	poll_wait(file, &bebob->hwdep_wait, wait);
 
-	guard(spinlock_irq)(&bebob->lock);
+	spin_lock_irq(&bebob->lock);
 	if (bebob->dev_lock_changed)
-		return EPOLLIN | EPOLLRDNORM;
+		events = EPOLLIN | EPOLLRDNORM;
 	else
-		return 0;
+		events = 0;
+	spin_unlock_irq(&bebob->lock);
+
+	return events;
 }
 
 static int
@@ -86,27 +90,39 @@ hwdep_get_info(struct snd_bebob *bebob, void __user *arg)
 static int
 hwdep_lock(struct snd_bebob *bebob)
 {
-	guard(spinlock_irq)(&bebob->lock);
+	int err;
+
+	spin_lock_irq(&bebob->lock);
 
 	if (bebob->dev_lock_count == 0) {
 		bebob->dev_lock_count = -1;
-		return 0;
+		err = 0;
 	} else {
-		return -EBUSY;
+		err = -EBUSY;
 	}
+
+	spin_unlock_irq(&bebob->lock);
+
+	return err;
 }
 
 static int
 hwdep_unlock(struct snd_bebob *bebob)
 {
-	guard(spinlock_irq)(&bebob->lock);
+	int err;
+
+	spin_lock_irq(&bebob->lock);
 
 	if (bebob->dev_lock_count == -1) {
 		bebob->dev_lock_count = 0;
-		return 0;
+		err = 0;
 	} else {
-		return -EBADFD;
+		err = -EBADFD;
 	}
+
+	spin_unlock_irq(&bebob->lock);
+
+	return err;
 }
 
 static int
@@ -114,9 +130,10 @@ hwdep_release(struct snd_hwdep *hwdep, struct file *file)
 {
 	struct snd_bebob *bebob = hwdep->private_data;
 
-	guard(spinlock_irq)(&bebob->lock);
+	spin_lock_irq(&bebob->lock);
 	if (bebob->dev_lock_count == -1)
 		bebob->dev_lock_count = 0;
+	spin_unlock_irq(&bebob->lock);
 
 	return 0;
 }
@@ -166,7 +183,7 @@ int snd_bebob_create_hwdep_device(struct snd_bebob *bebob)
 	err = snd_hwdep_new(bebob->card, "BeBoB", 0, &hwdep);
 	if (err < 0)
 		goto end;
-	strscpy(hwdep->name, "BeBoB");
+	strcpy(hwdep->name, "BeBoB");
 	hwdep->iface = SNDRV_HWDEP_IFACE_FW_BEBOB;
 	hwdep->ops = ops;
 	hwdep->private_data = bebob;

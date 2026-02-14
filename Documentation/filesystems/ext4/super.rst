@@ -328,13 +328,9 @@ The ext4 superblock is laid out as follows in
      - s_checksum_type
      - Metadata checksum algorithm type. The only valid value is 1 (crc32c).
    * - 0x176
-     - \_\_u8
-     - s\_encryption\_level
-     - Versioning level for encryption.
-   * - 0x177
-     - \_\_u8
-     - s\_reserved\_pad
-     - Padding to next 32bits.
+     - __le16
+     - s_reserved_pad
+     -
    * - 0x178
      - __le64
      - s_kbytes_written
@@ -470,13 +466,9 @@ The ext4 superblock is laid out as follows in
      - s_last_error_time_hi
      - Upper 8 bits of the s_last_error_time field.
    * - 0x27A
-     - \_\_u8
-     - s\_first\_error\_errcode
-     -
-   * - 0x27B
-     - \_\_u8
-     - s\_last\_error\_errcode
-     -
+     - __u8
+     - s_pad[2]
+     - Zero padding.
    * - 0x27C
      - __le16
      - s_encoding
@@ -671,9 +663,7 @@ following:
    * - 0x8000
      - Data in inode (INCOMPAT_INLINE_DATA).
    * - 0x10000
-     - Encrypted inodes can be present. (INCOMPAT_ENCRYPT).
-   * - 0x20000
-     - Directories can be marked case-insensitive. (INCOMPAT_CASEFOLD).
+     - Encrypted inodes are present on the filesystem. (INCOMPAT_ENCRYPT).
 
 .. _super_rocompat:
 
@@ -782,7 +772,7 @@ The ``s_default_mount_opts`` field is any combination of the following:
    * - 0x0010
      - Do not support 32-bit UIDs. (EXT4_DEFM_UID16)
    * - 0x0020
-     - All data and metadata are committed to the journal.
+     - All data and metadata are commited to the journal.
        (EXT4_DEFM_JMODE_DATA)
    * - 0x0040
      - All data are flushed to the disk before metadata are committed to the

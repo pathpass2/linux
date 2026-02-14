@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 OR MIT
 /**************************************************************************
  *
- * Copyright (c) 2011-2024 Broadcom. All Rights Reserved. The term
- * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.
+ * Copyright 2011-2022 VMware, Inc., Palo Alto, CA., USA
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -26,15 +25,12 @@
  *
  **************************************************************************/
 
-#include "vmwgfx_bo.h"
-#include "vmwgfx_kms.h"
-#include "vmwgfx_vkms.h"
-
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_fourcc.h>
-#include <drm/drm_vblank.h>
+
+#include "vmwgfx_kms.h"
 
 #define vmw_crtc_to_sou(x) \
 	container_of(x, struct vmw_screen_object_unit, base.crtc)
@@ -92,7 +88,8 @@ struct vmw_kms_sou_define_gmrfb {
 struct vmw_screen_object_unit {
 	struct vmw_display_unit base;
 
-	struct vmw_bo *buffer; /**< Backing store buffer */
+	unsigned long buffer_size; /**< Size of allocated buffer */
+	struct vmw_buffer_object *buffer; /**< Backing store buffer */
 
 	bool defined;
 };
@@ -151,7 +148,7 @@ static int vmw_sou_fifo_create(struct vmw_private *dev_priv,
 	sou->base.set_gui_y = cmd->obj.root.y;
 
 	/* Ok to assume that buffer is pinned in vram */
-	vmw_bo_get_guest_ptr(&sou->buffer->tbo, &cmd->obj.backingStore.ptr);
+	vmw_bo_get_guest_ptr(&sou->buffer->base, &cmd->obj.backingStore.ptr);
 	cmd->obj.backingStore.pitch = mode->hdisplay * 4;
 
 	vmw_cmd_commit(dev_priv, fifo_size);
@@ -241,7 +238,8 @@ static void vmw_sou_crtc_mode_set_nofb(struct drm_crtc *crtc)
 		struct vmw_connector_state *vmw_conn_state;
 		int x, y;
 
-		sou->buffer = vmw_user_object_buffer(&vps->uo);
+		sou->buffer = vps->bo;
+		sou->buffer_size = vps->bo_size;
 
 		conn_state = sou->base.connector.state;
 		vmw_conn_state = vmw_connector_state_to_vcs(conn_state);
@@ -256,6 +254,7 @@ static void vmw_sou_crtc_mode_set_nofb(struct drm_crtc *crtc)
 
 	} else {
 		sou->buffer = NULL;
+		sou->buffer_size = 0;
 	}
 }
 
@@ -267,6 +266,19 @@ static void vmw_sou_crtc_mode_set_nofb(struct drm_crtc *crtc)
  * Prepares the CRTC for a mode set, but we don't need to do anything here.
  */
 static void vmw_sou_crtc_helper_prepare(struct drm_crtc *crtc)
+{
+}
+
+/**
+ * vmw_sou_crtc_atomic_enable - Noop
+ *
+ * @crtc: CRTC associated with the new screen
+ * @state: Unused
+ *
+ * This is called after a mode set has been completed.
+ */
+static void vmw_sou_crtc_atomic_enable(struct drm_crtc *crtc,
+				       struct drm_atomic_state *state)
 {
 }
 
@@ -292,9 +304,6 @@ static void vmw_sou_crtc_atomic_disable(struct drm_crtc *crtc,
 	sou = vmw_crtc_to_sou(crtc);
 	dev_priv = vmw_priv(crtc->dev);
 
-	if (dev_priv->vkms_enabled)
-		drm_crtc_vblank_off(crtc);
-
 	if (sou->defined) {
 		ret = vmw_sou_fifo_destroy(dev_priv, sou);
 		if (ret)
@@ -310,9 +319,6 @@ static const struct drm_crtc_funcs vmw_screen_object_crtc_funcs = {
 	.atomic_destroy_state = vmw_du_crtc_destroy_state,
 	.set_config = drm_atomic_helper_set_config,
 	.page_flip = drm_atomic_helper_page_flip,
-	.enable_vblank          = vmw_vkms_enable_vblank,
-	.disable_vblank         = vmw_vkms_disable_vblank,
-	.get_vblank_timestamp   = vmw_vkms_get_vblank_timestamp,
 };
 
 /*
@@ -340,7 +346,7 @@ static void vmw_sou_connector_destroy(struct drm_connector *connector)
 static const struct drm_connector_funcs vmw_sou_connector_funcs = {
 	.dpms = vmw_du_connector_dpms,
 	.detect = vmw_du_connector_detect,
-	.fill_modes = drm_helper_probe_single_connector_modes,
+	.fill_modes = vmw_du_connector_fill_modes,
 	.destroy = vmw_sou_connector_destroy,
 	.reset = vmw_du_connector_reset,
 	.atomic_duplicate_state = vmw_du_connector_duplicate_state,
@@ -350,8 +356,6 @@ static const struct drm_connector_funcs vmw_sou_connector_funcs = {
 
 static const struct
 drm_connector_helper_funcs vmw_sou_connector_helper_funcs = {
-	.get_modes = vmw_connector_get_modes,
-	.mode_valid = vmw_connector_mode_valid
 };
 
 
@@ -377,11 +381,10 @@ vmw_sou_primary_plane_cleanup_fb(struct drm_plane *plane,
 	struct vmw_plane_state *vps = vmw_plane_state_to_vps(old_state);
 	struct drm_crtc *crtc = plane->state->crtc ?
 		plane->state->crtc : old_state->crtc;
-	struct vmw_bo *bo = vmw_user_object_buffer(&vps->uo);
 
-	if (bo)
-		vmw_bo_unpin(vmw_priv(crtc->dev), bo, false);
-	vmw_user_object_unref(&vps->uo);
+	if (vps->bo)
+		vmw_bo_unpin(vmw_priv(crtc->dev), vps->bo, false);
+	vmw_bo_unreference(&vps->bo);
 	vps->bo_size = 0;
 
 	vmw_du_plane_cleanup_fb(plane, old_state);
@@ -406,36 +409,31 @@ vmw_sou_primary_plane_prepare_fb(struct drm_plane *plane,
 	struct drm_crtc *crtc = plane->state->crtc ?: new_state->crtc;
 	struct vmw_plane_state *vps = vmw_plane_state_to_vps(new_state);
 	struct vmw_private *dev_priv;
+	size_t size;
 	int ret;
-	struct vmw_bo_params bo_params = {
-		.domain = VMW_BO_DOMAIN_VRAM,
-		.busy_domain = VMW_BO_DOMAIN_VRAM,
-		.bo_type = ttm_bo_type_device,
-		.pin = true
-	};
-	struct vmw_bo *bo = NULL;
+
 
 	if (!new_fb) {
-		vmw_user_object_unref(&vps->uo);
+		vmw_bo_unreference(&vps->bo);
 		vps->bo_size = 0;
 
 		return 0;
 	}
 
-	bo_params.size = new_state->crtc_w * new_state->crtc_h * 4;
+	size = new_state->crtc_w * new_state->crtc_h * 4;
 	dev_priv = vmw_priv(crtc->dev);
 
-	bo = vmw_user_object_buffer(&vps->uo);
-	if (bo) {
-		if (vps->bo_size == bo_params.size) {
+	if (vps->bo) {
+		if (vps->bo_size == size) {
 			/*
 			 * Note that this might temporarily up the pin-count
 			 * to 2, until cleanup_fb() is called.
 			 */
-			return vmw_bo_pin_in_vram(dev_priv, bo, true);
+			return vmw_bo_pin_in_vram(dev_priv, vps->bo,
+						      true);
 		}
 
-		vmw_user_object_unref(&vps->uo);
+		vmw_bo_unreference(&vps->bo);
 		vps->bo_size = 0;
 	}
 
@@ -445,18 +443,22 @@ vmw_sou_primary_plane_prepare_fb(struct drm_plane *plane,
 	 * resume the overlays, this is preferred to failing to alloc.
 	 */
 	vmw_overlay_pause_all(dev_priv);
-	ret = vmw_bo_create(dev_priv, &bo_params, &vps->uo.buffer);
+	ret = vmw_bo_create(dev_priv, size,
+			    &vmw_vram_placement,
+			    false, true, &vmw_bo_bo_free, &vps->bo);
 	vmw_overlay_resume_all(dev_priv);
-	if (ret)
+	if (ret) {
+		vps->bo = NULL; /* vmw_bo_init frees on error */
 		return ret;
+	}
 
-	vps->bo_size = bo_params.size;
+	vps->bo_size = size;
 
 	/*
 	 * TTM already thinks the buffer is pinned, but make sure the
 	 * pin_count is upped.
 	 */
-	return vmw_bo_pin_in_vram(dev_priv, vps->uo.buffer, true);
+	return vmw_bo_pin_in_vram(dev_priv, vps->bo, true);
 }
 
 static uint32_t vmw_sou_bo_fifo_size(struct vmw_du_update_plane *update,
@@ -487,7 +489,7 @@ static uint32_t vmw_sou_bo_define_gmrfb(struct vmw_du_update_plane *update,
 	gmr->body.format.colorDepth = depth;
 	gmr->body.format.reserved = 0;
 	gmr->body.bytesPerLine = update->vfb->base.pitches[0];
-	vmw_bo_get_guest_ptr(&vfbbo->buffer->tbo, &gmr->body.ptr);
+	vmw_bo_get_guest_ptr(&vfbbo->buffer->base, &gmr->body.ptr);
 
 	return sizeof(*gmr);
 }
@@ -544,6 +546,7 @@ static int vmw_sou_plane_update_bo(struct vmw_private *dev_priv,
 	bo_update.base.vfb = vfb;
 	bo_update.base.out_fence = out_fence;
 	bo_update.base.mutex = NULL;
+	bo_update.base.cpu_blit = false;
 	bo_update.base.intr = true;
 
 	bo_update.base.calc_fifo_size = vmw_sou_bo_fifo_size;
@@ -583,7 +586,6 @@ static uint32_t vmw_sou_surface_pre_clip(struct vmw_du_update_plane *update,
 {
 	struct vmw_kms_sou_dirty_cmd *blit = cmd;
 	struct vmw_framebuffer_surface *vfbs;
-	struct vmw_surface *surf = NULL;
 
 	vfbs = container_of(update->vfb, typeof(*vfbs), base);
 
@@ -591,8 +593,7 @@ static uint32_t vmw_sou_surface_pre_clip(struct vmw_du_update_plane *update,
 	blit->header.size = sizeof(blit->body) + sizeof(SVGASignedRect) *
 		num_hits;
 
-	surf = vmw_user_object_surface(&vfbs->uo);
-	blit->body.srcImage.sid = surf->res.id;
+	blit->body.srcImage.sid = vfbs->surface->res.id;
 	blit->body.destScreenId = update->du->unit;
 
 	/* Update the source and destination bounding box later in post_clip */
@@ -706,6 +707,7 @@ static int vmw_sou_plane_update_surface(struct vmw_private *dev_priv,
 	srf_update.base.vfb = vfb;
 	srf_update.base.out_fence = out_fence;
 	srf_update.base.mutex = &dev_priv->cmdbuf_mutex;
+	srf_update.base.cpu_blit = false;
 	srf_update.base.intr = true;
 
 	srf_update.base.calc_fifo_size = vmw_sou_surface_fifo_size;
@@ -764,7 +766,7 @@ static const struct drm_plane_funcs vmw_sou_plane_funcs = {
 static const struct drm_plane_funcs vmw_sou_cursor_funcs = {
 	.update_plane = drm_atomic_helper_update_plane,
 	.disable_plane = drm_atomic_helper_disable_plane,
-	.destroy = vmw_cursor_plane_destroy,
+	.destroy = vmw_du_cursor_plane_destroy,
 	.reset = vmw_du_plane_reset,
 	.atomic_duplicate_state = vmw_du_plane_duplicate_state,
 	.atomic_destroy_state = vmw_du_plane_destroy_state,
@@ -775,10 +777,10 @@ static const struct drm_plane_funcs vmw_sou_cursor_funcs = {
  */
 static const struct
 drm_plane_helper_funcs vmw_sou_cursor_plane_helper_funcs = {
-	.atomic_check = vmw_cursor_plane_atomic_check,
-	.atomic_update = vmw_cursor_plane_atomic_update,
-	.prepare_fb = vmw_cursor_plane_prepare_fb,
-	.cleanup_fb = vmw_cursor_plane_cleanup_fb,
+	.atomic_check = vmw_du_cursor_plane_atomic_check,
+	.atomic_update = vmw_du_cursor_plane_atomic_update,
+	.prepare_fb = vmw_du_cursor_plane_prepare_fb,
+	.cleanup_fb = vmw_du_cursor_plane_cleanup_fb,
 };
 
 static const struct
@@ -794,8 +796,8 @@ static const struct drm_crtc_helper_funcs vmw_sou_crtc_helper_funcs = {
 	.mode_set_nofb = vmw_sou_crtc_mode_set_nofb,
 	.atomic_check = vmw_du_crtc_atomic_check,
 	.atomic_begin = vmw_du_crtc_atomic_begin,
-	.atomic_flush = vmw_vkms_crtc_atomic_flush,
-	.atomic_enable = vmw_vkms_crtc_atomic_enable,
+	.atomic_flush = vmw_du_crtc_atomic_flush,
+	.atomic_enable = vmw_sou_crtc_atomic_enable,
 	.atomic_disable = vmw_sou_crtc_atomic_disable,
 };
 
@@ -825,6 +827,7 @@ static int vmw_sou_init(struct vmw_private *dev_priv, unsigned unit)
 	sou->base.pref_active = (unit == 0);
 	sou->base.pref_width = dev_priv->initial_width;
 	sou->base.pref_height = dev_priv->initial_height;
+	sou->base.pref_mode = NULL;
 
 	/*
 	 * Remove this after enabling atomic because property values can
@@ -868,6 +871,7 @@ static int vmw_sou_init(struct vmw_private *dev_priv, unsigned unit)
 	}
 
 	drm_connector_helper_add(connector, &vmw_sou_connector_helper_funcs);
+	connector->status = vmw_du_connector_detect(connector, true);
 
 	ret = drm_encoder_init(dev, encoder, &vmw_screen_object_encoder_funcs,
 			       DRM_MODE_ENCODER_VIRTUAL, NULL);
@@ -904,9 +908,6 @@ static int vmw_sou_init(struct vmw_private *dev_priv, unsigned unit)
 				   dev->mode_config.suggested_x_property, 0);
 	drm_object_attach_property(&connector->base,
 				   dev->mode_config.suggested_y_property, 0);
-
-	vmw_du_init(&sou->base);
-
 	return 0;
 
 err_free_unregister:
@@ -946,7 +947,7 @@ int vmw_kms_sou_init_display(struct vmw_private *dev_priv)
 static int do_bo_define_gmrfb(struct vmw_private *dev_priv,
 				  struct vmw_framebuffer *framebuffer)
 {
-	struct vmw_bo *buf =
+	struct vmw_buffer_object *buf =
 		container_of(framebuffer, struct vmw_framebuffer_bo,
 			     base)->buffer;
 	int depth = framebuffer->base.format->depth;
@@ -972,7 +973,7 @@ static int do_bo_define_gmrfb(struct vmw_private *dev_priv,
 	cmd->body.format.reserved = 0;
 	cmd->body.bytesPerLine = framebuffer->base.pitches[0];
 	/* Buffer is reserved in vram or GMR */
-	vmw_bo_get_guest_ptr(&buf->tbo, &cmd->body.ptr);
+	vmw_bo_get_guest_ptr(&buf->base, &cmd->body.ptr);
 	vmw_cmd_commit(dev_priv, sizeof(*cmd));
 
 	return 0;
@@ -1108,7 +1109,7 @@ int vmw_kms_sou_do_surface_dirty(struct vmw_private *dev_priv,
 	int ret;
 
 	if (!srf)
-		srf = &vmw_user_object_surface(&vfbs->uo)->res;
+		srf = &vfbs->surface->res;
 
 	ret = vmw_validation_add_resource(&val_ctx, srf, 0, VMW_RES_DIRTY_NONE,
 					  NULL, NULL);
@@ -1215,16 +1216,14 @@ int vmw_kms_sou_do_bo_dirty(struct vmw_private *dev_priv,
 				struct vmw_fence_obj **out_fence,
 				struct drm_crtc *crtc)
 {
-	struct vmw_bo *buf =
+	struct vmw_buffer_object *buf =
 		container_of(framebuffer, struct vmw_framebuffer_bo,
 			     base)->buffer;
 	struct vmw_kms_dirty dirty;
 	DECLARE_VAL_CONTEXT(val_ctx, NULL, 0);
 	int ret;
 
-	vmw_bo_placement_set(buf, VMW_BO_DOMAIN_GMR | VMW_BO_DOMAIN_VRAM,
-			     VMW_BO_DOMAIN_GMR | VMW_BO_DOMAIN_VRAM);
-	ret = vmw_validation_add_bo(&val_ctx, buf);
+	ret = vmw_validation_add_bo(&val_ctx, buf, false, false);
 	if (ret)
 		return ret;
 
@@ -1324,15 +1323,13 @@ int vmw_kms_sou_readback(struct vmw_private *dev_priv,
 			 uint32_t num_clips,
 			 struct drm_crtc *crtc)
 {
-	struct vmw_bo *buf =
+	struct vmw_buffer_object *buf =
 		container_of(vfb, struct vmw_framebuffer_bo, base)->buffer;
 	struct vmw_kms_dirty dirty;
 	DECLARE_VAL_CONTEXT(val_ctx, NULL, 0);
 	int ret;
 
-	vmw_bo_placement_set(buf, VMW_BO_DOMAIN_GMR | VMW_BO_DOMAIN_VRAM,
-			     VMW_BO_DOMAIN_GMR | VMW_BO_DOMAIN_VRAM);
-	ret = vmw_validation_add_bo(&val_ctx, buf);
+	ret = vmw_validation_add_bo(&val_ctx, buf, false, false);
 	if (ret)
 		return ret;
 

@@ -6,7 +6,7 @@
  *
  * Based on work by:
  *   Stanislaw Skowronek <skylark@unaligned.org>
- *   Joshua Kinard <linux@kumba.dev>
+ *   Joshua Kinard <kumba@gentoo.org>
  *   Brent Casavant <bcasavan@sgi.com> - IOC4 master driver
  *   Pat Gefre <pfg@sgi.com> - IOC3 serial port IRQ demuxer
  */

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /* Copyright (c) 2020 Facebook */
-#include <vmlinux.h>
+#include "bpf_iter.h"
 #include <bpf/bpf_helpers.h>
 
 char _license[] SEC("license") = "GPL";

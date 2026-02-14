@@ -1,16 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
-/* Store the full address of the global discovery table */
-#define UNCORE_DISCOVERY_MSR			0x201e
-/* Base address of uncore perfmon discovery table for CBB domain */
-#define CBB_UNCORE_DISCOVERY_MSR		0x710
-/* Base address of uncore perfmon discovery table for the package */
-#define PACKAGE_UNCORE_DISCOVERY_MSR		0x711
-
 /* Generic device ID of a discovery table device */
 #define UNCORE_DISCOVERY_TABLE_DEVICE		0x09a7
-/* Device ID used on DMR */
-#define DMR_UNCORE_DISCOVERY_TABLE_DEVICE	0x09a1
 /* Capability ID for a discovery table device */
 #define UNCORE_EXT_CAP_ID_DISCOVERY		0x23
 /* First DVSEC offset */
@@ -122,27 +113,22 @@ struct uncore_unit_discovery {
 	};
 };
 
-struct intel_uncore_discovery_unit {
-	struct rb_node	node;
-	unsigned int	pmu_idx;	/* The idx of the corresponding PMU */
-	unsigned int	id;		/* Unit ID */
-	unsigned int	die;		/* Die ID */
-	u64		addr;		/* Unit Control Address */
-};
-
 struct intel_uncore_discovery_type {
 	struct rb_node	node;
 	enum uncore_access_type	access_type;
-	struct rb_root	units;		/* Unit ctrl addr for all units */
+	u64		box_ctrl;	/* Unit ctrl addr of the first box */
+	u64		*box_ctrl_die;	/* Unit ctrl addr of the first box of each die */
 	u16		type;		/* Type ID of the uncore block */
 	u8		num_counters;
 	u8		counter_width;
 	u8		ctl_offset;	/* Counter Control 0 offset */
 	u8		ctr_offset;	/* Counter 0 offset */
-	u16		num_units;	/* number of units */
+	u16		num_boxes;	/* number of boxes for the uncore block */
+	unsigned int	*ids;		/* Box IDs */
+	unsigned int	*box_offset;	/* Box offset */
 };
 
-bool uncore_discovery(struct uncore_plat_init *init);
+bool intel_uncore_has_discovery_tables(int *ignore);
 void intel_uncore_clear_discovery_tables(void);
 void intel_uncore_generic_uncore_cpu_init(void);
 int intel_uncore_generic_uncore_pci_init(void);
@@ -170,14 +156,3 @@ u64 intel_generic_uncore_pci_read_counter(struct intel_uncore_box *box,
 
 struct intel_uncore_type **
 intel_uncore_generic_init_uncores(enum uncore_access_type type_id, int num_extra);
-
-int intel_uncore_find_discovery_unit_id(struct rb_root *units, int die,
-					unsigned int pmu_idx);
-bool intel_generic_uncore_assign_hw_event(struct perf_event *event,
-					  struct intel_uncore_box *box);
-void uncore_find_add_unit(struct intel_uncore_discovery_unit *node,
-			  struct rb_root *root, u16 *num_units);
-struct intel_uncore_type **
-uncore_get_uncores(enum uncore_access_type type_id, int num_extra,
-		   struct intel_uncore_type **extra, int max_num_types,
-		   struct intel_uncore_type **uncores);

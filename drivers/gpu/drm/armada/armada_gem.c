@@ -10,13 +10,12 @@
 
 #include <drm/armada_drm.h>
 #include <drm/drm_prime.h>
-#include <drm/drm_print.h>
 
 #include "armada_drm.h"
 #include "armada_gem.h"
 #include "armada_ioctlP.h"
 
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);
 
 static vm_fault_t armada_gem_vm_fault(struct vm_fault *vmf)
 {

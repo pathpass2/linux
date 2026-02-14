@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <errno.h>
-#include "util/evlist.h"
+#include <stdio.h>
+#include "api/fs/fs.h"
 #include "util/pmu.h"
-#include "util/pmus.h"
 #include "util/topdown.h"
+#include "util/evlist.h"
+#include "util/debug.h"
+#include "util/pmu-hybrid.h"
 #include "topdown.h"
 #include "evsel.h"
 
-// cmask=0, inv=0, pc=0, edge=0, umask=4, event=0
-#define TOPDOWN_SLOTS		0x0400
+#define TOPDOWN_L1_EVENTS       "{slots,topdown-retiring,topdown-bad-spec,topdown-fe-bound,topdown-be-bound}"
+#define TOPDOWN_L1_EVENTS_CORE  "{slots,cpu_core/topdown-retiring/,cpu_core/topdown-bad-spec/,cpu_core/topdown-fe-bound/,cpu_core/topdown-be-bound/}"
+#define TOPDOWN_L2_EVENTS       "{slots,topdown-retiring,topdown-bad-spec,topdown-fe-bound,topdown-be-bound,topdown-heavy-ops,topdown-br-mispredict,topdown-fetch-lat,topdown-mem-bound}"
+#define TOPDOWN_L2_EVENTS_CORE  "{slots,cpu_core/topdown-retiring/,cpu_core/topdown-bad-spec/,cpu_core/topdown-fe-bound/,cpu_core/topdown-be-bound/,cpu_core/topdown-heavy-ops/,cpu_core/topdown-br-mispredict/,cpu_core/topdown-fetch-lat/,cpu_core/topdown-mem-bound/}"
 
 /* Check whether there is a PMU which supports the perf metrics. */
 bool topdown_sys_has_perf_metrics(void)
@@ -26,28 +30,39 @@ bool topdown_sys_has_perf_metrics(void)
 	 * The slots event is only available when the core PMU
 	 * supports the perf metrics feature.
 	 */
-	pmu = perf_pmus__find_by_type(PERF_TYPE_RAW);
-	if (pmu && perf_pmu__have_event(pmu, "slots"))
+	pmu = perf_pmu__find_by_type(PERF_TYPE_RAW);
+	if (pmu && pmu_have_event(pmu->name, "slots"))
 		has_perf_metrics = true;
 
 	cached = true;
 	return has_perf_metrics;
 }
 
-bool arch_is_topdown_slots(const struct evsel *evsel)
+/*
+ * Check whether we can use a group for top down.
+ * Without a group may get bad results due to multiplexing.
+ */
+bool arch_topdown_check_group(bool *warn)
 {
-	return evsel->core.attr.type == PERF_TYPE_RAW &&
-	       evsel->core.attr.config == TOPDOWN_SLOTS &&
-	       evsel->core.attr.config1 == 0;
+	int n;
+
+	if (sysctl__read_int("kernel/nmi_watchdog", &n) < 0)
+		return false;
+	if (n > 0) {
+		*warn = true;
+		return false;
+	}
+	return true;
 }
 
-bool arch_is_topdown_metrics(const struct evsel *evsel)
+void arch_topdown_group_warn(void)
 {
-	// cmask=0, inv=0, pc=0, edge=0, umask=0x80-0x87, event=0
-	return evsel->core.attr.type == PERF_TYPE_RAW &&
-		(evsel->core.attr.config & 0xFFFFF8FF) == 0x8000 &&
-		evsel->core.attr.config1 == 0;
+	fprintf(stderr,
+		"nmi_watchdog enabled with topdown. May give wrong results.\n"
+		"Disable with echo 0 > /proc/sys/kernel/nmi_watchdog\n");
 }
+
+#define TOPDOWN_SLOTS		0x0400
 
 /*
  * Check whether a topdown group supports sample-read.
@@ -55,54 +70,57 @@ bool arch_is_topdown_metrics(const struct evsel *evsel)
  * Only Topdown metric supports sample-read. The slots
  * event must be the leader of the topdown group.
  */
+
 bool arch_topdown_sample_read(struct evsel *leader)
 {
-	struct evsel *evsel;
-
 	if (!evsel__sys_has_perf_metrics(leader))
 		return false;
 
-	if (!arch_is_topdown_slots(leader))
-		return false;
-
-	/*
-	 * If slots event as leader event but no topdown metric events
-	 * in group, slots event should still sample as leader.
-	 */
-	evlist__for_each_entry(leader->evlist, evsel) {
-		if (evsel->core.leader != leader->core.leader)
-			continue;
-		if (evsel != leader && arch_is_topdown_metrics(evsel))
-			return true;
-	}
+	if (leader->core.attr.config == TOPDOWN_SLOTS)
+		return true;
 
 	return false;
 }
 
-/*
- * Make a copy of the topdown metric event metric_event with the given index but
- * change its configuration to be a topdown slots event. Copying from
- * metric_event ensures modifiers are the same.
- */
-int topdown_insert_slots_event(struct list_head *list, int idx, struct evsel *metric_event)
+const char *arch_get_topdown_pmu_name(struct evlist *evlist, bool warn)
 {
-	struct evsel *evsel = evsel__new_idx(&metric_event->core.attr, idx);
+	const char *pmu_name;
 
-	if (!evsel)
-		return -ENOMEM;
+	if (!perf_pmu__has_hybrid())
+		return "cpu";
 
-	evsel->core.attr.config = TOPDOWN_SLOTS;
-	evsel->core.cpus = perf_cpu_map__get(metric_event->core.cpus);
-	evsel->core.pmu_cpus = perf_cpu_map__get(metric_event->core.pmu_cpus);
-	evsel->core.is_pmu_core = true;
-	evsel->pmu = metric_event->pmu;
-	evsel->name = strdup("slots");
-	evsel->precise_max = metric_event->precise_max;
-	evsel->sample_read = metric_event->sample_read;
-	evsel->weak_group = metric_event->weak_group;
-	evsel->bpf_counter = metric_event->bpf_counter;
-	evsel->retire_lat = metric_event->retire_lat;
-	evsel__set_leader(evsel, evsel__leader(metric_event));
-	list_add_tail(&evsel->core.node, list);
-	return 0;
+	if (!evlist->hybrid_pmu_name) {
+		if (warn)
+			pr_warning("WARNING: default to use cpu_core topdown events\n");
+		evlist->hybrid_pmu_name = perf_pmu__hybrid_type_to_pmu("core");
+	}
+
+	pmu_name = evlist->hybrid_pmu_name;
+
+	return pmu_name;
+}
+
+int topdown_parse_events(struct evlist *evlist)
+{
+	const char *topdown_events;
+	const char *pmu_name;
+
+	if (!topdown_sys_has_perf_metrics())
+		return 0;
+
+	pmu_name = arch_get_topdown_pmu_name(evlist, false);
+
+	if (pmu_have_event(pmu_name, "topdown-heavy-ops")) {
+		if (!strcmp(pmu_name, "cpu_core"))
+			topdown_events = TOPDOWN_L2_EVENTS_CORE;
+		else
+			topdown_events = TOPDOWN_L2_EVENTS;
+	} else {
+		if (!strcmp(pmu_name, "cpu_core"))
+			topdown_events = TOPDOWN_L1_EVENTS_CORE;
+		else
+			topdown_events = TOPDOWN_L1_EVENTS;
+	}
+
+	return parse_event(evlist, topdown_events);
 }

@@ -21,7 +21,6 @@
 #include <linux/workqueue.h>
 
 #include <drm/drm_file.h>
-#include <drm/drm_print.h>
 #include <drm/exynos_drm.h>
 
 #include "exynos_drm_drv.h"
@@ -1336,7 +1335,7 @@ int exynos_g2d_exec_ioctl(struct drm_device *drm_dev, void *data,
 	/* Let the runqueue know that there is work to do. */
 	queue_work(g2d->g2d_workq, &g2d->runqueue_work);
 
-	if (req->async)
+	if (runqueue_node->async)
 		goto out;
 
 	wait_for_completion(&runqueue_node->complete);
@@ -1531,7 +1530,7 @@ err_destroy_slab:
 	return ret;
 }
 
-static void g2d_remove(struct platform_device *pdev)
+static int g2d_remove(struct platform_device *pdev)
 {
 	struct g2d_data *g2d = platform_get_drvdata(pdev);
 
@@ -1546,6 +1545,8 @@ static void g2d_remove(struct platform_device *pdev)
 	g2d_fini_cmdlist(g2d);
 	destroy_workqueue(g2d->g2d_workq);
 	kmem_cache_destroy(g2d->runqueue_slab);
+
+	return 0;
 }
 
 static int g2d_suspend(struct device *dev)
@@ -1611,6 +1612,7 @@ struct platform_driver g2d_driver = {
 	.remove		= g2d_remove,
 	.driver		= {
 		.name	= "exynos-drm-g2d",
+		.owner	= THIS_MODULE,
 		.pm	= pm_ptr(&g2d_pm_ops),
 		.of_match_table = exynos_g2d_match,
 	},

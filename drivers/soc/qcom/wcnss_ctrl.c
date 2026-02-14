@@ -3,12 +3,10 @@
  * Copyright (c) 2016, Linaro Ltd.
  * Copyright (c) 2015, Sony Mobile Communications Inc.
  */
-#include <linux/cleanup.h>
 #include <linux/firmware.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/io.h>
-#include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/rpmsg.h>
@@ -199,6 +197,7 @@ static int wcnss_request_version(struct wcnss_ctrl *wcnss)
  */
 static int wcnss_download_nv(struct wcnss_ctrl *wcnss, bool *expect_cbc)
 {
+	struct wcnss_download_nv_req *req;
 	const struct firmware *fw;
 	struct device *dev = wcnss->dev;
 	const char *nvbin = NVBIN_FILE;
@@ -206,19 +205,18 @@ static int wcnss_download_nv(struct wcnss_ctrl *wcnss, bool *expect_cbc)
 	ssize_t left;
 	int ret;
 
-	struct wcnss_download_nv_req *req __free(kfree) = kzalloc(sizeof(*req) + NV_FRAGMENT_SIZE,
-								  GFP_KERNEL);
+	req = kzalloc(sizeof(*req) + NV_FRAGMENT_SIZE, GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
 
 	ret = of_property_read_string(dev->of_node, "firmware-name", &nvbin);
 	if (ret < 0 && ret != -EINVAL)
-		return ret;
+		goto free_req;
 
 	ret = request_firmware(&fw, nvbin, dev);
 	if (ret < 0) {
 		dev_err(dev, "Failed to load nv file %s: %d\n", nvbin, ret);
-		return ret;
+		goto free_req;
 	}
 
 	data = fw->data;
@@ -264,6 +262,8 @@ static int wcnss_download_nv(struct wcnss_ctrl *wcnss, bool *expect_cbc)
 
 release_fw:
 	release_firmware(fw);
+free_req:
+	kfree(req);
 
 	return ret;
 }
@@ -286,7 +286,7 @@ struct rpmsg_endpoint *qcom_wcnss_open_channel(void *wcnss, const char *name, rp
 
 	return rpmsg_create_ept(_wcnss->channel->rpdev, cb, priv, chinfo);
 }
-EXPORT_SYMBOL_GPL(qcom_wcnss_open_channel);
+EXPORT_SYMBOL(qcom_wcnss_open_channel);
 
 static void wcnss_async_probe(struct work_struct *work)
 {
@@ -354,6 +354,7 @@ static struct rpmsg_driver wcnss_ctrl_driver = {
 	.callback = wcnss_ctrl_smd_callback,
 	.drv  = {
 		.name  = "qcom_wcnss_ctrl",
+		.owner = THIS_MODULE,
 		.of_match_table = wcnss_ctrl_of_match,
 	},
 };

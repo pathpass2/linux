@@ -90,8 +90,6 @@
 
 	gpio-keys {
 		compatible = "gpio-keys";
-		pinctrl-0 = <&gpio_keys_default>;
-		pinctrl-names = "default";
 
 		key-camera-focus {
 			label = "Camera Focus";
@@ -114,7 +112,7 @@
 			gpios = <&pm660l_gpios 7 GPIO_ACTIVE_LOW>;
 			linux,input-type = <1>;
 			linux,code = <KEY_VOLUMEDOWN>;
-			wakeup-source;
+			gpio-key,wakeup;
 			debounce-interval = <15>;
 		};
 	};
@@ -140,6 +138,11 @@
 			no-map;
 		};
 
+		reserved@85800000 {
+			reg = <0x00 0x85800000 0x00 0x3700000>;
+			no-map;
+		};
+
 		cont_splash_mem: splash@9d400000 {
 			reg = <0 0x9d400000 0 (1920 * 1080 * 4)>;
 			no-map;
@@ -152,12 +155,12 @@
 	 */
 	extcon_usb: extcon-usb {
 		compatible = "linux,extcon-usb-gpio";
-		id-gpios = <&tlmm 58 GPIO_ACTIVE_HIGH>;
+		id-gpio = <&tlmm 58 GPIO_ACTIVE_HIGH>;
 	};
 };
 
 &adsp_pil {
-	firmware-name = "qcom/sdm630/Sony/nile/adsp.mbn";
+	firmware-name = "qcom/sdm630/Sony/nile/adsp.mdt";
 };
 
 &blsp_i2c1 {
@@ -243,16 +246,6 @@
 	};
 };
 
-&pm660l_wled {
-	status = "okay";
-
-	qcom,switching-freq = <800>;
-	qcom,ovp-millivolt = <29600>;
-	qcom,current-boost-limit = <970>;
-	qcom,current-limit-microamp = <17500>;
-	qcom,num-strings = <2>;
-};
-
 &pon_pwrkey {
 	status = "okay";
 };
@@ -261,10 +254,6 @@
 	status = "okay";
 
 	linux,code = <KEY_VOLUMEUP>;
-};
-
-&qhee_code {
-	reg = <0x00 0x85800000 0x00 0x3700000>;
 };
 
 &qusb2phy0 {
@@ -647,13 +636,6 @@
 		bias-disable;
 	};
 
-	gpio_keys_default: gpio-keys-default-state {
-		pins = "gpio64", "gpio113";
-		function = "gpio";
-		drive-strength = <2>;
-		bias-pull-up;
-	};
-
 	imx300_vana_default: imx300-vana-default-state {
 		pins = "gpio50";
 		function = "gpio";
@@ -677,16 +659,10 @@
 };
 
 &usb3 {
-	qcom,select-utmi-as-pipe-clk;
-
 	status = "okay";
 };
 
 &usb3_dwc3 {
-	maximum-speed = "high-speed";
-	phys = <&qusb2phy0>;
-	phy-names = "usb2-phy";
-
 	dr_mode = "peripheral";
 	extcon = <&extcon_usb>;
 };

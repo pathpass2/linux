@@ -155,12 +155,21 @@ static int clps711x_fb_blank(int blank, struct fb_info *info)
 
 static const struct fb_ops clps711x_fb_ops = {
 	.owner		= THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_setcolreg	= clps711x_fb_setcolreg,
 	.fb_check_var	= clps711x_fb_check_var,
 	.fb_set_par	= clps711x_fb_set_par,
 	.fb_blank	= clps711x_fb_blank,
+	.fb_fillrect	= sys_fillrect,
+	.fb_copyarea	= sys_copyarea,
+	.fb_imageblit	= sys_imageblit,
 };
+
+static int clps711x_lcd_check_fb(struct lcd_device *lcddev, struct fb_info *fi)
+{
+	struct clps711x_fb_info *cfb = dev_get_drvdata(&lcddev->dev);
+
+	return (!fi || fi->par == cfb) ? 1 : 0;
+}
 
 static int clps711x_lcd_get_power(struct lcd_device *lcddev)
 {
@@ -168,9 +177,9 @@ static int clps711x_lcd_get_power(struct lcd_device *lcddev)
 
 	if (!IS_ERR_OR_NULL(cfb->lcd_pwr))
 		if (!regulator_is_enabled(cfb->lcd_pwr))
-			return LCD_POWER_REDUCED;
+			return FB_BLANK_NORMAL;
 
-	return LCD_POWER_ON;
+	return FB_BLANK_UNBLANK;
 }
 
 static int clps711x_lcd_set_power(struct lcd_device *lcddev, int blank)
@@ -178,7 +187,7 @@ static int clps711x_lcd_set_power(struct lcd_device *lcddev, int blank)
 	struct clps711x_fb_info *cfb = dev_get_drvdata(&lcddev->dev);
 
 	if (!IS_ERR_OR_NULL(cfb->lcd_pwr)) {
-		if (blank == LCD_POWER_ON) {
+		if (blank == FB_BLANK_UNBLANK) {
 			if (!regulator_is_enabled(cfb->lcd_pwr))
 				return regulator_enable(cfb->lcd_pwr);
 		} else {
@@ -190,7 +199,8 @@ static int clps711x_lcd_set_power(struct lcd_device *lcddev, int blank)
 	return 0;
 }
 
-static const struct lcd_ops clps711x_lcd_ops = {
+static struct lcd_ops clps711x_lcd_ops = {
+	.check_fb	= clps711x_lcd_check_fb,
 	.get_power	= clps711x_lcd_get_power,
 	.set_power	= clps711x_lcd_set_power,
 };
@@ -300,6 +310,7 @@ static int clps711x_fb_probe(struct platform_device *pdev)
 	}
 
 	info->fbops = &clps711x_fb_ops;
+	info->flags = FBINFO_DEFAULT;
 	info->var.activate = FB_ACTIVATE_FORCE | FB_ACTIVATE_NOW;
 	info->var.height = -1;
 	info->var.width = -1;
@@ -317,21 +328,16 @@ static int clps711x_fb_probe(struct platform_device *pdev)
 	if (ret)
 		goto out_fb_dealloc_cmap;
 
-	lcd = devm_lcd_device_register(dev, "clps711x-lcd", dev, cfb,
-				       &clps711x_lcd_ops);
-	if (IS_ERR(lcd)) {
-		ret = PTR_ERR(lcd);
-		goto out_fb_dealloc_cmap;
-	}
-
-	info->lcd_dev = lcd;
-
 	ret = register_framebuffer(info);
 	if (ret)
 		goto out_fb_dealloc_cmap;
 
-	return 0;
+	lcd = devm_lcd_device_register(dev, "clps711x-lcd", dev, cfb,
+				       &clps711x_lcd_ops);
+	if (!IS_ERR(lcd))
+		return 0;
 
+	ret = PTR_ERR(lcd);
 	unregister_framebuffer(info);
 
 out_fb_dealloc_cmap:
@@ -344,7 +350,7 @@ out_fb_release:
 	return ret;
 }
 
-static void clps711x_fb_remove(struct platform_device *pdev)
+static int clps711x_fb_remove(struct platform_device *pdev)
 {
 	struct fb_info *info = platform_get_drvdata(pdev);
 	struct clps711x_fb_info *cfb = info->par;
@@ -354,6 +360,8 @@ static void clps711x_fb_remove(struct platform_device *pdev)
 	unregister_framebuffer(info);
 	fb_dealloc_cmap(&info->cmap);
 	framebuffer_release(info);
+
+	return 0;
 }
 
 static const struct of_device_id clps711x_fb_dt_ids[] = {

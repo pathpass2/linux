@@ -181,15 +181,13 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, uint32_t flags, int mode,
 	struct dlm_ls *ls;
 	struct dlm_user_args *ua;
 	struct dlm_user_proc *proc;
-	struct dlm_callback *cb;
-	int rv, copy_lvb;
+	int rv;
 
-	if (test_bit(DLM_DFL_ORPHAN_BIT, &lkb->lkb_dflags) ||
-	    test_bit(DLM_IFL_DEAD_BIT, &lkb->lkb_iflags))
+	if (lkb->lkb_flags & (DLM_IFL_ORPHAN | DLM_IFL_DEAD))
 		return;
 
 	ls = lkb->lkb_resource->res_ls;
-	spin_lock_bh(&ls->ls_clear_proc_locks);
+	spin_lock(&ls->ls_clear_proc_locks);
 
 	/* If ORPHAN/DEAD flag is set, it means the process is dead so an ast
 	   can't be delivered.  For ORPHAN's, dlm_clear_proc_locks() freed
@@ -197,8 +195,7 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, uint32_t flags, int mode,
 	   for cases where a completion ast is received for an operation that
 	   began before clear_proc_locks did its cancel/unlock. */
 
-	if (test_bit(DLM_DFL_ORPHAN_BIT, &lkb->lkb_dflags) ||
-	    test_bit(DLM_IFL_DEAD_BIT, &lkb->lkb_iflags))
+	if (lkb->lkb_flags & (DLM_IFL_ORPHAN | DLM_IFL_DEAD))
 		goto out;
 
 	DLM_ASSERT(lkb->lkb_ua, dlm_print_lkb(lkb););
@@ -209,40 +206,40 @@ void dlm_user_add_ast(struct dlm_lkb *lkb, uint32_t flags, int mode,
 		goto out;
 
 	if ((flags & DLM_CB_CAST) && lkb_is_endoflife(mode, status))
-		set_bit(DLM_IFL_ENDOFLIFE_BIT, &lkb->lkb_iflags);
+		lkb->lkb_flags |= DLM_IFL_ENDOFLIFE;
 
-	spin_lock_bh(&proc->asts_spin);
+	spin_lock(&proc->asts_spin);
 
-	if (!dlm_may_skip_callback(lkb, flags, mode, status, sbflags,
-				   &copy_lvb)) {
-		rv = dlm_get_cb(lkb, flags, mode, status, sbflags, &cb);
-		if (!rv) {
-			cb->copy_lvb = copy_lvb;
-			cb->ua = *ua;
-			cb->lkb_lksb = &cb->ua.lksb;
-			if (copy_lvb) {
-				memcpy(cb->lvbptr, ua->lksb.sb_lvbptr,
-				       DLM_USER_LVB_LEN);
-				cb->lkb_lksb->sb_lvbptr = cb->lvbptr;
-			}
-
-			list_add_tail(&cb->list, &proc->asts);
-			wake_up_interruptible(&proc->wait);
-		}
+	rv = dlm_enqueue_lkb_callback(lkb, flags, mode, status, sbflags);
+	switch (rv) {
+	case DLM_ENQUEUE_CALLBACK_FAILURE:
+		spin_unlock(&proc->asts_spin);
+		WARN_ON_ONCE(1);
+		goto out;
+	case DLM_ENQUEUE_CALLBACK_NEED_SCHED:
+		kref_get(&lkb->lkb_ref);
+		list_add_tail(&lkb->lkb_cb_list, &proc->asts);
+		wake_up_interruptible(&proc->wait);
+		break;
+	case DLM_ENQUEUE_CALLBACK_SUCCESS:
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		break;
 	}
-	spin_unlock_bh(&proc->asts_spin);
+	spin_unlock(&proc->asts_spin);
 
-	if (test_bit(DLM_IFL_ENDOFLIFE_BIT, &lkb->lkb_iflags)) {
+	if (lkb->lkb_flags & DLM_IFL_ENDOFLIFE) {
 		/* N.B. spin_lock locks_spin, not asts_spin */
-		spin_lock_bh(&proc->locks_spin);
+		spin_lock(&proc->locks_spin);
 		if (!list_empty(&lkb->lkb_ownqueue)) {
 			list_del_init(&lkb->lkb_ownqueue);
 			dlm_put_lkb(lkb);
 		}
-		spin_unlock_bh(&proc->locks_spin);
+		spin_unlock(&proc->locks_spin);
 	}
  out:
-	spin_unlock_bh(&ls->ls_clear_proc_locks);
+	spin_unlock(&ls->ls_clear_proc_locks);
 }
 
 static int device_user_lock(struct dlm_user_proc *proc,
@@ -262,6 +259,14 @@ static int device_user_lock(struct dlm_user_proc *proc,
 		goto out;
 	}
 
+#ifdef CONFIG_DLM_DEPRECATED_API
+	if (params->timeout)
+		pr_warn_once("========================================================\n"
+			     "WARNING: the lkb timeout feature is being deprecated and\n"
+			     "         will be removed in v6.2!\n"
+			     "========================================================\n");
+#endif
+
 	ua = kzalloc(sizeof(struct dlm_user_args), GFP_NOFS);
 	if (!ua)
 		goto out;
@@ -274,9 +279,16 @@ static int device_user_lock(struct dlm_user_proc *proc,
 	ua->xid = params->xid;
 
 	if (params->flags & DLM_LKF_CONVERT) {
+#ifdef CONFIG_DLM_DEPRECATED_API
+		error = dlm_user_convert(ls, ua,
+				         params->mode, params->flags,
+				         params->lkid, params->lvb,
+					 (unsigned long) params->timeout);
+#else
 		error = dlm_user_convert(ls, ua,
 					 params->mode, params->flags,
 					 params->lkid, params->lvb);
+#endif
 	} else if (params->flags & DLM_LKF_ORPHAN) {
 		error = dlm_user_adopt_orphan(ls, ua,
 					 params->mode, params->flags,
@@ -285,9 +297,16 @@ static int device_user_lock(struct dlm_user_proc *proc,
 		if (!error)
 			error = lkid;
 	} else {
+#ifdef CONFIG_DLM_DEPRECATED_API
+		error = dlm_user_request(ls, ua,
+					 params->mode, params->flags,
+					 params->name, params->namelen,
+					 (unsigned long) params->timeout);
+#else
 		error = dlm_user_request(ls, ua,
 					 params->mode, params->flags,
 					 params->name, params->namelen);
+#endif
 		if (!error)
 			error = ua->lksb.sb_lkid;
 	}
@@ -425,7 +444,7 @@ static int device_create_lockspace(struct dlm_lspace_params *params)
 	dlm_put_lockspace(ls);
 
 	if (error)
-		dlm_release_lockspace(lockspace, DLM_RELEASE_NO_LOCKS);
+		dlm_release_lockspace(lockspace, 0);
 	else
 		error = ls->ls_device.minor;
 
@@ -436,7 +455,7 @@ static int device_remove_lockspace(struct dlm_lspace_params *params)
 {
 	dlm_lockspace_t *lockspace;
 	struct dlm_ls *ls;
-	int error, force = DLM_RELEASE_NO_LOCKS;
+	int error, force = 0;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -446,9 +465,9 @@ static int device_remove_lockspace(struct dlm_lspace_params *params)
 		return -ENOENT;
 
 	if (params->flags & DLM_USER_LSFLG_FORCEFREE)
-		force = DLM_RELEASE_NORMAL;
+		force = 2;
 
-	lockspace = ls;
+	lockspace = ls->ls_local_handle;
 	dlm_put_lockspace(ls);
 
 	/* The final dlm_release_lockspace waits for references to go to
@@ -651,7 +670,7 @@ static int device_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	}
 
-	proc->lockspace = ls;
+	proc->lockspace = ls->ls_local_handle;
 	INIT_LIST_HEAD(&proc->asts);
 	INIT_LIST_HEAD(&proc->locks);
 	INIT_LIST_HEAD(&proc->unlocking);
@@ -786,9 +805,11 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 			   loff_t *ppos)
 {
 	struct dlm_user_proc *proc = file->private_data;
+	struct dlm_lkb *lkb;
 	DECLARE_WAITQUEUE(wait, current);
 	struct dlm_callback *cb;
-	int rv, ret;
+	int rv, copy_lvb = 0;
+	int old_mode, new_mode;
 
 	if (count == sizeof(struct dlm_device_version)) {
 		rv = copy_version_to_user(buf, count);
@@ -807,14 +828,16 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 #endif
 		return -EINVAL;
 
+ try_another:
+
 	/* do we really need this? can a read happen after a close? */
 	if (test_bit(DLM_PROC_FLAGS_CLOSING, &proc->flags))
 		return -EINVAL;
 
-	spin_lock_bh(&proc->asts_spin);
+	spin_lock(&proc->asts_spin);
 	if (list_empty(&proc->asts)) {
 		if (file->f_flags & O_NONBLOCK) {
-			spin_unlock_bh(&proc->asts_spin);
+			spin_unlock(&proc->asts_spin);
 			return -EAGAIN;
 		}
 
@@ -823,16 +846,16 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	repeat:
 		set_current_state(TASK_INTERRUPTIBLE);
 		if (list_empty(&proc->asts) && !signal_pending(current)) {
-			spin_unlock_bh(&proc->asts_spin);
+			spin_unlock(&proc->asts_spin);
 			schedule();
-			spin_lock_bh(&proc->asts_spin);
+			spin_lock(&proc->asts_spin);
 			goto repeat;
 		}
 		set_current_state(TASK_RUNNING);
 		remove_wait_queue(&proc->wait, &wait);
 
 		if (signal_pending(current)) {
-			spin_unlock_bh(&proc->asts_spin);
+			spin_unlock(&proc->asts_spin);
 			return -ERESTARTSYS;
 		}
 	}
@@ -841,25 +864,61 @@ static ssize_t device_read(struct file *file, char __user *buf, size_t count,
 	   without removing lkb_cb_list; so empty lkb_cb_list is always
 	   consistent with empty lkb_callbacks */
 
-	cb = list_first_entry(&proc->asts, struct dlm_callback, list);
-	list_del(&cb->list);
-	spin_unlock_bh(&proc->asts_spin);
+	lkb = list_first_entry(&proc->asts, struct dlm_lkb, lkb_cb_list);
+
+	/* rem_lkb_callback sets a new lkb_last_cast */
+	old_mode = lkb->lkb_last_cast->mode;
+
+	rv = dlm_dequeue_lkb_callback(lkb, &cb);
+	switch (rv) {
+	case DLM_DEQUEUE_CALLBACK_EMPTY:
+		/* this shouldn't happen; lkb should have been removed from
+		 * list when last item was dequeued
+		 */
+		log_print("dlm_rem_lkb_callback empty %x", lkb->lkb_id);
+		list_del_init(&lkb->lkb_cb_list);
+		spin_unlock(&proc->asts_spin);
+		/* removes ref for proc->asts, may cause lkb to be freed */
+		dlm_put_lkb(lkb);
+		WARN_ON_ONCE(1);
+		goto try_another;
+	case DLM_DEQUEUE_CALLBACK_LAST:
+		list_del_init(&lkb->lkb_cb_list);
+		lkb->lkb_flags &= ~DLM_IFL_CB_PENDING;
+		break;
+	case DLM_DEQUEUE_CALLBACK_SUCCESS:
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		break;
+	}
+	spin_unlock(&proc->asts_spin);
 
 	if (cb->flags & DLM_CB_BAST) {
-		trace_dlm_bast(cb->ls_id, cb->lkb_id, cb->mode, cb->res_name,
-			       cb->res_length);
+		trace_dlm_bast(lkb->lkb_resource->res_ls, lkb, cb->mode);
 	} else if (cb->flags & DLM_CB_CAST) {
-		cb->lkb_lksb->sb_status = cb->sb_status;
-		cb->lkb_lksb->sb_flags = cb->sb_flags;
-		trace_dlm_ast(cb->ls_id, cb->lkb_id, cb->sb_status,
-			      cb->sb_flags, cb->res_name, cb->res_length);
+		new_mode = cb->mode;
+
+		if (!cb->sb_status && lkb->lkb_lksb->sb_lvbptr &&
+		    dlm_lvb_operations[old_mode + 1][new_mode + 1])
+			copy_lvb = 1;
+
+		lkb->lkb_lksb->sb_status = cb->sb_status;
+		lkb->lkb_lksb->sb_flags = cb->sb_flags;
+		trace_dlm_ast(lkb->lkb_resource->res_ls, lkb);
 	}
 
-	ret = copy_result_to_user(&cb->ua,
-				  test_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags),
-				  cb->flags, cb->mode, cb->copy_lvb, buf, count);
-	dlm_free_cb(cb);
-	return ret;
+	rv = copy_result_to_user(lkb->lkb_ua,
+				 test_bit(DLM_PROC_FLAGS_COMPAT, &proc->flags),
+				 cb->flags, cb->mode, copy_lvb, buf, count);
+
+	kref_put(&cb->ref, dlm_release_callback);
+
+	/* removes ref for proc->asts, may cause lkb to be freed */
+	if (rv == DLM_DEQUEUE_CALLBACK_LAST)
+		dlm_put_lkb(lkb);
+
+	return rv;
 }
 
 static __poll_t device_poll(struct file *file, poll_table *wait)
@@ -868,12 +927,12 @@ static __poll_t device_poll(struct file *file, poll_table *wait)
 
 	poll_wait(file, &proc->wait, wait);
 
-	spin_lock_bh(&proc->asts_spin);
+	spin_lock(&proc->asts_spin);
 	if (!list_empty(&proc->asts)) {
-		spin_unlock_bh(&proc->asts_spin);
+		spin_unlock(&proc->asts_spin);
 		return EPOLLIN | EPOLLRDNORM;
 	}
-	spin_unlock_bh(&proc->asts_spin);
+	spin_unlock(&proc->asts_spin);
 	return 0;
 }
 

@@ -85,7 +85,6 @@ EXPORT_SYMBOL_GPL(pie_drop_early);
 static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			     struct sk_buff **to_free)
 {
-	enum skb_drop_reason reason = SKB_DROP_REASON_QDISC_OVERLIMIT;
 	struct pie_sched_data *q = qdisc_priv(sch);
 	bool enqueue = false;
 
@@ -93,8 +92,6 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		q->stats.overlimit++;
 		goto out;
 	}
-
-	reason = SKB_DROP_REASON_QDISC_CONGESTED;
 
 	if (!pie_drop_early(sch, &q->params, &q->vars, sch->qstats.backlog,
 			    skb->len)) {
@@ -124,7 +121,7 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 out:
 	q->stats.dropped++;
 	q->vars.accu_prob = 0;
-	return qdisc_drop_reason(skb, sch, to_free, reason);
+	return qdisc_drop(skb, sch, to_free);
 }
 
 static const struct nla_policy pie_policy[TCA_PIE_MAX + 1] = {
@@ -141,9 +138,9 @@ static const struct nla_policy pie_policy[TCA_PIE_MAX + 1] = {
 static int pie_change(struct Qdisc *sch, struct nlattr *opt,
 		      struct netlink_ext_ack *extack)
 {
-	unsigned int dropped_pkts = 0, dropped_bytes = 0;
 	struct pie_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_PIE_MAX + 1];
+	unsigned int qlen, dropped = 0;
 	int err;
 
 	err = nla_parse_nested_deprecated(tb, TCA_PIE_MAX, opt, pie_policy,
@@ -159,51 +156,47 @@ static int pie_change(struct Qdisc *sch, struct nlattr *opt,
 		u32 target = nla_get_u32(tb[TCA_PIE_TARGET]);
 
 		/* convert to pschedtime */
-		WRITE_ONCE(q->params.target,
-			   PSCHED_NS2TICKS((u64)target * NSEC_PER_USEC));
+		q->params.target = PSCHED_NS2TICKS((u64)target * NSEC_PER_USEC);
 	}
 
 	/* tupdate is in jiffies */
 	if (tb[TCA_PIE_TUPDATE])
-		WRITE_ONCE(q->params.tupdate,
-			   usecs_to_jiffies(nla_get_u32(tb[TCA_PIE_TUPDATE])));
+		q->params.tupdate =
+			usecs_to_jiffies(nla_get_u32(tb[TCA_PIE_TUPDATE]));
 
 	if (tb[TCA_PIE_LIMIT]) {
 		u32 limit = nla_get_u32(tb[TCA_PIE_LIMIT]);
 
-		WRITE_ONCE(q->params.limit, limit);
-		WRITE_ONCE(sch->limit, limit);
+		q->params.limit = limit;
+		sch->limit = limit;
 	}
 
 	if (tb[TCA_PIE_ALPHA])
-		WRITE_ONCE(q->params.alpha, nla_get_u32(tb[TCA_PIE_ALPHA]));
+		q->params.alpha = nla_get_u32(tb[TCA_PIE_ALPHA]);
 
 	if (tb[TCA_PIE_BETA])
-		WRITE_ONCE(q->params.beta, nla_get_u32(tb[TCA_PIE_BETA]));
+		q->params.beta = nla_get_u32(tb[TCA_PIE_BETA]);
 
 	if (tb[TCA_PIE_ECN])
-		WRITE_ONCE(q->params.ecn, nla_get_u32(tb[TCA_PIE_ECN]));
+		q->params.ecn = nla_get_u32(tb[TCA_PIE_ECN]);
 
 	if (tb[TCA_PIE_BYTEMODE])
-		WRITE_ONCE(q->params.bytemode,
-			   nla_get_u32(tb[TCA_PIE_BYTEMODE]));
+		q->params.bytemode = nla_get_u32(tb[TCA_PIE_BYTEMODE]);
 
 	if (tb[TCA_PIE_DQ_RATE_ESTIMATOR])
-		WRITE_ONCE(q->params.dq_rate_estimator,
-			   nla_get_u32(tb[TCA_PIE_DQ_RATE_ESTIMATOR]));
+		q->params.dq_rate_estimator =
+				nla_get_u32(tb[TCA_PIE_DQ_RATE_ESTIMATOR]);
 
 	/* Drop excess packets if new limit is lower */
+	qlen = sch->q.qlen;
 	while (sch->q.qlen > sch->limit) {
-		struct sk_buff *skb = qdisc_dequeue_internal(sch, true);
+		struct sk_buff *skb = __qdisc_dequeue_head(&sch->q);
 
-		if (!skb)
-			break;
-
-		dropped_pkts++;
-		dropped_bytes += qdisc_pkt_len(skb);
+		dropped += qdisc_pkt_len(skb);
+		qdisc_qstats_backlog_dec(sch, skb);
 		rtnl_qdisc_drop(skb, sch);
 	}
-	qdisc_tree_reduce_backlog(sch, dropped_pkts, dropped_bytes);
+	qdisc_tree_reduce_backlog(sch, qlen - sch->q.qlen, dropped);
 
 	sch_tree_unlock(sch);
 	return 0;
@@ -326,7 +319,7 @@ void pie_calculate_probability(struct pie_params *params, struct pie_vars *vars,
 	}
 
 	/* If qdelay is zero and backlog is not, it means backlog is very small,
-	 * so we do not update probability in this round.
+	 * so we do not update probabilty in this round.
 	 */
 	if (qdelay == 0 && backlog != 0)
 		update_prob = false;
@@ -426,12 +419,10 @@ EXPORT_SYMBOL_GPL(pie_calculate_probability);
 
 static void pie_timer(struct timer_list *t)
 {
-	struct pie_sched_data *q = timer_container_of(q, t, adapt_timer);
+	struct pie_sched_data *q = from_timer(q, t, adapt_timer);
 	struct Qdisc *sch = q->sch;
-	spinlock_t *root_lock;
+	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 
-	rcu_read_lock();
-	root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 	spin_lock(root_lock);
 	pie_calculate_probability(&q->params, &q->vars, sch->qstats.backlog);
 
@@ -439,7 +430,6 @@ static void pie_timer(struct timer_list *t)
 	if (q->params.tupdate)
 		mod_timer(&q->adapt_timer, jiffies + q->params.tupdate);
 	spin_unlock(root_lock);
-	rcu_read_unlock();
 }
 
 static int pie_init(struct Qdisc *sch, struct nlattr *opt,
@@ -476,18 +466,17 @@ static int pie_dump(struct Qdisc *sch, struct sk_buff *skb)
 
 	/* convert target from pschedtime to us */
 	if (nla_put_u32(skb, TCA_PIE_TARGET,
-			((u32)PSCHED_TICKS2NS(READ_ONCE(q->params.target))) /
+			((u32)PSCHED_TICKS2NS(q->params.target)) /
 			NSEC_PER_USEC) ||
-	    nla_put_u32(skb, TCA_PIE_LIMIT, READ_ONCE(sch->limit)) ||
+	    nla_put_u32(skb, TCA_PIE_LIMIT, sch->limit) ||
 	    nla_put_u32(skb, TCA_PIE_TUPDATE,
-			jiffies_to_usecs(READ_ONCE(q->params.tupdate))) ||
-	    nla_put_u32(skb, TCA_PIE_ALPHA, READ_ONCE(q->params.alpha)) ||
-	    nla_put_u32(skb, TCA_PIE_BETA, READ_ONCE(q->params.beta)) ||
+			jiffies_to_usecs(q->params.tupdate)) ||
+	    nla_put_u32(skb, TCA_PIE_ALPHA, q->params.alpha) ||
+	    nla_put_u32(skb, TCA_PIE_BETA, q->params.beta) ||
 	    nla_put_u32(skb, TCA_PIE_ECN, q->params.ecn) ||
-	    nla_put_u32(skb, TCA_PIE_BYTEMODE,
-			READ_ONCE(q->params.bytemode)) ||
+	    nla_put_u32(skb, TCA_PIE_BYTEMODE, q->params.bytemode) ||
 	    nla_put_u32(skb, TCA_PIE_DQ_RATE_ESTIMATOR,
-			READ_ONCE(q->params.dq_rate_estimator)))
+			q->params.dq_rate_estimator))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
@@ -547,7 +536,7 @@ static void pie_destroy(struct Qdisc *sch)
 	struct pie_sched_data *q = qdisc_priv(sch);
 
 	q->params.tupdate = 0;
-	timer_delete_sync(&q->adapt_timer);
+	del_timer_sync(&q->adapt_timer);
 }
 
 static struct Qdisc_ops pie_qdisc_ops __read_mostly = {
@@ -564,7 +553,6 @@ static struct Qdisc_ops pie_qdisc_ops __read_mostly = {
 	.dump_stats	= pie_dump_stats,
 	.owner		= THIS_MODULE,
 };
-MODULE_ALIAS_NET_SCH("pie");
 
 static int __init pie_module_init(void)
 {

@@ -15,11 +15,9 @@ properties:
       - items:
           - enum:
               - allwinner,sun4i-a10-ohci
-              - allwinner,sun50i-a100-ohci
               - allwinner,sun50i-a64-ohci
               - allwinner,sun50i-h6-ohci
               - allwinner,sun50i-h616-ohci
-              - allwinner,sun55i-a523-ohci
               - allwinner,sun5i-a13-ohci
               - allwinner,sun6i-a31-ohci
               - allwinner,sun7i-a20-ohci
@@ -27,7 +25,6 @@ properties:
               - allwinner,sun8i-a83t-ohci
               - allwinner,sun8i-h3-ohci
               - allwinner,sun8i-r40-ohci
-              - allwinner,sun8i-v3s-ohci
               - allwinner,sun9i-a80-ohci
               - allwinner,sun20i-d1-ohci
               - brcm,bcm3384-ohci
@@ -47,7 +44,6 @@ properties:
               - hpe,gxp-ohci
               - ibm,476gtr-ohci
               - ingenic,jz4740-ohci
-              - rockchip,rk3588-ohci
               - snps,hsdk-v1.0-ohci
           - const: generic-ohci
       - enum:
@@ -73,7 +69,7 @@ properties:
 
   clocks:
     minItems: 1
-    maxItems: 4
+    maxItems: 3
     description: |
       In case the Renesas R-Car Gen3 SoCs:
         - if a host only channel: first clock should be host.
@@ -151,22 +147,8 @@ allOf:
     then:
       properties:
         transceiver: false
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: rockchip,rk3588-ohci
-    then:
-      properties:
-        clocks:
-          minItems: 4
-    else:
-      properties:
-        clocks:
-          minItems: 1
-          maxItems: 3
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

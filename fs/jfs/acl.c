@@ -61,7 +61,7 @@ static int __jfs_set_acl(tid_t tid, struct inode *inode, int type,
 {
 	char *ea_name;
 	int rc;
-	size_t size = 0;
+	int size = 0;
 	char *value = NULL;
 
 	switch (type) {
@@ -76,11 +76,16 @@ static int __jfs_set_acl(tid_t tid, struct inode *inode, int type,
 	}
 
 	if (acl) {
-		value = posix_acl_to_xattr(&init_user_ns, acl, &size, GFP_KERNEL);
+		size = posix_acl_xattr_size(acl->a_count);
+		value = kmalloc(size, GFP_KERNEL);
 		if (!value)
 			return -ENOMEM;
+		rc = posix_acl_to_xattr(&init_user_ns, acl, value, size);
+		if (rc < 0)
+			goto out;
 	}
 	rc = __jfs_setxattr(tid, inode, ea_name, value, size, 0);
+out:
 	kfree(value);
 
 	if (!rc)
@@ -111,7 +116,7 @@ int jfs_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 	if (!rc) {
 		if (update_mode) {
 			inode->i_mode = mode;
-			inode_set_ctime_current(inode);
+			inode->i_ctime = current_time(inode);
 			mark_inode_dirty(inode);
 		}
 		rc = txCommit(tid, 1, &inode, 0);

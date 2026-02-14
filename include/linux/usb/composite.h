@@ -35,14 +35,6 @@
  * are ready. The control transfer will then be kept from completing till
  * all the function drivers that requested for USB_GADGET_DELAYED_STAUS
  * invoke usb_composite_setup_continue().
- *
- * NOTE: USB_GADGET_DELAYED_STATUS must not be used in UDC drivers: they
- * must delay completing the status stage for 0-length control transfers
- * regardless of the whether USB_GADGET_DELAYED_STATUS is returned from
- * the gadget driver's setup() callback.
- * Currently, a number of UDC drivers rely on USB_GADGET_DELAYED_STATUS,
- * which is a bug. These drivers must be fixed and USB_GADGET_DELAYED_STATUS
- * must be contained within the composite framework.
  */
 #define USB_GADGET_DELAYED_STATUS       0x7fff	/* Impossibly large value */
 
@@ -158,9 +150,6 @@ struct usb_os_desc_table {
  *	GetStatus() request when the recipient is Interface.
  * @func_suspend: callback to be called when
  *	SetFeature(FUNCTION_SUSPEND) is reseived
- * @func_suspended: Indicates whether the function is in function suspend state.
- * @func_wakeup_armed: Indicates whether the function is armed by the host for
- *	wakeup signaling.
  *
  * A single USB function uses one or more interfaces, and should in most
  * cases support operation at both full and high speeds.  Each function is
@@ -231,13 +220,11 @@ struct usb_function {
 	int			(*get_status)(struct usb_function *);
 	int			(*func_suspend)(struct usb_function *,
 						u8 suspend_opt);
-	bool			func_suspended;
-	bool			func_wakeup_armed;
 	/* private: */
 	/* internals */
 	struct list_head		list;
 	DECLARE_BITMAP(endpoints, 32);
-	struct usb_function_instance *fi;
+	const struct usb_function_instance *fi;
 
 	unsigned int		bind_deactivated:1;
 };
@@ -254,9 +241,8 @@ int config_ep_by_speed_and_alt(struct usb_gadget *g, struct usb_function *f,
 
 int config_ep_by_speed(struct usb_gadget *g, struct usb_function *f,
 			struct usb_ep *_ep);
-int usb_func_wakeup(struct usb_function *func);
 
-#define	MAX_CONFIG_INTERFACES		32
+#define	MAX_CONFIG_INTERFACES		16	/* arbitrary; max 255 */
 
 /**
  * struct usb_configuration - represents one gadget configuration
@@ -338,6 +324,9 @@ struct usb_configuration {
 int usb_add_config(struct usb_composite_dev *,
 		struct usb_configuration *,
 		int (*)(struct usb_configuration *));
+
+void usb_remove_config(struct usb_composite_dev *,
+		struct usb_configuration *);
 
 /* predefined index for usb_composite_driver */
 enum {
@@ -424,8 +413,6 @@ extern int composite_dev_prepare(struct usb_composite_driver *composite,
 extern int composite_os_desc_req_prepare(struct usb_composite_dev *cdev,
 					 struct usb_ep *ep0);
 void composite_dev_cleanup(struct usb_composite_dev *cdev);
-void check_remote_wakeup_config(struct usb_gadget *g,
-				struct usb_configuration *c);
 
 static inline struct usb_composite_driver *to_cdriver(
 		struct usb_gadget_driver *gdrv)
@@ -448,13 +435,36 @@ static inline struct usb_composite_driver *to_cdriver(
  * @bcd_webusb_version: 0x0100 by default, WebUSB specification version
  * @b_webusb_vendor_code: 0x0 by default, vendor code for WebUSB
  * @landing_page: empty by default, landing page to announce in WebUSB
- * @use_webusb: false by default, interested gadgets set it
+ * @use_webusb:: false by default, interested gadgets set it
  * @os_desc_config: the configuration to be used with OS descriptors
  * @setup_pending: true when setup request is queued but not completed
  * @os_desc_pending: true when os_desc request is queued but not completed
  *
  * One of these devices is allocated and initialized before the
  * associated device driver's bind() is called.
+ *
+ * OPEN ISSUE:  it appears that some WUSB devices will need to be
+ * built by combining a normal (wired) gadget with a wireless one.
+ * This revision of the gadget framework should probably try to make
+ * sure doing that won't hurt too much.
+ *
+ * One notion for how to handle Wireless USB devices involves:
+ *
+ * (a) a second gadget here, discovery mechanism TBD, but likely
+ *     needing separate "register/unregister WUSB gadget" calls;
+ * (b) updates to usb_gadget to include flags "is it wireless",
+ *     "is it wired", plus (presumably in a wrapper structure)
+ *     bandgroup and PHY info;
+ * (c) presumably a wireless_ep wrapping a usb_ep, and reporting
+ *     wireless-specific parameters like maxburst and maxsequence;
+ * (d) configurations that are specific to wireless links;
+ * (e) function drivers that understand wireless configs and will
+ *     support wireless for (additional) function instances;
+ * (f) a function to support association setup (like CBAF), not
+ *     necessarily requiring a wireless adapter;
+ * (g) composite device setup that can create one or more wireless
+ *     configs, including appropriate association setup support;
+ * (h) more, TBD.
  */
 struct usb_composite_dev {
 	struct usb_gadget		*gadget;

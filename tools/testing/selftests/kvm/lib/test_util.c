@@ -4,8 +4,7 @@
  *
  * Copyright (C) 2020, Google LLC.
  */
-#include <stdio.h>
-#include <stdarg.h>
+
 #include <assert.h>
 #include <ctype.h>
 #include <limits.h>
@@ -17,13 +16,6 @@
 #include "linux/kernel.h"
 
 #include "test_util.h"
-
-sigjmp_buf expect_sigbus_jmpbuf;
-
-void __attribute__((used)) expect_sigbus_handler(int signum)
-{
-	siglongjmp(expect_sigbus_jmpbuf, 1);
-}
 
 /*
  * Random number generator that is usable from guest code. This is the
@@ -139,55 +131,35 @@ void print_skip(const char *fmt, ...)
 	puts(", skipping test");
 }
 
-static bool test_sysfs_path(const char *path)
+bool thp_configured(void)
 {
-	struct stat statbuf;
 	int ret;
+	struct stat statbuf;
 
-	ret = stat(path, &statbuf);
+	ret = stat("/sys/kernel/mm/transparent_hugepage", &statbuf);
 	TEST_ASSERT(ret == 0 || (ret == -1 && errno == ENOENT),
-		    "Error in stat()ing '%s'", path);
+		    "Error in stating /sys/kernel/mm/transparent_hugepage");
 
 	return ret == 0;
 }
 
-bool thp_configured(void)
-{
-	return test_sysfs_path("/sys/kernel/mm/transparent_hugepage");
-}
-
-static size_t get_sysfs_val(const char *path)
+size_t get_trans_hugepagesz(void)
 {
 	size_t size;
 	FILE *f;
 	int ret;
 
-	f = fopen(path, "r");
-	TEST_ASSERT(f, "Error opening '%s'", path);
-
-	ret = fscanf(f, "%ld", &size);
-	TEST_ASSERT(ret > 0, "Error reading '%s'", path);
-
-	/* Re-scan the input stream to verify the entire file was read. */
-	ret = fscanf(f, "%ld", &size);
-	TEST_ASSERT(ret < 1, "Error reading '%s'", path);
-
-	fclose(f);
-	return size;
-}
-
-size_t get_trans_hugepagesz(void)
-{
 	TEST_ASSERT(thp_configured(), "THP is not configured in host kernel");
 
-	return get_sysfs_val("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size");
-}
+	f = fopen("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size", "r");
+	TEST_ASSERT(f != NULL, "Error in opening transparent_hugepage/hpage_pmd_size");
 
-bool is_numa_balancing_enabled(void)
-{
-	if (!test_sysfs_path("/proc/sys/kernel/numa_balancing"))
-		return false;
-	return get_sysfs_val("/proc/sys/kernel/numa_balancing") == 1;
+	ret = fscanf(f, "%ld", &size);
+	ret = fscanf(f, "%ld", &size);
+	TEST_ASSERT(ret < 1, "Error reading transparent_hugepage/hpage_pmd_size");
+	fclose(f);
+
+	return size;
 }
 
 size_t get_def_hugetlb_pagesz(void)
@@ -404,41 +376,4 @@ int atoi_paranoid(const char *num_str)
 		    "%ld not in range of [%d, %d]", num, INT_MIN, INT_MAX);
 
 	return num;
-}
-
-char *strdup_printf(const char *fmt, ...)
-{
-	va_list ap;
-	char *str;
-
-	va_start(ap, fmt);
-	TEST_ASSERT(vasprintf(&str, fmt, ap) >= 0, "vasprintf() failed");
-	va_end(ap);
-
-	return str;
-}
-
-#define CLOCKSOURCE_PATH "/sys/devices/system/clocksource/clocksource0/current_clocksource"
-
-char *sys_get_cur_clocksource(void)
-{
-	char *clk_name;
-	struct stat st;
-	FILE *fp;
-
-	fp = fopen(CLOCKSOURCE_PATH, "r");
-	TEST_ASSERT(fp, "failed to open clocksource file, errno: %d", errno);
-
-	TEST_ASSERT(!fstat(fileno(fp), &st), "failed to stat clocksource file, errno: %d",
-		    errno);
-
-	clk_name = malloc(st.st_size);
-	TEST_ASSERT(clk_name, "failed to allocate buffer to read file");
-
-	TEST_ASSERT(fgets(clk_name, st.st_size, fp), "failed to read clocksource file: %d",
-		    ferror(fp));
-
-	fclose(fp);
-
-	return clk_name;
 }

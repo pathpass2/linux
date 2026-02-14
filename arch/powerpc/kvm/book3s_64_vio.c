@@ -20,7 +20,6 @@
 #include <linux/iommu.h>
 #include <linux/file.h>
 #include <linux/mm.h>
-#include <linux/rcupdate_wait.h>
 
 #include <asm/kvm_ppc.h>
 #include <asm/kvm_book3s.h>
@@ -78,8 +77,8 @@ static void kvm_spapr_tce_liobn_put(struct kref *kref)
 	call_rcu(&stit->rcu, kvm_spapr_tce_iommu_table_free);
 }
 
-void kvm_spapr_tce_release_iommu_group(struct kvm *kvm,
-				       struct iommu_group *grp)
+extern void kvm_spapr_tce_release_iommu_group(struct kvm *kvm,
+		struct iommu_group *grp)
 {
 	int i;
 	struct kvmppc_spapr_tce_table *stt;
@@ -106,8 +105,8 @@ void kvm_spapr_tce_release_iommu_group(struct kvm *kvm,
 	rcu_read_unlock();
 }
 
-long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
-				      struct iommu_group *grp)
+extern long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
+		struct iommu_group *grp)
 {
 	struct kvmppc_spapr_tce_table *stt = NULL;
 	bool found = false;
@@ -115,19 +114,22 @@ long kvm_spapr_tce_attach_iommu_group(struct kvm *kvm, int tablefd,
 	struct iommu_table_group *table_group;
 	long i;
 	struct kvmppc_spapr_tce_iommu_table *stit;
-	CLASS(fd, f)(tablefd);
+	struct fd f;
 
-	if (fd_empty(f))
+	f = fdget(tablefd);
+	if (!f.file)
 		return -EBADF;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(stt, &kvm->arch.spapr_tce_tables, list) {
-		if (stt == fd_file(f)->private_data) {
+		if (stt == f.file->private_data) {
 			found = true;
 			break;
 		}
 	}
 	rcu_read_unlock();
+
+	fdput(f);
 
 	if (!found)
 		return -EINVAL;
@@ -286,8 +288,8 @@ static const struct file_operations kvm_spapr_tce_fops = {
 	.release	= kvm_spapr_tce_release,
 };
 
-int kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
-				  struct kvm_create_spapr_tce_64 *args)
+long kvm_vm_ioctl_create_spapr_tce(struct kvm *kvm,
+				   struct kvm_create_spapr_tce_64 *args)
 {
 	struct kvmppc_spapr_tce_table *stt = NULL;
 	struct kvmppc_spapr_tce_table *siter;
@@ -784,12 +786,12 @@ long kvmppc_h_get_tce(struct kvm_vcpu *vcpu, unsigned long liobn,
 	idx = (ioba >> stt->page_shift) - stt->offset;
 	page = stt->pages[idx / TCES_PER_PAGE];
 	if (!page) {
-		kvmppc_set_gpr(vcpu, 4, 0);
+		vcpu->arch.regs.gpr[4] = 0;
 		return H_SUCCESS;
 	}
 	tbl = (u64 *)page_address(page);
 
-	kvmppc_set_gpr(vcpu, 4, tbl[idx % TCES_PER_PAGE]);
+	vcpu->arch.regs.gpr[4] = tbl[idx % TCES_PER_PAGE];
 
 	return H_SUCCESS;
 }

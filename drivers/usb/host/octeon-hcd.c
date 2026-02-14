@@ -3346,7 +3346,7 @@ static int octeon_usb_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 			break;
 		case USB_PORT_FEAT_INDICATOR:
 			dev_dbg(dev, " INDICATOR\n");
-			/* Port indicator not supported */
+			/* Port inidicator not supported */
 			break;
 		case USB_PORT_FEAT_C_CONNECTION:
 			dev_dbg(dev, " C_CONNECTION\n");
@@ -3680,7 +3680,7 @@ static int octeon_usb_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void octeon_usb_remove(struct platform_device *pdev)
+static int octeon_usb_remove(struct platform_device *pdev)
 {
 	int status;
 	struct device *dev = &pdev->dev;
@@ -3696,6 +3696,8 @@ static void octeon_usb_remove(struct platform_device *pdev)
 		dev_dbg(dev, "USB shutdown failed with %d\n", status);
 
 	usb_put_hcd(hcd);
+
+	return 0;
 }
 
 static const struct of_device_id octeon_usb_match[] = {
@@ -3711,8 +3713,8 @@ static struct platform_driver octeon_usb_driver = {
 		.name		= "octeon-hcd",
 		.of_match_table = octeon_usb_match,
 	},
-	.probe = octeon_usb_probe,
-	.remove = octeon_usb_remove,
+	.probe      = octeon_usb_probe,
+	.remove     = octeon_usb_remove,
 };
 
 static int __init octeon_usb_driver_init(void)

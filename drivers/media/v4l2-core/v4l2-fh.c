@@ -41,11 +41,9 @@ void v4l2_fh_init(struct v4l2_fh *fh, struct video_device *vdev)
 }
 EXPORT_SYMBOL_GPL(v4l2_fh_init);
 
-void v4l2_fh_add(struct v4l2_fh *fh, struct file *filp)
+void v4l2_fh_add(struct v4l2_fh *fh)
 {
 	unsigned long flags;
-
-	filp->private_data = fh;
 
 	v4l2_prio_open(fh->vdev->prio, &fh->prio);
 	spin_lock_irqsave(&fh->vdev->fh_lock, flags);
@@ -59,15 +57,16 @@ int v4l2_fh_open(struct file *filp)
 	struct video_device *vdev = video_devdata(filp);
 	struct v4l2_fh *fh = kzalloc(sizeof(*fh), GFP_KERNEL);
 
+	filp->private_data = fh;
 	if (fh == NULL)
 		return -ENOMEM;
 	v4l2_fh_init(fh, vdev);
-	v4l2_fh_add(fh, filp);
+	v4l2_fh_add(fh);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(v4l2_fh_open);
 
-void v4l2_fh_del(struct v4l2_fh *fh, struct file *filp)
+void v4l2_fh_del(struct v4l2_fh *fh)
 {
 	unsigned long flags;
 
@@ -75,8 +74,6 @@ void v4l2_fh_del(struct v4l2_fh *fh, struct file *filp)
 	list_del_init(&fh->list);
 	spin_unlock_irqrestore(&fh->vdev->fh_lock, flags);
 	v4l2_prio_close(fh->vdev->prio, fh->prio);
-
-	filp->private_data = NULL;
 }
 EXPORT_SYMBOL_GPL(v4l2_fh_del);
 
@@ -93,12 +90,13 @@ EXPORT_SYMBOL_GPL(v4l2_fh_exit);
 
 int v4l2_fh_release(struct file *filp)
 {
-	struct v4l2_fh *fh = file_to_v4l2_fh(filp);
+	struct v4l2_fh *fh = filp->private_data;
 
 	if (fh) {
-		v4l2_fh_del(fh, filp);
+		v4l2_fh_del(fh);
 		v4l2_fh_exit(fh);
 		kfree(fh);
+		filp->private_data = NULL;
 	}
 	return 0;
 }

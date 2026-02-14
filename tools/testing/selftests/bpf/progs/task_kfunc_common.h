@@ -10,10 +10,10 @@
 #include <bpf/bpf_tracing.h>
 
 struct __tasks_kfunc_map_value {
-	struct task_struct __kptr * task;
+	struct task_struct __kptr_ref * task;
 };
 
-struct {
+struct hash_map {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, int);
 	__type(value, struct __tasks_kfunc_map_value);
@@ -21,11 +21,9 @@ struct {
 } __tasks_kfunc_map SEC(".maps");
 
 struct task_struct *bpf_task_acquire(struct task_struct *p) __ksym;
+struct task_struct *bpf_task_kptr_get(struct task_struct **pp) __ksym;
 void bpf_task_release(struct task_struct *p) __ksym;
 struct task_struct *bpf_task_from_pid(s32 pid) __ksym;
-struct task_struct *bpf_task_from_vpid(s32 vpid) __ksym;
-void bpf_rcu_read_lock(void) __ksym;
-void bpf_rcu_read_unlock(void) __ksym;
 
 static inline struct __tasks_kfunc_map_value *tasks_kfunc_map_value_lookup(struct task_struct *p)
 {
@@ -62,9 +60,6 @@ static inline int tasks_kfunc_map_insert(struct task_struct *p)
 	}
 
 	acquired = bpf_task_acquire(p);
-	if (!acquired)
-		return -ENOENT;
-
 	old = bpf_kptr_xchg(&v->task, acquired);
 	if (old) {
 		bpf_task_release(old);

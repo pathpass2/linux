@@ -22,7 +22,6 @@
 #include "tick-internal.h"
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Clocksource watchdog unit test");
 MODULE_AUTHOR("Paul E. McKenney <paulmck@kernel.org>");
 
 static int holdoff = IS_BUILTIN(CONFIG_TEST_CLOCKSOURCE_WATCHDOG) ? 10 : 0;
@@ -105,8 +104,8 @@ static void wdtest_ktime_clocksource_reset(void)
 static int wdtest_func(void *arg)
 {
 	unsigned long j1, j2;
-	int i, max_retries;
 	char *s;
+	int i;
 
 	schedule_timeout_uninterruptible(holdoff * HZ);
 
@@ -137,23 +136,21 @@ static int wdtest_func(void *arg)
 	udelay(1);
 	j2 = clocksource_wdtest_ktime.read(&clocksource_wdtest_ktime);
 	pr_info("--- tsc-like times: %lu - %lu = %lu.\n", j2, j1, j2 - j1);
-	WARN_ONCE(time_before(j2, j1 + NSEC_PER_USEC),
-		  "Expected at least 1000ns, got %lu.\n", j2 - j1);
+	WARN_ON_ONCE(time_before(j2, j1 + NSEC_PER_USEC));
 
 	/* Verify tsc-like stability with various numbers of errors injected. */
-	max_retries = clocksource_get_max_watchdog_retry();
-	for (i = 0; i <= max_retries + 1; i++) {
-		if (i <= 1 && i < max_retries)
+	for (i = 0; i <= max_cswd_read_retries + 1; i++) {
+		if (i <= 1 && i < max_cswd_read_retries)
 			s = "";
-		else if (i <= max_retries)
+		else if (i <= max_cswd_read_retries)
 			s = ", expect message";
 		else
 			s = ", expect clock skew";
-		pr_info("--- Watchdog with %dx error injection, %d retries%s.\n", i, max_retries, s);
+		pr_info("--- Watchdog with %dx error injection, %lu retries%s.\n", i, max_cswd_read_retries, s);
 		WRITE_ONCE(wdtest_ktime_read_ndelays, i);
 		schedule_timeout_uninterruptible(2 * HZ);
 		WARN_ON_ONCE(READ_ONCE(wdtest_ktime_read_ndelays));
-		WARN_ON_ONCE((i <= max_retries) !=
+		WARN_ON_ONCE((i <= max_cswd_read_retries) !=
 			     !(clocksource_wdtest_ktime.flags & CLOCK_SOURCE_UNSTABLE));
 		wdtest_ktime_clocksource_reset();
 	}

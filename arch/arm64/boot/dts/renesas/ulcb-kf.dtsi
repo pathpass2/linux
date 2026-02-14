@@ -4,29 +4,12 @@
  *
  * Copyright (C) 2017 Renesas Electronics Corp.
  * Copyright (C) 2017 Cogent Embedded, Inc.
- *
- * Sample Audio settings:
- *
- *	> amixer set "DVC Out" 1%
- *	> amixer set "DVC In"  20%
- *
- *	// if you use xxxx-mix+split.dtsi
- *	> amixer -D hw:1 set "pcm3168a DAC1" 50%
- *	> amixer -D hw:1 set "pcm3168a DAC2" 50%
- *	> amixer -D hw:1 set "pcm3168a DAC3" 50%
- *	> amixer -D hw:1 set "pcm3168a DAC4" 50%
- *
- *	// else
- *	> amixer -D hw:1 set "DAC1" 50%
- *	> amixer -D hw:1 set "DAC2" 50%
- *	> amixer -D hw:1 set "DAC3" 50%
- *	> amixer -D hw:1 set "DAC4" 50%
  */
+
 / {
 	aliases {
 		serial1 = &hscif0;
 		serial2 = &scif1;
-		serial3 = &hscif1;
 		mmc2 = &sdhi3;
 	};
 
@@ -48,40 +31,39 @@
 		};
 	};
 
-	reg_t1p8v: regulator-t1p8v {
+	accel_3v3: regulator-acc-3v3 {
 		compatible = "regulator-fixed";
-		regulator-name = "T1.8V";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-		regulator-boot-on;
-		regulator-always-on;
-	};
-
-	pcie_1v5: regulator-pcie-1v5 {
-		compatible = "regulator-fixed";
-		regulator-name = "pcie-1v5";
-		regulator-min-microvolt = <1500000>;
-		regulator-max-microvolt = <1500000>;
-		gpio = <&gpio_exp_77 15 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-	};
-
-	pcie_3v3: regulator-pcie-3v3 {
-		compatible = "regulator-fixed";
-		regulator-name = "pcie-3v3";
+		regulator-name = "accel-3v3";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
-		gpio = <&gpio_exp_77 14 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
 	};
 
-	reg_5v: regulator-5v {
+	hdmi_1v8: regulator-hdmi-1v8 {
 		compatible = "regulator-fixed";
-		regulator-name = "fixed-5V";
+		regulator-name = "hdmi-1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+	};
+
+	hdmi_3v3: regulator-hdmi-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "hdmi-3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	snd_3p3v: regulator-snd_3p3v {
+		compatible = "regulator-fixed";
+		regulator-name = "snd-3.3v";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	snd_vcc5v: regulator-snd_vcc5v {
+		compatible = "regulator-fixed";
+		regulator-name = "snd-vcc5v";
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
-		regulator-boot-on;
-		regulator-always-on;
 	};
 
 	wlan_en: regulator-wlan_en {
@@ -132,14 +114,6 @@
 	status = "okay";
 };
 
-&hscif1 {
-	pinctrl-0 = <&hscif1_pins>;
-	pinctrl-names = "default";
-	uart-has-rtscts;
-
-	status = "okay";
-};
-
 &hsusb {
 	dr_mode = "otg";
 	status = "okay";
@@ -166,18 +140,19 @@
 				pinctrl-0 = <&hdmi1_pins>;
 				pinctrl-names = "default";
 
-				interrupts-extended = <&gpio2 14 IRQ_TYPE_LEVEL_LOW>;
+				interrupt-parent = <&gpio2>;
+				interrupts = <14 IRQ_TYPE_LEVEL_LOW>;
 
 				clocks = <&cs2000>;
 				clock-names = "cec";
 
 				pd-gpios = <&gpio_exp_75 5 GPIO_ACTIVE_LOW>;
 
-				avdd-supply = <&reg_t1p8v>;
-				dvdd-supply = <&reg_t1p8v>;
-				pvdd-supply = <&reg_t1p8v>;
-				dvdd-3v-supply = <&reg_3p3v>;
-				bgvdd-supply = <&reg_t1p8v>;
+				avdd-supply = <&hdmi_1v8>;
+				dvdd-supply = <&hdmi_1v8>;
+				pvdd-supply = <&hdmi_1v8>;
+				dvdd-3v-supply = <&hdmi_3v3>;
+				bgvdd-supply = <&hdmi_1v8>;
 
 				adi,input-depth = <8>;
 				adi,input-colorspace = "rgb";
@@ -214,8 +189,8 @@
 				compatible = "st,lsm9ds0-imu";
 				reg = <0x1d>;
 
-				vdd-supply = <&reg_3p3v>;
-				vddio-supply = <&reg_3p3v>;
+				vdd-supply = <&accel_3v3>;
+				vddio-supply = <&accel_3v3>;
 			};
 
 			pcm3168a: audio-codec@44 {
@@ -225,20 +200,20 @@
 				clocks = <&clksndsel>;
 				clock-names = "scki";
 
-				VDD1-supply = <&reg_3p3v>;
-				VDD2-supply = <&reg_3p3v>;
-				VCCAD1-supply = <&reg_5v>;
-				VCCAD2-supply = <&reg_5v>;
-				VCCDA1-supply = <&reg_5v>;
-				VCCDA2-supply = <&reg_5v>;
+				VDD1-supply = <&snd_3p3v>;
+				VDD2-supply = <&snd_3p3v>;
+				VCCAD1-supply = <&snd_vcc5v>;
+				VCCAD2-supply = <&snd_vcc5v>;
+				VCCDA1-supply = <&snd_vcc5v>;
+				VCCDA2-supply = <&snd_vcc5v>;
 			};
 
 			gyroscope@6b {
 				compatible = "st,lsm9ds0-gyro";
 				reg = <0x6b>;
 
-				vdd-supply = <&reg_3p3v>;
-				vddio-supply = <&reg_3p3v>;
+				vdd-supply = <&accel_3v3>;
+				vddio-supply = <&accel_3v3>;
 			};
 		};
 	};
@@ -250,8 +225,8 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		#interrupt-cells = <2>;
-		interrupts-extended = <&gpio6 8 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-parent = <&gpio6>;
+		interrupts = <8 IRQ_TYPE_EDGE_FALLING>;
 
 		audio-out-off-hog {
 			gpio-hog;
@@ -310,8 +285,8 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		#interrupt-cells = <2>;
-		interrupts-extended = <&gpio6 4 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-parent = <&gpio6>;
+		interrupts = <4 IRQ_TYPE_EDGE_FALLING>;
 	};
 };
 
@@ -330,8 +305,8 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		#interrupt-cells = <2>;
-		interrupts-extended = <&gpio7 3 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-parent = <&gpio7>;
+		interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
 	};
 
 	gpio_exp_77: gpio@77 {
@@ -340,8 +315,8 @@
 		gpio-controller;
 		#gpio-cells = <2>;
 		interrupt-controller;
-		#interrupt-cells = <2>;
-		interrupts-extended = <&gpio5 9 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-parent = <&gpio5>;
+		interrupts = <9 IRQ_TYPE_EDGE_FALLING>;
 	};
 };
 
@@ -360,9 +335,6 @@
 
 &pciec1 {
 	status = "okay";
-
-	vpcie1v5-supply = <&pcie_1v5>;
-	vpcie3v3-supply = <&pcie_3v3>;
 };
 
 &pfc {
@@ -394,13 +366,8 @@
 		function = "hscif0";
 	};
 
-	hscif1_pins: hscif1 {
-		groups = "hscif1_data_a", "hscif1_ctrl_a";
-		function = "hscif1";
-	};
-
 	scif1_pins: scif1 {
-		groups = "scif1_data_b";
+		groups = "scif1_data_b", "scif1_ctrl";
 		function = "scif1";
 	};
 
@@ -430,15 +397,9 @@
 &scif1 {
 	pinctrl-0 = <&scif1_pins>;
 	pinctrl-names = "default";
+	uart-has-rtscts;
 
 	status = "okay";
-
-	gnss {
-		compatible = "u-blox,neo-m8";
-		reset-gpios = <&gpio_exp_75 6 GPIO_ACTIVE_LOW>;
-		vcc-supply = <&reg_3p3v>;
-		current-speed = <9600>;
-	};
 };
 
 &sdhi3 {
@@ -460,7 +421,8 @@
 	wlcore: wlcore@2 {
 		compatible = "ti,wl1837";
 		reg = <2>;
-		interrupts-extended = <&gpio1 25 IRQ_TYPE_EDGE_FALLING>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <25 IRQ_TYPE_EDGE_FALLING>;
 	};
 };
 

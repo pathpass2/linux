@@ -49,16 +49,14 @@ static unsigned long aux_calc_rate(struct clk_hw *hw, unsigned long prate,
 			(rtbl[index].yscale * eq)) * 10000;
 }
 
-static int clk_aux_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long clk_aux_round_rate(struct clk_hw *hw, unsigned long drate,
+		unsigned long *prate)
 {
 	struct clk_aux *aux = to_clk_aux(hw);
 	int unused;
 
-	req->rate = clk_round_rate_index(hw, req->rate, req->best_parent_rate,
-					 aux_calc_rate, aux->rtbl_cnt, &unused);
-
-	return 0;
+	return clk_round_rate_index(hw, drate, *prate, aux_calc_rate,
+			aux->rtbl_cnt, &unused);
 }
 
 static unsigned long clk_aux_recalc_rate(struct clk_hw *hw,
@@ -129,7 +127,7 @@ static int clk_aux_set_rate(struct clk_hw *hw, unsigned long drate,
 
 static const struct clk_ops clk_aux_ops = {
 	.recalc_rate = clk_aux_recalc_rate,
-	.determine_rate = clk_aux_determine_rate,
+	.round_rate = clk_aux_round_rate,
 	.set_rate = clk_aux_set_rate,
 };
 

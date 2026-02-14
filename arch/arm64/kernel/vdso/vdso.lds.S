@@ -11,18 +11,18 @@
 #include <linux/const.h>
 #include <asm/page.h>
 #include <asm/vdso.h>
-#include <asm/vdso/vsyscall.h>
 #include <asm-generic/vmlinux.lds.h>
-#include <vdso/datapage.h>
 
 OUTPUT_FORMAT("elf64-littleaarch64", "elf64-bigaarch64", "elf64-littleaarch64")
 OUTPUT_ARCH(aarch64)
 
 SECTIONS
 {
-	VDSO_VVAR_SYMS
-
-	. = SIZEOF_HEADERS;
+	PROVIDE(_vdso_data = . - __VVAR_PAGES * PAGE_SIZE);
+#ifdef CONFIG_TIME_NS
+	PROVIDE(_timens_data = _vdso_data + PAGE_SIZE);
+#endif
+	. = VDSO_LBASE + SIZEOF_HEADERS;
 
 	.hash		: { *(.hash) }			:text
 	.gnu.hash	: { *(.gnu.hash) }
@@ -38,7 +38,6 @@ SECTIONS
 	 */
 	/DISCARD/	: {
 		*(.note.GNU-stack .note.gnu.property)
-		*(.ARM.attributes)
 	}
 	.note		: { *(.note.*) }		:text	:note
 
@@ -51,7 +50,9 @@ SECTIONS
 
 	. = ALIGN(4);
 	.altinstructions : {
+		__alt_instructions = .;
 		*(.altinstructions)
+		__alt_instructions_end = .;
 	}
 
 	.dynamic	: { *(.dynamic) }		:text	:dynamic
@@ -103,7 +104,6 @@ VERSION
 		__kernel_gettimeofday;
 		__kernel_clock_gettime;
 		__kernel_clock_getres;
-		__kernel_getrandom;
 	local: *;
 	};
 }

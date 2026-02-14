@@ -283,7 +283,7 @@ out_unlock:
 	xprt_clear_locked(xprt);
 out_sleep:
 	task->tk_status = -EAGAIN;
-	if (RPC_IS_SOFT(task) || RPC_IS_SOFTCONN(task))
+	if  (RPC_IS_SOFT(task))
 		rpc_sleep_on_timeout(&xprt->sending, task, NULL,
 				xprt_request_timeout(req));
 	else
@@ -349,7 +349,7 @@ out_unlock:
 	xprt_clear_locked(xprt);
 out_sleep:
 	task->tk_status = -EAGAIN;
-	if (RPC_IS_SOFT(task) || RPC_IS_SOFTCONN(task))
+	if (RPC_IS_SOFT(task))
 		rpc_sleep_on_timeout(&xprt->sending, task, NULL,
 				xprt_request_timeout(req));
 	else
@@ -651,9 +651,9 @@ static unsigned long xprt_abs_ktime_to_jiffies(ktime_t abstime)
 		jiffies + nsecs_to_jiffies(-delta);
 }
 
-static unsigned long xprt_calc_majortimeo(struct rpc_rqst *req,
-		const struct rpc_timeout *to)
+static unsigned long xprt_calc_majortimeo(struct rpc_rqst *req)
 {
+	const struct rpc_timeout *to = req->rq_task->tk_client->cl_timeout;
 	unsigned long majortimeo = req->rq_timeout;
 
 	if (to->to_exponential)
@@ -665,10 +665,9 @@ static unsigned long xprt_calc_majortimeo(struct rpc_rqst *req,
 	return majortimeo;
 }
 
-static void xprt_reset_majortimeo(struct rpc_rqst *req,
-		const struct rpc_timeout *to)
+static void xprt_reset_majortimeo(struct rpc_rqst *req)
 {
-	req->rq_majortimeo += xprt_calc_majortimeo(req, to);
+	req->rq_majortimeo += xprt_calc_majortimeo(req);
 }
 
 static void xprt_reset_minortimeo(struct rpc_rqst *req)
@@ -676,8 +675,7 @@ static void xprt_reset_minortimeo(struct rpc_rqst *req)
 	req->rq_minortimeo += req->rq_timeout;
 }
 
-static void xprt_init_majortimeo(struct rpc_task *task, struct rpc_rqst *req,
-		const struct rpc_timeout *to)
+static void xprt_init_majortimeo(struct rpc_task *task, struct rpc_rqst *req)
 {
 	unsigned long time_init;
 	struct rpc_xprt *xprt = req->rq_xprt;
@@ -686,9 +684,8 @@ static void xprt_init_majortimeo(struct rpc_task *task, struct rpc_rqst *req,
 		time_init = jiffies;
 	else
 		time_init = xprt_abs_ktime_to_jiffies(task->tk_start);
-
-	req->rq_timeout = to->to_initval;
-	req->rq_majortimeo = time_init + xprt_calc_majortimeo(req, to);
+	req->rq_timeout = task->tk_client->cl_timeout->to_initval;
+	req->rq_majortimeo = time_init + xprt_calc_majortimeo(req);
 	req->rq_minortimeo = time_init + req->rq_timeout;
 }
 
@@ -716,7 +713,7 @@ int xprt_adjust_timeout(struct rpc_rqst *req)
 	} else {
 		req->rq_timeout = to->to_initval;
 		req->rq_retries = 0;
-		xprt_reset_majortimeo(req, to);
+		xprt_reset_majortimeo(req);
 		/* Reset the RTT counters == "slow start" */
 		spin_lock(&xprt->transport_lock);
 		rpc_init_rtt(req->rq_task->tk_client->cl_rtt, to->to_initval);
@@ -854,7 +851,7 @@ xprt_schedule_autodisconnect(struct rpc_xprt *xprt)
 static void
 xprt_init_autodisconnect(struct timer_list *t)
 {
-	struct rpc_xprt *xprt = timer_container_of(xprt, t, timer);
+	struct rpc_xprt *xprt = from_timer(xprt, t, timer);
 
 	if (!RB_EMPTY_ROOT(&xprt->recv_queue))
 		return;
@@ -1167,7 +1164,7 @@ xprt_request_enqueue_receive(struct rpc_task *task)
 	spin_unlock(&xprt->queue_lock);
 
 	/* Turn off autodisconnect */
-	timer_delete_sync(&xprt->timer);
+	del_timer_sync(&xprt->timer);
 	return 0;
 }
 
@@ -1365,7 +1362,7 @@ xprt_request_enqueue_transmit(struct rpc_task *task)
 				INIT_LIST_HEAD(&req->rq_xmit2);
 				goto out;
 			}
-		} else if (req->rq_seqno_count == 0) {
+		} else if (!req->rq_seqno) {
 			list_for_each_entry(pos, &xprt->xmit_queue, rq_xmit) {
 				if (pos->rq_task->tk_owner != task->tk_owner)
 					continue;
@@ -1398,12 +1395,6 @@ xprt_request_dequeue_transmit_locked(struct rpc_task *task)
 	if (!test_and_clear_bit(RPC_TASK_NEED_XMIT, &task->tk_runstate))
 		return;
 	if (!list_empty(&req->rq_xmit)) {
-		struct rpc_xprt *xprt = req->rq_xprt;
-
-		if (list_is_first(&req->rq_xmit, &xprt->xmit_queue) &&
-		    xprt->ops->abort_send_request)
-			xprt->ops->abort_send_request(req);
-
 		list_del(&req->rq_xmit);
 		if (!list_empty(&req->rq_xmit2)) {
 			struct rpc_rqst *next = list_first_entry(&req->rq_xmit2,
@@ -1546,9 +1537,6 @@ xprt_request_transmit(struct rpc_rqst *req, struct rpc_task *snd_task)
 	unsigned int connect_cookie;
 	int is_retrans = RPC_WAS_SENT(task);
 	int status;
-
-	if (test_bit(XPRT_CLOSE_WAIT, &xprt->state))
-		return -ENOTCONN;
 
 	if (!req->rq_bytes_sent) {
 		if (xprt_request_data_received(task)) {
@@ -1898,8 +1886,7 @@ xprt_request_init(struct rpc_task *task)
 	req->rq_snd_buf.bvec = NULL;
 	req->rq_rcv_buf.bvec = NULL;
 	req->rq_release_snd_buf = NULL;
-	req->rq_seqno_count = 0;
-	xprt_init_majortimeo(task, req, task->tk_client->cl_timeout);
+	xprt_init_majortimeo(task, req);
 
 	trace_xprt_reserve(req);
 }
@@ -1996,8 +1983,7 @@ void xprt_release(struct rpc_task *task)
 
 #ifdef CONFIG_SUNRPC_BACKCHANNEL
 void
-xprt_init_bc_request(struct rpc_rqst *req, struct rpc_task *task,
-		const struct rpc_timeout *to)
+xprt_init_bc_request(struct rpc_rqst *req, struct rpc_task *task)
 {
 	struct xdr_buf *xbufp = &req->rq_snd_buf;
 
@@ -2010,13 +1996,6 @@ xprt_init_bc_request(struct rpc_rqst *req, struct rpc_task *task,
 	 */
 	xbufp->len = xbufp->head[0].iov_len + xbufp->page_len +
 		xbufp->tail[0].iov_len;
-	/*
-	 * Backchannel Replies are sent with !RPC_TASK_SOFT and
-	 * RPC_TASK_NO_RETRANS_TIMEOUT. The major timeout setting
-	 * affects only how long each Reply waits to be sent when
-	 * a transport connection cannot be established.
-	 */
-	xprt_init_majortimeo(task, req, to);
 }
 #endif
 
@@ -2139,7 +2118,7 @@ static void xprt_destroy(struct rpc_xprt *xprt)
 	 * can only run *before* del_time_sync(), never after.
 	 */
 	spin_lock(&xprt->transport_lock);
-	timer_delete_sync(&xprt->timer);
+	del_timer_sync(&xprt->timer);
 	spin_unlock(&xprt->transport_lock);
 
 	/*

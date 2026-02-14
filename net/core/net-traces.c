@@ -23,7 +23,7 @@
 #include <linux/net_dropmon.h>
 #include <linux/slab.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <asm/bitops.h>
 
 #define CREATE_TRACE_POINTS
@@ -62,7 +62,5 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(napi_poll);
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(tcp_send_reset);
 EXPORT_TRACEPOINT_SYMBOL_GPL(tcp_bad_csum);
-
-EXPORT_TRACEPOINT_SYMBOL_GPL(udp_fail_queue_rcv_skb);
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(sk_data_ready);

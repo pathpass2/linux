@@ -16,7 +16,7 @@
  * @busy: busy bit shift
  *
  * The mxs divider clock is a subclass of basic clk_divider with an
- * additional busy bit.
+ * addtional busy bit.
  */
 struct clk_div {
 	struct clk_divider divider;
@@ -40,12 +40,12 @@ static unsigned long clk_div_recalc_rate(struct clk_hw *hw,
 	return div->ops->recalc_rate(&div->divider.hw, parent_rate);
 }
 
-static int clk_div_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long clk_div_round_rate(struct clk_hw *hw, unsigned long rate,
+			       unsigned long *prate)
 {
 	struct clk_div *div = to_clk_div(hw);
 
-	return div->ops->determine_rate(&div->divider.hw, req);
+	return div->ops->round_rate(&div->divider.hw, rate, prate);
 }
 
 static int clk_div_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -63,7 +63,7 @@ static int clk_div_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops clk_div_ops = {
 	.recalc_rate = clk_div_recalc_rate,
-	.determine_rate = clk_div_determine_rate,
+	.round_rate = clk_div_round_rate,
 	.set_rate = clk_div_set_rate,
 };
 

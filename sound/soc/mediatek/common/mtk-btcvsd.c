@@ -696,10 +696,11 @@ static int wait_for_bt_irq(struct mtk_btcvsd_snd *bt,
 }
 
 static ssize_t mtk_btcvsd_snd_read(struct mtk_btcvsd_snd *bt,
-				   struct iov_iter *buf,
+				   char __user *buf,
 				   size_t count)
 {
 	ssize_t read_size = 0, read_count = 0, cur_read_idx, cont;
+	unsigned int cur_buf_ofs = 0;
 	unsigned long avail;
 	unsigned long flags;
 	unsigned int packet_size = bt->rx->packet_size;
@@ -742,9 +743,10 @@ static ssize_t mtk_btcvsd_snd_read(struct mtk_btcvsd_snd *bt,
 		if (read_size > cont)
 			read_size = cont;
 
-		if (copy_to_iter(bt->rx_packet_buf + cur_read_idx,
-				 read_size, buf) != read_size) {
-			dev_warn(bt->dev, "%s(), copy_to_iter fail\n",
+		if (copy_to_user(buf + cur_buf_ofs,
+				 bt->rx_packet_buf + cur_read_idx,
+				 read_size)) {
+			dev_warn(bt->dev, "%s(), copy_to_user fail\n",
 				 __func__);
 			return -EFAULT;
 		}
@@ -754,6 +756,7 @@ static ssize_t mtk_btcvsd_snd_read(struct mtk_btcvsd_snd *bt,
 		spin_unlock_irqrestore(&bt->rx_lock, flags);
 
 		read_count += read_size;
+		cur_buf_ofs += read_size;
 		count -= read_size;
 	}
 
@@ -774,10 +777,11 @@ static ssize_t mtk_btcvsd_snd_read(struct mtk_btcvsd_snd *bt,
 }
 
 static ssize_t mtk_btcvsd_snd_write(struct mtk_btcvsd_snd *bt,
-				    struct iov_iter *buf,
+				    char __user *buf,
 				    size_t count)
 {
 	int written_size = count, avail, cur_write_idx, write_size, cont;
+	unsigned int cur_buf_ofs = 0;
 	unsigned long flags;
 	unsigned int packet_size = bt->tx->packet_size;
 
@@ -831,9 +835,11 @@ static ssize_t mtk_btcvsd_snd_write(struct mtk_btcvsd_snd *bt,
 		if (write_size > cont)
 			write_size = cont;
 
-		if (copy_from_iter(bt->tx_packet_buf + cur_write_idx,
-				   write_size, buf) != write_size) {
-			dev_warn(bt->dev, "%s(), copy_from_iter fail\n",
+		if (copy_from_user(bt->tx_packet_buf +
+				   cur_write_idx,
+				   buf + cur_buf_ofs,
+				   write_size)) {
+			dev_warn(bt->dev, "%s(), copy_from_user fail\n",
 				 __func__);
 			return -EFAULT;
 		}
@@ -841,6 +847,7 @@ static ssize_t mtk_btcvsd_snd_write(struct mtk_btcvsd_snd *bt,
 		spin_lock_irqsave(&bt->tx_lock, flags);
 		bt->tx->packet_w += write_size / packet_size;
 		spin_unlock_irqrestore(&bt->tx_lock, flags);
+		cur_buf_ofs += write_size;
 		count -= write_size;
 	}
 
@@ -1026,7 +1033,7 @@ static snd_pcm_uframes_t mtk_pcm_btcvsd_pointer(
 static int mtk_pcm_btcvsd_copy(struct snd_soc_component *component,
 			       struct snd_pcm_substream *substream,
 			       int channel, unsigned long pos,
-			       struct iov_iter *buf, unsigned long count)
+			       void __user *buf, unsigned long count)
 {
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(component);
 
@@ -1046,7 +1053,7 @@ static const struct soc_enum btcvsd_enum[] = {
 static int btcvsd_band_get(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	ucontrol->value.integer.value[0] = bt->band;
@@ -1056,7 +1063,7 @@ static int btcvsd_band_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_band_set(struct snd_kcontrol *kcontrol,
 			   struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 
@@ -1071,7 +1078,7 @@ static int btcvsd_band_set(struct snd_kcontrol *kcontrol,
 static int btcvsd_loopback_get(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 	bool lpbk_en = bt->tx->state == BT_SCO_STATE_LOOPBACK;
 
@@ -1082,7 +1089,7 @@ static int btcvsd_loopback_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_loopback_set(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	if (ucontrol->value.integer.value[0]) {
@@ -1098,7 +1105,7 @@ static int btcvsd_loopback_set(struct snd_kcontrol *kcontrol,
 static int btcvsd_tx_mute_get(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	if (!bt->tx) {
@@ -1113,7 +1120,7 @@ static int btcvsd_tx_mute_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_tx_mute_set(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	if (!bt->tx)
@@ -1126,7 +1133,7 @@ static int btcvsd_tx_mute_set(struct snd_kcontrol *kcontrol,
 static int btcvsd_rx_irq_received_get(struct snd_kcontrol *kcontrol,
 				      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	if (!bt->rx)
@@ -1139,7 +1146,7 @@ static int btcvsd_rx_irq_received_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_rx_timeout_get(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	if (!bt->rx)
@@ -1153,7 +1160,7 @@ static int btcvsd_rx_timeout_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_rx_timestamp_get(struct snd_kcontrol *kcontrol,
 				   unsigned int __user *data, unsigned int size)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 	int ret = 0;
 	struct mtk_btcvsd_snd_time_buffer_info time_buffer_info_rx;
@@ -1180,7 +1187,7 @@ static int btcvsd_rx_timestamp_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_tx_irq_received_get(struct snd_kcontrol *kcontrol,
 				      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	if (!bt->tx)
@@ -1193,7 +1200,7 @@ static int btcvsd_tx_irq_received_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_tx_timeout_get(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 
 	ucontrol->value.integer.value[0] = bt->tx->timeout;
@@ -1203,7 +1210,7 @@ static int btcvsd_tx_timeout_get(struct snd_kcontrol *kcontrol,
 static int btcvsd_tx_timestamp_get(struct snd_kcontrol *kcontrol,
 				   unsigned int __user *data, unsigned int size)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_btcvsd_snd *bt = snd_soc_component_get_drvdata(cmpnt);
 	int ret = 0;
 	struct mtk_btcvsd_snd_time_buffer_info time_buffer_info_tx;
@@ -1267,7 +1274,7 @@ static const struct snd_soc_component_driver mtk_btcvsd_snd_platform = {
 	.prepare	= mtk_pcm_btcvsd_prepare,
 	.trigger	= mtk_pcm_btcvsd_trigger,
 	.pointer	= mtk_pcm_btcvsd_pointer,
-	.copy		= mtk_pcm_btcvsd_copy,
+	.copy_user	= mtk_pcm_btcvsd_copy,
 };
 
 static int mtk_btcvsd_snd_probe(struct platform_device *pdev)
@@ -1380,12 +1387,13 @@ unmap_pkv_err:
 	return ret;
 }
 
-static void mtk_btcvsd_snd_remove(struct platform_device *pdev)
+static int mtk_btcvsd_snd_remove(struct platform_device *pdev)
 {
 	struct mtk_btcvsd_snd *btcvsd = dev_get_drvdata(&pdev->dev);
 
 	iounmap(btcvsd->bt_pkv_base);
 	iounmap(btcvsd->bt_sram_bank2_base);
+	return 0;
 }
 
 static const struct of_device_id mtk_btcvsd_snd_dt_match[] = {

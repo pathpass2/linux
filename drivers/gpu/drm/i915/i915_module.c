@@ -5,7 +5,6 @@
  */
 
 #include <drm/drm_drv.h>
-#include <drm/drm_print.h>
 
 #include "gem/i915_gem_context.h"
 #include "gem/i915_gem_object.h"
@@ -25,16 +24,10 @@ static int i915_check_nomodeset(void)
 	bool use_kms = true;
 
 	/*
-	 * Enable KMS by default, unless explicitly overridden by
+	 * Enable KMS by default, unless explicitly overriden by
 	 * either the i915.modeset parameter or by the
 	 * nomodeset boot option.
 	 */
-
-	if (i915_modparams.modeset == 0)
-		pr_warn("i915.modeset=0 is deprecated. Please use the 'nomodeset' kernel parameter instead.\n");
-	else if (i915_modparams.modeset != -1)
-		pr_warn("i915.modeset=%d is deprecated. Please remove it and the 'nomodeset' kernel parameter instead.\n",
-			i915_modparams.modeset);
 
 	if (i915_modparams.modeset == 0)
 		use_kms = false;
@@ -43,8 +36,9 @@ static int i915_check_nomodeset(void)
 		use_kms = false;
 
 	if (!use_kms) {
+		/* Silently fail loading to not upset userspace. */
 		DRM_DEBUG_DRIVER("KMS disabled.\n");
-		return -ENODEV;
+		return 1;
 	}
 
 	return 0;
@@ -72,6 +66,8 @@ static const struct {
 	{ .init = i915_vma_resource_module_init,
 	  .exit = i915_vma_resource_module_exit },
 	{ .init = i915_mock_selftests },
+	{ .init = i915_pmu_init,
+	  .exit = i915_pmu_exit },
 	{ .init = i915_pci_register_driver,
 	  .exit = i915_pci_unregister_driver },
 	{ .init = i915_perf_sysctl_register,

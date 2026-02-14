@@ -116,7 +116,6 @@ enum idlestate_value {
 	IDLESTATE_USAGE,
 	IDLESTATE_POWER,
 	IDLESTATE_LATENCY,
-	IDLESTATE_RESIDENCY,
 	IDLESTATE_TIME,
 	IDLESTATE_DISABLE,
 	MAX_IDLESTATE_VALUE_FILES
@@ -126,7 +125,6 @@ static const char *idlestate_value_files[MAX_IDLESTATE_VALUE_FILES] = {
 	[IDLESTATE_USAGE] = "usage",
 	[IDLESTATE_POWER] = "power",
 	[IDLESTATE_LATENCY] = "latency",
-	[IDLESTATE_RESIDENCY] = "residency",
 	[IDLESTATE_TIME]  = "time",
 	[IDLESTATE_DISABLE]  = "disable",
 };
@@ -150,7 +148,6 @@ unsigned long long cpuidle_state_get_one_value(unsigned int cpu,
 	if (len == 0)
 		return 0;
 
-	errno = 0;
 	value = strtoull(linebuf, &endp, 0);
 
 	if (endp == linebuf || errno == ERANGE)
@@ -194,7 +191,8 @@ static char *cpuidle_state_get_one_string(unsigned int cpu,
 	if (result == NULL)
 		return NULL;
 
-	result[strcspn(result, "\n")] = '\0';
+	if (result[strlen(result) - 1] == '\n')
+		result[strlen(result) - 1] = '\0';
 
 	return result;
 }
@@ -233,7 +231,6 @@ int cpuidle_state_disable(unsigned int cpu,
 {
 	char value[SYSFS_PATH_MAX];
 	int bytes_written;
-	int len;
 
 	if (cpuidle_state_count(cpu) <= idlestate)
 		return -1;
@@ -242,10 +239,10 @@ int cpuidle_state_disable(unsigned int cpu,
 				 idlestate_value_files[IDLESTATE_DISABLE]))
 		return -2;
 
-	len = snprintf(value, SYSFS_PATH_MAX, "%u", disable);
+	snprintf(value, SYSFS_PATH_MAX, "%u", disable);
 
 	bytes_written = cpuidle_state_write_file(cpu, idlestate, "disable",
-						   value, len);
+						   value, sizeof(disable));
 	if (bytes_written)
 		return 0;
 	return -3;
@@ -255,12 +252,6 @@ unsigned long cpuidle_state_latency(unsigned int cpu,
 					  unsigned int idlestate)
 {
 	return cpuidle_state_get_one_value(cpu, idlestate, IDLESTATE_LATENCY);
-}
-
-unsigned long cpuidle_state_residency(unsigned int cpu,
-					  unsigned int idlestate)
-{
-	return cpuidle_state_get_one_value(cpu, idlestate, IDLESTATE_RESIDENCY);
 }
 
 unsigned long cpuidle_state_usage(unsigned int cpu,
@@ -366,7 +357,8 @@ static char *sysfs_cpuidle_get_one_string(enum cpuidle_string which)
 	if (result == NULL)
 		return NULL;
 
-	result[strcspn(result, "\n")] = '\0';
+	if (result[strlen(result) - 1] == '\n')
+		result[strlen(result) - 1] = '\0';
 
 	return result;
 }

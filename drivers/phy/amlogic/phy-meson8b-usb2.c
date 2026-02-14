@@ -5,12 +5,11 @@
  * Copyright (C) 2016 Martin Blumenstingl <martin.blumenstingl@googlemail.com>
  */
 
-#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/io.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
@@ -40,7 +39,9 @@
 	#define REG_CTRL_TX_BITSTUFF_ENN		BIT(18)
 	#define REG_CTRL_COMMON_ON			BIT(19)
 	#define REG_CTRL_REF_CLK_SEL_MASK		GENMASK(21, 20)
+	#define REG_CTRL_REF_CLK_SEL_SHIFT		20
 	#define REG_CTRL_FSEL_MASK			GENMASK(24, 22)
+	#define REG_CTRL_FSEL_SHIFT			22
 	#define REG_CTRL_PORT_RESET			BIT(25)
 	#define REG_CTRL_THREAD_ID_MASK			GENMASK(31, 26)
 
@@ -165,29 +166,33 @@ static int phy_meson8b_usb2_power_on(struct phy *phy)
 		return ret;
 	}
 
-	regmap_set_bits(priv->regmap, REG_CONFIG, REG_CONFIG_CLK_32k_ALTSEL);
+	regmap_update_bits(priv->regmap, REG_CONFIG, REG_CONFIG_CLK_32k_ALTSEL,
+			   REG_CONFIG_CLK_32k_ALTSEL);
 
 	regmap_update_bits(priv->regmap, REG_CTRL, REG_CTRL_REF_CLK_SEL_MASK,
-			   FIELD_PREP(REG_CTRL_REF_CLK_SEL_MASK, 0x2));
+			   0x2 << REG_CTRL_REF_CLK_SEL_SHIFT);
 
 	regmap_update_bits(priv->regmap, REG_CTRL, REG_CTRL_FSEL_MASK,
-			   FIELD_PREP(REG_CTRL_FSEL_MASK, 0x5));
+			   0x5 << REG_CTRL_FSEL_SHIFT);
 
 	/* reset the PHY */
-	regmap_set_bits(priv->regmap, REG_CTRL, REG_CTRL_POWER_ON_RESET);
+	regmap_update_bits(priv->regmap, REG_CTRL, REG_CTRL_POWER_ON_RESET,
+			   REG_CTRL_POWER_ON_RESET);
 	udelay(RESET_COMPLETE_TIME);
-	regmap_clear_bits(priv->regmap, REG_CTRL, REG_CTRL_POWER_ON_RESET);
+	regmap_update_bits(priv->regmap, REG_CTRL, REG_CTRL_POWER_ON_RESET, 0);
 	udelay(RESET_COMPLETE_TIME);
 
-	regmap_set_bits(priv->regmap, REG_CTRL, REG_CTRL_SOF_TOGGLE_OUT);
+	regmap_update_bits(priv->regmap, REG_CTRL, REG_CTRL_SOF_TOGGLE_OUT,
+			   REG_CTRL_SOF_TOGGLE_OUT);
 
 	if (priv->dr_mode == USB_DR_MODE_HOST) {
-		regmap_clear_bits(priv->regmap, REG_DBG_UART,
-				  REG_DBG_UART_SET_IDDQ);
+		regmap_update_bits(priv->regmap, REG_DBG_UART,
+				   REG_DBG_UART_SET_IDDQ, 0);
 
 		if (priv->match->host_enable_aca) {
-			regmap_set_bits(priv->regmap, REG_ADP_BC,
-					REG_ADP_BC_ACA_ENABLE);
+			regmap_update_bits(priv->regmap, REG_ADP_BC,
+					   REG_ADP_BC_ACA_ENABLE,
+					   REG_ADP_BC_ACA_ENABLE);
 
 			udelay(ACA_ENABLE_COMPLETE_TIME);
 
@@ -210,15 +215,17 @@ static int phy_meson8b_usb2_power_off(struct phy *phy)
 	struct phy_meson8b_usb2_priv *priv = phy_get_drvdata(phy);
 
 	if (priv->dr_mode == USB_DR_MODE_HOST)
-		regmap_set_bits(priv->regmap, REG_DBG_UART,
-				REG_DBG_UART_SET_IDDQ);
+		regmap_update_bits(priv->regmap, REG_DBG_UART,
+				   REG_DBG_UART_SET_IDDQ,
+				   REG_DBG_UART_SET_IDDQ);
 
 	clk_disable_unprepare(priv->clk_usb);
 	clk_disable_unprepare(priv->clk_usb_general);
 	reset_control_rearm(priv->reset);
 
 	/* power off the PHY by putting it into reset mode */
-	regmap_set_bits(priv->regmap, REG_CTRL, REG_CTRL_POWER_ON_RESET);
+	regmap_update_bits(priv->regmap, REG_CTRL, REG_CTRL_POWER_ON_RESET,
+			   REG_CTRL_POWER_ON_RESET);
 
 	return 0;
 }

@@ -76,9 +76,9 @@ static bool dce_dmcu_init(struct dmcu *dmcu)
 }
 
 static bool dce_dmcu_load_iram(struct dmcu *dmcu,
-			       unsigned int start_offset,
-			       const char *src,
-			       unsigned int bytes)
+		unsigned int start_offset,
+		const char *src,
+		unsigned int bytes)
 {
 	struct dce_dmcu *dmcu_dce = TO_DCE_DMCU(dmcu);
 	unsigned int count = 0;
@@ -586,7 +586,6 @@ static void dcn10_dmcu_set_psr_enable(struct dmcu *dmcu, bool enable, bool wait)
 				if (state == PSR_STATE0)
 					break;
 			}
-			/* must *not* be fsleep - this can be called from high irq levels */
 			udelay(500);
 		}
 
@@ -1094,9 +1093,11 @@ static void dcn21_dmcu_construct(
 
 	dce_dmcu_construct(dmcu_dce, ctx, regs, dmcu_shift, dmcu_mask);
 
-	psp_version = dm_read_reg(ctx, mmMP0_SMN_C2PMSG_58);
-	dmcu_dce->base.auto_load_dmcu = ((psp_version & 0x00FF00FF) > 0x00110029);
-	dmcu_dce->base.psp_version = psp_version;
+	if (!IS_FPGA_MAXIMUS_DC(ctx->dce_environment)) {
+		psp_version = dm_read_reg(ctx, mmMP0_SMN_C2PMSG_58);
+		dmcu_dce->base.auto_load_dmcu = ((psp_version & 0x00FF00FF) > 0x00110029);
+		dmcu_dce->base.psp_version = psp_version;
+	}
 }
 
 struct dmcu *dce_dmcu_create(
@@ -1126,7 +1127,7 @@ struct dmcu *dcn10_dmcu_create(
 	const struct dce_dmcu_shift *dmcu_shift,
 	const struct dce_dmcu_mask *dmcu_mask)
 {
-	struct dce_dmcu *dmcu_dce = kzalloc(sizeof(*dmcu_dce), GFP_KERNEL);
+	struct dce_dmcu *dmcu_dce = kzalloc(sizeof(*dmcu_dce), GFP_ATOMIC);
 
 	if (dmcu_dce == NULL) {
 		BREAK_TO_DEBUGGER();
@@ -1147,7 +1148,7 @@ struct dmcu *dcn20_dmcu_create(
 	const struct dce_dmcu_shift *dmcu_shift,
 	const struct dce_dmcu_mask *dmcu_mask)
 {
-	struct dce_dmcu *dmcu_dce = kzalloc(sizeof(*dmcu_dce), GFP_KERNEL);
+	struct dce_dmcu *dmcu_dce = kzalloc(sizeof(*dmcu_dce), GFP_ATOMIC);
 
 	if (dmcu_dce == NULL) {
 		BREAK_TO_DEBUGGER();
@@ -1168,7 +1169,7 @@ struct dmcu *dcn21_dmcu_create(
 	const struct dce_dmcu_shift *dmcu_shift,
 	const struct dce_dmcu_mask *dmcu_mask)
 {
-	struct dce_dmcu *dmcu_dce = kzalloc(sizeof(*dmcu_dce), GFP_KERNEL);
+	struct dce_dmcu *dmcu_dce = kzalloc(sizeof(*dmcu_dce), GFP_ATOMIC);
 
 	if (dmcu_dce == NULL) {
 		BREAK_TO_DEBUGGER();

@@ -12,8 +12,10 @@
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/acpi.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
 #include <sound/core.h>
@@ -697,11 +699,11 @@ static int rt1305_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0, reg1_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		reg_val |= RT1305_SEL_I2S_OUT_MODE_M;
 		rt1305->master = 1;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		reg_val |= RT1305_SEL_I2S_OUT_MODE_S;
 		rt1305->master = 0;
 		break;
@@ -953,7 +955,7 @@ static const struct regmap_config rt1305_regmap = {
 					       RT1305_PR_SPACING),
 	.volatile_reg = rt1305_volatile_register,
 	.readable_reg = rt1305_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = rt1305_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1305_reg),
 	.ranges = rt1305_ranges,
@@ -966,23 +968,23 @@ static const struct regmap_config rt1305_regmap = {
 static const struct of_device_id rt1305_of_match[] = {
 	{ .compatible = "realtek,rt1305", },
 	{ .compatible = "realtek,rt1306", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, rt1305_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1305_acpi_match[] = {
-	{ "10EC1305" },
-	{ "10EC1306" },
-	{ }
+	{"10EC1305", 0,},
+	{"10EC1306", 0,},
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, rt1305_acpi_match);
 #endif
 
 static const struct i2c_device_id rt1305_i2c_id[] = {
-	{ "rt1305" },
-	{ "rt1306" },
+	{ "rt1305", 0 },
+	{ "rt1306", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1305_i2c_id);
@@ -1168,7 +1170,7 @@ static struct i2c_driver rt1305_i2c_driver = {
 		.acpi_match_table = ACPI_PTR(rt1305_acpi_match)
 #endif
 	},
-	.probe = rt1305_i2c_probe,
+	.probe_new = rt1305_i2c_probe,
 	.shutdown = rt1305_i2c_shutdown,
 	.id_table = rt1305_i2c_id,
 };

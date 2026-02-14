@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * driver for the SAA7146 based AV110 cards
- * - CA and CI stuff
+ * av7110_ca.c: CA and CI stuff
  *
  * Copyright (C) 1999-2002 Ralph  Metzler
  *                       & Marcus Metzler for convergence integrated media GmbH
@@ -24,30 +23,26 @@
 #include "av7110_hw.h"
 #include "av7110_ca.h"
 
+
 void CI_handle(struct av7110 *av7110, u8 *data, u16 len)
 {
-	unsigned int slot_num;
-
-	dprintk(8, "av7110:%p\n", av7110);
+	dprintk(8, "av7110:%p\n",av7110);
 
 	if (len < 3)
 		return;
 	switch (data[0]) {
 	case CI_MSG_CI_INFO:
-		if (data[2] != 1 && data[2] != MAX_CI_SLOTS)
+		if (data[2] != 1 && data[2] != 2)
 			break;
-
-		slot_num = array_index_nospec(data[2] - 1, MAX_CI_SLOTS);
-
 		switch (data[1]) {
 		case 0:
-			av7110->ci_slot[slot_num].flags = 0;
+			av7110->ci_slot[data[2] - 1].flags = 0;
 			break;
 		case 1:
-			av7110->ci_slot[slot_num].flags |= CA_CI_MODULE_PRESENT;
+			av7110->ci_slot[data[2] - 1].flags |= CA_CI_MODULE_PRESENT;
 			break;
 		case 2:
-			av7110->ci_slot[slot_num].flags |= CA_CI_MODULE_READY;
+			av7110->ci_slot[data[2] - 1].flags |= CA_CI_MODULE_READY;
 			break;
 		}
 		break;
@@ -59,6 +54,7 @@ void CI_handle(struct av7110 *av7110, u8 *data, u16 len)
 	}
 }
 
+
 void ci_get_data(struct dvb_ringbuffer *cibuf, u8 *data, int len)
 {
 	if (dvb_ringbuffer_free(cibuf) < len + 2)
@@ -69,6 +65,7 @@ void ci_get_data(struct dvb_ringbuffer *cibuf, u8 *data, int len)
 	dvb_ringbuffer_write(cibuf, data, len);
 	wake_up_interruptible(&cibuf->queue);
 }
+
 
 /******************************************************************************
  * CI link layer file ops
@@ -204,7 +201,7 @@ static int dvb_ca_open(struct inode *inode, struct file *file)
 	struct av7110 *av7110 = dvbdev->priv;
 	int err = dvb_generic_open(inode, file);
 
-	dprintk(8, "av7110:%p\n", av7110);
+	dprintk(8, "av7110:%p\n",av7110);
 
 	if (err < 0)
 		return err;
@@ -212,7 +209,7 @@ static int dvb_ca_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static __poll_t dvb_ca_poll(struct file *file, poll_table *wait)
+static __poll_t dvb_ca_poll (struct file *file, poll_table *wait)
 {
 	struct dvb_device *dvbdev = file->private_data;
 	struct av7110 *av7110 = dvbdev->priv;
@@ -220,7 +217,7 @@ static __poll_t dvb_ca_poll(struct file *file, poll_table *wait)
 	struct dvb_ringbuffer *wbuf = &av7110->ci_wbuffer;
 	__poll_t mask = 0;
 
-	dprintk(8, "av7110:%p\n", av7110);
+	dprintk(8, "av7110:%p\n",av7110);
 
 	poll_wait(file, &rbuf->queue, wait);
 	poll_wait(file, &wbuf->queue, wait);
@@ -238,10 +235,10 @@ static int dvb_ca_ioctl(struct file *file, unsigned int cmd, void *parg)
 {
 	struct dvb_device *dvbdev = file->private_data;
 	struct av7110 *av7110 = dvbdev->priv;
-	unsigned long arg = (unsigned long)parg;
+	unsigned long arg = (unsigned long) parg;
 	int ret = 0;
 
-	dprintk(8, "av7110:%p\n", av7110);
+	dprintk(8, "av7110:%p\n",av7110);
 
 	if (mutex_lock_interruptible(&av7110->ioctl_mutex))
 		return -ERESTARTSYS;
@@ -266,20 +263,16 @@ static int dvb_ca_ioctl(struct file *file, unsigned int cmd, void *parg)
 
 	case CA_GET_SLOT_INFO:
 	{
-		struct ca_slot_info *info = (struct ca_slot_info *)parg;
-		unsigned int slot_num;
+		struct ca_slot_info *info=(struct ca_slot_info *)parg;
 
 		if (info->num < 0 || info->num > 1) {
 			mutex_unlock(&av7110->ioctl_mutex);
 			return -EINVAL;
 		}
-		slot_num = array_index_nospec(info->num, MAX_CI_SLOTS);
-
-		av7110->ci_slot[slot_num].num = info->num;
-		av7110->ci_slot[slot_num].type = FW_CI_LL_SUPPORT(av7110->arm_app) ?
-						 CA_CI_LINK : CA_CI;
-		memcpy(info, &av7110->ci_slot[slot_num],
-		       sizeof(struct ca_slot_info));
+		av7110->ci_slot[info->num].num = info->num;
+		av7110->ci_slot[info->num].type = FW_CI_LL_SUPPORT(av7110->arm_app) ?
+							CA_CI_LINK : CA_CI;
+		memcpy(info, &av7110->ci_slot[info->num], sizeof(struct ca_slot_info));
 		break;
 	}
 
@@ -295,24 +288,24 @@ static int dvb_ca_ioctl(struct file *file, unsigned int cmd, void *parg)
 
 		info.num = 16;
 		info.type = CA_ECD;
-		memcpy(parg, &info, sizeof(info));
+		memcpy(parg, &info, sizeof (info));
 		break;
 	}
 
 	case CA_SET_DESCR:
 	{
-		struct ca_descr *descr = (struct ca_descr *)parg;
+		struct ca_descr *descr = (struct ca_descr*) parg;
 
 		if (descr->index >= 16 || descr->parity > 1) {
 			mutex_unlock(&av7110->ioctl_mutex);
 			return -EINVAL;
 		}
 		av7110_fw_cmd(av7110, COMTYPE_PIDFILTER, SetDescr, 5,
-			      (descr->index << 8) | descr->parity,
-			      (descr->cw[0] << 8) | descr->cw[1],
-			      (descr->cw[2] << 8) | descr->cw[3],
-			      (descr->cw[4] << 8) | descr->cw[5],
-			      (descr->cw[6] << 8) | descr->cw[7]);
+			      (descr->index<<8)|descr->parity,
+			      (descr->cw[0]<<8)|descr->cw[1],
+			      (descr->cw[2]<<8)|descr->cw[3],
+			      (descr->cw[4]<<8)|descr->cw[5],
+			      (descr->cw[6]<<8)|descr->cw[7]);
 		break;
 	}
 
@@ -331,7 +324,7 @@ static ssize_t dvb_ca_write(struct file *file, const char __user *buf,
 	struct dvb_device *dvbdev = file->private_data;
 	struct av7110 *av7110 = dvbdev->priv;
 
-	dprintk(8, "av7110:%p\n", av7110);
+	dprintk(8, "av7110:%p\n",av7110);
 	return ci_ll_write(&av7110->ci_wbuffer, file, buf, count, ppos);
 }
 
@@ -341,7 +334,7 @@ static ssize_t dvb_ca_read(struct file *file, char __user *buf,
 	struct dvb_device *dvbdev = file->private_data;
 	struct av7110 *av7110 = dvbdev->priv;
 
-	dprintk(8, "av7110:%p\n", av7110);
+	dprintk(8, "av7110:%p\n",av7110);
 	return ci_ll_read(&av7110->ci_rbuffer, file, buf, count, ppos);
 }
 
@@ -364,6 +357,7 @@ static struct dvb_device dvbdev_ca = {
 	.kernel_ioctl	= dvb_ca_ioctl,
 };
 
+
 int av7110_ca_register(struct av7110 *av7110)
 {
 	return dvb_register_device(&av7110->dvb_adapter, &av7110->ca_dev,
@@ -375,12 +369,12 @@ void av7110_ca_unregister(struct av7110 *av7110)
 	dvb_unregister_device(av7110->ca_dev);
 }
 
-int av7110_ca_init(struct av7110 *av7110)
+int av7110_ca_init(struct av7110* av7110)
 {
 	return ci_ll_init(&av7110->ci_rbuffer, &av7110->ci_wbuffer, 8192);
 }
 
-void av7110_ca_exit(struct av7110 *av7110)
+void av7110_ca_exit(struct av7110* av7110)
 {
 	ci_ll_release(&av7110->ci_rbuffer, &av7110->ci_wbuffer);
 }

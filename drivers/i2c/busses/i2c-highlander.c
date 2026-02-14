@@ -331,7 +331,7 @@ static int highlander_i2c_smbus_xfer(struct i2c_adapter *adap, u16 addr,
 	/* Ensure we're in a sane state */
 	highlander_i2c_done(dev);
 
-	/* Set target address */
+	/* Set slave address */
 	iowrite16((addr << 1) | read_write, dev->base + SMSMADR);
 
 	highlander_i2c_command(dev, command, dev->buf_len);
@@ -435,7 +435,7 @@ err:
 	return ret;
 }
 
-static void highlander_i2c_remove(struct platform_device *pdev)
+static int highlander_i2c_remove(struct platform_device *pdev)
 {
 	struct highlander_i2c_dev *dev = platform_get_drvdata(pdev);
 
@@ -446,6 +446,8 @@ static void highlander_i2c_remove(struct platform_device *pdev)
 
 	iounmap(dev->base);
 	kfree(dev);
+
+	return 0;
 }
 
 static struct platform_driver highlander_i2c_driver = {

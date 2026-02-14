@@ -3,22 +3,7 @@
 #ifndef BTRFS_FILE_ITEM_H
 #define BTRFS_FILE_ITEM_H
 
-#include <linux/blk_types.h>
-#include <linux/list.h>
-#include <uapi/linux/btrfs_tree.h>
-#include "ctree.h"
-#include "ordered-data.h"
-
-struct extent_map;
-struct btrfs_file_extent_item;
-struct btrfs_fs_info;
-struct btrfs_path;
-struct btrfs_bio;
-struct btrfs_trans_handle;
-struct btrfs_root;
-struct btrfs_ordered_sum;
-struct btrfs_path;
-struct btrfs_inode;
+#include "accessors.h"
 
 #define BTRFS_FILE_EXTENT_INLINE_DATA_START		\
 		(offsetof(struct btrfs_file_extent_item, disk_bytenr))
@@ -53,7 +38,7 @@ static inline u32 btrfs_file_extent_calc_inline_size(u32 datasize)
 
 int btrfs_del_csums(struct btrfs_trans_handle *trans,
 		    struct btrfs_root *root, u64 bytenr, u64 len);
-int btrfs_lookup_bio_sums(struct btrfs_bio *bbio);
+blk_status_t btrfs_lookup_bio_sums(struct btrfs_bio *bbio);
 int btrfs_insert_hole_extent(struct btrfs_trans_handle *trans,
 			     struct btrfs_root *root, u64 objectid, u64 pos,
 			     u64 num_bytes);
@@ -64,19 +49,18 @@ int btrfs_lookup_file_extent(struct btrfs_trans_handle *trans,
 int btrfs_csum_file_blocks(struct btrfs_trans_handle *trans,
 			   struct btrfs_root *root,
 			   struct btrfs_ordered_sum *sums);
-int btrfs_csum_one_bio(struct btrfs_bio *bbio, bool async);
-int btrfs_alloc_dummy_sum(struct btrfs_bio *bbio);
+blk_status_t btrfs_csum_one_bio(struct btrfs_bio *bbio);
 int btrfs_lookup_csums_range(struct btrfs_root *root, u64 start, u64 end,
 			     struct list_head *list, int search_commit,
 			     bool nowait);
 int btrfs_lookup_csums_list(struct btrfs_root *root, u64 start, u64 end,
-			    struct list_head *list, bool nowait);
-int btrfs_lookup_csums_bitmap(struct btrfs_root *root, struct btrfs_path *path,
-			      u64 start, u64 end, u8 *csum_buf,
-			      unsigned long *csum_bitmap);
+			    struct list_head *list, int search_commit,
+			    bool nowait);
+int btrfs_lookup_csums_bitmap(struct btrfs_root *root, u64 start, u64 end,
+			      u8 *csum_buf, unsigned long *csum_bitmap);
 void btrfs_extent_item_to_extent_map(struct btrfs_inode *inode,
 				     const struct btrfs_path *path,
-				     const struct btrfs_file_extent_item *fi,
+				     struct btrfs_file_extent_item *fi,
 				     struct extent_map *em);
 int btrfs_inode_clear_file_extent_range(struct btrfs_inode *inode, u64 start,
 					u64 len);

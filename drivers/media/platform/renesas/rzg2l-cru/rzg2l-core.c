@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -22,7 +23,6 @@
 #include <media/v4l2-mc.h>
 
 #include "rzg2l-cru.h"
-#include "rzg2l-cru-regs.h"
 
 static inline struct rzg2l_cru_dev *notifier_to_cru(struct v4l2_async_notifier *n)
 {
@@ -73,6 +73,7 @@ static int rzg2l_cru_group_notify_complete(struct v4l2_async_notifier *notifier)
 			source->name, sink->name);
 		return ret;
 	}
+	cru->csi.channel = 0;
 	cru->ip.remote = cru->csi.subdev;
 
 	/* Create media device link between CRU IP <-> CRU OUTPUT */
@@ -92,7 +93,7 @@ static int rzg2l_cru_group_notify_complete(struct v4l2_async_notifier *notifier)
 
 static void rzg2l_cru_group_notify_unbind(struct v4l2_async_notifier *notifier,
 					  struct v4l2_subdev *subdev,
-					  struct v4l2_async_connection *asd)
+					  struct v4l2_async_subdev *asd)
 {
 	struct rzg2l_cru_dev *cru = notifier_to_cru(notifier);
 
@@ -110,7 +111,7 @@ static void rzg2l_cru_group_notify_unbind(struct v4l2_async_notifier *notifier,
 
 static int rzg2l_cru_group_notify_bound(struct v4l2_async_notifier *notifier,
 					struct v4l2_subdev *subdev,
-					struct v4l2_async_connection *asd)
+					struct v4l2_async_subdev *asd)
 {
 	struct rzg2l_cru_dev *cru = notifier_to_cru(notifier);
 
@@ -138,7 +139,7 @@ static int rzg2l_cru_mc_parse_of(struct rzg2l_cru_dev *cru)
 		.bus_type = V4L2_MBUS_CSI2_DPHY,
 	};
 	struct fwnode_handle *ep, *fwnode;
-	struct v4l2_async_connection *asd;
+	struct v4l2_async_subdev *asd;
 	int ret;
 
 	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(cru->dev), 1, 0, 0);
@@ -162,7 +163,7 @@ static int rzg2l_cru_mc_parse_of(struct rzg2l_cru_dev *cru)
 	}
 
 	asd = v4l2_async_nf_add_fwnode(&cru->notifier, fwnode,
-				       struct v4l2_async_connection);
+				       struct v4l2_async_subdev);
 	if (IS_ERR(asd)) {
 		ret = PTR_ERR(asd);
 		goto out;
@@ -182,7 +183,7 @@ static int rzg2l_cru_mc_parse_of_graph(struct rzg2l_cru_dev *cru)
 {
 	int ret;
 
-	v4l2_async_nf_init(&cru->notifier, &cru->v4l2_dev);
+	v4l2_async_nf_init(&cru->notifier);
 
 	ret = rzg2l_cru_mc_parse_of(cru);
 	if (ret)
@@ -190,10 +191,10 @@ static int rzg2l_cru_mc_parse_of_graph(struct rzg2l_cru_dev *cru)
 
 	cru->notifier.ops = &rzg2l_cru_async_ops;
 
-	if (list_empty(&cru->notifier.waiting_list))
+	if (list_empty(&cru->notifier.asd_list))
 		return 0;
 
-	ret = v4l2_async_nf_register(&cru->notifier);
+	ret = v4l2_async_nf_register(&cru->v4l2_dev, &cru->notifier);
 	if (ret < 0) {
 		dev_err(cru->dev, "Notifier registration failed\n");
 		v4l2_async_nf_cleanup(&cru->notifier);
@@ -209,7 +210,7 @@ static int rzg2l_cru_media_init(struct rzg2l_cru_dev *cru)
 	const struct of_device_id *match;
 	int ret;
 
-	cru->pad.flags = MEDIA_PAD_FL_SINK | MEDIA_PAD_FL_MUST_CONNECT;
+	cru->pad.flags = MEDIA_PAD_FL_SINK;
 	ret = media_entity_pads_init(&cru->vdev.entity, 1, &cru->pad);
 	if (ret)
 		return ret;
@@ -241,11 +242,10 @@ static int rzg2l_cru_media_init(struct rzg2l_cru_dev *cru)
 
 static int rzg2l_cru_probe(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
 	struct rzg2l_cru_dev *cru;
-	int irq, ret;
+	int ret;
 
-	cru = devm_kzalloc(dev, sizeof(*cru), GFP_KERNEL);
+	cru = devm_kzalloc(&pdev->dev, sizeof(*cru), GFP_KERNEL);
 	if (!cru)
 		return -ENOMEM;
 
@@ -253,32 +253,27 @@ static int rzg2l_cru_probe(struct platform_device *pdev)
 	if (IS_ERR(cru->base))
 		return PTR_ERR(cru->base);
 
-	cru->presetn = devm_reset_control_get_shared(dev, "presetn");
+	cru->presetn = devm_reset_control_get_shared(&pdev->dev, "presetn");
 	if (IS_ERR(cru->presetn))
-		return dev_err_probe(dev, PTR_ERR(cru->presetn),
+		return dev_err_probe(&pdev->dev, PTR_ERR(cru->presetn),
 				     "Failed to get cpg presetn\n");
 
-	cru->aresetn = devm_reset_control_get_exclusive(dev, "aresetn");
+	cru->aresetn = devm_reset_control_get_exclusive(&pdev->dev, "aresetn");
 	if (IS_ERR(cru->aresetn))
-		return dev_err_probe(dev, PTR_ERR(cru->aresetn),
+		return dev_err_probe(&pdev->dev, PTR_ERR(cru->aresetn),
 				     "Failed to get cpg aresetn\n");
 
-	cru->vclk = devm_clk_get(dev, "video");
+	cru->vclk = devm_clk_get(&pdev->dev, "video");
 	if (IS_ERR(cru->vclk))
-		return dev_err_probe(dev, PTR_ERR(cru->vclk),
+		return dev_err_probe(&pdev->dev, PTR_ERR(cru->vclk),
 				     "Failed to get video clock\n");
 
-	cru->dev = dev;
-	cru->info = of_device_get_match_data(dev);
+	cru->dev = &pdev->dev;
+	cru->info = of_device_get_match_data(&pdev->dev);
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
-
-	ret = devm_request_irq(dev, irq, cru->info->irq_handler, 0,
-			       KBUILD_MODNAME, cru);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to request irq\n");
+	cru->image_conv_irq = platform_get_irq(pdev, 0);
+	if (cru->image_conv_irq < 0)
+		return cru->image_conv_irq;
 
 	platform_set_drvdata(pdev, cru);
 
@@ -287,10 +282,8 @@ static int rzg2l_cru_probe(struct platform_device *pdev)
 		return ret;
 
 	cru->num_buf = RZG2L_CRU_HW_BUFFER_DEFAULT;
-	pm_suspend_ignore_children(dev, true);
-	ret = devm_pm_runtime_enable(dev);
-	if (ret)
-		goto error_dma_unregister;
+	pm_suspend_ignore_children(&pdev->dev, true);
+	pm_runtime_enable(&pdev->dev);
 
 	ret = rzg2l_cru_media_init(cru);
 	if (ret)
@@ -300,13 +293,16 @@ static int rzg2l_cru_probe(struct platform_device *pdev)
 
 error_dma_unregister:
 	rzg2l_cru_dma_unregister(cru);
+	pm_runtime_disable(&pdev->dev);
 
 	return ret;
 }
 
-static void rzg2l_cru_remove(struct platform_device *pdev)
+static int rzg2l_cru_remove(struct platform_device *pdev)
 {
 	struct rzg2l_cru_dev *cru = platform_get_drvdata(pdev);
+
+	pm_runtime_disable(&pdev->dev);
 
 	v4l2_async_nf_unregister(&cru->notifier);
 	v4l2_async_nf_cleanup(&cru->notifier);
@@ -316,112 +312,12 @@ static void rzg2l_cru_remove(struct platform_device *pdev)
 	mutex_destroy(&cru->mdev_lock);
 
 	rzg2l_cru_dma_unregister(cru);
+
+	return 0;
 }
 
-static const u16 rzg3e_cru_regs[] = {
-	[CRUnCTRL] = 0x0,
-	[CRUnIE] = 0x4,
-	[CRUnIE2] = 0x8,
-	[CRUnINTS] = 0xc,
-	[CRUnINTS2] = 0x10,
-	[CRUnRST] = 0x18,
-	[AMnMB1ADDRL] = 0x40,
-	[AMnMB1ADDRH] = 0x44,
-	[AMnMB2ADDRL] = 0x48,
-	[AMnMB2ADDRH] = 0x4c,
-	[AMnMB3ADDRL] = 0x50,
-	[AMnMB3ADDRH] = 0x54,
-	[AMnMB4ADDRL] = 0x58,
-	[AMnMB4ADDRH] = 0x5c,
-	[AMnMB5ADDRL] = 0x60,
-	[AMnMB5ADDRH] = 0x64,
-	[AMnMB6ADDRL] = 0x68,
-	[AMnMB6ADDRH] = 0x6c,
-	[AMnMB7ADDRL] = 0x70,
-	[AMnMB7ADDRH] = 0x74,
-	[AMnMB8ADDRL] = 0x78,
-	[AMnMB8ADDRH] = 0x7c,
-	[AMnMBVALID] = 0x88,
-	[AMnMADRSL] = 0x8c,
-	[AMnMADRSH] = 0x90,
-	[AMnAXIATTR] = 0xec,
-	[AMnFIFOPNTR] = 0xf8,
-	[AMnAXISTP] = 0x110,
-	[AMnAXISTPACK] = 0x114,
-	[AMnIS] = 0x128,
-	[ICnEN] = 0x1f0,
-	[ICnSVCNUM] = 0x1f8,
-	[ICnSVC] = 0x1fc,
-	[ICnIPMC_C0] = 0x200,
-	[ICnMS] = 0x2d8,
-	[ICnDMR] = 0x304,
-};
-
-static const struct rzg2l_cru_info rzg3e_cru_info = {
-	.max_width = 4095,
-	.max_height = 4095,
-	.image_conv = ICnIPMC_C0,
-	.has_stride = true,
-	.regs = rzg3e_cru_regs,
-	.irq_handler = rzg3e_cru_irq,
-	.enable_interrupts = rzg3e_cru_enable_interrupts,
-	.disable_interrupts = rzg3e_cru_disable_interrupts,
-	.fifo_empty = rzg3e_fifo_empty,
-};
-
-static const u16 rzg2l_cru_regs[] = {
-	[CRUnCTRL] = 0x0,
-	[CRUnIE] = 0x4,
-	[CRUnINTS] = 0x8,
-	[CRUnRST] = 0xc,
-	[AMnMB1ADDRL] = 0x100,
-	[AMnMB1ADDRH] = 0x104,
-	[AMnMB2ADDRL] = 0x108,
-	[AMnMB2ADDRH] = 0x10c,
-	[AMnMB3ADDRL] = 0x110,
-	[AMnMB3ADDRH] = 0x114,
-	[AMnMB4ADDRL] = 0x118,
-	[AMnMB4ADDRH] = 0x11c,
-	[AMnMB5ADDRL] = 0x120,
-	[AMnMB5ADDRH] = 0x124,
-	[AMnMB6ADDRL] = 0x128,
-	[AMnMB6ADDRH] = 0x12c,
-	[AMnMB7ADDRL] = 0x130,
-	[AMnMB7ADDRH] = 0x134,
-	[AMnMB8ADDRL] = 0x138,
-	[AMnMB8ADDRH] = 0x13c,
-	[AMnMBVALID] = 0x148,
-	[AMnMBS] = 0x14c,
-	[AMnAXIATTR] = 0x158,
-	[AMnFIFOPNTR] = 0x168,
-	[AMnAXISTP] = 0x174,
-	[AMnAXISTPACK] = 0x178,
-	[ICnEN] = 0x200,
-	[ICnMC] = 0x208,
-	[ICnMS] = 0x254,
-	[ICnDMR] = 0x26c,
-};
-
-static const struct rzg2l_cru_info rzg2l_cru_info = {
-	.max_width = 2800,
-	.max_height = 4095,
-	.image_conv = ICnMC,
-	.regs = rzg2l_cru_regs,
-	.irq_handler = rzg2l_cru_irq,
-	.enable_interrupts = rzg2l_cru_enable_interrupts,
-	.disable_interrupts = rzg2l_cru_disable_interrupts,
-	.fifo_empty = rzg2l_fifo_empty,
-};
-
 static const struct of_device_id rzg2l_cru_of_id_table[] = {
-	{
-		.compatible = "renesas,r9a09g047-cru",
-		.data = &rzg3e_cru_info,
-	},
-	{
-		.compatible = "renesas,rzg2l-cru",
-		.data = &rzg2l_cru_info,
-	},
+	{ .compatible = "renesas,rzg2l-cru", },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, rzg2l_cru_of_id_table);

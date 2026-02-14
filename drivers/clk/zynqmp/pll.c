@@ -98,29 +98,29 @@ static inline void zynqmp_pll_set_mode(struct clk_hw *hw, bool on)
  *
  * Return: Frequency closest to @rate the hardware can generate
  */
-static int zynqmp_pll_determine_rate(struct clk_hw *hw,
-				     struct clk_rate_request *req)
+static long zynqmp_pll_round_rate(struct clk_hw *hw, unsigned long rate,
+				  unsigned long *prate)
 {
 	u32 fbdiv;
 	u32 mult, div;
 
 	/* Let rate fall inside the range PS_PLL_VCO_MIN ~ PS_PLL_VCO_MAX */
-	if (req->rate > PS_PLL_VCO_MAX) {
-		div = DIV_ROUND_UP(req->rate, PS_PLL_VCO_MAX);
-		req->rate = req->rate / div;
+	if (rate > PS_PLL_VCO_MAX) {
+		div = DIV_ROUND_UP(rate, PS_PLL_VCO_MAX);
+		rate = rate / div;
 	}
-	if (req->rate < PS_PLL_VCO_MIN) {
-		mult = DIV_ROUND_UP(PS_PLL_VCO_MIN, req->rate);
-		req->rate = req->rate * mult;
+	if (rate < PS_PLL_VCO_MIN) {
+		mult = DIV_ROUND_UP(PS_PLL_VCO_MIN, rate);
+		rate = rate * mult;
 	}
 
-	fbdiv = DIV_ROUND_CLOSEST(req->rate, req->best_parent_rate);
+	fbdiv = DIV_ROUND_CLOSEST(rate, *prate);
 	if (fbdiv < PLL_FBDIV_MIN || fbdiv > PLL_FBDIV_MAX) {
 		fbdiv = clamp_t(u32, fbdiv, PLL_FBDIV_MIN, PLL_FBDIV_MAX);
-		req->rate = req->best_parent_rate * fbdiv;
+		rate = *prate * fbdiv;
 	}
 
-	return 0;
+	return rate;
 }
 
 /**
@@ -294,7 +294,7 @@ static const struct clk_ops zynqmp_pll_ops = {
 	.enable = zynqmp_pll_enable,
 	.disable = zynqmp_pll_disable,
 	.is_enabled = zynqmp_pll_is_enabled,
-	.determine_rate = zynqmp_pll_determine_rate,
+	.round_rate = zynqmp_pll_round_rate,
 	.recalc_rate = zynqmp_pll_recalc_rate,
 	.set_rate = zynqmp_pll_set_rate,
 };
@@ -340,6 +340,8 @@ struct clk_hw *zynqmp_clk_register_pll(const char *name, u32 clk_id,
 		kfree(pll);
 		return ERR_PTR(ret);
 	}
+
+	clk_hw_set_rate_range(hw, PS_PLL_VCO_MIN, PS_PLL_VCO_MAX);
 
 	return hw;
 }

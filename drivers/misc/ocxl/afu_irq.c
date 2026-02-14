@@ -57,7 +57,7 @@ EXPORT_SYMBOL_GPL(ocxl_irq_set_handler);
 
 static irqreturn_t afu_irq_handler(int virq, void *data)
 {
-	struct afu_irq *irq = data;
+	struct afu_irq *irq = (struct afu_irq *) data;
 
 	trace_ocxl_afu_irq_receive(virq);
 
@@ -203,7 +203,7 @@ u64 ocxl_afu_irq_get_addr(struct ocxl_context *ctx, int irq_id)
 	mutex_lock(&ctx->irq_lock);
 	irq = idr_find(&ctx->irq_idr, irq_id);
 	if (irq) {
-		xd = irq_get_chip_data(irq->virq);
+		xd = irq_get_handler_data(irq->virq);
 		addr = xd ? xd->trig_page : 0;
 	}
 	mutex_unlock(&ctx->irq_lock);

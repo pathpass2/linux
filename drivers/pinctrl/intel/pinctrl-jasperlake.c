@@ -9,7 +9,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
@@ -20,6 +19,14 @@
 #define JSL_HOSTSW_OWN	0x0c0
 #define JSL_GPI_IS	0x100
 #define JSL_GPI_IE	0x120
+
+#define JSL_GPP(r, s, e, g)				\
+	{						\
+		.reg_num = (r),				\
+		.base = (s),				\
+		.size = ((e) - (s) + 1),		\
+		.gpio_base = (g),			\
+	}
 
 #define JSL_COMMUNITY(b, s, e, g)			\
 	INTEL_COMMUNITY_GPPS(b, s, e, g, JSL)
@@ -275,28 +282,28 @@ static const struct pinctrl_pin_desc jsl_pins[] = {
 };
 
 static const struct intel_padgroup jsl_community0_gpps[] = {
-	INTEL_GPP(0, 0, 19, 320),			/* GPP_F */
-	INTEL_GPP(1, 20, 28, INTEL_GPIO_BASE_NOMAP),	/* SPI */
-	INTEL_GPP(2, 29, 54, 32),			/* GPP_B */
-	INTEL_GPP(3, 55, 75, 64),			/* GPP_A */
-	INTEL_GPP(4, 76, 83, 96),			/* GPP_S */
-	INTEL_GPP(5, 84, 91, 128),			/* GPP_R */
+	JSL_GPP(0, 0, 19, 320),				/* GPP_F */
+	JSL_GPP(1, 20, 28, INTEL_GPIO_BASE_NOMAP),	/* SPI */
+	JSL_GPP(2, 29, 54, 32),				/* GPP_B */
+	JSL_GPP(3, 55, 75, 64),				/* GPP_A */
+	JSL_GPP(4, 76, 83, 96),				/* GPP_S */
+	JSL_GPP(5, 84, 91, 128),			/* GPP_R */
 };
 
 static const struct intel_padgroup jsl_community1_gpps[] = {
-	INTEL_GPP(0, 92, 115, 160),			/* GPP_H */
-	INTEL_GPP(1, 116, 141, 192),			/* GPP_D */
-	INTEL_GPP(2, 142, 170, 224),			/* vGPIO */
-	INTEL_GPP(3, 171, 194, 256),			/* GPP_C */
+	JSL_GPP(0, 92, 115, 160),			/* GPP_H */
+	JSL_GPP(1, 116, 141, 192),			/* GPP_D */
+	JSL_GPP(2, 142, 170, 224),			/* vGPIO */
+	JSL_GPP(3, 171, 194, 256),			/* GPP_C */
 };
 
 static const struct intel_padgroup jsl_community4_gpps[] = {
-	INTEL_GPP(0, 195, 200, INTEL_GPIO_BASE_NOMAP),	/* HVCMOS */
-	INTEL_GPP(1, 201, 224, 288),			/* GPP_E */
+	JSL_GPP(0, 195, 200, INTEL_GPIO_BASE_NOMAP),	/* HVCMOS */
+	JSL_GPP(1, 201, 224, 288),			/* GPP_E */
 };
 
 static const struct intel_padgroup jsl_community5_gpps[] = {
-	INTEL_GPP(0, 225, 232, INTEL_GPIO_BASE_ZERO),	/* GPP_G */
+	JSL_GPP(0, 225, 232, INTEL_GPIO_BASE_ZERO),	/* GPP_G */
 };
 
 static const struct intel_community jsl_communities[] = {
@@ -319,12 +326,14 @@ static const struct acpi_device_id jsl_pinctrl_acpi_match[] = {
 };
 MODULE_DEVICE_TABLE(acpi, jsl_pinctrl_acpi_match);
 
+static INTEL_PINCTRL_PM_OPS(jsl_pinctrl_pm_ops);
+
 static struct platform_driver jsl_pinctrl_driver = {
 	.probe = intel_pinctrl_probe_by_hid,
 	.driver = {
 		.name = "jasperlake-pinctrl",
 		.acpi_match_table = jsl_pinctrl_acpi_match,
-		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
+		.pm = &jsl_pinctrl_pm_ops,
 	},
 };
 module_platform_driver(jsl_pinctrl_driver);
@@ -332,4 +341,3 @@ module_platform_driver(jsl_pinctrl_driver);
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Jasper Lake PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("PINCTRL_INTEL");

@@ -5,7 +5,6 @@
 //
 // Exynos5250 - CPU PMU (Power Management Unit) support
 
-#include <linux/array_size.h>
 #include <linux/soc/samsung/exynos-regs-pmu.h>
 #include <linux/soc/samsung/exynos-pmu.h>
 

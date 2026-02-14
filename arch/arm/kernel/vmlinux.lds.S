@@ -12,8 +12,9 @@
 #include <asm/vmlinux.lds.h>
 #include <asm/cache.h>
 #include <asm/thread_info.h>
-#include <asm/page.h>
+#include <asm/memory.h>
 #include <asm/mpu.h>
+#include <asm/page.h>
 
 OUTPUT_ARCH(arm)
 ENTRY(stext)
@@ -99,7 +100,7 @@ SECTIONS
 	}
 	.init.arch.info : {
 		__arch_info_begin = .;
-		KEEP(*(.arch.info.init))
+		*(.arch.info.init)
 		__arch_info_end = .;
 	}
 	.init.tagtable : {
@@ -116,7 +117,7 @@ SECTIONS
 #endif
 	.init.pv_table : {
 		__pv_table_begin = .;
-		KEEP(*(.pv_table))
+		*(.pv_table)
 		__pv_table_end = .;
 	}
 

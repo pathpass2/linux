@@ -91,14 +91,6 @@ struct pcc_chan_reg {
  * @cmd_update: PCC register bundle for the command complete update register
  * @error: PCC register bundle for the error status register
  * @plat_irq: platform interrupt
- * @type: PCC subspace type
- * @plat_irq_flags: platform interrupt flags
- * @chan_in_use: this flag is used just to check if the interrupt needs
- *		handling when it is shared. Since only one transfer can occur
- *		at a time and mailbox takes care of locking, this flag can be
- *		accessed without a lock. Note: the type only support the
- *		communication from OSPM to Platform, like type3, use it, and
- *		other types completely ignore it.
  */
 struct pcc_chan_info {
 	struct pcc_mbox_chan chan;
@@ -108,9 +100,6 @@ struct pcc_chan_info {
 	struct pcc_chan_reg cmd_update;
 	struct pcc_chan_reg error;
 	int plat_irq;
-	u8 type;
-	unsigned int plat_irq_flags;
-	bool chan_in_use;
 };
 
 #define to_pcc_chan_info(c) container_of(c, struct pcc_chan_info, chan)
@@ -232,95 +221,6 @@ static int pcc_map_interrupt(u32 interrupt, u32 flags)
 	return acpi_register_gsi(NULL, interrupt, trigger, polarity);
 }
 
-static bool pcc_chan_plat_irq_can_be_shared(struct pcc_chan_info *pchan)
-{
-	return (pchan->plat_irq_flags & ACPI_PCCT_INTERRUPT_MODE) ==
-		ACPI_LEVEL_SENSITIVE;
-}
-
-static bool pcc_mbox_cmd_complete_check(struct pcc_chan_info *pchan)
-{
-	u64 val;
-	int ret;
-
-	if (!pchan->cmd_complete.gas)
-		return true;
-
-	ret = pcc_chan_reg_read(&pchan->cmd_complete, &val);
-	if (ret)
-		return false;
-
-	/*
-	 * Judge if the channel respond the interrupt based on the value of
-	 * command complete.
-	 */
-	val &= pchan->cmd_complete.status_mask;
-
-	/*
-	 * If this is PCC slave subspace channel, and the command complete
-	 * bit 0 indicates that Platform is sending a notification and OSPM
-	 * needs to respond this interrupt to process this command.
-	 */
-	if (pchan->type == ACPI_PCCT_TYPE_EXT_PCC_SLAVE_SUBSPACE)
-		return !val;
-
-	return !!val;
-}
-
-static int pcc_mbox_error_check_and_clear(struct pcc_chan_info *pchan)
-{
-	u64 val;
-	int ret;
-
-	ret = pcc_chan_reg_read(&pchan->error, &val);
-	if (ret)
-		return ret;
-
-	if (val & pchan->error.status_mask) {
-		val &= pchan->error.preserve_mask;
-		pcc_chan_reg_write(&pchan->error, val);
-		return -EIO;
-	}
-
-	return 0;
-}
-
-static void pcc_chan_acknowledge(struct pcc_chan_info *pchan)
-{
-	struct acpi_pcct_ext_pcc_shared_memory __iomem *pcc_hdr;
-
-	if (pchan->type != ACPI_PCCT_TYPE_EXT_PCC_SLAVE_SUBSPACE)
-		return;
-
-	pcc_chan_reg_read_modify_write(&pchan->cmd_update);
-
-	pcc_hdr = pchan->chan.shmem;
-
-	/*
-	 * The PCC slave subspace channel needs to set the command
-	 * complete bit after processing message. If the PCC_ACK_FLAG
-	 * is set, it should also ring the doorbell.
-	 */
-	if (ioread32(&pcc_hdr->flags) & PCC_CMD_COMPLETION_NOTIFY)
-		pcc_chan_reg_read_modify_write(&pchan->db);
-}
-
-static void *write_response(struct pcc_chan_info *pchan)
-{
-	struct pcc_header pcc_header;
-	void *buffer;
-	int data_len;
-
-	memcpy_fromio(&pcc_header, pchan->chan.shmem,
-		      sizeof(pcc_header));
-	data_len = pcc_header.length - sizeof(u32) + sizeof(struct pcc_header);
-
-	buffer = pchan->chan.rx_alloc(pchan->chan.mchan->cl, data_len);
-	if (buffer != NULL)
-		memcpy_fromio(buffer, pchan->chan.shmem, data_len);
-	return buffer;
-}
-
 /**
  * pcc_mbox_irq - PCC mailbox interrupt handler
  * @irq:	interrupt number
@@ -332,44 +232,35 @@ static irqreturn_t pcc_mbox_irq(int irq, void *p)
 {
 	struct pcc_chan_info *pchan;
 	struct mbox_chan *chan = p;
-	struct pcc_header *pcc_header = chan->active_req;
-	void *handle = NULL;
+	u64 val;
+	int ret;
 
 	pchan = chan->con_priv;
+
+	ret = pcc_chan_reg_read(&pchan->cmd_complete, &val);
+	if (ret)
+		return IRQ_NONE;
+
+	if (val) { /* Ensure GAS exists and value is non-zero */
+		val &= pchan->cmd_complete.status_mask;
+		if (!val)
+			return IRQ_NONE;
+	}
+
+	ret = pcc_chan_reg_read(&pchan->error, &val);
+	if (ret)
+		return IRQ_NONE;
+	val &= pchan->error.status_mask;
+	if (val) {
+		val &= ~pchan->error.status_mask;
+		pcc_chan_reg_write(&pchan->error, val);
+		return IRQ_NONE;
+	}
 
 	if (pcc_chan_reg_read_modify_write(&pchan->plat_irq_ack))
 		return IRQ_NONE;
 
-	if (pchan->type == ACPI_PCCT_TYPE_EXT_PCC_MASTER_SUBSPACE &&
-	    !pchan->chan_in_use)
-		return IRQ_NONE;
-
-	if (!pcc_mbox_cmd_complete_check(pchan))
-		return IRQ_NONE;
-
-	if (pcc_mbox_error_check_and_clear(pchan))
-		return IRQ_NONE;
-
-	/*
-	 * Clear this flag after updating interrupt ack register and just
-	 * before mbox_chan_received_data() which might call pcc_send_data()
-	 * where the flag is set again to start new transfer. This is
-	 * required to avoid any possible race in updatation of this flag.
-	 */
-	pchan->chan_in_use = false;
-
-	if (pchan->chan.rx_alloc)
-		handle = write_response(pchan);
-
-	if (chan->active_req) {
-		pcc_header = chan->active_req;
-		if (pcc_header->flags & PCC_CMD_COMPLETION_NOTIFY)
-			mbox_chan_txdone(chan, 0);
-	}
-
-	mbox_chan_received_data(chan, handle);
-
-	pcc_chan_acknowledge(pchan);
+	mbox_chan_received_data(chan, NULL);
 
 	return IRQ_HANDLED;
 }
@@ -389,10 +280,10 @@ static irqreturn_t pcc_mbox_irq(int irq, void *p)
 struct pcc_mbox_chan *
 pcc_mbox_request_channel(struct mbox_client *cl, int subspace_id)
 {
-	struct pcc_mbox_chan *pcc_mchan;
 	struct pcc_chan_info *pchan;
 	struct mbox_chan *chan;
-	int rc;
+	struct device *dev;
+	unsigned long flags;
 
 	if (subspace_id < 0 || subspace_id >= pcc_chan_count)
 		return ERR_PTR(-ENOENT);
@@ -403,34 +294,34 @@ pcc_mbox_request_channel(struct mbox_client *cl, int subspace_id)
 		pr_err("Channel not found for idx: %d\n", subspace_id);
 		return ERR_PTR(-EBUSY);
 	}
+	dev = chan->mbox->dev;
 
-	rc = mbox_bind_client(chan, cl);
-	if (rc)
-		return ERR_PTR(rc);
+	spin_lock_irqsave(&chan->lock, flags);
+	chan->msg_free = 0;
+	chan->msg_count = 0;
+	chan->active_req = NULL;
+	chan->cl = cl;
+	init_completion(&chan->tx_complete);
 
-	pcc_mchan = &pchan->chan;
-	pcc_mchan->shmem = acpi_os_ioremap(pcc_mchan->shmem_base_addr,
-					   pcc_mchan->shmem_size);
-	if (!pcc_mchan->shmem)
-		goto err;
+	if (chan->txdone_method == TXDONE_BY_POLL && cl->knows_txdone)
+		chan->txdone_method = TXDONE_BY_ACK;
 
-	pcc_mchan->manage_writes = false;
+	spin_unlock_irqrestore(&chan->lock, flags);
 
-	/* This indicates that the channel is ready to accept messages.
-	 * This needs to happen after the channel has registered
-	 * its callback. There is no access point to do that in
-	 * the mailbox API. That implies that the mailbox client must
-	 * have set the allocate callback function prior to
-	 * sending any messages.
-	 */
-	if (pchan->type == ACPI_PCCT_TYPE_EXT_PCC_SLAVE_SUBSPACE)
-		pcc_chan_reg_read_modify_write(&pchan->cmd_update);
+	if (pchan->plat_irq > 0) {
+		int rc;
 
-	return pcc_mchan;
+		rc = devm_request_irq(dev, pchan->plat_irq, pcc_mbox_irq, 0,
+				      MBOX_IRQ_NAME, chan);
+		if (unlikely(rc)) {
+			dev_err(dev, "failed to register PCC interrupt %d\n",
+				pchan->plat_irq);
+			pcc_mbox_free_channel(&pchan->chan);
+			return ERR_PTR(rc);
+		}
+	}
 
-err:
-	mbox_free_channel(chan);
-	return ERR_PTR(-ENXIO);
+	return &pchan->chan;
 }
 EXPORT_SYMBOL_GPL(pcc_mbox_request_channel);
 
@@ -442,55 +333,28 @@ EXPORT_SYMBOL_GPL(pcc_mbox_request_channel);
  */
 void pcc_mbox_free_channel(struct pcc_mbox_chan *pchan)
 {
+	struct pcc_chan_info *pchan_info = to_pcc_chan_info(pchan);
 	struct mbox_chan *chan = pchan->mchan;
-	struct pcc_chan_info *pchan_info;
-	struct pcc_mbox_chan *pcc_mbox_chan;
+	unsigned long flags;
 
 	if (!chan || !chan->cl)
 		return;
-	pchan_info = chan->con_priv;
-	pcc_mbox_chan = &pchan_info->chan;
-	if (pcc_mbox_chan->shmem) {
-		iounmap(pcc_mbox_chan->shmem);
-		pcc_mbox_chan->shmem = NULL;
-	}
 
-	mbox_free_channel(chan);
+	if (pchan_info->plat_irq > 0)
+		devm_free_irq(chan->mbox->dev, pchan_info->plat_irq, chan);
+
+	spin_lock_irqsave(&chan->lock, flags);
+	chan->cl = NULL;
+	chan->active_req = NULL;
+	if (chan->txdone_method == TXDONE_BY_ACK)
+		chan->txdone_method = TXDONE_BY_POLL;
+
+	spin_unlock_irqrestore(&chan->lock, flags);
 }
 EXPORT_SYMBOL_GPL(pcc_mbox_free_channel);
 
-static int pcc_write_to_buffer(struct mbox_chan *chan, void *data)
-{
-	struct pcc_chan_info *pchan = chan->con_priv;
-	struct pcc_mbox_chan *pcc_mbox_chan = &pchan->chan;
-	struct pcc_header *pcc_header = data;
-
-	if (!pchan->chan.manage_writes)
-		return 0;
-
-	/* The PCC header length includes the command field
-	 * but not the other values from the header.
-	 */
-	int len = pcc_header->length - sizeof(u32) + sizeof(struct pcc_header);
-	u64 val;
-
-	pcc_chan_reg_read(&pchan->cmd_complete, &val);
-	if (!val) {
-		pr_info("%s pchan->cmd_complete not set", __func__);
-		return -1;
-	}
-	memcpy_toio(pcc_mbox_chan->shmem,  data, len);
-	return 0;
-}
-
-
 /**
- * pcc_send_data - Called from Mailbox Controller code. If
- *		pchan->chan.rx_alloc is set, then the command complete
- *		flag is checked and the data is written to the shared
- *		buffer io memory.
- *
- *		If pchan->chan.rx_alloc is not set, then it is used
+ * pcc_send_data - Called from Mailbox Controller code. Used
  *		here only to ring the channel doorbell. The PCC client
  *		specific read/write is done in the client driver in
  *		order to maintain atomicity over PCC channel once
@@ -506,83 +370,15 @@ static int pcc_send_data(struct mbox_chan *chan, void *data)
 	int ret;
 	struct pcc_chan_info *pchan = chan->con_priv;
 
-	ret = pcc_write_to_buffer(chan, data);
-	if (ret)
-		return ret;
-
 	ret = pcc_chan_reg_read_modify_write(&pchan->cmd_update);
 	if (ret)
 		return ret;
 
-	ret = pcc_chan_reg_read_modify_write(&pchan->db);
-
-	if (!ret && pchan->plat_irq > 0)
-		pchan->chan_in_use = true;
-
-	return ret;
-}
-
-
-static bool pcc_last_tx_done(struct mbox_chan *chan)
-{
-	struct pcc_chan_info *pchan = chan->con_priv;
-	u64 val;
-
-	pcc_chan_reg_read(&pchan->cmd_complete, &val);
-	if (!val)
-		return false;
-	else
-		return true;
-}
-
-
-
-/**
- * pcc_startup - Called from Mailbox Controller code. Used here
- *		to request the interrupt.
- * @chan: Pointer to Mailbox channel to startup.
- *
- * Return: Err if something failed else 0 for success.
- */
-static int pcc_startup(struct mbox_chan *chan)
-{
-	struct pcc_chan_info *pchan = chan->con_priv;
-	unsigned long irqflags;
-	int rc;
-
-	if (pchan->plat_irq > 0) {
-		irqflags = pcc_chan_plat_irq_can_be_shared(pchan) ?
-						IRQF_SHARED | IRQF_ONESHOT : 0;
-		rc = devm_request_irq(chan->mbox->dev, pchan->plat_irq, pcc_mbox_irq,
-				      irqflags, MBOX_IRQ_NAME, chan);
-		if (unlikely(rc)) {
-			dev_err(chan->mbox->dev, "failed to register PCC interrupt %d\n",
-				pchan->plat_irq);
-			return rc;
-		}
-	}
-
-	return 0;
-}
-
-/**
- * pcc_shutdown - Called from Mailbox Controller code. Used here
- *		to free the interrupt.
- * @chan: Pointer to Mailbox channel to shutdown.
- */
-static void pcc_shutdown(struct mbox_chan *chan)
-{
-	struct pcc_chan_info *pchan = chan->con_priv;
-
-	if (pchan->plat_irq > 0)
-		devm_free_irq(chan->mbox->dev, pchan->plat_irq, chan);
+	return pcc_chan_reg_read_modify_write(&pchan->db);
 }
 
 static const struct mbox_chan_ops pcc_chan_ops = {
 	.send_data = pcc_send_data,
-	.startup = pcc_startup,
-	.shutdown = pcc_shutdown,
-	.last_tx_done = pcc_last_tx_done,
 };
 
 /**
@@ -661,7 +457,6 @@ static int pcc_parse_subspace_irq(struct pcc_chan_info *pchan,
 		       pcct_ss->platform_interrupt);
 		return -EINVAL;
 	}
-	pchan->plat_irq_flags = pcct_ss->flags;
 
 	if (pcct_ss->header.type == ACPI_PCCT_TYPE_HW_REDUCED_SUBSPACE_TYPE2) {
 		struct acpi_pcct_hw_reduced_type2 *pcct2_ss = (void *)pcct_ss;
@@ -681,12 +476,6 @@ static int pcc_parse_subspace_irq(struct pcc_chan_info *pchan,
 					pcct_ext->ack_preserve_mask,
 					pcct_ext->ack_set_mask, 0,
 					"PLAT IRQ ACK");
-	}
-
-	if (pcc_chan_plat_irq_can_be_shared(pchan) &&
-	    !pchan->plat_irq_ack.gas) {
-		pr_err("PCC subspace has level IRQ with no ACK register\n");
-		return -EINVAL;
 	}
 
 	return ret;
@@ -744,8 +533,7 @@ static int pcc_parse_subspace_db_reg(struct pcc_chan_info *pchan,
 
 		ret = pcc_chan_reg_init(&pchan->error,
 					&pcct_ext->error_status_register,
-					~pcct_ext->error_status_mask, 0,
-					pcct_ext->error_status_mask,
+					0, 0, pcct_ext->error_status_mask,
 					"Error Status");
 	}
 	return ret;
@@ -904,7 +692,6 @@ static int pcc_mbox_probe(struct platform_device *pdev)
 
 		pcc_parse_subspace_shmem(pchan, pcct_entry);
 
-		pchan->type = pcct_entry->type;
 		pcct_entry = (struct acpi_subtable_header *)
 			((unsigned long) pcct_entry + pcct_entry->length);
 	}

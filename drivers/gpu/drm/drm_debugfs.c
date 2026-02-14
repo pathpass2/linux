@@ -31,7 +31,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_auth.h>
-#include <drm/drm_bridge.h>
+#include <drm/drm_client.h>
 #include <drm/drm_debugfs.h>
 #include <drm/drm_device.h>
 #include <drm/drm_drv.h>
@@ -39,13 +39,11 @@
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_managed.h>
-#include <drm/drm_gpuvm.h>
 
 #include "drm_crtc_internal.h"
 #include "drm_internal.h"
 
-static struct dentry *accel_debugfs_root;
-static struct dentry *drm_debugfs_root;
+#if defined(CONFIG_DEBUG_FS)
 
 /***************************************************
  * Initialization, etc.
@@ -80,43 +78,33 @@ static int drm_clients_info(struct seq_file *m, void *data)
 	kuid_t uid;
 
 	seq_printf(m,
-		   "%20s %5s %3s master a %5s %10s %*s %20s\n",
+		   "%20s %5s %3s master a %5s %10s\n",
 		   "command",
-		   "tgid",
+		   "pid",
 		   "dev",
 		   "uid",
-		   "magic",
-		   DRM_CLIENT_NAME_MAX_LEN,
-		   "name",
-		   "id");
+		   "magic");
 
 	/* dev->filelist is sorted youngest first, but we want to present
 	 * oldest first (i.e. kernel, servers, clients), so walk backwardss.
 	 */
 	mutex_lock(&dev->filelist_mutex);
 	list_for_each_entry_reverse(priv, &dev->filelist, lhead) {
-		bool is_current_master = drm_is_current_master(priv);
 		struct task_struct *task;
-		struct pid *pid;
+		bool is_current_master = drm_is_current_master(priv);
 
-		mutex_lock(&priv->client_name_lock);
-		rcu_read_lock(); /* Locks priv->pid and pid_task()->comm! */
-		pid = rcu_dereference(priv->pid);
-		task = pid_task(pid, PIDTYPE_TGID);
+		rcu_read_lock(); /* locks pid_task()->comm */
+		task = pid_task(priv->pid, PIDTYPE_PID);
 		uid = task ? __task_cred(task)->euid : GLOBAL_ROOT_UID;
-		seq_printf(m, "%20s %5d %3d   %c    %c %5d %10u %*s %20llu\n",
+		seq_printf(m, "%20s %5d %3d   %c    %c %5d %10u\n",
 			   task ? task->comm : "<unknown>",
-			   pid_vnr(pid),
+			   pid_vnr(priv->pid),
 			   priv->minor->index,
 			   is_current_master ? 'y' : 'n',
 			   priv->authenticated ? 'y' : 'n',
 			   from_kuid_munged(seq_user_ns(m), uid),
-			   priv->magic,
-			   DRM_CLIENT_NAME_MAX_LEN,
-			   priv->client_name ? priv->client_name : "<unset>",
-			   priv->client_id);
+			   priv->magic);
 		rcu_read_unlock();
-		mutex_unlock(&priv->client_name_lock);
 	}
 	mutex_unlock(&dev->filelist_mutex);
 	return 0;
@@ -160,9 +148,6 @@ static int drm_debugfs_open(struct inode *inode, struct file *file)
 {
 	struct drm_info_node *node = inode->i_private;
 
-	if (!device_is_registered(node->minor->kdev))
-		return -ENODEV;
-
 	return single_open(file, node->info_ent->show, node);
 }
 
@@ -170,10 +155,6 @@ static int drm_debugfs_entry_open(struct inode *inode, struct file *file)
 {
 	struct drm_debugfs_entry *entry = inode->i_private;
 	struct drm_debugfs_info *node = &entry->file;
-	struct drm_minor *minor = entry->dev->primary ?: entry->dev->accel;
-
-	if (!device_is_registered(minor->kdev))
-		return -ENODEV;
 
 	return single_open(file, node->show, entry);
 }
@@ -194,45 +175,6 @@ static const struct file_operations drm_debugfs_fops = {
 	.release = single_release,
 };
 
-/**
- * drm_debugfs_gpuva_info - dump the given DRM GPU VA space
- * @m: pointer to the &seq_file to write
- * @gpuvm: the &drm_gpuvm representing the GPU VA space
- *
- * Dumps the GPU VA mappings of a given DRM GPU VA manager.
- *
- * For each DRM GPU VA space drivers should call this function from their
- * &drm_info_list's show callback.
- *
- * Returns: 0 on success, -ENODEV if the &gpuvm is not initialized
- */
-int drm_debugfs_gpuva_info(struct seq_file *m,
-			   struct drm_gpuvm *gpuvm)
-{
-	struct drm_gpuva *va, *kva = &gpuvm->kernel_alloc_node;
-
-	if (!gpuvm->name)
-		return -ENODEV;
-
-	seq_printf(m, "DRM GPU VA space (%s) [0x%016llx;0x%016llx]\n",
-		   gpuvm->name, gpuvm->mm_start, gpuvm->mm_start + gpuvm->mm_range);
-	seq_printf(m, "Kernel reserved node [0x%016llx;0x%016llx]\n",
-		   kva->va.addr, kva->va.addr + kva->va.range);
-	seq_puts(m, "\n");
-	seq_puts(m, " VAs | start              | range              | end                | object             | object offset\n");
-	seq_puts(m, "-------------------------------------------------------------------------------------------------------------\n");
-	drm_gpuvm_for_each_va(va, gpuvm) {
-		if (unlikely(va == kva))
-			continue;
-
-		seq_printf(m, "     | 0x%016llx | 0x%016llx | 0x%016llx | 0x%016llx | 0x%016llx\n",
-			   va->va.addr, va->va.range, va->va.addr + va->va.range,
-			   (u64)(uintptr_t)va->gem.obj, va->gem.offset);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(drm_debugfs_gpuva_info);
 
 /**
  * drm_debugfs_create_files - Initialize a given set of debugfs files for DRM
@@ -244,7 +186,7 @@ EXPORT_SYMBOL(drm_debugfs_gpuva_info);
  *
  * Create a given set of debugfs files represented by an array of
  * &struct drm_info_list in the given root directory. These files will be removed
- * automatically on drm_debugfs_dev_fini().
+ * automatically on drm_debugfs_cleanup().
  */
 void drm_debugfs_create_files(const struct drm_info_list *files, int count,
 			      struct dentry *root, struct drm_minor *minor)
@@ -259,7 +201,7 @@ void drm_debugfs_create_files(const struct drm_info_list *files, int count,
 		if (features && !drm_core_check_all_features(dev, features))
 			continue;
 
-		tmp = drmm_kzalloc(dev, sizeof(*tmp), GFP_KERNEL);
+		tmp = kmalloc(sizeof(struct drm_info_node), GFP_KERNEL);
 		if (tmp == NULL)
 			continue;
 
@@ -268,190 +210,110 @@ void drm_debugfs_create_files(const struct drm_info_list *files, int count,
 						0444, root, tmp,
 						&drm_debugfs_fops);
 		tmp->info_ent = &files[i];
+
+		mutex_lock(&minor->debugfs_lock);
+		list_add(&tmp->list, &minor->debugfs_list);
+		mutex_unlock(&minor->debugfs_lock);
 	}
 }
 EXPORT_SYMBOL(drm_debugfs_create_files);
 
-int drm_debugfs_remove_files(const struct drm_info_list *files, int count,
-			     struct dentry *root, struct drm_minor *minor)
+int drm_debugfs_init(struct drm_minor *minor, int minor_id,
+		     struct dentry *root)
 {
+	struct drm_device *dev = minor->dev;
+	struct drm_debugfs_entry *entry, *tmp;
+	char name[64];
+
+	INIT_LIST_HEAD(&minor->debugfs_list);
+	mutex_init(&minor->debugfs_lock);
+	sprintf(name, "%d", minor_id);
+	minor->debugfs_root = debugfs_create_dir(name, root);
+
+	drm_debugfs_add_files(minor->dev, drm_debugfs_list, DRM_DEBUGFS_ENTRIES);
+
+	if (drm_drv_uses_atomic_modeset(dev)) {
+		drm_atomic_debugfs_init(minor);
+	}
+
+	if (drm_core_check_feature(dev, DRIVER_MODESET)) {
+		drm_framebuffer_debugfs_init(minor);
+
+		drm_client_debugfs_init(minor);
+	}
+
+	if (dev->driver->debugfs_init)
+		dev->driver->debugfs_init(minor);
+
+	list_for_each_entry_safe(entry, tmp, &dev->debugfs_list, list) {
+		debugfs_create_file(entry->file.name, 0444,
+				    minor->debugfs_root, entry, &drm_debugfs_entry_fops);
+		list_del(&entry->list);
+	}
+
+	return 0;
+}
+
+void drm_debugfs_late_register(struct drm_device *dev)
+{
+	struct drm_minor *minor = dev->primary;
+	struct drm_debugfs_entry *entry, *tmp;
+
+	if (!minor)
+		return;
+
+	list_for_each_entry_safe(entry, tmp, &dev->debugfs_list, list) {
+		debugfs_create_file(entry->file.name, 0444,
+				    minor->debugfs_root, entry, &drm_debugfs_entry_fops);
+		list_del(&entry->list);
+	}
+}
+
+int drm_debugfs_remove_files(const struct drm_info_list *files, int count,
+			     struct drm_minor *minor)
+{
+	struct list_head *pos, *q;
+	struct drm_info_node *tmp;
 	int i;
 
+	mutex_lock(&minor->debugfs_lock);
 	for (i = 0; i < count; i++) {
-		struct dentry *dent = debugfs_lookup(files[i].name, root);
-
-		if (!dent)
-			continue;
-
-		drmm_kfree(minor->dev, d_inode(dent)->i_private);
-		debugfs_remove(dent);
+		list_for_each_safe(pos, q, &minor->debugfs_list) {
+			tmp = list_entry(pos, struct drm_info_node, list);
+			if (tmp->info_ent == &files[i]) {
+				debugfs_remove(tmp->dent);
+				list_del(pos);
+				kfree(tmp);
+			}
+		}
 	}
+	mutex_unlock(&minor->debugfs_lock);
 	return 0;
 }
 EXPORT_SYMBOL(drm_debugfs_remove_files);
 
-void drm_debugfs_bridge_params(void)
+static void drm_debugfs_remove_all_files(struct drm_minor *minor)
 {
-	drm_bridge_debugfs_params(drm_debugfs_root);
-}
+	struct drm_info_node *node, *tmp;
 
-void drm_debugfs_init_root(void)
-{
-	drm_debugfs_root = debugfs_create_dir("dri", NULL);
-#if IS_ENABLED(CONFIG_DRM_ACCEL)
-	accel_debugfs_root = debugfs_create_dir("accel", NULL);
-#endif
-}
-
-void drm_debugfs_remove_root(void)
-{
-#if IS_ENABLED(CONFIG_DRM_ACCEL)
-	debugfs_remove(accel_debugfs_root);
-#endif
-	debugfs_remove(drm_debugfs_root);
-}
-
-static int drm_debugfs_proc_info_show(struct seq_file *m, void *unused)
-{
-	struct pid *pid;
-	struct task_struct *task;
-	struct drm_file *file = m->private;
-
-	if (!file)
-		return -EINVAL;
-
-	rcu_read_lock();
-	pid = rcu_dereference(file->pid);
-	task = pid_task(pid, PIDTYPE_TGID);
-
-	seq_printf(m, "pid: %d\n", task ? task->pid : 0);
-	seq_printf(m, "comm: %s\n", task ? task->comm : "Unset");
-	rcu_read_unlock();
-	return 0;
-}
-
-static int drm_debufs_proc_info_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, drm_debugfs_proc_info_show, inode->i_private);
-}
-
-static const struct file_operations drm_debugfs_proc_info_fops = {
-	.owner = THIS_MODULE,
-	.open = drm_debufs_proc_info_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-/**
- * drm_debugfs_clients_add - Add a per client debugfs directory
- * @file: drm_file for a client
- *
- * Create the debugfs directory for each client. This will be used to populate
- * driver specific data for each client.
- *
- * Also add the process information debugfs file for each client to tag
- * which client belongs to which process.
- */
-void drm_debugfs_clients_add(struct drm_file *file)
-{
-	char *client;
-
-	client = kasprintf(GFP_KERNEL, "client-%llu", file->client_id);
-	if (!client)
-		return;
-
-	/* Create a debugfs directory for the client in root on drm debugfs */
-	file->debugfs_client = debugfs_create_dir(client, drm_debugfs_root);
-	kfree(client);
-
-	debugfs_create_file("proc_info", 0444, file->debugfs_client, file,
-			    &drm_debugfs_proc_info_fops);
-
-	client = kasprintf(GFP_KERNEL, "../%s", file->minor->dev->unique);
-	if (!client)
-		return;
-
-	/* Create a link from client_id to the drm device this client id belongs to */
-	debugfs_create_symlink("device", file->debugfs_client, client);
-	kfree(client);
-}
-
-/**
- * drm_debugfs_clients_remove - removes all debugfs directories and files
- * @file: drm_file for a client
- *
- * Removes the debugfs directories recursively from the client directory.
- *
- * There is also a possibility that debugfs files are open while the drm_file
- * is released.
- */
-void drm_debugfs_clients_remove(struct drm_file *file)
-{
-	debugfs_remove_recursive(file->debugfs_client);
-	file->debugfs_client = NULL;
-}
-
-/**
- * drm_debugfs_dev_init - create debugfs directory for the device
- * @dev: the device which we want to create the directory for
- *
- * Creates the debugfs directory for the device under the given root directory.
- */
-void drm_debugfs_dev_init(struct drm_device *dev)
-{
-	if (drm_core_check_feature(dev, DRIVER_COMPUTE_ACCEL))
-		dev->debugfs_root = debugfs_create_dir(dev->unique, accel_debugfs_root);
-	else
-		dev->debugfs_root = debugfs_create_dir(dev->unique, drm_debugfs_root);
-}
-
-/**
- * drm_debugfs_dev_fini - cleanup debugfs directory
- * @dev: the device to cleanup the debugfs stuff
- *
- * Remove the debugfs directory, might be called multiple times.
- */
-void drm_debugfs_dev_fini(struct drm_device *dev)
-{
-	debugfs_remove_recursive(dev->debugfs_root);
-	dev->debugfs_root = NULL;
-}
-
-void drm_debugfs_dev_register(struct drm_device *dev)
-{
-	drm_debugfs_add_files(dev, drm_debugfs_list, DRM_DEBUGFS_ENTRIES);
-
-	if (drm_core_check_feature(dev, DRIVER_MODESET)) {
-		drm_framebuffer_debugfs_init(dev);
-		drm_client_debugfs_init(dev);
+	mutex_lock(&minor->debugfs_lock);
+	list_for_each_entry_safe(node, tmp, &minor->debugfs_list, list) {
+		debugfs_remove(node->dent);
+		list_del(&node->list);
+		kfree(node);
 	}
-	if (drm_drv_uses_atomic_modeset(dev))
-		drm_atomic_debugfs_init(dev);
+	mutex_unlock(&minor->debugfs_lock);
 }
 
-int drm_debugfs_register(struct drm_minor *minor, int minor_id)
+void drm_debugfs_cleanup(struct drm_minor *minor)
 {
-	struct drm_device *dev = minor->dev;
-	char name[64];
+	if (!minor->debugfs_root)
+		return;
 
-	sprintf(name, "%d", minor_id);
-	minor->debugfs_symlink = debugfs_create_symlink(name, drm_debugfs_root,
-							dev->unique);
+	drm_debugfs_remove_all_files(minor);
 
-	/* TODO: Only for compatibility with drivers */
-	minor->debugfs_root = dev->debugfs_root;
-
-	if (dev->driver->debugfs_init && dev->render != minor)
-		dev->driver->debugfs_init(minor);
-
-	return 0;
-}
-
-void drm_debugfs_unregister(struct drm_minor *minor)
-{
-	debugfs_remove(minor->debugfs_symlink);
-	minor->debugfs_symlink = NULL;
+	debugfs_remove_recursive(minor->debugfs_root);
+	minor->debugfs_root = NULL;
 }
 
 /**
@@ -477,8 +339,9 @@ void drm_debugfs_add_file(struct drm_device *dev, const char *name,
 	entry->file.data = data;
 	entry->dev = dev;
 
-	debugfs_create_file(name, 0444, dev->debugfs_root, entry,
-			    &drm_debugfs_entry_fops);
+	mutex_lock(&dev->debugfs_mutex);
+	list_add(&entry->list, &dev->debugfs_list);
+	mutex_unlock(&dev->debugfs_mutex);
 }
 EXPORT_SYMBOL(drm_debugfs_add_file);
 
@@ -633,170 +496,15 @@ static const struct file_operations drm_connector_fops = {
 	.write = connector_write
 };
 
-static ssize_t
-audio_infoframe_read(struct file *filp, char __user *ubuf, size_t count, loff_t *ppos)
-{
-	struct drm_connector_hdmi_infoframe *infoframe;
-	struct drm_connector *connector;
-	union hdmi_infoframe *frame;
-	u8 buf[HDMI_INFOFRAME_SIZE(AUDIO)];
-	ssize_t len = 0;
-
-	connector = filp->private_data;
-	mutex_lock(&connector->hdmi.infoframes.lock);
-
-	infoframe = &connector->hdmi.infoframes.audio;
-	if (!infoframe->set)
-		goto out;
-
-	frame = &infoframe->data;
-	len = hdmi_infoframe_pack(frame, buf, sizeof(buf));
-	if (len < 0)
-		goto out;
-
-	len = simple_read_from_buffer(ubuf, count, ppos, buf, len);
-
-out:
-	mutex_unlock(&connector->hdmi.infoframes.lock);
-	return len;
-}
-
-static const struct file_operations audio_infoframe_fops = {
-	.owner   = THIS_MODULE,
-	.open    = simple_open,
-	.read    = audio_infoframe_read,
-};
-
-static int create_hdmi_audio_infoframe_file(struct drm_connector *connector,
-					    struct dentry *parent)
-{
-	struct dentry *file;
-
-	if (!connector->hdmi.funcs ||
-	    !connector->hdmi.funcs->audio.write_infoframe)
-		return 0;
-
-	file = debugfs_create_file("audio", 0400, parent, connector, &audio_infoframe_fops);
-	if (IS_ERR(file))
-		return PTR_ERR(file);
-
-	return 0;
-}
-
-#define DEFINE_INFOFRAME_FILE(_f) \
-static ssize_t _f##_read_infoframe(struct file *filp, \
-				   char __user *ubuf, \
-				   size_t count,      \
-				   loff_t *ppos)      \
-{ \
-	struct drm_connector_hdmi_infoframe *infoframe; \
-	struct drm_connector_state *conn_state; \
-	struct drm_connector *connector; \
-	union hdmi_infoframe *frame; \
-	struct drm_device *dev; \
-	u8 buf[HDMI_INFOFRAME_SIZE(MAX)]; \
-	ssize_t len = 0; \
-	\
-	connector = filp->private_data; \
-	dev = connector->dev; \
-	\
-	drm_modeset_lock(&dev->mode_config.connection_mutex, NULL); \
-	\
-	conn_state = connector->state; \
-	infoframe = &conn_state->hdmi.infoframes._f; \
-	if (!infoframe->set) \
-		goto out; \
-	\
-	frame = &infoframe->data; \
-	len = hdmi_infoframe_pack(frame, buf, sizeof(buf)); \
-	if (len < 0) \
-		goto out; \
-	\
-	len = simple_read_from_buffer(ubuf, count, ppos, buf, len); \
-	\
-out: \
-	drm_modeset_unlock(&dev->mode_config.connection_mutex); \
-	return len; \
-} \
-\
-static const struct file_operations _f##_infoframe_fops = { \
-	.owner = THIS_MODULE, \
-	.open = simple_open, \
-	.read = _f##_read_infoframe, \
-}; \
-\
-static int create_hdmi_## _f ## _infoframe_file(struct drm_connector *connector, \
-						struct dentry *parent) \
-{ \
-	struct dentry *file; \
-	\
-	if (!connector->hdmi.funcs || \
-	    !connector->hdmi.funcs->_f.write_infoframe) \
-		return 0; \
-	file = debugfs_create_file(#_f, 0400, parent, connector, &_f ## _infoframe_fops); \
-	if (IS_ERR(file)) \
-		return PTR_ERR(file); \
-	\
-	return 0; \
-}
-
-DEFINE_INFOFRAME_FILE(avi);
-DEFINE_INFOFRAME_FILE(hdmi);
-DEFINE_INFOFRAME_FILE(hdr_drm);
-DEFINE_INFOFRAME_FILE(spd);
-
-static int create_hdmi_infoframe_files(struct drm_connector *connector,
-				       struct dentry *parent)
-{
-	int ret;
-
-	ret = create_hdmi_audio_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_avi_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_hdmi_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_hdr_drm_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	ret = create_hdmi_spd_infoframe_file(connector, parent);
-	if (ret)
-		return ret;
-
-	return 0;
-}
-
-static void hdmi_debugfs_add(struct drm_connector *connector)
-{
-	struct dentry *dir;
-
-	if (!(connector->connector_type == DRM_MODE_CONNECTOR_HDMIA ||
-	      connector->connector_type == DRM_MODE_CONNECTOR_HDMIB))
-		return;
-
-	dir = debugfs_create_dir("infoframes", connector->debugfs_entry);
-	if (IS_ERR(dir))
-		return;
-
-	create_hdmi_infoframe_files(connector, dir);
-}
-
 void drm_debugfs_connector_add(struct drm_connector *connector)
 {
-	struct drm_device *dev = connector->dev;
+	struct drm_minor *minor = connector->dev->primary;
 	struct dentry *root;
 
-	if (!dev->debugfs_root)
+	if (!minor->debugfs_root)
 		return;
 
-	root = debugfs_create_dir(connector->name, dev->debugfs_root);
+	root = debugfs_create_dir(connector->name, minor->debugfs_root);
 	connector->debugfs_entry = root;
 
 	/* force */
@@ -815,8 +523,6 @@ void drm_debugfs_connector_add(struct drm_connector *connector)
 	debugfs_create_file("output_bpc", 0444, root, connector,
 			    &output_bpc_fops);
 
-	hdmi_debugfs_add(connector);
-
 	if (connector->funcs->debugfs_init)
 		connector->funcs->debugfs_init(connector, root);
 }
@@ -833,7 +539,7 @@ void drm_debugfs_connector_remove(struct drm_connector *connector)
 
 void drm_debugfs_crtc_add(struct drm_crtc *crtc)
 {
-	struct drm_device *dev = crtc->dev;
+	struct drm_minor *minor = crtc->dev->primary;
 	struct dentry *root;
 	char *name;
 
@@ -841,7 +547,7 @@ void drm_debugfs_crtc_add(struct drm_crtc *crtc)
 	if (!name)
 		return;
 
-	root = debugfs_create_dir(name, dev->debugfs_root);
+	root = debugfs_create_dir(name, minor->debugfs_root);
 	kfree(name);
 
 	crtc->debugfs_entry = root;
@@ -855,29 +561,4 @@ void drm_debugfs_crtc_remove(struct drm_crtc *crtc)
 	crtc->debugfs_entry = NULL;
 }
 
-void drm_debugfs_encoder_add(struct drm_encoder *encoder)
-{
-	struct drm_minor *minor = encoder->dev->primary;
-	struct dentry *root;
-	char *name;
-
-	name = kasprintf(GFP_KERNEL, "encoder-%d", encoder->index);
-	if (!name)
-		return;
-
-	root = debugfs_create_dir(name, minor->debugfs_root);
-	kfree(name);
-
-	encoder->debugfs_entry = root;
-
-	drm_bridge_debugfs_encoder_params(root, encoder);
-
-	if (encoder->funcs && encoder->funcs->debugfs_init)
-		encoder->funcs->debugfs_init(encoder, root);
-}
-
-void drm_debugfs_encoder_remove(struct drm_encoder *encoder)
-{
-	debugfs_remove_recursive(encoder->debugfs_entry);
-	encoder->debugfs_entry = NULL;
-}
+#endif /* CONFIG_DEBUG_FS */

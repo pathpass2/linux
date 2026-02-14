@@ -287,7 +287,6 @@
 enum chip_id {
 	ID_IT6610,
 	ID_IT66121,
-	ID_IT66122,
 };
 
 struct it66121_chip_info {
@@ -298,6 +297,7 @@ struct it66121_chip_info {
 struct it66121_ctx {
 	struct regmap *regmap;
 	struct drm_bridge bridge;
+	struct drm_bridge *next_bridge;
 	struct drm_connector *connector;
 	struct device *dev;
 	struct gpio_desc *gpio_reset;
@@ -312,7 +312,7 @@ struct it66121_ctx {
 		u8 swl;
 		bool auto_cts;
 	} audio;
-	enum chip_id id;
+	const struct it66121_chip_info *info;
 };
 
 static const struct regmap_range_cfg it66121_regmap_banks[] = {
@@ -402,7 +402,7 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 		if (ret)
 			return ret;
 
-		if (ctx->id == ID_IT66121 || ctx->id == ID_IT66122) {
+		if (ctx->info->id == ID_IT66121) {
 			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
 						IT66121_AFE_IP_EC1, 0);
 			if (ret)
@@ -428,7 +428,7 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 		if (ret)
 			return ret;
 
-		if (ctx->id == ID_IT66121 || ctx->id == ID_IT66122) {
+		if (ctx->info->id == ID_IT66121) {
 			ret = regmap_write_bits(ctx->regmap, IT66121_AFE_IP_REG,
 						IT66121_AFE_IP_EC1,
 						IT66121_AFE_IP_EC1);
@@ -449,7 +449,7 @@ static int it66121_configure_afe(struct it66121_ctx *ctx,
 	if (ret)
 		return ret;
 
-	if (ctx->id == ID_IT6610) {
+	if (ctx->info->id == ID_IT6610) {
 		ret = regmap_write_bits(ctx->regmap, IT66121_AFE_XP_REG,
 					IT6610_AFE_XP_BYPASS,
 					IT6610_AFE_XP_BYPASS);
@@ -586,7 +586,6 @@ static bool it66121_is_hpd_detect(struct it66121_ctx *ctx)
 }
 
 static int it66121_bridge_attach(struct drm_bridge *bridge,
-				 struct drm_encoder *encoder,
 				 enum drm_bridge_attach_flags flags)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
@@ -595,11 +594,11 @@ static int it66121_bridge_attach(struct drm_bridge *bridge,
 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR))
 		return -EINVAL;
 
-	ret = drm_bridge_attach(encoder, ctx->bridge.next_bridge, bridge, flags);
+	ret = drm_bridge_attach(bridge->encoder, ctx->next_bridge, bridge, flags);
 	if (ret)
 		return ret;
 
-	if (ctx->id == ID_IT66121 || ctx->id == ID_IT66122) {
+	if (ctx->info->id == ID_IT66121) {
 		ret = regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
 					IT66121_CLK_BANK_PWROFF_RCLK, 0);
 		if (ret)
@@ -722,9 +721,10 @@ static u32 *it66121_bridge_atomic_get_input_bus_fmts(struct drm_bridge *bridge,
 }
 
 static void it66121_bridge_enable(struct drm_bridge *bridge,
-				  struct drm_atomic_state *state)
+				  struct drm_bridge_state *bridge_state)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
+	struct drm_atomic_state *state = bridge_state->base.state;
 
 	ctx->connector = drm_atomic_get_new_connector_for_encoder(state, bridge->encoder);
 
@@ -732,7 +732,7 @@ static void it66121_bridge_enable(struct drm_bridge *bridge,
 }
 
 static void it66121_bridge_disable(struct drm_bridge *bridge,
-				   struct drm_atomic_state *state)
+				   struct drm_bridge_state *bridge_state)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
 
@@ -748,7 +748,7 @@ static int it66121_bridge_check(struct drm_bridge *bridge,
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
 
-	if (ctx->id == ID_IT6610) {
+	if (ctx->info->id == ID_IT6610) {
 		/* The IT6610 only supports these settings */
 		bridge_state->input_bus_cfg.flags |= DRM_BUS_FLAG_DE_HIGH |
 			DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE;
@@ -769,6 +769,8 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
 	int ret;
 
 	mutex_lock(&ctx->lock);
+
+	hdmi_avi_infoframe_init(&ctx->hdmi_avi_infoframe);
 
 	ret = drm_hdmi_avi_infoframe_from_display_mode(&ctx->hdmi_avi_infoframe, ctx->connector,
 						       adjusted_mode);
@@ -802,7 +804,7 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
 	if (regmap_write(ctx->regmap, IT66121_HDMI_MODE_REG, IT66121_HDMI_MODE_HDMI))
 		goto unlock;
 
-	if ((ctx->id == ID_IT66121 || ctx->id == ID_IT66122) &&
+	if (ctx->info->id == ID_IT66121 &&
 	    regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
 			      IT66121_CLK_BANK_PWROFF_TXCLK,
 			      IT66121_CLK_BANK_PWROFF_TXCLK)) {
@@ -815,7 +817,7 @@ void it66121_bridge_mode_set(struct drm_bridge *bridge,
 	if (it66121_configure_afe(ctx, adjusted_mode))
 		goto unlock;
 
-	if ((ctx->id == ID_IT66121 || ctx->id == ID_IT66122) &&
+	if (ctx->info->id == ID_IT66121 &&
 	    regmap_write_bits(ctx->regmap, IT66121_CLK_BANK_REG,
 			      IT66121_CLK_BANK_PWROFF_TXCLK, 0)) {
 		goto unlock;
@@ -843,8 +845,7 @@ static enum drm_mode_status it66121_bridge_mode_valid(struct drm_bridge *bridge,
 	return MODE_OK;
 }
 
-static enum drm_connector_status
-it66121_bridge_detect(struct drm_bridge *bridge, struct drm_connector *connector)
+static enum drm_connector_status it66121_bridge_detect(struct drm_bridge *bridge)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
 
@@ -873,33 +874,33 @@ static void it66121_bridge_hpd_disable(struct drm_bridge *bridge)
 		dev_err(ctx->dev, "failed to disable HPD IRQ\n");
 }
 
-static const struct drm_edid *it66121_bridge_edid_read(struct drm_bridge *bridge,
-						       struct drm_connector *connector)
+static struct edid *it66121_bridge_get_edid(struct drm_bridge *bridge,
+					    struct drm_connector *connector)
 {
 	struct it66121_ctx *ctx = container_of(bridge, struct it66121_ctx, bridge);
-	const struct drm_edid *drm_edid;
+	struct edid *edid;
 	int ret;
 
 	mutex_lock(&ctx->lock);
 	ret = it66121_preamble_ddc(ctx);
 	if (ret) {
-		drm_edid = NULL;
+		edid = ERR_PTR(ret);
 		goto out_unlock;
 	}
 
 	ret = regmap_write(ctx->regmap, IT66121_DDC_HEADER_REG,
 			   IT66121_DDC_HEADER_EDID);
 	if (ret) {
-		drm_edid = NULL;
+		edid = ERR_PTR(ret);
 		goto out_unlock;
 	}
 
-	drm_edid = drm_edid_read_custom(connector, it66121_get_edid_block, ctx);
+	edid = drm_do_get_edid(connector, it66121_get_edid_block, ctx);
 
 out_unlock:
 	mutex_unlock(&ctx->lock);
 
-	return drm_edid;
+	return edid;
 }
 
 static const struct drm_bridge_funcs it66121_bridge_funcs = {
@@ -915,7 +916,7 @@ static const struct drm_bridge_funcs it66121_bridge_funcs = {
 	.mode_set = it66121_bridge_mode_set,
 	.mode_valid = it66121_bridge_mode_valid,
 	.detect = it66121_bridge_detect,
-	.edid_read = it66121_bridge_edid_read,
+	.get_edid = it66121_bridge_get_edid,
 	.hpd_enable = it66121_bridge_hpd_enable,
 	.hpd_disable = it66121_bridge_hpd_disable,
 };
@@ -1384,6 +1385,8 @@ static int it66121_audio_startup(struct device *dev, void *data)
 	int ret;
 	struct it66121_ctx *ctx = dev_get_drvdata(dev);
 
+	dev_dbg(dev, "%s\n", __func__);
+
 	mutex_lock(&ctx->lock);
 	ret = it661221_audio_output_enable(ctx, true);
 	if (ret)
@@ -1398,6 +1401,8 @@ static void it66121_audio_shutdown(struct device *dev, void *data)
 {
 	int ret;
 	struct it66121_ctx *ctx = dev_get_drvdata(dev);
+
+	dev_dbg(dev, "%s\n", __func__);
 
 	mutex_lock(&ctx->lock);
 	ret = it661221_audio_output_enable(ctx, false);
@@ -1442,16 +1447,10 @@ static int it66121_audio_get_eld(struct device *dev, void *data,
 	struct it66121_ctx *ctx = dev_get_drvdata(dev);
 
 	mutex_lock(&ctx->lock);
-	if (!ctx->connector) {
-		/* Pass en empty ELD if connector not available */
-		dev_dbg(dev, "No connector present, passing empty EDID data");
-		memset(buf, 0, len);
-	} else {
-		mutex_lock(&ctx->connector->eld_mutex);
-		memcpy(buf, ctx->connector->eld,
-		       min(sizeof(ctx->connector->eld), len));
-		mutex_unlock(&ctx->connector->eld_mutex);
-	}
+
+	memcpy(buf, ctx->connector->eld,
+	       min(sizeof(ctx->connector->eld), len));
+
 	mutex_unlock(&ctx->lock);
 
 	return 0;
@@ -1463,6 +1462,7 @@ static const struct hdmi_codec_ops it66121_audio_codec_ops = {
 	.audio_shutdown = it66121_audio_shutdown,
 	.mute_stream = it66121_audio_mute,
 	.get_eld = it66121_audio_get_eld,
+	.no_capture_mute = 1,
 };
 
 static int it66121_audio_codec_init(struct it66121_ctx *ctx, struct device *dev)
@@ -1472,10 +1472,11 @@ static int it66121_audio_codec_init(struct it66121_ctx *ctx, struct device *dev)
 		.i2s = 1, /* Only i2s support for now */
 		.spdif = 0,
 		.max_i2s_channels = 8,
-		.no_capture_mute = 1,
 	};
 
-	if (!of_property_present(dev->of_node, "#sound-dai-cells")) {
+	dev_dbg(dev, "%s\n", __func__);
+
+	if (!of_property_read_bool(dev->of_node, "#sound-dai-cells")) {
 		dev_info(dev, "No \"#sound-dai-cells\", no audio\n");
 		return 0;
 	}
@@ -1498,30 +1499,23 @@ static const char * const it66121_supplies[] = {
 	"vcn33", "vcn18", "vrf12"
 };
 
-static const struct it66121_chip_info it66xx_chip_info[] = {
-	{.id = ID_IT6610, .vid = 0xca00, .pid = 0x0611 },
-	{.id = ID_IT66121, .vid = 0x4954, .pid = 0x0612 },
-	{.id = ID_IT66122, .vid = 0x4954, .pid = 0x0622 },
-};
-
 static int it66121_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	u32 revision_id, vendor_ids[2] = { 0 }, device_ids[2] = { 0 };
 	struct device_node *ep;
-	int ret, i;
+	int ret;
 	struct it66121_ctx *ctx;
 	struct device *dev = &client->dev;
-	const struct it66121_chip_info *chip_info;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		dev_err(dev, "I2C check functionality failed.\n");
 		return -ENXIO;
 	}
 
-	ctx = devm_drm_bridge_alloc(dev, struct it66121_ctx, bridge,
-				    &it66121_bridge_funcs);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
 
 	ep = of_graph_get_endpoint_by_regs(dev->of_node, 0, 0);
 	if (!ep)
@@ -1529,6 +1523,7 @@ static int it66121_probe(struct i2c_client *client)
 
 	ctx->dev = dev;
 	ctx->client = client;
+	ctx->info = (const struct it66121_chip_info *) id->driver_data;
 
 	of_property_read_u32(ep, "bus-width", &ctx->bus_width);
 	of_node_put(ep);
@@ -1542,9 +1537,15 @@ static int it66121_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	ctx->bridge.next_bridge = of_drm_find_and_get_bridge(ep);
+	if (!of_device_is_available(ep)) {
+		of_node_put(ep);
+		dev_err(ctx->dev, "The remote device is disabled\n");
+		return -ENODEV;
+	}
+
+	ctx->next_bridge = of_drm_find_bridge(ep);
 	of_node_put(ep);
-	if (!ctx->bridge.next_bridge) {
+	if (!ctx->next_bridge) {
 		dev_dbg(ctx->dev, "Next bridge not found, deferring probe\n");
 		return -EPROBE_DEFER;
 	}
@@ -1574,32 +1575,21 @@ static int it66121_probe(struct i2c_client *client)
 	revision_id = FIELD_GET(IT66121_REVISION_MASK, device_ids[1]);
 	device_ids[1] &= IT66121_DEVICE_ID1_MASK;
 
-	for (i = 0; i < ARRAY_SIZE(it66xx_chip_info); i++) {
-		chip_info = &it66xx_chip_info[i];
-		if ((vendor_ids[1] << 8 | vendor_ids[0]) == chip_info->vid &&
-		    (device_ids[1] << 8 | device_ids[0]) == chip_info->pid) {
-			ctx->id = chip_info->id;
-			break;
-		}
+	if ((vendor_ids[1] << 8 | vendor_ids[0]) != ctx->info->vid ||
+	    (device_ids[1] << 8 | device_ids[0]) != ctx->info->pid) {
+		return -ENODEV;
 	}
 
-	if (i == ARRAY_SIZE(it66xx_chip_info))
-		return -ENODEV;
-
+	ctx->bridge.funcs = &it66121_bridge_funcs;
 	ctx->bridge.of_node = dev->of_node;
 	ctx->bridge.type = DRM_MODE_CONNECTOR_HDMIA;
-	ctx->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID;
-	if (client->irq > 0) {
-		ctx->bridge.ops |= DRM_BRIDGE_OP_HPD;
+	ctx->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID | DRM_BRIDGE_OP_HPD;
 
-		ret = devm_request_threaded_irq(dev, client->irq, NULL,
-						it66121_irq_threaded_handler,
-						IRQF_ONESHOT, dev_name(dev),
-						ctx);
-		if (ret < 0) {
-			dev_err(dev, "Failed to request irq %d:%d\n", client->irq, ret);
-			return ret;
-		}
+	ret = devm_request_threaded_irq(dev, client->irq, NULL,	it66121_irq_threaded_handler,
+					IRQF_ONESHOT, dev_name(dev), ctx);
+	if (ret < 0) {
+		dev_err(dev, "Failed to request irq %d:%d\n", client->irq, ret);
+		return ret;
 	}
 
 	it66121_audio_codec_init(ctx, dev);
@@ -1620,17 +1610,27 @@ static void it66121_remove(struct i2c_client *client)
 }
 
 static const struct of_device_id it66121_dt_match[] = {
-	{ .compatible = "ite,it6610" },
 	{ .compatible = "ite,it66121" },
-	{ .compatible = "ite,it66122" },
+	{ .compatible = "ite,it6610" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, it66121_dt_match);
 
+static const struct it66121_chip_info it66121_chip_info = {
+	.id = ID_IT66121,
+	.vid = 0x4954,
+	.pid = 0x0612,
+};
+
+static const struct it66121_chip_info it6610_chip_info = {
+	.id = ID_IT6610,
+	.vid = 0xca00,
+	.pid = 0x0611,
+};
+
 static const struct i2c_device_id it66121_id[] = {
-	{ .name = "it6610" },
-	{ .name = "it66121" },
-	{ .name = "it66122" },
+	{ "it66121", (kernel_ulong_t) &it66121_chip_info },
+	{ "it6610", (kernel_ulong_t) &it6610_chip_info },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, it66121_id);
@@ -1640,7 +1640,7 @@ static struct i2c_driver it66121_driver = {
 		.name	= "it66121",
 		.of_match_table = it66121_dt_match,
 	},
-	.probe = it66121_probe,
+	.probe_new = it66121_probe,
 	.remove = it66121_remove,
 	.id_table = it66121_id,
 };

@@ -37,6 +37,7 @@ struct et8ek8_mode {
 	u16 window_height;
 
 	u32 pixel_clock;		/* in Hz */
+	u32 ext_clock;			/* in Hz */
 	struct v4l2_fract timeperframe;
 	u32 max_exp;			/* Maximum exposure value */
 	u32 bus_format;			/* MEDIA_BUS_FMT_ */

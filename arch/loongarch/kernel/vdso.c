@@ -14,16 +14,25 @@
 #include <linux/random.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/vdso_datastore.h>
+#include <linux/timekeeper_internal.h>
 
 #include <asm/page.h>
 #include <asm/vdso.h>
 #include <vdso/helpers.h>
 #include <vdso/vsyscall.h>
-#include <vdso/datapage.h>
 #include <generated/vdso-offsets.h>
 
 extern char vdso_start[], vdso_end[];
+
+/* Kernel-provided data used by the VDSO. */
+static union {
+	u8 page[VDSO_DATA_SIZE];
+	struct loongarch_vdso_data vdata;
+} loongarch_vdso_data __page_aligned_data;
+
+static struct page *vdso_pages[] = { NULL };
+struct vdso_data *vdso_data = loongarch_vdso_data.vdata.data;
+struct vdso_pcpu_data *vdso_pdata = loongarch_vdso_data.vdata.pdata;
 
 static int vdso_mremap(const struct vm_special_mapping *sm, struct vm_area_struct *new_vma)
 {
@@ -34,9 +43,14 @@ static int vdso_mremap(const struct vm_special_mapping *sm, struct vm_area_struc
 
 struct loongarch_vdso_info vdso_info = {
 	.vdso = vdso_start,
+	.size = PAGE_SIZE,
 	.code_mapping = {
 		.name = "[vdso]",
+		.pages = vdso_pages,
 		.mremap = vdso_mremap,
+	},
+	.data_mapping = {
+		.name = "[vvar]",
 	},
 	.offset_sigreturn = vdso_offset_sigreturn,
 };
@@ -46,16 +60,10 @@ static int __init init_vdso(void)
 	unsigned long i, cpu, pfn;
 
 	BUG_ON(!PAGE_ALIGNED(vdso_info.vdso));
+	BUG_ON(!PAGE_ALIGNED(vdso_info.size));
 
 	for_each_possible_cpu(cpu)
-		vdso_k_arch_data->pdata[cpu].node = cpu_to_node(cpu);
-
-	vdso_info.size = PAGE_ALIGN(vdso_end - vdso_start);
-	vdso_info.code_mapping.pages =
-		kcalloc(vdso_info.size / PAGE_SIZE, sizeof(struct page *), GFP_KERNEL);
-
-	if (!vdso_info.code_mapping.pages)
-		return -ENOMEM;
+		vdso_pdata[cpu].node = cpu_to_node(cpu);
 
 	pfn = __phys_to_pfn(__pa_symbol(vdso_info.vdso));
 	for (i = 0; i < vdso_info.size / PAGE_SIZE; i++)
@@ -80,7 +88,7 @@ static unsigned long vdso_base(void)
 int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 {
 	int ret;
-	unsigned long size, data_addr, vdso_addr;
+	unsigned long vvar_size, size, data_addr, vdso_addr;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
 	struct loongarch_vdso_info *info = current->thread.vdso;
@@ -92,25 +100,34 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 	 * Determine total area size. This includes the VDSO data itself
 	 * and the data pages.
 	 */
-	size = VVAR_SIZE + info->size;
+	vvar_size = VDSO_DATA_SIZE;
+	size = vvar_size + info->size;
 
 	data_addr = get_unmapped_area(NULL, vdso_base(), size, 0, 0);
 	if (IS_ERR_VALUE(data_addr)) {
 		ret = data_addr;
 		goto out;
 	}
+	vdso_addr = data_addr + VDSO_DATA_SIZE;
 
-	vma = vdso_install_vvar_mapping(mm, data_addr);
+	vma = _install_special_mapping(mm, data_addr, vvar_size,
+				       VM_READ | VM_MAYREAD,
+				       &info->data_mapping);
 	if (IS_ERR(vma)) {
 		ret = PTR_ERR(vma);
 		goto out;
 	}
 
-	vdso_addr = data_addr + VVAR_SIZE;
+	/* Map VDSO data page. */
+	ret = remap_pfn_range(vma, data_addr,
+			      virt_to_phys(&loongarch_vdso_data) >> PAGE_SHIFT,
+			      vvar_size, PAGE_READONLY);
+	if (ret)
+		goto out;
+
+	/* Map VDSO code page. */
 	vma = _install_special_mapping(mm, vdso_addr, info->size,
-				       VM_READ | VM_EXEC |
-				       VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC |
-				       VM_SEALED_SYSMAP,
+				       VM_READ | VM_EXEC | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC,
 				       &info->code_mapping);
 	if (IS_ERR(vma)) {
 		ret = PTR_ERR(vma);

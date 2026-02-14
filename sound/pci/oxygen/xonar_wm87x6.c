@@ -237,7 +237,7 @@ static void xonar_ds_handle_hp_jack(struct oxygen *chip)
 	bool hp_plugged;
 	unsigned int reg;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 
 	hp_plugged = !(oxygen_read16(chip, OXYGEN_GPIO_DATA) &
 		       GPIO_DS_HP_DETECT);
@@ -252,6 +252,8 @@ static void xonar_ds_handle_hp_jack(struct oxygen *chip)
 	wm8766_write_cached(chip, WM8766_DAC_CTRL, reg);
 
 	snd_jack_report(data->hp_jack, hp_plugged ? SND_JACK_HEADPHONE : 0);
+
+	mutex_unlock(&chip->mutex);
 }
 
 static void xonar_ds_init(struct oxygen *chip)
@@ -519,13 +521,14 @@ static int wm8776_bit_switch_put(struct snd_kcontrol *ctl,
 	bool invert = (ctl->private_value >> 24) & 1;
 	int changed;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	reg_value = data->wm8776_regs[reg_index] & ~bit;
 	if (value->value.integer.value[0] ^ invert)
 		reg_value |= bit;
 	changed = reg_value != data->wm8776_regs[reg_index];
 	if (changed)
 		wm8776_write(chip, reg_index, reg_value);
+	mutex_unlock(&chip->mutex);
 	return changed;
 }
 
@@ -645,12 +648,13 @@ static int wm8776_field_set(struct snd_kcontrol *ctl, unsigned int value)
 	max = (ctl->private_value >> 12) & 0xf;
 	if (value < min || value > max)
 		return -EINVAL;
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	changed = value != (ctl->private_value & 0xf);
 	if (changed) {
 		ctl->private_value = (ctl->private_value & ~0xf) | value;
 		wm8776_field_set_from_ctl(ctl);
 	}
+	mutex_unlock(&chip->mutex);
 	return changed;
 }
 
@@ -696,11 +700,12 @@ static int wm8776_hp_vol_get(struct snd_kcontrol *ctl,
 	struct oxygen *chip = ctl->private_data;
 	struct xonar_wm87x6 *data = chip->model_data;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	value->value.integer.value[0] =
 		data->wm8776_regs[WM8776_HPLVOL] & WM8776_HPATT_MASK;
 	value->value.integer.value[1] =
 		data->wm8776_regs[WM8776_HPRVOL] & WM8776_HPATT_MASK;
+	mutex_unlock(&chip->mutex);
 	return 0;
 }
 
@@ -711,7 +716,7 @@ static int wm8776_hp_vol_put(struct snd_kcontrol *ctl,
 	struct xonar_wm87x6 *data = chip->model_data;
 	u8 to_update;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	to_update = (value->value.integer.value[0] !=
 		     (data->wm8776_regs[WM8776_HPLVOL] & WM8776_HPATT_MASK))
 		<< 0;
@@ -739,6 +744,7 @@ static int wm8776_hp_vol_put(struct snd_kcontrol *ctl,
 				     value->value.integer.value[1] |
 				     WM8776_HPZCEN | WM8776_UPDATE);
 	}
+	mutex_unlock(&chip->mutex);
 	return to_update != 0;
 }
 
@@ -764,7 +770,7 @@ static int wm8776_input_mux_put(struct snd_kcontrol *ctl,
 	u16 reg;
 	int changed;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	reg = data->wm8776_regs[WM8776_ADCMUX];
 	if (value->value.integer.value[0]) {
 		reg |= mux_bit;
@@ -788,6 +794,7 @@ static int wm8776_input_mux_put(struct snd_kcontrol *ctl,
 				      GPIO_DS_INPUT_ROUTE);
 		wm8776_write(chip, WM8776_ADCMUX, reg);
 	}
+	mutex_unlock(&chip->mutex);
 	return changed;
 }
 
@@ -807,11 +814,12 @@ static int wm8776_input_vol_get(struct snd_kcontrol *ctl,
 	struct oxygen *chip = ctl->private_data;
 	struct xonar_wm87x6 *data = chip->model_data;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	value->value.integer.value[0] =
 		data->wm8776_regs[WM8776_ADCLVOL] & WM8776_AGMASK;
 	value->value.integer.value[1] =
 		data->wm8776_regs[WM8776_ADCRVOL] & WM8776_AGMASK;
+	mutex_unlock(&chip->mutex);
 	return 0;
 }
 
@@ -822,7 +830,7 @@ static int wm8776_input_vol_put(struct snd_kcontrol *ctl,
 	struct xonar_wm87x6 *data = chip->model_data;
 	int changed = 0;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	changed = (value->value.integer.value[0] !=
 		   (data->wm8776_regs[WM8776_ADCLVOL] & WM8776_AGMASK)) ||
 		  (value->value.integer.value[1] !=
@@ -831,6 +839,7 @@ static int wm8776_input_vol_put(struct snd_kcontrol *ctl,
 			    value->value.integer.value[0] | WM8776_ZCA);
 	wm8776_write_cached(chip, WM8776_ADCRVOL,
 			    value->value.integer.value[1] | WM8776_ZCA);
+	mutex_unlock(&chip->mutex);
 	return changed;
 }
 
@@ -886,7 +895,7 @@ static int wm8776_level_control_put(struct snd_kcontrol *ctl,
 
 	if (value->value.enumerated.item[0] >= 3)
 		return -EINVAL;
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	changed = value->value.enumerated.item[0] != ctl->private_value;
 	if (changed) {
 		ctl->private_value = value->value.enumerated.item[0];
@@ -917,6 +926,7 @@ static int wm8776_level_control_put(struct snd_kcontrol *ctl,
 		for (i = 0; i < ARRAY_SIZE(data->lc_controls); ++i)
 			activate_control(chip, data->lc_controls[i], mode);
 	}
+	mutex_unlock(&chip->mutex);
 	return changed;
 }
 
@@ -946,13 +956,14 @@ static int hpf_put(struct snd_kcontrol *ctl, struct snd_ctl_elem_value *value)
 	unsigned int reg;
 	int changed;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	reg = data->wm8776_regs[WM8776_ADCIFCTRL] & ~WM8776_ADCHPD;
 	if (!value->value.enumerated.item[0])
 		reg |= WM8776_ADCHPD;
 	changed = reg != data->wm8776_regs[WM8776_ADCIFCTRL];
 	if (changed)
 		wm8776_write(chip, WM8776_ADCIFCTRL, reg);
+	mutex_unlock(&chip->mutex);
 	return changed;
 }
 

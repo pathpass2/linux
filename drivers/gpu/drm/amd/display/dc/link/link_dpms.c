@@ -37,7 +37,7 @@
 
 #include "link_dpms.h"
 #include "link_hwss.h"
-#include "link_validation.h"
+#include "accessories/link_fpga.h"
 #include "accessories/link_dp_trace.h"
 #include "protocols/link_dpcd.h"
 #include "protocols/link_ddc.h"
@@ -46,8 +46,6 @@
 #include "protocols/link_dp_capability.h"
 #include "protocols/link_dp_training.h"
 #include "protocols/link_edp_panel_control.h"
-#include "protocols/link_dp_panel_replay.h"
-#include "protocols/link_dp_dpia_bw.h"
 
 #include "dm_helpers.h"
 #include "link_enc_cfg.h"
@@ -56,12 +54,7 @@
 #include "dccg.h"
 #include "clk_mgr.h"
 #include "atomfirmware.h"
-#include "vpg.h"
-
-#define DC_LOGGER \
-	dc_logger
-#define DC_LOGGER_INIT(logger) \
-	struct dal_logger *dc_logger = logger
+#define DC_LOGGER_INIT(logger)
 
 #define LINK_INFO(...) \
 	DC_LOG_HW_HOTPLUG(  \
@@ -70,6 +63,7 @@
 #define RETIMER_REDRIVER_INFO(...) \
 	DC_LOG_RETIMER_REDRIVER(  \
 		__VA_ARGS__)
+#include "dc/dcn30/dcn30_vpg.h"
 
 #define MAX_MTP_SLOT_COUNT 64
 #define LINK_TRAINING_ATTEMPTS 4
@@ -129,7 +123,7 @@ void link_blank_dp_stream(struct dc_link *link, bool hw_init)
 		if (link->ep_type == DISPLAY_ENDPOINT_PHY &&
 			link->link_enc->funcs->get_dig_frontend &&
 			link->link_enc->funcs->is_dig_enabled(link->link_enc)) {
-			int fe = link->link_enc->funcs->get_dig_frontend(link->link_enc);
+			unsigned int fe = link->link_enc->funcs->get_dig_frontend(link->link_enc);
 
 			if (fe != ENGINE_ID_UNKNOWN)
 				for (j = 0; j < dc->res_pool->stream_enc_count; j++) {
@@ -141,16 +135,14 @@ void link_blank_dp_stream(struct dc_link *link, bool hw_init)
 				}
 		}
 
-		if (((!dc->is_switch_in_progress_dest) && ((!link->wa_flags.dp_keep_receiver_powered) || hw_init)) &&
-			(link->type != dc_connection_none))
-			dpcd_write_rx_power_ctrl(link, false);
+		if ((!link->wa_flags.dp_keep_receiver_powered) || hw_init)
+			dc_link_dp_receiver_power_ctrl(link, false);
 	}
 }
 
 void link_set_all_streams_dpms_off_for_link(struct dc_link *link)
 {
 	struct pipe_ctx *pipes[MAX_PIPES];
-	struct dc_stream_state *streams[MAX_PIPES];
 	struct dc_state *state = link->dc->current_state;
 	uint8_t count;
 	int i;
@@ -163,18 +155,10 @@ void link_set_all_streams_dpms_off_for_link(struct dc_link *link)
 
 	link_get_master_pipes_with_dpms_on(link, state, &count, pipes);
 
-	/* The subsequent call to dc_commit_updates_for_stream for a full update
-	 * will release the current state and swap to a new state. Releasing the
-	 * current state results in the stream pointers in the pipe_ctx structs
-	 * to be zero'd. Hence, cache all streams prior to dc_commit_updates_for_stream.
-	 */
-	for (i = 0; i < count; i++)
-		streams[i] = pipes[i]->stream;
-
 	for (i = 0; i < count; i++) {
-		stream_update.stream = streams[i];
+		stream_update.stream = pipes[i]->stream;
 		dc_commit_updates_for_stream(link->ctx->dc, NULL, 0,
-				streams[i], &stream_update,
+				pipes[i]->stream, &stream_update,
 				state);
 	}
 
@@ -196,8 +180,11 @@ void link_resume(struct dc_link *link)
 static bool is_master_pipe_for_link(const struct dc_link *link,
 		const struct pipe_ctx *pipe)
 {
-	return resource_is_pipe_type(pipe, OTG_MASTER) &&
-			pipe->stream->link == link;
+	return (pipe->stream &&
+			pipe->stream->link &&
+			pipe->stream->link == link &&
+			pipe->top_pipe == NULL &&
+			pipe->prev_odm_pipe == NULL);
 }
 
 /*
@@ -659,19 +646,20 @@ static void write_i2c_redriver_setting(
 	if (!i2c_success)
 		DC_LOG_DEBUG("Set redriver failed");
 }
+#if defined(CONFIG_DRM_AMD_DC_HDCP)
 
 static void update_psp_stream_config(struct pipe_ctx *pipe_ctx, bool dpms_off)
 {
 	struct cp_psp *cp_psp = &pipe_ctx->stream->ctx->cp_psp;
-	struct link_encoder *link_enc = pipe_ctx->link_res.dio_link_enc;
+	struct link_encoder *link_enc = NULL;
 	struct cp_psp_stream_config config = {0};
 	enum dp_panel_mode panel_mode =
 			dp_get_panel_mode(pipe_ctx->stream->link);
 
 	if (cp_psp == NULL || cp_psp->funcs.update_stream_config == NULL)
 		return;
-	if (!pipe_ctx->stream->ctx->dc->config.unify_link_enc_assignment)
-		link_enc = link_enc_cfg_get_link_enc(pipe_ctx->stream->link);
+
+	link_enc = link_enc_cfg_get_link_enc(pipe_ctx->stream->link);
 	ASSERT(link_enc);
 	if (link_enc == NULL)
 		return;
@@ -684,7 +672,7 @@ static void update_psp_stream_config(struct pipe_ctx *pipe_ctx, bool dpms_off)
 
 	/* stream encoder index */
 	config.stream_enc_idx = pipe_ctx->stream_res.stream_enc->id - ENGINE_ID_DIGA;
-	if (dp_is_128b_132b_signal(pipe_ctx))
+	if (link_is_dp_128b_132b_signal(pipe_ctx))
 		config.stream_enc_idx =
 				pipe_ctx->stream_res.hpo_dp_stream_enc->id - ENGINE_ID_HPO_DP_0;
 
@@ -693,7 +681,7 @@ static void update_psp_stream_config(struct pipe_ctx *pipe_ctx, bool dpms_off)
 
 	/* link encoder index */
 	config.link_enc_idx = link_enc->transmitter - TRANSMITTER_UNIPHY_A;
-	if (dp_is_128b_132b_signal(pipe_ctx))
+	if (link_is_dp_128b_132b_signal(pipe_ctx))
 		config.link_enc_idx = pipe_ctx->link_res.hpo_dp_link_enc->inst;
 
 	/* dio output index is dpia index for DPIA endpoint & dcio index by default */
@@ -714,7 +702,7 @@ static void update_psp_stream_config(struct pipe_ctx *pipe_ctx, bool dpms_off)
 	config.assr_enabled = (panel_mode == DP_PANEL_MODE_EDP) ? 1 : 0;
 	config.mst_enabled = (pipe_ctx->stream->signal ==
 			SIGNAL_TYPE_DISPLAY_PORT_MST) ? 1 : 0;
-	config.dp2_enabled = dp_is_128b_132b_signal(pipe_ctx) ? 1 : 0;
+	config.dp2_enabled = link_is_dp_128b_132b_signal(pipe_ctx) ? 1 : 0;
 	config.usb4_enabled = (pipe_ctx->stream->link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA) ?
 			1 : 0;
 	config.dpms_off = dpms_off;
@@ -724,6 +712,7 @@ static void update_psp_stream_config(struct pipe_ctx *pipe_ctx, bool dpms_off)
 
 	cp_psp->funcs.update_stream_config(cp_psp->handle, &config);
 }
+#endif
 
 static void set_avmute(struct pipe_ctx *pipe_ctx, bool enable)
 {
@@ -737,7 +726,7 @@ static void set_avmute(struct pipe_ctx *pipe_ctx, bool enable)
 
 static void enable_mst_on_sink(struct dc_link *link, bool enable)
 {
-	unsigned char mstmCntl = 0;
+	unsigned char mstmCntl;
 
 	core_link_read_dpcd(link, DP_MSTM_CTRL, &mstmCntl, 1);
 	if (enable)
@@ -776,52 +765,23 @@ static bool dp_set_dsc_on_rx(struct pipe_ctx *pipe_ctx, bool enable)
 	struct dc_stream_state *stream = pipe_ctx->stream;
 	bool result = false;
 
-	if (dc_is_virtual_signal(stream->signal))
+	if (dc_is_virtual_signal(stream->signal) || IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment))
 		result = true;
 	else
 		result = dm_helpers_dp_write_dsc_enable(dc->ctx, stream, enable);
 	return result;
 }
 
-static bool dp_set_hblank_reduction_on_rx(struct pipe_ctx *pipe_ctx)
-{
-	struct dc *dc = pipe_ctx->stream->ctx->dc;
-	struct dc_stream_state *stream = pipe_ctx->stream;
-	bool result = false;
-
-	if (dc_is_virtual_signal(stream->signal))
-		result = true;
-	else
-		result = dm_helpers_dp_write_hblank_reduction(dc->ctx, stream);
-	return result;
-}
-
-
 /* The stream with these settings can be sent (unblanked) only after DSC was enabled on RX first,
  * i.e. after dp_enable_dsc_on_rx() had been called
  */
 void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 {
-	/* TODO: Move this to HWSS as this is hardware programming sequence not a
-	 * link layer sequence
-	 */
 	struct display_stream_compressor *dsc = pipe_ctx->stream_res.dsc;
 	struct dc *dc = pipe_ctx->stream->ctx->dc;
 	struct dc_stream_state *stream = pipe_ctx->stream;
 	struct pipe_ctx *odm_pipe;
 	int opp_cnt = 1;
-	struct dccg *dccg = dc->res_pool->dccg;
-	/* It has been found that when DSCCLK is lower than 16Mhz, we will get DCN
-	 * register access hung. When DSCCLk is based on refclk, DSCCLk is always a
-	 * fixed value higher than 16Mhz so the issue doesn't occur. When DSCCLK is
-	 * generated by DTO, DSCCLK would be based on 1/3 dispclk. For small timings
-	 * with DSC such as 480p60Hz, the dispclk could be low enough to trigger
-	 * this problem. We are implementing a workaround here to keep using dscclk
-	 * based on fixed value refclk when timing is smaller than 3x16Mhz (i.e
-	 * 48Mhz) pixel clock to avoid hitting this problem.
-	 */
-	bool should_use_dto_dscclk = (dccg->funcs->set_dto_dscclk != NULL) &&
-			stream->timing.pix_clk_100hz > 480000;
 	DC_LOGGER_INIT(dsc->ctx->logger);
 
 	for (odm_pipe = pipe_ctx->next_odm_pipe; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe)
@@ -829,12 +789,11 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 
 	if (enable) {
 		struct dsc_config dsc_cfg;
-		struct dsc_optc_config dsc_optc_cfg = {0};
+		struct dsc_optc_config dsc_optc_cfg;
 		enum optc_dsc_mode optc_dsc_mode;
 
 		/* Enable DSC hw block */
-		dsc_cfg.pic_width = (stream->timing.h_addressable + pipe_ctx->dsc_padding_params.dsc_hactive_padding +
-				stream->timing.h_border_left + stream->timing.h_border_right) / opp_cnt;
+		dsc_cfg.pic_width = (stream->timing.h_addressable + stream->timing.h_border_left + stream->timing.h_border_right) / opp_cnt;
 		dsc_cfg.pic_height = stream->timing.v_addressable + stream->timing.v_border_top + stream->timing.v_border_bottom;
 		dsc_cfg.pixel_encoding = stream->timing.pixel_encoding;
 		dsc_cfg.color_depth = stream->timing.display_color_depth;
@@ -842,35 +801,29 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 		dsc_cfg.dc_dsc_cfg = stream->timing.dsc_cfg;
 		ASSERT(dsc_cfg.dc_dsc_cfg.num_slices_h % opp_cnt == 0);
 		dsc_cfg.dc_dsc_cfg.num_slices_h /= opp_cnt;
-		dsc_cfg.dsc_padding = 0;
 
-		if (should_use_dto_dscclk)
-			dccg->funcs->set_dto_dscclk(dccg, dsc->inst, dsc_cfg.dc_dsc_cfg.num_slices_h);
 		dsc->funcs->dsc_set_config(dsc, &dsc_cfg, &dsc_optc_cfg);
 		dsc->funcs->dsc_enable(dsc, pipe_ctx->stream_res.opp->inst);
 		for (odm_pipe = pipe_ctx->next_odm_pipe; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe) {
 			struct display_stream_compressor *odm_dsc = odm_pipe->stream_res.dsc;
 
-			if (should_use_dto_dscclk)
-				dccg->funcs->set_dto_dscclk(dccg, odm_dsc->inst, dsc_cfg.dc_dsc_cfg.num_slices_h);
 			odm_dsc->funcs->dsc_set_config(odm_dsc, &dsc_cfg, &dsc_optc_cfg);
 			odm_dsc->funcs->dsc_enable(odm_dsc, odm_pipe->stream_res.opp->inst);
 		}
 		dsc_cfg.dc_dsc_cfg.num_slices_h *= opp_cnt;
 		dsc_cfg.pic_width *= opp_cnt;
-		dsc_cfg.dsc_padding = pipe_ctx->dsc_padding_params.dsc_hactive_padding;
 
 		optc_dsc_mode = dsc_optc_cfg.is_pixel_format_444 ? OPTC_DSC_ENABLED_444 : OPTC_DSC_ENABLED_NATIVE_SUBSAMPLED;
 
 		/* Enable DSC in encoder */
-		if (dc_is_dp_signal(stream->signal) && !dp_is_128b_132b_signal(pipe_ctx)) {
+		if (dc_is_dp_signal(stream->signal) && !IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment)
+				&& !link_is_dp_128b_132b_signal(pipe_ctx)) {
 			DC_LOG_DSC("Setting stream encoder DSC config for engine %d:", (int)pipe_ctx->stream_res.stream_enc->id);
 			dsc_optc_config_log(dsc, &dsc_optc_cfg);
-			if (pipe_ctx->stream_res.stream_enc->funcs->dp_set_dsc_config)
-				pipe_ctx->stream_res.stream_enc->funcs->dp_set_dsc_config(pipe_ctx->stream_res.stream_enc,
-										optc_dsc_mode,
-										dsc_optc_cfg.bytes_per_pixel,
-										dsc_optc_cfg.slice_width);
+			pipe_ctx->stream_res.stream_enc->funcs->dp_set_dsc_config(pipe_ctx->stream_res.stream_enc,
+									optc_dsc_mode,
+									dsc_optc_cfg.bytes_per_pixel,
+									dsc_optc_cfg.slice_width);
 
 			/* PPS SDP is set elsewhere because it has to be done after DIG FE is connected to DIG BE */
 		}
@@ -890,50 +843,25 @@ void link_set_dsc_on_stream(struct pipe_ctx *pipe_ctx, bool enable)
 
 		/* disable DSC in stream encoder */
 		if (dc_is_dp_signal(stream->signal)) {
-			if (dp_is_128b_132b_signal(pipe_ctx))
+			if (link_is_dp_128b_132b_signal(pipe_ctx))
 				pipe_ctx->stream_res.hpo_dp_stream_enc->funcs->dp_set_dsc_pps_info_packet(
 										pipe_ctx->stream_res.hpo_dp_stream_enc,
 										false,
 										NULL,
 										true);
-			else {
-				if (pipe_ctx->stream_res.stream_enc->funcs->dp_set_dsc_config)
-					pipe_ctx->stream_res.stream_enc->funcs->dp_set_dsc_config(
-							pipe_ctx->stream_res.stream_enc,
-							OPTC_DSC_DISABLED, 0, 0);
+			else if (!IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment)) {
+				pipe_ctx->stream_res.stream_enc->funcs->dp_set_dsc_config(
+						pipe_ctx->stream_res.stream_enc,
+						OPTC_DSC_DISABLED, 0, 0);
 				pipe_ctx->stream_res.stream_enc->funcs->dp_set_dsc_pps_info_packet(
 							pipe_ctx->stream_res.stream_enc, false, NULL, true);
 			}
 		}
 
 		/* disable DSC block */
-		for (odm_pipe = pipe_ctx; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe) {
-			odm_pipe->stream_res.dsc->funcs->dsc_disconnect(odm_pipe->stream_res.dsc);
-			/*
-			 * TODO - dsc_disconnect is a double buffered register.
-			 * by the time we call dsc_disable, dsc may still remain
-			 * connected to OPP. In this case OPTC will no longer
-			 * get correct pixel data because DSCC is off. However
-			 * we also can't wait for the  disconnect pending
-			 * complete, because this function can be called
-			 * with/without OTG master lock acquired. When the lock
-			 * is acquired we will never get pending complete until
-			 * we release the lock later. So there is no easy way to
-			 * solve this problem especially when the lock is
-			 * acquired. DSC is a front end hw block it should be
-			 * programmed as part of front end sequence, where the
-			 * commit sequence without lock and update sequence
-			 * with lock are completely separated. However because
-			 * we are programming dsc as part of back end link
-			 * programming sequence, we don't know if front end OPTC
-			 * master lock is acquired. The back end should be
-			 * agnostic to front end lock. DSC programming shouldn't
-			 * belong to this sequence.
-			 */
+		pipe_ctx->stream_res.dsc->funcs->dsc_disable(pipe_ctx->stream_res.dsc);
+		for (odm_pipe = pipe_ctx->next_odm_pipe; odm_pipe; odm_pipe = odm_pipe->next_odm_pipe)
 			odm_pipe->stream_res.dsc->funcs->dsc_disable(odm_pipe->stream_res.dsc);
-			if (dccg->funcs->set_ref_dscclk)
-				dccg->funcs->set_ref_dscclk(dccg, odm_pipe->stream_res.dsc->inst);
-		}
 	}
 }
 
@@ -950,14 +878,10 @@ bool link_set_dsc_pps_packet(struct pipe_ctx *pipe_ctx, bool enable, bool immedi
 {
 	struct display_stream_compressor *dsc = pipe_ctx->stream_res.dsc;
 	struct dc_stream_state *stream = pipe_ctx->stream;
-
-	if (!pipe_ctx->stream->timing.flags.DSC)
-		return false;
-
-	if (!dsc)
-		return false;
-
 	DC_LOGGER_INIT(dsc->ctx->logger);
+
+	if (!pipe_ctx->stream->timing.flags.DSC || !dsc)
+		return false;
 
 	if (enable) {
 		struct dsc_config dsc_cfg;
@@ -973,13 +897,12 @@ bool link_set_dsc_pps_packet(struct pipe_ctx *pipe_ctx, bool enable, bool immedi
 		dsc_cfg.color_depth = stream->timing.display_color_depth;
 		dsc_cfg.is_odm = pipe_ctx->next_odm_pipe ? true : false;
 		dsc_cfg.dc_dsc_cfg = stream->timing.dsc_cfg;
-		dsc_cfg.dsc_padding = pipe_ctx->dsc_padding_params.dsc_hactive_padding;
 
 		dsc->funcs->dsc_get_packed_pps(dsc, &dsc_cfg, &dsc_packed_pps[0]);
 		memcpy(&stream->dsc_packed_pps[0], &dsc_packed_pps[0], sizeof(stream->dsc_packed_pps));
 		if (dc_is_dp_signal(stream->signal)) {
 			DC_LOG_DSC("Setting stream encoder DSC PPS SDP for engine %d\n", (int)pipe_ctx->stream_res.stream_enc->id);
-			if (dp_is_128b_132b_signal(pipe_ctx))
+			if (link_is_dp_128b_132b_signal(pipe_ctx))
 				pipe_ctx->stream_res.hpo_dp_stream_enc->funcs->dp_set_dsc_pps_info_packet(
 										pipe_ctx->stream_res.hpo_dp_stream_enc,
 										true,
@@ -996,7 +919,7 @@ bool link_set_dsc_pps_packet(struct pipe_ctx *pipe_ctx, bool enable, bool immedi
 		/* disable DSC PPS in stream encoder */
 		memset(&stream->dsc_packed_pps[0], 0, sizeof(stream->dsc_packed_pps));
 		if (dc_is_dp_signal(stream->signal)) {
-			if (dp_is_128b_132b_signal(pipe_ctx))
+			if (link_is_dp_128b_132b_signal(pipe_ctx))
 				pipe_ctx->stream_res.hpo_dp_stream_enc->funcs->dp_set_dsc_pps_info_packet(
 										pipe_ctx->stream_res.hpo_dp_stream_enc,
 										false,
@@ -1078,7 +1001,7 @@ static void enable_stream_features(struct pipe_ctx *pipe_ctx)
 	}
 }
 
-static void log_vcp_x_y(const struct dc_link *link, struct fixed31_32 avg_time_slots_per_mtp)
+static void dc_log_vcp_x_y(const struct dc_link *link, struct fixed31_32 avg_time_slots_per_mtp)
 {
 	const uint32_t VCP_Y_PRECISION = 1000;
 	uint64_t vcp_x, vcp_y;
@@ -1121,7 +1044,7 @@ static void log_vcp_x_y(const struct dc_link *link, struct fixed31_32 avg_time_s
 static struct fixed31_32 get_pbn_per_slot(struct dc_stream_state *stream)
 {
 	struct fixed31_32 mbytes_per_sec;
-	uint32_t link_rate_in_mbytes_per_sec = dp_link_bandwidth_kbps(stream->link,
+	uint32_t link_rate_in_mbytes_per_sec = dc_link_bandwidth_kbps(stream->link,
 			&stream->link->cur_link_settings);
 	link_rate_in_mbytes_per_sec /= 8000; /* Kbits to MBytes */
 
@@ -1137,21 +1060,18 @@ static struct fixed31_32 get_pbn_from_bw_in_kbps(uint64_t kbps)
 	uint32_t denominator = 1;
 
 	/*
-	 * The 1.006 factor (margin 5300ppm + 300ppm ~ 0.6% as per spec) is not
-	 * required when determining PBN/time slot utilization on the link between
-	 * us and the branch, since that overhead is already accounted for in
-	 * the get_pbn_per_slot function.
-	 *
+	 * margin 5300ppm + 300ppm ~ 0.6% as per spec, factor is 1.006
 	 * The unit of 54/64Mbytes/sec is an arbitrary unit chosen based on
 	 * common multiplier to render an integer PBN for all link rate/lane
 	 * counts combinations
 	 * calculate
+	 * peak_kbps *= (1006/1000)
 	 * peak_kbps *= (64/54)
-	 * peak_kbps /= (8 * 1000) convert to bytes
+	 * peak_kbps *= 8    convert to bytes
 	 */
 
-	numerator = 64;
-	denominator = 54 * 8 * 1000;
+	numerator = 64 * PEAK_FACTOR_X1000;
+	denominator = 54 * 8 * 1000 * 1000;
 	kbps *= numerator;
 	peak_kbps = dc_fixpt_from_fraction(kbps, denominator);
 
@@ -1161,14 +1081,8 @@ static struct fixed31_32 get_pbn_from_bw_in_kbps(uint64_t kbps)
 static struct fixed31_32 get_pbn_from_timing(struct pipe_ctx *pipe_ctx)
 {
 	uint64_t kbps;
-	enum dc_link_encoding_format link_encoding;
 
-	if (dp_is_128b_132b_signal(pipe_ctx))
-		link_encoding = DC_LINK_ENCODING_DP_128b_132b;
-	else
-		link_encoding = DC_LINK_ENCODING_DP_8b_10b;
-
-	kbps = dc_bandwidth_in_kbps_from_timing(&pipe_ctx->stream->timing, link_encoding);
+	kbps = dc_bandwidth_in_kbps_from_timing(&pipe_ctx->stream->timing);
 	return get_pbn_from_bw_in_kbps(kbps);
 }
 
@@ -1208,13 +1122,12 @@ static bool poll_for_allocation_change_trigger(struct dc_link *link)
 	int i;
 	const int act_retries = 30;
 	enum act_return_status result = ACT_FAILED;
-	enum dc_connection_type display_connected = (link->type != dc_connection_none);
 	union payload_table_update_status update_status = {0};
 	union lane_status dpcd_lane_status[LANE_COUNT_DP_MAX];
 	union lane_align_status_updated lane_status_updated;
 	DC_LOGGER_INIT(link->ctx->logger);
 
-	if (!display_connected || link->aux_access_disabled)
+	if (link->aux_access_disabled)
 		return true;
 	for (i = 0; i < act_retries; i++) {
 		get_lane_status(link, link->cur_link_settings.lane_count, dpcd_lane_status, &lane_status_updated);
@@ -1240,7 +1153,7 @@ static bool poll_for_allocation_change_trigger(struct dc_link *link)
 			break;
 		}
 
-		fsleep(5000);
+		msleep(5);
 	}
 
 	if (result == ACT_FAILED) {
@@ -1331,26 +1244,84 @@ static void remove_stream_from_alloc_table(
 	}
 }
 
-static void print_mst_streams(struct dc_link *link)
+static enum dc_status deallocate_mst_payload_with_temp_drm_wa(
+		struct pipe_ctx *pipe_ctx)
 {
+	struct dc_stream_state *stream = pipe_ctx->stream;
+	struct dc_link *link = stream->link;
+	struct dc_dp_mst_stream_allocation_table proposed_table = {0};
+	struct fixed31_32 avg_time_slots_per_mtp = dc_fixpt_from_int(0);
 	int i;
-
+	bool mst_mode = (link->type == dc_connection_mst_branch);
+	/* adjust for drm changes*/
+	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
+	const struct dc_link_settings empty_link_settings = {0};
 	DC_LOGGER_INIT(link->ctx->logger);
 
-	DC_LOG_MST("%s stream_count: %d:\n",
-		   __func__,
-		   link->mst_stream_alloc_table.stream_count);
+	if (link_hwss->ext.set_throttled_vcp_size)
+		link_hwss->ext.set_throttled_vcp_size(pipe_ctx, avg_time_slots_per_mtp);
+	if (link_hwss->ext.set_hblank_min_symbol_width)
+		link_hwss->ext.set_hblank_min_symbol_width(pipe_ctx,
+				&empty_link_settings,
+				avg_time_slots_per_mtp);
+
+	if (dm_helpers_dp_mst_write_payload_allocation_table(
+			stream->ctx,
+			stream,
+			&proposed_table,
+			false))
+		update_mst_stream_alloc_table(
+				link,
+				pipe_ctx->stream_res.stream_enc,
+				pipe_ctx->stream_res.hpo_dp_stream_enc,
+				&proposed_table);
+	else
+		DC_LOG_WARNING("Failed to update"
+				"MST allocation table for"
+				"pipe idx:%d\n",
+				pipe_ctx->pipe_idx);
+
+	DC_LOG_MST("%s"
+			"stream_count: %d: ",
+			__func__,
+			link->mst_stream_alloc_table.stream_count);
 
 	for (i = 0; i < MAX_CONTROLLER_NUM; i++) {
-		DC_LOG_MST("stream_enc[%d]: %p\n", i,
-			   (void *) link->mst_stream_alloc_table.stream_allocations[i].stream_enc);
-		DC_LOG_MST("stream[%d].hpo_dp_stream_enc: %p\n", i,
-			   (void *) link->mst_stream_alloc_table.stream_allocations[i].hpo_dp_stream_enc);
-		DC_LOG_MST("stream[%d].vcp_id: %d\n", i,
-			   link->mst_stream_alloc_table.stream_allocations[i].vcp_id);
-		DC_LOG_MST("stream[%d].slot_count: %d\n", i,
-			   link->mst_stream_alloc_table.stream_allocations[i].slot_count);
+		DC_LOG_MST("stream_enc[%d]: %p      "
+		"stream[%d].hpo_dp_stream_enc: %p      "
+		"stream[%d].vcp_id: %d      "
+		"stream[%d].slot_count: %d\n",
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].stream_enc,
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].hpo_dp_stream_enc,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].vcp_id,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].slot_count);
 	}
+
+	if (link_hwss->ext.update_stream_allocation_table == NULL ||
+			link_dp_get_encoding_format(&link->cur_link_settings) == DP_UNKNOWN_ENCODING) {
+		DC_LOG_DEBUG("Unknown encoding format\n");
+		return DC_ERROR_UNEXPECTED;
+	}
+
+	link_hwss->ext.update_stream_allocation_table(link, &pipe_ctx->link_res,
+			&link->mst_stream_alloc_table);
+
+	if (mst_mode) {
+		dm_helpers_dp_mst_poll_for_allocation_change_trigger(
+			stream->ctx,
+			stream);
+	}
+
+	dm_helpers_dp_mst_send_payload_allocation(
+			stream->ctx,
+			stream,
+			false);
+
+	return DC_OK;
 }
 
 static enum dc_status deallocate_mst_payload(struct pipe_ctx *pipe_ctx)
@@ -1359,10 +1330,14 @@ static enum dc_status deallocate_mst_payload(struct pipe_ctx *pipe_ctx)
 	struct dc_link *link = stream->link;
 	struct dc_dp_mst_stream_allocation_table proposed_table = {0};
 	struct fixed31_32 avg_time_slots_per_mtp = dc_fixpt_from_int(0);
+	int i;
 	bool mst_mode = (link->type == dc_connection_mst_branch);
 	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
 	const struct dc_link_settings empty_link_settings = {0};
 	DC_LOGGER_INIT(link->ctx->logger);
+
+	if (link->dc->debug.temp_mst_deallocation_sequence)
+		return deallocate_mst_payload_with_temp_drm_wa(pipe_ctx);
 
 	/* deallocate_mst_payload is called before disable link. When mode or
 	 * disable/enable monitor, new stream is created which is not in link
@@ -1394,7 +1369,9 @@ static enum dc_status deallocate_mst_payload(struct pipe_ctx *pipe_ctx)
 					pipe_ctx->stream_res.hpo_dp_stream_enc,
 					&proposed_table);
 		else
-			DC_LOG_WARNING("Failed to update MST allocation table for idx %d\n",
+			DC_LOG_WARNING("Failed to update"
+					"MST allocation table for"
+					"pipe idx:%d\n",
 					pipe_ctx->pipe_idx);
 	} else {
 		/* when link is no longer in mst mode (mst hub unplugged),
@@ -1404,7 +1381,25 @@ static enum dc_status deallocate_mst_payload(struct pipe_ctx *pipe_ctx)
 				pipe_ctx->stream_res.hpo_dp_stream_enc);
 	}
 
-	print_mst_streams(link);
+	DC_LOG_MST("%s"
+			"stream_count: %d: ",
+			__func__,
+			link->mst_stream_alloc_table.stream_count);
+
+	for (i = 0; i < MAX_CONTROLLER_NUM; i++) {
+		DC_LOG_MST("stream_enc[%d]: %p      "
+		"stream[%d].hpo_dp_stream_enc: %p      "
+		"stream[%d].vcp_id: %d      "
+		"stream[%d].slot_count: %d\n",
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].stream_enc,
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].hpo_dp_stream_enc,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].vcp_id,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].slot_count);
+	}
 
 	/* update mst stream allocation table hardware state */
 	if (link_hwss->ext.update_stream_allocation_table == NULL ||
@@ -1416,14 +1411,16 @@ static enum dc_status deallocate_mst_payload(struct pipe_ctx *pipe_ctx)
 	link_hwss->ext.update_stream_allocation_table(link, &pipe_ctx->link_res,
 			&link->mst_stream_alloc_table);
 
-	if (mst_mode)
+	if (mst_mode) {
 		dm_helpers_dp_mst_poll_for_allocation_change_trigger(
 			stream->ctx,
 			stream);
 
-	dm_helpers_dp_mst_update_mst_mgr_for_deallocation(
-			stream->ctx,
-			stream);
+		dm_helpers_dp_mst_send_payload_allocation(
+				stream->ctx,
+				stream,
+				false);
+	}
 
 	return DC_OK;
 }
@@ -1439,6 +1436,7 @@ static enum dc_status allocate_mst_payload(struct pipe_ctx *pipe_ctx)
 	struct fixed31_32 avg_time_slots_per_mtp;
 	struct fixed31_32 pbn;
 	struct fixed31_32 pbn_per_slot;
+	int i;
 	enum act_return_status ret;
 	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
 	DC_LOGGER_INIT(link->ctx->logger);
@@ -1460,10 +1458,30 @@ static enum dc_status allocate_mst_payload(struct pipe_ctx *pipe_ctx)
 					pipe_ctx->stream_res.hpo_dp_stream_enc,
 					&proposed_table);
 	else
-		DC_LOG_WARNING("Failed to update MST allocation table for idx %d\n",
+		DC_LOG_WARNING("Failed to update"
+				"MST allocation table for"
+				"pipe idx:%d\n",
 				pipe_ctx->pipe_idx);
 
-	print_mst_streams(link);
+	DC_LOG_MST("%s  "
+			"stream_count: %d: \n ",
+			__func__,
+			link->mst_stream_alloc_table.stream_count);
+
+	for (i = 0; i < MAX_CONTROLLER_NUM; i++) {
+		DC_LOG_MST("stream_enc[%d]: %p      "
+		"stream[%d].hpo_dp_stream_enc: %p      "
+		"stream[%d].vcp_id: %d      "
+		"stream[%d].slot_count: %d\n",
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].stream_enc,
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].hpo_dp_stream_enc,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].vcp_id,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].slot_count);
+	}
 
 	ASSERT(proposed_table.stream_count > 0);
 
@@ -1483,10 +1501,12 @@ static enum dc_status allocate_mst_payload(struct pipe_ctx *pipe_ctx)
 			stream->ctx,
 			stream);
 
-	if (ret != ACT_LINK_LOST)
+	if (ret != ACT_LINK_LOST) {
 		dm_helpers_dp_mst_send_payload_allocation(
 				stream->ctx,
-				stream);
+				stream,
+				true);
+	}
 
 	/* slot X.Y for only current stream */
 	pbn_per_slot = get_pbn_per_slot(stream);
@@ -1497,7 +1517,7 @@ static enum dc_status allocate_mst_payload(struct pipe_ctx *pipe_ctx)
 	pbn = get_pbn_from_timing(pipe_ctx);
 	avg_time_slots_per_mtp = dc_fixpt_div(pbn, pbn_per_slot);
 
-	log_vcp_x_y(link, avg_time_slots_per_mtp);
+	dc_log_vcp_x_y(link, avg_time_slots_per_mtp);
 
 	if (link_hwss->ext.set_throttled_vcp_size)
 		link_hwss->ext.set_throttled_vcp_size(pipe_ctx, avg_time_slots_per_mtp);
@@ -1515,13 +1535,12 @@ struct fixed31_32 link_calculate_sst_avg_time_slots_per_mtp(
 {
 	struct fixed31_32 link_bw_effective =
 			dc_fixpt_from_int(
-					dp_link_bandwidth_kbps(link, &link->cur_link_settings));
+					dc_link_bandwidth_kbps(link, &link->cur_link_settings));
 	struct fixed31_32 timeslot_bw_effective =
 			dc_fixpt_div_int(link_bw_effective, MAX_MTP_SLOT_COUNT);
 	struct fixed31_32 timing_bw =
 			dc_fixpt_from_int(
-					dc_bandwidth_in_kbps_from_timing(&stream->timing,
-							dc_link_get_highest_encoding_format(link)));
+					dc_bandwidth_in_kbps_from_timing(&stream->timing));
 	struct fixed31_32 avg_time_slots_per_mtp =
 			dc_fixpt_div(timing_bw, timeslot_bw_effective);
 
@@ -1543,7 +1562,6 @@ static bool write_128b_132b_sst_payload_allocation_table(
 	union payload_table_update_status update_status = { 0 };
 	const uint32_t max_retries = 30;
 	uint32_t retries = 0;
-	enum dc_connection_type display_connected = (link->type != dc_connection_none);
 	DC_LOGGER_INIT(link->ctx->logger);
 
 	if (allocate)	{
@@ -1561,7 +1579,7 @@ static bool write_128b_132b_sst_payload_allocation_table(
 	proposed_table->stream_allocations[0].slot_count = req_slot_count;
 	proposed_table->stream_allocations[0].vcp_id = vc_id;
 
-	if (!display_connected || link->aux_access_disabled)
+	if (link->aux_access_disabled)
 		return true;
 
 	/// Write DPCD 2C0 = 1 to start updating
@@ -1608,7 +1626,7 @@ static bool write_128b_132b_sst_payload_allocation_table(
 				break;
 			}
 		} else {
-			union dpcd_rev dpcdRev = {0};
+			union dpcd_rev dpcdRev;
 
 			if (core_link_read_dpcd(
 					link,
@@ -1622,7 +1640,7 @@ static bool write_128b_132b_sst_payload_allocation_table(
 			}
 		}
 		retries++;
-		fsleep(5000);
+		msleep(5);
 	}
 
 	if (!result && retries == max_retries) {
@@ -1652,7 +1670,7 @@ static enum dc_status update_sst_payload(struct pipe_ctx *pipe_ctx,
 	if (!allocate) {
 		avg_time_slots_per_mtp = dc_fixpt_from_int(0);
 
-		log_vcp_x_y(link, avg_time_slots_per_mtp);
+		dc_log_vcp_x_y(link, avg_time_slots_per_mtp);
 
 		if (link_hwss->ext.set_throttled_vcp_size)
 			link_hwss->ext.set_throttled_vcp_size(pipe_ctx,
@@ -1703,7 +1721,7 @@ static enum dc_status update_sst_payload(struct pipe_ctx *pipe_ctx,
 			DP_128b_132b_ENCODING) {
 		avg_time_slots_per_mtp = link_calculate_sst_avg_time_slots_per_mtp(stream, link);
 
-		log_vcp_x_y(link, avg_time_slots_per_mtp);
+		dc_log_vcp_x_y(link, avg_time_slots_per_mtp);
 
 		if (link_hwss->ext.set_throttled_vcp_size)
 			link_hwss->ext.set_throttled_vcp_size(pipe_ctx,
@@ -1728,6 +1746,7 @@ enum dc_status link_reduce_mst_payload(struct pipe_ctx *pipe_ctx, uint32_t bw_in
 	struct fixed31_32 pbn;
 	struct fixed31_32 pbn_per_slot;
 	struct dc_dp_mst_stream_allocation_table proposed_table = {0};
+	uint8_t i;
 	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
 	DC_LOGGER_INIT(link->ctx->logger);
 
@@ -1746,7 +1765,8 @@ enum dc_status link_reduce_mst_payload(struct pipe_ctx *pipe_ctx, uint32_t bw_in
 	/* send ALLOCATE_PAYLOAD sideband message with updated pbn */
 	dm_helpers_dp_mst_send_payload_allocation(
 			stream->ctx,
-			stream);
+			stream,
+			true);
 
 	/* notify immediate branch device table update */
 	if (dm_helpers_dp_mst_write_payload_allocation_table(
@@ -1761,11 +1781,31 @@ enum dc_status link_reduce_mst_payload(struct pipe_ctx *pipe_ctx, uint32_t bw_in
 				pipe_ctx->stream_res.hpo_dp_stream_enc,
 				&proposed_table);
 	} else {
-		DC_LOG_WARNING("Failed to update MST allocation table for idx %d\n",
+		DC_LOG_WARNING("Failed to update"
+				"MST allocation table for"
+				"pipe idx:%d\n",
 				pipe_ctx->pipe_idx);
 	}
 
-	print_mst_streams(link);
+	DC_LOG_MST("%s  "
+			"stream_count: %d: \n ",
+			__func__,
+			link->mst_stream_alloc_table.stream_count);
+
+	for (i = 0; i < MAX_CONTROLLER_NUM; i++) {
+		DC_LOG_MST("stream_enc[%d]: %p      "
+		"stream[%d].hpo_dp_stream_enc: %p      "
+		"stream[%d].vcp_id: %d      "
+		"stream[%d].slot_count: %d\n",
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].stream_enc,
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].hpo_dp_stream_enc,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].vcp_id,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].slot_count);
+	}
 
 	ASSERT(proposed_table.stream_count > 0);
 
@@ -1795,6 +1835,7 @@ enum dc_status link_increase_mst_payload(struct pipe_ctx *pipe_ctx, uint32_t bw_
 	struct fixed31_32 pbn;
 	struct fixed31_32 pbn_per_slot;
 	struct dc_dp_mst_stream_allocation_table proposed_table = {0};
+	uint8_t i;
 	enum act_return_status ret;
 	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
 	DC_LOGGER_INIT(link->ctx->logger);
@@ -1813,7 +1854,25 @@ enum dc_status link_increase_mst_payload(struct pipe_ctx *pipe_ctx, uint32_t bw_
 				&proposed_table);
 	}
 
-	print_mst_streams(link);
+	DC_LOG_MST("%s  "
+			"stream_count: %d: \n ",
+			__func__,
+			link->mst_stream_alloc_table.stream_count);
+
+	for (i = 0; i < MAX_CONTROLLER_NUM; i++) {
+		DC_LOG_MST("stream_enc[%d]: %p      "
+		"stream[%d].hpo_dp_stream_enc: %p      "
+		"stream[%d].vcp_id: %d      "
+		"stream[%d].slot_count: %d\n",
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].stream_enc,
+		i,
+		(void *) link->mst_stream_alloc_table.stream_allocations[i].hpo_dp_stream_enc,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].vcp_id,
+		i,
+		link->mst_stream_alloc_table.stream_allocations[i].slot_count);
+	}
 
 	ASSERT(proposed_table.stream_count > 0);
 
@@ -1836,7 +1895,8 @@ enum dc_status link_increase_mst_payload(struct pipe_ctx *pipe_ctx, uint32_t bw_
 		/* send ALLOCATE_PAYLOAD sideband message with updated pbn */
 		dm_helpers_dp_mst_send_payload_allocation(
 				stream->ctx,
-				stream);
+				stream,
+				true);
 	}
 
 	/* increase throttled vcp size */
@@ -1867,18 +1927,13 @@ static void disable_link_dp(struct dc_link *link,
 
 	dp_disable_link_phy(link, link_res, signal);
 
-	if (link->connector_signal == SIGNAL_TYPE_EDP) {
-		if (!link->skip_implict_edp_power_control)
-			link->dc->hwss.edp_power_control(link, false);
-	}
-
-	if (signal == SIGNAL_TYPE_DISPLAY_PORT_MST && link->sink_count == 0)
+	if (signal == SIGNAL_TYPE_DISPLAY_PORT_MST)
 		/* set the sink to SST mode after disabling the link */
 		enable_mst_on_sink(link, false);
 
 	if (link_dp_get_encoding_format(&link_settings) ==
 			DP_8b_10b_ENCODING) {
-		dp_set_fec_enable(link, link_res, false);
+		dp_set_fec_enable(link, false);
 		dp_set_fec_ready(link, link_res, false);
 	}
 }
@@ -1889,9 +1944,7 @@ static void disable_link(struct dc_link *link,
 {
 	if (dc_is_dp_signal(signal)) {
 		disable_link_dp(link, link_res, signal);
-	} else if (signal == SIGNAL_TYPE_VIRTUAL) {
-		link->dc->hwss.disable_link_output(link, link_res, SIGNAL_TYPE_DISPLAY_PORT);
-	} else {
+	} else if (signal != SIGNAL_TYPE_VIRTUAL) {
 		link->dc->hwss.disable_link_output(link, link_res, signal);
 	}
 
@@ -1915,21 +1968,16 @@ static void enable_link_hdmi(struct pipe_ctx *pipe_ctx)
 	bool is_vga_mode = (stream->timing.h_addressable == 640)
 			&& (stream->timing.v_addressable == 480);
 	struct dc *dc = pipe_ctx->stream->ctx->dc;
-	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
 
 	if (stream->phy_pix_clk == 0)
 		stream->phy_pix_clk = stream->timing.pix_clk_100hz / 10;
 	if (stream->phy_pix_clk > 340000)
 		is_over_340mhz = true;
-	if (dc_is_tmds_signal(stream->signal) && stream->phy_pix_clk > 6000000UL) {
-		ASSERT(false);
-		return;
-	}
 
 	if (dc_is_hdmi_signal(pipe_ctx->stream->signal)) {
 		unsigned short masked_chip_caps = pipe_ctx->stream->link->chip_caps &
-				AMD_EXT_DISPLAY_PATH_CAPS__EXT_CHIP_MASK;
-		if (masked_chip_caps == AMD_EXT_DISPLAY_PATH_CAPS__HDMI20_TISN65DP159RSBT) {
+				EXT_DISPLAY_PATH_CAPS__EXT_CHIP_MASK;
+		if (masked_chip_caps == EXT_DISPLAY_PATH_CAPS__HDMI20_TISN65DP159RSBT) {
 			/* DP159, Retimer settings */
 			eng_id = pipe_ctx->stream_res.stream_enc->id;
 
@@ -1940,7 +1988,7 @@ static void enable_link_hdmi(struct pipe_ctx *pipe_ctx)
 				write_i2c_default_retimer_setting(pipe_ctx,
 						is_vga_mode, is_over_340mhz);
 			}
-		} else if (masked_chip_caps == AMD_EXT_DISPLAY_PATH_CAPS__HDMI20_PI3EQX1204) {
+		} else if (masked_chip_caps == EXT_DISPLAY_PATH_CAPS__HDMI20_PI3EQX1204) {
 			/* PI3EQX1204, Redriver settings */
 			write_i2c_redriver_setting(pipe_ctx, is_over_340mhz);
 		}
@@ -1958,12 +2006,6 @@ static void enable_link_hdmi(struct pipe_ctx *pipe_ctx)
 	display_color_depth = stream->timing.display_color_depth;
 	if (stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422)
 		display_color_depth = COLOR_DEPTH_888;
-
-	/* We need to enable stream encoder for TMDS first to apply 1/4 TMDS
-	 * character clock in case that beyond 340MHz.
-	 */
-	if (dc_is_hdmi_tmds_signal(pipe_ctx->stream->signal) || dc_is_dvi_signal(pipe_ctx->stream->signal))
-		link_hwss->setup_stream_encoder(pipe_ctx);
 
 	dc->hwss.enable_tmds_link_output(
 			link,
@@ -1993,12 +2035,6 @@ static enum dc_status enable_link_dp(struct dc_state *state,
 	uint32_t post_oui_delay = 30; // 30ms
 	/* Reduce link bandwidth between failed link training attempts. */
 	bool do_fallback = false;
-	int lt_attempts = LINK_TRAINING_ATTEMPTS;
-
-	// Increase retry count if attempting DP1.x on FIXED_VS link
-	if (((link->chip_caps & AMD_EXT_DISPLAY_PATH_CAPS__EXT_CHIP_MASK) == AMD_EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN) &&
-			link_dp_get_encoding_format(link_settings) == DP_8b_10b_ENCODING)
-		lt_attempts = 10;
 
 	// check for seamless boot
 	for (i = 0; i < state->stream_count; i++) {
@@ -2011,8 +2047,7 @@ static enum dc_status enable_link_dp(struct dc_state *state,
 	/* Train with fallback when enabling DPIA link. Conventional links are
 	 * trained with fallback during sink detection.
 	 */
-	if (link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA &&
-			!link->dc->config.enable_dpia_pre_training)
+	if (link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA)
 		do_fallback = true;
 
 	/*
@@ -2023,12 +2058,7 @@ static enum dc_status enable_link_dp(struct dc_state *state,
 			pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT &&
 			link->dc->debug.set_mst_en_for_sst) {
 		enable_mst_on_sink(link, true);
-	} else if (link->dpcd_caps.is_mst_capable &&
-		pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT) {
-		/* disable mst on sink */
-		enable_mst_on_sink(link, false);
 	}
-
 	if (pipe_ctx->stream->signal == SIGNAL_TYPE_EDP) {
 		/*in case it is not on*/
 		if (!link->dc->config.edp_no_power_sequencing)
@@ -2061,12 +2091,9 @@ static enum dc_status enable_link_dp(struct dc_state *state,
 	if (link_settings->link_rate == LINK_RATE_LOW)
 		skip_video_pattern = false;
 
-	if (stream->sink_patches.oled_optimize_display_on)
-		set_default_brightness_aux(link);
-
 	if (perform_link_training_with_retries(link_settings,
 					       skip_video_pattern,
-					       lt_attempts,
+					       LINK_TRAINING_ATTEMPTS,
 					       pipe_ctx,
 					       pipe_ctx->stream->signal,
 					       do_fallback)) {
@@ -2081,20 +2108,16 @@ static enum dc_status enable_link_dp(struct dc_state *state,
 		fec_enable = true;
 
 	if (link_dp_get_encoding_format(link_settings) == DP_8b_10b_ENCODING)
-		dp_set_fec_enable(link, &pipe_ctx->link_res, fec_enable);
+		dp_set_fec_enable(link, fec_enable);
 
 	// during mode set we do DP_SET_POWER off then on, aux writes are lost
 	if (link->dpcd_sink_ext_caps.bits.oled == 1 ||
 		link->dpcd_sink_ext_caps.bits.sdr_aux_backlight_control == 1 ||
 		link->dpcd_sink_ext_caps.bits.hdr_aux_backlight_control == 1) {
-		if (!stream->sink_patches.oled_optimize_display_on) {
-			set_default_brightness_aux(link);
-			if (link->dpcd_sink_ext_caps.bits.oled == 1)
-				msleep(bl_oled_enable_delay);
-			edp_backlight_enable_aux(link, true);
-		} else {
-			edp_backlight_enable_aux(link, true);
-		}
+		set_default_brightness_aux(link); // TODO: use cached if known
+		if (link->dpcd_sink_ext_caps.bits.oled == 1)
+			msleep(bl_oled_enable_delay);
+		link_backlight_enable_aux(link, true);
 	}
 
 	return status;
@@ -2131,7 +2154,6 @@ static enum dc_status enable_link_dp_mst(
 		struct pipe_ctx *pipe_ctx)
 {
 	struct dc_link *link = pipe_ctx->stream->link;
-	unsigned char mstm_cntl = 0;
 
 	/* sink signal type after MST branch is MST. Multiple MST sinks
 	 * share one link. Link DP PHY is enable or training only once.
@@ -2140,9 +2162,7 @@ static enum dc_status enable_link_dp_mst(
 		return DC_OK;
 
 	/* clear payload table */
-	core_link_read_dpcd(link, DP_MSTM_CTRL, &mstm_cntl, 1);
-	if (mstm_cntl & DP_MST_EN)
-		dm_helpers_dp_mst_clear_payload_allocation_table(link->ctx, link);
+	dm_helpers_dp_mst_clear_payload_allocation_table(link->ctx, link);
 
 	/* to make sure the pending down rep can be processed
 	 * before enabling the link
@@ -2155,29 +2175,13 @@ static enum dc_status enable_link_dp_mst(
 	return enable_link_dp(state, pipe_ctx);
 }
 
-static enum dc_status enable_link_virtual(struct pipe_ctx *pipe_ctx)
-{
-	struct dc_link *link = pipe_ctx->stream->link;
-
-	link->dc->hwss.enable_dp_link_output(link,
-			&pipe_ctx->link_res,
-			SIGNAL_TYPE_DISPLAY_PORT,
-			pipe_ctx->clock_source->id,
-			&pipe_ctx->link_config.dp_link_settings);
-	return DC_OK;
-}
-
 static enum dc_status enable_link(
 		struct dc_state *state,
 		struct pipe_ctx *pipe_ctx)
 {
 	enum dc_status status = DC_ERROR_UNEXPECTED;
 	struct dc_stream_state *stream = pipe_ctx->stream;
-	struct dc_link *link = NULL;
-
-	if (stream == NULL)
-		return DC_ERROR_UNEXPECTED;
-	link = stream->link;
+	struct dc_link *link = stream->link;
 
 	/* There's some scenarios where driver is unloaded with display
 	 * still enabled. When driver is reloaded, it may cause a display
@@ -2185,8 +2189,9 @@ static enum dc_status enable_link(
 	 * link settings. Need to call disable first before enabling at
 	 * new link settings.
 	 */
-	if (link->link_status.link_active)
+	if (link->link_status.link_active) {
 		disable_link(link, &pipe_ctx->link_res, pipe_ctx->stream->signal);
+	}
 
 	switch (pipe_ctx->stream->signal) {
 	case SIGNAL_TYPE_DISPLAY_PORT:
@@ -2209,11 +2214,8 @@ static enum dc_status enable_link(
 		enable_link_lvds(pipe_ctx);
 		status = DC_OK;
 		break;
-	case SIGNAL_TYPE_RGB:
-		status = DC_OK;
-		break;
 	case SIGNAL_TYPE_VIRTUAL:
-		status = enable_link_virtual(pipe_ctx);
+		status = DC_OK;
 		break;
 	default:
 		break;
@@ -2226,99 +2228,32 @@ static enum dc_status enable_link(
 	return status;
 }
 
-static bool allocate_usb4_bandwidth_for_stream(struct dc_stream_state *stream, int bw)
-{
-	struct dc_link *link = stream->sink->link;
-	int req_bw = bw;
-
-	DC_LOGGER_INIT(link->ctx->logger);
-
-	if (!link->dpia_bw_alloc_config.bw_alloc_enabled)
-		return false;
-
-	if (stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST) {
-		int sink_index = 0;
-		int i = 0;
-
-		for (i = 0; i < link->sink_count; i++) {
-			if (link->remote_sinks[i] == NULL)
-				continue;
-
-			if (stream->sink->sink_id != link->remote_sinks[i]->sink_id)
-				req_bw += link->dpia_bw_alloc_config.remote_sink_req_bw[i];
-			else
-				sink_index = i;
-		}
-
-		link->dpia_bw_alloc_config.remote_sink_req_bw[sink_index] = bw;
-	}
-
-	link->dpia_bw_alloc_config.dp_overhead = link_dpia_get_dp_overhead(link);
-	req_bw += link->dpia_bw_alloc_config.dp_overhead;
-
-	link_dp_dpia_allocate_usb4_bandwidth_for_stream(link, req_bw);
-
-	if (stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST) {
-		int i = 0;
-
-		for (i = 0; i < link->sink_count; i++) {
-			if (link->remote_sinks[i] == NULL)
-				continue;
-			DC_LOG_DEBUG("%s, remote_sink=%s, request_bw=%d\n", __func__,
-					(const char *)(&link->remote_sinks[i]->edid_caps.display_name[0]),
-					link->dpia_bw_alloc_config.remote_sink_req_bw[i]);
-		}
-	}
-
-	return true;
-}
-
-static bool allocate_usb4_bandwidth(struct dc_stream_state *stream)
-{
-	bool ret;
-
-	int bw = dc_bandwidth_in_kbps_from_timing(&stream->timing,
-			dc_link_get_highest_encoding_format(stream->sink->link));
-
-	ret = allocate_usb4_bandwidth_for_stream(stream, bw);
-
-	return ret;
-}
-
-static bool deallocate_usb4_bandwidth(struct dc_stream_state *stream)
-{
-	bool ret;
-
-	ret = allocate_usb4_bandwidth_for_stream(stream, 0);
-
-	return ret;
-}
-
 void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 {
 	struct dc  *dc = pipe_ctx->stream->ctx->dc;
 	struct dc_stream_state *stream = pipe_ctx->stream;
 	struct dc_link *link = stream->sink->link;
 	struct vpg *vpg = pipe_ctx->stream_res.stream_enc->vpg;
-	enum dp_panel_mode panel_mode_dp = dp_get_panel_mode(link);
-
-	DC_LOGGER_INIT(pipe_ctx->stream->ctx->logger);
 
 	ASSERT(is_master_pipe_for_link(link, pipe_ctx));
 
-	if (dp_is_128b_132b_signal(pipe_ctx))
+	if (link_is_dp_128b_132b_signal(pipe_ctx))
 		vpg = pipe_ctx->stream_res.hpo_dp_stream_enc->vpg;
-	if (dc_is_virtual_signal(pipe_ctx->stream->signal))
-		return;
+
+	DC_LOGGER_INIT(pipe_ctx->stream->ctx->logger);
 
 	if (pipe_ctx->stream->sink) {
 		if (pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_VIRTUAL &&
 			pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_NONE) {
-			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x link=%d sink_count=%d\n", __func__,
+			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x\n", __func__,
 			pipe_ctx->stream->sink->edid_caps.display_name,
-			pipe_ctx->stream->signal, link->link_index, link->sink_count);
+			pipe_ctx->stream->signal);
 		}
 	}
+
+	if (!IS_DIAG_DC(dc->ctx->dce_environment) &&
+			dc_is_virtual_signal(pipe_ctx->stream->signal))
+		return;
 
 	if (!pipe_ctx->stream->sink->edid_caps.panel_patch.skip_avmute) {
 		if (dc_is_hdmi_signal(pipe_ctx->stream->signal))
@@ -2327,16 +2262,15 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 
 	dc->hwss.disable_audio_stream(pipe_ctx);
 
+#if defined(CONFIG_DRM_AMD_DC_HDCP)
 	update_psp_stream_config(pipe_ctx, true);
+#endif
 	dc->hwss.blank_stream(pipe_ctx);
-
-	if (pipe_ctx->link_config.dp_tunnel_settings.should_use_dp_bw_allocation)
-		deallocate_usb4_bandwidth(pipe_ctx->stream);
 
 	if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST)
 		deallocate_mst_payload(pipe_ctx);
-	else if (dc_is_dp_sst_signal(pipe_ctx->stream->signal) &&
-			dp_is_128b_132b_signal(pipe_ctx))
+	else if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT &&
+			link_is_dp_128b_132b_signal(pipe_ctx))
 		update_sst_payload(pipe_ctx, false);
 
 	if (dc_is_hdmi_signal(pipe_ctx->stream->signal)) {
@@ -2344,13 +2278,13 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 		enum engine_id eng_id = pipe_ctx->stream_res.stream_enc->id;
 
 		unsigned short masked_chip_caps = link->chip_caps &
-				AMD_EXT_DISPLAY_PATH_CAPS__EXT_CHIP_MASK;
+				EXT_DISPLAY_PATH_CAPS__EXT_CHIP_MASK;
 		//Need to inform that sink is going to use legacy HDMI mode.
 		write_scdc_data(
 			link->ddc,
 			165000,//vbios only handles 165Mhz.
 			false);
-		if (masked_chip_caps == AMD_EXT_DISPLAY_PATH_CAPS__HDMI20_TISN65DP159RSBT) {
+		if (masked_chip_caps == EXT_DISPLAY_PATH_CAPS__HDMI20_TISN65DP159RSBT) {
 			/* DP159, Retimer settings */
 			if (get_ext_hdmi_settings(pipe_ctx, eng_id, &settings))
 				write_i2c_retimer_setting(pipe_ctx,
@@ -2358,14 +2292,14 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 			else
 				write_i2c_default_retimer_setting(pipe_ctx,
 						false, false);
-		} else if (masked_chip_caps == AMD_EXT_DISPLAY_PATH_CAPS__HDMI20_PI3EQX1204) {
+		} else if (masked_chip_caps == EXT_DISPLAY_PATH_CAPS__HDMI20_PI3EQX1204) {
 			/* PI3EQX1204, Redriver settings */
 			write_i2c_redriver_setting(pipe_ctx, false);
 		}
 	}
 
 	if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT &&
-			!dp_is_128b_132b_signal(pipe_ctx)) {
+			!link_is_dp_128b_132b_signal(pipe_ctx)) {
 
 		/* In DP1.x SST mode, our encoder will go to TPS1
 		 * when link is on but stream is off.
@@ -2380,27 +2314,18 @@ void link_set_dpms_off(struct pipe_ctx *pipe_ctx)
 		dc->hwss.disable_stream(pipe_ctx);
 		disable_link(pipe_ctx->stream->link, &pipe_ctx->link_res, pipe_ctx->stream->signal);
 	}
-	edp_set_panel_assr(link, pipe_ctx, &panel_mode_dp, false);
 
 	if (pipe_ctx->stream->timing.flags.DSC) {
 		if (dc_is_dp_signal(pipe_ctx->stream->signal))
 			link_set_dsc_enable(pipe_ctx, false);
 	}
-	if (dp_is_128b_132b_signal(pipe_ctx)) {
+	if (link_is_dp_128b_132b_signal(pipe_ctx)) {
 		if (pipe_ctx->stream_res.tg->funcs->set_out_mux)
 			pipe_ctx->stream_res.tg->funcs->set_out_mux(pipe_ctx->stream_res.tg, OUT_MUX_DIO);
 	}
 
 	if (vpg && vpg->funcs->vpg_powerdown)
 		vpg->funcs->vpg_powerdown(vpg);
-
-	/* for psp not exist case */
-	if (link->connector_signal == SIGNAL_TYPE_EDP && dc->debug.psp_disabled_wa) {
-		/* reset internal save state to default since eDP is  off */
-		enum dp_panel_mode panel_mode = dp_get_panel_mode(pipe_ctx->stream->link);
-		/* since current psp not loaded, we need to reset it to default */
-		link->panel_mode = panel_mode;
-	}
 }
 
 void link_set_dpms_on(
@@ -2411,39 +2336,36 @@ void link_set_dpms_on(
 	struct dc_stream_state *stream = pipe_ctx->stream;
 	struct dc_link *link = stream->sink->link;
 	enum dc_status status;
-	struct link_encoder *link_enc = pipe_ctx->link_res.dio_link_enc;
+	struct link_encoder *link_enc;
 	enum otg_out_mux_dest otg_out_dest = OUT_MUX_DIO;
 	struct vpg *vpg = pipe_ctx->stream_res.stream_enc->vpg;
 	const struct link_hwss *link_hwss = get_link_hwss(link, &pipe_ctx->link_res);
-	bool apply_edp_fast_boot_optimization =
-		pipe_ctx->stream->apply_edp_fast_boot_optimization;
-
-	DC_LOGGER_INIT(pipe_ctx->stream->ctx->logger);
 
 	ASSERT(is_master_pipe_for_link(link, pipe_ctx));
 
-	if (dp_is_128b_132b_signal(pipe_ctx))
+	if (link_is_dp_128b_132b_signal(pipe_ctx))
 		vpg = pipe_ctx->stream_res.hpo_dp_stream_enc->vpg;
-	if (dc_is_virtual_signal(pipe_ctx->stream->signal))
-		return;
+
+	DC_LOGGER_INIT(pipe_ctx->stream->ctx->logger);
 
 	if (pipe_ctx->stream->sink) {
 		if (pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_VIRTUAL &&
 			pipe_ctx->stream->sink->sink_signal != SIGNAL_TYPE_NONE) {
-			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x link=%d sink_count=%d\n", __func__,
+			DC_LOG_DC("%s pipe_ctx dispname=%s signal=%x\n", __func__,
 			pipe_ctx->stream->sink->edid_caps.display_name,
-			pipe_ctx->stream->signal,
-			link->link_index,
-			link->sink_count);
+			pipe_ctx->stream->signal);
 		}
 	}
 
-	if (!dc->config.unify_link_enc_assignment)
-		link_enc = link_enc_cfg_get_link_enc(link);
+	if (!IS_DIAG_DC(dc->ctx->dce_environment) &&
+			dc_is_virtual_signal(pipe_ctx->stream->signal))
+		return;
+
+	link_enc = link_enc_cfg_get_link_enc(link);
 	ASSERT(link_enc);
 
 	if (!dc_is_virtual_signal(pipe_ctx->stream->signal)
-			&& !dp_is_128b_132b_signal(pipe_ctx)) {
+			&& !link_is_dp_128b_132b_signal(pipe_ctx)) {
 		if (link_enc)
 			link_enc->funcs->setup(
 				link_enc,
@@ -2453,7 +2375,7 @@ void link_set_dpms_on(
 	pipe_ctx->stream->link->link_state_valid = true;
 
 	if (pipe_ctx->stream_res.tg->funcs->set_out_mux) {
-		if (dp_is_128b_132b_signal(pipe_ctx))
+		if (link_is_dp_128b_132b_signal(pipe_ctx))
 			otg_out_dest = OUT_MUX_HPO_DP;
 		else
 			otg_out_dest = OUT_MUX_DIO;
@@ -2462,162 +2384,143 @@ void link_set_dpms_on(
 
 	link_hwss->setup_stream_attribute(pipe_ctx);
 
-	pipe_ctx->stream->apply_edp_fast_boot_optimization = false;
+	if (!IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment)) {
+		bool apply_edp_fast_boot_optimization =
+			pipe_ctx->stream->apply_edp_fast_boot_optimization;
 
-	// Enable VPG before building infoframe
-	if (vpg && vpg->funcs->vpg_poweron)
-		vpg->funcs->vpg_poweron(vpg);
+		pipe_ctx->stream->apply_edp_fast_boot_optimization = false;
 
-	resource_build_info_frame(pipe_ctx);
-	dc->hwss.update_info_frame(pipe_ctx);
+		// Enable VPG before building infoframe
+		if (vpg && vpg->funcs->vpg_poweron)
+			vpg->funcs->vpg_poweron(vpg);
 
-	if (dc_is_dp_signal(pipe_ctx->stream->signal))
-		dp_trace_source_sequence(link, DPCD_SOURCE_SEQ_AFTER_UPDATE_INFO_FRAME);
+		resource_build_info_frame(pipe_ctx);
+		dc->hwss.update_info_frame(pipe_ctx);
 
-	/* Do not touch link on seamless boot optimization. */
-	if (pipe_ctx->stream->apply_seamless_boot_optimization) {
-		pipe_ctx->stream->dpms_off = false;
+		if (dc_is_dp_signal(pipe_ctx->stream->signal))
+			link_dp_source_sequence_trace(link, DPCD_SOURCE_SEQ_AFTER_UPDATE_INFO_FRAME);
 
-		/* Still enable stream features & audio on seamless boot for DP external displays */
-		if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT) {
-			enable_stream_features(pipe_ctx);
-			dc->hwss.enable_audio_stream(pipe_ctx);
-		}
+		/* Do not touch link on seamless boot optimization. */
+		if (pipe_ctx->stream->apply_seamless_boot_optimization) {
+			pipe_ctx->stream->dpms_off = false;
 
-		update_psp_stream_config(pipe_ctx, false);
-		return;
-	}
+			/* Still enable stream features & audio on seamless boot for DP external displays */
+			if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT) {
+				enable_stream_features(pipe_ctx);
+				dc->hwss.enable_audio_stream(pipe_ctx);
+			}
 
-	/* eDP lit up by bios already, no need to enable again. */
-	if (pipe_ctx->stream->signal == SIGNAL_TYPE_EDP &&
-				apply_edp_fast_boot_optimization &&
-				!pipe_ctx->stream->timing.flags.DSC &&
-				!pipe_ctx->next_odm_pipe) {
-		pipe_ctx->stream->dpms_off = false;
-		update_psp_stream_config(pipe_ctx, false);
-
-		if (link->is_dds) {
-			uint32_t post_oui_delay = 30; // 30ms
-
-			dpcd_set_source_specific_data(link);
-			msleep(post_oui_delay);
-		}
-
-		return;
-	}
-
-	if (pipe_ctx->stream->dpms_off)
-		return;
-
-	/* For Dp tunneling link, a pending HPD means that we have a race condition between processing
-	 * current link and processing the pending HPD. If we enable the link now, we may end up with a
-	 * link that is not actually connected to a sink. So we skip enabling the link in this case.
-	 */
-	if (link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA && link->is_hpd_pending) {
-		DC_LOG_DEBUG("%s, Link%d HPD is pending, not enable it.\n", __func__, link->link_index);
-		return;
-	}
-
-	/* Have to setup DSC before DIG FE and BE are connected (which happens before the
-	 * link training). This is to make sure the bandwidth sent to DIG BE won't be
-	 * bigger than what the link and/or DIG BE can handle. VBID[6]/CompressedStream_flag
-	 * will be automatically set at a later time when the video is enabled
-	 * (DP_VID_STREAM_EN = 1).
-	 */
-	if (pipe_ctx->stream->timing.flags.DSC) {
-		if (dc_is_dp_signal(pipe_ctx->stream->signal) ||
-		    dc_is_virtual_signal(pipe_ctx->stream->signal))
-			link_set_dsc_enable(pipe_ctx, true);
-	}
-
-	if (link->replay_settings.config.replay_supported && !dc_is_embedded_signal(link->connector_signal))
-		dp_setup_replay(link, stream);
-
-	status = enable_link(state, pipe_ctx);
-
-	if (status != DC_OK) {
-		DC_LOG_WARNING("enabling link %u failed: %d\n",
-		pipe_ctx->stream->link->link_index,
-		status);
-
-		/* Abort stream enable *unless* the failure was due to
-		 * DP link training - some DP monitors will recover and
-		 * show the stream anyway. But MST displays can't proceed
-		 * without link training.
-		 */
-		if (status != DC_FAIL_DP_LINK_TRAINING ||
-				pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST) {
-			if (false == stream->link->link_status.link_active)
-				disable_link(stream->link, &pipe_ctx->link_res,
-						pipe_ctx->stream->signal);
-			BREAK_TO_DEBUGGER();
+#if defined(CONFIG_DRM_AMD_DC_HDCP)
+			update_psp_stream_config(pipe_ctx, false);
+#endif
 			return;
 		}
-	}
 
-	/* turn off otg test pattern if enable */
-	if (pipe_ctx->stream_res.tg->funcs->set_test_pattern)
-		pipe_ctx->stream_res.tg->funcs->set_test_pattern(pipe_ctx->stream_res.tg,
-				CONTROLLER_DP_TEST_PATTERN_VIDEOMODE,
-				COLOR_DEPTH_UNDEFINED);
+		/* eDP lit up by bios already, no need to enable again. */
+		if (pipe_ctx->stream->signal == SIGNAL_TYPE_EDP &&
+					apply_edp_fast_boot_optimization &&
+					!pipe_ctx->stream->timing.flags.DSC &&
+					!pipe_ctx->next_odm_pipe) {
+			pipe_ctx->stream->dpms_off = false;
+#if defined(CONFIG_DRM_AMD_DC_HDCP)
+			update_psp_stream_config(pipe_ctx, false);
+#endif
+			return;
+		}
 
-	/* This second call is needed to reconfigure the DIG
-	 * as a workaround for the incorrect value being applied
-	 * from transmitter control.
-	 */
-	if (!(dc_is_virtual_signal(pipe_ctx->stream->signal) ||
-			dp_is_128b_132b_signal(pipe_ctx))) {
+		if (pipe_ctx->stream->dpms_off)
+			return;
 
+		/* Have to setup DSC before DIG FE and BE are connected (which happens before the
+		 * link training). This is to make sure the bandwidth sent to DIG BE won't be
+		 * bigger than what the link and/or DIG BE can handle. VBID[6]/CompressedStream_flag
+		 * will be automatically set at a later time when the video is enabled
+		 * (DP_VID_STREAM_EN = 1).
+		 */
+		if (pipe_ctx->stream->timing.flags.DSC) {
+			if (dc_is_dp_signal(pipe_ctx->stream->signal) ||
+				dc_is_virtual_signal(pipe_ctx->stream->signal))
+			link_set_dsc_enable(pipe_ctx, true);
+
+		}
+
+		status = enable_link(state, pipe_ctx);
+
+		if (status != DC_OK) {
+			DC_LOG_WARNING("enabling link %u failed: %d\n",
+			pipe_ctx->stream->link->link_index,
+			status);
+
+			/* Abort stream enable *unless* the failure was due to
+			 * DP link training - some DP monitors will recover and
+			 * show the stream anyway. But MST displays can't proceed
+			 * without link training.
+			 */
+			if (status != DC_FAIL_DP_LINK_TRAINING ||
+					pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST) {
+				if (false == stream->link->link_status.link_active)
+					disable_link(stream->link, &pipe_ctx->link_res,
+							pipe_ctx->stream->signal);
+				BREAK_TO_DEBUGGER();
+				return;
+			}
+		}
+
+		/* turn off otg test pattern if enable */
+		if (pipe_ctx->stream_res.tg->funcs->set_test_pattern)
+			pipe_ctx->stream_res.tg->funcs->set_test_pattern(pipe_ctx->stream_res.tg,
+					CONTROLLER_DP_TEST_PATTERN_VIDEOMODE,
+					COLOR_DEPTH_UNDEFINED);
+
+		/* This second call is needed to reconfigure the DIG
+		 * as a workaround for the incorrect value being applied
+		 * from transmitter control.
+		 */
+		if (!(dc_is_virtual_signal(pipe_ctx->stream->signal) ||
+				link_is_dp_128b_132b_signal(pipe_ctx)))
 			if (link_enc)
 				link_enc->funcs->setup(
 					link_enc,
 					pipe_ctx->stream->signal);
 
+		dc->hwss.enable_stream(pipe_ctx);
+
+		/* Set DPS PPS SDP (AKA "info frames") */
+		if (pipe_ctx->stream->timing.flags.DSC) {
+			if (dc_is_dp_signal(pipe_ctx->stream->signal) ||
+					dc_is_virtual_signal(pipe_ctx->stream->signal)) {
+				dp_set_dsc_on_rx(pipe_ctx, true);
+				link_set_dsc_pps_packet(pipe_ctx, true, true);
+			}
 		}
 
-	dc->hwss.enable_stream(pipe_ctx);
+		if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST)
+			allocate_mst_payload(pipe_ctx);
+		else if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT &&
+				link_is_dp_128b_132b_signal(pipe_ctx))
+			update_sst_payload(pipe_ctx, true);
 
-	/* Set DPS PPS SDP (AKA "info frames") */
-	if (pipe_ctx->stream->timing.flags.DSC) {
+		dc->hwss.unblank_stream(pipe_ctx,
+			&pipe_ctx->stream->link->cur_link_settings);
+
+		if (stream->sink_patches.delay_ignore_msa > 0)
+			msleep(stream->sink_patches.delay_ignore_msa);
+
+		if (dc_is_dp_signal(pipe_ctx->stream->signal))
+			enable_stream_features(pipe_ctx);
+#if defined(CONFIG_DRM_AMD_DC_HDCP)
+		update_psp_stream_config(pipe_ctx, false);
+#endif
+
+		dc->hwss.enable_audio_stream(pipe_ctx);
+
+	} else { // if (IS_FPGA_MAXIMUS_DC(dc->ctx->dce_environment))
+		if (link_is_dp_128b_132b_signal(pipe_ctx))
+			dp_fpga_hpo_enable_link_and_stream(state, pipe_ctx);
 		if (dc_is_dp_signal(pipe_ctx->stream->signal) ||
-				dc_is_virtual_signal(pipe_ctx->stream->signal)) {
-			dp_set_dsc_on_rx(pipe_ctx, true);
-			link_set_dsc_pps_packet(pipe_ctx, true, true);
-		}
+				dc_is_virtual_signal(pipe_ctx->stream->signal))
+			link_set_dsc_enable(pipe_ctx, true);
 	}
-
-	if (dc_is_dp_signal(pipe_ctx->stream->signal))
-		dp_set_hblank_reduction_on_rx(pipe_ctx);
-
-	if (pipe_ctx->link_config.dp_tunnel_settings.should_use_dp_bw_allocation)
-		allocate_usb4_bandwidth(pipe_ctx->stream);
-
-	if (pipe_ctx->stream->signal == SIGNAL_TYPE_DISPLAY_PORT_MST)
-		allocate_mst_payload(pipe_ctx);
-	else if (dc_is_dp_sst_signal(pipe_ctx->stream->signal) &&
-			dp_is_128b_132b_signal(pipe_ctx))
-		update_sst_payload(pipe_ctx, true);
-
-	/* Corruption was observed on systems with display mux when stream gets
-	 * enabled after the mux switch. Having a small delay between link
-	 * training and stream unblank resolves the corruption issue.
-	 * This is workaround.
-	 */
-	if (pipe_ctx->stream->signal == SIGNAL_TYPE_EDP &&
-			link->is_display_mux_present)
-		msleep(20);
-
-	dc->hwss.unblank_stream(pipe_ctx,
-		&pipe_ctx->stream->link->cur_link_settings);
-
-	if (stream->sink_patches.delay_ignore_msa > 0)
-		msleep(stream->sink_patches.delay_ignore_msa);
-
-	if (dc_is_dp_signal(pipe_ctx->stream->signal))
-		enable_stream_features(pipe_ctx);
-	update_psp_stream_config(pipe_ctx, false);
-
-	dc->hwss.enable_audio_stream(pipe_ctx);
 
 	if (dc_is_hdmi_signal(pipe_ctx->stream->signal)) {
 		set_avmute(pipe_ctx, false);

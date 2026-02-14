@@ -27,6 +27,7 @@
 
 &ccp0 {
 	status = "okay";
+	amd,zlib-support = <1>;
 };
 
 /**
@@ -58,11 +59,12 @@
 
 &spi1 {
 	status = "okay";
-	sdcard0: mmc@0 {
+	sdcard0: sdcard@0 {
 		compatible = "mmc-spi-slot";
 		reg = <0>;
 		spi-max-frequency = <20000000>;
 		voltage-ranges = <3200 3400>;
+		pl022,hierarchy = <0>;
 		pl022,interface = <0>;
 		pl022,com-mode = <0x0>;
 		pl022,rx-level-trig = <0>;

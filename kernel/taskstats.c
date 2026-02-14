@@ -233,8 +233,9 @@ static int fill_stats_for_tgid(pid_t tgid, struct taskstats *stats)
 	else
 		memset(stats, 0, sizeof(*stats));
 
+	tsk = first;
 	start_time = ktime_get_ns();
-	for_each_thread(first, tsk) {
+	do {
 		if (tsk->exit_state)
 			continue;
 		/*
@@ -257,7 +258,7 @@ static int fill_stats_for_tgid(pid_t tgid, struct taskstats *stats)
 
 		stats->nvcsw += tsk->nvcsw;
 		stats->nivcsw += tsk->nivcsw;
-	}
+	} while_each_thread(first, tsk);
 
 	unlock_task_sighand(first, &flags);
 	rc = 0;
@@ -411,14 +412,15 @@ static int cgroupstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 	struct nlattr *na;
 	size_t size;
 	u32 fd;
+	struct fd f;
 
 	na = info->attrs[CGROUPSTATS_CMD_ATTR_FD];
 	if (!na)
 		return -EINVAL;
 
 	fd = nla_get_u32(info->attrs[CGROUPSTATS_CMD_ATTR_FD]);
-	CLASS(fd, f)(fd);
-	if (fd_empty(f))
+	f = fdget(fd);
+	if (!f.file)
 		return 0;
 
 	size = nla_total_size(sizeof(struct cgroupstats));
@@ -426,25 +428,30 @@ static int cgroupstats_user_cmd(struct sk_buff *skb, struct genl_info *info)
 	rc = prepare_reply(info, CGROUPSTATS_CMD_NEW, &rep_skb,
 				size);
 	if (rc < 0)
-		return rc;
+		goto err;
 
 	na = nla_reserve(rep_skb, CGROUPSTATS_TYPE_CGROUP_STATS,
 				sizeof(struct cgroupstats));
 	if (na == NULL) {
 		nlmsg_free(rep_skb);
-		return -EMSGSIZE;
+		rc = -EMSGSIZE;
+		goto err;
 	}
 
 	stats = nla_data(na);
 	memset(stats, 0, sizeof(*stats));
 
-	rc = cgroupstats_build(stats, fd_file(f)->f_path.dentry);
+	rc = cgroupstats_build(stats, f.file->f_path.dentry);
 	if (rc < 0) {
 		nlmsg_free(rep_skb);
-		return rc;
+		goto err;
 	}
 
-	return send_reply(rep_skb, info);
+	rc = send_reply(rep_skb, info);
+
+err:
+	fdput(f);
+	return rc;
 }
 
 static int cmd_attr_register_cpumask(struct genl_info *info)

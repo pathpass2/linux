@@ -50,7 +50,8 @@ properties:
       - const: clk_ahb
       - const: clk_xin
 
-  dma-coherent: true
+  dma-coherent:
+    type: boolean
 
   # PHY output tap delays:
   # Used to delay the data valid window and align it to the sampling clock.

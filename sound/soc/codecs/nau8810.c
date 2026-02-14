@@ -164,12 +164,11 @@ static bool nau8810_volatile_reg(struct device *dev, unsigned int reg)
 static int nau8810_eq_get(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct nau8810 *nau8810 = snd_soc_component_get_drvdata(component);
 	struct soc_bytes_ext *params = (void *)kcontrol->private_value;
 	int i, reg, reg_val;
 	u16 *val;
-	__be16 tmp;
 
 	val = (u16 *)ucontrol->value.bytes.data;
 	reg = NAU8810_REG_EQ1;
@@ -178,8 +177,8 @@ static int nau8810_eq_get(struct snd_kcontrol *kcontrol,
 		/* conversion of 16-bit integers between native CPU format
 		 * and big endian format
 		 */
-		tmp = cpu_to_be16(reg_val);
-		memcpy(val + i, &tmp, sizeof(tmp));
+		reg_val = cpu_to_be16(reg_val);
+		memcpy(val + i, &reg_val, sizeof(reg_val));
 	}
 
 	return 0;
@@ -196,13 +195,12 @@ static int nau8810_eq_get(struct snd_kcontrol *kcontrol,
 static int nau8810_eq_put(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct nau8810 *nau8810 = snd_soc_component_get_drvdata(component);
 	struct soc_bytes_ext *params = (void *)kcontrol->private_value;
 	void *data;
 	u16 *val, value;
 	int i, reg, ret;
-	__be16 *tmp;
 
 	data = kmemdup(ucontrol->value.bytes.data,
 		params->max, GFP_KERNEL | GFP_DMA);
@@ -215,8 +213,7 @@ static int nau8810_eq_put(struct snd_kcontrol *kcontrol,
 		/* conversion of 16-bit integers between native CPU format
 		 * and big endian format
 		 */
-		tmp = (__be16 *)(val + i);
-		value = be16_to_cpup(tmp);
+		value = be16_to_cpu(*(val + i));
 		ret = regmap_write(nau8810->regmap, reg + i, value);
 		if (ret) {
 			dev_err(component->dev, "EQ configuration fail, register: %x ret: %d\n",
@@ -613,10 +610,10 @@ static int nau8810_set_dai_fmt(struct snd_soc_dai *codec_dai,
 	u16 ctrl1_val = 0, ctrl2_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		ctrl2_val |= NAU8810_CLKIO_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		break;
 	default:
 		return -EINVAL;
@@ -775,7 +772,6 @@ static int nau8810_pcm_hw_params(struct snd_pcm_substream *substream,
 static int nau8810_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct nau8810 *nau8810 = snd_soc_component_get_drvdata(component);
 	struct regmap *map = nau8810->regmap;
 
@@ -791,7 +787,7 @@ static int nau8810_set_bias_level(struct snd_soc_component *component,
 			NAU8810_IOBUF_EN | NAU8810_ABIAS_EN,
 			NAU8810_IOBUF_EN | NAU8810_ABIAS_EN);
 
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			regcache_sync(map);
 			regmap_update_bits(map, NAU8810_REG_POWER1,
 				NAU8810_REFIMP_MASK, NAU8810_REFIMP_3K);
@@ -896,9 +892,9 @@ static int nau8810_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id nau8810_i2c_id[] = {
-	{ "nau8810" },
-	{ "nau8812" },
-	{ "nau8814" },
+	{ "nau8810", 0 },
+	{ "nau8812", 0 },
+	{ "nau8814", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, nau8810_i2c_id);
@@ -918,7 +914,7 @@ static struct i2c_driver nau8810_i2c_driver = {
 		.name = "nau8810",
 		.of_match_table = of_match_ptr(nau8810_of_match),
 	},
-	.probe = nau8810_i2c_probe,
+	.probe_new = nau8810_i2c_probe,
 	.id_table = nau8810_i2c_id,
 };
 

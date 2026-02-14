@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 %YAML 1.2
 ---
-$id: http://devicetree.org/schemas/serial/renesas,sci.yaml#
-$schema: http://devicetree.org/meta-schemas/core.yaml#
+$id: "http://devicetree.org/schemas/serial/renesas,sci.yaml#"
+$schema: "http://devicetree.org/meta-schemas/core.yaml#"
 
 title: Renesas Serial Communication Interface
 
@@ -17,7 +17,7 @@ properties:
     oneOf:
       - items:
           - enum:
-              - renesas,r9a07g043-sci     # RZ/G2UL and RZ/Five
+              - renesas,r9a07g043-sci     # RZ/G2UL
               - renesas,r9a07g044-sci     # RZ/G2{L,LC}
               - renesas,r9a07g054-sci     # RZ/V2L
           - const: renesas,sci            # generic SCI compatible UART

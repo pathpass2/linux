@@ -305,15 +305,9 @@ static size_t parport_pc_epp_read_data(struct parport *port, void *buf,
 		}
 		return got;
 	}
-	if ((length > 1) && ((flags & PARPORT_EPP_FAST_32)
-			   || flags & PARPORT_EPP_FAST_16
-			   || flags & PARPORT_EPP_FAST_8)) {
-		if ((flags & PARPORT_EPP_FAST_32)
-		    && !(((long)buf | length) & 0x03))
+	if ((flags & PARPORT_EPP_FAST) && (length > 1)) {
+		if (!(((long)buf | length) & 0x03))
 			insl(EPPDATA(port), buf, (length >> 2));
-		else if ((flags & PARPORT_EPP_FAST_16)
-			 && !(((long)buf | length) & 0x01))
-			insw(EPPDATA(port), buf, length >> 1);
 		else
 			insb(EPPDATA(port), buf, length);
 		if (inb(STATUS(port)) & 0x01) {
@@ -340,15 +334,9 @@ static size_t parport_pc_epp_write_data(struct parport *port, const void *buf,
 {
 	size_t written = 0;
 
-	if ((length > 1) && ((flags & PARPORT_EPP_FAST_32)
-			   || flags & PARPORT_EPP_FAST_16
-			   || flags & PARPORT_EPP_FAST_8)) {
-		if ((flags & PARPORT_EPP_FAST_32)
-		    && !(((long)buf | length) & 0x03))
+	if ((flags & PARPORT_EPP_FAST) && (length > 1)) {
+		if (!(((long)buf | length) & 0x03))
 			outsl(EPPDATA(port), buf, (length >> 2));
-		else if ((flags & PARPORT_EPP_FAST_16)
-			 && !(((long)buf | length) & 0x01))
-			outsw(EPPDATA(port), buf, length >> 1);
 		else
 			outsb(EPPDATA(port), buf, length);
 		if (inb(STATUS(port)) & 0x01) {
@@ -2655,11 +2643,8 @@ enum parport_pc_pci_cards {
 	netmos_9815,
 	netmos_9901,
 	netmos_9865,
-	asix_ax99100,
 	quatech_sppxp100,
 	wch_ch382l,
-	brainboxes_uc146,
-	brainboxes_px203,
 };
 
 
@@ -2736,11 +2721,8 @@ static struct parport_pc_pci {
 	/* netmos_9815 */		{ 2, { { 0, 1 }, { 2, 3 }, } },
 	/* netmos_9901 */               { 1, { { 0, -1 }, } },
 	/* netmos_9865 */               { 1, { { 0, -1 }, } },
-	/* asix_ax99100 */		{ 1, { { 0, 1 }, } },
 	/* quatech_sppxp100 */		{ 1, { { 0, 1 }, } },
 	/* wch_ch382l */		{ 1, { { 2, -1 }, } },
-	/* brainboxes_uc146 */	{ 1, { { 3, -1 }, } },
-	/* brainboxes_px203 */	{ 1, { { 0, -1 }, } },
 };
 
 static const struct pci_device_id parport_pc_pci_tbl[] = {
@@ -2829,31 +2811,11 @@ static const struct pci_device_id parport_pc_pci_tbl[] = {
 	  0xA000, 0x1000, 0, 0, netmos_9865 },
 	{ PCI_VENDOR_ID_NETMOS, PCI_DEVICE_ID_NETMOS_9865,
 	  0xA000, 0x2000, 0, 0, netmos_9865 },
-	/* ASIX AX99100 PCIe to Multi I/O Controller */
-	{ PCI_VENDOR_ID_ASIX, PCI_DEVICE_ID_ASIX_AX99100,
-	  0xA000, 0x2000, 0, 0, asix_ax99100 },
 	/* Quatech SPPXP-100 Parallel port PCI ExpressCard */
 	{ PCI_VENDOR_ID_QUATECH, PCI_DEVICE_ID_QUATECH_SPPXP_100,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, quatech_sppxp100 },
 	/* WCH CH382L PCI-E single parallel port card */
 	{ 0x1c00, 0x3050, 0x1c00, 0x3050, 0, 0, wch_ch382l },
-	/* Brainboxes IX-500/550 */
-	{ PCI_VENDOR_ID_INTASHIELD, 0x402a,
-	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
-	/* Brainboxes UC-146/UC-157 */
-	{ PCI_VENDOR_ID_INTASHIELD, 0x0be1,
-	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, brainboxes_uc146 },
-	{ PCI_VENDOR_ID_INTASHIELD, 0x0be2,
-	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, brainboxes_uc146 },
-	/* Brainboxes PX-146/PX-257 */
-	{ PCI_VENDOR_ID_INTASHIELD, 0x401c,
-	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
-	/* Brainboxes PX-203 */
-	{ PCI_VENDOR_ID_INTASHIELD, 0x4007,
-	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, brainboxes_px203 },
-	/* Brainboxes PX-475 */
-	{ PCI_VENDOR_ID_INTASHIELD, 0x401f,
-	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
 	{ 0, } /* terminate list */
 };
 MODULE_DEVICE_TABLE(pci, parport_pc_pci_tbl);

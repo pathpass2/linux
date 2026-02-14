@@ -239,7 +239,7 @@ static int delta_mjpeg_ipc_open(struct delta_ctx *pctx)
 	return 0;
 }
 
-static int delta_mjpeg_ipc_decode(struct delta_ctx *pctx, dma_addr_t pstart, dma_addr_t pend)
+static int delta_mjpeg_ipc_decode(struct delta_ctx *pctx, struct delta_au *au)
 {
 	struct delta_dev *delta = pctx->dev;
 	struct delta_mjpeg_ctx *ctx = to_ctx(pctx);
@@ -256,8 +256,8 @@ static int delta_mjpeg_ipc_decode(struct delta_ctx *pctx, dma_addr_t pstart, dma
 
 	memset(params, 0, sizeof(*params));
 
-	params->picture_start_addr_p = pstart;
-	params->picture_end_addr_p = pend;
+	params->picture_start_addr_p = (u32)(au->paddr);
+	params->picture_end_addr_p = (u32)(au->paddr + au->size - 1);
 
 	/*
 	 * !WARNING!
@@ -374,14 +374,12 @@ static int delta_mjpeg_decode(struct delta_ctx *pctx, struct delta_au *pau)
 	struct delta_dev *delta = pctx->dev;
 	struct delta_mjpeg_ctx *ctx = to_ctx(pctx);
 	int ret;
-	void *au_vaddr = pau->vaddr;
-	dma_addr_t au_dma = pau->paddr;
-	size_t au_size = pau->size;
+	struct delta_au au = *pau;
 	unsigned int data_offset = 0;
 	struct mjpeg_header *header = &ctx->header_struct;
 
 	if (!ctx->header) {
-		ret = delta_mjpeg_read_header(pctx, au_vaddr, au_size,
+		ret = delta_mjpeg_read_header(pctx, au.vaddr, au.size,
 					      header, &data_offset);
 		if (ret) {
 			pctx->stream_errors++;
@@ -407,17 +405,17 @@ static int delta_mjpeg_decode(struct delta_ctx *pctx, struct delta_au *pau)
 			goto err;
 	}
 
-	ret = delta_mjpeg_read_header(pctx, au_vaddr, au_size,
+	ret = delta_mjpeg_read_header(pctx, au.vaddr, au.size,
 				      ctx->header, &data_offset);
 	if (ret) {
 		pctx->stream_errors++;
 		goto err;
 	}
 
-	au_dma += data_offset;
-	au_vaddr += data_offset;
+	au.paddr += data_offset;
+	au.vaddr += data_offset;
 
-	ret = delta_mjpeg_ipc_decode(pctx, au_dma, au_dma + au_size - 1);
+	ret = delta_mjpeg_ipc_decode(pctx, &au);
 	if (ret)
 		goto err;
 

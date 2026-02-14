@@ -161,7 +161,6 @@ See the include/linux/kmemleak.h header for the functions prototype.
 - ``kmemleak_free_percpu``	 - notify of a percpu memory block freeing
 - ``kmemleak_update_trace``	 - update object allocation stack trace
 - ``kmemleak_not_leak``	 - mark an object as not a leak
-- ``kmemleak_transient_leak``	 - mark an object as a transient leak
 - ``kmemleak_ignore``		 - do not scan or report an object as leak
 - ``kmemleak_scan_area``	 - add scan areas inside a memory block
 - ``kmemleak_no_scan``	 - do not scan a memory block
@@ -228,7 +227,7 @@ Testing with kmemleak-test
 --------------------------
 
 To check if you have all set up to use kmemleak, you can use the kmemleak-test
-module, a module that deliberately leaks memory. Set CONFIG_SAMPLE_KMEMLEAK
+module, a module that deliberately leaks memory. Set CONFIG_DEBUG_KMEMLEAK_TEST
 as module (it can't be used as built-in) and boot the kernel with kmemleak
 enabled. Load the module and perform a scan with::
 

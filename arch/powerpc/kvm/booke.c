@@ -283,10 +283,9 @@ void kvmppc_core_queue_dtlb_miss(struct kvm_vcpu *vcpu,
 	kvmppc_booke_queue_irqprio(vcpu, BOOKE_IRQPRIO_DTLB_MISS);
 }
 
-void kvmppc_core_queue_data_storage(struct kvm_vcpu *vcpu, ulong srr1_flags,
+void kvmppc_core_queue_data_storage(struct kvm_vcpu *vcpu,
 				    ulong dear_flags, ulong esr_flags)
 {
-	WARN_ON_ONCE(srr1_flags);
 	vcpu->arch.queued_dear = dear_flags;
 	vcpu->arch.queued_esr = esr_flags;
 	kvmppc_booke_queue_irqprio(vcpu, BOOKE_IRQPRIO_DATA_STORAGE);
@@ -317,16 +316,14 @@ void kvmppc_core_queue_program(struct kvm_vcpu *vcpu, ulong esr_flags)
 	kvmppc_booke_queue_irqprio(vcpu, BOOKE_IRQPRIO_PROGRAM);
 }
 
-void kvmppc_core_queue_fpunavail(struct kvm_vcpu *vcpu, ulong srr1_flags)
+void kvmppc_core_queue_fpunavail(struct kvm_vcpu *vcpu)
 {
-	WARN_ON_ONCE(srr1_flags);
 	kvmppc_booke_queue_irqprio(vcpu, BOOKE_IRQPRIO_FP_UNAVAIL);
 }
 
 #ifdef CONFIG_ALTIVEC
-void kvmppc_core_queue_vec_unavail(struct kvm_vcpu *vcpu, ulong srr1_flags)
+void kvmppc_core_queue_vec_unavail(struct kvm_vcpu *vcpu)
 {
-	WARN_ON_ONCE(srr1_flags);
 	kvmppc_booke_queue_irqprio(vcpu, BOOKE_IRQPRIO_ALTIVEC_UNAVAIL);
 }
 #endif
@@ -572,7 +569,7 @@ static int kvmppc_booke_irqprio_deliver(struct kvm_vcpu *vcpu,
 
 /*
  * Return the number of jiffies until the next timeout.  If the timeout is
- * longer than the TIMER_NEXT_MAX_DELTA, then return TIMER_NEXT_MAX_DELTA
+ * longer than the NEXT_TIMER_MAX_DELTA, then return NEXT_TIMER_MAX_DELTA
  * because the larger value can break the timer APIs.
  */
 static unsigned long watchdog_next_timeout(struct kvm_vcpu *vcpu)
@@ -598,7 +595,7 @@ static unsigned long watchdog_next_timeout(struct kvm_vcpu *vcpu)
 	if (do_div(nr_jiffies, tb_ticks_per_jiffy))
 		nr_jiffies++;
 
-	return min_t(unsigned long long, nr_jiffies, TIMER_NEXT_MAX_DELTA);
+	return min_t(unsigned long long, nr_jiffies, NEXT_TIMER_MAX_DELTA);
 }
 
 static void arm_next_watchdog(struct kvm_vcpu *vcpu)
@@ -616,19 +613,19 @@ static void arm_next_watchdog(struct kvm_vcpu *vcpu)
 	spin_lock_irqsave(&vcpu->arch.wdt_lock, flags);
 	nr_jiffies = watchdog_next_timeout(vcpu);
 	/*
-	 * If the number of jiffies of watchdog timer >= TIMER_NEXT_MAX_DELTA
+	 * If the number of jiffies of watchdog timer >= NEXT_TIMER_MAX_DELTA
 	 * then do not run the watchdog timer as this can break timer APIs.
 	 */
-	if (nr_jiffies < TIMER_NEXT_MAX_DELTA)
+	if (nr_jiffies < NEXT_TIMER_MAX_DELTA)
 		mod_timer(&vcpu->arch.wdt_timer, jiffies + nr_jiffies);
 	else
-		timer_delete(&vcpu->arch.wdt_timer);
+		del_timer(&vcpu->arch.wdt_timer);
 	spin_unlock_irqrestore(&vcpu->arch.wdt_lock, flags);
 }
 
-static void kvmppc_watchdog_func(struct timer_list *t)
+void kvmppc_watchdog_func(struct timer_list *t)
 {
-	struct kvm_vcpu *vcpu = timer_container_of(vcpu, t, arch.wdt_timer);
+	struct kvm_vcpu *vcpu = from_timer(vcpu, t, arch.wdt_timer);
 	u32 tsr, new_tsr;
 	int final;
 
@@ -844,7 +841,7 @@ static int emulation_exit(struct kvm_vcpu *vcpu)
 		return RESUME_GUEST;
 
 	case EMULATE_FAIL:
-		printk(KERN_CRIT "%s: emulation at %lx failed (%08lx)\n",
+		printk(KERN_CRIT "%s: emulation at %lx failed (%08x)\n",
 		       __func__, vcpu->arch.regs.nip, vcpu->arch.last_inst);
 		/* For debugging, encode the failing instruction and
 		 * report it to userspace. */
@@ -1003,7 +1000,7 @@ static int kvmppc_resume_inst_load(struct kvm_vcpu *vcpu,
 	}
 }
 
-/*
+/**
  * kvmppc_handle_exit
  *
  * Return value is in the form (errcode<<2 | RESUME_FLAG_HOST | RESUME_FLAG_NV)
@@ -1015,7 +1012,6 @@ int kvmppc_handle_exit(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 	int s;
 	int idx;
 	u32 last_inst = KVM_INST_FETCH_FAILED;
-	ppc_inst_t pinst;
 	enum emulation_result emulated = EMULATE_DONE;
 
 	/* Fix irq state (pairs with kvmppc_fix_ee_before_entry()) */
@@ -1035,15 +1031,12 @@ int kvmppc_handle_exit(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 	case BOOKE_INTERRUPT_DATA_STORAGE:
 	case BOOKE_INTERRUPT_DTLB_MISS:
 	case BOOKE_INTERRUPT_HV_PRIV:
-		emulated = kvmppc_get_last_inst(vcpu, INST_GENERIC, &pinst);
-		last_inst = ppc_inst_val(pinst);
+		emulated = kvmppc_get_last_inst(vcpu, INST_GENERIC, &last_inst);
 		break;
 	case BOOKE_INTERRUPT_PROGRAM:
 		/* SW breakpoints arrive as illegal instructions on HV */
-		if (vcpu->guest_debug & KVM_GUESTDBG_USE_SW_BP) {
-			emulated = kvmppc_get_last_inst(vcpu, INST_GENERIC, &pinst);
-			last_inst = ppc_inst_val(pinst);
-		}
+		if (vcpu->guest_debug & KVM_GUESTDBG_USE_SW_BP)
+			emulated = kvmppc_get_last_inst(vcpu, INST_GENERIC, &last_inst);
 		break;
 	default:
 		break;
@@ -1232,7 +1225,7 @@ int kvmppc_handle_exit(struct kvm_vcpu *vcpu, unsigned int exit_nr)
 #endif
 
 	case BOOKE_INTERRUPT_DATA_STORAGE:
-		kvmppc_core_queue_data_storage(vcpu, 0, vcpu->arch.fault_dear,
+		kvmppc_core_queue_data_storage(vcpu, vcpu->arch.fault_dear,
 		                               vcpu->arch.fault_esr);
 		kvmppc_account_exit(vcpu, DSI_EXITS);
 		r = RESUME_GUEST;
@@ -1441,7 +1434,7 @@ int kvmppc_subarch_vcpu_init(struct kvm_vcpu *vcpu)
 
 void kvmppc_subarch_vcpu_uninit(struct kvm_vcpu *vcpu)
 {
-	timer_delete_sync(&vcpu->arch.wdt_timer);
+	del_timer_sync(&vcpu->arch.wdt_timer);
 }
 
 int kvm_arch_vcpu_ioctl_get_regs(struct kvm_vcpu *vcpu, struct kvm_regs *regs)
@@ -1953,8 +1946,7 @@ static int kvmppc_booke_add_watchpoint(struct debug_reg *dbg_reg, uint64_t addr,
 	dbg_reg->dbcr0 |= DBCR0_IDM;
 	return 0;
 }
-static void kvm_guest_protect_msr(struct kvm_vcpu *vcpu, ulong prot_bitmap,
-				  bool set)
+void kvm_guest_protect_msr(struct kvm_vcpu *vcpu, ulong prot_bitmap, bool set)
 {
 	/* XXX: Add similar MSR protection for BookE-PR */
 #ifdef CONFIG_KVM_BOOKE_HV

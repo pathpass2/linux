@@ -215,7 +215,8 @@ check_hybrid:
 		sz = le32_to_cpu(mbr->partition_record[part].size_in_lba);
 		if (sz != (uint32_t) total_sectors - 1 && sz != 0xFFFFFFFF)
 			pr_debug("GPT: mbr size in lba (%u) different than whole disk (%u).\n",
-				 sz, (uint32_t)min(total_sectors - 1, 0xFFFFFFFF));
+				 sz, min_t(uint32_t,
+					   total_sectors - 1, 0xFFFFFFFF));
 	}
 done:
 	return ret;
@@ -681,7 +682,7 @@ static void utf16_le_to_7bit(const __le16 *in, unsigned int size, u8 *out)
 	out[size] = 0;
 
 	while (i < size) {
-		u8 c = le16_to_cpu(in[i]) & 0x7f;
+		u8 c = le16_to_cpu(in[i]) & 0xff;
 
 		if (c && !isprint(c))
 			c = '!';

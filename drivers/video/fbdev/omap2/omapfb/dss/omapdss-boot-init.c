@@ -149,7 +149,8 @@ static void __init omapdss_walk_device(struct device_node *node, bool root)
 
 	of_node_put(n);
 
-	for_each_endpoint_of_node(node, n) {
+	n = NULL;
+	while ((n = of_graph_get_next_endpoint(node, n)) != NULL) {
 		struct device_node *pn;
 
 		pn = of_graph_get_remote_port_parent(n);

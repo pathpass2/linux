@@ -53,7 +53,7 @@ int iio_simple_dummy_write_event_config(struct iio_dev *indio_dev,
 					const struct iio_chan_spec *chan,
 					enum iio_event_type type,
 					enum iio_event_direction dir,
-					bool state)
+					int state)
 {
 	struct iio_dummy_state *st = iio_priv(indio_dev);
 
@@ -183,34 +183,36 @@ static irqreturn_t iio_simple_dummy_event_handler(int irq, void *private)
 	switch (st->regs->reg_data) {
 	case 0:
 		iio_push_event(indio_dev,
-			       IIO_UNMOD_EVENT_CODE(IIO_VOLTAGE, 0,
-						    IIO_EV_TYPE_THRESH,
-						    IIO_EV_DIR_RISING),
+			       IIO_EVENT_CODE(IIO_VOLTAGE, 0, 0,
+					      IIO_EV_DIR_RISING,
+					      IIO_EV_TYPE_THRESH, 0, 0, 0),
 			       st->event_timestamp);
 		break;
 	case 1:
 		if (st->activity_running > st->event_val)
 			iio_push_event(indio_dev,
-				       IIO_MOD_EVENT_CODE(IIO_ACTIVITY, 0,
-							  IIO_MOD_RUNNING,
-							  IIO_EV_TYPE_THRESH,
-							  IIO_EV_DIR_RISING),
+				       IIO_EVENT_CODE(IIO_ACTIVITY, 0,
+						      IIO_MOD_RUNNING,
+						      IIO_EV_DIR_RISING,
+						      IIO_EV_TYPE_THRESH,
+						      0, 0, 0),
 				       st->event_timestamp);
 		break;
 	case 2:
 		if (st->activity_walking < st->event_val)
 			iio_push_event(indio_dev,
-				       IIO_MOD_EVENT_CODE(IIO_ACTIVITY, 0,
-							  IIO_MOD_WALKING,
-							  IIO_EV_TYPE_THRESH,
-							  IIO_EV_DIR_FALLING),
+				       IIO_EVENT_CODE(IIO_ACTIVITY, 0,
+						      IIO_MOD_WALKING,
+						      IIO_EV_DIR_FALLING,
+						      IIO_EV_TYPE_THRESH,
+						      0, 0, 0),
 				       st->event_timestamp);
 		break;
 	case 3:
 		iio_push_event(indio_dev,
-			       IIO_UNMOD_EVENT_CODE(IIO_STEPS, 0,
-						    IIO_EV_TYPE_CHANGE,
-						    IIO_EV_DIR_NONE),
+			       IIO_EVENT_CODE(IIO_STEPS, 0, IIO_NO_MOD,
+					      IIO_EV_DIR_NONE,
+					      IIO_EV_TYPE_CHANGE, 0, 0, 0),
 			       st->event_timestamp);
 		break;
 	default:

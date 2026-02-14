@@ -30,6 +30,7 @@ static struct dentry *rootdir;
 struct b43_debugfs_fops {
 	ssize_t (*read)(struct b43_wldev *dev, char *buf, size_t bufsize);
 	int (*write)(struct b43_wldev *dev, const char *buf, size_t count);
+	struct file_operations fops;
 	/* Offset of struct b43_dfs_file in struct b43_dfsentry */
 	size_t file_struct_offset;
 };
@@ -490,7 +491,7 @@ static ssize_t b43_debugfs_read(struct file *file, char __user *userbuf,
 				size_t count, loff_t *ppos)
 {
 	struct b43_wldev *dev;
-	const struct b43_debugfs_fops *dfops;
+	struct b43_debugfs_fops *dfops;
 	struct b43_dfs_file *dfile;
 	ssize_t ret;
 	char *buf;
@@ -510,7 +511,8 @@ static ssize_t b43_debugfs_read(struct file *file, char __user *userbuf,
 		goto out_unlock;
 	}
 
-	dfops = debugfs_get_aux(file);
+	dfops = container_of(debugfs_real_fops(file),
+			     struct b43_debugfs_fops, fops);
 	if (!dfops->read) {
 		err = -ENOSYS;
 		goto out_unlock;
@@ -553,7 +555,7 @@ static ssize_t b43_debugfs_write(struct file *file,
 				 size_t count, loff_t *ppos)
 {
 	struct b43_wldev *dev;
-	const struct b43_debugfs_fops *dfops;
+	struct b43_debugfs_fops *dfops;
 	char *buf;
 	int err = 0;
 
@@ -571,7 +573,8 @@ static ssize_t b43_debugfs_write(struct file *file,
 		goto out_unlock;
 	}
 
-	dfops = debugfs_get_aux(file);
+	dfops = container_of(debugfs_real_fops(file),
+			     struct b43_debugfs_fops, fops);
 	if (!dfops->write) {
 		err = -ENOSYS;
 		goto out_unlock;
@@ -599,16 +602,16 @@ out_unlock:
 }
 
 
-static struct debugfs_short_fops debugfs_ops = {
-	.read	= b43_debugfs_read,
-	.write	= b43_debugfs_write,
-	.llseek = generic_file_llseek,
-};
-
 #define B43_DEBUGFS_FOPS(name, _read, _write)			\
 	static struct b43_debugfs_fops fops_##name = {		\
 		.read	= _read,				\
 		.write	= _write,				\
+		.fops	= {					\
+			.open	= simple_open,			\
+			.read	= b43_debugfs_read,		\
+			.write	= b43_debugfs_write,		\
+			.llseek = generic_file_llseek,		\
+		},						\
 		.file_struct_offset = offsetof(struct b43_dfsentry, \
 					       file_##name),	\
 	}
@@ -700,9 +703,9 @@ void b43_debugfs_add_device(struct b43_wldev *dev)
 
 #define ADD_FILE(name, mode)	\
 	do {							\
-		debugfs_create_file_aux(__stringify(name),	\
+		debugfs_create_file(__stringify(name),		\
 				mode, e->subdir, dev,		\
-				&fops_##name, &debugfs_ops);	\
+				&fops_##name.fops);		\
 	} while (0)
 
 

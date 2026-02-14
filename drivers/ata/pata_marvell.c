@@ -92,14 +92,14 @@ static int marvell_cable_detect(struct ata_port *ap)
 
 /* No PIO or DMA methods needed for this device */
 
-static const struct scsi_host_template marvell_sht = {
+static struct scsi_host_template marvell_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
 static struct ata_port_operations marvell_ops = {
 	.inherits		= &ata_bmdma_port_ops,
 	.cable_detect		= marvell_cable_detect,
-	.reset.prereset		= marvell_pre_reset,
+	.prereset		= marvell_pre_reset,
 };
 
 

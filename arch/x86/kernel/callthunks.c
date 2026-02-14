@@ -15,6 +15,7 @@
 #include <asm/insn.h>
 #include <asm/kexec.h>
 #include <asm/nospec-branch.h>
+#include <asm/paravirt.h>
 #include <asm/sections.h>
 #include <asm/switch_to.h>
 #include <asm/sync_core.h>
@@ -22,8 +23,6 @@
 #include <asm/xen/hypercall.h>
 
 static int __initdata_or_module debug_callthunks;
-
-#define MAX_PATCH_LEN (255-1)
 
 #define prdbg(fmt, args...)					\
 do {								\
@@ -43,11 +42,16 @@ DEFINE_PER_CPU(u64, __x86_call_count);
 DEFINE_PER_CPU(u64, __x86_ret_count);
 DEFINE_PER_CPU(u64, __x86_stuffs_count);
 DEFINE_PER_CPU(u64, __x86_ctxsw_count);
-EXPORT_PER_CPU_SYMBOL_GPL(__x86_ctxsw_count);
-EXPORT_PER_CPU_SYMBOL_GPL(__x86_call_count);
+EXPORT_SYMBOL_GPL(__x86_ctxsw_count);
+EXPORT_SYMBOL_GPL(__x86_call_count);
 #endif
 
 extern s32 __call_sites[], __call_sites_end[];
+
+struct thunk_desc {
+	void		*template;
+	unsigned int	template_size;
+};
 
 struct core_text {
 	unsigned long	base;
@@ -97,10 +101,11 @@ static inline bool within_module_coretext(void *addr)
 #ifdef CONFIG_MODULES
 	struct module *mod;
 
-	guard(rcu)();
+	preempt_disable();
 	mod = __module_address((unsigned long)addr);
 	if (mod && within_module_core((unsigned long)addr, mod))
 		ret = true;
+	preempt_enable();
 #endif
 	return ret;
 }
@@ -128,8 +133,8 @@ static bool skip_addr(void *dest)
 	/* Accounts directly */
 	if (dest == ret_from_fork)
 		return true;
-#if defined(CONFIG_HOTPLUG_CPU) && defined(CONFIG_AMD_MEM_ENCRYPT)
-	if (dest == soft_restart_cpu)
+#ifdef CONFIG_HOTPLUG_CPU
+	if (dest == start_cpu0)
 		return true;
 #endif
 #ifdef CONFIG_FUNCTION_TRACER
@@ -137,15 +142,14 @@ static bool skip_addr(void *dest)
 		return true;
 #endif
 #ifdef CONFIG_KEXEC_CORE
-# ifdef CONFIG_X86_64
-	if (dest >= (void *)__relocate_kernel_start &&
-	    dest < (void *)__relocate_kernel_end)
-		return true;
-# else
 	if (dest >= (void *)relocate_kernel &&
 	    dest < (void*)relocate_kernel + KEXEC_CONTROL_CODE_MAX_SIZE)
 		return true;
-# endif
+#endif
+#ifdef CONFIG_XEN
+	if (dest >= (void *)hypercall_page &&
+	    dest < (void*)hypercall_page + PAGE_SIZE)
+		return true;
 #endif
 	return false;
 }
@@ -180,14 +184,10 @@ static const u8 nops[] = {
 static void *patch_dest(void *dest, bool direct)
 {
 	unsigned int tsize = SKL_TMPL_SIZE;
-	u8 insn_buff[MAX_PATCH_LEN];
 	u8 *pad = dest - tsize;
 
-	memcpy(insn_buff, skl_call_thunk_template, tsize);
-	text_poke_apply_relocation(insn_buff, pad, tsize, skl_call_thunk_template, tsize);
-
 	/* Already patched? */
-	if (!bcmp(pad, insn_buff, tsize))
+	if (!bcmp(pad, skl_call_thunk_template, tsize))
 		return pad;
 
 	/* Ensure there are nops */
@@ -197,9 +197,9 @@ static void *patch_dest(void *dest, bool direct)
 	}
 
 	if (direct)
-		memcpy(pad, insn_buff, tsize);
+		memcpy(pad, skl_call_thunk_template, tsize);
 	else
-		text_poke_copy_locked(pad, insn_buff, tsize, true);
+		text_poke_copy_locked(pad, skl_call_thunk_template, tsize, true);
 	return pad;
 }
 
@@ -238,10 +238,22 @@ patch_call_sites(s32 *start, s32 *end, const struct core_text *ct)
 }
 
 static __init_or_module void
+patch_paravirt_call_sites(struct paravirt_patch_site *start,
+			  struct paravirt_patch_site *end,
+			  const struct core_text *ct)
+{
+	struct paravirt_patch_site *p;
+
+	for (p = start; p < end; p++)
+		patch_call(p->instr, ct);
+}
+
+static __init_or_module void
 callthunks_setup(struct callthunk_sites *cs, const struct core_text *ct)
 {
 	prdbg("Patching call sites %s\n", ct->name);
 	patch_call_sites(cs->call_start, cs->call_end, ct);
+	patch_paravirt_call_sites(cs->pv_start, cs->pv_end, ct);
 	prdbg("Patching call sites done%s\n", ct->name);
 }
 
@@ -250,6 +262,8 @@ void __init callthunks_patch_builtin_calls(void)
 	struct callthunk_sites cs = {
 		.call_start	= __call_sites,
 		.call_end	= __call_sites_end,
+		.pv_start	= __parainstructions,
+		.pv_end		= __parainstructions_end
 	};
 
 	if (!cpu_feature_enabled(X86_FEATURE_CALL_DEPTH))
@@ -258,6 +272,7 @@ void __init callthunks_patch_builtin_calls(void)
 	pr_info("Setting up call depth tracking\n");
 	mutex_lock(&text_mutex);
 	callthunks_setup(&cs, &builtin_coretext);
+	static_call_force_reinit();
 	thunks_initialized = true;
 	mutex_unlock(&text_mutex);
 }
@@ -278,30 +293,24 @@ void *callthunks_translate_call_dest(void *dest)
 	return target ? : dest;
 }
 
-#ifdef CONFIG_BPF_JIT
-static bool is_callthunk(void *addr)
+bool is_callthunk(void *addr)
 {
 	unsigned int tmpl_size = SKL_TMPL_SIZE;
-	u8 insn_buff[MAX_PATCH_LEN];
+	void *tmpl = skl_call_thunk_template;
 	unsigned long dest;
-	u8 *pad;
 
 	dest = roundup((unsigned long)addr, CONFIG_FUNCTION_ALIGNMENT);
 	if (!thunks_initialized || skip_addr((void *)dest))
 		return false;
 
-	pad = (void *)(dest - tmpl_size);
-
-	memcpy(insn_buff, skl_call_thunk_template, tmpl_size);
-	text_poke_apply_relocation(insn_buff, pad, tmpl_size, skl_call_thunk_template, tmpl_size);
-
-	return !bcmp(pad, insn_buff, tmpl_size);
+	return !bcmp((void *)(dest - tmpl_size), tmpl, tmpl_size);
 }
 
-int x86_call_depth_emit_accounting(u8 **pprog, void *func, void *ip)
+#ifdef CONFIG_BPF_JIT
+int x86_call_depth_emit_accounting(u8 **pprog, void *func)
 {
 	unsigned int tmpl_size = SKL_TMPL_SIZE;
-	u8 insn_buff[MAX_PATCH_LEN];
+	void *tmpl = skl_call_thunk_template;
 
 	if (!thunks_initialized)
 		return 0;
@@ -310,10 +319,7 @@ int x86_call_depth_emit_accounting(u8 **pprog, void *func, void *ip)
 	if (func && is_callthunk(func))
 		return 0;
 
-	memcpy(insn_buff, skl_call_thunk_template, tmpl_size);
-	text_poke_apply_relocation(insn_buff, ip, tmpl_size, skl_call_thunk_template, tmpl_size);
-
-	memcpy(*pprog, insn_buff, tmpl_size);
+	memcpy(*pprog, tmpl, tmpl_size);
 	*pprog += tmpl_size;
 	return tmpl_size;
 }
@@ -324,8 +330,8 @@ void noinline callthunks_patch_module_calls(struct callthunk_sites *cs,
 					    struct module *mod)
 {
 	struct core_text ct = {
-		.base = (unsigned long)mod->mem[MOD_TEXT].base,
-		.end  = (unsigned long)mod->mem[MOD_TEXT].base + mod->mem[MOD_TEXT].size,
+		.base = (unsigned long)mod->core_layout.base,
+		.end  = (unsigned long)mod->core_layout.base + mod->core_layout.size,
 		.name = mod->name,
 	};
 

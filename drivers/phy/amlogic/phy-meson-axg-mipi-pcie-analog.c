@@ -11,7 +11,6 @@
 #include <linux/regmap.h>
 #include <linux/delay.h>
 #include <linux/mfd/syscon.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <dt-bindings/phy/phy.h>
 
@@ -200,6 +199,7 @@ static int phy_axg_mipi_pcie_analog_probe(struct platform_device *pdev)
 	struct phy_axg_mipi_pcie_analog_priv *priv;
 	struct device_node *np = dev->of_node, *parent_np;
 	struct regmap *map;
+	int ret;
 
 	priv = devm_kmalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -218,9 +218,12 @@ static int phy_axg_mipi_pcie_analog_probe(struct platform_device *pdev)
 	priv->regmap = map;
 
 	priv->phy = devm_phy_create(dev, np, &phy_axg_mipi_pcie_analog_ops);
-	if (IS_ERR(priv->phy))
-		return dev_err_probe(dev, PTR_ERR(priv->phy),
-				     "failed to create PHY\n");
+	if (IS_ERR(priv->phy)) {
+		ret = PTR_ERR(priv->phy);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "failed to create PHY\n");
+		return ret;
+	}
 
 	phy_set_drvdata(priv->phy, priv);
 	dev_set_drvdata(dev, priv);

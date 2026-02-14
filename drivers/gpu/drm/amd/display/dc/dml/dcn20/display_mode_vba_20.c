@@ -785,9 +785,12 @@ static bool CalculatePrefetchSchedule(
 
 	if (MyError) {
 		*PrefetchBandwidth = 0;
+		TimeForFetchingMetaPTE = 0;
+		TimeForFetchingRowInVBlank = 0;
 		*DestinationLinesToRequestVMInVBlank = 0;
 		*DestinationLinesToRequestRowInVBlank = 0;
 		*DestinationLinesForPrefetch = 0;
+		LinesToRequestPrefetchPixelData = 0;
 		*VRatioPrefetchY = 0;
 		*VRatioPrefetchC = 0;
 		*RequiredPrefetchPixDataBW = 0;
@@ -1014,7 +1017,7 @@ static unsigned int CalculateVMAndRowBytes(
 			if (ScanDirection == dm_horz)
 				FractionOfPTEReturnDrop = 0;
 			else
-				FractionOfPTEReturnDrop = 7.0 / 8;
+				FractionOfPTEReturnDrop = 7 / 8;
 		} else if (VMMPageSize == 4096 && MacroTileSizeBytes > 4096) {
 			PixelPTEReqHeight = 16 * BlockHeight256Bytes;
 			PixelPTEReqWidth = 16 * BlockWidth256Bytes;
@@ -3228,22 +3231,22 @@ static unsigned int TruncToValidBPP(
 			if (Format == dm_420) {
 				if (DecimalBPP < 6)
 					return BPP_INVALID;
-				else if (DecimalBPP >= 1.5 * DSCInputBitPerComponent - 1.0 / 16)
-					return 1.5 * DSCInputBitPerComponent - 1.0 / 16;
+				else if (DecimalBPP >= 1.5 * DSCInputBitPerComponent - 1 / 16)
+					return 1.5 * DSCInputBitPerComponent - 1 / 16;
 				else
 					return dml_floor(16 * DecimalBPP, 1) / 16;
 			} else if (Format == dm_n422) {
 				if (DecimalBPP < 7)
 					return BPP_INVALID;
-				else if (DecimalBPP >= 2 * DSCInputBitPerComponent - 1.0 / 16)
-					return 2 * DSCInputBitPerComponent - 1.0 / 16;
+				else if (DecimalBPP >= 2 * DSCInputBitPerComponent - 1 / 16)
+					return 2 * DSCInputBitPerComponent - 1 / 16;
 				else
 					return dml_floor(16 * DecimalBPP, 1) / 16;
 			} else {
 				if (DecimalBPP < 8)
 					return BPP_INVALID;
-				else if (DecimalBPP >= 3 * DSCInputBitPerComponent - 1.0 / 16)
-					return 3 * DSCInputBitPerComponent - 1.0 / 16;
+				else if (DecimalBPP >= 3 * DSCInputBitPerComponent - 1 / 16)
+					return 3 * DSCInputBitPerComponent - 1 / 16;
 				else
 					return dml_floor(16 * DecimalBPP, 1) / 16;
 			}
@@ -4319,7 +4322,7 @@ void dml20_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 					locals->RoundedUpMaxSwathSizeBytesC = 0;
 				}
 
-				if (locals->RoundedUpMaxSwathSizeBytesY + locals->RoundedUpMaxSwathSizeBytesC <= locals->DETBufferSizeInKByte[0] * 1024.0 / 2) {
+				if (locals->RoundedUpMaxSwathSizeBytesY + locals->RoundedUpMaxSwathSizeBytesC <= locals->DETBufferSizeInKByte[0] * 1024 / 2) {
 					locals->SwathHeightYPerState[i][j][k] = locals->MaxSwathHeightY[k];
 					locals->SwathHeightCPerState[i][j][k] = locals->MaxSwathHeightC[k];
 				} else {
@@ -4353,16 +4356,12 @@ void dml20_ModeSupportAndSystemConfigurationFull(struct display_mode_lib *mode_l
 						locals->PSCL_FACTOR[k] / locals->ReturnBWPerState[i][0],
 						locals->EffectiveLBLatencyHidingSourceLinesLuma),
 						locals->SwathHeightYPerState[i][j][k]);
-				if (locals->LinesInDETChroma) {
-					locals->EffectiveDETLBLinesChroma = dml_floor(locals->LinesInDETChroma +
-						    dml_min(locals->LinesInDETChroma * locals->RequiredDISPCLK[i][j] *
-						    locals->BytePerPixelInDETC[k] *
-							locals->PSCL_FACTOR_CHROMA[k] / locals->ReturnBWPerState[i][0],
-							locals->EffectiveLBLatencyHidingSourceLinesChroma),
-							locals->SwathHeightCPerState[i][j][k]);
-				} else {
-					locals->EffectiveDETLBLinesChroma = 0;
-				}
+
+				locals->EffectiveDETLBLinesChroma = dml_floor(locals->LinesInDETChroma + dml_min(
+						locals->LinesInDETChroma * locals->RequiredDISPCLK[i][j] * locals->BytePerPixelInDETC[k] *
+						locals->PSCL_FACTOR_CHROMA[k] / locals->ReturnBWPerState[i][0],
+						locals->EffectiveLBLatencyHidingSourceLinesChroma),
+						locals->SwathHeightCPerState[i][j][k]);
 
 				if (locals->BytePerPixelInDETC[k] == 0) {
 					locals->UrgentLatencySupportUsPerState[i][j][k] = locals->EffectiveDETLBLinesLuma * (locals->HTotal[k] / locals->PixelClock[k])

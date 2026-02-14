@@ -13,7 +13,6 @@
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
 
-#include <linux/hex.h>
 #include <linux/list.h>
 #include <linux/irq.h>
 #include <linux/spinlock.h>
@@ -202,7 +201,7 @@ static int tuntap_write(struct iss_net_private *lp, struct sk_buff **skb)
 	return simc_write(lp->tp.info.tuntap.fd, (*skb)->data, (*skb)->len);
 }
 
-static unsigned short tuntap_protocol(struct sk_buff *skb)
+unsigned short tuntap_protocol(struct sk_buff *skb)
 {
 	return eth_type_trans(skb, skb->dev);
 }
@@ -238,7 +237,7 @@ static int tuntap_probe(struct iss_net_private *lp, int index, char *init)
 
 	init += sizeof(TRANSPORT_TUNTAP_NAME) - 1;
 	if (*init == ',') {
-		rem = split_if_spec(init + 1, &mac_str, &dev_name, NULL);
+		rem = split_if_spec(init + 1, &mac_str, &dev_name);
 		if (rem != NULL) {
 			pr_err("%s: extra garbage on specification : '%s'\n",
 			       dev->name, rem);
@@ -339,7 +338,7 @@ static int iss_net_poll(struct iss_net_private *lp)
 
 static void iss_net_timer(struct timer_list *t)
 {
-	struct iss_net_private *lp = timer_container_of(lp, t, timer);
+	struct iss_net_private *lp = from_timer(lp, t, timer);
 
 	iss_net_poll(lp);
 	mod_timer(&lp->timer, jiffies + lp->timer_val);
@@ -376,7 +375,7 @@ static int iss_net_close(struct net_device *dev)
 	struct iss_net_private *lp = netdev_priv(dev);
 
 	netif_stop_queue(dev);
-	timer_delete_sync(&lp->timer);
+	del_timer_sync(&lp->timer);
 	lp->tp.net_ops->close(lp);
 
 	return 0;
@@ -442,7 +441,7 @@ static int iss_net_change_mtu(struct net_device *dev, int new_mtu)
 	return -EINVAL;
 }
 
-static void iss_net_user_timer_expire(struct timer_list *unused)
+void iss_net_user_timer_expire(struct timer_list *unused)
 {
 }
 
@@ -541,7 +540,6 @@ static void iss_net_configure(int index, char *init)
 		rtnl_unlock();
 		pr_err("%s: error registering net device!\n", dev->name);
 		platform_device_unregister(&lp->pdev);
-		/* dev is freed by the iss_net_pdev_release callback */
 		return;
 	}
 	rtnl_unlock();

@@ -2,7 +2,7 @@
 /*
  * MLO link handling
  *
- * Copyright (C) 2022-2025 Intel Corporation
+ * Copyright (C) 2022 Intel Corporation
  */
 #include <linux/slab.h>
 #include <linux/kernel.h>
@@ -10,69 +10,6 @@
 #include "ieee80211_i.h"
 #include "driver-ops.h"
 #include "key.h"
-#include "debugfs_netdev.h"
-
-static void ieee80211_update_apvlan_links(struct ieee80211_sub_if_data *sdata)
-{
-	struct ieee80211_sub_if_data *vlan;
-	struct ieee80211_link_data *link;
-	u16 ap_bss_links = sdata->vif.valid_links;
-	u16 new_links, vlan_links;
-	unsigned long add;
-
-	list_for_each_entry(vlan, &sdata->u.ap.vlans, u.vlan.list) {
-		int link_id;
-
-		/* No support for 4addr with MLO yet */
-		if (vlan->wdev.use_4addr)
-			return;
-
-		vlan_links = vlan->vif.valid_links;
-
-		new_links = ap_bss_links;
-
-		add = new_links & ~vlan_links;
-		if (!add)
-			continue;
-
-		ieee80211_vif_set_links(vlan, add, 0);
-
-		for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
-			link = sdata_dereference(vlan->link[link_id], vlan);
-			ieee80211_link_vlan_copy_chanctx(link);
-		}
-	}
-}
-
-void ieee80211_apvlan_link_setup(struct ieee80211_sub_if_data *sdata)
-{
-	struct ieee80211_sub_if_data *ap_bss = container_of(sdata->bss,
-					    struct ieee80211_sub_if_data, u.ap);
-	u16 new_links = ap_bss->vif.valid_links;
-	unsigned long add;
-	int link_id;
-
-	if (!ap_bss->vif.valid_links)
-		return;
-
-	add = new_links;
-	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
-		sdata->wdev.valid_links |= BIT(link_id);
-		ether_addr_copy(sdata->wdev.links[link_id].addr,
-				ap_bss->wdev.links[link_id].addr);
-	}
-
-	ieee80211_vif_set_links(sdata, new_links, 0);
-}
-
-void ieee80211_apvlan_link_clear(struct ieee80211_sub_if_data *sdata)
-{
-	if (!sdata->wdev.valid_links)
-		return;
-
-	sdata->wdev.valid_links = 0;
-	ieee80211_vif_clear_links(sdata);
-}
 
 void ieee80211_link_setup(struct ieee80211_link_data *link)
 {
@@ -90,39 +27,28 @@ void ieee80211_link_init(struct ieee80211_sub_if_data *sdata,
 	if (link_id < 0)
 		link_id = 0;
 
-	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN) {
-		struct ieee80211_sub_if_data *ap_bss;
-		struct ieee80211_bss_conf *ap_bss_conf;
-
-		ap_bss = container_of(sdata->bss,
-				      struct ieee80211_sub_if_data, u.ap);
-		ap_bss_conf = sdata_dereference(ap_bss->vif.link_conf[link_id],
-						ap_bss);
-		memcpy(link_conf, ap_bss_conf, sizeof(*link_conf));
-	}
+	rcu_assign_pointer(sdata->vif.link_conf[link_id], link_conf);
+	rcu_assign_pointer(sdata->link[link_id], link);
 
 	link->sdata = sdata;
 	link->link_id = link_id;
 	link->conf = link_conf;
 	link_conf->link_id = link_id;
-	link_conf->vif = &sdata->vif;
-	link->ap_power_level = IEEE80211_UNSET_POWER_LEVEL;
-	link->user_power_level = sdata->local->user_power_level;
-	link_conf->txpower = INT_MIN;
 
-	wiphy_work_init(&link->csa.finalize_work,
-			ieee80211_csa_finalize_work);
-	wiphy_work_init(&link->color_change_finalize_work,
-			ieee80211_color_change_finalize_work);
-	wiphy_delayed_work_init(&link->color_collision_detect_work,
-				ieee80211_color_collision_detection_work);
-	wiphy_hrtimer_work_init(&link->dfs_cac_timer_work,
-				ieee80211_dfs_cac_timer_work);
+	INIT_WORK(&link->csa_finalize_work,
+		  ieee80211_csa_finalize_work);
+	INIT_WORK(&link->color_change_finalize_work,
+		  ieee80211_color_change_finalize_work);
+	INIT_DELAYED_WORK(&link->color_collision_detect_work,
+			  ieee80211_color_collision_detection_work);
+	INIT_LIST_HEAD(&link->assigned_chanctx_list);
+	INIT_LIST_HEAD(&link->reserved_chanctx_list);
+	INIT_DELAYED_WORK(&link->dfs_cac_timer_work,
+			  ieee80211_dfs_cac_timer_work);
 
 	if (!deflink) {
 		switch (sdata->vif.type) {
 		case NL80211_IFTYPE_AP:
-		case NL80211_IFTYPE_AP_VLAN:
 			ether_addr_copy(link_conf->addr,
 					sdata->wdev.links[link_id].addr);
 			link_conf->bssid = link_conf->addr;
@@ -134,12 +60,7 @@ void ieee80211_link_init(struct ieee80211_sub_if_data *sdata,
 		default:
 			WARN_ON(1);
 		}
-
-		ieee80211_link_debugfs_add(link);
 	}
-
-	rcu_assign_pointer(sdata->vif.link_conf[link_id], link_conf);
-	rcu_assign_pointer(sdata->link[link_id], link);
 }
 
 void ieee80211_link_stop(struct ieee80211_link_data *link)
@@ -147,22 +68,7 @@ void ieee80211_link_stop(struct ieee80211_link_data *link)
 	if (link->sdata->vif.type == NL80211_IFTYPE_STATION)
 		ieee80211_mgd_stop_link(link);
 
-	wiphy_delayed_work_cancel(link->sdata->local->hw.wiphy,
-				  &link->color_collision_detect_work);
-	wiphy_work_cancel(link->sdata->local->hw.wiphy,
-			  &link->color_change_finalize_work);
-	wiphy_work_cancel(link->sdata->local->hw.wiphy,
-			  &link->csa.finalize_work);
-
-	if (link->sdata->wdev.links[link->link_id].cac_started) {
-		wiphy_hrtimer_work_cancel(link->sdata->local->hw.wiphy,
-					  &link->dfs_cac_timer_work);
-		cfg80211_cac_event(link->sdata->dev,
-				   &link->conf->chanreq.oper,
-				   NL80211_RADAR_CAC_ABORTED,
-				   GFP_KERNEL, link->link_id);
-	}
-
+	cancel_delayed_work_sync(&link->color_collision_detect_work);
 	ieee80211_link_release_channel(link);
 }
 
@@ -187,7 +93,6 @@ static void ieee80211_tear_down_links(struct ieee80211_sub_if_data *sdata,
 		if (WARN_ON(!link))
 			continue;
 		ieee80211_remove_link_keys(link, &keys);
-		ieee80211_link_debugfs_remove(link);
 		ieee80211_link_stop(link);
 	}
 
@@ -232,35 +137,25 @@ static int ieee80211_check_dup_link_addrs(struct ieee80211_sub_if_data *sdata)
 }
 
 static void ieee80211_set_vif_links_bitmaps(struct ieee80211_sub_if_data *sdata,
-					    u16 valid_links, u16 dormant_links)
+					    u16 links)
 {
-	sdata->vif.valid_links = valid_links;
-	sdata->vif.dormant_links = dormant_links;
+	sdata->vif.valid_links = links;
 
-	if (!valid_links ||
-	    WARN((~valid_links & dormant_links) ||
-		 !(valid_links & ~dormant_links),
-		 "Invalid links: valid=0x%x, dormant=0x%x",
-		 valid_links, dormant_links)) {
+	if (!links) {
 		sdata->vif.active_links = 0;
-		sdata->vif.dormant_links = 0;
 		return;
 	}
 
 	switch (sdata->vif.type) {
 	case NL80211_IFTYPE_AP:
-	case NL80211_IFTYPE_AP_VLAN:
 		/* in an AP all links are always active */
-		sdata->vif.active_links = valid_links;
-
-		/* AP links are not expected to be disabled */
-		WARN_ON(dormant_links);
+		sdata->vif.active_links = links;
 		break;
 	case NL80211_IFTYPE_STATION:
 		if (sdata->vif.active_links)
 			break;
-		sdata->vif.active_links = valid_links & ~dormant_links;
-		WARN_ON(hweight16(sdata->vif.active_links) > 1);
+		WARN_ON(hweight16(links) > 1);
+		sdata->vif.active_links = links;
 		break;
 	default:
 		WARN_ON(1);
@@ -269,7 +164,7 @@ static void ieee80211_set_vif_links_bitmaps(struct ieee80211_sub_if_data *sdata,
 
 static int ieee80211_vif_update_links(struct ieee80211_sub_if_data *sdata,
 				      struct link_container **to_free,
-				      u16 new_links, u16 dormant_links)
+				      u16 new_links)
 {
 	u16 old_links = sdata->vif.valid_links;
 	u16 old_active = sdata->vif.active_links;
@@ -282,11 +177,11 @@ static int ieee80211_vif_update_links(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_link_data *old_data[IEEE80211_MLD_MAX_NUM_LINKS];
 	bool use_deflink = old_links == 0; /* set for error case */
 
-	lockdep_assert_wiphy(sdata->local->hw.wiphy);
+	sdata_assert_lock(sdata);
 
 	memset(to_free, 0, sizeof(links));
 
-	if (old_links == new_links && dormant_links == sdata->vif.dormant_links)
+	if (old_links == new_links)
 		return 0;
 
 	/* if there were no old links, need to clear the pointers to deflink */
@@ -326,9 +221,6 @@ static int ieee80211_vif_update_links(struct ieee80211_sub_if_data *sdata,
 		RCU_INIT_POINTER(sdata->vif.link_conf[link_id], NULL);
 	}
 
-	if (!old_links)
-		ieee80211_debugfs_recreate_netdev(sdata, true);
-
 	/* link them into data structures */
 	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
 		WARN_ON(!use_deflink &&
@@ -348,33 +240,20 @@ static int ieee80211_vif_update_links(struct ieee80211_sub_if_data *sdata,
 		/* for keys we will not be able to undo this */
 		ieee80211_tear_down_links(sdata, to_free, rem);
 
-		ieee80211_set_vif_links_bitmaps(sdata, new_links, dormant_links);
+		ieee80211_set_vif_links_bitmaps(sdata, new_links);
 
 		/* tell the driver */
-		if (sdata->vif.type != NL80211_IFTYPE_AP_VLAN)
-			ret = drv_change_vif_links(sdata->local, sdata,
-						   old_links & old_active,
-						   new_links & sdata->vif.active_links,
-						   old);
-		if (!new_links)
-			ieee80211_debugfs_recreate_netdev(sdata, false);
-
-		if (sdata->vif.type == NL80211_IFTYPE_AP)
-			ieee80211_update_apvlan_links(sdata);
+		ret = drv_change_vif_links(sdata->local, sdata,
+					   old_links & old_active,
+					   new_links & sdata->vif.active_links,
+					   old);
 	}
-
-	/*
-	 * Ignore errors if we are only removing links as removal should
-	 * always succeed
-	 */
-	if (!new_links)
-		ret = 0;
 
 	if (ret) {
 		/* restore config */
 		memcpy(sdata->link, old_data, sizeof(old_data));
 		memcpy(sdata->vif.link_conf, old, sizeof(old));
-		ieee80211_set_vif_links_bitmaps(sdata, old_links, dormant_links);
+		ieee80211_set_vif_links_bitmaps(sdata, old_links);
 		/* and free (only) the newly allocated links */
 		memset(to_free, 0, sizeof(links));
 		goto free;
@@ -398,16 +277,32 @@ deinit:
 }
 
 int ieee80211_vif_set_links(struct ieee80211_sub_if_data *sdata,
-			    u16 new_links, u16 dormant_links)
+			    u16 new_links)
 {
 	struct link_container *links[IEEE80211_MLD_MAX_NUM_LINKS];
 	int ret;
 
-	ret = ieee80211_vif_update_links(sdata, links, new_links,
-					 dormant_links);
+	ret = ieee80211_vif_update_links(sdata, links, new_links);
 	ieee80211_free_links(sdata, links);
 
 	return ret;
+}
+
+void ieee80211_vif_clear_links(struct ieee80211_sub_if_data *sdata)
+{
+	struct link_container *links[IEEE80211_MLD_MAX_NUM_LINKS];
+
+	/*
+	 * The locking here is different because when we free links
+	 * in the station case we need to be able to cancel_work_sync()
+	 * something that also takes the lock.
+	 */
+
+	sdata_lock(sdata);
+	ieee80211_vif_update_links(sdata, links, 0);
+	sdata_unlock(sdata);
+
+	ieee80211_free_links(sdata, links);
 }
 
 static int _ieee80211_set_active_links(struct ieee80211_sub_if_data *sdata,
@@ -428,7 +323,8 @@ static int _ieee80211_set_active_links(struct ieee80211_sub_if_data *sdata,
 	if (sdata->vif.type != NL80211_IFTYPE_STATION)
 		return -EINVAL;
 
-	if (active_links & ~ieee80211_vif_usable_links(&sdata->vif))
+	/* cannot activate links that don't exist */
+	if (active_links & ~sdata->vif.valid_links)
 		return -EINVAL;
 
 	/* nothing to do */
@@ -456,52 +352,9 @@ static int _ieee80211_set_active_links(struct ieee80211_sub_if_data *sdata,
 
 		link = sdata_dereference(sdata->link[link_id], sdata);
 
-		ieee80211_teardown_tdls_peers(link);
+		/* FIXME: kill TDLS connections on the link */
 
-		__ieee80211_link_release_channel(link, true);
-
-		/*
-		 * If CSA is (still) active while the link is deactivated,
-		 * just schedule the channel switch work for the time we
-		 * had previously calculated, and we'll take the process
-		 * from there.
-		 */
-		if (link->conf->csa_active)
-			wiphy_hrtimer_work_queue(local->hw.wiphy,
-						 &link->u.mgd.csa.switch_work,
-						 link->u.mgd.csa.time -
-						 ktime_get_boottime());
-	}
-
-	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
-		struct ieee80211_link_data *link;
-
-		link = sdata_dereference(sdata->link[link_id], sdata);
-
-		/*
-		 * This call really should not fail. Unfortunately, it appears
-		 * that this may happen occasionally with some drivers. Should
-		 * it happen, we are stuck in a bad place as going backwards is
-		 * not really feasible.
-		 *
-		 * So lets just tell link_use_channel that it must not fail to
-		 * assign the channel context (from mac80211's perspective) and
-		 * assume the driver is going to trigger a recovery flow if it
-		 * had a failure.
-		 * That really is not great nor guaranteed to work. But at least
-		 * the internal mac80211 state remains consistent and there is
-		 * a chance that we can recover.
-		 */
-		ret = _ieee80211_link_use_channel(link,
-						  &link->conf->chanreq,
-						  IEEE80211_CHANCTX_SHARED,
-						  true);
-		WARN_ON_ONCE(ret);
-
-		/*
-		 * inform about the link info changed parameters after all
-		 * stations are also added
-		 */
+		ieee80211_link_release_channel(link);
 	}
 
 	list_for_each_entry(sta, &local->sta_list, list) {
@@ -547,7 +400,10 @@ static int _ieee80211_set_active_links(struct ieee80211_sub_if_data *sdata,
 
 		link = sdata_dereference(sdata->link[link_id], sdata);
 
-		ieee80211_mgd_set_link_qos_params(link);
+		ret = ieee80211_link_use_channel(link, &link->conf->chandef,
+						 IEEE80211_CHANCTX_SHARED);
+		WARN_ON_ONCE(ret);
+
 		ieee80211_link_info_change_notify(sdata, link,
 						  BSS_CHANGED_ERP_CTS_PROT |
 						  BSS_CHANGED_ERP_PREAMBLE |
@@ -562,6 +418,7 @@ static int _ieee80211_set_active_links(struct ieee80211_sub_if_data *sdata,
 						  BSS_CHANGED_TWT |
 						  BSS_CHANGED_HE_OBSS_PD |
 						  BSS_CHANGED_HE_BSS_COLOR);
+		ieee80211_mgd_set_link_qos_params(link);
 	}
 
 	old_active = sdata->vif.active_links;
@@ -583,18 +440,11 @@ int ieee80211_set_active_links(struct ieee80211_vif *vif, u16 active_links)
 	u16 old_active;
 	int ret;
 
-	lockdep_assert_wiphy(local->hw.wiphy);
-
-	if (WARN_ON(!active_links))
-		return -EINVAL;
-
+	sdata_lock(sdata);
+	mutex_lock(&local->sta_mtx);
+	mutex_lock(&local->mtx);
+	mutex_lock(&local->key_mtx);
 	old_active = sdata->vif.active_links;
-	if (old_active == active_links)
-		return 0;
-
-	if (!drv_can_activate_links(local, sdata, active_links))
-		return -EINVAL;
-
 	if (old_active & active_links) {
 		/*
 		 * if there's at least one link that stays active across
@@ -609,6 +459,10 @@ int ieee80211_set_active_links(struct ieee80211_vif *vif, u16 active_links)
 		/* otherwise switch directly */
 		ret = _ieee80211_set_active_links(sdata, active_links);
 	}
+	mutex_unlock(&local->key_mtx);
+	mutex_unlock(&local->mtx);
+	mutex_unlock(&local->sta_mtx);
+	sdata_unlock(sdata);
 
 	return ret;
 }
@@ -619,16 +473,14 @@ void ieee80211_set_active_links_async(struct ieee80211_vif *vif,
 {
 	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
 
-	if (WARN_ON(!active_links))
-		return;
-
 	if (!ieee80211_sdata_running(sdata))
 		return;
 
 	if (sdata->vif.type != NL80211_IFTYPE_STATION)
 		return;
 
-	if (active_links & ~ieee80211_vif_usable_links(&sdata->vif))
+	/* cannot activate links that don't exist */
+	if (active_links & ~sdata->vif.valid_links)
 		return;
 
 	/* nothing to do */
@@ -636,6 +488,6 @@ void ieee80211_set_active_links_async(struct ieee80211_vif *vif,
 		return;
 
 	sdata->desired_active_links = active_links;
-	wiphy_work_queue(sdata->local->hw.wiphy, &sdata->activate_links_work);
+	schedule_work(&sdata->activate_links_work);
 }
 EXPORT_SYMBOL_GPL(ieee80211_set_active_links_async);

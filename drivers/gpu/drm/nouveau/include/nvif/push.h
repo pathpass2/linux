@@ -31,12 +31,6 @@ struct nvif_push {
 	void (*kick)(struct nvif_push *push);
 
 	struct nvif_mem mem;
-	u64 addr;
-
-	struct {
-		u32 get;
-		u32 max;
-	} hw;
 
 	u32 *bgn;
 	u32 *cur;
@@ -47,7 +41,7 @@ struct nvif_push {
 static inline __must_check int
 PUSH_WAIT(struct nvif_push *push, u32 size)
 {
-	if (push->cur + size > push->end) {
+	if (push->cur + size >= push->end) {
 		int ret = push->wait(push, size);
 		if (ret)
 			return ret;
@@ -61,11 +55,7 @@ PUSH_WAIT(struct nvif_push *push, u32 size)
 static inline int
 PUSH_KICK(struct nvif_push *push)
 {
-	if (push->cur != push->bgn) {
-		push->kick(push);
-		push->bgn = push->cur;
-	}
-
+	push->kick(push);
 	return 0;
 }
 

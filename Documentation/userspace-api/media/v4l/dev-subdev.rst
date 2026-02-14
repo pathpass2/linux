@@ -1,5 +1,4 @@
 .. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
-.. c:namespace:: V4L
 
 .. _subdev:
 
@@ -460,7 +459,7 @@ selection will refer to the sink pad format dimensions instead.
     :alt:   subdev-image-processing-crop.svg
     :align: center
 
-    Image processing in subdevs: simple crop example
+    **Figure 4.5. Image processing in subdevs: simple crop example**
 
 In the above example, the subdev supports cropping on its sink pad. To
 configure it, the user sets the media bus format on the subdev's sink
@@ -477,7 +476,7 @@ pad.
     :alt:   subdev-image-processing-scaling-multi-source.svg
     :align: center
 
-    Image processing in subdevs: scaling with multiple sources
+    **Figure 4.6. Image processing in subdevs: scaling with multiple sources**
 
 In this example, the subdev is capable of first cropping, then scaling
 and finally cropping for two source pads individually from the resulting
@@ -493,7 +492,7 @@ an area at location specified by the source crop rectangle from it.
     :alt:    subdev-image-processing-full.svg
     :align:  center
 
-    Image processing in subdevs: scaling and composition with multiple sinks and sources
+    **Figure 4.7. Image processing in subdevs: scaling and composition with multiple sinks and sources**
 
 The subdev driver supports two sink pads and two source pads. The images
 from both of the sink pads are individually cropped, then scaled and
@@ -507,10 +506,8 @@ source pads.
 
     subdev-formats
 
-.. _subdev-routing:
-
 Streams, multiplexed media pads and internal routing
-====================================================
+----------------------------------------------------
 
 Simple V4L2 sub-devices do not support multiple, unrelated video streams,
 and only a single stream can pass through a media link and a media pad.
@@ -530,12 +527,12 @@ the its sink pad and allows to route them individually to one of its source
 pads.
 
 Subdevice drivers that support multiplexed streams are compatible with
-non-multiplexed subdev drivers. However, if the driver at the sink end of a link
-does not support streams, then only stream 0 of source end may be captured.
-There may be additional limitations specific to the sink device.
+non-multiplexed subdev drivers, but, of course, require a routing configuration
+where the link between those two types of drivers contains only a single
+stream.
 
 Understanding streams
----------------------
+^^^^^^^^^^^^^^^^^^^^^
 
 A stream is a stream of content (e.g. pixel data or metadata) flowing through
 the media pipeline from a source (e.g. a sensor) towards the final sink (e.g. a
@@ -555,7 +552,7 @@ sub-device and a (pad, stream) pair. For sub-devices that do not support
 multiplexed streams the 'stream' field is always 0.
 
 Interaction between routes, streams, formats and selections
------------------------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The addition of streams to the V4L2 sub-device interface moves the sub-device
 formats and selections from pads to (pad, stream) pairs. Besides the
@@ -573,30 +570,8 @@ Any configurations of a stream within a pad, such as format or selections,
 are independent of similar configurations on other streams. This is
 subject to change in the future.
 
-Device types and routing setup
-------------------------------
-
-Different kinds of sub-devices have differing behaviour for route activation,
-depending on the hardware. In all cases, however, only routes that have the
-``V4L2_SUBDEV_ROUTE_FL_ACTIVE`` flag set are active.
-
-Devices generating the streams may allow enabling and disabling some of the
-routes or have a fixed routing configuration. If the routes can be disabled, not
-declaring the routes (or declaring them without ``V4L2_SUBDEV_ROUTE_FL_ACTIVE``
-flag set) in ``VIDIOC_SUBDEV_S_ROUTING`` will disable the routes.
-``VIDIOC_SUBDEV_S_ROUTING`` will still return such routes back to the user in
-the routes array, with the ``V4L2_SUBDEV_ROUTE_FL_ACTIVE`` flag unset.
-
-Devices transporting the streams almost always have more configurability with
-respect to routing. Typically any route between the sub-device's sink and source
-pads is possible, and multiple routes (usually up to certain limited number) may
-be active simultaneously. For such devices, no routes are created by the driver
-and user-created routes are fully replaced when ``VIDIOC_SUBDEV_S_ROUTING`` is
-called on the sub-device. Such newly created routes have the device's default
-configuration for format and selection rectangles.
-
 Configuring streams
--------------------
+^^^^^^^^^^^^^^^^^^^
 
 The configuration of the streams is done individually for each sub-device and
 the validity of the streams between sub-devices is validated when the pipeline
@@ -604,22 +579,23 @@ is started.
 
 There are three steps in configuring the streams:
 
-1. Set up links. Connect the pads between sub-devices using the
-   :ref:`Media Controller API <media_controller>`
+1) Set up links. Connect the pads between sub-devices using the :ref:`Media
+Controller API <media_controller>`
 
-2. Streams. Streams are declared and their routing is configured by setting the
-   routing table for the sub-device using :ref:`VIDIOC_SUBDEV_S_ROUTING
-   <VIDIOC_SUBDEV_G_ROUTING>` ioctl. Note that setting the routing table will
-   reset formats and selections in the sub-device to default values.
+2) Streams. Streams are declared and their routing is configured by
+setting the routing table for the sub-device using
+:ref:`VIDIOC_SUBDEV_S_ROUTING <VIDIOC_SUBDEV_G_ROUTING>` ioctl. Note that
+setting the routing table will reset formats and selections in the
+sub-device to default values.
 
-3. Configure formats and selections. Formats and selections of each stream are
-   configured separately as documented for plain sub-devices in
-   :ref:`format-propagation`. The stream ID is set to the same stream ID
-   associated with either sink or source pads of routes configured using the
-   :ref:`VIDIOC_SUBDEV_S_ROUTING <VIDIOC_SUBDEV_G_ROUTING>` ioctl.
+3) Configure formats and selections. Formats and selections of each stream
+are configured separately as documented for plain sub-devices in
+:ref:`format-propagation`. The stream ID is set to the same stream ID
+associated with either sink or source pads of routes configured using the
+:ref:`VIDIOC_SUBDEV_S_ROUTING <VIDIOC_SUBDEV_G_ROUTING>` ioctl.
 
 Multiplexed streams setup example
----------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 A simple example of a multiplexed stream setup might be as follows:
 
@@ -642,11 +618,11 @@ modeled as V4L2 devices, exposed to userspace via /dev/videoX nodes.
 
 To configure this pipeline, the userspace must take the following steps:
 
-1. Set up media links between entities: connect the sensors to the bridge,
-   bridge to the receiver, and the receiver to the DMA engines. This step does
-   not differ from normal non-multiplexed media controller setup.
+1) Set up media links between entities: connect the sensors to the bridge,
+bridge to the receiver, and the receiver to the DMA engines. This step does
+not differ from normal non-multiplexed media controller setup.
 
-2. Configure routing
+2) Configure routing
 
 .. flat-table:: Bridge routing table
     :header-rows:  1
@@ -680,14 +656,14 @@ To configure this pipeline, the userspace must take the following steps:
       - V4L2_SUBDEV_ROUTE_FL_ACTIVE
       - Pixel data stream from Sensor B
 
-3. Configure formats and selections
+3) Configure formats and selections
 
-   After configuring routing, the next step is configuring the formats and
-   selections for the streams. This is similar to performing this step without
-   streams, with just one exception: the ``stream`` field needs to be assigned
-   to the value of the stream ID.
+After configuring routing, the next step is configuring the formats and
+selections for the streams. This is similar to performing this step without
+streams, with just one exception: the ``stream`` field needs to be assigned
+to the value of the stream ID.
 
-   A common way to accomplish this is to start from the sensors and propagate
-   the configurations along the stream towards the receiver, using
-   :ref:`VIDIOC_SUBDEV_S_FMT <VIDIOC_SUBDEV_G_FMT>` ioctls to configure each
-   stream endpoint in each sub-device.
+A common way to accomplish this is to start from the sensors and propagate the
+configurations along the stream towards the receiver,
+using :ref:`VIDIOC_SUBDEV_S_FMT <VIDIOC_SUBDEV_G_FMT>` ioctls to configure each
+stream endpoint in each sub-device.

@@ -204,15 +204,13 @@ static void __em_gio_set(struct gpio_chip *chip, unsigned int reg,
 		     (BIT(shift + 16)) | (value << shift));
 }
 
-static int em_gio_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void em_gio_set(struct gpio_chip *chip, unsigned offset, int value)
 {
 	/* output is split into two registers */
 	if (offset < 16)
 		__em_gio_set(chip, GIO_OL, offset, value);
 	else
 		__em_gio_set(chip, GIO_OH, offset - 16, value);
-
-	return 0;
 }
 
 static int em_gio_direction_output(struct gpio_chip *chip, unsigned offset,
@@ -229,9 +227,14 @@ static int em_gio_to_irq(struct gpio_chip *chip, unsigned offset)
 	return irq_create_mapping(gpio_to_priv(chip)->irq_domain, offset);
 }
 
+static int em_gio_request(struct gpio_chip *chip, unsigned offset)
+{
+	return pinctrl_gpio_request(chip->base + offset);
+}
+
 static void em_gio_free(struct gpio_chip *chip, unsigned offset)
 {
-	pinctrl_gpio_free(chip, offset);
+	pinctrl_gpio_free(chip->base + offset);
 
 	/* Set the GPIO as an input to ensure that the next GPIO request won't
 	* drive the GPIO pin as an output.
@@ -308,7 +311,7 @@ static int em_gio_probe(struct platform_device *pdev)
 	gpio_chip->direction_output = em_gio_direction_output;
 	gpio_chip->set = em_gio_set;
 	gpio_chip->to_irq = em_gio_to_irq;
-	gpio_chip->request = pinctrl_gpio_request;
+	gpio_chip->request = em_gio_request;
 	gpio_chip->free = em_gio_free;
 	gpio_chip->label = name;
 	gpio_chip->parent = dev;
@@ -325,8 +328,8 @@ static int em_gio_probe(struct platform_device *pdev)
 	irq_chip->irq_release_resources = em_gio_irq_relres;
 	irq_chip->flags	= IRQCHIP_SKIP_SET_WAKE | IRQCHIP_MASK_ON_SUSPEND;
 
-	p->irq_domain = irq_domain_create_simple(dev_fwnode(dev), ngpios, 0,
-						 &em_gio_irq_domain_ops, p);
+	p->irq_domain = irq_domain_add_simple(dev->of_node, ngpios, 0,
+					      &em_gio_irq_domain_ops, p);
 	if (!p->irq_domain) {
 		dev_err(dev, "cannot initialize irq domain\n");
 		return -ENXIO;

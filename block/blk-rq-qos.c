@@ -196,6 +196,7 @@ bool rq_depth_scale_down(struct rq_depth *rqd, bool hard_throttle)
 
 struct rq_qos_wait_data {
 	struct wait_queue_entry wq;
+	struct task_struct *task;
 	struct rq_wait *rqw;
 	acquire_inflight_cb_t *cb;
 	void *private_data;
@@ -217,21 +218,9 @@ static int rq_qos_wake_function(struct wait_queue_entry *curr,
 		return -1;
 
 	data->got_token = true;
-	/*
-	 * autoremove_wake_function() removes the wait entry only when it
-	 * actually changed the task state. We want the wait always removed.
-	 * Remove explicitly and use default_wake_function().
-	 */
-	default_wake_function(curr, mode, wake_flags, key);
-	/*
-	 * Note that the order of operations is important as finish_wait()
-	 * tests whether @curr is removed without grabbing the lock. This
-	 * should be the last thing to do to make sure we will not have a
-	 * UAF access to @data. And the semantics of memory barrier in it
-	 * also make sure the waiter will see the latest @data->got_token
-	 * once list_empty_careful() in finish_wait() returns true.
-	 */
-	list_del_init_careful(&curr->entry);
+	smp_wmb();
+	list_del_init(&curr->entry);
+	wake_up_process(data->task);
 	return 1;
 }
 
@@ -256,55 +245,42 @@ void rq_qos_wait(struct rq_wait *rqw, void *private_data,
 		 cleanup_cb_t *cleanup_cb)
 {
 	struct rq_qos_wait_data data = {
-		.rqw		= rqw,
-		.cb		= acquire_inflight_cb,
-		.private_data	= private_data,
-		.got_token	= false,
+		.wq = {
+			.func	= rq_qos_wake_function,
+			.entry	= LIST_HEAD_INIT(data.wq.entry),
+		},
+		.task = current,
+		.rqw = rqw,
+		.cb = acquire_inflight_cb,
+		.private_data = private_data,
 	};
-	bool first_waiter;
+	bool has_sleeper;
 
-	/*
-	 * If there are no waiters in the waiting queue, try to increase the
-	 * inflight counter if we can. Otherwise, prepare for adding ourselves
-	 * to the waiting queue.
-	 */
-	if (!waitqueue_active(&rqw->wait) && acquire_inflight_cb(rqw, private_data))
+	has_sleeper = wq_has_sleeper(&rqw->wait);
+	if (!has_sleeper && acquire_inflight_cb(rqw, private_data))
 		return;
 
-	init_wait_func(&data.wq, rq_qos_wake_function);
-	first_waiter = prepare_to_wait_exclusive(&rqw->wait, &data.wq,
+	has_sleeper = !prepare_to_wait_exclusive(&rqw->wait, &data.wq,
 						 TASK_UNINTERRUPTIBLE);
-	/*
-	 * Make sure there is at least one inflight process; otherwise, waiters
-	 * will never be woken up. Since there may be no inflight process before
-	 * adding ourselves to the waiting queue above, we need to try to
-	 * increase the inflight counter for ourselves. And it is sufficient to
-	 * guarantee that at least the first waiter to enter the waiting queue
-	 * will re-check the waiting condition before going to sleep, thus
-	 * ensuring forward progress.
-	 */
-	if (!data.got_token && first_waiter && acquire_inflight_cb(rqw, private_data)) {
-		finish_wait(&rqw->wait, &data.wq);
-		/*
-		 * We raced with rq_qos_wake_function() getting a token,
-		 * which means we now have two. Put our local token
-		 * and wake anyone else potentially waiting for one.
-		 *
-		 * Enough memory barrier in list_empty_careful() in
-		 * finish_wait() is paired with list_del_init_careful()
-		 * in rq_qos_wake_function() to make sure we will see
-		 * the latest @data->got_token.
-		 */
-		if (data.got_token)
-			cleanup_cb(rqw, private_data);
-		return;
-	}
-
-	/* we are now relying on the waker to increase our inflight counter. */
 	do {
+		/* The memory barrier in set_task_state saves us here. */
 		if (data.got_token)
 			break;
+		if (!has_sleeper && acquire_inflight_cb(rqw, private_data)) {
+			finish_wait(&rqw->wait, &data.wq);
+
+			/*
+			 * We raced with wbt_wake_function() getting a token,
+			 * which means we now have two. Put our local token
+			 * and wake anyone else potentially waiting for one.
+			 */
+			smp_rmb();
+			if (data.got_token)
+				cleanup_cb(rqw, private_data);
+			break;
+		}
 		io_schedule();
+		has_sleeper = true;
 		set_current_state(TASK_UNINTERRUPTIBLE);
 	} while (1);
 	finish_wait(&rqw->wait, &data.wq);
@@ -312,23 +288,17 @@ void rq_qos_wait(struct rq_wait *rqw, void *private_data,
 
 void rq_qos_exit(struct request_queue *q)
 {
-	mutex_lock(&q->rq_qos_mutex);
 	while (q->rq_qos) {
 		struct rq_qos *rqos = q->rq_qos;
 		q->rq_qos = rqos->next;
 		rqos->ops->exit(rqos);
 	}
-	blk_queue_flag_clear(QUEUE_FLAG_QOS_ENABLED, q);
-	mutex_unlock(&q->rq_qos_mutex);
 }
 
 int rq_qos_add(struct rq_qos *rqos, struct gendisk *disk, enum rq_qos_id id,
 		const struct rq_qos_ops *ops)
 {
 	struct request_queue *q = disk->queue;
-	unsigned int memflags;
-
-	lockdep_assert_held(&q->rq_qos_mutex);
 
 	rqos->disk = disk;
 	rqos->id = id;
@@ -337,19 +307,31 @@ int rq_qos_add(struct rq_qos *rqos, struct gendisk *disk, enum rq_qos_id id,
 	/*
 	 * No IO can be in-flight when adding rqos, so freeze queue, which
 	 * is fine since we only support rq_qos for blk-mq queue.
+	 *
+	 * Reuse ->queue_lock for protecting against other concurrent
+	 * rq_qos adding/deleting
 	 */
-	memflags = blk_mq_freeze_queue(q);
+	blk_mq_freeze_queue(q);
 
+	spin_lock_irq(&q->queue_lock);
 	if (rq_qos_id(q, rqos->id))
 		goto ebusy;
 	rqos->next = q->rq_qos;
 	q->rq_qos = rqos;
-	blk_queue_flag_set(QUEUE_FLAG_QOS_ENABLED, q);
+	spin_unlock_irq(&q->queue_lock);
 
-	blk_mq_unfreeze_queue(q, memflags);
+	blk_mq_unfreeze_queue(q);
+
+	if (rqos->ops->debugfs_attrs) {
+		mutex_lock(&q->debugfs_mutex);
+		blk_mq_debugfs_register_rqos(rqos);
+		mutex_unlock(&q->debugfs_mutex);
+	}
+
 	return 0;
 ebusy:
-	blk_mq_unfreeze_queue(q, memflags);
+	spin_unlock_irq(&q->queue_lock);
+	blk_mq_unfreeze_queue(q);
 	return -EBUSY;
 }
 
@@ -357,18 +339,25 @@ void rq_qos_del(struct rq_qos *rqos)
 {
 	struct request_queue *q = rqos->disk->queue;
 	struct rq_qos **cur;
-	unsigned int memflags;
 
-	lockdep_assert_held(&q->rq_qos_mutex);
+	/*
+	 * See comment in rq_qos_add() about freezing queue & using
+	 * ->queue_lock.
+	 */
+	blk_mq_freeze_queue(q);
 
-	memflags = blk_mq_freeze_queue(q);
+	spin_lock_irq(&q->queue_lock);
 	for (cur = &q->rq_qos; *cur; cur = &(*cur)->next) {
 		if (*cur == rqos) {
 			*cur = rqos->next;
 			break;
 		}
 	}
-	if (!q->rq_qos)
-		blk_queue_flag_clear(QUEUE_FLAG_QOS_ENABLED, q);
-	blk_mq_unfreeze_queue(q, memflags);
+	spin_unlock_irq(&q->queue_lock);
+
+	blk_mq_unfreeze_queue(q);
+
+	mutex_lock(&q->debugfs_mutex);
+	blk_mq_debugfs_unregister_rqos(rqos);
+	mutex_unlock(&q->debugfs_mutex);
 }

@@ -205,7 +205,7 @@ static int pacpi_port_start(struct ata_port *ap)
 	return ata_bmdma_port_start(ap);
 }
 
-static const struct scsi_host_template pacpi_sht = {
+static struct scsi_host_template pacpi_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -216,7 +216,7 @@ static struct ata_port_operations pacpi_ops = {
 	.mode_filter		= pacpi_mode_filter,
 	.set_piomode		= pacpi_set_piomode,
 	.set_dmamode		= pacpi_set_dmamode,
-	.reset.prereset		= pacpi_pre_reset,
+	.prereset		= pacpi_pre_reset,
 	.port_start		= pacpi_port_start,
 };
 

@@ -256,38 +256,33 @@ static int ltc2992_gpio_get_multiple(struct gpio_chip *chip, unsigned long *mask
 	return 0;
 }
 
-static int ltc2992_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			    int value)
+static void ltc2992_gpio_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
 	struct ltc2992_state *st = gpiochip_get_data(chip);
 	unsigned long gpio_ctrl;
-	int reg, ret;
+	int reg;
 
 	mutex_lock(&st->gpio_mutex);
 	reg = ltc2992_read_reg(st, ltc2992_gpio_addr_map[offset].ctrl, 1);
 	if (reg < 0) {
 		mutex_unlock(&st->gpio_mutex);
-		return reg;
+		return;
 	}
 
 	gpio_ctrl = reg;
 	assign_bit(ltc2992_gpio_addr_map[offset].ctrl_bit, &gpio_ctrl, value);
 
-	ret = ltc2992_write_reg(st, ltc2992_gpio_addr_map[offset].ctrl, 1,
-				gpio_ctrl);
+	ltc2992_write_reg(st, ltc2992_gpio_addr_map[offset].ctrl, 1, gpio_ctrl);
 	mutex_unlock(&st->gpio_mutex);
-
-	return ret;
 }
 
-static int ltc2992_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mask,
-				     unsigned long *bits)
+static void ltc2992_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mask,
+				      unsigned long *bits)
 {
 	struct ltc2992_state *st = gpiochip_get_data(chip);
 	unsigned long gpio_ctrl_io = 0;
 	unsigned long gpio_ctrl = 0;
 	unsigned int gpio_nr;
-	int ret;
 
 	for_each_set_bit(gpio_nr, mask, LTC2992_GPIO_NR) {
 		if (gpio_nr < 3)
@@ -298,14 +293,9 @@ static int ltc2992_gpio_set_multiple(struct gpio_chip *chip, unsigned long *mask
 	}
 
 	mutex_lock(&st->gpio_mutex);
-	ret = ltc2992_write_reg(st, LTC2992_GPIO_IO_CTRL, 1, gpio_ctrl_io);
-	if (ret)
-		goto out;
-
-	ret = ltc2992_write_reg(st, LTC2992_GPIO_CTRL, 1, gpio_ctrl);
-out:
+	ltc2992_write_reg(st, LTC2992_GPIO_IO_CTRL, 1, gpio_ctrl_io);
+	ltc2992_write_reg(st, LTC2992_GPIO_CTRL, 1, gpio_ctrl);
 	mutex_unlock(&st->gpio_mutex);
-	return ret;
 }
 
 static int ltc2992_config_gpio(struct ltc2992_state *st)
@@ -822,7 +812,7 @@ static const struct hwmon_ops ltc2992_hwmon_ops = {
 	.write = ltc2992_write,
 };
 
-static const struct hwmon_channel_info * const ltc2992_info[] = {
+static const struct hwmon_channel_info *ltc2992_info[] = {
 	HWMON_CHANNEL_INFO(chip,
 			   HWMON_C_IN_RESET_HISTORY),
 	HWMON_CHANNEL_INFO(in,
@@ -864,26 +854,29 @@ static const struct regmap_config ltc2992_regmap_config = {
 
 static int ltc2992_parse_dt(struct ltc2992_state *st)
 {
+	struct fwnode_handle *fwnode;
+	struct fwnode_handle *child;
 	u32 addr;
 	u32 val;
 	int ret;
 
-	device_for_each_child_node_scoped(&st->client->dev, child) {
-		ret = fwnode_property_read_u32(child, "reg", &addr);
-		if (ret < 0)
-			return ret;
+	fwnode = dev_fwnode(&st->client->dev);
 
-		if (addr > 1)
+	fwnode_for_each_available_child_node(fwnode, child) {
+		ret = fwnode_property_read_u32(child, "reg", &addr);
+		if (ret < 0) {
+			fwnode_handle_put(child);
+			return ret;
+		}
+
+		if (addr > 1) {
+			fwnode_handle_put(child);
 			return -EINVAL;
+		}
 
 		ret = fwnode_property_read_u32(child, "shunt-resistor-micro-ohms", &val);
-		if (!ret) {
-			if (!val)
-				return dev_err_probe(&st->client->dev, -EINVAL,
-						     "shunt resistor value cannot be zero\n");
-
+		if (!ret)
 			st->r_sense_uohm[addr] = val;
-		}
 	}
 
 	return 0;
@@ -925,7 +918,7 @@ static const struct of_device_id ltc2992_of_match[] = {
 MODULE_DEVICE_TABLE(of, ltc2992_of_match);
 
 static const struct i2c_device_id ltc2992_i2c_id[] = {
-	{"ltc2992"},
+	{"ltc2992", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ltc2992_i2c_id);
@@ -935,7 +928,7 @@ static struct i2c_driver ltc2992_i2c_driver = {
 		.name = "ltc2992",
 		.of_match_table = ltc2992_of_match,
 	},
-	.probe = ltc2992_i2c_probe,
+	.probe_new = ltc2992_i2c_probe,
 	.id_table = ltc2992_i2c_id,
 };
 

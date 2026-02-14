@@ -143,9 +143,6 @@ static ssize_t handle_policy_update(struct file *file,
 	char *buf, *p, *end;
 	int err;
 
-	if (len >= KMALLOC_MAX_SIZE)
-		return -EINVAL;
-
 	pol = kmalloc(sizeof(struct setid_ruleset), GFP_KERNEL);
 	if (!pol)
 		return -ENOMEM;
@@ -308,7 +305,7 @@ static const struct file_operations safesetid_gid_file_fops = {
 	.write = safesetid_gid_file_write,
 };
 
-int __init safesetid_init_securityfs(void)
+static int __init safesetid_init_securityfs(void)
 {
 	int ret;
 	struct dentry *policy_dir;
@@ -345,3 +342,4 @@ error:
 	securityfs_remove(policy_dir);
 	return ret;
 }
+fs_initcall(safesetid_init_securityfs);

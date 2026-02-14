@@ -24,7 +24,6 @@
  * @cgx:		parent cgx port
  * @mcast_filters_count:  Number of multicast filters installed
  * @lmac_id:		lmac port id
- * @lmac_type:	        lmac type like SGMII/XAUI
  * @cmd_pend:		flag set before new command is started
  *			flag cleared after command response is received
  * @name:		lmac port name
@@ -44,7 +43,6 @@ struct lmac {
 	struct cgx *cgx;
 	u8 mcast_filters_count;
 	u8 lmac_id;
-	u8 lmac_type;
 	bool cmd_pend;
 	char *name;
 };
@@ -72,6 +70,7 @@ struct mac_ops {
 	u8			irq_offset;
 	u8			int_ena_bit;
 	u8			lmac_fwi;
+	u32			fifo_len;
 	bool			non_contiguous_serdes_lane;
 	/* RPM & CGX differs in number of Receive/transmit stats */
 	u8			rx_stats_cnt;
@@ -126,14 +125,10 @@ struct mac_ops {
 
 	int                     (*mac_get_pfc_frm_cfg)(void *cgxd, int lmac_id,
 						       u8 *tx_pause, u8 *rx_pause);
-	int			(*mac_reset)(void *cgxd, int lmac_id, u8 pf_req_flr);
 
 	/* FEC stats */
 	int			(*get_fec_stats)(void *cgxd, int lmac_id,
 						 struct cgx_fec_stats_rsp *rsp);
-	int			(*mac_stats_reset)(void *cgxd, int lmac_id);
-	void                    (*mac_x2p_reset)(void *cgxd, bool enable);
-	int			(*mac_enadis_rx)(void *cgxd, int lmac_id, bool enable);
 };
 
 struct cgx {
@@ -143,10 +138,6 @@ struct cgx {
 	u8			lmac_count;
 	/* number of LMACs per MAC could be 4 or 8 */
 	u8			max_lmac_per_mac;
-	/* length of fifo varies depending on the number
-	 * of LMACS
-	 */
-	u32			fifo_len;
 #define MAX_LMAC_COUNT		8
 	struct lmac             *lmac_idmap[MAX_LMAC_COUNT];
 	struct			work_struct cgx_cmd_work;

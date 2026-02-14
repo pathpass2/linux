@@ -259,7 +259,7 @@ static int iceland_start_smu(struct pp_hwmgr *hwmgr)
 
 static int iceland_smu_init(struct pp_hwmgr *hwmgr)
 {
-	struct iceland_smumgr *iceland_priv;
+	struct iceland_smumgr *iceland_priv = NULL;
 
 	iceland_priv = kzalloc(sizeof(struct iceland_smumgr), GFP_KERNEL);
 
@@ -2028,7 +2028,7 @@ static int iceland_init_smc_table(struct pp_hwmgr *hwmgr)
 	table->VoltageResponseTime  = 0;
 	table->PhaseResponseTime  = 0;
 	table->MemoryThermThrottleEnable  = 1;
-	table->PCIeBootLinkLevel = (uint8_t) (data->dpm_table.pcie_speed_table.count);
+	table->PCIeBootLinkLevel = 0;
 	table->PCIeGenInterval = 1;
 
 	result = iceland_populate_smc_svi2_config(hwmgr, table);
@@ -2263,7 +2263,6 @@ static uint32_t iceland_get_mac_definition(uint32_t value)
 	case SMU_MAX_ENTRIES_SMIO:
 		return SMU71_MAX_ENTRIES_SMIO;
 	case SMU_MAX_LEVELS_VDDC:
-	case SMU_MAX_LEVELS_VDDGFX:
 		return SMU71_MAX_LEVELS_VDDC;
 	case SMU_MAX_LEVELS_VDDCI:
 		return SMU71_MAX_LEVELS_VDDCI;
@@ -2655,8 +2654,9 @@ static int iceland_initialize_mc_reg_table(struct pp_hwmgr *hwmgr)
 
 static bool iceland_is_dpm_running(struct pp_hwmgr *hwmgr)
 {
-	return PHM_READ_INDIRECT_FIELD(hwmgr->device,
-			CGS_IND_REG__SMC, FEATURE_STATUS, VOLTAGE_CONTROLLER_ON) == 1;
+	return (1 == PHM_READ_INDIRECT_FIELD(hwmgr->device,
+			CGS_IND_REG__SMC, FEATURE_STATUS, VOLTAGE_CONTROLLER_ON))
+			? true : false;
 }
 
 const struct pp_smumgr_func iceland_smu_funcs = {

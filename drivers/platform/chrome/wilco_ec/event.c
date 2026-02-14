@@ -58,6 +58,7 @@
 #define DRV_NAME		EVENT_DEV_NAME
 #define EVENT_DEV_NAME_FMT	(EVENT_DEV_NAME "%d")
 static struct class event_class = {
+	.owner	= THIS_MODULE,
 	.name	= EVENT_CLASS_NAME,
 };
 
@@ -95,7 +96,7 @@ struct ec_event_queue {
 	int capacity;
 	int head;
 	int tail;
-	struct ec_event *entries[] __counted_by(capacity);
+	struct ec_event *entries[];
 };
 
 /* Maximum number of events to store in ec_event_queue */
@@ -403,6 +404,7 @@ static const struct file_operations event_fops = {
 	.poll  = event_poll,
 	.read = event_read,
 	.release = event_release,
+	.llseek = no_llseek,
 	.owner = THIS_MODULE,
 };
 
@@ -494,7 +496,7 @@ static int event_device_add(struct acpi_device *adev)
 free_dev_data:
 	hangup_device(dev_data);
 free_minor:
-	ida_free(&event_ida, minor);
+	ida_simple_remove(&event_ida, minor);
 	return error;
 }
 
@@ -503,7 +505,7 @@ static void event_device_remove(struct acpi_device *adev)
 	struct event_device_data *dev_data = adev->driver_data;
 
 	cdev_device_del(&dev_data->cdev, &dev_data->dev);
-	ida_free(&event_ida, MINOR(dev_data->dev.devt));
+	ida_simple_remove(&event_ida, MINOR(dev_data->dev.devt));
 	hangup_device(dev_data);
 }
 
@@ -522,6 +524,7 @@ static struct acpi_driver event_driver = {
 		.notify = event_device_notify,
 		.remove = event_device_remove,
 	},
+	.owner = THIS_MODULE,
 };
 
 static int __init event_module_init(void)
@@ -573,3 +576,4 @@ module_exit(event_module_exit);
 MODULE_AUTHOR("Nick Crews <ncrews@chromium.org>");
 MODULE_DESCRIPTION("Wilco EC ACPI event driver");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:" DRV_NAME);

@@ -1,18 +1,13 @@
-// SPDX-License-Identifier: MIT
 /*
+ * SPDX-License-Identifier: MIT
+ *
  * Copyright © 2014-2016 Intel Corporation
  */
 
-#include <linux/vmalloc.h>
-
 #include <drm/drm_cache.h>
-#include <drm/drm_panic.h>
-#include <drm/drm_print.h>
 
-#include "display/intel_fb.h"
-#include "display/intel_display_types.h"
 #include "gt/intel_gt.h"
-#include "gt/intel_tlb.h"
+#include "gt/intel_gt_pm.h"
 
 #include "i915_drv.h"
 #include "i915_gem_object.h"
@@ -198,16 +193,13 @@ static void unmap_object(struct drm_i915_gem_object *obj, void *ptr)
 static void flush_tlb_invalidate(struct drm_i915_gem_object *obj)
 {
 	struct drm_i915_private *i915 = to_i915(obj->base.dev);
-	struct intel_gt *gt;
-	int id;
+	struct intel_gt *gt = to_gt(i915);
 
-	for_each_gt(gt, i915, id) {
-		if (!obj->mm.tlb[id])
-			continue;
+	if (!obj->mm.tlb)
+		return;
 
-		intel_gt_invalidate_tlb_full(gt, obj->mm.tlb[id]);
-		obj->mm.tlb[id] = 0;
-	}
+	intel_gt_invalidate_tlb(gt, obj->mm.tlb);
+	obj->mm.tlb = 0;
 }
 
 struct sg_table *
@@ -359,131 +351,6 @@ static void *i915_gem_object_map_pfn(struct drm_i915_gem_object *obj,
 	return vaddr ?: ERR_PTR(-ENOMEM);
 }
 
-struct intel_panic {
-	struct page **pages;
-	int page;
-	void *vaddr;
-};
-
-static void i915_panic_kunmap(struct intel_panic *panic)
-{
-	if (panic->vaddr) {
-		drm_clflush_virt_range(panic->vaddr, PAGE_SIZE);
-		kunmap_local(panic->vaddr);
-		panic->vaddr = NULL;
-	}
-}
-
-static struct page **i915_gem_object_panic_pages(struct drm_i915_gem_object *obj)
-{
-	unsigned long n_pages = obj->base.size >> PAGE_SHIFT, i;
-	struct page *page;
-	struct page **pages;
-	struct sgt_iter iter;
-
-	/* For a 3840x2160 32 bits Framebuffer, this should require ~64K */
-	pages = kmalloc_array(n_pages, sizeof(*pages), GFP_ATOMIC);
-	if (!pages)
-		return NULL;
-
-	i = 0;
-	for_each_sgt_page(page, iter, obj->mm.pages)
-		pages[i++] = page;
-	return pages;
-}
-
-static void i915_gem_object_panic_map_set_pixel(struct drm_scanout_buffer *sb, unsigned int x,
-						unsigned int y, u32 color)
-{
-	struct intel_framebuffer *fb = (struct intel_framebuffer *)sb->private;
-	unsigned int offset = fb->panic_tiling(sb->width, x, y);
-
-	iosys_map_wr(&sb->map[0], offset, u32, color);
-}
-
-/*
- * The scanout buffer pages are not mapped, so for each pixel,
- * use kmap_local_page_try_from_panic() to map the page, and write the pixel.
- * Try to keep the map from the previous pixel, to avoid too much map/unmap.
- */
-static void i915_gem_object_panic_page_set_pixel(struct drm_scanout_buffer *sb, unsigned int x,
-						 unsigned int y, u32 color)
-{
-	unsigned int new_page;
-	unsigned int offset;
-	struct intel_framebuffer *fb = (struct intel_framebuffer *)sb->private;
-	struct intel_panic *panic = fb->panic;
-
-	if (fb->panic_tiling)
-		offset = fb->panic_tiling(sb->width, x, y);
-	else
-		offset = y * sb->pitch[0] + x * sb->format->cpp[0];
-
-	new_page = offset >> PAGE_SHIFT;
-	offset = offset % PAGE_SIZE;
-	if (new_page != panic->page) {
-		i915_panic_kunmap(panic);
-		panic->page = new_page;
-		panic->vaddr =
-			kmap_local_page_try_from_panic(panic->pages[panic->page]);
-	}
-	if (panic->vaddr) {
-		u32 *pix = panic->vaddr + offset;
-		*pix = color;
-	}
-}
-
-struct intel_panic *i915_gem_object_alloc_panic(void)
-{
-	struct intel_panic *panic;
-
-	panic = kzalloc(sizeof(*panic), GFP_KERNEL);
-
-	return panic;
-}
-
-/*
- * Setup the gem framebuffer for drm_panic access.
- * Use current vaddr if it exists, or setup a list of pages.
- * pfn is not supported yet.
- */
-int i915_gem_object_panic_setup(struct intel_panic *panic, struct drm_scanout_buffer *sb,
-				struct drm_gem_object *_obj, bool panic_tiling)
-{
-	enum i915_map_type has_type;
-	struct drm_i915_gem_object *obj = to_intel_bo(_obj);
-	void *ptr;
-
-	ptr = page_unpack_bits(obj->mm.mapping, &has_type);
-	if (ptr) {
-		if (i915_gem_object_has_iomem(obj))
-			iosys_map_set_vaddr_iomem(&sb->map[0], (void __iomem *)ptr);
-		else
-			iosys_map_set_vaddr(&sb->map[0], ptr);
-
-		if (panic_tiling)
-			sb->set_pixel = i915_gem_object_panic_map_set_pixel;
-		return 0;
-	}
-	if (i915_gem_object_has_struct_page(obj)) {
-		panic->pages = i915_gem_object_panic_pages(obj);
-		if (!panic->pages)
-			return -ENOMEM;
-		panic->page = -1;
-		sb->set_pixel = i915_gem_object_panic_page_set_pixel;
-		return 0;
-	}
-	return -EOPNOTSUPP;
-}
-
-void i915_gem_object_panic_finish(struct intel_panic *panic)
-{
-	i915_panic_kunmap(panic);
-	panic->page = -1;
-	kfree(panic->pages);
-	panic->pages = NULL;
-}
-
 /* get, pin, and map the pages of the object into kernel space */
 void *i915_gem_object_pin_map(struct drm_i915_gem_object *obj,
 			      enum i915_map_type type)
@@ -596,6 +463,18 @@ void *i915_gem_object_pin_map_unlocked(struct drm_i915_gem_object *obj,
 	i915_gem_object_unlock(obj);
 
 	return ret;
+}
+
+enum i915_map_type i915_coherent_map_type(struct drm_i915_private *i915,
+					  struct drm_i915_gem_object *obj,
+					  bool always_coherent)
+{
+	if (i915_gem_object_is_lmem(obj))
+		return I915_MAP_WC;
+	if (HAS_LLC(i915) || always_coherent)
+		return I915_MAP_WB;
+	else
+		return I915_MAP_WC;
 }
 
 void __i915_gem_object_flush_map(struct drm_i915_gem_object *obj,
@@ -767,7 +646,7 @@ __i915_gem_object_get_page(struct drm_i915_gem_object *obj, pgoff_t n)
 	GEM_BUG_ON(!i915_gem_object_has_struct_page(obj));
 
 	sg = i915_gem_object_get_sg(obj, n, &offset);
-	return sg_page(sg) + offset;
+	return nth_page(sg_page(sg), offset);
 }
 
 /* Like i915_gem_object_get_page(), but mark the returned page dirty */

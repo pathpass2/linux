@@ -179,7 +179,7 @@ static int flexcop_usb_memory_req(struct flexcop_usb *fc_usb,
 		flexcop_usb_request_t req, flexcop_usb_mem_page_t page_start,
 		u32 addr, int extended, u8 *buf, u32 len)
 {
-	int ret = 0;
+	int i, ret = 0;
 	u16 wMax;
 	u32 pagechunk = 0;
 
@@ -196,8 +196,11 @@ static int flexcop_usb_memory_req(struct flexcop_usb *fc_usb,
 	default:
 		return -EINVAL;
 	}
-	while (len) {
-		pagechunk = min(wMax, bytes_left_to_read_on_page(addr, len));
+	for (i = 0; i < len;) {
+		pagechunk =
+			wMax < bytes_left_to_read_on_page(addr, len) ?
+				wMax :
+				bytes_left_to_read_on_page(addr, len);
 		deb_info("%x\n",
 			(addr & V8_MEMORY_PAGE_MASK) |
 				(V8_MEMORY_EXTENDED*extended));
@@ -206,12 +209,11 @@ static int flexcop_usb_memory_req(struct flexcop_usb *fc_usb,
 			page_start + (addr / V8_MEMORY_PAGE_SIZE),
 			(addr & V8_MEMORY_PAGE_MASK) |
 				(V8_MEMORY_EXTENDED*extended),
-			buf, pagechunk);
+			&buf[i], pagechunk);
 
 		if (ret < 0)
 			return ret;
 		addr += pagechunk;
-		buf += pagechunk;
 		len -= pagechunk;
 	}
 	return 0;
@@ -446,7 +448,7 @@ static int flexcop_usb_transfer_init(struct flexcop_usb *fc_usb)
 	/* creating iso urbs */
 	for (i = 0; i < B2C2_USB_NUM_ISO_URB; i++) {
 		fc_usb->iso_urb[i] = usb_alloc_urb(B2C2_USB_FRAMES_PER_ISO,
-			GFP_KERNEL);
+			GFP_ATOMIC);
 		if (fc_usb->iso_urb[i] == NULL) {
 			ret = -ENOMEM;
 			goto urb_error;
@@ -479,7 +481,7 @@ static int flexcop_usb_transfer_init(struct flexcop_usb *fc_usb)
 			frame_offset += frame_size;
 		}
 
-		if ((ret = usb_submit_urb(fc_usb->iso_urb[i],GFP_KERNEL))) {
+		if ((ret = usb_submit_urb(fc_usb->iso_urb[i],GFP_ATOMIC))) {
 			err("submitting urb %d failed with %d.", i, ret);
 			goto urb_error;
 		}
@@ -513,7 +515,7 @@ static int flexcop_usb_init(struct flexcop_usb *fc_usb)
 
 	alt = fc_usb->uintf->cur_altsetting;
 
-	if (alt->desc.bNumEndpoints < 2)
+	if (alt->desc.bNumEndpoints < 1)
 		return -ENODEV;
 	if (!usb_endpoint_is_isoc_in(&alt->endpoint[0].desc))
 		return -ENODEV;
@@ -528,12 +530,6 @@ static int flexcop_usb_init(struct flexcop_usb *fc_usb)
 		break;
 	case USB_SPEED_HIGH:
 		info("running at HIGH speed.");
-		break;
-	case USB_SPEED_SUPER:
-		info("running at SUPER speed.");
-		break;
-	case USB_SPEED_SUPER_PLUS:
-		info("running at SUPER+ speed.");
 		break;
 	case USB_SPEED_UNKNOWN:
 	default:

@@ -44,7 +44,6 @@ properties:
       - allwinner,sun8i-r40-pinctrl
       - allwinner,sun8i-v3-pinctrl
       - allwinner,sun8i-v3s-pinctrl
-      - allwinner,sun8i-v853-pinctrl
       - allwinner,sun9i-a80-pinctrl
       - allwinner,sun9i-a80-r-pinctrl
       - allwinner,sun20i-d1-pinctrl
@@ -98,7 +97,7 @@ patternProperties:
   # It's pretty scary, but the basic idea is that:
   #   - One node name can start with either s- or r- for PRCM nodes,
   #   - Then, the name itself can be any repetition of <string>- (to
-  #     accommodate with nodes like uart4-rts-cts-pins), where each
+  #     accomodate with nodes like uart4-rts-cts-pins), where each
   #     string can be either starting with 'p' but in a string longer
   #     than 3, or something that doesn't start with 'p',
   #   - Then, the bank name is optional and will be between pa and pg,
@@ -143,7 +142,7 @@ allOf:
   # boards are defining it at the moment so it would generate a lot of
   # warnings.
 
-  - $ref: pinctrl.yaml#
+  - $ref: "pinctrl.yaml#"
   - if:
       not:
         properties:
@@ -179,18 +178,6 @@ allOf:
         interrupts:
           minItems: 7
           maxItems: 7
-
-  - if:
-      properties:
-        compatible:
-          enum:
-            - allwinner,sun8i-v853-pinctrl
-
-    then:
-      properties:
-        interrupts:
-          minItems: 8
-          maxItems: 8
 
   - if:
       properties:

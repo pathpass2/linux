@@ -17,7 +17,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
-#include <linux/prandom.h>
+#include <linux/random.h>
 
 #include "mtd_test.h"
 

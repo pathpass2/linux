@@ -6,11 +6,10 @@
  */
 
 #include <linux/gpio/consumer.h>
-#include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/mfd/core.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 
 #include <linux/mfd/lp87565.h>
@@ -47,6 +46,7 @@ MODULE_DEVICE_TABLE(of, of_lp87565_match_table);
 static int lp87565_probe(struct i2c_client *client)
 {
 	struct lp87565 *lp87565;
+	const struct of_device_id *of_id;
 	int ret;
 	unsigned int otpid;
 
@@ -89,7 +89,10 @@ static int lp87565_probe(struct i2c_client *client)
 	}
 
 	lp87565->rev = otpid & LP87565_OTP_REV_OTP_ID;
-	lp87565->dev_type = (uintptr_t)i2c_get_match_data(client);
+
+	of_id = of_match_device(of_lp87565_match_table, &client->dev);
+	if (of_id)
+		lp87565->dev_type = (enum lp87565_device_type)of_id->data;
 
 	i2c_set_clientdata(client, lp87565);
 
@@ -106,8 +109,8 @@ static void lp87565_shutdown(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lp87565_id_table[] = {
-	{ "lp87565-q1" },
-	{ }
+	{ "lp87565-q1", 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, lp87565_id_table);
 
@@ -116,7 +119,7 @@ static struct i2c_driver lp87565_driver = {
 		.name	= "lp87565",
 		.of_match_table = of_lp87565_match_table,
 	},
-	.probe = lp87565_probe,
+	.probe_new = lp87565_probe,
 	.shutdown = lp87565_shutdown,
 	.id_table = lp87565_id_table,
 };

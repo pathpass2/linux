@@ -109,7 +109,7 @@ static int is_elf(struct elfhdr *hdr, struct file *file)
 		return 0;
 	if (!elf_check_arch(hdr))
 		return 0;
-	if (!can_mmap_file(file))
+	if (!file->f_op->mmap)
 		return 0;
 	return 1;
 }
@@ -138,7 +138,7 @@ static int is_constdisp(struct elfhdr *hdr)
 static int elf_fdpic_fetch_phdrs(struct elf_fdpic_params *params,
 				 struct file *file)
 {
-	struct elf_phdr *phdr;
+	struct elf32_phdr *phdr;
 	unsigned long size;
 	int retval, loop;
 	loff_t pos = params->hdr.e_phoff;
@@ -320,7 +320,7 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 	else
 		executable_stack = EXSTACK_DEFAULT;
 
-	if (stack_size == 0 && interp_params.flags & ELF_FDPIC_FLAG_PRESENT) {
+	if (stack_size == 0) {
 		stack_size = interp_params.stack_size;
 		if (interp_params.flags & ELF_FDPIC_FLAG_EXEC_STACK)
 			executable_stack = EXSTACK_ENABLE_X;
@@ -345,9 +345,10 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 	/* there's now no turning back... the old userspace image is dead,
 	 * defunct, deceased, etc.
 	 */
-	SET_PERSONALITY(exec_params.hdr);
 	if (elf_check_fdpic(&exec_params.hdr))
-		current->personality |= PER_LINUX_FDPIC;
+		set_personality(PER_LINUX_FDPIC);
+	else
+		set_personality(PER_LINUX);
 	if (elf_read_implies_exec(&exec_params.hdr, executable_stack))
 		current->personality |= READ_IMPLIES_EXEC;
 
@@ -394,7 +395,7 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 			goto error;
 		}
 
-		exe_file_allow_write_access(interpreter);
+		allow_write_access(interpreter);
 		fput(interpreter);
 		interpreter = NULL;
 	}
@@ -467,7 +468,7 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 
 error:
 	if (interpreter) {
-		exe_file_allow_write_access(interpreter);
+		allow_write_access(interpreter);
 		fput(interpreter);
 	}
 	kfree(interpreter_name);
@@ -505,9 +506,8 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 	char *k_platform, *k_base_platform;
 	char __user *u_platform, *u_base_platform, *p;
 	int loop;
+	int nr;	/* reset for each csp adjustment */
 	unsigned long flags = 0;
-	int ei_index;
-	elf_addr_t *elf_info;
 
 #ifdef CONFIG_MMU
 	/* In some cases (e.g. Hyper-Threading), we want to avoid L1 evictions
@@ -560,8 +560,8 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 	sp &= ~7UL;
 
 	/* stack the load map(s) */
-	len = sizeof(struct elf_fdpic_loadmap);
-	len += sizeof(struct elf_fdpic_loadseg) * exec_params->loadmap->nsegs;
+	len = sizeof(struct elf32_fdpic_loadmap);
+	len += sizeof(struct elf32_fdpic_loadseg) * exec_params->loadmap->nsegs;
 	sp = (sp - len) & ~7UL;
 	exec_params->map_addr = sp;
 
@@ -571,8 +571,8 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 	current->mm->context.exec_fdpic_loadmap = (unsigned long) sp;
 
 	if (interp_params->loadmap) {
-		len = sizeof(struct elf_fdpic_loadmap);
-		len += sizeof(struct elf_fdpic_loadseg) *
+		len = sizeof(struct elf32_fdpic_loadmap);
+		len += sizeof(struct elf32_fdpic_loadseg) *
 			interp_params->loadmap->nsegs;
 		sp = (sp - len) & ~7UL;
 		interp_params->map_addr = sp;
@@ -592,9 +592,6 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 
 	if (bprm->have_execfd)
 		nitems++;
-#ifdef ELF_HWCAP2
-	nitems++;
-#endif
 
 	csp = sp;
 	sp -= nitems * 2 * sizeof(unsigned long);
@@ -605,33 +602,47 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 	csp -= sp & 15UL;
 	sp -= sp & 15UL;
 
-	/* Create the ELF interpreter info */
-	elf_info = (elf_addr_t *)mm->saved_auxv;
-	/* update AT_VECTOR_SIZE_BASE if the number of NEW_AUX_ENT() changes */
-#define NEW_AUX_ENT(id, val) \
-	do { \
-		*elf_info++ = id; \
-		*elf_info++ = val; \
+	/* put the ELF interpreter info on the stack */
+#define NEW_AUX_ENT(id, val)						\
+	do {								\
+		struct { unsigned long _id, _val; } __user *ent, v;	\
+									\
+		ent = (void __user *) csp;				\
+		v._id = (id);						\
+		v._val = (val);						\
+		if (copy_to_user(ent + nr, &v, sizeof(v)))		\
+			return -EFAULT;					\
+		nr++;							\
 	} while (0)
 
-#ifdef ARCH_DLINFO
-	/*
-	 * ARCH_DLINFO must come first so PPC can do its special alignment of
-	 * AUXV.
-	 * update AT_VECTOR_SIZE_ARCH if the number of NEW_AUX_ENT() in
-	 * ARCH_DLINFO changes
-	 */
-	ARCH_DLINFO;
-#endif
+	nr = 0;
+	csp -= 2 * sizeof(unsigned long);
+	NEW_AUX_ENT(AT_NULL, 0);
+	if (k_platform) {
+		nr = 0;
+		csp -= 2 * sizeof(unsigned long);
+		NEW_AUX_ENT(AT_PLATFORM,
+			    (elf_addr_t) (unsigned long) u_platform);
+	}
+
+	if (k_base_platform) {
+		nr = 0;
+		csp -= 2 * sizeof(unsigned long);
+		NEW_AUX_ENT(AT_BASE_PLATFORM,
+			    (elf_addr_t) (unsigned long) u_base_platform);
+	}
+
+	if (bprm->have_execfd) {
+		nr = 0;
+		csp -= 2 * sizeof(unsigned long);
+		NEW_AUX_ENT(AT_EXECFD, bprm->execfd);
+	}
+
+	nr = 0;
+	csp -= DLINFO_ITEMS * 2 * sizeof(unsigned long);
 	NEW_AUX_ENT(AT_HWCAP,	ELF_HWCAP);
 #ifdef ELF_HWCAP2
 	NEW_AUX_ENT(AT_HWCAP2,	ELF_HWCAP2);
-#endif
-#ifdef ELF_HWCAP3
-	NEW_AUX_ENT(AT_HWCAP3,	ELF_HWCAP3);
-#endif
-#ifdef ELF_HWCAP4
-	NEW_AUX_ENT(AT_HWCAP4,	ELF_HWCAP4);
 #endif
 	NEW_AUX_ENT(AT_PAGESZ,	PAGE_SIZE);
 	NEW_AUX_ENT(AT_CLKTCK,	CLOCKS_PER_SEC);
@@ -649,29 +660,17 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 	NEW_AUX_ENT(AT_EGID,	(elf_addr_t) from_kgid_munged(cred->user_ns, cred->egid));
 	NEW_AUX_ENT(AT_SECURE,	bprm->secureexec);
 	NEW_AUX_ENT(AT_EXECFN,	bprm->exec);
-	if (k_platform)
-		NEW_AUX_ENT(AT_PLATFORM,
-			    (elf_addr_t)(unsigned long)u_platform);
-	if (k_base_platform)
-		NEW_AUX_ENT(AT_BASE_PLATFORM,
-			    (elf_addr_t)(unsigned long)u_base_platform);
-	if (bprm->have_execfd)
-		NEW_AUX_ENT(AT_EXECFD, bprm->execfd);
+
+#ifdef ARCH_DLINFO
+	nr = 0;
+	csp -= AT_VECTOR_SIZE_ARCH * 2 * sizeof(unsigned long);
+
+	/* ARCH_DLINFO must come last so platform specific code can enforce
+	 * special alignment requirements on the AUXV if necessary (eg. PPC).
+	 */
+	ARCH_DLINFO;
+#endif
 #undef NEW_AUX_ENT
-	/* AT_NULL is zero; clear the rest too */
-	memset(elf_info, 0, (char *)mm->saved_auxv +
-	       sizeof(mm->saved_auxv) - (char *)elf_info);
-
-	/* And advance past the AT_NULL entry.  */
-	elf_info += 2;
-
-	ei_index = elf_info - (elf_addr_t *)mm->saved_auxv;
-	csp -= ei_index * sizeof(elf_addr_t);
-
-	/* Put the elf_info on the stack in the right place.  */
-	if (copy_to_user((void __user *)csp, mm->saved_auxv,
-			 ei_index * sizeof(elf_addr_t)))
-		return -EFAULT;
 
 	/* allocate room for argv[] and envv[] */
 	csp -= (bprm->envc + 1) * sizeof(elf_caddr_t);
@@ -741,15 +740,15 @@ static int elf_fdpic_map_file(struct elf_fdpic_params *params,
 			      struct mm_struct *mm,
 			      const char *what)
 {
-	struct elf_fdpic_loadmap *loadmap;
+	struct elf32_fdpic_loadmap *loadmap;
 #ifdef CONFIG_MMU
-	struct elf_fdpic_loadseg *mseg;
-	unsigned long load_addr;
+	struct elf32_fdpic_loadseg *mseg;
 #endif
-	struct elf_fdpic_loadseg *seg;
-	struct elf_phdr *phdr;
+	struct elf32_fdpic_loadseg *seg;
+	struct elf32_phdr *phdr;
+	unsigned long load_addr, stop;
 	unsigned nloads, tmp;
-	unsigned long stop;
+	size_t size;
 	int loop, ret;
 
 	/* allocate a load map table */
@@ -761,14 +760,18 @@ static int elf_fdpic_map_file(struct elf_fdpic_params *params,
 	if (nloads == 0)
 		return -ELIBBAD;
 
-	loadmap = kzalloc(struct_size(loadmap, segs, nloads), GFP_KERNEL);
+	size = sizeof(*loadmap) + nloads * sizeof(*seg);
+	loadmap = kzalloc(size, GFP_KERNEL);
 	if (!loadmap)
 		return -ENOMEM;
 
 	params->loadmap = loadmap;
 
-	loadmap->version = ELF_FDPIC_LOADMAP_VERSION;
+	loadmap->version = ELF32_FDPIC_LOADMAP_VERSION;
 	loadmap->nsegs = nloads;
+
+	load_addr = params->load_addr;
+	seg = loadmap->segs;
 
 	/* map the requested LOADs into the memory space */
 	switch (params->flags & ELF_FDPIC_FLAG_ARRANGEMENT) {
@@ -840,8 +843,8 @@ static int elf_fdpic_map_file(struct elf_fdpic_params *params,
 			if (phdr->p_vaddr >= seg->p_vaddr &&
 			    phdr->p_vaddr + phdr->p_memsz <=
 			    seg->p_vaddr + seg->p_memsz) {
-				Elf_Dyn __user *dyn;
-				Elf_Sword d_tag;
+				Elf32_Dyn __user *dyn;
+				Elf32_Sword d_tag;
 
 				params->dynamic_addr =
 					(phdr->p_vaddr - seg->p_vaddr) +
@@ -851,11 +854,11 @@ static int elf_fdpic_map_file(struct elf_fdpic_params *params,
 				 * one item, and that the last item is a NULL
 				 * entry */
 				if (phdr->p_memsz == 0 ||
-				    phdr->p_memsz % sizeof(Elf_Dyn) != 0)
+				    phdr->p_memsz % sizeof(Elf32_Dyn) != 0)
 					goto dynamic_error;
 
-				tmp = phdr->p_memsz / sizeof(Elf_Dyn);
-				dyn = (Elf_Dyn __user *)params->dynamic_addr;
+				tmp = phdr->p_memsz / sizeof(Elf32_Dyn);
+				dyn = (Elf32_Dyn __user *)params->dynamic_addr;
 				if (get_user(d_tag, &dyn[tmp - 1].d_tag) ||
 				    d_tag != 0)
 					goto dynamic_error;
@@ -901,12 +904,10 @@ static int elf_fdpic_map_file(struct elf_fdpic_params *params,
 	kdebug("- DYNAMIC[]: %lx", params->dynamic_addr);
 	seg = loadmap->segs;
 	for (loop = 0; loop < loadmap->nsegs; loop++, seg++)
-		kdebug("- LOAD[%d] : %08llx-%08llx [va=%llx ms=%llx]",
+		kdebug("- LOAD[%d] : %08x-%08x [va=%x ms=%x]",
 		       loop,
-		       (unsigned long long) seg->addr,
-		       (unsigned long long) seg->addr + seg->p_memsz - 1,
-		       (unsigned long long) seg->p_vaddr,
-		       (unsigned long long) seg->p_memsz);
+		       seg->addr, seg->addr + seg->p_memsz - 1,
+		       seg->p_vaddr, seg->p_memsz);
 
 	return 0;
 
@@ -926,8 +927,8 @@ static int elf_fdpic_map_file_constdisp_on_uclinux(
 	struct file *file,
 	struct mm_struct *mm)
 {
-	struct elf_fdpic_loadseg *seg;
-	struct elf_phdr *phdr;
+	struct elf32_fdpic_loadseg *seg;
+	struct elf32_phdr *phdr;
 	unsigned long load_addr, base = ULONG_MAX, top = 0, maddr = 0;
 	int loop, ret;
 
@@ -1010,8 +1011,8 @@ static int elf_fdpic_map_file_by_direct_mmap(struct elf_fdpic_params *params,
 					     struct file *file,
 					     struct mm_struct *mm)
 {
-	struct elf_fdpic_loadseg *seg;
-	struct elf_phdr *phdr;
+	struct elf32_fdpic_loadseg *seg;
+	struct elf32_phdr *phdr;
 	unsigned long load_addr, delta_vaddr;
 	int loop, dvset;
 
@@ -1024,7 +1025,7 @@ static int elf_fdpic_map_file_by_direct_mmap(struct elf_fdpic_params *params,
 	/* deal with each load segment separately */
 	phdr = params->phdrs;
 	for (loop = 0; loop < params->hdr.e_phnum; loop++, phdr++) {
-		unsigned long maddr, disp, excess;
+		unsigned long maddr, disp, excess, excess1;
 		int prot = 0, flags;
 
 		if (phdr->p_type != PT_LOAD)
@@ -1085,10 +1086,9 @@ static int elf_fdpic_map_file_by_direct_mmap(struct elf_fdpic_params *params,
 		maddr = vm_mmap(file, maddr, phdr->p_memsz + disp, prot, flags,
 				phdr->p_offset - disp);
 
-		kdebug("mmap[%d] <file> sz=%llx pr=%x fl=%x of=%llx --> %08lx",
-		       loop, (unsigned long long) phdr->p_memsz + disp,
-		       prot, flags, (unsigned long long) phdr->p_offset - disp,
-		       maddr);
+		kdebug("mmap[%d] <file> sz=%lx pr=%x fl=%x of=%lx --> %08lx",
+		       loop, phdr->p_memsz + disp, prot, flags,
+		       phdr->p_offset - disp, maddr);
 
 		if (IS_ERR_VALUE(maddr))
 			return (int) maddr;
@@ -1120,10 +1120,9 @@ static int elf_fdpic_map_file_by_direct_mmap(struct elf_fdpic_params *params,
 		 *   extant in the file
 		 */
 		excess = phdr->p_memsz - phdr->p_filesz;
+		excess1 = PAGE_SIZE - ((maddr + phdr->p_filesz) & ~PAGE_MASK);
 
 #ifdef CONFIG_MMU
-		unsigned long excess1
-			= PAGE_SIZE - ((maddr + phdr->p_filesz) & ~PAGE_MASK);
 		if (excess > excess1) {
 			unsigned long xaddr = maddr + phdr->p_filesz + excess1;
 			unsigned long xmaddr;
@@ -1151,9 +1150,8 @@ static int elf_fdpic_map_file_by_direct_mmap(struct elf_fdpic_params *params,
 
 #else
 		if (excess > 0) {
-			kdebug("clear[%d] ad=%llx sz=%lx", loop,
-			       (unsigned long long) maddr + phdr->p_filesz,
-			       excess);
+			kdebug("clear[%d] ad=%lx sz=%lx",
+			       loop, maddr + phdr->p_filesz, excess);
 			if (clear_user((void *) maddr + phdr->p_filesz, excess))
 				return -EFAULT;
 		}
@@ -1271,12 +1269,12 @@ static inline void fill_elf_note_phdr(struct elf_phdr *phdr, int sz, loff_t offs
 	phdr->p_filesz = sz;
 	phdr->p_memsz = 0;
 	phdr->p_flags = 0;
-	phdr->p_align = 4;
+	phdr->p_align = 0;
 	return;
 }
 
-static inline void __fill_note(struct memelfnote *note, const char *name, int type,
-			       unsigned int sz, void *data)
+static inline void fill_note(struct memelfnote *note, const char *name, int type,
+		unsigned int sz, void *data)
 {
 	note->name = name;
 	note->type = type;
@@ -1284,9 +1282,6 @@ static inline void __fill_note(struct memelfnote *note, const char *name, int ty
 	note->data = data;
 	return;
 }
-
-#define fill_note(note, type, sz, data) \
-	__fill_note(note, NN_ ## type, NT_ ## type, sz, data)
 
 /*
  * fill up all the fields in prstatus from the given task struct, except
@@ -1365,7 +1360,7 @@ static int fill_psinfo(struct elf_prpsinfo *psinfo, struct task_struct *p,
 	SET_UID(psinfo->pr_uid, from_kuid_munged(cred->user_ns, cred->uid));
 	SET_GID(psinfo->pr_gid, from_kgid_munged(cred->user_ns, cred->gid));
 	rcu_read_unlock();
-	get_task_comm(psinfo->pr_fname, p);
+	strncpy(psinfo->pr_fname, p->comm, sizeof(psinfo->pr_fname));
 
 	return 0;
 }
@@ -1401,7 +1396,8 @@ static struct elf_thread_status *elf_dump_thread_status(long signr, struct task_
 	regset_get(p, &view->regsets[0],
 		   sizeof(t->prstatus.pr_reg), &t->prstatus.pr_reg);
 
-	fill_note(&t->notes[0], PRSTATUS, sizeof(t->prstatus), &t->prstatus);
+	fill_note(&t->notes[0], "CORE", NT_PRSTATUS, sizeof(t->prstatus),
+		  &t->prstatus);
 	t->num_notes++;
 	*sz += notesize(&t->notes[0]);
 
@@ -1418,7 +1414,8 @@ static struct elf_thread_status *elf_dump_thread_status(long signr, struct task_
 	}
 
 	if (t->prstatus.pr_fpvalid) {
-		fill_note(&t->notes[1], PRFPREG, sizeof(t->fpu), &t->fpu);
+		fill_note(&t->notes[1], "CORE", NT_PRFPREG, sizeof(t->fpu),
+			  &t->fpu);
 		t->num_notes++;
 		*sz += notesize(&t->notes[1]);
 	}
@@ -1532,7 +1529,7 @@ static int elf_fdpic_core_dump(struct coredump_params *cprm)
 	 */
 
 	fill_psinfo(psinfo, current->group_leader, current->mm);
-	fill_note(&psinfo_note, PRPSINFO, sizeof(*psinfo), psinfo);
+	fill_note(&psinfo_note, "CORE", NT_PRPSINFO, sizeof(*psinfo), psinfo);
 	thread_status_size += notesize(&psinfo_note);
 
 	auxv = (elf_addr_t *) current->mm->saved_auxv;
@@ -1540,10 +1537,10 @@ static int elf_fdpic_core_dump(struct coredump_params *cprm)
 	do
 		i += 2;
 	while (auxv[i - 2] != AT_NULL);
-	fill_note(&auxv_note, AUXV, i * sizeof(elf_addr_t), auxv);
+	fill_note(&auxv_note, "CORE", NT_AUXV, i * sizeof(elf_addr_t), auxv);
 	thread_status_size += notesize(&auxv_note);
 
-	offset = sizeof(*elf);				/* ELF header */
+	offset = sizeof(*elf);				/* Elf header */
 	offset += segs * sizeof(struct elf_phdr);	/* Program headers */
 
 	/* Write notes phdr entry */

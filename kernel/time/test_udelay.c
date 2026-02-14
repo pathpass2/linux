@@ -155,6 +155,5 @@ static void __exit udelay_test_exit(void)
 
 module_exit(udelay_test_exit);
 
-MODULE_DESCRIPTION("udelay test module");
 MODULE_AUTHOR("David Riley <davidriley@chromium.org>");
 MODULE_LICENSE("GPL");

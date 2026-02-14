@@ -40,11 +40,12 @@ properties:
 
 patternProperties:
   "^nand@[a-f0-9]$":
-    $ref: raw-nand-chip.yaml#
+    $ref: nand-chip.yaml#
     unevaluatedProperties: false
     properties:
       reg:
         maximum: 1
+      nand-on-flash-bbt: true
       nand-ecc-mode:
         const: hw
 

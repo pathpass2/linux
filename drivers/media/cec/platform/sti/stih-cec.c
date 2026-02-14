@@ -6,7 +6,6 @@
  */
 #include <linux/clk.h>
 #include <linux/interrupt.h>
-#include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -365,12 +364,14 @@ err_delete_adapter:
 	return ret;
 }
 
-static void stih_cec_remove(struct platform_device *pdev)
+static int stih_cec_remove(struct platform_device *pdev)
 {
 	struct stih_cec *cec = platform_get_drvdata(pdev);
 
 	cec_notifier_cec_adap_unregister(cec->notifier, cec->adap);
 	cec_unregister_adapter(cec->adap);
+
+	return 0;
 }
 
 static const struct of_device_id stih_cec_match[] = {

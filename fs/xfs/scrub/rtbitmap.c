@@ -1,144 +1,59 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (C) 2017-2023 Oracle.  All Rights Reserved.
- * Author: Darrick J. Wong <djwong@kernel.org>
+ * Copyright (C) 2017 Oracle.  All Rights Reserved.
+ * Author: Darrick J. Wong <darrick.wong@oracle.com>
  */
-#include "xfs_platform.h"
+#include "xfs.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
 #include "xfs_trans_resv.h"
 #include "xfs_mount.h"
-#include "xfs_btree.h"
 #include "xfs_log_format.h"
 #include "xfs_trans.h"
-#include "xfs_rtbitmap.h"
+#include "xfs_rtalloc.h"
 #include "xfs_inode.h"
 #include "xfs_bmap.h"
-#include "xfs_bit.h"
-#include "xfs_rtgroup.h"
-#include "xfs_sb.h"
-#include "xfs_rmap.h"
-#include "xfs_rtrmap_btree.h"
-#include "xfs_exchmaps.h"
-#include "xfs_zone_alloc.h"
 #include "scrub/scrub.h"
 #include "scrub/common.h"
-#include "scrub/repair.h"
-#include "scrub/tempexch.h"
-#include "scrub/rtbitmap.h"
-#include "scrub/btree.h"
 
 /* Set us up with the realtime metadata locked. */
 int
-xchk_setup_rtbitmap(
+xchk_setup_rt(
 	struct xfs_scrub	*sc)
 {
-	struct xfs_mount	*mp = sc->mp;
-	struct xchk_rtbitmap	*rtb;
 	int			error;
 
-	if (xchk_need_intent_drain(sc))
-		xchk_fsgates_enable(sc, XCHK_FSGATES_DRAIN);
-
-	rtb = kzalloc(struct_size(rtb, words, xchk_rtbitmap_wordcnt(sc)),
-			XCHK_GFP_FLAGS);
-	if (!rtb)
-		return -ENOMEM;
-	sc->buf = rtb;
-	rtb->sc = sc;
-
-	error = xchk_rtgroup_init(sc, sc->sm->sm_agno, &sc->sr);
+	error = xchk_setup_fs(sc);
 	if (error)
 		return error;
 
-	if (xchk_could_repair(sc)) {
-		error = xrep_setup_rtbitmap(sc, rtb);
-		if (error)
-			return error;
-	}
-
-	error = xchk_trans_alloc(sc, rtb->resblks);
-	if (error)
-		return error;
-
-	error = xchk_install_live_inode(sc, rtg_bitmap(sc->sr.rtg));
-	if (error)
-		return error;
-
-	error = xchk_ino_dqattach(sc);
-	if (error)
-		return error;
-
-	error = xchk_rtgroup_lock(sc, &sc->sr, XCHK_RTGLOCK_ALL);
-	if (error)
-		return error;
-
-	/*
-	 * Now that we've locked the rtbitmap, we can't race with growfsrt
-	 * trying to expand the bitmap or change the size of the rt volume.
-	 * Hence it is safe to compute and check the geometry values.
-	 */
-	if (mp->m_sb.sb_rblocks) {
-		rtb->rextents = xfs_blen_to_rtbxlen(mp, mp->m_sb.sb_rblocks);
-		rtb->rextslog = xfs_compute_rextslog(rtb->rextents);
-		rtb->rbmblocks = xfs_rtbitmap_blockcount(mp);
-	}
+	sc->ilock_flags = XFS_ILOCK_EXCL | XFS_ILOCK_RTBITMAP;
+	sc->ip = sc->mp->m_rbmip;
+	xfs_ilock(sc->ip, sc->ilock_flags);
 
 	return 0;
 }
 
-/* Per-rtgroup bitmap contents. */
-
-/* Cross-reference rtbitmap entries with other metadata. */
-STATIC void
-xchk_rtbitmap_xref(
-	struct xchk_rtbitmap	*rtb,
-	xfs_rtblock_t		startblock,
-	xfs_rtblock_t		blockcount)
-{
-	struct xfs_scrub	*sc = rtb->sc;
-	xfs_rgblock_t		rgbno = xfs_rtb_to_rgbno(sc->mp, startblock);
-
-	if (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT)
-		return;
-	if (!sc->sr.rmap_cur)
-		return;
-
-	xchk_xref_has_no_rt_owner(sc, rgbno, blockcount);
-	xchk_xref_is_not_rt_shared(sc, rgbno, blockcount);
-	xchk_xref_is_not_rt_cow_staging(sc, rgbno, blockcount);
-
-	if (rtb->next_free_rgbno < rgbno)
-		xchk_xref_has_rt_owner(sc, rtb->next_free_rgbno,
-				rgbno - rtb->next_free_rgbno);
-	rtb->next_free_rgbno = rgbno + blockcount;
-}
+/* Realtime bitmap. */
 
 /* Scrub a free extent record from the realtime bitmap. */
 STATIC int
 xchk_rtbitmap_rec(
-	struct xfs_rtgroup	*rtg,
+	struct xfs_mount	*mp,
 	struct xfs_trans	*tp,
 	const struct xfs_rtalloc_rec *rec,
 	void			*priv)
 {
-	struct xchk_rtbitmap	*rtb = priv;
-	struct xfs_scrub	*sc = rtb->sc;
+	struct xfs_scrub	*sc = priv;
 	xfs_rtblock_t		startblock;
-	xfs_filblks_t		blockcount;
+	xfs_rtblock_t		blockcount;
 
-	startblock = xfs_rtx_to_rtb(rtg, rec->ar_startext);
-	blockcount = xfs_rtxlen_to_extlen(rtg_mount(rtg), rec->ar_extcount);
+	startblock = rec->ar_startext * mp->m_sb.sb_rextsize;
+	blockcount = rec->ar_extcount * mp->m_sb.sb_rextsize;
 
-	if (!xfs_verify_rtbext(rtg_mount(rtg), startblock, blockcount))
+	if (!xfs_verify_rtext(mp, startblock, blockcount))
 		xchk_fblock_set_corrupt(sc, XFS_DATA_FORK, 0);
-
-	xchk_rtbitmap_xref(rtb, startblock, blockcount);
-
-	if (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT)
-		return -ECANCELED;
-
 	return 0;
 }
 
@@ -147,30 +62,21 @@ STATIC int
 xchk_rtbitmap_check_extents(
 	struct xfs_scrub	*sc)
 {
-	struct xfs_bmbt_irec	map;
-	struct xfs_iext_cursor	icur;
 	struct xfs_mount	*mp = sc->mp;
-	struct xfs_inode	*ip = sc->ip;
-	xfs_fileoff_t		off = 0;
-	xfs_fileoff_t		endoff;
+	struct xfs_bmbt_irec	map;
+	xfs_rtblock_t		off;
+	int			nmap;
 	int			error = 0;
 
-	/* Mappings may not cross or lie beyond EOF. */
-	endoff = XFS_B_TO_FSB(mp, ip->i_disk_size);
-	if (xfs_iext_lookup_extent(ip, &ip->i_df, endoff, &icur, &map)) {
-		xchk_fblock_set_corrupt(sc, XFS_DATA_FORK, endoff);
-		return 0;
-	}
-
-	while (off < endoff) {
-		int		nmap = 1;
-
+	for (off = 0; off < mp->m_sb.sb_rbmblocks;) {
 		if (xchk_should_terminate(sc, &error) ||
 		    (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT))
 			break;
 
 		/* Make sure we have a written extent. */
-		error = xfs_bmapi_read(ip, off, endoff - off, &map, &nmap,
+		nmap = 1;
+		error = xfs_bmapi_read(mp->m_rbmip, off,
+				mp->m_sb.sb_rbmblocks - off, &map, &nmap,
 				XFS_DATA_FORK);
 		if (!xchk_fblock_process_error(sc, XFS_DATA_FORK, off, &error))
 			break;
@@ -186,56 +92,17 @@ xchk_rtbitmap_check_extents(
 	return error;
 }
 
-/* Scrub this group's realtime bitmap. */
+/* Scrub the realtime bitmap. */
 int
 xchk_rtbitmap(
 	struct xfs_scrub	*sc)
 {
-	struct xfs_mount	*mp = sc->mp;
-	struct xfs_rtgroup	*rtg = sc->sr.rtg;
-	struct xfs_inode	*rbmip = rtg_bitmap(rtg);
-	struct xchk_rtbitmap	*rtb = sc->buf;
-	xfs_rgblock_t		last_rgbno;
 	int			error;
 
-	/* Is sb_rextents correct? */
-	if (mp->m_sb.sb_rextents != rtb->rextents) {
-		xchk_ino_set_corrupt(sc, rbmip->i_ino);
-		return 0;
-	}
-
-	/* Is sb_rextslog correct? */
-	if (mp->m_sb.sb_rextslog != rtb->rextslog) {
-		xchk_ino_set_corrupt(sc, rbmip->i_ino);
-		return 0;
-	}
-
-	/*
-	 * Is sb_rbmblocks large enough to handle the current rt volume?  In no
-	 * case can we exceed 4bn bitmap blocks since the super field is a u32.
-	 */
-	if (rtb->rbmblocks > U32_MAX) {
-		xchk_ino_set_corrupt(sc, rbmip->i_ino);
-		return 0;
-	}
-	if (mp->m_sb.sb_rbmblocks != rtb->rbmblocks) {
-		xchk_ino_set_corrupt(sc, rbmip->i_ino);
-		return 0;
-	}
-
-	/* The bitmap file length must be aligned to an fsblock. */
-	if (rbmip->i_disk_size & mp->m_blockmask) {
-		xchk_ino_set_corrupt(sc, rbmip->i_ino);
-		return 0;
-	}
-
-	/*
-	 * Is the bitmap file itself large enough to handle the rt volume?
-	 * growfsrt expands the bitmap file before updating sb_rextents, so the
-	 * file can be larger than sb_rbmblocks.
-	 */
-	if (rbmip->i_disk_size < XFS_FSB_TO_B(mp, rtb->rbmblocks)) {
-		xchk_ino_set_corrupt(sc, rbmip->i_ino);
+	/* Is the size of the rtbitmap correct? */
+	if (sc->mp->m_rbmip->i_disk_size !=
+	    XFS_FSB_TO_B(sc->mp, sc->mp->m_sb.sb_rbmblocks)) {
+		xchk_ino_set_corrupt(sc, sc->mp->m_rbmip->i_ino);
 		return 0;
 	}
 
@@ -248,52 +115,79 @@ xchk_rtbitmap(
 	if (error || (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT))
 		return error;
 
-	rtb->next_free_rgbno = 0;
-	error = xfs_rtalloc_query_all(rtg, sc->tp, xchk_rtbitmap_rec, rtb);
+	error = xfs_rtalloc_query_all(sc->mp, sc->tp, xchk_rtbitmap_rec, sc);
 	if (!xchk_fblock_process_error(sc, XFS_DATA_FORK, 0, &error))
-		return error;
+		goto out;
+
+out:
+	return error;
+}
+
+/* Scrub the realtime summary. */
+int
+xchk_rtsummary(
+	struct xfs_scrub	*sc)
+{
+	struct xfs_inode	*rsumip = sc->mp->m_rsumip;
+	struct xfs_inode	*old_ip = sc->ip;
+	uint			old_ilock_flags = sc->ilock_flags;
+	int			error = 0;
 
 	/*
-	 * Check that the are rmappings for all rt extents between the end of
-	 * the last free extent we saw and the last possible extent in the rt
-	 * group.
+	 * We ILOCK'd the rt bitmap ip in the setup routine, now lock the
+	 * rt summary ip in compliance with the rt inode locking rules.
+	 *
+	 * Since we switch sc->ip to rsumip we have to save the old ilock
+	 * flags so that we don't mix up the inode state that @sc tracks.
 	 */
-	last_rgbno = rtg->rtg_extents * mp->m_sb.sb_rextsize - 1;
-	if (rtb->next_free_rgbno < last_rgbno)
-		xchk_xref_has_rt_owner(sc, rtb->next_free_rgbno,
-				last_rgbno - rtb->next_free_rgbno);
-	return 0;
+	sc->ip = rsumip;
+	sc->ilock_flags = XFS_ILOCK_EXCL | XFS_ILOCK_RTSUM;
+	xfs_ilock(sc->ip, sc->ilock_flags);
+
+	/* Invoke the fork scrubber. */
+	error = xchk_metadata_inode_forks(sc);
+	if (error || (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT))
+		goto out;
+
+	/* XXX: implement this some day */
+	xchk_set_incomplete(sc);
+out:
+	/* Switch back to the rtbitmap inode and lock flags. */
+	xfs_iunlock(sc->ip, sc->ilock_flags);
+	sc->ilock_flags = old_ilock_flags;
+	sc->ip = old_ip;
+	return error;
 }
+
 
 /* xref check that the extent is not free in the rtbitmap */
 void
 xchk_xref_is_used_rt_space(
 	struct xfs_scrub	*sc,
-	xfs_rtblock_t		rtbno,
+	xfs_rtblock_t		fsbno,
 	xfs_extlen_t		len)
 {
-	struct xfs_rtgroup	*rtg = sc->sr.rtg;
-	xfs_rtxnum_t		startext;
-	xfs_rtxnum_t		endext;
+	xfs_rtblock_t		startext;
+	xfs_rtblock_t		endext;
+	xfs_rtblock_t		extcount;
 	bool			is_free;
 	int			error;
 
 	if (xchk_skip_xref(sc->sm))
 		return;
 
-	if (xfs_has_zoned(sc->mp)) {
-		if (!xfs_zone_rgbno_is_valid(rtg,
-				xfs_rtb_to_rgbno(sc->mp, rtbno) + len - 1))
-			xchk_ino_xref_set_corrupt(sc, rtg_rmap(rtg)->i_ino);
-		return;
-	}
-
-	startext = xfs_rtb_to_rtx(sc->mp, rtbno);
-	endext = xfs_rtb_to_rtx(sc->mp, rtbno + len - 1);
-	error = xfs_rtalloc_extent_is_free(rtg, sc->tp, startext,
-			endext - startext + 1, &is_free);
+	startext = fsbno;
+	endext = fsbno + len - 1;
+	do_div(startext, sc->mp->m_sb.sb_rextsize);
+	do_div(endext, sc->mp->m_sb.sb_rextsize);
+	extcount = endext - startext + 1;
+	xfs_ilock(sc->mp->m_rbmip, XFS_ILOCK_SHARED | XFS_ILOCK_RTBITMAP);
+	error = xfs_rtalloc_extent_is_free(sc->mp, sc->tp, startext, extcount,
+			&is_free);
 	if (!xchk_should_check_xref(sc, &error, NULL))
-		return;
+		goto out_unlock;
 	if (is_free)
-		xchk_ino_xref_set_corrupt(sc, rtg_bitmap(rtg)->i_ino);
+		xchk_ino_xref_set_corrupt(sc, sc->mp->m_rbmip->i_ino);
+out_unlock:
+	xfs_iunlock(sc->mp->m_rbmip, XFS_ILOCK_SHARED | XFS_ILOCK_RTBITMAP);
 }

@@ -36,7 +36,6 @@
 struct dc_dp_mst_stream_allocation_table;
 struct aux_payload;
 enum aux_return_code_type;
-enum set_config_status;
 
 /*
  * Allocate memory accessible by the GPU
@@ -104,16 +103,10 @@ enum act_return_status dm_helpers_dp_mst_poll_for_allocation_change_trigger(
 /*
  * Sends ALLOCATE_PAYLOAD message.
  */
-void dm_helpers_dp_mst_send_payload_allocation(
+bool dm_helpers_dp_mst_send_payload_allocation(
 		struct dc_context *ctx,
-		const struct dc_stream_state *stream);
-
-/*
- * Update mst manager relevant variables
- */
-void dm_helpers_dp_mst_update_mst_mgr_for_deallocation(
-		struct dc_context *ctx,
-		const struct dc_stream_state *stream);
+		const struct dc_stream_state *stream,
+		bool enable);
 
 bool dm_helpers_dp_mst_start_top_mgr(
 		struct dc_context *ctx,
@@ -153,24 +146,11 @@ bool dm_helpers_submit_i2c(
 		const struct dc_link *link,
 		struct i2c_command *cmd);
 
-bool dm_helpers_execute_fused_io(
-		struct dc_context *ctx,
-		struct dc_link *link,
-		union dmub_rb_cmd *commands,
-		uint8_t count,
-		uint32_t timeout_us
-);
-
 bool dm_helpers_dp_write_dsc_enable(
 		struct dc_context *ctx,
 		const struct dc_stream_state *stream,
 		bool enable
 );
-
-bool dm_helpers_dp_write_hblank_reduction(
-		struct dc_context *ctx,
-		const struct dc_stream_state *stream);
-
 bool dm_helpers_is_dp_sink_present(
 		struct dc_link *link);
 
@@ -197,7 +177,6 @@ void dm_set_phyd32clk(struct dc_context *ctx, int freq_khz);
 
 bool dm_helpers_dmub_outbox_interrupt_control(struct dc_context *ctx, bool enable);
 
-void dm_helpers_dmu_timeout(struct dc_context *ctx);
 void dm_helpers_smu_timeout(struct dc_context *ctx, unsigned int msg_id, unsigned int param, unsigned int timeout_us);
 
 // 0x1 = Result_OK, 0xFE = Result_UnkmownCmd, 0x0 = Status_Busy
@@ -215,7 +194,7 @@ int dm_helper_dmub_aux_transfer_sync(
 		const struct dc_link *link,
 		struct aux_payload *payload,
 		enum aux_return_code_type *operation_result);
-
+enum set_config_status;
 int dm_helpers_dmub_set_config_sync(struct dc_context *ctx,
 		const struct dc_link *link,
 		struct set_config_cmd_payload *payload,
@@ -223,8 +202,5 @@ int dm_helpers_dmub_set_config_sync(struct dc_context *ctx,
 enum adaptive_sync_type dm_get_adaptive_sync_support_type(struct dc_link *link);
 
 enum dc_edid_status dm_helpers_get_sbios_edid(struct dc_link *link, struct dc_edid *edid);
-
-bool dm_helpers_is_fullscreen(struct dc_context *ctx, struct dc_stream_state *stream);
-bool dm_helpers_is_hdr_on(struct dc_context *ctx, struct dc_stream_state *stream);
 
 #endif /* __DM_HELPERS__ */

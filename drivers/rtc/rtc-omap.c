@@ -18,14 +18,13 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinconf.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-#include <linux/property.h>
 #include <linux/rtc.h>
-#include <linux/rtc/rtc-omap.h>
 
 /*
  * The OMAP RTC is a year/month/day/hours/minutes/seconds BCD clock
@@ -729,14 +728,16 @@ static int omap_rtc_probe(struct platform_device *pdev)
 	struct omap_rtc	*rtc;
 	u8 reg, mask, new_ctrl;
 	const struct platform_device_id *id_entry;
+	const struct of_device_id *of_id;
 	int ret;
 
 	rtc = devm_kzalloc(&pdev->dev, sizeof(*rtc), GFP_KERNEL);
 	if (!rtc)
 		return -ENOMEM;
 
-	rtc->type = device_get_match_data(&pdev->dev);
-	if (rtc->type) {
+	of_id = of_match_device(omap_rtc_of_match, &pdev->dev);
+	if (of_id) {
+		rtc->type = of_id->data;
 		rtc->is_pmic_controller = rtc->type->has_pmic_mode &&
 			of_device_is_system_power_controller(pdev->dev.of_node);
 	} else {
@@ -745,12 +746,12 @@ static int omap_rtc_probe(struct platform_device *pdev)
 	}
 
 	rtc->irq_timer = platform_get_irq(pdev, 0);
-	if (rtc->irq_timer < 0)
-		return rtc->irq_timer;
+	if (rtc->irq_timer <= 0)
+		return -ENOENT;
 
 	rtc->irq_alarm = platform_get_irq(pdev, 1);
-	if (rtc->irq_alarm < 0)
-		return rtc->irq_alarm;
+	if (rtc->irq_alarm <= 0)
+		return -ENOENT;
 
 	rtc->clk = devm_clk_get(&pdev->dev, "ext-clk");
 	if (!IS_ERR(rtc->clk))
@@ -909,7 +910,7 @@ err:
 	return ret;
 }
 
-static void omap_rtc_remove(struct platform_device *pdev)
+static int omap_rtc_remove(struct platform_device *pdev)
 {
 	struct omap_rtc *rtc = platform_get_drvdata(pdev);
 	u8 reg;
@@ -920,7 +921,7 @@ static void omap_rtc_remove(struct platform_device *pdev)
 		omap_rtc_power_off_rtc = NULL;
 	}
 
-	device_init_wakeup(&pdev->dev, false);
+	device_init_wakeup(&pdev->dev, 0);
 
 	if (!IS_ERR(rtc->clk))
 		clk_disable_unprepare(rtc->clk);
@@ -940,6 +941,8 @@ static void omap_rtc_remove(struct platform_device *pdev)
 	/* Disable the clock/module */
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static int __maybe_unused omap_rtc_suspend(struct device *dev)
@@ -1027,5 +1030,4 @@ static struct platform_driver omap_rtc_driver = {
 module_platform_driver(omap_rtc_driver);
 
 MODULE_AUTHOR("George G. Davis (and others)");
-MODULE_DESCRIPTION("TI OMAP1, AM33xx, DA8xx/OMAP-L13x, AM43xx and DRA7xx RTC driver");
 MODULE_LICENSE("GPL");

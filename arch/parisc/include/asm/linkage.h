@@ -15,7 +15,7 @@
  */
 #define ASM_NL	!
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 #define ENTRY(name) \
 	ALIGN	!\
@@ -35,6 +35,6 @@ name:		ASM_NL\
 	.procend	ASM_NL\
 	ENDPROC(name)
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif  /* __ASM_PARISC_LINKAGE_H */

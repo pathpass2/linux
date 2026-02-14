@@ -40,7 +40,7 @@ static struct ttyprintk_port tpk_port;
 
 static int tpk_curr;
 
-static u8 tpk_buffer[TPK_STR_SIZE + 4];
+static char tpk_buffer[TPK_STR_SIZE + 4];
 
 static void tpk_flush(void)
 {
@@ -51,9 +51,9 @@ static void tpk_flush(void)
 	}
 }
 
-static int tpk_printk(const u8 *buf, size_t count)
+static int tpk_printk(const unsigned char *buf, int count)
 {
-	size_t i;
+	int i;
 
 	for (i = 0; i < count; i++) {
 		if (tpk_curr >= TPK_STR_SIZE) {
@@ -103,7 +103,8 @@ static void tpk_close(struct tty_struct *tty, struct file *filp)
 /*
  * TTY operations write function.
  */
-static ssize_t tpk_write(struct tty_struct *tty, const u8 *buf, size_t count)
+static int tpk_write(struct tty_struct *tty,
+		const unsigned char *buf, int count)
 {
 	struct ttyprintk_port *tpkp = tty->driver_data;
 	unsigned long flags;
@@ -228,5 +229,4 @@ static void __exit ttyprintk_exit(void)
 device_initcall(ttyprintk_init);
 module_exit(ttyprintk_exit);
 
-MODULE_DESCRIPTION("TTY driver to output user messages via printk");
 MODULE_LICENSE("GPL");

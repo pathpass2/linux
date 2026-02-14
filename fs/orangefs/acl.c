@@ -90,9 +90,14 @@ int __orangefs_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 		     type);
 
 	if (acl) {
-		value = posix_acl_to_xattr(&init_user_ns, acl, &size, GFP_KERNEL);
+		size = posix_acl_xattr_size(acl->a_count);
+		value = kmalloc(size, GFP_KERNEL);
 		if (!value)
 			return -ENOMEM;
+
+		error = posix_acl_to_xattr(&init_user_ns, acl, value, size);
+		if (error < 0)
+			goto out;
 	}
 
 	gossip_debug(GOSSIP_ACL_DEBUG,
@@ -106,6 +111,7 @@ int __orangefs_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 	 */
 	error = orangefs_inode_setxattr(inode, name, value, size, 0);
 
+out:
 	kfree(value);
 	if (!error)
 		set_cached_acl(inode, type, acl);

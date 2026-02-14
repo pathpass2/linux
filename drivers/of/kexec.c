@@ -128,6 +128,7 @@ int __init ima_get_kexec_buffer(void **addr, size_t *size)
 {
 	int ret, len;
 	unsigned long tmp_addr;
+	unsigned long start_pfn, end_pfn;
 	size_t tmp_size;
 	const void *prop;
 
@@ -143,9 +144,17 @@ int __init ima_get_kexec_buffer(void **addr, size_t *size)
 	if (!tmp_size)
 		return -ENOENT;
 
-	ret = ima_validate_range(tmp_addr, tmp_size);
-	if (ret)
-		return ret;
+	/*
+	 * Calculate the PFNs for the buffer and ensure
+	 * they are with in addressable memory.
+	 */
+	start_pfn = PHYS_PFN(tmp_addr);
+	end_pfn = PHYS_PFN(tmp_addr + tmp_size - 1);
+	if (!page_is_ram(start_pfn) || !page_is_ram(end_pfn)) {
+		pr_warn("IMA buffer at 0x%lx, size = 0x%zx beyond memory\n",
+			tmp_addr, tmp_size);
+		return -EINVAL;
+	}
 
 	*addr = __va(tmp_addr);
 	*size = tmp_size;
@@ -175,8 +184,7 @@ int __init ima_free_kexec_buffer(void)
 	if (ret)
 		return ret;
 
-	memblock_free_late(addr, size);
-	return 0;
+	return memblock_phys_free(addr, size);
 }
 #endif
 
@@ -255,43 +263,6 @@ static inline int setup_ima_buffer(const struct kimage *image, void *fdt,
 }
 #endif /* CONFIG_IMA_KEXEC */
 
-static int kho_add_chosen(const struct kimage *image, void *fdt, int chosen_node)
-{
-	int ret = 0;
-#ifdef CONFIG_KEXEC_HANDOVER
-	phys_addr_t fdt_mem = 0;
-	phys_addr_t fdt_len = 0;
-	phys_addr_t scratch_mem = 0;
-	phys_addr_t scratch_len = 0;
-
-	ret = fdt_delprop(fdt, chosen_node, "linux,kho-fdt");
-	if (ret && ret != -FDT_ERR_NOTFOUND)
-		return ret;
-	ret = fdt_delprop(fdt, chosen_node, "linux,kho-scratch");
-	if (ret && ret != -FDT_ERR_NOTFOUND)
-		return ret;
-
-	if (!image->kho.fdt || !image->kho.scratch)
-		return 0;
-
-	fdt_mem = image->kho.fdt;
-	fdt_len = PAGE_SIZE;
-	scratch_mem = image->kho.scratch->mem;
-	scratch_len = image->kho.scratch->bufsz;
-
-	pr_debug("Adding kho metadata to DT");
-
-	ret = fdt_appendprop_addrrange(fdt, 0, chosen_node, "linux,kho-fdt",
-				       fdt_mem, fdt_len);
-	if (ret)
-		return ret;
-	ret = fdt_appendprop_addrrange(fdt, 0, chosen_node, "linux,kho-scratch",
-				       scratch_mem, scratch_len);
-
-#endif /* CONFIG_KEXEC_HANDOVER */
-	return ret;
-}
-
 /*
  * of_kexec_alloc_and_setup_fdt - Alloc and setup a new Flattened Device Tree
  *
@@ -329,7 +300,7 @@ void *of_kexec_alloc_and_setup_fdt(const struct kimage *image,
 	}
 
 	/* Remove memory reservation for the current device tree. */
-	ret = fdt_find_and_del_mem_rsv(fdt, initial_boot_params_pa,
+	ret = fdt_find_and_del_mem_rsv(fdt, __pa(initial_boot_params),
 				       fdt_totalsize(initial_boot_params));
 	if (ret == -EINVAL) {
 		pr_err("Error removing memory reservation.\n");
@@ -423,7 +394,6 @@ void *of_kexec_alloc_and_setup_fdt(const struct kimage *image,
 		if (ret)
 			goto out;
 
-#ifdef CONFIG_CRASH_DUMP
 		/* add linux,usable-memory-range */
 		ret = fdt_appendprop_addrrange(fdt, 0, chosen_node,
 				"linux,usable-memory-range", crashk_res.start,
@@ -439,13 +409,7 @@ void *of_kexec_alloc_and_setup_fdt(const struct kimage *image,
 			if (ret)
 				goto out;
 		}
-#endif
 	}
-
-	/* Add kho metadata if this is a KHO image */
-	ret = kho_add_chosen(image, fdt, chosen_node);
-	if (ret)
-		goto out;
 
 	/* add bootargs */
 	if (cmdline) {

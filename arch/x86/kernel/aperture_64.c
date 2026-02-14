@@ -29,7 +29,7 @@
 #include <asm/gart.h>
 #include <asm/pci-direct.h>
 #include <asm/dma.h>
-#include <asm/amd/nb.h>
+#include <asm/amd_nb.h>
 #include <asm/x86_init.h>
 #include <linux/crash_dump.h>
 
@@ -259,9 +259,10 @@ static u32 __init search_agp_bridge(u32 *order, int *valid_agp)
 							order);
 				}
 
+				/* No multi-function device? */
 				type = read_pci_config_byte(bus, slot, func,
 							       PCI_HEADER_TYPE);
-				if (!(type & PCI_HEADER_TYPE_MFD))
+				if (!(type & 0x80))
 					break;
 			}
 		}

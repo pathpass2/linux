@@ -96,7 +96,7 @@ static int ieee802154_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 	return sk->sk_prot->sendmsg(sk, msg, len);
 }
 
-static int ieee802154_sock_bind(struct socket *sock, struct sockaddr_unsized *uaddr,
+static int ieee802154_sock_bind(struct socket *sock, struct sockaddr *uaddr,
 				int addr_len)
 {
 	struct sock *sk = sock->sk;
@@ -107,7 +107,7 @@ static int ieee802154_sock_bind(struct socket *sock, struct sockaddr_unsized *ua
 	return sock_no_bind(sock, uaddr, addr_len);
 }
 
-static int ieee802154_sock_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
+static int ieee802154_sock_connect(struct socket *sock, struct sockaddr *uaddr,
 				   int addr_len, int flags)
 {
 	struct sock *sk = sock->sk;
@@ -162,7 +162,7 @@ static int ieee802154_sock_ioctl(struct socket *sock, unsigned int cmd,
 	default:
 		if (!sk->sk_prot->ioctl)
 			return -ENOIOCTLCMD;
-		return sk_ioctl(sk, cmd, (void __user *)arg);
+		return sk->sk_prot->ioctl(sk, cmd, arg);
 	}
 }
 
@@ -193,7 +193,7 @@ static void raw_close(struct sock *sk, long timeout)
 	sk_common_release(sk);
 }
 
-static int raw_bind(struct sock *sk, struct sockaddr_unsized *_uaddr, int len)
+static int raw_bind(struct sock *sk, struct sockaddr *_uaddr, int len)
 {
 	struct ieee802154_addr addr;
 	struct sockaddr_ieee802154 *uaddr = (struct sockaddr_ieee802154 *)_uaddr;
@@ -227,7 +227,7 @@ out:
 	return err;
 }
 
-static int raw_connect(struct sock *sk, struct sockaddr_unsized *uaddr,
+static int raw_connect(struct sock *sk, struct sockaddr *uaddr,
 		       int addr_len)
 {
 	return -ENOTSUPP;
@@ -426,6 +426,7 @@ static const struct proto_ops ieee802154_raw_ops = {
 	.sendmsg	   = ieee802154_sock_sendmsg,
 	.recvmsg	   = sock_common_recvmsg,
 	.mmap		   = sock_no_mmap,
+	.sendpage	   = sock_no_sendpage,
 };
 
 /* DGRAM Sockets (802.15.4 dataframes) */
@@ -485,7 +486,7 @@ static void dgram_close(struct sock *sk, long timeout)
 	sk_common_release(sk);
 }
 
-static int dgram_bind(struct sock *sk, struct sockaddr_unsized *uaddr, int len)
+static int dgram_bind(struct sock *sk, struct sockaddr *uaddr, int len)
 {
 	struct sockaddr_ieee802154 *addr = (struct sockaddr_ieee802154 *)uaddr;
 	struct ieee802154_addr haddr;
@@ -530,21 +531,22 @@ out:
 	return err;
 }
 
-static int dgram_ioctl(struct sock *sk, int cmd, int *karg)
+static int dgram_ioctl(struct sock *sk, int cmd, unsigned long arg)
 {
 	switch (cmd) {
 	case SIOCOUTQ:
 	{
-		*karg = sk_wmem_alloc_get(sk);
+		int amount = sk_wmem_alloc_get(sk);
 
-		return 0;
+		return put_user(amount, (int __user *)arg);
 	}
 
 	case SIOCINQ:
 	{
 		struct sk_buff *skb;
+		unsigned long amount;
 
-		*karg = 0;
+		amount = 0;
 		spin_lock_bh(&sk->sk_receive_queue.lock);
 		skb = skb_peek(&sk->sk_receive_queue);
 		if (skb) {
@@ -552,10 +554,10 @@ static int dgram_ioctl(struct sock *sk, int cmd, int *karg)
 			 * of this packet since that is all
 			 * that will be read.
 			 */
-			*karg = skb->len - ieee802154_hdr_length(skb);
+			amount = skb->len - ieee802154_hdr_length(skb);
 		}
 		spin_unlock_bh(&sk->sk_receive_queue.lock);
-		return 0;
+		return put_user(amount, (int __user *)arg);
 	}
 	}
 
@@ -563,7 +565,7 @@ static int dgram_ioctl(struct sock *sk, int cmd, int *karg)
 }
 
 /* FIXME: autobind */
-static int dgram_connect(struct sock *sk, struct sockaddr_unsized *uaddr,
+static int dgram_connect(struct sock *sk, struct sockaddr *uaddr,
 			 int len)
 {
 	struct sockaddr_ieee802154 *addr = (struct sockaddr_ieee802154 *)uaddr;
@@ -988,6 +990,7 @@ static const struct proto_ops ieee802154_dgram_ops = {
 	.sendmsg	   = ieee802154_sock_sendmsg,
 	.recvmsg	   = sock_common_recvmsg,
 	.mmap		   = sock_no_mmap,
+	.sendpage	   = sock_no_sendpage,
 };
 
 static void ieee802154_sock_destruct(struct sock *sk)
@@ -1043,21 +1046,19 @@ static int ieee802154_create(struct net *net, struct socket *sock,
 
 	if (sk->sk_prot->hash) {
 		rc = sk->sk_prot->hash(sk);
-		if (rc)
-			goto out_sk_release;
+		if (rc) {
+			sk_common_release(sk);
+			goto out;
+		}
 	}
 
 	if (sk->sk_prot->init) {
 		rc = sk->sk_prot->init(sk);
 		if (rc)
-			goto out_sk_release;
+			sk_common_release(sk);
 	}
 out:
 	return rc;
-out_sk_release:
-	sk_common_release(sk);
-	sock->sk = NULL;
-	goto out;
 }
 
 static const struct net_proto_family ieee802154_family_ops = {
@@ -1139,5 +1140,4 @@ module_init(af_ieee802154_init);
 module_exit(af_ieee802154_remove);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("IEEE 802.15.4 socket interface");
 MODULE_ALIAS_NETPROTO(PF_IEEE802154);

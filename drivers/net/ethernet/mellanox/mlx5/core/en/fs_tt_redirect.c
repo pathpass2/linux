@@ -154,7 +154,6 @@ static int fs_udp_create_groups(struct mlx5e_flow_table *ft, enum fs_udp_type ty
 	in = kvzalloc(inlen, GFP_KERNEL);
 	if  (!in || !ft->g) {
 		kfree(ft->g);
-		ft->g = NULL;
 		kvfree(in);
 		return -ENOMEM;
 	}
@@ -436,7 +435,6 @@ static int fs_any_create_groups(struct mlx5e_flow_table *ft)
 	in = kvzalloc(inlen, GFP_KERNEL);
 	if  (!in || !ft->g) {
 		kfree(ft->g);
-		ft->g = NULL;
 		kvfree(in);
 		return -ENOMEM;
 	}
@@ -596,7 +594,7 @@ int mlx5e_fs_tt_redirect_any_create(struct mlx5e_flow_steering *fs)
 
 	err = fs_any_create_table(fs);
 	if (err)
-		goto err_free_any;
+		return err;
 
 	err = fs_any_enable(fs);
 	if (err)
@@ -608,8 +606,8 @@ int mlx5e_fs_tt_redirect_any_create(struct mlx5e_flow_steering *fs)
 
 err_destroy_table:
 	fs_any_destroy_table(fs_any);
-err_free_any:
-	mlx5e_fs_set_any(fs, NULL);
+
 	kfree(fs_any);
+	mlx5e_fs_set_any(fs, NULL);
 	return err;
 }

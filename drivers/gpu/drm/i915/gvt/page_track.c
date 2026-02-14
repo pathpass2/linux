@@ -20,9 +20,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
-#include "gvt.h"
 #include "i915_drv.h"
+#include "gvt.h"
 
 /**
  * intel_vgpu_find_page_track - find page track rcord of guest page
@@ -163,12 +162,16 @@ int intel_vgpu_page_track_handler(struct intel_vgpu *vgpu, u64 gpa,
 	struct intel_vgpu_page_track *page_track;
 	int ret = 0;
 
+	mutex_lock(&vgpu->vgpu_lock);
+
 	page_track = intel_vgpu_find_page_track(vgpu, gpa >> PAGE_SHIFT);
-	if (!page_track)
-		return -ENXIO;
+	if (!page_track) {
+		ret = -ENXIO;
+		goto out;
+	}
 
 	if (unlikely(vgpu->failsafe)) {
-		/* Remove write protection to prevent future traps. */
+		/* Remove write protection to prevent furture traps. */
 		intel_gvt_page_track_remove(vgpu, gpa >> PAGE_SHIFT);
 	} else {
 		ret = page_track->handler(page_track, gpa, data, bytes);
@@ -176,5 +179,7 @@ int intel_vgpu_page_track_handler(struct intel_vgpu *vgpu, u64 gpa,
 			gvt_err("guest page write error, gpa %llx\n", gpa);
 	}
 
+out:
+	mutex_unlock(&vgpu->vgpu_lock);
 	return ret;
 }

@@ -243,9 +243,8 @@ static int stick_patch(const struct vdso_image *image, struct vdso_elfinfo *e, b
  * Allocate pages for the vdso and vvar, and copy in the vdso text from the
  * kernel image.
  */
-static int __init init_vdso_image(const struct vdso_image *image,
-				  struct vm_special_mapping *vdso_mapping,
-				  bool elf64)
+int __init init_vdso_image(const struct vdso_image *image,
+			   struct vm_special_mapping *vdso_mapping, bool elf64)
 {
 	int cnpages = (image->size) / PAGE_SIZE;
 	struct page *dp, **dpp = NULL;
@@ -450,8 +449,9 @@ static __init int vdso_setup(char *s)
 	unsigned long val;
 
 	err = kstrtoul(s, 10, &val);
-	if (!err)
-		vdso_enabled = val;
-	return 1;
+	if (err)
+		return err;
+	vdso_enabled = val;
+	return 0;
 }
 __setup("vdso=", vdso_setup);

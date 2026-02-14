@@ -4,5 +4,5 @@
 
 int main(void)
 {
-	return gelf_getnote(NULL, 0, NULL, NULL, NULL) == 0;
+	return gelf_getnote(NULL, 0, NULL, NULL, NULL);
 }

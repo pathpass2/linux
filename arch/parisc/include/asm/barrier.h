@@ -4,7 +4,7 @@
 
 #include <asm/alternative.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /* The synchronize caches instruction executes as a nop on systems in
    which all memory references are performed in order. */
@@ -93,5 +93,5 @@ do {									\
 })
 #include <asm-generic/barrier.h>
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 #endif /* __ASM_BARRIER_H */

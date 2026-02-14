@@ -7,7 +7,7 @@
 
 #include <asm/asm-const.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <asm/ppc-opcode.h>
 #endif
 
@@ -102,7 +102,7 @@ do {									\
 
 #else /* !CONFIG_PPC_BARRIER_NOSPEC */
 #define barrier_nospec_asm
-#define barrier_nospec()	do {} while (0)
+#define barrier_nospec()
 #endif /* CONFIG_PPC_BARRIER_NOSPEC */
 
 /*

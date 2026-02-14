@@ -3,13 +3,19 @@
 Support for Intel Camera Imaging ISP subsystem.
 Copyright (c) 2010 - 2015, Intel Corporation.
 
-*/
+This program is free software; you can redistribute it and/or modify it
+under the terms and conditions of the GNU General Public License,
+version 2, as published by the Free Software Foundation.
 
-#include <linux/bitops.h>
-#include <linux/math.h>
+This program is distributed in the hope it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+more details.
+*/
 
 #include "ia_css_yuv444_io.host.h"
 #include "dma.h"
+#include "math_support.h"
 #ifndef IA_CSS_NO_DEBUG
 #include "ia_css_debug.h"
 #endif
@@ -23,8 +29,9 @@ int ia_css_yuv444_io_config(const struct ia_css_binary      *binary,
 	const struct ia_css_frame **out_frames = (const struct ia_css_frame **)
 		&args->out_frame;
 	const struct ia_css_frame_info *in_frame_info = ia_css_frame_get_info(in_frame);
-	const unsigned int ddr_elems_per_word =
-		DIV_ROUND_UP(HIVE_ISP_DDR_WORD_BITS, BITS_PER_TYPE(short));
+	const unsigned int ddr_bits_per_element = sizeof(short) * 8;
+	const unsigned int ddr_elems_per_word = ceil_div(HIVE_ISP_DDR_WORD_BITS,
+						ddr_bits_per_element);
 	unsigned int size_get = 0, size_put = 0;
 	unsigned int offset = 0;
 	int ret;

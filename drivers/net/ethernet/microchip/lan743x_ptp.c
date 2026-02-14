@@ -58,7 +58,7 @@ int lan743x_gpio_init(struct lan743x_adapter *adapter)
 static void lan743x_ptp_wait_till_cmd_done(struct lan743x_adapter *adapter,
 					   u32 bit_mask)
 {
-	int timeout = PTP_CMD_CTL_TIMEOUT_CNT;
+	int timeout = 1000;
 	u32 data = 0;
 
 	while (timeout &&
@@ -401,21 +401,28 @@ static int lan743x_ptpci_settime64(struct ptp_clock_info *ptpci,
 	u32 nano_seconds = 0;
 	u32 seconds = 0;
 
-	if (ts->tv_sec > 0xFFFFFFFFLL) {
-		netif_warn(adapter, drv, adapter->netdev,
-			   "ts->tv_sec out of range, %lld\n",
-			   ts->tv_sec);
-		return -ERANGE;
+	if (ts) {
+		if (ts->tv_sec > 0xFFFFFFFFLL ||
+		    ts->tv_sec < 0) {
+			netif_warn(adapter, drv, adapter->netdev,
+				   "ts->tv_sec out of range, %lld\n",
+				   ts->tv_sec);
+			return -ERANGE;
+		}
+		if (ts->tv_nsec >= 1000000000L ||
+		    ts->tv_nsec < 0) {
+			netif_warn(adapter, drv, adapter->netdev,
+				   "ts->tv_nsec out of range, %ld\n",
+				   ts->tv_nsec);
+			return -ERANGE;
+		}
+		seconds = ts->tv_sec;
+		nano_seconds = ts->tv_nsec;
+		lan743x_ptp_clock_set(adapter, seconds, nano_seconds, 0);
+	} else {
+		netif_warn(adapter, drv, adapter->netdev, "ts == NULL\n");
+		return -EINVAL;
 	}
-	if (ts->tv_nsec < 0) {
-		netif_warn(adapter, drv, adapter->netdev,
-			   "ts->tv_nsec out of range, %ld\n",
-			   ts->tv_nsec);
-		return -ERANGE;
-	}
-	seconds = ts->tv_sec;
-	nano_seconds = ts->tv_nsec;
-	lan743x_ptp_clock_set(adapter, seconds, nano_seconds, 0);
 
 	return 0;
 }
@@ -462,6 +469,10 @@ static int lan743x_ptp_perout(struct lan743x_adapter *adapter, int on,
 	unsigned int index = perout_request->index;
 	struct lan743x_ptp_perout *perout = &ptp->perout[index];
 	int ret = 0;
+
+	/* Reject requests with unsupported flags */
+	if (perout_request->flags & ~PTP_PEROUT_DUTY_CYCLE)
+		return -EOPNOTSUPP;
 
 	if (on) {
 		perout_pin = ptp_find_pin(ptp->ptp_clock, PTP_PF_PEROUT,
@@ -544,7 +555,7 @@ static int lan743x_ptp_perout(struct lan743x_adapter *adapter, int on,
 			if (half == wf_high) {
 				/* It's 50% match. Use the toggle option */
 				pulse_width = PTP_GENERAL_CONFIG_CLOCK_EVENT_TOGGLE_;
-				/* In this case, divide period value by 2 */
+				/* In this case, devide period value by 2 */
 				ts_period = ns_to_timespec64(div_s64(period64, 2));
 				period_sec = ts_period.tv_sec;
 				period_nsec = ts_period.tv_nsec;
@@ -1482,10 +1493,6 @@ int lan743x_ptp_open(struct lan743x_adapter *adapter)
 	temp = lan743x_csr_read(adapter, PTP_TX_MOD2);
 	temp |= PTP_TX_MOD2_TX_PTP_CLR_UDPV4_CHKSUM_;
 	lan743x_csr_write(adapter, PTP_TX_MOD2, temp);
-
-	/* Default Timestamping */
-	lan743x_rx_set_tstamp_mode(adapter, HWTSTAMP_FILTER_NONE);
-
 	lan743x_ptp_enable(adapter);
 	lan743x_csr_write(adapter, INT_EN_SET, INT_BIT_1588_);
 	lan743x_csr_write(adapter, PTP_INT_EN_SET,
@@ -1533,10 +1540,6 @@ int lan743x_ptp_open(struct lan743x_adapter *adapter)
 	ptp->ptp_clock_info.n_per_out = LAN743X_PTP_N_EVENT_CHAN;
 	ptp->ptp_clock_info.n_pins = n_pins;
 	ptp->ptp_clock_info.pps = LAN743X_PTP_N_PPS;
-	ptp->ptp_clock_info.supported_extts_flags = PTP_RISING_EDGE |
-						    PTP_FALLING_EDGE |
-						    PTP_STRICT_FLAGS;
-	ptp->ptp_clock_info.supported_perout_flags = PTP_PEROUT_DUTY_CYCLE;
 	ptp->ptp_clock_info.pin_config = ptp->pin_config;
 	ptp->ptp_clock_info.adjfine = lan743x_ptpci_adjfine;
 	ptp->ptp_clock_info.adjtime = lan743x_ptpci_adjtime;
@@ -1650,9 +1653,6 @@ static void lan743x_ptp_disable(struct lan743x_adapter *adapter)
 {
 	struct lan743x_ptp *ptp = &adapter->ptp;
 
-	/* Disable Timestamping */
-	lan743x_rx_set_tstamp_mode(adapter, HWTSTAMP_FILTER_NONE);
-
 	mutex_lock(&ptp->command_lock);
 	if (!lan743x_ptp_is_enabled(adapter)) {
 		netif_warn(adapter, drv, adapter->netdev,
@@ -1705,13 +1705,13 @@ bool lan743x_ptp_request_tx_timestamp(struct lan743x_adapter *adapter)
 	struct lan743x_ptp *ptp = &adapter->ptp;
 	bool result = false;
 
-	spin_lock(&ptp->tx_ts_lock);
+	spin_lock_bh(&ptp->tx_ts_lock);
 	if (ptp->pending_tx_timestamps < LAN743X_PTP_NUMBER_OF_TX_TIMESTAMPS) {
 		/* request granted */
 		ptp->pending_tx_timestamps++;
 		result = true;
 	}
-	spin_unlock(&ptp->tx_ts_lock);
+	spin_unlock_bh(&ptp->tx_ts_lock);
 	return result;
 }
 
@@ -1736,32 +1736,23 @@ void lan743x_ptp_tx_timestamp_skb(struct lan743x_adapter *adapter,
 	lan743x_ptp_tx_ts_complete(adapter);
 }
 
-int lan743x_ptp_hwtstamp_get(struct net_device *netdev,
-			     struct kernel_hwtstamp_config *config)
+int lan743x_ptp_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 {
 	struct lan743x_adapter *adapter = netdev_priv(netdev);
-	struct lan743x_tx *tx = &adapter->tx[0];
-
-	if (tx->ts_flags & TX_TS_FLAG_ONE_STEP_SYNC)
-		config->tx_type = HWTSTAMP_TX_ONESTEP_SYNC;
-	else if (tx->ts_flags & TX_TS_FLAG_TIMESTAMPING_ENABLED)
-		config->tx_type = HWTSTAMP_TX_ON;
-	else
-		config->tx_type = HWTSTAMP_TX_OFF;
-
-	config->rx_filter = adapter->rx_tstamp_filter;
-
-	return 0;
-}
-
-int lan743x_ptp_hwtstamp_set(struct net_device *netdev,
-			     struct kernel_hwtstamp_config *config,
-			     struct netlink_ext_ack *extack)
-{
-	struct lan743x_adapter *adapter = netdev_priv(netdev);
+	struct hwtstamp_config config;
+	int ret = 0;
 	int index;
 
-	switch (config->tx_type) {
+	if (!ifr) {
+		netif_err(adapter, drv, adapter->netdev,
+			  "SIOCSHWTSTAMP, ifr == NULL\n");
+		return -EINVAL;
+	}
+
+	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	switch (config.tx_type) {
 	case HWTSTAMP_TX_OFF:
 		for (index = 0; index < adapter->used_tx_channels;
 		     index++)
@@ -1785,12 +1776,17 @@ int lan743x_ptp_hwtstamp_set(struct net_device *netdev,
 		lan743x_ptp_set_sync_ts_insert(adapter, true);
 		break;
 	case HWTSTAMP_TX_ONESTEP_P2P:
-		return -ERANGE;
+		ret = -ERANGE;
+		break;
 	default:
 		netif_warn(adapter, drv, adapter->netdev,
-			   "  tx_type = %d, UNKNOWN\n", config->tx_type);
-		return -EINVAL;
+			   "  tx_type = %d, UNKNOWN\n", config.tx_type);
+		ret = -EINVAL;
+		break;
 	}
 
-	return lan743x_rx_set_tstamp_mode(adapter, config->rx_filter);
+	if (!ret)
+		return copy_to_user(ifr->ifr_data, &config,
+			sizeof(config)) ? -EFAULT : 0;
+	return ret;
 }

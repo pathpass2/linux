@@ -56,9 +56,9 @@ struct af_alg_type {
 };
 
 struct af_alg_sgl {
-	struct sg_table sgt;
-	struct scatterlist sgl[ALG_MAX_PAGES + 1];
-	bool need_unpin;
+	struct scatterlist sg[ALG_MAX_PAGES + 1];
+	struct page *pages[ALG_MAX_PAGES];
+	unsigned int npages;
 };
 
 /* TX SGL entry */
@@ -121,7 +121,6 @@ struct af_alg_async_req {
  *
  * @tsgl_list:		Link to TX SGL
  * @iv:			IV for cipher operation
- * @state:		Existing state for continuing operation
  * @aead_assoclen:	Length of AAD for AEAD cipher operations
  * @completion:		Work queue for synchronous operation
  * @used:		TX bytes sent to kernel. This variable is used to
@@ -135,16 +134,13 @@ struct af_alg_async_req {
  *			SG?
  * @enc:		Cryptographic operation to be performed when
  *			recvmsg is invoked.
- * @write:		True if we are in the middle of a write.
  * @init:		True if metadata has been sent.
  * @len:		Length of memory allocated for this data structure.
- * @inflight:		Non-zero when AIO requests are in flight.
  */
 struct af_alg_ctx {
 	struct list_head tsgl_list;
 
 	void *iv;
-	void *state;
 	size_t aead_assoclen;
 
 	struct crypto_wait wait;
@@ -152,15 +148,12 @@ struct af_alg_ctx {
 	size_t used;
 	atomic_t rcvused;
 
-	bool		more:1,
-			merge:1,
-			enc:1,
-			write:1,
-			init:1;
+	bool more;
+	bool merge;
+	bool enc;
+	bool init;
 
 	unsigned int len;
-
-	unsigned int inflight;
 };
 
 int af_alg_register_type(const struct af_alg_type *type);
@@ -168,9 +161,9 @@ int af_alg_unregister_type(const struct af_alg_type *type);
 
 int af_alg_release(struct socket *sock);
 void af_alg_release_parent(struct sock *sk);
-int af_alg_accept(struct sock *sk, struct socket *newsock,
-		  struct proto_accept_arg *arg);
+int af_alg_accept(struct sock *sk, struct socket *newsock, bool kern);
 
+int af_alg_make_sg(struct af_alg_sgl *sgl, struct iov_iter *iter, int len);
 void af_alg_free_sg(struct af_alg_sgl *sgl);
 
 static inline struct alg_sock *alg_sk(struct sock *sk)
@@ -237,6 +230,8 @@ void af_alg_wmem_wakeup(struct sock *sk);
 int af_alg_wait_for_data(struct sock *sk, unsigned flags, unsigned min);
 int af_alg_sendmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		   unsigned int ivsize);
+ssize_t af_alg_sendpage(struct socket *sock, struct page *page,
+			int offset, size_t size, int flags);
 void af_alg_free_resources(struct af_alg_async_req *areq);
 void af_alg_async_cb(void *data, int err);
 __poll_t af_alg_poll(struct file *file, struct socket *sock,

@@ -4,7 +4,7 @@
 
 #include <uapi/asm/ptrace.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #ifndef PS_S
 #define PS_S  (0x2000)
@@ -24,5 +24,5 @@
 #define arch_has_block_step()	(1)
 #endif
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* _M68K_PTRACE_H */

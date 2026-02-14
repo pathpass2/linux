@@ -312,13 +312,13 @@ static ssize_t rtas_flash_write(struct file *file, const char __user *buffer,
 {
 	struct rtas_update_flash_t *const uf = &rtas_update_flash_data;
 	char *p;
-	int next_free;
+	int next_free, rc;
 	struct flash_block_list *fl;
 
-	guard(mutex)(&rtas_update_flash_mutex);
+	mutex_lock(&rtas_update_flash_mutex);
 
 	if (uf->status == FLASH_AUTH || count == 0)
-		return count;	/* discard data */
+		goto out;	/* discard data */
 
 	/* In the case that the image is not ready for flashing, the memory
 	 * allocated for the block list will be freed upon the release of the 
@@ -327,7 +327,7 @@ static ssize_t rtas_flash_write(struct file *file, const char __user *buffer,
 	if (uf->flist == NULL) {
 		uf->flist = kmem_cache_zalloc(flash_block_cache, GFP_KERNEL);
 		if (!uf->flist)
-			return -ENOMEM;
+			goto nomem;
 	}
 
 	fl = uf->flist;
@@ -338,7 +338,7 @@ static ssize_t rtas_flash_write(struct file *file, const char __user *buffer,
 		/* Need to allocate another block_list */
 		fl->next = kmem_cache_zalloc(flash_block_cache, GFP_KERNEL);
 		if (!fl->next)
-			return -ENOMEM;
+			goto nomem;
 		fl = fl->next;
 		next_free = 0;
 	}
@@ -347,17 +347,25 @@ static ssize_t rtas_flash_write(struct file *file, const char __user *buffer,
 		count = RTAS_BLK_SIZE;
 	p = kmem_cache_zalloc(flash_block_cache, GFP_KERNEL);
 	if (!p)
-		return -ENOMEM;
+		goto nomem;
 	
 	if(copy_from_user(p, buffer, count)) {
 		kmem_cache_free(flash_block_cache, p);
-		return -EFAULT;
+		rc = -EFAULT;
+		goto error;
 	}
 	fl->blocks[next_free].data = p;
 	fl->blocks[next_free].length = count;
 	fl->num_blocks++;
-
+out:
+	mutex_unlock(&rtas_update_flash_mutex);
 	return count;
+
+nomem:
+	rc = -ENOMEM;
+error:
+	mutex_unlock(&rtas_update_flash_mutex);
+	return rc;
 }
 
 /*
@@ -397,18 +405,19 @@ static ssize_t manage_flash_write(struct file *file, const char __user *buf,
 	static const char reject_str[] = "0";
 	static const char commit_str[] = "1";
 	char stkbuf[10];
-	int op;
+	int op, rc;
 
-	guard(mutex)(&rtas_manage_flash_mutex);
+	mutex_lock(&rtas_manage_flash_mutex);
 
 	if ((args_buf->status == MANAGE_AUTH) || (count == 0))
-		return count;
+		goto out;
 		
 	op = -1;
 	if (buf) {
 		if (count > 9) count = 9;
+		rc = -EFAULT;
 		if (copy_from_user (stkbuf, buf, count))
-			return -EFAULT;
+			goto error;
 		if (strncmp(stkbuf, reject_str, strlen(reject_str)) == 0) 
 			op = RTAS_REJECT_TMP_IMG;
 		else if (strncmp(stkbuf, commit_str, strlen(commit_str)) == 0) 
@@ -416,11 +425,18 @@ static ssize_t manage_flash_write(struct file *file, const char __user *buf,
 	}
 	
 	if (op == -1) {   /* buf is empty, or contains invalid string */
-		return -EINVAL;
+		rc = -EINVAL;
+		goto error;
 	}
 
 	manage_flash(args_buf, op);
+out:
+	mutex_unlock(&rtas_manage_flash_mutex);
 	return count;
+
+error:
+	mutex_unlock(&rtas_manage_flash_mutex);
+	return rc;
 }
 
 /*
@@ -483,14 +499,16 @@ static ssize_t validate_flash_write(struct file *file, const char __user *buf,
 {
 	struct rtas_validate_flash_t *const args_buf =
 		&rtas_validate_flash_data;
+	int rc;
 
-	guard(mutex)(&rtas_validate_flash_mutex);
+	mutex_lock(&rtas_validate_flash_mutex);
 
 	/* We are only interested in the first 4K of the
 	 * candidate image */
 	if ((*off >= VALIDATE_BUF_SIZE) || 
 		(args_buf->status == VALIDATE_AUTH)) {
 		*off += count;
+		mutex_unlock(&rtas_validate_flash_mutex);
 		return count;
 	}
 
@@ -501,14 +519,20 @@ static ssize_t validate_flash_write(struct file *file, const char __user *buf,
 		args_buf->status = VALIDATE_INCOMPLETE;
 	}
 
-	if (!access_ok(buf, count))
-		return -EFAULT;
-
-	if (copy_from_user(args_buf->buf + *off, buf, count))
-		return -EFAULT;
+	if (!access_ok(buf, count)) {
+		rc = -EFAULT;
+		goto done;
+	}
+	if (copy_from_user(args_buf->buf + *off, buf, count)) {
+		rc = -EFAULT;
+		goto done;
+	}
 
 	*off += count;
-	return count;
+	rc = count;
+done:
+	mutex_unlock(&rtas_validate_flash_mutex);
+	return rc;
 }
 
 static int validate_flash_release(struct inode *inode, struct file *file)
@@ -685,9 +709,9 @@ static int __init rtas_flash_init(void)
 	if (!rtas_validate_flash_data.buf)
 		return -ENOMEM;
 
-	flash_block_cache = kmem_cache_create_usercopy("rtas_flash_cache",
-						       RTAS_BLK_SIZE, RTAS_BLK_SIZE,
-						       0, 0, RTAS_BLK_SIZE, NULL);
+	flash_block_cache = kmem_cache_create("rtas_flash_cache",
+					      RTAS_BLK_SIZE, RTAS_BLK_SIZE, 0,
+					      NULL);
 	if (!flash_block_cache) {
 		printk(KERN_ERR "%s: failed to create block cache\n",
 				__func__);
@@ -749,5 +773,4 @@ static void __exit rtas_flash_cleanup(void)
 
 module_init(rtas_flash_init);
 module_exit(rtas_flash_cleanup);
-MODULE_DESCRIPTION("PPC procfs firmware flash interface");
 MODULE_LICENSE("GPL");

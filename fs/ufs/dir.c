@@ -19,7 +19,6 @@
 
 #include <linux/time.h>
 #include <linux/fs.h>
-#include <linux/filelock.h>
 #include <linux/swap.h>
 #include <linux/iversion.h>
 
@@ -43,82 +42,84 @@ static inline int ufs_match(struct super_block *sb, int len,
 	return !memcmp(name, de->d_name, len);
 }
 
-static void ufs_commit_chunk(struct folio *folio, loff_t pos, unsigned len)
+static int ufs_commit_chunk(struct page *page, loff_t pos, unsigned len)
 {
-	struct address_space *mapping = folio->mapping;
+	struct address_space *mapping = page->mapping;
 	struct inode *dir = mapping->host;
+	int err = 0;
 
 	inode_inc_iversion(dir);
-	block_write_end(pos, len, len, folio);
+	block_write_end(NULL, mapping, pos, len, len, page, NULL);
 	if (pos+len > dir->i_size) {
 		i_size_write(dir, pos+len);
 		mark_inode_dirty(dir);
 	}
-	folio_unlock(folio);
+	if (IS_DIRSYNC(dir))
+		err = write_one_page(page);
+	else
+		unlock_page(page);
+	return err;
 }
 
-static int ufs_handle_dirsync(struct inode *dir)
+static inline void ufs_put_page(struct page *page)
 {
-	int err;
-
-	err = filemap_write_and_wait(dir->i_mapping);
-	if (!err)
-		err = sync_inode_metadata(dir, 1);
-	return err;
+	kunmap(page);
+	put_page(page);
 }
 
 ino_t ufs_inode_by_name(struct inode *dir, const struct qstr *qstr)
 {
 	ino_t res = 0;
 	struct ufs_dir_entry *de;
-	struct folio *folio;
+	struct page *page;
 	
-	de = ufs_find_entry(dir, qstr, &folio);
+	de = ufs_find_entry(dir, qstr, &page);
 	if (de) {
 		res = fs32_to_cpu(dir->i_sb, de->d_ino);
-		folio_release_kmap(folio, de);
+		ufs_put_page(page);
 	}
 	return res;
 }
 
 
-int ufs_set_link(struct inode *dir, struct ufs_dir_entry *de,
-		 struct folio *folio, struct inode *inode,
-		 bool update_times)
+/* Releases the page */
+void ufs_set_link(struct inode *dir, struct ufs_dir_entry *de,
+		  struct page *page, struct inode *inode,
+		  bool update_times)
 {
-	loff_t pos = folio_pos(folio) + offset_in_folio(folio, de);
+	loff_t pos = page_offset(page) +
+			(char *) de - (char *) page_address(page);
 	unsigned len = fs16_to_cpu(dir->i_sb, de->d_reclen);
 	int err;
 
-	folio_lock(folio);
-	err = ufs_prepare_chunk(folio, pos, len);
-	if (unlikely(err)) {
-		folio_unlock(folio);
-		return err;
-	}
+	lock_page(page);
+	err = ufs_prepare_chunk(page, pos, len);
+	BUG_ON(err);
 
 	de->d_ino = cpu_to_fs32(dir->i_sb, inode->i_ino);
 	ufs_set_de_type(dir->i_sb, de, inode->i_mode);
 
-	ufs_commit_chunk(folio, pos, len);
+	err = ufs_commit_chunk(page, pos, len);
+	ufs_put_page(page);
 	if (update_times)
-		inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+		dir->i_mtime = dir->i_ctime = current_time(dir);
 	mark_inode_dirty(dir);
-	return ufs_handle_dirsync(dir);
 }
 
-static bool ufs_check_folio(struct folio *folio, char *kaddr)
+
+static bool ufs_check_page(struct page *page)
 {
-	struct inode *dir = folio->mapping->host;
+	struct inode *dir = page->mapping->host;
 	struct super_block *sb = dir->i_sb;
+	char *kaddr = page_address(page);
 	unsigned offs, rec_len;
-	unsigned limit = folio_size(folio);
+	unsigned limit = PAGE_SIZE;
 	const unsigned chunk_mask = UFS_SB(sb)->s_uspi->s_dirblksize - 1;
 	struct ufs_dir_entry *p;
 	char *error;
 
-	if (dir->i_size < folio_pos(folio) + limit) {
-		limit = offset_in_folio(folio, dir->i_size);
+	if ((dir->i_size >> PAGE_SHIFT) == page->index) {
+		limit = dir->i_size & ~PAGE_MASK;
 		if (limit & chunk_mask)
 			goto Ebadsize;
 		if (!limit)
@@ -143,13 +144,13 @@ static bool ufs_check_folio(struct folio *folio, char *kaddr)
 	if (offs != limit)
 		goto Eend;
 out:
-	folio_set_checked(folio);
+	SetPageChecked(page);
 	return true;
 
 	/* Too bad, we had an error */
 
 Ebadsize:
-	ufs_error(sb, __func__,
+	ufs_error(sb, "ufs_check_page",
 		  "size of directory #%lu is not a multiple of chunk size",
 		  dir->i_ino
 	);
@@ -169,40 +170,37 @@ Espan:
 Einumber:
 	error = "inode out of bounds";
 bad_entry:
-	ufs_error(sb, __func__, "bad entry in directory #%lu: %s - "
-		   "offset=%llu, rec_len=%d, name_len=%d",
-		   dir->i_ino, error, folio_pos(folio) + offs,
+	ufs_error (sb, "ufs_check_page", "bad entry in directory #%lu: %s - "
+		   "offset=%lu, rec_len=%d, name_len=%d",
+		   dir->i_ino, error, (page->index<<PAGE_SHIFT)+offs,
 		   rec_len, ufs_get_de_namlen(sb, p));
 	goto fail;
 Eend:
 	p = (struct ufs_dir_entry *)(kaddr + offs);
 	ufs_error(sb, __func__,
 		   "entry in directory #%lu spans the page boundary"
-		   "offset=%llu",
-		   dir->i_ino, folio_pos(folio) + offs);
+		   "offset=%lu",
+		   dir->i_ino, (page->index<<PAGE_SHIFT)+offs);
 fail:
+	SetPageError(page);
 	return false;
 }
 
-static void *ufs_get_folio(struct inode *dir, unsigned long n,
-		struct folio **foliop)
+static struct page *ufs_get_page(struct inode *dir, unsigned long n)
 {
 	struct address_space *mapping = dir->i_mapping;
-	struct folio *folio = read_mapping_folio(mapping, n, NULL);
-	void *kaddr;
-
-	if (IS_ERR(folio))
-		return ERR_CAST(folio);
-	kaddr = kmap_local_folio(folio, 0);
-	if (unlikely(!folio_test_checked(folio))) {
-		if (!ufs_check_folio(folio, kaddr))
-			goto fail;
+	struct page *page = read_mapping_page(mapping, n, NULL);
+	if (!IS_ERR(page)) {
+		kmap(page);
+		if (unlikely(!PageChecked(page))) {
+			if (!ufs_check_page(page))
+				goto fail;
+		}
 	}
-	*foliop = folio;
-	return kaddr;
+	return page;
 
 fail:
-	folio_release_kmap(folio, kaddr);
+	ufs_put_page(page);
 	return ERR_PTR(-EIO);
 }
 
@@ -228,14 +226,17 @@ ufs_next_entry(struct super_block *sb, struct ufs_dir_entry *p)
 					fs16_to_cpu(sb, p->d_reclen));
 }
 
-struct ufs_dir_entry *ufs_dotdot(struct inode *dir, struct folio **foliop)
+struct ufs_dir_entry *ufs_dotdot(struct inode *dir, struct page **p)
 {
-	struct ufs_dir_entry *de = ufs_get_folio(dir, 0, foliop);
+	struct page *page = ufs_get_page(dir, 0);
+	struct ufs_dir_entry *de = NULL;
 
-	if (!IS_ERR(de))
-		return ufs_next_entry(dir->i_sb, de);
-
-	return NULL;
+	if (!IS_ERR(page)) {
+		de = ufs_next_entry(dir->i_sb,
+				    (struct ufs_dir_entry *)page_address(page));
+		*p = page;
+	}
+	return de;
 }
 
 /*
@@ -247,7 +248,7 @@ struct ufs_dir_entry *ufs_dotdot(struct inode *dir, struct folio **foliop)
  * Entry is guaranteed to be valid.
  */
 struct ufs_dir_entry *ufs_find_entry(struct inode *dir, const struct qstr *qstr,
-				     struct folio **foliop)
+				     struct page **res_page)
 {
 	struct super_block *sb = dir->i_sb;
 	const unsigned char *name = qstr->name;
@@ -255,6 +256,7 @@ struct ufs_dir_entry *ufs_find_entry(struct inode *dir, const struct qstr *qstr,
 	unsigned reclen = UFS_DIR_REC_LEN(namelen);
 	unsigned long start, n;
 	unsigned long npages = dir_pages(dir);
+	struct page *page = NULL;
 	struct ufs_inode_info *ui = UFS_I(dir);
 	struct ufs_dir_entry *de;
 
@@ -263,23 +265,27 @@ struct ufs_dir_entry *ufs_find_entry(struct inode *dir, const struct qstr *qstr,
 	if (npages == 0 || namelen > UFS_MAXNAMLEN)
 		goto out;
 
+	/* OFFSET_CACHE */
+	*res_page = NULL;
+
 	start = ui->i_dir_start_lookup;
 
 	if (start >= npages)
 		start = 0;
 	n = start;
 	do {
-		char *kaddr = ufs_get_folio(dir, n, foliop);
-
-		if (!IS_ERR(kaddr)) {
-			de = (struct ufs_dir_entry *)kaddr;
+		char *kaddr;
+		page = ufs_get_page(dir, n);
+		if (!IS_ERR(page)) {
+			kaddr = page_address(page);
+			de = (struct ufs_dir_entry *) kaddr;
 			kaddr += ufs_last_byte(dir, n) - reclen;
 			while ((char *) de <= kaddr) {
 				if (ufs_match(sb, namelen, name, de))
 					goto found;
 				de = ufs_next_entry(sb, de);
 			}
-			folio_release_kmap(*foliop, kaddr);
+			ufs_put_page(page);
 		}
 		if (++n >= npages)
 			n = 0;
@@ -288,6 +294,7 @@ out:
 	return NULL;
 
 found:
+	*res_page = page;
 	ui->i_dir_start_lookup = n;
 	return de;
 }
@@ -304,10 +311,11 @@ int ufs_add_link(struct dentry *dentry, struct inode *inode)
 	unsigned reclen = UFS_DIR_REC_LEN(namelen);
 	const unsigned int chunk_size = UFS_SB(sb)->s_uspi->s_dirblksize;
 	unsigned short rec_len, name_len;
-	struct folio *folio = NULL;
+	struct page *page = NULL;
 	struct ufs_dir_entry *de;
 	unsigned long npages = dir_pages(dir);
 	unsigned long n;
+	char *kaddr;
 	loff_t pos;
 	int err;
 
@@ -315,19 +323,21 @@ int ufs_add_link(struct dentry *dentry, struct inode *inode)
 
 	/*
 	 * We take care of directory expansion in the same loop.
-	 * This code plays outside i_size, so it locks the folio
+	 * This code plays outside i_size, so it locks the page
 	 * to protect that region.
 	 */
 	for (n = 0; n <= npages; n++) {
-		char *kaddr = ufs_get_folio(dir, n, &folio);
 		char *dir_end;
 
-		if (IS_ERR(kaddr))
-			return PTR_ERR(kaddr);
-		folio_lock(folio);
+		page = ufs_get_page(dir, n);
+		err = PTR_ERR(page);
+		if (IS_ERR(page))
+			goto out;
+		lock_page(page);
+		kaddr = page_address(page);
 		dir_end = kaddr + ufs_last_byte(dir, n);
 		de = (struct ufs_dir_entry *)kaddr;
-		kaddr += folio_size(folio) - reclen;
+		kaddr += PAGE_SIZE - reclen;
 		while ((char *)de <= kaddr) {
 			if ((char *)de == dir_end) {
 				/* We hit i_size */
@@ -354,15 +364,16 @@ int ufs_add_link(struct dentry *dentry, struct inode *inode)
 				goto got_it;
 			de = (struct ufs_dir_entry *) ((char *) de + rec_len);
 		}
-		folio_unlock(folio);
-		folio_release_kmap(folio, kaddr);
+		unlock_page(page);
+		ufs_put_page(page);
 	}
 	BUG();
 	return -EINVAL;
 
 got_it:
-	pos = folio_pos(folio) + offset_in_folio(folio, de);
-	err = ufs_prepare_chunk(folio, pos, rec_len);
+	pos = page_offset(page) +
+			(char*)de - (char*)page_address(page);
+	err = ufs_prepare_chunk(page, pos, rec_len);
 	if (err)
 		goto out_unlock;
 	if (de->d_ino) {
@@ -379,17 +390,17 @@ got_it:
 	de->d_ino = cpu_to_fs32(sb, inode->i_ino);
 	ufs_set_de_type(sb, de, inode->i_mode);
 
-	ufs_commit_chunk(folio, pos, rec_len);
-	inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+	err = ufs_commit_chunk(page, pos, rec_len);
+	dir->i_mtime = dir->i_ctime = current_time(dir);
 
 	mark_inode_dirty(dir);
-	err = ufs_handle_dirsync(dir);
 	/* OFFSET_CACHE */
 out_put:
-	folio_release_kmap(folio, de);
+	ufs_put_page(page);
+out:
 	return err;
 out_unlock:
-	folio_unlock(folio);
+	unlock_page(page);
 	goto out_put;
 }
 
@@ -418,7 +429,7 @@ ufs_readdir(struct file *file, struct dir_context *ctx)
 	unsigned long n = pos >> PAGE_SHIFT;
 	unsigned long npages = dir_pages(inode);
 	unsigned chunk_mask = ~(UFS_SB(sb)->s_uspi->s_dirblksize - 1);
-	bool need_revalidate = !inode_eq_iversion(inode, *(u64 *)file->private_data);
+	bool need_revalidate = !inode_eq_iversion(inode, file->f_version);
 	unsigned flags = UFS_SB(sb)->s_flags;
 
 	UFSD("BEGIN\n");
@@ -427,24 +438,25 @@ ufs_readdir(struct file *file, struct dir_context *ctx)
 		return 0;
 
 	for ( ; n < npages; n++, offset = 0) {
+		char *kaddr, *limit;
 		struct ufs_dir_entry *de;
-		struct folio *folio;
-		char *kaddr = ufs_get_folio(inode, n, &folio);
-		char *limit;
 
-		if (IS_ERR(kaddr)) {
+		struct page *page = ufs_get_page(inode, n);
+
+		if (IS_ERR(page)) {
 			ufs_error(sb, __func__,
 				  "bad page in #%lu",
 				  inode->i_ino);
 			ctx->pos += PAGE_SIZE - offset;
-			return PTR_ERR(kaddr);
+			return -EIO;
 		}
+		kaddr = page_address(page);
 		if (unlikely(need_revalidate)) {
 			if (offset) {
 				offset = ufs_validate_entry(sb, kaddr, offset, chunk_mask);
 				ctx->pos = (n<<PAGE_SHIFT) + offset;
 			}
-			*(u64 *)file->private_data = inode_query_iversion(inode);
+			file->f_version = inode_query_iversion(inode);
 			need_revalidate = false;
 		}
 		de = (struct ufs_dir_entry *)(kaddr+offset);
@@ -464,13 +476,13 @@ ufs_readdir(struct file *file, struct dir_context *ctx)
 					       ufs_get_de_namlen(sb, de),
 					       fs32_to_cpu(sb, de->d_ino),
 					       d_type)) {
-					folio_release_kmap(folio, de);
+					ufs_put_page(page);
 					return 0;
 				}
 			}
 			ctx->pos += fs16_to_cpu(sb, de->d_reclen);
 		}
-		folio_release_kmap(folio, kaddr);
+		ufs_put_page(page);
 	}
 	return 0;
 }
@@ -481,22 +493,18 @@ ufs_readdir(struct file *file, struct dir_context *ctx)
  * previous entry.
  */
 int ufs_delete_entry(struct inode *inode, struct ufs_dir_entry *dir,
-		     struct folio *folio)
+		     struct page * page)
 {
 	struct super_block *sb = inode->i_sb;
-	size_t from, to;
-	char *kaddr;
+	char *kaddr = page_address(page);
+	unsigned from = ((char*)dir - kaddr) & ~(UFS_SB(sb)->s_uspi->s_dirblksize - 1);
+	unsigned to = ((char*)dir - kaddr) + fs16_to_cpu(sb, dir->d_reclen);
 	loff_t pos;
-	struct ufs_dir_entry *de, *pde = NULL;
+	struct ufs_dir_entry *pde = NULL;
+	struct ufs_dir_entry *de = (struct ufs_dir_entry *) (kaddr + from);
 	int err;
 
 	UFSD("ENTER\n");
-
-	from = offset_in_folio(folio, dir);
-	to = from + fs16_to_cpu(sb, dir->d_reclen);
-	kaddr = (char *)dir - from;
-	from &= ~(UFS_SB(sb)->s_uspi->s_dirblksize - 1);
-	de = (struct ufs_dir_entry *) (kaddr + from);
 
 	UFSD("ino %u, reclen %u, namlen %u, name %s\n",
 	      fs32_to_cpu(sb, de->d_ino),
@@ -507,52 +515,55 @@ int ufs_delete_entry(struct inode *inode, struct ufs_dir_entry *dir,
 		if (de->d_reclen == 0) {
 			ufs_error(inode->i_sb, __func__,
 				  "zero-length directory entry");
-			return -EIO;
+			err = -EIO;
+			goto out;
 		}
 		pde = de;
 		de = ufs_next_entry(sb, de);
 	}
 	if (pde)
-		from = offset_in_folio(folio, pde);
-	pos = folio_pos(folio) + from;
-	folio_lock(folio);
-	err = ufs_prepare_chunk(folio, pos, to - from);
-	if (unlikely(err)) {
-		folio_unlock(folio);
-		return err;
-	}
+		from = (char*)pde - (char*)page_address(page);
+
+	pos = page_offset(page) + from;
+	lock_page(page);
+	err = ufs_prepare_chunk(page, pos, to - from);
+	BUG_ON(err);
 	if (pde)
 		pde->d_reclen = cpu_to_fs16(sb, to - from);
 	dir->d_ino = 0;
-	ufs_commit_chunk(folio, pos, to - from);
-	inode_set_mtime_to_ts(inode, inode_set_ctime_current(inode));
+	err = ufs_commit_chunk(page, pos, to - from);
+	inode->i_ctime = inode->i_mtime = current_time(inode);
 	mark_inode_dirty(inode);
-	return ufs_handle_dirsync(inode);
+out:
+	ufs_put_page(page);
+	UFSD("EXIT\n");
+	return err;
 }
 
 int ufs_make_empty(struct inode * inode, struct inode *dir)
 {
 	struct super_block * sb = dir->i_sb;
 	struct address_space *mapping = inode->i_mapping;
-	struct folio *folio = filemap_grab_folio(mapping, 0);
+	struct page *page = grab_cache_page(mapping, 0);
 	const unsigned int chunk_size = UFS_SB(sb)->s_uspi->s_dirblksize;
 	struct ufs_dir_entry * de;
+	char *base;
 	int err;
-	char *kaddr;
 
-	if (IS_ERR(folio))
-		return PTR_ERR(folio);
+	if (!page)
+		return -ENOMEM;
 
-	err = ufs_prepare_chunk(folio, 0, chunk_size);
+	err = ufs_prepare_chunk(page, 0, chunk_size);
 	if (err) {
-		folio_unlock(folio);
+		unlock_page(page);
 		goto fail;
 	}
 
-	kaddr = kmap_local_folio(folio, 0);
-	memset(kaddr, 0, folio_size(folio));
+	kmap(page);
+	base = (char*)page_address(page);
+	memset(base, 0, PAGE_SIZE);
 
-	de = (struct ufs_dir_entry *)kaddr;
+	de = (struct ufs_dir_entry *) base;
 
 	de->d_ino = cpu_to_fs32(sb, inode->i_ino);
 	ufs_set_de_type(sb, de, inode->i_mode);
@@ -566,12 +577,11 @@ int ufs_make_empty(struct inode * inode, struct inode *dir)
 	de->d_reclen = cpu_to_fs16(sb, chunk_size - UFS_DIR_REC_LEN(1));
 	ufs_set_de_namlen(sb, de, 2);
 	strcpy (de->d_name, "..");
-	kunmap_local(kaddr);
+	kunmap(page);
 
-	ufs_commit_chunk(folio, 0, chunk_size);
-	err = ufs_handle_dirsync(inode);
+	err = ufs_commit_chunk(page, 0, chunk_size);
 fail:
-	folio_put(folio);
+	put_page(page);
 	return err;
 }
 
@@ -581,17 +591,18 @@ fail:
 int ufs_empty_dir(struct inode * inode)
 {
 	struct super_block *sb = inode->i_sb;
-	struct folio *folio;
-	char *kaddr;
+	struct page *page = NULL;
 	unsigned long i, npages = dir_pages(inode);
 
 	for (i = 0; i < npages; i++) {
+		char *kaddr;
 		struct ufs_dir_entry *de;
+		page = ufs_get_page(inode, i);
 
-		kaddr = ufs_get_folio(inode, i, &folio);
-		if (IS_ERR(kaddr))
+		if (IS_ERR(page))
 			continue;
 
+		kaddr = page_address(page);
 		de = (struct ufs_dir_entry *)kaddr;
 		kaddr += ufs_last_byte(inode, i) - UFS_DIR_REC_LEN(1);
 
@@ -618,41 +629,18 @@ int ufs_empty_dir(struct inode * inode)
 			}
 			de = ufs_next_entry(sb, de);
 		}
-		folio_release_kmap(folio, kaddr);
+		ufs_put_page(page);
 	}
 	return 1;
 
 not_empty:
-	folio_release_kmap(folio, kaddr);
+	ufs_put_page(page);
 	return 0;
-}
-
-static int ufs_dir_open(struct inode *inode, struct file *file)
-{
-	file->private_data = kzalloc(sizeof(u64), GFP_KERNEL);
-	if (!file->private_data)
-		return -ENOMEM;
-	return 0;
-}
-
-static int ufs_dir_release(struct inode *inode, struct file *file)
-{
-	kfree(file->private_data);
-	return 0;
-}
-
-static loff_t ufs_dir_llseek(struct file *file, loff_t offset, int whence)
-{
-	return generic_llseek_cookie(file, offset, whence,
-				     (u64 *)file->private_data);
 }
 
 const struct file_operations ufs_dir_operations = {
-	.open		= ufs_dir_open,
-	.release	= ufs_dir_release,
 	.read		= generic_read_dir,
 	.iterate_shared	= ufs_readdir,
 	.fsync		= generic_file_fsync,
-	.llseek		= ufs_dir_llseek,
-	.setlease	= generic_setlease,
+	.llseek		= generic_file_llseek,
 };

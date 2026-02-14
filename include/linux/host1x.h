@@ -14,17 +14,12 @@
 
 enum host1x_class {
 	HOST1X_CLASS_HOST1X = 0x1,
-	HOST1X_CLASS_NVJPG1 = 0x7,
-	HOST1X_CLASS_NVENC = 0x21,
-	HOST1X_CLASS_NVENC1 = 0x22,
 	HOST1X_CLASS_GR2D = 0x51,
 	HOST1X_CLASS_GR2D_SB = 0x52,
 	HOST1X_CLASS_VIC = 0x5D,
 	HOST1X_CLASS_GR3D = 0x60,
-	HOST1X_CLASS_NVJPG = 0xC0,
 	HOST1X_CLASS_NVDEC = 0xF0,
 	HOST1X_CLASS_NVDEC1 = 0xF5,
-	HOST1X_CLASS_OFA = 0xF8,
 };
 
 struct host1x;
@@ -380,7 +375,7 @@ struct host1x_driver {
 	struct list_head list;
 
 	int (*probe)(struct host1x_device *device);
-	void (*remove)(struct host1x_device *device);
+	int (*remove)(struct host1x_device *device);
 	void (*shutdown)(struct host1x_device *device);
 };
 
@@ -448,7 +443,7 @@ int __host1x_client_register(struct host1x_client *client);
 		__host1x_client_register(client);	\
 	})
 
-void host1x_client_unregister(struct host1x_client *client);
+int host1x_client_unregister(struct host1x_client *client);
 
 int host1x_client_suspend(struct host1x_client *client);
 int host1x_client_resume(struct host1x_client *client);
@@ -471,7 +466,6 @@ struct host1x_memory_context {
 	refcount_t ref;
 	struct pid *owner;
 
-	struct device_dma_parameters dma_parms;
 	struct device dev;
 	u64 dma_mask;
 	u32 stream_id;

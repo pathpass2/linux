@@ -31,7 +31,7 @@ struct srcu_struct {
 
 void srcu_drive_gp(struct work_struct *wp);
 
-#define __SRCU_STRUCT_INIT(name, __ignored, ___ignored, ____ignored)	\
+#define __SRCU_STRUCT_INIT(name, __ignored)				\
 {									\
 	.srcu_wq = __SWAIT_QUEUE_HEAD_INITIALIZER(name.srcu_wq),	\
 	.srcu_cb_tail = &name.srcu_cb_head,				\
@@ -44,25 +44,9 @@ void srcu_drive_gp(struct work_struct *wp);
  * Tree SRCU, which needs some per-CPU data.
  */
 #define DEFINE_SRCU(name) \
-	struct srcu_struct name = __SRCU_STRUCT_INIT(name, name, name, name)
+	struct srcu_struct name = __SRCU_STRUCT_INIT(name, name)
 #define DEFINE_STATIC_SRCU(name) \
-	static struct srcu_struct name = __SRCU_STRUCT_INIT(name, name, name, name)
-#define DEFINE_SRCU_FAST(name) DEFINE_SRCU(name)
-#define DEFINE_STATIC_SRCU_FAST(name) \
-	static struct srcu_struct name = __SRCU_STRUCT_INIT(name, name, name, name)
-#define DEFINE_SRCU_FAST_UPDOWN(name) DEFINE_SRCU(name)
-#define DEFINE_STATIC_SRCU_FAST_UPDOWN(name) \
-	static struct srcu_struct name = __SRCU_STRUCT_INIT(name, name, name, name)
-
-// Dummy structure for srcu_notifier_head.
-struct srcu_usage { };
-#define __SRCU_USAGE_INIT(name) { }
-#define __init_srcu_struct_fast __init_srcu_struct
-#define __init_srcu_struct_fast_updown __init_srcu_struct
-#ifndef CONFIG_DEBUG_LOCK_ALLOC
-#define init_srcu_struct_fast init_srcu_struct
-#define init_srcu_struct_fast_updown init_srcu_struct
-#endif // #ifndef CONFIG_DEBUG_LOCK_ALLOC
+	static struct srcu_struct name = __SRCU_STRUCT_INIT(name, name)
 
 void synchronize_srcu(struct srcu_struct *ssp);
 
@@ -73,53 +57,12 @@ void synchronize_srcu(struct srcu_struct *ssp);
  * index that must be passed to the matching srcu_read_unlock().
  */
 static inline int __srcu_read_lock(struct srcu_struct *ssp)
-	__acquires_shared(ssp)
 {
 	int idx;
 
-	preempt_disable();  // Needed for PREEMPT_LAZY
 	idx = ((READ_ONCE(ssp->srcu_idx) + 1) & 0x2) >> 1;
 	WRITE_ONCE(ssp->srcu_lock_nesting[idx], READ_ONCE(ssp->srcu_lock_nesting[idx]) + 1);
-	preempt_enable();
-	__acquire_shared(ssp);
 	return idx;
-}
-
-struct srcu_ctr;
-
-static inline bool __srcu_ptr_to_ctr(struct srcu_struct *ssp, struct srcu_ctr __percpu *scpp)
-{
-	return (int)(intptr_t)(struct srcu_ctr __force __kernel *)scpp;
-}
-
-static inline struct srcu_ctr __percpu *__srcu_ctr_to_ptr(struct srcu_struct *ssp, int idx)
-{
-	return (struct srcu_ctr __percpu *)(intptr_t)idx;
-}
-
-static inline struct srcu_ctr __percpu *__srcu_read_lock_fast(struct srcu_struct *ssp)
-	__acquires_shared(ssp)
-{
-	return __srcu_ctr_to_ptr(ssp, __srcu_read_lock(ssp));
-}
-
-static inline void __srcu_read_unlock_fast(struct srcu_struct *ssp, struct srcu_ctr __percpu *scp)
-	__releases_shared(ssp)
-{
-	__srcu_read_unlock(ssp, __srcu_ptr_to_ctr(ssp, scp));
-}
-
-static inline struct srcu_ctr __percpu *__srcu_read_lock_fast_updown(struct srcu_struct *ssp)
-	__acquires_shared(ssp)
-{
-	return __srcu_ctr_to_ptr(ssp, __srcu_read_lock(ssp));
-}
-
-static inline
-void __srcu_read_unlock_fast_updown(struct srcu_struct *ssp, struct srcu_ctr __percpu *scp)
-	__releases_shared(ssp)
-{
-	__srcu_read_unlock(ssp, __srcu_ptr_to_ctr(ssp, scp));
 }
 
 static inline void synchronize_srcu_expedited(struct srcu_struct *ssp)
@@ -131,9 +74,6 @@ static inline void srcu_barrier(struct srcu_struct *ssp)
 {
 	synchronize_srcu(ssp);
 }
-
-static inline void srcu_expedite_current(struct srcu_struct *ssp) { }
-#define srcu_check_read_flavor(ssp, read_flavor) do { } while (0)
 
 /* Defined here to avoid size increase for non-torture kernels. */
 static inline void srcu_torture_stats_print(struct srcu_struct *ssp,

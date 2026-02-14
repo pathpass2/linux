@@ -23,7 +23,7 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <asm/byteorder.h>
-#include <asm/page.h>
+#include <asm/memory.h>
 #include <asm-generic/pci_iomap.h>
 
 /*
@@ -381,7 +381,7 @@ void __iomem *ioremap_wc(resource_size_t res_cookie, size_t size);
 void iounmap(volatile void __iomem *io_addr);
 #define iounmap iounmap
 
-void *arch_memremap_wb(phys_addr_t phys_addr, size_t size, unsigned long flags);
+void *arch_memremap_wb(phys_addr_t phys_addr, size_t size);
 #define arch_memremap_wb arch_memremap_wb
 
 /*
@@ -406,6 +406,12 @@ struct pci_dev;
 
 #define pci_iounmap pci_iounmap
 extern void pci_iounmap(struct pci_dev *dev, void __iomem *addr);
+
+/*
+ * Convert a physical pointer to a virtual kernel pointer for /dev/mem
+ * access
+ */
+#define xlate_dev_mem_ptr(p)	__va(p)
 
 #include <asm-generic/io.h>
 

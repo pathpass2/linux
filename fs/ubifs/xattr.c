@@ -48,6 +48,19 @@
 #include <linux/slab.h>
 #include <linux/xattr.h>
 
+/*
+ * Extended attribute type constants.
+ *
+ * USER_XATTR: user extended attribute ("user.*")
+ * TRUSTED_XATTR: trusted extended attribute ("trusted.*)
+ * SECURITY_XATTR: security extended attribute ("security.*")
+ */
+enum {
+	USER_XATTR,
+	TRUSTED_XATTR,
+	SECURITY_XATTR,
+};
+
 static const struct inode_operations empty_iops;
 static const struct file_operations empty_fops;
 
@@ -121,7 +134,7 @@ static int create_xattr(struct ubifs_info *c, struct inode *host,
 	ui->data_len = size;
 
 	mutex_lock(&host_ui->ui_mutex);
-	inode_set_ctime_current(host);
+	host->i_ctime = current_time(host);
 	host_ui->xattr_cnt += 1;
 	host_ui->xattr_size += CALC_DENT_SIZE(fname_len(nm));
 	host_ui->xattr_size += CALC_XATTR_BYTES(size);
@@ -136,7 +149,7 @@ static int create_xattr(struct ubifs_info *c, struct inode *host,
 	if (strcmp(fname_name(nm), UBIFS_XATTR_NAME_ENCRYPTION_CONTEXT) == 0)
 		host_ui->flags |= UBIFS_CRYPT_FL;
 
-	err = ubifs_jnl_update(c, host, nm, inode, 0, 1, 0);
+	err = ubifs_jnl_update(c, host, nm, inode, 0, 1);
 	if (err)
 		goto out_cancel;
 	ubifs_set_inode_flags(host);
@@ -202,7 +215,7 @@ static int change_xattr(struct ubifs_info *c, struct inode *host,
 	ui->data_len = size;
 
 	mutex_lock(&host_ui->ui_mutex);
-	inode_set_ctime_current(host);
+	host->i_ctime = current_time(host);
 	host_ui->xattr_size -= CALC_XATTR_BYTES(old_size);
 	host_ui->xattr_size += CALC_XATTR_BYTES(size);
 
@@ -461,7 +474,7 @@ static int remove_xattr(struct ubifs_info *c, struct inode *host,
 		return err;
 
 	mutex_lock(&host_ui->ui_mutex);
-	inode_set_ctime_current(host);
+	host->i_ctime = current_time(host);
 	host_ui->xattr_cnt -= 1;
 	host_ui->xattr_size -= CALC_DENT_SIZE(fname_len(nm));
 	host_ui->xattr_size -= CALC_XATTR_BYTES(ui->data_len);
@@ -519,6 +532,8 @@ int ubifs_purge_xattrs(struct inode *host)
 			ubifs_err(c, "dead directory entry '%s', error %d",
 				  xent->name, err);
 			ubifs_ro_mode(c, err);
+			kfree(pxent);
+			kfree(xent);
 			goto out_err;
 		}
 
@@ -526,11 +541,15 @@ int ubifs_purge_xattrs(struct inode *host)
 
 		clear_nlink(xino);
 		err = remove_xattr(c, host, xino, &nm);
-		iput(xino);
 		if (err) {
+			kfree(pxent);
+			kfree(xent);
+			iput(xino);
 			ubifs_err(c, "cannot remove xattr, error %d", err);
 			goto out_err;
 		}
+
+		iput(xino);
 
 		kfree(pxent);
 		pxent = xent;
@@ -547,10 +566,30 @@ int ubifs_purge_xattrs(struct inode *host)
 	return 0;
 
 out_err:
-	kfree(pxent);
-	kfree(xent);
 	up_write(&ubifs_inode(host)->xattr_sem);
 	return err;
+}
+
+/**
+ * ubifs_evict_xattr_inode - Evict an xattr inode.
+ * @c: UBIFS file-system description object
+ * @xattr_inum: xattr inode number
+ *
+ * When an inode that hosts xattrs is being removed we have to make sure
+ * that cached inodes of the xattrs also get removed from the inode cache
+ * otherwise we'd waste memory. This function looks up an inode from the
+ * inode cache and clears the link counter such that iput() will evict
+ * the inode.
+ */
+void ubifs_evict_xattr_inode(struct ubifs_info *c, ino_t xattr_inum)
+{
+	struct inode *inode;
+
+	inode = ilookup(c->vfs_sb, xattr_inum);
+	if (inode) {
+		clear_nlink(inode);
+		iput(inode);
+	}
 }
 
 static int ubifs_xattr_remove(struct inode *host, const char *name)
@@ -696,7 +735,7 @@ static const struct xattr_handler ubifs_security_xattr_handler = {
 };
 #endif
 
-const struct xattr_handler * const ubifs_xattr_handlers[] = {
+const struct xattr_handler *ubifs_xattr_handlers[] = {
 	&ubifs_user_xattr_handler,
 	&ubifs_trusted_xattr_handler,
 #ifdef CONFIG_UBIFS_FS_SECURITY

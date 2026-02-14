@@ -5,7 +5,7 @@
 int main(void)
 {
 	void *backtrace_fns[10];
-	int entries;
+	size_t entries;
 
 	entries = backtrace(backtrace_fns, 10);
 	backtrace_symbols_fd(backtrace_fns, entries, 1);

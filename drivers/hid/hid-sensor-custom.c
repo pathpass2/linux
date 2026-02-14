@@ -155,7 +155,7 @@ static ssize_t enable_sensor_show(struct device *dev,
 {
 	struct hid_sensor_custom *sensor_inst = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%d\n", sensor_inst->enable);
+	return sprintf(buf, "%d\n", sensor_inst->enable);
 }
 
 static int set_power_report_state(struct hid_sensor_custom *sensor_inst,
@@ -372,13 +372,14 @@ static ssize_t show_value(struct device *dev, struct device_attribute *attr,
 				     sizeof(struct hid_custom_usage_desc),
 				     usage_id_cmp);
 		if (usage_desc)
-			return sysfs_emit(buf, "%s\n", usage_desc->desc);
+			return snprintf(buf, PAGE_SIZE, "%s\n",
+					usage_desc->desc);
 		else
-			return sysfs_emit(buf, "not-specified\n");
+			return sprintf(buf, "not-specified\n");
 	 } else
 		return -EINVAL;
 
-	return sysfs_emit(buf, "%d\n", value);
+	return sprintf(buf, "%d\n", value);
 }
 
 static ssize_t store_value(struct device *dev, struct device_attribute *attr,
@@ -732,7 +733,7 @@ static int hid_sensor_custom_dev_if_add(struct hid_sensor_custom *sensor_inst)
 
 	sensor_inst->custom_dev.minor = MISC_DYNAMIC_MINOR;
 	sensor_inst->custom_dev.name = dev_name(&sensor_inst->pdev->dev);
-	sensor_inst->custom_dev.fops = &hid_sensor_custom_fops;
+	sensor_inst->custom_dev.fops = &hid_sensor_custom_fops,
 	ret = misc_register(&sensor_inst->custom_dev);
 	if (ret) {
 		kfifo_free(&sensor_inst->data_fifo);
@@ -939,14 +940,14 @@ hid_sensor_register_platform_device(struct platform_device *pdev,
 				    struct hid_sensor_hub_device *hsdev,
 				    const struct hid_sensor_custom_match *match)
 {
-	char real_usage[HID_SENSOR_USAGE_LENGTH] = { 0 };
+	char real_usage[HID_SENSOR_USAGE_LENGTH];
 	struct platform_device *custom_pdev;
 	const char *dev_name;
 	char *c;
 
 	memcpy(real_usage, match->luid, 4);
 
-	/* usage id are all lowercase */
+	/* usage id are all lowcase */
 	for (c = real_usage; *c != '\0'; c++)
 		*c = tolower(*c);
 
@@ -1031,14 +1032,14 @@ err_remove_callback:
 	return ret;
 }
 
-static void hid_sensor_custom_remove(struct platform_device *pdev)
+static int hid_sensor_custom_remove(struct platform_device *pdev)
 {
 	struct hid_sensor_custom *sensor_inst = platform_get_drvdata(pdev);
 	struct hid_sensor_hub_device *hsdev = pdev->dev.platform_data;
 
 	if (sensor_inst->custom_pdev) {
 		platform_device_unregister(sensor_inst->custom_pdev);
-		return;
+		return 0;
 	}
 
 	hid_sensor_custom_dev_if_remove(sensor_inst);
@@ -1046,6 +1047,8 @@ static void hid_sensor_custom_remove(struct platform_device *pdev)
 	sysfs_remove_group(&sensor_inst->pdev->dev.kobj,
 			   &enable_sensor_attr_group);
 	sensor_hub_remove_callback(hsdev, hsdev->usage);
+
+	return 0;
 }
 
 static const struct platform_device_id hid_sensor_custom_ids[] = {

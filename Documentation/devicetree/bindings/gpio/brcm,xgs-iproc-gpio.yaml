@@ -66,4 +66,5 @@ examples:
         interrupts = <GIC_SPI 91 IRQ_TYPE_LEVEL_HIGH>;
     };
 
+
 ...

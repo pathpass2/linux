@@ -62,8 +62,7 @@ static int uvc_input_init(struct uvc_device *dev)
 	__set_bit(EV_KEY, input->evbit);
 	__set_bit(KEY_CAMERA, input->keybit);
 
-	ret = input_register_device(input);
-	if (ret < 0)
+	if ((ret = input_register_device(input)) < 0)
 		goto error;
 
 	dev->input = input;
@@ -216,7 +215,7 @@ static void uvc_status_complete(struct urb *urb)
 		return;
 
 	default:
-		dev_warn(&dev->intf->dev,
+		dev_warn(&dev->udev->dev,
 			 "Non-zero status (%d) in status completion handler.\n",
 			 urb->status);
 		return;
@@ -248,7 +247,7 @@ static void uvc_status_complete(struct urb *urb)
 	urb->interval = dev->int_ep->desc.bInterval;
 	ret = usb_submit_urb(urb, GFP_ATOMIC);
 	if (ret < 0)
-		dev_err(&dev->intf->dev,
+		dev_err(&dev->udev->dev,
 			"Failed to resubmit status URB (%d).\n", ret);
 }
 
@@ -258,10 +257,10 @@ int uvc_status_init(struct uvc_device *dev)
 	unsigned int pipe;
 	int interval;
 
-	mutex_init(&dev->status_lock);
-
 	if (ep == NULL)
 		return 0;
+
+	uvc_input_init(dev);
 
 	dev->status = kzalloc(sizeof(*dev->status), GFP_KERNEL);
 	if (!dev->status)
@@ -270,7 +269,6 @@ int uvc_status_init(struct uvc_device *dev)
 	dev->int_urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!dev->int_urb) {
 		kfree(dev->status);
-		dev->status = NULL;
 		return -ENOMEM;
 	}
 
@@ -289,17 +287,12 @@ int uvc_status_init(struct uvc_device *dev)
 		dev->status, sizeof(*dev->status), uvc_status_complete,
 		dev, interval);
 
-	uvc_input_init(dev);
-
 	return 0;
 }
 
 void uvc_status_unregister(struct uvc_device *dev)
 {
-	if (!dev->status)
-		return;
-
-	uvc_status_suspend(dev);
+	usb_kill_urb(dev->int_urb);
 	uvc_input_unregister(dev);
 }
 
@@ -309,24 +302,17 @@ void uvc_status_cleanup(struct uvc_device *dev)
 	kfree(dev->status);
 }
 
-static int uvc_status_start(struct uvc_device *dev, gfp_t flags)
+int uvc_status_start(struct uvc_device *dev, gfp_t flags)
 {
-	lockdep_assert_held(&dev->status_lock);
-
-	if (!dev->int_urb)
+	if (dev->int_urb == NULL)
 		return 0;
 
 	return usb_submit_urb(dev->int_urb, flags);
 }
 
-static void uvc_status_stop(struct uvc_device *dev)
+void uvc_status_stop(struct uvc_device *dev)
 {
 	struct uvc_ctrl_work *w = &dev->async_ctrl;
-
-	lockdep_assert_held(&dev->status_lock);
-
-	if (!dev->int_urb)
-		return;
 
 	/*
 	 * Prevent the asynchronous control handler from requeing the URB. The
@@ -363,50 +349,4 @@ static void uvc_status_stop(struct uvc_device *dev)
 	 * again.
 	 */
 	smp_store_release(&dev->flush_status, false);
-}
-
-int uvc_status_resume(struct uvc_device *dev)
-{
-	guard(mutex)(&dev->status_lock);
-
-	if (dev->status_users)
-		return uvc_status_start(dev, GFP_NOIO);
-
-	return 0;
-}
-
-void uvc_status_suspend(struct uvc_device *dev)
-{
-	guard(mutex)(&dev->status_lock);
-
-	if (dev->status_users)
-		uvc_status_stop(dev);
-}
-
-int uvc_status_get(struct uvc_device *dev)
-{
-	int ret;
-
-	guard(mutex)(&dev->status_lock);
-
-	if (!dev->status_users) {
-		ret = uvc_status_start(dev, GFP_KERNEL);
-		if (ret)
-			return ret;
-	}
-
-	dev->status_users++;
-
-	return 0;
-}
-
-void uvc_status_put(struct uvc_device *dev)
-{
-	guard(mutex)(&dev->status_lock);
-
-	if (dev->status_users == 1)
-		uvc_status_stop(dev);
-	WARN_ON(!dev->status_users);
-	if (dev->status_users)
-		dev->status_users--;
 }

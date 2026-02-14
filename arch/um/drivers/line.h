@@ -47,9 +47,9 @@ struct line {
 	 *
 	 * buffer points to a buffer allocated on demand, of length
 	 * LINE_BUFSIZE, head to the start of the ring, tail to the end.*/
-	u8 *buffer;
-	u8 *head;
-	u8 *tail;
+	char *buffer;
+	char *head;
+	char *tail;
 
 	int sigio;
 	struct delayed_work task;
@@ -64,7 +64,8 @@ extern void line_cleanup(struct tty_struct *tty);
 extern void line_hangup(struct tty_struct *tty);
 extern int line_setup(char **conf, unsigned nlines, char **def,
 		      char *init, char *name);
-extern ssize_t line_write(struct tty_struct *tty, const u8 *buf, size_t len);
+extern int line_write(struct tty_struct *tty, const unsigned char *buf,
+		      int len);
 extern unsigned int line_chars_in_buffer(struct tty_struct *tty);
 extern void line_flush_buffer(struct tty_struct *tty);
 extern void line_flush_chars(struct tty_struct *tty);

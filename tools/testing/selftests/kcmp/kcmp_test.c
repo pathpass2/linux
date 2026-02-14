@@ -18,7 +18,7 @@
 #include <sys/wait.h>
 #include <sys/epoll.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 
 static long sys_kcmp(int pid1, int pid2, int type, unsigned long fd1, unsigned long fd2)
 {
@@ -91,7 +91,7 @@ int main(int argc, char **argv)
 		ksft_print_header();
 		ksft_set_plan(3);
 
-		fd2 = open(kpath, O_RDWR);
+		fd2 = open(kpath, O_RDWR, 0644);
 		if (fd2 < 0) {
 			perror("Can't open file");
 			ksft_exit_fail();

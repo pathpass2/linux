@@ -11,7 +11,6 @@
  * CompactPCI platform by Eric Brower, 1999.
  */
 
-#include <linux/export.h>
 #include <linux/version.h>
 #include <linux/init.h>
 
@@ -26,6 +25,7 @@
 #include <asm/thread_info.h>	/* TI_UWINMASK */
 #include <asm/errno.h>
 #include <asm/pgtable.h>	/* PGDIR_SHIFT */
+#include <asm/export.h>
 
 	.data
 /* The following are used with the prom_vector node-ops to figure out
@@ -118,12 +118,9 @@ current_pc:
 		mov	%o7, %g3
 
 		tst	%o0
-		bne	2f
+		be	no_sun4u_here
 		 mov	%g4, %o7		/* Previous %o7. */
-		sethi	%hi(no_sun4u_here), %l1
-		jmpl	%l1 + %lo(no_sun4u_here), %g0
-		 nop
-2:
+
 		mov	%o0, %l0		! stash away romvec
 		mov	%o0, %g7		! put it here too
 		mov	%o1, %l1		! stash away debug_vec too
@@ -198,8 +195,7 @@ halt_notsup:
 		sub	%o0, %l6, %o0
 		call	%o1
 		 nop
-		sethi	%hi(halt_me), %o0
-		jmpl	%o0 + %lo(halt_me), %g0
+		ba	halt_me
 		 nop
 
 not_a_sun4:
@@ -435,11 +431,8 @@ leon_init:
 #ifdef CONFIG_SMP
 		ldub	[%g2 + %lo(boot_cpu_id)], %g1
 		cmp	%g1, 0xff		! unset means first CPU
-		be 1f
-		 sethi	%hi(leon_smp_cpu_startup), %g1
-		jmpl	%g1 + %lo(leon_smp_cpu_startup), %g0
+		bne	leon_smp_cpu_startup	! continue only with master
 		 nop
-1:
 #endif
 		/* Get CPU-ID from most significant 4-bit of ASR17 */
 		rd     %asr17, %g1

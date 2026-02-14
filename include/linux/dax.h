@@ -26,7 +26,13 @@ struct dax_operations {
 	 * number of pages available for DAX at that pfn.
 	 */
 	long (*direct_access)(struct dax_device *, pgoff_t, long,
-			enum dax_access_mode, void **, unsigned long *);
+			enum dax_access_mode, void **, pfn_t *);
+	/*
+	 * Validate whether this device is usable as an fsdax backing
+	 * device.
+	 */
+	bool (*dax_supported)(struct dax_device *, struct block_device *, int,
+			sector_t, sector_t);
 	/* zero_page_range: required operation. Zero page range   */
 	int (*zero_page_range)(struct dax_device *, pgoff_t, size_t);
 	/*
@@ -57,21 +63,18 @@ void kill_dax(struct dax_device *dax_dev);
 void dax_write_cache(struct dax_device *dax_dev, bool wc);
 bool dax_write_cache_enabled(struct dax_device *dax_dev);
 bool dax_synchronous(struct dax_device *dax_dev);
-void set_dax_nocache(struct dax_device *dax_dev);
-void set_dax_nomc(struct dax_device *dax_dev);
 void set_dax_synchronous(struct dax_device *dax_dev);
 size_t dax_recovery_write(struct dax_device *dax_dev, pgoff_t pgoff,
 		void *addr, size_t bytes, struct iov_iter *i);
 /*
  * Check if given mapping is supported by the file / underlying device.
  */
-static inline bool daxdev_mapping_supported(vm_flags_t vm_flags,
-					    const struct inode *inode,
-					    struct dax_device *dax_dev)
+static inline bool daxdev_mapping_supported(struct vm_area_struct *vma,
+					     struct dax_device *dax_dev)
 {
-	if (!(vm_flags & VM_SYNC))
+	if (!(vma->vm_flags & VM_SYNC))
 		return true;
-	if (!IS_DAX(inode))
+	if (!IS_DAX(file_inode(vma->vm_file)))
 		return false;
 	return dax_synchronous(dax_dev);
 }
@@ -83,7 +86,11 @@ static inline void *dax_holder(struct dax_device *dax_dev)
 static inline struct dax_device *alloc_dax(void *private,
 		const struct dax_operations *ops)
 {
-	return ERR_PTR(-EOPNOTSUPP);
+	/*
+	 * Callers should check IS_ENABLED(CONFIG_DAX) to know if this
+	 * NULL is an error or expected.
+	 */
+	return NULL;
 }
 static inline void put_dax(struct dax_device *dax_dev)
 {
@@ -102,20 +109,13 @@ static inline bool dax_synchronous(struct dax_device *dax_dev)
 {
 	return true;
 }
-static inline void set_dax_nocache(struct dax_device *dax_dev)
-{
-}
-static inline void set_dax_nomc(struct dax_device *dax_dev)
-{
-}
 static inline void set_dax_synchronous(struct dax_device *dax_dev)
 {
 }
-static inline bool daxdev_mapping_supported(vm_flags_t vm_flags,
-					    const struct inode *inode,
-					    struct dax_device *dax_dev)
+static inline bool daxdev_mapping_supported(struct vm_area_struct *vma,
+				struct dax_device *dax_dev)
 {
-	return !(vm_flags & VM_SYNC);
+	return !(vma->vm_flags & VM_SYNC);
 }
 static inline size_t dax_recovery_write(struct dax_device *dax_dev,
 		pgoff_t pgoff, void *addr, size_t bytes, struct iov_iter *i)
@@ -123,6 +123,9 @@ static inline size_t dax_recovery_write(struct dax_device *dax_dev,
 	return 0;
 }
 #endif
+
+void set_dax_nocache(struct dax_device *dax_dev);
+void set_dax_nomc(struct dax_device *dax_dev);
 
 struct writeback_control;
 #if defined(CONFIG_BLOCK) && defined(CONFIG_FS_DAX)
@@ -156,8 +159,8 @@ int dax_writeback_mapping_range(struct address_space *mapping,
 
 struct page *dax_layout_busy_page(struct address_space *mapping);
 struct page *dax_layout_busy_page_range(struct address_space *mapping, loff_t start, loff_t end);
-dax_entry_t dax_lock_folio(struct folio *folio);
-void dax_unlock_folio(struct folio *folio, dax_entry_t cookie);
+dax_entry_t dax_lock_page(struct page *page);
+void dax_unlock_page(struct page *page, dax_entry_t cookie);
 dax_entry_t dax_lock_mapping_entry(struct address_space *mapping,
 		unsigned long index, struct page **page);
 void dax_unlock_mapping_entry(struct address_space *mapping,
@@ -179,14 +182,14 @@ static inline int dax_writeback_mapping_range(struct address_space *mapping,
 	return -EOPNOTSUPP;
 }
 
-static inline dax_entry_t dax_lock_folio(struct folio *folio)
+static inline dax_entry_t dax_lock_page(struct page *page)
 {
-	if (IS_DAX(folio->mapping->host))
+	if (IS_DAX(page->mapping->host))
 		return ~0UL;
 	return 0;
 }
 
-static inline void dax_unlock_folio(struct folio *folio, dax_entry_t cookie)
+static inline void dax_unlock_page(struct page *page, dax_entry_t cookie)
 {
 }
 
@@ -209,11 +212,6 @@ int dax_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
 int dax_truncate_page(struct inode *inode, loff_t pos, bool *did_zero,
 		const struct iomap_ops *ops);
 
-static inline bool dax_page_is_idle(struct page *page)
-{
-	return page && page_ref_count(page) == 0;
-}
-
 #if IS_ENABLED(CONFIG_DAX)
 int dax_read_lock(void);
 void dax_read_unlock(int id);
@@ -227,23 +225,10 @@ static inline void dax_read_unlock(int id)
 {
 }
 #endif /* CONFIG_DAX */
-
-#if !IS_ENABLED(CONFIG_FS_DAX)
-static inline int __must_check dax_break_layout(struct inode *inode,
-			    loff_t start, loff_t end, void (cb)(struct inode *))
-{
-	return 0;
-}
-
-static inline void dax_break_layout_final(struct inode *inode)
-{
-}
-#endif
-
 bool dax_alive(struct dax_device *dax_dev);
 void *dax_get_private(struct dax_device *dax_dev);
 long dax_direct_access(struct dax_device *dax_dev, pgoff_t pgoff, long nr_pages,
-		enum dax_access_mode mode, void **kaddr, unsigned long *pfn);
+		enum dax_access_mode mode, void **kaddr, pfn_t *pfn);
 size_t dax_copy_from_iter(struct dax_device *dax_dev, pgoff_t pgoff, void *addr,
 		size_t bytes, struct iov_iter *i);
 size_t dax_copy_to_iter(struct dax_device *dax_dev, pgoff_t pgoff, void *addr,
@@ -256,24 +241,13 @@ void dax_flush(struct dax_device *dax_dev, void *addr, size_t size);
 
 ssize_t dax_iomap_rw(struct kiocb *iocb, struct iov_iter *iter,
 		const struct iomap_ops *ops);
-vm_fault_t dax_iomap_fault(struct vm_fault *vmf, unsigned int order,
-			unsigned long *pfnp, int *errp,
-			const struct iomap_ops *ops);
+vm_fault_t dax_iomap_fault(struct vm_fault *vmf, enum page_entry_size pe_size,
+		    pfn_t *pfnp, int *errp, const struct iomap_ops *ops);
 vm_fault_t dax_finish_sync_fault(struct vm_fault *vmf,
-		unsigned int order, unsigned long pfn);
+		enum page_entry_size pe_size, pfn_t pfn);
 int dax_delete_mapping_entry(struct address_space *mapping, pgoff_t index);
-void dax_delete_mapping_range(struct address_space *mapping,
-				loff_t start, loff_t end);
 int dax_invalidate_mapping_entry_sync(struct address_space *mapping,
 				      pgoff_t index);
-int __must_check dax_break_layout(struct inode *inode, loff_t start,
-				loff_t end, void (cb)(struct inode *));
-static inline int __must_check dax_break_layout_inode(struct inode *inode,
-						void (cb)(struct inode *))
-{
-	return dax_break_layout(inode, 0, LLONG_MAX, cb);
-}
-void dax_break_layout_final(struct inode *inode);
 int dax_dedupe_file_range_compare(struct inode *src, loff_t srcoff,
 				  struct inode *dest, loff_t destoff,
 				  loff_t len, bool *is_same,
@@ -285,19 +259,6 @@ int dax_remap_file_range_prep(struct file *file_in, loff_t pos_in,
 static inline bool dax_mapping(struct address_space *mapping)
 {
 	return mapping->host && IS_DAX(mapping->host);
-}
-
-/*
- * Due to dax's memory and block duo personalities, hwpoison reporting
- * takes into consideration which personality is presently visible.
- * When dax acts like a block device, such as in block IO, an encounter of
- * dax hwpoison is reported as -EIO.
- * When dax acts like memory, such as in page fault, a detection of hwpoison
- * is reported as -EHWPOISON which leads to VM_FAULT_HWPOISON.
- */
-static inline int dax_mem2blk_err(int err)
-{
-	return (err == -EHWPOISON) ? -EIO : err;
 }
 
 #ifdef CONFIG_DEV_DAX_HMEM_DEVICES

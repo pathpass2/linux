@@ -298,14 +298,14 @@ static void find_next_position(struct mtdoops_context *cxt)
 }
 
 static void mtdoops_do_dump(struct kmsg_dumper *dumper,
-			    struct kmsg_dump_detail *detail)
+			    enum kmsg_dump_reason reason)
 {
 	struct mtdoops_context *cxt = container_of(dumper,
 			struct mtdoops_context, dump);
 	struct kmsg_dump_iter iter;
 
 	/* Only dump oopses if dump_oops is set */
-	if (detail->reason == KMSG_DUMP_OOPS && !dump_oops)
+	if (reason == KMSG_DUMP_OOPS && !dump_oops)
 		return;
 
 	kmsg_dump_rewind(&iter);
@@ -317,7 +317,7 @@ static void mtdoops_do_dump(struct kmsg_dumper *dumper,
 			     record_size - sizeof(struct mtdoops_hdr), NULL);
 	clear_bit(0, &cxt->oops_buf_busy);
 
-	if (detail->reason != KMSG_DUMP_OOPS) {
+	if (reason != KMSG_DUMP_OOPS) {
 		/* Panics must be written immediately */
 		mtdoops_write(cxt, 1);
 	} else {
@@ -356,8 +356,9 @@ static void mtdoops_notify_add(struct mtd_info *mtd)
 
 	/* oops_page_used is a bit field */
 	cxt->oops_page_used =
-		vmalloc_array(DIV_ROUND_UP(mtdoops_pages, BITS_PER_LONG),
-			      sizeof(unsigned long));
+		vmalloc(array_size(sizeof(unsigned long),
+				   DIV_ROUND_UP(mtdoops_pages,
+						BITS_PER_LONG)));
 	if (!cxt->oops_page_used) {
 		pr_err("could not allocate page array\n");
 		return;

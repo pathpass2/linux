@@ -4,8 +4,6 @@
 #include <linux/cpu.h>
 #include <asm/nospec-branch.h>
 
-int nobp = IS_ENABLED(CONFIG_KERNEL_NOBP);
-
 static int __init nobp_setup_early(char *str)
 {
 	bool enabled;
@@ -16,14 +14,14 @@ static int __init nobp_setup_early(char *str)
 		return rc;
 	if (enabled && test_facility(82)) {
 		/*
-		 * The user explicitly requested nobp=1, enable it and
+		 * The user explicitely requested nobp=1, enable it and
 		 * disable the expoline support.
 		 */
-		nobp = 1;
+		__set_facility(82, alt_stfle_fac_list);
 		if (IS_ENABLED(CONFIG_EXPOLINE))
 			nospec_disable = 1;
 	} else {
-		nobp = 0;
+		__clear_facility(82, alt_stfle_fac_list);
 	}
 	return 0;
 }
@@ -31,7 +29,7 @@ early_param("nobp", nobp_setup_early);
 
 static int __init nospec_setup_early(char *str)
 {
-	nobp = 0;
+	__clear_facility(82, alt_stfle_fac_list);
 	return 0;
 }
 early_param("nospec", nospec_setup_early);
@@ -42,7 +40,7 @@ static int __init nospec_report(void)
 		pr_info("Spectre V2 mitigation: etokens\n");
 	if (nospec_uses_trampoline())
 		pr_info("Spectre V2 mitigation: execute trampolines\n");
-	if (nobp_enabled())
+	if (__test_facility(82, alt_stfle_fac_list))
 		pr_info("Spectre V2 mitigation: limited branch prediction\n");
 	return 0;
 }
@@ -68,14 +66,14 @@ void __init nospec_auto_detect(void)
 		 */
 		if (__is_defined(CC_USING_EXPOLINE))
 			nospec_disable = 1;
-		nobp = 0;
+		__clear_facility(82, alt_stfle_fac_list);
 	} else if (__is_defined(CC_USING_EXPOLINE)) {
 		/*
 		 * The kernel has been compiled with expolines.
 		 * Keep expolines enabled and disable nobp.
 		 */
 		nospec_disable = 0;
-		nobp = 0;
+		__clear_facility(82, alt_stfle_fac_list);
 	}
 	/*
 	 * If the kernel has not been compiled with expolines the
@@ -88,7 +86,7 @@ static int __init spectre_v2_setup_early(char *str)
 {
 	if (str && !strncmp(str, "on", 2)) {
 		nospec_disable = 0;
-		nobp = 0;
+		__clear_facility(82, alt_stfle_fac_list);
 	}
 	if (str && !strncmp(str, "off", 3))
 		nospec_disable = 1;
@@ -116,10 +114,10 @@ static void __init_or_module __nospec_revert(s32 *start, s32 *end)
 			type = BRASL_EXPOLINE;	/* brasl instruction */
 		else
 			continue;
-		thunk = instr + (long)(*(int *)(instr + 2)) * 2;
+		thunk = instr + (*(int *)(instr + 2)) * 2;
 		if (thunk[0] == 0xc6 && thunk[1] == 0x00)
 			/* exrl %r0,<target-br> */
-			br = thunk + (long)(*(int *)(thunk + 2)) * 2;
+			br = thunk + (*(int *)(thunk + 2)) * 2;
 		else
 			continue;
 		if (br[0] != 0x07 || (br[1] & 0xf0) != 0xf0)

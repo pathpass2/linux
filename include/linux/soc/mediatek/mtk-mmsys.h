@@ -27,7 +27,8 @@ enum mtk_ddp_comp_id {
 	DDP_COMPONENT_CCORR,
 	DDP_COMPONENT_COLOR0,
 	DDP_COMPONENT_COLOR1,
-	DDP_COMPONENT_DITHER0,
+	DDP_COMPONENT_DITHER,
+	DDP_COMPONENT_DITHER0 = DDP_COMPONENT_DITHER,
 	DDP_COMPONENT_DITHER1,
 	DDP_COMPONENT_DP_INTF0,
 	DDP_COMPONENT_DP_INTF1,
@@ -62,14 +63,6 @@ enum mtk_ddp_comp_id {
 	DDP_COMPONENT_OVL_2L1,
 	DDP_COMPONENT_OVL_2L2,
 	DDP_COMPONENT_OVL1,
-	DDP_COMPONENT_PADDING0,
-	DDP_COMPONENT_PADDING1,
-	DDP_COMPONENT_PADDING2,
-	DDP_COMPONENT_PADDING3,
-	DDP_COMPONENT_PADDING4,
-	DDP_COMPONENT_PADDING5,
-	DDP_COMPONENT_PADDING6,
-	DDP_COMPONENT_PADDING7,
 	DDP_COMPONENT_POSTMASK0,
 	DDP_COMPONENT_PWM0,
 	DDP_COMPONENT_PWM1,
@@ -105,11 +98,5 @@ void mtk_mmsys_mixer_in_config(struct device *dev, int idx, bool alpha_sel, u16 
 
 void mtk_mmsys_mixer_in_channel_swap(struct device *dev, int idx, bool channel_swap,
 				     struct cmdq_pkt *cmdq_pkt);
-
-void mtk_mmsys_vpp_rsz_merge_config(struct device *dev, u32 id, bool enable,
-				    struct cmdq_pkt *cmdq_pkt);
-
-void mtk_mmsys_vpp_rsz_dcm_config(struct device *dev, bool enable,
-				  struct cmdq_pkt *cmdq_pkt);
 
 #endif /* __MTK_MMSYS_H */

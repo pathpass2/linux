@@ -51,18 +51,13 @@ static int cros_typec_cmd_mux_set(struct cros_typec_switch_data *sdata, int port
 static int cros_typec_get_mux_state(unsigned long mode, struct typec_altmode *alt)
 {
 	int ret = -EOPNOTSUPP;
-	u8 pin_assign;
 
-	if (mode == TYPEC_STATE_SAFE) {
+	if (mode == TYPEC_STATE_SAFE)
 		ret = USB_PD_MUX_SAFE_MODE;
-	} else if (mode == TYPEC_STATE_USB) {
+	else if (mode == TYPEC_STATE_USB)
 		ret = USB_PD_MUX_USB_ENABLED;
-	} else if (alt && alt->svid == USB_TYPEC_DP_SID) {
+	else if (alt && alt->svid == USB_TYPEC_DP_SID)
 		ret = USB_PD_MUX_DP_ENABLED;
-		pin_assign = mode - TYPEC_STATE_MODAL;
-		if (pin_assign & DP_PIN_ASSIGN_D)
-			ret |= USB_PD_MUX_USB_ENABLED;
-	}
 
 	return ret;
 }
@@ -211,8 +206,9 @@ static int cros_typec_register_switches(struct cros_typec_switch_data *sdata)
 	struct cros_typec_port *port;
 	struct device *dev = sdata->dev;
 	struct fwnode_handle *fwnode;
+	struct acpi_device *adev;
+	unsigned long long index;
 	int nports, ret;
-	u64 index;
 
 	nports = device_get_child_node_count(dev);
 	if (nports == 0) {
@@ -227,14 +223,22 @@ static int cros_typec_register_switches(struct cros_typec_switch_data *sdata)
 			goto err_switch;
 		}
 
-		ret = acpi_get_local_u64_address(ACPI_HANDLE_FWNODE(fwnode), &index);
-		if (ret) {
-			dev_err(dev, "_ADR wasn't evaluated for %pfwP\n", fwnode);
+		adev = to_acpi_device_node(fwnode);
+		if (!adev) {
+			dev_err(fwnode->dev, "Couldn't get ACPI device handle\n");
+			ret = -ENODEV;
+			goto err_switch;
+		}
+
+		ret = acpi_evaluate_integer(adev->handle, "_ADR", NULL, &index);
+		if (ACPI_FAILURE(ret)) {
+			dev_err(fwnode->dev, "_ADR wasn't evaluated\n");
+			ret = -ENODATA;
 			goto err_switch;
 		}
 
 		if (index >= EC_USB_PD_MAX_PORTS) {
-			dev_err(dev, "%pfwP: Invalid port index number: %llu\n", fwnode, index);
+			dev_err(fwnode->dev, "Invalid port index number: %llu\n", index);
 			ret = -EINVAL;
 			goto err_switch;
 		}
@@ -266,7 +270,6 @@ static int cros_typec_register_switches(struct cros_typec_switch_data *sdata)
 
 	return 0;
 err_switch:
-	fwnode_handle_put(fwnode);
 	cros_typec_unregister_switches(sdata);
 	return ret;
 }
@@ -288,11 +291,12 @@ static int cros_typec_switch_probe(struct platform_device *pdev)
 	return cros_typec_register_switches(sdata);
 }
 
-static void cros_typec_switch_remove(struct platform_device *pdev)
+static int cros_typec_switch_remove(struct platform_device *pdev)
 {
 	struct cros_typec_switch_data *sdata = platform_get_drvdata(pdev);
 
 	cros_typec_unregister_switches(sdata);
+	return 0;
 }
 
 #ifdef CONFIG_ACPI

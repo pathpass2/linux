@@ -73,12 +73,6 @@
 /* Holds the block group items for extent tree v2. */
 #define BTRFS_BLOCK_GROUP_TREE_OBJECTID 11ULL
 
-/* Tracks RAID stripes in block groups. */
-#define BTRFS_RAID_STRIPE_TREE_OBJECTID 12ULL
-
-/* Holds details of remapped addresses after relocation. */
-#define BTRFS_REMAP_TREE_OBJECTID 13ULL
-
 /* device stats in the device tree */
 #define BTRFS_DEV_STATS_OBJECTID 0ULL
 
@@ -222,31 +216,11 @@
  */
 #define BTRFS_METADATA_ITEM_KEY	169
 
-/*
- * Special inline ref key which stores the id of the subvolume which originally
- * created the extent. This subvolume owns the extent permanently from the
- * perspective of simple quotas. Needed to know which subvolume to free quota
- * usage from when the extent is deleted.
- *
- * Stored as an inline ref rather to avoid wasting space on a separate item on
- * top of the existing extent item. However, unlike the other inline refs,
- * there is one one owner ref per extent rather than one per extent.
- *
- * Because of this, it goes at the front of the list of inline refs, and thus
- * must have a lower type value than any other inline ref type (to satisfy the
- * disk format rule that inline refs have non-decreasing type).
- */
-#define BTRFS_EXTENT_OWNER_REF_KEY	172
-
 #define BTRFS_TREE_BLOCK_REF_KEY	176
 
 #define BTRFS_EXTENT_DATA_REF_KEY	178
 
-/*
- * Obsolete key. Defintion removed in 6.6, value may be reused in the future.
- *
- * #define BTRFS_EXTENT_REF_V0_KEY	180
- */
+#define BTRFS_EXTENT_REF_V0_KEY		180
 
 #define BTRFS_SHARED_BLOCK_REF_KEY	182
 
@@ -282,12 +256,6 @@
 #define BTRFS_DEV_EXTENT_KEY	204
 #define BTRFS_DEV_ITEM_KEY	216
 #define BTRFS_CHUNK_ITEM_KEY	228
-
-#define BTRFS_RAID_STRIPE_KEY	230
-
-#define BTRFS_IDENTITY_REMAP_KEY 	234
-#define BTRFS_REMAP_KEY		 	235
-#define BTRFS_REMAP_BACKREF_KEY	 	236
 
 /*
  * Records the overall state of the qgroups.
@@ -721,12 +689,9 @@ struct btrfs_super_block {
 	__u8 metadata_uuid[BTRFS_FSID_SIZE];
 
 	__u64 nr_global_roots;
-	__le64 remap_root;
-	__le64 remap_root_generation;
-	__u8 remap_root_level;
 
 	/* Future expansion */
-	__u8 reserved[199];
+	__le64 reserved[27];
 	__u8 sys_chunk_array[BTRFS_SYSTEM_CHUNK_ARRAY_SIZE];
 	struct btrfs_root_backup super_roots[BTRFS_NUM_BACKUP_ROOTS];
 
@@ -750,18 +715,6 @@ struct btrfs_free_space_header {
 	__le64 num_bitmaps;
 } __attribute__ ((__packed__));
 
-struct btrfs_raid_stride {
-	/* The id of device this raid extent lives on. */
-	__le64 devid;
-	/* The physical location on disk. */
-	__le64 physical;
-} __attribute__ ((__packed__));
-
-struct btrfs_stripe_extent {
-	/* An array of raid strides this stripe is composed of. */
-	__DECLARE_FLEX_ARRAY(struct btrfs_raid_stride, strides);
-} __attribute__ ((__packed__));
-
 #define BTRFS_HEADER_FLAG_WRITTEN	(1ULL << 0)
 #define BTRFS_HEADER_FLAG_RELOC		(1ULL << 1)
 
@@ -775,14 +728,6 @@ struct btrfs_stripe_extent {
 #define BTRFS_SUPER_FLAG_CHANGING_FSID	(1ULL << 35)
 #define BTRFS_SUPER_FLAG_CHANGING_FSID_V2 (1ULL << 36)
 
-/*
- * Those are temporaray flags utilized by btrfs-progs to do offline conversion.
- * They are rejected by kernel.
- * But still keep them all here to avoid conflicts.
- */
-#define BTRFS_SUPER_FLAG_CHANGING_BG_TREE	(1ULL << 38)
-#define BTRFS_SUPER_FLAG_CHANGING_DATA_CSUM	(1ULL << 39)
-#define BTRFS_SUPER_FLAG_CHANGING_META_CSUM	(1ULL << 40)
 
 /*
  * items in the extent btree are used to record the objectid of the
@@ -836,10 +781,6 @@ struct btrfs_extent_data_ref {
 
 struct btrfs_shared_data_ref {
 	__le32 count;
-} __attribute__ ((__packed__));
-
-struct btrfs_extent_owner_ref {
-	__le64 root_id;
 } __attribute__ ((__packed__));
 
 struct btrfs_extent_inline_ref {
@@ -1171,15 +1112,12 @@ struct btrfs_dev_replace_item {
 #define BTRFS_BLOCK_GROUP_RAID6         (1ULL << 8)
 #define BTRFS_BLOCK_GROUP_RAID1C3       (1ULL << 9)
 #define BTRFS_BLOCK_GROUP_RAID1C4       (1ULL << 10)
-#define BTRFS_BLOCK_GROUP_REMAPPED      (1ULL << 11)
-#define BTRFS_BLOCK_GROUP_METADATA_REMAP (1ULL << 12)
 #define BTRFS_BLOCK_GROUP_RESERVED	(BTRFS_AVAIL_ALLOC_BIT_SINGLE | \
 					 BTRFS_SPACE_INFO_GLOBAL_RSV)
 
 #define BTRFS_BLOCK_GROUP_TYPE_MASK	(BTRFS_BLOCK_GROUP_DATA |    \
 					 BTRFS_BLOCK_GROUP_SYSTEM |  \
-					 BTRFS_BLOCK_GROUP_METADATA | \
-					 BTRFS_BLOCK_GROUP_METADATA_REMAP)
+					 BTRFS_BLOCK_GROUP_METADATA)
 
 #define BTRFS_BLOCK_GROUP_PROFILE_MASK	(BTRFS_BLOCK_GROUP_RAID0 |   \
 					 BTRFS_BLOCK_GROUP_RAID1 |   \
@@ -1232,14 +1170,6 @@ struct btrfs_block_group_item {
 	__le64 flags;
 } __attribute__ ((__packed__));
 
-struct btrfs_block_group_item_v2 {
-	__le64 used;
-	__le64 chunk_objectid;
-	__le64 flags;
-	__le64 remap_bytes;
-	__le32 identity_remap_count;
-} __attribute__ ((__packed__));
-
 struct btrfs_free_space_info {
 	__le32 extent_count;
 	__le32 flags;
@@ -1270,17 +1200,9 @@ static inline __u16 btrfs_qgroup_level(__u64 qgroupid)
  */
 #define BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT	(1ULL << 2)
 
-/*
- * Whether or not this filesystem is using simple quotas.  Not exactly the
- * incompat bit, because we support using simple quotas, disabling it, then
- * going back to full qgroup quotas.
- */
-#define BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE	(1ULL << 3)
-
 #define BTRFS_QGROUP_STATUS_FLAGS_MASK	(BTRFS_QGROUP_STATUS_FLAG_ON |		\
 					 BTRFS_QGROUP_STATUS_FLAG_RESCAN |	\
-					 BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT | \
-					 BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE)
+					 BTRFS_QGROUP_STATUS_FLAG_INCONSISTENT)
 
 #define BTRFS_QGROUP_STATUS_VERSION        1
 
@@ -1302,15 +1224,6 @@ struct btrfs_qgroup_status_item {
 	 * of the scan. It contains a logical address
 	 */
 	__le64 rescan;
-
-	/*
-	 * The generation when quotas were last enabled. Used by simple quotas to
-	 * avoid decrementing when freeing an extent that was written before
-	 * enable.
-	 *
-	 * Set only if flags contain BTRFS_QGROUP_STATUS_FLAG_SIMPLE_MODE.
-	 */
-	__le64 enable_gen;
 } __attribute__ ((__packed__));
 
 struct btrfs_qgroup_info_item {
@@ -1342,15 +1255,6 @@ struct btrfs_verity_descriptor_item {
 	 */
 	__le64 reserved[2];
 	__u8 encryption;
-} __attribute__ ((__packed__));
-
-/*
- * For a range identified by a BTRFS_REMAP_KEY item in the remap tree, gives
- * the address that the start of the range will get remapped to.  This
- * structure is also shared by BTRFS_REMAP_BACKREF_KEY.
- */
-struct btrfs_remap_item {
-	__le64 address;
 } __attribute__ ((__packed__));
 
 #endif /* _BTRFS_CTREE_H_ */

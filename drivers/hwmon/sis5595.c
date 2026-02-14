@@ -153,9 +153,13 @@ static inline s8 TEMP_TO_REG(long val)
 }
 
 /*
- * FAN DIV: 1, 2, 4, or 8
- * REG: 0, 1, 2, or 3 (respectively)
+ * FAN DIV: 1, 2, 4, or 8 (defaults to 2)
+ * REG: 0, 1, 2, or 3 (respectively) (defaults to 1)
  */
+static inline u8 DIV_TO_REG(int val)
+{
+	return val == 8 ? 3 : val == 4 ? 2 : val == 1 ? 0 : 1;
+}
 #define DIV_FROM_REG(val) (1 << (val))
 
 /*
@@ -705,7 +709,7 @@ exit_remove_files:
 	return err;
 }
 
-static void sis5595_remove(struct platform_device *pdev)
+static int sis5595_remove(struct platform_device *pdev)
 {
 	struct sis5595_data *data = platform_get_drvdata(pdev);
 
@@ -713,6 +717,8 @@ static void sis5595_remove(struct platform_device *pdev)
 	sysfs_remove_group(&pdev->dev.kobj, &sis5595_group);
 	sysfs_remove_group(&pdev->dev.kobj, &sis5595_group_in4);
 	sysfs_remove_group(&pdev->dev.kobj, &sis5595_group_temp1);
+
+	return 0;
 }
 
 static const struct pci_device_id sis5595_pci_ids[] = {
@@ -792,7 +798,7 @@ static int sis5595_pci_probe(struct pci_dev *dev,
 {
 	u16 address;
 	u8 enable;
-	int *i, err;
+	int *i;
 
 	for (i = blacklist; *i != 0; i++) {
 		struct pci_dev *d;
@@ -812,8 +818,8 @@ static int sis5595_pci_probe(struct pci_dev *dev,
 		pci_write_config_word(dev, SIS5595_BASE_REG, force_addr);
 	}
 
-	err = pci_read_config_word(dev, SIS5595_BASE_REG, &address);
-	if (err != PCIBIOS_SUCCESSFUL) {
+	if (PCIBIOS_SUCCESSFUL !=
+	    pci_read_config_word(dev, SIS5595_BASE_REG, &address)) {
 		dev_err(&dev->dev, "Failed to read ISA address\n");
 		return -ENODEV;
 	}
@@ -830,23 +836,22 @@ static int sis5595_pci_probe(struct pci_dev *dev,
 		return -ENODEV;
 	}
 
-	err = pci_read_config_byte(dev, SIS5595_ENABLE_REG, &enable);
-	if (err != PCIBIOS_SUCCESSFUL) {
+	if (PCIBIOS_SUCCESSFUL !=
+	    pci_read_config_byte(dev, SIS5595_ENABLE_REG, &enable)) {
 		dev_err(&dev->dev, "Failed to read enable register\n");
 		return -ENODEV;
 	}
 	if (!(enable & 0x80)) {
-		err = pci_write_config_byte(dev, SIS5595_ENABLE_REG, enable | 0x80);
-		if (err != PCIBIOS_SUCCESSFUL)
-			goto enable_fail;
-
-		err = pci_read_config_byte(dev, SIS5595_ENABLE_REG, &enable);
-		if (err != PCIBIOS_SUCCESSFUL)
-			goto enable_fail;
-
-		/* doesn't work for some chips! */
-		if (!(enable & 0x80))
-			goto enable_fail;
+		if ((PCIBIOS_SUCCESSFUL !=
+		     pci_write_config_byte(dev, SIS5595_ENABLE_REG,
+					   enable | 0x80))
+		 || (PCIBIOS_SUCCESSFUL !=
+		     pci_read_config_byte(dev, SIS5595_ENABLE_REG, &enable))
+		 || (!(enable & 0x80))) {
+			/* doesn't work for some chips! */
+			dev_err(&dev->dev, "Failed to enable HWM device\n");
+			return -ENODEV;
+		}
 	}
 
 	if (platform_driver_register(&sis5595_driver)) {
@@ -865,10 +870,6 @@ static int sis5595_pci_probe(struct pci_dev *dev,
 	 * pci device, we only wanted to read as few register values from it.
 	 */
 	return -ENODEV;
-
-enable_fail:
-	dev_err(&dev->dev, "Failed to enable HWM device\n");
-	goto exit;
 
 exit_unregister:
 	pci_dev_put(dev);

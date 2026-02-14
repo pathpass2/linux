@@ -12,7 +12,7 @@
 
 #define KV_MAGIC		0x5f4b565f
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/sn/types.h>
 
@@ -24,6 +24,6 @@ typedef struct kern_vars_s {
 	unsigned long	kv_rw_baseaddr;
 } kern_vars_t;
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #endif /* __ASM_SN_KLKERNVARS_H */

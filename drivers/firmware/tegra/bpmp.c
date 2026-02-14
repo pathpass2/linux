@@ -8,7 +8,8 @@
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/semaphore.h>
@@ -23,6 +24,12 @@
 #define MSG_ACK		BIT(0)
 #define MSG_RING	BIT(1)
 #define TAG_SZ		32
+
+static inline struct tegra_bpmp *
+mbox_client_to_bpmp(struct mbox_client *client)
+{
+	return container_of(client, struct tegra_bpmp, mbox.client);
+}
 
 static inline const struct tegra_bpmp_ops *
 channel_to_ops(struct tegra_bpmp_channel *channel)
@@ -307,8 +314,6 @@ static ssize_t tegra_bpmp_channel_write(struct tegra_bpmp_channel *channel,
 	return __tegra_bpmp_channel_write(channel, mrq, flags, data, size);
 }
 
-static int __maybe_unused tegra_bpmp_resume(struct device *dev);
-
 int tegra_bpmp_transfer_atomic(struct tegra_bpmp *bpmp,
 			       struct tegra_bpmp_message *msg)
 {
@@ -320,14 +325,6 @@ int tegra_bpmp_transfer_atomic(struct tegra_bpmp *bpmp,
 
 	if (!tegra_bpmp_message_valid(msg))
 		return -EINVAL;
-
-	if (bpmp->suspended) {
-		/* Reset BPMP IPC channels during resume based on flags passed */
-		if (msg->flags & TEGRA_BPMP_MESSAGE_RESET)
-			tegra_bpmp_resume(bpmp->dev);
-		else
-			return -EAGAIN;
-	}
 
 	channel = bpmp->tx_channel;
 
@@ -367,14 +364,6 @@ int tegra_bpmp_transfer(struct tegra_bpmp *bpmp,
 
 	if (!tegra_bpmp_message_valid(msg))
 		return -EINVAL;
-
-	if (bpmp->suspended) {
-		/* Reset BPMP IPC channels during resume based on flags passed */
-		if (msg->flags & TEGRA_BPMP_MESSAGE_RESET)
-			tegra_bpmp_resume(bpmp->dev);
-		else
-			return -EAGAIN;
-	}
 
 	channel = tegra_bpmp_write_threaded(bpmp, msg->mrq, msg->tx.data,
 					    msg->tx.size);
@@ -746,8 +735,6 @@ static int tegra_bpmp_probe(struct platform_device *pdev)
 	if (!bpmp->threaded_channels)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, bpmp);
-
 	err = bpmp->soc->ops->init(bpmp);
 	if (err < 0)
 		return err;
@@ -771,23 +758,25 @@ static int tegra_bpmp_probe(struct platform_device *pdev)
 
 	dev_info(&pdev->dev, "firmware: %.*s\n", (int)sizeof(tag), tag);
 
+	platform_set_drvdata(pdev, bpmp);
+
 	err = of_platform_default_populate(pdev->dev.of_node, NULL, &pdev->dev);
 	if (err < 0)
 		goto free_mrq;
 
-	if (of_property_present(pdev->dev.of_node, "#clock-cells")) {
+	if (of_find_property(pdev->dev.of_node, "#clock-cells", NULL)) {
 		err = tegra_bpmp_init_clocks(bpmp);
 		if (err < 0)
 			goto free_mrq;
 	}
 
-	if (of_property_present(pdev->dev.of_node, "#reset-cells")) {
+	if (of_find_property(pdev->dev.of_node, "#reset-cells", NULL)) {
 		err = tegra_bpmp_init_resets(bpmp);
 		if (err < 0)
 			goto free_mrq;
 	}
 
-	if (of_property_present(pdev->dev.of_node, "#power-domain-cells")) {
+	if (of_find_property(pdev->dev.of_node, "#power-domain-cells", NULL)) {
 		err = tegra_bpmp_init_powergates(bpmp);
 		if (err < 0)
 			goto free_mrq;
@@ -808,20 +797,9 @@ deinit:
 	return err;
 }
 
-static int __maybe_unused tegra_bpmp_suspend(struct device *dev)
-{
-	struct tegra_bpmp *bpmp = dev_get_drvdata(dev);
-
-	bpmp->suspended = true;
-
-	return 0;
-}
-
 static int __maybe_unused tegra_bpmp_resume(struct device *dev)
 {
 	struct tegra_bpmp *bpmp = dev_get_drvdata(dev);
-
-	bpmp->suspended = false;
 
 	if (bpmp->soc->ops->resume)
 		return bpmp->soc->ops->resume(bpmp);
@@ -830,14 +808,12 @@ static int __maybe_unused tegra_bpmp_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops tegra_bpmp_pm_ops = {
-	.suspend_noirq = tegra_bpmp_suspend,
 	.resume_noirq = tegra_bpmp_resume,
 };
 
 #if IS_ENABLED(CONFIG_ARCH_TEGRA_186_SOC) || \
     IS_ENABLED(CONFIG_ARCH_TEGRA_194_SOC) || \
-    IS_ENABLED(CONFIG_ARCH_TEGRA_234_SOC) || \
-    IS_ENABLED(CONFIG_ARCH_TEGRA_264_SOC)
+    IS_ENABLED(CONFIG_ARCH_TEGRA_234_SOC)
 static const struct tegra_bpmp_soc tegra186_soc = {
 	.channels = {
 		.cpu_tx = {
@@ -885,8 +861,7 @@ static const struct tegra_bpmp_soc tegra210_soc = {
 static const struct of_device_id tegra_bpmp_match[] = {
 #if IS_ENABLED(CONFIG_ARCH_TEGRA_186_SOC) || \
     IS_ENABLED(CONFIG_ARCH_TEGRA_194_SOC) || \
-    IS_ENABLED(CONFIG_ARCH_TEGRA_234_SOC) || \
-    IS_ENABLED(CONFIG_ARCH_TEGRA_264_SOC)
+    IS_ENABLED(CONFIG_ARCH_TEGRA_234_SOC)
 	{ .compatible = "nvidia,tegra186-bpmp", .data = &tegra186_soc },
 #endif
 #if IS_ENABLED(CONFIG_ARCH_TEGRA_210_SOC)

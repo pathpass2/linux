@@ -44,8 +44,7 @@ properties:
     maxItems: 1
 
   iommus:
-    minItems: 2
-    maxItems: 32
+    maxItems: 2
     description: |
       Points to the respective IOMMU block with master port as argument, see
       Documentation/devicetree/bindings/iommu/mediatek,iommu.yaml for details.

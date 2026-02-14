@@ -15,6 +15,7 @@ static DEFINE_IDA(pd_ida);
 
 static struct class pd_class = {
 	.name = "usb_power_delivery",
+	.owner = THIS_MODULE,
 };
 
 #define to_pdo(o) container_of(o, struct pdo, dev)
@@ -83,17 +84,19 @@ unchunked_extended_messages_supported_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(unchunked_extended_messages_supported);
 
+/*
+ * REVISIT: Peak Current requires access also to the RDO.
 static ssize_t
 peak_current_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%u\n", (to_pdo(dev)->pdo >> PDO_FIXED_PEAK_CURR_SHIFT) & 3);
+	...
 }
-static DEVICE_ATTR_RO(peak_current);
+*/
 
 static ssize_t
 fast_role_swap_current_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%u\n", (to_pdo(dev)->pdo >> PDO_FIXED_FRS_CURR_SHIFT) & 3);
+	return sysfs_emit(buf, "%u\n", to_pdo(dev)->pdo >> PDO_FIXED_FRS_CURR_SHIFT) & 3;
 }
 static DEVICE_ATTR_RO(fast_role_swap_current);
 
@@ -133,7 +136,7 @@ static struct attribute *source_fixed_supply_attrs[] = {
 	&dev_attr_usb_communication_capable.attr,
 	&dev_attr_dual_role_data.attr,
 	&dev_attr_unchunked_extended_messages_supported.attr,
-	&dev_attr_peak_current.attr,
+	/*&dev_attr_peak_current.attr,*/
 	&dev_attr_voltage.attr,
 	&maximum_current_attr.attr,
 	NULL
@@ -142,7 +145,7 @@ static struct attribute *source_fixed_supply_attrs[] = {
 static umode_t fixed_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n)
 {
 	if (to_pdo(kobj_to_dev(kobj))->object_position &&
-	    attr != &dev_attr_peak_current.attr &&
+	    /*attr != &dev_attr_peak_current.attr &&*/
 	    attr != &dev_attr_voltage.attr &&
 	    attr != &maximum_current_attr.attr &&
 	    attr != &operational_current_attr.attr)
@@ -157,7 +160,7 @@ static const struct attribute_group source_fixed_supply_group = {
 };
 __ATTRIBUTE_GROUPS(source_fixed_supply);
 
-static const struct device_type source_fixed_supply_type = {
+static struct device_type source_fixed_supply_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = source_fixed_supply_groups,
@@ -182,7 +185,7 @@ static const struct attribute_group sink_fixed_supply_group = {
 };
 __ATTRIBUTE_GROUPS(sink_fixed_supply);
 
-static const struct device_type sink_fixed_supply_type = {
+static struct device_type sink_fixed_supply_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = sink_fixed_supply_groups,
@@ -213,7 +216,7 @@ static struct attribute *source_variable_supply_attrs[] = {
 };
 ATTRIBUTE_GROUPS(source_variable_supply);
 
-static const struct device_type source_variable_supply_type = {
+static struct device_type source_variable_supply_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = source_variable_supply_groups,
@@ -227,7 +230,7 @@ static struct attribute *sink_variable_supply_attrs[] = {
 };
 ATTRIBUTE_GROUPS(sink_variable_supply);
 
-static const struct device_type sink_variable_supply_type = {
+static struct device_type sink_variable_supply_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = sink_variable_supply_groups,
@@ -258,7 +261,7 @@ static struct attribute *source_battery_attrs[] = {
 };
 ATTRIBUTE_GROUPS(source_battery);
 
-static const struct device_type source_battery_type = {
+static struct device_type source_battery_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = source_battery_groups,
@@ -272,7 +275,7 @@ static struct attribute *sink_battery_attrs[] = {
 };
 ATTRIBUTE_GROUPS(sink_battery);
 
-static const struct device_type sink_battery_type = {
+static struct device_type sink_battery_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = sink_battery_groups,
@@ -339,7 +342,7 @@ static struct attribute *source_pps_attrs[] = {
 };
 ATTRIBUTE_GROUPS(source_pps);
 
-static const struct device_type source_pps_type = {
+static struct device_type source_pps_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = source_pps_groups,
@@ -353,88 +356,10 @@ static struct attribute *sink_pps_attrs[] = {
 };
 ATTRIBUTE_GROUPS(sink_pps);
 
-static const struct device_type sink_pps_type = {
+static struct device_type sink_pps_type = {
 	.name = "pdo",
 	.release = pdo_release,
 	.groups = sink_pps_groups,
-};
-
-/* -------------------------------------------------------------------------- */
-/* Standard Power Range (SPR) Adjustable Voltage Supply (AVS) */
-
-static ssize_t
-spr_avs_9v_to_15v_max_current_show(struct device *dev,
-				   struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%umA\n",
-			  pdo_spr_avs_apdo_9v_to_15v_max_current_ma(to_pdo(dev)->pdo));
-}
-
-static ssize_t
-spr_avs_15v_to_20v_max_current_show(struct device *dev,
-				    struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%umA\n",
-			  pdo_spr_avs_apdo_15v_to_20v_max_current_ma(to_pdo(dev)->pdo));
-}
-
-static ssize_t
-spr_avs_src_peak_current_show(struct device *dev,
-			      struct device_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%u\n",
-			  pdo_spr_avs_apdo_src_peak_current(to_pdo(dev)->pdo));
-}
-
-static struct device_attribute spr_avs_9v_to_15v_max_current_attr = {
-	.attr = {
-		.name = "maximum_current_9V_to_15V",
-		.mode = 0444,
-	},
-	.show = spr_avs_9v_to_15v_max_current_show,
-};
-
-static struct device_attribute spr_avs_15v_to_20v_max_current_attr = {
-	.attr = {
-		.name = "maximum_current_15V_to_20V",
-		.mode = 0444,
-	},
-	.show = spr_avs_15v_to_20v_max_current_show,
-};
-
-static struct device_attribute spr_avs_src_peak_current_attr = {
-	.attr = {
-		.name = "peak_current",
-		.mode = 0444,
-	},
-	.show = spr_avs_src_peak_current_show,
-};
-
-static struct attribute *source_spr_avs_attrs[] = {
-	&spr_avs_9v_to_15v_max_current_attr.attr,
-	&spr_avs_15v_to_20v_max_current_attr.attr,
-	&spr_avs_src_peak_current_attr.attr,
-	NULL
-};
-ATTRIBUTE_GROUPS(source_spr_avs);
-
-static const struct device_type source_spr_avs_type = {
-	.name = "pdo",
-	.release = pdo_release,
-	.groups = source_spr_avs_groups,
-};
-
-static struct attribute *sink_spr_avs_attrs[] = {
-	&spr_avs_9v_to_15v_max_current_attr.attr,
-	&spr_avs_15v_to_20v_max_current_attr.attr,
-	NULL
-};
-ATTRIBUTE_GROUPS(sink_spr_avs);
-
-static const struct device_type sink_spr_avs_type = {
-	.name = "pdo",
-	.release = pdo_release,
-	.groups = sink_spr_avs_groups,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -446,36 +371,33 @@ static const char * const supply_name[] = {
 };
 
 static const char * const apdo_supply_name[] = {
-	[APDO_TYPE_PPS]      = "programmable_supply",
-	[APDO_TYPE_SPR_AVS]  = "spr_adjustable_voltage_supply",
+	[APDO_TYPE_PPS]  = "programmable_supply",
 };
 
-static const struct device_type *source_type[] = {
+static struct device_type *source_type[] = {
 	[PDO_TYPE_FIXED] = &source_fixed_supply_type,
 	[PDO_TYPE_BATT]  = &source_battery_type,
 	[PDO_TYPE_VAR]   = &source_variable_supply_type,
 };
 
-static const struct device_type *source_apdo_type[] = {
-	[APDO_TYPE_PPS]     = &source_pps_type,
-	[APDO_TYPE_SPR_AVS] = &source_spr_avs_type,
+static struct device_type *source_apdo_type[] = {
+	[APDO_TYPE_PPS]  = &source_pps_type,
 };
 
-static const struct device_type *sink_type[] = {
+static struct device_type *sink_type[] = {
 	[PDO_TYPE_FIXED] = &sink_fixed_supply_type,
 	[PDO_TYPE_BATT]  = &sink_battery_type,
 	[PDO_TYPE_VAR]   = &sink_variable_supply_type,
 };
 
-static const struct device_type *sink_apdo_type[] = {
-	[APDO_TYPE_PPS]     = &sink_pps_type,
-	[APDO_TYPE_SPR_AVS] = &sink_spr_avs_type,
+static struct device_type *sink_apdo_type[] = {
+	[APDO_TYPE_PPS]  = &sink_pps_type,
 };
 
 /* REVISIT: Export when EPR_*_Capabilities need to be supported. */
 static int add_pdo(struct usb_power_delivery_capabilities *cap, u32 pdo, int position)
 {
-	const struct device_type *type;
+	struct device_type *type;
 	const char *name;
 	struct pdo *p;
 	int ret;
@@ -488,12 +410,8 @@ static int add_pdo(struct usb_power_delivery_capabilities *cap, u32 pdo, int pos
 	p->object_position = position;
 
 	if (pdo_type(pdo) == PDO_TYPE_APDO) {
-		/*
-		 * FIXME: Only PPS, SPR_AVS supported for now!
-		 * Skipping others.
-		 */
-		if (pdo_apdo_type(pdo) != APDO_TYPE_PPS &&
-		    pdo_apdo_type(pdo) != APDO_TYPE_SPR_AVS) {
+		/* FIXME: Only PPS supported for now! Skipping others. */
+		if (pdo_apdo_type(pdo) > APDO_TYPE_PPS) {
 			dev_warn(&cap->dev, "Unknown APDO type. PDO 0x%08x\n", pdo);
 			kfree(p);
 			return 0;
@@ -545,7 +463,7 @@ static void pd_capabilities_release(struct device *dev)
 	kfree(to_usb_power_delivery_capabilities(dev));
 }
 
-static const struct device_type pd_capabilities_type = {
+static struct device_type pd_capabilities_type = {
 	.name = "capabilities",
 	.release = pd_capabilities_release,
 };
@@ -553,7 +471,7 @@ static const struct device_type pd_capabilities_type = {
 /**
  * usb_power_delivery_register_capabilities - Register a set of capabilities.
  * @pd: The USB PD instance that the capabilities belong to.
- * @desc: Description of the Capabilities Message.
+ * @desc: Description of the Capablities Message.
  *
  * This function registers a Capabilities Message described in @desc. The
  * capabilities will have their own sub-directory under @pd in sysfs.
@@ -656,11 +574,11 @@ static void pd_release(struct device *dev)
 {
 	struct usb_power_delivery *pd = to_usb_power_delivery(dev);
 
-	ida_free(&pd_ida, pd->id);
+	ida_simple_remove(&pd_ida, pd->id);
 	kfree(pd);
 }
 
-static const struct device_type pd_type = {
+static struct device_type pd_type = {
 	.name = "usb_power_delivery",
 	.release = pd_release,
 	.groups = pd_groups,
@@ -701,7 +619,7 @@ usb_power_delivery_register(struct device *parent, struct usb_power_delivery_des
 	if (!pd)
 		return ERR_PTR(-ENOMEM);
 
-	ret = ida_alloc(&pd_ida, GFP_KERNEL);
+	ret = ida_simple_get(&pd_ida, 0, 0, GFP_KERNEL);
 	if (ret < 0) {
 		kfree(pd);
 		return ERR_PTR(ret);

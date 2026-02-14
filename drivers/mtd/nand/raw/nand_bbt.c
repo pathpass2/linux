@@ -3,7 +3,7 @@
  *  Overview:
  *   Bad block table support for the NAND driver
  *
- *  Copyright © 2004 Thomas Gleixner (tglx@kernel.org)
+ *  Copyright © 2004 Thomas Gleixner (tglx@linutronix.de)
  *
  * Description:
  *
@@ -576,6 +576,7 @@ static int search_bbt(struct nand_chip *this, uint8_t *buf,
 		startblock &= bbtblocks - 1;
 	} else {
 		chips = 1;
+		bbtblocks = mtd->size >> this->bbt_erase_shift;
 	}
 
 	for (i = 0; i < chips; i++) {

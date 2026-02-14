@@ -54,7 +54,7 @@
 #define FAILURE (-1)
 #endif
 
-static const struct scsi_host_template blogic_template;
+static struct scsi_host_template blogic_template;
 
 /*
   blogic_drvr_options_count is a count of the number of BusLogic Driver
@@ -78,7 +78,6 @@ static struct blogic_drvr_options blogic_drvr_options[BLOGIC_MAX_ADAPTERS];
   BusLogic can be assigned a string by insmod.
 */
 
-MODULE_DESCRIPTION("BusLogic MultiMaster and FlashPoint SCSI Host Adapter driver");
 MODULE_LICENSE("GPL");
 #ifdef MODULE
 static char *BusLogic;
@@ -920,8 +919,7 @@ static int __init blogic_init_fp_probeinfo(struct blogic_adapter *adapter)
   a particular probe order.
 */
 
-static noinline_for_stack void __init
-blogic_init_probeinfo_list(struct blogic_adapter *adapter)
+static void __init blogic_init_probeinfo_list(struct blogic_adapter *adapter)
 {
 	/*
 	   If a PCI BIOS is present, interrogate it for MultiMaster and
@@ -1691,8 +1689,7 @@ common:
   blogic_reportconfig reports the configuration of Host Adapter.
 */
 
-static noinline_for_stack bool __init
-blogic_reportconfig(struct blogic_adapter *adapter)
+static bool __init blogic_reportconfig(struct blogic_adapter *adapter)
 {
 	unsigned short alltgt_mask = (1 << adapter->maxdev) - 1;
 	unsigned short sync_ok, fast_ok;
@@ -2155,15 +2152,14 @@ static void __init blogic_inithoststruct(struct blogic_adapter *adapter,
 }
 
 /*
-  blogic_sdev_configure will actually set the queue depth on individual
+  blogic_slaveconfig will actually set the queue depth on individual
   scsi devices as they are permanently added to the device chain.  We
   shamelessly rip off the SelectQueueDepths code to make this work mostly
   like it used to.  Since we don't get called once at the end of the scan
   but instead get called for each device, we have to do things a bit
   differently.
 */
-static int blogic_sdev_configure(struct scsi_device *dev,
-				 struct queue_limits *lim)
+static int blogic_slaveconfig(struct scsi_device *dev)
 {
 	struct blogic_adapter *adapter =
 		(struct blogic_adapter *) dev->host->hostdata;
@@ -2879,7 +2875,7 @@ static int blogic_hostreset(struct scsi_cmnd *SCpnt)
   Outgoing Mailbox for execution by the associated Host Adapter.
 */
 
-static enum scsi_qc_status blogic_qcmd_lck(struct scsi_cmnd *command)
+static int blogic_qcmd_lck(struct scsi_cmnd *command)
 {
 	void (*comp_cb)(struct scsi_cmnd *) = scsi_done;
 	struct blogic_adapter *adapter =
@@ -3242,7 +3238,7 @@ static int blogic_resetadapter(struct blogic_adapter *adapter, bool hard_reset)
   the BIOS, and a warning may be displayed.
 */
 
-static int blogic_diskparam(struct scsi_device *sdev, struct gendisk *disk,
+static int blogic_diskparam(struct scsi_device *sdev, struct block_device *dev,
 		sector_t capacity, int *params)
 {
 	struct blogic_adapter *adapter =
@@ -3263,7 +3259,7 @@ static int blogic_diskparam(struct scsi_device *sdev, struct gendisk *disk,
 		diskparam->sectors = 32;
 	}
 	diskparam->cylinders = (unsigned long) capacity / (diskparam->heads * diskparam->sectors);
-	buf = scsi_bios_ptable(disk);
+	buf = scsi_bios_ptable(dev);
 	if (buf == NULL)
 		return 0;
 	/*
@@ -3667,7 +3663,7 @@ static int __init blogic_parseopts(char *options)
   Get it all started
 */
 
-static const struct scsi_host_template blogic_template = {
+static struct scsi_host_template blogic_template = {
 	.module = THIS_MODULE,
 	.proc_name = "BusLogic",
 	.write_info = blogic_write_info,
@@ -3675,7 +3671,7 @@ static const struct scsi_host_template blogic_template = {
 	.name = "BusLogic",
 	.info = blogic_drvr_info,
 	.queuecommand = blogic_qcmd,
-	.sdev_configure = blogic_sdev_configure,
+	.slave_configure = blogic_slaveconfig,
 	.bios_param = blogic_diskparam,
 	.eh_host_reset_handler = blogic_hostreset,
 #if 0
@@ -3717,7 +3713,8 @@ static void __exit blogic_exit(void)
 
 __setup("BusLogic=", blogic_setup);
 
-/*static const struct pci_device_id blogic_pci_tbl[] = {
+#ifdef MODULE
+/*static struct pci_device_id blogic_pci_tbl[] = {
 	{ PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{ PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER_NC,
@@ -3726,12 +3723,13 @@ __setup("BusLogic=", blogic_setup);
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{ }
 };*/
-static const struct pci_device_id blogic_pci_tbl[] __maybe_unused = {
+static const struct pci_device_id blogic_pci_tbl[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER)},
 	{PCI_DEVICE(PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_MULTIMASTER_NC)},
 	{PCI_DEVICE(PCI_VENDOR_ID_BUSLOGIC, PCI_DEVICE_ID_BUSLOGIC_FLASHPOINT)},
 	{0, },
 };
+#endif
 MODULE_DEVICE_TABLE(pci, blogic_pci_tbl);
 
 module_init(blogic_init);

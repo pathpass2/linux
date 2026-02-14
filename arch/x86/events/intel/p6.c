@@ -2,9 +2,6 @@
 #include <linux/perf_event.h>
 #include <linux/types.h>
 
-#include <asm/cpu_device_id.h>
-#include <asm/msr.h>
-
 #include "../perf_event.h"
 
 /*
@@ -143,9 +140,9 @@ static void p6_pmu_disable_all(void)
 	u64 val;
 
 	/* p6 only has one enable register */
-	rdmsrq(MSR_P6_EVNTSEL0, val);
+	rdmsrl(MSR_P6_EVNTSEL0, val);
 	val &= ~ARCH_PERFMON_EVENTSEL_ENABLE;
-	wrmsrq(MSR_P6_EVNTSEL0, val);
+	wrmsrl(MSR_P6_EVNTSEL0, val);
 }
 
 static void p6_pmu_enable_all(int added)
@@ -153,9 +150,9 @@ static void p6_pmu_enable_all(int added)
 	unsigned long val;
 
 	/* p6 only has one enable register */
-	rdmsrq(MSR_P6_EVNTSEL0, val);
+	rdmsrl(MSR_P6_EVNTSEL0, val);
 	val |= ARCH_PERFMON_EVENTSEL_ENABLE;
-	wrmsrq(MSR_P6_EVNTSEL0, val);
+	wrmsrl(MSR_P6_EVNTSEL0, val);
 }
 
 static inline void
@@ -164,7 +161,7 @@ p6_pmu_disable_event(struct perf_event *event)
 	struct hw_perf_event *hwc = &event->hw;
 	u64 val = P6_NOP_EVENT;
 
-	(void)wrmsrq_safe(hwc->config_base, val);
+	(void)wrmsrl_safe(hwc->config_base, val);
 }
 
 static void p6_pmu_enable_event(struct perf_event *event)
@@ -181,7 +178,7 @@ static void p6_pmu_enable_event(struct perf_event *event)
 	 * to actually enable the events.
 	 */
 
-	(void)wrmsrq_safe(hwc->config_base, val);
+	(void)wrmsrl_safe(hwc->config_base, val);
 }
 
 PMU_FORMAT_ATTR(event,	"config:0-7"	);
@@ -217,7 +214,7 @@ static __initconst const struct x86_pmu p6_pmu = {
 	.apic			= 1,
 	.max_period		= (1ULL << 31) - 1,
 	.version		= 0,
-	.cntr_mask64		= 0x3,
+	.num_counters		= 2,
 	/*
 	 * Events have 40 bits implemented. However they are designed such
 	 * that bits [32-39] are sign extensions of bit 31. As such the
@@ -243,7 +240,7 @@ static __init void p6_pmu_rdpmc_quirk(void)
 		 */
 		pr_warn("Userspace RDPMC support disabled due to a CPU erratum\n");
 		x86_pmu.attr_rdpmc_broken = 1;
-		x86_pmu.attr_rdpmc = X86_USER_RDPMC_NEVER_ENABLE;
+		x86_pmu.attr_rdpmc = 0;
 	}
 }
 
@@ -251,8 +248,30 @@ __init int p6_pmu_init(void)
 {
 	x86_pmu = p6_pmu;
 
-	if (boot_cpu_data.x86_vfm == INTEL_PENTIUM_PRO)
+	switch (boot_cpu_data.x86_model) {
+	case  1: /* Pentium Pro */
 		x86_add_quirk(p6_pmu_rdpmc_quirk);
+		break;
+
+	case  3: /* Pentium II - Klamath */
+	case  5: /* Pentium II - Deschutes */
+	case  6: /* Pentium II - Mendocino */
+		break;
+
+	case  7: /* Pentium III - Katmai */
+	case  8: /* Pentium III - Coppermine */
+	case 10: /* Pentium III Xeon */
+	case 11: /* Pentium III - Tualatin */
+		break;
+
+	case  9: /* Pentium M - Banias */
+	case 13: /* Pentium M - Dothan */
+		break;
+
+	default:
+		pr_cont("unsupported p6 CPU model %d ", boot_cpu_data.x86_model);
+		return -ENODEV;
+	}
 
 	memcpy(hw_cache_event_ids, p6_hw_cache_event_ids,
 		sizeof(hw_cache_event_ids));

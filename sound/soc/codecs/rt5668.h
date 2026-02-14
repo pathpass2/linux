@@ -1309,4 +1309,7 @@ enum {
 	RT5668_CLK_SEL_I2S2_ASRC,
 };
 
+int rt5668_sel_asrc_clk_src(struct snd_soc_component *component,
+		unsigned int filter_mask, unsigned int clk_src);
+
 #endif /* __RT5668_H__ */

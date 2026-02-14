@@ -14,8 +14,8 @@
  */
 
 #include <linux/platform_device.h>
-#include <linux/of.h>
 #include <linux/of_reserved_mem.h>
+#include <linux/of_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
@@ -86,26 +86,9 @@ void cedrus_dst_format_set(struct cedrus_dev *dev,
 
 	switch (fmt->pixelformat) {
 	case V4L2_PIX_FMT_NV12:
-	case V4L2_PIX_FMT_NV21:
-	case V4L2_PIX_FMT_YUV420:
-	case V4L2_PIX_FMT_YVU420:
 		chroma_size = ALIGN(width, 16) * ALIGN(height, 16) / 2;
 
-		switch (fmt->pixelformat) {
-		case V4L2_PIX_FMT_NV12:
-			reg = VE_PRIMARY_OUT_FMT_NV12;
-			break;
-		case V4L2_PIX_FMT_NV21:
-			reg = VE_PRIMARY_OUT_FMT_NV21;
-			break;
-		case V4L2_PIX_FMT_YUV420:
-			reg = VE_PRIMARY_OUT_FMT_YU12;
-			break;
-		case V4L2_PIX_FMT_YVU420:
-		default:
-			reg = VE_PRIMARY_OUT_FMT_YV12;
-			break;
-		}
+		reg = VE_PRIMARY_OUT_FMT_NV12;
 		cedrus_write(dev, VE_PRIMARY_OUT_FMT, reg);
 
 		reg = chroma_size / 2;
@@ -189,11 +172,11 @@ int cedrus_hw_suspend(struct device *device)
 {
 	struct cedrus_dev *dev = dev_get_drvdata(device);
 
+	reset_control_assert(dev->rstc);
+
 	clk_disable_unprepare(dev->ram_clk);
 	clk_disable_unprepare(dev->mod_clk);
 	clk_disable_unprepare(dev->ahb_clk);
-
-	reset_control_assert(dev->rstc);
 
 	return 0;
 }
@@ -203,18 +186,11 @@ int cedrus_hw_resume(struct device *device)
 	struct cedrus_dev *dev = dev_get_drvdata(device);
 	int ret;
 
-	ret = reset_control_reset(dev->rstc);
-	if (ret) {
-		dev_err(dev->dev, "Failed to apply reset\n");
-
-		return ret;
-	}
-
 	ret = clk_prepare_enable(dev->ahb_clk);
 	if (ret) {
 		dev_err(dev->dev, "Failed to enable AHB clock\n");
 
-		goto err_rst;
+		return ret;
 	}
 
 	ret = clk_prepare_enable(dev->mod_clk);
@@ -231,14 +207,21 @@ int cedrus_hw_resume(struct device *device)
 		goto err_mod_clk;
 	}
 
+	ret = reset_control_reset(dev->rstc);
+	if (ret) {
+		dev_err(dev->dev, "Failed to apply reset\n");
+
+		goto err_ram_clk;
+	}
+
 	return 0;
 
+err_ram_clk:
+	clk_disable_unprepare(dev->ram_clk);
 err_mod_clk:
 	clk_disable_unprepare(dev->mod_clk);
 err_ahb_clk:
 	clk_disable_unprepare(dev->ahb_clk);
-err_rst:
-	reset_control_assert(dev->rstc);
 
 	return ret;
 }

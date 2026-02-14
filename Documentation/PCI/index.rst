@@ -17,6 +17,4 @@ PCI Bus Subsystem
    pci-error-recovery
    pcieaer-howto
    endpoint/index
-   controller/index
    boot-interrupts
-   tph

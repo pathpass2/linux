@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/dma-mapping.h>
 #include <linux/pm_runtime.h>
 #include <sound/soc.h>
@@ -481,10 +480,10 @@ static int mt8173_afe_hdmi_trigger(struct snd_pcm_substream *substream, int cmd,
 static int mt8173_memif_fs(struct snd_pcm_substream *substream,
 			   unsigned int rate)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
 	struct snd_soc_component *component = snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
-	struct mtk_base_afe_memif *memif = &afe->memif[snd_soc_rtd_to_cpu(rtd, 0)->id];
+	struct mtk_base_afe_memif *memif = &afe->memif[asoc_rtd_to_cpu(rtd, 0)->id];
 	int fs;
 
 	if (memif->data->id == MT8173_AFE_MEMIF_DAI ||
@@ -1054,58 +1053,48 @@ static int mt8173_afe_pcm_dev_probe(struct platform_device *pdev)
 	struct mtk_base_afe *afe;
 	struct mt8173_afe_private *afe_priv;
 	struct snd_soc_component *comp_pcm, *comp_hdmi;
-	struct device *dev = &pdev->dev;
 
-	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(33));
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(33));
 	if (ret)
 		return ret;
 
-	afe = devm_kzalloc(dev, sizeof(*afe), GFP_KERNEL);
+	afe = devm_kzalloc(&pdev->dev, sizeof(*afe), GFP_KERNEL);
 	if (!afe)
 		return -ENOMEM;
 
-	afe->platform_priv = devm_kzalloc(dev, sizeof(*afe_priv), GFP_KERNEL);
+	afe->platform_priv = devm_kzalloc(&pdev->dev, sizeof(*afe_priv),
+					  GFP_KERNEL);
 	afe_priv = afe->platform_priv;
 	if (!afe_priv)
 		return -ENOMEM;
 
-	afe->dev = dev;
-
-	ret = of_reserved_mem_device_init(dev);
-	if (ret) {
-		dev_info(dev, "no reserved memory found, pre-allocating buffers instead\n");
-		afe->preallocate_buffers = true;
-	}
-
-	irq_id = platform_get_irq(pdev, 0);
-	if (irq_id <= 0)
-		return irq_id < 0 ? irq_id : -ENXIO;
+	afe->dev = &pdev->dev;
 
 	afe->base_addr = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(afe->base_addr))
 		return PTR_ERR(afe->base_addr);
 
-	afe->regmap = devm_regmap_init_mmio(dev, afe->base_addr,
-					    &mt8173_afe_regmap_config);
+	afe->regmap = devm_regmap_init_mmio(&pdev->dev, afe->base_addr,
+		&mt8173_afe_regmap_config);
 	if (IS_ERR(afe->regmap))
 		return PTR_ERR(afe->regmap);
 
 	/* initial audio related clock */
 	ret = mt8173_afe_init_audio_clk(afe);
 	if (ret) {
-		dev_err(dev, "mt8173_afe_init_audio_clk fail\n");
+		dev_err(afe->dev, "mt8173_afe_init_audio_clk fail\n");
 		return ret;
 	}
 
 	/* memif % irq initialize*/
 	afe->memif_size = MT8173_AFE_MEMIF_NUM;
-	afe->memif = devm_kcalloc(dev, afe->memif_size,
+	afe->memif = devm_kcalloc(afe->dev, afe->memif_size,
 				  sizeof(*afe->memif), GFP_KERNEL);
 	if (!afe->memif)
 		return -ENOMEM;
 
 	afe->irqs_size = MT8173_AFE_IRQ_NUM;
-	afe->irqs = devm_kcalloc(dev, afe->irqs_size,
+	afe->irqs = devm_kcalloc(afe->dev, afe->irqs_size,
 				 sizeof(*afe->irqs), GFP_KERNEL);
 	if (!afe->irqs)
 		return -ENOMEM;
@@ -1124,9 +1113,9 @@ static int mt8173_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, afe);
 
-	pm_runtime_enable(dev);
-	if (!pm_runtime_enabled(dev)) {
-		ret = mt8173_afe_runtime_resume(dev);
+	pm_runtime_enable(&pdev->dev);
+	if (!pm_runtime_enabled(&pdev->dev)) {
+		ret = mt8173_afe_runtime_resume(&pdev->dev);
 		if (ret)
 			goto err_pm_disable;
 	}
@@ -1136,12 +1125,13 @@ static int mt8173_afe_pcm_dev_probe(struct platform_device *pdev)
 	afe->runtime_resume = mt8173_afe_runtime_resume;
 	afe->runtime_suspend = mt8173_afe_runtime_suspend;
 
-	ret = devm_snd_soc_register_component(dev, &mtk_afe_pcm_platform,
-					      NULL, 0);
+	ret = devm_snd_soc_register_component(&pdev->dev,
+					 &mtk_afe_pcm_platform,
+					 NULL, 0);
 	if (ret)
 		goto err_pm_disable;
 
-	comp_pcm = devm_kzalloc(dev, sizeof(*comp_pcm), GFP_KERNEL);
+	comp_pcm = devm_kzalloc(&pdev->dev, sizeof(*comp_pcm), GFP_KERNEL);
 	if (!comp_pcm) {
 		ret = -ENOMEM;
 		goto err_pm_disable;
@@ -1149,7 +1139,7 @@ static int mt8173_afe_pcm_dev_probe(struct platform_device *pdev)
 
 	ret = snd_soc_component_initialize(comp_pcm,
 					   &mt8173_afe_pcm_dai_component,
-					   dev);
+					   &pdev->dev);
 	if (ret)
 		goto err_pm_disable;
 
@@ -1163,17 +1153,17 @@ static int mt8173_afe_pcm_dev_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_pm_disable;
 
-	comp_hdmi = devm_kzalloc(dev, sizeof(*comp_hdmi), GFP_KERNEL);
+	comp_hdmi = devm_kzalloc(&pdev->dev, sizeof(*comp_hdmi), GFP_KERNEL);
 	if (!comp_hdmi) {
 		ret = -ENOMEM;
-		goto err_cleanup_components;
+		goto err_pm_disable;
 	}
 
 	ret = snd_soc_component_initialize(comp_hdmi,
 					   &mt8173_afe_hdmi_dai_component,
-					   dev);
+					   &pdev->dev);
 	if (ret)
-		goto err_cleanup_components;
+		goto err_pm_disable;
 
 #ifdef CONFIG_DEBUG_FS
 	comp_hdmi->debugfs_prefix = "hdmi";
@@ -1185,32 +1175,34 @@ static int mt8173_afe_pcm_dev_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_cleanup_components;
 
-	ret = devm_request_irq(dev, irq_id, mt8173_afe_irq_handler,
+	irq_id = platform_get_irq(pdev, 0);
+	if (irq_id <= 0)
+		return irq_id < 0 ? irq_id : -ENXIO;
+	ret = devm_request_irq(afe->dev, irq_id, mt8173_afe_irq_handler,
 			       0, "Afe_ISR_Handle", (void *)afe);
 	if (ret) {
-		dev_err(dev, "could not request_irq\n");
-		goto err_cleanup_components;
+		dev_err(afe->dev, "could not request_irq\n");
+		goto err_pm_disable;
 	}
 
-	dev_info(dev, "MT8173 AFE driver initialized.\n");
+	dev_info(&pdev->dev, "MT8173 AFE driver initialized.\n");
 	return 0;
 
 err_cleanup_components:
-	snd_soc_unregister_component(dev);
+	snd_soc_unregister_component(&pdev->dev);
 err_pm_disable:
-	pm_runtime_disable(dev);
+	pm_runtime_disable(&pdev->dev);
 	return ret;
 }
 
-static void mt8173_afe_pcm_dev_remove(struct platform_device *pdev)
+static int mt8173_afe_pcm_dev_remove(struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
+	snd_soc_unregister_component(&pdev->dev);
 
-	snd_soc_unregister_component(dev);
-
-	pm_runtime_disable(dev);
-	if (!pm_runtime_status_suspended(dev))
-		mt8173_afe_runtime_suspend(dev);
+	pm_runtime_disable(&pdev->dev);
+	if (!pm_runtime_status_suspended(&pdev->dev))
+		mt8173_afe_runtime_suspend(&pdev->dev);
+	return 0;
 }
 
 static const struct of_device_id mt8173_afe_pcm_dt_match[] = {
@@ -1220,15 +1212,15 @@ static const struct of_device_id mt8173_afe_pcm_dt_match[] = {
 MODULE_DEVICE_TABLE(of, mt8173_afe_pcm_dt_match);
 
 static const struct dev_pm_ops mt8173_afe_pm_ops = {
-	RUNTIME_PM_OPS(mt8173_afe_runtime_suspend,
-		       mt8173_afe_runtime_resume, NULL)
+	SET_RUNTIME_PM_OPS(mt8173_afe_runtime_suspend,
+			   mt8173_afe_runtime_resume, NULL)
 };
 
 static struct platform_driver mt8173_afe_pcm_driver = {
 	.driver = {
 		   .name = "mt8173-afe-pcm",
 		   .of_match_table = mt8173_afe_pcm_dt_match,
-		   .pm = pm_ptr(&mt8173_afe_pm_ops),
+		   .pm = &mt8173_afe_pm_ops,
 	},
 	.probe = mt8173_afe_pcm_dev_probe,
 	.remove = mt8173_afe_pcm_dev_remove,

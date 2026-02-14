@@ -113,7 +113,7 @@ gk104_chan_ramfc = {
 
 const struct nvkm_chan_func_userd
 gk104_chan_userd = {
-	.bar = NVKM_BAR1_FB,
+	.bar = 1,
 	.size = 0x200,
 	.clear = gf100_chan_userd_clear,
 };
@@ -745,7 +745,7 @@ gk104_fifo_init(struct nvkm_fifo *fifo)
 {
 	struct nvkm_device *device = fifo->engine.subdev.device;
 
-	if (fifo->func->chan.func->userd->bar == NVKM_BAR1_FB)
+	if (fifo->func->chan.func->userd->bar == 1)
 		nvkm_wr32(device, 0x002254, 0x10000000 | fifo->userd.bar1->addr >> 12);
 
 	nvkm_wr32(device, 0x002100, 0xffffffff);

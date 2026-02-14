@@ -28,7 +28,7 @@
 #include <asm/xive.h>
 #include <asm/opal.h>
 #include <asm/runlatch.h>
-#include <asm/text-patching.h>
+#include <asm/code-patching.h>
 #include <asm/dbell.h>
 #include <asm/kvm_ppc.h>
 #include <asm/ppc-opcode.h>
@@ -36,7 +36,6 @@
 #include <asm/kexec.h>
 #include <asm/reg.h>
 #include <asm/powernv.h>
-#include <asm/systemcfg.h>
 
 #include "powernv.h"
 
@@ -137,9 +136,7 @@ static int pnv_smp_cpu_disable(void)
 	 * the generic fixup_irqs. --BenH.
 	 */
 	set_cpu_online(cpu, false);
-#ifdef CONFIG_PPC64_PROC_SYSTEMCFG
-	systemcfg->processorCount--;
-#endif
+	vdso_data->processorCount--;
 	if (cpu == boot_cpuid)
 		boot_cpuid = cpumask_any(cpu_online_mask);
 	if (xive_enabled())
@@ -437,7 +434,7 @@ void __init pnv_smp_init(void)
 	smp_ops = &pnv_smp_ops;
 
 #ifdef CONFIG_HOTPLUG_CPU
-#ifdef CONFIG_CRASH_DUMP
+#ifdef CONFIG_KEXEC_CORE
 	crash_wake_offline = 1;
 #endif
 #endif

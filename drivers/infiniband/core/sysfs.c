@@ -216,12 +216,24 @@ static ssize_t state_show(struct ib_device *ibdev, u32 port_num,
 	struct ib_port_attr attr;
 	ssize_t ret;
 
+	static const char *state_name[] = {
+		[IB_PORT_NOP]		= "NOP",
+		[IB_PORT_DOWN]		= "DOWN",
+		[IB_PORT_INIT]		= "INIT",
+		[IB_PORT_ARMED]		= "ARMED",
+		[IB_PORT_ACTIVE]	= "ACTIVE",
+		[IB_PORT_ACTIVE_DEFER]	= "ACTIVE_DEFER"
+	};
+
 	ret = ib_query_port(ibdev, port_num, &attr);
 	if (ret)
 		return ret;
 
 	return sysfs_emit(buf, "%d: %s\n", attr.state,
-			  ib_port_state_to_str(attr.state));
+			  attr.state >= 0 &&
+					  attr.state < ARRAY_SIZE(state_name) ?
+				  state_name[attr.state] :
+				  "UNKNOWN");
 }
 
 static ssize_t lid_show(struct ib_device *ibdev, u32 port_num,
@@ -292,22 +304,58 @@ static ssize_t cap_mask_show(struct ib_device *ibdev, u32 port_num,
 static ssize_t rate_show(struct ib_device *ibdev, u32 port_num,
 			 struct ib_port_attribute *unused, char *buf)
 {
-	struct ib_port_speed_info speed_info;
 	struct ib_port_attr attr;
+	char *speed = "";
+	int rate;		/* in deci-Gb/sec */
 	ssize_t ret;
 
 	ret = ib_query_port(ibdev, port_num, &attr);
 	if (ret)
 		return ret;
 
-	ret = ib_port_attr_to_speed_info(&attr, &speed_info);
-	if (ret)
-		return ret;
+	switch (attr.active_speed) {
+	case IB_SPEED_DDR:
+		speed = " DDR";
+		rate = 50;
+		break;
+	case IB_SPEED_QDR:
+		speed = " QDR";
+		rate = 100;
+		break;
+	case IB_SPEED_FDR10:
+		speed = " FDR10";
+		rate = 100;
+		break;
+	case IB_SPEED_FDR:
+		speed = " FDR";
+		rate = 140;
+		break;
+	case IB_SPEED_EDR:
+		speed = " EDR";
+		rate = 250;
+		break;
+	case IB_SPEED_HDR:
+		speed = " HDR";
+		rate = 500;
+		break;
+	case IB_SPEED_NDR:
+		speed = " NDR";
+		rate = 1000;
+		break;
+	case IB_SPEED_SDR:
+	default:		/* default to SDR for invalid rates */
+		speed = " SDR";
+		rate = 25;
+		break;
+	}
 
-	return sysfs_emit(buf, "%d%s Gb/sec (%dX%s)\n", speed_info.rate / 10,
-			  speed_info.rate % 10 ? ".5" : "",
-			  ib_width_enum_to_int(attr.active_width),
-			  speed_info.str);
+	rate *= ib_width_enum_to_int(attr.active_width);
+	if (rate < 0)
+		return -EINVAL;
+
+	return sysfs_emit(buf, "%d%s Gb/sec (%dX%s)\n", rate / 10,
+			  rate % 10 ? ".5" : "",
+			  ib_width_enum_to_int(attr.active_width), speed);
 }
 
 static const char *phys_state_to_str(enum ib_port_phys_state phys_state)
@@ -855,7 +903,7 @@ alloc_hw_stats_device(struct ib_device *ibdev)
 	 * Two extra attribue elements here, one for the lifespan entry and
 	 * one to NULL terminate the list for the sysfs core code
 	 */
-	data = kzalloc(struct_size(data, attrs, size_add(stats->num_counters, 1)),
+	data = kzalloc(struct_size(data, attrs, stats->num_counters + 1),
 		       GFP_KERNEL);
 	if (!data)
 		goto err_free_stats;
@@ -936,7 +984,6 @@ int ib_setup_device_attrs(struct ib_device *ibdev)
 	for (i = 0; i != ARRAY_SIZE(ibdev->groups); i++)
 		if (!ibdev->groups[i]) {
 			ibdev->groups[i] = &data->group;
-			ibdev->hw_stats_attr_index = i;
 			return 0;
 		}
 	WARN(true, "struct ib_device->groups is too small");
@@ -962,7 +1009,7 @@ alloc_hw_stats_port(struct ib_port *port, struct attribute_group *group)
 	 * Two extra attribue elements here, one for the lifespan entry and
 	 * one to NULL terminate the list for the sysfs core code
 	 */
-	data = kzalloc(struct_size(data, attrs, size_add(stats->num_counters, 1)),
+	data = kzalloc(struct_size(data, attrs, stats->num_counters + 1),
 		       GFP_KERNEL);
 	if (!data)
 		goto err_free_stats;
@@ -1093,7 +1140,7 @@ static int setup_gid_attrs(struct ib_port *port,
 	int ret;
 
 	gid_attr_group = kzalloc(struct_size(gid_attr_group, attrs_list,
-					     size_mul(attr->gid_tbl_len, 2)),
+					     attr->gid_tbl_len * 2),
 				 GFP_KERNEL);
 	if (!gid_attr_group)
 		return -ENOMEM;
@@ -1158,8 +1205,8 @@ static struct ib_port *setup_port(struct ib_core_device *coredev, int port_num,
 	int ret;
 
 	p = kvzalloc(struct_size(p, attrs_list,
-				size_add(attr->gid_tbl_len, attr->pkey_tbl_len)),
-		     GFP_KERNEL);
+				attr->gid_tbl_len + attr->pkey_tbl_len),
+		    GFP_KERNEL);
 	if (!p)
 		return ERR_PTR(-ENOMEM);
 	p->ibdev = device;

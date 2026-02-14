@@ -7,7 +7,6 @@
  *	Author: Jacek Anaszewski <j.anaszewski@samsung.com>
  */
 
-#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/led-class-flash.h>
@@ -78,6 +77,8 @@ struct aat1290_led {
 	int *mm_current_scale;
 	/* device mode */
 	bool movie_mode;
+	/* brightness cache */
+	unsigned int torch_brightness;
 };
 
 static struct aat1290_led *fled_cdev_to_led(
@@ -216,6 +217,7 @@ static int aat1290_led_parse_dt(struct aat1290_led *led,
 			struct device_node **sub_node)
 {
 	struct device *dev = &led->pdev->dev;
+	struct device_node *child_node;
 #if IS_ENABLED(CONFIG_V4L2_FLASH_LED_CLASS)
 	struct pinctrl *pinctrl;
 #endif
@@ -246,8 +248,7 @@ static int aat1290_led_parse_dt(struct aat1290_led *led,
 	}
 #endif
 
-	struct device_node *child_node __free(device_node) =
-		of_get_next_available_child(dev_of_node(dev), NULL);
+	child_node = of_get_next_available_child(dev_of_node(dev), NULL);
 	if (!child_node) {
 		dev_err(dev, "No DT child node found for connected LED.\n");
 		return -EINVAL;
@@ -268,7 +269,7 @@ static int aat1290_led_parse_dt(struct aat1290_led *led,
 	if (ret < 0) {
 		dev_err(dev,
 			"flash-max-microamp DT property missing\n");
-		return ret;
+		goto err_parse_dt;
 	}
 
 	ret = of_property_read_u32(child_node, "flash-max-timeout-us",
@@ -276,12 +277,15 @@ static int aat1290_led_parse_dt(struct aat1290_led *led,
 	if (ret < 0) {
 		dev_err(dev,
 			"flash-max-timeout-us DT property missing\n");
-		return ret;
+		goto err_parse_dt;
 	}
 
 	*sub_node = child_node;
 
-	return 0;
+err_parse_dt:
+	of_node_put(child_node);
+
+	return ret;
 }
 
 static void aat1290_led_validate_mm_current(struct aat1290_led *led,
@@ -421,7 +425,7 @@ static void aat1290_init_v4l2_flash_config(struct aat1290_led *led,
 	struct led_classdev *led_cdev = &led->fled_cdev.led_cdev;
 	struct led_flash_setting *s;
 
-	strscpy(v4l2_sd_cfg->dev_name, led_cdev->dev->kobj.name,
+	strlcpy(v4l2_sd_cfg->dev_name, led_cdev->dev->kobj.name,
 		sizeof(v4l2_sd_cfg->dev_name));
 
 	s = &v4l2_sd_cfg->intensity;
@@ -518,7 +522,7 @@ err_flash_register:
 	return ret;
 }
 
-static void aat1290_led_remove(struct platform_device *pdev)
+static int aat1290_led_remove(struct platform_device *pdev)
 {
 	struct aat1290_led *led = platform_get_drvdata(pdev);
 
@@ -526,6 +530,8 @@ static void aat1290_led_remove(struct platform_device *pdev)
 	led_classdev_flash_unregister(&led->fled_cdev);
 
 	mutex_destroy(&led->lock);
+
+	return 0;
 }
 
 static const struct of_device_id aat1290_led_dt_match[] = {

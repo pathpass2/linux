@@ -6,7 +6,6 @@
  *
  *  Common directory handling for ADFS
  */
-#include <linux/hex.h>
 #include <linux/slab.h>
 #include "adfs.h"
 

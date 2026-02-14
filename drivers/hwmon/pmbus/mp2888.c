@@ -378,7 +378,7 @@ static int mp2888_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id mp2888_id[] = {
-	{"mp2888"},
+	{"mp2888", 0},
 	{}
 };
 
@@ -395,7 +395,7 @@ static struct i2c_driver mp2888_driver = {
 		.name = "mp2888",
 		.of_match_table = of_match_ptr(mp2888_of_match),
 	},
-	.probe = mp2888_probe,
+	.probe_new = mp2888_probe,
 	.id_table = mp2888_id,
 };
 
@@ -404,4 +404,4 @@ module_i2c_driver(mp2888_driver);
 MODULE_AUTHOR("Vadim Pasternak <vadimp@nvidia.com>");
 MODULE_DESCRIPTION("PMBus driver for MPS MP2888 device");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("PMBUS");
+MODULE_IMPORT_NS(PMBUS);

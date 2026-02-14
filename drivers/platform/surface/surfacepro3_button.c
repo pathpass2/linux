@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/string.h>
 #include <linux/types.h>
 #include <linux/input.h>
 #include <linux/acpi.h>
@@ -190,6 +189,7 @@ static int surface_button_add(struct acpi_device *device)
 	struct surface_button *button;
 	struct input_dev *input;
 	const char *hid = acpi_device_hid(device);
+	char *name;
 	int error;
 
 	if (strncmp(acpi_device_bid(device), SURFACE_BUTTON_OBJ_NAME,
@@ -210,10 +210,11 @@ static int surface_button_add(struct acpi_device *device)
 		goto err_free_button;
 	}
 
-	strscpy(acpi_device_name(device), SURFACE_BUTTON_DEVICE_NAME);
+	name = acpi_device_name(device);
+	strcpy(name, SURFACE_BUTTON_DEVICE_NAME);
 	snprintf(button->phys, sizeof(button->phys), "%s/buttons", hid);
 
-	input->name = acpi_device_name(device);
+	input->name = name;
 	input->phys = button->phys;
 	input->id.bustype = BUS_HOST;
 	input->dev.parent = &device->dev;
@@ -227,8 +228,8 @@ static int surface_button_add(struct acpi_device *device)
 		goto err_free_input;
 
 	device_init_wakeup(&device->dev, true);
-	dev_info(&device->dev, "%s [%s]\n", acpi_device_name(device),
-		 acpi_device_bid(device));
+	dev_info(&device->dev,
+			"%s [%s]\n", name, acpi_device_bid(device));
 	return 0;
 
  err_free_input:

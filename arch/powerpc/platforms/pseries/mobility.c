@@ -24,11 +24,9 @@
 #include <linux/stringify.h>
 
 #include <asm/machdep.h>
-#include <asm/nmi.h>
 #include <asm/rtas.h>
 #include "pseries.h"
 #include "vas.h"	/* vas_migration_handler() */
-#include "papr-hvpipe.h"	/* hvpipe_migration_handler() */
 #include "../../kernel/cacheinfo.h"
 
 static struct kobject *mobility_kobj;
@@ -54,7 +52,7 @@ struct update_props_workarea {
 static unsigned int nmi_wd_lpm_factor = 200;
 
 #ifdef CONFIG_SYSCTL
-static const struct ctl_table nmi_wd_lpm_factor_ctl_table[] = {
+static struct ctl_table nmi_wd_lpm_factor_ctl_table[] = {
 	{
 		.procname	= "nmi_wd_lpm_factor",
 		.data		= &nmi_wd_lpm_factor,
@@ -62,11 +60,20 @@ static const struct ctl_table nmi_wd_lpm_factor_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_douintvec_minmax,
 	},
+	{}
+};
+static struct ctl_table nmi_wd_lpm_factor_sysctl_root[] = {
+	{
+		.procname       = "kernel",
+		.mode           = 0555,
+		.child          = nmi_wd_lpm_factor_ctl_table,
+	},
+	{}
 };
 
 static int __init register_nmi_wd_lpm_factor_sysctl(void)
 {
-	register_sysctl("kernel", nmi_wd_lpm_factor_ctl_table);
+	register_sysctl_table(nmi_wd_lpm_factor_sysctl_root);
 
 	return 0;
 }
@@ -745,14 +752,13 @@ static int pseries_migrate_partition(u64 handle)
 	 * by closing VAS windows at the beginning of this function.
 	 */
 	vas_migration_handler(VAS_SUSPEND);
-	hvpipe_migration_handler(HVPIPE_SUSPEND);
 
 	ret = wait_for_vasi_session_suspending(handle);
 	if (ret)
 		goto out;
 
 	if (factor)
-		watchdog_hardlockup_set_timeout_pct(factor);
+		watchdog_nmi_set_timeout_pct(factor);
 
 	ret = pseries_suspend(handle);
 	if (ret == 0) {
@@ -768,11 +774,10 @@ static int pseries_migrate_partition(u64 handle)
 		pseries_cancel_migration(handle, ret);
 
 	if (factor)
-		watchdog_hardlockup_set_timeout_pct(0);
+		watchdog_nmi_set_timeout_pct(0);
 
 out:
 	vas_migration_handler(VAS_RESUME);
-	hvpipe_migration_handler(HVPIPE_RESUME);
 
 	return ret;
 }
@@ -782,8 +787,8 @@ int rtas_syscall_dispatch_ibm_suspend_me(u64 handle)
 	return pseries_migrate_partition(handle);
 }
 
-static ssize_t migration_store(const struct class *class,
-			       const struct class_attribute *attr, const char *buf,
+static ssize_t migration_store(struct class *class,
+			       struct class_attribute *attr, const char *buf,
 			       size_t count)
 {
 	u64 streamid;

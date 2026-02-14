@@ -12,14 +12,15 @@
 #include <libelf.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <inttypes.h>
+#include <fcntl.h>
 #include <err.h>
-#ifdef HAVE_LIBDW_SUPPORT
+#ifdef HAVE_DWARF_SUPPORT
 #include <dwarf.h>
 #endif
 
 #include "genelf.h"
-#include "sha1.h"
 #include "../util/jitdump.h"
 #include <linux/compiler.h>
 
@@ -27,12 +28,36 @@
 #define NT_GNU_BUILD_ID 3
 #endif
 
+#define BUILD_ID_URANDOM /* different uuid for each run */
+
+#ifdef HAVE_LIBCRYPTO_SUPPORT
+
+#define BUILD_ID_MD5
+#undef BUILD_ID_SHA	/* does not seem to work well when linked with Java */
+#undef BUILD_ID_URANDOM /* different uuid for each run */
+
+#ifdef BUILD_ID_SHA
+#include <openssl/sha.h>
+#endif
+
+#ifdef BUILD_ID_MD5
+#include <openssl/evp.h>
+#include <openssl/md5.h>
+#endif
+#endif
+
+
 typedef struct {
   unsigned int namesz;  /* Size of entry's owner string */
   unsigned int descsz;  /* Size of the note descriptor */
   unsigned int type;    /* Interpretation of the descriptor */
   char         name[0]; /* Start of the name+desc data */
 } Elf_Note;
+
+struct options {
+	char *output;
+	int fd;
+};
 
 static char shd_string_table[] = {
 	0,
@@ -51,7 +76,7 @@ static char shd_string_table[] = {
 static struct buildid_note {
 	Elf_Note desc;		/* descsz: size of build-id, must be multiple of 4 */
 	char	 name[4];	/* GNU\0 */
-	u8	 build_id[SHA1_DIGEST_SIZE];
+	char	 build_id[20];
 } bnote;
 
 static Elf_Sym symtab[]={
@@ -71,6 +96,65 @@ static Elf_Sym symtab[]={
 	  .st_size  = 0, /* for now */
 	}
 };
+
+#ifdef BUILD_ID_URANDOM
+static void
+gen_build_id(struct buildid_note *note,
+	     unsigned long load_addr __maybe_unused,
+	     const void *code __maybe_unused,
+	     size_t csize __maybe_unused)
+{
+	int fd;
+	size_t sz = sizeof(note->build_id);
+	ssize_t sret;
+
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd == -1)
+		err(1, "cannot access /dev/urandom for buildid");
+
+	sret = read(fd, note->build_id, sz);
+
+	close(fd);
+
+	if (sret != (ssize_t)sz)
+		memset(note->build_id, 0, sz);
+}
+#endif
+
+#ifdef BUILD_ID_SHA
+static void
+gen_build_id(struct buildid_note *note,
+	     unsigned long load_addr __maybe_unused,
+	     const void *code,
+	     size_t csize)
+{
+	if (sizeof(note->build_id) < SHA_DIGEST_LENGTH)
+		errx(1, "build_id too small for SHA1");
+
+	SHA1(code, csize, (unsigned char *)note->build_id);
+}
+#endif
+
+#ifdef BUILD_ID_MD5
+static void
+gen_build_id(struct buildid_note *note, unsigned long load_addr, const void *code, size_t csize)
+{
+	EVP_MD_CTX *mdctx;
+
+	if (sizeof(note->build_id) < 16)
+		errx(1, "build_id too small for MD5");
+
+	mdctx = EVP_MD_CTX_new();
+	if (!mdctx)
+		errx(2, "failed to create EVP_MD_CTX");
+
+	EVP_DigestInit_ex(mdctx, EVP_md5(), NULL);
+	EVP_DigestUpdate(mdctx, &load_addr, sizeof(load_addr));
+	EVP_DigestUpdate(mdctx, code, csize);
+	EVP_DigestFinal_ex(mdctx, (unsigned char *)note->build_id, NULL);
+	EVP_MD_CTX_free(mdctx);
+}
+#endif
 
 static int
 jit_add_eh_frame_info(Elf *e, void* unwinding, uint64_t unwinding_header_size,
@@ -160,7 +244,7 @@ jit_add_eh_frame_info(Elf *e, void* unwinding, uint64_t unwinding_header_size,
  * csize: the code size in bytes
  */
 int
-jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
+jit_write_elf(int fd, uint64_t load_addr, const char *sym,
 	      const void *code, int csize,
 	      void *debug __maybe_unused, int nr_debug_entries __maybe_unused,
 	      void *unwinding, uint64_t unwinding_header_size, uint64_t unwinding_size)
@@ -173,8 +257,6 @@ jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
 	Elf_Shdr *shdr;
 	uint64_t eh_frame_base_offset;
 	char *strsym = NULL;
-	void *build_id_data = NULL, *tmp;
-	int build_id_data_len;
 	int symlen;
 	int retval = -1;
 
@@ -211,9 +293,9 @@ jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
 	 */
 	phdr = elf_newphdr(e, 1);
 	phdr[0].p_type = PT_LOAD;
-	phdr[0].p_offset = GEN_ELF_TEXT_OFFSET;
-	phdr[0].p_vaddr = GEN_ELF_TEXT_OFFSET;
-	phdr[0].p_paddr = GEN_ELF_TEXT_OFFSET;
+	phdr[0].p_offset = 0;
+	phdr[0].p_vaddr = 0;
+	phdr[0].p_paddr = 0;
 	phdr[0].p_filesz = csize;
 	phdr[0].p_memsz = csize;
 	phdr[0].p_flags = PF_X | PF_R;
@@ -252,14 +334,6 @@ jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
 	shdr->sh_addr = GEN_ELF_TEXT_OFFSET;
 	shdr->sh_flags = SHF_EXECINSTR | SHF_ALLOC;
 	shdr->sh_entsize = 0;
-
-	build_id_data = malloc(csize);
-	if (build_id_data == NULL) {
-		warnx("cannot allocate build-id data");
-		goto error;
-	}
-	memcpy(build_id_data, code, csize);
-	build_id_data_len = csize;
 
 	/*
 	 * Setup .eh_frame_hdr and .eh_frame
@@ -344,15 +418,6 @@ jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
 	shdr->sh_entsize = sizeof(Elf_Sym);
 	shdr->sh_link = unwinding ? 6 : 4; /* index of .strtab section */
 
-	tmp = realloc(build_id_data, build_id_data_len + sizeof(symtab));
-	if (tmp == NULL) {
-		warnx("cannot allocate build-id data");
-		goto error;
-	}
-	memcpy(tmp + build_id_data_len, symtab, sizeof(symtab));
-	build_id_data = tmp;
-	build_id_data_len += sizeof(symtab);
-
 	/*
 	 * setup symbols string table
 	 * 2 = 1 for 0 in 1st entry, 1 for the 0 at end of symbol for 2nd entry
@@ -395,15 +460,6 @@ jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
 	shdr->sh_flags = 0;
 	shdr->sh_entsize = 0;
 
-	tmp = realloc(build_id_data, build_id_data_len + symlen);
-	if (tmp == NULL) {
-		warnx("cannot allocate build-id data");
-		goto error;
-	}
-	memcpy(tmp + build_id_data_len, strsym, symlen);
-	build_id_data = tmp;
-	build_id_data_len += symlen;
-
 	/*
 	 * setup build-id section
 	 */
@@ -422,7 +478,7 @@ jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
 	/*
 	 * build-id generation
 	 */
-	sha1(build_id_data, build_id_data_len, bnote.build_id);
+	gen_build_id(&bnote, load_addr, code, csize);
 	bnote.desc.namesz = sizeof(bnote.name); /* must include 0 termination */
 	bnote.desc.descsz = sizeof(bnote.build_id);
 	bnote.desc.type   = NT_GNU_BUILD_ID;
@@ -448,7 +504,7 @@ jit_write_elf(int fd, uint64_t load_addr __maybe_unused, const char *sym,
 	shdr->sh_size = sizeof(bnote);
 	shdr->sh_entsize = 0;
 
-#ifdef HAVE_LIBDW_SUPPORT
+#ifdef HAVE_DWARF_SUPPORT
 	if (debug && nr_debug_entries) {
 		retval = jit_add_debug_info(e, load_addr, debug, nr_debug_entries);
 		if (retval)
@@ -467,7 +523,7 @@ error:
 	(void)elf_end(e);
 
 	free(strsym);
-	free(build_id_data);
+
 
 	return retval;
 }

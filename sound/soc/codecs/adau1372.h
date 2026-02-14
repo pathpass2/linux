@@ -13,7 +13,6 @@
 
 struct device;
 
-extern const struct of_device_id adau1372_of_match[];
 int adau1372_probe(struct device *dev, struct regmap *regmap,
 		   void (*switch_mode)(struct device *dev));
 

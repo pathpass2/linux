@@ -41,9 +41,7 @@ enum smk_inos {
 	SMK_AMBIENT	= 7,	/* internet ambient label */
 	SMK_NET4ADDR	= 8,	/* single label hosts */
 	SMK_ONLYCAP	= 9,	/* the only "capable" label */
-#ifdef CONFIG_AUDIT
 	SMK_LOGGING	= 10,	/* logging */
-#endif /* CONFIG_AUDIT */
 	SMK_LOAD_SELF	= 11,	/* task specific rules */
 	SMK_ACCESSES	= 12,	/* access policy */
 	SMK_MAPPED	= 13,	/* CIPSO level indicating mapped label */
@@ -70,7 +68,6 @@ enum smk_inos {
 static DEFINE_MUTEX(smack_cipso_lock);
 static DEFINE_MUTEX(smack_ambient_lock);
 static DEFINE_MUTEX(smk_net4addr_lock);
-static DEFINE_MUTEX(smk_cipso_doi_lock);
 #if IS_ENABLED(CONFIG_IPV6)
 static DEFINE_MUTEX(smk_net6addr_lock);
 #endif /* CONFIG_IPV6 */
@@ -117,7 +114,7 @@ struct smack_known *smack_syslog_label;
  * SMACK_PTRACE_DEFAULT    regular smack ptrace rules (/proc based)
  * SMACK_PTRACE_EXACT      labels must match, but can be overriden with
  *			   CAP_SYS_PTRACE
- * SMACK_PTRACE_DRACONIAN  labels must match, CAP_SYS_PTRACE has no effect
+ * SMACK_PTRACE_DRACONIAN  lables must match, CAP_SYS_PTRACE has no effect
  */
 int smack_ptrace_rule = SMACK_PTRACE_DEFAULT;
 
@@ -142,7 +139,7 @@ struct smack_parsed_rule {
 	int			smk_access2;
 };
 
-static u32 smk_cipso_doi_value = CIPSO_V4_DOI_UNKNOWN;
+static int smk_cipso_doi_value = SMACK_CIPSO_DOI_DEFAULT;
 
 /*
  * Values for parsing cipso rules
@@ -168,7 +165,7 @@ static u32 smk_cipso_doi_value = CIPSO_V4_DOI_UNKNOWN;
 #define SMK_LOADLEN	(SMK_LABELLEN + SMK_LABELLEN + SMK_ACCESSLEN)
 
 /*
- * Strictly for CIPSO level manipulation.
+ * Stricly for CIPSO level manipulation.
  * Set the category bit number in a smack label sized buffer.
  */
 static inline void smack_catset_bit(unsigned int cat, char *catsetp)
@@ -185,9 +182,11 @@ static inline void smack_catset_bit(unsigned int cat, char *catsetp)
  */
 static void smk_netlabel_audit_set(struct netlbl_audit *nap)
 {
+	struct smack_known *skp = smk_of_current();
+
 	nap->loginuid = audit_get_loginuid(current);
 	nap->sessionid = audit_get_sessionid(current);
-	nap->prop.smack.skp = smk_of_current();
+	nap->secid = skp->smk_secid;
 }
 
 /*
@@ -565,7 +564,6 @@ static void smk_seq_stop(struct seq_file *s, void *v)
 
 static void smk_rule_show(struct seq_file *s, struct smack_rule *srp, int max)
 {
-	char acc[SMK_NUM_ACCESS_TYPE + 1];
 	/*
 	 * Don't show any rules with label names too long for
 	 * interface file (/smack/load or /smack/load2)
@@ -579,11 +577,28 @@ static void smk_rule_show(struct seq_file *s, struct smack_rule *srp, int max)
 	if (srp->smk_access == 0)
 		return;
 
-	smack_str_from_perm(acc, srp->smk_access);
-	seq_printf(s, "%s %s %s\n",
+	seq_printf(s, "%s %s",
 		   srp->smk_subject->smk_known,
-		   srp->smk_object->smk_known,
-		   acc);
+		   srp->smk_object->smk_known);
+
+	seq_putc(s, ' ');
+
+	if (srp->smk_access & MAY_READ)
+		seq_putc(s, 'r');
+	if (srp->smk_access & MAY_WRITE)
+		seq_putc(s, 'w');
+	if (srp->smk_access & MAY_EXEC)
+		seq_putc(s, 'x');
+	if (srp->smk_access & MAY_APPEND)
+		seq_putc(s, 'a');
+	if (srp->smk_access & MAY_TRANSMUTE)
+		seq_putc(s, 't');
+	if (srp->smk_access & MAY_LOCK)
+		seq_putc(s, 'l');
+	if (srp->smk_access & MAY_BRINGUP)
+		seq_putc(s, 'b');
+
+	seq_putc(s, '\n');
 }
 
 /*
@@ -664,60 +679,43 @@ static const struct file_operations smk_load_ops = {
 };
 
 /**
- * smk_cipso_doi - set netlabel maps
- * @ndoi: new value for our CIPSO DOI
- * @gfp_flags: kmalloc allocation context
+ * smk_cipso_doi - initialize the CIPSO domain
  */
-static int
-smk_cipso_doi(u32 ndoi, gfp_t gfp_flags)
+static void smk_cipso_doi(void)
 {
-	int rc = 0;
+	int rc;
 	struct cipso_v4_doi *doip;
 	struct netlbl_audit nai;
 
-	mutex_lock(&smk_cipso_doi_lock);
-
-	if (smk_cipso_doi_value == ndoi)
-		goto clr_doi_lock;
-
 	smk_netlabel_audit_set(&nai);
 
-	doip = kmalloc(sizeof(struct cipso_v4_doi), gfp_flags);
-	if (!doip) {
-		rc = -ENOMEM;
-		goto clr_doi_lock;
-	}
+	rc = netlbl_cfg_map_del(NULL, PF_INET, NULL, NULL, &nai);
+	if (rc != 0)
+		printk(KERN_WARNING "%s:%d remove rc = %d\n",
+		       __func__, __LINE__, rc);
+
+	doip = kmalloc(sizeof(struct cipso_v4_doi), GFP_KERNEL | __GFP_NOFAIL);
 	doip->map.std = NULL;
-	doip->doi = ndoi;
+	doip->doi = smk_cipso_doi_value;
 	doip->type = CIPSO_V4_MAP_PASS;
 	doip->tags[0] = CIPSO_V4_TAG_RBITMAP;
 	for (rc = 1; rc < CIPSO_V4_TAG_MAXCNT; rc++)
 		doip->tags[rc] = CIPSO_V4_TAG_INVALID;
 
 	rc = netlbl_cfg_cipsov4_add(doip, &nai);
-	if (rc) {
+	if (rc != 0) {
+		printk(KERN_WARNING "%s:%d cipso add rc = %d\n",
+		       __func__, __LINE__, rc);
 		kfree(doip);
-		goto clr_doi_lock;
+		return;
 	}
-
-	if (smk_cipso_doi_value != CIPSO_V4_DOI_UNKNOWN) {
-		rc = netlbl_cfg_map_del(NULL, PF_INET, NULL, NULL, &nai);
-		if (rc && rc != -ENOENT)
-			goto clr_ndoi_def;
-
-		netlbl_cfg_cipsov4_del(smk_cipso_doi_value, &nai);
+	rc = netlbl_cfg_cipsov4_map_add(doip->doi, NULL, NULL, NULL, &nai);
+	if (rc != 0) {
+		printk(KERN_WARNING "%s:%d map add rc = %d\n",
+		       __func__, __LINE__, rc);
+		netlbl_cfg_cipsov4_del(doip->doi, &nai);
+		return;
 	}
-
-	rc = netlbl_cfg_cipsov4_map_add(ndoi, NULL, NULL, NULL, &nai);
-	if (rc) {
-		smk_cipso_doi_value = CIPSO_V4_DOI_UNKNOWN; // no default map
-clr_ndoi_def:	netlbl_cfg_cipsov4_del(ndoi, &nai);
-	} else
-		smk_cipso_doi_value = ndoi;
-
-clr_doi_lock:
-	mutex_unlock(&smk_cipso_doi_lock);
-	return rc;
 }
 
 /**
@@ -832,7 +830,7 @@ static int smk_open_cipso(struct inode *inode, struct file *file)
 static ssize_t smk_set_cipso(struct file *file, const char __user *buf,
 				size_t count, loff_t *ppos, int format)
 {
-	struct netlbl_lsm_catmap *old_cat;
+	struct netlbl_lsm_catmap *old_cat, *new_cat = NULL;
 	struct smack_known *skp;
 	struct netlbl_lsm_secattr ncats;
 	char mapcatset[SMK_CIPSOLEN];
@@ -898,7 +896,7 @@ static ssize_t smk_set_cipso(struct file *file, const char __user *buf,
 	}
 
 	ret = sscanf(rule, "%d", &catlen);
-	if (ret != 1 || catlen < 0 || catlen > SMACK_CIPSO_MAXCATNUM)
+	if (ret != 1 || catlen > SMACK_CIPSO_MAXCATNUM)
 		goto out;
 
 	if (format == SMK_FIXED24_FMT &&
@@ -919,15 +917,22 @@ static ssize_t smk_set_cipso(struct file *file, const char __user *buf,
 
 		smack_catset_bit(cat, mapcatset);
 	}
-
-	rc = smk_netlbl_mls(maplevel, mapcatset, &ncats, SMK_CIPSOLEN);
+	ncats.flags = 0;
+	if (catlen == 0) {
+		ncats.attr.mls.cat = NULL;
+		ncats.attr.mls.lvl = maplevel;
+		new_cat = netlbl_catmap_alloc(GFP_ATOMIC);
+		if (new_cat)
+			new_cat->next = ncats.attr.mls.cat;
+		ncats.attr.mls.cat = new_cat;
+		skp->smk_netlabel.flags &= ~(1U << 3);
+		rc = 0;
+	} else {
+		rc = smk_netlbl_mls(maplevel, mapcatset, &ncats, SMK_CIPSOLEN);
+	}
 	if (rc >= 0) {
 		old_cat = skp->smk_netlabel.attr.mls.cat;
-		rcu_assign_pointer(skp->smk_netlabel.attr.mls.cat, ncats.attr.mls.cat);
-		if (ncats.attr.mls.cat)
-			skp->smk_netlabel.flags |= NETLBL_SECATTR_MLS_CAT;
-		else
-			skp->smk_netlabel.flags &= ~(u32)NETLBL_SECATTR_MLS_CAT;
+		skp->smk_netlabel.attr.mls.cat = ncats.attr.mls.cat;
 		skp->smk_netlabel.attr.mls.lvl = ncats.attr.mls.lvl;
 		synchronize_rcu();
 		netlbl_catmap_free(old_cat);
@@ -1095,12 +1100,13 @@ static int smk_open_net4addr(struct inode *inode, struct file *file)
 }
 
 /**
- * smk_net4addr_insert - insert a new entry into the net4addrs list
+ * smk_net4addr_insert
  * @new : netlabel to insert
  *
- * This helper inserts netlabel in the smack_net4addrs list
+ * This helper insert netlabel in the smack_net4addrs list
  * sorted by netmask length (longest to smallest)
- * locked by &smk_net4addr_lock in smk_write_net4addr.
+ * locked by &smk_net4addr_lock in smk_write_net4addr
+ *
  */
 static void smk_net4addr_insert(struct smk_net4addr *new)
 {
@@ -1357,12 +1363,13 @@ static int smk_open_net6addr(struct inode *inode, struct file *file)
 }
 
 /**
- * smk_net6addr_insert - insert a new entry into the net6addrs list
+ * smk_net6addr_insert
  * @new : entry to insert
  *
  * This inserts an entry in the smack_net6addrs list
  * sorted by netmask length (longest to smallest)
- * locked by &smk_net6addr_lock in smk_write_net6addr.
+ * locked by &smk_net6addr_lock in smk_write_net6addr
+ *
  */
 static void smk_net6addr_insert(struct smk_net6addr *new)
 {
@@ -1580,7 +1587,7 @@ static ssize_t smk_read_doi(struct file *filp, char __user *buf,
 	if (*ppos != 0)
 		return 0;
 
-	sprintf(temp, "%lu", (unsigned long)smk_cipso_doi_value);
+	sprintf(temp, "%d", smk_cipso_doi_value);
 	rc = simple_read_from_buffer(buf, count, ppos, temp, strlen(temp));
 
 	return rc;
@@ -1599,7 +1606,7 @@ static ssize_t smk_write_doi(struct file *file, const char __user *buf,
 			     size_t count, loff_t *ppos)
 {
 	char temp[80];
-	unsigned long u;
+	int i;
 
 	if (!smack_privileged(CAP_MAC_ADMIN))
 		return -EPERM;
@@ -1612,13 +1619,14 @@ static ssize_t smk_write_doi(struct file *file, const char __user *buf,
 
 	temp[count] = '\0';
 
-	if (kstrtoul(temp, 10, &u))
+	if (sscanf(temp, "%d", &i) != 1)
 		return -EINVAL;
 
-	if (u == CIPSO_V4_DOI_UNKNOWN || u > U32_MAX)
-		return -EINVAL;
+	smk_cipso_doi_value = i;
 
-	return smk_cipso_doi(u, GFP_KERNEL) ? : count;
+	smk_cipso_doi();
+
+	return count;
 }
 
 static const struct file_operations smk_doi_ops = {
@@ -2143,7 +2151,6 @@ static const struct file_operations smk_unconfined_ops = {
 };
 #endif /* CONFIG_SECURITY_SMACK_BRINGUP */
 
-#ifdef CONFIG_AUDIT
 /**
  * smk_read_logging - read() for /smack/logging
  * @filp: file pointer, not actually used
@@ -2208,7 +2215,6 @@ static const struct file_operations smk_logging_ops = {
 	.write		= smk_write_logging,
 	.llseek		= default_llseek,
 };
-#endif /* CONFIG_AUDIT */
 
 /*
  * Seq_file read operations for /smack/load-self
@@ -2895,10 +2901,8 @@ static int smk_fill_super(struct super_block *sb, struct fs_context *fc)
 			"netlabel", &smk_net4addr_ops, S_IRUGO|S_IWUSR},
 		[SMK_ONLYCAP] = {
 			"onlycap", &smk_onlycap_ops, S_IRUGO|S_IWUSR},
-#ifdef CONFIG_AUDIT
 		[SMK_LOGGING] = {
 			"logging", &smk_logging_ops, S_IRUGO|S_IWUSR},
-#endif /* CONFIG_AUDIT */
 		[SMK_LOAD_SELF] = {
 			"load-self", &smk_load_self_ops, S_IRUGO|S_IWUGO},
 		[SMK_ACCESSES] = {
@@ -2977,7 +2981,7 @@ static int smk_init_fs_context(struct fs_context *fc)
 static struct file_system_type smk_fs_type = {
 	.name		= "smackfs",
 	.init_fs_context = smk_init_fs_context,
-	.kill_sb	= kill_anon_super,
+	.kill_sb	= kill_litter_super,
 };
 
 static struct vfsmount *smackfs_mount;
@@ -2995,11 +2999,10 @@ static struct vfsmount *smackfs_mount;
  * Returns true if we were not chosen on boot or if
  * we were chosen and filesystem registration succeeded.
  */
-int __init init_smk_fs(void)
+static int __init init_smk_fs(void)
 {
 	int err;
 	int rc;
-	struct netlbl_audit nai;
 
 	if (smack_enabled == 0)
 		return 0;
@@ -3018,10 +3021,7 @@ int __init init_smk_fs(void)
 		}
 	}
 
-	smk_netlabel_audit_set(&nai);
-	(void) netlbl_cfg_map_del(NULL, PF_INET, NULL, NULL, &nai);
-	(void) smk_cipso_doi(SMACK_CIPSO_DOI_DEFAULT,
-			     GFP_KERNEL | __GFP_NOFAIL);
+	smk_cipso_doi();
 	smk_unlbl_ambient(NULL);
 
 	rc = smack_populate_secattr(&smack_known_floor);
@@ -3042,3 +3042,5 @@ int __init init_smk_fs(void)
 
 	return err;
 }
+
+__initcall(init_smk_fs);

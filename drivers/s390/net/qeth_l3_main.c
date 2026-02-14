@@ -7,9 +7,9 @@
  *		 Frank Blaschka <frank.blaschka@de.ibm.com>
  */
 
-#define pr_fmt(fmt) "qeth: " fmt
+#define KMSG_COMPONENT "qeth"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/bitops.h>
@@ -255,10 +255,9 @@ static void qeth_l3_clear_ip_htable(struct qeth_card *card, int recover)
 		if (!recover) {
 			hash_del(&addr->hnode);
 			kfree(addr);
-		} else {
-			/* prepare for recovery */
-			addr->disp_flag = QETH_DISP_ADDR_ADD;
+			continue;
 		}
+		addr->disp_flag = QETH_DISP_ADDR_ADD;
 	}
 
 	mutex_unlock(&card->ip_lock);
@@ -279,11 +278,9 @@ static void qeth_l3_recover_ip(struct qeth_card *card)
 		if (addr->disp_flag == QETH_DISP_ADDR_ADD) {
 			rc = qeth_l3_register_addr_entry(card, addr);
 
-			if (!rc || rc == -EADDRINUSE || rc == -ENETDOWN) {
-				/* keep it in the records */
+			if (!rc) {
 				addr->disp_flag = QETH_DISP_ADDR_DO_NOTHING;
 			} else {
-				/* bad address */
 				hash_del(&addr->hnode);
 				kfree(addr);
 			}
@@ -2021,11 +2018,9 @@ static int qeth_l3_set_online(struct qeth_card *card, bool carrier_ok)
 		netif_device_attach(dev);
 		qeth_enable_hw_features(dev);
 
-		if (netif_running(dev)) {
-			local_bh_disable();
-			napi_schedule(&card->napi);
-			/* kick-start the NAPI softirq: */
-			local_bh_enable();
+		if (card->info.open_when_online) {
+			card->info.open_when_online = 0;
+			dev_open(dev, NULL);
 		}
 		rtnl_unlock();
 	}

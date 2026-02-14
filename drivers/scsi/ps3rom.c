@@ -61,8 +61,7 @@ enum lv1_atapi_in_out {
 };
 
 
-static int ps3rom_sdev_configure(struct scsi_device *scsi_dev,
-				 struct queue_limits *lim)
+static int ps3rom_slave_configure(struct scsi_device *scsi_dev)
 {
 	struct ps3rom_private *priv = shost_priv(scsi_dev->host);
 	struct ps3_storage_device *dev = priv->dev;
@@ -201,7 +200,7 @@ static int ps3rom_write_request(struct ps3_storage_device *dev,
 	return 0;
 }
 
-static enum scsi_qc_status ps3rom_queuecommand_lck(struct scsi_cmnd *cmd)
+static int ps3rom_queuecommand_lck(struct scsi_cmnd *cmd)
 {
 	struct ps3rom_private *priv = shost_priv(cmd->device->host);
 	struct ps3_storage_device *dev = priv->dev;
@@ -324,9 +323,9 @@ done:
 	return IRQ_HANDLED;
 }
 
-static const struct scsi_host_template ps3rom_host_template = {
+static struct scsi_host_template ps3rom_host_template = {
 	.name =			DEVICE_NAME,
-	.sdev_configure =	ps3rom_sdev_configure,
+	.slave_configure =	ps3rom_slave_configure,
 	.queuecommand =		ps3rom_queuecommand,
 	.can_queue =		1,
 	.this_id =		7,

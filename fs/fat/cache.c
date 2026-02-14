@@ -29,6 +29,11 @@ struct fat_cache_id {
 	int dcluster;
 };
 
+static inline int fat_max_cache(struct inode *inode)
+{
+	return FAT_MAX_CACHE;
+}
+
 static struct kmem_cache *fat_cache_cachep;
 
 static void init_once(void *foo)
@@ -42,7 +47,7 @@ int __init fat_cache_init(void)
 {
 	fat_cache_cachep = kmem_cache_create("fat_cache",
 				sizeof(struct fat_cache),
-				0, SLAB_RECLAIM_ACCOUNT,
+				0, SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD,
 				init_once);
 	if (fat_cache_cachep == NULL)
 		return -ENOMEM;
@@ -54,7 +59,7 @@ void fat_cache_destroy(void)
 	kmem_cache_destroy(fat_cache_cachep);
 }
 
-static inline struct fat_cache *fat_cache_alloc(void)
+static inline struct fat_cache *fat_cache_alloc(struct inode *inode)
 {
 	return kmem_cache_alloc(fat_cache_cachep, GFP_NOFS);
 }
@@ -140,11 +145,11 @@ static void fat_cache_add(struct inode *inode, struct fat_cache_id *new)
 
 	cache = fat_cache_merge(inode, new);
 	if (cache == NULL) {
-		if (MSDOS_I(inode)->nr_caches < FAT_MAX_CACHE) {
+		if (MSDOS_I(inode)->nr_caches < fat_max_cache(inode)) {
 			MSDOS_I(inode)->nr_caches++;
 			spin_unlock(&MSDOS_I(inode)->cache_lru_lock);
 
-			tmp = fat_cache_alloc();
+			tmp = fat_cache_alloc(inode);
 			if (!tmp) {
 				spin_lock(&MSDOS_I(inode)->cache_lru_lock);
 				MSDOS_I(inode)->nr_caches--;

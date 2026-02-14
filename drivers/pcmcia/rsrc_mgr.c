@@ -66,6 +66,5 @@ EXPORT_SYMBOL(pccard_static_ops);
 
 
 MODULE_AUTHOR("David A. Hinds, Dominik Brodowski");
-MODULE_DESCRIPTION("PCMCIA resource management routines");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("rsrc_nonstatic");

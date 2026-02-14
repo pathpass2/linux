@@ -2,7 +2,7 @@
 /*
  *  cx18 firmware functions
  *
- *  Copyright (C) 2007  Hans Verkuil <hverkuil@kernel.org>
+ *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  */
 
 int cx18_firmware_init(struct cx18 *cx);

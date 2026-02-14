@@ -64,24 +64,18 @@ struct dpu_vsync_source_cfg {
 	u32 pp_count;
 	u32 frame_rate;
 	u32 ppnumber[PINGPONG_MAX];
-	enum dpu_vsync_source vsync_source;
-};
-
-enum dpu_dp_phy_sel {
-	DPU_DP_PHY_NONE,
-	DPU_DP_PHY_0,
-	DPU_DP_PHY_1,
-	DPU_DP_PHY_2,
+	u32 vsync_source;
 };
 
 /**
  * struct dpu_hw_mdp_ops - interface to the MDP TOP Hw driver functions
  * Assumption is these functions will be called after clocks are enabled.
+ * @setup_split_pipe : Programs the pipe control registers
+ * @setup_pp_split : Programs the pp split control registers
+ * @setup_traffic_shaper : programs traffic shaper control
  */
 struct dpu_hw_mdp_ops {
-	/**
-	 * @setup_split_pipe : Programs the pipe control registers.
-	 * Registers are not double buffered, this
+	/** setup_split_pipe() : Registers are not double buffered, thisk
 	 * function should be called before timing control enable
 	 * @mdp  : mdp top context driver
 	 * @cfg  : upper and lower part of pipe configuration
@@ -90,7 +84,7 @@ struct dpu_hw_mdp_ops {
 			struct split_pipe_cfg *p);
 
 	/**
-	 * @setup_traffic_shaper : programs traffic shaper control.
+	 * setup_traffic_shaper() : Setup traffic shaper control
 	 * @mdp  : mdp top context driver
 	 * @cfg  : traffic shaper configuration
 	 */
@@ -98,7 +92,7 @@ struct dpu_hw_mdp_ops {
 			struct traffic_shaper_cfg *cfg);
 
 	/**
-	 * @setup_clk_force_ctrl: set clock force control
+	 * setup_clk_force_ctrl - set clock force control
 	 * @mdp: mdp top context driver
 	 * @clk_ctrl: clock to be controlled
 	 * @enable: force on enable
@@ -108,7 +102,7 @@ struct dpu_hw_mdp_ops {
 			enum dpu_clk_ctrl_type clk_ctrl, bool enable);
 
 	/**
-	 * @get_danger_status: get danger status
+	 * get_danger_status - get danger status
 	 * @mdp: mdp top context driver
 	 * @status: Pointer to danger safe status
 	 */
@@ -116,7 +110,7 @@ struct dpu_hw_mdp_ops {
 			struct dpu_danger_safe_status *status);
 
 	/**
-	 * @setup_vsync_source: setup vsync source configuration details
+	 * setup_vsync_source - setup vsync source configuration details
 	 * @mdp: mdp top context driver
 	 * @cfg: vsync source selection configuration
 	 */
@@ -124,7 +118,7 @@ struct dpu_hw_mdp_ops {
 				struct dpu_vsync_source_cfg *cfg);
 
 	/**
-	 * @get_safe_status: get safe status
+	 * get_safe_status - get safe status
 	 * @mdp: mdp top context driver
 	 * @status: Pointer to danger safe status
 	 */
@@ -132,14 +126,7 @@ struct dpu_hw_mdp_ops {
 			struct dpu_danger_safe_status *status);
 
 	/**
-	 * @dp_phy_intf_sel: configure intf to phy mapping
-	 * @mdp: mdp top context driver
-	 * @phys: list of phys the DP interfaces should be connected to. 0 disables the INTF.
-	 */
-	void (*dp_phy_intf_sel)(struct dpu_hw_mdp *mdp, enum dpu_dp_phy_sel phys[2]);
-
-	/**
-	 * @intf_audio_select: select the external interface for audio
+	 * intf_audio_select - select the external interface for audio
 	 * @mdp: mdp top context driver
 	 */
 	void (*intf_audio_select)(struct dpu_hw_mdp *mdp);
@@ -150,15 +137,23 @@ struct dpu_hw_mdp {
 	struct dpu_hw_blk_reg_map hw;
 
 	/* top */
+	enum dpu_mdp idx;
 	const struct dpu_mdp_cfg *caps;
 
 	/* ops */
 	struct dpu_hw_mdp_ops ops;
 };
 
-struct dpu_hw_mdp *dpu_hw_mdptop_init(struct drm_device *dev,
-				      const struct dpu_mdp_cfg *cfg,
-				      void __iomem *addr,
-				      const struct dpu_mdss_version *mdss_rev);
+/**
+ * dpu_hw_mdptop_init - initializes the top driver for the passed idx
+ * @idx:  Interface index for which driver object is required
+ * @addr: Mapped register io address of MDP
+ * @m:    Pointer to mdss catalog data
+ */
+struct dpu_hw_mdp *dpu_hw_mdptop_init(enum dpu_mdp idx,
+		void __iomem *addr,
+		const struct dpu_mdss_cfg *m);
+
+void dpu_hw_mdp_destroy(struct dpu_hw_mdp *mdp);
 
 #endif /*_DPU_HW_TOP_H */

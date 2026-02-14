@@ -169,12 +169,13 @@ static int hdc2010_read_raw(struct iio_dev *indio_dev,
 			*val = hdc2010_get_heater_status(data);
 			return IIO_VAL_INT;
 		}
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		mutex_lock(&data->lock);
 		ret = hdc2010_get_prim_measurement_word(data, chan);
 		mutex_unlock(&data->lock);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		if (ret < 0)
 			return ret;
 		*val = ret;
@@ -183,12 +184,13 @@ static int hdc2010_read_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_PEAK: {
 		int ret;
 
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		mutex_lock(&data->lock);
 		ret = hdc2010_get_peak_measurement_byte(data, chan);
 		mutex_unlock(&data->lock);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		if (ret < 0)
 			return ret;
 		/* Scaling up the value so we can use same offset as RAW */
@@ -336,7 +338,7 @@ static struct i2c_driver hdc2010_driver = {
 		.name	= "hdc2010",
 		.of_match_table = hdc2010_dt_ids,
 	},
-	.probe = hdc2010_probe,
+	.probe_new = hdc2010_probe,
 	.remove = hdc2010_remove,
 	.id_table = hdc2010_id,
 };

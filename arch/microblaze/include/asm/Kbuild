@@ -8,4 +8,3 @@ generic-y += parport.h
 generic-y += syscalls.h
 generic-y += tlb.h
 generic-y += user.h
-generic-y += text-patching.h

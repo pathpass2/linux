@@ -2,7 +2,7 @@
 /*
  * This file contains functions which manage clock event devices.
  *
- * Copyright(C) 2005-2006, Linutronix GmbH, Thomas Gleixner <tglx@kernel.org>
+ * Copyright(C) 2005-2006, Thomas Gleixner <tglx@linutronix.de>
  * Copyright(C) 2005-2007, Red Hat, Inc., Ingo Molnar
  * Copyright(C) 2006-2007, Timesys Corp., Thomas Gleixner
  */
@@ -190,7 +190,7 @@ int clockevents_tick_resume(struct clock_event_device *dev)
 
 #ifdef CONFIG_GENERIC_CLOCKEVENTS_MIN_ADJUST
 
-/* Limit min_delta to a jiffy */
+/* Limit min_delta to a jiffie */
 #define MIN_DELTA_LIMIT		(NSEC_PER_SEC / HZ)
 
 /**
@@ -337,21 +337,13 @@ int clockevents_program_event(struct clock_event_device *dev, ktime_t expires,
 }
 
 /*
- * Called after a clockevent has been added which might
- * have replaced a current regular or broadcast device. A
- * released normal device might be a suitable replacement
- * for the current broadcast device. Similarly a released
- * broadcast device might be a suitable replacement for a
- * normal device.
+ * Called after a notify add to make devices available which were
+ * released from the notifier call.
  */
 static void clockevents_notify_released(void)
 {
 	struct clock_event_device *dev;
 
-	/*
-	 * Keep iterating as long as tick_check_new_device()
-	 * replaces a device.
-	 */
 	while (!list_empty(&clockevents_released)) {
 		dev = list_entry(clockevents_released.next,
 				 struct clock_event_device, list);
@@ -618,30 +610,39 @@ void clockevents_resume(void)
 
 #ifdef CONFIG_HOTPLUG_CPU
 
+# ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
 /**
- * tick_offline_cpu - Shutdown all clock events related
- *                    to this CPU and take it out of the
- *                    broadcast mechanism.
+ * tick_offline_cpu - Take CPU out of the broadcast mechanism
  * @cpu:	The outgoing CPU
  *
- * Called by the dying CPU during teardown.
+ * Called on the outgoing CPU after it took itself offline.
  */
 void tick_offline_cpu(unsigned int cpu)
 {
-	struct clock_event_device *dev, *tmp;
-
 	raw_spin_lock(&clockevents_lock);
-
 	tick_broadcast_offline(cpu);
-	tick_shutdown();
+	raw_spin_unlock(&clockevents_lock);
+}
+# endif
 
+/**
+ * tick_cleanup_dead_cpu - Cleanup the tick and clockevents of a dead cpu
+ * @cpu:	The dead CPU
+ */
+void tick_cleanup_dead_cpu(int cpu)
+{
+	struct clock_event_device *dev, *tmp;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&clockevents_lock, flags);
+
+	tick_shutdown(cpu);
 	/*
 	 * Unregister the clock event devices which were
-	 * released above.
+	 * released from the users in the notify chain.
 	 */
 	list_for_each_entry_safe(dev, tmp, &clockevents_released, list)
 		list_del(&dev->list);
-
 	/*
 	 * Now check whether the CPU has left unused per cpu devices
 	 */
@@ -653,13 +654,12 @@ void tick_offline_cpu(unsigned int cpu)
 			list_del(&dev->list);
 		}
 	}
-
-	raw_spin_unlock(&clockevents_lock);
+	raw_spin_unlock_irqrestore(&clockevents_lock, flags);
 }
 #endif
 
 #ifdef CONFIG_SYSFS
-static const struct bus_type clockevents_subsys = {
+static struct bus_type clockevents_subsys = {
 	.name		= "clockevents",
 	.dev_name       = "clockevent",
 };
@@ -677,7 +677,7 @@ static ssize_t current_device_show(struct device *dev,
 	raw_spin_lock_irq(&clockevents_lock);
 	td = tick_get_tick_dev(dev);
 	if (td && td->evtdev)
-		count = sysfs_emit(buf, "%s\n", td->evtdev->name);
+		count = snprintf(buf, PAGE_SIZE, "%s\n", td->evtdev->name);
 	raw_spin_unlock_irq(&clockevents_lock);
 	return count;
 }

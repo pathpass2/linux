@@ -10,7 +10,7 @@
 
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -28,6 +28,8 @@ struct panel_lvds {
 	struct device *dev;
 
 	const char *label;
+	unsigned int width;
+	unsigned int height;
 	struct drm_display_mode dmode;
 	u32 bus_flags;
 	unsigned int bus_format;
@@ -162,11 +164,9 @@ static int panel_lvds_probe(struct platform_device *pdev)
 	struct panel_lvds *lvds;
 	int ret;
 
-	lvds = devm_drm_panel_alloc(&pdev->dev, struct panel_lvds, panel,
-				    &panel_lvds_funcs,
-				    DRM_MODE_CONNECTOR_LVDS);
-	if (IS_ERR(lvds))
-		return PTR_ERR(lvds);
+	lvds = devm_kzalloc(&pdev->dev, sizeof(*lvds), GFP_KERNEL);
+	if (!lvds)
+		return -ENOMEM;
 
 	lvds->dev = &pdev->dev;
 
@@ -214,6 +214,10 @@ static int panel_lvds_probe(struct platform_device *pdev)
 	 * driver.
 	 */
 
+	/* Register the panel. */
+	drm_panel_init(&lvds->panel, lvds->dev, &panel_lvds_funcs,
+		       DRM_MODE_CONNECTOR_LVDS);
+
 	ret = drm_panel_of_backlight(&lvds->panel);
 	if (ret)
 		return ret;
@@ -224,13 +228,15 @@ static int panel_lvds_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void panel_lvds_remove(struct platform_device *pdev)
+static int panel_lvds_remove(struct platform_device *pdev)
 {
 	struct panel_lvds *lvds = platform_get_drvdata(pdev);
 
 	drm_panel_remove(&lvds->panel);
 
 	drm_panel_disable(&lvds->panel);
+
+	return 0;
 }
 
 static const struct of_device_id panel_lvds_of_table[] = {

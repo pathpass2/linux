@@ -188,7 +188,7 @@ static const struct regmap_config rt1316_sdw_regmap = {
 	.max_register = 0x4108ffff,
 	.reg_defaults = rt1316_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(rt1316_reg_defaults),
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.use_single_read = true,
 	.use_single_write = true,
 };
@@ -272,16 +272,25 @@ static int rt1316_io_init(struct device *dev, struct sdw_slave *slave)
 	if (rt1316->hw_init)
 		return 0;
 
-	regcache_cache_only(rt1316->regmap, false);
 	if (rt1316->first_hw_init) {
+		regcache_cache_only(rt1316->regmap, false);
 		regcache_cache_bypass(rt1316->regmap, true);
 	} else {
 		/*
-		 *  PM runtime status is marked as 'active' only when a Slave reports as Attached
+		 * PM runtime is only enabled when a Slave reports as Attached
 		 */
+
+		/* set autosuspend parameters */
+		pm_runtime_set_autosuspend_delay(&slave->dev, 3000);
+		pm_runtime_use_autosuspend(&slave->dev);
 
 		/* update count of parent 'active' children */
 		pm_runtime_set_active(&slave->dev);
+
+		/* make sure the device does not suspend immediately */
+		pm_runtime_mark_last_busy(&slave->dev);
+
+		pm_runtime_enable(&slave->dev);
 	}
 
 	pm_runtime_get_noresume(&slave->dev);
@@ -302,6 +311,7 @@ static int rt1316_io_init(struct device *dev, struct sdw_slave *slave)
 	/* Mark Slave initialization complete */
 	rt1316->hw_init = true;
 
+	pm_runtime_mark_last_busy(&slave->dev);
 	pm_runtime_put_autosuspend(&slave->dev);
 
 	dev_dbg(&slave->dev, "%s hw_init complete\n", __func__);
@@ -313,6 +323,9 @@ static int rt1316_update_status(struct sdw_slave *slave,
 {
 	struct  rt1316_sdw_priv *rt1316 = dev_get_drvdata(&slave->dev);
 
+	/* Update the status */
+	rt1316->status = status;
+
 	if (status == SDW_SLAVE_UNATTACHED)
 		rt1316->hw_init = false;
 
@@ -320,7 +333,7 @@ static int rt1316_update_status(struct sdw_slave *slave,
 	 * Perform initialization only if slave status is present and
 	 * hw_init flag is false
 	 */
-	if (rt1316->hw_init || status != SDW_SLAVE_ATTACHED)
+	if (rt1316->hw_init || rt1316->status != SDW_SLAVE_ATTACHED)
 		return 0;
 
 	/* perform I/O transfers required for Slave initialization */
@@ -414,15 +427,6 @@ static SOC_ENUM_SINGLE_DECL(rt1316_rx_data_ch_enum,
 	SDW_SDCA_CTL(FUNC_NUM_SMART_AMP, RT1316_SDCA_ENT_UDMPU21, RT1316_SDCA_CTL_UDMPU_CLUSTER, 0), 0,
 	rt1316_rx_data_ch_select);
 
-static const char * const rt1316_dac_output_vol_select[] = {
-	"immediately",
-	"zero crossing",
-	"zero crossing with soft ramp",
-};
-
-static SOC_ENUM_SINGLE_DECL(rt1316_dac_vol_ctl_enum,
-	0xc010, 6, rt1316_dac_output_vol_select);
-
 static const struct snd_kcontrol_new rt1316_snd_controls[] = {
 
 	/* I2S Data Channel Selection */
@@ -441,9 +445,6 @@ static const struct snd_kcontrol_new rt1316_snd_controls[] = {
 	/* IV mixer Control */
 	SOC_DOUBLE("Isense Mixer Switch", 0xc605, 2, 0, 1, 1),
 	SOC_DOUBLE("Vsense Mixer Switch", 0xc605, 3, 1, 1, 1),
-
-	/* DAC Output Volume Control */
-	SOC_ENUM("DAC Output Vol Control", rt1316_dac_vol_ctl_enum),
 };
 
 static const struct snd_kcontrol_new rt1316_sto_dac =
@@ -493,7 +494,19 @@ static const struct snd_soc_dapm_route rt1316_dapm_routes[] = {
 static int rt1316_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 				int direction)
 {
-	snd_soc_dai_dma_data_set(dai, direction, sdw_stream);
+	struct sdw_stream_data *stream;
+
+	if (!sdw_stream)
+		return 0;
+
+	stream = kzalloc(sizeof(*stream), GFP_KERNEL);
+	if (!stream)
+		return -ENOMEM;
+
+	stream->sdw_stream = sdw_stream;
+
+	/* Use tx_mask or rx_mask to configure stream tag and set dma_data */
+	snd_soc_dai_dma_data_set(dai, direction, stream);
 
 	return 0;
 }
@@ -501,7 +514,11 @@ static int rt1316_set_sdw_stream(struct snd_soc_dai *dai, void *sdw_stream,
 static void rt1316_sdw_shutdown(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *dai)
 {
+	struct sdw_stream_data *stream;
+
+	stream = snd_soc_dai_get_dma_data(dai, substream);
 	snd_soc_dai_set_dma_data(dai, substream, NULL);
+	kfree(stream);
 }
 
 static int rt1316_sdw_hw_params(struct snd_pcm_substream *substream,
@@ -512,13 +529,13 @@ static int rt1316_sdw_hw_params(struct snd_pcm_substream *substream,
 		snd_soc_component_get_drvdata(component);
 	struct sdw_stream_config stream_config = {0};
 	struct sdw_port_config port_config = {0};
-	struct sdw_stream_runtime *sdw_stream;
+	struct sdw_stream_data *stream;
 	int retval;
 
 	dev_dbg(dai->dev, "%s %s", __func__, dai->name);
-	sdw_stream = snd_soc_dai_get_dma_data(dai, substream);
+	stream = snd_soc_dai_get_dma_data(dai, substream);
 
-	if (!sdw_stream)
+	if (!stream)
 		return -EINVAL;
 
 	if (!rt1316->sdw_slave)
@@ -534,9 +551,9 @@ static int rt1316_sdw_hw_params(struct snd_pcm_substream *substream,
 		port_config.num = 2;
 
 	retval = sdw_stream_add_slave(rt1316->sdw_slave, &stream_config,
-				&port_config, 1, sdw_stream);
+				&port_config, 1, stream->sdw_stream);
 	if (retval) {
-		dev_err(dai->dev, "%s: Unable to configure port\n", __func__);
+		dev_err(dai->dev, "Unable to configure port\n");
 		return retval;
 	}
 
@@ -549,13 +566,13 @@ static int rt1316_sdw_pcm_hw_free(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct rt1316_sdw_priv *rt1316 =
 		snd_soc_component_get_drvdata(component);
-	struct sdw_stream_runtime *sdw_stream =
+	struct sdw_stream_data *stream =
 		snd_soc_dai_get_dma_data(dai, substream);
 
 	if (!rt1316->sdw_slave)
 		return -EINVAL;
 
-	sdw_stream_remove_slave(rt1316->sdw_slave, sdw_stream);
+	sdw_stream_remove_slave(rt1316->sdw_slave, stream->sdw_stream);
 	return 0;
 }
 
@@ -576,12 +593,12 @@ static int rt1316_sdw_parse_dt(struct rt1316_sdw_priv *rt1316, struct device *de
 	if (rt1316->bq_params_cnt) {
 		rt1316->bq_params = devm_kzalloc(dev, rt1316->bq_params_cnt, GFP_KERNEL);
 		if (!rt1316->bq_params) {
-			dev_err(dev, "%s: Could not allocate bq_params memory\n", __func__);
+			dev_err(dev, "Could not allocate bq_params memory\n");
 			ret = -ENOMEM;
 		} else {
 			ret = device_property_read_u8_array(dev, "realtek,bq-params", rt1316->bq_params, rt1316->bq_params_cnt);
 			if (ret < 0)
-				dev_err(dev, "%s: Could not read list of realtek,bq-params\n", __func__);
+				dev_err(dev, "Could not read list of realtek,bq-params\n");
 		}
 	}
 
@@ -596,9 +613,6 @@ static int rt1316_sdw_component_probe(struct snd_soc_component *component)
 
 	rt1316->component = component;
 	rt1316_sdw_parse_dt(rt1316, &rt1316->sdw_slave->dev);
-
-	if (!rt1316->first_hw_init)
-		return 0;
 
 	ret = pm_runtime_resume(component->dev);
 	if (ret < 0 && ret != -EACCES)
@@ -667,8 +681,6 @@ static int rt1316_sdw_init(struct device *dev, struct regmap *regmap,
 	rt1316->sdw_slave = slave;
 	rt1316->regmap = regmap;
 
-	regcache_cache_only(rt1316->regmap, true);
-
 	/*
 	 * Mark hw_init to false
 	 * HW init will be performed when device reports present
@@ -680,27 +692,10 @@ static int rt1316_sdw_init(struct device *dev, struct regmap *regmap,
 				&soc_component_sdw_rt1316,
 				rt1316_sdw_dai,
 				ARRAY_SIZE(rt1316_sdw_dai));
-	if (ret < 0)
-		return ret;
 
-	/* set autosuspend parameters */
-	pm_runtime_set_autosuspend_delay(dev, 3000);
-	pm_runtime_use_autosuspend(dev);
+	dev_dbg(&slave->dev, "%s\n", __func__);
 
-	/* make sure the device does not suspend immediately */
-	pm_runtime_mark_last_busy(dev);
-
-	pm_runtime_enable(dev);
-
-	/* important note: the device is NOT tagged as 'active' and will remain
-	 * 'suspended' until the hardware is enumerated/initialized. This is required
-	 * to make sure the ASoC framework use of pm_runtime_get_sync() does not silently
-	 * fail with -EACCESS because of race conditions between card creation and enumeration
-	 */
-
-	dev_dbg(dev, "%s\n", __func__);
-
-	return 0;
+	return ret;
 }
 
 static int rt1316_sdw_probe(struct sdw_slave *slave,
@@ -718,7 +713,10 @@ static int rt1316_sdw_probe(struct sdw_slave *slave,
 
 static int rt1316_sdw_remove(struct sdw_slave *slave)
 {
-	pm_runtime_disable(&slave->dev);
+	struct rt1316_sdw_priv *rt1316 = dev_get_drvdata(&slave->dev);
+
+	if (rt1316->first_hw_init)
+		pm_runtime_disable(&slave->dev);
 
 	return 0;
 }
@@ -729,7 +727,7 @@ static const struct sdw_device_id rt1316_id[] = {
 };
 MODULE_DEVICE_TABLE(sdw, rt1316_id);
 
-static int rt1316_dev_suspend(struct device *dev)
+static int __maybe_unused rt1316_dev_suspend(struct device *dev)
 {
 	struct rt1316_sdw_priv *rt1316 = dev_get_drvdata(dev);
 
@@ -743,7 +741,7 @@ static int rt1316_dev_suspend(struct device *dev)
 
 #define RT1316_PROBE_TIMEOUT 5000
 
-static int rt1316_dev_resume(struct device *dev)
+static int __maybe_unused rt1316_dev_resume(struct device *dev)
 {
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
 	struct rt1316_sdw_priv *rt1316 = dev_get_drvdata(dev);
@@ -758,7 +756,7 @@ static int rt1316_dev_resume(struct device *dev)
 	time = wait_for_completion_timeout(&slave->initialization_complete,
 				msecs_to_jiffies(RT1316_PROBE_TIMEOUT));
 	if (!time) {
-		dev_err(&slave->dev, "%s: Initialization not complete, timed out\n", __func__);
+		dev_err(&slave->dev, "Initialization not complete, timed out\n");
 		sdw_show_ping_status(slave->bus, true);
 
 		return -ETIMEDOUT;
@@ -773,14 +771,15 @@ regmap_sync:
 }
 
 static const struct dev_pm_ops rt1316_pm = {
-	SYSTEM_SLEEP_PM_OPS(rt1316_dev_suspend, rt1316_dev_resume)
-	RUNTIME_PM_OPS(rt1316_dev_suspend, rt1316_dev_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(rt1316_dev_suspend, rt1316_dev_resume)
+	SET_RUNTIME_PM_OPS(rt1316_dev_suspend, rt1316_dev_resume, NULL)
 };
 
 static struct sdw_driver rt1316_sdw_driver = {
 	.driver = {
 		.name = "rt1316-sdca",
-		.pm = pm_ptr(&rt1316_pm),
+		.owner = THIS_MODULE,
+		.pm = &rt1316_pm,
 	},
 	.probe = rt1316_sdw_probe,
 	.remove = rt1316_sdw_remove,

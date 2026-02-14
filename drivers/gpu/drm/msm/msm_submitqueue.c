@@ -7,7 +7,8 @@
 
 #include "msm_gpu.h"
 
-int msm_context_set_sysprof(struct msm_context *ctx, struct msm_gpu *gpu, int sysprof)
+int msm_file_private_set_sysprof(struct msm_file_private *ctx,
+				 struct msm_gpu *gpu, int sysprof)
 {
 	/*
 	 * Since pm_runtime and sysprof_active are both refcounts, we
@@ -17,7 +18,7 @@ int msm_context_set_sysprof(struct msm_context *ctx, struct msm_gpu *gpu, int sy
 
 	switch (sysprof) {
 	default:
-		return UERR(EINVAL, gpu->dev, "Invalid sysprof: %d", sysprof);
+		return -EINVAL;
 	case 2:
 		pm_runtime_get_sync(&gpu->pdev->dev);
 		fallthrough;
@@ -40,19 +41,15 @@ int msm_context_set_sysprof(struct msm_context *ctx, struct msm_gpu *gpu, int sy
 		break;
 	}
 
-	/* Some gpu families require additional setup for sysprof */
-	if (gpu->funcs->sysprof_setup)
-		gpu->funcs->sysprof_setup(gpu);
-
 	ctx->sysprof = sysprof;
 
 	return 0;
 }
 
-void __msm_context_destroy(struct kref *kref)
+void __msm_file_private_destroy(struct kref *kref)
 {
-	struct msm_context *ctx = container_of(kref,
-		struct msm_context, ref);
+	struct msm_file_private *ctx = container_of(kref,
+		struct msm_file_private, ref);
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(ctx->entities); i++) {
@@ -63,7 +60,7 @@ void __msm_context_destroy(struct kref *kref)
 		kfree(ctx->entities[i]);
 	}
 
-	drm_gpuvm_put(ctx->vm);
+	msm_gem_address_space_put(ctx->aspace);
 	kfree(ctx->comm);
 	kfree(ctx->cmdline);
 	kfree(ctx);
@@ -76,15 +73,12 @@ void msm_submitqueue_destroy(struct kref *kref)
 
 	idr_destroy(&queue->fence_idr);
 
-	if (queue->entity == &queue->_vm_bind_entity[0])
-		drm_sched_entity_destroy(queue->entity);
-
-	msm_context_put(queue->ctx);
+	msm_file_private_put(queue->ctx);
 
 	kfree(queue);
 }
 
-struct msm_gpu_submitqueue *msm_submitqueue_get(struct msm_context *ctx,
+struct msm_gpu_submitqueue *msm_submitqueue_get(struct msm_file_private *ctx,
 		u32 id)
 {
 	struct msm_gpu_submitqueue *entry;
@@ -107,9 +101,9 @@ struct msm_gpu_submitqueue *msm_submitqueue_get(struct msm_context *ctx,
 	return NULL;
 }
 
-void msm_submitqueue_close(struct msm_context *ctx)
+void msm_submitqueue_close(struct msm_file_private *ctx)
 {
-	struct msm_gpu_submitqueue *queue, *tmp;
+	struct msm_gpu_submitqueue *entry, *tmp;
 
 	if (!ctx)
 		return;
@@ -118,21 +112,14 @@ void msm_submitqueue_close(struct msm_context *ctx)
 	 * No lock needed in close and there won't
 	 * be any more user ioctls coming our way
 	 */
-	list_for_each_entry_safe(queue, tmp, &ctx->submitqueues, node) {
-		if (queue->entity == &queue->_vm_bind_entity[0])
-			drm_sched_entity_flush(queue->entity, MAX_WAIT_SCHED_ENTITY_Q_EMPTY);
-		list_del(&queue->node);
-		msm_submitqueue_put(queue);
+	list_for_each_entry_safe(entry, tmp, &ctx->submitqueues, node) {
+		list_del(&entry->node);
+		msm_submitqueue_put(entry);
 	}
-
-	if (!ctx->vm)
-		return;
-
-	msm_gem_vm_close(ctx->vm);
 }
 
 static struct drm_sched_entity *
-get_sched_entity(struct msm_context *ctx, struct msm_ringbuffer *ring,
+get_sched_entity(struct msm_file_private *ctx, struct msm_ringbuffer *ring,
 		 unsigned ring_nr, enum drm_sched_priority sched_prio)
 {
 	static DEFINE_MUTEX(entity_lock);
@@ -168,7 +155,7 @@ get_sched_entity(struct msm_context *ctx, struct msm_ringbuffer *ring,
 	return ctx->entities[idx];
 }
 
-int msm_submitqueue_create(struct drm_device *drm, struct msm_context *ctx,
+int msm_submitqueue_create(struct drm_device *drm, struct msm_file_private *ctx,
 		u32 prio, u32 flags, u32 *id)
 {
 	struct msm_drm_private *priv = drm->dev_private;
@@ -183,53 +170,21 @@ int msm_submitqueue_create(struct drm_device *drm, struct msm_context *ctx,
 	if (!priv->gpu)
 		return -ENODEV;
 
-	if (flags & MSM_SUBMITQUEUE_VM_BIND) {
-		unsigned sz;
+	ret = msm_gpu_convert_priority(priv->gpu, prio, &ring_nr, &sched_prio);
+	if (ret)
+		return ret;
 
-		/* Not allowed for kernel managed VMs (ie. kernel allocs VA) */
-		if (!msm_context_is_vmbind(ctx))
-			return -EINVAL;
-
-		if (prio)
-			return -EINVAL;
-
-		sz = struct_size(queue, _vm_bind_entity, 1);
-		queue = kzalloc(sz, GFP_KERNEL);
-	} else {
-		extern int enable_preemption;
-		bool preemption_supported =
-			priv->gpu->nr_rings == 1 && enable_preemption != 0;
-
-		if (flags & MSM_SUBMITQUEUE_ALLOW_PREEMPT && preemption_supported)
-			return -EINVAL;
-
-		ret = msm_gpu_convert_priority(priv->gpu, prio, &ring_nr, &sched_prio);
-		if (ret)
-			return ret;
-
-		queue = kzalloc(sizeof(*queue), GFP_KERNEL);
-	}
+	queue = kzalloc(sizeof(*queue), GFP_KERNEL);
 
 	if (!queue)
 		return -ENOMEM;
 
 	kref_init(&queue->ref);
 	queue->flags = flags;
+	queue->ring_nr = ring_nr;
 
-	if (flags & MSM_SUBMITQUEUE_VM_BIND) {
-		struct drm_gpu_scheduler *sched = &to_msm_vm(msm_context_vm(drm, ctx))->sched;
-
-		queue->entity = &queue->_vm_bind_entity[0];
-
-		drm_sched_entity_init(queue->entity, DRM_SCHED_PRIORITY_KERNEL,
-				      &sched, 1, NULL);
-	} else {
-		queue->ring_nr = ring_nr;
-
-		queue->entity = get_sched_entity(ctx, priv->gpu->rb[ring_nr],
-						 ring_nr, sched_prio);
-	}
-
+	queue->entity = get_sched_entity(ctx, priv->gpu->rb[ring_nr],
+					 ring_nr, sched_prio);
 	if (IS_ERR(queue->entity)) {
 		ret = PTR_ERR(queue->entity);
 		kfree(queue);
@@ -238,14 +193,14 @@ int msm_submitqueue_create(struct drm_device *drm, struct msm_context *ctx,
 
 	write_lock(&ctx->queuelock);
 
-	queue->ctx = msm_context_get(ctx);
+	queue->ctx = msm_file_private_get(ctx);
 	queue->id = ctx->queueid++;
 
 	if (id)
 		*id = queue->id;
 
 	idr_init(&queue->fence_idr);
-	spin_lock_init(&queue->idr_lock);
+	mutex_init(&queue->idr_lock);
 	mutex_init(&queue->lock);
 
 	list_add_tail(&queue->node, &ctx->submitqueues);
@@ -259,7 +214,7 @@ int msm_submitqueue_create(struct drm_device *drm, struct msm_context *ctx,
  * Create the default submit-queue (id==0), used for backwards compatibility
  * for userspace that pre-dates the introduction of submitqueues.
  */
-int msm_submitqueue_init(struct drm_device *drm, struct msm_context *ctx)
+int msm_submitqueue_init(struct drm_device *drm, struct msm_file_private *ctx)
 {
 	struct msm_drm_private *priv = drm->dev_private;
 	int default_prio, max_priority;
@@ -299,7 +254,7 @@ static int msm_submitqueue_query_faults(struct msm_gpu_submitqueue *queue,
 	return ret ? -EFAULT : 0;
 }
 
-int msm_submitqueue_query(struct drm_device *drm, struct msm_context *ctx,
+int msm_submitqueue_query(struct drm_device *drm, struct msm_file_private *ctx,
 		struct drm_msm_submitqueue_query *args)
 {
 	struct msm_gpu_submitqueue *queue;
@@ -320,7 +275,7 @@ int msm_submitqueue_query(struct drm_device *drm, struct msm_context *ctx,
 	return ret;
 }
 
-int msm_submitqueue_remove(struct msm_context *ctx, u32 id)
+int msm_submitqueue_remove(struct msm_file_private *ctx, u32 id)
 {
 	struct msm_gpu_submitqueue *entry;
 

@@ -5,7 +5,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
-#include "bpf_misc.h"
 
 #include <errno.h>
 
@@ -22,6 +21,10 @@ bool skip = false;
 #define BADPTR			((void *)0xFFFFFFFFFFFFF000ULL)
 #else
 #define BADPTR			0
+#endif
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(x)	(sizeof(x) / sizeof((x)[0]))
 #endif
 
 struct {
@@ -50,6 +53,7 @@ static int __strncmp(const void *m1, const void *m2, size_t len)
 	do {								\
 		static const char _expectedval[EXPECTED_STRSIZE] =	\
 							_expected;	\
+		static const char _ptrtype[64] = #_type;		\
 		__u64 _hflags = _flags | BTF_F_COMPACT;			\
 		static _type _ptrdata = __VA_ARGS__;			\
 		static struct btf_ptr _ptr = { };			\

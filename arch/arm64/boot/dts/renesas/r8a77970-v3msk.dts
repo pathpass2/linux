@@ -117,7 +117,8 @@
 			     "ethernet-phy-ieee802.3-c22";
 		rxc-skew-ps = <1500>;
 		reg = <0>;
-		interrupts-extended = <&gpio1 17 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <17 IRQ_TYPE_LEVEL_LOW>;
 		reset-gpios = <&gpio1 16 GPIO_ACTIVE_LOW>;
 	};
 };
@@ -144,10 +145,12 @@
 	status = "okay";
 	clock-frequency = <400000>;
 
-	hdmi@39 {
+	hdmi@39{
 		compatible = "adi,adv7511w";
+		#sound-dai-cells = <0>;
 		reg = <0x39>;
-		interrupts-extended = <&gpio1 20 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <20 IRQ_TYPE_LEVEL_LOW>;
 		avdd-supply = <&vcc_d1_8v>;
 		dvdd-supply = <&vcc_d1_8v>;
 		pvdd-supply = <&vcc_d1_8v>;
@@ -255,7 +258,7 @@
 				reg = <0x00040000 0x080000>;
 				read-only;
 			};
-			cert-header-sa3@c0000 {
+			cert_header_sa3@c0000 {
 				reg = <0x000c0000 0x080000>;
 				read-only;
 			};
@@ -263,7 +266,7 @@
 				reg = <0x00140000 0x040000>;
 				read-only;
 			};
-			cert-header-sa6@180000 {
+			cert_header_sa6@180000 {
 				reg = <0x00180000 0x040000>;
 				read-only;
 			};
@@ -292,20 +295,9 @@
 	};
 };
 
-&rwdt {
-	timeout-sec = <60>;
-	status = "okay";
-};
-
 &scif0 {
 	pinctrl-0 = <&scif0_pins>;
 	pinctrl-names = "default";
-	bootph-all;
 
 	status = "okay";
-};
-
-/* Firmware should reserve it but sadly doesn't */
-&swdt {
-	status = "reserved";
 };

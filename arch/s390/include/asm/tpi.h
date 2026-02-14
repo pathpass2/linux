@@ -5,7 +5,7 @@
 #include <linux/types.h>
 #include <uapi/asm/schid.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /* I/O-Interruption Code as stored by TEST PENDING INTERRUPTION (TPI). */
 struct tpi_info {
@@ -32,6 +32,6 @@ struct tpi_adapter_info {
 	u32 :27;
 } __packed __aligned(4);
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_S390_TPI_H */

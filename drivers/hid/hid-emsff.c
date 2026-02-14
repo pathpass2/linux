@@ -144,6 +144,5 @@ static struct hid_driver ems_driver = {
 };
 module_hid_driver(ems_driver);
 
-MODULE_DESCRIPTION("Force feedback support for EMS Trio Linker Plus II");
 MODULE_LICENSE("GPL");
 

@@ -51,9 +51,7 @@ static secno hpfs_bmap(struct inode *inode, unsigned file_secno, unsigned *n_sec
 		return hpfs_inode->i_disk_sec + n;
 	}
 	if (!(fnode = hpfs_map_fnode(inode->i_sb, inode->i_ino, &bh))) return 0;
-	disk_secno = hpfs_bplus_lookup(inode->i_sb, inode,
-				       GET_BTREE_PTR(&fnode->btree),
-				       file_secno, bh);
+	disk_secno = hpfs_bplus_lookup(inode->i_sb, inode, &fnode->btree, file_secno, bh);
 	if (disk_secno == -1) return 0;
 	if (hpfs_chk_sectors(inode->i_sb, disk_secno, 1, "bmap")) return 0;
 	n = file_secno - hpfs_inode->i_file_sec;
@@ -190,14 +188,14 @@ static void hpfs_write_failed(struct address_space *mapping, loff_t to)
 	hpfs_unlock(inode->i_sb);
 }
 
-static int hpfs_write_begin(const struct kiocb *iocb,
-			    struct address_space *mapping,
-			    loff_t pos, unsigned len,
-			    struct folio **foliop, void **fsdata)
+static int hpfs_write_begin(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len,
+			struct page **pagep, void **fsdata)
 {
 	int ret;
 
-	ret = cont_write_begin(iocb, mapping, pos, len, foliop, fsdata,
+	*pagep = NULL;
+	ret = cont_write_begin(file, mapping, pos, len, pagep, fsdata,
 				hpfs_get_block,
 				&hpfs_i(mapping->host)->mmu_private);
 	if (unlikely(ret))
@@ -206,14 +204,13 @@ static int hpfs_write_begin(const struct kiocb *iocb,
 	return ret;
 }
 
-static int hpfs_write_end(const struct kiocb *iocb,
-			  struct address_space *mapping,
-			  loff_t pos, unsigned len, unsigned copied,
-			  struct folio *folio, void *fsdata)
+static int hpfs_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *pagep, void *fsdata)
 {
 	struct inode *inode = mapping->host;
 	int err;
-	err = generic_write_end(iocb, mapping, pos, len, copied, folio, fsdata);
+	err = generic_write_end(file, mapping, pos, len, copied, pagep, fsdata);
 	if (err < len)
 		hpfs_write_failed(mapping, pos + len);
 	if (!(err < 0)) {
@@ -259,10 +256,10 @@ const struct file_operations hpfs_file_ops =
 	.llseek		= generic_file_llseek,
 	.read_iter	= generic_file_read_iter,
 	.write_iter	= generic_file_write_iter,
-	.mmap_prepare	= generic_file_mmap_prepare,
+	.mmap		= generic_file_mmap,
 	.release	= hpfs_file_release,
 	.fsync		= hpfs_file_fsync,
-	.splice_read	= filemap_splice_read,
+	.splice_read	= generic_file_splice_read,
 	.unlocked_ioctl	= hpfs_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
 };

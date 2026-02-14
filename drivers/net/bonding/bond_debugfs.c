@@ -49,6 +49,9 @@ DEFINE_SHOW_ATTRIBUTE(bond_debug_rlb_hash);
 
 void bond_debug_register(struct bonding *bond)
 {
+	if (!bonding_debug_root)
+		return;
+
 	bond->debug_dir =
 		debugfs_create_dir(bond->dev->name, bonding_debug_root);
 
@@ -58,23 +61,34 @@ void bond_debug_register(struct bonding *bond)
 
 void bond_debug_unregister(struct bonding *bond)
 {
+	if (!bonding_debug_root)
+		return;
+
 	debugfs_remove_recursive(bond->debug_dir);
 }
 
 void bond_debug_reregister(struct bonding *bond)
 {
-	int err = debugfs_change_name(bond->debug_dir, "%s", bond->dev->name);
-	if (err) {
+	struct dentry *d;
+
+	if (!bonding_debug_root)
+		return;
+
+	d = debugfs_rename(bonding_debug_root, bond->debug_dir,
+			   bonding_debug_root, bond->dev->name);
+	if (!IS_ERR(d)) {
+		bond->debug_dir = d;
+	} else {
 		netdev_warn(bond->dev, "failed to reregister, so just unregister old one\n");
 		bond_debug_unregister(bond);
 	}
 }
 
-void __init bond_create_debugfs(void)
+void bond_create_debugfs(void)
 {
 	bonding_debug_root = debugfs_create_dir("bonding", NULL);
 
-	if (IS_ERR(bonding_debug_root))
+	if (!bonding_debug_root)
 		pr_warn("Warning: Cannot create bonding directory in debugfs\n");
 }
 
@@ -99,7 +113,7 @@ void bond_debug_reregister(struct bonding *bond)
 {
 }
 
-void __init bond_create_debugfs(void)
+void bond_create_debugfs(void)
 {
 }
 

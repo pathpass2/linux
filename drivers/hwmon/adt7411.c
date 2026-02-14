@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/err.h>
+#include <linux/mutex.h>
 #include <linux/jiffies.h>
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
@@ -98,6 +99,8 @@ static const u8 adt7411_in_alarm_bits[] = {
 };
 
 struct adt7411_data {
+	struct mutex device_lock;	/* for "atomic" device accesses */
+	struct mutex update_lock;
 	unsigned long next_update;
 	long vref_cached;
 	struct i2c_client *client;
@@ -107,41 +110,55 @@ struct adt7411_data {
 /*
  * When reading a register containing (up to 4) lsb, all associated
  * msb-registers get locked by the hardware. After _one_ of those msb is read,
- * _all_ are unlocked.
+ * _all_ are unlocked. In order to use this locking correctly, reading lsb/msb
+ * is protected here with a mutex, too.
  */
 static int adt7411_read_10_bit(struct i2c_client *client, u8 lsb_reg,
-			       u8 msb_reg, u8 lsb_shift)
+				u8 msb_reg, u8 lsb_shift)
 {
+	struct adt7411_data *data = i2c_get_clientdata(client);
 	int val, tmp;
+
+	mutex_lock(&data->device_lock);
 
 	val = i2c_smbus_read_byte_data(client, lsb_reg);
 	if (val < 0)
-		return val;
+		goto exit_unlock;
 
 	tmp = (val >> lsb_shift) & 3;
 	val = i2c_smbus_read_byte_data(client, msb_reg);
-	if (val < 0)
-		return val;
 
-	val = (val << 2) | tmp;
+	if (val >= 0)
+		val = (val << 2) | tmp;
+
+ exit_unlock:
+	mutex_unlock(&data->device_lock);
+
 	return val;
 }
 
 static int adt7411_modify_bit(struct i2c_client *client, u8 reg, u8 bit,
-			      bool flag)
+				bool flag)
 {
+	struct adt7411_data *data = i2c_get_clientdata(client);
 	int ret, val;
+
+	mutex_lock(&data->device_lock);
 
 	ret = i2c_smbus_read_byte_data(client, reg);
 	if (ret < 0)
-		return ret;
+		goto exit_unlock;
 
 	if (flag)
 		val = ret | bit;
 	else
 		val = ret & ~bit;
 
-	return i2c_smbus_write_byte_data(client, reg, val);
+	ret = i2c_smbus_write_byte_data(client, reg, val);
+
+ exit_unlock:
+	mutex_unlock(&data->device_lock);
+	return ret;
 }
 
 static ssize_t adt7411_show_bit(struct device *dev,
@@ -169,11 +186,12 @@ static ssize_t adt7411_set_bit(struct device *dev,
 	if (ret || flag > 1)
 		return -EINVAL;
 
-	hwmon_lock(dev);
 	ret = adt7411_modify_bit(client, s_attr2->index, s_attr2->nr, flag);
+
 	/* force update */
+	mutex_lock(&data->update_lock);
 	data->next_update = jiffies;
-	hwmon_unlock(dev);
+	mutex_unlock(&data->update_lock);
 
 	return ret < 0 ? ret : count;
 }
@@ -276,9 +294,10 @@ static int adt7411_read_in_chan(struct device *dev, u32 attr, int channel,
 	int reg, lsb_reg, lsb_shift;
 	int nr = channel - 1;
 
+	mutex_lock(&data->update_lock);
 	ret = adt7411_update_vref(dev);
 	if (ret < 0)
-		return ret;
+		goto exit_unlock;
 
 	switch (attr) {
 	case hwmon_in_input:
@@ -288,7 +307,7 @@ static int adt7411_read_in_chan(struct device *dev, u32 attr, int channel,
 					  ADT7411_REG_EXT_TEMP_AIN1_MSB + nr,
 					  lsb_shift);
 		if (ret < 0)
-			return ret;
+			goto exit_unlock;
 		*val = ret * data->vref_cached / 1024;
 		ret = 0;
 		break;
@@ -299,7 +318,7 @@ static int adt7411_read_in_chan(struct device *dev, u32 attr, int channel,
 			: ADT7411_REG_IN_HIGH(channel);
 		ret = i2c_smbus_read_byte_data(client, reg);
 		if (ret < 0)
-			return ret;
+			goto exit_unlock;
 		*val = ret * data->vref_cached / 256;
 		ret = 0;
 		break;
@@ -310,6 +329,8 @@ static int adt7411_read_in_chan(struct device *dev, u32 attr, int channel,
 		ret = -EOPNOTSUPP;
 		break;
 	}
+ exit_unlock:
+	mutex_unlock(&data->update_lock);
 	return ret;
 }
 
@@ -436,9 +457,10 @@ static int adt7411_write_in_chan(struct device *dev, u32 attr, int channel,
 	struct i2c_client *client = data->client;
 	int ret, reg;
 
+	mutex_lock(&data->update_lock);
 	ret = adt7411_update_vref(dev);
 	if (ret < 0)
-		return ret;
+		goto exit_unlock;
 	val = clamp_val(val, 0, 255 * data->vref_cached / 256);
 	val = DIV_ROUND_CLOSEST(val * 256, data->vref_cached);
 
@@ -450,10 +472,13 @@ static int adt7411_write_in_chan(struct device *dev, u32 attr, int channel,
 		reg = ADT7411_REG_IN_HIGH(channel);
 		break;
 	default:
-		return -EOPNOTSUPP;
+		ret = -EOPNOTSUPP;
+		goto exit_unlock;
 	}
 
 	ret = i2c_smbus_write_byte_data(client, reg, val);
+ exit_unlock:
+	mutex_unlock(&data->update_lock);
 	return ret;
 }
 
@@ -611,7 +636,7 @@ static int adt7411_init_device(struct adt7411_data *data)
 	return i2c_smbus_write_byte_data(data->client, ADT7411_REG_CFG1, val);
 }
 
-static const struct hwmon_channel_info * const adt7411_info[] = {
+static const struct hwmon_channel_info *adt7411_info[] = {
 	HWMON_CHANNEL_INFO(in,
 			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_ALARM,
 			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX | HWMON_I_ALARM,
@@ -654,6 +679,8 @@ static int adt7411_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, data);
 	data->client = client;
+	mutex_init(&data->device_lock);
+	mutex_init(&data->update_lock);
 
 	ret = adt7411_init_device(data);
 	if (ret < 0)
@@ -670,7 +697,7 @@ static int adt7411_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adt7411_id[] = {
-	{ "adt7411" },
+	{ "adt7411", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adt7411_id);
@@ -679,7 +706,7 @@ static struct i2c_driver adt7411_driver = {
 	.driver		= {
 		.name		= "adt7411",
 	},
-	.probe = adt7411_probe,
+	.probe_new = adt7411_probe,
 	.id_table = adt7411_id,
 	.detect = adt7411_detect,
 	.address_list = normal_i2c,

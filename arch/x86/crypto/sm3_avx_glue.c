@@ -10,11 +10,12 @@
 
 #include <crypto/internal/hash.h>
 #include <crypto/internal/simd.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/types.h>
 #include <crypto/sm3.h>
 #include <crypto/sm3_base.h>
-#include <linux/cpufeature.h>
-#include <linux/kernel.h>
-#include <linux/module.h>
+#include <asm/simd.h>
 
 asmlinkage void sm3_transform_avx(struct sm3_state *state,
 			const u8 *data, int nblocks);
@@ -22,7 +23,13 @@ asmlinkage void sm3_transform_avx(struct sm3_state *state,
 static int sm3_avx_update(struct shash_desc *desc, const u8 *data,
 			 unsigned int len)
 {
-	int remain;
+	struct sm3_state *sctx = shash_desc_ctx(desc);
+
+	if (!crypto_simd_usable() ||
+			(sctx->count % SM3_BLOCK_SIZE) + len < SM3_BLOCK_SIZE) {
+		sm3_update(sctx, data, len);
+		return 0;
+	}
 
 	/*
 	 * Make sure struct sm3_state begins directly with the SM3
@@ -31,17 +38,45 @@ static int sm3_avx_update(struct shash_desc *desc, const u8 *data,
 	BUILD_BUG_ON(offsetof(struct sm3_state, state) != 0);
 
 	kernel_fpu_begin();
-	remain = sm3_base_do_update_blocks(desc, data, len, sm3_transform_avx);
+	sm3_base_do_update(desc, data, len, sm3_transform_avx);
 	kernel_fpu_end();
-	return remain;
+
+	return 0;
 }
 
 static int sm3_avx_finup(struct shash_desc *desc, const u8 *data,
 		      unsigned int len, u8 *out)
 {
+	if (!crypto_simd_usable()) {
+		struct sm3_state *sctx = shash_desc_ctx(desc);
+
+		if (len)
+			sm3_update(sctx, data, len);
+
+		sm3_final(sctx, out);
+		return 0;
+	}
+
 	kernel_fpu_begin();
-	sm3_base_do_finup(desc, data, len, sm3_transform_avx);
+	if (len)
+		sm3_base_do_update(desc, data, len, sm3_transform_avx);
+	sm3_base_do_finalize(desc, sm3_transform_avx);
 	kernel_fpu_end();
+
+	return sm3_base_finish(desc, out);
+}
+
+static int sm3_avx_final(struct shash_desc *desc, u8 *out)
+{
+	if (!crypto_simd_usable()) {
+		sm3_final(shash_desc_ctx(desc), out);
+		return 0;
+	}
+
+	kernel_fpu_begin();
+	sm3_base_do_finalize(desc, sm3_transform_avx);
+	kernel_fpu_end();
+
 	return sm3_base_finish(desc, out);
 }
 
@@ -49,14 +84,13 @@ static struct shash_alg sm3_avx_alg = {
 	.digestsize	=	SM3_DIGEST_SIZE,
 	.init		=	sm3_base_init,
 	.update		=	sm3_avx_update,
+	.final		=	sm3_avx_final,
 	.finup		=	sm3_avx_finup,
-	.descsize	=	SM3_STATE_SIZE,
+	.descsize	=	sizeof(struct sm3_state),
 	.base		=	{
 		.cra_name	=	"sm3",
 		.cra_driver_name =	"sm3-avx",
 		.cra_priority	=	300,
-		.cra_flags	 =	CRYPTO_AHASH_ALG_BLOCK_ONLY |
-					CRYPTO_AHASH_ALG_FINUP_MAX,
 		.cra_blocksize	=	SM3_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}

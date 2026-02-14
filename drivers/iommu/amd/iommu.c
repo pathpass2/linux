@@ -14,22 +14,20 @@
 #include <linux/pci-ats.h>
 #include <linux/bitmap.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 #include <linux/debugfs.h>
 #include <linux/scatterlist.h>
 #include <linux/dma-map-ops.h>
 #include <linux/dma-direct.h>
-#include <linux/idr.h>
 #include <linux/iommu-helper.h>
 #include <linux/delay.h>
 #include <linux/amd-iommu.h>
 #include <linux/notifier.h>
 #include <linux/export.h>
 #include <linux/irq.h>
-#include <linux/irqchip/irq-msi-lib.h>
 #include <linux/msi.h>
 #include <linux/irqdomain.h>
 #include <linux/percpu.h>
+#include <linux/io-pgtable.h>
 #include <linux/cc_platform.h>
 #include <asm/irq_remapping.h>
 #include <asm/io_apic.h>
@@ -39,15 +37,18 @@
 #include <asm/iommu.h>
 #include <asm/gart.h>
 #include <asm/dma.h>
-#include <uapi/linux/iommufd.h>
-#include <linux/generic_pt/iommu.h>
 
 #include "amd_iommu.h"
-#include "iommufd.h"
+#include "../dma-iommu.h"
 #include "../irq_remapping.h"
-#include "../iommu-pages.h"
 
 #define CMD_SET_TYPE(cmd, t) ((cmd)->data[1] |= ((t) << 28))
+
+#define LOOP_TIMEOUT	100000
+
+/* IO virtual address start page frame number */
+#define IOVA_START_PFN		(1)
+#define IOVA_PFN(addr)		((addr) >> PAGE_SHIFT)
 
 /* Reserved IOVA ranges */
 #define MSI_RANGE_START		(0xfee00000)
@@ -55,42 +56,30 @@
 #define HT_RANGE_START		(0xfd00000000ULL)
 #define HT_RANGE_END		(0xffffffffffULL)
 
+#define DEFAULT_PGTABLE_LEVEL	PAGE_MODE_3_LEVEL
+
+static DEFINE_SPINLOCK(pd_bitmap_lock);
+
 LIST_HEAD(ioapic_map);
 LIST_HEAD(hpet_map);
 LIST_HEAD(acpihid_map);
 
 const struct iommu_ops amd_iommu_ops;
 
+static ATOMIC_NOTIFIER_HEAD(ppr_notifier);
 int amd_iommu_max_glx_val = -1;
 
 /*
- * AMD IOMMU allows up to 2^16 different protection domains. This is a bitmap
- * to know which ones are already in use.
+ * general struct to manage commands send to an IOMMU
  */
-DEFINE_IDA(pdom_ids);
+struct iommu_cmd {
+	u32 data[4];
+};
 
-static int amd_iommu_attach_device(struct iommu_domain *dom, struct device *dev,
-				   struct iommu_domain *old);
+struct kmem_cache *amd_iommu_irq_cache;
 
-static void set_dte_entry(struct amd_iommu *iommu,
-			  struct iommu_dev_data *dev_data,
-			  phys_addr_t top_paddr, unsigned int top_level);
-
-static int device_flush_dte(struct iommu_dev_data *dev_data);
-
-static void amd_iommu_change_top(struct pt_iommu *iommu_table,
-				 phys_addr_t top_paddr, unsigned int top_level);
-
-static void iommu_flush_dte_sync(struct amd_iommu *iommu, u16 devid);
-
-static struct iommu_dev_data *find_dev_data(struct amd_iommu *iommu, u16 devid);
-static bool amd_iommu_enforce_cache_coherency(struct iommu_domain *domain);
-static int amd_iommu_set_dirty_tracking(struct iommu_domain *domain,
-					bool enable);
-
-static void clone_aliases(struct amd_iommu *iommu, struct device *dev);
-
-static int iommu_completion_wait(struct amd_iommu *iommu);
+static void detach_device(struct device *dev);
+static int domain_enable_v2(struct protection_domain *domain, int pasids);
 
 /****************************************************************************
  *
@@ -98,169 +87,11 @@ static int iommu_completion_wait(struct amd_iommu *iommu);
  *
  ****************************************************************************/
 
-static __always_inline void amd_iommu_atomic128_set(__int128 *ptr, __int128 val)
-{
-	/*
-	 * Note:
-	 * We use arch_cmpxchg128_local() because:
-	 * - Need cmpxchg16b instruction mainly for 128-bit store to DTE
-	 *   (not necessary for cmpxchg since this function is already
-	 *   protected by a spin_lock for this DTE).
-	 * - Neither need LOCK_PREFIX nor try loop because of the spin_lock.
-	 */
-	arch_cmpxchg128_local(ptr, *ptr, val);
-}
-
-static void write_dte_upper128(struct dev_table_entry *ptr, struct dev_table_entry *new)
-{
-	struct dev_table_entry old;
-
-	old.data128[1] = ptr->data128[1];
-	/*
-	 * Preserve DTE_DATA2_INTR_MASK. This needs to be
-	 * done here since it requires to be inside
-	 * spin_lock(&dev_data->dte_lock) context.
-	 */
-	new->data[2] &= ~DTE_DATA2_INTR_MASK;
-	new->data[2] |= old.data[2] & DTE_DATA2_INTR_MASK;
-
-	amd_iommu_atomic128_set(&ptr->data128[1], new->data128[1]);
-}
-
-static void write_dte_lower128(struct dev_table_entry *ptr, struct dev_table_entry *new)
-{
-	amd_iommu_atomic128_set(&ptr->data128[0], new->data128[0]);
-}
-
-/*
- * Note:
- * IOMMU reads the entire Device Table entry in a single 256-bit transaction
- * but the driver is programming DTE using 2 128-bit cmpxchg. So, the driver
- * need to ensure the following:
- *   - DTE[V|GV] bit is being written last when setting.
- *   - DTE[V|GV] bit is being written first when clearing.
- *
- * This function is used only by code, which updates DMA translation part of the DTE.
- * So, only consider control bits related to DMA when updating the entry.
- */
-static void update_dte256(struct amd_iommu *iommu, struct iommu_dev_data *dev_data,
-			  struct dev_table_entry *new)
-{
-	unsigned long flags;
-	struct dev_table_entry *dev_table = get_dev_table(iommu);
-	struct dev_table_entry *ptr = &dev_table[dev_data->devid];
-
-	spin_lock_irqsave(&dev_data->dte_lock, flags);
-
-	if (!(ptr->data[0] & DTE_FLAG_V)) {
-		/* Existing DTE is not valid. */
-		write_dte_upper128(ptr, new);
-		write_dte_lower128(ptr, new);
-		iommu_flush_dte_sync(iommu, dev_data->devid);
-	} else if (!(new->data[0] & DTE_FLAG_V)) {
-		/* Existing DTE is valid. New DTE is not valid.  */
-		write_dte_lower128(ptr, new);
-		write_dte_upper128(ptr, new);
-		iommu_flush_dte_sync(iommu, dev_data->devid);
-	} else if (!FIELD_GET(DTE_FLAG_GV, ptr->data[0])) {
-		/*
-		 * Both DTEs are valid.
-		 * Existing DTE has no guest page table.
-		 */
-		write_dte_upper128(ptr, new);
-		write_dte_lower128(ptr, new);
-		iommu_flush_dte_sync(iommu, dev_data->devid);
-	} else if (!FIELD_GET(DTE_FLAG_GV, new->data[0])) {
-		/*
-		 * Both DTEs are valid.
-		 * Existing DTE has guest page table,
-		 * new DTE has no guest page table,
-		 */
-		write_dte_lower128(ptr, new);
-		write_dte_upper128(ptr, new);
-		iommu_flush_dte_sync(iommu, dev_data->devid);
-	} else if (FIELD_GET(DTE_GPT_LEVEL_MASK, ptr->data[2]) !=
-		   FIELD_GET(DTE_GPT_LEVEL_MASK, new->data[2])) {
-		/*
-		 * Both DTEs are valid and have guest page table,
-		 * but have different number of levels. So, we need
-		 * to upadte both upper and lower 128-bit value, which
-		 * require disabling and flushing.
-		 */
-		struct dev_table_entry clear = {};
-
-		/* First disable DTE */
-		write_dte_lower128(ptr, &clear);
-		iommu_flush_dte_sync(iommu, dev_data->devid);
-
-		/* Then update DTE */
-		write_dte_upper128(ptr, new);
-		write_dte_lower128(ptr, new);
-		iommu_flush_dte_sync(iommu, dev_data->devid);
-	} else {
-		/*
-		 * Both DTEs are valid and have guest page table,
-		 * and same number of levels. We just need to only
-		 * update the lower 128-bit. So no need to disable DTE.
-		 */
-		write_dte_lower128(ptr, new);
-	}
-
-	spin_unlock_irqrestore(&dev_data->dte_lock, flags);
-}
-
-void amd_iommu_update_dte(struct amd_iommu *iommu,
-			     struct iommu_dev_data *dev_data,
-			     struct dev_table_entry *new)
-{
-	update_dte256(iommu, dev_data, new);
-	clone_aliases(iommu, dev_data->dev);
-	device_flush_dte(dev_data);
-	iommu_completion_wait(iommu);
-}
-
-static void get_dte256(struct amd_iommu *iommu, struct iommu_dev_data *dev_data,
-		      struct dev_table_entry *dte)
-{
-	unsigned long flags;
-	struct dev_table_entry *ptr;
-	struct dev_table_entry *dev_table = get_dev_table(iommu);
-
-	ptr = &dev_table[dev_data->devid];
-
-	spin_lock_irqsave(&dev_data->dte_lock, flags);
-	dte->data128[0] = ptr->data128[0];
-	dte->data128[1] = ptr->data128[1];
-	spin_unlock_irqrestore(&dev_data->dte_lock, flags);
-}
-
-static inline bool pdom_is_v2_pgtbl_mode(struct protection_domain *pdom)
-{
-	return (pdom && (pdom->pd_mode == PD_MODE_V2));
-}
-
-static inline bool pdom_is_in_pt_mode(struct protection_domain *pdom)
-{
-	return (pdom->domain.type == IOMMU_DOMAIN_IDENTITY);
-}
-
-/*
- * We cannot support PASID w/ existing v1 page table in the same domain
- * since it will be nested. However, existing domain w/ v2 page table
- * or passthrough mode can be used for PASID.
- */
-static inline bool pdom_is_sva_capable(struct protection_domain *pdom)
-{
-	return pdom_is_v2_pgtbl_mode(pdom) || pdom_is_in_pt_mode(pdom);
-}
-
 static inline int get_acpihid_device_id(struct device *dev,
 					struct acpihid_map_entry **entry)
 {
 	struct acpi_device *adev = ACPI_COMPANION(dev);
-	struct acpihid_map_entry *p, *p1 = NULL;
-	int hid_count = 0;
-	bool fw_bug;
+	struct acpihid_map_entry *p;
 
 	if (!adev)
 		return -ENODEV;
@@ -268,33 +99,12 @@ static inline int get_acpihid_device_id(struct device *dev,
 	list_for_each_entry(p, &acpihid_map, list) {
 		if (acpi_dev_hid_uid_match(adev, p->hid,
 					   p->uid[0] ? p->uid : NULL)) {
-			p1 = p;
-			fw_bug = false;
-			hid_count = 1;
-			break;
-		}
-
-		/*
-		 * Count HID matches w/o UID, raise FW_BUG but allow exactly one match
-		 */
-		if (acpi_dev_hid_match(adev, p->hid)) {
-			p1 = p;
-			hid_count++;
-			fw_bug = true;
+			if (entry)
+				*entry = p;
+			return p->devid;
 		}
 	}
-
-	if (!p1)
-		return -EINVAL;
-	if (fw_bug)
-		dev_err_once(dev, FW_BUG "No ACPI device matched UID, but %d device%s matched HID.\n",
-			     hid_count, str_plural(hid_count));
-	if (hid_count > 1)
-		return -EINVAL;
-	if (entry)
-		*entry = p1;
-
-	return p1->devid;
+	return -EINVAL;
 }
 
 static inline int get_device_sbdf_id(struct device *dev)
@@ -367,6 +177,11 @@ static struct amd_iommu *rlookup_amd_iommu(struct device *dev)
 	return __rlookup_amd_iommu(seg, PCI_SBDF_TO_DEVID(devid));
 }
 
+static struct protection_domain *to_pdomain(struct iommu_domain *dom)
+{
+	return container_of(dom, struct protection_domain, domain);
+}
+
 static struct iommu_dev_data *alloc_dev_data(struct amd_iommu *iommu, u16 devid)
 {
 	struct iommu_dev_data *dev_data;
@@ -376,8 +191,7 @@ static struct iommu_dev_data *alloc_dev_data(struct amd_iommu *iommu, u16 devid)
 	if (!dev_data)
 		return NULL;
 
-	mutex_init(&dev_data->mutex);
-	spin_lock_init(&dev_data->dte_lock);
+	spin_lock_init(&dev_data->lock);
 	dev_data->devid = devid;
 	ratelimit_default_init(&dev_data->rs);
 
@@ -385,7 +199,7 @@ static struct iommu_dev_data *alloc_dev_data(struct amd_iommu *iommu, u16 devid)
 	return dev_data;
 }
 
-struct iommu_dev_data *search_dev_data(struct amd_iommu *iommu, u16 devid)
+static struct iommu_dev_data *search_dev_data(struct amd_iommu *iommu, u16 devid)
 {
 	struct iommu_dev_data *dev_data;
 	struct llist_node *node;
@@ -405,11 +219,9 @@ struct iommu_dev_data *search_dev_data(struct amd_iommu *iommu, u16 devid)
 
 static int clone_alias(struct pci_dev *pdev, u16 alias, void *data)
 {
-	struct dev_table_entry new;
 	struct amd_iommu *iommu;
-	struct iommu_dev_data *dev_data, *alias_data;
+	struct dev_table_entry *dev_table;
 	u16 devid = pci_dev_id(pdev);
-	int ret = 0;
 
 	if (devid == alias)
 		return 0;
@@ -418,27 +230,13 @@ static int clone_alias(struct pci_dev *pdev, u16 alias, void *data)
 	if (!iommu)
 		return 0;
 
-	/* Copy the data from pdev */
-	dev_data = dev_iommu_priv_get(&pdev->dev);
-	if (!dev_data) {
-		pr_err("%s : Failed to get dev_data for 0x%x\n", __func__, devid);
-		ret = -EINVAL;
-		goto out;
-	}
-	get_dte256(iommu, dev_data, &new);
-
-	/* Setup alias */
-	alias_data = find_dev_data(iommu, alias);
-	if (!alias_data) {
-		pr_err("%s : Failed to get alias dev_data for 0x%x\n", __func__, alias);
-		ret = -EINVAL;
-		goto out;
-	}
-	update_dte256(iommu, alias_data, &new);
-
 	amd_iommu_set_rlookup_table(iommu, alias);
-out:
-	return ret;
+	dev_table = get_dev_table(iommu);
+	memcpy(dev_table[alias].data,
+	       dev_table[devid].data,
+	       sizeof(dev_table[alias].data));
+
+	return 0;
 }
 
 static void clone_aliases(struct amd_iommu *iommu, struct device *dev)
@@ -524,143 +322,24 @@ static struct iommu_group *acpihid_device_group(struct device *dev)
 	return entry->group;
 }
 
-static inline bool pdev_pasid_supported(struct iommu_dev_data *dev_data)
+static bool pci_iommuv2_capable(struct pci_dev *pdev)
 {
-	return (dev_data->flags & AMD_IOMMU_DEVICE_FLAG_PASID_SUP);
-}
+	static const int caps[] = {
+		PCI_EXT_CAP_ID_PRI,
+		PCI_EXT_CAP_ID_PASID,
+	};
+	int i, pos;
 
-static u32 pdev_get_caps(struct pci_dev *pdev)
-{
-	int features;
-	u32 flags = 0;
+	if (!pci_ats_supported(pdev))
+		return false;
 
-	if (pci_ats_supported(pdev))
-		flags |= AMD_IOMMU_DEVICE_FLAG_ATS_SUP;
-
-	if (pci_pri_supported(pdev))
-		flags |= AMD_IOMMU_DEVICE_FLAG_PRI_SUP;
-
-	features = pci_pasid_features(pdev);
-	if (features >= 0) {
-		flags |= AMD_IOMMU_DEVICE_FLAG_PASID_SUP;
-
-		if (features & PCI_PASID_CAP_EXEC)
-			flags |= AMD_IOMMU_DEVICE_FLAG_EXEC_SUP;
-
-		if (features & PCI_PASID_CAP_PRIV)
-			flags |= AMD_IOMMU_DEVICE_FLAG_PRIV_SUP;
+	for (i = 0; i < 2; ++i) {
+		pos = pci_find_ext_capability(pdev, caps[i]);
+		if (pos == 0)
+			return false;
 	}
 
-	return flags;
-}
-
-static inline int pdev_enable_cap_ats(struct pci_dev *pdev)
-{
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(&pdev->dev);
-	int ret = -EINVAL;
-
-	if (dev_data->ats_enabled)
-		return 0;
-
-	if (amd_iommu_iotlb_sup &&
-	    (dev_data->flags & AMD_IOMMU_DEVICE_FLAG_ATS_SUP)) {
-		ret = pci_enable_ats(pdev, PAGE_SHIFT);
-		if (!ret) {
-			dev_data->ats_enabled = 1;
-			dev_data->ats_qdep    = pci_ats_queue_depth(pdev);
-		}
-	}
-
-	return ret;
-}
-
-static inline void pdev_disable_cap_ats(struct pci_dev *pdev)
-{
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(&pdev->dev);
-
-	if (dev_data->ats_enabled) {
-		pci_disable_ats(pdev);
-		dev_data->ats_enabled = 0;
-	}
-}
-
-static inline int pdev_enable_cap_pri(struct pci_dev *pdev)
-{
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(&pdev->dev);
-	int ret = -EINVAL;
-
-	if (dev_data->pri_enabled)
-		return 0;
-
-	if (!dev_data->ats_enabled)
-		return 0;
-
-	if (dev_data->flags & AMD_IOMMU_DEVICE_FLAG_PRI_SUP) {
-		/*
-		 * First reset the PRI state of the device.
-		 * FIXME: Hardcode number of outstanding requests for now
-		 */
-		if (!pci_reset_pri(pdev) && !pci_enable_pri(pdev, 32)) {
-			dev_data->pri_enabled = 1;
-			dev_data->pri_tlp     = pci_prg_resp_pasid_required(pdev);
-
-			ret = 0;
-		}
-	}
-
-	return ret;
-}
-
-static inline void pdev_disable_cap_pri(struct pci_dev *pdev)
-{
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(&pdev->dev);
-
-	if (dev_data->pri_enabled) {
-		pci_disable_pri(pdev);
-		dev_data->pri_enabled = 0;
-	}
-}
-
-static inline int pdev_enable_cap_pasid(struct pci_dev *pdev)
-{
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(&pdev->dev);
-	int ret = -EINVAL;
-
-	if (dev_data->pasid_enabled)
-		return 0;
-
-	if (dev_data->flags & AMD_IOMMU_DEVICE_FLAG_PASID_SUP) {
-		/* Only allow access to user-accessible pages */
-		ret = pci_enable_pasid(pdev, 0);
-		if (!ret)
-			dev_data->pasid_enabled = 1;
-	}
-
-	return ret;
-}
-
-static inline void pdev_disable_cap_pasid(struct pci_dev *pdev)
-{
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(&pdev->dev);
-
-	if (dev_data->pasid_enabled) {
-		pci_disable_pasid(pdev);
-		dev_data->pasid_enabled = 0;
-	}
-}
-
-static void pdev_enable_caps(struct pci_dev *pdev)
-{
-	pdev_enable_cap_pasid(pdev);
-	pdev_enable_cap_ats(pdev);
-	pdev_enable_cap_pri(pdev);
-}
-
-static void pdev_disable_caps(struct pci_dev *pdev)
-{
-	pdev_disable_cap_ats(pdev);
-	pdev_disable_cap_pasid(pdev);
-	pdev_disable_cap_pri(pdev);
+	return true;
 }
 
 /*
@@ -711,12 +390,6 @@ static int iommu_init_device(struct amd_iommu *iommu, struct device *dev)
 		return -ENOMEM;
 
 	dev_data->dev = dev;
-
-	/*
-	 * The dev_iommu_priv_set() needes to be called before setup_aliases.
-	 * Otherwise, subsequent call to dev_iommu_priv_get() will fail.
-	 */
-	dev_iommu_priv_set(dev, dev_data);
 	setup_aliases(iommu, dev);
 
 	/*
@@ -726,9 +399,11 @@ static int iommu_init_device(struct amd_iommu *iommu, struct device *dev)
 	 * it'll be forced to go into translation mode.
 	 */
 	if ((iommu_default_passthrough() || !amd_iommu_force_isolation) &&
-	    dev_is_pci(dev) && amd_iommu_gt_ppr_supported()) {
-		dev_data->flags = pdev_get_caps(to_pci_dev(dev));
+	    dev_is_pci(dev) && pci_iommuv2_capable(to_pci_dev(dev))) {
+		dev_data->iommu_v2 = iommu->is_iommu_v2;
 	}
+
+	dev_iommu_priv_set(dev, dev_data);
 
 	return 0;
 }
@@ -750,6 +425,24 @@ static void iommu_ignore_device(struct amd_iommu *iommu, struct device *dev)
 	setup_aliases(iommu, dev);
 }
 
+static void amd_iommu_uninit_device(struct device *dev)
+{
+	struct iommu_dev_data *dev_data;
+
+	dev_data = dev_iommu_priv_get(dev);
+	if (!dev_data)
+		return;
+
+	if (dev_data->domain)
+		detach_device(dev);
+
+	dev_iommu_priv_set(dev, NULL);
+
+	/*
+	 * We keep dev_data around for unplugged devices and reuse it when the
+	 * device is re-plugged - not doing so would introduce a ton of races.
+	 */
+}
 
 /****************************************************************************
  *
@@ -760,13 +453,10 @@ static void iommu_ignore_device(struct amd_iommu *iommu, struct device *dev)
 static void dump_dte_entry(struct amd_iommu *iommu, u16 devid)
 {
 	int i;
-	struct dev_table_entry dte;
-	struct iommu_dev_data *dev_data = find_dev_data(iommu, devid);
-
-	get_dte256(iommu, dev_data, &dte);
+	struct dev_table_entry *dev_table = get_dev_table(iommu);
 
 	for (i = 0; i < 4; ++i)
-		pr_err("DTE[%d]: %016llx\n", i, dte.data[i]);
+		pr_err("DTE[%d]: %016llx\n", i, dev_table[devid].data[i]);
 }
 
 static void dump_command(unsigned long phys_addr)
@@ -906,7 +596,7 @@ static void iommu_print_event(struct amd_iommu *iommu, void *__evt)
 	int type, devid, flags, tag;
 	volatile u32 *event = __evt;
 	int count = 0;
-	u64 address, ctrl;
+	u64 address;
 	u32 pasid;
 
 retry:
@@ -916,7 +606,6 @@ retry:
 		  (event[1] & EVENT_DOMID_MASK_LO);
 	flags   = (event[1] >> EVENT_FLAGS_SHIFT) & EVENT_FLAGS_MASK;
 	address = (u64)(((u64)event[3]) << 32) | event[2];
-	ctrl    = readq(iommu->mmio_base + MMIO_CONTROL_OFFSET);
 
 	if (type == 0) {
 		/* Did we hit the erratum? */
@@ -938,7 +627,6 @@ retry:
 		dev_err(dev, "Event logged [ILLEGAL_DEV_TABLE_ENTRY device=%04x:%02x:%02x.%x pasid=0x%05x address=0x%llx flags=0x%04x]\n",
 			iommu->pci_seg->id, PCI_BUS_NUM(devid), PCI_SLOT(devid), PCI_FUNC(devid),
 			pasid, address, flags);
-		dev_err(dev, "Control Reg : 0x%llx\n", ctrl);
 		dump_dte_entry(iommu, devid);
 		break;
 	case EVENT_TYPE_DEV_TAB_ERR:
@@ -1007,12 +695,82 @@ static void iommu_poll_events(struct amd_iommu *iommu)
 
 	while (head != tail) {
 		iommu_print_event(iommu, iommu->evt_buf + head);
-
-		/* Update head pointer of hardware ring-buffer */
 		head = (head + EVENT_ENTRY_SIZE) % EVT_BUFFER_SIZE;
-		writel(head, iommu->mmio_base + MMIO_EVT_HEAD_OFFSET);
 	}
 
+	writel(head, iommu->mmio_base + MMIO_EVT_HEAD_OFFSET);
+}
+
+static void iommu_handle_ppr_entry(struct amd_iommu *iommu, u64 *raw)
+{
+	struct amd_iommu_fault fault;
+
+	if (PPR_REQ_TYPE(raw[0]) != PPR_REQ_FAULT) {
+		pr_err_ratelimited("Unknown PPR request received\n");
+		return;
+	}
+
+	fault.address   = raw[1];
+	fault.pasid     = PPR_PASID(raw[0]);
+	fault.sbdf      = PCI_SEG_DEVID_TO_SBDF(iommu->pci_seg->id, PPR_DEVID(raw[0]));
+	fault.tag       = PPR_TAG(raw[0]);
+	fault.flags     = PPR_FLAGS(raw[0]);
+
+	atomic_notifier_call_chain(&ppr_notifier, 0, &fault);
+}
+
+static void iommu_poll_ppr_log(struct amd_iommu *iommu)
+{
+	u32 head, tail;
+
+	if (iommu->ppr_log == NULL)
+		return;
+
+	head = readl(iommu->mmio_base + MMIO_PPR_HEAD_OFFSET);
+	tail = readl(iommu->mmio_base + MMIO_PPR_TAIL_OFFSET);
+
+	while (head != tail) {
+		volatile u64 *raw;
+		u64 entry[2];
+		int i;
+
+		raw = (u64 *)(iommu->ppr_log + head);
+
+		/*
+		 * Hardware bug: Interrupt may arrive before the entry is
+		 * written to memory. If this happens we need to wait for the
+		 * entry to arrive.
+		 */
+		for (i = 0; i < LOOP_TIMEOUT; ++i) {
+			if (PPR_REQ_TYPE(raw[0]) != 0)
+				break;
+			udelay(1);
+		}
+
+		/* Avoid memcpy function-call overhead */
+		entry[0] = raw[0];
+		entry[1] = raw[1];
+
+		/*
+		 * To detect the hardware errata 733 we need to clear the
+		 * entry back to zero. This issue does not exist on SNP
+		 * enabled system. Also this buffer is not writeable on
+		 * SNP enabled system.
+		 */
+		if (!amd_iommu_snp_en)
+			raw[0] = raw[1] = 0UL;
+
+		/* Update head pointer of hardware ring-buffer */
+		head = (head + PPR_ENTRY_SIZE) % PPR_LOG_SIZE;
+		writel(head, iommu->mmio_base + MMIO_PPR_HEAD_OFFSET);
+
+		/* Handle PPR entry */
+		iommu_handle_ppr_entry(iommu, entry);
+
+		/* Refresh ring-buffer information */
+		head = readl(iommu->mmio_base + MMIO_PPR_HEAD_OFFSET);
+		tail = readl(iommu->mmio_base + MMIO_PPR_TAIL_OFFSET);
+	}
 }
 
 #ifdef CONFIG_IRQ_REMAP
@@ -1021,14 +779,6 @@ static int (*iommu_ga_log_notifier)(u32);
 int amd_iommu_register_ga_log_notifier(int (*notifier)(u32))
 {
 	iommu_ga_log_notifier = notifier;
-
-	/*
-	 * Ensure all in-flight IRQ handlers run to completion before returning
-	 * to the caller, e.g. to ensure module code isn't unloaded while it's
-	 * being executed in the IRQ handler.
-	 */
-	if (!notifier)
-		synchronize_rcu();
 
 	return 0;
 }
@@ -1091,27 +841,43 @@ static inline void
 amd_iommu_set_pci_msi_domain(struct device *dev, struct amd_iommu *iommu) { }
 #endif /* !CONFIG_IRQ_REMAP */
 
-static void amd_iommu_handle_irq(void *data, const char *evt_type,
-				 u32 int_mask, u32 overflow_mask,
-				 void (*int_handler)(struct amd_iommu *),
-				 void (*overflow_handler)(struct amd_iommu *))
+#define AMD_IOMMU_INT_MASK	\
+	(MMIO_STATUS_EVT_OVERFLOW_INT_MASK | \
+	 MMIO_STATUS_EVT_INT_MASK | \
+	 MMIO_STATUS_PPR_INT_MASK | \
+	 MMIO_STATUS_GALOG_INT_MASK)
+
+irqreturn_t amd_iommu_int_thread(int irq, void *data)
 {
 	struct amd_iommu *iommu = (struct amd_iommu *) data;
 	u32 status = readl(iommu->mmio_base + MMIO_STATUS_OFFSET);
-	u32 mask = int_mask | overflow_mask;
 
-	while (status & mask) {
+	while (status & AMD_IOMMU_INT_MASK) {
 		/* Enable interrupt sources again */
-		writel(mask, iommu->mmio_base + MMIO_STATUS_OFFSET);
+		writel(AMD_IOMMU_INT_MASK,
+			iommu->mmio_base + MMIO_STATUS_OFFSET);
 
-		if (int_handler) {
-			pr_devel("Processing IOMMU (ivhd%d) %s Log\n",
-				 iommu->index, evt_type);
-			int_handler(iommu);
+		if (status & MMIO_STATUS_EVT_INT_MASK) {
+			pr_devel("Processing IOMMU Event Log\n");
+			iommu_poll_events(iommu);
 		}
 
-		if ((status & overflow_mask) && overflow_handler)
-			overflow_handler(iommu);
+		if (status & MMIO_STATUS_PPR_INT_MASK) {
+			pr_devel("Processing IOMMU PPR Log\n");
+			iommu_poll_ppr_log(iommu);
+		}
+
+#ifdef CONFIG_IRQ_REMAP
+		if (status & MMIO_STATUS_GALOG_INT_MASK) {
+			pr_devel("Processing IOMMU GA Log\n");
+			iommu_poll_ga_log(iommu);
+		}
+#endif
+
+		if (status & MMIO_STATUS_EVT_OVERFLOW_INT_MASK) {
+			pr_info_ratelimited("IOMMU event log overflow\n");
+			amd_iommu_restart_event_logging(iommu);
+		}
 
 		/*
 		 * Hardware bug: ERBT1312
@@ -1128,44 +894,12 @@ static void amd_iommu_handle_irq(void *data, const char *evt_type,
 		 */
 		status = readl(iommu->mmio_base + MMIO_STATUS_OFFSET);
 	}
-}
-
-irqreturn_t amd_iommu_int_thread_evtlog(int irq, void *data)
-{
-	amd_iommu_handle_irq(data, "Evt", MMIO_STATUS_EVT_INT_MASK,
-			     MMIO_STATUS_EVT_OVERFLOW_MASK,
-			     iommu_poll_events, amd_iommu_restart_event_logging);
-
 	return IRQ_HANDLED;
 }
 
-irqreturn_t amd_iommu_int_thread_pprlog(int irq, void *data)
+irqreturn_t amd_iommu_int_handler(int irq, void *data)
 {
-	amd_iommu_handle_irq(data, "PPR", MMIO_STATUS_PPR_INT_MASK,
-			     MMIO_STATUS_PPR_OVERFLOW_MASK,
-			     amd_iommu_poll_ppr_log, amd_iommu_restart_ppr_log);
-
-	return IRQ_HANDLED;
-}
-
-irqreturn_t amd_iommu_int_thread_galog(int irq, void *data)
-{
-#ifdef CONFIG_IRQ_REMAP
-	amd_iommu_handle_irq(data, "GA", MMIO_STATUS_GALOG_INT_MASK,
-			     MMIO_STATUS_GALOG_OVERFLOW_MASK,
-			     iommu_poll_ga_log, amd_iommu_restart_ga_log);
-#endif
-
-	return IRQ_HANDLED;
-}
-
-irqreturn_t amd_iommu_int_thread(int irq, void *data)
-{
-	amd_iommu_int_thread_evtlog(irq, data);
-	amd_iommu_int_thread_pprlog(irq, data);
-	amd_iommu_int_thread_galog(irq, data);
-
-	return IRQ_HANDLED;
+	return IRQ_WAKE_THREAD;
 }
 
 /****************************************************************************
@@ -1174,48 +908,17 @@ irqreturn_t amd_iommu_int_thread(int irq, void *data)
  *
  ****************************************************************************/
 
-static void dump_command_buffer(struct amd_iommu *iommu)
-{
-	struct iommu_cmd *cmd;
-	u32 head, tail;
-	int i;
-
-	head = readl(iommu->mmio_base + MMIO_CMD_HEAD_OFFSET);
-	tail = readl(iommu->mmio_base + MMIO_CMD_TAIL_OFFSET);
-
-	pr_err("CMD Buffer head=%llu tail=%llu\n", MMIO_CMD_BUFFER_HEAD(head),
-	       MMIO_CMD_BUFFER_TAIL(tail));
-
-	for (i = 0; i < CMD_BUFFER_ENTRIES; i++) {
-		cmd = (struct iommu_cmd *)(iommu->cmd_buf + i * sizeof(*cmd));
-		pr_err("%3d: %08x %08x %08x %08x\n", i, cmd->data[0], cmd->data[1], cmd->data[2],
-		       cmd->data[3]);
-	}
-}
-
 static int wait_on_sem(struct amd_iommu *iommu, u64 data)
 {
 	int i = 0;
 
-	/*
-	 * cmd_sem holds a monotonically non-decreasing completion sequence
-	 * number.
-	 */
-	while ((__s64)(READ_ONCE(*iommu->cmd_sem) - data) < 0 &&
-	       i < LOOP_TIMEOUT) {
+	while (*iommu->cmd_sem != data && i < LOOP_TIMEOUT) {
 		udelay(1);
 		i += 1;
 	}
 
 	if (i == LOOP_TIMEOUT) {
-
-		pr_alert("IOMMU %04x:%02x:%02x.%01x: Completion-Wait loop timed out\n",
-			 iommu->pci_seg->id, PCI_BUS_NUM(iommu->devid),
-			 PCI_SLOT(iommu->devid), PCI_FUNC(iommu->devid));
-
-		if (amd_iommu_dump)
-			DO_ONCE_LITE(dump_command_buffer, iommu);
-
+		pr_alert("Completion-Wait loop timed out\n");
 		return -EIO;
 	}
 
@@ -1244,7 +947,7 @@ static void build_completion_wait(struct iommu_cmd *cmd,
 				  struct amd_iommu *iommu,
 				  u64 data)
 {
-	u64 paddr = iommu->cmd_sem_paddr;
+	u64 paddr = iommu_virt_to_phys((void *)iommu->cmd_sem);
 
 	memset(cmd, 0, sizeof(*cmd));
 	cmd->data[0] = lower_32_bits(paddr) | CMD_COMPL_WAIT_STORE_MASK;
@@ -1304,49 +1007,73 @@ static inline u64 build_inv_address(u64 address, size_t size)
 }
 
 static void build_inv_iommu_pages(struct iommu_cmd *cmd, u64 address,
-				  size_t size, u16 domid,
-				  ioasid_t pasid, bool gn)
+				  size_t size, u16 domid, int pde)
 {
 	u64 inv_address = build_inv_address(address, size);
 
 	memset(cmd, 0, sizeof(*cmd));
-
 	cmd->data[1] |= domid;
 	cmd->data[2]  = lower_32_bits(inv_address);
 	cmd->data[3]  = upper_32_bits(inv_address);
-	/* PDE bit - we want to flush everything, not only the PTEs */
-	cmd->data[2] |= CMD_INV_IOMMU_PAGES_PDE_MASK;
-	if (gn) {
-		cmd->data[0] |= pasid;
-		cmd->data[2] |= CMD_INV_IOMMU_PAGES_GN_MASK;
-	}
 	CMD_SET_TYPE(cmd, CMD_INV_IOMMU_PAGES);
+	if (pde) /* PDE bit - we want to flush everything, not only the PTEs */
+		cmd->data[2] |= CMD_INV_IOMMU_PAGES_PDE_MASK;
 }
 
 static void build_inv_iotlb_pages(struct iommu_cmd *cmd, u16 devid, int qdep,
-				  u64 address, size_t size,
-				  ioasid_t pasid, bool gn)
+				  u64 address, size_t size)
 {
 	u64 inv_address = build_inv_address(address, size);
 
 	memset(cmd, 0, sizeof(*cmd));
-
 	cmd->data[0]  = devid;
 	cmd->data[0] |= (qdep & 0xff) << 24;
 	cmd->data[1]  = devid;
 	cmd->data[2]  = lower_32_bits(inv_address);
 	cmd->data[3]  = upper_32_bits(inv_address);
-	if (gn) {
-		cmd->data[0] |= ((pasid >> 8) & 0xff) << 16;
-		cmd->data[1] |= (pasid & 0xff) << 16;
-		cmd->data[2] |= CMD_INV_IOMMU_PAGES_GN_MASK;
-	}
+	CMD_SET_TYPE(cmd, CMD_INV_IOTLB_PAGES);
+}
 
+static void build_inv_iommu_pasid(struct iommu_cmd *cmd, u16 domid, u32 pasid,
+				  u64 address, bool size)
+{
+	memset(cmd, 0, sizeof(*cmd));
+
+	address &= ~(0xfffULL);
+
+	cmd->data[0]  = pasid;
+	cmd->data[1]  = domid;
+	cmd->data[2]  = lower_32_bits(address);
+	cmd->data[3]  = upper_32_bits(address);
+	cmd->data[2] |= CMD_INV_IOMMU_PAGES_PDE_MASK;
+	cmd->data[2] |= CMD_INV_IOMMU_PAGES_GN_MASK;
+	if (size)
+		cmd->data[2] |= CMD_INV_IOMMU_PAGES_SIZE_MASK;
+	CMD_SET_TYPE(cmd, CMD_INV_IOMMU_PAGES);
+}
+
+static void build_inv_iotlb_pasid(struct iommu_cmd *cmd, u16 devid, u32 pasid,
+				  int qdep, u64 address, bool size)
+{
+	memset(cmd, 0, sizeof(*cmd));
+
+	address &= ~(0xfffULL);
+
+	cmd->data[0]  = devid;
+	cmd->data[0] |= ((pasid >> 8) & 0xff) << 16;
+	cmd->data[0] |= (qdep  & 0xff) << 24;
+	cmd->data[1]  = devid;
+	cmd->data[1] |= (pasid & 0xff) << 16;
+	cmd->data[2]  = lower_32_bits(address);
+	cmd->data[2] |= CMD_INV_IOMMU_PAGES_GN_MASK;
+	cmd->data[3]  = upper_32_bits(address);
+	if (size)
+		cmd->data[2] |= CMD_INV_IOMMU_PAGES_SIZE_MASK;
 	CMD_SET_TYPE(cmd, CMD_INV_IOTLB_PAGES);
 }
 
 static void build_complete_ppr(struct iommu_cmd *cmd, u16 devid, u32 pasid,
-			       int status, int tag, u8 gn)
+			       int status, int tag, bool gn)
 {
 	memset(cmd, 0, sizeof(*cmd));
 
@@ -1434,12 +1161,6 @@ static int iommu_queue_command(struct amd_iommu *iommu, struct iommu_cmd *cmd)
 	return iommu_queue_command_sync(iommu, cmd, true);
 }
 
-static u64 get_cmdsem_val(struct amd_iommu *iommu)
-{
-	lockdep_assert_held(&iommu->lock);
-	return ++iommu->cmd_sem_val;
-}
-
 /*
  * This function queues a completion wait command into the command
  * buffer of an IOMMU
@@ -1456,33 +1177,19 @@ static int iommu_completion_wait(struct amd_iommu *iommu)
 
 	raw_spin_lock_irqsave(&iommu->lock, flags);
 
-	data = get_cmdsem_val(iommu);
+	data = ++iommu->cmd_sem_val;
 	build_completion_wait(&cmd, iommu, data);
 
 	ret = __iommu_queue_command_sync(iommu, &cmd, false);
-	raw_spin_unlock_irqrestore(&iommu->lock, flags);
-
 	if (ret)
-		return ret;
+		goto out_unlock;
 
 	ret = wait_on_sem(iommu, data);
 
+out_unlock:
+	raw_spin_unlock_irqrestore(&iommu->lock, flags);
+
 	return ret;
-}
-
-static void domain_flush_complete(struct protection_domain *domain)
-{
-	struct pdom_iommu_info *pdom_iommu_info;
-	unsigned long i;
-
-	lockdep_assert_held(&domain->lock);
-
-	/*
-	 * Devices of this domain are behind this IOMMU
-	 * We need to wait for completion of all commands.
-	 */
-	 xa_for_each(&domain->iommu_array, i, pdom_iommu_info)
-		iommu_completion_wait(pdom_iommu_info->iommu);
 }
 
 static int iommu_flush_dte(struct amd_iommu *iommu, u16 devid)
@@ -1492,15 +1199,6 @@ static int iommu_flush_dte(struct amd_iommu *iommu, u16 devid)
 	build_inv_dte(&cmd, devid);
 
 	return iommu_queue_command(iommu, &cmd);
-}
-
-static void iommu_flush_dte_sync(struct amd_iommu *iommu, u16 devid)
-{
-	int ret;
-
-	ret = iommu_flush_dte(iommu, devid);
-	if (!ret)
-		iommu_completion_wait(iommu);
 }
 
 static void amd_iommu_flush_dte_all(struct amd_iommu *iommu)
@@ -1526,7 +1224,7 @@ static void amd_iommu_flush_tlb_all(struct amd_iommu *iommu)
 	for (dom_id = 0; dom_id <= last_bdf; ++dom_id) {
 		struct iommu_cmd cmd;
 		build_inv_iommu_pages(&cmd, 0, CMD_INV_IOMMU_ALL_PAGES_ADDRESS,
-				      dom_id, IOMMU_NO_PASID, false);
+				      dom_id, 1);
 		iommu_queue_command(iommu, &cmd);
 	}
 
@@ -1538,36 +1236,10 @@ static void amd_iommu_flush_tlb_domid(struct amd_iommu *iommu, u32 dom_id)
 	struct iommu_cmd cmd;
 
 	build_inv_iommu_pages(&cmd, 0, CMD_INV_IOMMU_ALL_PAGES_ADDRESS,
-			      dom_id, IOMMU_NO_PASID, false);
+			      dom_id, 1);
 	iommu_queue_command(iommu, &cmd);
 
 	iommu_completion_wait(iommu);
-}
-
-static int iommu_flush_pages_v1_hdom_ids(struct protection_domain *pdom, u64 address, size_t size)
-{
-	int ret = 0;
-	struct amd_iommu_viommu *aviommu;
-
-	list_for_each_entry(aviommu, &pdom->viommu_list, pdom_list) {
-		unsigned long i;
-		struct guest_domain_mapping_info *gdom_info;
-		struct amd_iommu *iommu = container_of(aviommu->core.iommu_dev,
-						       struct amd_iommu, iommu);
-
-		xa_lock(&aviommu->gdomid_array);
-		xa_for_each(&aviommu->gdomid_array, i, gdom_info) {
-			struct iommu_cmd cmd;
-
-			pr_debug("%s: iommu=%#x, hdom_id=%#x\n", __func__,
-				 iommu->devid, gdom_info->hdom_id);
-			build_inv_iommu_pages(&cmd, address, size, gdom_info->hdom_id,
-					      IOMMU_NO_PASID, false);
-			ret |= iommu_queue_command(iommu, &cmd);
-		}
-		xa_unlock(&aviommu->gdomid_array);
-	}
-	return ret;
 }
 
 static void amd_iommu_flush_all(struct amd_iommu *iommu)
@@ -1594,18 +1266,15 @@ static void amd_iommu_flush_irt_all(struct amd_iommu *iommu)
 	u32 devid;
 	u16 last_bdf = iommu->pci_seg->last_bdf;
 
-	if (iommu->irtcachedis_enabled)
-		return;
-
 	for (devid = 0; devid <= last_bdf; devid++)
 		iommu_flush_irt(iommu, devid);
 
 	iommu_completion_wait(iommu);
 }
 
-void amd_iommu_flush_all_caches(struct amd_iommu *iommu)
+void iommu_flush_all_caches(struct amd_iommu *iommu)
 {
-	if (check_feature(FEATURE_IA)) {
+	if (iommu_feature(iommu, FEATURE_IA)) {
 		amd_iommu_flush_all(iommu);
 	} else {
 		amd_iommu_flush_dte_all(iommu);
@@ -1617,15 +1286,19 @@ void amd_iommu_flush_all_caches(struct amd_iommu *iommu)
 /*
  * Command send function for flushing on-device TLB
  */
-static int device_flush_iotlb(struct iommu_dev_data *dev_data, u64 address,
-			      size_t size, ioasid_t pasid, bool gn)
+static int device_flush_iotlb(struct iommu_dev_data *dev_data,
+			      u64 address, size_t size)
 {
-	struct amd_iommu *iommu = get_amd_iommu_from_dev_data(dev_data);
+	struct amd_iommu *iommu;
 	struct iommu_cmd cmd;
-	int qdep = dev_data->ats_qdep;
+	int qdep;
 
-	build_inv_iotlb_pages(&cmd, dev_data->devid, qdep, address,
-			      size, pasid, gn);
+	qdep     = dev_data->ats.qdep;
+	iommu    = rlookup_amd_iommu(dev_data->dev);
+	if (!iommu)
+		return -EINVAL;
+
+	build_inv_iotlb_pages(&cmd, dev_data->devid, qdep, address, size);
 
 	return iommu_queue_command(iommu, &cmd);
 }
@@ -1642,11 +1315,15 @@ static int device_flush_dte_alias(struct pci_dev *pdev, u16 alias, void *data)
  */
 static int device_flush_dte(struct iommu_dev_data *dev_data)
 {
-	struct amd_iommu *iommu = get_amd_iommu_from_dev_data(dev_data);
+	struct amd_iommu *iommu;
 	struct pci_dev *pdev = NULL;
 	struct amd_iommu_pci_seg *pci_seg;
 	u16 alias;
 	int ret;
+
+	iommu = rlookup_amd_iommu(dev_data->dev);
+	if (!iommu)
+		return -EINVAL;
 
 	if (dev_is_pci(dev_data->dev))
 		pdev = to_pci_dev(dev_data->dev);
@@ -1667,114 +1344,53 @@ static int device_flush_dte(struct iommu_dev_data *dev_data)
 			return ret;
 	}
 
-	if (dev_data->ats_enabled) {
-		/* Invalidate the entire contents of an IOTLB */
-		ret = device_flush_iotlb(dev_data, 0, ~0UL,
-					 IOMMU_NO_PASID, false);
-	}
-
-	return ret;
-}
-
-static int domain_flush_pages_v2(struct protection_domain *pdom,
-				 u64 address, size_t size)
-{
-	struct iommu_dev_data *dev_data;
-	struct iommu_cmd cmd;
-	int ret = 0;
-
-	lockdep_assert_held(&pdom->lock);
-	list_for_each_entry(dev_data, &pdom->dev_list, list) {
-		struct amd_iommu *iommu = get_amd_iommu_from_dev(dev_data->dev);
-		u16 domid = dev_data->gcr3_info.domid;
-
-		build_inv_iommu_pages(&cmd, address, size,
-				      domid, IOMMU_NO_PASID, true);
-
-		ret |= iommu_queue_command(iommu, &cmd);
-	}
-
-	return ret;
-}
-
-static int domain_flush_pages_v1(struct protection_domain *pdom,
-				 u64 address, size_t size)
-{
-	struct pdom_iommu_info *pdom_iommu_info;
-	struct iommu_cmd cmd;
-	int ret = 0;
-	unsigned long i;
-
-	lockdep_assert_held(&pdom->lock);
-
-	build_inv_iommu_pages(&cmd, address, size,
-			      pdom->id, IOMMU_NO_PASID, false);
-
-	xa_for_each(&pdom->iommu_array, i, pdom_iommu_info) {
-		/*
-		 * Devices of this domain are behind this IOMMU
-		 * We need a TLB flush
-		 */
-		ret |= iommu_queue_command(pdom_iommu_info->iommu, &cmd);
-	}
-
-	/*
-	 * A domain w/ v1 table can be a nest parent, which can have
-	 * multiple nested domains. Each nested domain has 1:1 mapping
-	 * between gDomID and hDomID. Therefore, flush every hDomID
-	 * associated to this nest parent domain.
-	 *
-	 * See drivers/iommu/amd/nested.c: amd_iommu_alloc_domain_nested()
-	 */
-	if (!list_empty(&pdom->viommu_list))
-		ret |= iommu_flush_pages_v1_hdom_ids(pdom, address, size);
+	if (dev_data->ats.enabled)
+		ret = device_flush_iotlb(dev_data, 0, ~0UL);
 
 	return ret;
 }
 
 /*
  * TLB invalidation function which is called from the mapping functions.
- * It flushes range of PTEs of the domain.
+ * It invalidates a single PTE if the range to flush is within a single
+ * page. Otherwise it flushes the whole TLB of the IOMMU.
  */
 static void __domain_flush_pages(struct protection_domain *domain,
-				 u64 address, size_t size)
+				 u64 address, size_t size, int pde)
 {
 	struct iommu_dev_data *dev_data;
-	int ret = 0;
-	ioasid_t pasid = IOMMU_NO_PASID;
-	bool gn = false;
+	struct iommu_cmd cmd;
+	int ret = 0, i;
 
-	lockdep_assert_held(&domain->lock);
+	build_inv_iommu_pages(&cmd, address, size, domain->id, pde);
 
-	if (pdom_is_v2_pgtbl_mode(domain)) {
-		gn = true;
-		ret = domain_flush_pages_v2(domain, address, size);
-	} else {
-		ret = domain_flush_pages_v1(domain, address, size);
+	for (i = 0; i < amd_iommu_get_num_iommus(); ++i) {
+		if (!domain->dev_iommu[i])
+			continue;
+
+		/*
+		 * Devices of this domain are behind this IOMMU
+		 * We need a TLB flush
+		 */
+		ret |= iommu_queue_command(amd_iommus[i], &cmd);
 	}
 
 	list_for_each_entry(dev_data, &domain->dev_list, list) {
 
-		if (!dev_data->ats_enabled)
+		if (!dev_data->ats.enabled)
 			continue;
 
-		ret |= device_flush_iotlb(dev_data, address, size, pasid, gn);
+		ret |= device_flush_iotlb(dev_data, address, size);
 	}
 
 	WARN_ON(ret);
 }
 
-void amd_iommu_domain_flush_pages(struct protection_domain *domain,
-				  u64 address, size_t size)
+static void domain_flush_pages(struct protection_domain *domain,
+			       u64 address, size_t size, int pde)
 {
-	lockdep_assert_held(&domain->lock);
-
 	if (likely(!amd_iommu_np_cache)) {
-		__domain_flush_pages(domain, address, size);
-
-		/* Wait until IOMMU TLB and all device IOTLB flushes are complete */
-		domain_flush_complete(domain);
-
+		__domain_flush_pages(domain, address, size, pde);
 		return;
 	}
 
@@ -1807,58 +1423,58 @@ void amd_iommu_domain_flush_pages(struct protection_domain *domain,
 
 		flush_size = 1ul << min_alignment;
 
-		__domain_flush_pages(domain, address, flush_size);
+		__domain_flush_pages(domain, address, flush_size, pde);
 		address += flush_size;
 		size -= flush_size;
 	}
-
-	/* Wait until IOMMU TLB and all device IOTLB flushes are complete */
-	domain_flush_complete(domain);
 }
 
 /* Flush the whole IO/TLB for a given protection domain - including PDE */
-static void amd_iommu_domain_flush_all(struct protection_domain *domain)
+void amd_iommu_domain_flush_tlb_pde(struct protection_domain *domain)
 {
-	amd_iommu_domain_flush_pages(domain, 0,
-				     CMD_INV_IOMMU_ALL_PAGES_ADDRESS);
+	domain_flush_pages(domain, 0, CMD_INV_IOMMU_ALL_PAGES_ADDRESS, 1);
 }
 
-void amd_iommu_dev_flush_pasid_pages(struct iommu_dev_data *dev_data,
-				     ioasid_t pasid, u64 address, size_t size)
+void amd_iommu_domain_flush_complete(struct protection_domain *domain)
 {
-	struct iommu_cmd cmd;
-	struct amd_iommu *iommu = get_amd_iommu_from_dev(dev_data->dev);
+	int i;
 
-	build_inv_iommu_pages(&cmd, address, size,
-			      dev_data->gcr3_info.domid, pasid, true);
-	iommu_queue_command(iommu, &cmd);
+	for (i = 0; i < amd_iommu_get_num_iommus(); ++i) {
+		if (domain && !domain->dev_iommu[i])
+			continue;
 
-	if (dev_data->ats_enabled)
-		device_flush_iotlb(dev_data, address, size, pasid, true);
-
-	iommu_completion_wait(iommu);
+		/*
+		 * Devices of this domain are behind this IOMMU
+		 * We need to wait for completion of all commands.
+		 */
+		iommu_completion_wait(amd_iommus[i]);
+	}
 }
 
-static void dev_flush_pasid_all(struct iommu_dev_data *dev_data,
-				ioasid_t pasid)
+/* Flush the not present cache if it exists */
+static void domain_flush_np_cache(struct protection_domain *domain,
+		dma_addr_t iova, size_t size)
 {
-	amd_iommu_dev_flush_pasid_pages(dev_data, pasid, 0,
-					CMD_INV_IOMMU_ALL_PAGES_ADDRESS);
+	if (unlikely(amd_iommu_np_cache)) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&domain->lock, flags);
+		domain_flush_pages(domain, iova, size, 1);
+		amd_iommu_domain_flush_complete(domain);
+		spin_unlock_irqrestore(&domain->lock, flags);
+	}
 }
 
-int amd_iommu_complete_ppr(struct device *dev, u32 pasid, int status, int tag)
+
+/*
+ * This function flushes the DTEs for all devices in domain
+ */
+static void domain_flush_devices(struct protection_domain *domain)
 {
 	struct iommu_dev_data *dev_data;
-	struct amd_iommu *iommu;
-	struct iommu_cmd cmd;
 
-	dev_data = dev_iommu_priv_get(dev);
-	iommu    = get_amd_iommu_from_dev(dev);
-
-	build_complete_ppr(&cmd, dev_data->devid, pasid, status,
-			   tag, dev_data->pri_tlp);
-
-	return iommu_queue_command(iommu, &cmd);
+	list_for_each_entry(dev_data, &domain->dev_list, list)
+		device_flush_dte(dev_data);
 }
 
 /****************************************************************************
@@ -1870,24 +1486,29 @@ int amd_iommu_complete_ppr(struct device *dev, u32 pasid, int status, int tag)
  * contain.
  *
  ****************************************************************************/
-int amd_iommu_pdom_id_alloc(void)
+
+static u16 domain_id_alloc(void)
 {
-	return ida_alloc_range(&pdom_ids, 1, MAX_DOMAIN_ID - 1, GFP_ATOMIC);
+	int id;
+
+	spin_lock(&pd_bitmap_lock);
+	id = find_first_zero_bit(amd_iommu_pd_alloc_bitmap, MAX_DOMAIN_ID);
+	BUG_ON(id == 0);
+	if (id > 0 && id < MAX_DOMAIN_ID)
+		__set_bit(id, amd_iommu_pd_alloc_bitmap);
+	else
+		id = 0;
+	spin_unlock(&pd_bitmap_lock);
+
+	return id;
 }
 
-int amd_iommu_pdom_id_reserve(u16 id, gfp_t gfp)
+static void domain_id_free(int id)
 {
-	return ida_alloc_range(&pdom_ids, id, id, gfp);
-}
-
-void amd_iommu_pdom_id_free(int id)
-{
-	ida_free(&pdom_ids, id);
-}
-
-void amd_iommu_pdom_id_destroy(void)
-{
-	ida_destroy(&pdom_ids);
+	spin_lock(&pd_bitmap_lock);
+	if (id > 0 && id < MAX_DOMAIN_ID)
+		__clear_bit(id, amd_iommu_pd_alloc_bitmap);
+	spin_unlock(&pd_bitmap_lock);
 }
 
 static void free_gcr3_tbl_level1(u64 *tbl)
@@ -1901,7 +1522,7 @@ static void free_gcr3_tbl_level1(u64 *tbl)
 
 		ptr = iommu_phys_to_virt(tbl[i] & PAGE_MASK);
 
-		iommu_free_pages(ptr);
+		free_page((unsigned long)ptr);
 	}
 }
 
@@ -1920,261 +1541,86 @@ static void free_gcr3_tbl_level2(u64 *tbl)
 	}
 }
 
-static void free_gcr3_table(struct gcr3_tbl_info *gcr3_info)
+static void free_gcr3_table(struct protection_domain *domain)
 {
-	if (gcr3_info->glx == 2)
-		free_gcr3_tbl_level2(gcr3_info->gcr3_tbl);
-	else if (gcr3_info->glx == 1)
-		free_gcr3_tbl_level1(gcr3_info->gcr3_tbl);
+	if (domain->glx == 2)
+		free_gcr3_tbl_level2(domain->gcr3_tbl);
+	else if (domain->glx == 1)
+		free_gcr3_tbl_level1(domain->gcr3_tbl);
 	else
-		WARN_ON_ONCE(gcr3_info->glx != 0);
+		BUG_ON(domain->glx != 0);
 
-	gcr3_info->glx = 0;
-
-	/* Free per device domain ID */
-	amd_iommu_pdom_id_free(gcr3_info->domid);
-
-	iommu_free_pages(gcr3_info->gcr3_tbl);
-	gcr3_info->gcr3_tbl = NULL;
+	free_page((unsigned long)domain->gcr3_tbl);
 }
 
-/*
- * Number of GCR3 table levels required. Level must be 4-Kbyte
- * page and can contain up to 512 entries.
- */
-static int get_gcr3_levels(int pasids)
+static void set_dte_entry(struct amd_iommu *iommu, u16 devid,
+			  struct protection_domain *domain, bool ats, bool ppr)
 {
-	int levels;
+	u64 pte_root = 0;
+	u64 flags = 0;
+	u32 old_domid;
+	struct dev_table_entry *dev_table = get_dev_table(iommu);
 
-	if (pasids == -1)
-		return amd_iommu_max_glx_val;
+	if (domain->iop.mode != PAGE_MODE_NONE)
+		pte_root = iommu_virt_to_phys(domain->iop.root);
 
-	levels = get_count_order(pasids);
+	pte_root |= (domain->iop.mode & DEV_ENTRY_MODE_MASK)
+		    << DEV_ENTRY_MODE_SHIFT;
 
-	return levels ? (DIV_ROUND_UP(levels, 9) - 1) : levels;
-}
-
-static int setup_gcr3_table(struct gcr3_tbl_info *gcr3_info,
-			    struct amd_iommu *iommu, int pasids)
-{
-	int levels = get_gcr3_levels(pasids);
-	int nid = iommu ? dev_to_node(&iommu->dev->dev) : NUMA_NO_NODE;
-	int domid;
-
-	if (levels > amd_iommu_max_glx_val)
-		return -EINVAL;
-
-	if (gcr3_info->gcr3_tbl)
-		return -EBUSY;
-
-	/* Allocate per device domain ID */
-	domid = amd_iommu_pdom_id_alloc();
-	if (domid <= 0)
-		return -ENOSPC;
-	gcr3_info->domid = domid;
-
-	gcr3_info->gcr3_tbl = iommu_alloc_pages_node_sz(nid, GFP_ATOMIC, SZ_4K);
-	if (gcr3_info->gcr3_tbl == NULL) {
-		amd_iommu_pdom_id_free(domid);
-		return -ENOMEM;
-	}
-
-	gcr3_info->glx = levels;
-
-	return 0;
-}
-
-static u64 *__get_gcr3_pte(struct gcr3_tbl_info *gcr3_info,
-			   ioasid_t pasid, bool alloc)
-{
-	int index;
-	u64 *pte;
-	u64 *root = gcr3_info->gcr3_tbl;
-	int level = gcr3_info->glx;
-
-	while (true) {
-
-		index = (pasid >> (9 * level)) & 0x1ff;
-		pte   = &root[index];
-
-		if (level == 0)
-			break;
-
-		if (!(*pte & GCR3_VALID)) {
-			if (!alloc)
-				return NULL;
-
-			root = (void *)get_zeroed_page(GFP_ATOMIC);
-			if (root == NULL)
-				return NULL;
-
-			*pte = iommu_virt_to_phys(root) | GCR3_VALID;
-		}
-
-		root = iommu_phys_to_virt(*pte & PAGE_MASK);
-
-		level -= 1;
-	}
-
-	return pte;
-}
-
-static int update_gcr3(struct iommu_dev_data *dev_data,
-		       ioasid_t pasid, unsigned long gcr3, bool set)
-{
-	struct gcr3_tbl_info *gcr3_info = &dev_data->gcr3_info;
-	u64 *pte;
-
-	pte = __get_gcr3_pte(gcr3_info, pasid, true);
-	if (pte == NULL)
-		return -ENOMEM;
-
-	if (set)
-		*pte = (gcr3 & PAGE_MASK) | GCR3_VALID;
-	else
-		*pte = 0;
-
-	dev_flush_pasid_all(dev_data, pasid);
-	return 0;
-}
-
-int amd_iommu_set_gcr3(struct iommu_dev_data *dev_data, ioasid_t pasid,
-		       unsigned long gcr3)
-{
-	struct gcr3_tbl_info *gcr3_info = &dev_data->gcr3_info;
-	int ret;
-
-	iommu_group_mutex_assert(dev_data->dev);
-
-	ret = update_gcr3(dev_data, pasid, gcr3, true);
-	if (ret)
-		return ret;
-
-	gcr3_info->pasid_cnt++;
-	return ret;
-}
-
-int amd_iommu_clear_gcr3(struct iommu_dev_data *dev_data, ioasid_t pasid)
-{
-	struct gcr3_tbl_info *gcr3_info = &dev_data->gcr3_info;
-	int ret;
-
-	iommu_group_mutex_assert(dev_data->dev);
-
-	ret = update_gcr3(dev_data, pasid, 0, false);
-	if (ret)
-		return ret;
-
-	gcr3_info->pasid_cnt--;
-	return ret;
-}
-
-/*
- * Note:
- * The old value for GCR3 table and GPT have been cleared from caller.
- */
-static void set_dte_gcr3_table(struct iommu_dev_data *dev_data,
-			       struct dev_table_entry *new)
-{
-	struct gcr3_tbl_info *gcr3_info = &dev_data->gcr3_info;
-	u64 gcr3 = iommu_virt_to_phys(gcr3_info->gcr3_tbl);
-
-	new->data[0] |= DTE_FLAG_TV |
-			(dev_data->ppr ? DTE_FLAG_PPR : 0) |
-			(pdom_is_v2_pgtbl_mode(dev_data->domain) ?  DTE_FLAG_GIOV : 0) |
-			DTE_FLAG_GV |
-			FIELD_PREP(DTE_GLX, gcr3_info->glx) |
-			FIELD_PREP(DTE_GCR3_14_12, gcr3 >> 12) |
-			DTE_FLAG_IR | DTE_FLAG_IW;
-
-	new->data[1] |= FIELD_PREP(DTE_DOMID_MASK, dev_data->gcr3_info.domid) |
-			FIELD_PREP(DTE_GCR3_30_15, gcr3 >> 15) |
-			(dev_data->ats_enabled ? DTE_FLAG_IOTLB : 0) |
-			FIELD_PREP(DTE_GCR3_51_31, gcr3 >> 31);
-
-	/* Guest page table can only support 4 and 5 levels  */
-	if (amd_iommu_gpt_level == PAGE_MODE_5_LEVEL)
-		new->data[2] |= FIELD_PREP(DTE_GPT_LEVEL_MASK, GUEST_PGTABLE_5_LEVEL);
-	else
-		new->data[2] |= FIELD_PREP(DTE_GPT_LEVEL_MASK, GUEST_PGTABLE_4_LEVEL);
-}
-
-void amd_iommu_set_dte_v1(struct iommu_dev_data *dev_data,
-			  struct protection_domain *domain, u16 domid,
-			  struct pt_iommu_amdv1_hw_info *pt_info,
-			  struct dev_table_entry *new)
-{
-	u64 host_pt_root = __sme_set(pt_info->host_pt_root);
-
-	/* Note Dirty tracking is used for v1 table only for now */
-	new->data[0] |= DTE_FLAG_TV |
-			FIELD_PREP(DTE_MODE_MASK, pt_info->mode) |
-			(domain->dirty_tracking ? DTE_FLAG_HAD : 0) |
-			FIELD_PREP(DTE_HOST_TRP, host_pt_root >> 12) |
-			DTE_FLAG_IR | DTE_FLAG_IW;
-
-	new->data[1] |= FIELD_PREP(DTE_DOMID_MASK, domid) |
-			(dev_data->ats_enabled ? DTE_FLAG_IOTLB : 0);
-}
-
-static void set_dte_v1(struct iommu_dev_data *dev_data,
-		       struct protection_domain *domain, u16 domid,
-		       phys_addr_t top_paddr, unsigned int top_level,
-		       struct dev_table_entry *new)
-{
-	struct pt_iommu_amdv1_hw_info pt_info;
+	pte_root |= DTE_FLAG_IR | DTE_FLAG_IW | DTE_FLAG_V;
 
 	/*
-	 * When updating the IO pagetable, the new top and level
-	 * are provided as parameters. For other operations i.e.
-	 * device attach, retrieve the current pagetable info
-	 * via the IOMMU PT API.
+	 * When SNP is enabled, Only set TV bit when IOMMU
+	 * page translation is in use.
 	 */
-	if (top_paddr) {
-		pt_info.host_pt_root = top_paddr;
-		pt_info.mode = top_level + 1;
-	} else {
-		WARN_ON(top_paddr || top_level);
-		pt_iommu_amdv1_hw_info(&domain->amdv1, &pt_info);
+	if (!amd_iommu_snp_en || (domain->id != 0))
+		pte_root |= DTE_FLAG_TV;
+
+	flags = dev_table[devid].data[1];
+
+	if (ats)
+		flags |= DTE_FLAG_IOTLB;
+
+	if (ppr) {
+		if (iommu_feature(iommu, FEATURE_EPHSUP))
+			pte_root |= 1ULL << DEV_ENTRY_PPR;
 	}
 
-	amd_iommu_set_dte_v1(dev_data, domain, domid, &pt_info, new);
-}
+	if (domain->flags & PD_IOMMUV2_MASK) {
+		u64 gcr3 = iommu_virt_to_phys(domain->gcr3_tbl);
+		u64 glx  = domain->glx;
+		u64 tmp;
 
-static void set_dte_passthrough(struct iommu_dev_data *dev_data,
-				struct protection_domain *domain,
-				struct dev_table_entry *new)
-{
-	new->data[0] |= DTE_FLAG_TV | DTE_FLAG_IR | DTE_FLAG_IW;
+		pte_root |= DTE_FLAG_GV;
+		pte_root |= (glx & DTE_GLX_MASK) << DTE_GLX_SHIFT;
 
-	new->data[1] |= FIELD_PREP(DTE_DOMID_MASK, domain->id) |
-			(dev_data->ats_enabled) ? DTE_FLAG_IOTLB : 0;
-}
+		/* First mask out possible old values for GCR3 table */
+		tmp = DTE_GCR3_VAL_B(~0ULL) << DTE_GCR3_SHIFT_B;
+		flags    &= ~tmp;
 
-static void set_dte_entry(struct amd_iommu *iommu,
-			  struct iommu_dev_data *dev_data,
-			  phys_addr_t top_paddr, unsigned int top_level)
-{
-	u32 old_domid;
-	struct dev_table_entry new = {};
-	struct protection_domain *domain = dev_data->domain;
-	struct gcr3_tbl_info *gcr3_info = &dev_data->gcr3_info;
-	struct dev_table_entry *dte = &get_dev_table(iommu)[dev_data->devid];
+		tmp = DTE_GCR3_VAL_C(~0ULL) << DTE_GCR3_SHIFT_C;
+		flags    &= ~tmp;
 
-	amd_iommu_make_clear_dte(dev_data, &new);
+		/* Encode GCR3 table into DTE */
+		tmp = DTE_GCR3_VAL_A(gcr3) << DTE_GCR3_SHIFT_A;
+		pte_root |= tmp;
 
-	old_domid = READ_ONCE(dte->data[1]) & DTE_DOMID_MASK;
-	if (gcr3_info->gcr3_tbl)
-		set_dte_gcr3_table(dev_data, &new);
-	else if (domain->domain.type == IOMMU_DOMAIN_IDENTITY)
-		set_dte_passthrough(dev_data, domain, &new);
-	else if ((domain->domain.type & __IOMMU_DOMAIN_PAGING) &&
-		 domain->pd_mode == PD_MODE_V1)
-		set_dte_v1(dev_data, domain, domain->id, top_paddr, top_level, &new);
-	else
-		WARN_ON(true);
+		tmp = DTE_GCR3_VAL_B(gcr3) << DTE_GCR3_SHIFT_B;
+		flags    |= tmp;
 
-	amd_iommu_update_dte(iommu, dev_data, &new);
+		tmp = DTE_GCR3_VAL_C(gcr3) << DTE_GCR3_SHIFT_C;
+		flags    |= tmp;
+
+		if (domain->flags & PD_GIOV_MASK)
+			pte_root |= DTE_FLAG_GIOV;
+	}
+
+	flags &= ~DEV_DOMID_MASK;
+	flags |= domain->id;
+
+	old_domid = dev_table[devid].data[1] & DEV_DOMID_MASK;
+	dev_table[devid].data[1]  = flags;
+	dev_table[devid].data[0]  = pte_root;
 
 	/*
 	 * A kdump kernel might be replacing a domain ID that was copied from
@@ -2186,140 +1632,121 @@ static void set_dte_entry(struct amd_iommu *iommu,
 	}
 }
 
-/*
- * Clear DMA-remap related flags to block all DMA (blockeded domain)
- */
-static void clear_dte_entry(struct amd_iommu *iommu, struct iommu_dev_data *dev_data)
+static void clear_dte_entry(struct amd_iommu *iommu, u16 devid)
 {
-	struct dev_table_entry new = {};
+	struct dev_table_entry *dev_table = get_dev_table(iommu);
 
-	amd_iommu_make_clear_dte(dev_data, &new);
-	amd_iommu_update_dte(iommu, dev_data, &new);
+	/* remove entry from the device table seen by the hardware */
+	dev_table[devid].data[0]  = DTE_FLAG_V;
+
+	if (!amd_iommu_snp_en)
+		dev_table[devid].data[0] |= DTE_FLAG_TV;
+
+	dev_table[devid].data[1] &= DTE_FLAG_MASK;
+
+	amd_iommu_apply_erratum_63(iommu, devid);
 }
 
-/* Update and flush DTE for the given device */
-static void dev_update_dte(struct iommu_dev_data *dev_data, bool set)
+static void do_attach(struct iommu_dev_data *dev_data,
+		      struct protection_domain *domain)
 {
-	struct amd_iommu *iommu = get_amd_iommu_from_dev(dev_data->dev);
+	struct amd_iommu *iommu;
+	bool ats;
 
-	if (set)
-		set_dte_entry(iommu, dev_data, 0, 0);
-	else
-		clear_dte_entry(iommu, dev_data);
+	iommu = rlookup_amd_iommu(dev_data->dev);
+	if (!iommu)
+		return;
+	ats   = dev_data->ats.enabled;
+
+	/* Update data structures */
+	dev_data->domain = domain;
+	list_add(&dev_data->list, &domain->dev_list);
+
+	/* Do reference counting */
+	domain->dev_iommu[iommu->index] += 1;
+	domain->dev_cnt                 += 1;
+
+	/* Override supported page sizes */
+	if (domain->flags & PD_GIOV_MASK)
+		domain->domain.pgsize_bitmap = AMD_IOMMU_PGSIZES_V2;
+
+	/* Update device table */
+	set_dte_entry(iommu, dev_data->devid, domain,
+		      ats, dev_data->iommu_v2);
+	clone_aliases(iommu, dev_data->dev);
+
+	device_flush_dte(dev_data);
 }
 
-/*
- * If domain is SVA capable then initialize GCR3 table. Also if domain is
- * in v2 page table mode then update GCR3[0].
- */
-static int init_gcr3_table(struct iommu_dev_data *dev_data,
-			   struct protection_domain *pdom)
+static void do_detach(struct iommu_dev_data *dev_data)
 {
-	struct amd_iommu *iommu = get_amd_iommu_from_dev_data(dev_data);
-	int max_pasids = dev_data->max_pasids;
-	struct pt_iommu_x86_64_hw_info pt_info;
-	int ret = 0;
+	struct protection_domain *domain = dev_data->domain;
+	struct amd_iommu *iommu;
 
-	 /*
-	  * If domain is in pt mode then setup GCR3 table only if device
-	  * is PASID capable
-	  */
-	if (pdom_is_in_pt_mode(pdom) && !pdev_pasid_supported(dev_data))
-		return ret;
+	iommu = rlookup_amd_iommu(dev_data->dev);
+	if (!iommu)
+		return;
 
-	/*
-	 * By default, setup GCR3 table to support MAX PASIDs
-	 * supported by the device/IOMMU.
-	 */
-	ret = setup_gcr3_table(&dev_data->gcr3_info, iommu,
-			       max_pasids > 0 ?  max_pasids : 1);
+	/* Update data structures */
+	dev_data->domain = NULL;
+	list_del(&dev_data->list);
+	clear_dte_entry(iommu, dev_data->devid);
+	clone_aliases(iommu, dev_data->dev);
+
+	/* Flush the DTE entry */
+	device_flush_dte(dev_data);
+
+	/* Flush IOTLB */
+	amd_iommu_domain_flush_tlb_pde(domain);
+
+	/* Wait for the flushes to finish */
+	amd_iommu_domain_flush_complete(domain);
+
+	/* decrease reference counters - needs to happen after the flushes */
+	domain->dev_iommu[iommu->index] -= 1;
+	domain->dev_cnt                 -= 1;
+}
+
+static void pdev_iommuv2_disable(struct pci_dev *pdev)
+{
+	pci_disable_ats(pdev);
+	pci_disable_pri(pdev);
+	pci_disable_pasid(pdev);
+}
+
+static int pdev_pri_ats_enable(struct pci_dev *pdev)
+{
+	int ret;
+
+	/* Only allow access to user-accessible pages */
+	ret = pci_enable_pasid(pdev, 0);
 	if (ret)
 		return ret;
 
-	/* Setup GCR3[0] only if domain is setup with v2 page table mode */
-	if (!pdom_is_v2_pgtbl_mode(pdom))
-		return ret;
-
-	pt_iommu_x86_64_hw_info(&pdom->amdv2, &pt_info);
-	ret = update_gcr3(dev_data, 0, __sme_set(pt_info.gcr3_pt), true);
+	/* First reset the PRI state of the device */
+	ret = pci_reset_pri(pdev);
 	if (ret)
-		free_gcr3_table(&dev_data->gcr3_info);
+		goto out_err_pasid;
+
+	/* Enable PRI */
+	/* FIXME: Hardcode number of outstanding requests for now */
+	ret = pci_enable_pri(pdev, 32);
+	if (ret)
+		goto out_err_pasid;
+
+	ret = pci_enable_ats(pdev, PAGE_SHIFT);
+	if (ret)
+		goto out_err_pri;
+
+	return 0;
+
+out_err_pri:
+	pci_disable_pri(pdev);
+
+out_err_pasid:
+	pci_disable_pasid(pdev);
 
 	return ret;
-}
-
-static void destroy_gcr3_table(struct iommu_dev_data *dev_data,
-			       struct protection_domain *pdom)
-{
-	struct gcr3_tbl_info *gcr3_info = &dev_data->gcr3_info;
-
-	if (pdom_is_v2_pgtbl_mode(pdom))
-		update_gcr3(dev_data, 0, 0, false);
-
-	if (gcr3_info->gcr3_tbl == NULL)
-		return;
-
-	free_gcr3_table(gcr3_info);
-}
-
-static int pdom_attach_iommu(struct amd_iommu *iommu,
-			     struct protection_domain *pdom)
-{
-	struct pdom_iommu_info *pdom_iommu_info, *curr;
-	unsigned long flags;
-	int ret = 0;
-
-	spin_lock_irqsave(&pdom->lock, flags);
-
-	pdom_iommu_info = xa_load(&pdom->iommu_array, iommu->index);
-	if (pdom_iommu_info) {
-		pdom_iommu_info->refcnt++;
-		goto out_unlock;
-	}
-
-	pdom_iommu_info = kzalloc(sizeof(*pdom_iommu_info), GFP_ATOMIC);
-	if (!pdom_iommu_info) {
-		ret = -ENOMEM;
-		goto out_unlock;
-	}
-
-	pdom_iommu_info->iommu = iommu;
-	pdom_iommu_info->refcnt = 1;
-
-	curr = xa_cmpxchg(&pdom->iommu_array, iommu->index,
-			  NULL, pdom_iommu_info, GFP_ATOMIC);
-	if (curr) {
-		kfree(pdom_iommu_info);
-		ret = -ENOSPC;
-		goto out_unlock;
-	}
-
-out_unlock:
-	spin_unlock_irqrestore(&pdom->lock, flags);
-	return ret;
-}
-
-static void pdom_detach_iommu(struct amd_iommu *iommu,
-			      struct protection_domain *pdom)
-{
-	struct pdom_iommu_info *pdom_iommu_info;
-	unsigned long flags;
-
-	spin_lock_irqsave(&pdom->lock, flags);
-
-	pdom_iommu_info = xa_load(&pdom->iommu_array, iommu->index);
-	if (!pdom_iommu_info) {
-		spin_unlock_irqrestore(&pdom->lock, flags);
-		return;
-	}
-
-	pdom_iommu_info->refcnt--;
-	if (pdom_iommu_info->refcnt == 0) {
-		xa_erase(&pdom->iommu_array, iommu->index);
-		kfree(pdom_iommu_info);
-	}
-
-	spin_unlock_irqrestore(&pdom->lock, flags);
 }
 
 /*
@@ -2329,59 +1756,72 @@ static void pdom_detach_iommu(struct amd_iommu *iommu,
 static int attach_device(struct device *dev,
 			 struct protection_domain *domain)
 {
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
-	struct amd_iommu *iommu = get_amd_iommu_from_dev_data(dev_data);
+	struct iommu_dev_data *dev_data;
 	struct pci_dev *pdev;
 	unsigned long flags;
-	int ret = 0;
+	int ret;
 
-	mutex_lock(&dev_data->mutex);
+	spin_lock_irqsave(&domain->lock, flags);
 
-	if (dev_data->domain != NULL) {
-		ret = -EBUSY;
-		goto out;
-	}
+	dev_data = dev_iommu_priv_get(dev);
 
-	/* Do reference counting */
-	ret = pdom_attach_iommu(iommu, domain);
-	if (ret)
+	spin_lock(&dev_data->lock);
+
+	ret = -EBUSY;
+	if (dev_data->domain != NULL)
 		goto out;
 
-	/* Setup GCR3 table */
-	if (pdom_is_sva_capable(domain)) {
-		ret = init_gcr3_table(dev_data, domain);
-		if (ret) {
-			pdom_detach_iommu(iommu, domain);
-			goto out;
-		}
-	}
+	if (!dev_is_pci(dev))
+		goto skip_ats_check;
 
-	pdev = dev_is_pci(dev_data->dev) ? to_pci_dev(dev_data->dev) : NULL;
-	if (pdev && pdom_is_sva_capable(domain)) {
-		pdev_enable_caps(pdev);
+	pdev = to_pci_dev(dev);
+	if (domain->flags & PD_IOMMUV2_MASK) {
+		struct iommu_domain *def_domain = iommu_get_dma_domain(dev);
+
+		ret = -EINVAL;
 
 		/*
-		 * Device can continue to function even if IOPF
-		 * enablement failed. Hence in error path just
-		 * disable device PRI support.
+		 * In case of using AMD_IOMMU_V1 page table mode and the device
+		 * is enabling for PPR/ATS support (using v2 table),
+		 * we need to make sure that the domain type is identity map.
 		 */
-		if (amd_iommu_iopf_add_device(iommu, dev_data))
-			pdev_disable_cap_pri(pdev);
-	} else if (pdev) {
-		pdev_enable_cap_ats(pdev);
+		if ((amd_iommu_pgtable == AMD_IOMMU_V1) &&
+		    def_domain->type != IOMMU_DOMAIN_IDENTITY) {
+			goto out;
+		}
+
+		if (dev_data->iommu_v2) {
+			if (pdev_pri_ats_enable(pdev) != 0)
+				goto out;
+
+			dev_data->ats.enabled = true;
+			dev_data->ats.qdep    = pci_ats_queue_depth(pdev);
+			dev_data->pri_tlp     = pci_prg_resp_pasid_required(pdev);
+		}
+	} else if (amd_iommu_iotlb_sup &&
+		   pci_enable_ats(pdev, PAGE_SHIFT) == 0) {
+		dev_data->ats.enabled = true;
+		dev_data->ats.qdep    = pci_ats_queue_depth(pdev);
 	}
 
-	/* Update data structures */
-	dev_data->domain = domain;
-	spin_lock_irqsave(&domain->lock, flags);
-	list_add(&dev_data->list, &domain->dev_list);
-	spin_unlock_irqrestore(&domain->lock, flags);
+skip_ats_check:
+	ret = 0;
 
-	/* Update device table */
-	dev_update_dte(dev_data, true);
+	do_attach(dev_data, domain);
+
+	/*
+	 * We might boot into a crash-kernel here. The crashed kernel
+	 * left the caches in the IOMMU dirty. So we have to flush
+	 * here to evict all dirty stuff.
+	 */
+	amd_iommu_domain_flush_tlb_pde(domain);
+
+	amd_iommu_domain_flush_complete(domain);
 
 out:
-	mutex_unlock(&dev_data->mutex);
+	spin_unlock(&dev_data->lock);
+
+	spin_unlock_irqrestore(&domain->lock, flags);
 
 	return ret;
 }
@@ -2391,12 +1831,16 @@ out:
  */
 static void detach_device(struct device *dev)
 {
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
-	struct amd_iommu *iommu = get_amd_iommu_from_dev_data(dev_data);
-	struct protection_domain *domain = dev_data->domain;
+	struct protection_domain *domain;
+	struct iommu_dev_data *dev_data;
 	unsigned long flags;
 
-	mutex_lock(&dev_data->mutex);
+	dev_data = dev_iommu_priv_get(dev);
+	domain   = dev_data->domain;
+
+	spin_lock_irqsave(&domain->lock, flags);
+
+	spin_lock(&dev_data->lock);
 
 	/*
 	 * First check if the device is still attached. It might already
@@ -2407,43 +1851,28 @@ static void detach_device(struct device *dev)
 	if (WARN_ON(!dev_data->domain))
 		goto out;
 
-	/* Remove IOPF handler */
-	if (dev_data->ppr) {
-		iopf_queue_flush_dev(dev);
-		amd_iommu_iopf_remove_device(iommu, dev_data);
-	}
+	do_detach(dev_data);
 
-	if (dev_is_pci(dev))
-		pdev_disable_caps(to_pci_dev(dev));
+	if (!dev_is_pci(dev))
+		goto out;
 
-	/* Clear DTE and flush the entry */
-	dev_update_dte(dev_data, false);
+	if (domain->flags & PD_IOMMUV2_MASK && dev_data->iommu_v2)
+		pdev_iommuv2_disable(to_pci_dev(dev));
+	else if (dev_data->ats.enabled)
+		pci_disable_ats(to_pci_dev(dev));
 
-	/* Flush IOTLB and wait for the flushes to finish */
-	spin_lock_irqsave(&domain->lock, flags);
-	amd_iommu_domain_flush_all(domain);
-	list_del(&dev_data->list);
-	spin_unlock_irqrestore(&domain->lock, flags);
-
-	/* Clear GCR3 table */
-	if (pdom_is_sva_capable(domain))
-		destroy_gcr3_table(dev_data, domain);
-
-	/* Update data structures */
-	dev_data->domain = NULL;
-
-	/* decrease reference counters - needs to happen after the flushes */
-	pdom_detach_iommu(iommu, domain);
+	dev_data->ats.enabled = false;
 
 out:
-	mutex_unlock(&dev_data->mutex);
+	spin_unlock(&dev_data->lock);
+
+	spin_unlock_irqrestore(&domain->lock, flags);
 }
 
 static struct iommu_device *amd_iommu_probe_device(struct device *dev)
 {
 	struct iommu_device *iommu_dev;
 	struct amd_iommu *iommu;
-	struct iommu_dev_data *dev_data;
 	int ret;
 
 	if (!check_device(dev))
@@ -2462,57 +1891,40 @@ static struct iommu_device *amd_iommu_probe_device(struct device *dev)
 
 	ret = iommu_init_device(iommu, dev);
 	if (ret) {
-		dev_err(dev, "Failed to initialize - trying to proceed anyway\n");
+		if (ret != -ENOTSUPP)
+			dev_err(dev, "Failed to initialize - trying to proceed anyway\n");
 		iommu_dev = ERR_PTR(ret);
 		iommu_ignore_device(iommu, dev);
-		goto out_err;
-	}
-
-	amd_iommu_set_pci_msi_domain(dev, iommu);
-	iommu_dev = &iommu->iommu;
-
-	/*
-	 * If IOMMU and device supports PASID then it will contain max
-	 * supported PASIDs, else it will be zero.
-	 */
-	dev_data = dev_iommu_priv_get(dev);
-	if (amd_iommu_pasid_supported() && dev_is_pci(dev) &&
-	    pdev_pasid_supported(dev_data)) {
-		dev_data->max_pasids = min_t(u32, iommu->iommu.max_pasids,
-					     pci_max_pasids(to_pci_dev(dev)));
-	}
-
-	if (amd_iommu_pgtable == PD_MODE_NONE) {
-		pr_warn_once("%s: DMA translation not supported by iommu.\n",
-			     __func__);
-		iommu_dev = ERR_PTR(-ENODEV);
-		goto out_err;
+	} else {
+		amd_iommu_set_pci_msi_domain(dev, iommu);
+		iommu_dev = &iommu->iommu;
 	}
 
 	iommu_completion_wait(iommu);
 
-	if (FEATURE_NUM_INT_REMAP_SUP_2K(amd_iommu_efr2))
-		dev_data->max_irqs = MAX_IRQS_PER_TABLE_2K;
-	else
-		dev_data->max_irqs = MAX_IRQS_PER_TABLE_512;
-
-	if (dev_is_pci(dev))
-		pci_prepare_ats(to_pci_dev(dev), PAGE_SHIFT);
-
-out_err:
 	return iommu_dev;
+}
+
+static void amd_iommu_probe_finalize(struct device *dev)
+{
+	/* Domains are initialized for this device - have a look what we ended up with */
+	set_dma_ops(dev, NULL);
+	iommu_setup_dma_ops(dev, 0, U64_MAX);
 }
 
 static void amd_iommu_release_device(struct device *dev)
 {
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
+	struct amd_iommu *iommu;
 
-	WARN_ON(dev_data->domain);
+	if (!check_device(dev))
+		return;
 
-	/*
-	 * We keep dev_data around for unplugged devices and reuse it when the
-	 * device is re-plugged - not doing so would introduce a ton of races.
-	 */
+	iommu = rlookup_amd_iommu(dev);
+	if (!iommu)
+		return;
+
+	amd_iommu_uninit_device(dev);
+	iommu_completion_wait(iommu);
 }
 
 static struct iommu_group *amd_iommu_device_group(struct device *dev)
@@ -2525,6 +1937,43 @@ static struct iommu_group *amd_iommu_device_group(struct device *dev)
 
 /*****************************************************************************
  *
+ * The next functions belong to the dma_ops mapping/unmapping code.
+ *
+ *****************************************************************************/
+
+static void update_device_table(struct protection_domain *domain)
+{
+	struct iommu_dev_data *dev_data;
+
+	list_for_each_entry(dev_data, &domain->dev_list, list) {
+		struct amd_iommu *iommu = rlookup_amd_iommu(dev_data->dev);
+
+		if (!iommu)
+			continue;
+		set_dte_entry(iommu, dev_data->devid, domain,
+			      dev_data->ats.enabled, dev_data->iommu_v2);
+		clone_aliases(iommu, dev_data->dev);
+	}
+}
+
+void amd_iommu_update_and_flush_device_table(struct protection_domain *domain)
+{
+	update_device_table(domain);
+	domain_flush_devices(domain);
+}
+
+void amd_iommu_domain_update(struct protection_domain *domain)
+{
+	/* Update device table */
+	amd_iommu_update_and_flush_device_table(domain);
+
+	/* Flush domain TLB(s) and wait for completion */
+	amd_iommu_domain_flush_tlb_pde(domain);
+	amd_iommu_domain_flush_complete(domain);
+}
+
+/*****************************************************************************
+ *
  * The following functions belong to the exported interface of AMD IOMMU
  *
  * This interface allows access to lower level functions of the IOMMU
@@ -2533,405 +1982,181 @@ static struct iommu_group *amd_iommu_device_group(struct device *dev)
  *
  *****************************************************************************/
 
-static void protection_domain_init(struct protection_domain *domain)
+static void cleanup_domain(struct protection_domain *domain)
 {
-	spin_lock_init(&domain->lock);
-	INIT_LIST_HEAD(&domain->dev_list);
-	INIT_LIST_HEAD(&domain->dev_data_list);
-	INIT_LIST_HEAD(&domain->viommu_list);
-	xa_init(&domain->iommu_array);
+	struct iommu_dev_data *entry;
+	unsigned long flags;
+
+	spin_lock_irqsave(&domain->lock, flags);
+
+	while (!list_empty(&domain->dev_list)) {
+		entry = list_first_entry(&domain->dev_list,
+					 struct iommu_dev_data, list);
+		BUG_ON(!entry->domain);
+		do_detach(entry);
+	}
+
+	spin_unlock_irqrestore(&domain->lock, flags);
 }
 
-struct protection_domain *protection_domain_alloc(void)
+static void protection_domain_free(struct protection_domain *domain)
 {
+	if (!domain)
+		return;
+
+	if (domain->iop.pgtbl_cfg.tlb)
+		free_io_pgtable_ops(&domain->iop.iop.ops);
+
+	if (domain->id)
+		domain_id_free(domain->id);
+
+	kfree(domain);
+}
+
+static int protection_domain_init_v1(struct protection_domain *domain, int mode)
+{
+	u64 *pt_root = NULL;
+
+	BUG_ON(mode < PAGE_MODE_NONE || mode > PAGE_MODE_6_LEVEL);
+
+	spin_lock_init(&domain->lock);
+	domain->id = domain_id_alloc();
+	if (!domain->id)
+		return -ENOMEM;
+	INIT_LIST_HEAD(&domain->dev_list);
+
+	if (mode != PAGE_MODE_NONE) {
+		pt_root = (void *)get_zeroed_page(GFP_KERNEL);
+		if (!pt_root) {
+			domain_id_free(domain->id);
+			return -ENOMEM;
+		}
+	}
+
+	amd_iommu_domain_set_pgtable(domain, pt_root, mode);
+
+	return 0;
+}
+
+static int protection_domain_init_v2(struct protection_domain *domain)
+{
+	spin_lock_init(&domain->lock);
+	domain->id = domain_id_alloc();
+	if (!domain->id)
+		return -ENOMEM;
+	INIT_LIST_HEAD(&domain->dev_list);
+
+	domain->flags |= PD_GIOV_MASK;
+
+	if (domain_enable_v2(domain, 1)) {
+		domain_id_free(domain->id);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static struct protection_domain *protection_domain_alloc(unsigned int type)
+{
+	struct io_pgtable_ops *pgtbl_ops;
 	struct protection_domain *domain;
-	int domid;
+	int pgtable = amd_iommu_pgtable;
+	int mode = DEFAULT_PGTABLE_LEVEL;
+	int ret;
 
 	domain = kzalloc(sizeof(*domain), GFP_KERNEL);
 	if (!domain)
 		return NULL;
 
-	domid = amd_iommu_pdom_id_alloc();
-	if (domid <= 0) {
-		kfree(domain);
-		return NULL;
+	/*
+	 * Force IOMMU v1 page table when iommu=pt and
+	 * when allocating domain for pass-through devices.
+	 */
+	if (type == IOMMU_DOMAIN_IDENTITY) {
+		pgtable = AMD_IOMMU_V1;
+		mode = PAGE_MODE_NONE;
+	} else if (type == IOMMU_DOMAIN_UNMANAGED) {
+		pgtable = AMD_IOMMU_V1;
 	}
-	domain->id = domid;
 
-	protection_domain_init(domain);
+	switch (pgtable) {
+	case AMD_IOMMU_V1:
+		ret = protection_domain_init_v1(domain, mode);
+		break;
+	case AMD_IOMMU_V2:
+		ret = protection_domain_init_v2(domain);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	if (ret)
+		goto out_err;
+
+	/* No need to allocate io pgtable ops in passthrough mode */
+	if (type == IOMMU_DOMAIN_IDENTITY)
+		return domain;
+
+	pgtbl_ops = alloc_io_pgtable_ops(pgtable, &domain->iop.pgtbl_cfg, domain);
+	if (!pgtbl_ops) {
+		domain_id_free(domain->id);
+		goto out_err;
+	}
 
 	return domain;
-}
-
-static bool amd_iommu_hd_support(struct amd_iommu *iommu)
-{
-	if (amd_iommu_hatdis)
-		return false;
-
-	return iommu && (iommu->features & FEATURE_HDSUP);
-}
-
-static spinlock_t *amd_iommu_get_top_lock(struct pt_iommu *iommupt)
-{
-	struct protection_domain *pdom =
-		container_of(iommupt, struct protection_domain, iommu);
-
-	return &pdom->lock;
-}
-
-/*
- * Update all HW references to the domain with a new pgtable configuration.
- */
-static void amd_iommu_change_top(struct pt_iommu *iommu_table,
-				 phys_addr_t top_paddr, unsigned int top_level)
-{
-	struct protection_domain *pdom =
-		container_of(iommu_table, struct protection_domain, iommu);
-	struct iommu_dev_data *dev_data;
-
-	lockdep_assert_held(&pdom->lock);
-
-	/* Update the DTE for all devices attached to this domain */
-	list_for_each_entry(dev_data, &pdom->dev_list, list) {
-		struct amd_iommu *iommu = rlookup_amd_iommu(dev_data->dev);
-
-		/* Update the HW references with the new level and top ptr */
-		set_dte_entry(iommu, dev_data, top_paddr, top_level);
-		clone_aliases(iommu, dev_data->dev);
-	}
-
-	list_for_each_entry(dev_data, &pdom->dev_list, list)
-		device_flush_dte(dev_data);
-
-	domain_flush_complete(pdom);
-}
-
-/*
- * amd_iommu_iotlb_sync_map() is used to generate flushes for non-present to
- * present (ie mapping) operations. It is a NOP if the IOMMU doesn't have non
- * present caching (like hypervisor shadowing).
- */
-static int amd_iommu_iotlb_sync_map(struct iommu_domain *dom,
-				    unsigned long iova, size_t size)
-{
-	struct protection_domain *domain = to_pdomain(dom);
-	unsigned long flags;
-
-	if (likely(!amd_iommu_np_cache))
-		return 0;
-
-	spin_lock_irqsave(&domain->lock, flags);
-	amd_iommu_domain_flush_pages(domain, iova, size);
-	spin_unlock_irqrestore(&domain->lock, flags);
-	return 0;
-}
-
-static void amd_iommu_flush_iotlb_all(struct iommu_domain *domain)
-{
-	struct protection_domain *dom = to_pdomain(domain);
-	unsigned long flags;
-
-	spin_lock_irqsave(&dom->lock, flags);
-	amd_iommu_domain_flush_all(dom);
-	spin_unlock_irqrestore(&dom->lock, flags);
-}
-
-static void amd_iommu_iotlb_sync(struct iommu_domain *domain,
-				 struct iommu_iotlb_gather *gather)
-{
-	struct protection_domain *dom = to_pdomain(domain);
-	unsigned long flags;
-
-	spin_lock_irqsave(&dom->lock, flags);
-	amd_iommu_domain_flush_pages(dom, gather->start,
-				     gather->end - gather->start + 1);
-	spin_unlock_irqrestore(&dom->lock, flags);
-	iommu_put_pages_list(&gather->freelist);
-}
-
-static const struct pt_iommu_driver_ops amd_hw_driver_ops_v1 = {
-	.get_top_lock = amd_iommu_get_top_lock,
-	.change_top = amd_iommu_change_top,
-};
-
-static const struct iommu_domain_ops amdv1_ops = {
-	IOMMU_PT_DOMAIN_OPS(amdv1),
-	.iotlb_sync_map = amd_iommu_iotlb_sync_map,
-	.flush_iotlb_all = amd_iommu_flush_iotlb_all,
-	.iotlb_sync = amd_iommu_iotlb_sync,
-	.attach_dev = amd_iommu_attach_device,
-	.free = amd_iommu_domain_free,
-	.enforce_cache_coherency = amd_iommu_enforce_cache_coherency,
-};
-
-static const struct iommu_dirty_ops amdv1_dirty_ops = {
-	IOMMU_PT_DIRTY_OPS(amdv1),
-	.set_dirty_tracking = amd_iommu_set_dirty_tracking,
-};
-
-static struct iommu_domain *amd_iommu_domain_alloc_paging_v1(struct device *dev,
-							     u32 flags)
-{
-	struct pt_iommu_amdv1_cfg cfg = {};
-	struct protection_domain *domain;
-	int ret;
-
-	if (amd_iommu_hatdis)
-		return ERR_PTR(-EOPNOTSUPP);
-
-	domain = protection_domain_alloc();
-	if (!domain)
-		return ERR_PTR(-ENOMEM);
-
-	domain->pd_mode = PD_MODE_V1;
-	domain->iommu.driver_ops = &amd_hw_driver_ops_v1;
-	domain->iommu.nid = dev_to_node(dev);
-	if (flags & IOMMU_HWPT_ALLOC_DIRTY_TRACKING)
-		domain->domain.dirty_ops = &amdv1_dirty_ops;
-
-	/*
-	 * Someday FORCE_COHERENCE should be set by
-	 * amd_iommu_enforce_cache_coherency() like VT-d does.
-	 */
-	cfg.common.features = BIT(PT_FEAT_DYNAMIC_TOP) |
-			      BIT(PT_FEAT_AMDV1_ENCRYPT_TABLES) |
-			      BIT(PT_FEAT_AMDV1_FORCE_COHERENCE);
-
-	/*
-	 * AMD's IOMMU can flush as many pages as necessary in a single flush.
-	 * Unless we run in a virtual machine, which can be inferred according
-	 * to whether "non-present cache" is on, it is probably best to prefer
-	 * (potentially) too extensive TLB flushing (i.e., more misses) over
-	 * multiple TLB flushes (i.e., more flushes). For virtual machines the
-	 * hypervisor needs to synchronize the host IOMMU PTEs with those of
-	 * the guest, and the trade-off is different: unnecessary TLB flushes
-	 * should be avoided.
-	 */
-	if (amd_iommu_np_cache)
-		cfg.common.features |= BIT(PT_FEAT_FLUSH_RANGE_NO_GAPS);
-	else
-		cfg.common.features |= BIT(PT_FEAT_FLUSH_RANGE);
-
-	cfg.common.hw_max_vasz_lg2 =
-		min(64, (amd_iommu_hpt_level - 1) * 9 + 21);
-	cfg.common.hw_max_oasz_lg2 = 52;
-	cfg.starting_level = 2;
-	domain->domain.ops = &amdv1_ops;
-
-	ret = pt_iommu_amdv1_init(&domain->amdv1, &cfg, GFP_KERNEL);
-	if (ret) {
-		amd_iommu_domain_free(&domain->domain);
-		return ERR_PTR(ret);
-	}
-
-	/*
-	 * Narrow the supported page sizes to those selected by the kernel
-	 * command line.
-	 */
-	domain->domain.pgsize_bitmap &= amd_iommu_pgsize_bitmap;
-	return &domain->domain;
-}
-
-static const struct iommu_domain_ops amdv2_ops = {
-	IOMMU_PT_DOMAIN_OPS(x86_64),
-	.iotlb_sync_map = amd_iommu_iotlb_sync_map,
-	.flush_iotlb_all = amd_iommu_flush_iotlb_all,
-	.iotlb_sync = amd_iommu_iotlb_sync,
-	.attach_dev = amd_iommu_attach_device,
-	.free = amd_iommu_domain_free,
-	/*
-	 * Note the AMDv2 page table format does not support a Force Coherency
-	 * bit, so enforce_cache_coherency should not be set. However VFIO is
-	 * not prepared to handle a case where some domains will support
-	 * enforcement and others do not. VFIO and iommufd will have to be fixed
-	 * before it can fully use the V2 page table. See the comment in
-	 * iommufd_hwpt_paging_alloc(). For now leave things as they have
-	 * historically been and lie about enforce_cache_coherencey.
-	 */
-	.enforce_cache_coherency = amd_iommu_enforce_cache_coherency,
-};
-
-static struct iommu_domain *amd_iommu_domain_alloc_paging_v2(struct device *dev,
-							     u32 flags)
-{
-	struct pt_iommu_x86_64_cfg cfg = {};
-	struct protection_domain *domain;
-	int ret;
-
-	if (!amd_iommu_v2_pgtbl_supported())
-		return ERR_PTR(-EOPNOTSUPP);
-
-	domain = protection_domain_alloc();
-	if (!domain)
-		return ERR_PTR(-ENOMEM);
-
-	domain->pd_mode = PD_MODE_V2;
-	domain->iommu.nid = dev_to_node(dev);
-
-	cfg.common.features = BIT(PT_FEAT_X86_64_AMD_ENCRYPT_TABLES);
-	if (amd_iommu_np_cache)
-		cfg.common.features |= BIT(PT_FEAT_FLUSH_RANGE_NO_GAPS);
-	else
-		cfg.common.features |= BIT(PT_FEAT_FLUSH_RANGE);
-
-	/*
-	 * The v2 table behaves differently if it is attached to PASID 0 vs a
-	 * non-zero PASID. On PASID 0 it has no sign extension and the full
-	 * 57/48 bits decode the lower addresses. Otherwise it behaves like a
-	 * normal sign extended x86 page table. Since we want the domain to work
-	 * in both modes the top bit is removed and PT_FEAT_SIGN_EXTEND is not
-	 * set which creates a table that is compatible in both modes.
-	 */
-	if (amd_iommu_gpt_level == PAGE_MODE_5_LEVEL) {
-		cfg.common.hw_max_vasz_lg2 = 56;
-		cfg.top_level = 4;
-	} else {
-		cfg.common.hw_max_vasz_lg2 = 47;
-		cfg.top_level = 3;
-	}
-	cfg.common.hw_max_oasz_lg2 = 52;
-	domain->domain.ops = &amdv2_ops;
-
-	ret = pt_iommu_x86_64_init(&domain->amdv2, &cfg, GFP_KERNEL);
-	if (ret) {
-		amd_iommu_domain_free(&domain->domain);
-		return ERR_PTR(ret);
-	}
-	return &domain->domain;
-}
-
-static inline bool is_nest_parent_supported(u32 flags)
-{
-	/* Only allow nest parent when these features are supported */
-	return check_feature(FEATURE_GT) &&
-	       check_feature(FEATURE_GIOSUP) &&
-	       check_feature2(FEATURE_GCR3TRPMODE);
-}
-
-static struct iommu_domain *
-amd_iommu_domain_alloc_paging_flags(struct device *dev, u32 flags,
-				    const struct iommu_user_data *user_data)
-
-{
-	struct amd_iommu *iommu = get_amd_iommu_from_dev(dev);
-	const u32 supported_flags = IOMMU_HWPT_ALLOC_DIRTY_TRACKING |
-						IOMMU_HWPT_ALLOC_PASID |
-						IOMMU_HWPT_ALLOC_NEST_PARENT;
-
-	if ((flags & ~supported_flags) || user_data)
-		return ERR_PTR(-EOPNOTSUPP);
-
-	switch (flags & supported_flags) {
-	case IOMMU_HWPT_ALLOC_DIRTY_TRACKING:
-	case IOMMU_HWPT_ALLOC_NEST_PARENT:
-	case IOMMU_HWPT_ALLOC_DIRTY_TRACKING | IOMMU_HWPT_ALLOC_NEST_PARENT:
-		/*
-		 * Allocate domain with v1 page table for dirty tracking
-		 * and/or Nest parent.
-		 */
-		if ((flags & IOMMU_HWPT_ALLOC_DIRTY_TRACKING) &&
-		    !amd_iommu_hd_support(iommu))
-			break;
-
-		if ((flags & IOMMU_HWPT_ALLOC_NEST_PARENT) &&
-		    !is_nest_parent_supported(flags))
-			break;
-
-		return amd_iommu_domain_alloc_paging_v1(dev, flags);
-	case IOMMU_HWPT_ALLOC_PASID:
-		/* Allocate domain with v2 page table if IOMMU supports PASID. */
-		if (!amd_iommu_pasid_supported())
-			break;
-		return amd_iommu_domain_alloc_paging_v2(dev, flags);
-	case 0: {
-		struct iommu_domain *ret;
-
-		/* If nothing specific is required use the kernel commandline default */
-		if (amd_iommu_pgtable == PD_MODE_V1) {
-			ret = amd_iommu_domain_alloc_paging_v1(dev, flags);
-			if (ret != ERR_PTR(-EOPNOTSUPP))
-				return ret;
-			return amd_iommu_domain_alloc_paging_v2(dev, flags);
-		}
-		ret = amd_iommu_domain_alloc_paging_v2(dev, flags);
-		if (ret != ERR_PTR(-EOPNOTSUPP))
-			return ret;
-		return amd_iommu_domain_alloc_paging_v1(dev, flags);
-	}
-	default:
-		break;
-	}
-	return ERR_PTR(-EOPNOTSUPP);
-}
-
-void amd_iommu_domain_free(struct iommu_domain *dom)
-{
-	struct protection_domain *domain = to_pdomain(dom);
-
-	WARN_ON(!list_empty(&domain->dev_list));
-	pt_iommu_deinit(&domain->iommu);
-	amd_iommu_pdom_id_free(domain->id);
+out_err:
 	kfree(domain);
+	return NULL;
 }
 
-static int blocked_domain_attach_device(struct iommu_domain *domain,
-					struct device *dev,
-					struct iommu_domain *old)
+static struct iommu_domain *amd_iommu_domain_alloc(unsigned type)
 {
-	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
+	struct protection_domain *domain;
 
-	if (dev_data->domain)
-		detach_device(dev);
+	/*
+	 * Since DTE[Mode]=0 is prohibited on SNP-enabled system,
+	 * default to use IOMMU_DOMAIN_DMA[_FQ].
+	 */
+	if (amd_iommu_snp_en && (type == IOMMU_DOMAIN_IDENTITY))
+		return NULL;
 
-	/* Clear DTE and flush the entry */
-	mutex_lock(&dev_data->mutex);
-	dev_update_dte(dev_data, false);
-	mutex_unlock(&dev_data->mutex);
+	domain = protection_domain_alloc(type);
+	if (!domain)
+		return NULL;
 
-	return 0;
+	domain->domain.geometry.aperture_start = 0;
+	domain->domain.geometry.aperture_end   = ~0ULL;
+	domain->domain.geometry.force_aperture = true;
+
+	return &domain->domain;
 }
 
-static int blocked_domain_set_dev_pasid(struct iommu_domain *domain,
-					struct device *dev, ioasid_t pasid,
-					struct iommu_domain *old)
+static void amd_iommu_domain_free(struct iommu_domain *dom)
 {
-	amd_iommu_remove_dev_pasid(dev, pasid, old);
-	return 0;
+	struct protection_domain *domain;
+
+	domain = to_pdomain(dom);
+
+	if (domain->dev_cnt > 0)
+		cleanup_domain(domain);
+
+	BUG_ON(domain->dev_cnt != 0);
+
+	if (!dom)
+		return;
+
+	if (domain->flags & PD_IOMMUV2_MASK)
+		free_gcr3_table(domain);
+
+	protection_domain_free(domain);
 }
 
-static struct iommu_domain blocked_domain = {
-	.type = IOMMU_DOMAIN_BLOCKED,
-	.ops = &(const struct iommu_domain_ops) {
-		.attach_dev     = blocked_domain_attach_device,
-		.set_dev_pasid  = blocked_domain_set_dev_pasid,
-	}
-};
-
-static struct protection_domain identity_domain;
-
-static const struct iommu_domain_ops identity_domain_ops = {
-	.attach_dev = amd_iommu_attach_device,
-};
-
-void amd_iommu_init_identity_domain(void)
-{
-	struct iommu_domain *domain = &identity_domain.domain;
-
-	domain->type = IOMMU_DOMAIN_IDENTITY;
-	domain->ops = &identity_domain_ops;
-	domain->owner = &amd_iommu_ops;
-
-	identity_domain.id = amd_iommu_pdom_id_alloc();
-
-	protection_domain_init(&identity_domain);
-}
-
-static int amd_iommu_attach_device(struct iommu_domain *dom, struct device *dev,
-				   struct iommu_domain *old)
+static int amd_iommu_attach_device(struct iommu_domain *dom,
+				   struct device *dev)
 {
 	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
 	struct protection_domain *domain = to_pdomain(dom);
-	struct amd_iommu *iommu = get_amd_iommu_from_dev(dev);
+	struct amd_iommu *iommu = rlookup_amd_iommu(dev);
 	int ret;
 
 	/*
@@ -2942,13 +2167,6 @@ static int amd_iommu_attach_device(struct iommu_domain *dom, struct device *dev,
 		return 0;
 
 	dev_data->defer_attach = false;
-
-	/*
-	 * Restrict to devices with compatible IOMMU hardware support
-	 * when enforcement of dirty tracking is enabled.
-	 */
-	if (dom->dirty_ops && !amd_iommu_hd_support(iommu))
-		return -EINVAL;
 
 	if (dev_data->domain)
 		detach_device(dev);
@@ -2964,7 +2182,95 @@ static int amd_iommu_attach_device(struct iommu_domain *dom, struct device *dev,
 	}
 #endif
 
+	iommu_completion_wait(iommu);
+
 	return ret;
+}
+
+static void amd_iommu_iotlb_sync_map(struct iommu_domain *dom,
+				     unsigned long iova, size_t size)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
+
+	if (ops->map_pages)
+		domain_flush_np_cache(domain, iova, size);
+}
+
+static int amd_iommu_map_pages(struct iommu_domain *dom, unsigned long iova,
+			       phys_addr_t paddr, size_t pgsize, size_t pgcount,
+			       int iommu_prot, gfp_t gfp, size_t *mapped)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
+	int prot = 0;
+	int ret = -EINVAL;
+
+	if ((amd_iommu_pgtable == AMD_IOMMU_V1) &&
+	    (domain->iop.mode == PAGE_MODE_NONE))
+		return -EINVAL;
+
+	if (iommu_prot & IOMMU_READ)
+		prot |= IOMMU_PROT_IR;
+	if (iommu_prot & IOMMU_WRITE)
+		prot |= IOMMU_PROT_IW;
+
+	if (ops->map_pages) {
+		ret = ops->map_pages(ops, iova, paddr, pgsize,
+				     pgcount, prot, gfp, mapped);
+	}
+
+	return ret;
+}
+
+static void amd_iommu_iotlb_gather_add_page(struct iommu_domain *domain,
+					    struct iommu_iotlb_gather *gather,
+					    unsigned long iova, size_t size)
+{
+	/*
+	 * AMD's IOMMU can flush as many pages as necessary in a single flush.
+	 * Unless we run in a virtual machine, which can be inferred according
+	 * to whether "non-present cache" is on, it is probably best to prefer
+	 * (potentially) too extensive TLB flushing (i.e., more misses) over
+	 * mutliple TLB flushes (i.e., more flushes). For virtual machines the
+	 * hypervisor needs to synchronize the host IOMMU PTEs with those of
+	 * the guest, and the trade-off is different: unnecessary TLB flushes
+	 * should be avoided.
+	 */
+	if (amd_iommu_np_cache &&
+	    iommu_iotlb_gather_is_disjoint(gather, iova, size))
+		iommu_iotlb_sync(domain, gather);
+
+	iommu_iotlb_gather_add_range(gather, iova, size);
+}
+
+static size_t amd_iommu_unmap_pages(struct iommu_domain *dom, unsigned long iova,
+				    size_t pgsize, size_t pgcount,
+				    struct iommu_iotlb_gather *gather)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
+	size_t r;
+
+	if ((amd_iommu_pgtable == AMD_IOMMU_V1) &&
+	    (domain->iop.mode == PAGE_MODE_NONE))
+		return 0;
+
+	r = (ops->unmap_pages) ? ops->unmap_pages(ops, iova, pgsize, pgcount, NULL) : 0;
+
+	if (r)
+		amd_iommu_iotlb_gather_add_page(dom, gather, iova, r);
+
+	return r;
+}
+
+static phys_addr_t amd_iommu_iova_to_phys(struct iommu_domain *dom,
+					  dma_addr_t iova)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	struct io_pgtable_ops *ops = &domain->iop.iop.ops;
+
+	return ops->iova_to_phys(ops, iova);
 }
 
 static bool amd_iommu_capable(struct device *dev, enum iommu_cap cap)
@@ -2978,59 +2284,11 @@ static bool amd_iommu_capable(struct device *dev, enum iommu_cap cap)
 		return amdr_ivrs_remap_support;
 	case IOMMU_CAP_ENFORCE_CACHE_COHERENCY:
 		return true;
-	case IOMMU_CAP_DEFERRED_FLUSH:
-		return true;
-	case IOMMU_CAP_DIRTY_TRACKING: {
-		struct amd_iommu *iommu = get_amd_iommu_from_dev(dev);
-
-		return amd_iommu_hd_support(iommu);
-	}
 	default:
 		break;
 	}
 
 	return false;
-}
-
-static int amd_iommu_set_dirty_tracking(struct iommu_domain *domain,
-					bool enable)
-{
-	struct protection_domain *pdomain = to_pdomain(domain);
-	struct dev_table_entry *dte;
-	struct iommu_dev_data *dev_data;
-	bool domain_flush = false;
-	struct amd_iommu *iommu;
-	unsigned long flags;
-	u64 new;
-
-	spin_lock_irqsave(&pdomain->lock, flags);
-	if (!(pdomain->dirty_tracking ^ enable)) {
-		spin_unlock_irqrestore(&pdomain->lock, flags);
-		return 0;
-	}
-
-	list_for_each_entry(dev_data, &pdomain->dev_list, list) {
-		spin_lock(&dev_data->dte_lock);
-		iommu = get_amd_iommu_from_dev_data(dev_data);
-		dte = &get_dev_table(iommu)[dev_data->devid];
-		new = dte->data[0];
-		new = (enable ? new | DTE_FLAG_HAD : new & ~DTE_FLAG_HAD);
-		dte->data[0] = new;
-		spin_unlock(&dev_data->dte_lock);
-
-		/* Flush device DTE */
-		device_flush_dte(dev_data);
-		domain_flush = true;
-	}
-
-	/* Flush IOTLB to mark IOPTE dirty on the next translation(s) */
-	if (domain_flush)
-		amd_iommu_domain_flush_all(pdomain);
-
-	pdomain->dirty_tracking = enable;
-	spin_unlock_irqrestore(&pdomain->lock, flags);
-
-	return 0;
 }
 
 static void amd_iommu_get_resv_regions(struct device *dev,
@@ -3047,7 +2305,9 @@ static void amd_iommu_get_resv_regions(struct device *dev,
 		return;
 
 	devid = PCI_SBDF_TO_DEVID(sbdf);
-	iommu = get_amd_iommu_from_dev(dev);
+	iommu = rlookup_amd_iommu(dev);
+	if (!iommu)
+		return;
 	pci_seg = iommu->pci_seg;
 
 	list_for_each_entry(entry, &pci_seg->unity_map, list) {
@@ -3084,9 +2344,6 @@ static void amd_iommu_get_resv_regions(struct device *dev,
 		return;
 	list_add_tail(&region->list, head);
 
-	if (amd_iommu_ht_range_ignore())
-		return;
-
 	region = iommu_alloc_resv_region(HT_RANGE_START,
 					 HT_RANGE_END - HT_RANGE_START + 1,
 					 0, IOMMU_RESV_RESERVED, GFP_KERNEL);
@@ -3095,11 +2352,35 @@ static void amd_iommu_get_resv_regions(struct device *dev,
 	list_add_tail(&region->list, head);
 }
 
-static bool amd_iommu_is_attach_deferred(struct device *dev)
+bool amd_iommu_is_attach_deferred(struct device *dev)
 {
 	struct iommu_dev_data *dev_data = dev_iommu_priv_get(dev);
 
 	return dev_data->defer_attach;
+}
+EXPORT_SYMBOL_GPL(amd_iommu_is_attach_deferred);
+
+static void amd_iommu_flush_iotlb_all(struct iommu_domain *domain)
+{
+	struct protection_domain *dom = to_pdomain(domain);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dom->lock, flags);
+	amd_iommu_domain_flush_tlb_pde(dom);
+	amd_iommu_domain_flush_complete(dom);
+	spin_unlock_irqrestore(&dom->lock, flags);
+}
+
+static void amd_iommu_iotlb_sync(struct iommu_domain *domain,
+				 struct iommu_iotlb_gather *gather)
+{
+	struct protection_domain *dom = to_pdomain(domain);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dom->lock, flags);
+	domain_flush_pages(dom, gather->start, gather->end - gather->start, 1);
+	amd_iommu_domain_flush_complete(dom);
+	spin_unlock_irqrestore(&dom->lock, flags);
 }
 
 static int amd_iommu_def_domain_type(struct device *dev)
@@ -3110,10 +2391,6 @@ static int amd_iommu_def_domain_type(struct device *dev)
 	if (!dev_data)
 		return 0;
 
-	/* Always use DMA domain for untrusted device */
-	if (dev_is_pci(dev) && to_pci_dev(dev)->untrusted)
-		return IOMMU_DOMAIN_DMA;
-
 	/*
 	 * Do not identity map IOMMUv2 capable devices when:
 	 *  - memory encryption is active, because some of those devices
@@ -3121,7 +2398,7 @@ static int amd_iommu_def_domain_type(struct device *dev)
 	 *    and require remapping.
 	 *  - SNP is enabled, because it prohibits DTE[Mode]=0.
 	 */
-	if (pdev_pasid_supported(dev_data) &&
+	if (dev_data->iommu_v2 &&
 	    !cc_platform_has(CC_ATTR_MEM_ENCRYPT) &&
 	    !amd_iommu_snp_en) {
 		return IOMMU_DOMAIN_IDENTITY;
@@ -3138,22 +2415,372 @@ static bool amd_iommu_enforce_cache_coherency(struct iommu_domain *domain)
 
 const struct iommu_ops amd_iommu_ops = {
 	.capable = amd_iommu_capable,
-	.hw_info = amd_iommufd_hw_info,
-	.blocked_domain = &blocked_domain,
-	.release_domain = &blocked_domain,
-	.identity_domain = &identity_domain.domain,
-	.domain_alloc_paging_flags = amd_iommu_domain_alloc_paging_flags,
-	.domain_alloc_sva = amd_iommu_domain_alloc_sva,
+	.domain_alloc = amd_iommu_domain_alloc,
 	.probe_device = amd_iommu_probe_device,
 	.release_device = amd_iommu_release_device,
+	.probe_finalize = amd_iommu_probe_finalize,
 	.device_group = amd_iommu_device_group,
 	.get_resv_regions = amd_iommu_get_resv_regions,
 	.is_attach_deferred = amd_iommu_is_attach_deferred,
+	.pgsize_bitmap	= AMD_IOMMU_PGSIZES,
 	.def_domain_type = amd_iommu_def_domain_type,
-	.page_response = amd_iommu_page_response,
-	.get_viommu_size = amd_iommufd_get_viommu_size,
-	.viommu_init = amd_iommufd_viommu_init,
+	.default_domain_ops = &(const struct iommu_domain_ops) {
+		.attach_dev	= amd_iommu_attach_device,
+		.map_pages	= amd_iommu_map_pages,
+		.unmap_pages	= amd_iommu_unmap_pages,
+		.iotlb_sync_map	= amd_iommu_iotlb_sync_map,
+		.iova_to_phys	= amd_iommu_iova_to_phys,
+		.flush_iotlb_all = amd_iommu_flush_iotlb_all,
+		.iotlb_sync	= amd_iommu_iotlb_sync,
+		.free		= amd_iommu_domain_free,
+		.enforce_cache_coherency = amd_iommu_enforce_cache_coherency,
+	}
 };
+
+/*****************************************************************************
+ *
+ * The next functions do a basic initialization of IOMMU for pass through
+ * mode
+ *
+ * In passthrough mode the IOMMU is initialized and enabled but not used for
+ * DMA-API translation.
+ *
+ *****************************************************************************/
+
+/* IOMMUv2 specific functions */
+int amd_iommu_register_ppr_notifier(struct notifier_block *nb)
+{
+	return atomic_notifier_chain_register(&ppr_notifier, nb);
+}
+EXPORT_SYMBOL(amd_iommu_register_ppr_notifier);
+
+int amd_iommu_unregister_ppr_notifier(struct notifier_block *nb)
+{
+	return atomic_notifier_chain_unregister(&ppr_notifier, nb);
+}
+EXPORT_SYMBOL(amd_iommu_unregister_ppr_notifier);
+
+void amd_iommu_domain_direct_map(struct iommu_domain *dom)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	unsigned long flags;
+
+	spin_lock_irqsave(&domain->lock, flags);
+
+	if (domain->iop.pgtbl_cfg.tlb)
+		free_io_pgtable_ops(&domain->iop.iop.ops);
+
+	spin_unlock_irqrestore(&domain->lock, flags);
+}
+EXPORT_SYMBOL(amd_iommu_domain_direct_map);
+
+/* Note: This function expects iommu_domain->lock to be held prior calling the function. */
+static int domain_enable_v2(struct protection_domain *domain, int pasids)
+{
+	int levels;
+
+	/* Number of GCR3 table levels required */
+	for (levels = 0; (pasids - 1) & ~0x1ff; pasids >>= 9)
+		levels += 1;
+
+	if (levels > amd_iommu_max_glx_val)
+		return -EINVAL;
+
+	domain->gcr3_tbl = (void *)get_zeroed_page(GFP_ATOMIC);
+	if (domain->gcr3_tbl == NULL)
+		return -ENOMEM;
+
+	domain->glx      = levels;
+	domain->flags   |= PD_IOMMUV2_MASK;
+
+	amd_iommu_domain_update(domain);
+
+	return 0;
+}
+
+int amd_iommu_domain_enable_v2(struct iommu_domain *dom, int pasids)
+{
+	struct protection_domain *pdom = to_pdomain(dom);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&pdom->lock, flags);
+
+	/*
+	 * Save us all sanity checks whether devices already in the
+	 * domain support IOMMUv2. Just force that the domain has no
+	 * devices attached when it is switched into IOMMUv2 mode.
+	 */
+	ret = -EBUSY;
+	if (pdom->dev_cnt > 0 || pdom->flags & PD_IOMMUV2_MASK)
+		goto out;
+
+	if (!pdom->gcr3_tbl)
+		ret = domain_enable_v2(pdom, pasids);
+
+out:
+	spin_unlock_irqrestore(&pdom->lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL(amd_iommu_domain_enable_v2);
+
+static int __flush_pasid(struct protection_domain *domain, u32 pasid,
+			 u64 address, bool size)
+{
+	struct iommu_dev_data *dev_data;
+	struct iommu_cmd cmd;
+	int i, ret;
+
+	if (!(domain->flags & PD_IOMMUV2_MASK))
+		return -EINVAL;
+
+	build_inv_iommu_pasid(&cmd, domain->id, pasid, address, size);
+
+	/*
+	 * IOMMU TLB needs to be flushed before Device TLB to
+	 * prevent device TLB refill from IOMMU TLB
+	 */
+	for (i = 0; i < amd_iommu_get_num_iommus(); ++i) {
+		if (domain->dev_iommu[i] == 0)
+			continue;
+
+		ret = iommu_queue_command(amd_iommus[i], &cmd);
+		if (ret != 0)
+			goto out;
+	}
+
+	/* Wait until IOMMU TLB flushes are complete */
+	amd_iommu_domain_flush_complete(domain);
+
+	/* Now flush device TLBs */
+	list_for_each_entry(dev_data, &domain->dev_list, list) {
+		struct amd_iommu *iommu;
+		int qdep;
+
+		/*
+		   There might be non-IOMMUv2 capable devices in an IOMMUv2
+		 * domain.
+		 */
+		if (!dev_data->ats.enabled)
+			continue;
+
+		qdep  = dev_data->ats.qdep;
+		iommu = rlookup_amd_iommu(dev_data->dev);
+		if (!iommu)
+			continue;
+		build_inv_iotlb_pasid(&cmd, dev_data->devid, pasid,
+				      qdep, address, size);
+
+		ret = iommu_queue_command(iommu, &cmd);
+		if (ret != 0)
+			goto out;
+	}
+
+	/* Wait until all device TLBs are flushed */
+	amd_iommu_domain_flush_complete(domain);
+
+	ret = 0;
+
+out:
+
+	return ret;
+}
+
+static int __amd_iommu_flush_page(struct protection_domain *domain, u32 pasid,
+				  u64 address)
+{
+	return __flush_pasid(domain, pasid, address, false);
+}
+
+int amd_iommu_flush_page(struct iommu_domain *dom, u32 pasid,
+			 u64 address)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&domain->lock, flags);
+	ret = __amd_iommu_flush_page(domain, pasid, address);
+	spin_unlock_irqrestore(&domain->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL(amd_iommu_flush_page);
+
+static int __amd_iommu_flush_tlb(struct protection_domain *domain, u32 pasid)
+{
+	return __flush_pasid(domain, pasid, CMD_INV_IOMMU_ALL_PAGES_ADDRESS,
+			     true);
+}
+
+int amd_iommu_flush_tlb(struct iommu_domain *dom, u32 pasid)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&domain->lock, flags);
+	ret = __amd_iommu_flush_tlb(domain, pasid);
+	spin_unlock_irqrestore(&domain->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL(amd_iommu_flush_tlb);
+
+static u64 *__get_gcr3_pte(u64 *root, int level, u32 pasid, bool alloc)
+{
+	int index;
+	u64 *pte;
+
+	while (true) {
+
+		index = (pasid >> (9 * level)) & 0x1ff;
+		pte   = &root[index];
+
+		if (level == 0)
+			break;
+
+		if (!(*pte & GCR3_VALID)) {
+			if (!alloc)
+				return NULL;
+
+			root = (void *)get_zeroed_page(GFP_ATOMIC);
+			if (root == NULL)
+				return NULL;
+
+			*pte = iommu_virt_to_phys(root) | GCR3_VALID;
+		}
+
+		root = iommu_phys_to_virt(*pte & PAGE_MASK);
+
+		level -= 1;
+	}
+
+	return pte;
+}
+
+static int __set_gcr3(struct protection_domain *domain, u32 pasid,
+		      unsigned long cr3)
+{
+	u64 *pte;
+
+	if (domain->iop.mode != PAGE_MODE_NONE)
+		return -EINVAL;
+
+	pte = __get_gcr3_pte(domain->gcr3_tbl, domain->glx, pasid, true);
+	if (pte == NULL)
+		return -ENOMEM;
+
+	*pte = (cr3 & PAGE_MASK) | GCR3_VALID;
+
+	return __amd_iommu_flush_tlb(domain, pasid);
+}
+
+static int __clear_gcr3(struct protection_domain *domain, u32 pasid)
+{
+	u64 *pte;
+
+	if (domain->iop.mode != PAGE_MODE_NONE)
+		return -EINVAL;
+
+	pte = __get_gcr3_pte(domain->gcr3_tbl, domain->glx, pasid, false);
+	if (pte == NULL)
+		return 0;
+
+	*pte = 0;
+
+	return __amd_iommu_flush_tlb(domain, pasid);
+}
+
+int amd_iommu_domain_set_gcr3(struct iommu_domain *dom, u32 pasid,
+			      unsigned long cr3)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&domain->lock, flags);
+	ret = __set_gcr3(domain, pasid, cr3);
+	spin_unlock_irqrestore(&domain->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL(amd_iommu_domain_set_gcr3);
+
+int amd_iommu_domain_clear_gcr3(struct iommu_domain *dom, u32 pasid)
+{
+	struct protection_domain *domain = to_pdomain(dom);
+	unsigned long flags;
+	int ret;
+
+	spin_lock_irqsave(&domain->lock, flags);
+	ret = __clear_gcr3(domain, pasid);
+	spin_unlock_irqrestore(&domain->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL(amd_iommu_domain_clear_gcr3);
+
+int amd_iommu_complete_ppr(struct pci_dev *pdev, u32 pasid,
+			   int status, int tag)
+{
+	struct iommu_dev_data *dev_data;
+	struct amd_iommu *iommu;
+	struct iommu_cmd cmd;
+
+	dev_data = dev_iommu_priv_get(&pdev->dev);
+	iommu    = rlookup_amd_iommu(&pdev->dev);
+	if (!iommu)
+		return -ENODEV;
+
+	build_complete_ppr(&cmd, dev_data->devid, pasid, status,
+			   tag, dev_data->pri_tlp);
+
+	return iommu_queue_command(iommu, &cmd);
+}
+EXPORT_SYMBOL(amd_iommu_complete_ppr);
+
+int amd_iommu_device_info(struct pci_dev *pdev,
+                          struct amd_iommu_device_info *info)
+{
+	int max_pasids;
+	int pos;
+
+	if (pdev == NULL || info == NULL)
+		return -EINVAL;
+
+	if (!amd_iommu_v2_supported())
+		return -EINVAL;
+
+	memset(info, 0, sizeof(*info));
+
+	if (pci_ats_supported(pdev))
+		info->flags |= AMD_IOMMU_DEVICE_FLAG_ATS_SUP;
+
+	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_PRI);
+	if (pos)
+		info->flags |= AMD_IOMMU_DEVICE_FLAG_PRI_SUP;
+
+	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_PASID);
+	if (pos) {
+		int features;
+
+		max_pasids = 1 << (9 * (amd_iommu_max_glx_val + 1));
+		max_pasids = min(max_pasids, (1 << 20));
+
+		info->flags |= AMD_IOMMU_DEVICE_FLAG_PASID_SUP;
+		info->max_pasids = min(pci_max_pasids(pdev), max_pasids);
+
+		features = pci_pasid_features(pdev);
+		if (features & PCI_PASID_CAP_EXEC)
+			info->flags |= AMD_IOMMU_DEVICE_FLAG_EXEC_SUP;
+		if (features & PCI_PASID_CAP_PRIV)
+			info->flags |= AMD_IOMMU_DEVICE_FLAG_PRIV_SUP;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(amd_iommu_device_info);
 
 #ifdef CONFIG_IRQ_REMAP
 
@@ -3166,64 +2793,20 @@ const struct iommu_ops amd_iommu_ops = {
 static struct irq_chip amd_ir_chip;
 static DEFINE_SPINLOCK(iommu_table_lock);
 
-static void iommu_flush_irt_and_complete(struct amd_iommu *iommu, u16 devid)
-{
-	int ret;
-	u64 data;
-	unsigned long flags;
-	struct iommu_cmd cmd, cmd2;
-
-	if (iommu->irtcachedis_enabled)
-		return;
-
-	build_inv_irt(&cmd, devid);
-
-	raw_spin_lock_irqsave(&iommu->lock, flags);
-	data = get_cmdsem_val(iommu);
-	build_completion_wait(&cmd2, iommu, data);
-
-	ret = __iommu_queue_command_sync(iommu, &cmd, true);
-	if (ret)
-		goto out_err;
-	ret = __iommu_queue_command_sync(iommu, &cmd2, false);
-	if (ret)
-		goto out_err;
-	raw_spin_unlock_irqrestore(&iommu->lock, flags);
-
-	wait_on_sem(iommu, data);
-	return;
-
-out_err:
-	raw_spin_unlock_irqrestore(&iommu->lock, flags);
-}
-
-static inline u8 iommu_get_int_tablen(struct iommu_dev_data *dev_data)
-{
-	if (dev_data && dev_data->max_irqs == MAX_IRQS_PER_TABLE_2K)
-		return DTE_INTTABLEN_2K;
-	return DTE_INTTABLEN_512;
-}
-
 static void set_dte_irq_entry(struct amd_iommu *iommu, u16 devid,
 			      struct irq_remap_table *table)
 {
-	u64 new;
-	struct dev_table_entry *dte = &get_dev_table(iommu)[devid];
-	struct iommu_dev_data *dev_data = search_dev_data(iommu, devid);
+	u64 dte;
+	struct dev_table_entry *dev_table = get_dev_table(iommu);
 
-	if (dev_data)
-		spin_lock(&dev_data->dte_lock);
+	dte	= dev_table[devid].data[2];
+	dte	&= ~DTE_IRQ_PHYS_ADDR_MASK;
+	dte	|= iommu_virt_to_phys(table->table);
+	dte	|= DTE_IRQ_REMAP_INTCTL;
+	dte	|= DTE_INTTABLEN;
+	dte	|= DTE_IRQ_REMAP_ENABLE;
 
-	new = READ_ONCE(dte->data[2]);
-	new &= ~DTE_IRQ_PHYS_ADDR_MASK;
-	new |= iommu_virt_to_phys(table->table);
-	new |= DTE_IRQ_REMAP_INTCTL;
-	new |= iommu_get_int_tablen(dev_data);
-	new |= DTE_IRQ_REMAP_ENABLE;
-	WRITE_ONCE(dte->data[2], new);
-
-	if (dev_data)
-		spin_unlock(&dev_data->dte_lock);
+	dev_table[devid].data[2] = dte;
 }
 
 static struct irq_remap_table *get_irq_table(struct amd_iommu *iommu, u16 devid)
@@ -3244,7 +2827,7 @@ static struct irq_remap_table *get_irq_table(struct amd_iommu *iommu, u16 devid)
 	return table;
 }
 
-static struct irq_remap_table *__alloc_irq_table(int nid, size_t size)
+static struct irq_remap_table *__alloc_irq_table(void)
 {
 	struct irq_remap_table *table;
 
@@ -3252,14 +2835,19 @@ static struct irq_remap_table *__alloc_irq_table(int nid, size_t size)
 	if (!table)
 		return NULL;
 
-	table->table = iommu_alloc_pages_node_sz(
-		nid, GFP_KERNEL, max(DTE_INTTAB_ALIGNMENT, size));
+	table->table = kmem_cache_alloc(amd_iommu_irq_cache, GFP_KERNEL);
 	if (!table->table) {
 		kfree(table);
 		return NULL;
 	}
 	raw_spin_lock_init(&table->lock);
 
+	if (!AMD_IOMMU_GUEST_IR_GA(amd_iommu_guest_ir))
+		memset(table->table, 0,
+		       MAX_IRQS_PER_TABLE * sizeof(u32));
+	else
+		memset(table->table, 0,
+		       (MAX_IRQS_PER_TABLE * (sizeof(u64) * 2)));
 	return table;
 }
 
@@ -3291,23 +2879,13 @@ static int set_remap_table_entry_alias(struct pci_dev *pdev, u16 alias,
 	return 0;
 }
 
-static inline size_t get_irq_table_size(unsigned int max_irqs)
-{
-	if (!AMD_IOMMU_GUEST_IR_GA(amd_iommu_guest_ir))
-		return max_irqs * sizeof(u32);
-
-	return max_irqs * (sizeof(u64) * 2);
-}
-
 static struct irq_remap_table *alloc_irq_table(struct amd_iommu *iommu,
-					       u16 devid, struct pci_dev *pdev,
-					       unsigned int max_irqs)
+					       u16 devid, struct pci_dev *pdev)
 {
 	struct irq_remap_table *table = NULL;
 	struct irq_remap_table *new_table = NULL;
 	struct amd_iommu_pci_seg *pci_seg;
 	unsigned long flags;
-	int nid = iommu->dev ? dev_to_node(&iommu->dev->dev) : NUMA_NO_NODE;
 	u16 alias;
 
 	spin_lock_irqsave(&iommu_table_lock, flags);
@@ -3326,7 +2904,7 @@ static struct irq_remap_table *alloc_irq_table(struct amd_iommu *iommu,
 	spin_unlock_irqrestore(&iommu_table_lock, flags);
 
 	/* Nothing there yet, allocate new irq remapping table */
-	new_table = __alloc_irq_table(nid, get_irq_table_size(max_irqs));
+	new_table = __alloc_irq_table();
 	if (!new_table)
 		return NULL;
 
@@ -3361,21 +2939,20 @@ out_unlock:
 	spin_unlock_irqrestore(&iommu_table_lock, flags);
 
 	if (new_table) {
-		iommu_free_pages(new_table->table);
+		kmem_cache_free(amd_iommu_irq_cache, new_table->table);
 		kfree(new_table);
 	}
 	return table;
 }
 
 static int alloc_irq_index(struct amd_iommu *iommu, u16 devid, int count,
-			   bool align, struct pci_dev *pdev,
-			   unsigned long max_irqs)
+			   bool align, struct pci_dev *pdev)
 {
 	struct irq_remap_table *table;
 	int index, c, alignment = 1;
 	unsigned long flags;
 
-	table = alloc_irq_table(iommu, devid, pdev, max_irqs);
+	table = alloc_irq_table(iommu, devid, pdev);
 	if (!table)
 		return -ENODEV;
 
@@ -3386,7 +2963,7 @@ static int alloc_irq_index(struct amd_iommu *iommu, u16 devid, int count,
 
 	/* Scan table for free entries */
 	for (index = ALIGN(table->min_index, alignment), c = 0;
-	     index < max_irqs;) {
+	     index < MAX_IRQS_PER_TABLE;) {
 		if (!iommu->irte_ops->is_allocated(table, index)) {
 			c += 1;
 		} else {
@@ -3414,13 +2991,13 @@ out:
 	return index;
 }
 
-static int __modify_irte_ga(struct amd_iommu *iommu, u16 devid, int index,
-			    struct irte_ga *irte)
+static int modify_irte_ga(struct amd_iommu *iommu, u16 devid, int index,
+			  struct irte_ga *irte, struct amd_ir_data *data)
 {
+	bool ret;
 	struct irq_remap_table *table;
-	struct irte_ga *entry;
 	unsigned long flags;
-	u128 old;
+	struct irte_ga *entry;
 
 	table = get_irq_table(iommu, devid);
 	if (!table)
@@ -3431,30 +3008,24 @@ static int __modify_irte_ga(struct amd_iommu *iommu, u16 devid, int index,
 	entry = (struct irte_ga *)table->table;
 	entry = &entry[index];
 
+	ret = cmpxchg_double(&entry->lo.val, &entry->hi.val,
+			     entry->lo.val, entry->hi.val,
+			     irte->lo.val, irte->hi.val);
 	/*
 	 * We use cmpxchg16 to atomically update the 128-bit IRTE,
 	 * and it cannot be updated by the hardware or other processors
 	 * behind us, so the return value of cmpxchg16 should be the
 	 * same as the old value.
 	 */
-	old = entry->irte;
-	WARN_ON(!try_cmpxchg128(&entry->irte, &old, irte->irte));
+	WARN_ON(!ret);
+
+	if (data)
+		data->ref = entry;
 
 	raw_spin_unlock_irqrestore(&table->lock, flags);
 
-	return 0;
-}
-
-static int modify_irte_ga(struct amd_iommu *iommu, u16 devid, int index,
-			  struct irte_ga *irte)
-{
-	int ret;
-
-	ret = __modify_irte_ga(iommu, devid, index, irte);
-	if (ret)
-		return ret;
-
-	iommu_flush_irt_and_complete(iommu, devid);
+	iommu_flush_irt(iommu, devid);
+	iommu_completion_wait(iommu);
 
 	return 0;
 }
@@ -3473,7 +3044,8 @@ static int modify_irte(struct amd_iommu *iommu,
 	table->table[index] = irte->val;
 	raw_spin_unlock_irqrestore(&table->lock, flags);
 
-	iommu_flush_irt_and_complete(iommu, devid);
+	iommu_flush_irt(iommu, devid);
+	iommu_completion_wait(iommu);
 
 	return 0;
 }
@@ -3491,7 +3063,8 @@ static void free_irte(struct amd_iommu *iommu, u16 devid, int index)
 	iommu->irte_ops->clear_allocated(table, index);
 	raw_spin_unlock_irqrestore(&table->lock, flags);
 
-	iommu_flush_irt_and_complete(iommu, devid);
+	iommu_flush_irt(iommu, devid);
+	iommu_completion_wait(iommu);
 }
 
 static void irte_prepare(void *entry,
@@ -3537,7 +3110,7 @@ static void irte_ga_activate(struct amd_iommu *iommu, void *entry, u16 devid, u1
 	struct irte_ga *irte = (struct irte_ga *) entry;
 
 	irte->lo.fields_remap.valid = 1;
-	modify_irte_ga(iommu, devid, index, irte);
+	modify_irte_ga(iommu, devid, index, irte, NULL);
 }
 
 static void irte_deactivate(struct amd_iommu *iommu, void *entry, u16 devid, u16 index)
@@ -3553,7 +3126,7 @@ static void irte_ga_deactivate(struct amd_iommu *iommu, void *entry, u16 devid, 
 	struct irte_ga *irte = (struct irte_ga *) entry;
 
 	irte->lo.fields_remap.valid = 0;
-	modify_irte_ga(iommu, devid, index, irte);
+	modify_irte_ga(iommu, devid, index, irte, NULL);
 }
 
 static void irte_set_affinity(struct amd_iommu *iommu, void *entry, u16 devid, u16 index,
@@ -3577,7 +3150,7 @@ static void irte_ga_set_affinity(struct amd_iommu *iommu, void *entry, u16 devid
 					APICID_TO_IRTE_DEST_LO(dest_apicid);
 		irte->hi.fields.destination =
 					APICID_TO_IRTE_DEST_HI(dest_apicid);
-		modify_irte_ga(iommu, devid, index, irte);
+		modify_irte_ga(iommu, devid, index, irte, NULL);
 	}
 }
 
@@ -3656,14 +3229,6 @@ static void fill_msi_msg(struct msi_msg *msg, u32 index)
 	msg->data = index;
 	msg->address_lo = 0;
 	msg->arch_addr_lo.base_address = X86_MSI_BASE_ADDRESS_LOW;
-	/*
-	 * The struct msi_msg.dest_mode_logical is used to set the DM bit
-	 * in MSI Message Address Register. For device w/ 2K int-remap support,
-	 * this is bit must be set to 1 regardless of the actual destination
-	 * mode, which is signified by the IRTE[DM].
-	 */
-	if (FEATURE_NUM_INT_REMAP_SUP_2K(amd_iommu_efr2))
-		msg->arch_addr_lo.dest_mode_logical = true;
 	msg->address_hi = X86_MSI_BASE_ADDRESS_HIGH;
 }
 
@@ -3680,7 +3245,7 @@ static void irq_remapping_prepare_irte(struct amd_ir_data *data,
 
 	data->irq_2_irte.devid = devid;
 	data->irq_2_irte.index = index + sub_handle;
-	iommu->irte_ops->prepare(data->entry, APIC_DELIVERY_MODE_FIXED,
+	iommu->irte_ops->prepare(data->entry, apic->delivery_mode,
 				 apic->dest_mode_logical, irq_cfg->vector,
 				 irq_cfg->dest_apicid, devid);
 
@@ -3726,8 +3291,6 @@ static int irq_remapping_alloc(struct irq_domain *domain, unsigned int virq,
 	struct amd_ir_data *data = NULL;
 	struct amd_iommu *iommu;
 	struct irq_cfg *cfg;
-	struct iommu_dev_data *dev_data;
-	unsigned long max_irqs;
 	int i, ret, devid, seg, sbdf;
 	int index;
 
@@ -3746,9 +3309,6 @@ static int irq_remapping_alloc(struct irq_domain *domain, unsigned int virq,
 	if (!iommu)
 		return -EINVAL;
 
-	dev_data = search_dev_data(iommu, devid);
-	max_irqs = dev_data ? dev_data->max_irqs : MAX_IRQS_PER_TABLE_512;
-
 	ret = irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, arg);
 	if (ret < 0)
 		return ret;
@@ -3756,7 +3316,7 @@ static int irq_remapping_alloc(struct irq_domain *domain, unsigned int virq,
 	if (info->type == X86_IRQ_ALLOC_TYPE_IOAPIC) {
 		struct irq_remap_table *table;
 
-		table = alloc_irq_table(iommu, devid, NULL, max_irqs);
+		table = alloc_irq_table(iommu, devid, NULL);
 		if (table) {
 			if (!table->min_index) {
 				/*
@@ -3777,11 +3337,9 @@ static int irq_remapping_alloc(struct irq_domain *domain, unsigned int virq,
 		bool align = (info->type == X86_IRQ_ALLOC_TYPE_PCI_MSI);
 
 		index = alloc_irq_index(iommu, devid, nr_irqs, align,
-					msi_desc_to_pci_dev(info->desc),
-					max_irqs);
+					msi_desc_to_pci_dev(info->desc));
 	} else {
-		index = alloc_irq_index(iommu, devid, nr_irqs, false, NULL,
-					max_irqs);
+		index = alloc_irq_index(iommu, devid, nr_irqs, false, NULL);
 	}
 
 	if (index < 0) {
@@ -3818,6 +3376,7 @@ static int irq_remapping_alloc(struct irq_domain *domain, unsigned int virq,
 		irq_data->chip_data = data;
 		irq_data->chip = &amd_ir_chip;
 		irq_remapping_prepare_irte(data, cfg, info, devid, index, i);
+		irq_set_status_flags(virq + i, IRQ_MOVE_PCNTXT);
 	}
 
 	return 0;
@@ -3919,70 +3478,14 @@ static const struct irq_domain_ops amd_ir_domain_ops = {
 	.deactivate = irq_remapping_deactivate,
 };
 
-static void __amd_iommu_update_ga(struct irte_ga *entry, int cpu,
-				  bool ga_log_intr)
-{
-	if (cpu >= 0) {
-		entry->lo.fields_vapic.destination =
-					APICID_TO_IRTE_DEST_LO(cpu);
-		entry->hi.fields.destination =
-					APICID_TO_IRTE_DEST_HI(cpu);
-		entry->lo.fields_vapic.is_run = true;
-		entry->lo.fields_vapic.ga_log_intr = false;
-	} else {
-		entry->lo.fields_vapic.is_run = false;
-		entry->lo.fields_vapic.ga_log_intr = ga_log_intr;
-	}
-}
-
-/*
- * Update the pCPU information for an IRTE that is configured to post IRQs to
- * a vCPU, without issuing an IOMMU invalidation for the IRTE.
- *
- * If the vCPU is associated with a pCPU (@cpu >= 0), configure the Destination
- * with the pCPU's APIC ID, set IsRun, and clear GALogIntr.  If the vCPU isn't
- * associated with a pCPU (@cpu < 0), clear IsRun and set/clear GALogIntr based
- * on input from the caller (e.g. KVM only requests GALogIntr when the vCPU is
- * blocking and requires a notification wake event).  I.e. treat vCPUs that are
- * associated with a pCPU as running.  This API is intended to be used when a
- * vCPU is scheduled in/out (or stops running for any reason), to do a fast
- * update of IsRun, GALogIntr, and (conditionally) Destination.
- *
- * Per the IOMMU spec, the Destination, IsRun, and GATag fields are not cached
- * and thus don't require an invalidation to ensure the IOMMU consumes fresh
- * information.
- */
-int amd_iommu_update_ga(void *data, int cpu, bool ga_log_intr)
-{
-	struct amd_ir_data *ir_data = (struct amd_ir_data *)data;
-	struct irte_ga *entry = (struct irte_ga *) ir_data->entry;
-
-	if (WARN_ON_ONCE(!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir)))
-		return -EINVAL;
-
-	if (!entry || !entry->lo.fields_vapic.guest_mode)
-		return 0;
-
-	if (!ir_data->iommu)
-		return -ENODEV;
-
-	__amd_iommu_update_ga(entry, cpu, ga_log_intr);
-
-	return __modify_irte_ga(ir_data->iommu, ir_data->irq_2_irte.devid,
-				ir_data->irq_2_irte.index, entry);
-}
-EXPORT_SYMBOL(amd_iommu_update_ga);
-
-int amd_iommu_activate_guest_mode(void *data, int cpu, bool ga_log_intr)
+int amd_iommu_activate_guest_mode(void *data)
 {
 	struct amd_ir_data *ir_data = (struct amd_ir_data *)data;
 	struct irte_ga *entry = (struct irte_ga *) ir_data->entry;
 	u64 valid;
 
-	if (WARN_ON_ONCE(!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir)))
-		return -EINVAL;
-
-	if (!entry)
+	if (!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir) ||
+	    !entry || entry->lo.fields_vapic.guest_mode)
 		return 0;
 
 	valid = entry->lo.fields_vapic.valid;
@@ -3992,14 +3495,13 @@ int amd_iommu_activate_guest_mode(void *data, int cpu, bool ga_log_intr)
 
 	entry->lo.fields_vapic.valid       = valid;
 	entry->lo.fields_vapic.guest_mode  = 1;
+	entry->lo.fields_vapic.ga_log_intr = 1;
 	entry->hi.fields.ga_root_ptr       = ir_data->ga_root_ptr;
 	entry->hi.fields.vector            = ir_data->ga_vector;
 	entry->lo.fields_vapic.ga_tag      = ir_data->ga_tag;
 
-	__amd_iommu_update_ga(entry, cpu, ga_log_intr);
-
 	return modify_irte_ga(ir_data->iommu, ir_data->irq_2_irte.devid,
-			      ir_data->irq_2_irte.index, entry);
+			      ir_data->irq_2_irte.index, entry, ir_data);
 }
 EXPORT_SYMBOL(amd_iommu_activate_guest_mode);
 
@@ -4010,10 +3512,8 @@ int amd_iommu_deactivate_guest_mode(void *data)
 	struct irq_cfg *cfg = ir_data->cfg;
 	u64 valid;
 
-	if (WARN_ON_ONCE(!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir)))
-		return -EINVAL;
-
-	if (!entry || !entry->lo.fields_vapic.guest_mode)
+	if (!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir) ||
+	    !entry || !entry->lo.fields_vapic.guest_mode)
 		return 0;
 
 	valid = entry->lo.fields_remap.valid;
@@ -4023,7 +3523,7 @@ int amd_iommu_deactivate_guest_mode(void *data)
 
 	entry->lo.fields_remap.valid       = valid;
 	entry->lo.fields_remap.dm          = apic->dest_mode_logical;
-	entry->lo.fields_remap.int_type    = APIC_DELIVERY_MODE_FIXED;
+	entry->lo.fields_remap.int_type    = apic->delivery_mode;
 	entry->hi.fields.vector            = cfg->vector;
 	entry->lo.fields_remap.destination =
 				APICID_TO_IRTE_DEST_LO(cfg->dest_apicid);
@@ -4031,20 +3531,18 @@ int amd_iommu_deactivate_guest_mode(void *data)
 				APICID_TO_IRTE_DEST_HI(cfg->dest_apicid);
 
 	return modify_irte_ga(ir_data->iommu, ir_data->irq_2_irte.devid,
-			      ir_data->irq_2_irte.index, entry);
+			      ir_data->irq_2_irte.index, entry, ir_data);
 }
 EXPORT_SYMBOL(amd_iommu_deactivate_guest_mode);
 
-static int amd_ir_set_vcpu_affinity(struct irq_data *data, void *info)
+static int amd_ir_set_vcpu_affinity(struct irq_data *data, void *vcpu_info)
 {
 	int ret;
-	struct amd_iommu_pi_data *pi_data = info;
+	struct amd_iommu_pi_data *pi_data = vcpu_info;
+	struct vcpu_data *vcpu_pi_info = pi_data->vcpu_data;
 	struct amd_ir_data *ir_data = data->chip_data;
 	struct irq_2_irte *irte_info = &ir_data->irq_2_irte;
 	struct iommu_dev_data *dev_data;
-
-	if (WARN_ON_ONCE(!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir)))
-		return -EINVAL;
 
 	if (ir_data->iommu == NULL)
 		return -EINVAL;
@@ -4056,23 +3554,38 @@ static int amd_ir_set_vcpu_affinity(struct irq_data *data, void *info)
 	 * we should not modify the IRTE
 	 */
 	if (!dev_data || !dev_data->use_vapic)
-		return -EINVAL;
+		return 0;
 
 	ir_data->cfg = irqd_cfg(data);
+	pi_data->ir_data = ir_data;
 
-	if (pi_data) {
-		pi_data->ir_data = ir_data;
+	/* Note:
+	 * SVM tries to set up for VAPIC mode, but we are in
+	 * legacy mode. So, we force legacy mode instead.
+	 */
+	if (!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir)) {
+		pr_debug("%s: Fall back to using intr legacy remap\n",
+			 __func__);
+		pi_data->is_guest_mode = false;
+	}
 
-		ir_data->ga_root_ptr = (pi_data->vapic_addr >> 12);
-		ir_data->ga_vector = pi_data->vector;
+	pi_data->prev_ga_tag = ir_data->cached_ga_tag;
+	if (pi_data->is_guest_mode) {
+		ir_data->ga_root_ptr = (pi_data->base >> 12);
+		ir_data->ga_vector = vcpu_pi_info->vector;
 		ir_data->ga_tag = pi_data->ga_tag;
-		if (pi_data->is_guest_mode)
-			ret = amd_iommu_activate_guest_mode(ir_data, pi_data->cpu,
-							    pi_data->ga_log_intr);
-		else
-			ret = amd_iommu_deactivate_guest_mode(ir_data);
+		ret = amd_iommu_activate_guest_mode(ir_data);
+		if (!ret)
+			ir_data->cached_ga_tag = pi_data->ga_tag;
 	} else {
 		ret = amd_iommu_deactivate_guest_mode(ir_data);
+
+		/*
+		 * This communicates the ga_tag back to the caller
+		 * so that it can do all the necessary clean up.
+		 */
+		if (!ret)
+			ir_data->cached_ga_tag = 0;
 	}
 
 	return ret;
@@ -4117,7 +3630,7 @@ static int amd_ir_set_affinity(struct irq_data *data,
 	 * at the new destination. So, time to cleanup the previous
 	 * vector allocation.
 	 */
-	vector_schedule_cleanup(cfg);
+	send_cleanup_vector(cfg);
 
 	return IRQ_SET_MASK_OK_DONE;
 }
@@ -4138,33 +3651,86 @@ static struct irq_chip amd_ir_chip = {
 };
 
 static const struct msi_parent_ops amdvi_msi_parent_ops = {
-	.supported_flags	= X86_VECTOR_MSI_FLAGS_SUPPORTED | MSI_FLAG_MULTI_PCI_MSI,
-	.bus_select_token	= DOMAIN_BUS_AMDVI,
-	.bus_select_mask	= MATCH_PCI_MSI,
+	.supported_flags	= X86_VECTOR_MSI_FLAGS_SUPPORTED |
+				  MSI_FLAG_MULTI_PCI_MSI |
+				  MSI_FLAG_PCI_IMS,
 	.prefix			= "IR-",
+	.init_dev_msi_info	= msi_parent_init_dev_msi_info,
+};
+
+static const struct msi_parent_ops virt_amdvi_msi_parent_ops = {
+	.supported_flags	= X86_VECTOR_MSI_FLAGS_SUPPORTED |
+				  MSI_FLAG_MULTI_PCI_MSI,
+	.prefix			= "vIR-",
 	.init_dev_msi_info	= msi_parent_init_dev_msi_info,
 };
 
 int amd_iommu_create_irq_domain(struct amd_iommu *iommu)
 {
-	struct irq_domain_info info = {
-		.fwnode		= irq_domain_alloc_named_id_fwnode("AMD-IR", iommu->index),
-		.ops		= &amd_ir_domain_ops,
-		.domain_flags	= IRQ_DOMAIN_FLAG_ISOLATED_MSI,
-		.host_data	= iommu,
-		.parent		= arch_get_ir_parent_domain(),
-	};
+	struct fwnode_handle *fn;
 
-	if (!info.fwnode)
+	fn = irq_domain_alloc_named_id_fwnode("AMD-IR", iommu->index);
+	if (!fn)
 		return -ENOMEM;
-
-	iommu->ir_domain = msi_create_parent_irq_domain(&info, &amdvi_msi_parent_ops);
+	iommu->ir_domain = irq_domain_create_hierarchy(arch_get_ir_parent_domain(), 0, 0,
+						       fn, &amd_ir_domain_ops, iommu);
 	if (!iommu->ir_domain) {
-		irq_domain_free_fwnode(info.fwnode);
+		irq_domain_free_fwnode(fn);
 		return -ENOMEM;
 	}
+
+	irq_domain_update_bus_token(iommu->ir_domain,  DOMAIN_BUS_AMDVI);
+	iommu->ir_domain->flags |= IRQ_DOMAIN_FLAG_MSI_PARENT |
+				   IRQ_DOMAIN_FLAG_ISOLATED_MSI;
+
+	if (amd_iommu_np_cache)
+		iommu->ir_domain->msi_parent_ops = &virt_amdvi_msi_parent_ops;
+	else
+		iommu->ir_domain->msi_parent_ops = &amdvi_msi_parent_ops;
+
 	return 0;
 }
-#endif
 
-MODULE_IMPORT_NS("GENERIC_PT_IOMMU");
+int amd_iommu_update_ga(int cpu, bool is_run, void *data)
+{
+	unsigned long flags;
+	struct amd_iommu *iommu;
+	struct irq_remap_table *table;
+	struct amd_ir_data *ir_data = (struct amd_ir_data *)data;
+	int devid = ir_data->irq_2_irte.devid;
+	struct irte_ga *entry = (struct irte_ga *) ir_data->entry;
+	struct irte_ga *ref = (struct irte_ga *) ir_data->ref;
+
+	if (!AMD_IOMMU_GUEST_IR_VAPIC(amd_iommu_guest_ir) ||
+	    !ref || !entry || !entry->lo.fields_vapic.guest_mode)
+		return 0;
+
+	iommu = ir_data->iommu;
+	if (!iommu)
+		return -ENODEV;
+
+	table = get_irq_table(iommu, devid);
+	if (!table)
+		return -ENODEV;
+
+	raw_spin_lock_irqsave(&table->lock, flags);
+
+	if (ref->lo.fields_vapic.guest_mode) {
+		if (cpu >= 0) {
+			ref->lo.fields_vapic.destination =
+						APICID_TO_IRTE_DEST_LO(cpu);
+			ref->hi.fields.destination =
+						APICID_TO_IRTE_DEST_HI(cpu);
+		}
+		ref->lo.fields_vapic.is_run = is_run;
+		barrier();
+	}
+
+	raw_spin_unlock_irqrestore(&table->lock, flags);
+
+	iommu_flush_irt(iommu, devid);
+	iommu_completion_wait(iommu);
+	return 0;
+}
+EXPORT_SYMBOL(amd_iommu_update_ga);
+#endif

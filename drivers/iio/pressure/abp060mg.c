@@ -35,7 +35,7 @@ struct abp_config {
 	int max;
 };
 
-static const struct abp_config abp_config[] = {
+static struct abp_config abp_config[] = {
 	/* mbar & kPa variants */
 	[ABP006KG] = { .min =       0, .max =     6000 },
 	[ABP010KG] = { .min =       0, .max =    10000 },
@@ -165,7 +165,7 @@ static const struct iio_info abp060mg_info = {
 static void abp060mg_init_device(struct iio_dev *indio_dev, unsigned long id)
 {
 	struct abp_state *state = iio_priv(indio_dev);
-	const struct abp_config *cfg = &abp_config[id];
+	struct abp_config *cfg = &abp_config[id];
 
 	state->scale = cfg->max - cfg->min;
 	state->offset = -ABP060MG_MIN_COUNTS;
@@ -247,7 +247,7 @@ static const struct i2c_device_id abp060mg_id_table[] = {
 	{ "abp015pd", ABP015PD },
 	{ "abp030pd", ABP030PD },
 	{ "abp060pd", ABP060PD },
-	{ }
+	{ /* empty */ },
 };
 MODULE_DEVICE_TABLE(i2c, abp060mg_id_table);
 
@@ -255,7 +255,7 @@ static struct i2c_driver abp060mg_driver = {
 	.driver = {
 		.name = "abp060mg",
 	},
-	.probe = abp060mg_probe,
+	.probe_new = abp060mg_probe,
 	.id_table = abp060mg_id_table,
 };
 module_i2c_driver(abp060mg_driver);

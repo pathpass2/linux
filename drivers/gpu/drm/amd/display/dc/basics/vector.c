@@ -50,11 +50,12 @@ bool dal_vector_construct(
 	return true;
 }
 
-static bool dal_vector_presized_costruct(struct vector *vector,
-					 struct dc_context *ctx,
-					 uint32_t count,
-					 void *initial_value,
-					 uint32_t struct_size)
+static bool dal_vector_presized_costruct(
+	struct vector *vector,
+	struct dc_context *ctx,
+	uint32_t count,
+	void *initial_value,
+	uint32_t struct_size)
 {
 	uint32_t i;
 
@@ -170,7 +171,7 @@ bool dal_vector_remove_at_index(
 		memmove(
 			vector->container + (index * vector->struct_size),
 			vector->container + ((index + 1) * vector->struct_size),
-			(size_t)(vector->count - index - 1) * vector->struct_size);
+			(vector->count - index - 1) * vector->struct_size);
 	vector->count -= 1;
 
 	return true;
@@ -219,7 +220,7 @@ bool dal_vector_insert_at(
 		memmove(
 			insert_address + vector->struct_size,
 			insert_address,
-			(size_t)vector->struct_size * (vector->count - position));
+			vector->struct_size * (vector->count - position));
 
 	memmove(
 		insert_address,
@@ -271,7 +272,7 @@ struct vector *dal_vector_clone(
 
 	/* copy vector's data */
 	memmove(vec_cloned->container, vector->container,
-			(size_t)vec_cloned->struct_size * vec_cloned->capacity);
+			vec_cloned->struct_size * vec_cloned->capacity);
 
 	return vec_cloned;
 }

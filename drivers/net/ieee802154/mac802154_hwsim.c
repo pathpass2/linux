@@ -685,7 +685,7 @@ static int hwsim_del_edge_nl(struct sk_buff *msg, struct genl_info *info)
 static int hwsim_set_edge_lqi(struct sk_buff *msg, struct genl_info *info)
 {
 	struct nlattr *edge_attrs[MAC802154_HWSIM_EDGE_ATTR_MAX + 1];
-	struct hwsim_edge_info *einfo, *einfo_old;
+	struct hwsim_edge_info *einfo;
 	struct hwsim_phy *phy_v0;
 	struct hwsim_edge *e;
 	u32 v0, v1;
@@ -723,10 +723,8 @@ static int hwsim_set_edge_lqi(struct sk_buff *msg, struct genl_info *info)
 	list_for_each_entry_rcu(e, &phy_v0->edges, list) {
 		if (e->endpoint->idx == v1) {
 			einfo->lqi = lqi;
-			einfo_old = rcu_replace_pointer(e->info, einfo,
-							lockdep_is_held(&hwsim_phys_lock));
+			rcu_assign_pointer(e->info, einfo);
 			rcu_read_unlock();
-			kfree_rcu(einfo_old, rcu);
 			mutex_unlock(&hwsim_phys_lock);
 			return 0;
 		}
@@ -1035,7 +1033,7 @@ err_slave:
 	return err;
 }
 
-static void hwsim_remove(struct platform_device *pdev)
+static int hwsim_remove(struct platform_device *pdev)
 {
 	struct hwsim_phy *phy, *tmp;
 
@@ -1043,6 +1041,8 @@ static void hwsim_remove(struct platform_device *pdev)
 	list_for_each_entry_safe(phy, tmp, &hwsim_phys, list)
 		hwsim_del(phy);
 	mutex_unlock(&hwsim_phys_lock);
+
+	return 0;
 }
 
 static struct platform_driver mac802154hwsim_driver = {

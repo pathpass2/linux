@@ -23,6 +23,7 @@
 #include <linux/log2.h>
 #include <linux/slab.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
 
@@ -331,7 +332,7 @@ static const struct rtc_class_ops s3c_rtcops = {
 	.alarm_irq_enable = s3c_rtc_setaie,
 };
 
-static void s3c6410_rtc_enable(struct s3c_rtc *info)
+static void s3c24xx_rtc_enable(struct s3c_rtc *info)
 {
 	unsigned int con, tmp;
 
@@ -361,6 +362,19 @@ static void s3c6410_rtc_enable(struct s3c_rtc *info)
 	}
 }
 
+static void s3c24xx_rtc_disable(struct s3c_rtc *info)
+{
+	unsigned int con;
+
+	con = readw(info->base + S3C2410_RTCCON);
+	con &= ~S3C2410_RTCCON_RTCEN;
+	writew(con, info->base + S3C2410_RTCCON);
+
+	con = readb(info->base + S3C2410_TICNT);
+	con &= ~S3C2410_TICNT_ENABLE;
+	writeb(con, info->base + S3C2410_TICNT);
+}
+
 static void s3c6410_rtc_disable(struct s3c_rtc *info)
 {
 	unsigned int con;
@@ -371,7 +385,7 @@ static void s3c6410_rtc_disable(struct s3c_rtc *info)
 	writew(con, info->base + S3C2410_RTCCON);
 }
 
-static void s3c_rtc_remove(struct platform_device *pdev)
+static int s3c_rtc_remove(struct platform_device *pdev)
 {
 	struct s3c_rtc *info = platform_get_drvdata(pdev);
 
@@ -380,6 +394,8 @@ static void s3c_rtc_remove(struct platform_device *pdev)
 	if (info->data->needs_src_clk)
 		clk_unprepare(info->rtc_src_clk);
 	clk_unprepare(info->rtc_clk);
+
+	return 0;
 }
 
 static int s3c_rtc_probe(struct platform_device *pdev)
@@ -443,7 +459,7 @@ static int s3c_rtc_probe(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "s3c2410_rtc: RTCCON=%02x\n",
 		readw(info->base + S3C2410_RTCCON));
 
-	device_init_wakeup(&pdev->dev, true);
+	device_init_wakeup(&pdev->dev, 1);
 
 	info->rtc = devm_rtc_allocate_device(&pdev->dev);
 	if (IS_ERR(info->rtc)) {
@@ -525,21 +541,53 @@ static int s3c_rtc_resume(struct device *dev)
 #endif
 static SIMPLE_DEV_PM_OPS(s3c_rtc_pm_ops, s3c_rtc_suspend, s3c_rtc_resume);
 
+static void s3c24xx_rtc_irq(struct s3c_rtc *info, int mask)
+{
+	rtc_update_irq(info->rtc, 1, RTC_AF | RTC_IRQF);
+}
+
 static void s3c6410_rtc_irq(struct s3c_rtc *info, int mask)
 {
 	rtc_update_irq(info->rtc, 1, RTC_AF | RTC_IRQF);
 	writeb(mask, info->base + S3C2410_INTP);
 }
 
-static const struct s3c_rtc_data s3c6410_rtc_data = {
+static struct s3c_rtc_data const s3c2410_rtc_data = {
+	.irq_handler		= s3c24xx_rtc_irq,
+	.enable			= s3c24xx_rtc_enable,
+	.disable		= s3c24xx_rtc_disable,
+};
+
+static struct s3c_rtc_data const s3c2416_rtc_data = {
+	.irq_handler		= s3c24xx_rtc_irq,
+	.enable			= s3c24xx_rtc_enable,
+	.disable		= s3c24xx_rtc_disable,
+};
+
+static struct s3c_rtc_data const s3c2443_rtc_data = {
+	.irq_handler		= s3c24xx_rtc_irq,
+	.enable			= s3c24xx_rtc_enable,
+	.disable		= s3c24xx_rtc_disable,
+};
+
+static struct s3c_rtc_data const s3c6410_rtc_data = {
 	.needs_src_clk		= true,
 	.irq_handler		= s3c6410_rtc_irq,
-	.enable			= s3c6410_rtc_enable,
+	.enable			= s3c24xx_rtc_enable,
 	.disable		= s3c6410_rtc_disable,
 };
 
 static const __maybe_unused struct of_device_id s3c_rtc_dt_match[] = {
 	{
+		.compatible = "samsung,s3c2410-rtc",
+		.data = &s3c2410_rtc_data,
+	}, {
+		.compatible = "samsung,s3c2416-rtc",
+		.data = &s3c2416_rtc_data,
+	}, {
+		.compatible = "samsung,s3c2443-rtc",
+		.data = &s3c2443_rtc_data,
+	}, {
 		.compatible = "samsung,s3c6410-rtc",
 		.data = &s3c6410_rtc_data,
 	}, {
@@ -564,3 +612,4 @@ module_platform_driver(s3c_rtc_driver);
 MODULE_DESCRIPTION("Samsung S3C RTC Driver");
 MODULE_AUTHOR("Ben Dooks <ben@simtec.co.uk>");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:s3c2410-rtc");

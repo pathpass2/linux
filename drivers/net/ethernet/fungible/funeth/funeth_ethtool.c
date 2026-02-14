@@ -655,7 +655,7 @@ static void fun_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 						i);
 		}
 		for (j = 0; j < ARRAY_SIZE(txq_stat_names); j++)
-			ethtool_puts(&p, txq_stat_names[j]);
+			ethtool_sprintf(&p, txq_stat_names[j]);
 
 		for (i = 0; i < fp->num_xdpqs; i++) {
 			for (j = 0; j < ARRAY_SIZE(xdpq_stat_names); j++)
@@ -663,7 +663,7 @@ static void fun_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 						xdpq_stat_names[j], i);
 		}
 		for (j = 0; j < ARRAY_SIZE(xdpq_stat_names); j++)
-			ethtool_puts(&p, xdpq_stat_names[j]);
+			ethtool_sprintf(&p, xdpq_stat_names[j]);
 
 		for (i = 0; i < netdev->real_num_rx_queues; i++) {
 			for (j = 0; j < ARRAY_SIZE(rxq_stat_names); j++)
@@ -671,10 +671,10 @@ static void fun_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 						i);
 		}
 		for (j = 0; j < ARRAY_SIZE(rxq_stat_names); j++)
-			ethtool_puts(&p, rxq_stat_names[j]);
+			ethtool_sprintf(&p, rxq_stat_names[j]);
 
 		for (j = 0; j < ARRAY_SIZE(tls_stat_names); j++)
-			ethtool_puts(&p, tls_stat_names[j]);
+			ethtool_sprintf(&p, tls_stat_names[j]);
 		break;
 	default:
 		break;
@@ -930,8 +930,7 @@ static void fun_get_rmon_stats(struct net_device *netdev,
 }
 
 static void fun_get_fec_stats(struct net_device *netdev,
-			      struct ethtool_fec_stats *stats,
-			      struct ethtool_fec_hist *hist)
+			      struct ethtool_fec_stats *stats)
 {
 	const struct funeth_priv *fp = netdev_priv(netdev);
 
@@ -946,9 +945,17 @@ static void fun_get_fec_stats(struct net_device *netdev,
 #undef TX_STAT
 #undef FEC_STAT
 
-static u32 fun_get_rx_ring_count(struct net_device *netdev)
+static int fun_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
+			 u32 *rule_locs)
 {
-	return netdev->real_num_rx_queues;
+	switch (cmd->cmd) {
+	case ETHTOOL_GRXRINGS:
+		cmd->data = netdev->real_num_rx_queues;
+		return 0;
+	default:
+		break;
+	}
+	return -EOPNOTSUPP;
 }
 
 static int fun_set_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *info)
@@ -970,44 +977,44 @@ static u32 fun_get_rxfh_key_size(struct net_device *netdev)
 	return sizeof(fp->rss_key);
 }
 
-static int fun_get_rxfh(struct net_device *netdev,
-			struct ethtool_rxfh_param *rxfh)
+static int fun_get_rxfh(struct net_device *netdev, u32 *indir, u8 *key,
+			u8 *hfunc)
 {
 	const struct funeth_priv *fp = netdev_priv(netdev);
 
 	if (!fp->rss_cfg)
 		return -EOPNOTSUPP;
 
-	if (rxfh->indir)
-		memcpy(rxfh->indir, fp->indir_table,
+	if (indir)
+		memcpy(indir, fp->indir_table,
 		       sizeof(u32) * fp->indir_table_nentries);
 
-	if (rxfh->key)
-		memcpy(rxfh->key, fp->rss_key, sizeof(fp->rss_key));
+	if (key)
+		memcpy(key, fp->rss_key, sizeof(fp->rss_key));
 
-	rxfh->hfunc = fp->hash_algo == FUN_ETH_RSS_ALG_TOEPLITZ ?
-			ETH_RSS_HASH_TOP : ETH_RSS_HASH_CRC32;
+	if (hfunc)
+		*hfunc = fp->hash_algo == FUN_ETH_RSS_ALG_TOEPLITZ ?
+				ETH_RSS_HASH_TOP : ETH_RSS_HASH_CRC32;
 
 	return 0;
 }
 
-static int fun_set_rxfh(struct net_device *netdev,
-			struct ethtool_rxfh_param *rxfh,
-			struct netlink_ext_ack *extack)
+static int fun_set_rxfh(struct net_device *netdev, const u32 *indir,
+			const u8 *key, const u8 hfunc)
 {
 	struct funeth_priv *fp = netdev_priv(netdev);
-	const u32 *rss_indir = rxfh->indir ? rxfh->indir : fp->indir_table;
-	const u8 *rss_key = rxfh->key ? rxfh->key : fp->rss_key;
+	const u32 *rss_indir = indir ? indir : fp->indir_table;
+	const u8 *rss_key = key ? key : fp->rss_key;
 	enum fun_eth_hash_alg algo;
 
 	if (!fp->rss_cfg)
 		return -EOPNOTSUPP;
 
-	if (rxfh->hfunc == ETH_RSS_HASH_NO_CHANGE)
+	if (hfunc == ETH_RSS_HASH_NO_CHANGE)
 		algo = fp->hash_algo;
-	else if (rxfh->hfunc == ETH_RSS_HASH_CRC32)
+	else if (hfunc == ETH_RSS_HASH_CRC32)
 		algo = FUN_ETH_RSS_ALG_CRC32;
-	else if (rxfh->hfunc == ETH_RSS_HASH_TOP)
+	else if (hfunc == ETH_RSS_HASH_TOP)
 		algo = FUN_ETH_RSS_ALG_TOEPLITZ;
 	else
 		return -EINVAL;
@@ -1024,20 +1031,23 @@ static int fun_set_rxfh(struct net_device *netdev,
 	}
 
 	fp->hash_algo = algo;
-	if (rxfh->key)
-		memcpy(fp->rss_key, rxfh->key, sizeof(fp->rss_key));
-	if (rxfh->indir)
-		memcpy(fp->indir_table, rxfh->indir,
+	if (key)
+		memcpy(fp->rss_key, key, sizeof(fp->rss_key));
+	if (indir)
+		memcpy(fp->indir_table, indir,
 		       sizeof(u32) * fp->indir_table_nentries);
 	return 0;
 }
 
 static int fun_get_ts_info(struct net_device *netdev,
-			   struct kernel_ethtool_ts_info *info)
+			   struct ethtool_ts_info *info)
 {
-	info->so_timestamping = SOF_TIMESTAMPING_RX_HARDWARE |
+	info->so_timestamping = SOF_TIMESTAMPING_RX_SOFTWARE |
+				SOF_TIMESTAMPING_RX_HARDWARE |
 				SOF_TIMESTAMPING_TX_SOFTWARE |
+				SOF_TIMESTAMPING_SOFTWARE |
 				SOF_TIMESTAMPING_RAW_HARDWARE;
+	info->phc_index = -1;
 	info->tx_types = BIT(HWTSTAMP_TX_OFF);
 	info->rx_filters = BIT(HWTSTAMP_FILTER_NONE) | BIT(HWTSTAMP_FILTER_ALL);
 	return 0;
@@ -1161,8 +1171,8 @@ static const struct ethtool_ops fun_ethtool_ops = {
 	.get_sset_count      = fun_get_sset_count,
 	.get_strings         = fun_get_strings,
 	.get_ethtool_stats   = fun_get_ethtool_stats,
+	.get_rxnfc	     = fun_get_rxnfc,
 	.set_rxnfc           = fun_set_rxnfc,
-	.get_rx_ring_count   = fun_get_rx_ring_count,
 	.get_rxfh_indir_size = fun_get_rxfh_indir_size,
 	.get_rxfh_key_size   = fun_get_rxfh_key_size,
 	.get_rxfh            = fun_get_rxfh,

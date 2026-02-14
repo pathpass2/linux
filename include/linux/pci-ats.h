@@ -8,7 +8,6 @@
 /* Address Translation Service */
 bool pci_ats_supported(struct pci_dev *dev);
 int pci_enable_ats(struct pci_dev *dev, int ps);
-int pci_prepare_ats(struct pci_dev *dev, int ps);
 void pci_disable_ats(struct pci_dev *dev);
 int pci_ats_queue_depth(struct pci_dev *dev);
 int pci_ats_page_aligned(struct pci_dev *dev);
@@ -16,8 +15,6 @@ int pci_ats_page_aligned(struct pci_dev *dev);
 static inline bool pci_ats_supported(struct pci_dev *d)
 { return false; }
 static inline int pci_enable_ats(struct pci_dev *d, int ps)
-{ return -ENODEV; }
-static inline int pci_prepare_ats(struct pci_dev *dev, int ps)
 { return -ENODEV; }
 static inline void pci_disable_ats(struct pci_dev *d) { }
 static inline int pci_ats_queue_depth(struct pci_dev *d)
@@ -42,7 +39,6 @@ int pci_enable_pasid(struct pci_dev *pdev, int features);
 void pci_disable_pasid(struct pci_dev *pdev);
 int pci_pasid_features(struct pci_dev *pdev);
 int pci_max_pasids(struct pci_dev *pdev);
-int pci_pasid_status(struct pci_dev *pdev);
 #else /* CONFIG_PCI_PASID */
 static inline int pci_enable_pasid(struct pci_dev *pdev, int features)
 { return -EINVAL; }
@@ -50,8 +46,6 @@ static inline void pci_disable_pasid(struct pci_dev *pdev) { }
 static inline int pci_pasid_features(struct pci_dev *pdev)
 { return -EINVAL; }
 static inline int pci_max_pasids(struct pci_dev *pdev)
-{ return -EINVAL; }
-static inline int pci_pasid_status(struct pci_dev *pdev)
 { return -EINVAL; }
 #endif /* CONFIG_PCI_PASID */
 

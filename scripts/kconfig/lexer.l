@@ -13,24 +13,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <xalloc.h>
 #include "lkc.h"
-#include "preprocess.h"
-
 #include "parser.tab.h"
 
 #define YY_DECL		static int yylex1(void)
 
 #define START_STRSIZE	16
 
-/* The Kconfig file currently being parsed.  */
-const char *cur_filename;
-
-/*
- * The line number of the current statement. This does not match yylineno.
- * yylineno is used by the lexer, while cur_lineno is used by the parser.
- */
-int cur_lineno;
+static struct {
+	struct file *file;
+	int lineno;
+} current_pos;
 
 static int prev_prev_token = T_EOL;
 static int prev_token = T_EOL;
@@ -40,9 +33,6 @@ static int text_size, text_asize;
 struct buffer {
 	struct buffer *parent;
 	YY_BUFFER_STATE state;
-	int yylineno;
-	const char *filename;
-	int source_lineno;
 };
 
 static struct buffer *current_buf;
@@ -87,7 +77,7 @@ static void warn_ignored_character(char chr)
 {
 	fprintf(stderr,
 	        "%s:%d:warning: ignoring unsupported character '%c'\n",
-	        cur_filename, yylineno, chr);
+	        current_file->name, yylineno, chr);
 }
 %}
 
@@ -121,12 +111,12 @@ n	[A-Za-z0-9_-]
 "menuconfig"		return T_MENUCONFIG;
 "modules"		return T_MODULES;
 "on"			return T_ON;
+"optional"		return T_OPTIONAL;
 "prompt"		return T_PROMPT;
 "range"			return T_RANGE;
 "select"		return T_SELECT;
 "source"		return T_SOURCE;
 "string"		return T_STRING;
-"transitional"		return T_TRANSITIONAL;
 "tristate"		return T_TRISTATE;
 "visible"		return T_VISIBLE;
 "||"			return T_OR;
@@ -190,7 +180,7 @@ n	[A-Za-z0-9_-]
 	\n	{
 		fprintf(stderr,
 			"%s:%d:warning: multi-line strings not supported\n",
-			cur_filename, cur_lineno);
+			zconf_curname(), zconf_lineno());
 		unput('\n');
 		BEGIN(INITIAL);
 		yylval.string = text;
@@ -256,9 +246,9 @@ n	[A-Za-z0-9_-]
 
 	if (prev_token != T_EOL && prev_token != T_HELPTEXT)
 		fprintf(stderr, "%s:%d:warning: no new line at end of file\n",
-			cur_filename, yylineno);
+			current_file->name, yylineno);
 
-	if (current_buf) {
+	if (current_file) {
 		zconf_endfile();
 		return T_EOL;
 	}
@@ -277,17 +267,19 @@ repeat:
 	token = yylex1();
 
 	if (prev_token == T_EOL || prev_token == T_HELPTEXT) {
-		if (token == T_EOL)
+		if (token == T_EOL) {
 			/* Do not pass unneeded T_EOL to the parser. */
 			goto repeat;
-		else
+		} else {
 			/*
-			 * For the parser, update lineno at the first token
+			 * For the parser, update file/lineno at the first token
 			 * of each statement. Generally, \n is a statement
 			 * terminator in Kconfig, but it is not always true
 			 * because \n could be escaped by a backslash.
 			 */
-			cur_lineno = yylineno;
+			current_pos.file = current_file;
+			current_pos.lineno = yylineno;
+		}
 	}
 
 	if (prev_prev_token == T_EOL && prev_token == T_WORD &&
@@ -310,11 +302,8 @@ static char *expand_token(const char *in, size_t n)
 	new_string();
 	append_string(in, n);
 
-	/*
-	 * get the whole line because we do not know the end of token.
-	 * input() returns 0 (not EOF!) when it reachs the end of file.
-	 */
-	while ((c = input()) != 0) {
+	/* get the whole line because we do not know the end of token. */
+	while ((c = input()) != EOF) {
 		if (c == '\n') {
 			unput(c);
 			break;
@@ -402,60 +391,78 @@ void zconf_initscan(const char *name)
 		exit(1);
 	}
 
-	cur_filename = file_lookup(name);
+	current_buf = xmalloc(sizeof(*current_buf));
+	memset(current_buf, 0, sizeof(*current_buf));
+
+	current_file = file_lookup(name);
 	yylineno = 1;
 }
 
 void zconf_nextfile(const char *name)
 {
+	struct file *iter;
+	struct file *file = file_lookup(name);
 	struct buffer *buf = xmalloc(sizeof(*buf));
-	bool recur_include = false;
+	memset(buf, 0, sizeof(*buf));
 
-	buf->state = YY_CURRENT_BUFFER;
-	buf->yylineno = yylineno;
-	buf->filename = cur_filename;
-	buf->source_lineno = cur_lineno;
-	buf->parent = current_buf;
-	current_buf = buf;
-	yyin = zconf_fopen(name);
+	current_buf->state = YY_CURRENT_BUFFER;
+	yyin = zconf_fopen(file->name);
 	if (!yyin) {
 		fprintf(stderr, "%s:%d: can't open file \"%s\"\n",
-			cur_filename, cur_lineno, name);
+			zconf_curname(), zconf_lineno(), file->name);
 		exit(1);
 	}
 	yy_switch_to_buffer(yy_create_buffer(yyin, YY_BUF_SIZE));
+	buf->parent = current_buf;
+	current_buf = buf;
 
-	for (buf = current_buf; buf; buf = buf->parent) {
-		if (!strcmp(buf->filename, name))
-			recur_include = true;
-	}
+	current_file->lineno = yylineno;
+	file->parent = current_file;
 
-	if (recur_include) {
-		fprintf(stderr,
-			"Recursive inclusion detected.\n"
-			"Inclusion path:\n"
-			"  current file : %s\n", name);
-
-		for (buf = current_buf; buf; buf = buf->parent)
-			fprintf(stderr, "  included from: %s:%d\n",
-				buf->filename, buf->source_lineno);
-		exit(1);
+	for (iter = current_file; iter; iter = iter->parent) {
+		if (!strcmp(iter->name, file->name)) {
+			fprintf(stderr,
+				"Recursive inclusion detected.\n"
+				"Inclusion path:\n"
+				"  current file : %s\n", file->name);
+			iter = file;
+			do {
+				iter = iter->parent;
+				fprintf(stderr, "  included from: %s:%d\n",
+					iter->name, iter->lineno - 1);
+			} while (strcmp(iter->name, file->name));
+			exit(1);
+		}
 	}
 
 	yylineno = 1;
-	cur_filename = file_lookup(name);
+	current_file = file;
 }
 
 static void zconf_endfile(void)
 {
-	struct buffer *tmp;
+	struct buffer *parent;
 
-	fclose(yyin);
-	yy_delete_buffer(YY_CURRENT_BUFFER);
-	yy_switch_to_buffer(current_buf->state);
-	yylineno = current_buf->yylineno;
-	cur_filename = current_buf->filename;
-	tmp = current_buf;
-	current_buf = current_buf->parent;
-	free(tmp);
+	current_file = current_file->parent;
+	if (current_file)
+		yylineno = current_file->lineno;
+
+	parent = current_buf->parent;
+	if (parent) {
+		fclose(yyin);
+		yy_delete_buffer(YY_CURRENT_BUFFER);
+		yy_switch_to_buffer(parent->state);
+	}
+	free(current_buf);
+	current_buf = parent;
+}
+
+int zconf_lineno(void)
+{
+	return current_pos.lineno;
+}
+
+const char *zconf_curname(void)
+{
+	return current_pos.file ? current_pos.file->name : "<none>";
 }

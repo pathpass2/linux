@@ -47,22 +47,13 @@
 #define MLXBF_EDAC_MAX_DIMM_PER_MC	2
 #define MLXBF_EDAC_ERROR_GRAIN		8
 
-#define MLXBF_WRITE_REG_32		(0x82000009)
-#define MLXBF_READ_REG_32		(0x8200000A)
-#define MLXBF_SIP_SVC_VERSION		(0x8200ff03)
-
-#define MLXBF_SMCCC_ACCESS_VIOLATION	(-4)
-
-#define MLXBF_SVC_REQ_MAJOR		0
-#define MLXBF_SVC_REQ_MINOR		3
-
 /*
- * Request MLXBF_SIP_GET_DIMM_INFO
+ * Request MLNX_SIP_GET_DIMM_INFO
  *
  * Retrieve information about DIMM on a certain slot.
  *
  * Call register usage:
- * a0: MLXBF_SIP_GET_DIMM_INFO
+ * a0: MLNX_SIP_GET_DIMM_INFO
  * a1: (Memory controller index) << 16 | (Dimm index in memory controller)
  * a2-7: not used.
  *
@@ -70,7 +61,7 @@
  * a0: MLXBF_DIMM_INFO defined below describing the DIMM.
  * a1-3: not used.
  */
-#define MLXBF_SIP_GET_DIMM_INFO		0x82000008
+#define MLNX_SIP_GET_DIMM_INFO		0x82000008
 
 /* Format for the SMC response about the memory information */
 #define MLXBF_DIMM_INFO__SIZE_GB GENMASK_ULL(15, 0)
@@ -81,15 +72,9 @@
 #define MLXBF_DIMM_INFO__PACKAGE_X GENMASK_ULL(31, 24)
 
 struct bluefield_edac_priv {
-	/* pointer to device structure */
-	struct device *dev;
 	int dimm_ranks[MLXBF_EDAC_MAX_DIMM_PER_MC];
 	void __iomem *emi_base;
 	int dimm_per_mc;
-	/* access to secure regs supported */
-	bool svc_sreg_support;
-	/* SMC table# for secure regs access */
-	u32 sreg_tbl;
 };
 
 static u64 smc_call1(u64 smc_op, u64 smc_arg)
@@ -99,71 +84,6 @@ static u64 smc_call1(u64 smc_op, u64 smc_arg)
 	arm_smccc_smc(smc_op, smc_arg, 0, 0, 0, 0, 0, 0, &res);
 
 	return res.a0;
-}
-
-static int secure_readl(void __iomem *addr, u32 *result, u32 sreg_tbl)
-{
-	struct arm_smccc_res res;
-	int status;
-
-	arm_smccc_smc(MLXBF_READ_REG_32, sreg_tbl, (uintptr_t)addr,
-		      0, 0, 0, 0, 0, &res);
-
-	status = res.a0;
-
-	if (status == SMCCC_RET_NOT_SUPPORTED ||
-	    status == MLXBF_SMCCC_ACCESS_VIOLATION)
-		return -1;
-
-	*result = (u32)res.a1;
-	return 0;
-}
-
-static int secure_writel(void __iomem *addr, u32 data, u32 sreg_tbl)
-{
-	struct arm_smccc_res res;
-	int status;
-
-	arm_smccc_smc(MLXBF_WRITE_REG_32, sreg_tbl, data, (uintptr_t)addr,
-		      0, 0, 0, 0, &res);
-
-	status = res.a0;
-
-	if (status == SMCCC_RET_NOT_SUPPORTED ||
-	    status == MLXBF_SMCCC_ACCESS_VIOLATION)
-		return -1;
-	else
-		return 0;
-}
-
-static int bluefield_edac_readl(struct bluefield_edac_priv *priv, u32 offset, u32 *result)
-{
-	void __iomem *addr;
-	int err = 0;
-
-	addr = priv->emi_base + offset;
-
-	if (priv->svc_sreg_support)
-		err = secure_readl(addr, result, priv->sreg_tbl);
-	else
-		*result = readl(addr);
-
-	return err;
-}
-
-static int bluefield_edac_writel(struct bluefield_edac_priv *priv, u32 offset, u32 data)
-{
-	void __iomem *addr;
-	int err = 0;
-
-	addr = priv->emi_base + offset;
-
-	if (priv->svc_sreg_support)
-		err = secure_writel(addr, data, priv->sreg_tbl);
-	else
-		writel(data, addr);
-
-	return err;
 }
 
 /*
@@ -179,7 +99,7 @@ static void bluefield_gather_report_ecc(struct mem_ctl_info *mci,
 	u32 ecc_latch_select, dram_syndrom, serr, derr, syndrom;
 	enum hw_event_mc_err_type ecc_type;
 	u64 ecc_dimm_addr;
-	int ecc_dimm, err;
+	int ecc_dimm;
 
 	ecc_type = is_single_ecc ? HW_EVENT_ERR_CORRECTED :
 				   HW_EVENT_ERR_UNCORRECTED;
@@ -189,21 +109,14 @@ static void bluefield_gather_report_ecc(struct mem_ctl_info *mci,
 	 * registers with information about the last ECC error occurrence.
 	 */
 	ecc_latch_select = MLXBF_ECC_LATCH_SEL__START;
-	err = bluefield_edac_writel(priv, MLXBF_ECC_LATCH_SEL, ecc_latch_select);
-	if (err)
-		dev_err(priv->dev, "ECC latch select write failed.\n");
+	writel(ecc_latch_select, priv->emi_base + MLXBF_ECC_LATCH_SEL);
 
 	/*
 	 * Verify that the ECC reported info in the registers is of the
 	 * same type as the one asked to report. If not, just report the
 	 * error without the detailed information.
 	 */
-	err = bluefield_edac_readl(priv, MLXBF_SYNDROM, &dram_syndrom);
-	if (err) {
-		dev_err(priv->dev, "DRAM syndrom read failed.\n");
-		return;
-	}
-
+	dram_syndrom = readl(priv->emi_base + MLXBF_SYNDROM);
 	serr = FIELD_GET(MLXBF_SYNDROM__SERR, dram_syndrom);
 	derr = FIELD_GET(MLXBF_SYNDROM__DERR, dram_syndrom);
 	syndrom = FIELD_GET(MLXBF_SYNDROM__SYN, dram_syndrom);
@@ -214,27 +127,13 @@ static void bluefield_gather_report_ecc(struct mem_ctl_info *mci,
 		return;
 	}
 
-	err = bluefield_edac_readl(priv, MLXBF_ADD_INFO, &dram_additional_info);
-	if (err) {
-		dev_err(priv->dev, "DRAM additional info read failed.\n");
-		return;
-	}
-
+	dram_additional_info = readl(priv->emi_base + MLXBF_ADD_INFO);
 	err_prank = FIELD_GET(MLXBF_ADD_INFO__ERR_PRANK, dram_additional_info);
 
 	ecc_dimm = (err_prank >= 2 && priv->dimm_ranks[0] <= 2) ? 1 : 0;
 
-	err = bluefield_edac_readl(priv, MLXBF_ERR_ADDR_0, &edea0);
-	if (err) {
-		dev_err(priv->dev, "Error addr 0 read failed.\n");
-		return;
-	}
-
-	err = bluefield_edac_readl(priv, MLXBF_ERR_ADDR_1, &edea1);
-	if (err) {
-		dev_err(priv->dev, "Error addr 1 read failed.\n");
-		return;
-	}
+	edea0 = readl(priv->emi_base + MLXBF_ERR_ADDR_0);
+	edea1 = readl(priv->emi_base + MLXBF_ERR_ADDR_1);
 
 	ecc_dimm_addr = ((u64)edea1 << 32) | edea0;
 
@@ -248,7 +147,6 @@ static void bluefield_edac_check(struct mem_ctl_info *mci)
 {
 	struct bluefield_edac_priv *priv = mci->pvt_info;
 	u32 ecc_count, single_error_count, double_error_count, ecc_error = 0;
-	int err;
 
 	/*
 	 * The memory controller might not be initialized by the firmware
@@ -257,12 +155,7 @@ static void bluefield_edac_check(struct mem_ctl_info *mci)
 	if (mci->edac_cap == EDAC_FLAG_NONE)
 		return;
 
-	err = bluefield_edac_readl(priv, MLXBF_ECC_CNT, &ecc_count);
-	if (err) {
-		dev_err(priv->dev, "ECC count read failed.\n");
-		return;
-	}
-
+	ecc_count = readl(priv->emi_base + MLXBF_ECC_CNT);
 	single_error_count = FIELD_GET(MLXBF_ECC_CNT__SERR_CNT, ecc_count);
 	double_error_count = FIELD_GET(MLXBF_ECC_CNT__DERR_CNT, ecc_count);
 
@@ -279,18 +172,15 @@ static void bluefield_edac_check(struct mem_ctl_info *mci)
 	}
 
 	/* Write to clear reported errors. */
-	if (ecc_count) {
-		err = bluefield_edac_writel(priv, MLXBF_ECC_ERR, ecc_error);
-		if (err)
-			dev_err(priv->dev, "ECC Error write failed.\n");
-	}
+	if (ecc_count)
+		writel(ecc_error, priv->emi_base + MLXBF_ECC_ERR);
 }
 
 /* Initialize the DIMMs information for the given memory controller. */
 static void bluefield_edac_init_dimms(struct mem_ctl_info *mci)
 {
 	struct bluefield_edac_priv *priv = mci->pvt_info;
-	u64 mem_ctrl_idx = mci->mc_idx;
+	int mem_ctrl_idx = mci->mc_idx;
 	struct dimm_info *dimm;
 	u64 smc_info, smc_arg;
 	int is_empty = 1, i;
@@ -299,7 +189,7 @@ static void bluefield_edac_init_dimms(struct mem_ctl_info *mci)
 		dimm = mci->dimms[i];
 
 		smc_arg = mem_ctrl_idx << 16 | i;
-		smc_info = smc_call1(MLXBF_SIP_GET_DIMM_INFO, smc_arg);
+		smc_info = smc_call1(MLNX_SIP_GET_DIMM_INFO, smc_arg);
 
 		if (!FIELD_GET(MLXBF_DIMM_INFO__SIZE_GB, smc_info)) {
 			dimm->mtype = MEM_EMPTY;
@@ -354,7 +244,6 @@ static int bluefield_edac_mc_probe(struct platform_device *pdev)
 	struct bluefield_edac_priv *priv;
 	struct device *dev = &pdev->dev;
 	struct edac_mc_layer layers[1];
-	struct arm_smccc_res res;
 	struct mem_ctl_info *mci;
 	struct resource *emi_res;
 	unsigned int mc_idx, dimm_count;
@@ -390,43 +279,13 @@ static int bluefield_edac_mc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	priv = mci->pvt_info;
-	priv->dev = dev;
-
-	/*
-	 * The "sec_reg_block" property in the ACPI table determines the method
-	 * the driver uses to access the EMI registers:
-	 * a) property is not present - directly access registers via readl/writel
-	 * b) property is present - indirectly access registers via SMC calls
-	 *    (assuming required Silicon Provider service version found)
-	 */
-	if (device_property_read_u32(dev, "sec_reg_block", &priv->sreg_tbl)) {
-		priv->svc_sreg_support = false;
-	} else {
-		/*
-		 * Check for minimum required Arm Silicon Provider (SiP) service
-		 * version, ensuring support of required SMC function IDs.
-		 */
-		arm_smccc_smc(MLXBF_SIP_SVC_VERSION, 0, 0, 0, 0, 0, 0, 0, &res);
-		if (res.a0 == MLXBF_SVC_REQ_MAJOR &&
-		    res.a1 >= MLXBF_SVC_REQ_MINOR) {
-			priv->svc_sreg_support = true;
-		} else {
-			dev_err(dev, "Required SMCs are not supported.\n");
-			ret = -EINVAL;
-			goto err;
-		}
-	}
 
 	priv->dimm_per_mc = dimm_count;
-	if (!priv->svc_sreg_support) {
-		priv->emi_base = devm_ioremap_resource(dev, emi_res);
-		if (IS_ERR(priv->emi_base)) {
-			dev_err(dev, "failed to map EMI IO resource\n");
-			ret = PTR_ERR(priv->emi_base);
-			goto err;
-		}
-	} else {
-		priv->emi_base = (void __iomem *)emi_res->start;
+	priv->emi_base = devm_ioremap_resource(dev, emi_res);
+	if (IS_ERR(priv->emi_base)) {
+		dev_err(dev, "failed to map EMI IO resource\n");
+		ret = PTR_ERR(priv->emi_base);
+		goto err;
 	}
 
 	mci->pdev = dev;
@@ -461,14 +320,17 @@ err:
 	edac_mc_free(mci);
 
 	return ret;
+
 }
 
-static void bluefield_edac_mc_remove(struct platform_device *pdev)
+static int bluefield_edac_mc_remove(struct platform_device *pdev)
 {
 	struct mem_ctl_info *mci = platform_get_drvdata(pdev);
 
 	edac_mc_del_mc(&pdev->dev);
 	edac_mc_free(mci);
+
+	return 0;
 }
 
 static const struct acpi_device_id bluefield_mc_acpi_ids[] = {

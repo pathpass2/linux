@@ -2,9 +2,6 @@
 /* Support nat functions for openvswitch and used by OVS and TC conntrack. */
 
 #include <net/netfilter/nf_nat.h>
-#include <net/ipv6.h>
-#include <linux/ip.h>
-#include <linux/if_vlan.h>
 
 /* Modelled after nf_nat_ipv[46]_fn().
  * range is only used for new, uninitialized NAT state.
@@ -78,10 +75,9 @@ static int nf_ct_nat_execute(struct sk_buff *skb, struct nf_conn *ct,
 	}
 
 	err = nf_nat_packet(ct, ctinfo, hooknum, skb);
-out:
 	if (err == NF_ACCEPT)
 		*action |= BIT(maniptype);
-
+out:
 	return err;
 }
 

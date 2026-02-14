@@ -4,7 +4,6 @@
  * Author: Archit Taneja <archit@ti.com>
  */
 
-#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>

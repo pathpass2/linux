@@ -63,13 +63,6 @@ static int aspeed_mdio_op(struct mii_bus *bus, u8 st, u8 op, u8 phyad, u8 regad,
 
 	iowrite32(ctrl, ctx->base + ASPEED_MDIO_CTRL);
 
-	/* Workaround for read-after-write issue.
-	 * The controller may return stale data if a read follows immediately
-	 * after a write. A dummy read forces the hardware to update its
-	 * internal state, ensuring that the next real read returns correct data.
-	 */
-	ioread32(ctx->base + ASPEED_MDIO_CTRL);
-
 	return readl_poll_timeout(ctx->base + ASPEED_MDIO_CTRL, ctrl,
 				!(ctrl & ASPEED_MDIO_CTRL_FIRE),
 				ASPEED_MDIO_INTERVAL_US,
@@ -184,13 +177,15 @@ static int aspeed_mdio_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void aspeed_mdio_remove(struct platform_device *pdev)
+static int aspeed_mdio_remove(struct platform_device *pdev)
 {
 	struct mii_bus *bus = (struct mii_bus *)platform_get_drvdata(pdev);
 	struct aspeed_mdio *ctx = bus->priv;
 
 	reset_control_assert(ctx->reset);
 	mdiobus_unregister(bus);
+
+	return 0;
 }
 
 static const struct of_device_id aspeed_mdio_of_match[] = {
@@ -212,4 +207,3 @@ module_platform_driver(aspeed_mdio_driver);
 
 MODULE_AUTHOR("Andrew Jeffery <andrew@aj.id.au>");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("ASPEED MDIO bus controller");

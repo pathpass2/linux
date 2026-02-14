@@ -12,6 +12,18 @@
 PHONY := __build
 __build:
 
+ifeq ($(V),1)
+  quiet =
+  Q =
+else
+  quiet=quiet_
+  Q=@
+endif
+
+ifneq ($(findstring s,$(filter-out --%,$(MAKEFLAGS))),)
+  quiet=silent_
+endif
+
 build-dir := $(srctree)/tools/build
 
 # Define $(fixdep) for dep-cmd function
@@ -105,16 +117,6 @@ $(OUTPUT)%.s: %.c FORCE
 	$(call rule_mkdir)
 	$(call if_changed_dep,cc_s_c)
 
-# bison and flex files are generated in the OUTPUT directory
-# so it needs a separate rule to depend on them properly
-$(OUTPUT)%-bison.o: $(OUTPUT)%-bison.c FORCE
-	$(call rule_mkdir)
-	$(call if_changed_dep,$(host)cc_o_c)
-
-$(OUTPUT)%-flex.o: $(OUTPUT)%-flex.c FORCE
-	$(call rule_mkdir)
-	$(call if_changed_dep,$(host)cc_o_c)
-
 # Gather build data:
 #   obj-y        - list of build objects
 #   subdir-y     - list of directories to nest
@@ -129,10 +131,6 @@ objprefix    := $(subst ./,,$(OUTPUT)$(dir)/)
 obj-y        := $(addprefix $(objprefix),$(obj-y))
 subdir-obj-y := $(addprefix $(objprefix),$(subdir-obj-y))
 
-# Separate out test log files from real build objects.
-test-y       := $(filter %_log, $(obj-y))
-obj-y        := $(filter-out %_log, $(obj-y))
-
 # Final '$(obj)-in.o' object
 in-target := $(objprefix)$(obj)-in.o
 
@@ -143,7 +141,7 @@ $(subdir-y):
 
 $(sort $(subdir-obj-y)): $(subdir-y) ;
 
-$(in-target): $(obj-y) $(test-y) FORCE
+$(in-target): $(obj-y) FORCE
 	$(call rule_mkdir)
 	$(call if_changed,$(host)ld_multi)
 

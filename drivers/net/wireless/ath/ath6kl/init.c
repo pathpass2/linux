@@ -207,7 +207,7 @@ static const struct ath6kl_hw hw_list[] = {
 
 /*
  * This configuration item sets the value of disconnect timeout
- * Firmware delays sending the disconnect event to the host for this
+ * Firmware delays sending the disconnec event to the host for this
  * timeout after is gets disconnected from the current AP.
  * If the firmware successly roams within the disconnect timeout
  * it sends a new connect event
@@ -221,7 +221,7 @@ struct sk_buff *ath6kl_buf_alloc(int size)
 	struct sk_buff *skb;
 	u16 reserved;
 
-	/* Add cacheline space at front and back of buffer */
+	/* Add chacheline space at front and back of buffer */
 	reserved = roundup((2 * L1_CACHE_BYTES) + ATH6KL_DATA_OFFSET +
 		   sizeof(struct htc_packet) + ATH6KL_HTC_ALIGN_BYTES, 4);
 	skb = dev_alloc_skb(size + reserved);
@@ -1677,7 +1677,7 @@ static void ath6kl_init_get_fwcaps(struct ath6kl *ar, char *buf, size_t buf_len)
 
 			/* add "..." to the end of string */
 			trunc_len = strlen(trunc) + 1;
-			memcpy(buf + buf_len - trunc_len, trunc, trunc_len);
+			strncpy(buf + buf_len - trunc_len, trunc, trunc_len);
 
 			return;
 		}
@@ -1915,7 +1915,7 @@ void ath6kl_stop_txrx(struct ath6kl *ar)
 	clear_bit(WMI_READY, &ar->flag);
 
 	if (ar->fw_recovery.enable)
-		timer_delete_sync(&ar->fw_recovery.hb_timer);
+		del_timer_sync(&ar->fw_recovery.hb_timer);
 
 	/*
 	 * After wmi_shudown all WMI events will be dropped. We

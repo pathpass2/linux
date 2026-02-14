@@ -5,7 +5,6 @@
 #define _IP_SET_HASH_GEN_H
 
 #include <linux/rcupdate.h>
-#include <linux/rcupdate_wait.h>
 #include <linux/jhash.h>
 #include <linux/types.h>
 #include <linux/netfilter/nfnetlink.h>
@@ -63,8 +62,8 @@ struct hbucket {
 		: jhash_size((htable_bits) - HTABLE_REGION_BITS))
 #define ahash_sizeof_regions(htable_bits)		\
 	(ahash_numof_locks(htable_bits) * sizeof(struct ip_set_region))
-#define ahash_region(n)		\
-	((n) / jhash_size(HTABLE_REGION_BITS))
+#define ahash_region(n, htable_bits)		\
+	((n) % ahash_numof_locks(htable_bits))
 #define ahash_bucket_start(h,  htable_bits)	\
 	((htable_bits) < HTABLE_REGION_BITS ? 0	\
 		: (h) * jhash_size(HTABLE_REGION_BITS))
@@ -222,7 +221,6 @@ static const union nf_inet_addr zeromask = {};
 #undef mtype_gc_do
 #undef mtype_gc
 #undef mtype_gc_init
-#undef mtype_cancel_gc
 #undef mtype_variant
 #undef mtype_data_match
 
@@ -267,7 +265,6 @@ static const union nf_inet_addr zeromask = {};
 #define mtype_gc_do		IPSET_TOKEN(MTYPE, _gc_do)
 #define mtype_gc		IPSET_TOKEN(MTYPE, _gc)
 #define mtype_gc_init		IPSET_TOKEN(MTYPE, _gc_init)
-#define mtype_cancel_gc		IPSET_TOKEN(MTYPE, _cancel_gc)
 #define mtype_variant		IPSET_TOKEN(MTYPE, _variant)
 #define mtype_data_match	IPSET_TOKEN(MTYPE, _data_match)
 
@@ -432,7 +429,7 @@ mtype_ahash_destroy(struct ip_set *set, struct htable *t, bool ext_destroy)
 	u32 i;
 
 	for (i = 0; i < jhash_size(t->htable_bits); i++) {
-		n = (__force struct hbucket *)hbucket(t, i);
+		n = __ipset_dereference(hbucket(t, i));
 		if (!n)
 			continue;
 		if (set->extensions & IPSET_EXT_DESTROY && ext_destroy)
@@ -452,7 +449,10 @@ mtype_destroy(struct ip_set *set)
 	struct htype *h = set->data;
 	struct list_head *l, *lt;
 
-	mtype_ahash_destroy(set, (__force struct htable *)h->table, true);
+	if (SET_WITH_TIMEOUT(set))
+		cancel_delayed_work_sync(&h->gc.dwork);
+
+	mtype_ahash_destroy(set, ipset_dereference_nfnl(h->table), true);
 	list_for_each_safe(l, lt, &h->ad) {
 		list_del(l);
 		kfree(l);
@@ -598,15 +598,6 @@ mtype_gc_init(struct htable_gc *gc)
 	queue_delayed_work(system_power_efficient_wq, &gc->dwork, HZ);
 }
 
-static void
-mtype_cancel_gc(struct ip_set *set)
-{
-	struct htype *h = set->data;
-
-	if (SET_WITH_TIMEOUT(set))
-		cancel_delayed_work_sync(&h->gc.dwork);
-}
-
 static int
 mtype_add(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 	  struct ip_set_ext *mext, u32 flags);
@@ -702,7 +693,7 @@ retry:
 #endif
 				key = HKEY(data, h->initval, htable_bits);
 				m = __ipset_dereference(hbucket(t, key));
-				nr = ahash_region(key);
+				nr = ahash_region(key, htable_bits);
 				if (!m) {
 					m = kzalloc(sizeof(*m) +
 					    AHASH_INIT_SIZE * dsize,
@@ -852,7 +843,7 @@ mtype_add(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 	rcu_read_lock_bh();
 	t = rcu_dereference_bh(h->table);
 	key = HKEY(value, h->initval, t->htable_bits);
-	r = ahash_region(key);
+	r = ahash_region(key, t->htable_bits);
 	atomic_inc(&t->uref);
 	elements = t->hregion[r].elements;
 	maxelem = t->maxelem;
@@ -1050,7 +1041,7 @@ mtype_del(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 	rcu_read_lock_bh();
 	t = rcu_dereference_bh(h->table);
 	key = HKEY(value, h->initval, t->htable_bits);
-	r = ahash_region(key);
+	r = ahash_region(key, t->htable_bits);
 	atomic_inc(&t->uref);
 	rcu_read_unlock_bh();
 
@@ -1449,7 +1440,6 @@ static const struct ip_set_type_variant mtype_variant = {
 	.uref	= mtype_uref,
 	.resize	= mtype_resize,
 	.same_set = mtype_same_set,
-	.cancel_gc = mtype_cancel_gc,
 	.region_lock = true,
 };
 

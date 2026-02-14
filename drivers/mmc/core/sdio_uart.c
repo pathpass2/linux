@@ -178,9 +178,11 @@ static inline void sdio_uart_release_func(struct sdio_uart_port *port)
 		sdio_release_host(port->func);
 }
 
-static inline u8 sdio_in(struct sdio_uart_port *port, int offset)
+static inline unsigned int sdio_in(struct sdio_uart_port *port, int offset)
 {
-	return sdio_readb(port->func, port->regs_offset + offset, NULL);
+	unsigned char c;
+	c = sdio_readb(port->func, port->regs_offset + offset, NULL);
+	return c;
 }
 
 static inline void sdio_out(struct sdio_uart_port *port, int offset, int value)
@@ -190,8 +192,8 @@ static inline void sdio_out(struct sdio_uart_port *port, int offset, int value)
 
 static unsigned int sdio_uart_get_mctrl(struct sdio_uart_port *port)
 {
+	unsigned char status;
 	unsigned int ret;
-	u8 status;
 
 	/* FIXME: What stops this losing the delta bits and breaking
 	   sdio_uart_check_modem_status ? */
@@ -352,13 +354,15 @@ static void sdio_uart_stop_rx(struct sdio_uart_port *port)
 	sdio_out(port, UART_IER, port->ier);
 }
 
-static void sdio_uart_receive_chars(struct sdio_uart_port *port, u8 *status)
+static void sdio_uart_receive_chars(struct sdio_uart_port *port,
+				    unsigned int *status)
 {
+	unsigned int ch, flag;
 	int max_count = 256;
 
 	do {
-		u8 ch = sdio_in(port, UART_RX);
-		u8 flag = TTY_NORMAL;
+		ch = sdio_in(port, UART_RX);
+		flag = TTY_NORMAL;
 		port->icount.rx++;
 
 		if (unlikely(*status & (UART_LSR_BI | UART_LSR_PE |
@@ -445,8 +449,8 @@ static void sdio_uart_transmit_chars(struct sdio_uart_port *port)
 
 static void sdio_uart_check_modem_status(struct sdio_uart_port *port)
 {
+	int status;
 	struct tty_struct *tty;
-	u8 status;
 
 	status = sdio_in(port, UART_MSR);
 
@@ -471,16 +475,16 @@ static void sdio_uart_check_modem_status(struct sdio_uart_port *port)
 		port->icount.cts++;
 		tty = tty_port_tty_get(&port->port);
 		if (tty && C_CRTSCTS(tty)) {
-			bool cts = status & UART_MSR_CTS;
+			int cts = (status & UART_MSR_CTS);
 			if (tty->hw_stopped) {
 				if (cts) {
-					tty->hw_stopped = false;
+					tty->hw_stopped = 0;
 					sdio_uart_start_tx(port);
 					tty_wakeup(tty);
 				}
 			} else {
 				if (!cts) {
-					tty->hw_stopped = true;
+					tty->hw_stopped = 1;
 					sdio_uart_stop_tx(port);
 				}
 			}
@@ -495,7 +499,7 @@ static void sdio_uart_check_modem_status(struct sdio_uart_port *port)
 static void sdio_uart_irq(struct sdio_func *func)
 {
 	struct sdio_uart_port *port = sdio_get_drvdata(func);
-	u8 iir, lsr;
+	unsigned int iir, lsr;
 
 	/*
 	 * In a few places sdio_uart_irq() is called directly instead of
@@ -629,7 +633,7 @@ static int sdio_uart_activate(struct tty_port *tport, struct tty_struct *tty)
 
 	if (C_CRTSCTS(tty))
 		if (!(sdio_uart_get_mctrl(port) & TIOCM_CTS))
-			tty->hw_stopped = true;
+			tty->hw_stopped = 1;
 
 	clear_bit(TTY_IO_ERROR, &tty->flags);
 
@@ -756,8 +760,8 @@ static void sdio_uart_hangup(struct tty_struct *tty)
 	tty_port_hangup(&port->port);
 }
 
-static ssize_t sdio_uart_write(struct tty_struct *tty, const u8 *buf,
-			      size_t count)
+static int sdio_uart_write(struct tty_struct *tty, const unsigned char *buf,
+			   int count)
 {
 	struct sdio_uart_port *port = tty->driver_data;
 	int ret;
@@ -791,7 +795,7 @@ static unsigned int sdio_uart_chars_in_buffer(struct tty_struct *tty)
 	return kfifo_len(&port->xmit_fifo);
 }
 
-static void sdio_uart_send_xchar(struct tty_struct *tty, u8 ch)
+static void sdio_uart_send_xchar(struct tty_struct *tty, char ch)
 {
 	struct sdio_uart_port *port = tty->driver_data;
 
@@ -878,14 +882,14 @@ static void sdio_uart_set_termios(struct tty_struct *tty,
 
 	/* Handle turning off CRTSCTS */
 	if ((old_termios->c_cflag & CRTSCTS) && !(cflag & CRTSCTS)) {
-		tty->hw_stopped = false;
+		tty->hw_stopped = 0;
 		sdio_uart_start_tx(port);
 	}
 
 	/* Handle turning on CRTSCTS */
 	if (!(old_termios->c_cflag & CRTSCTS) && (cflag & CRTSCTS)) {
 		if (!(sdio_uart_get_mctrl(port) & TIOCM_CTS)) {
-			tty->hw_stopped = true;
+			tty->hw_stopped = 1;
 			sdio_uart_stop_tx(port);
 		}
 	}
@@ -1162,5 +1166,4 @@ module_init(sdio_uart_init);
 module_exit(sdio_uart_exit);
 
 MODULE_AUTHOR("Nicolas Pitre");
-MODULE_DESCRIPTION("SDIO UART/GPS driver");
 MODULE_LICENSE("GPL");

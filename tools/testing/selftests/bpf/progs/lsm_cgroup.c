@@ -103,15 +103,11 @@ static __always_inline int real_bind(struct socket *sock,
 				     int addrlen)
 {
 	struct sockaddr_ll sa = {};
-	struct sock *sk = sock->sk;
 
-	if (!sk)
+	if (sock->sk->__sk_common.skc_family != AF_PACKET)
 		return 1;
 
-	if (sk->__sk_common.skc_family != AF_PACKET)
-		return 1;
-
-	if (sk->sk_kern_sock)
+	if (sock->sk->sk_kern_sock)
 		return 1;
 
 	bpf_probe_read_kernel(&sa, sizeof(sa), address);

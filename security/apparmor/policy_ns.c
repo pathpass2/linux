@@ -107,7 +107,7 @@ static struct aa_ns *alloc_ns(const char *prefix, const char *name)
 	struct aa_ns *ns;
 
 	ns = kzalloc(sizeof(*ns), GFP_KERNEL);
-	AA_DEBUG(DEBUG_POLICY, "%s(%p)\n", __func__, ns);
+	AA_DEBUG("%s(%p)\n", __func__, ns);
 	if (!ns)
 		return NULL;
 	if (!aa_policy_init(&ns->base, prefix, name, GFP_KERNEL))
@@ -157,6 +157,43 @@ void aa_free_ns(struct aa_ns *ns)
 	ns->unconfined->ns = NULL;
 	aa_free_profile(ns->unconfined);
 	kfree_sensitive(ns);
+}
+
+/**
+ * aa_findn_ns  -  look up a profile namespace on the namespace list
+ * @root: namespace to search in  (NOT NULL)
+ * @name: name of namespace to find  (NOT NULL)
+ * @n: length of @name
+ *
+ * Returns: a refcounted namespace on the list, or NULL if no namespace
+ *          called @name exists.
+ *
+ * refcount released by caller
+ */
+struct aa_ns *aa_findn_ns(struct aa_ns *root, const char *name, size_t n)
+{
+	struct aa_ns *ns = NULL;
+
+	rcu_read_lock();
+	ns = aa_get_ns(__aa_findn_ns(&root->sub_ns, name, n));
+	rcu_read_unlock();
+
+	return ns;
+}
+
+/**
+ * aa_find_ns  -  look up a profile namespace on the namespace list
+ * @root: namespace to search in  (NOT NULL)
+ * @name: name of namespace to find  (NOT NULL)
+ *
+ * Returns: a refcounted namespace on the list, or NULL if no namespace
+ *          called @name exists.
+ *
+ * refcount released by caller
+ */
+struct aa_ns *aa_find_ns(struct aa_ns *root, const char *name)
+{
+	return aa_findn_ns(root, name, strlen(name));
 }
 
 /**

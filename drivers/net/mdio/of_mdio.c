@@ -25,7 +25,6 @@
 
 MODULE_AUTHOR("Grant Likely <grant.likely@secretlab.ca>");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("OpenFirmware MDIO bus (Ethernet PHY) accessors");
 
 /* Extract the clause 22 phy ID from the compatible string of the form
  * ethernet-phy-idAAAA.BBBB */
@@ -63,11 +62,14 @@ static int of_mdiobus_register_device(struct mii_bus *mdio,
 	/* Associate the OF node with the device structure so it
 	 * can be looked up later.
 	 */
-	device_set_node(&mdiodev->dev, fwnode_handle_get(fwnode));
+	fwnode_handle_get(fwnode);
+	device_set_node(&mdiodev->dev, fwnode);
 
 	/* All data is now stored in the mdiodev struct; register it. */
 	rc = mdio_device_register(mdiodev);
 	if (rc) {
+		device_set_node(&mdiodev->dev, NULL);
+		fwnode_handle_put(fwnode);
 		mdio_device_free(mdiodev);
 		return rc;
 	}
@@ -129,59 +131,12 @@ bool of_mdiobus_child_is_phy(struct device_node *child)
 		return true;
 	}
 
-	if (!of_property_present(child, "compatible"))
+	if (!of_find_property(child, "compatible", NULL))
 		return true;
 
 	return false;
 }
 EXPORT_SYMBOL(of_mdiobus_child_is_phy);
-
-static int __of_mdiobus_parse_phys(struct mii_bus *mdio, struct device_node *np,
-				   bool *scanphys)
-{
-	struct device_node *child;
-	int addr, rc = 0;
-
-	/* Loop over the child nodes and register a phy_device for each phy */
-	for_each_available_child_of_node(np, child) {
-		if (of_node_name_eq(child, "ethernet-phy-package")) {
-			/* Ignore invalid ethernet-phy-package node */
-			if (!of_property_present(child, "reg"))
-				continue;
-
-			rc = __of_mdiobus_parse_phys(mdio, child, NULL);
-			if (rc && rc != -ENODEV)
-				goto exit;
-
-			continue;
-		}
-
-		addr = of_mdio_parse_addr(&mdio->dev, child);
-		if (addr < 0) {
-			/* Skip scanning for invalid ethernet-phy-package node */
-			if (scanphys)
-				*scanphys = true;
-			continue;
-		}
-
-		if (of_mdiobus_child_is_phy(child))
-			rc = of_mdiobus_register_phy(mdio, child, addr);
-		else
-			rc = of_mdiobus_register_device(mdio, child, addr);
-
-		if (rc == -ENODEV)
-			dev_err(&mdio->dev,
-				"MDIO device at address %d is missing.\n",
-				addr);
-		else if (rc)
-			goto exit;
-	}
-
-	return 0;
-exit:
-	of_node_put(child);
-	return rc;
-}
 
 /**
  * __of_mdiobus_register - Register mii_bus and create PHYs from the device tree
@@ -224,18 +179,33 @@ int __of_mdiobus_register(struct mii_bus *mdio, struct device_node *np,
 		return rc;
 
 	/* Loop over the child nodes and register a phy_device for each phy */
-	rc = __of_mdiobus_parse_phys(mdio, np, &scanphys);
-	if (rc)
-		goto unregister;
+	for_each_available_child_of_node(np, child) {
+		addr = of_mdio_parse_addr(&mdio->dev, child);
+		if (addr < 0) {
+			scanphys = true;
+			continue;
+		}
+
+		if (of_mdiobus_child_is_phy(child))
+			rc = of_mdiobus_register_phy(mdio, child, addr);
+		else
+			rc = of_mdiobus_register_device(mdio, child, addr);
+
+		if (rc == -ENODEV)
+			dev_err(&mdio->dev,
+				"MDIO device at address %d is missing.\n",
+				addr);
+		else if (rc)
+			goto unregister;
+	}
 
 	if (!scanphys)
 		return 0;
 
 	/* auto scan for PHYs with empty reg property */
 	for_each_available_child_of_node(np, child) {
-		/* Skip PHYs with reg property set or ethernet-phy-package node */
-		if (of_property_present(child, "reg") ||
-		    of_node_name_eq(child, "ethernet-phy-package"))
+		/* Skip PHYs with reg property set */
+		if (of_find_property(child, "reg", NULL))
 			continue;
 
 		for (addr = 0; addr < PHY_MAX_ADDR; addr++) {
@@ -256,16 +226,15 @@ int __of_mdiobus_register(struct mii_bus *mdio, struct device_node *np,
 				if (!rc)
 					break;
 				if (rc != -ENODEV)
-					goto put_unregister;
+					goto unregister;
 			}
 		}
 	}
 
 	return 0;
 
-put_unregister:
-	of_node_put(child);
 unregister:
+	of_node_put(child);
 	mdiobus_unregister(mdio);
 	return rc;
 }
@@ -387,7 +356,7 @@ EXPORT_SYMBOL(of_phy_get_and_connect);
 bool of_phy_is_fixed_link(struct device_node *np)
 {
 	struct device_node *dn;
-	int err;
+	int len, err;
 	const char *managed;
 
 	/* New binding */
@@ -402,7 +371,8 @@ bool of_phy_is_fixed_link(struct device_node *np)
 		return true;
 
 	/* Old binding */
-	if (of_property_count_u32_elems(np, "fixed-link") == 5)
+	if (of_get_property(np, "fixed-link", &len) &&
+	    len == (5 * sizeof(__be32)))
 		return true;
 
 	return false;
@@ -444,8 +414,6 @@ int of_phy_register_fixed_link(struct device_node *np)
 	/* Old binding */
 	if (of_property_read_u32_array(np, "fixed-link", fixed_link_prop,
 				       ARRAY_SIZE(fixed_link_prop)) == 0) {
-		pr_warn_once("%pOF uses deprecated array-style fixed-link binding!\n",
-			     np);
 		status.link = 1;
 		status.duplex = fixed_link_prop[1];
 		status.speed  = fixed_link_prop[2];
@@ -457,7 +425,7 @@ int of_phy_register_fixed_link(struct device_node *np)
 	return -ENODEV;
 
 register_phy:
-	return PTR_ERR_OR_ZERO(fixed_phy_register(&status, np));
+	return PTR_ERR_OR_ZERO(fixed_phy_register(PHY_POLL, &status, np));
 }
 EXPORT_SYMBOL(of_phy_register_fixed_link);
 
@@ -472,5 +440,6 @@ void of_phy_deregister_fixed_link(struct device_node *np)
 	fixed_phy_unregister(phydev);
 
 	put_device(&phydev->mdio.dev);	/* of_phy_find_device() */
+	phy_device_free(phydev);	/* fixed_phy_register() */
 }
 EXPORT_SYMBOL(of_phy_deregister_fixed_link);

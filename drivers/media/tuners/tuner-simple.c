@@ -112,7 +112,7 @@ struct tuner_simple_priv {
 	struct list_head hybrid_tuner_instance_list;
 
 	unsigned int type;
-	const struct tunertype *tun;
+	struct tunertype *tun;
 
 	u32 frequency;
 	u32 bandwidth;
@@ -232,11 +232,11 @@ static inline char *tuner_param_name(enum param_type type)
 	return name;
 }
 
-static const struct tuner_params *simple_tuner_params(struct dvb_frontend *fe,
-						      enum param_type desired_type)
+static struct tuner_params *simple_tuner_params(struct dvb_frontend *fe,
+						enum param_type desired_type)
 {
 	struct tuner_simple_priv *priv = fe->tuner_priv;
-	const struct tunertype *tun = priv->tun;
+	struct tunertype *tun = priv->tun;
 	int i;
 
 	for (i = 0; i < tun->count; i++)
@@ -257,7 +257,7 @@ static const struct tuner_params *simple_tuner_params(struct dvb_frontend *fe,
 }
 
 static int simple_config_lookup(struct dvb_frontend *fe,
-				const struct tuner_params *t_params,
+				struct tuner_params *t_params,
 				unsigned *frequency, u8 *config, u8 *cb)
 {
 	struct tuner_simple_priv *priv = fe->tuner_priv;
@@ -549,7 +549,7 @@ static int simple_set_tv_freq(struct dvb_frontend *fe,
 	u8 buffer[4];
 	int rc, IFPCoff, i;
 	enum param_type desired_type;
-	const struct tuner_params *t_params;
+	struct tuner_params *t_params;
 
 	/* IFPCoff = Video Intermediate Frequency - Vif:
 		940  =16*58.75  NTSC/J (Japan)
@@ -664,12 +664,12 @@ static int simple_set_tv_freq(struct dvb_frontend *fe,
 static int simple_set_radio_freq(struct dvb_frontend *fe,
 				 struct analog_parameters *params)
 {
-	const struct tunertype *tun;
+	struct tunertype *tun;
 	struct tuner_simple_priv *priv = fe->tuner_priv;
 	u8 buffer[4];
 	u16 div;
 	int rc, j;
-	const struct tuner_params *t_params;
+	struct tuner_params *t_params;
 	unsigned int freq = params->frequency;
 	bool mono = params->audmode == V4L2_TUNER_MODE_MONO;
 
@@ -848,8 +848,8 @@ static u32 simple_dvb_configure(struct dvb_frontend *fe, u8 *buf,
 {
 	/* This function returns the tuned frequency on success, 0 on error */
 	struct tuner_simple_priv *priv = fe->tuner_priv;
-	const struct tunertype *tun = priv->tun;
-	const struct tuner_params *t_params;
+	struct tunertype *tun = priv->tun;
+	struct tuner_params *t_params;
 	u8 config, cb;
 	u32 div;
 	int ret;

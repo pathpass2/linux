@@ -31,8 +31,7 @@ static const char lowpan_frags_cache_name[] = "lowpan-frags";
 static struct inet_frags lowpan_frags;
 
 static int lowpan_frag_reasm(struct lowpan_frag_queue *fq, struct sk_buff *skb,
-			     struct sk_buff *prev, struct net_device *ldev,
-			     int *refs);
+			     struct sk_buff *prev,  struct net_device *ldev);
 
 static void lowpan_frag_init(struct inet_frag_queue *q, const void *a)
 {
@@ -44,9 +43,8 @@ static void lowpan_frag_init(struct inet_frag_queue *q, const void *a)
 
 static void lowpan_frag_expire(struct timer_list *t)
 {
-	struct inet_frag_queue *frag = timer_container_of(frag, t, timer);
+	struct inet_frag_queue *frag = from_timer(frag, t, timer);
 	struct frag_queue *fq;
-	int refs = 1;
 
 	fq = container_of(frag, struct frag_queue, q);
 
@@ -55,10 +53,10 @@ static void lowpan_frag_expire(struct timer_list *t)
 	if (fq->q.flags & INET_FRAG_COMPLETE)
 		goto out;
 
-	inet_frag_kill(&fq->q, &refs);
+	inet_frag_kill(&fq->q);
 out:
 	spin_unlock(&fq->q.lock);
-	inet_frag_putn(&fq->q, refs);
+	inet_frag_put(&fq->q);
 }
 
 static inline struct lowpan_frag_queue *
@@ -84,8 +82,7 @@ fq_find(struct net *net, const struct lowpan_802154_cb *cb,
 }
 
 static int lowpan_frag_queue(struct lowpan_frag_queue *fq,
-			     struct sk_buff *skb, u8 frag_type,
-			     int *refs)
+			     struct sk_buff *skb, u8 frag_type)
 {
 	struct sk_buff *prev_tail;
 	struct net_device *ldev;
@@ -133,7 +130,7 @@ static int lowpan_frag_queue(struct lowpan_frag_queue *fq,
 		goto err;
 
 	fq->q.stamp = skb->tstamp;
-	fq->q.tstamp_type = skb->tstamp_type;
+	fq->q.mono_delivery_time = skb->mono_delivery_time;
 	if (frag_type == LOWPAN_DISPATCH_FRAG1)
 		fq->q.flags |= INET_FRAG_FIRST_IN;
 
@@ -146,7 +143,7 @@ static int lowpan_frag_queue(struct lowpan_frag_queue *fq,
 		unsigned long orefdst = skb->_skb_refdst;
 
 		skb->_skb_refdst = 0UL;
-		res = lowpan_frag_reasm(fq, skb, prev_tail, ldev, refs);
+		res = lowpan_frag_reasm(fq, skb, prev_tail, ldev);
 		skb->_skb_refdst = orefdst;
 		return res;
 	}
@@ -165,12 +162,11 @@ err:
  *	the last and the first frames arrived and all the bits are here.
  */
 static int lowpan_frag_reasm(struct lowpan_frag_queue *fq, struct sk_buff *skb,
-			     struct sk_buff *prev_tail, struct net_device *ldev,
-			     int *refs)
+			     struct sk_buff *prev_tail, struct net_device *ldev)
 {
 	void *reasm_data;
 
-	inet_frag_kill(&fq->q, refs);
+	inet_frag_kill(&fq->q);
 
 	reasm_data = inet_frag_reasm_prepare(&fq->q, skb, prev_tail);
 	if (!reasm_data)
@@ -304,20 +300,17 @@ int lowpan_frag_rcv(struct sk_buff *skb, u8 frag_type)
 		goto err;
 	}
 
-	rcu_read_lock();
 	fq = fq_find(net, cb, &hdr.source, &hdr.dest);
 	if (fq != NULL) {
-		int ret, refs = 0;
+		int ret;
 
 		spin_lock(&fq->q.lock);
-		ret = lowpan_frag_queue(fq, skb, frag_type, &refs);
+		ret = lowpan_frag_queue(fq, skb, frag_type);
 		spin_unlock(&fq->q.lock);
 
-		rcu_read_unlock();
-		inet_frag_putn(&fq->q, refs);
+		inet_frag_put(&fq->q);
 		return ret;
 	}
-	rcu_read_unlock();
 
 err:
 	kfree_skb(skb);
@@ -345,6 +338,7 @@ static struct ctl_table lowpan_frags_ns_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_jiffies,
 	},
+	{ }
 };
 
 /* secret interval has been deprecated */
@@ -357,6 +351,7 @@ static struct ctl_table lowpan_frags_ctl_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_jiffies,
 	},
+	{ }
 };
 
 static int __net_init lowpan_frags_ns_sysctl_register(struct net *net)
@@ -365,7 +360,6 @@ static int __net_init lowpan_frags_ns_sysctl_register(struct net *net)
 	struct ctl_table_header *hdr;
 	struct netns_ieee802154_lowpan *ieee802154_lowpan =
 		net_ieee802154_lowpan(net);
-	size_t table_size = ARRAY_SIZE(lowpan_frags_ns_ctl_table);
 
 	table = lowpan_frags_ns_ctl_table;
 	if (!net_eq(net, &init_net)) {
@@ -376,7 +370,7 @@ static int __net_init lowpan_frags_ns_sysctl_register(struct net *net)
 
 		/* Don't export sysctls to unprivileged users */
 		if (net->user_ns != &init_user_ns)
-			table_size = 0;
+			table[0].procname = NULL;
 	}
 
 	table[0].data	= &ieee802154_lowpan->fqdir->high_thresh;
@@ -385,8 +379,7 @@ static int __net_init lowpan_frags_ns_sysctl_register(struct net *net)
 	table[1].extra2	= &ieee802154_lowpan->fqdir->high_thresh;
 	table[2].data	= &ieee802154_lowpan->fqdir->timeout;
 
-	hdr = register_net_sysctl_sz(net, "net/ieee802154/6lowpan", table,
-				     table_size);
+	hdr = register_net_sysctl(net, "net/ieee802154/6lowpan", table);
 	if (hdr == NULL)
 		goto err_reg;
 
@@ -402,7 +395,7 @@ err_alloc:
 
 static void __net_exit lowpan_frags_ns_sysctl_unregister(struct net *net)
 {
-	const struct ctl_table *table;
+	struct ctl_table *table;
 	struct netns_ieee802154_lowpan *ieee802154_lowpan =
 		net_ieee802154_lowpan(net);
 

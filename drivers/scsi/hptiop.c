@@ -993,7 +993,7 @@ static int hptiop_reset_comm_mvfrey(struct hptiop_hba *hba)
 	return 0;
 }
 
-static enum scsi_qc_status hptiop_queuecommand_lck(struct scsi_cmnd *scp)
+static int hptiop_queuecommand_lck(struct scsi_cmnd *scp)
 {
 	struct Scsi_Host *host = scp->device->host;
 	struct hptiop_hba *hba = (struct hptiop_hba *)host->hostdata;
@@ -1151,15 +1151,15 @@ static struct attribute *hptiop_host_attrs[] = {
 
 ATTRIBUTE_GROUPS(hptiop_host);
 
-static int hptiop_sdev_configure(struct scsi_device *sdev,
-				 struct queue_limits *lim)
+static int hptiop_slave_config(struct scsi_device *sdev)
 {
 	if (sdev->type == TYPE_TAPE)
-		lim->max_hw_sectors = 8192;
+		blk_queue_max_hw_sectors(sdev->request_queue, 8192);
+
 	return 0;
 }
 
-static const struct scsi_host_template driver_template = {
+static struct scsi_host_template driver_template = {
 	.module                     = THIS_MODULE,
 	.name                       = driver_name,
 	.queuecommand               = hptiop_queuecommand,
@@ -1168,7 +1168,7 @@ static const struct scsi_host_template driver_template = {
 	.emulated                   = 0,
 	.proc_name                  = driver_name,
 	.shost_groups		    = hptiop_host_groups,
-	.sdev_configure		    = hptiop_sdev_configure,
+	.slave_configure            = hptiop_slave_config,
 	.this_id                    = -1,
 	.change_queue_depth         = hptiop_adjust_disk_queue_depth,
 	.cmd_size		    = sizeof(struct hpt_cmd_priv),
@@ -1394,8 +1394,8 @@ static int hptiop_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	host->cmd_per_lun = le32_to_cpu(iop_config.max_requests);
 	host->max_cmd_len = 16;
 
-	req_size = struct_size_t(struct hpt_iop_request_scsi_command,
-				 sg_list, hba->max_sg_descriptors);
+	req_size = struct_size((struct hpt_iop_request_scsi_command *)0,
+			       sg_list, hba->max_sg_descriptors);
 	if ((req_size & 0x1f) != 0)
 		req_size = (req_size + 0x1f) & ~0x1f;
 
@@ -1634,7 +1634,7 @@ static struct hptiop_adapter_ops hptiop_mvfrey_ops = {
 	.host_phy_flag     = cpu_to_le64(1),
 };
 
-static const struct pci_device_id hptiop_id_table[] = {
+static struct pci_device_id hptiop_id_table[] = {
 	{ PCI_VDEVICE(TTI, 0x3220), (kernel_ulong_t)&hptiop_itl_ops },
 	{ PCI_VDEVICE(TTI, 0x3320), (kernel_ulong_t)&hptiop_itl_ops },
 	{ PCI_VDEVICE(TTI, 0x3410), (kernel_ulong_t)&hptiop_itl_ops },

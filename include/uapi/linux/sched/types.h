@@ -4,6 +4,10 @@
 
 #include <linux/types.h>
 
+struct sched_param {
+	int sched_priority;
+};
+
 #define SCHED_ATTR_SIZE_VER0	48	/* sizeof first published struct */
 #define SCHED_ATTR_SIZE_VER1	56	/* add: util_{min,max} */
 
@@ -58,9 +62,9 @@
  *
  * This is reflected by the following fields of the sched_attr structure:
  *
- *  @sched_deadline	representative of the task's deadline in nanoseconds
- *  @sched_runtime	representative of the task's runtime in nanoseconds
- *  @sched_period	representative of the task's period in nanoseconds
+ *  @sched_deadline	representative of the task's deadline
+ *  @sched_runtime	representative of the task's runtime
+ *  @sched_period	representative of the task's period
  *
  * Given this task model, there are a multiplicity of scheduling algorithms
  * and policies, that can be used to ensure all the tasks will make their

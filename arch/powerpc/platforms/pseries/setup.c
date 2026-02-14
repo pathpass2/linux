@@ -42,7 +42,6 @@
 #include <linux/memblock.h>
 #include <linux/swiotlb.h>
 #include <linux/seq_buf.h>
-#include <linux/sched/cputime.h>
 
 #include <asm/mmu.h>
 #include <asm/processor.h>
@@ -84,6 +83,9 @@ DEFINE_STATIC_KEY_FALSE(shared_processor);
 EXPORT_SYMBOL(shared_processor);
 
 #ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+struct static_key paravirt_steal_enabled;
+struct static_key paravirt_steal_rq_enabled;
+
 static bool steal_acc = true;
 static int __init parse_no_stealacc(char *arg)
 {
@@ -341,8 +343,8 @@ static int alloc_dispatch_log_kmem_cache(void)
 {
 	void (*ctor)(void *) = get_dtl_cache_ctor();
 
-	dtl_cache = kmem_cache_create_usercopy("dtl", DISPATCH_LOG_BYTES,
-						DISPATCH_LOG_BYTES, 0, 0, DISPATCH_LOG_BYTES, ctor);
+	dtl_cache = kmem_cache_create("dtl", DISPATCH_LOG_BYTES,
+						DISPATCH_LOG_BYTES, 0, ctor);
 	if (!dtl_cache) {
 		pr_warn("Failed to create dispatch trace log buffer cache\n");
 		pr_warn("Stolen time statistics will be unreliable\n");
@@ -814,8 +816,6 @@ static void __init pSeries_setup_arch(void)
 	/* Discover PIC type and setup ppc_md accordingly */
 	smp_init_pseries();
 
-	// Setup CPU hotplug callbacks
-	pseries_cpu_hotplug_init();
 
 	if (radix_enabled() && !mmu_has_feature(MMU_FTR_GTSE))
 		if (!firmware_has_feature(FW_FEATURE_RPT_INVALIDATE))
@@ -847,7 +847,7 @@ static void __init pSeries_setup_arch(void)
 	if (firmware_has_feature(FW_FEATURE_LPAR)) {
 		vpa_init(boot_cpuid);
 
-		if (lppaca_shared_proc()) {
+		if (lppaca_shared_proc(get_lppaca())) {
 			static_branch_enable(&shared_processor);
 			pv_spinlocks_init();
 #ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
@@ -1027,11 +1027,9 @@ static void __init pseries_add_hw_description(void)
 		return;
 	}
 
-	dn = of_find_node_by_path("/");
-	if (of_property_read_bool(dn, "ibm,powervm-partition") ||
-	    of_property_read_bool(dn, "ibm,fw-net-version"))
+	if (of_property_read_bool(of_root, "ibm,powervm-partition") ||
+	    of_property_read_bool(of_root, "ibm,fw-net-version"))
 		seq_buf_printf(&ppc_hw_desc, "hv:phyp ");
-	of_node_put(dn);
 }
 
 /*
@@ -1091,11 +1089,7 @@ static void pseries_power_off(void)
 
 static int __init pSeries_probe(void)
 {
-	struct device_node *root = of_find_node_by_path("/");
-	bool ret = of_node_is_type(root, "chrp");
-
-	of_node_put(root);
-	if (!ret)
+	if (!of_node_is_type(of_root, "chrp"))
 		return 0;
 
 	/* Cell blades firmware claims to be chrp while it's not. Until this
@@ -1122,18 +1116,8 @@ static int pSeries_pci_probe_mode(struct pci_bus *bus)
 	return PCI_PROBE_NORMAL;
 }
 
-#ifdef CONFIG_MEMORY_HOTPLUG
-static unsigned long pseries_memory_block_size(void)
-{
-	return memory_block_size;
-}
-#endif
-
 struct pci_controller_ops pseries_pci_controller_ops = {
 	.probe_mode		= pSeries_pci_probe_mode,
-#ifdef CONFIG_SPAPR_TCE_IOMMU
-	.device_group		= pSeries_pci_device_group,
-#endif
 };
 
 define_machine(pseries) {
@@ -1151,12 +1135,14 @@ define_machine(pseries) {
 	.get_boot_time		= rtas_get_boot_time,
 	.get_rtc_time		= rtas_get_rtc_time,
 	.set_rtc_time		= rtas_set_rtc_time,
+	.calibrate_decr		= generic_calibrate_decr,
 	.progress		= rtas_progress,
 	.system_reset_exception = pSeries_system_reset_exception,
 	.machine_check_early	= pseries_machine_check_realmode,
 	.machine_check_exception = pSeries_machine_check_exception,
 	.machine_check_log_err	= pSeries_machine_check_log_err,
 #ifdef CONFIG_KEXEC_CORE
+	.machine_kexec          = pseries_machine_kexec,
 	.kexec_cpu_down         = pseries_kexec_cpu_down,
 #endif
 #ifdef CONFIG_MEMORY_HOTPLUG

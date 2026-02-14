@@ -23,51 +23,14 @@
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 
-#include <trace/events/timestamp.h>
-
 #include "internal.h"
 #include "mount.h"
 
 /**
- * fill_mg_cmtime - Fill in the mtime and ctime and flag ctime as QUERIED
- * @stat: where to store the resulting values
- * @request_mask: STATX_* values requested
- * @inode: inode from which to grab the c/mtime
- *
- * Given @inode, grab the ctime and mtime out if it and store the result
- * in @stat. When fetching the value, flag it as QUERIED (if not already)
- * so the next write will record a distinct timestamp.
- *
- * NB: The QUERIED flag is tracked in the ctime, but we set it there even
- * if only the mtime was requested, as that ensures that the next mtime
- * change will be distinct.
- */
-void fill_mg_cmtime(struct kstat *stat, u32 request_mask, struct inode *inode)
-{
-	atomic_t *pcn = (atomic_t *)&inode->i_ctime_nsec;
-
-	/* If neither time was requested, then don't report them */
-	if (!(request_mask & (STATX_CTIME|STATX_MTIME))) {
-		stat->result_mask &= ~(STATX_CTIME|STATX_MTIME);
-		return;
-	}
-
-	stat->mtime = inode_get_mtime(inode);
-	stat->ctime.tv_sec = inode->i_ctime_sec;
-	stat->ctime.tv_nsec = (u32)atomic_read(pcn);
-	if (!(stat->ctime.tv_nsec & I_CTIME_QUERIED))
-		stat->ctime.tv_nsec = ((u32)atomic_fetch_or(I_CTIME_QUERIED, pcn));
-	stat->ctime.tv_nsec &= ~I_CTIME_QUERIED;
-	trace_fill_mg_cmtime(inode, &stat->ctime, &stat->mtime);
-}
-EXPORT_SYMBOL(fill_mg_cmtime);
-
-/**
  * generic_fillattr - Fill in the basic attributes from the inode struct
- * @idmap:		idmap of the mount the inode was found from
- * @request_mask:	statx request_mask
- * @inode:		Inode to use as the source
- * @stat:		Where to fill in the attributes
+ * @idmap:	idmap of the mount the inode was found from
+ * @inode:	Inode to use as the source
+ * @stat:	Where to fill in the attributes
  *
  * Fill in the basic attributes in the kstat structure from data that's to be
  * found on the VFS inode structure.  This is the default if no getattr inode
@@ -77,10 +40,10 @@ EXPORT_SYMBOL(fill_mg_cmtime);
  * the vfsmount must be passed through @idmap. This function will then
  * take care to map the inode according to @idmap before filling in the
  * uid and gid filds. On non-idmapped mounts or if permission checking is to be
- * performed on the raw inode simply pass @nop_mnt_idmap.
+ * performed on the raw inode simply passs @nop_mnt_idmap.
  */
-void generic_fillattr(struct mnt_idmap *idmap, u32 request_mask,
-		      struct inode *inode, struct kstat *stat)
+void generic_fillattr(struct mnt_idmap *idmap, struct inode *inode,
+		      struct kstat *stat)
 {
 	vfsuid_t vfsuid = i_uid_into_vfsuid(idmap, inode);
 	vfsgid_t vfsgid = i_gid_into_vfsgid(idmap, inode);
@@ -93,23 +56,11 @@ void generic_fillattr(struct mnt_idmap *idmap, u32 request_mask,
 	stat->gid = vfsgid_into_kgid(vfsgid);
 	stat->rdev = inode->i_rdev;
 	stat->size = i_size_read(inode);
-	stat->atime = inode_get_atime(inode);
-
-	if (is_mgtime(inode)) {
-		fill_mg_cmtime(stat, request_mask, inode);
-	} else {
-		stat->ctime = inode_get_ctime(inode);
-		stat->mtime = inode_get_mtime(inode);
-	}
-
+	stat->atime = inode->i_atime;
+	stat->mtime = inode->i_mtime;
+	stat->ctime = inode->i_ctime;
 	stat->blksize = i_blocksize(inode);
 	stat->blocks = inode->i_blocks;
-
-	if ((request_mask & STATX_CHANGE_COOKIE) && IS_I_VERSION(inode)) {
-		stat->result_mask |= STATX_CHANGE_COOKIE;
-		stat->change_cookie = inode_query_iversion(inode);
-	}
-
 }
 EXPORT_SYMBOL(generic_fillattr);
 
@@ -130,40 +81,6 @@ void generic_fill_statx_attr(struct inode *inode, struct kstat *stat)
 	stat->attributes_mask |= KSTAT_ATTR_VFS_FLAGS;
 }
 EXPORT_SYMBOL(generic_fill_statx_attr);
-
-/**
- * generic_fill_statx_atomic_writes - Fill in atomic writes statx attributes
- * @stat:	Where to fill in the attribute flags
- * @unit_min:	Minimum supported atomic write length in bytes
- * @unit_max:	Maximum supported atomic write length in bytes
- * @unit_max_opt: Optimised maximum supported atomic write length in bytes
- *
- * Fill in the STATX{_ATTR}_WRITE_ATOMIC flags in the kstat structure from
- * atomic write unit_min and unit_max values.
- */
-void generic_fill_statx_atomic_writes(struct kstat *stat,
-				      unsigned int unit_min,
-				      unsigned int unit_max,
-				      unsigned int unit_max_opt)
-{
-	/* Confirm that the request type is known */
-	stat->result_mask |= STATX_WRITE_ATOMIC;
-
-	/* Confirm that the file attribute type is known */
-	stat->attributes_mask |= STATX_ATTR_WRITE_ATOMIC;
-
-	if (unit_min) {
-		stat->atomic_write_unit_min = unit_min;
-		stat->atomic_write_unit_max = unit_max;
-		stat->atomic_write_unit_max_opt = unit_max_opt;
-		/* Initially only allow 1x segment */
-		stat->atomic_write_segments_max = 1;
-
-		/* Confirm atomic writes are actually supported */
-		stat->attributes |= STATX_ATTR_WRITE_ATOMIC;
-	}
-}
-EXPORT_SYMBOL_GPL(generic_fill_statx_atomic_writes);
 
 /**
  * vfs_getattr_nosec - getattr without security checks
@@ -206,26 +123,17 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
 	stat->attributes_mask |= (STATX_ATTR_AUTOMOUNT |
 				  STATX_ATTR_DAX);
 
-	idmap = mnt_idmap(path->mnt);
-	if (inode->i_op->getattr) {
-		int ret;
-
-		ret = inode->i_op->getattr(idmap, path, stat, request_mask,
-				query_flags);
-		if (ret)
-			return ret;
-	} else {
-		generic_fillattr(idmap, request_mask, inode, stat);
+	if ((request_mask & STATX_CHANGE_COOKIE) && IS_I_VERSION(inode)) {
+		stat->result_mask |= STATX_CHANGE_COOKIE;
+		stat->change_cookie = inode_query_iversion(inode);
 	}
 
-	/*
-	 * If this is a block device inode, override the filesystem attributes
-	 * with the block device specific parameters that need to be obtained
-	 * from the bdev backing inode.
-	 */
-	if (S_ISBLK(stat->mode))
-		bdev_statx(path, stat, request_mask);
+	idmap = mnt_idmap(path->mnt);
+	if (inode->i_op->getattr)
+		return inode->i_op->getattr(idmap, path, stat,
+					    request_mask, query_flags);
 
+	generic_fillattr(idmap, inode, stat);
 	return 0;
 }
 EXPORT_SYMBOL(vfs_getattr_nosec);
@@ -257,7 +165,7 @@ int vfs_getattr(const struct path *path, struct kstat *stat,
 	int retval;
 
 	retval = security_inode_getattr(path);
-	if (unlikely(retval))
+	if (retval)
 		return retval;
 	return vfs_getattr_nosec(path, stat, request_mask, query_flags);
 }
@@ -275,13 +183,18 @@ EXPORT_SYMBOL(vfs_getattr);
  */
 int vfs_fstat(int fd, struct kstat *stat)
 {
-	CLASS(fd_raw, f)(fd);
-	if (fd_empty(f))
+	struct fd f;
+	int error;
+
+	f = fdget_raw(fd);
+	if (!f.file)
 		return -EBADF;
-	return vfs_getattr(&fd_file(f)->f_path, stat, STATX_BASIC_STATS, 0);
+	error = vfs_getattr(&f.file->f_path, stat, STATX_BASIC_STATS, 0);
+	fdput(f);
+	return error;
 }
 
-static int statx_lookup_flags(int flags)
+int getname_statx_lookup_flags(int flags)
 {
 	int lookup_flags = 0;
 
@@ -289,38 +202,10 @@ static int statx_lookup_flags(int flags)
 		lookup_flags |= LOOKUP_FOLLOW;
 	if (!(flags & AT_NO_AUTOMOUNT))
 		lookup_flags |= LOOKUP_AUTOMOUNT;
+	if (flags & AT_EMPTY_PATH)
+		lookup_flags |= LOOKUP_EMPTY;
 
 	return lookup_flags;
-}
-
-static int vfs_statx_path(const struct path *path, int flags, struct kstat *stat,
-			  u32 request_mask)
-{
-	int error = vfs_getattr(path, stat, request_mask, flags);
-	if (error)
-		return error;
-
-	if (request_mask & STATX_MNT_ID_UNIQUE) {
-		stat->mnt_id = real_mount(path->mnt)->mnt_id_unique;
-		stat->result_mask |= STATX_MNT_ID_UNIQUE;
-	} else {
-		stat->mnt_id = real_mount(path->mnt)->mnt_id;
-		stat->result_mask |= STATX_MNT_ID;
-	}
-
-	if (path_mounted(path))
-		stat->attributes |= STATX_ATTR_MOUNT_ROOT;
-	stat->attributes_mask |= STATX_ATTR_MOUNT_ROOT;
-	return 0;
-}
-
-static int vfs_statx_fd(int fd, int flags, struct kstat *stat,
-			  u32 request_mask)
-{
-	CLASS(fd_raw, f)(fd);
-	if (fd_empty(f))
-		return -EBADF;
-	return vfs_statx_path(&fd_file(f)->f_path, flags, stat, request_mask);
 }
 
 /**
@@ -342,7 +227,7 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
 	      struct kstat *stat, u32 request_mask)
 {
 	struct path path;
-	unsigned int lookup_flags = statx_lookup_flags(flags);
+	unsigned int lookup_flags = getname_statx_lookup_flags(flags);
 	int error;
 
 	if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH |
@@ -352,26 +237,46 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
 retry:
 	error = filename_lookup(dfd, filename, lookup_flags, &path, NULL);
 	if (error)
-		return error;
-	error = vfs_statx_path(&path, flags, stat, request_mask);
+		goto out;
+
+	error = vfs_getattr(&path, stat, request_mask, flags);
+
+	stat->mnt_id = real_mount(path.mnt)->mnt_id;
+	stat->result_mask |= STATX_MNT_ID;
+
+	if (path.mnt->mnt_root == path.dentry)
+		stat->attributes |= STATX_ATTR_MOUNT_ROOT;
+	stat->attributes_mask |= STATX_ATTR_MOUNT_ROOT;
+
+	/* Handle STATX_DIOALIGN for block devices. */
+	if (request_mask & STATX_DIOALIGN) {
+		struct inode *inode = d_backing_inode(path.dentry);
+
+		if (S_ISBLK(inode->i_mode))
+			bdev_statx_dioalign(inode, stat);
+	}
+
 	path_put(&path);
 	if (retry_estale(error, lookup_flags)) {
 		lookup_flags |= LOOKUP_REVAL;
 		goto retry;
 	}
+out:
 	return error;
 }
 
 int vfs_fstatat(int dfd, const char __user *filename,
 			      struct kstat *stat, int flags)
 {
-	CLASS(filename_maybe_null, name)(filename, flags);
+	int ret;
+	int statx_flags = flags | AT_NO_AUTOMOUNT;
+	struct filename *name;
 
-	if (!name && dfd >= 0)
-		return vfs_fstat(dfd, stat);
+	name = getname_flags(filename, getname_statx_lookup_flags(statx_flags), NULL);
+	ret = vfs_statx(dfd, name, statx_flags, stat, STATX_BASIC_STATS);
+	putname(name);
 
-	return vfs_statx(dfd, name, flags | AT_NO_AUTOMOUNT,
-			 stat, STATX_BASIC_STATS);
+	return ret;
 }
 
 #ifdef __ARCH_WANT_OLD_STAT
@@ -424,7 +329,7 @@ SYSCALL_DEFINE2(stat, const char __user *, filename,
 	int error;
 
 	error = vfs_stat(filename, &stat);
-	if (unlikely(error))
+	if (error)
 		return error;
 
 	return cp_old_stat(&stat, statbuf);
@@ -437,7 +342,7 @@ SYSCALL_DEFINE2(lstat, const char __user *, filename,
 	int error;
 
 	error = vfs_lstat(filename, &stat);
-	if (unlikely(error))
+	if (error)
 		return error;
 
 	return cp_old_stat(&stat, statbuf);
@@ -446,18 +351,23 @@ SYSCALL_DEFINE2(lstat, const char __user *, filename,
 SYSCALL_DEFINE2(fstat, unsigned int, fd, struct __old_kernel_stat __user *, statbuf)
 {
 	struct kstat stat;
-	int error;
+	int error = vfs_fstat(fd, &stat);
 
-	error = vfs_fstat(fd, &stat);
-	if (unlikely(error))
-		return error;
+	if (!error)
+		error = cp_old_stat(&stat, statbuf);
 
-	return cp_old_stat(&stat, statbuf);
+	return error;
 }
 
 #endif /* __ARCH_WANT_OLD_STAT */
 
 #ifdef __ARCH_WANT_NEW_STAT
+
+#if BITS_PER_LONG == 32
+#  define choose_32_64(a,b) a
+#else
+#  define choose_32_64(a,b) b
+#endif
 
 #ifndef INIT_STRUCT_STAT_PADDING
 #  define INIT_STRUCT_STAT_PADDING(st) memset(&st, 0, sizeof(st))
@@ -506,12 +416,10 @@ SYSCALL_DEFINE2(newstat, const char __user *, filename,
 		struct stat __user *, statbuf)
 {
 	struct kstat stat;
-	int error;
+	int error = vfs_stat(filename, &stat);
 
-	error = vfs_stat(filename, &stat);
-	if (unlikely(error))
+	if (error)
 		return error;
-
 	return cp_new_stat(&stat, statbuf);
 }
 
@@ -522,7 +430,7 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
 	int error;
 
 	error = vfs_lstat(filename, &stat);
-	if (unlikely(error))
+	if (error)
 		return error;
 
 	return cp_new_stat(&stat, statbuf);
@@ -536,9 +444,8 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 	int error;
 
 	error = vfs_fstatat(dfd, filename, &stat, flag);
-	if (unlikely(error))
+	if (error)
 		return error;
-
 	return cp_new_stat(&stat, statbuf);
 }
 #endif
@@ -546,13 +453,12 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 {
 	struct kstat stat;
-	int error;
+	int error = vfs_fstat(fd, &stat);
 
-	error = vfs_fstat(fd, &stat);
-	if (unlikely(error))
-		return error;
+	if (!error)
+		error = cp_new_stat(&stat, statbuf);
 
-	return cp_new_stat(&stat, statbuf);
+	return error;
 }
 #endif
 
@@ -561,34 +467,33 @@ static int do_readlinkat(int dfd, const char __user *pathname,
 {
 	struct path path;
 	int error;
-	unsigned int lookup_flags = 0;
+	int empty = 0;
+	unsigned int lookup_flags = LOOKUP_EMPTY;
 
 	if (bufsiz <= 0)
 		return -EINVAL;
 
-	CLASS(filename_flags, name)(pathname, LOOKUP_EMPTY);
 retry:
-	error = filename_lookup(dfd, name, lookup_flags, &path, NULL);
-	if (unlikely(error))
-		return error;
+	error = user_path_at_empty(dfd, pathname, lookup_flags, &path, &empty);
+	if (!error) {
+		struct inode *inode = d_backing_inode(path.dentry);
 
-	/*
-	 * AFS mountpoints allow readlink(2) but are not symlinks
-	 */
-	if (d_is_symlink(path.dentry) ||
-	    d_backing_inode(path.dentry)->i_op->readlink) {
-		error = security_inode_readlink(path.dentry);
-		if (!error) {
-			touch_atime(&path);
-			error = vfs_readlink(path.dentry, buf, bufsiz);
+		error = empty ? -ENOENT : -EINVAL;
+		/*
+		 * AFS mountpoints allow readlink(2) but are not symlinks
+		 */
+		if (d_is_symlink(path.dentry) || inode->i_op->readlink) {
+			error = security_inode_readlink(path.dentry);
+			if (!error) {
+				touch_atime(&path);
+				error = vfs_readlink(path.dentry, buf, bufsiz);
+			}
 		}
-	} else {
-		error = (name->name[0] == '\0') ? -ENOENT : -EINVAL;
-	}
-	path_put(&path);
-	if (retry_estale(error, lookup_flags)) {
-		lookup_flags |= LOOKUP_REVAL;
-		goto retry;
+		path_put(&path);
+		if (retry_estale(error, lookup_flags)) {
+			lookup_flags |= LOOKUP_REVAL;
+			goto retry;
+		}
 	}
 	return error;
 }
@@ -731,12 +636,6 @@ cp_statx(const struct kstat *stat, struct statx __user *buffer)
 	tmp.stx_mnt_id = stat->mnt_id;
 	tmp.stx_dio_mem_align = stat->dio_mem_align;
 	tmp.stx_dio_offset_align = stat->dio_offset_align;
-	tmp.stx_dio_read_offset_align = stat->dio_read_offset_align;
-	tmp.stx_subvol = stat->subvol;
-	tmp.stx_atomic_write_unit_min = stat->atomic_write_unit_min;
-	tmp.stx_atomic_write_unit_max = stat->atomic_write_unit_max;
-	tmp.stx_atomic_write_segments_max = stat->atomic_write_segments_max;
-	tmp.stx_atomic_write_unit_max_opt = stat->atomic_write_unit_max_opt;
 
 	return copy_to_user(buffer, &tmp, sizeof(tmp)) ? -EFAULT : 0;
 }
@@ -752,8 +651,7 @@ int do_statx(int dfd, struct filename *filename, unsigned int flags,
 	if ((flags & AT_STATX_SYNC_TYPE) == AT_STATX_SYNC_TYPE)
 		return -EINVAL;
 
-	/*
-	 * STATX_CHANGE_COOKIE is kernel-only for now. Ignore requests
+	/* STATX_CHANGE_COOKIE is kernel-only for now. Ignore requests
 	 * from userland.
 	 */
 	mask &= ~STATX_CHANGE_COOKIE;
@@ -765,53 +663,30 @@ int do_statx(int dfd, struct filename *filename, unsigned int flags,
 	return cp_statx(&stat, buffer);
 }
 
-int do_statx_fd(int fd, unsigned int flags, unsigned int mask,
-	     struct statx __user *buffer)
-{
-	struct kstat stat;
-	int error;
-
-	if (mask & STATX__RESERVED)
-		return -EINVAL;
-	if ((flags & AT_STATX_SYNC_TYPE) == AT_STATX_SYNC_TYPE)
-		return -EINVAL;
-
-	/*
-	 * STATX_CHANGE_COOKIE is kernel-only for now. Ignore requests
-	 * from userland.
-	 */
-	mask &= ~STATX_CHANGE_COOKIE;
-
-	error = vfs_statx_fd(fd, flags, &stat, mask);
-	if (error)
-		return error;
-
-	return cp_statx(&stat, buffer);
-}
-
 /**
  * sys_statx - System call to get enhanced stats
  * @dfd: Base directory to pathwalk from *or* fd to stat.
- * @filename: File to stat or either NULL or "" with AT_EMPTY_PATH
+ * @filename: File to stat or "" with AT_EMPTY_PATH
  * @flags: AT_* flags to control pathwalk.
  * @mask: Parts of statx struct actually required.
  * @buffer: Result buffer.
  *
  * Note that fstat() can be emulated by setting dfd to the fd of interest,
- * supplying "" (or preferably NULL) as the filename and setting AT_EMPTY_PATH
- * in the flags.
+ * supplying "" as the filename and setting AT_EMPTY_PATH in the flags.
  */
 SYSCALL_DEFINE5(statx,
 		int, dfd, const char __user *, filename, unsigned, flags,
 		unsigned int, mask,
 		struct statx __user *, buffer)
 {
-	CLASS(filename_maybe_null, name)(filename, flags);
+	int ret;
+	struct filename *name;
 
-	if (!name && dfd >= 0)
-		return do_statx_fd(dfd, flags & ~AT_NO_AUTOMOUNT, mask, buffer);
+	name = getname_flags(filename, getname_statx_lookup_flags(flags), NULL);
+	ret = do_statx(dfd, name, flags, mask, buffer);
+	putname(name);
 
-	return do_statx(dfd, name, flags, mask, buffer);
+	return ret;
 }
 
 #if defined(CONFIG_COMPAT) && defined(__ARCH_WANT_COMPAT_STAT)

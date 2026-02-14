@@ -7,6 +7,7 @@
 #ifndef __XFS_SYSFS_H__
 #define __XFS_SYSFS_H__
 
+extern const struct kobj_type xfs_mp_ktype;	/* xfs_mount */
 extern const struct kobj_type xfs_dbg_ktype;	/* debug */
 extern const struct kobj_type xfs_log_ktype;	/* xlog */
 extern const struct kobj_type xfs_stats_ktype;	/* stats */
@@ -52,7 +53,7 @@ xfs_sysfs_del(
 	wait_for_completion(&kobj->complete);
 }
 
-int	xfs_mount_sysfs_init(struct xfs_mount *mp);
-void	xfs_mount_sysfs_del(struct xfs_mount *mp);
+int	xfs_error_sysfs_init(struct xfs_mount *mp);
+void	xfs_error_sysfs_del(struct xfs_mount *mp);
 
 #endif	/* __XFS_SYSFS_H__ */

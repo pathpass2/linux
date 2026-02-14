@@ -28,7 +28,10 @@
 #include <sys/time.h>
 #include <sys/timex.h>
 #include <time.h>
-#include "kselftest.h"
+#include "../kselftest.h"
+
+#define NSEC_PER_SEC 1000000000LL
+
 
 int change_skew_test(int ppm)
 {
@@ -86,8 +89,8 @@ int main(int argc, char **argv)
 
 	if (ret) {
 		printf("[FAIL]");
-		ksft_exit_fail();
+		return ksft_exit_fail();
 	}
 	printf("[OK]");
-	ksft_exit_pass();
+	return ksft_exit_pass();
 }

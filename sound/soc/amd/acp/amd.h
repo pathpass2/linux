@@ -16,8 +16,10 @@
 #include <sound/soc-acpi.h>
 #include <sound/soc-dai.h>
 
-#include "acp_common.h"
 #include "chip_offset_byte.h"
+
+#define ACP3X_DEV			3
+#define ACP6X_DEV			6
 
 #define DMIC_INSTANCE			0x00
 #define I2S_SP_INSTANCE			0x01
@@ -57,14 +59,6 @@
 #define I2S_HS_TX_MEM_WINDOW_START      0x40A0000
 #define I2S_HS_RX_MEM_WINDOW_START      0x40C0000
 
-#define ACP7x_I2S_SP_TX_MEM_WINDOW_START	0x4000000
-#define ACP7x_I2S_SP_RX_MEM_WINDOW_START	0x4200000
-#define ACP7x_I2S_BT_TX_MEM_WINDOW_START	0x4400000
-#define ACP7x_I2S_BT_RX_MEM_WINDOW_START	0x4600000
-#define ACP7x_I2S_HS_TX_MEM_WINDOW_START	0x4800000
-#define ACP7x_I2S_HS_RX_MEM_WINDOW_START	0x4A00000
-#define ACP7x_DMIC_MEM_WINDOW_START			0x4C00000
-
 #define SP_PB_FIFO_ADDR_OFFSET		0x500
 #define SP_CAPT_FIFO_ADDR_OFFSET	0x700
 #define BT_PB_FIFO_ADDR_OFFSET		0x900
@@ -98,78 +92,10 @@
 #define SLOT_WIDTH_24	0x18
 #define SLOT_WIDTH_32	0x20
 
-#define ACP6X_PGFSM_CONTROL                     0x1024
-#define ACP6X_PGFSM_STATUS                      0x1028
-
-#define ACP63_PGFSM_CONTROL			ACP6X_PGFSM_CONTROL
-#define ACP63_PGFSM_STATUS			ACP6X_PGFSM_STATUS
-
-#define ACP70_PGFSM_CONTROL			ACP6X_PGFSM_CONTROL
-#define ACP70_PGFSM_STATUS			ACP6X_PGFSM_STATUS
-
-#define ACP_ZSC_DSP_CTRL			0x0001014
-#define ACP_ZSC_STS				0x0001018
-#define ACP_SOFT_RST_DONE_MASK	0x00010001
-
-#define ACP_PGFSM_CNTL_POWER_ON_MASK            0xffffffff
-#define ACP_PGFSM_CNTL_POWER_OFF_MASK           0x00
-#define ACP_PGFSM_STATUS_MASK                   0x03
-#define ACP_POWERED_ON                          0x00
-#define ACP_POWER_ON_IN_PROGRESS                0x01
-#define ACP_POWERED_OFF                         0x02
-#define ACP_POWER_OFF_IN_PROGRESS               0x03
-
-#define ACP_ERROR_MASK                          0x20000000
-#define ACP_EXT_INTR_STAT_CLEAR_MASK            0xffffffff
-
-#define ACP_TIMEOUT		500
-#define DELAY_US		5
-#define ACP_SUSPEND_DELAY_MS   2000
-
-#define PDM_DMA_STAT            0x10
-#define PDM_DMA_INTR_MASK       0x10000
-#define PDM_DEC_64              0x2
-#define PDM_CLK_FREQ_MASK       0x07
-#define PDM_MISC_CTRL_MASK      0x18
-#define PDM_ENABLE              0x01
-#define PDM_DISABLE             0x00
-#define DMA_EN_MASK             0x02
-#define DELAY_US                5
-#define PDM_TIMEOUT             1000
-#define ACP_REGION2_OFFSET      0x02000000
-
 struct acp_chip_info {
 	char *name;		/* Platform name */
-	struct resource *res;
-	struct device *dev;
-	struct snd_soc_dai_driver *dai_driver;
-
 	unsigned int acp_rev;	/* ACP Revision id */
 	void __iomem *base;	/* ACP memory PCI base */
-	struct snd_acp_hw_ops *acp_hw_ops;
-	int (*acp_hw_ops_init)(struct acp_chip_info *chip);
-	struct platform_device *chip_pdev;
-	struct acp_resource *rsrc; /* Platform specific resources*/
-	struct list_head stream_list;
-	spinlock_t acp_lock; /* Used to protect stream_list */
-	struct platform_device *dmic_codec_dev;
-	struct platform_device *acp_plat_dev;
-	struct platform_device *mach_dev;
-	struct snd_soc_acpi_mach *machines;
-	int num_dai;
-	u32 addr;
-	u32 bclk_div;
-	u32 lrclk_div;
-	u32 ch_mask;
-	u32 tdm_tx_fmt[3];
-	u32 tdm_rx_fmt[3];
-	u32 xfer_tx_resolution[3];
-	u32 xfer_rx_resolution[3];
-	unsigned int flag;	/* Distinguish b/w Legacy or Only PDM */
-	bool is_pdm_dev;	/* flag set to true when ACP PDM controller exists */
-	bool is_pdm_config;	/* flag set to true when PDM configuration is selected from BIOS */
-	bool is_i2s_config;	/* flag set to true when I2S configuration is selected from BIOS */
-	bool tdm_mode;
 };
 
 struct acp_stream {
@@ -191,175 +117,136 @@ struct acp_resource {
 	int irqp_used;
 	bool soc_mclk;
 	u32 irq_reg_offset;
+	u32 i2s_pin_cfg_offset;
+	int i2s_mode;
 	u64 scratch_reg_offset;
 	u64 sram_pte_offset;
 };
 
-/**
- * struct snd_acp_hw_ops - ACP PCI driver platform specific ops
- * @acp_init: ACP initialization
- * @acp_deinit: ACP de-initialization
- * @irq: ACP irq handler
- * @en_interrupts: ACP enable interrupts
- * @dis_interrupts: ACP disable interrupts
- */
-struct snd_acp_hw_ops {
-	/* ACP hardware initilizations */
-	int (*acp_init)(struct acp_chip_info *chip);
-	int (*acp_deinit)(struct acp_chip_info *chip);
+struct acp_dev_data {
+	char *name;
+	struct device *dev;
+	void __iomem *acp_base;
+	unsigned int i2s_irq;
 
-	/* ACP Interrupts*/
-	irqreturn_t (*irq)(int irq, void *data);
-	int (*en_interrupts)(struct acp_chip_info *chip);
-	int (*dis_interrupts)(struct acp_chip_info *chip);
+	bool tdm_mode;
+	/* SOC specific dais */
+	struct snd_soc_dai_driver *dai_driver;
+	int num_dai;
+
+	struct list_head stream_list;
+	spinlock_t acp_lock;
+
+	struct snd_soc_acpi_mach *machines;
+	struct platform_device *mach_dev;
+
+	u32 bclk_div;
+	u32 lrclk_div;
+
+	struct acp_resource *rsrc;
+	u32 tdm_tx_fmt[3];
+	u32 tdm_rx_fmt[3];
 };
 
-enum acp_config {
-	ACP_CONFIG_0 = 0,
-	ACP_CONFIG_1,
-	ACP_CONFIG_2,
-	ACP_CONFIG_3,
-	ACP_CONFIG_4,
-	ACP_CONFIG_5,
-	ACP_CONFIG_6,
-	ACP_CONFIG_7,
-	ACP_CONFIG_8,
-	ACP_CONFIG_9,
-	ACP_CONFIG_10,
-	ACP_CONFIG_11,
-	ACP_CONFIG_12,
-	ACP_CONFIG_13,
-	ACP_CONFIG_14,
-	ACP_CONFIG_15,
-	ACP_CONFIG_16,
-	ACP_CONFIG_17,
-	ACP_CONFIG_18,
-	ACP_CONFIG_19,
-	ACP_CONFIG_20,
+union acp_i2stdm_mstrclkgen {
+	struct {
+		u32 i2stdm_master_mode : 1;
+		u32 i2stdm_format_mode : 1;
+		u32 i2stdm_lrclk_div_val : 9;
+		u32 i2stdm_bclk_div_val : 11;
+		u32:10;
+	} bitfields, bits;
+	u32  u32_all;
 };
-
-extern struct acp_resource rn_rsrc;
-extern struct acp_resource rmb_rsrc;
-extern struct acp_resource acp63_rsrc;
-extern struct acp_resource acp70_rsrc;
-
-extern struct snd_soc_acpi_mach snd_soc_acpi_amd_acp_machines[];
-extern struct snd_soc_acpi_mach snd_soc_acpi_amd_rmb_acp_machines[];
-extern struct snd_soc_acpi_mach snd_soc_acpi_amd_acp63_acp_machines[];
-extern struct snd_soc_acpi_mach snd_soc_acpi_amd_acp70_acp_machines[];
 
 extern const struct snd_soc_dai_ops asoc_acp_cpu_dai_ops;
 extern const struct snd_soc_dai_ops acp_dmic_dai_ops;
 
+int asoc_acp_i2s_probe(struct snd_soc_dai *dai);
 int acp_platform_register(struct device *dev);
 int acp_platform_unregister(struct device *dev);
 
-int acp_machine_select(struct acp_chip_info *chip);
+int acp_machine_select(struct acp_dev_data *adata);
 
-int acp_init(struct acp_chip_info *chip);
-int acp_deinit(struct acp_chip_info *chip);
-int acp_enable_interrupts(struct acp_chip_info *chip);
-int acp_disable_interrupts(struct acp_chip_info *chip);
-irqreturn_t acp_irq_handler(int irq, void *data);
-
-extern struct snd_acp_hw_ops acp31_common_hw_ops;
-extern struct snd_acp_hw_ops acp6x_common_hw_ops;
-extern struct snd_acp_hw_ops acp63_common_hw_ops;
-extern struct snd_acp_hw_ops acp70_common_hw_ops;
-extern int acp31_hw_ops_init(struct acp_chip_info *chip);
-extern int acp6x_hw_ops_init(struct acp_chip_info *chip);
-extern int acp63_hw_ops_init(struct acp_chip_info *chip);
-extern int acp70_hw_ops_init(struct acp_chip_info *chip);
 /* Machine configuration */
 int snd_amd_acp_find_config(struct pci_dev *pci);
 
-void config_pte_for_stream(struct acp_chip_info *chip, struct acp_stream *stream);
-void config_acp_dma(struct acp_chip_info *chip, struct acp_stream *stream, int size);
-void restore_acp_pdm_params(struct snd_pcm_substream *substream,
-			    struct acp_chip_info *chip);
-
-int restore_acp_i2s_params(struct snd_pcm_substream *substream,
-			   struct acp_chip_info *chip, struct acp_stream *stream);
-
-void check_acp_config(struct pci_dev *pci, struct acp_chip_info *chip);
-
-static inline int acp_hw_init(struct acp_chip_info *chip)
+static inline u64 acp_get_byte_count(struct acp_dev_data *adata, int dai_id, int direction)
 {
-	if (chip && chip->acp_hw_ops && chip->acp_hw_ops->acp_init)
-		return chip->acp_hw_ops->acp_init(chip);
-	return -EOPNOTSUPP;
-}
-
-static inline int acp_hw_deinit(struct acp_chip_info *chip)
-{
-	if (chip && chip->acp_hw_ops && chip->acp_hw_ops->acp_deinit)
-		return chip->acp_hw_ops->acp_deinit(chip);
-	return -EOPNOTSUPP;
-}
-
-static inline int acp_hw_en_interrupts(struct acp_chip_info *chip)
-{
-	if (chip && chip->acp_hw_ops && chip->acp_hw_ops->en_interrupts)
-		return chip->acp_hw_ops->en_interrupts(chip);
-	return -EOPNOTSUPP;
-}
-
-static inline int acp_hw_dis_interrupts(struct acp_chip_info *chip)
-{
-	if (chip && chip->acp_hw_ops && chip->acp_hw_ops->dis_interrupts)
-		chip->acp_hw_ops->dis_interrupts(chip);
-	return -EOPNOTSUPP;
-}
-
-static inline u64 acp_get_byte_count(struct acp_chip_info *chip, int dai_id, int direction)
-{
-	u64 byte_count = 0, low = 0, high = 0;
+	u64 byte_count, low = 0, high = 0;
 
 	if (direction == SNDRV_PCM_STREAM_PLAYBACK) {
 		switch (dai_id) {
 		case I2S_BT_INSTANCE:
-			high = readl(chip->base + ACP_BT_TX_LINEARPOSITIONCNTR_HIGH(chip));
-			low = readl(chip->base + ACP_BT_TX_LINEARPOSITIONCNTR_LOW(chip));
+			high = readl(adata->acp_base + ACP_BT_TX_LINEARPOSITIONCNTR_HIGH);
+			low = readl(adata->acp_base + ACP_BT_TX_LINEARPOSITIONCNTR_LOW);
 			break;
 		case I2S_SP_INSTANCE:
-			high = readl(chip->base + ACP_I2S_TX_LINEARPOSITIONCNTR_HIGH(chip));
-			low = readl(chip->base + ACP_I2S_TX_LINEARPOSITIONCNTR_LOW(chip));
+			high = readl(adata->acp_base + ACP_I2S_TX_LINEARPOSITIONCNTR_HIGH);
+			low = readl(adata->acp_base + ACP_I2S_TX_LINEARPOSITIONCNTR_LOW);
 			break;
 		case I2S_HS_INSTANCE:
-			high = readl(chip->base + ACP_HS_TX_LINEARPOSITIONCNTR_HIGH);
-			low = readl(chip->base + ACP_HS_TX_LINEARPOSITIONCNTR_LOW);
+			high = readl(adata->acp_base + ACP_HS_TX_LINEARPOSITIONCNTR_HIGH);
+			low = readl(adata->acp_base + ACP_HS_TX_LINEARPOSITIONCNTR_LOW);
 			break;
 		default:
-			dev_err(chip->dev, "Invalid dai id %x\n", dai_id);
-			goto POINTER_RETURN_BYTES;
+			dev_err(adata->dev, "Invalid dai id %x\n", dai_id);
+			return -EINVAL;
 		}
 	} else {
 		switch (dai_id) {
 		case I2S_BT_INSTANCE:
-			high = readl(chip->base + ACP_BT_RX_LINEARPOSITIONCNTR_HIGH(chip));
-			low = readl(chip->base + ACP_BT_RX_LINEARPOSITIONCNTR_LOW(chip));
+			high = readl(adata->acp_base + ACP_BT_RX_LINEARPOSITIONCNTR_HIGH);
+			low = readl(adata->acp_base + ACP_BT_RX_LINEARPOSITIONCNTR_LOW);
 			break;
 		case I2S_SP_INSTANCE:
-			high = readl(chip->base + ACP_I2S_RX_LINEARPOSITIONCNTR_HIGH(chip));
-			low = readl(chip->base + ACP_I2S_RX_LINEARPOSITIONCNTR_LOW(chip));
+			high = readl(adata->acp_base + ACP_I2S_RX_LINEARPOSITIONCNTR_HIGH);
+			low = readl(adata->acp_base + ACP_I2S_RX_LINEARPOSITIONCNTR_LOW);
 			break;
 		case I2S_HS_INSTANCE:
-			high = readl(chip->base + ACP_HS_RX_LINEARPOSITIONCNTR_HIGH);
-			low = readl(chip->base + ACP_HS_RX_LINEARPOSITIONCNTR_LOW);
+			high = readl(adata->acp_base + ACP_HS_RX_LINEARPOSITIONCNTR_HIGH);
+			low = readl(adata->acp_base + ACP_HS_RX_LINEARPOSITIONCNTR_LOW);
 			break;
 		case DMIC_INSTANCE:
-			high = readl(chip->base + ACP_WOV_RX_LINEARPOSITIONCNTR_HIGH);
-			low = readl(chip->base + ACP_WOV_RX_LINEARPOSITIONCNTR_LOW);
+			high = readl(adata->acp_base + ACP_WOV_RX_LINEARPOSITIONCNTR_HIGH);
+			low = readl(adata->acp_base + ACP_WOV_RX_LINEARPOSITIONCNTR_LOW);
 			break;
 		default:
-			dev_err(chip->dev, "Invalid dai id %x\n", dai_id);
-			goto POINTER_RETURN_BYTES;
+			dev_err(adata->dev, "Invalid dai id %x\n", dai_id);
+			return -EINVAL;
 		}
 	}
 	/* Get 64 bit value from two 32 bit registers */
 	byte_count = (high << 32) | low;
 
-POINTER_RETURN_BYTES:
 	return byte_count;
+}
+
+static inline void acp_set_i2s_clk(struct acp_dev_data *adata, int dai_id)
+{
+	union acp_i2stdm_mstrclkgen mclkgen;
+	u32 master_reg;
+
+	switch (dai_id) {
+	case I2S_SP_INSTANCE:
+		master_reg = ACP_I2STDM0_MSTRCLKGEN;
+		break;
+	case I2S_BT_INSTANCE:
+		master_reg = ACP_I2STDM1_MSTRCLKGEN;
+		break;
+	case I2S_HS_INSTANCE:
+		master_reg = ACP_I2STDM2_MSTRCLKGEN;
+		break;
+	default:
+		master_reg = ACP_I2STDM0_MSTRCLKGEN;
+		break;
+	}
+
+	mclkgen.bits.i2stdm_master_mode = 0x1;
+	mclkgen.bits.i2stdm_format_mode = 0x00;
+
+	mclkgen.bits.i2stdm_bclk_div_val = adata->bclk_div;
+	mclkgen.bits.i2stdm_lrclk_div_val = adata->lrclk_div;
+	writel(mclkgen.u32_all, adata->acp_base + master_reg);
 }
 #endif

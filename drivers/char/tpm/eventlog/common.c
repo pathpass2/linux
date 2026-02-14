@@ -32,11 +32,11 @@ static int tpm_bios_measurements_open(struct inode *inode,
 	struct tpm_chip *chip;
 
 	inode_lock(inode);
-	if (!inode->i_nlink) {
+	if (!inode->i_private) {
 		inode_unlock(inode);
 		return -ENODEV;
 	}
-	chip_seqops = inode->i_private;
+	chip_seqops = (struct tpm_chip_seqops *)inode->i_private;
 	seqops = chip_seqops->seqops;
 	chip = chip_seqops->chip;
 	get_device(&chip->dev);
@@ -47,8 +47,6 @@ static int tpm_bios_measurements_open(struct inode *inode,
 	if (!err) {
 		seq = file->private_data;
 		seq->private = chip;
-	} else {
-		put_device(&chip->dev);
 	}
 
 	return err;
@@ -57,8 +55,8 @@ static int tpm_bios_measurements_open(struct inode *inode,
 static int tpm_bios_measurements_release(struct inode *inode,
 					 struct file *file)
 {
-	struct seq_file *seq = file->private_data;
-	struct tpm_chip *chip = seq->private;
+	struct seq_file *seq = (struct seq_file *)file->private_data;
+	struct tpm_chip *chip = (struct tpm_chip *)seq->private;
 
 	put_device(&chip->dev);
 
@@ -105,7 +103,7 @@ static int tpm_read_log(struct tpm_chip *chip)
 void tpm_bios_log_setup(struct tpm_chip *chip)
 {
 	const char *name = dev_name(&chip->dev);
-	struct dentry *dentry;
+	unsigned int cnt;
 	int log_version;
 	int rc = 0;
 
@@ -117,12 +115,14 @@ void tpm_bios_log_setup(struct tpm_chip *chip)
 		return;
 	log_version = rc;
 
-	chip->bios_dir = securityfs_create_dir(name, NULL);
+	cnt = 0;
+	chip->bios_dir[cnt] = securityfs_create_dir(name, NULL);
 	/* NOTE: securityfs_create_dir can return ENODEV if securityfs is
 	 * compiled out. The caller should ignore the ENODEV return code.
 	 */
-	if (IS_ERR(chip->bios_dir))
-		return;
+	if (IS_ERR(chip->bios_dir[cnt]))
+		goto err;
+	cnt++;
 
 	chip->bin_log_seqops.chip = chip;
 	if (log_version == EFI_TCG2_EVENT_LOG_FORMAT_TCG_2)
@@ -133,13 +133,14 @@ void tpm_bios_log_setup(struct tpm_chip *chip)
 			&tpm1_binary_b_measurements_seqops;
 
 
-	dentry =
+	chip->bios_dir[cnt] =
 	    securityfs_create_file("binary_bios_measurements",
-				   0440, chip->bios_dir,
+				   0440, chip->bios_dir[0],
 				   (void *)&chip->bin_log_seqops,
 				   &tpm_bios_measurements_ops);
-	if (IS_ERR(dentry))
+	if (IS_ERR(chip->bios_dir[cnt]))
 		goto err;
+	cnt++;
 
 	if (!(chip->flags & TPM_CHIP_FLAG_TPM2)) {
 
@@ -147,23 +148,42 @@ void tpm_bios_log_setup(struct tpm_chip *chip)
 		chip->ascii_log_seqops.seqops =
 			&tpm1_ascii_b_measurements_seqops;
 
-		dentry =
+		chip->bios_dir[cnt] =
 			securityfs_create_file("ascii_bios_measurements",
-					       0440, chip->bios_dir,
+					       0440, chip->bios_dir[0],
 					       (void *)&chip->ascii_log_seqops,
 					       &tpm_bios_measurements_ops);
-		if (IS_ERR(dentry))
+		if (IS_ERR(chip->bios_dir[cnt]))
 			goto err;
+		cnt++;
 	}
 
 	return;
 
 err:
+	chip->bios_dir[cnt] = NULL;
 	tpm_bios_log_teardown(chip);
 	return;
 }
 
 void tpm_bios_log_teardown(struct tpm_chip *chip)
 {
-	securityfs_remove(chip->bios_dir);
+	int i;
+	struct inode *inode;
+
+	/* securityfs_remove currently doesn't take care of handling sync
+	 * between removal and opening of pseudo files. To handle this, a
+	 * workaround is added by making i_private = NULL here during removal
+	 * and to check it during open(), both within inode_lock()/unlock().
+	 * This design ensures that open() either safely gets kref or fails.
+	 */
+	for (i = (TPM_NUM_EVENT_LOG_FILES - 1); i >= 0; i--) {
+		if (chip->bios_dir[i]) {
+			inode = d_inode(chip->bios_dir[i]);
+			inode_lock(inode);
+			inode->i_private = NULL;
+			inode_unlock(inode);
+			securityfs_remove(chip->bios_dir[i]);
+		}
+	}
 }

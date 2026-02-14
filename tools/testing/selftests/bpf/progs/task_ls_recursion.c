@@ -27,6 +27,23 @@ struct {
 	__type(value, long);
 } map_b SEC(".maps");
 
+SEC("fentry/bpf_local_storage_lookup")
+int BPF_PROG(on_lookup)
+{
+	struct task_struct *task = bpf_get_current_task_btf();
+
+	if (!test_pid || task->pid != test_pid)
+		return 0;
+
+	/* The bpf_task_storage_delete will call
+	 * bpf_local_storage_lookup.  The prog->active will
+	 * stop the recursion.
+	 */
+	bpf_task_storage_delete(&map_a, task);
+	bpf_task_storage_delete(&map_b, task);
+	return 0;
+}
+
 SEC("fentry/bpf_local_storage_update")
 int BPF_PROG(on_update)
 {
@@ -36,9 +53,14 @@ int BPF_PROG(on_update)
 	if (!test_pid || task->pid != test_pid)
 		return 0;
 
-	/* This will succeed as there is no real deadlock */
 	ptr = bpf_task_storage_get(&map_a, task, 0,
 				   BPF_LOCAL_STORAGE_GET_F_CREATE);
+	/* ptr will not be NULL when it is called from
+	 * the bpf_task_storage_get(&map_b,...F_CREATE) in
+	 * the BPF_PROG(on_enter) below.  It is because
+	 * the value can be found in map_a and the kernel
+	 * does not need to acquire any spin_lock.
+	 */
 	if (ptr) {
 		int err;
 
@@ -48,7 +70,12 @@ int BPF_PROG(on_update)
 			nr_del_errs++;
 	}
 
-	/* This will succeed as there is no real deadlock */
+	/* This will still fail because map_b is empty and
+	 * this BPF_PROG(on_update) has failed to acquire
+	 * the percpu busy lock => meaning potential
+	 * deadlock is detected and it will fail to create
+	 * new storage.
+	 */
 	ptr = bpf_task_storage_get(&map_b, task, 0,
 				   BPF_LOCAL_STORAGE_GET_F_CREATE);
 	if (ptr)

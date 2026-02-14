@@ -718,7 +718,7 @@ err_deregister:
 	return ret;
 }
 
-static void lm3533_led_remove(struct platform_device *pdev)
+static int lm3533_led_remove(struct platform_device *pdev)
 {
 	struct lm3533_led *led = platform_get_drvdata(pdev);
 
@@ -726,6 +726,8 @@ static void lm3533_led_remove(struct platform_device *pdev)
 
 	lm3533_ctrlbank_disable(&led->cb);
 	led_classdev_unregister(&led->cdev);
+
+	return 0;
 }
 
 static void lm3533_led_shutdown(struct platform_device *pdev)

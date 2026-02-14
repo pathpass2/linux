@@ -12,24 +12,14 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - enum:
-          - microchip,lan966x-pinctrl
-          - microchip,lan9691-pinctrl
-          - microchip,sparx5-pinctrl
-          - mscc,jaguar2-pinctrl
-          - mscc,luton-pinctrl
-          - mscc,ocelot-pinctrl
-          - mscc,serval-pinctrl
-          - mscc,servalt-pinctrl
-      - items:
-          - enum:
-              - microchip,lan9698-pinctrl
-              - microchip,lan9696-pinctrl
-              - microchip,lan9694-pinctrl
-              - microchip,lan9693-pinctrl
-              - microchip,lan9692-pinctrl
-          - const: microchip,lan9691-pinctrl
+    enum:
+      - microchip,lan966x-pinctrl
+      - microchip,sparx5-pinctrl
+      - mscc,jaguar2-pinctrl
+      - mscc,luton-pinctrl
+      - mscc,ocelot-pinctrl
+      - mscc,serval-pinctrl
+      - mscc,servalt-pinctrl
 
   reg:
     items:
@@ -64,8 +54,8 @@ patternProperties:
   '-pins$':
     type: object
     allOf:
-      - $ref: pinmux-node.yaml
-      - $ref: pincfg-node.yaml
+      - $ref: "pinmux-node.yaml"
+      - $ref: "pincfg-node.yaml"
 
     properties:
       function: true
@@ -88,14 +78,13 @@ required:
   - gpio-ranges
 
 allOf:
-  - $ref: pinctrl.yaml#
+  - $ref: "pinctrl.yaml#"
   - if:
       properties:
         compatible:
           contains:
             enum:
               - microchip,lan966x-pinctrl
-              - microchip,lan9691-pinctrl
               - microchip,sparx5-pinctrl
     then:
       properties:

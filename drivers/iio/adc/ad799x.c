@@ -114,13 +114,11 @@ struct ad799x_chip_config {
  * @num_channels:	number of channels
  * @noirq_config:	device configuration w/o IRQ
  * @irq_config:		device configuration w/IRQ
- * @has_vref:		device supports external reference voltage
  */
 struct ad799x_chip_info {
 	int				num_channels;
 	const struct ad799x_chip_config	noirq_config;
 	const struct ad799x_chip_config	irq_config;
-	bool has_vref;
 };
 
 struct ad799x_state {
@@ -130,7 +128,7 @@ struct ad799x_state {
 	struct regulator		*vref;
 	/* lock to protect against multiple access to the device */
 	struct mutex			lock;
-	unsigned int			id;
+	unsigned			id;
 	u16				config;
 
 	u8				*rx_buf;
@@ -239,8 +237,7 @@ static int ad799x_update_scan_mode(struct iio_dev *indio_dev,
 	if (!st->rx_buf)
 		return -ENOMEM;
 
-	st->transfer_size = bitmap_weight(scan_mask,
-					  iio_get_masklength(indio_dev)) * 2;
+	st->transfer_size = bitmap_weight(scan_mask, indio_dev->masklength) * 2;
 
 	switch (st->id) {
 	case ad7992:
@@ -256,7 +253,7 @@ static int ad799x_update_scan_mode(struct iio_dev *indio_dev,
 	}
 }
 
-static int ad799x_scan_direct(struct ad799x_state *st, unsigned int ch)
+static int ad799x_scan_direct(struct ad799x_state *st, unsigned ch)
 {
 	u8 cmd;
 
@@ -293,12 +290,13 @@ static int ad799x_read_raw(struct iio_dev *indio_dev,
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		mutex_lock(&st->lock);
 		ret = ad799x_scan_direct(st, chan->scan_index);
 		mutex_unlock(&st->lock);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 
 		if (ret < 0)
 			return ret;
@@ -337,7 +335,6 @@ static ssize_t ad799x_read_frequency(struct device *dev,
 	struct ad799x_state *st = iio_priv(indio_dev);
 
 	int ret = i2c_smbus_read_byte_data(st->client, AD7998_CYCLE_TMR_REG);
-
 	if (ret < 0)
 		return ret;
 
@@ -407,13 +404,14 @@ static int ad799x_write_event_config(struct iio_dev *indio_dev,
 				     const struct iio_chan_spec *chan,
 				     enum iio_event_type type,
 				     enum iio_event_direction dir,
-				     bool state)
+				     int state)
 {
 	struct ad799x_state *st = iio_priv(indio_dev);
 	int ret;
 
-	if (!iio_device_claim_direct(indio_dev))
-		return -EBUSY;
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret)
+		return ret;
 
 	mutex_lock(&st->lock);
 
@@ -429,7 +427,7 @@ static int ad799x_write_event_config(struct iio_dev *indio_dev,
 
 	ret = ad799x_write_config(st, st->config);
 	mutex_unlock(&st->lock);
-	iio_device_release_direct(indio_dev);
+	iio_device_release_direct_mode(indio_dev);
 	return ret;
 }
 
@@ -525,7 +523,7 @@ done:
 	return IRQ_HANDLED;
 }
 
-static IIO_DEV_ATTR_SAMP_FREQ(0644,
+static IIO_DEV_ATTR_SAMP_FREQ(S_IWUSR | S_IRUGO,
 			      ad799x_read_frequency,
 			      ad799x_write_frequency);
 static IIO_CONST_ATTR_SAMP_FREQ_AVAIL("15625 7812 3906 1953 976 488 244 0");
@@ -606,7 +604,6 @@ static const struct iio_event_spec ad799x_events[] = {
 static const struct ad799x_chip_info ad799x_chip_info_tbl[] = {
 	[ad7991] = {
 		.num_channels = 5,
-		.has_vref = true,
 		.noirq_config = {
 			.channel = {
 				AD799X_CHANNEL(0, 12),
@@ -620,7 +617,6 @@ static const struct ad799x_chip_info ad799x_chip_info_tbl[] = {
 	},
 	[ad7995] = {
 		.num_channels = 5,
-		.has_vref = true,
 		.noirq_config = {
 			.channel = {
 				AD799X_CHANNEL(0, 10),
@@ -634,7 +630,6 @@ static const struct ad799x_chip_info ad799x_chip_info_tbl[] = {
 	},
 	[ad7999] = {
 		.num_channels = 5,
-		.has_vref = true,
 		.noirq_config = {
 			.channel = {
 				AD799X_CHANNEL(0, 8),
@@ -692,7 +687,6 @@ static const struct ad799x_chip_info ad799x_chip_info_tbl[] = {
 	},
 	[ad7994] = {
 		.num_channels = 5,
-		.has_vref = true,
 		.noirq_config = {
 			.channel = {
 				AD799X_CHANNEL(0, 12),
@@ -815,22 +809,32 @@ static int ad799x_probe(struct i2c_client *client)
 		return ret;
 
 	/* check if an external reference is supplied */
-	if (chip_info->has_vref) {
-		st->vref = devm_regulator_get_optional(&client->dev, "vref");
-		ret = PTR_ERR_OR_ZERO(st->vref);
-		if (ret) {
-			if (ret != -ENODEV)
-				goto error_disable_reg;
+	st->vref = devm_regulator_get_optional(&client->dev, "vref");
+
+	if (IS_ERR(st->vref)) {
+		if (PTR_ERR(st->vref) == -ENODEV) {
 			st->vref = NULL;
 			dev_info(&client->dev, "Using VCC reference voltage\n");
+		} else {
+			ret = PTR_ERR(st->vref);
+			goto error_disable_reg;
 		}
+	}
 
-		if (st->vref) {
+	if (st->vref) {
+		/*
+		 * Use external reference voltage if supported by hardware.
+		 * This is optional if voltage / regulator present, use VCC otherwise.
+		 */
+		if ((st->id == ad7991) || (st->id == ad7995) || (st->id == ad7999)) {
 			dev_info(&client->dev, "Using external reference voltage\n");
 			extra_config |= AD7991_REF_SEL;
 			ret = regulator_enable(st->vref);
 			if (ret)
 				goto error_disable_reg;
+		} else {
+			st->vref = NULL;
+			dev_warn(&client->dev, "Supplied reference not supported\n");
 		}
 	}
 
@@ -954,7 +958,7 @@ static const struct i2c_device_id ad799x_id[] = {
 	{ "ad7994", ad7994 },
 	{ "ad7997", ad7997 },
 	{ "ad7998", ad7998 },
-	{ }
+	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, ad799x_id);
@@ -964,7 +968,7 @@ static struct i2c_driver ad799x_driver = {
 		.name = "ad799x",
 		.pm = pm_sleep_ptr(&ad799x_pm_ops),
 	},
-	.probe = ad799x_probe,
+	.probe_new = ad799x_probe,
 	.remove = ad799x_remove,
 	.id_table = ad799x_id,
 };

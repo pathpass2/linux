@@ -52,12 +52,12 @@ static __always_inline void
 arch_set_bit(long nr, volatile unsigned long *addr)
 {
 	if (__builtin_constant_p(nr)) {
-		asm_inline volatile(LOCK_PREFIX "orb %b1,%0"
+		asm volatile(LOCK_PREFIX "orb %b1,%0"
 			: CONST_MASK_ADDR(nr, addr)
 			: "iq" (CONST_MASK(nr))
 			: "memory");
 	} else {
-		asm_inline volatile(LOCK_PREFIX __ASM_SIZE(bts) " %1,%0"
+		asm volatile(LOCK_PREFIX __ASM_SIZE(bts) " %1,%0"
 			: : RLONG_ADDR(addr), "Ir" (nr) : "memory");
 	}
 }
@@ -72,11 +72,11 @@ static __always_inline void
 arch_clear_bit(long nr, volatile unsigned long *addr)
 {
 	if (__builtin_constant_p(nr)) {
-		asm_inline volatile(LOCK_PREFIX "andb %b1,%0"
+		asm volatile(LOCK_PREFIX "andb %b1,%0"
 			: CONST_MASK_ADDR(nr, addr)
 			: "iq" (~CONST_MASK(nr)));
 	} else {
-		asm_inline volatile(LOCK_PREFIX __ASM_SIZE(btr) " %1,%0"
+		asm volatile(LOCK_PREFIX __ASM_SIZE(btr) " %1,%0"
 			: : RLONG_ADDR(addr), "Ir" (nr) : "memory");
 	}
 }
@@ -94,16 +94,18 @@ arch___clear_bit(unsigned long nr, volatile unsigned long *addr)
 	asm volatile(__ASM_SIZE(btr) " %1,%0" : : ADDR, "Ir" (nr) : "memory");
 }
 
-static __always_inline bool arch_xor_unlock_is_negative_byte(unsigned long mask,
-		volatile unsigned long *addr)
+static __always_inline bool
+arch_clear_bit_unlock_is_negative_byte(long nr, volatile unsigned long *addr)
 {
 	bool negative;
-	asm_inline volatile(LOCK_PREFIX "xorb %2,%1"
-		: "=@ccs" (negative), WBYTE_ADDR(addr)
-		: "iq" ((char)mask) : "memory");
+	asm volatile(LOCK_PREFIX "andb %2,%1"
+		CC_SET(s)
+		: CC_OUT(s) (negative), WBYTE_ADDR(addr)
+		: "ir" ((char) ~(1 << nr)) : "memory");
 	return negative;
 }
-#define arch_xor_unlock_is_negative_byte arch_xor_unlock_is_negative_byte
+#define arch_clear_bit_unlock_is_negative_byte                                 \
+	arch_clear_bit_unlock_is_negative_byte
 
 static __always_inline void
 arch___clear_bit_unlock(long nr, volatile unsigned long *addr)
@@ -121,11 +123,11 @@ static __always_inline void
 arch_change_bit(long nr, volatile unsigned long *addr)
 {
 	if (__builtin_constant_p(nr)) {
-		asm_inline volatile(LOCK_PREFIX "xorb %b1,%0"
+		asm volatile(LOCK_PREFIX "xorb %b1,%0"
 			: CONST_MASK_ADDR(nr, addr)
 			: "iq" (CONST_MASK(nr)));
 	} else {
-		asm_inline volatile(LOCK_PREFIX __ASM_SIZE(btc) " %1,%0"
+		asm volatile(LOCK_PREFIX __ASM_SIZE(btc) " %1,%0"
 			: : RLONG_ADDR(addr), "Ir" (nr) : "memory");
 	}
 }
@@ -148,7 +150,8 @@ arch___test_and_set_bit(unsigned long nr, volatile unsigned long *addr)
 	bool oldbit;
 
 	asm(__ASM_SIZE(bts) " %2,%1"
-	    : "=@ccc" (oldbit)
+	    CC_SET(c)
+	    : CC_OUT(c) (oldbit)
 	    : ADDR, "Ir" (nr) : "memory");
 	return oldbit;
 }
@@ -173,7 +176,8 @@ arch___test_and_clear_bit(unsigned long nr, volatile unsigned long *addr)
 	bool oldbit;
 
 	asm volatile(__ASM_SIZE(btr) " %2,%1"
-		     : "=@ccc" (oldbit)
+		     CC_SET(c)
+		     : CC_OUT(c) (oldbit)
 		     : ADDR, "Ir" (nr) : "memory");
 	return oldbit;
 }
@@ -184,7 +188,8 @@ arch___test_and_change_bit(unsigned long nr, volatile unsigned long *addr)
 	bool oldbit;
 
 	asm volatile(__ASM_SIZE(btc) " %2,%1"
-		     : "=@ccc" (oldbit)
+		     CC_SET(c)
+		     : CC_OUT(c) (oldbit)
 		     : ADDR, "Ir" (nr) : "memory");
 
 	return oldbit;
@@ -207,7 +212,8 @@ static __always_inline bool constant_test_bit_acquire(long nr, const volatile un
 	bool oldbit;
 
 	asm volatile("testb %2,%1"
-		     : "=@ccnz" (oldbit)
+		     CC_SET(nz)
+		     : CC_OUT(nz) (oldbit)
 		     : "m" (((unsigned char *)addr)[nr >> 3]),
 		       "i" (1 << (nr & 7))
 		     :"memory");
@@ -220,7 +226,8 @@ static __always_inline bool variable_test_bit(long nr, volatile const unsigned l
 	bool oldbit;
 
 	asm volatile(__ASM_SIZE(bt) " %2,%1"
-		     : "=@ccc" (oldbit)
+		     CC_SET(c)
+		     : CC_OUT(c) (oldbit)
 		     : "m" (*(unsigned long *)addr), "Ir" (nr) : "memory");
 
 	return oldbit;
@@ -240,11 +247,11 @@ arch_test_bit_acquire(unsigned long nr, const volatile unsigned long *addr)
 					  variable_test_bit(nr, addr);
 }
 
-static __always_inline __attribute_const__ unsigned long variable__ffs(unsigned long word)
+static __always_inline unsigned long variable__ffs(unsigned long word)
 {
-	asm("tzcnt %1,%0"
+	asm("rep; bsf %1,%0"
 		: "=r" (word)
-		: ASM_INPUT_RM (word));
+		: "rm" (word));
 	return word;
 }
 
@@ -259,9 +266,12 @@ static __always_inline __attribute_const__ unsigned long variable__ffs(unsigned 
 	 (unsigned long)__builtin_ctzl(word) :	\
 	 variable__ffs(word))
 
-static __always_inline __attribute_const__ unsigned long variable_ffz(unsigned long word)
+static __always_inline unsigned long variable_ffz(unsigned long word)
 {
-	return variable__ffs(~word);
+	asm("rep; bsf %1,%0"
+		: "=r" (word)
+		: "r" (~word));
+	return word;
 }
 
 /**
@@ -281,21 +291,18 @@ static __always_inline __attribute_const__ unsigned long variable_ffz(unsigned l
  *
  * Undefined if no set bit exists, so code should check against 0 first.
  */
-static __always_inline __attribute_const__ unsigned long __fls(unsigned long word)
+static __always_inline unsigned long __fls(unsigned long word)
 {
-	if (__builtin_constant_p(word))
-		return BITS_PER_LONG - 1 - __builtin_clzl(word);
-
 	asm("bsr %1,%0"
 	    : "=r" (word)
-	    : ASM_INPUT_RM (word));
+	    : "rm" (word));
 	return word;
 }
 
 #undef ADDR
 
 #ifdef __KERNEL__
-static __always_inline __attribute_const__ int variable_ffs(int x)
+static __always_inline int variable_ffs(int x)
 {
 	int r;
 
@@ -311,7 +318,7 @@ static __always_inline __attribute_const__ int variable_ffs(int x)
 	 */
 	asm("bsfl %1,%0"
 	    : "=r" (r)
-	    : ASM_INPUT_RM (x), "0" (-1));
+	    : "rm" (x), "0" (-1));
 #elif defined(CONFIG_X86_CMOV)
 	asm("bsfl %1,%0\n\t"
 	    "cmovzl %2,%0"
@@ -349,12 +356,9 @@ static __always_inline __attribute_const__ int variable_ffs(int x)
  * set bit if value is nonzero. The last (most significant) bit is
  * at position 32.
  */
-static __always_inline __attribute_const__ int fls(unsigned int x)
+static __always_inline int fls(unsigned int x)
 {
 	int r;
-
-	if (__builtin_constant_p(x))
-		return x ? 32 - __builtin_clz(x) : 0;
 
 #ifdef CONFIG_X86_64
 	/*
@@ -368,7 +372,7 @@ static __always_inline __attribute_const__ int fls(unsigned int x)
 	 */
 	asm("bsrl %1,%0"
 	    : "=r" (r)
-	    : ASM_INPUT_RM (x), "0" (-1));
+	    : "rm" (x), "0" (-1));
 #elif defined(CONFIG_X86_CMOV)
 	asm("bsrl %1,%0\n\t"
 	    "cmovzl %2,%0"
@@ -394,12 +398,9 @@ static __always_inline __attribute_const__ int fls(unsigned int x)
  * at position 64.
  */
 #ifdef CONFIG_X86_64
-static __always_inline __attribute_const__ int fls64(__u64 x)
+static __always_inline int fls64(__u64 x)
 {
 	int bitpos = -1;
-
-	if (__builtin_constant_p(x))
-		return x ? 64 - __builtin_clzll(x) : 0;
 	/*
 	 * AMD64 says BSRQ won't clobber the dest reg if x==0; Intel64 says the
 	 * dest reg is undefined if x==0, but their CPU architect says its
@@ -407,7 +408,7 @@ static __always_inline __attribute_const__ int fls64(__u64 x)
 	 */
 	asm("bsrq %1,%q0"
 	    : "+r" (bitpos)
-	    : ASM_INPUT_RM (x));
+	    : "rm" (x));
 	return bitpos + 1;
 }
 #else

@@ -92,11 +92,6 @@ enum {
 	CFG_TAG_MAX,
 };
 
-enum {
-	CFG_POST_HIBERN8_ENTER,
-	CFG_PRE_HIBERN8_EXIT,
-};
-
 struct samsung_ufs_phy_cfg {
 	u32 off_0;
 	u32 off_1;
@@ -113,14 +108,10 @@ struct samsung_ufs_phy_pmu_isol {
 
 struct samsung_ufs_phy_drvdata {
 	const struct samsung_ufs_phy_cfg **cfgs;
-	const struct samsung_ufs_phy_cfg **cfgs_hibern8;
 	struct samsung_ufs_phy_pmu_isol isol;
 	const char * const *clk_list;
 	int num_clks;
 	u32 cdr_lock_status_offset;
-	/* SoC's specific operations */
-	int (*wait_for_cal)(struct phy *phy, u8 lane);
-	int (*wait_for_cdr)(struct phy *phy, u8 lane);
 };
 
 struct samsung_ufs_phy {
@@ -130,7 +121,6 @@ struct samsung_ufs_phy {
 	struct clk_bulk_data *clks;
 	const struct samsung_ufs_phy_drvdata *drvdata;
 	const struct samsung_ufs_phy_cfg * const *cfgs;
-	const struct samsung_ufs_phy_cfg * const *cfgs_hibern8;
 	struct samsung_ufs_phy_pmu_isol isol;
 	u8 lane_cnt;
 	int ufs_phy_state;
@@ -149,15 +139,8 @@ static inline void samsung_ufs_phy_ctrl_isol(
 			   phy->isol.mask, isol ? 0 : phy->isol.en);
 }
 
-int samsung_ufs_phy_wait_for_lock_acq(struct phy *phy, u8 lane);
-int exynosautov920_ufs_phy_wait_cdr_lock(struct phy *phy, u8 lane);
-void samsung_ufs_phy_config(struct samsung_ufs_phy *phy,
-			    const struct samsung_ufs_phy_cfg *cfg, u8 lane);
-
 extern const struct samsung_ufs_phy_drvdata exynos7_ufs_phy;
 extern const struct samsung_ufs_phy_drvdata exynosautov9_ufs_phy;
-extern const struct samsung_ufs_phy_drvdata exynosautov920_ufs_phy;
 extern const struct samsung_ufs_phy_drvdata fsd_ufs_phy;
-extern const struct samsung_ufs_phy_drvdata tensor_gs101_ufs_phy;
 
 #endif /* _PHY_SAMSUNG_UFS_ */

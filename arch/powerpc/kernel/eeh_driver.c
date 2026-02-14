@@ -39,7 +39,7 @@ static int eeh_result_priority(enum pci_ers_result result)
 	case PCI_ERS_RESULT_NEED_RESET:
 		return 6;
 	default:
-		WARN_ONCE(1, "Unknown pci_ers_result value: %d\n", result);
+		WARN_ONCE(1, "Unknown pci_ers_result value: %d\n", (int)result);
 		return 0;
 	}
 };
@@ -60,7 +60,7 @@ static const char *pci_ers_result_name(enum pci_ers_result result)
 	case PCI_ERS_RESULT_NO_AER_DRIVER:
 		return "no AER driver";
 	default:
-		WARN_ONCE(1, "Unknown result type: %d\n", result);
+		WARN_ONCE(1, "Unknown result type: %d\n", (int)result);
 		return "unknown";
 	}
 };
@@ -257,12 +257,13 @@ static void eeh_pe_report_edev(struct eeh_dev *edev, eeh_report_fn fn,
 	struct pci_driver *driver;
 	enum pci_ers_result new_result;
 
+	pci_lock_rescan_remove();
 	pdev = edev->pdev;
 	if (pdev)
 		get_device(&pdev->dev);
+	pci_unlock_rescan_remove();
 	if (!pdev) {
 		eeh_edev_info(edev, "no device");
-		*result = PCI_ERS_RESULT_DISCONNECT;
 		return;
 	}
 	device_lock(&pdev->dev);
@@ -303,9 +304,8 @@ static void eeh_pe_report(const char *name, struct eeh_pe *root,
 	struct eeh_dev *edev, *tmp;
 
 	pr_info("EEH: Beginning: '%s'\n", name);
-	eeh_for_each_pe(root, pe)
-		eeh_pe_for_each_dev(pe, edev, tmp)
-			eeh_pe_report_edev(edev, fn, result);
+	eeh_for_each_pe(root, pe) eeh_pe_for_each_dev(pe, edev, tmp)
+		eeh_pe_report_edev(edev, fn, result);
 	if (result)
 		pr_info("EEH: Finished:'%s' with aggregate recovery state:'%s'\n",
 			name, pci_ers_result_name(*result));
@@ -334,7 +334,7 @@ static enum pci_ers_result eeh_report_error(struct eeh_dev *edev,
 	rc = driver->err_handler->error_detected(pdev, pci_channel_io_frozen);
 
 	edev->in_error = true;
-	pci_uevent_ers(pdev, rc);
+	pci_uevent_ers(pdev, PCI_ERS_RESULT_NONE);
 	return rc;
 }
 
@@ -383,8 +383,6 @@ static void eeh_dev_restore_state(struct eeh_dev *edev, void *userdata)
 	if (!edev)
 		return;
 
-	pci_lock_rescan_remove();
-
 	/*
 	 * The content in the config space isn't saved because
 	 * the blocked config space on some adapters. We have
@@ -395,19 +393,14 @@ static void eeh_dev_restore_state(struct eeh_dev *edev, void *userdata)
 		if (list_is_last(&edev->entry, &edev->pe->edevs))
 			eeh_pe_restore_bars(edev->pe);
 
-		pci_unlock_rescan_remove();
 		return;
 	}
 
 	pdev = eeh_dev_to_pci_dev(edev);
-	if (!pdev) {
-		pci_unlock_rescan_remove();
+	if (!pdev)
 		return;
-	}
 
 	pci_restore_state(pdev);
-
-	pci_unlock_rescan_remove();
 }
 
 /**
@@ -654,7 +647,9 @@ static int eeh_reset_device(struct eeh_pe *pe, struct pci_bus *bus,
 	if (any_passed || driver_eeh_aware || (pe->type & EEH_PE_VF)) {
 		eeh_pe_dev_traverse(pe, eeh_rmv_device, rmv_data);
 	} else {
+		pci_lock_rescan_remove();
 		pci_hp_remove_devices(bus);
+		pci_unlock_rescan_remove();
 	}
 
 	/*
@@ -670,6 +665,8 @@ static int eeh_reset_device(struct eeh_pe *pe, struct pci_bus *bus,
 	if (rc)
 		return rc;
 
+	pci_lock_rescan_remove();
+
 	/* Restore PE */
 	eeh_ops->configure_bridge(pe);
 	eeh_pe_restore_bars(pe);
@@ -677,6 +674,7 @@ static int eeh_reset_device(struct eeh_pe *pe, struct pci_bus *bus,
 	/* Clear frozen state */
 	rc = eeh_clear_pe_frozen_state(pe, false);
 	if (rc) {
+		pci_unlock_rescan_remove();
 		return rc;
 	}
 
@@ -711,6 +709,7 @@ static int eeh_reset_device(struct eeh_pe *pe, struct pci_bus *bus,
 	pe->tstamp = tstamp;
 	pe->freeze_count = cnt;
 
+	pci_unlock_rescan_remove();
 	return 0;
 }
 
@@ -844,13 +843,10 @@ void eeh_handle_normal_event(struct eeh_pe *pe)
 		{LIST_HEAD_INIT(rmv_data.removed_vf_list), 0};
 	int devices = 0;
 
-	pci_lock_rescan_remove();
-
-	bus = eeh_pe_bus_get_nolock(pe);
+	bus = eeh_pe_bus_get(pe);
 	if (!bus) {
 		pr_err("%s: Cannot find PCI bus for PHB#%x-PE#%x\n",
 			__func__, pe->phb->global_number, pe->addr);
-		pci_unlock_rescan_remove();
 		return;
 	}
 
@@ -869,32 +865,22 @@ void eeh_handle_normal_event(struct eeh_pe *pe)
 				devices++;
 
 	if (!devices) {
-		pr_warn("EEH: Frozen PHB#%x-PE#%x is empty!\n",
+		pr_debug("EEH: Frozen PHB#%x-PE#%x is empty!\n",
 			pe->phb->global_number, pe->addr);
-		/*
-		 * The device is removed, tear down its state, on powernv
-		 * hotplug driver would take care of it but not on pseries,
-		 * permanently disable the card as it is hot removed.
-		 *
-		 * In the case of powernv, note that the removal of device
-		 * is covered by pci rescan lock, so no problem even if hotplug
-		 * driver attempts to remove the device.
-		 */
-		goto recover_failed;
+		goto out; /* nothing to recover */
 	}
 
 	/* Log the event */
 	if (pe->type & EEH_PE_PHB) {
 		pr_err("EEH: Recovering PHB#%x, location: %s\n",
-			pe->phb->global_number, eeh_pe_loc_get_bus(bus));
+			pe->phb->global_number, eeh_pe_loc_get(pe));
 	} else {
 		struct eeh_pe *phb_pe = eeh_phb_pe_get(pe->phb);
 
 		pr_err("EEH: Recovering PHB#%x-PE#%x\n",
 		       pe->phb->global_number, pe->addr);
 		pr_err("EEH: PE location: %s, PHB location: %s\n",
-		       eeh_pe_loc_get_bus(bus),
-		       eeh_pe_loc_get_bus(eeh_pe_bus_get_nolock(phb_pe)));
+		       eeh_pe_loc_get(pe), eeh_pe_loc_get(phb_pe));
 	}
 
 #ifdef CONFIG_STACKTRACE
@@ -912,7 +898,7 @@ void eeh_handle_normal_event(struct eeh_pe *pe)
 		/* FIXME: Use the same format as dump_stack() */
 		pr_err("EEH: Call Trace:\n");
 		for (i = 0; i < pe->trace_entries; i++)
-			pr_err("EEH: [%p] %pS\n", ptrs[i], ptrs[i]);
+			pr_err("EEH: [%pK] %pS\n", ptrs[i], ptrs[i]);
 
 		pe->trace_entries = 0;
 	}
@@ -1099,15 +1085,10 @@ recover_failed:
 		eeh_pe_state_clear(pe, EEH_PE_PRI_BUS, true);
 		eeh_pe_dev_mode_mark(pe, EEH_DEV_REMOVED);
 
-		bus = eeh_pe_bus_get_nolock(pe);
-		if (bus)
-			pci_hp_remove_devices(bus);
-		else
-			pr_err("%s: PCI bus for PHB#%x-PE#%x disappeared\n",
-				__func__, pe->phb->global_number, pe->addr);
-
-		/* The passed PE should no longer be used */
+		pci_lock_rescan_remove();
+		pci_hp_remove_devices(bus);
 		pci_unlock_rescan_remove();
+		/* The passed PE should no longer be used */
 		return;
 	}
 
@@ -1124,8 +1105,6 @@ out:
 			eeh_clear_slot_attention(edev->pdev);
 
 	eeh_pe_state_clear(pe, EEH_PE_RECOVERING, true);
-
-	pci_unlock_rescan_remove();
 }
 
 /**
@@ -1144,7 +1123,6 @@ void eeh_handle_special_event(void)
 	unsigned long flags;
 	int rc;
 
-	pci_lock_rescan_remove();
 
 	do {
 		rc = eeh_ops->next_error(&pe);
@@ -1184,12 +1162,10 @@ void eeh_handle_special_event(void)
 
 			break;
 		case EEH_NEXT_ERR_NONE:
-			pci_unlock_rescan_remove();
 			return;
 		default:
 			pr_warn("%s: Invalid value %d from next_error()\n",
 				__func__, rc);
-			pci_unlock_rescan_remove();
 			return;
 		}
 
@@ -1201,9 +1177,7 @@ void eeh_handle_special_event(void)
 		if (rc == EEH_NEXT_ERR_FROZEN_PE ||
 		    rc == EEH_NEXT_ERR_FENCED_PHB) {
 			eeh_pe_state_mark(pe, EEH_PE_RECOVERING);
-			pci_unlock_rescan_remove();
 			eeh_handle_normal_event(pe);
-			pci_lock_rescan_remove();
 		} else {
 			eeh_for_each_pe(pe, tmp_pe)
 				eeh_pe_for_each_dev(tmp_pe, edev, tmp_edev)
@@ -1216,6 +1190,7 @@ void eeh_handle_special_event(void)
 				eeh_report_failure, NULL);
 			eeh_set_channel_state(pe, pci_channel_io_perm_failure);
 
+			pci_lock_rescan_remove();
 			list_for_each_entry(hose, &hose_list, list_node) {
 				phb_pe = eeh_phb_pe_get(hose);
 				if (!phb_pe ||
@@ -1223,7 +1198,7 @@ void eeh_handle_special_event(void)
 				    (phb_pe->state & EEH_PE_RECOVERING))
 					continue;
 
-				bus = eeh_pe_bus_get_nolock(phb_pe);
+				bus = eeh_pe_bus_get(phb_pe);
 				if (!bus) {
 					pr_err("%s: Cannot find PCI bus for "
 					       "PHB#%x-PE#%x\n",
@@ -1234,6 +1209,7 @@ void eeh_handle_special_event(void)
 				}
 				pci_hp_remove_devices(bus);
 			}
+			pci_unlock_rescan_remove();
 		}
 
 		/*
@@ -1243,6 +1219,4 @@ void eeh_handle_special_event(void)
 		if (rc == EEH_NEXT_ERR_DEAD_IOC)
 			break;
 	} while (rc != EEH_NEXT_ERR_NONE);
-
-	pci_unlock_rescan_remove();
 }

@@ -70,7 +70,6 @@ static int red_use_nodrop(struct red_sched_data *q)
 static int red_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		       struct sk_buff **to_free)
 {
-	enum skb_drop_reason reason = SKB_DROP_REASON_QDISC_CONGESTED;
 	struct red_sched_data *q = qdisc_priv(sch);
 	struct Qdisc *child = q->qdisc;
 	unsigned int len;
@@ -108,7 +107,6 @@ static int red_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		break;
 
 	case RED_HARD_MARK:
-		reason = SKB_DROP_REASON_QDISC_OVERLIMIT;
 		qdisc_qstats_overlimit(sch);
 		if (red_use_harddrop(q) || !red_use_ecn(q)) {
 			q->stats.forced_drop++;
@@ -145,7 +143,7 @@ congestion_drop:
 	if (!skb)
 		return NET_XMIT_CN | ret;
 
-	qdisc_drop_reason(skb, sch, to_free, reason);
+	qdisc_drop(skb, sch, to_free);
 	return NET_XMIT_CN;
 }
 
@@ -218,7 +216,7 @@ static void red_destroy(struct Qdisc *sch)
 
 	tcf_qevent_destroy(&q->qe_mark, sch);
 	tcf_qevent_destroy(&q->qe_early_drop, sch);
-	timer_delete_sync(&q->adapt_timer);
+	del_timer_sync(&q->adapt_timer);
 	red_offload(sch, false);
 	qdisc_put(q->qdisc);
 }
@@ -250,7 +248,7 @@ static int __red_change(struct Qdisc *sch, struct nlattr **tb,
 	    tb[TCA_RED_STAB] == NULL)
 		return -EINVAL;
 
-	max_P = nla_get_u32_default(tb[TCA_RED_MAX_P], 0);
+	max_P = tb[TCA_RED_MAX_P] ? nla_get_u32(tb[TCA_RED_MAX_P]) : 0;
 
 	ctl = nla_data(tb[TCA_RED_PARMS]);
 	stab = nla_data(tb[TCA_RED_STAB]);
@@ -285,7 +283,7 @@ static int __red_change(struct Qdisc *sch, struct nlattr **tb,
 	q->userbits = userbits;
 	q->limit = ctl->limit;
 	if (child) {
-		qdisc_purge_queue(q->qdisc);
+		qdisc_tree_flush_backlog(q->qdisc);
 		old_child = q->qdisc;
 		q->qdisc = child;
 	}
@@ -297,7 +295,7 @@ static int __red_change(struct Qdisc *sch, struct nlattr **tb,
 		      max_P);
 	red_set_vars(&q->vars);
 
-	timer_delete(&q->adapt_timer);
+	del_timer(&q->adapt_timer);
 	if (ctl->flags & TC_RED_ADAPTATIVE)
 		mod_timer(&q->adapt_timer, jiffies + HZ/2);
 
@@ -321,17 +319,14 @@ unlock_out:
 
 static inline void red_adaptative_timer(struct timer_list *t)
 {
-	struct red_sched_data *q = timer_container_of(q, t, adapt_timer);
+	struct red_sched_data *q = from_timer(q, t, adapt_timer);
 	struct Qdisc *sch = q->sch;
-	spinlock_t *root_lock;
+	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 
-	rcu_read_lock();
-	root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 	spin_lock(root_lock);
 	red_adaptative_algo(&q->parms, &q->vars);
 	mod_timer(&q->adapt_timer, jiffies + HZ/2);
 	spin_unlock(root_lock);
-	rcu_read_unlock();
 }
 
 static int red_init(struct Qdisc *sch, struct nlattr *opt,
@@ -550,7 +545,6 @@ static struct Qdisc_ops red_qdisc_ops __read_mostly = {
 	.dump_stats	=	red_dump_stats,
 	.owner		=	THIS_MODULE,
 };
-MODULE_ALIAS_NET_SCH("red");
 
 static int __init red_module_init(void)
 {
@@ -566,4 +560,3 @@ module_init(red_module_init)
 module_exit(red_module_exit)
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Random Early Detection qdisc");

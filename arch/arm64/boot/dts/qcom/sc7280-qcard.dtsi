@@ -16,7 +16,7 @@
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 
-#include "kodiak.dtsi"
+#include "sc7280.dtsi"
 
 /* PMICs depend on spmi_bus label and so must come after SoC */
 #include "pm7325.dtsi"
@@ -87,7 +87,7 @@
 	 * are left out of here since they are managed elsewhere.
 	 */
 
-	regulators-0 {
+	pm7325-regulators {
 		compatible = "qcom,pm7325-rpmh-regulators";
 		qcom,pmic-id = "b";
 
@@ -188,7 +188,7 @@
 		};
 	};
 
-	regulators-1 {
+	pm8350c-regulators {
 		compatible = "qcom,pm8350c-rpmh-regulators";
 		qcom,pmic-id = "c";
 
@@ -354,9 +354,14 @@
 
 			backlight = <&pm8350c_pwm_backlight>;
 
-			port {
-				edp_panel_in: endpoint {
-					remote-endpoint = <&mdss_edp_out>;
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				port@0 {
+					reg = <0>;
+					edp_panel_in: endpoint {
+						remote-endpoint = <&mdss_edp_out>;
+					};
 				};
 			};
 		};
@@ -383,13 +388,13 @@
 };
 
 &pmk8350_vadc {
-	channel@3 {
+	pmk8350-die-temp@3 {
 		reg = <PMK8350_ADC7_DIE_TEMP>;
 		label = "pmk8350_die_temp";
 		qcom,pre-scaling = <1 1>;
 	};
 
-	channel@403 {
+	pmr735a-die-temp@403 {
 		reg = <PMR735A_ADC7_DIE_TEMP>;
 		label = "pmr735a_die_temp";
 		qcom,pre-scaling = <1 1>;
@@ -414,6 +419,7 @@
 	wcd_rx: codec@0,4 {
 		compatible = "sdw20217010d00";
 		reg = <0 4>;
+		#sound-dai-cells = <1>;
 		qcom,rx-port-mapping = <1 2 3 4 5>;
 	};
 };
@@ -422,11 +428,13 @@
 	wcd_tx: codec@0,3 {
 		compatible = "sdw20217010d00";
 		reg = <0 3>;
+		#sound-dai-cells = <1>;
 		qcom,tx-port-mapping = <1 2 3 4>;
 	};
 };
 
 uart_dbg: &uart5 {
+	compatible = "qcom,geni-debug-uart";
 	status = "okay";
 };
 

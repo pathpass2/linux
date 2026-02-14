@@ -192,7 +192,7 @@ static unsigned long pvr2fb_map;
 
 #ifdef CONFIG_PVR2_DMA
 static unsigned int shdma = PVR2_CASCADE_CHAN;
-static unsigned int pvr2dma = CONFIG_NR_ONCHIP_DMA_CHANNELS;
+static unsigned int pvr2dma = ONCHIP_NR_DMA_CHANNELS;
 #endif
 
 static struct fb_videomode pvr2_modedb[] = {
@@ -647,9 +647,6 @@ static ssize_t pvr2fb_write(struct fb_info *info, const char *buf,
 	struct page **pages;
 	int ret, i;
 
-	if (!info->screen_base)
-		return -ENODEV;
-
 	nr_pages = (count + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
 	pages = kmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
@@ -725,18 +722,16 @@ out_unmap:
 
 static const struct fb_ops pvr2fb_ops = {
 	.owner		= THIS_MODULE,
-#ifdef CONFIG_PVR2_DMA
-	.fb_read	= fb_io_read,
-	.fb_write	= pvr2fb_write,
-#else
-	__FB_DEFAULT_IOMEM_OPS_RDWR,
-#endif
 	.fb_setcolreg	= pvr2fb_setcolreg,
 	.fb_blank	= pvr2fb_blank,
-	__FB_DEFAULT_IOMEM_OPS_DRAW,
 	.fb_check_var	= pvr2fb_check_var,
 	.fb_set_par	= pvr2fb_set_par,
-	__FB_DEFAULT_IOMEM_OPS_MMAP,
+#ifdef CONFIG_PVR2_DMA
+	.fb_write	= pvr2fb_write,
+#endif
+	.fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
 };
 
 #ifndef MODULE
@@ -803,7 +798,7 @@ static int __maybe_unused pvr2fb_common_init(void)
 		goto out_err;
 	}
 
-	fb_memset_io(fb_info->screen_base, 0, pvr2_fix.smem_len);
+	fb_memset(fb_info->screen_base, 0, pvr2_fix.smem_len);
 
 	pvr2_fix.ypanstep	= nopan  ? 0 : 1;
 	pvr2_fix.ywrapstep	= nowrap ? 0 : 1;
@@ -812,7 +807,7 @@ static int __maybe_unused pvr2fb_common_init(void)
 	fb_info->fix		= pvr2_fix;
 	fb_info->par		= currentpar;
 	fb_info->pseudo_palette	= currentpar->palette;
-	fb_info->flags		= FBINFO_HWACCEL_YPAN;
+	fb_info->flags		= FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
 
 	if (video_output == VO_VGA)
 		defmode = DEFMODE_VGA;

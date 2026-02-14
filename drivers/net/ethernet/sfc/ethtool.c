@@ -217,8 +217,7 @@ static int efx_ethtool_set_wol(struct net_device *net_dev,
 }
 
 static void efx_ethtool_get_fec_stats(struct net_device *net_dev,
-				      struct ethtool_fec_stats *fec_stats,
-				      struct ethtool_fec_hist *hist)
+				      struct ethtool_fec_stats *fec_stats)
 {
 	struct efx_nic *efx = efx_netdev_priv(net_dev);
 
@@ -227,9 +226,14 @@ static void efx_ethtool_get_fec_stats(struct net_device *net_dev,
 }
 
 static int efx_ethtool_get_ts_info(struct net_device *net_dev,
-				   struct kernel_ethtool_ts_info *ts_info)
+				   struct ethtool_ts_info *ts_info)
 {
 	struct efx_nic *efx = efx_netdev_priv(net_dev);
+
+	/* Software capabilities */
+	ts_info->so_timestamping = (SOF_TIMESTAMPING_RX_SOFTWARE |
+				    SOF_TIMESTAMPING_SOFTWARE);
+	ts_info->phc_index = -1;
 
 	efx_ptp_get_ts_info(efx, ts_info);
 	return 0;
@@ -261,19 +265,12 @@ const struct ethtool_ops efx_ethtool_ops = {
 	.reset			= efx_ethtool_reset,
 	.get_rxnfc		= efx_ethtool_get_rxnfc,
 	.set_rxnfc		= efx_ethtool_set_rxnfc,
-	.get_rx_ring_count	= efx_ethtool_get_rx_ring_count,
 	.get_rxfh_indir_size	= efx_ethtool_get_rxfh_indir_size,
 	.get_rxfh_key_size	= efx_ethtool_get_rxfh_key_size,
-	.rxfh_per_ctx_fields	= true,
-	.rxfh_per_ctx_key	= true,
-	.cap_rss_rxnfc_adds	= true,
-	.rxfh_priv_size		= sizeof(struct efx_rss_context_priv),
 	.get_rxfh		= efx_ethtool_get_rxfh,
 	.set_rxfh		= efx_ethtool_set_rxfh,
-	.get_rxfh_fields	= efx_ethtool_get_rxfh_fields,
-	.create_rxfh_context	= efx_ethtool_create_rxfh_context,
-	.modify_rxfh_context	= efx_ethtool_modify_rxfh_context,
-	.remove_rxfh_context	= efx_ethtool_remove_rxfh_context,
+	.get_rxfh_context	= efx_ethtool_get_rxfh_context,
+	.set_rxfh_context	= efx_ethtool_set_rxfh_context,
 	.get_ts_info		= efx_ethtool_get_ts_info,
 	.get_module_info	= efx_ethtool_get_module_info,
 	.get_module_eeprom	= efx_ethtool_get_module_eeprom,

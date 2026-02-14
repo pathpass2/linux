@@ -66,8 +66,6 @@ int main(int argc, char *argv[])
 	pid_t pid;
 	struct timespec mtime_now;
 
-	ksft_print_header();
-
 	nscheck();
 
 	ksft_set_plan(2);

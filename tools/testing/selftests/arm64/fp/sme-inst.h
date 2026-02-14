@@ -5,8 +5,6 @@
 #ifndef SME_INST_H
 #define SME_INST_H
 
-#define REG_FPMR                                        S3_3_C4_C4_2
-
 /*
  * RDSVL X\nx, #\imm
  */

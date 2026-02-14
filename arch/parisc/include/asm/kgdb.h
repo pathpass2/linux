@@ -17,11 +17,9 @@
 #define NUMREGBYTES			sizeof(struct parisc_gdb_regs)
 #define BUFMAX				4096
 
-#define KGDB_MAX_BREAKPOINTS		40
-
 #define CACHE_FLUSH_IS_SAFE		1
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 static inline void arch_kgdb_breakpoint(void)
 {

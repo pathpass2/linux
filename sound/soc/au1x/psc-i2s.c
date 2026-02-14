@@ -344,7 +344,7 @@ static int au1xpsc_i2s_drvprobe(struct platform_device *pdev)
 				&au1xpsc_i2s_component, &wd->dai_drv, 1);
 }
 
-static void au1xpsc_i2s_drvremove(struct platform_device *pdev)
+static int au1xpsc_i2s_drvremove(struct platform_device *pdev)
 {
 	struct au1xpsc_audio_data *wd = platform_get_drvdata(pdev);
 
@@ -352,8 +352,11 @@ static void au1xpsc_i2s_drvremove(struct platform_device *pdev)
 	wmb(); /* drain writebuffer */
 	__raw_writel(PSC_CTRL_DISABLE, PSC_CTRL(wd));
 	wmb(); /* drain writebuffer */
+
+	return 0;
 }
 
+#ifdef CONFIG_PM
 static int au1xpsc_i2s_drvsuspend(struct device *dev)
 {
 	struct au1xpsc_audio_data *wd = dev_get_drvdata(dev);
@@ -384,13 +387,23 @@ static int au1xpsc_i2s_drvresume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(au1xpsci2s_pmops, au1xpsc_i2s_drvsuspend,
-				au1xpsc_i2s_drvresume);
+static const struct dev_pm_ops au1xpsci2s_pmops = {
+	.suspend	= au1xpsc_i2s_drvsuspend,
+	.resume		= au1xpsc_i2s_drvresume,
+};
+
+#define AU1XPSCI2S_PMOPS &au1xpsci2s_pmops
+
+#else
+
+#define AU1XPSCI2S_PMOPS NULL
+
+#endif
 
 static struct platform_driver au1xpsc_i2s_driver = {
 	.driver		= {
 		.name	= "au1xpsc_i2s",
-		.pm	= pm_ptr(&au1xpsci2s_pmops),
+		.pm	= AU1XPSCI2S_PMOPS,
 	},
 	.probe		= au1xpsc_i2s_drvprobe,
 	.remove		= au1xpsc_i2s_drvremove,

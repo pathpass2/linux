@@ -17,7 +17,6 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
@@ -366,7 +365,7 @@ static const struct phy_ops bcm63xx_usbh_phy_ops = {
 };
 
 static struct phy *bcm63xx_usbh_phy_xlate(struct device *dev,
-					  const struct of_phandle_args *args)
+					  struct of_phandle_args *args)
 {
 	struct bcm63xx_usbh_phy *usbh = dev_get_drvdata(dev);
 
@@ -375,7 +374,7 @@ static struct phy *bcm63xx_usbh_phy_xlate(struct device *dev,
 	return of_phy_simple_xlate(dev, args);
 }
 
-static int bcm63xx_usbh_phy_probe(struct platform_device *pdev)
+static int __init bcm63xx_usbh_phy_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct bcm63xx_usbh_phy	*usbh;
@@ -432,7 +431,7 @@ static int bcm63xx_usbh_phy_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id bcm63xx_usbh_phy_ids[] = {
+static const struct of_device_id bcm63xx_usbh_phy_ids[] __initconst = {
 	{ .compatible = "brcm,bcm6318-usbh-phy", .data = &usbh_bcm6318 },
 	{ .compatible = "brcm,bcm6328-usbh-phy", .data = &usbh_bcm6328 },
 	{ .compatible = "brcm,bcm6358-usbh-phy", .data = &usbh_bcm6358 },
@@ -443,7 +442,7 @@ static const struct of_device_id bcm63xx_usbh_phy_ids[] = {
 };
 MODULE_DEVICE_TABLE(of, bcm63xx_usbh_phy_ids);
 
-static struct platform_driver bcm63xx_usbh_phy_driver = {
+static struct platform_driver bcm63xx_usbh_phy_driver __refdata = {
 	.driver	= {
 		.name = "bcm63xx-usbh-phy",
 		.of_match_table = bcm63xx_usbh_phy_ids,

@@ -11,8 +11,19 @@
 .. toctree::
    :maxdepth: 1
 
-   process/howto
+   howto
+
+
+리눅스 커널 메모리 배리어
+-------------------------
 
 .. raw:: latex
 
-       }\kerneldocEndKR
+    \footnotesize
+
+.. include:: ./memory-barriers.txt
+    :literal:
+
+.. raw:: latex
+
+    }\kerneldocEndKR

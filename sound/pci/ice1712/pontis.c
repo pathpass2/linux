@@ -112,12 +112,13 @@ static int wm_dac_vol_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	unsigned short val;
 	int i;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		val = wm_get(ice, WM_DAC_ATTEN_L + i) & 0xff;
 		val = val > DAC_MIN ? (val - DAC_MIN) : 0;
 		ucontrol->value.integer.value[i] = val;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -127,7 +128,7 @@ static int wm_dac_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	unsigned short oval, nval;
 	int i, idx, change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		nval = ucontrol->value.integer.value[i];
 		nval = (nval ? (nval + DAC_MIN) : 0) & 0xff;
@@ -139,6 +140,7 @@ static int wm_dac_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 			change = 1;
 		}
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -165,12 +167,13 @@ static int wm_adc_vol_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	unsigned short val;
 	int i;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		val = wm_get(ice, WM_ADC_ATTEN_L + i) & 0xff;
 		val = val > ADC_MIN ? (val - ADC_MIN) : 0;
 		ucontrol->value.integer.value[i] = val;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -180,7 +183,7 @@ static int wm_adc_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	unsigned short ovol, nvol;
 	int i, idx, change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		nvol = ucontrol->value.integer.value[i];
 		nvol = nvol ? (nvol + ADC_MIN) : 0;
@@ -191,6 +194,7 @@ static int wm_adc_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 			change = 1;
 		}
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -204,8 +208,9 @@ static int wm_adc_mux_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 	int bit = kcontrol->private_value;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.integer.value[0] = (wm_get(ice, WM_ADC_MUX) & (1 << bit)) ? 1 : 0;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -216,7 +221,7 @@ static int wm_adc_mux_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	unsigned short oval, nval;
 	int change;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	nval = oval = wm_get(ice, WM_ADC_MUX);
 	if (ucontrol->value.integer.value[0])
 		nval |= (1 << bit);
@@ -226,6 +231,7 @@ static int wm_adc_mux_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	if (change) {
 		wm_put(ice, WM_ADC_MUX, nval);
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -238,8 +244,9 @@ static int wm_bypass_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.integer.value[0] = (wm_get(ice, WM_OUT_MUX) & 0x04) ? 1 : 0;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -249,7 +256,7 @@ static int wm_bypass_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 	unsigned short val, oval;
 	int change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	val = oval = wm_get(ice, WM_OUT_MUX);
 	if (ucontrol->value.integer.value[0])
 		val |= 0x04;
@@ -259,6 +266,7 @@ static int wm_bypass_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 		wm_put(ice, WM_OUT_MUX, val);
 		change = 1;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -271,8 +279,9 @@ static int wm_chswap_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.integer.value[0] = (wm_get(ice, WM_DAC_CTRL1) & 0xf0) != 0x90;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -282,7 +291,7 @@ static int wm_chswap_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 	unsigned short val, oval;
 	int change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	oval = wm_get(ice, WM_DAC_CTRL1);
 	val = oval & 0x0f;
 	if (ucontrol->value.integer.value[0])
@@ -294,6 +303,7 @@ static int wm_chswap_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 		wm_put_nocache(ice, WM_DAC_CTRL1, val);
 		change = 1;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -400,8 +410,9 @@ static int cs_source_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.enumerated.item[0] = ice->gpio.saved[0];
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -411,13 +422,14 @@ static int cs_source_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_valu
 	unsigned char val;
 	int change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	if (ucontrol->value.enumerated.item[0] != ice->gpio.saved[0]) {
 		ice->gpio.saved[0] = ucontrol->value.enumerated.item[0] & 3;
 		val = 0x80 | (ice->gpio.saved[0] << 3);
 		spi_write(ice, CS_DEV, 0x04, val);
 		change = 1;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -437,10 +449,10 @@ static int pontis_gpio_mask_info(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 static int pontis_gpio_mask_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	/* 4-7 reserved */
 	ucontrol->value.integer.value[0] = (~ice->gpio.write_mask & 0xffff) | 0x00f0;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 	
@@ -449,22 +461,22 @@ static int pontis_gpio_mask_put(struct snd_kcontrol *kcontrol, struct snd_ctl_el
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 	unsigned int val;
 	int changed;
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	/* 4-7 reserved */
 	val = (~ucontrol->value.integer.value[0] & 0xffff) | 0x00f0;
 	changed = val != ice->gpio.write_mask;
 	ice->gpio.write_mask = val;
+	mutex_unlock(&ice->gpio_mutex);
 	return changed;
 }
 
 static int pontis_gpio_dir_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	/* 4-7 reserved */
 	ucontrol->value.integer.value[0] = ice->gpio.direction & 0xff0f;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 	
@@ -473,23 +485,23 @@ static int pontis_gpio_dir_put(struct snd_kcontrol *kcontrol, struct snd_ctl_ele
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 	unsigned int val;
 	int changed;
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	/* 4-7 reserved */
 	val = ucontrol->value.integer.value[0] & 0xff0f;
 	changed = (val != ice->gpio.direction);
 	ice->gpio.direction = val;
+	mutex_unlock(&ice->gpio_mutex);
 	return changed;
 }
 
 static int pontis_gpio_data_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	snd_ice1712_gpio_set_dir(ice, ice->gpio.direction);
 	snd_ice1712_gpio_set_mask(ice, ice->gpio.write_mask);
 	ucontrol->value.integer.value[0] = snd_ice1712_gpio_read(ice) & 0xffff;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -498,8 +510,7 @@ static int pontis_gpio_data_put(struct snd_kcontrol *kcontrol, struct snd_ctl_el
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 	unsigned int val, nval;
 	int changed = 0;
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	snd_ice1712_gpio_set_dir(ice, ice->gpio.direction);
 	snd_ice1712_gpio_set_mask(ice, ice->gpio.write_mask);
 	val = snd_ice1712_gpio_read(ice) & 0xffff;
@@ -508,6 +519,7 @@ static int pontis_gpio_data_put(struct snd_kcontrol *kcontrol, struct snd_ctl_el
 		snd_ice1712_gpio_write(ice, nval);
 		changed = 1;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return changed;
 }
 
@@ -608,14 +620,14 @@ static void wm_proc_regs_write(struct snd_info_entry *entry, struct snd_info_buf
 	struct snd_ice1712 *ice = entry->private_data;
 	char line[64];
 	unsigned int reg, val;
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	while (!snd_info_get_line(buffer, line, sizeof(line))) {
 		if (sscanf(line, "%x %x", &reg, &val) != 2)
 			continue;
 		if (reg <= 0x17 && val <= 0xffff)
 			wm_put(ice, reg, val);
 	}
+	mutex_unlock(&ice->gpio_mutex);
 }
 
 static void wm_proc_regs_read(struct snd_info_entry *entry, struct snd_info_buffer *buffer)
@@ -623,11 +635,12 @@ static void wm_proc_regs_read(struct snd_info_entry *entry, struct snd_info_buff
 	struct snd_ice1712 *ice = entry->private_data;
 	int reg, val;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (reg = 0; reg <= 0x17; reg++) {
 		val = wm_get(ice, reg);
 		snd_iprintf(buffer, "%02x = %04x\n", reg, val);
 	}
+	mutex_unlock(&ice->gpio_mutex);
 }
 
 static void wm_proc_init(struct snd_ice1712 *ice)
@@ -641,13 +654,14 @@ static void cs_proc_regs_read(struct snd_info_entry *entry, struct snd_info_buff
 	struct snd_ice1712 *ice = entry->private_data;
 	int reg, val;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (reg = 0; reg <= 0x26; reg++) {
 		val = spi_read(ice, CS_DEV, reg);
 		snd_iprintf(buffer, "%02x = %02x\n", reg, val);
 	}
 	val = spi_read(ice, CS_DEV, 0x7f);
 	snd_iprintf(buffer, "%02x = %02x\n", 0x7f, val);
+	mutex_unlock(&ice->gpio_mutex);
 }
 
 static void cs_proc_init(struct snd_ice1712 *ice)

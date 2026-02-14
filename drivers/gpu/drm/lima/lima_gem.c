@@ -34,7 +34,7 @@ int lima_heap_alloc(struct lima_bo *bo, struct lima_vm *vm)
 
 	new_size = min(new_size, bo->base.base.size);
 
-	dma_resv_lock(bo->base.base.resv, NULL);
+	mutex_lock(&bo->base.pages_lock);
 
 	if (bo->base.pages) {
 		pages = bo->base.pages;
@@ -42,12 +42,12 @@ int lima_heap_alloc(struct lima_bo *bo, struct lima_vm *vm)
 		pages = kvmalloc_array(bo->base.base.size >> PAGE_SHIFT,
 				       sizeof(*pages), GFP_KERNEL | __GFP_ZERO);
 		if (!pages) {
-			dma_resv_unlock(bo->base.base.resv);
+			mutex_unlock(&bo->base.pages_lock);
 			return -ENOMEM;
 		}
 
 		bo->base.pages = pages;
-		refcount_set(&bo->base.pages_use_count, 1);
+		bo->base.pages_use_count = 1;
 
 		mapping_set_unevictable(mapping);
 	}
@@ -56,13 +56,13 @@ int lima_heap_alloc(struct lima_bo *bo, struct lima_vm *vm)
 		struct page *page = shmem_read_mapping_page(mapping, i);
 
 		if (IS_ERR(page)) {
-			dma_resv_unlock(bo->base.base.resv);
+			mutex_unlock(&bo->base.pages_lock);
 			return PTR_ERR(page);
 		}
 		pages[i] = page;
 	}
 
-	dma_resv_unlock(bo->base.base.resv);
+	mutex_unlock(&bo->base.pages_lock);
 
 	ret = sg_alloc_table_from_pages(&sgt, pages, i, 0,
 					new_size, GFP_KERNEL);
@@ -75,34 +75,29 @@ int lima_heap_alloc(struct lima_bo *bo, struct lima_vm *vm)
 	} else {
 		bo->base.sgt = kmalloc(sizeof(*bo->base.sgt), GFP_KERNEL);
 		if (!bo->base.sgt) {
-			ret = -ENOMEM;
-			goto err_out0;
+			sg_free_table(&sgt);
+			return -ENOMEM;
 		}
 	}
 
 	ret = dma_map_sgtable(dev, &sgt, DMA_BIDIRECTIONAL, 0);
-	if (ret)
-		goto err_out1;
+	if (ret) {
+		sg_free_table(&sgt);
+		kfree(bo->base.sgt);
+		bo->base.sgt = NULL;
+		return ret;
+	}
 
 	*bo->base.sgt = sgt;
 
 	if (vm) {
 		ret = lima_vm_map_bo(vm, bo, old_size >> PAGE_SHIFT);
 		if (ret)
-			goto err_out2;
+			return ret;
 	}
 
 	bo->heap_size = new_size;
 	return 0;
-
-err_out2:
-	dma_unmap_sgtable(dev, &sgt, DMA_BIDIRECTIONAL, 0);
-err_out1:
-	kfree(bo->base.sgt);
-	bo->base.sgt = NULL;
-err_out0:
-	sg_free_table(&sgt);
-	return ret;
 }
 
 int lima_gem_create_handle(struct drm_device *dev, struct drm_file *file,
@@ -185,7 +180,7 @@ static int lima_gem_pin(struct drm_gem_object *obj)
 	if (bo->heap_size)
 		return -EINVAL;
 
-	return drm_gem_shmem_pin_locked(&bo->base);
+	return drm_gem_shmem_pin(&bo->base);
 }
 
 static int lima_gem_vmap(struct drm_gem_object *obj, struct iosys_map *map)
@@ -195,7 +190,7 @@ static int lima_gem_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 	if (bo->heap_size)
 		return -EINVAL;
 
-	return drm_gem_shmem_vmap_locked(&bo->base, map);
+	return drm_gem_shmem_vmap(&bo->base, map);
 }
 
 static int lima_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
@@ -282,13 +277,21 @@ static int lima_gem_add_deps(struct drm_file *file, struct lima_submit *submit)
 	int i, err;
 
 	for (i = 0; i < ARRAY_SIZE(submit->in_sync); i++) {
+		struct dma_fence *fence = NULL;
+
 		if (!submit->in_sync[i])
 			continue;
 
-		err = drm_sched_job_add_syncobj_dependency(&submit->task->base, file,
-							   submit->in_sync[i], 0);
+		err = drm_syncobj_find_fence(file, submit->in_sync[i],
+					     0, 0, &fence);
 		if (err)
 			return err;
+
+		err = drm_sched_job_add_dependency(&submit->task->base, fence);
+		if (err) {
+			dma_fence_put(fence);
+			return err;
+		}
 	}
 
 	return 0;
@@ -341,7 +344,7 @@ int lima_gem_submit(struct drm_file *file, struct lima_submit *submit)
 
 	err = lima_sched_task_init(
 		submit->task, submit->ctx->context + submit->pipe,
-		bos, submit->nr_bos, vm, file->client_id);
+		bos, submit->nr_bos, vm);
 	if (err)
 		goto err_out1;
 

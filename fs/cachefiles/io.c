@@ -9,11 +9,9 @@
 #include <linux/slab.h>
 #include <linux/file.h>
 #include <linux/uio.h>
-#include <linux/bio.h>
 #include <linux/falloc.h>
 #include <linux/sched/mm.h>
 #include <trace/events/fscache.h>
-#include <trace/events/netfs.h>
 #include "internal.h"
 
 struct cachefiles_kiocb {
@@ -63,7 +61,7 @@ static void cachefiles_read_complete(struct kiocb *iocb, long ret)
 				ret = -ESTALE;
 		}
 
-		ki->term_func(ki->term_func_priv, ret);
+		ki->term_func(ki->term_func_priv, ret, ki->was_async);
 	}
 
 	cachefiles_put_kiocb(ki);
@@ -188,7 +186,7 @@ in_progress:
 
 presubmission_error:
 	if (term_func)
-		term_func(term_func_priv, ret < 0 ? ret : skipped);
+		term_func(term_func_priv, ret < 0 ? ret : skipped, false);
 	return ret;
 }
 
@@ -261,8 +259,9 @@ static void cachefiles_write_complete(struct kiocb *iocb, long ret)
 
 	_enter("%ld", ret);
 
-	if (ki->was_async)
-		kiocb_end_write(iocb);
+	/* Tell lockdep we inherited freeze protection from submission thread */
+	__sb_writers_acquired(inode->i_sb, SB_FREEZE_WRITE);
+	__sb_end_write(inode->i_sb, SB_FREEZE_WRITE);
 
 	if (ret < 0)
 		trace_cachefiles_io_error(object, inode, ret,
@@ -271,7 +270,7 @@ static void cachefiles_write_complete(struct kiocb *iocb, long ret)
 	atomic_long_sub(ki->b_writing, &object->volume->cache->b_writing);
 	set_bit(FSCACHE_COOKIE_HAVE_DATA, &object->cookie->flags);
 	if (ki->term_func)
-		ki->term_func(ki->term_func_priv, ret);
+		ki->term_func(ki->term_func_priv, ret, ki->was_async);
 	cachefiles_put_kiocb(ki);
 }
 
@@ -287,6 +286,7 @@ int __cachefiles_write(struct cachefiles_object *object,
 {
 	struct cachefiles_cache *cache;
 	struct cachefiles_kiocb *ki;
+	struct inode *inode;
 	unsigned int old_nofs;
 	ssize_t ret;
 	size_t len = iov_iter_count(iter);
@@ -301,7 +301,7 @@ int __cachefiles_write(struct cachefiles_object *object,
 	ki = kzalloc(sizeof(struct cachefiles_kiocb), GFP_KERNEL);
 	if (!ki) {
 		if (term_func)
-			term_func(term_func_priv, -ENOMEM);
+			term_func(term_func_priv, -ENOMEM, false);
 		return -ENOMEM;
 	}
 
@@ -322,10 +322,19 @@ int __cachefiles_write(struct cachefiles_object *object,
 		ki->iocb.ki_complete = cachefiles_write_complete;
 	atomic_long_add(ki->b_writing, &cache->b_writing);
 
+	/* Open-code file_start_write here to grab freeze protection, which
+	 * will be released by another thread in aio_complete_rw().  Fool
+	 * lockdep by telling it the lock got released so that it doesn't
+	 * complain about the held lock when we return to userspace.
+	 */
+	inode = file_inode(file);
+	__sb_start_write(inode->i_sb, SB_FREEZE_WRITE);
+	__sb_writers_release(inode->i_sb, SB_FREEZE_WRITE);
+
 	get_file(ki->iocb.ki_filp);
 	cachefiles_grab_object(object, cachefiles_obj_get_ioreq);
 
-	trace_cachefiles_write(object, file_inode(file), ki->iocb.ki_pos, len);
+	trace_cachefiles_write(object, inode, ki->iocb.ki_pos, len);
 	old_nofs = memalloc_nofs_save();
 	ret = cachefiles_inject_write_error();
 	if (ret == 0)
@@ -347,6 +356,8 @@ int __cachefiles_write(struct cachefiles_object *object,
 	default:
 		ki->was_async = false;
 		cachefiles_write_complete(&ki->iocb, ret);
+		if (ret > 0)
+			ret = 0;
 		break;
 	}
 
@@ -364,8 +375,7 @@ static int cachefiles_write(struct netfs_cache_resources *cres,
 {
 	if (!fscache_wait_for_operation(cres, FSCACHE_WANT_WRITE)) {
 		if (term_func)
-			term_func(term_func_priv, -ENOBUFS);
-		trace_netfs_sreq(term_func_priv, netfs_sreq_trace_cache_nowrite);
+			term_func(term_func_priv, -ENOBUFS, false);
 		return -ENOBUFS;
 	}
 
@@ -494,7 +504,7 @@ out_no_object:
  * boundary as appropriate.
  */
 static enum netfs_io_source cachefiles_prepare_read(struct netfs_io_subrequest *subreq,
-						    unsigned long long i_size)
+						    loff_t i_size)
 {
 	return cachefiles_do_prepare_read(&subreq->rreq->cache_resources,
 					  subreq->start, &subreq->len, i_size,
@@ -518,26 +528,18 @@ cachefiles_prepare_ondemand_read(struct netfs_cache_resources *cres,
  */
 int __cachefiles_prepare_write(struct cachefiles_object *object,
 			       struct file *file,
-			       loff_t *_start, size_t *_len, size_t upper_len,
+			       loff_t *_start, size_t *_len,
 			       bool no_space_allocated_yet)
 {
 	struct cachefiles_cache *cache = object->volume->cache;
 	loff_t start = *_start, pos;
-	size_t len = *_len;
+	size_t len = *_len, down;
 	int ret;
 
 	/* Round to DIO size */
-	start = round_down(*_start, PAGE_SIZE);
-	if (start != *_start || *_len > upper_len) {
-		/* Probably asked to cache a streaming write written into the
-		 * pagecache when the cookie was temporarily out of service to
-		 * culling.
-		 */
-		fscache_count_dio_misfit();
-		return -ENOBUFS;
-	}
-
-	*_len = round_up(len, PAGE_SIZE);
+	down = start - round_down(start, PAGE_SIZE);
+	*_start = start - down;
+	*_len = round_up(down + len, PAGE_SIZE);
 
 	/* We need to work out whether there's sufficient disk space to perform
 	 * the write - but we can skip that check if we have space already
@@ -548,7 +550,7 @@ int __cachefiles_prepare_write(struct cachefiles_object *object,
 
 	pos = cachefiles_inject_read_error();
 	if (pos == 0)
-		pos = vfs_llseek(file, start, SEEK_DATA);
+		pos = vfs_llseek(file, *_start, SEEK_DATA);
 	if (pos < 0 && pos >= (loff_t)-MAX_ERRNO) {
 		if (pos == -ENXIO)
 			goto check_space; /* Unallocated tail */
@@ -556,7 +558,7 @@ int __cachefiles_prepare_write(struct cachefiles_object *object,
 					  cachefiles_trace_seek_error);
 		return pos;
 	}
-	if ((u64)pos >= (u64)start + *_len)
+	if ((u64)pos >= (u64)*_start + *_len)
 		goto check_space; /* Unallocated region */
 
 	/* We have a block that's at least partially filled - if we're low on
@@ -569,13 +571,13 @@ int __cachefiles_prepare_write(struct cachefiles_object *object,
 
 	pos = cachefiles_inject_read_error();
 	if (pos == 0)
-		pos = vfs_llseek(file, start, SEEK_HOLE);
+		pos = vfs_llseek(file, *_start, SEEK_HOLE);
 	if (pos < 0 && pos >= (loff_t)-MAX_ERRNO) {
 		trace_cachefiles_io_error(object, file_inode(file), pos,
 					  cachefiles_trace_seek_error);
 		return pos;
 	}
-	if ((u64)pos >= (u64)start + *_len)
+	if ((u64)pos >= (u64)*_start + *_len)
 		return 0; /* Fully allocated */
 
 	/* Partially allocated, but insufficient space: cull. */
@@ -583,7 +585,7 @@ int __cachefiles_prepare_write(struct cachefiles_object *object,
 	ret = cachefiles_inject_remove_error();
 	if (ret == 0)
 		ret = vfs_fallocate(file, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-				    start, *_len);
+				    *_start, *_len);
 	if (ret < 0) {
 		trace_cachefiles_io_error(object, file_inode(file), ret,
 					  cachefiles_trace_fallocate_error);
@@ -600,8 +602,8 @@ check_space:
 }
 
 static int cachefiles_prepare_write(struct netfs_cache_resources *cres,
-				    loff_t *_start, size_t *_len, size_t upper_len,
-				    loff_t i_size, bool no_space_allocated_yet)
+				    loff_t *_start, size_t *_len, loff_t i_size,
+				    bool no_space_allocated_yet)
 {
 	struct cachefiles_object *object = cachefiles_cres_object(cres);
 	struct cachefiles_cache *cache = object->volume->cache;
@@ -617,98 +619,10 @@ static int cachefiles_prepare_write(struct netfs_cache_resources *cres,
 
 	cachefiles_begin_secure(cache, &saved_cred);
 	ret = __cachefiles_prepare_write(object, cachefiles_cres_file(cres),
-					 _start, _len, upper_len,
+					 _start, _len,
 					 no_space_allocated_yet);
 	cachefiles_end_secure(cache, saved_cred);
 	return ret;
-}
-
-static void cachefiles_prepare_write_subreq(struct netfs_io_subrequest *subreq)
-{
-	struct netfs_io_request *wreq = subreq->rreq;
-	struct netfs_cache_resources *cres = &wreq->cache_resources;
-	struct netfs_io_stream *stream = &wreq->io_streams[subreq->stream_nr];
-
-	_enter("W=%x[%x] %llx", wreq->debug_id, subreq->debug_index, subreq->start);
-
-	stream->sreq_max_len = MAX_RW_COUNT;
-	stream->sreq_max_segs = BIO_MAX_VECS;
-
-	if (!cachefiles_cres_file(cres)) {
-		if (!fscache_wait_for_operation(cres, FSCACHE_WANT_WRITE))
-			return netfs_prepare_write_failed(subreq);
-		if (!cachefiles_cres_file(cres))
-			return netfs_prepare_write_failed(subreq);
-	}
-}
-
-static void cachefiles_issue_write(struct netfs_io_subrequest *subreq)
-{
-	struct netfs_io_request *wreq = subreq->rreq;
-	struct netfs_cache_resources *cres = &wreq->cache_resources;
-	struct cachefiles_object *object = cachefiles_cres_object(cres);
-	struct cachefiles_cache *cache = object->volume->cache;
-	struct netfs_io_stream *stream = &wreq->io_streams[subreq->stream_nr];
-	const struct cred *saved_cred;
-	size_t off, pre, post, len = subreq->len;
-	loff_t start = subreq->start;
-	int ret;
-
-	_enter("W=%x[%x] %llx-%llx",
-	       wreq->debug_id, subreq->debug_index, start, start + len - 1);
-
-	/* We need to start on the cache granularity boundary */
-	off = start & (CACHEFILES_DIO_BLOCK_SIZE - 1);
-	if (off) {
-		pre = CACHEFILES_DIO_BLOCK_SIZE - off;
-		if (pre >= len) {
-			fscache_count_dio_misfit();
-			netfs_write_subrequest_terminated(subreq, len);
-			return;
-		}
-		subreq->transferred += pre;
-		start += pre;
-		len -= pre;
-		iov_iter_advance(&subreq->io_iter, pre);
-	}
-
-	/* We also need to end on the cache granularity boundary */
-	if (start + len == wreq->i_size) {
-		size_t part = len % CACHEFILES_DIO_BLOCK_SIZE;
-		size_t need = CACHEFILES_DIO_BLOCK_SIZE - part;
-
-		if (part && stream->submit_extendable_to >= need) {
-			len += need;
-			subreq->len += need;
-			subreq->io_iter.count += need;
-		}
-	}
-
-	post = len & (CACHEFILES_DIO_BLOCK_SIZE - 1);
-	if (post) {
-		len -= post;
-		if (len == 0) {
-			fscache_count_dio_misfit();
-			netfs_write_subrequest_terminated(subreq, post);
-			return;
-		}
-		iov_iter_truncate(&subreq->io_iter, len);
-	}
-
-	trace_netfs_sreq(subreq, netfs_sreq_trace_cache_prepare);
-	cachefiles_begin_secure(cache, &saved_cred);
-	ret = __cachefiles_prepare_write(object, cachefiles_cres_file(cres),
-					 &start, &len, len, true);
-	cachefiles_end_secure(cache, saved_cred);
-	if (ret < 0) {
-		netfs_write_subrequest_terminated(subreq, ret);
-		return;
-	}
-
-	trace_netfs_sreq(subreq, netfs_sreq_trace_cache_write);
-	cachefiles_write(&subreq->rreq->cache_resources,
-			 subreq->start, &subreq->io_iter,
-			 netfs_write_subrequest_terminated, subreq);
 }
 
 /*
@@ -727,10 +641,8 @@ static const struct netfs_cache_ops cachefiles_netfs_cache_ops = {
 	.end_operation		= cachefiles_end_operation,
 	.read			= cachefiles_read,
 	.write			= cachefiles_write,
-	.issue_write		= cachefiles_issue_write,
 	.prepare_read		= cachefiles_prepare_read,
 	.prepare_write		= cachefiles_prepare_write,
-	.prepare_write_subreq	= cachefiles_prepare_write_subreq,
 	.prepare_ondemand_read	= cachefiles_prepare_ondemand_read,
 	.query_occupancy	= cachefiles_query_occupancy,
 };

@@ -162,7 +162,7 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 	struct ata_port *ap = qc->ap;
 	struct domain_device *dev = ap->private_data;
 	struct sas_ha_struct *sas_ha = dev->port->ha;
-	struct Scsi_Host *host = sas_ha->shost;
+	struct Scsi_Host *host = sas_ha->core.shost;
 	struct sas_internal *i = to_sas_internal(host->transportt);
 
 	/* TODO: we should try to remove that unlock */
@@ -201,13 +201,11 @@ static unsigned int sas_ata_qc_issue(struct ata_queued_cmd *qc)
 		task->data_dir = qc->dma_dir;
 	}
 	task->scatter = qc->sg;
+	task->ata_task.retry_count = 1;
 	qc->lldd_task = task;
 
 	task->ata_task.use_ncq = ata_is_ncq(qc->tf.protocol);
 	task->ata_task.dma_xfer = ata_is_dma(qc->tf.protocol);
-
-	if (qc->flags & ATA_QCFLAG_RESULT_TF)
-		task->ata_task.return_fis_on_success = 1;
 
 	if (qc->scsicmd)
 		ASSIGN_SAS_TASK(qc->scsicmd, task);
@@ -237,7 +235,7 @@ static void sas_ata_qc_fill_rtf(struct ata_queued_cmd *qc)
 
 static struct sas_internal *dev_to_sas_internal(struct domain_device *dev)
 {
-	return to_sas_internal(dev->port->ha->shost->transportt);
+	return to_sas_internal(dev->port->ha->core.shost->transportt);
 }
 
 static int sas_get_ata_command_set(struct domain_device *dev)
@@ -252,7 +250,7 @@ static int sas_get_ata_command_set(struct domain_device *dev)
 	return ata_dev_classify(&tf);
 }
 
-static int sas_get_ata_info(struct domain_device *dev, struct ex_phy *phy)
+int sas_get_ata_info(struct domain_device *dev, struct ex_phy *phy)
 {
 	if (phy->attached_tproto & SAS_PROTOCOL_STP)
 		dev->tproto = phy->attached_tproto;
@@ -559,22 +557,34 @@ static int sas_ata_prereset(struct ata_link *link, unsigned long deadline)
 }
 
 static struct ata_port_operations sas_sata_ops = {
-	.reset.prereset		= sas_ata_prereset,
-	.reset.hardreset	= sas_ata_hard_reset,
+	.prereset		= sas_ata_prereset,
+	.hardreset		= sas_ata_hard_reset,
 	.error_handler		= ata_std_error_handler,
 	.post_internal_cmd	= sas_ata_post_internal,
 	.qc_defer               = ata_std_qc_defer,
+	.qc_prep		= ata_noop_qc_prep,
 	.qc_issue		= sas_ata_qc_issue,
 	.qc_fill_rtf		= sas_ata_qc_fill_rtf,
+	.port_start		= ata_sas_port_start,
+	.port_stop		= ata_sas_port_stop,
 	.set_dmamode		= sas_ata_set_dmamode,
 	.sched_eh		= sas_ata_sched_eh,
 	.end_eh			= sas_ata_end_eh,
 };
 
+static struct ata_port_info sata_port_info = {
+	.flags = ATA_FLAG_SATA | ATA_FLAG_PIO_DMA | ATA_FLAG_NCQ |
+		 ATA_FLAG_SAS_HOST | ATA_FLAG_FPDMA_AUX,
+	.pio_mask = ATA_PIO4,
+	.mwdma_mask = ATA_MWDMA2,
+	.udma_mask = ATA_UDMA6,
+	.port_ops = &sas_sata_ops
+};
+
 int sas_ata_init(struct domain_device *found_dev)
 {
 	struct sas_ha_struct *ha = found_dev->port->ha;
-	struct Scsi_Host *shost = ha->shost;
+	struct Scsi_Host *shost = ha->core.shost;
 	struct ata_host *ata_host;
 	struct ata_port *ap;
 	int rc;
@@ -587,35 +597,31 @@ int sas_ata_init(struct domain_device *found_dev)
 
 	ata_host_init(ata_host, ha->dev, &sas_sata_ops);
 
-	ap = ata_port_alloc(ata_host);
+	ap = ata_sas_port_alloc(ata_host, &sata_port_info, shost);
 	if (!ap) {
-		pr_err("ata_port_alloc failed.\n");
+		pr_err("ata_sas_port_alloc failed.\n");
 		rc = -ENODEV;
 		goto free_host;
 	}
 
-	ap->port_no = 0;
-	ap->pio_mask = ATA_PIO4;
-	ap->mwdma_mask = ATA_MWDMA2;
-	ap->udma_mask = ATA_UDMA6;
-	ap->flags |= ATA_FLAG_SATA | ATA_FLAG_PIO_DMA | ATA_FLAG_NCQ |
-		     ATA_FLAG_SAS_HOST | ATA_FLAG_FPDMA_AUX;
-	ap->ops = &sas_sata_ops;
 	ap->private_data = found_dev;
 	ap->cbl = ATA_CBL_SATA;
 	ap->scsi_host = shost;
-
-	rc = ata_tport_add(ata_host->dev, ap);
+	rc = ata_sas_port_init(ap);
 	if (rc)
-		goto free_port;
+		goto destroy_port;
+
+	rc = ata_sas_tport_add(ata_host->dev, ap);
+	if (rc)
+		goto destroy_port;
 
 	found_dev->sata_dev.ata_host = ata_host;
 	found_dev->sata_dev.ap = ap;
 
 	return 0;
 
-free_port:
-	ata_port_free(ap);
+destroy_port:
+	ata_sas_port_destroy(ap);
 free_host:
 	ata_host_put(ata_host);
 	return rc;
@@ -649,7 +655,7 @@ void sas_probe_sata(struct asd_sas_port *port)
 		if (!dev_is_sata(dev))
 			continue;
 
-		ata_port_probe(dev->sata_dev.ap);
+		ata_sas_async_probe(dev->sata_dev.ap);
 	}
 	mutex_unlock(&port->ha->disco_mutex);
 
@@ -816,7 +822,7 @@ static void async_sas_ata_eh(void *data, async_cookie_t cookie)
 	struct sas_ha_struct *ha = dev->port->ha;
 
 	sas_ata_printk(KERN_DEBUG, dev, "dev error handler\n");
-	ata_scsi_port_error_handler(ha->shost, ap);
+	ata_scsi_port_error_handler(ha->core.shost, ap);
 	sas_put_device(dev);
 }
 
@@ -927,7 +933,13 @@ EXPORT_SYMBOL_GPL(sas_ata_schedule_reset);
 
 void sas_ata_wait_eh(struct domain_device *dev)
 {
-	ata_port_wait_eh(dev->sata_dev.ap);
+	struct ata_port *ap;
+
+	if (!dev_is_sata(dev))
+		return;
+
+	ap = dev->sata_dev.ap;
+	ata_port_wait_eh(ap);
 }
 
 void sas_ata_device_link_abort(struct domain_device *device, bool force_reset)
@@ -955,87 +967,3 @@ int sas_execute_ata_cmd(struct domain_device *device, u8 *fis, int force_phy_id)
 			       force_phy_id, &tmf_task);
 }
 EXPORT_SYMBOL_GPL(sas_execute_ata_cmd);
-
-static ssize_t sas_ncq_prio_supported_show(struct device *device,
-					   struct device_attribute *attr,
-					   char *buf)
-{
-	struct scsi_device *sdev = to_scsi_device(device);
-	struct domain_device *ddev = sdev_to_domain_dev(sdev);
-	bool supported;
-	int rc;
-
-	rc = ata_ncq_prio_supported(ddev->sata_dev.ap, sdev, &supported);
-	if (rc)
-		return rc;
-
-	return sysfs_emit(buf, "%d\n", supported);
-}
-
-static struct device_attribute dev_attr_sas_ncq_prio_supported =
-	__ATTR(ncq_prio_supported, S_IRUGO, sas_ncq_prio_supported_show, NULL);
-
-static ssize_t sas_ncq_prio_enable_show(struct device *device,
-					struct device_attribute *attr,
-					char *buf)
-{
-	struct scsi_device *sdev = to_scsi_device(device);
-	struct domain_device *ddev = sdev_to_domain_dev(sdev);
-	bool enabled;
-	int rc;
-
-	rc = ata_ncq_prio_enabled(ddev->sata_dev.ap, sdev, &enabled);
-	if (rc)
-		return rc;
-
-	return sysfs_emit(buf, "%d\n", enabled);
-}
-
-static ssize_t sas_ncq_prio_enable_store(struct device *device,
-					 struct device_attribute *attr,
-					 const char *buf, size_t len)
-{
-	struct scsi_device *sdev = to_scsi_device(device);
-	struct domain_device *ddev = sdev_to_domain_dev(sdev);
-	bool enable;
-	int rc;
-
-	rc = kstrtobool(buf, &enable);
-	if (rc)
-		return rc;
-
-	rc = ata_ncq_prio_enable(ddev->sata_dev.ap, sdev, enable);
-	if (rc)
-		return rc;
-
-	return len;
-}
-
-static struct device_attribute dev_attr_sas_ncq_prio_enable =
-	__ATTR(ncq_prio_enable, S_IRUGO | S_IWUSR,
-	       sas_ncq_prio_enable_show, sas_ncq_prio_enable_store);
-
-static struct attribute *sas_ata_sdev_attrs[] = {
-	&dev_attr_sas_ncq_prio_supported.attr,
-	&dev_attr_sas_ncq_prio_enable.attr,
-	NULL
-};
-
-static umode_t sas_ata_attr_is_visible(struct kobject *kobj,
-				       struct attribute *attr, int i)
-{
-	struct device *dev = kobj_to_dev(kobj);
-	struct scsi_device *sdev = to_scsi_device(dev);
-	struct domain_device *ddev = sdev_to_domain_dev(sdev);
-
-	if (!dev_is_sata(ddev))
-		return 0;
-
-	return attr->mode;
-}
-
-const struct attribute_group sas_ata_sdev_attr_group = {
-	.attrs = sas_ata_sdev_attrs,
-	.is_visible = sas_ata_attr_is_visible,
-};
-EXPORT_SYMBOL_GPL(sas_ata_sdev_attr_group);

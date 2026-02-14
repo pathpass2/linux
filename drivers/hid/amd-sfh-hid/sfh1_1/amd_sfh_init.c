@@ -30,7 +30,6 @@ static int amd_sfh_get_sensor_num(struct amd_mp2_dev *mp2, u8 *sensor_id)
 		case ACCEL_IDX:
 		case GYRO_IDX:
 		case MAG_IDX:
-		case SRA_IDX:
 		case ALS_IDX:
 		case HPD_IDX:
 			if (BIT(i) & slist->sl.sensors)
@@ -59,8 +58,6 @@ static const char *get_sensor_name(int idx)
 		return "gyroscope";
 	case MAG_IDX:
 		return "magnetometer";
-	case SRA_IDX:
-		return "SRA";
 	case ALS_IDX:
 		return "ALS";
 	case HPD_IDX:
@@ -76,18 +73,6 @@ static int amd_sfh_hid_client_deinit(struct amd_mp2_dev *privdata)
 	int i, status;
 
 	for (i = 0; i < cl_data->num_hid_devices; i++) {
-		switch (cl_data->sensor_idx[i]) {
-		case HPD_IDX:
-			privdata->dev_en.is_hpd_present = false;
-			break;
-		case ALS_IDX:
-			privdata->dev_en.is_als_present = false;
-			break;
-		case SRA_IDX:
-			privdata->dev_en.is_sra_present = false;
-			break;
-		}
-
 		if (cl_data->sensor_sts[i] == SENSOR_ENABLED) {
 			privdata->mp2_ops->stop(privdata, cl_data->sensor_idx[i]);
 			status = amd_sfh_wait_for_response
@@ -127,7 +112,6 @@ static int amd_sfh1_1_hid_client_init(struct amd_mp2_dev *privdata)
 	cl_data->num_hid_devices = amd_sfh_get_sensor_num(privdata, &cl_data->sensor_idx[0]);
 	if (cl_data->num_hid_devices == 0)
 		return -ENODEV;
-	cl_data->is_any_sensor_enabled = false;
 
 	INIT_DELAYED_WORK(&cl_data->work, amd_sfh_work);
 	INIT_DELAYED_WORK(&cl_data->work_buffer, amd_sfh_work_buffer);
@@ -136,22 +120,6 @@ static int amd_sfh1_1_hid_client_init(struct amd_mp2_dev *privdata)
 
 	for (i = 0; i < cl_data->num_hid_devices; i++) {
 		cl_data->sensor_sts[i] = SENSOR_DISABLED;
-
-		if (cl_data->sensor_idx[i] == SRA_IDX) {
-			info.sensor_idx = cl_data->sensor_idx[i];
-			writel(0, privdata->mmio + amd_get_p2c_val(privdata, 0));
-			mp2_ops->start(privdata, info);
-			status = amd_sfh_wait_for_response
-				(privdata, cl_data->sensor_idx[i], ENABLE_SENSOR);
-
-			cl_data->sensor_sts[i] = (status == 0) ? SENSOR_ENABLED : SENSOR_DISABLED;
-			if (cl_data->sensor_sts[i] == SENSOR_ENABLED) {
-				cl_data->is_any_sensor_enabled = true;
-				privdata->dev_en.is_sra_present = true;
-			}
-			continue;
-		}
-
 		cl_data->sensor_requested_cnt[i] = 0;
 		cl_data->cur_hid_dev = i;
 		cl_idx = cl_data->sensor_idx[i];
@@ -194,46 +162,34 @@ static int amd_sfh1_1_hid_client_init(struct amd_mp2_dev *privdata)
 		if (rc)
 			goto cleanup;
 
-		mp2_ops->stop(privdata, cl_data->sensor_idx[i]);
-		amd_sfh_wait_for_response(privdata, cl_data->sensor_idx[i], DISABLE_SENSOR);
-		writel(0, privdata->mmio + amd_get_p2c_val(privdata, 0));
+		writel(0, privdata->mmio + AMD_P2C_MSG(0));
 		mp2_ops->start(privdata, info);
 		status = amd_sfh_wait_for_response
 				(privdata, cl_data->sensor_idx[i], ENABLE_SENSOR);
 
-		cl_data->sensor_sts[i] = (status == 0) ? SENSOR_ENABLED : SENSOR_DISABLED;
-	}
+		status = (status == 0) ? SENSOR_ENABLED : SENSOR_DISABLED;
 
-	for (i = 0; i < cl_data->num_hid_devices; i++) {
-		if (cl_data->sensor_idx[i] == SRA_IDX)
-			continue;
-		cl_data->cur_hid_dev = i;
-		if (cl_data->sensor_sts[i] == SENSOR_ENABLED) {
-			cl_data->is_any_sensor_enabled = true;
+		if (status == SENSOR_ENABLED) {
+			cl_data->sensor_sts[i] = SENSOR_ENABLED;
 			rc = amdtp_hid_probe(i, cl_data);
-			if (rc)
+			if (rc) {
+				mp2_ops->stop(privdata, cl_data->sensor_idx[i]);
+				status = amd_sfh_wait_for_response
+					(privdata, cl_data->sensor_idx[i], DISABLE_SENSOR);
+				if (status == 0)
+					status = SENSOR_DISABLED;
+				if (status != SENSOR_ENABLED)
+					cl_data->sensor_sts[i] = SENSOR_DISABLED;
+				dev_dbg(dev, "sid 0x%x (%s) status 0x%x\n",
+					cl_data->sensor_idx[i],
+					get_sensor_name(cl_data->sensor_idx[i]),
+					cl_data->sensor_sts[i]);
 				goto cleanup;
-			switch (cl_data->sensor_idx[i]) {
-			case HPD_IDX:
-				privdata->dev_en.is_hpd_present = true;
-				privdata->dev_en.is_hpd_enabled = true;
-				amd_sfh_toggle_hpd(privdata, false);
-				break;
-			case ALS_IDX:
-				privdata->dev_en.is_als_present = true;
-				break;
 			}
 		}
 		dev_dbg(dev, "sid 0x%x (%s) status 0x%x\n",
 			cl_data->sensor_idx[i], get_sensor_name(cl_data->sensor_idx[i]),
 			cl_data->sensor_sts[i]);
-	}
-
-	if (!cl_data->is_any_sensor_enabled) {
-		dev_warn(dev, "No sensor registered, sensors not enabled is %d\n",
-			 cl_data->is_any_sensor_enabled);
-		rc = -EOPNOTSUPP;
-		goto cleanup;
 	}
 
 	schedule_delayed_work(&cl_data->work_buffer, msecs_to_jiffies(AMD_SFH_IDLE_LOOP));
@@ -242,8 +198,6 @@ static int amd_sfh1_1_hid_client_init(struct amd_mp2_dev *privdata)
 cleanup:
 	amd_sfh_hid_client_deinit(privdata);
 	for (i = 0; i < cl_data->num_hid_devices; i++) {
-		if (cl_data->sensor_idx[i] == SRA_IDX)
-			continue;
 		devm_kfree(dev, cl_data->feature_report[i]);
 		devm_kfree(dev, in_data->input_report[i]);
 		devm_kfree(dev, cl_data->report_descr[i]);
@@ -257,16 +211,7 @@ static void amd_sfh_resume(struct amd_mp2_dev *mp2)
 	struct amd_mp2_sensor_info info;
 	int i, status;
 
-	if (!cl_data->is_any_sensor_enabled) {
-		amd_sfh_clear_intr(mp2);
-		return;
-	}
-
 	for (i = 0; i < cl_data->num_hid_devices; i++) {
-		/* leave HPD alone; policy is controlled by sysfs */
-		if (cl_data->sensor_idx[i] == HPD_IDX)
-			continue;
-
 		if (cl_data->sensor_sts[i] == SENSOR_DISABLED) {
 			info.sensor_idx = cl_data->sensor_idx[i];
 			mp2->mp2_ops->start(mp2, info);
@@ -291,16 +236,9 @@ static void amd_sfh_suspend(struct amd_mp2_dev *mp2)
 	struct amdtp_cl_data *cl_data = mp2->cl_data;
 	int i, status;
 
-	if (!cl_data->is_any_sensor_enabled) {
-		amd_sfh_clear_intr(mp2);
-		return;
-	}
-
 	for (i = 0; i < cl_data->num_hid_devices; i++) {
-		/* leave HPD alone; policy is controlled by sysfs */
-		if (cl_data->sensor_idx[i] == HPD_IDX)
-			continue;
-		if (cl_data->sensor_sts[i] == SENSOR_ENABLED) {
+		if (cl_data->sensor_idx[i] != HPD_IDX &&
+		    cl_data->sensor_sts[i] == SENSOR_ENABLED) {
 			mp2->mp2_ops->stop(mp2, cl_data->sensor_idx[i]);
 			status = amd_sfh_wait_for_response
 					(mp2, cl_data->sensor_idx[i], DISABLE_SENSOR);
@@ -318,52 +256,13 @@ static void amd_sfh_suspend(struct amd_mp2_dev *mp2)
 	amd_sfh_clear_intr(mp2);
 }
 
-void amd_sfh_toggle_hpd(struct amd_mp2_dev *mp2, bool enabled)
-{
-	struct amdtp_cl_data *cl_data = mp2->cl_data;
-	struct amd_mp2_sensor_info info;
-	int i, status;
-
-	if (mp2->dev_en.is_hpd_enabled == enabled)
-		return;
-
-	for (i = 0; i < cl_data->num_hid_devices; i++) {
-		if (cl_data->sensor_idx[i] != HPD_IDX)
-			continue;
-		info.sensor_idx = cl_data->sensor_idx[i];
-		if (enabled) {
-			mp2->mp2_ops->start(mp2, info);
-			status = amd_sfh_wait_for_response
-					(mp2, cl_data->sensor_idx[i], ENABLE_SENSOR);
-			if (status == 0)
-				status = SENSOR_ENABLED;
-			if (status == SENSOR_ENABLED)
-				cl_data->sensor_sts[i] = SENSOR_ENABLED;
-		} else {
-			mp2->mp2_ops->stop(mp2, cl_data->sensor_idx[i]);
-			status = amd_sfh_wait_for_response
-					(mp2, cl_data->sensor_idx[i], DISABLE_SENSOR);
-			if (status == 0)
-				status = SENSOR_DISABLED;
-			if (status != SENSOR_ENABLED)
-				cl_data->sensor_sts[i] = SENSOR_DISABLED;
-		}
-		dev_dbg(&mp2->pdev->dev, "toggle sid 0x%x (%s) status 0x%x\n",
-			cl_data->sensor_idx[i], get_sensor_name(cl_data->sensor_idx[i]),
-			cl_data->sensor_sts[i]);
-		break;
-	}
-	mp2->dev_en.is_hpd_enabled = enabled;
-}
-
 static void amd_mp2_pci_remove(void *privdata)
 {
 	struct amd_mp2_dev *mp2 = privdata;
 
-	sfh_deinit_emp2();
 	amd_sfh_hid_client_deinit(privdata);
 	mp2->mp2_ops->stop_all(mp2);
-	pcim_intx(mp2->pdev, false);
+	pci_intx(mp2->pdev, false);
 	amd_sfh_clear_intr(mp2);
 }
 
@@ -373,8 +272,8 @@ static void amd_sfh_set_ops(struct amd_mp2_dev *mp2)
 
 	sfh_interface_init(mp2);
 	mp2_ops = mp2->mp2_ops;
-	mp2_ops->clear_intr = amd_sfh_clear_intr_v2;
-	mp2_ops->init_intr = amd_sfh_irq_init_v2;
+	mp2_ops->clear_intr = amd_sfh_clear_intr_v2,
+	mp2_ops->init_intr = amd_sfh_irq_init_v2,
 	mp2_ops->suspend = amd_sfh_suspend;
 	mp2_ops->resume = amd_sfh_resume;
 	mp2_ops->remove = amd_mp2_pci_remove;
@@ -382,7 +281,7 @@ static void amd_sfh_set_ops(struct amd_mp2_dev *mp2)
 
 int amd_sfh1_1_init(struct amd_mp2_dev *mp2)
 {
-	u32 phy_base = readl(mp2->mmio + amd_get_c2p_val(mp2, 22));
+	u32 phy_base = readl(mp2->mmio + AMD_C2P_MSG(22));
 	struct device *dev = &mp2->pdev->dev;
 	struct sfh_base_info binfo;
 	int rc;
@@ -404,7 +303,7 @@ int amd_sfh1_1_init(struct amd_mp2_dev *mp2)
 
 	memcpy_fromio(&binfo, mp2->vsbase, sizeof(struct sfh_base_info));
 	if (binfo.sbase.fw_info.fw_ver == 0 || binfo.sbase.s_list.sl.sensors == 0) {
-		dev_dbg(dev, "No sensor registered\n");
+		dev_dbg(dev, "failed to get sensors\n");
 		return -EOPNOTSUPP;
 	}
 	dev_dbg(dev, "firmware version 0x%x\n", binfo.sbase.fw_info.fw_ver);
@@ -413,16 +312,13 @@ int amd_sfh1_1_init(struct amd_mp2_dev *mp2)
 
 	rc = amd_sfh_irq_init(mp2);
 	if (rc) {
-		sfh_deinit_emp2();
 		dev_err(dev, "amd_sfh_irq_init failed\n");
 		return rc;
 	}
 
 	rc = amd_sfh1_1_hid_client_init(mp2);
 	if (rc) {
-		sfh_deinit_emp2();
-		if ((rc != -ENODEV) && (rc != -EOPNOTSUPP))
-			dev_err(dev, "amd_sfh1_1_hid_client_init failed\n");
+		dev_err(dev, "amd_sfh1_1_hid_client_init failed\n");
 		return rc;
 	}
 

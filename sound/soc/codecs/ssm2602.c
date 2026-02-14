@@ -53,18 +53,6 @@ static const struct reg_default ssm2602_reg[SSM2602_CACHEREGNUM] = {
 	{ .reg = 0x09, .def = 0x0000 }
 };
 
-/*
- * ssm2602 register patch
- * Workaround for playback distortions after power up: activates digital
- * core, and then powers on output, DAC, and whole chip at the same time
- */
-
-static const struct reg_sequence ssm2602_patch[] = {
-	{ SSM2602_ACTIVE, 0x01 },
-	{ SSM2602_PWR,    0x07 },
-	{ SSM2602_RESET,  0x00 },
-};
-
 
 /*Appending several "None"s just for OSS mixer use*/
 static const char *ssm2602_input_select[] = {
@@ -292,12 +280,9 @@ static inline int ssm2602_get_coeff(int mclk, int rate)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(ssm2602_coeff_table); i++) {
-		if (ssm2602_coeff_table[i].rate == rate) {
-			if (ssm2602_coeff_table[i].mclk == mclk)
-				return ssm2602_coeff_table[i].srate;
-			if (ssm2602_coeff_table[i].mclk == mclk / 2)
-				return ssm2602_coeff_table[i].srate | SRATE_CORECLK_DIV2;
-		}
+		if (ssm2602_coeff_table[i].rate == rate &&
+			ssm2602_coeff_table[i].mclk == mclk)
+			return ssm2602_coeff_table[i].srate;
 	}
 	return -EINVAL;
 }
@@ -380,24 +365,18 @@ static int ssm2602_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		switch (freq) {
 		case 12288000:
 		case 18432000:
-		case 24576000:
-		case 36864000:
 			ssm2602->sysclk_constraints = &ssm2602_constraints_12288000;
 			break;
 		case 11289600:
 		case 16934400:
-		case 22579200:
-		case 33868800:
 			ssm2602->sysclk_constraints = &ssm2602_constraints_11289600;
 			break;
 		case 12000000:
-		case 24000000:
 			ssm2602->sysclk_constraints = NULL;
 			break;
 		default:
 			return -EINVAL;
 		}
-
 		ssm2602->sysclk = freq;
 	} else {
 		unsigned int mask;
@@ -562,7 +541,7 @@ static int ssm2602_resume(struct snd_soc_component *component)
 
 static int ssm2602_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	struct ssm2602_priv *ssm2602 = snd_soc_component_get_drvdata(component);
 	int ret;
 
@@ -587,7 +566,7 @@ static int ssm2602_component_probe(struct snd_soc_component *component)
 
 static int ssm2604_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	int ret;
 
 	ret = snd_soc_dapm_new_controls(dapm, ssm2604_dapm_widgets,
@@ -609,9 +588,6 @@ static int ssm260x_component_probe(struct snd_soc_component *component)
 		dev_err(component->dev, "Failed to issue reset: %d\n", ret);
 		return ret;
 	}
-
-	regmap_register_patch(ssm2602->regmap, ssm2602_patch,
-			      ARRAY_SIZE(ssm2602_patch));
 
 	/* set the update bits */
 	regmap_update_bits(ssm2602->regmap, SSM2602_LINVOL,

@@ -493,5 +493,4 @@ static void __exit exit_nls_maccyrillic(void)
 module_init(init_nls_maccyrillic)
 module_exit(exit_nls_maccyrillic)
 
-MODULE_DESCRIPTION("NLS Codepage maccyrillic");
 MODULE_LICENSE("Dual BSD/GPL");

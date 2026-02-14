@@ -51,7 +51,8 @@ static int ipc_trace_remove_buf_file_handler(struct dentry *dentry)
 }
 
 static int ipc_trace_subbuf_start_handler(struct rchan_buf *buf, void *subbuf,
-					  void *prev_subbuf)
+					  void *prev_subbuf,
+					  size_t prev_padding)
 {
 	if (relay_buf_full(buf)) {
 		pr_err_ratelimited("Relay_buf full dropping traces");

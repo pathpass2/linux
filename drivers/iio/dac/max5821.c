@@ -32,6 +32,7 @@ enum max5821_device_ids {
 
 struct max5821_data {
 	struct i2c_client	*client;
+	struct regulator	*vref_reg;
 	unsigned short		vref_mv;
 	bool			powerdown[MAX5821_MAX_DAC_CHANNELS];
 	u8			powerdown_mode[MAX5821_MAX_DAC_CHANNELS];
@@ -137,7 +138,7 @@ static const struct iio_chan_spec_ext_info max5821_ext_info[] = {
 	},
 	IIO_ENUM("powerdown_mode", IIO_SEPARATE, &max5821_powerdown_mode_enum),
 	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE, &max5821_powerdown_mode_enum),
-	{ }
+	{ },
 };
 
 #define MAX5821_CHANNEL(chan) {					\
@@ -294,6 +295,11 @@ static const struct iio_info max5821_info = {
 	.write_raw = max5821_write_raw,
 };
 
+static void max5821_regulator_disable(void *reg)
+{
+	regulator_disable(reg);
+}
+
 static int max5821_probe(struct i2c_client *client)
 {
 	const struct i2c_device_id *id = i2c_client_get_device_id(client);
@@ -315,10 +321,32 @@ static int max5821_probe(struct i2c_client *client)
 		data->powerdown_mode[tmp] = MAX5821_100KOHM_TO_GND;
 	}
 
-	ret = devm_regulator_get_enable_read_voltage(&client->dev, "vref");
-	if (ret)
-		return dev_err_probe(&client->dev, ret,
-				     "Failed to get vref regulator voltage\n");
+	data->vref_reg = devm_regulator_get(&client->dev, "vref");
+	if (IS_ERR(data->vref_reg))
+		return dev_err_probe(&client->dev, PTR_ERR(data->vref_reg),
+				     "Failed to get vref regulator\n");
+
+	ret = regulator_enable(data->vref_reg);
+	if (ret) {
+		dev_err(&client->dev,
+			"Failed to enable vref regulator: %d\n", ret);
+		return ret;
+	}
+
+	ret = devm_add_action_or_reset(&client->dev, max5821_regulator_disable,
+				       data->vref_reg);
+	if (ret) {
+		dev_err(&client->dev,
+			"Failed to add action to managed regulator: %d\n", ret);
+		return ret;
+	}
+
+	ret = regulator_get_voltage(data->vref_reg);
+	if (ret < 0) {
+		dev_err(&client->dev,
+			"Failed to get voltage on regulator: %d\n", ret);
+		return ret;
+	}
 
 	data->vref_mv = ret / 1000;
 
@@ -349,7 +377,7 @@ static struct i2c_driver max5821_driver = {
 		.of_match_table = max5821_of_match,
 		.pm     = pm_sleep_ptr(&max5821_pm_ops),
 	},
-	.probe		= max5821_probe,
+	.probe_new	= max5821_probe,
 	.id_table	= max5821_id,
 };
 module_i2c_driver(max5821_driver);

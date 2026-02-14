@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/nvmem-provider.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -21,7 +22,7 @@
  * LPC18xx OTP memory contains 4 banks with 4 32-bit words. Bank 0 starts
  * at offset 0 from the base.
  *
- * Bank 0 contains the part ID for Flashless devices and is reserved for
+ * Bank 0 contains the part ID for Flashless devices and is reseverd for
  * devices with Flash.
  * Bank 1/2 is generale purpose or AES key storage for secure devices.
  * Bank 3 contains control data, USB ID and generale purpose words.
@@ -67,12 +68,14 @@ static int lpc18xx_otp_probe(struct platform_device *pdev)
 {
 	struct nvmem_device *nvmem;
 	struct lpc18xx_otp *otp;
+	struct resource *res;
 
 	otp = devm_kzalloc(&pdev->dev, sizeof(*otp), GFP_KERNEL);
 	if (!otp)
 		return -ENOMEM;
 
-	otp->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	otp->base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(otp->base))
 		return PTR_ERR(otp->base);
 

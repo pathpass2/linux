@@ -124,8 +124,7 @@ static int e1000e_phc_get_syncdevicetime(ktime_t *device,
 	sys_cycles = er32(PLTSTMPH);
 	sys_cycles <<= 32;
 	sys_cycles |= er32(PLTSTMPL);
-	system->cycles = sys_cycles;
-	system->cs_id = CSID_X86_ART;
+	*system = convert_art_to_tsc(sys_cycles);
 
 	return 0;
 }
@@ -229,11 +228,14 @@ static void e1000e_systim_overflow_work(struct work_struct *work)
 						     systim_overflow_work.work);
 	struct e1000_hw *hw = &adapter->hw;
 	struct timespec64 ts;
+	u64 ns;
 
 	/* Update the timecounter */
-	ts = ns_to_timespec64(timecounter_read(&adapter->tc));
+	ns = timecounter_read(&adapter->tc);
 
-	e_dbg("SYSTIM overflow check at %ptSp\n", &ts);
+	ts = ns_to_timespec64(ns);
+	e_dbg("SYSTIM overflow check at %lld.%09lu\n",
+	      (long long) ts.tv_sec, ts.tv_nsec);
 
 	schedule_delayed_work(&adapter->systim_overflow_work,
 			      E1000_SYSTIM_OVERFLOW_PERIOD);
@@ -278,34 +280,23 @@ void e1000e_ptp_init(struct e1000_adapter *adapter)
 
 	switch (hw->mac.type) {
 	case e1000_pch2lan:
-		adapter->ptp_clock_info.max_adj = MAX_PPB_96MHZ;
-		break;
 	case e1000_pch_lpt:
-		if (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI)
-			adapter->ptp_clock_info.max_adj = MAX_PPB_96MHZ;
-		else
-			adapter->ptp_clock_info.max_adj = MAX_PPB_25MHZ;
-		break;
 	case e1000_pch_spt:
-		adapter->ptp_clock_info.max_adj = MAX_PPB_24MHZ;
-		break;
 	case e1000_pch_cnp:
 	case e1000_pch_tgp:
 	case e1000_pch_adp:
-	case e1000_pch_nvp:
-		if (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI)
-			adapter->ptp_clock_info.max_adj = MAX_PPB_24MHZ;
-		else
-			adapter->ptp_clock_info.max_adj = MAX_PPB_38400KHZ;
-		break;
 	case e1000_pch_mtp:
 	case e1000_pch_lnp:
 	case e1000_pch_ptp:
-		adapter->ptp_clock_info.max_adj = MAX_PPB_38400KHZ;
-		break;
+		if ((hw->mac.type < e1000_pch_lpt) ||
+		    (er32(TSYNCRXCTL) & E1000_TSYNCRXCTL_SYSCFI)) {
+			adapter->ptp_clock_info.max_adj = 24000000 - 1;
+			break;
+		}
+		fallthrough;
 	case e1000_82574:
 	case e1000_82583:
-		adapter->ptp_clock_info.max_adj = MAX_PPB_25MHZ;
+		adapter->ptp_clock_info.max_adj = 600000000 - 1;
 		break;
 	default:
 		break;

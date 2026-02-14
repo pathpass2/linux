@@ -9,7 +9,6 @@
 #include <linux/mm.h>
 #include <linux/interrupt.h>
 #include <linux/seq_file.h>
-#include <linux/proc_fs.h>
 #include <linux/debugfs.h>
 #include <linux/pfn.h>
 #include <linux/percpu.h>
@@ -32,6 +31,8 @@
 #include <asm/pgalloc.h>
 #include <asm/proto.h>
 #include <asm/memtype.h>
+#include <asm/hyperv-tlfs.h>
+#include <asm/mshyperv.h>
 
 #include "../mm_internal.h"
 
@@ -73,7 +74,6 @@ static DEFINE_SPINLOCK(cpa_lock);
 #define CPA_ARRAY 2
 #define CPA_PAGES_ARRAY 4
 #define CPA_NO_CHECK_ALIAS 8 /* Do not search for aliases */
-#define CPA_COLLAPSE 16 /* try to collapse large pages */
 
 static inline pgprot_t cachemode2pgprot(enum page_cache_mode pcm)
 {
@@ -106,18 +106,6 @@ static void split_page_count(int level)
 	direct_pages_count[level - 1] += PTRS_PER_PTE;
 }
 
-static void collapse_page_count(int level)
-{
-	direct_pages_count[level]++;
-	if (system_state == SYSTEM_RUNNING) {
-		if (level == PG_LEVEL_2M)
-			count_vm_event(DIRECT_MAP_LEVEL2_COLLAPSE);
-		else if (level == PG_LEVEL_1G)
-			count_vm_event(DIRECT_MAP_LEVEL3_COLLAPSE);
-	}
-	direct_pages_count[level - 1] -= PTRS_PER_PTE;
-}
-
 void arch_report_meminfo(struct seq_file *m)
 {
 	seq_printf(m, "DirectMap4k:    %8lu kB\n",
@@ -135,7 +123,6 @@ void arch_report_meminfo(struct seq_file *m)
 }
 #else
 static inline void split_page_count(int level) { }
-static inline void collapse_page_count(int level) { }
 #endif
 
 #ifdef CONFIG_X86_CPA_STATISTICS
@@ -225,13 +212,13 @@ within(unsigned long addr, unsigned long start, unsigned long end)
 	return addr >= start && addr < end;
 }
 
-#ifdef CONFIG_X86_64
-
 static inline int
 within_inclusive(unsigned long addr, unsigned long start, unsigned long end)
 {
 	return addr >= start && addr <= end;
 }
+
+#ifdef CONFIG_X86_64
 
 /*
  * The kernel image is mapped into two places in the virtual address space
@@ -244,10 +231,10 @@ within_inclusive(unsigned long addr, unsigned long start, unsigned long end)
  * points to #2, but almost all physical-to-virtual translations point to #1.
  *
  * This is so that we can have both a directmap of all physical memory *and*
- * take full advantage of the limited (s32) immediate addressing range (2G)
+ * take full advantage of the the limited (s32) immediate addressing range (2G)
  * of x86_64.
  *
- * See Documentation/arch/x86/x86_64/mm.rst for more detail.
+ * See Documentation/x86/x86_64/mm.rst for more detail.
  */
 
 static inline unsigned long highmap_start_pfn(void)
@@ -366,16 +353,16 @@ bool cpu_cache_has_invalidate_memregion(void)
 {
 	return !cpu_feature_enabled(X86_FEATURE_HYPERVISOR);
 }
-EXPORT_SYMBOL_NS_GPL(cpu_cache_has_invalidate_memregion, "DEVMEM");
+EXPORT_SYMBOL_NS_GPL(cpu_cache_has_invalidate_memregion, DEVMEM);
 
-int cpu_cache_invalidate_memregion(phys_addr_t start, size_t len)
+int cpu_cache_invalidate_memregion(int res_desc)
 {
 	if (WARN_ON_ONCE(!cpu_cache_has_invalidate_memregion()))
 		return -ENXIO;
 	wbinvd_on_all_cpus();
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(cpu_cache_invalidate_memregion, "DEVMEM");
+EXPORT_SYMBOL_NS_GPL(cpu_cache_invalidate_memregion, DEVMEM);
 #endif
 
 static void __cpa_flush_all(void *arg)
@@ -399,61 +386,34 @@ static void cpa_flush_all(unsigned long cache)
 	on_each_cpu(__cpa_flush_all, (void *) cache, 1);
 }
 
-static int collapse_large_pages(unsigned long addr, struct list_head *pgtables);
-
-static void cpa_collapse_large_pages(struct cpa_data *cpa)
+static void __cpa_flush_tlb(void *data)
 {
-	unsigned long start, addr, end;
-	struct ptdesc *ptdesc, *tmp;
-	LIST_HEAD(pgtables);
-	int collapsed = 0;
-	int i;
+	struct cpa_data *cpa = data;
+	unsigned int i;
 
-	if (cpa->flags & (CPA_PAGES_ARRAY | CPA_ARRAY)) {
-		for (i = 0; i < cpa->numpages; i++)
-			collapsed += collapse_large_pages(__cpa_addr(cpa, i),
-							  &pgtables);
-	} else {
-		addr = __cpa_addr(cpa, 0);
-		start = addr & PMD_MASK;
-		end = addr + PAGE_SIZE * cpa->numpages;
-
-		for (addr = start; within(addr, start, end); addr += PMD_SIZE)
-			collapsed += collapse_large_pages(addr, &pgtables);
-	}
-
-	if (!collapsed)
-		return;
-
-	flush_tlb_all();
-
-	list_for_each_entry_safe(ptdesc, tmp, &pgtables, pt_list) {
-		list_del(&ptdesc->pt_list);
-		pagetable_free(ptdesc);
-	}
+	for (i = 0; i < cpa->numpages; i++)
+		flush_tlb_one_kernel(fix_addr(__cpa_addr(cpa, i)));
 }
 
-static void cpa_flush(struct cpa_data *cpa, int cache)
+static void cpa_flush(struct cpa_data *data, int cache)
 {
-	unsigned long start, end;
+	struct cpa_data *cpa = data;
 	unsigned int i;
 
 	BUG_ON(irqs_disabled() && !early_boot_irqs_disabled);
 
 	if (cache && !static_cpu_has(X86_FEATURE_CLFLUSH)) {
 		cpa_flush_all(cache);
-		goto collapse_large_pages;
+		return;
 	}
 
-	start = fix_addr(__cpa_addr(cpa, 0));
-	end =   start + cpa->numpages * PAGE_SIZE;
-	if (cpa->force_flush_all)
-		end = TLB_FLUSH_ALL;
-
-	flush_tlb_kernel_range(start, end);
+	if (cpa->force_flush_all || cpa->numpages > tlb_single_page_flush_ceiling)
+		flush_tlb_all();
+	else
+		on_each_cpu(__cpa_flush_tlb, cpa, 1);
 
 	if (!cache)
-		goto collapse_large_pages;
+		return;
 
 	mb();
 	for (i = 0; i < cpa->numpages; i++) {
@@ -469,10 +429,6 @@ static void cpa_flush(struct cpa_data *cpa, int cache)
 			clflush_cache_range_opt((void *)fix_addr(addr), PAGE_SIZE);
 	}
 	mb();
-
-collapse_large_pages:
-	if (cpa->flags & CPA_COLLAPSE)
-		cpa_collapse_large_pages(cpa);
 }
 
 static bool overlaps(unsigned long r1_start, unsigned long r1_end,
@@ -662,8 +618,7 @@ static inline pgprot_t static_protections(pgprot_t prot, unsigned long start,
  * Validate strict W^X semantics.
  */
 static inline pgprot_t verify_rwx(pgprot_t old, pgprot_t new, unsigned long start,
-				  unsigned long pfn, unsigned long npg,
-				  bool nx, bool rw)
+				  unsigned long pfn, unsigned long npg)
 {
 	unsigned long end;
 
@@ -685,10 +640,6 @@ static inline pgprot_t verify_rwx(pgprot_t old, pgprot_t new, unsigned long star
 	if ((pgprot_val(new) & (_PAGE_RW | _PAGE_NX)) != _PAGE_RW)
 		return new;
 
-	/* Non-leaf translation entries can disable writing or execution. */
-	if (!rw || nx)
-		return new;
-
 	end = start + npg * PAGE_SIZE - 1;
 	WARN_ONCE(1, "CPA detected W^X violation: %016llx -> %016llx range: 0x%016lx - 0x%016lx PFN %lx\n",
 		  (unsigned long long)pgprot_val(old),
@@ -705,82 +656,56 @@ static inline pgprot_t verify_rwx(pgprot_t old, pgprot_t new, unsigned long star
 
 /*
  * Lookup the page table entry for a virtual address in a specific pgd.
- * Return a pointer to the entry (or NULL if the entry does not exist),
- * the level of the entry, and the effective NX and RW bits of all
- * page table levels.
- */
-pte_t *lookup_address_in_pgd_attr(pgd_t *pgd, unsigned long address,
-				  unsigned int *level, bool *nx, bool *rw)
-{
-	p4d_t *p4d;
-	pud_t *pud;
-	pmd_t *pmd;
-
-	*level = PG_LEVEL_256T;
-	*nx = false;
-	*rw = true;
-
-	if (pgd_none(*pgd))
-		return NULL;
-
-	*level = PG_LEVEL_512G;
-	*nx |= pgd_flags(*pgd) & _PAGE_NX;
-	*rw &= pgd_flags(*pgd) & _PAGE_RW;
-
-	p4d = p4d_offset(pgd, address);
-	if (p4d_none(*p4d))
-		return NULL;
-
-	if (p4d_leaf(*p4d) || !p4d_present(*p4d))
-		return (pte_t *)p4d;
-
-	*level = PG_LEVEL_1G;
-	*nx |= p4d_flags(*p4d) & _PAGE_NX;
-	*rw &= p4d_flags(*p4d) & _PAGE_RW;
-
-	pud = pud_offset(p4d, address);
-	if (pud_none(*pud))
-		return NULL;
-
-	if (pud_leaf(*pud) || !pud_present(*pud))
-		return (pte_t *)pud;
-
-	*level = PG_LEVEL_2M;
-	*nx |= pud_flags(*pud) & _PAGE_NX;
-	*rw &= pud_flags(*pud) & _PAGE_RW;
-
-	pmd = pmd_offset(pud, address);
-	if (pmd_none(*pmd))
-		return NULL;
-
-	if (pmd_leaf(*pmd) || !pmd_present(*pmd))
-		return (pte_t *)pmd;
-
-	*level = PG_LEVEL_4K;
-	*nx |= pmd_flags(*pmd) & _PAGE_NX;
-	*rw &= pmd_flags(*pmd) & _PAGE_RW;
-
-	return pte_offset_kernel(pmd, address);
-}
-
-/*
- * Lookup the page table entry for a virtual address in a specific pgd.
  * Return a pointer to the entry and the level of the mapping.
  */
 pte_t *lookup_address_in_pgd(pgd_t *pgd, unsigned long address,
 			     unsigned int *level)
 {
-	bool nx, rw;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
 
-	return lookup_address_in_pgd_attr(pgd, address, level, &nx, &rw);
+	*level = PG_LEVEL_NONE;
+
+	if (pgd_none(*pgd))
+		return NULL;
+
+	p4d = p4d_offset(pgd, address);
+	if (p4d_none(*p4d))
+		return NULL;
+
+	*level = PG_LEVEL_512G;
+	if (p4d_large(*p4d) || !p4d_present(*p4d))
+		return (pte_t *)p4d;
+
+	pud = pud_offset(p4d, address);
+	if (pud_none(*pud))
+		return NULL;
+
+	*level = PG_LEVEL_1G;
+	if (pud_large(*pud) || !pud_present(*pud))
+		return (pte_t *)pud;
+
+	pmd = pmd_offset(pud, address);
+	if (pmd_none(*pmd))
+		return NULL;
+
+	*level = PG_LEVEL_2M;
+	if (pmd_large(*pmd) || !pmd_present(*pmd))
+		return (pte_t *)pmd;
+
+	*level = PG_LEVEL_4K;
+
+	return pte_offset_kernel(pmd, address);
 }
 
 /*
  * Lookup the page table entry for a virtual address. Return a pointer
  * to the entry and the level of the mapping.
  *
- * Note: the function returns p4d, pud or pmd either when the entry is marked
- * large or when the present bit is not set. Otherwise it returns NULL.
+ * Note: We return pud and pmd either when the entry is marked large
+ * or when the present bit is not set. Otherwise we would return a
+ * pointer to a nonexisting mapping.
  */
 pte_t *lookup_address(unsigned long address, unsigned int *level)
 {
@@ -789,16 +714,13 @@ pte_t *lookup_address(unsigned long address, unsigned int *level)
 EXPORT_SYMBOL_GPL(lookup_address);
 
 static pte_t *_lookup_address_cpa(struct cpa_data *cpa, unsigned long address,
-				  unsigned int *level, bool *nx, bool *rw)
+				  unsigned int *level)
 {
-	pgd_t *pgd;
+	if (cpa->pgd)
+		return lookup_address_in_pgd(cpa->pgd + pgd_index(address),
+					       address, level);
 
-	if (!cpa->pgd)
-		pgd = pgd_offset_k(address);
-	else
-		pgd = cpa->pgd + pgd_index(address);
-
-	return lookup_address_in_pgd_attr(pgd, address, level, nx, rw);
+	return lookup_address(address, level);
 }
 
 /*
@@ -816,11 +738,11 @@ pmd_t *lookup_pmd_address(unsigned long address)
 		return NULL;
 
 	p4d = p4d_offset(pgd, address);
-	if (p4d_none(*p4d) || p4d_leaf(*p4d) || !p4d_present(*p4d))
+	if (p4d_none(*p4d) || p4d_large(*p4d) || !p4d_present(*p4d))
 		return NULL;
 
 	pud = pud_offset(p4d, address);
-	if (pud_none(*pud) || pud_leaf(*pud) || !pud_present(*pud))
+	if (pud_none(*pud) || pud_large(*pud) || !pud_present(*pud))
 		return NULL;
 
 	return pmd_offset(pud, address);
@@ -832,14 +754,10 @@ pmd_t *lookup_pmd_address(unsigned long address)
  * areas on 32-bit NUMA systems.  The percpu areas can
  * end up in this kind of memory, for instance.
  *
- * Note that as long as the PTEs are well-formed with correct PFNs, this
- * works without checking the PRESENT bit in the leaf PTE.  This is unlike
- * the similar vmalloc_to_page() and derivatives.  Callers may depend on
- * this behavior.
- *
- * This could be optimized, but it is only used in paths that are not perf
- * sensitive, and keeping it unoptimized should increase the testing coverage
- * for the more obscure platforms.
+ * This could be optimized, but it is only intended to be
+ * used at initialization time, and keeping it
+ * unoptimized should increase the testing coverage for
+ * the more obscure platforms.
  */
 phys_addr_t slow_virt_to_phys(void *__virt_addr)
 {
@@ -883,7 +801,7 @@ static void __set_pmd_pte(pte_t *kpte, unsigned long address, pte_t pte)
 	/* change init_mm */
 	set_pte_atomic(kpte, pte);
 #ifdef CONFIG_X86_32
-	{
+	if (!SHARED_KERNEL_PMD) {
 		struct page *page;
 
 		list_for_each_entry(page, &pgd_list, lru) {
@@ -926,13 +844,12 @@ static int __should_split_large_page(pte_t *kpte, unsigned long address,
 	pgprot_t old_prot, new_prot, req_prot, chk_prot;
 	pte_t new_pte, *tmp;
 	enum pg_level level;
-	bool nx, rw;
 
 	/*
 	 * Check for races, another CPU might have split this page
 	 * up already:
 	 */
-	tmp = _lookup_address_cpa(cpa, address, &level, &nx, &rw);
+	tmp = _lookup_address_cpa(cpa, address, &level);
 	if (tmp != kpte)
 		return 1;
 
@@ -1043,8 +960,7 @@ static int __should_split_large_page(pte_t *kpte, unsigned long address,
 	new_prot = static_protections(req_prot, lpaddr, old_pfn, numpages,
 				      psize, CPA_DETECT);
 
-	new_prot = verify_rwx(old_prot, new_prot, lpaddr, old_pfn, numpages,
-			      nx, rw);
+	new_prot = verify_rwx(old_prot, new_prot, lpaddr, old_pfn, numpages);
 
 	/*
 	 * If there is a conflict, split the large page.
@@ -1125,7 +1041,6 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 	pte_t *pbase = (pte_t *)page_address(base);
 	unsigned int i, level;
 	pgprot_t ref_prot;
-	bool nx, rw;
 	pte_t *tmp;
 
 	spin_lock(&pgd_lock);
@@ -1133,7 +1048,7 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 	 * Check for races, another CPU might have split this page
 	 * up for us already:
 	 */
-	tmp = _lookup_address_cpa(cpa, address, &level, &nx, &rw);
+	tmp = _lookup_address_cpa(cpa, address, &level);
 	if (tmp != kpte) {
 		spin_unlock(&pgd_lock);
 		return 1;
@@ -1162,8 +1077,8 @@ __split_large_page(struct cpa_data *cpa, pte_t *kpte, unsigned long address,
 		lpinc = PMD_SIZE;
 		/*
 		 * Clear the PSE flags if the PRESENT flag is not set
-		 * otherwise pmd_present() will return true even on a non
-		 * present pmd.
+		 * otherwise pmd_present/pmd_huge will return true
+		 * even on a non present pmd.
 		 */
 		if (!(pgprot_val(ref_prot) & _PAGE_PRESENT))
 			pgprot_val(ref_prot) &= ~_PAGE_PSE;
@@ -1242,164 +1157,6 @@ static int split_large_page(struct cpa_data *cpa, pte_t *kpte,
 	return 0;
 }
 
-static int collapse_pmd_page(pmd_t *pmd, unsigned long addr,
-			     struct list_head *pgtables)
-{
-	pmd_t _pmd, old_pmd;
-	pte_t *pte, first;
-	unsigned long pfn;
-	pgprot_t pgprot;
-	int i = 0;
-
-	if (!cpu_feature_enabled(X86_FEATURE_PSE))
-		return 0;
-
-	addr &= PMD_MASK;
-	pte = pte_offset_kernel(pmd, addr);
-	first = *pte;
-	pfn = pte_pfn(first);
-
-	/* Make sure alignment is suitable */
-	if (PFN_PHYS(pfn) & ~PMD_MASK)
-		return 0;
-
-	/* The page is 4k intentionally */
-	if (pte_flags(first) & _PAGE_KERNEL_4K)
-		return 0;
-
-	/* Check that the rest of PTEs are compatible with the first one */
-	for (i = 1, pte++; i < PTRS_PER_PTE; i++, pte++) {
-		pte_t entry = *pte;
-
-		if (!pte_present(entry))
-			return 0;
-		if (pte_flags(entry) != pte_flags(first))
-			return 0;
-		if (pte_pfn(entry) != pte_pfn(first) + i)
-			return 0;
-	}
-
-	old_pmd = *pmd;
-
-	/* Success: set up a large page */
-	pgprot = pgprot_4k_2_large(pte_pgprot(first));
-	pgprot_val(pgprot) |= _PAGE_PSE;
-	_pmd = pfn_pmd(pfn, pgprot);
-	set_pmd(pmd, _pmd);
-
-	/* Queue the page table to be freed after TLB flush */
-	list_add(&page_ptdesc(pmd_page(old_pmd))->pt_list, pgtables);
-
-	if (IS_ENABLED(CONFIG_X86_32)) {
-		struct page *page;
-
-		/* Update all PGD tables to use the same large page */
-		list_for_each_entry(page, &pgd_list, lru) {
-			pgd_t *pgd = (pgd_t *)page_address(page) + pgd_index(addr);
-			p4d_t *p4d = p4d_offset(pgd, addr);
-			pud_t *pud = pud_offset(p4d, addr);
-			pmd_t *pmd = pmd_offset(pud, addr);
-			/* Something is wrong if entries doesn't match */
-			if (WARN_ON(pmd_val(old_pmd) != pmd_val(*pmd)))
-				continue;
-			set_pmd(pmd, _pmd);
-		}
-	}
-
-	if (virt_addr_valid(addr) && pfn_range_is_mapped(pfn, pfn + 1))
-		collapse_page_count(PG_LEVEL_2M);
-
-	return 1;
-}
-
-static int collapse_pud_page(pud_t *pud, unsigned long addr,
-			     struct list_head *pgtables)
-{
-	unsigned long pfn;
-	pmd_t *pmd, first;
-	int i;
-
-	if (!direct_gbpages)
-		return 0;
-
-	addr &= PUD_MASK;
-	pmd = pmd_offset(pud, addr);
-	first = *pmd;
-
-	/*
-	 * To restore PUD page all PMD entries must be large and
-	 * have suitable alignment
-	 */
-	pfn = pmd_pfn(first);
-	if (!pmd_leaf(first) || (PFN_PHYS(pfn) & ~PUD_MASK))
-		return 0;
-
-	/*
-	 * To restore PUD page, all following PMDs must be compatible with the
-	 * first one.
-	 */
-	for (i = 1, pmd++; i < PTRS_PER_PMD; i++, pmd++) {
-		pmd_t entry = *pmd;
-
-		if (!pmd_present(entry) || !pmd_leaf(entry))
-			return 0;
-		if (pmd_flags(entry) != pmd_flags(first))
-			return 0;
-		if (pmd_pfn(entry) != pmd_pfn(first) + i * PTRS_PER_PTE)
-			return 0;
-	}
-
-	/* Restore PUD page and queue page table to be freed after TLB flush */
-	list_add(&page_ptdesc(pud_page(*pud))->pt_list, pgtables);
-	set_pud(pud, pfn_pud(pfn, pmd_pgprot(first)));
-
-	if (virt_addr_valid(addr) && pfn_range_is_mapped(pfn, pfn + 1))
-		collapse_page_count(PG_LEVEL_1G);
-
-	return 1;
-}
-
-/*
- * Collapse PMD and PUD pages in the kernel mapping around the address where
- * possible.
- *
- * Caller must flush TLB and free page tables queued on the list before
- * touching the new entries. CPU must not see TLB entries of different size
- * with different attributes.
- */
-static int collapse_large_pages(unsigned long addr, struct list_head *pgtables)
-{
-	int collapsed = 0;
-	pgd_t *pgd;
-	p4d_t *p4d;
-	pud_t *pud;
-	pmd_t *pmd;
-
-	addr &= PMD_MASK;
-
-	spin_lock(&pgd_lock);
-	pgd = pgd_offset_k(addr);
-	if (pgd_none(*pgd))
-		goto out;
-	p4d = p4d_offset(pgd, addr);
-	if (p4d_none(*p4d))
-		goto out;
-	pud = pud_offset(p4d, addr);
-	if (!pud_present(*pud) || pud_leaf(*pud))
-		goto out;
-	pmd = pmd_offset(pud, addr);
-	if (!pmd_present(*pmd) || pmd_leaf(*pmd))
-		goto out;
-
-	collapsed = collapse_pmd_page(pmd, addr, pgtables);
-	if (collapsed)
-		collapsed += collapse_pud_page(pud, addr, pgtables);
-
-out:
-	spin_unlock(&pgd_lock);
-	return collapsed;
-}
-
 static bool try_to_free_pte_page(pte_t *pte)
 {
 	int i;
@@ -1471,7 +1228,7 @@ static void unmap_pmd_range(pud_t *pud, unsigned long start, unsigned long end)
 	 * Try to unmap in 2M chunks.
 	 */
 	while (end - start >= PMD_SIZE) {
-		if (pmd_leaf(*pmd))
+		if (pmd_large(*pmd))
 			pmd_clear(pmd);
 		else
 			__unmap_pmd_range(pud, pmd, start, start + PMD_SIZE);
@@ -1516,7 +1273,7 @@ static void unmap_pud_range(p4d_t *p4d, unsigned long start, unsigned long end)
 	 */
 	while (end - start >= PUD_SIZE) {
 
-		if (pud_leaf(*pud))
+		if (pud_large(*pud))
 			pud_clear(pud);
 		else
 			unmap_pmd_range(pud, start, start + PUD_SIZE);
@@ -1832,11 +1589,10 @@ static int __change_page_attr(struct cpa_data *cpa, int primary)
 	int do_split, err;
 	unsigned int level;
 	pte_t *kpte, old_pte;
-	bool nx, rw;
 
 	address = __cpa_addr(cpa, cpa->curpage);
 repeat:
-	kpte = _lookup_address_cpa(cpa, address, &level, &nx, &rw);
+	kpte = _lookup_address_cpa(cpa, address, &level);
 	if (!kpte)
 		return __cpa_process_fault(cpa, address, primary);
 
@@ -1858,14 +1614,13 @@ repeat:
 		new_prot = static_protections(new_prot, address, pfn, 1, 0,
 					      CPA_PROTECT);
 
-		new_prot = verify_rwx(old_prot, new_prot, address, pfn, 1,
-				      nx, rw);
+		new_prot = verify_rwx(old_prot, new_prot, address, pfn, 1);
 
 		new_prot = pgprot_clear_protnone_bits(new_prot);
 
 		/*
 		 * We need to keep the pfn from the existing PTE,
-		 * after all we're only going to change its attributes
+		 * after all we're only going to change it's attributes
 		 * not the memory it points to
 		 */
 		new_pte = pfn_pte(pfn, new_prot);
@@ -2145,6 +1900,19 @@ static inline int cpa_clear_pages_array(struct page **pages, int numpages,
 		CPA_PAGES_ARRAY, pages);
 }
 
+/*
+ * __set_memory_prot is an internal helper for callers that have been passed
+ * a pgprot_t value from upper layers and a reservation has already been taken.
+ * If you want to set the pgprot to a specific page protocol, use the
+ * set_memory_xx() functions.
+ */
+int __set_memory_prot(unsigned long addr, int numpages, pgprot_t prot)
+{
+	return change_page_attr_set_clr(&addr, numpages, prot,
+					__pgprot(~pgprot_val(prot)), 0, 0,
+					NULL);
+}
+
 int _set_memory_uc(unsigned long addr, int numpages)
 {
 	/*
@@ -2271,14 +2039,18 @@ int set_mce_nospec(unsigned long pfn)
 		pr_warn("Could not invalidate pfn=0x%lx from 1:1 map\n", pfn);
 	return rc;
 }
-EXPORT_SYMBOL_GPL(set_mce_nospec);
+
+static int set_memory_p(unsigned long *addr, int numpages)
+{
+	return change_page_attr_set(addr, numpages, __pgprot(_PAGE_PRESENT), 0);
+}
 
 /* Restore full speculative operation to the pfn. */
 int clear_mce_nospec(unsigned long pfn)
 {
 	unsigned long addr = (unsigned long) pfn_to_kaddr(pfn);
 
-	return set_memory_p(addr, 1);
+	return set_memory_p(&addr, 1);
 }
 EXPORT_SYMBOL_GPL(clear_mce_nospec);
 #endif /* CONFIG_X86_64 */
@@ -2301,18 +2073,17 @@ int set_memory_nx(unsigned long addr, int numpages)
 
 int set_memory_ro(unsigned long addr, int numpages)
 {
-	return change_page_attr_clear(&addr, numpages, __pgprot(_PAGE_RW | _PAGE_DIRTY), 0);
+	return change_page_attr_clear(&addr, numpages, __pgprot(_PAGE_RW), 0);
 }
 
 int set_memory_rox(unsigned long addr, int numpages)
 {
-	pgprot_t clr = __pgprot(_PAGE_RW | _PAGE_DIRTY);
+	pgprot_t clr = __pgprot(_PAGE_RW);
 
 	if (__supported_pte_mask & _PAGE_NX)
 		clr.pgprot |= _PAGE_NX;
 
-	return change_page_attr_set_clr(&addr, numpages, __pgprot(0), clr, 0,
-					CPA_COLLAPSE, NULL);
+	return change_page_attr_clear(&addr, numpages, clr, 0);
 }
 
 int set_memory_rw(unsigned long addr, int numpages)
@@ -2332,15 +2103,9 @@ int set_memory_np_noalias(unsigned long addr, int numpages)
 					CPA_NO_CHECK_ALIAS, NULL);
 }
 
-int set_memory_p(unsigned long addr, int numpages)
-{
-	return change_page_attr_set(&addr, numpages, __pgprot(_PAGE_PRESENT), 0);
-}
-
 int set_memory_4k(unsigned long addr, int numpages)
 {
-	return change_page_attr_set_clr(&addr, numpages,
-					__pgprot(_PAGE_KERNEL_4K),
+	return change_page_attr_set_clr(&addr, numpages, __pgprot(0),
 					__pgprot(0), 1, 0, NULL);
 }
 
@@ -2386,9 +2151,7 @@ static int __set_memory_enc_pgtable(unsigned long addr, int numpages, bool enc)
 		cpa_flush(&cpa, x86_platform.guest.enc_cache_flush_required());
 
 	/* Notify hypervisor that we are about to set/clr encryption attribute. */
-	ret = x86_platform.guest.enc_status_change_prepare(addr, numpages, enc);
-	if (ret)
-		goto vmm_fail;
+	x86_platform.guest.enc_status_change_prepare(addr, numpages, enc);
 
 	ret = __change_page_attr_set_clr(&cpa, 1);
 
@@ -2401,65 +2164,24 @@ static int __set_memory_enc_pgtable(unsigned long addr, int numpages, bool enc)
 	 */
 	cpa_flush(&cpa, 0);
 
-	if (ret)
-		return ret;
-
 	/* Notify hypervisor that we have successfully set/clr encryption attribute. */
-	ret = x86_platform.guest.enc_status_change_finish(addr, numpages, enc);
-	if (ret)
-		goto vmm_fail;
-
-	return 0;
-
-vmm_fail:
-	WARN_ONCE(1, "CPA VMM failure to convert memory (addr=%p, numpages=%d) to %s: %d\n",
-		  (void *)addr, numpages, enc ? "private" : "shared", ret);
+	if (!ret) {
+		if (!x86_platform.guest.enc_status_change_finish(addr, numpages, enc))
+			ret = -EIO;
+	}
 
 	return ret;
-}
-
-/*
- * The lock serializes conversions between private and shared memory.
- *
- * It is taken for read on conversion. A write lock guarantees that no
- * concurrent conversions are in progress.
- */
-static DECLARE_RWSEM(mem_enc_lock);
-
-/*
- * Stop new private<->shared conversions.
- *
- * Taking the exclusive mem_enc_lock waits for in-flight conversions to complete.
- * The lock is not released to prevent new conversions from being started.
- */
-bool set_memory_enc_stop_conversion(void)
-{
-	/*
-	 * In a crash scenario, sleep is not allowed. Try to take the lock.
-	 * Failure indicates that there is a race with the conversion.
-	 */
-	if (oops_in_progress)
-		return down_write_trylock(&mem_enc_lock);
-
-	down_write(&mem_enc_lock);
-
-	return true;
 }
 
 static int __set_memory_enc_dec(unsigned long addr, int numpages, bool enc)
 {
-	int ret = 0;
+	if (hv_is_isolation_supported())
+		return hv_set_mem_host_visibility(addr, numpages, !enc);
 
-	if (cc_platform_has(CC_ATTR_MEM_ENCRYPT)) {
-		if (!down_read_trylock(&mem_enc_lock))
-			return -EBUSY;
+	if (cc_platform_has(CC_ATTR_MEM_ENCRYPT))
+		return __set_memory_enc_pgtable(addr, numpages, enc);
 
-		ret = __set_memory_enc_pgtable(addr, numpages, enc);
-
-		up_read(&mem_enc_lock);
-	}
-
-	return ret;
+	return 0;
 }
 
 int set_memory_encrypted(unsigned long addr, int numpages)
@@ -2613,7 +2335,7 @@ static int __set_pages_np(struct page *page, int numpages)
 				.pgd = NULL,
 				.numpages = numpages,
 				.mask_set = __pgprot(0),
-				.mask_clr = __pgprot(_PAGE_PRESENT | _PAGE_RW | _PAGE_DIRTY),
+				.mask_clr = __pgprot(_PAGE_PRESENT | _PAGE_RW),
 				.flags = CPA_NO_CHECK_ALIAS };
 
 	/*
@@ -2633,14 +2355,6 @@ int set_direct_map_invalid_noflush(struct page *page)
 int set_direct_map_default_noflush(struct page *page)
 {
 	return __set_pages_p(page, 1);
-}
-
-int set_direct_map_valid_noflush(struct page *page, unsigned nr, bool valid)
-{
-	if (valid)
-		return __set_pages_p(page, nr);
-
-	return __set_pages_np(page, nr);
 }
 
 #ifdef CONFIG_DEBUG_PAGEALLOC
@@ -2700,7 +2414,7 @@ int __init kernel_map_pages_in_pgd(pgd_t *pgd, u64 pfn, unsigned long address,
 		.pgd = pgd,
 		.numpages = numpages,
 		.mask_set = __pgprot(0),
-		.mask_clr = __pgprot(~page_flags & (_PAGE_NX|_PAGE_RW|_PAGE_DIRTY)),
+		.mask_clr = __pgprot(~page_flags & (_PAGE_NX|_PAGE_RW)),
 		.flags = CPA_NO_CHECK_ALIAS,
 	};
 
@@ -2734,7 +2448,7 @@ int __init kernel_unmap_pages_in_pgd(pgd_t *pgd, unsigned long address,
 	/*
 	 * The typical sequence for unmapping is to find a pte through
 	 * lookup_address_in_pgd() (ideally, it should never return NULL because
-	 * the address is already mapped) and change its protections. As pfn is
+	 * the address is already mapped) and change it's protections. As pfn is
 	 * the *target* of a mapping, it's not useful while unmapping.
 	 */
 	struct cpa_data cpa = {
@@ -2743,7 +2457,7 @@ int __init kernel_unmap_pages_in_pgd(pgd_t *pgd, unsigned long address,
 		.pgd		= pgd,
 		.numpages	= numpages,
 		.mask_set	= __pgprot(0),
-		.mask_clr	= __pgprot(_PAGE_PRESENT | _PAGE_RW | _PAGE_DIRTY),
+		.mask_clr	= __pgprot(_PAGE_PRESENT | _PAGE_RW),
 		.flags		= CPA_NO_CHECK_ALIAS,
 	};
 

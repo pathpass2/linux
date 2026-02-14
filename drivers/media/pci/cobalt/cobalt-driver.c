@@ -8,7 +8,6 @@
  *  All rights reserved.
  */
 
-#include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <media/i2c/adv7604.h>
 #include <media/i2c/adv7842.h>
@@ -44,7 +43,7 @@ module_param_named(ignore_err, cobalt_ignore_err, int, 0644);
 MODULE_PARM_DESC(ignore_err,
 	"If set then ignore missing i2c adapters/receivers. Default: 0\n");
 
-MODULE_AUTHOR("Hans Verkuil <hverkuil@kernel.org> & Morten Hestnes");
+MODULE_AUTHOR("Hans Verkuil <hans.verkuil@cisco.com> & Morten Hestnes");
 MODULE_DESCRIPTION("cobalt driver");
 MODULE_LICENSE("GPL");
 
@@ -211,17 +210,17 @@ void cobalt_pcie_status_show(struct cobalt *cobalt)
 	pcie_capability_read_word(pci_dev, PCI_EXP_LNKSTA, &stat);
 	cobalt_info("PCIe link capability 0x%08x: %s per lane and %u lanes\n",
 			capa, get_link_speed(capa),
-			FIELD_GET(PCI_EXP_LNKCAP_MLW, capa));
+			(capa & PCI_EXP_LNKCAP_MLW) >> 4);
 	cobalt_info("PCIe link control 0x%04x\n", ctrl);
 	cobalt_info("PCIe link status 0x%04x: %s per lane and %u lanes\n",
 		    stat, get_link_speed(stat),
-		    FIELD_GET(PCI_EXP_LNKSTA_NLW, stat));
+		    (stat & PCI_EXP_LNKSTA_NLW) >> 4);
 
 	/* Bus */
 	pcie_capability_read_dword(pci_bus_dev, PCI_EXP_LNKCAP, &capa);
 	cobalt_info("PCIe bus link capability 0x%08x: %s per lane and %u lanes\n",
 			capa, get_link_speed(capa),
-			FIELD_GET(PCI_EXP_LNKCAP_MLW, capa));
+			(capa & PCI_EXP_LNKCAP_MLW) >> 4);
 
 	/* Slot */
 	pcie_capability_read_dword(pci_dev, PCI_EXP_SLTCAP, &capa);
@@ -240,7 +239,7 @@ static unsigned pcie_link_get_lanes(struct cobalt *cobalt)
 	if (!pci_is_pcie(pci_dev))
 		return 0;
 	pcie_capability_read_word(pci_dev, PCI_EXP_LNKSTA, &link);
-	return FIELD_GET(PCI_EXP_LNKSTA_NLW, link);
+	return (link & PCI_EXP_LNKSTA_NLW) >> 4;
 }
 
 static unsigned pcie_bus_link_get_lanes(struct cobalt *cobalt)
@@ -251,7 +250,7 @@ static unsigned pcie_bus_link_get_lanes(struct cobalt *cobalt)
 	if (!pci_is_pcie(pci_dev))
 		return 0;
 	pcie_capability_read_dword(pci_dev, PCI_EXP_LNKCAP, &link);
-	return FIELD_GET(PCI_EXP_LNKCAP_MLW, link);
+	return (link & PCI_EXP_LNKCAP_MLW) >> 4;
 }
 
 static void msi_config_show(struct cobalt *cobalt, struct pci_dev *pci_dev)

@@ -15,7 +15,7 @@
 #define MCOUNT_ADDR ((unsigned long)(_mcount))
 #define MCOUNT_INSN_SIZE 4		/* sizeof mcount call */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 extern void _mcount(void);
 #define mcount _mcount
 
@@ -85,26 +85,6 @@ struct dyn_arch_ftrace {
 };
 
 #endif /*  CONFIG_DYNAMIC_FTRACE */
-
-void prepare_ftrace_return(unsigned long *parent_ra_addr, unsigned long self_ra,
-			   unsigned long fp);
-
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* CONFIG_FUNCTION_TRACER */
-
-#ifdef CONFIG_FTRACE_SYSCALLS
-#ifndef __ASSEMBLER__
-/*
- * Some syscall entry functions on mips start with "__sys_" (fork and clone,
- * for instance). We should also match the sys_ variant with those.
- */
-#define ARCH_HAS_SYSCALL_MATCH_SYM_NAME
-static inline bool arch_syscall_match_sym_name(const char *sym,
-					       const char *name)
-{
-	return !strcmp(sym, name) ||
-		(!strncmp(sym, "__sys_", 6) && !strcmp(sym + 6, name + 4));
-}
-#endif /* __ASSEMBLER__ */
-#endif /* CONFIG_FTRACE_SYSCALLS */
 #endif /* _ASM_MIPS_FTRACE_H */

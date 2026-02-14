@@ -40,7 +40,6 @@ static const struct of_device_id of_match_clk_mt6779_mfg[] = {
 		/* sentinel */
 	}
 };
-MODULE_DEVICE_TABLE(of, of_match_clk_mt6779_mfg);
 
 static struct platform_driver clk_mt6779_mfg_drv = {
 	.probe = mtk_clk_simple_probe,
@@ -52,6 +51,4 @@ static struct platform_driver clk_mt6779_mfg_drv = {
 };
 
 module_platform_driver(clk_mt6779_mfg_drv);
-
-MODULE_DESCRIPTION("MediaTek MT6779 GPU mfg clocks driver");
 MODULE_LICENSE("GPL");

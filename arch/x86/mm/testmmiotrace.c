@@ -144,4 +144,3 @@ static void __exit cleanup(void)
 module_init(init);
 module_exit(cleanup);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Test module for mmiotrace");

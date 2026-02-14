@@ -207,7 +207,7 @@ static int lx_pcm_open(struct snd_pcm_substream *substream)
 	int board_rate;
 
 	dev_dbg(chip->card->dev, "->lx_pcm_open\n");
-	guard(mutex)(&chip->setup_mutex);
+	mutex_lock(&chip->setup_mutex);
 
 	/* copy the struct snd_pcm_hardware struct */
 	runtime->hw = lx_caps;
@@ -218,7 +218,7 @@ static int lx_pcm_open(struct snd_pcm_substream *substream)
 					    SNDRV_PCM_HW_PARAM_PERIODS);
 	if (err < 0) {
 		dev_warn(chip->card->dev, "could not constrain periods\n");
-		return err;
+		goto exit;
 	}
 #endif
 
@@ -229,7 +229,7 @@ static int lx_pcm_open(struct snd_pcm_substream *substream)
 
 	if (err < 0) {
 		dev_warn(chip->card->dev, "could not constrain periods\n");
-		return err;
+		goto exit;
 	}
 
 	/* constrain period size */
@@ -240,7 +240,7 @@ static int lx_pcm_open(struct snd_pcm_substream *substream)
 	if (err < 0) {
 		dev_warn(chip->card->dev,
 			   "could not constrain period size\n");
-		return err;
+		goto exit;
 	}
 
 	snd_pcm_hw_constraint_step(runtime, 0,
@@ -249,8 +249,10 @@ static int lx_pcm_open(struct snd_pcm_substream *substream)
 	snd_pcm_set_sync(substream);
 	err = 0;
 
+exit:
 	runtime->private_data = chip;
 
+	mutex_unlock(&chip->setup_mutex);
 	dev_dbg(chip->card->dev, "<-lx_pcm_open, %d\n", err);
 	return err;
 }
@@ -273,8 +275,9 @@ static snd_pcm_uframes_t lx_pcm_stream_pointer(struct snd_pcm_substream
 
 	dev_dbg(chip->card->dev, "->lx_pcm_stream_pointer\n");
 
-	guard(mutex)(&chip->lock);
+	mutex_lock(&chip->lock);
 	pos = lx_stream->frame_pos * substream->runtime->period_size;
+	mutex_unlock(&chip->lock);
 
 	dev_dbg(chip->card->dev, "stream_pointer at %ld\n", pos);
 	return pos;
@@ -288,21 +291,21 @@ static int lx_pcm_prepare(struct snd_pcm_substream *substream)
 
 	dev_dbg(chip->card->dev, "->lx_pcm_prepare\n");
 
-	guard(mutex)(&chip->setup_mutex);
+	mutex_lock(&chip->setup_mutex);
 
 	if (chip->hardware_running[is_capture]) {
 		err = lx_hardware_stop(chip, substream);
 		if (err < 0) {
 			dev_err(chip->card->dev, "failed to stop hardware. "
 				   "Error code %d\n", err);
-			return err;
+			goto exit;
 		}
 
 		err = lx_hardware_close(chip, substream);
 		if (err < 0) {
 			dev_err(chip->card->dev, "failed to close hardware. "
 				   "Error code %d\n", err);
-			return err;
+			goto exit;
 		}
 	}
 
@@ -311,14 +314,14 @@ static int lx_pcm_prepare(struct snd_pcm_substream *substream)
 	if (err < 0) {
 		dev_err(chip->card->dev, "failed to open hardware. "
 			   "Error code %d\n", err);
-		return err;
+		goto exit;
 	}
 
 	err = lx_hardware_start(chip, substream);
 	if (err < 0) {
 		dev_err(chip->card->dev, "failed to start hardware. "
 			   "Error code %d\n", err);
-		return err;
+		goto exit;
 	}
 
 	chip->hardware_running[is_capture] = 1;
@@ -328,6 +331,8 @@ static int lx_pcm_prepare(struct snd_pcm_substream *substream)
 			chip->board_sample_rate = substream->runtime->rate;
 	}
 
+exit:
+	mutex_unlock(&chip->setup_mutex);
 	return err;
 }
 
@@ -338,13 +343,14 @@ static int lx_pcm_hw_params(struct snd_pcm_substream *substream,
 
 	dev_dbg(chip->card->dev, "->lx_pcm_hw_params\n");
 
-	guard(mutex)(&chip->setup_mutex);
+	mutex_lock(&chip->setup_mutex);
 
 	if (is_capture)
 		chip->capture_stream.stream = substream;
 	else
 		chip->playback_stream.stream = substream;
 
+	mutex_unlock(&chip->setup_mutex);
 	return 0;
 }
 
@@ -367,21 +373,21 @@ static int lx_pcm_hw_free(struct snd_pcm_substream *substream)
 	int is_capture = (substream->stream == SNDRV_PCM_STREAM_CAPTURE);
 
 	dev_dbg(chip->card->dev, "->lx_pcm_hw_free\n");
-	guard(mutex)(&chip->setup_mutex);
+	mutex_lock(&chip->setup_mutex);
 
 	if (chip->hardware_running[is_capture]) {
 		err = lx_hardware_stop(chip, substream);
 		if (err < 0) {
 			dev_err(chip->card->dev, "failed to stop hardware. "
 				   "Error code %d\n", err);
-			return err;
+			goto exit;
 		}
 
 		err = lx_hardware_close(chip, substream);
 		if (err < 0) {
 			dev_err(chip->card->dev, "failed to close hardware. "
 				   "Error code %d\n", err);
-			return err;
+			goto exit;
 		}
 
 		chip->hardware_running[is_capture] = 0;
@@ -392,7 +398,9 @@ static int lx_pcm_hw_free(struct snd_pcm_substream *substream)
 	else
 		chip->playback_stream.stream = NULL;
 
-	return 0;
+exit:
+	mutex_unlock(&chip->setup_mutex);
+	return err;
 }
 
 static void lx_trigger_start(struct lx6464es *chip, struct lx_stream *lx_stream)
@@ -478,7 +486,9 @@ static void lx_trigger_dispatch_stream(struct lx6464es *chip,
 static int lx_pcm_trigger_dispatch(struct lx6464es *chip,
 				   struct lx_stream *lx_stream, int cmd)
 {
-	guard(mutex)(&chip->lock);
+	int err = 0;
+
+	mutex_lock(&chip->lock);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 		lx_stream->status = LX_STREAM_STATUS_SCHEDULE_RUN;
@@ -489,13 +499,16 @@ static int lx_pcm_trigger_dispatch(struct lx6464es *chip,
 		break;
 
 	default:
-		return -EINVAL;
+		err = -EINVAL;
+		goto exit;
 	}
 
 	lx_trigger_dispatch_stream(chip, &chip->capture_stream);
 	lx_trigger_dispatch_stream(chip, &chip->playback_stream);
 
-	return 0;
+exit:
+	mutex_unlock(&chip->lock);
+	return err;
 }
 
 
@@ -801,7 +814,7 @@ static int lx_pcm_create(struct lx6464es *chip)
 
 	pcm->info_flags = 0;
 	pcm->nonatomic = true;
-	strscpy(pcm->name, card_name);
+	strcpy(pcm->name, card_name);
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV,
 				       &chip->pci->dev, size, size);
@@ -931,7 +944,7 @@ static int snd_lx6464es_create(struct snd_card *card,
 	mutex_init(&chip->setup_mutex);
 
 	/* request resources */
-	err = pcim_request_all_regions(pci, card_name);
+	err = pci_request_regions(pci, card_name);
 	if (err < 0)
 		return err;
 
@@ -1009,7 +1022,7 @@ static int snd_lx6464es_probe(struct pci_dev *pci,
 		goto error;
 	}
 
-	strscpy(card->driver, "LX6464ES");
+	strcpy(card->driver, "LX6464ES");
 	sprintf(card->id, "LX6464ES_%02X%02X%02X",
 		chip->mac_address[3], chip->mac_address[4], chip->mac_address[5]);
 

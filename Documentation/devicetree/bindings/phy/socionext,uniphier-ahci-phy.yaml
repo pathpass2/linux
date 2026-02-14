@@ -30,17 +30,13 @@ properties:
     minItems: 1
     maxItems: 2
 
-  clock-names:
-    minItems: 1
-    maxItems: 6
+  clock-names: true
 
   resets:
     minItems: 2
     maxItems: 6
 
-  reset-names:
-    minItems: 2
-    maxItems: 6
+  reset-names: true
 
 allOf:
   - if:

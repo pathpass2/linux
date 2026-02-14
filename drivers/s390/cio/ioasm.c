@@ -8,7 +8,6 @@
 #include <asm/asm-extable.h>
 #include <asm/chpid.h>
 #include <asm/schid.h>
-#include <asm/asm.h>
 #include <asm/crw.h>
 
 #include "ioasm.h"
@@ -19,20 +18,19 @@
 static inline int __stsch(struct subchannel_id schid, struct schib *addr)
 {
 	unsigned long r1 = *(unsigned int *)&schid;
-	int ccode, exception;
+	int ccode = -EIO;
 
-	exception = 1;
-	asm_inline volatile(
+	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	stsch	%[addr]\n"
-		"0:	lhi	%[exc],0\n"
+		"0:	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
 		"1:\n"
-		CC_IPM(cc)
 		EX_TABLE(0b, 1b)
-		: CC_OUT(cc, ccode), [addr] "=Q" (*addr), [exc] "+d" (exception)
+		: [cc] "+&d" (ccode), [addr] "=Q" (*addr)
 		: [r1] "d" (r1)
-		: CC_CLOBBER_LIST("1"));
-	return exception ? -EIO : CC_TRANSFORM(ccode);
+		: "cc", "1");
+	return ccode;
 }
 
 int stsch(struct subchannel_id schid, struct schib *addr)
@@ -49,20 +47,19 @@ EXPORT_SYMBOL(stsch);
 static inline int __msch(struct subchannel_id schid, struct schib *addr)
 {
 	unsigned long r1 = *(unsigned int *)&schid;
-	int ccode, exception;
+	int ccode = -EIO;
 
-	exception = 1;
-	asm_inline volatile(
+	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	msch	%[addr]\n"
-		"0:	lhi	%[exc],0\n"
+		"0:	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
 		"1:\n"
-		CC_IPM(cc)
 		EX_TABLE(0b, 1b)
-		: CC_OUT(cc, ccode), [exc] "+d" (exception)
+		: [cc] "+&d" (ccode)
 		: [r1] "d" (r1), [addr] "Q" (*addr)
-		: CC_CLOBBER_LIST("1"));
-	return exception ? -EIO : CC_TRANSFORM(ccode);
+		: "cc", "1");
+	return ccode;
 }
 
 int msch(struct subchannel_id schid, struct schib *addr)
@@ -83,11 +80,12 @@ static inline int __tsch(struct subchannel_id schid, struct irb *addr)
 	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	tsch	%[addr]\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, ccode), [addr] "=Q" (*addr)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28"
+		: [cc] "=&d" (ccode), [addr] "=Q" (*addr)
 		: [r1] "d" (r1)
-		: CC_CLOBBER_LIST("1"));
-	return CC_TRANSFORM(ccode);
+		: "cc", "1");
+	return ccode;
 }
 
 int tsch(struct subchannel_id schid, struct irb *addr)
@@ -103,20 +101,19 @@ int tsch(struct subchannel_id schid, struct irb *addr)
 static inline int __ssch(struct subchannel_id schid, union orb *addr)
 {
 	unsigned long r1 = *(unsigned int *)&schid;
-	int ccode, exception;
+	int ccode = -EIO;
 
-	exception = 1;
-	asm_inline volatile(
+	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	ssch	%[addr]\n"
-		"0:	lhi	%[exc],0\n"
+		"0:	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
 		"1:\n"
-		CC_IPM(cc)
 		EX_TABLE(0b, 1b)
-		: CC_OUT(cc, ccode), [exc] "+d" (exception)
+		: [cc] "+&d" (ccode)
 		: [r1] "d" (r1), [addr] "Q" (*addr)
-		: CC_CLOBBER_LIST("memory", "1"));
-	return CC_TRANSFORM(ccode);
+		: "cc", "memory", "1");
+	return ccode;
 }
 
 int ssch(struct subchannel_id schid, union orb *addr)
@@ -138,11 +135,12 @@ static inline int __csch(struct subchannel_id schid)
 	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	csch\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, ccode)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
+		: [cc] "=&d" (ccode)
 		: [r1] "d" (r1)
-		: CC_CLOBBER_LIST("1"));
-	return CC_TRANSFORM(ccode);
+		: "cc", "1");
+	return ccode;
 }
 
 int csch(struct subchannel_id schid)
@@ -162,11 +160,11 @@ int tpi(struct tpi_info *addr)
 
 	asm volatile(
 		"	tpi	%[addr]\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, ccode), [addr] "=Q" (*addr)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28"
+		: [cc] "=&d" (ccode), [addr] "=Q" (*addr)
 		:
-		: CC_CLOBBER);
-	ccode = CC_TRANSFORM(ccode);
+		: "cc");
 	trace_s390_cio_tpi(addr, ccode);
 
 	return ccode;
@@ -175,19 +173,17 @@ int tpi(struct tpi_info *addr)
 int chsc(void *chsc_area)
 {
 	typedef struct { char _[4096]; } addr_type;
-	int cc, exception;
+	int cc = -EIO;
 
-	exception = 1;
-	asm_inline volatile(
+	asm volatile(
 		"	.insn	rre,0xb25f0000,%[chsc_area],0\n"
-		"0:	lhi	%[exc],0\n"
+		"0:	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
 		"1:\n"
-		CC_IPM(cc)
 		EX_TABLE(0b, 1b)
-		: CC_OUT(cc, cc), "+m" (*(addr_type *)chsc_area), [exc] "+d" (exception)
+		: [cc] "+&d" (cc), "+m" (*(addr_type *)chsc_area)
 		: [chsc_area] "d" (chsc_area)
-		: CC_CLOBBER);
-	cc = exception ? -EIO : CC_TRANSFORM(cc);
+		: "cc");
 	trace_s390_cio_chsc(chsc_area, cc);
 
 	return cc;
@@ -202,11 +198,12 @@ static inline int __rsch(struct subchannel_id schid)
 	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	rsch\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, ccode)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
+		: [cc] "=&d" (ccode)
 		: [r1] "d" (r1)
-		: CC_CLOBBER_LIST("memory", "1"));
-	return CC_TRANSFORM(ccode);
+		: "cc", "memory", "1");
+	return ccode;
 }
 
 int rsch(struct subchannel_id schid)
@@ -227,11 +224,12 @@ static inline int __hsch(struct subchannel_id schid)
 	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	hsch\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, ccode)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
+		: [cc] "=&d" (ccode)
 		: [r1] "d" (r1)
-		: CC_CLOBBER_LIST("1"));
-	return CC_TRANSFORM(ccode);
+		: "cc", "1");
+	return ccode;
 }
 
 int hsch(struct subchannel_id schid)
@@ -253,11 +251,12 @@ static inline int __xsch(struct subchannel_id schid)
 	asm volatile(
 		"	lgr	1,%[r1]\n"
 		"	xsch\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, ccode)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
+		: [cc] "=&d" (ccode)
 		: [r1] "d" (r1)
-		: CC_CLOBBER_LIST("1"));
-	return CC_TRANSFORM(ccode);
+		: "cc", "1");
+	return ccode;
 }
 
 int xsch(struct subchannel_id schid)
@@ -276,11 +275,12 @@ static inline int __stcrw(struct crw *crw)
 
 	asm volatile(
 		"	stcrw	%[crw]\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, ccode), [crw] "=Q" (*crw)
+		"	ipm	%[cc]\n"
+		"	srl	%[cc],28\n"
+		: [cc] "=&d" (ccode), [crw] "=Q" (*crw)
 		:
-		: CC_CLOBBER);
-	return CC_TRANSFORM(ccode);
+		: "cc");
+	return ccode;
 }
 
 static inline int _stcrw(struct crw *crw)

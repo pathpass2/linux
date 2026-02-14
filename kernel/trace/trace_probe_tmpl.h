@@ -54,7 +54,7 @@ fetch_apply_bitfield(struct fetch_insn *code, void *buf)
  * If dest is NULL, don't store result and return required dynamic data size.
  */
 static int
-process_fetch_insn(struct fetch_insn *code, void *rec, void *edata,
+process_fetch_insn(struct fetch_insn *code, void *rec,
 		   void *dest, void *base);
 static nokprobe_inline int fetch_store_strlen(unsigned long addr);
 static nokprobe_inline int
@@ -156,11 +156,11 @@ stage3:
 			code++;
 			goto array;
 		case FETCH_OP_ST_USTRING:
-			ret = fetch_store_strlen_user(val + code->offset);
+			ret += fetch_store_strlen_user(val + code->offset);
 			code++;
 			goto array;
 		case FETCH_OP_ST_SYMSTR:
-			ret = fetch_store_symstrlen(val + code->offset);
+			ret += fetch_store_symstrlen(val + code->offset);
 			code++;
 			goto array;
 		default:
@@ -204,8 +204,6 @@ stage3:
 array:
 	/* the last stage: Loop on array */
 	if (code->op == FETCH_OP_LP_ARRAY) {
-		if (ret < 0)
-			ret = 0;
 		total += ret;
 		if (++i < code->param) {
 			code = s3;
@@ -232,7 +230,7 @@ array:
 
 /* Sum up total data length for dynamic arrays (strings) */
 static nokprobe_inline int
-__get_data_size(struct trace_probe *tp, void *regs, void *edata)
+__get_data_size(struct trace_probe *tp, struct pt_regs *regs)
 {
 	struct probe_arg *arg;
 	int i, len, ret = 0;
@@ -240,7 +238,7 @@ __get_data_size(struct trace_probe *tp, void *regs, void *edata)
 	for (i = 0; i < tp->nr_args; i++) {
 		arg = tp->args + i;
 		if (unlikely(arg->dynamic)) {
-			len = process_fetch_insn(arg->code, regs, edata, NULL, NULL);
+			len = process_fetch_insn(arg->code, regs, NULL, NULL);
 			if (len > 0)
 				ret += len;
 		}
@@ -251,7 +249,7 @@ __get_data_size(struct trace_probe *tp, void *regs, void *edata)
 
 /* Store the value of each argument */
 static nokprobe_inline void
-store_trace_args(void *data, struct trace_probe *tp, void *rec, void *edata,
+store_trace_args(void *data, struct trace_probe *tp, void *rec,
 		 int header_size, int maxlen)
 {
 	struct probe_arg *arg;
@@ -266,8 +264,10 @@ store_trace_args(void *data, struct trace_probe *tp, void *rec, void *edata,
 		/* Point the dynamic data area if needed */
 		if (unlikely(arg->dynamic))
 			*dl = make_data_loc(maxlen, dyndata - base);
-		ret = process_fetch_insn(arg->code, rec, edata, dl, base);
-		if (arg->dynamic && likely(ret > 0)) {
+		ret = process_fetch_insn(arg->code, rec, dl, base);
+		if (unlikely(ret < 0 && arg->dynamic)) {
+			*dl = make_data_loc(0, dyndata - base);
+		} else {
 			dyndata += ret;
 			maxlen -= ret;
 		}

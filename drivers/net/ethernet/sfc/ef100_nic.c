@@ -224,7 +224,7 @@ int efx_ef100_init_datapath_caps(struct efx_nic *efx)
 static int ef100_ev_probe(struct efx_channel *channel)
 {
 	/* Allocate an extra descriptor for the QMDA status completion entry */
-	return efx_nic_alloc_buffer(channel->efx, &channel->eventq,
+	return efx_nic_alloc_buffer(channel->efx, &channel->eventq.buf,
 				    (channel->eventq_mask + 2) *
 				    sizeof(efx_qword_t),
 				    GFP_KERNEL);
@@ -253,8 +253,6 @@ static void ef100_ev_read_ack(struct efx_channel *channel)
 		   efx_reg(channel->efx, ER_GZ_EVQ_INT_PRIME));
 }
 
-#define EFX_NAPI_MAX_TX 512
-
 static int ef100_ev_process(struct efx_channel *channel, int quota)
 {
 	struct efx_nic *efx = channel->efx;
@@ -262,7 +260,6 @@ static int ef100_ev_process(struct efx_channel *channel, int quota)
 	bool evq_phase, old_evq_phase;
 	unsigned int read_ptr;
 	efx_qword_t *p_event;
-	int spent_tx = 0;
 	int spent = 0;
 	bool ev_phase;
 	int ev_type;
@@ -298,9 +295,7 @@ static int ef100_ev_process(struct efx_channel *channel, int quota)
 			efx_mcdi_process_event(channel, p_event);
 			break;
 		case ESE_GZ_EF100_EV_TX_COMPLETION:
-			spent_tx += ef100_ev_tx(channel, p_event);
-			if (spent_tx >= EFX_NAPI_MAX_TX)
-				spent = quota;
+			ef100_ev_tx(channel, p_event);
 			break;
 		case ESE_GZ_EF100_EV_DRIVER:
 			netif_info(efx, drv, efx->net_dev,
@@ -583,7 +578,7 @@ static const struct efx_hw_stat_desc ef100_stat_desc[EF100_STAT_COUNT] = {
 	EFX_GENERIC_SW_STAT(rx_noskb_drops),
 };
 
-static size_t ef100_describe_stats(struct efx_nic *efx, u8 **names)
+static size_t ef100_describe_stats(struct efx_nic *efx, u8 *names)
 {
 	DECLARE_BITMAP(mask, EF100_STAT_COUNT) = {};
 
@@ -887,7 +882,8 @@ static int ef100_process_design_param(struct efx_nic *efx,
 	case ESE_EF100_DP_GZ_TSO_MAX_HDR_NUM_SEGS:
 		/* We always put HDR_NUM_SEGS=1 in our TSO descriptors */
 		if (!reader->value) {
-			pci_err(efx->pci_dev, "TSO_MAX_HDR_NUM_SEGS < 1\n");
+			netif_err(efx, probe, efx->net_dev,
+				  "TSO_MAX_HDR_NUM_SEGS < 1\n");
 			return -EOPNOTSUPP;
 		}
 		return 0;
@@ -900,28 +896,32 @@ static int ef100_process_design_param(struct efx_nic *efx,
 		 */
 		if (!reader->value || reader->value > EFX_MIN_DMAQ_SIZE ||
 		    EFX_MIN_DMAQ_SIZE % (u32)reader->value) {
-			pci_err(efx->pci_dev,
-				"%s size granularity is %llu, can't guarantee safety\n",
-				reader->type == ESE_EF100_DP_GZ_RXQ_SIZE_GRANULARITY ? "RXQ" : "TXQ",
-				reader->value);
+			netif_err(efx, probe, efx->net_dev,
+				  "%s size granularity is %llu, can't guarantee safety\n",
+				  reader->type == ESE_EF100_DP_GZ_RXQ_SIZE_GRANULARITY ? "RXQ" : "TXQ",
+				  reader->value);
 			return -EOPNOTSUPP;
 		}
 		return 0;
 	case ESE_EF100_DP_GZ_TSO_MAX_PAYLOAD_LEN:
 		nic_data->tso_max_payload_len = min_t(u64, reader->value,
 						      GSO_LEGACY_MAX_SIZE);
+		netif_set_tso_max_size(efx->net_dev,
+				       nic_data->tso_max_payload_len);
 		return 0;
 	case ESE_EF100_DP_GZ_TSO_MAX_PAYLOAD_NUM_SEGS:
 		nic_data->tso_max_payload_num_segs = min_t(u64, reader->value, 0xffff);
+		netif_set_tso_max_segs(efx->net_dev,
+				       nic_data->tso_max_payload_num_segs);
 		return 0;
 	case ESE_EF100_DP_GZ_TSO_MAX_NUM_FRAMES:
 		nic_data->tso_max_frames = min_t(u64, reader->value, 0xffff);
 		return 0;
 	case ESE_EF100_DP_GZ_COMPAT:
 		if (reader->value) {
-			pci_err(efx->pci_dev,
-				"DP_COMPAT has unknown bits %#llx, driver not compatible with this hw\n",
-				reader->value);
+			netif_err(efx, probe, efx->net_dev,
+				  "DP_COMPAT has unknown bits %#llx, driver not compatible with this hw\n",
+				  reader->value);
 			return -EOPNOTSUPP;
 		}
 		return 0;
@@ -941,10 +941,10 @@ static int ef100_process_design_param(struct efx_nic *efx,
 		 * So the value of this shouldn't matter.
 		 */
 		if (reader->value != ESE_EF100_DP_GZ_VI_STRIDES_DEFAULT)
-			pci_dbg(efx->pci_dev,
-				"NIC has other than default VI_STRIDES (mask "
-				"%#llx), early probing might use wrong one\n",
-				reader->value);
+			netif_dbg(efx, probe, efx->net_dev,
+				  "NIC has other than default VI_STRIDES (mask "
+				  "%#llx), early probing might use wrong one\n",
+				  reader->value);
 		return 0;
 	case ESE_EF100_DP_GZ_RX_MAX_RUNT:
 		/* Driver doesn't look at L2_STATUS:LEN_ERR bit, so we don't
@@ -956,9 +956,9 @@ static int ef100_process_design_param(struct efx_nic *efx,
 		/* Host interface says "Drivers should ignore design parameters
 		 * that they do not recognise."
 		 */
-		pci_dbg(efx->pci_dev,
-			"Ignoring unrecognised design parameter %u\n",
-			reader->type);
+		netif_dbg(efx, probe, efx->net_dev,
+			  "Ignoring unrecognised design parameter %u\n",
+			  reader->type);
 		return 0;
 	}
 }
@@ -994,13 +994,13 @@ static int ef100_check_design_params(struct efx_nic *efx)
 	 */
 	if (reader.state != EF100_TLV_TYPE) {
 		if (reader.state == EF100_TLV_TYPE_CONT)
-			pci_err(efx->pci_dev,
-				"truncated design parameter (incomplete type %u)\n",
-				reader.type);
+			netif_err(efx, probe, efx->net_dev,
+				  "truncated design parameter (incomplete type %u)\n",
+				  reader.type);
 		else
-			pci_err(efx->pci_dev,
-				"truncated design parameter %u\n",
-				reader.type);
+			netif_err(efx, probe, efx->net_dev,
+				  "truncated design parameter %u\n",
+				  reader.type);
 		rc = -EIO;
 	}
 out:
@@ -1189,7 +1189,7 @@ int ef100_probe_netdev_pf(struct efx_nic *efx)
 		net_dev->features |= NETIF_F_HW_TC;
 		efx->fixed_features |= NETIF_F_HW_TC;
 	}
-	return 0;
+	return rc;
 }
 
 int ef100_probe_vf(struct efx_nic *efx)

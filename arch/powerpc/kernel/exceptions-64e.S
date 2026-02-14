@@ -5,7 +5,6 @@
  *  Copyright (C) 2007 Ben. Herrenschmidt (benh@kernel.crashing.org), IBM Corp.
  */
 
-#include <linux/linkage.h>
 #include <linux/threads.h>
 #include <asm/reg.h>
 #include <asm/page.h>
@@ -14,6 +13,7 @@
 #include <asm/cputable.h>
 #include <asm/setup.h>
 #include <asm/thread_info.h>
+#include <asm/reg_a2.h>
 #include <asm/exception-64e.h>
 #include <asm/bug.h>
 #include <asm/irqflags.h>
@@ -66,7 +66,7 @@
 #define SPECIAL_EXC_LOAD(reg, name) \
 	ld	reg, (SPECIAL_EXC_##name * 8 + SPECIAL_EXC_FRAME_OFFS)(r1)
 
-SYM_CODE_START_LOCAL(special_reg_save)
+special_reg_save:
 	/*
 	 * We only need (or have stack space) to save this stuff if
 	 * we interrupted the kernel.
@@ -131,9 +131,8 @@ END_FTR_SECTION_IFSET(CPU_FTR_EMB_HV)
 	SPECIAL_EXC_STORE(r10,CSRR1)
 
 	blr
-SYM_CODE_END(special_reg_save)
 
-SYM_CODE_START_LOCAL(ret_from_level_except)
+ret_from_level_except:
 	ld	r3,_MSR(r1)
 	andi.	r3,r3,MSR_PR
 	beq	1f
@@ -207,7 +206,6 @@ END_FTR_SECTION_IFSET(CPU_FTR_EMB_HV)
 	mtxer	r11
 
 	blr
-SYM_CODE_END(ret_from_level_except)
 
 .macro ret_from_level srr0 srr1 paca_ex scratch
 	bl	ret_from_level_except
@@ -234,15 +232,13 @@ SYM_CODE_END(ret_from_level_except)
 	mfspr	r13,\scratch
 .endm
 
-SYM_CODE_START_LOCAL(ret_from_crit_except)
+ret_from_crit_except:
 	ret_from_level SPRN_CSRR0 SPRN_CSRR1 PACA_EXCRIT SPRN_SPRG_CRIT_SCRATCH
 	rfci
-SYM_CODE_END(ret_from_crit_except)
 
-SYM_CODE_START_LOCAL(ret_from_mc_except)
+ret_from_mc_except:
 	ret_from_level SPRN_MCSRR0 SPRN_MCSRR1 PACA_EXMC SPRN_SPRG_MC_SCRATCH
 	rfmci
-SYM_CODE_END(ret_from_mc_except)
 
 /* Exception prolog code for all exceptions */
 #define EXCEPTION_PROLOG(n, intnum, type, addition)	    		    \
@@ -485,8 +481,8 @@ interrupt_base_book3e:					/* fake trap */
 	EXCEPTION_STUB(0x160, decrementer)		/* 0x0900 */
 	EXCEPTION_STUB(0x180, fixed_interval)		/* 0x0980 */
 	EXCEPTION_STUB(0x1a0, watchdog)			/* 0x09f0 */
-	EXCEPTION_STUB(0x1c0, data_tlb_miss_bolted)
-	EXCEPTION_STUB(0x1e0, instruction_tlb_miss_bolted)
+	EXCEPTION_STUB(0x1c0, data_tlb_miss)
+	EXCEPTION_STUB(0x1e0, instruction_tlb_miss)
 	EXCEPTION_STUB(0x200, altivec_unavailable)
 	EXCEPTION_STUB(0x220, altivec_assist)
 	EXCEPTION_STUB(0x260, perfmon)
@@ -982,22 +978,20 @@ masked_interrupt_book3e_0x2c0:
  * r14 and r15 containing the fault address and error code, with the
  * original values stashed away in the PACA
  */
-SYM_CODE_START_LOCAL(storage_fault_common)
+storage_fault_common:
 	addi	r3,r1,STACK_INT_FRAME_REGS
 	bl	do_page_fault
 	b	interrupt_return
-SYM_CODE_END(storage_fault_common)
 
 /*
  * Alignment exception doesn't fit entirely in the 0x100 bytes so it
  * continues here.
  */
-SYM_CODE_START_LOCAL(alignment_more)
+alignment_more:
 	addi	r3,r1,STACK_INT_FRAME_REGS
 	bl	alignment_exception
 	REST_NVGPRS(r1)
 	b	interrupt_return
-SYM_CODE_END(alignment_more)
 
 /*
  * Trampolines used when spotting a bad kernel stack pointer in
@@ -1036,7 +1030,8 @@ BAD_STACK_TRAMPOLINE(0xe00)
 BAD_STACK_TRAMPOLINE(0xf00)
 BAD_STACK_TRAMPOLINE(0xf20)
 
-_GLOBAL(bad_stack_book3e)
+	.globl	bad_stack_book3e
+bad_stack_book3e:
 	/* XXX: Needs to make SPRN_SPRG_GEN depend on exception type */
 	mfspr	r10,SPRN_SRR0;		  /* read SRR0 before touching stack */
 	ld	r1,PACAEMERGSP(r13)
@@ -1290,7 +1285,8 @@ have_hes:
 	 * ever takes any parameters, the SCOM code must also be updated to
 	 * provide them.
 	 */
-_GLOBAL(a2_tlbinit_code_start)
+	.globl a2_tlbinit_code_start
+a2_tlbinit_code_start:
 
 	ori	r11,r3,MAS0_WQ_ALLWAYS
 	oris	r11,r11,MAS0_ESEL(3)@h /* Use way 3: workaround A2 erratum 376 */
@@ -1483,7 +1479,8 @@ _GLOBAL(book3e_secondary_thread_init)
 	mflr	r28
 	b	3b
 
-_GLOBAL(init_core_book3e)
+	.globl init_core_book3e
+init_core_book3e:
 	/* Establish the interrupt vector base */
 	tovirt(r2,r2)
 	LOAD_REG_ADDR(r3, interrupt_base_book3e)
@@ -1491,7 +1488,7 @@ _GLOBAL(init_core_book3e)
 	sync
 	blr
 
-SYM_CODE_START_LOCAL(init_thread_book3e)
+init_thread_book3e:
 	lis	r3,(SPRN_EPCR_ICM | SPRN_EPCR_GICM)@h
 	mtspr	SPRN_EPCR,r3
 
@@ -1505,7 +1502,6 @@ SYM_CODE_START_LOCAL(init_thread_book3e)
 	mtspr	SPRN_TSR,r3
 
 	blr
-SYM_CODE_END(init_thread_book3e)
 
 _GLOBAL(__setup_base_ivors)
 	SET_IVOR(0, 0x020) /* Critical Input */

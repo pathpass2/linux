@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/etherdevice.h>
 #include <linux/ctype.h>
-#include <linux/string.h>
 
 #include <scsi/fcoe_sysfs.h>
 #include <scsi/libfcoe.h>
@@ -45,8 +44,12 @@ MODULE_PARM_DESC(fcf_dev_loss_tmo,
  */
 #define fcoe_ctlr_id(x)				\
 	((x)->id)
+#define fcoe_ctlr_work_q_name(x)		\
+	((x)->work_q_name)
 #define fcoe_ctlr_work_q(x)			\
 	((x)->work_q)
+#define fcoe_ctlr_devloss_work_q_name(x)	\
+	((x)->devloss_work_q_name)
 #define fcoe_ctlr_devloss_work_q(x)		\
 	((x)->devloss_work_q)
 #define fcoe_ctlr_mode(x)			\
@@ -211,12 +214,24 @@ static const char *get_fcoe_##title##_name(enum table_type table_key)	\
 	return table[table_key];					\
 }
 
-static const char * const fip_conn_type_names[] = {
+static char *fip_conn_type_names[] = {
 	[ FIP_CONN_TYPE_UNKNOWN ] = "Unknown",
 	[ FIP_CONN_TYPE_FABRIC ]  = "Fabric",
 	[ FIP_CONN_TYPE_VN2VN ]   = "VN2VN",
 };
 fcoe_enum_name_search(ctlr_mode, fip_conn_type, fip_conn_type_names)
+
+static enum fip_conn_type fcoe_parse_mode(const char *buf)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(fip_conn_type_names); i++) {
+		if (strcasecmp(buf, fip_conn_type_names[i]) == 0)
+			return i;
+	}
+
+	return FIP_CONN_TYPE_UNKNOWN;
+}
 
 static char *fcf_state_names[] = {
 	[ FCOE_FCF_STATE_UNKNOWN ]      = "Unknown",
@@ -259,11 +274,17 @@ static ssize_t store_ctlr_mode(struct device *dev,
 			       const char *buf, size_t count)
 {
 	struct fcoe_ctlr_device *ctlr = dev_to_ctlr(dev);
-	int res;
+	char mode[FCOE_MAX_MODENAME_LEN + 1];
 
 	if (count > FCOE_MAX_MODENAME_LEN)
 		return -EINVAL;
 
+	strncpy(mode, buf, count);
+
+	if (mode[count - 1] == '\n')
+		mode[count - 1] = '\0';
+	else
+		mode[count] = '\0';
 
 	switch (ctlr->enabled) {
 	case FCOE_CTLR_ENABLED:
@@ -276,13 +297,12 @@ static ssize_t store_ctlr_mode(struct device *dev,
 			return -ENOTSUPP;
 		}
 
-		res = sysfs_match_string(fip_conn_type_names, buf);
-		if (res < 0 || res == FIP_CONN_TYPE_UNKNOWN) {
+		ctlr->mode = fcoe_parse_mode(mode);
+		if (ctlr->mode == FIP_CONN_TYPE_UNKNOWN) {
 			LIBFCOE_SYSFS_DBG(ctlr, "Unknown mode %s provided.\n",
 					  buf);
 			return -EINVAL;
 		}
-		ctlr->mode = res;
 
 		ctlr->f->set_fcoe_ctlr_mode(ctlr);
 		LIBFCOE_SYSFS_DBG(ctlr, "Mode changed to %s.\n", buf);
@@ -593,10 +613,10 @@ static const struct attribute_group *fcoe_fcf_attr_groups[] = {
 	NULL,
 };
 
-static const struct bus_type fcoe_bus_type;
+static struct bus_type fcoe_bus_type;
 
 static int fcoe_bus_match(struct device *dev,
-			  const struct device_driver *drv)
+			  struct device_driver *drv)
 {
 	if (dev->bus == &fcoe_bus_type)
 		return 1;
@@ -639,17 +659,17 @@ static const struct device_type fcoe_fcf_device_type = {
 	.release = fcoe_fcf_device_release,
 };
 
-static ssize_t ctlr_create_store(const struct bus_type *bus, const char *buf,
+static ssize_t ctlr_create_store(struct bus_type *bus, const char *buf,
 				 size_t count)
 {
-	return fcoe_ctlr_create_store(buf, count);
+	return fcoe_ctlr_create_store(bus, buf, count);
 }
 static BUS_ATTR_WO(ctlr_create);
 
-static ssize_t ctlr_destroy_store(const struct bus_type *bus, const char *buf,
+static ssize_t ctlr_destroy_store(struct bus_type *bus, const char *buf,
 				  size_t count)
 {
-	return fcoe_ctlr_destroy_store(buf, count);
+	return fcoe_ctlr_destroy_store(bus, buf, count);
 }
 static BUS_ATTR_WO(ctlr_destroy);
 
@@ -660,7 +680,7 @@ static struct attribute *fcoe_bus_attrs[] = {
 };
 ATTRIBUTE_GROUPS(fcoe_bus);
 
-static const struct bus_type fcoe_bus_type = {
+static struct bus_type fcoe_bus_type = {
 	.name = "fcoe",
 	.match = &fcoe_bus_match,
 	.bus_groups = fcoe_bus_groups,
@@ -793,14 +813,18 @@ struct fcoe_ctlr_device *fcoe_ctlr_device_add(struct device *parent,
 
 	ctlr->fcf_dev_loss_tmo = fcoe_fcf_dev_loss_tmo;
 
-	ctlr->work_q = alloc_ordered_workqueue("ctlr_wq_%d", WQ_MEM_RECLAIM,
-					       ctlr->id);
+	snprintf(ctlr->work_q_name, sizeof(ctlr->work_q_name),
+		 "ctlr_wq_%d", ctlr->id);
+	ctlr->work_q = create_singlethread_workqueue(
+		ctlr->work_q_name);
 	if (!ctlr->work_q)
 		goto out_del;
 
-	ctlr->devloss_work_q = alloc_ordered_workqueue("ctlr_dl_wq_%d",
-						       WQ_MEM_RECLAIM,
-						       ctlr->id);
+	snprintf(ctlr->devloss_work_q_name,
+		 sizeof(ctlr->devloss_work_q_name),
+		 "ctlr_dl_wq_%d", ctlr->id);
+	ctlr->devloss_work_q = create_singlethread_workqueue(
+		ctlr->devloss_work_q_name);
 	if (!ctlr->devloss_work_q)
 		goto out_del_q;
 

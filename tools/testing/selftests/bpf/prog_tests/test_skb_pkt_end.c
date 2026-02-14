@@ -11,7 +11,6 @@ static int sanity_run(struct bpf_program *prog)
 		.data_in = &pkt_v4,
 		.data_size_in = sizeof(pkt_v4),
 		.repeat = 1,
-		.flags = BPF_F_TEST_SKB_CHECKSUM_COMPLETE,
 	);
 
 	prog_fd = bpf_program__fd(prog);

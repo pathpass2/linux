@@ -8,7 +8,6 @@
  *     Jasper St. Pierre <jstpierre@mecheye.net>
  */
 
-#include <linux/aperture.h>
 #include <linux/component.h>
 #include <linux/module.h>
 #include <linux/of_graph.h>
@@ -16,10 +15,10 @@
 #include <linux/platform_device.h>
 #include <linux/soc/amlogic/meson-canvas.h>
 
-#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_aperture.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_dma.h>
+#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_modeset_helper_vtables.h>
@@ -35,7 +34,6 @@
 #include "meson_registers.h"
 #include "meson_encoder_cvbs.h"
 #include "meson_encoder_hdmi.h"
-#include "meson_encoder_dsi.h"
 #include "meson_viu.h"
 #include "meson_vpp.h"
 #include "meson_rdma.h"
@@ -99,12 +97,12 @@ static const struct drm_driver meson_driver = {
 
 	/* DMA Ops */
 	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(meson_dumb_create),
-	DRM_FBDEV_DMA_DRIVER_OPS,
 
 	/* Misc */
 	.fops			= &fops,
 	.name			= DRIVER_NAME,
 	.desc			= DRIVER_DESC,
+	.date			= "20161109",
 	.major			= 1,
 	.minor			= 0,
 };
@@ -127,7 +125,7 @@ static bool meson_vpu_has_available_connectors(struct device *dev)
 	return false;
 }
 
-static const struct regmap_config meson_regmap_config = {
+static struct regmap_config meson_regmap_config = {
 	.reg_bits       = 32,
 	.val_bits       = 32,
 	.reg_stride     = 4,
@@ -169,7 +167,7 @@ static const struct meson_drm_soc_attr meson_drm_soc_attrs[] = {
 	/* S805X/S805Y HDMI PLL won't lock for HDMI PHY freq > 1,65GHz */
 	{
 		.limits = {
-			.max_hdmi_phy_freq = 1650000000,
+			.max_hdmi_phy_freq = 1650000,
 		},
 		.attrs = (const struct soc_device_attribute []) {
 			{ .soc_id = "GXL (S805*)", },
@@ -251,20 +249,29 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	if (ret)
 		goto free_drm;
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_0);
-	if (ret)
-		goto free_canvas_osd1;
+	if (ret) {
+		meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
+		goto free_drm;
+	}
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_1);
-	if (ret)
-		goto free_canvas_vd1_0;
+	if (ret) {
+		meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
+		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
+		goto free_drm;
+	}
 	ret = meson_canvas_alloc(priv->canvas, &priv->canvas_id_vd1_2);
-	if (ret)
-		goto free_canvas_vd1_1;
+	if (ret) {
+		meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
+		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
+		meson_canvas_free(priv->canvas, priv->canvas_id_vd1_1);
+		goto free_drm;
+	}
 
 	priv->vsync_irq = platform_get_irq(pdev, 0);
 
 	ret = drm_vblank_init(drm, 1);
 	if (ret)
-		goto free_canvas_vd1_2;
+		goto free_drm;
 
 	/* Assign limits per soc revision/package */
 	for (i = 0 ; i < ARRAY_SIZE(meson_drm_soc_attrs) ; ++i) {
@@ -278,13 +285,13 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	 * Remove early framebuffers (ie. simplefb). The framebuffer can be
 	 * located anywhere in RAM
 	 */
-	ret = aperture_remove_all_conflicting_devices(meson_driver.name);
+	ret = drm_aperture_remove_framebuffers(false, &meson_driver);
 	if (ret)
-		goto free_canvas_vd1_2;
+		goto free_drm;
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
-		goto free_canvas_vd1_2;
+		goto free_drm;
 	drm->mode_config.max_width = 3840;
 	drm->mode_config.max_height = 2160;
 	drm->mode_config.funcs = &meson_mode_config_funcs;
@@ -299,50 +306,42 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	if (priv->afbcd.ops) {
 		ret = priv->afbcd.ops->init(priv);
 		if (ret)
-			goto free_canvas_vd1_2;
+			goto free_drm;
 	}
 
 	/* Encoder Initialization */
 
-	ret = meson_encoder_cvbs_probe(priv);
+	ret = meson_encoder_cvbs_init(priv);
 	if (ret)
 		goto exit_afbcd;
 
 	if (has_components) {
-		ret = component_bind_all(dev, drm);
+		ret = component_bind_all(drm->dev, drm);
 		if (ret) {
 			dev_err(drm->dev, "Couldn't bind all components\n");
-			/* Do not try to unbind */
-			has_components = false;
 			goto exit_afbcd;
 		}
 	}
 
-	ret = meson_encoder_hdmi_probe(priv);
+	ret = meson_encoder_hdmi_init(priv);
 	if (ret)
-		goto exit_afbcd;
-
-	if (meson_vpu_is_compatible(priv, VPU_COMPATIBLE_G12A)) {
-		ret = meson_encoder_dsi_probe(priv);
-		if (ret)
-			goto exit_afbcd;
-	}
+		goto unbind_all;
 
 	ret = meson_plane_create(priv);
 	if (ret)
-		goto exit_afbcd;
+		goto unbind_all;
 
 	ret = meson_overlay_create(priv);
 	if (ret)
-		goto exit_afbcd;
+		goto unbind_all;
 
 	ret = meson_crtc_create(priv);
 	if (ret)
-		goto exit_afbcd;
+		goto unbind_all;
 
 	ret = request_irq(priv->vsync_irq, meson_irq, 0, drm->driver->name, drm);
 	if (ret)
-		goto exit_afbcd;
+		goto unbind_all;
 
 	drm_mode_config_reset(drm);
 
@@ -354,32 +353,20 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	if (ret)
 		goto uninstall_irq;
 
-	drm_client_setup(drm, NULL);
+	drm_fbdev_generic_setup(drm, 32);
 
 	return 0;
 
 uninstall_irq:
 	free_irq(priv->vsync_irq, drm);
+unbind_all:
+	if (has_components)
+		component_unbind_all(drm->dev, drm);
 exit_afbcd:
 	if (priv->afbcd.ops)
 		priv->afbcd.ops->exit(priv);
-free_canvas_vd1_2:
-	meson_canvas_free(priv->canvas, priv->canvas_id_vd1_2);
-free_canvas_vd1_1:
-	meson_canvas_free(priv->canvas, priv->canvas_id_vd1_1);
-free_canvas_vd1_0:
-	meson_canvas_free(priv->canvas, priv->canvas_id_vd1_0);
-free_canvas_osd1:
-	meson_canvas_free(priv->canvas, priv->canvas_id_osd1);
 free_drm:
 	drm_dev_put(drm);
-
-	meson_encoder_dsi_remove(priv);
-	meson_encoder_hdmi_remove(priv);
-	meson_encoder_cvbs_remove(priv);
-
-	if (has_components)
-		component_unbind_all(dev, drm);
 
 	return ret;
 }
@@ -407,7 +394,6 @@ static void meson_drv_unbind(struct device *dev)
 	free_irq(priv->vsync_irq, drm);
 	drm_dev_put(drm);
 
-	meson_encoder_dsi_remove(priv);
 	meson_encoder_hdmi_remove(priv);
 	meson_encoder_cvbs_remove(priv);
 
@@ -460,17 +446,10 @@ static void meson_drv_shutdown(struct platform_device *pdev)
 	drm_atomic_helper_shutdown(priv->drm);
 }
 
-/*
- * Only devices to use as components
- * TOFIX: get rid of components when we can finally
- * get meson_dx_hdmi to stop using the meson_drm
- * private structure for HHI registers.
- */
-static const struct of_device_id components_dev_match[] = {
-	{ .compatible = "amlogic,meson-gxbb-dw-hdmi" },
-	{ .compatible = "amlogic,meson-gxl-dw-hdmi" },
-	{ .compatible = "amlogic,meson-gxm-dw-hdmi" },
-	{ .compatible = "amlogic,meson-g12a-dw-hdmi" },
+/* Possible connectors nodes to ignore */
+static const struct of_device_id connectors_match[] = {
+	{ .compatible = "composite-video-connector" },
+	{ .compatible = "svideo-connector" },
 	{}
 };
 
@@ -488,12 +467,17 @@ static int meson_drv_probe(struct platform_device *pdev)
 			continue;
 		}
 
-		if (of_match_node(components_dev_match, remote)) {
-			component_match_add(&pdev->dev, &match, component_compare_of, remote);
-
-			dev_dbg(&pdev->dev, "parent %pOF remote match add %pOF parent %s\n",
-				np, remote, dev_name(&pdev->dev));
+		/* If an analog connector is detected, count it as an output */
+		if (of_match_node(connectors_match, remote)) {
+			++count;
+			of_node_put(remote);
+			continue;
 		}
+
+		dev_dbg(&pdev->dev, "parent %pOF remote match add %pOF parent %s\n",
+			np, remote, dev_name(&pdev->dev));
+
+		component_match_add(&pdev->dev, &match, component_compare_of, remote);
 
 		of_node_put(remote);
 
@@ -516,9 +500,11 @@ static int meson_drv_probe(struct platform_device *pdev)
 	return 0;
 };
 
-static void meson_drv_remove(struct platform_device *pdev)
+static int meson_drv_remove(struct platform_device *pdev)
 {
 	component_master_del(&pdev->dev, &meson_drv_master_ops);
+
+	return 0;
 }
 
 static struct meson_drm_match_data meson_drm_gxbb_data = {

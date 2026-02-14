@@ -119,8 +119,6 @@ vmci_transport_packet_init(struct vmci_transport_packet *pkt,
 			   u16 proto,
 			   struct vmci_handle handle)
 {
-	memset(pkt, 0, sizeof(*pkt));
-
 	/* We register the stream control handler as an any cid handle so we
 	 * must always send from a source address of VMADDR_CID_ANY
 	 */
@@ -133,6 +131,8 @@ vmci_transport_packet_init(struct vmci_transport_packet *pkt,
 	pkt->type = type;
 	pkt->src_port = src->svm_port;
 	pkt->dst_port = dst->svm_port;
+	memset(&pkt->proto, 0, sizeof(pkt->proto));
+	memset(&pkt->_reserved2, 0, sizeof(pkt->_reserved2));
 
 	switch (pkt->type) {
 	case VMCI_TRANSPORT_PACKET_TYPE_INVALID:
@@ -161,7 +161,7 @@ vmci_transport_packet_init(struct vmci_transport_packet *pkt,
 
 	case VMCI_TRANSPORT_PACKET_TYPE_WAITING_READ:
 	case VMCI_TRANSPORT_PACKET_TYPE_WAITING_WRITE:
-		pkt->u.wait = *wait;
+		memcpy(&pkt->u.wait, wait, sizeof(pkt->u.wait));
 		break;
 
 	case VMCI_TRANSPORT_PACKET_TYPE_REQUEST2:
@@ -646,16 +646,12 @@ static int vmci_transport_recv_dgram_cb(void *data, struct vmci_datagram *dg)
 	return VMCI_SUCCESS;
 }
 
-static bool vmci_transport_stream_allow(struct vsock_sock *vsk, u32 cid,
-					u32 port)
+static bool vmci_transport_stream_allow(u32 cid, u32 port)
 {
 	static const u32 non_socket_contexts[] = {
 		VMADDR_CID_LOCAL,
 	};
 	int i;
-
-	if (!vsock_net_mode_global(vsk))
-		return false;
 
 	BUILD_BUG_ON(sizeof(cid) != sizeof(*non_socket_contexts));
 
@@ -686,10 +682,12 @@ static int vmci_transport_recv_stream_cb(void *data, struct vmci_datagram *dg)
 	err = VMCI_SUCCESS;
 	bh_process_pkt = false;
 
-	/* Ignore incoming packets from resources that aren't vsock
-	 * implementations.
+	/* Ignore incoming packets from contexts without sockets, or resources
+	 * that aren't vsock implementations.
 	 */
-	if (vmci_transport_peer_rid(dg->src.context) != dg->src.resource)
+
+	if (!vmci_transport_stream_allow(dg->src.context, -1)
+	    || vmci_transport_peer_rid(dg->src.context) != dg->src.resource)
 		return VMCI_ERROR_NO_ACCESS;
 
 	if (VMCI_DG_SIZE(dg) < sizeof(*pkt))
@@ -747,12 +745,6 @@ static int vmci_transport_recv_stream_cb(void *data, struct vmci_datagram *dg)
 	 */
 	vsk = vsock_sk(sk);
 	if (!vmci_transport_allow_dgram(vsk, pkt->dg.src.context)) {
-		err = VMCI_ERROR_NO_ACCESS;
-		goto out;
-	}
-
-	/* Ignore incoming packets from contexts without sockets. */
-	if (!vmci_transport_stream_allow(vsk, dg->src.context, -1)) {
 		err = VMCI_ERROR_NO_ACCESS;
 		goto out;
 	}
@@ -1792,12 +1784,8 @@ out:
 	return err;
 }
 
-static bool vmci_transport_dgram_allow(struct vsock_sock *vsk, u32 cid,
-				       u32 port)
+static bool vmci_transport_dgram_allow(u32 cid, u32 port)
 {
-	if (!vsock_net_mode_global(vsk))
-		return false;
-
 	if (cid == VMADDR_CID_HYPERVISOR) {
 		/* Registrations of PBRPC Servers do not modify VMX/Hypervisor
 		 * state and are allowed.
@@ -1843,17 +1831,10 @@ static ssize_t vmci_transport_stream_dequeue(
 	size_t len,
 	int flags)
 {
-	ssize_t err;
-
 	if (flags & MSG_PEEK)
-		err = vmci_qpair_peekv(vmci_trans(vsk)->qpair, msg, len, 0);
+		return vmci_qpair_peekv(vmci_trans(vsk)->qpair, msg, len, 0);
 	else
-		err = vmci_qpair_dequev(vmci_trans(vsk)->qpair, msg, len, 0);
-
-	if (err < 0)
-		err = -ENOMEM;
-
-	return err;
+		return vmci_qpair_dequev(vmci_trans(vsk)->qpair, msg, len, 0);
 }
 
 static ssize_t vmci_transport_stream_enqueue(
@@ -1861,13 +1842,7 @@ static ssize_t vmci_transport_stream_enqueue(
 	struct msghdr *msg,
 	size_t len)
 {
-	ssize_t err;
-
-	err = vmci_qpair_enquev(vmci_trans(vsk)->qpair, msg, len, 0);
-	if (err < 0)
-		err = -ENOMEM;
-
-	return err;
+	return vmci_qpair_enquev(vmci_trans(vsk)->qpair, msg, len, 0);
 }
 
 static s64 vmci_transport_stream_has_data(struct vsock_sock *vsk)

@@ -14,7 +14,6 @@
 
 #include "vsp1.h"
 #include "vsp1_dl.h"
-#include "vsp1_entity.h"
 #include "vsp1_hsit.h"
 
 #define HSIT_MIN_SIZE				4U
@@ -67,19 +66,20 @@ static int hsit_set_format(struct v4l2_subdev *subdev,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct vsp1_hsit *hsit = to_hsit(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
 	mutex_lock(&hsit->entity.lock);
 
-	state = vsp1_entity_get_state(&hsit->entity, sd_state, fmt->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&hsit->entity, sd_state,
+					    fmt->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
 
-	format = v4l2_subdev_state_get_format(state, fmt->pad);
+	format = vsp1_entity_get_pad_format(&hsit->entity, config, fmt->pad);
 
 	if (fmt->pad == HSIT_PAD_SOURCE) {
 		/*
@@ -97,23 +97,16 @@ static int hsit_set_format(struct v4l2_subdev *subdev,
 	format->height = clamp_t(unsigned int, fmt->format.height,
 				 HSIT_MIN_SIZE, HSIT_MAX_SIZE);
 	format->field = V4L2_FIELD_NONE;
-
-	format->colorspace = fmt->format.colorspace;
-	format->xfer_func = fmt->format.xfer_func;
-	format->ycbcr_enc = fmt->format.ycbcr_enc;
-	format->quantization = fmt->format.quantization;
-
-	vsp1_entity_adjust_color_space(format);
+	format->colorspace = V4L2_COLORSPACE_SRGB;
 
 	fmt->format = *format;
 
 	/* Propagate the format to the source pad. */
-	format = v4l2_subdev_state_get_format(state, HSIT_PAD_SOURCE);
+	format = vsp1_entity_get_pad_format(&hsit->entity, config,
+					    HSIT_PAD_SOURCE);
 	*format = fmt->format;
 	format->code = hsit->inverse ? MEDIA_BUS_FMT_ARGB8888_1X32
 		     : MEDIA_BUS_FMT_AHSV8888_1X32;
-
-	vsp1_entity_adjust_color_space(format);
 
 done:
 	mutex_unlock(&hsit->entity.lock);
@@ -121,6 +114,7 @@ done:
 }
 
 static const struct v4l2_subdev_pad_ops hsit_pad_ops = {
+	.init_cfg = vsp1_entity_init_cfg,
 	.enum_mbus_code = hsit_enum_mbus_code,
 	.enum_frame_size = hsit_enum_frame_size,
 	.get_fmt = vsp1_subdev_get_pad_format,
@@ -136,7 +130,6 @@ static const struct v4l2_subdev_ops hsit_ops = {
  */
 
 static void hsit_configure_stream(struct vsp1_entity *entity,
-				  struct v4l2_subdev_state *state,
 				  struct vsp1_pipeline *pipe,
 				  struct vsp1_dl_list *dl,
 				  struct vsp1_dl_body *dlb)

@@ -18,7 +18,6 @@
 #include <linux/random.h>
 #include <linux/uaccess.h>
 #include <linux/elf.h>
-#include <linux/hugetlb.h>
 
 #include <asm/elf.h>
 #include <asm/ia32.h>
@@ -26,10 +25,8 @@
 /*
  * Align a virtual address to avoid aliasing in the I$ on AMD F15h.
  */
-static unsigned long get_align_mask(struct file *filp)
+static unsigned long get_align_mask(void)
 {
-	if (filp && is_file_hugepages(filp))
-		return huge_page_mask_align(filp);
 	/* handle 32- and 64-bit case with a single conditional */
 	if (va_align.flags < 0 || !(va_align.flags & (2 - mmap_is_ia32())))
 		return 0;
@@ -52,7 +49,14 @@ static unsigned long get_align_mask(struct file *filp)
  */
 static unsigned long get_align_bits(void)
 {
-	return va_align.bits & get_align_mask(NULL);
+	return va_align.bits & get_align_mask();
+}
+
+unsigned long align_vdso_addr(unsigned long addr)
+{
+	unsigned long align_mask = get_align_mask();
+	addr = (addr + align_mask) & ~align_mask;
+	return addr | get_align_bits();
 }
 
 static int __init control_va_addr_alignment(char *str)
@@ -115,21 +119,13 @@ static void find_start_end(unsigned long addr, unsigned long flags,
 		*end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
 }
 
-static inline unsigned long stack_guard_placement(vm_flags_t vm_flags)
-{
-	if (vm_flags & VM_SHADOW_STACK)
-		return PAGE_SIZE;
-
-	return 0;
-}
-
 unsigned long
-arch_get_unmapped_area(struct file *filp, unsigned long addr, unsigned long len,
-		       unsigned long pgoff, unsigned long flags, vm_flags_t vm_flags)
+arch_get_unmapped_area(struct file *filp, unsigned long addr,
+		unsigned long len, unsigned long pgoff, unsigned long flags)
 {
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
-	struct vm_unmapped_area_info info = {};
+	struct vm_unmapped_area_info info;
 	unsigned long begin, end;
 
 	if (flags & MAP_FIXED)
@@ -148,30 +144,28 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr, unsigned long len,
 			return addr;
 	}
 
+	info.flags = 0;
 	info.length = len;
 	info.low_limit = begin;
 	info.high_limit = end;
-	if (!(filp && is_file_hugepages(filp))) {
-		info.align_offset = pgoff << PAGE_SHIFT;
-		info.start_gap = stack_guard_placement(vm_flags);
-	}
+	info.align_mask = 0;
+	info.align_offset = pgoff << PAGE_SHIFT;
 	if (filp) {
-		info.align_mask = get_align_mask(filp);
+		info.align_mask = get_align_mask();
 		info.align_offset += get_align_bits();
 	}
-
 	return vm_unmapped_area(&info);
 }
 
 unsigned long
-arch_get_unmapped_area_topdown(struct file *filp, unsigned long addr0,
-			  unsigned long len, unsigned long pgoff,
-			  unsigned long flags, vm_flags_t vm_flags)
+arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
+			  const unsigned long len, const unsigned long pgoff,
+			  const unsigned long flags)
 {
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
 	unsigned long addr = addr0;
-	struct vm_unmapped_area_info info = {};
+	struct vm_unmapped_area_info info;
 
 	/* requested length too big for entire address space */
 	if (len > TASK_SIZE)
@@ -199,16 +193,8 @@ get_unmapped_area:
 
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
-	if (!in_32bit_syscall() && (flags & MAP_ABOVE4G))
-		info.low_limit = SZ_4G;
-	else
-		info.low_limit = PAGE_SIZE;
-
+	info.low_limit = PAGE_SIZE;
 	info.high_limit = get_mmap_base(0);
-	if (!(filp && is_file_hugepages(filp))) {
-		info.start_gap = stack_guard_placement(vm_flags);
-		info.align_offset = pgoff << PAGE_SHIFT;
-	}
 
 	/*
 	 * If hint address is above DEFAULT_MAP_WINDOW, look for unmapped area
@@ -220,8 +206,10 @@ get_unmapped_area:
 	if (addr > DEFAULT_MAP_WINDOW && !in_32bit_syscall())
 		info.high_limit += TASK_SIZE_MAX - DEFAULT_MAP_WINDOW;
 
+	info.align_mask = 0;
+	info.align_offset = pgoff << PAGE_SHIFT;
 	if (filp) {
-		info.align_mask = get_align_mask(filp);
+		info.align_mask = get_align_mask();
 		info.align_offset += get_align_bits();
 	}
 	addr = vm_unmapped_area(&info);
@@ -236,5 +224,5 @@ bottomup:
 	 * can happen with large stack limits and large mmap()
 	 * allocations.
 	 */
-	return arch_get_unmapped_area(filp, addr0, len, pgoff, flags, 0);
+	return arch_get_unmapped_area(filp, addr0, len, pgoff, flags);
 }

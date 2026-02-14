@@ -78,7 +78,7 @@ MODULE_DESCRIPTION("iSER (iSCSI Extensions for RDMA) Datamover");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Alex Nezhinsky, Dan Bar Dov, Or Gerlitz");
 
-static const struct scsi_host_template iscsi_iser_sht;
+static struct scsi_host_template iscsi_iser_sht;
 static struct iscsi_transport iscsi_iser_transport;
 static struct scsi_transport_template *iscsi_iser_scsi_transport;
 static struct workqueue_struct *release_wq;
@@ -267,7 +267,11 @@ static int iscsi_iser_task_init(struct iscsi_task *task)
 static int iscsi_iser_mtask_xmit(struct iscsi_conn *conn,
 				 struct iscsi_task *task)
 {
+	int error = 0;
+
 	iser_dbg("mtask xmit [cid %d itt 0x%x]\n", conn->id, task->itt);
+
+	error = iser_send_control(conn, task);
 
 	/* since iser xmits control with zero copy, tasks can not be recycled
 	 * right after sending them.
@@ -275,7 +279,7 @@ static int iscsi_iser_mtask_xmit(struct iscsi_conn *conn,
 	 * - if yes, the task is recycled at iscsi_complete_pdu
 	 * - if no,  the task is recycled at iser_snd_completion
 	 */
-	return iser_send_control(conn, task);
+	return error;
 }
 
 static int iscsi_iser_task_xmit_unsol_data(struct iscsi_conn *conn,
@@ -389,10 +393,10 @@ static void iscsi_iser_cleanup_task(struct iscsi_task *task)
  * @task:     iscsi task
  * @sector:   error sector if exsists (output)
  *
- * Return: zero if no data-integrity errors have occurred
- *         0x1: data-integrity error occurred in the guard-block
- *         0x2: data-integrity error occurred in the reference tag
- *         0x3: data-integrity error occurred in the application tag
+ * Return: zero if no data-integrity errors have occured
+ *         0x1: data-integrity error occured in the guard-block
+ *         0x2: data-integrity error occured in the reference tag
+ *         0x3: data-integrity error occured in the application tag
  *
  *         In addition the error sector is marked.
  */
@@ -952,7 +956,7 @@ static umode_t iser_attr_is_visible(int param_type, int param)
 	return 0;
 }
 
-static const struct scsi_host_template iscsi_iser_sht = {
+static struct scsi_host_template iscsi_iser_sht = {
 	.module                 = THIS_MODULE,
 	.name                   = "iSCSI Initiator over iSER",
 	.queuecommand           = iscsi_queuecommand,
@@ -1029,7 +1033,7 @@ static int __init iser_init(void)
 	mutex_init(&ig.connlist_mutex);
 	INIT_LIST_HEAD(&ig.connlist);
 
-	release_wq = alloc_workqueue("release workqueue", WQ_PERCPU, 0);
+	release_wq = alloc_workqueue("release workqueue", 0, 0);
 	if (!release_wq) {
 		iser_err("failed to allocate release workqueue\n");
 		err = -ENOMEM;

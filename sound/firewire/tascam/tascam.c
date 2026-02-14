@@ -9,7 +9,7 @@
 
 MODULE_DESCRIPTION("TASCAM FireWire series Driver");
 MODULE_AUTHOR("Takashi Sakamoto <o-takashi@sakamocchi.jp>");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 
 static const struct snd_tscm_spec model_specs[] = {
 	{
@@ -73,9 +73,9 @@ static int identify_model(struct snd_tscm *tscm)
 	if (tscm->spec == NULL)
 		return -ENODEV;
 
-	strscpy(tscm->card->driver, "FW-TASCAM");
-	strscpy(tscm->card->shortname, model);
-	strscpy(tscm->card->mixername, model);
+	strcpy(tscm->card->driver, "FW-TASCAM");
+	strcpy(tscm->card->shortname, model);
+	strcpy(tscm->card->mixername, model);
 	snprintf(tscm->card->longname, sizeof(tscm->card->longname),
 		 "TASCAM %s, GUID %08x%08x at %s, S%d", model,
 		 fw_dev->config_rom[3], fw_dev->config_rom[4],
@@ -158,8 +158,9 @@ static void snd_tscm_update(struct fw_unit *unit)
 
 	snd_tscm_transaction_reregister(tscm);
 
-	guard(mutex)(&tscm->mutex);
+	mutex_lock(&tscm->mutex);
 	snd_tscm_stream_update_duplex(tscm);
+	mutex_unlock(&tscm->mutex);
 }
 
 static void snd_tscm_remove(struct fw_unit *unit)

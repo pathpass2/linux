@@ -3,7 +3,6 @@
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
  */
 #include <linux/bits.h>
-#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
@@ -19,9 +18,8 @@
 #include <linux/regulator/consumer.h>
 #include <linux/types.h>
 #include <linux/wait.h>
-#include <linux/bitfield.h>
 
-#include <crypto/sha1.h>
+#include <crypto/hash.h>
 
 #include <drm/display/drm_dp_helper.h>
 #include <drm/display/drm_hdcp_helper.h>
@@ -127,7 +125,6 @@
 #define REG_AUX_OUT_DATA0 0x27
 
 #define REG_AUX_CMD_REQ 0x2B
-#define M_AUX_REQ_CMD 0x0F
 #define AUX_BUSY BIT(5)
 
 #define REG_AUX_DATA_0_7 0x2C
@@ -261,24 +258,12 @@
 #define REG_AUD_INFOFRAM_SUM 0xFB
 
 /* the following six registers are in bank1 */
-#define REG_DRV_0_DB_800_MV 0x17E
-#define REG_PRE_0_DB_800_MV 0x17F
-#define REG_PRE_3P5_DB_800_MV 0x181
-#define REG_SSC_CTRL0 0x188
-#define REG_SSC_CTRL1 0x189
-#define REG_SSC_CTRL2 0x18A
-
-#define REG_AUX_USER_CTRL 0x190
-#define EN_USER_AUX BIT(0)
-#define USER_AUX_DONE BIT(1)
-#define AUX_EVENT BIT(4)
-
-#define REG_AUX_USER_DATA_REC 0x191
-#define M_AUX_IN_REC   0xF0
-#define M_AUX_OUT_REC  0x0F
-
-#define REG_AUX_USER_REPLY 0x19A
-#define REG_AUX_USER_RXB(n) (n + 0x19B)
+#define REG_DRV_0_DB_800_MV 0x7E
+#define REG_PRE_0_DB_800_MV 0x7F
+#define REG_PRE_3P5_DB_800_MV 0x81
+#define REG_SSC_CTRL0 0x88
+#define REG_SSC_CTRL1 0x89
+#define REG_SSC_CTRL2 0x8A
 
 #define RBR DP_LINK_BW_1_62
 #define HBR DP_LINK_BW_2_7
@@ -310,13 +295,11 @@
 #define MAX_LANE_COUNT 4
 #define MAX_LINK_RATE HBR
 #define AUTO_TRAIN_RETRY 3
-#define MAX_HDCP_DOWN_STREAM_COUNT 127
+#define MAX_HDCP_DOWN_STREAM_COUNT 10
 #define MAX_CR_LEVEL 0x03
 #define MAX_EQ_LEVEL 0x03
 #define AUX_WAIT_TIMEOUT_MS 15
-#define AUX_FIFO_MAX_SIZE 16
-#define AUX_I2C_MAX_SIZE 4
-#define AUX_I2C_DEFER_RETRY 4
+#define AUX_FIFO_MAX_SIZE 32
 #define PIXEL_CLK_DELAY 1
 #define PIXEL_CLK_INVERSE 0
 #define ADJUST_PHASE_THRESHOLD 80000
@@ -339,15 +322,7 @@
 enum aux_cmd_type {
 	CMD_AUX_NATIVE_READ = 0x0,
 	CMD_AUX_NATIVE_WRITE = 0x5,
-	CMD_AUX_GI2C_ADR = 0x08,
-	CMD_AUX_GI2C_READ = 0x09,
-	CMD_AUX_GI2C_WRITE = 0x0A,
 	CMD_AUX_I2C_EDID_READ = 0xB,
-	CMD_AUX_I2C_READ = 0x0D,
-	CMD_AUX_I2C_WRITE = 0x0C,
-
-	/* KSV read with AUX FIFO extend from CMD_AUX_NATIVE_READ*/
-	CMD_AUX_GET_KSV_LIST = 0x10,
 };
 
 enum aux_cmd_reply {
@@ -429,7 +404,7 @@ struct debugfs_entries {
 struct it6505 {
 	struct drm_dp_aux aux;
 	struct drm_bridge bridge;
-	struct device *dev;
+	struct i2c_client *client;
 	struct it6505_drm_dp_link link;
 	struct it6505_platform_data pdata;
 	/*
@@ -483,9 +458,7 @@ struct it6505 {
 	/* it6505 driver hold option */
 	bool enable_drv_hold;
 
-	const struct drm_edid *cached_edid;
-
-	int irq;
+	struct edid *cached_edid;
 };
 
 struct it6505_step_train_para {
@@ -516,7 +489,7 @@ static const struct it6505_audio_sample_rate_map audio_sample_rate_map[] = {
 };
 
 static const struct regmap_range it6505_bridge_volatile_ranges[] = {
-	{ .range_min = 0, .range_max = 0x1FF },
+	{ .range_min = 0, .range_max = 0xFF },
 };
 
 static const struct regmap_access_table it6505_bridge_volatile_table = {
@@ -524,34 +497,18 @@ static const struct regmap_access_table it6505_bridge_volatile_table = {
 	.n_yes_ranges = ARRAY_SIZE(it6505_bridge_volatile_ranges),
 };
 
-static const struct regmap_range_cfg it6505_regmap_banks[] = {
-	{
-		.name = "it6505",
-		.range_min = 0x00,
-		.range_max = 0x1FF,
-		.selector_reg = REG_BANK_SEL,
-		.selector_mask = 0x1,
-		.selector_shift = 0,
-		.window_start = 0x00,
-		.window_len = 0x100,
-	},
-};
-
 static const struct regmap_config it6505_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.volatile_table = &it6505_bridge_volatile_table,
 	.cache_type = REGCACHE_NONE,
-	.ranges = it6505_regmap_banks,
-	.num_ranges = ARRAY_SIZE(it6505_regmap_banks),
-	.max_register = 0x1FF,
 };
 
 static int it6505_read(struct it6505 *it6505, unsigned int reg_addr)
 {
 	unsigned int value;
 	int err;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	if (!it6505->powered)
 		return -ENODEV;
@@ -569,7 +526,7 @@ static int it6505_write(struct it6505 *it6505, unsigned int reg_addr,
 			unsigned int reg_val)
 {
 	int err;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	if (!it6505->powered)
 		return -ENODEV;
@@ -589,7 +546,7 @@ static int it6505_set_bits(struct it6505 *it6505, unsigned int reg,
 			   unsigned int mask, unsigned int value)
 {
 	int err;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	if (!it6505->powered)
 		return -ENODEV;
@@ -607,7 +564,7 @@ static int it6505_set_bits(struct it6505 *it6505, unsigned int reg,
 static void it6505_debug_print(struct it6505 *it6505, unsigned int reg,
 			       const char *prefix)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int val;
 
 	if (!drm_debug_enabled(DRM_UT_DRIVER))
@@ -626,7 +583,7 @@ static int it6505_dpcd_read(struct it6505 *it6505, unsigned long offset)
 {
 	u8 value;
 	int ret;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	ret = drm_dp_dpcd_readb(&it6505->aux, offset, &value);
 	if (ret < 0) {
@@ -640,7 +597,7 @@ static int it6505_dpcd_write(struct it6505 *it6505, unsigned long offset,
 			     u8 datain)
 {
 	int ret;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	ret = drm_dp_dpcd_writeb(&it6505->aux, offset, datain);
 	if (ret < 0) {
@@ -653,7 +610,7 @@ static int it6505_dpcd_write(struct it6505 *it6505, unsigned long offset,
 static int it6505_get_dpcd(struct it6505 *it6505, int offset, u8 *dpcd, int num)
 {
 	int ret;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	ret = drm_dp_dpcd_read(&it6505->aux, offset, dpcd, num);
 
@@ -670,7 +627,7 @@ static void it6505_dump(struct it6505 *it6505)
 {
 	unsigned int i, j;
 	u8 regs[16];
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	for (i = 0; i <= 0xff; i += 16) {
 		for (j = 0; j < 16; j++)
@@ -709,7 +666,7 @@ static int it6505_read_word(struct it6505 *it6505, unsigned int reg)
 
 static void it6505_calc_video_info(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int hsync_pol, vsync_pol, interlaced;
 	int htotal, hdes, hdew, hfph, hsyncw;
 	int vtotal, vdes, vdew, vfph, vsyncw;
@@ -769,6 +726,40 @@ static void it6505_calc_video_info(struct it6505 *it6505)
 
 	DRM_DEV_DEBUG_DRIVER(dev, DRM_MODE_FMT,
 			     DRM_MODE_ARG(&it6505->video_info));
+}
+
+static int it6505_drm_dp_link_set_power(struct drm_dp_aux *aux,
+					struct it6505_drm_dp_link *link,
+					u8 mode)
+{
+	u8 value;
+	int err;
+
+	/* DP_SET_POWER register is only available on DPCD v1.1 and later */
+	if (link->revision < DPCD_V_1_1)
+		return 0;
+
+	err = drm_dp_dpcd_readb(aux, DP_SET_POWER, &value);
+	if (err < 0)
+		return err;
+
+	value &= ~DP_SET_POWER_MASK;
+	value |= mode;
+
+	err = drm_dp_dpcd_writeb(aux, DP_SET_POWER, value);
+	if (err < 0)
+		return err;
+
+	if (mode == DP_SET_POWER_D0) {
+		/*
+		 * According to the DP 1.1 specification, a "Sink Device must
+		 * exit the power saving state within 1 ms" (Section 2.5.3.1,
+		 * Table 5-52, "Sink Control Field" (register 0x600).
+		 */
+		usleep_range(1000, 2000);
+	}
+
+	return 0;
 }
 
 static void it6505_clear_int(struct it6505 *it6505)
@@ -919,7 +910,7 @@ static int it6505_aux_wait(struct it6505 *it6505)
 {
 	int status;
 	unsigned long timeout;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	timeout = jiffies + msecs_to_jiffies(AUX_WAIT_TIMEOUT_MS) + 1;
 
@@ -955,8 +946,7 @@ static ssize_t it6505_aux_operation(struct it6505 *it6505,
 	it6505_set_bits(it6505, REG_AUX_CTRL, AUX_USER_MODE, AUX_USER_MODE);
 
 aux_op_start:
-	/* HW AUX FIFO supports only EDID and DCPD KSV FIFO area */
-	if (cmd == CMD_AUX_I2C_EDID_READ || cmd == CMD_AUX_GET_KSV_LIST) {
+	if (cmd == CMD_AUX_I2C_EDID_READ) {
 		/* AUX EDID FIFO has max length of AUX_FIFO_MAX_SIZE bytes. */
 		size = min_t(size_t, size, AUX_FIFO_MAX_SIZE);
 		/* Enable AUX FIFO read back and clear FIFO */
@@ -987,7 +977,7 @@ aux_op_start:
 				  size);
 
 	/* Aux Fire */
-	it6505_write(it6505, REG_AUX_CMD_REQ, FIELD_GET(M_AUX_REQ_CMD, cmd));
+	it6505_write(it6505, REG_AUX_CMD_REQ, cmd);
 
 	ret = it6505_aux_wait(it6505);
 	if (ret < 0)
@@ -1021,7 +1011,7 @@ aux_op_start:
 		goto aux_op_start;
 	}
 
-	if (cmd == CMD_AUX_I2C_EDID_READ || cmd == CMD_AUX_GET_KSV_LIST) {
+	if (cmd == CMD_AUX_I2C_EDID_READ) {
 		for (i = 0; i < size; i++) {
 			ret = it6505_read(it6505, REG_AUX_DATA_FIFO);
 			if (ret < 0)
@@ -1046,7 +1036,7 @@ aux_op_start:
 	ret = i;
 
 aux_op_err:
-	if (cmd == CMD_AUX_I2C_EDID_READ || cmd == CMD_AUX_GET_KSV_LIST) {
+	if (cmd == CMD_AUX_I2C_EDID_READ) {
 		/* clear AUX FIFO */
 		it6505_set_bits(it6505, REG_AUX_CTRL,
 				AUX_EN_FIFO_READ | CLR_EDID_FIFO,
@@ -1067,14 +1057,10 @@ static ssize_t it6505_aux_do_transfer(struct it6505 *it6505,
 				      size_t size, enum aux_cmd_reply *reply)
 {
 	int i, ret_size, ret = 0, request_size;
-	int fifo_max_size = (cmd == CMD_AUX_I2C_EDID_READ || cmd == CMD_AUX_GET_KSV_LIST) ?
-						 AUX_FIFO_MAX_SIZE : 4;
 
 	mutex_lock(&it6505->aux_lock);
-	i = 0;
-	do {
-		request_size = min_t(int, (int)size - i, fifo_max_size);
-
+	for (i = 0; i < size; i += 4) {
+		request_size = min((int)size - i, 4);
 		ret_size = it6505_aux_operation(it6505, cmd, address + i,
 						buffer + i, request_size,
 						reply);
@@ -1083,168 +1069,12 @@ static ssize_t it6505_aux_do_transfer(struct it6505 *it6505,
 			goto aux_op_err;
 		}
 
-		i += request_size;
 		ret += ret_size;
-	} while (i < size);
+	}
 
 aux_op_err:
 	mutex_unlock(&it6505->aux_lock);
 	return ret;
-}
-
-static bool it6505_aux_i2c_reply_defer(u8 reply)
-{
-	if (reply == DP_AUX_NATIVE_REPLY_DEFER || reply == DP_AUX_I2C_REPLY_DEFER)
-		return true;
-	return false;
-}
-
-static bool it6505_aux_i2c_reply_nack(u8 reply)
-{
-	if (reply == DP_AUX_NATIVE_REPLY_NACK || reply == DP_AUX_I2C_REPLY_NACK)
-		return true;
-	return false;
-}
-
-static int it6505_aux_i2c_wait(struct it6505 *it6505, u8 *reply)
-{
-	int err = 0;
-	unsigned long timeout;
-	struct device *dev = it6505->dev;
-
-	timeout = jiffies + msecs_to_jiffies(AUX_WAIT_TIMEOUT_MS) + 1;
-
-	do {
-		if (it6505_read(it6505, REG_AUX_USER_CTRL) & AUX_EVENT)
-			break;
-		if (time_after(jiffies, timeout)) {
-			dev_err(dev, "Timed out waiting AUX I2C, BUSY = %X\n",
-				it6505_aux_op_finished(it6505));
-			err = -ETIMEDOUT;
-			goto end_aux_i2c_wait;
-		}
-		usleep_range(300, 800);
-	} while (!it6505_aux_op_finished(it6505));
-
-	*reply = it6505_read(it6505, REG_AUX_USER_REPLY) >> 4;
-
-	if (*reply == 0)
-		goto end_aux_i2c_wait;
-
-	if (it6505_aux_i2c_reply_defer(*reply))
-		err = -EBUSY;
-	else if (it6505_aux_i2c_reply_nack(*reply))
-		err = -ENXIO;
-
-end_aux_i2c_wait:
-	it6505_set_bits(it6505, REG_AUX_USER_CTRL, USER_AUX_DONE, USER_AUX_DONE);
-	return err;
-}
-
-static int it6505_aux_i2c_readb(struct it6505 *it6505, u8 *buf, size_t size, u8 *reply)
-{
-	int ret, i;
-	int retry;
-
-	for (retry = 0; retry < AUX_I2C_DEFER_RETRY; retry++) {
-		it6505_write(it6505, REG_AUX_CMD_REQ, CMD_AUX_GI2C_READ);
-
-		ret = it6505_aux_i2c_wait(it6505, reply);
-		if (it6505_aux_i2c_reply_defer(*reply))
-			continue;
-		if (ret >= 0)
-			break;
-	}
-
-	for (i = 0; i < size; i++)
-		buf[i] = it6505_read(it6505, REG_AUX_USER_RXB(0 + i));
-
-	return size;
-}
-
-static int it6505_aux_i2c_writeb(struct it6505 *it6505, u8 *buf, size_t size, u8 *reply)
-{
-	int i, ret;
-	int retry;
-
-	for (i = 0; i < size; i++)
-		it6505_write(it6505, REG_AUX_OUT_DATA0 + i, buf[i]);
-
-	for (retry = 0; retry < AUX_I2C_DEFER_RETRY; retry++) {
-		it6505_write(it6505, REG_AUX_CMD_REQ, CMD_AUX_GI2C_WRITE);
-
-		ret = it6505_aux_i2c_wait(it6505, reply);
-		if (it6505_aux_i2c_reply_defer(*reply))
-			continue;
-		if (ret >= 0)
-			break;
-	}
-	return size;
-}
-
-static ssize_t it6505_aux_i2c_operation(struct it6505 *it6505,
-					struct drm_dp_aux_msg *msg)
-{
-	int ret;
-	ssize_t request_size, data_cnt = 0;
-	u8 *buffer = msg->buffer;
-
-	/* set AUX user mode */
-	it6505_set_bits(it6505, REG_AUX_CTRL,
-			AUX_USER_MODE | AUX_NO_SEGMENT_WR, AUX_USER_MODE);
-	it6505_set_bits(it6505, REG_AUX_USER_CTRL, EN_USER_AUX, EN_USER_AUX);
-	/* clear AUX FIFO */
-	it6505_set_bits(it6505, REG_AUX_CTRL,
-			AUX_EN_FIFO_READ | CLR_EDID_FIFO,
-			AUX_EN_FIFO_READ | CLR_EDID_FIFO);
-
-	it6505_set_bits(it6505, REG_AUX_CTRL,
-			AUX_EN_FIFO_READ | CLR_EDID_FIFO, 0x00);
-
-	it6505_write(it6505, REG_AUX_ADR_0_7, 0x00);
-	it6505_write(it6505, REG_AUX_ADR_8_15, msg->address << 1);
-
-	if (msg->size == 0) {
-		/* IIC Start/STOP dummy write */
-		it6505_write(it6505, REG_AUX_ADR_16_19, msg->request);
-		it6505_write(it6505, REG_AUX_CMD_REQ, CMD_AUX_GI2C_ADR);
-		ret = it6505_aux_i2c_wait(it6505, &msg->reply);
-		goto end_aux_i2c_transfer;
-	}
-
-	/* IIC data transfer */
-	data_cnt = 0;
-	do {
-		request_size = min_t(ssize_t, msg->size - data_cnt, AUX_I2C_MAX_SIZE);
-		it6505_write(it6505, REG_AUX_ADR_16_19,
-			     msg->request | ((request_size - 1) << 4));
-		if ((msg->request & DP_AUX_I2C_READ) == DP_AUX_I2C_READ)
-			ret = it6505_aux_i2c_readb(it6505, &buffer[data_cnt],
-						   request_size, &msg->reply);
-		else
-			ret = it6505_aux_i2c_writeb(it6505, &buffer[data_cnt],
-						    request_size, &msg->reply);
-
-		if (ret < 0)
-			goto end_aux_i2c_transfer;
-
-		data_cnt += request_size;
-	} while (data_cnt < msg->size);
-	ret = data_cnt;
-end_aux_i2c_transfer:
-
-	it6505_set_bits(it6505, REG_AUX_USER_CTRL, EN_USER_AUX, 0);
-	it6505_set_bits(it6505, REG_AUX_CTRL, AUX_USER_MODE, 0);
-	return ret;
-}
-
-static ssize_t it6505_aux_i2c_transfer(struct drm_dp_aux *aux,
-				       struct drm_dp_aux_msg *msg)
-{
-	struct it6505 *it6505 = container_of(aux, struct it6505, aux);
-
-	guard(mutex)(&it6505->aux_lock);
-	return it6505_aux_i2c_operation(it6505, msg);
 }
 
 static ssize_t it6505_aux_transfer(struct drm_dp_aux *aux,
@@ -1256,8 +1086,9 @@ static ssize_t it6505_aux_transfer(struct drm_dp_aux *aux,
 	int ret;
 	enum aux_cmd_reply reply;
 
+	/* IT6505 doesn't support arbitrary I2C read / write. */
 	if (is_i2c)
-		return it6505_aux_i2c_transfer(aux, msg);
+		return -EINVAL;
 
 	switch (msg->request) {
 	case DP_AUX_NATIVE_READ:
@@ -1294,7 +1125,7 @@ static int it6505_get_edid_block(void *data, u8 *buf, unsigned int block,
 				 size_t len)
 {
 	struct it6505 *it6505 = data;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	enum aux_cmd_reply reply;
 	int offset, ret, aux_retry = 100;
 
@@ -1328,37 +1159,6 @@ static int it6505_get_edid_block(void *data, u8 *buf, unsigned int block,
 	return 0;
 }
 
-static int it6505_get_ksvlist(struct it6505 *it6505, u8 *buf, size_t len)
-{
-	struct device *dev = it6505->dev;
-	enum aux_cmd_reply reply;
-	int request_size, ret;
-	int i = 0;
-
-	do {
-		request_size = min_t(int, (int)len - i, 15);
-
-		ret = it6505_aux_do_transfer(it6505, CMD_AUX_GET_KSV_LIST,
-					     DP_AUX_HDCP_KSV_FIFO,
-					     buf + i, request_size, &reply);
-
-		DRM_DEV_DEBUG_DRIVER(dev, "request_size = %d, ret =%d", request_size, ret);
-		if (ret < 0)
-			return ret;
-
-		i += request_size;
-	} while (i < len);
-
-	DRM_DEV_DEBUG_DRIVER(dev, "ksv read cnt = %d down_stream_cnt=%d ", i, i / 5);
-
-	for (i = 0 ; i < len; i += 5) {
-		DRM_DEV_DEBUG_DRIVER(dev, "ksv[%d] = %02X%02X%02X%02X%02X",
-				     i / 5, buf[i], buf[i + 1], buf[i + 2], buf[i + 3], buf[i + 4]);
-	}
-
-	return len;
-}
-
 static void it6505_variable_config(struct it6505 *it6505)
 {
 	it6505->link_rate_bw_code = HBR;
@@ -1385,7 +1185,7 @@ static int it6505_send_video_infoframe(struct it6505 *it6505,
 {
 	u8 buffer[HDMI_INFOFRAME_HEADER_SIZE + HDMI_AVI_INFOFRAME_SIZE];
 	int err;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	err = hdmi_avi_infoframe_pack(frame, buffer, sizeof(buffer));
 	if (err < 0) {
@@ -1415,7 +1215,7 @@ static void it6505_get_extcon_property(struct it6505 *it6505)
 {
 	int err;
 	union extcon_property_value property;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	if (it6505->extcon && !it6505->lane_swap_disabled) {
 		err = extcon_get_property(it6505->extcon, EXTCON_DISP_DP,
@@ -1467,6 +1267,7 @@ static void it6505_init(struct it6505 *it6505)
 	it6505_write(it6505, REG_TIME_STMP_CTRL,
 		     EN_SSC_GAT | EN_ENHANCE_VID_STMP | EN_ENHANCE_AUD_STMP);
 	it6505_write(it6505, REG_INFOFRAME_CTRL, 0x00);
+	it6505_write(it6505, REG_BANK_SEL, 0x01);
 	it6505_write(it6505, REG_DRV_0_DB_800_MV,
 		     afe_setting_table[it6505->afe_setting][0]);
 	it6505_write(it6505, REG_PRE_0_DB_800_MV,
@@ -1476,6 +1277,7 @@ static void it6505_init(struct it6505 *it6505)
 	it6505_write(it6505, REG_SSC_CTRL0, 0x9E);
 	it6505_write(it6505, REG_SSC_CTRL1, 0x1C);
 	it6505_write(it6505, REG_SSC_CTRL2, 0x42);
+	it6505_write(it6505, REG_BANK_SEL, 0x00);
 }
 
 static void it6505_video_disable(struct it6505 *it6505)
@@ -1490,15 +1292,9 @@ static void it6505_video_reset(struct it6505 *it6505)
 	it6505_link_reset_step_train(it6505);
 	it6505_set_bits(it6505, REG_DATA_MUTE_CTRL, EN_VID_MUTE, EN_VID_MUTE);
 	it6505_set_bits(it6505, REG_INFOFRAME_CTRL, EN_VID_CTRL_PKT, 0x00);
-
-	it6505_set_bits(it6505, REG_VID_BUS_CTRL1, TX_FIFO_RESET, TX_FIFO_RESET);
-	it6505_set_bits(it6505, REG_VID_BUS_CTRL1, TX_FIFO_RESET, 0x00);
-
+	it6505_set_bits(it6505, REG_RESET_CTRL, VIDEO_RESET, VIDEO_RESET);
 	it6505_set_bits(it6505, REG_501_FIFO_CTRL, RST_501_FIFO, RST_501_FIFO);
 	it6505_set_bits(it6505, REG_501_FIFO_CTRL, RST_501_FIFO, 0x00);
-
-	it6505_set_bits(it6505, REG_RESET_CTRL, VIDEO_RESET, VIDEO_RESET);
-	usleep_range(1000, 2000);
 	it6505_set_bits(it6505, REG_RESET_CTRL, VIDEO_RESET, 0x00);
 }
 
@@ -1572,7 +1368,7 @@ static void it6505_enable_audio_source(struct it6505 *it6505)
 
 static void it6505_enable_audio_infoframe(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	u8 audio_info_ca[] = { 0x00, 0x00, 0x01, 0x03, 0x07, 0x0B, 0x0F, 0x1F };
 
 	DRM_DEV_DEBUG_DRIVER(dev, "infoframe channel_allocation:0x%02x",
@@ -1601,7 +1397,7 @@ static void it6505_disable_audio(struct it6505 *it6505)
 
 static void it6505_enable_audio(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int regbe;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "start");
@@ -1636,7 +1432,7 @@ static bool it6505_use_step_train_check(struct it6505 *it6505)
 
 static void it6505_parse_link_capabilities(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	struct it6505_drm_dp_link *link = &it6505->link;
 	int bcaps;
 
@@ -1710,9 +1506,11 @@ static void it6505_setup_ssc(struct it6505 *it6505)
 	it6505_set_bits(it6505, REG_TRAIN_CTRL0, SPREAD_AMP_5,
 			it6505->enable_ssc ? SPREAD_AMP_5 : 0x00);
 	if (it6505->enable_ssc) {
+		it6505_write(it6505, REG_BANK_SEL, 0x01);
 		it6505_write(it6505, REG_SSC_CTRL0, 0x9E);
 		it6505_write(it6505, REG_SSC_CTRL1, 0x1C);
 		it6505_write(it6505, REG_SSC_CTRL2, 0x42);
+		it6505_write(it6505, REG_BANK_SEL, 0x00);
 		it6505_write(it6505, REG_SP_CTRL0, 0x07);
 		it6505_write(it6505, REG_IP_CTRL1, 0x29);
 		it6505_write(it6505, REG_IP_CTRL2, 0x03);
@@ -1747,7 +1545,7 @@ static void it6505_lane_count_setup(struct it6505 *it6505)
 
 static void it6505_link_training_setup(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	if (it6505->enable_enhanced_frame)
 		it6505_set_bits(it6505, REG_DATA_MUTE_CTRL,
@@ -1898,7 +1696,7 @@ it6505_step_cr_train(struct it6505 *it6505,
 					FORCE_CR_DONE);
 			return true;
 		}
-		DRM_DEV_DEBUG_DRIVER(it6505->dev, "cr not done");
+		DRM_DEV_DEBUG_DRIVER(&it6505->client->dev, "cr not done");
 
 		if (it6505_check_max_voltage_swing_reached(lane_level_config,
 							   it6505->lane_count))
@@ -1975,7 +1773,7 @@ it6505_step_eq_train(struct it6505 *it6505,
 					FORCE_EQ_DONE);
 			return true;
 		}
-		DRM_DEV_DEBUG_DRIVER(it6505->dev, "eq not done");
+		DRM_DEV_DEBUG_DRIVER(&it6505->client->dev, "eq not done");
 
 		for (i = 0; i < it6505->lane_count; i++) {
 			lane_voltage_pre_emphasis->voltage_swing[i] =
@@ -2010,7 +1808,7 @@ static bool it6505_link_start_step_train(struct it6505 *it6505)
 		.pre_emphasis = { 0 },
 	};
 
-	DRM_DEV_DEBUG_DRIVER(it6505->dev, "start");
+	DRM_DEV_DEBUG_DRIVER(&it6505->client->dev, "start");
 	err = it6505_drm_dp_link_configure(it6505);
 
 	if (err < 0)
@@ -2044,7 +1842,7 @@ static void it6505_reset_hdcp(struct it6505 *it6505)
 
 static void it6505_start_hdcp(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "start");
 	it6505_reset_hdcp(it6505);
@@ -2072,7 +1870,7 @@ static bool it6505_hdcp_is_ksv_valid(u8 *ksv)
 
 static void it6505_hdcp_part1_auth(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	u8 hdcp_bcaps;
 
 	it6505_set_bits(it6505, REG_RESET_CTRL, HDCP_RESET, 0x00);
@@ -2107,11 +1905,40 @@ static void it6505_hdcp_part1_auth(struct it6505 *it6505)
 	it6505->hdcp_status = HDCP_AUTH_GOING;
 }
 
+static int it6505_sha1_digest(struct it6505 *it6505, u8 *sha1_input,
+			      unsigned int size, u8 *output_av)
+{
+	struct shash_desc *desc;
+	struct crypto_shash *tfm;
+	int err;
+	struct device *dev = &it6505->client->dev;
+
+	tfm = crypto_alloc_shash("sha1", 0, 0);
+	if (IS_ERR(tfm)) {
+		dev_err(dev, "crypto_alloc_shash sha1 failed");
+		return PTR_ERR(tfm);
+	}
+	desc = kzalloc(sizeof(*desc) + crypto_shash_descsize(tfm), GFP_KERNEL);
+	if (!desc) {
+		crypto_free_shash(tfm);
+		return -ENOMEM;
+	}
+
+	desc->tfm = tfm;
+	err = crypto_shash_digest(desc, sha1_input, size, output_av);
+	if (err)
+		dev_err(dev, "crypto_shash_digest sha1 failed");
+
+	crypto_free_shash(tfm);
+	kfree(desc);
+	return err;
+}
+
 static int it6505_setup_sha1_input(struct it6505 *it6505, u8 *sha1_input)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	u8 binfo[2];
-	int down_stream_count, err, msg_count = 0;
+	int down_stream_count, i, err, msg_count = 0;
 
 	err = it6505_get_dpcd(it6505, DP_AUX_HDCP_BINFO, binfo,
 			      ARRAY_SIZE(binfo));
@@ -2136,11 +1963,18 @@ static int it6505_setup_sha1_input(struct it6505 *it6505, u8 *sha1_input)
 			down_stream_count);
 		return 0;
 	}
-	err =  it6505_get_ksvlist(it6505, sha1_input, down_stream_count * 5);
-	if (err < 0)
-		return err;
 
-	msg_count += down_stream_count * 5;
+	for (i = 0; i < down_stream_count; i++) {
+		err = it6505_get_dpcd(it6505, DP_AUX_HDCP_KSV_FIFO +
+				      (i % 3) * DRM_HDCP_KSV_LEN,
+				      sha1_input + msg_count,
+				      DRM_HDCP_KSV_LEN);
+
+		if (err < 0)
+			return err;
+
+		msg_count += 5;
+	}
 
 	it6505->hdcp_down_stream_count = down_stream_count;
 	sha1_input[msg_count++] = binfo[0];
@@ -2166,9 +2000,9 @@ static int it6505_setup_sha1_input(struct it6505 *it6505, u8 *sha1_input)
 
 static bool it6505_hdcp_part2_ksvlist_check(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	u8 av[5][4], bv[5][4];
-	int i, err, retry;
+	int i, err;
 
 	i = it6505_setup_sha1_input(it6505, it6505->sha1_input);
 	if (i <= 0) {
@@ -2176,44 +2010,36 @@ static bool it6505_hdcp_part2_ksvlist_check(struct it6505 *it6505)
 		return false;
 	}
 
-	sha1(it6505->sha1_input, i, (u8 *)av);
-	/*1B-05 V' must retry 3 times */
-	for (retry = 0; retry < 3; retry++) {
-		err = it6505_get_dpcd(it6505, DP_AUX_HDCP_V_PRIME(0), (u8 *)bv,
-				      sizeof(bv));
+	it6505_sha1_digest(it6505, it6505->sha1_input, i, (u8 *)av);
 
-		if (err < 0) {
-			dev_err(dev, "Read V' value Fail %d", retry);
-			continue;
-		}
+	err = it6505_get_dpcd(it6505, DP_AUX_HDCP_V_PRIME(0), (u8 *)bv,
+			      sizeof(bv));
 
-		for (i = 0; i < 5; i++)
-			if (bv[i][3] != av[i][0] || bv[i][2] != av[i][1] ||
-			    bv[i][1] != av[i][2] || bv[i][0] != av[i][3])
-				break;
-
-		if (i == 5) {
-			DRM_DEV_DEBUG_DRIVER(dev, "V' all match!! %d", retry);
-			return true;
-		}
+	if (err < 0) {
+		dev_err(dev, "Read V' value Fail");
+		return false;
 	}
 
-	DRM_DEV_DEBUG_DRIVER(dev, "V' NOT match!! %d", retry);
-	return false;
+	for (i = 0; i < 5; i++)
+		if (bv[i][3] != av[i][0] || bv[i][2] != av[i][1] ||
+		    bv[i][1] != av[i][2] || bv[i][0] != av[i][3])
+			return false;
+
+	DRM_DEV_DEBUG_DRIVER(dev, "V' all match!!");
+	return true;
 }
 
 static void it6505_hdcp_wait_ksv_list(struct work_struct *work)
 {
 	struct it6505 *it6505 = container_of(work, struct it6505,
 					     hdcp_wait_ksv_list);
-	struct device *dev = it6505->dev;
-	u8 bstatus;
+	struct device *dev = &it6505->client->dev;
+	unsigned int timeout = 5000;
+	u8 bstatus = 0;
 	bool ksv_list_check;
-	/* 1B-04 wait ksv list for 5s */
-	unsigned long timeout = jiffies +
-				msecs_to_jiffies(5000) + 1;
 
-	for (;;) {
+	timeout /= 20;
+	while (timeout > 0) {
 		if (!it6505_get_sink_hpd_status(it6505))
 			return;
 
@@ -2222,30 +2048,34 @@ static void it6505_hdcp_wait_ksv_list(struct work_struct *work)
 		if (bstatus & DP_BSTATUS_READY)
 			break;
 
-		if (time_after(jiffies, timeout)) {
-			DRM_DEV_DEBUG_DRIVER(dev, "KSV list wait timeout");
-			goto timeout;
-		}
-
 		msleep(20);
+		timeout--;
+	}
+
+	if (timeout == 0) {
+		DRM_DEV_DEBUG_DRIVER(dev, "timeout and ksv list wait failed");
+		goto timeout;
 	}
 
 	ksv_list_check = it6505_hdcp_part2_ksvlist_check(it6505);
 	DRM_DEV_DEBUG_DRIVER(dev, "ksv list ready, ksv list check %s",
 			     ksv_list_check ? "pass" : "fail");
-
-	if (ksv_list_check)
+	if (ksv_list_check) {
+		it6505_set_bits(it6505, REG_HDCP_TRIGGER,
+				HDCP_TRIGGER_KSV_DONE, HDCP_TRIGGER_KSV_DONE);
 		return;
-
+	}
 timeout:
-	it6505_start_hdcp(it6505);
+	it6505_set_bits(it6505, REG_HDCP_TRIGGER,
+			HDCP_TRIGGER_KSV_DONE | HDCP_TRIGGER_KSV_FAIL,
+			HDCP_TRIGGER_KSV_DONE | HDCP_TRIGGER_KSV_FAIL);
 }
 
 static void it6505_hdcp_work(struct work_struct *work)
 {
 	struct it6505 *it6505 = container_of(work, struct it6505,
 					     hdcp_work.work);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int ret;
 	u8 link_status[DP_LINK_STATUS_SIZE] = { 0 };
 
@@ -2286,7 +2116,7 @@ static void it6505_hdcp_work(struct work_struct *work)
 
 static void it6505_show_hdcp_info(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int i;
 	u8 *sha1 = it6505->sha1_input;
 
@@ -2320,7 +2150,7 @@ static void it6505_stop_link_train(struct it6505 *it6505)
 
 static void it6505_link_train_ok(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	it6505->link_state = LINK_OK;
 	/* disalbe mute enable avi info frame */
@@ -2339,7 +2169,7 @@ static void it6505_link_train_ok(struct it6505 *it6505)
 
 static void it6505_link_step_train_process(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int ret, i, step_retry = 3;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "Start step train");
@@ -2377,7 +2207,7 @@ static void it6505_link_step_train_process(struct it6505 *it6505)
 static void it6505_link_training_work(struct work_struct *work)
 {
 	struct it6505 *it6505 = container_of(work, struct it6505, link_works);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int ret;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "it6505->sink_count: %d",
@@ -2398,15 +2228,14 @@ static void it6505_link_training_work(struct work_struct *work)
 	ret = it6505_link_start_auto_train(it6505);
 	DRM_DEV_DEBUG_DRIVER(dev, "auto train %s, auto_train_retry: %d",
 			     ret ? "pass" : "failed", it6505->auto_train_retry);
+	it6505->auto_train_retry--;
 
 	if (ret) {
-		it6505->auto_train_retry = AUTO_TRAIN_RETRY;
 		it6505_link_train_ok(it6505);
-	} else {
-		it6505->auto_train_retry--;
-		it6505_dump(it6505);
+		return;
 	}
 
+	it6505_dump(it6505);
 }
 
 static void it6505_plugged_status_to_codec(struct it6505 *it6505)
@@ -2420,13 +2249,13 @@ static void it6505_plugged_status_to_codec(struct it6505 *it6505)
 
 static void it6505_remove_edid(struct it6505 *it6505)
 {
-	drm_edid_free(it6505->cached_edid);
+	kfree(it6505->cached_edid);
 	it6505->cached_edid = NULL;
 }
 
 static int it6505_process_hpd_irq(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int ret, dpcd_sink_count, dp_irq_vector, bstatus;
 	u8 link_status[DP_LINK_STATUS_SIZE];
 
@@ -2461,20 +2290,14 @@ static int it6505_process_hpd_irq(struct it6505 *it6505)
 	DRM_DEV_DEBUG_DRIVER(dev, "dp_irq_vector = 0x%02x", dp_irq_vector);
 
 	if (dp_irq_vector & DP_CP_IRQ) {
+		it6505_set_bits(it6505, REG_HDCP_TRIGGER, HDCP_TRIGGER_CPIRQ,
+				HDCP_TRIGGER_CPIRQ);
+
 		bstatus = it6505_dpcd_read(it6505, DP_AUX_HDCP_BSTATUS);
 		if (bstatus < 0)
 			return bstatus;
 
 		DRM_DEV_DEBUG_DRIVER(dev, "Bstatus = 0x%02x", bstatus);
-
-		/*Check BSTATUS when recive CP_IRQ */
-		if (bstatus & DP_BSTATUS_R0_PRIME_READY &&
-		    it6505->hdcp_status == HDCP_AUTH_GOING)
-			it6505_set_bits(it6505, REG_HDCP_TRIGGER, HDCP_TRIGGER_CPIRQ,
-					HDCP_TRIGGER_CPIRQ);
-		else if (bstatus & (DP_BSTATUS_REAUTH_REQ | DP_BSTATUS_LINK_FAILURE) &&
-			 it6505->hdcp_status == HDCP_AUTH_DONE)
-			it6505_start_hdcp(it6505);
 	}
 
 	ret = drm_dp_dpcd_read_link_status(&it6505->aux, link_status);
@@ -2496,7 +2319,7 @@ static int it6505_process_hpd_irq(struct it6505 *it6505)
 
 static void it6505_irq_hpd(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int dp_sink_count;
 
 	it6505->hpd_state = it6505_get_sink_hpd_status(it6505);
@@ -2515,7 +2338,8 @@ static void it6505_irq_hpd(struct it6505 *it6505)
 		}
 		it6505->auto_train_retry = AUTO_TRAIN_RETRY;
 
-		drm_dp_link_power_up(&it6505->aux, it6505->link.revision);
+		it6505_drm_dp_link_set_power(&it6505->aux, &it6505->link,
+					     DP_SET_POWER_D0);
 		dp_sink_count = it6505_dpcd_read(it6505, DP_SINK_COUNT);
 		it6505->sink_count = DP_GET_SINK_COUNT(dp_sink_count);
 
@@ -2557,7 +2381,7 @@ static void it6505_irq_hpd(struct it6505 *it6505)
 
 static void it6505_irq_hpd_irq(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "hpd_irq interrupt");
 
@@ -2567,7 +2391,7 @@ static void it6505_irq_hpd_irq(struct it6505 *it6505)
 
 static void it6505_irq_scdt(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	bool data;
 
 	data = it6505_get_video_status(it6505);
@@ -2582,7 +2406,7 @@ static void it6505_irq_scdt(struct it6505 *it6505)
 
 static void it6505_irq_hdcp_done(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "hdcp done interrupt");
 	it6505->hdcp_status = HDCP_AUTH_DONE;
@@ -2591,7 +2415,7 @@ static void it6505_irq_hdcp_done(struct it6505 *it6505)
 
 static void it6505_irq_hdcp_fail(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "hdcp fail interrupt");
 	it6505->hdcp_status = HDCP_AUTH_IDLE;
@@ -2601,26 +2425,22 @@ static void it6505_irq_hdcp_fail(struct it6505 *it6505)
 
 static void it6505_irq_aux_cmd_fail(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "AUX PC Request Fail Interrupt");
 }
 
 static void it6505_irq_hdcp_ksv_check(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
-	DRM_DEV_DEBUG_DRIVER(dev, "HDCP repeater R0 event Interrupt");
-	/* 1B01 HDCP encription should start when R0 is ready*/
-	it6505_set_bits(it6505, REG_HDCP_TRIGGER,
-			HDCP_TRIGGER_KSV_DONE, HDCP_TRIGGER_KSV_DONE);
-
+	DRM_DEV_DEBUG_DRIVER(dev, "HDCP event Interrupt");
 	schedule_work(&it6505->hdcp_wait_ksv_list);
 }
 
 static void it6505_irq_audio_fifo_error(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "audio fifo error Interrupt");
 
@@ -2630,10 +2450,32 @@ static void it6505_irq_audio_fifo_error(struct it6505 *it6505)
 
 static void it6505_irq_link_train_fail(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "link training fail interrupt");
 	schedule_work(&it6505->link_works);
+}
+
+static void it6505_irq_video_fifo_error(struct it6505 *it6505)
+{
+	struct device *dev = &it6505->client->dev;
+
+	DRM_DEV_DEBUG_DRIVER(dev, "video fifo overflow interrupt");
+	it6505->auto_train_retry = AUTO_TRAIN_RETRY;
+	flush_work(&it6505->link_works);
+	it6505_stop_hdcp(it6505);
+	it6505_video_reset(it6505);
+}
+
+static void it6505_irq_io_latch_fifo_overflow(struct it6505 *it6505)
+{
+	struct device *dev = &it6505->client->dev;
+
+	DRM_DEV_DEBUG_DRIVER(dev, "IO latch fifo overflow interrupt");
+	it6505->auto_train_retry = AUTO_TRAIN_RETRY;
+	flush_work(&it6505->link_works);
+	it6505_stop_hdcp(it6505);
+	it6505_video_reset(it6505);
 }
 
 static bool it6505_test_bit(unsigned int bit, const unsigned int *addr)
@@ -2641,73 +2483,30 @@ static bool it6505_test_bit(unsigned int bit, const unsigned int *addr)
 	return 1 & (addr[bit / BITS_PER_BYTE] >> (bit % BITS_PER_BYTE));
 }
 
-static void it6505_irq_video_handler(struct it6505 *it6505, const int *int_status)
-{
-	struct device *dev = it6505->dev;
-	int reg_0d, reg_int03;
-
-	/*
-	 * When video SCDT change with video not stable,
-	 * Or video FIFO error, need video reset
-	 */
-
-	if ((!it6505_get_video_status(it6505) &&
-	     (it6505_test_bit(INT_SCDT_CHANGE, (unsigned int *)int_status))) ||
-	    (it6505_test_bit(BIT_INT_IO_FIFO_OVERFLOW,
-			     (unsigned int *)int_status)) ||
-	    (it6505_test_bit(BIT_INT_VID_FIFO_ERROR,
-			     (unsigned int *)int_status))) {
-		it6505->auto_train_retry = AUTO_TRAIN_RETRY;
-		flush_work(&it6505->link_works);
-		it6505_stop_hdcp(it6505);
-		it6505_video_reset(it6505);
-
-		usleep_range(10000, 11000);
-
-		/*
-		 * Clear FIFO error IRQ to prevent fifo error -> reset loop
-		 * HW will trigger SCDT change IRQ again when video stable
-		 */
-
-		reg_int03 = it6505_read(it6505, INT_STATUS_03);
-		reg_0d = it6505_read(it6505, REG_SYSTEM_STS);
-
-		reg_int03 &= (BIT(INT_VID_FIFO_ERROR) | BIT(INT_IO_LATCH_FIFO_OVERFLOW));
-		it6505_write(it6505, INT_STATUS_03, reg_int03);
-
-		DRM_DEV_DEBUG_DRIVER(dev, "reg08 = 0x%02x", reg_int03);
-		DRM_DEV_DEBUG_DRIVER(dev, "reg0D = 0x%02x", reg_0d);
-
-		return;
-	}
-
-	if (it6505_test_bit(INT_SCDT_CHANGE, (unsigned int *)int_status))
-		it6505_irq_scdt(it6505);
-}
-
 static irqreturn_t it6505_int_threaded_handler(int unused, void *data)
 {
 	struct it6505 *it6505 = data;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	static const struct {
 		int bit;
 		void (*handler)(struct it6505 *it6505);
 	} irq_vec[] = {
 		{ BIT_INT_HPD, it6505_irq_hpd },
 		{ BIT_INT_HPD_IRQ, it6505_irq_hpd_irq },
+		{ BIT_INT_SCDT, it6505_irq_scdt },
 		{ BIT_INT_HDCP_FAIL, it6505_irq_hdcp_fail },
 		{ BIT_INT_HDCP_DONE, it6505_irq_hdcp_done },
 		{ BIT_INT_AUX_CMD_FAIL, it6505_irq_aux_cmd_fail },
 		{ BIT_INT_HDCP_KSV_CHECK, it6505_irq_hdcp_ksv_check },
 		{ BIT_INT_AUDIO_FIFO_ERROR, it6505_irq_audio_fifo_error },
 		{ BIT_INT_LINK_TRAIN_FAIL, it6505_irq_link_train_fail },
+		{ BIT_INT_VID_FIFO_ERROR, it6505_irq_video_fifo_error },
+		{ BIT_INT_IO_FIFO_OVERFLOW, it6505_irq_io_latch_fifo_overflow },
 	};
 	int int_status[3], i;
 
-	if (it6505->enable_drv_hold || !it6505->powered)
+	if (it6505->enable_drv_hold || pm_runtime_get_if_in_use(dev) <= 0)
 		return IRQ_HANDLED;
-
-	pm_runtime_get_sync(dev);
 
 	int_status[0] = it6505_read(it6505, INT_STATUS_01);
 	int_status[1] = it6505_read(it6505, INT_STATUS_02);
@@ -2730,7 +2529,6 @@ static irqreturn_t it6505_int_threaded_handler(int unused, void *data)
 			if (it6505_test_bit(irq_vec[i].bit, (unsigned int *)int_status))
 				irq_vec[i].handler(it6505);
 		}
-		it6505_irq_video_handler(it6505, (unsigned int *)int_status);
 	}
 
 	pm_runtime_put_sync(dev);
@@ -2740,7 +2538,7 @@ static irqreturn_t it6505_int_threaded_handler(int unused, void *data)
 
 static int it6505_poweron(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	struct it6505_platform_data *pdata = &it6505->pdata;
 	int err;
 
@@ -2772,10 +2570,10 @@ static int it6505_poweron(struct it6505 *it6505)
 	/* time interval between OVDD and SYSRSTN at least be 10ms */
 	if (pdata->gpiod_reset) {
 		usleep_range(10000, 20000);
-		gpiod_set_value_cansleep(pdata->gpiod_reset, 1);
-		usleep_range(1000, 2000);
 		gpiod_set_value_cansleep(pdata->gpiod_reset, 0);
-		usleep_range(25000, 35000);
+		usleep_range(1000, 2000);
+		gpiod_set_value_cansleep(pdata->gpiod_reset, 1);
+		usleep_range(10000, 20000);
 	}
 
 	it6505->powered = true;
@@ -2784,14 +2582,12 @@ static int it6505_poweron(struct it6505 *it6505)
 	it6505_init(it6505);
 	it6505_lane_off(it6505);
 
-	enable_irq(it6505->irq);
-
 	return 0;
 }
 
 static int it6505_poweroff(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	struct it6505_platform_data *pdata = &it6505->pdata;
 	int err;
 
@@ -2802,10 +2598,8 @@ static int it6505_poweroff(struct it6505 *it6505)
 		return 0;
 	}
 
-	disable_irq_nosync(it6505->irq);
-
 	if (pdata->gpiod_reset)
-		gpiod_set_value_cansleep(pdata->gpiod_reset, 1);
+		gpiod_set_value_cansleep(pdata->gpiod_reset, 0);
 
 	if (pdata->pwr18) {
 		err = regulator_disable(pdata->pwr18);
@@ -2827,7 +2621,7 @@ static int it6505_poweroff(struct it6505 *it6505)
 
 static enum drm_connector_status it6505_detect(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	enum drm_connector_status status = connector_status_disconnected;
 	int dp_sink_count;
 
@@ -2846,7 +2640,8 @@ static enum drm_connector_status it6505_detect(struct it6505 *it6505)
 	}
 
 	if (it6505->hpd_state) {
-		drm_dp_link_power_up(&it6505->aux, it6505->link.revision);
+		it6505_drm_dp_link_set_power(&it6505->aux, &it6505->link,
+					     DP_SET_POWER_D0);
 		dp_sink_count = it6505_dpcd_read(it6505, DP_SINK_COUNT);
 		it6505->sink_count = DP_GET_SINK_COUNT(dp_sink_count);
 		DRM_DEV_DEBUG_DRIVER(dev, "it6505->sink_count:%d branch:%d",
@@ -2887,7 +2682,7 @@ static int it6505_extcon_notifier(struct notifier_block *self,
 static void it6505_extcon_work(struct work_struct *work)
 {
 	struct it6505 *it6505 = container_of(work, struct it6505, extcon_wq);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int state, ret;
 
 	if (it6505->enable_drv_hold)
@@ -2932,11 +2727,11 @@ unlock:
 static int it6505_use_notifier_module(struct it6505 *it6505)
 {
 	int ret;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	it6505->event_nb.notifier_call = it6505_extcon_notifier;
 	INIT_WORK(&it6505->extcon_wq, it6505_extcon_work);
-	ret = devm_extcon_register_notifier(it6505->dev,
+	ret = devm_extcon_register_notifier(&it6505->client->dev,
 					    it6505->extcon, EXTCON_DISP_DP,
 					    &it6505->event_nb);
 	if (ret) {
@@ -2952,7 +2747,7 @@ static int it6505_use_notifier_module(struct it6505 *it6505)
 static void it6505_remove_notifier_module(struct it6505 *it6505)
 {
 	if (it6505->extcon) {
-		devm_extcon_unregister_notifier(it6505->dev,
+		devm_extcon_unregister_notifier(&it6505->client->dev,
 						it6505->extcon,	EXTCON_DISP_DP,
 						&it6505->event_nb);
 
@@ -2965,7 +2760,7 @@ static void __maybe_unused it6505_delayed_audio(struct work_struct *work)
 	struct it6505 *it6505 = container_of(work, struct it6505,
 					     delayed_audio.work);
 
-	DRM_DEV_DEBUG_DRIVER(it6505->dev, "start");
+	DRM_DEV_DEBUG_DRIVER(&it6505->client->dev, "start");
 
 	if (!it6505->powered)
 		return;
@@ -2978,7 +2773,7 @@ static int __maybe_unused it6505_audio_setup_hw_params(struct it6505 *it6505,
 						       struct hdmi_codec_params
 						       *params)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int i = 0;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "%s %d Hz, %d bit, %d channels\n", __func__,
@@ -3059,16 +2854,20 @@ static inline struct it6505 *bridge_to_it6505(struct drm_bridge *bridge)
 }
 
 static int it6505_bridge_attach(struct drm_bridge *bridge,
-				struct drm_encoder *encoder,
 				enum drm_bridge_attach_flags flags)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	int ret;
 
 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)) {
 		DRM_ERROR("DRM_BRIDGE_ATTACH_NO_CONNECTOR must be supplied");
 		return -EINVAL;
+	}
+
+	if (!bridge->encoder) {
+		dev_err(dev, "Parent encoder object not found");
+		return -ENODEV;
 	}
 
 	/* Register aux channel */
@@ -3119,10 +2918,11 @@ it6505_bridge_mode_valid(struct drm_bridge *bridge,
 }
 
 static void it6505_bridge_atomic_enable(struct drm_bridge *bridge,
-					struct drm_atomic_state *state)
+					struct drm_bridge_state *old_state)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
+	struct drm_atomic_state *state = old_state->base.state;
 	struct hdmi_avi_infoframe frame;
 	struct drm_crtc_state *crtc_state;
 	struct drm_connector_state *conn_state;
@@ -3169,28 +2969,30 @@ static void it6505_bridge_atomic_enable(struct drm_bridge *bridge,
 	it6505_int_mask_enable(it6505);
 	it6505_video_reset(it6505);
 
-	drm_dp_link_power_up(&it6505->aux, it6505->link.revision);
+	it6505_drm_dp_link_set_power(&it6505->aux, &it6505->link,
+				     DP_SET_POWER_D0);
 }
 
 static void it6505_bridge_atomic_disable(struct drm_bridge *bridge,
-					 struct drm_atomic_state *state)
+					 struct drm_bridge_state *old_state)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "start");
 
 	if (it6505->powered) {
-		drm_dp_link_power_down(&it6505->aux, it6505->link.revision);
+		it6505_drm_dp_link_set_power(&it6505->aux, &it6505->link,
+					     DP_SET_POWER_D3);
 		it6505_video_disable(it6505);
 	}
 }
 
 static void it6505_bridge_atomic_pre_enable(struct drm_bridge *bridge,
-					    struct drm_atomic_state *state)
+					    struct drm_bridge_state *old_state)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "start");
 
@@ -3198,10 +3000,10 @@ static void it6505_bridge_atomic_pre_enable(struct drm_bridge *bridge,
 }
 
 static void it6505_bridge_atomic_post_disable(struct drm_bridge *bridge,
-					      struct drm_atomic_state *state)
+					      struct drm_bridge_state *old_state)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	DRM_DEV_DEBUG_DRIVER(dev, "start");
 
@@ -3209,23 +3011,22 @@ static void it6505_bridge_atomic_post_disable(struct drm_bridge *bridge,
 }
 
 static enum drm_connector_status
-it6505_bridge_detect(struct drm_bridge *bridge, struct drm_connector *connector)
+it6505_bridge_detect(struct drm_bridge *bridge)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
 
 	return it6505_detect(it6505);
 }
 
-static const struct drm_edid *it6505_bridge_edid_read(struct drm_bridge *bridge,
-						      struct drm_connector *connector)
+static struct edid *it6505_bridge_get_edid(struct drm_bridge *bridge,
+					   struct drm_connector *connector)
 {
 	struct it6505 *it6505 = bridge_to_it6505(bridge);
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	if (!it6505->cached_edid) {
-		it6505->cached_edid = drm_edid_read_custom(connector,
-							   it6505_get_edid_block,
-							   it6505);
+		it6505->cached_edid = drm_do_get_edid(connector, it6505_get_edid_block,
+						      it6505);
 
 		if (!it6505->cached_edid) {
 			DRM_DEV_DEBUG_DRIVER(dev, "failed to get edid!");
@@ -3233,7 +3034,7 @@ static const struct drm_edid *it6505_bridge_edid_read(struct drm_bridge *bridge,
 		}
 	}
 
-	return drm_edid_dup(it6505->cached_edid);
+	return drm_edid_duplicate(it6505->cached_edid);
 }
 
 static const struct drm_bridge_funcs it6505_bridge_funcs = {
@@ -3248,7 +3049,7 @@ static const struct drm_bridge_funcs it6505_bridge_funcs = {
 	.atomic_pre_enable = it6505_bridge_atomic_pre_enable,
 	.atomic_post_disable = it6505_bridge_atomic_post_disable,
 	.detect = it6505_bridge_detect,
-	.edid_read = it6505_bridge_edid_read,
+	.get_edid = it6505_bridge_get_edid,
 };
 
 static __maybe_unused int it6505_bridge_resume(struct device *dev)
@@ -3262,8 +3063,6 @@ static __maybe_unused int it6505_bridge_suspend(struct device *dev)
 {
 	struct it6505 *it6505 = dev_get_drvdata(dev);
 
-	it6505_remove_edid(it6505);
-
 	return it6505_poweroff(it6505);
 }
 
@@ -3275,7 +3074,7 @@ static const struct dev_pm_ops it6505_bridge_pm_ops = {
 static int it6505_init_pdata(struct it6505 *it6505)
 {
 	struct it6505_platform_data *pdata = &it6505->pdata;
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	/* 1.0V digital core power regulator  */
 	pdata->pwr18 = devm_regulator_get(dev, "pwr18");
@@ -3290,7 +3089,7 @@ static int it6505_init_pdata(struct it6505 *it6505)
 		return PTR_ERR(pdata->ovdd);
 	}
 
-	pdata->gpiod_reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+	pdata->gpiod_reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(pdata->gpiod_reset)) {
 		dev_err(dev, "gpiod_reset gpio not found");
 		return PTR_ERR(pdata->gpiod_reset);
@@ -3317,7 +3116,7 @@ static int it6505_get_data_lanes_count(const struct device_node *endpoint,
 
 static void it6505_parse_dt(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 	struct device_node *np = dev->of_node, *ep = NULL;
 	int len;
 	u64 link_frequencies;
@@ -3396,7 +3195,7 @@ static ssize_t receive_timing_debugfs_show(struct file *file, char __user *buf,
 					   size_t len, loff_t *ppos)
 {
 	struct it6505 *it6505 = file->private_data;
-	struct drm_display_mode *vid;
+	struct drm_display_mode *vid = &it6505->video_info;
 	u8 read_buf[READ_BUFFER_SIZE];
 	u8 *str = read_buf, *end = read_buf + READ_BUFFER_SIZE;
 	ssize_t ret, count;
@@ -3405,7 +3204,6 @@ static ssize_t receive_timing_debugfs_show(struct file *file, char __user *buf,
 		return -ENODEV;
 
 	it6505_calc_video_info(it6505);
-	vid = &it6505->video_info;
 	str += scnprintf(str, end - str, "---video timing---\n");
 	str += scnprintf(str, end - str, "PCLK:%d.%03dMHz\n",
 			 vid->clock / 1000, vid->clock % 1000);
@@ -3522,7 +3320,7 @@ static void debugfs_create_files(struct it6505 *it6505)
 
 static void debugfs_init(struct it6505 *it6505)
 {
-	struct device *dev = it6505->dev;
+	struct device *dev = &it6505->client->dev;
 
 	it6505->debugfs = debugfs_create_dir(DEBUGFS_DIR_NAME, NULL);
 
@@ -3552,12 +3350,11 @@ static int it6505_i2c_probe(struct i2c_client *client)
 	struct it6505 *it6505;
 	struct device *dev = &client->dev;
 	struct extcon_dev *extcon;
-	int err;
+	int err, intp_irq;
 
-	it6505 = devm_drm_bridge_alloc(&client->dev, struct it6505, bridge,
-				       &it6505_bridge_funcs);
-	if (IS_ERR(it6505))
-		return PTR_ERR(it6505);
+	it6505 = devm_kzalloc(&client->dev, sizeof(*it6505), GFP_KERNEL);
+	if (!it6505)
+		return -ENOMEM;
 
 	mutex_init(&it6505->extcon_lock);
 	mutex_init(&it6505->mode_lock);
@@ -3565,7 +3362,7 @@ static int it6505_i2c_probe(struct i2c_client *client)
 
 	it6505->bridge.of_node = client->dev.of_node;
 	it6505->connector_status = connector_status_disconnected;
-	it6505->dev = &client->dev;
+	it6505->client = client;
 	i2c_set_clientdata(client, it6505);
 
 	/* get extcon device from DTS */
@@ -3594,18 +3391,17 @@ static int it6505_i2c_probe(struct i2c_client *client)
 
 	it6505_parse_dt(it6505);
 
-	it6505->irq = client->irq;
+	intp_irq = client->irq;
 
-	if (!it6505->irq) {
+	if (!intp_irq) {
 		dev_err(dev, "Failed to get INTP IRQ");
 		err = -ENODEV;
 		return err;
 	}
 
-	err = devm_request_threaded_irq(&client->dev, it6505->irq, NULL,
+	err = devm_request_threaded_irq(&client->dev, intp_irq, NULL,
 					it6505_int_threaded_handler,
-					IRQF_TRIGGER_LOW | IRQF_ONESHOT |
-					IRQF_NO_AUTOEN,
+					IRQF_TRIGGER_LOW | IRQF_ONESHOT,
 					"it6505-intp", it6505);
 	if (err) {
 		dev_err(dev, "Failed to request INTP threaded IRQ: %d", err);
@@ -3632,6 +3428,7 @@ static int it6505_i2c_probe(struct i2c_client *client)
 	it6505->aux.transfer = it6505_aux_transfer;
 	drm_dp_aux_init(&it6505->aux);
 
+	it6505->bridge.funcs = &it6505_bridge_funcs;
 	it6505->bridge.type = DRM_MODE_CONNECTOR_DisplayPort;
 	it6505->bridge.ops = DRM_BRIDGE_OP_DETECT | DRM_BRIDGE_OP_EDID |
 			     DRM_BRIDGE_OP_HPD;
@@ -3652,7 +3449,7 @@ static void it6505_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id it6505_id[] = {
-	{ "it6505" },
+	{ "it6505", 0 },
 	{ }
 };
 
@@ -3662,7 +3459,6 @@ static const struct of_device_id it6505_of_match[] = {
 	{ .compatible = "ite,it6505" },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, it6505_of_match);
 
 static struct i2c_driver it6505_i2c_driver = {
 	.driver = {
@@ -3670,7 +3466,7 @@ static struct i2c_driver it6505_i2c_driver = {
 		.of_match_table = it6505_of_match,
 		.pm = &it6505_bridge_pm_ops,
 	},
-	.probe = it6505_i2c_probe,
+	.probe_new = it6505_i2c_probe,
 	.remove = it6505_i2c_remove,
 	.shutdown = it6505_shutdown,
 	.id_table = it6505_id,

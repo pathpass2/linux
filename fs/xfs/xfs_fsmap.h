@@ -7,7 +7,6 @@
 #define __XFS_FSMAP_H__
 
 struct fsmap;
-struct fsmap_head;
 
 /* internal fsmap representation */
 struct xfs_fsmap {
@@ -28,21 +27,9 @@ struct xfs_fsmap_head {
 	struct xfs_fsmap fmh_keys[2];	/* low and high keys */
 };
 
-/* internal fsmap record format */
-struct xfs_fsmap_irec {
-	xfs_daddr_t	start_daddr;
-	xfs_daddr_t	len_daddr;
-	uint64_t	owner;		/* extent owner */
-	uint64_t	offset;		/* offset within the owner */
-	unsigned int	rm_flags;	/* rmap state flags */
+void xfs_fsmap_to_internal(struct xfs_fsmap *dest, struct fsmap *src);
 
-	/*
-	 * rmapbt startblock corresponding to start_daddr, if the record came
-	 * from an rmap btree.
-	 */
-	xfs_agblock_t	rec_key;
-};
-
-int xfs_ioc_getfsmap(struct xfs_inode *ip, struct fsmap_head __user *arg);
+int xfs_getfsmap(struct xfs_mount *mp, struct xfs_fsmap_head *head,
+		struct fsmap *out_recs);
 
 #endif /* __XFS_FSMAP_H__ */

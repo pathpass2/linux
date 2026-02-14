@@ -16,10 +16,8 @@
 #include <linux/slab.h>
 #include <linux/pvclock_gtod.h>
 #include <linux/timekeeper_internal.h>
-#include <linux/sched/cputime.h>
 
 #include <asm/pvclock.h>
-#include <asm/timer.h>
 #include <asm/xen/hypervisor.h>
 #include <asm/xen/hypercall.h>
 #include <asm/xen/cpuid.h>
@@ -32,7 +30,7 @@
 #include "xen-ops.h"
 
 /* Minimum amount of time until next clock event fires */
-#define TIMER_SLOP	1
+#define TIMER_SLOP	100000
 
 static u64 xen_sched_clock_offset __read_mostly;
 
@@ -68,10 +66,11 @@ static noinstr u64 xen_sched_clock(void)
         struct pvclock_vcpu_time_info *src;
 	u64 ret;
 
+	preempt_disable_notrace();
 	src = &__this_cpu_read(xen_vcpu)->time;
 	ret = pvclock_clocksource_read_nowd(src);
 	ret -= xen_sched_clock_offset;
-
+	preempt_enable_notrace();
 	return ret;
 }
 

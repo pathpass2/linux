@@ -27,7 +27,6 @@ allOf:
             enum:
               - xlnx,zynqmp-8.9a
               - xlnx,versal-8.9a
-              - xlnx,versal-net-emmc
     then:
       properties:
         clock-output-names:
@@ -38,15 +37,6 @@ allOf:
             - items:
                 - const: clk_out_sd1
                 - const: clk_in_sd1
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: renesas,rzn1-sdhci
-    then:
-      properties:
-        interrupts:
-          minItems: 2
 
 properties:
   compatible:
@@ -54,10 +44,6 @@ properties:
       - const: arasan,sdhci-8.9a                # generic Arasan SDHCI 8.9a PHY
       - const: arasan,sdhci-4.9a                # generic Arasan SDHCI 4.9a PHY
       - const: arasan,sdhci-5.1                 # generic Arasan SDHCI 5.1 PHY
-      - items:
-          - const: renesas,r9a06g032-sdhci      # Renesas RZ/N1D SoC
-          - const: renesas,rzn1-sdhci           # Renesas RZ/N1 family
-          - const: arasan,sdhci-8.9a
       - items:
           - const: rockchip,rk3399-sdhci-5.1    # rk3399 eMMC PHY
           - const: arasan,sdhci-5.1
@@ -73,10 +59,6 @@ properties:
       - items:
           - const: xlnx,versal-8.9a             # Versal SDHCI 8.9a PHY
           - const: arasan,sdhci-8.9a
-        description:
-          For this device it is strongly suggested to include
-          clock-output-names and '#clock-cells'.
-      - const: xlnx,versal-net-emmc     # Versal Net eMMC PHY
         description:
           For this device it is strongly suggested to include
           clock-output-names and '#clock-cells'.
@@ -106,6 +88,12 @@ properties:
         description:
           For this device it is strongly suggested to include
           arasan,soc-ctl-syscon.
+      - items:
+          - const: intel,thunderbay-sdhci-5.1   # Intel Thunder Bay eMMC PHY
+          - const: arasan,sdhci-5.1
+        description:
+          For this device it is strongly suggested to include
+          clock-output-names and '#clock-cells'.
 
   reg:
     maxItems: 1
@@ -122,14 +110,7 @@ properties:
       - const: gate
 
   interrupts:
-    minItems: 1
-    maxItems: 2
-
-  interrupt-names:
-    minItems: 1
-    items:
-      - const: int
-      - const: wakeup
+    maxItems: 1
 
   phys:
     maxItems: 1
@@ -179,12 +160,6 @@ properties:
     default: 0
     description:
       The MIO bank number in which the command and data lines are configured.
-
-  iommus:
-    maxItems: 1
-
-  power-domains:
-    maxItems: 1
 
 dependencies:
   '#clock-cells': [ clock-output-names ]
@@ -246,8 +221,8 @@ examples:
           interrupt-parent = <&gic>;
           interrupts = <0 48 4>;
           reg = <0xff160000 0x1000>;
-          clocks = <&clk200>, <&clk200>, <&clk1200>;
-          clock-names = "clk_xin", "clk_ahb", "gate";
+          clocks = <&clk200>, <&clk200>;
+          clock-names = "clk_xin", "clk_ahb";
           clock-output-names = "clk_out_sd0", "clk_in_sd0";
           #clock-cells = <1>;
           clk-phase-sd-hs = <63>, <72>;
@@ -259,8 +234,8 @@ examples:
           interrupt-parent = <&gic>;
           interrupts = <0 126 4>;
           reg = <0xf1040000 0x10000>;
-          clocks = <&clk200>, <&clk200>, <&clk1200>;
-          clock-names = "clk_xin", "clk_ahb", "gate";
+          clocks = <&clk200>, <&clk200>;
+          clock-names = "clk_xin", "clk_ahb";
           clock-output-names = "clk_out_sd0", "clk_in_sd0";
           #clock-cells = <1>;
           clk-phase-sd-hs = <132>, <60>;
@@ -333,4 +308,23 @@ examples:
           clocks = <&scmi_clk KEEM_BAY_PSS_AUX_SD0>,
                    <&scmi_clk KEEM_BAY_PSS_SD0>;
           arasan,soc-ctl-syscon = <&sd0_phy_syscon>;
+    };
+
+  - |
+    #define EMMC_XIN_CLK
+    #define EMMC_AXI_CLK
+    #define TBH_PSS_EMMC_RST_N
+    mmc@80420000 {
+          compatible = "intel,thunderbay-sdhci-5.1", "arasan,sdhci-5.1";
+          interrupts = <GIC_SPI 714 IRQ_TYPE_LEVEL_HIGH>;
+          reg = <0x80420000 0x400>;
+          clocks = <&scmi_clk EMMC_XIN_CLK>,
+                   <&scmi_clk EMMC_AXI_CLK>;
+          clock-names = "clk_xin", "clk_ahb";
+          phys = <&emmc_phy>;
+          phy-names = "phy_arasan";
+          assigned-clocks = <&scmi_clk EMMC_XIN_CLK>;
+          clock-output-names = "emmc_cardclock";
+          resets = <&rst_pss1 TBH_PSS_EMMC_RST_N>;
+          #clock-cells = <0x0>;
     };

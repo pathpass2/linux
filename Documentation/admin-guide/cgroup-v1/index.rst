@@ -22,3 +22,10 @@ Control Groups version 1
     net_prio
     pids
     rdma
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

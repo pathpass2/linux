@@ -15,7 +15,7 @@
 #include <linux/i2c.h>
 #include <linux/kstrtox.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/rtc.h>
 #include <linux/watchdog.h>
 
@@ -39,7 +39,7 @@
 #define ABX8XX_REG_STATUS	0x0f
 #define ABX8XX_STATUS_AF	BIT(2)
 #define ABX8XX_STATUS_BLF	BIT(4)
-#define ABX8XX_STATUS_WDT	BIT(5)
+#define ABX8XX_STATUS_WDT	BIT(6)
 
 #define ABX8XX_REG_CTRL1	0x10
 #define ABX8XX_CTRL_WRITE	BIT(0)
@@ -705,18 +705,14 @@ static int abx80x_nvmem_xfer(struct abx80x_priv *priv, unsigned int offset,
 		if (ret)
 			return ret;
 
-		if (write) {
+		if (write)
 			ret = i2c_smbus_write_i2c_block_data(priv->client, reg,
 							     len, val);
-			if (ret)
-				return ret;
-		} else {
+		else
 			ret = i2c_smbus_read_i2c_block_data(priv->client, reg,
 							    len, val);
-			if (ret <= 0)
-				return ret ? ret : -EIO;
-			len = ret;
-		}
+		if (ret)
+			return ret;
 
 		offset += len;
 		val += len;
@@ -996,7 +992,7 @@ static struct i2c_driver abx80x_driver = {
 		.name	= "rtc-abx80x",
 		.of_match_table = of_match_ptr(abx80x_of_match),
 	},
-	.probe		= abx80x_probe,
+	.probe_new	= abx80x_probe,
 	.id_table	= abx80x_id,
 };
 

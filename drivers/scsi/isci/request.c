@@ -180,7 +180,7 @@ static void sci_io_request_build_ssp_command_iu(struct isci_request *ireq)
 	cmd_iu->_r_a = 0;
 	cmd_iu->_r_b = 0;
 	cmd_iu->en_fburst = 0; /* unsupported */
-	cmd_iu->task_prio = 0;
+	cmd_iu->task_prio = task->ssp_task.task_prio;
 	cmd_iu->task_attr = task->ssp_task.task_attr;
 	cmd_iu->_r_c = 0;
 
@@ -738,7 +738,8 @@ static enum sci_status sci_io_request_construct_basic_ssp(struct isci_request *i
 	return SCI_SUCCESS;
 }
 
-void sci_task_request_construct_ssp(struct isci_request *ireq)
+enum sci_status sci_task_request_construct_ssp(
+	struct isci_request *ireq)
 {
 	/* Construct the SSP Task SCU Task Context */
 	scu_ssp_task_request_construct_task_context(ireq);
@@ -747,6 +748,8 @@ void sci_task_request_construct_ssp(struct isci_request *ireq)
 	sci_task_request_build_ssp_task_iu(ireq);
 
 	sci_change_state(&ireq->sm, SCI_REQ_CONSTRUCTED);
+
+	return SCI_SUCCESS;
 }
 
 static enum sci_status sci_io_request_construct_basic_sata(struct isci_request *ireq)
@@ -2904,7 +2907,7 @@ static void isci_request_io_request_complete(struct isci_host *ihost,
 					 task->total_xfer_len, task->data_dir);
 		else  /* unmap the sgl dma addresses */
 			dma_unmap_sg(&ihost->pdev->dev, task->scatter,
-				     task->num_scatter, task->data_dir);
+				     request->num_sg_entries, task->data_dir);
 		break;
 	case SAS_PROTOCOL_SMP: {
 		struct scatterlist *sg = &task->smp_task.smp_req;
@@ -3387,7 +3390,7 @@ static enum sci_status isci_io_request_build(struct isci_host *ihost,
 		return SCI_FAILURE;
 	}
 
-	return status;
+	return SCI_SUCCESS;
 }
 
 static struct isci_request *isci_request_from_tag(struct isci_host *ihost, u16 tag)

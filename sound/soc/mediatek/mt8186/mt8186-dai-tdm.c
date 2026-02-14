@@ -272,7 +272,7 @@ static const struct soc_enum mt8186_tdm_enum[] = {
 static int mt8186_tdm_hd_get(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 	struct mt8186_afe_private *afe_priv = afe->platform_priv;
 	int dai_id = get_tdm_id_by_name(kcontrol->id.name);
@@ -286,7 +286,7 @@ static int mt8186_tdm_hd_get(struct snd_kcontrol *kcontrol,
 static int mt8186_tdm_hd_set(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 	struct mt8186_afe_private *afe_priv = afe->platform_priv;
 	int dai_id = get_tdm_id_by_name(kcontrol->id.name);
@@ -416,10 +416,12 @@ static int mtk_dai_tdm_hw_params(struct snd_pcm_substream *substream,
 	regmap_update_bits(afe->regmap, ETDM_IN1_CON1, ETDM_IN_CON1_CTRL_MASK, tdm_con);
 
 	/* ETDM_IN1_CON3 */
+	tdm_con = 0;
 	tdm_con = ETDM_IN_CON3_FS(tran_rate);
 	regmap_update_bits(afe->regmap, ETDM_IN1_CON3, ETDM_IN_CON3_CTRL_MASK, tdm_con);
 
 	/* ETDM_IN1_CON4 */
+	tdm_con = 0;
 	tdm_con = ETDM_IN_CON4_FS(tran_relatch_rate);
 	if (slave_mode) {
 		if (lrck_inv)

@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/nvmem-provider.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
@@ -115,11 +116,11 @@ static int imx_iim_probe(struct platform_device *pdev)
 	if (IS_ERR(iim->clk))
 		return PTR_ERR(iim->clk);
 
-	cfg.name = "imx-iim";
-	cfg.read_only = true;
-	cfg.word_size = 1;
-	cfg.stride = 1;
-	cfg.reg_read = imx_iim_read;
+	cfg.name = "imx-iim",
+	cfg.read_only = true,
+	cfg.word_size = 1,
+	cfg.stride = 1,
+	cfg.reg_read = imx_iim_read,
 	cfg.dev = dev;
 	cfg.size = drvdata->nregs;
 	cfg.priv = iim;

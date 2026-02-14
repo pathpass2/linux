@@ -539,8 +539,7 @@ static irqreturn_t yenta_interrupt(int irq, void *dev_id)
 
 static void yenta_interrupt_wrapper(struct timer_list *t)
 {
-	struct yenta_socket *socket = timer_container_of(socket, t,
-							 poll_timer);
+	struct yenta_socket *socket = from_timer(socket, t, poll_timer);
 
 	yenta_interrupt(0, (void *)socket);
 	socket->poll_timer.expires = jiffies + HZ;
@@ -639,11 +638,11 @@ static int yenta_search_one_res(struct resource *root, struct resource *res,
 		start = PCIBIOS_MIN_CARDBUS_IO;
 		end = ~0U;
 	} else {
-		unsigned long avail = resource_size(root);
+		unsigned long avail = root->end - root->start;
 		int i;
 		size = BRIDGE_MEM_MAX;
-		if (size > (avail - 1) / 8) {
-			size = avail / 8;
+		if (size > avail/8) {
+			size = (avail+1)/8;
 			/* round size down to next power of 2 */
 			i = 0;
 			while ((size /= 2) != 0)
@@ -779,7 +778,7 @@ static void yenta_allocate_resources(struct yenta_socket *socket)
 			   IORESOURCE_MEM,
 			   PCI_CB_MEMORY_BASE_1, PCI_CB_MEMORY_LIMIT_1);
 	if (program)
-		pci_setup_cardbus_bridge(socket->dev->subordinate);
+		pci_setup_cardbus(socket->dev->subordinate);
 }
 
 
@@ -1453,5 +1452,4 @@ static struct pci_driver yenta_cardbus_driver = {
 
 module_pci_driver(yenta_cardbus_driver);
 
-MODULE_DESCRIPTION("Driver for CardBus yenta-compatible bridges");
 MODULE_LICENSE("GPL");

@@ -6,7 +6,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/netdevice.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/ktime.h>
 #include <net/xfrm.h>
 
@@ -266,17 +266,17 @@ static void set_sha2_512hmac(struct nfp_ipsec_cfg_add_sa *cfg, int *trunc_len)
 	}
 }
 
-static int nfp_net_xfrm_add_state(struct net_device *dev,
-				  struct xfrm_state *x,
+static int nfp_net_xfrm_add_state(struct xfrm_state *x,
 				  struct netlink_ext_ack *extack)
 {
+	struct net_device *netdev = x->xso.dev;
 	struct nfp_ipsec_cfg_mssg msg = {};
 	int i, key_len, trunc_len, err = 0;
 	struct nfp_ipsec_cfg_add_sa *cfg;
 	struct nfp_net *nn;
 	unsigned int saidx;
 
-	nn = netdev_priv(dev);
+	nn = netdev_priv(netdev);
 	cfg = &msg.cfg_add_sa;
 
 	/* General */
@@ -378,34 +378,6 @@ static int nfp_net_xfrm_add_state(struct net_device *dev,
 	/* Encryption */
 	switch (x->props.ealgo) {
 	case SADB_EALG_NONE:
-		/* The xfrm descriptor for CHACAH20_POLY1305 does not set the algorithm id, which
-		 * is the default value SADB_EALG_NONE. In the branch of SADB_EALG_NONE, driver
-		 * uses algorithm name to identify CHACAH20_POLY1305's algorithm.
-		 */
-		if (x->aead && !strcmp(x->aead->alg_name, "rfc7539esp(chacha20,poly1305)")) {
-			if (nn->pdev->device != PCI_DEVICE_ID_NFP3800) {
-				NL_SET_ERR_MSG_MOD(extack,
-						   "Unsupported encryption algorithm for offload");
-				return -EINVAL;
-			}
-			if (x->aead->alg_icv_len != 128) {
-				NL_SET_ERR_MSG_MOD(extack,
-						   "ICV must be 128bit with CHACHA20_POLY1305");
-				return -EINVAL;
-			}
-
-			/* Aead->alg_key_len includes 32-bit salt */
-			if (x->aead->alg_key_len - 32 != 256) {
-				NL_SET_ERR_MSG_MOD(extack, "Unsupported CHACHA20 key length");
-				return -EINVAL;
-			}
-
-			/* The CHACHA20's mode is not configured */
-			cfg->ctrl_word.hash = NFP_IPSEC_HASH_POLY1305_128;
-			cfg->ctrl_word.cipher = NFP_IPSEC_CIPHER_CHACHA20;
-			break;
-		}
-		fallthrough;
 	case SADB_EALG_NULL:
 		cfg->ctrl_word.cimode = NFP_IPSEC_CIMODE_CBC;
 		cfg->ctrl_word.cipher = NFP_IPSEC_CIPHER_NULL;
@@ -455,7 +427,6 @@ static int nfp_net_xfrm_add_state(struct net_device *dev,
 	}
 
 	if (x->aead) {
-		int key_offset = 0;
 		int salt_len = 4;
 
 		key_len = DIV_ROUND_UP(x->aead->alg_key_len, BITS_PER_BYTE);
@@ -466,19 +437,9 @@ static int nfp_net_xfrm_add_state(struct net_device *dev,
 			return -EINVAL;
 		}
 
-		/* The CHACHA20's key order needs to be adjusted based on hardware design.
-		 * Other's key order: {K0, K1, K2, K3, K4, K5, K6, K7}
-		 * CHACHA20's key order: {K4, K5, K6, K7, K0, K1, K2, K3}
-		 */
-		if (!strcmp(x->aead->alg_name, "rfc7539esp(chacha20,poly1305)"))
-			key_offset = key_len / sizeof(cfg->ciph_key[0]) >> 1;
-
-		for (i = 0; i < key_len / sizeof(cfg->ciph_key[0]); i++) {
-			int index = (i + key_offset) % (key_len / sizeof(cfg->ciph_key[0]));
-
-			cfg->ciph_key[index] = get_unaligned_be32(x->aead->alg_key +
-								  sizeof(cfg->ciph_key[0]) * i);
-		}
+		for (i = 0; i < key_len / sizeof(cfg->ciph_key[0]) ; i++)
+			cfg->ciph_key[i] = get_unaligned_be32(x->aead->alg_key +
+							      sizeof(cfg->ciph_key[0]) * i);
 
 		/* Load up the salt */
 		cfg->aesgcm_fields.salt = get_unaligned_be32(x->aead->alg_key + key_len);
@@ -546,16 +507,17 @@ static int nfp_net_xfrm_add_state(struct net_device *dev,
 	return 0;
 }
 
-static void nfp_net_xfrm_del_state(struct net_device *dev, struct xfrm_state *x)
+static void nfp_net_xfrm_del_state(struct xfrm_state *x)
 {
 	struct nfp_ipsec_cfg_mssg msg = {
 		.cmd = NFP_IPSEC_CFG_MSSG_INV_SA,
 		.sa_idx = x->xso.offload_handle - 1,
 	};
+	struct net_device *netdev = x->xso.dev;
 	struct nfp_net *nn;
 	int err;
 
-	nn = netdev_priv(dev);
+	nn = netdev_priv(netdev);
 	err = nfp_net_sched_mbox_amsg_work(nn, NFP_NET_CFG_MBOX_CMD_IPSEC, &msg,
 					   sizeof(msg), nfp_net_ipsec_cfg);
 	if (err)
@@ -564,9 +526,20 @@ static void nfp_net_xfrm_del_state(struct net_device *dev, struct xfrm_state *x)
 	xa_erase(&nn->xa_ipsec, x->xso.offload_handle - 1);
 }
 
+static bool nfp_net_ipsec_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
+{
+	if (x->props.family == AF_INET)
+		/* Offload with IPv4 options is not supported yet */
+		return ip_hdr(skb)->ihl == 5;
+
+	/* Offload with IPv6 extension headers is not support yet */
+	return !(ipv6_ext_hdr(ipv6_hdr(skb)->nexthdr));
+}
+
 static const struct xfrmdev_ops nfp_net_ipsec_xfrmdev_ops = {
 	.xdo_dev_state_add = nfp_net_xfrm_add_state,
 	.xdo_dev_state_delete = nfp_net_xfrm_del_state,
+	.xdo_dev_offload_ok = nfp_net_ipsec_offload_ok,
 };
 
 void nfp_net_ipsec_init(struct nfp_net *nn)

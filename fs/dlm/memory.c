@@ -72,8 +72,6 @@ out:
 
 void dlm_memory_exit(void)
 {
-	rcu_barrier();
-
 	kmem_cache_destroy(writequeue_cache);
 	kmem_cache_destroy(mhandle_cache);
 	kmem_cache_destroy(msg_cache);
@@ -84,7 +82,10 @@ void dlm_memory_exit(void)
 
 char *dlm_allocate_lvb(struct dlm_ls *ls)
 {
-	return kzalloc(ls->ls_lvblen, GFP_ATOMIC);
+	char *p;
+
+	p = kzalloc(ls->ls_lvblen, GFP_NOFS);
+	return p;
 }
 
 void dlm_free_lvb(char *p)
@@ -92,34 +93,32 @@ void dlm_free_lvb(char *p)
 	kfree(p);
 }
 
-struct dlm_rsb *dlm_allocate_rsb(void)
+struct dlm_rsb *dlm_allocate_rsb(struct dlm_ls *ls)
 {
-	return kmem_cache_zalloc(rsb_cache, GFP_ATOMIC);
+	struct dlm_rsb *r;
+
+	r = kmem_cache_zalloc(rsb_cache, GFP_NOFS);
+	return r;
 }
 
-static void __free_rsb_rcu(struct rcu_head *rcu)
+void dlm_free_rsb(struct dlm_rsb *r)
 {
-	struct dlm_rsb *r = container_of(rcu, struct dlm_rsb, rcu);
 	if (r->res_lvbptr)
 		dlm_free_lvb(r->res_lvbptr);
 	kmem_cache_free(rsb_cache, r);
 }
 
-void dlm_free_rsb(struct dlm_rsb *r)
+struct dlm_lkb *dlm_allocate_lkb(struct dlm_ls *ls)
 {
-	call_rcu(&r->rcu, __free_rsb_rcu);
+	struct dlm_lkb *lkb;
+
+	lkb = kmem_cache_zalloc(lkb_cache, GFP_NOFS);
+	return lkb;
 }
 
-struct dlm_lkb *dlm_allocate_lkb(void)
+void dlm_free_lkb(struct dlm_lkb *lkb)
 {
-	return kmem_cache_zalloc(lkb_cache, GFP_ATOMIC);
-}
-
-static void __free_lkb_rcu(struct rcu_head *rcu)
-{
-	struct dlm_lkb *lkb = container_of(rcu, struct dlm_lkb, rcu);
-
-	if (test_bit(DLM_DFL_USER_BIT, &lkb->lkb_dflags)) {
+	if (lkb->lkb_flags & DLM_IFL_USER) {
 		struct dlm_user_args *ua;
 		ua = lkb->lkb_ua;
 		if (ua) {
@@ -128,17 +127,16 @@ static void __free_lkb_rcu(struct rcu_head *rcu)
 		}
 	}
 
+	/* drop references if they are set */
+	dlm_callback_set_last_ptr(&lkb->lkb_last_cast, NULL);
+	dlm_callback_set_last_ptr(&lkb->lkb_last_cb, NULL);
+
 	kmem_cache_free(lkb_cache, lkb);
 }
 
-void dlm_free_lkb(struct dlm_lkb *lkb)
+struct dlm_mhandle *dlm_allocate_mhandle(gfp_t allocation)
 {
-	call_rcu(&lkb->rcu, __free_lkb_rcu);
-}
-
-struct dlm_mhandle *dlm_allocate_mhandle(void)
-{
-	return kmem_cache_alloc(mhandle_cache, GFP_ATOMIC);
+	return kmem_cache_alloc(mhandle_cache, allocation);
 }
 
 void dlm_free_mhandle(struct dlm_mhandle *mhandle)
@@ -156,9 +154,9 @@ void dlm_free_writequeue(struct writequeue_entry *writequeue)
 	kmem_cache_free(writequeue_cache, writequeue);
 }
 
-struct dlm_msg *dlm_allocate_msg(void)
+struct dlm_msg *dlm_allocate_msg(gfp_t allocation)
 {
-	return kmem_cache_alloc(msg_cache, GFP_ATOMIC);
+	return kmem_cache_alloc(msg_cache, allocation);
 }
 
 void dlm_free_msg(struct dlm_msg *msg)

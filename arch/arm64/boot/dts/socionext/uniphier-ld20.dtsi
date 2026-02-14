@@ -86,14 +86,10 @@
 
 		a72_l2: l2-cache0 {
 			compatible = "cache";
-			cache-level = <2>;
-			cache-unified;
 		};
 
 		a53_l2: l2-cache1 {
 			compatible = "cache";
-			cache-level = <2>;
-			cache-unified;
 		};
 	};
 
@@ -947,7 +943,6 @@
 
 			pcie_intc: legacy-interrupt-controller {
 				interrupt-controller;
-				#address-cells = <0>;
 				#interrupt-cells = <1>;
 				interrupt-parent = <&gic>;
 				interrupts = <GIC_SPI 226 IRQ_TYPE_LEVEL_HIGH>;

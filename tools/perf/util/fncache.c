@@ -1,58 +1,53 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Manage a cache of file names' existence */
-#include <pthread.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
-#include <linux/compiler.h>
+#include <string.h>
+#include <linux/list.h>
 #include "fncache.h"
-#include "hashmap.h"
 
-static struct hashmap *fncache;
+struct fncache {
+	struct hlist_node nd;
+	bool res;
+	char name[];
+};
 
-static size_t fncache__hash(long key, void *ctx __maybe_unused)
+#define FNHSIZE 61
+
+static struct hlist_head fncache_hash[FNHSIZE];
+
+unsigned shash(const unsigned char *s)
 {
-	return str_hash((const char *)key);
-}
-
-static bool fncache__equal(long key1, long key2, void *ctx __maybe_unused)
-{
-	return strcmp((const char *)key1, (const char *)key2) == 0;
-}
-
-static void fncache__init(void)
-{
-	fncache = hashmap__new(fncache__hash, fncache__equal, /*ctx=*/NULL);
-}
-
-static struct hashmap *fncache__get(void)
-{
-	static pthread_once_t fncache_once = PTHREAD_ONCE_INIT;
-
-	pthread_once(&fncache_once, fncache__init);
-
-	return fncache;
+	unsigned h = 0;
+	while (*s)
+		h = 65599 * h + *s++;
+	return h ^ (h >> 16);
 }
 
 static bool lookup_fncache(const char *name, bool *res)
 {
-	long val;
+	int h = shash((const unsigned char *)name) % FNHSIZE;
+	struct fncache *n;
 
-	if (!hashmap__find(fncache__get(), name, &val))
-		return false;
-
-	*res = (val != 0);
-	return true;
+	hlist_for_each_entry(n, &fncache_hash[h], nd) {
+		if (!strcmp(n->name, name)) {
+			*res = n->res;
+			return true;
+		}
+	}
+	return false;
 }
 
 static void update_fncache(const char *name, bool res)
 {
-	char *old_key = NULL, *key = strdup(name);
+	struct fncache *n = malloc(sizeof(struct fncache) + strlen(name) + 1);
+	int h = shash((const unsigned char *)name) % FNHSIZE;
 
-	if (key) {
-		hashmap__set(fncache__get(), key, res, &old_key, /*old_value*/NULL);
-		free(old_key);
-	}
+	if (!n)
+		return;
+	strcpy(n->name, name);
+	n->res = res;
+	hlist_add_head(&n->nd, &fncache_hash[h]);
 }
 
 /* No LRU, only use when bounded in some other way. */

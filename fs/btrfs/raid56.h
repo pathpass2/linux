@@ -7,101 +7,16 @@
 #ifndef BTRFS_RAID56_H
 #define BTRFS_RAID56_H
 
-#include <linux/types.h>
-#include <linux/list.h>
-#include <linux/spinlock.h>
-#include <linux/bio.h>
-#include <linux/refcount.h>
 #include <linux/workqueue.h>
 #include "volumes.h"
-
-struct page;
-struct btrfs_fs_info;
 
 enum btrfs_rbio_ops {
 	BTRFS_RBIO_WRITE,
 	BTRFS_RBIO_READ_REBUILD,
 	BTRFS_RBIO_PARITY_SCRUB,
+	BTRFS_RBIO_REBUILD_MISSING,
 };
 
-/*
- * Overview of btrfs_raid_bio.
- *
- * One btrfs_raid_bio represents a full stripe of RAID56, including both data
- * and P/Q stripes. For now, each data and P/Q stripe is of a fixed length (64K).
- *
- * One btrfs_raid_bio can have one or more bios from higher layer, covering
- * part or all of the data stripes.
- *
- * [PAGES FROM HIGHER LAYER BIOS]
- * Higher layer bios are in the btrfs_raid_bio::bio_list.
- *
- * Pages from the bio_list are represented like the following:
- *
- * bio_list:	     |<- Bio 1 ->|             |<- Bio 2 ->|  ...
- * bio_paddrs:	    [0]   [1]   [2]    [3]    [4]    [5]      ...
- *
- * If there is a bio covering a sector (one btrfs fs block), the corresponding
- * pointer in btrfs_raid_bio::bio_paddrs[] will point to the physical address
- * (with the offset inside the page) of the corresponding bio.
- *
- * If there is no bio covering a sector, then btrfs_raid_bio::bio_paddrs[i] will
- * be INVALID_PADDR.
- *
- * The length of each entry in bio_paddrs[] is a step (aka, min(sectorsize, PAGE_SIZE)).
- *
- * [PAGES FOR INTERNAL USAGES]
- * Pages not covered by any bio or belonging to P/Q stripes are stored in
- * btrfs_raid_bio::stripe_pages[] and stripe_paddrs[], like the following:
- *
- * stripe_pages:       |<- Page 0 ->|<- Page 1 ->|  ...
- * stripe_paddrs:     [0]    [1]   [2]    [3]   [4] ...
- *
- * stripe_pages[] array stores all the pages covering the full stripe, including
- * data and P/Q pages.
- * stripe_pages[0] is the first page of the first data stripe.
- * stripe_pages[BTRFS_STRIPE_LEN / PAGE_SIZE] is the first page of the second
- * data stripe.
- *
- * Some pointers inside stripe_pages[] can be NULL, e.g. for a full stripe write
- * (the bio covers all data stripes) there is no need to allocate pages for
- * data stripes (can grab from bio_paddrs[]).
- *
- * If the corresponding page of stripe_paddrs[i] is not allocated, the value of
- * stripe_paddrs[i] will be INVALID_PADDR.
- *
- * The length of each entry in stripe_paddrs[] is a step.
- *
- * [LOCATING A SECTOR]
- * To locate a sector for IO, we need the following info:
- *
- * - stripe_nr
- *   Starts from 0 (representing the first data stripe), ends at
- *   @nr_data (RAID5, P stripe) or @nr_data + 1 (RAID6, Q stripe).
- *
- * - sector_nr
- *   Starts from 0 (representing the first sector of the stripe), ends
- *   at BTRFS_STRIPE_LEN / sectorsize - 1.
- *
- * - step_nr
- *   A step is min(sector_size, PAGE_SIZE).
- *
- *   Starts from 0 (representing the first step of the sector), ends
- *   at @sector_nsteps - 1.
- *
- *   For most call sites they do not need to bother this parameter.
- *   It is for bs > ps support and only for vertical stripe related works.
- *   (e.g. RMW/recover)
- *
- * - from which array
- *   Whether grabbing from stripe_paddrs[] (aka, internal pages) or from the
- *   bio_paddrs[] (aka, from the higher layer bios).
- *
- * For IO, a physical address is returned, so that we can extract the page and
- * the offset inside the page for IO.
- * A special value INVALID_PADDR represents when the physical address is invalid,
- * normally meaning there is no page allocated for the specified sector.
- */
 struct btrfs_raid_bio {
 	struct btrfs_io_context *bioc;
 
@@ -159,14 +74,6 @@ struct btrfs_raid_bio {
 	/* How many sectors there are for each stripe */
 	u8 stripe_nsectors;
 
-	/*
-	 * How many steps there are for one sector.
-	 *
-	 * For bs > ps cases, it's sectorsize / PAGE_SIZE.
-	 * For bs <= ps cases, it's always 1.
-	 */
-	u8 sector_nsteps;
-
 	/* Stripe number that we're scrubbing  */
 	u8 scrubp;
 
@@ -201,13 +108,13 @@ struct btrfs_raid_bio {
 	struct page **stripe_pages;
 
 	/* Pointers to the sectors in the bio_list, for faster lookup */
-	phys_addr_t *bio_paddrs;
+	struct sector_ptr *bio_sectors;
 
-	/* Pointers to the sectors in the stripe_pages[]. */
-	phys_addr_t *stripe_paddrs;
-
-	/* Each set bit means the corresponding sector in stripe_sectors[] is uptodate. */
-	unsigned long *stripe_uptodate_bitmap;
+	/*
+	 * For subpage support, we need to map each sector to above
+	 * stripe_pages.
+	 */
+	struct sector_ptr *stripe_sectors;
 
 	/* Allocated with real_stripes-many pointers for finish_*() calls */
 	void **finish_pointers;
@@ -216,6 +123,10 @@ struct btrfs_raid_bio {
 	 * The bitmap recording where IO errors happened.
 	 * Each bit is corresponding to one sector in either bio_sectors[] or
 	 * stripe_sectors[] array.
+	 *
+	 * The reason we don't use another bit in sector_ptr is, we have two
+	 * arrays of sectors, and a lot of IO can use sectors in both arrays.
+	 * Thus making it much harder to iterate.
 	 */
 	unsigned long *error_bitmap;
 
@@ -254,14 +165,9 @@ struct raid56_bio_trace_info {
 	u8 stripe_nr;
 };
 
-static inline int nr_data_stripes(const struct btrfs_chunk_map *map)
+static inline int nr_data_stripes(const struct map_lookup *map)
 {
 	return map->num_stripes - btrfs_nr_parity_stripes(map->type);
-}
-
-static inline int nr_bioc_data_stripes(const struct btrfs_io_context *bioc)
-{
-	return bioc->num_stripes - btrfs_nr_parity_stripes(bioc->map_type);
 }
 
 #define RAID5_P_STRIPE ((u64)-2)
@@ -276,14 +182,18 @@ void raid56_parity_recover(struct bio *bio, struct btrfs_io_context *bioc,
 			   int mirror_num);
 void raid56_parity_write(struct bio *bio, struct btrfs_io_context *bioc);
 
+void raid56_add_scrub_pages(struct btrfs_raid_bio *rbio, struct page *page,
+			    unsigned int pgoff, u64 logical);
+
 struct btrfs_raid_bio *raid56_parity_alloc_scrub_rbio(struct bio *bio,
 				struct btrfs_io_context *bioc,
 				struct btrfs_device *scrub_dev,
 				unsigned long *dbitmap, int stripe_nsectors);
 void raid56_parity_submit_scrub_rbio(struct btrfs_raid_bio *rbio);
 
-void raid56_parity_cache_data_folios(struct btrfs_raid_bio *rbio,
-				     struct folio **data_folios, u64 data_logical);
+struct btrfs_raid_bio *
+raid56_alloc_missing_rbio(struct bio *bio, struct btrfs_io_context *bioc);
+void raid56_submit_missing_rbio(struct btrfs_raid_bio *rbio);
 
 int btrfs_alloc_stripe_hash_table(struct btrfs_fs_info *info);
 void btrfs_free_stripe_hash_table(struct btrfs_fs_info *info);

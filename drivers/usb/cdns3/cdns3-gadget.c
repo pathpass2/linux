@@ -61,7 +61,6 @@
 #include <linux/module.h>
 #include <linux/dmapool.h>
 #include <linux/iopoll.h>
-#include <linux/property.h>
 
 #include "core.h"
 #include "gadget-export.h"
@@ -801,8 +800,7 @@ void cdns3_gadget_giveback(struct cdns3_endpoint *priv_ep,
 	if (request->status == -EINPROGRESS)
 		request->status = status;
 
-	if (likely(!(priv_req->flags & REQUEST_UNALIGNED)))
-		usb_gadget_unmap_request_by_dev(priv_dev->sysdev, request,
+	usb_gadget_unmap_request_by_dev(priv_dev->sysdev, request,
 					priv_ep->dir);
 
 	if ((priv_req->flags & REQUEST_UNALIGNED) &&
@@ -810,10 +808,10 @@ void cdns3_gadget_giveback(struct cdns3_endpoint *priv_ep,
 		/* Make DMA buffer CPU accessible */
 		dma_sync_single_for_cpu(priv_dev->sysdev,
 			priv_req->aligned_buf->dma,
-			request->actual,
+			priv_req->aligned_buf->size,
 			priv_req->aligned_buf->dir);
 		memcpy(request->buf, priv_req->aligned_buf->buf,
-		       request->actual);
+		       request->length);
 	}
 
 	priv_req->flags &= ~(REQUEST_PENDING | REQUEST_UNALIGNED);
@@ -828,11 +826,7 @@ void cdns3_gadget_giveback(struct cdns3_endpoint *priv_ep,
 			return;
 	}
 
-	/*
-	 * zlp request is appended by driver, needn't call usb_gadget_giveback_request() to notify
-	 * gadget composite driver.
-	 */
-	if (request->complete && request->buf != priv_dev->zlp_buf) {
+	if (request->complete) {
 		spin_unlock(&priv_dev->lock);
 		usb_gadget_giveback_request(&priv_ep->endpoint,
 					    request);
@@ -1123,8 +1117,6 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 	dma_addr_t trb_dma;
 	u32 togle_pcs = 1;
 	int sg_iter = 0;
-	int num_trb_req;
-	int trb_burst;
 	int num_trb;
 	int address;
 	u32 control;
@@ -1132,15 +1124,16 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 	u16 total_tdl = 0;
 	struct scatterlist *s = NULL;
 	bool sg_supported = !!(request->num_mapped_sgs);
-	u32 ioc = request->no_interrupt ? 0 : TRB_IOC;
 
-	num_trb_req = sg_supported ? request->num_mapped_sgs : 1;
-
-	/* ISO transfer require each SOF have a TD, each TD include some TRBs */
 	if (priv_ep->type == USB_ENDPOINT_XFER_ISOC)
-		num_trb = priv_ep->interval * num_trb_req;
+		num_trb = priv_ep->interval;
 	else
-		num_trb = num_trb_req;
+		num_trb = sg_supported ? request->num_mapped_sgs : 1;
+
+	if (num_trb > priv_ep->free_trbs) {
+		priv_ep->flags |= EP_RING_FULL;
+		return -ENOBUFS;
+	}
 
 	priv_req = to_cdns3_request(request);
 	address = priv_ep->endpoint.desc->bEndpointAddress;
@@ -1189,30 +1182,13 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 
 		link_trb->control = cpu_to_le32(((priv_ep->pcs) ? TRB_CYCLE : 0) |
 				    TRB_TYPE(TRB_LINK) | TRB_TOGGLE | ch_bit);
-
-		if (priv_ep->type == USB_ENDPOINT_XFER_ISOC) {
-			/*
-			 * ISO require LINK TRB must be first one of TD.
-			 * Fill LINK TRBs for left trb space to simply software process logic.
-			 */
-			while (priv_ep->enqueue) {
-				*trb = *link_trb;
-				trace_cdns3_prepare_trb(priv_ep, trb);
-
-				cdns3_ep_inc_enq(priv_ep);
-				trb = priv_ep->trb_pool + priv_ep->enqueue;
-				priv_req->trb = trb;
-			}
-		}
-	}
-
-	if (num_trb > priv_ep->free_trbs) {
-		priv_ep->flags |= EP_RING_FULL;
-		return -ENOBUFS;
 	}
 
 	if (priv_dev->dev_ver <= DEV_VER_V2)
 		togle_pcs = cdns3_wa1_update_guard(priv_ep, trb);
+
+	if (sg_supported)
+		s = request->sg;
 
 	/* set incorrect Cycle Bit for first trb*/
 	control = priv_ep->pcs ? 0 : TRB_CYCLE;
@@ -1231,9 +1207,6 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 	do {
 		u32 length;
 
-		if (!(sg_iter % num_trb_req) && sg_supported)
-			s = request->sg;
-
 		/* fill TRB */
 		control |= TRB_TYPE(TRB_NORMAL);
 		if (sg_supported) {
@@ -1248,36 +1221,7 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 			total_tdl += DIV_ROUND_UP(length,
 					       priv_ep->endpoint.maxpacket);
 
-		trb_burst = priv_ep->trb_burst_size;
-
-		/*
-		 * Supposed DMA cross 4k bounder problem should be fixed at DEV_VER_V2, but still
-		 * met problem when do ISO transfer if sg enabled.
-		 *
-		 * Data pattern likes below when sg enabled, package size is 1k and mult is 2
-		 *       [UVC Header(8B) ] [data(3k - 8)] ...
-		 *
-		 * The received data at offset 0xd000 will get 0xc000 data, len 0x70. Error happen
-		 * as below pattern:
-		 *	0xd000: wrong
-		 *	0xe000: wrong
-		 *	0xf000: correct
-		 *	0x10000: wrong
-		 *	0x11000: wrong
-		 *	0x12000: correct
-		 *	...
-		 *
-		 * But it is still unclear about why error have not happen below 0xd000, it should
-		 * cross 4k bounder. But anyway, the below code can fix this problem.
-		 *
-		 * To avoid DMA cross 4k bounder at ISO transfer, reduce burst len according to 16.
-		 */
-		if (priv_ep->type == USB_ENDPOINT_XFER_ISOC && priv_dev->dev_ver <= DEV_VER_V2)
-			if (ALIGN_DOWN(trb->buffer, SZ_4K) !=
-			    ALIGN_DOWN(trb->buffer + length, SZ_4K))
-				trb_burst = 16;
-
-		trb->length |= cpu_to_le32(TRB_BURST_LEN(trb_burst) |
+		trb->length |= cpu_to_le32(TRB_BURST_LEN(priv_ep->trb_burst_size) |
 					TRB_LEN(length));
 		pcs = priv_ep->pcs ? TRB_CYCLE : 0;
 
@@ -1289,11 +1233,11 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 			control |= pcs;
 
 		if (priv_ep->type == USB_ENDPOINT_XFER_ISOC  && !priv_ep->dir) {
-			control |= ioc | TRB_ISP;
+			control |= TRB_IOC | TRB_ISP;
 		} else {
 			/* for last element in TD or in SG list */
 			if (sg_iter == (num_trb - 1) && sg_iter != 0)
-				control |= pcs | ioc | TRB_ISP;
+				control |= pcs | TRB_IOC | TRB_ISP;
 		}
 
 		if (sg_iter)
@@ -1304,7 +1248,7 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 		if (sg_supported) {
 			trb->control |= cpu_to_le32(TRB_ISP);
 			/* Don't set chain bit for last TRB */
-			if ((sg_iter % num_trb_req) < num_trb_req - 1)
+			if (sg_iter < num_trb - 1)
 				trb->control |= cpu_to_le32(TRB_CHAIN);
 
 			s = sg_next(s);
@@ -1324,7 +1268,7 @@ static int cdns3_ep_run_transfer(struct cdns3_endpoint *priv_ep,
 	priv_req->num_of_trb = num_trb;
 
 	if (sg_iter == 1)
-		trb->control |= cpu_to_le32(ioc | TRB_ISP);
+		trb->control |= cpu_to_le32(TRB_IOC | TRB_ISP);
 
 	if (priv_dev->dev_ver < DEV_VER_V2 &&
 	    (priv_ep->flags & EP_TDLCHK_EN)) {
@@ -1562,12 +1506,6 @@ static void cdns3_transfer_completed(struct cdns3_device *priv_dev,
 
 		/* The TRB was changed as link TRB, and the request was handled at ep_dequeue */
 		while (TRB_FIELD_TO_TYPE(le32_to_cpu(trb->control)) == TRB_LINK) {
-
-			/* ISO ep_traddr may stop at LINK TRB */
-			if (priv_ep->dequeue == cdns3_get_dma_pos(priv_dev, priv_ep) &&
-			    priv_ep->type == USB_ENDPOINT_XFER_ISOC)
-				break;
-
 			trace_cdns3_complete_trb(priv_ep, trb);
 			cdns3_ep_inc_deq(priv_ep);
 			trb = priv_ep->trb_pool + priv_ep->dequeue;
@@ -1600,10 +1538,6 @@ static void cdns3_transfer_completed(struct cdns3_device *priv_dev,
 			}
 
 			if (request_handled) {
-				/* TRBs are duplicated by priv_ep->interval time for ISO IN */
-				if (priv_ep->type == USB_ENDPOINT_XFER_ISOC && priv_ep->dir)
-					request->actual /= priv_ep->interval;
-
 				cdns3_gadget_giveback(priv_ep, priv_req, 0);
 				request_handled = false;
 				transfer_end = false;
@@ -1963,7 +1897,6 @@ static irqreturn_t cdns3_device_thread_irq_handler(int irq, void *data)
 	unsigned int bit;
 	unsigned long reg;
 
-	local_bh_disable();
 	spin_lock_irqsave(&priv_dev->lock, flags);
 
 	reg = readl(&priv_dev->regs->usb_ists);
@@ -2005,7 +1938,6 @@ static irqreturn_t cdns3_device_thread_irq_handler(int irq, void *data)
 irqend:
 	writel(~0, &priv_dev->regs->ep_ien);
 	spin_unlock_irqrestore(&priv_dev->lock, flags);
-	local_bh_enable();
 
 	return ret;
 }
@@ -2101,10 +2033,11 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 	bool is_iso_ep = (priv_ep->type == USB_ENDPOINT_XFER_ISOC);
 	struct cdns3_device *priv_dev = priv_ep->cdns3_dev;
 	u32 bEndpointAddress = priv_ep->num | priv_ep->dir;
-	u32 max_packet_size = priv_ep->wMaxPacketSize;
-	u8 maxburst = priv_ep->bMaxBurst;
+	u32 max_packet_size = 0;
+	u8 maxburst = 0;
 	u32 ep_cfg = 0;
 	u8 buffering;
+	u8 mult = 0;
 	int ret;
 
 	buffering = priv_dev->ep_buf_size - 1;
@@ -2126,7 +2059,8 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 		break;
 	default:
 		ep_cfg = EP_CFG_EPTYPE(USB_ENDPOINT_XFER_ISOC);
-		buffering = (priv_ep->bMaxBurst + 1) * (priv_ep->mult + 1) - 1;
+		mult = priv_dev->ep_iso_burst - 1;
+		buffering = mult + 1;
 	}
 
 	switch (priv_dev->gadget.speed) {
@@ -2137,8 +2071,17 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 		max_packet_size = is_iso_ep ? 1024 : 512;
 		break;
 	case USB_SPEED_SUPER:
-		if (priv_ep->type != USB_ENDPOINT_XFER_ISOC) {
-			max_packet_size = 1024;
+		/* It's limitation that driver assumes in driver. */
+		mult = 0;
+		max_packet_size = 1024;
+		if (priv_ep->type == USB_ENDPOINT_XFER_ISOC) {
+			maxburst = priv_dev->ep_iso_burst - 1;
+			buffering = (mult + 1) *
+				    (maxburst + 1);
+
+			if (priv_ep->interval > 1)
+				buffering++;
+		} else {
 			maxburst = priv_dev->ep_buf_size - 1;
 		}
 		break;
@@ -2154,19 +2097,7 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 	else
 		priv_ep->trb_burst_size = 16;
 
-	/*
-	 * In versions preceding DEV_VER_V2, for example, iMX8QM, there exit the bugs
-	 * in the DMA. These bugs occur when the trb_burst_size exceeds 16 and the
-	 * address is not aligned to 128 Bytes (which is a product of the 64-bit AXI
-	 * and AXI maximum burst length of 16 or 0xF+1, dma_axi_ctrl0[3:0]). This
-	 * results in data corruption when it crosses the 4K border. The corruption
-	 * specifically occurs from the position (4K - (address & 0x7F)) to 4K.
-	 *
-	 * So force trb_burst_size to 16 at such platform.
-	 */
-	if (priv_dev->dev_ver < DEV_VER_V2)
-		priv_ep->trb_burst_size = 16;
-
+	mult = min_t(u8, mult, EP_CFG_MULT_MAX);
 	buffering = min_t(u8, buffering, EP_CFG_BUFFERING_MAX);
 	maxburst = min_t(u8, maxburst, EP_CFG_MAXBURST_MAX);
 
@@ -2200,7 +2131,7 @@ int cdns3_ep_config(struct cdns3_endpoint *priv_ep, bool enable)
 	}
 
 	ep_cfg |= EP_CFG_MAXPKTSIZE(max_packet_size) |
-		  EP_CFG_MULT(priv_ep->mult) |			/* must match EP setting */
+		  EP_CFG_MULT(mult) |
 		  EP_CFG_BUFFERING(buffering) |
 		  EP_CFG_MAXBURST(maxburst);
 
@@ -2290,13 +2221,6 @@ usb_ep *cdns3_gadget_match_ep(struct usb_gadget *gadget,
 	priv_ep->type = usb_endpoint_type(desc);
 	priv_ep->flags |= EP_CLAIMED;
 	priv_ep->interval = desc->bInterval ? BIT(desc->bInterval - 1) : 0;
-	priv_ep->wMaxPacketSize =  usb_endpoint_maxp(desc);
-	priv_ep->mult = USB_EP_MAXP_MULT(priv_ep->wMaxPacketSize);
-	priv_ep->wMaxPacketSize &= USB_ENDPOINT_MAXP_MASK;
-	if (priv_ep->type == USB_ENDPOINT_XFER_ISOC && comp_desc) {
-		priv_ep->mult =  USB_SS_MULT(comp_desc->bmAttributes) - 1;
-		priv_ep->bMaxBurst = comp_desc->bMaxBurst;
-	}
 
 	spin_unlock_irqrestore(&priv_dev->lock, flags);
 	return &priv_ep->endpoint;
@@ -2546,11 +2470,11 @@ static int cdns3_gadget_ep_disable(struct usb_ep *ep)
 
 	while (!list_empty(&priv_ep->wa2_descmiss_req_list)) {
 		priv_req = cdns3_next_priv_request(&priv_ep->wa2_descmiss_req_list);
-		list_del_init(&priv_req->list);
 
 		kfree(priv_req->request.buf);
 		cdns3_gadget_ep_free_request(&priv_ep->endpoint,
 					     &priv_req->request);
+		list_del_init(&priv_req->list);
 		--priv_ep->wa2_counter;
 	}
 
@@ -2606,12 +2530,10 @@ static int __cdns3_gadget_ep_queue(struct usb_ep *ep,
 	if (ret < 0)
 		return ret;
 
-	if (likely(!(priv_req->flags & REQUEST_UNALIGNED))) {
-		ret = usb_gadget_map_request_by_dev(priv_dev->sysdev, request,
+	ret = usb_gadget_map_request_by_dev(priv_dev->sysdev, request,
 					    usb_endpoint_dir_in(ep->desc));
-		if (ret)
-			return ret;
-	}
+	if (ret)
+		return ret;
 
 	list_add_tail(&request->list, &priv_ep->deferred_req_list);
 
@@ -3077,43 +2999,23 @@ static int cdns3_gadget_udc_stop(struct usb_gadget *gadget)
 static int cdns3_gadget_check_config(struct usb_gadget *gadget)
 {
 	struct cdns3_device *priv_dev = gadget_to_cdns3_device(gadget);
-	struct cdns3_endpoint *priv_ep;
 	struct usb_ep *ep;
 	int n_in = 0;
-	int iso = 0;
-	int out = 1;
 	int total;
-	int n;
 
 	list_for_each_entry(ep, &gadget->ep_list, ep_list) {
-		priv_ep = ep_to_cdns3_ep(ep);
-		if (!(priv_ep->flags & EP_CLAIMED))
-			continue;
-
-		n = (priv_ep->mult + 1) * (priv_ep->bMaxBurst + 1);
-		if (ep->address & USB_DIR_IN) {
-			/*
-			 * ISO transfer: DMA start move data when get ISO, only transfer
-			 * data as min(TD size, iso). No benefit for allocate bigger
-			 * internal memory than 'iso'.
-			 */
-			if (priv_ep->type == USB_ENDPOINT_XFER_ISOC)
-				iso += n;
-			else
-				n_in++;
-		} else {
-			if (priv_ep->type == USB_ENDPOINT_XFER_ISOC)
-				out = max_t(int, out, n);
-		}
+		if (ep->claimed && (ep->address & USB_DIR_IN))
+			n_in++;
 	}
 
 	/* 2KB are reserved for EP0, 1KB for out*/
-	total = 2 + n_in + out + iso;
+	total = 2 + n_in + 1;
 
 	if (total > priv_dev->onchip_buffers)
 		return -ENOMEM;
 
-	priv_dev->ep_buf_size = (priv_dev->onchip_buffers - 2 - iso) / (n_in + out);
+	priv_dev->ep_buf_size = priv_dev->ep_iso_burst =
+			(priv_dev->onchip_buffers - 2) / (n_in + 1);
 
 	return 0;
 }
@@ -3251,6 +3153,7 @@ static void cdns3_gadget_exit(struct cdns *cdns)
 	priv_dev = cdns->gadget_dev;
 
 
+	pm_runtime_mark_last_busy(cdns->dev);
 	pm_runtime_put_autosuspend(cdns->dev);
 
 	usb_del_gadget(&priv_dev->gadget);
@@ -3469,7 +3372,7 @@ __must_hold(&cdns->lock)
 	return 0;
 }
 
-static int cdns3_gadget_resume(struct cdns *cdns, bool lost_power)
+static int cdns3_gadget_resume(struct cdns *cdns, bool hibernated)
 {
 	struct cdns3_device *priv_dev = cdns->gadget_dev;
 
@@ -3477,7 +3380,7 @@ static int cdns3_gadget_resume(struct cdns *cdns, bool lost_power)
 		return 0;
 
 	cdns3_gadget_config(priv_dev);
-	if (lost_power)
+	if (hibernated)
 		writel(USB_CONF_DEVEN, &priv_dev->regs->usb_conf);
 
 	return 0;

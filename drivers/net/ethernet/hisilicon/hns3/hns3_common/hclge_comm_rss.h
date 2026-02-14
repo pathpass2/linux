@@ -108,11 +108,12 @@ void hclge_comm_get_rss_indir_tbl(struct hclge_comm_rss_cfg *rss_cfg,
 int hclge_comm_set_rss_algo_key(struct hclge_comm_hw *hw, const u8 hfunc,
 				const u8 *key);
 int hclge_comm_init_rss_tuple_cmd(struct hclge_comm_rss_cfg *rss_cfg,
-				  const struct ethtool_rxfh_fields *nfc,
+				  struct ethtool_rxnfc *nfc,
 				  struct hnae3_ae_dev *ae_dev,
 				  struct hclge_comm_rss_input_tuple_cmd *req);
 u64 hclge_comm_convert_rss_tuple(u8 tuple_sets);
-int hclge_comm_set_rss_input_tuple(struct hclge_comm_hw *hw,
+int hclge_comm_set_rss_input_tuple(struct hnae3_handle *nic,
+				   struct hclge_comm_hw *hw, bool is_pf,
 				   struct hclge_comm_rss_cfg *rss_cfg);
 int hclge_comm_set_rss_indir_table(struct hnae3_ae_dev *ae_dev,
 				   struct hclge_comm_hw *hw, const u16 *indir);
@@ -129,5 +130,5 @@ int hclge_comm_set_rss_hash_key(struct hclge_comm_rss_cfg *rss_cfg,
 int hclge_comm_set_rss_tuple(struct hnae3_ae_dev *ae_dev,
 			     struct hclge_comm_hw *hw,
 			     struct hclge_comm_rss_cfg *rss_cfg,
-			     const struct ethtool_rxfh_fields *nfc);
+			     struct ethtool_rxnfc *nfc);
 #endif

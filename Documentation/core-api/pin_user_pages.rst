@@ -112,12 +112,6 @@ pages:
 This also leads to limitations: there are only 31-10==21 bits available for a
 counter that increments 10 bits at a time.
 
-* Because of that limitation, special handling is applied to the zero pages
-  when using FOLL_PIN.  We only pretend to pin a zero page - we don't alter its
-  refcount or pincount at all (it is permanent, so there's no need).  The
-  unpinning functions also don't do anything to a zero page.  This is
-  transparent to the caller.
-
 * Callers must specifically request "dma-pinned tracking of pages". In other
   words, just calling get_user_pages() will not suffice; a new set of functions,
   pin_user_page() and related, must be used.
@@ -132,7 +126,7 @@ CASE 1: Direct IO (DIO)
 -----------------------
 There are GUP references to pages that are serving
 as DIO buffers. These buffers are needed for a relatively short time (so they
-are not "long term"). No special synchronization with folio_mkclean() or
+are not "long term"). No special synchronization with page_mkclean() or
 munmap() is provided. Therefore, flags to set at the call site are: ::
 
     FOLL_PIN
@@ -144,7 +138,7 @@ CASE 2: RDMA
 ------------
 There are GUP references to pages that are serving as DMA
 buffers. These buffers are needed for a long time ("long term"). No special
-synchronization with folio_mkclean() or munmap() is provided. Therefore, flags
+synchronization with page_mkclean() or munmap() is provided. Therefore, flags
 to set at the call site are: ::
 
     FOLL_PIN | FOLL_LONGTERM
@@ -152,8 +146,6 @@ to set at the call site are: ::
 NOTE: Some pages, such as DAX pages, cannot be pinned with longterm pins. That's
 because DAX pages do not have a separate page cache, and so "pinning" implies
 locking down file system blocks, which is not (yet) supported in that way.
-
-.. _mmu-notifier-registration-case:
 
 CASE 3: MMU notifier registration, with or without page faulting hardware
 -------------------------------------------------------------------------
@@ -170,7 +162,7 @@ callback, simply remove the range from the device's page tables.
 
 Either way, as long as the driver unpins the pages upon mmu notifier callback,
 then there is proper synchronization with both filesystem and mm
-(folio_mkclean(), munmap(), etc). Therefore, neither flag needs to be set.
+(page_mkclean(), munmap(), etc). Therefore, neither flag needs to be set.
 
 CASE 4: Pinning for struct page manipulation only
 -------------------------------------------------
@@ -196,20 +188,20 @@ INCORRECT (uses FOLL_GET calls):
     write to the data within the pages
     put_page()
 
-folio_maybe_dma_pinned(): the whole point of pinning
-====================================================
+page_maybe_dma_pinned(): the whole point of pinning
+===================================================
 
-The whole point of marking folios as "DMA-pinned" or "gup-pinned" is to be able
-to query, "is this folio DMA-pinned?" That allows code such as folio_mkclean()
+The whole point of marking pages as "DMA-pinned" or "gup-pinned" is to be able
+to query, "is this page DMA-pinned?" That allows code such as page_mkclean()
 (and file system writeback code in general) to make informed decisions about
-what to do when a folio cannot be unmapped due to such pins.
+what to do when a page cannot be unmapped due to such pins.
 
 What to do in those cases is the subject of a years-long series of discussions
 and debates (see the References at the end of this document). It's a TODO item
 here: fill in the details once that's worked out. Meanwhile, it's safe to say
 that having this available: ::
 
-        static inline bool folio_maybe_dma_pinned(struct folio *folio)
+        static inline bool page_maybe_dma_pinned(struct page *page)
 
 ...is a prerequisite to solving the long-running gup+DMA problem.
 

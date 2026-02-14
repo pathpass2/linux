@@ -366,6 +366,7 @@ static int cedrus_open(struct file *file)
 	}
 
 	v4l2_fh_init(&ctx->fh, video_devdata(file));
+	file->private_data = &ctx->fh;
 	ctx->dev = dev;
 	ctx->bit_depth = 8;
 
@@ -382,7 +383,7 @@ static int cedrus_open(struct file *file)
 	if (ret)
 		goto err_m2m_release;
 
-	v4l2_fh_add(&ctx->fh, file);
+	v4l2_fh_add(&ctx->fh);
 
 	mutex_unlock(&dev->dev_mutex);
 
@@ -400,11 +401,12 @@ err_free:
 static int cedrus_release(struct file *file)
 {
 	struct cedrus_dev *dev = video_drvdata(file);
-	struct cedrus_ctx *ctx = cedrus_file2ctx(file);
+	struct cedrus_ctx *ctx = container_of(file->private_data,
+					      struct cedrus_ctx, fh);
 
 	mutex_lock(&dev->dev_mutex);
 
-	v4l2_fh_del(&ctx->fh, file);
+	v4l2_fh_del(&ctx->fh);
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 
 	v4l2_ctrl_handler_free(&ctx->hdl);
@@ -541,11 +543,10 @@ err_v4l2:
 	return ret;
 }
 
-static void cedrus_remove(struct platform_device *pdev)
+static int cedrus_remove(struct platform_device *pdev)
 {
 	struct cedrus_dev *dev = platform_get_drvdata(pdev);
 
-	cancel_delayed_work_sync(&dev->watchdog_work);
 	if (media_devnode_is_registered(dev->mdev.devnode)) {
 		media_device_unregister(&dev->mdev);
 		v4l2_m2m_unregister_media_controller(dev->m2m_dev);
@@ -557,6 +558,8 @@ static void cedrus_remove(struct platform_device *pdev)
 	v4l2_device_unregister(&dev->v4l2_dev);
 
 	cedrus_hw_remove(dev);
+
+	return 0;
 }
 
 static const struct cedrus_variant sun4i_a10_cedrus_variant = {
@@ -706,7 +709,7 @@ static struct platform_driver cedrus_driver = {
 	.remove		= cedrus_remove,
 	.driver		= {
 		.name		= CEDRUS_NAME,
-		.of_match_table	= cedrus_dt_match,
+		.of_match_table	= of_match_ptr(cedrus_dt_match),
 		.pm		= &cedrus_dev_pm_ops,
 	},
 };

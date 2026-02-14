@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * dir.c
  *
@@ -6,6 +5,11 @@
  *  Directory handling routines for the OSTA-UDF(tm) filesystem.
  *
  * COPYRIGHT
+ *	This file is distributed under the terms of the GNU General Public
+ *	License (GPL). Copies of the GPL can be obtained from:
+ *		ftp://prep.ai.mit.edu/pub/gnu/GPL
+ *	Each contributing author retains all rights to their own work.
+ *
  *  (C) 1998-2004 Ben Fennema
  *
  * HISTORY
@@ -24,7 +28,6 @@
 
 #include <linux/string.h>
 #include <linux/errno.h>
-#include <linux/filelock.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/bio.h>
@@ -61,14 +64,14 @@ static int udf_readdir(struct file *file, struct dir_context *ctx)
 	 * identifying beginning of dir entry (names are under user control),
 	 * we need to scan the directory from the beginning.
 	 */
-	if (!inode_eq_iversion(dir, *(u64 *)file->private_data)) {
+	if (!inode_eq_iversion(dir, file->f_version)) {
 		emit_pos = nf_pos;
 		nf_pos = 0;
 	} else {
 		pos_valid = true;
 	}
 
-	fname = kmalloc(UDF_NAME_LEN, GFP_KERNEL);
+	fname = kmalloc(UDF_NAME_LEN, GFP_NOFS);
 	if (!fname) {
 		ret = -ENOMEM;
 		goto out;
@@ -123,40 +126,17 @@ out_iter:
 	udf_fiiter_release(&iter);
 out:
 	if (pos_valid)
-		*(u64 *)file->private_data = inode_query_iversion(dir);
+		file->f_version = inode_query_iversion(dir);
 	kfree(fname);
 
 	return ret;
 }
 
-static int udf_dir_open(struct inode *inode, struct file *file)
-{
-	file->private_data = kzalloc(sizeof(u64), GFP_KERNEL);
-	if (!file->private_data)
-		return -ENOMEM;
-	return 0;
-}
-
-static int udf_dir_release(struct inode *inode, struct file *file)
-{
-	kfree(file->private_data);
-	return 0;
-}
-
-static loff_t udf_dir_llseek(struct file *file, loff_t offset, int whence)
-{
-	return generic_llseek_cookie(file, offset, whence,
-				     (u64 *)file->private_data);
-}
-
 /* readdir and lookup functions */
 const struct file_operations udf_dir_operations = {
-	.open			= udf_dir_open,
-	.release		= udf_dir_release,
-	.llseek			= udf_dir_llseek,
+	.llseek			= generic_file_llseek,
 	.read			= generic_read_dir,
 	.iterate_shared		= udf_readdir,
 	.unlocked_ioctl		= udf_ioctl,
 	.fsync			= generic_file_fsync,
-	.setlease		= generic_setlease,
 };

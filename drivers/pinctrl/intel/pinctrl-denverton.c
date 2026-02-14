@@ -9,7 +9,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
@@ -20,6 +19,13 @@
 #define DNV_HOSTSW_OWN	0x0C0
 #define DNV_GPI_IS	0x100
 #define DNV_GPI_IE	0x120
+
+#define DNV_GPP(n, s, e)				\
+	{						\
+		.reg_num = (n),				\
+		.base = (s),				\
+		.size = ((e) - (s) + 1),		\
+	}
 
 #define DNV_COMMUNITY(b, s, e, g)			\
 	INTEL_COMMUNITY_GPPS(b, s, e, g, DNV)
@@ -215,16 +221,16 @@ static const struct intel_function dnv_functions[] = {
 };
 
 static const struct intel_padgroup dnv_north_gpps[] = {
-	INTEL_GPP(0, 0, 31, 0),		/* North ALL_0 */
-	INTEL_GPP(1, 32, 40, 32),	/* North ALL_1 */
+	DNV_GPP(0, 0, 31),	/* North ALL_0 */
+	DNV_GPP(1, 32, 40),	/* North ALL_1 */
 };
 
 static const struct intel_padgroup dnv_south_gpps[] = {
-	INTEL_GPP(0, 41, 58, 41),	/* South DFX */
-	INTEL_GPP(1, 59, 90, 59),	/* South GPP0_0 */
-	INTEL_GPP(2, 91, 111, 91),	/* South GPP0_1 */
-	INTEL_GPP(3, 112, 143, 112),	/* South GPP1_0 */
-	INTEL_GPP(4, 144, 153, 144),	/* South GPP1_1 */
+	DNV_GPP(0, 41, 58),	/* South DFX */
+	DNV_GPP(1, 59, 90),	/* South GPP0_0 */
+	DNV_GPP(2, 91, 111),	/* South GPP0_1 */
+	DNV_GPP(3, 112, 143),	/* South GPP1_0 */
+	DNV_GPP(4, 144, 153),	/* South GPP1_1 */
 };
 
 static const struct intel_community dnv_communities[] = {
@@ -243,26 +249,21 @@ static const struct intel_pinctrl_soc_data dnv_soc_data = {
 	.ncommunities = ARRAY_SIZE(dnv_communities),
 };
 
+static INTEL_PINCTRL_PM_OPS(dnv_pinctrl_pm_ops);
+
 static const struct acpi_device_id dnv_pinctrl_acpi_match[] = {
 	{ "INTC3000", (kernel_ulong_t)&dnv_soc_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, dnv_pinctrl_acpi_match);
 
-static const struct platform_device_id dnv_pinctrl_platform_ids[] = {
-	{ "denverton-pinctrl", (kernel_ulong_t)&dnv_soc_data },
-	{ }
-};
-MODULE_DEVICE_TABLE(platform, dnv_pinctrl_platform_ids);
-
 static struct platform_driver dnv_pinctrl_driver = {
 	.probe = intel_pinctrl_probe_by_hid,
 	.driver = {
 		.name = "denverton-pinctrl",
 		.acpi_match_table = dnv_pinctrl_acpi_match,
-		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
+		.pm = &dnv_pinctrl_pm_ops,
 	},
-	.id_table = dnv_pinctrl_platform_ids,
 };
 
 static int __init dnv_pinctrl_init(void)
@@ -280,4 +281,3 @@ module_exit(dnv_pinctrl_exit);
 MODULE_AUTHOR("Mika Westerberg <mika.westerberg@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Denverton SoC pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("PINCTRL_INTEL");

@@ -34,10 +34,11 @@ void nd_detach_ndns(struct device *dev,
 
 	if (!ndns)
 		return;
-
-	struct device *ndev __free(put_device) = get_device(&ndns->dev);
-	guard(nvdimm_bus)(ndev);
+	get_device(&ndns->dev);
+	nvdimm_bus_lock(&ndns->dev);
 	__nd_detach_ndns(dev, _ndns);
+	nvdimm_bus_unlock(&ndns->dev);
+	put_device(&ndns->dev);
 }
 
 bool __nd_attach_ndns(struct device *dev, struct nd_namespace_common *attach,
@@ -53,6 +54,24 @@ bool __nd_attach_ndns(struct device *dev, struct nd_namespace_common *attach,
 	*_ndns = attach;
 	get_device(&attach->dev);
 	return true;
+}
+
+bool nd_attach_ndns(struct device *dev, struct nd_namespace_common *attach,
+		struct nd_namespace_common **_ndns)
+{
+	bool claimed;
+
+	nvdimm_bus_lock(&attach->dev);
+	claimed = __nd_attach_ndns(dev, attach, _ndns);
+	nvdimm_bus_unlock(&attach->dev);
+	return claimed;
+}
+
+static int namespace_match(struct device *dev, void *data)
+{
+	char *name = data;
+
+	return strcmp(name, dev_name(dev)) == 0;
 }
 
 static bool is_idle(struct device *dev, struct nd_namespace_common *ndns)
@@ -149,7 +168,7 @@ ssize_t nd_namespace_store(struct device *dev,
 		goto out;
 	}
 
-	found = device_find_child_by_name(dev->parent, name);
+	found = device_find_child(dev->parent, name, namespace_match);
 	if (!found) {
 		dev_dbg(dev, "'%s' not found under %s\n", name,
 				dev_name(dev->parent));

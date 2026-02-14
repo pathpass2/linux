@@ -10,15 +10,11 @@
 #include "rk3566-soquartz.dtsi"
 
 / {
-	model = "Pine64 SOQuartz on Blade carrier board";
+	model = "PINE64 RK3566 SOQuartz on Blade carrier board";
 	compatible = "pine64,soquartz-blade", "pine64,soquartz", "rockchip,rk3566";
 
-	aliases {
-		ethernet0 = &gmac1;
-	};
-
 	/* labeled VCC3V0_SD in schematic to not conflict with PMIC regulator */
-	vcc3v0_sd: regulator-vcc3v0-sd {
+	vcc3v0_sd: vcc3v0-sd-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v0_sd";
 		regulator-always-on;
@@ -29,7 +25,7 @@
 	};
 
 	/* labeled VCC_SSD in schematic */
-	vcc3v3_pcie_p: regulator-vcc3v3-pcie {
+	vcc3v3_pcie_p: vcc3v3-pcie-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_pcie_p";
 		regulator-always-on;
@@ -39,7 +35,7 @@
 		vin-supply = <&vbus>;
 	};
 
-	vcc5v_dcin: regulator-vcc5v-dcin {
+	vcc5v_dcin: vcc5v-dcin-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc5v_dcin";
 		regulator-always-on;

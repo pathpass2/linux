@@ -7,7 +7,7 @@
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -19,7 +19,6 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_plane.h>
-#include <drm/drm_print.h>
 
 #include "sun4i_drv.h"
 #include "sun4i_frontend.h"
@@ -635,9 +634,11 @@ static int sun4i_frontend_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sun4i_frontend_ops);
 }
 
-static void sun4i_frontend_remove(struct platform_device *pdev)
+static int sun4i_frontend_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sun4i_frontend_ops);
+
+	return 0;
 }
 
 static int sun4i_frontend_runtime_resume(struct device *dev)

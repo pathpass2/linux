@@ -13,9 +13,8 @@
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/phy/phy.h>
-#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset.h>
 #include <dt-bindings/phy/phy.h>
@@ -73,7 +72,7 @@ static void nano_register_write(struct histb_combphy_priv *priv,
 
 static int is_mode_fixed(struct histb_combphy_mode *mode)
 {
-	return mode->fixed != PHY_NONE;
+	return (mode->fixed != PHY_NONE) ? true : false;
 }
 
 static int histb_combphy_set_mode(struct histb_combphy_priv *priv)
@@ -163,7 +162,7 @@ static const struct phy_ops histb_combphy_ops = {
 };
 
 static struct phy *histb_combphy_xlate(struct device *dev,
-				       const struct of_phandle_args *args)
+				       struct of_phandle_args *args)
 {
 	struct histb_combphy_priv *priv = dev_get_drvdata(dev);
 	struct histb_combphy_mode *mode = &priv->mode;

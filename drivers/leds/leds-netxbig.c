@@ -364,9 +364,6 @@ static int netxbig_gpio_ext_get(struct device *dev,
 	if (!addr)
 		return -ENOMEM;
 
-	gpio_ext->addr = addr;
-	gpio_ext->num_addr = 0;
-
 	/*
 	 * We cannot use devm_ managed resources with these GPIO descriptors
 	 * since they are associated with the "GPIO extension device" which
@@ -378,58 +375,45 @@ static int netxbig_gpio_ext_get(struct device *dev,
 		gpiod = gpiod_get_index(gpio_ext_dev, "addr", i,
 					GPIOD_OUT_LOW);
 		if (IS_ERR(gpiod))
-			goto err_set_code;
+			return PTR_ERR(gpiod);
 		gpiod_set_consumer_name(gpiod, "GPIO extension addr");
 		addr[i] = gpiod;
-		gpio_ext->num_addr++;
 	}
+	gpio_ext->addr = addr;
+	gpio_ext->num_addr = num_addr;
 
 	ret = gpiod_count(gpio_ext_dev, "data");
 	if (ret < 0) {
 		dev_err(dev,
 			"Failed to count GPIOs in DT property data-gpios\n");
-		goto err_free_addr;
+		return ret;
 	}
 	num_data = ret;
 	data = devm_kcalloc(dev, num_data, sizeof(*data), GFP_KERNEL);
-	if (!data) {
-		ret = -ENOMEM;
-		goto err_free_addr;
-	}
-
-	gpio_ext->data = data;
-	gpio_ext->num_data = 0;
+	if (!data)
+		return -ENOMEM;
 
 	for (i = 0; i < num_data; i++) {
 		gpiod = gpiod_get_index(gpio_ext_dev, "data", i,
 					GPIOD_OUT_LOW);
 		if (IS_ERR(gpiod))
-			goto err_free_data;
+			return PTR_ERR(gpiod);
 		gpiod_set_consumer_name(gpiod, "GPIO extension data");
 		data[i] = gpiod;
-		gpio_ext->num_data++;
 	}
+	gpio_ext->data = data;
+	gpio_ext->num_data = num_data;
 
 	gpiod = gpiod_get(gpio_ext_dev, "enable", GPIOD_OUT_LOW);
 	if (IS_ERR(gpiod)) {
 		dev_err(dev,
 			"Failed to get GPIO from DT property enable-gpio\n");
-		goto err_free_data;
+		return PTR_ERR(gpiod);
 	}
 	gpiod_set_consumer_name(gpiod, "GPIO extension enable");
 	gpio_ext->enable = gpiod;
 
 	return devm_add_action_or_reset(dev, netxbig_gpio_ext_remove, gpio_ext);
-
-err_free_data:
-	for (i = 0; i < gpio_ext->num_data; i++)
-		gpiod_put(gpio_ext->data[i]);
-err_set_code:
-	ret = PTR_ERR(gpiod);
-err_free_addr:
-	for (i = 0; i < gpio_ext->num_addr; i++)
-		gpiod_put(gpio_ext->addr[i]);
-	return ret;
 }
 
 static int netxbig_leds_get_of_pdata(struct device *dev,
@@ -439,6 +423,7 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 	struct device_node *gpio_ext_np;
 	struct platform_device *gpio_ext_pdev;
 	struct device *gpio_ext_dev;
+	struct device_node *child;
 	struct netxbig_gpio_ext *gpio_ext;
 	struct netxbig_led_timer *timers;
 	struct netxbig_led *leds, *led;
@@ -455,7 +440,6 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 	}
 	gpio_ext_pdev = of_find_device_by_node(gpio_ext_np);
 	if (!gpio_ext_pdev) {
-		of_node_put(gpio_ext_np);
 		dev_err(dev, "Failed to find platform device for gpio-ext\n");
 		return -ENODEV;
 	}
@@ -523,7 +507,7 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 	}
 
 	led = leds;
-	for_each_available_child_of_node_scoped(np, child) {
+	for_each_available_child_of_node(np, child) {
 		const char *string;
 		int *mode_val;
 		int num_modes;
@@ -531,17 +515,17 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 		ret = of_property_read_u32(child, "mode-addr",
 					   &led->mode_addr);
 		if (ret)
-			goto put_device;
+			goto err_node_put;
 
 		ret = of_property_read_u32(child, "bright-addr",
 					   &led->bright_addr);
 		if (ret)
-			goto put_device;
+			goto err_node_put;
 
 		ret = of_property_read_u32(child, "max-brightness",
 					   &led->bright_max);
 		if (ret)
-			goto put_device;
+			goto err_node_put;
 
 		mode_val =
 			devm_kcalloc(dev,
@@ -549,7 +533,7 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 				     GFP_KERNEL);
 		if (!mode_val) {
 			ret = -ENOMEM;
-			goto put_device;
+			goto err_node_put;
 		}
 
 		for (i = 0; i < NETXBIG_LED_MODE_NUM; i++)
@@ -558,12 +542,12 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 		ret = of_property_count_u32_elems(child, "mode-val");
 		if (ret < 0 || ret % 2) {
 			ret = -EINVAL;
-			goto put_device;
+			goto err_node_put;
 		}
 		num_modes = ret / 2;
 		if (num_modes > NETXBIG_LED_MODE_NUM) {
 			ret = -EINVAL;
-			goto put_device;
+			goto err_node_put;
 		}
 
 		for (i = 0; i < num_modes; i++) {
@@ -576,7 +560,7 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 						   "mode-val", 2 * i + 1, &val);
 			if (mode >= NETXBIG_LED_MODE_NUM) {
 				ret = -EINVAL;
-				goto put_device;
+				goto err_node_put;
 			}
 			mode_val[mode] = val;
 		}
@@ -599,6 +583,8 @@ static int netxbig_leds_get_of_pdata(struct device *dev,
 
 	return 0;
 
+err_node_put:
+	of_node_put(child);
 put_device:
 	put_device(gpio_ext_dev);
 	return ret;

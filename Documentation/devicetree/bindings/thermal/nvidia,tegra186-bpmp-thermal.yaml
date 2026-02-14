@@ -20,7 +20,11 @@ description: |
   node. See ../firmware/nvidia,tegra186-bpmp.yaml for details of the
   BPMP binding.
 
-$ref: thermal-sensor.yaml#
+  This node represents a thermal sensor. See
+
+    Documentation/devicetree/bindings/thermal/thermal-sensor.yaml
+
+  for details of the core thermal binding.
 
 properties:
   compatible:
@@ -29,6 +33,10 @@ properties:
       - nvidia,tegra194-bpmp-thermal
 
   '#thermal-sensor-cells':
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Number of cells needed in the phandle specifier to
+      identify a given sensor. Must be 1 and the single cell specifies
+      the sensor index.
     const: 1
 
-unevaluatedProperties: false
+additionalProperties: false

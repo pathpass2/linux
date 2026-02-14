@@ -7,11 +7,16 @@
 #include <linux/cpufeature.h>
 #include <linux/debugfs.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/of_irq.h>
+#include <linux/of_address.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
+#include <linux/version.h>
 #include <soc/tegra/fuse.h>
 #include <soc/tegra/tegra-cbb.h>
 
@@ -69,12 +74,19 @@ static int tegra_cbb_err_show(struct seq_file *file, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(tegra_cbb_err);
 
-static void tegra_cbb_err_debugfs_init(struct tegra_cbb *cbb)
+static int tegra_cbb_err_debugfs_init(struct tegra_cbb *cbb)
 {
 	static struct dentry *root;
 
-	if (!root)
+	if (!root) {
 		root = debugfs_create_file("tegra_cbb_err", 0444, NULL, cbb, &tegra_cbb_err_fops);
+		if (IS_ERR_OR_NULL(root)) {
+			pr_err("%s(): could not create debugfs node\n", __func__);
+			return PTR_ERR(root);
+		}
+	}
+
+	return 0;
 }
 
 void tegra_cbb_stall_enable(struct tegra_cbb *cbb)
@@ -115,16 +127,20 @@ int tegra_cbb_get_irq(struct platform_device *pdev, unsigned int *nonsec_irq,
 
 	if (num_intr == 2) {
 		irq = platform_get_irq(pdev, index);
-		if (irq <= 0)
+		if (irq <= 0) {
+			dev_err(&pdev->dev, "failed to get non-secure IRQ: %d\n", irq);
 			return -ENOENT;
+		}
 
 		*nonsec_irq = irq;
 		index++;
 	}
 
 	irq = platform_get_irq(pdev, index);
-	if (irq <= 0)
+	if (irq <= 0) {
+		dev_err(&pdev->dev, "failed to get secure IRQ: %d\n", irq);
 		return -ENOENT;
+	}
 
 	*sec_irq = irq;
 
@@ -141,8 +157,13 @@ int tegra_cbb_register(struct tegra_cbb *cbb)
 {
 	int ret;
 
-	if (IS_ENABLED(CONFIG_DEBUG_FS))
-		tegra_cbb_err_debugfs_init(cbb);
+	if (IS_ENABLED(CONFIG_DEBUG_FS)) {
+		ret = tegra_cbb_err_debugfs_init(cbb);
+		if (ret) {
+			dev_err(cbb->dev, "failed to create debugfs\n");
+			return ret;
+		}
+	}
 
 	/* register interrupt handler for errors due to different initiators */
 	ret = cbb->ops->interrupt_enable(cbb);

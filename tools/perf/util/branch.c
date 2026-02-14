@@ -46,7 +46,7 @@ const char *branch_new_type_name(int new_type)
 		"FAULT_DATA",
 		"FAULT_INST",
 /*
- * TODO: This switch should happen on 'perf_session__env(session)->arch'
+ * TODO: This switch should happen on 'session->header.env.arch'
  * instead, because an arm64 platform perf recording could be
  * opened for analysis on other platforms as well.
  */
@@ -109,7 +109,7 @@ const char *get_branch_type(struct branch_entry *e)
 	return branch_type_name(e->flags.type);
 }
 
-void branch_type_stat_display(FILE *fp, const struct branch_type_stat *st)
+void branch_type_stat_display(FILE *fp, struct branch_type_stat *st)
 {
 	u64 total = 0;
 	int i;
@@ -171,7 +171,7 @@ static int count_str_scnprintf(int idx, const char *str, char *bf, int size)
 	return scnprintf(bf, size, "%s%s", (idx) ? " " : " (", str);
 }
 
-int branch_type_str(const struct branch_type_stat *st, char *bf, int size)
+int branch_type_str(struct branch_type_stat *st, char *bf, int size)
 {
 	int i, j = 0, printed = 0;
 	u64 total = 0;

@@ -21,6 +21,13 @@ do {					   \
 	pr_warn(errmsg);		   \
 } while (0)
 
+struct cfpktq {
+	struct sk_buff_head head;
+	atomic_t count;
+	/* Lock protects count updates */
+	spinlock_t lock;
+};
+
 /*
  * net/caif/ is generic and does not
  * understand SKB, so we do this typecast
@@ -298,8 +305,10 @@ struct cfpkt *cfpkt_append(struct cfpkt *dstpkt,
 	if (unlikely(is_erronous(dstpkt) || is_erronous(addpkt))) {
 		return dstpkt;
 	}
-
-	neededtailspace = max(expectlen, addlen);
+	if (expectlen > addlen)
+		neededtailspace = expectlen;
+	else
+		neededtailspace = addlen;
 
 	if (dst->tail + neededtailspace > dst->end) {
 		/* Create a dumplicate of 'dst' with more tail space */

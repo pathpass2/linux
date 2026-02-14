@@ -839,8 +839,10 @@ static int perf_copy_chunk(struct perf_thread *pthr,
 	dma_set_unmap(tx, unmap);
 
 	ret = dma_submit_error(dmaengine_submit(tx));
-	if (ret)
+	if (ret) {
+		dmaengine_unmap_put(unmap);
 		goto err_free_resource;
+	}
 
 	dmaengine_unmap_put(unmap);
 
@@ -1225,7 +1227,7 @@ static ssize_t perf_dbgfs_read_info(struct file *filep, char __user *ubuf,
 			"\tOut buffer addr 0x%pK\n", peer->outbuf);
 
 		pos += scnprintf(buf + pos, buf_size - pos,
-			"\tOut buff phys addr %pap\n", &peer->out_phys_addr);
+			"\tOut buff phys addr %pa[p]\n", &peer->out_phys_addr);
 
 		pos += scnprintf(buf + pos, buf_size - pos,
 			"\tOut buffer size %pa\n", &peer->outbuf_size);
@@ -1353,7 +1355,7 @@ static void perf_setup_dbgfs(struct perf_ctx *perf)
 	struct pci_dev *pdev = perf->ntb->pdev;
 
 	perf->dbgfs_dir = debugfs_create_dir(pci_name(pdev), perf_dbgfs_topdir);
-	if (IS_ERR(perf->dbgfs_dir)) {
+	if (!perf->dbgfs_dir) {
 		dev_warn(&perf->ntb->dev, "DebugFS unsupported\n");
 		return;
 	}

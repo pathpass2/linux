@@ -118,7 +118,7 @@ static int lmp91000_read(struct lmp91000_data *data, int channel, int *val)
 
 	data->chan_select = channel != LMP91000_REG_MODECN_3LEAD;
 
-	iio_trigger_poll_nested(data->trig);
+	iio_trigger_poll_chained(data->trig);
 
 	ret = wait_for_completion_timeout(&data->completion, HZ);
 	reinit_completion(&data->completion);
@@ -321,8 +321,10 @@ static int lmp91000_probe(struct i2c_client *client)
 	data->trig = devm_iio_trigger_alloc(dev, "%s-mux%d",
 					    indio_dev->name,
 					    iio_device_id(indio_dev));
-	if (!data->trig)
+	if (!data->trig) {
+		dev_err(dev, "cannot allocate iio trigger.\n");
 		return -ENOMEM;
+	}
 
 	init_completion(&data->completion);
 
@@ -398,14 +400,14 @@ static void lmp91000_remove(struct i2c_client *client)
 static const struct of_device_id lmp91000_of_match[] = {
 	{ .compatible = "ti,lmp91000", },
 	{ .compatible = "ti,lmp91002", },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(of, lmp91000_of_match);
 
 static const struct i2c_device_id lmp91000_id[] = {
-	{ "lmp91000" },
-	{ "lmp91002" },
-	{ }
+	{ "lmp91000", 0 },
+	{ "lmp91002", 0 },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, lmp91000_id);
 
@@ -414,7 +416,7 @@ static struct i2c_driver lmp91000_driver = {
 		.name = LMP91000_DRV_NAME,
 		.of_match_table = lmp91000_of_match,
 	},
-	.probe = lmp91000_probe,
+	.probe_new = lmp91000_probe,
 	.remove = lmp91000_remove,
 	.id_table = lmp91000_id,
 };

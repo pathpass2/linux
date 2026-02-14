@@ -4,8 +4,6 @@
 ARCnet
 ======
 
-:Author: Avery Pennarun <apenwarr@worldvisions.ca>
-
 .. note::
 
    See also arcnet-hardware.txt in this directory for jumper-setting
@@ -32,7 +30,18 @@ Come on, be a sport!  Send me a success report!
 
 (hey, that was even better than my original poem... this is getting bad!)
 
-----
+
+.. warning::
+
+   If you don't e-mail me about your success/failure soon, I may be forced to
+   start SINGING.  And we don't want that, do we?
+
+   (You know, it might be argued that I'm pushing this point a little too much.
+   If you think so, why not flame me in a quick little e-mail?  Please also
+   include the type of card(s) you're using, software, size of network, and
+   whether it's working or not.)
+
+   My e-mail address is: apenwarr@worldvisions.ca
 
 These are the ARCnet drivers for Linux.
 
@@ -50,14 +59,23 @@ ARCnet 2.10 ALPHA, Tomasz's all-new-and-improved RFC1051 support has been
 included and seems to be working fine!
 
 
-.. _arcnet-netdev:
-
 Where do I discuss these drivers?
 ---------------------------------
 
-ARCnet discussions take place on netdev. Simply send your email to
-netdev@vger.kernel.org and make sure to Cc: maintainer listed in
-"ARCNET NETWORK LAYER" heading of Documentation/process/maintainers.rst.
+Tomasz has been so kind as to set up a new and improved mailing list.
+Subscribe by sending a message with the BODY "subscribe linux-arcnet YOUR
+REAL NAME" to listserv@tichy.ch.uj.edu.pl.  Then, to submit messages to the
+list, mail to linux-arcnet@tichy.ch.uj.edu.pl.
+
+There are archives of the mailing list at:
+
+	http://epistolary.org/mailman/listinfo.cgi/arcnet
+
+The people on linux-net@vger.kernel.org (now defunct, replaced by
+netdev@vger.kernel.org) have also been known to be very helpful, especially
+when we're talking about ALPHA Linux kernels that may or may not work right
+in the first place.
+
 
 Other Drivers and Info
 ----------------------
@@ -505,9 +523,17 @@ can set up your network then:
 It works: what now?
 -------------------
 
-Send mail following :ref:`arcnet-netdev`. Describe your setup, preferably
-including driver version, kernel version, ARCnet card model, CPU type, number
-of systems on your network, and list of software in use.
+Send mail describing your setup, preferably including driver version, kernel
+version, ARCnet card model, CPU type, number of systems on your network, and
+list of software in use to me at the following address:
+
+	apenwarr@worldvisions.ca
+
+I do send (sometimes automated) replies to all messages I receive.  My email
+can be weird (and also usually gets forwarded all over the place along the
+way to me), so if you don't get a reply within a reasonable time, please
+resend.
+
 
 It doesn't work: what now?
 --------------------------

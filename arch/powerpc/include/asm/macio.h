@@ -3,10 +3,9 @@
 #define __MACIO_ASIC_H__
 #ifdef __KERNEL__
 
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
-extern const struct bus_type macio_bus_type;
+extern struct bus_type macio_bus_type;
 
 /* MacIO device driver is defined later */
 struct macio_driver;
@@ -126,7 +125,7 @@ static inline struct pci_dev *macio_get_pci_dev(struct macio_dev *mdev)
 struct macio_driver
 {
 	int	(*probe)(struct macio_dev* dev, const struct of_device_id *match);
-	void	(*remove)(struct macio_dev *dev);
+	int	(*remove)(struct macio_dev* dev);
 
 	int	(*suspend)(struct macio_dev* dev, pm_message_t state);
 	int	(*resume)(struct macio_dev* dev);

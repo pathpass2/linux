@@ -418,8 +418,7 @@ void usbnet_cdc_status(struct usbnet *dev, struct urb *urb)
 	case USB_CDC_NOTIFY_NETWORK_CONNECTION:
 		netif_dbg(dev, timer, dev->net, "CDC: carrier %s\n",
 			  event->wValue ? "on" : "off");
-		if (netif_carrier_ok(dev->net) != !!event->wValue)
-			usbnet_link_change(dev, !!event->wValue, 0);
+		usbnet_link_change(dev, !!event->wValue, 0);
 		break;
 	case USB_CDC_NOTIFY_SPEED_CHANGE:	/* tx/rx rates */
 		netif_dbg(dev, timer, dev->net, "CDC: speed change (len %d)\n",
@@ -619,13 +618,6 @@ static const struct usb_device_id	products[] = {
 	.match_flags	=   USB_DEVICE_ID_MATCH_INT_INFO
 			  | USB_DEVICE_ID_MATCH_DEVICE,
 	.idVendor		= 0x04DD,
-	.idProduct		= 0x8005,   /* A-300 */
-	ZAURUS_FAKE_INTERFACE,
-	.driver_info        = 0,
-}, {
-	.match_flags    =   USB_DEVICE_ID_MATCH_INT_INFO
-			  | USB_DEVICE_ID_MATCH_DEVICE,
-	.idVendor		= 0x04DD,
 	.idProduct		= 0x8006,	/* B-500/SL-5600 */
 	ZAURUS_MASTER_INTERFACE,
 	.driver_info		= 0,
@@ -633,23 +625,9 @@ static const struct usb_device_id	products[] = {
 	.match_flags    =   USB_DEVICE_ID_MATCH_INT_INFO
 			  | USB_DEVICE_ID_MATCH_DEVICE,
 	.idVendor		= 0x04DD,
-	.idProduct		= 0x8006,   /* B-500/SL-5600 */
-	ZAURUS_FAKE_INTERFACE,
-	.driver_info        = 0,
-}, {
-	.match_flags    =   USB_DEVICE_ID_MATCH_INT_INFO
-			  | USB_DEVICE_ID_MATCH_DEVICE,
-	.idVendor		= 0x04DD,
 	.idProduct		= 0x8007,	/* C-700 */
 	ZAURUS_MASTER_INTERFACE,
 	.driver_info		= 0,
-}, {
-	.match_flags    =   USB_DEVICE_ID_MATCH_INT_INFO
-			  | USB_DEVICE_ID_MATCH_DEVICE,
-	.idVendor		= 0x04DD,
-	.idProduct		= 0x8007,   /* C-700 */
-	ZAURUS_FAKE_INTERFACE,
-	.driver_info        = 0,
 }, {
 	.match_flags    =   USB_DEVICE_ID_MATCH_INT_INFO
 		 | USB_DEVICE_ID_MATCH_DEVICE,
@@ -783,13 +761,6 @@ static const struct usb_device_id	products[] = {
 	.driver_info = 0,
 },
 
-/* Lenovo ThinkPad Hybrid USB-C with USB-A Dock (40af0135eu, based on Realtek RTL8153) */
-{
-	USB_DEVICE_AND_INTERFACE_INFO(LENOVO_VENDOR_ID, 0xa359, USB_CLASS_COMM,
-			USB_CDC_SUBCLASS_ETHERNET, USB_CDC_PROTO_NONE),
-	.driver_info = 0,
-},
-
 /* Aquantia AQtion USB to 5GbE Controller (based on AQC111U) */
 {
 	USB_DEVICE_AND_INTERFACE_INFO(AQUANTIA_VENDOR_ID, 0xc101,
@@ -901,12 +872,6 @@ static const struct usb_device_id	products[] = {
 }, {
 	/* U-blox SARA-U2 */
 	USB_DEVICE_AND_INTERFACE_INFO(UBLOX_VENDOR_ID, 0x1104, USB_CLASS_COMM,
-				      USB_CDC_SUBCLASS_ETHERNET,
-				      USB_CDC_PROTO_NONE),
-	.driver_info = (unsigned long)&wwan_info,
-}, {
-	/* U-blox LARA-R6 01B */
-	USB_DEVICE_AND_INTERFACE_INFO(UBLOX_VENDOR_ID, 0x1313, USB_CLASS_COMM,
 				      USB_CDC_SUBCLASS_ETHERNET,
 				      USB_CDC_PROTO_NONE),
 	.driver_info = (unsigned long)&wwan_info,

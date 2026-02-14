@@ -1,5 +1,4 @@
 .. SPDX-License-Identifier: GPL-2.0 OR GFDL-1.1-no-invariants-or-later
-.. c:namespace:: V4L
 
 .. _encoder:
 
@@ -116,8 +115,8 @@ Querying Capabilities
 
 4. The client may use :c:func:`VIDIOC_ENUM_FRAMEINTERVALS` to detect supported
    frame intervals for a given format and resolution, passing the desired pixel
-   format in :c:type:`v4l2_frmivalenum` ``pixel_format`` and the resolution
-   in :c:type:`v4l2_frmivalenum` ``width`` and :c:type:`v4l2_frmivalenum`
+   format in :c:type:`v4l2_frmsizeenum` ``pixel_format`` and the resolution
+   in :c:type:`v4l2_frmsizeenum` ``width`` and :c:type:`v4l2_frmsizeenum`
    ``height``.
 
    * Values returned by :c:func:`VIDIOC_ENUM_FRAMEINTERVALS` for a coded pixel
@@ -164,7 +163,7 @@ Initialization
      other fields
          follow standard semantics.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``sizeimage``
          adjusted size of ``CAPTURE`` buffers.
@@ -190,7 +189,7 @@ Initialization
      other fields
          follow standard semantics.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``pixelformat``
          raw format supported for the coded format currently selected on
@@ -216,7 +215,7 @@ Initialization
      other fields
          follow standard semantics.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``width``, ``height``
          may be adjusted to match encoder minimums, maximums and alignment
@@ -234,7 +233,7 @@ Initialization
    :c:func:`VIDIOC_S_PARM`. This also sets the coded frame interval on the
    ``CAPTURE`` queue to the same value.
 
-   * **Required fields:**
+   * ** Required fields:**
 
      ``type``
 	 a ``V4L2_BUF_TYPE_*`` enum appropriate for ``OUTPUT``.
@@ -246,7 +245,7 @@ Initialization
 	 the desired frame interval; the encoder may adjust it to
 	 match hardware requirements.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``parm.output.timeperframe``
 	 the adjusted frame interval.
@@ -285,7 +284,7 @@ Initialization
    the case for off-line encoding. Support for this feature is signalled
    by the :ref:`V4L2_FMT_FLAG_ENC_CAP_FRAME_INTERVAL <fmtdesc-flags>` format flag.
 
-   * **Required fields:**
+   * ** Required fields:**
 
      ``type``
 	 a ``V4L2_BUF_TYPE_*`` enum appropriate for ``CAPTURE``.
@@ -297,7 +296,7 @@ Initialization
 	 the desired coded frame interval; the encoder may adjust it to
 	 match hardware requirements.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``parm.capture.timeperframe``
 	 the adjusted frame interval.
@@ -340,7 +339,7 @@ Initialization
          rectangle and may be subject to adjustment to match codec and
          hardware constraints.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``r.left``, ``r.top``, ``r.width``, ``r.height``
          visible rectangle adjusted by the encoder.
@@ -388,7 +387,7 @@ Initialization
      other fields
          follow standard semantics.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``count``
           actual number of buffers allocated.
@@ -421,7 +420,7 @@ Initialization
      other fields
          follow standard semantics.
 
-   * **Returned fields:**
+   * **Return fields:**
 
      ``count``
          adjusted to the number of allocated buffers.

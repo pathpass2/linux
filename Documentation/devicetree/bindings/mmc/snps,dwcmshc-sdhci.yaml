@@ -10,27 +10,15 @@ maintainers:
   - Ulf Hansson <ulf.hansson@linaro.org>
   - Jisheng Zhang <Jisheng.Zhang@synaptics.com>
 
+allOf:
+  - $ref: mmc-controller.yaml#
+
 properties:
   compatible:
-    oneOf:
-      - items:
-          - enum:
-              - rockchip,rk3528-dwcmshc
-              - rockchip,rk3562-dwcmshc
-              - rockchip,rk3576-dwcmshc
-          - const: rockchip,rk3588-dwcmshc
-      - items:
-          - const: sophgo,sg2044-dwcmshc
-          - const: sophgo,sg2042-dwcmshc
-      - enum:
-          - rockchip,rk3568-dwcmshc
-          - rockchip,rk3588-dwcmshc
-          - snps,dwcmshc-sdhci
-          - sophgo,cv1800b-dwcmshc
-          - sophgo,sg2002-dwcmshc
-          - sophgo,sg2042-dwcmshc
-          - thead,th1520-dwcmshc
-          - eswin,eic7700-dwcmshc
+    enum:
+      - rockchip,rk3568-dwcmshc
+      - rockchip,rk3588-dwcmshc
+      - snps,dwcmshc-sdhci
 
   reg:
     maxItems: 1
@@ -40,42 +28,38 @@ properties:
 
   clocks:
     minItems: 1
-    maxItems: 5
+    items:
+      - description: core clock
+      - description: bus clock for optional
+      - description: axi clock for rockchip specified
+      - description: block clock for rockchip specified
+      - description: timer clock for rockchip specified
+
 
   clock-names:
     minItems: 1
-    maxItems: 5
-
-  power-domains:
-    maxItems: 1
+    items:
+      - const: core
+      - const: bus
+      - const: axi
+      - const: block
+      - const: timer
 
   resets:
     maxItems: 5
 
   reset-names:
-    maxItems: 5
+    items:
+      - const: core
+      - const: bus
+      - const: axi
+      - const: block
+      - const: timer
 
   rockchip,txclk-tapnum:
     description: Specify the number of delay for tx sampling.
     $ref: /schemas/types.yaml#/definitions/uint8
 
-  eswin,hsp-sp-csr:
-    $ref: /schemas/types.yaml#/definitions/phandle-array
-    items:
-      - items:
-          - description: Phandle to HSP(High-Speed Peripheral) device
-          - description: Offset of the stability status register for internal
-                         clock.
-          - description: Offset of the stability register for host regulator
-                         voltage.
-    description:
-      HSP CSR is to control and get status of different high-speed peripherals
-      (such as Ethernet, USB, SATA, etc.) via register, which can tune
-      board-level's parameters of PHY, etc.
-
-  eswin,drive-impedance-ohms:
-    description: Specifies the drive impedance in Ohm.
-    enum: [33, 40, 50, 66, 100]
 
 required:
   - compatible
@@ -83,87 +67,6 @@ required:
   - interrupts
   - clocks
   - clock-names
-
-allOf:
-  - $ref: mmc-controller.yaml#
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: sophgo,sg2042-dwcmshc
-
-    then:
-      properties:
-        clocks:
-          items:
-            - description: core clock
-            - description: bus clock
-            - description: timer clock
-        clock-names:
-          items:
-            - const: core
-            - const: bus
-            - const: timer
-    else:
-      properties:
-        clocks:
-          minItems: 1
-          items:
-            - description: core clock
-            - description: bus clock for optional
-            - description: axi clock for rockchip specified
-            - description: block clock for rockchip specified
-            - description: timer clock for rockchip specified
-        clock-names:
-          minItems: 1
-          items:
-            - const: core
-            - const: bus
-            - const: axi
-            - const: block
-            - const: timer
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: eswin,eic7700-dwcmshc
-    then:
-      properties:
-        resets:
-          minItems: 4
-          maxItems: 4
-        reset-names:
-          items:
-            - const: axi
-            - const: phy
-            - const: prstn
-            - const: txrx
-      required:
-        - eswin,hsp-sp-csr
-        - eswin,drive-impedance-ohms
-    else:
-      properties:
-        resets:
-          maxItems: 5
-        reset-names:
-          items:
-            - const: core
-            - const: bus
-            - const: axi
-            - const: block
-            - const: timer
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: rockchip,rk3576-dwcmshc
-
-    then:
-      required:
-        - power-domains
 
 unevaluatedProperties: false
 

@@ -40,7 +40,7 @@ enum {
 /* An instance of a PHY, partially borrowed from mii_if_info */
 struct mii_phy
 {
-	const struct mii_phy_def *def;
+	struct mii_phy_def*	def;
 	u32			advertising;
 	int			mii_id;
 

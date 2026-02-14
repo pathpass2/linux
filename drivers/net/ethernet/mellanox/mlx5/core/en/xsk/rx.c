@@ -22,8 +22,6 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 	struct mlx5e_icosq *icosq = rq->icosq;
 	struct mlx5_wq_cyc *wq = &icosq->wq;
 	struct mlx5e_umr_wqe *umr_wqe;
-	struct xdp_buff **xsk_buffs;
-	bool sync_locked;
 	int batch, i;
 	u32 offset; /* 17-bit value with MTT. */
 	u16 pi;
@@ -31,9 +29,9 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 	if (unlikely(!xsk_buff_can_alloc(rq->xsk_pool, rq->mpwqe.pages_per_wqe)))
 		goto err;
 
+	BUILD_BUG_ON(sizeof(wi->alloc_units[0]) != sizeof(wi->alloc_units[0].xsk));
 	XSK_CHECK_PRIV_TYPE(struct mlx5e_xdp_buff);
-	xsk_buffs = (struct xdp_buff **)wi->alloc_units.xsk_buffs;
-	batch = xsk_buff_alloc_batch(rq->xsk_pool, xsk_buffs,
+	batch = xsk_buff_alloc_batch(rq->xsk_pool, (struct xdp_buff **)wi->alloc_units,
 				     rq->mpwqe.pages_per_wqe);
 
 	/* If batch < pages_per_wqe, either:
@@ -43,20 +41,19 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 	 * the first error, which will mean there are no more valid descriptors.
 	 */
 	for (; batch < rq->mpwqe.pages_per_wqe; batch++) {
-		xsk_buffs[batch] = xsk_buff_alloc(rq->xsk_pool);
-		if (unlikely(!xsk_buffs[batch]))
+		wi->alloc_units[batch].xsk = xsk_buff_alloc(rq->xsk_pool);
+		if (unlikely(!wi->alloc_units[batch].xsk))
 			goto err_reuse_batch;
 	}
 
-	sync_locked = mlx5e_icosq_sync_lock(icosq);
 	pi = mlx5e_icosq_get_next_pi(icosq, rq->mpwqe.umr_wqebbs);
 	umr_wqe = mlx5_wq_cyc_get_wqe(wq, pi);
 	memcpy(umr_wqe, &rq->mpwqe.umr_wqe, sizeof(struct mlx5e_umr_wqe));
 
 	if (likely(rq->mpwqe.umr_mode == MLX5E_MPWRQ_UMR_MODE_ALIGNED)) {
 		for (i = 0; i < batch; i++) {
-			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(xsk_buffs[i]);
-			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(xsk_buffs[i]);
+			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(wi->alloc_units[i].xsk);
+			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(wi->alloc_units[i].xsk);
 
 			umr_wqe->inline_mtts[i] = (struct mlx5_mtt) {
 				.ptag = cpu_to_be64(addr | MLX5_EN_WR),
@@ -65,8 +62,8 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 		}
 	} else if (unlikely(rq->mpwqe.umr_mode == MLX5E_MPWRQ_UMR_MODE_UNALIGNED)) {
 		for (i = 0; i < batch; i++) {
-			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(xsk_buffs[i]);
-			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(xsk_buffs[i]);
+			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(wi->alloc_units[i].xsk);
+			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(wi->alloc_units[i].xsk);
 
 			umr_wqe->inline_ksms[i] = (struct mlx5_ksm) {
 				.key = rq->mkey_be,
@@ -78,8 +75,8 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 		u32 mapping_size = 1 << (rq->mpwqe.page_shift - 2);
 
 		for (i = 0; i < batch; i++) {
-			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(xsk_buffs[i]);
-			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(xsk_buffs[i]);
+			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(wi->alloc_units[i].xsk);
+			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(wi->alloc_units[i].xsk);
 
 			umr_wqe->inline_ksms[i << 2] = (struct mlx5_ksm) {
 				.key = rq->mkey_be,
@@ -105,8 +102,8 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 		__be32 frame_size = cpu_to_be32(rq->xsk_pool->chunk_size);
 
 		for (i = 0; i < batch; i++) {
-			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(xsk_buffs[i]);
-			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(xsk_buffs[i]);
+			struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(wi->alloc_units[i].xsk);
+			dma_addr_t addr = xsk_buff_xdp_get_frame_dma(wi->alloc_units[i].xsk);
 
 			umr_wqe->inline_klms[i << 1] = (struct mlx5_klm) {
 				.key = rq->mkey_be,
@@ -122,10 +119,10 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 		}
 	}
 
-	bitmap_zero(wi->skip_release_bitmap, rq->mpwqe.pages_per_wqe);
+	bitmap_zero(wi->xdp_xmit_bitmap, rq->mpwqe.pages_per_wqe);
 	wi->consumed_strides = 0;
 
-	umr_wqe->hdr.ctrl.opmod_idx_opcode =
+	umr_wqe->ctrl.opmod_idx_opcode =
 		cpu_to_be32((icosq->pc << MLX5_WQE_CTRL_WQE_INDEX_SHIFT) | MLX5_OPCODE_UMR);
 
 	/* Optimized for speed: keep in sync with mlx5e_mpwrq_umr_entry_size. */
@@ -136,7 +133,7 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 		offset = offset * sizeof(struct mlx5_klm) * 2 / MLX5_OCTWORD;
 	else if (unlikely(rq->mpwqe.umr_mode == MLX5E_MPWRQ_UMR_MODE_TRIPLE))
 		offset = offset * sizeof(struct mlx5_ksm) * 4 / MLX5_OCTWORD;
-	umr_wqe->hdr.uctrl.xlt_offset = cpu_to_be16(offset);
+	umr_wqe->uctrl.xlt_offset = cpu_to_be16(offset);
 
 	icosq->db.wqe_info[pi] = (struct mlx5e_icosq_wqe_info) {
 		.wqe_type = MLX5E_ICOSQ_WQE_UMR_RX,
@@ -145,15 +142,14 @@ int mlx5e_xsk_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 	};
 
 	icosq->pc += rq->mpwqe.umr_wqebbs;
-	mlx5e_icosq_sync_unlock(icosq, sync_locked);
 
-	icosq->doorbell_cseg = &umr_wqe->hdr.ctrl;
+	icosq->doorbell_cseg = &umr_wqe->ctrl;
 
 	return 0;
 
 err_reuse_batch:
 	while (--batch >= 0)
-		xsk_buff_free(xsk_buffs[batch]);
+		xsk_buff_free(wi->alloc_units[batch].xsk);
 
 err:
 	rq->stats->buff_alloc_err++;
@@ -167,10 +163,13 @@ int mlx5e_xsk_alloc_rx_wqes_batched(struct mlx5e_rq *rq, u16 ix, int wqe_bulk)
 	u32 contig, alloc;
 	int i;
 
-	/* Each rq->wqe.frags->xskp is 1:1 mapped to an element inside the
-	 * rq->wqe.alloc_units->xsk_buffs array allocated here.
+	/* mlx5e_init_frags_partition creates a 1:1 mapping between
+	 * rq->wqe.frags and rq->wqe.alloc_units, which allows us to
+	 * allocate XDP buffers straight into alloc_units.
 	 */
-	buffs = rq->wqe.alloc_units->xsk_buffs;
+	BUILD_BUG_ON(sizeof(rq->wqe.alloc_units[0]) !=
+		     sizeof(rq->wqe.alloc_units[0].xsk));
+	buffs = (struct xdp_buff **)rq->wqe.alloc_units;
 	contig = mlx5_wq_cyc_get_size(wq) - ix;
 	if (wqe_bulk <= contig) {
 		alloc = xsk_buff_alloc_batch(rq->xsk_pool, buffs + ix, wqe_bulk);
@@ -190,9 +189,8 @@ int mlx5e_xsk_alloc_rx_wqes_batched(struct mlx5e_rq *rq, u16 ix, int wqe_bulk)
 		/* Assumes log_num_frags == 0. */
 		frag = &rq->wqe.frags[j];
 
-		addr = xsk_buff_xdp_get_frame_dma(*frag->xskp);
+		addr = xsk_buff_xdp_get_frame_dma(frag->au->xsk);
 		wqe->data[0].addr = cpu_to_be64(addr + rq->buff.headroom);
-		frag->flags &= ~BIT(MLX5E_WQE_FRAG_SKIP_RELEASE);
 	}
 
 	return alloc;
@@ -213,13 +211,12 @@ int mlx5e_xsk_alloc_rx_wqes(struct mlx5e_rq *rq, u16 ix, int wqe_bulk)
 		/* Assumes log_num_frags == 0. */
 		frag = &rq->wqe.frags[j];
 
-		*frag->xskp = xsk_buff_alloc(rq->xsk_pool);
-		if (unlikely(!*frag->xskp))
+		frag->au->xsk = xsk_buff_alloc(rq->xsk_pool);
+		if (unlikely(!frag->au->xsk))
 			return i;
 
-		addr = xsk_buff_xdp_get_frame_dma(*frag->xskp);
+		addr = xsk_buff_xdp_get_frame_dma(frag->au->xsk);
 		wqe->data[0].addr = cpu_to_be64(addr + rq->buff.headroom);
-		frag->flags &= ~BIT(MLX5E_WQE_FRAG_SKIP_RELEASE);
 	}
 
 	return wqe_bulk;
@@ -254,7 +251,7 @@ struct sk_buff *mlx5e_xsk_skb_from_cqe_mpwrq_linear(struct mlx5e_rq *rq,
 						    u32 head_offset,
 						    u32 page_idx)
 {
-	struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(wi->alloc_units.xsk_buffs[page_idx]);
+	struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(wi->alloc_units[page_idx].xsk);
 	struct bpf_prog *prog;
 
 	/* Check packet size. Note LRO doesn't use linear SKB */
@@ -273,7 +270,7 @@ struct sk_buff *mlx5e_xsk_skb_from_cqe_mpwrq_linear(struct mlx5e_rq *rq,
 	/* mxbuf->rq is set on allocation, but cqe is per-packet so set it here */
 	mxbuf->cqe = cqe;
 	xsk_buff_set_size(&mxbuf->xdp, cqe_bcnt);
-	xsk_buff_dma_sync_for_cpu(&mxbuf->xdp);
+	xsk_buff_dma_sync_for_cpu(&mxbuf->xdp, rq->xsk_pool);
 	net_prefetch(mxbuf->xdp.data);
 
 	/* Possible flows:
@@ -294,7 +291,7 @@ struct sk_buff *mlx5e_xsk_skb_from_cqe_mpwrq_linear(struct mlx5e_rq *rq,
 	prog = rcu_dereference(rq->xdp_prog);
 	if (likely(prog && mlx5e_xdp_handle(rq, prog, mxbuf))) {
 		if (likely(__test_and_clear_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags)))
-			__set_bit(page_idx, wi->skip_release_bitmap); /* non-atomic */
+			__set_bit(page_idx, wi->xdp_xmit_bitmap); /* non-atomic */
 		return NULL; /* page/packet was consumed by XDP */
 	}
 
@@ -309,7 +306,7 @@ struct sk_buff *mlx5e_xsk_skb_from_cqe_linear(struct mlx5e_rq *rq,
 					      struct mlx5_cqe64 *cqe,
 					      u32 cqe_bcnt)
 {
-	struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(*wi->xskp);
+	struct mlx5e_xdp_buff *mxbuf = xsk_buff_to_mxbuf(wi->au->xsk);
 	struct bpf_prog *prog;
 
 	/* wi->offset is not used in this function, because xdp->data and the
@@ -322,15 +319,12 @@ struct sk_buff *mlx5e_xsk_skb_from_cqe_linear(struct mlx5e_rq *rq,
 	/* mxbuf->rq is set on allocation, but cqe is per-packet so set it here */
 	mxbuf->cqe = cqe;
 	xsk_buff_set_size(&mxbuf->xdp, cqe_bcnt);
-	xsk_buff_dma_sync_for_cpu(&mxbuf->xdp);
+	xsk_buff_dma_sync_for_cpu(&mxbuf->xdp, rq->xsk_pool);
 	net_prefetch(mxbuf->xdp.data);
 
 	prog = rcu_dereference(rq->xdp_prog);
-	if (likely(prog && mlx5e_xdp_handle(rq, prog, mxbuf))) {
-		if (likely(__test_and_clear_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags)))
-			wi->flags |= BIT(MLX5E_WQE_FRAG_SKIP_RELEASE);
+	if (likely(prog && mlx5e_xdp_handle(rq, prog, mxbuf)))
 		return NULL; /* page/packet was consumed by XDP */
-	}
 
 	/* XDP_PASS: copy the data from the UMEM to a new SKB. The frame reuse
 	 * will be handled by mlx5e_free_rx_wqe.

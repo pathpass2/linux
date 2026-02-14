@@ -242,10 +242,10 @@ static int cs42xx8_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* Set master/slave audio interface */
 	switch (format & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		cs42xx8->slave_mode = true;
 		break;
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		cs42xx8->slave_mode = false;
 		break;
 	default:
@@ -458,14 +458,14 @@ const struct regmap_config cs42xx8_regmap_config = {
 	.num_reg_defaults = ARRAY_SIZE(cs42xx8_reg),
 	.volatile_reg = cs42xx8_volatile_register,
 	.writeable_reg = cs42xx8_writeable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 };
 EXPORT_SYMBOL_GPL(cs42xx8_regmap_config);
 
 static int cs42xx8_component_probe(struct snd_soc_component *component)
 {
 	struct cs42xx8_priv *cs42xx8 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 
 	switch (cs42xx8->drvdata->num_adcs) {
 	case 3:
@@ -606,6 +606,7 @@ err_enable:
 }
 EXPORT_SYMBOL_GPL(cs42xx8_probe);
 
+#ifdef CONFIG_PM
 static int cs42xx8_runtime_resume(struct device *dev)
 {
 	struct cs42xx8_priv *cs42xx8 = dev_get_drvdata(dev);
@@ -664,11 +665,14 @@ static int cs42xx8_runtime_suspend(struct device *dev)
 
 	return 0;
 }
+#endif
 
-EXPORT_GPL_DEV_PM_OPS(cs42xx8_pm) = {
-	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
-	RUNTIME_PM_OPS(cs42xx8_runtime_suspend, cs42xx8_runtime_resume, NULL)
+const struct dev_pm_ops cs42xx8_pm = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(cs42xx8_runtime_suspend, cs42xx8_runtime_resume, NULL)
 };
+EXPORT_SYMBOL_GPL(cs42xx8_pm);
 
 MODULE_DESCRIPTION("Cirrus Logic CS42448/CS42888 ALSA SoC Codec Driver");
 MODULE_AUTHOR("Freescale Semiconductor, Inc.");

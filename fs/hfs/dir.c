@@ -196,8 +196,8 @@ static int hfs_create(struct mnt_idmap *idmap, struct inode *dir,
 	int res;
 
 	inode = hfs_new_inode(dir, &dentry->d_name, mode);
-	if (IS_ERR(inode))
-		return PTR_ERR(inode);
+	if (!inode)
+		return -ENOMEM;
 
 	res = hfs_cat_create(inode->i_ino, dir, &dentry->d_name, inode);
 	if (res) {
@@ -219,26 +219,26 @@ static int hfs_create(struct mnt_idmap *idmap, struct inode *dir,
  * in a directory, given the inode for the parent directory and the
  * name (and its length) of the new directory.
  */
-static struct dentry *hfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
-				struct dentry *dentry, umode_t mode)
+static int hfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+		     struct dentry *dentry, umode_t mode)
 {
 	struct inode *inode;
 	int res;
 
 	inode = hfs_new_inode(dir, &dentry->d_name, S_IFDIR | mode);
-	if (IS_ERR(inode))
-		return ERR_CAST(inode);
+	if (!inode)
+		return -ENOMEM;
 
 	res = hfs_cat_create(inode->i_ino, dir, &dentry->d_name, inode);
 	if (res) {
 		clear_nlink(inode);
 		hfs_delete_inode(inode);
 		iput(inode);
-		return ERR_PTR(res);
+		return res;
 	}
 	d_instantiate(dentry, inode);
 	mark_inode_dirty(inode);
-	return NULL;
+	return 0;
 }
 
 /*
@@ -254,23 +254,16 @@ static struct dentry *hfs_mkdir(struct mnt_idmap *idmap, struct inode *dir,
  */
 static int hfs_remove(struct inode *dir, struct dentry *dentry)
 {
-	struct super_block *sb = dir->i_sb;
 	struct inode *inode = d_inode(dentry);
 	int res;
 
 	if (S_ISDIR(inode->i_mode) && inode->i_size != 2)
 		return -ENOTEMPTY;
-
-	if (unlikely(!is_hfs_cnid_counts_valid(sb))) {
-	    pr_err("cannot remove file/folder\n");
-	    return -ERANGE;
-	}
-
 	res = hfs_cat_delete(inode->i_ino, dir, &dentry->d_name);
 	if (res)
 		return res;
 	clear_nlink(inode);
-	inode_set_ctime_current(inode);
+	inode->i_ctime = current_time(inode);
 	hfs_delete_inode(inode);
 	mark_inode_dirty(inode);
 	return 0;

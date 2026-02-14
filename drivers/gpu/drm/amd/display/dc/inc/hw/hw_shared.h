@@ -43,67 +43,10 @@
  * to be used inside loops and for determining array sizes.
  */
 #define MAX_PIPES 6
-#define MAX_PHANTOM_PIPES (MAX_PIPES / 2)
-
-#define MAX_DPIA 6
-#define MAX_CONNECTOR 6
-#define MAX_VIRTUAL_LINKS 4
-
-#define MAX_LINKS (MAX_DPIA + MAX_CONNECTOR + MAX_VIRTUAL_LINKS)
-
-/**
- * define MAX_DIG_LINK_ENCODERS - maximum number of digital encoders
- *
- * Digital encoders are ENGINE_ID_DIGA...G, there are at most 7,
- * although not every GPU may have that many.
- */
 #define MAX_DIG_LINK_ENCODERS 7
-
-/**
- * define MAX_DAC_LINK_ENCODERS - maximum number of analog link encoders
- *
- * Analog encoders are ENGINE_ID_DACA/B, there are at most 2,
- * although not every GPU may have that many. Modern GPUs typically
- * don't have analog encoders.
- */
-#define MAX_DAC_LINK_ENCODERS 2
-
-/**
- * define MAX_LINK_ENCODERS - maximum number link encoders in total
- *
- * This includes both analog and digital encoders.
- */
-#define MAX_LINK_ENCODERS (MAX_DIG_LINK_ENCODERS + MAX_DAC_LINK_ENCODERS)
-
 #define MAX_DWB_PIPES	1
 #define MAX_HPO_DP2_ENCODERS	4
-#define MAX_HPO_DP2_LINK_ENCODERS	4
-
-/* Pipe topology snapshot structures */
-#define MAX_TOPOLOGY_SNAPSHOTS 4
-
-struct pipe_topology_line {
-	bool is_phantom_pipe;
-	int plane_idx;
-	int slice_idx;
-	int stream_idx;
-	int dpp_inst;
-	int opp_inst;
-	int tg_inst;
-};
-
-struct pipe_topology_snapshot {
-	struct pipe_topology_line pipe_log_lines[MAX_PIPES];
-	int line_count;
-	uint64_t timestamp_us;
-	int stream_count;
-	int phantom_stream_count;
-};
-
-struct pipe_topology_history {
-	struct pipe_topology_snapshot snapshots[MAX_TOPOLOGY_SNAPSHOTS];
-	int current_snapshot_index;
-};
+#define MAX_HPO_DP2_LINK_ENCODERS	2
 
 struct gamma_curve {
 	uint32_t offset;
@@ -272,13 +215,12 @@ enum optc_dsc_mode {
 };
 
 struct dc_bias_and_scale {
-	uint32_t scale_red;
-	uint32_t bias_red;
-	uint32_t scale_green;
-	uint32_t bias_green;
-	uint32_t scale_blue;
-	uint32_t bias_blue;
-	bool bias_and_scale_valid;
+	uint16_t scale_red;
+	uint16_t bias_red;
+	uint16_t scale_green;
+	uint16_t bias_green;
+	uint16_t scale_blue;
+	uint16_t bias_blue;
 };
 
 enum test_pattern_dyn_range {
@@ -331,6 +273,20 @@ enum dc_lut_mode {
 	LUT_BYPASS,
 	LUT_RAM_A,
 	LUT_RAM_B
+};
+
+enum symclk_state {
+	SYMCLK_OFF_TX_OFF,
+	SYMCLK_ON_TX_ON,
+	SYMCLK_ON_TX_OFF,
+};
+
+struct phy_state {
+	struct {
+		uint8_t otg		: 1;
+		uint8_t reserved	: 7;
+	} symclk_ref_cnts;
+	enum symclk_state symclk_state;
 };
 
 /**

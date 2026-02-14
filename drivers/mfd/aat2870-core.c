@@ -320,7 +320,9 @@ static const struct file_operations aat2870_reg_fops = {
 
 static void aat2870_init_debugfs(struct aat2870_data *aat2870)
 {
-	debugfs_create_file("regs", 0644, aat2870->client->debugfs, aat2870,
+	aat2870->dentry_root = debugfs_create_dir("aat2870", NULL);
+
+	debugfs_create_file("regs", 0644, aat2870->dentry_root, aat2870,
 			    &aat2870_reg_fops);
 }
 
@@ -343,6 +345,8 @@ static int aat2870_i2c_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	aat2870->dev = &client->dev;
+	dev_set_drvdata(aat2870->dev, aat2870);
+
 	aat2870->client = client;
 	i2c_set_clientdata(client, aat2870);
 
@@ -437,7 +441,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(aat2870_pm_ops, aat2870_i2c_suspend,
 				aat2870_i2c_resume);
 
 static const struct i2c_device_id aat2870_i2c_id_table[] = {
-	{ "aat2870" },
+	{ "aat2870", 0 },
 	{ }
 };
 
@@ -447,7 +451,7 @@ static struct i2c_driver aat2870_i2c_driver = {
 		.pm			= pm_sleep_ptr(&aat2870_pm_ops),
 		.suppress_bind_attrs	= true,
 	},
-	.probe		= aat2870_i2c_probe,
+	.probe_new	= aat2870_i2c_probe,
 	.id_table	= aat2870_i2c_id_table,
 };
 

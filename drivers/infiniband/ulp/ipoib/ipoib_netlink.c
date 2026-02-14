@@ -97,13 +97,10 @@ out_err:
 	return ret;
 }
 
-static int ipoib_new_child_link(struct net_device *dev,
-				struct rtnl_newlink_params *params,
+static int ipoib_new_child_link(struct net *src_net, struct net_device *dev,
+				struct nlattr *tb[], struct nlattr *data[],
 				struct netlink_ext_ack *extack)
 {
-	struct net *link_net = rtnl_newlink_link_net(params);
-	struct nlattr **data = params->data;
-	struct nlattr **tb = params->tb;
 	struct net_device *pdev;
 	struct ipoib_dev_priv *ppriv;
 	u16 child_pkey;
@@ -112,7 +109,7 @@ static int ipoib_new_child_link(struct net_device *dev,
 	if (!tb[IFLA_LINK])
 		return -EINVAL;
 
-	pdev = __dev_get_by_index(link_net, nla_get_u32(tb[IFLA_LINK]));
+	pdev = __dev_get_by_index(src_net, nla_get_u32(tb[IFLA_LINK]));
 	if (!pdev || pdev->type != ARPHRD_INFINIBAND)
 		return -ENODEV;
 

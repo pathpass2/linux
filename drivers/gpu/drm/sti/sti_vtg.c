@@ -143,17 +143,12 @@ struct sti_vtg {
 struct sti_vtg *of_vtg_find(struct device_node *np)
 {
 	struct platform_device *pdev;
-	struct sti_vtg *vtg;
 
 	pdev = of_find_device_by_node(np);
 	if (!pdev)
 		return NULL;
 
-	vtg = platform_get_drvdata(pdev);
-
-	put_device(&pdev->dev);
-
-	return vtg;
+	return (struct sti_vtg *)platform_get_drvdata(pdev);
 }
 
 static void vtg_reset(struct sti_vtg *vtg)
@@ -385,15 +380,23 @@ static int vtg_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct sti_vtg *vtg;
+	struct resource *res;
 	int ret;
 
 	vtg = devm_kzalloc(dev, sizeof(*vtg), GFP_KERNEL);
 	if (!vtg)
 		return -ENOMEM;
-	vtg->regs = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(vtg->regs)) {
+
+	/* Get Memory ressources */
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		DRM_ERROR("Get memory resource failed\n");
+		return -ENOMEM;
+	}
+	vtg->regs = devm_ioremap(dev, res->start, resource_size(res));
+	if (!vtg->regs) {
 		DRM_ERROR("failed to remap I/O memory\n");
-		return PTR_ERR(vtg->regs);
+		return -ENOMEM;
 	}
 
 	vtg->irq = platform_get_irq(pdev, 0);
@@ -428,6 +431,7 @@ MODULE_DEVICE_TABLE(of, vtg_of_match);
 struct platform_driver sti_vtg_driver = {
 	.driver = {
 		.name = "sti-vtg",
+		.owner = THIS_MODULE,
 		.of_match_table = vtg_of_match,
 	},
 	.probe	= vtg_probe,

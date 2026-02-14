@@ -11,16 +11,17 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/gpio/consumer.h>
 #include <linux/hrtimer.h>
 #include <linux/jiffies.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
+#include <linux/gpio.h>
 #include <linux/delay.h>
 #include <linux/property.h>
 #include <linux/spi/spi.h>
 #include <linux/regmap.h>
 #include <linux/skbuff.h>
+#include <linux/of_gpio.h>
 #include <linux/ieee802154.h>
 
 #include <net/mac802154.h>
@@ -315,7 +316,7 @@ static const struct regmap_config at86rf230_regmap_spi_config = {
 	.val_bits = 8,
 	.write_flag_mask = CMD_REG | CMD_WRITE,
 	.read_flag_mask = CMD_REG,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.max_register = AT86RF2XX_NUMREGS,
 	.writeable_reg = at86rf230_reg_writeable,
 	.readable_reg = at86rf230_reg_readable,
@@ -776,8 +777,8 @@ at86rf230_setup_spi_messages(struct at86rf230_local *lp,
 	state->trx.tx_buf = state->buf;
 	state->trx.rx_buf = state->buf;
 	spi_message_add_tail(&state->trx, &state->msg);
-	hrtimer_setup(&state->timer, at86rf230_async_state_timer, CLOCK_MONOTONIC,
-		      HRTIMER_MODE_REL);
+	hrtimer_init(&state->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	state->timer.function = at86rf230_async_state_timer;
 }
 
 static irqreturn_t at86rf230_isr(int irq, void *data)
@@ -1661,7 +1662,7 @@ MODULE_DEVICE_TABLE(spi, at86rf230_device_id);
 static struct spi_driver at86rf230_driver = {
 	.id_table = at86rf230_device_id,
 	.driver = {
-		.of_match_table = at86rf230_of_match,
+		.of_match_table = of_match_ptr(at86rf230_of_match),
 		.name	= "at86rf230",
 	},
 	.probe      = at86rf230_probe,

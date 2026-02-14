@@ -3,6 +3,7 @@
 #include <linux/compiler.h>
 #include <linux/bits.h>
 #include <string.h>
+#include <cpuid.h>
 #include <sched.h>
 
 #include "intel-pt-decoder/intel-pt-pkt-decoder.h"
@@ -10,7 +11,6 @@
 #include "debug.h"
 #include "tests/tests.h"
 #include "arch-tests.h"
-#include "../util/cpuid.h"
 #include "cpumap.h"
 
 /**
@@ -22,7 +22,7 @@
  * @new_ctx: expected new packet context
  * @ctx_unchanged: the packet context must not change
  */
-static const struct test_data {
+static struct test_data {
 	int len;
 	u8 bytes[INTEL_PT_PKT_MAX_SZ];
 	enum intel_pt_pkt_ctx ctx;
@@ -186,7 +186,7 @@ static const struct test_data {
 	{0, {0}, 0, {0, 0, 0}, 0, 0 },
 };
 
-static int dump_packet(const struct intel_pt_pkt *packet, const u8 *bytes, int len)
+static int dump_packet(struct intel_pt_pkt *packet, u8 *bytes, int len)
 {
 	char desc[INTEL_PT_PKT_DESC_MAX];
 	int ret, i;
@@ -206,14 +206,14 @@ static int dump_packet(const struct intel_pt_pkt *packet, const u8 *bytes, int l
 	return TEST_OK;
 }
 
-static void decoding_failed(const struct test_data *d)
+static void decoding_failed(struct test_data *d)
 {
 	pr_debug("Decoding failed!\n");
 	pr_debug("Decoding:  ");
 	dump_packet(&d->packet, d->bytes, d->len);
 }
 
-static int fail(const struct test_data *d, struct intel_pt_pkt *packet, int len,
+static int fail(struct test_data *d, struct intel_pt_pkt *packet, int len,
 		enum intel_pt_pkt_ctx new_ctx)
 {
 	decoding_failed(d);
@@ -242,7 +242,7 @@ static int fail(const struct test_data *d, struct intel_pt_pkt *packet, int len,
 	return TEST_FAIL;
 }
 
-static int test_ctx_unchanged(const struct test_data *d, struct intel_pt_pkt *packet,
+static int test_ctx_unchanged(struct test_data *d, struct intel_pt_pkt *packet,
 			      enum intel_pt_pkt_ctx ctx)
 {
 	enum intel_pt_pkt_ctx old_ctx = ctx;
@@ -258,7 +258,7 @@ static int test_ctx_unchanged(const struct test_data *d, struct intel_pt_pkt *pa
 	return TEST_OK;
 }
 
-static int test_one(const struct test_data *d)
+static int test_one(struct test_data *d)
 {
 	struct intel_pt_pkt packet;
 	enum intel_pt_pkt_ctx ctx = d->ctx;
@@ -307,7 +307,7 @@ static int test_one(const struct test_data *d)
  */
 int test__intel_pt_pkt_decoder(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
-	const struct test_data *d = data;
+	struct test_data *d = data;
 	int ret;
 
 	for (d = data; d->len; d++) {
@@ -363,7 +363,7 @@ static int get_pt_caps(int cpu, struct pt_caps *caps)
 	memset(caps, 0, sizeof(*caps));
 
 	for (i = 0; i < INTEL_PT_SUBLEAF_CNT; i++) {
-		cpuid(20, i, &r.eax, &r.ebx, &r.ecx, &r.edx);
+		__get_cpuid_count(20, i, &r.eax, &r.ebx, &r.ecx, &r.edx);
 		pr_debug("CPU %d CPUID leaf 20 subleaf %d\n", cpu, i);
 		pr_debug("eax = 0x%08x\n", r.eax);
 		pr_debug("ebx = 0x%08x\n", r.ebx);
@@ -375,12 +375,12 @@ static int get_pt_caps(int cpu, struct pt_caps *caps)
 	return 0;
 }
 
-static bool is_hybrid(void)
+static bool is_hydrid(void)
 {
 	unsigned int eax, ebx, ecx, edx = 0;
 	bool result;
 
-	cpuid(7, 0, &eax, &ebx, &ecx, &edx);
+	__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx);
 	result = edx & BIT(15);
 	pr_debug("Is %shybrid : CPUID leaf 7 subleaf 0 edx %#x (bit-15 indicates hybrid)\n",
 		 result ? "" : "not ", edx);
@@ -441,7 +441,7 @@ int test__intel_pt_hybrid_compat(struct test_suite *test, int subtest)
 	int ret = TEST_OK;
 	int cpu;
 
-	if (!is_hybrid()) {
+	if (!is_hydrid()) {
 		test->test_cases[subtest].skip_reason = "not hybrid";
 		return TEST_SKIP;
 	}

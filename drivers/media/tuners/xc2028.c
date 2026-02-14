@@ -14,7 +14,7 @@
 #include <media/tuner.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include "tuner-i2c.h"
 #include "xc2028.h"
 #include "xc2028-types.h"
@@ -1512,7 +1512,7 @@ fail:
 	return NULL;
 }
 
-EXPORT_SYMBOL_GPL(xc2028_attach);
+EXPORT_SYMBOL(xc2028_attach);
 
 MODULE_DESCRIPTION("Xceive xc2028/xc3028 tuner driver");
 MODULE_AUTHOR("Michel Ludwig <michel.ludwig@gmail.com>");

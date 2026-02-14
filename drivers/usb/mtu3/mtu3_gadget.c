@@ -7,7 +7,6 @@
  * Author: Chunfeng Yun <chunfeng.yun@mediatek.com>
  */
 
-#include <linux/string_choices.h>
 #include "mtu3.h"
 #include "mtu3_trace.h"
 
@@ -24,6 +23,7 @@ __acquires(mep->mtu->lock)
 		req->status = status;
 
 	trace_mtu3_req_complete(mreq);
+	spin_unlock(&mtu->lock);
 
 	/* ep0 makes use of PIO, needn't unmap it */
 	if (mep->epnum)
@@ -32,7 +32,6 @@ __acquires(mep->mtu->lock)
 	dev_dbg(mtu->dev, "%s complete req: %p, sts %d, %d/%d\n",
 		mep->name, req, req->status, req->actual, req->length);
 
-	spin_unlock(&mtu->lock);
 	usb_gadget_giveback_request(&mep->ep, req);
 	spin_lock(&mtu->lock);
 }
@@ -491,7 +490,7 @@ static int mtu3_gadget_pullup(struct usb_gadget *gadget, int is_on)
 	unsigned long flags;
 
 	dev_dbg(mtu->dev, "%s (%s) for %sactive device\n", __func__,
-		str_on_off(is_on), mtu->is_active ? "" : "in");
+		is_on ? "on" : "off", mtu->is_active ? "" : "in");
 
 	pm_runtime_get_sync(mtu->dev);
 

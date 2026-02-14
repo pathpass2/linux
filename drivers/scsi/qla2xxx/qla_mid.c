@@ -20,7 +20,7 @@ void
 qla2x00_vp_stop_timer(scsi_qla_host_t *vha)
 {
 	if (vha->vp_idx && vha->timer_active) {
-		timer_delete_sync(&vha->timer);
+		del_timer_sync(&vha->timer);
 		vha->timer_active = 0;
 	}
 }
@@ -180,7 +180,7 @@ qla24xx_disable_vp(scsi_qla_host_t *vha)
 	atomic_set(&vha->loop_state, LOOP_DOWN);
 	atomic_set(&vha->loop_down_timer, LOOP_DOWN_TIME);
 	list_for_each_entry(fcport, &vha->vp_fcports, list)
-		fcport->logout_on_delete = 1;
+		fcport->logout_on_delete = 0;
 
 	if (!vha->hw->flags.edif_enabled)
 		qla2x00_wait_for_sess_deletion(vha);
@@ -496,7 +496,7 @@ qla24xx_create_vhost(struct fc_vport *fc_vport)
 	scsi_qla_host_t *base_vha = shost_priv(fc_vport->shost);
 	struct qla_hw_data *ha = base_vha->hw;
 	scsi_qla_host_t *vha;
-	const struct scsi_host_template *sht = &qla2xxx_driver_template;
+	struct scsi_host_template *sht = &qla2xxx_driver_template;
 	struct Scsi_Host *host;
 
 	vha = qla2x00_create_host(sht, ha);
@@ -506,7 +506,6 @@ qla24xx_create_vhost(struct fc_vport *fc_vport)
 		return(NULL);
 	}
 
-	vha->irq_offset = QLA_BASE_VECTORS;
 	host = vha->host;
 	fc_vport->dd_data = vha;
 	/* New host info */
@@ -899,7 +898,9 @@ qla25xx_create_rsp_que(struct qla_hw_data *ha, uint16_t options,
 	    rsp->options, rsp->id, rsp->rsp_q_in,
 	    rsp->rsp_q_out);
 
-	ret = qla25xx_request_irq(ha, qpair, qpair->msix);
+	ret = qla25xx_request_irq(ha, qpair, qpair->msix,
+		ha->flags.disable_msix_handshake ?
+		QLA_MSIX_QPAIR_MULTIQ_RSP_Q : QLA_MSIX_QPAIR_MULTIQ_RSP_Q_HS);
 	if (ret)
 		goto que_failed;
 

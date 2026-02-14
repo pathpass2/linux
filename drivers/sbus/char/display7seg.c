@@ -16,7 +16,7 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/atomic.h>
 #include <linux/uaccess.h>		/* put_/get_user			*/
 #include <asm/io.h>
@@ -200,8 +200,9 @@ static int d7s_probe(struct platform_device *op)
 	 */
 	regs = readb(p->regs);
 	opts = of_find_node_by_path("/options");
-	if (opts)
-	    p->flipped = of_property_read_bool(opts, "d7s-flipped?");
+	if (opts &&
+	    of_get_property(opts, "d7s-flipped?", NULL))
+		p->flipped = true;
 
 	if (p->flipped)
 		regs |= D7S_FLIP;
@@ -229,7 +230,7 @@ out_iounmap:
 	goto out;
 }
 
-static void d7s_remove(struct platform_device *op)
+static int d7s_remove(struct platform_device *op)
 {
 	struct d7s *p = dev_get_drvdata(&op->dev);
 	u8 regs = readb(p->regs);
@@ -245,6 +246,8 @@ static void d7s_remove(struct platform_device *op)
 
 	misc_deregister(&d7s_miscdev);
 	of_iounmap(&op->resource[0], p->regs, sizeof(u8));
+
+	return 0;
 }
 
 static const struct of_device_id d7s_match[] = {

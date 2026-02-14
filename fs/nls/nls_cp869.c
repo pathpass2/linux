@@ -312,5 +312,4 @@ static void __exit exit_nls_cp869(void)
 module_init(init_nls_cp869)
 module_exit(exit_nls_cp869)
 
-MODULE_DESCRIPTION("NLS Codepage 869 (Greek)");
 MODULE_LICENSE("Dual BSD/GPL");

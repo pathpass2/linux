@@ -109,7 +109,7 @@ static int mchp_eic_irq_set_wake(struct irq_data *d, unsigned int on)
 	return 0;
 }
 
-static int mchp_eic_irq_suspend(void *data)
+static int mchp_eic_irq_suspend(void)
 {
 	unsigned int hwirq;
 
@@ -123,7 +123,7 @@ static int mchp_eic_irq_suspend(void *data)
 	return 0;
 }
 
-static void mchp_eic_irq_resume(void *data)
+static void mchp_eic_irq_resume(void)
 {
 	unsigned int hwirq;
 
@@ -135,13 +135,9 @@ static void mchp_eic_irq_resume(void *data)
 			       MCHP_EIC_SCFG(hwirq));
 }
 
-static const struct syscore_ops mchp_eic_syscore_ops = {
+static struct syscore_ops mchp_eic_syscore_ops = {
 	.suspend = mchp_eic_irq_suspend,
 	.resume = mchp_eic_irq_resume,
-};
-
-static struct syscore mchp_eic_syscore = {
-	.ops = &mchp_eic_syscore_ops,
 };
 
 static struct irq_chip mchp_eic_chip = {
@@ -170,7 +166,7 @@ static int mchp_eic_domain_alloc(struct irq_domain *domain, unsigned int virq,
 
 	ret = irq_domain_translate_twocell(domain, fwspec, &hwirq, &type);
 	if (ret || hwirq >= MCHP_EIC_NIRQ)
-		return ret ?: -EINVAL;
+		return ret;
 
 	switch (type) {
 	case IRQ_TYPE_EDGE_RISING:
@@ -203,9 +199,8 @@ static const struct irq_domain_ops mchp_eic_domain_ops = {
 	.free		= irq_domain_free_irqs_common,
 };
 
-static int mchp_eic_probe(struct platform_device *pdev, struct device_node *parent)
+static int mchp_eic_init(struct device_node *node, struct device_node *parent)
 {
-	struct device_node *node = pdev->dev.of_node;
 	struct irq_domain *parent_domain = NULL;
 	int ret, i;
 
@@ -253,16 +248,15 @@ static int mchp_eic_probe(struct platform_device *pdev, struct device_node *pare
 		eic->irqs[i] = irq.args[1];
 	}
 
-	eic->domain = irq_domain_create_hierarchy(parent_domain, 0, MCHP_EIC_NIRQ,
-						  of_fwnode_handle(node), &mchp_eic_domain_ops,
-						  eic);
+	eic->domain = irq_domain_add_hierarchy(parent_domain, 0, MCHP_EIC_NIRQ,
+					       node, &mchp_eic_domain_ops, eic);
 	if (!eic->domain) {
 		pr_err("%pOF: Failed to add domain\n", node);
 		ret = -ENODEV;
 		goto clk_unprepare;
 	}
 
-	register_syscore(&mchp_eic_syscore);
+	register_syscore_ops(&mchp_eic_syscore_ops);
 
 	pr_info("%pOF: EIC registered, nr_irqs %u\n", node, MCHP_EIC_NIRQ);
 
@@ -278,8 +272,9 @@ free:
 }
 
 IRQCHIP_PLATFORM_DRIVER_BEGIN(mchp_eic)
-IRQCHIP_MATCH("microchip,sama7g5-eic", mchp_eic_probe)
+IRQCHIP_MATCH("microchip,sama7g5-eic", mchp_eic_init)
 IRQCHIP_PLATFORM_DRIVER_END(mchp_eic)
 
 MODULE_DESCRIPTION("Microchip External Interrupt Controller");
+MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Claudiu Beznea <claudiu.beznea@microchip.com>");

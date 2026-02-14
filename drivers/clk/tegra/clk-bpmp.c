@@ -159,7 +159,7 @@ static unsigned long tegra_bpmp_clk_recalc_rate(struct clk_hw *hw,
 
 	err = tegra_bpmp_clk_transfer(clk->bpmp, &msg);
 	if (err < 0)
-		return 0;
+		return err;
 
 	return response.rate;
 }
@@ -174,7 +174,7 @@ static int tegra_bpmp_clk_determine_rate(struct clk_hw *hw,
 	unsigned long rate;
 	int err;
 
-	rate = clamp(rate_req->rate, rate_req->min_rate, rate_req->max_rate);
+	rate = min(max(rate_req->rate, rate_req->min_rate), rate_req->max_rate);
 
 	memset(&request, 0, sizeof(request));
 	request.rate = min_t(u64, rate, S64_MAX);
@@ -286,7 +286,6 @@ static const struct clk_ops tegra_bpmp_clk_mux_ops = {
 	.unprepare = tegra_bpmp_clk_unprepare,
 	.is_prepared = tegra_bpmp_clk_is_prepared,
 	.recalc_rate = tegra_bpmp_clk_recalc_rate,
-	.determine_rate = clk_hw_determine_rate_no_reparent,
 	.set_parent = tegra_bpmp_clk_set_parent,
 	.get_parent = tegra_bpmp_clk_get_parent,
 };
@@ -635,7 +634,7 @@ static int tegra_bpmp_register_clocks(struct tegra_bpmp *bpmp,
 
 	bpmp->num_clocks = count;
 
-	bpmp->clocks = devm_kcalloc(bpmp->dev, count, sizeof(*bpmp->clocks), GFP_KERNEL);
+	bpmp->clocks = devm_kcalloc(bpmp->dev, count, sizeof(struct tegra_bpmp_clk), GFP_KERNEL);
 	if (!bpmp->clocks)
 		return -ENOMEM;
 

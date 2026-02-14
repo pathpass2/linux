@@ -66,7 +66,7 @@ struct jmb38x_ms_host {
 struct jmb38x_ms {
 	struct pci_dev        *pdev;
 	int                   host_cnt;
-	struct memstick_host  *hosts[] __counted_by(host_cnt);
+	struct memstick_host  *hosts[];
 };
 
 #define BLOCK_COUNT_MASK       0xffff0000
@@ -317,7 +317,8 @@ static int jmb38x_ms_transfer_data(struct jmb38x_ms_host *host)
 		unsigned int p_off;
 
 		if (host->req->long_data) {
-			pg = sg_page(&host->req->sg) + (off >> PAGE_SHIFT);
+			pg = nth_page(sg_page(&host->req->sg),
+				      off >> PAGE_SHIFT);
 			p_off = offset_in_page(off);
 			p_cnt = PAGE_SIZE - p_off;
 			p_cnt = min(p_cnt, length);
@@ -468,7 +469,7 @@ static void jmb38x_ms_complete_cmd(struct memstick_host *msh, int last)
 	unsigned int t_val = 0;
 	int rc;
 
-	timer_delete(&host->timer);
+	del_timer(&host->timer);
 
 	dev_dbg(&msh->dev, "c control %08x\n",
 		readl(host->addr + HOST_CONTROL));
@@ -589,7 +590,7 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 
 static void jmb38x_ms_abort(struct timer_list *t)
 {
-	struct jmb38x_ms_host *host = timer_container_of(host, t, timer);
+	struct jmb38x_ms_host *host = from_timer(host, t, timer);
 	struct memstick_host *msh = host->msh;
 	unsigned long flags;
 

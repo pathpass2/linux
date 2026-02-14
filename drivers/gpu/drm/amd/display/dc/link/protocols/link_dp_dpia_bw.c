@@ -24,21 +24,18 @@
  *
  */
 /*********************************************************************/
-// USB4 DPIA BANDWIDTH ALLOCATION LOGIC
+//				USB4 DPIA BANDWIDTH ALLOCATION LOGIC
 /*********************************************************************/
+#include "dc.h"
+#include "dc_link.h"
 #include "link_dp_dpia_bw.h"
+#include "drm_dp_helper_dc.h"
 #include "link_dpcd.h"
-#include "dc_dmub_srv.h"
-
-#define DC_LOGGER \
-	link->ctx->logger
 
 #define Kbps_TO_Gbps (1000 * 1000)
 
-#define MST_TIME_SLOT_COUNT 64
-
 // ------------------------------------------------------------------
-// PRIVATE FUNCTIONS
+//					PRIVATE FUNCTIONS
 // ------------------------------------------------------------------
 /*
  * Always Check the following:
@@ -46,33 +43,21 @@
  *  - Is HPD HIGH?
  *  - Is BW Allocation Support Mode enabled on DP-Tx?
  */
-static bool link_dp_is_bw_alloc_available(struct dc_link *link)
+static bool get_bw_alloc_proceed_flag(struct dc_link *tmp)
 {
-	return (link && link->dpcd_caps.usb4_dp_tun_info.dp_tun_cap.bits.dp_tunneling
-		&& link->dpcd_caps.usb4_dp_tun_info.dp_tun_cap.bits.dpia_bw_alloc
-		&& link->dpcd_caps.usb4_dp_tun_info.driver_bw_cap.bits.driver_bw_alloc_support);
+	return (tmp && DISPLAY_ENDPOINT_USB4_DPIA == tmp->ep_type
+			&& tmp->hpd_status
+			&& tmp->dpia_bw_alloc_config.bw_alloc_enabled);
 }
-
 static void reset_bw_alloc_struct(struct dc_link *link)
 {
 	link->dpia_bw_alloc_config.bw_alloc_enabled = false;
-	link->dpia_bw_alloc_config.link_verified_bw = 0;
-	link->dpia_bw_alloc_config.link_max_bw = 0;
-	link->dpia_bw_alloc_config.allocated_bw = 0;
+	link->dpia_bw_alloc_config.sink_verified_bw = 0;
+	link->dpia_bw_alloc_config.sink_max_bw = 0;
 	link->dpia_bw_alloc_config.estimated_bw = 0;
 	link->dpia_bw_alloc_config.bw_granularity = 0;
-	link->dpia_bw_alloc_config.dp_overhead = 0;
-	link->dpia_bw_alloc_config.nrd_max_lane_count = 0;
-	link->dpia_bw_alloc_config.nrd_max_link_rate = 0;
-	for (int i = 0; i < MAX_SINKS_PER_LINK; i++)
-		link->dpia_bw_alloc_config.remote_sink_req_bw[i] = 0;
-	DC_LOG_DEBUG("reset usb4 bw alloc of link(%d)\n", link->link_index);
+	link->dpia_bw_alloc_config.response_ready = false;
 }
-
-#define BW_GRANULARITY_0 4 // 0.25 Gbps
-#define BW_GRANULARITY_1 2 // 0.5 Gbps
-#define BW_GRANULARITY_2 1 // 1 Gbps
-
 static uint8_t get_bw_granularity(struct dc_link *link)
 {
 	uint8_t bw_granularity = 0;
@@ -85,82 +70,120 @@ static uint8_t get_bw_granularity(struct dc_link *link)
 
 	switch (bw_granularity & 0x3) {
 	case 0:
-		bw_granularity = BW_GRANULARITY_0;
+		bw_granularity = 4;
 		break;
 	case 1:
-		bw_granularity = BW_GRANULARITY_1;
-		break;
-	case 2:
 	default:
-		bw_granularity = BW_GRANULARITY_2;
+		bw_granularity = 2;
 		break;
 	}
 
 	return bw_granularity;
 }
-
 static int get_estimated_bw(struct dc_link *link)
 {
 	uint8_t bw_estimated_bw = 0;
 
-	core_link_read_dpcd(
-			link,
-			ESTIMATED_BW,
-			&bw_estimated_bw,
-			sizeof(uint8_t));
+	if (core_link_read_dpcd(
+		link,
+		ESTIMATED_BW,
+		&bw_estimated_bw,
+		sizeof(uint8_t)) != DC_OK)
+		dm_output_to_console("%s: AUX W/R ERROR @ 0x%x\n", __func__, ESTIMATED_BW);
 
 	return bw_estimated_bw * (Kbps_TO_Gbps / link->dpia_bw_alloc_config.bw_granularity);
 }
-
-static int get_non_reduced_max_link_rate(struct dc_link *link)
+static bool allocate_usb4_bw(int *stream_allocated_bw, int bw_needed, struct dc_link *link)
 {
-	uint8_t nrd_max_link_rate = 0;
+	if (bw_needed > 0)
+		*stream_allocated_bw += bw_needed;
 
-	core_link_read_dpcd(
-			link,
-			DP_TUNNELING_MAX_LINK_RATE,
-			&nrd_max_link_rate,
-			sizeof(uint8_t));
-
-	return nrd_max_link_rate;
+	return true;
 }
-
-static int get_non_reduced_max_lane_count(struct dc_link *link)
+static bool deallocate_usb4_bw(int *stream_allocated_bw, int bw_to_dealloc, struct dc_link *link)
 {
-	uint8_t nrd_max_lane_count = 0;
+	bool ret = false;
 
-	core_link_read_dpcd(
-			link,
-			DP_TUNNELING_MAX_LANE_COUNT,
-			&nrd_max_lane_count,
-			sizeof(uint8_t));
+	if (*stream_allocated_bw > 0) {
+		*stream_allocated_bw -= bw_to_dealloc;
+		ret = true;
+	} else {
+		//Do nothing for now
+		ret = true;
+	}
 
-	return nrd_max_lane_count;
+	// Unplug so reset values
+	if (!link->hpd_status)
+		reset_bw_alloc_struct(link);
+
+	return ret;
 }
-
 /*
  * Read all New BW alloc configuration ex: estimated_bw, allocated_bw,
  * granuality, Driver_ID, CM_Group, & populate the BW allocation structs
  * for host router and dpia
  */
-static void retrieve_usb4_dp_bw_allocation_info(struct dc_link *link)
+static void init_usb4_bw_struct(struct dc_link *link)
 {
-	reset_bw_alloc_struct(link);
-
-	/* init the known values */
+	// Init the known values
 	link->dpia_bw_alloc_config.bw_granularity = get_bw_granularity(link);
 	link->dpia_bw_alloc_config.estimated_bw = get_estimated_bw(link);
-	link->dpia_bw_alloc_config.nrd_max_link_rate = get_non_reduced_max_link_rate(link);
-	link->dpia_bw_alloc_config.nrd_max_lane_count = get_non_reduced_max_lane_count(link);
-
-	DC_LOG_DEBUG("%s: bw_granularity(%d), estimated_bw(%d)\n",
-		__func__, link->dpia_bw_alloc_config.bw_granularity,
-		link->dpia_bw_alloc_config.estimated_bw);
-	DC_LOG_DEBUG("%s: nrd_max_link_rate(%d), nrd_max_lane_count(%d)\n",
-		__func__, link->dpia_bw_alloc_config.nrd_max_link_rate,
-		link->dpia_bw_alloc_config.nrd_max_lane_count);
 }
+static uint8_t get_lowest_dpia_index(struct dc_link *link)
+{
+	const struct dc *dc_struct = link->dc;
+	uint8_t idx = 0xFF;
 
+	for (int i = 0; i < MAX_PIPES * 2; ++i) {
+
+		if (!dc_struct->links[i] ||
+				dc_struct->links[i]->ep_type != DISPLAY_ENDPOINT_USB4_DPIA)
+			continue;
+
+		if (idx > dc_struct->links[i]->link_index)
+			idx = dc_struct->links[i]->link_index;
+	}
+
+	return idx;
+}
+/*
+ * Get the Max Available BW or Max Estimated BW for each Host Router
+ *
+ * @link: pointer to the dc_link struct instance
+ * @type: ESTIMATD BW or MAX AVAILABLE BW
+ *
+ * return: response_ready flag from dc_link struct
+ */
+static int get_host_router_total_bw(struct dc_link *link, uint8_t type)
+{
+	const struct dc *dc_struct = link->dc;
+	uint8_t lowest_dpia_index = get_lowest_dpia_index(link);
+	uint8_t idx = (link->link_index - lowest_dpia_index) / 2, idx_temp = 0;
+	struct dc_link *link_temp;
+	int total_bw = 0;
+
+	for (int i = 0; i < MAX_PIPES * 2; ++i) {
+
+		if (!dc_struct->links[i] || dc_struct->links[i]->ep_type != DISPLAY_ENDPOINT_USB4_DPIA)
+			continue;
+
+		link_temp = dc_struct->links[i];
+		if (!link_temp || !link_temp->hpd_status)
+			continue;
+
+		idx_temp = (link_temp->link_index - lowest_dpia_index) / 2;
+
+		if (idx_temp == idx) {
+
+			if (type == HOST_ROUTER_BW_ESTIMATED)
+				total_bw += link_temp->dpia_bw_alloc_config.estimated_bw;
+			else if (type == HOST_ROUTER_BW_ALLOCATED)
+				total_bw += link_temp->dpia_bw_alloc_config.sink_allocated_bw;
+		}
+	}
+
+	return total_bw;
+}
 /*
  * Cleanup function for when the dpia is unplugged to reset struct
  * and perform any required clean up
@@ -169,280 +192,250 @@ static void retrieve_usb4_dp_bw_allocation_info(struct dc_link *link)
  *
  * return: none
  */
-static void dpia_bw_alloc_unplug(struct dc_link *link)
-{
-	if (link) {
-		DC_LOG_DEBUG("%s: resetting BW alloc config for link(%d)\n",
-			__func__, link->link_index);
-		reset_bw_alloc_struct(link);
-	}
-}
-
-static void link_dpia_send_bw_alloc_request(struct dc_link *link, int req_bw)
-{
-	uint8_t request_reg_val;
-	uint32_t temp, request_bw;
-
-	if (link->dpia_bw_alloc_config.bw_granularity == 0) {
-		DC_LOG_ERROR("%s:  Link[%d]:  bw_granularity is zero!", __func__, link->link_index);
-		return;
-	}
-
-	temp = req_bw * link->dpia_bw_alloc_config.bw_granularity;
-	request_reg_val = temp / Kbps_TO_Gbps;
-
-	/* Always make sure to add more to account for floating points */
-	if (temp % Kbps_TO_Gbps)
-		++request_reg_val;
-
-	request_bw = request_reg_val * (Kbps_TO_Gbps / link->dpia_bw_alloc_config.bw_granularity);
-
-	if (request_bw > link->dpia_bw_alloc_config.estimated_bw) {
-		DC_LOG_ERROR("%s:  Link[%d]:  Request BW (%d --> %d) > Estimated BW (%d)... Set to Estimated BW!",
-				__func__, link->link_index,
-				req_bw, request_bw, link->dpia_bw_alloc_config.estimated_bw);
-		req_bw = link->dpia_bw_alloc_config.estimated_bw;
-
-		temp = req_bw * link->dpia_bw_alloc_config.bw_granularity;
-		request_reg_val = temp / Kbps_TO_Gbps;
-		if (temp % Kbps_TO_Gbps)
-			++request_reg_val;
-	}
-
-	link->dpia_bw_alloc_config.allocated_bw = request_bw;
-	DC_LOG_DC("%s:  Link[%d]:  Request BW:  %d", __func__, link->link_index, request_bw);
-
-	core_link_write_dpcd(link, REQUESTED_BW,
-		&request_reg_val,
-		sizeof(uint8_t));
-}
-
-// ------------------------------------------------------------------
-// PUBLIC FUNCTIONS
-// ------------------------------------------------------------------
-bool link_dpia_enable_usb4_dp_bw_alloc_mode(struct dc_link *link)
+static bool dpia_bw_alloc_unplug(struct dc_link *link)
 {
 	bool ret = false;
-	uint8_t val;
 
-	val = DPTX_BW_ALLOC_MODE_ENABLE | DPTX_BW_ALLOC_UNMASK_IRQ;
+	if (!link)
+		return true;
 
-	if (core_link_write_dpcd(link, DPTX_BW_ALLOCATION_MODE_CONTROL, &val, sizeof(uint8_t)) == DC_OK) {
-		DC_LOG_DEBUG("%s:  link[%d] DPTX BW allocation mode enabled", __func__, link->link_index);
-
-		retrieve_usb4_dp_bw_allocation_info(link);
-
-		if (
-				link->dpia_bw_alloc_config.nrd_max_link_rate
-				&& link->dpia_bw_alloc_config.nrd_max_lane_count) {
-			link->reported_link_cap.link_rate = link->dpia_bw_alloc_config.nrd_max_link_rate;
-			link->reported_link_cap.lane_count = link->dpia_bw_alloc_config.nrd_max_lane_count;
-		}
-
-		link->dpia_bw_alloc_config.bw_alloc_enabled = true;
-		ret = true;
-
-		if (link->dc->debug.dpia_debug.bits.enable_usb4_bw_zero_alloc_patch) {
-			/*
-			 * During DP tunnel creation, the CM preallocates BW
-			 * and reduces the estimated BW of other DPIAs.
-			 * The CM releases the preallocation only when the allocation is complete.
-			 * Perform a zero allocation to make the CM release the preallocation
-			 * and correctly update the estimated BW for all DPIAs per host router.
-			 */
-			link_dp_dpia_allocate_usb4_bandwidth_for_stream(link, 0);
-		}
-	} else
-		DC_LOG_DEBUG("%s:  link[%d] failed to enable DPTX BW allocation mode", __func__, link->link_index);
-
-	return ret;
+	return deallocate_usb4_bw(&link->dpia_bw_alloc_config.sink_allocated_bw,
+			link->dpia_bw_alloc_config.sink_allocated_bw, link);
 }
+static void dc_link_set_usb4_req_bw_req(struct dc_link *link, int req_bw)
+{
+	uint8_t requested_bw;
+	uint32_t temp;
 
+	// 1. Add check for this corner case #1
+	if (req_bw > link->dpia_bw_alloc_config.estimated_bw)
+		req_bw = link->dpia_bw_alloc_config.estimated_bw;
+
+	temp = req_bw * link->dpia_bw_alloc_config.bw_granularity;
+	requested_bw = temp / Kbps_TO_Gbps;
+
+	// Always make sure to add more to account for floating points
+	if (temp % Kbps_TO_Gbps)
+		++requested_bw;
+
+	// 2. Add check for this corner case #2
+	req_bw = requested_bw * (Kbps_TO_Gbps / link->dpia_bw_alloc_config.bw_granularity);
+	if (req_bw == link->dpia_bw_alloc_config.sink_allocated_bw)
+		return;
+
+	if (core_link_write_dpcd(
+		link,
+		REQUESTED_BW,
+		&requested_bw,
+		sizeof(uint8_t)) != DC_OK)
+		dm_output_to_console("%s: AUX W/R ERROR @ 0x%x\n", __func__, REQUESTED_BW);
+	else
+		link->dpia_bw_alloc_config.response_ready = false; // Reset flag
+}
 /*
- * Handle DP BW allocation status register
+ * Return the response_ready flag from dc_link struct
  *
  * @link: pointer to the dc_link struct instance
- * @status: content of DP tunneling status DPCD register
  *
- * return: none
+ * return: response_ready flag from dc_link struct
  */
-void link_dp_dpia_handle_bw_alloc_status(struct dc_link *link, uint8_t status)
+static bool get_cm_response_ready_flag(struct dc_link *link)
 {
-	if (status & DP_TUNNELING_BW_REQUEST_SUCCEEDED) {
-		DC_LOG_DEBUG("%s: BW Allocation request succeeded on link(%d)",
-				__func__, link->link_index);
-	}
-
-	if (status & DP_TUNNELING_BW_REQUEST_FAILED) {
-		DC_LOG_DEBUG("%s: BW Allocation request failed on link(%d)  allocated/estimated BW=%d",
-				__func__, link->link_index, link->dpia_bw_alloc_config.estimated_bw);
-
-		link_dpia_send_bw_alloc_request(link, link->dpia_bw_alloc_config.estimated_bw);
-	}
-
-	if (status & DP_TUNNELING_BW_ALLOC_CAP_CHANGED) {
-		link->dpia_bw_alloc_config.bw_granularity = get_bw_granularity(link);
-
-		DC_LOG_DEBUG("%s: Granularity changed on link(%d)  new granularity=%d",
-				__func__, link->link_index, link->dpia_bw_alloc_config.bw_granularity);
-	}
-
-	if (status & DP_TUNNELING_ESTIMATED_BW_CHANGED) {
-		link->dpia_bw_alloc_config.estimated_bw = get_estimated_bw(link);
-
-		DC_LOG_DEBUG("%s: Estimated BW changed on link(%d)  new estimated BW=%d",
-				__func__, link->link_index, link->dpia_bw_alloc_config.estimated_bw);
-	}
-
-	core_link_write_dpcd(
-		link, DP_TUNNELING_STATUS,
-		&status, sizeof(status));
+	return link->dpia_bw_alloc_config.response_ready;
 }
-
-/*
- * Handle the DP Bandwidth allocation for DPIA
- *
- */
-void dpia_handle_usb4_bandwidth_allocation_for_link(struct dc_link *link, int peak_bw)
+// ------------------------------------------------------------------
+//					PUBLIC FUNCTIONS
+// ------------------------------------------------------------------
+bool set_dptx_usb4_bw_alloc_support(struct dc_link *link)
 {
-	if (link && link->dpcd_caps.usb4_dp_tun_info.dp_tun_cap.bits.dp_tunneling
-			&& link->dpia_bw_alloc_config.bw_alloc_enabled) {
-		if (peak_bw > 0) {
-			// If DP over USB4 then we need to check BW allocation
-			link->dpia_bw_alloc_config.link_max_bw = peak_bw;
+	bool ret = false;
+	uint8_t response = 0,
+			bw_support_dpia = 0,
+			bw_support_cm = 0;
 
-			link_dpia_send_bw_alloc_request(link, peak_bw);
-		} else
-			dpia_bw_alloc_unplug(link);
+	if (!(link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA && link->hpd_status))
+		goto out;
+
+	if (core_link_read_dpcd(
+		link,
+		DP_TUNNELING_CAPABILITIES,
+		&response,
+		sizeof(uint8_t)) != DC_OK)
+		dm_output_to_console("%s: AUX W/R ERROR @ 0x%x\n", __func__, DP_TUNNELING_CAPABILITIES);
+
+	bw_support_dpia = (response >> 7) & 1;
+
+	if (core_link_read_dpcd(
+		link,
+		USB4_DRIVER_BW_CAPABILITY,
+		&response,
+		sizeof(uint8_t)) != DC_OK)
+		dm_output_to_console("%s: AUX W/R ERROR @ 0x%x\n", __func__, DP_TUNNELING_CAPABILITIES);
+
+	bw_support_cm = (response >> 7) & 1;
+
+	/* Send request acknowledgment to Turn ON DPTX support */
+	if (bw_support_cm && bw_support_dpia) {
+
+		response = 0x80;
+		if (core_link_write_dpcd(
+				link,
+				DPTX_BW_ALLOCATION_MODE_CONTROL,
+				&response,
+				sizeof(uint8_t)) != DC_OK)
+			dm_output_to_console("%s: AUX W/R ERROR @ 0x%x\n",
+					"**** FAILURE Enabling DPtx BW Allocation Mode Support ***\n",
+					__func__, DP_TUNNELING_CAPABILITIES);
+		else {
+
+			// SUCCESS Enabled DPtx BW Allocation Mode Support
+			link->dpia_bw_alloc_config.bw_alloc_enabled = true;
+			dm_output_to_console("**** SUCCESS Enabling DPtx BW Allocation Mode Support ***\n");
+
+			ret = true;
+			init_usb4_bw_struct(link);
+		}
 	}
+
+out:
+	return ret;
 }
-
-void link_dp_dpia_allocate_usb4_bandwidth_for_stream(struct dc_link *link, int req_bw)
+void dc_link_get_usb4_req_bw_resp(struct dc_link *link, uint8_t bw, uint8_t result)
 {
-	link->dpia_bw_alloc_config.estimated_bw = get_estimated_bw(link);
+	if (!get_bw_alloc_proceed_flag((link)))
+		return;
 
-	DC_LOG_DEBUG("%s: ENTER: link[%d] hpd(%d)  Allocated_BW: %d  Estimated_BW: %d  Req_BW: %d",
-		__func__, link->link_index, link->hpd_status,
-		link->dpia_bw_alloc_config.allocated_bw,
-		link->dpia_bw_alloc_config.estimated_bw,
-		req_bw);
+	switch (result) {
 
-	if (link_dp_is_bw_alloc_available(link))
-		link_dpia_send_bw_alloc_request(link, req_bw);
-	else
-		DC_LOG_DEBUG("%s:  BW Allocation mode not available", __func__);
-}
+	case DPIA_BW_REQ_FAILED:
 
-uint32_t link_dpia_get_dp_overhead(const struct dc_link *link)
-{
-	uint32_t link_dp_overhead = 0;
+		dm_output_to_console("%s: *** *** BW REQ FAILURE for DP-TX Request *** ***\n", __func__);
 
-	if ((link->type == dc_connection_mst_branch) &&
-				!link->dpcd_caps.channel_coding_cap.bits.DP_128b_132b_SUPPORTED) {
-		/* For 8b/10b encoding: MTP is 64 time slots long, slot 0 is used for MTPH
-		 * MST overhead is 1/64 of link bandwidth (excluding any overhead)
+		// Update the new Estimated BW value updated by CM
+		link->dpia_bw_alloc_config.estimated_bw =
+				bw * (Kbps_TO_Gbps / link->dpia_bw_alloc_config.bw_granularity);
+
+		dc_link_set_usb4_req_bw_req(link, link->dpia_bw_alloc_config.estimated_bw);
+		link->dpia_bw_alloc_config.response_ready = false;
+
+		/*
+		 * If FAIL then it is either:
+		 * 1. Due to DP-Tx trying to allocate more than available i.e. it failed locally
+		 *    => get estimated and allocate that
+		 * 2. Due to the fact that DP-Tx tried to allocated ESTIMATED BW and failed then
+		 *    CM will have to update 0xE0023 with new ESTIMATED BW value.
 		 */
-		const struct dc_link_settings *link_cap = dc_link_get_link_cap(link);
+		break;
 
-		if (link_cap) {
-			uint32_t link_bw_in_kbps = (uint32_t)link_cap->link_rate *
-					   (uint32_t)link_cap->lane_count *
-					   LINK_RATE_REF_FREQ_IN_KHZ * 8;
-			link_dp_overhead = (link_bw_in_kbps / MST_TIME_SLOT_COUNT)
-						+ ((link_bw_in_kbps % MST_TIME_SLOT_COUNT) ? 1 : 0);
+	case DPIA_BW_REQ_SUCCESS:
+
+		dm_output_to_console("%s: *** BW REQ SUCCESS for DP-TX Request ***\n", __func__);
+
+		// 1. SUCCESS 1st time before any Pruning is done
+		// 2. SUCCESS after prev. FAIL before any Pruning is done
+		// 3. SUCCESS after Pruning is done but before enabling link
+
+		int needed = bw * (Kbps_TO_Gbps / link->dpia_bw_alloc_config.bw_granularity);
+
+		// 1.
+		if (!link->dpia_bw_alloc_config.sink_allocated_bw) {
+
+			allocate_usb4_bw(&link->dpia_bw_alloc_config.sink_allocated_bw, needed, link);
+			link->dpia_bw_alloc_config.sink_verified_bw =
+					link->dpia_bw_alloc_config.sink_allocated_bw;
+
+			// SUCCESS from first attempt
+			if (link->dpia_bw_alloc_config.sink_allocated_bw >
+			link->dpia_bw_alloc_config.sink_max_bw)
+				link->dpia_bw_alloc_config.sink_verified_bw =
+						link->dpia_bw_alloc_config.sink_max_bw;
 		}
+		// 3.
+		else if (link->dpia_bw_alloc_config.sink_allocated_bw) {
+
+			// Find out how much do we need to de-alloc
+			if (link->dpia_bw_alloc_config.sink_allocated_bw > needed)
+				deallocate_usb4_bw(&link->dpia_bw_alloc_config.sink_allocated_bw,
+						link->dpia_bw_alloc_config.sink_allocated_bw - needed, link);
+			else
+				allocate_usb4_bw(&link->dpia_bw_alloc_config.sink_allocated_bw,
+						needed - link->dpia_bw_alloc_config.sink_allocated_bw, link);
+		}
+
+		// 4. If this is the 2nd sink then any unused bw will be reallocated to master DPIA
+		// => check if estimated_bw changed
+
+		link->dpia_bw_alloc_config.response_ready = true;
+		break;
+
+	case DPIA_EST_BW_CHANGED:
+
+		dm_output_to_console("%s: *** ESTIMATED BW CHANGED for DP-TX Request ***\n", __func__);
+
+		int available = 0, estimated = bw * (Kbps_TO_Gbps / link->dpia_bw_alloc_config.bw_granularity);
+		int host_router_total_estimated_bw = get_host_router_total_bw(link, HOST_ROUTER_BW_ESTIMATED);
+
+		// 1. If due to unplug of other sink
+		if (estimated == host_router_total_estimated_bw) {
+
+			// First update the estimated & max_bw fields
+			if (link->dpia_bw_alloc_config.estimated_bw < estimated) {
+				available = estimated - link->dpia_bw_alloc_config.estimated_bw;
+				link->dpia_bw_alloc_config.estimated_bw = estimated;
+			}
+		}
+		// 2. If due to realloc bw btw 2 dpia due to plug OR realloc unused Bw
+		else {
+
+			// We took from another unplugged/problematic sink to give to us
+			if (link->dpia_bw_alloc_config.estimated_bw < estimated)
+				available = estimated - link->dpia_bw_alloc_config.estimated_bw;
+
+			// We lost estimated bw usually due to plug event of other dpia
+			link->dpia_bw_alloc_config.estimated_bw = estimated;
+		}
+		break;
+
+	case DPIA_BW_ALLOC_CAPS_CHANGED:
+
+		dm_output_to_console("%s: *** BW ALLOC CAPABILITY CHANGED for DP-TX Request ***\n", __func__);
+		link->dpia_bw_alloc_config.bw_alloc_enabled = false;
+		break;
 	}
-
-	return link_dp_overhead;
 }
-
-/*
- * Aggregates the DPIA bandwidth usage for the respective USB4 Router.
- * And then validate if the required bandwidth is within the router's capacity.
- *
- * @dc_validation_dpia_set: pointer to the dc_validation_dpia_set
- * @count: number of DPIA validation sets
- *
- * return: true if validation is succeeded
- */
-bool link_dpia_validate_dp_tunnel_bandwidth(const struct dc_validation_dpia_set *dpia_link_sets, uint8_t count)
+int dc_link_dp_dpia_handle_usb4_bandwidth_allocation_for_link(struct dc_link *link, int peak_bw)
 {
-	uint32_t granularity_Gbps;
-	const struct dc_link *link;
-	uint32_t link_bw_granularity;
-	uint32_t link_required_bw;
-	struct usb4_router_validation_set router_sets[MAX_HOST_ROUTERS_NUM] = { 0 };
-	uint8_t i;
-	bool is_success = true;
-	uint8_t router_count = 0;
+	int ret = 0;
+	uint8_t timeout = 10;
 
-	if ((dpia_link_sets == NULL) || (count == 0))
-		return is_success;
+	if (!(link && DISPLAY_ENDPOINT_USB4_DPIA == link->ep_type
+			&& link->dpia_bw_alloc_config.bw_alloc_enabled))
+		goto out;
 
-	// Iterate through each DP tunneling link (DPIA).
-	// Aggregate its bandwidth requirements onto the respective USB4 router.
-	for (i = 0; i < count; i++) {
-		link = dpia_link_sets[i].link;
-		link_required_bw = dpia_link_sets[i].required_bw;
-		const struct dc_tunnel_settings *dp_tunnel_settings = dpia_link_sets[i].tunnel_settings;
+	//1. Hot Plug
+	if (link->hpd_status && peak_bw > 0) {
 
-		if ((link == NULL) || (dp_tunnel_settings == NULL) || dp_tunnel_settings->bw_granularity == 0)
-			break;
+		// If DP over USB4 then we need to check BW allocation
+		link->dpia_bw_alloc_config.sink_max_bw = peak_bw;
+		dc_link_set_usb4_req_bw_req(link, link->dpia_bw_alloc_config.sink_max_bw);
 
-		if (link->type == dc_connection_mst_branch)
-			link_required_bw += link_dpia_get_dp_overhead(link);
-
-		granularity_Gbps = (Kbps_TO_Gbps / dp_tunnel_settings->bw_granularity);
-		link_bw_granularity = (link_required_bw / granularity_Gbps) * granularity_Gbps +
-				((link_required_bw % granularity_Gbps) ? granularity_Gbps : 0);
-
-		// Find or add the USB4 router associated with the current DPIA link
-		for (uint8_t j = 0; j < MAX_HOST_ROUTERS_NUM; j++) {
-			if (router_sets[j].is_valid == false) {
-				router_sets[j].is_valid = true;
-				router_sets[j].cm_id = dp_tunnel_settings->cm_id;
-				router_count++;
-			}
-
-			if (router_sets[j].cm_id == dp_tunnel_settings->cm_id) {
-				uint32_t remaining_bw =
-					dp_tunnel_settings->estimated_bw - dp_tunnel_settings->allocated_bw;
-
-				router_sets[j].allocated_bw += dp_tunnel_settings->allocated_bw;
-
-				if (remaining_bw > router_sets[j].remaining_bw)
-					router_sets[j].remaining_bw = remaining_bw;
-
-				// Get the max estimated BW within the same CM_ID
-				if (dp_tunnel_settings->estimated_bw > router_sets[j].estimated_bw)
-					router_sets[j].estimated_bw = dp_tunnel_settings->estimated_bw;
-
-				router_sets[j].required_bw += link_bw_granularity;
-				router_sets[j].dpia_count++;
+		do {
+			if (!timeout > 0)
+				timeout--;
+			else
 				break;
-			}
-		}
+			udelay(10 * 1000);
+		} while (!get_cm_response_ready_flag(link));
+
+		if (!timeout)
+			ret = 0;// ERROR TIMEOUT waiting for response for allocating bw
+		else if (link->dpia_bw_alloc_config.sink_allocated_bw > 0)
+			ret = get_host_router_total_bw(link, HOST_ROUTER_BW_ALLOCATED);
 	}
+	//2. Cold Unplug
+	else if (!link->hpd_status)
+		dpia_bw_alloc_unplug(link);
 
-	// Validate bandwidth for each unique router found.
-	for (i = 0; i < router_count; i++) {
-		uint32_t total_bw = 0;
-
-		if (router_sets[i].is_valid == false)
-			break;
-
-		// Determine the total available bandwidth for the current router based on aggregated data
-		if ((router_sets[i].dpia_count == 1) || (router_sets[i].allocated_bw == 0))
-			total_bw = router_sets[i].estimated_bw;
-		else
-			total_bw = router_sets[i].allocated_bw + router_sets[i].remaining_bw;
-
-		if (router_sets[i].required_bw > total_bw) {
-			is_success = false;
-			break;
-		}
-	}
-
-	return is_success;
+out:
+	return ret;
 }
-

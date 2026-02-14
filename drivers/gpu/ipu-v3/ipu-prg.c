@@ -287,7 +287,7 @@ int ipu_prg_channel_configure(struct ipuv3_channel *ipu_chan,
 	chan = &prg->chan[prg_chan];
 
 	if (chan->enabled) {
-		ipu_pre_update(prg->pres[chan->used_pre], modifier, *eba);
+		ipu_pre_update(prg->pres[chan->used_pre], *eba);
 		return 0;
 	}
 
@@ -358,6 +358,7 @@ EXPORT_SYMBOL_GPL(ipu_prg_channel_configure_pending);
 static int ipu_prg_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 	struct ipu_prg *prg;
 	u32 val;
 	int i, ret;
@@ -366,9 +367,11 @@ static int ipu_prg_probe(struct platform_device *pdev)
 	if (!prg)
 		return -ENOMEM;
 
-	prg->regs = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	prg->regs = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(prg->regs))
 		return PTR_ERR(prg->regs);
+
 
 	prg->clk_ipg = devm_clk_get(dev, "ipg");
 	if (IS_ERR(prg->clk_ipg))
@@ -419,13 +422,15 @@ static int ipu_prg_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void ipu_prg_remove(struct platform_device *pdev)
+static int ipu_prg_remove(struct platform_device *pdev)
 {
 	struct ipu_prg *prg = platform_get_drvdata(pdev);
 
 	mutex_lock(&ipu_prg_list_mutex);
 	list_del(&prg->list);
 	mutex_unlock(&ipu_prg_list_mutex);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM

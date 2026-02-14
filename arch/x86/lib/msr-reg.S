@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/linkage.h>
 #include <linux/errno.h>
-#include <linux/cfi_types.h>
 #include <asm/asm.h>
 #include <asm/msr.h>
 
@@ -13,7 +12,7 @@
  *
  */
 .macro op_safe_regs op
-SYM_TYPED_FUNC_START(\op\()_safe_regs)
+SYM_FUNC_START(\op\()_safe_regs)
 	pushq %rbx
 	pushq %r12
 	movq	%rdi, %r10	/* Save pointer */

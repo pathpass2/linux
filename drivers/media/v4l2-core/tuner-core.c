@@ -1411,7 +1411,7 @@ static struct i2c_driver tuner_driver = {
 		.name	= "tuner",
 		.pm	= &tuner_pm_ops,
 	},
-	.probe		= tuner_probe,
+	.probe_new	= tuner_probe,
 	.remove		= tuner_remove,
 	.command	= tuner_command,
 	.id_table	= tuner_id,

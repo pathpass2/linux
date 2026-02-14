@@ -8,7 +8,6 @@
 from __future__ import print_function
 
 import argparse
-import json
 import re
 import sys, os
 import subprocess
@@ -43,13 +42,6 @@ class APIElement(object):
         self.desc = desc
         self.ret = ret
 
-    def to_dict(self):
-        return {
-            'proto': self.proto,
-            'desc': self.desc,
-            'ret': self.ret
-        }
-
 
 class Helper(APIElement):
     """
@@ -58,9 +50,8 @@ class Helper(APIElement):
     @desc: textual description of the helper function
     @ret: description of the return value of the helper function
     """
-    def __init__(self, proto='', desc='', ret='', attrs=[]):
-        super().__init__(proto, desc, ret)
-        self.attrs = attrs
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.enum_val = None
 
     def proto_break_down(self):
@@ -68,9 +59,9 @@ class Helper(APIElement):
         Break down helper function protocol into smaller chunks: return type,
         name, distincts arguments.
         """
-        arg_re = re.compile(r'((\w+ )*?(\w+|...))( (\**)(\w+))?$')
+        arg_re = re.compile('((\w+ )*?(\w+|...))( (\**)(\w+))?$')
         res = {}
-        proto_re = re.compile(r'(.+) (\**)(\w+)\(((([^,]+)(, )?){1,5})\)$')
+        proto_re = re.compile('(.+) (\**)(\w+)\(((([^,]+)(, )?){1,5})\)$')
 
         capture = proto_re.match(self.proto)
         res['ret_type'] = capture.group(1)
@@ -88,17 +79,6 @@ class Helper(APIElement):
             })
 
         return res
-
-    def to_dict(self):
-        d = super().to_dict()
-        d["attrs"] = self.attrs
-        d.update(self.proto_break_down())
-        return d
-
-
-ATTRS = {
-    '__bpf_fastcall': 'bpf_fastcall'
-}
 
 
 class HeaderParser(object):
@@ -131,15 +111,14 @@ class HeaderParser(object):
         proto    = self.parse_proto()
         desc     = self.parse_desc(proto)
         ret      = self.parse_ret(proto)
-        attrs    = self.parse_attrs(proto)
-        return Helper(proto=proto, desc=desc, ret=ret, attrs=attrs)
+        return Helper(proto=proto, desc=desc, ret=ret)
 
     def parse_symbol(self):
-        p = re.compile(r' \* ?(BPF\w+)$')
+        p = re.compile(' \* ?(BPF\w+)$')
         capture = p.match(self.line)
         if not capture:
             raise NoSyscallCommandFound
-        end_re = re.compile(r' \* ?NOTES$')
+        end_re = re.compile(' \* ?NOTES$')
         end = end_re.match(self.line)
         if end:
             raise NoSyscallCommandFound
@@ -154,7 +133,7 @@ class HeaderParser(object):
         #   - Same as above, with "const" and/or "struct" in front of type
         #   - "..." (undefined number of arguments, for bpf_trace_printk())
         # There is at least one term ("void"), and at most five arguments.
-        p = re.compile(r' \* ?((.+) \**\w+\((((const )?(struct )?(\w+|\.\.\.)( \**\w+)?)(, )?){1,5}\))$')
+        p = re.compile(' \* ?((.+) \**\w+\((((const )?(struct )?(\w+|\.\.\.)( \**\w+)?)(, )?){1,5}\))$')
         capture = p.match(self.line)
         if not capture:
             raise NoHelperFound
@@ -162,7 +141,7 @@ class HeaderParser(object):
         return capture.group(1)
 
     def parse_desc(self, proto):
-        p = re.compile(r' \* ?(?:\t| {5,8})Description$')
+        p = re.compile(' \* ?(?:\t| {5,8})Description$')
         capture = p.match(self.line)
         if not capture:
             raise Exception("No description section found for " + proto)
@@ -175,7 +154,7 @@ class HeaderParser(object):
             if self.line == ' *\n':
                 desc += '\n'
             else:
-                p = re.compile(r' \* ?(?:\t| {5,8})(?:\t| {8})(.*)')
+                p = re.compile(' \* ?(?:\t| {5,8})(?:\t| {8})(.*)')
                 capture = p.match(self.line)
                 if capture:
                     desc_present = True
@@ -188,7 +167,7 @@ class HeaderParser(object):
         return desc
 
     def parse_ret(self, proto):
-        p = re.compile(r' \* ?(?:\t| {5,8})Return$')
+        p = re.compile(' \* ?(?:\t| {5,8})Return$')
         capture = p.match(self.line)
         if not capture:
             raise Exception("No return section found for " + proto)
@@ -201,7 +180,7 @@ class HeaderParser(object):
             if self.line == ' *\n':
                 ret += '\n'
             else:
-                p = re.compile(r' \* ?(?:\t| {5,8})(?:\t| {8})(.*)')
+                p = re.compile(' \* ?(?:\t| {5,8})(?:\t| {8})(.*)')
                 capture = p.match(self.line)
                 if capture:
                     ret_present = True
@@ -212,28 +191,6 @@ class HeaderParser(object):
         if not ret_present:
             raise Exception("No return found for " + proto)
         return ret
-
-    def parse_attrs(self, proto):
-        p = re.compile(r' \* ?(?:\t| {5,8})Attributes$')
-        capture = p.match(self.line)
-        if not capture:
-            return []
-        # Expect a single line with mnemonics for attributes separated by spaces
-        self.line = self.reader.readline()
-        p = re.compile(r' \* ?(?:\t| {5,8})(?:\t| {8})(.*)')
-        capture = p.match(self.line)
-        if not capture:
-            raise Exception("Incomplete 'Attributes' section for " + proto)
-        attrs = capture.group(1).split(' ')
-        for attr in attrs:
-            if attr not in ATTRS:
-                raise Exception("Unexpected attribute '" + attr + "' specified for " + proto)
-        self.line = self.reader.readline()
-        if self.line != ' *\n':
-            raise Exception("Expecting empty line after 'Attributes' section for " + proto)
-        # Prepare a line for next self.parse_* to consume
-        self.line = self.reader.readline()
-        return attrs
 
     def seek_to(self, target, help_message, discard_lines = 1):
         self.reader.seek(0)
@@ -262,12 +219,12 @@ class HeaderParser(object):
         self.seek_to('enum bpf_cmd {',
                      'Could not find start of bpf_cmd enum', 0)
         # Searches for either one or more BPF\w+ enums
-        bpf_p = re.compile(r'\s*(BPF\w+)+')
+        bpf_p = re.compile('\s*(BPF\w+)+')
         # Searches for an enum entry assigned to another entry,
         # for e.g. BPF_PROG_RUN = BPF_PROG_TEST_RUN, which is
         # not documented hence should be skipped in check to
         # determine if the right number of syscalls are documented
-        assign_p = re.compile(r'\s*(BPF\w+)\s*=\s*(BPF\w+)')
+        assign_p = re.compile('\s*(BPF\w+)\s*=\s*(BPF\w+)')
         bpf_cmd_str = ''
         while True:
             capture = assign_p.match(self.line)
@@ -282,7 +239,7 @@ class HeaderParser(object):
                 break
             self.line = self.reader.readline()
         # Find the number of occurences of BPF\w+
-        self.enum_syscalls = re.findall(r'(BPF\w+)+', bpf_cmd_str)
+        self.enum_syscalls = re.findall('(BPF\w+)+', bpf_cmd_str)
 
     def parse_desc_helpers(self):
         self.seek_to(helpersDocStart,
@@ -306,7 +263,7 @@ class HeaderParser(object):
         self.seek_to('#define ___BPF_FUNC_MAPPER(FN, ctx...)',
                      'Could not find start of eBPF helper definition list')
         # Searches for one FN(\w+) define or a backslash for newline
-        p = re.compile(r'\s*FN\((\w+), (\d+), ##ctx\)|\\\\')
+        p = re.compile('\s*FN\((\w+), (\d+), ##ctx\)|\\\\')
         fn_defines_str = ''
         i = 0
         while True:
@@ -321,7 +278,7 @@ class HeaderParser(object):
                 break
             self.line = self.reader.readline()
         # Find the number of occurences of FN(\w+)
-        self.define_unique_helpers = re.findall(r'FN\(\w+, \d+, ##ctx\)', fn_defines_str)
+        self.define_unique_helpers = re.findall('FN\(\w+, \d+, ##ctx\)', fn_defines_str)
 
     def validate_helpers(self):
         last_helper = ''
@@ -426,7 +383,7 @@ class PrinterRST(Printer):
 .. Copyright (C) All BPF authors and contributors from 2014 to present.
 .. See git log include/uapi/linux/bpf.h in kernel tree for details.
 .. 
-.. SPDX-License-Identifier: Linux-man-pages-copyleft
+.. SPDX-License-Identifier:  Linux-man-pages-copyleft
 .. 
 .. Please do not edit this file. It was generated from the documentation
 .. located in file include/uapi/linux/bpf.h of the Linux kernel sources
@@ -457,8 +414,8 @@ class PrinterRST(Printer):
             version = version.stdout.decode().rstrip()
         except:
             try:
-                version = subprocess.run(['make', '-s', '--no-print-directory', 'kernelversion'],
-                                         cwd=linuxRoot, capture_output=True, check=True)
+                version = subprocess.run(['make', 'kernelversion'], cwd=linuxRoot,
+                                         capture_output=True, check=True)
                 version = version.stdout.decode().rstrip()
             except:
                 return 'Linux'
@@ -468,7 +425,7 @@ class PrinterRST(Printer):
         try:
             cmd = ['git', 'log', '-1', '--pretty=format:%cs', '--no-patch',
                    '-L',
-                   '/{}/,/\\*\\//:include/uapi/linux/bpf.h'.format(delimiter)]
+                   '/{}/,/\*\//:include/uapi/linux/bpf.h'.format(delimiter)]
             date = subprocess.run(cmd, cwd=linuxRoot,
                                   capture_output=True, check=True)
             return date.stdout.decode().rstrip()
@@ -556,10 +513,10 @@ eBPF programs can have an associated license, passed along with the bytecode
 instructions to the kernel when the programs are loaded. The format for that
 string is identical to the one in use for kernel modules (Dual licenses, such
 as "Dual BSD/GPL", may be used). Some helper functions are only accessible to
-programs that are compatible with the GNU General Public License (GNU GPL).
+programs that are compatible with the GNU Privacy License (GPL).
 
 In order to use such helpers, the eBPF program must be loaded with the correct
-license string passed (via **attr**) to the **bpf**\\ () system call, and this
+license string passed (via **attr**) to the **bpf**\ () system call, and this
 generally translates into the C source code of the program containing a line
 similar to the following:
 
@@ -593,7 +550,7 @@ may be interested in:
 * The bpftool utility can be used to probe the availability of helper functions
   on the system (as well as supported program and map types, and a number of
   other parameters). To do so, run **bpftool feature probe** (see
-  **bpftool-feature**\\ (8) for details). Add the **unprivileged** keyword to
+  **bpftool-feature**\ (8) for details). Add the **unprivileged** keyword to
   list features available to unprivileged users.
 
 Compatibility between helper functions and program types can generally be found
@@ -605,23 +562,23 @@ other functions, themselves allowing access to additional helpers. The
 requirement for GPL license is also in those **struct bpf_func_proto**.
 
 Compatibility between helper functions and map types can be found in the
-**check_map_func_compatibility**\\ () function in file *kernel/bpf/verifier.c*.
+**check_map_func_compatibility**\ () function in file *kernel/bpf/verifier.c*.
 
 Helper functions that invalidate the checks on **data** and **data_end**
 pointers for network processing are listed in function
-**bpf_helper_changes_pkt_data**\\ () in file *net/core/filter.c*.
+**bpf_helper_changes_pkt_data**\ () in file *net/core/filter.c*.
 
 SEE ALSO
 ========
 
-**bpf**\\ (2),
-**bpftool**\\ (8),
-**cgroups**\\ (7),
-**ip**\\ (8),
-**perf_event_open**\\ (2),
-**sendmsg**\\ (2),
-**socket**\\ (7),
-**tc-bpf**\\ (8)'''
+**bpf**\ (2),
+**bpftool**\ (8),
+**cgroups**\ (7),
+**ip**\ (8),
+**perf_event_open**\ (2),
+**sendmsg**\ (2),
+**socket**\ (7),
+**tc-bpf**\ (8)'''
         print(footer)
 
     def print_proto(self, helper):
@@ -641,7 +598,7 @@ SEE ALSO
             one_arg = '{}{}'.format(comma, a['type'])
             if a['name']:
                 if a['star']:
-                    one_arg += ' {}**\\ '.format(a['star'].replace('*', '\\*'))
+                    one_arg += ' {}**\ '.format(a['star'].replace('*', '\\*'))
                 else:
                     one_arg += '** '
                 one_arg += '*{}*\\ **'.format(a['name'])
@@ -689,7 +646,7 @@ COMMANDS
         self.print_elem(command)
 
 
-class PrinterHelpersHeader(Printer):
+class PrinterHelpers(Printer):
     """
     A printer for dumping collected information about helpers as C header to
     be included from BPF program.
@@ -788,7 +745,6 @@ class PrinterHelpersHeader(Printer):
             'struct task_struct',
             'struct cgroup',
             'struct path',
-            'const struct path',
             'struct btf_ptr',
             'struct inode',
             'struct socket',
@@ -833,21 +789,6 @@ class PrinterHelpersHeader(Printer):
             print('%s;' % fwd)
         print('')
 
-        used_attrs = set()
-        for helper in self.elements:
-            for attr in helper.attrs:
-                used_attrs.add(attr)
-        for attr in sorted(used_attrs):
-            print('#ifndef %s' % attr)
-            print('#if __has_attribute(%s)' % ATTRS[attr])
-            print('#define %s __attribute__((%s))' % (attr, ATTRS[attr]))
-            print('#else')
-            print('#define %s' % attr)
-            print('#endif')
-            print('#endif')
-        if used_attrs:
-            print('')
-
     def print_footer(self):
         footer = ''
         print(footer)
@@ -886,10 +827,7 @@ class PrinterHelpersHeader(Printer):
                 print(' *{}{}'.format(' \t' if line else '', line))
 
         print(' */')
-        print('static ', end='')
-        if helper.attrs:
-            print('%s ' % (" ".join(helper.attrs)), end='')
-        print('%s %s(* const %s)(' % (self.map_type(proto['ret_type']),
+        print('static %s %s(*%s)(' % (self.map_type(proto['ret_type']),
                                       proto['ret_star'], proto['name']), end='')
         comma = ''
         for i, a in enumerate(proto['args']):
@@ -911,43 +849,6 @@ class PrinterHelpersHeader(Printer):
         print(') = (void *) %d;' % helper.enum_val)
         print('')
 
-
-class PrinterHelpersJSON(Printer):
-    """
-    A printer for dumping collected information about helpers as a JSON file.
-    @parser: A HeaderParser with Helper objects
-    """
-
-    def __init__(self, parser):
-        self.elements = parser.helpers
-        self.elem_number_check(
-            parser.desc_unique_helpers,
-            parser.define_unique_helpers,
-            "helper",
-            "___BPF_FUNC_MAPPER",
-        )
-
-    def print_all(self):
-        helper_dicts = [helper.to_dict() for helper in self.elements]
-        out_dict = {'helpers': helper_dicts}
-        print(json.dumps(out_dict, indent=4))
-
-
-class PrinterSyscallJSON(Printer):
-    """
-    A printer for dumping collected syscall information as a JSON file.
-    @parser: A HeaderParser with APIElement objects
-    """
-
-    def __init__(self, parser):
-        self.elements = parser.commands
-        self.elem_number_check(parser.desc_syscalls, parser.enum_syscalls, 'syscall', 'bpf_cmd')
-
-    def print_all(self):
-        syscall_dicts = [syscall.to_dict() for syscall in self.elements]
-        out_dict = {'syscall': syscall_dicts}
-        print(json.dumps(out_dict, indent=4))
-
 ###############################################################################
 
 # If script is launched from scripts/ from kernel tree and can access
@@ -957,17 +858,9 @@ script = os.path.abspath(sys.argv[0])
 linuxRoot = os.path.dirname(os.path.dirname(script))
 bpfh = os.path.join(linuxRoot, 'include/uapi/linux/bpf.h')
 
-# target -> output format -> printer
 printers = {
-    'helpers': {
-        'rst': PrinterHelpersRST,
-        'json': PrinterHelpersJSON,
-        'header': PrinterHelpersHeader,
-    },
-    'syscall': {
-        'rst': PrinterSyscallRST,
-        'json': PrinterSyscallJSON
-    },
+        'helpers': PrinterHelpersRST,
+        'syscall': PrinterSyscallRST,
 }
 
 argParser = argparse.ArgumentParser(description="""
@@ -977,8 +870,6 @@ rst2man utility.
 """)
 argParser.add_argument('--header', action='store_true',
                        help='generate C header file')
-argParser.add_argument('--json', action='store_true',
-                       help='generate a JSON')
 if (os.path.isfile(bpfh)):
     argParser.add_argument('--filename', help='path to include/uapi/linux/bpf.h',
                            default=bpfh)
@@ -986,35 +877,17 @@ else:
     argParser.add_argument('--filename', help='path to include/uapi/linux/bpf.h')
 argParser.add_argument('target', nargs='?', default='helpers',
                        choices=printers.keys(), help='eBPF API target')
+args = argParser.parse_args()
 
-def error_die(message: str):
-    argParser.print_usage(file=sys.stderr)
-    print('Error: {}'.format(message), file=sys.stderr)
-    exit(1)
+# Parse file.
+headerParser = HeaderParser(args.filename)
+headerParser.run()
 
-def parse_and_dump():
-    args = argParser.parse_args()
-
-    # Parse file.
-    headerParser = HeaderParser(args.filename)
-    headerParser.run()
-
-    if args.header and args.json:
-        error_die('Use either --header or --json, not both')
-
-    output_format = 'rst'
-    if args.header:
-        output_format = 'header'
-    elif args.json:
-        output_format = 'json'
-
-    try:
-        printer = printers[args.target][output_format](headerParser)
-        # Print formatted output to standard output.
-        printer.print_all()
-    except KeyError:
-        error_die('Unsupported target/format combination: "{}", "{}"'
-                    .format(args.target, output_format))
-
-if __name__ == "__main__":
-    parse_and_dump()
+# Print formatted output to standard output.
+if args.header:
+    if args.target != 'helpers':
+        raise NotImplementedError('Only helpers header generation is supported')
+    printer = PrinterHelpers(headerParser)
+else:
+    printer = printers[args.target](headerParser)
+printer.print_all()

@@ -11,7 +11,6 @@
  *  Author: Lars Pöschel <poeschel@lemonage.de>
  *  All rights reserved.
  */
-#include <linux/hex.h>
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
@@ -299,18 +298,20 @@ static int lcd2s_i2c_probe(struct i2c_client *i2c)
 			I2C_FUNC_SMBUS_WRITE_BLOCK_DATA))
 		return -EIO;
 
+	lcd2s = devm_kzalloc(&i2c->dev, sizeof(*lcd2s), GFP_KERNEL);
+	if (!lcd2s)
+		return -ENOMEM;
+
 	/* Test, if the display is responding */
 	err = lcd2s_i2c_smbus_write_byte(i2c, LCD2S_CMD_DISPLAY_OFF);
 	if (err < 0)
 		return err;
 
-	lcd = charlcd_alloc(sizeof(*lcd2s));
+	lcd = charlcd_alloc();
 	if (!lcd)
 		return -ENOMEM;
 
-	lcd->ops = &lcd2s_ops;
-
-	lcd2s = lcd->drvdata;
+	lcd->drvdata = lcd2s;
 	lcd2s->i2c = i2c;
 	lcd2s->charlcd = lcd;
 
@@ -324,6 +325,8 @@ static int lcd2s_i2c_probe(struct i2c_client *i2c)
 			&lcd->width);
 	if (err)
 		goto fail1;
+
+	lcd->ops = &lcd2s_ops;
 
 	err = charlcd_register(lcd2s->charlcd);
 	if (err)
@@ -346,7 +349,7 @@ static void lcd2s_i2c_remove(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id lcd2s_i2c_id[] = {
-	{ "lcd2s" },
+	{ "lcd2s", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lcd2s_i2c_id);
@@ -362,7 +365,7 @@ static struct i2c_driver lcd2s_i2c_driver = {
 		.name = "lcd2s",
 		.of_match_table = lcd2s_of_table,
 	},
-	.probe = lcd2s_i2c_probe,
+	.probe_new = lcd2s_i2c_probe,
 	.remove = lcd2s_i2c_remove,
 	.id_table = lcd2s_i2c_id,
 };

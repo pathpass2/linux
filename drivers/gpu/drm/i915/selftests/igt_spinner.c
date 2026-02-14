@@ -3,13 +3,12 @@
  *
  * Copyright © 2018 Intel Corporation
  */
-
-#include "gem/i915_gem_internal.h"
-#include "gem/selftests/igt_gem_utils.h"
 #include "gt/intel_gpu_commands.h"
 #include "gt/intel_gt.h"
 
-#include "i915_wait_util.h"
+#include "gem/i915_gem_internal.h"
+#include "gem/selftests/igt_gem_utils.h"
+
 #include "igt_spinner.h"
 
 int igt_spinner_init(struct igt_spinner *spin, struct intel_gt *gt)
@@ -98,7 +97,7 @@ int igt_spinner_pin(struct igt_spinner *spin,
 	if (!spin->batch) {
 		unsigned int mode;
 
-		mode = intel_gt_coherent_map_type(spin->gt, spin->obj, false);
+		mode = i915_coherent_map_type(spin->gt->i915, spin->obj, false);
 		vaddr = igt_spinner_pin_obj(ce, ww, spin->obj, mode, &spin->batch_vma);
 		if (IS_ERR(vaddr))
 			return PTR_ERR(vaddr);
@@ -160,15 +159,15 @@ igt_spinner_create_request(struct igt_spinner *spin,
 
 	batch = spin->batch;
 
-	if (GRAPHICS_VER(rq->i915) >= 8) {
+	if (GRAPHICS_VER(rq->engine->i915) >= 8) {
 		*batch++ = MI_STORE_DWORD_IMM_GEN4;
 		*batch++ = lower_32_bits(hws_address(hws, rq));
 		*batch++ = upper_32_bits(hws_address(hws, rq));
-	} else if (GRAPHICS_VER(rq->i915) >= 6) {
+	} else if (GRAPHICS_VER(rq->engine->i915) >= 6) {
 		*batch++ = MI_STORE_DWORD_IMM_GEN4;
 		*batch++ = 0;
 		*batch++ = hws_address(hws, rq);
-	} else if (GRAPHICS_VER(rq->i915) >= 4) {
+	} else if (GRAPHICS_VER(rq->engine->i915) >= 4) {
 		*batch++ = MI_STORE_DWORD_IMM_GEN4 | MI_USE_GGTT;
 		*batch++ = 0;
 		*batch++ = hws_address(hws, rq);
@@ -180,14 +179,11 @@ igt_spinner_create_request(struct igt_spinner *spin,
 
 	*batch++ = arbitration_command;
 
-	memset32(batch, MI_NOOP, 128);
-	batch += 128;
-
-	if (GRAPHICS_VER(rq->i915) >= 8)
+	if (GRAPHICS_VER(rq->engine->i915) >= 8)
 		*batch++ = MI_BATCH_BUFFER_START | BIT(8) | 1;
-	else if (IS_HASWELL(rq->i915))
+	else if (IS_HASWELL(rq->engine->i915))
 		*batch++ = MI_BATCH_BUFFER_START | MI_BATCH_PPGTT_HSW;
-	else if (GRAPHICS_VER(rq->i915) >= 6)
+	else if (GRAPHICS_VER(rq->engine->i915) >= 6)
 		*batch++ = MI_BATCH_BUFFER_START;
 	else
 		*batch++ = MI_BATCH_BUFFER_START | MI_BATCH_GTT;
@@ -205,7 +201,7 @@ igt_spinner_create_request(struct igt_spinner *spin,
 	}
 
 	flags = 0;
-	if (GRAPHICS_VER(rq->i915) <= 5)
+	if (GRAPHICS_VER(rq->engine->i915) <= 5)
 		flags |= I915_DISPATCH_SECURE;
 	err = engine->emit_bb_start(rq, i915_vma_offset(vma), PAGE_SIZE, flags);
 

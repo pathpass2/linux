@@ -20,9 +20,7 @@ void efx_dequeue_buffer(struct efx_tx_queue *tx_queue,
 			struct efx_tx_buffer *buffer,
 			unsigned int *pkts_compl,
 			unsigned int *bytes_compl,
-			unsigned int *efv_pkts_compl,
-			unsigned int *xdp_pkts,
-			unsigned int *xdp_bytes);
+			unsigned int *efv_pkts_compl);
 
 static inline bool efx_tx_buffer_in_use(struct efx_tx_buffer *buffer)
 {
@@ -30,7 +28,7 @@ static inline bool efx_tx_buffer_in_use(struct efx_tx_buffer *buffer)
 }
 
 void efx_xmit_done_check_empty(struct efx_tx_queue *tx_queue);
-int efx_xmit_done(struct efx_tx_queue *tx_queue, unsigned int index);
+void efx_xmit_done(struct efx_tx_queue *tx_queue, unsigned int index);
 
 void efx_enqueue_unwind(struct efx_tx_queue *tx_queue,
 			unsigned int insert_count);

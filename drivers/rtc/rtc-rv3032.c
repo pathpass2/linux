@@ -19,7 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/log2.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 
@@ -69,7 +69,8 @@
 #define RV3032_CLKOUT2_FD_MSK		GENMASK(6, 5)
 #define RV3032_CLKOUT2_OS		BIT(7)
 
-#define RV3032_CTRL1_EERD		BIT(2)
+#define RV3032_CTRL1_EERD		BIT(3)
+#define RV3032_CTRL1_WADA		BIT(5)
 
 #define RV3032_CTRL2_STOP		BIT(0)
 #define RV3032_CTRL2_EIE		BIT(2)
@@ -646,24 +647,19 @@ static unsigned long rv3032_clkout_recalc_rate(struct clk_hw *hw,
 	return clkout_xtal_rates[FIELD_GET(RV3032_CLKOUT2_FD_MSK, clkout)];
 }
 
-static int rv3032_clkout_determine_rate(struct clk_hw *hw,
-					struct clk_rate_request *req)
+static long rv3032_clkout_round_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long *prate)
 {
 	int i, hfd;
 
-	if (req->rate < RV3032_HFD_STEP)
+	if (rate < RV3032_HFD_STEP)
 		for (i = 0; i < ARRAY_SIZE(clkout_xtal_rates); i++)
-			if (clkout_xtal_rates[i] <= req->rate) {
-				req->rate = clkout_xtal_rates[i];
+			if (clkout_xtal_rates[i] <= rate)
+				return clkout_xtal_rates[i];
 
-				return 0;
-			}
+	hfd = DIV_ROUND_CLOSEST(rate, RV3032_HFD_STEP);
 
-	hfd = DIV_ROUND_CLOSEST(req->rate, RV3032_HFD_STEP);
-
-	req->rate = RV3032_HFD_STEP * clamp(hfd, 0, 8192);
-
-	return 0;
+	return RV3032_HFD_STEP * clamp(hfd, 0, 8192);
 }
 
 static int rv3032_clkout_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -743,7 +739,7 @@ static const struct clk_ops rv3032_clkout_ops = {
 	.unprepare = rv3032_clkout_unprepare,
 	.is_prepared = rv3032_clkout_is_prepared,
 	.recalc_rate = rv3032_clkout_recalc_rate,
-	.determine_rate = rv3032_clkout_determine_rate,
+	.round_rate = rv3032_clkout_round_rate,
 	.set_rate = rv3032_clkout_set_rate,
 };
 
@@ -846,7 +842,7 @@ static int rv3032_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 	return err;
 }
 
-static const struct hwmon_channel_info * const rv3032_hwmon_info[] = {
+static const struct hwmon_channel_info *rv3032_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_REGISTER_TZ),
 	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MAX_HYST),
 	NULL
@@ -951,6 +947,11 @@ static int rv3032_probe(struct i2c_client *client)
 	if (!client->irq)
 		clear_bit(RTC_FEATURE_ALARM, rv3032->rtc->features);
 
+	ret = regmap_update_bits(rv3032->regmap, RV3032_CTRL1,
+				 RV3032_CTRL1_WADA, RV3032_CTRL1_WADA);
+	if (ret)
+		return ret;
+
 	rv3032_trickle_charger_setup(&client->dev, rv3032);
 
 	set_bit(RTC_FEATURE_BACKUP_SWITCH_MODE, rv3032->rtc->features);
@@ -967,6 +968,8 @@ static int rv3032_probe(struct i2c_client *client)
 	devm_rtc_nvmem_register(rv3032->rtc, &nvmem_cfg);
 	eeprom_cfg.priv = rv3032;
 	devm_rtc_nvmem_register(rv3032->rtc, &eeprom_cfg);
+
+	rv3032->rtc->max_user_freq = 1;
 
 #ifdef CONFIG_COMMON_CLK
 	rv3032_clkout_register_clk(rv3032, client);
@@ -995,7 +998,7 @@ static struct i2c_driver rv3032_driver = {
 		.acpi_match_table = rv3032_i2c_acpi_match,
 		.of_match_table = of_match_ptr(rv3032_of_match),
 	},
-	.probe		= rv3032_probe,
+	.probe_new	= rv3032_probe,
 };
 module_i2c_driver(rv3032_driver);
 

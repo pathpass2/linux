@@ -85,6 +85,7 @@ nf_conntrack_log_invalid - INTEGER
 	- 1   - log ICMP packets
 	- 6   - log TCP packets
 	- 17  - log UDP packets
+	- 33  - log DCCP packets
 	- 41  - log ICMPv6 packets
 	- 136 - log UDPLITE packets
 	- 255 - log packets of any protocol
@@ -177,10 +178,10 @@ nf_conntrack_sctp_timeout_established - INTEGER (seconds)
 	Default is set to (hb_interval * path_max_retrans + rto_max)
 
 nf_conntrack_sctp_timeout_shutdown_sent - INTEGER (seconds)
-	default 3
+	default 0.3
 
 nf_conntrack_sctp_timeout_shutdown_recd - INTEGER (seconds)
-	default 3
+	default 0.3
 
 nf_conntrack_sctp_timeout_shutdown_ack_sent - INTEGER (seconds)
 	default 3
@@ -221,11 +222,11 @@ nf_flowtable_tcp_timeout - INTEGER (seconds)
 
         Control offload timeout for tcp connections.
         TCP connections may be offloaded from nf conntrack to nf flow table.
-        Once aged, the connection is returned to nf conntrack.
+        Once aged, the connection is returned to nf conntrack with tcp pickup timeout.
 
 nf_flowtable_udp_timeout - INTEGER (seconds)
         default 30
 
         Control offload timeout for udp connections.
         UDP connections may be offloaded from nf conntrack to nf flow table.
-        Once aged, the connection is returned to nf conntrack.
+        Once aged, the connection is returned to nf conntrack with udp pickup timeout.

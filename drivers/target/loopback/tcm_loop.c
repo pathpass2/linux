@@ -83,8 +83,15 @@ static int tcm_loop_show_info(struct seq_file *m, struct Scsi_Host *host)
 static int tcm_loop_driver_probe(struct device *);
 static void tcm_loop_driver_remove(struct device *);
 
-static const struct bus_type tcm_loop_lld_bus = {
+static int pseudo_lld_bus_match(struct device *dev,
+				struct device_driver *dev_driver)
+{
+	return 1;
+}
+
+static struct bus_type tcm_loop_lld_bus = {
 	.name			= "tcm_loop_bus",
+	.match			= pseudo_lld_bus_match,
 	.probe			= tcm_loop_driver_probe,
 	.remove			= tcm_loop_driver_remove,
 };
@@ -154,7 +161,7 @@ static void tcm_loop_target_queue_cmd(struct tcm_loop_cmd *tl_cmd)
 			       GFP_ATOMIC))
 		return;
 
-	target_submit(se_cmd);
+	target_queue_submission(se_cmd);
 	return;
 
 out_done:
@@ -165,8 +172,7 @@ out_done:
  * ->queuecommand can be and usually is called from interrupt context, so
  * defer the actual submission to a workqueue.
  */
-static enum scsi_qc_status tcm_loop_queuecommand(struct Scsi_Host *sh,
-						 struct scsi_cmnd *sc)
+static int tcm_loop_queuecommand(struct Scsi_Host *sh, struct scsi_cmnd *sc)
 {
 	struct tcm_loop_cmd *tl_cmd = scsi_cmd_priv(sc);
 
@@ -177,7 +183,7 @@ static enum scsi_qc_status tcm_loop_queuecommand(struct Scsi_Host *sh,
 
 	memset(tl_cmd, 0, sizeof(*tl_cmd));
 	tl_cmd->sc = sc;
-	tl_cmd->sc_cmd_tag = blk_mq_unique_tag(scsi_cmd_to_rq(sc));
+	tl_cmd->sc_cmd_tag = scsi_cmd_to_rq(sc)->tag;
 
 	tcm_loop_target_queue_cmd(tl_cmd);
 	return 0;
@@ -243,8 +249,7 @@ static int tcm_loop_abort_task(struct scsi_cmnd *sc)
 	tl_hba = *(struct tcm_loop_hba **)shost_priv(sc->device->host);
 	tl_tpg = &tl_hba->tl_hba_tpgs[sc->device->id];
 	ret = tcm_loop_issue_tmr(tl_tpg, sc->device->lun,
-				 blk_mq_unique_tag(scsi_cmd_to_rq(sc)),
-				 TMR_ABORT_TASK);
+				 scsi_cmd_to_rq(sc)->tag, TMR_ABORT_TASK);
 	return (ret == TMR_FUNCTION_COMPLETE) ? SUCCESS : FAILED;
 }
 
@@ -293,7 +298,7 @@ static int tcm_loop_target_reset(struct scsi_cmnd *sc)
 	return FAILED;
 }
 
-static const struct scsi_host_template tcm_loop_driver_template = {
+static struct scsi_host_template tcm_loop_driver_template = {
 	.show_info		= tcm_loop_show_info,
 	.proc_name		= "tcm_loopback",
 	.name			= "TCM_Loopback",
@@ -475,6 +480,30 @@ static int tcm_loop_check_demo_mode(struct se_portal_group *se_tpg)
 	return 1;
 }
 
+static int tcm_loop_check_demo_mode_cache(struct se_portal_group *se_tpg)
+{
+	return 0;
+}
+
+/*
+ * Allow I_T Nexus full READ-WRITE access without explict Initiator Node ACLs for
+ * local virtual Linux/SCSI LLD passthrough into VM hypervisor guest
+ */
+static int tcm_loop_check_demo_mode_write_protect(struct se_portal_group *se_tpg)
+{
+	return 0;
+}
+
+/*
+ * Because TCM_Loop does not use explict ACLs and MappedLUNs, this will
+ * never be called for TCM_Loop by target_core_fabric_configfs.c code.
+ * It has been added here as a nop for target_fabric_tf_ops_check()
+ */
+static int tcm_loop_check_prod_mode_write_protect(struct se_portal_group *se_tpg)
+{
+	return 0;
+}
+
 static int tcm_loop_check_prot_fabric_only(struct se_portal_group *se_tpg)
 {
 	struct tcm_loop_tpg *tl_tpg = container_of(se_tpg, struct tcm_loop_tpg,
@@ -482,9 +511,19 @@ static int tcm_loop_check_prot_fabric_only(struct se_portal_group *se_tpg)
 	return tl_tpg->tl_fabric_prot_type;
 }
 
+static u32 tcm_loop_get_inst_index(struct se_portal_group *se_tpg)
+{
+	return 1;
+}
+
 static u32 tcm_loop_sess_get_index(struct se_session *se_sess)
 {
 	return 1;
+}
+
+static void tcm_loop_set_default_node_attributes(struct se_node_acl *se_acl)
+{
+	return;
 }
 
 static int tcm_loop_get_cmd_state(struct se_cmd *se_cmd)
@@ -895,9 +934,6 @@ static ssize_t tcm_loop_tpg_address_show(struct config_item *item,
 			struct tcm_loop_tpg, tl_se_tpg);
 	struct tcm_loop_hba *tl_hba = tl_tpg->tl_hba;
 
-	if (!tl_hba->sh)
-		return -ENODEV;
-
 	return snprintf(page, PAGE_SIZE, "%d:0:%d\n",
 			tl_hba->sh->host_no, tl_tpg->tl_tpgt);
 }
@@ -1088,11 +1124,18 @@ static const struct target_core_fabric_ops loop_ops = {
 	.tpg_get_wwn			= tcm_loop_get_endpoint_wwn,
 	.tpg_get_tag			= tcm_loop_get_tag,
 	.tpg_check_demo_mode		= tcm_loop_check_demo_mode,
+	.tpg_check_demo_mode_cache	= tcm_loop_check_demo_mode_cache,
+	.tpg_check_demo_mode_write_protect =
+				tcm_loop_check_demo_mode_write_protect,
+	.tpg_check_prod_mode_write_protect =
+				tcm_loop_check_prod_mode_write_protect,
 	.tpg_check_prot_fabric_only	= tcm_loop_check_prot_fabric_only,
+	.tpg_get_inst_index		= tcm_loop_get_inst_index,
 	.check_stop_free		= tcm_loop_check_stop_free,
 	.release_cmd			= tcm_loop_release_cmd,
 	.sess_get_index			= tcm_loop_sess_get_index,
 	.write_pending			= tcm_loop_write_pending,
+	.set_default_node_attributes	= tcm_loop_set_default_node_attributes,
 	.get_cmd_state			= tcm_loop_get_cmd_state,
 	.queue_data_in			= tcm_loop_queue_data_in,
 	.queue_status			= tcm_loop_queue_status,
@@ -1107,8 +1150,6 @@ static const struct target_core_fabric_ops loop_ops = {
 	.tfc_wwn_attrs			= tcm_loop_wwn_attrs,
 	.tfc_tpg_base_attrs		= tcm_loop_tpg_attrs,
 	.tfc_tpg_attrib_attrs		= tcm_loop_tpg_attrib_attrs,
-	.default_submit_type		= TARGET_QUEUE_SUBMIT,
-	.direct_submit_supp		= 0,
 };
 
 static int __init tcm_loop_fabric_init(void)

@@ -63,14 +63,18 @@ static __poll_t hwdep_poll(struct snd_hwdep *hwdep, struct file *file,
 			       poll_table *wait)
 {
 	struct snd_dg00x *dg00x = hwdep->private_data;
+	__poll_t events;
 
 	poll_wait(file, &dg00x->hwdep_wait, wait);
 
-	guard(spinlock_irq)(&dg00x->lock);
+	spin_lock_irq(&dg00x->lock);
 	if (dg00x->dev_lock_changed || dg00x->msg)
-		return EPOLLIN | EPOLLRDNORM;
+		events = EPOLLIN | EPOLLRDNORM;
 	else
-		return 0;
+		events = 0;
+	spin_unlock_irq(&dg00x->lock);
+
+	return events;
 }
 
 static int hwdep_get_info(struct snd_dg00x *dg00x, void __user *arg)
@@ -94,35 +98,48 @@ static int hwdep_get_info(struct snd_dg00x *dg00x, void __user *arg)
 
 static int hwdep_lock(struct snd_dg00x *dg00x)
 {
-	guard(spinlock_irq)(&dg00x->lock);
+	int err;
+
+	spin_lock_irq(&dg00x->lock);
 
 	if (dg00x->dev_lock_count == 0) {
 		dg00x->dev_lock_count = -1;
-		return 0;
+		err = 0;
 	} else {
-		return -EBUSY;
+		err = -EBUSY;
 	}
+
+	spin_unlock_irq(&dg00x->lock);
+
+	return err;
 }
 
 static int hwdep_unlock(struct snd_dg00x *dg00x)
 {
-	guard(spinlock_irq)(&dg00x->lock);
+	int err;
+
+	spin_lock_irq(&dg00x->lock);
 
 	if (dg00x->dev_lock_count == -1) {
 		dg00x->dev_lock_count = 0;
-		return 0;
+		err = 0;
 	} else {
-		return -EBADFD;
+		err = -EBADFD;
 	}
+
+	spin_unlock_irq(&dg00x->lock);
+
+	return err;
 }
 
 static int hwdep_release(struct snd_hwdep *hwdep, struct file *file)
 {
 	struct snd_dg00x *dg00x = hwdep->private_data;
 
-	guard(spinlock_irq)(&dg00x->lock);
+	spin_lock_irq(&dg00x->lock);
 	if (dg00x->dev_lock_count == -1)
 		dg00x->dev_lock_count = 0;
+	spin_unlock_irq(&dg00x->lock);
 
 	return 0;
 }
@@ -171,7 +188,7 @@ int snd_dg00x_create_hwdep_device(struct snd_dg00x *dg00x)
 	if (err < 0)
 		return err;
 
-	strscpy(hwdep->name, "Digi00x");
+	strcpy(hwdep->name, "Digi00x");
 	hwdep->iface = SNDRV_HWDEP_IFACE_FW_DIGI00X;
 	hwdep->ops = ops;
 	hwdep->private_data = dg00x;

@@ -81,6 +81,7 @@ required:
   - compatible
   - reg
 
+
 additionalProperties: false
 
 examples:

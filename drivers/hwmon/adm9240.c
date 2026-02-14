@@ -37,6 +37,7 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-vid.h>
 #include <linux/err.h>
+#include <linux/mutex.h>
 #include <linux/regmap.h>
 
 /* Addresses to scan */
@@ -124,6 +125,7 @@ static inline unsigned int AOUT_FROM_REG(u8 reg)
 struct adm9240_data {
 	struct device *dev;
 	struct regmap *regmap;
+	struct mutex update_lock;
 
 	u8 fan_div[2];		/* rw	fan1_div, read-only accessor */
 	u8 vrm;			/* --	vrm set on startup, no accessor */
@@ -168,6 +170,8 @@ static int adm9240_fan_min_write(struct adm9240_data *data, int channel, long va
 	u8 fan_min;
 	int err;
 
+	mutex_lock(&data->update_lock);
+
 	if (!val) {
 		fan_min = 255;
 		new_div = data->fan_div[channel];
@@ -201,6 +205,8 @@ static int adm9240_fan_min_write(struct adm9240_data *data, int channel, long va
 		adm9240_write_fan_div(data, channel, new_div);
 	}
 	err = regmap_write(data->regmap, ADM9240_REG_FAN_MIN(channel), fan_min);
+
+	mutex_unlock(&data->update_lock);
 
 	return err;
 }
@@ -495,17 +501,23 @@ static int adm9240_fan_read(struct device *dev, u32 attr, int channel, long *val
 
 	switch (attr) {
 	case hwmon_fan_input:
+		mutex_lock(&data->update_lock);
 		err = regmap_read(data->regmap, ADM9240_REG_FAN(channel), &regval);
-		if (err < 0)
+		if (err < 0) {
+			mutex_unlock(&data->update_lock);
 			return err;
+		}
 		if (regval == 255 && data->fan_div[channel] < 3) {
 			/* adjust fan clock divider on overflow */
 			err = adm9240_write_fan_div(data, channel,
 						    ++data->fan_div[channel]);
-			if (err)
+			if (err) {
+				mutex_unlock(&data->update_lock);
 				return err;
+			}
 		}
 		*val = FAN_FROM_REG(regval, BIT(data->fan_div[channel]));
+		mutex_unlock(&data->update_lock);
 		break;
 	case hwmon_fan_div:
 		*val = BIT(data->fan_div[channel]);
@@ -719,7 +731,7 @@ static const struct hwmon_ops adm9240_hwmon_ops = {
 	.write = adm9240_write,
 };
 
-static const struct hwmon_channel_info * const adm9240_info[] = {
+static const struct hwmon_channel_info *adm9240_info[] = {
 	HWMON_CHANNEL_INFO(chip, HWMON_C_ALARMS),
 	HWMON_CHANNEL_INFO(intrusion, HWMON_INTRUSION_ALARM),
 	HWMON_CHANNEL_INFO(temp,
@@ -779,6 +791,7 @@ static int adm9240_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	data->dev = dev;
+	mutex_init(&data->update_lock);
 	data->regmap = devm_regmap_init_i2c(client, &adm9240_regmap_config);
 	if (IS_ERR(data->regmap))
 		return PTR_ERR(data->regmap);
@@ -806,7 +819,7 @@ static struct i2c_driver adm9240_driver = {
 	.driver = {
 		.name	= "adm9240",
 	},
-	.probe		= adm9240_probe,
+	.probe_new	= adm9240_probe,
 	.id_table	= adm9240_id,
 	.detect		= adm9240_detect,
 	.address_list	= normal_i2c,

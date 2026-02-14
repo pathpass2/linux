@@ -3,7 +3,7 @@
  *
  * Name: acpixf.h - External interfaces to the ACPI subsystem
  *
- * Copyright (C) 2000 - 2025, Intel Corp.
+ * Copyright (C) 2000 - 2022, Intel Corp.
  *
  *****************************************************************************/
 
@@ -12,7 +12,7 @@
 
 /* Current ACPICA subsystem version in YYYYMMDD format */
 
-#define ACPI_CA_VERSION                 0x20251212
+#define ACPI_CA_VERSION                 0x20221020
 
 #include <acpi/acconfig.h>
 #include <acpi/actypes.h>
@@ -212,12 +212,6 @@ ACPI_INIT_GLOBAL(u8, acpi_gbl_osi_data, 0);
  * a reduced HW machine, and that flag is duplicated here for convenience.
  */
 ACPI_INIT_GLOBAL(u8, acpi_gbl_reduced_hardware, FALSE);
-
-/*
- * ACPI Global Lock is mainly used for systems with SMM, so no-SMM systems
- * (such as loong_arch) may not have and not use Global Lock.
- */
-ACPI_INIT_GLOBAL(u8, acpi_gbl_use_global_lock, TRUE);
 
 /*
  * Maximum timeout for While() loop iterations before forced method abort.
@@ -666,7 +660,6 @@ ACPI_EXTERNAL_RETURN_STATUS(acpi_status
 			     void *context))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status
 			    acpi_execute_reg_methods(acpi_handle device,
-						     u32 nax_depth,
 						     acpi_adr_space_type
 						     space_id))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status
@@ -768,8 +761,6 @@ ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
 						     acpi_event_status
 						     *event_status))
 ACPI_HW_DEPENDENT_RETURN_UINT32(u32 acpi_dispatch_gpe(acpi_handle gpe_device, u32 gpe_number))
-ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_hw_disable_all_gpes(void))
-ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_hw_enable_all_wakeup_gpes(void))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_disable_all_gpes(void))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_enable_all_runtime_gpes(void))
 ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status acpi_enable_all_wakeup_gpes(void))
@@ -885,10 +876,10 @@ ACPI_EXTERNAL_RETURN_STATUS(acpi_status
 			    acpi_leave_sleep_state_prep(u8 sleep_state))
 ACPI_EXTERNAL_RETURN_STATUS(acpi_status acpi_leave_sleep_state(u8 sleep_state))
 
-ACPI_EXTERNAL_RETURN_STATUS(acpi_status
-			    acpi_set_firmware_waking_vector
-			    (acpi_physical_address physical_address,
-			     acpi_physical_address physical_address64))
+ACPI_HW_DEPENDENT_RETURN_STATUS(acpi_status
+				acpi_set_firmware_waking_vector
+				(acpi_physical_address physical_address,
+				 acpi_physical_address physical_address64))
 /*
  * ACPI Timer interfaces
  */
@@ -977,6 +968,8 @@ ACPI_EXTERNAL_RETURN_STATUS(acpi_status
 					       acpi_object_handler handler,
 					       void **data,
 					       void (*callback)(void *)))
+
+void acpi_run_debugger(char *batch_buffer);
 
 void acpi_set_debugger_thread_id(acpi_thread_id thread_id);
 

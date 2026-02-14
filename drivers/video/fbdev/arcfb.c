@@ -41,7 +41,6 @@
 #include <linux/vmalloc.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
-#include <linux/io.h>
 #include <linux/fb.h>
 #include <linux/init.h>
 #include <linux/arcfb.h>
@@ -261,7 +260,7 @@ static void arcfb_lcd_update_page(struct arcfb_par *par, unsigned int upper,
 	ks108_set_yaddr(par, chipindex, upper/8);
 
 	linesize = par->info->var.xres/8;
-	src = (unsigned char *)par->info->screen_buffer + (left/8) +
+	src = (unsigned char __force *) par->info->screen_base + (left/8) +
 		(upper * linesize);
 	ks108_set_xaddr(par, chipindex, left);
 
@@ -363,6 +362,39 @@ static void arcfb_lcd_update(struct arcfb_par *par, unsigned int dx,
 	}
 }
 
+static void arcfb_fillrect(struct fb_info *info,
+			   const struct fb_fillrect *rect)
+{
+	struct arcfb_par *par = info->par;
+
+	sys_fillrect(info, rect);
+
+	/* update the physical lcd */
+	arcfb_lcd_update(par, rect->dx, rect->dy, rect->width, rect->height);
+}
+
+static void arcfb_copyarea(struct fb_info *info,
+			   const struct fb_copyarea *area)
+{
+	struct arcfb_par *par = info->par;
+
+	sys_copyarea(info, area);
+
+	/* update the physical lcd */
+	arcfb_lcd_update(par, area->dx, area->dy, area->width, area->height);
+}
+
+static void arcfb_imageblit(struct fb_info *info, const struct fb_image *image)
+{
+	struct arcfb_par *par = info->par;
+
+	sys_imageblit(info, image);
+
+	/* update the physical lcd */
+	arcfb_lcd_update(par, image->dx, image->dy, image->width,
+				image->height);
+}
+
 static int arcfb_ioctl(struct fb_info *info,
 			  unsigned int cmd, unsigned long arg)
 {
@@ -403,48 +435,73 @@ static int arcfb_ioctl(struct fb_info *info,
 	}
 }
 
-static void arcfb_damage_range(struct fb_info *info, off_t off, size_t len)
+/*
+ * this is the access path from userspace. they can seek and write to
+ * the fb. it's inefficient for them to do anything less than 64*8
+ * writes since we update the lcd in each write() anyway.
+ */
+static ssize_t arcfb_write(struct fb_info *info, const char __user *buf,
+			   size_t count, loff_t *ppos)
 {
-	struct arcfb_par *par = info->par;
-	unsigned int xres = info->var.xres;
-	unsigned int bitppos, startpos, endpos, bitcount;
-	unsigned int x, y, width, height;
+	/* modded from epson 1355 */
 
-	bitppos = off * 8;
+	unsigned long p;
+	int err;
+	unsigned int fbmemlength,x,y,w,h, bitppos, startpos, endpos, bitcount;
+	struct arcfb_par *par;
+	unsigned int xres;
+
+	p = *ppos;
+	par = info->par;
+	xres = info->var.xres;
+	fbmemlength = (xres * info->var.yres)/8;
+
+	if (p > fbmemlength)
+		return -ENOSPC;
+
+	err = 0;
+	if ((count + p) > fbmemlength) {
+		count = fbmemlength - p;
+		err = -ENOSPC;
+	}
+
+	if (count) {
+		char *base_addr;
+
+		base_addr = (char __force *)info->screen_base;
+		count -= copy_from_user(base_addr + p, buf, count);
+		*ppos += count;
+		err = -EFAULT;
+	}
+
+
+	bitppos = p*8;
 	startpos = floorXres(bitppos, xres);
-	endpos = ceilXres((bitppos + (len * 8)), xres);
+	endpos = ceilXres((bitppos + (count*8)), xres);
 	bitcount = endpos - startpos;
 
 	x = startpos % xres;
 	y = startpos / xres;
-	width = xres;
-	height = bitcount / xres;
+	w = xres;
+	h = bitcount / xres;
+	arcfb_lcd_update(par, x, y, w, h);
 
-	arcfb_lcd_update(par, x, y, width, height);
+	if (count)
+		return count;
+	return err;
 }
-
-static void arcfb_damage_area(struct fb_info *info, u32 x, u32 y,
-			      u32 width, u32 height)
-{
-	struct arcfb_par *par = info->par;
-
-	/* update the physical lcd */
-	arcfb_lcd_update(par, x, y, width, height);
-}
-
-FB_GEN_DEFAULT_DEFERRED_SYSMEM_OPS(arcfb,
-				   arcfb_damage_range,
-				   arcfb_damage_area)
 
 static const struct fb_ops arcfb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_open	= arcfb_open,
-	__FB_DEFAULT_DEFERRED_OPS_RDWR(arcfb),
+	.fb_read        = fb_sys_read,
+	.fb_write	= arcfb_write,
 	.fb_release	= arcfb_release,
 	.fb_pan_display	= arcfb_pan_display,
-	__FB_DEFAULT_DEFERRED_OPS_DRAW(arcfb),
+	.fb_fillrect	= arcfb_fillrect,
+	.fb_copyarea	= arcfb_copyarea,
+	.fb_imageblit	= arcfb_imageblit,
 	.fb_ioctl 	= arcfb_ioctl,
-	// .fb_mmap reqires deferred I/O
 };
 
 static int arcfb_probe(struct platform_device *dev)
@@ -466,10 +523,9 @@ static int arcfb_probe(struct platform_device *dev)
 
 	info = framebuffer_alloc(sizeof(struct arcfb_par), &dev->dev);
 	if (!info)
-		goto err_fb_alloc;
+		goto err;
 
-	info->flags |= FBINFO_VIRTFB;
-	info->screen_buffer = videomemory;
+	info->screen_base = (char __iomem *)videomemory;
 	info->fbops = &arcfb_ops;
 
 	info->var = arcfb_var;
@@ -479,13 +535,14 @@ static int arcfb_probe(struct platform_device *dev)
 
 	if (!dio_addr || !cio_addr || !c2io_addr) {
 		printk(KERN_WARNING "no IO addresses supplied\n");
-		goto err_addr;
+		goto err1;
 	}
 	par->dio_addr = dio_addr;
 	par->cio_addr = cio_addr;
 	par->c2io_addr = c2io_addr;
 	par->cslut[0] = 0x00;
 	par->cslut[1] = 0x06;
+	info->flags = FBINFO_FLAG_DEFAULT;
 	spin_lock_init(&par->lock);
 	if (irq) {
 		par->irq = irq;
@@ -494,12 +551,12 @@ static int arcfb_probe(struct platform_device *dev)
 			printk(KERN_INFO
 				"arcfb: Failed req IRQ %d\n", par->irq);
 			retval = -EBUSY;
-			goto err_addr;
+			goto err1;
 		}
 	}
 	retval = register_framebuffer(info);
 	if (retval < 0)
-		goto err_register_fb;
+		goto err1;
 	platform_set_drvdata(dev, info);
 	fb_info(info, "Arc frame buffer device, using %dK of video memory\n",
 		videomemorysize >> 10);
@@ -523,17 +580,14 @@ static int arcfb_probe(struct platform_device *dev)
 	}
 
 	return 0;
-
-err_register_fb:
-	free_irq(par->irq, info);
-err_addr:
+err1:
 	framebuffer_release(info);
-err_fb_alloc:
+err:
 	vfree(videomemory);
 	return retval;
 }
 
-static void arcfb_remove(struct platform_device *dev)
+static int arcfb_remove(struct platform_device *dev)
 {
 	struct fb_info *info = platform_get_drvdata(dev);
 
@@ -541,14 +595,15 @@ static void arcfb_remove(struct platform_device *dev)
 		unregister_framebuffer(info);
 		if (irq)
 			free_irq(((struct arcfb_par *)(info->par))->irq, info);
-		vfree(info->screen_buffer);
+		vfree((void __force *)info->screen_base);
 		framebuffer_release(info);
 	}
+	return 0;
 }
 
 static struct platform_driver arcfb_driver = {
 	.probe	= arcfb_probe,
-	.remove	= arcfb_remove,
+	.remove = arcfb_remove,
 	.driver	= {
 		.name	= "arcfb",
 	},

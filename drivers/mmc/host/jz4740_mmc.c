@@ -18,10 +18,9 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/slot-gpio.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/scatterlist.h>
 
@@ -641,8 +640,7 @@ poll_timeout:
 
 static void jz4740_mmc_timeout(struct timer_list *t)
 {
-	struct jz4740_mmc_host *host = timer_container_of(host, t,
-							  timeout_timer);
+	struct jz4740_mmc_host *host = from_timer(host, t, timeout_timer);
 
 	if (!test_and_clear_bit(0, &host->waiting))
 		return;
@@ -863,7 +861,7 @@ static irqreturn_t jz_mmc_irq(int irq, void *devid)
 
 	if (host->req && cmd && irq_reg) {
 		if (test_and_clear_bit(0, &host->waiting)) {
-			timer_delete(&host->timeout_timer);
+			del_timer(&host->timeout_timer);
 
 			if (status & JZ_MMC_STATUS_TIMEOUT_RES) {
 				cmd->error = -ETIMEDOUT;
@@ -1042,8 +1040,9 @@ static int jz4740_mmc_probe(struct platform_device* pdev)
 	int ret;
 	struct mmc_host *mmc;
 	struct jz4740_mmc_host *host;
+	const struct of_device_id *match;
 
-	mmc = devm_mmc_alloc_host(&pdev->dev, sizeof(*host));
+	mmc = mmc_alloc_host(sizeof(struct jz4740_mmc_host), &pdev->dev);
 	if (!mmc) {
 		dev_err(&pdev->dev, "Failed to alloc mmc host structure\n");
 		return -ENOMEM;
@@ -1051,28 +1050,41 @@ static int jz4740_mmc_probe(struct platform_device* pdev)
 
 	host = mmc_priv(mmc);
 
-	/* Default if no match is JZ4740 */
-	host->version = (enum jz4740_mmc_version)device_get_match_data(&pdev->dev);
+	match = of_match_device(jz4740_mmc_of_match, &pdev->dev);
+	if (match) {
+		host->version = (enum jz4740_mmc_version)match->data;
+	} else {
+		/* JZ4740 should be the only one using legacy probe */
+		host->version = JZ_MMC_JZ4740;
+	}
 
 	ret = mmc_of_parse(mmc);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret,
-				     "could not parse device properties\n");
+	if (ret) {
+		dev_err_probe(&pdev->dev, ret, "could not parse device properties\n");
+		goto err_free_host;
+	}
 
 	mmc_regulator_get_supply(mmc);
 
 	host->irq = platform_get_irq(pdev, 0);
-	if (host->irq < 0)
-		return host->irq;
+	if (host->irq < 0) {
+		ret = host->irq;
+		goto err_free_host;
+	}
 
 	host->clk = devm_clk_get(&pdev->dev, "mmc");
-	if (IS_ERR(host->clk))
-		return dev_err_probe(&pdev->dev, PTR_ERR(host->clk),
-				     "Failed to get mmc clock\n");
+	if (IS_ERR(host->clk)) {
+		ret = PTR_ERR(host->clk);
+		dev_err(&pdev->dev, "Failed to get mmc clock\n");
+		goto err_free_host;
+	}
 
-	host->base = devm_platform_get_and_ioremap_resource(pdev, 0, &host->mem_res);
-	if (IS_ERR(host->base))
-		return PTR_ERR(host->base);
+	host->mem_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	host->base = devm_ioremap_resource(&pdev->dev, host->mem_res);
+	if (IS_ERR(host->base)) {
+		ret = PTR_ERR(host->base);
+		goto err_free_host;
+	}
 
 	mmc->ops = &jz4740_mmc_ops;
 	if (!mmc->f_max)
@@ -1112,8 +1124,10 @@ static int jz4740_mmc_probe(struct platform_device* pdev)
 
 	ret = request_threaded_irq(host->irq, jz_mmc_irq, jz_mmc_irq_worker, 0,
 			dev_name(&pdev->dev), host);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "Failed to request irq\n");
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to request irq: %d\n", ret);
+		goto err_free_host;
+	}
 
 	jz4740_mmc_clock_disable(host);
 	timer_setup(&host->timeout_timer, jz4740_mmc_timeout, 0);
@@ -1144,14 +1158,17 @@ err_release_dma:
 		jz4740_mmc_release_dma_channels(host);
 err_free_irq:
 	free_irq(host->irq, host);
+err_free_host:
+	mmc_free_host(mmc);
+
 	return ret;
 }
 
-static void jz4740_mmc_remove(struct platform_device *pdev)
+static int jz4740_mmc_remove(struct platform_device *pdev)
 {
 	struct jz4740_mmc_host *host = platform_get_drvdata(pdev);
 
-	timer_delete_sync(&host->timeout_timer);
+	del_timer_sync(&host->timeout_timer);
 	jz4740_mmc_set_irq_enabled(host, 0xff, false);
 	jz4740_mmc_reset(host);
 
@@ -1161,6 +1178,10 @@ static void jz4740_mmc_remove(struct platform_device *pdev)
 
 	if (host->use_dma)
 		jz4740_mmc_release_dma_channels(host);
+
+	mmc_free_host(host->mmc);
+
+	return 0;
 }
 
 static int jz4740_mmc_suspend(struct device *dev)
@@ -1182,7 +1203,7 @@ static struct platform_driver jz4740_mmc_driver = {
 	.driver = {
 		.name = "jz4740-mmc",
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-		.of_match_table = jz4740_mmc_of_match,
+		.of_match_table = of_match_ptr(jz4740_mmc_of_match),
 		.pm = pm_sleep_ptr(&jz4740_mmc_pm_ops),
 	},
 };

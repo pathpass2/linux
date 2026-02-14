@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
+#include <linux/fb.h>
 #include <linux/backlight.h>
 
 #include <cpu/dac.h>
@@ -118,13 +119,15 @@ static int hp680bl_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void hp680bl_remove(struct platform_device *pdev)
+static int hp680bl_remove(struct platform_device *pdev)
 {
 	struct backlight_device *bd = platform_get_drvdata(pdev);
 
 	bd->props.brightness = 0;
 	bd->props.power = 0;
 	hp680bl_send_intensity(bd);
+
+	return 0;
 }
 
 static struct platform_driver hp680bl_driver = {

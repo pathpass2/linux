@@ -21,6 +21,7 @@
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/i2c.h>
+#include <linux/mutex.h>
 #include <linux/hwmon.h>
 #include <linux/watchdog.h>
 
@@ -127,6 +128,7 @@ static const unsigned short normal_i2c[] = {
 struct nct7904_data {
 	struct i2c_client *client;
 	struct watchdog_device wdt;
+	struct mutex bank_lock;
 	int bank_sel;
 	u32 fanin_mask;
 	u32 vsen_mask;
@@ -140,19 +142,24 @@ struct nct7904_data {
 };
 
 /* Access functions */
-static int nct7904_bank_select(struct nct7904_data *data, unsigned int bank)
+static int nct7904_bank_lock(struct nct7904_data *data, unsigned int bank)
 {
 	int ret;
 
+	mutex_lock(&data->bank_lock);
 	if (data->bank_sel == bank)
 		return 0;
 	ret = i2c_smbus_write_byte_data(data->client, BANK_SEL_REG, bank);
-	if (ret < 0) {
+	if (ret == 0)
+		data->bank_sel = bank;
+	else
 		data->bank_sel = -1;
-		return ret;
-	}
-	data->bank_sel = bank;
-	return 0;
+	return ret;
+}
+
+static inline void nct7904_bank_release(struct nct7904_data *data)
+{
+	mutex_unlock(&data->bank_lock);
 }
 
 /* Read 1-byte register. Returns unsigned reg or -ERRNO on error. */
@@ -162,10 +169,12 @@ static int nct7904_read_reg(struct nct7904_data *data,
 	struct i2c_client *client = data->client;
 	int ret;
 
-	ret = nct7904_bank_select(data, bank);
-	if (ret < 0)
-		return ret;
-	return i2c_smbus_read_byte_data(client, reg);
+	ret = nct7904_bank_lock(data, bank);
+	if (ret == 0)
+		ret = i2c_smbus_read_byte_data(client, reg);
+
+	nct7904_bank_release(data);
+	return ret;
 }
 
 /*
@@ -178,16 +187,19 @@ static int nct7904_read_reg16(struct nct7904_data *data,
 	struct i2c_client *client = data->client;
 	int ret, hi;
 
-	ret = nct7904_bank_select(data, bank);
-	if (ret < 0)
-		return ret;
-	hi = i2c_smbus_read_byte_data(client, reg);
-	if (hi < 0)
-		return hi;
-	ret = i2c_smbus_read_byte_data(client, reg + 1);
-	if (ret < 0)
-		return ret;
-	return ret | (hi << 8);
+	ret = nct7904_bank_lock(data, bank);
+	if (ret == 0) {
+		ret = i2c_smbus_read_byte_data(client, reg);
+		if (ret >= 0) {
+			hi = ret;
+			ret = i2c_smbus_read_byte_data(client, reg + 1);
+			if (ret >= 0)
+				ret |= hi << 8;
+		}
+	}
+
+	nct7904_bank_release(data);
+	return ret;
 }
 
 /* Write 1-byte register. Returns 0 or -ERRNO on error. */
@@ -197,10 +209,12 @@ static int nct7904_write_reg(struct nct7904_data *data,
 	struct i2c_client *client = data->client;
 	int ret;
 
-	ret = nct7904_bank_select(data, bank);
-	if (ret < 0)
-		return ret;
-	return i2c_smbus_write_byte_data(client, reg, val);
+	ret = nct7904_bank_lock(data, bank);
+	if (ret == 0)
+		ret = i2c_smbus_write_byte_data(client, reg, val);
+
+	nct7904_bank_release(data);
+	return ret;
 }
 
 static int nct7904_read_fan(struct device *dev, u32 attr, int channel,
@@ -789,7 +803,7 @@ static int nct7904_detect(struct i2c_client *client,
 	return 0;
 }
 
-static const struct hwmon_channel_info * const nct7904_info[] = {
+static const struct hwmon_channel_info *nct7904_info[] = {
 	HWMON_CHANNEL_INFO(in,
 			   /* dummy, skipped in is_visible */
 			   HWMON_I_INPUT | HWMON_I_MIN | HWMON_I_MAX |
@@ -1009,6 +1023,7 @@ static int nct7904_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	data->client = client;
+	mutex_init(&data->bank_lock);
 	data->bank_sel = -1;
 
 	/* Setup sensor groups. */
@@ -1146,7 +1161,7 @@ static int nct7904_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id nct7904_id[] = {
-	{"nct7904"},
+	{"nct7904", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, nct7904_id);
@@ -1156,7 +1171,7 @@ static struct i2c_driver nct7904_driver = {
 	.driver = {
 		.name = "nct7904",
 	},
-	.probe = nct7904_probe,
+	.probe_new = nct7904_probe,
 	.id_table = nct7904_id,
 	.detect = nct7904_detect,
 	.address_list = normal_i2c,

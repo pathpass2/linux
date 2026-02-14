@@ -28,9 +28,8 @@ config FEC
 	depends on PTP_1588_CLOCK_OPTIONAL
 	select CRC32
 	select PHYLIB
-	select FIXED_PHY if M5272
 	select PAGE_POOL
-	imply PAGE_POOL_STATS
+	select PAGE_POOL_STATS
 	imply NET_SELFTESTS
 	help
 	  Say Y here if you want to use the built-in 10/100 Fast ethernet
@@ -81,7 +80,8 @@ config UCC_GETH
 	tristate "Freescale QE Gigabit Ethernet"
 	depends on QUICC_ENGINE && PPC32
 	select FSL_PQ_MDIO
-	select PHYLINK
+	select PHYLIB
+	select FIXED_PHY
 	help
 	  This driver supports the Gigabit Ethernet mode of the QUICC Engine,
 	  which is available on some Freescale SOCs.

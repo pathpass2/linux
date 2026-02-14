@@ -16,7 +16,6 @@
 #define SUSPEND_CONSOLE	(MAX_NR_CONSOLES-1)
 
 static int orig_fgconsole, orig_kmsg;
-static bool vt_switch_done;
 
 static DEFINE_MUTEX(vt_switch_mutex);
 
@@ -44,10 +43,9 @@ static LIST_HEAD(pm_vt_switch_list);
  * no_console_suspend argument has been passed on the command line, VT
  * switches will occur.
  */
-int pm_vt_switch_required(struct device *dev, bool required)
+void pm_vt_switch_required(struct device *dev, bool required)
 {
 	struct pm_vt_switch *entry, *tmp;
-	int ret = 0;
 
 	mutex_lock(&vt_switch_mutex);
 	list_for_each_entry(tmp, &pm_vt_switch_list, head) {
@@ -59,10 +57,8 @@ int pm_vt_switch_required(struct device *dev, bool required)
 	}
 
 	entry = kmalloc(sizeof(*entry), GFP_KERNEL);
-	if (!entry) {
-		ret = -ENOMEM;
+	if (!entry)
 		goto out;
-		}
 
 	entry->required = required;
 	entry->dev = dev;
@@ -70,7 +66,6 @@ int pm_vt_switch_required(struct device *dev, bool required)
 	list_add(&entry->head, &pm_vt_switch_list);
 out:
 	mutex_unlock(&vt_switch_mutex);
-	return ret;
 }
 EXPORT_SYMBOL(pm_vt_switch_required);
 
@@ -141,21 +136,17 @@ void pm_prepare_console(void)
 	if (orig_fgconsole < 0)
 		return;
 
-	vt_switch_done = true;
-
 	orig_kmsg = vt_kmsg_redirect(SUSPEND_CONSOLE);
 	return;
 }
 
 void pm_restore_console(void)
 {
-	if (!pm_vt_switch() && !vt_switch_done)
+	if (!pm_vt_switch())
 		return;
 
 	if (orig_fgconsole >= 0) {
 		vt_move_to_console(orig_fgconsole, 0);
 		vt_kmsg_redirect(orig_kmsg);
 	}
-
-	vt_switch_done = false;
 }

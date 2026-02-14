@@ -38,8 +38,6 @@
 #include "dm_helpers.h"
 #include "atomfirmware.h"
 
-#define DC_LOGGER \
-	ddc_service->ctx->logger
 #define DC_LOGGER_INIT(logger)
 
 static const uint8_t DP_VGA_DONGLE_BRANCH_DEV_NAME[] = "DpVga";
@@ -51,7 +49,11 @@ struct i2c_payloads {
 	struct vector payloads;
 };
 
-static bool i2c_payloads_create(
+struct aux_payloads {
+	struct vector payloads;
+};
+
+static bool dal_ddc_i2c_payloads_create(
 		struct dc_context *ctx,
 		struct i2c_payloads *payloads,
 		uint32_t count)
@@ -63,22 +65,14 @@ static bool i2c_payloads_create(
 	return false;
 }
 
-static struct i2c_payload *i2c_payloads_get(struct i2c_payloads *p)
+static struct i2c_payload *dal_ddc_i2c_payloads_get(struct i2c_payloads *p)
 {
 	return (struct i2c_payload *)p->payloads.container;
 }
 
-static uint32_t i2c_payloads_get_count(struct i2c_payloads *p)
+static uint32_t dal_ddc_i2c_payloads_get_count(struct i2c_payloads *p)
 {
 	return p->payloads.count;
-}
-
-static void i2c_payloads_destroy(struct i2c_payloads *p)
-{
-	if (!p)
-		return;
-
-	dal_vector_destruct(&p->payloads);
 }
 
 #define DDC_MIN(a, b) (((a) < (b)) ? (a) : (b))
@@ -370,10 +364,10 @@ bool link_query_ddc_data(
 		struct i2c_command command = {0};
 		struct i2c_payloads payloads;
 
-		if (!i2c_payloads_create(ddc->ctx, &payloads, payloads_num))
+		if (!dal_ddc_i2c_payloads_create(ddc->ctx, &payloads, payloads_num))
 			return false;
 
-		command.payloads = i2c_payloads_get(&payloads);
+		command.payloads = dal_ddc_i2c_payloads_get(&payloads);
 		command.number_of_payloads = 0;
 		command.engine = DDC_I2C_COMMAND_ENGINE;
 		command.speed = ddc->ctx->dc->caps.i2c_speed_in_khz;
@@ -385,20 +379,20 @@ bool link_query_ddc_data(
 			&payloads, address, read_size, read_buf, false);
 
 		command.number_of_payloads =
-			i2c_payloads_get_count(&payloads);
+			dal_ddc_i2c_payloads_get_count(&payloads);
 
 		success = dm_helpers_submit_i2c(
 				ddc->ctx,
 				ddc->link,
 				&command);
 
-		i2c_payloads_destroy(&payloads);
+		dal_vector_destruct(&payloads.payloads);
 	}
 
 	return success;
 }
 
-int link_aux_transfer_raw(struct ddc_service *ddc,
+int dc_link_aux_transfer_raw(struct ddc_service *ddc,
 		struct aux_payload *payload,
 		enum aux_return_code_type *operation_result)
 {
@@ -408,88 +402,6 @@ int link_aux_transfer_raw(struct ddc_service *ddc,
 	} else {
 		return dce_aux_transfer_raw(ddc, payload, operation_result);
 	}
-}
-
-uint32_t link_get_fixed_vs_pe_retimer_write_address(struct dc_link *link)
-{
-	uint32_t vendor_lttpr_write_address = 0xF004F;
-	uint8_t offset;
-
-	switch (link->dpcd_caps.lttpr_caps.phy_repeater_cnt) {
-	case 0x80: // 1 lttpr repeater
-		offset =  1;
-		break;
-	case 0x40: // 2 lttpr repeaters
-		offset = 2;
-		break;
-	case 0x20: // 3 lttpr repeaters
-		offset = 3;
-		break;
-	case 0x10: // 4 lttpr repeaters
-		offset = 4;
-		break;
-	case 0x08: // 5 lttpr repeaters
-		offset = 5;
-		break;
-	case 0x04: // 6 lttpr repeaters
-		offset = 6;
-		break;
-	case 0x02: // 7 lttpr repeaters
-		offset = 7;
-		break;
-	case 0x01: // 8 lttpr repeaters
-		offset = 8;
-		break;
-	default:
-		offset = 0xFF;
-	}
-
-	if (offset != 0xFF) {
-		vendor_lttpr_write_address +=
-				((DP_REPEATER_CONFIGURATION_AND_STATUS_SIZE) * (offset - 1));
-	}
-	return vendor_lttpr_write_address;
-}
-
-uint32_t link_get_fixed_vs_pe_retimer_read_address(struct dc_link *link)
-{
-	return link_get_fixed_vs_pe_retimer_write_address(link) + 4;
-}
-
-bool link_configure_fixed_vs_pe_retimer(struct ddc_service *ddc, const uint8_t *data, uint32_t length)
-{
-	struct aux_payload write_payload = {
-		.i2c_over_aux = false,
-		.write = true,
-		.address = link_get_fixed_vs_pe_retimer_write_address(ddc->link),
-		.length = length,
-		.data = (uint8_t *) data,
-		.reply = NULL,
-		.mot = I2C_MOT_UNDEF,
-		.write_status_update = false,
-		.defer_delay = 0,
-	};
-
-	return link_aux_transfer_with_retries_no_mutex(ddc,
-			&write_payload);
-}
-
-bool link_query_fixed_vs_pe_retimer(struct ddc_service *ddc, uint8_t *data, uint32_t length)
-{
-	struct aux_payload read_payload = {
-		.i2c_over_aux = false,
-		.write = false,
-		.address = link_get_fixed_vs_pe_retimer_read_address(ddc->link),
-		.length = length,
-		.data = data,
-		.reply = NULL,
-		.mot = I2C_MOT_UNDEF,
-		.write_status_update = false,
-		.defer_delay = 0,
-	};
-
-	return link_aux_transfer_with_retries_no_mutex(ddc,
-			&read_payload);
 }
 
 bool link_aux_transfer_with_retries_no_mutex(struct ddc_service *ddc,
@@ -505,9 +417,9 @@ bool try_to_configure_aux_timeout(struct ddc_service *ddc,
 	bool result = false;
 	struct ddc *ddc_pin = ddc->ddc_pin;
 
-	if (((ddc->link->chip_caps & AMD_EXT_DISPLAY_PATH_CAPS__EXT_CHIP_MASK) == AMD_EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN) &&
+	if ((ddc->link->chip_caps & EXT_DISPLAY_PATH_CAPS__DP_FIXED_VS_EN) &&
 			!ddc->link->dc->debug.disable_fixed_vs_aux_timeout_wa &&
-			ddc->ctx->dce_version == DCN_VERSION_3_1) {
+			ASICREV_IS_YELLOW_CARP(ddc->ctx->asic_id.hw_internal_rev)) {
 		/* Fixed VS workaround for AUX timeout */
 		const uint32_t fixed_vs_address = 0xF004F;
 		const uint8_t fixed_vs_data[4] = {0x1, 0x22, 0x63, 0xc};
@@ -549,8 +461,7 @@ void write_scdc_data(struct ddc_service *ddc_service,
 	/*Lower than 340 Scramble bit from SCDC caps*/
 
 	if (ddc_service->link->local_sink &&
-		(ddc_service->link->local_sink->edid_caps.panel_patch.skip_scdc_overwrite ||
-		!ddc_service->link->local_sink->edid_caps.scdc_present))
+		ddc_service->link->local_sink->edid_caps.panel_patch.skip_scdc_overwrite)
 		return;
 
 	link_query_ddc_data(ddc_service, slave_address, &offset,

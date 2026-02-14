@@ -18,8 +18,7 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/spi/spi.h>
 #ifdef CONFIG_FSL_SOC
 #include <sysdev/fsl_soc.h>
@@ -82,17 +81,18 @@ void mpc8xxx_spi_probe(struct device *dev, struct resource *mem,
 			unsigned int irq)
 {
 	struct fsl_spi_platform_data *pdata = dev_get_platdata(dev);
-	struct spi_controller *ctlr;
+	struct spi_master *master;
 	struct mpc8xxx_spi *mpc8xxx_spi;
 
-	ctlr = dev_get_drvdata(dev);
+	master = dev_get_drvdata(dev);
 
 	/* the spi->mode bits understood by this driver: */
-	ctlr->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH
+	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH
 			| SPI_LSB_FIRST | SPI_LOOP;
 
+	master->dev.of_node = dev->of_node;
 
-	mpc8xxx_spi = spi_controller_get_devdata(ctlr);
+	mpc8xxx_spi = spi_master_get_devdata(master);
 	mpc8xxx_spi->dev = dev;
 	mpc8xxx_spi->get_rx = mpc8xxx_spi_rx_buf_u8;
 	mpc8xxx_spi->get_tx = mpc8xxx_spi_tx_buf_u8;
@@ -103,8 +103,8 @@ void mpc8xxx_spi_probe(struct device *dev, struct resource *mem,
 	mpc8xxx_spi->rx_shift = 0;
 	mpc8xxx_spi->tx_shift = 0;
 
-	ctlr->bus_num = pdata->bus_num;
-	ctlr->num_chipselect = pdata->max_chipselect;
+	master->bus_num = pdata->bus_num;
+	master->num_chipselect = pdata->max_chipselect;
 
 	init_completion(&mpc8xxx_spi->done);
 }
@@ -157,5 +157,4 @@ int of_mpc8xxx_spi_probe(struct platform_device *ofdev)
 }
 EXPORT_SYMBOL_GPL(of_mpc8xxx_spi_probe);
 
-MODULE_DESCRIPTION("Freescale SPI/eSPI controller driver library");
 MODULE_LICENSE("GPL");

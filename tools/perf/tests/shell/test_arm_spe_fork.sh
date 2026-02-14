@@ -1,11 +1,11 @@
-#!/bin/bash
+#!/bin/sh
 # Check Arm SPE doesn't hang when there are forks
 
 # SPDX-License-Identifier: GPL-2.0
 # German Gomez <german.gomez@arm.com>, 2022
 
 skip_if_no_arm_spe_event() {
-	perf list pmu | grep -E -q 'arm_spe_[0-9]+//' && return 0
+	perf list | grep -E -q 'arm_spe_[0-9]+//' && return 0
 	return 2
 }
 
@@ -22,7 +22,7 @@ cleanup_files()
 	rm -f ${PERF_DATA}
 }
 
-trap cleanup_files EXIT TERM INT
+trap cleanup_files exit term int
 
 echo "Recording workload..."
 perf record -o ${PERF_DATA} -e arm_spe/period=65536/ -vvv -- $TEST_PROGRAM > ${PERF_RECORD_LOG} 2>&1 &

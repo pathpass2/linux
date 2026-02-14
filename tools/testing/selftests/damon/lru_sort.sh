@@ -1,12 +1,14 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 
-source _common.sh
-
 # Kselftest framework requirement - SKIP code is 4.
 ksft_skip=4
 
-check_dependencies
+if [ $EUID -ne 0 ]
+then
+	echo "Run as root"
+	exit $ksft_skip
+fi
 
 damon_lru_sort_enabled="/sys/module/damon_lru_sort/parameters/enabled"
 if [ ! -f "$damon_lru_sort_enabled" ]

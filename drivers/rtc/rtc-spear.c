@@ -395,7 +395,7 @@ static int spear_rtc_probe(struct platform_device *pdev)
 		goto err_disable_clock;
 
 	if (!device_can_wakeup(&pdev->dev))
-		device_init_wakeup(&pdev->dev, true);
+		device_init_wakeup(&pdev->dev, 1);
 
 	return 0;
 
@@ -405,13 +405,15 @@ err_disable_clock:
 	return status;
 }
 
-static void spear_rtc_remove(struct platform_device *pdev)
+static int spear_rtc_remove(struct platform_device *pdev)
 {
 	struct spear_rtc_config *config = platform_get_drvdata(pdev);
 
 	spear_rtc_disable_interrupt(config);
 	clk_disable_unprepare(config->clk);
-	device_init_wakeup(&pdev->dev, false);
+	device_init_wakeup(&pdev->dev, 0);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

@@ -485,10 +485,18 @@ static void blkcg_iolatency_throttle(struct rq_qos *rqos, struct bio *bio)
 		mod_timer(&blkiolat->timer, jiffies + HZ);
 }
 
-static void iolatency_record_time(struct iolatency_grp *iolat, u64 start,
-				  u64 now, bool issue_as_root)
+static void iolatency_record_time(struct iolatency_grp *iolat,
+				  struct bio_issue *issue, u64 now,
+				  bool issue_as_root)
 {
+	u64 start = bio_issue_time(issue);
 	u64 req_time;
+
+	/*
+	 * Have to do this so we are truncated to the correct time that our
+	 * issue is truncated to.
+	 */
+	now = __bio_issue_time(now);
 
 	if (now <= start)
 		return;
@@ -601,7 +609,7 @@ static void blkcg_iolatency_done_bio(struct rq_qos *rqos, struct bio *bio)
 	if (!iolat->blkiolat->enabled)
 		return;
 
-	now = blk_time_get_ns();
+	now = ktime_to_ns(ktime_get());
 	while (blkg && blkg->parent) {
 		iolat = blkg_to_lat(blkg);
 		if (!iolat) {
@@ -617,7 +625,7 @@ static void blkcg_iolatency_done_bio(struct rq_qos *rqos, struct bio *bio)
 		 * submitted, so do not account for it.
 		 */
 		if (iolat->min_lat_nsec && bio->bi_status != BLK_STS_AGAIN) {
-			iolatency_record_time(iolat, bio->issue_time_ns, now,
+			iolatency_record_time(iolat, &bio->bi_issue, now,
 					      issue_as_root);
 			window_start = atomic64_read(&iolat->window_start);
 			if (now > window_start &&
@@ -650,11 +658,10 @@ static const struct rq_qos_ops blkcg_iolatency_ops = {
 
 static void blkiolatency_timer_fn(struct timer_list *t)
 {
-	struct blk_iolatency *blkiolat = timer_container_of(blkiolat, t,
-							    timer);
+	struct blk_iolatency *blkiolat = from_timer(blkiolat, t, timer);
 	struct blkcg_gq *blkg;
 	struct cgroup_subsys_state *pos_css;
-	u64 now = blk_time_get_ns();
+	u64 now = ktime_to_ns(ktime_get());
 
 	rcu_read_lock();
 	blkg_for_each_descendant_pre(blkg, pos_css,
@@ -742,20 +749,13 @@ static void blkiolatency_enable_work_fn(struct work_struct *work)
 	 */
 	enabled = atomic_read(&blkiolat->enable_cnt);
 	if (enabled != blkiolat->enabled) {
-		struct request_queue *q = blkiolat->rqos.disk->queue;
-		unsigned int memflags;
-
-		memflags = blk_mq_freeze_queue(blkiolat->rqos.disk->queue);
+		blk_mq_freeze_queue(blkiolat->rqos.disk->queue);
 		blkiolat->enabled = enabled;
-		if (enabled)
-			blk_queue_flag_set(QUEUE_FLAG_BIO_ISSUE_TIME, q);
-		else
-			blk_queue_flag_clear(QUEUE_FLAG_BIO_ISSUE_TIME, q);
-		blk_mq_unfreeze_queue(blkiolat->rqos.disk->queue, memflags);
+		blk_mq_unfreeze_queue(blkiolat->rqos.disk->queue);
 	}
 }
 
-static int blk_iolatency_init(struct gendisk *disk)
+int blk_iolatency_init(struct gendisk *disk)
 {
 	struct blk_iolatency *blkiolat;
 	int ret;
@@ -836,25 +836,9 @@ static ssize_t iolatency_set_limit(struct kernfs_open_file *of, char *buf,
 	u64 oldval;
 	int ret;
 
-	blkg_conf_init(&ctx, buf);
-
-	ret = blkg_conf_open_bdev(&ctx);
+	ret = blkg_conf_prep(blkcg, &blkcg_policy_iolatency, buf, &ctx);
 	if (ret)
-		goto out;
-
-	/*
-	 * blk_iolatency_init() may fail after rq_qos_add() succeeds which can
-	 * confuse iolat_rq_qos() test. Make the test and init atomic.
-	 */
-	lockdep_assert_held(&ctx.bdev->bd_queue->rq_qos_mutex);
-	if (!iolat_rq_qos(ctx.bdev->bd_queue))
-		ret = blk_iolatency_init(ctx.bdev->bd_disk);
-	if (ret)
-		goto out;
-
-	ret = blkg_conf_prep(blkcg, &blkcg_policy_iolatency, &ctx);
-	if (ret)
-		goto out;
+		return ret;
 
 	iolat = blkg_to_lat(ctx.blkg);
 	p = ctx.body;
@@ -890,7 +874,7 @@ static ssize_t iolatency_set_limit(struct kernfs_open_file *of, char *buf,
 		iolatency_clear_scaling(blkg);
 	ret = 0;
 out:
-	blkg_conf_exit(&ctx);
+	blkg_conf_finish(&ctx);
 	return ret ?: nbytes;
 }
 
@@ -983,12 +967,15 @@ static void iolatency_pd_init(struct blkg_policy_data *pd)
 {
 	struct iolatency_grp *iolat = pd_to_lat(pd);
 	struct blkcg_gq *blkg = lat_to_blkg(iolat);
-	struct rq_qos *rqos = iolat_rq_qos(blkg->q);
+	struct rq_qos *rqos = blkcg_rq_qos(blkg->q);
 	struct blk_iolatency *blkiolat = BLKIOLATENCY(rqos);
-	u64 now = blk_time_get_ns();
+	u64 now = ktime_to_ns(ktime_get());
 	int cpu;
 
-	iolat->ssd = !blk_queue_rot(blkg->q);
+	if (blk_queue_nonrot(blkg->q))
+		iolat->ssd = true;
+	else
+		iolat->ssd = false;
 
 	for_each_possible_cpu(cpu) {
 		struct latency_stat *stat;

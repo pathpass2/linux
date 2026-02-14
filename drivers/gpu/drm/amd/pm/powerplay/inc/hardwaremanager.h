@@ -44,7 +44,8 @@ struct phm_fan_speed_info {
 };
 
 /* Automatic Power State Throttling */
-enum PHM_AutoThrottleSource {
+enum PHM_AutoThrottleSource
+{
     PHM_AutoThrottleSource_Thermal,
     PHM_AutoThrottleSource_External
 };
@@ -396,6 +397,7 @@ struct phm_odn_clock_levels {
 };
 
 extern int phm_disable_clock_power_gatings(struct pp_hwmgr *hwmgr);
+extern int phm_powerdown_uvd(struct pp_hwmgr *hwmgr);
 extern int phm_setup_asic(struct pp_hwmgr *hwmgr);
 extern int phm_enable_dynamic_state_management(struct pp_hwmgr *hwmgr);
 extern int phm_disable_dynamic_state_management(struct pp_hwmgr *hwmgr);

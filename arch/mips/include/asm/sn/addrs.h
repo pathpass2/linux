@@ -10,10 +10,10 @@
 #define _ASM_SN_ADDRS_H
 
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <linux/smp.h>
 #include <linux/types.h>
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #include <asm/addrspace.h>
 #include <asm/sn/kldir.h>
@@ -25,15 +25,15 @@
 #endif
 
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define UINT64_CAST		(unsigned long)
 
-#else /* __ASSEMBLER__ */
+#else /* __ASSEMBLY__ */
 
 #define UINT64_CAST
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 
 #define NASID_GET_META(_n)	((_n) >> NASID_LOCAL_BITS)
@@ -254,7 +254,7 @@
 #define LOCAL_HUB_ADDR(_x)	(IALIAS_BASE + (_x))
 #define REMOTE_HUB_ADDR(_n, _x) ((NODE_SWIN_BASE(_n, 1) + 0x800000 + (_x)))
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define LOCAL_HUB_PTR(_x)	((u64 *)LOCAL_HUB_ADDR((_x)))
 #define REMOTE_HUB_PTR(_n, _x)	((u64 *)REMOTE_HUB_ADDR((_n), (_x)))
@@ -265,7 +265,7 @@
 #define REMOTE_HUB_S(_n, _r, _d)	__raw_writeq((_d),		\
 						REMOTE_HUB_PTR((_n), (_r)))
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 /*
  * Software structure locations -- permanently fixed
@@ -315,7 +315,7 @@
 #define KLI_KERN_XP		8
 #define KLI_KERN_PARTID		9
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define KLD_BASE(nasid)		((kldir_ent_t *) KLDIR_ADDR(nasid))
 #define KLD_LAUNCH(nasid)	(KLD_BASE(nasid) + KLI_LAUNCH)
@@ -371,7 +371,7 @@
 #define KERN_VARS_ADDR(nasid)	KLD_KERN_VARS(nasid)->pointer
 #define KERN_VARS_SIZE(nasid)	KLD_KERN_VARS(nasid)->size
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 
 #endif /* _ASM_SN_ADDRS_H */

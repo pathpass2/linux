@@ -16,7 +16,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <linux/delay.h>
 #include <linux/kernel.h>

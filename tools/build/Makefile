@@ -17,7 +17,13 @@ $(call allow-override,LD,$(CROSS_COMPILE)ld)
 
 export HOSTCC HOSTLD HOSTAR
 
-export srctree CC LD
+ifeq ($(V),1)
+  Q =
+else
+  Q = @
+endif
+
+export Q srctree CC LD
 
 MAKEFLAGS := --no-print-directory
 build     := -f $(srctree)/tools/build/Makefile.build dir=. obj
@@ -37,21 +43,11 @@ ifneq ($(wildcard $(TMP_O)),)
 	$(Q)$(MAKE) -C feature OUTPUT=$(TMP_O) clean >/dev/null
 endif
 
-FIXDEP		:= $(OUTPUT)fixdep
-FIXDEP_IN	:= $(OUTPUT)fixdep-in.o
+$(OUTPUT)fixdep-in.o: FORCE
+	$(Q)$(MAKE) $(build)=fixdep
 
-# To track fixdep's dependencies properly, fixdep needs to run on itself.
-# Build it twice the first time.
-$(FIXDEP_IN): FORCE
-	$(Q)if [ ! -f $(FIXDEP) ]; then						\
-		$(MAKE) $(build)=fixdep HOSTCFLAGS="$(KBUILD_HOSTCFLAGS)";	\
-		rm -f $(FIXDEP).o;						\
-	fi
-	$(Q)$(MAKE) $(build)=fixdep HOSTCFLAGS="$(KBUILD_HOSTCFLAGS)"
-
-
-$(FIXDEP): $(FIXDEP_IN)
-	$(QUIET_LINK)$(HOSTCC) $(FIXDEP_IN) $(KBUILD_HOSTLDFLAGS) -o $@
+$(OUTPUT)fixdep: $(OUTPUT)fixdep-in.o
+	$(QUIET_LINK)$(HOSTCC) $(KBUILD_HOSTLDFLAGS) -o $@ $<
 
 FORCE:
 

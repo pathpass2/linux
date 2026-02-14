@@ -136,31 +136,6 @@ TRACE_EVENT(kvm_mmio_emulate,
 		  __entry->vcpu_pc, __entry->instr, __entry->cpsr)
 );
 
-TRACE_EVENT(kvm_mmio_nisv,
-	TP_PROTO(unsigned long vcpu_pc, unsigned long esr,
-		 unsigned long far, unsigned long ipa),
-	TP_ARGS(vcpu_pc, esr, far, ipa),
-
-	TP_STRUCT__entry(
-		__field(	unsigned long,	vcpu_pc		)
-		__field(	unsigned long,	esr		)
-		__field(	unsigned long,	far		)
-		__field(	unsigned long,	ipa		)
-	),
-
-	TP_fast_assign(
-		__entry->vcpu_pc		= vcpu_pc;
-		__entry->esr			= esr;
-		__entry->far			= far;
-		__entry->ipa			= ipa;
-	),
-
-	TP_printk("ipa %#016lx, esr %#016lx, far %#016lx, pc %#016lx",
-		  __entry->ipa, __entry->esr,
-		  __entry->far, __entry->vcpu_pc)
-);
-
-
 TRACE_EVENT(kvm_set_way_flush,
 	    TP_PROTO(unsigned long vcpu_pc, bool cache),
 	    TP_ARGS(vcpu_pc, cache),
@@ -176,7 +151,7 @@ TRACE_EVENT(kvm_set_way_flush,
 	    ),
 
 	    TP_printk("S/W flush at 0x%016lx (cache %s)",
-		      __entry->vcpu_pc, str_on_off(__entry->cache))
+		      __entry->vcpu_pc, __entry->cache ? "on" : "off")
 );
 
 TRACE_EVENT(kvm_toggle_cache,
@@ -196,8 +171,8 @@ TRACE_EVENT(kvm_toggle_cache,
 	    ),
 
 	    TP_printk("VM op at 0x%016lx (cache was %s, now %s)",
-		      __entry->vcpu_pc, str_on_off(__entry->was),
-		      str_on_off(__entry->now))
+		      __entry->vcpu_pc, __entry->was ? "on" : "off",
+		      __entry->now ? "on" : "off")
 );
 
 /*
@@ -231,7 +206,6 @@ TRACE_EVENT(kvm_get_timer_map,
 		__field(	unsigned long,		vcpu_id	)
 		__field(	int,			direct_vtimer	)
 		__field(	int,			direct_ptimer	)
-		__field(	int,			emul_vtimer	)
 		__field(	int,			emul_ptimer	)
 	),
 
@@ -240,17 +214,14 @@ TRACE_EVENT(kvm_get_timer_map,
 		__entry->direct_vtimer		= arch_timer_ctx_index(map->direct_vtimer);
 		__entry->direct_ptimer =
 			(map->direct_ptimer) ? arch_timer_ctx_index(map->direct_ptimer) : -1;
-		__entry->emul_vtimer =
-			(map->emul_vtimer) ? arch_timer_ctx_index(map->emul_vtimer) : -1;
 		__entry->emul_ptimer =
 			(map->emul_ptimer) ? arch_timer_ctx_index(map->emul_ptimer) : -1;
 	),
 
-	TP_printk("VCPU: %ld, dv: %d, dp: %d, ev: %d, ep: %d",
+	TP_printk("VCPU: %ld, dv: %d, dp: %d, ep: %d",
 		  __entry->vcpu_id,
 		  __entry->direct_vtimer,
 		  __entry->direct_ptimer,
-		  __entry->emul_vtimer,
 		  __entry->emul_ptimer)
 );
 
@@ -387,32 +358,6 @@ TRACE_EVENT(kvm_inject_nested_exception,
 		  __entry->esr_el2, __entry->pc, __entry->spsr_el2,
 		  __print_symbolic(__entry->source_mode, kvm_mode_names),
 		  __entry->hcr_el2)
-);
-
-TRACE_EVENT(kvm_forward_sysreg_trap,
-	    TP_PROTO(struct kvm_vcpu *vcpu, u32 sysreg, bool is_read),
-	    TP_ARGS(vcpu, sysreg, is_read),
-
-	    TP_STRUCT__entry(
-		__field(u64,	pc)
-		__field(u32,	sysreg)
-		__field(bool,	is_read)
-	    ),
-
-	    TP_fast_assign(
-		__entry->pc = *vcpu_pc(vcpu);
-		__entry->sysreg = sysreg;
-		__entry->is_read = is_read;
-	    ),
-
-	    TP_printk("%llx %c (%d,%d,%d,%d,%d)",
-		      __entry->pc,
-		      __entry->is_read ? 'R' : 'W',
-		      sys_reg_Op0(__entry->sysreg),
-		      sys_reg_Op1(__entry->sysreg),
-		      sys_reg_CRn(__entry->sysreg),
-		      sys_reg_CRm(__entry->sysreg),
-		      sys_reg_Op2(__entry->sysreg))
 );
 
 #endif /* _TRACE_ARM_ARM64_KVM_H */

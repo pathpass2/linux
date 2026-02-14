@@ -2,10 +2,8 @@
 /* Copyright(c) 2022 Intel Corporation. */
 
 #include <linux/firmware.h>
-#include <linux/sizes.h>
 #include <asm/cpu.h>
-#include <asm/microcode.h>
-#include <asm/msr.h>
+#include <asm/microcode_intel.h>
 
 #include "ifs.h"
 
@@ -28,11 +26,6 @@ union meta_data {
 
 #define IFS_HEADER_SIZE	(sizeof(struct microcode_header_intel))
 #define META_TYPE_IFS	1
-#define INVALIDATE_STRIDE	0x1UL
-#define IFS_GEN_STRIDE_AWARE	2
-#define AUTH_INTERRUPTED_ERROR	5
-#define IFS_AUTH_RETRY_CT	10
-
 static  struct microcode_header_intel *ifs_header_ptr;	/* pointer to the ifs image header */
 static u64 ifs_hash_ptr;			/* Address of ifs metadata (hash) */
 static u64 ifs_test_image_ptr;			/* 256B aligned address of test pattern */
@@ -51,10 +44,7 @@ static const char * const scan_hash_status[] = {
 static const char * const scan_authentication_status[] = {
 	[0] = "No error reported",
 	[1] = "Attempt to authenticate a chunk which is already marked as authentic",
-	[2] = "Chunk authentication error. The hash of chunk did not match expected value",
-	[3] = "Reserved",
-	[4] = "Chunk outside the current stride",
-	[5] = "Authentication flow interrupted",
+	[2] = "Chunk authentication error. The hash of chunk did not match expected value"
 };
 
 #define MC_HEADER_META_TYPE_END		(0)
@@ -66,13 +56,12 @@ struct metadata_header {
 
 static struct metadata_header *find_meta_data(void *ucode, unsigned int meta_type)
 {
-	struct microcode_header_intel *hdr = &((struct microcode_intel *)ucode)->hdr;
 	struct metadata_header *meta_header;
 	unsigned long data_size, total_meta;
 	unsigned long meta_size = 0;
 
-	data_size = intel_microcode_get_datasize(hdr);
-	total_meta = hdr->metasize;
+	data_size = get_datasize(ucode);
+	total_meta = ((struct microcode_intel *)ucode)->hdr.metasize;
 	if (!total_meta)
 		return NULL;
 
@@ -90,23 +79,6 @@ static struct metadata_header *find_meta_data(void *ucode, unsigned int meta_typ
 	return NULL;
 }
 
-static void hashcopy_err_message(struct device *dev, u32 err_code)
-{
-	if (err_code >= ARRAY_SIZE(scan_hash_status))
-		dev_err(dev, "invalid error code 0x%x for hash copy\n", err_code);
-	else
-		dev_err(dev, "Hash copy error : %s\n", scan_hash_status[err_code]);
-}
-
-static void auth_err_message(struct device *dev, u32 err_code)
-{
-	if (err_code >= ARRAY_SIZE(scan_authentication_status))
-		dev_err(dev, "invalid error code 0x%x for authentication\n", err_code);
-	else
-		dev_err(dev, "Chunk authentication error : %s\n",
-			scan_authentication_status[err_code]);
-}
-
 /*
  * To copy scan hashes and authenticate test chunks, the initiating cpu must point
  * to the EDX:EAX to the test image in linear address.
@@ -119,17 +91,15 @@ static void copy_hashes_authenticate_chunks(struct work_struct *work)
 	union ifs_scan_hashes_status hashes_status;
 	union ifs_chunks_auth_status chunk_status;
 	struct device *dev = local_work->dev;
-	const struct ifs_test_msrs *msrs;
 	int i, num_chunks, chunk_size;
 	struct ifs_data *ifsd;
 	u64 linear_addr, base;
 	u32 err_code;
 
 	ifsd = ifs_get_data(dev);
-	msrs = ifs_get_test_msrs(dev);
 	/* run scan hash copy */
-	wrmsrq(msrs->copy_hashes, ifs_hash_ptr);
-	rdmsrq(msrs->copy_hashes_status, hashes_status.data);
+	wrmsrl(MSR_COPY_SCAN_HASHES, ifs_hash_ptr);
+	rdmsrl(MSR_SCAN_HASHES_STATUS, hashes_status.data);
 
 	/* enumerate the scan image information */
 	num_chunks = hashes_status.num_chunks;
@@ -138,7 +108,11 @@ static void copy_hashes_authenticate_chunks(struct work_struct *work)
 
 	if (!hashes_status.valid) {
 		ifsd->loading_error = true;
-		hashcopy_err_message(dev, err_code);
+		if (err_code >= ARRAY_SIZE(scan_hash_status)) {
+			dev_err(dev, "invalid error code 0x%x for hash copy\n", err_code);
+			goto done;
+		}
+		dev_err(dev, "Hash copy error : %s", scan_hash_status[err_code]);
 		goto done;
 	}
 
@@ -150,15 +124,21 @@ static void copy_hashes_authenticate_chunks(struct work_struct *work)
 		linear_addr = base + i * chunk_size;
 		linear_addr |= i;
 
-		wrmsrq(msrs->copy_chunks, linear_addr);
-		rdmsrq(msrs->copy_chunks_status, chunk_status.data);
+		wrmsrl(MSR_AUTHENTICATE_AND_COPY_CHUNK, linear_addr);
+		rdmsrl(MSR_CHUNKS_AUTHENTICATION_STATUS, chunk_status.data);
 
 		ifsd->valid_chunks = chunk_status.valid_chunks;
 		err_code = chunk_status.error_code;
 
 		if (err_code) {
 			ifsd->loading_error = true;
-			auth_err_message(dev, err_code);
+			if (err_code >= ARRAY_SIZE(scan_authentication_status)) {
+				dev_err(dev,
+					"invalid error code 0x%x for authentication\n", err_code);
+				goto done;
+			}
+			dev_err(dev, "Chunk authentication error %s\n",
+				scan_authentication_status[err_code]);
 			goto done;
 		}
 	}
@@ -166,118 +146,16 @@ done:
 	complete(&ifs_done);
 }
 
-static int get_num_chunks(int gen, union ifs_scan_hashes_status_gen2 status)
-{
-	return gen >= IFS_GEN_STRIDE_AWARE ? status.chunks_in_stride : status.num_chunks;
-}
-
-static bool need_copy_scan_hashes(struct ifs_data *ifsd)
-{
-	return !ifsd->loaded ||
-		ifsd->generation < IFS_GEN_STRIDE_AWARE ||
-		ifsd->loaded_version != ifs_header_ptr->rev;
-}
-
-static int copy_hashes_authenticate_chunks_gen2(struct device *dev)
-{
-	union ifs_scan_hashes_status_gen2 hashes_status;
-	union ifs_chunks_auth_status_gen2 chunk_status;
-	u32 err_code, valid_chunks, total_chunks;
-	const struct ifs_test_msrs *msrs;
-	int i, num_chunks, chunk_size;
-	union meta_data *ifs_meta;
-	int starting_chunk_nr;
-	struct ifs_data *ifsd;
-	u64 linear_addr, base;
-	u64 chunk_table[2];
-	int retry_count;
-
-	ifsd = ifs_get_data(dev);
-	msrs = ifs_get_test_msrs(dev);
-
-	if (need_copy_scan_hashes(ifsd)) {
-		wrmsrq(msrs->copy_hashes, ifs_hash_ptr);
-		rdmsrq(msrs->copy_hashes_status, hashes_status.data);
-
-		/* enumerate the scan image information */
-		chunk_size = hashes_status.chunk_size * SZ_1K;
-		err_code = hashes_status.error_code;
-
-		num_chunks = get_num_chunks(ifsd->generation, hashes_status);
-
-		if (!hashes_status.valid) {
-			hashcopy_err_message(dev, err_code);
-			return -EIO;
-		}
-		ifsd->loaded_version = ifs_header_ptr->rev;
-		ifsd->chunk_size = chunk_size;
-	} else {
-		num_chunks = ifsd->valid_chunks;
-		chunk_size = ifsd->chunk_size;
-	}
-
-	if (ifsd->generation >= IFS_GEN_STRIDE_AWARE) {
-		wrmsrq(msrs->test_ctrl, INVALIDATE_STRIDE);
-		rdmsrq(msrs->copy_chunks_status, chunk_status.data);
-		if (chunk_status.valid_chunks != 0) {
-			dev_err(dev, "Couldn't invalidate installed stride - %d\n",
-				chunk_status.valid_chunks);
-			return -EIO;
-		}
-	}
-
-	base = ifs_test_image_ptr;
-	ifs_meta = (union meta_data *)find_meta_data(ifs_header_ptr, META_TYPE_IFS);
-	starting_chunk_nr = ifs_meta->starting_chunk;
-
-	/* scan data authentication and copy chunks to secured memory */
-	for (i = 0; i < num_chunks; i++) {
-		retry_count = IFS_AUTH_RETRY_CT;
-		linear_addr = base + i * chunk_size;
-
-		chunk_table[0] = starting_chunk_nr + i;
-		chunk_table[1] = linear_addr;
-		do {
-			local_irq_disable();
-			wrmsrq(msrs->copy_chunks, (u64)chunk_table);
-			local_irq_enable();
-			rdmsrq(msrs->copy_chunks_status, chunk_status.data);
-			err_code = chunk_status.error_code;
-		} while (err_code == AUTH_INTERRUPTED_ERROR && --retry_count);
-
-		if (err_code) {
-			ifsd->loading_error = true;
-			auth_err_message(dev, err_code);
-			return -EIO;
-		}
-	}
-
-	valid_chunks = chunk_status.valid_chunks;
-	total_chunks = chunk_status.total_chunks;
-
-	if (valid_chunks != total_chunks) {
-		ifsd->loading_error = true;
-		dev_err(dev, "Couldn't authenticate all the chunks. Authenticated %d total %d.\n",
-			valid_chunks, total_chunks);
-		return -EIO;
-	}
-	ifsd->valid_chunks = valid_chunks;
-	ifsd->max_bundle = chunk_status.max_bundle;
-
-	return 0;
-}
-
 static int validate_ifs_metadata(struct device *dev)
 {
-	const struct ifs_test_caps *test = ifs_get_test_caps(dev);
 	struct ifs_data *ifsd = ifs_get_data(dev);
 	union meta_data *ifs_meta;
 	char test_file[64];
 	int ret = -EINVAL;
 
-	snprintf(test_file, sizeof(test_file), "%02x-%02x-%02x-%02x.%s",
+	snprintf(test_file, sizeof(test_file), "%02x-%02x-%02x-%02x.scan",
 		 boot_cpu_data.x86, boot_cpu_data.x86_model,
-		 boot_cpu_data.x86_stepping, ifsd->cur_batch, test->image_suffix);
+		 boot_cpu_data.x86_stepping, ifsd->cur_batch);
 
 	ifs_meta = (union meta_data *)find_meta_data(ifs_header_ptr, META_TYPE_IFS);
 	if (!ifs_meta) {
@@ -300,19 +178,6 @@ static int validate_ifs_metadata(struct device *dev)
 		return ret;
 	}
 
-	if (ifs_meta->chunks_per_stride &&
-	    (ifs_meta->starting_chunk % ifs_meta->chunks_per_stride != 0)) {
-		dev_warn(dev, "Starting chunk num %u not a multiple of chunks_per_stride %u\n",
-			 ifs_meta->starting_chunk, ifs_meta->chunks_per_stride);
-		return ret;
-	}
-
-	if (ifs_meta->test_type != test->test_num) {
-		dev_warn(dev, "Metadata test_type %d mismatches with device type\n",
-			 ifs_meta->test_type);
-		return ret;
-	}
-
 	return 0;
 }
 
@@ -327,35 +192,32 @@ static int scan_chunks_sanity_check(struct device *dev)
 	struct ifs_work local_work;
 	int curr_pkg, cpu, ret;
 
-	memset(ifs_pkg_auth, 0, (topology_max_packages() * sizeof(bool)));
+	memset(ifsd->pkg_auth, 0, (topology_max_packages() * sizeof(bool)));
 	ret = validate_ifs_metadata(dev);
 	if (ret)
 		return ret;
 
 	ifsd->loading_error = false;
-
-	if (ifsd->generation > 0)
-		return copy_hashes_authenticate_chunks_gen2(dev);
+	ifsd->loaded_version = ifs_header_ptr->rev;
 
 	/* copy the scan hash and authenticate per package */
 	cpus_read_lock();
 	for_each_online_cpu(cpu) {
 		curr_pkg = topology_physical_package_id(cpu);
-		if (ifs_pkg_auth[curr_pkg])
+		if (ifsd->pkg_auth[curr_pkg])
 			continue;
 		reinit_completion(&ifs_done);
 		local_work.dev = dev;
-		INIT_WORK_ONSTACK(&local_work.w, copy_hashes_authenticate_chunks);
+		INIT_WORK(&local_work.w, copy_hashes_authenticate_chunks);
 		schedule_work_on(cpu, &local_work.w);
 		wait_for_completion(&ifs_done);
 		if (ifsd->loading_error) {
 			ret = -EIO;
 			goto out;
 		}
-		ifs_pkg_auth[curr_pkg] = 1;
+		ifsd->pkg_auth[curr_pkg] = 1;
 	}
 	ret = 0;
-	ifsd->loaded_version = ifs_header_ptr->rev;
 out:
 	cpus_read_unlock();
 
@@ -364,7 +226,7 @@ out:
 
 static int image_sanity_check(struct device *dev, const struct microcode_header_intel *data)
 {
-	struct cpu_signature sig;
+	struct ucode_cpu_info uci;
 
 	/* Provide a specific error message when loading an older/unsupported image */
 	if (data->hdrver != MC_HEADER_TYPE_IFS) {
@@ -377,9 +239,11 @@ static int image_sanity_check(struct device *dev, const struct microcode_header_
 		return -EINVAL;
 	}
 
-	intel_collect_cpu_info(&sig);
+	intel_cpu_collect_info(&uci);
 
-	if (!intel_find_matching_signature((void *)data, &sig)) {
+	if (!intel_find_matching_signature((void *)data,
+					   uci.cpu_sig.sig,
+					   uci.cpu_sig.pf)) {
 		dev_err(dev, "cpu signature, processor flags not matching\n");
 		return -EINVAL;
 	}
@@ -393,29 +257,19 @@ static int image_sanity_check(struct device *dev, const struct microcode_header_
  */
 int ifs_load_firmware(struct device *dev)
 {
-	const struct ifs_test_caps *test = ifs_get_test_caps(dev);
 	struct ifs_data *ifsd = ifs_get_data(dev);
-	unsigned int expected_size;
 	const struct firmware *fw;
 	char scan_path[64];
-	int ret;
+	int ret = -EINVAL;
 
-	snprintf(scan_path, sizeof(scan_path), "intel/ifs_%d/%02x-%02x-%02x-%02x.%s",
-		 test->test_num, boot_cpu_data.x86, boot_cpu_data.x86_model,
-		 boot_cpu_data.x86_stepping, ifsd->cur_batch, test->image_suffix);
+	snprintf(scan_path, sizeof(scan_path), "intel/ifs_%d/%02x-%02x-%02x-%02x.scan",
+		 ifsd->test_num, boot_cpu_data.x86, boot_cpu_data.x86_model,
+		 boot_cpu_data.x86_stepping, ifsd->cur_batch);
 
 	ret = request_firmware_direct(&fw, scan_path, dev);
 	if (ret) {
 		dev_err(dev, "ifs file %s load failed\n", scan_path);
 		goto done;
-	}
-
-	expected_size = ((struct microcode_header_intel *)fw->data)->totalsize;
-	if (fw->size != expected_size) {
-		dev_err(dev, "File size mismatch (expected %u, actual %zu). Corrupted IFS image.\n",
-			expected_size, fw->size);
-		ret = -EINVAL;
-		goto release;
 	}
 
 	ret = image_sanity_check(dev, (struct microcode_header_intel *)fw->data);

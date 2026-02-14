@@ -268,9 +268,9 @@ static const struct irq_domain_ops sun6i_r_intc_domain_ops = {
 	.free		= irq_domain_free_irqs_common,
 };
 
-static int sun6i_r_intc_suspend(void *data)
+static int sun6i_r_intc_suspend(void)
 {
-	u32 buf[BITS_TO_U32(MAX(SUN6I_NR_TOP_LEVEL_IRQS, SUN6I_NR_MUX_BITS))];
+	u32 buf[BITS_TO_U32(max(SUN6I_NR_TOP_LEVEL_IRQS, SUN6I_NR_MUX_BITS))];
 	int i;
 
 	/* Wake IRQs are enabled during system sleep and shutdown. */
@@ -284,7 +284,7 @@ static int sun6i_r_intc_suspend(void *data)
 	return 0;
 }
 
-static void sun6i_r_intc_resume(void *data)
+static void sun6i_r_intc_resume(void)
 {
 	int i;
 
@@ -294,19 +294,15 @@ static void sun6i_r_intc_resume(void *data)
 		writel_relaxed(0, base + SUN6I_IRQ_ENABLE(i));
 }
 
-static void sun6i_r_intc_shutdown(void *data)
+static void sun6i_r_intc_shutdown(void)
 {
-	sun6i_r_intc_suspend(data);
+	sun6i_r_intc_suspend();
 }
 
-static const struct syscore_ops sun6i_r_intc_syscore_ops = {
+static struct syscore_ops sun6i_r_intc_syscore_ops = {
 	.suspend	= sun6i_r_intc_suspend,
 	.resume		= sun6i_r_intc_resume,
 	.shutdown	= sun6i_r_intc_shutdown,
-};
-
-static struct syscore sun6i_r_intc_syscore = {
-	.ops = &sun6i_r_intc_syscore_ops,
 };
 
 static int __init sun6i_r_intc_init(struct device_node *node,
@@ -342,18 +338,18 @@ static int __init sun6i_r_intc_init(struct device_node *node,
 		return PTR_ERR(base);
 	}
 
-	domain = irq_domain_create_hierarchy(parent_domain, 0, 0, of_fwnode_handle(node),
-					     &sun6i_r_intc_domain_ops, NULL);
+	domain = irq_domain_add_hierarchy(parent_domain, 0, 0, node,
+					  &sun6i_r_intc_domain_ops, NULL);
 	if (!domain) {
 		pr_err("%pOF: Failed to allocate domain\n", node);
 		iounmap(base);
 		return -ENOMEM;
 	}
 
-	register_syscore(&sun6i_r_intc_syscore);
+	register_syscore_ops(&sun6i_r_intc_syscore_ops);
 
 	sun6i_r_intc_ack_nmi();
-	sun6i_r_intc_resume(NULL);
+	sun6i_r_intc_resume();
 
 	return 0;
 }

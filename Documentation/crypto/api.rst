@@ -1,8 +1,11 @@
 Programming Interface
 =====================
 
+.. class:: toc-title
+
+	   Table of contents
+
 .. toctree::
-   :caption: Table of contents
    :maxdepth: 2
 
    api-skcipher
@@ -10,5 +13,4 @@ Programming Interface
    api-digest
    api-rng
    api-akcipher
-   api-sig
    api-kpp

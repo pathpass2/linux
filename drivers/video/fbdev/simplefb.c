@@ -13,19 +13,17 @@
  */
 
 #include <linux/aperture.h>
-#include <linux/clk.h>
 #include <linux/errno.h>
 #include <linux/fb.h>
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/platform_data/simplefb.h>
+#include <linux/platform_device.h>
+#include <linux/clk.h>
 #include <linux/of.h>
 #include <linux/of_clk.h>
 #include <linux/of_platform.h>
-#include <linux/of_reserved_mem.h>
 #include <linux/parser.h>
-#include <linux/platform_data/simplefb.h>
-#include <linux/platform_device.h>
-#include <linux/pm_domain.h>
 #include <linux/regulator/consumer.h>
 
 static const struct fb_fix_screeninfo simplefb_fix = {
@@ -79,11 +77,6 @@ struct simplefb_par {
 	unsigned int clk_count;
 	struct clk **clks;
 #endif
-#if defined CONFIG_OF && defined CONFIG_PM_GENERIC_DOMAINS
-	unsigned int num_genpds;
-	struct device **genpds;
-	struct device_link **genpd_links;
-#endif
 #if defined CONFIG_OF && defined CONFIG_REGULATOR
 	bool regulators_enabled;
 	u32 regulator_count;
@@ -93,7 +86,6 @@ struct simplefb_par {
 
 static void simplefb_clocks_destroy(struct simplefb_par *par);
 static void simplefb_regulators_destroy(struct simplefb_par *par);
-static void simplefb_detach_genpds(void *res);
 
 /*
  * fb_ops.fb_destroy is called by the last put_fb_info() call at the end
@@ -106,7 +98,6 @@ static void simplefb_destroy(struct fb_info *info)
 
 	simplefb_regulators_destroy(info->par);
 	simplefb_clocks_destroy(info->par);
-	simplefb_detach_genpds(info->par);
 	if (info->screen_base)
 		iounmap(info->screen_base);
 
@@ -118,9 +109,11 @@ static void simplefb_destroy(struct fb_info *info)
 
 static const struct fb_ops simplefb_ops = {
 	.owner		= THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_destroy	= simplefb_destroy,
 	.fb_setcolreg	= simplefb_setcolreg,
+	.fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
 };
 
 static struct simplefb_format simplefb_formats[] = SIMPLEFB_FORMATS;
@@ -130,7 +123,6 @@ struct simplefb_params {
 	u32 height;
 	u32 stride;
 	struct simplefb_format *format;
-	struct resource memory;
 };
 
 static int simplefb_parse_dt(struct platform_device *pdev,
@@ -176,14 +168,6 @@ static int simplefb_parse_dt(struct platform_device *pdev,
 		return -EINVAL;
 	}
 
-	ret = of_reserved_mem_region_to_resource(np, 0, &params->memory);
-	if (!ret) {
-		if (of_property_present(np, "reg"))
-			dev_warn(&pdev->dev, "preferring \"memory-region\" over \"reg\" property\n");
-	} else {
-		memset(&params->memory, 0, sizeof(params->memory));
-	}
-
 	return 0;
 }
 
@@ -210,8 +194,6 @@ static int simplefb_parse_pd(struct platform_device *pdev,
 		dev_err(&pdev->dev, "Invalid format value\n");
 		return -EINVAL;
 	}
-
-	memset(&params->memory, 0, sizeof(params->memory));
 
 	return 0;
 }
@@ -431,104 +413,6 @@ static void simplefb_regulators_enable(struct simplefb_par *par,
 static void simplefb_regulators_destroy(struct simplefb_par *par) { }
 #endif
 
-#if defined CONFIG_OF && defined CONFIG_PM_GENERIC_DOMAINS
-static void simplefb_detach_genpds(void *res)
-{
-	struct simplefb_par *par = res;
-	unsigned int i = par->num_genpds;
-
-	if (par->num_genpds <= 1)
-		return;
-
-	while (i--) {
-		if (par->genpd_links[i])
-			device_link_del(par->genpd_links[i]);
-
-		if (!IS_ERR_OR_NULL(par->genpds[i]))
-			dev_pm_domain_detach(par->genpds[i], true);
-	}
-	par->num_genpds = 0;
-}
-
-static int simplefb_attach_genpds(struct simplefb_par *par,
-				  struct platform_device *pdev)
-{
-	struct device *dev = &pdev->dev;
-	unsigned int i, num_genpds;
-	int err;
-
-	err = of_count_phandle_with_args(dev->of_node, "power-domains",
-					 "#power-domain-cells");
-	if (err < 0) {
-		/* Nothing wrong if optional PDs are missing */
-		if (err == -ENOENT)
-			return 0;
-
-		dev_err(dev, "failed to parse power-domains: %d\n", err);
-		return err;
-	}
-
-	num_genpds = err;
-
-	/*
-	 * Single power-domain devices are handled by the driver core, so
-	 * nothing to do here.
-	 */
-	if (num_genpds <= 1) {
-		par->num_genpds = num_genpds;
-		return 0;
-	}
-
-	par->genpds = devm_kcalloc(dev, num_genpds, sizeof(*par->genpds),
-				   GFP_KERNEL);
-	if (!par->genpds)
-		return -ENOMEM;
-
-	par->genpd_links = devm_kcalloc(dev, num_genpds,
-					sizeof(*par->genpd_links),
-					GFP_KERNEL);
-	if (!par->genpd_links)
-		return -ENOMEM;
-
-	/*
-	 * Set par->num_genpds only after genpds and genpd_links are allocated
-	 * to exit early from simplefb_detach_genpds() without full
-	 * initialisation.
-	 */
-	par->num_genpds = num_genpds;
-
-	for (i = 0; i < par->num_genpds; i++) {
-		par->genpds[i] = dev_pm_domain_attach_by_id(dev, i);
-		if (IS_ERR(par->genpds[i])) {
-			err = PTR_ERR(par->genpds[i]);
-			if (err == -EPROBE_DEFER) {
-				simplefb_detach_genpds(par);
-				return err;
-			}
-
-			dev_warn(dev, "failed to attach domain %u: %d\n", i, err);
-			continue;
-		}
-
-		par->genpd_links[i] = device_link_add(dev, par->genpds[i],
-						      DL_FLAG_STATELESS |
-						      DL_FLAG_PM_RUNTIME |
-						      DL_FLAG_RPM_ACTIVE);
-		if (!par->genpd_links[i])
-			dev_warn(dev, "failed to link power-domain %u\n", i);
-	}
-
-	return 0;
-}
-#else
-static void simplefb_detach_genpds(void *res) { }
-static int simplefb_attach_genpds(struct simplefb_par *par,
-				  struct platform_device *pdev)
-{
-	return 0;
-}
-#endif
-
 static int simplefb_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -549,14 +433,10 @@ static int simplefb_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	if (params.memory.start == 0 && params.memory.end == 0) {
-		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-		if (!res) {
-			dev_err(&pdev->dev, "No memory resource\n");
-			return -EINVAL;
-		}
-	} else {
-		res = &params.memory;
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		dev_err(&pdev->dev, "No memory resource\n");
+		return -EINVAL;
 	}
 
 	mem = request_mem_region(res->start, resource_size(res), "simplefb");
@@ -599,6 +479,7 @@ static int simplefb_probe(struct platform_device *pdev)
 	par->size = info->fix.smem_len;
 
 	info->fbops = &simplefb_ops;
+	info->flags = FBINFO_DEFAULT;
 	info->screen_base = ioremap_wc(info->fix.smem_start,
 				       info->fix.smem_len);
 	if (!info->screen_base) {
@@ -614,10 +495,6 @@ static int simplefb_probe(struct platform_device *pdev)
 	ret = simplefb_regulators_get(par, pdev);
 	if (ret < 0)
 		goto error_clocks;
-
-	ret = simplefb_attach_genpds(par, pdev);
-	if (ret < 0)
-		goto error_regulators;
 
 	simplefb_clocks_enable(par, pdev);
 	simplefb_regulators_enable(par, pdev);
@@ -635,20 +512,18 @@ static int simplefb_probe(struct platform_device *pdev)
 	ret = devm_aperture_acquire_for_platform_device(pdev, par->base, par->size);
 	if (ret) {
 		dev_err(&pdev->dev, "Unable to acquire aperture: %d\n", ret);
-		goto error_genpds;
+		goto error_regulators;
 	}
 	ret = register_framebuffer(info);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Unable to register simplefb: %d\n", ret);
-		goto error_genpds;
+		goto error_regulators;
 	}
 
 	dev_info(&pdev->dev, "fb%d: simplefb registered!\n", info->node);
 
 	return 0;
 
-error_genpds:
-	simplefb_detach_genpds(par);
 error_regulators:
 	simplefb_regulators_destroy(par);
 error_clocks:
@@ -663,12 +538,14 @@ error_release_mem_region:
 	return ret;
 }
 
-static void simplefb_remove(struct platform_device *pdev)
+static int simplefb_remove(struct platform_device *pdev)
 {
 	struct fb_info *info = platform_get_drvdata(pdev);
 
 	/* simplefb_destroy takes care of info cleanup */
 	unregister_framebuffer(info);
+
+	return 0;
 }
 
 static const struct of_device_id simplefb_of_match[] = {

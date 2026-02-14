@@ -11,7 +11,7 @@
  */
 
 #include <linux/slab.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/buffer_head.h>
 
 #include "exfat_raw.h"
@@ -46,7 +46,7 @@ int exfat_cache_init(void)
 {
 	exfat_cachep = kmem_cache_create("exfat_cache",
 				sizeof(struct exfat_cache),
-				0, SLAB_RECLAIM_ACCOUNT,
+				0, SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD,
 				exfat_cache_init_once);
 	if (!exfat_cachep)
 		return -ENOMEM;

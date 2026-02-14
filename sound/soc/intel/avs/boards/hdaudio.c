@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2021-2022 Intel Corporation
+// Copyright(c) 2021-2022 Intel Corporation. All rights reserved.
 //
 // Authors: Cezary Rojewski <cezary.rojewski@intel.com>
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -13,10 +13,9 @@
 #include <sound/soc.h>
 #include <sound/soc-acpi.h>
 #include "../../../codecs/hda.h"
-#include "../utils.h"
 
 static int avs_create_dai_links(struct device *dev, struct hda_codec *codec, int pcm_count,
-				struct snd_soc_dai_link **links)
+				const char *platform_name, struct snd_soc_dai_link **links)
 {
 	struct snd_soc_dai_link_component *platform;
 	struct snd_soc_dai_link *dl;
@@ -29,7 +28,7 @@ static int avs_create_dai_links(struct device *dev, struct hda_codec *codec, int
 	if (!dl || !platform)
 		return -ENOMEM;
 
-	platform->name = dev_name(dev);
+	platform->name = platform_name;
 	pcm = list_first_entry(&codec->pcm_list_head, struct hda_pcm, list);
 
 	for (i = 0; i < pcm_count; i++, pcm = list_next_entry(pcm, list)) {
@@ -40,6 +39,8 @@ static int avs_create_dai_links(struct device *dev, struct hda_codec *codec, int
 		dl[i].id = i;
 		dl[i].nonatomic = 1;
 		dl[i].no_pcm = 1;
+		dl[i].dpcm_playback = 1;
+		dl[i].dpcm_capture = 1;
 		dl[i].platforms = platform;
 		dl[i].num_platforms = 1;
 		dl[i].ignore_pmdown_time = 1;
@@ -53,16 +54,63 @@ static int avs_create_dai_links(struct device *dev, struct hda_codec *codec, int
 		if (!dl[i].cpus->dai_name)
 			return -ENOMEM;
 
-		dl[i].codecs->name = devm_kstrdup_const(dev, cname, GFP_KERNEL);
-		if (!dl[i].codecs->name)
-			return -ENOMEM;
-
+		dl[i].codecs->name = devm_kstrdup(dev, cname, GFP_KERNEL);
 		dl[i].codecs->dai_name = pcm->name;
 		dl[i].num_codecs = 1;
 		dl[i].num_cpus = 1;
 	}
 
 	*links = dl;
+	return 0;
+}
+
+static int avs_create_dapm_routes(struct device *dev, struct hda_codec *codec, int pcm_count,
+				  struct snd_soc_dapm_route **routes, int *num_routes)
+{
+	struct snd_soc_dapm_route *dr;
+	struct hda_pcm *pcm;
+	const char *cname = dev_name(&codec->core.dev);
+	int i, n = 0;
+
+	/* at max twice the number of pcms */
+	dr = devm_kcalloc(dev, pcm_count * 2, sizeof(*dr), GFP_KERNEL);
+	if (!dr)
+		return -ENOMEM;
+
+	pcm = list_first_entry(&codec->pcm_list_head, struct hda_pcm, list);
+
+	for (i = 0; i < pcm_count; i++, pcm = list_next_entry(pcm, list)) {
+		struct hda_pcm_stream *stream;
+		int dir;
+
+		dir = SNDRV_PCM_STREAM_PLAYBACK;
+		stream = &pcm->stream[dir];
+		if (!stream->substreams)
+			goto capture_routes;
+
+		dr[n].sink = devm_kasprintf(dev, GFP_KERNEL, "%s %s", pcm->name,
+					    snd_pcm_direction_name(dir));
+		dr[n].source = devm_kasprintf(dev, GFP_KERNEL, "%s-cpu%d Tx", cname, i);
+		if (!dr[n].sink || !dr[n].source)
+			return -ENOMEM;
+		n++;
+
+capture_routes:
+		dir = SNDRV_PCM_STREAM_CAPTURE;
+		stream = &pcm->stream[dir];
+		if (!stream->substreams)
+			continue;
+
+		dr[n].sink = devm_kasprintf(dev, GFP_KERNEL, "%s-cpu%d Rx", cname, i);
+		dr[n].source = devm_kasprintf(dev, GFP_KERNEL, "%s %s", pcm->name,
+					      snd_pcm_direction_name(dir));
+		if (!dr[n].sink || !dr[n].source)
+			return -ENOMEM;
+		n++;
+	}
+
+	*routes = dr;
+	*num_routes = n;
 	return 0;
 }
 
@@ -96,8 +144,7 @@ avs_card_hdmi_pcm_at(struct snd_soc_card *card, int hdmi_idx)
 static int avs_card_late_probe(struct snd_soc_card *card)
 {
 	struct snd_soc_acpi_mach *mach = dev_get_platdata(card->dev);
-	struct avs_mach_pdata *pdata = mach->pdata;
-	struct hda_codec *codec = pdata->codec;
+	struct hda_codec *codec = mach->pdata;
 	struct hda_pcm *hpcm;
 	/* Topology pcm indexing is 1-based */
 	int i = 1;
@@ -125,45 +172,62 @@ static int avs_card_late_probe(struct snd_soc_card *card)
 
 static int avs_probing_link_init(struct snd_soc_pcm_runtime *rtm)
 {
+	struct snd_soc_dapm_route *routes;
 	struct snd_soc_acpi_mach *mach;
-	struct avs_mach_pdata *pdata;
 	struct snd_soc_dai_link *links = NULL;
 	struct snd_soc_card *card = rtm->card;
 	struct hda_codec *codec;
 	struct hda_pcm *pcm;
-	int ret, pcm_count = 0;
+	int ret, n, pcm_count = 0;
 
 	mach = dev_get_platdata(card->dev);
-	pdata = mach->pdata;
-	codec = pdata->codec;
+	codec = mach->pdata;
 
 	if (list_empty(&codec->pcm_list_head))
 		return -EINVAL;
 	list_for_each_entry(pcm, &codec->pcm_list_head, list)
 		pcm_count++;
 
-	ret = avs_create_dai_links(card->dev, codec, pcm_count, &links);
+	ret = avs_create_dai_links(card->dev, codec, pcm_count, mach->mach_params.platform, &links);
 	if (ret < 0) {
 		dev_err(card->dev, "create links failed: %d\n", ret);
 		return ret;
 	}
 
-	ret = snd_soc_add_pcm_runtimes(card, links, pcm_count);
+	for (n = 0; n < pcm_count; n++) {
+		ret = snd_soc_add_pcm_runtime(card, &links[n]);
+		if (ret < 0) {
+			dev_err(card->dev, "add links failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	ret = avs_create_dapm_routes(card->dev, codec, pcm_count, &routes, &n);
 	if (ret < 0) {
-		dev_err(card->dev, "add links failed: %d\n", ret);
+		dev_err(card->dev, "create routes failed: %d\n", ret);
+		return ret;
+	}
+
+	ret = snd_soc_dapm_add_routes(&card->dapm, routes, n);
+	if (ret < 0) {
+		dev_err(card->dev, "add routes failed: %d\n", ret);
 		return ret;
 	}
 
 	return 0;
 }
 
-static const struct snd_soc_dai_link probing_link = {
+SND_SOC_DAILINK_DEF(dummy, DAILINK_COMP_ARRAY(COMP_DUMMY()));
+
+static struct snd_soc_dai_link probing_link = {
 	.name = "probing-LINK",
 	.id = -1,
 	.nonatomic = 1,
 	.no_pcm = 1,
-	.cpus = &snd_soc_dummy_dlc,
-	.num_cpus = 1,
+	.dpcm_playback = 1,
+	.dpcm_capture = 1,
+	.cpus = dummy,
+	.num_cpus = ARRAY_SIZE(dummy),
 	.init = avs_probing_link_init,
 };
 
@@ -171,14 +235,12 @@ static int avs_hdaudio_probe(struct platform_device *pdev)
 {
 	struct snd_soc_dai_link *binder;
 	struct snd_soc_acpi_mach *mach;
-	struct avs_mach_pdata *pdata;
 	struct snd_soc_card *card;
 	struct device *dev = &pdev->dev;
 	struct hda_codec *codec;
 
 	mach = dev_get_platdata(dev);
-	pdata = mach->pdata;
-	codec = pdata->codec;
+	codec = mach->pdata;
 
 	/* codec may be unloaded before card's probe() fires */
 	if (!device_is_registered(&codec->core.dev))
@@ -193,11 +255,11 @@ static int avs_hdaudio_probe(struct platform_device *pdev)
 	if (!binder->platforms || !binder->codecs)
 		return -ENOMEM;
 
-	binder->codecs->name = devm_kstrdup_const(dev, dev_name(&codec->core.dev), GFP_KERNEL);
+	binder->codecs->name = devm_kstrdup(dev, dev_name(&codec->core.dev), GFP_KERNEL);
 	if (!binder->codecs->name)
 		return -ENOMEM;
 
-	binder->platforms->name = dev_name(dev);
+	binder->platforms->name = mach->mach_params.platform;
 	binder->num_platforms = 1;
 	binder->codecs->dai_name = "codec-probing-DAI";
 	binder->num_codecs = 1;
@@ -206,19 +268,7 @@ static int avs_hdaudio_probe(struct platform_device *pdev)
 	if (!card)
 		return -ENOMEM;
 
-	if (pdata->obsolete_card_names) {
-		card->name = devm_kasprintf(dev, GFP_KERNEL, "hdaudioB%dD%d", codec->bus->core.idx,
-					    codec->core.addr);
-		if (!card->name)
-			return -ENOMEM;
-	} else {
-		card->driver_name = "avs_hdaudio";
-		if (hda_codec_is_display(codec))
-			card->long_name = card->name = "AVS HDMI";
-		else
-			card->long_name = card->name = "AVS HD-Audio";
-	}
-
+	card->name = binder->codecs->name;
 	card->dev = dev;
 	card->owner = THIS_MODULE;
 	card->dai_link = binder;
@@ -227,16 +277,8 @@ static int avs_hdaudio_probe(struct platform_device *pdev)
 	if (hda_codec_is_display(codec))
 		card->late_probe = avs_card_late_probe;
 
-	return devm_snd_soc_register_deferrable_card(dev, card);
+	return devm_snd_soc_register_card(dev, card);
 }
-
-static const struct platform_device_id avs_hdaudio_driver_ids[] = {
-	{
-		.name = "avs_hdaudio",
-	},
-	{},
-};
-MODULE_DEVICE_TABLE(platform, avs_hdaudio_driver_ids);
 
 static struct platform_driver avs_hdaudio_driver = {
 	.probe = avs_hdaudio_probe,
@@ -244,7 +286,6 @@ static struct platform_driver avs_hdaudio_driver = {
 		.name = "avs_hdaudio",
 		.pm = &snd_soc_pm_ops,
 	},
-	.id_table = avs_hdaudio_driver_ids,
 };
 
 module_platform_driver(avs_hdaudio_driver)
@@ -252,3 +293,4 @@ module_platform_driver(avs_hdaudio_driver)
 MODULE_DESCRIPTION("Intel HD-Audio machine driver");
 MODULE_AUTHOR("Cezary Rojewski <cezary.rojewski@intel.com>");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:avs_hdaudio");

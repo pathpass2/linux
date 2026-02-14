@@ -20,7 +20,6 @@
 		i2c4 = &i2c4;
 		i2c21 = &i2c21;
 		serial0 = &uart17;
-		serial1 = &uart2;
 	};
 
 	backlight: backlight {
@@ -35,20 +34,6 @@
 
 	chosen {
 		stdout-path = "serial0:115200n8";
-	};
-
-	gpio-keys {
-		compatible = "gpio-keys";
-
-		pinctrl-0 = <&kypd_vol_up_n>;
-		pinctrl-names = "default";
-
-		key-vol-up {
-			label = "volume_up";
-			gpios = <&pmc8280_1_gpios 6 GPIO_ACTIVE_LOW>;
-			linux,code = <KEY_VOLUMEUP>;
-			wakeup-source;
-		};
 	};
 
 	pmic-glink {
@@ -71,7 +56,7 @@
 					reg = <0>;
 
 					pmic_glink_con0_hs: endpoint {
-						remote-endpoint = <&usb_0_dwc3_hs>;
+						remote-endpoint = <&usb_0_role_switch>;
 					};
 				};
 
@@ -79,7 +64,7 @@
 					reg = <1>;
 
 					pmic_glink_con0_ss: endpoint {
-						remote-endpoint = <&usb_0_qmpphy_out>;
+						remote-endpoint = <&mdss0_dp0_out>;
 					};
 				};
 
@@ -106,7 +91,7 @@
 					reg = <0>;
 
 					pmic_glink_con1_hs: endpoint {
-						remote-endpoint = <&usb_1_dwc3_hs>;
+						remote-endpoint = <&usb_1_role_switch>;
 					};
 				};
 
@@ -114,7 +99,7 @@
 					reg = <1>;
 
 					pmic_glink_con1_ss: endpoint {
-						remote-endpoint = <&usb_1_qmpphy_out>;
+						remote-endpoint = <&mdss0_dp1_out>;
 					};
 				};
 
@@ -148,7 +133,7 @@
 	vreg_edp_bl: regulator-edp-bl {
 		compatible = "regulator-fixed";
 
-		regulator-name = "VREG_EDP_BL";
+		regulator-name = "VBL9";
 		regulator-min-microvolt = <3600000>;
 		regulator-max-microvolt = <3600000>;
 
@@ -164,7 +149,7 @@
 	vreg_nvme: regulator-nvme {
 		compatible = "regulator-fixed";
 
-		regulator-name = "VREG_NVME_3P3";
+		regulator-name = "VCC3_SSD";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 
@@ -178,11 +163,11 @@
 	vreg_misc_3p3: regulator-misc-3p3 {
 		compatible = "regulator-fixed";
 
-		regulator-name = "VREG_MISC_3P3";
+		regulator-name = "VCC3B";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 
-		gpio = <&pmc8280_1_gpios 2 GPIO_ACTIVE_HIGH>;
+		gpio = <&pmc8280_1_gpios 1 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
 
 		pinctrl-names = "default";
@@ -195,7 +180,7 @@
 	vreg_wlan: regulator-wlan {
 		compatible = "regulator-fixed";
 
-		regulator-name = "VPH_PWR_WLAN";
+		regulator-name = "VCC_WLAN_3R9";
 		regulator-min-microvolt = <3900000>;
 		regulator-max-microvolt = <3900000>;
 
@@ -211,7 +196,7 @@
 	vreg_wwan: regulator-wwan {
 		compatible = "regulator-fixed";
 
-		regulator-name = "SDX_VPH_PWR";
+		regulator-name = "VCC3B_WAN";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 
@@ -244,6 +229,7 @@
 
 		mode-switch;
 		orientation-switch;
+		svid = /bits/ 16 <0xff01>;
 
 		port {
 			usb0_sbu_mux: endpoint {
@@ -263,74 +249,11 @@
 
 		mode-switch;
 		orientation-switch;
+		svid = /bits/ 16 <0xff01>;
 
 		port {
 			usb1_sbu_mux: endpoint {
 				remote-endpoint = <&pmic_glink_con1_sbu>;
-			};
-		};
-	};
-
-	wcn6855-pmu {
-		compatible = "qcom,wcn6855-pmu";
-
-		pinctrl-0 = <&bt_en>, <&wlan_en>;
-		pinctrl-names = "default";
-
-		wlan-enable-gpios = <&tlmm 134 GPIO_ACTIVE_HIGH>;
-		bt-enable-gpios = <&tlmm 133 GPIO_ACTIVE_HIGH>;
-		swctrl-gpios = <&tlmm 132 GPIO_ACTIVE_HIGH>;
-
-		vddio-supply = <&vreg_s10b>;
-		vddaon-supply = <&vreg_s12b>;
-		vddpmu-supply = <&vreg_s12b>;
-		vddpmumx-supply = <&vreg_s12b>;
-		vddpmucx-supply = <&vreg_s12b>;
-		vddrfa0p95-supply = <&vreg_s12b>;
-		vddrfa1p3-supply = <&vreg_s11b>;
-		vddrfa1p9-supply = <&vreg_s1c>;
-		vddpcie1p3-supply = <&vreg_s11b>;
-		vddpcie1p9-supply = <&vreg_s1c>;
-
-		regulators {
-			vreg_pmu_rfa_cmn_0p8: ldo0 {
-				regulator-name = "vreg_pmu_rfa_cmn_0p8";
-			};
-
-			vreg_pmu_aon_0p8: ldo1 {
-				regulator-name = "vreg_pmu_aon_0p8";
-			};
-
-			vreg_pmu_wlcx_0p8: ldo2 {
-				regulator-name = "vreg_pmu_wlcx_0p8";
-			};
-
-			vreg_pmu_wlmx_0p8: ldo3 {
-				regulator-name = "vreg_pmu_wlmx_0p8";
-			};
-
-			vreg_pmu_btcmx_0p8: ldo4 {
-				regulator-name = "vreg_pmu_btcmx_0p8";
-			};
-
-			vreg_pmu_pcie_1p8: ldo5 {
-				regulator-name = "vreg_pmu_pcie_1p8";
-			};
-
-			vreg_pmu_pcie_0p9: ldo6 {
-				regulator-name = "vreg_pmu_pcie_0p9";
-			};
-
-			vreg_pmu_rfa_0p8: ldo7 {
-				regulator-name = "vreg_pmu_rfa_0p8";
-			};
-
-			vreg_pmu_rfa_1p2: ldo8 {
-				regulator-name = "vreg_pmu_rfa_1p2";
-			};
-
-			vreg_pmu_rfa_1p7: ldo9 {
-				regulator-name = "vreg_pmu_rfa_1p7";
 			};
 		};
 	};
@@ -343,26 +266,10 @@
 
 		vdd-l3-l5-supply = <&vreg_s11b>;
 
-		vreg_s10b: smps10 {
-			regulator-name = "vreg_s10b";
-			regulator-min-microvolt = <1800000>;
-			regulator-max-microvolt = <1800000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-			regulator-always-on;
-			regulator-boot-on;
-		};
-
 		vreg_s11b: smps11 {
 			regulator-name = "vreg_s11b";
 			regulator-min-microvolt = <1272000>;
 			regulator-max-microvolt = <1272000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-		};
-
-		vreg_s12b: smps12 {
-			regulator-name = "vreg_s12b";
-			regulator-min-microvolt = <984000>;
-			regulator-max-microvolt = <984000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -394,24 +301,10 @@
 		compatible = "qcom,pm8350c-rpmh-regulators";
 		qcom,pmic-id = "c";
 
-		vreg_s1c: smps1 {
-			regulator-name = "vreg_s1c";
-			regulator-min-microvolt = <1888000>;
-			regulator-max-microvolt = <1888000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-		};
-
 		vreg_l1c: ldo1 {
 			regulator-name = "vreg_l1c";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
-		};
-
-		vreg_l6c: ldo6 {
-			regulator-name = "vreg_l6c";
-			regulator-min-microvolt = <1800000>;
-			regulator-max-microvolt = <2960000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -423,13 +316,6 @@
 			regulator-allow-set-load;
 			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
 						   RPMH_REGULATOR_MODE_HPM>;
-		};
-
-		vreg_l9c: ldo9 {
-			regulator-name = "vreg_l9c";
-			regulator-min-microvolt = <2960000>;
-			regulator-max-microvolt = <2960000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
 		vreg_l13c: ldo13 {
@@ -490,26 +376,6 @@
 	status = "okay";
 };
 
-&gpi_dma0 {
-	status = "okay";
-};
-
-&gpi_dma1 {
-	status = "okay";
-};
-
-&gpi_dma2 {
-	status = "okay";
-};
-
-&gpu {
-	status = "okay";
-};
-
-&gpu_zap_shader {
-	firmware-name = "qcom/sc8280xp/qcdxkmsuc8280.mbn";
-};
-
 &mdss0 {
 	status = "okay";
 };
@@ -520,7 +386,7 @@
 
 &mdss0_dp0_out {
 	data-lanes = <0 1>;
-	remote-endpoint = <&usb_0_qmpphy_dp_in>;
+	remote-endpoint = <&pmic_glink_con0_ss>;
 };
 
 &mdss0_dp1 {
@@ -529,7 +395,7 @@
 
 &mdss0_dp1_out {
 	data-lanes = <0 1>;
-	remote-endpoint = <&usb_1_qmpphy_dp_in>;
+	remote-endpoint = <&pmic_glink_con1_ss>;
 };
 
 &mdss0_dp3 {
@@ -547,22 +413,27 @@
 
 			backlight = <&backlight>;
 
-			port {
-				edp_panel_in: endpoint {
-					remote-endpoint = <&mdss0_dp3_out>;
+			ports {
+				port {
+					edp_panel_in: endpoint {
+						remote-endpoint = <&mdss0_dp3_out>;
+					};
 				};
+			};
+		};
+	};
+
+	ports {
+		port@1 {
+			reg = <1>;
+			mdss0_dp3_out: endpoint {
+				remote-endpoint = <&edp_panel_in>;
 			};
 		};
 	};
 };
 
-&mdss0_dp3_out {
-	remote-endpoint = <&edp_panel_in>;
-};
-
 &mdss0_dp3_phy {
-	compatible = "qcom,sc8280xp-edp-phy";
-
 	vdda-phy-supply = <&vreg_l6b>;
 	vdda-pll-supply = <&vreg_l3b>;
 
@@ -666,8 +537,6 @@
 };
 
 &pcie4 {
-	max-link-speed = <2>;
-
 	perst-gpios = <&tlmm 141 GPIO_ACTIVE_LOW>;
 	wake-gpios = <&tlmm 139 GPIO_ACTIVE_LOW>;
 
@@ -686,46 +555,12 @@
 	status = "okay";
 };
 
-&pcie4_port0 {
-	wifi@0 {
-		compatible = "pci17cb,1103";
-		reg = <0x10000 0x0 0x0 0x0 0x0>;
-
-		vddrfacmn-supply = <&vreg_pmu_rfa_cmn_0p8>;
-		vddaon-supply = <&vreg_pmu_aon_0p8>;
-		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
-		vddwlmx-supply = <&vreg_pmu_wlmx_0p8>;
-		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
-		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
-		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
-		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
-		vddrfa1p8-supply = <&vreg_pmu_rfa_1p7>;
-
-		qcom,calibration-variant = "QC_8280XP_CRD";
-	};
-};
-
 &pmc8280c_lpg {
 	status = "okay";
 };
 
 &pmk8280_pon_pwrkey {
 	status = "okay";
-};
-
-&pmk8280_rtc {
-	nvmem-cells = <&rtc_offset>;
-	nvmem-cell-names = "offset";
-
-	status = "okay";
-};
-
-&pmk8280_sdam_6 {
-	status = "okay";
-
-	rtc_offset: rtc-offset@bc {
-		reg = <0xbc 0x4>;
-	};
 };
 
 &qup0 {
@@ -750,45 +585,6 @@
 	firmware-name = "qcom/sc8280xp/qccdsp8280.mbn";
 
 	status = "okay";
-};
-
-&remoteproc_slpi {
-	firmware-name = "qcom/sc8280xp/qcslpi8280.mbn";
-
-	status = "okay";
-};
-
-&sdc2 {
-	pinctrl-0 = <&sdc2_default_state>;
-	pinctrl-1 = <&sdc2_sleep_state>;
-	pinctrl-names = "default", "sleep";
-
-	vmmc-supply = <&vreg_l9c>;
-	vqmmc-supply = <&vreg_l6c>;
-
-	cd-gpios = <&tlmm 131 GPIO_ACTIVE_LOW>;
-
-	status = "okay";
-};
-
-&uart2 {
-	pinctrl-0 = <&uart2_default>;
-	pinctrl-names = "default";
-
-	status = "okay";
-
-	bluetooth {
-		compatible = "qcom,wcn6855-bt";
-
-		vddrfacmn-supply = <&vreg_pmu_rfa_cmn_0p8>;
-		vddaon-supply = <&vreg_pmu_aon_0p8>;
-		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
-		vddwlmx-supply = <&vreg_pmu_wlmx_0p8>;
-		vddbtcmx-supply = <&vreg_pmu_btcmx_0p8>;
-		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
-		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
-		vddrfa1p8-supply = <&vreg_pmu_rfa_1p7>;
-	};
 };
 
 &uart17 {
@@ -823,10 +619,6 @@
 	dr_mode = "host";
 };
 
-&usb_0_dwc3_hs {
-	remote-endpoint = <&pmic_glink_con0_hs>;
-};
-
 &usb_0_hsphy {
 	vdda-pll-supply = <&vreg_l9d>;
 	vdda18-supply = <&vreg_l1c>;
@@ -839,17 +631,11 @@
 	vdda-phy-supply = <&vreg_l9d>;
 	vdda-pll-supply = <&vreg_l4d>;
 
-	orientation-switch;
-
 	status = "okay";
 };
 
-&usb_0_qmpphy_dp_in {
-	remote-endpoint = <&mdss0_dp0_out>;
-};
-
-&usb_0_qmpphy_out {
-	remote-endpoint = <&pmic_glink_con0_ss>;
+&usb_0_role_switch {
+	remote-endpoint = <&pmic_glink_con0_hs>;
 };
 
 &usb_1 {
@@ -858,10 +644,6 @@
 
 &usb_1_dwc3 {
 	dr_mode = "host";
-};
-
-&usb_1_dwc3_hs {
-	remote-endpoint = <&pmic_glink_con1_hs>;
 };
 
 &usb_1_hsphy {
@@ -876,17 +658,11 @@
 	vdda-phy-supply = <&vreg_l4b>;
 	vdda-pll-supply = <&vreg_l3b>;
 
-	orientation-switch;
-
 	status = "okay";
 };
 
-&usb_1_qmpphy_dp_in {
-	remote-endpoint = <&mdss0_dp1_out>;
-};
-
-&usb_1_qmpphy_out {
-	remote-endpoint = <&pmic_glink_con1_ss>;
+&usb_1_role_switch {
+	remote-endpoint = <&pmic_glink_con1_hs>;
 };
 
 &xo_board_clk {
@@ -906,16 +682,8 @@
 		function = "normal";
 	};
 
-	kypd_vol_up_n: kypd-vol-up-n-state {
-		pins = "gpio6";
-		function = "normal";
-		power-source = <0>; /* 3.3 V */
-		bias-pull-up;
-		input-enable;
-	};
-
 	misc_3p3_reg_en: misc-3p3-reg-en-state {
-		pins = "gpio2";
+		pins = "gpio1";
 		function = "normal";
 	};
 };
@@ -943,13 +711,6 @@
 
 &tlmm {
 	gpio-reserved-ranges = <74 6>, <83 4>, <125 2>, <128 2>, <154 7>;
-
-	bt_en: bt-en-state {
-		pins = "gpio133";
-		function = "gpio";
-		drive-strength = <16>;
-		bias-disable;
-	};
 
 	edp_reg_en: edp-reg-en-state {
 		pins = "gpio25";
@@ -1011,15 +772,15 @@
 			pins = "gpio143";
 			function = "gpio";
 			drive-strength = <2>;
-			bias-disable;
+			bias-pull-down;
 		};
 
 		wake-n-pins {
-			pins = "gpio145";
-			function = "gpio";
-			drive-strength = <2>;
-			bias-pull-up;
-		};
+		       pins = "gpio145";
+		       function = "gpio";
+		       drive-strength = <2>;
+		       bias-pull-up;
+	       };
 	};
 
 	pcie3a_default: pcie3a-default-state {
@@ -1034,7 +795,7 @@
 			pins = "gpio151";
 			function = "gpio";
 			drive-strength = <2>;
-			bias-disable;
+			bias-pull-down;
 		};
 
 		wake-n-pins {
@@ -1057,7 +818,7 @@
 			pins = "gpio141";
 			function = "gpio";
 			drive-strength = <2>;
-			bias-disable;
+			bias-pull-down;
 		};
 
 		wake-n-pins {
@@ -1065,60 +826,6 @@
 			function = "gpio";
 			drive-strength = <2>;
 			bias-pull-up;
-		};
-	};
-
-	sdc2_default_state: sdc2-default-state {
-		clk-pins {
-			pins = "sdc2_clk";
-			drive-strength = <16>;
-			bias-disable;
-		};
-
-		cmd-pins {
-			pins = "sdc2_cmd";
-			drive-strength = <16>;
-			bias-pull-up;
-		};
-
-		data-pins {
-			pins = "sdc2_data";
-			drive-strength = <16>;
-			bias-pull-up;
-		};
-
-		card-detect-pins {
-			pins = "gpio131";
-			function = "gpio";
-			drive-strength = <2>;
-			bias-disable;
-		};
-	};
-
-	sdc2_sleep_state: sdc2-sleep-state {
-		clk-pins {
-			pins = "sdc2_clk";
-			drive-strength = <2>;
-			bias-disable;
-		};
-
-		cmd-pins {
-			pins = "sdc2_cmd";
-			drive-strength = <2>;
-			bias-pull-up;
-		};
-
-		data-pins {
-			pins = "sdc2_data";
-			drive-strength = <2>;
-			bias-pull-up;
-		};
-
-		card-detect-pins {
-			pins = "gpio131";
-			function = "gpio";
-			drive-strength = <2>;
-			bias-disable;
 		};
 	};
 
@@ -1140,35 +847,8 @@
 		reset-n-pins {
 			pins = "gpio99";
 			function = "gpio";
-			bias-disable;
-		};
-	};
-
-	uart2_default: uart2-default-state {
-		cts-pins {
-			pins = "gpio121";
-			function = "qup2";
-			bias-bus-hold;
-		};
-
-		rts-pins {
-			pins = "gpio122";
-			function = "qup2";
-			drive-strength = <2>;
-			bias-disable;
-		};
-
-		rx-pins {
-			pins = "gpio124";
-			function = "qup2";
-			bias-pull-up;
-		};
-
-		tx-pins {
-			pins = "gpio123";
-			function = "qup2";
-			drive-strength = <2>;
-			bias-disable;
+			output-high;
+			drive-strength = <16>;
 		};
 	};
 
@@ -1177,7 +857,7 @@
 			pins = "gpio101";
 			function = "gpio";
 			bias-disable;
-			drive-strength = <16>;
+			drive-strengh = <16>;
 			output-high;
 		};
 
@@ -1202,7 +882,7 @@
 			pins = "gpio48";
 			function = "gpio";
 			bias-disable;
-			drive-strength = <16>;
+			drive-strengh = <16>;
 			output-high;
 		};
 
@@ -1220,12 +900,5 @@
 			drive-strength = <16>;
 			output-high;
 		};
-	};
-
-	wlan_en: wlan-en-state {
-		pins = "gpio134";
-		function = "gpio";
-		drive-strength = <16>;
-		bias-disable;
 	};
 };

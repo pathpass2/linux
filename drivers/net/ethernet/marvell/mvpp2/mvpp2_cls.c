@@ -324,7 +324,7 @@ static const struct mvpp2_cls_flow cls_flows[MVPP2_N_PRS_FLOWS] = {
 		       MVPP2_PRS_RI_VLAN_MASK),
 	/* Non IP flow, with vlan tag */
 	MVPP2_DEF_FLOW(MVPP22_FLOW_ETHERNET, MVPP2_FL_NON_IP_TAG,
-		       MVPP22_CLS_HEK_TAGGED,
+		       MVPP22_CLS_HEK_OPT_VLAN,
 		       0, 0),
 };
 
@@ -1389,7 +1389,7 @@ int mvpp2_ethtool_cls_rule_ins(struct mvpp2_port *port,
 	efs->rule.flow_type = mvpp2_cls_ethtool_flow_to_type(info->fs.flow_type);
 	if (efs->rule.flow_type < 0) {
 		ret = efs->rule.flow_type;
-		goto clean_eth_rule;
+		goto clean_rule;
 	}
 
 	ret = mvpp2_cls_rfs_parse_rule(&efs->rule);
@@ -1522,19 +1522,29 @@ static int mvpp22_rss_context_create(struct mvpp2_port *port, u32 *rss_ctx)
 	return 0;
 }
 
-int mvpp22_port_rss_ctx_create(struct mvpp2_port *port, u32 port_ctx)
+int mvpp22_port_rss_ctx_create(struct mvpp2_port *port, u32 *port_ctx)
 {
 	u32 rss_ctx;
-	int ret;
+	int ret, i;
 
 	ret = mvpp22_rss_context_create(port, &rss_ctx);
 	if (ret)
 		return ret;
 
-	if (WARN_ON_ONCE(port->rss_ctx[port_ctx] >= 0))
+	/* Find the first available context number in the port, starting from 1.
+	 * Context 0 on each port is reserved for the default context.
+	 */
+	for (i = 1; i < MVPP22_N_RSS_TABLES; i++) {
+		if (port->rss_ctx[i] < 0)
+			break;
+	}
+
+	if (i == MVPP22_N_RSS_TABLES)
 		return -EINVAL;
 
-	port->rss_ctx[port_ctx] = rss_ctx;
+	port->rss_ctx[i] = rss_ctx;
+	*port_ctx = i;
+
 	return 0;
 }
 
@@ -1618,8 +1628,7 @@ int mvpp22_port_rss_ctx_indir_get(struct mvpp2_port *port, u32 port_ctx,
 	return 0;
 }
 
-int mvpp2_ethtool_rxfh_set(struct mvpp2_port *port,
-			   const struct ethtool_rxfh_fields *info)
+int mvpp2_ethtool_rxfh_set(struct mvpp2_port *port, struct ethtool_rxnfc *info)
 {
 	u16 hash_opts = 0;
 	u32 flow_type;
@@ -1657,8 +1666,7 @@ int mvpp2_ethtool_rxfh_set(struct mvpp2_port *port,
 	return mvpp2_port_rss_hash_opts_set(port, flow_type, hash_opts);
 }
 
-int mvpp2_ethtool_rxfh_get(struct mvpp2_port *port,
-			   struct ethtool_rxfh_fields *info)
+int mvpp2_ethtool_rxfh_get(struct mvpp2_port *port, struct ethtool_rxnfc *info)
 {
 	unsigned long hash_opts;
 	u32 flow_type;

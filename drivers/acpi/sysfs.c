@@ -319,7 +319,7 @@ struct acpi_data_attr {
 };
 
 static ssize_t acpi_table_show(struct file *filp, struct kobject *kobj,
-			       const struct bin_attribute *bin_attr, char *buf,
+			       struct bin_attribute *bin_attr, char *buf,
 			       loff_t offset, size_t count)
 {
 	struct acpi_table_attr *table_attr =
@@ -412,7 +412,7 @@ acpi_status acpi_sysfs_table_handler(u32 event, void *table, void *context)
 }
 
 static ssize_t acpi_data_show(struct file *filp, struct kobject *kobj,
-			      const struct bin_attribute *bin_attr, char *buf,
+			      struct bin_attribute *bin_attr, char *buf,
 			      loff_t offset, size_t count)
 {
 	struct acpi_data_attr *data_attr;
@@ -458,28 +458,11 @@ static int acpi_bert_data_init(void *th, struct acpi_data_attr *data_attr)
 	return sysfs_create_bin_file(tables_data_kobj, &data_attr->attr);
 }
 
-static int acpi_ccel_data_init(void *th, struct acpi_data_attr *data_attr)
-{
-	struct acpi_table_ccel *ccel = th;
-
-	if (ccel->header.length < sizeof(struct acpi_table_ccel) ||
-	    !ccel->log_area_start_address || !ccel->log_area_minimum_length) {
-		kfree(data_attr);
-		return -EINVAL;
-	}
-	data_attr->addr = ccel->log_area_start_address;
-	data_attr->attr.size = ccel->log_area_minimum_length;
-	data_attr->attr.attr.name = "CCEL";
-
-	return sysfs_create_bin_file(tables_data_kobj, &data_attr->attr);
-}
-
 static struct acpi_data_obj {
 	char *name;
 	int (*fn)(void *, struct acpi_data_attr *);
 } acpi_data_objs[] = {
 	{ ACPI_SIG_BERT, acpi_bert_data_init },
-	{ ACPI_SIG_CCEL, acpi_ccel_data_init },
 };
 
 #define NUM_ACPI_DATA_OBJS ARRAY_SIZE(acpi_data_objs)
@@ -687,7 +670,7 @@ static ssize_t counter_show(struct kobject *kobj,
 	    acpi_irq_not_handled;
 	all_counters[num_gpes + ACPI_NUM_FIXED_EVENTS + COUNT_GPE].count =
 	    acpi_gpe_count;
-	size = sysfs_emit(buf, "%8u", all_counters[index].count);
+	size = sprintf(buf, "%8u", all_counters[index].count);
 
 	/* "gpe_all" or "sci" */
 	if (index >= num_gpes + ACPI_NUM_FIXED_EVENTS)
@@ -698,29 +681,29 @@ static ssize_t counter_show(struct kobject *kobj,
 		goto end;
 
 	if (status & ACPI_EVENT_FLAG_ENABLE_SET)
-		size += sysfs_emit_at(buf, size, "  EN");
+		size += sprintf(buf + size, "  EN");
 	else
-		size += sysfs_emit_at(buf, size, "    ");
+		size += sprintf(buf + size, "    ");
 	if (status & ACPI_EVENT_FLAG_STATUS_SET)
-		size += sysfs_emit_at(buf, size, " STS");
+		size += sprintf(buf + size, " STS");
 	else
-		size += sysfs_emit_at(buf, size, "    ");
+		size += sprintf(buf + size, "    ");
 
 	if (!(status & ACPI_EVENT_FLAG_HAS_HANDLER))
-		size += sysfs_emit_at(buf, size, " invalid     ");
+		size += sprintf(buf + size, " invalid     ");
 	else if (status & ACPI_EVENT_FLAG_ENABLED)
-		size += sysfs_emit_at(buf, size, " enabled     ");
+		size += sprintf(buf + size, " enabled     ");
 	else if (status & ACPI_EVENT_FLAG_WAKE_ENABLED)
-		size += sysfs_emit_at(buf, size, " wake_enabled");
+		size += sprintf(buf + size, " wake_enabled");
 	else
-		size += sysfs_emit_at(buf, size, " disabled    ");
+		size += sprintf(buf + size, " disabled    ");
 	if (status & ACPI_EVENT_FLAG_MASKED)
-		size += sysfs_emit_at(buf, size, " masked  ");
+		size += sprintf(buf + size, " masked  ");
 	else
-		size += sysfs_emit_at(buf, size, " unmasked");
+		size += sprintf(buf + size, " unmasked");
 
 end:
-	size += sysfs_emit_at(buf, size, "\n");
+	size += sprintf(buf + size, "\n");
 	return result ? result : size;
 }
 
@@ -937,7 +920,7 @@ static void __exit interrupt_stats_exit(void)
 
 static ssize_t pm_profile_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%d\n", acpi_gbl_FADT.preferred_profile);
+	return sprintf(buf, "%d\n", acpi_gbl_FADT.preferred_profile);
 }
 
 static const struct kobj_attribute pm_profile_attr = __ATTR_RO(pm_profile);
@@ -946,7 +929,7 @@ static ssize_t enabled_show(struct kobject *kobj, struct kobj_attribute *attr, c
 {
 	struct acpi_hotplug_profile *hotplug = to_acpi_hotplug_profile(kobj);
 
-	return sysfs_emit(buf, "%d\n", hotplug->enabled);
+	return sprintf(buf, "%d\n", hotplug->enabled);
 }
 
 static ssize_t enabled_store(struct kobject *kobj, struct kobj_attribute *attr,
@@ -1000,7 +983,7 @@ void acpi_sysfs_add_hotplug_profile(struct acpi_hotplug_profile *hotplug,
 static ssize_t force_remove_show(struct kobject *kobj,
 				 struct kobj_attribute *attr, char *buf)
 {
-	return sysfs_emit(buf, "%d\n", 0);
+	return sprintf(buf, "%d\n", 0);
 }
 
 static ssize_t force_remove_store(struct kobject *kobj,

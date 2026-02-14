@@ -46,12 +46,12 @@ static unsigned long clk_busy_divider_recalc_rate(struct clk_hw *hw,
 	return busy->div_ops->recalc_rate(&busy->div.hw, parent_rate);
 }
 
-static int clk_busy_divider_determine_rate(struct clk_hw *hw,
-					   struct clk_rate_request *req)
+static long clk_busy_divider_round_rate(struct clk_hw *hw, unsigned long rate,
+					unsigned long *prate)
 {
 	struct clk_busy_divider *busy = to_clk_busy_divider(hw);
 
-	return busy->div_ops->determine_rate(&busy->div.hw, req);
+	return busy->div_ops->round_rate(&busy->div.hw, rate, prate);
 }
 
 static int clk_busy_divider_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -69,7 +69,7 @@ static int clk_busy_divider_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops clk_busy_divider_ops = {
 	.recalc_rate = clk_busy_divider_recalc_rate,
-	.determine_rate = clk_busy_divider_determine_rate,
+	.round_rate = clk_busy_divider_round_rate,
 	.set_rate = clk_busy_divider_set_rate,
 };
 
@@ -148,7 +148,6 @@ static int clk_busy_mux_set_parent(struct clk_hw *hw, u8 index)
 }
 
 static const struct clk_ops clk_busy_mux_ops = {
-	.determine_rate = clk_hw_determine_rate_no_reparent,
 	.get_parent = clk_busy_mux_get_parent,
 	.set_parent = clk_busy_mux_set_parent,
 };

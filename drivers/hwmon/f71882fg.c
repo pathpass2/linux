@@ -51,7 +51,6 @@
 #define SIO_F81866_ID		0x1010	/* Chipset ID */
 #define SIO_F71858AD_ID		0x0903	/* Chipset ID */
 #define SIO_F81966_ID		0x1502	/* Chipset ID */
-#define SIO_F81968_ID		0x1806	/* Chipset ID */
 
 #define REGION_LENGTH		8
 #define ADDR_REG_OFFSET		5
@@ -1097,11 +1096,8 @@ static ssize_t show_pwm(struct device *dev,
 		val = data->pwm[nr];
 	else {
 		/* RPM mode */
-		if (fan_from_reg(data->fan_full_speed[nr]))
-			val = 255 * fan_from_reg(data->fan_target[nr])
-				/ fan_from_reg(data->fan_full_speed[nr]);
-		else
-			val = 0;
+		val = 255 * fan_from_reg(data->fan_target[nr])
+			/ fan_from_reg(data->fan_full_speed[nr]);
 	}
 	mutex_unlock(&data->update_lock);
 	return sprintf(buf, "%d\n", val);
@@ -2224,7 +2220,7 @@ static int f71882fg_create_fan_sysfs_files(
 	return err;
 }
 
-static void f71882fg_remove(struct platform_device *pdev)
+static int f71882fg_remove(struct platform_device *pdev)
 {
 	struct f71882fg_data *data = platform_get_drvdata(pdev);
 	int nr_fans = f71882fg_nr_fans[data->type];
@@ -2334,6 +2330,7 @@ static void f71882fg_remove(struct platform_device *pdev)
 				ARRAY_SIZE(fxxxx_auto_pwm_attr[0]) * nr_fans);
 		}
 	}
+	return 0;
 }
 
 static int f71882fg_probe(struct platform_device *pdev)
@@ -2571,7 +2568,6 @@ static int __init f71882fg_find(int sioaddr, struct f71882fg_sio_data *sio_data)
 		break;
 	case SIO_F81866_ID:
 	case SIO_F81966_ID:
-	case SIO_F81968_ID:
 		sio_data->type = f81866a;
 		break;
 	default:
@@ -2601,9 +2597,9 @@ static int __init f71882fg_find(int sioaddr, struct f71882fg_sio_data *sio_data)
 	address &= ~(REGION_LENGTH - 1);	/* Ignore 3 LSB */
 
 	err = address;
-	pr_info("Found %s chip at %#x, revision %d, devid: %04x\n",
+	pr_info("Found %s chip at %#x, revision %d\n",
 		f71882fg_names[sio_data->type],	(unsigned int)address,
-		(int)superio_inb(sioaddr, SIO_REG_DEVREV), devid);
+		(int)superio_inb(sioaddr, SIO_REG_DEVREV));
 exit:
 	superio_exit(sioaddr);
 	return err;

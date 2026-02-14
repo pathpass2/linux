@@ -18,34 +18,6 @@ netlink commands.
 
 Drivers are encouraged to use the devlink instance lock for their own needs.
 
-Drivers need to be cautious when taking devlink instance lock and
-taking RTNL lock at the same time. Devlink instance lock needs to be taken
-first, only after that RTNL lock could be taken.
-
-Nested instances
-----------------
-
-Some objects, like linecards or port functions, could have another
-devlink instances created underneath. In that case, drivers should make
-sure to respect following rules:
-
- - Lock ordering should be maintained. If driver needs to take instance
-   lock of both nested and parent instances at the same time, devlink
-   instance lock of the parent instance should be taken first, only then
-   instance lock of the nested instance could be taken.
- - Driver should use object-specific helpers to setup the
-   nested relationship:
-
-   - ``devl_nested_devlink_set()`` - called to setup devlink -> nested
-     devlink relationship (could be user for multiple nested instances.
-   - ``devl_port_fn_devlink_set()`` - called to setup port function ->
-     nested devlink relationship.
-   - ``devlink_linecard_nested_dl_set()`` - called to setup linecard ->
-     nested devlink relationship.
-
-The nested devlink info is exposed to the userspace over object-specific
-attributes of devlink netlink.
-
 Interface documentation
 -----------------------
 
@@ -56,18 +28,17 @@ general.
    :maxdepth: 1
 
    devlink-dpipe
-   devlink-eswitch-attr
-   devlink-flash
    devlink-health
    devlink-info
-   devlink-linecard
+   devlink-flash
    devlink-params
    devlink-port
    devlink-region
-   devlink-reload
    devlink-resource
+   devlink-reload
    devlink-selftests
    devlink-trap
+   devlink-linecard
 
 Driver-specific documentation
 -----------------------------
@@ -78,27 +49,21 @@ parameters, info versions, and other features it supports.
 .. toctree::
    :maxdepth: 1
 
-   am65-nuss-cpsw-switch
    bnxt
    etas_es58x
    hns3
-   i40e
-   ice
    ionic
-   iosm
-   ixgbe
-   kvaser_pciefd
-   kvaser_usb
+   ice
    mlx4
    mlx5
    mlxsw
    mv88e6xxx
    netdevsim
    nfp
-   octeontx2
-   prestera
    qed
-   sfc
-   stmmac
    ti-cpsw-switch
-   zl3073x
+   am65-nuss-cpsw-switch
+   prestera
+   iosm
+   octeontx2
+   sfc

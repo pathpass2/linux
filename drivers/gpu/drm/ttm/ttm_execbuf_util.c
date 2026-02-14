@@ -26,8 +26,6 @@
  *
  **************************************************************************/
 
-#include <linux/export.h>
-
 #include <drm/ttm/ttm_execbuf_util.h>
 #include <drm/ttm/ttm_bo.h>
 

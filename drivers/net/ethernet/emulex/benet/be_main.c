@@ -16,6 +16,7 @@
 #include "be.h"
 #include "be_cmds.h"
 #include <asm/div64.h>
+#include <linux/aer.h>
 #include <linux/if_bridge.h>
 #include <net/busy_poll.h>
 #include <net/vxlan.h>
@@ -61,7 +62,7 @@ static const struct pci_device_id be_dev_ids[] = {
 };
 MODULE_DEVICE_TABLE(pci, be_dev_ids);
 
-/* Workqueue used by all functions for deferring cmd calls to the adapter */
+/* Workqueue used by all functions for defering cmd calls to the adapter */
 static struct workqueue_struct *be_wq;
 
 /* UE Status Low CSR */
@@ -1124,22 +1125,21 @@ static struct sk_buff *be_lancer_xmit_workarounds(struct be_adapter *adapter,
 						  struct be_wrb_params
 						  *wrb_params)
 {
-	struct vlan_ethhdr *veh = skb_vlan_eth_hdr(skb);
+	struct vlan_ethhdr *veh = (struct vlan_ethhdr *)skb->data;
 	unsigned int eth_hdr_len;
 	struct iphdr *ip;
 
 	/* For padded packets, BE HW modifies tot_len field in IP header
-	 * incorrectly when VLAN tag is inserted by HW.
+	 * incorrecly when VLAN tag is inserted by HW.
 	 * For padded packets, Lancer computes incorrect checksum.
 	 */
 	eth_hdr_len = ntohs(skb->protocol) == ETH_P_8021Q ?
 						VLAN_ETH_HLEN : ETH_HLEN;
 	if (skb->len <= 60 &&
-	    (lancer_chip(adapter) || BE3_chip(adapter) ||
-	     skb_vlan_tag_present(skb)) && is_ipv4_pkt(skb)) {
+	    (lancer_chip(adapter) || skb_vlan_tag_present(skb)) &&
+	    is_ipv4_pkt(skb)) {
 		ip = (struct iphdr *)ip_hdr(skb);
-		if (unlikely(pskb_trim(skb, eth_hdr_len + ntohs(ip->tot_len))))
-			goto tx_drop;
+		pskb_trim(skb, eth_hdr_len + ntohs(ip->tot_len));
 	}
 
 	/* If vlan tag is already inlined in the packet, skip HW VLAN
@@ -1296,8 +1296,7 @@ static void be_xmit_flush(struct be_adapter *adapter, struct be_tx_obj *txo)
 		(adapter->bmc_filt_mask & BMC_FILT_MULTICAST)
 
 static bool be_send_pkt_to_bmc(struct be_adapter *adapter,
-			       struct sk_buff **skb,
-			       struct be_wrb_params *wrb_params)
+			       struct sk_buff **skb)
 {
 	struct ethhdr *eh = (struct ethhdr *)(*skb)->data;
 	bool os2bmc = false;
@@ -1361,7 +1360,7 @@ done:
 	 * to BMC, asic expects the vlan to be inline in the packet.
 	 */
 	if (os2bmc)
-		*skb = be_insert_vlan_in_pkt(adapter, *skb, wrb_params);
+		*skb = be_insert_vlan_in_pkt(adapter, *skb, NULL);
 
 	return os2bmc;
 }
@@ -1382,17 +1381,19 @@ static netdev_tx_t be_xmit(struct sk_buff *skb, struct net_device *netdev)
 	be_get_wrb_params_from_skb(adapter, skb, &wrb_params);
 
 	wrb_cnt = be_xmit_enqueue(adapter, txo, skb, &wrb_params);
-	if (unlikely(!wrb_cnt))
-		goto drop_skb;
+	if (unlikely(!wrb_cnt)) {
+		dev_kfree_skb_any(skb);
+		goto drop;
+	}
 
 	/* if os2bmc is enabled and if the pkt is destined to bmc,
 	 * enqueue the pkt a 2nd time with mgmt bit set.
 	 */
-	if (be_send_pkt_to_bmc(adapter, &skb, &wrb_params)) {
+	if (be_send_pkt_to_bmc(adapter, &skb)) {
 		BE_WRB_F_SET(wrb_params.features, OS2BMC, 1);
 		wrb_cnt = be_xmit_enqueue(adapter, txo, skb, &wrb_params);
 		if (unlikely(!wrb_cnt))
-			goto drop_skb;
+			goto drop;
 		else
 			skb_get(skb);
 	}
@@ -1406,8 +1407,6 @@ static netdev_tx_t be_xmit(struct sk_buff *skb, struct net_device *netdev)
 		be_xmit_flush(adapter, txo);
 
 	return NETDEV_TX_OK;
-drop_skb:
-	dev_kfree_skb_any(skb);
 drop:
 	tx_stats(txo)->tx_drv_drops++;
 	/* Flush the already enqueued tx requests */
@@ -1466,10 +1465,10 @@ static void be_tx_timeout(struct net_device *netdev, unsigned int txqueue)
 						 ntohs(tcphdr->source));
 					dev_info(dev, "TCP dest port %d\n",
 						 ntohs(tcphdr->dest));
-					dev_info(dev, "TCP sequence num %u\n",
-						 ntohl(tcphdr->seq));
-					dev_info(dev, "TCP ack_seq %u\n",
-						 ntohl(tcphdr->ack_seq));
+					dev_info(dev, "TCP sequence num %d\n",
+						 ntohs(tcphdr->seq));
+					dev_info(dev, "TCP ack_seq %d\n",
+						 ntohs(tcphdr->ack_seq));
 				} else if (ip_hdr(skb)->protocol ==
 					   IPPROTO_UDP) {
 					udphdr = udp_hdr(skb);
@@ -2141,7 +2140,7 @@ static int be_get_new_eqd(struct be_eq_obj *eqo)
 	struct be_aic_obj *aic;
 	struct be_rx_obj *rxo;
 	struct be_tx_obj *txo;
-	u64 rx_pkts = 0, tx_pkts = 0, pkts;
+	u64 rx_pkts = 0, tx_pkts = 0;
 	ulong now;
 	u32 pps, delta;
 	int i;
@@ -2157,17 +2156,15 @@ static int be_get_new_eqd(struct be_eq_obj *eqo)
 	for_all_rx_queues_on_eq(adapter, eqo, rxo, i) {
 		do {
 			start = u64_stats_fetch_begin(&rxo->stats.sync);
-			pkts = rxo->stats.rx_pkts;
+			rx_pkts += rxo->stats.rx_pkts;
 		} while (u64_stats_fetch_retry(&rxo->stats.sync, start));
-		rx_pkts += pkts;
 	}
 
 	for_all_tx_queues_on_eq(adapter, eqo, txo, i) {
 		do {
 			start = u64_stats_fetch_begin(&txo->stats.sync);
-			pkts = txo->stats.tx_reqs;
+			tx_pkts += txo->stats.tx_reqs;
 		} while (u64_stats_fetch_retry(&txo->stats.sync, start));
-		tx_pkts += pkts;
 	}
 
 	/* Skip, if wrapped around or first calculation */
@@ -2347,10 +2344,11 @@ static void skb_fill_rx_data(struct be_rx_obj *rxo, struct sk_buff *skb,
 		hdr_len = ETH_HLEN;
 		memcpy(skb->data, start, hdr_len);
 		skb_shinfo(skb)->nr_frags = 1;
-		skb_frag_fill_page_desc(&skb_shinfo(skb)->frags[0],
-					page_info->page,
-					page_info->page_offset + hdr_len,
-					curr_frag_len - hdr_len);
+		skb_frag_set_page(skb, 0, page_info->page);
+		skb_frag_off_set(&skb_shinfo(skb)->frags[0],
+				 page_info->page_offset + hdr_len);
+		skb_frag_size_set(&skb_shinfo(skb)->frags[0],
+				  curr_frag_len - hdr_len);
 		skb->data_len = curr_frag_len - hdr_len;
 		skb->truesize += rx_frag_size;
 		skb->tail += hdr_len;
@@ -2372,17 +2370,16 @@ static void skb_fill_rx_data(struct be_rx_obj *rxo, struct sk_buff *skb,
 		if (page_info->page_offset == 0) {
 			/* Fresh page */
 			j++;
-			skb_frag_fill_page_desc(&skb_shinfo(skb)->frags[j],
-						page_info->page,
-						page_info->page_offset,
-						curr_frag_len);
+			skb_frag_set_page(skb, j, page_info->page);
+			skb_frag_off_set(&skb_shinfo(skb)->frags[j],
+					 page_info->page_offset);
+			skb_frag_size_set(&skb_shinfo(skb)->frags[j], 0);
 			skb_shinfo(skb)->nr_frags++;
 		} else {
 			put_page(page_info->page);
-			skb_frag_size_add(&skb_shinfo(skb)->frags[j],
-					  curr_frag_len);
 		}
 
+		skb_frag_size_add(&skb_shinfo(skb)->frags[j], curr_frag_len);
 		skb->len += curr_frag_len;
 		skb->data_len += curr_frag_len;
 		skb->truesize += rx_frag_size;
@@ -2455,16 +2452,14 @@ static void be_rx_compl_process_gro(struct be_rx_obj *rxo,
 		if (i == 0 || page_info->page_offset == 0) {
 			/* First frag or Fresh page */
 			j++;
-			skb_frag_fill_page_desc(&skb_shinfo(skb)->frags[j],
-						page_info->page,
-						page_info->page_offset,
-						curr_frag_len);
+			skb_frag_set_page(skb, j, page_info->page);
+			skb_frag_off_set(&skb_shinfo(skb)->frags[j],
+					 page_info->page_offset);
+			skb_frag_size_set(&skb_shinfo(skb)->frags[j], 0);
 		} else {
 			put_page(page_info->page);
-			skb_frag_size_add(&skb_shinfo(skb)->frags[j],
-					  curr_frag_len);
 		}
-
+		skb_frag_size_add(&skb_shinfo(skb)->frags[j], curr_frag_len);
 		skb->truesize += rx_frag_size;
 		remaining -= curr_frag_len;
 		memset(page_info, 0, sizeof(*page_info));
@@ -2570,7 +2565,7 @@ static struct be_rx_compl_info *be_rx_compl_get(struct be_rx_obj *rxo)
 			rxcp->vlanf = 0;
 	}
 
-	/* As the compl has been parsed, reset it; we won't touch it again */
+	/* As the compl has been parsed, reset it; we wont touch it again */
 	compl->dw[offsetof(struct amap_eth_rx_compl_v1, valid) / 32] = 0;
 
 	queue_tail_inc(&rxo->cq);
@@ -2729,7 +2724,7 @@ static struct be_tx_compl_info *be_tx_compl_get(struct be_adapter *adapter,
 	if (txcp->status) {
 		if (lancer_chip(adapter)) {
 			lancer_update_tx_err(txo, txcp->status);
-			/* Reset the adapter in case of TSO,
+			/* Reset the adapter incase of TSO,
 			 * SGE or Parity error
 			 */
 			if (txcp->status == LANCER_TX_COMP_LSO_ERR ||
@@ -3127,7 +3122,7 @@ static int be_rx_cqs_create(struct be_adapter *adapter)
 	adapter->num_rss_qs =
 			min(adapter->num_evt_qs, adapter->cfg_num_rx_irqs);
 
-	/* We'll use RSS only if at least 2 RSS rings are supported. */
+	/* We'll use RSS only if atleast 2 RSS rings are supported. */
 	if (adapter->num_rss_qs < 2)
 		adapter->num_rss_qs = 0;
 
@@ -3169,7 +3164,7 @@ static irqreturn_t be_intx(int irq, void *dev)
 	/* IRQ is not expected when NAPI is scheduled as the EQ
 	 * will not be armed.
 	 * But, this can happen on Lancer INTx where it takes
-	 * a while to de-assert INTx or in BE2 where occasionally
+	 * a while to de-assert INTx or in BE2 where occasionaly
 	 * an interrupt may be raised even when EQ is unarmed.
 	 * If NAPI is already scheduled, then counting & notifying
 	 * events will orphan them.
@@ -4034,7 +4029,8 @@ static int be_vxlan_unset_port(struct net_device *netdev, unsigned int table,
 static const struct udp_tunnel_nic_info be_udp_tunnels = {
 	.set_port	= be_vxlan_set_port,
 	.unset_port	= be_vxlan_unset_port,
-	.flags		= UDP_TUNNEL_NIC_INFO_OPEN_ONLY,
+	.flags		= UDP_TUNNEL_NIC_INFO_MAY_SLEEP |
+			  UDP_TUNNEL_NIC_INFO_OPEN_ONLY,
 	.tables		= {
 		{ .n_entries = 1, .tunnel_types = UDP_TUNNEL_TYPE_VXLAN, },
 	},
@@ -4417,7 +4413,7 @@ static void be_setup_init(struct be_adapter *adapter)
 /* HW supports only MAX_PORT_RSS_TABLES RSS Policy Tables per port.
  * However, this HW limitation is not exposed to the host via any SLI cmd.
  * As a result, in the case of SRIOV and in particular multi-partition configs
- * the driver needs to calculate a proportional share of RSS Tables per PF-pool
+ * the driver needs to calcuate a proportional share of RSS Tables per PF-pool
  * for distribution between the VFs. This self-imposed limit will determine the
  * no: of VFs for which RSS can be enabled.
  */
@@ -4521,7 +4517,7 @@ static int be_get_resources(struct be_adapter *adapter)
 		if (status)
 			return status;
 
-		/* If a default RXQ must be created, we'll use up one RSSQ*/
+		/* If a deafault RXQ must be created, we'll use up one RSSQ*/
 		if (res.max_rss_qs && res.max_rss_qs == res.max_rx_qs &&
 		    !(res.if_cap_flags & BE_IF_FLAGS_DEFQ_RSS))
 			res.max_rss_qs -= 1;
@@ -4984,7 +4980,13 @@ static int be_ndo_bridge_setlink(struct net_device *dev, struct nlmsghdr *nlh,
 	if (!br_spec)
 		return -EINVAL;
 
-	nla_for_each_nested_type(attr, IFLA_BRIDGE_MODE, br_spec, rem) {
+	nla_for_each_nested(attr, br_spec, rem) {
+		if (nla_type(attr) != IFLA_BRIDGE_MODE)
+			continue;
+
+		if (nla_len(attr) < sizeof(mode))
+			return -EINVAL;
+
 		mode = nla_get_u16(attr);
 		if (BE3_chip(adapter) && mode == BRIDGE_MODE_VEPA)
 			return -EOPNOTSUPP;
@@ -5669,8 +5671,8 @@ static int be_drv_init(struct be_adapter *adapter)
 	}
 
 	mutex_init(&adapter->mbox_lock);
+	mutex_init(&adapter->mcc_lock);
 	mutex_init(&adapter->rx_filter_lock);
-	spin_lock_init(&adapter->mcc_lock);
 	spin_lock_init(&adapter->mcc_cq_lock);
 	init_completion(&adapter->et_cmd_compl);
 
@@ -5723,6 +5725,8 @@ static void be_remove(struct pci_dev *pdev)
 
 	be_unmap_pci_bars(adapter);
 	be_drv_cleanup(adapter);
+
+	pci_disable_pcie_error_reporting(pdev);
 
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
@@ -5841,6 +5845,10 @@ static int be_probe(struct pci_dev *pdev, const struct pci_device_id *pdev_id)
 		goto free_netdev;
 	}
 
+	status = pci_enable_pcie_error_reporting(pdev);
+	if (!status)
+		dev_info(&pdev->dev, "PCIe error reporting enabled\n");
+
 	status = be_map_pci_bars(adapter);
 	if (status)
 		goto free_netdev;
@@ -5885,6 +5893,7 @@ drv_cleanup:
 unmap_bars:
 	be_unmap_pci_bars(adapter);
 free_netdev:
+	pci_disable_pcie_error_reporting(pdev);
 	free_netdev(netdev);
 rel_reg:
 	pci_release_regions(pdev);

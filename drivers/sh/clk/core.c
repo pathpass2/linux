@@ -569,7 +569,7 @@ long clk_round_rate(struct clk *clk, unsigned long rate)
 EXPORT_SYMBOL_GPL(clk_round_rate);
 
 #ifdef CONFIG_PM
-static void clks_core_resume(void *data)
+static void clks_core_resume(void)
 {
 	struct clk *clkp;
 
@@ -588,17 +588,13 @@ static void clks_core_resume(void *data)
 	}
 }
 
-static const struct syscore_ops clks_syscore_ops = {
+static struct syscore_ops clks_syscore_ops = {
 	.resume = clks_core_resume,
-};
-
-static struct syscore clks_syscore = {
-	.ops = &clks_syscore_ops,
 };
 
 static int __init clk_syscore_init(void)
 {
-	register_syscore(&clks_syscore);
+	register_syscore_ops(&clks_syscore_ops);
 
 	return 0;
 }

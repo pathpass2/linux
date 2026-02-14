@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
 
 /* Authors: Bernard Metzler <bmt@zurich.ibm.com> */
 /* Copyright (c) 2008-2019, IBM Corporation */
@@ -204,7 +204,7 @@ static int siw_qp_readq_init(struct siw_qp *qp, int irq_size, int orq_size)
 {
 	if (irq_size) {
 		irq_size = roundup_pow_of_two(irq_size);
-		qp->irq = vcalloc(irq_size, sizeof(struct siw_sqe));
+		qp->irq = vzalloc(irq_size * sizeof(struct siw_sqe));
 		if (!qp->irq) {
 			qp->attrs.irq_size = 0;
 			return -ENOMEM;
@@ -212,7 +212,7 @@ static int siw_qp_readq_init(struct siw_qp *qp, int irq_size, int orq_size)
 	}
 	if (orq_size) {
 		orq_size = roundup_pow_of_two(orq_size);
-		qp->orq = vcalloc(orq_size, sizeof(struct siw_sqe));
+		qp->orq = vzalloc(orq_size * sizeof(struct siw_sqe));
 		if (!qp->orq) {
 			qp->attrs.orq_size = 0;
 			qp->attrs.irq_size = 0;
@@ -223,6 +223,33 @@ static int siw_qp_readq_init(struct siw_qp *qp, int irq_size, int orq_size)
 	qp->attrs.irq_size = irq_size;
 	qp->attrs.orq_size = orq_size;
 	siw_dbg_qp(qp, "ORD %d, IRD %d\n", orq_size, irq_size);
+	return 0;
+}
+
+static int siw_qp_enable_crc(struct siw_qp *qp)
+{
+	struct siw_rx_stream *c_rx = &qp->rx_stream;
+	struct siw_iwarp_tx *c_tx = &qp->tx_ctx;
+	int size;
+
+	if (siw_crypto_shash == NULL)
+		return -ENOENT;
+
+	size = crypto_shash_descsize(siw_crypto_shash) +
+		sizeof(struct shash_desc);
+
+	c_tx->mpa_crc_hd = kzalloc(size, GFP_KERNEL);
+	c_rx->mpa_crc_hd = kzalloc(size, GFP_KERNEL);
+	if (!c_tx->mpa_crc_hd || !c_rx->mpa_crc_hd) {
+		kfree(c_tx->mpa_crc_hd);
+		kfree(c_rx->mpa_crc_hd);
+		c_tx->mpa_crc_hd = NULL;
+		c_rx->mpa_crc_hd = NULL;
+		return -ENOMEM;
+	}
+	c_tx->mpa_crc_hd->tfm = siw_crypto_shash;
+	c_rx->mpa_crc_hd->tfm = siw_crypto_shash;
+
 	return 0;
 }
 
@@ -556,15 +583,20 @@ void siw_send_terminate(struct siw_qp *qp)
 
 	term->ctrl.mpa_len =
 		cpu_to_be16(len_terminate - (MPA_HDR_SIZE + MPA_CRC_SIZE));
-	if (qp->tx_ctx.mpa_crc_enabled) {
-		siw_crc_init(&qp->tx_ctx.mpa_crc);
-		siw_crc_update(&qp->tx_ctx.mpa_crc,
-			       iov[0].iov_base, iov[0].iov_len);
+	if (qp->tx_ctx.mpa_crc_hd) {
+		crypto_shash_init(qp->tx_ctx.mpa_crc_hd);
+		if (crypto_shash_update(qp->tx_ctx.mpa_crc_hd,
+					(u8 *)iov[0].iov_base,
+					iov[0].iov_len))
+			goto out;
+
 		if (num_frags == 3) {
-			siw_crc_update(&qp->tx_ctx.mpa_crc,
-				       iov[1].iov_base, iov[1].iov_len);
+			if (crypto_shash_update(qp->tx_ctx.mpa_crc_hd,
+						(u8 *)iov[1].iov_base,
+						iov[1].iov_len))
+				goto out;
 		}
-		siw_crc_final(&qp->tx_ctx.mpa_crc, (u8 *)&crc);
+		crypto_shash_final(qp->tx_ctx.mpa_crc_hd, (u8 *)&crc);
 	}
 
 	rv = kernel_sendmsg(s, &msg, iov, num_frags, len_terminate);
@@ -572,6 +604,7 @@ void siw_send_terminate(struct siw_qp *qp)
 		   rv == len_terminate ? "success" : "failure",
 		   __rdmap_term_layer(term), __rdmap_term_etype(term),
 		   __rdmap_term_ecode(term), rv);
+out:
 	kfree(term);
 	kfree(err_hdr);
 }
@@ -610,10 +643,9 @@ static int siw_qp_nextstate_from_idle(struct siw_qp *qp,
 	switch (attrs->state) {
 	case SIW_QP_STATE_RTS:
 		if (attrs->flags & SIW_MPA_CRC) {
-			siw_crc_init(&qp->tx_ctx.mpa_crc);
-			qp->tx_ctx.mpa_crc_enabled = true;
-			siw_crc_init(&qp->rx_stream.mpa_crc);
-			qp->rx_stream.mpa_crc_enabled = true;
+			rv = siw_qp_enable_crc(qp);
+			if (rv)
+				break;
 		}
 		if (!(mask & SIW_QP_ATTR_LLP_HANDLE)) {
 			siw_dbg_qp(qp, "no socket\n");
@@ -1151,7 +1183,7 @@ int siw_rqe_complete(struct siw_qp *qp, struct siw_rqe *rqe, u32 bytes,
 /*
  * siw_sq_flush()
  *
- * Flush SQ and ORQ entries to CQ.
+ * Flush SQ and ORRQ entries to CQ.
  *
  * Must be called with QP state write lock held.
  * Therefore, SQ and ORQ lock must not be taken.

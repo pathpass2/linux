@@ -25,11 +25,6 @@
 #define MAX_TILE_COLS 20
 #define MAX_TILE_ROWS 22
 
-static bool hevc_use_compression = IS_ENABLED(CONFIG_VIDEO_HANTRO_HEVC_RFC);
-module_param_named(hevc_use_compression, hevc_use_compression, bool, 0644);
-MODULE_PARM_DESC(hevc_use_compression,
-		 "Use reference frame compression for HEVC");
-
 void hantro_hevc_ref_init(struct hantro_ctx *ctx)
 {
 	struct hantro_hevc_dec_hw_ctx *hevc_dec = &ctx->hevc_dec;
@@ -114,7 +109,7 @@ static int tile_buffer_reallocate(struct hantro_ctx *ctx)
 						       &hevc_dec->tile_filter.dma,
 						       GFP_KERNEL);
 	if (!hevc_dec->tile_filter.cpu)
-		return -ENOMEM;
+		goto err_free_tile_buffers;
 	hevc_dec->tile_filter.size = size;
 
 	size = (VERT_SAO_RAM_SIZE * height64 * (num_tile_cols - 1) * ctx->bit_depth) / 8;
@@ -130,19 +125,12 @@ static int tile_buffer_reallocate(struct hantro_ctx *ctx)
 						    &hevc_dec->tile_bsd.dma,
 						    GFP_KERNEL);
 	if (!hevc_dec->tile_bsd.cpu)
-		goto err_free_sao_buffers;
+		goto err_free_tile_buffers;
 	hevc_dec->tile_bsd.size = size;
 
 	hevc_dec->num_tile_cols_allocated = num_tile_cols;
 
 	return 0;
-
-err_free_sao_buffers:
-	if (hevc_dec->tile_sao.cpu)
-		dma_free_coherent(vpu->dev, hevc_dec->tile_sao.size,
-				  hevc_dec->tile_sao.cpu,
-				  hevc_dec->tile_sao.dma);
-	hevc_dec->tile_sao.cpu = NULL;
 
 err_free_tile_buffers:
 	if (hevc_dec->tile_filter.cpu)
@@ -150,6 +138,18 @@ err_free_tile_buffers:
 				  hevc_dec->tile_filter.cpu,
 				  hevc_dec->tile_filter.dma);
 	hevc_dec->tile_filter.cpu = NULL;
+
+	if (hevc_dec->tile_sao.cpu)
+		dma_free_coherent(vpu->dev, hevc_dec->tile_sao.size,
+				  hevc_dec->tile_sao.cpu,
+				  hevc_dec->tile_sao.dma);
+	hevc_dec->tile_sao.cpu = NULL;
+
+	if (hevc_dec->tile_bsd.cpu)
+		dma_free_coherent(vpu->dev, hevc_dec->tile_bsd.size,
+				  hevc_dec->tile_bsd.cpu,
+				  hevc_dec->tile_bsd.dma);
+	hevc_dec->tile_bsd.cpu = NULL;
 
 	return -ENOMEM;
 }
@@ -279,9 +279,6 @@ int hantro_hevc_dec_init(struct hantro_ctx *ctx)
 	hevc_dec->scaling_lists.size = SCALING_LIST_SIZE;
 
 	hantro_hevc_ref_init(ctx);
-
-	hevc_dec->use_compression =
-		hevc_use_compression & hantro_needs_postproc(ctx, ctx->vpu_dst_fmt);
 
 	return 0;
 }

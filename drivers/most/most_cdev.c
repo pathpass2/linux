@@ -100,7 +100,7 @@ static void destroy_cdev(struct comp_channel *c)
 
 static void destroy_channel(struct comp_channel *c)
 {
-	ida_free(&comp.minor_id, MINOR(c->devno));
+	ida_simple_remove(&comp.minor_id, MINOR(c->devno));
 	kfifo_free(&c->fifo);
 	kfree(c);
 }
@@ -425,7 +425,7 @@ static int comp_probe(struct most_interface *iface, int channel_id,
 	if (c)
 		return -EEXIST;
 
-	current_minor = ida_alloc(&comp.minor_id, GFP_KERNEL);
+	current_minor = ida_simple_get(&comp.minor_id, 0, 0, GFP_KERNEL);
 	if (current_minor < 0)
 		return current_minor;
 
@@ -472,7 +472,7 @@ err_del_cdev_and_free_channel:
 err_free_c:
 	kfree(c);
 err_remove_ida:
-	ida_free(&comp.minor_id, current_minor);
+	ida_simple_remove(&comp.minor_id, current_minor);
 	return retval;
 }
 
@@ -491,7 +491,7 @@ static int __init most_cdev_init(void)
 {
 	int err;
 
-	comp.class = class_create("most_cdev");
+	comp.class = class_create(THIS_MODULE, "most_cdev");
 	if (IS_ERR(comp.class))
 		return PTR_ERR(comp.class);
 

@@ -263,10 +263,10 @@ static int ksz_ptp_enable_mode(struct ksz_device *dev)
 {
 	struct ksz_tagger_data *tagger_data = ksz_tagger_data(dev->ds);
 	struct ksz_ptp_data *ptp_data = &dev->ptp_data;
-	const u16 *regs = dev->info->regs;
 	struct ksz_port *prt;
 	struct dsa_port *dp;
 	bool tag_en = false;
+	int ret;
 
 	dsa_switch_for_each_user_port(dp, dev->ds) {
 		prt = &dev->ports[dp->index];
@@ -277,21 +277,23 @@ static int ksz_ptp_enable_mode(struct ksz_device *dev)
 	}
 
 	if (tag_en) {
-		ptp_schedule_worker(ptp_data->clock, 0);
+		ret = ptp_schedule_worker(ptp_data->clock, 0);
+		if (ret)
+			return ret;
 	} else {
 		ptp_cancel_worker_sync(ptp_data->clock);
 	}
 
 	tagger_data->hwtstamp_set_state(dev->ds, tag_en);
 
-	return ksz_rmw16(dev, regs[PTP_MSG_CONF1], PTP_ENABLE,
+	return ksz_rmw16(dev, REG_PTP_MSG_CONF1, PTP_ENABLE,
 			 tag_en ? PTP_ENABLE : 0);
 }
 
 /* The function is return back the capability of timestamping feature when
  * requested through ethtool -T <interface> utility
  */
-int ksz_get_ts_info(struct dsa_switch *ds, int port, struct kernel_ethtool_ts_info *ts)
+int ksz_get_ts_info(struct dsa_switch *ds, int port, struct ethtool_ts_info *ts)
 {
 	struct ksz_device *dev = ds->priv;
 	struct ksz_ptp_data *ptp_data;
@@ -320,23 +322,23 @@ int ksz_get_ts_info(struct dsa_switch *ds, int port, struct kernel_ethtool_ts_in
 	return 0;
 }
 
-int ksz_hwtstamp_get(struct dsa_switch *ds, int port,
-		     struct kernel_hwtstamp_config *config)
+int ksz_hwtstamp_get(struct dsa_switch *ds, int port, struct ifreq *ifr)
 {
 	struct ksz_device *dev = ds->priv;
+	struct hwtstamp_config *config;
 	struct ksz_port *prt;
 
 	prt = &dev->ports[port];
-	*config = prt->tstamp_config;
+	config = &prt->tstamp_config;
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, config, sizeof(*config)) ?
+		-EFAULT : 0;
 }
 
 static int ksz_set_hwtstamp_config(struct ksz_device *dev,
 				   struct ksz_port *prt,
-				   struct kernel_hwtstamp_config *config)
+				   struct hwtstamp_config *config)
 {
-	const u16 *regs = dev->info->regs;
 	int ret;
 
 	if (config->flags)
@@ -355,7 +357,7 @@ static int ksz_set_hwtstamp_config(struct ksz_device *dev,
 		prt->ptpmsg_irq[KSZ_PDRES_MSG].ts_en = false;
 		prt->hwts_tx_en = true;
 
-		ret = ksz_rmw16(dev, regs[PTP_MSG_CONF1], PTP_1STEP, PTP_1STEP);
+		ret = ksz_rmw16(dev, REG_PTP_MSG_CONF1, PTP_1STEP, PTP_1STEP);
 		if (ret)
 			return ret;
 
@@ -369,7 +371,7 @@ static int ksz_set_hwtstamp_config(struct ksz_device *dev,
 		prt->ptpmsg_irq[KSZ_PDRES_MSG].ts_en = true;
 		prt->hwts_tx_en = true;
 
-		ret = ksz_rmw16(dev, regs[PTP_MSG_CONF1], PTP_1STEP, 0);
+		ret = ksz_rmw16(dev, REG_PTP_MSG_CONF1, PTP_1STEP, 0);
 		if (ret)
 			return ret;
 
@@ -405,21 +407,26 @@ static int ksz_set_hwtstamp_config(struct ksz_device *dev,
 	return ksz_ptp_enable_mode(dev);
 }
 
-int ksz_hwtstamp_set(struct dsa_switch *ds, int port,
-		     struct kernel_hwtstamp_config *config,
-		     struct netlink_ext_ack *extack)
+int ksz_hwtstamp_set(struct dsa_switch *ds, int port, struct ifreq *ifr)
 {
 	struct ksz_device *dev = ds->priv;
+	struct hwtstamp_config config;
 	struct ksz_port *prt;
 	int ret;
 
 	prt = &dev->ports[port];
 
-	ret = ksz_set_hwtstamp_config(dev, prt, config);
+	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	ret = ksz_set_hwtstamp_config(dev, prt, &config);
 	if (ret)
 		return ret;
 
-	prt->tstamp_config = *config;
+	memcpy(&prt->tstamp_config, &config, sizeof(config));
+
+	if (copy_to_user(ifr->ifr_data, &config, sizeof(config)))
+		return -EFAULT;
 
 	return 0;
 }
@@ -550,7 +557,7 @@ static void ksz_ptp_txtstamp_skb(struct ksz_device *dev,
 	struct skb_shared_hwtstamps hwtstamps = {};
 	int ret;
 
-	/* timeout must include DSA conduit to transmit data, tstamp latency,
+	/* timeout must include DSA master to transmit data, tstamp latency,
 	 * IRQ latency and time for reading the time stamp.
 	 */
 	ret = wait_for_completion_timeout(&prt->tstamp_msg_comp,
@@ -587,26 +594,25 @@ void ksz_port_deferred_xmit(struct kthread_work *work)
 
 static int _ksz_ptp_gettime(struct ksz_device *dev, struct timespec64 *ts)
 {
-	const u16 *regs = dev->info->regs;
 	u32 nanoseconds;
 	u32 seconds;
 	u8 phase;
 	int ret;
 
 	/* Copy current PTP clock into shadow registers and read */
-	ret = ksz_rmw16(dev, regs[PTP_CLK_CTRL], PTP_READ_TIME, PTP_READ_TIME);
+	ret = ksz_rmw16(dev, REG_PTP_CLK_CTRL, PTP_READ_TIME, PTP_READ_TIME);
 	if (ret)
 		return ret;
 
-	ret = ksz_read8(dev, regs[PTP_RTC_SUB_NANOSEC], &phase);
+	ret = ksz_read8(dev, REG_PTP_RTC_SUB_NANOSEC__2, &phase);
 	if (ret)
 		return ret;
 
-	ret = ksz_read32(dev, regs[PTP_RTC_NANOSEC], &nanoseconds);
+	ret = ksz_read32(dev, REG_PTP_RTC_NANOSEC, &nanoseconds);
 	if (ret)
 		return ret;
 
-	ret = ksz_read32(dev, regs[PTP_RTC_SEC], &seconds);
+	ret = ksz_read32(dev, REG_PTP_RTC_SEC, &seconds);
 	if (ret)
 		return ret;
 
@@ -679,25 +685,24 @@ static int ksz_ptp_settime(struct ptp_clock_info *ptp,
 {
 	struct ksz_ptp_data *ptp_data = ptp_caps_to_data(ptp);
 	struct ksz_device *dev = ptp_data_to_ksz_dev(ptp_data);
-	const u16 *regs = dev->info->regs;
 	int ret;
 
 	mutex_lock(&ptp_data->lock);
 
 	/* Write to shadow registers and Load PTP clock */
-	ret = ksz_write16(dev, regs[PTP_RTC_SUB_NANOSEC], PTP_RTC_0NS);
+	ret = ksz_write16(dev, REG_PTP_RTC_SUB_NANOSEC__2, PTP_RTC_0NS);
 	if (ret)
 		goto unlock;
 
-	ret = ksz_write32(dev, regs[PTP_RTC_NANOSEC], ts->tv_nsec);
+	ret = ksz_write32(dev, REG_PTP_RTC_NANOSEC, ts->tv_nsec);
 	if (ret)
 		goto unlock;
 
-	ret = ksz_write32(dev, regs[PTP_RTC_SEC], ts->tv_sec);
+	ret = ksz_write32(dev, REG_PTP_RTC_SEC, ts->tv_sec);
 	if (ret)
 		goto unlock;
 
-	ret = ksz_rmw16(dev, regs[PTP_CLK_CTRL], PTP_LOAD_TIME, PTP_LOAD_TIME);
+	ret = ksz_rmw16(dev, REG_PTP_CLK_CTRL, PTP_LOAD_TIME, PTP_LOAD_TIME);
 	if (ret)
 		goto unlock;
 
@@ -727,7 +732,6 @@ static int ksz_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 {
 	struct ksz_ptp_data *ptp_data = ptp_caps_to_data(ptp);
 	struct ksz_device *dev = ptp_data_to_ksz_dev(ptp_data);
-	const u16 *regs = dev->info->regs;
 	u64 base, adj;
 	bool negative;
 	u32 data32;
@@ -744,16 +748,16 @@ static int ksz_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 		if (!negative)
 			data32 |= PTP_RATE_DIR;
 
-		ret = ksz_write32(dev, regs[PTP_SUBNANOSEC_RATE], data32);
+		ret = ksz_write32(dev, REG_PTP_SUBNANOSEC_RATE, data32);
 		if (ret)
 			goto unlock;
 
-		ret = ksz_rmw16(dev, regs[PTP_CLK_CTRL], PTP_CLK_ADJ_ENABLE,
+		ret = ksz_rmw16(dev, REG_PTP_CLK_CTRL, PTP_CLK_ADJ_ENABLE,
 				PTP_CLK_ADJ_ENABLE);
 		if (ret)
 			goto unlock;
 	} else {
-		ret = ksz_rmw16(dev, regs[PTP_CLK_CTRL], PTP_CLK_ADJ_ENABLE, 0);
+		ret = ksz_rmw16(dev, REG_PTP_CLK_CTRL, PTP_CLK_ADJ_ENABLE, 0);
 		if (ret)
 			goto unlock;
 	}
@@ -768,7 +772,6 @@ static int ksz_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	struct ksz_ptp_data *ptp_data = ptp_caps_to_data(ptp);
 	struct ksz_device *dev = ptp_data_to_ksz_dev(ptp_data);
 	struct timespec64 delta64 = ns_to_timespec64(delta);
-	const u16 *regs = dev->info->regs;
 	s32 sec, nsec;
 	u16 data16;
 	int ret;
@@ -780,15 +783,15 @@ static int ksz_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	 */
 	sec = div_s64_rem(delta, NSEC_PER_SEC, &nsec);
 
-	ret = ksz_write32(dev, regs[PTP_RTC_NANOSEC], abs(nsec));
+	ret = ksz_write32(dev, REG_PTP_RTC_NANOSEC, abs(nsec));
 	if (ret)
 		goto unlock;
 
-	ret = ksz_write32(dev, regs[PTP_RTC_SEC], abs(sec));
+	ret = ksz_write32(dev, REG_PTP_RTC_SEC, abs(sec));
 	if (ret)
 		goto unlock;
 
-	ret = ksz_read16(dev, regs[PTP_CLK_CTRL], &data16);
+	ret = ksz_read16(dev, REG_PTP_CLK_CTRL, &data16);
 	if (ret)
 		goto unlock;
 
@@ -800,7 +803,7 @@ static int ksz_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	else
 		data16 |= PTP_STEP_DIR;
 
-	ret = ksz_write16(dev, regs[PTP_CLK_CTRL], data16);
+	ret = ksz_write16(dev, REG_PTP_CLK_CTRL, data16);
 	if (ret)
 		goto unlock;
 
@@ -888,10 +891,9 @@ out:
 static int ksz_ptp_start_clock(struct ksz_device *dev)
 {
 	struct ksz_ptp_data *ptp_data = &dev->ptp_data;
-	const u16 *regs = dev->info->regs;
 	int ret;
 
-	ret = ksz_rmw16(dev, regs[PTP_CLK_CTRL], PTP_CLK_ENABLE, PTP_CLK_ENABLE);
+	ret = ksz_rmw16(dev, REG_PTP_CLK_CTRL, PTP_CLK_ENABLE, PTP_CLK_ENABLE);
 	if (ret)
 		return ret;
 
@@ -904,7 +906,6 @@ static int ksz_ptp_start_clock(struct ksz_device *dev)
 int ksz_ptp_clock_register(struct dsa_switch *ds)
 {
 	struct ksz_device *dev = ds->priv;
-	const u16 *regs = dev->info->regs;
 	struct ksz_ptp_data *ptp_data;
 	int ret;
 	u8 i;
@@ -944,7 +945,7 @@ int ksz_ptp_clock_register(struct dsa_switch *ds)
 	/* Currently only P2P mode is supported. When 802_1AS bit is set, it
 	 * forwards all PTP packets to host port and none to other ports.
 	 */
-	ret = ksz_rmw16(dev, regs[PTP_MSG_CONF1], PTP_TC_P2P | PTP_802_1AS,
+	ret = ksz_rmw16(dev, REG_PTP_MSG_CONF1, PTP_TC_P2P | PTP_802_1AS,
 			PTP_TC_P2P | PTP_802_1AS);
 	if (ret)
 		return ret;
@@ -967,11 +968,6 @@ void ksz_ptp_clock_unregister(struct dsa_switch *ds)
 		ptp_clock_unregister(ptp_data->clock);
 }
 
-static int ksz_read_ts(struct ksz_port *port, u16 reg, u32 *ts)
-{
-	return ksz_read32(port->ksz_dev, reg, ts);
-}
-
 static irqreturn_t ksz_ptp_msg_thread_fn(int irq, void *dev_id)
 {
 	struct ksz_ptp_irq *ptpmsg_irq = dev_id;
@@ -985,7 +981,7 @@ static irqreturn_t ksz_ptp_msg_thread_fn(int irq, void *dev_id)
 	dev = port->ksz_dev;
 
 	if (ptpmsg_irq->ts_en) {
-		ret = ksz_read_ts(port, ptpmsg_irq->ts_reg, &tstamp_raw);
+		ret = ksz_read32(dev, ptpmsg_irq->ts_reg, &tstamp_raw);
 		if (ret)
 			return IRQ_NONE;
 
@@ -1021,7 +1017,7 @@ static irqreturn_t ksz_ptp_irq_thread_fn(int irq, void *dev_id)
 		return IRQ_NONE;
 
 	for (n = 0; n < ptpirq->nirqs; ++n) {
-		if (data & BIT(n + ptpirq->irq0_offset)) {
+		if (data & BIT(n + KSZ_PTP_INT_START)) {
 			sub_irq = irq_find_mapping(ptpirq->domain, n);
 			handle_nested_irq(sub_irq);
 			++nhandled;
@@ -1036,14 +1032,14 @@ static void ksz_ptp_irq_mask(struct irq_data *d)
 {
 	struct ksz_irq *kirq = irq_data_get_irq_chip_data(d);
 
-	kirq->masked &= ~BIT(d->hwirq + kirq->irq0_offset);
+	kirq->masked &= ~BIT(d->hwirq + KSZ_PTP_INT_START);
 }
 
 static void ksz_ptp_irq_unmask(struct irq_data *d)
 {
 	struct ksz_irq *kirq = irq_data_get_irq_chip_data(d);
 
-	kirq->masked |= BIT(d->hwirq + kirq->irq0_offset);
+	kirq->masked |= BIT(d->hwirq + KSZ_PTP_INT_START);
 }
 
 static void ksz_ptp_irq_bus_lock(struct irq_data *d)
@@ -1106,18 +1102,18 @@ static int ksz_ptp_msg_irq_setup(struct ksz_port *port, u8 n)
 	static const char * const name[] = {"pdresp-msg", "xdreq-msg",
 					    "sync-msg"};
 	const struct ksz_dev_ops *ops = port->ksz_dev->dev_ops;
-	struct ksz_irq *ptpirq = &port->ptpirq;
 	struct ksz_ptp_irq *ptpmsg_irq;
 
 	ptpmsg_irq = &port->ptpmsg_irq[n];
-	ptpmsg_irq->num = irq_create_mapping(ptpirq->domain, n);
-	if (!ptpmsg_irq->num)
-		return -EINVAL;
 
 	ptpmsg_irq->port = port;
 	ptpmsg_irq->ts_reg = ops->get_port_addr(port->num, ts_reg[n]);
 
-	strscpy(ptpmsg_irq->name, name[n]);
+	snprintf(ptpmsg_irq->name, sizeof(ptpmsg_irq->name), name[n]);
+
+	ptpmsg_irq->num = irq_find_mapping(port->ptpirq.domain, n);
+	if (ptpmsg_irq->num < 0)
+		return ptpmsg_irq->num;
 
 	return request_threaded_irq(ptpmsg_irq->num, NULL,
 				    ksz_ptp_msg_thread_fn, IRQF_ONESHOT,
@@ -1139,20 +1135,21 @@ int ksz_ptp_irq_setup(struct dsa_switch *ds, u8 p)
 	ptpirq->reg_mask = ops->get_port_addr(p, REG_PTP_PORT_TX_INT_ENABLE__2);
 	ptpirq->reg_status = ops->get_port_addr(p,
 						REG_PTP_PORT_TX_INT_STATUS__2);
-	ptpirq->irq0_offset = KSZ_PTP_INT_START;
-
 	snprintf(ptpirq->name, sizeof(ptpirq->name), "ptp-irq-%d", p);
 
 	init_completion(&port->tstamp_msg_comp);
 
-	ptpirq->domain = irq_domain_create_linear(dev_fwnode(dev->dev), ptpirq->nirqs,
-						  &ksz_ptp_irq_domain_ops, ptpirq);
+	ptpirq->domain = irq_domain_add_linear(dev->dev->of_node, ptpirq->nirqs,
+					       &ksz_ptp_irq_domain_ops, ptpirq);
 	if (!ptpirq->domain)
 		return -ENOMEM;
 
+	for (irq = 0; irq < ptpirq->nirqs; irq++)
+		irq_create_mapping(ptpirq->domain, irq);
+
 	ptpirq->irq_num = irq_find_mapping(port->pirq.domain, PORT_SRC_PTP_INT);
-	if (!ptpirq->irq_num) {
-		ret = -EINVAL;
+	if (ptpirq->irq_num < 0) {
+		ret = ptpirq->irq_num;
 		goto out;
 	}
 
@@ -1171,11 +1168,12 @@ int ksz_ptp_irq_setup(struct dsa_switch *ds, u8 p)
 
 out_ptp_msg:
 	free_irq(ptpirq->irq_num, ptpirq);
-	while (irq--) {
+	while (irq--)
 		free_irq(port->ptpmsg_irq[irq].num, &port->ptpmsg_irq[irq]);
-		irq_dispose_mapping(port->ptpmsg_irq[irq].num);
-	}
 out:
+	for (irq = 0; irq < ptpirq->nirqs; irq++)
+		irq_dispose_mapping(port->ptpmsg_irq[irq].num);
+
 	irq_domain_remove(ptpirq->domain);
 
 	return ret;

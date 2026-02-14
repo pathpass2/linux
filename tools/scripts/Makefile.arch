@@ -7,8 +7,8 @@ HOSTARCH := $(shell uname -m | sed -e s/i.86/x86/ -e s/x86_64/x86/ \
                                   -e s/sh[234].*/sh/ -e s/aarch64.*/arm64/ \
                                   -e s/riscv.*/riscv/ -e s/loongarch.*/loongarch/)
 
-ifeq ($(strip $(ARCH)),)
-override ARCH := $(HOSTARCH)
+ifndef ARCH
+ARCH := $(HOSTARCH)
 endif
 
 SRCARCH := $(ARCH)
@@ -27,6 +27,11 @@ ifeq ($(ARCH),sparc32)
 endif
 ifeq ($(ARCH),sparc64)
        SRCARCH := sparc
+endif
+
+# Additional ARCH settings for sh
+ifeq ($(ARCH),sh64)
+       SRCARCH := sh
 endif
 
 # Additional ARCH settings for loongarch

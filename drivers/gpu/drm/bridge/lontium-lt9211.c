@@ -16,6 +16,7 @@
 #include <linux/i2c.h>
 #include <linux/media-bus-format.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -89,7 +90,7 @@ static const struct regmap_config lt9211_regmap_config = {
 	.volatile_table	= &lt9211_rw_table,
 	.ranges = &lt9211_range,
 	.num_ranges = 1,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.max_register = 0xda00,
 };
 
@@ -99,12 +100,11 @@ static struct lt9211 *bridge_to_lt9211(struct drm_bridge *bridge)
 }
 
 static int lt9211_attach(struct drm_bridge *bridge,
-			 struct drm_encoder *encoder,
 			 enum drm_bridge_attach_flags flags)
 {
 	struct lt9211 *ctx = bridge_to_lt9211(bridge);
 
-	return drm_bridge_attach(encoder, ctx->panel_bridge,
+	return drm_bridge_attach(bridge->encoder, ctx->panel_bridge,
 				 &ctx->bridge, flags);
 }
 
@@ -121,7 +121,8 @@ static int lt9211_read_chipid(struct lt9211 *ctx)
 	}
 
 	/* Test for known Chip ID. */
-	if (chipid[0] != REG_CHIPID0_VALUE || chipid[1] != REG_CHIPID1_VALUE) {
+	if (chipid[0] != REG_CHIPID0_VALUE || chipid[1] != REG_CHIPID1_VALUE ||
+	    chipid[2] != REG_CHIPID2_VALUE) {
 		dev_err(ctx->dev, "Unknown Chip ID: 0x%02x 0x%02x 0x%02x\n",
 			chipid[0], chipid[1], chipid[2]);
 		return -EINVAL;
@@ -455,9 +456,10 @@ static int lt9211_configure_tx(struct lt9211 *ctx, bool jeida,
 }
 
 static void lt9211_atomic_enable(struct drm_bridge *bridge,
-				 struct drm_atomic_state *state)
+				 struct drm_bridge_state *old_bridge_state)
 {
 	struct lt9211 *ctx = bridge_to_lt9211(bridge);
+	struct drm_atomic_state *state = old_bridge_state->base.state;
 	const struct drm_bridge_state *bridge_state;
 	const struct drm_crtc_state *crtc_state;
 	const struct drm_display_mode *mode;
@@ -552,7 +554,7 @@ static void lt9211_atomic_enable(struct drm_bridge *bridge,
 }
 
 static void lt9211_atomic_disable(struct drm_bridge *bridge,
-				  struct drm_atomic_state *state)
+				  struct drm_bridge_state *old_bridge_state)
 {
 	struct lt9211 *ctx = bridge_to_lt9211(bridge);
 	int ret;
@@ -707,9 +709,7 @@ static int lt9211_host_attach(struct lt9211 *ctx)
 	dsi->lanes = dsi_lanes;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
-			  MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO_NO_HSA |
-			  MIPI_DSI_MODE_VIDEO_NO_HFP | MIPI_DSI_MODE_VIDEO_NO_HBP |
-			  MIPI_DSI_MODE_NO_EOT_PACKET;
+			  MIPI_DSI_MODE_VIDEO_HSE;
 
 	ret = devm_mipi_dsi_attach(dev, dsi);
 	if (ret < 0) {
@@ -726,9 +726,9 @@ static int lt9211_probe(struct i2c_client *client)
 	struct lt9211 *ctx;
 	int ret;
 
-	ctx = devm_drm_bridge_alloc(dev, struct lt9211, bridge, &lt9211_funcs);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
 
 	ctx->dev = dev;
 
@@ -754,6 +754,7 @@ static int lt9211_probe(struct i2c_client *client)
 	dev_set_drvdata(dev, ctx);
 	i2c_set_clientdata(client, ctx);
 
+	ctx->bridge.funcs = &lt9211_funcs;
 	ctx->bridge.of_node = dev->of_node;
 	drm_bridge_add(&ctx->bridge);
 
@@ -771,7 +772,7 @@ static void lt9211_remove(struct i2c_client *client)
 	drm_bridge_remove(&ctx->bridge);
 }
 
-static const struct i2c_device_id lt9211_id[] = {
+static struct i2c_device_id lt9211_id[] = {
 	{ "lontium,lt9211" },
 	{},
 };
@@ -784,7 +785,7 @@ static const struct of_device_id lt9211_match_table[] = {
 MODULE_DEVICE_TABLE(of, lt9211_match_table);
 
 static struct i2c_driver lt9211_driver = {
-	.probe = lt9211_probe,
+	.probe_new = lt9211_probe,
 	.remove = lt9211_remove,
 	.id_table = lt9211_id,
 	.driver = {

@@ -640,9 +640,7 @@ static ssize_t bh1770_power_state_store(struct device *dev,
 
 	mutex_lock(&chip->mutex);
 	if (value) {
-		ret = pm_runtime_resume_and_get(dev);
-		if (ret < 0)
-			goto leave;
+		pm_runtime_get_sync(dev);
 
 		ret = bh1770_lux_rate(chip, chip->lux_rate_index);
 		if (ret < 0) {
@@ -682,15 +680,15 @@ static ssize_t bh1770_lux_result_show(struct device *dev,
 {
 	struct bh1770_chip *chip =  dev_get_drvdata(dev);
 	ssize_t ret;
-	long time_left;
+	long timeout;
 
 	if (pm_runtime_suspended(dev))
 		return -EIO; /* Chip is not enabled at all */
 
-	time_left = wait_event_interruptible_timeout(chip->wait,
-						     !chip->lux_wait_result,
-						     msecs_to_jiffies(BH1770_TIMEOUT));
-	if (!time_left)
+	timeout = wait_event_interruptible_timeout(chip->wait,
+					!chip->lux_wait_result,
+					msecs_to_jiffies(BH1770_TIMEOUT));
+	if (!timeout)
 		return -EIO;
 
 	mutex_lock(&chip->mutex);
@@ -1363,8 +1361,8 @@ static int bh1770_runtime_resume(struct device *dev)
 #endif
 
 static const struct i2c_device_id bh1770_id[] = {
-	{ "bh1770glc" },
-	{ "sfh7770" },
+	{"bh1770glc", 0 },
+	{"sfh7770", 0 },
 	{}
 };
 
@@ -1376,11 +1374,11 @@ static const struct dev_pm_ops bh1770_pm_ops = {
 };
 
 static struct i2c_driver bh1770_driver = {
-	.driver	  = {
+	.driver	 = {
 		.name	= "bh1770glc",
 		.pm	= &bh1770_pm_ops,
 	},
-	.probe    = bh1770_probe,
+	.probe_new = bh1770_probe,
 	.remove	  = bh1770_remove,
 	.id_table = bh1770_id,
 };

@@ -29,6 +29,7 @@
 #include <bpf/libbpf.h>
 
 #include "hid_mouse.skel.h"
+#include "hid_bpf_attach.h"
 
 static bool running = true;
 
@@ -75,11 +76,18 @@ static int get_hid_id(const char *path)
 int main(int argc, char **argv)
 {
 	struct hid_mouse *skel;
-	struct bpf_link *link;
+	struct bpf_program *prog;
 	int err;
 	const char *optstr = "";
 	const char *sysfs_path;
-	int opt, hid_id;
+	int opt, hid_id, attach_fd;
+	struct attach_prog_args args = {
+		.retval = -1,
+	};
+	DECLARE_LIBBPF_OPTS(bpf_test_run_opts, tattr,
+			    .ctx_in = &args,
+			    .ctx_size_in = sizeof(args),
+	);
 
 	while ((opt = getopt(argc, argv, optstr)) != -1) {
 		switch (opt) {
@@ -100,7 +108,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	skel = hid_mouse__open();
+	skel = hid_mouse__open_and_load();
 	if (!skel) {
 		fprintf(stderr, "%s  %s:%d", __func__, __FILE__, __LINE__);
 		return -1;
@@ -112,18 +120,27 @@ int main(int argc, char **argv)
 		fprintf(stderr, "can not open HID device: %m\n");
 		return 1;
 	}
-	skel->struct_ops.mouse_invert->hid_id = hid_id;
+	args.hid = hid_id;
 
-	err = hid_mouse__load(skel);
-	if (err < 0) {
-		fprintf(stderr, "can not load HID-BPF program: %m\n");
+	attach_fd = bpf_program__fd(skel->progs.attach_prog);
+	if (attach_fd < 0) {
+		fprintf(stderr, "can't locate attach prog: %m\n");
 		return 1;
 	}
 
-	link = bpf_map__attach_struct_ops(skel->maps.mouse_invert);
-	if (!link) {
-		fprintf(stderr, "can not attach HID-BPF program: %m\n");
-		return 1;
+	bpf_object__for_each_program(prog, *skel->skeleton->obj) {
+		/* ignore syscalls */
+		if (bpf_program__get_type(prog) != BPF_PROG_TYPE_TRACING)
+			continue;
+
+		args.retval = -1;
+		args.prog_fd = bpf_program__fd(prog);
+		err = bpf_prog_test_run_opts(attach_fd, &tattr);
+		if (err) {
+			fprintf(stderr, "can't attach prog to hid device %d: %m (err: %d)\n",
+				hid_id, err);
+			return 1;
+		}
 	}
 
 	signal(SIGINT, int_exit);

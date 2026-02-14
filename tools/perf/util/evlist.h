@@ -9,10 +9,8 @@
 #include <api/fd/array.h>
 #include <internal/evlist.h>
 #include <internal/evsel.h>
-#include <perf/evlist.h>
 #include "events_stats.h"
 #include "evsel.h"
-#include "rblist.h"
 #include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
@@ -20,10 +18,7 @@
 struct pollfd;
 struct thread_map;
 struct perf_cpu_map;
-struct perf_stat_config;
 struct record_opts;
-struct strbuf;
-struct target;
 
 /*
  * State machine of bkw_mmap_state:
@@ -60,7 +55,6 @@ struct evlist {
 	bool		 enabled;
 	int		 id_pos;
 	int		 is_pos;
-	int		 nr_br_cntr;
 	u64		 combined_sample_type;
 	enum bkw_mmap_state bkw_mmap_state;
 	struct {
@@ -71,7 +65,8 @@ struct evlist {
 	struct mmap *overwrite_mmap;
 	struct evsel *selected;
 	struct events_stats stats;
-	struct perf_session *session;
+	struct perf_env	*env;
+	const char *hybrid_pmu_name;
 	void (*trace_event_sample_raw)(struct evlist *evlist,
 				       union perf_event *event,
 				       struct perf_sample *sample);
@@ -87,13 +82,6 @@ struct evlist {
 		int	pos;	/* index at evlist core object to check signals */
 	} ctl_fd;
 	struct event_enable_timer *eet;
-	/**
-	 * @metric_events: A list of struct metric_event which each have a list
-	 * of struct metric_expr.
-	 */
-	struct rblist	metric_events;
-	/* samples with deferred_callchain would wait here. */
-	struct list_head deferred_samples;
 };
 
 struct evsel_str_handler {
@@ -112,8 +100,26 @@ void evlist__delete(struct evlist *evlist);
 void evlist__add(struct evlist *evlist, struct evsel *entry);
 void evlist__remove(struct evlist *evlist, struct evsel *evsel);
 
-int arch_evlist__cmp(const struct evsel *lhs, const struct evsel *rhs);
-int arch_evlist__add_required_events(struct list_head *list);
+int __evlist__add_default(struct evlist *evlist, bool precise);
+
+static inline int evlist__add_default(struct evlist *evlist)
+{
+	return __evlist__add_default(evlist, true);
+}
+
+int evlist__add_attrs(struct evlist *evlist, struct perf_event_attr *attrs, size_t nr_attrs);
+
+int __evlist__add_default_attrs(struct evlist *evlist,
+				     struct perf_event_attr *attrs, size_t nr_attrs);
+
+int arch_evlist__add_default_attrs(struct evlist *evlist,
+				   struct perf_event_attr *attrs,
+				   size_t nr_attrs);
+
+#define evlist__add_default_attrs(evlist, array) \
+	arch_evlist__add_default_attrs(evlist, array, ARRAY_SIZE(array))
+
+struct evsel *arch_evlist__leader(struct list_head *list);
 
 int evlist__add_dummy(struct evlist *evlist);
 struct evsel *evlist__add_aux_dummy(struct evlist *evlist, bool system_wide);
@@ -143,6 +149,7 @@ int __evlist__set_tracepoints_handlers(struct evlist *evlist,
 	__evlist__set_tracepoints_handlers(evlist, array, ARRAY_SIZE(array))
 
 int evlist__set_tp_filter(struct evlist *evlist, const char *filter);
+int evlist__set_tp_filter_pid(struct evlist *evlist, pid_t pid);
 int evlist__set_tp_filter_pids(struct evlist *evlist, size_t npids, pid_t *pids);
 
 int evlist__append_tp_filter(struct evlist *evlist, const char *filter);
@@ -150,6 +157,7 @@ int evlist__append_tp_filter(struct evlist *evlist, const char *filter);
 int evlist__append_tp_filter_pid(struct evlist *evlist, pid_t pid);
 int evlist__append_tp_filter_pids(struct evlist *evlist, size_t npids, pid_t *pids);
 
+struct evsel *evlist__find_tracepoint_by_id(struct evlist *evlist, int id);
 struct evsel *evlist__find_tracepoint_by_name(struct evlist *evlist, const char *name);
 
 int evlist__add_pollfd(struct evlist *evlist, int fd);
@@ -183,7 +191,6 @@ int evlist__prepare_workload(struct evlist *evlist, struct target *target,
 			     const char *argv[], bool pipe_output,
 			     void (*exec_error)(int signo, siginfo_t *info, void *ucontext));
 int evlist__start_workload(struct evlist *evlist);
-void evlist__cancel_workload(struct evlist *evlist);
 
 struct option;
 
@@ -212,13 +219,11 @@ void evlist__enable_non_dummy(struct evlist *evlist);
 void evlist__set_selected(struct evlist *evlist, struct evsel *evsel);
 
 int evlist__create_maps(struct evlist *evlist, struct target *target);
-int evlist__apply_filters(struct evlist *evlist, struct evsel **err_evsel,
-			  struct target *target);
+int evlist__apply_filters(struct evlist *evlist, struct evsel **err_evsel);
 
 u64 __evlist__combined_sample_type(struct evlist *evlist);
 u64 evlist__combined_sample_type(struct evlist *evlist);
 u64 evlist__combined_branch_type(struct evlist *evlist);
-void evlist__update_br_cntr(struct evlist *evlist);
 bool evlist__sample_id_all(struct evlist *evlist);
 u16 evlist__id_hdr_size(struct evlist *evlist);
 
@@ -248,11 +253,6 @@ static inline struct evsel *evlist__last(struct evlist *evlist)
 	struct perf_evsel *evsel = perf_evlist__last(&evlist->core);
 
 	return container_of(evsel, struct evsel, core);
-}
-
-static inline int evlist__nr_groups(struct evlist *evlist)
-{
-	return perf_evlist__nr_groups(&evlist->core);
 }
 
 int evlist__strerror_open(struct evlist *evlist, int err, char *buf, size_t size);
@@ -389,7 +389,6 @@ bool evlist_cpu_iterator__end(const struct evlist_cpu_iterator *evlist_cpu_itr);
 
 struct evsel *evlist__get_tracking_event(struct evlist *evlist);
 void evlist__set_tracking_event(struct evlist *evlist, struct evsel *tracking_evsel);
-struct evsel *evlist__findnew_tracking_event(struct evlist *evlist, bool system_wide);
 
 struct evsel *evlist__find_evsel_by_str(struct evlist *evlist, const char *str);
 
@@ -441,11 +440,6 @@ int event_enable_timer__process(struct event_enable_timer *eet);
 
 struct evsel *evlist__find_evsel(struct evlist *evlist, int idx);
 
-void evlist__format_evsels(struct evlist *evlist, struct strbuf *sb, size_t max_length);
+int evlist__scnprintf_evsels(struct evlist *evlist, size_t size, char *bf);
 void evlist__check_mem_load_aux(struct evlist *evlist);
-void evlist__warn_user_requested_cpus(struct evlist *evlist, const char *cpu_list);
-void evlist__uniquify_evsel_names(struct evlist *evlist, const struct perf_stat_config *config);
-bool evlist__has_bpf_output(struct evlist *evlist);
-bool evlist__needs_bpf_sb_event(struct evlist *evlist);
-
 #endif /* __PERF_EVLIST_H */

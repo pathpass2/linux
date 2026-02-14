@@ -126,37 +126,54 @@ static enum dc_irq_source to_dal_irq_source_dcn302(struct irq_service *irq_servi
 	}
 }
 
-static struct irq_source_info_funcs hpd_irq_info_funcs  = {
+static bool hpd_ack(struct irq_service *irq_service, const struct irq_source_info *info)
+{
+	uint32_t addr = info->status_reg;
+	uint32_t value = dm_read_reg(irq_service->ctx, addr);
+	uint32_t current_status = get_reg_field_value(value, HPD0_DC_HPD_INT_STATUS, DC_HPD_SENSE_DELAYED);
+
+	dal_irq_service_ack_generic(irq_service, info);
+
+	value = dm_read_reg(irq_service->ctx, info->enable_reg);
+
+	set_reg_field_value(value, current_status ? 0 : 1, HPD0_DC_HPD_INT_CONTROL, DC_HPD_INT_POLARITY);
+
+	dm_write_reg(irq_service->ctx, info->enable_reg, value);
+
+	return true;
+}
+
+static const struct irq_source_info_funcs hpd_irq_info_funcs = {
 		.set = NULL,
-		.ack = hpd0_ack
+		.ack = hpd_ack
 };
 
-static struct irq_source_info_funcs hpd_rx_irq_info_funcs = {
+static const struct irq_source_info_funcs hpd_rx_irq_info_funcs = {
 		.set = NULL,
 		.ack = NULL
 };
 
-static struct irq_source_info_funcs pflip_irq_info_funcs = {
+static const struct irq_source_info_funcs pflip_irq_info_funcs = {
 		.set = NULL,
 		.ack = NULL
 };
 
-static struct irq_source_info_funcs vupdate_no_lock_irq_info_funcs = {
+static const struct irq_source_info_funcs vupdate_no_lock_irq_info_funcs = {
 	.set = NULL,
 	.ack = NULL
 };
 
-static struct irq_source_info_funcs vblank_irq_info_funcs = {
+static const struct irq_source_info_funcs vblank_irq_info_funcs = {
 		.set = NULL,
 		.ack = NULL
 };
 
-static struct irq_source_info_funcs dmub_trace_irq_info_funcs = {
+static const struct irq_source_info_funcs dmub_trace_irq_info_funcs = {
 	.set = NULL,
 	.ack = NULL
 };
 
-static struct irq_source_info_funcs vline0_irq_info_funcs = {
+static const struct irq_source_info_funcs vline0_irq_info_funcs = {
 	.set = NULL,
 	.ack = NULL
 };
@@ -273,7 +290,7 @@ static struct irq_source_info_funcs vline0_irq_info_funcs = {
 #define dc_underflow_int_entry(reg_num) \
 		[DC_IRQ_SOURCE_DC ## reg_num ## UNDERFLOW] = dummy_irq_entry()
 
-static struct irq_source_info_funcs dummy_irq_info_funcs = {
+static const struct irq_source_info_funcs dummy_irq_info_funcs = {
 		.set = dal_irq_service_dummy_set,
 		.ack = dal_irq_service_dummy_ack
 };

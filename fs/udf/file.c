@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * file.c
  *
@@ -6,6 +5,11 @@
  *  File handling routines for the OSTA-UDF(tm) filesystem.
  *
  * COPYRIGHT
+ *  This file is distributed under the terms of the GNU General Public
+ *  License (GPL). Copies of the GPL can be obtained from:
+ *    ftp://prep.ai.mit.edu/pub/gnu/GPL
+ *  Each contributing author retains all rights to their own work.
+ *
  *  (C) 1998-1999 Dave Boynton
  *  (C) 1998-2004 Ben Fennema
  *  (C) 1999-2000 Stelias Computing Inc
@@ -28,7 +32,6 @@
 #include <linux/string.h> /* memset */
 #include <linux/capability.h>
 #include <linux/errno.h>
-#include <linux/filelock.h>
 #include <linux/pagemap.h>
 #include <linux/uio.h>
 
@@ -40,7 +43,7 @@ static vm_fault_t udf_page_mkwrite(struct vm_fault *vmf)
 	struct vm_area_struct *vma = vmf->vma;
 	struct inode *inode = file_inode(vma->vm_file);
 	struct address_space *mapping = inode->i_mapping;
-	struct folio *folio = page_folio(vmf->page);
+	struct page *page = vmf->page;
 	loff_t size;
 	unsigned int end;
 	vm_fault_t ret = VM_FAULT_LOCKED;
@@ -49,31 +52,31 @@ static vm_fault_t udf_page_mkwrite(struct vm_fault *vmf)
 	sb_start_pagefault(inode->i_sb);
 	file_update_time(vma->vm_file);
 	filemap_invalidate_lock_shared(mapping);
-	folio_lock(folio);
+	lock_page(page);
 	size = i_size_read(inode);
-	if (folio->mapping != inode->i_mapping || folio_pos(folio) >= size) {
-		folio_unlock(folio);
+	if (page->mapping != inode->i_mapping || page_offset(page) >= size) {
+		unlock_page(page);
 		ret = VM_FAULT_NOPAGE;
 		goto out_unlock;
 	}
 	/* Space is already allocated for in-ICB file */
 	if (UDF_I(inode)->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB)
 		goto out_dirty;
-	if (folio->index == size >> PAGE_SHIFT)
+	if (page->index == size >> PAGE_SHIFT)
 		end = size & ~PAGE_MASK;
 	else
 		end = PAGE_SIZE;
-	err = __block_write_begin(folio, 0, end, udf_get_block);
-	if (err) {
-		folio_unlock(folio);
-		ret = vmf_fs_error(err);
+	err = __block_write_begin(page, 0, end, udf_get_block);
+	if (!err)
+		err = block_commit_write(page, 0, end);
+	if (err < 0) {
+		unlock_page(page);
+		ret = block_page_mkwrite_return(err);
 		goto out_unlock;
 	}
-
-	block_commit_write(folio, 0, end);
 out_dirty:
-	folio_mark_dirty(folio);
-	folio_wait_stable(folio);
+	set_page_dirty(page);
+	wait_for_stable_page(page);
 out_unlock:
 	filemap_invalidate_unlock_shared(mapping);
 	sb_end_pagefault(inode->i_sb);
@@ -206,10 +209,9 @@ const struct file_operations udf_file_operations = {
 	.write_iter		= udf_file_write_iter,
 	.release		= udf_release_file,
 	.fsync			= generic_file_fsync,
-	.splice_read		= filemap_splice_read,
+	.splice_read		= generic_file_splice_read,
 	.splice_write		= iter_file_splice_write,
 	.llseek			= generic_file_llseek,
-	.setlease		= generic_setlease,
 };
 
 static int udf_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
@@ -234,9 +236,7 @@ static int udf_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 
 	if ((attr->ia_valid & ATTR_SIZE) &&
 	    attr->ia_size != i_size_read(inode)) {
-		filemap_invalidate_lock(inode->i_mapping);
 		error = udf_setsize(inode, attr->ia_size);
-		filemap_invalidate_unlock(inode->i_mapping);
 		if (error)
 			return error;
 	}

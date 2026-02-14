@@ -1578,6 +1578,7 @@ napi_del:
 static int nicvf_change_mtu(struct net_device *netdev, int new_mtu)
 {
 	struct nicvf *nic = netdev_priv(netdev);
+	int orig_mtu = netdev->mtu;
 
 	/* For now just support only the usual MTU sized frames,
 	 * plus some headroom for VLAN, QinQ.
@@ -1588,10 +1589,15 @@ static int nicvf_change_mtu(struct net_device *netdev, int new_mtu)
 		return -EINVAL;
 	}
 
-	if (netif_running(netdev) && nicvf_update_hw_max_frs(nic, new_mtu))
-		return -EINVAL;
+	netdev->mtu = new_mtu;
 
-	WRITE_ONCE(netdev->mtu, new_mtu);
+	if (!netif_running(netdev))
+		return 0;
+
+	if (nicvf_update_hw_max_frs(nic, new_mtu)) {
+		netdev->mtu = orig_mtu;
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -1899,18 +1905,18 @@ static int nicvf_xdp(struct net_device *netdev, struct netdev_bpf *xdp)
 	}
 }
 
-static int nicvf_hwtstamp_set(struct net_device *netdev,
-			      struct kernel_hwtstamp_config *config,
-			      struct netlink_ext_ack *extack)
+static int nicvf_config_hwtstamp(struct net_device *netdev, struct ifreq *ifr)
 {
+	struct hwtstamp_config config;
 	struct nicvf *nic = netdev_priv(netdev);
 
-	if (!nic->ptp_clock) {
-		NL_SET_ERR_MSG_MOD(extack, "HW timestamping is not supported");
+	if (!nic->ptp_clock)
 		return -ENODEV;
-	}
 
-	switch (config->tx_type) {
+	if (copy_from_user(&config, ifr->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	switch (config.tx_type) {
 	case HWTSTAMP_TX_OFF:
 	case HWTSTAMP_TX_ON:
 		break;
@@ -1918,7 +1924,7 @@ static int nicvf_hwtstamp_set(struct net_device *netdev,
 		return -ERANGE;
 	}
 
-	switch (config->rx_filter) {
+	switch (config.rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		nic->hw_rx_tstamp = false;
 		break;
@@ -1937,7 +1943,7 @@ static int nicvf_hwtstamp_set(struct net_device *netdev,
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 		nic->hw_rx_tstamp = true;
-		config->rx_filter = HWTSTAMP_FILTER_ALL;
+		config.rx_filter = HWTSTAMP_FILTER_ALL;
 		break;
 	default:
 		return -ERANGE;
@@ -1946,24 +1952,20 @@ static int nicvf_hwtstamp_set(struct net_device *netdev,
 	if (netif_running(netdev))
 		nicvf_config_hw_rx_tstamp(nic, nic->hw_rx_tstamp);
 
+	if (copy_to_user(ifr->ifr_data, &config, sizeof(config)))
+		return -EFAULT;
+
 	return 0;
 }
 
-static int nicvf_hwtstamp_get(struct net_device *netdev,
-			      struct kernel_hwtstamp_config *config)
+static int nicvf_ioctl(struct net_device *netdev, struct ifreq *req, int cmd)
 {
-	struct nicvf *nic = netdev_priv(netdev);
-
-	if (!nic->ptp_clock)
-		return -ENODEV;
-
-	/* TX timestamping is technically always on */
-	config->tx_type = HWTSTAMP_TX_ON;
-	config->rx_filter = nic->hw_rx_tstamp ?
-			    HWTSTAMP_FILTER_ALL :
-			    HWTSTAMP_FILTER_NONE;
-
-	return 0;
+	switch (cmd) {
+	case SIOCSHWTSTAMP:
+		return nicvf_config_hwtstamp(netdev, req);
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 static void __nicvf_set_rx_mode_task(u8 mode, struct xcast_addr_list *mc_addrs,
@@ -2085,9 +2087,8 @@ static const struct net_device_ops nicvf_netdev_ops = {
 	.ndo_fix_features       = nicvf_fix_features,
 	.ndo_set_features       = nicvf_set_features,
 	.ndo_bpf		= nicvf_xdp,
+	.ndo_eth_ioctl           = nicvf_ioctl,
 	.ndo_set_rx_mode        = nicvf_set_rx_mode,
-	.ndo_hwtstamp_get	= nicvf_hwtstamp_get,
-	.ndo_hwtstamp_set	= nicvf_hwtstamp_set,
 };
 
 static int nicvf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)

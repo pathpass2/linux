@@ -8,9 +8,10 @@
 #include <linux/raid/pq.h>
 
 #ifdef __KERNEL__
-#include <asm/simd.h>
+#include <asm/neon.h>
 #else
-#define scoped_ksimd()
+#define kernel_neon_begin()
+#define kernel_neon_end()
 #define cpu_has_neon()		(1)
 #endif
 
@@ -31,9 +32,10 @@
 	{								\
 		void raid6_neon ## _n  ## _gen_syndrome_real(int,	\
 						unsigned long, void**);	\
-		scoped_ksimd()						\
-			raid6_neon ## _n ## _gen_syndrome_real(disks,	\
+		kernel_neon_begin();					\
+		raid6_neon ## _n ## _gen_syndrome_real(disks,		\
 					(unsigned long)bytes, ptrs);	\
+		kernel_neon_end();					\
 	}								\
 	static void raid6_neon ## _n ## _xor_syndrome(int disks,	\
 					int start, int stop, 		\
@@ -41,9 +43,10 @@
 	{								\
 		void raid6_neon ## _n  ## _xor_syndrome_real(int,	\
 				int, int, unsigned long, void**);	\
-		scoped_ksimd()						\
-			raid6_neon ## _n ## _xor_syndrome_real(disks,	\
-				start, stop, (unsigned long)bytes, ptrs);\
+		kernel_neon_begin();					\
+		raid6_neon ## _n ## _xor_syndrome_real(disks,		\
+			start, stop, (unsigned long)bytes, ptrs);	\
+		kernel_neon_end();					\
 	}								\
 	struct raid6_calls const raid6_neonx ## _n = {			\
 		raid6_neon ## _n ## _gen_syndrome,			\

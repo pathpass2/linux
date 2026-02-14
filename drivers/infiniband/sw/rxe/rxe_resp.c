@@ -42,6 +42,7 @@ static char *resp_state_name[] = {
 	[RESPST_ERR_LENGTH]			= "ERR_LENGTH",
 	[RESPST_ERR_CQ_OVERFLOW]		= "ERR_CQ_OVERFLOW",
 	[RESPST_ERROR]				= "ERROR",
+	[RESPST_RESET]				= "RESET",
 	[RESPST_DONE]				= "DONE",
 	[RESPST_EXIT]				= "EXIT",
 };
@@ -49,14 +50,35 @@ static char *resp_state_name[] = {
 /* rxe_recv calls here to add a request packet to the input queue */
 void rxe_resp_queue_pkt(struct rxe_qp *qp, struct sk_buff *skb)
 {
+	int must_sched;
+	struct rxe_pkt_info *pkt = SKB_TO_PKT(skb);
+
 	skb_queue_tail(&qp->req_pkts, skb);
-	rxe_sched_task(&qp->recv_task);
+
+	must_sched = (pkt->opcode == IB_OPCODE_RC_RDMA_READ_REQUEST) ||
+			(skb_queue_len(&qp->req_pkts) > 1);
+
+	if (must_sched)
+		rxe_sched_task(&qp->resp.task);
+	else
+		rxe_run_task(&qp->resp.task);
 }
 
 static inline enum resp_states get_req(struct rxe_qp *qp,
 				       struct rxe_pkt_info **pkt_p)
 {
 	struct sk_buff *skb;
+
+	if (qp->resp.state == QP_STATE_ERROR) {
+		while ((skb = skb_dequeue(&qp->req_pkts))) {
+			rxe_put(qp);
+			kfree_skb(skb);
+			ib_device_put(qp->ibqp.device);
+		}
+
+		/* go drain recv wr queue */
+		return RESPST_CHK_RESOURCE;
+	}
 
 	skb = skb_peek(&qp->req_pkts);
 	if (!skb)
@@ -312,6 +334,24 @@ static enum resp_states check_resource(struct rxe_qp *qp,
 {
 	struct rxe_srq *srq = qp->srq;
 
+	if (qp->resp.state == QP_STATE_ERROR) {
+		if (qp->resp.wqe) {
+			qp->resp.status = IB_WC_WR_FLUSH_ERR;
+			return RESPST_COMPLETE;
+		} else if (!srq) {
+			qp->resp.wqe = queue_head(qp->rq.queue,
+					QUEUE_TYPE_FROM_CLIENT);
+			if (qp->resp.wqe) {
+				qp->resp.status = IB_WC_WR_FLUSH_ERR;
+				return RESPST_COMPLETE;
+			} else {
+				return RESPST_EXIT;
+			}
+		} else {
+			return RESPST_EXIT;
+		}
+	}
+
 	if (pkt->mask & (RXE_READ_OR_ATOMIC_MASK | RXE_ATOMIC_WRITE_MASK)) {
 		/* it is the requesters job to not send
 		 * too many read/atomic ops, we just
@@ -341,22 +381,9 @@ static enum resp_states rxe_resp_check_length(struct rxe_qp *qp,
 	/*
 	 * See IBA C9-92
 	 * For UD QPs we only check if the packet will fit in the
-	 * receive buffer later. For RDMA operations additional
+	 * receive buffer later. For rmda operations additional
 	 * length checks are performed in check_rkey.
 	 */
-	if ((qp_type(qp) == IB_QPT_GSI) || (qp_type(qp) == IB_QPT_UD)) {
-		unsigned int payload = payload_size(pkt);
-		unsigned int recv_buffer_len = 0;
-		int i;
-
-		for (i = 0; i < qp->resp.wqe->dma.num_sge; i++)
-			recv_buffer_len += qp->resp.wqe->dma.sge[i].length;
-		if (payload + sizeof(union rdma_network_hdr) > recv_buffer_len) {
-			rxe_dbg_qp(qp, "The receive buffer is too small for this UD packet.\n");
-			return RESPST_ERR_LENGTH;
-		}
-	}
-
 	if (pkt->mask & RXE_PAYLOAD_MASK && ((qp_type(qp) == IB_QPT_RC) ||
 					     (qp_type(qp) == IB_QPT_UC))) {
 		unsigned int mtu = qp->mtu;
@@ -365,18 +392,18 @@ static enum resp_states rxe_resp_check_length(struct rxe_qp *qp,
 		if ((pkt->mask & RXE_START_MASK) &&
 		    (pkt->mask & RXE_END_MASK)) {
 			if (unlikely(payload > mtu)) {
-				rxe_dbg_qp(qp, "only packet too long\n");
+				rxe_dbg_qp(qp, "only packet too long");
 				return RESPST_ERR_LENGTH;
 			}
 		} else if ((pkt->mask & RXE_START_MASK) ||
 			   (pkt->mask & RXE_MIDDLE_MASK)) {
 			if (unlikely(payload != mtu)) {
-				rxe_dbg_qp(qp, "first or middle packet not mtu\n");
+				rxe_dbg_qp(qp, "first or middle packet not mtu");
 				return RESPST_ERR_LENGTH;
 			}
 		} else if (pkt->mask & RXE_END_MASK) {
 			if (unlikely((payload == 0) || (payload > mtu))) {
-				rxe_dbg_qp(qp, "last packet zero or too long\n");
+				rxe_dbg_qp(qp, "last packet zero or too long");
 				return RESPST_ERR_LENGTH;
 			}
 		}
@@ -385,15 +412,12 @@ static enum resp_states rxe_resp_check_length(struct rxe_qp *qp,
 	/* See IBA C9-94 */
 	if (pkt->mask & RXE_RETH_MASK) {
 		if (reth_len(pkt) > (1U << 31)) {
-			rxe_dbg_qp(qp, "dma length too long\n");
+			rxe_dbg_qp(qp, "dma length too long");
 			return RESPST_ERR_LENGTH;
 		}
 	}
 
-	if (pkt->mask & RXE_RDMA_OP_MASK)
-		return RESPST_CHK_RKEY;
-	else
-		return RESPST_EXECUTE;
+	return RESPST_CHK_RKEY;
 }
 
 /* if the reth length field is zero we can assume nothing
@@ -440,10 +464,6 @@ static enum resp_states check_rkey(struct rxe_qp *qp,
 	enum resp_states state;
 	int access = 0;
 
-	/* parse RETH or ATMETH header for first/only packets
-	 * for va, length, rkey, etc. or use current value for
-	 * middle/last packets.
-	 */
 	if (pkt->mask & (RXE_READ_OR_WRITE_MASK | RXE_ATOMIC_WRITE_MASK)) {
 		if (pkt->mask & RXE_RETH_MASK)
 			qp_resp_from_reth(qp, pkt);
@@ -464,8 +484,7 @@ static enum resp_states check_rkey(struct rxe_qp *qp,
 		qp_resp_from_atmeth(qp, pkt);
 		access = IB_ACCESS_REMOTE_ATOMIC;
 	} else {
-		/* shouldn't happen */
-		WARN_ON(1);
+		return RESPST_EXECUTE;
 	}
 
 	/* A zero-byte read or write op is not required to
@@ -500,9 +519,8 @@ static enum resp_states check_rkey(struct rxe_qp *qp,
 		if (mw->access & IB_ZERO_BASED)
 			qp->resp.offset = mw->addr;
 
-		rxe_get(mr);
 		rxe_put(mw);
-		mw = NULL;
+		rxe_get(mr);
 	} else {
 		mr = lookup_mr(qp->pd, access, rkey, RXE_LOOKUP_REMOTE);
 		if (!mr) {
@@ -702,16 +720,10 @@ static enum resp_states atomic_reply(struct rxe_qp *qp,
 	if (!res->replay) {
 		u64 iova = qp->resp.va + qp->resp.offset;
 
-		if (is_odp_mr(mr))
-			err = rxe_odp_atomic_op(mr, iova, pkt->opcode,
-						atmeth_comp(pkt),
-						atmeth_swap_add(pkt),
-						&res->atomic.orig_val);
-		else
-			err = rxe_mr_do_atomic_op(mr, iova, pkt->opcode,
-						  atmeth_comp(pkt),
-						  atmeth_swap_add(pkt),
-						  &res->atomic.orig_val);
+		err = rxe_mr_do_atomic_op(mr, iova, pkt->opcode,
+					  atmeth_comp(pkt),
+					  atmeth_swap_add(pkt),
+					  &res->atomic.orig_val);
 		if (err)
 			return err;
 
@@ -749,16 +761,7 @@ static enum resp_states atomic_write_reply(struct rxe_qp *qp,
 	value = *(u64 *)payload_addr(pkt);
 	iova = qp->resp.va + qp->resp.offset;
 
-	/* See IBA oA19-28 */
-	if (unlikely(mr->state != RXE_MR_STATE_VALID)) {
-		rxe_dbg_mr(mr, "mr not in valid state\n");
-		return RESPST_ERR_RKEY_VIOLATION;
-	}
-
-	if (is_odp_mr(mr))
-		err = rxe_odp_do_atomic_write(mr, iova, value);
-	else
-		err = rxe_mr_do_atomic_write(mr, iova, value);
+	err = rxe_mr_do_atomic_write(mr, iova, value);
 	if (err)
 		return err;
 
@@ -1074,7 +1077,6 @@ static enum resp_states do_complete(struct rxe_qp *qp,
 	struct ib_uverbs_wc *uwc = &cqe.uibwc;
 	struct rxe_recv_wqe *wqe = qp->resp.wqe;
 	struct rxe_dev *rxe = to_rdev(qp->ibqp.device);
-	unsigned long flags;
 
 	if (!wqe)
 		goto finish;
@@ -1149,10 +1151,6 @@ static enum resp_states do_complete(struct rxe_qp *qp,
 
 			wc->port_num		= qp->attr.port_num;
 		}
-	} else {
-		if (wc->status != IB_WC_WR_FLUSH_ERR)
-			rxe_err_qp(qp, "non-flush error status = %d\n",
-				wc->status);
 	}
 
 	/* have copy for srq and reference for !srq */
@@ -1165,13 +1163,8 @@ static enum resp_states do_complete(struct rxe_qp *qp,
 		return RESPST_ERR_CQ_OVERFLOW;
 
 finish:
-	spin_lock_irqsave(&qp->state_lock, flags);
-	if (unlikely(qp_state(qp) == IB_QPS_ERR)) {
-		spin_unlock_irqrestore(&qp->state_lock, flags);
+	if (unlikely(qp->resp.state == QP_STATE_ERROR))
 		return RESPST_CHK_RESOURCE;
-	}
-	spin_unlock_irqrestore(&qp->state_lock, flags);
-
 	if (unlikely(!pkt))
 		return RESPST_DONE;
 	if (qp_type(qp) == IB_QPT_RC)
@@ -1428,104 +1421,49 @@ static enum resp_states do_class_d1e_error(struct rxe_qp *qp)
 	}
 }
 
-/* drain incoming request packet queue */
-static void drain_req_pkts(struct rxe_qp *qp)
+static void rxe_drain_req_pkts(struct rxe_qp *qp, bool notify)
 {
 	struct sk_buff *skb;
+	struct rxe_queue *q = qp->rq.queue;
 
 	while ((skb = skb_dequeue(&qp->req_pkts))) {
 		rxe_put(qp);
 		kfree_skb(skb);
 		ib_device_put(qp->ibqp.device);
 	}
-}
 
-/* complete receive wqe with flush error */
-static int flush_recv_wqe(struct rxe_qp *qp, struct rxe_recv_wqe *wqe)
-{
-	struct rxe_cqe cqe = {};
-	struct ib_wc *wc = &cqe.ibwc;
-	struct ib_uverbs_wc *uwc = &cqe.uibwc;
-	int err;
-
-	if (qp->rcq->is_user) {
-		uwc->wr_id = wqe->wr_id;
-		uwc->status = IB_WC_WR_FLUSH_ERR;
-		uwc->qp_num = qp_num(qp);
-	} else {
-		wc->wr_id = wqe->wr_id;
-		wc->status = IB_WC_WR_FLUSH_ERR;
-		wc->qp = &qp->ibqp;
-	}
-
-	err = rxe_cq_post(qp->rcq, &cqe, 0);
-	if (err)
-		rxe_dbg_cq(qp->rcq, "post cq failed err = %d\n", err);
-
-	return err;
-}
-
-/* drain and optionally complete the recive queue
- * if unable to complete a wqe stop completing and
- * just flush the remaining wqes
- */
-static void flush_recv_queue(struct rxe_qp *qp, bool notify)
-{
-	struct rxe_queue *q = qp->rq.queue;
-	struct rxe_recv_wqe *wqe;
-	int err;
-
-	if (qp->srq) {
-		if (notify && qp->ibqp.event_handler) {
-			struct ib_event ev;
-
-			ev.device = qp->ibqp.device;
-			ev.element.qp = &qp->ibqp;
-			ev.event = IB_EVENT_QP_LAST_WQE_REACHED;
-			qp->ibqp.event_handler(&ev, qp->ibqp.qp_context);
-		}
-		return;
-	}
-
-	/* recv queue not created. nothing to do. */
-	if (!qp->rq.queue)
+	if (notify)
 		return;
 
-	while ((wqe = queue_head(q, q->type))) {
-		if (notify) {
-			err = flush_recv_wqe(qp, wqe);
-			if (err)
-				notify = 0;
-		}
+	while (!qp->srq && q && queue_head(q, q->type))
 		queue_advance_consumer(q, q->type);
-	}
-
-	qp->resp.wqe = NULL;
 }
 
-int rxe_receiver(struct rxe_qp *qp)
+int rxe_responder(void *arg)
 {
+	struct rxe_qp *qp = (struct rxe_qp *)arg;
 	struct rxe_dev *rxe = to_rdev(qp->ibqp.device);
 	enum resp_states state;
 	struct rxe_pkt_info *pkt = NULL;
 	int ret;
-	unsigned long flags;
 
-	spin_lock_irqsave(&qp->state_lock, flags);
-	if (!qp->valid || qp_state(qp) == IB_QPS_ERR ||
-			  qp_state(qp) == IB_QPS_RESET) {
-		bool notify = qp->valid && (qp_state(qp) == IB_QPS_ERR);
-
-		drain_req_pkts(qp);
-		flush_recv_queue(qp, notify);
-		spin_unlock_irqrestore(&qp->state_lock, flags);
-		goto exit;
-	}
-	spin_unlock_irqrestore(&qp->state_lock, flags);
+	if (!rxe_get(qp))
+		return -EAGAIN;
 
 	qp->resp.aeth_syndrome = AETH_ACK_UNLIMITED;
 
-	state = RESPST_GET_REQ;
+	if (!qp->valid)
+		goto exit;
+
+	switch (qp->resp.state) {
+	case QP_STATE_RESET:
+		state = RESPST_RESET;
+		break;
+
+	default:
+		state = RESPST_GET_REQ;
+		break;
+	}
 
 	while (1) {
 		rxe_dbg_qp(qp, "state = %s\n", resp_state_name[state]);
@@ -1684,6 +1622,11 @@ int rxe_receiver(struct rxe_qp *qp)
 
 			goto exit;
 
+		case RESPST_RESET:
+			rxe_drain_req_pkts(qp, false);
+			qp->resp.wqe = NULL;
+			goto exit;
+
 		case RESPST_ERROR:
 			qp->resp.goto_error = 0;
 			rxe_dbg_qp(qp, "moved to error state\n");
@@ -1696,7 +1639,7 @@ int rxe_receiver(struct rxe_qp *qp)
 	}
 
 	/* A non-zero return value will cause rxe_do_task to
-	 * exit its loop and end the work item. A zero return
+	 * exit its loop and end the tasklet. A zero return
 	 * will continue looping and return to rxe_responder
 	 */
 done:
@@ -1705,5 +1648,6 @@ done:
 exit:
 	ret = -EAGAIN;
 out:
+	rxe_put(qp);
 	return ret;
 }

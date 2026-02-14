@@ -11,7 +11,6 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
-#include <linux/ioremap.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mmiotrace.h>
@@ -71,7 +70,7 @@ int ioremap_change_attr(unsigned long vaddr, unsigned long size,
 static unsigned int __ioremap_check_ram(struct resource *res)
 {
 	unsigned long start_pfn, stop_pfn;
-	unsigned long pfn;
+	unsigned long i;
 
 	if ((res->flags & IORESOURCE_SYSTEM_RAM) != IORESOURCE_SYSTEM_RAM)
 		return 0;
@@ -79,8 +78,9 @@ static unsigned int __ioremap_check_ram(struct resource *res)
 	start_pfn = (res->start + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	stop_pfn = (res->end + 1) >> PAGE_SHIFT;
 	if (stop_pfn > start_pfn) {
-		for_each_valid_pfn(pfn, start_pfn, stop_pfn)
-			if (!PageReserved(pfn_to_page(pfn)))
+		for (i = 0; i < (stop_pfn - start_pfn); ++i)
+			if (pfn_valid(start_pfn + i) &&
+			    !PageReserved(pfn_to_page(start_pfn + i)))
 				return IORES_MAP_SYSTEM_RAM;
 	}
 
@@ -115,11 +115,6 @@ static void __ioremap_check_other(resource_size_t addr, struct ioremap_desc *des
 {
 	if (!cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
 		return;
-
-	if (x86_platform.hyper.is_private_mmio(addr)) {
-		desc->flags |= IORES_MAP_ENCRYPTED;
-		return;
-	}
 
 	if (!IS_ENABLED(CONFIG_EFI))
 		return;
@@ -439,10 +434,10 @@ void __iomem *ioremap_cache(resource_size_t phys_addr, unsigned long size)
 EXPORT_SYMBOL(ioremap_cache);
 
 void __iomem *ioremap_prot(resource_size_t phys_addr, unsigned long size,
-			   pgprot_t prot)
+				unsigned long prot_val)
 {
 	return __ioremap_caller(phys_addr, size,
-				pgprot2cachemode(prot),
+				pgprot2cachemode(__pgprot(prot_val)),
 				__builtin_return_address(0), false);
 }
 EXPORT_SYMBOL(ioremap_prot);
@@ -457,7 +452,7 @@ void iounmap(volatile void __iomem *addr)
 {
 	struct vm_struct *p, *o;
 
-	if (WARN_ON_ONCE(!is_ioremap_addr((void __force *)addr)))
+	if ((void __force *)addr <= high_memory)
 		return;
 
 	/*
@@ -501,14 +496,6 @@ void iounmap(volatile void __iomem *addr)
 	kfree(p);
 }
 EXPORT_SYMBOL(iounmap);
-
-void *arch_memremap_wb(phys_addr_t phys_addr, size_t size, unsigned long flags)
-{
-	if ((flags & MEMREMAP_DEC) || cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT))
-		return (void __force *)ioremap_cache(phys_addr, size);
-
-	return (void __force *)ioremap_encrypted(phys_addr, size);
-}
 
 /*
  * Convert a physical pointer to a virtual kernel pointer for /dev/mem
@@ -600,7 +587,8 @@ static bool memremap_should_map_decrypted(resource_size_t phys_addr,
  * Examine the physical address to determine if it is EFI data. Check
  * it against the boot params structure and EFI tables and memory types.
  */
-static bool memremap_is_efi_data(resource_size_t phys_addr)
+static bool memremap_is_efi_data(resource_size_t phys_addr,
+				 unsigned long size)
 {
 	u64 paddr;
 
@@ -638,54 +626,41 @@ static bool memremap_is_efi_data(resource_size_t phys_addr)
  * Examine the physical address to determine if it is boot data by checking
  * it against the boot params setup_data chain.
  */
-static bool __ref __memremap_is_setup_data(resource_size_t phys_addr, bool early)
+static bool memremap_is_setup_data(resource_size_t phys_addr,
+				   unsigned long size)
 {
-	unsigned int setup_data_sz = sizeof(struct setup_data);
 	struct setup_indirect *indirect;
 	struct setup_data *data;
 	u64 paddr, paddr_next;
 
 	paddr = boot_params.hdr.setup_data;
 	while (paddr) {
-		unsigned int len, size;
+		unsigned int len;
 
 		if (phys_addr == paddr)
 			return true;
 
-		if (early)
-			data = early_memremap_decrypted(paddr, setup_data_sz);
-		else
-			data = memremap(paddr, setup_data_sz, MEMREMAP_WB | MEMREMAP_DEC);
+		data = memremap(paddr, sizeof(*data),
+				MEMREMAP_WB | MEMREMAP_DEC);
 		if (!data) {
-			pr_warn("failed to remap setup_data entry\n");
+			pr_warn("failed to memremap setup_data entry\n");
 			return false;
 		}
-
-		size = setup_data_sz;
 
 		paddr_next = data->next;
 		len = data->len;
 
-		if ((phys_addr > paddr) &&
-		    (phys_addr < (paddr + setup_data_sz + len))) {
-			if (early)
-				early_memunmap(data, setup_data_sz);
-			else
-				memunmap(data);
+		if ((phys_addr > paddr) && (phys_addr < (paddr + len))) {
+			memunmap(data);
 			return true;
 		}
 
 		if (data->type == SETUP_INDIRECT) {
-			size += len;
-			if (early) {
-				early_memunmap(data, setup_data_sz);
-				data = early_memremap_decrypted(paddr, size);
-			} else {
-				memunmap(data);
-				data = memremap(paddr, size, MEMREMAP_WB | MEMREMAP_DEC);
-			}
+			memunmap(data);
+			data = memremap(paddr, sizeof(*data) + len,
+					MEMREMAP_WB | MEMREMAP_DEC);
 			if (!data) {
-				pr_warn("failed to remap indirect setup_data\n");
+				pr_warn("failed to memremap indirect setup_data\n");
 				return false;
 			}
 
@@ -697,10 +672,7 @@ static bool __ref __memremap_is_setup_data(resource_size_t phys_addr, bool early
 			}
 		}
 
-		if (early)
-			early_memunmap(data, size);
-		else
-			memunmap(data);
+		memunmap(data);
 
 		if ((phys_addr > paddr) && (phys_addr < (paddr + len)))
 			return true;
@@ -711,14 +683,66 @@ static bool __ref __memremap_is_setup_data(resource_size_t phys_addr, bool early
 	return false;
 }
 
-static bool memremap_is_setup_data(resource_size_t phys_addr)
+/*
+ * Examine the physical address to determine if it is boot data by checking
+ * it against the boot params setup_data chain (early boot version).
+ */
+static bool __init early_memremap_is_setup_data(resource_size_t phys_addr,
+						unsigned long size)
 {
-	return __memremap_is_setup_data(phys_addr, false);
-}
+	struct setup_indirect *indirect;
+	struct setup_data *data;
+	u64 paddr, paddr_next;
 
-static bool __init early_memremap_is_setup_data(resource_size_t phys_addr)
-{
-	return __memremap_is_setup_data(phys_addr, true);
+	paddr = boot_params.hdr.setup_data;
+	while (paddr) {
+		unsigned int len, size;
+
+		if (phys_addr == paddr)
+			return true;
+
+		data = early_memremap_decrypted(paddr, sizeof(*data));
+		if (!data) {
+			pr_warn("failed to early memremap setup_data entry\n");
+			return false;
+		}
+
+		size = sizeof(*data);
+
+		paddr_next = data->next;
+		len = data->len;
+
+		if ((phys_addr > paddr) && (phys_addr < (paddr + len))) {
+			early_memunmap(data, sizeof(*data));
+			return true;
+		}
+
+		if (data->type == SETUP_INDIRECT) {
+			size += len;
+			early_memunmap(data, sizeof(*data));
+			data = early_memremap_decrypted(paddr, size);
+			if (!data) {
+				pr_warn("failed to early memremap indirect setup_data\n");
+				return false;
+			}
+
+			indirect = (struct setup_indirect *)data->data;
+
+			if (indirect->type != SETUP_INDIRECT) {
+				paddr = indirect->addr;
+				len = indirect->len;
+			}
+		}
+
+		early_memunmap(data, size);
+
+		if ((phys_addr > paddr) && (phys_addr < (paddr + len)))
+			return true;
+
+		paddr = paddr_next;
+	}
+
+	return false;
 }
 
 /*
@@ -739,8 +763,8 @@ bool arch_memremap_can_ram_remap(resource_size_t phys_addr, unsigned long size,
 		return false;
 
 	if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT)) {
-		if (memremap_is_setup_data(phys_addr) ||
-		    memremap_is_efi_data(phys_addr))
+		if (memremap_is_setup_data(phys_addr, size) ||
+		    memremap_is_efi_data(phys_addr, size))
 			return false;
 	}
 
@@ -765,8 +789,8 @@ pgprot_t __init early_memremap_pgprot_adjust(resource_size_t phys_addr,
 	encrypted_prot = true;
 
 	if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT)) {
-		if (early_memremap_is_setup_data(phys_addr) ||
-		    memremap_is_efi_data(phys_addr))
+		if (early_memremap_is_setup_data(phys_addr, size) ||
+		    memremap_is_efi_data(phys_addr, size))
 			encrypted_prot = false;
 	}
 

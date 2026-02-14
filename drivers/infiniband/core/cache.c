@@ -46,7 +46,7 @@
 
 struct ib_pkey_cache {
 	int             table_len;
-	u16             table[] __counted_by(table_len);
+	u16             table[];
 };
 
 struct ib_update_work {
@@ -400,15 +400,15 @@ static void del_gid(struct ib_device *ib_dev, u32 port,
 		table->data_vec[ix] = NULL;
 	write_unlock_irq(&table->rwlock);
 
-	if (rdma_cap_roce_gid_table(ib_dev, port))
-		ib_dev->ops.del_gid(&entry->attr, &entry->context);
-
 	ndev_storage = entry->ndev_storage;
 	if (ndev_storage) {
 		entry->ndev_storage = NULL;
 		rcu_assign_pointer(entry->attr.ndev, NULL);
 		call_rcu(&ndev_storage->rcu_head, put_gid_ndev);
 	}
+
+	if (rdma_cap_roce_gid_table(ib_dev, port))
+		ib_dev->ops.del_gid(&entry->attr, &entry->context);
 
 	put_gid_entry_locked(entry);
 }
@@ -582,8 +582,8 @@ static int __ib_cache_gid_add(struct ib_device *ib_dev, u32 port,
 out_unlock:
 	mutex_unlock(&table->lock);
 	if (ret)
-		pr_warn_ratelimited("%s: unable to add gid %pI6 error=%d\n",
-				    __func__, gid->raw, ret);
+		pr_warn("%s: unable to add gid %pI6 error=%d\n",
+			__func__, gid->raw, ret);
 	return ret;
 }
 
@@ -794,6 +794,7 @@ err_free_table:
 static void release_gid_table(struct ib_device *device,
 			      struct ib_gid_table *table)
 {
+	bool leak = false;
 	int i;
 
 	if (!table)
@@ -802,12 +803,15 @@ static void release_gid_table(struct ib_device *device,
 	for (i = 0; i < table->sz; i++) {
 		if (is_gid_entry_free(table->data_vec[i]))
 			continue;
-
-		WARN_ONCE(true,
-			  "GID entry ref leak for dev %s index %d ref=%u\n",
-			  dev_name(&device->dev), i,
-			  kref_read(&table->data_vec[i]->kref));
+		if (kref_read(&table->data_vec[i]->kref) > 1) {
+			dev_err(&device->dev,
+				"GID entry ref leak for index %d ref=%u\n", i,
+				kref_read(&table->data_vec[i]->kref));
+			leak = true;
+		}
 	}
+	if (leak)
+		return;
 
 	mutex_destroy(&table->lock);
 	kfree(table->data_vec);
@@ -1127,6 +1131,41 @@ err:
 }
 EXPORT_SYMBOL(ib_find_cached_pkey);
 
+int ib_find_exact_cached_pkey(struct ib_device *device, u32 port_num,
+			      u16 pkey, u16 *index)
+{
+	struct ib_pkey_cache *cache;
+	unsigned long flags;
+	int i;
+	int ret = -ENOENT;
+
+	if (!rdma_is_port_valid(device, port_num))
+		return -EINVAL;
+
+	read_lock_irqsave(&device->cache_lock, flags);
+
+	cache = device->port_data[port_num].cache.pkey;
+	if (!cache) {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	*index = -1;
+
+	for (i = 0; i < cache->table_len; ++i)
+		if (cache->table[i] == pkey) {
+			*index = i;
+			ret = 0;
+			break;
+		}
+
+err:
+	read_unlock_irqrestore(&device->cache_lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL(ib_find_exact_cached_pkey);
+
 int ib_get_cached_lmc(struct ib_device *device, u32 port_num, u8 *lmc)
 {
 	unsigned long flags;
@@ -1418,17 +1457,6 @@ static int config_non_roce_gid_cache(struct ib_device *device,
 				 i);
 			goto err;
 		}
-
-		if (rdma_protocol_iwarp(device, port)) {
-			struct net_device *ndev;
-
-			ndev = ib_device_get_netdev(device, port);
-			if (!ndev)
-				continue;
-			RCU_INIT_POINTER(gid_attr.ndev, ndev);
-			dev_put(ndev);
-		}
-
 		gid_attr.index = i;
 		tprops->subnet_prefix =
 			be64_to_cpu(gid_attr.gid.global.subnet_prefix);
@@ -1501,12 +1529,6 @@ ib_cache_update(struct ib_device *device, u32 port, bool update_gids,
 		device->port_data[port].cache.pkey = pkey_cache;
 	}
 	device->port_data[port].cache.lmc = tprops->lmc;
-
-	if (device->port_data[port].cache.port_state != IB_PORT_NOP &&
-	    device->port_data[port].cache.port_state != tprops->state)
-		ibdev_info(device, "Port: %d Link %s\n", port,
-			   ib_port_state_to_str(tprops->state));
-
 	device->port_data[port].cache.port_state = tprops->state;
 
 	device->port_data[port].cache.subnet_prefix = tprops->subnet_prefix;
@@ -1537,8 +1559,7 @@ static void ib_cache_event_task(struct work_struct *_work)
 	 * the cache.
 	 */
 	ret = ib_cache_update(work->event.device, work->event.element.port_num,
-			      work->event.event == IB_EVENT_GID_CHANGE ||
-			      work->event.event == IB_EVENT_CLIENT_REREGISTER,
+			      work->event.event == IB_EVENT_GID_CHANGE,
 			      work->event.event == IB_EVENT_PKEY_CHANGE,
 			      work->enforce_security);
 
@@ -1612,10 +1633,8 @@ int ib_cache_setup_one(struct ib_device *device)
 
 	rdma_for_each_port (device, p) {
 		err = ib_cache_update(device, p, true, true, true);
-		if (err) {
-			gid_table_cleanup_one(device);
+		if (err)
 			return err;
-		}
 	}
 
 	return 0;

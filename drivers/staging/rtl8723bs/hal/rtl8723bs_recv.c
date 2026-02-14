@@ -6,6 +6,7 @@
  ******************************************************************************/
 
 #include <drv_types.h>
+#include <rtw_debug.h>
 #include <rtl8723b_hal.h>
 
 static void initrecvbuf(struct recv_buf *precvbuf, struct adapter *padapter)
@@ -431,8 +432,7 @@ initbuferror:
 		precvpriv->free_recv_buf_queue_cnt = 0;
 		for (i = 0; i < n ; i++) {
 			list_del_init(&precvbuf->list);
-			if (precvbuf->pskb)
-				dev_kfree_skb_any(precvbuf->pskb);
+			rtw_os_recvbuf_resource_free(padapter, precvbuf);
 			precvbuf++;
 		}
 		precvpriv->precv_buf = NULL;
@@ -468,8 +468,7 @@ void rtl8723bs_free_recv_priv(struct adapter *padapter)
 		precvpriv->free_recv_buf_queue_cnt = 0;
 		for (i = 0; i < NR_RECVBUFF; i++) {
 			list_del_init(&precvbuf->list);
-			if (precvbuf->pskb)
-				dev_kfree_skb_any(precvbuf->pskb);
+			rtw_os_recvbuf_resource_free(padapter, precvbuf);
 			precvbuf++;
 		}
 		precvpriv->precv_buf = NULL;

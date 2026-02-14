@@ -1,7 +1,7 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017-2025 Broadcom. All Rights Reserved. The term *
+ * Copyright (C) 2017-2022 Broadcom. All Rights Reserved. The term *
  * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2004-2009 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
@@ -25,7 +25,7 @@
 #define LOG_MBOX	0x00000004	/* Mailbox events */
 #define LOG_INIT	0x00000008	/* Initialization events */
 #define LOG_LINK_EVENT	0x00000010	/* Link events */
-#define LOG_NODE_VERBOSE 0x00000020	/* Node verbose events */
+#define LOG_IP		0x00000020	/* IP traffic history */
 #define LOG_FCP		0x00000040	/* FCP traffic history */
 #define LOG_NODE	0x00000080	/* Node table events */
 #define LOG_TEMP	0x00000100	/* Temperature sensor events */
@@ -47,7 +47,6 @@
 #define LOG_RSVD1	0x01000000	/* Reserved */
 #define LOG_RSVD2	0x02000000	/* Reserved */
 #define LOG_CGN_MGMT    0x04000000	/* Congestion Mgmt events */
-#define LOG_ENCRYPTION  0x40000000      /* EDIF Encryption events. */
 #define LOG_TRACE_EVENT 0x80000000	/* Dmp the DBG log on this err */
 #define LOG_ALL_MSG	0x7fffffff	/* LOG all messages */
 
@@ -56,7 +55,7 @@ void lpfc_dbg_print(struct lpfc_hba *phba, const char *fmt, ...);
 
 /* generate message by verbose log setting or severity */
 #define lpfc_vlog_msg(vport, level, mask, fmt, arg...) \
-{ if (((mask) & (vport)->cfg_log_verbose) || (level[1] <= '5')) \
+{ if (((mask) & (vport)->cfg_log_verbose) || (level[1] <= '4')) \
 	dev_printk(level, &((vport)->phba->pcidev)->dev, "%d:(%d):" \
 		   fmt, (vport)->phba->brd_no, vport->vpi, ##arg); }
 
@@ -65,7 +64,7 @@ do { \
 	{ uint32_t log_verbose = (phba)->pport ? \
 				 (phba)->pport->cfg_log_verbose : \
 				 (phba)->cfg_log_verbose; \
-	if (((mask) & log_verbose) || (level[1] <= '5')) \
+	if (((mask) & log_verbose) || (level[1] <= '4')) \
 		dev_printk(level, &((phba)->pcidev)->dev, "%d:" \
 			   fmt, phba->brd_no, ##arg); \
 	} \

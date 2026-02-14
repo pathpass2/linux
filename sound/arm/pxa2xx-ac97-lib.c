@@ -13,9 +13,10 @@
 #include <linux/interrupt.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/io.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <linux/soc/pxa/cpu.h>
 
 #include <sound/pxa2xx-lib.h>
@@ -30,8 +31,9 @@ static volatile long gsr_bits;
 static struct clk *ac97_clk;
 static struct clk *ac97conf_clk;
 static int reset_gpio;
-struct gpio_desc *rst_gpio;
 static void __iomem *ac97_reg_base;
+
+extern void pxa27x_configure_ac97reset(int reset_gpio, bool to_gpio);
 
 /*
  * Beware PXA27x bugs:
@@ -51,7 +53,7 @@ int pxa2xx_ac97_read(int slot, unsigned short reg)
 	if (slot > 0)
 		return -ENODEV;
 
-	guard(mutex)(&car_mutex);
+	mutex_lock(&car_mutex);
 
 	/* set up primary or secondary codec space */
 	if (cpu_is_pxa25x() && reg == AC97_GPIO_STATUS)
@@ -67,12 +69,13 @@ int pxa2xx_ac97_read(int slot, unsigned short reg)
 	gsr_bits = 0;
 	val = (readl(reg_addr) & 0xffff);
 	if (reg == AC97_GPIO_STATUS)
-		return val;
+		goto out;
 	if (wait_event_timeout(gsr_wq, (readl(ac97_reg_base + GSR) | gsr_bits) & GSR_SDONE, 1) <= 0 &&
 	    !((readl(ac97_reg_base + GSR) | gsr_bits) & GSR_SDONE)) {
 		printk(KERN_ERR "%s: read error (ac97_reg=%d GSR=%#lx)\n",
 				__func__, reg, readl(ac97_reg_base + GSR) | gsr_bits);
-		return -ETIMEDOUT;
+		val = -ETIMEDOUT;
+		goto out;
 	}
 
 	/* valid data now */
@@ -81,6 +84,8 @@ int pxa2xx_ac97_read(int slot, unsigned short reg)
 	val = (readl(reg_addr) & 0xffff);
 	/* but we've just started another cycle... */
 	wait_event_timeout(gsr_wq, (readl(ac97_reg_base + GSR) | gsr_bits) & GSR_SDONE, 1);
+
+out:	mutex_unlock(&car_mutex);
 	return val;
 }
 EXPORT_SYMBOL_GPL(pxa2xx_ac97_read);
@@ -90,7 +95,7 @@ int pxa2xx_ac97_write(int slot, unsigned short reg, unsigned short val)
 	u32 __iomem *reg_addr;
 	int ret = 0;
 
-	guard(mutex)(&car_mutex);
+	mutex_lock(&car_mutex);
 
 	/* set up primary or secondary codec space */
 	if (cpu_is_pxa25x() && reg == AC97_GPIO_STATUS)
@@ -111,6 +116,7 @@ int pxa2xx_ac97_write(int slot, unsigned short reg, unsigned short val)
 		ret = -EIO;
 	}
 
+	mutex_unlock(&car_mutex);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(pxa2xx_ac97_write);
@@ -321,6 +327,7 @@ int pxa2xx_ac97_hw_probe(struct platform_device *dev)
 {
 	int ret;
 	int irq;
+	pxa2xx_audio_ops_t *pdata = dev->dev.platform_data;
 
 	ac97_reg_base = devm_platform_ioremap_resource(dev, 0);
 	if (IS_ERR(ac97_reg_base)) {
@@ -328,15 +335,32 @@ int pxa2xx_ac97_hw_probe(struct platform_device *dev)
 		return PTR_ERR(ac97_reg_base);
 	}
 
-	if (dev->dev.of_node) {
-		/* Assert reset using GPIOD_OUT_HIGH, because reset is GPIO_ACTIVE_LOW */
-		rst_gpio = devm_gpiod_get(&dev->dev, "reset", GPIOD_OUT_HIGH);
-		ret = PTR_ERR(rst_gpio);
-		if (ret == -ENOENT)
-			reset_gpio = -1;
-		else if (ret)
-			return ret;
-		reset_gpio = desc_to_gpio(rst_gpio);
+	if (pdata) {
+		switch (pdata->reset_gpio) {
+		case 95:
+		case 113:
+			reset_gpio = pdata->reset_gpio;
+			break;
+		case 0:
+			reset_gpio = 113;
+			break;
+		case -1:
+			break;
+		default:
+			dev_err(&dev->dev, "Invalid reset GPIO %d\n",
+				pdata->reset_gpio);
+		}
+	} else if (!pdata && dev->dev.of_node) {
+		pdata = devm_kzalloc(&dev->dev, sizeof(*pdata), GFP_KERNEL);
+		if (!pdata)
+			return -ENOMEM;
+		pdata->reset_gpio = of_get_named_gpio(dev->dev.of_node,
+						      "reset-gpios", 0);
+		if (pdata->reset_gpio == -ENOENT)
+			pdata->reset_gpio = -1;
+		else if (pdata->reset_gpio < 0)
+			return pdata->reset_gpio;
+		reset_gpio = pdata->reset_gpio;
 	} else {
 		if (cpu_is_pxa27x())
 			reset_gpio = 113;
@@ -349,7 +373,13 @@ int pxa2xx_ac97_hw_probe(struct platform_device *dev)
 		 * here so that it is an output driven high when switching from
 		 * AC97_nRESET alt function to generic gpio.
 		 */
-		gpiod_set_consumer_name(rst_gpio, "pxa27x ac97 reset");
+		ret = gpio_request_one(reset_gpio, GPIOF_OUT_INIT_HIGH,
+				       "pxa27x ac97 reset");
+		if (ret < 0) {
+			pr_err("%s: gpio_request_one() failed: %d\n",
+			       __func__, ret);
+			goto err_conf;
+		}
 		pxa27x_configure_ac97reset(reset_gpio, false);
 
 		ac97conf_clk = clk_get(&dev->dev, "AC97CONFCLK");
@@ -400,6 +430,8 @@ EXPORT_SYMBOL_GPL(pxa2xx_ac97_hw_probe);
 
 void pxa2xx_ac97_hw_remove(struct platform_device *dev)
 {
+	if (cpu_is_pxa27x())
+		gpio_free(reset_gpio);
 	writel(readl(ac97_reg_base + GCR) | (GCR_ACLINK_OFF), ac97_reg_base + GCR);
 	free_irq(platform_get_irq(dev, 0), NULL);
 	if (ac97conf_clk) {

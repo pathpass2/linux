@@ -19,9 +19,7 @@
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/ethtool.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/platform_device.h>
 #include <asm/io.h>
 
 #include "emac.h"
@@ -216,24 +214,31 @@ void *rgmii_dump_regs(struct platform_device *ofdev, void *buf)
 
 static int rgmii_probe(struct platform_device *ofdev)
 {
+	struct device_node *np = ofdev->dev.of_node;
 	struct rgmii_instance *dev;
-	int err;
+	struct resource regs;
+	int rc;
 
-	dev = devm_kzalloc(&ofdev->dev, sizeof(struct rgmii_instance),
-			   GFP_KERNEL);
-	if (!dev)
-		return -ENOMEM;
+	rc = -ENOMEM;
+	dev = kzalloc(sizeof(struct rgmii_instance), GFP_KERNEL);
+	if (dev == NULL)
+		goto err_gone;
 
-	err = devm_mutex_init(&ofdev->dev, &dev->lock);
-	if (err)
-		return err;
-
+	mutex_init(&dev->lock);
 	dev->ofdev = ofdev;
 
-	dev->base = devm_platform_ioremap_resource(ofdev, 0);
-	if (IS_ERR(dev->base)) {
-		dev_err(&ofdev->dev, "can't map device registers");
-		return PTR_ERR(dev->base);
+	rc = -ENXIO;
+	if (of_address_to_resource(np, 0, &regs)) {
+		printk(KERN_ERR "%pOF: Can't get registers address\n", np);
+		goto err_free;
+	}
+
+	rc = -ENOMEM;
+	dev->base = (struct rgmii_regs __iomem *)ioremap(regs.start,
+						 sizeof(struct rgmii_regs));
+	if (dev->base == NULL) {
+		printk(KERN_ERR "%pOF: Can't map device registers!\n", np);
+		goto err_free;
 	}
 
 	/* Check for RGMII flags */
@@ -259,6 +264,23 @@ static int rgmii_probe(struct platform_device *ofdev)
 	platform_set_drvdata(ofdev, dev);
 
 	return 0;
+
+ err_free:
+	kfree(dev);
+ err_gone:
+	return rc;
+}
+
+static int rgmii_remove(struct platform_device *ofdev)
+{
+	struct rgmii_instance *dev = platform_get_drvdata(ofdev);
+
+	WARN_ON(dev->users != 0);
+
+	iounmap(dev->base);
+	kfree(dev);
+
+	return 0;
 }
 
 static const struct of_device_id rgmii_match[] =
@@ -278,6 +300,7 @@ static struct platform_driver rgmii_driver = {
 		.of_match_table = rgmii_match,
 	},
 	.probe = rgmii_probe,
+	.remove = rgmii_remove,
 };
 
 int __init rgmii_init(void)

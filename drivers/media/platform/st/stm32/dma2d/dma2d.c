@@ -45,10 +45,7 @@
  *   whole of a destination image with a pixel format conversion.
  */
 
-static inline struct dma2d_ctx *file2ctx(struct file *filp)
-{
-	return container_of(file_to_v4l2_fh(filp), struct dma2d_ctx, fh);
-}
+#define fh2ctx(__fh) container_of(__fh, struct dma2d_ctx, fh)
 
 static const struct dma2d_fmt formats[] = {
 	{
@@ -189,6 +186,8 @@ static const struct vb2_ops dma2d_qops = {
 	.buf_queue	= dma2d_buf_queue,
 	.start_streaming = dma2d_start_streaming,
 	.stop_streaming  = dma2d_stop_streaming,
+	.wait_prepare	= vb2_ops_wait_prepare,
+	.wait_finish	= vb2_ops_wait_finish,
 };
 
 static int queue_init(void *priv, struct vb2_queue *src_vq,
@@ -304,7 +303,8 @@ static int dma2d_open(struct file *file)
 	}
 
 	v4l2_fh_init(&ctx->fh, video_devdata(file));
-	v4l2_fh_add(&ctx->fh, file);
+	file->private_data = &ctx->fh;
+	v4l2_fh_add(&ctx->fh);
 
 	dma2d_setup_ctrls(ctx);
 
@@ -320,13 +320,13 @@ static int dma2d_open(struct file *file)
 static int dma2d_release(struct file *file)
 {
 	struct dma2d_dev *dev = video_drvdata(file);
-	struct dma2d_ctx *ctx = file2ctx(file);
+	struct dma2d_ctx *ctx = fh2ctx(file->private_data);
 
 	mutex_lock(&dev->mutex);
 	v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
 	mutex_unlock(&dev->mutex);
 	v4l2_ctrl_handler_free(&ctx->ctrl_handler);
-	v4l2_fh_del(&ctx->fh, file);
+	v4l2_fh_del(&ctx->fh);
 	v4l2_fh_exit(&ctx->fh);
 	kfree(ctx);
 
@@ -343,7 +343,7 @@ static int vidioc_querycap(struct file *file, void *priv,
 	return 0;
 }
 
-static int vidioc_enum_fmt(struct file *file, void *priv, struct v4l2_fmtdesc *f)
+static int vidioc_enum_fmt(struct file *file, void *prv, struct v4l2_fmtdesc *f)
 {
 	if (f->index >= NUM_FORMATS)
 		return -EINVAL;
@@ -352,10 +352,15 @@ static int vidioc_enum_fmt(struct file *file, void *priv, struct v4l2_fmtdesc *f
 	return 0;
 }
 
-static int vidioc_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
+static int vidioc_g_fmt(struct file *file, void *prv, struct v4l2_format *f)
 {
-	struct dma2d_ctx *ctx = file2ctx(file);
+	struct dma2d_ctx *ctx = prv;
+	struct vb2_queue *vq;
 	struct dma2d_frame *frm;
+
+	vq = v4l2_m2m_get_vq(ctx->fh.m2m_ctx, f->type);
+	if (!vq)
+		return -EINVAL;
 
 	frm = get_frame(ctx, f->type);
 	f->fmt.pix.width		= frm->width;
@@ -372,9 +377,9 @@ static int vidioc_g_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	return 0;
 }
 
-static int vidioc_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
+static int vidioc_try_fmt(struct file *file, void *prv, struct v4l2_format *f)
 {
-	struct dma2d_ctx *ctx = file2ctx(file);
+	struct dma2d_ctx *ctx = prv;
 	struct dma2d_fmt *fmt;
 	enum v4l2_field *field;
 	u32 fourcc = f->fmt.pix.pixelformat;
@@ -415,9 +420,9 @@ static int vidioc_try_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	return 0;
 }
 
-static int vidioc_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
+static int vidioc_s_fmt(struct file *file, void *prv, struct v4l2_format *f)
 {
-	struct dma2d_ctx *ctx = file2ctx(file);
+	struct dma2d_ctx *ctx = prv;
 	struct vb2_queue *vq;
 	struct dma2d_frame *frm;
 	struct dma2d_fmt *fmt;
@@ -426,7 +431,7 @@ static int vidioc_s_fmt(struct file *file, void *priv, struct v4l2_format *f)
 	/* Adjust all values accordingly to the hardware capabilities
 	 * and chosen format.
 	 */
-	ret = vidioc_try_fmt(file, priv, f);
+	ret = vidioc_try_fmt(file, prv, f);
 	if (ret)
 		return ret;
 
@@ -485,10 +490,9 @@ static void device_run(void *prv)
 
 	src->sequence = frm_out->sequence++;
 	dst->sequence = frm_cap->sequence++;
-	v4l2_m2m_buf_copy_metadata(src, dst);
+	v4l2_m2m_buf_copy_metadata(src, dst, true);
 
-	if (clk_enable(dev->gate))
-		goto end;
+	clk_enable(dev->gate);
 
 	dma2d_config_fg(dev, frm_out,
 			vb2_dma_contig_plane_dma_addr(&src->vb2_buf, 0));
@@ -599,6 +603,7 @@ static int dma2d_probe(struct platform_device *pdev)
 {
 	struct dma2d_dev *dev;
 	struct video_device *vfd;
+	struct resource *res;
 	int ret = 0;
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
@@ -609,7 +614,9 @@ static int dma2d_probe(struct platform_device *pdev)
 	mutex_init(&dev->mutex);
 	atomic_set(&dev->num_inst, 0);
 
-	dev->regs = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+
+	dev->regs = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(dev->regs))
 		return PTR_ERR(dev->regs);
 
@@ -689,7 +696,7 @@ put_clk_gate:
 	return ret;
 }
 
-static void dma2d_remove(struct platform_device *pdev)
+static int dma2d_remove(struct platform_device *pdev)
 {
 	struct dma2d_dev *dev = platform_get_drvdata(pdev);
 
@@ -700,6 +707,8 @@ static void dma2d_remove(struct platform_device *pdev)
 	vb2_dma_contig_clear_max_seg_size(&pdev->dev);
 	clk_unprepare(dev->gate);
 	clk_put(dev->gate);
+
+	return 0;
 }
 
 static const struct of_device_id stm32_dma2d_match[] = {

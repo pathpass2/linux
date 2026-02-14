@@ -297,7 +297,9 @@ static void ldom_startcpu_cpuid(unsigned int cpu, unsigned long thread_reg,
 	unsigned long hv_err;
 	int i;
 
-	hdesc = kzalloc(struct_size(hdesc, maps, num_kernel_image_mappings),
+	hdesc = kzalloc(sizeof(*hdesc) +
+			(sizeof(struct hvtramp_mapping) *
+			 num_kernel_image_mappings - 1),
 			GFP_KERNEL);
 	if (!hdesc) {
 		printk(KERN_ERR "ldom_startcpu_cpuid: Cannot allocate "
@@ -919,26 +921,20 @@ extern unsigned long xcall_flush_dcache_page_cheetah;
 #endif
 extern unsigned long xcall_flush_dcache_page_spitfire;
 
-static inline void __local_flush_dcache_folio(struct folio *folio)
+static inline void __local_flush_dcache_page(struct page *page)
 {
-	unsigned int i, nr = folio_nr_pages(folio);
-
 #ifdef DCACHE_ALIASING_POSSIBLE
-	for (i = 0; i < nr; i++)
-		__flush_dcache_page(folio_address(folio) + i * PAGE_SIZE,
+	__flush_dcache_page(page_address(page),
 			    ((tlb_type == spitfire) &&
-			     folio_flush_mapping(folio) != NULL));
+			     page_mapping_file(page) != NULL));
 #else
-	if (folio_flush_mapping(folio) != NULL &&
-	    tlb_type == spitfire) {
-		unsigned long pfn = folio_pfn(folio)
-		for (i = 0; i < nr; i++)
-			__flush_icache_page((pfn + i) * PAGE_SIZE);
-	}
+	if (page_mapping_file(page) != NULL &&
+	    tlb_type == spitfire)
+		__flush_icache_page(__pa(page_address(page)));
 #endif
 }
 
-void smp_flush_dcache_folio_impl(struct folio *folio, int cpu)
+void smp_flush_dcache_page_impl(struct page *page, int cpu)
 {
 	int this_cpu;
 
@@ -952,14 +948,14 @@ void smp_flush_dcache_folio_impl(struct folio *folio, int cpu)
 	this_cpu = get_cpu();
 
 	if (cpu == this_cpu) {
-		__local_flush_dcache_folio(folio);
+		__local_flush_dcache_page(page);
 	} else if (cpu_online(cpu)) {
-		void *pg_addr = folio_address(folio);
+		void *pg_addr = page_address(page);
 		u64 data0 = 0;
 
 		if (tlb_type == spitfire) {
 			data0 = ((u64)&xcall_flush_dcache_page_spitfire);
-			if (folio_flush_mapping(folio) != NULL)
+			if (page_mapping_file(page) != NULL)
 				data0 |= ((u64)1 << 32);
 		} else if (tlb_type == cheetah || tlb_type == cheetah_plus) {
 #ifdef DCACHE_ALIASING_POSSIBLE
@@ -967,23 +963,18 @@ void smp_flush_dcache_folio_impl(struct folio *folio, int cpu)
 #endif
 		}
 		if (data0) {
-			unsigned int i, nr = folio_nr_pages(folio);
-
-			for (i = 0; i < nr; i++) {
-				xcall_deliver(data0, __pa(pg_addr),
-					      (u64) pg_addr, cpumask_of(cpu));
+			xcall_deliver(data0, __pa(pg_addr),
+				      (u64) pg_addr, cpumask_of(cpu));
 #ifdef CONFIG_DEBUG_DCFLUSH
-				atomic_inc(&dcpage_flushes_xcall);
+			atomic_inc(&dcpage_flushes_xcall);
 #endif
-				pg_addr += PAGE_SIZE;
-			}
 		}
 	}
 
 	put_cpu();
 }
 
-void flush_dcache_folio_all(struct mm_struct *mm, struct folio *folio)
+void flush_dcache_page_all(struct mm_struct *mm, struct page *page)
 {
 	void *pg_addr;
 	u64 data0;
@@ -997,10 +988,10 @@ void flush_dcache_folio_all(struct mm_struct *mm, struct folio *folio)
 	atomic_inc(&dcpage_flushes);
 #endif
 	data0 = 0;
-	pg_addr = folio_address(folio);
+	pg_addr = page_address(page);
 	if (tlb_type == spitfire) {
 		data0 = ((u64)&xcall_flush_dcache_page_spitfire);
-		if (folio_flush_mapping(folio) != NULL)
+		if (page_mapping_file(page) != NULL)
 			data0 |= ((u64)1 << 32);
 	} else if (tlb_type == cheetah || tlb_type == cheetah_plus) {
 #ifdef DCACHE_ALIASING_POSSIBLE
@@ -1008,18 +999,13 @@ void flush_dcache_folio_all(struct mm_struct *mm, struct folio *folio)
 #endif
 	}
 	if (data0) {
-		unsigned int i, nr = folio_nr_pages(folio);
-
-		for (i = 0; i < nr; i++) {
-			xcall_deliver(data0, __pa(pg_addr),
-				      (u64) pg_addr, cpu_online_mask);
+		xcall_deliver(data0, __pa(pg_addr),
+			      (u64) pg_addr, cpu_online_mask);
 #ifdef CONFIG_DEBUG_DCFLUSH
-			atomic_inc(&dcpage_flushes_xcall);
+		atomic_inc(&dcpage_flushes_xcall);
 #endif
-			pg_addr += PAGE_SIZE;
-		}
 	}
-	__local_flush_dcache_folio(folio);
+	__local_flush_dcache_page(page);
 
 	preempt_enable();
 }
@@ -1204,6 +1190,10 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 {
 }
 
+void smp_prepare_boot_cpu(void)
+{
+}
+
 void __init smp_setup_processor_id(void)
 {
 	if (tlb_type == spitfire)
@@ -1212,6 +1202,20 @@ void __init smp_setup_processor_id(void)
 		xcall_deliver_impl = cheetah_xcall_deliver;
 	else
 		xcall_deliver_impl = hypervisor_xcall_deliver;
+}
+
+void __init smp_fill_in_cpu_possible_map(void)
+{
+	int possible_cpus = num_possible_cpus();
+	int i;
+
+	if (possible_cpus > nr_cpu_ids)
+		possible_cpus = nr_cpu_ids;
+
+	for (i = 0; i < possible_cpus; i++)
+		set_cpu_possible(i, true);
+	for (; i < NR_CPUS; i++)
+		set_cpu_possible(i, false);
 }
 
 void smp_fill_in_sib_core_maps(void)
@@ -1426,7 +1430,7 @@ static unsigned long send_cpu_poke(int cpu)
 	return hv_err;
 }
 
-void arch_smp_send_reschedule(int cpu)
+void smp_send_reschedule(int cpu)
 {
 	if (cpu == smp_processor_id()) {
 		WARN_ON_ONCE(preemptible());

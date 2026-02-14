@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0-only
-menu "Generic drivers"
-
 config SND_SIMPLE_CARD_UTILS
 	tristate
 
@@ -39,5 +37,3 @@ config SND_TEST_COMPONENT
 	depends on OF
 	help
 	  This option enables test component sound driver support.
-
-endmenu

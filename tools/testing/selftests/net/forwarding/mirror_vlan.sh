@@ -40,15 +40,11 @@ setup_prepare()
 
 	vlan_create $h2 111 v$h2 192.0.2.18/28
 	bridge vlan add dev $swp2 vid 111
-
-	trap_install $h3 ingress
 }
 
 cleanup()
 {
 	pre_cleanup
-
-	trap_uninstall $h3 ingress
 
 	vlan_destroy $h2 111
 	vlan_destroy $h1 111
@@ -67,11 +63,11 @@ test_vlan_dir()
 
 	RET=0
 
-	mirror_install $swp1 $direction $swp3.555 "matchall"
-	test_span_dir "$h3.555" "$forward_type" "$backward_type"
+	mirror_install $swp1 $direction $swp3.555 "matchall $tcflags"
+	test_span_dir "$h3.555" "$direction" "$forward_type" "$backward_type"
 	mirror_uninstall $swp1 $direction
 
-	log_test "$direction mirror to vlan"
+	log_test "$direction mirror to vlan ($tcflags)"
 }
 
 test_vlan()
@@ -88,12 +84,14 @@ test_tagged_vlan_dir()
 
 	RET=0
 
-	mirror_install $swp1 $direction $swp3.555 "matchall"
-	do_test_span_vlan_dir_ips '>= 10' "$h3.555" 111 ip 192.0.2.17 192.0.2.18
-	do_test_span_vlan_dir_ips  0 "$h3.555" 555 ip 192.0.2.17 192.0.2.18
+	mirror_install $swp1 $direction $swp3.555 "matchall $tcflags"
+	do_test_span_vlan_dir_ips 10 "$h3.555" 111 "$direction" ip \
+				  192.0.2.17 192.0.2.18
+	do_test_span_vlan_dir_ips  0 "$h3.555" 555 "$direction" ip \
+				  192.0.2.17 192.0.2.18
 	mirror_uninstall $swp1 $direction
 
-	log_test "$direction mirror tagged to vlan"
+	log_test "$direction mirror tagged to vlan ($tcflags)"
 }
 
 test_tagged_vlan()
@@ -102,11 +100,32 @@ test_tagged_vlan()
 	test_tagged_vlan_dir egress 0 8
 }
 
+test_all()
+{
+	slow_path_trap_install $swp1 ingress
+	slow_path_trap_install $swp1 egress
+	trap_install $h3 ingress
+
+	tests_run
+
+	trap_uninstall $h3 ingress
+	slow_path_trap_uninstall $swp1 egress
+	slow_path_trap_uninstall $swp1 ingress
+}
+
 trap cleanup EXIT
 
 setup_prepare
 setup_wait
 
-tests_run
+tcflags="skip_hw"
+test_all
+
+if ! tc_offload_check; then
+	echo "WARN: Could not test offloaded functionality"
+else
+	tcflags="skip_sw"
+	test_all
+fi
 
 exit $EXIT_STATUS

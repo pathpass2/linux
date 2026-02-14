@@ -2,7 +2,6 @@
 
 #include <linux/phy.h>
 #include <linux/ethtool_netlink.h>
-#include <net/netdev_lock.h>
 #include "netlink.h"
 #include "common.h"
 
@@ -14,7 +13,7 @@
 
 const struct nla_policy ethnl_cable_test_act_policy[] = {
 	[ETHTOOL_A_CABLE_TEST_HEADER]		=
-		NLA_POLICY_NESTED(ethnl_header_policy_phy),
+		NLA_POLICY_NESTED(ethnl_header_policy),
 };
 
 static int ethnl_cable_test_started(struct phy_device *phydev, u8 cmd)
@@ -59,7 +58,6 @@ int ethnl_act_cable_test(struct sk_buff *skb, struct genl_info *info)
 	struct ethnl_req_info req_info = {};
 	const struct ethtool_phy_ops *ops;
 	struct nlattr **tb = info->attrs;
-	struct phy_device *phydev;
 	struct net_device *dev;
 	int ret;
 
@@ -71,37 +69,33 @@ int ethnl_act_cable_test(struct sk_buff *skb, struct genl_info *info)
 		return ret;
 
 	dev = req_info.dev;
-
-	rtnl_lock();
-	netdev_lock_ops(dev);
-	phydev = ethnl_req_get_phydev(&req_info, tb,
-				      ETHTOOL_A_CABLE_TEST_HEADER,
-				      info->extack);
-	if (IS_ERR_OR_NULL(phydev)) {
+	if (!dev->phydev) {
 		ret = -EOPNOTSUPP;
-		goto out_unlock;
+		goto out_dev_put;
 	}
 
+	rtnl_lock();
 	ops = ethtool_phy_ops;
 	if (!ops || !ops->start_cable_test) {
 		ret = -EOPNOTSUPP;
-		goto out_unlock;
+		goto out_rtnl;
 	}
 
 	ret = ethnl_ops_begin(dev);
 	if (ret < 0)
-		goto out_unlock;
+		goto out_rtnl;
 
-	ret = ops->start_cable_test(phydev, info->extack);
+	ret = ops->start_cable_test(dev->phydev, info->extack);
 
 	ethnl_ops_complete(dev);
 
 	if (!ret)
-		ethnl_cable_test_started(phydev, ETHTOOL_MSG_CABLE_TEST_NTF);
+		ethnl_cable_test_started(dev->phydev,
+					 ETHTOOL_MSG_CABLE_TEST_NTF);
 
-out_unlock:
-	netdev_unlock_ops(dev);
+out_rtnl:
 	rtnl_unlock();
+out_dev_put:
 	ethnl_parse_header_dev_put(&req_info);
 	return ret;
 }
@@ -166,8 +160,7 @@ void ethnl_cable_test_finished(struct phy_device *phydev)
 }
 EXPORT_SYMBOL_GPL(ethnl_cable_test_finished);
 
-int ethnl_cable_test_result_with_src(struct phy_device *phydev, u8 pair,
-				     u8 result, u32 src)
+int ethnl_cable_test_result(struct phy_device *phydev, u8 pair, u8 result)
 {
 	struct nlattr *nest;
 	int ret = -EMSGSIZE;
@@ -180,10 +173,6 @@ int ethnl_cable_test_result_with_src(struct phy_device *phydev, u8 pair,
 		goto err;
 	if (nla_put_u8(phydev->skb, ETHTOOL_A_CABLE_RESULT_CODE, result))
 		goto err;
-	if (src != ETHTOOL_A_CABLE_INF_SRC_UNSPEC) {
-		if (nla_put_u32(phydev->skb, ETHTOOL_A_CABLE_RESULT_SRC, src))
-			goto err;
-	}
 
 	nla_nest_end(phydev->skb, nest);
 	return 0;
@@ -192,10 +181,9 @@ err:
 	nla_nest_cancel(phydev->skb, nest);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(ethnl_cable_test_result_with_src);
+EXPORT_SYMBOL_GPL(ethnl_cable_test_result);
 
-int ethnl_cable_test_fault_length_with_src(struct phy_device *phydev, u8 pair,
-					   u32 cm, u32 src)
+int ethnl_cable_test_fault_length(struct phy_device *phydev, u8 pair, u32 cm)
 {
 	struct nlattr *nest;
 	int ret = -EMSGSIZE;
@@ -209,11 +197,6 @@ int ethnl_cable_test_fault_length_with_src(struct phy_device *phydev, u8 pair,
 		goto err;
 	if (nla_put_u32(phydev->skb, ETHTOOL_A_CABLE_FAULT_LENGTH_CM, cm))
 		goto err;
-	if (src != ETHTOOL_A_CABLE_INF_SRC_UNSPEC) {
-		if (nla_put_u32(phydev->skb, ETHTOOL_A_CABLE_FAULT_LENGTH_SRC,
-				src))
-			goto err;
-	}
 
 	nla_nest_end(phydev->skb, nest);
 	return 0;
@@ -222,7 +205,11 @@ err:
 	nla_nest_cancel(phydev->skb, nest);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(ethnl_cable_test_fault_length_with_src);
+EXPORT_SYMBOL_GPL(ethnl_cable_test_fault_length);
+
+struct cable_test_tdr_req_info {
+	struct ethnl_req_info		base;
+};
 
 static const struct nla_policy cable_test_tdr_act_cfg_policy[] = {
 	[ETHTOOL_A_CABLE_TEST_TDR_CFG_FIRST]	= { .type = NLA_U32 },
@@ -233,7 +220,7 @@ static const struct nla_policy cable_test_tdr_act_cfg_policy[] = {
 
 const struct nla_policy ethnl_cable_test_tdr_act_policy[] = {
 	[ETHTOOL_A_CABLE_TEST_TDR_HEADER]	=
-		NLA_POLICY_NESTED(ethnl_header_policy_phy),
+		NLA_POLICY_NESTED(ethnl_header_policy),
 	[ETHTOOL_A_CABLE_TEST_TDR_CFG]		= { .type = NLA_NESTED },
 };
 
@@ -322,7 +309,6 @@ int ethnl_act_cable_test_tdr(struct sk_buff *skb, struct genl_info *info)
 	struct ethnl_req_info req_info = {};
 	const struct ethtool_phy_ops *ops;
 	struct nlattr **tb = info->attrs;
-	struct phy_device *phydev;
 	struct phy_tdr_config cfg;
 	struct net_device *dev;
 	int ret;
@@ -335,6 +321,10 @@ int ethnl_act_cable_test_tdr(struct sk_buff *skb, struct genl_info *info)
 		return ret;
 
 	dev = req_info.dev;
+	if (!dev->phydev) {
+		ret = -EOPNOTSUPP;
+		goto out_dev_put;
+	}
 
 	ret = ethnl_act_cable_test_tdr_cfg(tb[ETHTOOL_A_CABLE_TEST_TDR_CFG],
 					   info, &cfg);
@@ -342,35 +332,25 @@ int ethnl_act_cable_test_tdr(struct sk_buff *skb, struct genl_info *info)
 		goto out_dev_put;
 
 	rtnl_lock();
-	netdev_lock_ops(dev);
-	phydev = ethnl_req_get_phydev(&req_info, tb,
-				      ETHTOOL_A_CABLE_TEST_TDR_HEADER,
-				      info->extack);
-	if (IS_ERR_OR_NULL(phydev)) {
-		ret = -EOPNOTSUPP;
-		goto out_unlock;
-	}
-
 	ops = ethtool_phy_ops;
 	if (!ops || !ops->start_cable_test_tdr) {
 		ret = -EOPNOTSUPP;
-		goto out_unlock;
+		goto out_rtnl;
 	}
 
 	ret = ethnl_ops_begin(dev);
 	if (ret < 0)
-		goto out_unlock;
+		goto out_rtnl;
 
-	ret = ops->start_cable_test_tdr(phydev, info->extack, &cfg);
+	ret = ops->start_cable_test_tdr(dev->phydev, info->extack, &cfg);
 
 	ethnl_ops_complete(dev);
 
 	if (!ret)
-		ethnl_cable_test_started(phydev,
+		ethnl_cable_test_started(dev->phydev,
 					 ETHTOOL_MSG_CABLE_TEST_TDR_NTF);
 
-out_unlock:
-	netdev_unlock_ops(dev);
+out_rtnl:
 	rtnl_unlock();
 out_dev_put:
 	ethnl_parse_header_dev_put(&req_info);

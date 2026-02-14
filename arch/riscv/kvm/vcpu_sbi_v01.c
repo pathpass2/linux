@@ -23,7 +23,6 @@ static int kvm_sbi_ext_v01_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	struct kvm *kvm = vcpu->kvm;
 	struct kvm_cpu_context *cp = &vcpu->arch.guest_context;
 	struct kvm_cpu_trap *utrap = retdata->utrap;
-	unsigned long vmid;
 
 	switch (cp->a7) {
 	case SBI_EXT_0_1_CONSOLE_GETCHAR:
@@ -32,7 +31,8 @@ static int kvm_sbi_ext_v01_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 		 * The CONSOLE_GETCHAR/CONSOLE_PUTCHAR SBI calls cannot be
 		 * handled in kernel so we forward these to user-space
 		 */
-		ret = kvm_riscv_vcpu_sbi_forward_handler(vcpu, run, retdata);
+		kvm_riscv_vcpu_sbi_forward(vcpu, run);
+		retdata->uexit = true;
 		break;
 	case SBI_EXT_0_1_SET_TIMER:
 #if __riscv_xlen == 32
@@ -78,21 +78,25 @@ static int kvm_sbi_ext_v01_handler(struct kvm_vcpu *vcpu, struct kvm_run *run,
 		if (cp->a7 == SBI_EXT_0_1_REMOTE_FENCE_I)
 			kvm_riscv_fence_i(vcpu->kvm, 0, hmask);
 		else if (cp->a7 == SBI_EXT_0_1_REMOTE_SFENCE_VMA) {
-			vmid = READ_ONCE(vcpu->kvm->arch.vmid.vmid);
 			if (cp->a1 == 0 && cp->a2 == 0)
-				kvm_riscv_hfence_vvma_all(vcpu->kvm, 0, hmask, vmid);
+				kvm_riscv_hfence_vvma_all(vcpu->kvm,
+							  0, hmask);
 			else
-				kvm_riscv_hfence_vvma_gva(vcpu->kvm, 0, hmask, cp->a1,
-							  cp->a2, PAGE_SHIFT, vmid);
+				kvm_riscv_hfence_vvma_gva(vcpu->kvm,
+							  0, hmask,
+							  cp->a1, cp->a2,
+							  PAGE_SHIFT);
 		} else {
-			vmid = READ_ONCE(vcpu->kvm->arch.vmid.vmid);
 			if (cp->a1 == 0 && cp->a2 == 0)
-				kvm_riscv_hfence_vvma_asid_all(vcpu->kvm, 0, hmask,
-							       cp->a3, vmid);
+				kvm_riscv_hfence_vvma_asid_all(vcpu->kvm,
+							       0, hmask,
+							       cp->a3);
 			else
-				kvm_riscv_hfence_vvma_asid_gva(vcpu->kvm, 0, hmask,
-							       cp->a1, cp->a2, PAGE_SHIFT,
-							       cp->a3, vmid);
+				kvm_riscv_hfence_vvma_asid_gva(vcpu->kvm,
+							       0, hmask,
+							       cp->a1, cp->a2,
+							       PAGE_SHIFT,
+							       cp->a3);
 		}
 		break;
 	default:

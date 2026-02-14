@@ -559,8 +559,8 @@ static void bt1_pcie_host_deinit(struct dw_pcie_rp *pp)
 }
 
 static const struct dw_pcie_host_ops bt1_pcie_host_ops = {
-	.init = bt1_pcie_host_init,
-	.deinit = bt1_pcie_host_deinit,
+	.host_init = bt1_pcie_host_init,
+	.host_deinit = bt1_pcie_host_deinit,
 };
 
 static struct bt1_pcie *bt1_pcie_create_data(struct platform_device *pdev)
@@ -617,11 +617,13 @@ static int bt1_pcie_probe(struct platform_device *pdev)
 	return bt1_pcie_add_port(btpci);
 }
 
-static void bt1_pcie_remove(struct platform_device *pdev)
+static int bt1_pcie_remove(struct platform_device *pdev)
 {
 	struct bt1_pcie *btpci = platform_get_drvdata(pdev);
 
 	bt1_pcie_del_port(btpci);
+
+	return 0;
 }
 
 static const struct of_device_id bt1_pcie_of_match[] = {

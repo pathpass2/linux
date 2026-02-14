@@ -20,14 +20,4 @@ void memblock_free_pages(struct page *page, unsigned long pfn,
 {
 }
 
-static inline void accept_memory(phys_addr_t start, unsigned long size)
-{
-}
-
-static inline unsigned long free_reserved_area(void *start, void *end,
-					       int poison, const char *s)
-{
-	return 0;
-}
-
 #endif

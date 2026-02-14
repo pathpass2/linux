@@ -12,11 +12,9 @@
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/smp.h>
-#include <linux/memblock.h>
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
 #include <linux/export.h>
-#include <linux/sort.h>
 
 #include <asm/cpu.h>
 #include <asm/cpu-type.h>
@@ -24,9 +22,9 @@
 #include <asm/hazards.h>
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
-#include <asm/tlbex.h>
 #include <asm/tlbmisc.h>
-#include <asm/setup.h>
+
+extern void build_tlb_refill_handler(void);
 
 /*
  * LOONGSON-2 has a 4 entry itlb which is a subset of jtlb, LOONGSON-3 has
@@ -299,11 +297,11 @@ void __update_tlb(struct vm_area_struct * vma, unsigned long address, pte_t pte)
 	p4d_t *p4dp;
 	pud_t *pudp;
 	pmd_t *pmdp;
-	pte_t *ptep, *ptemap = NULL;
+	pte_t *ptep;
 	int idx, pid;
 
 	/*
-	 * Handle debugger faulting in for debuggee.
+	 * Handle debugger faulting in for debugee.
 	 */
 	if (current->active_mm != vma->vm_mm)
 		return;
@@ -328,7 +326,7 @@ void __update_tlb(struct vm_area_struct * vma, unsigned long address, pte_t pte)
 	idx = read_c0_index();
 #ifdef CONFIG_MIPS_HUGE_TLB_SUPPORT
 	/* this could be a huge page  */
-	if (pmd_leaf(*pmdp)) {
+	if (pmd_huge(*pmdp)) {
 		unsigned long lo;
 		write_c0_pagemask(PM_HUGE_MASK);
 		ptep = (pte_t *)pmdp;
@@ -346,12 +344,7 @@ void __update_tlb(struct vm_area_struct * vma, unsigned long address, pte_t pte)
 	} else
 #endif
 	{
-		ptemap = ptep = pte_offset_map(pmdp, address);
-		/*
-		 * update_mmu_cache() is called between pte_offset_map_lock()
-		 * and pte_unmap_unlock(), so we can assume that ptep is not
-		 * NULL here: and what should be done below if it were NULL?
-		 */
+		ptep = pte_offset_map(pmdp, address);
 
 #if defined(CONFIG_PHYS_ADDR_T_64BIT) && defined(CONFIG_CPU_MIPS32)
 #ifdef CONFIG_XPA
@@ -380,9 +373,6 @@ void __update_tlb(struct vm_area_struct * vma, unsigned long address, pte_t pte)
 	tlbw_use_hazard();
 	htw_start();
 	flush_micro_tlb_vm(vma);
-
-	if (ptemap)
-		pte_unmap(ptemap);
 	local_irq_restore(flags);
 }
 
@@ -460,7 +450,6 @@ EXPORT_SYMBOL(has_transparent_hugepage);
 
 int temp_tlb_entry;
 
-#ifndef CONFIG_64BIT
 __init int add_temporary_entry(unsigned long entrylo0, unsigned long entrylo1,
 			       unsigned long entryhi, unsigned long pagemask)
 {
@@ -499,7 +488,6 @@ out:
 	local_irq_restore(flags);
 	return ret;
 }
-#endif
 
 static int ntlb;
 static int __init set_ntlb(char *str)
@@ -509,97 +497,6 @@ static int __init set_ntlb(char *str)
 }
 
 __setup("ntlb=", set_ntlb);
-
-
-/* Comparison function for EntryHi VPN fields.  */
-static int r4k_vpn_cmp(const void *a, const void *b)
-{
-	long v = *(unsigned long *)a - *(unsigned long *)b;
-	int s = sizeof(long) > sizeof(int) ? sizeof(long) * 8 - 1: 0;
-	return s ? (v != 0) | v >> s : v;
-}
-
-/*
- * Initialise all TLB entries with unique values that do not clash with
- * what we have been handed over and what we'll be using ourselves.
- */
-static void __ref r4k_tlb_uniquify(void)
-{
-	int tlbsize = current_cpu_data.tlbsize;
-	bool use_slab = slab_is_available();
-	int start = num_wired_entries();
-	phys_addr_t tlb_vpn_size;
-	unsigned long *tlb_vpns;
-	unsigned long vpn_mask;
-	int cnt, ent, idx, i;
-
-	vpn_mask = GENMASK(cpu_vmbits - 1, 13);
-	vpn_mask |= IS_ENABLED(CONFIG_64BIT) ? 3ULL << 62 : 1 << 31;
-
-	tlb_vpn_size = tlbsize * sizeof(*tlb_vpns);
-	tlb_vpns = (use_slab ?
-		    kmalloc(tlb_vpn_size, GFP_KERNEL) :
-		    memblock_alloc_raw(tlb_vpn_size, sizeof(*tlb_vpns)));
-	if (WARN_ON(!tlb_vpns))
-		return; /* Pray local_flush_tlb_all() is good enough. */
-
-	htw_stop();
-
-	for (i = start, cnt = 0; i < tlbsize; i++, cnt++) {
-		unsigned long vpn;
-
-		write_c0_index(i);
-		mtc0_tlbr_hazard();
-		tlb_read();
-		tlb_read_hazard();
-		vpn = read_c0_entryhi();
-		vpn &= vpn_mask & PAGE_MASK;
-		tlb_vpns[cnt] = vpn;
-
-		/* Prevent any large pages from overlapping regular ones.  */
-		write_c0_pagemask(read_c0_pagemask() & PM_DEFAULT_MASK);
-		mtc0_tlbw_hazard();
-		tlb_write_indexed();
-		tlbw_use_hazard();
-	}
-
-	sort(tlb_vpns, cnt, sizeof(tlb_vpns[0]), r4k_vpn_cmp, NULL);
-
-	write_c0_pagemask(PM_DEFAULT_MASK);
-	write_c0_entrylo0(0);
-	write_c0_entrylo1(0);
-
-	idx = 0;
-	ent = tlbsize;
-	for (i = start; i < tlbsize; i++)
-		while (1) {
-			unsigned long entryhi, vpn;
-
-			entryhi = UNIQUE_ENTRYHI(ent);
-			vpn = entryhi & vpn_mask & PAGE_MASK;
-
-			if (idx >= cnt || vpn < tlb_vpns[idx]) {
-				write_c0_entryhi(entryhi);
-				write_c0_index(i);
-				mtc0_tlbw_hazard();
-				tlb_write_indexed();
-				ent++;
-				break;
-			} else if (vpn == tlb_vpns[idx]) {
-				ent++;
-			} else {
-				idx++;
-			}
-		}
-
-	tlbw_use_hazard();
-	htw_start();
-	flush_micro_tlb();
-	if (use_slab)
-		kfree(tlb_vpns);
-	else
-		memblock_free(tlb_vpns, tlb_vpn_size);
-}
 
 /*
  * Configure TLB (for init or after a CPU has been powered off).
@@ -640,7 +537,6 @@ static void r4k_tlb_configure(void)
 	temp_tlb_entry = current_cpu_data.tlbsize - 1;
 
 	/* From this point on the ARC firmware is dead.	 */
-	r4k_tlb_uniquify();
 	local_flush_tlb_all();
 
 	/* Did I tell you that ARC SUCKS?  */

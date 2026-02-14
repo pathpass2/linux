@@ -13,7 +13,7 @@ asm(
 	".globl just_return_func\n"
 	ASM_FUNC_ALIGN
 	"just_return_func:\n"
-		ANNOTATE_NOENDBR "\n"
+		ANNOTATE_NOENDBR
 		ASM_RET
 	".size just_return_func, .-just_return_func\n"
 );

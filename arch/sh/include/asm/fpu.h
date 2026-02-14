@@ -2,7 +2,7 @@
 #ifndef __ASM_SH_FPU_H
 #define __ASM_SH_FPU_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/ptrace.h>
 
@@ -64,9 +64,6 @@ static inline void clear_fpu(struct task_struct *tsk, struct pt_regs *regs)
 	preempt_enable();
 }
 
-void float_raise(unsigned int flags);
-int float_rounding_mode(void);
-
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_SH_FPU_H */

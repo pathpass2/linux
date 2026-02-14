@@ -56,24 +56,27 @@ struct link_follower {
 
 static int follower_update(struct link_follower *follower)
 {
+	struct snd_ctl_elem_value *uctl;
 	int err, ch;
-	struct snd_ctl_elem_value *uctl __free(kfree) =
-		kzalloc(sizeof(*uctl), GFP_KERNEL);
 
+	uctl = kzalloc(sizeof(*uctl), GFP_KERNEL);
 	if (!uctl)
 		return -ENOMEM;
 	uctl->id = follower->follower.id;
 	err = follower->follower.get(&follower->follower, uctl);
 	if (err < 0)
-		return err;
+		goto error;
 	for (ch = 0; ch < follower->info.count; ch++)
 		follower->vals[ch] = uctl->value.integer.value[ch];
-	return 0;
+ error:
+	kfree(uctl);
+	return err < 0 ? err : 0;
 }
 
 /* get the follower ctl info and save the initial values */
 static int follower_init(struct link_follower *follower)
 {
+	struct snd_ctl_elem_info *uinfo;
 	int err;
 
 	if (follower->info.count) {
@@ -83,24 +86,27 @@ static int follower_init(struct link_follower *follower)
 		return 0;
 	}
 
-	struct snd_ctl_elem_info *uinfo __free(kfree) =
-		kmalloc(sizeof(*uinfo), GFP_KERNEL);
+	uinfo = kmalloc(sizeof(*uinfo), GFP_KERNEL);
 	if (!uinfo)
 		return -ENOMEM;
 	uinfo->id = follower->follower.id;
 	err = follower->follower.info(&follower->follower, uinfo);
-	if (err < 0)
+	if (err < 0) {
+		kfree(uinfo);
 		return err;
+	}
 	follower->info.type = uinfo->type;
 	follower->info.count = uinfo->count;
 	if (follower->info.count > 2  ||
 	    (follower->info.type != SNDRV_CTL_ELEM_TYPE_INTEGER &&
 	     follower->info.type != SNDRV_CTL_ELEM_TYPE_BOOLEAN)) {
 		pr_err("ALSA: vmaster: invalid follower element\n");
+		kfree(uinfo);
 		return -EINVAL;
 	}
 	follower->info.min_val = uinfo->value.integer.min;
 	follower->info.max_val = uinfo->value.integer.max;
+	kfree(uinfo);
 
 	return follower_update(follower);
 }
@@ -199,12 +205,6 @@ static int follower_put(struct snd_kcontrol *kcontrol,
 	if (err < 0)
 		return err;
 	for (ch = 0; ch < follower->info.count; ch++) {
-		if (ucontrol->value.integer.value[ch] < follower->info.min_val ||
-		    ucontrol->value.integer.value[ch] > follower->info.max_val)
-			return -EINVAL;
-	}
-
-	for (ch = 0; ch < follower->info.count; ch++) {
 		if (follower->vals[ch] != ucontrol->value.integer.value[ch]) {
 			changed = 1;
 			follower->vals[ch] = ucontrol->value.integer.value[ch];
@@ -280,34 +280,6 @@ int _snd_ctl_add_follower(struct snd_kcontrol *master,
 }
 EXPORT_SYMBOL(_snd_ctl_add_follower);
 
-/**
- * snd_ctl_add_followers - add multiple followers to vmaster
- * @card: card instance
- * @master: the target vmaster kcontrol object
- * @list: NULL-terminated list of name strings of followers to be added
- *
- * Adds the multiple follower kcontrols with the given names.
- * Returns 0 for success or a negative error code.
- */
-int snd_ctl_add_followers(struct snd_card *card, struct snd_kcontrol *master,
-			  const char * const *list)
-{
-	struct snd_kcontrol *follower;
-	int err;
-
-	for (; *list; list++) {
-		follower = snd_ctl_find_id_mixer(card, *list);
-		if (follower) {
-			err = snd_ctl_add_follower(master, follower);
-			if (err < 0)
-				return err;
-		}
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(snd_ctl_add_followers);
-
 /*
  * ctl callbacks for master controls
  */
@@ -341,9 +313,9 @@ static int master_get(struct snd_kcontrol *kcontrol,
 static int sync_followers(struct link_master *master, int old_val, int new_val)
 {
 	struct link_follower *follower;
-	struct snd_ctl_elem_value *uval __free(kfree) =
-		kmalloc(sizeof(*uval), GFP_KERNEL);
+	struct snd_ctl_elem_value *uval;
 
+	uval = kmalloc(sizeof(*uval), GFP_KERNEL);
 	if (!uval)
 		return -ENOMEM;
 	list_for_each_entry(follower, &master->followers, list) {
@@ -353,6 +325,7 @@ static int sync_followers(struct link_master *master, int old_val, int new_val)
 		master->val = new_val;
 		follower_put_val(follower, uval);
 	}
+	kfree(uval);
 	return 0;
 }
 
@@ -371,8 +344,6 @@ static int master_put(struct snd_kcontrol *kcontrol,
 	new_val = ucontrol->value.integer.value[0];
 	if (new_val == old_val)
 		return 0;
-	if (new_val < master->info.min_val || new_val > master->info.max_val)
-		return -EINVAL;
 
 	err = sync_followers(master, old_val, new_val);
 	if (err < 0)

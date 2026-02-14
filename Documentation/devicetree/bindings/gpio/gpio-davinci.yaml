@@ -32,8 +32,6 @@ properties:
 
   gpio-ranges: true
 
-  gpio-reserved-ranges: true
-
   gpio-line-names:
     description: strings describing the names of each gpio line.
     minItems: 1

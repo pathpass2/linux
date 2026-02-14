@@ -20,7 +20,7 @@
 #include <unistd.h>
 
 #include "pidfd.h"
-#include "kselftest.h"
+#include "../kselftest.h"
 
 #define str(s) _str(s)
 #define _str(s) #s
@@ -42,41 +42,12 @@ static pid_t pidfd_clone(int flags, int *pidfd, int (*fn)(void *))
 #endif
 }
 
-static pthread_t signal_received;
+static int signal_received;
 
 static void set_signal_received_on_sigusr1(int sig)
 {
 	if (sig == SIGUSR1)
-		signal_received = pthread_self();
-}
-
-static int send_signal(int pidfd)
-{
-	int ret = 0;
-
-	if (sys_pidfd_send_signal(pidfd, SIGUSR1, NULL, 0) < 0) {
-		ret = -EINVAL;
-		goto exit;
-	}
-
-	if (signal_received != pthread_self()) {
-		ret = -EINVAL;
-		goto exit;
-	}
-
-exit:
-	signal_received = 0;
-	return ret;
-}
-
-static void *send_signal_worker(void *arg)
-{
-	int pidfd = (int)(intptr_t)arg;
-	int ret;
-
-	/* We forward any errors for the caller to handle. */
-	ret = send_signal(pidfd);
-	return (void *)(intptr_t)ret;
+		signal_received = 1;
 }
 
 /*
@@ -85,11 +56,8 @@ static void *send_signal_worker(void *arg)
  */
 static int test_pidfd_send_signal_simple_success(void)
 {
-	int pidfd;
+	int pidfd, ret;
 	const char *test_name = "pidfd_send_signal send SIGUSR1";
-	pthread_t thread;
-	void *thread_res;
-	int err;
 
 	if (!have_pidfd_send_signal) {
 		ksft_test_result_skip(
@@ -98,45 +66,25 @@ static int test_pidfd_send_signal_simple_success(void)
 		return 0;
 	}
 
-	signal(SIGUSR1, set_signal_received_on_sigusr1);
-
-	/* Try sending a signal to ourselves via /proc/self. */
 	pidfd = open("/proc/self", O_DIRECTORY | O_CLOEXEC);
 	if (pidfd < 0)
 		ksft_exit_fail_msg(
 			"%s test: Failed to open process file descriptor\n",
 			test_name);
-	err = send_signal(pidfd);
-	if (err)
-		ksft_exit_fail_msg(
-			"%s test: Error %d on sending pidfd signal\n",
-			test_name, err);
+
+	signal(SIGUSR1, set_signal_received_on_sigusr1);
+
+	ret = sys_pidfd_send_signal(pidfd, SIGUSR1, NULL, 0);
 	close(pidfd);
-
-	/* Now try the same thing only using PIDFD_SELF_THREAD_GROUP. */
-	err = send_signal(PIDFD_SELF_THREAD_GROUP);
-	if (err)
-		ksft_exit_fail_msg(
-			"%s test: Error %d on PIDFD_SELF_THREAD_GROUP signal\n",
-			test_name, err);
-
-	/*
-	 * Now try the same thing in a thread and assert thread ID is equal to
-	 * worker thread ID.
-	 */
-	if (pthread_create(&thread, NULL, send_signal_worker,
-			   (void *)(intptr_t)PIDFD_SELF_THREAD))
-		ksft_exit_fail_msg("%s test: Failed to create thread\n",
+	if (ret < 0)
+		ksft_exit_fail_msg("%s test: Failed to send signal\n",
 				   test_name);
-	if (pthread_join(thread, &thread_res))
-		ksft_exit_fail_msg("%s test: Failed to join thread\n",
-				   test_name);
-	err = (int)(intptr_t)thread_res;
-	if (err)
-		ksft_exit_fail_msg(
-			"%s test: Error %d on PIDFD_SELF_THREAD signal\n",
-			test_name, err);
 
+	if (signal_received != 1)
+		ksft_exit_fail_msg("%s test: Failed to receive signal\n",
+				   test_name);
+
+	signal_received = 0;
 	ksft_test_result_pass("%s test: Sent signal\n", test_name);
 	return 0;
 }
@@ -167,8 +115,7 @@ static int test_pidfd_send_signal_exited_fail(void)
 
 	pidfd = open(buf, O_DIRECTORY | O_CLOEXEC);
 
-	ret = wait_for_pid(pid);
-	ksft_print_msg("waitpid WEXITSTATUS=%d\n", ret);
+	(void)wait_for_pid(pid);
 
 	if (pidfd < 0)
 		ksft_exit_fail_msg(
@@ -433,13 +380,13 @@ static int test_pidfd_send_signal_syscall_support(void)
 
 static void *test_pidfd_poll_exec_thread(void *priv)
 {
-	ksft_print_msg("Child Thread: starting. pid %d tid %ld ; and sleeping\n",
+	ksft_print_msg("Child Thread: starting. pid %d tid %d ; and sleeping\n",
 			getpid(), syscall(SYS_gettid));
 	ksft_print_msg("Child Thread: doing exec of sleep\n");
 
 	execl("/bin/sleep", "sleep", str(CHILD_THREAD_MIN_WAIT), (char *)NULL);
 
-	ksft_print_msg("Child Thread: DONE. pid %d tid %ld\n",
+	ksft_print_msg("Child Thread: DONE. pid %d tid %d\n",
 			getpid(), syscall(SYS_gettid));
 	return NULL;
 }
@@ -479,7 +426,7 @@ static int child_poll_exec_test(void *args)
 {
 	pthread_t t1;
 
-	ksft_print_msg("Child (pidfd): starting. pid %d tid %ld\n", getpid(),
+	ksft_print_msg("Child (pidfd): starting. pid %d tid %d\n", getpid(),
 			syscall(SYS_gettid));
 	pthread_create(&t1, NULL, test_pidfd_poll_exec_thread, NULL);
 	/*
@@ -532,10 +479,10 @@ static void test_pidfd_poll_exec(int use_waitpid)
 
 static void *test_pidfd_poll_leader_exit_thread(void *priv)
 {
-	ksft_print_msg("Child Thread: starting. pid %d tid %ld ; and sleeping\n",
+	ksft_print_msg("Child Thread: starting. pid %d tid %d ; and sleeping\n",
 			getpid(), syscall(SYS_gettid));
 	sleep(CHILD_THREAD_MIN_WAIT);
-	ksft_print_msg("Child Thread: DONE. pid %d tid %ld\n", getpid(), syscall(SYS_gettid));
+	ksft_print_msg("Child Thread: DONE. pid %d tid %d\n", getpid(), syscall(SYS_gettid));
 	return NULL;
 }
 
@@ -544,12 +491,12 @@ static int child_poll_leader_exit_test(void *args)
 {
 	pthread_t t1, t2;
 
-	ksft_print_msg("Child: starting. pid %d tid %ld\n", getpid(), syscall(SYS_gettid));
+	ksft_print_msg("Child: starting. pid %d tid %d\n", getpid(), syscall(SYS_gettid));
 	pthread_create(&t1, NULL, test_pidfd_poll_leader_exit_thread, NULL);
 	pthread_create(&t2, NULL, test_pidfd_poll_leader_exit_thread, NULL);
 
 	/*
-	 * glibc exit calls exit_group syscall, so explicitly call exit only
+	 * glibc exit calls exit_group syscall, so explicity call exit only
 	 * so that only the group leader exits, leaving the threads alone.
 	 */
 	*child_exit_secs = time(NULL);
@@ -624,5 +571,5 @@ int main(int argc, char **argv)
 	test_pidfd_send_signal_exited_fail();
 	test_pidfd_send_signal_recycled_pid_fail();
 
-	ksft_exit_pass();
+	return ksft_exit_pass();
 }

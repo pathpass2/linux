@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2019 Intel Corporation
+ * Copyright(c) 2019 Intel Corporation. All rights reserved.
  *
  * Author: Ranjani Sridharan <ranjani.sridharan@linux.intel.com>
  */
@@ -30,9 +30,9 @@
  */
 #define SOF_WIDGET_MAX_NUM_PINS	8
 
-/* Widget pin type */
-#define SOF_PIN_TYPE_INPUT	0
-#define SOF_PIN_TYPE_OUTPUT	1
+/* The type of a widget pin is either sink or source */
+#define SOF_PIN_TYPE_SINK	0
+#define SOF_PIN_TYPE_SOURCE	1
 
 /* max number of FE PCMs before BEs */
 #define SOF_BE_PCM_BASE		16
@@ -44,9 +44,8 @@
 #define WIDGET_IS_AIF_OR_DAI(id) (WIDGET_IS_DAI(id) || WIDGET_IS_AIF(id))
 #define WIDGET_IS_COPIER(id) (WIDGET_IS_AIF_OR_DAI(id) || (id) == snd_soc_dapm_buffer)
 
-#define SOF_DAI_PARAM_INTEL_SSP_MCLK		0
-#define SOF_DAI_PARAM_INTEL_SSP_BCLK		1
-#define SOF_DAI_PARAM_INTEL_SSP_TDM_SLOTS	2
+#define SOF_DAI_CLK_INTEL_SSP_MCLK	0
+#define SOF_DAI_CLK_INTEL_SSP_BCLK	1
 
 enum sof_widget_op {
 	SOF_WIDGET_PREPARE,
@@ -92,7 +91,6 @@ struct snd_sof_pcm;
 struct snd_sof_dai_config_data {
 	int dai_index;
 	int dai_data; /* contains DAI-specific information */
-	int dai_node_id; /* contains DAI-specific information for Gateway configuration */
 };
 
 /**
@@ -105,20 +103,7 @@ struct snd_sof_dai_config_data {
  *	       additional memory in the SOF PCM stream structure
  * @pcm_free: Function pointer for PCM free that can be used for freeing any
  *	       additional memory in the SOF PCM stream structure
- * @pointer: Function pointer for pcm pointer
- *	     Note: the @pointer callback may return -EOPNOTSUPP which should be
- *		   handled in a same way as if the callback is not provided
- * @delay: Function pointer for pcm delay reporting
- * @reset_hw_params_during_stop: Flag indicating whether the hw_params should be reset during the
- *				 STOP pcm trigger
- * @ipc_first_on_start: Send IPC before invoking platform trigger during
- *				START/PAUSE_RELEASE triggers
- * @platform_stop_during_hw_free: Invoke the platform trigger during hw_free. This is needed for
- *				  IPC4 where a pipeline is only paused during stop/pause/suspend
- *				  triggers. The FW keeps the host DMA running in this case and
- *				  therefore the host must do the same and should stop the DMA during
- *				  hw_free.
- * @d0i3_supported_in_s0ix: Allow DSP D0I3 during S0iX
+ * @delay: Function pointer for pcm delay calculation
  */
 struct sof_ipc_pcm_ops {
 	int (*hw_params)(struct snd_soc_component *component, struct snd_pcm_substream *substream,
@@ -130,15 +115,8 @@ struct sof_ipc_pcm_ops {
 	int (*dai_link_fixup)(struct snd_soc_pcm_runtime *rtd, struct snd_pcm_hw_params *params);
 	int (*pcm_setup)(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm);
 	void (*pcm_free)(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm);
-	int (*pointer)(struct snd_soc_component *component,
-		       struct snd_pcm_substream *substream,
-		       snd_pcm_uframes_t *pointer);
 	snd_pcm_sframes_t (*delay)(struct snd_soc_component *component,
 				   struct snd_pcm_substream *substream);
-	bool reset_hw_params_during_stop;
-	bool ipc_first_on_start;
-	bool platform_stop_during_hw_free;
-	bool d0i3_supported_in_s0ix;
 };
 
 /**
@@ -209,8 +187,7 @@ struct sof_ipc_tplg_widget_ops {
  * @widget_setup: Function pointer for setting up setup in the DSP
  * @widget_free: Function pointer for freeing widget in the DSP
  * @dai_config: Function pointer for sending DAI config IPC to the DSP
- * @host_config: Function pointer for setting the DMA ID for host widgets
- * @dai_get_param: Function pointer for getting the DAI parameter
+ * @dai_get_clk: Function pointer for getting the DAI clock setting
  * @set_up_all_pipelines: Function pointer for setting up all topology pipelines
  * @tear_down_all_pipelines: Function pointer for tearing down all topology pipelines
  * @parse_manifest: Function pointer for ipc4 specific parsing of topology manifest
@@ -231,9 +208,7 @@ struct sof_ipc_tplg_ops {
 	int (*widget_free)(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget);
 	int (*dai_config)(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget,
 			  unsigned int flags, struct snd_sof_dai_config_data *data);
-	void (*host_config)(struct snd_sof_dev *sdev, struct snd_sof_widget *swidget,
-			    struct snd_sof_platform_stream_params *platform_params);
-	int (*dai_get_param)(struct snd_sof_dev *sdev, struct snd_sof_dai *dai, int param_type);
+	int (*dai_get_clk)(struct snd_sof_dev *sdev, struct snd_sof_dai *dai, int clk_type);
 	int (*set_up_all_pipelines)(struct snd_sof_dev *sdev, bool verify);
 	int (*tear_down_all_pipelines)(struct snd_sof_dev *sdev, bool verify);
 	int (*parse_manifest)(struct snd_soc_component *scomp, int index,
@@ -281,15 +256,14 @@ enum sof_tokens {
 	SOF_COMP_EXT_TOKENS,
 	SOF_IN_AUDIO_FORMAT_TOKENS,
 	SOF_OUT_AUDIO_FORMAT_TOKENS,
-	SOF_COPIER_DEEP_BUFFER_TOKENS,
+	SOF_AUDIO_FORMAT_BUFFER_SIZE_TOKENS,
+	SOF_COPIER_GATEWAY_CFG_TOKENS,
 	SOF_COPIER_TOKENS,
 	SOF_AUDIO_FMT_NUM_TOKENS,
 	SOF_COPIER_FORMAT_TOKENS,
 	SOF_GAIN_TOKENS,
 	SOF_ACPDMIC_TOKENS,
 	SOF_ACPI2S_TOKENS,
-	SOF_MICFIL_TOKENS,
-	SOF_ACP_SDW_TOKENS,
 
 	/* this should be the last */
 	SOF_TOKEN_COUNT,
@@ -317,12 +291,12 @@ struct sof_token_info {
 
 /**
  * struct snd_sof_pcm_stream_pipeline_list - List of pipelines associated with a PCM stream
- * @pipelines: array of pipelines
  * @count: number of pipeline widgets in the @pipe_widgets array
+ * @pipelines: array of pipelines
  */
 struct snd_sof_pcm_stream_pipeline_list {
-	struct snd_sof_pipeline **pipelines;
 	u32 count;
+	struct snd_sof_pipeline **pipelines;
 };
 
 /* PCM stream, mapped to FW component  */
@@ -335,8 +309,6 @@ struct snd_sof_pcm_stream {
 	struct work_struct period_elapsed_work;
 	struct snd_soc_dapm_widget_list *list; /* list of connected DAPM widgets */
 	bool d0i3_compatible; /* DSP can be in D0I3 when this pcm is opened */
-	bool pause_supported; /* PCM device supports PAUSE operation */
-	unsigned int dsp_max_burst_size_in_ms; /* The maximum size of the host DMA burst in ms */
 	/*
 	 * flag to indicate that the DSP pipelines should be kept
 	 * active or not while suspending the stream
@@ -351,16 +323,11 @@ struct snd_sof_pcm_stream {
 /* ALSA SOF PCM device */
 struct snd_sof_pcm {
 	struct snd_soc_component *scomp;
+	struct snd_soc_tplg_pcm pcm;
 	struct snd_sof_pcm_stream stream[2];
 	struct list_head list;	/* list in sdev pcm list */
 	struct snd_pcm_hw_params params[2];
-	struct snd_sof_platform_stream_params platform_params[2];
 	bool prepared[2]; /* PCM_PARAMS set successfully */
-	bool setup_done[2]; /* the setup of the SOF PCM device is done */
-	bool pending_stop[2]; /* only used if (!pcm_ops->platform_stop_during_hw_free) */
-
-	/* Must be last - ends in a flex-array member. */
-	struct snd_soc_tplg_pcm pcm;
 };
 
 struct snd_sof_led_control {
@@ -384,7 +351,6 @@ struct snd_sof_control {
 	size_t priv_size; /* size of private data */
 	size_t max_size;
 	void *ipc_control_data;
-	void *old_ipc_control_data;
 	int max; /* applicable to volume controls */
 	u32 size;	/* cdata size */
 	u32 *volume_table; /* volume table computed from tlv data*/
@@ -456,14 +422,6 @@ struct snd_sof_widget {
 	 */
 	bool dynamic_pipeline_widget;
 
-	/* Scheduling domain (enum sof_comp_domain), unset, Low Latency, or Data Processing */
-	u32 comp_domain;
-
-	/* The values below are added to mod_init pay load if comp_domain indicates DP component */
-	u32 dp_domain_id;	/* DP process userspace domain ID */
-	u32 dp_stack_bytes;	/* DP process stack size requirement in bytes */
-	u32 dp_heap_bytes;	/* DP process heap size requirement in bytes */
-
 	struct snd_soc_dapm_widget *widget;
 	struct list_head list;	/* list in sdev widget list */
 	struct snd_sof_pipeline *spipe;
@@ -475,31 +433,31 @@ struct snd_sof_widget {
 	struct snd_sof_tuple *tuples;
 
 	/*
-	 * The allowed range for num_input/output_pins is [0, SOF_WIDGET_MAX_NUM_PINS].
-	 * Widgets may have zero input or output pins, for example the tone widget has
-	 * zero input pins.
+	 * The allowed range for num_sink/source_pins is [0, SOF_WIDGET_MAX_NUM_PINS].
+	 * Widgets may have zero sink or source pins, for example the tone widget has
+	 * zero sink pins.
 	 */
-	u32 num_input_pins;
-	u32 num_output_pins;
+	u32 num_sink_pins;
+	u32 num_source_pins;
 
 	/*
-	 * The input/output pin binding array, it takes the form of
+	 * The sink/source pin binding array, it takes the form of
 	 * [widget_name_connected_to_pin0, widget_name_connected_to_pin1, ...],
 	 * with the index as the queue ID.
 	 *
 	 * The array is used for special pin binding. Note that even if there
-	 * is only one input/output pin requires special pin binding, pin binding
-	 * should be defined for all input/output pins in topology, for pin(s) that
+	 * is only one sink/source pin requires special pin binding, pin binding
+	 * should be defined for all sink/source pins in topology, for pin(s) that
 	 * are not used, give the value "NotConnected".
 	 *
 	 * If pin binding is not defined in topology, nothing to parse in the kernel,
-	 * input_pin_binding and output_pin_binding shall be NULL.
+	 * sink_pin_binding and src_pin_binding shall be NULL.
 	 */
-	char **input_pin_binding;
-	char **output_pin_binding;
+	char **sink_pin_binding;
+	char **src_pin_binding;
 
-	struct ida output_queue_ida;
-	struct ida input_queue_ida;
+	struct ida src_queue_ida;
+	struct ida sink_queue_ida;
 
 	void *private;		/* core does not touch this */
 };
@@ -510,21 +468,14 @@ struct snd_sof_widget {
  * @paused_count: Count of number of PCM's that have started and have currently paused this
 		  pipeline
  * @complete: flag used to indicate that pipeline set up is complete.
- * @core_mask: Mask containing target cores for all modules in the pipeline
  * @list: List item in sdev pipeline_list
- * @direction_valid: flag indicating if the direction is set in topology
- * @direction: pipeline direction set in topology, valid is direction_valid is true
- *
  */
 struct snd_sof_pipeline {
 	struct snd_sof_widget *pipe_widget;
 	int started_count;
 	int paused_count;
 	int complete;
-	unsigned long core_mask;
 	struct list_head list;
-	bool direction_valid;
-	u32 direction;
 };
 
 /* ASoC SOF DAPM route */
@@ -547,13 +498,10 @@ struct snd_sof_route {
 struct snd_sof_dai {
 	struct snd_soc_component *scomp;
 	const char *name;
-	u32 type;
 
 	int number_configs;
 	int current_config;
 	struct list_head list;	/* list in sdev dai list */
-	/* core should not touch this */
-	const void *platform_private;
 	void *private;
 };
 
@@ -635,25 +583,6 @@ struct snd_sof_pcm *snd_sof_find_spcm_comp(struct snd_soc_component *scomp,
 void snd_sof_pcm_period_elapsed(struct snd_pcm_substream *substream);
 void snd_sof_pcm_init_elapsed_work(struct work_struct *work);
 
-/*
- * snd_sof_pcm specific wrappers for dev_dbg() and dev_err() to provide
- * consistent and useful prints.
- */
-#define spcm_dbg(__spcm, __dir, __fmt, ...)					\
-	dev_dbg((__spcm)->scomp->dev, "pcm%u (%s), dir %d: " __fmt,		\
-		(__spcm)->pcm.pcm_id, (__spcm)->pcm.pcm_name, __dir,		\
-		##__VA_ARGS__)
-
-#define spcm_dbg_ratelimited(__spcm, __dir, __fmt, ...)				\
-	dev_dbg_ratelimited((__spcm)->scomp->dev, "pcm%u (%s), dir %d: " __fmt,	\
-		(__spcm)->pcm.pcm_id, (__spcm)->pcm.pcm_name, __dir,		\
-		##__VA_ARGS__)
-
-#define spcm_err(__spcm, __dir, __fmt, ...)					\
-	dev_err((__spcm)->scomp->dev, "%s: pcm%u (%s), dir %d: " __fmt,		\
-		__func__, (__spcm)->pcm.pcm_id, (__spcm)->pcm.pcm_name, __dir,	\
-		##__VA_ARGS__)
-
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_COMPRESS)
 void snd_sof_compr_fragment_elapsed(struct snd_compr_stream *cstream);
 void snd_sof_compr_init_elapsed_work(struct work_struct *work);
@@ -683,15 +612,11 @@ int sof_widget_list_setup(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm,
 			  struct snd_pcm_hw_params *fe_params,
 			  struct snd_sof_platform_stream_params *platform_params,
 			  int dir);
-int sof_widget_list_prepare(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm,
-			    struct snd_pcm_hw_params *fe_params,
-			    struct snd_sof_platform_stream_params *platform_params,
-			    int dir);
-void sof_widget_list_unprepare(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm, int dir);
 int sof_widget_list_free(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm, int dir);
 int sof_pcm_dsp_pcm_free(struct snd_pcm_substream *substream, struct snd_sof_dev *sdev,
 			 struct snd_sof_pcm *spcm);
-int sof_pcm_free_all_streams(struct snd_sof_dev *sdev);
+int sof_pcm_stream_free(struct snd_sof_dev *sdev, struct snd_pcm_substream *substream,
+			struct snd_sof_pcm *spcm, int dir, bool free_widget_list);
 int get_token_u32(void *elem, void *object, u32 offset);
 int get_token_u16(void *elem, void *object, u32 offset);
 int get_token_comp_format(void *elem, void *object, u32 offset);

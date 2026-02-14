@@ -46,5 +46,6 @@ int tm_signal_sigreturn_nt(void)
 
 int main(int argc, char **argv)
 {
-	return test_harness(tm_signal_sigreturn_nt, "tm_signal_sigreturn_nt");
+	test_harness(tm_signal_sigreturn_nt, "tm_signal_sigreturn_nt");
 }
+

@@ -27,7 +27,6 @@ static const char * const fw_upload_err_str[] = {
 	[FW_UPLOAD_ERR_INVALID_SIZE] = "invalid-file-size",
 	[FW_UPLOAD_ERR_RW_ERROR]     = "read-write-error",
 	[FW_UPLOAD_ERR_WEAROUT]	     = "flash-wearout",
-	[FW_UPLOAD_ERR_FW_INVALID]   = "firmware-invalid",
 };
 
 static const char *fw_upload_progress(struct device *dev,
@@ -100,10 +99,8 @@ static ssize_t cancel_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 
 	mutex_lock(&fwlp->lock);
-	if (fwlp->progress == FW_UPLOAD_PROG_IDLE) {
-		mutex_unlock(&fwlp->lock);
-		return -ENODEV;
-	}
+	if (fwlp->progress == FW_UPLOAD_PROG_IDLE)
+		ret = -ENODEV;
 
 	fwlp->ops->cancel(fwlp->fw_upload);
 	mutex_unlock(&fwlp->lock);

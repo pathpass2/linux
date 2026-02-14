@@ -76,7 +76,7 @@ static bool ms5611_prom_is_valid(u16 *prom, size_t len)
 
 	crc = (crc >> 12) & 0x000F;
 
-	return crc == crc_orig;
+	return crc_orig != 0x0000 && crc == crc_orig;
 }
 
 static int ms5611_read_prom(struct iio_dev *indio_dev)
@@ -213,7 +213,7 @@ static irqreturn_t ms5611_trigger_handler(int irq, void *p)
 	/* Ensure buffer elements are naturally aligned */
 	struct {
 		s32 channels[2];
-		aligned_s64 ts;
+		s64 ts __aligned(8);
 	} scan;
 	int ret;
 
@@ -308,6 +308,7 @@ static int ms5611_write_raw(struct iio_dev *indio_dev,
 {
 	struct ms5611_state *st = iio_priv(indio_dev);
 	const struct ms5611_osr *osr = NULL;
+	int ret;
 
 	if (mask != IIO_CHAN_INFO_OVERSAMPLING_RATIO)
 		return -EINVAL;
@@ -321,8 +322,9 @@ static int ms5611_write_raw(struct iio_dev *indio_dev,
 	if (!osr)
 		return -EINVAL;
 
-	if (!iio_device_claim_direct(indio_dev))
-		return -EBUSY;
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret)
+		return ret;
 
 	mutex_lock(&st->lock);
 
@@ -332,7 +334,7 @@ static int ms5611_write_raw(struct iio_dev *indio_dev,
 		st->pressure_osr = osr;
 
 	mutex_unlock(&st->lock);
-	iio_device_release_direct(indio_dev);
+	iio_device_release_direct_mode(indio_dev);
 
 	return 0;
 }
@@ -447,7 +449,7 @@ int ms5611_probe(struct iio_dev *indio_dev, struct device *dev,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(ms5611_probe, "IIO_MS5611");
+EXPORT_SYMBOL_NS(ms5611_probe, IIO_MS5611);
 
 MODULE_AUTHOR("Tomasz Duszynski <tduszyns@gmail.com>");
 MODULE_DESCRIPTION("MS5611 core driver");

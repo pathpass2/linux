@@ -6,8 +6,7 @@
  */
 
 /dts-v1/;
-
-#include "rk3399-nanopi-m4.dtsi"
+#include "rk3399-nanopi-m4.dts"
 
 / {
 	model = "FriendlyElec NanoPi M4B";

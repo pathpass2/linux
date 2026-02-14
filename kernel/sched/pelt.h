@@ -1,8 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
-#ifndef _KERNEL_SCHED_PELT_H
-#define _KERNEL_SCHED_PELT_H
-#include "sched.h"
-
+#ifdef CONFIG_SMP
 #include "sched-pelt.h"
 
 int __update_load_avg_blocked_se(u64 now, struct sched_entity *se);
@@ -10,27 +6,26 @@ int __update_load_avg_se(u64 now, struct cfs_rq *cfs_rq, struct sched_entity *se
 int __update_load_avg_cfs_rq(u64 now, struct cfs_rq *cfs_rq);
 int update_rt_rq_load_avg(u64 now, struct rq *rq, int running);
 int update_dl_rq_load_avg(u64 now, struct rq *rq, int running);
-bool update_other_load_avgs(struct rq *rq);
 
-#ifdef CONFIG_SCHED_HW_PRESSURE
-int update_hw_load_avg(u64 now, struct rq *rq, u64 capacity);
+#ifdef CONFIG_SCHED_THERMAL_PRESSURE
+int update_thermal_load_avg(u64 now, struct rq *rq, u64 capacity);
 
-static inline u64 hw_load_avg(struct rq *rq)
+static inline u64 thermal_load_avg(struct rq *rq)
 {
-	return READ_ONCE(rq->avg_hw.load_avg);
+	return READ_ONCE(rq->avg_thermal.load_avg);
 }
-#else /* !CONFIG_SCHED_HW_PRESSURE: */
+#else
 static inline int
-update_hw_load_avg(u64 now, struct rq *rq, u64 capacity)
+update_thermal_load_avg(u64 now, struct rq *rq, u64 capacity)
 {
 	return 0;
 }
 
-static inline u64 hw_load_avg(struct rq *rq)
+static inline u64 thermal_load_avg(struct rq *rq)
 {
 	return 0;
 }
-#endif /* !CONFIG_SCHED_HW_PRESSURE */
+#endif
 
 #ifdef CONFIG_HAVE_SCHED_AVG_IRQ
 int update_irq_load_avg(struct rq *rq, u64 running);
@@ -57,13 +52,13 @@ static inline void cfs_se_util_change(struct sched_avg *avg)
 		return;
 
 	/* Avoid store if the flag has been already reset */
-	enqueued = avg->util_est;
+	enqueued = avg->util_est.enqueued;
 	if (!(enqueued & UTIL_AVG_UNCHANGED))
 		return;
 
 	/* Reset flag to report util_avg has been updated */
 	enqueued &= ~UTIL_AVG_UNCHANGED;
-	WRITE_ONCE(avg->util_est, enqueued);
+	WRITE_ONCE(avg->util_est.enqueued, enqueued);
 }
 
 static inline u64 rq_clock_pelt(struct rq *rq)
@@ -162,7 +157,7 @@ static inline void update_idle_cfs_rq_clock_pelt(struct cfs_rq *cfs_rq)
 {
 	u64 throttled;
 
-	if (unlikely(cfs_rq->pelt_clock_throttled))
+	if (unlikely(cfs_rq->throttle_count))
 		throttled = U64_MAX;
 	else
 		throttled = cfs_rq->throttled_clock_pelt_time;
@@ -173,17 +168,68 @@ static inline void update_idle_cfs_rq_clock_pelt(struct cfs_rq *cfs_rq)
 /* rq->task_clock normalized against any time this cfs_rq has spent throttled */
 static inline u64 cfs_rq_clock_pelt(struct cfs_rq *cfs_rq)
 {
-	if (unlikely(cfs_rq->pelt_clock_throttled))
+	if (unlikely(cfs_rq->throttle_count))
 		return cfs_rq->throttled_clock_pelt - cfs_rq->throttled_clock_pelt_time;
 
 	return rq_clock_pelt(rq_of(cfs_rq)) - cfs_rq->throttled_clock_pelt_time;
 }
-#else /* !CONFIG_CFS_BANDWIDTH: */
+#else
 static inline void update_idle_cfs_rq_clock_pelt(struct cfs_rq *cfs_rq) { }
 static inline u64 cfs_rq_clock_pelt(struct cfs_rq *cfs_rq)
 {
 	return rq_clock_pelt(rq_of(cfs_rq));
 }
-#endif /* !CONFIG_CFS_BANDWIDTH */
+#endif
 
-#endif /* _KERNEL_SCHED_PELT_H */
+#else
+
+static inline int
+update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
+{
+	return 0;
+}
+
+static inline int
+update_rt_rq_load_avg(u64 now, struct rq *rq, int running)
+{
+	return 0;
+}
+
+static inline int
+update_dl_rq_load_avg(u64 now, struct rq *rq, int running)
+{
+	return 0;
+}
+
+static inline int
+update_thermal_load_avg(u64 now, struct rq *rq, u64 capacity)
+{
+	return 0;
+}
+
+static inline u64 thermal_load_avg(struct rq *rq)
+{
+	return 0;
+}
+
+static inline int
+update_irq_load_avg(struct rq *rq, u64 running)
+{
+	return 0;
+}
+
+static inline u64 rq_clock_pelt(struct rq *rq)
+{
+	return rq_clock_task(rq);
+}
+
+static inline void
+update_rq_clock_pelt(struct rq *rq, s64 delta) { }
+
+static inline void
+update_idle_rq_clock_pelt(struct rq *rq) { }
+
+static inline void update_idle_cfs_rq_clock_pelt(struct cfs_rq *cfs_rq) { }
+#endif
+
+

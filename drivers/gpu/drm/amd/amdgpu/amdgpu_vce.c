@@ -41,9 +41,6 @@
 #define VCE_IDLE_TIMEOUT	msecs_to_jiffies(1000)
 
 /* Firmware Names */
-#ifdef CONFIG_DRM_AMDGPU_SI
-#define FIRMWARE_VCE_V1_0	"amdgpu/vce_1_0_0.bin"
-#endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
 #define FIRMWARE_BONAIRE	"amdgpu/bonaire_vce.bin"
 #define FIRMWARE_KABINI	"amdgpu/kabini_vce.bin"
@@ -64,9 +61,6 @@
 #define FIRMWARE_VEGA12		"amdgpu/vega12_vce.bin"
 #define FIRMWARE_VEGA20		"amdgpu/vega20_vce.bin"
 
-#ifdef CONFIG_DRM_AMDGPU_SI
-MODULE_FIRMWARE(FIRMWARE_VCE_V1_0);
-#endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
 MODULE_FIRMWARE(FIRMWARE_BONAIRE);
 MODULE_FIRMWARE(FIRMWARE_KABINI);
@@ -94,93 +88,82 @@ static int amdgpu_vce_get_destroy_msg(struct amdgpu_ring *ring, uint32_t handle,
 				      bool direct, struct dma_fence **fence);
 
 /**
- * amdgpu_vce_firmware_name() - determine the firmware file name for VCE
+ * amdgpu_vce_sw_init - allocate memory, load vce firmware
  *
  * @adev: amdgpu_device pointer
+ * @size: size for the new BO
  *
- * Each chip that has VCE IP may need a different firmware.
- * This function returns the name of the VCE firmware file
- * appropriate for the current chip.
+ * First step to get VCE online, allocate memory and load the firmware
  */
-static const char *amdgpu_vce_firmware_name(struct amdgpu_device *adev)
+int amdgpu_vce_sw_init(struct amdgpu_device *adev, unsigned long size)
 {
+	const char *fw_name;
+	const struct common_firmware_header *hdr;
+	unsigned ucode_version, version_major, version_minor, binary_id;
+	int i, r;
+
 	switch (adev->asic_type) {
-#ifdef CONFIG_DRM_AMDGPU_SI
-	case CHIP_PITCAIRN:
-	case CHIP_TAHITI:
-	case CHIP_VERDE:
-		return FIRMWARE_VCE_V1_0;
-#endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
 	case CHIP_BONAIRE:
-		return FIRMWARE_BONAIRE;
+		fw_name = FIRMWARE_BONAIRE;
+		break;
 	case CHIP_KAVERI:
-		return FIRMWARE_KAVERI;
+		fw_name = FIRMWARE_KAVERI;
+		break;
 	case CHIP_KABINI:
-		return FIRMWARE_KABINI;
+		fw_name = FIRMWARE_KABINI;
+		break;
 	case CHIP_HAWAII:
-		return FIRMWARE_HAWAII;
+		fw_name = FIRMWARE_HAWAII;
+		break;
 	case CHIP_MULLINS:
-		return FIRMWARE_MULLINS;
+		fw_name = FIRMWARE_MULLINS;
+		break;
 #endif
 	case CHIP_TONGA:
-		return  FIRMWARE_TONGA;
+		fw_name = FIRMWARE_TONGA;
+		break;
 	case CHIP_CARRIZO:
-		return  FIRMWARE_CARRIZO;
+		fw_name = FIRMWARE_CARRIZO;
+		break;
 	case CHIP_FIJI:
-		return  FIRMWARE_FIJI;
+		fw_name = FIRMWARE_FIJI;
+		break;
 	case CHIP_STONEY:
-		return  FIRMWARE_STONEY;
+		fw_name = FIRMWARE_STONEY;
+		break;
 	case CHIP_POLARIS10:
-		return  FIRMWARE_POLARIS10;
+		fw_name = FIRMWARE_POLARIS10;
+		break;
 	case CHIP_POLARIS11:
-		return  FIRMWARE_POLARIS11;
+		fw_name = FIRMWARE_POLARIS11;
+		break;
 	case CHIP_POLARIS12:
-		return  FIRMWARE_POLARIS12;
+		fw_name = FIRMWARE_POLARIS12;
+		break;
 	case CHIP_VEGAM:
-		return  FIRMWARE_VEGAM;
+		fw_name = FIRMWARE_VEGAM;
+		break;
 	case CHIP_VEGA10:
-		return  FIRMWARE_VEGA10;
+		fw_name = FIRMWARE_VEGA10;
+		break;
 	case CHIP_VEGA12:
-		return  FIRMWARE_VEGA12;
+		fw_name = FIRMWARE_VEGA12;
+		break;
 	case CHIP_VEGA20:
-		return  FIRMWARE_VEGA20;
+		fw_name = FIRMWARE_VEGA20;
+		break;
 
 	default:
-		return NULL;
+		return -EINVAL;
 	}
-}
 
-/**
- * amdgpu_vce_early_init() - try to load VCE firmware
- *
- * @adev: amdgpu_device pointer
- *
- * Tries to load the VCE firmware.
- *
- * When not found, returns ENOENT so that the driver can
- * still load and initialize the rest of the IP blocks.
- * The GPU can function just fine without VCE, they will just
- * not support video encoding.
- */
-int amdgpu_vce_early_init(struct amdgpu_device *adev)
-{
-	const char *fw_name = amdgpu_vce_firmware_name(adev);
-	const struct common_firmware_header *hdr;
-	unsigned int ucode_version, version_major, version_minor, binary_id;
-	int r;
-
-	if (!fw_name)
-		return -ENOENT;
-
-	r = amdgpu_ucode_request(adev, &adev->vce.fw, AMDGPU_UCODE_REQUIRED, "%s", fw_name);
+	r = amdgpu_ucode_request(adev, &adev->vce.fw, fw_name);
 	if (r) {
-		dev_err(adev->dev,
-			"amdgpu_vce: Firmware \"%s\" not found or failed to validate (%d)\n",
-			fw_name, r);
-
+		dev_err(adev->dev, "amdgpu_vce: Can't validate firmware \"%s\"\n",
+			fw_name);
 		amdgpu_ucode_release(&adev->vce.fw);
-		return -ENOENT;
+		return r;
 	}
 
 	hdr = (const struct common_firmware_header *)adev->vce.fw->data;
@@ -189,34 +172,10 @@ int amdgpu_vce_early_init(struct amdgpu_device *adev)
 	version_major = (ucode_version >> 20) & 0xfff;
 	version_minor = (ucode_version >> 8) & 0xfff;
 	binary_id = ucode_version & 0xff;
-	dev_info(adev->dev, "Found VCE firmware Version: %d.%d Binary ID: %d\n",
+	DRM_INFO("Found VCE firmware Version: %d.%d Binary ID: %d\n",
 		version_major, version_minor, binary_id);
 	adev->vce.fw_version = ((version_major << 24) | (version_minor << 16) |
 				(binary_id << 8));
-
-	return 0;
-}
-
-/**
- * amdgpu_vce_sw_init() - allocate memory for VCE BO
- *
- * @adev: amdgpu_device pointer
- * @size: size for the new BO
- *
- * First step to get VCE online: allocate memory for VCE BO.
- * The VCE firmware binary is copied into the VCE BO later,
- * in amdgpu_vce_resume. The VCE executes its code from the
- * VCE BO and also uses the space in this BO for its stack and data.
- *
- * Ideally this BO should be placed in VRAM for optimal performance,
- * although technically it also runs from system RAM (albeit slowly).
- */
-int amdgpu_vce_sw_init(struct amdgpu_device *adev, unsigned long size)
-{
-	int i, r;
-
-	if (!adev->vce.fw)
-		return -ENOENT;
 
 	r = amdgpu_bo_create_kernel(adev, size, PAGE_SIZE,
 				    AMDGPU_GEM_DOMAIN_VRAM |
@@ -248,21 +207,21 @@ int amdgpu_vce_sw_init(struct amdgpu_device *adev, unsigned long size)
  */
 int amdgpu_vce_sw_fini(struct amdgpu_device *adev)
 {
-	unsigned int i;
+	unsigned i;
 
 	if (adev->vce.vcpu_bo == NULL)
 		return 0;
 
 	drm_sched_entity_destroy(&adev->vce.entity);
 
+	amdgpu_bo_free_kernel(&adev->vce.vcpu_bo, &adev->vce.gpu_addr,
+		(void **)&adev->vce.cpu_addr);
+
 	for (i = 0; i < adev->vce.num_rings; i++)
 		amdgpu_ring_fini(&adev->vce.ring[i]);
 
 	amdgpu_ucode_release(&adev->vce.fw);
 	mutex_destroy(&adev->vce.idle_mutex);
-
-	amdgpu_bo_free_kernel(&adev->vce.vcpu_bo, &adev->vce.gpu_addr,
-		(void **)&adev->vce.cpu_addr);
 
 	return 0;
 }
@@ -271,22 +230,21 @@ int amdgpu_vce_sw_fini(struct amdgpu_device *adev)
  * amdgpu_vce_entity_init - init entity
  *
  * @adev: amdgpu_device pointer
- * @ring: amdgpu_ring pointer to check
  *
- * Initialize the entity used for handle management in the kernel driver.
  */
-int amdgpu_vce_entity_init(struct amdgpu_device *adev, struct amdgpu_ring *ring)
+int amdgpu_vce_entity_init(struct amdgpu_device *adev)
 {
-	if (ring == &adev->vce.ring[0]) {
-		struct drm_gpu_scheduler *sched = &ring->sched;
-		int r;
+	struct amdgpu_ring *ring;
+	struct drm_gpu_scheduler *sched;
+	int r;
 
-		r = drm_sched_entity_init(&adev->vce.entity, DRM_SCHED_PRIORITY_NORMAL,
-					  &sched, 1, NULL);
-		if (r != 0) {
-			DRM_ERROR("Failed setting up VCE run queue.\n");
-			return r;
-		}
+	ring = &adev->vce.ring[0];
+	sched = &ring->sched;
+	r = drm_sched_entity_init(&adev->vce.entity, DRM_SCHED_PRIORITY_NORMAL,
+				  &sched, 1, NULL);
+	if (r != 0) {
+		DRM_ERROR("Failed setting up VCE run queue.\n");
+		return r;
 	}
 
 	return 0;
@@ -326,22 +284,39 @@ int amdgpu_vce_suspend(struct amdgpu_device *adev)
  */
 int amdgpu_vce_resume(struct amdgpu_device *adev)
 {
+	void *cpu_addr;
 	const struct common_firmware_header *hdr;
-	unsigned int offset;
-	int idx;
+	unsigned offset;
+	int r, idx;
 
 	if (adev->vce.vcpu_bo == NULL)
 		return -EINVAL;
+
+	r = amdgpu_bo_reserve(adev->vce.vcpu_bo, false);
+	if (r) {
+		dev_err(adev->dev, "(%d) failed to reserve VCE bo\n", r);
+		return r;
+	}
+
+	r = amdgpu_bo_kmap(adev->vce.vcpu_bo, &cpu_addr);
+	if (r) {
+		amdgpu_bo_unreserve(adev->vce.vcpu_bo);
+		dev_err(adev->dev, "(%d) VCE map failed\n", r);
+		return r;
+	}
 
 	hdr = (const struct common_firmware_header *)adev->vce.fw->data;
 	offset = le32_to_cpu(hdr->ucode_array_offset_bytes);
 
 	if (drm_dev_enter(adev_to_drm(adev), &idx)) {
-		memset_io(adev->vce.cpu_addr, 0, amdgpu_bo_size(adev->vce.vcpu_bo));
-		memcpy_toio(adev->vce.cpu_addr, adev->vce.fw->data + offset,
+		memcpy_toio(cpu_addr, adev->vce.fw->data + offset,
 			    adev->vce.fw->size - offset);
 		drm_dev_exit(idx);
 	}
+
+	amdgpu_bo_kunmap(adev->vce.vcpu_bo);
+
+	amdgpu_bo_unreserve(adev->vce.vcpu_bo);
 
 	return 0;
 }
@@ -357,7 +332,7 @@ static void amdgpu_vce_idle_work_handler(struct work_struct *work)
 {
 	struct amdgpu_device *adev =
 		container_of(work, struct amdgpu_device, vce.idle_work.work);
-	unsigned int i, count = 0;
+	unsigned i, count = 0;
 
 	for (i = 0; i < adev->vce.num_rings; i++)
 		count += amdgpu_fence_count_emitted(&adev->vce.ring[i]);
@@ -434,7 +409,6 @@ void amdgpu_vce_free_handles(struct amdgpu_device *adev, struct drm_file *filp)
 {
 	struct amdgpu_ring *ring = &adev->vce.ring[0];
 	int i, r;
-
 	for (i = 0; i < AMDGPU_MAX_VCE_HANDLES; ++i) {
 		uint32_t handle = atomic_read(&adev->vce.handles[i]);
 
@@ -451,24 +425,6 @@ void amdgpu_vce_free_handles(struct amdgpu_device *adev, struct drm_file *filp)
 }
 
 /**
- * amdgpu_vce_required_gart_pages() - gets number of GART pages required by VCE
- *
- * @adev: amdgpu_device pointer
- *
- * Returns how many GART pages we need before GTT for the VCE IP block.
- * For VCE1, see vce_v1_0_ensure_vcpu_bo_32bit_addr for details.
- * For VCE2+, this is not needed so return zero.
- */
-u32 amdgpu_vce_required_gart_pages(struct amdgpu_device *adev)
-{
-	/* VCE IP block not added yet, so can't use amdgpu_ip_version */
-	if (adev->family == AMDGPU_FAMILY_SI)
-		return 512;
-
-	return 0;
-}
-
-/**
  * amdgpu_vce_get_create_msg - generate a VCE create msg
  *
  * @ring: ring we should submit the msg to
@@ -480,7 +436,7 @@ u32 amdgpu_vce_required_gart_pages(struct amdgpu_device *adev)
 static int amdgpu_vce_get_create_msg(struct amdgpu_ring *ring, uint32_t handle,
 				     struct dma_fence **fence)
 {
-	const unsigned int ib_size_dw = 1024;
+	const unsigned ib_size_dw = 1024;
 	struct amdgpu_job *job;
 	struct amdgpu_ib *ib;
 	struct amdgpu_ib ib_msg;
@@ -491,7 +447,7 @@ static int amdgpu_vce_get_create_msg(struct amdgpu_ring *ring, uint32_t handle,
 	r = amdgpu_job_alloc_with_ib(ring->adev, &ring->adev->vce.entity,
 				     AMDGPU_FENCE_OWNER_UNDEFINED,
 				     ib_size_dw * 4, AMDGPU_IB_POOL_DIRECT,
-				     &job, AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
+				     &job);
 	if (r)
 		return r;
 
@@ -545,7 +501,7 @@ static int amdgpu_vce_get_create_msg(struct amdgpu_ring *ring, uint32_t handle,
 		ib->ptr[i] = 0x0;
 
 	r = amdgpu_job_submit_direct(job, ring, &f);
-	amdgpu_ib_free(&ib_msg, f);
+	amdgpu_ib_free(ring->adev, &ib_msg, f);
 	if (r)
 		goto err;
 
@@ -572,7 +528,7 @@ err:
 static int amdgpu_vce_get_destroy_msg(struct amdgpu_ring *ring, uint32_t handle,
 				      bool direct, struct dma_fence **fence)
 {
-	const unsigned int ib_size_dw = 1024;
+	const unsigned ib_size_dw = 1024;
 	struct amdgpu_job *job;
 	struct amdgpu_ib *ib;
 	struct dma_fence *f = NULL;
@@ -582,8 +538,7 @@ static int amdgpu_vce_get_destroy_msg(struct amdgpu_ring *ring, uint32_t handle,
 				     AMDGPU_FENCE_OWNER_UNDEFINED,
 				     ib_size_dw * 4,
 				     direct ? AMDGPU_IB_POOL_DIRECT :
-				     AMDGPU_IB_POOL_DELAYED, &job,
-				     AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
+				     AMDGPU_IB_POOL_DELAYED, &job);
 	if (r)
 		return r;
 
@@ -630,7 +585,6 @@ err:
 /**
  * amdgpu_vce_validate_bo - make sure not to cross 4GB boundary
  *
- * @p: cs parser
  * @ib: indirect buffer to use
  * @lo: address of lower dword
  * @hi: address of higher dword
@@ -641,12 +595,12 @@ err:
  */
 static int amdgpu_vce_validate_bo(struct amdgpu_cs_parser *p,
 				  struct amdgpu_ib *ib, int lo, int hi,
-				  unsigned int size, int32_t index)
+				  unsigned size, int32_t index)
 {
 	int64_t offset = ((uint64_t)size) * ((int64_t)index);
 	struct ttm_operation_ctx ctx = { false, false };
 	struct amdgpu_bo_va_mapping *mapping;
-	unsigned int i, fpfn, lpfn;
+	unsigned i, fpfn, lpfn;
 	struct amdgpu_bo *bo;
 	uint64_t addr;
 	int r;
@@ -664,7 +618,7 @@ static int amdgpu_vce_validate_bo(struct amdgpu_cs_parser *p,
 
 	r = amdgpu_cs_find_mapping(p, addr, &bo, &mapping);
 	if (r) {
-		DRM_ERROR("Can't find BO for addr 0x%010llx %d %d %d %d\n",
+		DRM_ERROR("Can't find BO for addr 0x%010Lx %d %d %d %d\n",
 			  addr, lo, hi, size, index);
 		return r;
 	}
@@ -691,7 +645,7 @@ static int amdgpu_vce_validate_bo(struct amdgpu_cs_parser *p,
  * Patch relocation inside command stream with real buffer address
  */
 static int amdgpu_vce_cs_reloc(struct amdgpu_cs_parser *p, struct amdgpu_ib *ib,
-			       int lo, int hi, unsigned int size, uint32_t index)
+			       int lo, int hi, unsigned size, uint32_t index)
 {
 	struct amdgpu_bo_va_mapping *mapping;
 	struct amdgpu_bo *bo;
@@ -707,14 +661,14 @@ static int amdgpu_vce_cs_reloc(struct amdgpu_cs_parser *p, struct amdgpu_ib *ib,
 
 	r = amdgpu_cs_find_mapping(p, addr, &bo, &mapping);
 	if (r) {
-		DRM_ERROR("Can't find BO for addr 0x%010llx %d %d %d %d\n",
+		DRM_ERROR("Can't find BO for addr 0x%010Lx %d %d %d %d\n",
 			  addr, lo, hi, size, index);
 		return r;
 	}
 
 	if ((addr + (uint64_t)size) >
 	    (mapping->last + 1) * AMDGPU_GPU_PAGE_SIZE) {
-		DRM_ERROR("BO too small for addr 0x%010llx %d %d\n",
+		DRM_ERROR("BO too small for addr 0x%010Lx %d %d\n",
 			  addr, lo, hi);
 		return -EINVAL;
 	}
@@ -737,12 +691,12 @@ static int amdgpu_vce_cs_reloc(struct amdgpu_cs_parser *p, struct amdgpu_ib *ib,
  * @allocated: allocated a new handle?
  *
  * Validates the handle and return the found session index or -EINVAL
- * we don't have another free session index.
+ * we we don't have another free session index.
  */
 static int amdgpu_vce_validate_handle(struct amdgpu_cs_parser *p,
 				      uint32_t handle, uint32_t *allocated)
 {
-	unsigned int i;
+	unsigned i;
 
 	/* validate the handle */
 	for (i = 0; i < AMDGPU_MAX_VCE_HANDLES; ++i) {
@@ -780,18 +734,18 @@ int amdgpu_vce_ring_parse_cs(struct amdgpu_cs_parser *p,
 			     struct amdgpu_job *job,
 			     struct amdgpu_ib *ib)
 {
-	unsigned int fb_idx = 0, bs_idx = 0;
+	unsigned fb_idx = 0, bs_idx = 0;
 	int session_idx = -1;
 	uint32_t destroyed = 0;
 	uint32_t created = 0;
 	uint32_t allocated = 0;
 	uint32_t tmp, handle = 0;
-	uint32_t dummy = 0xffffffff;
-	uint32_t *size = &dummy;
-	unsigned int idx;
+	uint32_t *size = &tmp;
+	unsigned idx;
 	int i, r = 0;
 
 	job->vm = NULL;
+	ib->gpu_addr = amdgpu_sa_bo_gpu_addr(ib->sa_bo);
 
 	for (idx = 0; idx < ib->length_dw;) {
 		uint32_t len = amdgpu_ib_get_value(ib, idx);
@@ -1086,6 +1040,7 @@ out:
 	if (!r) {
 		/* No error, free all destroyed handle slots */
 		tmp = destroyed;
+		amdgpu_ib_free(p->adev, ib, NULL);
 	} else {
 		/* Error during parsing, free all allocated handle slots */
 		tmp = allocated;
@@ -1128,7 +1083,7 @@ void amdgpu_vce_ring_emit_ib(struct amdgpu_ring *ring,
  *
  */
 void amdgpu_vce_ring_emit_fence(struct amdgpu_ring *ring, u64 addr, u64 seq,
-				unsigned int flags)
+				unsigned flags)
 {
 	WARN_ON(flags & AMDGPU_FENCE_FLAG_64BIT);
 
@@ -1150,7 +1105,7 @@ int amdgpu_vce_ring_test_ring(struct amdgpu_ring *ring)
 {
 	struct amdgpu_device *adev = ring->adev;
 	uint32_t rptr;
-	unsigned int i;
+	unsigned i;
 	int r, timeout = adev->usec_timeout;
 
 	/* skip ring test for sriov*/
@@ -1215,7 +1170,7 @@ error:
 
 enum amdgpu_ring_priority_level amdgpu_vce_get_ring_prio(int ring)
 {
-	switch (ring) {
+	switch(ring) {
 	case 0:
 		return AMDGPU_RING_PRIO_0;
 	case 1:

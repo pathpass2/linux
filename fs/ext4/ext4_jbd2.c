@@ -63,18 +63,15 @@ static void ext4_put_nojournal(handle_t *handle)
  */
 static int ext4_journal_check_start(struct super_block *sb)
 {
-	int ret;
 	journal_t *journal;
 
 	might_sleep();
 
-	ret = ext4_emergency_state(sb);
-	if (unlikely(ret))
-		return ret;
+	if (unlikely(ext4_forced_shutdown(EXT4_SB(sb))))
+		return -EIO;
 
-	if (WARN_ON_ONCE(sb_rdonly(sb)))
+	if (sb_rdonly(sb))
 		return -EROFS;
-
 	WARN_ON(sb->s_writers.frozen == SB_FREEZE_COMPLETE);
 	journal = EXT4_SB(sb)->s_journal;
 	/*
@@ -208,7 +205,7 @@ static void ext4_journal_abort_handle(const char *caller, unsigned int line,
 
 static void ext4_check_bdev_write_error(struct super_block *sb)
 {
-	struct address_space *mapping = sb->s_bdev->bd_mapping;
+	struct address_space *mapping = sb->s_bdev->bd_inode->i_mapping;
 	struct ext4_sb_info *sbi = EXT4_SB(sb);
 	int err;
 
@@ -237,6 +234,9 @@ int __ext4_journal_get_write_access(const char *where, unsigned int line,
 
 	might_sleep();
 
+	if (bh->b_bdev->bd_super)
+		ext4_check_bdev_write_error(bh->b_bdev->bd_super);
+
 	if (ext4_handle_valid(handle)) {
 		err = jbd2_journal_get_write_access(handle, bh);
 		if (err) {
@@ -244,10 +244,8 @@ int __ext4_journal_get_write_access(const char *where, unsigned int line,
 						  handle, err);
 			return err;
 		}
-	} else
-		ext4_check_bdev_write_error(sb);
-	if (trigger_type == EXT4_JTR_NONE ||
-	    !ext4_has_feature_metadata_csum(sb))
+	}
+	if (trigger_type == EXT4_JTR_NONE || !ext4_has_metadata_csum(sb))
 		return 0;
 	BUG_ON(trigger_type >= EXT4_JOURNAL_TRIGGER_COUNT);
 	jbd2_journal_set_triggers(bh,
@@ -279,16 +277,9 @@ int __ext4_forget(const char *where, unsigned int line, handle_t *handle,
 		  bh, is_metadata, inode->i_mode,
 		  test_opt(inode->i_sb, DATA_FLAGS));
 
-	/*
-	 * In the no journal case, we should wait for the ongoing buffer
-	 * to complete and do a forget.
-	 */
+	/* In the no journal case, we can just do a bforget and return */
 	if (!ext4_handle_valid(handle)) {
-		if (bh) {
-			clear_buffer_dirty(bh);
-			wait_on_buffer(bh);
-			__bforget(bh);
-		}
+		bforget(bh);
 		return 0;
 	}
 
@@ -341,8 +332,7 @@ int __ext4_journal_get_create_access(const char *where, unsigned int line,
 					  err);
 		return err;
 	}
-	if (trigger_type == EXT4_JTR_NONE ||
-	    !ext4_has_feature_metadata_csum(sb))
+	if (trigger_type == EXT4_JTR_NONE || !ext4_has_metadata_csum(sb))
 		return 0;
 	BUG_ON(trigger_type >= EXT4_JOURNAL_TRIGGER_COUNT);
 	jbd2_journal_set_triggers(bh,

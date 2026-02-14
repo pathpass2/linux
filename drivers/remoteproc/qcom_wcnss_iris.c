@@ -10,7 +10,6 @@
 #include <linux/clk.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
@@ -155,8 +154,9 @@ struct qcom_iris *qcom_iris_probe(struct device *parent, bool *use_48mhz_xo)
 
 	iris->xo_clk = devm_clk_get(&iris->dev, "xo");
 	if (IS_ERR(iris->xo_clk)) {
-		ret = dev_err_probe(&iris->dev, PTR_ERR(iris->xo_clk),
-				    "failed to acquire xo clk\n");
+		ret = PTR_ERR(iris->xo_clk);
+		if (ret != -EPROBE_DEFER)
+			dev_err(&iris->dev, "failed to acquire xo clk\n");
 		goto err_device_del;
 	}
 
@@ -196,7 +196,6 @@ struct qcom_iris *qcom_iris_probe(struct device *parent, bool *use_48mhz_xo)
 
 err_device_del:
 	device_del(&iris->dev);
-	put_device(&iris->dev);
 
 	return ERR_PTR(ret);
 }
@@ -204,5 +203,4 @@ err_device_del:
 void qcom_iris_remove(struct qcom_iris *iris)
 {
 	device_del(&iris->dev);
-	put_device(&iris->dev);
 }

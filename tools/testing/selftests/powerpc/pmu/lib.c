@@ -14,6 +14,19 @@
 #include "utils.h"
 #include "lib.h"
 
+
+int bind_to_cpu(int cpu)
+{
+	cpu_set_t mask;
+
+	printf("Binding to cpu %d\n", cpu);
+
+	CPU_ZERO(&mask);
+	CPU_SET(cpu, &mask);
+
+	return sched_setaffinity(0, sizeof(mask), &mask);
+}
+
 #define PARENT_TOKEN	0xAA
 #define CHILD_TOKEN	0x55
 
@@ -103,10 +116,12 @@ static int eat_cpu_child(union pipe read_pipe, union pipe write_pipe)
 pid_t eat_cpu(int (test_function)(void))
 {
 	union pipe read_pipe, write_pipe;
-	int rc;
+	int cpu, rc;
 	pid_t pid;
 
-	FAIL_IF(bind_to_cpu(BIND_CPU_ANY) < 0);
+	cpu = pick_online_cpu();
+	FAIL_IF(cpu < 0);
+	FAIL_IF(bind_to_cpu(cpu));
 
 	if (pipe(read_pipe.fds) == -1)
 		return -1;

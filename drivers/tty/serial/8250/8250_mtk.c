@@ -102,7 +102,7 @@ static void mtk8250_dma_rx_complete(void *param)
 	if (data->rx_status == DMA_RX_SHUTDOWN)
 		return;
 
-	uart_port_lock_irqsave(&up->port, &flags);
+	spin_lock_irqsave(&up->port.lock, flags);
 
 	dmaengine_tx_status(dma->rxchan, dma->rx_cookie, &state);
 	total = dma->rx_size - state.residue;
@@ -128,7 +128,7 @@ static void mtk8250_dma_rx_complete(void *param)
 
 	mtk8250_rx_dma(up);
 
-	uart_port_unlock_irqrestore(&up->port, flags);
+	spin_unlock_irqrestore(&up->port.lock, flags);
 }
 
 static void mtk8250_rx_dma(struct uart_8250_port *up)
@@ -199,7 +199,7 @@ static int mtk8250_startup(struct uart_port *port)
 
 	if (up->dma) {
 		data->rx_status = DMA_RX_START;
-		kfifo_reset(&port->state->port.xmit_fifo);
+		uart_circ_clear(&port->state->xmit);
 	}
 #endif
 	memset(&port->icount, 0, sizeof(port->icount));
@@ -209,34 +209,24 @@ static int mtk8250_startup(struct uart_port *port)
 
 static void mtk8250_shutdown(struct uart_port *port)
 {
+#ifdef CONFIG_SERIAL_8250_DMA
 	struct uart_8250_port *up = up_to_u8250p(port);
 	struct mtk8250_data *data = port->private_data;
-	int irq = data->rx_wakeup_irq;
 
-#ifdef CONFIG_SERIAL_8250_DMA
 	if (up->dma)
 		data->rx_status = DMA_RX_SHUTDOWN;
 #endif
 
-	serial8250_do_shutdown(port);
-
-	if (irq >= 0)
-		serial8250_do_set_mctrl(&up->port, TIOCM_RTS);
+	return serial8250_do_shutdown(port);
 }
 
 static void mtk8250_disable_intrs(struct uart_8250_port *up, int mask)
 {
-	/* Port locked to synchronize UART_IER access against the console. */
-	lockdep_assert_held_once(&up->port.lock);
-
 	serial_out(up, UART_IER, serial_in(up, UART_IER) & (~mask));
 }
 
 static void mtk8250_enable_intrs(struct uart_8250_port *up, int mask)
 {
-	/* Port locked to synchronize UART_IER access against the console. */
-	lockdep_assert_held_once(&up->port.lock);
-
 	serial_out(up, UART_IER, serial_in(up, UART_IER) | mask);
 }
 
@@ -244,9 +234,6 @@ static void mtk8250_set_flow_ctrl(struct uart_8250_port *up, int mode)
 {
 	struct uart_port *port = &up->port;
 	int lcr = serial_in(up, UART_LCR);
-
-	/* Port locked to synchronize UART_IER access against the console. */
-	lockdep_assert_held_once(&port->lock);
 
 	serial_out(up, UART_LCR, UART_LCR_CONF_MODE_B);
 	serial_out(up, MTK_UART_EFR, UART_EFR_ECB);
@@ -346,8 +333,8 @@ mtk8250_set_termios(struct uart_port *port, struct ktermios *termios,
 	/*
 	 * Mediatek UARTs use an extra highspeed register (MTK_UART_HIGHS)
 	 *
-	 * We need to recalculate the quot register, as the calculation depends
-	 * on the value in the highspeed register.
+	 * We need to recalcualte the quot register, as the claculation depends
+	 * on the vaule in the highspeed register.
 	 *
 	 * Some baudrates are not supported by the chip, so we use the next
 	 * lower rate supported and update termios c_flag.
@@ -372,7 +359,7 @@ mtk8250_set_termios(struct uart_port *port, struct ktermios *termios,
 	 * Ok, we're now changing the port state.  Do it with
 	 * interrupts disabled.
 	 */
-	uart_port_lock_irqsave(port, &flags);
+	spin_lock_irqsave(&port->lock, flags);
 
 	/*
 	 * Update the per-port timeout.
@@ -420,7 +407,7 @@ mtk8250_set_termios(struct uart_port *port, struct ktermios *termios,
 	if (uart_console(port))
 		up->port.cons->cflag = termios->c_cflag;
 
-	uart_port_unlock_irqrestore(port, flags);
+	spin_unlock_irqrestore(&port->lock, flags);
 	/* Don't rewrite B0 */
 	if (tty_termios_baud_rate(termios))
 		tty_termios_encode_baud_rate(termios, baud, baud);
@@ -435,8 +422,12 @@ static int __maybe_unused mtk8250_runtime_suspend(struct device *dev)
 	while
 		(serial_in(up, MTK_UART_DEBUG0));
 
-	clk_disable_unprepare(data->uart_clk);
-	clk_disable_unprepare(data->bus_clk);
+	if (data->clk_count == 0U) {
+		dev_dbg(dev, "%s clock count is 0\n", __func__);
+	} else {
+		clk_disable_unprepare(data->bus_clk);
+		data->clk_count--;
+	}
 
 	return 0;
 }
@@ -444,9 +435,19 @@ static int __maybe_unused mtk8250_runtime_suspend(struct device *dev)
 static int __maybe_unused mtk8250_runtime_resume(struct device *dev)
 {
 	struct mtk8250_data *data = dev_get_drvdata(dev);
+	int err;
 
-	clk_prepare_enable(data->bus_clk);
-	clk_prepare_enable(data->uart_clk);
+	if (data->clk_count > 0U) {
+		dev_dbg(dev, "%s clock count is %d\n", __func__,
+			data->clk_count);
+	} else {
+		err = clk_prepare_enable(data->bus_clk);
+		if (err) {
+			dev_warn(dev, "Can't enable bus clock\n");
+			return err;
+		}
+		data->clk_count++;
+	}
 
 	return 0;
 }
@@ -455,12 +456,14 @@ static void
 mtk8250_do_pm(struct uart_port *port, unsigned int state, unsigned int old)
 {
 	if (!state)
-		pm_runtime_get_sync(port->dev);
+		if (!mtk8250_runtime_resume(port->dev))
+			pm_runtime_get_sync(port->dev);
 
 	serial8250_do_pm(port, state, old);
 
 	if (state)
-		pm_runtime_put_sync_suspend(port->dev);
+		if (!pm_runtime_put_sync_suspend(port->dev))
+			mtk8250_runtime_suspend(port->dev);
 }
 
 #ifdef CONFIG_SERIAL_8250_DMA
@@ -477,13 +480,13 @@ static int mtk8250_probe_of(struct platform_device *pdev, struct uart_port *p,
 	int dmacnt;
 #endif
 
-	data->uart_clk = devm_clk_get_enabled(&pdev->dev, "baud");
+	data->uart_clk = devm_clk_get(&pdev->dev, "baud");
 	if (IS_ERR(data->uart_clk)) {
 		/*
 		 * For compatibility with older device trees try unnamed
 		 * clk when no baud clk can be found.
 		 */
-		data->uart_clk = devm_clk_get_enabled(&pdev->dev, NULL);
+		data->uart_clk = devm_clk_get(&pdev->dev, NULL);
 		if (IS_ERR(data->uart_clk)) {
 			dev_warn(&pdev->dev, "Can't get uart clock\n");
 			return PTR_ERR(data->uart_clk);
@@ -492,7 +495,7 @@ static int mtk8250_probe_of(struct platform_device *pdev, struct uart_port *p,
 		return 0;
 	}
 
-	data->bus_clk = devm_clk_get_enabled(&pdev->dev, "bus");
+	data->bus_clk = devm_clk_get(&pdev->dev, "bus");
 	if (IS_ERR(data->bus_clk))
 		return PTR_ERR(data->bus_clk);
 
@@ -575,19 +578,28 @@ static int mtk8250_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, data);
 
+	pm_runtime_enable(&pdev->dev);
+	err = mtk8250_runtime_resume(&pdev->dev);
+	if (err)
+		goto err_pm_disable;
+
 	data->line = serial8250_register_8250_port(&uart);
-	if (data->line < 0)
-		return data->line;
+	if (data->line < 0) {
+		err = data->line;
+		goto err_pm_disable;
+	}
 
 	data->rx_wakeup_irq = platform_get_irq_optional(pdev, 1);
 
-	pm_runtime_set_active(&pdev->dev);
-	pm_runtime_enable(&pdev->dev);
-
 	return 0;
+
+err_pm_disable:
+	pm_runtime_disable(&pdev->dev);
+
+	return err;
 }
 
-static void mtk8250_remove(struct platform_device *pdev)
+static int mtk8250_remove(struct platform_device *pdev)
 {
 	struct mtk8250_data *data = platform_get_drvdata(pdev);
 
@@ -597,6 +609,11 @@ static void mtk8250_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
+
+	if (!pm_runtime_status_suspended(&pdev->dev))
+		mtk8250_runtime_suspend(&pdev->dev);
+
+	return 0;
 }
 
 static int __maybe_unused mtk8250_suspend(struct device *dev)

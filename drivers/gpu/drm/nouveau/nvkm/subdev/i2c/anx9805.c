@@ -24,7 +24,7 @@
 #define anx9805_pad(p) container_of((p), struct anx9805_pad, base)
 #define anx9805_bus(p) container_of((p), struct anx9805_bus, base)
 #define anx9805_aux(p) container_of((p), struct anx9805_aux, base)
-#include "auxch.h"
+#include "aux.h"
 #include "bus.h"
 
 struct anx9805_pad {

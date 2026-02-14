@@ -22,6 +22,8 @@ VERSION {
 		__vdso_clock_gettime;
 		gettimeofday;
 		__vdso_gettimeofday;
+		getcpu;
+		__vdso_getcpu;
 		time;
 		__vdso_time;
 	local: *;

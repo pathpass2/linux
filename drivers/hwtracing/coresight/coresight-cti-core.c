@@ -22,7 +22,7 @@
 #include "coresight-priv.h"
 #include "coresight-cti.h"
 
-/*
+/**
  * CTI devices can be associated with a PE, or be connected to CoreSight
  * hardware. We have a list of all CTIs irrespective of CPU bound or
  * otherwise.
@@ -93,7 +93,7 @@ static int cti_enable_hw(struct cti_drvdata *drvdata)
 	unsigned long flags;
 	int rc = 0;
 
-	raw_spin_lock_irqsave(&drvdata->spinlock, flags);
+	spin_lock_irqsave(&drvdata->spinlock, flags);
 
 	/* no need to do anything if enabled or unpowered*/
 	if (config->hw_enabled || !config->hw_powered)
@@ -108,7 +108,7 @@ static int cti_enable_hw(struct cti_drvdata *drvdata)
 
 	config->hw_enabled = true;
 	drvdata->config.enable_req_count++;
-	raw_spin_unlock_irqrestore(&drvdata->spinlock, flags);
+	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 	return rc;
 
 cti_state_unchanged:
@@ -116,7 +116,7 @@ cti_state_unchanged:
 
 	/* cannot enable due to error */
 cti_err_not_enabled:
-	raw_spin_unlock_irqrestore(&drvdata->spinlock, flags);
+	spin_unlock_irqrestore(&drvdata->spinlock, flags);
 	return rc;
 }
 
@@ -125,7 +125,7 @@ static void cti_cpuhp_enable_hw(struct cti_drvdata *drvdata)
 {
 	struct cti_config *config = &drvdata->config;
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 	config->hw_powered = true;
 
 	/* no need to do anything if no enable request */
@@ -138,12 +138,12 @@ static void cti_cpuhp_enable_hw(struct cti_drvdata *drvdata)
 
 	cti_write_all_hw_regs(drvdata);
 	config->hw_enabled = true;
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 	return;
 
 	/* did not re-enable due to no claim / no request */
 cti_hp_not_enabled:
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 }
 
 /* disable hardware */
@@ -153,7 +153,7 @@ static int cti_disable_hw(struct cti_drvdata *drvdata)
 	struct coresight_device *csdev = drvdata->csdev;
 	int ret = 0;
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 
 	/* don't allow negative refcounts, return an error */
 	if (!drvdata->config.enable_req_count) {
@@ -177,12 +177,12 @@ static int cti_disable_hw(struct cti_drvdata *drvdata)
 
 	coresight_disclaim_device_unlocked(csdev);
 	CS_LOCK(drvdata->base);
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 	return ret;
 
 	/* not disabled this call */
 cti_not_disabled:
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 	return ret;
 }
 
@@ -198,11 +198,11 @@ void cti_write_intack(struct device *dev, u32 ackval)
 	struct cti_drvdata *drvdata = dev_get_drvdata(dev->parent);
 	struct cti_config *config = &drvdata->config;
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 	/* write if enabled */
 	if (cti_active(config))
 		cti_write_single_reg(drvdata, CTIINTACK, ackval);
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 }
 
 /*
@@ -369,7 +369,7 @@ int cti_channel_trig_op(struct device *dev, enum cti_chan_op op,
 	reg_offset = (direction == CTI_TRIG_IN ? CTIINEN(trigger_idx) :
 		      CTIOUTEN(trigger_idx));
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 
 	/* read - modify write - the trigger / channel enable value */
 	reg_value = direction == CTI_TRIG_IN ? config->ctiinen[trigger_idx] :
@@ -388,7 +388,7 @@ int cti_channel_trig_op(struct device *dev, enum cti_chan_op op,
 	/* write through if enabled */
 	if (cti_active(config))
 		cti_write_single_reg(drvdata, reg_offset, reg_value);
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 	return 0;
 }
 
@@ -406,7 +406,7 @@ int cti_channel_gate_op(struct device *dev, enum cti_chan_gate_op op,
 
 	chan_bitmask = BIT(channel_idx);
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 	reg_value = config->ctigate;
 	switch (op) {
 	case CTI_GATE_CHAN_ENABLE:
@@ -426,7 +426,7 @@ int cti_channel_gate_op(struct device *dev, enum cti_chan_gate_op op,
 		if (cti_active(config))
 			cti_write_single_reg(drvdata, CTIGATE, reg_value);
 	}
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 	return err;
 }
 
@@ -445,7 +445,7 @@ int cti_channel_setop(struct device *dev, enum cti_chan_set_op op,
 
 	chan_bitmask = BIT(channel_idx);
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 	reg_value = config->ctiappset;
 	switch (op) {
 	case CTI_CHAN_SET:
@@ -473,7 +473,7 @@ int cti_channel_setop(struct device *dev, enum cti_chan_set_op op,
 
 	if ((err == 0) && cti_active(config))
 		cti_write_single_reg(drvdata, reg_offset, reg_value);
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 
 	return err;
 }
@@ -555,10 +555,7 @@ static void cti_add_assoc_to_csdev(struct coresight_device *csdev)
 	mutex_lock(&ect_mutex);
 
 	/* exit if current is an ECT device.*/
-	if ((csdev->type == CORESIGHT_DEV_TYPE_HELPER &&
-	     csdev->subtype.helper_subtype ==
-		     CORESIGHT_DEV_SUBTYPE_HELPER_ECT_CTI) ||
-	    list_empty(&ect_net))
+	if ((csdev->type == CORESIGHT_DEV_TYPE_ECT) || list_empty(&ect_net))
 		goto cti_add_done;
 
 	/* if we didn't find the csdev previously we used the fwnode name */
@@ -574,7 +571,8 @@ static void cti_add_assoc_to_csdev(struct coresight_device *csdev)
 			 * if we found a matching csdev then update the ECT
 			 * association pointer for the device with this CTI.
 			 */
-			coresight_add_helper(csdev, ect_item->csdev);
+			coresight_set_assoc_ectdev_mutex(csdev,
+							 ect_item->csdev);
 			break;
 		}
 	}
@@ -584,30 +582,26 @@ cti_add_done:
 
 /*
  * Removing the associated devices is easier.
+ * A CTI will not have a value for csdev->ect_dev.
  */
 static void cti_remove_assoc_from_csdev(struct coresight_device *csdev)
 {
 	struct cti_drvdata *ctidrv;
 	struct cti_trig_con *tc;
 	struct cti_device *ctidev;
-	union coresight_dev_subtype cti_subtype = {
-		.helper_subtype = CORESIGHT_DEV_SUBTYPE_HELPER_ECT_CTI
-	};
-	struct coresight_device *cti_csdev = coresight_find_output_type(
-		csdev->pdata, CORESIGHT_DEV_TYPE_HELPER, cti_subtype);
-
-	if (!cti_csdev)
-		return;
 
 	mutex_lock(&ect_mutex);
-	ctidrv = csdev_to_cti_drvdata(cti_csdev);
-	ctidev = &ctidrv->ctidev;
-	list_for_each_entry(tc, &ctidev->trig_cons, node) {
-		if (tc->con_dev == csdev) {
-			cti_remove_sysfs_link(ctidrv, tc);
-			tc->con_dev = NULL;
-			break;
+	if (csdev->ect_dev) {
+		ctidrv = csdev_to_cti_drvdata(csdev->ect_dev);
+		ctidev = &ctidrv->ctidev;
+		list_for_each_entry(tc, &ctidev->trig_cons, node) {
+			if (tc->con_dev == csdev) {
+				cti_remove_sysfs_link(ctidrv, tc);
+				tc->con_dev = NULL;
+				break;
+			}
 		}
+		csdev->ect_dev = NULL;
 	}
 	mutex_unlock(&ect_mutex);
 }
@@ -636,8 +630,8 @@ static void cti_update_conn_xrefs(struct cti_drvdata *drvdata)
 			/* if we can set the sysfs link */
 			if (cti_add_sysfs_link(drvdata, tc))
 				/* set the CTI/csdev association */
-				coresight_add_helper(tc->con_dev,
-						     drvdata->csdev);
+				coresight_set_assoc_ectdev_mutex(tc->con_dev,
+							 drvdata->csdev);
 			else
 				/* otherwise remove reference from CTI */
 				tc->con_dev = NULL;
@@ -652,6 +646,8 @@ static void cti_remove_conn_xrefs(struct cti_drvdata *drvdata)
 
 	list_for_each_entry(tc, &ctidev->trig_cons, node) {
 		if (tc->con_dev) {
+			coresight_set_assoc_ectdev_mutex(tc->con_dev,
+							 NULL);
 			cti_remove_sysfs_link(drvdata, tc);
 			tc->con_dev = NULL;
 		}
@@ -676,7 +672,7 @@ static int cti_cpu_pm_notify(struct notifier_block *nb, unsigned long cmd,
 	if (WARN_ON_ONCE(drvdata->ctidev.cpu != cpu))
 		return NOTIFY_BAD;
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 
 	switch (cmd) {
 	case CPU_PM_ENTER:
@@ -716,7 +712,7 @@ static int cti_cpu_pm_notify(struct notifier_block *nb, unsigned long cmd,
 	}
 
 cti_notify_exit:
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 	return notify_res;
 }
 
@@ -743,11 +739,11 @@ static int cti_dying_cpu(unsigned int cpu)
 	if (!drvdata)
 		return 0;
 
-	raw_spin_lock(&drvdata->spinlock);
+	spin_lock(&drvdata->spinlock);
 	drvdata->config.hw_powered = false;
 	if (drvdata->config.hw_enabled)
 		coresight_disclaim_device(drvdata->csdev);
-	raw_spin_unlock(&drvdata->spinlock);
+	spin_unlock(&drvdata->spinlock);
 	return 0;
 }
 
@@ -799,28 +795,27 @@ static void cti_pm_release(struct cti_drvdata *drvdata)
 }
 
 /** cti ect operations **/
-int cti_enable(struct coresight_device *csdev, enum cs_mode mode,
-	       struct coresight_path *path)
+int cti_enable(struct coresight_device *csdev)
 {
 	struct cti_drvdata *drvdata = csdev_to_cti_drvdata(csdev);
 
 	return cti_enable_hw(drvdata);
 }
 
-int cti_disable(struct coresight_device *csdev, struct coresight_path *path)
+int cti_disable(struct coresight_device *csdev)
 {
 	struct cti_drvdata *drvdata = csdev_to_cti_drvdata(csdev);
 
 	return cti_disable_hw(drvdata);
 }
 
-static const struct coresight_ops_helper cti_ops_ect = {
+static const struct coresight_ops_ect cti_ops_ect = {
 	.enable = cti_enable,
 	.disable = cti_disable,
 };
 
 static const struct coresight_ops cti_ops = {
-	.helper_ops = &cti_ops_ect,
+	.ect_ops = &cti_ops_ect,
 };
 
 /*
@@ -889,7 +884,7 @@ static int cti_probe(struct amba_device *adev, const struct amba_id *id)
 	drvdata->ctidev.ctm_id = 0;
 	INIT_LIST_HEAD(&drvdata->ctidev.trig_cons);
 
-	raw_spin_lock_init(&drvdata->spinlock);
+	spin_lock_init(&drvdata->spinlock);
 
 	/* initialise CTI driver config values */
 	cti_set_default_config(dev, drvdata);
@@ -927,13 +922,11 @@ static int cti_probe(struct amba_device *adev, const struct amba_id *id)
 
 	/* set up coresight component description */
 	cti_desc.pdata = pdata;
-	cti_desc.type = CORESIGHT_DEV_TYPE_HELPER;
-	cti_desc.subtype.helper_subtype = CORESIGHT_DEV_SUBTYPE_HELPER_ECT_CTI;
+	cti_desc.type = CORESIGHT_DEV_TYPE_ECT;
+	cti_desc.subtype.ect_subtype = CORESIGHT_DEV_SUBTYPE_ECT_CTI;
 	cti_desc.ops = &cti_ops;
 	cti_desc.groups = drvdata->ctidev.con_groups;
 	cti_desc.dev = dev;
-
-	coresight_clear_self_claim_tag(&cti_desc.access);
 	drvdata->csdev = coresight_register(&cti_desc);
 	if (IS_ERR(drvdata->csdev)) {
 		ret = PTR_ERR(drvdata->csdev);
@@ -977,7 +970,7 @@ static const struct amba_id cti_ids[] = {
 	CS_AMBA_ID(0x000bb9aa), /* CTI - C-A73 */
 	CS_AMBA_UCI_ID(0x000bb9da, uci_id_cti), /* CTI - C-A35 */
 	CS_AMBA_UCI_ID(0x000bb9ed, uci_id_cti), /* Coresight CTI (SoC 600) */
-	{ 0, 0, NULL },
+	{ 0, 0},
 };
 
 MODULE_DEVICE_TABLE(amba, cti_ids);
@@ -985,6 +978,7 @@ MODULE_DEVICE_TABLE(amba, cti_ids);
 static struct amba_driver cti_driver = {
 	.drv = {
 		.name	= "coresight-cti",
+		.owner = THIS_MODULE,
 		.suppress_bind_attrs = true,
 	},
 	.probe		= cti_probe,

@@ -13,7 +13,6 @@
 #include "intel_engine_regs.h"
 #include "intel_gpu_commands.h"
 #include "intel_ring.h"
-#include "intel_gt.h"
 #include "intel_timeline.h"
 
 unsigned int intel_ring_update_space(struct intel_ring *ring)
@@ -57,7 +56,7 @@ int intel_ring_pin(struct intel_ring *ring, struct i915_gem_ww_ctx *ww)
 	if (i915_vma_is_map_and_fenceable(vma) && !HAS_LLC(vma->vm->i915)) {
 		addr = (void __force *)i915_vma_pin_iomap(vma);
 	} else {
-		int type = intel_gt_coherent_map_type(vma->vm->gt, vma->obj, false);
+		int type = i915_coherent_map_type(vma->vm->i915, vma->obj, false);
 
 		addr = i915_gem_object_pin_map(vma->obj, type);
 	}
@@ -306,6 +305,30 @@ u32 *intel_ring_begin(struct i915_request *rq, unsigned int num_dwords)
 	ring->space -= bytes;
 
 	return cs;
+}
+
+/* Align the ring tail to a cacheline boundary */
+int intel_ring_cacheline_align(struct i915_request *rq)
+{
+	int num_dwords;
+	void *cs;
+
+	num_dwords = (rq->ring->emit & (CACHELINE_BYTES - 1)) / sizeof(u32);
+	if (num_dwords == 0)
+		return 0;
+
+	num_dwords = CACHELINE_DWORDS - num_dwords;
+	GEM_BUG_ON(num_dwords & 1);
+
+	cs = intel_ring_begin(rq, num_dwords);
+	if (IS_ERR(cs))
+		return PTR_ERR(cs);
+
+	memset64(cs, (u64)MI_NOOP << 32 | MI_NOOP, num_dwords / 2);
+	intel_ring_advance(rq, cs + num_dwords);
+
+	GEM_BUG_ON(rq->ring->emit & (CACHELINE_BYTES - 1));
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)

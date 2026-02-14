@@ -15,7 +15,7 @@
 
 #ifdef CONFIG_PROC_SYSCTL
 
-static void *get_uts(const struct ctl_table *table)
+static void *get_uts(struct ctl_table *table)
 {
 	char *which = table->data;
 	struct uts_namespace *uts_ns;
@@ -30,7 +30,7 @@ static void *get_uts(const struct ctl_table *table)
  *	Special case of dostring for the UTS structure. This has locks
  *	to observe. Should this be in kernel/sys.c ????
  */
-static int proc_do_uts_string(const struct ctl_table *table, int write,
+static int proc_do_uts_string(struct ctl_table *table, int write,
 		  void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table uts_table;
@@ -75,7 +75,7 @@ static DEFINE_CTL_TABLE_POLL(hostname_poll);
 static DEFINE_CTL_TABLE_POLL(domainname_poll);
 
 // Note: update 'enum uts_proc' to match any changes to this table
-static const struct ctl_table uts_kern_table[] = {
+static struct ctl_table uts_kern_table[] = {
 	{
 		.procname	= "arch",
 		.data		= init_uts_ns.name.machine,
@@ -120,6 +120,16 @@ static const struct ctl_table uts_kern_table[] = {
 		.proc_handler	= proc_do_uts_string,
 		.poll		= &domainname_poll,
 	},
+	{}
+};
+
+static struct ctl_table uts_root_table[] = {
+	{
+		.procname	= "kernel",
+		.mode		= 0555,
+		.child		= uts_kern_table,
+	},
+	{}
 };
 
 #ifdef CONFIG_PROC_SYSCTL
@@ -129,7 +139,7 @@ static const struct ctl_table uts_kern_table[] = {
  */
 void uts_proc_notify(enum uts_proc proc)
 {
-	const struct ctl_table *table = &uts_kern_table[proc];
+	struct ctl_table *table = &uts_kern_table[proc];
 
 	proc_sys_poll_notify(table->poll);
 }
@@ -137,7 +147,7 @@ void uts_proc_notify(enum uts_proc proc)
 
 static int __init utsname_sysctl_init(void)
 {
-	register_sysctl("kernel", uts_kern_table);
+	register_sysctl_table(uts_root_table);
 	return 0;
 }
 

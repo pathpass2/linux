@@ -54,6 +54,8 @@ static int wm8400_init(struct wm8400 *wm8400,
 	unsigned int reg;
 	int ret;
 
+	dev_set_drvdata(wm8400->dev, wm8400);
+
 	/* Check that this is actually a WM8400 */
 	ret = regmap_read(wm8400->regmap, WM8400_RESET_ID, &reg);
 	if (ret != 0) {
@@ -100,7 +102,7 @@ static const struct regmap_config wm8400_regmap_config = {
 
 	.volatile_reg = wm8400_volatile,
 
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 };
 
 /**
@@ -135,7 +137,7 @@ static int wm8400_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm8400_i2c_id[] = {
-       { "wm8400" },
+       { "wm8400", 0 },
        { }
 };
 
@@ -143,7 +145,7 @@ static struct i2c_driver wm8400_i2c_driver = {
 	.driver = {
 		.name = "WM8400",
 	},
-	.probe = wm8400_i2c_probe,
+	.probe_new = wm8400_i2c_probe,
 	.id_table = wm8400_i2c_id,
 };
 #endif

@@ -5,13 +5,13 @@
 
 #include <kunit/test.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <linux/platform_data/cros_ec_commands.h>
 #include <linux/platform_data/cros_ec_proto.h>
 
 #include "cros_ec.h"
-#include "cros_ec_proto_test_util.h"
+#include "cros_kunit_util.h"
 
 #define BUFSIZE 512
 
@@ -1543,18 +1543,21 @@ static void cros_ec_proto_test_cmd_xfer_normal(struct kunit *test)
 	struct cros_ec_device *ec_dev = &priv->ec_dev;
 	struct ec_xfer_mock *mock;
 	int ret;
-	DEFINE_RAW_FLEX(struct cros_ec_command, buf, data, 0x100);
+	struct {
+		struct cros_ec_command msg;
+		u8 data[0x100];
+	} __packed buf;
 
 	ec_dev->max_request = 0xff;
 	ec_dev->max_response = 0xee;
 	ec_dev->max_passthru = 0xdd;
 
-	buf->version = 0;
-	buf->command = EC_CMD_HELLO;
-	buf->insize = 4;
-	buf->outsize = 2;
-	buf->data[0] = 0x55;
-	buf->data[1] = 0xaa;
+	buf.msg.version = 0;
+	buf.msg.command = EC_CMD_HELLO;
+	buf.msg.insize = 4;
+	buf.msg.outsize = 2;
+	buf.data[0] = 0x55;
+	buf.data[1] = 0xaa;
 
 	{
 		u8 *data;
@@ -1569,7 +1572,7 @@ static void cros_ec_proto_test_cmd_xfer_normal(struct kunit *test)
 		data[3] = 0x33;
 	}
 
-	ret = cros_ec_cmd_xfer(ec_dev, buf);
+	ret = cros_ec_cmd_xfer(ec_dev, &buf.msg);
 	KUNIT_EXPECT_EQ(test, ret, 4);
 
 	{
@@ -1587,10 +1590,10 @@ static void cros_ec_proto_test_cmd_xfer_normal(struct kunit *test)
 		KUNIT_EXPECT_EQ(test, data[0], 0x55);
 		KUNIT_EXPECT_EQ(test, data[1], 0xaa);
 
-		KUNIT_EXPECT_EQ(test, buf->data[0], 0xaa);
-		KUNIT_EXPECT_EQ(test, buf->data[1], 0x55);
-		KUNIT_EXPECT_EQ(test, buf->data[2], 0xcc);
-		KUNIT_EXPECT_EQ(test, buf->data[3], 0x33);
+		KUNIT_EXPECT_EQ(test, buf.data[0], 0xaa);
+		KUNIT_EXPECT_EQ(test, buf.data[1], 0x55);
+		KUNIT_EXPECT_EQ(test, buf.data[2], 0xcc);
+		KUNIT_EXPECT_EQ(test, buf.data[3], 0x33);
 	}
 }
 
@@ -1600,23 +1603,26 @@ static void cros_ec_proto_test_cmd_xfer_excess_msg_insize(struct kunit *test)
 	struct cros_ec_device *ec_dev = &priv->ec_dev;
 	struct ec_xfer_mock *mock;
 	int ret;
-	DEFINE_RAW_FLEX(struct cros_ec_command, buf, data, 0x100);
+	struct {
+		struct cros_ec_command msg;
+		u8 data[0x100];
+	} __packed buf;
 
 	ec_dev->max_request = 0xff;
 	ec_dev->max_response = 0xee;
 	ec_dev->max_passthru = 0xdd;
 
-	buf->version = 0;
-	buf->command = EC_CMD_HELLO;
-	buf->insize = 0xee + 1;
-	buf->outsize = 2;
+	buf.msg.version = 0;
+	buf.msg.command = EC_CMD_HELLO;
+	buf.msg.insize = 0xee + 1;
+	buf.msg.outsize = 2;
 
 	{
 		mock = cros_kunit_ec_xfer_mock_add(test, 0xcc);
 		KUNIT_ASSERT_PTR_NE(test, mock, NULL);
 	}
 
-	ret = cros_ec_cmd_xfer(ec_dev, buf);
+	ret = cros_ec_cmd_xfer(ec_dev, &buf.msg);
 	KUNIT_EXPECT_EQ(test, ret, 0xcc);
 
 	{
@@ -1635,18 +1641,21 @@ static void cros_ec_proto_test_cmd_xfer_excess_msg_outsize_without_passthru(stru
 	struct cros_ec_proto_test_priv *priv = test->priv;
 	struct cros_ec_device *ec_dev = &priv->ec_dev;
 	int ret;
-	DEFINE_RAW_FLEX(struct cros_ec_command, buf, data, 0x100);
+	struct {
+		struct cros_ec_command msg;
+		u8 data[0x100];
+	} __packed buf;
 
 	ec_dev->max_request = 0xff;
 	ec_dev->max_response = 0xee;
 	ec_dev->max_passthru = 0xdd;
 
-	buf->version = 0;
-	buf->command = EC_CMD_HELLO;
-	buf->insize = 4;
-	buf->outsize = 0xff + 1;
+	buf.msg.version = 0;
+	buf.msg.command = EC_CMD_HELLO;
+	buf.msg.insize = 4;
+	buf.msg.outsize = 0xff + 1;
 
-	ret = cros_ec_cmd_xfer(ec_dev, buf);
+	ret = cros_ec_cmd_xfer(ec_dev, &buf.msg);
 	KUNIT_EXPECT_EQ(test, ret, -EMSGSIZE);
 }
 
@@ -1655,18 +1664,21 @@ static void cros_ec_proto_test_cmd_xfer_excess_msg_outsize_with_passthru(struct 
 	struct cros_ec_proto_test_priv *priv = test->priv;
 	struct cros_ec_device *ec_dev = &priv->ec_dev;
 	int ret;
-	DEFINE_RAW_FLEX(struct cros_ec_command, buf, data, 0x100);
+	struct {
+		struct cros_ec_command msg;
+		u8 data[0x100];
+	} __packed buf;
 
 	ec_dev->max_request = 0xff;
 	ec_dev->max_response = 0xee;
 	ec_dev->max_passthru = 0xdd;
 
-	buf->version = 0;
-	buf->command = EC_CMD_PASSTHRU_OFFSET(CROS_EC_DEV_PD_INDEX) + EC_CMD_HELLO;
-	buf->insize = 4;
-	buf->outsize = 0xdd + 1;
+	buf.msg.version = 0;
+	buf.msg.command = EC_CMD_PASSTHRU_OFFSET(CROS_EC_DEV_PD_INDEX) + EC_CMD_HELLO;
+	buf.msg.insize = 4;
+	buf.msg.outsize = 0xdd + 1;
 
-	ret = cros_ec_cmd_xfer(ec_dev, buf);
+	ret = cros_ec_cmd_xfer(ec_dev, &buf.msg);
 	KUNIT_EXPECT_EQ(test, ret, -EMSGSIZE);
 }
 
@@ -2060,17 +2072,17 @@ static void cros_ec_proto_test_get_next_event_no_mkbp_event(struct kunit *test)
 
 	/* For get_keyboard_state_event(). */
 	{
-		union ec_response_get_next_data_v3 *data;
+		union ec_response_get_next_data_v1 *data;
 
 		mock = cros_kunit_ec_xfer_mock_add(test, sizeof(*data));
 		KUNIT_ASSERT_PTR_NE(test, mock, NULL);
 
-		data = (union ec_response_get_next_data_v3 *)mock->o_data;
+		data = (union ec_response_get_next_data_v1 *)mock->o_data;
 		data->host_event = 0xbeef;
 	}
 
 	ret = cros_ec_get_next_event(ec_dev, &wake_event, &more_events);
-	KUNIT_EXPECT_EQ(test, ret, sizeof(union ec_response_get_next_data_v3));
+	KUNIT_EXPECT_EQ(test, ret, sizeof(union ec_response_get_next_data_v1));
 
 	KUNIT_EXPECT_EQ(test, ec_dev->event_data.event_type, EC_MKBP_EVENT_KEY_MATRIX);
 	KUNIT_EXPECT_EQ(test, ec_dev->event_data.data.host_event, 0xbeef);
@@ -2085,7 +2097,7 @@ static void cros_ec_proto_test_get_next_event_no_mkbp_event(struct kunit *test)
 
 		KUNIT_EXPECT_EQ(test, mock->msg.version, 0);
 		KUNIT_EXPECT_EQ(test, mock->msg.command, EC_CMD_MKBP_STATE);
-		KUNIT_EXPECT_EQ(test, mock->msg.insize, sizeof(union ec_response_get_next_data_v3));
+		KUNIT_EXPECT_EQ(test, mock->msg.insize, sizeof(union ec_response_get_next_data_v1));
 		KUNIT_EXPECT_EQ(test, mock->msg.outsize, 0);
 	}
 }
@@ -2656,7 +2668,6 @@ static int cros_ec_proto_test_init(struct kunit *test)
 	ec_dev->dev->release = cros_ec_proto_test_release;
 	ec_dev->cmd_xfer = cros_kunit_ec_xfer_mock;
 	ec_dev->pkt_xfer = cros_kunit_ec_xfer_mock;
-	mutex_init(&ec_dev->lock);
 
 	priv->msg = (struct cros_ec_command *)priv->_msg;
 
@@ -2740,5 +2751,4 @@ static struct kunit_suite cros_ec_proto_test_suite = {
 
 kunit_test_suite(cros_ec_proto_test_suite);
 
-MODULE_DESCRIPTION("Kunit tests for ChromeOS Embedded Controller protocol");
 MODULE_LICENSE("GPL");

@@ -4,7 +4,10 @@
 
 #include <linux/const.h>
 
-#include <vdso/page.h>
+#define PAGE_SHIFT   13
+
+#define PAGE_SIZE    (_AC(1,UL) << PAGE_SHIFT)
+#define PAGE_MASK    (~(PAGE_SIZE-1))
 
 /* Flushing for D-cache alias handling is only needed if
  * the page size is smaller than 16K.
@@ -30,7 +33,7 @@
 #define HUGE_MAX_HSTATE		5
 #endif
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
 struct pt_regs;
@@ -43,7 +46,6 @@ void _clear_page(void *page);
 #define clear_page(X)	_clear_page((void *)(X))
 struct page;
 void clear_user_page(void *addr, unsigned long vaddr, struct page *page);
-#define clear_user_page clear_user_page
 #define copy_page(X,Y)	memcpy((void *)(X), (void *)(Y), PAGE_SIZE)
 void copy_user_page(void *to, void *from, unsigned long vaddr, struct page *topage);
 #define __HAVE_ARCH_COPY_USER_HIGHPAGE
@@ -129,7 +131,7 @@ extern unsigned long sparc64_va_hole_bottom;
 
 extern unsigned long PAGE_OFFSET;
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 /* The maximum number of physical memory address bits we support.  The
  * largest value we can support is whatever "KPGD_SHIFT + KPTE_BITS"
@@ -140,7 +142,7 @@ extern unsigned long PAGE_OFFSET;
 #define ILOG2_4MB		22
 #define ILOG2_256MB		28
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define __pa(x)			((unsigned long)(x) - PAGE_OFFSET)
 #define __va(x)			((void *)((unsigned long) (x) + PAGE_OFFSET))
@@ -154,7 +156,7 @@ extern unsigned long PAGE_OFFSET;
 #define virt_to_phys __pa
 #define phys_to_virt __va
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 #include <asm-generic/getorder.h>
 

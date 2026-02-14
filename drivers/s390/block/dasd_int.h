@@ -113,6 +113,9 @@ do { \
 			    __dev_id.ssid, __dev_id.devno, d_data);	\
 } while (0)
 
+/* limit size for an errorstring */
+#define ERRORLENGTH 30
+
 /* definition of dbf debug levels */
 #define	DBF_EMERG	0	/* system is unusable			*/
 #define	DBF_ALERT	1	/* action must be taken immediately	*/
@@ -122,6 +125,32 @@ do { \
 #define	DBF_NOTICE	5	/* normal but significant condition	*/
 #define	DBF_INFO	6	/* informational			*/
 #define	DBF_DEBUG	6	/* debug-level messages			*/
+
+/* messages to be written via klogd and dbf */
+#define DEV_MESSAGE(d_loglevel,d_device,d_string,d_args...)\
+do { \
+	printk(d_loglevel PRINTK_HEADER " %s: " d_string "\n", \
+	       dev_name(&d_device->cdev->dev), d_args); \
+	DBF_DEV_EVENT(DBF_ALERT, d_device, d_string, d_args); \
+} while(0)
+
+#define MESSAGE(d_loglevel,d_string,d_args...)\
+do { \
+	printk(d_loglevel PRINTK_HEADER " " d_string "\n", d_args); \
+	DBF_EVENT(DBF_ALERT, d_string, d_args); \
+} while(0)
+
+/* messages to be written via klogd only */
+#define DEV_MESSAGE_LOG(d_loglevel,d_device,d_string,d_args...)\
+do { \
+	printk(d_loglevel PRINTK_HEADER " %s: " d_string "\n", \
+	       dev_name(&d_device->cdev->dev), d_args); \
+} while(0)
+
+#define MESSAGE_LOG(d_loglevel,d_string,d_args...)\
+do { \
+	printk(d_loglevel PRINTK_HEADER " " d_string "\n", d_args); \
+} while(0)
 
 /* Macro to calculate number of blocks per page */
 #define BLOCKS_PER_PAGE(blksize) (PAGE_SIZE / blksize)
@@ -196,7 +225,7 @@ struct dasd_ccw_req {
  * The following flags are used to suppress output of certain errors.
  */
 #define DASD_CQR_SUPPRESS_NRF	4	/* Suppress 'No Record Found' error */
-#define DASD_CQR_SUPPRESS_IT	5	/* Suppress 'Invalid Track' error*/
+#define DASD_CQR_SUPPRESS_FP	5	/* Suppress 'File Protected' error*/
 #define DASD_CQR_SUPPRESS_IL	6	/* Suppress 'Incorrect Length' error */
 #define DASD_CQR_SUPPRESS_CR	7	/* Suppress 'Command Reject' error */
 
@@ -230,10 +259,6 @@ struct dasd_uid {
 	char vduit[33];
 };
 
-#define DASD_UID_STRLEN ( /* vendor */ 3 + 1 + /* serial    */ 14 + 1 +	\
-			  /* SSID   */ 4 + 1 + /* unit addr */ 2 + 1 +	\
-			  /* vduit */ 32 + 1)
-
 /*
  * PPRC Status data
  */
@@ -254,7 +279,7 @@ struct dasd_pprc_dev_info {
 	__u8 secondary;		/* 7       Secondary device address */
 	__u16 pprc_id;		/* 8-9     Peer-to-Peer Remote Copy ID */
 	__u8 reserved2[12];	/* 10-21   reserved */
-	__u16 prim_cu_ssid;	/* 22-23   Primary Control Unit SSID */
+	__u16 prim_cu_ssid;	/* 22-23   Pimary Control Unit SSID */
 	__u8 reserved3[12];	/* 24-35   reserved */
 	__u16 sec_cu_ssid;	/* 36-37   Secondary Control Unit SSID */
 	__u8 reserved4[90];	/* 38-127  reserved */
@@ -293,7 +318,6 @@ struct dasd_discipline {
 	struct module *owner;
 	char ebcname[8];	/* a name used for tagging and printks */
 	char name[8];		/* a name used for tagging and printks */
-	bool has_discard;
 
 	struct list_head list;	/* used for list of disciplines */
 
@@ -332,7 +356,10 @@ struct dasd_discipline {
 	int (*online_to_ready) (struct dasd_device *);
 	int (*basic_to_known)(struct dasd_device *);
 
-	unsigned int (*max_sectors)(struct dasd_block *);
+	/*
+	 * Initialize block layer request queue.
+	 */
+	void (*setup_blk_queue)(struct dasd_block *);
 	/* (struct dasd_device *);
 	 * Device operation functions. build_cp creates a ccw chain for
 	 * a block device request, start_io starts the request and
@@ -417,22 +444,22 @@ struct dasd_discipline {
 
 extern struct dasd_discipline *dasd_diag_discipline_pointer;
 
-/* Trigger IDs for extended error reporting DASD EER and autoquiesce */
-enum eer_trigger {
-	DASD_EER_FATALERROR = 1,
-	DASD_EER_NOPATH,
-	DASD_EER_STATECHANGE,
-	DASD_EER_PPRCSUSPEND,
-	DASD_EER_NOSPC,
-	DASD_EER_TIMEOUTS,
-	DASD_EER_STARTIO,
+/*
+ * Notification numbers for extended error reporting notifications:
+ * The DASD_EER_DISABLE notification is sent before a dasd_device (and it's
+ * eer pointer) is freed. The error reporting module needs to do all necessary
+ * cleanup steps.
+ * The DASD_EER_TRIGGER notification sends the actual error reports (triggers).
+ */
+#define DASD_EER_DISABLE 0
+#define DASD_EER_TRIGGER 1
 
-	/* enum end marker, only add new trigger above */
-	DASD_EER_MAX,
-	DASD_EER_AUTOQUIESCE = 31, /* internal only */
-};
-
-#define DASD_EER_VALID ((1U << DASD_EER_MAX) - 1)
+/* Trigger IDs for extended error reporting DASD_EER_TRIGGER notification */
+#define DASD_EER_FATALERROR  1
+#define DASD_EER_NOPATH      2
+#define DASD_EER_STATECHANGE 3
+#define DASD_EER_PPRCSUSPEND 4
+#define DASD_EER_NOSPC	     5
 
 /* DASD path handling */
 
@@ -610,8 +637,6 @@ struct dasd_device {
 	struct dasd_format_entry format_entry;
 	struct kset *paths_info;
 	struct dasd_copy_relation *copy;
-	unsigned long aq_mask;
-	unsigned int aq_timeouts;
 };
 
 struct dasd_block {
@@ -619,7 +644,7 @@ struct dasd_block {
 	struct gendisk *gdp;
 	spinlock_t request_queue_lock;
 	struct blk_mq_tag_set tag_set;
-	struct file *bdev_file;
+	struct block_device *bdev;
 	atomic_t open_count;
 
 	unsigned long blocks;	   /* size of volume in blocks */
@@ -938,8 +963,7 @@ int dasd_scan_partitions(struct dasd_block *);
 void dasd_destroy_partitions(struct dasd_block *);
 
 /* externals in dasd_ioctl.c */
-int dasd_ioctl(struct block_device *bdev, blk_mode_t mode, unsigned int cmd,
-		unsigned long arg);
+int dasd_ioctl(struct block_device *, fmode_t, unsigned int, unsigned long);
 int dasd_set_read_only(struct block_device *bdev, bool ro);
 
 /* externals in dasd_proc.c */

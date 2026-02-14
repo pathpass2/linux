@@ -8,22 +8,8 @@ like to know when a security bug is found so that it can be fixed and
 disclosed as quickly as possible.  Please report security bugs to the
 Linux kernel security team.
 
-The security team and maintainers almost always require additional
-information beyond what was initially provided in a report and rely on
-active and efficient collaboration with the reporter to perform further
-testing (e.g., verifying versions, configuration options, mitigations, or
-patches). Before contacting the security team, the reporter must ensure
-they are available to explain their findings, engage in discussions, and
-run additional tests.  Reports where the reporter does not respond promptly
-or cannot effectively discuss their findings may be abandoned if the
-communication does not quickly improve.
-
-As it is with any bug, the more information provided the easier it
-will be to diagnose and fix.  Please review the procedure outlined in
-'Documentation/admin-guide/reporting-issues.rst' if you are unclear about what
-information is helpful.  Any exploit code is very helpful and will not
-be released without consent from the reporter unless it has already been
-made public.
+Contact
+-------
 
 The Linux kernel security team can be contacted by email at
 <security@kernel.org>.  This is a private list of security officers
@@ -33,16 +19,19 @@ that can speed up the process considerably.  It is possible that the
 security team will bring in extra help from area maintainers to
 understand and fix the security vulnerability.
 
-Please send **plain text** emails without attachments where possible.
+As it is with any bug, the more information provided the easier it
+will be to diagnose and fix.  Please review the procedure outlined in
+'Documentation/admin-guide/reporting-issues.rst' if you are unclear about what
+information is helpful.  Any exploit code is very helpful and will not
+be released without consent from the reporter unless it has already been
+made public.
+
+Please send plain text emails without attachments where possible.
 It is much harder to have a context-quoted discussion about a complex
 issue if all the details are hidden away in attachments.  Think of it like a
 :doc:`regular patch submission <../process/submitting-patches>`
 (even if you don't have a patch yet): describe the problem and impact, list
 reproduction steps, and follow it with a proposed fix, all in plain text.
-Markdown, HTML and RST formatted reports are particularly frowned upon since
-they're quite hard to read for humans and encourage to use dedicated viewers,
-sometimes online, which by definition is not acceptable for a confidential
-security report.
 
 Disclosure and embargoed information
 ------------------------------------
@@ -74,44 +63,31 @@ information submitted to the security list and any followup discussions
 of the report are treated confidentially even after the embargo has been
 lifted, in perpetuity.
 
-Coordination with other groups
-------------------------------
+Coordination
+------------
 
-While the kernel security team solely focuses on getting bugs fixed,
-other groups focus on fixing issues in distros and coordinating
-disclosure between operating system vendors.  Coordination is usually
-handled by the "linux-distros" mailing list and disclosure by the
-public "oss-security" mailing list, both of which are closely related
-and presented in the linux-distros wiki:
-<https://oss-security.openwall.org/wiki/mailing-lists/distros>
-
-Please note that the respective policies and rules are different since
-the 3 lists pursue different goals.  Coordinating between the kernel
-security team and other teams is difficult since for the kernel security
-team occasional embargoes (as subject to a maximum allowed number of
-days) start from the availability of a fix, while for "linux-distros"
-they start from the initial post to the list regardless of the
-availability of a fix.
-
-As such, the kernel security team strongly recommends that as a reporter
-of a potential security issue you DO NOT contact the "linux-distros"
-mailing list UNTIL a fix is accepted by the affected code's maintainers
-and you have read the distros wiki page above and you fully understand
-the requirements that contacting "linux-distros" will impose on you and
-the kernel community.  This also means that in general it doesn't make
-sense to Cc: both lists at once, except maybe for coordination if and
-while an accepted fix has not yet been merged.  In other words, until a
-fix is accepted do not Cc: "linux-distros", and after it's merged do not
-Cc: the kernel security team.
+Fixes for sensitive bugs, such as those that might lead to privilege
+escalations, may need to be coordinated with the private
+<linux-distros@vs.openwall.org> mailing list so that distribution vendors
+are well prepared to issue a fixed kernel upon public disclosure of the
+upstream fix. Distros will need some time to test the proposed patch and
+will generally request at least a few days of embargo, and vendor update
+publication prefers to happen Tuesday through Thursday. When appropriate,
+the security team can assist with this coordination, or the reporter can
+include linux-distros from the start. In this case, remember to prefix
+the email Subject line with "[vs]" as described in the linux-distros wiki:
+<http://oss-security.openwall.org/wiki/mailing-lists/distros#how-to-use-the-lists>
 
 CVE assignment
 --------------
 
-The security team does not assign CVEs, nor do we require them for
-reports or fixes, as this can needlessly complicate the process and may
-delay the bug handling.  If a reporter wishes to have a CVE identifier
-assigned for a confirmed issue, they can contact the :doc:`kernel CVE
-assignment team<../process/cve>` to obtain one.
+The security team does not normally assign CVEs, nor do we require them
+for reports or fixes, as this can needlessly complicate the process and
+may delay the bug handling. If a reporter wishes to have a CVE identifier
+assigned ahead of public disclosure, they will need to contact the private
+linux-distros list, described above. When such a CVE identifier is known
+before a patch is provided, it is desirable to mention it in the commit
+message if the reporter agrees.
 
 Non-disclosure agreements
 -------------------------

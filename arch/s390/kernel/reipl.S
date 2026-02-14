@@ -9,7 +9,6 @@
 #include <asm/asm-offsets.h>
 #include <asm/nospec-insn.h>
 #include <asm/sigp.h>
-#include <asm/lowcore.h>
 
 	GEN_BR_THUNK %r9
 
@@ -20,16 +19,21 @@
 # r2 = Function to be called after store status
 # r3 = Parameter for function
 #
-SYM_CODE_START(store_status)
-	STMG_LC	%r0,%r15,__LC_GPREGS_SAVE_AREA
+ENTRY(store_status)
+	/* Save register one and load save area base */
+	stg	%r1,__LC_SAVE_AREA_RESTART
 	/* General purpose registers */
-	GET_LC	%r13
+	lghi	%r1,__LC_GPREGS_SAVE_AREA
+	stmg	%r0,%r15,0(%r1)
+	mvc	8(8,%r1),__LC_SAVE_AREA_RESTART
 	/* Control registers */
-	stctg	%c0,%c15,__LC_CREGS_SAVE_AREA(%r13)
+	lghi	%r1,__LC_CREGS_SAVE_AREA
+	stctg	%c0,%c15,0(%r1)
 	/* Access registers */
-	stamy	%a0,%a15,__LC_AREGS_SAVE_AREA(%r13)
+	lghi	%r1,__LC_AREGS_SAVE_AREA
+	stam	%a0,%a15,0(%r1)
 	/* Floating point registers */
-	lay	%r1,__LC_FPREGS_SAVE_AREA(%r13)
+	lghi	%r1,__LC_FPREGS_SAVE_AREA
 	std	%f0, 0x00(%r1)
 	std	%f1, 0x08(%r1)
 	std	%f2, 0x10(%r1)
@@ -47,21 +51,21 @@ SYM_CODE_START(store_status)
 	std	%f14,0x70(%r1)
 	std	%f15,0x78(%r1)
 	/* Floating point control register */
-	lay	%r1,__LC_FP_CREG_SAVE_AREA(%r13)
+	lghi	%r1,__LC_FP_CREG_SAVE_AREA
 	stfpc	0(%r1)
 	/* CPU timer */
-	lay	%r1,__LC_CPU_TIMER_SAVE_AREA(%r13)
+	lghi	%r1,__LC_CPU_TIMER_SAVE_AREA
 	stpt	0(%r1)
 	/* Store prefix register */
-	lay	%r1,__LC_PREFIX_SAVE_AREA(%r13)
+	lghi	%r1,__LC_PREFIX_SAVE_AREA
 	stpx	0(%r1)
 	/* Clock comparator - seven bytes */
-	larl	%r4,clkcmp
+	lghi	%r1,__LC_CLOCK_COMP_SAVE_AREA
+	larl	%r4,.Lclkcmp
 	stckc	0(%r4)
-	lay	%r1,__LC_CLOCK_COMP_SAVE_AREA(%r13)
 	mvc	1(7,%r1),1(%r4)
 	/* Program status word */
-	lay	%r1,__LC_PSW_SAVE_AREA(%r13)
+	lghi	%r1,__LC_PSW_SAVE_AREA
 	epsw	%r4,%r5
 	st	%r4,0(%r1)
 	st	%r5,4(%r1)
@@ -69,9 +73,9 @@ SYM_CODE_START(store_status)
 	lgr	%r9,%r2
 	lgr	%r2,%r3
 	BR_EX	%r9
-SYM_CODE_END(store_status)
+ENDPROC(store_status)
 
 	.section .bss
-	.balign	8
-SYM_DATA_LOCAL(clkcmp,	.quad 0x0000000000000000)
+	.align	8
+.Lclkcmp:	.quad	0x0000000000000000
 	.previous

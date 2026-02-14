@@ -8,7 +8,7 @@
 
 #include <uapi/asm/tm.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 extern void tm_reclaim(struct thread_struct *thread,
 		       uint8_t cause);
@@ -19,4 +19,4 @@ extern void tm_restore_sprs(struct thread_struct *thread);
 
 extern bool tm_suspend_disabled;
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */

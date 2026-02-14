@@ -21,8 +21,9 @@ static void nfs3_prepare_get_acl(struct posix_acl **p)
 {
 	struct posix_acl *sentinel = uncached_acl_sentinel(current);
 
-	/* If the ACL isn't being read yet, set our sentinel. */
-	cmpxchg(p, ACL_NOT_CACHED, sentinel);
+	if (cmpxchg(p, ACL_NOT_CACHED, sentinel) != ACL_NOT_CACHED) {
+		/* Not the first reader or sentinel already in place. */
+	}
 }
 
 static void nfs3_complete_get_acl(struct posix_acl **p, struct posix_acl *acl)
@@ -104,7 +105,7 @@ struct posix_acl *nfs3_get_acl(struct inode *inode, int type, bool rcu)
 
 	switch (status) {
 		case 0:
-			nfs_refresh_inode(inode, res.fattr);
+			status = nfs_refresh_inode(inode, res.fattr);
 			break;
 		case -EPFNOSUPPORT:
 		case -EPROTONOSUPPORT:
@@ -298,6 +299,12 @@ fail:
 	status = PTR_ERR(alloc);
 	goto out;
 }
+
+const struct xattr_handler *nfs3_xattr_handlers[] = {
+	&posix_acl_access_xattr_handler,
+	&posix_acl_default_xattr_handler,
+	NULL,
+};
 
 static int
 nfs3_list_one_acl(struct inode *inode, int type, const char *name, void *data,

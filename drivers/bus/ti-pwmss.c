@@ -10,7 +10,7 @@
 #include <linux/io.h>
 #include <linux/err.h>
 #include <linux/pm_runtime.h>
-#include <linux/of_platform.h>
+#include <linux/of_device.h>
 
 static const struct of_device_id pwmss_of_match[] = {
 	{ .compatible	= "ti,am33xx-pwmss" },
@@ -33,9 +33,10 @@ static int pwmss_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void pwmss_remove(struct platform_device *pdev)
+static int pwmss_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
+	return 0;
 }
 
 static struct platform_driver pwmss_driver = {

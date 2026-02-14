@@ -46,7 +46,7 @@
 
 	.section ".text"
 
-#ifndef __powerpc64__
+#ifndef CONFIG_PPC64
 
 /* Routines for saving integer registers, called by the compiler.  */
 /* Called with r11 pointing to the stack header word of the caller of the */

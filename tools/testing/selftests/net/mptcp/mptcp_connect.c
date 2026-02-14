@@ -18,14 +18,11 @@
 
 #include <sys/ioctl.h>
 #include <sys/poll.h>
-#include <sys/random.h>
 #include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/mman.h>
-
-#include <arpa/inet.h>
 
 #include <netdb.h>
 #include <netinet/in.h>
@@ -33,7 +30,6 @@
 #include <linux/tcp.h>
 #include <linux/time_types.h>
 #include <linux/sockios.h>
-#include <linux/compiler.h>
 
 extern int optind;
 
@@ -52,7 +48,6 @@ enum cfg_mode {
 	CFG_MODE_POLL,
 	CFG_MODE_MMAP,
 	CFG_MODE_SENDFILE,
-	CFG_MODE_SPLICE,
 };
 
 enum cfg_peek {
@@ -111,8 +106,8 @@ static struct cfg_sockopt_types cfg_sockopt_types;
 static void die_usage(void)
 {
 	fprintf(stderr, "Usage: mptcp_connect [-6] [-c cmsg] [-f offset] [-i file] [-I num] [-j] [-l] "
-		"[-m mode] [-M mark] [-o option] [-p port] [-P mode] [-r num] [-R num] "
-		"[-s MPTCP|TCP] [-S num] [-t num] [-T num] [-w sec] connect_address\n");
+		"[-m mode] [-M mark] [-o option] [-p port] [-P mode] [-j] [-l] [-r num] "
+		"[-s MPTCP|TCP] [-S num] [-r num] [-t num] [-T num] [-u] [-w sec] connect_address\n");
 	fprintf(stderr, "\t-6 use ipv6\n");
 	fprintf(stderr, "\t-c cmsg -- test cmsg type <cmsg>\n");
 	fprintf(stderr, "\t-f offset -- stop the I/O after receiving and sending the specified amount "
@@ -125,24 +120,24 @@ static void die_usage(void)
 	fprintf(stderr, "\t-j     -- add additional sleep at connection start and tear down "
 		"-- for MPJ tests\n");
 	fprintf(stderr, "\t-l     -- listens mode, accepts incoming connection\n");
-	fprintf(stderr, "\t-m [poll|mmap|sendfile|splice] -- use poll(default)/mmap+write/sendfile/splice\n");
+	fprintf(stderr, "\t-m [poll|mmap|sendfile] -- use poll(default)/mmap+write/sendfile\n");
 	fprintf(stderr, "\t-M mark -- set socket packet mark\n");
 	fprintf(stderr, "\t-o option -- test sockopt <option>\n");
 	fprintf(stderr, "\t-p num -- use port num\n");
 	fprintf(stderr,
 		"\t-P [saveWithPeek|saveAfterPeek] -- save data with/after MSG_PEEK form tcp socket\n");
+	fprintf(stderr, "\t-t num -- set poll timeout to num\n");
+	fprintf(stderr, "\t-T num -- set expected runtime to num ms\n");
 	fprintf(stderr, "\t-r num -- enable slow mode, limiting each write to num bytes "
 		"-- for remove addr tests\n");
 	fprintf(stderr, "\t-R num -- set SO_RCVBUF to num\n");
 	fprintf(stderr, "\t-s [MPTCP|TCP] -- use mptcp(default) or tcp sockets\n");
 	fprintf(stderr, "\t-S num -- set SO_SNDBUF to num\n");
-	fprintf(stderr, "\t-t num -- set poll timeout to num\n");
-	fprintf(stderr, "\t-T num -- set expected runtime to num ms\n");
 	fprintf(stderr, "\t-w num -- wait num sec before closing the socket\n");
 	exit(1);
 }
 
-static void __noreturn xerror(const char *fmt, ...)
+static void xerror(const char *fmt, ...)
 {
 	va_list ap;
 
@@ -182,27 +177,13 @@ static void xgetnameinfo(const struct sockaddr *addr, socklen_t addrlen,
 }
 
 static void xgetaddrinfo(const char *node, const char *service,
-			 struct addrinfo *hints,
+			 const struct addrinfo *hints,
 			 struct addrinfo **res)
 {
-	int err;
+	int err = getaddrinfo(node, service, hints, res);
 
-again:
-	err = getaddrinfo(node, service, hints, res);
 	if (err) {
-		const char *errstr;
-
-		/* glibc starts to support MPTCP since v2.42.
-		 * For older versions, use IPPROTO_TCP to resolve,
-		 * and use TCP/MPTCP to create socket.
-		 * Link: https://sourceware.org/git/?p=glibc.git;a=commit;h=a8e9022e0f82
-		 */
-		if (err == EAI_SOCKTYPE) {
-			hints->ai_protocol = IPPROTO_TCP;
-			goto again;
-		}
-
-		errstr = getxinfo_strerr(err);
+		const char *errstr = getxinfo_strerr(err);
 
 		fprintf(stderr, "Fatal: getaddrinfo(%s:%s): %s\n",
 			node ? node : "", service ? service : "", errstr);
@@ -259,7 +240,7 @@ static void set_transparent(int fd, int pf)
 	}
 }
 
-static void set_mptfo(int fd)
+static void set_mptfo(int fd, int pf)
 {
 	int qlen = 25;
 
@@ -308,7 +289,7 @@ static int sock_listen_mptcp(const char * const listenaddr,
 {
 	int sock = -1;
 	struct addrinfo hints = {
-		.ai_protocol = IPPROTO_MPTCP,
+		.ai_protocol = IPPROTO_TCP,
 		.ai_socktype = SOCK_STREAM,
 		.ai_flags = AI_PASSIVE | AI_NUMERICHOST
 	};
@@ -336,7 +317,7 @@ static int sock_listen_mptcp(const char * const listenaddr,
 			set_transparent(sock, pf);
 
 		if (cfg_sockopt_types.mptfo)
-			set_mptfo(sock);
+			set_mptfo(sock, pf);
 
 		if (bind(sock, a->ai_addr, a->ai_addrlen) == 0)
 			break; /* success */
@@ -372,7 +353,7 @@ static int sock_connect_mptcp(const char * const remoteaddr,
 			      int infd, struct wstate *winfo)
 {
 	struct addrinfo hints = {
-		.ai_protocol = IPPROTO_MPTCP,
+		.ai_protocol = IPPROTO_TCP,
 		.ai_socktype = SOCK_STREAM,
 	};
 	struct addrinfo *a, *addr;
@@ -407,18 +388,21 @@ static int sock_connect_mptcp(const char * const remoteaddr,
 				*peer = a;
 				break; /* success */
 			}
-			perror("sendto()");
 		} else {
 			if (connect(sock, a->ai_addr, a->ai_addrlen) == 0) {
 				*peer = a;
 				break; /* success */
 			}
-			perror("connect()");
 		}
-
-		/* error */
-		close(sock);
-		sock = -1;
+		if (cfg_sockopt_types.mptfo) {
+			perror("sendto()");
+			close(sock);
+			sock = -1;
+		} else {
+			perror("connect()");
+			close(sock);
+			sock = -1;
+		}
 	}
 
 	freeaddrinfo(addr);
@@ -709,14 +693,8 @@ static int copyfd_io_poll(int infd, int peerfd, int outfd,
 
 				bw = do_rnd_write(peerfd, winfo->buf + winfo->off, winfo->len);
 				if (bw < 0) {
-					/* expected reset, continue to read */
-					if (cfg_rcv_trunc &&
-					    (errno == ECONNRESET ||
-					     errno == EPIPE)) {
-						fds.events &= ~POLLOUT;
-						continue;
-					}
-
+					if (cfg_rcv_trunc)
+						return 0;
 					perror("write");
 					return 111;
 				}
@@ -742,10 +720,8 @@ static int copyfd_io_poll(int infd, int peerfd, int outfd,
 		}
 
 		if (fds.revents & (POLLERR | POLLNVAL)) {
-			if (cfg_rcv_trunc) {
-				fds.events &= ~(POLLERR | POLLNVAL);
-				continue;
-			}
+			if (cfg_rcv_trunc)
+				return 0;
 			fprintf(stderr, "Unexpected revents: "
 				"POLLERR/POLLNVAL(%x)\n", fds.revents);
 			return 5;
@@ -933,71 +909,6 @@ static int copyfd_io_sendfile(int infd, int peerfd, int outfd,
 	return err;
 }
 
-static int do_splice(const int infd, const int outfd, const size_t len,
-		     struct wstate *winfo)
-{
-	ssize_t in_bytes, out_bytes;
-	int pipefd[2];
-	int err;
-
-	err = pipe(pipefd);
-	if (err) {
-		perror("pipe");
-		return 2;
-	}
-
-again:
-	in_bytes = splice(infd, NULL, pipefd[1], NULL, len - winfo->total_len,
-			  SPLICE_F_MOVE | SPLICE_F_MORE);
-	if (in_bytes < 0) {
-		perror("splice in");
-		err = 3;
-	} else if (in_bytes > 0) {
-		out_bytes = splice(pipefd[0], NULL, outfd, NULL, in_bytes,
-				   SPLICE_F_MOVE | SPLICE_F_MORE);
-		if (out_bytes < 0) {
-			perror("splice out");
-			err = 4;
-		} else if (in_bytes != out_bytes) {
-			fprintf(stderr, "Unexpected transfer: %zu vs %zu\n",
-				in_bytes, out_bytes);
-			err = 5;
-		} else {
-			goto again;
-		}
-	}
-
-	close(pipefd[0]);
-	close(pipefd[1]);
-
-	return err;
-}
-
-static int copyfd_io_splice(int infd, int peerfd, int outfd, unsigned int size,
-			    bool *in_closed_after_out, struct wstate *winfo)
-{
-	int err;
-
-	if (listen_mode) {
-		err = do_splice(peerfd, outfd, size, winfo);
-		if (err)
-			return err;
-
-		err = do_splice(infd, peerfd, size, winfo);
-	} else {
-		err = do_splice(infd, peerfd, size, winfo);
-		if (err)
-			return err;
-
-		shut_wr(peerfd);
-
-		err = do_splice(peerfd, outfd, size, winfo);
-		*in_closed_after_out = true;
-	}
-
-	return err;
-}
-
 static int copyfd_io(int infd, int peerfd, int outfd, bool close_peerfd, struct wstate *winfo)
 {
 	bool in_closed_after_out = false;
@@ -1028,14 +939,6 @@ static int copyfd_io(int infd, int peerfd, int outfd, bool close_peerfd, struct 
 			return file_size;
 		ret = copyfd_io_sendfile(infd, peerfd, outfd, file_size,
 					 &in_closed_after_out, winfo);
-		break;
-
-	case CFG_MODE_SPLICE:
-		file_size = get_infd_size(infd);
-		if (file_size < 0)
-			return file_size;
-		ret = copyfd_io_splice(infd, peerfd, outfd, file_size,
-				       &in_closed_after_out, winfo);
 		break;
 
 	default:
@@ -1144,8 +1047,6 @@ static void check_getpeername_connect(int fd)
 	socklen_t salen = sizeof(ss);
 	char a[INET6_ADDRSTRLEN];
 	char b[INET6_ADDRSTRLEN];
-	const char *iface;
-	size_t len;
 
 	if (getpeername(fd, (struct sockaddr *)&ss, &salen) < 0) {
 		perror("getpeername");
@@ -1155,13 +1056,7 @@ static void check_getpeername_connect(int fd)
 	xgetnameinfo((struct sockaddr *)&ss, salen,
 		     a, sizeof(a), b, sizeof(b));
 
-	iface = strchr(cfg_host, '%');
-	if (iface)
-		len = iface - cfg_host;
-	else
-		len = strlen(cfg_host) + 1;
-
-	if (strncmp(cfg_host, a, len) || strcmp(cfg_port, b))
+	if (strcmp(cfg_host, a) || strcmp(cfg_port, b))
 		fprintf(stderr, "%s: %s vs %s, %s vs %s\n", __func__,
 			cfg_host, a, cfg_port, b);
 }
@@ -1181,7 +1076,6 @@ int main_loop_s(int listensock)
 	struct pollfd polls;
 	socklen_t salen;
 	int remotesock;
-	int err = 0;
 	int fd = 0;
 
 again:
@@ -1214,28 +1108,32 @@ again:
 		SOCK_TEST_TCPULP(remotesock, 0);
 
 		memset(&winfo, 0, sizeof(winfo));
-		err = copyfd_io(fd, remotesock, 1, true, &winfo);
+		copyfd_io(fd, remotesock, 1, true, &winfo);
 	} else {
 		perror("accept");
 		return 1;
 	}
 
-	if (cfg_input)
-		close(fd);
-
-	if (!err && --cfg_repeat > 0)
+	if (--cfg_repeat > 0) {
+		if (cfg_input)
+			close(fd);
 		goto again;
+	}
 
-	return err;
+	return 0;
 }
 
 static void init_rng(void)
 {
+	int fd = open("/dev/urandom", O_RDONLY);
 	unsigned int foo;
 
-	if (getrandom(&foo, sizeof(foo), 0) == -1) {
-		perror("getrandom");
-		exit(1);
+	if (fd > 0) {
+		int ret = read(fd, &foo, sizeof(foo));
+
+		if (ret < 0)
+			srand(fd + foo);
+		close(fd);
 	}
 
 	srand(foo);
@@ -1316,42 +1214,23 @@ static void parse_setsock_options(const char *name)
 	exit(1);
 }
 
-void xdisconnect(int fd)
+void xdisconnect(int fd, int addrlen)
 {
-	socklen_t addrlen = sizeof(struct sockaddr_storage);
-	struct sockaddr_storage addr, empty;
+	struct sockaddr_storage empty;
 	int msec_sleep = 10;
-	void *raw_addr;
-	int i, cmdlen;
-	char cmd[128];
-
-	/* get the local address and convert it to string */
-	if (getsockname(fd, (struct sockaddr *)&addr, &addrlen) < 0)
-		xerror("getsockname");
-
-	if (addr.ss_family == AF_INET)
-		raw_addr = &(((struct sockaddr_in *)&addr)->sin_addr);
-	else if (addr.ss_family == AF_INET6)
-		raw_addr = &(((struct sockaddr_in6 *)&addr)->sin6_addr);
-	else
-		xerror("bad family");
-
-	strcpy(cmd, "ss -Mnt | grep -q ");
-	cmdlen = strlen(cmd);
-	if (!inet_ntop(addr.ss_family, raw_addr, &cmd[cmdlen],
-		       sizeof(cmd) - cmdlen))
-		xerror("inet_ntop");
+	int queued = 1;
+	int i;
 
 	shutdown(fd, SHUT_WR);
 
-	/*
-	 * wait until the pending data is completely flushed and all
-	 * the sockets reached the closed status.
+	/* while until the pending data is completely flushed, the later
 	 * disconnect will bypass/ignore/drop any pending data.
 	 */
 	for (i = 0; ; i += msec_sleep) {
-		/* closed socket are not listed by 'ss' */
-		if (system(cmd) != 0)
+		if (ioctl(fd, SIOCOUTQ, &queued) < 0)
+			xerror("can't query out socket queue: %d", errno);
+
+		if (!queued)
 			break;
 
 		if (i > poll_timeout)
@@ -1367,13 +1246,13 @@ void xdisconnect(int fd)
 
 int main_loop(void)
 {
-	struct addrinfo *peer = NULL;
 	int fd = 0, ret, fd_in = 0;
+	struct addrinfo *peer;
 	struct wstate winfo;
 
 	if (cfg_input && cfg_sockopt_types.mptfo) {
 		fd_in = open(cfg_input, O_RDONLY);
-		if (fd_in < 0)
+		if (fd < 0)
 			xerror("can't open %s:%d", cfg_input, errno);
 	}
 
@@ -1396,18 +1275,18 @@ again:
 
 	if (cfg_input && !cfg_sockopt_types.mptfo) {
 		fd_in = open(cfg_input, O_RDONLY);
-		if (fd_in < 0)
+		if (fd < 0)
 			xerror("can't open %s:%d", cfg_input, errno);
 	}
 
 	ret = copyfd_io(fd_in, fd, 1, 0, &winfo);
 	if (ret)
-		goto out;
+		return ret;
 
 	if (cfg_truncate > 0) {
-		shutdown(fd, SHUT_WR);
+		xdisconnect(fd, peer->ai_addrlen);
 	} else if (--cfg_repeat > 0) {
-		xdisconnect(fd);
+		xdisconnect(fd, peer->ai_addrlen);
 
 		/* the socket could be unblocking at this point, we need the
 		 * connect to be blocking
@@ -1423,10 +1302,7 @@ again:
 		close(fd);
 	}
 
-out:
-	if (cfg_input)
-		close(fd_in);
-	return ret;
+	return 0;
 }
 
 int parse_proto(const char *proto)
@@ -1451,15 +1327,12 @@ int parse_mode(const char *mode)
 		return CFG_MODE_MMAP;
 	if (!strcasecmp(mode, "sendfile"))
 		return CFG_MODE_SENDFILE;
-	if (!strcasecmp(mode, "splice"))
-		return CFG_MODE_SPLICE;
 
 	fprintf(stderr, "Unknown test mode: %s\n", mode);
 	fprintf(stderr, "Supported modes are:\n");
 	fprintf(stderr, "\t\t\"poll\" - interleaved read/write using poll()\n");
 	fprintf(stderr, "\t\t\"mmap\" - send entire input file (mmap+write), then read response (-l will read input first)\n");
 	fprintf(stderr, "\t\t\"sendfile\" - send entire input file (sendfile), then read response (-l will read input first)\n");
-	fprintf(stderr, "\t\t\"splice\" - send entire input file (splice), then read response (-l will read input first)\n");
 
 	die_usage();
 
@@ -1524,7 +1397,7 @@ static void parse_opts(int argc, char **argv)
 			 */
 			if (cfg_truncate < 0) {
 				cfg_rcv_trunc = true;
-				signal(SIGPIPE, SIG_IGN);
+				signal(SIGPIPE, handle_signal);
 			}
 			break;
 		case 'j':

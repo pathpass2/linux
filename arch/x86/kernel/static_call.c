@@ -26,11 +26,6 @@ static const u8 xor5rax[] = { 0x2e, 0x2e, 0x2e, 0x31, 0xc0 };
 
 static const u8 retinsn[] = { RET_INSN_OPCODE, 0xcc, 0xcc, 0xcc, 0xcc };
 
-/*
- * ud1    (%edx),%rdi -- see __WARN_trap() / decode_bug()
- */
-static const u8 warninsn[] = { 0x67, 0x48, 0x0f, 0xb9, 0x3a };
-
 static u8 __is_Jcc(u8 *insn) /* Jcc.d32 */
 {
 	u8 ret = 0;
@@ -50,8 +45,8 @@ asm (".global __static_call_return\n\t"
      ".type __static_call_return, @function\n\t"
      ASM_FUNC_ALIGN "\n\t"
      "__static_call_return:\n\t"
-     ANNOTATE_NOENDBR "\n\t"
-     ANNOTATE_RETPOLINE_SAFE "\n\t"
+     ANNOTATE_NOENDBR
+     ANNOTATE_RETPOLINE_SAFE
      "ret; int3\n\t"
      ".size __static_call_return, . - __static_call_return \n\t");
 
@@ -74,10 +69,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 			emulate = code;
 			code = &xor5rax;
 		}
-		if (func == &__WARN_trap) {
-			emulate = code;
-			code = &warninsn;
-		}
+
 		break;
 
 	case NOP:
@@ -89,7 +81,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 		break;
 
 	case RET:
-		if (cpu_wants_rethunk_at(insn))
+		if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
 			code = text_gen_insn(JMP32_INSN_OPCODE, insn, x86_return_thunk);
 		else
 			code = &retinsn;
@@ -98,7 +90,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 	case JCC:
 		if (!func) {
 			func = __static_call_return;
-			if (cpu_wants_rethunk())
+			if (cpu_feature_enabled(X86_FEATURE_RETHUNK))
 				func = x86_return_thunk;
 		}
 
@@ -116,7 +108,7 @@ static void __ref __static_call_transform(void *insn, enum insn_type type,
 	if (system_state == SYSTEM_BOOTING || modinit)
 		return text_poke_early(insn, code, size);
 
-	smp_text_poke_single(insn, code, size, emulate);
+	text_poke_bp(insn, code, size, emulate);
 }
 
 static void __static_call_validate(u8 *insn, bool tail, bool tramp)
@@ -136,8 +128,7 @@ static void __static_call_validate(u8 *insn, bool tail, bool tramp)
 	} else {
 		if (opcode == CALL_INSN_OPCODE ||
 		    !memcmp(insn, x86_nops[5], 5) ||
-		    !memcmp(insn, xor5rax, 5) ||
-		    !memcmp(insn, warninsn, 5))
+		    !memcmp(insn, xor5rax, 5))
 			return;
 	}
 
@@ -167,7 +158,7 @@ void arch_static_call_transform(void *site, void *tramp, void *func, bool tail)
 {
 	mutex_lock(&text_mutex);
 
-	if (tramp && !site) {
+	if (tramp) {
 		__static_call_validate(tramp, true, true);
 		__static_call_transform(tramp, __sc_insn(!func, true), func, false);
 	}
@@ -181,15 +172,7 @@ void arch_static_call_transform(void *site, void *tramp, void *func, bool tail)
 }
 EXPORT_SYMBOL_GPL(arch_static_call_transform);
 
-noinstr void __static_call_update_early(void *tramp, void *func)
-{
-	BUG_ON(system_state != SYSTEM_BOOTING);
-	BUG_ON(static_call_initialized);
-	__text_gen_insn(tramp, JMP32_INSN_OPCODE, tramp, func, JMP32_INSN_SIZE);
-	sync_core();
-}
-
-#ifdef CONFIG_MITIGATION_RETHUNK
+#ifdef CONFIG_RETHUNK
 /*
  * This is called by apply_returns() to fix up static call trampolines,
  * specifically ARCH_DEFINE_STATIC_CALL_NULL_TRAMP which is recorded as
@@ -203,19 +186,6 @@ noinstr void __static_call_update_early(void *tramp, void *func)
  */
 bool __static_call_fixup(void *tramp, u8 op, void *dest)
 {
-	unsigned long addr = (unsigned long)tramp;
-	/*
-	 * Not all .return_sites are a static_call trampoline (most are not).
-	 * Check if the 3 bytes after the return are still kernel text, if not,
-	 * then this definitely is not a trampoline and we need not worry
-	 * further.
-	 *
-	 * This avoids the memcmp() below tripping over pagefaults etc..
-	 */
-	if (((addr >> PAGE_SHIFT) != ((addr + 7) >> PAGE_SHIFT)) &&
-	    !kernel_text_address(addr + 7))
-		return false;
-
 	if (memcmp(tramp+5, tramp_ud, 3)) {
 		/* Not a trampoline site, not our problem. */
 		return false;

@@ -8,13 +8,13 @@ title: Qualcomm Global Clock & Reset Controller on MSM8976
 
 maintainers:
   - Stephen Boyd <sboyd@kernel.org>
-  - Taniya Das <quic_tdas@quicinc.com>
+  - Taniya Das <tdas@codeaurora.org>
 
 description: |
   Qualcomm global clock control module provides the clocks, resets and power
   domains on MSM8976.
 
-  See also: include/dt-bindings/clock/qcom,gcc-msm8976.h
+  See also:: include/dt-bindings/clock/qcom,gcc-msm8976.h
 
 properties:
   compatible:
@@ -49,7 +49,6 @@ required:
   - clocks
   - clock-names
   - vdd_gfx-supply
-  - '#power-domain-cells'
 
 allOf:
   - $ref: qcom,gcc.yaml#

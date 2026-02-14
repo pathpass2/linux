@@ -17,7 +17,6 @@
 #include "clk-regmap.h"
 #include "clk-regmap-divider.h"
 #include "clk-regmap-mux.h"
-#include "clk-regmap-phy-mux.h"
 #include "gdsc.h"
 #include "reset.h"
 
@@ -159,6 +158,26 @@ static const struct clk_parent_data gcc_parent_data_3[] = {
 	{ .fw_name = "bi_tcxo" },
 };
 
+static const struct parent_map gcc_parent_map_4[] = {
+	{ P_PCIE_0_PIPE_CLK, 0 },
+	{ P_BI_TCXO, 2 },
+};
+
+static const struct clk_parent_data gcc_parent_data_4[] = {
+	{ .fw_name = "pcie_0_pipe_clk", },
+	{ .fw_name = "bi_tcxo" },
+};
+
+static const struct parent_map gcc_parent_map_5[] = {
+	{ P_PCIE_1_PIPE_CLK, 0 },
+	{ P_BI_TCXO, 2 },
+};
+
+static const struct clk_parent_data gcc_parent_data_5[] = {
+	{ .fw_name = "pcie_1_pipe_clk" },
+	{ .fw_name = "bi_tcxo" },
+};
+
 static const struct parent_map gcc_parent_map_6[] = {
 	{ P_BI_TCXO, 0 },
 	{ P_GCC_GPLL0_OUT_MAIN, 1 },
@@ -255,30 +274,32 @@ static const struct clk_parent_data gcc_parent_data_14[] = {
 	{ .fw_name = "bi_tcxo" },
 };
 
-static struct clk_regmap_phy_mux gcc_pcie_0_pipe_clk_src = {
+static struct clk_regmap_mux gcc_pcie_0_pipe_clk_src = {
 	.reg = 0x6b054,
+	.shift = 0,
+	.width = 2,
+	.parent_map = gcc_parent_map_4,
 	.clkr = {
 		.hw.init = &(struct clk_init_data){
 			.name = "gcc_pcie_0_pipe_clk_src",
-			.parent_data = &(const struct clk_parent_data){
-				.fw_name = "pcie_0_pipe_clk",
-			},
-			.num_parents = 1,
-			.ops = &clk_regmap_phy_mux_ops,
+			.parent_data = gcc_parent_data_4,
+			.num_parents = ARRAY_SIZE(gcc_parent_data_4),
+			.ops = &clk_regmap_mux_closest_ops,
 		},
 	},
 };
 
-static struct clk_regmap_phy_mux gcc_pcie_1_pipe_clk_src = {
+static struct clk_regmap_mux gcc_pcie_1_pipe_clk_src = {
 	.reg = 0x8d054,
+	.shift = 0,
+	.width = 2,
+	.parent_map = gcc_parent_map_5,
 	.clkr = {
 		.hw.init = &(struct clk_init_data){
 			.name = "gcc_pcie_1_pipe_clk_src",
-			.parent_data = &(const struct clk_parent_data){
-				.fw_name = "pcie_1_pipe_clk",
-			},
-			.num_parents = 1,
-			.ops = &clk_regmap_phy_mux_ops,
+			.parent_data = gcc_parent_data_5,
+			.num_parents = ARRAY_SIZE(gcc_parent_data_5),
+			.ops = &clk_regmap_mux_closest_ops,
 		},
 	},
 };
@@ -3743,8 +3764,8 @@ static const struct qcom_reset_map gcc_sm8350_resets[] = {
 	[GCC_USB3PHY_PHY_PRIM_BCR] = { 0x50004 },
 	[GCC_USB3PHY_PHY_SEC_BCR] = { 0x50010 },
 	[GCC_USB_PHY_CFG_AHB2PHY_BCR] = { 0x6a000 },
-	[GCC_VIDEO_AXI0_CLK_ARES] = { .reg = 0x28010, .bit = 2, .udelay = 400 },
-	[GCC_VIDEO_AXI1_CLK_ARES] = { .reg = 0x28018, .bit = 2, .udelay = 400 },
+	[GCC_VIDEO_AXI0_CLK_ARES] = { 0x28010, 2 },
+	[GCC_VIDEO_AXI1_CLK_ARES] = { 0x28018, 2 },
 	[GCC_VIDEO_BCR] = { 0x28000 },
 };
 
@@ -3806,14 +3827,18 @@ static int gcc_sm8350_probe(struct platform_device *pdev)
 		return PTR_ERR(regmap);
 	}
 
-	/* Keep some clocks always-on */
-	qcom_branch_set_clk_en(regmap, 0x26004); /* GCC_CAMERA_AHB_CLK */
-	qcom_branch_set_clk_en(regmap, 0x26018); /* GCC_CAMERA_XO_CLK */
-	qcom_branch_set_clk_en(regmap, 0x27004); /* GCC_DISP_AHB_CLK */
-	qcom_branch_set_clk_en(regmap, 0x2701c); /* GCC_DISP_XO_CLK */
-	qcom_branch_set_clk_en(regmap, 0x71004); /* GCC_GPU_CFG_AHB_CLK */
-	qcom_branch_set_clk_en(regmap, 0x28004); /* GCC_VIDEO_AHB_CLK */
-	qcom_branch_set_clk_en(regmap, 0x28020); /* GCC_VIDEO_XO_CLK */
+	/*
+	 * Keep the critical clock always-On
+	 * GCC_CAMERA_AHB_CLK, GCC_CAMERA_XO_CLK, GCC_DISP_AHB_CLK, GCC_DISP_XO_CLK,
+	 * GCC_GPU_CFG_AHB_CLK, GCC_VIDEO_AHB_CLK, GCC_VIDEO_XO_CLK
+	 */
+	regmap_update_bits(regmap, 0x26004, BIT(0), BIT(0));
+	regmap_update_bits(regmap, 0x26018, BIT(0), BIT(0));
+	regmap_update_bits(regmap, 0x27004, BIT(0), BIT(0));
+	regmap_update_bits(regmap, 0x2701c, BIT(0), BIT(0));
+	regmap_update_bits(regmap, 0x71004, BIT(0), BIT(0));
+	regmap_update_bits(regmap, 0x28004, BIT(0), BIT(0));
+	regmap_update_bits(regmap, 0x28020, BIT(0), BIT(0));
 
 	ret = qcom_cc_register_rcg_dfs(regmap, gcc_dfs_clocks, ARRAY_SIZE(gcc_dfs_clocks));
 	if (ret)
@@ -3822,7 +3847,7 @@ static int gcc_sm8350_probe(struct platform_device *pdev)
 	/* FORCE_MEM_CORE_ON for ufs phy ice core clocks */
 	regmap_update_bits(regmap, gcc_ufs_phy_ice_core_clk.halt_reg, BIT(14), BIT(14));
 
-	return qcom_cc_really_probe(&pdev->dev, &gcc_sm8350_desc, regmap);
+	return qcom_cc_really_probe(pdev, &gcc_sm8350_desc, regmap);
 }
 
 static struct platform_driver gcc_sm8350_driver = {

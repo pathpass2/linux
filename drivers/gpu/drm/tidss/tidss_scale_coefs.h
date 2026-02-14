@@ -9,8 +9,6 @@
 
 #include <linux/types.h>
 
-struct device;
-
 struct tidss_scale_coefs {
 	s16 c2[16];
 	s16 c1[16];

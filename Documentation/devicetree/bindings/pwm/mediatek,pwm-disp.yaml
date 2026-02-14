@@ -8,6 +8,7 @@ title: MediaTek DISP_PWM Controller
 
 maintainers:
   - Jitao Shi <jitao.shi@mediatek.com>
+  - Xinlei Lee <xinlei.lee@mediatek.com>
 
 allOf:
   - $ref: pwm.yaml#
@@ -21,18 +22,14 @@ properties:
           - mediatek,mt8173-disp-pwm
           - mediatek,mt8183-disp-pwm
       - items:
-          - enum:
-              - mediatek,mt6795-disp-pwm
-              - mediatek,mt8167-disp-pwm
+          - const: mediatek,mt8167-disp-pwm
           - const: mediatek,mt8173-disp-pwm
       - items:
           - enum:
-              - mediatek,mt6893-disp-pwm
               - mediatek,mt8186-disp-pwm
               - mediatek,mt8188-disp-pwm
               - mediatek,mt8192-disp-pwm
               - mediatek,mt8195-disp-pwm
-              - mediatek,mt8365-disp-pwm
           - const: mediatek,mt8183-disp-pwm
 
   reg:
@@ -54,12 +51,10 @@ properties:
       - const: main
       - const: mm
 
-  power-domains:
-    maxItems: 1
-
 required:
   - compatible
   - reg
+  - "#pwm-cells"
   - clocks
   - clock-names
 

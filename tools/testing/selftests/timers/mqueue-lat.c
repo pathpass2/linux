@@ -29,9 +29,9 @@
 #include <signal.h>
 #include <errno.h>
 #include <mqueue.h>
-#include <include/vdso/time64.h>
-#include "kselftest.h"
+#include "../kselftest.h"
 
+#define NSEC_PER_SEC 1000000000ULL
 
 #define TARGET_TIMEOUT		100000000	/* 100ms in nanoseconds */
 #define UNRESONABLE_LATENCY	40000000	/* 40ms in nanosecs */
@@ -107,8 +107,8 @@ int main(int argc, char **argv)
 	ret = mqueue_lat_test();
 	if (ret < 0) {
 		printf("[FAILED]\n");
-		ksft_exit_fail();
+		return ksft_exit_fail();
 	}
 	printf("[OK]\n");
-	ksft_exit_pass();
+	return ksft_exit_pass();
 }

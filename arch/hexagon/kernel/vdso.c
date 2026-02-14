@@ -10,7 +10,6 @@
 #include <linux/vmalloc.h>
 #include <linux/binfmts.h>
 
-#include <asm/elf.h>
 #include <asm/vdso.h>
 
 static struct page *vdso_page;
@@ -51,11 +50,7 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 {
 	int ret;
 	unsigned long vdso_base;
-	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
-	static struct vm_special_mapping vdso_mapping = {
-		.name = "[vdso]",
-	};
 
 	if (mmap_write_lock_killable(mm))
 		return -EINTR;
@@ -70,18 +65,16 @@ int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 	}
 
 	/* MAYWRITE to allow gdb to COW and set breakpoints. */
-	vdso_mapping.pages = &vdso_page;
-	vma = _install_special_mapping(mm, vdso_base, PAGE_SIZE,
+	ret = install_special_mapping(mm, vdso_base, PAGE_SIZE,
 				      VM_READ|VM_EXEC|
 				      VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC,
-				      &vdso_mapping);
+				      &vdso_page);
 
-	ret = PTR_ERR(vma);
-	if (IS_ERR(vma))
+	if (ret)
 		goto up_fail;
 
 	mm->context.vdso = (void *)vdso_base;
-	ret = 0;
+
 up_fail:
 	mmap_write_unlock(mm);
 	return ret;

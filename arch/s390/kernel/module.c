@@ -21,15 +21,11 @@
 #include <linux/moduleloader.h>
 #include <linux/bug.h>
 #include <linux/memory.h>
-#include <linux/execmem.h>
-#include <asm/arch-stackprotector.h>
 #include <asm/alternative.h>
 #include <asm/nospec-branch.h>
 #include <asm/facility.h>
 #include <asm/ftrace.lds.h>
 #include <asm/set_memory.h>
-#include <asm/setup.h>
-#include <asm/asm-offsets.h>
 
 #if 0
 #define DEBUGP printk
@@ -39,10 +35,27 @@
 
 #define PLT_ENTRY_SIZE 22
 
+void *module_alloc(unsigned long size)
+{
+	gfp_t gfp_mask = GFP_KERNEL;
+	void *p;
+
+	if (PAGE_ALIGN(size) > MODULES_LEN)
+		return NULL;
+	p = __vmalloc_node_range(size, MODULE_ALIGN, MODULES_VADDR, MODULES_END,
+				 gfp_mask, PAGE_KERNEL_EXEC, VM_DEFER_KMEMLEAK, NUMA_NO_NODE,
+				 __builtin_return_address(0));
+	if (p && (kasan_alloc_module_shadow(p, size, gfp_mask) < 0)) {
+		vfree(p);
+		return NULL;
+	}
+	return p;
+}
+
 #ifdef CONFIG_FUNCTION_TRACER
 void module_arch_cleanup(struct module *mod)
 {
-	execmem_free(mod->arch.trampolines_start);
+	module_memfree(mod->arch.trampolines_start);
 }
 #endif
 
@@ -113,7 +126,6 @@ int module_frob_arch_sections(Elf_Ehdr *hdr, Elf_Shdr *sechdrs,
 	Elf_Rela *rela;
 	char *strings;
 	int nrela, i, j;
-	struct module_memory *mod_mem;
 
 	/* Find symbol table and string table. */
 	symtab = NULL;
@@ -161,15 +173,14 @@ int module_frob_arch_sections(Elf_Ehdr *hdr, Elf_Shdr *sechdrs,
 
 	/* Increase core size by size of got & plt and set start
 	   offsets for got and plt. */
-	mod_mem = &me->mem[MOD_TEXT];
-	mod_mem->size = ALIGN(mod_mem->size, 4);
-	me->arch.got_offset = mod_mem->size;
-	mod_mem->size += me->arch.got_size;
-	me->arch.plt_offset = mod_mem->size;
+	me->core_layout.size = ALIGN(me->core_layout.size, 4);
+	me->arch.got_offset = me->core_layout.size;
+	me->core_layout.size += me->arch.got_size;
+	me->arch.plt_offset = me->core_layout.size;
 	if (me->arch.plt_size) {
 		if (IS_ENABLED(CONFIG_EXPOLINE) && !nospec_disable)
 			me->arch.plt_size += PLT_ENTRY_SIZE;
-		mod_mem->size += me->arch.plt_size;
+		me->core_layout.size += me->arch.plt_size;
 	}
 	return 0;
 }
@@ -293,7 +304,7 @@ static int apply_rela(Elf_Rela *rela, Elf_Addr base, Elf_Sym *symtab,
 	case R_390_GOTPLT64:	/* 64 bit offset to jump slot.	*/
 	case R_390_GOTPLTENT:	/* 32 bit rel. offset to jump slot >> 1. */
 		if (info->got_initialized == 0) {
-			Elf_Addr *gotent = me->mem[MOD_TEXT].base +
+			Elf_Addr *gotent = me->core_layout.base +
 					   me->arch.got_offset +
 					   info->got_offset;
 
@@ -318,8 +329,7 @@ static int apply_rela(Elf_Rela *rela, Elf_Addr base, Elf_Sym *symtab,
 			rc = apply_rela_bits(loc, val, 0, 64, 0, write);
 		else if (r_type == R_390_GOTENT ||
 			 r_type == R_390_GOTPLTENT) {
-			val += (Elf_Addr)me->mem[MOD_TEXT].base +
-				me->arch.got_offset - loc;
+			val += (Elf_Addr) me->core_layout.base - loc;
 			rc = apply_rela_bits(loc, val, 1, 32, 1, write);
 		}
 		break;
@@ -335,7 +345,7 @@ static int apply_rela(Elf_Rela *rela, Elf_Addr base, Elf_Sym *symtab,
 			char *plt_base;
 			char *ip;
 
-			plt_base = me->mem[MOD_TEXT].base + me->arch.plt_offset;
+			plt_base = me->core_layout.base + me->arch.plt_offset;
 			ip = plt_base + info->plt_offset;
 			*(int *)insn = 0x0d10e310;	/* basr 1,0  */
 			*(int *)&insn[4] = 0x100c0004;	/* lg	1,12(1) */
@@ -365,7 +375,7 @@ static int apply_rela(Elf_Rela *rela, Elf_Addr base, Elf_Sym *symtab,
 			       val - loc + 0xffffUL < 0x1ffffeUL) ||
 			      (r_type == R_390_PLT32DBL &&
 			       val - loc + 0xffffffffULL < 0x1fffffffeULL)))
-				val = (Elf_Addr) me->mem[MOD_TEXT].base +
+				val = (Elf_Addr) me->core_layout.base +
 					me->arch.plt_offset +
 					info->plt_offset;
 			val += rela->r_addend - loc;
@@ -387,7 +397,7 @@ static int apply_rela(Elf_Rela *rela, Elf_Addr base, Elf_Sym *symtab,
 	case R_390_GOTOFF32:	/* 32 bit offset to GOT.  */
 	case R_390_GOTOFF64:	/* 64 bit offset to GOT. */
 		val = val + rela->r_addend -
-			((Elf_Addr) me->mem[MOD_TEXT].base + me->arch.got_offset);
+			((Elf_Addr) me->core_layout.base + me->arch.got_offset);
 		if (r_type == R_390_GOTOFF16)
 			rc = apply_rela_bits(loc, val, 0, 16, 0, write);
 		else if (r_type == R_390_GOTOFF32)
@@ -397,7 +407,7 @@ static int apply_rela(Elf_Rela *rela, Elf_Addr base, Elf_Sym *symtab,
 		break;
 	case R_390_GOTPC:	/* 32 bit PC relative offset to GOT. */
 	case R_390_GOTPCDBL:	/* 32 bit PC rel. off. to GOT shifted by 1. */
-		val = (Elf_Addr) me->mem[MOD_TEXT].base + me->arch.got_offset +
+		val = (Elf_Addr) me->core_layout.base + me->arch.got_offset +
 			rela->r_addend - loc;
 		if (r_type == R_390_GOTPC)
 			rc = apply_rela_bits(loc, val, 1, 32, 0, write);
@@ -476,10 +486,10 @@ static int module_alloc_ftrace_hotpatch_trampolines(struct module *me,
 
 	size = FTRACE_HOTPATCH_TRAMPOLINES_SIZE(s->sh_size);
 	numpages = DIV_ROUND_UP(size, PAGE_SIZE);
-	start = execmem_alloc(EXECMEM_FTRACE, numpages * PAGE_SIZE);
+	start = module_alloc(numpages * PAGE_SIZE);
 	if (!start)
 		return -ENOMEM;
-	set_memory_rox((unsigned long)start, numpages);
+	set_memory_ro((unsigned long)start, numpages);
 	end = start + size;
 
 	me->arch.trampolines_start = (struct ftrace_hotpatch_trampoline *)start;
@@ -497,13 +507,15 @@ int module_finalize(const Elf_Ehdr *hdr,
 	const Elf_Shdr *s;
 	char *secstrings, *secname;
 	void *aseg;
-	int rc = 0;
+#ifdef CONFIG_FUNCTION_TRACER
+	int ret;
+#endif
 
 	if (IS_ENABLED(CONFIG_EXPOLINE) &&
 	    !nospec_disable && me->arch.plt_size) {
 		unsigned int *ij;
 
-		ij = me->mem[MOD_TEXT].base + me->arch.plt_offset +
+		ij = me->core_layout.base + me->arch.plt_offset +
 			me->arch.plt_size - PLT_ENTRY_SIZE;
 		ij[0] = 0xc6000000;	/* exrl	%r0,.+10	*/
 		ij[1] = 0x0005a7f4;	/* j	.		*/
@@ -527,21 +539,14 @@ int module_finalize(const Elf_Ehdr *hdr,
 		    (str_has_prefix(secname, ".s390_return")))
 			nospec_revert(aseg, aseg + s->sh_size);
 
-		if (IS_ENABLED(CONFIG_STACKPROTECTOR) &&
-		    (str_has_prefix(secname, "__stack_protector_loc"))) {
-			rc = stack_protector_apply(aseg, aseg + s->sh_size);
-			if (rc)
-				break;
-		}
-
 #ifdef CONFIG_FUNCTION_TRACER
 		if (!strcmp(FTRACE_CALLSITE_SECTION, secname)) {
-			rc = module_alloc_ftrace_hotpatch_trampolines(me, s);
-			if (rc)
-				break;
+			ret = module_alloc_ftrace_hotpatch_trampolines(me, s);
+			if (ret < 0)
+				return ret;
 		}
 #endif /* CONFIG_FUNCTION_TRACER */
 	}
 
-	return rc;
+	return 0;
 }

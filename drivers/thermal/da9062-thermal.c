@@ -41,8 +41,6 @@
 
 #define DA9062_MILLI_CELSIUS(t)			((t) * 1000)
 
-static unsigned int pp_tmp = DA9062_DEFAULT_POLLING_MS_PERIOD;
-
 struct da9062_thermal_config {
 	const char *name;
 };
@@ -97,10 +95,7 @@ static void da9062_thermal_poll_on(struct work_struct *work)
 		thermal_zone_device_update(thermal->zone,
 					   THERMAL_EVENT_UNSPECIFIED);
 
-		/*
-		 * pp_tmp is between 1s and 10s, so we can round the jiffies
-		 */
-		delay = round_jiffies(msecs_to_jiffies(pp_tmp));
+		delay = thermal->zone->passive_delay_jiffies;
 		queue_delayed_work(system_freezable_wq, &thermal->work, delay);
 		return;
 	}
@@ -128,7 +123,7 @@ static irqreturn_t da9062_thermal_irq_handler(int irq, void *data)
 static int da9062_thermal_get_temp(struct thermal_zone_device *z,
 				   int *temp)
 {
-	struct da9062_thermal *thermal = thermal_zone_device_priv(z);
+	struct da9062_thermal *thermal = z->devdata;
 
 	mutex_lock(&thermal->lock);
 	*temp = thermal->temperature;
@@ -137,7 +132,7 @@ static int da9062_thermal_get_temp(struct thermal_zone_device *z,
 	return 0;
 }
 
-static const struct thermal_zone_device_ops da9062_thermal_ops = {
+static struct thermal_zone_device_ops da9062_thermal_ops = {
 	.get_temp	= da9062_thermal_get_temp,
 };
 
@@ -160,6 +155,7 @@ static int da9062_thermal_probe(struct platform_device *pdev)
 {
 	struct da9062 *chip = dev_get_drvdata(pdev->dev.parent);
 	struct da9062_thermal *thermal;
+	unsigned int pp_tmp = DA9062_DEFAULT_POLLING_MS_PERIOD;
 	const struct of_device_id *match;
 	int ret = 0;
 
@@ -197,7 +193,7 @@ static int da9062_thermal_probe(struct platform_device *pdev)
 	mutex_init(&thermal->lock);
 
 	thermal->zone = thermal_zone_device_register_with_trips(thermal->config->name,
-								trips, ARRAY_SIZE(trips), thermal,
+								trips, ARRAY_SIZE(trips), 0, thermal,
 								&da9062_thermal_ops, NULL, pp_tmp,
 								0);
 	if (IS_ERR(thermal->zone)) {
@@ -212,7 +208,8 @@ static int da9062_thermal_probe(struct platform_device *pdev)
 	}
 
 	dev_dbg(&pdev->dev,
-		"TJUNC temperature polling period set at %d ms\n", pp_tmp);
+		"TJUNC temperature polling period set at %d ms\n",
+		jiffies_to_msecs(thermal->zone->passive_delay_jiffies));
 
 	ret = platform_get_irq_byname(pdev, "THERMAL");
 	if (ret < 0)
@@ -239,21 +236,22 @@ err:
 	return ret;
 }
 
-static void da9062_thermal_remove(struct platform_device *pdev)
+static int da9062_thermal_remove(struct platform_device *pdev)
 {
 	struct	da9062_thermal *thermal = platform_get_drvdata(pdev);
 
 	free_irq(thermal->irq, thermal);
 	cancel_delayed_work_sync(&thermal->work);
 	thermal_zone_device_unregister(thermal->zone);
+	return 0;
 }
 
 static struct platform_driver da9062_thermal_driver = {
 	.probe	= da9062_thermal_probe,
 	.remove	= da9062_thermal_remove,
 	.driver	= {
-		.name		= "da9062-thermal",
-		.of_match_table	= da9062_compatible_reg_id_table,
+		.name	= "da9062-thermal",
+		.of_match_table = da9062_compatible_reg_id_table,
 	},
 };
 

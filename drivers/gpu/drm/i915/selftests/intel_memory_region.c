@@ -413,8 +413,15 @@ static int igt_mock_splintered_region(void *arg)
 
 	close_objects(mem, &objects);
 
-	obj = igt_object_create(mem, &objects, roundup_pow_of_two(size),
-				I915_BO_ALLOC_CONTIGUOUS);
+	/*
+	 * While we should be able allocate everything without any flag
+	 * restrictions, if we consider I915_BO_ALLOC_CONTIGUOUS then we are
+	 * actually limited to the largest power-of-two for the region size i.e
+	 * max_order, due to the inner workings of the buddy allocator. So make
+	 * sure that does indeed hold true.
+	 */
+
+	obj = igt_object_create(mem, &objects, size, I915_BO_ALLOC_CONTIGUOUS);
 	if (!IS_ERR(obj)) {
 		pr_err("%s too large contiguous allocation was not rejected\n",
 		       __func__);
@@ -422,7 +429,8 @@ static int igt_mock_splintered_region(void *arg)
 		goto out_close;
 	}
 
-	obj = igt_object_create(mem, &objects, size, I915_BO_ALLOC_CONTIGUOUS);
+	obj = igt_object_create(mem, &objects, rounddown_pow_of_two(size),
+				I915_BO_ALLOC_CONTIGUOUS);
 	if (IS_ERR(obj)) {
 		pr_err("%s largest possible contiguous allocation failed\n",
 		       __func__);
@@ -509,7 +517,7 @@ static int igt_mock_max_segment(void *arg)
 
 		if (!IS_ALIGNED(daddr, ps)) {
 			pr_err("%s: Created an unaligned scatterlist entry, addr=%pa, ps=%u\n",
-			       __func__, &daddr, ps);
+			       __func__,  &daddr, ps);
 			err = -EINVAL;
 			goto out_close;
 		}
@@ -536,8 +544,8 @@ static u64 igt_object_mappable_total(struct drm_i915_gem_object *obj)
 		u64 start = drm_buddy_block_offset(block);
 		u64 end = start + drm_buddy_block_size(mm, block);
 
-		if (start < resource_size(&mr->io))
-			total += min_t(u64, end, resource_size(&mr->io)) - start;
+		if (start < mr->io_size)
+			total += min_t(u64, end, mr->io_size) - start;
 	}
 
 	return total;
@@ -1062,9 +1070,7 @@ static int igt_lmem_write_cpu(void *arg)
 	/* Put the pages into a known state -- from the gpu for added fun */
 	intel_engine_pm_get(engine);
 	err = intel_context_migrate_clear(engine->gt->migrate.context, NULL,
-					  obj->mm.pages->sgl,
-					  i915_gem_get_pat_index(i915,
-								 I915_CACHE_NONE),
+					  obj->mm.pages->sgl, I915_CACHE_NONE,
 					  true, 0xdeadbeaf, &rq);
 	if (rq) {
 		dma_resv_add_fence(obj->base.resv, &rq->fence,

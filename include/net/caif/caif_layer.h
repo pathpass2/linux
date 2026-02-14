@@ -11,7 +11,9 @@
 
 struct cflayer;
 struct cfpkt;
+struct cfpktq;
 struct caif_payload_info;
+struct caif_packet_funcs;
 
 #define CAIF_LAYER_NAME_SZ 16
 
@@ -20,7 +22,7 @@ struct caif_payload_info;
  * @assert: expression to evaluate.
  *
  * This function will print a error message and a do WARN_ON if the
- * assertion fails. Normally this will do a stack up at the current location.
+ * assertion failes. Normally this will do a stack up at the current location.
  */
 #define caif_assert(assert)					\
 do {								\
@@ -116,7 +118,7 @@ enum caif_direction {
  * @dn:		Pointer down to the layer below.
  * @node:	List node used when layer participate in a list.
  * @receive:	Packet receive function.
- * @transmit:	Packet transmit function.
+ * @transmit:	Packet transmit funciton.
  * @ctrlcmd:	Used for control signalling upwards in the stack.
  * @modemcmd:	Used for control signaling downwards in the stack.
  * @id:		The identity of this layer

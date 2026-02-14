@@ -7,12 +7,11 @@
 
 #include <linux/device.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
 
 #include <media/cec.h>
-
-#include <drm/display/drm_hdmi_cec_helper.h>
 
 #include "adv7511.h"
 
@@ -35,7 +34,7 @@ static const u8 ADV7511_REG_CEC_RX_FRAME_LEN[] = {
 
 static void adv_cec_tx_raw_status(struct adv7511 *adv7511, u8 tx_raw_status)
 {
-	unsigned int offset = adv7511->info->reg_cec_offset;
+	unsigned int offset = adv7511->reg_cec_offset;
 	unsigned int val;
 
 	if (regmap_read(adv7511->regmap_cec,
@@ -46,8 +45,8 @@ static void adv_cec_tx_raw_status(struct adv7511 *adv7511, u8 tx_raw_status)
 		return;
 
 	if (tx_raw_status & ADV7511_INT1_CEC_TX_ARBIT_LOST) {
-		drm_connector_hdmi_cec_transmit_attempt_done(adv7511->cec_connector,
-							     CEC_TX_STATUS_ARB_LOST);
+		cec_transmit_attempt_done(adv7511->cec_adap,
+					  CEC_TX_STATUS_ARB_LOST);
 		return;
 	}
 	if (tx_raw_status & ADV7511_INT1_CEC_TX_RETRY_TIMEOUT) {
@@ -74,21 +73,19 @@ static void adv_cec_tx_raw_status(struct adv7511 *adv7511, u8 tx_raw_status)
 			if (low_drive_cnt)
 				status |= CEC_TX_STATUS_LOW_DRIVE;
 		}
-		drm_connector_hdmi_cec_transmit_done(adv7511->cec_connector, status,
-						     0, nack_cnt, low_drive_cnt,
-						     err_cnt);
+		cec_transmit_done(adv7511->cec_adap, status,
+				  0, nack_cnt, low_drive_cnt, err_cnt);
 		return;
 	}
 	if (tx_raw_status & ADV7511_INT1_CEC_TX_READY) {
-		drm_connector_hdmi_cec_transmit_attempt_done(adv7511->cec_connector,
-							     CEC_TX_STATUS_OK);
+		cec_transmit_attempt_done(adv7511->cec_adap, CEC_TX_STATUS_OK);
 		return;
 	}
 }
 
 static void adv7511_cec_rx(struct adv7511 *adv7511, int rx_buf)
 {
-	unsigned int offset = adv7511->info->reg_cec_offset;
+	unsigned int offset = adv7511->reg_cec_offset;
 	struct cec_msg msg = {};
 	unsigned int len;
 	unsigned int val;
@@ -120,12 +117,12 @@ static void adv7511_cec_rx(struct adv7511 *adv7511, int rx_buf)
 	regmap_update_bits(adv7511->regmap_cec,
 			   ADV7511_REG_CEC_RX_BUFFERS + offset, BIT(rx_buf), 0);
 
-	drm_connector_hdmi_cec_received_msg(adv7511->cec_connector, &msg);
+	cec_received_msg(adv7511->cec_adap, &msg);
 }
 
-int adv7511_cec_irq_process(struct adv7511 *adv7511, unsigned int irq1)
+void adv7511_cec_irq_process(struct adv7511 *adv7511, unsigned int irq1)
 {
-	unsigned int offset = adv7511->info->reg_cec_offset;
+	unsigned int offset = adv7511->reg_cec_offset;
 	const u32 irq_tx_mask = ADV7511_INT1_CEC_TX_READY |
 				ADV7511_INT1_CEC_TX_ARBIT_LOST |
 				ADV7511_INT1_CEC_TX_RETRY_TIMEOUT;
@@ -135,19 +132,16 @@ int adv7511_cec_irq_process(struct adv7511 *adv7511, unsigned int irq1)
 	unsigned int rx_status;
 	int rx_order[3] = { -1, -1, -1 };
 	int i;
-	int irq_status = IRQ_NONE;
 
-	if (irq1 & irq_tx_mask) {
+	if (irq1 & irq_tx_mask)
 		adv_cec_tx_raw_status(adv7511, irq1);
-		irq_status = IRQ_HANDLED;
-	}
 
 	if (!(irq1 & irq_rx_mask))
-		return irq_status;
+		return;
 
 	if (regmap_read(adv7511->regmap_cec,
 			ADV7511_REG_CEC_RX_STATUS + offset, &rx_status))
-		return irq_status;
+		return;
 
 	/*
 	 * ADV7511_REG_CEC_RX_STATUS[5:0] contains the reception order of RX
@@ -179,14 +173,12 @@ int adv7511_cec_irq_process(struct adv7511 *adv7511, unsigned int irq1)
 
 		adv7511_cec_rx(adv7511, rx_buf);
 	}
-
-	return IRQ_HANDLED;
 }
 
-int adv7511_cec_enable(struct drm_bridge *bridge, bool enable)
+static int adv7511_cec_adap_enable(struct cec_adapter *adap, bool enable)
 {
-	struct adv7511 *adv7511 = bridge_to_adv7511(bridge);
-	unsigned int offset = adv7511->info->reg_cec_offset;
+	struct adv7511 *adv7511 = cec_get_drvdata(adap);
+	unsigned int offset = adv7511->reg_cec_offset;
 
 	if (adv7511->i2c_cec == NULL)
 		return -EIO;
@@ -229,10 +221,10 @@ int adv7511_cec_enable(struct drm_bridge *bridge, bool enable)
 	return 0;
 }
 
-int adv7511_cec_log_addr(struct drm_bridge *bridge, u8 addr)
+static int adv7511_cec_adap_log_addr(struct cec_adapter *adap, u8 addr)
 {
-	struct adv7511 *adv7511 = bridge_to_adv7511(bridge);
-	unsigned int offset = adv7511->info->reg_cec_offset;
+	struct adv7511 *adv7511 = cec_get_drvdata(adap);
+	unsigned int offset = adv7511->reg_cec_offset;
 	unsigned int i, free_idx = ADV7511_MAX_ADDRS;
 
 	if (!adv7511->cec_enabled_adap)
@@ -297,11 +289,11 @@ int adv7511_cec_log_addr(struct drm_bridge *bridge, u8 addr)
 	return 0;
 }
 
-int adv7511_cec_transmit(struct drm_bridge *bridge, u8 attempts,
-			 u32 signal_free_time, struct cec_msg *msg)
+static int adv7511_cec_adap_transmit(struct cec_adapter *adap, u8 attempts,
+				     u32 signal_free_time, struct cec_msg *msg)
 {
-	struct adv7511 *adv7511 = bridge_to_adv7511(bridge);
-	unsigned int offset = adv7511->info->reg_cec_offset;
+	struct adv7511 *adv7511 = cec_get_drvdata(adap);
+	unsigned int offset = adv7511->reg_cec_offset;
 	u8 len = msg->len;
 	unsigned int i;
 
@@ -332,6 +324,12 @@ int adv7511_cec_transmit(struct drm_bridge *bridge, u8 attempts,
 	return 0;
 }
 
+static const struct cec_adap_ops adv7511_cec_adap_ops = {
+	.adap_enable = adv7511_cec_adap_enable,
+	.adap_log_addr = adv7511_cec_adap_log_addr,
+	.adap_transmit = adv7511_cec_adap_transmit,
+};
+
 static int adv7511_cec_parse_dt(struct device *dev, struct adv7511 *adv7511)
 {
 	adv7511->cec_clk = devm_clk_get(dev, "cec");
@@ -346,18 +344,20 @@ static int adv7511_cec_parse_dt(struct device *dev, struct adv7511 *adv7511)
 	return 0;
 }
 
-int adv7511_cec_init(struct drm_bridge *bridge,
-		     struct drm_connector *connector)
+int adv7511_cec_init(struct device *dev, struct adv7511 *adv7511)
 {
-	struct adv7511 *adv7511 = bridge_to_adv7511(bridge);
-	struct device *dev = &adv7511->i2c_main->dev;
-	unsigned int offset = adv7511->info->reg_cec_offset;
+	unsigned int offset = adv7511->reg_cec_offset;
 	int ret = adv7511_cec_parse_dt(dev, adv7511);
 
 	if (ret)
 		goto err_cec_parse_dt;
 
-	adv7511->cec_connector = connector;
+	adv7511->cec_adap = cec_allocate_adapter(&adv7511_cec_adap_ops,
+		adv7511, dev_name(dev), CEC_CAP_DEFAULTS, ADV7511_MAX_ADDRS);
+	if (IS_ERR(adv7511->cec_adap)) {
+		ret = PTR_ERR(adv7511->cec_adap);
+		goto err_cec_alloc;
+	}
 
 	regmap_write(adv7511->regmap, ADV7511_REG_CEC_CTRL, 0);
 	/* cec soft reset */
@@ -374,8 +374,17 @@ int adv7511_cec_init(struct drm_bridge *bridge,
 		     ADV7511_REG_CEC_CLK_DIV + offset,
 		     ((adv7511->cec_clk_freq / 750000) - 1) << 2);
 
+	ret = cec_register_adapter(adv7511->cec_adap, dev);
+	if (ret)
+		goto err_cec_register;
 	return 0;
 
+err_cec_register:
+	cec_delete_adapter(adv7511->cec_adap);
+	adv7511->cec_adap = NULL;
+err_cec_alloc:
+	dev_info(dev, "Initializing CEC failed with error %d, disabling CEC\n",
+		 ret);
 err_cec_parse_dt:
 	regmap_write(adv7511->regmap, ADV7511_REG_CEC_CTRL,
 		     ADV7511_CEC_CTRL_POWER_DOWN);

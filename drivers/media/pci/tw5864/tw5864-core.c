@@ -24,8 +24,6 @@
 #include "tw5864.h"
 #include "tw5864-reg.h"
 
-#define DRIVER_NAME "tw5864"
-
 MODULE_DESCRIPTION("V4L2 driver module for tw5864-based multimedia capture & encoding devices");
 MODULE_AUTHOR("Bluecherry Maintainers <maintainers@bluecherrydvr.com>");
 MODULE_AUTHOR("Andrey Utkin <andrey.utkin@corp.bluecherry.net>");
@@ -146,7 +144,7 @@ static void tw5864_h264_isr(struct tw5864_dev *dev)
 		cur_frame->gop_seqno = input->frame_gop_seqno;
 
 		dev->h264_buf_w_index = next_frame_index;
-		queue_work(system_bh_wq, &dev->bh_work);
+		tasklet_schedule(&dev->tasklet);
 
 		cur_frame = next_frame;
 
@@ -248,8 +246,7 @@ static int tw5864_initdev(struct pci_dev *pci_dev,
 	if (!dev)
 		return -ENOMEM;
 
-	snprintf(dev->name, sizeof(dev->name), "%s:%s", DRIVER_NAME,
-		 pci_name(pci_dev));
+	snprintf(dev->name, sizeof(dev->name), "tw5864:%s", pci_name(pci_dev));
 
 	err = v4l2_device_register(&pci_dev->dev, &dev->v4l2_dev);
 	if (err)
@@ -272,12 +269,12 @@ static int tw5864_initdev(struct pci_dev *pci_dev,
 	}
 
 	/* get mmio */
-	dev->mmio = pcim_iomap_region(pci_dev, 0, DRIVER_NAME);
-	err = PTR_ERR_OR_ZERO(dev->mmio);
+	err = pcim_iomap_regions(pci_dev, BIT(0), dev->name);
 	if (err) {
 		dev_err(&dev->pci->dev, "Cannot request regions for MMIO\n");
 		goto unreg_v4l2;
 	}
+	dev->mmio = pcim_iomap_table(pci_dev)[0];
 
 	spin_lock_init(&dev->slock);
 
@@ -293,7 +290,7 @@ static int tw5864_initdev(struct pci_dev *pci_dev,
 
 	/* get irq */
 	err = devm_request_irq(&pci_dev->dev, pci_dev->irq, tw5864_isr,
-			       IRQF_SHARED, DRIVER_NAME, dev);
+			       IRQF_SHARED, "tw5864", dev);
 	if (err < 0) {
 		dev_err(&dev->pci->dev, "can't get IRQ %d\n", pci_dev->irq);
 		goto fini_video;
@@ -327,7 +324,7 @@ static void tw5864_finidev(struct pci_dev *pci_dev)
 }
 
 static struct pci_driver tw5864_pci_driver = {
-	.name = DRIVER_NAME,
+	.name = "tw5864",
 	.id_table = tw5864_pci_tbl,
 	.probe = tw5864_initdev,
 	.remove = tw5864_finidev,

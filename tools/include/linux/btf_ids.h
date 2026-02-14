@@ -3,20 +3,9 @@
 #ifndef _LINUX_BTF_IDS_H
 #define _LINUX_BTF_IDS_H
 
-#include <linux/types.h> /* for u32 */
-
 struct btf_id_set {
 	u32 cnt;
 	u32 ids[];
-};
-
-struct btf_id_set8 {
-	u32 cnt;
-	u32 flags;
-	struct {
-		u32 id;
-		u32 flags;
-	} pairs[];
 };
 
 #ifdef CONFIG_DEBUG_INFO_BTF
@@ -49,7 +38,7 @@ asm(							\
 	____BTF_ID(symbol)
 
 #define __ID(prefix) \
-	__PASTE(__PASTE(prefix, __COUNTER__), __LINE__)
+	__PASTE(prefix, __COUNTER__)
 
 /*
  * The BTF_ID defines unique symbol for each ID pointing

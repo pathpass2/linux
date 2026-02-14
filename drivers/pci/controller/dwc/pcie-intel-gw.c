@@ -9,11 +9,9 @@
 #include <linux/clk.h>
 #include <linux/gpio/consumer.h>
 #include <linux/iopoll.h>
-#include <linux/mod_devicetable.h>
 #include <linux/pci_regs.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/reset.h>
 
 #include "../../pci.h"
@@ -57,6 +55,7 @@
 	PCIE_APP_IRN_INTA | PCIE_APP_IRN_INTB | \
 	PCIE_APP_IRN_INTC | PCIE_APP_IRN_INTD)
 
+#define BUS_IATU_OFFSET			SZ_256M
 #define RESET_INTERVAL_MS		100
 
 struct intel_pcie {
@@ -131,7 +130,7 @@ static void intel_pcie_link_setup(struct intel_pcie *pcie)
 
 static void intel_pcie_init_n_fts(struct dw_pcie *pci)
 {
-	switch (pci->max_link_speed) {
+	switch (pci->link_gen) {
 	case 3:
 		pci->n_fts[1] = PORT_AFR_N_FTS_GEN3;
 		break;
@@ -251,7 +250,7 @@ static int intel_pcie_wait_l2(struct intel_pcie *pcie)
 	int ret;
 	struct dw_pcie *pci = &pcie->pci;
 
-	if (pci->max_link_speed < 3)
+	if (pci->link_gen < 3)
 		return 0;
 
 	/* Send PME_TURN_OFF message */
@@ -341,13 +340,15 @@ static void __intel_pcie_remove(struct intel_pcie *pcie)
 	phy_exit(pcie->phy);
 }
 
-static void intel_pcie_remove(struct platform_device *pdev)
+static int intel_pcie_remove(struct platform_device *pdev)
 {
 	struct intel_pcie *pcie = platform_get_drvdata(pdev);
 	struct dw_pcie_rp *pp = &pcie->pci.pp;
 
 	dw_pcie_host_deinit(pp);
 	__intel_pcie_remove(pcie);
+
+	return 0;
 }
 
 static int intel_pcie_suspend_noirq(struct device *dev)
@@ -380,11 +381,17 @@ static int intel_pcie_rc_init(struct dw_pcie_rp *pp)
 	return intel_pcie_host_setup(pcie);
 }
 
+static u64 intel_pcie_cpu_addr(struct dw_pcie *pcie, u64 cpu_addr)
+{
+	return cpu_addr + BUS_IATU_OFFSET;
+}
+
 static const struct dw_pcie_ops intel_pcie_ops = {
+	.cpu_addr_fixup = intel_pcie_cpu_addr,
 };
 
 static const struct dw_pcie_host_ops intel_pcie_dw_ops = {
-	.init = intel_pcie_rc_init,
+	.host_init =		intel_pcie_rc_init,
 };
 
 static int intel_pcie_probe(struct platform_device *pdev)
@@ -402,7 +409,6 @@ static int intel_pcie_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, pcie);
 	pci = &pcie->pci;
 	pci->dev = dev;
-	pci->use_parent_dt_ranges = true;
 	pp = &pci->pp;
 
 	ret = intel_pcie_get_resources(pdev);

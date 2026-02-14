@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// SPDX-License-Identifier: (GPL-2.0+ or MIT)
 /*
  * Copyright (C) 2021 Arm Ltd.
  */
@@ -6,7 +6,6 @@
 /dts-v1/;
 
 #include "sun50i-h616.dtsi"
-#include "sun50i-h616-cpu-opp.dtsi"
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -33,25 +32,11 @@
 	};
 };
 
-&codec {
-	allwinner,audio-routing = "Line Out", "LINEOUT";
-	status = "okay";
-};
-
-&cpu0 {
-	cpu-supply = <&reg_dcdca>;
-};
-
 &ehci0 {
 	status = "okay";
 };
 
 &ehci2 {
-	status = "okay";
-};
-
-&gpu {
-	mali-supply = <&reg_dcdcc>;
 	status = "okay";
 };
 
@@ -62,7 +47,6 @@
 &mmc0 {
 	vmmc-supply = <&reg_dcdce>;
 	cd-gpios = <&pio 5 6 GPIO_ACTIVE_LOW>;	/* PF6 */
-	disable-wp;
 	bus-width = <4>;
 	status = "okay";
 };

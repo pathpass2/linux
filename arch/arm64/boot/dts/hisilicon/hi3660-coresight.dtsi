@@ -17,7 +17,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu0>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {
@@ -35,7 +34,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu1>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {
@@ -53,7 +51,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu2>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {
@@ -71,7 +68,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu3>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {
@@ -164,7 +160,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu4>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {
@@ -182,7 +177,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu5>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {
@@ -200,7 +194,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu6>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {
@@ -218,7 +211,6 @@
 			clocks = <&crg_ctrl HI3660_PCLK>;
 			clock-names = "apb_pclk";
 			cpu = <&cpu7>;
-			arm,coresight-loses-context-with-cpu;
 
 			out-ports {
 				port {

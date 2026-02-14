@@ -473,8 +473,11 @@ static int xen_upload_processor_pm_data(void)
 		if (!_pr)
 			continue;
 
-		if (!pr_backup)
-			pr_backup = kmemdup(_pr, sizeof(*_pr), GFP_KERNEL);
+		if (!pr_backup) {
+			pr_backup = kzalloc(sizeof(struct acpi_processor), GFP_KERNEL);
+			if (pr_backup)
+				memcpy(pr_backup, _pr, sizeof(struct acpi_processor));
+		}
 		(void)upload_pm_data(_pr);
 	}
 
@@ -495,7 +498,7 @@ static void xen_acpi_processor_resume_worker(struct work_struct *dummy)
 		pr_info("ACPI data upload failed, error = %d\n", rc);
 }
 
-static void xen_acpi_processor_resume(void *data)
+static void xen_acpi_processor_resume(void)
 {
 	static DECLARE_WORK(wq, xen_acpi_processor_resume_worker);
 
@@ -509,12 +512,8 @@ static void xen_acpi_processor_resume(void *data)
 	schedule_work(&wq);
 }
 
-static const struct syscore_ops xap_syscore_ops = {
+static struct syscore_ops xap_syscore_ops = {
 	.resume	= xen_acpi_processor_resume,
-};
-
-static struct syscore xap_syscore = {
-	.ops = &xap_syscore_ops,
 };
 
 static int __init xen_acpi_processor_init(void)
@@ -567,7 +566,7 @@ static int __init xen_acpi_processor_init(void)
 	if (rc)
 		goto err_unregister;
 
-	register_syscore(&xap_syscore);
+	register_syscore_ops(&xap_syscore_ops);
 
 	return 0;
 err_unregister:
@@ -584,7 +583,7 @@ static void __exit xen_acpi_processor_exit(void)
 {
 	int i;
 
-	unregister_syscore(&xap_syscore);
+	unregister_syscore_ops(&xap_syscore_ops);
 	bitmap_free(acpi_ids_done);
 	bitmap_free(acpi_id_present);
 	bitmap_free(acpi_id_cst_present);

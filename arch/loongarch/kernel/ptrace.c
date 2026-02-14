@@ -38,7 +38,6 @@
 #include <asm/cpu.h>
 #include <asm/cpu-info.h>
 #include <asm/fpu.h>
-#include <asm/lbt.h>
 #include <asm/loongarch.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
@@ -148,8 +147,6 @@ static int fpr_get(struct task_struct *target,
 {
 	int r;
 
-	save_fpu_regs(target);
-
 	if (sizeof(target->thread.fpu.fpr[0]) == sizeof(elf_fpreg_t))
 		r = gfpr_get(target, &to);
 	else
@@ -252,132 +249,6 @@ static int cfg_set(struct task_struct *target,
 {
 	return 0;
 }
-
-#ifdef CONFIG_CPU_HAS_LSX
-
-static void copy_pad_fprs(struct task_struct *target,
-			 const struct user_regset *regset,
-			 struct membuf *to, unsigned int live_sz)
-{
-	int i, j;
-	unsigned long long fill = ~0ull;
-	unsigned int cp_sz, pad_sz;
-
-	cp_sz = min(regset->size, live_sz);
-	pad_sz = regset->size - cp_sz;
-	WARN_ON(pad_sz % sizeof(fill));
-
-	for (i = 0; i < NUM_FPU_REGS; i++) {
-		membuf_write(to, &target->thread.fpu.fpr[i], cp_sz);
-		for (j = 0; j < (pad_sz / sizeof(fill)); j++) {
-			membuf_store(to, fill);
-		}
-	}
-}
-
-static int simd_get(struct task_struct *target,
-		    const struct user_regset *regset,
-		    struct membuf to)
-{
-	const unsigned int wr_size = NUM_FPU_REGS * regset->size;
-
-	save_fpu_regs(target);
-
-	if (!tsk_used_math(target)) {
-		/* The task hasn't used FP or LSX, fill with 0xff */
-		copy_pad_fprs(target, regset, &to, 0);
-	} else if (!test_tsk_thread_flag(target, TIF_LSX_CTX_LIVE)) {
-		/* Copy scalar FP context, fill the rest with 0xff */
-		copy_pad_fprs(target, regset, &to, 8);
-#ifdef CONFIG_CPU_HAS_LASX
-	} else if (!test_tsk_thread_flag(target, TIF_LASX_CTX_LIVE)) {
-		/* Copy LSX 128 Bit context, fill the rest with 0xff */
-		copy_pad_fprs(target, regset, &to, 16);
-#endif
-	} else if (sizeof(target->thread.fpu.fpr[0]) == regset->size) {
-		/* Trivially copy the vector registers */
-		membuf_write(&to, &target->thread.fpu.fpr, wr_size);
-	} else {
-		/* Copy as much context as possible, fill the rest with 0xff */
-		copy_pad_fprs(target, regset, &to, sizeof(target->thread.fpu.fpr[0]));
-	}
-
-	return 0;
-}
-
-static int simd_set(struct task_struct *target,
-		    const struct user_regset *regset,
-		    unsigned int pos, unsigned int count,
-		    const void *kbuf, const void __user *ubuf)
-{
-	const unsigned int wr_size = NUM_FPU_REGS * regset->size;
-	unsigned int cp_sz;
-	int i, err, start;
-
-	init_fp_ctx(target);
-
-	if (sizeof(target->thread.fpu.fpr[0]) == regset->size) {
-		/* Trivially copy the vector registers */
-		err = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					 &target->thread.fpu.fpr,
-					 0, wr_size);
-	} else {
-		/* Copy as much context as possible */
-		cp_sz = min_t(unsigned int, regset->size,
-			      sizeof(target->thread.fpu.fpr[0]));
-
-		i = start = err = 0;
-		for (; i < NUM_FPU_REGS; i++, start += regset->size) {
-			err |= user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-						  &target->thread.fpu.fpr[i],
-						  start, start + cp_sz);
-		}
-	}
-
-	return err;
-}
-
-#endif /* CONFIG_CPU_HAS_LSX */
-
-#ifdef CONFIG_CPU_HAS_LBT
-static int lbt_get(struct task_struct *target,
-		   const struct user_regset *regset,
-		   struct membuf to)
-{
-	int r;
-
-	r = membuf_write(&to, &target->thread.lbt.scr0, sizeof(target->thread.lbt.scr0));
-	r = membuf_write(&to, &target->thread.lbt.scr1, sizeof(target->thread.lbt.scr1));
-	r = membuf_write(&to, &target->thread.lbt.scr2, sizeof(target->thread.lbt.scr2));
-	r = membuf_write(&to, &target->thread.lbt.scr3, sizeof(target->thread.lbt.scr3));
-	r = membuf_write(&to, &target->thread.lbt.eflags, sizeof(u32));
-	r = membuf_write(&to, &target->thread.fpu.ftop, sizeof(u32));
-
-	return r;
-}
-
-static int lbt_set(struct task_struct *target,
-		   const struct user_regset *regset,
-		   unsigned int pos, unsigned int count,
-		   const void *kbuf, const void __user *ubuf)
-{
-	int err = 0;
-	const int eflags_start = 4 * sizeof(target->thread.lbt.scr0);
-	const int ftop_start = eflags_start + sizeof(u32);
-
-	err |= user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				  &target->thread.lbt.scr0,
-				  0, 4 * sizeof(target->thread.lbt.scr0));
-	err |= user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				  &target->thread.lbt.eflags,
-				  eflags_start, ftop_start);
-	err |= user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-				  &target->thread.fpu.ftop,
-				  ftop_start, ftop_start + sizeof(u32));
-
-	return err;
-}
-#endif /* CONFIG_CPU_HAS_LBT */
 
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 
@@ -494,22 +365,36 @@ static int ptrace_hbp_fill_attr_ctrl(unsigned int note_type,
 				     struct arch_hw_breakpoint_ctrl ctrl,
 				     struct perf_event_attr *attr)
 {
-	int err, len, type;
+	int err, len, type, offset;
 
-	err = arch_bp_generic_fields(ctrl, &len, &type);
+	err = arch_bp_generic_fields(ctrl, &len, &type, &offset);
 	if (err)
 		return err;
 
+	switch (note_type) {
+	case NT_LOONGARCH_HW_BREAK:
+		if ((type & HW_BREAKPOINT_X) != type)
+			return -EINVAL;
+		break;
+	case NT_LOONGARCH_HW_WATCH:
+		if ((type & HW_BREAKPOINT_RW) != type)
+			return -EINVAL;
+		break;
+	default:
+		return -EINVAL;
+	}
+
 	attr->bp_len	= len;
 	attr->bp_type	= type;
+	attr->bp_addr	+= offset;
 
 	return 0;
 }
 
-static int ptrace_hbp_get_resource_info(unsigned int note_type, u64 *info)
+static int ptrace_hbp_get_resource_info(unsigned int note_type, u16 *info)
 {
 	u8 num;
-	u64 reg = 0;
+	u16 reg = 0;
 
 	switch (note_type) {
 	case NT_LOONGARCH_HW_BREAK:
@@ -589,36 +474,16 @@ static int ptrace_hbp_set_ctrl(unsigned int note_type,
 	struct perf_event *bp;
 	struct perf_event_attr attr;
 	struct arch_hw_breakpoint_ctrl ctrl;
-	struct thread_info *ti = task_thread_info(tsk);
 
 	bp = ptrace_hbp_get_initialised_bp(note_type, tsk, idx);
 	if (IS_ERR(bp))
 		return PTR_ERR(bp);
 
 	attr = bp->attr;
-
-	switch (note_type) {
-	case NT_LOONGARCH_HW_BREAK:
-		ctrl.type = LOONGARCH_BREAKPOINT_EXECUTE;
-		ctrl.len = LOONGARCH_BREAKPOINT_LEN_4;
-		break;
-	case NT_LOONGARCH_HW_WATCH:
-		decode_ctrl_reg(uctrl, &ctrl);
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	if (uctrl & CTRL_PLV_ENABLE) {
-		err = ptrace_hbp_fill_attr_ctrl(note_type, ctrl, &attr);
-		if (err)
-			return err;
-		attr.disabled = 0;
-		set_ti_thread_flag(ti, TIF_LOAD_WATCH);
-	} else {
-		attr.disabled = 1;
-		clear_ti_thread_flag(ti, TIF_LOAD_WATCH);
-	}
+	decode_ctrl_reg(uctrl, &ctrl);
+	err = ptrace_hbp_fill_attr_ctrl(note_type, ctrl, &attr);
+	if (err)
+		return err;
 
 	return modify_user_hw_breakpoint(bp, &attr);
 }
@@ -649,15 +514,6 @@ static int ptrace_hbp_set_addr(unsigned int note_type,
 	struct perf_event *bp;
 	struct perf_event_attr attr;
 
-	/* Kernel-space address cannot be monitored by user-space */
-#ifdef CONFIG_32BIT
-	if ((unsigned long)addr >= KPRANGE0)
-		return -EINVAL;
-#else
-	if ((unsigned long)addr >= XKPRANGE)
-		return -EINVAL;
-#endif
-
 	bp = ptrace_hbp_get_initialised_bp(note_type, tsk, idx);
 	if (IS_ERR(bp))
 		return PTR_ERR(bp);
@@ -668,16 +524,15 @@ static int ptrace_hbp_set_addr(unsigned int note_type,
 	return modify_user_hw_breakpoint(bp, &attr);
 }
 
+#define PTRACE_HBP_CTRL_SZ	sizeof(u32)
 #define PTRACE_HBP_ADDR_SZ	sizeof(u64)
 #define PTRACE_HBP_MASK_SZ	sizeof(u64)
-#define PTRACE_HBP_CTRL_SZ	sizeof(u32)
-#define PTRACE_HBP_PAD_SZ	sizeof(u32)
 
 static int hw_break_get(struct task_struct *target,
 			const struct user_regset *regset,
 			struct membuf to)
 {
-	u64 info;
+	u16 info;
 	u32 ctrl;
 	u64 addr, mask;
 	int ret, idx = 0;
@@ -690,7 +545,7 @@ static int hw_break_get(struct task_struct *target,
 
 	membuf_write(&to, &info, sizeof(info));
 
-	/* (address, mask, ctrl) registers */
+	/* (address, ctrl) registers */
 	while (to.left) {
 		ret = ptrace_hbp_get_addr(note_type, target, idx, &addr);
 		if (ret)
@@ -707,7 +562,6 @@ static int hw_break_get(struct task_struct *target,
 		membuf_store(&to, addr);
 		membuf_store(&to, mask);
 		membuf_store(&to, ctrl);
-		membuf_zero(&to, sizeof(u32));
 		idx++;
 	}
 
@@ -725,10 +579,10 @@ static int hw_break_set(struct task_struct *target,
 	unsigned int note_type = regset->core_note_type;
 
 	/* Resource info */
-	offset = offsetof(struct user_watch_state_v2, dbg_regs);
+	offset = offsetof(struct user_watch_state, dbg_regs);
 	user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf, 0, offset);
 
-	/* (address, mask, ctrl) registers */
+	/* (address, ctrl) registers */
 	limit = regset->n * regset->size;
 	while (count && offset < limit) {
 		if (count < PTRACE_HBP_ADDR_SZ)
@@ -748,7 +602,7 @@ static int hw_break_set(struct task_struct *target,
 			break;
 
 		ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &mask,
-					 offset, offset + PTRACE_HBP_MASK_SZ);
+					 offset, offset + PTRACE_HBP_ADDR_SZ);
 		if (ret)
 			return ret;
 
@@ -757,8 +611,8 @@ static int hw_break_set(struct task_struct *target,
 			return ret;
 		offset += PTRACE_HBP_MASK_SZ;
 
-		ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &ctrl,
-					 offset, offset + PTRACE_HBP_CTRL_SZ);
+		ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &mask,
+					 offset, offset + PTRACE_HBP_MASK_SZ);
 		if (ret)
 			return ret;
 
@@ -766,11 +620,6 @@ static int hw_break_set(struct task_struct *target,
 		if (ret)
 			return ret;
 		offset += PTRACE_HBP_CTRL_SZ;
-
-		user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-					  offset, offset + PTRACE_HBP_PAD_SZ);
-		offset += PTRACE_HBP_PAD_SZ;
-
 		idx++;
 	}
 
@@ -852,15 +701,6 @@ enum loongarch_regset {
 	REGSET_GPR,
 	REGSET_FPR,
 	REGSET_CPUCFG,
-#ifdef CONFIG_CPU_HAS_LSX
-	REGSET_LSX,
-#endif
-#ifdef CONFIG_CPU_HAS_LASX
-	REGSET_LASX,
-#endif
-#ifdef CONFIG_CPU_HAS_LBT
-	REGSET_LBT,
-#endif
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 	REGSET_HW_BREAK,
 	REGSET_HW_WATCH,
@@ -869,7 +709,7 @@ enum loongarch_regset {
 
 static const struct user_regset loongarch64_regsets[] = {
 	[REGSET_GPR] = {
-		USER_REGSET_NOTE_TYPE(PRSTATUS),
+		.core_note_type	= NT_PRSTATUS,
 		.n		= ELF_NGREG,
 		.size		= sizeof(elf_greg_t),
 		.align		= sizeof(elf_greg_t),
@@ -877,7 +717,7 @@ static const struct user_regset loongarch64_regsets[] = {
 		.set		= gpr_set,
 	},
 	[REGSET_FPR] = {
-		USER_REGSET_NOTE_TYPE(PRFPREG),
+		.core_note_type	= NT_PRFPREG,
 		.n		= ELF_NFPREG,
 		.size		= sizeof(elf_fpreg_t),
 		.align		= sizeof(elf_fpreg_t),
@@ -885,55 +725,25 @@ static const struct user_regset loongarch64_regsets[] = {
 		.set		= fpr_set,
 	},
 	[REGSET_CPUCFG] = {
-		USER_REGSET_NOTE_TYPE(LOONGARCH_CPUCFG),
+		.core_note_type	= NT_LOONGARCH_CPUCFG,
 		.n		= 64,
 		.size		= sizeof(u32),
 		.align		= sizeof(u32),
 		.regset_get	= cfg_get,
 		.set		= cfg_set,
 	},
-#ifdef CONFIG_CPU_HAS_LSX
-	[REGSET_LSX] = {
-		USER_REGSET_NOTE_TYPE(LOONGARCH_LSX),
-		.n		= NUM_FPU_REGS,
-		.size		= 16,
-		.align		= 16,
-		.regset_get	= simd_get,
-		.set		= simd_set,
-	},
-#endif
-#ifdef CONFIG_CPU_HAS_LASX
-	[REGSET_LASX] = {
-		USER_REGSET_NOTE_TYPE(LOONGARCH_LASX),
-		.n		= NUM_FPU_REGS,
-		.size		= 32,
-		.align		= 32,
-		.regset_get	= simd_get,
-		.set		= simd_set,
-	},
-#endif
-#ifdef CONFIG_CPU_HAS_LBT
-	[REGSET_LBT] = {
-		USER_REGSET_NOTE_TYPE(LOONGARCH_LBT),
-		.n		= 5,
-		.size		= sizeof(u64),
-		.align		= sizeof(u64),
-		.regset_get	= lbt_get,
-		.set		= lbt_set,
-	},
-#endif
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 	[REGSET_HW_BREAK] = {
-		USER_REGSET_NOTE_TYPE(LOONGARCH_HW_BREAK),
-		.n = sizeof(struct user_watch_state_v2) / sizeof(u32),
+		.core_note_type = NT_LOONGARCH_HW_BREAK,
+		.n = sizeof(struct user_watch_state) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),
 		.regset_get = hw_break_get,
 		.set = hw_break_set,
 	},
 	[REGSET_HW_WATCH] = {
-		USER_REGSET_NOTE_TYPE(LOONGARCH_HW_WATCH),
-		.n = sizeof(struct user_watch_state_v2) / sizeof(u32),
+		.core_note_type = NT_LOONGARCH_HW_WATCH,
+		.n = sizeof(struct user_watch_state) / sizeof(u32),
 		.size = sizeof(u32),
 		.align = sizeof(u32),
 		.regset_get = hw_break_get,

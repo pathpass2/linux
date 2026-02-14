@@ -157,7 +157,9 @@ This is achieved by using the otherwise unused and obsolete VERW instruction in
 combination with a microcode update. The microcode clears the affected CPU
 buffers when the VERW instruction is executed.
 
-Kernel does the buffer clearing with x86_clear_cpu_buffers().
+Kernel reuses the MDS function to invoke the buffer clearing:
+
+	mds_clear_cpu_buffers()
 
 On MDS affected CPUs, the kernel already invokes CPU buffer clear on
 kernel/userspace, hypervisor/guest and C-state (idle) transitions. No
@@ -223,19 +225,8 @@ The possible values in this file are:
      * - 'Vulnerable'
        - The processor is vulnerable, but no mitigation enabled
      * - 'Vulnerable: Clear CPU buffers attempted, no microcode'
-       - The processor is vulnerable but microcode is not updated. The
+       - The processor is vulnerable, but microcode is not updated. The
          mitigation is enabled on a best effort basis.
-
-         If the processor is vulnerable but the availability of the microcode
-         based mitigation mechanism is not advertised via CPUID, the kernel
-         selects a best effort mitigation mode. This mode invokes the mitigation
-         instructions without a guarantee that they clear the CPU buffers.
-
-         This is done to address virtualization scenarios where the host has the
-         microcode update applied, but the hypervisor is not yet updated to
-         expose the CPUID to the guest. If the host has updated microcode the
-         protection takes effect; otherwise a few CPU cycles are wasted
-         pointlessly.
      * - 'Mitigation: Clear CPU buffers'
        - The processor is vulnerable and the CPU buffer clearing mitigation is
          enabled.

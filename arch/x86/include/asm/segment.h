@@ -56,7 +56,7 @@
 
 #define GDT_ENTRY_INVALID_SEG	0
 
-#if defined(CONFIG_X86_32) && !defined(BUILD_VDSO32_64)
+#ifdef CONFIG_X86_32
 /*
  * The layout of the per-CPU GDT under Linux:
  *
@@ -233,7 +233,7 @@
 #define VDSO_CPUNODE_BITS		12
 #define VDSO_CPUNODE_MASK		0xfff
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /* Helper functions to store/load CPU and node numbers */
 
@@ -244,7 +244,7 @@ static inline unsigned long vdso_encode_cpunode(int cpu, unsigned long node)
 
 static inline void vdso_read_cpunode(unsigned *cpu, unsigned *node)
 {
-	unsigned long p;
+	unsigned int p;
 
 	/*
 	 * Load CPU and node number from the GDT.  LSL is faster than RDTSCP
@@ -254,10 +254,10 @@ static inline void vdso_read_cpunode(unsigned *cpu, unsigned *node)
 	 *
 	 * If RDPID is available, use it.
 	 */
-	alternative_io ("lsl %[seg],%k[p]",
-			"rdpid %[p]",
+	alternative_io ("lsl %[seg],%[p]",
+			".byte 0xf3,0x0f,0xc7,0xf8", /* RDPID %eax/rax */
 			X86_FEATURE_RDPID,
-			[p] "=r" (p), [seg] "r" (__CPUNODE_SEG));
+			[p] "=a" (p), [seg] "r" (__CPUNODE_SEG));
 
 	if (cpu)
 		*cpu = (p & VDSO_CPUNODE_MASK);
@@ -265,7 +265,7 @@ static inline void vdso_read_cpunode(unsigned *cpu, unsigned *node)
 		*node = (p >> VDSO_CPUNODE_BITS);
 }
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #ifdef __KERNEL__
 
@@ -286,7 +286,7 @@ static inline void vdso_read_cpunode(unsigned *cpu, unsigned *node)
  */
 #define XEN_EARLY_IDT_HANDLER_SIZE (8 + ENDBR_INSN_SIZE)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 extern const char early_idt_handler_array[NUM_EXCEPTION_VECTORS][EARLY_IDT_HANDLER_SIZE];
 extern void early_ignore_irq(void);
@@ -348,9 +348,9 @@ static inline void __loadsegment_fs(unsigned short value)
  * Save a segment register away:
  */
 #define savesegment(seg, value)				\
-	asm("movl %%" #seg ",%k0" : "=r" (value) : : "memory")
+	asm("mov %%" #seg ",%0":"=r" (value) : : "memory")
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 #endif /* __KERNEL__ */
 
 #endif /* _ASM_X86_SEGMENT_H */

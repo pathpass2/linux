@@ -395,6 +395,7 @@ static int ns2_drd_phy_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, driver);
 
+	dev_info(dev, "Registered NS2 DRD Phy device\n");
 	queue_delayed_work(system_power_efficient_wq, &driver->wq_extcon,
 			   driver->debounce_jiffies);
 

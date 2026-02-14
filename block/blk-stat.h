@@ -64,6 +64,7 @@ struct blk_stat_callback {
 
 struct blk_queue_stats *blk_alloc_queue_stats(void);
 void blk_free_queue_stats(struct blk_queue_stats *);
+bool blk_stats_alloc_enable(struct request_queue *q);
 
 void blk_stat_add(struct request *rq, u64 now);
 
@@ -148,7 +149,7 @@ static inline void blk_stat_activate_nsecs(struct blk_stat_callback *cb,
 
 static inline void blk_stat_deactivate(struct blk_stat_callback *cb)
 {
-	timer_delete_sync(&cb->timer);
+	del_timer_sync(&cb->timer);
 }
 
 /**

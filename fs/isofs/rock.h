@@ -44,7 +44,7 @@ struct RR_PN_s {
 struct SL_component {
 	__u8 flags;
 	__u8 len;
-	__u8 text[] __counted_by(len);
+	__u8 text[];
 } __attribute__ ((packed));
 
 struct RR_SL_s {
@@ -65,9 +65,13 @@ struct RR_PL_s {
 	__u8 location[8];
 };
 
+struct stamp {
+	__u8 time[7];		/* actually 6 unsigned, 1 signed */
+} __attribute__ ((packed));
+
 struct RR_TF_s {
 	__u8 flags;
-	__u8 data[];
+	struct stamp times[];	/* Variable number of these beasts */
 } __attribute__ ((packed));
 
 /* Linux-specific extension for transparent decompression */

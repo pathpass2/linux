@@ -229,34 +229,41 @@ abort:
 
 static int nct7802_read_fan(struct nct7802_data *data, u8 reg_fan)
 {
-	unsigned int regs[2] = {reg_fan, REG_FANCOUNT_LOW};
-	u8 f[2];
+	unsigned int f1, f2;
 	int ret;
 
-	ret = regmap_multi_reg_read(data->regmap, regs, f, 2);
-	if (ret)
-		return ret;
-	ret = (f[0] << 5) | (f[1] >> 3);
+	mutex_lock(&data->access_lock);
+	ret = regmap_read(data->regmap, reg_fan, &f1);
+	if (ret < 0)
+		goto abort;
+	ret = regmap_read(data->regmap, REG_FANCOUNT_LOW, &f2);
+	if (ret < 0)
+		goto abort;
+	ret = (f1 << 5) | (f2 >> 3);
 	/* convert fan count to rpm */
 	if (ret == 0x1fff)	/* maximum value, assume fan is stopped */
 		ret = 0;
 	else if (ret)
 		ret = DIV_ROUND_CLOSEST(1350000U, ret);
+abort:
+	mutex_unlock(&data->access_lock);
 	return ret;
 }
 
 static int nct7802_read_fan_min(struct nct7802_data *data, u8 reg_fan_low,
 				u8 reg_fan_high)
 {
-	unsigned int regs[2] = {reg_fan_low, reg_fan_high};
-	u8 f[2];
+	unsigned int f1, f2;
 	int ret;
 
-	ret = regmap_multi_reg_read(data->regmap, regs, f, 2);
+	mutex_lock(&data->access_lock);
+	ret = regmap_read(data->regmap, reg_fan_low, &f1);
 	if (ret < 0)
-		return ret;
-
-	ret = f[0] | ((f[1] & 0xf8) << 5);
+		goto abort;
+	ret = regmap_read(data->regmap, reg_fan_high, &f2);
+	if (ret < 0)
+		goto abort;
+	ret = f1 | ((f2 & 0xf8) << 5);
 	/* convert fan count to rpm */
 	if (ret == 0x1fff)	/* maximum value, assume no limit */
 		ret = 0;
@@ -264,6 +271,8 @@ static int nct7802_read_fan_min(struct nct7802_data *data, u8 reg_fan_low,
 		ret = DIV_ROUND_CLOSEST(1350000U, ret);
 	else
 		ret = 1350000U;
+abort:
+	mutex_unlock(&data->access_lock);
 	return ret;
 }
 
@@ -293,26 +302,33 @@ static u8 nct7802_vmul[] = { 4, 2, 2, 2, 2 };
 
 static int nct7802_read_voltage(struct nct7802_data *data, int nr, int index)
 {
-	u8 v[2];
+	unsigned int v1, v2;
 	int ret;
 
+	mutex_lock(&data->access_lock);
 	if (index == 0) {	/* voltage */
-		unsigned int regs[2] = {REG_VOLTAGE[nr], REG_VOLTAGE_LOW};
-
-		ret = regmap_multi_reg_read(data->regmap, regs, v, 2);
+		ret = regmap_read(data->regmap, REG_VOLTAGE[nr], &v1);
 		if (ret < 0)
-			return ret;
-		ret = ((v[0] << 2) | (v[1] >> 6)) * nct7802_vmul[nr];
+			goto abort;
+		ret = regmap_read(data->regmap, REG_VOLTAGE_LOW, &v2);
+		if (ret < 0)
+			goto abort;
+		ret = ((v1 << 2) | (v2 >> 6)) * nct7802_vmul[nr];
 	}  else {	/* limit */
 		int shift = 8 - REG_VOLTAGE_LIMIT_MSB_SHIFT[index - 1][nr];
-		unsigned int regs[2] = {REG_VOLTAGE_LIMIT_LSB[index - 1][nr],
-					REG_VOLTAGE_LIMIT_MSB[nr]};
 
-		ret = regmap_multi_reg_read(data->regmap, regs, v, 2);
+		ret = regmap_read(data->regmap,
+				  REG_VOLTAGE_LIMIT_LSB[index - 1][nr], &v1);
 		if (ret < 0)
-			return ret;
-		ret = (v[0] | ((v[1] << shift) & 0x300)) * nct7802_vmul[nr];
+			goto abort;
+		ret = regmap_read(data->regmap, REG_VOLTAGE_LIMIT_MSB[nr],
+				  &v2);
+		if (ret < 0)
+			goto abort;
+		ret = (v1 | ((v2 << shift) & 0x300)) * nct7802_vmul[nr];
 	}
+abort:
+	mutex_unlock(&data->access_lock);
 	return ret;
 }
 
@@ -709,7 +725,7 @@ static umode_t nct7802_temp_is_visible(struct kobject *kobj,
 	if (index >= 38 && index < 46 && !(reg & 0x01))		/* PECI 0 */
 		return 0;
 
-	if (index >= 46 && !(reg & 0x02))			/* PECI 1 */
+	if (index >= 0x46 && (!(reg & 0x02)))			/* PECI 1 */
 		return 0;
 
 	return attr->mode;
@@ -1035,7 +1051,7 @@ static bool nct7802_regmap_is_volatile(struct device *dev, unsigned int reg)
 static const struct regmap_config nct7802_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.volatile_reg = nct7802_regmap_is_volatile,
 };
 
@@ -1129,14 +1145,17 @@ static int nct7802_configure_channels(struct device *dev,
 {
 	/* Enable local temperature sensor by default */
 	u8 mode_mask = MODE_LTD_EN, mode_val = MODE_LTD_EN;
+	struct device_node *node;
 	int err;
 
 	if (dev->of_node) {
-		for_each_child_of_node_scoped(dev->of_node, node) {
+		for_each_child_of_node(dev->of_node, node) {
 			err = nct7802_get_channel_config(dev, node, &mode_mask,
 							 &mode_val);
-			if (err)
+			if (err) {
+				of_node_put(node);
 				return err;
+			}
 		}
 	}
 
@@ -1193,7 +1212,7 @@ static const unsigned short nct7802_address_list[] = {
 };
 
 static const struct i2c_device_id nct7802_idtable[] = {
-	{ "nct7802" },
+	{ "nct7802", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, nct7802_idtable);
@@ -1204,7 +1223,7 @@ static struct i2c_driver nct7802_driver = {
 		.name = DRVNAME,
 	},
 	.detect = nct7802_detect,
-	.probe = nct7802_probe,
+	.probe_new = nct7802_probe,
 	.id_table = nct7802_idtable,
 	.address_list = nct7802_address_list,
 };

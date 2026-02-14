@@ -48,7 +48,9 @@ void *uml_load_file(const char *filename, unsigned long long *size)
 		return NULL;
 	}
 
-	area = memblock_alloc_or_panic(*size, SMP_CACHE_BYTES);
+	area = memblock_alloc(*size, SMP_CACHE_BYTES);
+	if (!area)
+		panic("%s: Failed to allocate %llu bytes\n", __func__, *size);
 
 	if (__uml_load_file(filename, area, *size)) {
 		memblock_free(area, *size);

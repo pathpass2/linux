@@ -1,5 +1,4 @@
 .. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
-.. c:namespace:: V4L
 
 .. _fm-rx-controls:
 
@@ -65,12 +64,17 @@ FM_RX Control IDs
     broadcasts speech. If the transmitter doesn't make this distinction,
     then it will be set.
 
-``V4L2_CID_TUNE_DEEMPHASIS (enum)``
+``V4L2_CID_TUNE_DEEMPHASIS``
+    (enum)
+
+enum v4l2_deemphasis -
     Configures the de-emphasis value for reception. A de-emphasis filter
     is applied to the broadcast to accentuate the high audio
     frequencies. Depending on the region, a time constant of either 50
-    or 75 microseconds is used. The enum v4l2_deemphasis defines possible
-    values for de-emphasis. They are:
+    or 75 useconds is used. The enum v4l2_deemphasis defines possible
+    values for de-emphasis. Here they are:
+
+
 
 .. flat-table::
     :header-rows:  0

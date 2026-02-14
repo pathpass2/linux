@@ -31,14 +31,13 @@ void _insb(const volatile u8 __iomem *port, void *buf, long count)
 
 	if (unlikely(count <= 0))
 		return;
-
-	mb();
+	asm volatile("sync");
 	do {
-		tmp = *(const volatile u8 __force *)port;
+		tmp = *port;
 		eieio();
 		*tbuf++ = tmp;
 	} while (--count != 0);
-	data_barrier(tmp);
+	asm volatile("twi 0,%0,0; isync" : : "r" (tmp));
 }
 EXPORT_SYMBOL(_insb);
 
@@ -48,80 +47,75 @@ void _outsb(volatile u8 __iomem *port, const void *buf, long count)
 
 	if (unlikely(count <= 0))
 		return;
-
-	mb();
+	asm volatile("sync");
 	do {
-		*(volatile u8 __force *)port = *tbuf++;
+		*port = *tbuf++;
 	} while (--count != 0);
-	mb();
+	asm volatile("sync");
 }
 EXPORT_SYMBOL(_outsb);
 
-void _insw(const volatile u16 __iomem *port, void *buf, long count)
+void _insw_ns(const volatile u16 __iomem *port, void *buf, long count)
 {
 	u16 *tbuf = buf;
 	u16 tmp;
 
 	if (unlikely(count <= 0))
 		return;
-
-	mb();
+	asm volatile("sync");
 	do {
-		tmp = *(const volatile u16 __force *)port;
+		tmp = *port;
 		eieio();
 		*tbuf++ = tmp;
 	} while (--count != 0);
-	data_barrier(tmp);
+	asm volatile("twi 0,%0,0; isync" : : "r" (tmp));
 }
-EXPORT_SYMBOL(_insw);
+EXPORT_SYMBOL(_insw_ns);
 
-void _outsw(volatile u16 __iomem *port, const void *buf, long count)
+void _outsw_ns(volatile u16 __iomem *port, const void *buf, long count)
 {
 	const u16 *tbuf = buf;
 
 	if (unlikely(count <= 0))
 		return;
-
-	mb();
+	asm volatile("sync");
 	do {
-		*(volatile u16 __force *)port = *tbuf++;
+		*port = *tbuf++;
 	} while (--count != 0);
-	mb();
+	asm volatile("sync");
 }
-EXPORT_SYMBOL(_outsw);
+EXPORT_SYMBOL(_outsw_ns);
 
-void _insl(const volatile u32 __iomem *port, void *buf, long count)
+void _insl_ns(const volatile u32 __iomem *port, void *buf, long count)
 {
 	u32 *tbuf = buf;
 	u32 tmp;
 
 	if (unlikely(count <= 0))
 		return;
-
-	mb();
+	asm volatile("sync");
 	do {
-		tmp = *(const volatile u32 __force *)port;
+		tmp = *port;
 		eieio();
 		*tbuf++ = tmp;
 	} while (--count != 0);
-	data_barrier(tmp);
+	asm volatile("twi 0,%0,0; isync" : : "r" (tmp));
 }
-EXPORT_SYMBOL(_insl);
+EXPORT_SYMBOL(_insl_ns);
 
-void _outsl(volatile u32 __iomem *port, const void *buf, long count)
+void _outsl_ns(volatile u32 __iomem *port, const void *buf, long count)
 {
 	const u32 *tbuf = buf;
 
 	if (unlikely(count <= 0))
 		return;
-
-	mb();
+	asm volatile("sync");
 	do {
-		*(volatile u32 __force *)port = *tbuf++;
+		*port = *tbuf++;
 	} while (--count != 0);
-	mb();
+	asm volatile("sync");
 }
-EXPORT_SYMBOL(_outsl);
+EXPORT_SYMBOL(_outsl_ns);
 
 #define IO_CHECK_ALIGN(v,a) ((((unsigned long)(v)) & ((a) - 1)) == 0)
 
@@ -133,7 +127,7 @@ _memset_io(volatile void __iomem *addr, int c, unsigned long n)
 	lc |= lc << 8;
 	lc |= lc << 16;
 
-	mb();
+	__asm__ __volatile__ ("sync" : : : "memory");
 	while(n && !IO_CHECK_ALIGN(p, 4)) {
 		*((volatile u8 *)p) = c;
 		p++;
@@ -149,7 +143,7 @@ _memset_io(volatile void __iomem *addr, int c, unsigned long n)
 		p++;
 		n--;
 	}
-	mb();
+	__asm__ __volatile__ ("sync" : : : "memory");
 }
 EXPORT_SYMBOL(_memset_io);
 
@@ -158,7 +152,7 @@ void _memcpy_fromio(void *dest, const volatile void __iomem *src,
 {
 	void *vsrc = (void __force *) src;
 
-	mb();
+	__asm__ __volatile__ ("sync" : : : "memory");
 	while(n && (!IO_CHECK_ALIGN(vsrc, 4) || !IO_CHECK_ALIGN(dest, 4))) {
 		*((u8 *)dest) = *((volatile u8 *)vsrc);
 		eieio();
@@ -180,7 +174,7 @@ void _memcpy_fromio(void *dest, const volatile void __iomem *src,
 		dest++;
 		n--;
 	}
-	mb();
+	__asm__ __volatile__ ("sync" : : : "memory");
 }
 EXPORT_SYMBOL(_memcpy_fromio);
 
@@ -188,7 +182,7 @@ void _memcpy_toio(volatile void __iomem *dest, const void *src, unsigned long n)
 {
 	void *vdest = (void __force *) dest;
 
-	mb();
+	__asm__ __volatile__ ("sync" : : : "memory");
 	while(n && (!IO_CHECK_ALIGN(vdest, 4) || !IO_CHECK_ALIGN(src, 4))) {
 		*((volatile u8 *)vdest) = *((u8 *)src);
 		src++;
@@ -207,6 +201,6 @@ void _memcpy_toio(volatile void __iomem *dest, const void *src, unsigned long n)
 		vdest++;
 		n--;
 	}
-	mb();
+	__asm__ __volatile__ ("sync" : : : "memory");
 }
 EXPORT_SYMBOL(_memcpy_toio);

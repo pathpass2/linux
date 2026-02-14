@@ -26,7 +26,7 @@
 
 struct lp8788_adc {
 	struct lp8788 *lp;
-	const struct iio_map *map;
+	struct iio_map *map;
 	struct mutex lock;
 };
 
@@ -149,9 +149,17 @@ static const struct iio_chan_spec lp8788_adc_channels[] = {
 };
 
 /* default maps used by iio consumer (lp8788-charger driver) */
-static const struct iio_map lp8788_default_iio_maps[] = {
-	IIO_MAP("VBATT_5P0", "lp8788-charger", "lp8788_vbatt_5p0"),
-	IIO_MAP("ADC1", "lp8788-charger", "lp8788_adc1"),
+static struct iio_map lp8788_default_iio_maps[] = {
+	{
+		.consumer_dev_name = "lp8788-charger",
+		.consumer_channel = "lp8788_vbatt_5p0",
+		.adc_channel_label = "VBATT_5P0",
+	},
+	{
+		.consumer_dev_name = "lp8788-charger",
+		.consumer_channel = "lp8788_adc1",
+		.adc_channel_label = "ADC1",
+	},
 	{ }
 };
 
@@ -160,7 +168,7 @@ static int lp8788_iio_map_register(struct device *dev,
 				struct lp8788_platform_data *pdata,
 				struct lp8788_adc *adc)
 {
-	const struct iio_map *map;
+	struct iio_map *map;
 	int ret;
 
 	map = (!pdata || !pdata->adc_pdata) ?

@@ -1,11 +1,12 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-================================================================
-DAMON: Data Access MONitoring and Access-aware System Operations
-================================================================
+==========================
+DAMON: Data Access MONitor
+==========================
 
-:doc:`DAMON </mm/damon/index>` is a Linux kernel subsystem for efficient data
-access monitoring and access-aware system operations.
+:doc:`DAMON </mm/damon/index>` allows light-weight data access monitoring.
+Using DAMON, users can analyze the memory access patterns of their systems and
+optimize those.
 
 .. toctree::
    :maxdepth: 2
@@ -14,4 +15,3 @@ access monitoring and access-aware system operations.
    usage
    reclaim
    lru_sort
-   stat

@@ -7,6 +7,7 @@
 #include <linux/device/bus.h>
 #include "idxd.h"
 
+extern int device_driver_attach(struct device_driver *drv, struct device *dev);
 extern void device_driver_detach(struct device *dev);
 
 #define DRIVER_ATTR_IGNORE_LOCKDEP(_name, _mode, _show, _store)	\
@@ -15,20 +16,15 @@ extern void device_driver_detach(struct device *dev);
 
 static ssize_t unbind_store(struct device_driver *drv, const char *buf, size_t count)
 {
-	const struct bus_type *bus = drv->bus;
+	struct bus_type *bus = drv->bus;
 	struct device *dev;
 	int rc = -ENODEV;
 
 	dev = bus_find_device_by_name(bus, NULL, buf);
-	if (!dev)
-		return -ENODEV;
-
-	if (dev->driver) {
+	if (dev && dev->driver) {
 		device_driver_detach(dev);
 		rc = count;
 	}
-
-	put_device(dev);
 
 	return rc;
 }
@@ -36,18 +32,15 @@ static DRIVER_ATTR_IGNORE_LOCKDEP(unbind, 0200, NULL, unbind_store);
 
 static ssize_t bind_store(struct device_driver *drv, const char *buf, size_t count)
 {
-	const struct bus_type *bus = drv->bus;
+	struct bus_type *bus = drv->bus;
 	struct device *dev;
 	struct device_driver *alt_drv = NULL;
 	int rc = -ENODEV;
 	struct idxd_dev *idxd_dev;
 
 	dev = bus_find_device_by_name(bus, NULL, buf);
-	if (!dev)
+	if (!dev || dev->driver || drv != &dsa_drv.drv)
 		return -ENODEV;
-
-	if (dev->driver || drv != &dsa_drv.drv)
-		goto err_put_dev;
 
 	idxd_dev = confdev_to_idxd_dev(dev);
 	if (is_idxd_dev(idxd_dev)) {
@@ -61,20 +54,13 @@ static ssize_t bind_store(struct device_driver *drv, const char *buf, size_t cou
 			alt_drv = driver_find("user", bus);
 	}
 	if (!alt_drv)
-		goto err_put_dev;
+		return -ENODEV;
 
 	rc = device_driver_attach(alt_drv, dev);
 	if (rc < 0)
-		goto err_put_dev;
-
-	put_device(dev);
+		return rc;
 
 	return count;
-
-err_put_dev:
-	put_device(dev);
-
-	return rc;
 }
 static DRIVER_ATTR_IGNORE_LOCKDEP(bind, 0200, NULL, bind_store);
 
@@ -118,4 +104,4 @@ struct idxd_device_driver dsa_drv = {
 };
 
 module_idxd_driver(dsa_drv);
-MODULE_IMPORT_NS("IDXD");
+MODULE_IMPORT_NS(IDXD);

@@ -5,8 +5,3 @@
 !*.h
 !*.S
 !*.sh
-!.gitignore
-!config
-!settings
-!Makefile
-!Makefile.kvm

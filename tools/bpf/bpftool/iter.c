@@ -37,7 +37,7 @@ static int do_pin(int argc, char **argv)
 				return -1;
 			}
 
-			map_fd = map_parse_fd(&argc, &argv, BPF_F_RDONLY);
+			map_fd = map_parse_fd(&argc, &argv);
 			if (map_fd < 0)
 				return -1;
 
@@ -76,7 +76,7 @@ static int do_pin(int argc, char **argv)
 		goto close_obj;
 	}
 
-	err = mount_bpffs_for_file(path);
+	err = mount_bpffs_for_pin(path);
 	if (err)
 		goto close_link;
 

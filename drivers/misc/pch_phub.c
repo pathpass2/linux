@@ -7,7 +7,6 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/fs.h>
-#include <linux/hex.h>
 #include <linux/uaccess.h>
 #include <linux/string.h>
 #include <linux/pci.h>
@@ -484,7 +483,7 @@ static int pch_phub_write_gbe_mac_addr(struct pch_phub_reg *chip, u8 *data)
 }
 
 static ssize_t pch_phub_bin_read(struct file *filp, struct kobject *kobj,
-				 const struct bin_attribute *attr, char *buf,
+				 struct bin_attribute *attr, char *buf,
 				 loff_t off, size_t count)
 {
 	unsigned int rom_signature;
@@ -554,7 +553,7 @@ return_err_nomutex:
 }
 
 static ssize_t pch_phub_bin_write(struct file *filp, struct kobject *kobj,
-				  const struct bin_attribute *attr,
+				  struct bin_attribute *attr,
 				  char *buf, loff_t off, size_t count)
 {
 	int err;

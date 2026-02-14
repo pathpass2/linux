@@ -36,7 +36,7 @@ struct vcc_port {
 	 * and guarantee that any characters that the driver accepts will
 	 * be eventually sent, either immediately or later.
 	 */
-	size_t chars_in_buffer;
+	int chars_in_buffer;
 	struct vio_vcc buffer;
 
 	struct timer_list rx_timer;
@@ -356,7 +356,7 @@ done:
 
 static void vcc_rx_timer(struct timer_list *t)
 {
-	struct vcc_port *port = timer_container_of(port, t, rx_timer);
+	struct vcc_port *port = from_timer(port, t, rx_timer);
 	struct vio_driver_state *vio;
 	unsigned long flags;
 	int rv;
@@ -382,10 +382,10 @@ done:
 
 static void vcc_tx_timer(struct timer_list *t)
 {
-	struct vcc_port *port = timer_container_of(port, t, tx_timer);
+	struct vcc_port *port = from_timer(port, t, tx_timer);
 	struct vio_vcc *pkt;
 	unsigned long flags;
-	size_t tosend = 0;
+	int tosend = 0;
 	int rv;
 
 	spin_lock_irqsave(&port->lock, flags);
@@ -579,22 +579,18 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		return -ENOMEM;
 
 	name = kstrdup(dev_name(&vdev->dev), GFP_KERNEL);
-	if (!name) {
-		rv = -ENOMEM;
-		goto free_port;
-	}
 
 	rv = vio_driver_init(&port->vio, vdev, VDEV_CONSOLE_CON, vcc_versions,
 			     ARRAY_SIZE(vcc_versions), NULL, name);
 	if (rv)
-		goto free_name;
+		goto free_port;
 
 	port->vio.debug = vcc_dbg_vio;
 	vcc_ldc_cfg.debug = vcc_dbg_ldc;
 
 	rv = vio_ldc_alloc(&port->vio, &vcc_ldc_cfg, port);
 	if (rv)
-		goto free_name;
+		goto free_port;
 
 	spin_lock_init(&port->lock);
 
@@ -628,11 +624,6 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		goto unreg_tty;
 	}
 	port->domain = kstrdup(domain, GFP_KERNEL);
-	if (!port->domain) {
-		rv = -ENOMEM;
-		goto unreg_tty;
-	}
-
 
 	mdesc_release(hp);
 
@@ -662,9 +653,8 @@ free_table:
 	vcc_table_remove(port->index);
 free_ldc:
 	vio_ldc_free(&port->vio);
-free_name:
-	kfree(name);
 free_port:
+	kfree(name);
 	kfree(port);
 
 	return rv;
@@ -683,8 +673,8 @@ static void vcc_remove(struct vio_dev *vdev)
 {
 	struct vcc_port *port = dev_get_drvdata(&vdev->dev);
 
-	timer_delete_sync(&port->rx_timer);
-	timer_delete_sync(&port->tx_timer);
+	del_timer_sync(&port->rx_timer);
+	del_timer_sync(&port->tx_timer);
 
 	/* If there's a process with the device open, do a synchronous
 	 * hangup of the TTY. This *may* cause the process to call close
@@ -700,7 +690,7 @@ static void vcc_remove(struct vio_dev *vdev)
 
 	tty_unregister_device(vcc_tty_driver, port->index);
 
-	timer_delete_sync(&port->vio.timer);
+	del_timer_sync(&port->vio.timer);
 	vio_ldc_free(&port->vio);
 	sysfs_remove_group(&vdev->dev.kobj, &vcc_attribute_group);
 	dev_set_drvdata(&vdev->dev, NULL);
@@ -814,13 +804,14 @@ static void vcc_hangup(struct tty_struct *tty)
 	tty_port_hangup(tty->port);
 }
 
-static ssize_t vcc_write(struct tty_struct *tty, const u8 *buf, size_t count)
+static int vcc_write(struct tty_struct *tty, const unsigned char *buf,
+		     int count)
 {
 	struct vcc_port *port;
 	struct vio_vcc *pkt;
 	unsigned long flags;
-	size_t total_sent = 0;
-	size_t tosend = 0;
+	int total_sent = 0;
+	int tosend = 0;
 	int rv = -EINVAL;
 
 	port = vcc_get_ne(tty->index);
@@ -836,8 +827,7 @@ static ssize_t vcc_write(struct tty_struct *tty, const u8 *buf, size_t count)
 
 	while (count > 0) {
 		/* Minimum of data to write and space available */
-		tosend = min_t(size_t, count,
-			       (VCC_BUFF_LEN - port->chars_in_buffer));
+		tosend = min(count, (VCC_BUFF_LEN - port->chars_in_buffer));
 
 		if (!tosend)
 			break;
@@ -857,7 +847,7 @@ static ssize_t vcc_write(struct tty_struct *tty, const u8 *buf, size_t count)
 		 * hypervisor actually took it because we have it buffered.
 		 */
 		rv = ldc_write(port->vio.lp, pkt, (VIO_TAG_SIZE + tosend));
-		vccdbg("VCC: write: ldc_write(%zu)=%d\n",
+		vccdbg("VCC: write: ldc_write(%d)=%d\n",
 		       (VIO_TAG_SIZE + tosend), rv);
 
 		total_sent += tosend;
@@ -874,7 +864,7 @@ static ssize_t vcc_write(struct tty_struct *tty, const u8 *buf, size_t count)
 
 	vcc_put(port, false);
 
-	vccdbg("VCC: write: total=%zu rv=%d", total_sent, rv);
+	vccdbg("VCC: write: total=%d rv=%d", total_sent, rv);
 
 	return total_sent ? total_sent : rv;
 }

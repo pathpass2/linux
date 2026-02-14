@@ -2,9 +2,6 @@
 #ifndef _M68K_IRQ_H_
 #define _M68K_IRQ_H_
 
-#include <linux/atomic.h>
-#include <linux/linkage.h>
-
 /*
  * This should be the same as the max(NUM_X_SOURCES) for all the
  * different m68k hosts compiled into the kernel.
@@ -28,8 +25,10 @@
 #define NR_IRQS	32
 #elif defined(CONFIG_APOLLO)
 #define NR_IRQS	24
-#else /* CONFIG_HP300 etc. */
+#elif defined(CONFIG_HP300)
 #define NR_IRQS	8
+#else
+#define NR_IRQS	0
 #endif
 
 #if defined(CONFIG_M68020) || defined(CONFIG_M68030) || \
@@ -60,8 +59,6 @@
 struct irq_data;
 struct irq_chip;
 struct irq_desc;
-struct pt_regs;
-
 extern unsigned int m68k_irq_startup(struct irq_data *data);
 extern unsigned int m68k_irq_startup_irq(unsigned int irq);
 extern void m68k_irq_shutdown(struct irq_data *data);

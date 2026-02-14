@@ -24,14 +24,12 @@ struct devx_obj {
 	struct list_head event_sub; /* holds devx_event_subscription entries */
 };
 #if IS_ENABLED(CONFIG_INFINIBAND_USER_ACCESS)
-int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user, u64 req_ucaps);
+int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user);
 void mlx5_ib_devx_destroy(struct mlx5_ib_dev *dev, u16 uid);
 int mlx5_ib_devx_init(struct mlx5_ib_dev *dev);
 void mlx5_ib_devx_cleanup(struct mlx5_ib_dev *dev);
-void mlx5_ib_ufile_hw_cleanup(struct ib_uverbs_file *ufile);
 #else
-static inline int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user,
-				      u64 req_ucaps)
+static inline int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user)
 {
 	return -EOPNOTSUPP;
 }
@@ -41,9 +39,6 @@ static inline int mlx5_ib_devx_init(struct mlx5_ib_dev *dev)
 	return 0;
 }
 static inline void mlx5_ib_devx_cleanup(struct mlx5_ib_dev *dev)
-{
-}
-static inline void mlx5_ib_ufile_hw_cleanup(struct ib_uverbs_file *ufile)
 {
 }
 #endif

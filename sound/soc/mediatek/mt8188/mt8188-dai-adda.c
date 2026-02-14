@@ -14,20 +14,105 @@
 #include "mt8188-afe-clk.h"
 #include "mt8188-afe-common.h"
 #include "mt8188-reg.h"
-#include "../common/mtk-dai-adda-common.h"
 
 #define ADDA_HIRES_THRES 48000
 
 enum {
+	SUPPLY_SEQ_CLOCK_SEL,
 	SUPPLY_SEQ_ADDA_DL_ON,
 	SUPPLY_SEQ_ADDA_MTKAIF_CFG,
 	SUPPLY_SEQ_ADDA_UL_ON,
 	SUPPLY_SEQ_ADDA_AFE_ON,
 };
 
-struct mtk_dai_adda_priv {
-	bool hires_required;
+enum {
+	MTK_AFE_ADDA_DL_RATE_8K = 0,
+	MTK_AFE_ADDA_DL_RATE_11K = 1,
+	MTK_AFE_ADDA_DL_RATE_12K = 2,
+	MTK_AFE_ADDA_DL_RATE_16K = 3,
+	MTK_AFE_ADDA_DL_RATE_22K = 4,
+	MTK_AFE_ADDA_DL_RATE_24K = 5,
+	MTK_AFE_ADDA_DL_RATE_32K = 6,
+	MTK_AFE_ADDA_DL_RATE_44K = 7,
+	MTK_AFE_ADDA_DL_RATE_48K = 8,
+	MTK_AFE_ADDA_DL_RATE_96K = 9,
+	MTK_AFE_ADDA_DL_RATE_192K = 10,
 };
+
+enum {
+	MTK_AFE_ADDA_UL_RATE_8K = 0,
+	MTK_AFE_ADDA_UL_RATE_16K = 1,
+	MTK_AFE_ADDA_UL_RATE_32K = 2,
+	MTK_AFE_ADDA_UL_RATE_48K = 3,
+	MTK_AFE_ADDA_UL_RATE_96K = 4,
+	MTK_AFE_ADDA_UL_RATE_192K = 5,
+};
+
+enum {
+	DELAY_DATA_MISO1 = 0,
+	DELAY_DATA_MISO0 = 1,
+};
+
+struct mtk_dai_adda_priv {
+	unsigned int dl_rate;
+	unsigned int ul_rate;
+};
+
+static unsigned int afe_adda_dl_rate_transform(struct mtk_base_afe *afe,
+					       unsigned int rate)
+{
+	switch (rate) {
+	case 8000:
+		return MTK_AFE_ADDA_DL_RATE_8K;
+	case 11025:
+		return MTK_AFE_ADDA_DL_RATE_11K;
+	case 12000:
+		return MTK_AFE_ADDA_DL_RATE_12K;
+	case 16000:
+		return MTK_AFE_ADDA_DL_RATE_16K;
+	case 22050:
+		return MTK_AFE_ADDA_DL_RATE_22K;
+	case 24000:
+		return MTK_AFE_ADDA_DL_RATE_24K;
+	case 32000:
+		return MTK_AFE_ADDA_DL_RATE_32K;
+	case 44100:
+		return MTK_AFE_ADDA_DL_RATE_44K;
+	case 48000:
+		return MTK_AFE_ADDA_DL_RATE_48K;
+	case 96000:
+		return MTK_AFE_ADDA_DL_RATE_96K;
+	case 192000:
+		return MTK_AFE_ADDA_DL_RATE_192K;
+	default:
+		dev_info(afe->dev, "%s(), rate %u invalid, use 48kHz!!!\n",
+			 __func__, rate);
+		return MTK_AFE_ADDA_DL_RATE_48K;
+	}
+}
+
+static unsigned int afe_adda_ul_rate_transform(struct mtk_base_afe *afe,
+					       unsigned int rate)
+{
+	switch (rate) {
+	case 8000:
+		return MTK_AFE_ADDA_UL_RATE_8K;
+	case 16000:
+		return MTK_AFE_ADDA_UL_RATE_16K;
+	case 32000:
+		return MTK_AFE_ADDA_UL_RATE_32K;
+	case 48000:
+		return MTK_AFE_ADDA_UL_RATE_48K;
+	case 96000:
+		return MTK_AFE_ADDA_UL_RATE_96K;
+	case 192000:
+		return MTK_AFE_ADDA_UL_RATE_192K;
+	default:
+		dev_info(afe->dev, "%s(), rate %u invalid, use 48kHz!!!\n",
+			 __func__, rate);
+		return MTK_AFE_ADDA_UL_RATE_48K;
+	}
+}
 
 static int mt8188_adda_mtkaif_init(struct mtk_base_afe *afe)
 {
@@ -63,6 +148,7 @@ static int mt8188_adda_mtkaif_init(struct mtk_base_afe *afe)
 			param->mtkaif_phase_cycle[MT8188_MTKAIF_MISO_0];
 	}
 
+	val = 0;
 	mask = (MTKAIF_RXIF_DELAY_DATA | MTKAIF_RXIF_DELAY_CYCLE_MASK);
 	val |= FIELD_PREP(MTKAIF_RXIF_DELAY_CYCLE_MASK, delay_cycle);
 	val |= FIELD_PREP(MTKAIF_RXIF_DELAY_DATA, delay_data);
@@ -156,35 +242,70 @@ static int mtk_adda_ul_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
-static struct mtk_dai_adda_priv *get_adda_priv_by_name(struct mtk_base_afe *afe,
-						       const char *name)
+static int mtk_audio_hires_event(struct snd_soc_dapm_widget *w,
+				 struct snd_kcontrol *kcontrol,
+				 int event)
 {
+	struct snd_soc_component *cmpnt = snd_soc_dapm_to_component(w->dapm);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 	struct mt8188_afe_private *afe_priv = afe->platform_priv;
+	struct clk *clk = afe_priv->clk[MT8188_CLK_TOP_AUDIO_H_SEL];
+	struct clk *clk_parent;
 
-	if (strstr(name, "aud_adc_hires"))
-		return afe_priv->dai_priv[MT8188_AFE_IO_UL_SRC];
-	else if (strstr(name, "aud_dac_hires"))
-		return afe_priv->dai_priv[MT8188_AFE_IO_DL_SRC];
-	else
-		return NULL;
+	dev_dbg(afe->dev, "%s(), name %s, event 0x%x\n",
+		__func__, w->name, event);
+
+	switch (event) {
+	case SND_SOC_DAPM_PRE_PMU:
+		clk_parent = afe_priv->clk[MT8188_CLK_APMIXED_APLL1];
+		break;
+	case SND_SOC_DAPM_POST_PMD:
+		clk_parent = afe_priv->clk[MT8188_CLK_XTAL_26M];
+		break;
+	default:
+		return 0;
+	}
+	mt8188_afe_set_clk_parent(afe, clk, clk_parent);
+
+	return 0;
 }
 
-static int mtk_afe_adda_hires_connect(struct snd_soc_dapm_widget *source,
-				      struct snd_soc_dapm_widget *sink)
+static int mtk_afe_adc_hires_connect(struct snd_soc_dapm_widget *source,
+				     struct snd_soc_dapm_widget *sink)
 {
 	struct snd_soc_dapm_widget *w = source;
 	struct snd_soc_component *cmpnt = snd_soc_dapm_to_component(w->dapm);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
+	struct mt8188_afe_private *afe_priv = afe->platform_priv;
 	struct mtk_dai_adda_priv *adda_priv;
 
-	adda_priv = get_adda_priv_by_name(afe, w->name);
+	adda_priv = afe_priv->dai_priv[MT8188_AFE_IO_ADDA];
 
 	if (!adda_priv) {
-		dev_dbg(afe->dev, "adda_priv == NULL");
+		dev_err(afe->dev, "%s adda_priv == NULL", __func__);
 		return 0;
 	}
 
-	return (adda_priv->hires_required) ? 1 : 0;
+	return !!(adda_priv->ul_rate > ADDA_HIRES_THRES);
+}
+
+static int mtk_afe_dac_hires_connect(struct snd_soc_dapm_widget *source,
+				     struct snd_soc_dapm_widget *sink)
+{
+	struct snd_soc_dapm_widget *w = source;
+	struct snd_soc_component *cmpnt = snd_soc_dapm_to_component(w->dapm);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
+	struct mt8188_afe_private *afe_priv = afe->platform_priv;
+	struct mtk_dai_adda_priv *adda_priv;
+
+	adda_priv = afe_priv->dai_priv[MT8188_AFE_IO_ADDA];
+
+	if (!adda_priv) {
+		dev_err(afe->dev, "%s adda_priv == NULL", __func__);
+		return 0;
+	}
+
+	return !!(adda_priv->dl_rate > ADDA_HIRES_THRES);
 }
 
 static const struct snd_kcontrol_new mtk_dai_adda_o176_mix[] = {
@@ -243,6 +364,12 @@ static const struct snd_soc_dapm_widget mtk_dai_adda_widgets[] = {
 			      mtk_adda_ul_event,
 			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 
+	SND_SOC_DAPM_SUPPLY_S("AUDIO_HIRES", SUPPLY_SEQ_CLOCK_SEL,
+			      SND_SOC_NOPM,
+			      0, 0,
+			      mtk_audio_hires_event,
+			      SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+
 	SND_SOC_DAPM_SUPPLY_S("ADDA_MTKAIF_CFG", SUPPLY_SEQ_ADDA_MTKAIF_CFG,
 			      SND_SOC_NOPM,
 			      0, 0,
@@ -269,7 +396,8 @@ static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
 	{"ADDA Capture", NULL, "ADDA Capture Enable"},
 	{"ADDA Capture", NULL, "ADDA_MTKAIF_CFG"},
 	{"ADDA Capture", NULL, "aud_adc"},
-	{"ADDA Capture", NULL, "aud_adc_hires", mtk_afe_adda_hires_connect},
+	{"ADDA Capture", NULL, "aud_adc_hires", mtk_afe_adc_hires_connect},
+	{"aud_adc_hires", NULL, "AUDIO_HIRES"},
 
 	{"I168", NULL, "ADDA Capture"},
 	{"I169", NULL, "ADDA Capture"},
@@ -277,7 +405,8 @@ static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
 	{"ADDA Playback", NULL, "ADDA Enable"},
 	{"ADDA Playback", NULL, "ADDA Playback Enable"},
 	{"ADDA Playback", NULL, "aud_dac"},
-	{"ADDA Playback", NULL, "aud_dac_hires", mtk_afe_adda_hires_connect},
+	{"ADDA Playback", NULL, "aud_dac_hires", mtk_afe_dac_hires_connect},
+	{"aud_dac_hires", NULL, "AUDIO_HIRES"},
 
 	{"DL_GAIN", NULL, "O176"},
 	{"DL_GAIN", NULL, "O177"},
@@ -310,7 +439,7 @@ static const struct snd_soc_dapm_route mtk_dai_adda_routes[] = {
 static int mt8188_adda_dmic_get(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 	struct mt8188_afe_private *afe_priv = afe->platform_priv;
 	struct mtkaif_param *param = &afe_priv->mtkaif_params;
@@ -322,7 +451,7 @@ static int mt8188_adda_dmic_get(struct snd_kcontrol *kcontrol,
 static int mt8188_adda_dmic_set(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(cmpnt);
 	struct mt8188_afe_private *afe_priv = afe->platform_priv;
 	struct mtkaif_param *param = &afe_priv->mtkaif_params;
@@ -356,7 +485,7 @@ static int mtk_dai_da_configure(struct mtk_base_afe *afe,
 	/* set sampling rate */
 	mask |= DL_2_INPUT_MODE_CTL_MASK;
 	val |= FIELD_PREP(DL_2_INPUT_MODE_CTL_MASK,
-			  mtk_adda_dl_rate_transform(afe, rate));
+			  afe_adda_dl_rate_transform(afe, rate));
 
 	/* turn off saturation */
 	mask |= DL_2_CH1_SATURATION_EN_CTL;
@@ -390,7 +519,7 @@ static int mtk_dai_ad_configure(struct mtk_base_afe *afe,
 
 	mask = UL_VOICE_MODE_CTL_MASK;
 	val = FIELD_PREP(UL_VOICE_MODE_CTL_MASK,
-			 mtk_adda_ul_rate_transform(afe, rate));
+			 afe_adda_ul_rate_transform(afe, rate));
 
 	regmap_update_bits(afe->regmap, AFE_ADDA_UL_SRC_CON0,
 			   mask, val);
@@ -411,12 +540,13 @@ static int mtk_dai_adda_hw_params(struct snd_pcm_substream *substream,
 	dev_dbg(afe->dev, "%s(), id %d, stream %d, rate %u\n",
 		__func__, id, substream->stream, rate);
 
-	adda_priv->hires_required = (rate > ADDA_HIRES_THRES);
-
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		adda_priv->dl_rate = rate;
 		ret = mtk_dai_da_configure(afe, rate, id);
-	else
+	} else {
+		adda_priv->ul_rate = rate;
 		ret = mtk_dai_ad_configure(afe, rate, id);
+	}
 
 	return ret;
 }
@@ -443,8 +573,8 @@ static const struct snd_soc_dai_ops mtk_dai_adda_ops = {
 
 static struct snd_soc_dai_driver mtk_dai_adda_driver[] = {
 	{
-		.name = "DL_SRC",
-		.id = MT8188_AFE_IO_DL_SRC,
+		.name = "ADDA",
+		.id = MT8188_AFE_IO_ADDA,
 		.playback = {
 			.stream_name = "ADDA Playback",
 			.channels_min = 1,
@@ -452,11 +582,6 @@ static struct snd_soc_dai_driver mtk_dai_adda_driver[] = {
 			.rates = MTK_ADDA_PLAYBACK_RATES,
 			.formats = MTK_ADDA_FORMATS,
 		},
-		.ops = &mtk_dai_adda_ops,
-	},
-	{
-		.name = "UL_SRC",
-		.id = MT8188_AFE_IO_UL_SRC,
 		.capture = {
 			.stream_name = "ADDA Capture",
 			.channels_min = 1,
@@ -472,18 +597,13 @@ static int init_adda_priv_data(struct mtk_base_afe *afe)
 {
 	struct mt8188_afe_private *afe_priv = afe->platform_priv;
 	struct mtk_dai_adda_priv *adda_priv;
-	int adda_dai_list[] = {MT8188_AFE_IO_DL_SRC, MT8188_AFE_IO_UL_SRC};
-	int i;
 
-	for (i = 0; i < ARRAY_SIZE(adda_dai_list); i++) {
-		adda_priv = devm_kzalloc(afe->dev,
-					 sizeof(struct mtk_dai_adda_priv),
-					 GFP_KERNEL);
-		if (!adda_priv)
-			return -ENOMEM;
+	adda_priv = devm_kzalloc(afe->dev, sizeof(struct mtk_dai_adda_priv),
+				 GFP_KERNEL);
+	if (!adda_priv)
+		return -ENOMEM;
 
-		afe_priv->dai_priv[adda_dai_list[i]] = adda_priv;
-	}
+	afe_priv->dai_priv[MT8188_AFE_IO_ADDA] = adda_priv;
 
 	return 0;
 }

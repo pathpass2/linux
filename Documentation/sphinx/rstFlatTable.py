@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8; mode: python -*-
-# SPDX-License-Identifier: GPL-2.0
 # pylint: disable=C0330, R0903, R0912
 
-"""
+u"""
     flat-table
     ~~~~~~~~~~
 
@@ -100,7 +99,7 @@ class colSpan(nodes.General, nodes.Element): pass # pylint: disable=C0103,C0321
 class FlatTable(Table):
 # ==============================================================================
 
-    """FlatTable (``flat-table``) directive"""
+    u"""FlatTable (``flat-table``) directive"""
 
     option_spec = {
         'name': directives.unchanged
@@ -136,7 +135,7 @@ class FlatTable(Table):
 class ListTableBuilder(object):
 # ==============================================================================
 
-    """Builds a table from a double-stage list"""
+    u"""Builds a table from a double-stage list"""
 
     def __init__(self, directive):
         self.directive = directive
@@ -213,7 +212,7 @@ class ListTableBuilder(object):
         raise SystemMessagePropagation(error)
 
     def parseFlatTableNode(self, node):
-        """parses the node from a :py:class:`FlatTable` directive's body"""
+        u"""parses the node from a :py:class:`FlatTable` directive's body"""
 
         if len(node) != 1 or not isinstance(node[0], nodes.bullet_list):
             self.raiseError(
@@ -226,7 +225,7 @@ class ListTableBuilder(object):
         self.roundOffTableDefinition()
 
     def roundOffTableDefinition(self):
-        """Round off the table definition.
+        u"""Round off the table definition.
 
         This method rounds off the table definition in :py:member:`rows`.
 

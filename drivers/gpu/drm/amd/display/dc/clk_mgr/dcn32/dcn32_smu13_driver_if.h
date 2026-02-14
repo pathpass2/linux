@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-/* Copyright © 2022-2024 Advanced Micro Devices, Inc. All rights reserved. */
+// This is a stripped-down version of the smu13_driver_if.h file for the relevant DAL interfaces.
 
 #define SMU13_DRIVER_IF_VERSION  0x18
 

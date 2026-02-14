@@ -8,15 +8,11 @@ title: Atmel maXTouch touchscreen/touchpad
 
 maintainers:
   - Nick Dyer <nick@shmanahar.org>
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
 
 description: |
   Atmel maXTouch touchscreen or touchpads such as the mXT244
   and similar devices.
-
-allOf:
-  - $ref: input.yaml#
-  - $ref: touchscreen/touchscreen.yaml#
 
 properties:
   compatible:
@@ -64,10 +60,6 @@ properties:
       or experiment to determine which bit corresponds to which input. Use
       KEY_RESERVED for unused padding values.
 
-  linux,keycodes:
-    minItems: 1
-    maxItems: 8
-
   atmel,wakeup-method:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: |
@@ -96,7 +88,7 @@ required:
   - reg
   - interrupts
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

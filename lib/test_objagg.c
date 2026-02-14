@@ -60,7 +60,7 @@ static struct objagg_obj *world_obj_get(struct world *world,
 	if (!world->key_refs[key_id_index(key_id)]) {
 		world->objagg_objs[key_id_index(key_id)] = objagg_obj;
 	} else if (world->objagg_objs[key_id_index(key_id)] != objagg_obj) {
-		pr_err("Key %u: Got another object for the same key.\n",
+		pr_err("Key %u: God another object for the same key.\n",
 		       key_id);
 		err = -EINVAL;
 		goto err_key_id_check;
@@ -899,63 +899,10 @@ static int check_expect_hints_stats(struct objagg_hints *objagg_hints,
 	int err;
 
 	stats = objagg_hints_stats_get(objagg_hints);
-	if (IS_ERR(stats)) {
-		*errmsg = "objagg_hints_stats_get() failed.";
+	if (IS_ERR(stats))
 		return PTR_ERR(stats);
-	}
 	err = __check_expect_stats(stats, expect_stats, errmsg);
 	objagg_stats_put(stats);
-	return err;
-}
-
-static int test_hints_case2(const struct hints_case *hints_case,
-			    struct objagg_hints *hints, struct objagg *objagg)
-{
-	struct objagg_obj *objagg_obj;
-	struct world world2 = {};
-	struct objagg *objagg2;
-	const char *errmsg;
-	int i;
-	int err;
-
-	pr_debug_hints_stats(hints);
-	err = check_expect_hints_stats(hints, &hints_case->expect_stats_hints,
-				       &errmsg);
-	if (err) {
-		pr_err("Hints stats: %s\n", errmsg);
-		return err;
-	}
-
-	objagg2 = objagg_create(&delta_ops, hints, &world2);
-	if (IS_ERR(objagg2))
-		return PTR_ERR(objagg2);
-
-	for (i = 0; i < hints_case->key_ids_count; i++) {
-		objagg_obj = world_obj_get(&world2, objagg2,
-					   hints_case->key_ids[i]);
-		if (IS_ERR(objagg_obj)) {
-			err = PTR_ERR(objagg_obj);
-			goto err_world2_obj_get;
-		}
-	}
-
-	pr_debug_stats(objagg2);
-	err = check_expect_stats(objagg2, &hints_case->expect_stats_hints,
-				 &errmsg);
-	if (err) {
-		pr_err("Stats2: %s\n", errmsg);
-		goto err_check_expect_stats2;
-	}
-
-	err = 0;
-
-err_check_expect_stats2:
-err_world2_obj_get:
-	for (i--; i >= 0; i--)
-		world_obj_put(&world2, objagg, hints_case->key_ids[i]);
-	i = hints_case->key_ids_count;
-	objagg_destroy(objagg2);
-
 	return err;
 }
 
@@ -963,7 +910,9 @@ static int test_hints_case(const struct hints_case *hints_case)
 {
 	struct objagg_obj *objagg_obj;
 	struct objagg_hints *hints;
+	struct world world2 = {};
 	struct world world = {};
+	struct objagg *objagg2;
 	struct objagg *objagg;
 	const char *errmsg;
 	int i;
@@ -995,8 +944,44 @@ static int test_hints_case(const struct hints_case *hints_case)
 		goto err_hints_get;
 	}
 
-	err = test_hints_case2(hints_case, hints, objagg);
+	pr_debug_hints_stats(hints);
+	err = check_expect_hints_stats(hints, &hints_case->expect_stats_hints,
+				       &errmsg);
+	if (err) {
+		pr_err("Hints stats: %s\n", errmsg);
+		goto err_check_expect_hints_stats;
+	}
 
+	objagg2 = objagg_create(&delta_ops, hints, &world2);
+	if (IS_ERR(objagg2))
+		return PTR_ERR(objagg2);
+
+	for (i = 0; i < hints_case->key_ids_count; i++) {
+		objagg_obj = world_obj_get(&world2, objagg2,
+					   hints_case->key_ids[i]);
+		if (IS_ERR(objagg_obj)) {
+			err = PTR_ERR(objagg_obj);
+			goto err_world2_obj_get;
+		}
+	}
+
+	pr_debug_stats(objagg2);
+	err = check_expect_stats(objagg2, &hints_case->expect_stats_hints,
+				 &errmsg);
+	if (err) {
+		pr_err("Stats2: %s\n", errmsg);
+		goto err_check_expect_stats2;
+	}
+
+	err = 0;
+
+err_check_expect_stats2:
+err_world2_obj_get:
+	for (i--; i >= 0; i--)
+		world_obj_put(&world2, objagg, hints_case->key_ids[i]);
+	i = hints_case->key_ids_count;
+	objagg_destroy(objagg2);
+err_check_expect_hints_stats:
 	objagg_hints_put(hints);
 err_hints_get:
 err_check_expect_stats:

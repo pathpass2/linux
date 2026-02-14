@@ -58,7 +58,7 @@ Because the buffers are potentially shared between Hyper-Threads cross
 Hyper-Thread attacks are possible.
 
 Deeper technical information is available in the MDS specific x86
-architecture section: :ref:`Documentation/arch/x86/mds.rst <mds>`.
+architecture section: :ref:`Documentation/x86/mds.rst <mds>`.
 
 
 Attack scenarios
@@ -102,19 +102,9 @@ The possible values in this file are:
      * - 'Vulnerable'
        - The processor is vulnerable, but no mitigation enabled
      * - 'Vulnerable: Clear CPU buffers attempted, no microcode'
-       - The processor is vulnerable but microcode is not updated. The
-         mitigation is enabled on a best effort basis.
+       - The processor is vulnerable but microcode is not updated.
 
-         If the processor is vulnerable but the availability of the microcode
-         based mitigation mechanism is not advertised via CPUID, the kernel
-         selects a best effort mitigation mode. This mode invokes the mitigation
-         instructions without a guarantee that they clear the CPU buffers.
-
-         This is done to address virtualization scenarios where the host has the
-         microcode update applied, but the hypervisor is not yet updated to
-         expose the CPUID to the guest. If the host has updated microcode the
-         protection takes effect; otherwise a few CPU cycles are wasted
-         pointlessly.
+         The mitigation is enabled on a best effort basis. See :ref:`vmwerv`
      * - 'Mitigation: Clear CPU buffers'
        - The processor is vulnerable and the CPU buffer clearing mitigation is
          enabled.
@@ -128,6 +118,24 @@ to the above information:
     'SMT disabled'            SMT is disabled
     'SMT Host state unknown'  Kernel runs in a VM, Host SMT state unknown
     ========================  ============================================
+
+.. _vmwerv:
+
+Best effort mitigation mode
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  If the processor is vulnerable, but the availability of the microcode based
+  mitigation mechanism is not advertised via CPUID the kernel selects a best
+  effort mitigation mode.  This mode invokes the mitigation instructions
+  without a guarantee that they clear the CPU buffers.
+
+  This is done to address virtualization scenarios where the host has the
+  microcode update applied, but the hypervisor is not yet updated to expose
+  the CPUID to the guest. If the host has updated microcode the protection
+  takes effect otherwise a few cpu cycles are wasted pointlessly.
+
+  The state in the mds sysfs file reflects this situation accordingly.
+
 
 Mitigation mechanism
 -------------------------
@@ -214,7 +222,7 @@ XEON PHI specific considerations
   command line with the 'ring3mwait=disable' command line option.
 
   XEON PHI is not affected by the other MDS variants and MSBDS is mitigated
-  before the CPU enters an idle state. As XEON PHI is not affected by L1TF
+  before the CPU enters a idle state. As XEON PHI is not affected by L1TF
   either disabling SMT is not required for full protection.
 
 .. _mds_smt_control:

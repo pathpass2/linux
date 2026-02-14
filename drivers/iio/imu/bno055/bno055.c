@@ -114,35 +114,34 @@
 #define BNO055_UID_LEN 16
 
 struct bno055_sysfs_attr {
-	const int *vals;
+	int *vals;
 	int len;
-	const int *fusion_vals;
-	const int *hw_xlate;
-	int hw_xlate_len;
+	int *fusion_vals;
+	int *hw_xlate;
 	int type;
 };
 
-static const int bno055_acc_lpf_vals[] = {
+static int bno055_acc_lpf_vals[] = {
 	7, 810000, 15, 630000, 31, 250000, 62, 500000,
 	125, 0, 250, 0, 500, 0, 1000, 0,
 };
 
-static const struct bno055_sysfs_attr bno055_acc_lpf = {
+static struct bno055_sysfs_attr bno055_acc_lpf = {
 	.vals = bno055_acc_lpf_vals,
 	.len = ARRAY_SIZE(bno055_acc_lpf_vals),
-	.fusion_vals = (const int[]){62, 500000},
+	.fusion_vals = (int[]){62, 500000},
 	.type = IIO_VAL_INT_PLUS_MICRO,
 };
 
-static const int bno055_acc_range_vals[] = {
+static int bno055_acc_range_vals[] = {
   /* G:    2,    4,    8,    16 */
 	1962, 3924, 7848, 15696
 };
 
-static const struct bno055_sysfs_attr bno055_acc_range = {
+static struct bno055_sysfs_attr bno055_acc_range = {
 	.vals = bno055_acc_range_vals,
 	.len = ARRAY_SIZE(bno055_acc_range_vals),
-	.fusion_vals = (const int[]){3924}, /* 4G */
+	.fusion_vals = (int[]){3924}, /* 4G */
 	.type = IIO_VAL_INT,
 };
 
@@ -166,37 +165,33 @@ static const struct bno055_sysfs_attr bno055_acc_range = {
  *     = hwval * (dps_range/(2^15 * k))
  * where k is rad-to-deg factor
  */
-static const int bno055_gyr_scale_vals[] = {
+static int bno055_gyr_scale_vals[] = {
 	125, 1877467, 250, 1877467, 500, 1877467,
 	1000, 1877467, 2000, 1877467,
 };
 
-static const int bno055_gyr_scale_hw_xlate[] = {0, 1, 2, 3, 4};
-static const struct bno055_sysfs_attr bno055_gyr_scale = {
+static struct bno055_sysfs_attr bno055_gyr_scale = {
 	.vals = bno055_gyr_scale_vals,
 	.len = ARRAY_SIZE(bno055_gyr_scale_vals),
-	.fusion_vals = (const int[]){1, 900},
-	.hw_xlate = bno055_gyr_scale_hw_xlate,
-	.hw_xlate_len = ARRAY_SIZE(bno055_gyr_scale_hw_xlate),
+	.fusion_vals = (int[]){1, 900},
+	.hw_xlate = (int[]){4, 3, 2, 1, 0},
 	.type = IIO_VAL_FRACTIONAL,
 };
 
-static const int bno055_gyr_lpf_vals[] = {12, 23, 32, 47, 64, 116, 230, 523};
-static const int bno055_gyr_lpf_hw_xlate[] = {5, 4, 7, 3, 6, 2, 1, 0};
-static const struct bno055_sysfs_attr bno055_gyr_lpf = {
+static int bno055_gyr_lpf_vals[] = {12, 23, 32, 47, 64, 116, 230, 523};
+static struct bno055_sysfs_attr bno055_gyr_lpf = {
 	.vals = bno055_gyr_lpf_vals,
 	.len = ARRAY_SIZE(bno055_gyr_lpf_vals),
-	.fusion_vals = (const int[]){32},
-	.hw_xlate = bno055_gyr_lpf_hw_xlate,
-	.hw_xlate_len = ARRAY_SIZE(bno055_gyr_lpf_hw_xlate),
+	.fusion_vals = (int[]){32},
+	.hw_xlate = (int[]){5, 4, 7, 3, 6, 2, 1, 0},
 	.type = IIO_VAL_INT,
 };
 
-static const int bno055_mag_odr_vals[] = {2, 6, 8, 10, 15, 20, 25, 30};
-static const struct bno055_sysfs_attr bno055_mag_odr = {
+static int bno055_mag_odr_vals[] = {2, 6, 8, 10, 15, 20, 25, 30};
+static struct bno055_sysfs_attr bno055_mag_odr = {
 	.vals = bno055_mag_odr_vals,
 	.len =  ARRAY_SIZE(bno055_mag_odr_vals),
-	.fusion_vals = (const int[]){20},
+	.fusion_vals = (int[]){20},
 	.type = IIO_VAL_INT,
 };
 
@@ -212,7 +207,7 @@ struct bno055_priv {
 	bool sw_reset;
 	struct {
 		__le16 chans[BNO055_SCAN_CH_COUNT];
-		aligned_s64 timestamp;
+		s64 timestamp __aligned(8);
 	} buf;
 	struct dentry *debugfs;
 };
@@ -295,9 +290,9 @@ const struct regmap_config bno055_regmap_config = {
 	.max_register = 0x80 * 2,
 	.writeable_reg = bno055_regmap_writeable,
 	.readable_reg = bno055_regmap_readable,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 };
-EXPORT_SYMBOL_NS_GPL(bno055_regmap_config, "IIO_BNO055");
+EXPORT_SYMBOL_NS_GPL(bno055_regmap_config, IIO_BNO055);
 
 /* must be called in configuration mode */
 static int bno055_calibration_load(struct bno055_priv *priv, const u8 *data, int len)
@@ -553,8 +548,7 @@ static const struct iio_chan_spec bno055_channels[] = {
 };
 
 static int bno055_get_regmask(struct bno055_priv *priv, int *val, int *val2,
-			      int reg, int mask,
-			      const struct bno055_sysfs_attr *attr)
+			      int reg, int mask, struct bno055_sysfs_attr *attr)
 {
 	const int shift = __ffs(mask);
 	int hwval, idx;
@@ -567,7 +561,7 @@ static int bno055_get_regmask(struct bno055_priv *priv, int *val, int *val2,
 
 	idx = (hwval & mask) >> shift;
 	if (attr->hw_xlate)
-		for (i = 0; i < attr->hw_xlate_len; i++)
+		for (i = 0; i < attr->len; i++)
 			if (attr->hw_xlate[i] == idx) {
 				idx = i;
 				break;
@@ -583,8 +577,7 @@ static int bno055_get_regmask(struct bno055_priv *priv, int *val, int *val2,
 }
 
 static int bno055_set_regmask(struct bno055_priv *priv, int val, int val2,
-			      int reg, int mask,
-			      const struct bno055_sysfs_attr *attr)
+			      int reg, int mask, struct bno055_sysfs_attr *attr)
 {
 	const int shift = __ffs(mask);
 	int best_delta;
@@ -765,8 +758,7 @@ static int bno055_read_simple_chan(struct iio_dev *indio_dev,
 	}
 }
 
-static int bno055_sysfs_attr_avail(struct bno055_priv *priv,
-				   const struct bno055_sysfs_attr *attr,
+static int bno055_sysfs_attr_avail(struct bno055_priv *priv, struct bno055_sysfs_attr *attr,
 				   const int **vals, int *length)
 {
 	if (priv->operation_mode != BNO055_OPR_MODE_AMG) {
@@ -1201,7 +1193,7 @@ static ssize_t serialnumber_show(struct device *dev,
 }
 
 static ssize_t calibration_data_read(struct file *filp, struct kobject *kobj,
-				     const struct bin_attribute *bin_attr, char *buf,
+				     struct bin_attribute *bin_attr, char *buf,
 				     loff_t pos, size_t count)
 {
 	struct bno055_priv *priv = iio_priv(dev_to_iio_dev(kobj_to_dev(kobj)));
@@ -1356,9 +1348,9 @@ static struct attribute *bno055_attrs[] = {
 	NULL
 };
 
-static const BIN_ATTR_RO(calibration_data, BNO055_CALDATA_LEN);
+static BIN_ATTR_RO(calibration_data, BNO055_CALDATA_LEN);
 
-static const struct bin_attribute *const bno055_bin_attrs[] = {
+static struct bin_attribute *bno055_bin_attrs[] = {
 	&bin_attr_calibration_data,
 	NULL
 };
@@ -1466,7 +1458,7 @@ static irqreturn_t bno055_trigger_handler(int irq, void *p)
 	 * then we split the transfer, skipping the gap.
 	 */
 	for_each_set_bitrange(start, end, iio_dev->active_scan_mask,
-			      iio_get_masklength(iio_dev)) {
+			      iio_dev->masklength) {
 		/*
 		 * First transfer will start from the beginning of the first
 		 * ones-field in the bitmap
@@ -1686,7 +1678,7 @@ int bno055_probe(struct device *dev, struct regmap *regmap,
 
 	return 0;
 }
-EXPORT_SYMBOL_NS_GPL(bno055_probe, "IIO_BNO055");
+EXPORT_SYMBOL_NS_GPL(bno055_probe, IIO_BNO055);
 
 MODULE_AUTHOR("Andrea Merello <andrea.merello@iit.it>");
 MODULE_DESCRIPTION("Bosch BNO055 driver");

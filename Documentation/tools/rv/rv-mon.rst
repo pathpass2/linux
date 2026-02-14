@@ -1,8 +1,8 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-======
-rv-mon
-======
+=======
+rv-list
+=======
 -----------------------
 List available monitors
 -----------------------

@@ -54,8 +54,6 @@ static void acpi_video_parse_cmdline(void)
 		acpi_backlight_cmdline = acpi_backlight_nvidia_wmi_ec;
 	if (!strcmp("apple_gmux", acpi_video_backlight_string))
 		acpi_backlight_cmdline = acpi_backlight_apple_gmux;
-	if (!strcmp("dell_uart", acpi_video_backlight_string))
-		acpi_backlight_cmdline = acpi_backlight_dell_uart;
 	if (!strcmp("none", acpi_video_backlight_string))
 		acpi_backlight_cmdline = acpi_backlight_none;
 }
@@ -132,13 +130,9 @@ static int video_detect_force_native(const struct dmi_system_id *d)
 	return 0;
 }
 
-static int video_detect_portege_r100(const struct dmi_system_id *d)
+static int video_detect_force_none(const struct dmi_system_id *d)
 {
-	struct pci_dev *dev;
-	/* Search for Trident CyberBlade XP4m32 to confirm Portégé R100 */
-	dev = pci_get_device(PCI_VENDOR_ID_TRIDENT, 0x2100, NULL);
-	if (dev)
-		acpi_backlight_dmi = acpi_backlight_vendor;
+	acpi_backlight_dmi = acpi_backlight_none;
 	return 0;
 }
 
@@ -241,6 +235,14 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 		DMI_MATCH(DMI_BOARD_NAME, "NC210/NC110"),
 		},
 	},
+	{
+	 .callback = video_detect_force_vendor,
+	 /* Xiaomi Mi Pad 2 */
+	 .matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Xiaomi Inc"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Mipad2"),
+		},
+	},
 
 	/*
 	 * Models which should use the vendor backlight interface,
@@ -252,14 +254,6 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 	 .matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "Sony Corporation"),
 		DMI_MATCH(DMI_PRODUCT_NAME, "PCG-FRV35"),
-		},
-	},
-	{
-	 .callback = video_detect_force_vendor,
-	 /* Panasonic Toughbook CF-18 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Matsushita Electric Industrial"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "CF-18"),
 		},
 	},
 
@@ -279,45 +273,6 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 	 .matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "TOSHIBA"),
 		DMI_MATCH(DMI_PRODUCT_NAME, "PORTEGE R600"),
-		},
-	},
-
-	/*
-	 * Toshiba Portégé R100 has working both acpi_video and toshiba_acpi
-	 * vendor driver. But none of them gets activated as it has a VGA with
-	 * no kernel driver (Trident CyberBlade XP4m32).
-	 * The DMI strings are generic so check for the VGA chip in callback.
-	 */
-	{
-	 .callback = video_detect_portege_r100,
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "TOSHIBA"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Portable PC"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "Version 1.0"),
-		DMI_MATCH(DMI_BOARD_NAME, "Portable PC")
-		},
-	},
-
-	/*
-	 * Models which need acpi_video backlight control where the GPU drivers
-	 * do not call acpi_video_register_backlight() because no internal panel
-	 * is detected. Typically these are all-in-ones (monitors with builtin
-	 * PC) where the panel connection shows up as regular DP instead of eDP.
-	 */
-	{
-	 .callback = video_detect_force_video,
-	 /* Apple iMac14,1 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "iMac14,1"),
-		},
-	},
-	{
-	 .callback = video_detect_force_video,
-	 /* Apple iMac14,2 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "iMac14,2"),
 		},
 	},
 
@@ -474,15 +429,6 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 		},
 	},
 	{
-	 /* https://bugzilla.suse.com/show_bug.cgi?id=1208724 */
-	 .callback = video_detect_force_native,
-	 /* Lenovo Ideapad Z470 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "IdeaPad Z470"),
-		},
-	},
-	{
 	 /* https://bugzilla.redhat.com/show_bug.cgi?id=1187004 */
 	 .callback = video_detect_force_native,
 	 /* Lenovo Ideapad Z570 */
@@ -508,94 +454,12 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 		},
 	},
 	{
-	 .callback = video_detect_force_native,
-	 /* Lenovo Slim 7 16ARH7 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "82UX"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Lenovo ThinkPad X131e (3371 AMD version) */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "3371"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Apple iMac11,3 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "iMac11,3"),
-		},
-	},
-	{
-	 /* https://gitlab.freedesktop.org/drm/amd/-/issues/1838 */
-	 .callback = video_detect_force_native,
-	 /* Apple iMac12,1 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "iMac12,1"),
-		},
-	},
-	{
-	 /* https://gitlab.freedesktop.org/drm/amd/-/issues/2753 */
-	 .callback = video_detect_force_native,
-	 /* Apple iMac12,2 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "iMac12,2"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Apple MacBook Air 7,2 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "MacBookAir7,2"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Apple MacBook Air 9,1 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "MacBookAir9,1"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Apple MacBook Pro 9,2 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "MacBookPro9,2"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Apple MacBook Pro 11,2 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "MacBookPro11,2"),
-		},
-	},
-	{
 	 /* https://bugzilla.redhat.com/show_bug.cgi?id=1217249 */
 	 .callback = video_detect_force_native,
 	 /* Apple MacBook Pro 12,1 */
 	 .matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
 		DMI_MATCH(DMI_PRODUCT_NAME, "MacBookPro12,1"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Apple MacBook Pro 16,2 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Apple Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "MacBookPro16,2"),
 		},
 	},
 	{
@@ -629,14 +493,6 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 	 .matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
 		DMI_MATCH(DMI_PRODUCT_NAME, "Precision 7510"),
-		},
-	},
-	{
-	 .callback = video_detect_force_native,
-	 /* Dell Studio 1569 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Studio 1569"),
 		},
 	},
 	{
@@ -856,30 +712,6 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 	},
 
 	/*
-	 * Dell AIO (All in Ones) which advertise an UART attached backlight
-	 * controller board in their ACPI tables (and may even have one), but
-	 * which need native backlight control nevertheless.
-	 */
-	{
-	 /* https://github.com/zabbly/linux/issues/26 */
-	 .callback = video_detect_force_native,
-	 /* Dell OptiPlex 5480 AIO */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "OptiPlex 5480 AIO"),
-		},
-	},
-	{
-	 /* https://bugzilla.redhat.com/show_bug.cgi?id=2303936 */
-	 .callback = video_detect_force_native,
-	 /* Dell OptiPlex 7760 AIO */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "OptiPlex 7760 AIO"),
-		},
-	},
-
-	/*
 	 * Models which have nvidia-ec-wmi support, but should not use it.
 	 * Note this indicates a likely firmware bug on these models and should
 	 * be revisited if/when Linux gets support for dynamic mux mode.
@@ -901,59 +733,31 @@ static const struct dmi_system_id video_detect_dmi_table[] = {
 	},
 
 	/*
-	 * x86 android tablets which directly control the backlight through
-	 * an external backlight controller, typically TI's LP8557.
-	 * The backlight is directly controlled by the lp855x driver on these.
-	 * This setup means that neither i915's native nor acpi_video backlight
-	 * control works. Add a "vendor" quirk to disable both. Note these
-	 * devices do not use vendor control in the typical meaning of
-	 * vendor specific SMBIOS or ACPI calls being used.
+	 * Desktops which falsely report a backlight and which our heuristics
+	 * for this do not catch.
 	 */
 	{
-	 .callback = video_detect_force_vendor,
-	 /* Lenovo Yoga Book X90F / X90L */
+	 .callback = video_detect_force_none,
+	 /* Dell OptiPlex 9020M */
 	 .matches = {
-		DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel Corporation"),
-		DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "CHERRYVIEW D1 PLATFORM"),
-		DMI_EXACT_MATCH(DMI_PRODUCT_VERSION, "YETI-11"),
+		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+		DMI_MATCH(DMI_PRODUCT_NAME, "OptiPlex 9020M"),
 		},
 	},
 	{
-	 .callback = video_detect_force_vendor,
-	 /*
-	  * Lenovo Yoga Tablet 2 830F/L or 1050F/L (The 8" and 10"
-	  * Lenovo Yoga Tablet 2 use the same mainboard)
-	  */
+	 .callback = video_detect_force_none,
+	 /* GIGABYTE GB-BXBT-2807 */
 	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Intel Corp."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "VALLEYVIEW C0 PLATFORM"),
-		DMI_MATCH(DMI_BOARD_NAME, "BYT-T FFD8"),
-		/* Partial match on beginning of BIOS version */
-		DMI_MATCH(DMI_BIOS_VERSION, "BLADE_21"),
+		DMI_MATCH(DMI_SYS_VENDOR, "GIGABYTE"),
+		DMI_MATCH(DMI_PRODUCT_NAME, "GB-BXBT-2807"),
 		},
 	},
 	{
-	 .callback = video_detect_force_vendor,
-	 /* Lenovo Yoga Tab 3 Pro YT3-X90F */
+	 .callback = video_detect_force_none,
+	 /* MSI MS-7721 */
 	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Intel Corporation"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "Blade3-10A-001"),
-		},
-	},
-	{
-	 .callback = video_detect_force_vendor,
-	 /* Xiaomi Mi Pad 2 */
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Xiaomi Inc"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Mipad2"),
-		},
-	},
-	/* https://gitlab.freedesktop.org/drm/amd/-/issues/4512 */
-	{
-	 .callback = video_detect_force_native,
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "82K8"),
+		DMI_MATCH(DMI_SYS_VENDOR, "MSI"),
+		DMI_MATCH(DMI_PRODUCT_NAME, "MS-7721"),
 		},
 	},
 	{ },
@@ -978,12 +782,11 @@ static bool prefer_native_over_acpi_video(void)
  * Determine which type of backlight interface to use on this system,
  * First check cmdline, then dmi quirks, then do autodetect.
  */
-enum acpi_backlight_type __acpi_video_get_backlight_type(bool native, bool *auto_detect)
+static enum acpi_backlight_type __acpi_video_get_backlight_type(bool native)
 {
 	static DEFINE_MUTEX(init_mutex);
 	static bool nvidia_wmi_ec_present;
 	static bool apple_gmux_present;
-	static bool dell_uart_present;
 	static bool native_available;
 	static bool init_done;
 	static long video_caps;
@@ -998,15 +801,11 @@ enum acpi_backlight_type __acpi_video_get_backlight_type(bool native, bool *auto
 				    &video_caps, NULL);
 		nvidia_wmi_ec_present = nvidia_wmi_ec_supported();
 		apple_gmux_present = apple_gmux_detect(NULL, NULL);
-		dell_uart_present = acpi_dev_present("DELL0501", NULL, -1);
 		init_done = true;
 	}
 	if (native)
 		native_available = true;
 	mutex_unlock(&init_mutex);
-
-	if (auto_detect)
-		*auto_detect = false;
 
 	/*
 	 * The below heuristics / detection steps are in order of descending
@@ -1019,18 +818,12 @@ enum acpi_backlight_type __acpi_video_get_backlight_type(bool native, bool *auto
 	if (acpi_backlight_dmi != acpi_backlight_undef)
 		return acpi_backlight_dmi;
 
-	if (auto_detect)
-		*auto_detect = true;
-
 	/* Special cases such as nvidia_wmi_ec and apple gmux. */
 	if (nvidia_wmi_ec_present)
 		return acpi_backlight_nvidia_wmi_ec;
 
 	if (apple_gmux_present)
 		return acpi_backlight_apple_gmux;
-
-	if (dell_uart_present)
-		return acpi_backlight_dell_uart;
 
 	/* Use ACPI video if available, except when native should be preferred. */
 	if ((video_caps & ACPI_VIDEO_BACKLIGHT) &&
@@ -1041,28 +834,18 @@ enum acpi_backlight_type __acpi_video_get_backlight_type(bool native, bool *auto
 	if (native_available)
 		return acpi_backlight_native;
 
-	/*
-	 * The vendor specific BIOS interfaces are only necessary for
-	 * laptops from before ~2008.
-	 *
-	 * For laptops from ~2008 till ~2023 this point is never reached
-	 * because on those (video_caps & ACPI_VIDEO_BACKLIGHT) above is true.
-	 *
-	 * Laptops from after ~2023 no longer support ACPI_VIDEO_BACKLIGHT,
-	 * if this point is reached on those, this likely means that
-	 * the GPU kms driver which sets native_available has not loaded yet.
-	 *
-	 * Returning acpi_backlight_vendor in this case is known to sometimes
-	 * cause a non working vendor specific /sys/class/backlight device to
-	 * get registered.
-	 *
-	 * Return acpi_backlight_none on laptops with ACPI tables written
-	 * for Windows 8 (laptops from after ~2012) to avoid this problem.
-	 */
-	if (acpi_osi_is_win8())
-		return acpi_backlight_none;
-
 	/* No ACPI video/native (old hw), use vendor specific fw methods. */
 	return acpi_backlight_vendor;
 }
-EXPORT_SYMBOL(__acpi_video_get_backlight_type);
+
+enum acpi_backlight_type acpi_video_get_backlight_type(void)
+{
+	return __acpi_video_get_backlight_type(false);
+}
+EXPORT_SYMBOL(acpi_video_get_backlight_type);
+
+bool acpi_video_backlight_use_native(void)
+{
+	return __acpi_video_get_backlight_type(true) == acpi_backlight_native;
+}
+EXPORT_SYMBOL(acpi_video_backlight_use_native);

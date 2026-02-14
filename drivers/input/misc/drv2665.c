@@ -15,7 +15,7 @@
 #include <linux/delay.h>
 #include <linux/regulator/consumer.h>
 
-/* Control registers */
+/* Contol registers */
 #define DRV2665_STATUS	0x00
 #define DRV2665_CTRL_1	0x01
 #define DRV2665_CTRL_2	0x02
@@ -225,63 +225,65 @@ static int drv2665_probe(struct i2c_client *client)
 static int drv2665_suspend(struct device *dev)
 {
 	struct drv2665_data *haptics = dev_get_drvdata(dev);
-	int error;
+	int ret = 0;
 
-	guard(mutex)(&haptics->input_dev->mutex);
+	mutex_lock(&haptics->input_dev->mutex);
 
 	if (input_device_enabled(haptics->input_dev)) {
-		error = regmap_update_bits(haptics->regmap, DRV2665_CTRL_2,
-					   DRV2665_STANDBY, DRV2665_STANDBY);
-		if (error) {
+		ret = regmap_update_bits(haptics->regmap, DRV2665_CTRL_2,
+					 DRV2665_STANDBY, DRV2665_STANDBY);
+		if (ret) {
 			dev_err(dev, "Failed to set standby mode\n");
 			regulator_disable(haptics->regulator);
-			return error;
+			goto out;
 		}
 
-		error = regulator_disable(haptics->regulator);
-		if (error) {
+		ret = regulator_disable(haptics->regulator);
+		if (ret) {
 			dev_err(dev, "Failed to disable regulator\n");
 			regmap_update_bits(haptics->regmap,
 					   DRV2665_CTRL_2,
 					   DRV2665_STANDBY, 0);
-			return error;
 		}
 	}
-
-	return 0;
+out:
+	mutex_unlock(&haptics->input_dev->mutex);
+	return ret;
 }
 
 static int drv2665_resume(struct device *dev)
 {
 	struct drv2665_data *haptics = dev_get_drvdata(dev);
-	int error;
+	int ret = 0;
 
-	guard(mutex)(&haptics->input_dev->mutex);
+	mutex_lock(&haptics->input_dev->mutex);
 
 	if (input_device_enabled(haptics->input_dev)) {
-		error = regulator_enable(haptics->regulator);
-		if (error) {
+		ret = regulator_enable(haptics->regulator);
+		if (ret) {
 			dev_err(dev, "Failed to enable regulator\n");
-			return error;
+			goto out;
 		}
 
-		error = regmap_update_bits(haptics->regmap, DRV2665_CTRL_2,
-					   DRV2665_STANDBY, 0);
-		if (error) {
+		ret = regmap_update_bits(haptics->regmap, DRV2665_CTRL_2,
+					 DRV2665_STANDBY, 0);
+		if (ret) {
 			dev_err(dev, "Failed to unset standby mode\n");
 			regulator_disable(haptics->regulator);
-			return error;
+			goto out;
 		}
 
 	}
 
-	return 0;
+out:
+	mutex_unlock(&haptics->input_dev->mutex);
+	return ret;
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(drv2665_pm_ops, drv2665_suspend, drv2665_resume);
 
 static const struct i2c_device_id drv2665_id[] = {
-	{ "drv2665" },
+	{ "drv2665", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, drv2665_id);
@@ -295,7 +297,7 @@ MODULE_DEVICE_TABLE(of, drv2665_of_match);
 #endif
 
 static struct i2c_driver drv2665_driver = {
-	.probe		= drv2665_probe,
+	.probe_new	= drv2665_probe,
 	.driver		= {
 		.name	= "drv2665-haptics",
 		.of_match_table = of_match_ptr(drv2665_of_match),

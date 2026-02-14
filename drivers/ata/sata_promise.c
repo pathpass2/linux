@@ -158,7 +158,7 @@ static void pdc_error_handler(struct ata_port *ap);
 static void pdc_post_internal_cmd(struct ata_queued_cmd *qc);
 static int pdc_pata_cable_detect(struct ata_port *ap);
 
-static const struct scsi_host_template pdc_ata_sht = {
+static struct scsi_host_template pdc_ata_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= PDC_MAX_PRD,
 	.dma_boundary		= ATA_DMA_BOUNDARY,
@@ -188,7 +188,7 @@ static struct ata_port_operations pdc_sata_ops = {
 	.scr_read		= pdc_sata_scr_read,
 	.scr_write		= pdc_sata_scr_write,
 	.port_start		= pdc_sata_port_start,
-	.reset.hardreset	= pdc_sata_hardreset,
+	.hardreset		= pdc_sata_hardreset,
 };
 
 /* First-generation chips need a more restrictive ->check_atapi_dma op,
@@ -206,7 +206,7 @@ static struct ata_port_operations pdc_pata_ops = {
 	.freeze			= pdc_freeze,
 	.thaw			= pdc_thaw,
 	.port_start		= pdc_common_port_start,
-	.reset.softreset	= pdc_pata_softreset,
+	.softreset		= pdc_pata_softreset,
 };
 
 static const struct ata_port_info pdc_port_info[] = {

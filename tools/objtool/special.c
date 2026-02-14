@@ -15,6 +15,7 @@
 #include <objtool/builtin.h>
 #include <objtool/special.h>
 #include <objtool/warn.h>
+#include <objtool/endianness.h>
 
 struct special_entry {
 	const char *sec;
@@ -53,7 +54,7 @@ static const struct special_entry entries[] = {
 	{},
 };
 
-void __weak arch_handle_alternative(struct special_alt *alt)
+void __weak arch_handle_alternative(unsigned short feature, struct special_alt *alt)
 {
 }
 
@@ -61,7 +62,7 @@ static void reloc_to_sec_off(struct reloc *reloc, struct section **sec,
 			     unsigned long *off)
 {
 	*sec = reloc->sym->sec;
-	*off = reloc->sym->offset + reloc_addend(reloc);
+	*off = reloc->sym->offset + reloc->addend;
 }
 
 static int get_alt_entry(struct elf *elf, const struct special_entry *entry,
@@ -81,24 +82,31 @@ static int get_alt_entry(struct elf *elf, const struct special_entry *entry,
 						   entry->orig_len);
 		alt->new_len = *(unsigned char *)(sec->data->d_buf + offset +
 						  entry->new_len);
-		alt->feature = *(unsigned int *)(sec->data->d_buf + offset +
-						 entry->feature);
+	}
+
+	if (entry->feature) {
+		unsigned short feature;
+
+		feature = bswap_if_needed(elf,
+					  *(unsigned short *)(sec->data->d_buf +
+							      offset +
+							      entry->feature));
+		arch_handle_alternative(feature, alt);
 	}
 
 	orig_reloc = find_reloc_by_dest(elf, sec, offset + entry->orig);
 	if (!orig_reloc) {
-		ERROR_FUNC(sec, offset + entry->orig, "can't find orig reloc");
+		WARN_FUNC("can't find orig reloc", sec, offset + entry->orig);
 		return -1;
 	}
 
 	reloc_to_sec_off(orig_reloc, &alt->orig_sec, &alt->orig_off);
 
-	arch_handle_alternative(alt);
-
 	if (!entry->group || alt->new_len) {
 		new_reloc = find_reloc_by_dest(elf, sec, offset + entry->new);
 		if (!new_reloc) {
-			ERROR_FUNC(sec, offset + entry->new, "can't find new reloc");
+			WARN_FUNC("can't find new reloc",
+				  sec, offset + entry->new);
 			return -1;
 		}
 
@@ -114,10 +122,11 @@ static int get_alt_entry(struct elf *elf, const struct special_entry *entry,
 
 		key_reloc = find_reloc_by_dest(elf, sec, offset + entry->key);
 		if (!key_reloc) {
-			ERROR_FUNC(sec, offset + entry->key, "can't find key reloc");
+			WARN_FUNC("can't find key reloc",
+				  sec, offset + entry->key);
 			return -1;
 		}
-		alt->key_addend = reloc_addend(key_reloc);
+		alt->key_addend = key_reloc->addend;
 	}
 
 	return 0;
@@ -134,7 +143,7 @@ int special_get_alts(struct elf *elf, struct list_head *alts)
 	struct section *sec;
 	unsigned int nr_entries;
 	struct special_alt *alt;
-	int idx;
+	int idx, ret;
 
 	INIT_LIST_HEAD(alts);
 
@@ -143,23 +152,27 @@ int special_get_alts(struct elf *elf, struct list_head *alts)
 		if (!sec)
 			continue;
 
-		if (sec_size(sec) % entry->size != 0) {
-			ERROR("%s size not a multiple of %d", sec->name, entry->size);
+		if (sec->sh.sh_size % entry->size != 0) {
+			WARN("%s size not a multiple of %d",
+			     sec->name, entry->size);
 			return -1;
 		}
 
-		nr_entries = sec_size(sec) / entry->size;
+		nr_entries = sec->sh.sh_size / entry->size;
 
 		for (idx = 0; idx < nr_entries; idx++) {
 			alt = malloc(sizeof(*alt));
 			if (!alt) {
-				ERROR_GLIBC("malloc failed");
+				WARN("malloc failed");
 				return -1;
 			}
 			memset(alt, 0, sizeof(*alt));
 
-			if (get_alt_entry(elf, entry, sec, idx, alt))
-				return -1;
+			ret = get_alt_entry(elf, entry, sec, idx, alt);
+			if (ret > 0)
+				continue;
+			if (ret < 0)
+				return ret;
 
 			list_add_tail(&alt->list, alts);
 		}

@@ -10,7 +10,7 @@
 #include <linux/errqueue.h>
 #include <linux/if_link.h>
 #include <linux/net_tstamp.h>
-#include <netinet/udp.h>
+#include <linux/udp.h>
 #include <sys/mman.h>
 #include <net/if.h>
 #include <poll.h>
@@ -20,7 +20,7 @@
 
 #define UDP_PAYLOAD_BYTES 4
 
-#define UDP_SOURCE_PORT 1234
+#define AF_XDP_SOURCE_PORT 1234
 #define AF_XDP_CONSUMER_PORT 8080
 
 #define UMEM_NUM 16
@@ -33,18 +33,11 @@
 #define RX_ADDR "10.0.0.2"
 #define PREFIX_LEN "8"
 #define FAMILY AF_INET
-#define TX_NETNS_NAME "xdp_metadata_tx"
-#define RX_NETNS_NAME "xdp_metadata_rx"
-#define TX_MAC "00:00:00:00:00:01"
-#define RX_MAC "00:00:00:00:00:02"
 
-#define VLAN_ID 59
-#define VLAN_PROTO "802.1Q"
-#define VLAN_PID htons(ETH_P_8021Q)
-#define TX_NAME_VLAN TX_NAME "." TO_STR(VLAN_ID)
-
-#define XDP_RSS_TYPE_L4 BIT(3)
-#define VLAN_VID_MASK 0xfff
+#define SYS(cmd) ({ \
+	if (!ASSERT_OK(system(cmd), (cmd))) \
+		goto out; \
+})
 
 struct xsk {
 	void *umem_area;
@@ -68,9 +61,7 @@ static int open_xsk(int ifindex, struct xsk *xsk)
 		.fill_size = XSK_RING_PROD__DEFAULT_NUM_DESCS,
 		.comp_size = XSK_RING_CONS__DEFAULT_NUM_DESCS,
 		.frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE,
-		.flags = XDP_UMEM_UNALIGNED_CHUNK_FLAG | XDP_UMEM_TX_SW_CSUM |
-			 XDP_UMEM_TX_METADATA_LEN,
-		.tx_metadata_len = sizeof(struct xsk_tx_metadata),
+		.flags = XDP_UMEM_UNALIGNED_CHUNK_FLAG,
 	};
 	__u32 idx;
 	u64 addr;
@@ -133,9 +124,25 @@ static void close_xsk(struct xsk *xsk)
 	munmap(xsk->umem_area, UMEM_SIZE);
 }
 
+static void ip_csum(struct iphdr *iph)
+{
+	__u32 sum = 0;
+	__u16 *p;
+	int i;
+
+	iph->check = 0;
+	p = (void *)iph;
+	for (i = 0; i < sizeof(*iph) / sizeof(*p); i++)
+		sum += p[i];
+
+	while (sum >> 16)
+		sum = (sum & 0xffff) + (sum >> 16);
+
+	iph->check = ~sum;
+}
+
 static int generate_packet(struct xsk *xsk, __u16 dst_port)
 {
-	struct xsk_tx_metadata *meta;
 	struct xdp_desc *tx_desc;
 	struct udphdr *udph;
 	struct ethhdr *eth;
@@ -149,13 +156,9 @@ static int generate_packet(struct xsk *xsk, __u16 dst_port)
 		return -1;
 
 	tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx);
-	tx_desc->addr = idx % (UMEM_NUM / 2) * UMEM_FRAME_SIZE + sizeof(struct xsk_tx_metadata);
+	tx_desc->addr = idx % (UMEM_NUM / 2) * UMEM_FRAME_SIZE;
 	printf("%p: tx_desc[%u]->addr=%llx\n", xsk, idx, tx_desc->addr);
 	data = xsk_umem__get_data(xsk->umem_area, tx_desc->addr);
-
-	meta = data - sizeof(struct xsk_tx_metadata);
-	memset(meta, 0, sizeof(*meta));
-	meta->flags = XDP_TXMD_FLAGS_TIMESTAMP;
 
 	eth = data;
 	iph = (void *)(eth + 1);
@@ -175,22 +178,16 @@ static int generate_packet(struct xsk *xsk, __u16 dst_port)
 	iph->protocol = IPPROTO_UDP;
 	ASSERT_EQ(inet_pton(FAMILY, TX_ADDR, &iph->saddr), 1, "inet_pton(TX_ADDR)");
 	ASSERT_EQ(inet_pton(FAMILY, RX_ADDR, &iph->daddr), 1, "inet_pton(RX_ADDR)");
-	iph->check = build_ip_csum(iph);
+	ip_csum(iph);
 
-	udph->source = htons(UDP_SOURCE_PORT);
+	udph->source = htons(AF_XDP_SOURCE_PORT);
 	udph->dest = htons(dst_port);
 	udph->len = htons(sizeof(*udph) + UDP_PAYLOAD_BYTES);
-	udph->check = ~csum_tcpudp_magic(iph->saddr, iph->daddr,
-					 ntohs(udph->len), IPPROTO_UDP, 0);
+	udph->check = 0;
 
 	memset(udph + 1, 0xAA, UDP_PAYLOAD_BYTES);
 
-	meta->flags |= XDP_TXMD_FLAGS_CHECKSUM;
-	meta->request.csum_start = sizeof(*eth) + sizeof(*iph);
-	meta->request.csum_offset = offsetof(struct udphdr, check);
-
 	tx_desc->len = sizeof(*eth) + sizeof(*iph) + sizeof(*udph) + UDP_PAYLOAD_BYTES;
-	tx_desc->options |= XDP_TX_METADATA;
 	xsk_ring_prod__submit(&xsk->tx, 1);
 
 	ret = sendto(xsk_socket__fd(xsk->socket), NULL, 0, MSG_DONTWAIT, NULL, 0);
@@ -200,47 +197,15 @@ static int generate_packet(struct xsk *xsk, __u16 dst_port)
 	return 0;
 }
 
-static int generate_packet_inet(void)
-{
-	char udp_payload[UDP_PAYLOAD_BYTES];
-	struct sockaddr_in rx_addr;
-	int sock_fd, err = 0;
-
-	/* Build a packet */
-	memset(udp_payload, 0xAA, UDP_PAYLOAD_BYTES);
-	rx_addr.sin_addr.s_addr = inet_addr(RX_ADDR);
-	rx_addr.sin_family = AF_INET;
-	rx_addr.sin_port = htons(AF_XDP_CONSUMER_PORT);
-
-	sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (!ASSERT_GE(sock_fd, 0, "socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)"))
-		return sock_fd;
-
-	err = sendto(sock_fd, udp_payload, UDP_PAYLOAD_BYTES, MSG_DONTWAIT,
-		     (void *)&rx_addr, sizeof(rx_addr));
-	ASSERT_GE(err, 0, "sendto");
-
-	close(sock_fd);
-	return err;
-}
-
 static void complete_tx(struct xsk *xsk)
 {
-	struct xsk_tx_metadata *meta;
-	__u64 addr;
-	void *data;
 	__u32 idx;
+	__u64 addr;
 
 	if (ASSERT_EQ(xsk_ring_cons__peek(&xsk->comp, 1, &idx), 1, "xsk_ring_cons__peek")) {
 		addr = *xsk_ring_cons__comp_addr(&xsk->comp, idx);
 
 		printf("%p: complete tx idx=%u addr=%llx\n", xsk, idx, addr);
-
-		data = xsk_umem__get_data(xsk->umem_area, addr);
-		meta = data - sizeof(struct xsk_tx_metadata);
-
-		ASSERT_NEQ(meta->completion.tx_timestamp, 0, "tx_timestamp");
-
 		xsk_ring_cons__release(&xsk->comp, 1);
 	}
 }
@@ -256,18 +221,17 @@ static void refill_rx(struct xsk *xsk, __u64 addr)
 	}
 }
 
-static int verify_xsk_metadata(struct xsk *xsk, bool sent_from_af_xdp)
+static int verify_xsk_metadata(struct xsk *xsk)
 {
 	const struct xdp_desc *rx_desc;
 	struct pollfd fds = {};
 	struct xdp_meta *meta;
-	struct udphdr *udph;
 	struct ethhdr *eth;
 	struct iphdr *iph;
 	__u64 comp_addr;
 	void *data;
 	__u64 addr;
-	__u32 idx = 0;
+	__u32 idx;
 	int ret;
 
 	ret = recvfrom(xsk_socket__fd(xsk->socket), NULL, 0, MSG_DONTWAIT, NULL, NULL);
@@ -298,7 +262,6 @@ static int verify_xsk_metadata(struct xsk *xsk, bool sent_from_af_xdp)
 	ASSERT_EQ(eth->h_proto, htons(ETH_P_IP), "eth->h_proto");
 	iph = (void *)(eth + 1);
 	ASSERT_EQ((int)iph->version, 4, "iph->version");
-	udph = (void *)(iph + 1);
 
 	/* custom metadata */
 
@@ -310,40 +273,10 @@ static int verify_xsk_metadata(struct xsk *xsk, bool sent_from_af_xdp)
 	if (!ASSERT_NEQ(meta->rx_hash, 0, "rx_hash"))
 		return -1;
 
-	if (!sent_from_af_xdp) {
-		if (!ASSERT_NEQ(meta->rx_hash_type & XDP_RSS_TYPE_L4, 0, "rx_hash_type"))
-			return -1;
-
-		if (!ASSERT_EQ(meta->rx_vlan_tci & VLAN_VID_MASK, VLAN_ID, "rx_vlan_tci"))
-			return -1;
-
-		if (!ASSERT_EQ(meta->rx_vlan_proto, VLAN_PID, "rx_vlan_proto"))
-			return -1;
-		goto done;
-	}
-
-	ASSERT_EQ(meta->rx_hash_type, 0, "rx_hash_type");
-
-	/* checksum offload */
-	ASSERT_EQ(udph->check, htons(0x721c), "csum");
-
-done:
 	xsk_ring_cons__release(&xsk->rx, 1);
 	refill_rx(xsk, comp_addr);
 
 	return 0;
-}
-
-static void switch_ns_to_rx(struct nstoken **tok)
-{
-	close_netns(*tok);
-	*tok = open_netns(RX_NETNS_NAME);
-}
-
-static void switch_ns_to_tx(struct nstoken **tok)
-{
-	close_netns(*tok);
-	*tok = open_netns(TX_NETNS_NAME);
 }
 
 void test_xdp_metadata(void)
@@ -351,10 +284,9 @@ void test_xdp_metadata(void)
 	struct xdp_metadata2 *bpf_obj2 = NULL;
 	struct xdp_metadata *bpf_obj = NULL;
 	struct bpf_program *new_prog, *prog;
-	struct bpf_devmap_val devmap_e = {};
-	struct bpf_map *prog_arr, *devmap;
 	struct nstoken *tok = NULL;
 	__u32 queue_id = QUEUE_ID;
+	struct bpf_map *prog_arr;
 	struct xsk tx_xsk = {};
 	struct xsk rx_xsk = {};
 	__u32 val, key = 0;
@@ -364,39 +296,27 @@ void test_xdp_metadata(void)
 	int sock_fd;
 	int ret;
 
-	/* Setup new networking namespaces, with a veth pair. */
-	SYS(out, "ip netns add " TX_NETNS_NAME);
-	SYS(out, "ip netns add " RX_NETNS_NAME);
+	/* Setup new networking namespace, with a veth pair. */
 
-	tok = open_netns(TX_NETNS_NAME);
-	if (!ASSERT_OK_PTR(tok, "setns"))
-		goto out;
-	SYS(out, "ip link add numtxqueues 1 numrxqueues 1 " TX_NAME
+	SYS("ip netns add xdp_metadata");
+	tok = open_netns("xdp_metadata");
+	SYS("ip link add numtxqueues 1 numrxqueues 1 " TX_NAME
 	    " type veth peer " RX_NAME " numtxqueues 1 numrxqueues 1");
-	SYS(out, "ip link set " RX_NAME " netns " RX_NETNS_NAME);
-
-	SYS(out, "ip link set dev " TX_NAME " address " TX_MAC);
-	SYS(out, "ip link set dev " TX_NAME " up");
-
-	SYS(out, "ip link add link " TX_NAME " " TX_NAME_VLAN
-		 " type vlan proto " VLAN_PROTO " id " TO_STR(VLAN_ID));
-	SYS(out, "ip link set dev " TX_NAME_VLAN " up");
-	SYS(out, "ip addr add " TX_ADDR "/" PREFIX_LEN " dev " TX_NAME_VLAN);
-
-	/* Avoid ARP calls */
-	SYS(out, "ip -4 neigh add " RX_ADDR " lladdr " RX_MAC " dev " TX_NAME_VLAN);
-
-	switch_ns_to_rx(&tok);
-	if (!ASSERT_OK_PTR(tok, "setns rx"))
-		goto out;
-
-	SYS(out, "ip link set dev " RX_NAME " address " RX_MAC);
-	SYS(out, "ip link set dev " RX_NAME " up");
-	SYS(out, "ip addr add " RX_ADDR "/" PREFIX_LEN " dev " RX_NAME);
+	SYS("ip link set dev " TX_NAME " address 00:00:00:00:00:01");
+	SYS("ip link set dev " RX_NAME " address 00:00:00:00:00:02");
+	SYS("ip link set dev " TX_NAME " up");
+	SYS("ip link set dev " RX_NAME " up");
+	SYS("ip addr add " TX_ADDR "/" PREFIX_LEN " dev " TX_NAME);
+	SYS("ip addr add " RX_ADDR "/" PREFIX_LEN " dev " RX_NAME);
 
 	rx_ifindex = if_nametoindex(RX_NAME);
+	tx_ifindex = if_nametoindex(TX_NAME);
 
-	/* Setup separate AF_XDP for RX interface. */
+	/* Setup separate AF_XDP for TX and RX interfaces. */
+
+	ret = open_xsk(tx_ifindex, &tx_xsk);
+	if (!ASSERT_OK(ret, "open_xsk(TX_NAME)"))
+		goto out;
 
 	ret = open_xsk(rx_ifindex, &rx_xsk);
 	if (!ASSERT_OK(ret, "open_xsk(RX_NAME)"))
@@ -409,13 +329,6 @@ void test_xdp_metadata(void)
 	prog = bpf_object__find_program_by_name(bpf_obj->obj, "rx");
 	bpf_program__set_ifindex(prog, rx_ifindex);
 	bpf_program__set_flags(prog, BPF_F_XDP_DEV_BOUND_ONLY);
-
-	/* Make sure we can load a dev-bound program that performs
-	 * XDP_REDIRECT into a devmap.
-	 */
-	new_prog = bpf_object__find_program_by_name(bpf_obj->obj, "redirect");
-	bpf_program__set_ifindex(new_prog, rx_ifindex);
-	bpf_program__set_flags(new_prog, BPF_F_XDP_DEV_BOUND_ONLY);
 
 	if (!ASSERT_OK(xdp_metadata__load(bpf_obj), "load skeleton"))
 		goto out;
@@ -431,18 +344,6 @@ void test_xdp_metadata(void)
 			"update prog_arr"))
 		goto out;
 
-	/* Make sure we can't add dev-bound programs to devmaps. */
-	devmap = bpf_object__find_map_by_name(bpf_obj->obj, "dev_map");
-	if (!ASSERT_OK_PTR(devmap, "no dev_map found"))
-		goto out;
-
-	devmap_e.bpf_prog.fd = val;
-	if (!ASSERT_ERR(bpf_map__update_elem(devmap, &key, sizeof(key),
-					     &devmap_e, sizeof(devmap_e),
-					     BPF_ANY),
-			"update dev_map"))
-		goto out;
-
 	/* Attach BPF program to RX interface. */
 
 	ret = bpf_xdp_attach(rx_ifindex,
@@ -456,45 +357,17 @@ void test_xdp_metadata(void)
 	if (!ASSERT_GE(ret, 0, "bpf_map_update_elem"))
 		goto out;
 
-	switch_ns_to_tx(&tok);
-	if (!ASSERT_OK_PTR(tok, "setns tx"))
-		goto out;
-
-	/* Setup separate AF_XDP for TX interface nad send packet to the RX socket. */
-	tx_ifindex = if_nametoindex(TX_NAME);
-	ret = open_xsk(tx_ifindex, &tx_xsk);
-	if (!ASSERT_OK(ret, "open_xsk(TX_NAME)"))
-		goto out;
-
+	/* Send packet destined to RX AF_XDP socket. */
 	if (!ASSERT_GE(generate_packet(&tx_xsk, AF_XDP_CONSUMER_PORT), 0,
 		       "generate AF_XDP_CONSUMER_PORT"))
 		goto out;
 
-	switch_ns_to_rx(&tok);
-	if (!ASSERT_OK_PTR(tok, "setns rx"))
-		goto out;
-
-	/* Verify packet sent from AF_XDP has proper metadata. */
-	if (!ASSERT_GE(verify_xsk_metadata(&rx_xsk, true), 0,
+	/* Verify AF_XDP RX packet has proper metadata. */
+	if (!ASSERT_GE(verify_xsk_metadata(&rx_xsk), 0,
 		       "verify_xsk_metadata"))
 		goto out;
 
-	switch_ns_to_tx(&tok);
-	if (!ASSERT_OK_PTR(tok, "setns tx"))
-		goto out;
 	complete_tx(&tx_xsk);
-
-	/* Now check metadata of packet, generated with network stack */
-	if (!ASSERT_GE(generate_packet_inet(), 0, "generate UDP packet"))
-		goto out;
-
-	switch_ns_to_rx(&tok);
-	if (!ASSERT_OK_PTR(tok, "setns rx"))
-		goto out;
-
-	if (!ASSERT_GE(verify_xsk_metadata(&rx_xsk, false), 0,
-		       "verify_xsk_metadata"))
-		goto out;
 
 	/* Make sure freplace correctly picks up original bound device
 	 * and doesn't crash.
@@ -513,17 +386,9 @@ void test_xdp_metadata(void)
 	if (!ASSERT_OK(xdp_metadata2__attach(bpf_obj2), "attach freplace"))
 		goto out;
 
-	switch_ns_to_tx(&tok);
-	if (!ASSERT_OK_PTR(tok, "setns tx"))
-		goto out;
-
 	/* Send packet to trigger . */
 	if (!ASSERT_GE(generate_packet(&tx_xsk, AF_XDP_CONSUMER_PORT), 0,
 		       "generate freplace packet"))
-		goto out;
-
-	switch_ns_to_rx(&tok);
-	if (!ASSERT_OK_PTR(tok, "setns rx"))
 		goto out;
 
 	while (!retries--) {
@@ -540,6 +405,5 @@ out:
 	xdp_metadata__destroy(bpf_obj);
 	if (tok)
 		close_netns(tok);
-	SYS_NOFAIL("ip netns del " RX_NETNS_NAME);
-	SYS_NOFAIL("ip netns del " TX_NETNS_NAME);
+	system("ip netns del xdp_metadata");
 }

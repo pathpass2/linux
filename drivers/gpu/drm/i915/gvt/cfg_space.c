@@ -31,10 +31,8 @@
  *
  */
 
-#include <drm/drm_print.h>
-
-#include "gvt.h"
 #include "i915_drv.h"
+#include "gvt.h"
 #include "intel_pci_config.h"
 
 enum {

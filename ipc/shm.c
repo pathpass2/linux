@@ -29,7 +29,6 @@
 #include <linux/mm.h>
 #include <linux/hugetlb.h>
 #include <linux/shm.h>
-#include <uapi/linux/shm.h>
 #include <linux/init.h>
 #include <linux/file.h>
 #include <linux/mman.h>
@@ -45,7 +44,6 @@
 #include <linux/mount.h>
 #include <linux/ipc_namespace.h>
 #include <linux/rhashtable.h>
-#include <linux/nstree.h>
 
 #include <linux/uaccess.h>
 
@@ -149,7 +147,6 @@ void shm_exit_ns(struct ipc_namespace *ns)
 static int __init ipc_ns_init(void)
 {
 	shm_init_ns(&init_ipc_ns);
-	ns_tree_add(&init_ipc_ns);
 	return 0;
 }
 
@@ -433,11 +430,8 @@ static int shm_try_destroy_orphaned(int id, void *p, void *data)
 void shm_destroy_orphaned(struct ipc_namespace *ns)
 {
 	down_write(&shm_ids(ns).rwsem);
-	if (shm_ids(ns).in_use) {
-		rcu_read_lock();
+	if (shm_ids(ns).in_use)
 		idr_for_each(&shm_ids(ns).ipcs_idr, &shm_try_destroy_orphaned, ns);
-		rcu_read_unlock();
-	}
 	up_write(&shm_ids(ns).rwsem);
 }
 
@@ -568,25 +562,30 @@ static unsigned long shm_pagesize(struct vm_area_struct *vma)
 }
 
 #ifdef CONFIG_NUMA
-static int shm_set_policy(struct vm_area_struct *vma, struct mempolicy *mpol)
+static int shm_set_policy(struct vm_area_struct *vma, struct mempolicy *new)
 {
-	struct shm_file_data *sfd = shm_file_data(vma->vm_file);
+	struct file *file = vma->vm_file;
+	struct shm_file_data *sfd = shm_file_data(file);
 	int err = 0;
 
 	if (sfd->vm_ops->set_policy)
-		err = sfd->vm_ops->set_policy(vma, mpol);
+		err = sfd->vm_ops->set_policy(vma, new);
 	return err;
 }
 
 static struct mempolicy *shm_get_policy(struct vm_area_struct *vma,
-					unsigned long addr, pgoff_t *ilx)
+					unsigned long addr)
 {
-	struct shm_file_data *sfd = shm_file_data(vma->vm_file);
-	struct mempolicy *mpol = vma->vm_policy;
+	struct file *file = vma->vm_file;
+	struct shm_file_data *sfd = shm_file_data(file);
+	struct mempolicy *pol = NULL;
 
 	if (sfd->vm_ops->get_policy)
-		mpol = sfd->vm_ops->get_policy(vma, addr, ilx);
-	return mpol;
+		pol = sfd->vm_ops->get_policy(vma, addr);
+	else if (vma->vm_policy)
+		pol = vma->vm_policy;
+
+	return pol;
 }
 #endif
 
@@ -604,7 +603,7 @@ static int shm_mmap(struct file *file, struct vm_area_struct *vma)
 	if (ret)
 		return ret;
 
-	ret = vfs_mmap(sfd->file, vma);
+	ret = call_mmap(sfd->file, vma);
 	if (ret) {
 		__shm_close(sfd);
 		return ret;
@@ -667,8 +666,8 @@ static const struct file_operations shm_file_operations = {
 };
 
 /*
- * shm_file_operations_huge is now identical to shm_file_operations
- * except for fop_flags
+ * shm_file_operations_huge is now identical to shm_file_operations,
+ * but we keep it distinct for the sake of is_file_shm_hugepages().
  */
 static const struct file_operations shm_file_operations_huge = {
 	.mmap		= shm_mmap,
@@ -677,8 +676,12 @@ static const struct file_operations shm_file_operations_huge = {
 	.get_unmapped_area	= shm_get_unmapped_area,
 	.llseek		= noop_llseek,
 	.fallocate	= shm_fallocate,
-	.fop_flags	= FOP_HUGE_PAGES,
 };
+
+bool is_file_shm_hugepages(struct file *file)
+{
+	return file->f_op == &shm_file_operations_huge;
+}
 
 static const struct vm_operations_struct shm_vm_ops = {
 	.open	= shm_open,	/* callback for a new vm-area open */
@@ -1659,7 +1662,7 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
 			goto invalid;
 	}
 
-	addr = do_mmap(file, addr, size, prot, flags, 0, 0, &populate, NULL);
+	addr = do_mmap(file, addr, size, prot, flags, 0, &populate, NULL);
 	*raddr = addr;
 	err = 0;
 	if (IS_ERR_VALUE(addr))
@@ -1783,8 +1786,8 @@ long ksys_shmdt(char __user *shmaddr)
 			 */
 			file = vma->vm_file;
 			size = i_size_read(file_inode(vma->vm_file));
-			do_vmi_align_munmap(&vmi, vma, mm, vma->vm_start,
-					    vma->vm_end, NULL, false);
+			do_vma_munmap(&vmi, vma, vma->vm_start, vma->vm_end,
+				      NULL, false);
 			/*
 			 * We discovered the size of the shm segment, so
 			 * break out of here and fall through to the next
@@ -1808,8 +1811,8 @@ long ksys_shmdt(char __user *shmaddr)
 		if ((vma->vm_ops == &shm_vm_ops) &&
 		    ((vma->vm_start - addr)/PAGE_SIZE == vma->vm_pgoff) &&
 		    (vma->vm_file == file)) {
-			do_vmi_align_munmap(&vmi, vma, mm, vma->vm_start,
-					    vma->vm_end, NULL, false);
+			do_vma_munmap(&vmi, vma, vma->vm_start, vma->vm_end,
+				      NULL, false);
 		}
 
 		vma = vma_next(&vmi);

@@ -9,7 +9,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <sound/soc.h>
@@ -438,7 +438,7 @@ static int ak4375_power_on(struct ak4375_priv *ak4375)
 	return 0;
 }
 
-static int ak4375_runtime_suspend(struct device *dev)
+static int __maybe_unused ak4375_runtime_suspend(struct device *dev)
 {
 	struct ak4375_priv *ak4375 = dev_get_drvdata(dev);
 
@@ -448,7 +448,7 @@ static int ak4375_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int ak4375_runtime_resume(struct device *dev)
+static int __maybe_unused ak4375_runtime_resume(struct device *dev)
 {
 	struct ak4375_priv *ak4375 = dev_get_drvdata(dev);
 	int ret;
@@ -490,8 +490,9 @@ static const struct ak4375_drvdata ak4375_drvdata = {
 };
 
 static const struct dev_pm_ops ak4375_pm = {
-	RUNTIME_PM_OPS(ak4375_runtime_suspend, ak4375_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(ak4375_runtime_suspend, ak4375_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 };
 
 static int ak4375_i2c_probe(struct i2c_client *i2c)
@@ -593,10 +594,10 @@ MODULE_DEVICE_TABLE(of, ak4375_of_match);
 static struct i2c_driver ak4375_i2c_driver = {
 	.driver = {
 		.name = "ak4375",
-		.pm = pm_ptr(&ak4375_pm),
+		.pm = &ak4375_pm,
 		.of_match_table = ak4375_of_match,
 	},
-	.probe = ak4375_i2c_probe,
+	.probe_new = ak4375_i2c_probe,
 	.remove = ak4375_i2c_remove,
 };
 module_i2c_driver(ak4375_i2c_driver);

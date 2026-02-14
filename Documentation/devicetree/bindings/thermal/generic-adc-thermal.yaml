@@ -15,8 +15,6 @@ description:
   sensor resistor. The voltage read across the sensor is mapped to
   temperature using voltage-temperature lookup table.
 
-$ref: thermal-sensor.yaml#
-
 properties:
   compatible:
     const: generic-adc-thermal
@@ -46,10 +44,11 @@ properties:
 
 required:
   - compatible
+  - '#thermal-sensor-cells'
   - io-channels
   - io-channel-names
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

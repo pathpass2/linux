@@ -57,8 +57,8 @@ ssize_t wait_for_direct_io(enum ORANGEFS_io_type type, struct inode *inode,
 	int buffer_index;
 	ssize_t ret;
 	size_t copy_amount;
-	bool open_for_read;
-	bool open_for_write;
+	int open_for_read;
+	int open_for_write;
 
 	new_op = op_alloc(ORANGEFS_VFS_OP_FILE_IO);
 	if (!new_op)
@@ -337,26 +337,6 @@ out:
 	return ret;
 }
 
-static ssize_t orangefs_file_splice_read(struct file *in, loff_t *ppos,
-					 struct pipe_inode_info *pipe,
-					 size_t len, unsigned int flags)
-{
-	struct inode *inode = file_inode(in);
-	ssize_t ret;
-
-	orangefs_stats.reads++;
-
-	down_read(&inode->i_rwsem);
-	ret = orangefs_revalidate_mapping(inode);
-	if (ret)
-		goto out;
-
-	ret = filemap_splice_read(in, ppos, pipe, len, flags);
-out:
-	up_read(&inode->i_rwsem);
-	return ret;
-}
-
 static ssize_t orangefs_file_write_iter(struct kiocb *iocb,
     struct iov_iter *iter)
 {
@@ -398,9 +378,8 @@ static const struct vm_operations_struct orangefs_file_vm_ops = {
 /*
  * Memory map a region of a file.
  */
-static int orangefs_file_mmap_prepare(struct vm_area_desc *desc)
+static int orangefs_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct file *file = desc->file;
 	int ret;
 
 	ret = orangefs_revalidate_mapping(file_inode(file));
@@ -411,11 +390,10 @@ static int orangefs_file_mmap_prepare(struct vm_area_desc *desc)
 		     "orangefs_file_mmap: called on %pD\n", file);
 
 	/* set the sequential readahead hint */
-	desc->vm_flags |= VM_SEQ_READ;
-	desc->vm_flags &= ~VM_RAND_READ;
+	vm_flags_mod(vma, VM_SEQ_READ, VM_RAND_READ);
 
 	file_accessed(file);
-	desc->vm_ops = &orangefs_file_vm_ops;
+	vma->vm_ops = &orangefs_file_vm_ops;
 	return 0;
 }
 
@@ -576,12 +554,11 @@ const struct file_operations orangefs_file_operations = {
 	.read_iter	= orangefs_file_read_iter,
 	.write_iter	= orangefs_file_write_iter,
 	.lock		= orangefs_lock,
-	.mmap_prepare	= orangefs_file_mmap_prepare,
+	.mmap		= orangefs_file_mmap,
 	.open		= generic_file_open,
-	.splice_read    = orangefs_file_splice_read,
+	.splice_read    = generic_file_splice_read,
 	.splice_write   = iter_file_splice_write,
 	.flush		= orangefs_flush,
 	.release	= orangefs_file_release,
 	.fsync		= orangefs_fsync,
-	.setlease	= generic_setlease,
 };

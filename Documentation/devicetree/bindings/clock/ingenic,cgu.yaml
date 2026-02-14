@@ -98,9 +98,9 @@ required:
 
 patternProperties:
   "^usb-phy@[a-f0-9]+$":
-    $ref: /schemas/phy/ingenic,phy-usb.yaml#
+    allOf: [ $ref: "../phy/ingenic,phy-usb.yaml#" ]
   "^mac-phy-ctrl@[a-f0-9]+$":
-    $ref: /schemas/net/ingenic,mac.yaml#
+    allOf: [ $ref: "../net/ingenic,mac.yaml#" ]
 
 additionalProperties: false
 

@@ -5,7 +5,7 @@
 #include <asm/ptrace.h>
 #include <uapi/asm/sigcontext.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define __SUNOS_MAXWIN   31
 
@@ -104,6 +104,6 @@ typedef struct {
 #endif /* (CONFIG_SPARC64) */
 
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 #endif /* !(__SPARC_SIGCONTEXT_H) */

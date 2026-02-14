@@ -112,16 +112,14 @@ static unsigned long __bestmult(struct clk_hw *hw, unsigned long rate,
 	return bestmult;
 }
 
-static int clk_multiplier_determine_rate(struct clk_hw *hw,
-					 struct clk_rate_request *req)
+static long clk_multiplier_round_rate(struct clk_hw *hw, unsigned long rate,
+				  unsigned long *parent_rate)
 {
 	struct clk_multiplier *mult = to_clk_multiplier(hw);
-	unsigned long factor = __bestmult(hw, req->rate, &req->best_parent_rate,
+	unsigned long factor = __bestmult(hw, rate, parent_rate,
 					  mult->width, mult->flags);
 
-	req->rate = req->best_parent_rate * factor;
-
-	return 0;
+	return *parent_rate * factor;
 }
 
 static int clk_multiplier_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -152,7 +150,7 @@ static int clk_multiplier_set_rate(struct clk_hw *hw, unsigned long rate,
 
 const struct clk_ops clk_multiplier_ops = {
 	.recalc_rate	= clk_multiplier_recalc_rate,
-	.determine_rate = clk_multiplier_determine_rate,
+	.round_rate	= clk_multiplier_round_rate,
 	.set_rate	= clk_multiplier_set_rate,
 };
 EXPORT_SYMBOL_GPL(clk_multiplier_ops);

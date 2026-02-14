@@ -217,6 +217,18 @@ along to ftrace_push_return_trace() instead of a stub value of 0.
 
 Similarly, when you call ftrace_return_to_handler(), pass it the frame pointer.
 
+HAVE_FUNCTION_GRAPH_RET_ADDR_PTR
+--------------------------------
+
+An arch may pass in a pointer to the return address on the stack.  This
+prevents potential stack unwinding issues where the unwinder gets out of
+sync with ret_stack and the wrong addresses are reported by
+ftrace_graph_ret_addr().
+
+Adding support for it is easy: just define the macro in asm/ftrace.h and
+pass the return address pointer as the 'retp' argument to
+ftrace_push_return_trace().
+
 HAVE_SYSCALL_TRACEPOINTS
 ------------------------
 
@@ -238,15 +250,19 @@ You need very few things to get the syscalls tracing in an arch.
   - Tag this arch as HAVE_SYSCALL_TRACEPOINTS.
 
 
-HAVE_DYNAMIC_FTRACE
--------------------
+HAVE_FTRACE_MCOUNT_RECORD
+-------------------------
 
 See scripts/recordmcount.pl for more info.  Just fill in the arch-specific
 details for how to locate the addresses of mcount call sites via objdump.
 This option doesn't make much sense without also implementing dynamic ftrace.
 
-You will first need HAVE_FUNCTION_TRACER, so scroll your reader back up if you
-got over eager.
+
+HAVE_DYNAMIC_FTRACE
+-------------------
+
+You will first need HAVE_FTRACE_MCOUNT_RECORD and HAVE_FUNCTION_TRACER, so
+scroll your reader back up if you got over eager.
 
 Once those are out of the way, you will need to implement:
 	- asm/ftrace.h:

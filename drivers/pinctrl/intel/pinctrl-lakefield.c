@@ -9,7 +9,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
@@ -20,6 +19,14 @@
 #define LKF_HOSTSW_OWN	0x090
 #define LKF_GPI_IS	0x100
 #define LKF_GPI_IE	0x110
+
+#define LKF_GPP(r, s, e, g)				\
+	{						\
+		.reg_num = (r),				\
+		.base = (s),				\
+		.size = ((e) - (s) + 1),		\
+		.gpio_base = (g),			\
+	}
 
 #define LKF_COMMUNITY(b, s, e, g)			\
 	INTEL_COMMUNITY_GPPS(b, s, e, g, LKF)
@@ -300,24 +307,24 @@ static const struct pinctrl_pin_desc lkf_pins[] = {
 };
 
 static const struct intel_padgroup lkf_community0_gpps[] = {
-	INTEL_GPP(0, 0, 31, 0),		/* EAST_0 */
-	INTEL_GPP(1, 32, 59, 32),	/* EAST_1 */
+	LKF_GPP(0, 0, 31, 0),		/* EAST_0 */
+	LKF_GPP(1, 32, 59, 32),		/* EAST_1 */
 };
 
 static const struct intel_padgroup lkf_community1_gpps[] = {
-	INTEL_GPP(0, 60, 91, 64),	/* NORTHWEST_0 */
-	INTEL_GPP(1, 92, 123, 96),	/* NORTHWEST_1 */
-	INTEL_GPP(2, 124, 148, 128),	/* NORTHWEST_2 */
+	LKF_GPP(0, 60, 91, 64),		/* NORTHWEST_0 */
+	LKF_GPP(1, 92, 123, 96),	/* NORTHWEST_1 */
+	LKF_GPP(2, 124, 148, 128),	/* NORTHWEST_2 */
 };
 
 static const struct intel_padgroup lkf_community2_gpps[] = {
-	INTEL_GPP(0, 149, 180, 160),	/* WEST_0 */
-	INTEL_GPP(1, 181, 212, 192),	/* WEST_1 */
-	INTEL_GPP(2, 213, 237, 224),	/* WEST_2 */
+	LKF_GPP(0, 149, 180, 160),	/* WEST_0 */
+	LKF_GPP(1, 181, 212, 192),	/* WEST_1 */
+	LKF_GPP(2, 213, 237, 224),	/* WEST_2 */
 };
 
 static const struct intel_padgroup lkf_community3_gpps[] = {
-	INTEL_GPP(0, 238, 266, 256),	/* SOUTHEAST */
+	LKF_GPP(0, 238, 266, 256),	/* SOUTHEAST */
 };
 
 static const struct intel_community lkf_communities[] = {
@@ -340,12 +347,14 @@ static const struct acpi_device_id lkf_pinctrl_acpi_match[] = {
 };
 MODULE_DEVICE_TABLE(acpi, lkf_pinctrl_acpi_match);
 
+static INTEL_PINCTRL_PM_OPS(lkf_pinctrl_pm_ops);
+
 static struct platform_driver lkf_pinctrl_driver = {
 	.probe = intel_pinctrl_probe_by_hid,
 	.driver = {
 		.name = "lakefield-pinctrl",
 		.acpi_match_table = lkf_pinctrl_acpi_match,
-		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
+		.pm = &lkf_pinctrl_pm_ops,
 	},
 };
 module_platform_driver(lkf_pinctrl_driver);
@@ -353,4 +362,3 @@ module_platform_driver(lkf_pinctrl_driver);
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Lakefield PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("PINCTRL_INTEL");

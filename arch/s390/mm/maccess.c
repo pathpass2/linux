@@ -13,13 +13,12 @@
 #include <linux/gfp.h>
 #include <linux/cpu.h>
 #include <linux/uio.h>
-#include <linux/io.h>
 #include <asm/asm-extable.h>
+#include <asm/ctl_reg.h>
+#include <asm/io.h>
 #include <asm/abs_lowcore.h>
 #include <asm/stacktrace.h>
-#include <asm/sections.h>
 #include <asm/maccess.h>
-#include <asm/ctlreg.h>
 
 unsigned long __bootdata_preserved(__memcpy_real_area);
 pte_t *__bootdata_preserved(memcpy_real_ptep);
@@ -41,7 +40,7 @@ static notrace long s390_kernel_write_odd(void *dst, const void *src, size_t siz
 		"	ex	%1,0(1)\n"
 		"	lg	%1,0(%3)\n"
 		"	lra	%0,0(%0)\n"
-		"	sturg	%1,%0"
+		"	sturg	%1,%0\n"
 		: "+&a" (aligned), "+&a" (count), "=m" (tmp)
 		: "a" (&tmp), "a" (&tmp[offset]), "a" (src)
 		: "cc", "memory", "1");
@@ -49,7 +48,7 @@ static notrace long s390_kernel_write_odd(void *dst, const void *src, size_t siz
 }
 
 /*
- * __s390_kernel_write - write to kernel memory bypassing DAT
+ * s390_kernel_write - write to kernel memory bypassing DAT
  * @dst: destination address
  * @src: source address
  * @size: number of bytes to copy
@@ -62,7 +61,7 @@ static notrace long s390_kernel_write_odd(void *dst, const void *src, size_t siz
  */
 static DEFINE_SPINLOCK(s390_kernel_write_lock);
 
-notrace void *__s390_kernel_write(void *dst, const void *src, size_t size)
+notrace void *s390_kernel_write(void *dst, const void *src, size_t size)
 {
 	void *tmp = dst;
 	unsigned long flags;
@@ -87,12 +86,11 @@ size_t memcpy_real_iter(struct iov_iter *iter, unsigned long src, size_t count)
 	void *chunk;
 	pte_t pte;
 
-	BUILD_BUG_ON(MEMCPY_REAL_SIZE != PAGE_SIZE);
 	while (count) {
-		phys = src & MEMCPY_REAL_MASK;
-		offset = src & ~MEMCPY_REAL_MASK;
+		phys = src & PAGE_MASK;
+		offset = src & ~PAGE_MASK;
 		chunk = (void *)(__memcpy_real_area + offset);
-		len = min(count, MEMCPY_REAL_SIZE - offset);
+		len = min(count, PAGE_SIZE - offset);
 		pte = mk_pte_phys(phys, PAGE_KERNEL_RO);
 
 		mutex_lock(&memcpy_real_mutex);

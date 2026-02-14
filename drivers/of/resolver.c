@@ -8,7 +8,6 @@
 
 #define pr_fmt(fmt)	"OF: resolver: " fmt
 
-#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -42,7 +41,7 @@ static void adjust_overlay_phandles(struct device_node *overlay,
 		int phandle_delta)
 {
 	struct device_node *child;
-	const struct property *prop;
+	struct property *prop;
 	phandle phandle;
 
 	/* adjust node's phandle in node */
@@ -71,15 +70,15 @@ static void adjust_overlay_phandles(struct device_node *overlay,
 }
 
 static int update_usages_of_a_phandle_reference(struct device_node *overlay,
-		const struct property *prop_fixup, phandle phandle)
+		struct property *prop_fixup, phandle phandle)
 {
 	struct device_node *refnode;
-	const struct property *prop;
-	char *value __free(kfree) = kmemdup(prop_fixup->value, prop_fixup->length, GFP_KERNEL);
-	char *cur, *end, *node_path, *prop_name, *s;
+	struct property *prop;
+	char *value, *cur, *end, *node_path, *prop_name, *s;
 	int offset, len;
 	int err = 0;
 
+	value = kmemdup(prop_fixup->value, prop_fixup->length, GFP_KERNEL);
 	if (!value)
 		return -ENOMEM;
 
@@ -90,19 +89,23 @@ static int update_usages_of_a_phandle_reference(struct device_node *overlay,
 
 		node_path = cur;
 		s = strchr(cur, ':');
-		if (!s)
-			return -EINVAL;
+		if (!s) {
+			err = -EINVAL;
+			goto err_fail;
+		}
 		*s++ = '\0';
 
 		prop_name = s;
 		s = strchr(s, ':');
-		if (!s)
-			return -EINVAL;
+		if (!s) {
+			err = -EINVAL;
+			goto err_fail;
+		}
 		*s++ = '\0';
 
 		err = kstrtoint(s, 10, &offset);
 		if (err)
-			return err;
+			goto err_fail;
 
 		refnode = __of_find_node_by_full_path(of_node_get(overlay), node_path);
 		if (!refnode)
@@ -114,16 +117,22 @@ static int update_usages_of_a_phandle_reference(struct device_node *overlay,
 		}
 		of_node_put(refnode);
 
-		if (!prop)
-			return -ENOENT;
+		if (!prop) {
+			err = -ENOENT;
+			goto err_fail;
+		}
 
-		if (offset < 0 || offset + sizeof(__be32) > prop->length)
-			return -EINVAL;
+		if (offset < 0 || offset + sizeof(__be32) > prop->length) {
+			err = -EINVAL;
+			goto err_fail;
+		}
 
 		*(__be32 *)(prop->value + offset) = cpu_to_be32(phandle);
 	}
 
-	return 0;
+err_fail:
+	kfree(value);
+	return err;
 }
 
 /* compare nodes taking into account that 'name' strips out the @ part */
@@ -147,11 +156,11 @@ static int node_name_cmp(const struct device_node *dn1,
  * of offsets of the phandle reference(s) within the respective property
  * value(s).  The values at these offsets will be fixed up.
  */
-static int adjust_local_phandle_references(const struct device_node *local_fixups,
-		const struct device_node *overlay, int phandle_delta)
+static int adjust_local_phandle_references(struct device_node *local_fixups,
+		struct device_node *overlay, int phandle_delta)
 {
-	struct device_node *overlay_child;
-	const struct property *prop_fix, *prop;
+	struct device_node *child, *overlay_child;
+	struct property *prop_fix, *prop;
 	int err, i, count;
 	unsigned int off;
 
@@ -161,7 +170,9 @@ static int adjust_local_phandle_references(const struct device_node *local_fixup
 	for_each_property_of_node(local_fixups, prop_fix) {
 
 		/* skip properties added automatically */
-		if (is_pseudo_property(prop_fix->name))
+		if (!of_prop_cmp(prop_fix->name, "name") ||
+		    !of_prop_cmp(prop_fix->name, "phandle") ||
+		    !of_prop_cmp(prop_fix->name, "linux,phandle"))
 			continue;
 
 		if ((prop_fix->length % 4) != 0 || prop_fix->length == 0)
@@ -192,7 +203,7 @@ static int adjust_local_phandle_references(const struct device_node *local_fixup
 	 * The roots of the subtrees are the overlay's __local_fixups__ node
 	 * and the overlay's root node.
 	 */
-	for_each_child_of_node_scoped(local_fixups, child) {
+	for_each_child_of_node(local_fixups, child) {
 
 		for_each_child_of_node(overlay, overlay_child)
 			if (!node_name_cmp(child, overlay_child)) {
@@ -200,13 +211,17 @@ static int adjust_local_phandle_references(const struct device_node *local_fixup
 				break;
 			}
 
-		if (!overlay_child)
+		if (!overlay_child) {
+			of_node_put(child);
 			return -EINVAL;
+		}
 
 		err = adjust_local_phandle_references(child, overlay_child,
 				phandle_delta);
-		if (err)
+		if (err) {
+			of_node_put(child);
 			return err;
+		}
 	}
 
 	return 0;
@@ -247,22 +262,25 @@ static int adjust_local_phandle_references(const struct device_node *local_fixup
  */
 int of_resolve_phandles(struct device_node *overlay)
 {
-	struct device_node *child, *refnode;
-	struct device_node *overlay_fixups;
-	struct device_node __free(device_node) *local_fixups = NULL;
+	struct device_node *child, *local_fixups, *refnode;
+	struct device_node *tree_symbols, *overlay_fixups;
 	struct property *prop;
 	const char *refpath;
 	phandle phandle, phandle_delta;
 	int err;
 
+	tree_symbols = NULL;
+
 	if (!overlay) {
 		pr_err("null overlay\n");
-		return -EINVAL;
+		err = -EINVAL;
+		goto out;
 	}
 
 	if (!of_node_check_flag(overlay, OF_DETACHED)) {
 		pr_err("overlay not detached\n");
-		return -EINVAL;
+		err = -EINVAL;
+		goto out;
 	}
 
 	phandle_delta = live_tree_max_phandle() + 1;
@@ -274,7 +292,7 @@ int of_resolve_phandles(struct device_node *overlay)
 
 	err = adjust_local_phandle_references(local_fixups, overlay, phandle_delta);
 	if (err)
-		return err;
+		goto out;
 
 	overlay_fixups = NULL;
 
@@ -283,13 +301,16 @@ int of_resolve_phandles(struct device_node *overlay)
 			overlay_fixups = child;
 	}
 
-	if (!overlay_fixups)
-		return 0;
+	if (!overlay_fixups) {
+		err = 0;
+		goto out;
+	}
 
-	struct device_node __free(device_node) *tree_symbols = of_find_node_by_path("/__symbols__");
+	tree_symbols = of_find_node_by_path("/__symbols__");
 	if (!tree_symbols) {
 		pr_err("no symbols in root of device tree.\n");
-		return -EINVAL;
+		err = -EINVAL;
+		goto out;
 	}
 
 	for_each_property_of_node(overlay_fixups, prop) {
@@ -303,12 +324,14 @@ int of_resolve_phandles(struct device_node *overlay)
 		if (err) {
 			pr_err("node label '%s' not found in live devicetree symbols table\n",
 			       prop->name);
-			return err;
+			goto out;
 		}
 
 		refnode = of_find_node_by_path(refpath);
-		if (!refnode)
-			return -ENOENT;
+		if (!refnode) {
+			err = -ENOENT;
+			goto out;
+		}
 
 		phandle = refnode->phandle;
 		of_node_put(refnode);
@@ -318,8 +341,11 @@ int of_resolve_phandles(struct device_node *overlay)
 			break;
 	}
 
+out:
 	if (err)
 		pr_err("overlay phandle fixup failed: %d\n", err);
+	of_node_put(tree_symbols);
+
 	return err;
 }
 EXPORT_SYMBOL_GPL(of_resolve_phandles);

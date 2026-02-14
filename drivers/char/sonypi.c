@@ -37,7 +37,6 @@
 #include <linux/kfifo.h>
 #include <linux/platform_device.h>
 #include <linux/gfp.h>
-#include <linux/string_choices.h>
 
 #include <linux/uaccess.h>
 #include <asm/io.h>
@@ -921,7 +920,7 @@ static ssize_t sonypi_misc_read(struct file *file, char __user *buf,
 
 	if (ret > 0) {
 		struct inode *inode = file_inode(file);
-		inode_set_atime_to_ts(inode, current_time(inode));
+		inode->i_atime = current_time(inode);
 	}
 
 	return ret;
@@ -1055,6 +1054,7 @@ static const struct file_operations sonypi_misc_fops = {
 	.release	= sonypi_misc_release,
 	.fasync		= sonypi_misc_fasync,
 	.unlocked_ioctl	= sonypi_misc_ioctl,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice sonypi_misc_device = {
@@ -1269,12 +1269,12 @@ static void sonypi_display_info(void)
 	       "compat = %s, mask = 0x%08lx, useinput = %s, acpi = %s\n",
 	       sonypi_device.model,
 	       verbose,
-	       str_on_off(fnkeyinit),
-	       str_on_off(camera),
-	       str_on_off(compat),
+	       fnkeyinit ? "on" : "off",
+	       camera ? "on" : "off",
+	       compat ? "on" : "off",
 	       mask,
-	       str_on_off(useinput),
-	       str_on_off(SONYPI_ACPI_ACTIVE));
+	       useinput ? "on" : "off",
+	       SONYPI_ACPI_ACTIVE ? "on" : "off");
 	printk(KERN_INFO "sonypi: enabled at irq=%d, port1=0x%x, port2=0x%x\n",
 	       sonypi_device.irq,
 	       sonypi_device.ioport1, sonypi_device.ioport2);
@@ -1408,7 +1408,7 @@ static int sonypi_probe(struct platform_device *dev)
 	return error;
 }
 
-static void sonypi_remove(struct platform_device *dev)
+static int sonypi_remove(struct platform_device *dev)
 {
 	sonypi_disable();
 
@@ -1432,6 +1432,8 @@ static void sonypi_remove(struct platform_device *dev)
 	}
 
 	kfifo_free(&sonypi_device.fifo);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

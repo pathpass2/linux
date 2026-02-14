@@ -26,8 +26,12 @@ void sja1105_pack(void *buf, const u64 *val, int start, int end, size_t len)
 		pr_err("Start bit (%d) expected to be larger than end (%d)\n",
 		       start, end);
 	} else if (rc == -ERANGE) {
-		pr_err("Field %d-%d too large for 64 bits!\n",
-		       start, end);
+		if ((start - end + 1) > 64)
+			pr_err("Field %d-%d too large for 64 bits!\n",
+			       start, end);
+		else
+			pr_err("Cannot store %llx inside bits %d-%d (would truncate)\n",
+			       *val, start, end);
 	}
 	dump_stack();
 }
@@ -1917,10 +1921,8 @@ int sja1105_table_delete_entry(struct sja1105_table *table, int i)
 	if (i > table->entry_count)
 		return -ERANGE;
 
-	if (i + 1 < table->entry_count) {
-		memmove(entries + i * entry_size, entries + (i + 1) * entry_size,
-			(table->entry_count - i - 1) * entry_size);
-	}
+	memmove(entries + i * entry_size, entries + (i + 1) * entry_size,
+		(table->entry_count - i) * entry_size);
 
 	table->entry_count--;
 

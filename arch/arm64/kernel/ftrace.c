@@ -15,7 +15,7 @@
 #include <asm/debug-monitors.h>
 #include <asm/ftrace.h>
 #include <asm/insn.h>
-#include <asm/text-patching.h>
+#include <asm/patching.h>
 
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
 struct fregs_offset {
@@ -23,10 +23,10 @@ struct fregs_offset {
 	int offset;
 };
 
-#define FREGS_OFFSET(n, field)					\
-{								\
-	.name = n,						\
-	.offset = offsetof(struct __arch_ftrace_regs, field),	\
+#define FREGS_OFFSET(n, field)				\
+{							\
+	.name = n,					\
+	.offset = offsetof(struct ftrace_regs, field),	\
 }
 
 static const struct fregs_offset fregs_offsets[] = {
@@ -143,69 +143,6 @@ unsigned long ftrace_call_adjust(unsigned long addr)
 	return addr;
 }
 
-/* Convert fentry_ip to the symbol address without kallsyms */
-unsigned long arch_ftrace_get_symaddr(unsigned long fentry_ip)
-{
-	u32 insn;
-
-	/*
-	 * When using patchable-function-entry without pre-function NOPS, ftrace
-	 * entry is the address of the first NOP after the function entry point.
-	 *
-	 * The compiler has either generated:
-	 *
-	 * func+00:	func:	NOP		// To be patched to MOV X9, LR
-	 * func+04:		NOP		// To be patched to BL <caller>
-	 *
-	 * Or:
-	 *
-	 * func-04:		BTI	C
-	 * func+00:	func:	NOP		// To be patched to MOV X9, LR
-	 * func+04:		NOP		// To be patched to BL <caller>
-	 *
-	 * The fentry_ip is the address of `BL <caller>` which is at `func + 4`
-	 * bytes in either case.
-	 */
-	if (!IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS))
-		return fentry_ip - AARCH64_INSN_SIZE;
-
-	/*
-	 * When using patchable-function-entry with pre-function NOPs, BTI is
-	 * a bit different.
-	 *
-	 * func+00:	func:	NOP		// To be patched to MOV X9, LR
-	 * func+04:		NOP		// To be patched to BL <caller>
-	 *
-	 * Or:
-	 *
-	 * func+00:	func:	BTI	C
-	 * func+04:		NOP		// To be patched to MOV X9, LR
-	 * func+08:		NOP		// To be patched to BL <caller>
-	 *
-	 * The fentry_ip is the address of `BL <caller>` which is at either
-	 * `func + 4` or `func + 8` depends on whether there is a BTI.
-	 */
-
-	/* If there is no BTI, the func address should be one instruction before. */
-	if (!IS_ENABLED(CONFIG_ARM64_BTI_KERNEL))
-		return fentry_ip - AARCH64_INSN_SIZE;
-
-	/* We want to be extra safe in case entry ip is on the page edge,
-	 * but otherwise we need to avoid get_kernel_nofault()'s overhead.
-	 */
-	if ((fentry_ip & ~PAGE_MASK) < AARCH64_INSN_SIZE * 2) {
-		if (get_kernel_nofault(insn, (u32 *)(fentry_ip - AARCH64_INSN_SIZE * 2)))
-			return 0;
-	} else {
-		insn = *(u32 *)(fentry_ip - AARCH64_INSN_SIZE * 2);
-	}
-
-	if (aarch64_insn_is_bti(le32_to_cpu((__le32)insn)))
-		return fentry_ip - AARCH64_INSN_SIZE * 2;
-
-	return fentry_ip - AARCH64_INSN_SIZE;
-}
-
 /*
  * Replace a single instruction, which may be a branch or NOP.
  * If @validate == true, a replaced instruction is checked against 'old'.
@@ -260,27 +197,13 @@ int ftrace_update_ftrace_func(ftrace_func_t func)
 
 static struct plt_entry *get_ftrace_plt(struct module *mod, unsigned long addr)
 {
-#ifdef CONFIG_MODULES
-	struct plt_entry *plt = NULL;
+#ifdef CONFIG_ARM64_MODULE_PLTS
+	struct plt_entry *plt = mod->arch.ftrace_trampolines;
 
-	if (within_module_mem_type(addr, mod, MOD_INIT_TEXT))
-		plt = mod->arch.init_ftrace_trampolines;
-	else if (within_module_mem_type(addr, mod, MOD_TEXT))
-		plt = mod->arch.ftrace_trampolines;
-	else
-		return NULL;
-
-	return &plt[FTRACE_PLT_IDX];
-#else
-	return NULL;
+	if (addr == FTRACE_ADDR)
+		return &plt[FTRACE_PLT_IDX];
 #endif
-}
-
-static bool reachable_by_bl(unsigned long addr, unsigned long pc)
-{
-	long offset = (long)addr - (long)pc;
-
-	return offset >= -SZ_128M && offset < SZ_128M;
+	return NULL;
 }
 
 /*
@@ -297,21 +220,14 @@ static bool ftrace_find_callable_addr(struct dyn_ftrace *rec,
 				      unsigned long *addr)
 {
 	unsigned long pc = rec->ip;
+	long offset = (long)*addr - (long)pc;
 	struct plt_entry *plt;
-
-	/*
-	 * If a custom trampoline is unreachable, rely on the ftrace_caller
-	 * trampoline which knows how to indirectly reach that trampoline
-	 * through ops->direct_call.
-	 */
-	if (*addr != FTRACE_ADDR && !reachable_by_bl(*addr, pc))
-		*addr = FTRACE_ADDR;
 
 	/*
 	 * When the target is within range of the 'BL' instruction, use 'addr'
 	 * as-is and branch to that directly.
 	 */
-	if (reachable_by_bl(*addr, pc))
+	if (offset >= -SZ_128M && offset < SZ_128M)
 		return true;
 
 	/*
@@ -319,7 +235,7 @@ static bool ftrace_find_callable_addr(struct dyn_ftrace *rec,
 	 * must use a PLT to reach it. We can only place PLTs for modules, and
 	 * only when module PLT support is built-in.
 	 */
-	if (!IS_ENABLED(CONFIG_MODULES))
+	if (!IS_ENABLED(CONFIG_ARM64_MODULE_PLTS))
 		return false;
 
 	/*
@@ -327,19 +243,20 @@ static bool ftrace_find_callable_addr(struct dyn_ftrace *rec,
 	 * dealing with an out-of-range condition, we can assume it
 	 * is due to a module being loaded far away from the kernel.
 	 *
-	 * NOTE: __module_text_address() must be called within a RCU read
-	 * section, but we can rely on ftrace_lock to ensure that 'mod'
+	 * NOTE: __module_text_address() must be called with preemption
+	 * disabled, but we can rely on ftrace_lock to ensure that 'mod'
 	 * retains its validity throughout the remainder of this code.
 	 */
 	if (!mod) {
-		guard(rcu)();
+		preempt_disable();
 		mod = __module_text_address(pc);
+		preempt_enable();
 	}
 
 	if (WARN_ON(!mod))
 		return false;
 
-	plt = get_ftrace_plt(mod, pc);
+	plt = get_ftrace_plt(mod, *addr);
 	if (!plt) {
 		pr_err("ftrace: no module PLT for %ps\n", (void *)*addr);
 		return false;
@@ -413,24 +330,12 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr,
 		       unsigned long addr)
 {
-	unsigned long pc = rec->ip;
-	u32 old, new;
-	int ret;
-
-	ret = ftrace_rec_set_ops(rec, arm64_rec_get_ops(rec));
-	if (ret)
-		return ret;
-
-	if (!ftrace_find_callable_addr(rec, NULL, &old_addr))
+	if (WARN_ON_ONCE(old_addr != (unsigned long)ftrace_caller))
 		return -EINVAL;
-	if (!ftrace_find_callable_addr(rec, NULL, &addr))
+	if (WARN_ON_ONCE(addr != (unsigned long)ftrace_caller))
 		return -EINVAL;
 
-	old = aarch64_insn_gen_branch_imm(pc, old_addr,
-					  AARCH64_INSN_BRANCH_LINK);
-	new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK);
-
-	return ftrace_modify_code(pc, old, new, true);
+	return ftrace_rec_update_ops(rec);
 }
 #endif
 
@@ -492,7 +397,7 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 		return ret;
 
 	/*
-	 * When using mcount, callsites in modules may have been initialized to
+	 * When using mcount, callsites in modules may have been initalized to
 	 * call an arbitrary module PLT (which redirects to the _mcount stub)
 	 * rather than the ftrace PLT we'll use at runtime (which redirects to
 	 * the ftrace trampoline). We can ignore the old PLT when initializing
@@ -500,8 +405,10 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 	 *
 	 * Note: 'mod' is only set at module load time.
 	 */
-	if (!IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_ARGS) && mod)
+	if (!IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_ARGS) &&
+	    IS_ENABLED(CONFIG_ARM64_MODULE_PLTS) && mod) {
 		return aarch64_insn_patch_text_nosync((void *)pc, new);
+	}
 
 	if (!ftrace_find_callable_addr(rec, mod, &addr))
 		return -EINVAL;
@@ -550,20 +457,7 @@ void prepare_ftrace_return(unsigned long self_addr, unsigned long *parent,
 void ftrace_graph_func(unsigned long ip, unsigned long parent_ip,
 		       struct ftrace_ops *op, struct ftrace_regs *fregs)
 {
-	unsigned long return_hooker = (unsigned long)&return_to_handler;
-	unsigned long frame_pointer = arch_ftrace_regs(fregs)->fp;
-	unsigned long *parent = &arch_ftrace_regs(fregs)->lr;
-	unsigned long old;
-
-	if (unlikely(atomic_read(&current->tracing_graph_pause)))
-		return;
-
-	old = *parent;
-
-	if (!function_graph_enter_regs(old, ip, frame_pointer,
-				       (void *)frame_pointer, fregs)) {
-		*parent = return_hooker;
-	}
+	prepare_ftrace_return(ip, &fregs->lr, fregs->fp);
 }
 #else
 /*

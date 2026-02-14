@@ -42,13 +42,13 @@ struct peci_controller_ops {
  */
 struct peci_controller {
 	struct device dev;
-	const struct peci_controller_ops *ops;
+	struct peci_controller_ops *ops;
 	struct mutex bus_lock; /* held for the duration of xfer */
 	u8 id;
 };
 
 struct peci_controller *devm_peci_controller_add(struct device *parent,
-						 const struct peci_controller_ops *ops);
+						 struct peci_controller_ops *ops);
 
 static inline struct peci_controller *to_peci_controller(void *d)
 {
@@ -58,8 +58,10 @@ static inline struct peci_controller *to_peci_controller(void *d)
 /**
  * struct peci_device - PECI device
  * @dev: device object to register PECI device to the device model
+ * @controller: manages the bus segment hosting this PECI device
  * @info: PECI device characteristics
- * @info.x86_vfm: device vendor-family-model
+ * @info.family: device family
+ * @info.model: device model
  * @info.peci_revision: PECI revision supported by the PECI device
  * @info.socket_id: the socket ID represented by the PECI device
  * @addr: address used on the PECI bus connected to the parent controller
@@ -72,7 +74,8 @@ static inline struct peci_controller *to_peci_controller(void *d)
 struct peci_device {
 	struct device dev;
 	struct {
-		u32 x86_vfm;
+		u16 family;
+		u8 model;
 		u8 peci_revision;
 		u8 socket_id;
 	} info;

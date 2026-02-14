@@ -550,6 +550,7 @@ typedef enum {
 
 /* Driver definitions */
 
+#define	 PCI_VENDOR_ID_AMD		0x1022
 #define  PCI_DEVICE_ID_AMD8111E_7462	0x7462
 
 #define MAX_UNITS			8 /* Maximum number of devices possible */
@@ -763,6 +764,7 @@ struct amd8111e_priv{
 	u32 ext_phy_id;
 
 	struct amd8111e_link_config link_config;
+	int pm_cap;
 
 	struct net_device *next;
 	int mii;

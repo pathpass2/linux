@@ -7,9 +7,9 @@ Supported chips:
 
     Prefix: 'ds620'
 
-    Datasheet: Publicly available at the Analog Devices website
+    Datasheet: Publicly available at the Dallas Semiconductor website
 
-	https://www.analog.com/media/en/technical-documentation/data-sheets/DS620.pdf
+	       http://www.dalsemi.com/
 
 Authors:
 	Roland Stigge <stigge@antcom.de>

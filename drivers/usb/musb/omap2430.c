@@ -151,6 +151,7 @@ static void omap_musb_set_mailbox(struct omap2430_glue *glue)
 	default:
 		dev_dbg(musb->controller, "ID float\n");
 	}
+	pm_runtime_mark_last_busy(musb->controller);
 	pm_runtime_put_autosuspend(musb->controller);
 	atomic_notifier_call_chain(&musb->xceiv->notifier,
 			musb->xceiv->last_event, NULL);
@@ -317,11 +318,13 @@ static int omap2430_probe(struct platform_device *pdev)
 
 	glue = devm_kzalloc(&pdev->dev, sizeof(*glue), GFP_KERNEL);
 	if (!glue)
-		return -ENOMEM;
+		goto err0;
 
 	musb = platform_device_alloc("musb-hdrc", PLATFORM_DEVID_AUTO);
-	if (!musb)
-		return -ENOMEM;
+	if (!musb) {
+		dev_err(&pdev->dev, "failed to allocate musb device\n");
+		goto err0;
+	}
 
 	musb->dev.parent		= &pdev->dev;
 	musb->dev.dma_mask		= &omap2430_dmamask;
@@ -331,7 +334,7 @@ static int omap2430_probe(struct platform_device *pdev)
 	 * Legacy SoCs using omap_device get confused if node is moved
 	 * because of interconnect properties mixed into the node.
 	 */
-	if (of_property_present(np, "ti,hwmods")) {
+	if (of_get_property(np, "ti,hwmods", NULL)) {
 		dev_warn(&pdev->dev, "please update to probe with ti-sysc\n");
 		populate_irqs = true;
 	} else {
@@ -346,15 +349,15 @@ static int omap2430_probe(struct platform_device *pdev)
 
 	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
-		goto err_put_musb;
+		goto err2;
 
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
-		goto err_put_musb;
+		goto err2;
 
 	config = devm_kzalloc(&pdev->dev, sizeof(*config), GFP_KERNEL);
 	if (!config)
-		goto err_put_musb;
+		goto err2;
 
 	of_property_read_u32(np, "mode", (u32 *)&pdata->mode);
 	of_property_read_u32(np, "interface-type",
@@ -377,7 +380,7 @@ static int omap2430_probe(struct platform_device *pdev)
 		if (!control_pdev) {
 			dev_err(&pdev->dev, "Failed to get control device\n");
 			ret = -EINVAL;
-			goto err_put_musb;
+			goto err2;
 		}
 		glue->control_otghs = &control_pdev->dev;
 	}
@@ -397,7 +400,7 @@ static int omap2430_probe(struct platform_device *pdev)
 	ret = platform_device_add_resources(musb, pdev->resource, pdev->num_resources);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to add resources\n");
-		goto err_put_control_otghs;
+		goto err2;
 	}
 
 	if (populate_irqs) {
@@ -410,7 +413,7 @@ static int omap2430_probe(struct platform_device *pdev)
 		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 		if (!res) {
 			ret = -EINVAL;
-			goto err_put_control_otghs;
+			goto err2;
 		}
 
 		musb_res[i].start = res->start;
@@ -438,14 +441,14 @@ static int omap2430_probe(struct platform_device *pdev)
 		ret = platform_device_add_resources(musb, musb_res, i);
 		if (ret) {
 			dev_err(&pdev->dev, "failed to add IRQ resources\n");
-			goto err_put_control_otghs;
+			goto err2;
 		}
 	}
 
 	ret = platform_device_add_data(musb, pdata, sizeof(*pdata));
 	if (ret) {
 		dev_err(&pdev->dev, "failed to add platform_data\n");
-		goto err_put_control_otghs;
+		goto err2;
 	}
 
 	pm_runtime_enable(glue->dev);
@@ -453,30 +456,29 @@ static int omap2430_probe(struct platform_device *pdev)
 	ret = platform_device_add(musb);
 	if (ret) {
 		dev_err(&pdev->dev, "failed to register musb device\n");
-		goto err_disable_rpm;
+		goto err3;
 	}
 
 	return 0;
 
-err_disable_rpm:
+err3:
 	pm_runtime_disable(glue->dev);
-err_put_control_otghs:
-	if (!IS_ERR(glue->control_otghs))
-		put_device(glue->control_otghs);
-err_put_musb:
+
+err2:
 	platform_device_put(musb);
 
+err0:
 	return ret;
 }
 
-static void omap2430_remove(struct platform_device *pdev)
+static int omap2430_remove(struct platform_device *pdev)
 {
 	struct omap2430_glue *glue = platform_get_drvdata(pdev);
 
 	platform_device_unregister(glue->musb);
 	pm_runtime_disable(glue->dev);
-	if (!IS_ERR(glue->control_otghs))
-		put_device(glue->control_otghs);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM

@@ -2,14 +2,14 @@
 
 #include <linux/linkage.h>
 #include <asm/asm.h>
+#include <asm-generic/export.h>
 #include <asm/alternative-macros.h>
-#include <asm/hwcap.h>
+#include <asm/errata_list.h>
 
 /* int strncmp(const char *cs, const char *ct, size_t count) */
 SYM_FUNC_START(strncmp)
 
-	__ALTERNATIVE_CFG("nop", "j strncmp_zbb", 0, RISCV_ISA_EXT_ZBB,
-		IS_ENABLED(CONFIG_RISCV_ISA_ZBB) && IS_ENABLED(CONFIG_TOOLCHAIN_HAS_ZBB))
+	ALTERNATIVE("nop", "j strncmp_zbb", 0, RISCV_ISA_EXT_ZBB, CONFIG_RISCV_ISA_ZBB)
 
 	/*
 	 * Returns
@@ -47,7 +47,7 @@ SYM_FUNC_START(strncmp)
 /*
  * Variant of strncmp using the ZBB extension if available
  */
-#if defined(CONFIG_RISCV_ISA_ZBB) && defined(CONFIG_TOOLCHAIN_HAS_ZBB)
+#ifdef CONFIG_RISCV_ISA_ZBB
 strncmp_zbb:
 
 .option push
@@ -137,5 +137,3 @@ strncmp_zbb:
 .option pop
 #endif
 SYM_FUNC_END(strncmp)
-SYM_FUNC_ALIAS(__pi_strncmp, strncmp)
-EXPORT_SYMBOL(strncmp)

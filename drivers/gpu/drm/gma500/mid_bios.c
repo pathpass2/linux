@@ -12,7 +12,6 @@
  */
 
 #include <drm/drm.h>
-#include <drm/drm_print.h>
 
 #include "mid_bios.h"
 #include "psb_drv.h"
@@ -279,11 +278,6 @@ static void mid_get_vbt_data(struct drm_psb_private *dev_priv)
 		pci_get_domain_bus_and_slot(pci_domain_nr(pdev->bus),
 					    0, PCI_DEVFN(2, 0));
 	int ret = -1;
-
-	if (pci_gfx_root == NULL) {
-		WARN_ON(1);
-		return;
-	}
 
 	/* Get the address of the platform config vbt */
 	pci_read_config_dword(pci_gfx_root, 0xFC, &addr);

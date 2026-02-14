@@ -8,8 +8,7 @@
 /*
  * Fields are zero when not available. Also, this struct is shared with
  * userspace mcelog and thus must keep existing fields at current offsets.
- * Only add new, shared fields to the end of the structure.
- * Do not add vendor-specific fields.
+ * Only add new fields to the end of the structure
  */
 struct mce {
 	__u64 status;		/* Bank's MCi_STATUS MSR */

@@ -10,7 +10,6 @@
 
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/fb.h>
 #include <linux/i2c-algo-bit.h>
@@ -117,6 +116,7 @@ unsigned char *fb_ddc_read(struct i2c_adapter *adapter)
 	algo_data->setsda(algo_data->data, 1);
 	algo_data->setscl(algo_data->data, 1);
 
+	adapter->class |= I2C_CLASS_DDC;
 	return edid;
 }
 

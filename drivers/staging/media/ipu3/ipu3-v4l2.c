@@ -3,7 +3,6 @@
 
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
-#include <linux/string_choices.h>
 
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
@@ -37,7 +36,7 @@ static int imgu_subdev_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	/* Initialize try_fmt */
 	for (i = 0; i < IMGU_NODE_NUM; i++) {
 		struct v4l2_mbus_framefmt *try_fmt =
-			v4l2_subdev_state_get_format(fh->state, i);
+			v4l2_subdev_get_try_format(sd, fh->state, i);
 
 		try_fmt->width = try_crop.width;
 		try_fmt->height = try_crop.height;
@@ -45,8 +44,8 @@ static int imgu_subdev_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 		try_fmt->field = V4L2_FIELD_NONE;
 	}
 
-	*v4l2_subdev_state_get_crop(fh->state, IMGU_NODE_IN) = try_crop;
-	*v4l2_subdev_state_get_compose(fh->state, IMGU_NODE_IN) = try_crop;
+	*v4l2_subdev_get_try_crop(sd, fh->state, IMGU_NODE_IN) = try_crop;
+	*v4l2_subdev_get_try_compose(sd, fh->state, IMGU_NODE_IN) = try_crop;
 
 	return 0;
 }
@@ -137,7 +136,7 @@ static int imgu_subdev_get_fmt(struct v4l2_subdev *sd,
 	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		fmt->format = imgu_pipe->nodes[pad].pad_fmt;
 	} else {
-		mf = v4l2_subdev_state_get_format(sd_state, pad);
+		mf = v4l2_subdev_get_try_format(sd, sd_state, pad);
 		fmt->format = *mf;
 	}
 
@@ -162,7 +161,7 @@ static int imgu_subdev_set_fmt(struct v4l2_subdev *sd,
 
 	imgu_pipe = &imgu->imgu_pipe[pipe];
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-		mf = v4l2_subdev_state_get_format(sd_state, pad);
+		mf = v4l2_subdev_get_try_format(sd, sd_state, pad);
 	else
 		mf = &imgu_pipe->nodes[pad].pad_fmt;
 
@@ -195,7 +194,7 @@ imgu_subdev_get_crop(struct imgu_v4l2_subdev *sd,
 		     enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_state_get_crop(sd_state, pad);
+		return v4l2_subdev_get_try_crop(&sd->subdev, sd_state, pad);
 	else
 		return &sd->rect.eff;
 }
@@ -206,7 +205,7 @@ imgu_subdev_get_compose(struct imgu_v4l2_subdev *sd,
 			enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_state_get_compose(sd_state, pad);
+		return v4l2_subdev_get_try_compose(&sd->subdev, sd_state, pad);
 	else
 		return &sd->rect.bds;
 }
@@ -288,7 +287,7 @@ static int imgu_link_setup(struct media_entity *entity,
 	WARN_ON(pad >= IMGU_NODE_NUM);
 
 	dev_dbg(&imgu->pci_dev->dev, "pipe %u pad %u is %s", pipe, pad,
-		 str_enabled_disabled(flags & MEDIA_LNK_FL_ENABLED));
+		 flags & MEDIA_LNK_FL_ENABLED ? "enabled" : "disabled");
 
 	imgu_pipe = &imgu->imgu_pipe[pipe];
 	imgu_pipe->nodes[pad].enabled = flags & MEDIA_LNK_FL_ENABLED;
@@ -303,7 +302,7 @@ static int imgu_link_setup(struct media_entity *entity,
 		__clear_bit(pipe, imgu->css.enabled_pipes);
 
 	dev_dbg(&imgu->pci_dev->dev, "pipe %u is %s", pipe,
-		 str_enabled_disabled(flags & MEDIA_LNK_FL_ENABLED));
+		 flags & MEDIA_LNK_FL_ENABLED ? "enabled" : "disabled");
 
 	return 0;
 }
@@ -536,53 +535,31 @@ static void imgu_vb2_stop_streaming(struct vb2_queue *vq)
 		container_of(vq, struct imgu_video_device, vbq);
 	int r;
 	unsigned int pipe;
-	bool stop_streaming = false;
 
-	/* Verify that the node had been setup with imgu_v4l2_node_setup() */
 	WARN_ON(!node->enabled);
 
 	pipe = node->pipe;
 	dev_dbg(dev, "Try to stream off node [%u][%u]", pipe, node->id);
+	imgu_pipe = &imgu->imgu_pipe[pipe];
+	r = v4l2_subdev_call(&imgu_pipe->imgu_sd.subdev, video, s_stream, 0);
+	if (r)
+		dev_err(&imgu->pci_dev->dev,
+			"failed to stop subdev streaming\n");
 
-	/*
-	 * When the first node of a streaming setup is stopped, the entire
-	 * pipeline needs to stop before individual nodes are disabled.
-	 * Perform the inverse of the initial setup.
-	 *
-	 * Part 1 - s_stream on the entire pipeline
-	 */
 	mutex_lock(&imgu->streaming_lock);
-	if (imgu->streaming) {
+	/* Was this the first node with streaming disabled? */
+	if (imgu->streaming && imgu_all_nodes_streaming(imgu, node)) {
 		/* Yes, really stop streaming now */
 		dev_dbg(dev, "IMGU streaming is ready to stop");
 		r = imgu_s_stream(imgu, false);
 		if (!r)
 			imgu->streaming = false;
-		stop_streaming = true;
 	}
+
+	imgu_return_all_buffers(imgu, node, VB2_BUF_STATE_ERROR);
 	mutex_unlock(&imgu->streaming_lock);
 
-	/* Part 2 - s_stream on subdevs
-	 *
-	 * If we call s_stream multiple times, Linux v6.7's call_s_stream()
-	 * WARNs and aborts. Thus, disable all pipes at once, and only once.
-	 */
-	if (stop_streaming) {
-		for_each_set_bit(pipe, imgu->css.enabled_pipes,
-				 IMGU_MAX_PIPE_NUM) {
-			imgu_pipe = &imgu->imgu_pipe[pipe];
-
-			r = v4l2_subdev_call(&imgu_pipe->imgu_sd.subdev,
-					     video, s_stream, 0);
-			if (r)
-				dev_err(&imgu->pci_dev->dev,
-					"failed to stop subdev streaming\n");
-		}
-	}
-
-	/* Part 3 - individual node teardown */
 	video_device_pipeline_stop(&node->vdev);
-	imgu_return_all_buffers(imgu, node, VB2_BUF_STATE_ERROR);
 }
 
 /******************** v4l2_ioctl_ops ********************/
@@ -938,6 +915,8 @@ static const struct vb2_ops imgu_vb2_ops = {
 	.queue_setup = imgu_vb2_queue_setup,
 	.start_streaming = imgu_vb2_start_streaming,
 	.stop_streaming = imgu_vb2_stop_streaming,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
 };
 
 /****************** v4l2_file_operations *****************/
@@ -1090,17 +1069,17 @@ static int imgu_v4l2_subdev_register(struct imgu_device *imgu,
 	struct imgu_media_pipe *imgu_pipe = &imgu->imgu_pipe[pipe];
 
 	/* Initialize subdev media entity */
-	imgu_sd->subdev.entity.ops = &imgu_media_ops;
-	for (i = 0; i < IMGU_NODE_NUM; i++) {
-		imgu_sd->subdev_pads[i].flags = imgu_pipe->nodes[i].output ?
-			MEDIA_PAD_FL_SINK : MEDIA_PAD_FL_SOURCE;
-	}
 	r = media_entity_pads_init(&imgu_sd->subdev.entity, IMGU_NODE_NUM,
 				   imgu_sd->subdev_pads);
 	if (r) {
 		dev_err(&imgu->pci_dev->dev,
 			"failed initialize subdev media entity (%d)\n", r);
 		return r;
+	}
+	imgu_sd->subdev.entity.ops = &imgu_media_ops;
+	for (i = 0; i < IMGU_NODE_NUM; i++) {
+		imgu_sd->subdev_pads[i].flags = imgu_pipe->nodes[i].output ?
+			MEDIA_PAD_FL_SINK : MEDIA_PAD_FL_SOURCE;
 	}
 
 	/* Initialize subdev */
@@ -1198,15 +1177,15 @@ static int imgu_v4l2_node_setup(struct imgu_device *imgu, unsigned int pipe,
 	}
 
 	/* Initialize media entities */
-	node->vdev_pad.flags = node->output ?
-		MEDIA_PAD_FL_SOURCE : MEDIA_PAD_FL_SINK;
-	vdev->entity.ops = NULL;
 	r = media_entity_pads_init(&vdev->entity, 1, &node->vdev_pad);
 	if (r) {
 		dev_err(dev, "failed initialize media entity (%d)\n", r);
 		mutex_destroy(&node->lock);
 		return r;
 	}
+	node->vdev_pad.flags = node->output ?
+		MEDIA_PAD_FL_SOURCE : MEDIA_PAD_FL_SINK;
+	vdev->entity.ops = NULL;
 
 	/* Initialize vbq */
 	vbq->type = node->vdev_fmt.type;
@@ -1219,7 +1198,7 @@ static int imgu_v4l2_node_setup(struct imgu_device *imgu, unsigned int pipe,
 	vbq->buf_struct_size = imgu->buf_struct_size;
 	vbq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	/* can streamon w/o buffers */
-	vbq->min_queued_buffers = 0;
+	vbq->min_buffers_needed = 0;
 	vbq->drv_priv = imgu;
 	vbq->lock = &node->lock;
 	r = vb2_queue_init(vbq);

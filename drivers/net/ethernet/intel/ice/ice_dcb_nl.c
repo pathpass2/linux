@@ -70,11 +70,6 @@ static int ice_dcbnl_setets(struct net_device *netdev, struct ieee_ets *ets)
 	    !(pf->dcbx_cap & DCB_CAP_DCBX_VER_IEEE))
 		return -EINVAL;
 
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return -EINVAL;
-	}
-
 	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
 
 	mutex_lock(&pf->tc_mutex);
@@ -175,11 +170,6 @@ static u8 ice_dcbnl_setdcbx(struct net_device *netdev, u8 mode)
 	if (mode == pf->dcbx_cap)
 		return ICE_DCB_NO_HW_CHG;
 
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return ICE_DCB_NO_HW_CHG;
-	}
-
 	qos_cfg = &pf->hw.port_info->qos_cfg;
 
 	/* DSCP configuration is not DCBx negotiated */
@@ -227,7 +217,7 @@ static void ice_get_pfc_delay(struct ice_hw *hw, u16 *delay)
 	u32 val;
 
 	val = rd32(hw, PRTDCB_GENC);
-	*delay = FIELD_GET(PRTDCB_GENC_PFCLDA_M, val);
+	*delay = (u16)((val & PRTDCB_GENC_PFCLDA_M) >> PRTDCB_GENC_PFCLDA_S);
 }
 
 /**
@@ -270,11 +260,6 @@ static int ice_dcbnl_setpfc(struct net_device *netdev, struct ieee_pfc *pfc)
 	if ((pf->dcbx_cap & DCB_CAP_DCBX_LLD_MANAGED) ||
 	    !(pf->dcbx_cap & DCB_CAP_DCBX_VER_IEEE))
 		return -EINVAL;
-
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return -EINVAL;
-	}
 
 	mutex_lock(&pf->tc_mutex);
 
@@ -338,11 +323,6 @@ static void ice_dcbnl_set_pfc_cfg(struct net_device *netdev, int prio, u8 set)
 	if (prio >= ICE_MAX_USER_PRIORITY)
 		return;
 
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return;
-	}
-
 	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
 
 	new_cfg->pfc.pfccap = pf->hw.func_caps.common_cap.maxtc;
@@ -398,11 +378,6 @@ static u8 ice_dcbnl_setstate(struct net_device *netdev, u8 state)
 	if ((pf->dcbx_cap & DCB_CAP_DCBX_LLD_MANAGED) ||
 	    !(pf->dcbx_cap & DCB_CAP_DCBX_VER_CEE))
 		return ICE_DCB_NO_HW_CHG;
-
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return ICE_DCB_NO_HW_CHG;
-	}
 
 	/* Nothing to do */
 	if (!!state == test_bit(ICE_FLAG_DCB_ENA, pf->flags))
@@ -476,11 +451,6 @@ ice_dcbnl_set_pg_tc_cfg_tx(struct net_device *netdev, int tc,
 	if (tc >= ICE_MAX_TRAFFIC_CLASS)
 		return;
 
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return;
-	}
-
 	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
 
 	/* prio_type, bwg_id and bw_pct per UP are not supported */
@@ -534,11 +504,6 @@ ice_dcbnl_set_pg_bwg_cfg_tx(struct net_device *netdev, int pgid, u8 bw_pct)
 
 	if (pgid >= ICE_MAX_TRAFFIC_CLASS)
 		return;
-
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return;
-	}
 
 	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
 
@@ -754,14 +719,9 @@ static int ice_dcbnl_setapp(struct net_device *netdev, struct dcb_app *app)
 	if (!ice_is_feature_supported(pf, ICE_F_DSCP))
 		return -EOPNOTSUPP;
 
-	if (app->protocol >= DSCP_MAX) {
+	if (app->protocol >= ICE_DSCP_NUM_VAL) {
 		netdev_err(netdev, "DSCP value 0x%04X out of range\n",
 			   app->protocol);
-		return -EINVAL;
-	}
-
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
 		return -EINVAL;
 	}
 
@@ -876,11 +836,6 @@ static int ice_dcbnl_delapp(struct net_device *netdev, struct dcb_app *app)
 		return -EINVAL;
 	}
 
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return -EINVAL;
-	}
-
 	mutex_lock(&pf->tc_mutex);
 	old_cfg = &pf->hw.port_info->qos_cfg.local_dcbx_cfg;
 
@@ -931,7 +886,7 @@ static int ice_dcbnl_delapp(struct net_device *netdev, struct dcb_app *app)
 	/* if the last DSCP mapping just got deleted, need to switch
 	 * to L2 VLAN QoS mode
 	 */
-	if (bitmap_empty(new_cfg->dscp_mapped, DSCP_MAX) &&
+	if (bitmap_empty(new_cfg->dscp_mapped, ICE_DSCP_NUM_VAL) &&
 	    new_cfg->pfc_mode == ICE_QOS_MODE_DSCP) {
 		ret = ice_aq_set_pfc_mode(&pf->hw,
 					  ICE_AQC_PFC_VLAN_BASED_PFC,
@@ -981,11 +936,6 @@ static u8 ice_dcbnl_cee_set_all(struct net_device *netdev)
 	if ((pf->dcbx_cap & DCB_CAP_DCBX_LLD_MANAGED) ||
 	    !(pf->dcbx_cap & DCB_CAP_DCBX_VER_CEE))
 		return ICE_DCB_NO_HW_CHG;
-
-	if (pf->lag && pf->lag->bonded) {
-		netdev_err(netdev, "DCB changes not allowed when in a bond\n");
-		return ICE_DCB_NO_HW_CHG;
-	}
 
 	new_cfg = &pf->hw.port_info->qos_cfg.desired_dcbx_cfg;
 

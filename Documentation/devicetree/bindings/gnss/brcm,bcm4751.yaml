@@ -8,7 +8,7 @@ title: Broadcom BCM4751 family GNSS Receiver
 
 maintainers:
   - Johan Hovold <johan@kernel.org>
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
 
 description:
   Broadcom GPS chips can be used over the UART or I2C bus. The UART
@@ -18,7 +18,6 @@ description:
 
 allOf:
   - $ref: gnss-common.yaml#
-  - $ref: /schemas/serial/serial-peripheral-props.yaml#
 
 properties:
   compatible:

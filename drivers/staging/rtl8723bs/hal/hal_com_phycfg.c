@@ -6,6 +6,7 @@
  ******************************************************************************/
 
 #include <drv_types.h>
+#include <rtw_debug.h>
 #include <hal_data.h>
 #include <linux/kernel.h>
 
@@ -59,7 +60,10 @@ phy_SetTxPowerByRateBase(struct adapter *Adapter, u8 RfPath,
 	}
 }
 
-static void phy_StoreTxPowerByRateBase(struct adapter *padapter)
+static void
+phy_StoreTxPowerByRateBase(
+struct adapter *padapter
+	)
 {
 	u8 path, base;
 

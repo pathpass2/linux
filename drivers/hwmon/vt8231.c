@@ -138,12 +138,7 @@ static inline u8 FAN_TO_REG(long rpm, int div)
 	return clamp_val(1310720 / (rpm * div), 1, 255);
 }
 
-static int fan_from_reg(int val, int div)
-{
-	if (val == 0)
-		return 0;
-	return 1310720 / (val * div);
-}
+#define FAN_FROM_REG(val, div) ((val) == 0 ? 0 : 1310720 / ((val) * (div)))
 
 struct vt8231_data {
 	unsigned short addr;
@@ -566,7 +561,7 @@ static ssize_t fan_show(struct device *dev, struct device_attribute *attr,
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
 	struct vt8231_data *data = vt8231_update_device(dev);
-	return sprintf(buf, "%d\n", fan_from_reg(data->fan[nr],
+	return sprintf(buf, "%d\n", FAN_FROM_REG(data->fan[nr],
 				DIV_FROM_REG(data->fan_div[nr])));
 }
 
@@ -576,7 +571,7 @@ static ssize_t fan_min_show(struct device *dev, struct device_attribute *attr,
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	int nr = sensor_attr->index;
 	struct vt8231_data *data = vt8231_update_device(dev);
-	return sprintf(buf, "%d\n", fan_from_reg(data->fan_min[nr],
+	return sprintf(buf, "%d\n", FAN_FROM_REG(data->fan_min[nr],
 			DIV_FROM_REG(data->fan_div[nr])));
 }
 
@@ -618,8 +613,9 @@ static ssize_t fan_div_store(struct device *dev,
 	struct sensor_device_attribute *sensor_attr = to_sensor_dev_attr(attr);
 	unsigned long val;
 	int nr = sensor_attr->index;
-	int old;
-	long min;
+	int old = vt8231_read_value(data, VT8231_REG_FANDIV);
+	long min = FAN_FROM_REG(data->fan_min[nr],
+				 DIV_FROM_REG(data->fan_div[nr]));
 	int err;
 
 	err = kstrtoul(buf, 10, &val);
@@ -627,8 +623,6 @@ static ssize_t fan_div_store(struct device *dev,
 		return err;
 
 	mutex_lock(&data->update_lock);
-	old = vt8231_read_value(data, VT8231_REG_FANDIV);
-	min = fan_from_reg(data->fan_min[nr], DIV_FROM_REG(data->fan_div[nr]));
 	switch (val) {
 	case 1:
 		data->fan_div[nr] = 0;
@@ -898,7 +892,7 @@ exit_remove_files:
 	return err;
 }
 
-static void vt8231_remove(struct platform_device *pdev)
+static int vt8231_remove(struct platform_device *pdev)
 {
 	struct vt8231_data *data = platform_get_drvdata(pdev);
 	int i;
@@ -912,11 +906,13 @@ static void vt8231_remove(struct platform_device *pdev)
 		sysfs_remove_group(&pdev->dev.kobj, &vt8231_group_temps[i]);
 
 	sysfs_remove_group(&pdev->dev.kobj, &vt8231_group);
+
+	return 0;
 }
 
 
 static struct platform_driver vt8231_driver = {
-	.driver	= {
+	.driver = {
 		.name	= DRIVER_NAME,
 	},
 	.probe	= vt8231_probe,
@@ -975,15 +971,13 @@ static int vt8231_pci_probe(struct pci_dev *dev,
 				const struct pci_device_id *id)
 {
 	u16 address, val;
-	int ret;
-
 	if (force_addr) {
 		address = force_addr & 0xff00;
 		dev_warn(&dev->dev, "Forcing ISA address 0x%x\n",
 			 address);
 
-		ret = pci_write_config_word(dev, VT8231_BASE_REG, address | 1);
-		if (ret != PCIBIOS_SUCCESSFUL)
+		if (PCIBIOS_SUCCESSFUL !=
+		    pci_write_config_word(dev, VT8231_BASE_REG, address | 1))
 			return -ENODEV;
 	}
 
@@ -1003,8 +997,9 @@ static int vt8231_pci_probe(struct pci_dev *dev,
 
 	if (!(val & 0x0001)) {
 		dev_warn(&dev->dev, "enabling sensors\n");
-		ret = pci_write_config_word(dev, VT8231_ENABLE_REG, val | 0x1);
-		if (ret != PCIBIOS_SUCCESSFUL)
+		if (PCIBIOS_SUCCESSFUL !=
+			pci_write_config_word(dev, VT8231_ENABLE_REG,
+							val | 0x0001))
 			return -ENODEV;
 	}
 

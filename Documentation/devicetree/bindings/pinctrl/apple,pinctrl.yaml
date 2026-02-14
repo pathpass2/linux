@@ -16,22 +16,11 @@ description: |
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - const: apple,t6020-pinctrl
-          - const: apple,t8103-pinctrl
-      - items:
-          # Do not add additional SoC to this list.
-          - enum:
-              - apple,s5l8960x-pinctrl
-              - apple,t7000-pinctrl
-              - apple,s8000-pinctrl
-              - apple,t8010-pinctrl
-              - apple,t8015-pinctrl
-              - apple,t8103-pinctrl
-              - apple,t8112-pinctrl
-              - apple,t6000-pinctrl
-          - const: apple,pinctrl
+    items:
+      - enum:
+          - apple,t8103-pinctrl
+          - apple,t6000-pinctrl
+      - const: apple,pinctrl
 
   reg:
     maxItems: 1
@@ -84,7 +73,7 @@ patternProperties:
     additionalProperties: false
 
 allOf:
-  - $ref: pinctrl.yaml#
+  - $ref: "pinctrl.yaml#"
 
 required:
   - compatible

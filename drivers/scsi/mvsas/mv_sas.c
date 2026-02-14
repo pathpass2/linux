@@ -151,6 +151,16 @@ static inline u8 mvs_assign_reg_set(struct mvs_info *mvi,
 	return MVS_CHIP_DISP->assign_reg_set(mvi, &dev->taskfileset);
 }
 
+void mvs_phys_reset(struct mvs_info *mvi, u32 phy_mask, int hard)
+{
+	u32 no;
+	for_each_phy(phy_mask, phy_mask, no) {
+		if (!(phy_mask & 1))
+			continue;
+		MVS_CHIP_DISP->phy_reset(mvi, no, hard);
+	}
+}
+
 int mvs_phy_control(struct asd_sas_phy *sas_phy, enum phy_func func,
 			void *funcdata)
 {
@@ -554,7 +564,7 @@ static int mvs_task_prep_ssp(struct mvs_info *mvi,
 	void *buf_prd;
 	struct ssp_frame_hdr *ssp_hdr;
 	void *buf_tmp;
-	u8 *buf_cmd, *buf_oaf;
+	u8 *buf_cmd, *buf_oaf, fburst = 0;
 	dma_addr_t buf_tmp_dma;
 	u32 flags;
 	u32 resp_len, req_len, i, tag = tei->tag;
@@ -572,6 +582,10 @@ static int mvs_task_prep_ssp(struct mvs_info *mvi,
 				(phy_mask << TXQ_PHY_SHIFT));
 
 	flags = MCH_RETRY;
+	if (task->ssp_task.enable_first_burst) {
+		flags |= MCH_FBURST;
+		fburst = (1 << 7);
+	}
 	if (is_tmf)
 		flags |= (MCH_SSP_FR_TASK << MCH_SSP_FR_TYPE_SHIFT);
 	else
@@ -653,7 +667,8 @@ static int mvs_task_prep_ssp(struct mvs_info *mvi,
 	memcpy(buf_cmd, &task->ssp_task.LUN, 8);
 
 	if (ssp_hdr->frame_type != SSP_TASK) {
-		buf_cmd[9] = task->ssp_task.task_attr;
+		buf_cmd[9] = fburst | task->ssp_task.task_attr |
+				(task->ssp_task.task_prio << 3);
 		memcpy(buf_cmd + 12, task->ssp_task.cmd->cmnd,
 		       task->ssp_task.cmd->cmd_len);
 	} else{
@@ -818,7 +833,7 @@ err_out:
 	dev_printk(KERN_ERR, mvi->dev, "mvsas prep failed[%d]!\n", rc);
 	if (!sas_protocol_ata(task->task_proto))
 		if (n_elem)
-			dma_unmap_sg(mvi->dev, task->scatter, task->num_scatter,
+			dma_unmap_sg(mvi->dev, task->scatter, n_elem,
 				     task->data_dir);
 prep_out:
 	return rc;
@@ -864,7 +879,7 @@ static void mvs_slot_task_free(struct mvs_info *mvi, struct sas_task *task,
 	if (!sas_protocol_ata(task->task_proto))
 		if (slot->n_elem)
 			dma_unmap_sg(mvi->dev, task->scatter,
-				     task->num_scatter, task->data_dir);
+				     slot->n_elem, task->data_dir);
 
 	switch (task->task_proto) {
 	case SAS_PROTOCOL_SMP:
@@ -976,7 +991,7 @@ static u32 mvs_is_sig_fis_received(u32 irq_status)
 static void mvs_sig_remove_timer(struct mvs_phy *phy)
 {
 	if (phy->timer.function)
-		timer_delete(&phy->timer);
+		del_timer(&phy->timer);
 	phy->timer.function = NULL;
 }
 
@@ -1175,7 +1190,7 @@ static int mvs_dev_found_notify(struct domain_device *dev, int lock)
 	mvi_device->dev_type = dev->dev_type;
 	mvi_device->mvi_info = mvi;
 	mvi_device->sas_device = dev;
-	if (dev_parent_is_expander(dev)) {
+	if (parent_dev && dev_is_expander(parent_dev->dev_type)) {
 		int phy_id;
 
 		phy_id = sas_find_attached_phy_id(&parent_dev->ex_dev, dev);
@@ -1755,7 +1770,7 @@ static int mvs_handle_event(struct mvs_info *mvi, void *data, int handler)
 
 static void mvs_sig_time_out(struct timer_list *t)
 {
-	struct mvs_phy *phy = timer_container_of(phy, t, timer);
+	struct mvs_phy *phy = from_timer(phy, t, timer);
 	struct mvs_info *mvi = phy->mvi;
 	u8 phy_no;
 

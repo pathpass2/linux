@@ -94,14 +94,13 @@ int pvrdma_req_notify_cq(struct ib_cq *ibcq,
  * pvrdma_create_cq - create completion queue
  * @ibcq: Allocated CQ
  * @attr: completion queue attributes
- * @attrs: bundle
+ * @udata: user data
  *
  * @return: 0 on success
  */
 int pvrdma_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
-		     struct uverbs_attr_bundle *attrs)
+		     struct ib_udata *udata)
 {
-	struct ib_udata *udata = &attrs->driver_udata;
 	struct ib_device *ibdev = ibcq->device;
 	int entries = attr->cqe;
 	struct pvrdma_dev *dev = to_vdev(ibdev);

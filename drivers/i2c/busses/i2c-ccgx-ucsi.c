@@ -27,5 +27,4 @@ struct i2c_client *i2c_new_ccgx_ucsi(struct i2c_adapter *adapter, int irq,
 }
 EXPORT_SYMBOL_GPL(i2c_new_ccgx_ucsi);
 
-MODULE_DESCRIPTION("Instantiate UCSI device for Cypress CCGx Type-C controller");
 MODULE_LICENSE("GPL");

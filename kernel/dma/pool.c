@@ -70,9 +70,9 @@ static bool cma_in_zone(gfp_t gfp)
 	/* CMA can't cross zone boundaries, see cma_activate_area() */
 	end = cma_get_base(cma) + size - 1;
 	if (IS_ENABLED(CONFIG_ZONE_DMA) && (gfp & GFP_DMA))
-		return end <= zone_dma_limit;
+		return end <= DMA_BIT_MASK(zone_dma_bits);
 	if (IS_ENABLED(CONFIG_ZONE_DMA32) && (gfp & GFP_DMA32))
-		return end <= max(DMA_BIT_MASK(32), zone_dma_limit);
+		return end <= DMA_BIT_MASK(32);
 	return true;
 }
 
@@ -84,8 +84,8 @@ static int atomic_pool_expand(struct gen_pool *pool, size_t pool_size,
 	void *addr;
 	int ret = -ENOMEM;
 
-	/* Cannot allocate larger than MAX_PAGE_ORDER */
-	order = min(get_order(pool_size), MAX_PAGE_ORDER);
+	/* Cannot allocate larger than MAX_ORDER-1 */
+	order = min(get_order(pool_size), MAX_ORDER-1);
 
 	do {
 		pool_size = 1 << (PAGE_SHIFT + order);
@@ -93,7 +93,7 @@ static int atomic_pool_expand(struct gen_pool *pool, size_t pool_size,
 			page = dma_alloc_from_contiguous(NULL, 1 << order,
 							 order, false);
 		if (!page)
-			page = alloc_pages(gfp | __GFP_NOWARN, order);
+			page = alloc_pages(gfp, order);
 	} while (!page && order-- > 0);
 	if (!page)
 		goto out;
@@ -102,8 +102,8 @@ static int atomic_pool_expand(struct gen_pool *pool, size_t pool_size,
 
 #ifdef CONFIG_DMA_DIRECT_REMAP
 	addr = dma_common_contiguous_remap(page, pool_size,
-			pgprot_decrypted(pgprot_dmacoherent(PAGE_KERNEL)),
-			__builtin_return_address(0));
+					   pgprot_dmacoherent(PAGE_KERNEL),
+					   __builtin_return_address(0));
 	if (!addr)
 		goto free_page;
 #else
@@ -135,9 +135,9 @@ encrypt_mapping:
 remove_mapping:
 #ifdef CONFIG_DMA_DIRECT_REMAP
 	dma_common_free_remap(addr, pool_size);
-free_page:
-	__free_pages(page, order);
 #endif
+free_page: __maybe_unused
+	__free_pages(page, order);
 out:
 	return ret;
 }
@@ -184,19 +184,13 @@ static __init struct gen_pool *__dma_atomic_pool_init(size_t pool_size,
 	return pool;
 }
 
-#ifdef CONFIG_ZONE_DMA32
-#define has_managed_dma32 has_managed_zone(ZONE_DMA32)
-#else
-#define has_managed_dma32 false
-#endif
-
 static int __init dma_atomic_pool_init(void)
 {
 	int ret = 0;
 
 	/*
 	 * If coherent_pool was not used on the command line, default the pool
-	 * sizes to 128KB per 1GB of memory, min 128KB, max MAX_PAGE_ORDER.
+	 * sizes to 128KB per 1GB of memory, min 128KB, max MAX_ORDER-1.
 	 */
 	if (!atomic_pool_size) {
 		unsigned long pages = totalram_pages() / (SZ_1G / SZ_128K);
@@ -205,20 +199,17 @@ static int __init dma_atomic_pool_init(void)
 	}
 	INIT_WORK(&atomic_pool_work, atomic_pool_work_fn);
 
-	/* All memory might be in the DMA zone(s) to begin with */
-	if (has_managed_zone(ZONE_NORMAL)) {
-		atomic_pool_kernel = __dma_atomic_pool_init(atomic_pool_size,
+	atomic_pool_kernel = __dma_atomic_pool_init(atomic_pool_size,
 						    GFP_KERNEL);
-		if (!atomic_pool_kernel)
-			ret = -ENOMEM;
-	}
+	if (!atomic_pool_kernel)
+		ret = -ENOMEM;
 	if (has_managed_dma()) {
 		atomic_pool_dma = __dma_atomic_pool_init(atomic_pool_size,
 						GFP_KERNEL | GFP_DMA);
 		if (!atomic_pool_dma)
 			ret = -ENOMEM;
 	}
-	if (has_managed_dma32) {
+	if (IS_ENABLED(CONFIG_ZONE_DMA32)) {
 		atomic_pool_dma32 = __dma_atomic_pool_init(atomic_pool_size,
 						GFP_KERNEL | GFP_DMA32);
 		if (!atomic_pool_dma32)
@@ -233,11 +224,11 @@ postcore_initcall(dma_atomic_pool_init);
 static inline struct gen_pool *dma_guess_pool(struct gen_pool *prev, gfp_t gfp)
 {
 	if (prev == NULL) {
-		if (gfp & GFP_DMA)
-			return atomic_pool_dma ?: atomic_pool_dma32 ?: atomic_pool_kernel;
-		if (gfp & GFP_DMA32)
-			return atomic_pool_dma32 ?: atomic_pool_dma ?: atomic_pool_kernel;
-		return atomic_pool_kernel ?: atomic_pool_dma32 ?: atomic_pool_dma;
+		if (IS_ENABLED(CONFIG_ZONE_DMA32) && (gfp & GFP_DMA32))
+			return atomic_pool_dma32;
+		if (atomic_pool_dma && (gfp & GFP_DMA))
+			return atomic_pool_dma;
+		return atomic_pool_kernel;
 	}
 	if (prev == atomic_pool_kernel)
 		return atomic_pool_dma32 ? atomic_pool_dma32 : atomic_pool_dma;
@@ -277,20 +268,15 @@ struct page *dma_alloc_from_pool(struct device *dev, size_t size,
 {
 	struct gen_pool *pool = NULL;
 	struct page *page;
-	bool pool_found = false;
 
 	while ((pool = dma_guess_pool(pool, gfp))) {
-		pool_found = true;
 		page = __dma_alloc_from_pool(dev, size, pool, cpu_addr,
 					     phys_addr_ok);
 		if (page)
 			return page;
 	}
 
-	if (pool_found)
-		WARN(!(gfp & __GFP_NOWARN), "DMA pool exhausted for %s\n", dev_name(dev));
-	else
-		WARN(1, "Failed to get suitable pool for %s\n", dev_name(dev));
+	WARN(1, "Failed to get suitable pool for %s\n", dev_name(dev));
 	return NULL;
 }
 

@@ -15,4 +15,10 @@ Runtime verification (rv) tool
    rv-mon
    rv-mon-wip
    rv-mon-wwnr
-   rv-mon-sched
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

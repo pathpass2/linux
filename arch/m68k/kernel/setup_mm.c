@@ -10,7 +10,6 @@
  */
 
 #include <linux/kernel.h>
-#include <linux/cpu.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
 #include <linux/delay.h>
@@ -107,6 +106,8 @@ EXPORT_SYMBOL(isa_sex);
 
 #define MASK_256K 0xfffc0000
 
+extern void paging_init(void);
+
 static void __init m68k_parse_bootinfo(const struct bi_record *record)
 {
 	const struct bi_record *first_record = record;
@@ -147,7 +148,8 @@ static void __init m68k_parse_bootinfo(const struct bi_record *record)
 			break;
 
 		case BI_COMMAND_LINE:
-			strscpy(m68k_command_line, data);
+			strscpy(m68k_command_line, data,
+				sizeof(m68k_command_line));
 			break;
 
 		case BI_RNG_SEED: {
@@ -242,16 +244,13 @@ void __init setup_arch(char **cmdline_p)
 	setup_initial_init_mm((void *)PAGE_OFFSET, _etext, _edata, _end);
 
 #if defined(CONFIG_BOOTPARAM)
-	strscpy(m68k_command_line, CONFIG_BOOTPARAM_STRING, CL_SIZE);
+	strncpy(m68k_command_line, CONFIG_BOOTPARAM_STRING, CL_SIZE);
+	m68k_command_line[CL_SIZE - 1] = 0;
 #endif /* CONFIG_BOOTPARAM */
 	process_uboot_commandline(&m68k_command_line[0], CL_SIZE);
 	*cmdline_p = m68k_command_line;
 	memcpy(boot_command_line, *cmdline_p, CL_SIZE);
-	/*
-	 * Initialise the static keys early as they may be enabled by the
-	 * cpufeature code and early parameters.
-	 */
-	jump_label_init();
+
 	parse_early_param();
 
 	switch (m68k_machtype) {
@@ -484,7 +483,7 @@ static int hardware_proc_show(struct seq_file *m, void *v)
 	if (mach_get_model)
 		mach_get_model(model);
 	else
-		strscpy(model, "Unknown m68k");
+		strcpy(model, "Unknown m68k");
 
 	seq_printf(m, "Model:\t\t%s\n", model);
 	for (mem = 0, i = 0; i < m68k_num_memory; i++)
@@ -505,7 +504,7 @@ static int __init proc_hardware_init(void)
 module_init(proc_hardware_init);
 #endif
 
-void __init arch_cpu_finalize_init(void)
+void check_bugs(void)
 {
 #if defined(CONFIG_FPU) && !defined(CONFIG_M68KFPU_EMU)
 	if (m68k_fputype == 0) {

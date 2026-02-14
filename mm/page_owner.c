@@ -32,26 +32,6 @@ struct page_owner {
 	char comm[TASK_COMM_LEN];
 	pid_t pid;
 	pid_t tgid;
-	pid_t free_pid;
-	pid_t free_tgid;
-};
-
-struct stack {
-	struct stack_record *stack_record;
-	struct stack *next;
-};
-static struct stack dummy_stack;
-static struct stack failure_stack;
-static struct stack *stack_list;
-static DEFINE_SPINLOCK(stack_list_lock);
-
-#define STACK_PRINT_FLAG_STACK		0x1
-#define STACK_PRINT_FLAG_PAGES		0x2
-#define STACK_PRINT_FLAG_HANDLE		0x4
-
-struct stack_print_ctx {
-	struct stack *stack;
-	u8 flags;
 };
 
 static bool page_owner_enabled __initdata;
@@ -62,22 +42,6 @@ static depot_stack_handle_t failure_handle;
 static depot_stack_handle_t early_handle;
 
 static void init_early_allocated_pages(void);
-
-static inline void set_current_in_page_owner(void)
-{
-	/*
-	 * Avoid recursion.
-	 *
-	 * We might need to allocate more memory from page_owner code, so make
-	 * sure to signal it in order to avoid recursion.
-	 */
-	current->in_page_owner = 1;
-}
-
-static inline void unset_current_in_page_owner(void)
-{
-	current->in_page_owner = 0;
-}
 
 static int __init early_page_owner_param(char *buf)
 {
@@ -127,17 +91,8 @@ static __init void init_page_owner(void)
 	register_dummy_stack();
 	register_failure_stack();
 	register_early_stack();
-	init_early_allocated_pages();
-	/* Initialize dummy and failure stacks and link them to stack_list */
-	dummy_stack.stack_record = __stack_depot_get_stack_record(dummy_handle);
-	failure_stack.stack_record = __stack_depot_get_stack_record(failure_handle);
-	if (dummy_stack.stack_record)
-		refcount_set(&dummy_stack.stack_record->count, 1);
-	if (failure_stack.stack_record)
-		refcount_set(&failure_stack.stack_record->count, 1);
-	dummy_stack.next = &failure_stack;
-	stack_list = &dummy_stack;
 	static_branch_enable(&page_owner_inited);
+	init_early_allocated_pages();
 }
 
 struct page_ext_operations page_owner_ops = {
@@ -149,7 +104,7 @@ struct page_ext_operations page_owner_ops = {
 
 static inline struct page_owner *get_page_owner(struct page_ext *page_ext)
 {
-	return page_ext_data(page_ext, &page_owner_ops);
+	return (void *)page_ext + page_owner_ops.offset;
 }
 
 static noinline depot_stack_handle_t save_stack(gfp_t flags)
@@ -158,148 +113,32 @@ static noinline depot_stack_handle_t save_stack(gfp_t flags)
 	depot_stack_handle_t handle;
 	unsigned int nr_entries;
 
+	/*
+	 * Avoid recursion.
+	 *
+	 * Sometimes page metadata allocation tracking requires more
+	 * memory to be allocated:
+	 * - when new stack trace is saved to stack depot
+	 * - when backtrace itself is calculated (ia64)
+	 */
 	if (current->in_page_owner)
 		return dummy_handle;
+	current->in_page_owner = 1;
 
-	set_current_in_page_owner();
 	nr_entries = stack_trace_save(entries, ARRAY_SIZE(entries), 2);
 	handle = stack_depot_save(entries, nr_entries, flags);
 	if (!handle)
 		handle = failure_handle;
-	unset_current_in_page_owner();
 
+	current->in_page_owner = 0;
 	return handle;
-}
-
-static void add_stack_record_to_list(struct stack_record *stack_record,
-				     gfp_t gfp_mask)
-{
-	unsigned long flags;
-	struct stack *stack;
-
-	if (!gfpflags_allow_spinning(gfp_mask))
-		return;
-
-	set_current_in_page_owner();
-	stack = kmalloc(sizeof(*stack), gfp_nested_mask(gfp_mask));
-	if (!stack) {
-		unset_current_in_page_owner();
-		return;
-	}
-	unset_current_in_page_owner();
-
-	stack->stack_record = stack_record;
-	stack->next = NULL;
-
-	spin_lock_irqsave(&stack_list_lock, flags);
-	stack->next = stack_list;
-	/*
-	 * This pairs with smp_load_acquire() from function
-	 * stack_start(). This guarantees that stack_start()
-	 * will see an updated stack_list before starting to
-	 * traverse the list.
-	 */
-	smp_store_release(&stack_list, stack);
-	spin_unlock_irqrestore(&stack_list_lock, flags);
-}
-
-static void inc_stack_record_count(depot_stack_handle_t handle, gfp_t gfp_mask,
-				   int nr_base_pages)
-{
-	struct stack_record *stack_record = __stack_depot_get_stack_record(handle);
-
-	if (!stack_record)
-		return;
-
-	/*
-	 * New stack_record's that do not use STACK_DEPOT_FLAG_GET start
-	 * with REFCOUNT_SATURATED to catch spurious increments of their
-	 * refcount.
-	 * Since we do not use STACK_DEPOT_FLAG_GET API, let us
-	 * set a refcount of 1 ourselves.
-	 */
-	if (refcount_read(&stack_record->count) == REFCOUNT_SATURATED) {
-		int old = REFCOUNT_SATURATED;
-
-		if (atomic_try_cmpxchg_relaxed(&stack_record->count.refs, &old, 1))
-			/* Add the new stack_record to our list */
-			add_stack_record_to_list(stack_record, gfp_mask);
-	}
-	refcount_add(nr_base_pages, &stack_record->count);
-}
-
-static void dec_stack_record_count(depot_stack_handle_t handle,
-				   int nr_base_pages)
-{
-	struct stack_record *stack_record = __stack_depot_get_stack_record(handle);
-
-	if (!stack_record)
-		return;
-
-	if (refcount_sub_and_test(nr_base_pages, &stack_record->count))
-		pr_warn("%s: refcount went to 0 for %u handle\n", __func__,
-			handle);
-}
-
-static inline void __update_page_owner_handle(struct page *page,
-					      depot_stack_handle_t handle,
-					      unsigned short order,
-					      gfp_t gfp_mask,
-					      short last_migrate_reason, u64 ts_nsec,
-					      pid_t pid, pid_t tgid, char *comm)
-{
-	struct page_ext_iter iter;
-	struct page_ext *page_ext;
-	struct page_owner *page_owner;
-
-	rcu_read_lock();
-	for_each_page_ext(page, 1 << order, page_ext, iter) {
-		page_owner = get_page_owner(page_ext);
-		page_owner->handle = handle;
-		page_owner->order = order;
-		page_owner->gfp_mask = gfp_mask;
-		page_owner->last_migrate_reason = last_migrate_reason;
-		page_owner->pid = pid;
-		page_owner->tgid = tgid;
-		page_owner->ts_nsec = ts_nsec;
-		strscpy(page_owner->comm, comm,
-			sizeof(page_owner->comm));
-		__set_bit(PAGE_EXT_OWNER, &page_ext->flags);
-		__set_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags);
-	}
-	rcu_read_unlock();
-}
-
-static inline void __update_page_owner_free_handle(struct page *page,
-						   depot_stack_handle_t handle,
-						   unsigned short order,
-						   pid_t pid, pid_t tgid,
-						   u64 free_ts_nsec)
-{
-	struct page_ext_iter iter;
-	struct page_ext *page_ext;
-	struct page_owner *page_owner;
-
-	rcu_read_lock();
-	for_each_page_ext(page, 1 << order, page_ext, iter) {
-		page_owner = get_page_owner(page_ext);
-		/* Only __reset_page_owner() wants to clear the bit */
-		if (handle) {
-			__clear_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags);
-			page_owner->free_handle = handle;
-		}
-		page_owner->free_ts_nsec = free_ts_nsec;
-		page_owner->free_pid = current->pid;
-		page_owner->free_tgid = current->tgid;
-	}
-	rcu_read_unlock();
 }
 
 void __reset_page_owner(struct page *page, unsigned short order)
 {
+	int i;
 	struct page_ext *page_ext;
 	depot_stack_handle_t handle;
-	depot_stack_handle_t alloc_handle;
 	struct page_owner *page_owner;
 	u64 free_ts_nsec = local_clock();
 
@@ -307,47 +146,61 @@ void __reset_page_owner(struct page *page, unsigned short order)
 	if (unlikely(!page_ext))
 		return;
 
-	page_owner = get_page_owner(page_ext);
-	alloc_handle = page_owner->handle;
+	handle = save_stack(GFP_NOWAIT | __GFP_NOWARN);
+	for (i = 0; i < (1 << order); i++) {
+		__clear_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags);
+		page_owner = get_page_owner(page_ext);
+		page_owner->free_handle = handle;
+		page_owner->free_ts_nsec = free_ts_nsec;
+		page_ext = page_ext_next(page_ext);
+	}
 	page_ext_put(page_ext);
+}
 
-	/*
-	 * Do not specify GFP_NOWAIT to make gfpflags_allow_spinning() == false
-	 * to prevent issues in stack_depot_save().
-	 * This is similar to alloc_pages_nolock() gfp flags, but only used
-	 * to signal stack_depot to avoid spin_locks.
-	 */
-	handle = save_stack(__GFP_NOWARN);
-	__update_page_owner_free_handle(page, handle, order, current->pid,
-					current->tgid, free_ts_nsec);
+static inline void __set_page_owner_handle(struct page_ext *page_ext,
+					depot_stack_handle_t handle,
+					unsigned short order, gfp_t gfp_mask)
+{
+	struct page_owner *page_owner;
+	int i;
+	u64 ts_nsec = local_clock();
 
-	if (alloc_handle != early_handle)
-		/*
-		 * early_handle is being set as a handle for all those
-		 * early allocated pages. See init_pages_in_zone().
-		 * Since their refcount is not being incremented because
-		 * the machinery is not ready yet, we cannot decrement
-		 * their refcount either.
-		 */
-		dec_stack_record_count(alloc_handle, 1 << order);
+	for (i = 0; i < (1 << order); i++) {
+		page_owner = get_page_owner(page_ext);
+		page_owner->handle = handle;
+		page_owner->order = order;
+		page_owner->gfp_mask = gfp_mask;
+		page_owner->last_migrate_reason = -1;
+		page_owner->pid = current->pid;
+		page_owner->tgid = current->tgid;
+		page_owner->ts_nsec = ts_nsec;
+		strscpy(page_owner->comm, current->comm,
+			sizeof(page_owner->comm));
+		__set_bit(PAGE_EXT_OWNER, &page_ext->flags);
+		__set_bit(PAGE_EXT_OWNER_ALLOCATED, &page_ext->flags);
+
+		page_ext = page_ext_next(page_ext);
+	}
 }
 
 noinline void __set_page_owner(struct page *page, unsigned short order,
 					gfp_t gfp_mask)
 {
-	u64 ts_nsec = local_clock();
+	struct page_ext *page_ext;
 	depot_stack_handle_t handle;
 
 	handle = save_stack(gfp_mask);
-	__update_page_owner_handle(page, handle, order, gfp_mask, -1,
-				   ts_nsec, current->pid, current->tgid,
-				   current->comm);
-	inc_stack_record_count(handle, gfp_mask, 1 << order);
+
+	page_ext = page_ext_get(page);
+	if (unlikely(!page_ext))
+		return;
+	__set_page_owner_handle(page_ext, handle, order, gfp_mask);
+	page_ext_put(page_ext);
 }
 
-void __folio_set_owner_migrate_reason(struct folio *folio, int reason)
+void __set_page_owner_migrate_reason(struct page *page, int reason)
 {
-	struct page_ext *page_ext = page_ext_get(&folio->page);
+	struct page_ext *page_ext = page_ext_get(page);
 	struct page_owner *page_owner;
 
 	if (unlikely(!page_ext))
@@ -358,68 +211,65 @@ void __folio_set_owner_migrate_reason(struct folio *folio, int reason)
 	page_ext_put(page_ext);
 }
 
-void __split_page_owner(struct page *page, int old_order, int new_order)
+void __split_page_owner(struct page *page, unsigned int nr)
 {
-	struct page_ext_iter iter;
-	struct page_ext *page_ext;
+	int i;
+	struct page_ext *page_ext = page_ext_get(page);
 	struct page_owner *page_owner;
 
-	rcu_read_lock();
-	for_each_page_ext(page, 1 << old_order, page_ext, iter) {
+	if (unlikely(!page_ext))
+		return;
+
+	for (i = 0; i < nr; i++) {
 		page_owner = get_page_owner(page_ext);
-		page_owner->order = new_order;
+		page_owner->order = 0;
+		page_ext = page_ext_next(page_ext);
 	}
-	rcu_read_unlock();
+	page_ext_put(page_ext);
 }
 
 void __folio_copy_owner(struct folio *newfolio, struct folio *old)
 {
-	struct page_ext *page_ext;
-	struct page_ext_iter iter;
-	struct page_owner *old_page_owner;
-	struct page_owner *new_page_owner;
-	depot_stack_handle_t migrate_handle;
+	struct page_ext *old_ext;
+	struct page_ext *new_ext;
+	struct page_owner *old_page_owner, *new_page_owner;
 
-	page_ext = page_ext_get(&old->page);
-	if (unlikely(!page_ext))
+	old_ext = page_ext_get(&old->page);
+	if (unlikely(!old_ext))
 		return;
 
-	old_page_owner = get_page_owner(page_ext);
-	page_ext_put(page_ext);
-
-	page_ext = page_ext_get(&newfolio->page);
-	if (unlikely(!page_ext))
+	new_ext = page_ext_get(&newfolio->page);
+	if (unlikely(!new_ext)) {
+		page_ext_put(old_ext);
 		return;
-
-	new_page_owner = get_page_owner(page_ext);
-	page_ext_put(page_ext);
-
-	migrate_handle = new_page_owner->handle;
-	__update_page_owner_handle(&newfolio->page, old_page_owner->handle,
-				   old_page_owner->order, old_page_owner->gfp_mask,
-				   old_page_owner->last_migrate_reason,
-				   old_page_owner->ts_nsec, old_page_owner->pid,
-				   old_page_owner->tgid, old_page_owner->comm);
-	/*
-	 * Do not proactively clear PAGE_EXT_OWNER{_ALLOCATED} bits as the folio
-	 * will be freed after migration. Keep them until then as they may be
-	 * useful.
-	 */
-	__update_page_owner_free_handle(&newfolio->page, 0, old_page_owner->order,
-					old_page_owner->free_pid,
-					old_page_owner->free_tgid,
-					old_page_owner->free_ts_nsec);
-	/*
-	 * We linked the original stack to the new folio, we need to do the same
-	 * for the new one and the old folio otherwise there will be an imbalance
-	 * when subtracting those pages from the stack.
-	 */
-	rcu_read_lock();
-	for_each_page_ext(&old->page, 1 << new_page_owner->order, page_ext, iter) {
-		old_page_owner = get_page_owner(page_ext);
-		old_page_owner->handle = migrate_handle;
 	}
-	rcu_read_unlock();
+
+	old_page_owner = get_page_owner(old_ext);
+	new_page_owner = get_page_owner(new_ext);
+	new_page_owner->order = old_page_owner->order;
+	new_page_owner->gfp_mask = old_page_owner->gfp_mask;
+	new_page_owner->last_migrate_reason =
+		old_page_owner->last_migrate_reason;
+	new_page_owner->handle = old_page_owner->handle;
+	new_page_owner->pid = old_page_owner->pid;
+	new_page_owner->tgid = old_page_owner->tgid;
+	new_page_owner->ts_nsec = old_page_owner->ts_nsec;
+	new_page_owner->free_ts_nsec = old_page_owner->ts_nsec;
+	strcpy(new_page_owner->comm, old_page_owner->comm);
+
+	/*
+	 * We don't clear the bit on the old folio as it's going to be freed
+	 * after migration. Until then, the info can be useful in case of
+	 * a bug, and the overall stats will be off a bit only temporarily.
+	 * Also, migrate_misplaced_transhuge_page() can still fail the
+	 * migration and then we want the old folio to retain the info. But
+	 * in that case we also don't need to explicitly clear the info from
+	 * the new page, which will be freed.
+	 */
+	__set_bit(PAGE_EXT_OWNER, &new_ext->flags);
+	__set_bit(PAGE_EXT_OWNER_ALLOCATED, &new_ext->flags);
+	page_ext_put(new_ext);
+	page_ext_put(old_ext);
 }
 
 void pagetypeinfo_showmixedcount_print(struct seq_file *m,
@@ -465,7 +315,7 @@ void pagetypeinfo_showmixedcount_print(struct seq_file *m,
 				unsigned long freepage_order;
 
 				freepage_order = buddy_order_unsafe(page);
-				if (freepage_order <= MAX_PAGE_ORDER)
+				if (freepage_order < MAX_ORDER)
 					pfn += (1UL << freepage_order) - 1;
 				continue;
 			}
@@ -519,10 +369,10 @@ static inline int print_page_owner_memcg(char *kbuf, size_t count, int ret,
 
 	rcu_read_lock();
 	memcg_data = READ_ONCE(page->memcg_data);
-	if (!memcg_data || PageTail(page))
+	if (!memcg_data)
 		goto out_unlock;
 
-	if (memcg_data & MEMCG_DATA_OBJEXTS)
+	if (memcg_data & MEMCG_DATA_OBJCGS)
 		ret += scnprintf(kbuf + ret, count - ret,
 				"Slab cache page\n");
 
@@ -530,7 +380,7 @@ static inline int print_page_owner_memcg(char *kbuf, size_t count, int ret,
 	if (!memcg)
 		goto out_unlock;
 
-	online = css_is_online(&memcg->css);
+	online = (memcg->css.flags & CSS_ONLINE);
 	cgroup_name(memcg->css.cgroup, name, sizeof(name));
 	ret += scnprintf(kbuf + ret, count - ret,
 			"Charged %sto %smemcg %s\n",
@@ -558,17 +408,17 @@ print_page_owner(char __user *buf, size_t count, unsigned long pfn,
 		return -ENOMEM;
 
 	ret = scnprintf(kbuf, count,
-			"Page allocated via order %u, mask %#x(%pGg), pid %d, tgid %d (%s), ts %llu ns\n",
+			"Page allocated via order %u, mask %#x(%pGg), pid %d, tgid %d (%s), ts %llu ns, free_ts %llu ns\n",
 			page_owner->order, page_owner->gfp_mask,
 			&page_owner->gfp_mask, page_owner->pid,
 			page_owner->tgid, page_owner->comm,
-			page_owner->ts_nsec);
+			page_owner->ts_nsec, page_owner->free_ts_nsec);
 
 	/* Print information relevant to grouping pages by mobility */
 	pageblock_mt = get_pageblock_migratetype(page);
 	page_mt  = gfp_migratetype(page_owner->gfp_mask);
 	ret += scnprintf(kbuf + ret, count - ret,
-			"PFN 0x%lx type %s Block %lu type %s Flags %pGp\n",
+			"PFN %lu type %s Block %lu type %s Flags %pGp\n",
 			pfn,
 			migratetype_names[page_mt],
 			pfn >> pageblock_order,
@@ -645,8 +495,7 @@ void __dump_page_owner(const struct page *page)
 	if (!handle) {
 		pr_alert("page_owner free stack trace missing\n");
 	} else {
-		pr_alert("page last free pid %d tgid %d stack trace:\n",
-			  page_owner->free_pid, page_owner->free_tgid);
+		pr_alert("page last free stack trace:\n");
 		stack_depot_print(handle);
 	}
 
@@ -700,7 +549,7 @@ read_page_owner(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 		if (PageBuddy(page)) {
 			unsigned long freepage_order = buddy_order_unsafe(page);
 
-			if (freepage_order <= MAX_PAGE_ORDER)
+			if (freepage_order < MAX_ORDER)
 				pfn += (1UL << freepage_order) - 1;
 			continue;
 		}
@@ -769,7 +618,7 @@ static loff_t lseek_page_owner(struct file *file, loff_t offset, int orig)
 	return file->f_pos;
 }
 
-static void init_pages_in_zone(struct zone *zone)
+static void init_pages_in_zone(pg_data_t *pgdat, struct zone *zone)
 {
 	unsigned long pfn = zone->zone_start_pfn;
 	unsigned long end_pfn = zone_end_pfn(zone);
@@ -808,7 +657,7 @@ static void init_pages_in_zone(struct zone *zone)
 			if (PageBuddy(page)) {
 				unsigned long order = buddy_order_unsafe(page);
 
-				if (order > 0 && order <= MAX_PAGE_ORDER)
+				if (order > 0 && order < MAX_ORDER)
 					pfn += (1UL << order) - 1;
 				continue;
 			}
@@ -825,9 +674,8 @@ static void init_pages_in_zone(struct zone *zone)
 				goto ext_put_continue;
 
 			/* Found early allocated page */
-			__update_page_owner_handle(page, early_handle, 0, 0,
-						   -1, local_clock(), current->pid,
-						   current->tgid, current->comm);
+			__set_page_owner_handle(page_ext, early_handle,
+						0, 0);
 			count++;
 ext_put_continue:
 			page_ext_put(page_ext);
@@ -836,166 +684,45 @@ ext_put_continue:
 	}
 
 	pr_info("Node %d, zone %8s: page owner found early allocated %lu pages\n",
-		zone->zone_pgdat->node_id, zone->name, count);
+		pgdat->node_id, zone->name, count);
+}
+
+static void init_zones_in_node(pg_data_t *pgdat)
+{
+	struct zone *zone;
+	struct zone *node_zones = pgdat->node_zones;
+
+	for (zone = node_zones; zone - node_zones < MAX_NR_ZONES; ++zone) {
+		if (!populated_zone(zone))
+			continue;
+
+		init_pages_in_zone(pgdat, zone);
+	}
 }
 
 static void init_early_allocated_pages(void)
 {
-	struct zone *zone;
+	pg_data_t *pgdat;
 
-	for_each_populated_zone(zone)
-		init_pages_in_zone(zone);
+	for_each_online_pgdat(pgdat)
+		init_zones_in_node(pgdat);
 }
 
-static const struct file_operations page_owner_fops = {
+static const struct file_operations proc_page_owner_operations = {
 	.read		= read_page_owner,
 	.llseek		= lseek_page_owner,
 };
 
-static void *stack_start(struct seq_file *m, loff_t *ppos)
-{
-	struct stack *stack;
-	struct stack_print_ctx *ctx = m->private;
-
-	if (*ppos == -1UL)
-		return NULL;
-
-	if (!*ppos) {
-		/*
-		 * This pairs with smp_store_release() from function
-		 * add_stack_record_to_list(), so we get a consistent
-		 * value of stack_list.
-		 */
-		stack = smp_load_acquire(&stack_list);
-		ctx->stack = stack;
-	} else {
-		stack = ctx->stack;
-	}
-
-	return stack;
-}
-
-static void *stack_next(struct seq_file *m, void *v, loff_t *ppos)
-{
-	struct stack *stack = v;
-	struct stack_print_ctx *ctx = m->private;
-
-	stack = stack->next;
-	*ppos = stack ? *ppos + 1 : -1UL;
-	ctx->stack = stack;
-
-	return stack;
-}
-
-static unsigned long page_owner_pages_threshold;
-
-static int stack_print(struct seq_file *m, void *v)
-{
-	int i, nr_base_pages;
-	struct stack *stack = v;
-	unsigned long *entries;
-	unsigned long nr_entries;
-	struct stack_record *stack_record = stack->stack_record;
-	struct stack_print_ctx *ctx = m->private;
-
-	if (!stack->stack_record)
-		return 0;
-
-	nr_base_pages = refcount_read(&stack_record->count) - 1;
-
-	if (ctx->flags & STACK_PRINT_FLAG_PAGES &&
-	    (nr_base_pages < 1 || nr_base_pages < page_owner_pages_threshold))
-		return 0;
-
-	if (ctx->flags & STACK_PRINT_FLAG_STACK) {
-		nr_entries = stack_record->size;
-		entries = stack_record->entries;
-		for (i = 0; i < nr_entries; i++)
-			seq_printf(m, " %pS\n", (void *)entries[i]);
-	}
-	if (ctx->flags & STACK_PRINT_FLAG_HANDLE)
-		seq_printf(m, "handle: %d\n", stack_record->handle.handle);
-	if (ctx->flags & STACK_PRINT_FLAG_PAGES)
-		seq_printf(m, "nr_base_pages: %d\n", nr_base_pages);
-	seq_putc(m, '\n');
-
-	return 0;
-}
-
-static void stack_stop(struct seq_file *m, void *v)
-{
-}
-
-static const struct seq_operations page_owner_stack_op = {
-	.start	= stack_start,
-	.next	= stack_next,
-	.stop	= stack_stop,
-	.show	= stack_print
-};
-
-static int page_owner_stack_open(struct inode *inode, struct file *file)
-{
-	int ret = seq_open_private(file, &page_owner_stack_op,
-				   sizeof(struct stack_print_ctx));
-
-	if (!ret) {
-		struct seq_file *m = file->private_data;
-		struct stack_print_ctx *ctx = m->private;
-
-		ctx->flags = (uintptr_t) inode->i_private;
-	}
-
-	return ret;
-}
-
-static const struct file_operations page_owner_stack_fops = {
-	.open		= page_owner_stack_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release_private,
-};
-
-static int page_owner_threshold_get(void *data, u64 *val)
-{
-	*val = READ_ONCE(page_owner_pages_threshold);
-	return 0;
-}
-
-static int page_owner_threshold_set(void *data, u64 val)
-{
-	WRITE_ONCE(page_owner_pages_threshold, val);
-	return 0;
-}
-
-DEFINE_SIMPLE_ATTRIBUTE(page_owner_threshold_fops, &page_owner_threshold_get,
-			&page_owner_threshold_set, "%llu");
-
-
 static int __init pageowner_init(void)
 {
-	struct dentry *dir;
-
 	if (!static_branch_unlikely(&page_owner_inited)) {
 		pr_info("page_owner is disabled\n");
 		return 0;
 	}
 
-	debugfs_create_file("page_owner", 0400, NULL, NULL, &page_owner_fops);
-	dir = debugfs_create_dir("page_owner_stacks", NULL);
-	debugfs_create_file("show_stacks", 0400, dir,
-			    (void *)(STACK_PRINT_FLAG_STACK |
-				     STACK_PRINT_FLAG_PAGES),
-			     &page_owner_stack_fops);
-	debugfs_create_file("show_handles", 0400, dir,
-			    (void *)(STACK_PRINT_FLAG_HANDLE |
-				     STACK_PRINT_FLAG_PAGES),
-			    &page_owner_stack_fops);
-	debugfs_create_file("show_stacks_handles", 0400, dir,
-			    (void *)(STACK_PRINT_FLAG_STACK |
-				     STACK_PRINT_FLAG_HANDLE),
-			    &page_owner_stack_fops);
-	debugfs_create_file("count_threshold", 0600, dir, NULL,
-			    &page_owner_threshold_fops);
+	debugfs_create_file("page_owner", 0400, NULL, NULL,
+			    &proc_page_owner_operations);
+
 	return 0;
 }
 late_initcall(pageowner_init)

@@ -15,15 +15,17 @@ static int midi_open(struct snd_rawmidi_substream *substream)
 	if (err < 0)
 		return err;
 
-	scoped_guard(mutex, &dice->mutex) {
-		err = snd_dice_stream_reserve_duplex(dice, 0, 0, 0);
-		if (err >= 0) {
-			++dice->substreams_counter;
-			err = snd_dice_stream_start_duplex(dice);
-			if (err < 0)
-				--dice->substreams_counter;
-		}
+	mutex_lock(&dice->mutex);
+
+	err = snd_dice_stream_reserve_duplex(dice, 0, 0, 0);
+	if (err >= 0) {
+		++dice->substreams_counter;
+		err = snd_dice_stream_start_duplex(dice);
+		if (err < 0)
+			--dice->substreams_counter;
 	}
+
+	mutex_unlock(&dice->mutex);
 
 	if (err < 0)
 		snd_dice_stream_lock_release(dice);
@@ -35,10 +37,12 @@ static int midi_close(struct snd_rawmidi_substream *substream)
 {
 	struct snd_dice *dice = substream->rmidi->private_data;
 
-	scoped_guard(mutex, &dice->mutex) {
-		--dice->substreams_counter;
-		snd_dice_stream_stop_duplex(dice);
-	}
+	mutex_lock(&dice->mutex);
+
+	--dice->substreams_counter;
+	snd_dice_stream_stop_duplex(dice);
+
+	mutex_unlock(&dice->mutex);
 
 	snd_dice_stream_lock_release(dice);
 	return 0;
@@ -47,8 +51,9 @@ static int midi_close(struct snd_rawmidi_substream *substream)
 static void midi_capture_trigger(struct snd_rawmidi_substream *substrm, int up)
 {
 	struct snd_dice *dice = substrm->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&dice->lock);
+	spin_lock_irqsave(&dice->lock, flags);
 
 	if (up)
 		amdtp_am824_midi_trigger(&dice->tx_stream[0],
@@ -56,13 +61,16 @@ static void midi_capture_trigger(struct snd_rawmidi_substream *substrm, int up)
 	else
 		amdtp_am824_midi_trigger(&dice->tx_stream[0],
 					  substrm->number, NULL);
+
+	spin_unlock_irqrestore(&dice->lock, flags);
 }
 
 static void midi_playback_trigger(struct snd_rawmidi_substream *substrm, int up)
 {
 	struct snd_dice *dice = substrm->rmidi->private_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&dice->lock);
+	spin_lock_irqsave(&dice->lock, flags);
 
 	if (up)
 		amdtp_am824_midi_trigger(&dice->rx_stream[0],
@@ -70,6 +78,8 @@ static void midi_playback_trigger(struct snd_rawmidi_substream *substrm, int up)
 	else
 		amdtp_am824_midi_trigger(&dice->rx_stream[0],
 					 substrm->number, NULL);
+
+	spin_unlock_irqrestore(&dice->lock, flags);
 }
 
 static void set_midi_substream_names(struct snd_dice *dice,
@@ -78,8 +88,8 @@ static void set_midi_substream_names(struct snd_dice *dice,
 	struct snd_rawmidi_substream *subs;
 
 	list_for_each_entry(subs, &str->substreams, list) {
-		scnprintf(subs->name, sizeof(subs->name),
-			  "%s MIDI %d", dice->card->shortname, subs->number + 1);
+		snprintf(subs->name, sizeof(subs->name),
+			 "%s MIDI %d", dice->card->shortname, subs->number + 1);
 	}
 }
 

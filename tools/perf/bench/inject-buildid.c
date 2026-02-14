@@ -12,7 +12,6 @@
 #include <linux/time64.h>
 #include <linux/list.h>
 #include <linux/err.h>
-#include <linux/zalloc.h>
 #include <internal/lib.h>
 #include <subcmd/parse-options.h>
 
@@ -52,7 +51,7 @@ struct bench_dso {
 static int nr_dsos;
 static struct bench_dso *dsos;
 
-extern int main(int argc, const char **argv);
+extern int cmd_inject(int argc, const char *argv[]);
 
 static const struct option options[] = {
 	OPT_UINTEGER('i', "iterations", &iterations,
@@ -80,7 +79,7 @@ static int add_dso(const char *fpath, const struct stat *sb __maybe_unused,
 		   int typeflag, struct FTW *ftwbuf __maybe_unused)
 {
 	struct bench_dso *dso = &dsos[nr_dsos];
-	struct build_id bid = { .size = 0, };
+	struct build_id bid;
 
 	if (typeflag == FTW_D || typeflag == FTW_SL)
 		return 0;
@@ -123,7 +122,7 @@ static void release_dso(void)
 	for (i = 0; i < nr_dsos; i++) {
 		struct bench_dso *dso = &dsos[i];
 
-		zfree(&dso->name);
+		free(dso->name);
 	}
 	free(dsos);
 }
@@ -294,7 +293,7 @@ static int setup_injection(struct bench_data *data, bool build_id_all)
 
 	if (data->pid == 0) {
 		const char **inject_argv;
-		int inject_argc = 3;
+		int inject_argc = 2;
 
 		close(data->input_pipe[1]);
 		close(data->output_pipe[0]);
@@ -318,16 +317,15 @@ static int setup_injection(struct bench_data *data, bool build_id_all)
 		if (inject_argv == NULL)
 			exit(1);
 
-		inject_argv[0] = strdup("perf");
-		inject_argv[1] = strdup("inject");
-		inject_argv[2] = strdup("-b");
+		inject_argv[0] = strdup("inject");
+		inject_argv[1] = strdup("-b");
 		if (build_id_all)
-			inject_argv[3] = strdup("--buildid-all");
+			inject_argv[2] = strdup("--buildid-all");
 
 		/* signal that we're ready to go */
 		close(ready_pipe[1]);
 
-		main(inject_argc, inject_argv);
+		cmd_inject(inject_argc, inject_argv);
 
 		exit(0);
 	}
@@ -363,7 +361,7 @@ static int inject_build_id(struct bench_data *data, u64 *max_rss)
 		return -1;
 
 	for (i = 0; i < nr_mmaps; i++) {
-		int idx = rand() % nr_dsos;
+		int idx = rand() % (nr_dsos - 1);
 		struct bench_dso *dso = &dsos[idx];
 		u64 timestamp = rand() % 1000000;
 

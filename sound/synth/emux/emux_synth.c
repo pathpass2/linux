@@ -49,6 +49,7 @@ snd_emux_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 	int i, key, nvoices;
 	struct snd_emux_voice *vp;
 	struct snd_sf_zone *table[SNDRV_EMUX_MAX_MULTI_VOICES];
+	unsigned long flags;
 	struct snd_emux_port *port;
 
 	port = p;
@@ -76,7 +77,7 @@ snd_emux_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 	terminate_note1(emu, key, chan, 0);
 #endif
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < nvoices; i++) {
 
 		/* set up each voice parameter */
@@ -123,6 +124,7 @@ snd_emux_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 			vp->ontime = jiffies; /* remember the trigger timing */
 		}
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 
 #ifdef SNDRV_EMUX_USE_RAW_EFFECT
 	if (port->port_mode == SNDRV_EMUX_PORT_MODE_OSS_SYNTH) {
@@ -145,6 +147,7 @@ snd_emux_note_off(void *p, int note, int vel, struct snd_midi_channel *chan)
 	int ch;
 	struct snd_emux *emu;
 	struct snd_emux_voice *vp;
+	unsigned long flags;
 	struct snd_emux_port *port;
 
 	port = p;
@@ -155,7 +158,7 @@ snd_emux_note_off(void *p, int note, int vel, struct snd_midi_channel *chan)
 	if (snd_BUG_ON(!emu || !emu->ops.release))
 		return;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (ch = 0; ch < emu->max_voices; ch++) {
 		vp = &emu->voices[ch];
 		if (STATE_IS_PLAYING(vp->state) &&
@@ -177,6 +180,7 @@ snd_emux_note_off(void *p, int note, int vel, struct snd_midi_channel *chan)
 				emu->ops.release(vp);
 		}
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 /*
@@ -186,11 +190,12 @@ snd_emux_note_off(void *p, int note, int vel, struct snd_midi_channel *chan)
  */
 void snd_emux_timer_callback(struct timer_list *t)
 {
-	struct snd_emux *emu = timer_container_of(emu, t, tlist);
+	struct snd_emux *emu = from_timer(emu, t, tlist);
 	struct snd_emux_voice *vp;
+	unsigned long flags;
 	int ch, do_again = 0;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (ch = 0; ch < emu->max_voices; ch++) {
 		vp = &emu->voices[ch];
 		if (vp->state == SNDRV_EMUX_ST_PENDING) {
@@ -207,6 +212,7 @@ void snd_emux_timer_callback(struct timer_list *t)
 		emu->timer_active = 1;
 	} else
 		emu->timer_active = 0;
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 /*
@@ -218,6 +224,7 @@ snd_emux_key_press(void *p, int note, int vel, struct snd_midi_channel *chan)
 	int ch;
 	struct snd_emux *emu;
 	struct snd_emux_voice *vp;
+	unsigned long flags;
 	struct snd_emux_port *port;
 
 	port = p;
@@ -228,7 +235,7 @@ snd_emux_key_press(void *p, int note, int vel, struct snd_midi_channel *chan)
 	if (snd_BUG_ON(!emu || !emu->ops.update))
 		return;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (ch = 0; ch < emu->max_voices; ch++) {
 		vp = &emu->voices[ch];
 		if (vp->state == SNDRV_EMUX_ST_ON &&
@@ -237,6 +244,7 @@ snd_emux_key_press(void *p, int note, int vel, struct snd_midi_channel *chan)
 			update_voice(emu, vp, SNDRV_EMUX_UPDATE_VOLUME);
 		}
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 
@@ -249,6 +257,7 @@ snd_emux_update_channel(struct snd_emux_port *port, struct snd_midi_channel *cha
 	struct snd_emux *emu;
 	struct snd_emux_voice *vp;
 	int i;
+	unsigned long flags;
 
 	if (! update)
 		return;
@@ -257,12 +266,13 @@ snd_emux_update_channel(struct snd_emux_port *port, struct snd_midi_channel *cha
 	if (snd_BUG_ON(!emu || !emu->ops.update))
 		return;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
 		vp = &emu->voices[i];
 		if (vp->chan == chan)
 			update_voice(emu, vp, update);
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 /*
@@ -274,6 +284,7 @@ snd_emux_update_port(struct snd_emux_port *port, int update)
 	struct snd_emux *emu; 
 	struct snd_emux_voice *vp;
 	int i;
+	unsigned long flags;
 
 	if (! update)
 		return;
@@ -282,12 +293,13 @@ snd_emux_update_port(struct snd_emux_port *port, int update)
 	if (snd_BUG_ON(!emu || !emu->ops.update))
 		return;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
 		vp = &emu->voices[i];
 		if (vp->port == port)
 			update_voice(emu, vp, update);
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 
@@ -353,14 +365,16 @@ terminate_note1(struct snd_emux *emu, int note, struct snd_midi_channel *chan, i
 {
 	int  i;
 	struct snd_emux_voice *vp;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
 		vp = &emu->voices[i];
 		if (STATE_IS_PLAYING(vp->state) && vp->chan == chan &&
 		    vp->key == note)
 			terminate_voice(emu, vp, free);
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 
@@ -393,8 +407,9 @@ snd_emux_terminate_all(struct snd_emux *emu)
 {
 	int i;
 	struct snd_emux_voice *vp;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
 		vp = &emu->voices[i];
 		if (STATE_IS_PLAYING(vp->state))
@@ -409,6 +424,7 @@ snd_emux_terminate_all(struct snd_emux *emu)
 	}
 	/* initialize allocation time */
 	emu->use_time = 0;
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 EXPORT_SYMBOL(snd_emux_terminate_all);
@@ -422,6 +438,7 @@ snd_emux_sounds_off_all(struct snd_emux_port *port)
 	int i;
 	struct snd_emux *emu;
 	struct snd_emux_voice *vp;
+	unsigned long flags;
 
 	if (snd_BUG_ON(!port))
 		return;
@@ -429,7 +446,7 @@ snd_emux_sounds_off_all(struct snd_emux_port *port)
 	if (snd_BUG_ON(!emu || !emu->ops.terminate))
 		return;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
 		vp = &emu->voices[i];
 		if (STATE_IS_PLAYING(vp->state) &&
@@ -442,6 +459,7 @@ snd_emux_sounds_off_all(struct snd_emux_port *port)
 				emu->ops.reset(emu, i);
 		}
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 
@@ -454,8 +472,9 @@ exclusive_note_off(struct snd_emux *emu, struct snd_emux_port *port, int exclass
 {
 	struct snd_emux_voice *vp;
 	int  i;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
 		vp = &emu->voices[i];
 		if (STATE_IS_PLAYING(vp->state) && vp->port == port &&
@@ -463,6 +482,7 @@ exclusive_note_off(struct snd_emux *emu, struct snd_emux_port *port, int exclass
 			terminate_voice(emu, vp, 0);
 		}
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 /*
@@ -825,8 +845,7 @@ calc_pitch(struct snd_emux_voice *vp)
 
 	/* 0xe000: root pitch */
 	offset += 0xe000 + vp->reg.rate_offset;
-	if (vp->emu->ops.get_pitch_shift)
-		offset += vp->emu->ops.get_pitch_shift(vp->emu);
+	offset += vp->emu->pitch_shift;
 	LIMITVALUE(offset, 0, 0xffff);
 	if (offset == vp->apitch)
 		return 0; /* unchanged */
@@ -896,8 +915,9 @@ snd_emux_init_voices(struct snd_emux *emu)
 {
 	struct snd_emux_voice *vp;
 	int i;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
 		vp = &emu->voices[i];
 		vp->ch = -1; /* not used */
@@ -908,19 +928,23 @@ snd_emux_init_voices(struct snd_emux *emu)
 		vp->emu = emu;
 		vp->hw = emu->hw;
 	}
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 /*
  */
 void snd_emux_lock_voice(struct snd_emux *emu, int voice)
 {
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	if (emu->voices[voice].state == SNDRV_EMUX_ST_OFF)
 		emu->voices[voice].state = SNDRV_EMUX_ST_LOCKED;
 	else
-		dev_warn(emu->card->dev,
-			 "invalid voice for lock %d (state = %x)\n",
-			 voice, emu->voices[voice].state);
+		snd_printk(KERN_WARNING
+			   "invalid voice for lock %d (state = %x)\n",
+			   voice, emu->voices[voice].state);
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 EXPORT_SYMBOL(snd_emux_lock_voice);
@@ -929,13 +953,16 @@ EXPORT_SYMBOL(snd_emux_lock_voice);
  */
 void snd_emux_unlock_voice(struct snd_emux *emu, int voice)
 {
-	guard(spinlock_irqsave)(&emu->voice_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&emu->voice_lock, flags);
 	if (emu->voices[voice].state == SNDRV_EMUX_ST_LOCKED)
 		emu->voices[voice].state = SNDRV_EMUX_ST_OFF;
 	else
-		dev_warn(emu->card->dev,
-			 "invalid voice for unlock %d (state = %x)\n",
-			 voice, emu->voices[voice].state);
+		snd_printk(KERN_WARNING
+			   "invalid voice for unlock %d (state = %x)\n",
+			   voice, emu->voices[voice].state);
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
 
 EXPORT_SYMBOL(snd_emux_unlock_voice);

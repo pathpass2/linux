@@ -1,6 +1,6 @@
-=======================================
-tgafb - TGA graphics framebuffer driver
-=======================================
+==============
+What is tgafb?
+==============
 
 This is a driver for DECChip 21030 based graphics framebuffers, a.k.a. TGA
 cards, which are usually found in older Digital Alpha systems. The

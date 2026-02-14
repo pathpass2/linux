@@ -131,7 +131,6 @@ char kdb_getchar(void)
 	int escape_delay = 0;
 	get_char_func *f, *f_prev = NULL;
 	int key;
-	static bool last_char_was_cr;
 
 	for (f = &kdb_poll_funcs[0]; ; ++f) {
 		if (*f == NULL) {
@@ -149,18 +148,6 @@ char kdb_getchar(void)
 			}
 			continue;
 		}
-
-		/*
-		 * The caller expects that newlines are either CR or LF. However
-		 * some terminals send _both_ CR and LF. Avoid having to handle
-		 * this in the caller by stripping the LF if we saw a CR right
-		 * before.
-		 */
-		if (last_char_was_cr && key == '\n') {
-			last_char_was_cr = false;
-			continue;
-		}
-		last_char_was_cr = (key == '\r');
 
 		/*
 		 * When the first character is received (or we get a change
@@ -182,33 +169,6 @@ char kdb_getchar(void)
 	}
 
 	unreachable();
-}
-
-/**
- * kdb_position_cursor() - Place cursor in the correct horizontal position
- * @prompt: Nil-terminated string containing the prompt string
- * @buffer: Nil-terminated string containing the entire command line
- * @cp: Cursor position, pointer the character in buffer where the cursor
- *      should be positioned.
- *
- * The cursor is positioned by sending a carriage-return and then printing
- * the content of the line until we reach the correct cursor position.
- *
- * There is some additional fine detail here.
- *
- * Firstly, even though kdb_printf() will correctly format zero-width fields
- * we want the second call to kdb_printf() to be conditional. That keeps things
- * a little cleaner when LOGGING=1.
- *
- * Secondly, we can't combine everything into one call to kdb_printf() since
- * that renders into a fixed length buffer and the combined print could result
- * in unwanted truncation.
- */
-static void kdb_position_cursor(char *prompt, char *buffer, char *cp)
-{
-	kdb_printf("\r%s", prompt);
-	if (cp > buffer)
-		kdb_printf("%.*s", (int)(cp - buffer), buffer);
 }
 
 /*
@@ -247,7 +207,8 @@ static char *kdb_read(char *buffer, size_t bufsize)
 	int count;
 	int i;
 	int diag, dtab_count;
-	int key, ret;
+	int key, buf_size, ret;
+
 
 	diag = kdbgetintenv("DTABCOUNT", &dtab_count);
 	if (diag)
@@ -269,15 +230,21 @@ poll_again:
 	switch (key) {
 	case 8: /* backspace */
 		if (cp > buffer) {
-			memmove(cp-1, cp, lastchar - cp + 1);
-			lastchar--;
-			cp--;
-			kdb_printf("\b%s ", cp);
-			kdb_position_cursor(kdb_prompt_str, buffer, cp);
+			if (cp < lastchar) {
+				memcpy(tmpbuffer, cp, lastchar - cp);
+				memcpy(cp-1, tmpbuffer, lastchar - cp);
+			}
+			*(--lastchar) = '\0';
+			--cp;
+			kdb_printf("\b%s \r", cp);
+			tmp = *cp;
+			*cp = '\0';
+			kdb_printf(kdb_prompt_str);
+			kdb_printf("%s", buffer);
+			*cp = tmp;
 		}
 		break;
-	case 10: /* linefeed */
-	case 13: /* carriage return */
+	case 13: /* enter */
 		*lastchar++ = '\n';
 		*lastchar++ = '\0';
 		if (!KDB_STATE(KGDB_TRANS)) {
@@ -288,16 +255,22 @@ poll_again:
 		return buffer;
 	case 4: /* Del */
 		if (cp < lastchar) {
-			memmove(cp, cp+1, lastchar - cp);
-			lastchar--;
-			kdb_printf("%s ", cp);
-			kdb_position_cursor(kdb_prompt_str, buffer, cp);
+			memcpy(tmpbuffer, cp+1, lastchar - cp - 1);
+			memcpy(cp, tmpbuffer, lastchar - cp - 1);
+			*(--lastchar) = '\0';
+			kdb_printf("%s \r", cp);
+			tmp = *cp;
+			*cp = '\0';
+			kdb_printf(kdb_prompt_str);
+			kdb_printf("%s", buffer);
+			*cp = tmp;
 		}
 		break;
 	case 1: /* Home */
 		if (cp > buffer) {
+			kdb_printf("\r");
+			kdb_printf(kdb_prompt_str);
 			cp = buffer;
-			kdb_position_cursor(kdb_prompt_str, buffer, cp);
 		}
 		break;
 	case 5: /* End */
@@ -313,10 +286,11 @@ poll_again:
 		}
 		break;
 	case 14: /* Down */
-	case 16: /* Up */
-		kdb_printf("\r%*c\r",
-			   (int)(strlen(kdb_prompt_str) + (lastchar - buffer)),
-			   ' ');
+		memset(tmpbuffer, ' ',
+		       strlen(kdb_prompt_str) + (lastchar-buffer));
+		*(tmpbuffer+strlen(kdb_prompt_str) +
+		  (lastchar-buffer)) = '\0';
+		kdb_printf("\r%s\r", tmpbuffer);
 		*lastchar = (char)key;
 		*(lastchar+1) = '\0';
 		return lastchar;
@@ -326,19 +300,33 @@ poll_again:
 			++cp;
 		}
 		break;
+	case 16: /* Up */
+		memset(tmpbuffer, ' ',
+		       strlen(kdb_prompt_str) + (lastchar-buffer));
+		*(tmpbuffer+strlen(kdb_prompt_str) +
+		  (lastchar-buffer)) = '\0';
+		kdb_printf("\r%s\r", tmpbuffer);
+		*lastchar = (char)key;
+		*(lastchar+1) = '\0';
+		return lastchar;
 	case 9: /* Tab */
 		if (tab < 2)
 			++tab;
-
-		tmp = *cp;
-		*cp = '\0';
-		p_tmp = strrchr(buffer, ' ');
-		p_tmp = (p_tmp ? p_tmp + 1 : buffer);
-		strscpy(tmpbuffer, p_tmp);
-		*cp = tmp;
-
-		len = strlen(tmpbuffer);
-		count = kallsyms_symbol_complete(tmpbuffer, sizeof(tmpbuffer));
+		p_tmp = buffer;
+		while (*p_tmp == ' ')
+			p_tmp++;
+		if (p_tmp > cp)
+			break;
+		memcpy(tmpbuffer, p_tmp, cp-p_tmp);
+		*(tmpbuffer + (cp-p_tmp)) = '\0';
+		p_tmp = strrchr(tmpbuffer, ' ');
+		if (p_tmp)
+			++p_tmp;
+		else
+			p_tmp = tmpbuffer;
+		len = strlen(p_tmp);
+		buf_size = sizeof(tmpbuffer) - (p_tmp - tmpbuffer);
+		count = kallsyms_symbol_complete(p_tmp, buf_size);
 		if (tab == 2 && count > 0) {
 			kdb_printf("\n%d symbols are found.", count);
 			if (count > dtab_count) {
@@ -350,51 +338,46 @@ poll_again:
 			}
 			kdb_printf("\n");
 			for (i = 0; i < count; i++) {
-				ret = kallsyms_symbol_next(tmpbuffer, i, sizeof(tmpbuffer));
+				ret = kallsyms_symbol_next(p_tmp, i, buf_size);
 				if (WARN_ON(!ret))
 					break;
 				if (ret != -E2BIG)
-					kdb_printf("%s ", tmpbuffer);
+					kdb_printf("%s ", p_tmp);
 				else
-					kdb_printf("%s... ", tmpbuffer);
-				tmpbuffer[len] = '\0';
+					kdb_printf("%s... ", p_tmp);
+				*(p_tmp + len) = '\0';
 			}
 			if (i >= dtab_count)
 				kdb_printf("...");
 			kdb_printf("\n");
-			kdb_printf("%s",  kdb_prompt_str);
+			kdb_printf(kdb_prompt_str);
 			kdb_printf("%s", buffer);
-			if (cp != lastchar)
-				kdb_position_cursor(kdb_prompt_str, buffer, cp);
 		} else if (tab != 2 && count > 0) {
-			/* How many new characters do we want from tmpbuffer? */
-			len_tmp = strlen(tmpbuffer) - len;
-			if (lastchar + len_tmp >= bufend)
-				len_tmp = bufend - lastchar;
-
-			if (len_tmp) {
-				/* + 1 ensures the '\0' is memmove'd */
-				memmove(cp+len_tmp, cp, (lastchar-cp) + 1);
-				memcpy(cp, tmpbuffer+len, len_tmp);
-				kdb_printf("%s", cp);
-				cp += len_tmp;
-				lastchar += len_tmp;
-				if (cp != lastchar)
-					kdb_position_cursor(kdb_prompt_str,
-							    buffer, cp);
-			}
+			len_tmp = strlen(p_tmp);
+			strncpy(p_tmp+len_tmp, cp, lastchar-cp+1);
+			len_tmp = strlen(p_tmp);
+			strncpy(cp, p_tmp+len, len_tmp-len + 1);
+			len = len_tmp - len;
+			kdb_printf("%s", cp);
+			cp += len;
+			lastchar += len;
 		}
 		kdb_nextline = 1; /* reset output line number */
 		break;
 	default:
 		if (key >= 32 && lastchar < bufend) {
 			if (cp < lastchar) {
-				memmove(cp+1, cp, lastchar - cp + 1);
-				lastchar++;
+				memcpy(tmpbuffer, cp, lastchar - cp);
+				memcpy(cp+1, tmpbuffer, lastchar - cp);
+				*++lastchar = '\0';
 				*cp = key;
-				kdb_printf("%s", cp);
+				kdb_printf("%s\r", cp);
 				++cp;
-				kdb_position_cursor(kdb_prompt_str, buffer, cp);
+				tmp = *cp;
+				*cp = '\0';
+				kdb_printf(kdb_prompt_str);
+				kdb_printf("%s", buffer);
+				*cp = tmp;
 			} else {
 				*++lastchar = '\0';
 				*cp++ = key;
@@ -452,8 +435,8 @@ poll_again:
 char *kdb_getstr(char *buffer, size_t bufsize, const char *prompt)
 {
 	if (prompt && kdb_prompt_str != prompt)
-		strscpy(kdb_prompt_str, prompt);
-	kdb_printf("%s", kdb_prompt_str);
+		strscpy(kdb_prompt_str, prompt, CMD_BUFLEN);
+	kdb_printf(kdb_prompt_str);
 	kdb_nextline = 1;	/* Prompt and input resets line number */
 	return kdb_read(buffer, bufsize);
 }
@@ -589,41 +572,22 @@ static void kdb_msg_write(const char *msg, int msg_len)
 	 */
 	cookie = console_srcu_read_lock();
 	for_each_console_srcu(c) {
-		short flags = console_srcu_read_flags(c);
-
-		if (!console_is_usable(c, flags, true))
+		if (!(console_srcu_read_flags(c) & CON_ENABLED))
 			continue;
 		if (c == dbg_io_ops->cons)
 			continue;
-
-		if (flags & CON_NBCON) {
-			struct nbcon_write_context wctxt = { };
-
-			/*
-			 * Do not continue if the console is NBCON and the context
-			 * can't be acquired.
-			 */
-			if (!nbcon_kdb_try_acquire(c, &wctxt))
-				continue;
-
-			nbcon_write_context_set_buf(&wctxt, (char *)msg, msg_len);
-
-			c->write_atomic(c, &wctxt);
-			nbcon_kdb_release(&wctxt);
-		} else {
-			/*
-			 * Set oops_in_progress to encourage the console drivers to
-			 * disregard their internal spin locks: in the current calling
-			 * context the risk of deadlock is a bigger problem than risks
-			 * due to re-entering the console driver. We operate directly on
-			 * oops_in_progress rather than using bust_spinlocks() because
-			 * the calls bust_spinlocks() makes on exit are not appropriate
-			 * for this calling context.
-			 */
-			++oops_in_progress;
-			c->write(c, msg, msg_len);
-			--oops_in_progress;
-		}
+		/*
+		 * Set oops_in_progress to encourage the console drivers to
+		 * disregard their internal spin locks: in the current calling
+		 * context the risk of deadlock is a bigger problem than risks
+		 * due to re-entering the console driver. We operate directly on
+		 * oops_in_progress rather than using bust_spinlocks() because
+		 * the calls bust_spinlocks() makes on exit are not appropriate
+		 * for this calling context.
+		 */
+		++oops_in_progress;
+		c->write(c, msg, msg_len);
+		--oops_in_progress;
 		touch_nmi_watchdog();
 	}
 	console_srcu_read_unlock(cookie);
@@ -731,8 +695,8 @@ int vkdb_printf(enum kdb_msgsrc src, const char *fmt, va_list ap)
 		 * it, depending on the results of the search.
 		 */
 		cp++;	 	     /* to byte after the newline */
-		replaced_byte = *cp; /* remember what it was */
-		cphold = cp;	     /* remember where it was */
+		replaced_byte = *cp; /* remember what/where it was */
+		cphold = cp;
 		*cp = '\0';	     /* end the string for our search */
 
 		/*
@@ -749,9 +713,8 @@ int vkdb_printf(enum kdb_msgsrc src, const char *fmt, va_list ap)
 			 * Shift the buffer left.
 			 */
 			*cphold = replaced_byte;
-			len = strlen(cphold);
-			/* Use memmove() because the buffers overlap */
-			memmove(kdb_buffer, cphold, len + 1);
+			strcpy(kdb_buffer, cphold);
+			len = strlen(kdb_buffer);
 			next_avail = kdb_buffer + len;
 			size_avail = sizeof(kdb_buffer) - len;
 			goto kdb_print_out;
@@ -890,9 +853,8 @@ kdb_printit:
 	 */
 	if (kdb_grepping_flag && !suspend_grep) {
 		*cphold = replaced_byte;
-		len = strlen(cphold);
-		/* Use memmove() because the buffers overlap */
-		memmove(kdb_buffer, cphold, len + 1);
+		strcpy(kdb_buffer, cphold);
+		len = strlen(kdb_buffer);
 		next_avail = kdb_buffer + len;
 		size_avail = sizeof(kdb_buffer) - len;
 	}

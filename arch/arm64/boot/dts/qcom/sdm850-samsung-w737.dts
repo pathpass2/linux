@@ -56,7 +56,7 @@
 	};
 
 	aliases {
-		serial1 = &uart6;
+		hsuart0 = &uart6;
 	};
 
 	/* Reserved memory changes */
@@ -425,15 +425,15 @@
 
 &q6asmdai {
 	dai@0 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+		reg = <0>;
 	};
 
 	dai@1 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+		reg = <1>;
 	};
 
 	dai@2 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
+		reg = <2>;
 	};
 };
 
@@ -445,7 +445,10 @@
 		"RX_BIAS", "MCLK",
 		"AMIC2", "MIC BIAS2",
 		"SpkrLeft IN", "SPK1 OUT",
-		"SpkrRight IN", "SPK2 OUT";
+		"SpkrRight IN", "SPK2 OUT",
+		"MM_DL1",  "MultiMedia1 Playback",
+		"MM_DL3",  "MultiMedia3 Playback",
+		"MultiMedia2 Capture", "MM_UL2";
 
 	mm1-dai-link {
 		link-name = "MultiMedia1";
@@ -655,11 +658,11 @@
 	qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
 	qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
 
-	swm: soundwire@c85 {
+	swm: swm@c85 {
 		left_spkr: speaker@0,3 {
 			compatible = "sdw10217211000";
 			reg = <0 3>;
-			powerdown-gpios = <&wcdgpio 1 GPIO_ACTIVE_LOW>;
+			powerdown-gpios = <&wcdgpio 1 GPIO_ACTIVE_HIGH>;
 			#thermal-sensor-cells = <0>;
 			sound-name-prefix = "SpkrLeft";
 			#sound-dai-cells = <0>;
@@ -667,7 +670,7 @@
 
 		right_spkr: speaker@0,4 {
 			compatible = "sdw10217211000";
-			powerdown-gpios = <&wcdgpio 2 GPIO_ACTIVE_LOW>;
+			powerdown-gpios = <&wcdgpio 2 GPIO_ACTIVE_HIGH>;
 			reg = <0 4>;
 			#thermal-sensor-cells = <0>;
 			sound-name-prefix = "SpkrRight";

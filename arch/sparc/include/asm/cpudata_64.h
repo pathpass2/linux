@@ -7,7 +7,7 @@
 #ifndef _SPARC64_CPUDATA_H
 #define _SPARC64_CPUDATA_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 typedef struct {
 	/* Dcache line 1 */
@@ -35,7 +35,7 @@ DECLARE_PER_CPU(cpuinfo_sparc, __cpu_data);
 #define cpu_data(__cpu)		per_cpu(__cpu_data, (__cpu))
 #define local_cpu_data()	(*this_cpu_ptr(&__cpu_data))
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 #include <asm/trap_block.h>
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
 
 # Testing and monitor the cpu desire performance, frequency, load,
@@ -66,15 +66,12 @@ post_clear_gitsource()
 
 install_gitsource()
 {
-	if [ ! -d $SCRIPTDIR/$git_name ]; then
-		pushd $(pwd) > /dev/null 2>&1
-		cd $SCRIPTDIR
+	if [ ! -d $git_name ]; then
 		printf "Download gitsource, please wait a moment ...\n\n"
 		wget -O $git_tar $gitsource_url > /dev/null 2>&1
 
 		printf "Tar gitsource ...\n\n"
 		tar -xzf $git_tar
-		popd > /dev/null 2>&1
 	fi
 }
 
@@ -82,14 +79,12 @@ install_gitsource()
 run_gitsource()
 {
 	echo "Launching amd pstate tracer for $1 #$2 tracer_interval: $TRACER_INTERVAL"
-	$TRACER -n tracer-gitsource-$1-$2 -i $TRACER_INTERVAL > /dev/null 2>&1 &
+	./amd_pstate_trace.py -n tracer-gitsource-$1-$2 -i $TRACER_INTERVAL > /dev/null 2>&1 &
 
 	printf "Make and test gitsource for $1 #$2 make_cpus: $MAKE_CPUS\n"
-	BACKUP_DIR=$(pwd)
-	pushd $BACKUP_DIR > /dev/null 2>&1
-	cd $SCRIPTDIR/$git_name
-	$PERF stat -a --per-socket -I 1000 -e power/energy-pkg/ /usr/bin/time -o $BACKUP_DIR/$OUTFILE_GIT.time-gitsource-$1-$2.log make test -j$MAKE_CPUS > $BACKUP_DIR/$OUTFILE_GIT-perf-$1-$2.log 2>&1
-	popd > /dev/null 2>&1
+	cd $git_name
+	perf stat -a --per-socket -I 1000 -e power/energy-pkg/ /usr/bin/time -o ../$OUTFILE_GIT.time-gitsource-$1-$2.log make test -j$MAKE_CPUS > ../$OUTFILE_GIT-perf-$1-$2.log 2>&1
+	cd ..
 
 	for job in `jobs -p`
 	do
@@ -122,7 +117,7 @@ parse_gitsource()
 	printf "Gitsource-$1-#$2 power consumption(J): $en_sum\n" | tee -a $OUTFILE_GIT.result
 
 	# Permance is the number of run gitsource per second, denoted 1/t, where 1 is the number of run gitsource in t
-	# seconds. It is well known that P=E/t, where P is power measured in watts(W), E is energy measured in joules(J),
+	# senconds. It is well known that P=E/t, where P is power measured in watts(W), E is energy measured in joules(J),
 	# and t is time measured in seconds(s). This means that performance per watt becomes
 	#        1/t     1/t     1
 	#       ----- = ----- = ---
@@ -180,7 +175,7 @@ gather_gitsource()
 	printf "Gitsource-$1 avg power consumption(J): $avg_en\n" | tee -a $OUTFILE_GIT.result
 
 	# Permance is the number of run gitsource per second, denoted 1/t, where 1 is the number of run gitsource in t
-	# seconds. It is well known that P=E/t, where P is power measured in watts(W), E is energy measured in joules(J),
+	# senconds. It is well known that P=E/t, where P is power measured in watts(W), E is energy measured in joules(J),
 	# and t is time measured in seconds(s). This means that performance per watt becomes
 	#        1/t     1/t     1
 	#       ----- = ----- = ---

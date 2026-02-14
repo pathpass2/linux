@@ -212,15 +212,13 @@ static unsigned long applnco_recalc_rate(struct clk_hw *hw,
 			((u64) div) * incbase + inc1);
 }
 
-static int applnco_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long applnco_round_rate(struct clk_hw *hw, unsigned long rate,
+				unsigned long *parent_rate)
 {
-	unsigned long lo = req->best_parent_rate / (COARSE_DIV_OFFSET + LFSR_TBLSIZE) + 1;
-	unsigned long hi = req->best_parent_rate / COARSE_DIV_OFFSET;
+	unsigned long lo = *parent_rate / (COARSE_DIV_OFFSET + LFSR_TBLSIZE) + 1;
+	unsigned long hi = *parent_rate / COARSE_DIV_OFFSET;
 
-	req->rate = clamp(req->rate, lo, hi);
-
-	return 0;
+	return clamp(rate, lo, hi);
 }
 
 static int applnco_enable(struct clk_hw *hw)
@@ -248,7 +246,7 @@ static void applnco_disable(struct clk_hw *hw)
 static const struct clk_ops applnco_ops = {
 	.set_rate = applnco_set_rate,
 	.recalc_rate = applnco_recalc_rate,
-	.determine_rate = applnco_determine_rate,
+	.round_rate = applnco_round_rate,
 	.enable = applnco_enable,
 	.disable = applnco_disable,
 	.is_enabled = applnco_is_enabled,
@@ -299,9 +297,6 @@ static int applnco_probe(struct platform_device *pdev)
 		memset(&init, 0, sizeof(init));
 		init.name = devm_kasprintf(&pdev->dev, GFP_KERNEL,
 						"%s-%d", np->name, i);
-		if (!init.name)
-			return -ENOMEM;
-
 		init.ops = &applnco_ops;
 		init.parent_data = &pdata;
 		init.num_parents = 1;

@@ -217,6 +217,7 @@ static int advwdt_close(struct inode *inode, struct file *file)
 
 static const struct file_operations advwdt_fops = {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.write		= advwdt_write,
 	.unlocked_ioctl	= advwdt_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,
@@ -278,12 +279,14 @@ unreg_stop:
 	goto out;
 }
 
-static void advwdt_remove(struct platform_device *dev)
+static int advwdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&advwdt_miscdev);
 	release_region(wdt_start, 1);
 	if (wdt_stop != wdt_start)
 		release_region(wdt_stop, 1);
+
+	return 0;
 }
 
 static void advwdt_shutdown(struct platform_device *dev)

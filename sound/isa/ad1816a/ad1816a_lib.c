@@ -25,7 +25,7 @@ static inline int snd_ad1816a_busy_wait(struct snd_ad1816a *chip)
 		if (inb(AD1816A_REG(AD1816A_CHIP_STATUS)) & AD1816A_READY)
 			return 0;
 
-	dev_warn(chip->card->dev, "chip busy.\n");
+	snd_printk(KERN_WARNING "chip busy.\n");
 	return -EBUSY;
 }
 
@@ -96,10 +96,14 @@ static unsigned char snd_ad1816a_get_format(struct snd_ad1816a *chip,
 
 static int snd_ad1816a_open(struct snd_ad1816a *chip, unsigned int mode)
 {
-	guard(spinlock_irqsave)(&chip->lock);
+	unsigned long flags;
 
-	if (chip->mode & mode)
+	spin_lock_irqsave(&chip->lock, flags);
+
+	if (chip->mode & mode) {
+		spin_unlock_irqrestore(&chip->lock, flags);
 		return -EAGAIN;
+	}
 
 	switch ((mode &= AD1816A_MODE_OPEN)) {
 	case AD1816A_MODE_PLAYBACK:
@@ -122,12 +126,15 @@ static int snd_ad1816a_open(struct snd_ad1816a *chip, unsigned int mode)
 	}
 	chip->mode |= mode;
 
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return 0;
 }
 
 static void snd_ad1816a_close(struct snd_ad1816a *chip, unsigned int mode)
 {
-	guard(spinlock_irqsave)(&chip->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&chip->lock, flags);
 
 	switch ((mode &= AD1816A_MODE_OPEN)) {
 	case AD1816A_MODE_PLAYBACK:
@@ -151,6 +158,8 @@ static void snd_ad1816a_close(struct snd_ad1816a *chip, unsigned int mode)
 	chip->mode &= ~mode;
 	if (!(chip->mode & AD1816A_MODE_OPEN))
 		chip->mode = 0;
+
+	spin_unlock_irqrestore(&chip->lock, flags);
 }
 
 
@@ -162,22 +171,22 @@ static int snd_ad1816a_trigger(struct snd_ad1816a *chip, unsigned char what,
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_STOP:
-		scoped_guard(spinlock, &chip->lock) {
-			cmd = (cmd == SNDRV_PCM_TRIGGER_START) ? 0xff: 0x00;
-			/* if (what & AD1816A_PLAYBACK_ENABLE) */
-			/* That is not valid, because playback and capture enable
-			 * are the same bit pattern, just to different addresses
-			 */
-			if (!iscapture)
-				snd_ad1816a_out_mask(chip, AD1816A_PLAYBACK_CONFIG,
-						     AD1816A_PLAYBACK_ENABLE, cmd);
-			else
-				snd_ad1816a_out_mask(chip, AD1816A_CAPTURE_CONFIG,
-						     AD1816A_CAPTURE_ENABLE, cmd);
-		}
+		spin_lock(&chip->lock);
+		cmd = (cmd == SNDRV_PCM_TRIGGER_START) ? 0xff: 0x00;
+		/* if (what & AD1816A_PLAYBACK_ENABLE) */
+		/* That is not valid, because playback and capture enable
+		 * are the same bit pattern, just to different addresses
+		 */
+		if (! iscapture)
+			snd_ad1816a_out_mask(chip, AD1816A_PLAYBACK_CONFIG,
+				AD1816A_PLAYBACK_ENABLE, cmd);
+		else
+			snd_ad1816a_out_mask(chip, AD1816A_CAPTURE_CONFIG,
+				AD1816A_CAPTURE_ENABLE, cmd);
+		spin_unlock(&chip->lock);
 		break;
 	default:
-		dev_warn(chip->card->dev, "invalid trigger mode 0x%x.\n", what);
+		snd_printk(KERN_WARNING "invalid trigger mode 0x%x.\n", what);
 		error = -EINVAL;
 	}
 
@@ -201,10 +210,11 @@ static int snd_ad1816a_capture_trigger(struct snd_pcm_substream *substream, int 
 static int snd_ad1816a_playback_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_ad1816a *chip = snd_pcm_substream_chip(substream);
+	unsigned long flags;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	unsigned int size, rate;
 
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 
 	chip->p_dma_size = size = snd_pcm_lib_buffer_bytes(substream);
 	snd_ad1816a_out_mask(chip, AD1816A_PLAYBACK_CONFIG,
@@ -224,16 +234,19 @@ static int snd_ad1816a_playback_prepare(struct snd_pcm_substream *substream)
 
 	snd_ad1816a_write(chip, AD1816A_PLAYBACK_BASE_COUNT,
 		snd_pcm_lib_period_bytes(substream) / 4 - 1);
+
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return 0;
 }
 
 static int snd_ad1816a_capture_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_ad1816a *chip = snd_pcm_substream_chip(substream);
+	unsigned long flags;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	unsigned int size, rate;
 
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 
 	chip->c_dma_size = size = snd_pcm_lib_buffer_bytes(substream);
 	snd_ad1816a_out_mask(chip, AD1816A_CAPTURE_CONFIG,
@@ -253,6 +266,8 @@ static int snd_ad1816a_capture_prepare(struct snd_pcm_substream *substream)
 
 	snd_ad1816a_write(chip, AD1816A_CAPTURE_BASE_COUNT,
 		snd_pcm_lib_period_bytes(substream) / 4 - 1);
+
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return 0;
 }
 
@@ -283,9 +298,9 @@ static irqreturn_t snd_ad1816a_interrupt(int irq, void *dev_id)
 	struct snd_ad1816a *chip = dev_id;
 	unsigned char status;
 
-	scoped_guard(spinlock, &chip->lock) {
-		status = snd_ad1816a_in(chip, AD1816A_INTERRUPT_STATUS);
-	}
+	spin_lock(&chip->lock);
+	status = snd_ad1816a_in(chip, AD1816A_INTERRUPT_STATUS);
+	spin_unlock(&chip->lock);
 
 	if ((status & AD1816A_PLAYBACK_IRQ_PENDING) && chip->playback_substream)
 		snd_pcm_period_elapsed(chip->playback_substream);
@@ -296,9 +311,9 @@ static irqreturn_t snd_ad1816a_interrupt(int irq, void *dev_id)
 	if ((status & AD1816A_TIMER_IRQ_PENDING) && chip->timer)
 		snd_timer_interrupt(chip->timer, chip->timer->sticks);
 
-	scoped_guard(spinlock, &chip->lock) {
-		snd_ad1816a_out(chip, AD1816A_INTERRUPT_STATUS, 0x00);
-	}
+	spin_lock(&chip->lock);
+	snd_ad1816a_out(chip, AD1816A_INTERRUPT_STATUS, 0x00);
+	spin_unlock(&chip->lock);
 	return IRQ_HANDLED;
 }
 
@@ -366,9 +381,9 @@ static unsigned long snd_ad1816a_timer_resolution(struct snd_timer *timer)
 static int snd_ad1816a_timer_start(struct snd_timer *timer)
 {
 	unsigned short bits;
+	unsigned long flags;
 	struct snd_ad1816a *chip = snd_timer_chip(timer);
-
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	bits = snd_ad1816a_read(chip, AD1816A_INTERRUPT_ENABLE);
 
 	if (!(bits & AD1816A_TIMER_ENABLE)) {
@@ -378,16 +393,20 @@ static int snd_ad1816a_timer_start(struct snd_timer *timer)
 		snd_ad1816a_write_mask(chip, AD1816A_INTERRUPT_ENABLE,
 			AD1816A_TIMER_ENABLE, 0xffff);
 	}
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return 0;
 }
 
 static int snd_ad1816a_timer_stop(struct snd_timer *timer)
 {
+	unsigned long flags;
 	struct snd_ad1816a *chip = snd_timer_chip(timer);
+	spin_lock_irqsave(&chip->lock, flags);
 
-	guard(spinlock_irqsave)(&chip->lock);
 	snd_ad1816a_write_mask(chip, AD1816A_INTERRUPT_ENABLE,
 		AD1816A_TIMER_ENABLE, 0x0000);
+
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return 0;
 }
 
@@ -455,7 +474,9 @@ static int snd_ad1816a_capture_close(struct snd_pcm_substream *substream)
 
 static void snd_ad1816a_init(struct snd_ad1816a *chip)
 {
-	guard(spinlock_irqsave)(&chip->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&chip->lock, flags);
 
 	snd_ad1816a_out(chip, AD1816A_INTERRUPT_STATUS, 0x00);
 	snd_ad1816a_out_mask(chip, AD1816A_PLAYBACK_CONFIG,
@@ -467,32 +488,40 @@ static void snd_ad1816a_init(struct snd_ad1816a *chip)
 		AD1816A_CAPTURE_NOT_EQUAL | AD1816A_WSS_ENABLE, 0xffff);
 	snd_ad1816a_write(chip, AD1816A_DSP_CONFIG, 0x0000);
 	snd_ad1816a_write(chip, AD1816A_POWERDOWN_CTRL, 0x0000);
+
+	spin_unlock_irqrestore(&chip->lock, flags);
 }
 
 #ifdef CONFIG_PM
 void snd_ad1816a_suspend(struct snd_ad1816a *chip)
 {
 	int reg;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	for (reg = 0; reg < 48; reg++)
 		chip->image[reg] = snd_ad1816a_read(chip, reg);
+	spin_unlock_irqrestore(&chip->lock, flags);
 }
 
 void snd_ad1816a_resume(struct snd_ad1816a *chip)
 {
 	int reg;
+	unsigned long flags;
 
 	snd_ad1816a_init(chip);
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	for (reg = 0; reg < 48; reg++)
 		snd_ad1816a_write(chip, reg, chip->image[reg]);
+	spin_unlock_irqrestore(&chip->lock, flags);
 }
 #endif
 
 static int snd_ad1816a_probe(struct snd_ad1816a *chip)
 {
-	guard(spinlock_irqsave)(&chip->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&chip->lock, flags);
 
 	switch (chip->version = snd_ad1816a_read(chip, AD1816A_VERSION_ID)) {
 	case 0:
@@ -507,6 +536,8 @@ static int snd_ad1816a_probe(struct snd_ad1816a *chip)
 	default:
 		chip->hardware = AD1816A_HW_AUTO;
 	}
+
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return 0;
 }
 
@@ -517,8 +548,8 @@ static const char *snd_ad1816a_chip_id(struct snd_ad1816a *chip)
 	case AD1816A_HW_AD1815:	return "AD1815";
 	case AD1816A_HW_AD18MAX10: return "AD18max10";
 	default:
-		dev_warn(chip->card->dev, "Unknown chip version %d:%d.\n",
-			 chip->version, chip->hardware);
+		snd_printk(KERN_WARNING "Unknown chip version %d:%d.\n",
+			chip->version, chip->hardware);
 		return "AD1816A - unknown";
 	}
 }
@@ -535,23 +566,23 @@ int snd_ad1816a_create(struct snd_card *card,
 
 	chip->res_port = devm_request_region(card->dev, port, 16, "AD1816A");
 	if (!chip->res_port) {
-		dev_err(card->dev, "ad1816a: can't grab port 0x%lx\n", port);
+		snd_printk(KERN_ERR "ad1816a: can't grab port 0x%lx\n", port);
 		return -EBUSY;
 	}
 	if (devm_request_irq(card->dev, irq, snd_ad1816a_interrupt, 0,
 			     "AD1816A", (void *) chip)) {
-		dev_err(card->dev, "ad1816a: can't grab IRQ %d\n", irq);
+		snd_printk(KERN_ERR "ad1816a: can't grab IRQ %d\n", irq);
 		return -EBUSY;
 	}
 	chip->irq = irq;
 	card->sync_irq = chip->irq;
 	if (snd_devm_request_dma(card->dev, dma1, "AD1816A - 1")) {
-		dev_err(card->dev, "ad1816a: can't grab DMA1 %d\n", dma1);
+		snd_printk(KERN_ERR "ad1816a: can't grab DMA1 %d\n", dma1);
 		return -EBUSY;
 	}
 	chip->dma1 = dma1;
 	if (snd_devm_request_dma(card->dev, dma2, "AD1816A - 2")) {
-		dev_err(card->dev, "ad1816a: can't grab DMA2 %d\n", dma2);
+		snd_printk(KERN_ERR "ad1816a: can't grab DMA2 %d\n", dma2);
 		return -EBUSY;
 	}
 	chip->dma2 = dma2;
@@ -600,7 +631,7 @@ int snd_ad1816a_pcm(struct snd_ad1816a *chip, int device)
 	pcm->private_data = chip;
 	pcm->info_flags = (chip->dma1 == chip->dma2 ) ? SNDRV_PCM_INFO_JOINT_DUPLEX : 0;
 
-	strscpy(pcm->name, snd_ad1816a_chip_id(chip));
+	strcpy(pcm->name, snd_ad1816a_chip_id(chip));
 	snd_ad1816a_init(chip);
 
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV, chip->card->dev,
@@ -624,7 +655,7 @@ int snd_ad1816a_timer(struct snd_ad1816a *chip, int device)
 	error = snd_timer_new(chip->card, "AD1816A", &tid, &timer);
 	if (error < 0)
 		return error;
-	strscpy(timer->name, snd_ad1816a_chip_id(chip));
+	strcpy(timer->name, snd_ad1816a_chip_id(chip));
 	timer->private_data = chip;
 	chip->timer = timer;
 	timer->hw = snd_ad1816a_timer_table;
@@ -648,10 +679,12 @@ static int snd_ad1816a_info_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_el
 static int snd_ad1816a_get_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ad1816a *chip = snd_kcontrol_chip(kcontrol);
+	unsigned long flags;
 	unsigned short val;
 	
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	val = snd_ad1816a_read(chip, AD1816A_ADC_SOURCE_SEL);
+	spin_unlock_irqrestore(&chip->lock, flags);
 	ucontrol->value.enumerated.item[0] = (val >> 12) & 7;
 	ucontrol->value.enumerated.item[1] = (val >> 4) & 7;
 	return 0;
@@ -660,6 +693,7 @@ static int snd_ad1816a_get_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_ele
 static int snd_ad1816a_put_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ad1816a *chip = snd_kcontrol_chip(kcontrol);
+	unsigned long flags;
 	unsigned short val;
 	int change;
 	
@@ -668,9 +702,10 @@ static int snd_ad1816a_put_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_ele
 		return -EINVAL;
 	val = (ucontrol->value.enumerated.item[0] << 12) |
 	      (ucontrol->value.enumerated.item[1] << 4);
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	change = snd_ad1816a_read(chip, AD1816A_ADC_SOURCE_SEL) != val;
 	snd_ad1816a_write(chip, AD1816A_ADC_SOURCE_SEL, val);
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return change;
 }
 
@@ -700,13 +735,15 @@ static int snd_ad1816a_info_single(struct snd_kcontrol *kcontrol, struct snd_ctl
 static int snd_ad1816a_get_single(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ad1816a *chip = snd_kcontrol_chip(kcontrol);
+	unsigned long flags;
 	int reg = kcontrol->private_value & 0xff;
 	int shift = (kcontrol->private_value >> 8) & 0xff;
 	int mask = (kcontrol->private_value >> 16) & 0xff;
 	int invert = (kcontrol->private_value >> 24) & 0xff;
 	
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	ucontrol->value.integer.value[0] = (snd_ad1816a_read(chip, reg) >> shift) & mask;
+	spin_unlock_irqrestore(&chip->lock, flags);
 	if (invert)
 		ucontrol->value.integer.value[0] = mask - ucontrol->value.integer.value[0];
 	return 0;
@@ -715,6 +752,7 @@ static int snd_ad1816a_get_single(struct snd_kcontrol *kcontrol, struct snd_ctl_
 static int snd_ad1816a_put_single(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ad1816a *chip = snd_kcontrol_chip(kcontrol);
+	unsigned long flags;
 	int reg = kcontrol->private_value & 0xff;
 	int shift = (kcontrol->private_value >> 8) & 0xff;
 	int mask = (kcontrol->private_value >> 16) & 0xff;
@@ -726,11 +764,12 @@ static int snd_ad1816a_put_single(struct snd_kcontrol *kcontrol, struct snd_ctl_
 	if (invert)
 		val = mask - val;
 	val <<= shift;
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	old_val = snd_ad1816a_read(chip, reg);
 	val = (old_val & ~(mask << shift)) | val;
 	change = val != old_val;
 	snd_ad1816a_write(chip, reg, val);
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return change;
 }
 
@@ -761,6 +800,7 @@ static int snd_ad1816a_info_double(struct snd_kcontrol *kcontrol, struct snd_ctl
 static int snd_ad1816a_get_double(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ad1816a *chip = snd_kcontrol_chip(kcontrol);
+	unsigned long flags;
 	int reg = kcontrol->private_value & 0xff;
 	int shift_left = (kcontrol->private_value >> 8) & 0x0f;
 	int shift_right = (kcontrol->private_value >> 12) & 0x0f;
@@ -768,10 +808,11 @@ static int snd_ad1816a_get_double(struct snd_kcontrol *kcontrol, struct snd_ctl_
 	int invert = (kcontrol->private_value >> 24) & 0xff;
 	unsigned short val;
 	
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	val = snd_ad1816a_read(chip, reg);
 	ucontrol->value.integer.value[0] = (val >> shift_left) & mask;
 	ucontrol->value.integer.value[1] = (val >> shift_right) & mask;
+	spin_unlock_irqrestore(&chip->lock, flags);
 	if (invert) {
 		ucontrol->value.integer.value[0] = mask - ucontrol->value.integer.value[0];
 		ucontrol->value.integer.value[1] = mask - ucontrol->value.integer.value[1];
@@ -782,6 +823,7 @@ static int snd_ad1816a_get_double(struct snd_kcontrol *kcontrol, struct snd_ctl_
 static int snd_ad1816a_put_double(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_ad1816a *chip = snd_kcontrol_chip(kcontrol);
+	unsigned long flags;
 	int reg = kcontrol->private_value & 0xff;
 	int shift_left = (kcontrol->private_value >> 8) & 0x0f;
 	int shift_right = (kcontrol->private_value >> 12) & 0x0f;
@@ -798,11 +840,12 @@ static int snd_ad1816a_put_double(struct snd_kcontrol *kcontrol, struct snd_ctl_
 	}
 	val1 <<= shift_left;
 	val2 <<= shift_right;
-	guard(spinlock_irqsave)(&chip->lock);
+	spin_lock_irqsave(&chip->lock, flags);
 	old_val = snd_ad1816a_read(chip, reg);
 	val1 = (old_val & ~((mask << shift_left) | (mask << shift_right))) | val1 | val2;
 	change = val1 != old_val;
 	snd_ad1816a_write(chip, reg, val1);
+	spin_unlock_irqrestore(&chip->lock, flags);
 	return change;
 }
 
@@ -869,7 +912,7 @@ int snd_ad1816a_mixer(struct snd_ad1816a *chip)
 
 	card = chip->card;
 
-	strscpy(card->mixername, snd_ad1816a_chip_id(chip));
+	strcpy(card->mixername, snd_ad1816a_chip_id(chip));
 
 	for (idx = 0; idx < ARRAY_SIZE(snd_ad1816a_controls); idx++) {
 		err = snd_ctl_add(card, snd_ctl_new1(&snd_ad1816a_controls[idx], chip));

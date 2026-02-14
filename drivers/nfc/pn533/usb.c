@@ -254,6 +254,7 @@ struct pn533_acr122_ccid_hdr {
 	 * byte for reposnse msg
 	 */
 	u8 params[3];
+	u8 data[]; /* payload */
 } __packed;
 
 struct pn533_acr122_apdu_hdr {
@@ -406,7 +407,7 @@ static int pn533_acr122_poweron_rdr(struct pn533_usb_phy *phy)
 	if (rc || (transferred != sizeof(cmd))) {
 		nfc_err(&phy->udev->dev,
 			"Reader power on cmd error %d\n", rc);
-		return rc ?: -EINVAL;
+		return rc;
 	}
 
 	rc =  usb_submit_urb(phy->in_urb, GFP_KERNEL);

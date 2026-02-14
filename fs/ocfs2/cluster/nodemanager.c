@@ -4,7 +4,6 @@
  */
 
 #include <linux/slab.h>
-#include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/configfs.h>
@@ -396,7 +395,7 @@ static struct configfs_attribute *o2nm_node_attrs[] = {
 	NULL,
 };
 
-static const struct configfs_item_operations o2nm_node_item_ops = {
+static struct configfs_item_operations o2nm_node_item_ops = {
 	.release		= o2nm_node_release,
 };
 
@@ -591,7 +590,7 @@ static struct config_item *o2nm_node_group_make_item(struct config_group *group,
 	if (node == NULL)
 		return ERR_PTR(-ENOMEM);
 
-	strscpy(node->nd_name, name); /* use item.ci_namebuf instead? */
+	strcpy(node->nd_name, name); /* use item.ci_namebuf instead? */
 	config_item_init_type_name(&node->nd_item, name, &o2nm_node_type);
 	spin_lock_init(&node->nd_lock);
 
@@ -638,7 +637,7 @@ static void o2nm_node_group_drop_item(struct config_group *group,
 	config_item_put(item);
 }
 
-static const struct configfs_group_operations o2nm_node_group_group_ops = {
+static struct configfs_group_operations o2nm_node_group_group_ops = {
 	.make_item	= o2nm_node_group_make_item,
 	.drop_item	= o2nm_node_group_drop_item,
 };
@@ -657,7 +656,7 @@ static void o2nm_cluster_release(struct config_item *item)
 	kfree(cluster);
 }
 
-static const struct configfs_item_operations o2nm_cluster_item_ops = {
+static struct configfs_item_operations o2nm_cluster_item_ops = {
 	.release	= o2nm_cluster_release,
 };
 
@@ -741,7 +740,7 @@ static void o2nm_cluster_group_drop_item(struct config_group *group, struct conf
 	config_item_put(item);
 }
 
-static const struct configfs_group_operations o2nm_cluster_group_group_ops = {
+static struct configfs_group_operations o2nm_cluster_group_group_ops = {
 	.make_group	= o2nm_cluster_group_make_group,
 	.drop_item	= o2nm_cluster_group_drop_item,
 };

@@ -2,9 +2,9 @@
 /*
  * Link Layer for Samsung S3FWRN5 NCI based Driver
  *
- * Copyright (C) 2015 Samsung Electronics
+ * Copyright (C) 2015 Samsung Electrnoics
  * Robert Baldyga <r.baldyga@samsung.com>
- * Copyright (C) 2020 Samsung Electronics
+ * Copyright (C) 2020 Samsung Electrnoics
  * Bongsu Jeon <bongsu.jeon@samsung.com>
  */
 

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
 %YAML 1.2
 ---
 $id: http://devicetree.org/schemas/media/mediatek,vcodec-encoder.yaml#
@@ -15,18 +16,14 @@ description: |+
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - enum:
-              - mediatek,mt8173-vcodec-enc-vp8
-              - mediatek,mt8173-vcodec-enc
-              - mediatek,mt8183-vcodec-enc
-              - mediatek,mt8188-vcodec-enc
-              - mediatek,mt8192-vcodec-enc
-              - mediatek,mt8195-vcodec-enc
-      - items:
-          - const: mediatek,mt8186-vcodec-enc
-          - const: mediatek,mt8183-vcodec-enc
+    enum:
+      - mediatek,mt8173-vcodec-enc-vp8
+      - mediatek,mt8173-vcodec-enc
+      - mediatek,mt8183-vcodec-enc
+      - mediatek,mt8188-vcodec-enc
+      - mediatek,mt8192-vcodec-enc
+      - mediatek,mt8195-vcodec-enc
+
   reg:
     maxItems: 1
 
@@ -41,12 +38,21 @@ properties:
     minItems: 1
     maxItems: 5
 
+  assigned-clocks: true
+
+  assigned-clock-parents: true
+
   iommus:
     minItems: 1
     maxItems: 32
     description: |
       List of the hardware port in respective IOMMU block for current Socs.
       Refer to bindings/iommu/mediatek,iommu.yaml.
+
+  dma-ranges:
+    maxItems: 1
+    description: |
+      Describes the physical address space of IOMMU maps to memory.
 
   mediatek,vpu:
     $ref: /schemas/types.yaml#/definitions/phandle
@@ -74,6 +80,8 @@ required:
   - clocks
   - clock-names
   - iommus
+  - assigned-clocks
+  - assigned-clock-parents
 
 allOf:
   - if:
@@ -106,7 +114,10 @@ allOf:
       properties:
         compatible:
           enum:
-            - mediatek,mt8173-vcodec-enc-vp8
+            - mediatek,mt8173-vcodec-enc
+            - mediatek,mt8188-vcodec-enc
+            - mediatek,mt8192-vcodec-enc
+            - mediatek,mt8195-vcodec-enc
 
     then:
       properties:
@@ -116,8 +127,8 @@ allOf:
             maxItems: 1
         clock-names:
           items:
-            - const: venc_lt_sel
-    else:
+            - const: venc_sel
+    else:  # for vp8 hw encoder
       properties:
         clock:
           items:
@@ -125,7 +136,7 @@ allOf:
             maxItems: 1
         clock-names:
           items:
-            - const: venc_sel
+            - const: venc_lt_sel
 
 additionalProperties: false
 

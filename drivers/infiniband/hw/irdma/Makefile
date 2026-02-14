@@ -13,10 +13,7 @@ irdma-objs := cm.o        \
               hw.o        \
               i40iw_hw.o  \
               i40iw_if.o  \
-	      ig3rdma_if.o\
-	      icrdma_if.o \
               icrdma_hw.o \
-	      ig3rdma_hw.o\
               main.o      \
               pble.o      \
               puda.o      \
@@ -25,7 +22,6 @@ irdma-objs := cm.o        \
               uk.o        \
               utils.o     \
               verbs.o     \
-	      virtchnl.o  \
               ws.o        \
 
 CFLAGS_trace.o = -I$(src)

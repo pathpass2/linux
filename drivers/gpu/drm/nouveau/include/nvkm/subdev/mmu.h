@@ -2,13 +2,12 @@
 #ifndef __NVKM_MMU_H__
 #define __NVKM_MMU_H__
 #include <core/subdev.h>
-#include <subdev/gsp.h>
 
 struct nvkm_vma {
 	struct list_head head;
 	struct rb_node tree;
 	u64 addr;
-	u64 size;
+	u64 size:50;
 	bool mapref:1; /* PTs (de)referenced on (un)map (vs pre-allocated). */
 	bool sparse:1; /* Unmapped PDEs/PTEs will not trigger MMU faults. */
 #define NVKM_VMA_PAGE_NONE 7
@@ -18,7 +17,6 @@ struct nvkm_vma {
 	bool part:1; /* Region was split from an allocated region by map(). */
 	bool busy:1; /* Region busy (for temporarily preventing user access). */
 	bool mapped:1; /* Region contains valid pages. */
-	bool no_comp:1; /* Force no memory compression. */
 	struct nvkm_memory *memory; /* Memory currently mapped into VMA. */
 	struct nvkm_tags *tags; /* Compression tag reference. */
 };
@@ -29,26 +27,10 @@ struct nvkm_vmm {
 	const char *name;
 	u32 debug;
 	struct kref kref;
-
-	struct {
-		struct mutex vmm;
-		struct mutex ref;
-		struct mutex map;
-	} mutex;
+	struct mutex mutex;
 
 	u64 start;
 	u64 limit;
-	struct {
-		struct {
-			u64 addr;
-			u64 size;
-		} p;
-		struct {
-			u64 addr;
-			u64 size;
-		} n;
-		bool raw;
-	} managed;
 
 	struct nvkm_vmm_pt *pd;
 	struct list_head join;
@@ -64,17 +46,6 @@ struct nvkm_vmm {
 	void *nullp;
 
 	bool replay;
-
-	struct {
-		u64 bar2_pdb;
-
-		struct nvkm_gsp_client client;
-		struct nvkm_gsp_device device;
-		struct nvkm_gsp_object object;
-
-		struct nvkm_vma *rsvd;
-		bool external;
-	} rm;
 };
 
 int nvkm_vmm_new(struct nvkm_device *, u64 addr, u64 size, void *argv, u32 argc,
@@ -99,7 +70,6 @@ struct nvkm_vmm_map {
 
 	const struct nvkm_vmm_page *page;
 
-	bool no_comp;
 	struct nvkm_tags *tags;
 	u64 next;
 	u64 type;
@@ -166,5 +136,4 @@ int gp100_mmu_new(struct nvkm_device *, enum nvkm_subdev_type, int inst, struct 
 int gp10b_mmu_new(struct nvkm_device *, enum nvkm_subdev_type, int inst, struct nvkm_mmu **);
 int gv100_mmu_new(struct nvkm_device *, enum nvkm_subdev_type, int inst, struct nvkm_mmu **);
 int tu102_mmu_new(struct nvkm_device *, enum nvkm_subdev_type, int inst, struct nvkm_mmu **);
-int gh100_mmu_new(struct nvkm_device *, enum nvkm_subdev_type, int inst, struct nvkm_mmu **);
 #endif

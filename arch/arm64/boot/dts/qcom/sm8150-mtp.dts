@@ -16,7 +16,6 @@
 / {
 	model = "Qualcomm Technologies, Inc. SM8150 MTP";
 	compatible = "qcom,sm8150-mtp", "qcom,sm8150";
-	chassis-type = "handset";
 
 	aliases {
 		serial0 = &uart2;
@@ -358,15 +357,6 @@
 	status = "okay";
 };
 
-&gpu_zap_shader {
-	firmware-name = "qcom/sm8150/a640_zap.mbn";
-};
-
-&pon {
-	mode-bootloader = <0x2>;
-	mode-recovery = <0x1>;
-};
-
 &pon_pwrkey {
 	status = "okay";
 };
@@ -383,22 +373,22 @@
 
 &remoteproc_adsp {
 	status = "okay";
-	firmware-name = "qcom/sm8150/adsp.mbn";
+	firmware-name = "qcom/sm8150/adsp.mdt";
 };
 
 &remoteproc_cdsp {
 	status = "okay";
-	firmware-name = "qcom/sm8150/cdsp.mbn";
+	firmware-name = "qcom/sm8150/cdsp.mdt";
 };
 
 &remoteproc_mpss {
 	status = "okay";
-	firmware-name = "qcom/sm8150/modem.mbn";
+	firmware-name = "qcom/sm8150/modem.mdt";
 };
 
 &remoteproc_slpi {
 	status = "okay";
-	firmware-name = "qcom/sm8150/slpi.mbn";
+	firmware-name = "qcom/sm8150/slpi.mdt";
 };
 
 &tlmm {

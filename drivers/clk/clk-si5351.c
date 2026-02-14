@@ -21,7 +21,7 @@
 #include <linux/errno.h>
 #include <linux/rational.h>
 #include <linux/i2c.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_data/si5351.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -206,7 +206,7 @@ static bool si5351_regmap_is_writeable(struct device *dev, unsigned int reg)
 static const struct regmap_config si5351_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.max_register = 187,
 	.writeable_reg = si5351_regmap_is_writeable,
 	.volatile_reg = si5351_regmap_is_volatile,
@@ -442,12 +442,11 @@ static unsigned long si5351_pll_recalc_rate(struct clk_hw *hw,
 	return (unsigned long)rate;
 }
 
-static int si5351_pll_determine_rate(struct clk_hw *hw,
-				     struct clk_rate_request *req)
+static long si5351_pll_round_rate(struct clk_hw *hw, unsigned long rate,
+				  unsigned long *parent_rate)
 {
 	struct si5351_hw_data *hwdata =
 		container_of(hw, struct si5351_hw_data, hw);
-	unsigned long rate = req->rate;
 	unsigned long rfrac, denom, a, b, c;
 	unsigned long long lltmp;
 
@@ -457,18 +456,18 @@ static int si5351_pll_determine_rate(struct clk_hw *hw,
 		rate = SI5351_PLL_VCO_MAX;
 
 	/* determine integer part of feedback equation */
-	a = rate / req->best_parent_rate;
+	a = rate / *parent_rate;
 
 	if (a < SI5351_PLL_A_MIN)
-		rate = req->best_parent_rate * SI5351_PLL_A_MIN;
+		rate = *parent_rate * SI5351_PLL_A_MIN;
 	if (a > SI5351_PLL_A_MAX)
-		rate = req->best_parent_rate * SI5351_PLL_A_MAX;
+		rate = *parent_rate * SI5351_PLL_A_MAX;
 
 	/* find best approximation for b/c = fVCO mod fIN */
 	denom = 1000 * 1000;
-	lltmp = rate % (req->best_parent_rate);
+	lltmp = rate % (*parent_rate);
 	lltmp *= denom;
-	do_div(lltmp, req->best_parent_rate);
+	do_div(lltmp, *parent_rate);
 	rfrac = (unsigned long)lltmp;
 
 	b = 0;
@@ -485,20 +484,19 @@ static int si5351_pll_determine_rate(struct clk_hw *hw,
 	hwdata->params.p1 -= 512;
 
 	/* recalculate rate by fIN * (a + b/c) */
-	lltmp  = req->best_parent_rate;
+	lltmp  = *parent_rate;
 	lltmp *= b;
 	do_div(lltmp, c);
 
 	rate  = (unsigned long)lltmp;
-	rate += req->best_parent_rate * a;
+	rate += *parent_rate * a;
 
 	dev_dbg(&hwdata->drvdata->client->dev,
 		"%s - %s: a = %lu, b = %lu, c = %lu, parent_rate = %lu, rate = %lu\n",
 		__func__, clk_hw_get_name(hw), a, b, c,
-		req->best_parent_rate, rate);
+		*parent_rate, rate);
 
-	req->rate = rate;
-	return 0;
+	return rate;
 }
 
 static int si5351_pll_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -506,8 +504,6 @@ static int si5351_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 {
 	struct si5351_hw_data *hwdata =
 		container_of(hw, struct si5351_hw_data, hw);
-	struct si5351_platform_data *pdata =
-		hwdata->drvdata->client->dev.platform_data;
 	u8 reg = (hwdata->num == 0) ? SI5351_PLLA_PARAMETERS :
 		SI5351_PLLB_PARAMETERS;
 
@@ -520,10 +516,9 @@ static int si5351_pll_set_rate(struct clk_hw *hw, unsigned long rate,
 		(hwdata->params.p2 == 0) ? SI5351_CLK_INTEGER_MODE : 0);
 
 	/* Do a pll soft reset on the affected pll */
-	if (pdata->pll_reset[hwdata->num])
-		si5351_reg_write(hwdata->drvdata, SI5351_PLL_RESET,
-				 hwdata->num == 0 ? SI5351_PLL_RESET_A :
-						    SI5351_PLL_RESET_B);
+	si5351_reg_write(hwdata->drvdata, SI5351_PLL_RESET,
+			 hwdata->num == 0 ? SI5351_PLL_RESET_A :
+					    SI5351_PLL_RESET_B);
 
 	dev_dbg(&hwdata->drvdata->client->dev,
 		"%s - %s: p1 = %lu, p2 = %lu, p3 = %lu, parent_rate = %lu, rate = %lu\n",
@@ -538,7 +533,7 @@ static const struct clk_ops si5351_pll_ops = {
 	.set_parent = si5351_pll_set_parent,
 	.get_parent = si5351_pll_get_parent,
 	.recalc_rate = si5351_pll_recalc_rate,
-	.determine_rate = si5351_pll_determine_rate,
+	.round_rate = si5351_pll_round_rate,
 	.set_rate = si5351_pll_set_rate,
 };
 
@@ -645,17 +640,16 @@ static unsigned long si5351_msynth_recalc_rate(struct clk_hw *hw,
 	return (unsigned long)rate;
 }
 
-static int si5351_msynth_determine_rate(struct clk_hw *hw,
-					struct clk_rate_request *req)
+static long si5351_msynth_round_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long *parent_rate)
 {
 	struct si5351_hw_data *hwdata =
 		container_of(hw, struct si5351_hw_data, hw);
-	unsigned long rate = req->rate;
 	unsigned long long lltmp;
 	unsigned long a, b, c;
 	int divby4;
 
-	/* multisync6-7 can only handle frequencies < 150MHz */
+	/* multisync6-7 can only handle freqencies < 150MHz */
 	if (hwdata->num >= 6 && rate > SI5351_MULTISYNTH67_MAX_FREQ)
 		rate = SI5351_MULTISYNTH67_MAX_FREQ;
 
@@ -685,10 +679,10 @@ static int si5351_msynth_determine_rate(struct clk_hw *hw,
 		b = 0;
 		c = 1;
 
-		req->best_parent_rate = a * rate;
+		*parent_rate = a * rate;
 	} else if (hwdata->num >= 6) {
 		/* determine the closest integer divider */
-		a = DIV_ROUND_CLOSEST(req->best_parent_rate, rate);
+		a = DIV_ROUND_CLOSEST(*parent_rate, rate);
 		if (a < SI5351_MULTISYNTH_A_MIN)
 			a = SI5351_MULTISYNTH_A_MIN;
 		if (a > SI5351_MULTISYNTH67_A_MAX)
@@ -706,7 +700,7 @@ static int si5351_msynth_determine_rate(struct clk_hw *hw,
 		}
 
 		/* determine integer part of divider equation */
-		a = req->best_parent_rate / rate;
+		a = *parent_rate / rate;
 		if (a < SI5351_MULTISYNTH_A_MIN)
 			a = SI5351_MULTISYNTH_A_MIN;
 		if (a > SI5351_MULTISYNTH_A_MAX)
@@ -714,7 +708,7 @@ static int si5351_msynth_determine_rate(struct clk_hw *hw,
 
 		/* find best approximation for b/c = fVCO mod fOUT */
 		denom = 1000 * 1000;
-		lltmp = req->best_parent_rate % rate;
+		lltmp = (*parent_rate) % rate;
 		lltmp *= denom;
 		do_div(lltmp, rate);
 		rfrac = (unsigned long)lltmp;
@@ -728,7 +722,7 @@ static int si5351_msynth_determine_rate(struct clk_hw *hw,
 	}
 
 	/* recalculate rate by fOUT = fIN / (a + b/c) */
-	lltmp  = req->best_parent_rate;
+	lltmp  = *parent_rate;
 	lltmp *= c;
 	do_div(lltmp, a * c + b);
 	rate  = (unsigned long)lltmp;
@@ -753,11 +747,9 @@ static int si5351_msynth_determine_rate(struct clk_hw *hw,
 	dev_dbg(&hwdata->drvdata->client->dev,
 		"%s - %s: a = %lu, b = %lu, c = %lu, divby4 = %d, parent_rate = %lu, rate = %lu\n",
 		__func__, clk_hw_get_name(hw), a, b, c, divby4,
-		req->best_parent_rate, rate);
+		*parent_rate, rate);
 
-	req->rate = rate;
-
-	return 0;
+	return rate;
 }
 
 static int si5351_msynth_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -797,7 +789,7 @@ static const struct clk_ops si5351_msynth_ops = {
 	.set_parent = si5351_msynth_set_parent,
 	.get_parent = si5351_msynth_get_parent,
 	.recalc_rate = si5351_msynth_recalc_rate,
-	.determine_rate = si5351_msynth_determine_rate,
+	.round_rate = si5351_msynth_round_rate,
 	.set_rate = si5351_msynth_set_rate,
 };
 
@@ -1040,19 +1032,18 @@ static unsigned long si5351_clkout_recalc_rate(struct clk_hw *hw,
 	return parent_rate >> rdiv;
 }
 
-static int si5351_clkout_determine_rate(struct clk_hw *hw,
-					struct clk_rate_request *req)
+static long si5351_clkout_round_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long *parent_rate)
 {
 	struct si5351_hw_data *hwdata =
 		container_of(hw, struct si5351_hw_data, hw);
-	unsigned long rate = req->rate;
 	unsigned char rdiv;
 
-	/* clkout6/7 can only handle output frequencies < 150MHz */
+	/* clkout6/7 can only handle output freqencies < 150MHz */
 	if (hwdata->num >= 6 && rate > SI5351_CLKOUT67_MAX_FREQ)
 		rate = SI5351_CLKOUT67_MAX_FREQ;
 
-	/* clkout frequency is 8kHz - 160MHz */
+	/* clkout freqency is 8kHz - 160MHz */
 	if (rate > SI5351_CLKOUT_MAX_FREQ)
 		rate = SI5351_CLKOUT_MAX_FREQ;
 	if (rate < SI5351_CLKOUT_MIN_FREQ)
@@ -1067,13 +1058,13 @@ static int si5351_clkout_determine_rate(struct clk_hw *hw,
 			rdiv += 1;
 			rate *= 2;
 		}
-		req->best_parent_rate = rate;
+		*parent_rate = rate;
 	} else {
 		unsigned long new_rate, new_err, err;
 
 		/* round to closed rdiv */
 		rdiv = SI5351_OUTPUT_CLK_DIV_1;
-		new_rate = req->best_parent_rate;
+		new_rate = *parent_rate;
 		err = abs(new_rate - rate);
 		do {
 			new_rate >>= 1;
@@ -1084,15 +1075,14 @@ static int si5351_clkout_determine_rate(struct clk_hw *hw,
 			err = new_err;
 		} while (1);
 	}
-	rate = req->best_parent_rate >> rdiv;
+	rate = *parent_rate >> rdiv;
 
 	dev_dbg(&hwdata->drvdata->client->dev,
 		"%s - %s: rdiv = %u, parent_rate = %lu, rate = %lu\n",
 		__func__, clk_hw_get_name(hw), (1 << rdiv),
-		req->best_parent_rate, rate);
+		*parent_rate, rate);
 
-	req->rate = rate;
-	return 0;
+	return rate;
 }
 
 static int si5351_clkout_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -1152,7 +1142,7 @@ static const struct clk_ops si5351_clkout_ops = {
 	.set_parent = si5351_clkout_set_parent,
 	.get_parent = si5351_clkout_get_parent,
 	.recalc_rate = si5351_clkout_recalc_rate,
-	.determine_rate = si5351_clkout_determine_rate,
+	.round_rate = si5351_clkout_round_rate,
 	.set_rate = si5351_clkout_set_rate,
 };
 
@@ -1175,8 +1165,8 @@ static int si5351_dt_parse(struct i2c_client *client,
 {
 	struct device_node *child, *np = client->dev.of_node;
 	struct si5351_platform_data *pdata;
-	u32 array[4];
-	int sz, i;
+	struct property *prop;
+	const __be32 *p;
 	int num = 0;
 	u32 val;
 
@@ -1191,21 +1181,17 @@ static int si5351_dt_parse(struct i2c_client *client,
 	 * property silabs,pll-source : <num src>, [<..>]
 	 * allow to selectively set pll source
 	 */
-	sz = of_property_read_variable_u32_array(np, "silabs,pll-source", array, 2, 4);
-	sz = (sz == -EINVAL) ? 0 : sz; /* Missing property is OK */
-	if (sz < 0)
-		return dev_err_probe(&client->dev, sz, "invalid pll-source\n");
-	if (sz % 2)
-		return dev_err_probe(&client->dev, -EINVAL,
-				     "missing pll-source for pll %d\n", array[sz - 1]);
-
-	for (i = 0; i < sz; i += 2) {
-		num = array[i];
-		val = array[i + 1];
-
+	of_property_for_each_u32(np, "silabs,pll-source", prop, p, num) {
 		if (num >= 2) {
 			dev_err(&client->dev,
 				"invalid pll %d on pll-source prop\n", num);
+			return -EINVAL;
+		}
+
+		p = of_prop_next_u32(prop, p, &val);
+		if (!p) {
+			dev_err(&client->dev,
+				"missing pll-source for pll %d\n", num);
 			return -EINVAL;
 		}
 
@@ -1225,49 +1211,6 @@ static int si5351_dt_parse(struct i2c_client *client,
 		default:
 			dev_err(&client->dev,
 				 "invalid parent %d for pll %d\n", val, num);
-			return -EINVAL;
-		}
-	}
-
-	/*
-	 * Parse PLL reset mode. For compatibility with older device trees, the
-	 * default is to always reset a PLL after setting its rate.
-	 */
-	pdata->pll_reset[0] = true;
-	pdata->pll_reset[1] = true;
-
-	sz = of_property_read_variable_u32_array(np, "silabs,pll-reset-mode", array, 2, 4);
-	sz = (sz == -EINVAL) ? 0 : sz; /* Missing property is OK */
-	if (sz < 0)
-		return dev_err_probe(&client->dev, sz, "invalid pll-reset-mode\n");
-	if (sz % 2)
-		return dev_err_probe(&client->dev, -EINVAL,
-				     "missing pll-reset-mode for pll %d\n", array[sz - 1]);
-
-	for (i = 0; i < sz; i += 2) {
-		num = array[i];
-		val = array[i + 1];
-
-		if (num >= 2) {
-			dev_err(&client->dev,
-				"invalid pll %d on pll-reset-mode prop\n", num);
-			return -EINVAL;
-		}
-
-
-		switch (val) {
-		case 0:
-			/* Reset PLL whenever its rate is adjusted */
-			pdata->pll_reset[num] = true;
-			break;
-		case 1:
-			/* Don't reset PLL whenever its rate is adjusted */
-			pdata->pll_reset[num] = false;
-			break;
-		default:
-			dev_err(&client->dev,
-				"invalid pll-reset-mode %d for pll %d\n", val,
-				num);
 			return -EINVAL;
 		}
 	}
@@ -1435,7 +1378,8 @@ MODULE_DEVICE_TABLE(i2c, si5351_i2c_ids);
 
 static int si5351_i2c_probe(struct i2c_client *client)
 {
-	enum si5351_variant variant;
+	const struct i2c_device_id *id = i2c_match_id(si5351_i2c_ids, client);
+	enum si5351_variant variant = (enum si5351_variant)id->driver_data;
 	struct si5351_platform_data *pdata;
 	struct si5351_driver_data *drvdata;
 	struct clk_init_data init;
@@ -1443,7 +1387,6 @@ static int si5351_i2c_probe(struct i2c_client *client)
 	u8 num_parents, num_clocks;
 	int ret, n;
 
-	variant = (enum si5351_variant)(uintptr_t)i2c_get_match_data(client);
 	ret = si5351_dt_parse(client, variant);
 	if (ret)
 		return ret;
@@ -1698,8 +1641,8 @@ static int si5351_i2c_probe(struct i2c_client *client)
 		}
 	}
 
-	ret = devm_of_clk_add_hw_provider(&client->dev, si53351_of_clk_get,
-					  drvdata);
+	ret = of_clk_add_hw_provider(client->dev.of_node, si53351_of_clk_get,
+				     drvdata);
 	if (ret) {
 		dev_err(&client->dev, "unable to add clk provider\n");
 		return ret;
@@ -1708,12 +1651,18 @@ static int si5351_i2c_probe(struct i2c_client *client)
 	return 0;
 }
 
+static void si5351_i2c_remove(struct i2c_client *client)
+{
+	of_clk_del_provider(client->dev.of_node);
+}
+
 static struct i2c_driver si5351_driver = {
 	.driver = {
 		.name = "si5351",
 		.of_match_table = of_match_ptr(si5351_dt_ids),
 	},
-	.probe = si5351_i2c_probe,
+	.probe_new = si5351_i2c_probe,
+	.remove = si5351_i2c_remove,
 	.id_table = si5351_i2c_ids,
 };
 module_i2c_driver(si5351_driver);

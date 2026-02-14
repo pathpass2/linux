@@ -7,7 +7,6 @@
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
  */
 
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
@@ -17,6 +16,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
+#include <linux/of_device.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -264,10 +264,10 @@ static int wm8523_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		      WM8523_FMT_MASK | WM8523_AIF_MSTR_MASK);
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		aifctrl1 |= WM8523_AIF_MSTR;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		break;
 	default:
 		return -EINVAL;
@@ -317,7 +317,6 @@ static int wm8523_set_bias_level(struct snd_soc_component *component,
 				 enum snd_soc_bias_level level)
 {
 	struct wm8523_priv *wm8523 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret;
 
 	switch (level) {
@@ -331,7 +330,7 @@ static int wm8523_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			ret = regulator_bulk_enable(ARRAY_SIZE(wm8523->supplies),
 						    wm8523->supplies);
 			if (ret != 0) {
@@ -438,7 +437,7 @@ static const struct regmap_config wm8523_regmap = {
 
 	.reg_defaults = wm8523_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8523_reg_defaults),
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.volatile_reg = wm8523_volatile_register,
 };
@@ -518,7 +517,7 @@ err_enable:
 }
 
 static const struct i2c_device_id wm8523_i2c_id[] = {
-	{ "wm8523" },
+	{ "wm8523", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8523_i2c_id);
@@ -528,7 +527,7 @@ static struct i2c_driver wm8523_i2c_driver = {
 		.name = "wm8523",
 		.of_match_table = wm8523_of_match,
 	},
-	.probe = wm8523_i2c_probe,
+	.probe_new = wm8523_i2c_probe,
 	.id_table = wm8523_i2c_id,
 };
 

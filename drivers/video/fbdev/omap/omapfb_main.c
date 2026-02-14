@@ -11,8 +11,6 @@
  *   Dirk Behme <dirk.behme@de.bosch.com>  - changes for 2.6 kernel API
  *   Texas Instruments                     - H3 support
  */
-
-#include <linux/export.h>
 #include <linux/platform_device.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
@@ -1205,8 +1203,6 @@ static int omapfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 	struct omapfb_device *fbdev = plane->fbdev;
 	int r;
 
-	vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
-
 	omapfb_rqueue_lock(fbdev);
 	r = fbdev->ctrl->mmap(info, vma);
 	omapfb_rqueue_unlock(fbdev);
@@ -1220,11 +1216,13 @@ static int omapfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
  */
 static struct fb_ops omapfb_ops = {
 	.owner		= THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_open        = omapfb_open,
 	.fb_release     = omapfb_release,
 	.fb_setcolreg	= omapfb_setcolreg,
 	.fb_setcmap	= omapfb_setcmap,
+	.fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
 	.fb_blank       = omapfb_blank,
 	.fb_ioctl	= omapfb_ioctl,
 	.fb_check_var	= omapfb_check_var,
@@ -1243,13 +1241,14 @@ static ssize_t omapfb_show_caps_num(struct device *dev,
 {
 	struct omapfb_device *fbdev = dev_get_drvdata(dev);
 	int plane;
-	size_t size = 0;
+	size_t size;
 	struct omapfb_caps caps;
 
 	plane = 0;
-	while (plane < OMAPFB_PLANE_NUM) {
+	size = 0;
+	while (size < PAGE_SIZE && plane < OMAPFB_PLANE_NUM) {
 		omapfb_get_caps(fbdev, plane, &caps);
-		size += sysfs_emit_at(buf, size,
+		size += scnprintf(&buf[size], PAGE_SIZE - size,
 			"plane#%d %#010x %#010x %#010x\n",
 			plane, caps.ctrl, caps.plane_color, caps.wnd_color);
 		plane++;
@@ -1264,27 +1263,34 @@ static ssize_t omapfb_show_caps_text(struct device *dev,
 	int i;
 	struct omapfb_caps caps;
 	int plane;
-	size_t size = 0;
+	size_t size;
 
 	plane = 0;
-	while (plane < OMAPFB_PLANE_NUM) {
+	size = 0;
+	while (size < PAGE_SIZE && plane < OMAPFB_PLANE_NUM) {
 		omapfb_get_caps(fbdev, plane, &caps);
-		size += sysfs_emit_at(buf, size, "plane#%d:\n", plane);
-		for (i = 0; i < ARRAY_SIZE(ctrl_caps); i++) {
+		size += scnprintf(&buf[size], PAGE_SIZE - size,
+				 "plane#%d:\n", plane);
+		for (i = 0; i < ARRAY_SIZE(ctrl_caps) &&
+		     size < PAGE_SIZE; i++) {
 			if (ctrl_caps[i].flag & caps.ctrl)
-				size += sysfs_emit_at(buf, size,
+				size += scnprintf(&buf[size], PAGE_SIZE - size,
 					" %s\n", ctrl_caps[i].name);
 		}
-		size += sysfs_emit_at(buf, size, " plane colors:\n");
-		for (i = 0; i < ARRAY_SIZE(color_caps); i++) {
+		size += scnprintf(&buf[size], PAGE_SIZE - size,
+				 " plane colors:\n");
+		for (i = 0; i < ARRAY_SIZE(color_caps) &&
+		     size < PAGE_SIZE; i++) {
 			if (color_caps[i].flag & caps.plane_color)
-				size += sysfs_emit_at(buf, size,
+				size += scnprintf(&buf[size], PAGE_SIZE - size,
 					"  %s\n", color_caps[i].name);
 		}
-		size += sysfs_emit_at(buf, size, " window colors:\n");
-		for (i = 0; i < ARRAY_SIZE(color_caps); i++) {
+		size += scnprintf(&buf[size], PAGE_SIZE - size,
+				 " window colors:\n");
+		for (i = 0; i < ARRAY_SIZE(color_caps) &&
+		     size < PAGE_SIZE; i++) {
 			if (color_caps[i].flag & caps.wnd_color)
-				size += sysfs_emit_at(buf, size,
+				size += scnprintf(&buf[size], PAGE_SIZE - size,
 					"  %s\n", color_caps[i].name);
 		}
 
@@ -1445,6 +1451,7 @@ static int fbinfo_init(struct omapfb_device *fbdev, struct fb_info *info)
 	int				r = 0;
 
 	info->fbops = &omapfb_ops;
+	info->flags = FBINFO_FLAG_DEFAULT;
 
 	strscpy(fix->id, MODULE_NAME, sizeof(fix->id));
 
@@ -1639,16 +1646,17 @@ static int omapfb_do_probe(struct platform_device *pdev,
 		r = -ENOMEM;
 		goto cleanup;
 	}
-
-	r = platform_get_irq(pdev, 0);
-	if (r < 0)
+	fbdev->int_irq = platform_get_irq(pdev, 0);
+	if (fbdev->int_irq < 0) {
+		r = ENXIO;
 		goto cleanup;
-	fbdev->int_irq = r;
+	}
 
-	r = platform_get_irq(pdev, 1);
-	if (r < 0)
+	fbdev->ext_irq = platform_get_irq(pdev, 1);
+	if (fbdev->ext_irq < 0) {
+		r = ENXIO;
 		goto cleanup;
-	fbdev->ext_irq = r;
+	}
 
 	init_state++;
 
@@ -1791,7 +1799,7 @@ void omapfb_register_panel(struct lcd_panel *panel)
 EXPORT_SYMBOL_GPL(omapfb_register_panel);
 
 /* Called when the device is being detached from the driver */
-static void omapfb_remove(struct platform_device *pdev)
+static int omapfb_remove(struct platform_device *pdev)
 {
 	struct omapfb_device *fbdev = platform_get_drvdata(pdev);
 	enum omapfb_state saved_state = fbdev->state;
@@ -1803,6 +1811,8 @@ static void omapfb_remove(struct platform_device *pdev)
 
 	platform_device_unregister(&omapdss_device);
 	fbdev->dssdev = NULL;
+
+	return 0;
 }
 
 /* PM suspend */
@@ -1852,12 +1862,19 @@ static int __init omapfb_setup(char *options)
 		if (!strncmp(this_opt, "accel", 5))
 			def_accel = 1;
 		else if (!strncmp(this_opt, "vram:", 5)) {
-			unsigned long long vram;
 			char *suffix;
-
-			vram = memparse(this_opt + 5, &suffix);
+			unsigned long vram;
+			vram = (simple_strtoul(this_opt + 5, &suffix, 0));
 			switch (suffix[0]) {
 			case '\0':
+				break;
+			case 'm':
+			case 'M':
+				vram *= 1024;
+				fallthrough;
+			case 'k':
+			case 'K':
+				vram *= 1024;
 				break;
 			default:
 				pr_debug("omapfb: invalid vram suffix %c\n",

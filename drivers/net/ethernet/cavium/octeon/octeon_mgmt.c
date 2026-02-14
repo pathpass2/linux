@@ -649,7 +649,7 @@ static int octeon_mgmt_change_mtu(struct net_device *netdev, int new_mtu)
 	struct octeon_mgmt *p = netdev_priv(netdev);
 	int max_packet = new_mtu + ETH_HLEN + ETH_FCS_LEN;
 
-	WRITE_ONCE(netdev->mtu, new_mtu);
+	netdev->mtu = new_mtu;
 
 	/* HW lifts the limit if the frame is VLAN tagged
 	 * (+4 bytes per each tag, up to two tags)
@@ -690,16 +690,19 @@ static irqreturn_t octeon_mgmt_interrupt(int cpl, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int octeon_mgmt_hwtstamp_set(struct net_device *netdev,
-				    struct kernel_hwtstamp_config *config,
-				    struct netlink_ext_ack *extack)
+static int octeon_mgmt_ioctl_hwtstamp(struct net_device *netdev,
+				      struct ifreq *rq, int cmd)
 {
 	struct octeon_mgmt *p = netdev_priv(netdev);
-	union cvmx_agl_gmx_rxx_frm_ctl rxx_frm_ctl;
+	struct hwtstamp_config config;
 	union cvmx_mio_ptp_clock_cfg ptp;
+	union cvmx_agl_gmx_rxx_frm_ctl rxx_frm_ctl;
 	bool have_hw_timestamps = false;
 
-	/* Check the status of hardware for timestamps */
+	if (copy_from_user(&config, rq->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	/* Check the status of hardware for tiemstamps */
 	if (OCTEON_IS_MODEL(OCTEON_CN6XXX)) {
 		/* Get the current state of the PTP clock */
 		ptp.u64 = cvmx_read_csr(CVMX_MIO_PTP_CLOCK_CFG);
@@ -730,12 +733,10 @@ static int octeon_mgmt_hwtstamp_set(struct net_device *netdev,
 		have_hw_timestamps = true;
 	}
 
-	if (!have_hw_timestamps) {
-		NL_SET_ERR_MSG_MOD(extack, "HW doesn't support timestamping");
+	if (!have_hw_timestamps)
 		return -EINVAL;
-	}
 
-	switch (config->tx_type) {
+	switch (config.tx_type) {
 	case HWTSTAMP_TX_OFF:
 	case HWTSTAMP_TX_ON:
 		break;
@@ -743,7 +744,7 @@ static int octeon_mgmt_hwtstamp_set(struct net_device *netdev,
 		return -ERANGE;
 	}
 
-	switch (config->rx_filter) {
+	switch (config.rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		p->has_rx_tstamp = false;
 		rxx_frm_ctl.u64 = cvmx_read_csr(p->agl + AGL_GMX_RX_FRM_CTL);
@@ -765,34 +766,33 @@ static int octeon_mgmt_hwtstamp_set(struct net_device *netdev,
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 	case HWTSTAMP_FILTER_NTP_ALL:
-		p->has_rx_tstamp = true;
-		config->rx_filter = HWTSTAMP_FILTER_ALL;
-		rxx_frm_ctl.u64 = cvmx_read_csr(p->agl + AGL_GMX_RX_FRM_CTL);
-		rxx_frm_ctl.s.ptp_mode = 1;
-		cvmx_write_csr(p->agl + AGL_GMX_RX_FRM_CTL, rxx_frm_ctl.u64);
+		p->has_rx_tstamp = have_hw_timestamps;
+		config.rx_filter = HWTSTAMP_FILTER_ALL;
+		if (p->has_rx_tstamp) {
+			rxx_frm_ctl.u64 = cvmx_read_csr(p->agl + AGL_GMX_RX_FRM_CTL);
+			rxx_frm_ctl.s.ptp_mode = 1;
+			cvmx_write_csr(p->agl + AGL_GMX_RX_FRM_CTL, rxx_frm_ctl.u64);
+		}
 		break;
 	default:
 		return -ERANGE;
 	}
 
+	if (copy_to_user(rq->ifr_data, &config, sizeof(config)))
+		return -EFAULT;
+
 	return 0;
 }
 
-static int octeon_mgmt_hwtstamp_get(struct net_device *netdev,
-				    struct kernel_hwtstamp_config *config)
+static int octeon_mgmt_ioctl(struct net_device *netdev,
+			     struct ifreq *rq, int cmd)
 {
-	struct octeon_mgmt *p = netdev_priv(netdev);
-
-	/* Check the status of hardware for timestamps */
-	if (!OCTEON_IS_MODEL(OCTEON_CN6XXX))
-		return -EINVAL;
-
-	config->tx_type = HWTSTAMP_TX_ON;
-	config->rx_filter = p->has_rx_tstamp ?
-			    HWTSTAMP_FILTER_ALL :
-			    HWTSTAMP_FILTER_NONE;
-
-	return 0;
+	switch (cmd) {
+	case SIOCSHWTSTAMP:
+		return octeon_mgmt_ioctl_hwtstamp(netdev, rq, cmd);
+	default:
+		return phy_do_ioctl(netdev, rq, cmd);
+	}
 }
 
 static void octeon_mgmt_disable_link(struct octeon_mgmt *p)
@@ -1370,13 +1370,11 @@ static const struct net_device_ops octeon_mgmt_ops = {
 	.ndo_start_xmit =		octeon_mgmt_xmit,
 	.ndo_set_rx_mode =		octeon_mgmt_set_rx_filtering,
 	.ndo_set_mac_address =		octeon_mgmt_set_mac_address,
-	.ndo_eth_ioctl =		phy_do_ioctl,
+	.ndo_eth_ioctl =			octeon_mgmt_ioctl,
 	.ndo_change_mtu =		octeon_mgmt_change_mtu,
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller =		octeon_mgmt_poll_controller,
 #endif
-	.ndo_hwtstamp_get =		octeon_mgmt_hwtstamp_get,
-	.ndo_hwtstamp_set =		octeon_mgmt_hwtstamp_set,
 };
 
 static int octeon_mgmt_probe(struct platform_device *pdev)
@@ -1523,7 +1521,7 @@ err:
 	return result;
 }
 
-static void octeon_mgmt_remove(struct platform_device *pdev)
+static int octeon_mgmt_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = platform_get_drvdata(pdev);
 	struct octeon_mgmt *p = netdev_priv(netdev);
@@ -1531,6 +1529,7 @@ static void octeon_mgmt_remove(struct platform_device *pdev)
 	unregister_netdev(netdev);
 	of_node_put(p->phy_np);
 	free_netdev(netdev);
+	return 0;
 }
 
 static const struct of_device_id octeon_mgmt_match[] = {

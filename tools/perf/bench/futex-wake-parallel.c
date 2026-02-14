@@ -57,12 +57,9 @@ static struct stats waketime_stats, wakeup_stats;
 static unsigned int threads_starting;
 static int futex_flag = 0;
 
-static struct bench_futex_parameters params = {
-	.nbuckets = -1,
-};
+static struct bench_futex_parameters params;
 
 static const struct option options[] = {
-	OPT_INTEGER( 'b', "buckets", &params.nbuckets, "Specify amount of hash buckets"),
 	OPT_UINTEGER('t', "threads", &params.nthreads, "Specify amount of threads"),
 	OPT_UINTEGER('w', "nwakers", &params.nwakes, "Specify amount of waking threads"),
 	OPT_BOOLEAN( 's', "silent",  &params.silent, "Silent mode: do not display data/details"),
@@ -98,12 +95,10 @@ static void *waking_workerfn(void *arg)
 	return NULL;
 }
 
-static void wakeup_threads(struct thread_data *td)
+static void wakeup_threads(struct thread_data *td, pthread_attr_t thread_attr)
 {
 	unsigned int i;
-	pthread_attr_t thread_attr;
 
-	pthread_attr_init(&thread_attr);
 	pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
 
 	pthread_barrier_init(&barrier, NULL, params.nwakes + 1);
@@ -127,7 +122,6 @@ static void wakeup_threads(struct thread_data *td)
 			err(EXIT_FAILURE, "pthread_join");
 
 	pthread_barrier_destroy(&barrier);
-	pthread_attr_destroy(&thread_attr);
 }
 
 static void *blocked_workerfn(void *arg __maybe_unused)
@@ -148,11 +142,12 @@ static void *blocked_workerfn(void *arg __maybe_unused)
 	return NULL;
 }
 
-static void block_threads(pthread_t *w, struct perf_cpu_map *cpu)
+static void block_threads(pthread_t *w, pthread_attr_t thread_attr,
+			  struct perf_cpu_map *cpu)
 {
 	cpu_set_t *cpuset;
 	unsigned int i;
-	int nrcpus = cpu__max_cpu().cpu;
+	int nrcpus = perf_cpu_map__nr(cpu);
 	size_t size;
 
 	threads_starting = params.nthreads;
@@ -163,9 +158,6 @@ static void block_threads(pthread_t *w, struct perf_cpu_map *cpu)
 
 	/* create and block all threads */
 	for (i = 0; i < params.nthreads; i++) {
-		pthread_attr_t thread_attr;
-
-		pthread_attr_init(&thread_attr);
 		CPU_ZERO_S(size, cpuset);
 		CPU_SET_S(perf_cpu_map__cpu(cpu, i % perf_cpu_map__nr(cpu)).cpu, size, cpuset);
 
@@ -178,7 +170,6 @@ static void block_threads(pthread_t *w, struct perf_cpu_map *cpu)
 			CPU_FREE(cpuset);
 			err(EXIT_FAILURE, "pthread_create");
 		}
-		pthread_attr_destroy(&thread_attr);
 	}
 	CPU_FREE(cpuset);
 }
@@ -221,7 +212,6 @@ static void print_summary(void)
 	       params.nthreads,
 	       waketime_avg / USEC_PER_MSEC,
 	       rel_stddev_stats(waketime_stddev, waketime_avg));
-	futex_print_nbuckets(&params);
 }
 
 
@@ -248,6 +238,7 @@ int bench_futex_wake_parallel(int argc, const char **argv)
 	int ret = 0;
 	unsigned int i, j;
 	struct sigaction act;
+	pthread_attr_t thread_attr;
 	struct thread_data *waking_worker;
 	struct perf_cpu_map *cpu;
 
@@ -268,7 +259,7 @@ int bench_futex_wake_parallel(int argc, const char **argv)
 			err(EXIT_FAILURE, "mlockall");
 	}
 
-	cpu = perf_cpu_map__new_online_cpus();
+	cpu = perf_cpu_map__new(NULL);
 	if (!cpu)
 		err(EXIT_FAILURE, "calloc");
 
@@ -295,8 +286,6 @@ int bench_futex_wake_parallel(int argc, const char **argv)
 	if (!params.fshared)
 		futex_flag = FUTEX_PRIVATE_FLAG;
 
-	futex_set_nbuckets_param(&params);
-
 	printf("Run summary [PID %d]: blocking on %d threads (at [%s] "
 	       "futex %p), %d threads waking up %d at a time.\n\n",
 	       getpid(), params.nthreads, params.fshared ? "shared":"private",
@@ -305,6 +294,7 @@ int bench_futex_wake_parallel(int argc, const char **argv)
 	init_stats(&wakeup_stats);
 	init_stats(&waketime_stats);
 
+	pthread_attr_init(&thread_attr);
 	mutex_init(&thread_lock);
 	cond_init(&thread_parent);
 	cond_init(&thread_worker);
@@ -315,7 +305,7 @@ int bench_futex_wake_parallel(int argc, const char **argv)
 			err(EXIT_FAILURE, "calloc");
 
 		/* create, launch & block all threads */
-		block_threads(blocked_worker, cpu);
+		block_threads(blocked_worker, thread_attr, cpu);
 
 		/* make sure all threads are already blocked */
 		mutex_lock(&thread_lock);
@@ -324,10 +314,10 @@ int bench_futex_wake_parallel(int argc, const char **argv)
 		cond_broadcast(&thread_worker);
 		mutex_unlock(&thread_lock);
 
-		usleep(200000);
+		usleep(100000);
 
 		/* Ok, all threads are patiently blocked, start waking folks up */
-		wakeup_threads(waking_worker);
+		wakeup_threads(waking_worker, thread_attr);
 
 		for (i = 0; i < params.nthreads; i++) {
 			ret = pthread_join(blocked_worker[i], NULL);
@@ -346,6 +336,7 @@ int bench_futex_wake_parallel(int argc, const char **argv)
 	cond_destroy(&thread_parent);
 	cond_destroy(&thread_worker);
 	mutex_destroy(&thread_lock);
+	pthread_attr_destroy(&thread_attr);
 
 	print_summary();
 

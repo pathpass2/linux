@@ -7,6 +7,7 @@
 
 #include <linux/errno.h>
 #include <linux/types.h>
+#include <linux/kernel.h>
 #include <linux/vmalloc.h>
 
 #ifdef CONFIG_BCM47XX_NVRAM

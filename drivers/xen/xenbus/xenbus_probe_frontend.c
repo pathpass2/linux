@@ -91,14 +91,14 @@ static void backend_changed(struct xenbus_watch *watch,
 	xenbus_otherend_changed(watch, path, token, 1);
 }
 
-static void xenbus_frontend_delayed_restore(struct work_struct *w)
+static void xenbus_frontend_delayed_resume(struct work_struct *w)
 {
 	struct xenbus_device *xdev = container_of(w, struct xenbus_device, work);
 
-	xenbus_dev_restore(&xdev->dev);
+	xenbus_dev_resume(&xdev->dev);
 }
 
-static int xenbus_frontend_dev_restore(struct device *dev)
+static int xenbus_frontend_dev_resume(struct device *dev)
 {
 	/*
 	 * If xenstored is running in this domain, we cannot access the backend
@@ -112,14 +112,14 @@ static int xenbus_frontend_dev_restore(struct device *dev)
 		return 0;
 	}
 
-	return xenbus_dev_restore(dev);
+	return xenbus_dev_resume(dev);
 }
 
 static int xenbus_frontend_dev_probe(struct device *dev)
 {
 	if (xen_store_domain_type == XS_LOCAL) {
 		struct xenbus_device *xdev = to_xenbus_device(dev);
-		INIT_WORK(&xdev->work, xenbus_frontend_delayed_restore);
+		INIT_WORK(&xdev->work, xenbus_frontend_delayed_resume);
 	}
 
 	return xenbus_dev_probe(dev);
@@ -148,9 +148,11 @@ static void xenbus_frontend_dev_shutdown(struct device *_dev)
 }
 
 static const struct dev_pm_ops xenbus_pm_ops = {
-	.freeze		= xenbus_dev_freeze,
-	.thaw		= xenbus_dev_thaw,
-	.restore	= xenbus_frontend_dev_restore,
+	.suspend	= xenbus_dev_suspend,
+	.resume		= xenbus_frontend_dev_resume,
+	.freeze		= xenbus_dev_suspend,
+	.thaw		= xenbus_dev_cancel,
+	.restore	= xenbus_dev_resume,
 };
 
 static struct xen_bus_type xenbus_frontend = {
@@ -427,7 +429,7 @@ static void xenbus_check_frontend(char *class, char *dev)
 		printk(KERN_DEBUG "XENBUS: frontend %s %s\n",
 				frontend, xenbus_strstate(fe_state));
 		backend = xenbus_read(XBT_NIL, frontend, "backend", NULL);
-		if (IS_ERR_OR_NULL(backend))
+		if (!backend || IS_ERR(backend))
 			goto out;
 		err = xenbus_scanf(XBT_NIL, backend, "state", "%i", &be_state);
 		if (err == 1)
@@ -511,5 +513,4 @@ static int __init boot_wait_for_devices(void)
 late_initcall(boot_wait_for_devices);
 #endif
 
-MODULE_DESCRIPTION("Xen PV-device frontend support");
 MODULE_LICENSE("GPL");

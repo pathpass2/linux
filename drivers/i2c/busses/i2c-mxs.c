@@ -22,6 +22,7 @@
 #include <linux/io.h>
 #include <linux/stmp_device.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
 #include <linux/dma/mxs-dma.h>
@@ -687,7 +688,7 @@ static irqreturn_t mxs_i2c_isr(int this_irq, void *dev_id)
 }
 
 static const struct i2c_algorithm mxs_i2c_algo = {
-	.xfer = mxs_i2c_xfer,
+	.master_xfer = mxs_i2c_xfer,
 	.functionality = mxs_i2c_func,
 };
 
@@ -863,7 +864,7 @@ static int mxs_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void mxs_i2c_remove(struct platform_device *pdev)
+static int mxs_i2c_remove(struct platform_device *pdev)
 {
 	struct mxs_i2c_dev *i2c = platform_get_drvdata(pdev);
 
@@ -873,6 +874,8 @@ static void mxs_i2c_remove(struct platform_device *pdev)
 		dma_release_channel(i2c->dmach);
 
 	writel(MXS_I2C_CTRL0_SFTRST, i2c->regs + MXS_I2C_CTRL0_SET);
+
+	return 0;
 }
 
 static struct platform_driver mxs_i2c_driver = {

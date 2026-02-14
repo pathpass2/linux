@@ -237,7 +237,8 @@ static int htc_issue_packets(struct htc_target *target,
 
 		packet->info.tx.flags |= HTC_FLAGS_TX_FIXUP_NETBUF;
 
-		put_unaligned_le16(payload_len, &htc_hdr->payld_len);
+		/* Endianess? */
+		put_unaligned((u16) payload_len, &htc_hdr->payld_len);
 		htc_hdr->flags = packet->info.tx.flags;
 		htc_hdr->eid = (u8) packet->endpoint;
 		htc_hdr->ctrl[0] = 0;
@@ -718,7 +719,7 @@ static struct htc_packet *htc_lookup_tx_packet(struct htc_target *target,
 	spin_lock_bh(&target->tx_lock);
 
 	/*
-	 * iterate from the front of tx lookup queue
+	 * interate from the front of tx lookup queue
 	 * this lookup should be fast since lower layers completes in-order and
 	 * so the completed packet should be at the head of the list generally
 	 */
@@ -959,8 +960,8 @@ static int ath6kl_htc_pipe_rx_complete(struct ath6kl *ar, struct sk_buff *skb,
 	 * Thus the possibility of ar->htc_target being NULL
 	 * via ath6kl_recv_complete -> ath6kl_usb_io_comp_work.
 	 */
-	if (!target) {
-		ath6kl_dbg(ATH6KL_DBG_HTC, "Target not yet initialized\n");
+	if (WARN_ON_ONCE(!target)) {
+		ath6kl_err("Target not yet initialized\n");
 		status = -EINVAL;
 		goto free_skb;
 	}

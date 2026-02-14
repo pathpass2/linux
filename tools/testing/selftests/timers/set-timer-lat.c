@@ -28,12 +28,24 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <pthread.h>
-#include <include/vdso/time64.h>
-#include "kselftest.h"
+#include "../kselftest.h"
 
-/* CLOCK_HWSPECIFIC == CLOCK_SGI_CYCLE (Deprecated) */
+#define CLOCK_REALTIME			0
+#define CLOCK_MONOTONIC			1
+#define CLOCK_PROCESS_CPUTIME_ID	2
+#define CLOCK_THREAD_CPUTIME_ID		3
+#define CLOCK_MONOTONIC_RAW		4
+#define CLOCK_REALTIME_COARSE		5
+#define CLOCK_MONOTONIC_COARSE		6
+#define CLOCK_BOOTTIME			7
+#define CLOCK_REALTIME_ALARM		8
+#define CLOCK_BOOTTIME_ALARM		9
 #define CLOCK_HWSPECIFIC		10
+#define CLOCK_TAI			11
+#define NR_CLOCKIDS			12
 
+
+#define NSEC_PER_SEC 1000000000ULL
 #define UNRESONABLE_LATENCY 40000000 /* 40ms in nanosecs */
 
 #define TIMER_SECS 1
@@ -68,7 +80,7 @@ char *clockstring(int clockid)
 		return "CLOCK_BOOTTIME_ALARM";
 	case CLOCK_TAI:
 		return "CLOCK_TAI";
-	}
+	};
 	return "UNKNOWN_CLOCKID";
 }
 
@@ -242,7 +254,6 @@ int main(void)
 	struct sigaction act;
 	int signum = SIGRTMAX;
 	int ret = 0;
-	int max_clocks = CLOCK_TAI + 1;
 
 	/* Set up signal handler: */
 	sigfillset(&act.sa_mask);
@@ -251,7 +262,7 @@ int main(void)
 	sigaction(signum, &act, NULL);
 
 	printf("Setting timers for every %i seconds\n", TIMER_SECS);
-	for (clock_id = 0; clock_id < max_clocks; clock_id++) {
+	for (clock_id = 0; clock_id < NR_CLOCKIDS; clock_id++) {
 
 		if ((clock_id == CLOCK_PROCESS_CPUTIME_ID) ||
 				(clock_id == CLOCK_THREAD_CPUTIME_ID) ||
@@ -267,6 +278,6 @@ int main(void)
 		ret |= do_timer_oneshot(clock_id, 0);
 	}
 	if (ret)
-		ksft_exit_fail();
-	ksft_exit_pass();
+		return ksft_exit_fail();
+	return ksft_exit_pass();
 }

@@ -9,40 +9,17 @@
 #undef __entry
 #define __entry entry
 
-#ifndef __STAGE5_STRING_SRC_H
-#define __STAGE5_STRING_SRC_H
-static inline const char *__string_src(const char *str)
-{
-       if (!str)
-	       return EVENT_NULL_STR;
-       return str;
-}
-#endif /* __STAGE5_STRING_SRC_H */
-
-/*
- * Fields should never declare an array: i.e. __field(int, arr[5])
- * If they do, it will cause issues in parsing and possibly corrupt the
- * events. To prevent that from happening, test the sizeof() a fictitious
- * type called "struct _test_no_array_##item" which will fail if "item"
- * contains array elements (like "arr[5]").
- *
- * If you hit this, use __array(int, arr, 5) instead.
- */
 #undef __field
-#define __field(type, item)					\
-	{ (void)sizeof(struct _test_no_array_##item *); }
+#define __field(type, item)
 
 #undef __field_ext
-#define __field_ext(type, item, filter_type)			\
-	{ (void)sizeof(struct _test_no_array_##item *); }
+#define __field_ext(type, item, filter_type)
 
 #undef __field_struct
-#define __field_struct(type, item)				\
-	{ (void)sizeof(struct _test_no_array_##item *); }
+#define __field_struct(type, item)
 
 #undef __field_struct_ext
-#define __field_struct_ext(type, item, filter_type)		\
-	{ (void)sizeof(struct _test_no_array_##item *); }
+#define __field_struct_ext(type, item, filter_type)
 
 #undef __array
 #define __array(type, item, len)
@@ -57,12 +34,10 @@ static inline const char *__string_src(const char *str)
 
 #undef __string
 #define __string(item, src) __dynamic_array(char, item,			\
-		    strlen(__string_src(src)) + 1)			\
-	__data_offsets->item##_ptr_ = src;
+		    strlen((src) ? (const char *)(src) : "(null)") + 1)
 
 #undef __string_len
-#define __string_len(item, src, len) __dynamic_array(char, item, (len) + 1)\
-	__data_offsets->item##_ptr_ = src;
+#define __string_len(item, src, len) __dynamic_array(char, item, (len) + 1)
 
 #undef __vstring
 #define __vstring(item, fmt, ap) __dynamic_array(char, item,		\
@@ -79,14 +54,11 @@ static inline const char *__string_src(const char *str)
 	__data_size += __item_length;
 
 #undef __rel_string
-#define __rel_string(item, src) __rel_dynamic_array(char, item,		\
-		    strlen(__string_src(src)) + 1)			\
-	__data_offsets->item##_ptr_ = src;
+#define __rel_string(item, src) __rel_dynamic_array(char, item,			\
+		    strlen((src) ? (const char *)(src) : "(null)") + 1)
 
 #undef __rel_string_len
-#define __rel_string_len(item, src, len) __rel_dynamic_array(char, item, (len) + 1)\
-	__data_offsets->item##_ptr_ = src;
-
+#define __rel_string_len(item, src, len) __rel_dynamic_array(char, item, (len) + 1)
 /*
  * __bitmask_size_in_bytes_raw is the number of bytes needed to hold
  * num_possible_cpus().

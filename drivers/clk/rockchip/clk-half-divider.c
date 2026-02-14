@@ -92,19 +92,17 @@ static int clk_half_divider_bestdiv(struct clk_hw *hw, unsigned long rate,
 	return bestdiv;
 }
 
-static int clk_half_divider_determine_rate(struct clk_hw *hw,
-					   struct clk_rate_request *req)
+static long clk_half_divider_round_rate(struct clk_hw *hw, unsigned long rate,
+					unsigned long *prate)
 {
 	struct clk_divider *divider = to_clk_divider(hw);
 	int div;
 
-	div = clk_half_divider_bestdiv(hw, req->rate, &req->best_parent_rate,
+	div = clk_half_divider_bestdiv(hw, rate, prate,
 				       divider->width,
 				       divider->flags);
 
-	req->rate = DIV_ROUND_UP_ULL(((u64)req->best_parent_rate * 2), div * 2 + 3);
-
-	return 0;
+	return DIV_ROUND_UP_ULL(((u64)*prate * 2), div * 2 + 3);
 }
 
 static int clk_half_divider_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -143,7 +141,7 @@ static int clk_half_divider_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops clk_half_divider_ops = {
 	.recalc_rate = clk_half_divider_recalc_rate,
-	.determine_rate = clk_half_divider_determine_rate,
+	.round_rate = clk_half_divider_round_rate,
 	.set_rate = clk_half_divider_set_rate,
 };
 

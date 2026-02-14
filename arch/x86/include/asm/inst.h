@@ -6,7 +6,7 @@
 #ifndef X86_ASM_INST_H
 #define X86_ASM_INST_H
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 #define REG_NUM_INVALID		100
 

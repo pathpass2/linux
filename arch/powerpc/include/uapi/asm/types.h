@@ -28,14 +28,14 @@
 # include <asm-generic/int-ll64.h>
 #endif
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 
 typedef struct {
 	__u32 u[4];
 } __attribute__((aligned(16))) __vector128;
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 
 #endif /* _UAPI_ASM_POWERPC_TYPES_H */

@@ -80,7 +80,7 @@ static int acp3x_i2s_hwparams(struct snd_pcm_substream *substream,
 	u32 val;
 	u32 reg_val, frmt_reg;
 
-	prtd = snd_soc_substream_to_rtd(substream);
+	prtd = asoc_substream_to_rtd(substream);
 	rtd = substream->runtime->private_data;
 	card = prtd->card;
 	adata = snd_soc_dai_get_drvdata(dai);
@@ -149,9 +149,8 @@ static int acp3x_i2s_trigger(struct snd_pcm_substream *substream,
 				int cmd, struct snd_soc_dai *dai)
 {
 	struct i2s_stream_instance *rtd;
-	u32 val, period_bytes, reg_val, ier_val, water_val;
+	u32 ret, val, period_bytes, reg_val, ier_val, water_val;
 	u32 buf_size, buf_reg;
-	int ret;
 
 	rtd = substream->runtime->private_data;
 	period_bytes = frames_to_bytes(substream->runtime,

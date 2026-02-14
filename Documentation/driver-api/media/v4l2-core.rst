@@ -13,6 +13,7 @@ Video4Linux devices
     v4l2-subdev
     v4l2-event
     v4l2-controls
+    v4l2-videobuf
     v4l2-videobuf2
     v4l2-dv-timings
     v4l2-flash-led-class
@@ -21,10 +22,7 @@ Video4Linux devices
     v4l2-mem2mem
     v4l2-async
     v4l2-fwnode
-    v4l2-cci
     v4l2-rect
     v4l2-tuner
     v4l2-common
     v4l2-tveeprom
-    v4l2-jpeg
-    v4l2-isp

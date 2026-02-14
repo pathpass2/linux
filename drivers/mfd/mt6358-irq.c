@@ -3,8 +3,6 @@
 // Copyright (c) 2020 MediaTek Inc.
 
 #include <linux/interrupt.h>
-#include <linux/irq.h>
-#include <linux/irqdomain.h>
 #include <linux/mfd/mt6357/core.h>
 #include <linux/mfd/mt6357/registers.h>
 #include <linux/mfd/mt6358/core.h>
@@ -13,6 +11,9 @@
 #include <linux/mfd/mt6359/registers.h>
 #include <linux/mfd/mt6397/core.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
@@ -272,8 +273,9 @@ int mt6358_irq_init(struct mt6397_chip *chip)
 				     irqd->pmic_ints[i].en_reg_shift * j, 0);
 	}
 
-	chip->irq_domain = irq_domain_create_linear(dev_fwnode(chip->dev), irqd->num_pmic_irqs,
-						    &mt6358_irq_domain_ops, chip);
+	chip->irq_domain = irq_domain_add_linear(chip->dev->of_node,
+						 irqd->num_pmic_irqs,
+						 &mt6358_irq_domain_ops, chip);
 	if (!chip->irq_domain) {
 		dev_err(chip->dev, "Could not create IRQ domain\n");
 		return -ENODEV;
@@ -285,7 +287,6 @@ int mt6358_irq_init(struct mt6397_chip *chip)
 	if (ret) {
 		dev_err(chip->dev, "Failed to register IRQ=%d, ret=%d\n",
 			chip->irq, ret);
-		irq_domain_remove(chip->irq_domain);
 		return ret;
 	}
 

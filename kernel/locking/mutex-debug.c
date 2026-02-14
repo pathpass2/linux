@@ -12,7 +12,6 @@
  */
 #include <linux/mutex.h>
 #include <linux/delay.h>
-#include <linux/device.h>
 #include <linux/export.h>
 #include <linux/poison.h>
 #include <linux/sched.h>
@@ -53,18 +52,17 @@ void debug_mutex_add_waiter(struct mutex *lock, struct mutex_waiter *waiter,
 {
 	lockdep_assert_held(&lock->wait_lock);
 
-	/* Current thread can't be already blocked (since it's executing!) */
-	DEBUG_LOCKS_WARN_ON(__get_task_blocked_on(task));
+	/* Mark the current thread as blocked on the lock: */
+	task->blocked_on = waiter;
 }
 
 void debug_mutex_remove_waiter(struct mutex *lock, struct mutex_waiter *waiter,
 			 struct task_struct *task)
 {
-	struct mutex *blocked_on = __get_task_blocked_on(task);
-
 	DEBUG_LOCKS_WARN_ON(list_empty(&waiter->list));
 	DEBUG_LOCKS_WARN_ON(waiter->task != task);
-	DEBUG_LOCKS_WARN_ON(blocked_on && blocked_on != lock);
+	DEBUG_LOCKS_WARN_ON(task->blocked_on != waiter);
+	task->blocked_on = NULL;
 
 	INIT_LIST_HEAD(&waiter->list);
 	waiter->task = NULL;
@@ -78,21 +76,18 @@ void debug_mutex_unlock(struct mutex *lock)
 	}
 }
 
-void debug_mutex_init(struct mutex *lock)
+void debug_mutex_init(struct mutex *lock, const char *name,
+		      struct lock_class_key *key)
 {
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	/*
+	 * Make sure we are not reinitializing a held lock:
+	 */
+	debug_check_no_locks_freed((void *)lock, sizeof(*lock));
+	lockdep_init_map_wait(&lock->dep_map, name, key, 0, LD_WAIT_SLEEP);
+#endif
 	lock->magic = lock;
 }
-
-static void devm_mutex_release(void *res)
-{
-	mutex_destroy(res);
-}
-
-int __devm_mutex_init(struct device *dev, struct mutex *lock)
-{
-	return devm_add_action_or_reset(dev, devm_mutex_release, lock);
-}
-EXPORT_SYMBOL_GPL(__devm_mutex_init);
 
 /***
  * mutex_destroy - mark a mutex unusable

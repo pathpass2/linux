@@ -7,31 +7,33 @@
 #include <linux/stop_machine.h>
 #include <linux/string_helpers.h>
 
-#include "display/intel_display_reset.h"
+#include "display/intel_display.h"
 #include "display/intel_overlay.h"
+
 #include "gem/i915_gem_context.h"
+
 #include "gt/intel_gt_regs.h"
-#include "gt/uc/intel_gsc_fw.h"
-#include "uc/intel_guc.h"
 
 #include "i915_drv.h"
 #include "i915_file_private.h"
 #include "i915_gpu_error.h"
 #include "i915_irq.h"
-#include "i915_reg.h"
-#include "i915_wait_util.h"
 #include "intel_breadcrumbs.h"
 #include "intel_engine_pm.h"
 #include "intel_engine_regs.h"
 #include "intel_gt.h"
 #include "intel_gt_pm.h"
-#include "intel_gt_print.h"
 #include "intel_gt_requests.h"
 #include "intel_mchbar_regs.h"
 #include "intel_pci_config.h"
 #include "intel_reset.h"
 
+#include "uc/intel_guc.h"
+
 #define RESET_MAX_RETRIES 3
+
+/* XXX How to handle concurrent GGTT updates using tiling registers? */
+#define RESET_UNDER_STOP_MACHINE 0
 
 static void client_mark_guilty(struct i915_gem_context *ctx, bool banned)
 {
@@ -159,16 +161,16 @@ static int i915_do_reset(struct intel_gt *gt,
 	struct pci_dev *pdev = to_pci_dev(gt->i915->drm.dev);
 	int err;
 
-	/* Assert reset for at least 50 usec, and wait for acknowledgement. */
+	/* Assert reset for at least 20 usec, and wait for acknowledgement. */
 	pci_write_config_byte(pdev, I915_GDRST, GRDOM_RESET_ENABLE);
 	udelay(50);
-	err = _wait_for_atomic(i915_in_reset(pdev), 50000, 0);
+	err = wait_for_atomic(i915_in_reset(pdev), 50);
 
 	/* Clear the reset request. */
 	pci_write_config_byte(pdev, I915_GDRST, 0);
 	udelay(50);
 	if (!err)
-		err = _wait_for_atomic(!i915_in_reset(pdev), 50000, 0);
+		err = wait_for_atomic(!i915_in_reset(pdev), 50);
 
 	return err;
 }
@@ -188,7 +190,7 @@ static int g33_do_reset(struct intel_gt *gt,
 	struct pci_dev *pdev = to_pci_dev(gt->i915->drm.dev);
 
 	pci_write_config_byte(pdev, I915_GDRST, GRDOM_RESET_ENABLE);
-	return _wait_for_atomic(g4x_reset_complete(pdev), 50000, 0);
+	return wait_for_atomic(g4x_reset_complete(pdev), 50);
 }
 
 static int g4x_do_reset(struct intel_gt *gt,
@@ -205,7 +207,7 @@ static int g4x_do_reset(struct intel_gt *gt,
 
 	pci_write_config_byte(pdev, I915_GDRST,
 			      GRDOM_MEDIA | GRDOM_RESET_ENABLE);
-	ret =  _wait_for_atomic(g4x_reset_complete(pdev), 50000, 0);
+	ret =  wait_for_atomic(g4x_reset_complete(pdev), 50);
 	if (ret) {
 		GT_TRACE(gt, "Wait for media reset failed\n");
 		goto out;
@@ -213,7 +215,7 @@ static int g4x_do_reset(struct intel_gt *gt,
 
 	pci_write_config_byte(pdev, I915_GDRST,
 			      GRDOM_RENDER | GRDOM_RESET_ENABLE);
-	ret =  _wait_for_atomic(g4x_reset_complete(pdev), 50000, 0);
+	ret =  wait_for_atomic(g4x_reset_complete(pdev), 50);
 	if (ret) {
 		GT_TRACE(gt, "Wait for render reset failed\n");
 		goto out;
@@ -266,26 +268,8 @@ out:
 static int gen6_hw_domain_reset(struct intel_gt *gt, u32 hw_domain_mask)
 {
 	struct intel_uncore *uncore = gt->uncore;
-	int loops;
+	int loops = 2;
 	int err;
-
-	/*
-	 * On some platforms, e.g. Jasperlake, we see that the engine register
-	 * state is not cleared until shortly after GDRST reports completion,
-	 * causing a failure as we try to immediately resume while the internal
-	 * state is still in flux. If we immediately repeat the reset, the
-	 * second reset appears to serialise with the first, and since it is a
-	 * no-op, the registers should retain their reset value. However, there
-	 * is still a concern that upon leaving the second reset, the internal
-	 * engine state is still in flux and not ready for resuming.
-	 *
-	 * Starting on MTL, there are some prep steps that we need to do when
-	 * resetting some engines that need to be applied every time we write to
-	 * GEN6_GDRST. As those are time consuming (tens of ms), we don't want
-	 * to perform that twice, so, since the Jasperlake issue hasn't been
-	 * observed on MTL, we avoid repeating the reset on newer platforms.
-	 */
-	loops = GRAPHICS_VER_FULL(gt->i915) < IP_VER(12, 70) ? 2 : 1;
 
 	/*
 	 * GEN6_GDRST is not in the gt power well, no need to check
@@ -295,7 +279,20 @@ static int gen6_hw_domain_reset(struct intel_gt *gt, u32 hw_domain_mask)
 	do {
 		intel_uncore_write_fw(uncore, GEN6_GDRST, hw_domain_mask);
 
-		/* Wait for the device to ack the reset requests. */
+		/*
+		 * Wait for the device to ack the reset requests.
+		 *
+		 * On some platforms, e.g. Jasperlake, we see that the
+		 * engine register state is not cleared until shortly after
+		 * GDRST reports completion, causing a failure as we try
+		 * to immediately resume while the internal state is still
+		 * in flux. If we immediately repeat the reset, the second
+		 * reset appears to serialise with the first, and since
+		 * it is a no-op, the registers should retain their reset
+		 * value. However, there is still a concern that upon
+		 * leaving the second reset, the internal engine state
+		 * is still in flux and not ready for resuming.
+		 */
 		err = __intel_wait_for_register_fw(uncore, GEN6_GDRST,
 						   hw_domain_mask, 0,
 						   2000, 0,
@@ -590,10 +587,10 @@ static int gen8_engine_reset_prepare(struct intel_engine_cs *engine)
 	ret = __intel_wait_for_register_fw(uncore, reg, mask, ack,
 					   700, 0, NULL);
 	if (ret)
-		gt_err(engine->gt,
-		       "%s reset request timed out: {request: %08x, RESET_CTL: %08x}\n",
-		       engine->name, request,
-		       intel_uncore_read_fw(uncore, reg));
+		drm_err(&engine->i915->drm,
+			"%s reset request timed out: {request: %08x, RESET_CTL: %08x}\n",
+			engine->name, request,
+			intel_uncore_read_fw(uncore, reg));
 
 	return ret;
 }
@@ -693,75 +690,7 @@ static reset_func intel_get_gpu_reset(const struct intel_gt *gt)
 		return NULL;
 }
 
-static int __reset_guc(struct intel_gt *gt)
-{
-	u32 guc_domain =
-		GRAPHICS_VER(gt->i915) >= 11 ? GEN11_GRDOM_GUC : GEN9_GRDOM_GUC;
-
-	return gen6_hw_domain_reset(gt, guc_domain);
-}
-
-static bool needs_wa_14015076503(struct intel_gt *gt, intel_engine_mask_t engine_mask)
-{
-	if (MEDIA_VER_FULL(gt->i915) != IP_VER(13, 0) || !HAS_ENGINE(gt, GSC0))
-		return false;
-
-	if (!__HAS_ENGINE(engine_mask, GSC0))
-		return false;
-
-	return intel_gsc_uc_fw_init_done(&gt->uc.gsc);
-}
-
-static intel_engine_mask_t
-wa_14015076503_start(struct intel_gt *gt, intel_engine_mask_t engine_mask, bool first)
-{
-	if (!needs_wa_14015076503(gt, engine_mask))
-		return engine_mask;
-
-	/*
-	 * wa_14015076503: if the GSC FW is loaded, we need to alert it that
-	 * we're going to do a GSC engine reset and then wait for 200ms for the
-	 * FW to get ready for it. However, if this is the first ALL_ENGINES
-	 * reset attempt and the GSC is not busy, we can try to instead reset
-	 * the GuC and all the other engines individually to avoid the 200ms
-	 * wait.
-	 * Skipping the GSC engine is safe because, differently from other
-	 * engines, the GSCCS only role is to forward the commands to the GSC
-	 * FW, so it doesn't have any HW outside of the CS itself and therefore
-	 * it has no state that we don't explicitly re-init on resume or on
-	 * context switch LRC or power context). The HW for the GSC uC is
-	 * managed by the GSC FW so we don't need to care about that.
-	 */
-	if (engine_mask == ALL_ENGINES && first && intel_engine_is_idle(gt->engine[GSC0])) {
-		__reset_guc(gt);
-		engine_mask = gt->info.engine_mask & ~BIT(GSC0);
-	} else {
-		intel_uncore_rmw(gt->uncore,
-				 HECI_H_GS1(MTL_GSC_HECI2_BASE),
-				 0, HECI_H_GS1_ER_PREP);
-
-		/* make sure the reset bit is clear when writing the CSR reg */
-		intel_uncore_rmw(gt->uncore,
-				 HECI_H_CSR(MTL_GSC_HECI2_BASE),
-				 HECI_H_CSR_RST, HECI_H_CSR_IG);
-		msleep(200);
-	}
-
-	return engine_mask;
-}
-
-static void
-wa_14015076503_end(struct intel_gt *gt, intel_engine_mask_t engine_mask)
-{
-	if (!needs_wa_14015076503(gt, engine_mask))
-		return;
-
-	intel_uncore_rmw(gt->uncore,
-			 HECI_H_GS1(MTL_GSC_HECI2_BASE),
-			 HECI_H_GS1_ER_PREP, 0);
-}
-
-static int __intel_gt_reset(struct intel_gt *gt, intel_engine_mask_t engine_mask)
+int __intel_gt_reset(struct intel_gt *gt, intel_engine_mask_t engine_mask)
 {
 	const int retries = engine_mask == ALL_ENGINES ? RESET_MAX_RETRIES : 1;
 	reset_func reset;
@@ -778,14 +707,10 @@ static int __intel_gt_reset(struct intel_gt *gt, intel_engine_mask_t engine_mask
 	 */
 	intel_uncore_forcewake_get(gt->uncore, FORCEWAKE_ALL);
 	for (retry = 0; ret == -ETIMEDOUT && retry < retries; retry++) {
-		intel_engine_mask_t reset_mask;
-
-		reset_mask = wa_14015076503_start(gt, engine_mask, !retry);
-
-		GT_TRACE(gt, "engine_mask=%x\n", reset_mask);
-		ret = reset(gt, reset_mask, retry);
-
-		wa_14015076503_end(gt, reset_mask);
+		GT_TRACE(gt, "engine_mask=%x\n", engine_mask);
+		preempt_disable();
+		ret = reset(gt, engine_mask, retry);
+		preempt_enable();
 	}
 	intel_uncore_forcewake_put(gt->uncore, FORCEWAKE_ALL);
 
@@ -810,12 +735,14 @@ bool intel_has_reset_engine(const struct intel_gt *gt)
 
 int intel_reset_guc(struct intel_gt *gt)
 {
+	u32 guc_domain =
+		GRAPHICS_VER(gt->i915) >= 11 ? GEN11_GRDOM_GUC : GEN9_GRDOM_GUC;
 	int ret;
 
 	GEM_BUG_ON(!HAS_GT_UC(gt->i915));
 
 	intel_uncore_forcewake_get(gt->uncore, FORCEWAKE_ALL);
-	ret = __reset_guc(gt);
+	ret = gen6_hw_domain_reset(gt, guc_domain);
 	intel_uncore_forcewake_put(gt->uncore, FORCEWAKE_ALL);
 
 	return ret;
@@ -876,17 +803,8 @@ static intel_engine_mask_t reset_prepare(struct intel_gt *gt)
 	intel_engine_mask_t awake = 0;
 	enum intel_engine_id id;
 
-	/**
-	 * For GuC mode with submission enabled, ensure submission
-	 * is disabled before stopping ring.
-	 *
-	 * For GuC mode with submission disabled, ensure that GuC is not
-	 * sanitized, do that after engine reset. reset_prepare()
-	 * is followed by engine reset which in this mode requires GuC to
-	 * process any CSB FIFO entries generated by the resets.
-	 */
-	if (intel_uc_uses_guc_submission(&gt->uc))
-		intel_uc_reset_prepare(&gt->uc);
+	/* For GuC mode, ensure submission is disabled before stopping ring */
+	intel_uc_reset_prepare(&gt->uc);
 
 	for_each_engine(engine, gt, id) {
 		if (intel_engine_pm_get_if_awake(engine))
@@ -983,8 +901,8 @@ static void __intel_gt_set_wedged(struct intel_gt *gt)
 	awake = reset_prepare(gt);
 
 	/* Even if the GPU reset fails, it should still stop the engines */
-	if (!intel_gt_gpu_reset_clobbers_display(gt))
-		intel_gt_reset_all_engines(gt);
+	if (!INTEL_INFO(gt->i915)->gpu_reset_clobbers_display)
+		__intel_gt_reset(gt, ALL_ENGINES);
 
 	for_each_engine(engine, gt, id)
 		engine->submit_request = nop_submit_request;
@@ -1010,15 +928,6 @@ static void __intel_gt_set_wedged(struct intel_gt *gt)
 	GT_TRACE(gt, "end\n");
 }
 
-static void set_wedged_work(struct work_struct *w)
-{
-	struct intel_gt *gt = container_of(w, struct intel_gt, wedge);
-	intel_wakeref_t wf;
-
-	with_intel_runtime_pm(gt->uncore->rpm, wf)
-		__intel_gt_set_wedged(gt);
-}
-
 void intel_gt_set_wedged(struct intel_gt *gt)
 {
 	intel_wakeref_t wakeref;
@@ -1030,8 +939,7 @@ void intel_gt_set_wedged(struct intel_gt *gt)
 	mutex_lock(&gt->reset.mutex);
 
 	if (GEM_SHOW_DEBUG()) {
-		struct drm_printer p = drm_dbg_printer(&gt->i915->drm,
-						       DRM_UT_DRIVER, NULL);
+		struct drm_printer p = drm_debug_printer(__func__);
 		struct intel_engine_cs *engine;
 		enum intel_engine_id id;
 
@@ -1095,7 +1003,7 @@ static bool __intel_gt_unset_wedged(struct intel_gt *gt)
 		dma_fence_default_wait(fence, false, MAX_SCHEDULE_TIMEOUT);
 		dma_fence_put(fence);
 
-		/* Restart iteration after dropping lock */
+		/* Restart iteration after droping lock */
 		spin_lock(&timelines->lock);
 		tl = list_entry(&timelines->active_list, typeof(*tl), link);
 	}
@@ -1103,8 +1011,8 @@ static bool __intel_gt_unset_wedged(struct intel_gt *gt)
 
 	/* We must reset pending GPU events before restoring our submission */
 	ok = !HAS_EXECLISTS(gt->i915); /* XXX better agnosticism desired */
-	if (!intel_gt_gpu_reset_clobbers_display(gt))
-		ok = intel_gt_reset_all_engines(gt) == 0;
+	if (!INTEL_INFO(gt->i915)->gpu_reset_clobbers_display)
+		ok = __intel_gt_reset(gt, ALL_ENGINES) == 0;
 	if (!ok) {
 		/*
 		 * Warn CI about the unrecoverable wedged condition.
@@ -1148,10 +1056,10 @@ static int do_reset(struct intel_gt *gt, intel_engine_mask_t stalled_mask)
 {
 	int err, i;
 
-	err = intel_gt_reset_all_engines(gt);
+	err = __intel_gt_reset(gt, ALL_ENGINES);
 	for (i = 0; err && i < RESET_MAX_RETRIES; i++) {
 		msleep(10 * (i + 1));
-		err = intel_gt_reset_all_engines(gt);
+		err = __intel_gt_reset(gt, ALL_ENGINES);
 	}
 	if (err)
 		return err;
@@ -1172,13 +1080,6 @@ static int resume(struct intel_gt *gt)
 	}
 
 	return 0;
-}
-
-bool intel_gt_gpu_reset_clobbers_display(struct intel_gt *gt)
-{
-	struct drm_i915_private *i915 = gt->i915;
-
-	return INTEL_INFO(i915)->gpu_reset_clobbers_display;
 }
 
 /**
@@ -1202,7 +1103,6 @@ void intel_gt_reset(struct intel_gt *gt,
 		    intel_engine_mask_t stalled_mask,
 		    const char *reason)
 {
-	struct intel_display *display = gt->i915->display;
 	intel_engine_mask_t awake;
 	int ret;
 
@@ -1224,35 +1124,33 @@ void intel_gt_reset(struct intel_gt *gt,
 		goto unlock;
 
 	if (reason)
-		gt_notice(gt, "Resetting chip for %s\n", reason);
+		drm_notice(&gt->i915->drm,
+			   "Resetting chip for %s\n", reason);
 	atomic_inc(&gt->i915->gpu_error.reset_count);
 
 	awake = reset_prepare(gt);
 
 	if (!intel_has_gpu_reset(gt)) {
 		if (gt->i915->params.reset)
-			gt_err(gt, "GPU reset not supported\n");
+			drm_err(&gt->i915->drm, "GPU reset not supported\n");
 		else
-			gt_dbg(gt, "GPU reset disabled\n");
+			drm_dbg(&gt->i915->drm, "GPU reset disabled\n");
 		goto error;
 	}
 
-	if (intel_gt_gpu_reset_clobbers_display(gt))
-		intel_irq_suspend(gt->i915);
+	if (INTEL_INFO(gt->i915)->gpu_reset_clobbers_display)
+		intel_runtime_pm_disable_interrupts(gt->i915);
 
 	if (do_reset(gt, stalled_mask)) {
-		gt_err(gt, "Failed to reset chip\n");
+		drm_err(&gt->i915->drm, "Failed to reset chip\n");
 		goto taint;
 	}
 
-	if (intel_gt_gpu_reset_clobbers_display(gt))
-		intel_irq_resume(gt->i915);
+	if (INTEL_INFO(gt->i915)->gpu_reset_clobbers_display)
+		intel_runtime_pm_enable_interrupts(gt->i915);
 
-	intel_overlay_reset(display);
+	intel_overlay_reset(gt->i915);
 
-	/* sanitize uC after engine reset */
-	if (!intel_uc_uses_guc_submission(&gt->uc))
-		intel_uc_reset_prepare(&gt->uc);
 	/*
 	 * Next we need to restore the context, but we don't use those
 	 * yet either...
@@ -1263,7 +1161,9 @@ void intel_gt_reset(struct intel_gt *gt,
 	 */
 	ret = intel_gt_init_hw(gt);
 	if (ret) {
-		gt_err(gt, "Failed to initialise HW following reset (%d)\n", ret);
+		drm_err(&gt->i915->drm,
+			"Failed to initialise HW following reset (%d)\n",
+			ret);
 		goto taint;
 	}
 
@@ -1296,30 +1196,7 @@ error:
 	goto finish;
 }
 
-/**
- * intel_gt_reset_all_engines() - Reset all engines in the given gt.
- * @gt: the GT to reset all engines for.
- *
- * This function resets all engines within the given gt.
- *
- * Returns:
- * Zero on success, negative error code on failure.
- */
-int intel_gt_reset_all_engines(struct intel_gt *gt)
-{
-	return __intel_gt_reset(gt, ALL_ENGINES);
-}
-
-/**
- * intel_gt_reset_engine() - Reset a specific engine within a gt.
- * @engine: engine to be reset.
- *
- * This function resets the specified engine within a gt.
- *
- * Returns:
- * Zero on success, negative error code on failure.
- */
-int intel_gt_reset_engine(struct intel_engine_cs *engine)
+static int intel_gt_reset_engine(struct intel_engine_cs *engine)
 {
 	return __intel_gt_reset(engine->gt, engine->mask);
 }
@@ -1343,7 +1220,7 @@ int __intel_engine_reset_bh(struct intel_engine_cs *engine, const char *msg)
 	if (msg)
 		drm_notice(&engine->i915->drm,
 			   "Resetting %s for %s\n", engine->name, msg);
-	i915_increase_reset_engine_count(&engine->i915->gpu_error, engine);
+	atomic_inc(&engine->i915->gpu_error.reset_engine_count[engine->uabi_class]);
 
 	ret = intel_gt_reset_engine(engine);
 	if (ret) {
@@ -1397,11 +1274,6 @@ int intel_engine_reset(struct intel_engine_cs *engine, const char *msg)
 	return err;
 }
 
-static void display_reset_modeset_stuck(void *gt)
-{
-	intel_gt_set_wedged(gt);
-}
-
 static void intel_gt_reset_global(struct intel_gt *gt,
 				  u32 engine_mask,
 				  const char *reason)
@@ -1419,34 +1291,15 @@ static void intel_gt_reset_global(struct intel_gt *gt,
 
 	/* Use a watchdog to ensure that our reset completes */
 	intel_wedge_on_timeout(&w, gt, 60 * HZ) {
-		struct drm_i915_private *i915 = gt->i915;
-		struct intel_display *display = i915->display;
-		bool need_display_reset;
-		bool reset_display;
-
-		need_display_reset = intel_gt_gpu_reset_clobbers_display(gt) &&
-			intel_has_gpu_reset(gt);
-
-		reset_display = intel_display_reset_test(display) ||
-			need_display_reset;
-
-		if (reset_display)
-			reset_display = intel_display_reset_prepare(display,
-								    display_reset_modeset_stuck,
-								    gt);
+		intel_display_prepare_reset(gt->i915);
 
 		intel_gt_reset(gt, engine_mask, reason);
 
-		if (reset_display)
-			intel_display_reset_finish(display, !need_display_reset);
+		intel_display_finish_reset(gt->i915);
 	}
 
 	if (!test_bit(I915_WEDGED, &gt->reset.flags))
 		kobject_uevent_env(kobj, KOBJ_CHANGE, reset_done_event);
-	else
-		drm_dev_wedged_event(&gt->i915->drm,
-				     DRM_WEDGE_RECOVERY_REBIND | DRM_WEDGE_RECOVERY_BUS_RESET,
-				     NULL);
 }
 
 /**
@@ -1507,7 +1360,7 @@ void intel_gt_handle_error(struct intel_gt *gt,
 	    intel_has_reset_engine(gt) && !intel_gt_is_wedged(gt)) {
 		local_bh_disable();
 		for_each_engine_masked(engine, gt, engine_mask, tmp) {
-			BUILD_BUG_ON(I915_RESET_BACKOFF >= I915_RESET_ENGINE);
+			BUILD_BUG_ON(I915_RESET_MODESET >= I915_RESET_ENGINE);
 			if (test_and_set_bit(I915_RESET_ENGINE + engine->id,
 					     &gt->reset.flags))
 				continue;
@@ -1652,7 +1505,6 @@ void intel_gt_init_reset(struct intel_gt *gt)
 	init_waitqueue_head(&gt->reset.queue);
 	mutex_init(&gt->reset.mutex);
 	init_srcu_struct(&gt->reset.backoff_srcu);
-	INIT_WORK(&gt->wedge, set_wedged_work);
 
 	/*
 	 * While undesirable to wait inside the shrinker, complain anyway.
@@ -1678,8 +1530,10 @@ static void intel_wedge_me(struct work_struct *work)
 {
 	struct intel_wedge_me *w = container_of(work, typeof(*w), work.work);
 
-	gt_err(w->gt, "%s timed out, cancelling all in-flight rendering.\n", w->name);
-	set_wedged_work(&w->gt->wedge);
+	drm_err(&w->gt->i915->drm,
+		"%s timed out, cancelling all in-flight rendering.\n",
+		w->name);
+	intel_gt_set_wedged(w->gt);
 }
 
 void __intel_init_wedge(struct intel_wedge_me *w,
@@ -1691,7 +1545,7 @@ void __intel_init_wedge(struct intel_wedge_me *w,
 	w->name = name;
 
 	INIT_DELAYED_WORK_ONSTACK(&w->work, intel_wedge_me);
-	queue_delayed_work(gt->i915->unordered_wq, &w->work, timeout);
+	schedule_delayed_work(&w->work, timeout);
 }
 
 void __intel_fini_wedge(struct intel_wedge_me *w)
@@ -1699,24 +1553,6 @@ void __intel_fini_wedge(struct intel_wedge_me *w)
 	cancel_delayed_work_sync(&w->work);
 	destroy_delayed_work_on_stack(&w->work);
 	w->gt = NULL;
-}
-
-/*
- * Wa_22011802037 requires that we (or the GuC) ensure that no command
- * streamers are executing MI_FORCE_WAKE while an engine reset is initiated.
- */
-bool intel_engine_reset_needs_wa_22011802037(struct intel_gt *gt)
-{
-	if (GRAPHICS_VER(gt->i915) < 11)
-		return false;
-
-	if (IS_GFX_GT_IP_STEP(gt, IP_VER(12, 70), STEP_A0, STEP_B0))
-		return true;
-
-	if (GRAPHICS_VER_FULL(gt->i915) >= IP_VER(12, 70))
-		return false;
-
-	return true;
 }
 
 #if IS_ENABLED(CONFIG_DRM_I915_SELFTEST)

@@ -31,10 +31,6 @@
 #include <linux/sunrpc/auth.h>
 #include <linux/sunrpc/clnt.h>
 
-#ifdef CONFIG_NFS_FSCACHE
-#include <linux/netfs.h>
-#endif
-
 #include <linux/nfs.h>
 #include <linux/nfs2.h>
 #include <linux/nfs3.h>
@@ -77,23 +73,6 @@ struct nfs_lock_context {
 	struct rcu_head	rcu_head;
 };
 
-struct nfs_file_localio {
-	struct nfsd_file __rcu *ro_file;
-	struct nfsd_file __rcu *rw_file;
-	struct list_head list;
-	void __rcu *nfs_uuid; /* opaque pointer to 'nfs_uuid_t' */
-};
-
-static inline void nfs_localio_file_init(struct nfs_file_localio *nfl)
-{
-#if IS_ENABLED(CONFIG_NFS_LOCALIO)
-	nfl->ro_file = NULL;
-	nfl->rw_file = NULL;
-	INIT_LIST_HEAD(&nfl->list);
-	nfl->nfs_uuid = NULL;
-#endif
-}
-
 struct nfs4_state;
 struct nfs_open_context {
 	struct nfs_lock_context lock_context;
@@ -104,16 +83,15 @@ struct nfs_open_context {
 	struct nfs4_state *state;
 	fmode_t mode;
 
-	int error;
 	unsigned long flags;
 #define NFS_CONTEXT_BAD			(2)
 #define NFS_CONTEXT_UNLOCK	(3)
 #define NFS_CONTEXT_FILE_OPEN		(4)
+	int error;
 
-	struct nfs4_threshold	*mdsthreshold;
 	struct list_head list;
+	struct nfs4_threshold	*mdsthreshold;
 	struct rcu_head	rcu_head;
-	struct nfs_file_localio nfl;
 };
 
 struct nfs_open_dir_context {
@@ -159,12 +137,6 @@ struct nfs_inode {
 	 */
 	unsigned long		flags;			/* atomic bit ops */
 	unsigned long		cache_validity;		/* bit mask */
-
-	/*
-	 * NFS Attributes not included in struct inode
-	 */
-
-	struct timespec64	btime;
 
 	/*
 	 * read_cache_jiffies is when we started read-caching this inode.
@@ -219,39 +191,6 @@ struct nfs_inode {
 	/* Open contexts for shared mmap writes */
 	struct list_head	open_files;
 
-	/* Keep track of out-of-order replies.
-	 * The ooo array contains start/end pairs of
-	 * numbers from the changeid sequence when
-	 * the inode's iversion has been updated.
-	 * It also contains end/start pair (i.e. reverse order)
-	 * of sections of the changeid sequence that have
-	 * been seen in replies from the server.
-	 * Normally these should match and when both
-	 * A:B and B:A are found in ooo, they are both removed.
-	 * And if a reply with A:B causes an iversion update
-	 * of A:B, then neither are added.
-	 * When a reply has pre_change that doesn't match
-	 * iversion, then the changeid pair and any consequent
-	 * change in iversion ARE added.  Later replies
-	 * might fill in the gaps, or possibly a gap is caused
-	 * by a change from another client.
-	 * When a file or directory is opened, if the ooo table
-	 * is not empty, then we assume the gaps were due to
-	 * another client and we invalidate the cached data.
-	 *
-	 * We can only track a limited number of concurrent gaps.
-	 * Currently that limit is 16.
-	 * We allocate the table on demand.  If there is insufficient
-	 * memory, then we probably cannot cache the file anyway
-	 * so there is no loss.
-	 */
-	struct {
-		int cnt;
-		struct {
-			u64 start, end;
-		} gap[16];
-	} *ooo;
-
 #if IS_ENABLED(CONFIG_NFS_V4)
 	struct nfs4_cached_acl	*nfs4_acl;
         /* NFSv4 state */
@@ -265,15 +204,14 @@ struct nfs_inode {
 	/* how many bytes have been written/read and how many bytes queued up */
 	__u64 write_io;
 	__u64 read_io;
+#ifdef CONFIG_NFS_FSCACHE
+	struct fscache_cookie	*fscache;
+#endif
+	struct inode		vfs_inode;
+
 #ifdef CONFIG_NFS_V4_2
 	struct nfs4_xattr_cache *xattr_cache;
 #endif
-	union {
-		struct inode		vfs_inode;
-#ifdef CONFIG_NFS_FSCACHE
-		struct netfs_inode	netfs; /* netfs context and VFS inode */
-#endif
-	};
 };
 
 struct nfs4_copy_state {
@@ -322,12 +260,10 @@ struct nfs4_copy_state {
 #define NFS_INO_INVALID_XATTR	BIT(15)		/* xattrs are invalid */
 #define NFS_INO_INVALID_NLINK	BIT(16)		/* cached nlinks is invalid */
 #define NFS_INO_INVALID_MODE	BIT(17)		/* cached mode is invalid */
-#define NFS_INO_INVALID_BTIME	BIT(18)		/* cached btime is invalid */
 
 #define NFS_INO_INVALID_ATTR	(NFS_INO_INVALID_CHANGE \
 		| NFS_INO_INVALID_CTIME \
 		| NFS_INO_INVALID_MTIME \
-		| NFS_INO_INVALID_BTIME \
 		| NFS_INO_INVALID_SIZE \
 		| NFS_INO_INVALID_NLINK \
 		| NFS_INO_INVALID_MODE \
@@ -340,11 +276,11 @@ struct nfs4_copy_state {
 #define NFS_INO_ACL_LRU_SET	(2)		/* Inode is on the LRU list */
 #define NFS_INO_INVALIDATING	(3)		/* inode is being invalidated */
 #define NFS_INO_PRESERVE_UNLINKED (4)		/* preserve file if removed while open */
+#define NFS_INO_FSCACHE		(5)		/* inode can be cached by FS-Cache */
 #define NFS_INO_LAYOUTCOMMIT	(9)		/* layoutcommit required */
 #define NFS_INO_LAYOUTCOMMITTING (10)		/* layoutcommit inflight */
 #define NFS_INO_LAYOUTSTATS	(11)		/* layoutstats inflight */
 #define NFS_INO_ODIRECT		(12)		/* I/O setting is O_DIRECT */
-#define NFS_INO_REQ_DIR_DELEG	(13)		/* Request a directory delegation */
 
 static inline struct nfs_inode *NFS_I(const struct inode *inode)
 {
@@ -391,6 +327,15 @@ static inline unsigned NFS_MAXATTRTIMEO(const struct inode *inode)
 static inline int NFS_STALE(const struct inode *inode)
 {
 	return test_bit(NFS_INO_STALE, &NFS_I(inode)->flags);
+}
+
+static inline struct fscache_cookie *nfs_i_fscache(struct inode *inode)
+{
+#ifdef CONFIG_NFS_FSCACHE
+	return NFS_I(inode)->fscache;
+#else
+	return NULL;
+#endif
 }
 
 static inline __u64 NFS_FILEID(const struct inode *inode)
@@ -588,9 +533,6 @@ extern int nfs_may_open(struct inode *inode, const struct cred *cred, int openfl
 extern void nfs_access_zap_cache(struct inode *inode);
 extern int nfs_access_get_cached(struct inode *inode, const struct cred *cred,
 				 u32 *mask, bool may_block);
-extern int nfs_atomic_open_v23(struct inode *dir, struct dentry *dentry,
-			       struct file *file, unsigned int open_flags,
-			       umode_t mode);
 
 /*
  * linux/fs/nfs/symlink.c
@@ -625,6 +567,7 @@ extern void nfs_complete_unlink(struct dentry *dentry, struct inode *);
  * linux/fs/nfs/write.c
  */
 extern int  nfs_congestion_kb;
+extern int  nfs_writepage(struct page *page, struct writeback_control *wbc);
 extern int  nfs_writepages(struct address_space *, struct writeback_control *);
 extern int  nfs_flush_incompatible(struct file *file, struct folio *folio);
 extern int  nfs_update_folio(struct file *file, struct folio *folio,
@@ -637,12 +580,10 @@ extern int  nfs_update_folio(struct file *file, struct folio *folio,
 extern int nfs_sync_inode(struct inode *inode);
 extern int nfs_wb_all(struct inode *inode);
 extern int nfs_wb_folio(struct inode *inode, struct folio *folio);
-extern int nfs_wb_folio_reclaim(struct inode *inode, struct folio *folio);
 int nfs_wb_folio_cancel(struct inode *inode, struct folio *folio);
 extern int  nfs_commit_inode(struct inode *, int);
 extern struct nfs_commit_data *nfs_commitdata_alloc(void);
 extern void nfs_commit_free(struct nfs_commit_data *data);
-void nfs_commit_begin(struct nfs_mds_commit_info *cinfo);
 bool nfs_commit_end(struct nfs_mds_commit_info *cinfo);
 
 static inline bool nfs_have_writebacks(const struct inode *inode)
@@ -674,20 +615,6 @@ nfs_fileid_to_ino_t(u64 fileid)
 	if (sizeof(ino_t) < sizeof(u64))
 		ino ^= fileid >> (sizeof(u64)-sizeof(ino_t)) * 8;
 	return ino;
-}
-
-static inline void nfs_ooo_clear(struct nfs_inode *nfsi)
-{
-	nfsi->cache_validity &= ~NFS_INO_DATA_INVAL_DEFER;
-	kfree(nfsi->ooo);
-	nfsi->ooo = NULL;
-}
-
-static inline bool nfs_ooo_test(struct nfs_inode *nfsi)
-{
-	return (nfsi->cache_validity & NFS_INO_DATA_INVAL_DEFER) ||
-		(nfsi->ooo && nfsi->ooo->cnt > 0);
-
 }
 
 #define NFS_JUKEBOX_RETRY_TIME (5 * HZ)

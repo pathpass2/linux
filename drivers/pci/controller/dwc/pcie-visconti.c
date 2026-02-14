@@ -121,13 +121,13 @@ static u32 visconti_mpu_readl(struct visconti_pcie *pcie, u32 reg)
 	return readl_relaxed(pcie->mpu_base + reg);
 }
 
-static bool visconti_pcie_link_up(struct dw_pcie *pci)
+static int visconti_pcie_link_up(struct dw_pcie *pci)
 {
 	struct visconti_pcie *pcie = dev_get_drvdata(pci->dev);
 	void __iomem *addr = pcie->ulreg_base;
 	u32 val = readl_relaxed(addr + PCIE_UL_REG_V_PHY_ST_02);
 
-	return val & PCIE_UL_S_L0;
+	return !!(val & PCIE_UL_S_L0);
 }
 
 static int visconti_pcie_start_link(struct dw_pcie *pci)
@@ -236,7 +236,7 @@ static int visconti_pcie_host_init(struct dw_pcie_rp *pp)
 }
 
 static const struct dw_pcie_host_ops visconti_pcie_host_ops = {
-	.init = visconti_pcie_host_init,
+	.host_init = visconti_pcie_host_init,
 };
 
 static int visconti_get_resources(struct platform_device *pdev,

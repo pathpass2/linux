@@ -45,33 +45,47 @@ int mlx5_crdump_enable(struct mlx5_core_dev *dev);
 void mlx5_crdump_disable(struct mlx5_core_dev *dev);
 int mlx5_crdump_collect(struct mlx5_core_dev *dev, u32 *cr_data);
 
+/* TODO move to lib/events.h */
+
+#define PORT_MODULE_EVENT_MODULE_STATUS_MASK 0xF
+#define PORT_MODULE_EVENT_ERROR_TYPE_MASK    0xF
+
+enum port_module_event_status_type {
+	MLX5_MODULE_STATUS_PLUGGED   = 0x1,
+	MLX5_MODULE_STATUS_UNPLUGGED = 0x2,
+	MLX5_MODULE_STATUS_ERROR     = 0x3,
+	MLX5_MODULE_STATUS_DISABLED  = 0x4,
+	MLX5_MODULE_STATUS_NUM,
+};
+
+enum  port_module_event_error_type {
+	MLX5_MODULE_EVENT_ERROR_POWER_BUDGET_EXCEEDED    = 0x0,
+	MLX5_MODULE_EVENT_ERROR_LONG_RANGE_FOR_NON_MLNX  = 0x1,
+	MLX5_MODULE_EVENT_ERROR_BUS_STUCK                = 0x2,
+	MLX5_MODULE_EVENT_ERROR_NO_EEPROM_RETRY_TIMEOUT  = 0x3,
+	MLX5_MODULE_EVENT_ERROR_ENFORCE_PART_NUMBER_LIST = 0x4,
+	MLX5_MODULE_EVENT_ERROR_UNKNOWN_IDENTIFIER       = 0x5,
+	MLX5_MODULE_EVENT_ERROR_HIGH_TEMPERATURE         = 0x6,
+	MLX5_MODULE_EVENT_ERROR_BAD_CABLE                = 0x7,
+	MLX5_MODULE_EVENT_ERROR_PCIE_POWER_SLOT_EXCEEDED = 0xc,
+	MLX5_MODULE_EVENT_ERROR_NUM,
+};
+
+struct mlx5_pme_stats {
+	u64 status_counters[MLX5_MODULE_STATUS_NUM];
+	u64 error_counters[MLX5_MODULE_EVENT_ERROR_NUM];
+};
+
+void mlx5_get_pme_stats(struct mlx5_core_dev *dev, struct mlx5_pme_stats *stats);
+int mlx5_notifier_call_chain(struct mlx5_events *events, unsigned int event, void *data);
+
+static inline struct net *mlx5_core_net(struct mlx5_core_dev *dev)
+{
+	return devlink_net(priv_to_devlink(dev));
+}
+
 static inline struct net_device *mlx5_uplink_netdev_get(struct mlx5_core_dev *mdev)
 {
-	struct mlx5e_resources *mlx5e_res = &mdev->mlx5e_res;
-	struct net_device *netdev;
-
-	mutex_lock(&mlx5e_res->uplink_netdev_lock);
-	netdev = mlx5e_res->uplink_netdev;
-	netdev_hold(netdev, &mlx5e_res->tracker, GFP_KERNEL);
-	mutex_unlock(&mlx5e_res->uplink_netdev_lock);
-	return netdev;
-}
-
-static inline void mlx5_uplink_netdev_put(struct mlx5_core_dev *mdev,
-					  struct net_device *netdev)
-{
-	netdev_put(netdev, &mdev->mlx5e_res.tracker);
-}
-
-struct mlx5_sd;
-
-static inline struct mlx5_sd *mlx5_get_sd(struct mlx5_core_dev *dev)
-{
-	return dev->sd;
-}
-
-static inline void mlx5_set_sd(struct mlx5_core_dev *dev, struct mlx5_sd *sd)
-{
-	dev->sd = sd;
+	return mdev->mlx5e_res.uplink_netdev;
 }
 #endif

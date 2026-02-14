@@ -35,7 +35,7 @@
 
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 		unsigned long, prot, unsigned long, flags, unsigned long, fd,
-		unsigned long, pgoff)
+		off_t, pgoff)
 {
 	if (pgoff & ~PAGE_MASK)
 		return -EINVAL;

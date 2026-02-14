@@ -21,7 +21,6 @@
 #include <asm/cputype.h>
 #include <asm/mpu.h>
 #include <asm/procinfo.h>
-#include <asm/idmap.h>
 
 #include "mm.h"
 
@@ -31,7 +30,7 @@ unsigned long vectors_base;
  * empty_zero_page is a special page that is used for
  * zero-initialized data and COW.
  */
-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+struct page *empty_zero_page;
 EXPORT_SYMBOL(empty_zero_page);
 
 #ifdef CONFIG_ARM_MPU
@@ -156,10 +155,21 @@ void __init adjust_lowmem_bounds(void)
  */
 void __init paging_init(const struct machine_desc *mdesc)
 {
+	void *zero_page;
+
 	early_trap_init((void *)vectors_base);
 	mpu_setup();
 
+	/* allocate the zero page. */
+	zero_page = (void *)memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+	if (!zero_page)
+		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
+		      __func__, PAGE_SIZE, PAGE_SIZE);
+
 	bootmem_init();
+
+	empty_zero_page = virt_to_page(zero_page);
+	flush_dcache_page(empty_zero_page);
 }
 
 /*
@@ -168,12 +178,6 @@ void __init paging_init(const struct machine_desc *mdesc)
 void setup_mm_for_reboot(void)
 {
 }
-
-void flush_dcache_folio(struct folio *folio)
-{
-	__cpuc_flush_dcache_area(folio_address(folio), folio_size(folio));
-}
-EXPORT_SYMBOL(flush_dcache_folio);
 
 void flush_dcache_page(struct page *page)
 {
@@ -240,7 +244,7 @@ void __iomem *pci_remap_cfgspace(resource_size_t res_cookie, size_t size)
 EXPORT_SYMBOL_GPL(pci_remap_cfgspace);
 #endif
 
-void *arch_memremap_wb(phys_addr_t phys_addr, size_t size, unsigned long flags)
+void *arch_memremap_wb(phys_addr_t phys_addr, size_t size)
 {
 	return (void *)phys_addr;
 }

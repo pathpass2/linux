@@ -47,4 +47,10 @@ static inline void prandom_seed_state(struct rnd_state *state, u64 seed)
 	state->s4 = __seed(i, 128U);
 }
 
+/* Pseudo random number generator from numerical recipes. */
+static inline u32 next_pseudo_random32(u32 seed)
+{
+	return seed * 1664525 + 1013904223;
+}
+
 #endif

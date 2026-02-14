@@ -116,6 +116,7 @@ struct hfsc_class {
 	struct net_rate_estimator __rcu *rate_est;
 	struct tcf_proto __rcu *filter_list; /* filter list */
 	struct tcf_block *block;
+	unsigned int	filter_cnt;	/* filter count */
 	unsigned int	level;		/* class level in hierarchy */
 
 	struct hfsc_sched *sched;	/* scheduler data */
@@ -175,11 +176,6 @@ struct hfsc_sched {
 
 #define	HT_INFINITY	0xffffffffffffffffULL	/* infinite time value */
 
-static bool cl_in_el_or_vttree(struct hfsc_class *cl)
-{
-	return ((cl->cl_flags & HFSC_FSC) && cl->cl_nactive) ||
-		((cl->cl_flags & HFSC_RSC) && !RB_EMPTY_NODE(&cl->el_node));
-}
 
 /*
  * eligible tree holds backlogged classes being sorted by their eligible times.
@@ -208,10 +204,7 @@ eltree_insert(struct hfsc_class *cl)
 static inline void
 eltree_remove(struct hfsc_class *cl)
 {
-	if (!RB_EMPTY_NODE(&cl->el_node)) {
-		rb_erase(&cl->el_node, &cl->sched->eligible);
-		RB_CLEAR_NODE(&cl->el_node);
-	}
+	rb_erase(&cl->el_node, &cl->sched->eligible);
 }
 
 static inline void
@@ -835,6 +828,22 @@ update_vf(struct hfsc_class *cl, unsigned int len, u64 cur_time)
 	}
 }
 
+static unsigned int
+qdisc_peek_len(struct Qdisc *sch)
+{
+	struct sk_buff *skb;
+	unsigned int len;
+
+	skb = sch->ops->peek(sch);
+	if (unlikely(skb == NULL)) {
+		qdisc_warn_nonwc("qdisc_peek_len", sch);
+		return 0;
+	}
+	len = qdisc_pkt_len(skb);
+
+	return len;
+}
+
 static void
 hfsc_adjust_levels(struct hfsc_class *cl)
 {
@@ -894,14 +903,6 @@ hfsc_change_usc(struct hfsc_class *cl, struct tc_service_curve *usc,
 	cl->cl_flags |= HFSC_USC;
 }
 
-static void
-hfsc_upgrade_rt(struct hfsc_class *cl)
-{
-	cl->cl_fsc = cl->cl_rsc;
-	rtsc_init(&cl->cl_virtual, &cl->cl_fsc, cl->cl_vt, cl->cl_total);
-	cl->cl_flags |= HFSC_FSC;
-}
-
 static const struct nla_policy hfsc_policy[TCA_HFSC_MAX + 1] = {
 	[TCA_HFSC_RSC]	= { .len = sizeof(struct tc_service_curve) },
 	[TCA_HFSC_FSC]	= { .len = sizeof(struct tc_service_curve) },
@@ -950,7 +951,6 @@ hfsc_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 
 	if (cl != NULL) {
 		int old_flags;
-		int len = 0;
 
 		if (parentid) {
 			if (cl->cl_parent &&
@@ -981,13 +981,9 @@ hfsc_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 		if (usc != NULL)
 			hfsc_change_usc(cl, usc, cur_time);
 
-		if (cl->qdisc->q.qlen != 0)
-			len = qdisc_peek_len(cl->qdisc);
-		/* Check queue length again since some qdisc implementations
-		 * (e.g., netem/codel) might empty the queue during the peek
-		 * operation.
-		 */
 		if (cl->qdisc->q.qlen != 0) {
+			int len = qdisc_peek_len(cl->qdisc);
+
 			if (cl->cl_flags & HFSC_RSC) {
 				if (old_flags & HFSC_RSC)
 					update_ed(cl, len);
@@ -1029,8 +1025,6 @@ hfsc_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 	if (cl == NULL)
 		return -ENOBUFS;
 
-	RB_CLEAR_NODE(&cl->el_node);
-
 	err = tcf_block_get(&cl->block, &cl->filter_list, sch, extack);
 	if (err) {
 		kfree(cl);
@@ -1068,12 +1062,6 @@ hfsc_change_class(struct Qdisc *sch, u32 classid, u32 parentid,
 	cl->cf_tree = RB_ROOT;
 
 	sch_tree_lock(sch);
-	/* Check if the inner class is a misconfigured 'rt' */
-	if (!(parent->cl_flags & HFSC_FSC) && parent != &q->root) {
-		NL_SET_ERR_MSG(extack,
-			       "Forced curve change on parent 'rt' to 'sc'");
-		hfsc_upgrade_rt(parent);
-	}
 	qdisc_class_hash_insert(&q->clhash, &cl->cl_common);
 	list_add_tail(&cl->siblings, &parent->children);
 	if (parent->level == 0)
@@ -1106,11 +1094,8 @@ hfsc_delete_class(struct Qdisc *sch, unsigned long arg,
 	struct hfsc_sched *q = qdisc_priv(sch);
 	struct hfsc_class *cl = (struct hfsc_class *)arg;
 
-	if (cl->level > 0 || qdisc_class_in_use(&cl->cl_common) ||
-	    cl == &q->root) {
-		NL_SET_ERR_MSG(extack, "HFSC class in use");
+	if (cl->level > 0 || cl->filter_cnt > 0 || cl == &q->root)
 		return -EBUSY;
-	}
 
 	sch_tree_lock(sch);
 
@@ -1173,8 +1158,7 @@ hfsc_classify(struct sk_buff *skb, struct Qdisc *sch, int *qerr)
 	}
 
 	/* classification failed, try default class */
-	cl = hfsc_find_class(TC_H_MAKE(TC_H_MAJ(sch->handle),
-				       READ_ONCE(q->defcls)), sch);
+	cl = hfsc_find_class(TC_H_MAKE(TC_H_MAJ(sch->handle), q->defcls), sch);
 	if (cl == NULL || cl->level > 0)
 		return NULL;
 
@@ -1219,8 +1203,7 @@ hfsc_qlen_notify(struct Qdisc *sch, unsigned long arg)
 	/* vttree is now handled in update_vf() so that update_vf(cl, 0, 0)
 	 * needs to be called explicitly to remove a class from vttree.
 	 */
-	if (cl->cl_nactive)
-		update_vf(cl, 0, 0);
+	update_vf(cl, 0, 0);
 	if (cl->cl_flags & HFSC_RSC)
 		eltree_remove(cl);
 }
@@ -1240,7 +1223,7 @@ hfsc_bind_tcf(struct Qdisc *sch, unsigned long parent, u32 classid)
 	if (cl != NULL) {
 		if (p != NULL && p->level <= cl->level)
 			return 0;
-		qdisc_class_get(&cl->cl_common);
+		cl->filter_cnt++;
 	}
 
 	return (unsigned long)cl;
@@ -1251,7 +1234,7 @@ hfsc_unbind_tcf(struct Qdisc *sch, unsigned long arg)
 {
 	struct hfsc_class *cl = (struct hfsc_class *)arg;
 
-	qdisc_class_put(&cl->cl_common);
+	cl->filter_cnt--;
 }
 
 static struct tcf_block *hfsc_tcf_block(struct Qdisc *sch, unsigned long arg,
@@ -1444,7 +1427,9 @@ hfsc_change_qdisc(struct Qdisc *sch, struct nlattr *opt,
 		return -EINVAL;
 	qopt = nla_data(opt);
 
-	WRITE_ONCE(q->defcls, qopt->defcls);
+	sch_tree_lock(sch);
+	q->defcls = qopt->defcls;
+	sch_tree_unlock(sch);
 
 	return 0;
 }
@@ -1524,7 +1509,7 @@ hfsc_dump_qdisc(struct Qdisc *sch, struct sk_buff *skb)
 	unsigned char *b = skb_tail_pointer(skb);
 	struct tc_hfsc_qopt qopt;
 
-	qopt.defcls = READ_ONCE(q->defcls);
+	qopt.defcls = q->defcls;
 	if (nla_put(skb, TCA_OPTIONS, sizeof(qopt), &qopt))
 		goto nla_put_failure;
 	return skb->len;
@@ -1560,10 +1545,7 @@ hfsc_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 		return err;
 	}
 
-	sch->qstats.backlog += len;
-	sch->q.qlen++;
-
-	if (first && !cl_in_el_or_vttree(cl)) {
+	if (first) {
 		if (cl->cl_flags & HFSC_RSC)
 			init_ed(cl, len);
 		if (cl->cl_flags & HFSC_FSC)
@@ -1577,6 +1559,9 @@ hfsc_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 			cl->qdisc->ops->peek(cl->qdisc);
 
 	}
+
+	sch->qstats.backlog += len;
+	sch->q.qlen++;
 
 	return NET_XMIT_SUCCESS;
 }
@@ -1632,16 +1617,10 @@ hfsc_dequeue(struct Qdisc *sch)
 		if (cl->qdisc->q.qlen != 0) {
 			/* update ed */
 			next_len = qdisc_peek_len(cl->qdisc);
-			/* Check queue length again since some qdisc implementations
-			 * (e.g., netem/codel) might empty the queue during the peek
-			 * operation.
-			 */
-			if (cl->qdisc->q.qlen != 0) {
-				if (realtime)
-					update_ed(cl, next_len);
-				else
-					update_d(cl, next_len);
-			}
+			if (realtime)
+				update_ed(cl, next_len);
+			else
+				update_d(cl, next_len);
 		} else {
 			/* the class becomes passive */
 			eltree_remove(cl);
@@ -1684,7 +1663,6 @@ static struct Qdisc_ops hfsc_qdisc_ops __read_mostly = {
 	.priv_size	= sizeof(struct hfsc_sched),
 	.owner		= THIS_MODULE
 };
-MODULE_ALIAS_NET_SCH("hfsc");
 
 static int __init
 hfsc_init(void)
@@ -1699,6 +1677,5 @@ hfsc_cleanup(void)
 }
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Hierarchical Fair Service Curve scheduler");
 module_init(hfsc_init);
 module_exit(hfsc_cleanup);

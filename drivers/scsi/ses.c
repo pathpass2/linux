@@ -9,7 +9,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/enclosure.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -42,8 +42,9 @@ static bool ses_page2_supported(struct enclosure_device *edev)
 	return (ses_dev->page2 != NULL);
 }
 
-static int ses_probe(struct scsi_device *sdev)
+static int ses_probe(struct device *dev)
 {
+	struct scsi_device *sdev = to_scsi_device(dev);
 	int err = -ENODEV;
 
 	if (sdev->type != TYPE_ENCLOSURE)
@@ -86,32 +87,19 @@ static int ses_recv_diag(struct scsi_device *sdev, int page_code,
 		0
 	};
 	unsigned char recv_page_code;
-	struct scsi_failure failure_defs[] = {
-		{
-			.sense = UNIT_ATTENTION,
-			.asc = 0x29,
-			.ascq = SCMD_FAILURE_ASCQ_ANY,
-			.allowed = SES_RETRIES,
-			.result = SAM_STAT_CHECK_CONDITION,
-		},
-		{
-			.sense = NOT_READY,
-			.asc = SCMD_FAILURE_ASC_ANY,
-			.ascq = SCMD_FAILURE_ASCQ_ANY,
-			.allowed = SES_RETRIES,
-			.result = SAM_STAT_CHECK_CONDITION,
-		},
-		{}
-	};
-	struct scsi_failures failures = {
-		.failure_definitions = failure_defs,
-	};
+	unsigned int retries = SES_RETRIES;
+	struct scsi_sense_hdr sshdr;
 	const struct scsi_exec_args exec_args = {
-		.failures = &failures,
+		.sshdr = &sshdr,
 	};
 
-	ret = scsi_execute_cmd(sdev, cmd, REQ_OP_DRV_IN, buf, bufflen,
-			       SES_TIMEOUT, 1, &exec_args);
+	do {
+		ret = scsi_execute_cmd(sdev, cmd, REQ_OP_DRV_IN, buf, bufflen,
+				       SES_TIMEOUT, 1, &exec_args);
+	} while (ret > 0 && --retries && scsi_sense_valid(&sshdr) &&
+		 (sshdr.sense_key == NOT_READY ||
+		  (sshdr.sense_key == UNIT_ATTENTION && sshdr.asc == 0x29)));
+
 	if (unlikely(ret))
 		return ret;
 
@@ -143,32 +131,19 @@ static int ses_send_diag(struct scsi_device *sdev, int page_code,
 		bufflen & 0xff,
 		0
 	};
-	struct scsi_failure failure_defs[] = {
-		{
-			.sense = UNIT_ATTENTION,
-			.asc = 0x29,
-			.ascq = SCMD_FAILURE_ASCQ_ANY,
-			.allowed = SES_RETRIES,
-			.result = SAM_STAT_CHECK_CONDITION,
-		},
-		{
-			.sense = NOT_READY,
-			.asc = SCMD_FAILURE_ASC_ANY,
-			.ascq = SCMD_FAILURE_ASCQ_ANY,
-			.allowed = SES_RETRIES,
-			.result = SAM_STAT_CHECK_CONDITION,
-		},
-		{}
-	};
-	struct scsi_failures failures = {
-		.failure_definitions = failure_defs,
-	};
+	struct scsi_sense_hdr sshdr;
+	unsigned int retries = SES_RETRIES;
 	const struct scsi_exec_args exec_args = {
-		.failures = &failures,
+		.sshdr = &sshdr,
 	};
 
-	result = scsi_execute_cmd(sdev, cmd, REQ_OP_DRV_OUT, buf, bufflen,
-				  SES_TIMEOUT, 1, &exec_args);
+	do {
+		result = scsi_execute_cmd(sdev, cmd, REQ_OP_DRV_OUT, buf,
+					  bufflen, SES_TIMEOUT, 1, &exec_args);
+	} while (result > 0 && --retries && scsi_sense_valid(&sshdr) &&
+		 (sshdr.sense_key == NOT_READY ||
+		  (sshdr.sense_key == UNIT_ATTENTION && sshdr.asc == 0x29)));
+
 	if (result)
 		sdev_printk(KERN_ERR, sdev, "SEND DIAGNOSTIC result: %8x\n",
 			    result);
@@ -534,6 +509,9 @@ static int ses_enclosure_find_by_addr(struct enclosure_device *edev,
 	int i;
 	struct ses_component *scomp;
 
+	if (!edev->component[0].scratch)
+		return 0;
+
 	for (i = 0; i < edev->components; i++) {
 		scomp = edev->component[i].scratch;
 		if (scomp->addr != efd->addr)
@@ -624,10 +602,8 @@ static void ses_enclosure_data_process(struct enclosure_device *edev,
 						components++,
 						type_ptr[0],
 						name);
-				else if (components < edev->components)
-					ecomp = &edev->component[components++];
 				else
-					ecomp = ERR_PTR(-EINVAL);
+					ecomp = &edev->component[components++];
 
 				if (!IS_ERR(ecomp)) {
 					if (addl_desc_ptr) {
@@ -687,7 +663,8 @@ static void ses_match_to_enclosure(struct enclosure_device *edev,
 	}
 }
 
-static int ses_intf_add(struct device *cdev)
+static int ses_intf_add(struct device *cdev,
+			struct class_interface *intf)
 {
 	struct scsi_device *sdev = to_scsi_device(cdev->parent);
 	struct scsi_device *tmp_sdev;
@@ -757,6 +734,11 @@ static int ses_intf_add(struct device *cdev)
 			components += type_ptr[1];
 	}
 
+	if (components == 0) {
+		sdev_printk(KERN_WARNING, sdev, "enclosure has no enumerated components\n");
+		goto err_free;
+	}
+
 	ses_dev->page1 = buf;
 	ses_dev->page1_len = len;
 	buf = NULL;
@@ -798,11 +780,9 @@ static int ses_intf_add(struct device *cdev)
 		buf = NULL;
 	}
 page2_not_supported:
-	if (components > 0) {
-		scomp = kcalloc(components, sizeof(struct ses_component), GFP_KERNEL);
-		if (!scomp)
-			goto err_free;
-	}
+	scomp = kcalloc(components, sizeof(struct ses_component), GFP_KERNEL);
+	if (!scomp)
+		goto err_free;
 
 	edev = enclosure_register(cdev->parent, dev_name(&sdev->sdev_gendev),
 				  components, &ses_enclosure_callbacks);
@@ -846,6 +826,11 @@ page2_not_supported:
 	return err;
 }
 
+static int ses_remove(struct device *dev)
+{
+	return 0;
+}
+
 static void ses_intf_remove_component(struct scsi_device *sdev)
 {
 	struct enclosure_device *edev, *prev = NULL;
@@ -884,7 +869,8 @@ static void ses_intf_remove_enclosure(struct scsi_device *sdev)
 	enclosure_unregister(edev);
 }
 
-static void ses_intf_remove(struct device *cdev)
+static void ses_intf_remove(struct device *cdev,
+			    struct class_interface *intf)
 {
 	struct scsi_device *sdev = to_scsi_device(cdev->parent);
 
@@ -900,9 +886,11 @@ static struct class_interface ses_interface = {
 };
 
 static struct scsi_driver ses_template = {
-	.probe = ses_probe,
 	.gendrv = {
 		.name		= "ses",
+		.owner		= THIS_MODULE,
+		.probe		= ses_probe,
+		.remove		= ses_remove,
 	},
 };
 
@@ -914,7 +902,7 @@ static int __init ses_init(void)
 	if (err)
 		return err;
 
-	err = scsi_register_driver(&ses_template);
+	err = scsi_register_driver(&ses_template.gendrv);
 	if (err)
 		goto out_unreg;
 
@@ -927,7 +915,7 @@ static int __init ses_init(void)
 
 static void __exit ses_exit(void)
 {
-	scsi_unregister_driver(&ses_template);
+	scsi_unregister_driver(&ses_template.gendrv);
 	scsi_unregister_interface(&ses_interface);
 }
 

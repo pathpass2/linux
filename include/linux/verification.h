@@ -8,7 +8,6 @@
 #ifndef _LINUX_VERIFICATION_H
 #define _LINUX_VERIFICATION_H
 
-#include <linux/errno.h>
 #include <linux/types.h>
 
 /*
@@ -36,9 +35,10 @@ enum key_being_used_for {
 	VERIFYING_KEY_SIGNATURE,
 	VERIFYING_KEY_SELF_SIGNATURE,
 	VERIFYING_UNSPECIFIED_SIGNATURE,
-	VERIFYING_BPF_SIGNATURE,
 	NR__KEY_BEING_USED_FOR
 };
+extern const char *const key_being_used_for[NR__KEY_BEING_USED_FOR];
+
 #ifdef CONFIG_SYSTEM_DATA_VERIFICATION
 
 struct key;

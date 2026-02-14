@@ -504,7 +504,6 @@ static void aty128_bl_set_power(struct fb_info *info, int power);
 
 static const struct fb_ops aty128fb_ops = {
 	.owner		= THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_check_var	= aty128fb_check_var,
 	.fb_set_par	= aty128fb_set_par,
 	.fb_setcolreg	= aty128fb_setcolreg,
@@ -512,6 +511,9 @@ static const struct fb_ops aty128fb_ops = {
 	.fb_blank	= aty128fb_blank,
 	.fb_ioctl	= aty128fb_ioctl,
 	.fb_sync	= aty128fb_sync,
+	.fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
 };
 
     /*
@@ -1299,11 +1301,11 @@ static void aty128_set_lcd_enable(struct aty128fb_par *par, int on)
 		reg &= ~LVDS_DISPLAY_DIS;
 		aty_st_le32(LVDS_GEN_CNTL, reg);
 #ifdef CONFIG_FB_ATY128_BACKLIGHT
-		aty128_bl_set_power(info, BACKLIGHT_POWER_ON);
+		aty128_bl_set_power(info, FB_BLANK_UNBLANK);
 #endif
 	} else {
 #ifdef CONFIG_FB_ATY128_BACKLIGHT
-		aty128_bl_set_power(info, BACKLIGHT_POWER_OFF);
+		aty128_bl_set_power(info, FB_BLANK_POWERDOWN);
 #endif
 		reg = aty_ld_le32(LVDS_GEN_CNTL);
 		reg |= LVDS_DISPLAY_DIS;
@@ -1844,7 +1846,7 @@ static void aty128_bl_init(struct aty128fb_par *par)
 	memset(&props, 0, sizeof(struct backlight_properties));
 	props.type = BACKLIGHT_RAW;
 	props.max_brightness = FB_BACKLIGHT_LEVELS - 1;
-	bd = backlight_device_register(name, info->device, par, &aty128_bl_data,
+	bd = backlight_device_register(name, info->dev, par, &aty128_bl_data,
 				       &props);
 	if (IS_ERR(bd)) {
 		info->bl_dev = NULL;
@@ -1858,7 +1860,7 @@ static void aty128_bl_init(struct aty128fb_par *par)
 		219 * FB_BACKLIGHT_MAX / MAX_LEVEL);
 
 	bd->props.brightness = bd->props.max_brightness;
-	bd->props.power = BACKLIGHT_POWER_ON;
+	bd->props.power = FB_BLANK_UNBLANK;
 	backlight_update_status(bd);
 
 	printk("aty128: Backlight initialized (%s)\n", name);
@@ -1925,6 +1927,7 @@ static int aty128_init(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* fill in info */
 	info->fbops = &aty128fb_ops;
+	info->flags = FBINFO_FLAG_DEFAULT;
 
 	par->lcd_on = default_lcd_on;
 	par->crt_on = default_crt_on;
@@ -2025,13 +2028,13 @@ static int aty128_init(struct pci_dev *pdev, const struct pci_device_id *ent)
 	par->asleep = 0;
 	par->lock_blank = 0;
 
-	if (register_framebuffer(info) < 0)
-		return 0;
-
 #ifdef CONFIG_FB_ATY128_BACKLIGHT
 	if (backlight)
 		aty128_bl_init(par);
 #endif
+
+	if (register_framebuffer(info) < 0)
+		return 0;
 
 	fb_info(info, "%s frame buffer device on %s\n",
 		info->fix.id, video_card);
@@ -2164,11 +2167,11 @@ static void aty128_remove(struct pci_dev *pdev)
 
 	par = info->par;
 
+	unregister_framebuffer(info);
+
 #ifdef CONFIG_FB_ATY128_BACKLIGHT
 	aty128_bl_exit(info->bl_dev);
 #endif
-
-	unregister_framebuffer(info);
 
 	arch_phys_wc_del(par->wc_cookie);
 	iounmap(par->regbase);

@@ -32,7 +32,7 @@ struct vc4_dummy_output *vc4_dummy_output(struct kunit *test,
 	struct drm_encoder *enc;
 	int ret;
 
-	dummy_output = drmm_kzalloc(drm, sizeof(*dummy_output), GFP_KERNEL);
+	dummy_output = kunit_kzalloc(test, sizeof(*dummy_output), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, dummy_output);
 	dummy_output->encoder.type = vc4_encoder_type;
 
@@ -61,19 +61,6 @@ static const struct drm_display_mode default_mode = {
 	DRM_SIMPLE_MODE(640, 480, 64, 48)
 };
 
-/**
- * vc4_mock_atomic_add_output() - Enables an output in a state
- * @test: The test context object
- * @state: Atomic state to enable the output in.
- * @type: Type of the output encoder
- *
- * Adds an output CRTC and connector to a state, and enables them.
- *
- * Returns:
- * 0 on success, a negative error code on failure. If the error is
- * EDEADLK, the entire atomic sequence must be restarted. All other
- * errors are fatal.
- */
 int vc4_mock_atomic_add_output(struct kunit *test,
 			       struct drm_atomic_state *state,
 			       enum vc4_encoder_type type)
@@ -88,49 +75,30 @@ int vc4_mock_atomic_add_output(struct kunit *test,
 	int ret;
 
 	encoder = vc4_find_encoder_by_type(drm, type);
-	if (!encoder)
-		return -ENODEV;
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, encoder);
 
 	crtc = vc4_find_crtc_for_encoder(test, drm, encoder);
-	if (!crtc)
-		return -ENODEV;
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, crtc);
 
-	output = encoder_to_vc4_dummy_output(encoder);
+	output = container_of(encoder, struct vc4_dummy_output, encoder.base);
 	conn = &output->connector;
 	conn_state = drm_atomic_get_connector_state(state, conn);
-	if (IS_ERR(conn_state))
-		return PTR_ERR(conn_state);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, conn_state);
 
 	ret = drm_atomic_set_crtc_for_connector(conn_state, crtc);
-	if (ret)
-		return ret;
+	KUNIT_EXPECT_EQ(test, ret, 0);
 
 	crtc_state = drm_atomic_get_crtc_state(state, crtc);
-	if (IS_ERR(crtc_state))
-		return PTR_ERR(crtc_state);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, crtc_state);
 
 	ret = drm_atomic_set_mode_for_crtc(crtc_state, &default_mode);
-	if (ret)
-		return ret;
+	KUNIT_EXPECT_EQ(test, ret, 0);
 
 	crtc_state->active = true;
 
 	return 0;
 }
 
-/**
- * vc4_mock_atomic_del_output() - Disables an output in a state
- * @test: The test context object
- * @state: Atomic state to disable the output in.
- * @type: Type of the output encoder
- *
- * Adds an output CRTC and connector to a state, and disables them.
- *
- * Returns:
- * 0 on success, a negative error code on failure. If the error is
- * EDEADLK, the entire atomic sequence must be restarted. All other
- * errors are fatal.
- */
 int vc4_mock_atomic_del_output(struct kunit *test,
 			       struct drm_atomic_state *state,
 			       enum vc4_encoder_type type)
@@ -145,32 +113,26 @@ int vc4_mock_atomic_del_output(struct kunit *test,
 	int ret;
 
 	encoder = vc4_find_encoder_by_type(drm, type);
-	if (!encoder)
-		return -ENODEV;
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, encoder);
 
 	crtc = vc4_find_crtc_for_encoder(test, drm, encoder);
-	if (!crtc)
-		return -ENODEV;
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, crtc);
 
 	crtc_state = drm_atomic_get_crtc_state(state, crtc);
-	if (IS_ERR(crtc_state))
-		return PTR_ERR(crtc_state);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, crtc_state);
 
 	crtc_state->active = false;
 
 	ret = drm_atomic_set_mode_for_crtc(crtc_state, NULL);
-	if (ret)
-		return ret;
+	KUNIT_ASSERT_EQ(test, ret, 0);
 
-	output = encoder_to_vc4_dummy_output(encoder);
+	output = container_of(encoder, struct vc4_dummy_output, encoder.base);
 	conn = &output->connector;
 	conn_state = drm_atomic_get_connector_state(state, conn);
-	if (IS_ERR(conn_state))
-		return PTR_ERR(conn_state);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, conn_state);
 
 	ret = drm_atomic_set_crtc_for_connector(conn_state, NULL);
-	if (ret)
-		return ret;
+	KUNIT_ASSERT_EQ(test, ret, 0);
 
 	return 0;
 }

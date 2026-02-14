@@ -30,12 +30,19 @@ static int ftrace_modify_code(unsigned long pc, u32 old, u32 new, bool validate)
 	return 0;
 }
 
-#ifdef CONFIG_MODULES
-static bool reachable_by_bl(unsigned long addr, unsigned long pc)
-{
-	long offset = (long)addr - (long)pc;
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
 
-	return offset >= -SZ_128M && offset < SZ_128M;
+#ifdef CONFIG_MODULES
+static inline int __get_mod(struct module **mod, unsigned long addr)
+{
+	preempt_disable();
+	*mod = __module_text_address(addr);
+	preempt_enable();
+
+	if (WARN_ON(!(*mod)))
+		return -EINVAL;
+
+	return 0;
 }
 
 static struct plt_entry *get_ftrace_plt(struct module *mod, unsigned long addr)
@@ -51,87 +58,51 @@ static struct plt_entry *get_ftrace_plt(struct module *mod, unsigned long addr)
 	return NULL;
 }
 
-/*
- * Find the address the callsite must branch to in order to reach '*addr'.
- *
- * Due to the limited range of 'bl' instruction, modules may be placed too far
- * away to branch directly and we must use a PLT.
- *
- * Returns true when '*addr' contains a reachable target address, or has been
- * modified to contain a PLT address. Returns false otherwise.
- */
-static bool ftrace_find_callable_addr(struct dyn_ftrace *rec, struct module *mod, unsigned long *addr)
+static unsigned long get_plt_addr(struct module *mod, unsigned long addr)
 {
-	unsigned long pc = rec->ip + LOONGARCH_INSN_SIZE;
 	struct plt_entry *plt;
 
-	/*
-	 * If a custom trampoline is unreachable, rely on the ftrace_regs_caller
-	 * trampoline which knows how to indirectly reach that trampoline through
-	 * ops->direct_call.
-	 */
-	if (*addr != FTRACE_ADDR && *addr != FTRACE_REGS_ADDR && !reachable_by_bl(*addr, pc))
-		*addr = FTRACE_REGS_ADDR;
-
-	/*
-	 * When the target is within range of the 'bl' instruction, use 'addr'
-	 * as-is and branch to that directly.
-	 */
-	if (reachable_by_bl(*addr, pc))
-		return true;
-
-	/*
-	 * 'mod' is only set at module load time, but if we end up
-	 * dealing with an out-of-range condition, we can assume it
-	 * is due to a module being loaded far away from the kernel.
-	 *
-	 * NOTE: __module_text_address() must be called within a RCU read
-	 * section, but we can rely on ftrace_lock to ensure that 'mod'
-	 * retains its validity throughout the remainder of this code.
-	 */
-	if (!mod) {
-		scoped_guard(rcu)
-			mod = __module_text_address(pc);
-	}
-
-	if (WARN_ON(!mod))
-		return false;
-
-	plt = get_ftrace_plt(mod, *addr);
+	plt = get_ftrace_plt(mod, addr);
 	if (!plt) {
-		pr_err("ftrace: no module PLT for %ps\n", (void *)*addr);
-		return false;
+		pr_err("ftrace: no module PLT for %ps\n", (void *)addr);
+		return -EINVAL;
 	}
 
-	*addr = (unsigned long)plt;
-	return true;
-}
-#else /* !CONFIG_MODULES */
-static bool ftrace_find_callable_addr(struct dyn_ftrace *rec, struct module *mod, unsigned long *addr)
-{
-	return true;
+	return (unsigned long)plt;
 }
 #endif
 
-#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
 int ftrace_modify_call(struct dyn_ftrace *rec, unsigned long old_addr, unsigned long addr)
 {
 	u32 old, new;
 	unsigned long pc;
+	long offset __maybe_unused;
 
 	pc = rec->ip + LOONGARCH_INSN_SIZE;
 
-	if (!ftrace_find_callable_addr(rec, NULL, &addr))
-		return -EINVAL;
+#ifdef CONFIG_MODULES
+	offset = (long)pc - (long)addr;
 
-	if (!ftrace_find_callable_addr(rec, NULL, &old_addr))
-		return -EINVAL;
+	if (offset < -SZ_128M || offset >= SZ_128M) {
+		int ret;
+		struct module *mod;
+
+		ret = __get_mod(&mod, pc);
+		if (ret)
+			return ret;
+
+		addr = get_plt_addr(mod, addr);
+
+		old_addr = get_plt_addr(mod, old_addr);
+	}
+#endif
 
 	new = larch_insn_gen_bl(pc, addr);
 	old = larch_insn_gen_bl(pc, old_addr);
 
 	return ftrace_modify_code(pc, old, new, true);
 }
+
 #endif /* CONFIG_DYNAMIC_FTRACE_WITH_REGS */
 
 int ftrace_update_ftrace_func(ftrace_func_t func)
@@ -182,11 +153,24 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 {
 	u32 old, new;
 	unsigned long pc;
+	long offset __maybe_unused;
 
 	pc = rec->ip + LOONGARCH_INSN_SIZE;
 
-	if (!ftrace_find_callable_addr(rec, NULL, &addr))
-		return -EINVAL;
+#ifdef CONFIG_MODULES
+	offset = (long)pc - (long)addr;
+
+	if (offset < -SZ_128M || offset >= SZ_128M) {
+		int ret;
+		struct module *mod;
+
+		ret = __get_mod(&mod, pc);
+		if (ret)
+			return ret;
+
+		addr = get_plt_addr(mod, addr);
+	}
+#endif
 
 	old = larch_insn_gen_nop();
 	new = larch_insn_gen_bl(pc, addr);
@@ -198,11 +182,24 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec, unsigned long ad
 {
 	u32 old, new;
 	unsigned long pc;
+	long offset __maybe_unused;
 
 	pc = rec->ip + LOONGARCH_INSN_SIZE;
 
-	if (!ftrace_find_callable_addr(rec, NULL, &addr))
-		return -EINVAL;
+#ifdef CONFIG_MODULES
+	offset = (long)pc - (long)addr;
+
+	if (offset < -SZ_128M || offset >= SZ_128M) {
+		int ret;
+		struct module *mod;
+
+		ret = __get_mod(&mod, pc);
+		if (ret)
+			return ret;
+
+		addr = get_plt_addr(mod, addr);
+	}
+#endif
 
 	new = larch_insn_gen_nop();
 	old = larch_insn_gen_bl(pc, addr);
@@ -240,18 +237,10 @@ void prepare_ftrace_return(unsigned long self_addr, unsigned long *parent)
 void ftrace_graph_func(unsigned long ip, unsigned long parent_ip,
 		       struct ftrace_ops *op, struct ftrace_regs *fregs)
 {
-	struct pt_regs *regs = &arch_ftrace_regs(fregs)->regs;
+	struct pt_regs *regs = &fregs->regs;
 	unsigned long *parent = (unsigned long *)&regs->regs[1];
-	unsigned long return_hooker = (unsigned long)&return_to_handler;
-	unsigned long old;
 
-	if (unlikely(atomic_read(&current->tracing_graph_pause)))
-		return;
-
-	old = *parent;
-
-	if (!function_graph_enter_regs(old, ip, 0, parent, fregs))
-		*parent = return_hooker;
+	prepare_ftrace_return(ip, (unsigned long *)parent);
 }
 #else
 static int ftrace_modify_graph_caller(bool enable)
@@ -293,9 +282,6 @@ void kprobe_ftrace_handler(unsigned long ip, unsigned long parent_ip,
 	struct pt_regs *regs;
 	struct kprobe *p;
 	struct kprobe_ctlblk *kcb;
-
-	if (unlikely(kprobe_ftrace_disabled))
-		return;
 
 	bit = ftrace_test_recursion_trylock(ip, parent_ip);
 	if (bit < 0)

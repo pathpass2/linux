@@ -11,10 +11,10 @@
 
 #include <uapi/asm/types.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 typedef __vector128 vector128;
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_POWERPC_TYPES_H */

@@ -133,7 +133,6 @@ static u32 esdhc_readl_fixup(struct sdhci_host *host,
 			return ret;
 		}
 	}
-
 	/*
 	 * The DAT[3:0] line signal levels and the CMD line signal level are
 	 * not compatible with standard SDHC register. The line signal levels
@@ -145,16 +144,6 @@ static u32 esdhc_readl_fixup(struct sdhci_host *host,
 		ret = value & 0x000fffff;
 		ret |= (value >> 4) & SDHCI_DATA_LVL_MASK;
 		ret |= (value << 1) & SDHCI_CMD_LVL;
-
-		/*
-		 * Some controllers have unreliable Data Line Active
-		 * bit for commands with busy signal. This affects
-		 * Command Inhibit (data) bit. Just ignore it since
-		 * MMC core driver has already polled card status
-		 * with CMD13 after any command with busy siganl.
-		 */
-		if (esdhc->quirk_ignore_data_inhibit)
-			ret &= ~SDHCI_DATA_INHIBIT;
 		return ret;
 	}
 
@@ -166,6 +155,19 @@ static u32 esdhc_readl_fixup(struct sdhci_host *host,
 	if (spec_reg == SDHCI_CAPABILITIES_1) {
 		ret = value & ~(SDHCI_SUPPORT_SDR50 | SDHCI_SUPPORT_SDR104 |
 				SDHCI_SUPPORT_DDR50);
+		return ret;
+	}
+
+	/*
+	 * Some controllers have unreliable Data Line Active
+	 * bit for commands with busy signal. This affects
+	 * Command Inhibit (data) bit. Just ignore it since
+	 * MMC core driver has already polled card status
+	 * with CMD13 after any command with busy siganl.
+	 */
+	if ((spec_reg == SDHCI_PRESENT_STATE) &&
+	(esdhc->quirk_ignore_data_inhibit == true)) {
+		ret = value & ~SDHCI_DATA_INHIBIT;
 		return ret;
 	}
 
@@ -1234,6 +1236,7 @@ static u32 esdhc_irq(struct sdhci_host *host, u32 intmask)
 	return intmask;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static u32 esdhc_proctl;
 static int esdhc_of_suspend(struct device *dev)
 {
@@ -1259,8 +1262,11 @@ static int esdhc_of_resume(struct device *dev)
 	}
 	return ret;
 }
+#endif
 
-static DEFINE_SIMPLE_DEV_PM_OPS(esdhc_of_dev_pm_ops, esdhc_of_suspend, esdhc_of_resume);
+static SIMPLE_DEV_PM_OPS(esdhc_of_dev_pm_ops,
+			esdhc_of_suspend,
+			esdhc_of_resume);
 
 static const struct sdhci_ops sdhci_esdhc_be_ops = {
 	.read_l = esdhc_be_readl,
@@ -1495,11 +1501,18 @@ static int sdhci_esdhc_probe(struct platform_device *pdev)
 	/* call to generic mmc_of_parse to support additional capabilities */
 	ret = mmc_of_parse(host->mmc);
 	if (ret)
-		return ret;
+		goto err;
 
 	mmc_of_parse_voltage(host->mmc, &host->ocr_mask);
 
-	return sdhci_add_host(host);
+	ret = sdhci_add_host(host);
+	if (ret)
+		goto err;
+
+	return 0;
+ err:
+	sdhci_pltfm_free(pdev);
+	return ret;
 }
 
 static struct platform_driver sdhci_esdhc_driver = {
@@ -1507,10 +1520,10 @@ static struct platform_driver sdhci_esdhc_driver = {
 		.name = "sdhci-esdhc",
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = sdhci_esdhc_of_match,
-		.pm = pm_sleep_ptr(&esdhc_of_dev_pm_ops),
+		.pm = &esdhc_of_dev_pm_ops,
 	},
 	.probe = sdhci_esdhc_probe,
-	.remove = sdhci_pltfm_remove,
+	.remove = sdhci_pltfm_unregister,
 };
 
 module_platform_driver(sdhci_esdhc_driver);

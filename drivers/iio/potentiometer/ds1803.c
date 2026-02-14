@@ -13,6 +13,7 @@
  */
 
 #include <linux/err.h>
+#include <linux/export.h>
 #include <linux/i2c.h>
 #include <linux/iio/iio.h>
 #include <linux/module.h>
@@ -203,6 +204,7 @@ static const struct iio_info ds1803_info = {
 
 static int ds1803_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct device *dev = &client->dev;
 	struct ds1803_data *data;
 	struct iio_dev *indio_dev;
@@ -215,7 +217,9 @@ static int ds1803_probe(struct i2c_client *client)
 
 	data = iio_priv(indio_dev);
 	data->client = client;
-	data->cfg = i2c_get_match_data(client);
+	data->cfg = device_get_match_data(dev);
+	if (!data->cfg)
+		data->cfg = &ds1803_cfg[id->driver_data];
 
 	indio_dev->info = &ds1803_info;
 	indio_dev->channels = data->cfg->channels;
@@ -230,16 +234,16 @@ static const struct of_device_id ds1803_dt_ids[] = {
 	{ .compatible = "maxim,ds1803-050", .data = &ds1803_cfg[DS1803_050] },
 	{ .compatible = "maxim,ds1803-100", .data = &ds1803_cfg[DS1803_100] },
 	{ .compatible = "maxim,ds3502", .data = &ds1803_cfg[DS3502] },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(of, ds1803_dt_ids);
 
 static const struct i2c_device_id ds1803_id[] = {
-	{ "ds1803-010", (kernel_ulong_t)&ds1803_cfg[DS1803_010] },
-	{ "ds1803-050", (kernel_ulong_t)&ds1803_cfg[DS1803_050] },
-	{ "ds1803-100", (kernel_ulong_t)&ds1803_cfg[DS1803_100] },
-	{ "ds3502", (kernel_ulong_t)&ds1803_cfg[DS3502] },
-	{ }
+	{ "ds1803-010", DS1803_010 },
+	{ "ds1803-050", DS1803_050 },
+	{ "ds1803-100", DS1803_100 },
+	{ "ds3502", DS3502 },
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, ds1803_id);
 
@@ -248,7 +252,7 @@ static struct i2c_driver ds1803_driver = {
 		.name	= "ds1803",
 		.of_match_table = ds1803_dt_ids,
 	},
-	.probe		= ds1803_probe,
+	.probe_new	= ds1803_probe,
 	.id_table	= ds1803_id,
 };
 

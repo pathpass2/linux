@@ -104,9 +104,6 @@ Driver Support
 .. kernel-doc:: include/linux/netdevice.h
    :internal:
 
-.. kernel-doc:: include/net/net_shaper.h
-   :internal:
-
 PHY Support
 -----------
 

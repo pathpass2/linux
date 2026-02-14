@@ -97,17 +97,16 @@ static int clk_mt8192_aud_probe(struct platform_device *pdev)
 	return r;
 }
 
-static void clk_mt8192_aud_remove(struct platform_device *pdev)
+static int clk_mt8192_aud_remove(struct platform_device *pdev)
 {
 	of_platform_depopulate(&pdev->dev);
-	mtk_clk_simple_remove(pdev);
+	return mtk_clk_simple_remove(pdev);
 }
 
 static const struct of_device_id of_match_clk_mt8192_aud[] = {
 	{ .compatible = "mediatek,mt8192-audsys", .data = &aud_desc },
 	{ /* sentinel */ }
 };
-MODULE_DEVICE_TABLE(of, of_match_clk_mt8192_aud);
 
 static struct platform_driver clk_mt8192_aud_drv = {
 	.probe = clk_mt8192_aud_probe,
@@ -117,7 +116,5 @@ static struct platform_driver clk_mt8192_aud_drv = {
 		.of_match_table = of_match_clk_mt8192_aud,
 	},
 };
-module_platform_driver(clk_mt8192_aud_drv);
 
-MODULE_DESCRIPTION("MediaTek MT8192 audio clocks driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(clk_mt8192_aud_drv);

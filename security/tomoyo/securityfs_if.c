@@ -229,11 +229,11 @@ static void __init tomoyo_create_entry(const char *name, const umode_t mode,
 }
 
 /**
- * tomoyo_interface_init - Initialize /sys/kernel/security/tomoyo/ interface.
+ * tomoyo_initerface_init - Initialize /sys/kernel/security/tomoyo/ interface.
  *
  * Returns 0.
  */
-int __init tomoyo_interface_init(void)
+static int __init tomoyo_initerface_init(void)
 {
 	struct tomoyo_domain_info *domain;
 	struct dentry *tomoyo_dir;
@@ -269,3 +269,5 @@ int __init tomoyo_interface_init(void)
 	tomoyo_load_builtin_policy();
 	return 0;
 }
+
+fs_initcall(tomoyo_initerface_init);

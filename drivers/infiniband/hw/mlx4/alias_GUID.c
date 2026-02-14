@@ -829,6 +829,7 @@ void mlx4_ib_destroy_alias_guid_service(struct mlx4_ib_dev *dev)
 
 int mlx4_ib_init_alias_guid_service(struct mlx4_ib_dev *dev)
 {
+	char alias_wq_name[15];
 	int ret = 0;
 	int i, j;
 	union ib_gid gid;
@@ -874,8 +875,9 @@ int mlx4_ib_init_alias_guid_service(struct mlx4_ib_dev *dev)
 		dev->sriov.alias_guid.ports_guid[i].parent = &dev->sriov.alias_guid;
 		dev->sriov.alias_guid.ports_guid[i].port  = i;
 
+		snprintf(alias_wq_name, sizeof alias_wq_name, "alias_guid%d", i);
 		dev->sriov.alias_guid.ports_guid[i].wq =
-			alloc_ordered_workqueue("alias_guid%d", WQ_MEM_RECLAIM, i);
+			alloc_ordered_workqueue(alias_wq_name, WQ_MEM_RECLAIM);
 		if (!dev->sriov.alias_guid.ports_guid[i].wq) {
 			ret = -ENOMEM;
 			goto err_thread;

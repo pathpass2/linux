@@ -27,8 +27,8 @@ struct stm32_i2c_dma *stm32_i2c_dma_request(struct device *dev,
 	if (IS_ERR(dma->chan_tx)) {
 		ret = PTR_ERR(dma->chan_tx);
 		if (ret != -ENODEV)
-			dev_err_probe(dev, ret, "can't request DMA tx channel\n");
-
+			ret = dev_err_probe(dev, ret,
+					    "can't request DMA tx channel\n");
 		goto fail_al;
 	}
 
@@ -48,7 +48,8 @@ struct stm32_i2c_dma *stm32_i2c_dma_request(struct device *dev,
 	if (IS_ERR(dma->chan_rx)) {
 		ret = PTR_ERR(dma->chan_rx);
 		if (ret != -ENODEV)
-			dev_err_probe(dev, ret, "can't request DMA rx channel\n");
+			ret = dev_err_probe(dev, ret,
+					    "can't request DMA rx channel\n");
 
 		goto fail_tx;
 	}
@@ -101,6 +102,7 @@ int stm32_i2c_prep_dma_xfer(struct device *dev, struct stm32_i2c_dma *dma,
 			    void *dma_async_param)
 {
 	struct dma_async_tx_descriptor *txdesc;
+	struct device *chan_dev;
 	int ret;
 
 	if (rd_wr) {
@@ -114,10 +116,11 @@ int stm32_i2c_prep_dma_xfer(struct device *dev, struct stm32_i2c_dma *dma,
 	}
 
 	dma->dma_len = len;
+	chan_dev = dma->chan_using->device->dev;
 
-	dma->dma_buf = dma_map_single(dev, buf, dma->dma_len,
+	dma->dma_buf = dma_map_single(chan_dev, buf, dma->dma_len,
 				      dma->dma_data_dir);
-	if (dma_mapping_error(dev, dma->dma_buf)) {
+	if (dma_mapping_error(chan_dev, dma->dma_buf)) {
 		dev_err(dev, "DMA mapping failed\n");
 		return -EINVAL;
 	}
@@ -147,7 +150,7 @@ int stm32_i2c_prep_dma_xfer(struct device *dev, struct stm32_i2c_dma *dma,
 	return 0;
 
 err:
-	dma_unmap_single(dev, dma->dma_buf, dma->dma_len,
+	dma_unmap_single(chan_dev, dma->dma_buf, dma->dma_len,
 			 dma->dma_data_dir);
 	return ret;
 }

@@ -24,7 +24,7 @@ static inline bool rv_insn_reg_set_val(struct pt_regs *regs, u32 index,
 				       unsigned long val)
 {
 	if (index == 0)
-		return true;
+		return false;
 	else if (index <= 31)
 		*((unsigned long *)regs + index) = val;
 	else
@@ -41,16 +41,19 @@ bool __kprobes simulate_jal(u32 opcode, unsigned long addr, struct pt_regs *regs
 	 *     1         10          1           8       5    JAL/J
 	 */
 	bool ret;
-	s32 imm;
-	u32 index = RV_EXTRACT_RD_REG(opcode);
+	u32 imm;
+	u32 index = (opcode >> 7) & 0x1f;
 
 	ret = rv_insn_reg_set_val(regs, index, addr + 4);
 	if (!ret)
 		return ret;
 
-	imm = RV_EXTRACT_JTYPE_IMM(opcode);
+	imm  = ((opcode >> 21) & 0x3ff) << 1;
+	imm |= ((opcode >> 20) & 0x1)   << 11;
+	imm |= ((opcode >> 12) & 0xff)  << 12;
+	imm |= ((opcode >> 31) & 0x1)   << 20;
 
-	instruction_pointer_set(regs, addr + imm);
+	instruction_pointer_set(regs, addr + sign_extend32((imm), 20));
 
 	return ret;
 }
@@ -64,9 +67,9 @@ bool __kprobes simulate_jalr(u32 opcode, unsigned long addr, struct pt_regs *reg
 	 */
 	bool ret;
 	unsigned long base_addr;
-	u32 imm = RV_EXTRACT_ITYPE_IMM(opcode);
-	u32 rd_index = RV_EXTRACT_RD_REG(opcode);
-	u32 rs1_index = RV_EXTRACT_RS1_REG(opcode);
+	u32 imm = (opcode >> 20) & 0xfff;
+	u32 rd_index = (opcode >> 7) & 0x1f;
+	u32 rs1_index = (opcode >> 15) & 0x1f;
 
 	ret = rv_insn_reg_get_val(regs, rs1_index, &base_addr);
 	if (!ret)
@@ -81,6 +84,20 @@ bool __kprobes simulate_jalr(u32 opcode, unsigned long addr, struct pt_regs *reg
 	return ret;
 }
 
+#define auipc_rd_idx(opcode) \
+	((opcode >> 7) & 0x1f)
+
+#define auipc_imm(opcode) \
+	((((opcode) >> 12) & 0xfffff) << 12)
+
+#if __riscv_xlen == 64
+#define auipc_offset(opcode)	sign_extend64(auipc_imm(opcode), 31)
+#elif __riscv_xlen == 32
+#define auipc_offset(opcode)	auipc_imm(opcode)
+#else
+#error "Unexpected __riscv_xlen"
+#endif
+
 bool __kprobes simulate_auipc(u32 opcode, unsigned long addr, struct pt_regs *regs)
 {
 	/*
@@ -90,8 +107,8 @@ bool __kprobes simulate_auipc(u32 opcode, unsigned long addr, struct pt_regs *re
 	 *        20       5     7
 	 */
 
-	u32 rd_idx = RV_EXTRACT_RD_REG(opcode);
-	unsigned long rd_val = addr + (s32)RV_EXTRACT_UTYPE_IMM(opcode);
+	u32 rd_idx = auipc_rd_idx(opcode);
+	unsigned long rd_val = addr + auipc_offset(opcode);
 
 	if (!rv_insn_reg_set_val(regs, rd_idx, rd_val))
 		return false;
@@ -100,6 +117,24 @@ bool __kprobes simulate_auipc(u32 opcode, unsigned long addr, struct pt_regs *re
 
 	return true;
 }
+
+#define branch_rs1_idx(opcode) \
+	(((opcode) >> 15) & 0x1f)
+
+#define branch_rs2_idx(opcode) \
+	(((opcode) >> 20) & 0x1f)
+
+#define branch_funct3(opcode) \
+	(((opcode) >> 12) & 0x7)
+
+#define branch_imm(opcode) \
+	(((((opcode) >>  8) & 0xf ) <<  1) | \
+	 ((((opcode) >> 25) & 0x3f) <<  5) | \
+	 ((((opcode) >>  7) & 0x1 ) << 11) | \
+	 ((((opcode) >> 31) & 0x1 ) << 12))
+
+#define branch_offset(opcode) \
+	sign_extend32((branch_imm(opcode)), 12)
 
 bool __kprobes simulate_branch(u32 opcode, unsigned long addr, struct pt_regs *regs)
 {
@@ -121,12 +156,12 @@ bool __kprobes simulate_branch(u32 opcode, unsigned long addr, struct pt_regs *r
 	unsigned long rs1_val;
 	unsigned long rs2_val;
 
-	if (!rv_insn_reg_get_val(regs, RV_EXTRACT_RS1_REG(opcode), &rs1_val) ||
-	    !rv_insn_reg_get_val(regs, RV_EXTRACT_RS2_REG(opcode), &rs2_val))
+	if (!rv_insn_reg_get_val(regs, branch_rs1_idx(opcode), &rs1_val) ||
+	    !rv_insn_reg_get_val(regs, branch_rs2_idx(opcode), &rs2_val))
 		return false;
 
-	offset_tmp = RV_EXTRACT_BTYPE_IMM(opcode);
-	switch (RV_EXTRACT_FUNCT3(opcode)) {
+	offset_tmp = branch_offset(opcode);
+	switch (branch_funct3(opcode)) {
 	case RVG_FUNCT3_BEQ:
 		offset = (rs1_val == rs2_val) ? offset_tmp : 4;
 		break;
@@ -152,88 +187,4 @@ bool __kprobes simulate_branch(u32 opcode, unsigned long addr, struct pt_regs *r
 	instruction_pointer_set(regs, addr + offset);
 
 	return true;
-}
-
-bool __kprobes simulate_c_j(u32 opcode, unsigned long addr, struct pt_regs *regs)
-{
-	s32 offset = RVC_EXTRACT_JTYPE_IMM(opcode);
-
-	instruction_pointer_set(regs, addr + offset);
-
-	return true;
-}
-
-static bool __kprobes simulate_c_jr_jalr(u32 opcode, unsigned long addr, struct pt_regs *regs,
-					 bool is_jalr)
-{
-	/*
-	 *  15    12 11  7 6   2 1  0
-	 * | funct4 | rs1 | rs2 | op |
-	 *     4       5     5    2
-	 */
-
-	unsigned long jump_addr;
-
-	u32 rs1 = RVC_EXTRACT_C2_RS1_REG(opcode);
-
-	if (rs1 == 0) /* C.JR is only valid when rs1 != x0 */
-		return false;
-
-	if (!rv_insn_reg_get_val(regs, rs1, &jump_addr))
-		return false;
-
-	if (is_jalr && !rv_insn_reg_set_val(regs, 1, addr + 2))
-		return false;
-
-	instruction_pointer_set(regs, jump_addr);
-
-	return true;
-}
-
-bool __kprobes simulate_c_jr(u32 opcode, unsigned long addr, struct pt_regs *regs)
-{
-	return simulate_c_jr_jalr(opcode, addr, regs, false);
-}
-
-bool __kprobes simulate_c_jalr(u32 opcode, unsigned long addr, struct pt_regs *regs)
-{
-	return simulate_c_jr_jalr(opcode, addr, regs, true);
-}
-
-static bool __kprobes simulate_c_bnez_beqz(u32 opcode, unsigned long addr, struct pt_regs *regs,
-					   bool is_bnez)
-{
-	/*
-	 *  15    13 12           10 9    7 6                 2 1  0
-	 * | funct3 | offset[8|4:3] | rs1' | offset[7:6|2:1|5] | op |
-	 *     3            3          3             5           2
-	 */
-
-	s32 offset;
-	u32 rs1;
-	unsigned long rs1_val;
-
-	rs1 = 0x8 | ((opcode >> 7) & 0x7);
-
-	if (!rv_insn_reg_get_val(regs, rs1, &rs1_val))
-		return false;
-
-	if ((rs1_val != 0 && is_bnez) || (rs1_val == 0 && !is_bnez))
-		offset = RVC_EXTRACT_BTYPE_IMM(opcode);
-	else
-		offset = 2;
-
-	instruction_pointer_set(regs, addr + offset);
-
-	return true;
-}
-
-bool __kprobes simulate_c_bnez(u32 opcode, unsigned long addr, struct pt_regs *regs)
-{
-	return simulate_c_bnez_beqz(opcode, addr, regs, true);
-}
-
-bool __kprobes simulate_c_beqz(u32 opcode, unsigned long addr, struct pt_regs *regs)
-{
-	return simulate_c_bnez_beqz(opcode, addr, regs, false);
 }

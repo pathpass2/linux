@@ -96,7 +96,7 @@ struct path_selector_type {
 int dm_register_path_selector(struct path_selector_type *type);
 
 /* Unregister a path selector */
-void dm_unregister_path_selector(struct path_selector_type *type);
+int dm_unregister_path_selector(struct path_selector_type *type);
 
 /* Returns a registered path selector type */
 struct path_selector_type *dm_get_path_selector(const char *name);

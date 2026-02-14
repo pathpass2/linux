@@ -11,6 +11,7 @@
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <linux/i2c.h>
+#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/regulator/consumer.h>
@@ -43,6 +44,7 @@ static const char * const tas5720_supply_names[] = {
 struct tas5720_data {
 	struct snd_soc_component *component;
 	struct regmap *regmap;
+	struct i2c_client *tas5720_client;
 	enum tas572x_type devtype;
 	struct regulator_bulk_data supplies[TAS5720_NUM_SUPPLIES];
 	struct delayed_work fault_check_work;
@@ -337,8 +339,7 @@ static int tas5720_codec_probe(struct snd_soc_component *component)
 		break;
 	default:
 		dev_err(component->dev, "unexpected private driver data\n");
-		ret = -EINVAL;
-		goto probe_fail;
+		return -EINVAL;
 	}
 
 	if (device_id != expected_device_id)
@@ -564,7 +565,7 @@ static DECLARE_TLV_DB_SCALE(tas5722_dac_tlv, -10350, 25, 0);
 static int tas5722_volume_get(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	unsigned int val;
 
 	val = snd_soc_component_read(component, TAS5720_VOLUME_CTRL_REG);
@@ -579,7 +580,7 @@ static int tas5722_volume_get(struct snd_kcontrol *kcontrol,
 static int tas5722_volume_set(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	unsigned int sel = ucontrol->value.integer.value[0];
 
 	snd_soc_component_write(component, TAS5720_VOLUME_CTRL_REG, sel >> 1);
@@ -728,6 +729,7 @@ static int tas5720_probe(struct i2c_client *client)
 	struct device *dev = &client->dev;
 	struct tas5720_data *data;
 	const struct regmap_config *regmap_config;
+	const struct i2c_device_id *id;
 	int ret;
 	int i;
 
@@ -735,9 +737,11 @@ static int tas5720_probe(struct i2c_client *client)
 	if (!data)
 		return -ENOMEM;
 
-	data->devtype = (uintptr_t)i2c_get_match_data(client);
+	id = i2c_match_id(tas5720_id, client);
+	data->tas5720_client = client;
+	data->devtype = id->driver_data;
 
-	switch (data->devtype) {
+	switch (id->driver_data) {
 	case TAS5720:
 		regmap_config = &tas5720_regmap_config;
 		break;
@@ -770,7 +774,7 @@ static int tas5720_probe(struct i2c_client *client)
 
 	dev_set_drvdata(dev, data);
 
-	switch (data->devtype) {
+	switch (id->driver_data) {
 	case TAS5720:
 		ret = devm_snd_soc_register_component(&client->dev,
 					&soc_component_dev_tas5720,
@@ -816,7 +820,7 @@ static struct i2c_driver tas5720_i2c_driver = {
 		.name = "tas5720",
 		.of_match_table = of_match_ptr(tas5720_of_match),
 	},
-	.probe = tas5720_probe,
+	.probe_new = tas5720_probe,
 	.id_table = tas5720_id,
 };
 

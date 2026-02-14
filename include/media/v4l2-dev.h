@@ -62,7 +62,6 @@ struct v4l2_ioctl_callbacks;
 struct video_device;
 struct v4l2_device;
 struct v4l2_ctrl_handler;
-struct dentry;
 
 /**
  * enum v4l2_video_device_flags - Flags used by &struct video_device
@@ -74,7 +73,7 @@ struct dentry;
  * @V4L2_FL_USES_V4L2_FH:
  *	indicates that file->private_data points to &struct v4l2_fh.
  *	This flag is set by the core when v4l2_fh_init() is called.
- *	All drivers must use it.
+ *	All new drivers should use it.
  * @V4L2_FL_QUIRK_INVERTED_CROP:
  *	some old M2M drivers use g/s_crop/cropcap incorrectly: crop and
  *	compose are swapped. If this flag is set, then the selection
@@ -285,7 +284,7 @@ struct video_device {
 	struct v4l2_prio_state *prio;
 
 	/* device info */
-	char name[64];
+	char name[32];
 	enum vfl_devnode_type vfl_type;
 	enum vfl_devnode_direction vfl_dir;
 	int minor;
@@ -313,16 +312,10 @@ struct video_device {
  * media_entity_to_video_device - Returns a &struct video_device from
  *	the &struct media_entity embedded on it.
  *
- * @__entity: pointer to &struct media_entity, may be NULL
+ * @__entity: pointer to &struct media_entity
  */
-#define media_entity_to_video_device(__entity)				\
-({									\
-	typeof(__entity) __me_vdev_ent = __entity;			\
-									\
-	__me_vdev_ent ?							\
-		container_of_const(__me_vdev_ent,  struct video_device, \
-				   entity) : NULL;			\
-})
+#define media_entity_to_video_device(__entity) \
+	container_of(__entity, struct video_device, entity)
 
 /**
  * to_video_device - Returns a &struct video_device from the
@@ -330,7 +323,7 @@ struct video_device {
  *
  * @cd: pointer to &struct device
  */
-#define to_video_device(cd) container_of_const(cd, struct video_device, dev)
+#define to_video_device(cd) container_of(cd, struct video_device, dev)
 
 /**
  * __video_register_device - register video4linux devices
@@ -545,20 +538,6 @@ static inline int video_is_registered(struct video_device *vdev)
 {
 	return test_bit(V4L2_FL_REGISTERED, &vdev->flags);
 }
-
-/**
- * v4l2_debugfs_root - returns the dentry of the top-level "v4l2" debugfs dir
- *
- * If this directory does not yet exist, then it will be created.
- */
-#ifdef CONFIG_DEBUG_FS
-struct dentry *v4l2_debugfs_root(void);
-#else
-static inline struct dentry *v4l2_debugfs_root(void)
-{
-	return NULL;
-}
-#endif
 
 #if defined(CONFIG_MEDIA_CONTROLLER)
 

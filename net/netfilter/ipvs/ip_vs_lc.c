@@ -9,7 +9,8 @@
  *     Wensong Zhang            :     added any dest with weight=0 is quiesced
  */
 
-#define pr_fmt(fmt) "IPVS: " fmt
+#define KMSG_COMPONENT "IPVS"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -85,4 +86,3 @@ static void __exit ip_vs_lc_cleanup(void)
 module_init(ip_vs_lc_init);
 module_exit(ip_vs_lc_cleanup);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("ipvs least connection scheduler");

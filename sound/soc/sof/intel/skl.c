@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018-2022 Intel Corporation
+// Copyright(c) 2018-2022 Intel Corporation. All rights reserved.
 //
 
 /*
@@ -19,6 +19,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/pci.h>
+#include <linux/pm_runtime.h>
 #include <sound/hdaudio_ext.h>
 #include <sound/pcm_params.h>
 #include <sound/sof.h>
@@ -50,7 +51,7 @@ static int skl_dsp_ipc_get_mailbox_offset(struct snd_sof_dev *sdev)
 
 /* skylake ops */
 struct snd_sof_dsp_ops sof_skl_ops;
-EXPORT_SYMBOL_NS(sof_skl_ops, "SND_SOC_SOF_INTEL_HDA_COMMON");
+EXPORT_SYMBOL_NS(sof_skl_ops, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 int sof_skl_ops_init(struct snd_sof_dev *sdev)
 {
@@ -62,7 +63,7 @@ int sof_skl_ops_init(struct snd_sof_dev *sdev)
 	/* probe/remove/shutdown */
 	sof_skl_ops.shutdown	= hda_dsp_shutdown;
 
-	sdev->private = kzalloc(sizeof(*ipc4_data), GFP_KERNEL);
+	sdev->private = devm_kzalloc(sdev->dev, sizeof(*ipc4_data), GFP_KERNEL);
 	if (!sdev->private)
 		return -ENOMEM;
 
@@ -96,7 +97,7 @@ int sof_skl_ops_init(struct snd_sof_dev *sdev)
 
 	return 0;
 };
-EXPORT_SYMBOL_NS(sof_skl_ops_init, "SND_SOC_SOF_INTEL_HDA_COMMON");
+EXPORT_SYMBOL_NS(sof_skl_ops_init, SND_SOC_SOF_INTEL_HDA_COMMON);
 
 const struct sof_intel_dsp_desc skl_chip_info = {
 	.cores_num = 2,
@@ -113,6 +114,5 @@ const struct sof_intel_dsp_desc skl_chip_info = {
 	.power_down_dsp = hda_power_down_dsp,
 	.disable_interrupts = hda_dsp_disable_interrupts,
 	.hw_ip_version = SOF_INTEL_CAVS_1_5,
-	.platform = "skl",
 };
-EXPORT_SYMBOL_NS(skl_chip_info, "SND_SOC_SOF_INTEL_HDA_COMMON");
+EXPORT_SYMBOL_NS(skl_chip_info, SND_SOC_SOF_INTEL_HDA_COMMON);

@@ -8,7 +8,7 @@
 #define Pref_Load	0
 #define Pref_Store	8
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 	.macro	__pref hint addr
 #ifdef CONFIG_CPU_HAS_PREFETCH

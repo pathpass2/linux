@@ -3,11 +3,8 @@ OpenCAPI (Open Coherent Accelerator Processor Interface)
 ========================================================
 
 OpenCAPI is an interface between processors and accelerators. It aims
-at being low-latency and high-bandwidth.
-
-The specification was developed by the OpenCAPI Consortium, and is now
-available from the `Compute Express Link Consortium
-<https://computeexpresslink.org/resource/opencapi-specification-archive/>`_.
+at being low-latency and high-bandwidth. The specification is
+developed by the `OpenCAPI Consortium <http://opencapi.org/>`_.
 
 It allows an accelerator (which could be an FPGA, ASICs, ...) to access
 the host memory coherently, using virtual addresses. An OpenCAPI

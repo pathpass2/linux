@@ -94,30 +94,29 @@ mlx5e_tc_act_vlan_add_push_action(struct mlx5e_priv *priv,
 				  struct net_device **out_dev,
 				  struct netlink_ext_ack *extack)
 {
-	do {
-		struct net_device *vlan_dev = *out_dev;
-		struct flow_action_entry vlan_act = {
-			.id = FLOW_ACTION_VLAN_PUSH,
-			.vlan.vid = vlan_dev_vlan_id(vlan_dev),
-			.vlan.proto = vlan_dev_vlan_proto(vlan_dev),
-			.vlan.prio = 0,
-		};
-		int err;
+	struct net_device *vlan_dev = *out_dev;
+	struct flow_action_entry vlan_act = {
+		.id = FLOW_ACTION_VLAN_PUSH,
+		.vlan.vid = vlan_dev_vlan_id(vlan_dev),
+		.vlan.proto = vlan_dev_vlan_proto(vlan_dev),
+		.vlan.prio = 0,
+	};
+	int err;
 
-		err = parse_tc_vlan_action(priv, &vlan_act, attr->esw_attr,
-					   &attr->action, extack, NULL);
-		if (err)
-			return err;
+	err = parse_tc_vlan_action(priv, &vlan_act, attr->esw_attr, &attr->action, extack, NULL);
+	if (err)
+		return err;
 
-		rcu_read_lock();
-		*out_dev = dev_get_by_index_rcu(dev_net(vlan_dev),
-						dev_get_iflink(vlan_dev));
-		rcu_read_unlock();
-		if (!*out_dev)
-			return -ENODEV;
-	} while (is_vlan_dev(*out_dev));
+	rcu_read_lock();
+	*out_dev = dev_get_by_index_rcu(dev_net(vlan_dev), dev_get_iflink(vlan_dev));
+	rcu_read_unlock();
+	if (!*out_dev)
+		return -ENODEV;
 
-	return 0;
+	if (is_vlan_dev(*out_dev))
+		err = mlx5e_tc_act_vlan_add_push_action(priv, attr, out_dev, extack);
+
+	return err;
 }
 
 int
@@ -140,6 +139,15 @@ mlx5e_tc_act_vlan_add_pop_action(struct mlx5e_priv *priv,
 	}
 
 	return err;
+}
+
+static bool
+tc_act_can_offload_vlan(struct mlx5e_tc_act_parse_state *parse_state,
+			const struct flow_action_entry *act,
+			int act_index,
+			struct mlx5_flow_attr *attr)
+{
+	return true;
 }
 
 static int
@@ -167,7 +175,6 @@ tc_act_parse_vlan(struct mlx5e_tc_act_parse_state *parse_state,
 		return err;
 
 	esw_attr->split_count = esw_attr->out_count;
-	parse_state->if_count = 0;
 
 	return 0;
 }
@@ -198,6 +205,7 @@ tc_act_post_parse_vlan(struct mlx5e_tc_act_parse_state *parse_state,
 }
 
 struct mlx5e_tc_act mlx5e_tc_act_vlan = {
+	.can_offload = tc_act_can_offload_vlan,
 	.parse_action = tc_act_parse_vlan,
 	.post_parse = tc_act_post_parse_vlan,
 };

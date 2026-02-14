@@ -94,30 +94,26 @@ void ledtrig_cpu(enum cpu_led_event ledevt)
 }
 EXPORT_SYMBOL(ledtrig_cpu);
 
-static int ledtrig_cpu_syscore_suspend(void *data)
+static int ledtrig_cpu_syscore_suspend(void)
 {
 	ledtrig_cpu(CPU_LED_STOP);
 	return 0;
 }
 
-static void ledtrig_cpu_syscore_resume(void *data)
+static void ledtrig_cpu_syscore_resume(void)
 {
 	ledtrig_cpu(CPU_LED_START);
 }
 
-static void ledtrig_cpu_syscore_shutdown(void *data)
+static void ledtrig_cpu_syscore_shutdown(void)
 {
 	ledtrig_cpu(CPU_LED_HALTED);
 }
 
-static const struct syscore_ops ledtrig_cpu_syscore_ops = {
+static struct syscore_ops ledtrig_cpu_syscore_ops = {
 	.shutdown	= ledtrig_cpu_syscore_shutdown,
 	.suspend	= ledtrig_cpu_syscore_suspend,
 	.resume		= ledtrig_cpu_syscore_resume,
-};
-
-static struct syscore ledtrig_cpu_syscore = {
-	.ops = &ledtrig_cpu_syscore_ops,
 };
 
 static int ledtrig_online_cpu(unsigned int cpu)
@@ -134,7 +130,7 @@ static int ledtrig_prepare_down_cpu(unsigned int cpu)
 
 static int __init ledtrig_cpu_init(void)
 {
-	unsigned int cpu;
+	int cpu;
 	int ret;
 
 	/* Supports up to 9999 cpu cores */
@@ -156,12 +152,12 @@ static int __init ledtrig_cpu_init(void)
 		if (cpu >= 8)
 			continue;
 
-		snprintf(trig->name, MAX_NAME_LEN, "cpu%u", cpu);
+		snprintf(trig->name, MAX_NAME_LEN, "cpu%d", cpu);
 
 		led_trigger_register_simple(trig->name, &trig->_trig);
 	}
 
-	register_syscore(&ledtrig_cpu_syscore);
+	register_syscore_ops(&ledtrig_cpu_syscore_ops);
 
 	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "leds/trigger:starting",
 				ledtrig_online_cpu, ledtrig_prepare_down_cpu);

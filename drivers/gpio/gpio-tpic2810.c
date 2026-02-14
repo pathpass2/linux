@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2015-2023 Texas Instruments Incorporated - https://www.ti.com/
- *	Andrew Davis <afd@ti.com>
+ * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ *	Andrew F. Davis <afd@ti.com>
  */
 
 #include <linux/gpio/driver.h>
@@ -25,7 +25,7 @@ struct tpic2810 {
 	struct mutex lock;
 };
 
-static int tpic2810_set(struct gpio_chip *chip, unsigned int offset, int value);
+static void tpic2810_set(struct gpio_chip *chip, unsigned offset, int value);
 
 static int tpic2810_get_direction(struct gpio_chip *chip,
 				  unsigned offset)
@@ -34,11 +34,19 @@ static int tpic2810_get_direction(struct gpio_chip *chip,
 	return GPIO_LINE_DIRECTION_OUT;
 }
 
+static int tpic2810_direction_input(struct gpio_chip *chip,
+				    unsigned offset)
+{
+	/* This device is output only */
+	return -EINVAL;
+}
+
 static int tpic2810_direction_output(struct gpio_chip *chip,
 				     unsigned offset, int value)
 {
 	/* This device always output */
-	return tpic2810_set(chip, offset, value);
+	tpic2810_set(chip, offset, value);
+	return 0;
 }
 
 static void tpic2810_set_mask_bits(struct gpio_chip *chip, u8 mask, u8 bits)
@@ -60,25 +68,22 @@ static void tpic2810_set_mask_bits(struct gpio_chip *chip, u8 mask, u8 bits)
 	mutex_unlock(&gpio->lock);
 }
 
-static int tpic2810_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void tpic2810_set(struct gpio_chip *chip, unsigned offset, int value)
 {
 	tpic2810_set_mask_bits(chip, BIT(offset), value ? BIT(offset) : 0);
-
-	return 0;
 }
 
-static int tpic2810_set_multiple(struct gpio_chip *chip, unsigned long *mask,
-				 unsigned long *bits)
+static void tpic2810_set_multiple(struct gpio_chip *chip, unsigned long *mask,
+				  unsigned long *bits)
 {
 	tpic2810_set_mask_bits(chip, *mask, *bits);
-
-	return 0;
 }
 
 static const struct gpio_chip template_chip = {
 	.label			= "tpic2810",
 	.owner			= THIS_MODULE,
 	.get_direction		= tpic2810_get_direction,
+	.direction_input	= tpic2810_direction_input,
 	.direction_output	= tpic2810_direction_output,
 	.set			= tpic2810_set,
 	.set_multiple		= tpic2810_set_multiple,
@@ -96,10 +101,13 @@ MODULE_DEVICE_TABLE(of, tpic2810_of_match_table);
 static int tpic2810_probe(struct i2c_client *client)
 {
 	struct tpic2810 *gpio;
+	int ret;
 
 	gpio = devm_kzalloc(&client->dev, sizeof(*gpio), GFP_KERNEL);
 	if (!gpio)
 		return -ENOMEM;
+
+	i2c_set_clientdata(client, gpio);
 
 	gpio->chip = template_chip;
 	gpio->chip.parent = &client->dev;
@@ -108,7 +116,20 @@ static int tpic2810_probe(struct i2c_client *client)
 
 	mutex_init(&gpio->lock);
 
-	return devm_gpiochip_add_data(&client->dev, &gpio->chip, gpio);
+	ret = gpiochip_add_data(&gpio->chip, gpio);
+	if (ret < 0) {
+		dev_err(&client->dev, "Unable to register gpiochip\n");
+		return ret;
+	}
+
+	return 0;
+}
+
+static void tpic2810_remove(struct i2c_client *client)
+{
+	struct tpic2810 *gpio = i2c_get_clientdata(client);
+
+	gpiochip_remove(&gpio->chip);
 }
 
 static const struct i2c_device_id tpic2810_id_table[] = {
@@ -122,11 +143,12 @@ static struct i2c_driver tpic2810_driver = {
 		.name = "tpic2810",
 		.of_match_table = tpic2810_of_match_table,
 	},
-	.probe = tpic2810_probe,
+	.probe_new = tpic2810_probe,
+	.remove = tpic2810_remove,
 	.id_table = tpic2810_id_table,
 };
 module_i2c_driver(tpic2810_driver);
 
-MODULE_AUTHOR("Andrew Davis <afd@ti.com>");
+MODULE_AUTHOR("Andrew F. Davis <afd@ti.com>");
 MODULE_DESCRIPTION("TPIC2810 8-Bit LED Driver GPIO Driver");
 MODULE_LICENSE("GPL v2");

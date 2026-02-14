@@ -18,3 +18,10 @@ behavior on specific hardware.
    rtla-timerlat-hist
    rtla-timerlat-top
    rtla-hwnoise
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

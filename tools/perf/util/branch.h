@@ -25,8 +25,7 @@ struct branch_flags {
 			u64 spec:2;
 			u64 new_type:4;
 			u64 priv:3;
-			u64 not_taken:1;
-			u64 reserved:30;
+			u64 reserved:31;
 		};
 	};
 };
@@ -35,7 +34,6 @@ struct branch_info {
 	struct addr_map_symbol from;
 	struct addr_map_symbol to;
 	struct branch_flags    flags;
-	u64		       branch_stack_cntr;
 	char		       *srcline_from;
 	char		       *srcline_to;
 };
@@ -88,8 +86,8 @@ void branch_type_count(struct branch_type_stat *st, struct branch_flags *flags,
 const char *branch_type_name(int type);
 const char *branch_new_type_name(int new_type);
 const char *get_branch_type(struct branch_entry *e);
-void branch_type_stat_display(FILE *fp, const struct branch_type_stat *st);
-int branch_type_str(const struct branch_type_stat *st, char *bf, int bfsize);
+void branch_type_stat_display(FILE *fp, struct branch_type_stat *st);
+int branch_type_str(struct branch_type_stat *st, char *bf, int bfsize);
 
 const char *branch_spec_desc(int spec);
 

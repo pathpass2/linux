@@ -199,7 +199,7 @@ static const struct irq_domain_ops cirq_domain_ops = {
 };
 
 #ifdef CONFIG_PM_SLEEP
-static int mtk_cirq_suspend(void *data)
+static int mtk_cirq_suspend(void)
 {
 	void __iomem *reg;
 	u32 value, mask;
@@ -257,7 +257,7 @@ static int mtk_cirq_suspend(void *data)
 	return 0;
 }
 
-static void mtk_cirq_resume(void *data)
+static void mtk_cirq_resume(void)
 {
 	void __iomem *reg = mtk_cirq_reg(cirq_data, CIRQ_CONTROL);
 	u32 value;
@@ -272,18 +272,14 @@ static void mtk_cirq_resume(void *data)
 	writel_relaxed(value, reg);
 }
 
-static const struct syscore_ops mtk_cirq_syscore_ops = {
+static struct syscore_ops mtk_cirq_syscore_ops = {
 	.suspend	= mtk_cirq_suspend,
 	.resume		= mtk_cirq_resume,
 };
 
-static struct syscore mtk_cirq_syscore = {
-	.ops = &mtk_cirq_syscore_ops,
-};
-
 static void mtk_cirq_syscore_init(void)
 {
-	register_syscore(&mtk_cirq_syscore);
+	register_syscore_ops(&mtk_cirq_syscore_ops);
 }
 #else
 static inline void mtk_cirq_syscore_init(void) {}
@@ -340,8 +336,9 @@ static int __init mtk_cirq_of_init(struct device_node *node,
 	cirq_data->offsets = match->data;
 
 	irq_num = cirq_data->ext_irq_end - cirq_data->ext_irq_start + 1;
-	domain = irq_domain_create_hierarchy(domain_parent, 0, irq_num, of_fwnode_handle(node),
-					     &cirq_domain_ops, cirq_data);
+	domain = irq_domain_add_hierarchy(domain_parent, 0,
+					  irq_num, node,
+					  &cirq_domain_ops, cirq_data);
 	if (!domain) {
 		ret = -ENOMEM;
 		goto out_unmap;

@@ -13,12 +13,7 @@
 #include <linux/reboot.h>
 #include <linux/ftrace.h>
 #include <linux/debug_locks.h>
-#include <linux/cpufeature.h>
-#include <asm/guarded_storage.h>
-#include <asm/machine.h>
-#include <asm/pfault.h>
 #include <asm/cio.h>
-#include <asm/fpu.h>
 #include <asm/setup.h>
 #include <asm/smp.h>
 #include <asm/ipl.h>
@@ -30,11 +25,12 @@
 #include <asm/os_info.h>
 #include <asm/set_memory.h>
 #include <asm/stacktrace.h>
+#include <asm/switch_to.h>
 #include <asm/nmi.h>
 #include <asm/sclp.h>
 
-typedef void (*relocate_kernel_t)(unsigned long, unsigned long, unsigned long);
-typedef int (*purgatory_t)(int);
+typedef void (*relocate_kernel_t)(kimage_entry_t *, unsigned long,
+				  unsigned long);
 
 extern const unsigned char relocate_kernel[];
 extern const unsigned long long relocate_kernel_len;
@@ -45,16 +41,13 @@ extern const unsigned long long relocate_kernel_len;
  * Reset the system, copy boot CPU registers to absolute zero,
  * and jump to the kdump image
  */
-static void __do_machine_kdump(void *data)
+static void __do_machine_kdump(void *image)
 {
-	struct kimage *image = data;
-	purgatory_t purgatory;
+	int (*start_kdump)(int);
 	unsigned long prefix;
 
-	purgatory = (purgatory_t)image->start;
-
 	/* store_status() saved the prefix register to lowcore */
-	prefix = (unsigned long)get_lowcore()->prefixreg_save_area;
+	prefix = (unsigned long) S390_lowcore.prefixreg_save_area;
 
 	/* Now do the reset  */
 	s390_reset_system();
@@ -64,12 +57,14 @@ static void __do_machine_kdump(void *data)
 	 * This need to be done *after* s390_reset_system set the
 	 * prefix register of this CPU to zero
 	 */
-	memcpy(absolute_pointer(get_lowcore()->floating_pt_save_area),
-	       phys_to_virt(prefix + __LC_FPREGS_SAVE_AREA), 512);
+	memcpy(absolute_pointer(__LC_FPREGS_SAVE_AREA),
+	       (void *)(prefix + __LC_FPREGS_SAVE_AREA), 512);
 
-	call_nodat(1, int, purgatory, int, 1);
+	__load_psw_mask(PSW_MASK_BASE | PSW_DEFAULT_KEY | PSW_MASK_EA | PSW_MASK_BA);
+	start_kdump = (void *)((struct kimage *) image)->start;
+	start_kdump(1);
 
-	/* Die if kdump returns */
+	/* Die if start_kdump returns */
 	disabled_wait();
 }
 
@@ -93,16 +88,16 @@ static noinline void __machine_kdump(void *image)
 			continue;
 	}
 	/* Store status of the boot CPU */
-	mcesa = __va(get_lowcore()->mcesad & MCESA_ORIGIN_MASK);
-	if (cpu_has_vx())
+	mcesa = __va(S390_lowcore.mcesad & MCESA_ORIGIN_MASK);
+	if (MACHINE_HAS_VX)
 		save_vx_regs((__vector128 *) mcesa->vector_save_area);
-	if (cpu_has_gs()) {
-		local_ctl_store(2, &cr2_old.reg);
+	if (MACHINE_HAS_GS) {
+		__ctl_store(cr2_old.val, 2, 2);
 		cr2_new = cr2_old;
 		cr2_new.gse = 1;
-		local_ctl_load(2, &cr2_new.reg);
+		__ctl_load(cr2_new.val, 2, 2);
 		save_gs_cb((struct gs_cb *) mcesa->guarded_storage_save_area);
-		local_ctl_load(2, &cr2_old.reg);
+		__ctl_load(cr2_old.val, 2, 2);
 	}
 	/*
 	 * To create a good backchain for this CPU in the dump store_status
@@ -116,6 +111,18 @@ static noinline void __machine_kdump(void *image)
 	store_status(__do_machine_kdump, image);
 }
 
+static unsigned long do_start_kdump(unsigned long addr)
+{
+	struct kimage *image = (struct kimage *) addr;
+	int (*start_kdump)(int) = (void *)image->start;
+	int rc;
+
+	__arch_local_irq_stnsm(0xfb); /* disable DAT */
+	rc = start_kdump(0);
+	__arch_local_irq_stosm(0x04); /* enable DAT */
+	return rc;
+}
+
 #endif /* CONFIG_CRASH_DUMP */
 
 /*
@@ -124,10 +131,12 @@ static noinline void __machine_kdump(void *image)
 static bool kdump_csum_valid(struct kimage *image)
 {
 #ifdef CONFIG_CRASH_DUMP
-	purgatory_t purgatory = (purgatory_t)image->start;
 	int rc;
 
-	rc = call_nodat(1, int, purgatory, int, 0);
+	preempt_disable();
+	rc = call_on_stack(1, S390_lowcore.nodat_stack, unsigned long, do_start_kdump,
+			   unsigned long, (unsigned long)image);
+	preempt_enable();
 	return rc == 0;
 #else
 	return false;
@@ -180,7 +189,7 @@ void arch_kexec_unprotect_crashkres(void)
 static int machine_kexec_prepare_kdump(void)
 {
 #ifdef CONFIG_CRASH_DUMP
-	if (machine_is_vm())
+	if (MACHINE_IS_VM)
 		diag10_range(PFN_DOWN(crashk_res.start),
 			     PFN_DOWN(crashk_res.end - crashk_res.start + 1));
 	return 0;
@@ -201,7 +210,7 @@ int machine_kexec_prepare(struct kimage *image)
 		return -EINVAL;
 
 	/* Get the destination where the assembler code should be copied to.*/
-	reboot_code_buffer = page_to_virt(image->control_code_page);
+	reboot_code_buffer = (void *) page_to_phys(image->control_code_page);
 
 	/* Then copy it */
 	memcpy(reboot_code_buffer, relocate_kernel, relocate_kernel_len);
@@ -210,6 +219,21 @@ int machine_kexec_prepare(struct kimage *image)
 
 void machine_kexec_cleanup(struct kimage *image)
 {
+}
+
+void arch_crash_save_vmcoreinfo(void)
+{
+	struct lowcore *abs_lc;
+
+	VMCOREINFO_SYMBOL(lowcore_ptr);
+	VMCOREINFO_SYMBOL(high_memory);
+	VMCOREINFO_LENGTH(lowcore_ptr, NR_CPUS);
+	vmcoreinfo_append_str("SAMODE31=%lx\n", __samode31);
+	vmcoreinfo_append_str("EAMODE31=%lx\n", __eamode31);
+	vmcoreinfo_append_str("KERNELOFFSET=%lx\n", kaslr_offset());
+	abs_lc = get_abs_lowcore();
+	abs_lc->vmcore_info = paddr_vmcoreinfo_note();
+	put_abs_lowcore(abs_lc);
 }
 
 void machine_shutdown(void)
@@ -226,20 +250,19 @@ void machine_crash_shutdown(struct pt_regs *regs)
  */
 static void __do_machine_kexec(void *data)
 {
-	unsigned long data_mover, entry, diag308_subcode;
+	unsigned long diag308_subcode;
+	relocate_kernel_t data_mover;
 	struct kimage *image = data;
 
-	data_mover = page_to_phys(image->control_code_page);
-	entry = virt_to_phys(&image->head);
+	s390_reset_system();
+	data_mover = (relocate_kernel_t) page_to_phys(image->control_code_page);
+
+	__arch_local_irq_stnsm(0xfb); /* disable DAT - avoid no-execute */
+	/* Call the moving routine */
 	diag308_subcode = DIAG308_CLEAR_RESET;
 	if (sclp.has_iplcc)
 		diag308_subcode |= DIAG308_FLAG_EI;
-	s390_reset_system();
-
-	call_nodat(3, void, (relocate_kernel_t)data_mover,
-		   unsigned long, entry,
-		   unsigned long, image->start,
-		   unsigned long, diag308_subcode);
+	(*data_mover)(&image->head, image->start, diag308_subcode);
 
 	/* Die if kexec returns */
 	disabled_wait();

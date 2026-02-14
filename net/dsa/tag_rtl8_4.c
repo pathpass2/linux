@@ -103,6 +103,7 @@
 static void rtl8_4_write_tag(struct sk_buff *skb, struct net_device *dev,
 			     void *tag)
 {
+	struct dsa_port *dp = dsa_slave_to_port(dev);
 	__be16 tag16[RTL8_4_TAG_LEN / 2];
 
 	/* Set Realtek EtherType */
@@ -115,7 +116,7 @@ static void rtl8_4_write_tag(struct sk_buff *skb, struct net_device *dev,
 	tag16[2] = htons(FIELD_PREP(RTL8_4_LEARN_DIS, 1));
 
 	/* Zero ALLOW; set RX (CPU->switch) forwarding port mask */
-	tag16[3] = htons(FIELD_PREP(RTL8_4_RX, dsa_xmit_port_mask(skb, dev)));
+	tag16[3] = htons(FIELD_PREP(RTL8_4_RX, BIT(dp->index)));
 
 	memcpy(tag, tag16, RTL8_4_TAG_LEN);
 }
@@ -179,10 +180,10 @@ static int rtl8_4_read_tag(struct sk_buff *skb, struct net_device *dev,
 
 	/* Parse TX (switch->CPU) */
 	port = FIELD_GET(RTL8_4_TX, ntohs(tag16[3]));
-	skb->dev = dsa_conduit_find_user(dev, 0, port);
+	skb->dev = dsa_master_find_slave(dev, 0, port);
 	if (!skb->dev) {
 		dev_warn_ratelimited(&dev->dev,
-				     "could not find user for port %d\n",
+				     "could not find slave for port %d\n",
 				     port);
 		return -ENOENT;
 	}
@@ -257,5 +258,4 @@ static struct dsa_tag_driver *dsa_tag_drivers[] = {
 };
 module_dsa_tag_drivers(dsa_tag_drivers);
 
-MODULE_DESCRIPTION("DSA tag driver for Realtek 8 byte protocol 4 tags");
 MODULE_LICENSE("GPL");

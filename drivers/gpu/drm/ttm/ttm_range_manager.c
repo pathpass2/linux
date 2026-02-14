@@ -34,8 +34,6 @@
 #include <drm/ttm/ttm_range_manager.h>
 #include <drm/ttm/ttm_bo.h>
 #include <drm/drm_mm.h>
-
-#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 

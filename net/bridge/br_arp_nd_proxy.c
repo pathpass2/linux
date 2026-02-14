@@ -30,7 +30,7 @@ void br_recalculate_neigh_suppress_enabled(struct net_bridge *br)
 	bool neigh_suppress = false;
 
 	list_for_each_entry(p, &br->port_list, list) {
-		if (p->flags & (BR_NEIGH_SUPPRESS | BR_NEIGH_VLAN_SUPPRESS)) {
+		if (p->flags & BR_NEIGH_SUPPRESS) {
 			neigh_suppress = true;
 			break;
 		}
@@ -158,10 +158,7 @@ void br_do_proxy_suppress_arp(struct sk_buff *skb, struct net_bridge *br,
 		return;
 
 	if (br_opt_get(br, BROPT_NEIGH_SUPPRESS_ENABLED)) {
-		if (br_is_neigh_suppress_enabled(p, vid))
-			return;
-		if (is_unicast_ether_addr(eth_hdr(skb)->h_dest) &&
-		    parp->ar_op == htons(ARPOP_REQUEST))
+		if (p && (p->flags & BR_NEIGH_SUPPRESS))
 			return;
 		if (parp->ar_op != htons(ARPOP_RREQUEST) &&
 		    parp->ar_op != htons(ARPOP_RREPLY) &&
@@ -195,7 +192,7 @@ void br_do_proxy_suppress_arp(struct sk_buff *skb, struct net_bridge *br,
 	if (n) {
 		struct net_bridge_fdb_entry *f;
 
-		if (!(READ_ONCE(n->nud_state) & NUD_VALID)) {
+		if (!(n->nud_state & NUD_VALID)) {
 			neigh_release(n);
 			return;
 		}
@@ -205,8 +202,8 @@ void br_do_proxy_suppress_arp(struct sk_buff *skb, struct net_bridge *br,
 			bool replied = false;
 
 			if ((p && (p->flags & BR_PROXYARP)) ||
-			    (f->dst && (f->dst->flags & BR_PROXYARP_WIFI)) ||
-			    br_is_neigh_suppress_enabled(f->dst, vid)) {
+			    (f->dst && (f->dst->flags & (BR_PROXYARP_WIFI |
+							 BR_NEIGH_SUPPRESS)))) {
 				if (!vid)
 					br_arp_send(br, p, skb->dev, sip, tip,
 						    sha, n->ha, sha, 0, 0);
@@ -232,7 +229,7 @@ void br_do_proxy_suppress_arp(struct sk_buff *skb, struct net_bridge *br,
 #endif
 
 #if IS_ENABLED(CONFIG_IPV6)
-struct nd_msg *br_is_nd_neigh_msg(const struct sk_buff *skb, struct nd_msg *msg)
+struct nd_msg *br_is_nd_neigh_msg(struct sk_buff *skb, struct nd_msg *msg)
 {
 	struct nd_msg *m;
 
@@ -410,11 +407,7 @@ void br_do_suppress_nd(struct sk_buff *skb, struct net_bridge *br,
 
 	BR_INPUT_SKB_CB(skb)->proxyarp_replied = 0;
 
-	if (br_is_neigh_suppress_enabled(p, vid))
-		return;
-
-	if (is_unicast_ether_addr(eth_hdr(skb)->h_dest) &&
-	    msg->icmph.icmp6_type == NDISC_NEIGHBOUR_SOLICITATION)
+	if (p && (p->flags & BR_NEIGH_SUPPRESS))
 		return;
 
 	if (msg->icmph.icmp6_type == NDISC_NEIGHBOUR_ADVERTISEMENT &&
@@ -459,7 +452,7 @@ void br_do_suppress_nd(struct sk_buff *skb, struct net_bridge *br,
 	if (n) {
 		struct net_bridge_fdb_entry *f;
 
-		if (!(READ_ONCE(n->nud_state) & NUD_VALID)) {
+		if (!(n->nud_state & NUD_VALID)) {
 			neigh_release(n);
 			return;
 		}
@@ -468,7 +461,7 @@ void br_do_suppress_nd(struct sk_buff *skb, struct net_bridge *br,
 		if (f) {
 			bool replied = false;
 
-			if (br_is_neigh_suppress_enabled(f->dst, vid)) {
+			if (f->dst && (f->dst->flags & BR_NEIGH_SUPPRESS)) {
 				if (vid != 0)
 					br_nd_send(br, p, skb, n,
 						   skb->vlan_proto,
@@ -490,24 +483,3 @@ void br_do_suppress_nd(struct sk_buff *skb, struct net_bridge *br,
 	}
 }
 #endif
-
-bool br_is_neigh_suppress_enabled(const struct net_bridge_port *p, u16 vid)
-{
-	if (!p)
-		return false;
-
-	if (!vid)
-		return !!(p->flags & BR_NEIGH_SUPPRESS);
-
-	if (p->flags & BR_NEIGH_VLAN_SUPPRESS) {
-		struct net_bridge_vlan_group *vg = nbp_vlan_group_rcu(p);
-		struct net_bridge_vlan *v;
-
-		v = br_vlan_find(vg, vid);
-		if (!v)
-			return false;
-		return !!(v->priv_flags & BR_VLFLAG_NEIGH_SUPPRESS_ENABLED);
-	} else {
-		return !!(p->flags & BR_NEIGH_SUPPRESS);
-	}
-}

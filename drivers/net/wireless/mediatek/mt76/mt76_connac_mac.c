@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /* Copyright (C) 2020 MediaTek Inc. */
 
 #include "mt76_connac.h"
@@ -8,30 +8,6 @@
 #define HE_BITS(f)		cpu_to_le16(IEEE80211_RADIOTAP_HE_##f)
 #define HE_PREP(f, m, v)	le16_encode_bits(le32_get_bits(v, MT_CRXV_HE_##m),\
 						 IEEE80211_RADIOTAP_HE_##f)
-
-void mt76_connac_gen_ppe_thresh(u8 *he_ppet, int nss, enum nl80211_band band)
-{
-	static const u8 ppet16_ppet8_ru3_ru0[] = { 0x1c, 0xc7, 0x71 };
-	u8 i, ppet_bits, ppet_size, ru_bit_mask = 0xf;
-
-	if (band == NL80211_BAND_2GHZ)
-		ru_bit_mask = 0x3;
-
-	he_ppet[0] = FIELD_PREP(IEEE80211_PPE_THRES_NSS_MASK, nss - 1) |
-		     FIELD_PREP(IEEE80211_PPE_THRES_RU_INDEX_BITMASK_MASK,
-				ru_bit_mask);
-
-	ppet_bits = IEEE80211_PPE_THRES_INFO_PPET_SIZE *
-		    nss * hweight8(ru_bit_mask) * 2;
-	ppet_size = DIV_ROUND_UP(ppet_bits, 8);
-
-	for (i = 0; i < ppet_size - 1; i++)
-		he_ppet[i + 1] = ppet16_ppet8_ru3_ru0[i % 3];
-
-	he_ppet[i + 1] = ppet16_ppet8_ru3_ru0[i % 3] &
-			 (0xff >> (8 - (ppet_bits - 1) % 8));
-}
-EXPORT_SYMBOL_GPL(mt76_connac_gen_ppe_thresh);
 
 int mt76_connac_pm_wake(struct mt76_phy *phy, struct mt76_connac_pm *pm)
 {
@@ -154,6 +130,23 @@ void mt76_connac_tx_complete_skb(struct mt76_dev *mdev,
 		return;
 	}
 
+	/* error path */
+	if (e->skb == DMA_DUMMY_DATA) {
+		struct mt76_connac_txp_common *txp;
+		struct mt76_txwi_cache *t;
+		u16 token;
+
+		txp = mt76_connac_txwi_to_txp(mdev, e->txwi);
+		if (is_mt76_fw_txp(mdev))
+			token = le16_to_cpu(txp->fw.token);
+		else
+			token = le16_to_cpu(txp->hw.msdu_id[0]) &
+				~MT_MSDU_ID_VALID;
+
+		t = mt76_token_put(mdev, token);
+		e->skb = t ? t->skb : NULL;
+	}
+
 	if (e->skb)
 		mt76_tx_complete_skb(mdev, e->wcid, e->skb);
 }
@@ -173,7 +166,7 @@ void mt76_connac_write_hw_txp(struct mt76_dev *dev,
 
 	txp->msdu_id[0] = cpu_to_le16(id | MT_MSDU_ID_VALID);
 
-	if (is_mt7663(dev) || is_mt7921(dev) || is_mt7925(dev))
+	if (is_mt7663(dev) || is_mt7921(dev))
 		last_mask = MT_TXD_LEN_LAST;
 	else
 		last_mask = MT_TXD_LEN_AMSDU_LAST |
@@ -217,7 +210,7 @@ mt76_connac_txp_skb_unmap_hw(struct mt76_dev *dev,
 	u32 last_mask;
 	int i;
 
-	if (is_mt7663(dev) || is_mt7921(dev) || is_mt7925(dev))
+	if (is_mt7663(dev) || is_mt7921(dev))
 		last_mask = MT_TXD_LEN_LAST;
 	else
 		last_mask = MT_TXD_LEN_MSDU_LAST;
@@ -259,12 +252,11 @@ void mt76_connac_txp_skb_unmap(struct mt76_dev *dev,
 EXPORT_SYMBOL_GPL(mt76_connac_txp_skb_unmap);
 
 int mt76_connac_init_tx_queues(struct mt76_phy *phy, int idx, int n_desc,
-			       int ring_base, void *wed, u32 flags)
+			       int ring_base, u32 flags)
 {
 	int i, err;
 
-	err = mt76_init_tx_queue(phy, 0, idx, n_desc, ring_base,
-				 wed, flags);
+	err = mt76_init_tx_queue(phy, 0, idx, n_desc, ring_base, flags);
 	if (err < 0)
 		return err;
 
@@ -275,84 +267,56 @@ int mt76_connac_init_tx_queues(struct mt76_phy *phy, int idx, int n_desc,
 }
 EXPORT_SYMBOL_GPL(mt76_connac_init_tx_queues);
 
-#define __bitrate_mask_check(_mcs, _mode)				\
-({									\
-	u8 i = 0;							\
-	for (nss = 0; i < ARRAY_SIZE(mask->control[band]._mcs); i++) {	\
-		if (!mask->control[band]._mcs[i])			\
-			continue;					\
-		if (hweight16(mask->control[band]._mcs[i]) == 1) {	\
-			mode = MT_PHY_TYPE_##_mode;			\
-			rateidx = ffs(mask->control[band]._mcs[i]) - 1;	\
-			if (mode == MT_PHY_TYPE_HT)			\
-				rateidx += 8 * i;			\
-			else						\
-				nss = i + 1;				\
-			goto out;					\
-		}							\
-	}								\
-})
-
 u16 mt76_connac2_mac_tx_rate_val(struct mt76_phy *mphy,
-				 struct ieee80211_bss_conf *conf,
+				 struct ieee80211_vif *vif,
 				 bool beacon, bool mcast)
 {
-	u8 nss = 0, mode = 0, band = NL80211_BAND_2GHZ;
-	int rateidx = 0, offset = 0, mcast_rate;
-	struct cfg80211_chan_def *chandef;
-	struct mt76_vif_link *mvif;
+	u8 mode = 0, band = mphy->chandef.chan->band;
+	int rateidx = 0, mcast_rate;
 
-	if (!conf)
+	if (!vif)
 		goto legacy;
 
-	mvif = mt76_vif_conf_link(mphy->dev, conf->vif, conf);
-	chandef = mvif->ctx ? &mvif->ctx->def : &mphy->chandef;
-	band = chandef->chan->band;
-
 	if (is_mt7921(mphy->dev)) {
-		rateidx = ffs(conf->basic_rates) - 1;
+		rateidx = ffs(vif->bss_conf.basic_rates) - 1;
 		goto legacy;
 	}
 
 	if (beacon) {
 		struct cfg80211_bitrate_mask *mask;
 
-		mask = &conf->beacon_tx_rate;
-
-		__bitrate_mask_check(he_mcs, HE_SU);
-		__bitrate_mask_check(vht_mcs, VHT);
-		__bitrate_mask_check(ht_mcs, HT);
-
-		if (hweight32(mask->control[band].legacy) == 1) {
+		mask = &vif->bss_conf.beacon_tx_rate;
+		if (hweight16(mask->control[band].he_mcs[0]) == 1) {
+			rateidx = ffs(mask->control[band].he_mcs[0]) - 1;
+			mode = MT_PHY_TYPE_HE_SU;
+			goto out;
+		} else if (hweight16(mask->control[band].vht_mcs[0]) == 1) {
+			rateidx = ffs(mask->control[band].vht_mcs[0]) - 1;
+			mode = MT_PHY_TYPE_VHT;
+			goto out;
+		} else if (hweight8(mask->control[band].ht_mcs[0]) == 1) {
+			rateidx = ffs(mask->control[band].ht_mcs[0]) - 1;
+			mode = MT_PHY_TYPE_HT;
+			goto out;
+		} else if (hweight32(mask->control[band].legacy) == 1) {
 			rateidx = ffs(mask->control[band].legacy) - 1;
 			goto legacy;
 		}
 	}
 
-	mcast_rate = conf->mcast_rate[band];
+	mcast_rate = vif->bss_conf.mcast_rate[band];
 	if (mcast && mcast_rate > 0)
 		rateidx = mcast_rate - 1;
 	else
-		rateidx = ffs(conf->basic_rates) - 1;
+		rateidx = ffs(vif->bss_conf.basic_rates) - 1;
 
 legacy:
-	if (band != NL80211_BAND_2GHZ)
-		offset = 4;
-
-	/* pick the lowest rate for hidden nodes */
-	if (rateidx < 0)
-		rateidx = 0;
-
-	rateidx += offset;
-	if (rateidx >= ARRAY_SIZE(mt76_rates))
-		rateidx = offset;
-
-	rateidx = mt76_rates[rateidx].hw_value;
+	rateidx = mt76_calculate_default_rate(mphy, rateidx);
 	mode = rateidx >> 8;
 	rateidx &= GENMASK(7, 0);
+
 out:
-	return FIELD_PREP(MT_TX_RATE_NSS, nss) |
-	       FIELD_PREP(MT_TX_RATE_IDX, rateidx) |
+	return FIELD_PREP(MT_TX_RATE_IDX, rateidx) |
 	       FIELD_PREP(MT_TX_RATE_MODE, mode);
 }
 EXPORT_SYMBOL_GPL(mt76_connac2_mac_tx_rate_val);
@@ -408,7 +372,6 @@ mt76_connac2_mac_write_txwi_80211(struct mt76_dev *dev, __le32 *txwi,
 	bool multicast = is_multicast_ether_addr(hdr->addr1);
 	u8 tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
 	__le16 fc = hdr->frame_control;
-	__le16 sc = hdr->seq_ctrl;
 	u8 fc_type, fc_stype;
 	u32 val;
 
@@ -450,13 +413,6 @@ mt76_connac2_mac_write_txwi_80211(struct mt76_dev *dev, __le32 *txwi,
 	    info->flags & IEEE80211_TX_CTL_USE_MINRATE)
 		val |= MT_TXD2_FIX_RATE;
 
-	if (ieee80211_has_morefrags(fc) && ieee80211_is_first_frag(sc))
-		val |= FIELD_PREP(MT_TXD2_FRAG, MT_TX_FRAG_FIRST);
-	else if (ieee80211_has_morefrags(fc) && !ieee80211_is_first_frag(sc))
-		val |= FIELD_PREP(MT_TXD2_FRAG, MT_TX_FRAG_MID);
-	else if (!ieee80211_has_morefrags(fc) && !ieee80211_is_first_frag(sc))
-		val |= FIELD_PREP(MT_TXD2_FRAG, MT_TX_FRAG_LAST);
-
 	txwi[2] |= cpu_to_le32(val);
 
 	if (ieee80211_is_beacon(fc)) {
@@ -465,7 +421,7 @@ mt76_connac2_mac_write_txwi_80211(struct mt76_dev *dev, __le32 *txwi,
 	}
 
 	if (info->flags & IEEE80211_TX_CTL_INJECTED) {
-		u16 seqno = le16_to_cpu(sc);
+		u16 seqno = le16_to_cpu(hdr->seq_ctrl);
 
 		if (ieee80211_is_back_req(hdr->frame_control)) {
 			struct ieee80211_bar *bar;
@@ -507,10 +463,9 @@ void mt76_connac2_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
 				    BSS_CHANGED_BEACON_ENABLED));
 	bool inband_disc = !!(changed & (BSS_CHANGED_UNSOL_BCAST_PROBE_RESP |
 					 BSS_CHANGED_FILS_DISCOVERY));
-	bool amsdu_en = wcid->amsdu;
 
 	if (vif) {
-		struct mt76_vif_link *mvif = (struct mt76_vif_link *)vif->drv_priv;
+		struct mt76_vif *mvif = (struct mt76_vif *)vif->drv_priv;
 
 		omac_idx = mvif->omac_idx;
 		wmm_idx = mvif->wmm_idx;
@@ -534,9 +489,9 @@ void mt76_connac2_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
 		q_idx = wmm_idx * MT76_CONNAC_MAX_WMM_SETS +
 			mt76_connac_lmac_mapping(skb_get_queue_mapping(skb));
 
-		/* mt7915 WA only counts WED path */
-		if (is_mt7915(dev) && mtk_wed_device_active(&dev->mmio.wed))
-			wcid->stats.tx_packets++;
+		/* counting non-offloading skbs */
+		wcid->stats.tx_bytes += skb->len;
+		wcid->stats.tx_packets++;
 	}
 
 	val = FIELD_PREP(MT_TXD0_TX_BYTES, skb->len + sz_txd) |
@@ -567,14 +522,12 @@ void mt76_connac2_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
 	txwi[4] = 0;
 
 	val = FIELD_PREP(MT_TXD5_PID, pid);
-	if (pid >= MT_PACKET_ID_FIRST) {
+	if (pid >= MT_PACKET_ID_FIRST)
 		val |= MT_TXD5_TX_STATUS_HOST;
-		amsdu_en = 0;
-	}
 
 	txwi[5] = cpu_to_le32(val);
 	txwi[6] = 0;
-	txwi[7] = amsdu_en ? cpu_to_le32(MT_TXD7_HW_AMSDU) : 0;
+	txwi[7] = wcid->amsdu ? cpu_to_le32(MT_TXD7_HW_AMSDU) : 0;
 
 	if (is_8023)
 		mt76_connac2_mac_write_txwi_8023(txwi, skb, wcid);
@@ -584,11 +537,9 @@ void mt76_connac2_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
 	if (txwi[2] & cpu_to_le32(MT_TXD2_FIX_RATE)) {
 		/* Fixed rata is available just for 802.11 txd */
 		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
-		bool multicast = ieee80211_is_data(hdr->frame_control) &&
-				 is_multicast_ether_addr(hdr->addr1);
-		u16 rate = mt76_connac2_mac_tx_rate_val(mphy,
-							vif ? &vif->bss_conf : NULL,
-							beacon, multicast);
+		bool multicast = is_multicast_ether_addr(hdr->addr1);
+		u16 rate = mt76_connac2_mac_tx_rate_val(mphy, vif, beacon,
+							multicast);
 		u32 val = MT_TXD6_FIXED_BW;
 
 		/* hardware won't add HTC for mgmt/ctrl frame */
@@ -605,8 +556,6 @@ void mt76_connac2_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
 				spe_idx = 24 + phy_idx;
 			txwi[7] |= cpu_to_le32(FIELD_PREP(MT_TXD7_SPE_IDX, spe_idx));
 		}
-
-		txwi[7] &= ~cpu_to_le32(MT_TXD7_HW_AMSDU);
 	}
 }
 EXPORT_SYMBOL_GPL(mt76_connac2_mac_write_txwi);
@@ -624,26 +573,15 @@ bool mt76_connac2_mac_fill_txs(struct mt76_dev *dev, struct mt76_wcid *wcid,
 	txs = le32_to_cpu(txs_data[0]);
 
 	/* PPDU based reporting */
-	if (mtk_wed_device_active(&dev->mmio.wed) &&
-	    FIELD_GET(MT_TXS0_TXS_FORMAT, txs) > 1) {
+	if (FIELD_GET(MT_TXS0_TXS_FORMAT, txs) > 1) {
 		stats->tx_bytes +=
-			le32_get_bits(txs_data[5], MT_TXS5_MPDU_TX_BYTE) -
-			le32_get_bits(txs_data[7], MT_TXS7_MPDU_RETRY_BYTE);
+			le32_get_bits(txs_data[5], MT_TXS5_MPDU_TX_BYTE);
+		stats->tx_packets +=
+			le32_get_bits(txs_data[5], MT_TXS5_MPDU_TX_CNT);
 		stats->tx_failed +=
 			le32_get_bits(txs_data[6], MT_TXS6_MPDU_FAIL_CNT);
 		stats->tx_retries +=
 			le32_get_bits(txs_data[7], MT_TXS7_MPDU_RETRY_CNT);
-
-		if (wcid->sta) {
-			struct ieee80211_sta *sta;
-			u8 tid;
-
-			sta = container_of((void *)wcid, struct ieee80211_sta,
-					   drv_priv);
-			tid = FIELD_GET(MT_TXS0_TID, txs);
-
-			ieee80211_refresh_tx_agg_session_timer(sta, tid);
-		}
 	}
 
 	txrate = FIELD_GET(MT_TXS0_TX_RATE, txs);
@@ -742,21 +680,20 @@ bool mt76_connac2_mac_add_txs_skb(struct mt76_dev *dev, struct mt76_wcid *wcid,
 	struct sk_buff_head list;
 	struct sk_buff *skb;
 
-	if (le32_get_bits(txs_data[0], MT_TXS0_TXS_FORMAT) == MT_TXS_PPDU_FMT)
-		return false;
-
 	mt76_tx_status_lock(dev, &list);
 	skb = mt76_tx_status_skb_get(dev, wcid, pid, &list);
 	if (skb) {
 		struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+		bool noacked = !(info->flags & IEEE80211_TX_STAT_ACK);
 
 		if (!(le32_to_cpu(txs_data[0]) & MT_TXS0_ACK_ERROR_MASK))
 			info->flags |= IEEE80211_TX_STAT_ACK;
 
 		info->status.ampdu_len = 1;
-		info->status.ampdu_ack_len =
-			!!(info->flags & IEEE80211_TX_STAT_ACK);
+		info->status.ampdu_ack_len = !noacked;
 		info->status.rates[0].idx = -1;
+
+		wcid->stats.tx_failed += noacked;
 
 		mt76_connac2_mac_fill_txs(dev, wcid, txs_data);
 		mt76_tx_status_skb_done(dev, skb, &list);
@@ -1130,81 +1067,3 @@ int mt76_connac2_mac_fill_rx_rate(struct mt76_dev *dev,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt76_connac2_mac_fill_rx_rate);
-
-void mt76_connac2_tx_check_aggr(struct ieee80211_sta *sta, __le32 *txwi)
-{
-	struct mt76_wcid *wcid;
-	u16 fc, tid;
-	u32 val;
-
-	if (!sta ||
-	    !(sta->deflink.ht_cap.ht_supported || sta->deflink.he_cap.has_he))
-		return;
-
-	tid = le32_get_bits(txwi[1], MT_TXD1_TID);
-	if (tid >= 6) /* skip VO queue */
-		return;
-
-	val = le32_to_cpu(txwi[2]);
-	fc = FIELD_GET(MT_TXD2_FRAME_TYPE, val) << 2 |
-	     FIELD_GET(MT_TXD2_SUB_TYPE, val) << 4;
-	if (unlikely(fc != (IEEE80211_FTYPE_DATA | IEEE80211_STYPE_QOS_DATA)))
-		return;
-
-	wcid = (struct mt76_wcid *)sta->drv_priv;
-	if (!test_and_set_bit(tid, &wcid->ampdu_state))
-		ieee80211_start_tx_ba_session(sta, tid, 0);
-}
-EXPORT_SYMBOL_GPL(mt76_connac2_tx_check_aggr);
-
-void mt76_connac2_txwi_free(struct mt76_dev *dev, struct mt76_txwi_cache *t,
-			    struct ieee80211_sta *sta,
-			    struct list_head *free_list)
-{
-	struct mt76_wcid *wcid;
-	__le32 *txwi;
-	u16 wcid_idx;
-
-	mt76_connac_txp_skb_unmap(dev, t);
-	if (!t->skb)
-		goto out;
-
-	txwi = (__le32 *)mt76_get_txwi_ptr(dev, t);
-	if (sta) {
-		wcid = (struct mt76_wcid *)sta->drv_priv;
-		wcid_idx = wcid->idx;
-	} else {
-		wcid_idx = le32_get_bits(txwi[1], MT_TXD1_WLAN_IDX);
-		wcid = __mt76_wcid_ptr(dev, wcid_idx);
-
-		if (wcid && wcid->sta) {
-			sta = container_of((void *)wcid, struct ieee80211_sta,
-					   drv_priv);
-			mt76_wcid_add_poll(dev, wcid);
-		}
-	}
-
-	if (sta && likely(t->skb->protocol != cpu_to_be16(ETH_P_PAE)))
-		mt76_connac2_tx_check_aggr(sta, txwi);
-
-	__mt76_tx_complete_skb(dev, wcid_idx, t->skb, free_list);
-out:
-	t->skb = NULL;
-	mt76_put_txwi(dev, t);
-}
-EXPORT_SYMBOL_GPL(mt76_connac2_txwi_free);
-
-void mt76_connac2_tx_token_put(struct mt76_dev *dev)
-{
-	struct mt76_txwi_cache *txwi;
-	int id;
-
-	spin_lock_bh(&dev->token_lock);
-	idr_for_each_entry(&dev->token, txwi, id) {
-		mt76_connac2_txwi_free(dev, txwi, NULL, NULL);
-		dev->token_count--;
-	}
-	spin_unlock_bh(&dev->token_lock);
-	idr_destroy(&dev->token);
-}
-EXPORT_SYMBOL_GPL(mt76_connac2_tx_token_put);

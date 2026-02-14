@@ -76,7 +76,7 @@ long __kvm_hypercall##args(unsigned long nr HYPERCALL_PARM_##args)	\
 	HYPERCALL_REGS_##args;						\
 									\
 	asm volatile (							\
-		"	diag	2,4,0x500"				\
+		"	diag	2,4,0x500\n"				\
 		: "=d" (__rc)						\
 		: "d" (__nr) HYPERCALL_FMT_##args			\
 		: "memory", "cc");					\

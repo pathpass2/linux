@@ -90,7 +90,7 @@ examples:
   - |
     #include <dt-bindings/regulator/active-semi,8865-regulator.h>
 
-    i2c {
+    i2c1 {
       #address-cells = <1>;
       #size-cells = <0>;
 

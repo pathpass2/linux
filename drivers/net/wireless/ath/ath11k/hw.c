@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (c) 2018-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/types.h>
@@ -58,7 +58,7 @@ static void ath11k_hw_wcn6855_tx_mesh_enable(struct ath11k_base *ab,
 static void ath11k_init_wmi_config_qca6390(struct ath11k_base *ab,
 					   struct target_resource_config *config)
 {
-	config->num_vdevs = ab->hw_params.num_vdevs;
+	config->num_vdevs = 4;
 	config->num_peers = 16;
 	config->num_tids = 32;
 
@@ -201,10 +201,6 @@ static void ath11k_init_wmi_config_ipq8074(struct ath11k_base *ab,
 	config->twt_ap_pdev_count = ab->num_radios;
 	config->twt_ap_sta_count = 1000;
 	config->flag1 |= WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64;
-	config->flag1 |= WMI_RSRC_CFG_FLAG1_ACK_RSSI;
-	config->ema_max_vap_cnt = ab->num_radios;
-	config->ema_max_profile_period = TARGET_EMA_MAX_PROFILE_PERIOD;
-	config->beacon_tx_offload_max_vdev += config->ema_max_vap_cnt;
 }
 
 static int ath11k_hw_mac_id_to_pdev_id_ipq8074(struct ath11k_hw_params *hw,
@@ -838,35 +834,26 @@ static void ath11k_hw_ipq5018_reo_setup(struct ath11k_base *ab)
 			   ring_hash_map);
 }
 
-static u16
-ath11k_hw_ipq8074_mpdu_info_get_peerid(struct hal_rx_mpdu_info *mpdu_info)
+static u16 ath11k_hw_ipq8074_mpdu_info_get_peerid(u8 *tlv_data)
 {
 	u16 peer_id = 0;
+	struct hal_rx_mpdu_info *mpdu_info =
+		(struct hal_rx_mpdu_info *)tlv_data;
 
 	peer_id = FIELD_GET(HAL_RX_MPDU_INFO_INFO0_PEERID,
-			    __le32_to_cpu(mpdu_info->u.ipq8074.info0));
+			    __le32_to_cpu(mpdu_info->info0));
 
 	return peer_id;
 }
 
-static u16
-ath11k_hw_qcn9074_mpdu_info_get_peerid(struct hal_rx_mpdu_info *mpdu_info)
+static u16 ath11k_hw_wcn6855_mpdu_info_get_peerid(u8 *tlv_data)
 {
 	u16 peer_id = 0;
-
-	peer_id = FIELD_GET(HAL_RX_MPDU_INFO_INFO0_PEERID,
-			    __le32_to_cpu(mpdu_info->u.qcn9074.info0));
-
-	return peer_id;
-}
-
-static u16
-ath11k_hw_wcn6855_mpdu_info_get_peerid(struct hal_rx_mpdu_info *mpdu_info)
-{
-	u16 peer_id = 0;
+	struct hal_rx_mpdu_info_wcn6855 *mpdu_info =
+		(struct hal_rx_mpdu_info_wcn6855 *)tlv_data;
 
 	peer_id = FIELD_GET(HAL_RX_MPDU_INFO_INFO0_PEERID_WCN6855,
-			    __le32_to_cpu(mpdu_info->u.wcn6855.info0));
+			    __le32_to_cpu(mpdu_info->info0));
 	return peer_id;
 }
 
@@ -1054,7 +1041,7 @@ const struct ath11k_hw_ops qcn9074_ops = {
 	.rx_desc_get_attention = ath11k_hw_qcn9074_rx_desc_get_attention,
 	.rx_desc_get_msdu_payload = ath11k_hw_qcn9074_rx_desc_get_msdu_payload,
 	.reo_setup = ath11k_hw_ipq8074_reo_setup,
-	.mpdu_info_get_peerid = ath11k_hw_qcn9074_mpdu_info_get_peerid,
+	.mpdu_info_get_peerid = ath11k_hw_ipq8074_mpdu_info_get_peerid,
 	.rx_desc_mac_addr2_valid = ath11k_hw_ipq9074_rx_desc_mac_addr2_valid,
 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq9074_rx_desc_mpdu_start_addr2,
 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
@@ -1178,7 +1165,7 @@ const struct ath11k_hw_ops ipq5018_ops = {
 	.mpdu_info_get_peerid = ath11k_hw_ipq8074_mpdu_info_get_peerid,
 	.rx_desc_mac_addr2_valid = ath11k_hw_ipq9074_rx_desc_mac_addr2_valid,
 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq9074_rx_desc_mpdu_start_addr2,
-	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
+
 };
 
 #define ATH11K_TX_RING_MASK_0 BIT(0)
@@ -1236,7 +1223,6 @@ const struct ath11k_hw_ring_mask ath11k_hw_ring_mask_ipq8074 = {
 		ATH11K_RX_WBM_REL_RING_MASK_0,
 	},
 	.reo_status = {
-		0, 0, 0,
 		ATH11K_REO_STATUS_RING_MASK_0,
 	},
 	.rxdma2host = {
@@ -2707,14 +2693,6 @@ const struct ath11k_hw_regs wcn6750_regs = {
 	.hal_reo1_misc_ctl = 0x000005d8,
 };
 
-static const struct ath11k_hw_tcl2wbm_rbm_map ath11k_hw_tcl2wbm_rbm_map_ipq5018[] = {
-	{
-		.tcl_ring_num = 0,
-		.wbm_ring_num = 0,
-		.rbm_id = HAL_RX_BUF_RBM_SW0_BM,
-	},
-};
-
 static const struct ath11k_hw_tcl2wbm_rbm_map ath11k_hw_tcl2wbm_rbm_map_ipq8074[] = {
 	{
 		.tcl_ring_num = 0,
@@ -2830,28 +2808,19 @@ const struct ath11k_hw_regs ipq5018_regs = {
 	.hal_wbm1_release_ring_base_lsb = 0x0000097c,
 };
 
-const struct ath11k_hw_hal_params ath11k_hw_hal_params_ipq5018 = {
-	.rx_buf_rbm = HAL_RX_BUF_RBM_SW3_BM,
-	.tcl2wbm_rbm_map = ath11k_hw_tcl2wbm_rbm_map_ipq5018,
-	.num_tx_rings = ARRAY_SIZE(ath11k_hw_tcl2wbm_rbm_map_ipq5018),
-};
-
 const struct ath11k_hw_hal_params ath11k_hw_hal_params_ipq8074 = {
 	.rx_buf_rbm = HAL_RX_BUF_RBM_SW3_BM,
 	.tcl2wbm_rbm_map = ath11k_hw_tcl2wbm_rbm_map_ipq8074,
-	.num_tx_rings = ARRAY_SIZE(ath11k_hw_tcl2wbm_rbm_map_ipq8074),
 };
 
 const struct ath11k_hw_hal_params ath11k_hw_hal_params_qca6390 = {
 	.rx_buf_rbm = HAL_RX_BUF_RBM_SW1_BM,
-	.tcl2wbm_rbm_map = ath11k_hw_tcl2wbm_rbm_map_ipq5018,
-	.num_tx_rings = ARRAY_SIZE(ath11k_hw_tcl2wbm_rbm_map_ipq5018),
+	.tcl2wbm_rbm_map = ath11k_hw_tcl2wbm_rbm_map_ipq8074,
 };
 
 const struct ath11k_hw_hal_params ath11k_hw_hal_params_wcn6750 = {
 	.rx_buf_rbm = HAL_RX_BUF_RBM_SW1_BM,
 	.tcl2wbm_rbm_map = ath11k_hw_tcl2wbm_rbm_map_wcn6750,
-	.num_tx_rings = ARRAY_SIZE(ath11k_hw_tcl2wbm_rbm_map_wcn6750),
 };
 
 static const struct cfg80211_sar_freq_ranges ath11k_hw_sar_freq_ranges_wcn6855[] = {

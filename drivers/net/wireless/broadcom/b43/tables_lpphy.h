@@ -36,7 +36,7 @@ struct lpphy_tx_gain_table_entry {
 void lpphy_write_gain_table(struct b43_wldev *dev, int offset,
 			    struct lpphy_tx_gain_table_entry data);
 void lpphy_write_gain_table_bulk(struct b43_wldev *dev, int offset, int count,
-				 const struct lpphy_tx_gain_table_entry *table);
+				 struct lpphy_tx_gain_table_entry *table);
 
 void lpphy_rev0_1_table_init(struct b43_wldev *dev);
 void lpphy_rev2plus_table_init(struct b43_wldev *dev);

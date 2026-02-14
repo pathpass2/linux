@@ -6,6 +6,7 @@
  */
 #include <linux/kernel.h>
 #include <linux/rculist.h>
+#include <linux/blk-mq.h>
 
 #include "blk-stat.h"
 #include "blk-mq.h"
@@ -27,7 +28,7 @@ void blk_rq_stat_init(struct blk_rq_stat *stat)
 /* src is a per-cpu stat, mean isn't initialized */
 void blk_rq_stat_sum(struct blk_rq_stat *dst, struct blk_rq_stat *src)
 {
-	if (dst->nr_samples + src->nr_samples <= dst->nr_samples)
+	if (!src->nr_samples)
 		return;
 
 	dst->min = min(dst->min, src->min);
@@ -57,6 +58,9 @@ void blk_stat_add(struct request *rq, u64 now)
 
 	value = (now >= rq->io_start_time_ns) ? now - rq->io_start_time_ns : 0;
 
+	if (req_op(rq) == REQ_OP_READ || req_op(rq) == REQ_OP_WRITE)
+		blk_throtl_stat_add(rq, value);
+
 	rcu_read_lock();
 	cpu = get_cpu();
 	list_for_each_entry_rcu(cb, &q->stats->callbacks, list) {
@@ -76,7 +80,7 @@ void blk_stat_add(struct request *rq, u64 now)
 
 static void blk_stat_timer_fn(struct timer_list *t)
 {
-	struct blk_stat_callback *cb = timer_container_of(cb, t, timer);
+	struct blk_stat_callback *cb = from_timer(cb, t, timer);
 	unsigned int bucket;
 	int cpu;
 
@@ -162,7 +166,7 @@ void blk_stat_remove_callback(struct request_queue *q,
 		blk_queue_flag_clear(QUEUE_FLAG_STATS, q);
 	spin_unlock_irqrestore(&q->stats->lock, flags);
 
-	timer_delete_sync(&cb->timer);
+	del_timer_sync(&cb->timer);
 }
 
 static void blk_stat_free_callback_rcu(struct rcu_head *head)
@@ -186,7 +190,7 @@ void blk_stat_disable_accounting(struct request_queue *q)
 	unsigned long flags;
 
 	spin_lock_irqsave(&q->stats->lock, flags);
-	if (!--q->stats->accounting && list_empty(&q->stats->callbacks))
+	if (!--q->stats->accounting)
 		blk_queue_flag_clear(QUEUE_FLAG_STATS, q);
 	spin_unlock_irqrestore(&q->stats->lock, flags);
 }
@@ -197,7 +201,7 @@ void blk_stat_enable_accounting(struct request_queue *q)
 	unsigned long flags;
 
 	spin_lock_irqsave(&q->stats->lock, flags);
-	if (!q->stats->accounting++ && list_empty(&q->stats->callbacks))
+	if (!q->stats->accounting++)
 		blk_queue_flag_set(QUEUE_FLAG_STATS, q);
 	spin_unlock_irqrestore(&q->stats->lock, flags);
 }
@@ -226,4 +230,22 @@ void blk_free_queue_stats(struct blk_queue_stats *stats)
 	WARN_ON(!list_empty(&stats->callbacks));
 
 	kfree(stats);
+}
+
+bool blk_stats_alloc_enable(struct request_queue *q)
+{
+	struct blk_rq_stat *poll_stat;
+
+	poll_stat = kcalloc(BLK_MQ_POLL_STATS_BKTS, sizeof(*poll_stat),
+				GFP_ATOMIC);
+	if (!poll_stat)
+		return false;
+
+	if (cmpxchg(&q->poll_stat, NULL, poll_stat) != NULL) {
+		kfree(poll_stat);
+		return true;
+	}
+
+	blk_stat_add_callback(q, q->poll_cb);
+	return false;
 }

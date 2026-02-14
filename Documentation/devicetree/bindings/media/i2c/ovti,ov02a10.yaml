@@ -39,7 +39,6 @@ properties:
   clock-frequency:
     description:
       Frequency of the eclk clock in Hz.
-    deprecated: true
 
   dovdd-supply:
     description:
@@ -69,6 +68,12 @@ properties:
       marked GPIO_ACTIVE_LOW.
     maxItems: 1
 
+  rotation:
+    enum:
+      - 0    # Sensor Mounted Upright
+      - 180  # Sensor Mounted Upside Down
+    default: 0
+
   port:
     $ref: /schemas/graph.yaml#/$defs/port-base
     additionalProperties: false
@@ -83,7 +88,7 @@ properties:
         properties:
           link-frequencies: true
           ovti,mipi-clock-voltage:
-            $ref: /schemas/types.yaml#/definitions/uint32
+            $ref: "/schemas/types.yaml#/definitions/uint32"
             description:
               Definition of MIPI clock voltage unit. This entry corresponds to
               the link speed defined by the 'link-frequencies' property.
@@ -101,6 +106,7 @@ required:
   - reg
   - clocks
   - clock-names
+  - clock-frequency
   - dovdd-supply
   - avdd-supply
   - dvdd-supply
@@ -108,7 +114,7 @@ required:
   - reset-gpios
   - port
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |
@@ -127,6 +133,7 @@ examples:
 
             clocks = <&ov02a10_clk>;
             clock-names = "eclk";
+            clock-frequency = <24000000>;
 
             rotation = <180>;
 

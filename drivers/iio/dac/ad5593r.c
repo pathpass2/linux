@@ -13,7 +13,7 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #define AD5593R_MODE_CONF		(0 << 4)
 #define AD5593R_MODE_DAC_WRITE		(1 << 4)
@@ -116,19 +116,19 @@ static void ad5593r_i2c_remove(struct i2c_client *i2c)
 
 static const struct i2c_device_id ad5593r_i2c_ids[] = {
 	{ .name = "ad5593r", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, ad5593r_i2c_ids);
 
 static const struct of_device_id ad5593r_of_match[] = {
 	{ .compatible = "adi,ad5593r", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, ad5593r_of_match);
 
 static const struct acpi_device_id ad5593r_acpi_match[] = {
 	{"ADS5593", },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, ad5593r_acpi_match);
 
@@ -138,7 +138,7 @@ static struct i2c_driver ad5593r_driver = {
 		.of_match_table = ad5593r_of_match,
 		.acpi_match_table = ad5593r_acpi_match,
 	},
-	.probe = ad5593r_i2c_probe,
+	.probe_new = ad5593r_i2c_probe,
 	.remove = ad5593r_i2c_remove,
 	.id_table = ad5593r_i2c_ids,
 };
@@ -147,4 +147,4 @@ module_i2c_driver(ad5593r_driver);
 MODULE_AUTHOR("Paul Cercueil <paul.cercueil@analog.com>");
 MODULE_DESCRIPTION("Analog Devices AD5593R multi-channel converters");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_AD5592R");
+MODULE_IMPORT_NS(IIO_AD5592R);

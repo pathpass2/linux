@@ -38,30 +38,15 @@ typedef unsigned int ap_qid_t;
  * The ap queue status word is returned by all three AP functions
  * (PQAP, NQAP and DQAP).  There's a set of flags in the first
  * byte, followed by a 1 byte response code.
- *
- * For convenience the 'value' field is a 32 bit access of the
- * whole status and the 'status_bits' and 'rc' fields comprise
- * the leftmost 8 status bits and the response_code.
  */
 struct ap_queue_status {
-	union {
-		unsigned int value			: 32;
-		struct {
-			unsigned int status_bits	: 8;
-			unsigned int rc			: 8;
-			unsigned int			: 16;
-		};
-		struct {
-			unsigned int queue_empty	: 1;
-			unsigned int replies_waiting	: 1;
-			unsigned int queue_full		: 1;
-			unsigned int			: 3;
-			unsigned int async		: 1;
-			unsigned int irq_enabled	: 1;
-			unsigned int response_code	: 8;
-			unsigned int			: 16;
-		};
-	};
+	unsigned int queue_empty	: 1;
+	unsigned int replies_waiting	: 1;
+	unsigned int queue_full		: 1;
+	unsigned int _pad1		: 4;
+	unsigned int irq_enabled	: 1;
+	unsigned int response_code	: 8;
+	unsigned int _pad2		: 16;
 };
 
 /*
@@ -78,7 +63,7 @@ union ap_queue_status_reg {
 };
 
 /**
- * ap_instructions_available() - Test if AP instructions are available.
+ * ap_intructions_available() - Test if AP instructions are available.
  *
  * Returns true if the AP instructions are installed, otherwise false.
  */
@@ -101,53 +86,14 @@ static inline bool ap_instructions_available(void)
 	return reg1 != 0;
 }
 
-/* TAPQ register GR2 response struct */
-struct ap_tapq_hwinfo {
-	union {
-		unsigned long value;
-		struct {
-			unsigned int fac    : 32; /* facility bits */
-			unsigned int apinfo : 32; /* ap type, ... */
-		};
-		struct {
-			unsigned int apsc  :  1; /* APSC */
-			unsigned int mex4k :  1; /* AP4KM */
-			unsigned int crt4k :  1; /* AP4KC */
-			unsigned int cca   :  1; /* D */
-			unsigned int accel :  1; /* A */
-			unsigned int ep11  :  1; /* X */
-			unsigned int apxa  :  1; /* APXA */
-			unsigned int slcf  :  1; /* Cmd filtering avail. */
-			unsigned int class :  8;
-			unsigned int bs	   :  2; /* SE bind/assoc */
-			unsigned int	   : 14;
-			unsigned int at	   :  8; /* ap type */
-			unsigned int nd	   :  8; /* nr of domains */
-			unsigned int	   :  4;
-			unsigned int ml	   :  4; /* apxl ml */
-			unsigned int	   :  4;
-			unsigned int qd	   :  4; /* queue depth */
-		};
-	};
-};
-
-/*
- * Convenience defines to be used with the bs field from struct ap_tapq_gr2
- */
-#define AP_BS_Q_USABLE		      0
-#define AP_BS_Q_USABLE_NO_SECURE_KEY  1
-#define AP_BS_Q_AVAIL_FOR_BINDING     2
-#define AP_BS_Q_UNUSABLE	      3
-
 /**
  * ap_tapq(): Test adjunct processor queue.
  * @qid: The AP queue number
- * @info: Pointer to tapq hwinfo struct
+ * @info: Pointer to queue descriptor
  *
  * Returns AP queue status structure.
  */
-static inline struct ap_queue_status ap_tapq(ap_qid_t qid,
-					     struct ap_tapq_hwinfo *info)
+static inline struct ap_queue_status ap_tapq(ap_qid_t qid, unsigned long *info)
 {
 	union ap_queue_status_reg reg1;
 	unsigned long reg2;
@@ -157,12 +103,12 @@ static inline struct ap_queue_status ap_tapq(ap_qid_t qid,
 		"	lghi	2,0\n"			/* 0 into gr2 */
 		"	.insn	rre,0xb2af0000,0,0\n"	/* PQAP(TAPQ) */
 		"	lgr	%[reg1],1\n"		/* gr1 (status) into reg1 */
-		"	lgr	%[reg2],2"		/* gr2 into reg2 */
+		"	lgr	%[reg2],2\n"		/* gr2 into reg2 */
 		: [reg1] "=&d" (reg1.value), [reg2] "=&d" (reg2)
 		: [qid] "d" (qid)
 		: "cc", "0", "1", "2");
 	if (info)
-		info->value = reg2;
+		*info = reg2;
 	return reg1.status;
 }
 
@@ -170,12 +116,13 @@ static inline struct ap_queue_status ap_tapq(ap_qid_t qid,
  * ap_test_queue(): Test adjunct processor queue.
  * @qid: The AP queue number
  * @tbit: Test facilities bit
- * @info: Ptr to tapq gr2 struct
+ * @info: Pointer to queue descriptor
  *
  * Returns AP queue status structure.
  */
-static inline struct ap_queue_status ap_test_queue(ap_qid_t qid, int tbit,
-						   struct ap_tapq_hwinfo *info)
+static inline struct ap_queue_status ap_test_queue(ap_qid_t qid,
+						   int tbit,
+						   unsigned long *info)
 {
 	if (tbit)
 		qid |= 1UL << 23; /* set T bit*/
@@ -185,22 +132,18 @@ static inline struct ap_queue_status ap_test_queue(ap_qid_t qid, int tbit,
 /**
  * ap_pqap_rapq(): Reset adjunct processor queue.
  * @qid: The AP queue number
- * @fbit: if != 0 set F bit
  *
  * Returns AP queue status structure.
  */
-static inline struct ap_queue_status ap_rapq(ap_qid_t qid, int fbit)
+static inline struct ap_queue_status ap_rapq(ap_qid_t qid)
 {
 	unsigned long reg0 = qid | (1UL << 24);  /* fc 1UL is RAPQ */
 	union ap_queue_status_reg reg1;
 
-	if (fbit)
-		reg0 |= 1UL << 22;
-
 	asm volatile(
 		"	lgr	0,%[reg0]\n"		/* qid arg into gr0 */
 		"	.insn	rre,0xb2af0000,0,0\n"	/* PQAP(RAPQ) */
-		"	lgr	%[reg1],1"		/* gr1 (status) into reg1 */
+		"	lgr	%[reg1],1\n"		/* gr1 (status) into reg1 */
 		: [reg1] "=&d" (reg1.value)
 		: [reg0] "d" (reg0)
 		: "cc", "0", "1");
@@ -210,22 +153,18 @@ static inline struct ap_queue_status ap_rapq(ap_qid_t qid, int fbit)
 /**
  * ap_pqap_zapq(): Reset and zeroize adjunct processor queue.
  * @qid: The AP queue number
- * @fbit: if != 0 set F bit
  *
  * Returns AP queue status structure.
  */
-static inline struct ap_queue_status ap_zapq(ap_qid_t qid, int fbit)
+static inline struct ap_queue_status ap_zapq(ap_qid_t qid)
 {
 	unsigned long reg0 = qid | (2UL << 24);  /* fc 2UL is ZAPQ */
 	union ap_queue_status_reg reg1;
 
-	if (fbit)
-		reg0 |= 1UL << 22;
-
 	asm volatile(
 		"	lgr	0,%[reg0]\n"		/* qid arg into gr0 */
 		"	.insn	rre,0xb2af0000,0,0\n"	/* PQAP(ZAPQ) */
-		"	lgr	%[reg1],1"		/* gr1 (status) into reg1 */
+		"	lgr	%[reg1],1\n"		/* gr1 (status) into reg1 */
 		: [reg1] "=&d" (reg1.value)
 		: [reg0] "d" (reg0)
 		: "cc", "0", "1");
@@ -237,25 +176,19 @@ static inline struct ap_queue_status ap_zapq(ap_qid_t qid, int fbit)
  * config info as returned by the ap_qci() function.
  */
 struct ap_config_info {
-	union {
-		unsigned int flags;
-		struct {
-			unsigned int apsc	 : 1;	/* S bit */
-			unsigned int apxa	 : 1;	/* N bit */
-			unsigned int qact	 : 1;	/* C bit */
-			unsigned int rc8a	 : 1;	/* R bit */
-			unsigned int		 : 4;
-			unsigned int apsb	 : 1;	/* B bit */
-			unsigned int		 : 23;
-		};
-	};
-	unsigned char na;		/* max # of APs - 1 */
-	unsigned char nd;		/* max # of Domains - 1 */
-	unsigned char _reserved0[10];
+	unsigned int apsc	 : 1;	/* S bit */
+	unsigned int apxa	 : 1;	/* N bit */
+	unsigned int qact	 : 1;	/* C bit */
+	unsigned int rc8a	 : 1;	/* R bit */
+	unsigned char _reserved1 : 4;
+	unsigned char _reserved2[3];
+	unsigned char Na;		/* max # of APs - 1 */
+	unsigned char Nd;		/* max # of Domains - 1 */
+	unsigned char _reserved3[10];
 	unsigned int apm[8];		/* AP ID mask */
 	unsigned int aqm[8];		/* AP (usage) queue mask */
 	unsigned int adm[8];		/* AP (control) domain mask */
-	unsigned char _reserved1[16];
+	unsigned char _reserved4[16];
 } __aligned(8);
 
 /**
@@ -329,7 +262,7 @@ static inline struct ap_queue_status ap_aqic(ap_qid_t qid,
 		"	lgr	1,%[reg1]\n"		/* irq ctrl into gr1 */
 		"	lgr	2,%[reg2]\n"		/* ni addr into gr2 */
 		"	.insn	rre,0xb2af0000,0,0\n"	/* PQAP(AQIC) */
-		"	lgr	%[reg1],1"		/* gr1 (status) into reg1 */
+		"	lgr	%[reg1],1\n"		/* gr1 (status) into reg1 */
 		: [reg1] "+&d" (reg1.value)
 		: [reg0] "d" (reg0), [reg2] "d" (reg2)
 		: "cc", "memory", "0", "1", "2");
@@ -355,7 +288,7 @@ union ap_qact_ap_info {
 };
 
 /**
- * ap_qact(): Query AP compatibility type.
+ * ap_qact(): Query AP combatibility type.
  * @qid: The AP queue number
  * @apinfo: On input the info about the AP queue. On output the
  *	    alternate AP queue info provided by the qact function
@@ -377,64 +310,11 @@ static inline struct ap_queue_status ap_qact(ap_qid_t qid, int ifbit,
 		"	lgr	1,%[reg1]\n"		/* qact in info into gr1 */
 		"	.insn	rre,0xb2af0000,0,0\n"	/* PQAP(QACT) */
 		"	lgr	%[reg1],1\n"		/* gr1 (status) into reg1 */
-		"	lgr	%[reg2],2"		/* qact out info into reg2 */
+		"	lgr	%[reg2],2\n"		/* qact out info into reg2 */
 		: [reg1] "+&d" (reg1.value), [reg2] "=&d" (reg2)
 		: [reg0] "d" (reg0)
 		: "cc", "0", "1", "2");
 	apinfo->val = reg2;
-	return reg1.status;
-}
-
-/*
- * ap_bapq(): SE bind AP queue.
- * @qid: The AP queue number
- *
- * Returns AP queue status structure.
- *
- * Invoking this function in a non-SE environment
- * may case a specification exception.
- */
-static inline struct ap_queue_status ap_bapq(ap_qid_t qid)
-{
-	unsigned long reg0 = qid | (7UL << 24);  /* fc 7 is BAPQ */
-	union ap_queue_status_reg reg1;
-
-	asm volatile(
-		"	lgr	0,%[reg0]\n"		/* qid arg into gr0 */
-		"	.insn	rre,0xb2af0000,0,0\n"	/* PQAP(BAPQ) */
-		"	lgr	%[reg1],1"		/* gr1 (status) into reg1 */
-		: [reg1] "=&d" (reg1.value)
-		: [reg0] "d" (reg0)
-		: "cc", "0", "1");
-
-	return reg1.status;
-}
-
-/*
- * ap_aapq(): SE associate AP queue.
- * @qid: The AP queue number
- * @sec_idx: The secret index
- *
- * Returns AP queue status structure.
- *
- * Invoking this function in a non-SE environment
- * may case a specification exception.
- */
-static inline struct ap_queue_status ap_aapq(ap_qid_t qid, unsigned int sec_idx)
-{
-	unsigned long reg0 = qid | (8UL << 24);  /* fc 8 is AAPQ */
-	unsigned long reg2 = sec_idx;
-	union ap_queue_status_reg reg1;
-
-	asm volatile(
-		"	lgr	0,%[reg0]\n"		/* qid arg into gr0 */
-		"	lgr	2,%[reg2]\n"		/* secret index into gr2 */
-		"	.insn	rre,0xb2af0000,0,0\n"	/* PQAP(AAPQ) */
-		"	lgr	%[reg1],1"		/* gr1 (status) into reg1 */
-		: [reg1] "=&d" (reg1.value)
-		: [reg0] "d" (reg0), [reg2] "d" (reg2)
-		: "cc", "0", "1", "2");
-
 	return reg1.status;
 }
 
@@ -467,7 +347,7 @@ static inline struct ap_queue_status ap_nqap(ap_qid_t qid,
 		"	lgr	0,%[reg0]\n"  /* qid param in gr0 */
 		"0:	.insn	rre,0xb2ad0000,%[nqap_r1],%[nqap_r2]\n"
 		"	brc	2,0b\n"       /* handle partial completion */
-		"	lgr	%[reg1],1"    /* gr1 (status) into reg1 */
+		"	lgr	%[reg1],1\n"  /* gr1 (status) into reg1 */
 		: [reg0] "+&d" (reg0), [reg1] "=&d" (reg1.value),
 		  [nqap_r2] "+&d" (nqap_r2.pair)
 		: [nqap_r1] "d" (nqap_r1.pair)
@@ -479,11 +359,10 @@ static inline struct ap_queue_status ap_nqap(ap_qid_t qid,
  * ap_dqap(): Receive message from adjunct processor queue.
  * @qid: The AP queue number
  * @psmid: Pointer to program supplied message identifier
- * @msg: Pointer to message buffer
- * @msglen: Message buffer size
- * @length: Pointer to length of actually written bytes
- * @reslength: Residual length on return
- * @resgr0: input: gr0 value (only used if != 0), output: residual gr0 content
+ * @msg: The message text
+ * @length: The message length
+ * @reslength: Resitual length on return
+ * @resgr0: input: gr0 value (only used if != 0), output: resitual gr0 content
  *
  * Returns AP queue status structure.
  * Condition code 1 on DQAP means the receive has taken place
@@ -507,9 +386,8 @@ static inline struct ap_queue_status ap_nqap(ap_qid_t qid,
  * *resgr0 is to be used instead of qid to further process this entry.
  */
 static inline struct ap_queue_status ap_dqap(ap_qid_t qid,
-					     unsigned long *psmid,
-					     void *msg, size_t msglen,
-					     size_t *length,
+					     unsigned long long *psmid,
+					     void *msg, size_t length,
 					     size_t *reslength,
 					     unsigned long *resgr0)
 {
@@ -521,7 +399,7 @@ static inline struct ap_queue_status ap_dqap(ap_qid_t qid,
 	rp1.even = 0UL;
 	rp1.odd  = 0UL;
 	rp2.even = (unsigned long)msg;
-	rp2.odd  = (unsigned long)msglen;
+	rp2.odd  = (unsigned long)length;
 
 	asm volatile(
 		"	lgr	0,%[reg0]\n"   /* qid param into gr0 */
@@ -532,7 +410,7 @@ static inline struct ap_queue_status ap_dqap(ap_qid_t qid,
 		"	brc	6,0b\n"        /* handle partial complete */
 		"2:	lgr	%[reg0],0\n"   /* gr0 (qid + info) into reg0 */
 		"	lgr	%[reg1],1\n"   /* gr1 (status) into reg1 */
-		"	lgr	%[reg2],2"     /* gr2 (res length) into reg2 */
+		"	lgr	%[reg2],2\n"   /* gr2 (res length) into reg2 */
 		: [reg0] "+&d" (reg0), [reg1] "=&d" (reg1.value),
 		  [reg2] "=&d" (reg2), [rp1] "+&d" (rp1.pair),
 		  [rp2] "+&d" (rp2.pair)
@@ -551,16 +429,23 @@ static inline struct ap_queue_status ap_dqap(ap_qid_t qid,
 		if (resgr0)
 			*resgr0 = reg0;
 	} else {
-		*psmid = (rp1.even << 32) + rp1.odd;
+		*psmid = (((unsigned long long)rp1.even) << 32) + rp1.odd;
 		if (resgr0)
 			*resgr0 = 0;
 	}
 
-	/* update *length with the nr of bytes stored into the msg buffer */
-	if (length)
-		*length = msglen - rp2.odd;
-
 	return reg1.status;
 }
+
+/*
+ * Interface to tell the AP bus code that a configuration
+ * change has happened. The bus code should at least do
+ * an ap bus resource rescan.
+ */
+#if IS_ENABLED(CONFIG_ZCRYPT)
+void ap_bus_cfg_chg(void);
+#else
+static inline void ap_bus_cfg_chg(void){}
+#endif
 
 #endif /* _ASM_S390_AP_H_ */

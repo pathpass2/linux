@@ -18,8 +18,7 @@ enum {
 
 enum {
 	MLX5E_TC_PRIO = 0,
-	MLX5E_PROMISC_PRIO,
-	MLX5E_NIC_PRIO,
+	MLX5E_NIC_PRIO
 };
 
 struct mlx5e_flow_table {
@@ -57,7 +56,7 @@ struct mlx5e_l2_table {
 	bool                       promisc_enabled;
 };
 
-#define MLX5E_NUM_INDIR_TIRS (MLX5_NUM_INDIR_TIRS)
+#define MLX5E_NUM_INDIR_TIRS (MLX5_NUM_TT - 1)
 
 #define MLX5_HASH_IP		(MLX5_HASH_FIELD_SEL_SRC_IP   |\
 				 MLX5_HASH_FIELD_SEL_DST_IP)
@@ -69,13 +68,9 @@ struct mlx5e_l2_table {
 				 MLX5_HASH_FIELD_SEL_DST_IP   |\
 				 MLX5_HASH_FIELD_SEL_IPSEC_SPI)
 
-/* NIC promisc FT level */
-enum {
-	MLX5E_PROMISC_FT_LEVEL,
-};
-
 /* NIC prio FTS */
 enum {
+	MLX5E_PROMISC_FT_LEVEL,
 	MLX5E_VLAN_FT_LEVEL,
 	MLX5E_L2_FT_LEVEL,
 	MLX5E_TTC_FT_LEVEL,
@@ -88,11 +83,10 @@ enum {
 #ifdef CONFIG_MLX5_EN_ARFS
 	MLX5E_ARFS_FT_LEVEL = MLX5E_INNER_TTC_FT_LEVEL + 1,
 #endif
-#if defined(CONFIG_MLX5_EN_IPSEC) || defined(CONFIG_MLX5_EN_PSP)
-	MLX5E_ACCEL_FS_ESP_FT_LEVEL = MLX5E_INNER_TTC_FT_LEVEL + 1,
+#ifdef CONFIG_MLX5_EN_IPSEC
+	MLX5E_ACCEL_FS_POL_FT_LEVEL = MLX5E_INNER_TTC_FT_LEVEL + 1,
+	MLX5E_ACCEL_FS_ESP_FT_LEVEL,
 	MLX5E_ACCEL_FS_ESP_FT_ERR_LEVEL,
-	MLX5E_ACCEL_FS_POL_FT_LEVEL,
-	MLX5E_ACCEL_FS_POL_MISS_FT_LEVEL,
 	MLX5E_ACCEL_FS_ESP_FT_ROCE_LEVEL,
 #endif
 };
@@ -132,8 +126,7 @@ struct mlx5e_ptp_fs;
 
 void mlx5e_set_ttc_params(struct mlx5e_flow_steering *fs,
 			  struct mlx5e_rx_res *rx_res,
-			  struct ttc_params *ttc_params, bool tunnel,
-			  bool ipsec_rss);
+			  struct ttc_params *ttc_params, bool tunnel);
 
 void mlx5e_destroy_ttc_table(struct mlx5e_flow_steering *fs);
 int mlx5e_create_ttc_table(struct mlx5e_flow_steering  *fs,
@@ -157,23 +150,11 @@ struct mlx5e_flow_steering *mlx5e_fs_init(const struct mlx5e_profile *profile,
 					  struct dentry *dfs_root);
 void mlx5e_fs_cleanup(struct mlx5e_flow_steering *fs);
 struct mlx5e_vlan_table *mlx5e_fs_get_vlan(struct mlx5e_flow_steering *fs);
+void mlx5e_fs_set_tc(struct mlx5e_flow_steering *fs, struct mlx5e_tc_table *tc);
 struct mlx5e_tc_table *mlx5e_fs_get_tc(struct mlx5e_flow_steering *fs);
 struct mlx5e_l2_table *mlx5e_fs_get_l2(struct mlx5e_flow_steering *fs);
 struct mlx5_flow_namespace *mlx5e_fs_get_ns(struct mlx5e_flow_steering *fs, bool egress);
 void mlx5e_fs_set_ns(struct mlx5e_flow_steering *fs, struct mlx5_flow_namespace *ns, bool egress);
-
-static inline bool mlx5e_fs_has_arfs(struct net_device *netdev)
-{
-	return IS_ENABLED(CONFIG_MLX5_EN_ARFS) &&
-		netdev->hw_features & NETIF_F_NTUPLE;
-}
-
-static inline bool mlx5e_fs_want_arfs(struct net_device *netdev)
-{
-	return IS_ENABLED(CONFIG_MLX5_EN_ARFS) &&
-		netdev->features & NETIF_F_NTUPLE;
-}
-
 #ifdef CONFIG_MLX5_EN_RXNFC
 struct mlx5e_ethtool_steering *mlx5e_fs_get_ethtool(struct mlx5e_flow_steering *fs);
 #endif

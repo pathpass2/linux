@@ -26,9 +26,6 @@ properties:
   clocks:
     maxItems: 2
 
-  clock-names:
-    maxItems: 2
-
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
 

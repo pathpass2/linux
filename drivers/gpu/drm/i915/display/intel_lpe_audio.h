@@ -8,33 +8,15 @@
 
 #include <linux/types.h>
 
+enum pipe;
 enum port;
-enum transcoder;
-struct intel_display;
+struct drm_i915_private;
 
-#ifdef I915
-int  intel_lpe_audio_init(struct intel_display *display);
-void intel_lpe_audio_teardown(struct intel_display *display);
-void intel_lpe_audio_irq_handler(struct intel_display *display);
-void intel_lpe_audio_notify(struct intel_display *display,
-			    enum transcoder cpu_transcoder, enum port port,
+int  intel_lpe_audio_init(struct drm_i915_private *dev_priv);
+void intel_lpe_audio_teardown(struct drm_i915_private *dev_priv);
+void intel_lpe_audio_irq_handler(struct drm_i915_private *dev_priv);
+void intel_lpe_audio_notify(struct drm_i915_private *dev_priv,
+			    enum pipe pipe, enum port port,
 			    const void *eld, int ls_clock, bool dp_output);
-#else
-static inline int intel_lpe_audio_init(struct intel_display *display)
-{
-	return -ENODEV;
-}
-static inline void intel_lpe_audio_teardown(struct intel_display *display)
-{
-}
-static inline void intel_lpe_audio_irq_handler(struct intel_display *display)
-{
-}
-static inline void intel_lpe_audio_notify(struct intel_display *display,
-					  enum transcoder cpu_transcoder, enum port port,
-					  const void *eld, int ls_clock, bool dp_output)
-{
-}
-#endif
 
 #endif /* __INTEL_LPE_AUDIO_H__ */

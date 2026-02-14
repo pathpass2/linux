@@ -14,7 +14,6 @@
 	compatible = "radxa,cm3-io", "radxa,cm3", "rockchip,rk3566";
 
 	aliases {
-		ethernet0 = &gmac1;
 		mmc1 = &sdmmc0;
 	};
 
@@ -53,7 +52,7 @@
 		};
 	};
 
-	vcc5v0_usb30: regulator-vcc5v0-usb30 {
+	vcc5v0_usb30: vcc5v0-usb30-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc5v0_usb30";
 		enable-active-high;
@@ -66,7 +65,7 @@
 		vin-supply = <&vcc_sys>;
 	};
 
-	vcca1v8_image: regulator-vcca1v8-image {
+	vcca1v8_image: vcca1v8-image-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcca1v8_image";
 		regulator-always-on;
@@ -76,7 +75,7 @@
 		vin-supply = <&vcc_1v8_p>;
 	};
 
-	vdda0v9_image: regulator-vdda0v9-image {
+	vdda0v9_image: vdda0v9-image-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcca0v9_image";
 		regulator-always-on;
@@ -138,8 +137,8 @@
 
 &mdio1 {
 	rgmii_phy1: ethernet-phy@0 {
-		compatible = "ethernet-phy-ieee802.3-c22";
-		reg = <0x0>;
+		compatible="ethernet-phy-ieee802.3-c22";
+		reg= <0x0>;
 	};
 };
 
@@ -252,14 +251,6 @@
 };
 
 &usb_host1_xhci {
-	status = "okay";
-};
-
-&usb2phy0_otg {
-	status = "okay";
-};
-
-&usb_host0_xhci {
 	status = "okay";
 };
 

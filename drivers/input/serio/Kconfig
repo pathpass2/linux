@@ -148,7 +148,6 @@ config HIL_MLC
 config SERIO_PCIPS2
 	tristate "PCI PS/2 keyboard and PS/2 mouse controller"
 	depends on PCI
-	depends on HAS_IOPORT
 	help
 	  Say Y here if you have a Mobility Docking station with PS/2
 	  keyboard and mice ports.
@@ -276,8 +275,8 @@ config SERIO_OLPC_APSP
 
 config HYPERV_KEYBOARD
 	tristate "Microsoft Synthetic Keyboard driver"
-	depends on HYPERV_VMBUS
-	default HYPERV_VMBUS
+	depends on HYPERV
+	default HYPERV
 	help
 	  Select this option to enable the Hyper-V Keyboard driver.
 

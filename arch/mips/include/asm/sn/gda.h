@@ -39,7 +39,7 @@
 #define G_PARTIDOFF	40
 #define G_TABLEOFF	128
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 typedef struct gda {
 	u32	g_magic;	/* GDA magic number */
@@ -63,7 +63,7 @@ typedef struct gda {
 
 #define GDA ((gda_t*) GDA_ADDR(get_nasid()))
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 /*
  * Define:	PART_GDA_VERSION
  * Purpose:	Define the minimum version of the GDA required, lower

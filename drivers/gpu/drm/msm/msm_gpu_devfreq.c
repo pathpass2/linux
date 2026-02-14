@@ -48,7 +48,7 @@ static int msm_devfreq_target(struct device *dev, unsigned long *freq,
 		gpu->funcs->gpu_set_freq(gpu, opp, df->suspended);
 		mutex_unlock(&df->lock);
 	} else {
-		dev_pm_opp_set_rate(dev, *freq);
+		clk_set_rate(gpu->core_clk, *freq);
 	}
 
 	dev_pm_opp_put(opp);
@@ -140,7 +140,6 @@ void msm_devfreq_init(struct msm_gpu *gpu)
 {
 	struct msm_gpu_devfreq *df = &gpu->devfreq;
 	struct msm_drm_private *priv = gpu->dev->dev_private;
-	int ret;
 
 	/* We need target support to do devfreq */
 	if (!gpu->funcs->gpu_busy)
@@ -156,14 +155,9 @@ void msm_devfreq_init(struct msm_gpu *gpu)
 	priv->gpu_devfreq_config.downdifferential = 10;
 
 	mutex_init(&df->lock);
-	df->suspended = true;
 
-	ret = dev_pm_qos_add_request(&gpu->pdev->dev, &df->boost_freq,
-				     DEV_PM_QOS_MIN_FREQUENCY, 0);
-	if (ret < 0) {
-		DRM_DEV_ERROR(&gpu->pdev->dev, "Couldn't initialize QoS\n");
-		return;
-	}
+	dev_pm_qos_add_request(&gpu->pdev->dev, &df->boost_freq,
+			       DEV_PM_QOS_MIN_FREQUENCY, 0);
 
 	msm_devfreq_profile.initial_freq = gpu->fast_rate;
 

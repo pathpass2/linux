@@ -41,7 +41,7 @@
 #include <linux/compiler.h>
 #include <linux/export.h>
 #include <linux/module.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <asm/page.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_device.h>
@@ -800,7 +800,7 @@ csio_scsis_io_active(struct csio_ioreq *req, enum csio_scsi_ev evt)
 			rn = req->rnode;
 			/*
 			 * FW says remote device is lost, but rnode
-			 * doesn't reflect it.
+			 * doesnt reflect it.
 			 */
 			if (csio_scsi_itnexus_loss_error(req->wr_status) &&
 						csio_is_rnode_ready(rn)) {
@@ -1775,8 +1775,8 @@ csio_scsi_cbfn(struct csio_hw *hw, struct csio_ioreq *req)
  *	- Kicks off the SCSI state machine for this IO.
  *	- Returns busy status on error.
  */
-static enum scsi_qc_status csio_queuecommand(struct Scsi_Host *host,
-					     struct scsi_cmnd *cmnd)
+static int
+csio_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *cmnd)
 {
 	struct csio_lnode *ln = shost_priv(host);
 	struct csio_hw *hw = csio_lnode_to_hw(ln);
@@ -2074,7 +2074,7 @@ csio_eh_lun_reset_handler(struct scsi_cmnd *cmnd)
 	struct csio_scsi_level_data sld;
 
 	if (!rn)
-		goto fail_ret;
+		goto fail;
 
 	csio_dbg(hw, "Request to reset LUN:%llu (ssni:0x%x tgtid:%d)\n",
 		      cmnd->device->lun, rn->flowid, rn->scsi_id);
@@ -2220,12 +2220,11 @@ fail_ret_ioreq:
 	csio_put_scsi_ioreq_lock(hw, scsim, ioreq);
 fail:
 	CSIO_INC_STATS(rn, n_lun_rst_fail);
-fail_ret:
 	return FAILED;
 }
 
 static int
-csio_sdev_init(struct scsi_device *sdev)
+csio_slave_alloc(struct scsi_device *sdev)
 {
 	struct fc_rport *rport = starget_to_rport(scsi_target(sdev));
 
@@ -2238,14 +2237,14 @@ csio_sdev_init(struct scsi_device *sdev)
 }
 
 static int
-csio_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
+csio_slave_configure(struct scsi_device *sdev)
 {
 	scsi_change_queue_depth(sdev, csio_lun_qdepth);
 	return 0;
 }
 
 static void
-csio_sdev_destroy(struct scsi_device *sdev)
+csio_slave_destroy(struct scsi_device *sdev)
 {
 	sdev->hostdata = NULL;
 }
@@ -2277,9 +2276,9 @@ struct scsi_host_template csio_fcoe_shost_template = {
 	.eh_timed_out		= fc_eh_timed_out,
 	.eh_abort_handler	= csio_eh_abort_handler,
 	.eh_device_reset_handler = csio_eh_lun_reset_handler,
-	.sdev_init		= csio_sdev_init,
-	.sdev_configure		= csio_sdev_configure,
-	.sdev_destroy		= csio_sdev_destroy,
+	.slave_alloc		= csio_slave_alloc,
+	.slave_configure	= csio_slave_configure,
+	.slave_destroy		= csio_slave_destroy,
 	.scan_finished		= csio_scan_finished,
 	.this_id		= -1,
 	.sg_tablesize		= CSIO_SCSI_MAX_SGE,
@@ -2296,9 +2295,9 @@ struct scsi_host_template csio_fcoe_shost_vport_template = {
 	.eh_timed_out		= fc_eh_timed_out,
 	.eh_abort_handler	= csio_eh_abort_handler,
 	.eh_device_reset_handler = csio_eh_lun_reset_handler,
-	.sdev_init		= csio_sdev_init,
-	.sdev_configure		= csio_sdev_configure,
-	.sdev_destroy		= csio_sdev_destroy,
+	.slave_alloc		= csio_slave_alloc,
+	.slave_configure	= csio_slave_configure,
+	.slave_destroy		= csio_slave_destroy,
 	.scan_finished		= csio_scan_finished,
 	.this_id		= -1,
 	.sg_tablesize		= CSIO_SCSI_MAX_SGE,

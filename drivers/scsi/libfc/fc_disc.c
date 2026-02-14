@@ -26,7 +26,7 @@
 #include <linux/export.h>
 #include <linux/list.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <scsi/fc/fc_gs.h>
 

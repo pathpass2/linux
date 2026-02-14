@@ -8,27 +8,22 @@
  *          Mickael Reulier <mickael.reulier@st.com>
  */
 
-#include <linux/aperture.h>
 #include <linux/component.h>
 #include <linux/dma-mapping.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 
-#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_aperture.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_dma.h>
-#include <drm/drm_fourcc.h>
+#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_module.h>
-#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
-#include <drm/drm_managed.h>
 
 #include "ltdc.h"
 
@@ -63,12 +58,12 @@ static const struct drm_driver drv_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
 	.name = "stm",
 	.desc = "STMicroelectronics SoC DRM",
+	.date = "20170330",
 	.major = 1,
 	.minor = 0,
 	.patchlevel = 0,
 	.fops = &drv_driver_fops,
 	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(stm_gem_dma_dumb_create),
-	DRM_FBDEV_DMA_DRIVER_OPS,
 };
 
 static int drv_load(struct drm_device *ddev)
@@ -79,7 +74,7 @@ static int drv_load(struct drm_device *ddev)
 
 	DRM_DEBUG("%s\n", __func__);
 
-	ldev = drmm_kzalloc(ddev, sizeof(*ldev), GFP_KERNEL);
+	ldev = devm_kzalloc(ddev->dev, sizeof(*ldev), GFP_KERNEL);
 	if (!ldev)
 		return -ENOMEM;
 
@@ -118,7 +113,6 @@ static void drv_unload(struct drm_device *ddev)
 	DRM_DEBUG("%s\n", __func__);
 
 	drm_kms_helper_poll_fini(ddev);
-	drm_atomic_helper_shutdown(ddev);
 	ltdc_unload(ddev);
 }
 
@@ -191,7 +185,7 @@ static int stm_drm_platform_probe(struct platform_device *pdev)
 
 	DRM_DEBUG("%s\n", __func__);
 
-	ret = aperture_remove_all_conflicting_devices(drv_driver.name);
+	ret = drm_aperture_remove_framebuffers(false, &drv_driver);
 	if (ret)
 		return ret;
 
@@ -207,21 +201,19 @@ static int stm_drm_platform_probe(struct platform_device *pdev)
 
 	ret = drm_dev_register(ddev, 0);
 	if (ret)
-		goto err_unload;
+		goto err_put;
 
-	drm_client_setup_with_fourcc(ddev, DRM_FORMAT_RGB565);
+	drm_fbdev_generic_setup(ddev, 16);
 
 	return 0;
 
-err_unload:
-	drv_unload(ddev);
 err_put:
 	drm_dev_put(ddev);
 
 	return ret;
 }
 
-static void stm_drm_platform_remove(struct platform_device *pdev)
+static int stm_drm_platform_remove(struct platform_device *pdev)
 {
 	struct drm_device *ddev = platform_get_drvdata(pdev);
 
@@ -230,25 +222,12 @@ static void stm_drm_platform_remove(struct platform_device *pdev)
 	drm_dev_unregister(ddev);
 	drv_unload(ddev);
 	drm_dev_put(ddev);
+
+	return 0;
 }
-
-static void stm_drm_platform_shutdown(struct platform_device *pdev)
-{
-	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
-}
-
-static struct ltdc_plat_data stm_drm_plat_data = {
-	.pad_max_freq_hz = 90000000,
-};
-
-static struct ltdc_plat_data stm_drm_plat_data_mp25 = {
-	.pad_max_freq_hz = 150000000,
-};
 
 static const struct of_device_id drv_dt_ids[] = {
-	{ .compatible = "st,stm32-ltdc", .data = &stm_drm_plat_data, },
-	{ .compatible = "st,stm32mp251-ltdc", .data = &stm_drm_plat_data_mp25, },
-	{ .compatible = "st,stm32mp255-ltdc", .data = &stm_drm_plat_data_mp25, },
+	{ .compatible = "st,stm32-ltdc"},
 	{ /* end node */ },
 };
 MODULE_DEVICE_TABLE(of, drv_dt_ids);
@@ -256,7 +235,6 @@ MODULE_DEVICE_TABLE(of, drv_dt_ids);
 static struct platform_driver stm_drm_platform_driver = {
 	.probe = stm_drm_platform_probe,
 	.remove = stm_drm_platform_remove,
-	.shutdown = stm_drm_platform_shutdown,
 	.driver = {
 		.name = "stm32-display",
 		.of_match_table = drv_dt_ids,

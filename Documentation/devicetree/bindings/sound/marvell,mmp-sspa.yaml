@@ -60,7 +60,6 @@ properties:
     properties:
       endpoint:
         type: object
-        additionalProperties: true
 
         properties:
           dai-format:

@@ -56,9 +56,7 @@ xvip_dma_remote_subdev(struct media_pad *local, u32 *pad)
 
 static int xvip_dma_verify_format(struct xvip_dma *dma)
 {
-	struct v4l2_subdev_format fmt = {
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-	};
+	struct v4l2_subdev_format fmt;
 	struct v4l2_subdev *subdev;
 	int ret;
 
@@ -66,6 +64,7 @@ static int xvip_dma_verify_format(struct xvip_dma *dma)
 	if (subdev == NULL)
 		return -EPIPE;
 
+	fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
 	ret = v4l2_subdev_call(subdev, pad, get_fmt, NULL, &fmt);
 	if (ret < 0)
 		return ret == -ENOIOCTLCMD ? -EINVAL : ret;
@@ -348,8 +347,8 @@ static void xvip_dma_buffer_queue(struct vb2_buffer *vb)
 	}
 
 	dma->xt.frame_size = 1;
-	dma->sgl.size = dma->format.width * dma->fmtinfo->bpp;
-	dma->sgl.icg = dma->format.bytesperline - dma->sgl.size;
+	dma->sgl[0].size = dma->format.width * dma->fmtinfo->bpp;
+	dma->sgl[0].icg = dma->format.bytesperline - dma->sgl[0].size;
 	dma->xt.numf = dma->format.height;
 
 	desc = dmaengine_prep_interleaved_dma(dma->dma, &dma->xt, flags);
@@ -458,6 +457,8 @@ static const struct vb2_ops xvip_dma_queue_qops = {
 	.queue_setup = xvip_dma_queue_setup,
 	.buf_prepare = xvip_dma_buffer_prepare,
 	.buf_queue = xvip_dma_buffer_queue,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
 	.start_streaming = xvip_dma_start_streaming,
 	.stop_streaming = xvip_dma_stop_streaming,
 };
@@ -469,7 +470,7 @@ static const struct vb2_ops xvip_dma_queue_qops = {
 static int
 xvip_dma_querycap(struct file *file, void *fh, struct v4l2_capability *cap)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 
 	cap->capabilities = dma->xdev->v4l2_caps | V4L2_CAP_STREAMING |
@@ -491,7 +492,7 @@ xvip_dma_querycap(struct file *file, void *fh, struct v4l2_capability *cap)
 static int
 xvip_dma_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 
 	if (f->index > 0)
@@ -505,7 +506,7 @@ xvip_dma_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 static int
 xvip_dma_get_format(struct file *file, void *fh, struct v4l2_format *format)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 
 	format->fmt.pix = dma->format;
@@ -565,7 +566,7 @@ __xvip_dma_try_format(struct xvip_dma *dma, struct v4l2_pix_format *pix,
 static int
 xvip_dma_try_format(struct file *file, void *fh, struct v4l2_format *format)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 
 	__xvip_dma_try_format(dma, &format->fmt.pix, NULL);
@@ -575,7 +576,7 @@ xvip_dma_try_format(struct file *file, void *fh, struct v4l2_format *format)
 static int
 xvip_dma_set_format(struct file *file, void *fh, struct v4l2_format *format)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
 	const struct xvip_video_format *info;
 
@@ -706,8 +707,9 @@ int xvip_dma_init(struct xvip_composite_device *xdev, struct xvip_dma *dma,
 	snprintf(name, sizeof(name), "port%u", port);
 	dma->dma = dma_request_chan(dma->xdev->dev, name);
 	if (IS_ERR(dma->dma)) {
-		ret = dev_err_probe(dma->xdev->dev, PTR_ERR(dma->dma),
-				    "no VDMA channel found\n");
+		ret = PTR_ERR(dma->dma);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dma->xdev->dev, "no VDMA channel found\n");
 		goto error;
 	}
 

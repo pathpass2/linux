@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0-only or BSD-2-Clause
 %YAML 1.2
 ---
 $id: http://devicetree.org/schemas/display/msm/qcom,sm8350-mdss.yaml#
@@ -38,38 +38,22 @@ properties:
     maxItems: 1
 
   interconnects:
-    items:
-      - description: Interconnect path from the MDP0 port to the data bus
-      - description: Interconnect path from the MDP1 port to the data bus
-      - description: Interconnect path from the CPU to the reg bus
+    maxItems: 2
 
   interconnect-names:
     items:
       - const: mdp0-mem
       - const: mdp1-mem
-      - const: cpu-cfg
 
 patternProperties:
   "^display-controller@[0-9a-f]+$":
     type: object
-    additionalProperties: true
-
     properties:
       compatible:
         const: qcom,sm8350-dpu
 
-  "^displayport-controller@[0-9a-f]+$":
-    type: object
-    additionalProperties: true
-
-    properties:
-      compatible:
-        const: qcom,sm8350-dp
-
   "^dsi@[0-9a-f]+$":
     type: object
-    additionalProperties: true
-
     properties:
       compatible:
         items:
@@ -78,11 +62,9 @@ patternProperties:
 
   "^phy@[0-9a-f]+$":
     type: object
-    additionalProperties: true
-
     properties:
       compatible:
-        const: qcom,sm8350-dsi-phy-5nm
+        const: qcom,dsi-phy-5nm-8350
 
 unevaluatedProperties: false
 
@@ -92,9 +74,8 @@ examples:
     #include <dt-bindings/clock/qcom,gcc-sm8350.h>
     #include <dt-bindings/clock/qcom,rpmh.h>
     #include <dt-bindings/interrupt-controller/arm-gic.h>
-    #include <dt-bindings/interconnect/qcom,icc.h>
     #include <dt-bindings/interconnect/qcom,sm8350.h>
-    #include <dt-bindings/power/qcom,rpmhpd.h>
+    #include <dt-bindings/power/qcom-rpmpd.h>
 
     display-subsystem@ae00000 {
         compatible = "qcom,sm8350-mdss";
@@ -102,10 +83,8 @@ examples:
         reg-names = "mdss";
 
         interconnects = <&mmss_noc MASTER_MDP0 0 &mc_virt SLAVE_EBI1 0>,
-                        <&mmss_noc MASTER_MDP1 0 &mc_virt SLAVE_EBI1 0>,
-                        <&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ACTIVE_ONLY
-                         &config_noc SLAVE_DISPLAY_CFG QCOM_ICC_TAG_ACTIVE_ONLY>;
-        interconnect-names = "mdp0-mem", "mdp1-mem", "cpu-cfg";
+                        <&mmss_noc MASTER_MDP1 0 &mc_virt SLAVE_EBI1 0>;
+        interconnect-names = "mdp0-mem", "mdp1-mem";
 
         power-domains = <&dispcc MDSS_GDSC>;
         resets = <&dispcc DISP_CC_MDSS_CORE_BCR>;
@@ -149,7 +128,7 @@ examples:
             assigned-clock-rates = <19200000>;
 
             operating-points-v2 = <&mdp_opp_table>;
-            power-domains = <&rpmhpd RPMHPD_MMCX>;
+            power-domains = <&rpmhpd SM8350_MMCX>;
 
             interrupt-parent = <&mdss>;
             interrupts = <0>;
@@ -218,7 +197,7 @@ examples:
                                  <&mdss_dsi0_phy 1>;
 
             operating-points-v2 = <&dsi_opp_table>;
-            power-domains = <&rpmhpd RPMHPD_MMCX>;
+            power-domains = <&rpmhpd SM8350_MMCX>;
 
             phys = <&mdss_dsi0_phy>;
 

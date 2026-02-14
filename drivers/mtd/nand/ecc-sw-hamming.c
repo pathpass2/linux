@@ -8,7 +8,7 @@
  *
  * Completely replaces the previous ECC implementation which was written by:
  *   Steven J. Hill (sjhill@realitydiluted.com)
- *   Thomas Gleixner (tglx@kernel.org)
+ *   Thomas Gleixner (tglx@linutronix.de)
  *
  * Information on how this algorithm works and how it was developed
  * can be found in Documentation/driver-api/mtd/nand_ecc.rst
@@ -638,7 +638,7 @@ static int nand_ecc_sw_hamming_finish_io_req(struct nand_device *nand,
 	return max_bitflips;
 }
 
-static const struct nand_ecc_engine_ops nand_ecc_sw_hamming_engine_ops = {
+static struct nand_ecc_engine_ops nand_ecc_sw_hamming_engine_ops = {
 	.init_ctx = nand_ecc_sw_hamming_init_ctx,
 	.cleanup_ctx = nand_ecc_sw_hamming_cleanup_ctx,
 	.prepare_io_req = nand_ecc_sw_hamming_prepare_io_req,

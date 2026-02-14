@@ -33,7 +33,7 @@
 #include "ohci.h"
 
 #define DRIVER_DESC "OHCI generic platform driver"
-#define OHCI_MAX_CLKS 4
+#define OHCI_MAX_CLKS 3
 #define hcd_to_ohci_priv(h) ((struct ohci_platform_priv *)hcd_to_ohci(h)->priv)
 
 struct ohci_platform_priv {
@@ -69,7 +69,8 @@ static void ohci_platform_power_off(struct platform_device *dev)
 	int clk;
 
 	for (clk = OHCI_MAX_CLKS - 1; clk >= 0; clk--)
-		clk_disable_unprepare(priv->clks[clk]);
+		if (priv->clks[clk])
+			clk_disable_unprepare(priv->clks[clk]);
 }
 
 static struct hc_driver __read_mostly ohci_platform_hc_driver;
@@ -199,7 +200,8 @@ static int ohci_platform_probe(struct platform_device *dev)
 			goto err_reset;
 	}
 
-	hcd->regs = devm_platform_get_and_ioremap_resource(dev, 0, &res_mem);
+	res_mem = platform_get_resource(dev, IORESOURCE_MEM, 0);
+	hcd->regs = devm_ioremap_resource(&dev->dev, res_mem);
 	if (IS_ERR(hcd->regs)) {
 		err = PTR_ERR(hcd->regs);
 		goto err_power;
@@ -237,7 +239,7 @@ err_put_clks:
 	return err;
 }
 
-static void ohci_platform_remove(struct platform_device *dev)
+static int ohci_platform_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct usb_ohci_pdata *pdata = dev_get_platdata(&dev->dev);
@@ -262,6 +264,8 @@ static void ohci_platform_remove(struct platform_device *dev)
 
 	if (pdata == &ohci_platform_defaults)
 		dev->dev.platform_data = NULL;
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -270,7 +274,6 @@ static int ohci_platform_suspend(struct device *dev)
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct usb_ohci_pdata *pdata = dev->platform_data;
 	struct platform_device *pdev = to_platform_device(dev);
-	struct ohci_platform_priv *priv = hcd_to_ohci_priv(hcd);
 	bool do_wakeup = device_may_wakeup(dev);
 	int ret;
 
@@ -281,14 +284,6 @@ static int ohci_platform_suspend(struct device *dev)
 	if (pdata->power_suspend)
 		pdata->power_suspend(pdev);
 
-	ret = reset_control_assert(priv->resets);
-	if (ret) {
-		if (pdata->power_on)
-			pdata->power_on(pdev);
-
-		ohci_resume(hcd, false);
-	}
-
 	return ret;
 }
 
@@ -297,19 +292,11 @@ static int ohci_platform_resume_common(struct device *dev, bool hibernated)
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct usb_ohci_pdata *pdata = dev_get_platdata(dev);
 	struct platform_device *pdev = to_platform_device(dev);
-	struct ohci_platform_priv *priv = hcd_to_ohci_priv(hcd);
-	int err;
-
-	err = reset_control_deassert(priv->resets);
-	if (err)
-		return err;
 
 	if (pdata->power_on) {
-		err = pdata->power_on(pdev);
-		if (err < 0) {
-			reset_control_assert(priv->resets);
+		int err = pdata->power_on(pdev);
+		if (err < 0)
 			return err;
-		}
 	}
 
 	ohci_resume(hcd, hibernated);
@@ -392,4 +379,3 @@ MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_AUTHOR("Hauke Mehrtens");
 MODULE_AUTHOR("Alan Stern");
 MODULE_LICENSE("GPL");
-MODULE_SOFTDEP("pre: ehci_platform");

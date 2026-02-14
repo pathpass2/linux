@@ -9,7 +9,6 @@
  *                   Russell King <rmk@arm.linux.org.uk>
  */
 
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>

@@ -80,14 +80,12 @@ struct nfc_ops {
 #define NFC_ATR_REQ_GT_OFFSET 14
 
 /**
- * struct nfc_target - NFC target description
+ * struct nfc_target - NFC target descriptiom
  *
  * @sens_res: 2 bytes describing the target SENS_RES response, if the target
  *	is a type A one. The %sens_res most significant byte must be byte 2
  *	as described by the NFC Forum digital specification (i.e. the platform
  *	configuration one) while %sens_res least significant byte is byte 1.
- * @ats_len: length of Answer To Select in bytes
- * @ats: Answer To Select returned by an ISO 14443 Type A target upon activation
  */
 struct nfc_target {
 	u32 idx;
@@ -107,8 +105,6 @@ struct nfc_target {
 	u8 is_iso15693;
 	u8 iso15693_dsfid;
 	u8 iso15693_uid[NFC_ISO15693_UID_MAXSIZE];
-	u8 ats_len;
-	u8 ats[NFC_ATS_MAXSIZE];
 };
 
 /**
@@ -200,7 +196,7 @@ struct nfc_dev {
 };
 #define to_nfc_dev(_dev) container_of(_dev, struct nfc_dev, dev)
 
-extern const struct class nfc_class;
+extern struct class nfc_class;
 
 struct nfc_dev *nfc_allocate_device(const struct nfc_ops *ops,
 				    u32 supported_protocols,
@@ -219,8 +215,6 @@ static inline void nfc_free_device(struct nfc_dev *dev)
 
 int nfc_register_device(struct nfc_dev *dev);
 
-void nfc_unregister_rfkill(struct nfc_dev *dev);
-void nfc_remove_device(struct nfc_dev *dev);
 void nfc_unregister_device(struct nfc_dev *dev);
 
 /**
@@ -236,10 +230,10 @@ static inline void nfc_set_parent_dev(struct nfc_dev *nfc_dev,
 }
 
 /**
- * nfc_set_drvdata - set driver specific data
+ * nfc_set_drvdata - set driver specifc data
  *
  * @dev: The nfc device
- * @data: Pointer to driver specific data
+ * @data: Pointer to driver specifc data
  */
 static inline void nfc_set_drvdata(struct nfc_dev *dev, void *data)
 {
@@ -247,7 +241,7 @@ static inline void nfc_set_drvdata(struct nfc_dev *dev, void *data)
 }
 
 /**
- * nfc_get_drvdata - get driver specific data
+ * nfc_get_drvdata - get driver specifc data
  *
  * @dev: The nfc device
  */

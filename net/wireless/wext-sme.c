@@ -3,7 +3,7 @@
  * cfg80211 wext compat for managed mode.
  *
  * Copyright 2009	Johannes Berg <johannes@sipsolutions.net>
- * Copyright (C) 2009, 2020-2023 Intel Corporation
+ * Copyright (C) 2009, 2020-2022 Intel Corporation
  */
 
 #include <linux/export.h>
@@ -23,7 +23,7 @@ int cfg80211_mgd_wext_connect(struct cfg80211_registered_device *rdev,
 	int err, i;
 
 	ASSERT_RTNL();
-	lockdep_assert_wiphy(wdev->wiphy);
+	ASSERT_WDEV_LOCK(wdev);
 
 	if (!netif_running(wdev->netdev))
 		return 0;
@@ -87,11 +87,15 @@ int cfg80211_mgd_wext_siwfreq(struct net_device *dev,
 			return -EINVAL;
 	}
 
+	wdev_lock(wdev);
+
 	if (wdev->conn) {
 		bool event = true;
 
-		if (wdev->wext.connect.channel == chan)
-			return 0;
+		if (wdev->wext.connect.channel == chan) {
+			err = 0;
+			goto out;
+		}
 
 		/* if SSID set, we'll try right again, avoid event */
 		if (wdev->wext.connect.ssid_len)
@@ -99,11 +103,14 @@ int cfg80211_mgd_wext_siwfreq(struct net_device *dev,
 		err = cfg80211_disconnect(rdev, dev,
 					  WLAN_REASON_DEAUTH_LEAVING, event);
 		if (err)
-			return err;
+			goto out;
 	}
 
 	wdev->wext.connect.channel = chan;
-	return cfg80211_mgd_wext_connect(rdev, wdev);
+	err = cfg80211_mgd_wext_connect(rdev, wdev);
+ out:
+	wdev_unlock(wdev);
+	return err;
 }
 
 int cfg80211_mgd_wext_giwfreq(struct net_device *dev,
@@ -120,10 +127,12 @@ int cfg80211_mgd_wext_giwfreq(struct net_device *dev,
 	if (wdev->valid_links)
 		return -EOPNOTSUPP;
 
+	wdev_lock(wdev);
 	if (wdev->links[0].client.current_bss)
 		chan = wdev->links[0].client.current_bss->pub.channel;
 	else if (wdev->wext.connect.channel)
 		chan = wdev->wext.connect.channel;
+	wdev_unlock(wdev);
 
 	if (chan) {
 		freq->m = chan->center_freq;
@@ -155,13 +164,17 @@ int cfg80211_mgd_wext_siwessid(struct net_device *dev,
 	if (len > 0 && ssid[len - 1] == '\0')
 		len--;
 
+	wdev_lock(wdev);
+
+	err = 0;
+
 	if (wdev->conn) {
 		bool event = true;
 
 		if (wdev->wext.connect.ssid && len &&
 		    len == wdev->wext.connect.ssid_len &&
 		    memcmp(wdev->wext.connect.ssid, ssid, len) == 0)
-			return 0;
+			goto out;
 
 		/* if SSID set now, we'll try to connect, avoid event */
 		if (len)
@@ -169,7 +182,7 @@ int cfg80211_mgd_wext_siwessid(struct net_device *dev,
 		err = cfg80211_disconnect(rdev, dev,
 					  WLAN_REASON_DEAUTH_LEAVING, event);
 		if (err)
-			return err;
+			goto out;
 	}
 
 	wdev->wext.prev_bssid_valid = false;
@@ -181,7 +194,10 @@ int cfg80211_mgd_wext_siwessid(struct net_device *dev,
 	wdev->wext.connect.crypto.control_port_ethertype =
 					cpu_to_be16(ETH_P_PAE);
 
-	return cfg80211_mgd_wext_connect(rdev, wdev);
+	err = cfg80211_mgd_wext_connect(rdev, wdev);
+ out:
+	wdev_unlock(wdev);
+	return err;
 }
 
 int cfg80211_mgd_wext_giwessid(struct net_device *dev,
@@ -200,6 +216,7 @@ int cfg80211_mgd_wext_giwessid(struct net_device *dev,
 
 	data->flags = 0;
 
+	wdev_lock(wdev);
 	if (wdev->links[0].client.current_bss) {
 		const struct element *ssid_elem;
 
@@ -221,6 +238,7 @@ int cfg80211_mgd_wext_giwessid(struct net_device *dev,
 		data->length = wdev->wext.connect.ssid_len;
 		memcpy(ssid, wdev->wext.connect.ssid, data->length);
 	}
+	wdev_unlock(wdev);
 
 	return ret;
 }
@@ -245,20 +263,23 @@ int cfg80211_mgd_wext_siwap(struct net_device *dev,
 	if (is_zero_ether_addr(bssid) || is_broadcast_ether_addr(bssid))
 		bssid = NULL;
 
+	wdev_lock(wdev);
+
 	if (wdev->conn) {
+		err = 0;
 		/* both automatic */
 		if (!bssid && !wdev->wext.connect.bssid)
-			return 0;
+			goto out;
 
 		/* fixed already - and no change */
 		if (wdev->wext.connect.bssid && bssid &&
 		    ether_addr_equal(bssid, wdev->wext.connect.bssid))
-			return 0;
+			goto out;
 
 		err = cfg80211_disconnect(rdev, dev,
 					  WLAN_REASON_DEAUTH_LEAVING, false);
 		if (err)
-			return err;
+			goto out;
 	}
 
 	if (bssid) {
@@ -267,7 +288,10 @@ int cfg80211_mgd_wext_siwap(struct net_device *dev,
 	} else
 		wdev->wext.connect.bssid = NULL;
 
-	return cfg80211_mgd_wext_connect(rdev, wdev);
+	err = cfg80211_mgd_wext_connect(rdev, wdev);
+ out:
+	wdev_unlock(wdev);
+	return err;
 }
 
 int cfg80211_mgd_wext_giwap(struct net_device *dev,
@@ -282,15 +306,18 @@ int cfg80211_mgd_wext_giwap(struct net_device *dev,
 
 	ap_addr->sa_family = ARPHRD_ETHER;
 
-	if (wdev->valid_links)
+	wdev_lock(wdev);
+	if (wdev->valid_links) {
+		wdev_unlock(wdev);
 		return -EOPNOTSUPP;
-
+	}
 	if (wdev->links[0].client.current_bss)
 		memcpy(ap_addr->sa_data,
 		       wdev->links[0].client.current_bss->pub.bssid,
 		       ETH_ALEN);
 	else
 		eth_zero_addr(ap_addr->sa_data);
+	wdev_unlock(wdev);
 
 	return 0;
 }
@@ -302,8 +329,8 @@ int cfg80211_wext_siwgenie(struct net_device *dev,
 	struct iw_point *data = &wrqu->data;
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
-	int ie_len = data->length;
 	u8 *ie = extra;
+	int ie_len = data->length, err;
 
 	if (wdev->iftype != NL80211_IFTYPE_STATION)
 		return -EOPNOTSUPP;
@@ -311,31 +338,39 @@ int cfg80211_wext_siwgenie(struct net_device *dev,
 	if (!ie_len)
 		ie = NULL;
 
-	guard(wiphy)(wdev->wiphy);
+	wdev_lock(wdev);
 
 	/* no change */
+	err = 0;
 	if (wdev->wext.ie_len == ie_len &&
 	    memcmp(wdev->wext.ie, ie, ie_len) == 0)
-		return 0;
+		goto out;
 
 	if (ie_len) {
 		ie = kmemdup(extra, ie_len, GFP_KERNEL);
-		if (!ie)
-			return -ENOMEM;
-	} else {
+		if (!ie) {
+			err = -ENOMEM;
+			goto out;
+		}
+	} else
 		ie = NULL;
-	}
 
 	kfree(wdev->wext.ie);
 	wdev->wext.ie = ie;
 	wdev->wext.ie_len = ie_len;
 
-	if (wdev->conn)
-		return cfg80211_disconnect(rdev, dev,
-					   WLAN_REASON_DEAUTH_LEAVING, false);
+	if (wdev->conn) {
+		err = cfg80211_disconnect(rdev, dev,
+					  WLAN_REASON_DEAUTH_LEAVING, false);
+		if (err)
+			goto out;
+	}
 
 	/* userspace better not think we'll reconnect */
-	return 0;
+	err = 0;
+ out:
+	wdev_unlock(wdev);
+	return err;
 }
 
 int cfg80211_wext_siwmlme(struct net_device *dev,
@@ -345,6 +380,7 @@ int cfg80211_wext_siwmlme(struct net_device *dev,
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct iw_mlme *mlme = (struct iw_mlme *)extra;
 	struct cfg80211_registered_device *rdev;
+	int err;
 
 	if (!wdev)
 		return -EOPNOTSUPP;
@@ -357,13 +393,19 @@ int cfg80211_wext_siwmlme(struct net_device *dev,
 	if (mlme->addr.sa_family != ARPHRD_ETHER)
 		return -EINVAL;
 
-	guard(wiphy)(&rdev->wiphy);
-
+	wiphy_lock(&rdev->wiphy);
+	wdev_lock(wdev);
 	switch (mlme->cmd) {
 	case IW_MLME_DEAUTH:
 	case IW_MLME_DISASSOC:
-		return cfg80211_disconnect(rdev, dev, mlme->reason_code, true);
+		err = cfg80211_disconnect(rdev, dev, mlme->reason_code, true);
+		break;
 	default:
-		return -EOPNOTSUPP;
+		err = -EOPNOTSUPP;
+		break;
 	}
+	wdev_unlock(wdev);
+	wiphy_unlock(&rdev->wiphy);
+
+	return err;
 }

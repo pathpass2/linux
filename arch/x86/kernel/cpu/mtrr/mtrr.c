@@ -1,8 +1,21 @@
-// SPDX-License-Identifier: LGPL-2.0+
 /*  Generic MTRR (Memory Type Range Register) driver.
 
     Copyright (C) 1997-2000  Richard Gooch
     Copyright (c) 2002	     Patrick Mochel
+
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Library General Public
+    License as published by the Free Software Foundation; either
+    version 2 of the License, or (at your option) any later version.
+
+    This library is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Library General Public License for more details.
+
+    You should have received a copy of the GNU Library General Public
+    License along with this library; if not, write to the Free
+    Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
     Richard Gooch may be reached by email at  rgooch@atnf.csiro.au
     The postal address is:
@@ -42,19 +55,19 @@
 
 #include "mtrr.h"
 
-static_assert(X86_MEMTYPE_UC == MTRR_TYPE_UNCACHABLE);
-static_assert(X86_MEMTYPE_WC == MTRR_TYPE_WRCOMB);
-static_assert(X86_MEMTYPE_WT == MTRR_TYPE_WRTHROUGH);
-static_assert(X86_MEMTYPE_WP == MTRR_TYPE_WRPROT);
-static_assert(X86_MEMTYPE_WB == MTRR_TYPE_WRBACK);
-
 /* arch_phys_wc_add returns an MTRR register index plus this offset. */
 #define MTRR_TO_PHYS_WC_OFFSET 1000
 
 u32 num_var_ranges;
+static bool mtrr_enabled(void)
+{
+	return !!mtrr_if;
+}
 
 unsigned int mtrr_usage_table[MTRR_MAX_VAR_RANGES];
-DEFINE_MUTEX(mtrr_mutex);
+static DEFINE_MUTEX(mtrr_mutex);
+
+u64 size_or_mask, size_and_mask;
 
 const struct mtrr_ops *mtrr_if;
 
@@ -90,6 +103,21 @@ static int have_wrcomb(void)
 		pci_dev_put(dev);
 	}
 	return mtrr_if->have_wrcomb ? mtrr_if->have_wrcomb() : 0;
+}
+
+/*  This function returns the number of variable MTRRs  */
+static void __init set_num_var_ranges(bool use_generic)
+{
+	unsigned long config = 0, dummy;
+
+	if (use_generic)
+		rdmsr(MSR_MTRRcap, config, dummy);
+	else if (is_cpu(AMD) || is_cpu(HYGON))
+		config = 2;
+	else if (is_cpu(CYRIX) || is_cpu(CENTAUR))
+		config = 8;
+
+	num_var_ranges = config & 0xff;
 }
 
 static void __init init_table(void)
@@ -166,8 +194,20 @@ static inline int types_compatible(mtrr_type type1, mtrr_type type2)
  * Note that the mechanism is the same for UP systems, too; all the SMP stuff
  * becomes nops.
  */
-static void set_mtrr(unsigned int reg, unsigned long base, unsigned long size,
-		     mtrr_type type)
+static void
+set_mtrr(unsigned int reg, unsigned long base, unsigned long size, mtrr_type type)
+{
+	struct set_mtrr_data data = { .smp_reg = reg,
+				      .smp_base = base,
+				      .smp_size = size,
+				      .smp_type = type
+				    };
+
+	stop_machine(mtrr_rendezvous_handler, &data, cpu_online_mask);
+}
+
+static void set_mtrr_cpuslocked(unsigned int reg, unsigned long base,
+				unsigned long size, mtrr_type type)
 {
 	struct set_mtrr_data data = { .smp_reg = reg,
 				      .smp_base = base,
@@ -176,8 +216,6 @@ static void set_mtrr(unsigned int reg, unsigned long base, unsigned long size,
 				    };
 
 	stop_machine_cpuslocked(mtrr_rendezvous_handler, &data, cpu_online_mask);
-
-	generic_rebuild_map();
 }
 
 /**
@@ -299,7 +337,7 @@ int mtrr_add_page(unsigned long base, unsigned long size,
 	/* Search for an empty MTRR */
 	i = mtrr_if->get_free_region(base, size, replace);
 	if (i >= 0) {
-		set_mtrr(i, base, size, type);
+		set_mtrr_cpuslocked(i, base, size, type);
 		if (likely(replace < 0)) {
 			mtrr_usage_table[i] = 1;
 		} else {
@@ -307,7 +345,7 @@ int mtrr_add_page(unsigned long base, unsigned long size,
 			if (increment)
 				mtrr_usage_table[i]++;
 			if (unlikely(replace != i)) {
-				set_mtrr(replace, 0, 0, 0);
+				set_mtrr_cpuslocked(replace, 0, 0, 0);
 				mtrr_usage_table[replace] = 0;
 			}
 		}
@@ -325,7 +363,7 @@ static int mtrr_check(unsigned long base, unsigned long size)
 {
 	if ((base & (PAGE_SIZE - 1)) || (size & (PAGE_SIZE - 1))) {
 		pr_warn("size and base must be multiples of 4 kiB\n");
-		Dprintk("size: 0x%lx  base: 0x%lx\n", size, base);
+		pr_debug("size: 0x%lx  base: 0x%lx\n", size, base);
 		dump_stack();
 		return -1;
 	}
@@ -416,7 +454,8 @@ int mtrr_del_page(int reg, unsigned long base, unsigned long size)
 			}
 		}
 		if (reg < 0) {
-			Dprintk("no MTRR for %lx000,%lx000 found\n", base, size);
+			pr_debug("no MTRR for %lx000,%lx000 found\n",
+				 base, size);
 			goto out;
 		}
 	}
@@ -434,7 +473,7 @@ int mtrr_del_page(int reg, unsigned long base, unsigned long size)
 		goto out;
 	}
 	if (--mtrr_usage_table[reg] < 1)
-		set_mtrr(reg, 0, 0, 0);
+		set_mtrr_cpuslocked(reg, 0, 0, 0);
 	error = reg;
  out:
 	mutex_unlock(&mtrr_mutex);
@@ -535,54 +574,136 @@ int arch_phys_wc_index(int handle)
 }
 EXPORT_SYMBOL_GPL(arch_phys_wc_index);
 
+/* The suspend/resume methods are only for CPU without MTRR. CPU using generic
+ * MTRR driver doesn't require this
+ */
+struct mtrr_value {
+	mtrr_type	ltype;
+	unsigned long	lbase;
+	unsigned long	lsize;
+};
+
+static struct mtrr_value mtrr_value[MTRR_MAX_VAR_RANGES];
+
+static int mtrr_save(void)
+{
+	int i;
+
+	for (i = 0; i < num_var_ranges; i++) {
+		mtrr_if->get(i, &mtrr_value[i].lbase,
+				&mtrr_value[i].lsize,
+				&mtrr_value[i].ltype);
+	}
+	return 0;
+}
+
+static void mtrr_restore(void)
+{
+	int i;
+
+	for (i = 0; i < num_var_ranges; i++) {
+		if (mtrr_value[i].lsize) {
+			set_mtrr(i, mtrr_value[i].lbase,
+				    mtrr_value[i].lsize,
+				    mtrr_value[i].ltype);
+		}
+	}
+}
+
+
+
+static struct syscore_ops mtrr_syscore_ops = {
+	.suspend	= mtrr_save,
+	.resume		= mtrr_restore,
+};
+
 int __initdata changed_by_mtrr_cleanup;
 
+#define SIZE_OR_MASK_BITS(n)  (~((1ULL << ((n) - PAGE_SHIFT)) - 1))
 /**
- * mtrr_bp_init - initialize MTRRs on the boot CPU
+ * mtrr_bp_init - initialize mtrrs on the boot CPU
  *
  * This needs to be called early; before any of the other CPUs are
  * initialized (i.e. before smp_init()).
+ *
  */
 void __init mtrr_bp_init(void)
 {
-	bool generic_mtrrs = cpu_feature_enabled(X86_FEATURE_MTRR);
 	const char *why = "(not available)";
-	unsigned long config, dummy;
+	u32 phys_addr;
 
-	phys_hi_rsvd = GENMASK(31, boot_cpu_data.x86_phys_bits - 32);
+	phys_addr = 32;
 
-	if (!generic_mtrrs && mtrr_state.enabled) {
+	if (boot_cpu_has(X86_FEATURE_MTRR)) {
+		mtrr_if = &generic_mtrr_ops;
+		size_or_mask = SIZE_OR_MASK_BITS(36);
+		size_and_mask = 0x00f00000;
+		phys_addr = 36;
+
 		/*
-		 * Software overwrite of MTRR state, only for generic case.
-		 * Note that X86_FEATURE_MTRR has been reset in this case.
+		 * This is an AMD specific MSR, but we assume(hope?) that
+		 * Intel will implement it too when they extend the address
+		 * bus of the Xeon.
 		 */
-		init_table();
-		mtrr_build_map();
-		pr_info("MTRRs set to read-only\n");
+		if (cpuid_eax(0x80000000) >= 0x80000008) {
+			phys_addr = cpuid_eax(0x80000008) & 0xff;
+			/* CPUID workaround for Intel 0F33/0F34 CPU */
+			if (boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
+			    boot_cpu_data.x86 == 0xF &&
+			    boot_cpu_data.x86_model == 0x3 &&
+			    (boot_cpu_data.x86_stepping == 0x3 ||
+			     boot_cpu_data.x86_stepping == 0x4))
+				phys_addr = 36;
 
-		return;
+			size_or_mask = SIZE_OR_MASK_BITS(phys_addr);
+			size_and_mask = ~size_or_mask & 0xfffff00000ULL;
+		} else if (boot_cpu_data.x86_vendor == X86_VENDOR_CENTAUR &&
+			   boot_cpu_data.x86 == 6) {
+			/*
+			 * VIA C* family have Intel style MTRRs,
+			 * but don't support PAE
+			 */
+			size_or_mask = SIZE_OR_MASK_BITS(32);
+			size_and_mask = 0;
+			phys_addr = 32;
+		}
+	} else {
+		switch (boot_cpu_data.x86_vendor) {
+		case X86_VENDOR_AMD:
+			if (cpu_feature_enabled(X86_FEATURE_K6_MTRR)) {
+				/* Pre-Athlon (K6) AMD CPU MTRRs */
+				mtrr_if = &amd_mtrr_ops;
+				size_or_mask = SIZE_OR_MASK_BITS(32);
+				size_and_mask = 0;
+			}
+			break;
+		case X86_VENDOR_CENTAUR:
+			if (cpu_feature_enabled(X86_FEATURE_CENTAUR_MCR)) {
+				mtrr_if = &centaur_mtrr_ops;
+				size_or_mask = SIZE_OR_MASK_BITS(32);
+				size_and_mask = 0;
+			}
+			break;
+		case X86_VENDOR_CYRIX:
+			if (cpu_feature_enabled(X86_FEATURE_CYRIX_ARR)) {
+				mtrr_if = &cyrix_mtrr_ops;
+				size_or_mask = SIZE_OR_MASK_BITS(32);
+				size_and_mask = 0;
+			}
+			break;
+		default:
+			break;
+		}
 	}
 
-	if (generic_mtrrs)
-		mtrr_if = &generic_mtrr_ops;
-	else
-		mtrr_set_if();
-
 	if (mtrr_enabled()) {
-		/* Get the number of variable MTRR ranges. */
-		if (mtrr_if == &generic_mtrr_ops)
-			rdmsr(MSR_MTRRcap, config, dummy);
-		else
-			config = mtrr_if->var_regs;
-		num_var_ranges = config & MTRR_CAP_VCNT;
-
+		set_num_var_ranges(mtrr_if == &generic_mtrr_ops);
 		init_table();
 		if (mtrr_if == &generic_mtrr_ops) {
 			/* BIOS may override */
 			if (get_mtrr_state()) {
 				memory_caching_control |= CACHE_MTRR;
-				changed_by_mtrr_cleanup = mtrr_cleanup();
-				mtrr_build_map();
+				changed_by_mtrr_cleanup = mtrr_cleanup(phys_addr);
 			} else {
 				mtrr_if = NULL;
 				why = "by BIOS";
@@ -602,21 +723,15 @@ void mtrr_save_state(void)
 {
 	int first_cpu;
 
-	if (!mtrr_enabled() || !mtrr_state.have_fixed)
+	if (!mtrr_enabled())
 		return;
 
 	first_cpu = cpumask_first(cpu_online_mask);
 	smp_call_function_single(first_cpu, mtrr_save_fixed_ranges, NULL, 1);
 }
 
-static int __init mtrr_init_finalize(void)
+static int __init mtrr_init_finialize(void)
 {
-	/*
-	 * Map might exist if guest_force_mtrr_state() has been called or if
-	 * mtrr_enabled() returns true.
-	 */
-	mtrr_copy_map();
-
 	if (!mtrr_enabled())
 		return 0;
 
@@ -626,8 +741,16 @@ static int __init mtrr_init_finalize(void)
 		return 0;
 	}
 
-	mtrr_register_syscore();
+	/*
+	 * The CPU has no MTRR and seems to not support SMP. They have
+	 * specific drivers, we use a tricky method to support
+	 * suspend/resume for them.
+	 *
+	 * TBD: is there any system with such CPU which supports
+	 * suspend/resume? If no, we should remove the code.
+	 */
+	register_syscore_ops(&mtrr_syscore_ops);
 
 	return 0;
 }
-subsys_initcall(mtrr_init_finalize);
+subsys_initcall(mtrr_init_finialize);

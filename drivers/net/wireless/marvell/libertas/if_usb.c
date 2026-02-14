@@ -165,7 +165,7 @@ static void if_usb_setup_firmware(struct lbs_private *priv)
 
 static void if_usb_fw_timeo(struct timer_list *t)
 {
-	struct if_usb_card *cardp = timer_container_of(cardp, t, fw_timeout);
+	struct if_usb_card *cardp = from_timer(cardp, t, fw_timeout);
 
 	if (cardp->fwdnldover) {
 		lbs_deb_usb("Download complete, no event. Assuming success\n");
@@ -425,8 +425,6 @@ static int usb_tx_block(struct if_usb_card *cardp, uint8_t *payload, uint16_t nb
 		ret = -ENODEV;
 		goto tx_ret;
 	}
-
-	usb_kill_urb(cardp->tx_urb);
 
 	usb_fill_bulk_urb(cardp->tx_urb, cardp->udev,
 			  usb_sndbulkpipe(cardp->udev,
@@ -899,7 +897,7 @@ restart:
 	/* ... and wait for the process to complete */
 	wait_event_interruptible(cardp->fw_wq, cardp->surprise_removed || cardp->fwdnldover);
 
-	timer_delete_sync(&cardp->fw_timeout);
+	del_timer_sync(&cardp->fw_timeout);
 	usb_kill_urb(cardp->rx_urb);
 
 	if (!cardp->fwdnldover) {

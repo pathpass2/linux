@@ -3,7 +3,6 @@
 #include <asm/asm.h>
 #include <asm/asm-offsets.h>
 #include <asm/bitsperlong.h>
-#include <asm/frame.h>
 #include <asm/kvm_vcpu_regs.h>
 #include <asm/nospec-branch.h>
 #include "kvm-asm-offsets.h"
@@ -52,23 +51,11 @@
 	 * there must not be any returns or indirect branches between this code
 	 * and vmentry.
 	 */
-#ifdef CONFIG_X86_64
-	mov SVM_spec_ctrl(%rdi), %rdx
-	cmp PER_CPU_VAR(x86_spec_ctrl_current), %rdx
+	movl SVM_spec_ctrl(%_ASM_DI), %eax
+	cmp PER_CPU_VAR(x86_spec_ctrl_current), %eax
 	je 801b
-	movl %edx, %eax
-	shr $32, %rdx
-#else
-	mov SVM_spec_ctrl(%edi), %eax
-	mov PER_CPU_VAR(x86_spec_ctrl_current), %ecx
-	xor %eax, %ecx
-	mov SVM_spec_ctrl + 4(%edi), %edx
-	mov PER_CPU_VAR(x86_spec_ctrl_current + 4), %esi
-	xor %edx, %esi
-	or %esi, %ecx
-	je 801b
-#endif
 	mov $MSR_IA32_SPEC_CTRL, %ecx
+	xor %edx, %edx
 	wrmsr
 	jmp 801b
 .endm
@@ -80,7 +67,7 @@
 		"", X86_FEATURE_V_SPEC_CTRL
 901:
 .endm
-.macro RESTORE_HOST_SPEC_CTRL_BODY spec_ctrl_intercepted:req
+.macro RESTORE_HOST_SPEC_CTRL_BODY
 900:
 	/* Same for after vmexit.  */
 	mov $MSR_IA32_SPEC_CTRL, %ecx
@@ -89,35 +76,21 @@
 	 * Load the value that the guest had written into MSR_IA32_SPEC_CTRL,
 	 * if it was not intercepted during guest execution.
 	 */
-	cmpb $0, \spec_ctrl_intercepted
+	cmpb $0, (%_ASM_SP)
 	jnz 998f
 	rdmsr
 	movl %eax, SVM_spec_ctrl(%_ASM_DI)
-	movl %edx, SVM_spec_ctrl + 4(%_ASM_DI)
 998:
+
 	/* Now restore the host value of the MSR if different from the guest's.  */
-#ifdef CONFIG_X86_64
-	mov PER_CPU_VAR(x86_spec_ctrl_current), %rdx
-	cmp SVM_spec_ctrl(%rdi), %rdx
+	movl PER_CPU_VAR(x86_spec_ctrl_current), %eax
+	cmp SVM_spec_ctrl(%_ASM_DI), %eax
 	je 901b
-	movl %edx, %eax
-	shr $32, %rdx
-#else
-	mov PER_CPU_VAR(x86_spec_ctrl_current), %eax
-	mov SVM_spec_ctrl(%edi), %esi
-	xor %eax, %esi
-	mov PER_CPU_VAR(x86_spec_ctrl_current + 4), %edx
-	mov SVM_spec_ctrl + 4(%edi), %edi
-	xor %edx, %edi
-	or %edi, %esi
-	je 901b
-#endif
+	xor %edx, %edx
 	wrmsr
 	jmp 901b
 .endm
 
-#define SVM_CLEAR_CPU_BUFFERS \
-	ALTERNATIVE "", __CLEAR_CPU_BUFFERS, X86_FEATURE_CLEAR_CPU_BUF_VM
 
 /**
  * __svm_vcpu_run - Run a vCPU via a transition to SVM guest mode
@@ -126,7 +99,6 @@
  */
 SYM_FUNC_START(__svm_vcpu_run)
 	push %_ASM_BP
-	mov  %_ASM_SP, %_ASM_BP
 #ifdef CONFIG_X86_64
 	push %r15
 	push %r14
@@ -160,7 +132,7 @@ SYM_FUNC_START(__svm_vcpu_run)
 	mov %_ASM_ARG1, %_ASM_DI
 .endif
 
-	/* Clobbers RAX, RCX, RDX (and ESI on 32-bit), consumes RDI (@svm). */
+	/* Clobbers RAX, RCX, RDX.  */
 	RESTORE_GUEST_SPEC_CTRL
 
 	/*
@@ -195,12 +167,13 @@ SYM_FUNC_START(__svm_vcpu_run)
 #endif
 	mov VCPU_RDI(%_ASM_DI), %_ASM_DI
 
-	/* Clobbers EFLAGS.ZF */
-	SVM_CLEAR_CPU_BUFFERS
-
 	/* Enter guest mode */
+	sti
+
 3:	vmrun %_ASM_AX
 4:
+	cli
+
 	/* Pop @svm to RAX while it's the only available register. */
 	pop %_ASM_AX
 
@@ -234,13 +207,12 @@ SYM_FUNC_START(__svm_vcpu_run)
 7:	vmload %_ASM_AX
 8:
 
+#ifdef CONFIG_RETPOLINE
 	/* IMPORTANT: Stuff the RSB immediately after VM-Exit, before RET! */
-	FILL_RETURN_BUFFER %_ASM_AX, RSB_CLEAR_LOOPS, X86_FEATURE_RSB_VMEXIT
+	FILL_RETURN_BUFFER %_ASM_AX, RSB_CLEAR_LOOPS, X86_FEATURE_RETPOLINE
+#endif
 
-	/*
-	 * Clobbers RAX, RCX, RDX (and ESI, EDI on 32-bit), consumes RDI (@svm)
-	 * and RSP (pointer to @spec_ctrl_intercepted).
-	 */
+	/* Clobbers RAX, RCX, RDX.  */
 	RESTORE_HOST_SPEC_CTRL
 
 	/*
@@ -250,7 +222,7 @@ SYM_FUNC_START(__svm_vcpu_run)
 	 * because interrupt handlers won't sanitize 'ret' if the return is
 	 * from the kernel.
 	 */
-	UNTRAIN_RET_VM
+	UNTRAIN_RET
 
 	/*
 	 * Clear all general purpose registers except RSP and RAX to prevent
@@ -296,18 +268,18 @@ SYM_FUNC_START(__svm_vcpu_run)
 	RET
 
 	RESTORE_GUEST_SPEC_CTRL_BODY
-	RESTORE_HOST_SPEC_CTRL_BODY (%_ASM_SP)
+	RESTORE_HOST_SPEC_CTRL_BODY
 
-10:	cmpb $0, _ASM_RIP(kvm_rebooting)
+10:	cmpb $0, kvm_rebooting
 	jne 2b
 	ud2
-30:	cmpb $0, _ASM_RIP(kvm_rebooting)
+30:	cmpb $0, kvm_rebooting
 	jne 4b
 	ud2
-50:	cmpb $0, _ASM_RIP(kvm_rebooting)
+50:	cmpb $0, kvm_rebooting
 	jne 6b
 	ud2
-70:	cmpb $0, _ASM_RIP(kvm_rebooting)
+70:	cmpb $0, kvm_rebooting
 	jne 8b
 	ud2
 
@@ -318,65 +290,66 @@ SYM_FUNC_START(__svm_vcpu_run)
 
 SYM_FUNC_END(__svm_vcpu_run)
 
-#ifdef CONFIG_KVM_AMD_SEV
-
-
-#ifdef CONFIG_X86_64
-#define SEV_ES_GPRS_BASE 0x300
-#define SEV_ES_RBX	(SEV_ES_GPRS_BASE + __VCPU_REGS_RBX * WORD_SIZE)
-#define SEV_ES_RBP	(SEV_ES_GPRS_BASE + __VCPU_REGS_RBP * WORD_SIZE)
-#define SEV_ES_RSI	(SEV_ES_GPRS_BASE + __VCPU_REGS_RSI * WORD_SIZE)
-#define SEV_ES_RDI	(SEV_ES_GPRS_BASE + __VCPU_REGS_RDI * WORD_SIZE)
-#define SEV_ES_R12	(SEV_ES_GPRS_BASE + __VCPU_REGS_R12 * WORD_SIZE)
-#define SEV_ES_R13	(SEV_ES_GPRS_BASE + __VCPU_REGS_R13 * WORD_SIZE)
-#define SEV_ES_R14	(SEV_ES_GPRS_BASE + __VCPU_REGS_R14 * WORD_SIZE)
-#define SEV_ES_R15	(SEV_ES_GPRS_BASE + __VCPU_REGS_R15 * WORD_SIZE)
-#endif
-
 /**
  * __svm_sev_es_vcpu_run - Run a SEV-ES vCPU via a transition to SVM guest mode
  * @svm:	struct vcpu_svm *
  * @spec_ctrl_intercepted: bool
  */
 SYM_FUNC_START(__svm_sev_es_vcpu_run)
-	FRAME_BEGIN
+	push %_ASM_BP
+#ifdef CONFIG_X86_64
+	push %r15
+	push %r14
+	push %r13
+	push %r12
+#else
+	push %edi
+	push %esi
+#endif
+	push %_ASM_BX
 
 	/*
-	 * Save non-volatile (callee-saved) registers to the host save area.
-	 * Except for RAX and RSP, all GPRs are restored on #VMEXIT, but not
-	 * saved on VMRUN.
+	 * Save variables needed after vmexit on the stack, in inverse
+	 * order compared to when they are needed.
 	 */
-	mov %rbp, SEV_ES_RBP (%rdx)
-	mov %r15, SEV_ES_R15 (%rdx)
-	mov %r14, SEV_ES_R14 (%rdx)
-	mov %r13, SEV_ES_R13 (%rdx)
-	mov %r12, SEV_ES_R12 (%rdx)
-	mov %rbx, SEV_ES_RBX (%rdx)
 
+	/* Accessed directly from the stack in RESTORE_HOST_SPEC_CTRL.  */
+	push %_ASM_ARG2
+
+	/* Save @svm. */
+	push %_ASM_ARG1
+
+.ifnc _ASM_ARG1, _ASM_DI
 	/*
-	 * Save volatile registers that hold arguments that are needed after
-	 * #VMEXIT (RDI=@svm and RSI=@spec_ctrl_intercepted).
+	 * Stash @svm in RDI early. On 32-bit, arguments are in RAX, RCX
+	 * and RDX which are clobbered by RESTORE_GUEST_SPEC_CTRL.
 	 */
-	mov %rdi, SEV_ES_RDI (%rdx)
-	mov %rsi, SEV_ES_RSI (%rdx)
+	mov %_ASM_ARG1, %_ASM_DI
+.endif
 
-	/* Clobbers RAX, RCX, and RDX (@hostsa), consumes RDI (@svm). */
+	/* Clobbers RAX, RCX, RDX.  */
 	RESTORE_GUEST_SPEC_CTRL
 
 	/* Get svm->current_vmcb->pa into RAX. */
-	mov SVM_current_vmcb(%rdi), %rax
-	mov KVM_VMCB_pa(%rax), %rax
-
-	/* Clobbers EFLAGS.ZF */
-	SVM_CLEAR_CPU_BUFFERS
+	mov SVM_current_vmcb(%_ASM_DI), %_ASM_AX
+	mov KVM_VMCB_pa(%_ASM_AX), %_ASM_AX
 
 	/* Enter guest mode */
-1:	vmrun %rax
-2:
-	/* IMPORTANT: Stuff the RSB immediately after VM-Exit, before RET! */
-	FILL_RETURN_BUFFER %rax, RSB_CLEAR_LOOPS, X86_FEATURE_RSB_VMEXIT
+	sti
 
-	/* Clobbers RAX, RCX, RDX, consumes RDI (@svm) and RSI (@spec_ctrl_intercepted). */
+1:	vmrun %_ASM_AX
+
+2:	cli
+
+	/* Pop @svm to RDI, guest registers have been saved already. */
+	pop %_ASM_DI
+
+#ifdef CONFIG_RETPOLINE
+	/* IMPORTANT: Stuff the RSB immediately after VM-Exit, before RET! */
+	FILL_RETURN_BUFFER %_ASM_AX, RSB_CLEAR_LOOPS, X86_FEATURE_RETPOLINE
+#endif
+
+	/* Clobbers RAX, RCX, RDX.  */
 	RESTORE_HOST_SPEC_CTRL
 
 	/*
@@ -386,19 +359,32 @@ SYM_FUNC_START(__svm_sev_es_vcpu_run)
 	 * because interrupt handlers won't sanitize RET if the return is
 	 * from the kernel.
 	 */
-	UNTRAIN_RET_VM
+	UNTRAIN_RET
 
-	FRAME_END
+	/* "Pop" @spec_ctrl_intercepted.  */
+	pop %_ASM_BX
+
+	pop %_ASM_BX
+
+#ifdef CONFIG_X86_64
+	pop %r12
+	pop %r13
+	pop %r14
+	pop %r15
+#else
+	pop %esi
+	pop %edi
+#endif
+	pop %_ASM_BP
 	RET
 
 	RESTORE_GUEST_SPEC_CTRL_BODY
-	RESTORE_HOST_SPEC_CTRL_BODY %sil
+	RESTORE_HOST_SPEC_CTRL_BODY
 
-3:	cmpb $0, kvm_rebooting(%rip)
+3:	cmpb $0, kvm_rebooting
 	jne 2b
 	ud2
 
 	_ASM_EXTABLE(1b, 3b)
 
 SYM_FUNC_END(__svm_sev_es_vcpu_run)
-#endif /* CONFIG_KVM_AMD_SEV */

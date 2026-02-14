@@ -4,12 +4,11 @@
  * Copyright (c) 2021, Linaro Ltd.
  */
 
-#include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,dispcc-qcm2290.h>
@@ -21,15 +20,13 @@
 #include "clk-regmap-divider.h"
 #include "common.h"
 #include "gdsc.h"
-#include "reset.h"
 
 enum {
 	P_BI_TCXO,
-	P_BI_TCXO_AO,
 	P_DISP_CC_PLL0_OUT_MAIN,
 	P_DSI0_PHY_PLL_OUT_BYTECLK,
 	P_DSI0_PHY_PLL_OUT_DSICLK,
-	P_GPLL0_OUT_DIV,
+	P_DSI1_PHY_PLL_OUT_DSICLK,
 	P_GPLL0_OUT_MAIN,
 	P_SLEEP_CLK,
 };
@@ -41,6 +38,8 @@ static const struct pll_vco spark_vco[] = {
 /* 768MHz configuration */
 static const struct alpha_pll_config disp_cc_pll0_config = {
 	.l = 0x28,
+	.alpha = 0x0,
+	.alpha_en_mask = BIT(24),
 	.vco_val = 0x2 << 20,
 	.vco_mask = GENMASK(21, 20),
 	.main_output_mask = BIT(0),
@@ -83,8 +82,8 @@ static const struct clk_parent_data disp_cc_parent_data_1[] = {
 };
 
 static const struct parent_map disp_cc_parent_map_2[] = {
-	{ P_BI_TCXO_AO, 0 },
-	{ P_GPLL0_OUT_DIV, 4 },
+	{ P_BI_TCXO, 0 },
+	{ P_GPLL0_OUT_MAIN, 4 },
 };
 
 static const struct clk_parent_data disp_cc_parent_data_2[] = {
@@ -107,11 +106,13 @@ static const struct clk_parent_data disp_cc_parent_data_3[] = {
 static const struct parent_map disp_cc_parent_map_4[] = {
 	{ P_BI_TCXO, 0 },
 	{ P_DSI0_PHY_PLL_OUT_DSICLK, 1 },
+	{ P_DSI1_PHY_PLL_OUT_DSICLK, 2 },
 };
 
 static const struct clk_parent_data disp_cc_parent_data_4[] = {
 	{ .fw_name = "bi_tcxo" },
 	{ .fw_name = "dsi0_phy_pll_out_dsiclk" },
+	{ .fw_name = "dsi1_phy_pll_out_dsiclk" },
 };
 
 static const struct parent_map disp_cc_parent_map_5[] = {
@@ -152,9 +153,9 @@ static struct clk_regmap_div disp_cc_mdss_byte0_div_clk_src = {
 };
 
 static const struct freq_tbl ftbl_disp_cc_mdss_ahb_clk_src[] = {
-	F(19200000, P_BI_TCXO_AO, 1, 0, 0),
-	F(37500000, P_GPLL0_OUT_DIV, 8, 0, 0),
-	F(75000000, P_GPLL0_OUT_DIV, 4, 0, 0),
+	F(19200000, P_BI_TCXO, 1, 0, 0),
+	F(37500000, P_GPLL0_OUT_MAIN, 8, 0, 0),
+	F(75000000, P_GPLL0_OUT_MAIN, 4, 0, 0),
 	{ }
 };
 
@@ -444,10 +445,6 @@ static struct clk_branch disp_cc_sleep_clk = {
 	},
 };
 
-static const struct qcom_reset_map disp_cc_qcm2290_resets[] = {
-	[DISP_CC_MDSS_CORE_BCR] = { 0x2000 },
-};
-
 static struct gdsc mdss_gdsc = {
 	.gdscr = 0x3000,
 	.pd = {
@@ -497,8 +494,6 @@ static const struct qcom_cc_desc disp_cc_qcm2290_desc = {
 	.num_clks = ARRAY_SIZE(disp_cc_qcm2290_clocks),
 	.gdscs = disp_cc_qcm2290_gdscs,
 	.num_gdscs = ARRAY_SIZE(disp_cc_qcm2290_gdscs),
-	.resets = disp_cc_qcm2290_resets,
-	.num_resets = ARRAY_SIZE(disp_cc_qcm2290_resets),
 };
 
 static const struct of_device_id disp_cc_qcm2290_match_table[] = {
@@ -518,10 +513,10 @@ static int disp_cc_qcm2290_probe(struct platform_device *pdev)
 
 	clk_alpha_pll_configure(&disp_cc_pll0, regmap, &disp_cc_pll0_config);
 
-	/* Keep some clocks always-on */
-	qcom_branch_set_clk_en(regmap, 0x604c); /* DISP_CC_XO_CLK */
+	/* Keep DISP_CC_XO_CLK always-ON */
+	regmap_update_bits(regmap, 0x604c, BIT(0), BIT(0));
 
-	ret = qcom_cc_really_probe(&pdev->dev, &disp_cc_qcm2290_desc, regmap);
+	ret = qcom_cc_really_probe(pdev, &disp_cc_qcm2290_desc, regmap);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register DISP CC clocks\n");
 		return ret;
@@ -538,7 +533,17 @@ static struct platform_driver disp_cc_qcm2290_driver = {
 	},
 };
 
-module_platform_driver(disp_cc_qcm2290_driver);
+static int __init disp_cc_qcm2290_init(void)
+{
+	return platform_driver_register(&disp_cc_qcm2290_driver);
+}
+subsys_initcall(disp_cc_qcm2290_init);
+
+static void __exit disp_cc_qcm2290_exit(void)
+{
+	platform_driver_unregister(&disp_cc_qcm2290_driver);
+}
+module_exit(disp_cc_qcm2290_exit);
 
 MODULE_DESCRIPTION("QTI DISP_CC qcm2290 Driver");
 MODULE_LICENSE("GPL v2");

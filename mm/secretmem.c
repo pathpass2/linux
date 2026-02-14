@@ -35,7 +35,7 @@
 #define SECRETMEM_MODE_MASK	(0x0)
 #define SECRETMEM_FLAGS_MASK	SECRETMEM_MODE_MASK
 
-static bool secretmem_enable __ro_after_init = 1;
+static bool secretmem_enable __ro_after_init;
 module_param_named(enable, secretmem_enable, bool, 0400);
 MODULE_PARM_DESC(secretmem_enable,
 		 "Enable secretmem and memfd_secret(2) system call");
@@ -54,7 +54,7 @@ static vm_fault_t secretmem_fault(struct vm_fault *vmf)
 	pgoff_t offset = vmf->pgoff;
 	gfp_t gfp = vmf->gfp_mask;
 	unsigned long addr;
-	struct folio *folio;
+	struct page *page;
 	vm_fault_t ret;
 	int err;
 
@@ -64,31 +64,31 @@ static vm_fault_t secretmem_fault(struct vm_fault *vmf)
 	filemap_invalidate_lock_shared(mapping);
 
 retry:
-	folio = filemap_lock_folio(mapping, offset);
-	if (IS_ERR(folio)) {
-		folio = folio_alloc(gfp | __GFP_ZERO, 0);
-		if (!folio) {
+	page = find_lock_page(mapping, offset);
+	if (!page) {
+		page = alloc_page(gfp | __GFP_ZERO);
+		if (!page) {
 			ret = VM_FAULT_OOM;
 			goto out;
 		}
 
-		err = set_direct_map_invalid_noflush(folio_page(folio, 0));
+		err = set_direct_map_invalid_noflush(page);
 		if (err) {
-			folio_put(folio);
+			put_page(page);
 			ret = vmf_error(err);
 			goto out;
 		}
 
-		__folio_mark_uptodate(folio);
-		err = filemap_add_folio(mapping, folio, offset, gfp);
+		__SetPageUptodate(page);
+		err = add_to_page_cache_lru(page, mapping, offset, gfp);
 		if (unlikely(err)) {
+			put_page(page);
 			/*
 			 * If a split of large page was required, it
 			 * already happened when we marked the page invalid
 			 * which guarantees that this call won't fail
 			 */
-			set_direct_map_default_noflush(folio_page(folio, 0));
-			folio_put(folio);
+			set_direct_map_default_noflush(page);
 			if (err == -EEXIST)
 				goto retry;
 
@@ -96,11 +96,11 @@ retry:
 			goto out;
 		}
 
-		addr = (unsigned long)folio_address(folio);
+		addr = (unsigned long)page_address(page);
 		flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
 	}
 
-	vmf->page = folio_file_page(folio, vmf->pgoff);
+	vmf->page = page;
 	ret = VM_FAULT_LOCKED;
 
 out:
@@ -118,18 +118,18 @@ static int secretmem_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static int secretmem_mmap_prepare(struct vm_area_desc *desc)
+static int secretmem_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	const unsigned long len = vma_desc_size(desc);
+	unsigned long len = vma->vm_end - vma->vm_start;
 
-	if ((desc->vm_flags & (VM_SHARED | VM_MAYSHARE)) == 0)
+	if ((vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) == 0)
 		return -EINVAL;
 
-	if (!mlock_future_ok(desc->mm, desc->vm_flags | VM_LOCKED, len))
+	if (mlock_future_check(vma->vm_mm, vma->vm_flags | VM_LOCKED, len))
 		return -EAGAIN;
 
-	desc->vm_flags |= VM_LOCKED | VM_DONTDUMP;
-	desc->vm_ops = &secretmem_vm_ops;
+	vm_flags_set(vma, VM_LOCKED | VM_DONTDUMP);
+	vma->vm_ops = &secretmem_vm_ops;
 
 	return 0;
 }
@@ -141,7 +141,7 @@ bool vma_is_secretmem(struct vm_area_struct *vma)
 
 static const struct file_operations secretmem_fops = {
 	.release	= secretmem_release,
-	.mmap_prepare	= secretmem_mmap_prepare,
+	.mmap		= secretmem_mmap,
 };
 
 static int secretmem_migrate_folio(struct address_space *mapping,
@@ -152,7 +152,7 @@ static int secretmem_migrate_folio(struct address_space *mapping,
 
 static void secretmem_free_folio(struct folio *folio)
 {
-	set_direct_map_default_noflush(folio_page(folio, 0));
+	set_direct_map_default_noflush(&folio->page);
 	folio_zero_segment(folio, 0, folio_size(folio));
 }
 
@@ -193,13 +193,21 @@ static struct file *secretmem_file_create(unsigned long flags)
 	struct file *file;
 	struct inode *inode;
 	const char *anon_name = "[secretmem]";
+	const struct qstr qname = QSTR_INIT(anon_name, strlen(anon_name));
+	int err;
 
-	inode = anon_inode_make_secure_inode(secretmem_mnt->mnt_sb, anon_name, NULL);
+	inode = alloc_anon_inode(secretmem_mnt->mnt_sb);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
+	err = security_inode_init_security_anon(inode, &qname, NULL);
+	if (err) {
+		file = ERR_PTR(err);
+		goto err_free_inode;
+	}
+
 	file = alloc_file_pseudo(inode, secretmem_mnt, "secretmem",
-				 O_RDWR | O_LARGEFILE, &secretmem_fops);
+				 O_RDWR, &secretmem_fops);
 	if (IS_ERR(file))
 		goto err_free_inode;
 
@@ -213,8 +221,6 @@ static struct file *secretmem_file_create(unsigned long flags)
 	inode->i_mode |= S_IFREG;
 	inode->i_size = 0;
 
-	atomic_inc(&secretmem_users);
-
 	return file;
 
 err_free_inode:
@@ -224,10 +230,13 @@ err_free_inode:
 
 SYSCALL_DEFINE1(memfd_secret, unsigned int, flags)
 {
-	/* make sure local flags do not conflict with global fcntl.h */
+	struct file *file;
+	int fd, err;
+
+	/* make sure local flags do not confict with global fcntl.h */
 	BUILD_BUG_ON(SECRETMEM_FLAGS_MASK & O_CLOEXEC);
 
-	if (!secretmem_enable || !can_set_direct_map())
+	if (!secretmem_enable)
 		return -ENOSYS;
 
 	if (flags & ~(SECRETMEM_FLAGS_MASK | O_CLOEXEC))
@@ -235,20 +244,30 @@ SYSCALL_DEFINE1(memfd_secret, unsigned int, flags)
 	if (atomic_read(&secretmem_users) < 0)
 		return -ENFILE;
 
-	return FD_ADD(flags & O_CLOEXEC, secretmem_file_create(flags));
+	fd = get_unused_fd_flags(flags & O_CLOEXEC);
+	if (fd < 0)
+		return fd;
+
+	file = secretmem_file_create(flags);
+	if (IS_ERR(file)) {
+		err = PTR_ERR(file);
+		goto err_put_fd;
+	}
+
+	file->f_flags |= O_LARGEFILE;
+
+	atomic_inc(&secretmem_users);
+	fd_install(fd, file);
+	return fd;
+
+err_put_fd:
+	put_unused_fd(fd);
+	return err;
 }
 
 static int secretmem_init_fs_context(struct fs_context *fc)
 {
-	struct pseudo_fs_context *ctx;
-
-	ctx = init_pseudo(fc, SECRETMEM_MAGIC);
-	if (!ctx)
-		return -ENOMEM;
-
-	fc->s_iflags |= SB_I_NOEXEC;
-	fc->s_iflags |= SB_I_NODEV;
-	return 0;
+	return init_pseudo(fc, SECRETMEM_MAGIC) ? 0 : -ENOMEM;
 }
 
 static struct file_system_type secretmem_fs = {
@@ -259,12 +278,15 @@ static struct file_system_type secretmem_fs = {
 
 static int __init secretmem_init(void)
 {
-	if (!secretmem_enable || !can_set_direct_map())
+	if (!secretmem_enable)
 		return 0;
 
 	secretmem_mnt = kern_mount(&secretmem_fs);
 	if (IS_ERR(secretmem_mnt))
 		return PTR_ERR(secretmem_mnt);
+
+	/* prevent secretmem mappings from ever getting PROT_EXEC */
+	secretmem_mnt->mnt_flags |= MNT_NOEXEC;
 
 	return 0;
 }

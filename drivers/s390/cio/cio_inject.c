@@ -6,7 +6,8 @@
  *    Author(s): Vineeth Vijayan <vneethv@linux.ibm.com>
  */
 
-#define pr_fmt(fmt) "cio: " fmt
+#define KMSG_COMPONENT "cio"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -94,7 +95,7 @@ static ssize_t crw_inject_write(struct file *file, const char __user *buf,
 		return -EINVAL;
 	}
 
-	buffer = memdup_user_nul(buf, lbuf);
+	buffer = vmemdup_user(buf, lbuf);
 	if (IS_ERR(buffer))
 		return -ENOMEM;
 

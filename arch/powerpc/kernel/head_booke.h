@@ -5,9 +5,8 @@
 #include <asm/ptrace.h>	/* for STACK_FRAME_REGS_MARKER */
 #include <asm/kvm_asm.h>
 #include <asm/kvm_booke_hv_asm.h>
-#include <asm/thread_info.h>	/* for THREAD_SHIFT */
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 /*
  * Macros used for common Book-e exception handling
@@ -145,9 +144,10 @@ ALT_FTR_SECTION_END_IFSET(CPU_FTR_EMB_HV)
 	b	transfer_to_syscall	/* jump to handler */
 .endm
 
-/* To handle the additional exception priority levels on Book-E
+/* To handle the additional exception priority levels on 40x and Book-E
  * processors we allocate a stack per additional priority level.
  *
+ * On 40x critical is the only additional level
  * On 44x/e500 we have critical and machine check
  *
  * Additionally we reserve a SPRG for each priority level so we can free up a
@@ -522,5 +522,5 @@ label:
 	bl	kernel_fp_unavailable_exception;			      \
 	b	interrupt_return
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* __HEAD_BOOKE_H__ */

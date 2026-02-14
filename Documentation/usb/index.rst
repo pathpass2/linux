@@ -11,7 +11,6 @@ USB support
     dwc3
     ehci
     functionfs
-    functionfs-desc
     gadget_configfs
     gadget_hid
     gadget_multi
@@ -31,3 +30,10 @@ USB support
 
     usb-help
     text_files
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

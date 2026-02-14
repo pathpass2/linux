@@ -17,25 +17,18 @@ description: |
   such as SAI, MICFIL, .etc through building rpmsg channels between
   Cortex-A and Cortex-M.
 
-allOf:
-  - $ref: sound-card-common.yaml#
-
 properties:
   compatible:
-    oneOf:
-      - enum:
-          - fsl,imx7ulp-rpmsg-audio
-          - fsl,imx8mn-rpmsg-audio
-          - fsl,imx8mm-rpmsg-audio
-          - fsl,imx8mp-rpmsg-audio
-          - fsl,imx8ulp-rpmsg-audio
-          - fsl,imx93-rpmsg-audio
-          - fsl,imx95-rpmsg-audio
-      - items:
-          - enum:
-              - fsl,imx94-rpmsg-audio
-              - fsl,imx952-rpmsg-audio
-          - const: fsl,imx95-rpmsg-audio
+    enum:
+      - fsl,imx7ulp-rpmsg-audio
+      - fsl,imx8mn-rpmsg-audio
+      - fsl,imx8mm-rpmsg-audio
+      - fsl,imx8mp-rpmsg-audio
+      - fsl,imx8ulp-rpmsg-audio
+
+  model:
+    $ref: /schemas/types.yaml#/definitions/string
+    description: User specified audio sound card name
 
   clocks:
     items:
@@ -72,6 +65,13 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: The phandle to a node of audio codec
 
+  audio-routing:
+    $ref: /schemas/types.yaml#/definitions/non-unique-string-array
+    description: |
+      A list of the connections between audio components. Each entry is a
+      pair of strings, the first being the connection's sink, the second
+      being the connection's source.
+
   fsl,enable-lpa:
     $ref: /schemas/types.yaml#/definitions/flag
     description: enable low power audio path.
@@ -100,8 +100,9 @@ properties:
 
 required:
   - compatible
+  - model
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

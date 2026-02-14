@@ -10,10 +10,8 @@
 #define _ASM_S390_CPU_MF_H
 
 #include <linux/errno.h>
-#include <linux/kmsan-checks.h>
 #include <asm/asm-extable.h>
 #include <asm/facility.h>
-#include <asm/asm.h>
 
 asm(".include \"asm/cpu_mf-insn.h\"\n");
 
@@ -142,7 +140,7 @@ union hws_trailer_header {
 		unsigned int dsdes:16;	/* 48-63: size of diagnostic SDE */
 		unsigned long long overflow; /* 64 - Overflow Count   */
 	};
-	u128 val;
+	__uint128_t val;
 };
 
 struct hws_trailer_entry {
@@ -171,7 +169,7 @@ static inline int qctri(struct cpumf_ctr_info *info)
 {
 	int rc = -EINVAL;
 
-	asm_inline volatile (
+	asm volatile (
 		"0:	qctri	%1\n"
 		"1:	lhi	%0,0\n"
 		"2:\n"
@@ -185,13 +183,12 @@ static inline int lcctl(u64 ctl)
 {
 	int cc;
 
-	asm_inline volatile (
-		"	lcctl	%[ctl]\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, cc)
-		: [ctl] "Q" (ctl)
-		: CC_CLOBBER);
-	return CC_TRANSFORM(cc);
+	asm volatile (
+		"	lcctl	%1\n"
+		"	ipm	%0\n"
+		"	srl	%0,28\n"
+		: "=d" (cc) : "Q" (ctl) : "cc");
+	return cc;
 }
 
 /* Extract CPU counter */
@@ -200,14 +197,13 @@ static inline int __ecctr(u64 ctr, u64 *content)
 	u64 _content;
 	int cc;
 
-	asm_inline volatile (
-		"	ecctr	%[_content],%[ctr]\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, cc), [_content] "=d" (_content)
-		: [ctr] "d" (ctr)
-		: CC_CLOBBER);
+	asm volatile (
+		"	ecctr	%0,%2\n"
+		"	ipm	%1\n"
+		"	srl	%1,28\n"
+		: "=d" (_content), "=d" (cc) : "d" (ctr) : "cc");
 	*content = _content;
-	return CC_TRANSFORM(cc);
+	return cc;
 }
 
 /* Extract CPU counter */
@@ -237,17 +233,13 @@ static __always_inline int stcctm(enum stcctm_ctr_set set, u64 range, u64 *dest)
 	int cc;
 
 	asm volatile (
-		"	STCCTM	%[range],%[set],%[dest]\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, cc)
-		: [dest] "Q" (*dest), [range] "d" (range), [set] "i" (set)
-		: CC_CLOBBER_LIST("memory"));
-	/*
-	 * If cc == 2, less than RANGE counters are stored, but it's not easy
-	 * to tell how many. Always unpoison the whole range for simplicity.
-	 */
-	kmsan_unpoison_memory(dest, range * sizeof(u64));
-	return CC_TRANSFORM(cc);
+		"	STCCTM	%2,%3,%1\n"
+		"	ipm	%0\n"
+		"	srl	%0,28\n"
+		: "=d" (cc)
+		: "Q" (*dest), "d" (range), "i" (set)
+		: "cc", "memory");
+	return cc;
 }
 
 /* Query sampling information */
@@ -267,20 +259,19 @@ static inline int qsi(struct hws_qsi_info_block *info)
 /* Load sampling controls */
 static inline int lsctl(struct hws_lsctl_request_block *req)
 {
-	int cc, exception;
+	int cc;
 
-	exception = 1;
+	cc = 1;
 	asm volatile(
-		"0:	lsctl	%[req]\n"
-		"1:	lhi	%[exc],0\n"
+		"0:	lsctl	0(%1)\n"
+		"1:	ipm	%0\n"
+		"	srl	%0,28\n"
 		"2:\n"
-		CC_IPM(cc)
 		EX_TABLE(0b, 2b) EX_TABLE(1b, 2b)
-		: CC_OUT(cc, cc), [exc] "+d" (exception)
-		: [req] "Q" (*req)
-		: CC_CLOBBER);
-	if (exception || CC_TRANSFORM(cc))
-		return -EINVAL;
-	return 0;
+		: "+d" (cc), "+a" (req)
+		: "m" (*req)
+		: "cc", "memory");
+
+	return cc ? -EINVAL : 0;
 }
 #endif /* _ASM_S390_CPU_MF_H */

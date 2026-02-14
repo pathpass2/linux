@@ -26,22 +26,7 @@ enum {
 	IRQ_REMAP_X2APIC_MODE,
 };
 
-/*
- * This is mainly used to communicate information back-and-forth
- * between SVM and IOMMU for setting up and tearing down posted
- * interrupt
- */
-struct amd_iommu_pi_data {
-	u64 vapic_addr;		/* Physical address of the vCPU's vAPIC. */
-	u32 ga_tag;
-	u32 vector;		/* Guest vector of the interrupt */
-	int cpu;
-	bool ga_log_intr;
-	bool is_guest_mode;
-	void *ir_data;
-};
-
-struct intel_iommu_pi_data {
+struct vcpu_data {
 	u64 pi_desc_addr;	/* Physical address of PI Descriptor */
 	u32 vector;		/* Guest vector of the interrupt */
 };
@@ -65,14 +50,6 @@ static inline struct irq_domain *arch_get_ir_parent_domain(void)
 	return x86_vector_domain;
 }
 
-extern bool enable_posted_msi;
-
-static inline bool posted_msi_enabled(void)
-{
-	return IS_ENABLED(CONFIG_X86_POSTED_MSI) &&
-		enable_posted_msi && irq_remapping_cap(IRQ_POSTING_CAP);
-}
-
 #else  /* CONFIG_IRQ_REMAP */
 
 static inline bool irq_remapping_cap(enum irq_remap_cap cap) { return 0; }
@@ -88,11 +65,4 @@ static inline void panic_if_irq_remap(const char *msg)
 }
 
 #endif /* CONFIG_IRQ_REMAP */
-
-#ifdef CONFIG_X86_POSTED_MSI
-void intel_ack_posted_msi_irq(struct irq_data *irqd);
-#else
-#define intel_ack_posted_msi_irq	NULL
-#endif
-
 #endif /* __X86_IRQ_REMAPPING_H */

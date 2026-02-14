@@ -28,39 +28,45 @@ static void iforce_serio_xmit(struct iforce *iforce)
 							 iforce);
 	unsigned char cs;
 	int i;
+	unsigned long flags;
 
 	if (test_and_set_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags)) {
 		set_bit(IFORCE_XMIT_AGAIN, iforce->xmit_flags);
 		return;
 	}
 
-	guard(spinlock_irqsave)(&iforce->xmit_lock);
+	spin_lock_irqsave(&iforce->xmit_lock, flags);
 
-	do {
-		if (iforce->xmit.head == iforce->xmit.tail)
-			break;
+again:
+	if (iforce->xmit.head == iforce->xmit.tail) {
+		iforce_clear_xmit_and_wake(iforce);
+		spin_unlock_irqrestore(&iforce->xmit_lock, flags);
+		return;
+	}
 
-		cs = 0x2b;
+	cs = 0x2b;
 
-		serio_write(iforce_serio->serio, 0x2b);
+	serio_write(iforce_serio->serio, 0x2b);
 
+	serio_write(iforce_serio->serio, iforce->xmit.buf[iforce->xmit.tail]);
+	cs ^= iforce->xmit.buf[iforce->xmit.tail];
+	XMIT_INC(iforce->xmit.tail, 1);
+
+	for (i=iforce->xmit.buf[iforce->xmit.tail]; i >= 0; --i) {
 		serio_write(iforce_serio->serio,
 			    iforce->xmit.buf[iforce->xmit.tail]);
 		cs ^= iforce->xmit.buf[iforce->xmit.tail];
 		XMIT_INC(iforce->xmit.tail, 1);
+	}
 
-		for (i = iforce->xmit.buf[iforce->xmit.tail]; i >= 0; --i) {
-			serio_write(iforce_serio->serio,
-				    iforce->xmit.buf[iforce->xmit.tail]);
-			cs ^= iforce->xmit.buf[iforce->xmit.tail];
-			XMIT_INC(iforce->xmit.tail, 1);
-		}
+	serio_write(iforce_serio->serio, cs);
 
-		serio_write(iforce_serio->serio, cs);
-
-	} while (test_and_clear_bit(IFORCE_XMIT_AGAIN, iforce->xmit_flags));
+	if (test_and_clear_bit(IFORCE_XMIT_AGAIN, iforce->xmit_flags))
+		goto again;
 
 	iforce_clear_xmit_and_wake(iforce);
+
+	spin_unlock_irqrestore(&iforce->xmit_lock, flags);
 }
 
 static int iforce_serio_get_id(struct iforce *iforce, u8 id,

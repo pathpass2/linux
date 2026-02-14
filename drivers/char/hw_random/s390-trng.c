@@ -9,7 +9,8 @@
  * Author(s): Harald Freudenberger <freude@de.ibm.com>
  */
 
-#define pr_fmt(fmt) "trng: " fmt
+#define KMSG_COMPONENT "trng"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/hw_random.h>
 #include <linux/kernel.h>

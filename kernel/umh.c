@@ -13,6 +13,7 @@
 #include <linux/completion.h>
 #include <linux/cred.h>
 #include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/fs_struct.h>
 #include <linux/workqueue.h>
 #include <linux/security.h>
@@ -493,8 +494,7 @@ int call_usermodehelper(const char *path, char **argv, char **envp, int wait)
 }
 EXPORT_SYMBOL(call_usermodehelper);
 
-#if defined(CONFIG_SYSCTL)
-static int proc_cap_handler(const struct ctl_table *table, int write,
+static int proc_cap_handler(struct ctl_table *table, int write,
 			 void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct ctl_table t;
@@ -544,7 +544,7 @@ static int proc_cap_handler(const struct ctl_table *table, int write,
 	return 0;
 }
 
-static const struct ctl_table usermodehelper_table[] = {
+struct ctl_table usermodehelper_table[] = {
 	{
 		.procname	= "bset",
 		.data		= &usermodehelper_bset,
@@ -559,12 +559,5 @@ static const struct ctl_table usermodehelper_table[] = {
 		.mode		= 0600,
 		.proc_handler	= proc_cap_handler,
 	},
+	{ }
 };
-
-static int __init init_umh_sysctls(void)
-{
-	register_sysctl_init("kernel/usermodehelper", usermodehelper_table);
-	return 0;
-}
-early_initcall(init_umh_sysctls);
-#endif /* CONFIG_SYSCTL */

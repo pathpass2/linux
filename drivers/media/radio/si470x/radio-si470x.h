@@ -26,7 +26,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-device.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 
 

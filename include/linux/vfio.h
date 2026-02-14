@@ -13,7 +13,6 @@
 #include <linux/mm.h>
 #include <linux/workqueue.h>
 #include <linux/poll.h>
-#include <linux/cdev.h>
 #include <uapi/linux/vfio.h>
 #include <linux/iova_bitmap.h>
 
@@ -21,7 +20,6 @@ struct kvm;
 struct iommufd_ctx;
 struct iommufd_device;
 struct iommufd_access;
-struct vfio_info_cap;
 
 /*
  * VFIO devices can be placed in a set, this allows all devices to share this
@@ -44,11 +42,7 @@ struct vfio_device {
 	 */
 	const struct vfio_migration_ops *mig_ops;
 	const struct vfio_log_ops *log_ops;
-#if IS_ENABLED(CONFIG_VFIO_GROUP)
 	struct vfio_group *group;
-	struct list_head group_next;
-	struct list_head iommu_entry;
-#endif
 	struct vfio_device_set *dev_set;
 	struct list_head dev_set_list;
 	unsigned int migration_flags;
@@ -57,44 +51,29 @@ struct vfio_device {
 	/* Members below here are private, not for driver use */
 	unsigned int index;
 	struct device device;	/* device.kref covers object life circle */
-#if IS_ENABLED(CONFIG_VFIO_DEVICE_CDEV)
-	struct cdev cdev;
-#endif
 	refcount_t refcount;	/* user count on registered device*/
 	unsigned int open_count;
 	struct completion comp;
+	struct list_head group_next;
+	struct list_head iommu_entry;
 	struct iommufd_access *iommufd_access;
 	void (*put_kvm)(struct kvm *kvm);
-	struct inode *inode;
 #if IS_ENABLED(CONFIG_IOMMUFD)
 	struct iommufd_device *iommufd_device;
-	struct ida pasids;
-	u8 iommufd_attached:1;
-#endif
-	u8 cdev_opened:1;
-#ifdef CONFIG_DEBUG_FS
-	/*
-	 * debug_root is a static property of the vfio_device
-	 * which must be set prior to registering the vfio_device.
-	 */
-	struct dentry *debug_root;
+	struct iommufd_ctx *iommufd_ictx;
+	bool iommufd_attached;
 #endif
 };
 
 /**
  * struct vfio_device_ops - VFIO bus driver device callbacks
  *
- * @name: Name of the device driver.
  * @init: initialize private fields in device structure
  * @release: Reclaim private fields in device structure
  * @bind_iommufd: Called when binding the device to an iommufd
  * @unbind_iommufd: Opposite of bind_iommufd
  * @attach_ioas: Called when attaching device to an IOAS/HWPT managed by the
- *		 bound iommufd. Undo in unbind_iommufd if @detach_ioas is not
- *		 called.
- * @detach_ioas: Opposite of attach_ioas
- * @pasid_attach_ioas: The pasid variation of attach_ioas
- * @pasid_detach_ioas: Opposite of pasid_attach_ioas
+ *		 bound iommufd. Undo in unbind_iommufd.
  * @open_device: Called when the first file descriptor is opened for this device
  * @close_device: Opposite of open_device
  * @read: Perform read(2) on device file descriptor
@@ -106,9 +85,6 @@ struct vfio_device {
  * @match: Optional device name match callback (return: 0 for no-match, >0 for
  *         match, -errno for abort (ex. match with insufficient or incorrect
  *         additional args)
- * @match_token_uuid: Optional device token match/validation. Return 0
- *         if the uuid is valid for the device, -errno otherwise. uuid is NULL
- *         if none was provided.
  * @dma_unmap: Called when userspace unmaps IOVA from the container
  *             this device is attached to.
  * @device_feature: Optional, fill in the VFIO_DEVICE_FEATURE ioctl
@@ -121,10 +97,6 @@ struct vfio_device_ops {
 				struct iommufd_ctx *ictx, u32 *out_device_id);
 	void	(*unbind_iommufd)(struct vfio_device *vdev);
 	int	(*attach_ioas)(struct vfio_device *vdev, u32 *pt_id);
-	void	(*detach_ioas)(struct vfio_device *vdev);
-	int	(*pasid_attach_ioas)(struct vfio_device *vdev, u32 pasid,
-				     u32 *pt_id);
-	void	(*pasid_detach_ioas)(struct vfio_device *vdev, u32 pasid);
 	int	(*open_device)(struct vfio_device *vdev);
 	void	(*close_device)(struct vfio_device *vdev);
 	ssize_t	(*read)(struct vfio_device *vdev, char __user *buf,
@@ -133,48 +105,24 @@ struct vfio_device_ops {
 			 size_t count, loff_t *size);
 	long	(*ioctl)(struct vfio_device *vdev, unsigned int cmd,
 			 unsigned long arg);
-	int	(*get_region_info_caps)(struct vfio_device *vdev,
-					struct vfio_region_info *info,
-					struct vfio_info_cap *caps);
 	int	(*mmap)(struct vfio_device *vdev, struct vm_area_struct *vma);
 	void	(*request)(struct vfio_device *vdev, unsigned int count);
 	int	(*match)(struct vfio_device *vdev, char *buf);
-	int	(*match_token_uuid)(struct vfio_device *vdev, const uuid_t *uuid);
 	void	(*dma_unmap)(struct vfio_device *vdev, u64 iova, u64 length);
 	int	(*device_feature)(struct vfio_device *device, u32 flags,
 				  void __user *arg, size_t argsz);
 };
 
 #if IS_ENABLED(CONFIG_IOMMUFD)
-struct iommufd_ctx *vfio_iommufd_device_ictx(struct vfio_device *vdev);
-int vfio_iommufd_get_dev_id(struct vfio_device *vdev, struct iommufd_ctx *ictx);
 int vfio_iommufd_physical_bind(struct vfio_device *vdev,
 			       struct iommufd_ctx *ictx, u32 *out_device_id);
 void vfio_iommufd_physical_unbind(struct vfio_device *vdev);
 int vfio_iommufd_physical_attach_ioas(struct vfio_device *vdev, u32 *pt_id);
-void vfio_iommufd_physical_detach_ioas(struct vfio_device *vdev);
-int vfio_iommufd_physical_pasid_attach_ioas(struct vfio_device *vdev,
-					    u32 pasid, u32 *pt_id);
-void vfio_iommufd_physical_pasid_detach_ioas(struct vfio_device *vdev,
-					     u32 pasid);
 int vfio_iommufd_emulated_bind(struct vfio_device *vdev,
 			       struct iommufd_ctx *ictx, u32 *out_device_id);
 void vfio_iommufd_emulated_unbind(struct vfio_device *vdev);
 int vfio_iommufd_emulated_attach_ioas(struct vfio_device *vdev, u32 *pt_id);
-void vfio_iommufd_emulated_detach_ioas(struct vfio_device *vdev);
 #else
-static inline struct iommufd_ctx *
-vfio_iommufd_device_ictx(struct vfio_device *vdev)
-{
-	return NULL;
-}
-
-static inline int
-vfio_iommufd_get_dev_id(struct vfio_device *vdev, struct iommufd_ctx *ictx)
-{
-	return VFIO_PCI_DEVID_NOT_OWNED;
-}
-
 #define vfio_iommufd_physical_bind                                      \
 	((int (*)(struct vfio_device *vdev, struct iommufd_ctx *ictx,   \
 		  u32 *out_device_id)) NULL)
@@ -182,12 +130,6 @@ vfio_iommufd_get_dev_id(struct vfio_device *vdev, struct iommufd_ctx *ictx)
 	((void (*)(struct vfio_device *vdev)) NULL)
 #define vfio_iommufd_physical_attach_ioas \
 	((int (*)(struct vfio_device *vdev, u32 *pt_id)) NULL)
-#define vfio_iommufd_physical_detach_ioas \
-	((void (*)(struct vfio_device *vdev)) NULL)
-#define vfio_iommufd_physical_pasid_attach_ioas \
-	((int (*)(struct vfio_device *vdev, u32 pasid, u32 *pt_id)) NULL)
-#define vfio_iommufd_physical_pasid_detach_ioas \
-	((void (*)(struct vfio_device *vdev, u32 pasid)) NULL)
 #define vfio_iommufd_emulated_bind                                      \
 	((int (*)(struct vfio_device *vdev, struct iommufd_ctx *ictx,   \
 		  u32 *out_device_id)) NULL)
@@ -195,18 +137,9 @@ vfio_iommufd_get_dev_id(struct vfio_device *vdev, struct iommufd_ctx *ictx)
 	((void (*)(struct vfio_device *vdev)) NULL)
 #define vfio_iommufd_emulated_attach_ioas \
 	((int (*)(struct vfio_device *vdev, u32 *pt_id)) NULL)
-#define vfio_iommufd_emulated_detach_ioas \
-	((void (*)(struct vfio_device *vdev)) NULL)
 #endif
 
-static inline bool vfio_device_cdev_opened(struct vfio_device *device)
-{
-	return device->cdev_opened;
-}
-
 /**
- * struct vfio_migration_ops - VFIO bus device driver migration callbacks
- *
  * @migration_set_state: Optional callback to change the migration state for
  *         devices that support migration. It's mandatory for
  *         VFIO_DEVICE_FEATURE_MIGRATION migration support.
@@ -232,8 +165,6 @@ struct vfio_migration_ops {
 };
 
 /**
- * struct vfio_log_ops - VFIO bus device driver logging callbacks
- *
  * @log_start: Optional callback to ask the device start DMA logging.
  * @log_stop: Optional callback to ask the device stop DMA logging.
  * @log_read_and_clear: Optional callback to ask the device read
@@ -301,45 +232,23 @@ static inline void vfio_put_device(struct vfio_device *device)
 int vfio_register_group_dev(struct vfio_device *device);
 int vfio_register_emulated_iommu_dev(struct vfio_device *device);
 void vfio_unregister_group_dev(struct vfio_device *device);
-bool vfio_device_try_get_registration(struct vfio_device *device);
-void vfio_device_put_registration(struct vfio_device *device);
 
 int vfio_assign_device_set(struct vfio_device *device, void *set_id);
 unsigned int vfio_device_set_open_count(struct vfio_device_set *dev_set);
-struct vfio_device *
-vfio_find_device_in_devset(struct vfio_device_set *dev_set,
-			   struct device *dev);
 
 int vfio_mig_get_next_state(struct vfio_device *device,
 			    enum vfio_device_mig_state cur_fsm,
 			    enum vfio_device_mig_state new_fsm,
 			    enum vfio_device_mig_state *next_fsm);
 
-void vfio_combine_iova_ranges(struct rb_root_cached *root, u32 cur_nodes,
-			      u32 req_nodes);
-
 /*
  * External user API
  */
 struct iommu_group *vfio_file_iommu_group(struct file *file);
-
-#if IS_ENABLED(CONFIG_VFIO_GROUP)
 bool vfio_file_is_group(struct file *file);
-bool vfio_file_has_dev(struct file *file, struct vfio_device *device);
-#else
-static inline bool vfio_file_is_group(struct file *file)
-{
-	return false;
-}
-
-static inline bool vfio_file_has_dev(struct file *file, struct vfio_device *device)
-{
-	return false;
-}
-#endif
-bool vfio_file_is_valid(struct file *file);
 bool vfio_file_enforced_coherent(struct file *file);
 void vfio_file_set_kvm(struct file *file, struct kvm *kvm);
+bool vfio_file_has_dev(struct file *file, struct vfio_device *device);
 
 #define VFIO_PIN_PAGES_MAX_ENTRIES	(PAGE_SIZE/sizeof(unsigned long))
 
@@ -381,7 +290,6 @@ struct virqfd {
 	wait_queue_entry_t		wait;
 	poll_table		pt;
 	struct work_struct	shutdown;
-	struct work_struct	flush_inject;
 	struct virqfd		**pvirqfd;
 };
 
@@ -389,6 +297,5 @@ int vfio_virqfd_enable(void *opaque, int (*handler)(void *, void *),
 		       void (*thread)(void *, void *), void *data,
 		       struct virqfd **pvirqfd, int fd);
 void vfio_virqfd_disable(struct virqfd **pvirqfd);
-void vfio_virqfd_flush_thread(struct virqfd **pvirqfd);
 
 #endif /* VFIO_H */

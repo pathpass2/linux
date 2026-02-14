@@ -368,13 +368,13 @@ static const struct snd_kcontrol_new nau8824_snd_controls[] = {
 	SOC_ENUM("DAC Oversampling Rate", nau8824_dac_oversampl_enum),
 
 	SOC_SINGLE_TLV("Speaker Right DACR Volume",
-		NAU8824_REG_CLASSD_GAIN_1, 8, 0x19, 0, spk_vol_tlv),
+		NAU8824_REG_CLASSD_GAIN_1, 8, 0x1f, 0, spk_vol_tlv),
 	SOC_SINGLE_TLV("Speaker Left DACL Volume",
-		NAU8824_REG_CLASSD_GAIN_2, 0, 0x19, 0, spk_vol_tlv),
+		NAU8824_REG_CLASSD_GAIN_2, 0, 0x1f, 0, spk_vol_tlv),
 	SOC_SINGLE_TLV("Speaker Left DACR Volume",
-		NAU8824_REG_CLASSD_GAIN_1, 0, 0x19, 0, spk_vol_tlv),
+		NAU8824_REG_CLASSD_GAIN_1, 0, 0x1f, 0, spk_vol_tlv),
 	SOC_SINGLE_TLV("Speaker Right DACL Volume",
-		NAU8824_REG_CLASSD_GAIN_2, 8, 0x19, 0, spk_vol_tlv),
+		NAU8824_REG_CLASSD_GAIN_2, 8, 0x1f, 0, spk_vol_tlv),
 
 	SOC_SINGLE_TLV("Headphone Right DACR Volume",
 		NAU8824_REG_ATT_PORT0, 8, 0x1f, 0, hp_vol_tlv),
@@ -506,7 +506,6 @@ static int system_clock_control(struct snd_soc_dapm_widget *w,
 	struct regmap *regmap = nau8824->regmap;
 	unsigned int value;
 	bool clk_fll, error;
-	int ret;
 
 	if (SND_SOC_DAPM_EVENT_OFF(event)) {
 		dev_dbg(nau8824->dev, "system clock control : POWER OFF\n");
@@ -521,15 +520,8 @@ static int system_clock_control(struct snd_soc_dapm_widget *w,
 		} else {
 			nau8824_config_sysclk(nau8824, NAU8824_CLK_DIS, 0);
 		}
-
-		clk_disable_unprepare(nau8824->mclk);
 	} else {
 		dev_dbg(nau8824->dev, "system clock control : POWER ON\n");
-
-		ret = clk_prepare_enable(nau8824->mclk);
-		if (ret)
-			return ret;
-
 		/* Check the clock source setting is proper or not
 		 * no matter the source is from FLL or MCLK.
 		 */
@@ -571,21 +563,16 @@ static int dmic_clock_control(struct snd_soc_dapm_widget *w,
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
 	struct nau8824 *nau8824 = snd_soc_component_get_drvdata(component);
 	int src;
-	unsigned int freq;
-
-	freq = clk_get_rate(nau8824->mclk);
-	if (!freq)
-		freq = nau8824->fs * 256;
 
 	/* The DMIC clock is gotten from system clock (256fs) divided by
 	 * DMIC_SRC (1, 2, 4, 8, 16, 32). The clock has to be equal or
 	 * less than 3.072 MHz.
 	 */
 	for (src = 0; src < 5; src++) {
-		if (freq / (0x1 << src) <= DMIC_CLK)
+		if ((0x1 << (8 - src)) * nau8824->fs <= DMIC_CLK)
 			break;
 	}
-	dev_dbg(nau8824->dev, "dmic src %d for mclk %d\n", src, freq);
+	dev_dbg(nau8824->dev, "dmic src %d for mclk %d\n", src, nau8824->fs * 256);
 	regmap_update_bits(nau8824->regmap, NAU8824_REG_CLK_DIVIDER,
 		NAU8824_CLK_DMIC_SRC_MASK, (src << NAU8824_CLK_DMIC_SRC_SFT));
 
@@ -876,7 +863,7 @@ static void nau8824_eject_jack(struct nau8824 *nau8824)
 		NAU8824_JD_SLEEP_MODE, NAU8824_JD_SLEEP_MODE);
 
 	/* Close clock for jack type detection at manual mode */
-	if (snd_soc_dapm_get_bias_level(dapm) < SND_SOC_BIAS_PREPARE)
+	if (dapm->bias_level < SND_SOC_BIAS_PREPARE)
 		nau8824_config_sysclk(nau8824, NAU8824_CLK_DIS, 0);
 }
 
@@ -931,7 +918,7 @@ static void nau8824_setup_auto_irq(struct nau8824 *nau8824)
 	regmap_update_bits(regmap, NAU8824_REG_INTERRUPT_SETTING,
 		NAU8824_IRQ_EJECT_DIS, 0);
 	/* Enable internal VCO needed for interruptions */
-	if (snd_soc_dapm_get_bias_level(nau8824->dapm) < SND_SOC_BIAS_PREPARE)
+	if (nau8824->dapm->bias_level < SND_SOC_BIAS_PREPARE)
 		nau8824_config_sysclk(nau8824, NAU8824_CLK_INTERNAL, 0);
 	regmap_update_bits(regmap, NAU8824_REG_ENA_CTRL,
 		NAU8824_JD_SLEEP_MODE, 0);
@@ -1159,10 +1146,10 @@ static int nau8824_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int ctrl1_val = 0, ctrl2_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		ctrl2_val |= NAU8824_I2S_MS_MASTER;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		break;
 	default:
 		return -EINVAL;
@@ -1498,7 +1485,7 @@ static int nau8824_set_bias_level(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(nau8824->dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			/* Setup codec configuration after resume */
 			nau8824_resume_setup(nau8824);
 		}
@@ -1519,7 +1506,7 @@ static int nau8824_set_bias_level(struct snd_soc_component *component,
 static int nau8824_component_probe(struct snd_soc_component *component)
 {
 	struct nau8824 *nau8824 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 
 	nau8824->dapm = dapm;
 
@@ -1532,7 +1519,7 @@ static int __maybe_unused nau8824_suspend(struct snd_soc_component *component)
 
 	if (nau8824->irq) {
 		disable_irq(nau8824->irq);
-		snd_soc_dapm_force_bias_level(nau8824->dapm, SND_SOC_BIAS_OFF);
+		snd_soc_component_force_bias_level(component, SND_SOC_BIAS_OFF);
 	}
 	regcache_cache_only(nau8824->regmap, true);
 	regcache_mark_dirty(nau8824->regmap);
@@ -1884,10 +1871,6 @@ static int nau8824_read_device_properties(struct device *dev,
 	if (ret)
 		nau8824->jack_eject_debounce = 1;
 
-	nau8824->mclk = devm_clk_get_optional(dev, "mclk");
-	if (IS_ERR(nau8824->mclk))
-		return PTR_ERR(nau8824->mclk);
-
 	return 0;
 }
 
@@ -1919,30 +1902,6 @@ static const struct dmi_system_id nau8824_quirk_table[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "W2S"),
 		},
 		.driver_data = (void *)(NAU8824_MONO_SPEAKER),
-	},
-	{
-		/* Positivo CW14Q01P */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Positivo Tecnologia SA"),
-			DMI_MATCH(DMI_BOARD_NAME, "CW14Q01P"),
-		},
-		.driver_data = (void *)(NAU8824_JD_ACTIVE_HIGH),
-	},
-	{
-		/* Positivo K1424G */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Positivo Tecnologia SA"),
-			DMI_MATCH(DMI_BOARD_NAME, "K1424G"),
-		},
-		.driver_data = (void *)(NAU8824_JD_ACTIVE_HIGH),
-	},
-	{
-		/* Positivo N14ZP74G */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Positivo Tecnologia SA"),
-			DMI_MATCH(DMI_BOARD_NAME, "N14ZP74G"),
-		},
-		.driver_data = (void *)(NAU8824_JD_ACTIVE_HIGH),
 	},
 	{}
 };
@@ -2020,7 +1979,7 @@ static int nau8824_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id nau8824_i2c_ids[] = {
-	{ "nau8824" },
+	{ "nau8824", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, nau8824_i2c_ids);
@@ -2047,7 +2006,7 @@ static struct i2c_driver nau8824_i2c_driver = {
 		.of_match_table = of_match_ptr(nau8824_of_ids),
 		.acpi_match_table = ACPI_PTR(nau8824_acpi_match),
 	},
-	.probe = nau8824_i2c_probe,
+	.probe_new = nau8824_i2c_probe,
 	.id_table = nau8824_i2c_ids,
 };
 module_i2c_driver(nau8824_i2c_driver);

@@ -16,7 +16,7 @@
 #include <unistd.h>
 #include <string.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 
 #define MAP_SIZE_MB	100
 #define MAP_SIZE	(MAP_SIZE_MB * 1024 * 1024)
@@ -33,7 +33,7 @@ int read_memory_info(unsigned long *memfree, unsigned long *hugepagesize)
 	FILE *cmdfile = popen(cmd, "r");
 
 	if (!(fgets(buffer, sizeof(buffer), cmdfile))) {
-		ksft_print_msg("Failed to read meminfo: %s\n", strerror(errno));
+		perror("Failed to read meminfo\n");
 		return -1;
 	}
 
@@ -44,7 +44,7 @@ int read_memory_info(unsigned long *memfree, unsigned long *hugepagesize)
 	cmdfile = popen(cmd, "r");
 
 	if (!(fgets(buffer, sizeof(buffer), cmdfile))) {
-		ksft_print_msg("Failed to read meminfo: %s\n", strerror(errno));
+		perror("Failed to read meminfo\n");
 		return -1;
 	}
 
@@ -62,14 +62,14 @@ int prereq(void)
 	fd = open("/proc/sys/vm/compact_unevictable_allowed",
 		  O_RDONLY | O_NONBLOCK);
 	if (fd < 0) {
-		ksft_print_msg("Failed to open /proc/sys/vm/compact_unevictable_allowed: %s\n",
-			       strerror(errno));
+		perror("Failed to open\n"
+		       "/proc/sys/vm/compact_unevictable_allowed\n");
 		return -1;
 	}
 
 	if (read(fd, &allowed, sizeof(char)) != sizeof(char)) {
-		ksft_print_msg("Failed to read from /proc/sys/vm/compact_unevictable_allowed: %s\n",
-			       strerror(errno));
+		perror("Failed to read from\n"
+		       "/proc/sys/vm/compact_unevictable_allowed\n");
 		close(fd);
 		return -1;
 	}
@@ -78,23 +78,15 @@ int prereq(void)
 	if (allowed == '1')
 		return 0;
 
-	ksft_print_msg("Compaction isn't allowed\n");
 	return -1;
 }
 
-int check_compaction(unsigned long mem_free, unsigned long hugepage_size,
-		     unsigned long initial_nr_hugepages)
+int check_compaction(unsigned long mem_free, unsigned int hugepage_size)
 {
-	unsigned long nr_hugepages_ul;
-	int fd, ret = -1;
+	int fd;
 	int compaction_index = 0;
-	char nr_hugepages[20] = {0};
-	char init_nr_hugepages[24] = {0};
-	char target_nr_hugepages[24] = {0};
-	int slen;
-
-	snprintf(init_nr_hugepages, sizeof(init_nr_hugepages),
-		 "%lu", initial_nr_hugepages);
+	char initial_nr_hugepages[10] = {0};
+	char nr_hugepages[10] = {0};
 
 	/* We want to test with 80% of available memory. Else, OOM killer comes
 	   in to play */
@@ -102,138 +94,102 @@ int check_compaction(unsigned long mem_free, unsigned long hugepage_size,
 
 	fd = open("/proc/sys/vm/nr_hugepages", O_RDWR | O_NONBLOCK);
 	if (fd < 0) {
-		ksft_print_msg("Failed to open /proc/sys/vm/nr_hugepages: %s\n",
-			       strerror(errno));
-		ret = -1;
-		goto out;
+		perror("Failed to open /proc/sys/vm/nr_hugepages");
+		return -1;
 	}
 
-	/*
-	 * Request huge pages for about half of the free memory. The Kernel
-	 * will allocate as much as it can, and we expect it will get at least 1/3
-	 */
-	nr_hugepages_ul = mem_free / hugepage_size / 2;
-	snprintf(target_nr_hugepages, sizeof(target_nr_hugepages),
-		 "%lu", nr_hugepages_ul);
+	if (read(fd, initial_nr_hugepages, sizeof(initial_nr_hugepages)) <= 0) {
+		perror("Failed to read from /proc/sys/vm/nr_hugepages");
+		goto close_fd;
+	}
 
-	slen = strlen(target_nr_hugepages);
-	if (write(fd, target_nr_hugepages, slen) != slen) {
-		ksft_print_msg("Failed to write %lu to /proc/sys/vm/nr_hugepages: %s\n",
-			       nr_hugepages_ul, strerror(errno));
+	/* Start with the initial condition of 0 huge pages*/
+	if (write(fd, "0", sizeof(char)) != sizeof(char)) {
+		perror("Failed to write 0 to /proc/sys/vm/nr_hugepages\n");
+		goto close_fd;
+	}
+
+	lseek(fd, 0, SEEK_SET);
+
+	/* Request a large number of huge pages. The Kernel will allocate
+	   as much as it can */
+	if (write(fd, "100000", (6*sizeof(char))) != (6*sizeof(char))) {
+		perror("Failed to write 100000 to /proc/sys/vm/nr_hugepages\n");
 		goto close_fd;
 	}
 
 	lseek(fd, 0, SEEK_SET);
 
 	if (read(fd, nr_hugepages, sizeof(nr_hugepages)) <= 0) {
-		ksft_print_msg("Failed to re-read from /proc/sys/vm/nr_hugepages: %s\n",
-			       strerror(errno));
+		perror("Failed to re-read from /proc/sys/vm/nr_hugepages\n");
 		goto close_fd;
 	}
 
 	/* We should have been able to request at least 1/3 rd of the memory in
 	   huge pages */
-	nr_hugepages_ul = strtoul(nr_hugepages, NULL, 10);
-	if (!nr_hugepages_ul) {
-		ksft_print_msg("ERROR: No memory is available as huge pages\n");
-		goto close_fd;
-	}
-	compaction_index = mem_free/(nr_hugepages_ul * hugepage_size);
-
-	lseek(fd, 0, SEEK_SET);
-
-	if (write(fd, init_nr_hugepages, strlen(init_nr_hugepages))
-	    != strlen(init_nr_hugepages)) {
-		ksft_print_msg("Failed to write value to /proc/sys/vm/nr_hugepages: %s\n",
-			       strerror(errno));
-		goto close_fd;
-	}
-
-	ksft_print_msg("Number of huge pages allocated = %lu\n",
-		       nr_hugepages_ul);
+	compaction_index = mem_free/(atoi(nr_hugepages) * hugepage_size);
 
 	if (compaction_index > 3) {
-		ksft_print_msg("ERROR: Less than 1/%d of memory is available\n"
-			       "as huge pages\n", compaction_index);
+		printf("No of huge pages allocated = %d\n",
+		       (atoi(nr_hugepages)));
+		fprintf(stderr, "ERROR: Less that 1/%d of memory is available\n"
+			"as huge pages\n", compaction_index);
 		goto close_fd;
 	}
 
-	ret = 0;
-
- close_fd:
-	close(fd);
- out:
-	ksft_test_result(ret == 0, "check_compaction\n");
-	return ret;
-}
-
-int set_zero_hugepages(unsigned long *initial_nr_hugepages)
-{
-	int fd, ret = -1;
-	char nr_hugepages[20] = {0};
-
-	fd = open("/proc/sys/vm/nr_hugepages", O_RDWR | O_NONBLOCK);
-	if (fd < 0) {
-		ksft_print_msg("Failed to open /proc/sys/vm/nr_hugepages: %s\n",
-			       strerror(errno));
-		goto out;
-	}
-	if (read(fd, nr_hugepages, sizeof(nr_hugepages)) <= 0) {
-		ksft_print_msg("Failed to read from /proc/sys/vm/nr_hugepages: %s\n",
-			       strerror(errno));
-		goto close_fd;
-	}
+	printf("No of huge pages allocated = %d\n",
+	       (atoi(nr_hugepages)));
 
 	lseek(fd, 0, SEEK_SET);
 
-	/* Start with the initial condition of 0 huge pages */
-	if (write(fd, "0", sizeof(char)) != sizeof(char)) {
-		ksft_print_msg("Failed to write 0 to /proc/sys/vm/nr_hugepages: %s\n",
-			       strerror(errno));
+	if (write(fd, initial_nr_hugepages, strlen(initial_nr_hugepages))
+	    != strlen(initial_nr_hugepages)) {
+		perror("Failed to write value to /proc/sys/vm/nr_hugepages\n");
 		goto close_fd;
 	}
 
-	*initial_nr_hugepages = strtoul(nr_hugepages, NULL, 10);
-	ret = 0;
+	close(fd);
+	return 0;
 
  close_fd:
 	close(fd);
-
- out:
-	return ret;
+	printf("Not OK. Compaction test failed.");
+	return -1;
 }
+
 
 int main(int argc, char **argv)
 {
 	struct rlimit lim;
-	struct map_list *list = NULL, *entry;
+	struct map_list *list, *entry;
 	size_t page_size, i;
 	void *map = NULL;
 	unsigned long mem_free = 0;
 	unsigned long hugepage_size = 0;
 	long mem_fragmentable_MB = 0;
-	unsigned long initial_nr_hugepages;
 
-	ksft_print_header();
-
-	if (prereq() || geteuid())
-		ksft_exit_skip("Prerequisites unsatisfied\n");
-
-	ksft_set_plan(1);
-
-	/* Start the test without hugepages reducing mem_free */
-	if (set_zero_hugepages(&initial_nr_hugepages))
-		ksft_exit_fail();
+	if (prereq() != 0) {
+		printf("Either the sysctl compact_unevictable_allowed is not\n"
+		       "set to 1 or couldn't read the proc file.\n"
+		       "Skipping the test\n");
+		return KSFT_SKIP;
+	}
 
 	lim.rlim_cur = RLIM_INFINITY;
 	lim.rlim_max = RLIM_INFINITY;
-	if (setrlimit(RLIMIT_MEMLOCK, &lim))
-		ksft_exit_fail_msg("Failed to set rlimit: %s\n", strerror(errno));
+	if (setrlimit(RLIMIT_MEMLOCK, &lim)) {
+		perror("Failed to set rlimit:\n");
+		return -1;
+	}
 
 	page_size = getpagesize();
 
-	if (read_memory_info(&mem_free, &hugepage_size) != 0)
-		ksft_exit_fail_msg("Failed to get meminfo\n");
+	list = NULL;
+
+	if (read_memory_info(&mem_free, &hugepage_size) != 0) {
+		printf("ERROR: Cannot read meminfo\n");
+		return -1;
+	}
 
 	mem_fragmentable_MB = mem_free * 0.8 / 1024;
 
@@ -268,9 +224,8 @@ int main(int argc, char **argv)
 		entry = entry->next;
 	}
 
-	if (check_compaction(mem_free, hugepage_size,
-			     initial_nr_hugepages) == 0)
-		ksft_exit_pass();
+	if (check_compaction(mem_free, hugepage_size) == 0)
+		return 0;
 
-	ksft_exit_fail();
+	return -1;
 }

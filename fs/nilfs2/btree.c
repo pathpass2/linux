@@ -63,8 +63,8 @@ static int nilfs_btree_get_new_block(const struct nilfs_bmap *btree,
 	struct buffer_head *bh;
 
 	bh = nilfs_btnode_create_block(btnc, ptr);
-	if (IS_ERR(bh))
-		return PTR_ERR(bh);
+	if (!bh)
+		return -ENOMEM;
 
 	set_buffer_nilfs_volatile(bh);
 	*bhp = bh;
@@ -334,7 +334,7 @@ static int nilfs_btree_node_lookup(const struct nilfs_btree_node *node,
  * @inode: host inode of btree
  * @blocknr: block number
  *
- * Return: 0 if normal, 1 if the node is broken.
+ * Return Value: If node is broken, 1 is returned. Otherwise, 0 is returned.
  */
 static int nilfs_btree_node_broken(const struct nilfs_btree_node *node,
 				   size_t size, struct inode *inode,
@@ -350,7 +350,7 @@ static int nilfs_btree_node_broken(const struct nilfs_btree_node *node,
 	if (unlikely(level < NILFS_BTREE_LEVEL_NODE_MIN ||
 		     level >= NILFS_BTREE_LEVEL_MAX ||
 		     (flags & NILFS_BTREE_NODE_ROOT) ||
-		     nchildren <= 0 ||
+		     nchildren < 0 ||
 		     nchildren > NILFS_BTREE_NODE_NCHILDREN_MAX(size))) {
 		nilfs_crit(inode->i_sb,
 			   "bad btree node (ino=%lu, blocknr=%llu): level = %d, flags = 0x%x, nchildren = %d",
@@ -366,7 +366,7 @@ static int nilfs_btree_node_broken(const struct nilfs_btree_node *node,
  * @node: btree root node to be examined
  * @inode: host inode of btree
  *
- * Return: 0 if normal, 1 if the root node is broken.
+ * Return Value: If node is broken, 1 is returned. Otherwise, 0 is returned.
  */
 static int nilfs_btree_root_broken(const struct nilfs_btree_node *node,
 				   struct inode *inode)
@@ -381,8 +381,7 @@ static int nilfs_btree_root_broken(const struct nilfs_btree_node *node,
 	if (unlikely(level < NILFS_BTREE_LEVEL_NODE_MIN ||
 		     level >= NILFS_BTREE_LEVEL_MAX ||
 		     nchildren < 0 ||
-		     nchildren > NILFS_BTREE_ROOT_NCHILDREN_MAX ||
-		     (nchildren == 0 && level > NILFS_BTREE_LEVEL_NODE_MIN))) {
+		     nchildren > NILFS_BTREE_ROOT_NCHILDREN_MAX)) {
 		nilfs_crit(inode->i_sb,
 			   "bad btree root (ino=%lu): level = %d, flags = 0x%x, nchildren = %d",
 			   inode->i_ino, level, flags, nchildren);
@@ -652,7 +651,8 @@ static int nilfs_btree_do_lookup_last(const struct nilfs_bmap *btree,
  * @minlevel: start level
  * @nextkey: place to store the next valid key
  *
- * Return: 0 if the next key was found, %-ENOENT if not found.
+ * Return Value: If a next key was found, 0 is returned. Otherwise,
+ * -ENOENT is returned.
  */
 static int nilfs_btree_get_next_key(const struct nilfs_bmap *btree,
 				    const struct nilfs_btree_path *path,
@@ -724,7 +724,7 @@ static int nilfs_btree_lookup_contig(const struct nilfs_bmap *btree,
 		dat = nilfs_bmap_get_dat(btree);
 		ret = nilfs_dat_translate(dat, ptr, &blocknr);
 		if (ret < 0)
-			goto dat_error;
+			goto out;
 		ptr = blocknr;
 	}
 	cnt = 1;
@@ -743,7 +743,7 @@ static int nilfs_btree_lookup_contig(const struct nilfs_bmap *btree,
 			if (dat) {
 				ret = nilfs_dat_translate(dat, ptr2, &blocknr);
 				if (ret < 0)
-					goto dat_error;
+					goto out;
 				ptr2 = blocknr;
 			}
 			if (ptr2 != ptr + cnt || ++cnt == maxblocks)
@@ -781,11 +781,6 @@ static int nilfs_btree_lookup_contig(const struct nilfs_bmap *btree,
  out:
 	nilfs_btree_free_path(path);
 	return ret;
-
- dat_error:
-	if (ret == -ENOENT)
-		ret = -EINVAL;  /* Notify bmap layer of metadata corruption */
-	goto out;
 }
 
 static void nilfs_btree_promote_key(struct nilfs_bmap *btree,
@@ -1658,16 +1653,13 @@ static int nilfs_btree_check_delete(struct nilfs_bmap *btree, __u64 key)
 	int nchildren, ret;
 
 	root = nilfs_btree_get_root(btree);
-	nchildren = nilfs_btree_node_get_nchildren(root);
-	if (unlikely(nchildren == 0))
-		return 0;
-
 	switch (nilfs_btree_height(btree)) {
 	case 2:
 		bh = NULL;
 		node = root;
 		break;
 	case 3:
+		nchildren = nilfs_btree_node_get_nchildren(root);
 		if (nchildren > 1)
 			return 0;
 		ptr = nilfs_btree_node_get_ptr(root, nchildren - 1,
@@ -1676,12 +1668,12 @@ static int nilfs_btree_check_delete(struct nilfs_bmap *btree, __u64 key)
 		if (ret < 0)
 			return ret;
 		node = (struct nilfs_btree_node *)bh->b_data;
-		nchildren = nilfs_btree_node_get_nchildren(node);
 		break;
 	default:
 		return 0;
 	}
 
+	nchildren = nilfs_btree_node_get_nchildren(node);
 	maxkey = nilfs_btree_node_get_key(node, nchildren - 1);
 	nextmaxkey = (nchildren > 1) ?
 		nilfs_btree_node_get_key(node, nchildren - 2) : 0;
@@ -1860,22 +1852,13 @@ nilfs_btree_commit_convert_and_insert(struct nilfs_bmap *btree,
 }
 
 /**
- * nilfs_btree_convert_and_insert - Convert and insert entries into a B-tree
- * @btree: NILFS B-tree structure
- * @key: Key of the new entry to be inserted
- * @ptr: Pointer (block number) associated with the key to be inserted
- * @keys: Array of keys to be inserted in addition to @key
- * @ptrs: Array of pointers associated with @keys
- * @n: Number of keys and pointers in @keys and @ptrs
- *
- * This function is used to insert a new entry specified by @key and @ptr,
- * along with additional entries specified by @keys and @ptrs arrays, into a
- * NILFS B-tree.
- * It prepares the necessary changes by allocating the required blocks and any
- * necessary intermediate nodes. It converts configurations from other forms of
- * block mapping (the one that currently exists is direct mapping) to a B-tree.
- *
- * Return: 0 on success or a negative error code on failure.
+ * nilfs_btree_convert_and_insert -
+ * @bmap:
+ * @key:
+ * @ptr:
+ * @keys:
+ * @ptrs:
+ * @n:
  */
 int nilfs_btree_convert_and_insert(struct nilfs_bmap *btree,
 				   __u64 key, __u64 ptr,
@@ -2102,13 +2085,11 @@ static int nilfs_btree_propagate(struct nilfs_bmap *btree,
 
 	ret = nilfs_btree_do_lookup(btree, path, key, NULL, level + 1, 0);
 	if (ret < 0) {
-		if (unlikely(ret == -ENOENT)) {
+		if (unlikely(ret == -ENOENT))
 			nilfs_crit(btree->b_inode->i_sb,
 				   "writing node/leaf block does not appear in b-tree (ino=%lu) at key=%llu, level=%d",
 				   btree->b_inode->i_ino,
 				   (unsigned long long)key, level);
-			ret = -EINVAL;
-		}
 		goto out;
 	}
 
@@ -2238,7 +2219,6 @@ static int nilfs_btree_assign_p(struct nilfs_bmap *btree,
 	/* on-disk format */
 	binfo->bi_dat.bi_blkoff = cpu_to_le64(key);
 	binfo->bi_dat.bi_level = level;
-	memset(binfo->bi_dat.bi_pad, 0, sizeof(binfo->bi_dat.bi_pad));
 
 	return 0;
 }

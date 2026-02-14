@@ -13,6 +13,7 @@
 #include "filetable.h"
 #include "msg_ring.h"
 
+
 /* All valid masks for MSG_RING */
 #define IORING_MSG_RING_MASK		(IORING_MSG_RING_CQE_SKIP | \
 					IORING_MSG_RING_FLAGS_PASS)
@@ -37,8 +38,8 @@ static void io_double_unlock_ctx(struct io_ring_ctx *octx)
 	mutex_unlock(&octx->uring_lock);
 }
 
-static int io_lock_external_ctx(struct io_ring_ctx *octx,
-				unsigned int issue_flags)
+static int io_double_lock_ctx(struct io_ring_ctx *octx,
+			      unsigned int issue_flags)
 {
 	/*
 	 * To ensure proper ordering between the two ctxs, we can only
@@ -67,52 +68,65 @@ void io_msg_ring_cleanup(struct io_kiocb *req)
 
 static inline bool io_msg_need_remote(struct io_ring_ctx *target_ctx)
 {
-	return target_ctx->task_complete;
+	if (!target_ctx->task_complete)
+		return false;
+	return current != target_ctx->submitter_task;
 }
 
-static void io_msg_tw_complete(struct io_tw_req tw_req, io_tw_token_t tw)
+static int io_msg_exec_remote(struct io_kiocb *req, task_work_func_t func)
 {
-	struct io_kiocb *req = tw_req.req;
-	struct io_ring_ctx *ctx = req->ctx;
+	struct io_ring_ctx *ctx = req->file->private_data;
+	struct io_msg *msg = io_kiocb_to_cmd(req, struct io_msg);
+	struct task_struct *task = READ_ONCE(ctx->submitter_task);
 
-	io_add_aux_cqe(ctx, req->cqe.user_data, req->cqe.res, req->cqe.flags);
-	kfree_rcu(req, rcu_head);
-	percpu_ref_put(&ctx->refs);
+	if (unlikely(!task))
+		return -EOWNERDEAD;
+
+	init_task_work(&msg->tw, func);
+	if (task_work_add(ctx->submitter_task, &msg->tw, TWA_SIGNAL))
+		return -EOWNERDEAD;
+
+	return IOU_ISSUE_SKIP_COMPLETE;
 }
 
-static void io_msg_remote_post(struct io_ring_ctx *ctx, struct io_kiocb *req,
-			      int res, u32 cflags, u64 user_data)
+static void io_msg_tw_complete(struct callback_head *head)
 {
-	req->opcode = IORING_OP_NOP;
-	req->cqe.user_data = user_data;
-	io_req_set_res(req, res, cflags);
-	percpu_ref_get(&ctx->refs);
-	req->ctx = ctx;
-	req->tctx = NULL;
-	req->io_task_work.func = io_msg_tw_complete;
-	io_req_task_work_add_remote(req, IOU_F_TWQ_LAZY_WAKE);
+	struct io_msg *msg = container_of(head, struct io_msg, tw);
+	struct io_kiocb *req = cmd_to_io_kiocb(msg);
+	struct io_ring_ctx *target_ctx = req->file->private_data;
+	int ret = 0;
+
+	if (current->flags & PF_EXITING) {
+		ret = -EOWNERDEAD;
+	} else {
+		u32 flags = 0;
+
+		if (msg->flags & IORING_MSG_RING_FLAGS_PASS)
+			flags = msg->cqe_flags;
+
+		/*
+		 * If the target ring is using IOPOLL mode, then we need to be
+		 * holding the uring_lock for posting completions. Other ring
+		 * types rely on the regular completion locking, which is
+		 * handled while posting.
+		 */
+		if (target_ctx->flags & IORING_SETUP_IOPOLL)
+			mutex_lock(&target_ctx->uring_lock);
+		if (!io_post_aux_cqe(target_ctx, msg->user_data, msg->len, flags))
+			ret = -EOVERFLOW;
+		if (target_ctx->flags & IORING_SETUP_IOPOLL)
+			mutex_unlock(&target_ctx->uring_lock);
+	}
+
+	if (ret < 0)
+		req_set_fail(req);
+	io_req_queue_tw_complete(req, ret);
 }
 
-static int io_msg_data_remote(struct io_ring_ctx *target_ctx,
-			      struct io_msg *msg)
+static int io_msg_ring_data(struct io_kiocb *req, unsigned int issue_flags)
 {
-	struct io_kiocb *target;
-	u32 flags = 0;
-
-	target = kmem_cache_alloc(req_cachep, GFP_KERNEL | __GFP_NOWARN | __GFP_ZERO)  ;
-	if (unlikely(!target))
-		return -ENOMEM;
-
-	if (msg->flags & IORING_MSG_RING_FLAGS_PASS)
-		flags = msg->cqe_flags;
-
-	io_msg_remote_post(target_ctx, target, msg->len, flags, msg->user_data);
-	return 0;
-}
-
-static int __io_msg_ring_data(struct io_ring_ctx *target_ctx,
-			      struct io_msg *msg, unsigned int issue_flags)
-{
+	struct io_ring_ctx *target_ctx = req->file->private_data;
+	struct io_msg *msg = io_kiocb_to_cmd(req, struct io_msg);
 	u32 flags = 0;
 	int ret;
 
@@ -120,57 +134,47 @@ static int __io_msg_ring_data(struct io_ring_ctx *target_ctx,
 		return -EINVAL;
 	if (!(msg->flags & IORING_MSG_RING_FLAGS_PASS) && msg->dst_fd)
 		return -EINVAL;
-	/*
-	 * Keep IORING_SETUP_R_DISABLED check before submitter_task load
-	 * in io_msg_data_remote() -> io_req_task_work_add_remote()
-	 */
-	if (smp_load_acquire(&target_ctx->flags) & IORING_SETUP_R_DISABLED)
+	if (target_ctx->flags & IORING_SETUP_R_DISABLED)
 		return -EBADFD;
 
 	if (io_msg_need_remote(target_ctx))
-		return io_msg_data_remote(target_ctx, msg);
+		return io_msg_exec_remote(req, io_msg_tw_complete);
 
 	if (msg->flags & IORING_MSG_RING_FLAGS_PASS)
 		flags = msg->cqe_flags;
 
 	ret = -EOVERFLOW;
 	if (target_ctx->flags & IORING_SETUP_IOPOLL) {
-		if (unlikely(io_lock_external_ctx(target_ctx, issue_flags)))
+		if (unlikely(io_double_lock_ctx(target_ctx, issue_flags)))
 			return -EAGAIN;
-	}
-	if (io_post_aux_cqe(target_ctx, msg->user_data, msg->len, flags))
-		ret = 0;
-	if (target_ctx->flags & IORING_SETUP_IOPOLL)
+		if (io_post_aux_cqe(target_ctx, msg->user_data, msg->len, flags))
+			ret = 0;
 		io_double_unlock_ctx(target_ctx);
+	} else {
+		if (io_post_aux_cqe(target_ctx, msg->user_data, msg->len, flags))
+			ret = 0;
+	}
 	return ret;
 }
 
-static int io_msg_ring_data(struct io_kiocb *req, unsigned int issue_flags)
-{
-	struct io_ring_ctx *target_ctx = req->file->private_data;
-	struct io_msg *msg = io_kiocb_to_cmd(req, struct io_msg);
-
-	return __io_msg_ring_data(target_ctx, msg, issue_flags);
-}
-
-static int io_msg_grab_file(struct io_kiocb *req, unsigned int issue_flags)
+static struct file *io_msg_grab_file(struct io_kiocb *req, unsigned int issue_flags)
 {
 	struct io_msg *msg = io_kiocb_to_cmd(req, struct io_msg);
 	struct io_ring_ctx *ctx = req->ctx;
-	struct io_rsrc_node *node;
-	int ret = -EBADF;
+	struct file *file = NULL;
+	unsigned long file_ptr;
+	int idx = msg->src_fd;
 
 	io_ring_submit_lock(ctx, issue_flags);
-	node = io_rsrc_node_lookup(&ctx->file_table.data, msg->src_fd);
-	if (node) {
-		msg->src_file = io_slot_file(node);
-		if (msg->src_file)
-			get_file(msg->src_file);
-		req->flags |= REQ_F_NEED_CLEANUP;
-		ret = 0;
+	if (likely(idx < ctx->nr_user_files)) {
+		idx = array_index_nospec(idx, ctx->nr_user_files);
+		file_ptr = io_fixed_file_slot(&ctx->file_table, idx)->file_ptr;
+		file = (struct file *) (file_ptr & FFS_MASK);
+		if (file)
+			get_file(file);
 	}
 	io_ring_submit_unlock(ctx, issue_flags);
-	return ret;
+	return file;
 }
 
 static int io_msg_install_complete(struct io_kiocb *req, unsigned int issue_flags)
@@ -180,7 +184,7 @@ static int io_msg_install_complete(struct io_kiocb *req, unsigned int issue_flag
 	struct file *src_file = msg->src_file;
 	int ret;
 
-	if (unlikely(io_lock_external_ctx(target_ctx, issue_flags)))
+	if (unlikely(io_double_lock_ctx(target_ctx, issue_flags)))
 		return -EAGAIN;
 
 	ret = __io_fixed_fd_install(target_ctx, src_file, msg->dst_fd);
@@ -218,48 +222,36 @@ static void io_msg_tw_fd_complete(struct callback_head *head)
 	io_req_queue_tw_complete(req, ret);
 }
 
-static int io_msg_fd_remote(struct io_kiocb *req)
-{
-	struct io_ring_ctx *ctx = req->file->private_data;
-	struct io_msg *msg = io_kiocb_to_cmd(req, struct io_msg);
-	struct task_struct *task = ctx->submitter_task;
-
-	init_task_work(&msg->tw, io_msg_tw_fd_complete);
-	if (task_work_add(task, &msg->tw, TWA_SIGNAL))
-		return -EOWNERDEAD;
-
-	return IOU_ISSUE_SKIP_COMPLETE;
-}
-
 static int io_msg_send_fd(struct io_kiocb *req, unsigned int issue_flags)
 {
 	struct io_ring_ctx *target_ctx = req->file->private_data;
 	struct io_msg *msg = io_kiocb_to_cmd(req, struct io_msg);
 	struct io_ring_ctx *ctx = req->ctx;
+	struct file *src_file = msg->src_file;
 
 	if (msg->len)
 		return -EINVAL;
 	if (target_ctx == ctx)
 		return -EINVAL;
-	/*
-	 * Keep IORING_SETUP_R_DISABLED check before submitter_task load
-	 * in io_msg_fd_remote()
-	 */
-	if (smp_load_acquire(&target_ctx->flags) & IORING_SETUP_R_DISABLED)
+	if (target_ctx->flags & IORING_SETUP_R_DISABLED)
 		return -EBADFD;
-	if (!msg->src_file) {
-		int ret = io_msg_grab_file(req, issue_flags);
-		if (unlikely(ret))
-			return ret;
+	if (!src_file) {
+		src_file = io_msg_grab_file(req, issue_flags);
+		if (!src_file)
+			return -EBADF;
+		msg->src_file = src_file;
+		req->flags |= REQ_F_NEED_CLEANUP;
 	}
 
 	if (io_msg_need_remote(target_ctx))
-		return io_msg_fd_remote(req);
+		return io_msg_exec_remote(req, io_msg_tw_fd_complete);
 	return io_msg_install_complete(req, issue_flags);
 }
 
-static int __io_msg_ring_prep(struct io_msg *msg, const struct io_uring_sqe *sqe)
+int io_msg_ring_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
+	struct io_msg *msg = io_kiocb_to_cmd(req, struct io_msg);
+
 	if (unlikely(sqe->buf_index || sqe->personality))
 		return -EINVAL;
 
@@ -274,11 +266,6 @@ static int __io_msg_ring_prep(struct io_msg *msg, const struct io_uring_sqe *sqe
 		return -EINVAL;
 
 	return 0;
-}
-
-int io_msg_ring_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
-{
-	return __io_msg_ring_prep(io_kiocb_to_cmd(req, struct io_msg), sqe);
 }
 
 int io_msg_ring(struct io_kiocb *req, unsigned int issue_flags)
@@ -309,30 +296,5 @@ done:
 		req_set_fail(req);
 	}
 	io_req_set_res(req, ret, 0);
-	return IOU_COMPLETE;
-}
-
-int io_uring_sync_msg_ring(struct io_uring_sqe *sqe)
-{
-	struct io_msg io_msg = { };
-	int ret;
-
-	ret = __io_msg_ring_prep(&io_msg, sqe);
-	if (unlikely(ret))
-		return ret;
-
-	/*
-	 * Only data sending supported, not IORING_MSG_SEND_FD as that one
-	 * doesn't make sense without a source ring to send files from.
-	 */
-	if (io_msg.cmd != IORING_MSG_DATA)
-		return -EINVAL;
-
-	CLASS(fd, f)(sqe->fd);
-	if (fd_empty(f))
-		return -EBADF;
-	if (!io_is_uring_fops(fd_file(f)))
-		return -EBADFD;
-	return  __io_msg_ring_data(fd_file(f)->private_data,
-				   &io_msg, IO_URING_F_UNLOCKED);
+	return IOU_OK;
 }

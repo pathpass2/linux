@@ -268,7 +268,7 @@ static int ak4396_dac_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 	int i;
 	int change = 0;
 	
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		if (ucontrol->value.integer.value[i] != spec->vol[i]) {
 			spec->vol[i] = ucontrol->value.integer.value[i];
@@ -277,6 +277,7 @@ static int ak4396_dac_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 			change = 1;
 		}
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -375,7 +376,7 @@ static int wm_dac_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 	struct prodigy_hifi_spec *spec = ice->spec;
 	int i, idx, change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		if (ucontrol->value.integer.value[i] != spec->vol[2 + i]) {
 			idx = WM_DAC_ATTEN_L + i;
@@ -385,6 +386,7 @@ static int wm_dac_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 			change = 1;
 		}
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -426,7 +428,7 @@ static int wm8766_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 
 	voices = kcontrol->private_value >> 8;
 	ofs = kcontrol->private_value & 0xff;
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < voices; i++) {
 		if (ucontrol->value.integer.value[i] != spec->vol[ofs + i]) {
 			idx = WM8766_LDA1 + ofs + i;
@@ -437,6 +439,7 @@ static int wm8766_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_val
 			change = 1;
 		}
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -471,7 +474,7 @@ static int wm_master_vol_put(struct snd_kcontrol *kcontrol,
 	struct prodigy_hifi_spec *spec = ice->spec;
 	int ch, change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (ch = 0; ch < 2; ch++) {
 		if (ucontrol->value.integer.value[ch] != spec->master[ch]) {
 			spec->master[ch] = ucontrol->value.integer.value[ch];
@@ -491,6 +494,7 @@ static int wm_master_vol_put(struct snd_kcontrol *kcontrol,
 			change = 1;
 		}
 	}
+	mutex_unlock(&ice->gpio_mutex);	
 	return change;
 }
 
@@ -531,8 +535,9 @@ static int wm_adc_mux_enum_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.enumerated.item[0] = wm_get(ice, WM_ADC_MUX) & 0x1f;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -543,13 +548,14 @@ static int wm_adc_mux_enum_put(struct snd_kcontrol *kcontrol,
 	unsigned short oval, nval;
 	int change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	oval = wm_get(ice, WM_ADC_MUX);
 	nval = (oval & 0xe0) | ucontrol->value.enumerated.item[0];
 	if (nval != oval) {
 		wm_put(ice, WM_ADC_MUX, nval);
 		change = 1;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -580,12 +586,13 @@ static int wm_adc_vol_get(struct snd_kcontrol *kcontrol,
 	unsigned short val;
 	int i;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		val = wm_get(ice, WM_ADC_ATTEN_L + i) & 0xff;
 		val = val > ADC_MIN ? (val - ADC_MIN) : 0;
 		ucontrol->value.integer.value[i] = val;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -596,7 +603,7 @@ static int wm_adc_vol_put(struct snd_kcontrol *kcontrol,
 	unsigned short ovol, nvol;
 	int i, idx, change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (i = 0; i < 2; i++) {
 		nvol = ucontrol->value.integer.value[i];
 		nvol = nvol ? (nvol + ADC_MIN) : 0;
@@ -607,6 +614,7 @@ static int wm_adc_vol_put(struct snd_kcontrol *kcontrol,
 			change = 1;
 		}
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -621,9 +629,10 @@ static int wm_adc_mux_get(struct snd_kcontrol *kcontrol,
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 	int bit = kcontrol->private_value;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.integer.value[0] =
 		(wm_get(ice, WM_ADC_MUX) & (1 << bit)) ? 1 : 0;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -635,7 +644,7 @@ static int wm_adc_mux_put(struct snd_kcontrol *kcontrol,
 	unsigned short oval, nval;
 	int change;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	nval = oval = wm_get(ice, WM_ADC_MUX);
 	if (ucontrol->value.integer.value[0])
 		nval |= (1 << bit);
@@ -645,6 +654,7 @@ static int wm_adc_mux_put(struct snd_kcontrol *kcontrol,
 	if (change) {
 		wm_put(ice, WM_ADC_MUX, nval);
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -658,9 +668,10 @@ static int wm_bypass_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.integer.value[0] =
 		(wm_get(ice, WM_OUT_MUX) & 0x04) ? 1 : 0;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -671,7 +682,7 @@ static int wm_bypass_put(struct snd_kcontrol *kcontrol,
 	unsigned short val, oval;
 	int change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	val = oval = wm_get(ice, WM_OUT_MUX);
 	if (ucontrol->value.integer.value[0])
 		val |= 0x04;
@@ -681,6 +692,7 @@ static int wm_bypass_put(struct snd_kcontrol *kcontrol,
 		wm_put(ice, WM_OUT_MUX, val);
 		change = 1;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -694,9 +706,10 @@ static int wm_chswap_get(struct snd_kcontrol *kcontrol,
 {
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ucontrol->value.integer.value[0] =
 			(wm_get(ice, WM_DAC_CTRL1) & 0xf0) != 0x90;
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 
@@ -707,7 +720,7 @@ static int wm_chswap_put(struct snd_kcontrol *kcontrol,
 	unsigned short val, oval;
 	int change = 0;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	oval = wm_get(ice, WM_DAC_CTRL1);
 	val = oval & 0x0f;
 	if (ucontrol->value.integer.value[0])
@@ -719,6 +732,7 @@ static int wm_chswap_put(struct snd_kcontrol *kcontrol,
 		wm_put_nocache(ice, WM_DAC_CTRL1, val);
 		change = 1;
 	}
+	mutex_unlock(&ice->gpio_mutex);
 	return change;
 }
 
@@ -850,14 +864,14 @@ static void wm_proc_regs_write(struct snd_info_entry *entry,
 	struct snd_ice1712 *ice = entry->private_data;
 	char line[64];
 	unsigned int reg, val;
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	while (!snd_info_get_line(buffer, line, sizeof(line))) {
 		if (sscanf(line, "%x %x", &reg, &val) != 2)
 			continue;
 		if (reg <= 0x17 && val <= 0xffff)
 			wm_put(ice, reg, val);
 	}
+	mutex_unlock(&ice->gpio_mutex);
 }
 
 static void wm_proc_regs_read(struct snd_info_entry *entry,
@@ -866,11 +880,12 @@ static void wm_proc_regs_read(struct snd_info_entry *entry,
 	struct snd_ice1712 *ice = entry->private_data;
 	int reg, val;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	for (reg = 0; reg <= 0x17; reg++) {
 		val = wm_get(ice, reg);
 		snd_iprintf(buffer, "%02x = %04x\n", reg, val);
 	}
+	mutex_unlock(&ice->gpio_mutex);
 }
 
 static void wm_proc_init(struct snd_ice1712 *ice)
@@ -979,7 +994,7 @@ static int prodigy_hifi_resume(struct snd_ice1712 *ice)
 	struct prodigy_hifi_spec *spec = ice->spec;
 	int i, ch;
 
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 
 	/* reinitialize WM8776 and re-apply old register values */
 	wm8776_init(ice);
@@ -1008,6 +1023,7 @@ static int prodigy_hifi_resume(struct snd_ice1712 *ice)
 	wm_put(ice, WM_DAC_MUTE, 0x00);
 	wm_put(ice, WM_DAC_CTRL1, 0x90);
 
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 #endif
@@ -1118,11 +1134,11 @@ static int prodigy_hd2_resume(struct snd_ice1712 *ice)
 	/* initialize ak4396 codec and restore previous mixer volumes */
 	struct prodigy_hifi_spec *spec = ice->spec;
 	int i;
-
-	guard(mutex)(&ice->gpio_mutex);
+	mutex_lock(&ice->gpio_mutex);
 	ak4396_init(ice);
 	for (i = 0; i < 2; i++)
 		ak4396_write(ice, AK4396_LCH_ATT + i, spec->vol[i] & 0xff);
+	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
 #endif

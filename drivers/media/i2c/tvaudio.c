@@ -318,7 +318,7 @@ static int chip_cmd(struct CHIPSTATE *chip, char *name, audiocmd *cmd)
 
 static void chip_thread_wake(struct timer_list *t)
 {
-	struct CHIPSTATE *chip = timer_container_of(chip, t, wt);
+	struct CHIPSTATE *chip = from_timer(chip, t, wt);
 	wake_up_process(chip->thread);
 }
 
@@ -1787,7 +1787,7 @@ static int tvaudio_s_radio(struct v4l2_subdev *sd)
 	struct CHIPSTATE *chip = to_state(sd);
 
 	chip->radio = 1;
-	/* timer_delete(&chip->wt); */
+	/* del_timer(&chip->wt); */
 	return 0;
 }
 
@@ -2071,7 +2071,7 @@ static void tvaudio_remove(struct i2c_client *client)
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct CHIPSTATE *chip = to_state(sd);
 
-	timer_delete_sync(&chip->wt);
+	del_timer_sync(&chip->wt);
 	if (chip->thread) {
 		/* shutdown async thread */
 		kthread_stop(chip->thread);
@@ -2086,7 +2086,7 @@ static void tvaudio_remove(struct i2c_client *client)
    detect which device is present. So rather than listing all supported
    devices here, we pretend to support a single, fake device type. */
 static const struct i2c_device_id tvaudio_id[] = {
-	{ "tvaudio" },
+	{ "tvaudio", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tvaudio_id);
@@ -2095,7 +2095,7 @@ static struct i2c_driver tvaudio_driver = {
 	.driver = {
 		.name	= "tvaudio",
 	},
-	.probe		= tvaudio_probe,
+	.probe_new	= tvaudio_probe,
 	.remove		= tvaudio_remove,
 	.id_table	= tvaudio_id,
 };

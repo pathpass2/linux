@@ -5,14 +5,13 @@
  */
 
 #include <linux/gpio/driver.h>
-#include <linux/gpio/generic.h>
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/mfd/core.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
+#include <linux/platform_data/syscon.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/stat.h>
 
@@ -39,34 +38,22 @@
 
 /* The sysreg block is just a random collection of various functions... */
 
-static const struct property_entry vexpress_sysreg_sys_led_props[] = {
-	PROPERTY_ENTRY_STRING("label", "sys_led"),
-	PROPERTY_ENTRY_U32("ngpios", 8),
-	{ }
+static struct bgpio_pdata vexpress_sysreg_sys_led_pdata = {
+	.label = "sys_led",
+	.base = -1,
+	.ngpio = 8,
 };
 
-static const struct software_node vexpress_sysreg_sys_led_swnode = {
-	.properties = vexpress_sysreg_sys_led_props,
+static struct bgpio_pdata vexpress_sysreg_sys_mci_pdata = {
+	.label = "sys_mci",
+	.base = -1,
+	.ngpio = 2,
 };
 
-static const struct property_entry vexpress_sysreg_sys_mci_props[] = {
-	PROPERTY_ENTRY_STRING("label", "sys_mci"),
-	PROPERTY_ENTRY_U32("ngpios", 2),
-	{ }
-};
-
-static const struct software_node vexpress_sysreg_sys_mci_swnode = {
-	.properties = vexpress_sysreg_sys_mci_props,
-};
-
-static const struct property_entry vexpress_sysreg_sys_flash_props[] = {
-	PROPERTY_ENTRY_STRING("label", "sys_flash"),
-	PROPERTY_ENTRY_U32("ngpios", 1),
-	{ }
-};
-
-static const struct software_node vexpress_sysreg_sys_flash_swnode = {
-	.properties = vexpress_sysreg_sys_flash_props,
+static struct bgpio_pdata vexpress_sysreg_sys_flash_pdata = {
+	.label = "sys_flash",
+	.base = -1,
+	.ngpio = 1,
 };
 
 static struct mfd_cell vexpress_sysreg_cells[] = {
@@ -75,19 +62,22 @@ static struct mfd_cell vexpress_sysreg_cells[] = {
 		.of_compatible = "arm,vexpress-sysreg,sys_led",
 		.num_resources = 1,
 		.resources = &DEFINE_RES_MEM_NAMED(SYS_LED, 0x4, "dat"),
-		.swnode = &vexpress_sysreg_sys_led_swnode,
+		.platform_data = &vexpress_sysreg_sys_led_pdata,
+		.pdata_size = sizeof(vexpress_sysreg_sys_led_pdata),
 	}, {
 		.name = "basic-mmio-gpio",
 		.of_compatible = "arm,vexpress-sysreg,sys_mci",
 		.num_resources = 1,
 		.resources = &DEFINE_RES_MEM_NAMED(SYS_MCI, 0x4, "dat"),
-		.swnode = &vexpress_sysreg_sys_mci_swnode,
+		.platform_data = &vexpress_sysreg_sys_mci_pdata,
+		.pdata_size = sizeof(vexpress_sysreg_sys_mci_pdata),
 	}, {
 		.name = "basic-mmio-gpio",
 		.of_compatible = "arm,vexpress-sysreg,sys_flash",
 		.num_resources = 1,
 		.resources = &DEFINE_RES_MEM_NAMED(SYS_FLASH, 0x4, "dat"),
-		.swnode = &vexpress_sysreg_sys_flash_swnode,
+		.platform_data = &vexpress_sysreg_sys_flash_pdata,
+		.pdata_size = sizeof(vexpress_sysreg_sys_flash_pdata),
 	}, {
 		.name = "vexpress-syscfg",
 		.num_resources = 1,
@@ -97,11 +87,9 @@ static struct mfd_cell vexpress_sysreg_cells[] = {
 
 static int vexpress_sysreg_probe(struct platform_device *pdev)
 {
-	struct gpio_generic_chip *mmc_gpio_chip;
-	struct gpio_generic_chip_config config;
 	struct resource *mem;
 	void __iomem *base;
-	int ret;
+	struct gpio_chip *mmc_gpio_chip;
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!mem)
@@ -119,22 +107,10 @@ static int vexpress_sysreg_probe(struct platform_device *pdev)
 			GFP_KERNEL);
 	if (!mmc_gpio_chip)
 		return -ENOMEM;
-
-	config = (struct gpio_generic_chip_config) {
-		.dev = &pdev->dev,
-		.sz = 4,
-		.dat = base + SYS_MCI,
-	};
-
-	ret = gpio_generic_chip_init(mmc_gpio_chip, &config);
-	if (ret)
-		return ret;
-
-	mmc_gpio_chip->gc.ngpio = 2;
-
-	ret = devm_gpiochip_add_data(&pdev->dev, &mmc_gpio_chip->gc, NULL);
-	if (ret)
-		return ret;
+	bgpio_init(mmc_gpio_chip, &pdev->dev, 0x4, base + SYS_MCI,
+			NULL, NULL, NULL, NULL, 0);
+	mmc_gpio_chip->ngpio = 2;
+	devm_gpiochip_add_data(&pdev->dev, mmc_gpio_chip, NULL);
 
 	return devm_mfd_add_devices(&pdev->dev, PLATFORM_DEVID_AUTO,
 			vexpress_sysreg_cells,
@@ -156,5 +132,4 @@ static struct platform_driver vexpress_sysreg_driver = {
 };
 
 module_platform_driver(vexpress_sysreg_driver);
-MODULE_DESCRIPTION("Versatile Express system registers driver");
 MODULE_LICENSE("GPL v2");

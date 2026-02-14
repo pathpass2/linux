@@ -39,9 +39,7 @@ properties:
 patternProperties:
   "^nand@[a-f0-9]$":
     type: object
-    $ref: raw-nand-chip.yaml
     properties:
-
       rb-gpios:
         description: GPIO specifier for the busy pin.
         maxItems: 1
@@ -49,8 +47,6 @@ patternProperties:
       wp-gpios:
         description: GPIO specifier for the write-protect pin.
         maxItems: 1
-
-    unevaluatedProperties: false
 
 required:
   - compatible

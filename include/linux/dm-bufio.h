@@ -38,8 +38,6 @@ dm_bufio_client_create(struct block_device *bdev, unsigned int block_size,
  */
 void dm_bufio_client_destroy(struct dm_bufio_client *c);
 
-void dm_bufio_client_reset(struct dm_bufio_client *c);
-
 /*
  * Set the sector range.
  * When this function is called, there must be no I/O in progress on the bufio
@@ -64,9 +62,6 @@ void dm_bufio_set_sector_offset(struct dm_bufio_client *c, sector_t start);
 void *dm_bufio_read(struct dm_bufio_client *c, sector_t block,
 		    struct dm_buffer **bp);
 
-void *dm_bufio_read_with_ioprio(struct dm_bufio_client *c, sector_t block,
-				struct dm_buffer **bp, unsigned short ioprio);
-
 /*
  * Like dm_bufio_read, but return buffer from cache, don't read
  * it. If the buffer is not in the cache, return NULL.
@@ -88,10 +83,6 @@ void *dm_bufio_new(struct dm_bufio_client *c, sector_t block,
  */
 void dm_bufio_prefetch(struct dm_bufio_client *c,
 		       sector_t block, unsigned int n_blocks);
-
-void dm_bufio_prefetch_with_ioprio(struct dm_bufio_client *c,
-				sector_t block, unsigned int n_blocks,
-				unsigned short ioprio);
 
 /*
  * Release a reference obtained with dm_bufio_{read,get,new}. The data
@@ -138,6 +129,12 @@ int dm_bufio_issue_flush(struct dm_bufio_client *c);
  * Send a discard request to the underlying device.
  */
 int dm_bufio_issue_discard(struct dm_bufio_client *c, sector_t block, sector_t count);
+
+/*
+ * Like dm_bufio_release but also move the buffer to the new
+ * block. dm_bufio_write_dirty_buffers is needed to commit the new block.
+ */
+void dm_bufio_release_move(struct dm_buffer *b, sector_t new_block);
 
 /*
  * Free the given buffer.

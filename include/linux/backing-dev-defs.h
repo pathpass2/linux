@@ -46,6 +46,7 @@ enum wb_reason {
 	WB_REASON_VMSCAN,
 	WB_REASON_SYNC,
 	WB_REASON_PERIODIC,
+	WB_REASON_LAPTOP_TIMER,
 	WB_REASON_FS_FREE_SPACE,
 	/*
 	 * There is no bdi forker thread any more and works are done
@@ -62,8 +63,6 @@ enum wb_reason {
 struct wb_completion {
 	atomic_t		cnt;
 	wait_queue_head_t	*waitq;
-	unsigned long progress_stamp;	/* The jiffies when slow progress is detected */
-	unsigned long wait_start;	/* The jiffies when waiting for the writeback work to finish */
 };
 
 #define __WB_COMPLETION_INIT(_waitq)	\
@@ -142,6 +141,8 @@ struct bdi_writeback {
 	struct delayed_work dwork;	/* work item used for writeback */
 	struct delayed_work bw_dwork;	/* work item used for bandwidth estimate */
 
+	unsigned long dirty_sleep;	/* last wait */
+
 	struct list_head bdi_node;	/* anchored at bdi->wb_list */
 
 #ifdef CONFIG_CGROUP_WRITEBACK
@@ -153,10 +154,6 @@ struct bdi_writeback {
 	struct list_head blkcg_node;	/* anchored at blkcg->cgwb_list */
 	struct list_head b_attached;	/* attached inodes, protected by list_lock */
 	struct list_head offline_node;	/* anchored at offline_cgwbs */
-	struct work_struct switch_work;	/* work used to perform inode switching
-					 * to this wb */
-	struct llist_head switch_wbs_ctxs;	/* queued contexts for
-						 * writeback switching */
 
 	union {
 		struct work_struct release_work;
@@ -169,9 +166,7 @@ struct backing_dev_info {
 	u64 id;
 	struct rb_node rb_node; /* keyed by ->id */
 	struct list_head bdi_list;
-	/* max readahead in PAGE_SIZE units */
-	unsigned long __data_racy ra_pages;
-
+	unsigned long ra_pages;	/* max readahead in PAGE_SIZE units */
 	unsigned long io_pages;	/* max allowed IO size */
 
 	struct kref refcnt;	/* Reference counter for the structure */
@@ -184,11 +179,6 @@ struct backing_dev_info {
 	 * any dirty wbs, which is depended upon by bdi_has_dirty().
 	 */
 	atomic_long_t tot_write_bandwidth;
-	/*
-	 * Jiffies when last process was dirty throttled on this bdi. Used by
-	 * blk-wbt.
-	 */
-	unsigned long last_bdp_sleep;
 
 	struct bdi_writeback wb;  /* the root writeback info for this bdi */
 	struct list_head wb_list; /* list of all wbs */
@@ -202,6 +192,8 @@ struct backing_dev_info {
 	struct device *dev;
 	char dev_name[64];
 	struct device *owner;
+
+	struct timer_list laptop_mode_wb_timer;
 
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debug_dir;

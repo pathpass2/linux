@@ -69,10 +69,7 @@ required:
   - vcc-supply
   - ports
 
-allOf:
-  - $ref: /schemas/sound/dai-common.yaml#
-
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

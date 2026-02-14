@@ -40,8 +40,7 @@ bool is_rgb_cspace(enum dc_color_space output_color_space)
 	case COLOR_SPACE_YCBCR709:
 	case COLOR_SPACE_YCBCR601_LIMITED:
 	case COLOR_SPACE_YCBCR709_LIMITED:
-	case COLOR_SPACE_2020_YCBCR_LIMITED:
-	case COLOR_SPACE_2020_YCBCR_FULL:
+	case COLOR_SPACE_2020_YCBCR:
 		return false;
 	default:
 		/* Add a case to switch */

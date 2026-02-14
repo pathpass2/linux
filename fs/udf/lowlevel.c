@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lowlevel.c
  *
@@ -6,6 +5,11 @@
  *  Low Level Device Routines for the UDF filesystem
  *
  * COPYRIGHT
+ *	This file is distributed under the terms of the GNU General Public
+ *	License (GPL). Copies of the GPL can be obtained from:
+ *		ftp://prep.ai.mit.edu/pub/gnu/GPL
+ *	Each contributing author retains all rights to their own work.
+ *
  *  (C) 1999-2001 Ben Fennema
  *
  * HISTORY

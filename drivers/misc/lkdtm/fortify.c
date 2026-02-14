@@ -44,9 +44,6 @@ static void lkdtm_FORTIFY_STR_MEMBER(void)
 	char *src;
 
 	src = kmalloc(size, GFP_KERNEL);
-	if (!src)
-		return;
-
 	strscpy(src, "over ten bytes", size);
 	size = strlen(src) + 1;
 
@@ -112,9 +109,6 @@ static void lkdtm_FORTIFY_MEM_MEMBER(void)
 	char *src;
 
 	src = kmalloc(size, GFP_KERNEL);
-	if (!src)
-		return;
-
 	strscpy(src, "over ten bytes", size);
 	size = strlen(src) + 1;
 

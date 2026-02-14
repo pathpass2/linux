@@ -234,6 +234,12 @@
 /* max # tx status to process in wlc_txstatus() */
 #define TXSBND				8
 
+/* brcmu_format_flags() bit description structure */
+struct brcms_c_bit_desc {
+	u32 bit;
+	const char *name;
+};
+
 /*
  * The following table lists the buffer memory allocated to xmt fifos in HW.
  * the size is in units of 256bytes(one block), total size is HW dependent
@@ -457,11 +463,11 @@ static struct brcms_bss_cfg *brcms_c_bsscfg_malloc(uint unit)
 {
 	struct brcms_bss_cfg *cfg;
 
-	cfg = kzalloc(sizeof(*cfg), GFP_ATOMIC);
+	cfg = kzalloc(sizeof(struct brcms_bss_cfg), GFP_ATOMIC);
 	if (cfg == NULL)
 		goto fail;
 
-	cfg->current_bss = kzalloc(sizeof(*cfg->current_bss), GFP_ATOMIC);
+	cfg->current_bss = kzalloc(sizeof(struct brcms_bss_info), GFP_ATOMIC);
 	if (cfg->current_bss == NULL)
 		goto fail;
 
@@ -477,14 +483,14 @@ brcms_c_attach_malloc(uint unit, uint *err, uint devid)
 {
 	struct brcms_c_info *wlc;
 
-	wlc = kzalloc(sizeof(*wlc), GFP_ATOMIC);
+	wlc = kzalloc(sizeof(struct brcms_c_info), GFP_ATOMIC);
 	if (wlc == NULL) {
 		*err = 1002;
 		goto fail;
 	}
 
 	/* allocate struct brcms_c_pub state structure */
-	wlc->pub = kzalloc(sizeof(*wlc->pub), GFP_ATOMIC);
+	wlc->pub = kzalloc(sizeof(struct brcms_pub), GFP_ATOMIC);
 	if (wlc->pub == NULL) {
 		*err = 1003;
 		goto fail;
@@ -493,7 +499,7 @@ brcms_c_attach_malloc(uint unit, uint *err, uint devid)
 
 	/* allocate struct brcms_hardware state structure */
 
-	wlc->hw = kzalloc(sizeof(*wlc->hw), GFP_ATOMIC);
+	wlc->hw = kzalloc(sizeof(struct brcms_hardware), GFP_ATOMIC);
 	if (wlc->hw == NULL) {
 		*err = 1005;
 		goto fail;
@@ -522,7 +528,7 @@ brcms_c_attach_malloc(uint unit, uint *err, uint devid)
 		goto fail;
 	}
 
-	wlc->default_bss = kzalloc(sizeof(*wlc->default_bss), GFP_ATOMIC);
+	wlc->default_bss = kzalloc(sizeof(struct brcms_bss_info), GFP_ATOMIC);
 	if (wlc->default_bss == NULL) {
 		*err = 1010;
 		goto fail;
@@ -534,20 +540,21 @@ brcms_c_attach_malloc(uint unit, uint *err, uint devid)
 		goto fail;
 	}
 
-	wlc->protection = kzalloc(sizeof(*wlc->protection), GFP_ATOMIC);
+	wlc->protection = kzalloc(sizeof(struct brcms_protection),
+				  GFP_ATOMIC);
 	if (wlc->protection == NULL) {
 		*err = 1016;
 		goto fail;
 	}
 
-	wlc->stf = kzalloc(sizeof(*wlc->stf), GFP_ATOMIC);
+	wlc->stf = kzalloc(sizeof(struct brcms_stf), GFP_ATOMIC);
 	if (wlc->stf == NULL) {
 		*err = 1017;
 		goto fail;
 	}
 
 	wlc->bandstate[0] =
-		kcalloc(MAXBANDS, sizeof(*wlc->bandstate[0]), GFP_ATOMIC);
+		kcalloc(MAXBANDS, sizeof(struct brcms_band), GFP_ATOMIC);
 	if (wlc->bandstate[0] == NULL) {
 		*err = 1025;
 		goto fail;
@@ -560,14 +567,14 @@ brcms_c_attach_malloc(uint unit, uint *err, uint devid)
 				+ (sizeof(struct brcms_band)*i));
 	}
 
-	wlc->corestate = kzalloc(sizeof(*wlc->corestate), GFP_ATOMIC);
+	wlc->corestate = kzalloc(sizeof(struct brcms_core), GFP_ATOMIC);
 	if (wlc->corestate == NULL) {
 		*err = 1026;
 		goto fail;
 	}
 
 	wlc->corestate->macstat_snapshot =
-		kzalloc(sizeof(*wlc->corestate->macstat_snapshot), GFP_ATOMIC);
+		kzalloc(sizeof(struct macstat), GFP_ATOMIC);
 	if (wlc->corestate->macstat_snapshot == NULL) {
 		*err = 1027;
 		goto fail;
@@ -921,7 +928,7 @@ brcms_c_dotxstatus(struct brcms_c_info *wlc, struct tx_status *txs)
 		 * The "fallback limit" is the number of tx attempts a given
 		 * MPDU is sent at the "primary" rate. Tx attempts beyond that
 		 * limit are sent at the "secondary" rate.
-		 * A 'short frame' does not exceed RTS threshold.
+		 * A 'short frame' does not exceed RTS treshold.
 		 */
 		u16 sfbl,	/* Short Frame Rate Fallback Limit */
 		    lfbl,	/* Long Frame Rate Fallback Limit */
@@ -3140,8 +3147,10 @@ void brcms_c_init_scb(struct scb *scb)
 	scb->flags = SCB_WMECAP | SCB_HTCAP;
 	for (i = 0; i < NUMPRIO; i++) {
 		scb->seqnum[i] = 0;
+		scb->seqctl[i] = 0xFFFF;
 	}
 
+	scb->seqctl_nonqos = 0xFFFF;
 	scb->magic = SCB_MAGIC;
 }
 
@@ -5544,8 +5553,8 @@ int brcms_c_module_register(struct brcms_pub *pub,
 	/* find an empty entry and just add, no duplication check! */
 	for (i = 0; i < BRCMS_MAXMODULES; i++) {
 		if (wlc->modulecb[i].name[0] == '\0') {
-			strscpy(wlc->modulecb[i].name, name,
-				sizeof(wlc->modulecb[i].name));
+			strncpy(wlc->modulecb[i].name, name,
+				sizeof(wlc->modulecb[i].name) - 1);
 			wlc->modulecb[i].hdl = hdl;
 			wlc->modulecb[i].down_fn = d_fn;
 			return 0;
@@ -6259,7 +6268,7 @@ brcms_c_d11hdrs_mac80211(struct brcms_c_info *wlc, struct ieee80211_hw *hw,
 		}
 
 		/*
-		 * Currently only support same setting for primary and
+		 * Currently only support same setting for primay and
 		 * fallback rates. Unify flags for each rate into a
 		 * single value for the frame
 		 */

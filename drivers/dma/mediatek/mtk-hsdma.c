@@ -17,6 +17,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_dma.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -226,7 +227,7 @@ struct mtk_hsdma_soc {
  * @pc_refcnt:		     Track how many VCs are using the PC
  * @lock:		     Lock protect agaisting multiple VCs access PC
  * @soc:		     The pointer to area holding differences among
- *			     various platform
+ *			     vaious platform
  */
 struct mtk_hsdma_device {
 	struct dma_device ddev;
@@ -1009,7 +1010,7 @@ err_unregister:
 	return err;
 }
 
-static void mtk_hsdma_remove(struct platform_device *pdev)
+static int mtk_hsdma_remove(struct platform_device *pdev)
 {
 	struct mtk_hsdma_device *hsdma = platform_get_drvdata(pdev);
 	struct mtk_hsdma_vchan *vc;
@@ -1034,6 +1035,8 @@ static void mtk_hsdma_remove(struct platform_device *pdev)
 
 	dma_async_device_unregister(&hsdma->ddev);
 	of_dma_controller_free(pdev->dev.of_node);
+
+	return 0;
 }
 
 static struct platform_driver mtk_hsdma_driver = {

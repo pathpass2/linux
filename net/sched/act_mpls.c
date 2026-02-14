@@ -57,7 +57,7 @@ TC_INDIRECT_SCOPE int tcf_mpls_act(struct sk_buff *skb,
 	struct tcf_mpls *m = to_mpls(a);
 	struct tcf_mpls_params *p;
 	__be32 new_lse;
-	int mac_len;
+	int ret, mac_len;
 
 	tcf_lastuse_update(&m->tcf_tm);
 	bstats_update(this_cpu_ptr(m->common.cpu_bstats), skb);
@@ -69,8 +69,10 @@ TC_INDIRECT_SCOPE int tcf_mpls_act(struct sk_buff *skb,
 		skb_push_rcsum(skb, skb->mac_len);
 		mac_len = skb->mac_len;
 	} else {
-		mac_len = skb_network_offset(skb);
+		mac_len = skb_network_header(skb) - skb_mac_header(skb);
 	}
+
+	ret = READ_ONCE(m->tcf_action);
 
 	p = rcu_dereference_bh(m->mpls_p);
 
@@ -120,7 +122,7 @@ TC_INDIRECT_SCOPE int tcf_mpls_act(struct sk_buff *skb,
 	if (skb_at_tc_ingress(skb))
 		skb_pull_rcsum(skb, skb->mac_len);
 
-	return p->action;
+	return ret;
 
 drop:
 	qstats_drop_inc(this_cpu_ptr(m->common.cpu_qstats));
@@ -193,7 +195,7 @@ static int tcf_mpls_init(struct net *net, struct nlattr *nla,
 		return err;
 	exists = err;
 	if (exists && bind)
-		return ACT_P_BOUND;
+		return 0;
 
 	if (!exists) {
 		ret = tcf_idr_create(tn, index, est, a, &act_mpls_ops, bind,
@@ -286,15 +288,16 @@ static int tcf_mpls_init(struct net *net, struct nlattr *nla,
 	}
 
 	p->tcfm_action = parm->m_action;
-	p->tcfm_label = nla_get_u32_default(tb[TCA_MPLS_LABEL],
-					    ACT_MPLS_LABEL_NOT_SET);
-	p->tcfm_tc = nla_get_u8_default(tb[TCA_MPLS_TC], ACT_MPLS_TC_NOT_SET);
-	p->tcfm_ttl = nla_get_u8_default(tb[TCA_MPLS_TTL], mpls_ttl);
-	p->tcfm_bos = nla_get_u8_default(tb[TCA_MPLS_BOS],
-					 ACT_MPLS_BOS_NOT_SET);
-	p->tcfm_proto = nla_get_be16_default(tb[TCA_MPLS_PROTO],
-					     htons(ETH_P_MPLS_UC));
-	p->action = parm->action;
+	p->tcfm_label = tb[TCA_MPLS_LABEL] ? nla_get_u32(tb[TCA_MPLS_LABEL]) :
+					     ACT_MPLS_LABEL_NOT_SET;
+	p->tcfm_tc = tb[TCA_MPLS_TC] ? nla_get_u8(tb[TCA_MPLS_TC]) :
+				       ACT_MPLS_TC_NOT_SET;
+	p->tcfm_ttl = tb[TCA_MPLS_TTL] ? nla_get_u8(tb[TCA_MPLS_TTL]) :
+					 mpls_ttl;
+	p->tcfm_bos = tb[TCA_MPLS_BOS] ? nla_get_u8(tb[TCA_MPLS_BOS]) :
+					 ACT_MPLS_BOS_NOT_SET;
+	p->tcfm_proto = tb[TCA_MPLS_PROTO] ? nla_get_be16(tb[TCA_MPLS_PROTO]) :
+					     htons(ETH_P_MPLS_UC);
 
 	spin_lock_bh(&m->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, parm->action, goto_ch);
@@ -329,8 +332,8 @@ static int tcf_mpls_dump(struct sk_buff *skb, struct tc_action *a,
 			 int bind, int ref)
 {
 	unsigned char *b = skb_tail_pointer(skb);
-	const struct tcf_mpls *m = to_mpls(a);
-	const struct tcf_mpls_params *p;
+	struct tcf_mpls *m = to_mpls(a);
+	struct tcf_mpls_params *p;
 	struct tc_mpls opt = {
 		.index    = m->tcf_index,
 		.refcnt   = refcount_read(&m->tcf_refcnt) - ref,
@@ -338,10 +341,10 @@ static int tcf_mpls_dump(struct sk_buff *skb, struct tc_action *a,
 	};
 	struct tcf_t t;
 
-	rcu_read_lock();
-	p = rcu_dereference(m->mpls_p);
+	spin_lock_bh(&m->tcf_lock);
+	opt.action = m->tcf_action;
+	p = rcu_dereference_protected(m->mpls_p, lockdep_is_held(&m->tcf_lock));
 	opt.m_action = p->tcfm_action;
-	opt.action = p->action;
 
 	if (nla_put(skb, TCA_MPLS_PARMS, sizeof(opt), &opt))
 		goto nla_put_failure;
@@ -369,12 +372,12 @@ static int tcf_mpls_dump(struct sk_buff *skb, struct tc_action *a,
 	if (nla_put_64bit(skb, TCA_MPLS_TM, sizeof(t), &t, TCA_MPLS_PAD))
 		goto nla_put_failure;
 
-	rcu_read_unlock();
+	spin_unlock_bh(&m->tcf_lock);
 
 	return skb->len;
 
 nla_put_failure:
-	rcu_read_unlock();
+	spin_unlock_bh(&m->tcf_lock);
 	nlmsg_trim(skb, b);
 	return -EMSGSIZE;
 }
@@ -449,7 +452,6 @@ static struct tc_action_ops act_mpls_ops = {
 	.offload_act_setup =	tcf_mpls_offload_act_setup,
 	.size		=	sizeof(struct tcf_mpls),
 };
-MODULE_ALIAS_NET_ACT("mpls");
 
 static __net_init int mpls_init_net(struct net *net)
 {

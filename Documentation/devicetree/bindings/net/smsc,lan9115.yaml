@@ -11,7 +11,6 @@ maintainers:
 
 allOf:
   - $ref: ethernet-controller.yaml#
-  - $ref: /schemas/memory-controllers/mc-peripheral-props.yaml#
 
 properties:
   compatible:
@@ -90,7 +89,10 @@ required:
   - reg
   - interrupts
 
-unevaluatedProperties: false
+# There are lots of bus-specific properties ("qcom,*", "samsung,*", "fsl,*",
+# "gpmc,*", ...) to be found, that actually depend on the compatible value of
+# the parent node.
+additionalProperties: true
 
 examples:
   - |

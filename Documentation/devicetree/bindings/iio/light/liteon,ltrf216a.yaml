@@ -14,9 +14,7 @@ description:
 
 properties:
   compatible:
-    enum:
-      - liteon,ltr308
-      - liteon,ltrf216a
+    const: liteon,ltrf216a
 
   reg:
     maxItems: 1

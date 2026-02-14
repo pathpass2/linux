@@ -253,11 +253,8 @@ mwifiex_histogram_read(struct file *file, char __user *ubuf,
 	if (!p)
 		return -ENOMEM;
 
-	if (!priv || !priv->hist_data) {
-		ret = -EFAULT;
-		goto free_and_exit;
-	}
-
+	if (!priv || !priv->hist_data)
+		return -EFAULT;
 	phist_data = priv->hist_data;
 
 	p += sprintf(p, "\n"
@@ -312,8 +309,6 @@ mwifiex_histogram_read(struct file *file, char __user *ubuf,
 	ret = simple_read_from_buffer(ubuf, count, ppos, (char *)page,
 				      (unsigned long)p - page);
 
-free_and_exit:
-	free_page(page);
 	return ret;
 }
 
@@ -425,10 +420,7 @@ mwifiex_regrdwr_write(struct file *file,
 	if (IS_ERR(buf))
 		return PTR_ERR(buf);
 
-	if (sscanf(buf, "%u %x %x", &reg_type, &reg_offset, &reg_value) != 3) {
-		ret = -EINVAL;
-		goto done;
-	}
+	sscanf(buf, "%u %x %x", &reg_type, &reg_offset, &reg_value);
 
 	if (reg_type == 0 || reg_offset == 0) {
 		ret = -EINVAL;
@@ -566,8 +558,14 @@ mwifiex_verext_write(struct file *file, const char __user *ubuf,
 	int ret;
 	u32 versionstrsel;
 	struct mwifiex_private *priv = (void *)file->private_data;
+	char buf[16];
 
-	ret = kstrtou32_from_user(ubuf, count, 10, &versionstrsel);
+	memset(buf, 0, sizeof(buf));
+
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
+		return -EFAULT;
+
+	ret = kstrtou32(buf, 10, &versionstrsel);
 	if (ret)
 		return ret;
 
@@ -688,10 +686,7 @@ mwifiex_rdeeprom_write(struct file *file,
 	if (IS_ERR(buf))
 		return PTR_ERR(buf);
 
-	if (sscanf(buf, "%d %d", &offset, &bytes) != 2) {
-		ret = -EINVAL;
-		goto done;
-	}
+	sscanf(buf, "%d %d", &offset, &bytes);
 
 	if (offset == -1 || bytes == -1) {
 		ret = -EINVAL;
@@ -868,14 +863,19 @@ mwifiex_timeshare_coex_write(struct file *file, const char __user *ubuf,
 {
 	bool timeshare_coex;
 	struct mwifiex_private *priv = file->private_data;
+	char kbuf[16];
 	int ret;
 
 	if (priv->adapter->fw_api_ver != MWIFIEX_FW_V15)
 		return -EOPNOTSUPP;
 
-	ret = kstrtobool_from_user(ubuf, count, &timeshare_coex);
-	if (ret)
-		return ret;
+	memset(kbuf, 0, sizeof(kbuf));
+
+	if (copy_from_user(&kbuf, ubuf, min_t(size_t, sizeof(kbuf) - 1, count)))
+		return -EFAULT;
+
+	if (kstrtobool(kbuf, &timeshare_coex))
+		return -EINVAL;
 
 	ret = mwifiex_send_cmd(priv, HostCmd_CMD_ROBUST_COEX,
 			       HostCmd_ACT_GEN_SET, 0, &timeshare_coex, true);
@@ -958,6 +958,9 @@ mwifiex_dev_debugfs_init(struct mwifiex_private *priv)
 
 	priv->dfs_dev_dir = debugfs_create_dir(priv->netdev->name,
 					       mwifiex_dfs_dir);
+
+	if (!priv->dfs_dev_dir)
+		return;
 
 	MWIFIEX_DFS_ADD_FILE(info);
 	MWIFIEX_DFS_ADD_FILE(debug);

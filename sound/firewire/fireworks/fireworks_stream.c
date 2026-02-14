@@ -345,24 +345,33 @@ void snd_efw_stream_lock_changed(struct snd_efw *efw)
 
 int snd_efw_stream_lock_try(struct snd_efw *efw)
 {
-	guard(spinlock_irq)(&efw->lock);
+	int err;
+
+	spin_lock_irq(&efw->lock);
 
 	/* user land lock this */
-	if (efw->dev_lock_count < 0)
-		return -EBUSY;
+	if (efw->dev_lock_count < 0) {
+		err = -EBUSY;
+		goto end;
+	}
 
 	/* this is the first time */
 	if (efw->dev_lock_count++ == 0)
 		snd_efw_stream_lock_changed(efw);
-	return 0;
+	err = 0;
+end:
+	spin_unlock_irq(&efw->lock);
+	return err;
 }
 
 void snd_efw_stream_lock_release(struct snd_efw *efw)
 {
-	guard(spinlock_irq)(&efw->lock);
+	spin_lock_irq(&efw->lock);
 
 	if (WARN_ON(efw->dev_lock_count <= 0))
-		return;
+		goto end;
 	if (--efw->dev_lock_count == 0)
 		snd_efw_stream_lock_changed(efw);
+end:
+	spin_unlock_irq(&efw->lock);
 }

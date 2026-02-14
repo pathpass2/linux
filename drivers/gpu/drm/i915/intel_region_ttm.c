@@ -34,7 +34,7 @@ int intel_region_ttm_device_init(struct drm_i915_private *dev_priv)
 
 	return ttm_device_init(&dev_priv->bdev, i915_ttm_driver(),
 			       drm->dev, drm->anon_inode->i_mapping,
-			       drm->vma_offset_manager, 0);
+			       drm->vma_offset_manager, false, false);
 }
 
 /**
@@ -87,7 +87,7 @@ int intel_region_ttm_init(struct intel_memory_region *mem)
 
 	ret = i915_ttm_buddy_man_init(bdev, mem_type, false,
 				      resource_size(&mem->region),
-				      resource_size(&mem->io),
+				      mem->io_size,
 				      mem->min_page_size, PAGE_SIZE);
 	if (ret)
 		return ret;
@@ -181,7 +181,6 @@ intel_region_ttm_resource_to_rsgt(struct intel_memory_region *mem,
 /**
  * intel_region_ttm_resource_alloc - Allocate memory resources from a region
  * @mem: The memory region,
- * @offset: BO offset
  * @size: The requested size in bytes
  * @flags: Allocation flags
  *
@@ -219,16 +218,16 @@ intel_region_ttm_resource_alloc(struct intel_memory_region *mem,
 			goto out;
 		}
 		place.lpfn = place.fpfn + (size >> PAGE_SHIFT);
-	} else if (resource_size(&mem->io) && resource_size(&mem->io) < mem->total) {
+	} else if (mem->io_size && mem->io_size < mem->total) {
 		if (flags & I915_BO_ALLOC_GPU_ONLY) {
 			place.flags |= TTM_PL_FLAG_TOPDOWN;
 		} else {
 			place.fpfn = 0;
-			if (WARN_ON(overflows_type(resource_size(&mem->io) >> PAGE_SHIFT, place.lpfn))) {
+			if (WARN_ON(overflows_type(mem->io_size >> PAGE_SHIFT, place.lpfn))) {
 				ret = -E2BIG;
 				goto out;
 			}
-			place.lpfn = resource_size(&mem->io) >> PAGE_SHIFT;
+			place.lpfn = mem->io_size >> PAGE_SHIFT;
 		}
 	}
 

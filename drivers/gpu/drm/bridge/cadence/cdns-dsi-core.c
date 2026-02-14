@@ -9,13 +9,13 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_probe_helper.h>
 #include <video/mipi_display.h>
-#include <video/videomode.h>
 
 #include <linux/clk.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -418,25 +418,13 @@
 #define DSI_OUTPUT_PORT			0
 #define DSI_INPUT_PORT(inputid)		(1 + (inputid))
 
-#define DSI_HBP_FRAME_PULSE_OVERHEAD	12
-#define DSI_HBP_FRAME_EVENT_OVERHEAD	16
+#define DSI_HBP_FRAME_OVERHEAD		12
 #define DSI_HSA_FRAME_OVERHEAD		14
 #define DSI_HFP_FRAME_OVERHEAD		6
 #define DSI_HSS_VSS_VSE_FRAME_OVERHEAD	4
 #define DSI_BLANKING_FRAME_OVERHEAD	6
 #define DSI_NULL_FRAME_OVERHEAD		6
 #define DSI_EOT_PKT_SIZE		4
-
-struct cdns_dsi_bridge_state {
-	struct drm_bridge_state base;
-	struct cdns_dsi_cfg dsi_cfg;
-};
-
-static inline struct cdns_dsi_bridge_state *
-to_cdns_dsi_bridge_state(struct drm_bridge_state *bridge_state)
-{
-	return container_of(bridge_state, struct cdns_dsi_bridge_state, base);
-}
 
 static inline struct cdns_dsi *input_to_dsi(struct cdns_dsi_input *input)
 {
@@ -454,6 +442,15 @@ bridge_to_cdns_dsi_input(struct drm_bridge *bridge)
 	return container_of(bridge, struct cdns_dsi_input, bridge);
 }
 
+static unsigned int mode_to_dpi_hfp(const struct drm_display_mode *mode,
+				    bool mode_valid_check)
+{
+	if (mode_valid_check)
+		return mode->hsync_start - mode->hdisplay;
+
+	return mode->crtc_hsync_start - mode->crtc_hdisplay;
+}
+
 static unsigned int dpi_to_dsi_timing(unsigned int dpi_timing,
 				      unsigned int dpi_bpp,
 				      unsigned int dsi_pkt_overhead)
@@ -469,70 +466,120 @@ static unsigned int dpi_to_dsi_timing(unsigned int dpi_timing,
 }
 
 static int cdns_dsi_mode2cfg(struct cdns_dsi *dsi,
-			     const struct videomode *vm,
-			     struct cdns_dsi_cfg *dsi_cfg)
+			     const struct drm_display_mode *mode,
+			     struct cdns_dsi_cfg *dsi_cfg,
+			     bool mode_valid_check)
 {
 	struct cdns_dsi_output *output = &dsi->output;
-	u32 dpi_hsa, dpi_hbp, dpi_hfp, dpi_hact;
-	bool sync_pulse;
+	unsigned int tmp;
+	bool sync_pulse = false;
 	int bpp;
-
-	dpi_hsa = vm->hsync_len;
-	dpi_hbp = vm->hback_porch;
-	dpi_hfp = vm->hfront_porch;
-	dpi_hact = vm->hactive;
 
 	memset(dsi_cfg, 0, sizeof(*dsi_cfg));
 
-	sync_pulse = output->dev->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
+	if (output->dev->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE)
+		sync_pulse = true;
 
 	bpp = mipi_dsi_pixel_format_to_bpp(output->dev->format);
 
-	if (sync_pulse) {
-		dsi_cfg->hbp = dpi_to_dsi_timing(dpi_hbp, bpp,
-						 DSI_HBP_FRAME_PULSE_OVERHEAD);
+	if (mode_valid_check)
+		tmp = mode->htotal -
+		      (sync_pulse ? mode->hsync_end : mode->hsync_start);
+	else
+		tmp = mode->crtc_htotal -
+		      (sync_pulse ?
+		       mode->crtc_hsync_end : mode->crtc_hsync_start);
 
-		dsi_cfg->hsa = dpi_to_dsi_timing(dpi_hsa, bpp,
+	dsi_cfg->hbp = dpi_to_dsi_timing(tmp, bpp, DSI_HBP_FRAME_OVERHEAD);
+
+	if (sync_pulse) {
+		if (mode_valid_check)
+			tmp = mode->hsync_end - mode->hsync_start;
+		else
+			tmp = mode->crtc_hsync_end - mode->crtc_hsync_start;
+
+		dsi_cfg->hsa = dpi_to_dsi_timing(tmp, bpp,
 						 DSI_HSA_FRAME_OVERHEAD);
-	} else {
-		dsi_cfg->hbp = dpi_to_dsi_timing(dpi_hbp + dpi_hsa, bpp,
-						 DSI_HBP_FRAME_EVENT_OVERHEAD);
-
-		dsi_cfg->hsa = 0;
 	}
 
-	dsi_cfg->hact = dpi_to_dsi_timing(dpi_hact, bpp, 0);
+	dsi_cfg->hact = dpi_to_dsi_timing(mode_valid_check ?
+					  mode->hdisplay : mode->crtc_hdisplay,
+					  bpp, 0);
+	dsi_cfg->hfp = dpi_to_dsi_timing(mode_to_dpi_hfp(mode, mode_valid_check),
+					 bpp, DSI_HFP_FRAME_OVERHEAD);
 
-	dsi_cfg->hfp = dpi_to_dsi_timing(dpi_hfp, bpp, DSI_HFP_FRAME_OVERHEAD);
+	return 0;
+}
 
-	dsi_cfg->htotal = dsi_cfg->hact + dsi_cfg->hfp + DSI_HFP_FRAME_OVERHEAD;
+static int cdns_dsi_adjust_phy_config(struct cdns_dsi *dsi,
+			      struct cdns_dsi_cfg *dsi_cfg,
+			      struct phy_configure_opts_mipi_dphy *phy_cfg,
+			      const struct drm_display_mode *mode,
+			      bool mode_valid_check)
+{
+	struct cdns_dsi_output *output = &dsi->output;
+	unsigned long long dlane_bps;
+	unsigned long adj_dsi_htotal;
+	unsigned long dsi_htotal;
+	unsigned long dpi_htotal;
+	unsigned long dpi_hz;
+	unsigned int dsi_hfp_ext;
+	unsigned int lanes = output->dev->lanes;
 
-	if (sync_pulse) {
-		dsi_cfg->htotal += dsi_cfg->hbp + DSI_HBP_FRAME_PULSE_OVERHEAD;
-		dsi_cfg->htotal += dsi_cfg->hsa + DSI_HSA_FRAME_OVERHEAD;
-	} else {
-		dsi_cfg->htotal += dsi_cfg->hbp + DSI_HBP_FRAME_EVENT_OVERHEAD;
-	}
+	dsi_htotal = dsi_cfg->hbp + DSI_HBP_FRAME_OVERHEAD;
+	if (output->dev->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE)
+		dsi_htotal += dsi_cfg->hsa + DSI_HSA_FRAME_OVERHEAD;
+
+	dsi_htotal += dsi_cfg->hact;
+	dsi_htotal += dsi_cfg->hfp + DSI_HFP_FRAME_OVERHEAD;
+
+	/*
+	 * Make sure DSI htotal is aligned on a lane boundary when calculating
+	 * the expected data rate. This is done by extending HFP in case of
+	 * misalignment.
+	 */
+	adj_dsi_htotal = dsi_htotal;
+	if (dsi_htotal % lanes)
+		adj_dsi_htotal += lanes - (dsi_htotal % lanes);
+
+	dpi_hz = (mode_valid_check ? mode->clock : mode->crtc_clock) * 1000;
+	dlane_bps = (unsigned long long)dpi_hz * adj_dsi_htotal;
+
+	/* data rate in bytes/sec is not an integer, refuse the mode. */
+	dpi_htotal = mode_valid_check ? mode->htotal : mode->crtc_htotal;
+	if (do_div(dlane_bps, lanes * dpi_htotal))
+		return -EINVAL;
+
+	/* data rate was in bytes/sec, convert to bits/sec. */
+	phy_cfg->hs_clk_rate = dlane_bps * 8;
+
+	dsi_hfp_ext = adj_dsi_htotal - dsi_htotal;
+	dsi_cfg->hfp += dsi_hfp_ext;
+	dsi_cfg->htotal = dsi_htotal + dsi_hfp_ext;
 
 	return 0;
 }
 
 static int cdns_dsi_check_conf(struct cdns_dsi *dsi,
-			       const struct videomode *vm,
-			       struct cdns_dsi_cfg *dsi_cfg)
+			       const struct drm_display_mode *mode,
+			       struct cdns_dsi_cfg *dsi_cfg,
+			       bool mode_valid_check)
 {
 	struct cdns_dsi_output *output = &dsi->output;
 	struct phy_configure_opts_mipi_dphy *phy_cfg = &output->phy_opts.mipi_dphy;
+	unsigned long dsi_hss_hsa_hse_hbp;
 	unsigned int nlanes = output->dev->lanes;
 	int ret;
 
-	ret = cdns_dsi_mode2cfg(dsi, vm, dsi_cfg);
+	ret = cdns_dsi_mode2cfg(dsi, mode, dsi_cfg, mode_valid_check);
 	if (ret)
 		return ret;
 
-	ret = phy_mipi_dphy_get_default_config(vm->pixelclock,
-					       mipi_dsi_pixel_format_to_bpp(output->dev->format),
-					       nlanes, phy_cfg);
+	phy_mipi_dphy_get_default_config(mode->crtc_clock * 1000,
+					 mipi_dsi_pixel_format_to_bpp(output->dev->format),
+					 nlanes, phy_cfg);
+
+	ret = cdns_dsi_adjust_phy_config(dsi, dsi_cfg, phy_cfg, mode, mode_valid_check);
 	if (ret)
 		return ret;
 
@@ -540,11 +587,25 @@ static int cdns_dsi_check_conf(struct cdns_dsi *dsi,
 	if (ret)
 		return ret;
 
+	dsi_hss_hsa_hse_hbp = dsi_cfg->hbp + DSI_HBP_FRAME_OVERHEAD;
+	if (output->dev->mode_flags & MIPI_DSI_MODE_VIDEO_SYNC_PULSE)
+		dsi_hss_hsa_hse_hbp += dsi_cfg->hsa + DSI_HSA_FRAME_OVERHEAD;
+
+	/*
+	 * Make sure DPI(HFP) > DSI(HSS+HSA+HSE+HBP) to guarantee that the FIFO
+	 * is empty before we start a receiving a new line on the DPI
+	 * interface.
+	 */
+	if ((u64)phy_cfg->hs_clk_rate *
+	    mode_to_dpi_hfp(mode, mode_valid_check) * nlanes <
+	    (u64)dsi_hss_hsa_hse_hbp *
+	    (mode_valid_check ? mode->clock : mode->crtc_clock) * 1000)
+		return -EINVAL;
+
 	return 0;
 }
 
 static int cdns_dsi_bridge_attach(struct drm_bridge *bridge,
-				  struct drm_encoder *encoder,
 				  enum drm_bridge_attach_flags flags)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
@@ -557,7 +618,7 @@ static int cdns_dsi_bridge_attach(struct drm_bridge *bridge,
 		return -ENOTSUPP;
 	}
 
-	return drm_bridge_attach(encoder, output->bridge, bridge,
+	return drm_bridge_attach(bridge->encoder, output->bridge, bridge,
 				 flags);
 }
 
@@ -569,7 +630,8 @@ cdns_dsi_bridge_mode_valid(struct drm_bridge *bridge,
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
 	struct cdns_dsi *dsi = input_to_dsi(input);
 	struct cdns_dsi_output *output = &dsi->output;
-	int bpp;
+	struct cdns_dsi_cfg dsi_cfg;
+	int bpp, ret;
 
 	/*
 	 * VFP_DSI should be less than VFP_DPI and VFP_DSI should be at
@@ -587,30 +649,18 @@ cdns_dsi_bridge_mode_valid(struct drm_bridge *bridge,
 	if ((mode->hdisplay * bpp) % 32)
 		return MODE_H_ILLEGAL;
 
+	ret = cdns_dsi_check_conf(dsi, mode, &dsi_cfg, true);
+	if (ret)
+		return MODE_BAD;
+
 	return MODE_OK;
 }
 
-static void cdns_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
-						struct drm_atomic_state *state)
+static void cdns_dsi_bridge_disable(struct drm_bridge *bridge)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
 	struct cdns_dsi *dsi = input_to_dsi(input);
 	u32 val;
-
-	/*
-	 * The cdns-dsi controller needs to be disabled after it's DPI source
-	 * has stopped streaming. If this is not followed, there is a brief
-	 * window before DPI source is disabled and after cdns-dsi controller
-	 * has been disabled where the DPI stream is still on, but the cdns-dsi
-	 * controller is not ready anymore to accept the incoming signals. This
-	 * is one of the reasons why a shift in pixel colors is observed on
-	 * displays that have cdns-dsi as one of the bridges.
-	 *
-	 * To mitigate this, disable this bridge from the bridge post_disable()
-	 * hook, instead of the bridge _disable() hook. The bridge post_disable()
-	 * hook gets called after the CRTC disable, where often many DPI sources
-	 * disable their streams.
-	 */
 
 	val = readl(dsi->regs + MCTL_MAIN_DATA_CTL);
 	val &= ~(IF_VID_SELECT_MASK | IF_VID_MODE | VID_EN | HOST_EOT_GEN |
@@ -623,10 +673,13 @@ static void cdns_dsi_bridge_atomic_post_disable(struct drm_bridge *bridge,
 	if (dsi->platform_ops && dsi->platform_ops->disable)
 		dsi->platform_ops->disable(dsi);
 
-	dsi->phy_initialized = false;
-	dsi->link_initialized = false;
-	phy_power_off(dsi->dphy);
-	phy_exit(dsi->dphy);
+	pm_runtime_put(dsi->base.dev);
+}
+
+static void cdns_dsi_bridge_post_disable(struct drm_bridge *bridge)
+{
+	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
+	struct cdns_dsi *dsi = input_to_dsi(input);
 
 	pm_runtime_put(dsi->base.dev);
 }
@@ -700,73 +753,31 @@ static void cdns_dsi_init_link(struct cdns_dsi *dsi)
 	dsi->link_initialized = true;
 }
 
-static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
-					      struct drm_atomic_state *state)
+static void cdns_dsi_bridge_enable(struct drm_bridge *bridge)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
 	struct cdns_dsi *dsi = input_to_dsi(input);
 	struct cdns_dsi_output *output = &dsi->output;
-	struct drm_connector_state *conn_state;
-	struct drm_crtc_state *crtc_state;
-	struct cdns_dsi_bridge_state *dsi_state;
-	struct drm_bridge_state *new_bridge_state;
 	struct drm_display_mode *mode;
 	struct phy_configure_opts_mipi_dphy *phy_cfg = &output->phy_opts.mipi_dphy;
-	struct drm_connector *connector;
 	unsigned long tx_byte_period;
 	struct cdns_dsi_cfg dsi_cfg;
-	u32 tmp, reg_wakeup, div, status;
+	u32 tmp, reg_wakeup, div;
 	int nlanes;
-
-	/*
-	 * The cdns-dsi controller needs to be enabled before it's DPI source
-	 * has begun streaming. If this is not followed, there is a brief window
-	 * after DPI source enable and before cdns-dsi controller enable where
-	 * the DPI stream is on, but the cdns-dsi controller is not ready to
-	 * accept the incoming signals. This is one of the reasons why a shift
-	 * in pixel colors is observed on displays that have cdns-dsi as one of
-	 * the bridges.
-	 *
-	 * To mitigate this, enable this bridge from the bridge pre_enable()
-	 * hook, instead of the bridge _enable() hook. The bridge pre_enable()
-	 * hook gets called before the CRTC enable, where often many DPI sources
-	 * enable their streams.
-	 */
 
 	if (WARN_ON(pm_runtime_get_sync(dsi->base.dev) < 0))
 		return;
 
-	new_bridge_state = drm_atomic_get_new_bridge_state(state, bridge);
-	if (WARN_ON(!new_bridge_state))
-		return;
-
-	dsi_state = to_cdns_dsi_bridge_state(new_bridge_state);
-	dsi_cfg = dsi_state->dsi_cfg;
-
 	if (dsi->platform_ops && dsi->platform_ops->enable)
 		dsi->platform_ops->enable(dsi);
 
-	connector = drm_atomic_get_new_connector_for_encoder(state, bridge->encoder);
-	conn_state = drm_atomic_get_new_connector_state(state, connector);
-	crtc_state = drm_atomic_get_new_crtc_state(state, conn_state->crtc);
-	mode = &crtc_state->adjusted_mode;
+	mode = &bridge->encoder->crtc->state->adjusted_mode;
 	nlanes = output->dev->lanes;
 
-	cdns_dsi_init_link(dsi);
+	WARN_ON_ONCE(cdns_dsi_check_conf(dsi, mode, &dsi_cfg, false));
+
 	cdns_dsi_hs_init(dsi);
-
-	/*
-	 * Now that the DSI Link and DSI Phy are initialized,
-	 * wait for the CLK and Data Lanes to be ready.
-	 */
-	tmp = CLK_LANE_RDY;
-	for (int i = 0; i < nlanes; i++)
-		tmp |= DATA_LANE_RDY(i);
-
-	if (readl_poll_timeout(dsi->regs + MCTL_MAIN_STS, status,
-			       (tmp == (status & tmp)), 100, 500000))
-		dev_err(dsi->base.dev,
-			"Timed Out: DSI-DPhy Clock and Data Lanes not ready.\n");
+	cdns_dsi_init_link(dsi);
 
 	writel(HBP_LEN(dsi_cfg.hbp) | HSA_LEN(dsi_cfg.hsa),
 	       dsi->regs + VID_HSIZE1);
@@ -802,13 +813,7 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
 
 	tx_byte_period = DIV_ROUND_DOWN_ULL((u64)NSEC_PER_SEC * 8,
 					    phy_cfg->hs_clk_rate);
-
-	/*
-	 * Estimated time [in clock cycles] to perform LP->HS on D-PHY.
-	 * It is not clear how to calculate this, so for now,
-	 * set it to 1/10 of the total number of clocks in a line.
-	 */
-	reg_wakeup = dsi_cfg.htotal / nlanes / 10;
+	reg_wakeup = (phy_cfg->hs_prepare + phy_cfg->hs_zero) / tx_byte_period;
 	writel(REG_WAKEUP_TIME(reg_wakeup) | REG_LINE_DURATION(tmp),
 	       dsi->regs + VID_DPHY_TIME);
 
@@ -888,151 +893,25 @@ static void cdns_dsi_bridge_atomic_pre_enable(struct drm_bridge *bridge,
 	writel(tmp, dsi->regs + MCTL_MAIN_EN);
 }
 
-static u32 *cdns_dsi_bridge_get_input_bus_fmts(struct drm_bridge *bridge,
-					       struct drm_bridge_state *bridge_state,
-					       struct drm_crtc_state *crtc_state,
-					       struct drm_connector_state *conn_state,
-					       u32 output_fmt,
-					       unsigned int *num_input_fmts)
+static void cdns_dsi_bridge_pre_enable(struct drm_bridge *bridge)
 {
 	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
 	struct cdns_dsi *dsi = input_to_dsi(input);
-	struct cdns_dsi_output *output = &dsi->output;
-	u32 *input_fmts;
 
-	*num_input_fmts = 0;
+	if (WARN_ON(pm_runtime_get_sync(dsi->base.dev) < 0))
+		return;
 
-	input_fmts = kzalloc(sizeof(*input_fmts), GFP_KERNEL);
-	if (!input_fmts)
-		return NULL;
-
-	input_fmts[0] = drm_mipi_dsi_get_input_bus_fmt(output->dev->format);
-	if (!input_fmts[0])
-		return NULL;
-
-	*num_input_fmts = 1;
-
-	return input_fmts;
-}
-
-static long cdns_dsi_round_pclk(struct cdns_dsi *dsi, unsigned long pclk)
-{
-	struct cdns_dsi_output *output = &dsi->output;
-	unsigned int nlanes = output->dev->lanes;
-	union phy_configure_opts phy_opts = { 0 };
-	u32 bitspp;
-	int ret;
-
-	bitspp = mipi_dsi_pixel_format_to_bpp(output->dev->format);
-
-	ret = phy_mipi_dphy_get_default_config(pclk, bitspp, nlanes,
-					       &phy_opts.mipi_dphy);
-	if (ret)
-		return ret;
-
-	ret = phy_validate(dsi->dphy, PHY_MODE_MIPI_DPHY, 0, &phy_opts);
-	if (ret)
-		return ret;
-
-	return div_u64((u64)phy_opts.mipi_dphy.hs_clk_rate * nlanes, bitspp);
-}
-
-static int cdns_dsi_bridge_atomic_check(struct drm_bridge *bridge,
-					struct drm_bridge_state *bridge_state,
-					struct drm_crtc_state *crtc_state,
-					struct drm_connector_state *conn_state)
-{
-	struct cdns_dsi_input *input = bridge_to_cdns_dsi_input(bridge);
-	struct cdns_dsi *dsi = input_to_dsi(input);
-	struct cdns_dsi_bridge_state *dsi_state = to_cdns_dsi_bridge_state(bridge_state);
-	struct drm_display_mode *adjusted_mode = &crtc_state->adjusted_mode;
-	struct cdns_dsi_cfg *dsi_cfg = &dsi_state->dsi_cfg;
-	struct videomode vm;
-	long pclk;
-
-	/* cdns-dsi requires negative syncs */
-	adjusted_mode->flags &= ~(DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC);
-	adjusted_mode->flags |= DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC;
-
-	/*
-	 * The DPHY PLL has quite a coarsely grained clock rate options. See
-	 * what hsclk rate we can achieve based on the pixel clock, convert it
-	 * back to pixel clock, set that to the adjusted_mode->clock. This is
-	 * all in hopes that the CRTC will be able to provide us the requested
-	 * clock, as otherwise the DPI and DSI clocks will be out of sync.
-	 */
-
-	pclk = cdns_dsi_round_pclk(dsi, adjusted_mode->clock * 1000);
-	if (pclk < 0)
-		return (int)pclk;
-
-	adjusted_mode->clock = pclk / 1000;
-
-	drm_display_mode_to_videomode(adjusted_mode, &vm);
-
-	return cdns_dsi_check_conf(dsi, &vm, dsi_cfg);
-}
-
-static struct drm_bridge_state *
-cdns_dsi_bridge_atomic_duplicate_state(struct drm_bridge *bridge)
-{
-	struct cdns_dsi_bridge_state *dsi_state, *old_dsi_state;
-	struct drm_bridge_state *bridge_state;
-
-	if (WARN_ON(!bridge->base.state))
-		return NULL;
-
-	bridge_state = drm_priv_to_bridge_state(bridge->base.state);
-	old_dsi_state = to_cdns_dsi_bridge_state(bridge_state);
-
-	dsi_state = kzalloc(sizeof(*dsi_state), GFP_KERNEL);
-	if (!dsi_state)
-		return NULL;
-
-	__drm_atomic_helper_bridge_duplicate_state(bridge, &dsi_state->base);
-
-	memcpy(&dsi_state->dsi_cfg, &old_dsi_state->dsi_cfg,
-	       sizeof(dsi_state->dsi_cfg));
-
-	return &dsi_state->base;
-}
-
-static void
-cdns_dsi_bridge_atomic_destroy_state(struct drm_bridge *bridge,
-				     struct drm_bridge_state *state)
-{
-	struct cdns_dsi_bridge_state *dsi_state;
-
-	dsi_state = to_cdns_dsi_bridge_state(state);
-
-	kfree(dsi_state);
-}
-
-static struct drm_bridge_state *
-cdns_dsi_bridge_atomic_reset(struct drm_bridge *bridge)
-{
-	struct cdns_dsi_bridge_state *dsi_state;
-
-	dsi_state = kzalloc(sizeof(*dsi_state), GFP_KERNEL);
-	if (!dsi_state)
-		return NULL;
-
-	memset(dsi_state, 0, sizeof(*dsi_state));
-	dsi_state->base.bridge = bridge;
-
-	return &dsi_state->base;
+	cdns_dsi_init_link(dsi);
+	cdns_dsi_hs_init(dsi);
 }
 
 static const struct drm_bridge_funcs cdns_dsi_bridge_funcs = {
 	.attach = cdns_dsi_bridge_attach,
 	.mode_valid = cdns_dsi_bridge_mode_valid,
-	.atomic_pre_enable = cdns_dsi_bridge_atomic_pre_enable,
-	.atomic_post_disable = cdns_dsi_bridge_atomic_post_disable,
-	.atomic_check = cdns_dsi_bridge_atomic_check,
-	.atomic_reset = cdns_dsi_bridge_atomic_reset,
-	.atomic_duplicate_state = cdns_dsi_bridge_atomic_duplicate_state,
-	.atomic_destroy_state = cdns_dsi_bridge_atomic_destroy_state,
-	.atomic_get_input_bus_fmts = cdns_dsi_bridge_get_input_bus_fmts,
+	.disable = cdns_dsi_bridge_disable,
+	.pre_enable = cdns_dsi_bridge_pre_enable,
+	.enable = cdns_dsi_bridge_enable,
+	.post_disable = cdns_dsi_bridge_post_disable,
 };
 
 static int cdns_dsi_attach(struct mipi_dsi_host *host,
@@ -1042,6 +921,8 @@ static int cdns_dsi_attach(struct mipi_dsi_host *host,
 	struct cdns_dsi_output *output = &dsi->output;
 	struct cdns_dsi_input *input = &dsi->input;
 	struct drm_bridge *bridge;
+	struct drm_panel *panel;
+	struct device_node *np;
 	int ret;
 
 	/*
@@ -1052,13 +933,33 @@ static int cdns_dsi_attach(struct mipi_dsi_host *host,
 	if (output->dev)
 		return -EBUSY;
 
+	/* We do not support burst mode yet. */
+	if (dev->mode_flags & MIPI_DSI_MODE_VIDEO_BURST)
+		return -ENOTSUPP;
+
 	/*
 	 * The host <-> device link might be described using an OF-graph
 	 * representation, in this case we extract the device of_node from
-	 * this representation.
+	 * this representation, otherwise we use dsidev->dev.of_node which
+	 * should have been filled by the core.
 	 */
-	bridge = devm_drm_of_get_bridge(dsi->base.dev, dsi->base.dev->of_node,
-					DSI_OUTPUT_PORT, dev->channel);
+	np = of_graph_get_remote_node(dsi->base.dev->of_node, DSI_OUTPUT_PORT,
+				      dev->channel);
+	if (!np)
+		np = of_node_get(dev->dev.of_node);
+
+	panel = of_drm_find_panel(np);
+	if (!IS_ERR(panel)) {
+		bridge = drm_panel_bridge_add_typed(panel,
+						    DRM_MODE_CONNECTOR_DSI);
+	} else {
+		bridge = of_drm_find_bridge(dev->dev.of_node);
+		if (!bridge)
+			bridge = ERR_PTR(-EINVAL);
+	}
+
+	of_node_put(np);
+
 	if (IS_ERR(bridge)) {
 		ret = PTR_ERR(bridge);
 		dev_err(host->dev, "failed to add DSI device %s (err = %d)",
@@ -1068,6 +969,7 @@ static int cdns_dsi_attach(struct mipi_dsi_host *host,
 
 	output->dev = dev;
 	output->bridge = bridge;
+	output->panel = panel;
 
 	/*
 	 * The DSI output has been properly configured, we can now safely
@@ -1083,9 +985,12 @@ static int cdns_dsi_detach(struct mipi_dsi_host *host,
 			   struct mipi_dsi_device *dev)
 {
 	struct cdns_dsi *dsi = to_cdns_dsi(host);
+	struct cdns_dsi_output *output = &dsi->output;
 	struct cdns_dsi_input *input = &dsi->input;
 
 	drm_bridge_remove(&input->bridge);
+	if (output->panel)
+		drm_panel_bridge_remove(output->bridge);
 
 	return 0;
 }
@@ -1248,6 +1153,7 @@ static int __maybe_unused cdns_dsi_suspend(struct device *dev)
 	clk_disable_unprepare(dsi->dsi_sys_clk);
 	clk_disable_unprepare(dsi->dsi_p_clk);
 	reset_control_assert(dsi->dsi_p_rst);
+	dsi->link_initialized = false;
 	return 0;
 }
 
@@ -1261,10 +1167,9 @@ static int cdns_dsi_drm_probe(struct platform_device *pdev)
 	int ret, irq;
 	u32 val;
 
-	dsi = devm_drm_bridge_alloc(&pdev->dev, struct cdns_dsi, input.bridge,
-				    &cdns_dsi_bridge_funcs);
-	if (IS_ERR(dsi))
-		return PTR_ERR(dsi);
+	dsi = devm_kzalloc(&pdev->dev, sizeof(*dsi), GFP_KERNEL);
+	if (!dsi)
+		return -ENOMEM;
 
 	platform_set_drvdata(pdev, dsi);
 
@@ -1322,6 +1227,7 @@ static int cdns_dsi_drm_probe(struct platform_device *pdev)
 	 * CDNS_DPI_INPUT.
 	 */
 	input->id = CDNS_DPI_INPUT;
+	input->bridge.funcs = &cdns_dsi_bridge_funcs;
 	input->bridge.of_node = pdev->dev.of_node;
 
 	/* Mask all interrupts before registering the IRQ handler. */
@@ -1372,7 +1278,7 @@ err_disable_pclk:
 	return ret;
 }
 
-static void cdns_dsi_drm_remove(struct platform_device *pdev)
+static int cdns_dsi_drm_remove(struct platform_device *pdev)
 {
 	struct cdns_dsi *dsi = platform_get_drvdata(pdev);
 
@@ -1382,6 +1288,8 @@ static void cdns_dsi_drm_remove(struct platform_device *pdev)
 		dsi->platform_ops->deinit(dsi);
 
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static const struct of_device_id cdns_dsi_of_match[] = {
@@ -1408,3 +1316,4 @@ MODULE_AUTHOR("Boris Brezillon <boris.brezillon@bootlin.com>");
 MODULE_DESCRIPTION("Cadence DSI driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:cdns-dsi");
+

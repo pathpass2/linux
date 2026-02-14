@@ -33,7 +33,6 @@
 #include <linux/uaccess.h>
 #include <linux/atomic.h>
 
-#include <net/gso.h>
 #include <net/icmp.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
@@ -240,11 +239,13 @@ static void xfrmi_dev_free(struct net_device *dev)
 	struct xfrm_if *xi = netdev_priv(dev);
 
 	gro_cells_destroy(&xi->gro_cells);
+	free_percpu(dev->tstats);
 }
 
-static int xfrmi_create(struct net *net, struct net_device *dev)
+static int xfrmi_create(struct net_device *dev)
 {
 	struct xfrm_if *xi = netdev_priv(dev);
+	struct net *net = dev_net(dev);
 	struct xfrmi_net *xfrmn = net_generic(net, xfrmi_net_id);
 	int err;
 
@@ -378,8 +379,8 @@ static int xfrmi_rcv_cb(struct sk_buff *skb, int err)
 	skb->dev = dev;
 
 	if (err) {
-		DEV_STATS_INC(dev, rx_errors);
-		DEV_STATS_INC(dev, rx_dropped);
+		dev->stats.rx_errors++;
+		dev->stats.rx_dropped++;
 
 		return 0;
 	}
@@ -424,6 +425,7 @@ static int
 xfrmi_xmit2(struct sk_buff *skb, struct net_device *dev, struct flowi *fl)
 {
 	struct xfrm_if *xi = netdev_priv(dev);
+	struct net_device_stats *stats = &xi->dev->stats;
 	struct dst_entry *dst = skb_dst(skb);
 	unsigned int length = skb->len;
 	struct net_device *tdev;
@@ -470,7 +472,7 @@ xfrmi_xmit2(struct sk_buff *skb, struct net_device *dev, struct flowi *fl)
 	tdev = dst->dev;
 
 	if (tdev == dev) {
-		DEV_STATS_INC(dev, collisions);
+		stats->collisions++;
 		net_warn_ratelimited("%s: Local routing loop detected!\n",
 				     dev->name);
 		goto tx_err_dst_release;
@@ -505,17 +507,17 @@ xmit:
 	skb_dst_set(skb, dst);
 	skb->dev = tdev;
 
-	err = dst_output(xi->net, skb_to_full_sk(skb), skb);
+	err = dst_output(xi->net, skb->sk, skb);
 	if (net_xmit_eval(err) == 0) {
 		dev_sw_netstats_tx_add(dev, 1, length);
 	} else {
-		DEV_STATS_INC(dev, tx_errors);
-		DEV_STATS_INC(dev, tx_aborted_errors);
+		stats->tx_errors++;
+		stats->tx_aborted_errors++;
 	}
 
 	return 0;
 tx_err_link_failure:
-	DEV_STATS_INC(dev, tx_carrier_errors);
+	stats->tx_carrier_errors++;
 	dst_link_failure(skb);
 tx_err_dst_release:
 	dst_release(dst);
@@ -525,6 +527,7 @@ tx_err_dst_release:
 static netdev_tx_t xfrmi_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct xfrm_if *xi = netdev_priv(dev);
+	struct net_device_stats *stats = &xi->dev->stats;
 	struct dst_entry *dst = skb_dst(skb);
 	struct flowi fl;
 	int ret;
@@ -533,23 +536,23 @@ static netdev_tx_t xfrmi_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	switch (skb->protocol) {
 	case htons(ETH_P_IPV6):
+		xfrm_decode_session(skb, &fl, AF_INET6);
 		memset(IP6CB(skb), 0, sizeof(*IP6CB(skb)));
-		xfrm_decode_session(dev_net(dev), skb, &fl, AF_INET6);
 		if (!dst) {
 			fl.u.ip6.flowi6_oif = dev->ifindex;
 			fl.u.ip6.flowi6_flags |= FLOWI_FLAG_ANYSRC;
 			dst = ip6_route_output(dev_net(dev), NULL, &fl.u.ip6);
 			if (dst->error) {
 				dst_release(dst);
-				DEV_STATS_INC(dev, tx_carrier_errors);
+				stats->tx_carrier_errors++;
 				goto tx_err;
 			}
 			skb_dst_set(skb, dst);
 		}
 		break;
 	case htons(ETH_P_IP):
+		xfrm_decode_session(skb, &fl, AF_INET);
 		memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
-		xfrm_decode_session(dev_net(dev), skb, &fl, AF_INET);
 		if (!dst) {
 			struct rtable *rt;
 
@@ -557,7 +560,7 @@ static netdev_tx_t xfrmi_xmit(struct sk_buff *skb, struct net_device *dev)
 			fl.u.ip4.flowi4_flags |= FLOWI_FLAG_ANYSRC;
 			rt = __ip_route_output_key(dev_net(dev), &fl.u.ip4);
 			if (IS_ERR(rt)) {
-				DEV_STATS_INC(dev, tx_carrier_errors);
+				stats->tx_carrier_errors++;
 				goto tx_err;
 			}
 			skb_dst_set(skb, &rt->dst);
@@ -576,8 +579,8 @@ static netdev_tx_t xfrmi_xmit(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 
 tx_err:
-	DEV_STATS_INC(dev, tx_errors);
-	DEV_STATS_INC(dev, tx_dropped);
+	stats->tx_errors++;
+	stats->tx_dropped++;
 	kfree_skb(skb);
 	return NETDEV_TX_OK;
 }
@@ -725,7 +728,7 @@ static int xfrmi_get_iflink(const struct net_device *dev)
 {
 	struct xfrm_if *xi = netdev_priv(dev);
 
-	return READ_ONCE(xi->p.link);
+	return xi->p.link;
 }
 
 static const struct net_device_ops xfrmi_netdev_ops = {
@@ -747,7 +750,6 @@ static void xfrmi_dev_setup(struct net_device *dev)
 	dev->flags 		= IFF_NOARP;
 	dev->needs_free_netdev	= true;
 	dev->priv_destructor	= xfrmi_dev_free;
-	dev->pcpu_stat_type	= NETDEV_PCPU_STAT_TSTATS;
 	netif_keep_dst(dev);
 
 	eth_broadcast_addr(dev->broadcast);
@@ -764,11 +766,17 @@ static int xfrmi_dev_init(struct net_device *dev)
 	struct net_device *phydev = __dev_get_by_index(xi->net, xi->p.link);
 	int err;
 
-	err = gro_cells_init(&xi->gro_cells, dev);
-	if (err)
-		return err;
+	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
+	if (!dev->tstats)
+		return -ENOMEM;
 
-	dev->lltx = true;
+	err = gro_cells_init(&xi->gro_cells, dev);
+	if (err) {
+		free_percpu(dev->tstats);
+		return err;
+	}
+
+	dev->features |= NETIF_F_LLTX;
 	dev->features |= XFRMI_FEATURES;
 	dev->hw_features |= XFRMI_FEATURES;
 
@@ -813,17 +821,15 @@ static void xfrmi_netlink_parms(struct nlattr *data[],
 		parms->collect_md = true;
 }
 
-static int xfrmi_newlink(struct net_device *dev,
-			 struct rtnl_newlink_params *params,
-			 struct netlink_ext_ack *extack)
+static int xfrmi_newlink(struct net *src_net, struct net_device *dev,
+			struct nlattr *tb[], struct nlattr *data[],
+			struct netlink_ext_ack *extack)
 {
-	struct nlattr **data = params->data;
+	struct net *net = dev_net(dev);
 	struct xfrm_if_parms p = {};
 	struct xfrm_if *xi;
-	struct net *net;
 	int err;
 
-	net = params->link_net ? : dev_net(dev);
 	xfrmi_netlink_parms(data, &p);
 	if (p.collect_md) {
 		struct xfrmi_net *xfrmn = net_generic(net, xfrmi_net_id);
@@ -852,7 +858,7 @@ static int xfrmi_newlink(struct net_device *dev,
 	xi->net = net;
 	xi->dev = dev;
 
-	err = xfrmi_create(net, dev);
+	err = xfrmi_create(dev);
 	return err;
 }
 
@@ -875,7 +881,7 @@ static int xfrmi_changelink(struct net_device *dev, struct nlattr *tb[],
 		return -EINVAL;
 	}
 
-	if (p.collect_md || xi->p.collect_md) {
+	if (p.collect_md) {
 		NL_SET_ERR_MSG(extack, "collect_md can't be changed");
 		return -EINVAL;
 	}
@@ -886,6 +892,11 @@ static int xfrmi_changelink(struct net_device *dev, struct nlattr *tb[],
 	} else {
 		if (xi->dev != dev)
 			return -EEXIST;
+		if (xi->p.collect_md) {
+			NL_SET_ERR_MSG(extack,
+				       "device can't be changed to collect_md");
+			return -EINVAL;
+		}
 	}
 
 	return xfrmi_update(xi, &p);
@@ -922,7 +933,7 @@ static struct net *xfrmi_get_link_net(const struct net_device *dev)
 {
 	struct xfrm_if *xi = netdev_priv(dev);
 
-	return READ_ONCE(xi->net);
+	return xi->net;
 }
 
 static const struct nla_policy xfrmi_policy[IFLA_XFRM_MAX + 1] = {
@@ -947,28 +958,34 @@ static struct rtnl_link_ops xfrmi_link_ops __read_mostly = {
 	.get_link_net	= xfrmi_get_link_net,
 };
 
-static void __net_exit xfrmi_exit_rtnl(struct net *net,
-				       struct list_head *dev_to_kill)
+static void __net_exit xfrmi_exit_batch_net(struct list_head *net_exit_list)
 {
-	struct xfrmi_net *xfrmn = net_generic(net, xfrmi_net_id);
-	struct xfrm_if __rcu **xip;
-	struct xfrm_if *xi;
-	int i;
+	struct net *net;
+	LIST_HEAD(list);
 
-	for (i = 0; i < XFRMI_HASH_SIZE; i++) {
-		for (xip = &xfrmn->xfrmi[i];
-		     (xi = rtnl_net_dereference(net, *xip)) != NULL;
-		     xip = &xi->next)
-			unregister_netdevice_queue(xi->dev, dev_to_kill);
+	rtnl_lock();
+	list_for_each_entry(net, net_exit_list, exit_list) {
+		struct xfrmi_net *xfrmn = net_generic(net, xfrmi_net_id);
+		struct xfrm_if __rcu **xip;
+		struct xfrm_if *xi;
+		int i;
+
+		for (i = 0; i < XFRMI_HASH_SIZE; i++) {
+			for (xip = &xfrmn->xfrmi[i];
+			     (xi = rtnl_dereference(*xip)) != NULL;
+			     xip = &xi->next)
+				unregister_netdevice_queue(xi->dev, &list);
+		}
+		xi = rtnl_dereference(xfrmn->collect_md_xfrmi);
+		if (xi)
+			unregister_netdevice_queue(xi->dev, &list);
 	}
-
-	xi = rtnl_net_dereference(net, xfrmn->collect_md_xfrmi);
-	if (xi)
-		unregister_netdevice_queue(xi->dev, dev_to_kill);
+	unregister_netdevice_many(&list);
+	rtnl_unlock();
 }
 
 static struct pernet_operations xfrmi_net_ops = {
-	.exit_rtnl = xfrmi_exit_rtnl,
+	.exit_batch = xfrmi_exit_batch_net,
 	.id   = &xfrmi_net_id,
 	.size = sizeof(struct xfrmi_net),
 };

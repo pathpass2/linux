@@ -78,7 +78,7 @@ definitions:
     $ref: /schemas/types.yaml#/definitions/uint32
 
   prefix:
-    description: device name prefix
+    description: "device name prefix"
     $ref: /schemas/types.yaml#/definitions/string
 
   label:
@@ -148,15 +148,6 @@ definitions:
     required:
       - sound-dai
 
-  additional-devs:
-    type: object
-    description:
-      Additional devices used by the simple audio card.
-    patternProperties:
-      '^iio-aux(-.+)?$':
-        type: object
-        $ref: audio-iio-aux.yaml#
-
 properties:
   compatible:
     contains:
@@ -196,8 +187,6 @@ properties:
     $ref: "#/definitions/mclk-fs"
   simple-audio-card,aux-devs:
     $ref: "#/definitions/aux-devs"
-  simple-audio-card,additional-devs:
-    $ref: "#/definitions/additional-devs"
   simple-audio-card,convert-rate:
     $ref: "#/definitions/convert-rate"
   simple-audio-card,convert-channels:
@@ -207,14 +196,8 @@ properties:
   simple-audio-card,pin-switches:
     $ref: "#/definitions/pin-switches"
   simple-audio-card,hp-det-gpio:
-    deprecated: true
-    maxItems: 1
-  simple-audio-card,hp-det-gpios:
     maxItems: 1
   simple-audio-card,mic-det-gpio:
-    deprecated: true
-    maxItems: 1
-  simple-audio-card,mic-det-gpios:
     maxItems: 1
 
 patternProperties:
@@ -262,14 +245,8 @@ patternProperties:
       pin-switches:
         $ref: "#/definitions/pin-switches"
       hp-det-gpio:
-        deprecated: true
-        maxItems: 1
-      hp-det-gpios:
         maxItems: 1
       mic-det-gpio:
-        deprecated: true
-        maxItems: 1
-      mic-det-gpios:
         maxItems: 1
 
     patternProperties:
@@ -285,9 +262,9 @@ required:
 additionalProperties: false
 
 examples:
-# --------------------
+#--------------------
 # single DAI link
-# --------------------
+#--------------------
   - |
     sound {
         compatible = "simple-audio-card";
@@ -314,9 +291,9 @@ examples:
         };
     };
 
-# --------------------
+#--------------------
 # Multi DAI links
-# --------------------
+#--------------------
   - |
     sound {
         compatible = "simple-audio-card";
@@ -357,10 +334,10 @@ examples:
         };
     };
 
-# --------------------
+#--------------------
 # route audio from IMX6 SSI2 through TLV320DAC3100 codec
 # through TPA6130A2 amplifier to headphones:
-# --------------------
+#--------------------
   - |
     sound {
         compatible = "simple-audio-card";
@@ -382,51 +359,9 @@ examples:
         };
     };
 
-# --------------------
-# route audio to/from a codec through an amplifier
-# designed with a potentiometer driven by IIO:
-# --------------------
-  - |
-    sound {
-        compatible = "simple-audio-card";
-
-        simple-audio-card,aux-devs = <&amp_in>, <&amp_out>;
-        simple-audio-card,routing =
-            "CODEC LEFTIN", "AMP_IN LEFT OUT",
-            "CODEC RIGHTIN", "AMP_IN RIGHT OUT",
-            "AMP_OUT LEFT IN", "CODEC LEFTOUT",
-            "AMP_OUT RIGHT IN", "CODEC RIGHTOUT";
-
-        simple-audio-card,additional-devs {
-            amp_out: iio-aux-out {
-                compatible = "audio-iio-aux";
-                io-channels = <&pot_out 0>, <&pot_out 1>;
-                io-channel-names = "LEFT", "RIGHT";
-                snd-control-invert-range = <1 1>;
-                sound-name-prefix = "AMP_OUT";
-            };
-
-            amp_in: iio_aux-in {
-                compatible = "audio-iio-aux";
-                io-channels = <&pot_in 0>, <&pot_in 1>;
-                io-channel-names = "LEFT", "RIGHT";
-                sound-name-prefix = "AMP_IN";
-            };
-        };
-
-        simple-audio-card,cpu {
-            sound-dai = <&cpu>;
-        };
-
-        simple-audio-card,codec {
-            sound-dai = <&codec>;
-            clocks = <&clocks>;
-        };
-    };
-
-# --------------------
+#--------------------
 # Sampling Rate Conversion
-# --------------------
+#--------------------
   - |
     sound {
         compatible = "simple-audio-card";
@@ -452,9 +387,9 @@ examples:
         };
     };
 
-# --------------------
+#--------------------
 # 2 CPU 1 Codec (Mixing)
-# --------------------
+#--------------------
   - |
     sound {
         compatible = "simple-audio-card";
@@ -489,7 +424,7 @@ examples:
         };
     };
 
-# --------------------
+#--------------------
 # Multi DAI links with DPCM:
 #
 # CPU0 ------ ak4613
@@ -498,7 +433,7 @@ examples:
 # CPU3 --/                /* DPCM 5ch/6ch */
 # CPU4 --/                /* DPCM 7ch/8ch */
 # CPU5 ------ PCM3168A-c
-# --------------------
+#--------------------
   - |
     sound {
         compatible = "simple-audio-card";

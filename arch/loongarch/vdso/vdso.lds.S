@@ -3,16 +3,14 @@
  * Author: Huacai Chen <chenhuacai@loongson.cn>
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
-#include <asm/page.h>
-#include <generated/asm-offsets.h>
-#include <vdso/datapage.h>
+
+OUTPUT_FORMAT("elf64-loongarch", "elf64-loongarch", "elf64-loongarch")
 
 OUTPUT_ARCH(loongarch)
 
 SECTIONS
 {
-	VDSO_VVAR_SYMS
-
+	PROVIDE(_start = .);
 	. = SIZEOF_HEADERS;
 
 	.hash		: { *(.hash) }			:text
@@ -61,12 +59,9 @@ VERSION
 	LINUX_5.10 {
 	global:
 		__vdso_getcpu;
-#ifdef CONFIG_GENERIC_GETTIMEOFDAY
 		__vdso_clock_getres;
 		__vdso_clock_gettime;
 		__vdso_gettimeofday;
-#endif
-		__vdso_getrandom;
 		__vdso_rt_sigreturn;
 	local: *;
 	};

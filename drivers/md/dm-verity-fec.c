@@ -11,15 +11,20 @@
 #define DM_MSG_PREFIX	"verity-fec"
 
 /*
- * When correcting a data block, the FEC code performs optimally when it can
- * collect all the associated RS blocks at the same time.  As each byte is part
- * of a different RS block, there are '1 << data_dev_block_bits' RS blocks.
- * There are '1 << DM_VERITY_FEC_BUF_RS_BITS' RS blocks per buffer, so that
- * gives '1 << (data_dev_block_bits - DM_VERITY_FEC_BUF_RS_BITS)' buffers.
+ * If error correction has been configured, returns true.
  */
-static inline unsigned int fec_max_nbufs(struct dm_verity *v)
+bool verity_fec_is_enabled(struct dm_verity *v)
 {
-	return 1 << (v->data_dev_block_bits - DM_VERITY_FEC_BUF_RS_BITS);
+	return v->fec && v->fec->dev;
+}
+
+/*
+ * Return a pointer to dm_verity_fec_io after dm_verity_io and its variable
+ * length fields.
+ */
+static inline struct dm_verity_fec_io *fec_io(struct dm_verity_io *io)
+{
+	return (struct dm_verity_fec_io *) verity_io_digest_end(io->v, io);
 }
 
 /*
@@ -34,25 +39,36 @@ static inline u64 fec_interleave(struct dm_verity *v, u64 offset)
 }
 
 /*
+ * Decode an RS block using Reed-Solomon.
+ */
+static int fec_decode_rs8(struct dm_verity *v, struct dm_verity_fec_io *fio,
+			  u8 *data, u8 *fec, int neras)
+{
+	int i;
+	uint16_t par[DM_VERITY_FEC_RSM - DM_VERITY_FEC_MIN_RSN];
+
+	for (i = 0; i < v->fec->roots; i++)
+		par[i] = fec[i];
+
+	return decode_rs8(fio->rs, data, par, v->fec->rsn, NULL, neras,
+			  fio->erasures, 0, NULL);
+}
+
+/*
  * Read error-correcting codes for the requested RS block. Returns a pointer
  * to the data block. Caller is responsible for releasing buf.
  */
 static u8 *fec_read_parity(struct dm_verity *v, u64 rsb, int index,
-			   unsigned int *offset, unsigned int par_buf_offset,
-			   struct dm_buffer **buf, unsigned short ioprio)
+			   unsigned int *offset, struct dm_buffer **buf)
 {
 	u64 position, block, rem;
 	u8 *res;
 
-	/* We have already part of parity bytes read, skip to the next block */
-	if (par_buf_offset)
-		index++;
-
 	position = (index + rsb) * v->fec->roots;
 	block = div64_u64_rem(position, v->fec->io_size, &rem);
-	*offset = par_buf_offset ? 0 : (unsigned int)rem;
+	*offset = (unsigned int)rem;
 
-	res = dm_bufio_read_with_ioprio(v->fec->bufio, block, buf, ioprio);
+	res = dm_bufio_read(v->fec->bufio, block, buf);
 	if (IS_ERR(res)) {
 		DMERR("%s: FEC %llu: parity read failed (block %llu): %ld",
 		      v->data_dev->name, (unsigned long long)rsb,
@@ -62,6 +78,14 @@ static u8 *fec_read_parity(struct dm_verity *v, u64 rsb, int index,
 
 	return res;
 }
+
+/* Loop over each preallocated buffer slot. */
+#define fec_for_each_prealloc_buffer(__i) \
+	for (__i = 0; __i < DM_VERITY_FEC_BUF_PREALLOC; __i++)
+
+/* Loop over each extra buffer slot. */
+#define fec_for_each_extra_buffer(io, __i) \
+	for (__i = DM_VERITY_FEC_BUF_PREALLOC; __i < DM_VERITY_FEC_BUF_MAX; __i++)
 
 /* Loop over each allocated buffer. */
 #define fec_for_each_buffer(io, __i) \
@@ -96,19 +120,16 @@ static inline unsigned int fec_buffer_rs_index(unsigned int i, unsigned int j)
  * Decode all RS blocks from buffers and copy corrected bytes into fio->output
  * starting from block_offset.
  */
-static int fec_decode_bufs(struct dm_verity *v, struct dm_verity_io *io,
-			   struct dm_verity_fec_io *fio, u64 rsb, int byte_index,
-			   unsigned int block_offset, int neras)
+static int fec_decode_bufs(struct dm_verity *v, struct dm_verity_fec_io *fio,
+			   u64 rsb, int byte_index, unsigned int block_offset,
+			   int neras)
 {
 	int r, corrected = 0, res;
 	struct dm_buffer *buf;
-	unsigned int n, i, j, offset, par_buf_offset = 0;
-	uint16_t par_buf[DM_VERITY_FEC_RSM - DM_VERITY_FEC_MIN_RSN];
+	unsigned int n, i, offset;
 	u8 *par, *block;
-	struct bio *bio = dm_bio_from_per_bio_data(io, v->ti->per_io_data_size);
 
-	par = fec_read_parity(v, rsb, block_offset, &offset,
-			      par_buf_offset, &buf, bio->bi_ioprio);
+	par = fec_read_parity(v, rsb, block_offset, &offset, &buf);
 	if (IS_ERR(par))
 		return PTR_ERR(par);
 
@@ -118,11 +139,7 @@ static int fec_decode_bufs(struct dm_verity *v, struct dm_verity_io *io,
 	 */
 	fec_for_each_buffer_rs_block(fio, n, i) {
 		block = fec_buffer_rs_block(v, fio, n, i);
-		for (j = 0; j < v->fec->roots - par_buf_offset; j++)
-			par_buf[par_buf_offset + j] = par[offset + j];
-		/* Decode an RS block using Reed-Solomon */
-		res = decode_rs8(fio->rs, block, par_buf, v->fec->rsn,
-				 NULL, neras, fio->erasures, 0, NULL);
+		res = fec_decode_rs8(v, fio, block, &par[offset], neras);
 		if (res < 0) {
 			r = res;
 			goto error;
@@ -135,22 +152,12 @@ static int fec_decode_bufs(struct dm_verity *v, struct dm_verity_io *io,
 		if (block_offset >= 1 << v->data_dev_block_bits)
 			goto done;
 
-		/* Read the next block when we run out of parity bytes */
-		offset += (v->fec->roots - par_buf_offset);
-		/* Check if parity bytes are split between blocks */
-		if (offset < v->fec->io_size && (offset + v->fec->roots) > v->fec->io_size) {
-			par_buf_offset = v->fec->io_size - offset;
-			for (j = 0; j < par_buf_offset; j++)
-				par_buf[j] = par[offset + j];
-			offset += par_buf_offset;
-		} else
-			par_buf_offset = 0;
-
+		/* read the next block when we run out of parity bytes */
+		offset += v->fec->roots;
 		if (offset >= v->fec->io_size) {
 			dm_bufio_release(buf);
 
-			par = fec_read_parity(v, rsb, block_offset, &offset,
-					      par_buf_offset, &buf, bio->bi_ioprio);
+			par = fec_read_parity(v, rsb, block_offset, &offset, &buf);
 			if (IS_ERR(par))
 				return PTR_ERR(par);
 		}
@@ -163,11 +170,9 @@ error:
 	if (r < 0 && neras)
 		DMERR_LIMIT("%s: FEC %llu: failed to correct: %d",
 			    v->data_dev->name, (unsigned long long)rsb, r);
-	else if (r > 0) {
+	else if (r > 0)
 		DMWARN_LIMIT("%s: FEC %llu: corrected %d errors",
 			     v->data_dev->name, (unsigned long long)rsb, r);
-		atomic64_inc(&v->fec->corrected);
-	}
 
 	return r;
 }
@@ -176,13 +181,15 @@ error:
  * Locate data block erasures using verity hashes.
  */
 static int fec_is_erasure(struct dm_verity *v, struct dm_verity_io *io,
-			  const u8 *want_digest, const u8 *data)
+			  u8 *want_digest, u8 *data)
 {
-	if (unlikely(verity_hash(v, io, data, 1 << v->data_dev_block_bits,
-				 io->tmp_digest)))
+	if (unlikely(verity_hash(v, verity_io_hash_req(v, io),
+				 data, 1 << v->data_dev_block_bits,
+				 verity_io_real_digest(v, io))))
 		return 0;
 
-	return memcmp(io->tmp_digest, want_digest, v->digest_size) != 0;
+	return memcmp(verity_io_real_digest(v, io), want_digest,
+		      v->digest_size) != 0;
 }
 
 /*
@@ -197,12 +204,11 @@ static int fec_read_bufs(struct dm_verity *v, struct dm_verity_io *io,
 	int i, j, target_index = -1;
 	struct dm_buffer *buf;
 	struct dm_bufio_client *bufio;
-	struct dm_verity_fec_io *fio = io->fec_io;
+	struct dm_verity_fec_io *fio = fec_io(io);
 	u64 block, ileaved;
 	u8 *bbuf, *rs_block;
 	u8 want_digest[HASH_MAX_DIGESTSIZE];
 	unsigned int n, k;
-	struct bio *bio = dm_bio_from_per_bio_data(io, v->ti->per_io_data_size);
 
 	if (neras)
 		*neras = 0;
@@ -241,7 +247,7 @@ static int fec_read_bufs(struct dm_verity *v, struct dm_verity_io *io,
 			bufio = v->bufio;
 		}
 
-		bbuf = dm_bufio_read_with_ioprio(bufio, block, &buf, bio->bi_ioprio);
+		bbuf = dm_bufio_read(bufio, block, &buf);
 		if (IS_ERR(bbuf)) {
 			DMWARN_LIMIT("%s: FEC %llu: read failed (%llu): %ld",
 				     v->data_dev->name,
@@ -293,38 +299,43 @@ done:
 }
 
 /*
- * Allocate and initialize a struct dm_verity_fec_io to use for FEC for a bio.
- * This runs the first time a block needs to be corrected for a bio.  In the
- * common case where no block needs to be corrected, this code never runs.
- *
- * This always succeeds, as all required allocations are done from mempools.
- * Additional buffers are also allocated opportunistically to improve error
- * correction performance, but these aren't required to succeed.
+ * Allocate RS control structure and FEC buffers from preallocated mempools,
+ * and attempt to allocate as many extra buffers as available.
  */
-static struct dm_verity_fec_io *fec_alloc_and_init_io(struct dm_verity *v)
+static int fec_alloc_bufs(struct dm_verity *v, struct dm_verity_fec_io *fio)
 {
-	const unsigned int max_nbufs = fec_max_nbufs(v);
-	struct dm_verity_fec *f = v->fec;
-	struct dm_verity_fec_io *fio;
 	unsigned int n;
 
-	fio = mempool_alloc(&f->fio_pool, GFP_NOIO);
-	fio->rs = mempool_alloc(&f->rs_pool, GFP_NOIO);
+	if (!fio->rs)
+		fio->rs = mempool_alloc(&v->fec->rs_pool, GFP_NOIO);
 
-	fio->bufs[0] = mempool_alloc(&f->prealloc_pool, GFP_NOIO);
+	fec_for_each_prealloc_buffer(n) {
+		if (fio->bufs[n])
+			continue;
+
+		fio->bufs[n] = mempool_alloc(&v->fec->prealloc_pool, GFP_NOWAIT);
+		if (unlikely(!fio->bufs[n])) {
+			DMERR("failed to allocate FEC buffer");
+			return -ENOMEM;
+		}
+	}
 
 	/* try to allocate the maximum number of buffers */
-	for (n = 1; n < max_nbufs; n++) {
-		fio->bufs[n] = kmem_cache_alloc(f->cache, GFP_NOWAIT);
+	fec_for_each_extra_buffer(fio, n) {
+		if (fio->bufs[n])
+			continue;
+
+		fio->bufs[n] = mempool_alloc(&v->fec->extra_pool, GFP_NOWAIT);
 		/* we can manage with even one buffer if necessary */
 		if (unlikely(!fio->bufs[n]))
 			break;
 	}
 	fio->nbufs = n;
 
-	fio->output = mempool_alloc(&f->output_pool, GFP_NOIO);
-	fio->level = 0;
-	return fio;
+	if (!fio->output)
+		fio->output = mempool_alloc(&v->fec->output_pool, GFP_NOIO);
+
+	return 0;
 }
 
 /*
@@ -348,10 +359,14 @@ static void fec_init_bufs(struct dm_verity *v, struct dm_verity_fec_io *fio)
  */
 static int fec_decode_rsb(struct dm_verity *v, struct dm_verity_io *io,
 			  struct dm_verity_fec_io *fio, u64 rsb, u64 offset,
-			  const u8 *want_digest, bool use_erasures)
+			  bool use_erasures)
 {
 	int r, neras = 0;
 	unsigned int pos;
+
+	r = fec_alloc_bufs(v, fio);
+	if (unlikely(r < 0))
+		return r;
 
 	for (pos = 0; pos < 1 << v->data_dev_block_bits; ) {
 		fec_init_bufs(v, fio);
@@ -361,7 +376,7 @@ static int fec_decode_rsb(struct dm_verity *v, struct dm_verity_io *io,
 		if (unlikely(r < 0))
 			return r;
 
-		r = fec_decode_bufs(v, io, fio, rsb, r, pos, neras);
+		r = fec_decode_bufs(v, fio, rsb, r, pos, neras);
 		if (r < 0)
 			return r;
 
@@ -369,12 +384,14 @@ static int fec_decode_rsb(struct dm_verity *v, struct dm_verity_io *io,
 	}
 
 	/* Always re-validate the corrected block against the expected hash */
-	r = verity_hash(v, io, fio->output, 1 << v->data_dev_block_bits,
-			io->tmp_digest);
+	r = verity_hash(v, verity_io_hash_req(v, io), fio->output,
+			1 << v->data_dev_block_bits,
+			verity_io_real_digest(v, io));
 	if (unlikely(r < 0))
 		return r;
 
-	if (memcmp(io->tmp_digest, want_digest, v->digest_size)) {
+	if (memcmp(verity_io_real_digest(v, io), verity_io_want_digest(v, io),
+		   v->digest_size)) {
 		DMERR_LIMIT("%s: FEC %llu: failed to correct (%d erasures)",
 			    v->data_dev->name, (unsigned long long)rsb, neras);
 		return -EILSEQ;
@@ -383,24 +400,36 @@ static int fec_decode_rsb(struct dm_verity *v, struct dm_verity_io *io,
 	return 0;
 }
 
-/* Correct errors in a block. Copies corrected block to dest. */
+static int fec_bv_copy(struct dm_verity *v, struct dm_verity_io *io, u8 *data,
+		       size_t len)
+{
+	struct dm_verity_fec_io *fio = fec_io(io);
+
+	memcpy(data, &fio->output[fio->output_pos], len);
+	fio->output_pos += len;
+
+	return 0;
+}
+
+/*
+ * Correct errors in a block. Copies corrected block to dest if non-NULL,
+ * otherwise to a bio_vec starting from iter.
+ */
 int verity_fec_decode(struct dm_verity *v, struct dm_verity_io *io,
-		      enum verity_block_type type, const u8 *want_digest,
-		      sector_t block, u8 *dest)
+		      enum verity_block_type type, sector_t block, u8 *dest,
+		      struct bvec_iter *iter)
 {
 	int r;
-	struct dm_verity_fec_io *fio;
+	struct dm_verity_fec_io *fio = fec_io(io);
 	u64 offset, res, rsb;
 
 	if (!verity_fec_is_enabled(v))
 		return -EOPNOTSUPP;
 
-	fio = io->fec_io;
-	if (!fio)
-		fio = io->fec_io = fec_alloc_and_init_io(v);
-
-	if (fio->level)
+	if (fio->level >= DM_VERITY_FEC_MAX_RECURSION) {
+		DMWARN_LIMIT("%s: FEC: recursion too deep", v->data_dev->name);
 		return -EIO;
+	}
 
 	fio->level++;
 
@@ -431,14 +460,19 @@ int verity_fec_decode(struct dm_verity *v, struct dm_verity_io *io,
 	 * them first. Do a second attempt with erasures if the corruption is
 	 * bad enough.
 	 */
-	r = fec_decode_rsb(v, io, fio, rsb, offset, want_digest, false);
+	r = fec_decode_rsb(v, io, fio, rsb, offset, false);
 	if (r < 0) {
-		r = fec_decode_rsb(v, io, fio, rsb, offset, want_digest, true);
+		r = fec_decode_rsb(v, io, fio, rsb, offset, true);
 		if (r < 0)
 			goto done;
 	}
 
-	memcpy(dest, fio->output, 1 << v->data_dev_block_bits);
+	if (dest)
+		memcpy(dest, fio->output, 1 << v->data_dev_block_bits);
+	else if (iter) {
+		fio->output_pos = 0;
+		r = verity_for_bv_block(v, io, iter, fec_bv_copy);
+	}
 
 done:
 	fio->level--;
@@ -448,23 +482,41 @@ done:
 /*
  * Clean up per-bio data.
  */
-void __verity_fec_finish_io(struct dm_verity_io *io)
+void verity_fec_finish_io(struct dm_verity_io *io)
 {
 	unsigned int n;
 	struct dm_verity_fec *f = io->v->fec;
-	struct dm_verity_fec_io *fio = io->fec_io;
+	struct dm_verity_fec_io *fio = fec_io(io);
+
+	if (!verity_fec_is_enabled(io->v))
+		return;
 
 	mempool_free(fio->rs, &f->rs_pool);
 
-	mempool_free(fio->bufs[0], &f->prealloc_pool);
+	fec_for_each_prealloc_buffer(n)
+		mempool_free(fio->bufs[n], &f->prealloc_pool);
 
-	for (n = 1; n < fio->nbufs; n++)
-		kmem_cache_free(f->cache, fio->bufs[n]);
+	fec_for_each_extra_buffer(fio, n)
+		mempool_free(fio->bufs[n], &f->extra_pool);
 
 	mempool_free(fio->output, &f->output_pool);
+}
 
-	mempool_free(fio, &f->fio_pool);
-	io->fec_io = NULL;
+/*
+ * Initialize per-bio data.
+ */
+void verity_fec_init_io(struct dm_verity_io *io)
+{
+	struct dm_verity_fec_io *fio = fec_io(io);
+
+	if (!verity_fec_is_enabled(io->v))
+		return;
+
+	fio->rs = NULL;
+	memset(fio->bufs, 0, sizeof(fio->bufs));
+	fio->nbufs = 0;
+	fio->output = NULL;
+	fio->level = 0;
 }
 
 /*
@@ -495,15 +547,15 @@ void verity_fec_dtr(struct dm_verity *v)
 	if (!verity_fec_is_enabled(v))
 		goto out;
 
-	mempool_exit(&f->fio_pool);
 	mempool_exit(&f->rs_pool);
 	mempool_exit(&f->prealloc_pool);
+	mempool_exit(&f->extra_pool);
 	mempool_exit(&f->output_pool);
 	kmem_cache_destroy(f->cache);
 
-	if (!IS_ERR_OR_NULL(f->data_bufio))
+	if (f->data_bufio)
 		dm_bufio_client_destroy(f->data_bufio);
-	if (!IS_ERR_OR_NULL(f->bufio))
+	if (f->bufio)
 		dm_bufio_client_destroy(f->bufio);
 
 	if (f->dev)
@@ -515,14 +567,14 @@ out:
 
 static void *fec_rs_alloc(gfp_t gfp_mask, void *pool_data)
 {
-	struct dm_verity *v = pool_data;
+	struct dm_verity *v = (struct dm_verity *)pool_data;
 
 	return init_rs_gfp(8, 0x11d, 0, 1, v->fec->roots, gfp_mask);
 }
 
 static void fec_rs_free(void *element, void *pool_data)
 {
-	struct rs_control *rs = element;
+	struct rs_control *rs = (struct rs_control *)element;
 
 	if (rs)
 		free_rs(rs);
@@ -555,11 +607,7 @@ int verity_fec_parse_opt_args(struct dm_arg_set *as, struct dm_verity *v,
 	(*argc)--;
 
 	if (!strcasecmp(arg_name, DM_VERITY_OPT_FEC_DEV)) {
-		if (v->fec->dev) {
-			ti->error = "FEC device already specified";
-			return -EINVAL;
-		}
-		r = dm_get_device(ti, arg_value, BLK_OPEN_READ, &v->fec->dev);
+		r = dm_get_device(ti, arg_value, FMODE_READ, &v->fec->dev);
 		if (r) {
 			ti->error = "FEC device lookup failed";
 			return r;
@@ -694,7 +742,10 @@ int verity_fec_ctr(struct dm_verity *v)
 		return -E2BIG;
 	}
 
-	f->io_size = 1 << v->data_dev_block_bits;
+	if ((f->roots << SECTOR_SHIFT) & ((1 << v->data_dev_block_bits) - 1))
+		f->io_size = 1 << v->data_dev_block_bits;
+	else
+		f->io_size = v->fec->roots << SECTOR_SHIFT;
 
 	f->bufio = dm_bufio_client_create(f->dev->bdev,
 					  f->io_size,
@@ -725,15 +776,6 @@ int verity_fec_ctr(struct dm_verity *v)
 		return -E2BIG;
 	}
 
-	/* Preallocate some dm_verity_fec_io structures */
-	ret = mempool_init_kmalloc_pool(&f->fio_pool, num_online_cpus(),
-					struct_size((struct dm_verity_fec_io *)0,
-						    bufs, fec_max_nbufs(v)));
-	if (ret) {
-		ti->error = "Cannot allocate FEC IO pool";
-		return ret;
-	}
-
 	/* Preallocate an rs_control structure for each worker thread */
 	ret = mempool_init(&f->rs_pool, num_online_cpus(), fec_rs_alloc,
 			   fec_rs_free, (void *) v);
@@ -750,11 +792,18 @@ int verity_fec_ctr(struct dm_verity *v)
 		return -ENOMEM;
 	}
 
-	/* Preallocate one buffer for each thread */
-	ret = mempool_init_slab_pool(&f->prealloc_pool, num_online_cpus(),
+	/* Preallocate DM_VERITY_FEC_BUF_PREALLOC buffers for each thread */
+	ret = mempool_init_slab_pool(&f->prealloc_pool, num_online_cpus() *
+				     DM_VERITY_FEC_BUF_PREALLOC,
 				     f->cache);
 	if (ret) {
 		ti->error = "Cannot allocate FEC buffer prealloc pool";
+		return ret;
+	}
+
+	ret = mempool_init_slab_pool(&f->extra_pool, 0, f->cache);
+	if (ret) {
+		ti->error = "Cannot allocate FEC buffer extra pool";
 		return ret;
 	}
 
@@ -765,6 +814,9 @@ int verity_fec_ctr(struct dm_verity *v)
 		ti->error = "Cannot allocate FEC output pool";
 		return ret;
 	}
+
+	/* Reserve space for our per-bio data */
+	ti->per_io_data_size += sizeof(struct dm_verity_fec_io);
 
 	return 0;
 }

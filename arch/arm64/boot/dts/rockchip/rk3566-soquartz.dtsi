@@ -8,10 +8,11 @@
 #include "rk3566.dtsi"
 
 / {
-	model = "Pine64 SOQuartz system on module";
+	model = "Pine64 RK3566 SoQuartz SOM";
 	compatible = "pine64,soquartz", "rockchip,rk3566";
 
 	aliases {
+		ethernet0 = &gmac1;
 		mmc0 = &sdmmc0;
 		mmc1 = &sdhci;
 		mmc2 = &sdmmc1;
@@ -74,7 +75,7 @@
 		reset-gpios = <&gpio2 RK_PC2 GPIO_ACTIVE_LOW>;
 	};
 
-	vbus: regulator-vbus {
+	vbus: vbus-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vbus";
 		regulator-always-on;
@@ -84,7 +85,7 @@
 	};
 
 	/* sourced from vbus, vbus is provided by the carrier board */
-	vcc5v0_sys: regulator-vcc5v0-sys {
+	vcc5v0_sys: vcc5v0-sys-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc5v0_sys";
 		regulator-always-on;
@@ -94,7 +95,7 @@
 		vin-supply = <&vbus>;
 	};
 
-	vcc3v3_sys: regulator-vcc3v3-sys {
+	vcc3v3_sys: vcc3v3-sys-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v3_sys";
 		regulator-always-on;
@@ -102,6 +103,16 @@
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
 		vin-supply = <&vcc5v0_sys>;
+	};
+
+	sdmmc_pwr: sdmmc-pwr-regulator {
+		compatible = "regulator-fixed";
+		enable-active-high;
+		gpio = <&gpio0 RK_PA5 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&sdmmc_pwr_h>;
+		regulator-name = "sdmmc_pwr";
+		status = "disabled";
 	};
 };
 
@@ -142,19 +153,6 @@
 	rx_delay = <0x10>;
 	phy-handle = <&rgmii_phy1>;
 	status = "disabled";
-};
-
-&gpio0 {
-	nextrst-hog {
-		gpio-hog;
-		/*
-		 * GPIO_ACTIVE_LOW + output-low here means that the pin is set
-		 * to high, because output-low decides the value pre-inversion.
-		 */
-		gpios = <RK_PA5 GPIO_ACTIVE_LOW>;
-		line-name = "nEXTRST";
-		output-low;
-	};
 };
 
 &gpu {
@@ -213,7 +211,7 @@
 		clock-output-names = "rk808-clkout1", "rk808-clkout2";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pmic_int_l>;
-		system-power-controller;
+		rockchip,system-power-controller;
 		wakeup-source;
 
 		vcc1-supply = <&vcc3v3_sys>;
@@ -233,6 +231,7 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1350000>;
+				regulator-init-microvolt = <900000>;
 				regulator-ramp-delay = <6001>;
 				regulator-initial-mode = <0x2>;
 				regulator-state-mem {
@@ -247,6 +246,7 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1350000>;
+				regulator-init-microvolt = <900000>;
 				regulator-ramp-delay = <6001>;
 				regulator-initial-mode = <0x2>;
 					regulator-state-mem {
@@ -269,6 +269,7 @@
 				regulator-boot-on;
 				regulator-min-microvolt = <500000>;
 				regulator-max-microvolt = <1350000>;
+				regulator-init-microvolt = <900000>;
 				regulator-initial-mode = <0x2>;
 				regulator-name = "vdd_npu";
 				regulator-state-mem {
@@ -537,6 +538,12 @@
 			rockchip,pins = <2 RK_PC2 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
+
+	sdmmc-pwr {
+		sdmmc_pwr_h: sdmmc-pwr-h {
+			rockchip,pins = <0 RK_PA5 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
 };
 
 &pmu_io_domains {
@@ -591,7 +598,7 @@
 	non-removable;
 	pinctrl-names = "default";
 	pinctrl-0 = <&sdmmc1_bus4 &sdmmc1_cmd &sdmmc1_clk>;
-	sd-uhs-sdr50;
+	sd-uhs-sdr104;
 	vmmc-supply = <&vcc3v3_sys>;
 	vqmmc-supply = <&vcc_1v8>;
 	status = "okay";
@@ -614,7 +621,6 @@
 };
 
 &uart1 {
-	dma-names = "tx", "rx";
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart1m0_xfer &uart1m0_ctsn &uart1m0_rtsn>;
 	uart-has-rtscts;

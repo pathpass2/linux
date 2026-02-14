@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2022, Alexander Martinz <amartinz@shiftphones.com>
- * Copyright (c) 2022, Casey Connolly <casey.connolly@linaro.org>
+ * Copyright (c) 2022, Caleb Connolly <caleb@connolly.tech>
  * Copyright (c) 2022, Dylan Van Assche <me@dylanvanassche.be>
  */
 
 /dts-v1/;
 
-#include <dt-bindings/arm/qcom,ids.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
@@ -18,8 +17,7 @@
 / {
 	model = "SHIFT SHIFT6mq";
 	compatible = "shift,axolotl", "qcom,sdm845";
-	chassis-type = "handset";
-	qcom,msm-id = <QCOM_ID_SDM845 0x20001>;
+	qcom,msm-id = <321 0x20001>;
 	qcom,board-id = <11 0>;
 
 	aliases {
@@ -62,7 +60,7 @@
 	};
 
 	reserved-memory {
-		framebuffer@9d400000 {
+		framebuffer_region@9d400000 {
 			reg = <0x0 0x9d400000 0x0 (1080 * 2160 * 4)>;
 			no-map;
 		};
@@ -108,9 +106,8 @@
 };
 
 &adsp_pas {
-	firmware-name = "qcom/sdm845/SHIFT/axolotl/adsp.mbn";
-
 	status = "okay";
+	firmware-name = "qcom/sdm845/axolotl/adsp.mbn";
 };
 
 &apps_rsc {
@@ -410,66 +407,11 @@
 };
 
 &cdsp_pas {
-	firmware-name = "qcom/sdm845/SHIFT/axolotl/cdsp.mbn";
-
 	status = "okay";
+	firmware-name = "qcom/sdm845/axolotl/cdsp.mbn";
 };
 
-&gcc {
-	protected-clocks = <GCC_QSPI_CORE_CLK>,
-			   <GCC_QSPI_CORE_CLK_SRC>,
-			   <GCC_QSPI_CNOC_PERIPH_AHB_CLK>,
-			   <GCC_LPASS_Q6_AXI_CLK>,
-			   <GCC_LPASS_SWAY_CLK>;
-};
-
-&gpu {
-	status = "okay";
-};
-
-&gpu_zap_shader {
-	firmware-name = "qcom/sdm845/SHIFT/axolotl/a630_zap.mbn";
-};
-
-&i2c5 {
-	status = "okay";
-
-	touchscreen@38 {
-		compatible = "focaltech,ft5452";
-		reg = <0x38>;
-
-		interrupts-extended = <&tlmm 125 IRQ_TYPE_EDGE_FALLING>;
-		reset-gpios = <&tlmm 99 GPIO_ACTIVE_LOW>;
-
-		vcc-supply = <&vreg_l28a_3p0>;
-		iovcc-supply = <&vreg_l14a_1p88>;
-
-		pinctrl-0 = <&ts_int_active &ts_reset_active>;
-		pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
-		pinctrl-names = "default", "suspend";
-
-		touchscreen-size-x = <1080>;
-		touchscreen-size-y = <2160>;
-	};
-};
-
-&i2c10 {
-	/* SMB1355@0x0C */
-};
-
-&ipa {
-	qcom,gsi-loader = "self";
-	memory-region = <&ipa_fw_mem>;
-	firmware-name = "qcom/sdm845/SHIFT/axolotl/ipa_fws.mbn";
-
-	status = "okay";
-};
-
-&mdss {
-	status = "okay";
-};
-
-&mdss_dsi0 {
+&dsi0 {
 	status = "okay";
 	vdda-supply = <&vdda_mipi_dsi0_1p2>;
 
@@ -480,6 +422,9 @@
 		vdda-supply = <&vreg_l14a_1p88>;
 		vdd3p3-supply = <&vreg_l28a_3p0>;
 
+		#address-cells = <1>;
+		#size-cells = <0>;
+
 		reset-gpios = <&tlmm 6 GPIO_ACTIVE_HIGH>;
 
 		pinctrl-names = "default", "sleep";
@@ -488,26 +433,81 @@
 
 		port {
 			panel_in_0: endpoint {
-				remote-endpoint = <&mdss_dsi0_out>;
+				remote-endpoint = <&dsi0_out>;
 			};
 		};
 	};
 };
 
-&mdss_dsi0_out {
+&dsi0_out {
 	remote-endpoint = <&panel_in_0>;
 	data-lanes = <0 1 2 3>;
 };
 
-&mdss_dsi0_phy {
+&dsi0_phy {
 	status = "okay";
 	vdds-supply = <&vdda_mipi_dsi0_pll>;
 };
 
-&mss_pil {
-	firmware-name = "qcom/sdm845/SHIFT/axolotl/mba.mbn", "qcom/sdm845/SHIFT/axolotl/modem.mbn";
+&gcc {
+	protected-clocks = <GCC_QSPI_CORE_CLK>,
+			   <GCC_QSPI_CORE_CLK_SRC>,
+			   <GCC_QSPI_CNOC_PERIPH_AHB_CLK>,
+			   <GCC_LPASS_Q6_AXI_CLK>,
+			   <GCC_LPASS_SWAY_CLK>;
+};
 
+&gmu {
 	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+
+	zap-shader {
+		memory-region = <&gpu_mem>;
+		firmware-name = "qcom/sdm845/axolotl/a630_zap.mbn";
+	};
+};
+
+&i2c5 {
+	status = "okay";
+
+	touchscreen@38 {
+		compatible = "focaltech,fts8719";
+		reg = <0x38>;
+		wakeup-source;
+		interrupt-parent = <&tlmm>;
+		interrupts = <125 0x2>;
+		vdd-supply = <&vreg_l28a_3p0>;
+		vcc-i2c-supply = <&vreg_l14a_1p88>;
+
+		pinctrl-names = "default", "suspend";
+		pinctrl-0 = <&ts_int_active &ts_reset_active>;
+		pinctrl-1 = <&ts_int_suspend &ts_reset_suspend>;
+
+		reset-gpio = <&tlmm 99 GPIO_ACTIVE_HIGH>;
+		irq-gpio = <&tlmm 125 GPIO_TRANSITORY>;
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2160>;
+		focaltech,max-touch-number = <5>;
+	};
+};
+
+&ipa {
+	qcom,gsi-loader = "self";
+	memory-region = <&ipa_fw_mem>;
+	firmware-name = "qcom/sdm845/axolotl/ipa_fws.mbn";
+	status = "okay";
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mss_pil {
+	status = "okay";
+	firmware-name = "qcom/sdm845/axolotl/mba.mbn", "qcom/sdm845/axolotl/modem.mbn";
 };
 
 &pm8998_gpios {
@@ -520,12 +520,6 @@
 			qcom,drive-strength = <0>;
 		};
 	};
-};
-
-&pmi8998_charger {
-	monitored-battery = <&battery>;
-
-	status = "okay";
 };
 
 &pm8998_resin {
@@ -560,28 +554,6 @@
 	};
 };
 
-&pmi8998_flash {
-	status = "okay";
-
-	led-0 {
-		function = LED_FUNCTION_FLASH;
-		color = <LED_COLOR_ID_WHITE>;
-		led-sources = <1>;
-		led-max-microamp = <100000>;
-		flash-max-microamp = <1100000>;
-		flash-max-timeout-us = <1280000>;
-	};
-
-	led-1 {
-		function = LED_FUNCTION_FLASH;
-		color = <LED_COLOR_ID_YELLOW>;
-		led-sources = <2>;
-		led-max-microamp = <100000>;
-		flash-max-microamp = <1100000>;
-		flash-max-timeout-us = <1280000>;
-	};
-};
-
 &qup_uart9_rx {
 	drive-strength = <2>;
 	bias-pull-up;
@@ -597,12 +569,6 @@
 };
 
 &qupv3_id_1 {
-	status = "okay";
-};
-
-&slpi_pas {
-	firmware-name = "qcom/sdm845/SHIFT/axolotl/slpi.mbn";
-
 	status = "okay";
 };
 
@@ -642,6 +608,7 @@
 		function = "gpio";
 		drive-strength = <8>;
 		bias-pull-up;
+		input-enable;
 	};
 
 	ts_int_suspend: ts-int-suspend-state {
@@ -649,6 +616,7 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
+		input-enable;
 	};
 
 	ts_reset_active: ts-reset-active-state {
@@ -678,7 +646,7 @@
 		 * This path is relative to the qca/
 		 * subdir under lib/firmware.
 		 */
-		firmware-name = "SHIFT/axolotl/crnv21.bin";
+		firmware-name = "axolotl/crnv21.bin";
 
 		vddio-supply = <&vreg_s4a_1p8>;
 		vddxo-supply = <&vreg_l7a_1p8>;
@@ -732,9 +700,8 @@
 };
 
 &venus {
-	firmware-name = "qcom/sdm845/SHIFT/axolotl/venus.mbn";
-
 	status = "okay";
+	firmware-name = "qcom/sdm845/axolotl/venus.mbn";
 };
 
 &wifi {
@@ -746,6 +713,5 @@
 	vdd-3.3-ch0-supply = <&vreg_l25a_3p3>;
 	vdd-3.3-ch1-supply = <&vreg_l23a_3p3>;
 
-	qcom,calibration-variant = "shift_axolotl";
 	qcom,snoc-host-cap-8bit-quirk;
 };

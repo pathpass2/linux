@@ -15,13 +15,23 @@
 #include <linux/irq.h>
 #include <linux/dma/edma.h>
 #include <linux/dma-mapping.h>
-#include <linux/string_choices.h>
 
 #include "dw-edma-core.h"
 #include "dw-edma-v0-core.h"
-#include "dw-hdma-v0-core.h"
 #include "../dmaengine.h"
 #include "../virt-dma.h"
+
+static inline
+struct device *dchan2dev(struct dma_chan *dchan)
+{
+	return &dchan->dev->device;
+}
+
+static inline
+struct device *chan2dev(struct dw_edma_chan *chan)
+{
+	return &chan->vc.chan.dev->device;
+}
 
 static inline
 struct dw_edma_desc *vd2dw_edma_desc(struct virt_dma_desc *vd)
@@ -171,34 +181,31 @@ static void vchan_free_desc(struct virt_dma_desc *vdesc)
 	dw_edma_free_desc(vd2dw_edma_desc(vdesc));
 }
 
-static int dw_edma_start_transfer(struct dw_edma_chan *chan)
+static void dw_edma_start_transfer(struct dw_edma_chan *chan)
 {
-	struct dw_edma *dw = chan->dw;
 	struct dw_edma_chunk *child;
 	struct dw_edma_desc *desc;
 	struct virt_dma_desc *vd;
 
 	vd = vchan_next_desc(&chan->vc);
 	if (!vd)
-		return 0;
+		return;
 
 	desc = vd2dw_edma_desc(vd);
 	if (!desc)
-		return 0;
+		return;
 
 	child = list_first_entry_or_null(&desc->chunk->list,
 					 struct dw_edma_chunk, list);
 	if (!child)
-		return 0;
+		return;
 
-	dw_edma_core_start(dw, child, !desc->xfer_sz);
+	dw_edma_v0_core_start(child, !desc->xfer_sz);
 	desc->xfer_sz += child->ll_region.sz;
 	dw_edma_free_burst(child);
 	list_del(&child->list);
 	kfree(child);
 	desc->chunks_alloc--;
-
-	return 1;
 }
 
 static void dw_edma_device_caps(struct dma_chan *dchan,
@@ -278,7 +285,7 @@ static int dw_edma_device_terminate_all(struct dma_chan *dchan)
 		chan->configured = false;
 	} else if (chan->status == EDMA_ST_IDLE) {
 		chan->configured = false;
-	} else if (dw_edma_core_ch_status(chan) == DMA_COMPLETE) {
+	} else if (dw_edma_v0_core_ch_status(chan) == DMA_COMPLETE) {
 		/*
 		 * The channel is in a false BUSY state, probably didn't
 		 * receive or lost an interrupt
@@ -299,12 +306,9 @@ static void dw_edma_device_issue_pending(struct dma_chan *dchan)
 	struct dw_edma_chan *chan = dchan2dw_edma_chan(dchan);
 	unsigned long flags;
 
-	if (!chan->configured)
-		return;
-
 	spin_lock_irqsave(&chan->vc.lock, flags);
-	if (vchan_issue_pending(&chan->vc) && chan->request == EDMA_REQ_NONE &&
-	    chan->status == EDMA_ST_IDLE) {
+	if (chan->configured && chan->request == EDMA_REQ_NONE &&
+	    chan->status == EDMA_ST_IDLE && vchan_issue_pending(&chan->vc)) {
 		chan->status = EDMA_ST_BUSY;
 		dw_edma_start_transfer(chan);
 	}
@@ -584,30 +588,13 @@ dw_edma_device_prep_interleaved_dma(struct dma_chan *dchan,
 	return dw_edma_device_transfer(&xfer);
 }
 
-static void dw_hdma_set_callback_result(struct virt_dma_desc *vd,
-					enum dmaengine_tx_result result)
-{
-	u32 residue = 0;
-	struct dw_edma_desc *desc;
-	struct dmaengine_result *res;
-
-	if (!vd->tx.callback_result)
-		return;
-
-	desc = vd2dw_edma_desc(vd);
-	if (desc)
-		residue = desc->alloc_sz - desc->xfer_sz;
-
-	res = &vd->tx_result;
-	res->result = result;
-	res->residue = residue;
-}
-
 static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 {
 	struct dw_edma_desc *desc;
 	struct virt_dma_desc *vd;
 	unsigned long flags;
+
+	dw_edma_v0_core_clear_done_int(chan);
 
 	spin_lock_irqsave(&chan->vc.lock, flags);
 	vd = vchan_next_desc(&chan->vc);
@@ -615,16 +602,14 @@ static void dw_edma_done_interrupt(struct dw_edma_chan *chan)
 		switch (chan->request) {
 		case EDMA_REQ_NONE:
 			desc = vd2dw_edma_desc(vd);
-			if (!desc->chunks_alloc) {
-				dw_hdma_set_callback_result(vd,
-							    DMA_TRANS_NOERROR);
+			if (desc->chunks_alloc) {
+				chan->status = EDMA_ST_BUSY;
+				dw_edma_start_transfer(chan);
+			} else {
 				list_del(&vd->node);
 				vchan_cookie_complete(vd);
+				chan->status = EDMA_ST_IDLE;
 			}
-
-			/* Continue transferring if there are remaining chunks or issued requests.
-			 */
-			chan->status = dw_edma_start_transfer(chan) ? EDMA_ST_BUSY : EDMA_ST_IDLE;
 			break;
 
 		case EDMA_REQ_STOP:
@@ -651,10 +636,11 @@ static void dw_edma_abort_interrupt(struct dw_edma_chan *chan)
 	struct virt_dma_desc *vd;
 	unsigned long flags;
 
+	dw_edma_v0_core_clear_abort_int(chan);
+
 	spin_lock_irqsave(&chan->vc.lock, flags);
 	vd = vchan_next_desc(&chan->vc);
 	if (vd) {
-		dw_hdma_set_callback_result(vd, DMA_TRANS_ABORTED);
 		list_del(&vd->node);
 		vchan_cookie_complete(vd);
 	}
@@ -663,32 +649,63 @@ static void dw_edma_abort_interrupt(struct dw_edma_chan *chan)
 	chan->status = EDMA_ST_IDLE;
 }
 
-static inline irqreturn_t dw_edma_interrupt_write(int irq, void *data)
+static irqreturn_t dw_edma_interrupt(int irq, void *data, bool write)
 {
 	struct dw_edma_irq *dw_irq = data;
+	struct dw_edma *dw = dw_irq->dw;
+	unsigned long total, pos, val;
+	unsigned long off;
+	u32 mask;
 
-	return dw_edma_core_handle_int(dw_irq, EDMA_DIR_WRITE,
-				       dw_edma_done_interrupt,
-				       dw_edma_abort_interrupt);
+	if (write) {
+		total = dw->wr_ch_cnt;
+		off = 0;
+		mask = dw_irq->wr_mask;
+	} else {
+		total = dw->rd_ch_cnt;
+		off = dw->wr_ch_cnt;
+		mask = dw_irq->rd_mask;
+	}
+
+	val = dw_edma_v0_core_status_done_int(dw, write ?
+							  EDMA_DIR_WRITE :
+							  EDMA_DIR_READ);
+	val &= mask;
+	for_each_set_bit(pos, &val, total) {
+		struct dw_edma_chan *chan = &dw->chan[pos + off];
+
+		dw_edma_done_interrupt(chan);
+	}
+
+	val = dw_edma_v0_core_status_abort_int(dw, write ?
+							   EDMA_DIR_WRITE :
+							   EDMA_DIR_READ);
+	val &= mask;
+	for_each_set_bit(pos, &val, total) {
+		struct dw_edma_chan *chan = &dw->chan[pos + off];
+
+		dw_edma_abort_interrupt(chan);
+	}
+
+	return IRQ_HANDLED;
+}
+
+static inline irqreturn_t dw_edma_interrupt_write(int irq, void *data)
+{
+	return dw_edma_interrupt(irq, data, true);
 }
 
 static inline irqreturn_t dw_edma_interrupt_read(int irq, void *data)
 {
-	struct dw_edma_irq *dw_irq = data;
-
-	return dw_edma_core_handle_int(dw_irq, EDMA_DIR_READ,
-				       dw_edma_done_interrupt,
-				       dw_edma_abort_interrupt);
+	return dw_edma_interrupt(irq, data, false);
 }
 
 static irqreturn_t dw_edma_interrupt_common(int irq, void *data)
 {
-	irqreturn_t ret = IRQ_NONE;
+	dw_edma_interrupt(irq, data, true);
+	dw_edma_interrupt(irq, data, false);
 
-	ret |= dw_edma_interrupt_write(irq, data);
-	ret |= dw_edma_interrupt_read(irq, data);
-
-	return ret;
+	return IRQ_HANDLED;
 }
 
 static int dw_edma_alloc_chan_resources(struct dma_chan *dchan)
@@ -757,7 +774,7 @@ static int dw_edma_channel_setup(struct dw_edma *dw, u32 wr_alloc, u32 rd_alloc)
 		chan->ll_max -= 1;
 
 		dev_vdbg(dev, "L. List:\tChannel %s[%u] max_cnt=%u\n",
-			 str_write_read(chan->dir == EDMA_DIR_WRITE),
+			 chan->dir == EDMA_DIR_WRITE ? "write" : "read",
 			 chan->id, chan->ll_max);
 
 		if (dw->nr_irqs == 1)
@@ -778,8 +795,7 @@ static int dw_edma_channel_setup(struct dw_edma *dw, u32 wr_alloc, u32 rd_alloc)
 		memcpy(&chan->msi, &irq->msi, sizeof(chan->msi));
 
 		dev_vdbg(dev, "MSI:\t\tChannel %s[%u] addr=0x%.8x%.8x, data=0x%.8x\n",
-			 str_write_read(chan->dir == EDMA_DIR_WRITE),
-			 chan->id,
+			 chan->dir == EDMA_DIR_WRITE  ? "write" : "read", chan->id,
 			 chan->msi.address_hi, chan->msi.address_lo,
 			 chan->msi.data);
 
@@ -790,7 +806,7 @@ static int dw_edma_channel_setup(struct dw_edma *dw, u32 wr_alloc, u32 rd_alloc)
 
 		vchan_init(&chan->vc, dma);
 
-		dw_edma_core_ch_config(chan);
+		dw_edma_v0_core_device_config(chan);
 	}
 
 	/* Set DMA channel capabilities */
@@ -935,19 +951,14 @@ int dw_edma_probe(struct dw_edma_chip *chip)
 
 	dw->chip = chip;
 
-	if (dw->chip->mf == EDMA_MF_HDMA_NATIVE)
-		dw_hdma_v0_core_register(dw);
-	else
-		dw_edma_v0_core_register(dw);
-
 	raw_spin_lock_init(&dw->lock);
 
 	dw->wr_ch_cnt = min_t(u16, chip->ll_wr_cnt,
-			      dw_edma_core_ch_count(dw, EDMA_DIR_WRITE));
+			      dw_edma_v0_core_ch_count(dw, EDMA_DIR_WRITE));
 	dw->wr_ch_cnt = min_t(u16, dw->wr_ch_cnt, EDMA_MAX_WR_CH);
 
 	dw->rd_ch_cnt = min_t(u16, chip->ll_rd_cnt,
-			      dw_edma_core_ch_count(dw, EDMA_DIR_READ));
+			      dw_edma_v0_core_ch_count(dw, EDMA_DIR_READ));
 	dw->rd_ch_cnt = min_t(u16, dw->rd_ch_cnt, EDMA_MAX_RD_CH);
 
 	if (!dw->wr_ch_cnt && !dw->rd_ch_cnt)
@@ -966,7 +977,7 @@ int dw_edma_probe(struct dw_edma_chip *chip)
 		 dev_name(chip->dev));
 
 	/* Disable eDMA, only to establish the ideal initial conditions */
-	dw_edma_core_off(dw);
+	dw_edma_v0_core_off(dw);
 
 	/* Request IRQs */
 	err = dw_edma_irq_request(dw, &wr_alloc, &rd_alloc);
@@ -979,7 +990,7 @@ int dw_edma_probe(struct dw_edma_chip *chip)
 		goto err_irq_free;
 
 	/* Turn debugfs on */
-	dw_edma_core_debugfs_on(dw);
+	dw_edma_v0_core_debugfs_on(dw);
 
 	chip->dw = dw;
 
@@ -1005,7 +1016,7 @@ int dw_edma_remove(struct dw_edma_chip *chip)
 		return -ENODEV;
 
 	/* Disable eDMA */
-	dw_edma_core_off(dw);
+	dw_edma_v0_core_off(dw);
 
 	/* Free irqs */
 	for (i = (dw->nr_irqs - 1); i >= 0; i--)

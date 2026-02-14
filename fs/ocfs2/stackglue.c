@@ -10,7 +10,6 @@
 
 #include <linux/list.h>
 #include <linux/spinlock.h>
-#include <linux/string.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/kmod.h>
@@ -651,7 +650,7 @@ error:
  * and easier to preserve the name.
  */
 
-static const struct ctl_table ocfs2_nm_table[] = {
+static struct ctl_table ocfs2_nm_table[] = {
 	{
 		.procname	= "hb_ctl_path",
 		.data		= ocfs2_hb_ctl_path,
@@ -659,6 +658,7 @@ static const struct ctl_table ocfs2_nm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dostring,
 	},
+	{ }
 };
 
 static struct ctl_table_header *ocfs2_table_header;
@@ -671,7 +671,7 @@ static int __init ocfs2_stack_glue_init(void)
 {
 	int ret;
 
-	strscpy(cluster_stack_name, OCFS2_STACK_PLUGIN_O2CB);
+	strcpy(cluster_stack_name, OCFS2_STACK_PLUGIN_O2CB);
 
 	ocfs2_table_header = register_sysctl("fs/ocfs2/nm", ocfs2_nm_table);
 	if (!ocfs2_table_header) {
@@ -692,7 +692,8 @@ static void __exit ocfs2_stack_glue_exit(void)
 	memset(&locking_max_version, 0,
 	       sizeof(struct ocfs2_protocol_version));
 	ocfs2_sysfs_exit();
-	unregister_sysctl_table(ocfs2_table_header);
+	if (ocfs2_table_header)
+		unregister_sysctl_table(ocfs2_table_header);
 }
 
 MODULE_AUTHOR("Oracle");

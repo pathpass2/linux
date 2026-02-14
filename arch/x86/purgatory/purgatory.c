@@ -14,7 +14,6 @@
 #include <crypto/sha2.h>
 #include <asm/purgatory.h>
 
-#include "../boot/compressed/error.h"
 #include "../boot/string.h"
 
 u8 purgatory_sha256_digest[SHA256_DIGEST_SIZE] __section(".kexec-purgatory");
@@ -25,7 +24,7 @@ static int verify_sha256_digest(void)
 {
 	struct kexec_sha_region *ptr, *end;
 	u8 digest[SHA256_DIGEST_SIZE];
-	struct sha256_ctx sctx;
+	struct sha256_state sctx;
 
 	sha256_init(&sctx);
 	end = purgatory_sha_regions + ARRAY_SIZE(purgatory_sha_regions);

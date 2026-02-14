@@ -356,7 +356,7 @@ static irqreturn_t csi_idmac_nfb4eof_interrupt(int irq, void *dev_id)
  */
 static void csi_idmac_eof_timeout(struct timer_list *t)
 {
-	struct csi_priv *priv = timer_container_of(priv, t, eof_timeout_timer);
+	struct csi_priv *priv = from_timer(priv, t, eof_timeout_timer);
 	struct imx_media_video_dev *vdev = priv->vdev;
 
 	v4l2_err(&priv->sd, "EOF timeout\n");
@@ -695,7 +695,7 @@ static void csi_idmac_stop(struct csi_priv *priv)
 	imx_media_free_dma_buf(priv->dev, &priv->underrun_buf);
 
 	/* cancel the EOF timeout timer */
-	timer_delete_sync(&priv->eof_timeout_timer);
+	del_timer_sync(&priv->eof_timeout_timer);
 
 	csi_idmac_put_ipu_resources(priv);
 }
@@ -902,18 +902,10 @@ static const struct csi_skip_desc *csi_find_best_skip(struct v4l2_fract *in,
  * V4L2 subdev operations.
  */
 
-static int csi_get_frame_interval(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_state *sd_state,
-				  struct v4l2_subdev_frame_interval *fi)
+static int csi_g_frame_interval(struct v4l2_subdev *sd,
+				struct v4l2_subdev_frame_interval *fi)
 {
 	struct csi_priv *priv = v4l2_get_subdevdata(sd);
-
-	/*
-	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
-	 * subdev active state API.
-	 */
-	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE)
-		return -EINVAL;
 
 	if (fi->pad >= CSI_NUM_PADS)
 		return -EINVAL;
@@ -927,20 +919,12 @@ static int csi_get_frame_interval(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int csi_set_frame_interval(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_state *sd_state,
-				  struct v4l2_subdev_frame_interval *fi)
+static int csi_s_frame_interval(struct v4l2_subdev *sd,
+				struct v4l2_subdev_frame_interval *fi)
 {
 	struct csi_priv *priv = v4l2_get_subdevdata(sd);
 	struct v4l2_fract *input_fi;
 	int ret = 0;
-
-	/*
-	 * FIXME: Implement support for V4L2_SUBDEV_FORMAT_TRY, using the V4L2
-	 * subdev active state API.
-	 */
-	if (fi->which != V4L2_SUBDEV_FORMAT_ACTIVE)
-		return -EINVAL;
 
 	mutex_lock(&priv->lock);
 
@@ -1164,7 +1148,7 @@ __csi_get_fmt(struct csi_priv *priv, struct v4l2_subdev_state *sd_state,
 	      unsigned int pad, enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_state_get_format(sd_state, pad);
+		return v4l2_subdev_get_try_format(&priv->sd, sd_state, pad);
 	else
 		return &priv->format_mbus[pad];
 }
@@ -1174,7 +1158,8 @@ __csi_get_crop(struct csi_priv *priv, struct v4l2_subdev_state *sd_state,
 	       enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_state_get_crop(sd_state, CSI_SINK_PAD);
+		return v4l2_subdev_get_try_crop(&priv->sd, sd_state,
+						CSI_SINK_PAD);
 	else
 		return &priv->crop;
 }
@@ -1184,7 +1169,8 @@ __csi_get_compose(struct csi_priv *priv, struct v4l2_subdev_state *sd_state,
 		  enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_state_get_compose(sd_state, CSI_SINK_PAD);
+		return v4l2_subdev_get_try_compose(&priv->sd, sd_state,
+						   CSI_SINK_PAD);
 	else
 		return &priv->compose;
 }
@@ -1751,6 +1737,12 @@ static int csi_subscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
 	return v4l2_event_subscribe(fh, sub, 0, NULL);
 }
 
+static int csi_unsubscribe_event(struct v4l2_subdev *sd, struct v4l2_fh *fh,
+				 struct v4l2_event_subscription *sub)
+{
+	return v4l2_event_unsubscribe(fh, sub);
+}
+
 static int csi_registered(struct v4l2_subdev *sd)
 {
 	struct csi_priv *priv = v4l2_get_subdevdata(sd);
@@ -1866,14 +1858,17 @@ static const struct media_entity_operations csi_entity_ops = {
 
 static const struct v4l2_subdev_core_ops csi_core_ops = {
 	.subscribe_event = csi_subscribe_event,
-	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
+	.unsubscribe_event = csi_unsubscribe_event,
 };
 
 static const struct v4l2_subdev_video_ops csi_video_ops = {
+	.g_frame_interval = csi_g_frame_interval,
+	.s_frame_interval = csi_s_frame_interval,
 	.s_stream = csi_s_stream,
 };
 
 static const struct v4l2_subdev_pad_ops csi_pad_ops = {
+	.init_cfg = imx_media_init_cfg,
 	.enum_mbus_code = csi_enum_mbus_code,
 	.enum_frame_size = csi_enum_frame_size,
 	.enum_frame_interval = csi_enum_frame_interval,
@@ -1881,8 +1876,6 @@ static const struct v4l2_subdev_pad_ops csi_pad_ops = {
 	.set_fmt = csi_set_fmt,
 	.get_selection = csi_get_selection,
 	.set_selection = csi_set_selection,
-	.get_frame_interval = csi_get_frame_interval,
-	.set_frame_interval = csi_set_frame_interval,
 	.link_validate = csi_link_validate,
 };
 
@@ -1893,14 +1886,13 @@ static const struct v4l2_subdev_ops csi_subdev_ops = {
 };
 
 static const struct v4l2_subdev_internal_ops csi_internal_ops = {
-	.init_state = imx_media_init_state,
 	.registered = csi_registered,
 	.unregistered = csi_unregistered,
 };
 
 static int imx_csi_notify_bound(struct v4l2_async_notifier *notifier,
 				struct v4l2_subdev *sd,
-				struct v4l2_async_connection *asd)
+				struct v4l2_async_subdev *asd)
 {
 	struct csi_priv *priv = notifier_to_dev(notifier);
 	struct media_pad *sink = &priv->sd.entity.pads[CSI_SINK_PAD];
@@ -1921,12 +1913,12 @@ static const struct v4l2_async_notifier_operations csi_notify_ops = {
 
 static int imx_csi_async_register(struct csi_priv *priv)
 {
-	struct v4l2_async_connection *asd = NULL;
+	struct v4l2_async_subdev *asd = NULL;
 	struct fwnode_handle *ep;
 	unsigned int port;
 	int ret;
 
-	v4l2_async_subdev_nf_init(&priv->notifier, &priv->sd);
+	v4l2_async_nf_init(&priv->notifier);
 
 	/* get this CSI's port id */
 	ret = fwnode_property_read_u32(dev_fwnode(priv->dev), "reg", &port);
@@ -1938,7 +1930,7 @@ static int imx_csi_async_register(struct csi_priv *priv)
 					     FWNODE_GRAPH_ENDPOINT_NEXT);
 	if (ep) {
 		asd = v4l2_async_nf_add_fwnode_remote(&priv->notifier, ep,
-						      struct v4l2_async_connection);
+						      struct v4l2_async_subdev);
 
 		fwnode_handle_put(ep);
 
@@ -1952,7 +1944,7 @@ static int imx_csi_async_register(struct csi_priv *priv)
 
 	priv->notifier.ops = &csi_notify_ops;
 
-	ret = v4l2_async_nf_register(&priv->notifier);
+	ret = v4l2_async_subdev_nf_register(&priv->sd, &priv->notifier);
 	if (ret)
 		return ret;
 
@@ -2049,7 +2041,7 @@ free:
 	return ret;
 }
 
-static void imx_csi_remove(struct platform_device *pdev)
+static int imx_csi_remove(struct platform_device *pdev)
 {
 	struct v4l2_subdev *sd = platform_get_drvdata(pdev);
 	struct csi_priv *priv = sd_to_dev(sd);
@@ -2060,6 +2052,8 @@ static void imx_csi_remove(struct platform_device *pdev)
 	v4l2_async_nf_cleanup(&priv->notifier);
 	v4l2_async_unregister_subdev(sd);
 	media_entity_cleanup(&sd->entity);
+
+	return 0;
 }
 
 static const struct platform_device_id imx_csi_ids[] = {

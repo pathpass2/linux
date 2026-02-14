@@ -14,7 +14,6 @@
 #include <linux/interrupt.h>
 #include <linux/param.h>
 #include <linux/sched.h>
-#include <linux/string.h>
 
 #include <asm/bootinfo.h>
 #include <asm/mipsregs.h>
@@ -27,7 +26,8 @@
 #include <asm/ip32/mace.h>
 #include <asm/ip32/ip32_ints.h>
 
-#include "ip32-common.h"
+extern void ip32_be_init(void);
+extern void crime_init(void);
 
 #ifdef CONFIG_SGI_O2MACE_ETH
 /*
@@ -91,7 +91,7 @@ void __init plat_mem_setup(void)
 			static char options[8] __initdata;
 			char *baud = ArcGetEnvironmentVariable("dbaud");
 			if (baud)
-				strscpy(options, baud);
+				strcpy(options, baud);
 			add_preferred_console("ttyS", *(con + 1) == '2' ? 1 : 0,
 					      baud ? options : NULL);
 		}

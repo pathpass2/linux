@@ -37,7 +37,7 @@ struct adc081c {
 	/* Ensure natural alignment of buffer elements */
 	struct {
 		u16 channel;
-		aligned_s64 ts;
+		s64 ts __aligned(8);
 	} scan;
 };
 
@@ -102,23 +102,27 @@ struct adcxx1c_model {
 	int bits;
 };
 
+#define ADCxx1C_MODEL(_name, _bits)					\
+	{								\
+		.channels = _name ## _channels,				\
+		.bits = (_bits),					\
+	}
+
 DEFINE_ADCxx1C_CHANNELS(adc081c,  8);
 DEFINE_ADCxx1C_CHANNELS(adc101c, 10);
 DEFINE_ADCxx1C_CHANNELS(adc121c, 12);
 
-static const struct adcxx1c_model adc081c_model = {
-	.channels = adc081c_channels,
-	.bits = 8,
+/* Model ids are indexes in _models array */
+enum adcxx1c_model_id {
+	ADC081C = 0,
+	ADC101C = 1,
+	ADC121C = 2,
 };
 
-static const struct adcxx1c_model adc101c_model = {
-	.channels = adc101c_channels,
-	.bits = 10,
-};
-
-static const struct adcxx1c_model adc121c_model = {
-	.channels = adc121c_channels,
-	.bits = 12,
+static struct adcxx1c_model adcxx1c_models[] = {
+	ADCxx1C_MODEL(adc081c,  8),
+	ADCxx1C_MODEL(adc101c, 10),
+	ADCxx1C_MODEL(adc121c, 12),
 };
 
 static const struct iio_info adc081c_info = {
@@ -136,8 +140,8 @@ static irqreturn_t adc081c_trigger_handler(int irq, void *p)
 	if (ret < 0)
 		goto out;
 	data->scan.channel = ret;
-	iio_push_to_buffers_with_ts(indio_dev, &data->scan, sizeof(data->scan),
-				    iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
+					   iio_get_time_ns(indio_dev));
 out:
 	iio_trigger_notify_done(indio_dev->trig);
 	return IRQ_HANDLED;
@@ -150,6 +154,7 @@ static void adc081c_reg_disable(void *reg)
 
 static int adc081c_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct iio_dev *iio;
 	struct adc081c *adc;
 	const struct adcxx1c_model *model;
@@ -158,7 +163,10 @@ static int adc081c_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_WORD_DATA))
 		return -EOPNOTSUPP;
 
-	model = i2c_get_match_data(client);
+	if (dev_fwnode(&client->dev))
+		model = device_get_match_data(&client->dev);
+	else
+		model = &adcxx1c_models[id->driver_data];
 
 	iio = devm_iio_device_alloc(&client->dev, sizeof(*adc));
 	if (!iio)
@@ -199,24 +207,24 @@ static int adc081c_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adc081c_id[] = {
-	{ "adc081c", (kernel_ulong_t)&adc081c_model },
-	{ "adc101c", (kernel_ulong_t)&adc101c_model },
-	{ "adc121c", (kernel_ulong_t)&adc121c_model },
+	{ "adc081c", ADC081C },
+	{ "adc101c", ADC101C },
+	{ "adc121c", ADC121C },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adc081c_id);
 
 static const struct acpi_device_id adc081c_acpi_match[] = {
 	/* Used on some AAEON boards */
-	{ "ADC081C", (kernel_ulong_t)&adc081c_model },
+	{ "ADC081C", (kernel_ulong_t)&adcxx1c_models[ADC081C] },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, adc081c_acpi_match);
 
 static const struct of_device_id adc081c_of_match[] = {
-	{ .compatible = "ti,adc081c", .data = &adc081c_model },
-	{ .compatible = "ti,adc101c", .data = &adc101c_model },
-	{ .compatible = "ti,adc121c", .data = &adc121c_model },
+	{ .compatible = "ti,adc081c", .data = &adcxx1c_models[ADC081C] },
+	{ .compatible = "ti,adc101c", .data = &adcxx1c_models[ADC101C] },
+	{ .compatible = "ti,adc121c", .data = &adcxx1c_models[ADC121C] },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, adc081c_of_match);
@@ -227,7 +235,7 @@ static struct i2c_driver adc081c_driver = {
 		.of_match_table = adc081c_of_match,
 		.acpi_match_table = adc081c_acpi_match,
 	},
-	.probe = adc081c_probe,
+	.probe_new = adc081c_probe,
 	.id_table = adc081c_id,
 };
 module_i2c_driver(adc081c_driver);

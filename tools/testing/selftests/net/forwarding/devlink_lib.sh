@@ -122,8 +122,6 @@ devlink_reload()
 	still_pending=$(devlink resource show "$DEVLINK_DEV" | \
 			grep -c "size_new")
 	check_err $still_pending "Failed reload - There are still unset sizes"
-
-	udevadm settle
 }
 
 declare -A DEVLINK_ORIG
@@ -501,7 +499,7 @@ devlink_trap_drop_cleanup()
 	local pref=$1; shift
 	local handle=$1; shift
 
-	kill_process $mz_pid
+	kill $mz_pid && wait $mz_pid &> /dev/null
 	tc filter del dev $dev egress protocol $proto pref $pref handle $handle flower
 }
 

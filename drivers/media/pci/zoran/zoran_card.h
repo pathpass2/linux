@@ -12,6 +12,8 @@
 #ifndef __ZORAN_CARD_H__
 #define __ZORAN_CARD_H__
 
+extern int zr36067_debug;
+
 /* Anybody who uses more than four? */
 #define BUZ_MAX 4
 

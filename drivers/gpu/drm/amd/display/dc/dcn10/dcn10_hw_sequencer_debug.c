@@ -27,12 +27,12 @@
 #include "core_types.h"
 #include "resource.h"
 #include "custom_float.h"
-#include "dcn10/dcn10_hwseq.h"
-#include "dce110/dce110_hwseq.h"
+#include "dcn10_hw_sequencer.h"
+#include "dce110/dce110_hw_sequencer.h"
 #include "dce/dce_hwseq.h"
 #include "abm.h"
 #include "dmcu.h"
-#include "dcn10/dcn10_optc.h"
+#include "dcn10_optc.h"
 #include "dcn10/dcn10_dpp.h"
 #include "dcn10/dcn10_mpc.h"
 #include "timing_generator.h"
@@ -40,13 +40,12 @@
 #include "ipp.h"
 #include "mpc.h"
 #include "reg_helper.h"
-#include "dcn10/dcn10_hubp.h"
-#include "dcn10/dcn10_hubbub.h"
+#include "dcn10_hubp.h"
+#include "dcn10_hubbub.h"
 #include "dcn10_cm_common.h"
 #include "clk_mgr.h"
 
-__printf(3, 4)
-unsigned int snprintf_count(char *pbuf, unsigned int bufsize, const char *fmt, ...)
+unsigned int snprintf_count(char *pBuf, unsigned int bufSize, char *fmt, ...)
 {
 	int ret_vsnprintf;
 	unsigned int chars_printed;
@@ -54,15 +53,15 @@ unsigned int snprintf_count(char *pbuf, unsigned int bufsize, const char *fmt, .
 	va_list args;
 	va_start(args, fmt);
 
-	ret_vsnprintf = vsnprintf(pbuf, bufsize, fmt, args);
+	ret_vsnprintf = vsnprintf(pBuf, bufSize, fmt, args);
 
 	va_end(args);
 
 	if (ret_vsnprintf > 0) {
-		if (ret_vsnprintf < bufsize)
+		if (ret_vsnprintf < bufSize)
 			chars_printed = ret_vsnprintf;
 		else
-			chars_printed = bufsize - 1;
+			chars_printed = bufSize - 1;
 	} else
 		chars_printed = 0;
 
@@ -392,7 +391,7 @@ static unsigned int dcn10_get_mpcc_states(struct dc *dc, char *pBuf, unsigned in
 	remaining_buffer -= chars_printed;
 	pBuf += chars_printed;
 
-	for (i = 0; i < pool->mpcc_count; i++) {
+	for (i = 0; i < pool->pipe_count; i++) {
 		struct mpcc_state s = {0};
 
 		pool->mpc->funcs->read_mpcc_state(pool->mpc, i, &s);
@@ -429,9 +428,7 @@ static unsigned int dcn10_get_otg_states(struct dc *dc, char *pBuf, unsigned int
 		struct dcn_otg_state s = {0};
 		int pix_clk = 0;
 
-		if (tg->funcs->read_otg_state)
-			tg->funcs->read_otg_state(tg, &s);
-
+		optc1_read_otg_state(DCN10TG_FROM_TG(tg), &s);
 		pix_clk = dc->current_state->res_ctx.pipe_ctx[i].stream_res.pix_clk_params.requested_pix_clk_100hz / 10;
 
 		//only print if OTG master is enabled
@@ -497,8 +494,7 @@ static void dcn10_clear_otpc_underflow(struct dc *dc)
 		struct timing_generator *tg = pool->timing_generators[i];
 		struct dcn_otg_state s = {0};
 
-		if (tg->funcs->read_otg_state)
-			tg->funcs->read_otg_state(tg, &s);
+		optc1_read_otg_state(DCN10TG_FROM_TG(tg), &s);
 
 		if (s.otg_enabled & 1)
 			tg->funcs->clear_optc_underflow(tg);

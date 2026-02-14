@@ -16,7 +16,7 @@
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #include <linux/raid_class.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
@@ -112,8 +112,9 @@ static bool myrb_create_mempools(struct pci_dev *pdev, struct myrb_hba *cb)
 		return false;
 	}
 
-	cb->work_q = alloc_ordered_workqueue("myrb_wq_%d", WQ_MEM_RECLAIM,
-					     cb->host->host_no);
+	snprintf(cb->work_q_name, sizeof(cb->work_q_name),
+		 "myrb_wq_%d", cb->host->host_no);
+	cb->work_q = create_singlethread_workqueue(cb->work_q_name);
 	if (!cb->work_q) {
 		dma_pool_destroy(cb->dcdb_pool);
 		cb->dcdb_pool = NULL;
@@ -891,7 +892,7 @@ static bool myrb_enable_mmio(struct myrb_hba *cb, mbox_mmio_init_t mmio_init_fn)
 		status = mmio_init_fn(pdev, base, &mbox);
 		if (status != MYRB_STATUS_SUCCESS) {
 			dev_err(&pdev->dev,
-				"Failed to enable mailbox, status %02X\n",
+				"Failed to enable mailbox, statux %02X\n",
 				status);
 			return false;
 		}
@@ -1260,8 +1261,8 @@ static int myrb_host_reset(struct scsi_cmnd *scmd)
 	return SUCCESS;
 }
 
-static enum scsi_qc_status myrb_pthru_queuecommand(struct Scsi_Host *shost,
-						   struct scsi_cmnd *scmd)
+static int myrb_pthru_queuecommand(struct Scsi_Host *shost,
+		struct scsi_cmnd *scmd)
 {
 	struct request *rq = scsi_cmd_to_rq(scmd);
 	struct myrb_hba *cb = shost_priv(shost);
@@ -1416,8 +1417,8 @@ static void myrb_read_capacity(struct myrb_hba *cb, struct scsi_cmnd *scmd,
 	scsi_sg_copy_from_buffer(scmd, data, 8);
 }
 
-static enum scsi_qc_status myrb_ldev_queuecommand(struct Scsi_Host *shost,
-						  struct scsi_cmnd *scmd)
+static int myrb_ldev_queuecommand(struct Scsi_Host *shost,
+		struct scsi_cmnd *scmd)
 {
 	struct myrb_hba *cb = shost_priv(shost);
 	struct myrb_cmdblk *cmd_blk = scsi_cmd_priv(scmd);
@@ -1603,8 +1604,8 @@ submit:
 	return 0;
 }
 
-static enum scsi_qc_status myrb_queuecommand(struct Scsi_Host *shost,
-					     struct scsi_cmnd *scmd)
+static int myrb_queuecommand(struct Scsi_Host *shost,
+		struct scsi_cmnd *scmd)
 {
 	struct scsi_device *sdev = scmd->device;
 
@@ -1619,7 +1620,7 @@ static enum scsi_qc_status myrb_queuecommand(struct Scsi_Host *shost,
 	return myrb_pthru_queuecommand(shost, scmd);
 }
 
-static int myrb_ldev_sdev_init(struct scsi_device *sdev)
+static int myrb_ldev_slave_alloc(struct scsi_device *sdev)
 {
 	struct myrb_hba *cb = shost_priv(sdev->host);
 	struct myrb_ldev_info *ldev_info;
@@ -1627,6 +1628,8 @@ static int myrb_ldev_sdev_init(struct scsi_device *sdev)
 	enum raid_level level;
 
 	ldev_info = cb->ldev_info_buf + ldev_num;
+	if (!ldev_info)
+		return -ENXIO;
 
 	sdev->hostdata = kzalloc(sizeof(*ldev_info), GFP_KERNEL);
 	if (!sdev->hostdata)
@@ -1663,7 +1666,7 @@ static int myrb_ldev_sdev_init(struct scsi_device *sdev)
 	return 0;
 }
 
-static int myrb_pdev_sdev_init(struct scsi_device *sdev)
+static int myrb_pdev_slave_alloc(struct scsi_device *sdev)
 {
 	struct myrb_hba *cb = shost_priv(sdev->host);
 	struct myrb_pdev_state *pdev_info;
@@ -1699,7 +1702,7 @@ static int myrb_pdev_sdev_init(struct scsi_device *sdev)
 	return 0;
 }
 
-static int myrb_sdev_init(struct scsi_device *sdev)
+static int myrb_slave_alloc(struct scsi_device *sdev)
 {
 	if (sdev->channel > myrb_logical_channel(sdev->host))
 		return -ENXIO;
@@ -1708,13 +1711,12 @@ static int myrb_sdev_init(struct scsi_device *sdev)
 		return -ENXIO;
 
 	if (sdev->channel == myrb_logical_channel(sdev->host))
-		return myrb_ldev_sdev_init(sdev);
+		return myrb_ldev_slave_alloc(sdev);
 
-	return myrb_pdev_sdev_init(sdev);
+	return myrb_pdev_slave_alloc(sdev);
 }
 
-static int myrb_sdev_configure(struct scsi_device *sdev,
-			       struct queue_limits *lim)
+static int myrb_slave_configure(struct scsi_device *sdev)
 {
 	struct myrb_ldev_info *ldev_info;
 
@@ -1740,12 +1742,12 @@ static int myrb_sdev_configure(struct scsi_device *sdev,
 	return 0;
 }
 
-static void myrb_sdev_destroy(struct scsi_device *sdev)
+static void myrb_slave_destroy(struct scsi_device *sdev)
 {
 	kfree(sdev->hostdata);
 }
 
-static int myrb_biosparam(struct scsi_device *sdev, struct gendisk *unused,
+static int myrb_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 		sector_t capacity, int geom[])
 {
 	struct myrb_hba *cb = shost_priv(sdev->host);
@@ -1773,9 +1775,9 @@ static ssize_t raid_state_show(struct device *dev,
 
 		name = myrb_devstate_name(ldev_info->state);
 		if (name)
-			ret = snprintf(buf, 64, "%s\n", name);
+			ret = snprintf(buf, 32, "%s\n", name);
 		else
-			ret = snprintf(buf, 64, "Invalid (%02X)\n",
+			ret = snprintf(buf, 32, "Invalid (%02X)\n",
 				       ldev_info->state);
 	} else {
 		struct myrb_pdev_state *pdev_info = sdev->hostdata;
@@ -1794,9 +1796,9 @@ static ssize_t raid_state_show(struct device *dev,
 		else
 			name = myrb_devstate_name(pdev_info->state);
 		if (name)
-			ret = snprintf(buf, 64, "%s\n", name);
+			ret = snprintf(buf, 32, "%s\n", name);
 		else
-			ret = snprintf(buf, 64, "Invalid (%02X)\n",
+			ret = snprintf(buf, 32, "Invalid (%02X)\n",
 				       pdev_info->state);
 	}
 	return ret;
@@ -1884,11 +1886,11 @@ static ssize_t raid_level_show(struct device *dev,
 
 		name = myrb_raidlevel_name(ldev_info->raid_level);
 		if (!name)
-			return snprintf(buf, 64, "Invalid (%02X)\n",
+			return snprintf(buf, 32, "Invalid (%02X)\n",
 					ldev_info->state);
-		return snprintf(buf, 64, "%s\n", name);
+		return snprintf(buf, 32, "%s\n", name);
 	}
-	return snprintf(buf, 64, "Physical Drive\n");
+	return snprintf(buf, 32, "Physical Drive\n");
 }
 static DEVICE_ATTR_RO(raid_level);
 
@@ -1901,15 +1903,15 @@ static ssize_t rebuild_show(struct device *dev,
 	unsigned char status;
 
 	if (sdev->channel < myrb_logical_channel(sdev->host))
-		return snprintf(buf, 64, "physical device - not rebuilding\n");
+		return snprintf(buf, 32, "physical device - not rebuilding\n");
 
 	status = myrb_get_rbld_progress(cb, &rbld_buf);
 
 	if (rbld_buf.ldev_num != sdev->id ||
 	    status != MYRB_STATUS_SUCCESS)
-		return snprintf(buf, 64, "not rebuilding\n");
+		return snprintf(buf, 32, "not rebuilding\n");
 
-	return snprintf(buf, 64, "rebuilding block %u of %u\n",
+	return snprintf(buf, 32, "rebuilding block %u of %u\n",
 			rbld_buf.ldev_size - rbld_buf.blocks_left,
 			rbld_buf.ldev_size);
 }
@@ -2201,15 +2203,15 @@ static struct attribute *myrb_shost_attrs[] = {
 
 ATTRIBUTE_GROUPS(myrb_shost);
 
-static const struct scsi_host_template myrb_template = {
+static struct scsi_host_template myrb_template = {
 	.module			= THIS_MODULE,
 	.name			= "DAC960",
 	.proc_name		= "myrb",
 	.queuecommand		= myrb_queuecommand,
 	.eh_host_reset_handler	= myrb_host_reset,
-	.sdev_init		= myrb_sdev_init,
-	.sdev_configure		= myrb_sdev_configure,
-	.sdev_destroy		= myrb_sdev_destroy,
+	.slave_alloc		= myrb_slave_alloc,
+	.slave_configure	= myrb_slave_configure,
+	.slave_destroy		= myrb_slave_destroy,
 	.bios_param		= myrb_biosparam,
 	.cmd_size		= sizeof(struct myrb_cmdblk),
 	.shost_groups		= myrb_shost_groups,

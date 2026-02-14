@@ -609,6 +609,7 @@ static const struct net_device_ops softing_netdev_ops = {
 	.ndo_open = softing_netdev_open,
 	.ndo_stop = softing_netdev_stop,
 	.ndo_start_xmit	= softing_netdev_start_xmit,
+	.ndo_change_mtu = can_change_mtu,
 };
 
 static const struct ethtool_ops softing_ethtool_ops = {
@@ -728,7 +729,7 @@ static const struct attribute_group softing_pdev_group = {
 /*
  * platform driver
  */
-static void softing_pdev_remove(struct platform_device *pdev)
+static int softing_pdev_remove(struct platform_device *pdev)
 {
 	struct softing *card = platform_get_drvdata(pdev);
 	int j;
@@ -746,6 +747,7 @@ static void softing_pdev_remove(struct platform_device *pdev)
 
 	iounmap(card->dpram);
 	kfree(card);
+	return 0;
 }
 
 static int softing_pdev_probe(struct platform_device *pdev)

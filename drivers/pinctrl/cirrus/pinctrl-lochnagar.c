@@ -15,7 +15,6 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <linux/string_choices.h>
 
 #include <linux/pinctrl/consumer.h>
 #include <linux/pinctrl/pinconf-generic.h>
@@ -1058,49 +1057,48 @@ static const struct pinctrl_desc lochnagar_pin_desc = {
 	.confops = &lochnagar_pin_conf_ops,
 };
 
-static int lochnagar_gpio_set(struct gpio_chip *chip,
-			      unsigned int offset, int value)
+static void lochnagar_gpio_set(struct gpio_chip *chip,
+			       unsigned int offset, int value)
 {
 	struct lochnagar_pin_priv *priv = gpiochip_get_data(chip);
 	struct lochnagar *lochnagar = priv->lochnagar;
 	const struct lochnagar_pin *pin = priv->pins[offset].drv_data;
+	int ret;
 
 	value = !!value;
 
 	dev_dbg(priv->dev, "Set GPIO %s to %s\n",
-		pin->name, str_high_low(value));
+		pin->name, value ? "high" : "low");
 
 	switch (pin->type) {
 	case LN_PTYPE_MUX:
 		value |= LN2_OP_GPIO;
 
-		return lochnagar_pin_set_mux(priv, pin, value);
+		ret = lochnagar_pin_set_mux(priv, pin, value);
 		break;
 	case LN_PTYPE_GPIO:
 		if (pin->invert)
 			value = !value;
 
-		return regmap_update_bits(lochnagar->regmap, pin->reg,
-					  BIT(pin->shift),
-					  value << pin->shift);
+		ret = regmap_update_bits(lochnagar->regmap, pin->reg,
+					 BIT(pin->shift), value << pin->shift);
 		break;
 	default:
+		ret = -EINVAL;
 		break;
 	}
 
-	return -EINVAL;
+	if (ret < 0)
+		dev_err(chip->parent, "Failed to set %s value: %d\n",
+			pin->name, ret);
 }
 
 static int lochnagar_gpio_direction_out(struct gpio_chip *chip,
 					unsigned int offset, int value)
 {
-	int ret;
+	lochnagar_gpio_set(chip, offset, value);
 
-	ret = lochnagar_gpio_set(chip, offset, value);
-	if (ret)
-		return ret;
-
-	return pinctrl_gpio_direction_output(chip, offset);
+	return pinctrl_gpio_direction_output(chip->base + offset);
 }
 
 static int lochnagar_fill_func_groups(struct lochnagar_pin_priv *priv)

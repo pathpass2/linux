@@ -6,18 +6,6 @@
 #include <dt-bindings/leds/common.h>
 
 / {
-	native-hdmi-connector {
-		compatible = "hdmi-connector";
-		label = "J15";
-		type = "a";
-
-		port {
-			native_hdmi_connector_in: endpoint {
-				remote-endpoint = <&hdmi_tx_out>;
-			};
-		};
-	};
-
 	/* Carrier Board Supply +V1.8 */
 	reg_1p8v: regulator-1p8v {
 		compatible = "regulator-fixed";
@@ -85,11 +73,6 @@
 	};
 };
 
-/* Verdin HDMI_1 Audio */
-&aud2htx {
-	status = "okay";
-};
-
 &backlight {
 	power-supply = <&reg_3p3v>;
 };
@@ -104,7 +87,7 @@
 	status = "okay";
 };
 
-/* EEPROM on Verdin Yavia board */
+/* EEPROM on Verdin yavia board */
 &eeprom_carrier_board {
 	status = "okay";
 };
@@ -114,36 +97,6 @@
 };
 
 &flexcan1 {
-	status = "okay";
-};
-
-&gpio4 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_ctrl_sleep_moci>;
-};
-
-/* Verdin HDMI_1 */
-&hdmi_pai {
-	status = "okay";
-};
-
-&hdmi_pvi {
-	status = "okay";
-};
-
-&hdmi_tx {
-	status = "okay";
-
-	ports {
-		port@1 {
-			hdmi_tx_out: endpoint {
-				remote-endpoint = <&native_hdmi_connector_in>;
-			};
-		};
-	};
-};
-
-&hdmi_tx_phy {
 	status = "okay";
 };
 
@@ -164,21 +117,12 @@
 	status = "okay";
 };
 
-/* Verdin I2C_3_HDMI */
-&i2c5 {
-	status = "okay";
-};
-
-&lcdif3 {
-	status = "okay";
-};
-
 /* Verdin PCIE_1 */
 &pcie {
 	status = "okay";
 };
 
-&pcie_phy {
+&pcie_phy{
 	status = "okay";
 };
 
@@ -199,11 +143,6 @@
 
 &reg_usdhc2_vmmc {
 	vin-supply = <&reg_3p3v>;
-};
-
-/* Verdin HDMI_1 Audio */
-&sound_hdmi {
-	status = "okay";
 };
 
 /* Verdin UART_1 */
@@ -244,6 +183,7 @@
 };
 
 &usb_dwc3_1 {
+	disable-over-current;
 	status = "okay";
 };
 

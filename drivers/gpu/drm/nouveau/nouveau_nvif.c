@@ -35,6 +35,7 @@
 #include <nvif/ioctl.h>
 
 #include "nouveau_drv.h"
+#include "nouveau_usif.h"
 
 static void
 nvkm_client_unmap(void *priv, void __iomem *ptr, u32 size)
@@ -62,16 +63,10 @@ nvkm_client_resume(void *priv)
 }
 
 static int
-nvkm_client_suspend(void *priv, bool runtime)
+nvkm_client_suspend(void *priv)
 {
 	struct nvkm_client *client = priv;
-	enum nvkm_suspend_state state;
-
-	if (runtime)
-		state = NVKM_RUNTIME_SUSPEND;
-	else
-		state = NVKM_SUSPEND;
-	return nvkm_object_fini(&client->object, state);
+	return nvkm_object_fini(&client->object, true);
 }
 
 static int
@@ -103,4 +98,5 @@ nvif_driver_nvkm = {
 	.ioctl = nvkm_client_ioctl,
 	.map = nvkm_client_map,
 	.unmap = nvkm_client_unmap,
+	.keep = false,
 };

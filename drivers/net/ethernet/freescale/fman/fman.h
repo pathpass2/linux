@@ -74,9 +74,6 @@
 #define BM_MAX_NUM_OF_POOLS		64 /* Buffers pools */
 #define FMAN_PORT_MAX_EXT_POOLS_NUM	8  /* External BM pools per Rx port */
 
-/* General defines */
-#define MAX_NUM_OF_MACS			10
-
 struct fman; /* FMan data */
 
 /* Enum for defining port types */

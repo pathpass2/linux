@@ -19,7 +19,7 @@
  *
  * Ordering barriers can be more efficient than completion barriers, since:
  *
- *   a) Ordering barriers only require memory access instructions which precede
+ *   a) Ordering barriers only require memory access instructions which preceed
  *      them in program order (older instructions) to reach a point in the
  *      load/store datapath beyond which reordering is not possible before
  *      allowing memory access instructions which follow them (younger
@@ -193,7 +193,7 @@
  * Preprocessor magic to expand macros used as arguments before we insert them
  * into assembly code.
  */
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 # define ___SYNC(type, reason, else)				\
 	____SYNC(type, reason, else)
 #else

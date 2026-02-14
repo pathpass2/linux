@@ -11,6 +11,7 @@
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/interrupt.h>
 #include <linux/pm_runtime.h>
@@ -142,8 +143,18 @@ static struct max8997_platform_data *max8997_i2c_parse_dt_pdata(
 	return pd;
 }
 
+static inline unsigned long max8997_i2c_get_driver_data(struct i2c_client *i2c,
+						const struct i2c_device_id *id)
+{
+	if (i2c->dev.of_node)
+		return (unsigned long)of_device_get_match_data(&i2c->dev);
+
+	return id->driver_data;
+}
+
 static int max8997_i2c_probe(struct i2c_client *i2c)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(i2c);
 	struct max8997_dev *max8997;
 	struct max8997_platform_data *pdata = dev_get_platdata(&i2c->dev);
 	int ret = 0;
@@ -156,7 +167,7 @@ static int max8997_i2c_probe(struct i2c_client *i2c)
 	i2c_set_clientdata(i2c, max8997);
 	max8997->dev = &i2c->dev;
 	max8997->i2c = i2c;
-	max8997->type = (uintptr_t)i2c_get_match_data(i2c);
+	max8997->type = max8997_i2c_get_driver_data(i2c, id);
 	max8997->irq = i2c->irq;
 
 	if (IS_ENABLED(CONFIG_OF) && max8997->dev->of_node) {
@@ -438,7 +449,7 @@ static int max8997_suspend(struct device *dev)
 
 	disable_irq(max8997->irq);
 	if (device_may_wakeup(dev))
-		enable_irq_wake(max8997->irq);
+		irq_set_irq_wake(max8997->irq, 1);
 	return 0;
 }
 
@@ -448,7 +459,7 @@ static int max8997_resume(struct device *dev)
 	struct max8997_dev *max8997 = i2c_get_clientdata(i2c);
 
 	if (device_may_wakeup(dev))
-		disable_irq_wake(max8997->irq);
+		irq_set_irq_wake(max8997->irq, 0);
 	enable_irq(max8997->irq);
 	return max8997_irq_resume(max8997);
 }
@@ -467,7 +478,7 @@ static struct i2c_driver max8997_i2c_driver = {
 		   .suppress_bind_attrs = true,
 		   .of_match_table = of_match_ptr(max8997_pmic_dt_match),
 	},
-	.probe = max8997_i2c_probe,
+	.probe_new = max8997_i2c_probe,
 	.id_table = max8997_i2c_id,
 };
 

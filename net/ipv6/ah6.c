@@ -13,8 +13,8 @@
 
 #define pr_fmt(fmt) "IPv6: " fmt
 
+#include <crypto/algapi.h>
 #include <crypto/hash.h>
-#include <crypto/utils.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <net/ip.h>
@@ -46,40 +46,14 @@ struct ah_skb_cb {
 
 #define AH_SKB_CB(__skb) ((struct ah_skb_cb *)&((__skb)->cb[0]))
 
-/* Helper to save IPv6 addresses and extension headers to temporary storage */
-static inline void ah6_save_hdrs(struct tmp_ext *iph_ext,
-				 struct ipv6hdr *top_iph, int extlen)
-{
-	if (!extlen)
-		return;
-
-#if IS_ENABLED(CONFIG_IPV6_MIP6)
-	iph_ext->saddr = top_iph->saddr;
-#endif
-	iph_ext->daddr = top_iph->daddr;
-	memcpy(&iph_ext->hdrs, top_iph + 1, extlen - sizeof(*iph_ext));
-}
-
-/* Helper to restore IPv6 addresses and extension headers from temporary storage */
-static inline void ah6_restore_hdrs(struct ipv6hdr *top_iph,
-				    struct tmp_ext *iph_ext, int extlen)
-{
-	if (!extlen)
-		return;
-
-#if IS_ENABLED(CONFIG_IPV6_MIP6)
-	top_iph->saddr = iph_ext->saddr;
-#endif
-	top_iph->daddr = iph_ext->daddr;
-	memcpy(top_iph + 1, &iph_ext->hdrs, extlen - sizeof(*iph_ext));
-}
-
 static void *ah_alloc_tmp(struct crypto_ahash *ahash, int nfrags,
 			  unsigned int size)
 {
 	unsigned int len;
 
-	len = size + crypto_ahash_digestsize(ahash);
+	len = size + crypto_ahash_digestsize(ahash) +
+	      (crypto_ahash_alignmask(ahash) &
+	       ~(crypto_tfm_ctx_alignment() - 1));
 
 	len = ALIGN(len, crypto_tfm_ctx_alignment());
 
@@ -101,9 +75,10 @@ static inline u8 *ah_tmp_auth(u8 *tmp, unsigned int offset)
 	return tmp + offset;
 }
 
-static inline u8 *ah_tmp_icv(void *tmp, unsigned int offset)
+static inline u8 *ah_tmp_icv(struct crypto_ahash *ahash, void *tmp,
+			     unsigned int offset)
 {
-	return tmp + offset;
+	return PTR_ALIGN((u8 *)tmp + offset, crypto_ahash_alignmask(ahash) + 1);
 }
 
 static inline struct ahash_request *ah_tmp_req(struct crypto_ahash *ahash,
@@ -324,12 +299,18 @@ static void ah6_output_done(void *data, int err)
 
 	iph_base = AH_SKB_CB(skb)->tmp;
 	iph_ext = ah_tmp_ext(iph_base);
-	icv = ah_tmp_icv(iph_ext, extlen);
+	icv = ah_tmp_icv(ahp->ahash, iph_ext, extlen);
 
 	memcpy(ah->auth_data, icv, ahp->icv_trunc_len);
 	memcpy(top_iph, iph_base, IPV6HDR_BASELEN);
 
-	ah6_restore_hdrs(top_iph, iph_ext, extlen);
+	if (extlen) {
+#if IS_ENABLED(CONFIG_IPV6_MIP6)
+		memcpy(&top_iph->saddr, iph_ext, extlen);
+#else
+		memcpy(&top_iph->daddr, iph_ext, extlen);
+#endif
+	}
 
 	kfree(AH_SKB_CB(skb)->tmp);
 	xfrm_output_resume(skb->sk, skb, err);
@@ -381,7 +362,7 @@ static int ah6_output(struct xfrm_state *x, struct sk_buff *skb)
 
 	iph_ext = ah_tmp_ext(iph_base);
 	seqhi = (__be32 *)((char *)iph_ext + extlen);
-	icv = ah_tmp_icv(seqhi, seqhi_len);
+	icv = ah_tmp_icv(ahash, seqhi, seqhi_len);
 	req = ah_tmp_req(ahash, icv);
 	sg = ah_req_sg(ahash, req);
 	seqhisg = sg + nfrags;
@@ -400,8 +381,12 @@ static int ah6_output(struct xfrm_state *x, struct sk_buff *skb)
 	 */
 	memcpy(iph_base, top_iph, IPV6HDR_BASELEN);
 
-	ah6_save_hdrs(iph_ext, top_iph, extlen);
 	if (extlen) {
+#if IS_ENABLED(CONFIG_IPV6_MIP6)
+		memcpy(iph_ext, &top_iph->saddr, extlen);
+#else
+		memcpy(iph_ext, &top_iph->daddr, extlen);
+#endif
 		err = ipv6_clear_mutable_options(top_iph,
 						 extlen - sizeof(*iph_ext) +
 						 sizeof(*top_iph),
@@ -452,7 +437,13 @@ static int ah6_output(struct xfrm_state *x, struct sk_buff *skb)
 	memcpy(ah->auth_data, icv, ahp->icv_trunc_len);
 	memcpy(top_iph, iph_base, IPV6HDR_BASELEN);
 
-	ah6_restore_hdrs(top_iph, iph_ext, extlen);
+	if (extlen) {
+#if IS_ENABLED(CONFIG_IPV6_MIP6)
+		memcpy(&top_iph->saddr, iph_ext, extlen);
+#else
+		memcpy(&top_iph->daddr, iph_ext, extlen);
+#endif
+	}
 
 out_free:
 	kfree(iph_base);
@@ -477,7 +468,7 @@ static void ah6_input_done(void *data, int err)
 
 	work_iph = AH_SKB_CB(skb)->tmp;
 	auth_data = ah_tmp_auth(work_iph, hdr_len);
-	icv = ah_tmp_icv(auth_data, ahp->icv_trunc_len);
+	icv = ah_tmp_icv(ahp->ahash, auth_data, ahp->icv_trunc_len);
 
 	err = crypto_memneq(icv, auth_data, ahp->icv_trunc_len) ? -EBADMSG : 0;
 	if (err)
@@ -585,7 +576,7 @@ static int ah6_input(struct xfrm_state *x, struct sk_buff *skb)
 
 	auth_data = ah_tmp_auth((u8 *)work_iph, hdr_len);
 	seqhi = (__be32 *)(auth_data + ahp->icv_trunc_len);
-	icv = ah_tmp_icv(seqhi, seqhi_len);
+	icv = ah_tmp_icv(ahash, seqhi, seqhi_len);
 	req = ah_tmp_req(ahash, icv);
 	sg = ah_req_sg(ahash, req);
 	seqhisg = sg + nfrags;
@@ -812,6 +803,5 @@ static void __exit ah6_fini(void)
 module_init(ah6_init);
 module_exit(ah6_fini);
 
-MODULE_DESCRIPTION("IPv6 AH transformation helpers");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_XFRM_TYPE(AF_INET6, XFRM_PROTO_AH);

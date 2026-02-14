@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2020 Intel Corporation
+// Copyright(c) 2020 Intel Corporation. All rights reserved.
 //
 // Author: Cezary Rojewski <cezary.rojewski@intel.com>
 //
@@ -15,12 +15,17 @@ int catpt_ipc_get_fw_version(struct catpt_dev *cdev,
 {
 	union catpt_global_msg msg = CATPT_GLOBAL_MSG(GET_FW_VERSION);
 	struct catpt_ipc_msg request = {{0}}, reply;
+	int ret;
 
 	request.header = msg.val;
 	reply.size = sizeof(*version);
 	reply.data = version;
 
-	return catpt_dsp_send_msg(cdev, request, &reply, "get fw version");
+	ret = catpt_dsp_send_msg(cdev, request, &reply);
+	if (ret)
+		dev_err(cdev->dev, "get fw version failed: %d\n", ret);
+
+	return ret;
 }
 
 struct catpt_alloc_stream_input {
@@ -89,7 +94,11 @@ int catpt_ipc_alloc_stream(struct catpt_dev *cdev,
 	reply.size = sizeof(*sinfo);
 	reply.data = sinfo;
 
-	ret = catpt_dsp_send_msg(cdev, request, &reply, "alloc stream");
+	ret = catpt_dsp_send_msg(cdev, request, &reply);
+	if (ret)
+		dev_err(cdev->dev, "alloc stream type %d failed: %d\n",
+			type, ret);
+
 	kfree(payload);
 	return ret;
 }
@@ -98,12 +107,18 @@ int catpt_ipc_free_stream(struct catpt_dev *cdev, u8 stream_hw_id)
 {
 	union catpt_global_msg msg = CATPT_GLOBAL_MSG(FREE_STREAM);
 	struct catpt_ipc_msg request;
+	int ret;
 
 	request.header = msg.val;
 	request.size = sizeof(stream_hw_id);
 	request.data = &stream_hw_id;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "free stream");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "free stream %d failed: %d\n",
+			stream_hw_id, ret);
+
+	return ret;
 }
 
 int catpt_ipc_set_device_format(struct catpt_dev *cdev,
@@ -111,12 +126,17 @@ int catpt_ipc_set_device_format(struct catpt_dev *cdev,
 {
 	union catpt_global_msg msg = CATPT_GLOBAL_MSG(SET_DEVICE_FORMATS);
 	struct catpt_ipc_msg request;
+	int ret;
 
 	request.header = msg.val;
 	request.size = sizeof(*devfmt);
 	request.data = devfmt;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "set device format");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "set device format failed: %d\n", ret);
+
+	return ret;
 }
 
 int catpt_ipc_enter_dxstate(struct catpt_dev *cdev, enum catpt_dx_state state,
@@ -124,6 +144,7 @@ int catpt_ipc_enter_dxstate(struct catpt_dev *cdev, enum catpt_dx_state state,
 {
 	union catpt_global_msg msg = CATPT_GLOBAL_MSG(ENTER_DX_STATE);
 	struct catpt_ipc_msg request, reply;
+	int ret;
 
 	request.header = msg.val;
 	request.size = sizeof(state);
@@ -131,7 +152,11 @@ int catpt_ipc_enter_dxstate(struct catpt_dev *cdev, enum catpt_dx_state state,
 	reply.size = sizeof(*context);
 	reply.data = context;
 
-	return catpt_dsp_send_msg(cdev, request, &reply, "enter dx state");
+	ret = catpt_dsp_send_msg(cdev, request, &reply);
+	if (ret)
+		dev_err(cdev->dev, "enter dx state failed: %d\n", ret);
+
+	return ret;
 }
 
 int catpt_ipc_get_mixer_stream_info(struct catpt_dev *cdev,
@@ -139,45 +164,68 @@ int catpt_ipc_get_mixer_stream_info(struct catpt_dev *cdev,
 {
 	union catpt_global_msg msg = CATPT_GLOBAL_MSG(GET_MIXER_STREAM_INFO);
 	struct catpt_ipc_msg request = {{0}}, reply;
+	int ret;
 
 	request.header = msg.val;
 	reply.size = sizeof(*info);
 	reply.data = info;
 
-	return catpt_dsp_send_msg(cdev, request, &reply, "get mixer info");
+	ret = catpt_dsp_send_msg(cdev, request, &reply);
+	if (ret)
+		dev_err(cdev->dev, "get mixer info failed: %d\n", ret);
+
+	return ret;
 }
 
 int catpt_ipc_reset_stream(struct catpt_dev *cdev, u8 stream_hw_id)
 {
 	union catpt_stream_msg msg = CATPT_STREAM_MSG(RESET_STREAM);
 	struct catpt_ipc_msg request = {{0}};
+	int ret;
 
 	msg.stream_hw_id = stream_hw_id;
 	request.header = msg.val;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "reset stream");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "reset stream %d failed: %d\n",
+			stream_hw_id, ret);
+
+	return ret;
 }
 
 int catpt_ipc_pause_stream(struct catpt_dev *cdev, u8 stream_hw_id)
 {
 	union catpt_stream_msg msg = CATPT_STREAM_MSG(PAUSE_STREAM);
 	struct catpt_ipc_msg request = {{0}};
+	int ret;
 
 	msg.stream_hw_id = stream_hw_id;
 	request.header = msg.val;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "pause stream");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "pause stream %d failed: %d\n",
+			stream_hw_id, ret);
+
+	return ret;
 }
 
 int catpt_ipc_resume_stream(struct catpt_dev *cdev, u8 stream_hw_id)
 {
 	union catpt_stream_msg msg = CATPT_STREAM_MSG(RESUME_STREAM);
 	struct catpt_ipc_msg request = {{0}};
+	int ret;
 
 	msg.stream_hw_id = stream_hw_id;
 	request.header = msg.val;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "resume stream");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "resume stream %d failed: %d\n",
+			stream_hw_id, ret);
+
+	return ret;
 }
 
 struct catpt_set_volume_input {
@@ -195,6 +243,7 @@ int catpt_ipc_set_volume(struct catpt_dev *cdev, u8 stream_hw_id,
 	union catpt_stream_msg msg = CATPT_STAGE_MSG(SET_VOLUME);
 	struct catpt_ipc_msg request;
 	struct catpt_set_volume_input input;
+	int ret;
 
 	msg.stream_hw_id = stream_hw_id;
 	input.channel = channel;
@@ -206,7 +255,12 @@ int catpt_ipc_set_volume(struct catpt_dev *cdev, u8 stream_hw_id,
 	request.size = sizeof(input);
 	request.data = &input;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "set stream volume");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "set stream %d volume failed: %d\n",
+			stream_hw_id, ret);
+
+	return ret;
 }
 
 struct catpt_set_write_pos_input {
@@ -221,6 +275,7 @@ int catpt_ipc_set_write_pos(struct catpt_dev *cdev, u8 stream_hw_id,
 	union catpt_stream_msg msg = CATPT_STAGE_MSG(SET_WRITE_POSITION);
 	struct catpt_ipc_msg request;
 	struct catpt_set_write_pos_input input;
+	int ret;
 
 	msg.stream_hw_id = stream_hw_id;
 	input.new_write_pos = pos;
@@ -231,18 +286,28 @@ int catpt_ipc_set_write_pos(struct catpt_dev *cdev, u8 stream_hw_id,
 	request.size = sizeof(input);
 	request.data = &input;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "set stream write pos");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "set stream %d write pos failed: %d\n",
+			stream_hw_id, ret);
+
+	return ret;
 }
 
 int catpt_ipc_mute_loopback(struct catpt_dev *cdev, u8 stream_hw_id, bool mute)
 {
 	union catpt_stream_msg msg = CATPT_STAGE_MSG(MUTE_LOOPBACK);
 	struct catpt_ipc_msg request;
+	int ret;
 
 	msg.stream_hw_id = stream_hw_id;
 	request.header = msg.val;
 	request.size = sizeof(mute);
 	request.data = &mute;
 
-	return catpt_dsp_send_msg(cdev, request, NULL, "mute loopback");
+	ret = catpt_dsp_send_msg(cdev, request, NULL);
+	if (ret)
+		dev_err(cdev->dev, "mute loopback failed: %d\n", ret);
+
+	return ret;
 }

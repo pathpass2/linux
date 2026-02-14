@@ -7,13 +7,14 @@
 #include <unistd.h>
 #include <inttypes.h>
 
-#include "compress.h"
 #include "dso.h"
-#include "libbfd.h"
 #include "map.h"
 #include "maps.h"
 #include "symbol.h"
 #include "symsrc.h"
+#include "demangle-ocaml.h"
+#include "demangle-java.h"
+#include "demangle-rust.h"
 #include "machine.h"
 #include "vdso.h"
 #include "debug.h"
@@ -21,16 +22,11 @@
 #include <linux/ctype.h>
 #include <linux/kernel.h>
 #include <linux/zalloc.h>
-#include <linux/string.h>
 #include <symbol/kallsyms.h>
 #include <internal/lib.h>
 
 #ifndef EM_AARCH64
 #define EM_AARCH64	183  /* ARM 64 bit */
-#endif
-
-#ifndef EM_LOONGARCH
-#define EM_LOONGARCH	258
 #endif
 
 #ifndef ELF32_ST_VISIBILITY
@@ -49,6 +45,34 @@
 
 typedef Elf64_Nhdr GElf_Nhdr;
 
+#ifndef DMGL_PARAMS
+#define DMGL_NO_OPTS     0              /* For readability... */
+#define DMGL_PARAMS      (1 << 0)       /* Include function args */
+#define DMGL_ANSI        (1 << 1)       /* Include const, volatile, etc */
+#endif
+
+#ifdef HAVE_LIBBFD_SUPPORT
+#define PACKAGE 'perf'
+#include <bfd.h>
+#else
+#ifdef HAVE_CPLUS_DEMANGLE_SUPPORT
+extern char *cplus_demangle(const char *, int);
+
+static inline char *bfd_demangle(void __maybe_unused *v, const char *c, int i)
+{
+	return cplus_demangle(c, i);
+}
+#else
+#ifdef NO_DEMANGLE
+static inline char *bfd_demangle(void __maybe_unused *v,
+				 const char __maybe_unused *c,
+				 int __maybe_unused i)
+{
+	return NULL;
+}
+#endif
+#endif
+#endif
 
 #ifndef HAVE_ELF_GETPHDRNUM_SUPPORT
 static int elf_getphdrnum(Elf *elf, size_t *dst)
@@ -160,7 +184,7 @@ static inline bool elf_sec__is_data(const GElf_Shdr *shdr,
 
 static bool elf_sec__filter(GElf_Shdr *shdr, Elf_Data *secstrs)
 {
-	return elf_sec__is_text(shdr, secstrs) ||
+	return elf_sec__is_text(shdr, secstrs) || 
 	       elf_sec__is_data(shdr, secstrs);
 }
 
@@ -189,7 +213,7 @@ Elf_Scn *elf_section_by_name(Elf *elf, GElf_Ehdr *ep,
 	Elf_Scn *sec = NULL;
 	size_t cnt = 1;
 
-	/* ELF is corrupted/truncated, avoid calling elf_strptr. */
+	/* Elf is corrupted/truncated, avoid calling elf_strptr. */
 	if (!elf_rawdata(elf_getscn(elf, ep->e_shstrndx), NULL))
 		return NULL;
 
@@ -262,6 +286,41 @@ static int elf_read_program_header(Elf *elf, u64 vaddr, GElf_Phdr *phdr)
 
 	/* Not found any valid program header */
 	return -1;
+}
+
+static bool want_demangle(bool is_kernel_sym)
+{
+	return is_kernel_sym ? symbol_conf.demangle_kernel : symbol_conf.demangle;
+}
+
+static char *demangle_sym(struct dso *dso, int kmodule, const char *elf_name)
+{
+	int demangle_flags = verbose > 0 ? (DMGL_PARAMS | DMGL_ANSI) : DMGL_NO_OPTS;
+	char *demangled = NULL;
+
+	/*
+	 * We need to figure out if the object was created from C++ sources
+	 * DWARF DW_compile_unit has this, but we don't always have access
+	 * to it...
+	 */
+	if (!want_demangle(dso->kernel || kmodule))
+	    return demangled;
+
+	demangled = bfd_demangle(NULL, elf_name, demangle_flags);
+	if (demangled == NULL) {
+		demangled = ocaml_demangle_sym(elf_name);
+		if (demangled == NULL) {
+			demangled = java_demangle_sym(elf_name, JAVA_DEMANGLE_NORET);
+		}
+	}
+	else if (rust_is_mangled(demangled))
+		/*
+		    * Input to Rust demangling is the BFD-demangled
+		    * name which it Rust-demangles in place.
+		    */
+		rust_demangle_sym(demangled);
+
+	return demangled;
 }
 
 struct rel_info {
@@ -360,7 +419,7 @@ static bool get_ifunc_name(Elf *elf, struct dso *dso, GElf_Ehdr *ehdr,
 
 static void exit_rel(struct rel_info *ri)
 {
-	zfree(&ri->sorted);
+	free(ri->sorted);
 }
 
 static bool get_plt_sizes(struct dso *dso, GElf_Ehdr *ehdr, GElf_Shdr *shdr_plt,
@@ -372,10 +431,6 @@ static bool get_plt_sizes(struct dso *dso, GElf_Ehdr *ehdr, GElf_Shdr *shdr_plt,
 		*plt_entry_size = 12;
 		return true;
 	case EM_AARCH64:
-		*plt_header_size = 32;
-		*plt_entry_size = 16;
-		return true;
-	case EM_LOONGARCH:
 		*plt_header_size = 32;
 		*plt_entry_size = 16;
 		return true;
@@ -402,7 +457,7 @@ static bool get_plt_sizes(struct dso *dso, GElf_Ehdr *ehdr, GElf_Shdr *shdr_plt,
 	}
 	if (*plt_entry_size)
 		return true;
-	pr_debug("Missing PLT entry size for %s\n", dso__long_name(dso));
+	pr_debug("Missing PLT entry size for %s\n", dso->long_name);
 	return false;
 }
 
@@ -428,7 +483,7 @@ struct rela_dyn_info {
 
 static void exit_rela_dyn(struct rela_dyn_info *di)
 {
-	zfree(&di->sorted);
+	free(di->sorted);
 }
 
 static int cmp_offset(const void *a, const void *b)
@@ -510,12 +565,9 @@ static u32 get_x86_64_plt_disp(const u8 *p)
 		n += 1;
 	/* jmp with 4-byte displacement */
 	if (p[n] == 0xff && p[n + 1] == 0x25) {
-		u32 disp;
-
 		n += 2;
 		/* Also add offset from start of entry to end of instruction */
-		memcpy(&disp, p + n, sizeof(disp));
-		return n + 4 + le32toh(disp);
+		return n + 4 + le32toh(*(const u32 *)(p + n));
 	}
 	return 0;
 }
@@ -528,7 +580,6 @@ static bool get_plt_got_name(GElf_Shdr *shdr, size_t i,
 	const char *sym_name;
 	char *demangled;
 	GElf_Sym sym;
-	bool result;
 	u32 disp;
 
 	if (!di->sorted)
@@ -549,17 +600,15 @@ static bool get_plt_got_name(GElf_Shdr *shdr, size_t i,
 	/* Get the associated symbol */
 	gelf_getsym(di->dynsym_data, vr->sym_idx, &sym);
 	sym_name = elf_sym__name(&sym, di->dynstr_data);
-	demangled = dso__demangle_sym(di->dso, /*kmodule=*/0, sym_name);
+	demangled = demangle_sym(di->dso, 0, sym_name);
 	if (demangled != NULL)
 		sym_name = demangled;
 
 	snprintf(buf, buf_sz, "%s@plt", sym_name);
 
-	result = *sym_name;
-
 	free(demangled);
 
-	return result;
+	return *sym_name;
 }
 
 static int dso__synthesize_plt_got_symbols(struct dso *dso, Elf *elf,
@@ -586,7 +635,7 @@ static int dso__synthesize_plt_got_symbols(struct dso *dso, Elf *elf,
 		sym = symbol__new(shdr.sh_offset + i, shdr.sh_entsize, STB_GLOBAL, STT_FUNC, buf);
 		if (!sym)
 			goto out;
-		symbols__insert(dso__symbols(dso), sym);
+		symbols__insert(&dso->symbols, sym);
 	}
 	err = 0;
 out:
@@ -640,7 +689,7 @@ int dso__synthesize_plt_symbols(struct dso *dso, struct symsrc *ss)
 	plt_sym = symbol__new(shdr_plt.sh_offset, plt_header_size, STB_GLOBAL, STT_FUNC, ".plt");
 	if (!plt_sym)
 		goto out_elf_end;
-	symbols__insert(dso__symbols(dso), plt_sym);
+	symbols__insert(&dso->symbols, plt_sym);
 
 	/* Only x86 has .plt.got */
 	if (machine_is_x86(ehdr.e_machine) &&
@@ -747,7 +796,7 @@ int dso__synthesize_plt_symbols(struct dso *dso, struct symsrc *ss)
 		gelf_getsym(syms, get_rel_symidx(&ri, idx), &sym);
 
 		elf_name = elf_sym__name(&sym, symstrs);
-		demangled = dso__demangle_sym(dso, /*kmodule=*/0, elf_name);
+		demangled = demangle_sym(dso, 0, elf_name);
 		if (demangled)
 			elf_name = demangled;
 		if (*elf_name)
@@ -762,7 +811,7 @@ int dso__synthesize_plt_symbols(struct dso *dso, struct symsrc *ss)
 			goto out_elf_end;
 
 		plt_offset += plt_entry_size;
-		symbols__insert(dso__symbols(dso), f);
+		symbols__insert(&dso->symbols, f);
 		++nr;
 	}
 
@@ -772,8 +821,13 @@ out_elf_end:
 	if (err == 0)
 		return nr;
 	pr_debug("%s: problems reading %s PLT info.\n",
-		 __func__, dso__long_name(dso));
+		 __func__, dso->long_name);
 	return 0;
+}
+
+char *dso__demangle_sym(struct dso *dso, int kmodule, const char *elf_name)
+{
+	return demangle_sym(dso, kmodule, elf_name);
 }
 
 /*
@@ -849,7 +903,7 @@ static int elf_read_build_id(Elf *elf, void *bf, size_t size)
 				size_t sz = min(size, descsz);
 				memcpy(bf, ptr, sz);
 				memset(bf + sz, 0, size - sz);
-				err = sz;
+				err = descsz;
 				break;
 			}
 		}
@@ -860,15 +914,42 @@ out:
 	return err;
 }
 
+#ifdef HAVE_LIBBFD_BUILDID_SUPPORT
+
 static int read_build_id(const char *filename, struct build_id *bid)
 {
 	size_t size = sizeof(bid->data);
-	int fd, err;
-	Elf *elf;
+	int err = -1;
+	bfd *abfd;
 
-	err = libbfd__read_build_id(filename, bid);
-	if (err >= 0)
-		goto out;
+	abfd = bfd_openr(filename, NULL);
+	if (!abfd)
+		return -1;
+
+	if (!bfd_check_format(abfd, bfd_object)) {
+		pr_debug2("%s: cannot read %s bfd file.\n", __func__, filename);
+		goto out_close;
+	}
+
+	if (!abfd->build_id || abfd->build_id->size > size)
+		goto out_close;
+
+	memcpy(bid->data, abfd->build_id->data, abfd->build_id->size);
+	memset(bid->data + abfd->build_id->size, 0, size - abfd->build_id->size);
+	err = bid->size = abfd->build_id->size;
+
+out_close:
+	bfd_close(abfd);
+	return err;
+}
+
+#else // HAVE_LIBBFD_BUILDID_SUPPORT
+
+static int read_build_id(const char *filename, struct build_id *bid)
+{
+	size_t size = sizeof(bid->data);
+	int fd, err = -1;
+	Elf *elf;
 
 	if (size < BUILD_ID_SIZE)
 		goto out;
@@ -894,6 +975,8 @@ out:
 	return err;
 }
 
+#endif // HAVE_LIBBFD_BUILDID_SUPPORT
+
 int filename__read_build_id(const char *filename, struct build_id *bid)
 {
 	struct kmod_path m = { .name = NULL, };
@@ -902,10 +985,6 @@ int filename__read_build_id(const char *filename, struct build_id *bid)
 
 	if (!filename)
 		return -EFAULT;
-
-	errno = 0;
-	if (!is_regular_file(filename))
-		return errno == 0 ? -EWOULDBLOCK : -errno;
 
 	err = kmod_path__parse(&m, filename);
 	if (err)
@@ -981,6 +1060,44 @@ out:
 	return err;
 }
 
+#ifdef HAVE_LIBBFD_SUPPORT
+
+int filename__read_debuglink(const char *filename, char *debuglink,
+			     size_t size)
+{
+	int err = -1;
+	asection *section;
+	bfd *abfd;
+
+	abfd = bfd_openr(filename, NULL);
+	if (!abfd)
+		return -1;
+
+	if (!bfd_check_format(abfd, bfd_object)) {
+		pr_debug2("%s: cannot read %s bfd file.\n", __func__, filename);
+		goto out_close;
+	}
+
+	section = bfd_get_section_by_name(abfd, ".gnu_debuglink");
+	if (!section)
+		goto out_close;
+
+	if (section->size > size)
+		goto out_close;
+
+	if (!bfd_get_section_contents(abfd, section, debuglink, 0,
+				      section->size))
+		goto out_close;
+
+	err = 0;
+
+out_close:
+	bfd_close(abfd);
+	return err;
+}
+
+#else
+
 int filename__read_debuglink(const char *filename, char *debuglink,
 			     size_t size)
 {
@@ -991,10 +1108,6 @@ int filename__read_debuglink(const char *filename, char *debuglink,
 	Elf_Data *data;
 	Elf_Scn *sec;
 	Elf_Kind ek;
-
-	err = libbfd_filename__read_debuglink(filename, debuglink, size);
-	if (err >= 0)
-		goto out;
 
 	fd = open(filename, O_RDONLY);
 	if (fd < 0)
@@ -1037,6 +1150,35 @@ out:
 	return err;
 }
 
+#endif
+
+static int dso__swap_init(struct dso *dso, unsigned char eidata)
+{
+	static unsigned int const endian = 1;
+
+	dso->needs_swap = DSO_SWAP__NO;
+
+	switch (eidata) {
+	case ELFDATA2LSB:
+		/* We are big endian, DSO is little endian. */
+		if (*(unsigned char const *)&endian != 1)
+			dso->needs_swap = DSO_SWAP__YES;
+		break;
+
+	case ELFDATA2MSB:
+		/* We are little endian, DSO is big endian. */
+		if (*(unsigned char const *)&endian != 0)
+			dso->needs_swap = DSO_SWAP__YES;
+		break;
+
+	default:
+		pr_err("unrecognized DSO data encoding %d\n", eidata);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 bool symsrc__possibly_runtime(struct symsrc *ss)
 {
 	return ss->dynsym || ss->opdsec;
@@ -1065,81 +1207,6 @@ bool elf__needs_adjust_symbols(GElf_Ehdr ehdr)
 	       ehdr.e_type == ET_DYN;
 }
 
-static Elf *read_gnu_debugdata(struct dso *dso, Elf *elf, const char *name, int *fd_ret)
-{
-	Elf *elf_embedded;
-	GElf_Ehdr ehdr;
-	GElf_Shdr shdr;
-	Elf_Scn *scn;
-	Elf_Data *scn_data;
-	FILE *wrapped;
-	size_t shndx;
-	char temp_filename[] = "/tmp/perf.gnu_debugdata.elf.XXXXXX";
-	int ret, temp_fd;
-
-	if (gelf_getehdr(elf, &ehdr) == NULL) {
-		pr_debug("%s: cannot read %s ELF file.\n", __func__, name);
-		*dso__load_errno(dso) = DSO_LOAD_ERRNO__INVALID_ELF;
-		return NULL;
-	}
-
-	scn = elf_section_by_name(elf, &ehdr, &shdr, ".gnu_debugdata", &shndx);
-	if (!scn) {
-		*dso__load_errno(dso) = -ENOENT;
-		return NULL;
-	}
-
-	if (shdr.sh_type == SHT_NOBITS) {
-		pr_debug("%s: .gnu_debugdata of ELF file %s has no data.\n", __func__, name);
-		*dso__load_errno(dso) = DSO_LOAD_ERRNO__INVALID_ELF;
-		return NULL;
-	}
-
-	scn_data = elf_rawdata(scn, NULL);
-	if (!scn_data) {
-		pr_debug("%s: error reading .gnu_debugdata of %s: %s\n", __func__,
-			 name, elf_errmsg(-1));
-		*dso__load_errno(dso) = DSO_LOAD_ERRNO__INVALID_ELF;
-		return NULL;
-	}
-
-	wrapped = fmemopen(scn_data->d_buf, scn_data->d_size, "r");
-	if (!wrapped) {
-		pr_debug("%s: fmemopen: %s\n", __func__, strerror(errno));
-		*dso__load_errno(dso) = -errno;
-		return NULL;
-	}
-
-	temp_fd = mkstemp(temp_filename);
-	if (temp_fd < 0) {
-		pr_debug("%s: mkstemp: %s\n", __func__, strerror(errno));
-		*dso__load_errno(dso) = -errno;
-		fclose(wrapped);
-		return NULL;
-	}
-	unlink(temp_filename);
-
-	ret = lzma_decompress_stream_to_file(wrapped, temp_fd);
-	fclose(wrapped);
-	if (ret < 0) {
-		*dso__load_errno(dso) = -errno;
-		close(temp_fd);
-		return NULL;
-	}
-
-	elf_embedded = elf_begin(temp_fd, PERF_ELF_C_READ_MMAP, NULL);
-	if (!elf_embedded) {
-		pr_debug("%s: error reading .gnu_debugdata of %s: %s\n", __func__,
-			 name, elf_errmsg(-1));
-		*dso__load_errno(dso) = DSO_LOAD_ERRNO__INVALID_ELF;
-		close(temp_fd);
-		return NULL;
-	}
-	pr_debug("%s: using .gnu_debugdata of %s\n", __func__, name);
-	*fd_ret = temp_fd;
-	return elf_embedded;
-}
-
 int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 		 enum dso_binary_type type)
 {
@@ -1152,11 +1219,11 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 		if (fd < 0)
 			return -1;
 
-		type = dso__symtab_type(dso);
+		type = dso->symtab_type;
 	} else {
 		fd = open(name, O_RDONLY);
 		if (fd < 0) {
-			*dso__load_errno(dso) = errno;
+			dso->load_errno = errno;
 			return -1;
 		}
 	}
@@ -1164,50 +1231,37 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 	elf = elf_begin(fd, PERF_ELF_C_READ_MMAP, NULL);
 	if (elf == NULL) {
 		pr_debug("%s: cannot read %s ELF file.\n", __func__, name);
-		*dso__load_errno(dso) = DSO_LOAD_ERRNO__INVALID_ELF;
+		dso->load_errno = DSO_LOAD_ERRNO__INVALID_ELF;
 		goto out_close;
 	}
 
-	if (type == DSO_BINARY_TYPE__GNU_DEBUGDATA) {
-		int new_fd;
-		Elf *embedded = read_gnu_debugdata(dso, elf, name, &new_fd);
-
-		if (!embedded)
-			goto out_close;
-
-		elf_end(elf);
-		close(fd);
-		fd = new_fd;
-		elf = embedded;
-	}
-
 	if (gelf_getehdr(elf, &ehdr) == NULL) {
-		*dso__load_errno(dso) = DSO_LOAD_ERRNO__INVALID_ELF;
+		dso->load_errno = DSO_LOAD_ERRNO__INVALID_ELF;
 		pr_debug("%s: cannot get elf header.\n", __func__);
 		goto out_elf_end;
 	}
 
 	if (dso__swap_init(dso, ehdr.e_ident[EI_DATA])) {
-		*dso__load_errno(dso) = DSO_LOAD_ERRNO__INTERNAL_ERROR;
+		dso->load_errno = DSO_LOAD_ERRNO__INTERNAL_ERROR;
 		goto out_elf_end;
 	}
 
 	/* Always reject images with a mismatched build-id: */
-	if (dso__has_build_id(dso) && !symbol_conf.ignore_vmlinux_buildid) {
+	if (dso->has_build_id && !symbol_conf.ignore_vmlinux_buildid) {
 		u8 build_id[BUILD_ID_SIZE];
 		struct build_id bid;
 		int size;
 
 		size = elf_read_build_id(elf, build_id, BUILD_ID_SIZE);
 		if (size <= 0) {
-			*dso__load_errno(dso) = DSO_LOAD_ERRNO__CANNOT_READ_BUILDID;
+			dso->load_errno = DSO_LOAD_ERRNO__CANNOT_READ_BUILDID;
 			goto out_elf_end;
 		}
 
 		build_id__init(&bid, build_id, size);
 		if (!dso__build_id_equal(dso, &bid)) {
 			pr_debug("%s: build id mismatch for %s.\n", __func__, name);
-			*dso__load_errno(dso) = DSO_LOAD_ERRNO__MISMATCHING_BUILDID;
+			dso->load_errno = DSO_LOAD_ERRNO__MISMATCHING_BUILDID;
 			goto out_elf_end;
 		}
 	}
@@ -1232,14 +1286,14 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 	if (ss->opdshdr.sh_type != SHT_PROGBITS)
 		ss->opdsec = NULL;
 
-	if (dso__kernel(dso) == DSO_SPACE__USER)
+	if (dso->kernel == DSO_SPACE__USER)
 		ss->adjust_symbols = true;
 	else
 		ss->adjust_symbols = elf__needs_adjust_symbols(ehdr);
 
 	ss->name   = strdup(name);
 	if (!ss->name) {
-		*dso__load_errno(dso) = errno;
+		dso->load_errno = errno;
 		goto out_elf_end;
 	}
 
@@ -1255,58 +1309,6 @@ out_elf_end:
 out_close:
 	close(fd);
 	return -1;
-}
-
-static bool is_exe_text(int flags)
-{
-	return (flags & (SHF_ALLOC | SHF_EXECINSTR)) == (SHF_ALLOC | SHF_EXECINSTR);
-}
-
-/*
- * Some executable module sections like .noinstr.text might be laid out with
- * .text so they can use the same mapping (memory address to file offset).
- * Check if that is the case. Refer to kernel layout_sections(). Return the
- * maximum offset.
- */
-static u64 max_text_section(Elf *elf, GElf_Ehdr *ehdr)
-{
-	Elf_Scn *sec = NULL;
-	GElf_Shdr shdr;
-	u64 offs = 0;
-
-	/* Doesn't work for some arch */
-	if (ehdr->e_machine == EM_PARISC ||
-	    ehdr->e_machine == EM_ALPHA)
-		return 0;
-
-	/* ELF is corrupted/truncated, avoid calling elf_strptr. */
-	if (!elf_rawdata(elf_getscn(elf, ehdr->e_shstrndx), NULL))
-		return 0;
-
-	while ((sec = elf_nextscn(elf, sec)) != NULL) {
-		char *sec_name;
-
-		if (!gelf_getshdr(sec, &shdr))
-			break;
-
-		if (!is_exe_text(shdr.sh_flags))
-			continue;
-
-		/* .init and .exit sections are not placed with .text */
-		sec_name = elf_strptr(elf, ehdr->e_shstrndx, shdr.sh_name);
-		if (!sec_name ||
-		    strstarts(sec_name, ".init") ||
-		    strstarts(sec_name, ".exit"))
-			break;
-
-		/* Must be next to previous, assumes .text is first */
-		if (offs && PERF_ALIGN(offs, shdr.sh_addralign ?: 1) != shdr.sh_offset)
-			break;
-
-		offs = shdr.sh_offset + shdr.sh_size;
-	}
-
-	return offs;
 }
 
 /**
@@ -1346,10 +1348,9 @@ void __weak arch__sym_update(struct symbol *s __maybe_unused,
 static int dso__process_kernel_symbol(struct dso *dso, struct map *map,
 				      GElf_Sym *sym, GElf_Shdr *shdr,
 				      struct maps *kmaps, struct kmap *kmap,
-				      struct dso **curr_dsop,
+				      struct dso **curr_dsop, struct map **curr_mapp,
 				      const char *section_name,
-				      bool adjust_kernel_syms, bool kmodule, bool *remap_kernel,
-				      u64 max_text_sh_offset)
+				      bool adjust_kernel_syms, bool kmodule, bool *remap_kernel)
 {
 	struct dso *curr_dso = *curr_dsop;
 	struct map *curr_map;
@@ -1359,7 +1360,7 @@ static int dso__process_kernel_symbol(struct dso *dso, struct map *map,
 	if (adjust_kernel_syms)
 		sym->st_value -= shdr->sh_addr - shdr->sh_offset;
 
-	if (strcmp(section_name, (dso__short_name(curr_dso) + dso__short_name_len(dso))) == 0)
+	if (strcmp(section_name, (curr_dso->short_name + dso->short_name_len)) == 0)
 		return 0;
 
 	if (strcmp(section_name, ".text") == 0) {
@@ -1368,22 +1369,19 @@ static int dso__process_kernel_symbol(struct dso *dso, struct map *map,
 		 * kallsyms and identity maps.  Overwrite it to
 		 * map to the kernel dso.
 		 */
-		if (*remap_kernel && dso__kernel(dso) && !kmodule) {
+		if (*remap_kernel && dso->kernel && !kmodule) {
 			*remap_kernel = false;
-			map__set_start(map, shdr->sh_addr + ref_reloc(kmap));
-			map__set_end(map, map__start(map) + shdr->sh_size);
-			map__set_pgoff(map, shdr->sh_offset);
-			map__set_mapping_type(map, MAPPING_TYPE__DSO);
+			map->start = shdr->sh_addr + ref_reloc(kmap);
+			map->end = map->start + shdr->sh_size;
+			map->pgoff = shdr->sh_offset;
+			map->map_ip = map__map_ip;
+			map->unmap_ip = map__unmap_ip;
 			/* Ensure maps are correctly ordered */
 			if (kmaps) {
-				int err;
-				struct map *tmp = map__get(map);
-
+				map__get(map);
 				maps__remove(kmaps, map);
-				err = maps__insert(kmaps, map);
-				map__put(tmp);
-				if (err)
-					return err;
+				maps__insert(kmaps, map);
+				map__put(map);
 			}
 		}
 
@@ -1394,75 +1392,62 @@ static int dso__process_kernel_symbol(struct dso *dso, struct map *map,
 		 */
 		if (*remap_kernel && kmodule) {
 			*remap_kernel = false;
-			map__set_pgoff(map, shdr->sh_offset);
+			map->pgoff = shdr->sh_offset;
 		}
 
-		dso__put(*curr_dsop);
-		*curr_dsop = dso__get(dso);
+		*curr_mapp = map;
+		*curr_dsop = dso;
 		return 0;
 	}
 
 	if (!kmap)
 		return 0;
 
-	/*
-	 * perf does not record module section addresses except for .text, but
-	 * some sections can use the same mapping as .text.
-	 */
-	if (kmodule && adjust_kernel_syms && is_exe_text(shdr->sh_flags) &&
-	    shdr->sh_offset <= max_text_sh_offset) {
-		dso__put(*curr_dsop);
-		*curr_dsop = dso__get(dso);
-		return 0;
-	}
-
-	snprintf(dso_name, sizeof(dso_name), "%s%s", dso__short_name(dso), section_name);
+	snprintf(dso_name, sizeof(dso_name), "%s%s", dso->short_name, section_name);
 
 	curr_map = maps__find_by_name(kmaps, dso_name);
 	if (curr_map == NULL) {
 		u64 start = sym->st_value;
 
 		if (kmodule)
-			start += map__start(map) + shdr->sh_offset;
+			start += map->start + shdr->sh_offset;
 
 		curr_dso = dso__new(dso_name);
 		if (curr_dso == NULL)
 			return -1;
-		dso__set_kernel(curr_dso, dso__kernel(dso));
-		RC_CHK_ACCESS(curr_dso)->long_name = dso__long_name(dso);
-		RC_CHK_ACCESS(curr_dso)->long_name_len = dso__long_name_len(dso);
-		dso__set_binary_type(curr_dso, dso__binary_type(dso));
-		dso__set_adjust_symbols(curr_dso, dso__adjust_symbols(dso));
+		curr_dso->kernel = dso->kernel;
+		curr_dso->long_name = dso->long_name;
+		curr_dso->long_name_len = dso->long_name_len;
 		curr_map = map__new2(start, curr_dso);
-		if (curr_map == NULL) {
-			dso__put(curr_dso);
+		dso__put(curr_dso);
+		if (curr_map == NULL)
 			return -1;
-		}
-		if (dso__kernel(curr_dso))
+
+		if (curr_dso->kernel)
 			map__kmap(curr_map)->kmaps = kmaps;
 
 		if (adjust_kernel_syms) {
-			map__set_start(curr_map, shdr->sh_addr + ref_reloc(kmap));
-			map__set_end(curr_map, map__start(curr_map) + shdr->sh_size);
-			map__set_pgoff(curr_map, shdr->sh_offset);
+			curr_map->start  = shdr->sh_addr + ref_reloc(kmap);
+			curr_map->end	 = curr_map->start + shdr->sh_size;
+			curr_map->pgoff	 = shdr->sh_offset;
 		} else {
-			map__set_mapping_type(curr_map, MAPPING_TYPE__IDENTITY);
+			curr_map->map_ip = curr_map->unmap_ip = identity__map_ip;
 		}
-		dso__set_symtab_type(curr_dso, dso__symtab_type(dso));
-		if (maps__insert(kmaps, curr_map)) {
-			dso__put(curr_dso);
-			map__put(curr_map);
-			return -1;
-		}
-		dsos__add(&maps__machine(kmaps)->dsos, curr_dso);
+		curr_dso->symtab_type = dso->symtab_type;
+		maps__insert(kmaps, curr_map);
+		/*
+		 * Add it before we drop the reference to curr_map, i.e. while
+		 * we still are sure to have a reference to this DSO via
+		 * *curr_map->dso.
+		 */
+		dsos__add(&kmaps->machine->dsos, curr_dso);
+		/* kmaps already got it */
+		map__put(curr_map);
 		dso__set_loaded(curr_dso);
-		dso__put(*curr_dsop);
+		*curr_mapp = curr_map;
 		*curr_dsop = curr_dso;
-	} else {
-		dso__put(*curr_dsop);
-		*curr_dsop = dso__get(map__dso(curr_map));
-	}
-	map__put(curr_map);
+	} else
+		*curr_dsop = curr_map->dso;
 
 	return 0;
 }
@@ -1471,11 +1456,13 @@ static int
 dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 		       struct symsrc *runtime_ss, int kmodule, int dynsym)
 {
-	struct kmap *kmap = dso__kernel(dso) ? map__kmap(map) : NULL;
+	struct kmap *kmap = dso->kernel ? map__kmap(map) : NULL;
 	struct maps *kmaps = kmap ? map__kmaps(map) : NULL;
-	struct dso *curr_dso = NULL;
+	struct map *curr_map = map;
+	struct dso *curr_dso = dso;
 	Elf_Data *symstrs, *secstrs, *secstrs_run, *secstrs_sym;
 	uint32_t nr_syms;
+	int err = -1;
 	uint32_t idx;
 	GElf_Ehdr ehdr;
 	GElf_Shdr shdr;
@@ -1486,7 +1473,6 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 	Elf *elf;
 	int nr = 0;
 	bool remap_kernel = false, adjust_kernel_syms = false;
-	u64 max_text_sh_offset = 0;
 
 	if (kmap && !kmaps)
 		return -1;
@@ -1502,10 +1488,8 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 	}
 
 	if (elf_section_by_name(runtime_ss->elf, &runtime_ss->ehdr, &tshdr,
-				".text", NULL)) {
-		dso__set_text_offset(dso, tshdr.sh_addr - tshdr.sh_offset);
-		dso__set_text_end(dso, tshdr.sh_offset + tshdr.sh_size);
-	}
+				".text", NULL))
+		dso->text_offset = tshdr.sh_addr - tshdr.sh_offset;
 
 	if (runtime_ss->opdsec)
 		opddata = elf_rawdata(runtime_ss->opdsec, NULL);
@@ -1553,7 +1537,8 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 			if (strcmp(elf_name, kmap->ref_reloc_sym->name))
 				continue;
 			kmap->ref_reloc_sym->unrelocated_addr = sym.st_value;
-			map__set_reloc(map, kmap->ref_reloc_sym->addr - kmap->ref_reloc_sym->unrelocated_addr);
+			map->reloc = kmap->ref_reloc_sym->addr -
+				     kmap->ref_reloc_sym->unrelocated_addr;
 			break;
 		}
 	}
@@ -1563,22 +1548,17 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 	 * attempted to prelink vdso to its virtual address.
 	 */
 	if (dso__is_vdso(dso))
-		map__set_reloc(map, map__start(map) - dso__text_offset(dso));
+		map->reloc = map->start - dso->text_offset;
 
-	dso__set_adjust_symbols(dso, runtime_ss->adjust_symbols || ref_reloc(kmap));
+	dso->adjust_symbols = runtime_ss->adjust_symbols || ref_reloc(kmap);
 	/*
 	 * Initial kernel and module mappings do not map to the dso.
 	 * Flag the fixups.
 	 */
-	if (dso__kernel(dso)) {
+	if (dso->kernel) {
 		remap_kernel = true;
-		adjust_kernel_syms = dso__adjust_symbols(dso);
+		adjust_kernel_syms = dso->adjust_symbols;
 	}
-
-	if (kmodule && adjust_kernel_syms)
-		max_text_sh_offset = max_text_section(runtime_ss->elf, &runtime_ss->ehdr);
-
-	curr_dso = dso__get(dso);
 	elf_symtab__for_each_symbol(syms, nr_syms, idx, sym) {
 		struct symbol *f;
 		const char *elf_name = elf_sym__name(&sym, symstrs);
@@ -1596,12 +1576,6 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 		if (ehdr.e_machine == EM_ARM || ehdr.e_machine == EM_AARCH64) {
 			if (elf_name[0] == '$' && strchr("adtx", elf_name[1])
 			    && (elf_name[2] == '\0' || elf_name[2] == '.'))
-				continue;
-		}
-
-		/* Reject RISCV ELF "mapping symbols" */
-		if (ehdr.e_machine == EM_RISCV) {
-			if (elf_name[0] == '$' && strchr("dx", elf_name[1]))
 				continue;
 		}
 
@@ -1672,14 +1646,9 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 		    (sym.st_value & 1))
 			--sym.st_value;
 
-		if (dso__kernel(dso)) {
-			if (dso__process_kernel_symbol(dso, map, &sym, &shdr,
-						       kmaps, kmap, &curr_dso,
-						       section_name,
-						       adjust_kernel_syms,
-						       kmodule,
-						       &remap_kernel,
-						       max_text_sh_offset))
+		if (dso->kernel) {
+			if (dso__process_kernel_symbol(dso, map, &sym, &shdr, kmaps, kmap, &curr_dso, &curr_map,
+						       section_name, adjust_kernel_syms, kmodule, &remap_kernel))
 				goto out_elf_end;
 		} else if ((used_opd && runtime_ss->adjust_symbols) ||
 			   (!used_opd && syms_ss->adjust_symbols)) {
@@ -1712,7 +1681,7 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 			}
 		}
 
-		demangled = dso__demangle_sym(dso, kmodule, elf_name);
+		demangled = demangle_sym(dso, kmodule, elf_name);
 		if (demangled != NULL)
 			elf_name = demangled;
 
@@ -1725,17 +1694,16 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 
 		arch__sym_update(f, &sym);
 
-		__symbols__insert(dso__symbols(curr_dso), f, dso__kernel(dso));
+		__symbols__insert(&curr_dso->symbols, f, dso->kernel);
 		nr++;
 	}
-	dso__put(curr_dso);
 
 	/*
 	 * For misannotated, zeroed, ASM function sizes.
 	 */
 	if (nr > 0) {
-		symbols__fixup_end(dso__symbols(dso), false);
-		symbols__fixup_duplicate(dso__symbols(dso));
+		symbols__fixup_end(&dso->symbols, false);
+		symbols__fixup_duplicate(&dso->symbols);
 		if (kmap) {
 			/*
 			 * We need to fixup this here too because we create new
@@ -1744,10 +1712,9 @@ dso__load_sym_internal(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 			maps__fixup_end(kmaps);
 		}
 	}
-	return nr;
+	err = nr;
 out_elf_end:
-	dso__put(curr_dso);
-	return -1;
+	return err;
 }
 
 int dso__load_sym(struct dso *dso, struct map *map, struct symsrc *syms_ss,
@@ -1756,16 +1723,16 @@ int dso__load_sym(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 	int nr = 0;
 	int err = -1;
 
-	dso__set_symtab_type(dso, syms_ss->type);
-	dso__set_is_64_bit(dso, syms_ss->is_64_bit);
-	dso__set_rel(dso, syms_ss->ehdr.e_type == ET_REL);
+	dso->symtab_type = syms_ss->type;
+	dso->is_64_bit = syms_ss->is_64_bit;
+	dso->rel = syms_ss->ehdr.e_type == ET_REL;
 
 	/*
 	 * Modules may already have symbols from kallsyms, but those symbols
 	 * have the wrong values for the dso maps, so remove them.
 	 */
 	if (kmodule && syms_ss->symtab)
-		symbols__delete(dso__symbols(dso));
+		symbols__delete(&dso->symbols);
 
 	if (!syms_ss->symtab) {
 		/*
@@ -1773,7 +1740,7 @@ int dso__load_sym(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 		 * to using kallsyms. The vmlinux runtime symbols aren't
 		 * of much use.
 		 */
-		if (dso__kernel(dso))
+		if (dso->kernel)
 			return err;
 	} else  {
 		err = dso__load_sym_internal(dso, map, syms_ss, runtime_ss,
@@ -1788,23 +1755,10 @@ int dso__load_sym(struct dso *dso, struct map *map, struct symsrc *syms_ss,
 					     kmodule, 1);
 		if (err < 0)
 			return err;
-		nr += err;
+		err += nr;
 	}
 
-	/*
-	 * The .gnu_debugdata is a special situation: it contains a symbol
-	 * table, but the runtime file may also contain dynsym entries which are
-	 * not present there. We need to load both.
-	 */
-	if (syms_ss->type == DSO_BINARY_TYPE__GNU_DEBUGDATA && runtime_ss->dynsym) {
-		err = dso__load_sym_internal(dso, map, runtime_ss, runtime_ss,
-					     kmodule, 1);
-		if (err < 0)
-			return err;
-		nr += err;
-	}
-
-	return nr;
+	return err;
 }
 
 static int elf_read_maps(Elf *elf, bool exe, mapfn_t mapfn, void *data)

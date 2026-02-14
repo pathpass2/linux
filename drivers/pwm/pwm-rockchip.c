@@ -8,12 +8,10 @@
 
 #include <linux/clk.h>
 #include <linux/io.h>
-#include <linux/limits.h>
-#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/property.h>
 #include <linux/pwm.h>
 #include <linux/time.h>
 
@@ -32,6 +30,7 @@
 #define PWM_LP_DISABLE		(0 << 8)
 
 struct rockchip_pwm_chip {
+	struct pwm_chip chip;
 	struct clk *clk;
 	struct clk *pclk;
 	const struct rockchip_pwm_data *data;
@@ -53,9 +52,9 @@ struct rockchip_pwm_data {
 	u32 enable_conf;
 };
 
-static inline struct rockchip_pwm_chip *to_rockchip_pwm_chip(struct pwm_chip *chip)
+static inline struct rockchip_pwm_chip *to_rockchip_pwm_chip(struct pwm_chip *c)
 {
-	return pwmchip_get_drvdata(chip);
+	return container_of(c, struct rockchip_pwm_chip, chip);
 }
 
 static int rockchip_pwm_get_state(struct pwm_chip *chip,
@@ -63,7 +62,6 @@ static int rockchip_pwm_get_state(struct pwm_chip *chip,
 				  struct pwm_state *state)
 {
 	struct rockchip_pwm_chip *pc = to_rockchip_pwm_chip(chip);
-	u64 prescaled_ns = (u64)pc->data->prescaler * NSEC_PER_SEC;
 	u32 enable_conf = pc->data->enable_conf;
 	unsigned long clk_rate;
 	u64 tmp;
@@ -81,12 +79,12 @@ static int rockchip_pwm_get_state(struct pwm_chip *chip,
 	clk_rate = clk_get_rate(pc->clk);
 
 	tmp = readl_relaxed(pc->base + pc->data->regs.period);
-	tmp *= prescaled_ns;
-	state->period = DIV_U64_ROUND_UP(tmp, clk_rate);
+	tmp *= pc->data->prescaler * NSEC_PER_SEC;
+	state->period = DIV_ROUND_CLOSEST_ULL(tmp, clk_rate);
 
 	tmp = readl_relaxed(pc->base + pc->data->regs.duty);
-	tmp *= prescaled_ns;
-	state->duty_cycle =  DIV_U64_ROUND_UP(tmp, clk_rate);
+	tmp *= pc->data->prescaler * NSEC_PER_SEC;
+	state->duty_cycle =  DIV_ROUND_CLOSEST_ULL(tmp, clk_rate);
 
 	val = readl_relaxed(pc->base + pc->data->regs.ctrl);
 	state->enabled = (val & enable_conf) == enable_conf;
@@ -106,9 +104,8 @@ static void rockchip_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 			       const struct pwm_state *state)
 {
 	struct rockchip_pwm_chip *pc = to_rockchip_pwm_chip(chip);
-	u64 prescaled_ns = (u64)pc->data->prescaler * NSEC_PER_SEC;
-	u64 clk_rate, tmp;
-	u32 period_ticks, duty_ticks;
+	unsigned long period, duty;
+	u64 clk_rate, div;
 	u32 ctrl;
 
 	clk_rate = clk_get_rate(pc->clk);
@@ -118,15 +115,12 @@ static void rockchip_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	 * bits, every possible input period can be obtained using the
 	 * default prescaler value for all practical clock rate values.
 	 */
-	tmp = mul_u64_u64_div_u64(clk_rate, state->period, prescaled_ns);
-	if (tmp > U32_MAX)
-		tmp = U32_MAX;
-	period_ticks = tmp;
+	div = clk_rate * state->period;
+	period = DIV_ROUND_CLOSEST_ULL(div,
+				       pc->data->prescaler * NSEC_PER_SEC);
 
-	tmp = mul_u64_u64_div_u64(clk_rate, state->duty_cycle, prescaled_ns);
-	if (tmp > U32_MAX)
-		tmp = U32_MAX;
-	duty_ticks = tmp;
+	div = clk_rate * state->duty_cycle;
+	duty = DIV_ROUND_CLOSEST_ULL(div, pc->data->prescaler * NSEC_PER_SEC);
 
 	/*
 	 * Lock the period and duty of previous configuration, then
@@ -138,8 +132,8 @@ static void rockchip_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 		writel_relaxed(ctrl, pc->base + pc->data->regs.ctrl);
 	}
 
-	writel(period_ticks, pc->base + pc->data->regs.period);
-	writel(duty_ticks, pc->base + pc->data->regs.duty);
+	writel(period, pc->base + pc->data->regs.period);
+	writel(duty, pc->base + pc->data->regs.duty);
 
 	if (pc->data->supports_polarity) {
 		ctrl &= ~PWM_POLARITY_MASK;
@@ -234,6 +228,7 @@ out:
 static const struct pwm_ops rockchip_pwm_ops = {
 	.get_state = rockchip_pwm_get_state,
 	.apply = rockchip_pwm_apply,
+	.owner = THIS_MODULE,
 };
 
 static const struct rockchip_pwm_data pwm_data_v1 = {
@@ -302,16 +297,19 @@ MODULE_DEVICE_TABLE(of, rockchip_pwm_dt_ids);
 
 static int rockchip_pwm_probe(struct platform_device *pdev)
 {
-	struct pwm_chip *chip;
+	const struct of_device_id *id;
 	struct rockchip_pwm_chip *pc;
 	u32 enable_conf, ctrl;
 	bool enabled;
 	int ret, count;
 
-	chip = devm_pwmchip_alloc(&pdev->dev, 1, sizeof(*pc));
-	if (IS_ERR(chip))
-		return PTR_ERR(chip);
-	pc = to_rockchip_pwm_chip(chip);
+	id = of_match_device(rockchip_pwm_dt_ids, &pdev->dev);
+	if (!id)
+		return -EINVAL;
+
+	pc = devm_kzalloc(&pdev->dev, sizeof(*pc), GFP_KERNEL);
+	if (!pc)
+		return -ENOMEM;
 
 	pc->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pc->base))
@@ -345,16 +343,18 @@ static int rockchip_pwm_probe(struct platform_device *pdev)
 		goto err_clk;
 	}
 
-	platform_set_drvdata(pdev, chip);
+	platform_set_drvdata(pdev, pc);
 
-	pc->data = device_get_match_data(&pdev->dev);
-	chip->ops = &rockchip_pwm_ops;
+	pc->data = id->data;
+	pc->chip.dev = &pdev->dev;
+	pc->chip.ops = &rockchip_pwm_ops;
+	pc->chip.npwm = 1;
 
 	enable_conf = pc->data->enable_conf;
 	ctrl = readl_relaxed(pc->base + pc->data->regs.ctrl);
 	enabled = (ctrl & enable_conf) == enable_conf;
 
-	ret = pwmchip_add(chip);
+	ret = pwmchip_add(&pc->chip);
 	if (ret < 0) {
 		dev_err_probe(&pdev->dev, ret, "pwmchip_add() failed\n");
 		goto err_pclk;
@@ -376,15 +376,16 @@ err_clk:
 	return ret;
 }
 
-static void rockchip_pwm_remove(struct platform_device *pdev)
+static int rockchip_pwm_remove(struct platform_device *pdev)
 {
-	struct pwm_chip *chip = platform_get_drvdata(pdev);
-	struct rockchip_pwm_chip *pc = to_rockchip_pwm_chip(chip);
+	struct rockchip_pwm_chip *pc = platform_get_drvdata(pdev);
 
-	pwmchip_remove(chip);
+	pwmchip_remove(&pc->chip);
 
 	clk_unprepare(pc->pclk);
 	clk_unprepare(pc->clk);
+
+	return 0;
 }
 
 static struct platform_driver rockchip_pwm_driver = {

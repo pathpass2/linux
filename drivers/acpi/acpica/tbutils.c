@@ -3,7 +3,7 @@
  *
  * Module Name: tbutils - ACPI Table utilities
  *
- * Copyright (C) 2000 - 2025, Intel Corp.
+ * Copyright (C) 2000 - 2022, Intel Corp.
  *
  *****************************************************************************/
 
@@ -18,6 +18,7 @@ ACPI_MODULE_NAME("tbutils")
 static acpi_physical_address
 acpi_tb_get_root_table_entry(u8 *table_entry, u32 table_entry_size);
 
+#if (!ACPI_REDUCED_HARDWARE)
 /*******************************************************************************
  *
  * FUNCTION:    acpi_tb_initialize_facs
@@ -35,7 +36,12 @@ acpi_status acpi_tb_initialize_facs(void)
 {
 	struct acpi_table_facs *facs;
 
-	if (acpi_gbl_FADT.Xfacs &&
+	/* If Hardware Reduced flag is set, there is no FACS */
+
+	if (acpi_gbl_reduced_hardware) {
+		acpi_gbl_FACS = NULL;
+		return (AE_OK);
+	} else if (acpi_gbl_FADT.Xfacs &&
 		   (!acpi_gbl_FADT.facs
 		    || !acpi_gbl_use32_bit_facs_addresses)) {
 		(void)acpi_get_table_by_index(acpi_gbl_xfacs_index,
@@ -55,6 +61,7 @@ acpi_status acpi_tb_initialize_facs(void)
 
 	return (AE_OK);
 }
+#endif				/* !ACPI_REDUCED_HARDWARE */
 
 /*******************************************************************************
  *
@@ -158,7 +165,6 @@ struct acpi_table_header *acpi_tb_copy_dsdt(u32 table_index)
 static acpi_physical_address
 acpi_tb_get_root_table_entry(u8 *table_entry, u32 table_entry_size)
 {
-	u32 address32;
 	u64 address64;
 
 	/*
@@ -170,8 +176,8 @@ acpi_tb_get_root_table_entry(u8 *table_entry, u32 table_entry_size)
 		 * 32-bit platform, RSDT: Return 32-bit table entry
 		 * 64-bit platform, RSDT: Expand 32-bit to 64-bit and return
 		 */
-		ACPI_MOVE_32_TO_32(&address32, table_entry);
-		return address32;
+		return ((acpi_physical_address)
+			(*ACPI_CAST_PTR(u32, table_entry)));
 	} else {
 		/*
 		 * 32-bit platform, XSDT: Truncate 64-bit to 32-bit and return

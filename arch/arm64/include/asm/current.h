@@ -4,7 +4,7 @@
 
 #include <linux/compiler.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct task_struct;
 
@@ -23,7 +23,7 @@ static __always_inline struct task_struct *get_current(void)
 
 #define current get_current()
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_CURRENT_H */
 

@@ -12,8 +12,7 @@
 #include <linux/io.h>
 #include <linux/vmalloc.h>
 #include <linux/regmap.h>
-#include <linux/of.h>
-#include <linux/minmax.h>
+#include <linux/of_device.h>
 #include <linux/spi/spi-mem.h>
 #include <linux/mfd/syscon.h>
 
@@ -288,8 +287,8 @@ static ssize_t npcm_fiu_direct_read(struct spi_mem_dirmap_desc *desc,
 				    u64 offs, size_t len, void *buf)
 {
 	struct npcm_fiu_spi *fiu =
-		spi_controller_get_devdata(desc->mem->spi->controller);
-	struct npcm_fiu_chip *chip = &fiu->chip[spi_get_chipselect(desc->mem->spi, 0)];
+		spi_controller_get_devdata(desc->mem->spi->master);
+	struct npcm_fiu_chip *chip = &fiu->chip[desc->mem->spi->chip_select];
 	void __iomem *src = (void __iomem *)(chip->flash_region_mapped_ptr +
 					     offs);
 	u8 *buf_rx = buf;
@@ -315,8 +314,8 @@ static ssize_t npcm_fiu_direct_write(struct spi_mem_dirmap_desc *desc,
 				     u64 offs, size_t len, const void *buf)
 {
 	struct npcm_fiu_spi *fiu =
-		spi_controller_get_devdata(desc->mem->spi->controller);
-	struct npcm_fiu_chip *chip = &fiu->chip[spi_get_chipselect(desc->mem->spi, 0)];
+		spi_controller_get_devdata(desc->mem->spi->master);
+	struct npcm_fiu_chip *chip = &fiu->chip[desc->mem->spi->chip_select];
 	void __iomem *dst = (void __iomem *)(chip->flash_region_mapped_ptr +
 					     offs);
 	const u8 *buf_tx = buf;
@@ -336,7 +335,7 @@ static int npcm_fiu_uma_read(struct spi_mem *mem,
 			      bool is_address_size, u8 *data, u32 data_size)
 {
 	struct npcm_fiu_spi *fiu =
-		spi_controller_get_devdata(mem->spi->controller);
+		spi_controller_get_devdata(mem->spi->master);
 	u32 uma_cfg = BIT(10);
 	u32 data_reg[4];
 	int ret;
@@ -345,7 +344,7 @@ static int npcm_fiu_uma_read(struct spi_mem *mem,
 
 	regmap_update_bits(fiu->regmap, NPCM_FIU_UMA_CTS,
 			   NPCM_FIU_UMA_CTS_DEV_NUM,
-			   (spi_get_chipselect(mem->spi, 0) <<
+			   (mem->spi->chip_select <<
 			    NPCM_FIU_UMA_CTS_DEV_NUM_SHIFT));
 	regmap_update_bits(fiu->regmap, NPCM_FIU_UMA_CMD,
 			   NPCM_FIU_UMA_CMD_CMD, op->cmd.opcode);
@@ -354,9 +353,8 @@ static int npcm_fiu_uma_read(struct spi_mem *mem,
 		uma_cfg |= ilog2(op->cmd.buswidth);
 		uma_cfg |= ilog2(op->addr.buswidth)
 			<< NPCM_FIU_UMA_CFG_ADBPCK_SHIFT;
-		if (op->dummy.nbytes)
-			uma_cfg |= ilog2(op->dummy.buswidth)
-				<< NPCM_FIU_UMA_CFG_DBPCK_SHIFT;
+		uma_cfg |= ilog2(op->dummy.buswidth)
+			<< NPCM_FIU_UMA_CFG_DBPCK_SHIFT;
 		uma_cfg |= ilog2(op->data.buswidth)
 			<< NPCM_FIU_UMA_CFG_RDBPCK_SHIFT;
 		uma_cfg |= op->dummy.nbytes << NPCM_FIU_UMA_CFG_DBSIZ_SHIFT;
@@ -392,7 +390,7 @@ static int npcm_fiu_uma_write(struct spi_mem *mem,
 			      bool is_address_size, u8 *data, u32 data_size)
 {
 	struct npcm_fiu_spi *fiu =
-		spi_controller_get_devdata(mem->spi->controller);
+		spi_controller_get_devdata(mem->spi->master);
 	u32 uma_cfg = BIT(10);
 	u32 data_reg[4] = {0};
 	u32 val;
@@ -400,7 +398,7 @@ static int npcm_fiu_uma_write(struct spi_mem *mem,
 
 	regmap_update_bits(fiu->regmap, NPCM_FIU_UMA_CTS,
 			   NPCM_FIU_UMA_CTS_DEV_NUM,
-			   (spi_get_chipselect(mem->spi, 0) <<
+			   (mem->spi->chip_select <<
 			    NPCM_FIU_UMA_CTS_DEV_NUM_SHIFT));
 
 	regmap_update_bits(fiu->regmap, NPCM_FIU_UMA_CMD,
@@ -441,7 +439,7 @@ static int npcm_fiu_manualwrite(struct spi_mem *mem,
 				const struct spi_mem_op *op)
 {
 	struct npcm_fiu_spi *fiu =
-		spi_controller_get_devdata(mem->spi->controller);
+		spi_controller_get_devdata(mem->spi->master);
 	u8 *data = (u8 *)op->data.buf.out;
 	u32 num_data_chunks;
 	u32 remain_data;
@@ -453,7 +451,7 @@ static int npcm_fiu_manualwrite(struct spi_mem *mem,
 
 	regmap_update_bits(fiu->regmap, NPCM_FIU_UMA_CTS,
 			   NPCM_FIU_UMA_CTS_DEV_NUM,
-			   (spi_get_chipselect(mem->spi, 0) <<
+			   (mem->spi->chip_select <<
 			    NPCM_FIU_UMA_CTS_DEV_NUM_SHIFT));
 	regmap_update_bits(fiu->regmap, NPCM_FIU_UMA_CTS,
 			   NPCM_FIU_UMA_CTS_SW_CS, 0);
@@ -499,7 +497,10 @@ static int npcm_fiu_read(struct spi_mem *mem, const struct spi_mem_op *op)
 
 	do {
 		addr = ((u32)op->addr.val + i);
-		readlen = min_t(int, currlen, 16);
+		if (currlen < 16)
+			readlen = currlen;
+		else
+			readlen = 16;
 
 		buf_ptr = data + i;
 		ret = npcm_fiu_uma_read(mem, op, addr, true, buf_ptr,
@@ -543,13 +544,18 @@ static void npcm_fiux_set_direct_rd(struct npcm_fiu_spi *fiu)
 static int npcm_fiu_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
 	struct npcm_fiu_spi *fiu =
-		spi_controller_get_devdata(mem->spi->controller);
-	struct npcm_fiu_chip *chip = &fiu->chip[spi_get_chipselect(mem->spi, 0)];
+		spi_controller_get_devdata(mem->spi->master);
+	struct npcm_fiu_chip *chip = &fiu->chip[mem->spi->chip_select];
 	int ret = 0;
 	u8 *buf;
 
+	dev_dbg(fiu->dev, "cmd:%#x mode:%d.%d.%d.%d addr:%#llx len:%#x\n",
+		op->cmd.opcode, op->cmd.buswidth, op->addr.buswidth,
+		op->dummy.buswidth, op->data.buswidth, op->addr.val,
+		op->data.nbytes);
+
 	if (fiu->spix_mode || op->addr.nbytes > 4)
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 
 	if (fiu->clkrate != chip->clkrate) {
 		ret = clk_set_rate(fiu->clk, chip->clkrate);
@@ -598,8 +604,8 @@ static int npcm_fiu_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 static int npcm_fiu_dirmap_create(struct spi_mem_dirmap_desc *desc)
 {
 	struct npcm_fiu_spi *fiu =
-		spi_controller_get_devdata(desc->mem->spi->controller);
-	struct npcm_fiu_chip *chip = &fiu->chip[spi_get_chipselect(desc->mem->spi, 0)];
+		spi_controller_get_devdata(desc->mem->spi->master);
+	struct npcm_fiu_chip *chip = &fiu->chip[desc->mem->spi->chip_select];
 	struct regmap *gcr_regmap;
 
 	if (!fiu->res_mem) {
@@ -618,7 +624,7 @@ static int npcm_fiu_dirmap_create(struct spi_mem_dirmap_desc *desc)
 		chip->flash_region_mapped_ptr =
 			devm_ioremap(fiu->dev, (fiu->res_mem->start +
 							(fiu->info->max_map_size *
-						    spi_get_chipselect(desc->mem->spi, 0))),
+						    desc->mem->spi->chip_select)),
 					     (u32)desc->info.length);
 		if (!chip->flash_region_mapped_ptr) {
 			dev_warn(fiu->dev, "Error mapping memory region, direct read disabled\n");
@@ -659,13 +665,13 @@ static int npcm_fiu_dirmap_create(struct spi_mem_dirmap_desc *desc)
 
 static int npcm_fiu_setup(struct spi_device *spi)
 {
-	struct spi_controller *ctrl = spi->controller;
+	struct spi_controller *ctrl = spi->master;
 	struct npcm_fiu_spi *fiu = spi_controller_get_devdata(ctrl);
 	struct npcm_fiu_chip *chip;
 
-	chip = &fiu->chip[spi_get_chipselect(spi, 0)];
+	chip = &fiu->chip[spi->chip_select];
 	chip->fiu = fiu;
-	chip->chipselect = spi_get_chipselect(spi, 0);
+	chip->chipselect = spi->chip_select;
 	chip->clkrate = spi->max_speed_hz;
 
 	fiu->clkrate = clk_get_rate(fiu->clk);
@@ -693,9 +699,9 @@ static int npcm_fiu_probe(struct platform_device *pdev)
 	struct spi_controller *ctrl;
 	struct npcm_fiu_spi *fiu;
 	void __iomem *regbase;
-	int id;
+	int id, ret;
 
-	ctrl = devm_spi_alloc_host(dev, sizeof(*fiu));
+	ctrl = devm_spi_alloc_master(dev, sizeof(*fiu));
 	if (!ctrl)
 		return -ENOMEM;
 
@@ -731,7 +737,7 @@ static int npcm_fiu_probe(struct platform_device *pdev)
 
 	fiu->res_mem = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 						    "memory");
-	fiu->clk = devm_clk_get_enabled(dev, NULL);
+	fiu->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(fiu->clk))
 		return PTR_ERR(fiu->clk);
 
@@ -739,6 +745,7 @@ static int npcm_fiu_probe(struct platform_device *pdev)
 					       "nuvoton,spix-mode");
 
 	platform_set_drvdata(pdev, fiu);
+	clk_prepare_enable(fiu->clk);
 
 	ctrl->mode_bits = SPI_RX_DUAL | SPI_RX_QUAD
 		| SPI_TX_DUAL | SPI_TX_QUAD;
@@ -746,24 +753,33 @@ static int npcm_fiu_probe(struct platform_device *pdev)
 	ctrl->bus_num = -1;
 	ctrl->mem_ops = &npcm_fiu_mem_ops;
 	ctrl->num_chipselect = fiu->info->max_cs;
+	ctrl->dev.of_node = dev->of_node;
 
-	return devm_spi_register_controller(dev, ctrl);
+	ret = devm_spi_register_master(dev, ctrl);
+	if (ret)
+		clk_disable_unprepare(fiu->clk);
+
+	return ret;
 }
 
-static void npcm_fiu_remove(struct platform_device *pdev)
+static int npcm_fiu_remove(struct platform_device *pdev)
 {
+	struct npcm_fiu_spi *fiu = platform_get_drvdata(pdev);
+
+	clk_disable_unprepare(fiu->clk);
+	return 0;
 }
 
 MODULE_DEVICE_TABLE(of, npcm_fiu_dt_ids);
 
 static struct platform_driver npcm_fiu_driver = {
 	.driver = {
-		.name = "NPCM-FIU",
-		.bus = &platform_bus_type,
+		.name	= "NPCM-FIU",
+		.bus	= &platform_bus_type,
 		.of_match_table = npcm_fiu_dt_ids,
 	},
-	.probe = npcm_fiu_probe,
-	.remove = npcm_fiu_remove,
+	.probe      = npcm_fiu_probe,
+	.remove	    = npcm_fiu_remove,
 };
 module_platform_driver(npcm_fiu_driver);
 

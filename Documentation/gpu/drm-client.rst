@@ -13,6 +13,3 @@ Kernel clients
 
 .. kernel-doc:: drivers/gpu/drm/drm_client_modeset.c
    :export:
-
-.. kernel-doc:: drivers/gpu/drm/drm_client_event.c
-   :export:

@@ -28,13 +28,13 @@
 
 bool __kasan_check_read(const volatile void *p, unsigned int size)
 {
-	return kasan_check_range((void *)p, size, false, _RET_IP_);
+	return kasan_check_range((unsigned long)p, size, false, _RET_IP_);
 }
 EXPORT_SYMBOL(__kasan_check_read);
 
 bool __kasan_check_write(const volatile void *p, unsigned int size)
 {
-	return kasan_check_range((void *)p, size, true, _RET_IP_);
+	return kasan_check_range((unsigned long)p, size, true, _RET_IP_);
 }
 EXPORT_SYMBOL(__kasan_check_write);
 
@@ -50,7 +50,7 @@ EXPORT_SYMBOL(__kasan_check_write);
 #undef memset
 void *memset(void *addr, int c, size_t len)
 {
-	if (!kasan_check_range(addr, len, true, _RET_IP_))
+	if (!kasan_check_range((unsigned long)addr, len, true, _RET_IP_))
 		return NULL;
 
 	return __memset(addr, c, len);
@@ -60,8 +60,8 @@ void *memset(void *addr, int c, size_t len)
 #undef memmove
 void *memmove(void *dest, const void *src, size_t len)
 {
-	if (!kasan_check_range(src, len, false, _RET_IP_) ||
-	    !kasan_check_range(dest, len, true, _RET_IP_))
+	if (!kasan_check_range((unsigned long)src, len, false, _RET_IP_) ||
+	    !kasan_check_range((unsigned long)dest, len, true, _RET_IP_))
 		return NULL;
 
 	return __memmove(dest, src, len);
@@ -71,17 +71,17 @@ void *memmove(void *dest, const void *src, size_t len)
 #undef memcpy
 void *memcpy(void *dest, const void *src, size_t len)
 {
-	if (!kasan_check_range(src, len, false, _RET_IP_) ||
-	    !kasan_check_range(dest, len, true, _RET_IP_))
+	if (!kasan_check_range((unsigned long)src, len, false, _RET_IP_) ||
+	    !kasan_check_range((unsigned long)dest, len, true, _RET_IP_))
 		return NULL;
 
 	return __memcpy(dest, src, len);
 }
 #endif
 
-void *__asan_memset(void *addr, int c, ssize_t len)
+void *__asan_memset(void *addr, int c, size_t len)
 {
-	if (!kasan_check_range(addr, len, true, _RET_IP_))
+	if (!kasan_check_range((unsigned long)addr, len, true, _RET_IP_))
 		return NULL;
 
 	return __memset(addr, c, len);
@@ -89,10 +89,10 @@ void *__asan_memset(void *addr, int c, ssize_t len)
 EXPORT_SYMBOL(__asan_memset);
 
 #ifdef __HAVE_ARCH_MEMMOVE
-void *__asan_memmove(void *dest, const void *src, ssize_t len)
+void *__asan_memmove(void *dest, const void *src, size_t len)
 {
-	if (!kasan_check_range(src, len, false, _RET_IP_) ||
-	    !kasan_check_range(dest, len, true, _RET_IP_))
+	if (!kasan_check_range((unsigned long)src, len, false, _RET_IP_) ||
+	    !kasan_check_range((unsigned long)dest, len, true, _RET_IP_))
 		return NULL;
 
 	return __memmove(dest, src, len);
@@ -100,10 +100,10 @@ void *__asan_memmove(void *dest, const void *src, ssize_t len)
 EXPORT_SYMBOL(__asan_memmove);
 #endif
 
-void *__asan_memcpy(void *dest, const void *src, ssize_t len)
+void *__asan_memcpy(void *dest, const void *src, size_t len)
 {
-	if (!kasan_check_range(src, len, false, _RET_IP_) ||
-	    !kasan_check_range(dest, len, true, _RET_IP_))
+	if (!kasan_check_range((unsigned long)src, len, false, _RET_IP_) ||
+	    !kasan_check_range((unsigned long)dest, len, true, _RET_IP_))
 		return NULL;
 
 	return __memcpy(dest, src, len);
@@ -111,13 +111,13 @@ void *__asan_memcpy(void *dest, const void *src, ssize_t len)
 EXPORT_SYMBOL(__asan_memcpy);
 
 #ifdef CONFIG_KASAN_SW_TAGS
-void *__hwasan_memset(void *addr, int c, ssize_t len) __alias(__asan_memset);
+void *__hwasan_memset(void *addr, int c, size_t len) __alias(__asan_memset);
 EXPORT_SYMBOL(__hwasan_memset);
 #ifdef __HAVE_ARCH_MEMMOVE
-void *__hwasan_memmove(void *dest, const void *src, ssize_t len) __alias(__asan_memmove);
+void *__hwasan_memmove(void *dest, const void *src, size_t len) __alias(__asan_memmove);
 EXPORT_SYMBOL(__hwasan_memmove);
 #endif
-void *__hwasan_memcpy(void *dest, const void *src, ssize_t len) __alias(__asan_memcpy);
+void *__hwasan_memcpy(void *dest, const void *src, size_t len) __alias(__asan_memcpy);
 EXPORT_SYMBOL(__hwasan_memcpy);
 #endif
 
@@ -125,15 +125,19 @@ void kasan_poison(const void *addr, size_t size, u8 value, bool init)
 {
 	void *shadow_start, *shadow_end;
 
-	if (!kasan_enabled())
+	if (!kasan_arch_is_ready())
 		return;
 
 	/*
 	 * Perform shadow offset calculation based on untagged address, as
-	 * some of the callers (e.g. kasan_poison_new_object) pass tagged
+	 * some of the callers (e.g. kasan_poison_object_data) pass tagged
 	 * addresses to this function.
 	 */
 	addr = kasan_reset_tag(addr);
+
+	/* Skip KFENCE memory if called explicitly outside of sl*b. */
+	if (is_kfence_address(addr))
+		return;
 
 	if (WARN_ON((unsigned long)addr & KASAN_GRANULE_MASK))
 		return;
@@ -145,12 +149,12 @@ void kasan_poison(const void *addr, size_t size, u8 value, bool init)
 
 	__memset(shadow_start, value, shadow_end - shadow_start);
 }
-EXPORT_SYMBOL_GPL(kasan_poison);
+EXPORT_SYMBOL(kasan_poison);
 
 #ifdef CONFIG_KASAN_GENERIC
 void kasan_poison_last_granule(const void *addr, size_t size)
 {
-	if (!kasan_enabled())
+	if (!kasan_arch_is_ready())
 		return;
 
 	if (size & KASAN_GRANULE_MASK) {
@@ -166,10 +170,18 @@ void kasan_unpoison(const void *addr, size_t size, bool init)
 
 	/*
 	 * Perform shadow offset calculation based on untagged address, as
-	 * some of the callers (e.g. kasan_unpoison_new_object) pass tagged
+	 * some of the callers (e.g. kasan_unpoison_object_data) pass tagged
 	 * addresses to this function.
 	 */
 	addr = kasan_reset_tag(addr);
+
+	/*
+	 * Skip KFENCE memory if called explicitly outside of sl*b. Also note
+	 * that calls to ksize(), where size is not a multiple of machine-word
+	 * size, would otherwise poison the invalid portion of the word.
+	 */
+	if (is_kfence_address(addr))
+		return;
 
 	if (WARN_ON((unsigned long)addr & KASAN_GRANULE_MASK))
 		return;
@@ -199,15 +211,22 @@ static bool shadow_mapped(unsigned long addr)
 	pud = pud_offset(p4d, addr);
 	if (pud_none(*pud))
 		return false;
-	if (pud_leaf(*pud))
+
+	/*
+	 * We can't use pud_large() or pud_huge(), the first one is
+	 * arch-specific, the last one depends on HUGETLB_PAGE.  So let's abuse
+	 * pud_bad(), if pud is bad then it's bad because it's huge.
+	 */
+	if (pud_bad(*pud))
 		return true;
 	pmd = pmd_offset(pud, addr);
 	if (pmd_none(*pmd))
 		return false;
-	if (pmd_leaf(*pmd))
+
+	if (pmd_bad(*pmd))
 		return true;
 	pte = pte_offset_kernel(pmd, addr);
-	return !pte_none(ptep_get(pte));
+	return !pte_none(*pte);
 }
 
 static int __meminit kasan_mem_notifier(struct notifier_block *nb,
@@ -292,113 +311,40 @@ void __init __weak kasan_populate_early_vm_area_shadow(void *start,
 {
 }
 
-struct vmalloc_populate_data {
-	unsigned long start;
-	struct page **pages;
-};
-
 static int kasan_populate_vmalloc_pte(pte_t *ptep, unsigned long addr,
-				      void *_data)
+				      void *unused)
 {
-	struct vmalloc_populate_data *data = _data;
-	struct page *page;
+	unsigned long page;
 	pte_t pte;
-	int index;
 
-	lazy_mmu_mode_pause();
+	if (likely(!pte_none(*ptep)))
+		return 0;
 
-	index = PFN_DOWN(addr - data->start);
-	page = data->pages[index];
-	__memset(page_to_virt(page), KASAN_VMALLOC_INVALID, PAGE_SIZE);
-	pte = pfn_pte(page_to_pfn(page), PAGE_KERNEL);
-
-	spin_lock(&init_mm.page_table_lock);
-	if (likely(pte_none(ptep_get(ptep)))) {
-		set_pte_at(&init_mm, addr, ptep, pte);
-		data->pages[index] = NULL;
-	}
-	spin_unlock(&init_mm.page_table_lock);
-
-	lazy_mmu_mode_resume();
-
-	return 0;
-}
-
-static void ___free_pages_bulk(struct page **pages, int nr_pages)
-{
-	int i;
-
-	for (i = 0; i < nr_pages; i++) {
-		if (pages[i]) {
-			__free_pages(pages[i], 0);
-			pages[i] = NULL;
-		}
-	}
-}
-
-static int ___alloc_pages_bulk(struct page **pages, int nr_pages, gfp_t gfp_mask)
-{
-	unsigned long nr_populated, nr_total = nr_pages;
-	struct page **page_array = pages;
-
-	while (nr_pages) {
-		nr_populated = alloc_pages_bulk(gfp_mask, nr_pages, pages);
-		if (!nr_populated) {
-			___free_pages_bulk(page_array, nr_total - nr_pages);
-			return -ENOMEM;
-		}
-		pages += nr_populated;
-		nr_pages -= nr_populated;
-	}
-
-	return 0;
-}
-
-static int __kasan_populate_vmalloc_do(unsigned long start, unsigned long end, gfp_t gfp_mask)
-{
-	unsigned long nr_pages, nr_total = PFN_UP(end - start);
-	struct vmalloc_populate_data data;
-	unsigned int flags;
-	int ret = 0;
-
-	data.pages = (struct page **)__get_free_page(gfp_mask | __GFP_ZERO);
-	if (!data.pages)
+	page = __get_free_page(GFP_KERNEL);
+	if (!page)
 		return -ENOMEM;
 
-	while (nr_total) {
-		nr_pages = min(nr_total, PAGE_SIZE / sizeof(data.pages[0]));
-		ret = ___alloc_pages_bulk(data.pages, nr_pages, gfp_mask);
-		if (ret)
-			break;
+	memset((void *)page, KASAN_VMALLOC_INVALID, PAGE_SIZE);
+	pte = pfn_pte(PFN_DOWN(__pa(page)), PAGE_KERNEL);
 
-		data.start = start;
-
-		/*
-		 * page tables allocations ignore external gfp mask, enforce it
-		 * by the scope API
-		 */
-		flags = memalloc_apply_gfp_scope(gfp_mask);
-		ret = apply_to_page_range(&init_mm, start, nr_pages * PAGE_SIZE,
-					  kasan_populate_vmalloc_pte, &data);
-		memalloc_restore_scope(flags);
-
-		___free_pages_bulk(data.pages, nr_pages);
-		if (ret)
-			break;
-
-		start += nr_pages * PAGE_SIZE;
-		nr_total -= nr_pages;
+	spin_lock(&init_mm.page_table_lock);
+	if (likely(pte_none(*ptep))) {
+		set_pte_at(&init_mm, addr, ptep, pte);
+		page = 0;
 	}
-
-	free_page((unsigned long)data.pages);
-
-	return ret;
+	spin_unlock(&init_mm.page_table_lock);
+	if (page)
+		free_page(page);
+	return 0;
 }
 
-int __kasan_populate_vmalloc(unsigned long addr, unsigned long size, gfp_t gfp_mask)
+int kasan_populate_vmalloc(unsigned long addr, unsigned long size)
 {
 	unsigned long shadow_start, shadow_end;
 	int ret;
+
+	if (!kasan_arch_is_ready())
+		return 0;
 
 	if (!is_vmalloc_or_module_addr((void *)addr))
 		return 0;
@@ -421,7 +367,9 @@ int __kasan_populate_vmalloc(unsigned long addr, unsigned long size, gfp_t gfp_m
 	shadow_start = PAGE_ALIGN_DOWN(shadow_start);
 	shadow_end = PAGE_ALIGN(shadow_end);
 
-	ret = __kasan_populate_vmalloc_do(shadow_start, shadow_end, gfp_mask);
+	ret = apply_to_page_range(&init_mm, shadow_start,
+				  shadow_end - shadow_start,
+				  kasan_populate_vmalloc_pte, NULL);
 	if (ret)
 		return ret;
 
@@ -468,22 +416,17 @@ int __kasan_populate_vmalloc(unsigned long addr, unsigned long size, gfp_t gfp_m
 static int kasan_depopulate_vmalloc_pte(pte_t *ptep, unsigned long addr,
 					void *unused)
 {
-	pte_t pte;
-	int none;
+	unsigned long page;
 
-	lazy_mmu_mode_pause();
+	page = (unsigned long)__va(pte_pfn(*ptep) << PAGE_SHIFT);
 
 	spin_lock(&init_mm.page_table_lock);
-	pte = ptep_get(ptep);
-	none = pte_none(pte);
-	if (likely(!none))
+
+	if (likely(!pte_none(*ptep))) {
 		pte_clear(&init_mm, addr, ptep);
+		free_page(page);
+	}
 	spin_unlock(&init_mm.page_table_lock);
-
-	if (likely(!none))
-		__free_page(pfn_to_page(pte_pfn(pte)));
-
-	lazy_mmu_mode_resume();
 
 	return 0;
 }
@@ -563,14 +506,16 @@ static int kasan_depopulate_vmalloc_pte(pte_t *ptep, unsigned long addr,
  * pages entirely covered by the free region, we will not run in to any
  * trouble - any simultaneous allocations will be for disjoint regions.
  */
-void __kasan_release_vmalloc(unsigned long start, unsigned long end,
+void kasan_release_vmalloc(unsigned long start, unsigned long end,
 			   unsigned long free_region_start,
-			   unsigned long free_region_end,
-			   unsigned long flags)
+			   unsigned long free_region_end)
 {
 	void *shadow_start, *shadow_end;
 	unsigned long region_start, region_end;
 	unsigned long size;
+
+	if (!kasan_arch_is_ready())
+		return;
 
 	region_start = ALIGN(start, KASAN_MEMORY_PER_SHADOW_PAGE);
 	region_end = ALIGN_DOWN(end, KASAN_MEMORY_PER_SHADOW_PAGE);
@@ -596,17 +541,12 @@ void __kasan_release_vmalloc(unsigned long start, unsigned long end,
 			__memset(shadow_start, KASAN_SHADOW_INIT, shadow_end - shadow_start);
 			return;
 		}
-
-
-		if (flags & KASAN_VMALLOC_PAGE_RANGE)
-			apply_to_existing_page_range(&init_mm,
+		apply_to_existing_page_range(&init_mm,
 					     (unsigned long)shadow_start,
 					     size, kasan_depopulate_vmalloc_pte,
 					     NULL);
-
-		if (flags & KASAN_VMALLOC_TLB_FLUSH)
-			flush_tlb_kernel_range((unsigned long)shadow_start,
-					       (unsigned long)shadow_end);
+		flush_tlb_kernel_range((unsigned long)shadow_start,
+				       (unsigned long)shadow_end);
 	}
 }
 
@@ -620,6 +560,9 @@ void *__kasan_unpoison_vmalloc(const void *start, unsigned long size,
 	 * with setting memory tags, so the KASAN_VMALLOC_INIT flag is ignored.
 	 */
 
+	if (!kasan_arch_is_ready())
+		return (void *)start;
+
 	if (!is_vmalloc_or_module_addr(start))
 		return (void *)start;
 
@@ -631,9 +574,7 @@ void *__kasan_unpoison_vmalloc(const void *start, unsigned long size,
 	    !(flags & KASAN_VMALLOC_PROT_NORMAL))
 		return (void *)start;
 
-	if (unlikely(!(flags & KASAN_VMALLOC_KEEP_TAG)))
-		start = set_tag(start, kasan_random_tag());
-
+	start = set_tag(start, kasan_random_tag());
 	kasan_unpoison(start, size, false);
 	return (void *)start;
 }
@@ -644,6 +585,9 @@ void *__kasan_unpoison_vmalloc(const void *start, unsigned long size,
  */
 void __kasan_poison_vmalloc(const void *start, unsigned long size)
 {
+	if (!kasan_arch_is_ready())
+		return;
+
 	if (!is_vmalloc_or_module_addr(start))
 		return;
 

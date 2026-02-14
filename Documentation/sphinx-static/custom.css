@@ -7,10 +7,6 @@
 div.body h1 { font-size: 180%; }
 div.body h2 { font-size: 150%; }
 div.body h3 { font-size: 130%; }
-div.body h4 { font-size: 110%; }
-
-/* toctree captions are styled like h2 */
-div.toctree-wrapper p.caption[role=heading] { font-size: 150%; }
 
 /* Tighten up the layout slightly */
 div.body { padding: 0 15px 0 10px; }
@@ -20,18 +16,9 @@ div.sphinxsidebar { font-size: inherit;
 		    overflow-y: auto; }
 /* Tweak document margins and don't force width */
 div.document {
-    margin: 20px 10px 0 10px;
+    margin: 20px 10px 0 10px; 
     width: auto;
 }
-
-/* Size the logo appropriately */
-img.logo {
-    width: 104px;
-    margin-bottom: 20px;
-}
-
-/* The default is to use -1em, wich makes it override text */
-li { text-indent: 0em; }
 
 /*
  * Parameters for the display of function prototypes and such included
@@ -42,15 +29,6 @@ dl.function, dl.struct, dl.enum { margin-top: 2em; background-color: #ecf0f3; }
 dl.function dt { margin-left: 10em; text-indent: -10em; }
 dt.sig-object { font-size: larger; }
 div.kernelindent { margin-left: 2em; margin-right: 4em; }
-
-/*
- * Parameters for the display of function prototypes and such included
- * from Python source files.
- */
-dl.py { margin-top: 2em; background-color: #ecf0f3; }
-dl.py.class { margin-left: 2em; text-indent: -2em; padding-left: 2em; }
-dl.py.method, dl.py.attribute { margin-left: 2em; text-indent: -2em; }
-dl.py li, pre { text-indent: 0em; padding-left: 0 !important; }
 
 /*
  * Tweaks for our local TOC
@@ -94,78 +72,4 @@ input.kernel-toc-toggle { display: none; }
     }
     h3.kernel-toc-contents { display: inline; }
     div.kerneltoc a { color: black; }
-}
-
-/* Language selection menu */
-
-div.admonition {
-    /*
-     * Make sure we don't overlap notes and warnings at the top of the
-     * document.
-     */
-    clear: both;
-}
-
-div.language-selection {
-    background: #eeeeee;
-    border: 1px solid #cccccc;
-    margin-bottom: 1em;
-    padding: .5em;
-
-    position: relative;
-    float: right;
-}
-
-div.language-selection a {
-    display: block;
-    padding: 0.5em;
-    color: #333333;
-    text-decoration: none;
-}
-
-div.language-selection ul {
-    display: none;
-    position: absolute;
-
-    /* Align with the parent div */
-    top: 100%;
-    right: 0;
-    margin: 0;
-
-    list-style: none;
-
-    background: #fafafa;
-    border: 1px solid #cccccc;
-
-    /* Never break menu item lines */
-    white-space: nowrap;
-}
-
-div.language-selection:hover ul {
-    display: block;
-}
-
-div.language-selection ul li:hover {
-    background: #dddddd;
-}
-
-/* Make xrefs more universally visible */
-a.reference, a.reference:hover {
-    border-bottom: none;
-    text-decoration: underline;
-    text-underline-offset: 0.3em;
-}
-
-/* Slightly different style for sidebar links */
-div.sphinxsidebar a { border-bottom: none; }
-div.sphinxsidebar a:hover {
-    border-bottom: none;
-    text-decoration: underline;
-    text-underline-offset: 0.3em;
-}
-
-a.manpage {
-	font-style: normal;
-	font-weight: bold;
-	font-family: "Courier New", Courier, monospace;
 }

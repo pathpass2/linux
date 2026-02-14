@@ -18,7 +18,7 @@ struct acpi_device *to_cxl_host_bridge(struct device *host, struct device *dev)
 		goto out;
 	}
 
-	if (dev_is_platform(dev))
+	if (dev->bus == &platform_bus_type)
 		goto out;
 
 	adev = to_acpi_device(dev);

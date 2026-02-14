@@ -10,7 +10,6 @@
 #include "util/thread.h"
 #include "util/header.h"
 #include "util/target.h"
-#include "util/cgroup.h"
 #include "util/callchain.h"
 #include "util/lock-contention.h"
 #include "util/bpf_skel/lock_data.h"
@@ -28,7 +27,6 @@
 #include "util/map.h"
 #include "util/util.h"
 
-#include <stdio.h>
 #include <sys/types.h>
 #include <sys/prctl.h>
 #include <semaphore.h>
@@ -46,26 +44,41 @@
 static struct perf_session *session;
 static struct target target;
 
+/* based on kernel/lockdep.c */
+#define LOCKHASH_BITS		12
+#define LOCKHASH_SIZE		(1UL << LOCKHASH_BITS)
+
+static struct hlist_head lockhash_table[LOCKHASH_SIZE];
+
+#define __lockhashfn(key)	hash_long((unsigned long)key, LOCKHASH_BITS)
+#define lockhashentry(key)	(lockhash_table + __lockhashfn((key)))
+
 static struct rb_root		thread_stats;
 
 static bool combine_locks;
 static bool show_thread_stats;
 static bool show_lock_addrs;
 static bool show_lock_owner;
-static bool show_lock_cgroups;
 static bool use_bpf;
-static unsigned long bpf_map_entries = MAX_ENTRIES;
+static unsigned long bpf_map_entries = 10240;
 static int max_stack_depth = CONTENTION_STACK_DEPTH;
 static int stack_skip = CONTENTION_STACK_SKIP;
 static int print_nr_entries = INT_MAX / 2;
-static const char *output_name = NULL;
-static FILE *lock_output;
+static LIST_HEAD(callstack_filters);
+
+struct callstack_filter {
+	struct list_head list;
+	char name[];
+};
 
 static struct lock_filter filters;
-static struct lock_delay *delays;
-static int nr_delays;
 
 static enum lock_aggr_mode aggr_mode = LOCK_AGGR_ADDR;
+
+static bool needs_callstack(void)
+{
+	return verbose > 0 || !list_empty(&callstack_filters);
+}
 
 static struct thread_stat *thread_stat_find(u32 tid)
 {
@@ -212,28 +225,22 @@ static void lock_stat_key_print_time(unsigned long long nsec, int len)
 		{ 0, NULL },
 	};
 
-	/* for CSV output */
-	if (len == 0) {
-		fprintf(lock_output, "%llu", nsec);
-		return;
-	}
-
 	for (int i = 0; table[i].unit; i++) {
 		if (nsec < table[i].base)
 			continue;
 
-		fprintf(lock_output, "%*.2f %s", len - 3, nsec / table[i].base, table[i].unit);
+		pr_info("%*.2f %s", len - 3, nsec / table[i].base, table[i].unit);
 		return;
 	}
 
-	fprintf(lock_output, "%*llu %s", len - 3, nsec, "ns");
+	pr_info("%*llu %s", len - 3, nsec, "ns");
 }
 
 #define PRINT_KEY(member)						\
 static void lock_stat_key_print_ ## member(struct lock_key *key,	\
 					   struct lock_stat *ls)	\
 {									\
-	fprintf(lock_output, "%*llu", key->len, (unsigned long long)ls->member);\
+	pr_info("%*llu", key->len, (unsigned long long)ls->member);	\
 }
 
 #define PRINT_TIME(member)						\
@@ -420,12 +427,15 @@ static void combine_lock_stats(struct lock_stat *st)
 	rb_insert_color(&st->rb, &sorted);
 }
 
-static void insert_to(struct rb_root *rr, struct lock_stat *st,
-		      int (*bigger)(struct lock_stat *, struct lock_stat *))
+static void insert_to_result(struct lock_stat *st,
+			     int (*bigger)(struct lock_stat *, struct lock_stat *))
 {
-	struct rb_node **rb = &rr->rb_node;
+	struct rb_node **rb = &result.rb_node;
 	struct rb_node *parent = NULL;
 	struct lock_stat *p;
+
+	if (combine_locks && st->combined)
+		return;
 
 	while (*rb) {
 		p = container_of(*rb, struct lock_stat, rb);
@@ -438,21 +448,13 @@ static void insert_to(struct rb_root *rr, struct lock_stat *st,
 	}
 
 	rb_link_node(&st->rb, parent, rb);
-	rb_insert_color(&st->rb, rr);
+	rb_insert_color(&st->rb, &result);
 }
 
-static inline void insert_to_result(struct lock_stat *st,
-				    int (*bigger)(struct lock_stat *,
-						  struct lock_stat *))
+/* returns left most element of result, and erase it */
+static struct lock_stat *pop_from_result(void)
 {
-	if (combine_locks && st->combined)
-		return;
-	insert_to(&result, st, bigger);
-}
-
-static inline struct lock_stat *pop_from(struct rb_root *rr)
-{
-	struct rb_node *node = rr->rb_node;
+	struct rb_node *node = result.rb_node;
 
 	if (!node)
 		return NULL;
@@ -460,15 +462,80 @@ static inline struct lock_stat *pop_from(struct rb_root *rr)
 	while (node->rb_left)
 		node = node->rb_left;
 
-	rb_erase(node, rr);
+	rb_erase(node, &result);
 	return container_of(node, struct lock_stat, rb);
-
 }
 
-/* returns left most element of result, and erase it */
-static struct lock_stat *pop_from_result(void)
+struct lock_stat *lock_stat_find(u64 addr)
 {
-	return pop_from(&result);
+	struct hlist_head *entry = lockhashentry(addr);
+	struct lock_stat *ret;
+
+	hlist_for_each_entry(ret, entry, hash_entry) {
+		if (ret->addr == addr)
+			return ret;
+	}
+	return NULL;
+}
+
+struct lock_stat *lock_stat_findnew(u64 addr, const char *name, int flags)
+{
+	struct hlist_head *entry = lockhashentry(addr);
+	struct lock_stat *ret, *new;
+
+	hlist_for_each_entry(ret, entry, hash_entry) {
+		if (ret->addr == addr)
+			return ret;
+	}
+
+	new = zalloc(sizeof(struct lock_stat));
+	if (!new)
+		goto alloc_failed;
+
+	new->addr = addr;
+	new->name = strdup(name);
+	if (!new->name) {
+		free(new);
+		goto alloc_failed;
+	}
+
+	new->flags = flags;
+	new->wait_time_min = ULLONG_MAX;
+
+	hlist_add_head(&new->hash_entry, entry);
+	return new;
+
+alloc_failed:
+	pr_err("memory allocation failed\n");
+	return NULL;
+}
+
+bool match_callstack_filter(struct machine *machine, u64 *callstack)
+{
+	struct map *kmap;
+	struct symbol *sym;
+	u64 ip;
+
+	if (list_empty(&callstack_filters))
+		return true;
+
+	for (int i = 0; i < max_stack_depth; i++) {
+		struct callstack_filter *filter;
+
+		if (!callstack || !callstack[i])
+			break;
+
+		ip = callstack[i];
+		sym = machine__find_kernel_symbol(machine, ip, &kmap);
+		if (sym == NULL)
+			continue;
+
+		list_for_each_entry(filter, &callstack_filters, list) {
+			if (strstr(sym->name, filter->name))
+				return true;
+		}
+	}
+	return false;
 }
 
 struct trace_lock_handler {
@@ -543,7 +610,6 @@ static int get_key_by_aggr_mode_simple(u64 *key, u64 addr, u32 tid)
 		*key = tid;
 		break;
 	case LOCK_AGGR_CALLER:
-	case LOCK_AGGR_CGROUP:
 	default:
 		pr_err("Invalid aggregation mode: %d\n", aggr_mode);
 		return -EINVAL;
@@ -834,7 +900,7 @@ static int get_symbol_name_offset(struct map *map, struct symbol *sym, u64 ip,
 		return 0;
 	}
 
-	offset = map__map_ip(map, ip) - sym->start;
+	offset = map->map_ip(map, ip) - sym->start;
 
 	if (offset)
 		return scnprintf(buf, size, "%s+%#lx", sym->name, offset);
@@ -845,7 +911,7 @@ static int lock_contention_caller(struct evsel *evsel, struct perf_sample *sampl
 				  char *buf, int size)
 {
 	struct thread *thread;
-	struct callchain_cursor *cursor;
+	struct callchain_cursor *cursor = &callchain_cursor;
 	struct machine *machine = &session->machines.host;
 	struct symbol *sym;
 	int skip = 0;
@@ -858,8 +924,6 @@ static int lock_contention_caller(struct evsel *evsel, struct perf_sample *sampl
 	thread = machine__findnew_thread(machine, -1, sample->pid);
 	if (thread == NULL)
 		return -1;
-
-	cursor = get_tls_callchain_cursor();
 
 	/* use caller function name from the callchain */
 	ret = thread__resolve_callchain(thread, cursor, evsel, sample,
@@ -898,7 +962,7 @@ next:
 
 static u64 callchain_id(struct evsel *evsel, struct perf_sample *sample)
 {
-	struct callchain_cursor *cursor;
+	struct callchain_cursor *cursor = &callchain_cursor;
 	struct machine *machine = &session->machines.host;
 	struct thread *thread;
 	u64 hash = 0;
@@ -909,7 +973,6 @@ static u64 callchain_id(struct evsel *evsel, struct perf_sample *sample)
 	if (thread == NULL)
 		return -1;
 
-	cursor = get_tls_callchain_cursor();
 	/* use caller function name from the callchain */
 	ret = thread__resolve_callchain(thread, cursor, evsel, sample,
 					NULL, NULL, max_stack_depth);
@@ -1007,7 +1070,7 @@ static int report_lock_contention_begin_event(struct evsel *evsel,
 				return -ENOMEM;
 			}
 
-			addrs[filters.nr_addrs++] = map__unmap_ip(kmap, sym->start);
+			addrs[filters.nr_addrs++] = kmap->unmap_ip(kmap, sym->start);
 			filters.addrs = addrs;
 		}
 	}
@@ -1028,7 +1091,6 @@ static int report_lock_contention_begin_event(struct evsel *evsel,
 			if (lock_contention_caller(evsel, sample, buf, sizeof(buf)) < 0)
 				name = "Unknown";
 			break;
-		case LOCK_AGGR_CGROUP:
 		case LOCK_AGGR_TASK:
 		default:
 			break;
@@ -1072,7 +1134,7 @@ static int report_lock_contention_begin_event(struct evsel *evsel,
 		if (callstack == NULL)
 			return -ENOMEM;
 
-		if (!match_callstack_filter(machine, callstack, max_stack_depth)) {
+		if (!match_callstack_filter(machine, callstack)) {
 			free(callstack);
 			return 0;
 		}
@@ -1261,15 +1323,15 @@ static void print_bad_events(int bad, int total)
 	for (i = 0; i < BROKEN_MAX; i++)
 		broken += bad_hist[i];
 
-	if (quiet || total == 0 || (broken == 0 && verbose <= 0))
+	if (quiet || (broken == 0 && verbose <= 0))
 		return;
 
-	fprintf(lock_output, "\n=== output for debug ===\n\n");
-	fprintf(lock_output, "bad: %d, total: %d\n", bad, total);
-	fprintf(lock_output, "bad rate: %.2f %%\n", (double)bad / (double)total * 100);
-	fprintf(lock_output, "histogram of events caused bad sequence\n");
+	pr_info("\n=== output for debug===\n\n");
+	pr_info("bad: %d, total: %d\n", bad, total);
+	pr_info("bad rate: %.2f %%\n", (double)bad / (double)total * 100);
+	pr_info("histogram of events caused bad sequence\n");
 	for (i = 0; i < BROKEN_MAX; i++)
-		fprintf(lock_output, " %10s: %d\n", name[i], bad_hist[i]);
+		pr_info(" %10s: %d\n", name[i], bad_hist[i]);
 }
 
 /* TODO: various way to print, coloring, nano or milli sec */
@@ -1281,10 +1343,10 @@ static void print_result(void)
 	int bad, total, printed;
 
 	if (!quiet) {
-		fprintf(lock_output, "%20s ", "Name");
+		pr_info("%20s ", "Name");
 		list_for_each_entry(key, &lock_keys, list)
-			fprintf(lock_output, "%*s ", key->len, key->header);
-		fprintf(lock_output, "\n\n");
+			pr_info("%*s ", key->len, key->header);
+		pr_info("\n\n");
 	}
 
 	bad = total = printed = 0;
@@ -1309,7 +1371,7 @@ static void print_result(void)
 				name = thread__comm_str(t);
 			}
 
-			fprintf(lock_output, "%20s ", name);
+			pr_info("%20s ", name);
 		} else {
 			strncpy(cut_name, st->name, 16);
 			cut_name[16] = '.';
@@ -1317,14 +1379,14 @@ static void print_result(void)
 			cut_name[18] = '.';
 			cut_name[19] = '\0';
 			/* cut off name for saving output style */
-			fprintf(lock_output, "%20s ", cut_name);
+			pr_info("%20s ", cut_name);
 		}
 
 		list_for_each_entry(key, &lock_keys, list) {
 			key->print(key, st);
-			fprintf(lock_output, " ");
+			pr_info(" ");
 		}
-		fprintf(lock_output, "\n");
+		pr_info("\n");
 
 		if (++printed >= print_nr_entries)
 			break;
@@ -1341,13 +1403,13 @@ static void dump_threads(void)
 	struct rb_node *node;
 	struct thread *t;
 
-	fprintf(lock_output, "%10s: comm\n", "Thread ID");
+	pr_info("%10s: comm\n", "Thread ID");
 
 	node = rb_first(&thread_stats);
 	while (node) {
 		st = container_of(node, struct thread_stat, rb);
 		t = perf_session__findnew(session, st->tid);
-		fprintf(lock_output, "%10d: %s\n", st->tid, thread__comm_str(t));
+		pr_info("%10d: %s\n", st->tid, thread__comm_str(t));
 		node = rb_next(node);
 		thread__put(t);
 	}
@@ -1373,7 +1435,7 @@ static void dump_map(void)
 	unsigned int i;
 	struct lock_stat *st;
 
-	fprintf(lock_output, "Address of instance: name of class\n");
+	pr_info("Address of instance: name of class\n");
 	for (i = 0; i < LOCKHASH_SIZE; i++) {
 		hlist_for_each_entry(st, &lockhash_table[i], hash_entry) {
 			insert_to_result(st, compare_maps);
@@ -1381,19 +1443,23 @@ static void dump_map(void)
 	}
 
 	while ((st = pop_from_result()))
-		fprintf(lock_output, " %#llx: %s\n", (unsigned long long)st->addr, st->name);
+		pr_info(" %#llx: %s\n", (unsigned long long)st->addr, st->name);
 }
 
-static void dump_info(void)
+static int dump_info(void)
 {
+	int rc = 0;
+
 	if (info_threads)
 		dump_threads();
-
-	if (info_map) {
-		if (info_threads)
-			fputc('\n', lock_output);
+	else if (info_map)
 		dump_map();
+	else {
+		rc = -1;
+		pr_err("Unknown type of information\n");
 	}
+
+	return rc;
 }
 
 static const struct evsel_str_handler lock_tracepoints[] = {
@@ -1408,7 +1474,7 @@ static const struct evsel_str_handler contention_tracepoints[] = {
 	{ "lock:contention_end",   evsel__process_contention_end,   },
 };
 
-static int process_event_update(const struct perf_tool *tool,
+static int process_event_update(struct perf_tool *tool,
 				union perf_event *event,
 				struct evlist **pevlist)
 {
@@ -1427,7 +1493,7 @@ static int process_event_update(const struct perf_tool *tool,
 typedef int (*tracepoint_handler)(struct evsel *evsel,
 				  struct perf_sample *sample);
 
-static int process_sample_event(const struct perf_tool *tool __maybe_unused,
+static int process_sample_event(struct perf_tool *tool __maybe_unused,
 				union perf_event *event,
 				struct perf_sample *sample,
 				struct evsel *evsel,
@@ -1482,51 +1548,41 @@ static void sort_result(void)
 
 static const struct {
 	unsigned int flags;
-	/*
-	 * Name of the lock flags (access), with delimeter ':'.
-	 * For example, rwsem:R of rwsem:W.
-	 */
-	const char *flags_name;
-	/* Name of the lock (type), for example, rwlock or rwsem. */
-	const char *lock_name;
+	const char *name;
 } lock_type_table[] = {
-	{ 0,				"semaphore",	"semaphore" },
-	{ LCB_F_SPIN,			"spinlock",	"spinlock" },
-	{ LCB_F_SPIN | LCB_F_READ,	"rwlock:R",	"rwlock" },
-	{ LCB_F_SPIN | LCB_F_WRITE,	"rwlock:W",	"rwlock" },
-	{ LCB_F_READ,			"rwsem:R",	"rwsem" },
-	{ LCB_F_WRITE,			"rwsem:W",	"rwsem" },
-	{ LCB_F_RT,			"rt-mutex",	"rt-mutex" },
-	{ LCB_F_RT | LCB_F_READ,	"rwlock-rt:R",	"rwlock-rt" },
-	{ LCB_F_RT | LCB_F_WRITE,	"rwlock-rt:W",	"rwlock-rt" },
-	{ LCB_F_PERCPU | LCB_F_READ,	"pcpu-sem:R",	"percpu-rwsem" },
-	{ LCB_F_PERCPU | LCB_F_WRITE,	"pcpu-sem:W",	"percpu-rwsem" },
-	{ LCB_F_MUTEX,			"mutex",	"mutex" },
-	{ LCB_F_MUTEX | LCB_F_SPIN,	"mutex",	"mutex" },
-	/* alias for optimistic spinning only */
-	{ LCB_F_MUTEX | LCB_F_SPIN,	"mutex:spin",	"mutex-spin" },
+	{ 0,				"semaphore" },
+	{ LCB_F_SPIN,			"spinlock" },
+	{ LCB_F_SPIN | LCB_F_READ,	"rwlock:R" },
+	{ LCB_F_SPIN | LCB_F_WRITE,	"rwlock:W"},
+	{ LCB_F_READ,			"rwsem:R" },
+	{ LCB_F_WRITE,			"rwsem:W" },
+	{ LCB_F_RT,			"rtmutex" },
+	{ LCB_F_RT | LCB_F_READ,	"rwlock-rt:R" },
+	{ LCB_F_RT | LCB_F_WRITE,	"rwlock-rt:W"},
+	{ LCB_F_PERCPU | LCB_F_READ,	"pcpu-sem:R" },
+	{ LCB_F_PERCPU | LCB_F_WRITE,	"pcpu-sem:W" },
+	{ LCB_F_MUTEX,			"mutex" },
+	{ LCB_F_MUTEX | LCB_F_SPIN,	"mutex" },
+	/* alias for get_type_flag() */
+	{ LCB_F_MUTEX | LCB_F_SPIN,	"mutex-spin" },
 };
 
-static const char *get_type_flags_name(unsigned int flags)
+static const char *get_type_str(unsigned int flags)
 {
-	flags &= LCB_F_TYPE_MASK;
-
 	for (unsigned int i = 0; i < ARRAY_SIZE(lock_type_table); i++) {
 		if (lock_type_table[i].flags == flags)
-			return lock_type_table[i].flags_name;
+			return lock_type_table[i].name;
 	}
 	return "unknown";
 }
 
-static const char *get_type_lock_name(unsigned int flags)
+static unsigned int get_type_flag(const char *str)
 {
-	flags &= LCB_F_TYPE_MASK;
-
 	for (unsigned int i = 0; i < ARRAY_SIZE(lock_type_table); i++) {
-		if (lock_type_table[i].flags == flags)
-			return lock_type_table[i].lock_name;
+		if (!strcmp(lock_type_table[i].name, str))
+			return lock_type_table[i].flags;
 	}
-	return "unknown";
+	return UINT_MAX;
 }
 
 static void lock_filter_finish(void)
@@ -1542,15 +1598,6 @@ static void lock_filter_finish(void)
 
 	zfree(&filters.syms);
 	filters.nr_syms = 0;
-
-	zfree(&filters.cgrps);
-	filters.nr_cgrps = 0;
-
-	for (int i = 0; i < filters.nr_slabs; i++)
-		free(filters.slabs[i]);
-
-	zfree(&filters.slabs);
-	filters.nr_slabs = 0;
 }
 
 static void sort_contention_result(void)
@@ -1558,254 +1605,40 @@ static void sort_contention_result(void)
 	sort_result();
 }
 
-static void print_header_stdio(void)
-{
-	struct lock_key *key;
-
-	list_for_each_entry(key, &lock_keys, list)
-		fprintf(lock_output, "%*s ", key->len, key->header);
-
-	switch (aggr_mode) {
-	case LOCK_AGGR_TASK:
-		fprintf(lock_output, "  %10s   %s\n\n", "pid",
-			show_lock_owner ? "owner" : "comm");
-		break;
-	case LOCK_AGGR_CALLER:
-		fprintf(lock_output, "  %10s   %s\n\n", "type", "caller");
-		break;
-	case LOCK_AGGR_ADDR:
-		fprintf(lock_output, "  %16s   %s\n\n", "address", "symbol");
-		break;
-	case LOCK_AGGR_CGROUP:
-		fprintf(lock_output, "  %s\n\n", "cgroup");
-		break;
-	default:
-		break;
-	}
-}
-
-static void print_header_csv(const char *sep)
-{
-	struct lock_key *key;
-
-	fprintf(lock_output, "# output: ");
-	list_for_each_entry(key, &lock_keys, list)
-		fprintf(lock_output, "%s%s ", key->header, sep);
-
-	switch (aggr_mode) {
-	case LOCK_AGGR_TASK:
-		fprintf(lock_output, "%s%s %s\n", "pid", sep,
-			show_lock_owner ? "owner" : "comm");
-		break;
-	case LOCK_AGGR_CALLER:
-		fprintf(lock_output, "%s%s %s", "type", sep, "caller");
-		if (verbose > 0)
-			fprintf(lock_output, "%s %s", sep, "stacktrace");
-		fprintf(lock_output, "\n");
-		break;
-	case LOCK_AGGR_ADDR:
-		fprintf(lock_output, "%s%s %s%s %s\n", "address", sep, "symbol", sep, "type");
-		break;
-	case LOCK_AGGR_CGROUP:
-		fprintf(lock_output, "%s\n", "cgroup");
-		break;
-	default:
-		break;
-	}
-}
-
-static void print_header(void)
-{
-	if (!quiet) {
-		if (symbol_conf.field_sep)
-			print_header_csv(symbol_conf.field_sep);
-		else
-			print_header_stdio();
-	}
-}
-
-static void print_lock_stat_stdio(struct lock_contention *con, struct lock_stat *st)
-{
-	struct lock_key *key;
-	struct thread *t;
-	int pid;
-
-	list_for_each_entry(key, &lock_keys, list) {
-		key->print(key, st);
-		fprintf(lock_output, " ");
-	}
-
-	switch (aggr_mode) {
-	case LOCK_AGGR_CALLER:
-		fprintf(lock_output, "  %10s   %s\n", get_type_flags_name(st->flags), st->name);
-		break;
-	case LOCK_AGGR_TASK:
-		pid = st->addr;
-		t = perf_session__findnew(session, pid);
-		fprintf(lock_output, "  %10d   %s\n",
-			pid, pid == -1 ? "Unknown" : thread__comm_str(t));
-		break;
-	case LOCK_AGGR_ADDR:
-		fprintf(lock_output, "  %016llx   %s (%s)\n", (unsigned long long)st->addr,
-			st->name, get_type_lock_name(st->flags));
-		break;
-	case LOCK_AGGR_CGROUP:
-		fprintf(lock_output, "  %s\n", st->name);
-		break;
-	default:
-		break;
-	}
-
-	if (aggr_mode == LOCK_AGGR_CALLER && verbose > 0) {
-		struct map *kmap;
-		struct symbol *sym;
-		char buf[128];
-		u64 ip;
-
-		for (int i = 0; i < max_stack_depth; i++) {
-			if (!st->callstack || !st->callstack[i])
-				break;
-
-			ip = st->callstack[i];
-			sym = machine__find_kernel_symbol(con->machine, ip, &kmap);
-			get_symbol_name_offset(kmap, sym, ip, buf, sizeof(buf));
-			fprintf(lock_output, "\t\t\t%#lx  %s\n", (unsigned long)ip, buf);
-		}
-	}
-}
-
-static void print_lock_stat_csv(struct lock_contention *con, struct lock_stat *st,
-				const char *sep)
-{
-	struct lock_key *key;
-	struct thread *t;
-	int pid;
-
-	list_for_each_entry(key, &lock_keys, list) {
-		key->print(key, st);
-		fprintf(lock_output, "%s ", sep);
-	}
-
-	switch (aggr_mode) {
-	case LOCK_AGGR_CALLER:
-		fprintf(lock_output, "%s%s %s", get_type_flags_name(st->flags), sep, st->name);
-		if (verbose <= 0)
-			fprintf(lock_output, "\n");
-		break;
-	case LOCK_AGGR_TASK:
-		pid = st->addr;
-		t = perf_session__findnew(session, pid);
-		fprintf(lock_output, "%d%s %s\n", pid, sep,
-			pid == -1 ? "Unknown" : thread__comm_str(t));
-		break;
-	case LOCK_AGGR_ADDR:
-		fprintf(lock_output, "%llx%s %s%s %s\n", (unsigned long long)st->addr, sep,
-			st->name, sep, get_type_lock_name(st->flags));
-		break;
-	case LOCK_AGGR_CGROUP:
-		fprintf(lock_output, "%s\n",st->name);
-		break;
-	default:
-		break;
-	}
-
-	if (aggr_mode == LOCK_AGGR_CALLER && verbose > 0) {
-		struct map *kmap;
-		struct symbol *sym;
-		char buf[128];
-		u64 ip;
-
-		for (int i = 0; i < max_stack_depth; i++) {
-			if (!st->callstack || !st->callstack[i])
-				break;
-
-			ip = st->callstack[i];
-			sym = machine__find_kernel_symbol(con->machine, ip, &kmap);
-			get_symbol_name_offset(kmap, sym, ip, buf, sizeof(buf));
-			fprintf(lock_output, "%s %#lx %s", i ? ":" : sep, (unsigned long) ip, buf);
-		}
-		fprintf(lock_output, "\n");
-	}
-}
-
-static void print_lock_stat(struct lock_contention *con, struct lock_stat *st)
-{
-	if (symbol_conf.field_sep)
-		print_lock_stat_csv(con, st, symbol_conf.field_sep);
-	else
-		print_lock_stat_stdio(con, st);
-}
-
-static void print_footer_stdio(int total, int bad, struct lock_contention_fails *fails)
-{
-	/* Output for debug, this have to be removed */
-	int broken = fails->task + fails->stack + fails->time + fails->data;
-
-	if (!use_bpf)
-		print_bad_events(bad, total);
-
-	if (quiet || total == 0 || (broken == 0 && verbose <= 0))
-		return;
-
-	total += broken;
-	fprintf(lock_output, "\n=== output for debug ===\n\n");
-	fprintf(lock_output, "bad: %d, total: %d\n", broken, total);
-	fprintf(lock_output, "bad rate: %.2f %%\n", 100.0 * broken / total);
-
-	fprintf(lock_output, "histogram of failure reasons\n");
-	fprintf(lock_output, " %10s: %d\n", "task", fails->task);
-	fprintf(lock_output, " %10s: %d\n", "stack", fails->stack);
-	fprintf(lock_output, " %10s: %d\n", "time", fails->time);
-	fprintf(lock_output, " %10s: %d\n", "data", fails->data);
-}
-
-static void print_footer_csv(int total, int bad, struct lock_contention_fails *fails,
-			     const char *sep)
-{
-	/* Output for debug, this have to be removed */
-	if (use_bpf)
-		bad = fails->task + fails->stack + fails->time + fails->data;
-
-	if (quiet || total == 0 || (bad == 0 && verbose <= 0))
-		return;
-
-	total += bad;
-	fprintf(lock_output, "# debug: total=%d%s bad=%d", total, sep, bad);
-
-	if (use_bpf) {
-		fprintf(lock_output, "%s bad_%s=%d", sep, "task", fails->task);
-		fprintf(lock_output, "%s bad_%s=%d", sep, "stack", fails->stack);
-		fprintf(lock_output, "%s bad_%s=%d", sep, "time", fails->time);
-		fprintf(lock_output, "%s bad_%s=%d", sep, "data", fails->data);
-	} else {
-		int i;
-		const char *name[4] = { "acquire", "acquired", "contended", "release" };
-
-		for (i = 0; i < BROKEN_MAX; i++)
-			fprintf(lock_output, "%s bad_%s=%d", sep, name[i], bad_hist[i]);
-	}
-	fprintf(lock_output, "\n");
-}
-
-static void print_footer(int total, int bad, struct lock_contention_fails *fails)
-{
-	if (symbol_conf.field_sep)
-		print_footer_csv(total, bad, fails, symbol_conf.field_sep);
-	else
-		print_footer_stdio(total, bad, fails);
-}
-
 static void print_contention_result(struct lock_contention *con)
 {
 	struct lock_stat *st;
+	struct lock_key *key;
 	int bad, total, printed;
 
-	if (!quiet)
-		print_header();
+	if (!quiet) {
+		list_for_each_entry(key, &lock_keys, list)
+			pr_info("%*s ", key->len, key->header);
+
+		switch (aggr_mode) {
+		case LOCK_AGGR_TASK:
+			pr_info("  %10s   %s\n\n", "pid",
+				show_lock_owner ? "owner" : "comm");
+			break;
+		case LOCK_AGGR_CALLER:
+			pr_info("  %10s   %s\n\n", "type", "caller");
+			break;
+		case LOCK_AGGR_ADDR:
+			pr_info("  %16s   %s\n\n", "address", "symbol");
+			break;
+		default:
+			break;
+		}
+	}
 
 	bad = total = printed = 0;
+	if (use_bpf)
+		bad = bad_hist[BROKEN_CONTENDED];
 
 	while ((st = pop_from_result())) {
+		struct thread *t;
+		int pid;
+
 		total += use_bpf ? st->nr_contended : 1;
 		if (st->broken)
 			bad++;
@@ -1813,40 +1646,51 @@ static void print_contention_result(struct lock_contention *con)
 		if (!st->wait_time_total)
 			continue;
 
-		print_lock_stat(con, st);
+		list_for_each_entry(key, &lock_keys, list) {
+			key->print(key, st);
+			pr_info(" ");
+		}
+
+		switch (aggr_mode) {
+		case LOCK_AGGR_CALLER:
+			pr_info("  %10s   %s\n", get_type_str(st->flags), st->name);
+			break;
+		case LOCK_AGGR_TASK:
+			pid = st->addr;
+			t = perf_session__findnew(session, pid);
+			pr_info("  %10d   %s\n",
+				pid, pid == -1 ? "Unknown" : thread__comm_str(t));
+			break;
+		case LOCK_AGGR_ADDR:
+			pr_info("  %016llx   %s\n", (unsigned long long)st->addr,
+				st->name ? : "");
+			break;
+		default:
+			break;
+		}
+
+		if (aggr_mode == LOCK_AGGR_CALLER && verbose > 0) {
+			struct map *kmap;
+			struct symbol *sym;
+			char buf[128];
+			u64 ip;
+
+			for (int i = 0; i < max_stack_depth; i++) {
+				if (!st->callstack || !st->callstack[i])
+					break;
+
+				ip = st->callstack[i];
+				sym = machine__find_kernel_symbol(con->machine, ip, &kmap);
+				get_symbol_name_offset(kmap, sym, ip, buf, sizeof(buf));
+				pr_info("\t\t\t%#lx  %s\n", (unsigned long)ip, buf);
+			}
+		}
 
 		if (++printed >= print_nr_entries)
 			break;
 	}
 
-	if (con->owner && con->save_callstack && verbose > 0) {
-		struct rb_root root = RB_ROOT;
-
-		if (symbol_conf.field_sep)
-			fprintf(lock_output, "# owner stack trace:\n");
-		else
-			fprintf(lock_output, "\n=== owner stack trace ===\n\n");
-		while ((st = pop_owner_stack_trace(con)))
-			insert_to(&root, st, compare);
-
-		while ((st = pop_from(&root))) {
-			print_lock_stat(con, st);
-			free(st);
-		}
-	}
-
-	if (print_nr_entries) {
-		/* update the total/bad stats */
-		while ((st = pop_from_result())) {
-			total += use_bpf ? st->nr_contended : 1;
-			if (st->broken)
-				bad++;
-		}
-	}
-	/* some entries are collected but hidden by the callstack filter */
-	total += con->nr_filtered;
-
-	print_footer(total, bad, &con->fails);
+	print_bad_events(bad, total);
 }
 
 static bool force;
@@ -1854,30 +1698,32 @@ static bool force;
 static int __cmd_report(bool display_info)
 {
 	int err = -EINVAL;
-	struct perf_tool eops;
+	struct perf_tool eops = {
+		.attr		 = perf_event__process_attr,
+		.event_update	 = process_event_update,
+		.sample		 = process_sample_event,
+		.comm		 = perf_event__process_comm,
+		.mmap		 = perf_event__process_mmap,
+		.namespaces	 = perf_event__process_namespaces,
+		.tracing_data	 = perf_event__process_tracing_data,
+		.ordered_events	 = true,
+	};
 	struct perf_data data = {
 		.path  = input_name,
 		.mode  = PERF_DATA_MODE_READ,
 		.force = force,
 	};
 
-	perf_tool__init(&eops, /*ordered_events=*/true);
-	eops.attr		 = perf_event__process_attr;
-	eops.event_update	 = process_event_update;
-	eops.sample		 = process_sample_event;
-	eops.comm		 = perf_event__process_comm;
-	eops.mmap		 = perf_event__process_mmap;
-	eops.mmap2		 = perf_event__process_mmap2;
-	eops.namespaces		 = perf_event__process_namespaces;
-	eops.tracing_data	 = perf_event__process_tracing_data;
 	session = perf_session__new(&data, &eops);
 	if (IS_ERR(session)) {
 		pr_err("Initializing perf session failed\n");
 		return PTR_ERR(session);
 	}
 
+	/* for lock function check */
+	symbol_conf.sort_by_name = true;
 	symbol_conf.allow_aliases = true;
-	symbol__init(perf_session__env(session));
+	symbol__init(&session->header.env);
 
 	if (!data.is_pipe) {
 		if (!perf_session__has_traces(session, "lock record"))
@@ -1909,7 +1755,7 @@ static int __cmd_report(bool display_info)
 
 	setup_pager();
 	if (display_info) /* used for info subcommand */
-		dump_info();
+		err = dump_info();
 	else {
 		combine_result();
 		sort_result();
@@ -1950,41 +1796,8 @@ static int check_lock_contention_options(const struct option *options,
 		return -1;
 	}
 
-	if (show_lock_cgroups && !use_bpf) {
-		pr_err("Cgroups are available only with BPF\n");
-		parse_options_usage(usage, options, "lock-cgroup", 0);
-		parse_options_usage(NULL, options, "use-bpf", 0);
-		return -1;
-	}
-
-	if (show_lock_cgroups && show_lock_addrs) {
-		pr_err("Cannot use cgroup and addr mode together\n");
-		parse_options_usage(usage, options, "lock-cgroup", 0);
-		parse_options_usage(NULL, options, "lock-addr", 0);
-		return -1;
-	}
-
-	if (show_lock_cgroups && show_thread_stats) {
-		pr_err("Cannot use cgroup and thread mode together\n");
-		parse_options_usage(usage, options, "lock-cgroup", 0);
-		parse_options_usage(NULL, options, "threads", 0);
-		return -1;
-	}
-
-	if (symbol_conf.field_sep) {
-		if (strstr(symbol_conf.field_sep, ":") || /* part of type flags */
-		    strstr(symbol_conf.field_sep, "+") || /* part of caller offset */
-		    strstr(symbol_conf.field_sep, ".")) { /* can be in a symbol name */
-			pr_err("Cannot use the separator that is already used\n");
-			parse_options_usage(usage, options, "x", 1);
-			return -1;
-		}
-	}
-
-	if (show_lock_owner && !show_thread_stats) {
-		pr_warning("Now -o try to show owner's callstack instead of pid and comm.\n");
-		pr_warning("Please use -t option too to keep the old behavior.\n");
-	}
+	if (show_lock_owner)
+		show_thread_stats = true;
 
 	return 0;
 }
@@ -1992,7 +1805,15 @@ static int check_lock_contention_options(const struct option *options,
 static int __cmd_contention(int argc, const char **argv)
 {
 	int err = -EINVAL;
-	struct perf_tool eops;
+	struct perf_tool eops = {
+		.attr		 = perf_event__process_attr,
+		.event_update	 = process_event_update,
+		.sample		 = process_sample_event,
+		.comm		 = perf_event__process_comm,
+		.mmap		 = perf_event__process_mmap,
+		.tracing_data	 = perf_event__process_tracing_data,
+		.ordered_events	 = true,
+	};
 	struct perf_data data = {
 		.path  = input_name,
 		.mode  = PERF_DATA_MODE_READ,
@@ -2000,55 +1821,33 @@ static int __cmd_contention(int argc, const char **argv)
 	};
 	struct lock_contention con = {
 		.target = &target,
+		.result = &lockhash_table[0],
 		.map_nr_entries = bpf_map_entries,
 		.max_stack = max_stack_depth,
 		.stack_skip = stack_skip,
 		.filters = &filters,
-		.delays = delays,
-		.nr_delays = nr_delays,
 		.save_callstack = needs_callstack(),
 		.owner = show_lock_owner,
-		.cgroups = RB_ROOT,
 	};
-	struct perf_env host_env;
 
-	lockhash_table = calloc(LOCKHASH_SIZE, sizeof(*lockhash_table));
-	if (!lockhash_table)
-		return -ENOMEM;
-
-	con.result = &lockhash_table[0];
-
-	perf_tool__init(&eops, /*ordered_events=*/true);
-	eops.attr		 = perf_event__process_attr;
-	eops.event_update	 = process_event_update;
-	eops.sample		 = process_sample_event;
-	eops.comm		 = perf_event__process_comm;
-	eops.mmap		 = perf_event__process_mmap;
-	eops.mmap2		 = perf_event__process_mmap2;
-	eops.tracing_data	 = perf_event__process_tracing_data;
-
-	perf_env__init(&host_env);
-	session = __perf_session__new(use_bpf ? NULL : &data, &eops,
-				/*trace_event_repipe=*/false, &host_env);
-
+	session = perf_session__new(use_bpf ? NULL : &data, &eops);
 	if (IS_ERR(session)) {
 		pr_err("Initializing perf session failed\n");
-		err = PTR_ERR(session);
-		session = NULL;
-		goto out_delete;
+		return PTR_ERR(session);
 	}
 
 	con.machine = &session->machines.host;
 
 	con.aggr_mode = aggr_mode = show_thread_stats ? LOCK_AGGR_TASK :
-		show_lock_addrs ? LOCK_AGGR_ADDR :
-		show_lock_cgroups ? LOCK_AGGR_CGROUP : LOCK_AGGR_CALLER;
+		show_lock_addrs ? LOCK_AGGR_ADDR : LOCK_AGGR_CALLER;
 
 	if (con.aggr_mode == LOCK_AGGR_CALLER)
 		con.save_callstack = true;
 
+	/* for lock function check */
+	symbol_conf.sort_by_name = true;
 	symbol_conf.allow_aliases = true;
-	symbol__init(perf_session__env(session));
+	symbol__init(&session->header.env);
 
 	if (use_bpf) {
 		err = target__validate(&target);
@@ -2081,8 +1880,7 @@ static int __cmd_contention(int argc, const char **argv)
 				goto out_delete;
 		}
 
-		err = lock_contention_prepare(&con);
-		if (err < 0) {
+		if (lock_contention_prepare(&con) < 0) {
 			pr_err("lock contention BPF setup failed\n");
 			goto out_delete;
 		}
@@ -2103,24 +1901,11 @@ static int __cmd_contention(int argc, const char **argv)
 		}
 	}
 
-	err = setup_output_field(true, output_fields);
-	if (err) {
-		pr_err("Failed to setup output field\n");
-		goto out_delete;
-	}
-
-	err = select_key(true);
-	if (err)
+	if (setup_output_field(true, output_fields))
 		goto out_delete;
 
-	if (symbol_conf.field_sep) {
-		int i;
-		struct lock_key *keys = contention_keys;
-
-		/* do not align output in CSV format */
-		for (i = 0; keys[i].name; i++)
-			keys[i].len = 0;
-	}
+	if (select_key(true))
+		goto out_delete;
 
 	if (use_bpf) {
 		lock_contention_start();
@@ -2132,6 +1917,9 @@ static int __cmd_contention(int argc, const char **argv)
 
 		lock_contention_stop();
 		lock_contention_read(&con);
+
+		/* abuse bad hist stats for lost entries */
+		bad_hist[BROKEN_CONTENDED] = con.lost;
 	} else {
 		err = perf_session__process_events(session);
 		if (err)
@@ -2146,10 +1934,8 @@ static int __cmd_contention(int argc, const char **argv)
 out_delete:
 	lock_filter_finish();
 	evlist__delete(con.evlist);
-	lock_contention_finish(&con);
+	lock_contention_finish();
 	perf_session__delete(session);
-	perf_env__exit(&host_env);
-	zfree(&lockhash_table);
 	return err;
 }
 
@@ -2207,13 +1993,21 @@ setup_args:
 		return -ENOMEM;
 
 	for (i = 0; i < ARRAY_SIZE(record_args); i++)
-		rec_argv[i] = record_args[i];
+		rec_argv[i] = strdup(record_args[i]);
 
 	for (j = 0; j < nr_tracepoints; j++) {
+		const char *ev_name;
+
+		if (has_lock_stat)
+			ev_name = strdup(lock_tracepoints[j].name);
+		else
+			ev_name = strdup(contention_tracepoints[j].name);
+
+		if (!ev_name)
+			return -ENOMEM;
+
 		rec_argv[i++] = "-e";
-		rec_argv[i++] = has_lock_stat
-			? lock_tracepoints[j].name
-			: contention_tracepoints[j].name;
+		rec_argv[i++] = ev_name;
 	}
 
 	for (j = 0; j < nr_callgraph_args; j++, i++)
@@ -2287,61 +2081,60 @@ static int parse_lock_type(const struct option *opt __maybe_unused, const char *
 			   int unset __maybe_unused)
 {
 	char *s, *tmp, *tok;
+	int ret = 0;
 
 	s = strdup(str);
 	if (s == NULL)
 		return -1;
 
 	for (tok = strtok_r(s, ", ", &tmp); tok; tok = strtok_r(NULL, ", ", &tmp)) {
-		bool found = false;
+		unsigned int flags = get_type_flag(tok);
 
-		/* `tok` is a flags name if it contains ':'. */
-		if (strchr(tok, ':')) {
-			for (unsigned int i = 0; i < ARRAY_SIZE(lock_type_table); i++) {
-				if (!strcmp(lock_type_table[i].flags_name, tok) &&
-				    add_lock_type(lock_type_table[i].flags)) {
-					found = true;
+		if (flags == -1U) {
+			char buf[32];
+
+			if (strchr(tok, ':'))
+			    continue;
+
+			/* try :R and :W suffixes for rwlock, rwsem, ... */
+			scnprintf(buf, sizeof(buf), "%s:R", tok);
+			flags = get_type_flag(buf);
+			if (flags != UINT_MAX) {
+				if (!add_lock_type(flags)) {
+					ret = -1;
 					break;
 				}
 			}
 
-			if (!found) {
-				pr_err("Unknown lock flags name: %s\n", tok);
-				free(s);
-				return -1;
+			scnprintf(buf, sizeof(buf), "%s:W", tok);
+			flags = get_type_flag(buf);
+			if (flags != UINT_MAX) {
+				if (!add_lock_type(flags)) {
+					ret = -1;
+					break;
+				}
 			}
-
 			continue;
 		}
 
-		/*
-		 * Otherwise `tok` is a lock name.
-		 * Single lock name could contain multiple flags.
-		 * Replace alias `pcpu-sem` with actual name `percpu-rwsem.
-		 */
-		if (!strcmp(tok, "pcpu-sem"))
-			tok = (char *)"percpu-rwsem";
-		for (unsigned int i = 0; i < ARRAY_SIZE(lock_type_table); i++) {
-			if (!strcmp(lock_type_table[i].lock_name, tok)) {
-				if (add_lock_type(lock_type_table[i].flags)) {
-					found = true;
-				} else {
-					free(s);
-					return -1;
+		if (!add_lock_type(flags)) {
+			ret = -1;
+			break;
+		}
+
+		if (!strcmp(tok, "mutex")) {
+			flags = get_type_flag("mutex-spin");
+			if (flags != UINT_MAX) {
+				if (!add_lock_type(flags)) {
+					ret = -1;
+					break;
 				}
 			}
 		}
-
-		if (!found) {
-			pr_err("Unknown lock name: %s\n", tok);
-			free(s);
-			return -1;
-		}
-
 	}
 
 	free(s);
-	return 0;
+	return ret;
 }
 
 static bool add_lock_addr(unsigned long addr)
@@ -2381,27 +2174,6 @@ static bool add_lock_sym(char *name)
 	return true;
 }
 
-static bool add_lock_slab(char *name)
-{
-	char **tmp;
-	char *sym = strdup(name);
-
-	if (sym == NULL) {
-		pr_err("Memory allocation failure\n");
-		return false;
-	}
-
-	tmp = realloc(filters.slabs, (filters.nr_slabs + 1) * sizeof(*filters.slabs));
-	if (tmp == NULL) {
-		pr_err("Memory allocation failure\n");
-		return false;
-	}
-
-	tmp[filters.nr_slabs++] = sym;
-	filters.slabs = tmp;
-	return true;
-}
-
 static int parse_lock_addr(const struct option *opt __maybe_unused, const char *str,
 			   int unset __maybe_unused)
 {
@@ -2425,14 +2197,6 @@ static int parse_lock_addr(const struct option *opt __maybe_unused, const char *
 			continue;
 		}
 
-		if (*tok == '&') {
-			if (!add_lock_slab(tok + 1)) {
-				ret = -1;
-				break;
-			}
-			continue;
-		}
-
 		/*
 		 * At this moment, we don't have kernel symbols.  Save the symbols
 		 * in a separate list and resolve them to addresses later.
@@ -2447,55 +2211,8 @@ static int parse_lock_addr(const struct option *opt __maybe_unused, const char *
 	return ret;
 }
 
-static int parse_output(const struct option *opt __maybe_unused, const char *str,
-			int unset __maybe_unused)
-{
-	const char **name = (const char **)opt->value;
-
-	if (str == NULL)
-		return -1;
-
-	lock_output = fopen(str, "w");
-	if (lock_output == NULL) {
-		pr_err("Cannot open %s\n", str);
-		return -1;
-	}
-
-	*name = str;
-	return 0;
-}
-
-static bool add_lock_cgroup(char *name)
-{
-	u64 *tmp;
-	struct cgroup *cgrp;
-
-	cgrp = cgroup__new(name, /*do_open=*/false);
-	if (cgrp == NULL) {
-		pr_err("Failed to create cgroup: %s\n", name);
-		return false;
-	}
-
-	if (read_cgroup_id(cgrp) < 0) {
-		pr_err("Failed to read cgroup id for %s\n", name);
-		cgroup__put(cgrp);
-		return false;
-	}
-
-	tmp = realloc(filters.cgrps, (filters.nr_cgrps + 1) * sizeof(*filters.cgrps));
-	if (tmp == NULL) {
-		pr_err("Memory allocation failure\n");
-		return false;
-	}
-
-	tmp[filters.nr_cgrps++] = cgrp->id;
-	filters.cgrps = tmp;
-	cgroup__put(cgrp);
-	return true;
-}
-
-static int parse_cgroup_filter(const struct option *opt __maybe_unused, const char *str,
-			       int unset __maybe_unused)
+static int parse_call_stack(const struct option *opt __maybe_unused, const char *str,
+			   int unset __maybe_unused)
 {
 	char *s, *tmp, *tok;
 	int ret = 0;
@@ -2505,83 +2222,16 @@ static int parse_cgroup_filter(const struct option *opt __maybe_unused, const ch
 		return -1;
 
 	for (tok = strtok_r(s, ", ", &tmp); tok; tok = strtok_r(NULL, ", ", &tmp)) {
-		if (!add_lock_cgroup(tok)) {
-			ret = -1;
-			break;
+		struct callstack_filter *entry;
+
+		entry = malloc(sizeof(*entry) + strlen(tok) + 1);
+		if (entry == NULL) {
+			pr_err("Memory allocation failure\n");
+			return -1;
 		}
-	}
 
-	free(s);
-	return ret;
-}
-
-static bool add_lock_delay(char *spec)
-{
-	char *at, *pos;
-	struct lock_delay *tmp;
-	unsigned long duration;
-
-	at = strchr(spec, '@');
-	if (at == NULL) {
-		pr_err("lock delay should have '@' sign: %s\n", spec);
-		return false;
-	}
-	if (at == spec) {
-		pr_err("lock delay should have time before '@': %s\n", spec);
-		return false;
-	}
-
-	*at = '\0';
-	duration = strtoul(spec, &pos, 0);
-	if (!strcmp(pos, "ns"))
-		duration *= 1;
-	else if (!strcmp(pos, "us"))
-		duration *= 1000;
-	else if (!strcmp(pos, "ms"))
-		duration *= 1000 * 1000;
-	else if (*pos) {
-		pr_err("invalid delay time: %s@%s\n", spec, at + 1);
-		return false;
-	}
-
-	if (duration > 10 * 1000 * 1000) {
-		pr_err("lock delay is too long: %s (> 10ms)\n", spec);
-		return false;
-	}
-
-	tmp = realloc(delays, (nr_delays + 1) * sizeof(*delays));
-	if (tmp == NULL) {
-		pr_err("Memory allocation failure\n");
-		return false;
-	}
-	delays = tmp;
-
-	delays[nr_delays].sym = strdup(at + 1);
-	if (delays[nr_delays].sym == NULL) {
-		pr_err("Memory allocation failure\n");
-		return false;
-	}
-	delays[nr_delays].time = duration;
-
-	nr_delays++;
-	return true;
-}
-
-static int parse_lock_delay(const struct option *opt __maybe_unused, const char *str,
-			    int unset __maybe_unused)
-{
-	char *s, *tmp, *tok;
-	int ret = 0;
-
-	s = strdup(str);
-	if (s == NULL)
-		return -1;
-
-	for (tok = strtok_r(s, ", ", &tmp); tok; tok = strtok_r(NULL, ", ", &tmp)) {
-		if (!add_lock_delay(tok)) {
-			ret = -1;
-			break;
-		}
+		strcpy(entry->name, tok);
+		list_add_tail(&entry->list, &callstack_filters);
 	}
 
 	free(s);
@@ -2592,7 +2242,6 @@ int cmd_lock(int argc, const char **argv)
 {
 	const struct option lock_options[] = {
 	OPT_STRING('i', "input", &input_name, "file", "input file name"),
-	OPT_CALLBACK(0, "output", &output_name, "file", "output file name", parse_output),
 	OPT_INCR('v', "verbose", &verbose, "be more verbose (show symbol address, etc)"),
 	OPT_BOOLEAN('D', "dump-raw-trace", &dump_trace, "dump raw trace in ASCII"),
 	OPT_BOOLEAN('f', "force", &force, "don't complain, do it"),
@@ -2606,9 +2255,9 @@ int cmd_lock(int argc, const char **argv)
 
 	const struct option info_options[] = {
 	OPT_BOOLEAN('t', "threads", &info_threads,
-		    "dump the thread list in perf.data"),
+		    "dump thread list in perf.data"),
 	OPT_BOOLEAN('m', "map", &info_map,
-		    "dump the map of lock instances (address:name table)"),
+		    "map of lock instances (address:name table)"),
 	OPT_PARENT(lock_options)
 	};
 
@@ -2642,10 +2291,10 @@ int cmd_lock(int argc, const char **argv)
 		   "Trace on existing process id"),
 	OPT_STRING(0, "tid", &target.tid, "tid",
 		   "Trace on existing thread id (exclusive to --pid)"),
-	OPT_CALLBACK('M', "map-nr-entries", &bpf_map_entries, "num",
+	OPT_CALLBACK(0, "map-nr-entries", &bpf_map_entries, "num",
 		     "Max number of BPF map entries", parse_map_entry),
 	OPT_CALLBACK(0, "max-stack", &max_stack_depth, "num",
-		     "Set the maximum stack depth when collecting lock contention, "
+		     "Set the maximum stack depth when collecting lopck contention, "
 		     "Default: " __stringify(CONTENTION_STACK_DEPTH), parse_max_stack),
 	OPT_INTEGER(0, "stack-skip", &stack_skip,
 		    "Set the number of stack depth to skip when finding a lock caller, "
@@ -2659,13 +2308,6 @@ int cmd_lock(int argc, const char **argv)
 	OPT_CALLBACK('S', "callstack-filter", NULL, "NAMES",
 		     "Filter specific function in the callstack", parse_call_stack),
 	OPT_BOOLEAN('o', "lock-owner", &show_lock_owner, "show lock owners instead of waiters"),
-	OPT_STRING_NOEMPTY('x', "field-separator", &symbol_conf.field_sep, "separator",
-		   "print result in CSV format with custom separator"),
-	OPT_BOOLEAN(0, "lock-cgroup", &show_lock_cgroups, "show lock stats by cgroup"),
-	OPT_CALLBACK('G', "cgroup-filter", NULL, "CGROUPS",
-		     "Filter specific cgroups", parse_cgroup_filter),
-	OPT_CALLBACK('J', "inject-delay", NULL, "TIME@FUNC",
-		     "Inject delays to specific locks", parse_lock_delay),
 	OPT_PARENT(lock_options)
 	};
 
@@ -2690,14 +2332,9 @@ int cmd_lock(int argc, const char **argv)
 	unsigned int i;
 	int rc = 0;
 
-	lockhash_table = calloc(LOCKHASH_SIZE, sizeof(*lockhash_table));
-	if (!lockhash_table)
-		return -ENOMEM;
-
 	for (i = 0; i < LOCKHASH_SIZE; i++)
 		INIT_HLIST_HEAD(lockhash_table + i);
 
-	lock_output = stderr;
 	argc = parse_options_subcommand(argc, argv, lock_options, lock_subcommands,
 					lock_usage, PARSE_OPT_STOP_AT_NON_OPTION);
 	if (!argc)
@@ -2716,7 +2353,7 @@ int cmd_lock(int argc, const char **argv)
 		rc = __cmd_report(false);
 	} else if (!strcmp(argv[0], "script")) {
 		/* Aliased to 'perf script' */
-		rc = cmd_script(argc, argv);
+		return cmd_script(argc, argv);
 	} else if (!strcmp(argv[0], "info")) {
 		if (argc) {
 			argc = parse_options(argc, argv,
@@ -2724,13 +2361,6 @@ int cmd_lock(int argc, const char **argv)
 			if (argc)
 				usage_with_options(info_usage, info_options);
 		}
-
-		/* If neither threads nor map requested, display both */
-		if (!info_threads && !info_map) {
-			info_threads = true;
-			info_map = true;
-		}
-
 		/* recycling report_lock_ops */
 		trace_handler = &report_lock_ops;
 		rc = __cmd_report(true);
@@ -2757,9 +2387,5 @@ int cmd_lock(int argc, const char **argv)
 		usage_with_options(lock_usage, lock_options);
 	}
 
-	/* free usage string allocated by parse_options_subcommand */
-	free((void *)lock_usage[0]);
-
-	zfree(&lockhash_table);
 	return rc;
 }

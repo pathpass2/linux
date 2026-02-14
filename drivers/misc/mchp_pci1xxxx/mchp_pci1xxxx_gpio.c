@@ -7,14 +7,12 @@
 #include <linux/gpio/driver.h>
 #include <linux/bio.h>
 #include <linux/mutex.h>
-#include <linux/pci.h>
 #include <linux/kthread.h>
 #include <linux/interrupt.h>
 
 #include "mchp_pci1xxxx_gp.h"
 
 #define PCI1XXXX_NR_PINS		93
-#define PCI_DEV_REV_OFFSET		0x08
 #define PERI_GEN_RESET			0
 #define OUT_EN_OFFSET(x)		((((x) / 32) * 4) + 0x400)
 #define INP_EN_OFFSET(x)		((((x) / 32) * 4) + 0x400 + 0x10)
@@ -39,29 +37,10 @@
 struct pci1xxxx_gpio {
 	struct auxiliary_device *aux_dev;
 	void __iomem *reg_base;
-	raw_spinlock_t wa_lock;
 	struct gpio_chip gpio;
 	spinlock_t lock;
-	u32 gpio_wake_mask[3];
 	int irq_base;
-	u8 dev_rev;
 };
-
-static int pci1xxxx_gpio_get_device_revision(struct pci1xxxx_gpio *priv)
-{
-	struct device *parent = priv->aux_dev->dev.parent;
-	struct pci_dev *pcidev = to_pci_dev(parent);
-	int ret;
-	u32 val;
-
-	ret = pci_read_config_dword(pcidev, PCI_DEV_REV_OFFSET, &val);
-	if (ret)
-		return ret;
-
-	priv->dev_rev = val;
-
-	return 0;
-}
 
 static int pci1xxxx_gpio_get_direction(struct gpio_chip *gpio, unsigned int nr)
 {
@@ -135,7 +114,8 @@ static int pci1xxxx_gpio_direction_output(struct gpio_chip *gpio,
 	return 0;
 }
 
-static int pci1xxxx_gpio_set(struct gpio_chip *gpio, unsigned int nr, int val)
+static void pci1xxxx_gpio_set(struct gpio_chip *gpio,
+			      unsigned int nr, int val)
 {
 	struct pci1xxxx_gpio *priv = gpiochip_get_data(gpio);
 	unsigned long flags;
@@ -143,8 +123,6 @@ static int pci1xxxx_gpio_set(struct gpio_chip *gpio, unsigned int nr, int val)
 	spin_lock_irqsave(&priv->lock, flags);
 	pci1xxx_assign_bit(priv->reg_base, OUT_OFFSET(nr), (nr % 32), val);
 	spin_unlock_irqrestore(&priv->lock, flags);
-
-	return 0;
 }
 
 static int pci1xxxx_gpio_set_config(struct gpio_chip *gpio, unsigned int offset,
@@ -169,11 +147,8 @@ static int pci1xxxx_gpio_set_config(struct gpio_chip *gpio, unsigned int offset,
 	case PIN_CONFIG_DRIVE_OPEN_DRAIN:
 		pci1xxx_assign_bit(priv->reg_base, OPENDRAIN_OFFSET(offset), (offset % 32), true);
 		break;
-	case PIN_CONFIG_DRIVE_PUSH_PULL:
-		pci1xxx_assign_bit(priv->reg_base, OPENDRAIN_OFFSET(offset), (offset % 32), false);
-		break;
 	default:
-		ret = -ENOTSUPP;
+		ret = -EOPNOTSUPP;
 		break;
 	}
 	spin_unlock_irqrestore(&priv->lock, flags);
@@ -189,7 +164,7 @@ static void pci1xxxx_gpio_irq_ack(struct irq_data *data)
 	unsigned long flags;
 
 	spin_lock_irqsave(&priv->lock, flags);
-	writel(BIT(gpio % 32), priv->reg_base + INTR_STAT_OFFSET(gpio));
+	pci1xxx_assign_bit(priv->reg_base, INTR_STAT_OFFSET(gpio), (gpio % 32), true);
 	spin_unlock_irqrestore(&priv->lock, flags);
 }
 
@@ -200,13 +175,9 @@ static void pci1xxxx_gpio_irq_set_mask(struct irq_data *data, bool set)
 	unsigned int gpio = irqd_to_hwirq(data);
 	unsigned long flags;
 
-	if (!set)
-		gpiochip_enable_irq(chip, gpio);
 	spin_lock_irqsave(&priv->lock, flags);
 	pci1xxx_assign_bit(priv->reg_base, INTR_MASK_OFFSET(gpio), (gpio % 32), set);
 	spin_unlock_irqrestore(&priv->lock, flags);
-	if (set)
-		gpiochip_disable_irq(chip, gpio);
 }
 
 static void pci1xxxx_gpio_irq_mask(struct irq_data *data)
@@ -274,28 +245,11 @@ static int pci1xxxx_gpio_set_type(struct irq_data *data, unsigned int trigger_ty
 	return true;
 }
 
-static int pci1xxxx_gpio_set_wake(struct irq_data *data, unsigned int enable)
-{
-	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
-	struct pci1xxxx_gpio *priv = gpiochip_get_data(chip);
-	unsigned int gpio = irqd_to_hwirq(data);
-	unsigned int bitpos = gpio % 32;
-	unsigned int bank = gpio / 32;
-
-	if (enable)
-		priv->gpio_wake_mask[bank] |= (1 << bitpos);
-	else
-		priv->gpio_wake_mask[bank] &= ~(1 << bitpos);
-
-	return 0;
-}
-
 static irqreturn_t pci1xxxx_gpio_irq_handler(int irq, void *dev_id)
 {
 	struct pci1xxxx_gpio *priv = dev_id;
 	struct gpio_chip *gc =  &priv->gpio;
 	unsigned long int_status = 0;
-	unsigned long wa_flags;
 	unsigned long flags;
 	u8 pincount;
 	int bit;
@@ -319,9 +273,7 @@ static irqreturn_t pci1xxxx_gpio_irq_handler(int irq, void *dev_id)
 			writel(BIT(bit), priv->reg_base + INTR_STATUS_OFFSET(gpiobank));
 			spin_unlock_irqrestore(&priv->lock, flags);
 			irq = irq_find_mapping(gc->irq.domain, (bit + (gpiobank * 32)));
-			raw_spin_lock_irqsave(&priv->wa_lock, wa_flags);
 			generic_handle_irq(irq);
-			raw_spin_unlock_irqrestore(&priv->wa_lock, wa_flags);
 		}
 	}
 	spin_lock_irqsave(&priv->lock, flags);
@@ -331,39 +283,18 @@ static irqreturn_t pci1xxxx_gpio_irq_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static const struct irq_chip pci1xxxx_gpio_irqchip = {
+static struct irq_chip pci1xxxx_gpio_irqchip = {
 	.name = "pci1xxxx_gpio",
 	.irq_ack = pci1xxxx_gpio_irq_ack,
 	.irq_mask = pci1xxxx_gpio_irq_mask,
 	.irq_unmask = pci1xxxx_gpio_irq_unmask,
 	.irq_set_type = pci1xxxx_gpio_set_type,
-	.irq_set_wake = pci1xxxx_gpio_set_wake,
-	.flags = IRQCHIP_IMMUTABLE,
-	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 
 static int pci1xxxx_gpio_suspend(struct device *dev)
 {
 	struct pci1xxxx_gpio *priv = dev_get_drvdata(dev);
-	struct device *parent = priv->aux_dev->dev.parent;
-	struct pci_dev *pcidev = to_pci_dev(parent);
-	unsigned int gpio_bank_base;
-	unsigned int wake_mask;
-	unsigned int gpiobank;
 	unsigned long flags;
-
-	for (gpiobank = 0; gpiobank < 3; gpiobank++) {
-		wake_mask = priv->gpio_wake_mask[gpiobank];
-
-		if (wake_mask) {
-			gpio_bank_base = gpiobank * 32;
-
-			pci1xxx_assign_bit(priv->reg_base,
-					   PIO_PCI_CTRL_REG_OFFSET, 0, true);
-			writel(~wake_mask, priv->reg_base +
-			       WAKEMASK_OFFSET(gpio_bank_base));
-		}
-	}
 
 	spin_lock_irqsave(&priv->lock, flags);
 	pci1xxx_assign_bit(priv->reg_base, PIO_GLOBAL_CONFIG_OFFSET,
@@ -371,14 +302,7 @@ static int pci1xxxx_gpio_suspend(struct device *dev)
 	pci1xxx_assign_bit(priv->reg_base, PIO_GLOBAL_CONFIG_OFFSET,
 			   17, false);
 	pci1xxx_assign_bit(priv->reg_base, PERI_GEN_RESET, 16, true);
-
-	if (priv->dev_rev >= 0xC0)
-		pci1xxx_assign_bit(priv->reg_base, PERI_GEN_RESET, 17, true);
-
 	spin_unlock_irqrestore(&priv->lock, flags);
-
-	device_set_wakeup_enable(&pcidev->dev, true);
-	pci_wake_from_d3(pcidev, true);
 
 	return 0;
 }
@@ -386,27 +310,7 @@ static int pci1xxxx_gpio_suspend(struct device *dev)
 static int pci1xxxx_gpio_resume(struct device *dev)
 {
 	struct pci1xxxx_gpio *priv = dev_get_drvdata(dev);
-	struct device *parent = priv->aux_dev->dev.parent;
-	struct pci_dev *pcidev = to_pci_dev(parent);
-	unsigned int gpio_bank_base;
-	unsigned int wake_mask;
-	unsigned int gpiobank;
 	unsigned long flags;
-
-	for (gpiobank = 0; gpiobank < 3; gpiobank++) {
-		wake_mask = priv->gpio_wake_mask[gpiobank];
-
-		if (wake_mask) {
-			gpio_bank_base = gpiobank * 32;
-
-			writel(wake_mask, priv->reg_base +
-			       INTR_STAT_OFFSET(gpio_bank_base));
-			pci1xxx_assign_bit(priv->reg_base,
-					   PIO_PCI_CTRL_REG_OFFSET, 0, false);
-			writel(0xffffffff, priv->reg_base +
-			       WAKEMASK_OFFSET(gpio_bank_base));
-		}
-	}
 
 	spin_lock_irqsave(&priv->lock, flags);
 	pci1xxx_assign_bit(priv->reg_base, PIO_GLOBAL_CONFIG_OFFSET,
@@ -414,13 +318,7 @@ static int pci1xxxx_gpio_resume(struct device *dev)
 	pci1xxx_assign_bit(priv->reg_base, PIO_GLOBAL_CONFIG_OFFSET,
 			   16, false);
 	pci1xxx_assign_bit(priv->reg_base, PERI_GEN_RESET, 16, false);
-
-	if (priv->dev_rev >= 0xC0)
-		pci1xxx_assign_bit(priv->reg_base, PERI_GEN_RESET, 17, false);
-
 	spin_unlock_irqrestore(&priv->lock, flags);
-
-	pci_wake_from_d3(pcidev, false);
 
 	return 0;
 }
@@ -453,7 +351,7 @@ static int pci1xxxx_gpio_setup(struct pci1xxxx_gpio *priv, int irq)
 		return retval;
 
 	girq = &priv->gpio.irq;
-	gpio_irq_chip_set_chip(girq, &pci1xxxx_gpio_irqchip);
+	girq->chip = &pci1xxxx_gpio_irqchip;
 	girq->parent_handler = NULL;
 	girq->num_parents = 0;
 	girq->parents = NULL;
@@ -499,10 +397,6 @@ static int pci1xxxx_gpio_probe(struct auxiliary_device *aux_dev,
 	retval = pci1xxxx_gpio_setup(priv, pdata->irq_num);
 
 	if (retval < 0)
-		return retval;
-
-	retval = pci1xxxx_gpio_get_device_revision(priv);
-	if (retval)
 		return retval;
 
 	dev_set_drvdata(&aux_dev->dev, priv);

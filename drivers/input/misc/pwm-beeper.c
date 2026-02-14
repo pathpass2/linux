@@ -39,7 +39,7 @@ static int pwm_beeper_on(struct pwm_beeper *beeper, unsigned long period)
 	state.period = period;
 	pwm_set_relative_duty_cycle(&state, 50, 100);
 
-	error = pwm_apply_might_sleep(beeper->pwm, &state);
+	error = pwm_apply_state(beeper->pwm, &state);
 	if (error)
 		return error;
 
@@ -132,13 +132,18 @@ static int pwm_beeper_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	beeper->pwm = devm_pwm_get(dev, NULL);
-	if (IS_ERR(beeper->pwm))
-		return dev_err_probe(dev, PTR_ERR(beeper->pwm), "Failed to request PWM device\n");
+	if (IS_ERR(beeper->pwm)) {
+		error = PTR_ERR(beeper->pwm);
+		if (error != -EPROBE_DEFER)
+			dev_err(dev, "Failed to request PWM device: %d\n",
+				error);
+		return error;
+	}
 
 	/* Sync up PWM state and ensure it is off. */
 	pwm_init_state(beeper->pwm, &state);
 	state.enabled = false;
-	error = pwm_apply_might_sleep(beeper->pwm, &state);
+	error = pwm_apply_state(beeper->pwm, &state);
 	if (error) {
 		dev_err(dev, "failed to apply initial PWM state: %d\n",
 			error);
@@ -146,9 +151,13 @@ static int pwm_beeper_probe(struct platform_device *pdev)
 	}
 
 	beeper->amplifier = devm_regulator_get(dev, "amp");
-	if (IS_ERR(beeper->amplifier))
-		return dev_err_probe(dev, PTR_ERR(beeper->amplifier),
-				     "Failed to get 'amp' regulator\n");
+	if (IS_ERR(beeper->amplifier)) {
+		error = PTR_ERR(beeper->amplifier);
+		if (error != -EPROBE_DEFER)
+			dev_err(dev, "Failed to get 'amp' regulator: %d\n",
+				error);
+		return error;
+	}
 
 	INIT_WORK(&beeper->work, pwm_beeper_work);
 
@@ -203,9 +212,9 @@ static int pwm_beeper_suspend(struct device *dev)
 	 * beeper->suspended, but to ensure that pwm_beeper_event
 	 * does not re-submit work once flag is set.
 	 */
-	scoped_guard(spinlock_irq, &beeper->input->event_lock) {
-		beeper->suspended = true;
-	}
+	spin_lock_irq(&beeper->input->event_lock);
+	beeper->suspended = true;
+	spin_unlock_irq(&beeper->input->event_lock);
 
 	pwm_beeper_stop(beeper);
 
@@ -216,9 +225,9 @@ static int pwm_beeper_resume(struct device *dev)
 {
 	struct pwm_beeper *beeper = dev_get_drvdata(dev);
 
-	scoped_guard(spinlock_irq, &beeper->input->event_lock) {
-		beeper->suspended = false;
-	}
+	spin_lock_irq(&beeper->input->event_lock);
+	beeper->suspended = false;
+	spin_unlock_irq(&beeper->input->event_lock);
 
 	/* Let worker figure out if we should resume beeping */
 	schedule_work(&beeper->work);

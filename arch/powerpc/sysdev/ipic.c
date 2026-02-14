@@ -711,9 +711,8 @@ struct ipic * __init ipic_init(struct device_node *node, unsigned int flags)
 	if (ipic == NULL)
 		return NULL;
 
-	ipic->irqhost = irq_domain_create_linear(of_fwnode_handle(node),
-						 NR_IPIC_INTS,
-						 &ipic_host_ops, ipic);
+	ipic->irqhost = irq_domain_add_linear(node, NR_IPIC_INTS,
+					      &ipic_host_ops, ipic);
 	if (ipic->irqhost == NULL) {
 		kfree(ipic);
 		return NULL;
@@ -758,12 +757,13 @@ struct ipic * __init ipic_init(struct device_node *node, unsigned int flags)
 	ipic_write(ipic->regs, IPIC_SEMSR, temp);
 
 	primary_ipic = ipic;
-	irq_set_default_domain(primary_ipic->irqhost);
+	irq_set_default_host(primary_ipic->irqhost);
 
 	ipic_write(ipic->regs, IPIC_SIMSR_H, 0);
 	ipic_write(ipic->regs, IPIC_SIMSR_L, 0);
 
-	pr_info("IPIC (%d IRQ sources) at MMIO %pa\n", NR_IPIC_INTS, &res.start);
+	printk ("IPIC (%d IRQ sources) at %p\n", NR_IPIC_INTS,
+			primary_ipic->regs);
 
 	return ipic;
 }
@@ -801,7 +801,7 @@ unsigned int ipic_get_irq(void)
 	if (irq == 0)    /* 0 --> no irq is pending */
 		return 0;
 
-	return irq_find_mapping(primary_ipic->irqhost, irq);
+	return irq_linear_revmap(primary_ipic->irqhost, irq);
 }
 
 #ifdef CONFIG_SUSPEND
@@ -817,7 +817,7 @@ static struct {
 	u32 sercr;
 } ipic_saved_state;
 
-static int ipic_suspend(void *data)
+static int ipic_suspend(void)
 {
 	struct ipic *ipic = primary_ipic;
 
@@ -848,7 +848,7 @@ static int ipic_suspend(void *data)
 	return 0;
 }
 
-static void ipic_resume(void *data)
+static void ipic_resume(void)
 {
 	struct ipic *ipic = primary_ipic;
 
@@ -870,13 +870,9 @@ static void ipic_resume(void *data)
 #define ipic_resume NULL
 #endif
 
-static const struct syscore_ops ipic_syscore_ops = {
+static struct syscore_ops ipic_syscore_ops = {
 	.suspend = ipic_suspend,
 	.resume = ipic_resume,
-};
-
-static struct syscore ipic_syscore = {
-	.ops = &ipic_syscore_ops,
 };
 
 static int __init init_ipic_syscore(void)
@@ -885,7 +881,7 @@ static int __init init_ipic_syscore(void)
 		return -ENODEV;
 
 	printk(KERN_DEBUG "Registering ipic system core operations\n");
-	register_syscore(&ipic_syscore);
+	register_syscore_ops(&ipic_syscore_ops);
 
 	return 0;
 }

@@ -6,7 +6,6 @@
 
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/err.h>
 #include <linux/atomic.h>
@@ -80,15 +79,16 @@ static ssize_t cca_serialnr_show(struct device *dev,
 				 struct device_attribute *attr,
 				 char *buf)
 {
-	struct ap_card *ac = to_ap_card(dev);
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct cca_info ci;
+	struct ap_card *ac = to_ap_card(dev);
 
 	memset(&ci, 0, sizeof(ci));
 
 	if (ap_domain_index >= 0)
-		cca_get_info(ac->id, ap_domain_index, &ci, 0);
+		cca_get_info(ac->id, ap_domain_index, &ci, zc->online);
 
-	return sysfs_emit(buf, "%s\n", ci.serial);
+	return scnprintf(buf, PAGE_SIZE, "%s\n", ci.serial);
 }
 
 static struct device_attribute dev_attr_cca_serialnr =
@@ -110,83 +110,92 @@ static ssize_t cca_mkvps_show(struct device *dev,
 			      struct device_attribute *attr,
 			      char *buf)
 {
-	static const char * const new_state[] = { "empty", "partial", "full" };
-	static const char * const cao_state[] = { "invalid", "valid" };
 	struct zcrypt_queue *zq = dev_get_drvdata(dev);
-	struct cca_info ci;
 	int n = 0;
+	struct cca_info ci;
+	static const char * const cao_state[] = { "invalid", "valid" };
+	static const char * const new_state[] = { "empty", "partial", "full" };
 
 	memset(&ci, 0, sizeof(ci));
 
 	cca_get_info(AP_QID_CARD(zq->queue->qid),
 		     AP_QID_QUEUE(zq->queue->qid),
-		     &ci, 0);
+		     &ci, zq->online);
 
 	if (ci.new_aes_mk_state >= '1' && ci.new_aes_mk_state <= '3')
-		n += sysfs_emit_at(buf, n, "AES NEW: %s 0x%016llx\n",
-				   new_state[ci.new_aes_mk_state - '1'],
-				   ci.new_aes_mkvp);
+		n += scnprintf(buf + n, PAGE_SIZE,
+			       "AES NEW: %s 0x%016llx\n",
+			       new_state[ci.new_aes_mk_state - '1'],
+			       ci.new_aes_mkvp);
 	else
-		n += sysfs_emit_at(buf, n, "AES NEW: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE, "AES NEW: - -\n");
 
 	if (ci.cur_aes_mk_state >= '1' && ci.cur_aes_mk_state <= '2')
-		n += sysfs_emit_at(buf, n, "AES CUR: %s 0x%016llx\n",
-				   cao_state[ci.cur_aes_mk_state - '1'],
-				   ci.cur_aes_mkvp);
+		n += scnprintf(buf + n, PAGE_SIZE - n,
+			       "AES CUR: %s 0x%016llx\n",
+			       cao_state[ci.cur_aes_mk_state - '1'],
+			       ci.cur_aes_mkvp);
 	else
-		n += sysfs_emit_at(buf, n, "AES CUR: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "AES CUR: - -\n");
 
 	if (ci.old_aes_mk_state >= '1' && ci.old_aes_mk_state <= '2')
-		n += sysfs_emit_at(buf, n, "AES OLD: %s 0x%016llx\n",
-				   cao_state[ci.old_aes_mk_state - '1'],
-				   ci.old_aes_mkvp);
+		n += scnprintf(buf + n, PAGE_SIZE - n,
+			       "AES OLD: %s 0x%016llx\n",
+			       cao_state[ci.old_aes_mk_state - '1'],
+			       ci.old_aes_mkvp);
 	else
-		n += sysfs_emit_at(buf, n, "AES OLD: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "AES OLD: - -\n");
 
 	if (ci.new_apka_mk_state >= '1' && ci.new_apka_mk_state <= '3')
-		n += sysfs_emit_at(buf, n, "APKA NEW: %s 0x%016llx\n",
-				   new_state[ci.new_apka_mk_state - '1'],
-				   ci.new_apka_mkvp);
+		n += scnprintf(buf + n, PAGE_SIZE - n,
+			       "APKA NEW: %s 0x%016llx\n",
+			       new_state[ci.new_apka_mk_state - '1'],
+			       ci.new_apka_mkvp);
 	else
-		n += sysfs_emit_at(buf, n, "APKA NEW: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "APKA NEW: - -\n");
 
 	if (ci.cur_apka_mk_state >= '1' && ci.cur_apka_mk_state <= '2')
-		n += sysfs_emit_at(buf, n, "APKA CUR: %s 0x%016llx\n",
-				   cao_state[ci.cur_apka_mk_state - '1'],
-				   ci.cur_apka_mkvp);
+		n += scnprintf(buf + n, PAGE_SIZE - n,
+			       "APKA CUR: %s 0x%016llx\n",
+			       cao_state[ci.cur_apka_mk_state - '1'],
+			       ci.cur_apka_mkvp);
 	else
-		n += sysfs_emit_at(buf, n, "APKA CUR: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "APKA CUR: - -\n");
 
 	if (ci.old_apka_mk_state >= '1' && ci.old_apka_mk_state <= '2')
-		n += sysfs_emit_at(buf, n, "APKA OLD: %s 0x%016llx\n",
-				   cao_state[ci.old_apka_mk_state - '1'],
-				   ci.old_apka_mkvp);
+		n += scnprintf(buf + n, PAGE_SIZE - n,
+			       "APKA OLD: %s 0x%016llx\n",
+			       cao_state[ci.old_apka_mk_state - '1'],
+			       ci.old_apka_mkvp);
 	else
-		n += sysfs_emit_at(buf, n, "APKA OLD: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "APKA OLD: - -\n");
 
 	if (ci.new_asym_mk_state >= '1' && ci.new_asym_mk_state <= '3')
-		n += sysfs_emit_at(buf, n, "ASYM NEW: %s 0x%016llx%016llx\n",
-				   new_state[ci.new_asym_mk_state - '1'],
-				   *((u64 *)(ci.new_asym_mkvp)),
-				   *((u64 *)(ci.new_asym_mkvp + sizeof(u64))));
+		n += scnprintf(buf + n, PAGE_SIZE,
+			       "ASYM NEW: %s 0x%016llx%016llx\n",
+			       new_state[ci.new_asym_mk_state - '1'],
+			       *((u64 *)(ci.new_asym_mkvp)),
+			       *((u64 *)(ci.new_asym_mkvp + sizeof(u64))));
 	else
-		n += sysfs_emit_at(buf, n, "ASYM NEW: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE, "ASYM NEW: - -\n");
 
 	if (ci.cur_asym_mk_state >= '1' && ci.cur_asym_mk_state <= '2')
-		n += sysfs_emit_at(buf, n, "ASYM CUR: %s 0x%016llx%016llx\n",
-				   cao_state[ci.cur_asym_mk_state - '1'],
-				   *((u64 *)(ci.cur_asym_mkvp)),
-				   *((u64 *)(ci.cur_asym_mkvp + sizeof(u64))));
+		n += scnprintf(buf + n, PAGE_SIZE - n,
+			       "ASYM CUR: %s 0x%016llx%016llx\n",
+			       cao_state[ci.cur_asym_mk_state - '1'],
+			       *((u64 *)(ci.cur_asym_mkvp)),
+			       *((u64 *)(ci.cur_asym_mkvp + sizeof(u64))));
 	else
-		n += sysfs_emit_at(buf, n, "ASYM CUR: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "ASYM CUR: - -\n");
 
 	if (ci.old_asym_mk_state >= '1' && ci.old_asym_mk_state <= '2')
-		n += sysfs_emit_at(buf, n, "ASYM OLD: %s 0x%016llx%016llx\n",
-				   cao_state[ci.old_asym_mk_state - '1'],
-				   *((u64 *)(ci.old_asym_mkvp)),
-				   *((u64 *)(ci.old_asym_mkvp + sizeof(u64))));
+		n += scnprintf(buf + n, PAGE_SIZE - n,
+			       "ASYM OLD: %s 0x%016llx%016llx\n",
+			       cao_state[ci.old_asym_mk_state - '1'],
+			       *((u64 *)(ci.old_asym_mkvp)),
+			       *((u64 *)(ci.old_asym_mkvp + sizeof(u64))));
 	else
-		n += sysfs_emit_at(buf, n, "ASYM OLD: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "ASYM OLD: - -\n");
 
 	return n;
 }
@@ -210,17 +219,18 @@ static ssize_t ep11_api_ordinalnr_show(struct device *dev,
 				       struct device_attribute *attr,
 				       char *buf)
 {
-	struct ap_card *ac = to_ap_card(dev);
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct ep11_card_info ci;
+	struct ap_card *ac = to_ap_card(dev);
 
 	memset(&ci, 0, sizeof(ci));
 
-	ep11_get_card_info(ac->id, &ci, 0);
+	ep11_get_card_info(ac->id, &ci, zc->online);
 
 	if (ci.API_ord_nr > 0)
-		return sysfs_emit(buf, "%u\n", ci.API_ord_nr);
+		return scnprintf(buf, PAGE_SIZE, "%u\n", ci.API_ord_nr);
 	else
-		return sysfs_emit(buf, "\n");
+		return scnprintf(buf, PAGE_SIZE, "\n");
 }
 
 static struct device_attribute dev_attr_ep11_api_ordinalnr =
@@ -230,19 +240,20 @@ static ssize_t ep11_fw_version_show(struct device *dev,
 				    struct device_attribute *attr,
 				    char *buf)
 {
-	struct ap_card *ac = to_ap_card(dev);
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct ep11_card_info ci;
+	struct ap_card *ac = to_ap_card(dev);
 
 	memset(&ci, 0, sizeof(ci));
 
-	ep11_get_card_info(ac->id, &ci, 0);
+	ep11_get_card_info(ac->id, &ci, zc->online);
 
 	if (ci.FW_version > 0)
-		return sysfs_emit(buf, "%d.%d\n",
-				  (int)(ci.FW_version >> 8),
-				  (int)(ci.FW_version & 0xFF));
+		return scnprintf(buf, PAGE_SIZE, "%d.%d\n",
+				 (int)(ci.FW_version >> 8),
+				 (int)(ci.FW_version & 0xFF));
 	else
-		return sysfs_emit(buf, "\n");
+		return scnprintf(buf, PAGE_SIZE, "\n");
 }
 
 static struct device_attribute dev_attr_ep11_fw_version =
@@ -252,17 +263,18 @@ static ssize_t ep11_serialnr_show(struct device *dev,
 				  struct device_attribute *attr,
 				  char *buf)
 {
-	struct ap_card *ac = to_ap_card(dev);
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	struct ep11_card_info ci;
+	struct ap_card *ac = to_ap_card(dev);
 
 	memset(&ci, 0, sizeof(ci));
 
-	ep11_get_card_info(ac->id, &ci, 0);
+	ep11_get_card_info(ac->id, &ci, zc->online);
 
 	if (ci.serial[0])
-		return sysfs_emit(buf, "%16.16s\n", ci.serial);
+		return scnprintf(buf, PAGE_SIZE, "%16.16s\n", ci.serial);
 	else
-		return sysfs_emit(buf, "\n");
+		return scnprintf(buf, PAGE_SIZE, "\n");
 }
 
 static struct device_attribute dev_attr_ep11_serialnr =
@@ -276,11 +288,7 @@ static const struct {
 	{ 1, "BSI2009" },
 	{ 2, "FIPS2011" },
 	{ 3, "BSI2011" },
-	{ 4, "SIGG-IMPORT" },
-	{ 5, "SIGG" },
 	{ 6, "BSICC2017" },
-	{ 7, "FIPS2021" },
-	{ 8, "FIPS2024" },
 	{ 0, NULL }
 };
 
@@ -288,23 +296,24 @@ static ssize_t ep11_card_op_modes_show(struct device *dev,
 				       struct device_attribute *attr,
 				       char *buf)
 {
-	struct ap_card *ac = to_ap_card(dev);
-	struct ep11_card_info ci;
+	struct zcrypt_card *zc = dev_get_drvdata(dev);
 	int i, n = 0;
+	struct ep11_card_info ci;
+	struct ap_card *ac = to_ap_card(dev);
 
 	memset(&ci, 0, sizeof(ci));
 
-	ep11_get_card_info(ac->id, &ci, 0);
+	ep11_get_card_info(ac->id, &ci, zc->online);
 
 	for (i = 0; ep11_op_modes[i].mode_txt; i++) {
 		if (ci.op_mode & (1ULL << ep11_op_modes[i].mode_bit)) {
 			if (n > 0)
 				buf[n++] = ' ';
-			n += sysfs_emit_at(buf, n, "%s",
-					   ep11_op_modes[i].mode_txt);
+			n += scnprintf(buf + n, PAGE_SIZE - n,
+				       "%s", ep11_op_modes[i].mode_txt);
 		}
 	}
-	n += sysfs_emit_at(buf, n, "\n");
+	n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
 
 	return n;
 }
@@ -344,32 +353,32 @@ static ssize_t ep11_mkvps_show(struct device *dev,
 	if (zq->online)
 		ep11_get_domain_info(AP_QID_CARD(zq->queue->qid),
 				     AP_QID_QUEUE(zq->queue->qid),
-				     &di, 0);
+				     &di);
 
 	if (di.cur_wk_state == '0') {
-		n = sysfs_emit(buf, "WK CUR: %s -\n",
-			       cwk_state[di.cur_wk_state - '0']);
+		n = scnprintf(buf, PAGE_SIZE, "WK CUR: %s -\n",
+			      cwk_state[di.cur_wk_state - '0']);
 	} else if (di.cur_wk_state == '1') {
-		n = sysfs_emit(buf, "WK CUR: %s 0x",
-			       cwk_state[di.cur_wk_state - '0']);
+		n = scnprintf(buf, PAGE_SIZE, "WK CUR: %s 0x",
+			      cwk_state[di.cur_wk_state - '0']);
 		bin2hex(buf + n, di.cur_wkvp, sizeof(di.cur_wkvp));
 		n += 2 * sizeof(di.cur_wkvp);
-		n += sysfs_emit_at(buf, n, "\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
 	} else {
-		n = sysfs_emit(buf, "WK CUR: - -\n");
+		n = scnprintf(buf, PAGE_SIZE, "WK CUR: - -\n");
 	}
 
 	if (di.new_wk_state == '0') {
-		n += sysfs_emit_at(buf, n, "WK NEW: %s -\n",
-				   nwk_state[di.new_wk_state - '0']);
+		n += scnprintf(buf + n, PAGE_SIZE - n, "WK NEW: %s -\n",
+			       nwk_state[di.new_wk_state - '0']);
 	} else if (di.new_wk_state >= '1' && di.new_wk_state <= '2') {
-		n += sysfs_emit_at(buf, n, "WK NEW: %s 0x",
-				   nwk_state[di.new_wk_state - '0']);
+		n += scnprintf(buf + n, PAGE_SIZE - n, "WK NEW: %s 0x",
+			       nwk_state[di.new_wk_state - '0']);
 		bin2hex(buf + n, di.new_wkvp, sizeof(di.new_wkvp));
 		n += 2 * sizeof(di.new_wkvp);
-		n += sysfs_emit_at(buf, n, "\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
 	} else {
-		n += sysfs_emit_at(buf, n, "WK NEW: - -\n");
+		n += scnprintf(buf + n, PAGE_SIZE - n, "WK NEW: - -\n");
 	}
 
 	return n;
@@ -391,17 +400,17 @@ static ssize_t ep11_queue_op_modes_show(struct device *dev,
 	if (zq->online)
 		ep11_get_domain_info(AP_QID_CARD(zq->queue->qid),
 				     AP_QID_QUEUE(zq->queue->qid),
-				     &di, 0);
+				     &di);
 
 	for (i = 0; ep11_op_modes[i].mode_txt; i++) {
 		if (di.op_mode & (1ULL << ep11_op_modes[i].mode_bit)) {
 			if (n > 0)
 				buf[n++] = ' ';
-			n += sysfs_emit_at(buf, n, "%s",
-					   ep11_op_modes[i].mode_txt);
+			n += scnprintf(buf + n, PAGE_SIZE - n,
+				       "%s", ep11_op_modes[i].mode_txt);
 		}
 	}
-	n += sysfs_emit_at(buf, n, "\n");
+	n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
 
 	return n;
 }
@@ -473,7 +482,7 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 		return -ENOMEM;
 	zc->card = ac;
 	dev_set_drvdata(&ap_dev->device, zc);
-	if (ac->hwinfo.accel) {
+	if (ap_test_bit(&ac->functions, AP_FUNC_ACCEL)) {
 		if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX4) {
 			zc->type_string = "CEX4A";
 			zc->user_space_type = ZCRYPT_CEX4;
@@ -502,7 +511,8 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 			zc->user_space_type = ZCRYPT_CEX6;
 		}
 		zc->min_mod_size = CEX4A_MIN_MOD_SIZE;
-		if (ac->hwinfo.mex4k && ac->hwinfo.crt4k) {
+		if (ap_test_bit(&ac->functions, AP_FUNC_MEX4K) &&
+		    ap_test_bit(&ac->functions, AP_FUNC_CRT4K)) {
 			zc->max_mod_size = CEX4A_MAX_MOD_SIZE_4K;
 			zc->max_exp_bit_length =
 				CEX4A_MAX_MOD_SIZE_4K;
@@ -511,7 +521,7 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 			zc->max_exp_bit_length =
 				CEX4A_MAX_MOD_SIZE_2K;
 		}
-	} else if (ac->hwinfo.cca) {
+	} else if (ap_test_bit(&ac->functions, AP_FUNC_COPRO)) {
 		if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX4) {
 			zc->type_string = "CEX4C";
 			zc->speed_rating = CEX4C_SPEED_IDX;
@@ -551,7 +561,7 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 		zc->min_mod_size = CEX4C_MIN_MOD_SIZE;
 		zc->max_mod_size = CEX4C_MAX_MOD_SIZE;
 		zc->max_exp_bit_length = CEX4C_MAX_MOD_SIZE;
-	} else if (ac->hwinfo.ep11) {
+	} else if (ap_test_bit(&ac->functions, AP_FUNC_EP11)) {
 		if (ac->ap_dev.device_type == AP_DEVICE_TYPE_CEX4) {
 			zc->type_string = "CEX4P";
 			zc->user_space_type = ZCRYPT_CEX4;
@@ -594,14 +604,14 @@ static int zcrypt_cex4_card_probe(struct ap_device *ap_dev)
 		return rc;
 	}
 
-	if (ac->hwinfo.cca) {
+	if (ap_test_bit(&ac->functions, AP_FUNC_COPRO)) {
 		rc = sysfs_create_group(&ap_dev->device.kobj,
 					&cca_card_attr_grp);
 		if (rc) {
 			zcrypt_card_unregister(zc);
 			zcrypt_card_free(zc);
 		}
-	} else if (ac->hwinfo.ep11) {
+	} else if (ap_test_bit(&ac->functions, AP_FUNC_EP11)) {
 		rc = sysfs_create_group(&ap_dev->device.kobj,
 					&ep11_card_attr_grp);
 		if (rc) {
@@ -622,9 +632,9 @@ static void zcrypt_cex4_card_remove(struct ap_device *ap_dev)
 	struct zcrypt_card *zc = dev_get_drvdata(&ap_dev->device);
 	struct ap_card *ac = to_ap_card(&ap_dev->device);
 
-	if (ac->hwinfo.cca)
+	if (ap_test_bit(&ac->functions, AP_FUNC_COPRO))
 		sysfs_remove_group(&ap_dev->device.kobj, &cca_card_attr_grp);
-	else if (ac->hwinfo.ep11)
+	else if (ap_test_bit(&ac->functions, AP_FUNC_EP11))
 		sysfs_remove_group(&ap_dev->device.kobj, &ep11_card_attr_grp);
 
 	zcrypt_card_unregister(zc);
@@ -649,19 +659,19 @@ static int zcrypt_cex4_queue_probe(struct ap_device *ap_dev)
 	struct zcrypt_queue *zq;
 	int rc;
 
-	if (aq->card->hwinfo.accel) {
+	if (ap_test_bit(&aq->card->functions, AP_FUNC_ACCEL)) {
 		zq = zcrypt_queue_alloc(aq->card->maxmsgsize);
 		if (!zq)
 			return -ENOMEM;
 		zq->ops = zcrypt_msgtype(MSGTYPE50_NAME,
 					 MSGTYPE50_VARIANT_DEFAULT);
-	} else if (aq->card->hwinfo.cca) {
+	} else if (ap_test_bit(&aq->card->functions, AP_FUNC_COPRO)) {
 		zq = zcrypt_queue_alloc(aq->card->maxmsgsize);
 		if (!zq)
 			return -ENOMEM;
 		zq->ops = zcrypt_msgtype(MSGTYPE06_NAME,
 					 MSGTYPE06_VARIANT_DEFAULT);
-	} else if (aq->card->hwinfo.ep11) {
+	} else if (ap_test_bit(&aq->card->functions, AP_FUNC_EP11)) {
 		zq = zcrypt_queue_alloc(aq->card->maxmsgsize);
 		if (!zq)
 			return -ENOMEM;
@@ -684,14 +694,14 @@ static int zcrypt_cex4_queue_probe(struct ap_device *ap_dev)
 		return rc;
 	}
 
-	if (aq->card->hwinfo.cca) {
+	if (ap_test_bit(&aq->card->functions, AP_FUNC_COPRO)) {
 		rc = sysfs_create_group(&ap_dev->device.kobj,
 					&cca_queue_attr_grp);
 		if (rc) {
 			zcrypt_queue_unregister(zq);
 			zcrypt_queue_free(zq);
 		}
-	} else if (aq->card->hwinfo.ep11) {
+	} else if (ap_test_bit(&aq->card->functions, AP_FUNC_EP11)) {
 		rc = sysfs_create_group(&ap_dev->device.kobj,
 					&ep11_queue_attr_grp);
 		if (rc) {
@@ -712,9 +722,9 @@ static void zcrypt_cex4_queue_remove(struct ap_device *ap_dev)
 	struct zcrypt_queue *zq = dev_get_drvdata(&ap_dev->device);
 	struct ap_queue *aq = to_ap_queue(&ap_dev->device);
 
-	if (aq->card->hwinfo.cca)
+	if (ap_test_bit(&aq->card->functions, AP_FUNC_COPRO))
 		sysfs_remove_group(&ap_dev->device.kobj, &cca_queue_attr_grp);
-	else if (aq->card->hwinfo.ep11)
+	else if (ap_test_bit(&aq->card->functions, AP_FUNC_EP11))
 		sysfs_remove_group(&ap_dev->device.kobj, &ep11_queue_attr_grp);
 
 	zcrypt_queue_unregister(zq);

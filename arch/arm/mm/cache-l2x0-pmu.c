@@ -539,7 +539,8 @@ static __init int l2x0_pmu_init(void)
 	 * at higher frequencies.
 	 */
 	l2x0_pmu_poll_period = ms_to_ktime(1000);
-	hrtimer_setup(&l2x0_pmu_hrtimer, l2x0_pmu_poll, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	hrtimer_init(&l2x0_pmu_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	l2x0_pmu_hrtimer.function = l2x0_pmu_poll;
 
 	cpumask_set_cpu(0, &pmu_cpu);
 	ret = cpuhp_setup_state_nocalls(CPUHP_AP_PERF_ARM_L2X0_ONLINE,

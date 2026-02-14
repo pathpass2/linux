@@ -29,6 +29,8 @@ static int			ls_count;
 static struct mutex		ls_lock;
 static struct list_head		lslist;
 static spinlock_t		lslist_lock;
+static struct task_struct *	scand_task;
+
 
 static ssize_t dlm_control_store(struct dlm_ls *ls, const char *buf, size_t len)
 {
@@ -38,7 +40,7 @@ static ssize_t dlm_control_store(struct dlm_ls *ls, const char *buf, size_t len)
 
 	if (rc)
 		return rc;
-	ls = dlm_find_lockspace_local(ls);
+	ls = dlm_find_lockspace_local(ls->ls_local_handle);
 	if (!ls)
 		return -EINVAL;
 
@@ -174,6 +176,12 @@ static ssize_t dlm_attr_store(struct kobject *kobj, struct attribute *attr,
 	return a->store ? a->store(ls, buf, len) : len;
 }
 
+static void lockspace_kobj_release(struct kobject *k)
+{
+	struct dlm_ls *ls  = container_of(k, struct dlm_ls, ls_kobj);
+	kfree(ls);
+}
+
 static const struct sysfs_ops dlm_attr_ops = {
 	.show  = dlm_attr_show,
 	.store = dlm_attr_store,
@@ -182,21 +190,17 @@ static const struct sysfs_ops dlm_attr_ops = {
 static struct kobj_type dlm_ktype = {
 	.default_groups = dlm_groups,
 	.sysfs_ops     = &dlm_attr_ops,
+	.release       = lockspace_kobj_release,
 };
 
 static struct kset *dlm_kset;
 
-static int do_uevent(struct dlm_ls *ls, int in, unsigned int release_recover)
+static int do_uevent(struct dlm_ls *ls, int in)
 {
-	char message[512] = {};
-	char *envp[] = { message, NULL };
-
-	if (in) {
+	if (in)
 		kobject_uevent(&ls->ls_kobj, KOBJ_ONLINE);
-	} else {
-		snprintf(message, 511, "RELEASE_RECOVER=%u", release_recover);
-		kobject_uevent_env(&ls->ls_kobj, KOBJ_OFFLINE, envp);
-	}
+	else
+		kobject_uevent(&ls->ls_kobj, KOBJ_OFFLINE);
 
 	log_rinfo(ls, "%s the lockspace group...", in ? "joining" : "leaving");
 
@@ -243,11 +247,67 @@ void dlm_lockspace_exit(void)
 	kset_unregister(dlm_kset);
 }
 
+static struct dlm_ls *find_ls_to_scan(void)
+{
+	struct dlm_ls *ls;
+
+	spin_lock(&lslist_lock);
+	list_for_each_entry(ls, &lslist, ls_list) {
+		if (time_after_eq(jiffies, ls->ls_scan_time +
+					    dlm_config.ci_scan_secs * HZ)) {
+			spin_unlock(&lslist_lock);
+			return ls;
+		}
+	}
+	spin_unlock(&lslist_lock);
+	return NULL;
+}
+
+static int dlm_scand(void *data)
+{
+	struct dlm_ls *ls;
+
+	while (!kthread_should_stop()) {
+		ls = find_ls_to_scan();
+		if (ls) {
+			if (dlm_lock_recovery_try(ls)) {
+				ls->ls_scan_time = jiffies;
+				dlm_scan_rsbs(ls);
+				dlm_scan_timeout(ls);
+				dlm_unlock_recovery(ls);
+			} else {
+				ls->ls_scan_time += HZ;
+			}
+			continue;
+		}
+		schedule_timeout_interruptible(dlm_config.ci_scan_secs * HZ);
+	}
+	return 0;
+}
+
+static int dlm_scand_start(void)
+{
+	struct task_struct *p;
+	int error = 0;
+
+	p = kthread_run(dlm_scand, NULL, "dlm_scand");
+	if (IS_ERR(p))
+		error = PTR_ERR(p);
+	else
+		scand_task = p;
+	return error;
+}
+
+static void dlm_scand_stop(void)
+{
+	kthread_stop(scand_task);
+}
+
 struct dlm_ls *dlm_find_lockspace_global(uint32_t id)
 {
 	struct dlm_ls *ls;
 
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 
 	list_for_each_entry(ls, &lslist, ls_list) {
 		if (ls->ls_global_id == id) {
@@ -257,15 +317,24 @@ struct dlm_ls *dlm_find_lockspace_global(uint32_t id)
 	}
 	ls = NULL;
  out:
-	spin_unlock_bh(&lslist_lock);
+	spin_unlock(&lslist_lock);
 	return ls;
 }
 
 struct dlm_ls *dlm_find_lockspace_local(dlm_lockspace_t *lockspace)
 {
-	struct dlm_ls *ls = lockspace;
+	struct dlm_ls *ls;
 
-	atomic_inc(&ls->ls_count);
+	spin_lock(&lslist_lock);
+	list_for_each_entry(ls, &lslist, ls_list) {
+		if (ls->ls_local_handle == lockspace) {
+			atomic_inc(&ls->ls_count);
+			goto out;
+		}
+	}
+	ls = NULL;
+ out:
+	spin_unlock(&lslist_lock);
 	return ls;
 }
 
@@ -273,7 +342,7 @@ struct dlm_ls *dlm_find_lockspace_device(int minor)
 {
 	struct dlm_ls *ls;
 
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 	list_for_each_entry(ls, &lslist, ls_list) {
 		if (ls->ls_device.minor == minor) {
 			atomic_inc(&ls->ls_count);
@@ -282,7 +351,7 @@ struct dlm_ls *dlm_find_lockspace_device(int minor)
 	}
 	ls = NULL;
  out:
-	spin_unlock_bh(&lslist_lock);
+	spin_unlock(&lslist_lock);
 	return ls;
 }
 
@@ -297,15 +366,15 @@ static void remove_lockspace(struct dlm_ls *ls)
 retry:
 	wait_event(ls->ls_count_wait, atomic_read(&ls->ls_count) == 0);
 
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 	if (atomic_read(&ls->ls_count) != 0) {
-		spin_unlock_bh(&lslist_lock);
+		spin_unlock(&lslist_lock);
 		goto retry;
 	}
 
 	WARN_ON(ls->ls_create_count != 0);
 	list_del(&ls->ls_list);
-	spin_unlock_bh(&lslist_lock);
+	spin_unlock(&lslist_lock);
 }
 
 static int threads_start(void)
@@ -314,48 +383,23 @@ static int threads_start(void)
 
 	/* Thread for sending/receiving messages for all lockspace's */
 	error = dlm_midcomms_start();
-	if (error)
+	if (error) {
 		log_print("cannot start dlm midcomms %d", error);
-
-	return error;
-}
-
-static int lkb_idr_free(struct dlm_lkb *lkb)
-{
-	if (lkb->lkb_lvbptr && test_bit(DLM_IFL_MSTCPY_BIT, &lkb->lkb_iflags))
-		dlm_free_lvb(lkb->lkb_lvbptr);
-
-	dlm_free_lkb(lkb);
-	return 0;
-}
-
-static void rhash_free_rsb(void *ptr, void *arg)
-{
-	struct dlm_rsb *rsb = ptr;
-
-	dlm_free_rsb(rsb);
-}
-
-static void free_lockspace(struct work_struct *work)
-{
-	struct dlm_ls *ls  = container_of(work, struct dlm_ls, ls_free_work);
-	struct dlm_lkb *lkb;
-	unsigned long id;
-
-	/*
-	 * Free all lkb's in xa
-	 */
-	xa_for_each(&ls->ls_lkbxa, id, lkb) {
-		lkb_idr_free(lkb);
+		goto fail;
 	}
-	xa_destroy(&ls->ls_lkbxa);
 
-	/*
-	 * Free all rsb's on rsbtbl
-	 */
-	rhashtable_free_and_destroy(&ls->ls_rsbtbl, rhash_free_rsb, NULL);
+	error = dlm_scand_start();
+	if (error) {
+		log_print("cannot start dlm_scand thread %d", error);
+		goto midcomms_fail;
+	}
 
-	kfree(ls);
+	return 0;
+
+ midcomms_fail:
+	dlm_midcomms_stop();
+ fail:
+	return error;
 }
 
 static int new_lockspace(const char *name, const char *cluster,
@@ -364,8 +408,9 @@ static int new_lockspace(const char *name, const char *cluster,
 			 int *ops_result, dlm_lockspace_t **lockspace)
 {
 	struct dlm_ls *ls;
+	int i, size, error;
+	int do_unreg = 0;
 	int namelen = strlen(name);
-	int error;
 
 	if (namelen > DLM_LOCKSPACE_LEN || namelen == 0)
 		return -EINVAL;
@@ -404,7 +449,7 @@ static int new_lockspace(const char *name, const char *cluster,
 
 	error = 0;
 
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 	list_for_each_entry(ls, &lslist, ls_list) {
 		WARN_ON(ls->ls_create_count <= 0);
 		if (ls->ls_namelen != namelen)
@@ -420,7 +465,7 @@ static int new_lockspace(const char *name, const char *cluster,
 		error = 1;
 		break;
 	}
-	spin_unlock_bh(&lslist_lock);
+	spin_unlock(&lslist_lock);
 
 	if (error)
 		goto out;
@@ -436,36 +481,69 @@ static int new_lockspace(const char *name, const char *cluster,
 	atomic_set(&ls->ls_count, 0);
 	init_waitqueue_head(&ls->ls_count_wait);
 	ls->ls_flags = 0;
+	ls->ls_scan_time = jiffies;
 
 	if (ops && dlm_config.ci_recover_callbacks) {
 		ls->ls_ops = ops;
 		ls->ls_ops_arg = ops_arg;
 	}
 
-	if (flags & DLM_LSFL_SOFTIRQ)
-		set_bit(LSFL_SOFTIRQ, &ls->ls_flags);
+#ifdef CONFIG_DLM_DEPRECATED_API
+	if (flags & DLM_LSFL_TIMEWARN) {
+		pr_warn_once("===============================================================\n"
+			     "WARNING: the dlm DLM_LSFL_TIMEWARN flag is being deprecated and\n"
+			     "         will be removed in v6.2!\n"
+			     "         Inclusive DLM_LSFL_TIMEWARN define in UAPI header!\n"
+			     "===============================================================\n");
+
+		set_bit(LSFL_TIMEWARN, &ls->ls_flags);
+	}
 
 	/* ls_exflags are forced to match among nodes, and we don't
 	 * need to require all nodes to have some flags set
 	 */
-	ls->ls_exflags = (flags & ~(DLM_LSFL_FS | DLM_LSFL_NEWEXCL |
-				    DLM_LSFL_SOFTIRQ));
+	ls->ls_exflags = (flags & ~(DLM_LSFL_TIMEWARN | DLM_LSFL_FS |
+				    DLM_LSFL_NEWEXCL));
+#else
+	/* ls_exflags are forced to match among nodes, and we don't
+	 * need to require all nodes to have some flags set
+	 */
+	ls->ls_exflags = (flags & ~(DLM_LSFL_FS | DLM_LSFL_NEWEXCL));
+#endif
 
-	INIT_LIST_HEAD(&ls->ls_slow_inactive);
-	INIT_LIST_HEAD(&ls->ls_slow_active);
-	rwlock_init(&ls->ls_rsbtbl_lock);
+	size = READ_ONCE(dlm_config.ci_rsbtbl_size);
+	ls->ls_rsbtbl_size = size;
 
-	error = rhashtable_init(&ls->ls_rsbtbl, &dlm_rhash_rsb_params);
-	if (error)
+	ls->ls_rsbtbl = vmalloc(array_size(size, sizeof(struct dlm_rsbtable)));
+	if (!ls->ls_rsbtbl)
 		goto out_lsfree;
+	for (i = 0; i < size; i++) {
+		ls->ls_rsbtbl[i].keep.rb_node = NULL;
+		ls->ls_rsbtbl[i].toss.rb_node = NULL;
+		spin_lock_init(&ls->ls_rsbtbl[i].lock);
+	}
 
-	xa_init_flags(&ls->ls_lkbxa, XA_FLAGS_ALLOC | XA_FLAGS_LOCK_BH);
-	rwlock_init(&ls->ls_lkbxa_lock);
+	for (i = 0; i < DLM_REMOVE_NAMES_MAX; i++) {
+		ls->ls_remove_names[i] = kzalloc(DLM_RESNAME_MAXLEN+1,
+						 GFP_KERNEL);
+		if (!ls->ls_remove_names[i])
+			goto out_rsbtbl;
+	}
+
+	idr_init(&ls->ls_lkbidr);
+	spin_lock_init(&ls->ls_lkbidr_spin);
 
 	INIT_LIST_HEAD(&ls->ls_waiters);
-	spin_lock_init(&ls->ls_waiters_lock);
+	mutex_init(&ls->ls_waiters_mutex);
 	INIT_LIST_HEAD(&ls->ls_orphans);
-	spin_lock_init(&ls->ls_orphans_lock);
+	mutex_init(&ls->ls_orphans_mutex);
+#ifdef CONFIG_DLM_DEPRECATED_API
+	INIT_LIST_HEAD(&ls->ls_timeout);
+	mutex_init(&ls->ls_timeout_mutex);
+#endif
+
+	INIT_LIST_HEAD(&ls->ls_new_rsb);
+	spin_lock_init(&ls->ls_new_rsb_spin);
 
 	INIT_LIST_HEAD(&ls->ls_nodes);
 	INIT_LIST_HEAD(&ls->ls_nodes_gone);
@@ -474,8 +552,8 @@ static int new_lockspace(const char *name, const char *cluster,
 	ls->ls_total_weight = 0;
 	ls->ls_node_array = NULL;
 
-	memset(&ls->ls_local_rsb, 0, sizeof(struct dlm_rsb));
-	ls->ls_local_rsb.res_ls = ls;
+	memset(&ls->ls_stub_rsb, 0, sizeof(struct dlm_rsb));
+	ls->ls_stub_rsb.res_ls = ls;
 
 	ls->ls_debug_rsb_dentry = NULL;
 	ls->ls_debug_waiters_dentry = NULL;
@@ -488,8 +566,6 @@ static int new_lockspace(const char *name, const char *cluster,
 	spin_lock_init(&ls->ls_cb_lock);
 	INIT_LIST_HEAD(&ls->ls_cb_delay);
 
-	INIT_WORK(&ls->ls_free_work, free_lockspace);
-
 	ls->ls_recoverd_task = NULL;
 	mutex_init(&ls->ls_recoverd_active);
 	spin_lock_init(&ls->ls_recover_lock);
@@ -499,9 +575,11 @@ static int new_lockspace(const char *name, const char *cluster,
 	ls->ls_recover_seq = get_random_u64();
 	ls->ls_recover_args = NULL;
 	init_rwsem(&ls->ls_in_recovery);
-	rwlock_init(&ls->ls_recv_active);
+	init_rwsem(&ls->ls_recv_active);
 	INIT_LIST_HEAD(&ls->ls_requestqueue);
-	rwlock_init(&ls->ls_requestqueue_lock);
+	atomic_set(&ls->ls_requestqueue_cnt, 0);
+	init_waitqueue_head(&ls->ls_requestqueue_wait);
+	mutex_init(&ls->ls_requestqueue_mutex);
 	spin_lock_init(&ls->ls_clear_proc_locks);
 
 	/* Due backwards compatibility with 3.1 we need to use maximum
@@ -510,10 +588,8 @@ static int new_lockspace(const char *name, const char *cluster,
 	 * might send less.
 	 */
 	ls->ls_recover_buf = kmalloc(DLM_MAX_SOCKET_BUFSIZE, GFP_NOFS);
-	if (!ls->ls_recover_buf) {
-		error = -ENOMEM;
-		goto out_lkbxa;
-	}
+	if (!ls->ls_recover_buf)
+		goto out_lkbidr;
 
 	ls->ls_slot = 0;
 	ls->ls_num_slots = 0;
@@ -522,31 +598,25 @@ static int new_lockspace(const char *name, const char *cluster,
 
 	INIT_LIST_HEAD(&ls->ls_recover_list);
 	spin_lock_init(&ls->ls_recover_list_lock);
-	xa_init_flags(&ls->ls_recover_xa, XA_FLAGS_ALLOC | XA_FLAGS_LOCK_BH);
-	spin_lock_init(&ls->ls_recover_xa_lock);
+	idr_init(&ls->ls_recover_idr);
+	spin_lock_init(&ls->ls_recover_idr_lock);
 	ls->ls_recover_list_count = 0;
+	ls->ls_local_handle = ls;
 	init_waitqueue_head(&ls->ls_wait_general);
-	INIT_LIST_HEAD(&ls->ls_masters_list);
-	rwlock_init(&ls->ls_masters_lock);
-	INIT_LIST_HEAD(&ls->ls_dir_dump_list);
-	rwlock_init(&ls->ls_dir_dump_lock);
+	INIT_LIST_HEAD(&ls->ls_root_list);
+	init_rwsem(&ls->ls_root_sem);
 
-	INIT_LIST_HEAD(&ls->ls_scan_list);
-	spin_lock_init(&ls->ls_scan_lock);
-	timer_setup(&ls->ls_scan_timer, dlm_rsb_scan, TIMER_DEFERRABLE);
-
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 	ls->ls_create_count = 1;
 	list_add(&ls->ls_list, &lslist);
-	spin_unlock_bh(&lslist_lock);
+	spin_unlock(&lslist_lock);
 
-	if (flags & DLM_LSFL_FS)
-		set_bit(LSFL_FS, &ls->ls_flags);
-
-	error = dlm_callback_start(ls);
-	if (error) {
-		log_error(ls, "can't start dlm_callback %d", error);
-		goto out_delist;
+	if (flags & DLM_LSFL_FS) {
+		error = dlm_callback_start(ls);
+		if (error) {
+			log_error(ls, "can't start dlm_callback %d", error);
+			goto out_delist;
+		}
 	}
 
 	init_waitqueue_head(&ls->ls_recover_lock_wait);
@@ -567,6 +637,9 @@ static int new_lockspace(const char *name, const char *cluster,
 	wait_event(ls->ls_recover_lock_wait,
 		   test_bit(LSFL_RECOVER_LOCK, &ls->ls_flags));
 
+	/* let kobject handle freeing of ls if there's an error */
+	do_unreg = 1;
+
 	ls->ls_kobj.kset = dlm_kset;
 	error = kobject_init_and_add(&ls->ls_kobj, &dlm_ktype, NULL,
 				     "%s", ls->ls_name);
@@ -580,8 +653,8 @@ static int new_lockspace(const char *name, const char *cluster,
 	   current lockspace members are (via configfs) and then tells the
 	   lockspace to start running (via sysfs) in dlm_ls_start(). */
 
-	error = do_uevent(ls, 1, 0);
-	if (error < 0)
+	error = do_uevent(ls, 1);
+	if (error)
 		goto out_recoverd;
 
 	/* wait until recovery is successful or failed */
@@ -597,7 +670,7 @@ static int new_lockspace(const char *name, const char *cluster,
 	return 0;
 
  out_members:
-	do_uevent(ls, 0, 0);
+	do_uevent(ls, 0);
 	dlm_clear_members(ls);
 	kfree(ls->ls_node_array);
  out_recoverd:
@@ -605,17 +678,22 @@ static int new_lockspace(const char *name, const char *cluster,
  out_callback:
 	dlm_callback_stop(ls);
  out_delist:
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 	list_del(&ls->ls_list);
-	spin_unlock_bh(&lslist_lock);
-	xa_destroy(&ls->ls_recover_xa);
+	spin_unlock(&lslist_lock);
+	idr_destroy(&ls->ls_recover_idr);
 	kfree(ls->ls_recover_buf);
- out_lkbxa:
-	xa_destroy(&ls->ls_lkbxa);
-	rhashtable_destroy(&ls->ls_rsbtbl);
+ out_lkbidr:
+	idr_destroy(&ls->ls_lkbidr);
+ out_rsbtbl:
+	for (i = 0; i < DLM_REMOVE_NAMES_MAX; i++)
+		kfree(ls->ls_remove_names[i]);
+	vfree(ls->ls_rsbtbl);
  out_lsfree:
-	kobject_put(&ls->ls_kobj);
-	kfree(ls);
+	if (do_unreg)
+		kobject_put(&ls->ls_kobj);
+	else
+		kfree(ls);
  out:
 	module_put(THIS_MODULE);
 	return error;
@@ -642,6 +720,7 @@ static int __dlm_new_lockspace(const char *name, const char *cluster,
 	if (error > 0)
 		error = 0;
 	if (!ls_count) {
+		dlm_scand_stop();
 		dlm_midcomms_shutdown();
 		dlm_midcomms_stop();
 	}
@@ -665,52 +744,62 @@ int dlm_new_user_lockspace(const char *name, const char *cluster,
 			   void *ops_arg, int *ops_result,
 			   dlm_lockspace_t **lockspace)
 {
-	if (flags & DLM_LSFL_SOFTIRQ)
-		return -EINVAL;
-
 	return __dlm_new_lockspace(name, cluster, flags, lvblen, ops,
 				   ops_arg, ops_result, lockspace);
 }
 
-/* NOTE: We check the lkbxa here rather than the resource table.
+static int lkb_idr_is_local(int id, void *p, void *data)
+{
+	struct dlm_lkb *lkb = p;
+
+	return lkb->lkb_nodeid == 0 && lkb->lkb_grmode != DLM_LOCK_IV;
+}
+
+static int lkb_idr_is_any(int id, void *p, void *data)
+{
+	return 1;
+}
+
+static int lkb_idr_free(int id, void *p, void *data)
+{
+	struct dlm_lkb *lkb = p;
+
+	if (lkb->lkb_lvbptr && lkb->lkb_flags & DLM_IFL_MSTCPY)
+		dlm_free_lvb(lkb->lkb_lvbptr);
+
+	dlm_free_lkb(lkb);
+	return 0;
+}
+
+/* NOTE: We check the lkbidr here rather than the resource table.
    This is because there may be LKBs queued as ASTs that have been unlinked
    from their RSBs and are pending deletion once the AST has been delivered */
 
-static int lockspace_busy(struct dlm_ls *ls, unsigned int release_option)
+static int lockspace_busy(struct dlm_ls *ls, int force)
 {
-	struct dlm_lkb *lkb;
-	unsigned long id;
-	int rv = 0;
+	int rv;
 
-	read_lock_bh(&ls->ls_lkbxa_lock);
-	if (release_option == DLM_RELEASE_NO_LOCKS) {
-		xa_for_each(&ls->ls_lkbxa, id, lkb) {
-			rv = 1;
-			break;
-		}
-	} else if (release_option == DLM_RELEASE_UNUSED) {
-		/* TODO: handle this UNUSED option as NO_LOCKS in later patch */
-		xa_for_each(&ls->ls_lkbxa, id, lkb) {
-			if (lkb->lkb_nodeid == 0 &&
-			    lkb->lkb_grmode != DLM_LOCK_IV) {
-				rv = 1;
-				break;
-			}
-		}
+	spin_lock(&ls->ls_lkbidr_spin);
+	if (force == 0) {
+		rv = idr_for_each(&ls->ls_lkbidr, lkb_idr_is_any, ls);
+	} else if (force == 1) {
+		rv = idr_for_each(&ls->ls_lkbidr, lkb_idr_is_local, ls);
 	} else {
 		rv = 0;
 	}
-	read_unlock_bh(&ls->ls_lkbxa_lock);
+	spin_unlock(&ls->ls_lkbidr_spin);
 	return rv;
 }
 
-static int release_lockspace(struct dlm_ls *ls, unsigned int release_option)
+static int release_lockspace(struct dlm_ls *ls, int force)
 {
-	int busy, rv;
+	struct dlm_rsb *rsb;
+	struct rb_node *n;
+	int i, busy, rv;
 
-	busy = lockspace_busy(ls, release_option);
+	busy = lockspace_busy(ls, force);
 
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 	if (ls->ls_create_count == 1) {
 		if (busy) {
 			rv = -EBUSY;
@@ -724,7 +813,7 @@ static int release_lockspace(struct dlm_ls *ls, unsigned int release_option)
 	} else {
 		rv = -EINVAL;
 	}
-	spin_unlock_bh(&lslist_lock);
+	spin_unlock(&lslist_lock);
 
 	if (rv) {
 		log_debug(ls, "release_lockspace no remove %d", rv);
@@ -736,19 +825,13 @@ static int release_lockspace(struct dlm_ls *ls, unsigned int release_option)
 
 	dlm_device_deregister(ls);
 
-	if (release_option != DLM_RELEASE_NO_EVENT &&
-	    dlm_user_daemon_available())
-		do_uevent(ls, 0, (release_option == DLM_RELEASE_RECOVER));
+	if (force < 3 && dlm_user_daemon_available())
+		do_uevent(ls, 0);
 
 	dlm_recoverd_stop(ls);
 
-	/* clear the LSFL_RUNNING flag to fast up
-	 * time_shutdown_sync(), we don't care anymore
-	 */
-	clear_bit(LSFL_RUNNING, &ls->ls_flags);
-	timer_shutdown_sync(&ls->ls_scan_timer);
-
 	if (ls_count == 1) {
+		dlm_scand_stop();
 		dlm_clear_members(ls);
 		dlm_midcomms_shutdown();
 	}
@@ -759,10 +842,45 @@ static int release_lockspace(struct dlm_ls *ls, unsigned int release_option)
 
 	dlm_delete_debug_file(ls);
 
-	kobject_put(&ls->ls_kobj);
-
-	xa_destroy(&ls->ls_recover_xa);
+	idr_destroy(&ls->ls_recover_idr);
 	kfree(ls->ls_recover_buf);
+
+	/*
+	 * Free all lkb's in idr
+	 */
+
+	idr_for_each(&ls->ls_lkbidr, lkb_idr_free, ls);
+	idr_destroy(&ls->ls_lkbidr);
+
+	/*
+	 * Free all rsb's on rsbtbl[] lists
+	 */
+
+	for (i = 0; i < ls->ls_rsbtbl_size; i++) {
+		while ((n = rb_first(&ls->ls_rsbtbl[i].keep))) {
+			rsb = rb_entry(n, struct dlm_rsb, res_hashnode);
+			rb_erase(n, &ls->ls_rsbtbl[i].keep);
+			dlm_free_rsb(rsb);
+		}
+
+		while ((n = rb_first(&ls->ls_rsbtbl[i].toss))) {
+			rsb = rb_entry(n, struct dlm_rsb, res_hashnode);
+			rb_erase(n, &ls->ls_rsbtbl[i].toss);
+			dlm_free_rsb(rsb);
+		}
+	}
+
+	vfree(ls->ls_rsbtbl);
+
+	for (i = 0; i < DLM_REMOVE_NAMES_MAX; i++)
+		kfree(ls->ls_remove_names[i]);
+
+	while (!list_empty(&ls->ls_new_rsb)) {
+		rsb = list_first_entry(&ls->ls_new_rsb, struct dlm_rsb,
+				       res_hashchain);
+		list_del(&rsb->res_hashchain);
+		dlm_free_rsb(rsb);
+	}
 
 	/*
 	 * Free structures on any other lists
@@ -773,11 +891,10 @@ static int release_lockspace(struct dlm_ls *ls, unsigned int release_option)
 	dlm_clear_members(ls);
 	dlm_clear_members_gone(ls);
 	kfree(ls->ls_node_array);
+	log_rinfo(ls, "release_lockspace final free");
+	kobject_put(&ls->ls_kobj);
+	/* The ls structure will be freed when the kobject is done with */
 
-	log_rinfo(ls, "%s final free", __func__);
-
-	/* delayed free of data structures see free_lockspace() */
-	queue_work(dlm_wq, &ls->ls_free_work);
 	module_put(THIS_MODULE);
 	return 0;
 }
@@ -789,16 +906,17 @@ static int release_lockspace(struct dlm_ls *ls, unsigned int release_option)
  * lockspace must continue to function as usual, participating in recoveries,
  * until this returns.
  *
- * See DLM_RELEASE defines for release_option values and their meaning.
+ * Force has 4 possible values:
+ * 0 - don't destroy lockspace if it has any LKBs
+ * 1 - destroy lockspace if it has remote LKBs but not if it has local LKBs
+ * 2 - destroy lockspace regardless of LKBs
+ * 3 - destroy lockspace as part of a forced shutdown
  */
 
-int dlm_release_lockspace(void *lockspace, unsigned int release_option)
+int dlm_release_lockspace(void *lockspace, int force)
 {
 	struct dlm_ls *ls;
 	int error;
-
-	if (release_option > __DLM_RELEASE_MAX)
-		return -EINVAL;
 
 	ls = dlm_find_lockspace_local(lockspace);
 	if (!ls)
@@ -806,7 +924,7 @@ int dlm_release_lockspace(void *lockspace, unsigned int release_option)
 	dlm_put_lockspace(ls);
 
 	mutex_lock(&ls_lock);
-	error = release_lockspace(ls, release_option);
+	error = release_lockspace(ls, force);
 	if (!error)
 		ls_count--;
 	if (!ls_count)
@@ -823,19 +941,32 @@ void dlm_stop_lockspaces(void)
 
  restart:
 	count = 0;
-	spin_lock_bh(&lslist_lock);
+	spin_lock(&lslist_lock);
 	list_for_each_entry(ls, &lslist, ls_list) {
 		if (!test_bit(LSFL_RUNNING, &ls->ls_flags)) {
 			count++;
 			continue;
 		}
-		spin_unlock_bh(&lslist_lock);
+		spin_unlock(&lslist_lock);
 		log_error(ls, "no userland control daemon, stopping lockspace");
 		dlm_ls_stop(ls);
 		goto restart;
 	}
-	spin_unlock_bh(&lslist_lock);
+	spin_unlock(&lslist_lock);
 
 	if (count)
 		log_print("dlm user daemon left %d lockspaces", count);
+}
+
+void dlm_stop_lockspaces_check(void)
+{
+	struct dlm_ls *ls;
+
+	spin_lock(&lslist_lock);
+	list_for_each_entry(ls, &lslist, ls_list) {
+		if (WARN_ON(!rwsem_is_locked(&ls->ls_in_recovery) ||
+			    !dlm_locking_stopped(ls)))
+			break;
+	}
+	spin_unlock(&lslist_lock);
 }

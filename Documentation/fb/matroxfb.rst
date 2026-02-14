@@ -1,6 +1,9 @@
-================================================
-matroxfb - Framebuffer driver for Matrox devices
-================================================
+=================
+What is matroxfb?
+=================
+
+.. [This file is cloned from VesaFB. Thanks go to Gerd Knorr]
+
 
 This is a driver for a graphic framebuffer for Matrox devices on
 Alpha, Intel and PPC boxes.

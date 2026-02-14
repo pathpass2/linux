@@ -17,6 +17,8 @@
  *
  */
 
+#ifdef CONFIG_AS_AVX512
+
 #include <linux/raid/pq.h>
 #include "x86.h"
 
@@ -558,3 +560,5 @@ const struct raid6_calls raid6_avx512x4 = {
 	.priority = 2		/* Prefer AVX512 over priority 1 (SSE2 and others) */
 };
 #endif
+
+#endif /* CONFIG_AS_AVX512 */

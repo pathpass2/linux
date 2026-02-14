@@ -14,9 +14,10 @@
 
 static int efs_symlink_read_folio(struct file *file, struct folio *folio)
 {
-	char *link = folio_address(folio);
-	struct buffer_head *bh;
-	struct inode *inode = folio->mapping->host;
+	struct page *page = &folio->page;
+	char *link = page_address(page);
+	struct buffer_head * bh;
+	struct inode * inode = page->mapping->host;
 	efs_block_t size = inode->i_size;
 	int err;
   
@@ -39,9 +40,12 @@ static int efs_symlink_read_folio(struct file *file, struct folio *folio)
 		brelse(bh);
 	}
 	link[size] = '\0';
-	err = 0;
+	SetPageUptodate(page);
+	unlock_page(page);
+	return 0;
 fail:
-	folio_end_read(folio, err == 0);
+	SetPageError(page);
+	unlock_page(page);
 	return err;
 }
 

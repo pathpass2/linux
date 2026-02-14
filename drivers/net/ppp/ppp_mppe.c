@@ -43,7 +43,7 @@
  */
 
 #include <crypto/arc4.h>
-#include <crypto/sha1.h>
+#include <crypto/hash.h>
 #include <linux/err.h>
 #include <linux/fips.h>
 #include <linux/module.h>
@@ -55,7 +55,8 @@
 #include <linux/mm.h>
 #include <linux/ppp_defs.h>
 #include <linux/ppp-comp.h>
-#include <linux/unaligned.h>
+#include <linux/scatterlist.h>
+#include <asm/unaligned.h>
 
 #include "ppp_mppe.h"
 
@@ -66,15 +67,31 @@ MODULE_ALIAS("ppp-compress-" __stringify(CI_MPPE));
 MODULE_VERSION("1.0.2");
 
 #define SHA1_PAD_SIZE 40
-static const u8 sha_pad1[SHA1_PAD_SIZE] = { 0 };
-static const u8 sha_pad2[SHA1_PAD_SIZE] = { [0 ... SHA1_PAD_SIZE - 1] = 0xF2 };
+
+/*
+ * kernel crypto API needs its arguments to be in kmalloc'd memory, not in the module
+ * static data area.  That means sha_pad needs to be kmalloc'd.
+ */
+
+struct sha_pad {
+	unsigned char sha_pad1[SHA1_PAD_SIZE];
+	unsigned char sha_pad2[SHA1_PAD_SIZE];
+};
+static struct sha_pad *sha_pad;
+
+static inline void sha_pad_init(struct sha_pad *shapad)
+{
+	memset(shapad->sha_pad1, 0x00, sizeof(shapad->sha_pad1));
+	memset(shapad->sha_pad2, 0xF2, sizeof(shapad->sha_pad2));
+}
 
 /*
  * State for an MPPE (de)compressor.
  */
 struct ppp_mppe_state {
 	struct arc4_ctx arc4;
-	unsigned char sha1_digest[SHA1_DIGEST_SIZE];
+	struct shash_desc *sha1;
+	unsigned char *sha1_digest;
 	unsigned char master_key[MPPE_MAX_KEY_LEN];
 	unsigned char session_key[MPPE_MAX_KEY_LEN];
 	unsigned keylen;	/* key length in bytes             */
@@ -113,14 +130,16 @@ struct ppp_mppe_state {
  */
 static void get_new_key_from_sha(struct ppp_mppe_state * state)
 {
-	struct sha1_ctx ctx;
-
-	sha1_init(&ctx);
-	sha1_update(&ctx, state->master_key, state->keylen);
-	sha1_update(&ctx, sha_pad1, sizeof(sha_pad1));
-	sha1_update(&ctx, state->session_key, state->keylen);
-	sha1_update(&ctx, sha_pad2, sizeof(sha_pad2));
-	sha1_final(&ctx, state->sha1_digest);
+	crypto_shash_init(state->sha1);
+	crypto_shash_update(state->sha1, state->master_key,
+			    state->keylen);
+	crypto_shash_update(state->sha1, sha_pad->sha_pad1,
+			    sizeof(sha_pad->sha_pad1));
+	crypto_shash_update(state->sha1, state->session_key,
+			    state->keylen);
+	crypto_shash_update(state->sha1, sha_pad->sha_pad2,
+			    sizeof(sha_pad->sha_pad2));
+	crypto_shash_final(state->sha1, state->sha1_digest);
 }
 
 /*
@@ -152,15 +171,39 @@ static void mppe_rekey(struct ppp_mppe_state * state, int initial_key)
 static void *mppe_alloc(unsigned char *options, int optlen)
 {
 	struct ppp_mppe_state *state;
+	struct crypto_shash *shash;
+	unsigned int digestsize;
 
 	if (optlen != CILEN_MPPE + sizeof(state->master_key) ||
 	    options[0] != CI_MPPE || options[1] != CILEN_MPPE ||
 	    fips_enabled)
-		return NULL;
+		goto out;
 
 	state = kzalloc(sizeof(*state), GFP_KERNEL);
 	if (state == NULL)
-		return NULL;
+		goto out;
+
+
+	shash = crypto_alloc_shash("sha1", 0, 0);
+	if (IS_ERR(shash))
+		goto out_free;
+
+	state->sha1 = kmalloc(sizeof(*state->sha1) +
+				     crypto_shash_descsize(shash),
+			      GFP_KERNEL);
+	if (!state->sha1) {
+		crypto_free_shash(shash);
+		goto out_free;
+	}
+	state->sha1->tfm = shash;
+
+	digestsize = crypto_shash_digestsize(shash);
+	if (digestsize < MPPE_MAX_KEY_LEN)
+		goto out_free;
+
+	state->sha1_digest = kmalloc(digestsize, GFP_KERNEL);
+	if (!state->sha1_digest)
+		goto out_free;
 
 	/* Save keys. */
 	memcpy(state->master_key, &options[CILEN_MPPE],
@@ -174,6 +217,16 @@ static void *mppe_alloc(unsigned char *options, int optlen)
 	 */
 
 	return (void *)state;
+
+out_free:
+	kfree(state->sha1_digest);
+	if (state->sha1) {
+		crypto_free_shash(state->sha1->tfm);
+		kfree_sensitive(state->sha1);
+	}
+	kfree(state);
+out:
+	return NULL;
 }
 
 /*
@@ -182,8 +235,12 @@ static void *mppe_alloc(unsigned char *options, int optlen)
 static void mppe_free(void *arg)
 {
 	struct ppp_mppe_state *state = (struct ppp_mppe_state *) arg;
-
-	kfree_sensitive(state);
+	if (state) {
+		kfree(state->sha1_digest);
+		crypto_free_shash(state->sha1->tfm);
+		kfree_sensitive(state->sha1);
+		kfree_sensitive(state);
+	}
 }
 
 /*
@@ -592,17 +649,31 @@ static struct compressor ppp_mppe = {
 	.comp_extra     = MPPE_PAD,
 };
 
+/*
+ * ppp_mppe_init()
+ *
+ * Prior to allowing load, try to load the arc4 and sha1 crypto
+ * libraries.  The actual use will be allocated later, but
+ * this way the module will fail to insmod if they aren't available.
+ */
+
 static int __init ppp_mppe_init(void)
 {
 	int answer;
-
-	if (fips_enabled)
+	if (fips_enabled || !crypto_has_ahash("sha1", 0, CRYPTO_ALG_ASYNC))
 		return -ENODEV;
+
+	sha_pad = kmalloc(sizeof(struct sha_pad), GFP_KERNEL);
+	if (!sha_pad)
+		return -ENOMEM;
+	sha_pad_init(sha_pad);
 
 	answer = ppp_register_compressor(&ppp_mppe);
 
 	if (answer == 0)
 		printk(KERN_INFO "PPP MPPE Compression module registered\n");
+	else
+		kfree(sha_pad);
 
 	return answer;
 }
@@ -610,6 +681,7 @@ static int __init ppp_mppe_init(void)
 static void __exit ppp_mppe_cleanup(void)
 {
 	ppp_unregister_compressor(&ppp_mppe);
+	kfree(sha_pad);
 }
 
 module_init(ppp_mppe_init);

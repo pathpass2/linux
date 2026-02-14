@@ -11,6 +11,7 @@
 #include <linux/mutex.h>
 #include <linux/nvmem-provider.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/rtc.h>
 #include <linux/slab.h>
 
@@ -428,7 +429,7 @@ static void isl12026_force_power_modes(struct i2c_client *client)
 	}
 }
 
-static int isl12026_probe(struct i2c_client *client)
+static int isl12026_probe_new(struct i2c_client *client)
 {
 	struct isl12026 *priv;
 	int ret;
@@ -484,20 +485,13 @@ static const struct of_device_id isl12026_dt_match[] = {
 };
 MODULE_DEVICE_TABLE(of, isl12026_dt_match);
 
-static const struct i2c_device_id isl12026_id[] = {
-	{ "isl12026" },
-	{ },
-};
-MODULE_DEVICE_TABLE(i2c, isl12026_id);
-
 static struct i2c_driver isl12026_driver = {
 	.driver		= {
 		.name	= "rtc-isl12026",
 		.of_match_table = isl12026_dt_match,
 	},
-	.probe		= isl12026_probe,
+	.probe_new	= isl12026_probe_new,
 	.remove		= isl12026_remove,
-	.id_table	= isl12026_id,
 };
 
 module_i2c_driver(isl12026_driver);

@@ -16,16 +16,7 @@
 #include <linux/spi/spi.h>
 #include <linux/of.h>
 
-#define AR71XX_SPI_REG_FS		0x00	/* Function Select */
-#define AR71XX_SPI_REG_CTRL		0x04	/* SPI Control */
-#define AR71XX_SPI_REG_IOC		0x08	/* SPI I/O Control */
-#define AR71XX_SPI_REG_RDS		0x0c	/* Read Data Shift */
-
-#define AR71XX_SPI_FS_GPIO		BIT(0)	/* Enable GPIO mode */
-
-#define AR71XX_SPI_IOC_DO		BIT(0)	/* Data Out pin */
-#define AR71XX_SPI_IOC_CLK		BIT(8)	/* CLK pin */
-#define AR71XX_SPI_IOC_CS(n)		BIT(16 + (n))
+#include <asm/mach-ath79/ar71xx_regs.h>
 
 struct rb4xx_spi {
 	void __iomem *base;
@@ -72,7 +63,7 @@ static inline void do_spi_clk_two(struct rb4xx_spi *rbspi, u32 spi_ioc,
 	if (value & BIT(1))
 		regval |= AR71XX_SPI_IOC_DO;
 	if (value & BIT(0))
-		regval |= AR71XX_SPI_IOC_CS(2);
+		regval |= AR71XX_SPI_IOC_CS2;
 
 	rb4xx_write(rbspi, AR71XX_SPI_REG_IOC, regval);
 	rb4xx_write(rbspi, AR71XX_SPI_REG_IOC, regval | AR71XX_SPI_IOC_CLK);
@@ -89,7 +80,7 @@ static void do_spi_byte_two(struct rb4xx_spi *rbspi, u32 spi_ioc, u8 byte)
 
 static void rb4xx_set_cs(struct spi_device *spi, bool enable)
 {
-	struct rb4xx_spi *rbspi = spi_controller_get_devdata(spi->controller);
+	struct rb4xx_spi *rbspi = spi_master_get_devdata(spi->master);
 
 	/*
 	 * Setting CS is done along with bitbanging the actual values,
@@ -98,13 +89,13 @@ static void rb4xx_set_cs(struct spi_device *spi, bool enable)
 	 */
 	if (enable)
 		rb4xx_write(rbspi, AR71XX_SPI_REG_IOC,
-			    AR71XX_SPI_IOC_CS(0) | AR71XX_SPI_IOC_CS(1));
+			    AR71XX_SPI_IOC_CS0 | AR71XX_SPI_IOC_CS1);
 }
 
-static int rb4xx_transfer_one(struct spi_controller *host,
+static int rb4xx_transfer_one(struct spi_master *master,
 			      struct spi_device *spi, struct spi_transfer *t)
 {
-	struct rb4xx_spi *rbspi = spi_controller_get_devdata(host);
+	struct rb4xx_spi *rbspi = spi_master_get_devdata(master);
 	int i;
 	u32 spi_ioc;
 	u8 *rx_buf;
@@ -116,12 +107,12 @@ static int rb4xx_transfer_one(struct spi_controller *host,
 	 * command set was designed to almost not clash with that of the
 	 * boot flash.
 	 */
-	if (spi_get_chipselect(spi, 0) == 2)
+	if (spi->chip_select == 2)
 		/* MMC */
-		spi_ioc = AR71XX_SPI_IOC_CS(0);
+		spi_ioc = AR71XX_SPI_IOC_CS0;
 	else
 		/* Boot flash and CPLD */
-		spi_ioc = AR71XX_SPI_IOC_CS(1);
+		spi_ioc = AR71XX_SPI_IOC_CS1;
 
 	tx_buf = t->tx_buf;
 	rx_buf = t->rx_buf;
@@ -135,14 +126,14 @@ static int rb4xx_transfer_one(struct spi_controller *host,
 			continue;
 		rx_buf[i] = rb4xx_read(rbspi, AR71XX_SPI_REG_RDS);
 	}
-	spi_finalize_current_transfer(host);
+	spi_finalize_current_transfer(master);
 
 	return 0;
 }
 
 static int rb4xx_spi_probe(struct platform_device *pdev)
 {
-	struct spi_controller *host;
+	struct spi_master *master;
 	struct clk *ahb_clk;
 	struct rb4xx_spi *rbspi;
 	int err;
@@ -152,34 +143,49 @@ static int rb4xx_spi_probe(struct platform_device *pdev)
 	if (IS_ERR(spi_base))
 		return PTR_ERR(spi_base);
 
-	host = devm_spi_alloc_host(&pdev->dev, sizeof(*rbspi));
-	if (!host)
+	master = devm_spi_alloc_master(&pdev->dev, sizeof(*rbspi));
+	if (!master)
 		return -ENOMEM;
 
-	ahb_clk = devm_clk_get_enabled(&pdev->dev, "ahb");
+	ahb_clk = devm_clk_get(&pdev->dev, "ahb");
 	if (IS_ERR(ahb_clk))
 		return PTR_ERR(ahb_clk);
 
-	host->bus_num = 0;
-	host->num_chipselect = 3;
-	host->mode_bits = SPI_TX_DUAL;
-	host->bits_per_word_mask = SPI_BPW_MASK(8);
-	host->flags = SPI_CONTROLLER_MUST_TX;
-	host->transfer_one = rb4xx_transfer_one;
-	host->set_cs = rb4xx_set_cs;
+	master->dev.of_node = pdev->dev.of_node;
+	master->bus_num = 0;
+	master->num_chipselect = 3;
+	master->mode_bits = SPI_TX_DUAL;
+	master->bits_per_word_mask = SPI_BPW_MASK(8);
+	master->flags = SPI_MASTER_MUST_TX;
+	master->transfer_one = rb4xx_transfer_one;
+	master->set_cs = rb4xx_set_cs;
 
-	rbspi = spi_controller_get_devdata(host);
+	rbspi = spi_master_get_devdata(master);
 	rbspi->base = spi_base;
 	rbspi->clk = ahb_clk;
+	platform_set_drvdata(pdev, rbspi);
 
-	err = devm_spi_register_controller(&pdev->dev, host);
+	err = devm_spi_register_master(&pdev->dev, master);
 	if (err) {
-		dev_err(&pdev->dev, "failed to register SPI host\n");
+		dev_err(&pdev->dev, "failed to register SPI master\n");
 		return err;
 	}
 
+	err = clk_prepare_enable(ahb_clk);
+	if (err)
+		return err;
+
 	/* Enable SPI */
 	rb4xx_write(rbspi, AR71XX_SPI_REG_FS, AR71XX_SPI_FS_GPIO);
+
+	return 0;
+}
+
+static int rb4xx_spi_remove(struct platform_device *pdev)
+{
+	struct rb4xx_spi *rbspi = platform_get_drvdata(pdev);
+
+	clk_disable_unprepare(rbspi->clk);
 
 	return 0;
 }
@@ -192,9 +198,10 @@ MODULE_DEVICE_TABLE(of, rb4xx_spi_dt_match);
 
 static struct platform_driver rb4xx_spi_drv = {
 	.probe = rb4xx_spi_probe,
+	.remove = rb4xx_spi_remove,
 	.driver = {
 		.name = "rb4xx-spi",
-		.of_match_table = rb4xx_spi_dt_match,
+		.of_match_table = of_match_ptr(rb4xx_spi_dt_match),
 	},
 };
 

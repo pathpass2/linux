@@ -282,8 +282,6 @@ static uint screen_depth;
 static uint screen_fb_size;
 static uint dio_fb_size; /* FB size for deferred IO */
 
-static void hvfb_putmem(struct fb_info *info);
-
 /* Send message to Hyper-V host */
 static inline int synthvid_send(struct hv_device *hdev,
 				struct synthvid_msg *msg)
@@ -849,49 +847,57 @@ static int hvfb_blank(int blank, struct fb_info *info)
 	return 1;	/* get fb_blank to set the colormap to all black */
 }
 
-static void hvfb_ops_damage_range(struct fb_info *info, off_t off, size_t len)
+static void hvfb_cfb_fillrect(struct fb_info *p,
+			      const struct fb_fillrect *rect)
 {
-	/* TODO: implement damage handling */
-}
+	struct hvfb_par *par = p->par;
 
-static void hvfb_ops_damage_area(struct fb_info *info, u32 x, u32 y, u32 width, u32 height)
-{
-	struct hvfb_par *par = info->par;
-
+	cfb_fillrect(p, rect);
 	if (par->synchronous_fb)
-		synthvid_update(info, 0, 0, INT_MAX, INT_MAX);
+		synthvid_update(p, 0, 0, INT_MAX, INT_MAX);
 	else
-		hvfb_ondemand_refresh_throttle(par, x, y, width, height);
+		hvfb_ondemand_refresh_throttle(par, rect->dx, rect->dy,
+					       rect->width, rect->height);
 }
 
-/*
- * fb_ops.fb_destroy is called by the last put_fb_info() call at the end
- * of unregister_framebuffer() or fb_release(). Do any cleanup related to
- * framebuffer here.
- */
-static void hvfb_destroy(struct fb_info *info)
+static void hvfb_cfb_copyarea(struct fb_info *p,
+			      const struct fb_copyarea *area)
 {
-	hvfb_putmem(info);
-	framebuffer_release(info);
+	struct hvfb_par *par = p->par;
+
+	cfb_copyarea(p, area);
+	if (par->synchronous_fb)
+		synthvid_update(p, 0, 0, INT_MAX, INT_MAX);
+	else
+		hvfb_ondemand_refresh_throttle(par, area->dx, area->dy,
+					       area->width, area->height);
 }
 
-/*
- * TODO: GEN1 codepaths allocate from system or DMA-able memory. Fix the
- *       driver to use the _SYSMEM_ or _DMAMEM_ helpers in these cases.
- */
-FB_GEN_DEFAULT_DEFERRED_IOMEM_OPS(hvfb_ops,
-				  hvfb_ops_damage_range,
-				  hvfb_ops_damage_area)
+static void hvfb_cfb_imageblit(struct fb_info *p,
+			       const struct fb_image *image)
+{
+	struct hvfb_par *par = p->par;
+
+	cfb_imageblit(p, image);
+	if (par->synchronous_fb)
+		synthvid_update(p, 0, 0, INT_MAX, INT_MAX);
+	else
+		hvfb_ondemand_refresh_throttle(par, image->dx, image->dy,
+					       image->width, image->height);
+}
 
 static const struct fb_ops hvfb_ops = {
 	.owner = THIS_MODULE,
-	FB_DEFAULT_DEFERRED_OPS(hvfb_ops),
 	.fb_check_var = hvfb_check_var,
 	.fb_set_par = hvfb_set_par,
 	.fb_setcolreg = hvfb_setcolreg,
+	.fb_fillrect = hvfb_cfb_fillrect,
+	.fb_copyarea = hvfb_cfb_copyarea,
+	.fb_imageblit = hvfb_cfb_imageblit,
 	.fb_blank = hvfb_blank,
-	.fb_destroy	= hvfb_destroy,
+	.fb_mmap = fb_deferred_io_mmap,
 };
+
 
 /* Get options from kernel paramenter "video=" */
 static void hvfb_get_option(struct fb_info *info)
@@ -940,8 +946,8 @@ static phys_addr_t hvfb_get_phymem(struct hv_device *hdev,
 	if (request_size == 0)
 		return -1;
 
-	if (order <= MAX_PAGE_ORDER) {
-		/* Call alloc_pages if the size is less than 2^MAX_PAGE_ORDER */
+	if (order < MAX_ORDER) {
+		/* Call alloc_pages if the size is less than 2^MAX_ORDER */
 		page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
 		if (!page)
 			return -1;
@@ -966,15 +972,15 @@ static phys_addr_t hvfb_get_phymem(struct hv_device *hdev,
 }
 
 /* Release contiguous physical memory */
-static void hvfb_release_phymem(struct device *device,
+static void hvfb_release_phymem(struct hv_device *hdev,
 				phys_addr_t paddr, unsigned int size)
 {
 	unsigned int order = get_order(size);
 
-	if (order <= MAX_PAGE_ORDER)
+	if (order < MAX_ORDER)
 		__free_pages(pfn_to_page(paddr >> PAGE_SHIFT), order);
 	else
-		dma_free_coherent(device,
+		dma_free_coherent(&hdev->device,
 				  round_up(size, PAGE_SIZE),
 				  phys_to_virt(paddr),
 				  paddr);
@@ -988,8 +994,7 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 	struct pci_dev *pdev  = NULL;
 	void __iomem *fb_virt;
 	int gen2vm = efi_enabled(EFI_BOOT);
-	resource_size_t base = 0;
-	resource_size_t size = 0;
+	resource_size_t base, size;
 	phys_addr_t paddr;
 	int ret;
 
@@ -1003,7 +1008,6 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 
 		base = pci_resource_start(pdev, 0);
 		size = pci_resource_len(pdev, 0);
-		aperture_remove_conflicting_devices(base, size, KBUILD_MODNAME);
 
 		/*
 		 * For Gen 1 VM, we can directly use the contiguous memory
@@ -1026,20 +1030,13 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 		}
 		pr_info("Unable to allocate enough contiguous physical memory on Gen 1 VM. Using MMIO instead.\n");
 	} else {
-		aperture_remove_all_conflicting_devices(KBUILD_MODNAME);
+		base = screen_info.lfb_base;
+		size = screen_info.lfb_size;
 	}
 
 	/*
-	 * Cannot use contiguous physical memory, so allocate MMIO space for
-	 * the framebuffer. At this point in the function, conflicting devices
-	 * that might have claimed the framebuffer MMIO space based on
-	 * screen_info.lfb_base must have already been removed so that
-	 * vmbus_allocate_mmio() does not allocate different MMIO space. If the
-	 * kdump image were to be loaded using kexec_file_load(), the
-	 * framebuffer location in the kdump image would be set from
-	 * screen_info.lfb_base at the time that kdump is enabled. If the
-	 * framebuffer has moved elsewhere, this could be the wrong location,
-	 * causing kdump to hang when efifb (for example) loads.
+	 * Cannot use the contiguous physical memory.
+	 * Allocate mmio space for framebuffer.
 	 */
 	dio_fb_size =
 		screen_width * screen_height * screen_depth / 8;
@@ -1076,8 +1073,16 @@ static int hvfb_getmem(struct hv_device *hdev, struct fb_info *info)
 	info->screen_size = dio_fb_size;
 
 getmem_done:
-	if (!gen2vm)
+	aperture_remove_conflicting_devices(base, size, false, KBUILD_MODNAME);
+
+	if (gen2vm) {
+		/* framebuffer is reallocated, clear screen_info to avoid misuse from kexec */
+		screen_info.lfb_size = 0;
+		screen_info.lfb_base = 0;
+		screen_info.orig_video_isVGA = 0;
+	} else {
 		pci_dev_put(pdev);
+	}
 
 	return 0;
 
@@ -1094,16 +1099,16 @@ err1:
 }
 
 /* Release the framebuffer */
-static void hvfb_putmem(struct fb_info *info)
+static void hvfb_putmem(struct hv_device *hdev, struct fb_info *info)
 {
 	struct hvfb_par *par = info->par;
 
 	if (par->need_docopy) {
 		vfree(par->dio_vp);
-		iounmap(par->mmio_vp);
+		iounmap(info->screen_base);
 		vmbus_free_mmio(par->mem->start, screen_fb_size);
 	} else {
-		hvfb_release_phymem(info->device, info->fix.smem_start,
+		hvfb_release_phymem(hdev, info->fix.smem_start,
 				    screen_fb_size);
 	}
 
@@ -1153,6 +1158,8 @@ static int hvfb_probe(struct hv_device *hdev,
 	}
 
 	/* Set up fb_info */
+	info->flags = FBINFO_DEFAULT;
+
 	info->var.xres_virtual = info->var.xres = screen_width;
 	info->var.yres_virtual = info->var.yres = screen_height;
 	info->var.bits_per_pixel = screen_depth;
@@ -1192,7 +1199,7 @@ static int hvfb_probe(struct hv_device *hdev,
 	if (ret)
 		goto error;
 
-	ret = devm_register_framebuffer(&hdev->device, info);
+	ret = register_framebuffer(info);
 	if (ret) {
 		pr_err("Unable to register framebuffer\n");
 		goto error;
@@ -1209,7 +1216,7 @@ static int hvfb_probe(struct hv_device *hdev,
 	 * which is almost at the end of list, with priority = INT_MIN + 1.
 	 */
 	par->hvfb_panic_nb.notifier_call = hvfb_on_panic;
-	par->hvfb_panic_nb.priority = INT_MIN + 10;
+	par->hvfb_panic_nb.priority = INT_MIN + 10,
 	atomic_notifier_chain_register(&panic_notifier_list,
 				       &par->hvfb_panic_nb);
 
@@ -1217,7 +1224,7 @@ static int hvfb_probe(struct hv_device *hdev,
 
 error:
 	fb_deferred_io_cleanup(info);
-	hvfb_putmem(info);
+	hvfb_putmem(hdev, info);
 error2:
 	vmbus_close(hdev->channel);
 error1:
@@ -1240,10 +1247,14 @@ static void hvfb_remove(struct hv_device *hdev)
 
 	fb_deferred_io_cleanup(info);
 
+	unregister_framebuffer(info);
 	cancel_delayed_work_sync(&par->dwork);
 
 	vmbus_close(hdev->channel);
 	hv_set_drvdata(hdev, NULL);
+
+	hvfb_putmem(hdev, info);
+	framebuffer_release(info);
 }
 
 static int hvfb_suspend(struct hv_device *hdev)
@@ -1356,8 +1367,6 @@ static struct pci_driver hvfb_pci_stub_driver = {
 static int __init hvfb_drv_init(void)
 {
 	int ret;
-
-	pr_warn("Deprecated: use Hyper-V DRM driver instead\n");
 
 	if (fb_modesetting_disabled("hyper_fb"))
 		return -ENODEV;

@@ -33,7 +33,7 @@ static void __iomem *gpcv2_idx_to_reg(struct gpcv2_irqchip_data *cd, int i)
 	return cd->gpc_base + cd->cpu2wakeup + i * 4;
 }
 
-static int gpcv2_wakeup_source_save(void *data)
+static int gpcv2_wakeup_source_save(void)
 {
 	struct gpcv2_irqchip_data *cd;
 	void __iomem *reg;
@@ -52,7 +52,7 @@ static int gpcv2_wakeup_source_save(void *data)
 	return 0;
 }
 
-static void gpcv2_wakeup_source_restore(void *data)
+static void gpcv2_wakeup_source_restore(void)
 {
 	struct gpcv2_irqchip_data *cd;
 	int i;
@@ -65,13 +65,9 @@ static void gpcv2_wakeup_source_restore(void *data)
 		writel_relaxed(cd->saved_irq_mask[i], gpcv2_idx_to_reg(cd, i));
 }
 
-static const struct syscore_ops gpcv2_syscore_ops = {
-	.suspend = gpcv2_wakeup_source_save,
-	.resume = gpcv2_wakeup_source_restore,
-};
-
-static struct syscore gpcv2_syscore = {
-	.ops = &gpcv2_syscore_ops,
+static struct syscore_ops imx_gpcv2_syscore_ops = {
+	.suspend	= gpcv2_wakeup_source_save,
+	.resume		= gpcv2_wakeup_source_restore,
 };
 
 static int imx_gpcv2_irq_set_wake(struct irq_data *d, unsigned int on)
@@ -244,14 +240,14 @@ static int __init imx_gpcv2_irqchip_init(struct device_node *node,
 		return -ENOMEM;
 	}
 
-	domain = irq_domain_create_hierarchy(parent_domain, 0, GPC_MAX_IRQS,
-				of_fwnode_handle(node), &gpcv2_irqchip_data_domain_ops, cd);
+	domain = irq_domain_add_hierarchy(parent_domain, 0, GPC_MAX_IRQS,
+				node, &gpcv2_irqchip_data_domain_ops, cd);
 	if (!domain) {
 		iounmap(cd->gpc_base);
 		kfree(cd);
 		return -ENOMEM;
 	}
-	irq_set_default_domain(domain);
+	irq_set_default_host(domain);
 
 	/* Initially mask all interrupts */
 	for (i = 0; i < IMR_NUM; i++) {
@@ -280,7 +276,7 @@ static int __init imx_gpcv2_irqchip_init(struct device_node *node,
 	writel_relaxed(~0x1, cd->gpc_base + cd->cpu2wakeup);
 
 	imx_gpcv2_instance = cd;
-	register_syscore(&gpcv2_syscore);
+	register_syscore_ops(&imx_gpcv2_syscore_ops);
 
 	/*
 	 * Clear the OF_POPULATED flag set in of_irq_init so that

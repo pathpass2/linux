@@ -24,6 +24,7 @@
 #include "chan.h"
 #include "chid.h"
 #include "cgrp.h"
+#include "chid.h"
 #include "runl.h"
 #include "priv.h"
 
@@ -104,7 +105,7 @@ nvkm_chan_cctx_get(struct nvkm_chan *chan, struct nvkm_engn *engn, struct nvkm_c
 	if (cctx) {
 		refcount_inc(&cctx->refs);
 		*pcctx = cctx;
-		mutex_unlock(&cgrp->mutex);
+		mutex_unlock(&chan->cgrp->mutex);
 		return 0;
 	}
 
@@ -274,12 +275,12 @@ nvkm_chan_del(struct nvkm_chan **pchan)
 	nvkm_gpuobj_del(&chan->cache);
 	nvkm_gpuobj_del(&chan->ramfc);
 
+	nvkm_memory_unref(&chan->userd.mem);
+
 	if (chan->cgrp) {
 		nvkm_chid_put(chan->cgrp->runl->chid, chan->id, &chan->cgrp->lock);
 		nvkm_cgrp_unref(&chan->cgrp);
 	}
-
-	nvkm_memory_unref(&chan->userd.mem);
 
 	if (chan->vmm) {
 		nvkm_vmm_part(chan->vmm, chan->inst->memory);
@@ -355,14 +356,14 @@ nvkm_chan_new_(const struct nvkm_chan_func *func, struct nvkm_runl *runl, int ru
 	/* Validate arguments against class requirements. */
 	if ((runq && runq >= runl->func->runqs) ||
 	    (!func->inst->vmm != !vmm) ||
-	    (!func->userd->bar == !userd) ||
+	    ((func->userd->bar < 0) == !userd) ||
 	    (!func->ramfc->ctxdma != !dmaobj) ||
 	    ((func->ramfc->devm < devm) && devm != BIT(0)) ||
 	    (!func->ramfc->priv && priv)) {
 		RUNL_DEBUG(runl, "args runq:%d:%d vmm:%d:%p userd:%d:%p "
 				 "push:%d:%p devm:%08x:%08x priv:%d:%d",
 			   runl->func->runqs, runq, func->inst->vmm, vmm,
-			   func->userd->bar, userd, func->ramfc->ctxdma, dmaobj,
+			   func->userd->bar < 0, userd, func->ramfc->ctxdma, dmaobj,
 			   func->ramfc->devm, devm, func->ramfc->priv, priv);
 		return -EINVAL;
 	}
@@ -438,27 +439,6 @@ nvkm_chan_new_(const struct nvkm_chan_func *func, struct nvkm_runl *runl, int ru
 
 	/* Allocate channel ID. */
 	chan->id = nvkm_chid_get(runl->chid, chan);
-	if (chan->id >= 0) {
-		if (!func->userd->bar) {
-			if (ouserd + chan->func->userd->size >=
-				nvkm_memory_size(userd)) {
-				RUNL_DEBUG(runl, "ouserd %llx", ouserd);
-				return -EINVAL;
-			}
-
-			ret = nvkm_memory_kmap(userd, &chan->userd.mem);
-			if (ret) {
-				RUNL_DEBUG(runl, "userd %d", ret);
-				return ret;
-			}
-
-			chan->userd.base = ouserd;
-		} else {
-			chan->userd.mem = nvkm_memory_ref(fifo->userd.mem);
-			chan->userd.base = chan->id * chan->func->userd->size;
-		}
-	}
-
 	if (chan->id < 0) {
 		RUNL_ERROR(runl, "!chids");
 		return -ENOSPC;
@@ -468,6 +448,24 @@ nvkm_chan_new_(const struct nvkm_chan_func *func, struct nvkm_runl *runl, int ru
 		cgrp->id = chan->id;
 
 	/* Initialise USERD. */
+	if (func->userd->bar < 0) {
+		if (ouserd + chan->func->userd->size >= nvkm_memory_size(userd)) {
+			RUNL_DEBUG(runl, "ouserd %llx", ouserd);
+			return -EINVAL;
+		}
+
+		ret = nvkm_memory_kmap(userd, &chan->userd.mem);
+		if (ret) {
+			RUNL_DEBUG(runl, "userd %d", ret);
+			return ret;
+		}
+
+		chan->userd.base = ouserd;
+	} else {
+		chan->userd.mem = nvkm_memory_ref(fifo->userd.mem);
+		chan->userd.base = chan->id * chan->func->userd->size;
+	}
+
 	if (chan->func->userd->clear)
 		chan->func->userd->clear(chan);
 

@@ -32,7 +32,6 @@
 #include <linux/uaccess.h>
 
 #include "amdgpu_reset.h"
-#include "amdgpu_ras_mgr.h"
 
 /* These are memory addresses as would be seen by one or more EEPROM
  * chips strung on the I2C bus, usually by manipulating pins 1-3 of a
@@ -59,7 +58,7 @@
 #define EEPROM_I2C_MADDR_4      0x40000
 
 /*
- * The 2 macros below represent the actual size in bytes that
+ * The 2 macros bellow represent the actual size in bytes that
  * those entities occupy in the EEPROM memory.
  * RAS_TABLE_RECORD_SIZE is different than sizeof(eeprom_table_record) which
  * uses uint64 to store 6b fields such as retired_page.
@@ -69,23 +68,10 @@
 
 /* Table hdr is 'AMDR' */
 #define RAS_TABLE_HDR_VAL       0x414d4452
+#define RAS_TABLE_VER           0x00010000
 
 /* Bad GPU tag ‘BADG’ */
 #define RAS_TABLE_HDR_BAD       0x42414447
-
-/*
- * EEPROM Table structure v1
- * ---------------------------------
- * |                               |
- * |     EEPROM TABLE HEADER       |
- * |      ( size 20 Bytes )        |
- * |                               |
- * ---------------------------------
- * |                               |
- * |    BAD PAGE RECORD AREA       |
- * |                               |
- * ---------------------------------
- */
 
 /* Assume 2-Mbit size EEPROM and take up the whole space. */
 #define RAS_TBL_SIZE_BYTES      (256 * 1024)
@@ -94,37 +80,6 @@
 #define RAS_RECORD_START        (RAS_HDR_START + RAS_TABLE_HEADER_SIZE)
 #define RAS_MAX_RECORD_COUNT    ((RAS_TBL_SIZE_BYTES - RAS_TABLE_HEADER_SIZE) \
 				 / RAS_TABLE_RECORD_SIZE)
-
-/*
- * EEPROM Table structrue v2.1
- * ---------------------------------
- * |                               |
- * |     EEPROM TABLE HEADER       |
- * |      ( size 20 Bytes )        |
- * |                               |
- * ---------------------------------
- * |                               |
- * |     EEPROM TABLE RAS INFO     |
- * | (available info size 4 Bytes) |
- * |  ( reserved size 252 Bytes )  |
- * |                               |
- * ---------------------------------
- * |                               |
- * |     BAD PAGE RECORD AREA      |
- * |                               |
- * ---------------------------------
- */
-
-/* EEPROM Table V2_1 */
-#define RAS_TABLE_V2_1_INFO_SIZE       256
-#define RAS_TABLE_V2_1_INFO_START      RAS_TABLE_HEADER_SIZE
-#define RAS_RECORD_START_V2_1          (RAS_HDR_START + RAS_TABLE_HEADER_SIZE + \
-					RAS_TABLE_V2_1_INFO_SIZE)
-#define RAS_MAX_RECORD_COUNT_V2_1      ((RAS_TBL_SIZE_BYTES - RAS_TABLE_HEADER_SIZE - \
-					RAS_TABLE_V2_1_INFO_SIZE) \
-					/ RAS_TABLE_RECORD_SIZE)
-
-#define RAS_SMU_MESSAGE_TIMEOUT_MS 1000 /* 1s */
 
 /* Given a zero-based index of an EEPROM RAS record, yields the EEPROM
  * offset off of RAS_TABLE_START.  That is, this is something you can
@@ -148,25 +103,52 @@
 #define RAS_NUM_RECS(_tbl_hdr)  (((_tbl_hdr)->tbl_size - \
 				  RAS_TABLE_HEADER_SIZE) / RAS_TABLE_RECORD_SIZE)
 
-#define RAS_NUM_RECS_V2_1(_tbl_hdr)  (((_tbl_hdr)->tbl_size - \
-				       RAS_TABLE_HEADER_SIZE - \
-				       RAS_TABLE_V2_1_INFO_SIZE) / RAS_TABLE_RECORD_SIZE)
-
-#define to_amdgpu_device(x) ((container_of(x, struct amdgpu_ras, eeprom_control))->adev)
+#define to_amdgpu_device(x) (container_of(x, struct amdgpu_ras, eeprom_control))->adev
 
 static bool __is_ras_eeprom_supported(struct amdgpu_device *adev)
 {
-	switch (amdgpu_ip_version(adev, MP1_HWIP, 0)) {
-	case IP_VERSION(11, 0, 2): /* VEGA20 and ARCTURUS */
-	case IP_VERSION(11, 0, 7): /* Sienna cichlid */
+	if (adev->asic_type == CHIP_IP_DISCOVERY) {
+		switch (adev->ip_versions[MP1_HWIP][0]) {
+		case IP_VERSION(13, 0, 0):
+		case IP_VERSION(13, 0, 10):
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	return  adev->asic_type == CHIP_VEGA20 ||
+		adev->asic_type == CHIP_ARCTURUS ||
+		adev->asic_type == CHIP_SIENNA_CICHLID ||
+		adev->asic_type == CHIP_ALDEBARAN;
+}
+
+static bool __get_eeprom_i2c_addr_arct(struct amdgpu_device *adev,
+				       struct amdgpu_ras_eeprom_control *control)
+{
+	struct atom_context *atom_ctx = adev->mode_info.atom_context;
+
+	if (!control || !atom_ctx)
+		return false;
+
+	if (strnstr(atom_ctx->vbios_version,
+	            "D342",
+		    sizeof(atom_ctx->vbios_version)))
+		control->i2c_address = EEPROM_I2C_MADDR_0;
+	else
+		control->i2c_address = EEPROM_I2C_MADDR_4;
+
+	return true;
+}
+
+static bool __get_eeprom_i2c_addr_ip_discovery(struct amdgpu_device *adev,
+				       struct amdgpu_ras_eeprom_control *control)
+{
+	switch (adev->ip_versions[MP1_HWIP][0]) {
 	case IP_VERSION(13, 0, 0):
-	case IP_VERSION(13, 0, 2): /* Aldebaran */
 	case IP_VERSION(13, 0, 10):
+		control->i2c_address = EEPROM_I2C_MADDR_4;
 		return true;
-	case IP_VERSION(13, 0, 6):
-	case IP_VERSION(13, 0, 12):
-	case IP_VERSION(13, 0, 14):
-		return (adev->gmc.is_app_apu) ? false : true;
 	default:
 		return false;
 	}
@@ -181,7 +163,7 @@ static bool __get_eeprom_i2c_addr(struct amdgpu_device *adev,
 	if (!control)
 		return false;
 
-	if (adev->bios && amdgpu_atomfirmware_ras_rom_addr(adev, &i2c_addr)) {
+	if (amdgpu_atomfirmware_ras_rom_addr(adev, &i2c_addr)) {
 		/* The address given by VBIOS is an 8-bit, wire-format
 		 * address, i.e. the most significant byte.
 		 *
@@ -196,44 +178,43 @@ static bool __get_eeprom_i2c_addr(struct amdgpu_device *adev,
 		return true;
 	}
 
-	switch (amdgpu_ip_version(adev, MP1_HWIP, 0)) {
-	case IP_VERSION(11, 0, 2):
-		/* VEGA20 and ARCTURUS */
-		if (adev->asic_type == CHIP_VEGA20)
-			control->i2c_address = EEPROM_I2C_MADDR_0;
-		else if (strnstr(atom_ctx->vbios_pn,
-				 "D342",
-				 sizeof(atom_ctx->vbios_pn)))
-			control->i2c_address = EEPROM_I2C_MADDR_0;
-		else
-			control->i2c_address = EEPROM_I2C_MADDR_4;
-		return true;
-	case IP_VERSION(11, 0, 7):
+	switch (adev->asic_type) {
+	case CHIP_VEGA20:
 		control->i2c_address = EEPROM_I2C_MADDR_0;
-		return true;
-	case IP_VERSION(13, 0, 2):
-		if (strnstr(atom_ctx->vbios_pn, "D673",
-			    sizeof(atom_ctx->vbios_pn)))
+		break;
+
+	case CHIP_ARCTURUS:
+		return __get_eeprom_i2c_addr_arct(adev, control);
+
+	case CHIP_SIENNA_CICHLID:
+		control->i2c_address = EEPROM_I2C_MADDR_0;
+		break;
+
+	case CHIP_ALDEBARAN:
+		if (strnstr(atom_ctx->vbios_version, "D673",
+			    sizeof(atom_ctx->vbios_version)))
 			control->i2c_address = EEPROM_I2C_MADDR_4;
 		else
 			control->i2c_address = EEPROM_I2C_MADDR_0;
-		return true;
-	case IP_VERSION(13, 0, 0):
-		if (strnstr(atom_ctx->vbios_pn, "D707",
-			    sizeof(atom_ctx->vbios_pn)))
-			control->i2c_address = EEPROM_I2C_MADDR_0;
-		else
-			control->i2c_address = EEPROM_I2C_MADDR_4;
-		return true;
-	case IP_VERSION(13, 0, 6):
-	case IP_VERSION(13, 0, 10):
-	case IP_VERSION(13, 0, 12):
-	case IP_VERSION(13, 0, 14):
-		control->i2c_address = EEPROM_I2C_MADDR_4;
-		return true;
+		break;
+
+	case CHIP_IP_DISCOVERY:
+		return __get_eeprom_i2c_addr_ip_discovery(adev, control);
+
 	default:
 		return false;
 	}
+
+	switch (adev->ip_versions[MP1_HWIP][0]) {
+	case IP_VERSION(13, 0, 0):
+		control->i2c_address = EEPROM_I2C_MADDR_4;
+		break;
+
+	default:
+		break;
+	}
+
+	return true;
 }
 
 static void
@@ -280,80 +261,14 @@ static int __write_table_header(struct amdgpu_ras_eeprom_control *control)
 	up_read(&adev->reset_domain->sem);
 
 	if (res < 0) {
-		dev_err(adev->dev, "Failed to write EEPROM table header:%d",
-			res);
+		DRM_ERROR("Failed to write EEPROM table header:%d", res);
 	} else if (res < RAS_TABLE_HEADER_SIZE) {
-		dev_err(adev->dev, "Short write:%d out of %d\n", res,
-			RAS_TABLE_HEADER_SIZE);
+		DRM_ERROR("Short write:%d out of %d\n",
+			  res, RAS_TABLE_HEADER_SIZE);
 		res = -EIO;
 	} else {
 		res = 0;
 	}
-
-	return res;
-}
-
-static void
-__encode_table_ras_info_to_buf(struct amdgpu_ras_eeprom_table_ras_info *rai,
-			       unsigned char *buf)
-{
-	u32 *pp = (uint32_t *)buf;
-	u32 tmp;
-
-	tmp = ((uint32_t)(rai->rma_status) & 0xFF) |
-	      (((uint32_t)(rai->health_percent) << 8) & 0xFF00) |
-	      (((uint32_t)(rai->ecc_page_threshold) << 16) & 0xFFFF0000);
-	pp[0] = cpu_to_le32(tmp);
-}
-
-static void
-__decode_table_ras_info_from_buf(struct amdgpu_ras_eeprom_table_ras_info *rai,
-				 unsigned char *buf)
-{
-	u32 *pp = (uint32_t *)buf;
-	u32 tmp;
-
-	tmp = le32_to_cpu(pp[0]);
-	rai->rma_status = tmp & 0xFF;
-	rai->health_percent = (tmp >> 8) & 0xFF;
-	rai->ecc_page_threshold = (tmp >> 16) & 0xFFFF;
-}
-
-static int __write_table_ras_info(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	u8 *buf;
-	int res;
-
-	buf = kzalloc(RAS_TABLE_V2_1_INFO_SIZE, GFP_KERNEL);
-	if (!buf) {
-		dev_err(adev->dev,
-			"Failed to alloc buf to write table ras info\n");
-		return -ENOMEM;
-	}
-
-	__encode_table_ras_info_to_buf(&control->tbl_rai, buf);
-
-	/* i2c may be unstable in gpu reset */
-	down_read(&adev->reset_domain->sem);
-	res = amdgpu_eeprom_write(adev->pm.ras_eeprom_i2c_bus,
-				  control->i2c_address +
-				  control->ras_info_offset,
-				  buf, RAS_TABLE_V2_1_INFO_SIZE);
-	up_read(&adev->reset_domain->sem);
-
-	if (res < 0) {
-		dev_err(adev->dev, "Failed to write EEPROM table ras info:%d",
-			res);
-	} else if (res < RAS_TABLE_V2_1_INFO_SIZE) {
-		dev_err(adev->dev, "Short write:%d out of %d\n", res,
-			RAS_TABLE_V2_1_INFO_SIZE);
-		res = -EIO;
-	} else {
-		res = 0;
-	}
-
-	kfree(buf);
 
 	return res;
 }
@@ -367,21 +282,6 @@ static u8 __calc_hdr_byte_sum(const struct amdgpu_ras_eeprom_control *control)
 	/* Header checksum, skip checksum field in the calculation */
 	sz = sizeof(control->tbl_hdr) - sizeof(control->tbl_hdr.checksum);
 	pp = (u8 *) &control->tbl_hdr;
-	csum = 0;
-	for (ii = 0; ii < sz; ii++, pp++)
-		csum += *pp;
-
-	return csum;
-}
-
-static u8 __calc_ras_info_byte_sum(const struct amdgpu_ras_eeprom_control *control)
-{
-	int ii;
-	u8  *pp, csum;
-	size_t sz;
-
-	sz = sizeof(control->tbl_rai);
-	pp = (u8 *) &control->tbl_rai;
 	csum = 0;
 	for (ii = 0; ii < sz; ii++, pp++)
 		csum += *pp;
@@ -414,25 +314,6 @@ static int amdgpu_ras_eeprom_correct_header_tag(
 	return res;
 }
 
-static void amdgpu_ras_set_eeprom_table_version(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	struct amdgpu_ras_eeprom_table_header *hdr = &control->tbl_hdr;
-
-	switch (amdgpu_ip_version(adev, UMC_HWIP, 0)) {
-	case IP_VERSION(8, 10, 0):
-		hdr->version = RAS_TABLE_VER_V2_1;
-		return;
-	case IP_VERSION(12, 0, 0):
-	case IP_VERSION(12, 5, 0):
-		hdr->version = RAS_TABLE_VER_V3;
-		return;
-	default:
-		hdr->version = RAS_TABLE_VER_V1;
-		return;
-	}
-}
-
 /**
  * amdgpu_ras_eeprom_reset_table -- Reset the RAS EEPROM table
  * @control: pointer to control structure
@@ -444,66 +325,26 @@ int amdgpu_ras_eeprom_reset_table(struct amdgpu_ras_eeprom_control *control)
 {
 	struct amdgpu_device *adev = to_amdgpu_device(control);
 	struct amdgpu_ras_eeprom_table_header *hdr = &control->tbl_hdr;
-	struct amdgpu_ras_eeprom_table_ras_info *rai = &control->tbl_rai;
 	struct amdgpu_ras *con = amdgpu_ras_get_context(adev);
-	u32 erase_res = 0;
 	u8 csum;
 	int res;
 
 	mutex_lock(&control->ras_tbl_mutex);
 
-	if (!amdgpu_ras_smu_eeprom_supported(adev)) {
-		hdr->header = RAS_TABLE_HDR_VAL;
-		amdgpu_ras_set_eeprom_table_version(control);
+	hdr->header = RAS_TABLE_HDR_VAL;
+	hdr->version = RAS_TABLE_VER;
+	hdr->first_rec_offset = RAS_RECORD_START;
+	hdr->tbl_size = RAS_TABLE_HEADER_SIZE;
 
-		if (hdr->version >= RAS_TABLE_VER_V2_1) {
-			hdr->first_rec_offset = RAS_RECORD_START_V2_1;
-			hdr->tbl_size = RAS_TABLE_HEADER_SIZE +
-					RAS_TABLE_V2_1_INFO_SIZE;
-			rai->rma_status = GPU_HEALTH_USABLE;
-
-			control->ras_record_offset = RAS_RECORD_START_V2_1;
-			control->ras_max_record_count = RAS_MAX_RECORD_COUNT_V2_1;
-			/**
-			 * GPU health represented as a percentage.
-			 * 0 means worst health, 100 means fully health.
-			 */
-			rai->health_percent = 100;
-			/* ecc_page_threshold = 0 means disable bad page retirement */
-			rai->ecc_page_threshold = con->bad_page_cnt_threshold;
-		} else {
-			hdr->first_rec_offset = RAS_RECORD_START;
-			hdr->tbl_size = RAS_TABLE_HEADER_SIZE;
-
-			control->ras_record_offset = RAS_RECORD_START;
-			control->ras_max_record_count = RAS_MAX_RECORD_COUNT;
-		}
-
-		csum = __calc_hdr_byte_sum(control);
-		if (hdr->version >= RAS_TABLE_VER_V2_1)
-			csum += __calc_ras_info_byte_sum(control);
-		csum = -csum;
-		hdr->checksum = csum;
-		res = __write_table_header(control);
-		if (!res && hdr->version > RAS_TABLE_VER_V1)
-			res = __write_table_ras_info(control);
-	} else {
-		res = amdgpu_ras_smu_erase_ras_table(adev, &erase_res);
-		if (res || erase_res) {
-			dev_warn(adev->dev, "RAS EEPROM reset failed, res:%d result:%d",
-										res, erase_res);
-			if (!res)
-				res = -EIO;
-		}
-	}
+	csum = __calc_hdr_byte_sum(control);
+	csum = -csum;
+	hdr->checksum = csum;
+	res = __write_table_header(control);
 
 	control->ras_num_recs = 0;
-	control->ras_num_bad_pages = 0;
-	control->ras_num_mca_recs = 0;
-	control->ras_num_pa_recs = 0;
 	control->ras_fri = 0;
 
-	amdgpu_dpm_send_hbm_bad_pages_num(adev, control->ras_num_bad_pages);
+	amdgpu_dpm_send_hbm_bad_pages_num(adev, control->ras_num_recs);
 
 	control->bad_channel_bitmap = 0;
 	amdgpu_dpm_send_hbm_bad_channel_flag(adev, control->bad_channel_bitmap);
@@ -576,9 +417,6 @@ bool amdgpu_ras_eeprom_check_err_threshold(struct amdgpu_device *adev)
 {
 	struct amdgpu_ras *con = amdgpu_ras_get_context(adev);
 
-	if (amdgpu_uniras_enabled(adev))
-		return amdgpu_ras_mgr_check_eeprom_safety_watermark(adev);
-
 	if (!__is_ras_eeprom_supported(adev) ||
 	    !amdgpu_bad_page_threshold)
 		return false;
@@ -591,17 +429,16 @@ bool amdgpu_ras_eeprom_check_err_threshold(struct amdgpu_device *adev)
 			return false;
 
 	if (con->eeprom_control.tbl_hdr.header == RAS_TABLE_HDR_BAD) {
-		if (con->eeprom_control.ras_num_bad_pages > con->bad_page_cnt_threshold)
+		if (amdgpu_bad_page_threshold == -1) {
 			dev_warn(adev->dev, "RAS records:%d exceed threshold:%d",
-				 con->eeprom_control.ras_num_bad_pages, con->bad_page_cnt_threshold);
-		if ((amdgpu_bad_page_threshold == -1) ||
-		    (amdgpu_bad_page_threshold == -2)) {
+				con->eeprom_control.ras_num_recs, con->bad_page_cnt_threshold);
 			dev_warn(adev->dev,
-				 "Please consult AMD Service Action Guide (SAG) for appropriate service procedures.\n");
+				"But GPU can be operated due to bad_page_threshold = -1.\n");
 			return false;
 		} else {
-			dev_warn(adev->dev,
-				 "Please consider adjusting the customized threshold.\n");
+			dev_warn(adev->dev, "This GPU is in BAD status.");
+			dev_warn(adev->dev, "Please retire it or set a larger "
+				 "threshold value when reloading driver.\n");
 			return true;
 		}
 	}
@@ -635,13 +472,13 @@ static int __amdgpu_ras_eeprom_write(struct amdgpu_ras_eeprom_control *control,
 				  buf, buf_size);
 	up_read(&adev->reset_domain->sem);
 	if (res < 0) {
-		dev_err(adev->dev, "Writing %d EEPROM table records error:%d",
-			num, res);
+		DRM_ERROR("Writing %d EEPROM table records error:%d",
+			  num, res);
 	} else if (res < buf_size) {
 		/* Short write, return error.
 		 */
-		dev_err(adev->dev, "Wrote %d records out of %d",
-			res / RAS_TABLE_RECORD_SIZE, num);
+		DRM_ERROR("Wrote %d records out of %d",
+			  res / RAS_TABLE_RECORD_SIZE, num);
 		res = -EIO;
 	} else {
 		res = 0;
@@ -656,7 +493,6 @@ amdgpu_ras_eeprom_append_table(struct amdgpu_ras_eeprom_control *control,
 			       const u32 num)
 {
 	struct amdgpu_ras *con = amdgpu_ras_get_context(to_amdgpu_device(control));
-	struct amdgpu_device *adev = to_amdgpu_device(control);
 	u32 a, b, i;
 	u8 *buf, *pp;
 	int res;
@@ -672,8 +508,7 @@ amdgpu_ras_eeprom_append_table(struct amdgpu_ras_eeprom_control *control,
 		__encode_table_record_to_buf(control, &record[i], pp);
 
 		/* update bad channel bitmap */
-		if ((record[i].mem_channel < BITS_PER_TYPE(control->bad_channel_bitmap)) &&
-		    !(control->bad_channel_bitmap & (1 << record[i].mem_channel))) {
+		if (!(control->bad_channel_bitmap & (1 << record[i].mem_channel))) {
 			control->bad_channel_bitmap |= 1 << record[i].mem_channel;
 			con->update_channel_flag = true;
 		}
@@ -759,14 +594,6 @@ amdgpu_ras_eeprom_append_table(struct amdgpu_ras_eeprom_control *control,
 	control->ras_num_recs = 1 + (control->ras_max_record_count + b
 				     - control->ras_fri)
 		% control->ras_max_record_count;
-
-	/*old asics only save pa to eeprom like before*/
-	if (IP_VERSION_MAJ(amdgpu_ip_version(adev, UMC_HWIP, 0)) < 12)
-		control->ras_num_pa_recs += num;
-	else
-		control->ras_num_mca_recs += num;
-
-	control->ras_num_bad_pages = con->bad_page_num;
 Out:
 	kfree(buf);
 	return res;
@@ -784,44 +611,23 @@ amdgpu_ras_eeprom_update_header(struct amdgpu_ras_eeprom_control *control)
 	/* Modify the header if it exceeds.
 	 */
 	if (amdgpu_bad_page_threshold != 0 &&
-	    control->ras_num_bad_pages > ras->bad_page_cnt_threshold) {
+	    control->ras_num_recs >= ras->bad_page_cnt_threshold) {
 		dev_warn(adev->dev,
 			"Saved bad pages %d reaches threshold value %d\n",
-			control->ras_num_bad_pages, ras->bad_page_cnt_threshold);
-
-		if (adev->cper.enabled && !amdgpu_uniras_enabled(adev) &&
-		    amdgpu_cper_generate_bp_threshold_record(adev))
-			dev_warn(adev->dev, "fail to generate bad page threshold cper records\n");
-
-		if ((amdgpu_bad_page_threshold != -1) &&
-		    (amdgpu_bad_page_threshold != -2)) {
-			control->tbl_hdr.header = RAS_TABLE_HDR_BAD;
-			if (control->tbl_hdr.version >= RAS_TABLE_VER_V2_1) {
-				control->tbl_rai.rma_status = GPU_RETIRED__ECC_REACH_THRESHOLD;
-				control->tbl_rai.health_percent = 0;
-			}
-			ras->is_rma = true;
-		}
-
-		/* ignore the -ENOTSUPP return value */
-		amdgpu_dpm_send_rma_reason(adev);
+			control->ras_num_recs, ras->bad_page_cnt_threshold);
+		control->tbl_hdr.header = RAS_TABLE_HDR_BAD;
 	}
 
-	if (control->tbl_hdr.version >= RAS_TABLE_VER_V2_1)
-		control->tbl_hdr.tbl_size = RAS_TABLE_HEADER_SIZE +
-					    RAS_TABLE_V2_1_INFO_SIZE +
-					    control->ras_num_recs * RAS_TABLE_RECORD_SIZE;
-	else
-		control->tbl_hdr.tbl_size = RAS_TABLE_HEADER_SIZE +
-					    control->ras_num_recs * RAS_TABLE_RECORD_SIZE;
+	control->tbl_hdr.version = RAS_TABLE_VER;
+	control->tbl_hdr.first_rec_offset = RAS_INDEX_TO_OFFSET(control, control->ras_fri);
+	control->tbl_hdr.tbl_size = RAS_TABLE_HEADER_SIZE + control->ras_num_recs * RAS_TABLE_RECORD_SIZE;
 	control->tbl_hdr.checksum = 0;
 
 	buf_size = control->ras_num_recs * RAS_TABLE_RECORD_SIZE;
 	buf = kcalloc(control->ras_num_recs, RAS_TABLE_RECORD_SIZE, GFP_KERNEL);
 	if (!buf) {
-		dev_err(adev->dev,
-			"allocating memory for table of size %d bytes failed\n",
-			control->tbl_hdr.tbl_size);
+		DRM_ERROR("allocating memory for table of size %d bytes failed\n",
+			  control->tbl_hdr.tbl_size);
 		res = -ENOMEM;
 		goto Out;
 	}
@@ -833,25 +639,15 @@ amdgpu_ras_eeprom_update_header(struct amdgpu_ras_eeprom_control *control)
 				 buf, buf_size);
 	up_read(&adev->reset_domain->sem);
 	if (res < 0) {
-		dev_err(adev->dev, "EEPROM failed reading records:%d\n", res);
+		DRM_ERROR("EEPROM failed reading records:%d\n",
+			  res);
 		goto Out;
 	} else if (res < buf_size) {
-		dev_err(adev->dev, "EEPROM read %d out of %d bytes\n", res,
-			buf_size);
+		DRM_ERROR("EEPROM read %d out of %d bytes\n",
+			  res, buf_size);
 		res = -EIO;
 		goto Out;
 	}
-
-	/**
-	 * bad page records have been stored in eeprom,
-	 * now calculate gpu health percent
-	 */
-	if (amdgpu_bad_page_threshold != 0 &&
-	    control->tbl_hdr.version >= RAS_TABLE_VER_V2_1 &&
-	    control->ras_num_bad_pages <= ras->bad_page_cnt_threshold)
-		control->tbl_rai.health_percent = ((ras->bad_page_cnt_threshold -
-						   control->ras_num_bad_pages) * 100) /
-						   ras->bad_page_cnt_threshold;
 
 	/* Recalc the checksum.
 	 */
@@ -860,82 +656,13 @@ amdgpu_ras_eeprom_update_header(struct amdgpu_ras_eeprom_control *control)
 		csum += *pp;
 
 	csum += __calc_hdr_byte_sum(control);
-	if (control->tbl_hdr.version >= RAS_TABLE_VER_V2_1)
-		csum += __calc_ras_info_byte_sum(control);
 	/* avoid sign extension when assigning to "checksum" */
 	csum = -csum;
 	control->tbl_hdr.checksum = csum;
 	res = __write_table_header(control);
-	if (!res && control->tbl_hdr.version > RAS_TABLE_VER_V1)
-		res = __write_table_ras_info(control);
 Out:
 	kfree(buf);
 	return res;
-}
-
-int amdgpu_ras_eeprom_update_record_num(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	int ret, retry = 20;
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return 0;
-
-	control->ras_num_recs_old = control->ras_num_recs;
-
-	do {
-		/* 1000ms timeout is long enough, smu_get_badpage_count won't
-		 * return -EBUSY before timeout.
-		 */
-		ret = amdgpu_ras_smu_get_badpage_count(adev,
-			&(control->ras_num_recs), RAS_SMU_MESSAGE_TIMEOUT_MS);
-		if (!ret &&
-		    (control->ras_num_recs_old == control->ras_num_recs)) {
-			/* record number update in PMFW needs some time,
-			 * smu_get_badpage_count may return immediately without
-			 * count update, sleep for a while and retry again.
-			 */
-			msleep(50);
-			retry--;
-		} else {
-			break;
-		}
-	} while (retry);
-
-	/* no update of record number is not a real failure,
-	 * don't print warning here
-	 */
-	if (!ret && (control->ras_num_recs_old == control->ras_num_recs))
-		ret = -EINVAL;
-
-	return ret;
-}
-
-static int amdgpu_ras_smu_eeprom_append(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	struct amdgpu_ras *con = amdgpu_ras_get_context(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev) || !con)
-		return 0;
-
-	control->ras_num_bad_pages = con->bad_page_num;
-
-	if (amdgpu_bad_page_threshold != 0 &&
-	    control->ras_num_bad_pages > con->bad_page_cnt_threshold) {
-		dev_warn(adev->dev,
-			"Saved bad pages %d reaches threshold value %d\n",
-			control->ras_num_bad_pages, con->bad_page_cnt_threshold);
-
-		if (adev->cper.enabled && amdgpu_cper_generate_bp_threshold_record(adev))
-			dev_warn(adev->dev, "fail to generate bad page threshold cper records\n");
-
-		if ((amdgpu_bad_page_threshold != -1) &&
-		    (amdgpu_bad_page_threshold != -2))
-			con->is_rma = true;
-	}
-
-	return 0;
 }
 
 /**
@@ -956,31 +683,19 @@ int amdgpu_ras_eeprom_append(struct amdgpu_ras_eeprom_control *control,
 			     const u32 num)
 {
 	struct amdgpu_device *adev = to_amdgpu_device(control);
-	int res, i;
-	uint64_t nps = AMDGPU_NPS1_PARTITION_MODE;
+	int res;
 
 	if (!__is_ras_eeprom_supported(adev))
 		return 0;
 
-	if (amdgpu_ras_smu_eeprom_supported(adev))
-		return amdgpu_ras_smu_eeprom_append(control);
-
 	if (num == 0) {
-		dev_err(adev->dev, "will not append 0 records\n");
+		DRM_ERROR("will not append 0 records\n");
 		return -EINVAL;
 	} else if (num > control->ras_max_record_count) {
-		dev_err(adev->dev,
-			"cannot append %d records than the size of table %d\n",
-			num, control->ras_max_record_count);
+		DRM_ERROR("cannot append %d records than the size of table %d\n",
+			  num, control->ras_max_record_count);
 		return -EINVAL;
 	}
-
-	if (adev->gmc.gmc_funcs->query_mem_partition_mode)
-		nps = adev->gmc.gmc_funcs->query_mem_partition_mode(adev);
-
-	/* set the new channel index flag */
-	for (i = 0; i < num; i++)
-		record[i].retired_page |= (nps << UMC_NPS_SHIFT);
 
 	mutex_lock(&control->ras_tbl_mutex);
 
@@ -991,11 +706,6 @@ int amdgpu_ras_eeprom_append(struct amdgpu_ras_eeprom_control *control,
 		amdgpu_ras_debugfs_set_ret_size(control);
 
 	mutex_unlock(&control->ras_tbl_mutex);
-
-	/* clear channel index flag, the flag is only saved on eeprom */
-	for (i = 0; i < num; i++)
-		record[i].retired_page &= ~(nps << UMC_NPS_SHIFT);
-
 	return res;
 }
 
@@ -1025,63 +735,19 @@ static int __amdgpu_ras_eeprom_read(struct amdgpu_ras_eeprom_control *control,
 				 buf, buf_size);
 	up_read(&adev->reset_domain->sem);
 	if (res < 0) {
-		dev_err(adev->dev, "Reading %d EEPROM table records error:%d",
-			num, res);
+		DRM_ERROR("Reading %d EEPROM table records error:%d",
+			  num, res);
 	} else if (res < buf_size) {
 		/* Short read, return error.
 		 */
-		dev_err(adev->dev, "Read %d records out of %d",
-			res / RAS_TABLE_RECORD_SIZE, num);
+		DRM_ERROR("Read %d records out of %d",
+			  res / RAS_TABLE_RECORD_SIZE, num);
 		res = -EIO;
 	} else {
 		res = 0;
 	}
 
 	return res;
-}
-
-int amdgpu_ras_eeprom_read_idx(struct amdgpu_ras_eeprom_control *control,
-			struct eeprom_table_record *record, u32 rec_idx,
-			const u32 num)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	uint64_t ts, end_idx;
-	int i, ret;
-	u64 mca, ipid;
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return 0;
-
-	if (!adev->umc.ras || !adev->umc.ras->mca_ipid_parse)
-		return -EOPNOTSUPP;
-
-	end_idx = rec_idx + num;
-	for (i = rec_idx; i < end_idx; i++) {
-		ret = amdgpu_ras_smu_get_badpage_mca_addr(adev, i, &mca);
-		if (ret)
-			return ret;
-
-		ret = amdgpu_ras_smu_get_badpage_ipid(adev, i, &ipid);
-		if (ret)
-			return ret;
-
-		ret = amdgpu_ras_smu_get_timestamp(adev, i, &ts);
-		if (ret)
-			return ret;
-
-		record[i - rec_idx].address = mca;
-		/* retired_page (pa) is unused now */
-		record[i - rec_idx].retired_page = 0x1ULL;
-		record[i - rec_idx].ts = ts;
-		record[i - rec_idx].err_type = AMDGPU_RAS_EEPROM_ERR_NON_RECOVERABLE;
-
-		adev->umc.ras->mca_ipid_parse(adev, ipid,
-			(uint32_t *)&(record[i - rec_idx].cu),
-			(uint32_t *)&(record[i - rec_idx].mem_channel),
-			(uint32_t *)&(record[i - rec_idx].mcumc_id), NULL);
-	}
-
-	return 0;
 }
 
 /**
@@ -1105,18 +771,15 @@ int amdgpu_ras_eeprom_read(struct amdgpu_ras_eeprom_control *control,
 	u8 *buf, *pp;
 	u32 g0, g1;
 
-	if (amdgpu_ras_smu_eeprom_supported(adev))
-		return amdgpu_ras_eeprom_read_idx(control, record, 0, num);
-
 	if (!__is_ras_eeprom_supported(adev))
 		return 0;
 
 	if (num == 0) {
-		dev_err(adev->dev, "will not read 0 records\n");
+		DRM_ERROR("will not read 0 records\n");
 		return -EINVAL;
 	} else if (num > control->ras_num_recs) {
-		dev_err(adev->dev, "too many records to read:%d available:%d\n",
-			num, control->ras_num_recs);
+		DRM_ERROR("too many records to read:%d available:%d\n",
+			  num, control->ras_num_recs);
 		return -EINVAL;
 	}
 
@@ -1175,8 +838,7 @@ int amdgpu_ras_eeprom_read(struct amdgpu_ras_eeprom_control *control,
 		__decode_table_record_from_buf(control, &record[i], pp);
 
 		/* update bad channel bitmap */
-		if ((record[i].mem_channel < BITS_PER_TYPE(control->bad_channel_bitmap)) &&
-		    !(control->bad_channel_bitmap & (1 << record[i].mem_channel))) {
+		if (!(control->bad_channel_bitmap & (1 << record[i].mem_channel))) {
 			control->bad_channel_bitmap |= 1 << record[i].mem_channel;
 			con->update_channel_flag = true;
 		}
@@ -1188,15 +850,9 @@ Out:
 	return res;
 }
 
-uint32_t amdgpu_ras_eeprom_max_record_count(struct amdgpu_ras_eeprom_control *control)
+uint32_t amdgpu_ras_eeprom_max_record_count(void)
 {
-	/* get available eeprom table version first before eeprom table init */
-	amdgpu_ras_set_eeprom_table_version(control);
-
-	if (control->tbl_hdr.version >= RAS_TABLE_VER_V2_1)
-		return RAS_MAX_RECORD_COUNT_V2_1;
-	else
-		return RAS_MAX_RECORD_COUNT;
+	return RAS_MAX_RECORD_COUNT;
 }
 
 static ssize_t
@@ -1278,10 +934,6 @@ static ssize_t amdgpu_ras_debugfs_table_read(struct file *f, char __user *buf,
 	const size_t orig_size = size;
 	int res = -EFAULT;
 	size_t data_len;
-
-	/* pmfw manages eeprom data by itself */
-	if (amdgpu_ras_smu_eeprom_supported(adev))
-		return 0;
 
 	mutex_lock(&control->ras_tbl_mutex);
 
@@ -1442,18 +1094,11 @@ static int __verify_ras_table_checksum(struct amdgpu_ras_eeprom_control *control
 	int buf_size, res;
 	u8  csum, *buf, *pp;
 
-	if (control->tbl_hdr.version >= RAS_TABLE_VER_V2_1)
-		buf_size = RAS_TABLE_HEADER_SIZE +
-			   RAS_TABLE_V2_1_INFO_SIZE +
-			   control->ras_num_recs * RAS_TABLE_RECORD_SIZE;
-	else
-		buf_size = RAS_TABLE_HEADER_SIZE +
-			   control->ras_num_recs * RAS_TABLE_RECORD_SIZE;
-
+	buf_size = RAS_TABLE_HEADER_SIZE +
+		control->ras_num_recs * RAS_TABLE_RECORD_SIZE;
 	buf = kzalloc(buf_size, GFP_KERNEL);
 	if (!buf) {
-		dev_err(adev->dev,
-			"Out of memory checking RAS table checksum.\n");
+		DRM_ERROR("Out of memory checking RAS table checksum.\n");
 		return -ENOMEM;
 	}
 
@@ -1462,7 +1107,7 @@ static int __verify_ras_table_checksum(struct amdgpu_ras_eeprom_control *control
 				 control->ras_header_offset,
 				 buf, buf_size);
 	if (res < buf_size) {
-		dev_err(adev->dev, "Partial read for checksum, res:%d\n", res);
+		DRM_ERROR("Partial read for checksum, res:%d\n", res);
 		/* On partial reads, return -EIO.
 		 */
 		if (res >= 0)
@@ -1478,78 +1123,8 @@ Out:
 	return res < 0 ? res : csum;
 }
 
-static int __read_table_ras_info(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_ras_eeprom_table_ras_info *rai = &control->tbl_rai;
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	unsigned char *buf;
-	int res;
-
-	buf = kzalloc(RAS_TABLE_V2_1_INFO_SIZE, GFP_KERNEL);
-	if (!buf) {
-		dev_err(adev->dev,
-			"Failed to alloc buf to read EEPROM table ras info\n");
-		return -ENOMEM;
-	}
-
-	/**
-	 * EEPROM table V2_1 supports ras info,
-	 * read EEPROM table ras info
-	 */
-	res = amdgpu_eeprom_read(adev->pm.ras_eeprom_i2c_bus,
-				 control->i2c_address + control->ras_info_offset,
-				 buf, RAS_TABLE_V2_1_INFO_SIZE);
-	if (res < RAS_TABLE_V2_1_INFO_SIZE) {
-		dev_err(adev->dev,
-			"Failed to read EEPROM table ras info, res:%d", res);
-		res = res >= 0 ? -EIO : res;
-		goto Out;
-	}
-
-	__decode_table_ras_info_from_buf(rai, buf);
-
-Out:
-	kfree(buf);
-	return res == RAS_TABLE_V2_1_INFO_SIZE ? 0 : res;
-}
-
-static int amdgpu_ras_smu_eeprom_init(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	struct amdgpu_ras_eeprom_table_header *hdr = &control->tbl_hdr;
-	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
-	uint64_t local_time;
-	int res;
-
-	ras->is_rma = false;
-
-	if (!__is_ras_eeprom_supported(adev))
-		return 0;
-	mutex_init(&control->ras_tbl_mutex);
-
-	res = amdgpu_ras_smu_get_table_version(adev, &(hdr->version));
-	if (res)
-		return res;
-
-	res = amdgpu_ras_smu_get_badpage_count(adev,
-								&(control->ras_num_recs), 100);
-	if (res)
-		return res;
-
-	local_time = (uint64_t)ktime_get_real_seconds();
-	res = amdgpu_ras_smu_set_timestamp(adev, local_time);
-	if (res)
-		return res;
-
-	control->ras_max_record_count = 4000;
-
-	control->ras_num_mca_recs = 0;
-	control->ras_num_pa_recs = 0;
-
-	return 0;
-}
-
-int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control)
+int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control,
+			   bool *exceed_err_limit)
 {
 	struct amdgpu_device *adev = to_amdgpu_device(control);
 	unsigned char buf[RAS_TABLE_HEADER_SIZE] = { 0 };
@@ -1557,10 +1132,7 @@ int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control)
 	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
 	int res;
 
-	if (amdgpu_ras_smu_eeprom_supported(adev))
-		return amdgpu_ras_smu_eeprom_init(control);
-
-	ras->is_rma = false;
+	*exceed_err_limit = false;
 
 	if (!__is_ras_eeprom_supported(adev))
 		return 0;
@@ -1573,7 +1145,8 @@ int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control)
 		return -EINVAL;
 
 	control->ras_header_offset = RAS_HDR_START;
-	control->ras_info_offset = RAS_TABLE_V2_1_INFO_START;
+	control->ras_record_offset = RAS_RECORD_START;
+	control->ras_max_record_count  = RAS_MAX_RECORD_COUNT;
 	mutex_init(&control->ras_tbl_mutex);
 
 	/* Read the table header from EEPROM address */
@@ -1581,157 +1154,36 @@ int amdgpu_ras_eeprom_init(struct amdgpu_ras_eeprom_control *control)
 				 control->i2c_address + control->ras_header_offset,
 				 buf, RAS_TABLE_HEADER_SIZE);
 	if (res < RAS_TABLE_HEADER_SIZE) {
-		dev_err(adev->dev, "Failed to read EEPROM table header, res:%d",
-			res);
+		DRM_ERROR("Failed to read EEPROM table header, res:%d", res);
 		return res >= 0 ? -EIO : res;
 	}
 
 	__decode_table_header_from_buf(hdr, buf);
 
-	if (hdr->header != RAS_TABLE_HDR_VAL &&
-	    hdr->header != RAS_TABLE_HDR_BAD) {
-		dev_info(adev->dev, "Creating a new EEPROM table");
-		return amdgpu_ras_eeprom_reset_table(control);
-	}
-
-	switch (hdr->version) {
-	case RAS_TABLE_VER_V2_1:
-	case RAS_TABLE_VER_V3:
-		control->ras_num_recs = RAS_NUM_RECS_V2_1(hdr);
-		control->ras_record_offset = RAS_RECORD_START_V2_1;
-		control->ras_max_record_count = RAS_MAX_RECORD_COUNT_V2_1;
-		break;
-	case RAS_TABLE_VER_V1:
-		control->ras_num_recs = RAS_NUM_RECS(hdr);
-		control->ras_record_offset = RAS_RECORD_START;
-		control->ras_max_record_count = RAS_MAX_RECORD_COUNT;
-		break;
-	default:
-		dev_err(adev->dev,
-			"RAS header invalid, unsupported version: %u",
-			hdr->version);
-		return -EINVAL;
-	}
-
-	if (control->ras_num_recs > control->ras_max_record_count) {
-		dev_err(adev->dev,
-			"RAS header invalid, records in header: %u max allowed :%u",
-			control->ras_num_recs, control->ras_max_record_count);
-		return -EINVAL;
-	}
-
+	control->ras_num_recs = RAS_NUM_RECS(hdr);
 	control->ras_fri = RAS_OFFSET_TO_INDEX(control, hdr->first_rec_offset);
-	control->ras_num_mca_recs = 0;
-	control->ras_num_pa_recs = 0;
-	return 0;
-}
-
-static int amdgpu_ras_smu_eeprom_check(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
-
-	if (!__is_ras_eeprom_supported(adev))
-		return 0;
-
-	control->ras_num_bad_pages = ras->bad_page_num;
-
-	if ((ras->bad_page_cnt_threshold < control->ras_num_bad_pages) &&
-	    amdgpu_bad_page_threshold != 0) {
-		dev_warn(adev->dev,
-			"RAS records:%d exceed threshold:%d\n",
-			control->ras_num_bad_pages, ras->bad_page_cnt_threshold);
-		if ((amdgpu_bad_page_threshold == -1) ||
-			(amdgpu_bad_page_threshold == -2)) {
-			dev_warn(adev->dev,
-				 "Please consult AMD Service Action Guide (SAG) for appropriate service procedures\n");
-		} else {
-			ras->is_rma = true;
-			dev_warn(adev->dev,
-				 "User defined threshold is set, runtime service will be halt when threshold is reached\n");
-		}
-
-		return 0;
-	}
-
-	dev_dbg(adev->dev,
-		"Found existing EEPROM table with %d records",
-		control->ras_num_bad_pages);
-
-	/* Warn if we are at 90% of the threshold or above
-	 */
-	if (10 * control->ras_num_bad_pages >= 9 * ras->bad_page_cnt_threshold)
-		dev_warn(adev->dev, "RAS records:%u exceeds 90%% of threshold:%d",
-				control->ras_num_bad_pages,
-				ras->bad_page_cnt_threshold);
-	return 0;
-}
-
-int amdgpu_ras_eeprom_check(struct amdgpu_ras_eeprom_control *control)
-{
-	struct amdgpu_device *adev = to_amdgpu_device(control);
-	struct amdgpu_ras_eeprom_table_header *hdr = &control->tbl_hdr;
-	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
-	int res = 0;
-
-	if (amdgpu_ras_smu_eeprom_supported(adev))
-		return amdgpu_ras_smu_eeprom_check(control);
-
-	if (!__is_ras_eeprom_supported(adev))
-		return 0;
-
-	/* Verify i2c adapter is initialized */
-	if (!adev->pm.ras_eeprom_i2c_bus || !adev->pm.ras_eeprom_i2c_bus->algo)
-		return -ENOENT;
-
-	if (!__get_eeprom_i2c_addr(adev, control))
-		return -EINVAL;
-
-	control->ras_num_bad_pages = ras->bad_page_num;
 
 	if (hdr->header == RAS_TABLE_HDR_VAL) {
-		dev_dbg(adev->dev,
-			"Found existing EEPROM table with %d records",
-			control->ras_num_bad_pages);
-
-		if (hdr->version >= RAS_TABLE_VER_V2_1) {
-			res = __read_table_ras_info(control);
-			if (res)
-				return res;
-		}
-
+		DRM_DEBUG_DRIVER("Found existing EEPROM table with %d records",
+				 control->ras_num_recs);
 		res = __verify_ras_table_checksum(control);
 		if (res)
-			dev_err(adev->dev,
-				"RAS table incorrect checksum or error:%d\n",
-				res);
+			DRM_ERROR("RAS table incorrect checksum or error:%d\n",
+				  res);
 
 		/* Warn if we are at 90% of the threshold or above
 		 */
-		if (10 * control->ras_num_bad_pages >= 9 * ras->bad_page_cnt_threshold)
+		if (10 * control->ras_num_recs >= 9 * ras->bad_page_cnt_threshold)
 			dev_warn(adev->dev, "RAS records:%u exceeds 90%% of threshold:%d",
-					control->ras_num_bad_pages,
+					control->ras_num_recs,
 					ras->bad_page_cnt_threshold);
-		if (amdgpu_bad_page_threshold != 0 &&
-			control->ras_num_bad_pages >= ras->bad_page_cnt_threshold)
-			amdgpu_dpm_send_rma_reason(adev);
-
 	} else if (hdr->header == RAS_TABLE_HDR_BAD &&
 		   amdgpu_bad_page_threshold != 0) {
-		if (hdr->version >= RAS_TABLE_VER_V2_1) {
-			res = __read_table_ras_info(control);
-			if (res)
-				return res;
-		}
-
 		res = __verify_ras_table_checksum(control);
-		if (res) {
-			dev_err(adev->dev,
-				"RAS Table incorrect checksum or error:%d\n",
-				res);
-			return -EINVAL;
-		}
-		if (ras->bad_page_cnt_threshold >= control->ras_num_bad_pages) {
+		if (res)
+			DRM_ERROR("RAS Table incorrect checksum or error:%d\n",
+				  res);
+		if (ras->bad_page_cnt_threshold > control->ras_num_recs) {
 			/* This means that, the threshold was increased since
 			 * the last time the system was booted, and now,
 			 * ras->bad_page_cnt_threshold - control->num_recs > 0,
@@ -1741,194 +1193,29 @@ int amdgpu_ras_eeprom_check(struct amdgpu_ras_eeprom_control *control)
 			dev_info(adev->dev,
 				 "records:%d threshold:%d, resetting "
 				 "RAS table header signature",
-				 control->ras_num_bad_pages,
+				 control->ras_num_recs,
 				 ras->bad_page_cnt_threshold);
 			res = amdgpu_ras_eeprom_correct_header_tag(control,
 								   RAS_TABLE_HDR_VAL);
 		} else {
-			dev_warn(adev->dev,
-				"RAS records:%d exceed threshold:%d\n",
-				control->ras_num_bad_pages, ras->bad_page_cnt_threshold);
-			if ((amdgpu_bad_page_threshold == -1) ||
-			    (amdgpu_bad_page_threshold == -2)) {
+			dev_err(adev->dev, "RAS records:%d exceed threshold:%d",
+				control->ras_num_recs, ras->bad_page_cnt_threshold);
+			if (amdgpu_bad_page_threshold == -1) {
+				dev_warn(adev->dev, "GPU will be initialized due to bad_page_threshold = -1.");
 				res = 0;
-				dev_warn(adev->dev,
-					 "Please consult AMD Service Action Guide (SAG) for appropriate service procedures\n");
 			} else {
-				ras->is_rma = true;
-				dev_warn(adev->dev,
-					 "User defined threshold is set, runtime service will be halt when threshold is reached\n");
+				*exceed_err_limit = true;
+				dev_err(adev->dev,
+					"RAS records:%d exceed threshold:%d, "
+					"GPU will not be initialized. Replace this GPU or increase the threshold",
+					control->ras_num_recs, ras->bad_page_cnt_threshold);
 			}
 		}
+	} else {
+		DRM_INFO("Creating a new EEPROM table");
+
+		res = amdgpu_ras_eeprom_reset_table(control);
 	}
 
 	return res < 0 ? res : 0;
-}
-
-void amdgpu_ras_eeprom_check_and_recover(struct amdgpu_device *adev)
-{
-	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
-	struct amdgpu_ras_eeprom_control *control;
-	int res;
-
-	if (!__is_ras_eeprom_supported(adev) || !ras ||
-	    amdgpu_ras_smu_eeprom_supported(adev))
-		return;
-	control = &ras->eeprom_control;
-	if (!control->is_eeprom_valid)
-		return;
-	res = __verify_ras_table_checksum(control);
-	if (res) {
-		dev_warn(adev->dev,
-			"RAS table incorrect checksum or error:%d, try to recover\n",
-			res);
-		if (!amdgpu_ras_eeprom_reset_table(control))
-			if (!amdgpu_ras_save_bad_pages(adev, NULL))
-				if (!__verify_ras_table_checksum(control)) {
-					dev_info(adev->dev, "RAS table recovery succeed\n");
-					return;
-				}
-		dev_err(adev->dev, "RAS table recovery failed\n");
-		control->is_eeprom_valid = false;
-	}
-	return;
-}
-
-static const struct ras_smu_drv *amdgpu_ras_get_smu_ras_drv(struct amdgpu_device *adev)
-{
-	struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
-
-	if (!ras)
-		return NULL;
-
-	return ras->ras_smu_drv;
-}
-
-static uint64_t amdgpu_ras_smu_get_feature_flags(struct amdgpu_device *adev)
-{
-	const struct ras_smu_drv *ras_smu_drv = amdgpu_ras_get_smu_ras_drv(adev);
-	uint64_t flags = 0ULL;
-
-	if (!ras_smu_drv)
-		goto out;
-
-	if (ras_smu_drv->ras_smu_feature_flags)
-		ras_smu_drv->ras_smu_feature_flags(adev, &flags);
-
-out:
-	return flags;
-}
-
-bool amdgpu_ras_smu_eeprom_supported(struct amdgpu_device *adev)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-	uint64_t flags = 0ULL;
-
-	if (!__is_ras_eeprom_supported(adev) || !smu_ras_drv)
-		return false;
-
-	if (!smu_ras_drv->smu_eeprom_funcs)
-		return false;
-
-	flags = amdgpu_ras_smu_get_feature_flags(adev);
-
-	return !!(flags & RAS_SMU_FEATURE_BIT__RAS_EEPROM);
-}
-
-int amdgpu_ras_smu_get_table_version(struct amdgpu_device *adev,
-				     uint32_t *table_version)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return -EOPNOTSUPP;
-
-	if (smu_ras_drv->smu_eeprom_funcs->get_ras_table_version)
-		return smu_ras_drv->smu_eeprom_funcs->get_ras_table_version(adev,
-										 table_version);
-	return -EOPNOTSUPP;
-}
-
-int amdgpu_ras_smu_get_badpage_count(struct amdgpu_device *adev,
-				     uint32_t *count, uint32_t timeout)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return -EOPNOTSUPP;
-
-	if (smu_ras_drv->smu_eeprom_funcs->get_badpage_count)
-		return smu_ras_drv->smu_eeprom_funcs->get_badpage_count(adev,
-									     count, timeout);
-	return -EOPNOTSUPP;
-}
-
-int amdgpu_ras_smu_get_badpage_mca_addr(struct amdgpu_device *adev,
-					uint16_t index, uint64_t *mca_addr)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return -EOPNOTSUPP;
-
-	if (smu_ras_drv->smu_eeprom_funcs->get_badpage_mca_addr)
-		return smu_ras_drv->smu_eeprom_funcs->get_badpage_mca_addr(adev,
-										index, mca_addr);
-	return -EOPNOTSUPP;
-}
-
-int amdgpu_ras_smu_set_timestamp(struct amdgpu_device *adev,
-				 uint64_t timestamp)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return -EOPNOTSUPP;
-
-	if (smu_ras_drv->smu_eeprom_funcs->set_timestamp)
-		return smu_ras_drv->smu_eeprom_funcs->set_timestamp(adev,
-									 timestamp);
-	return -EOPNOTSUPP;
-}
-
-int amdgpu_ras_smu_get_timestamp(struct amdgpu_device *adev,
-				 uint16_t index, uint64_t *timestamp)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return -EOPNOTSUPP;
-
-	if (smu_ras_drv->smu_eeprom_funcs->get_timestamp)
-		return smu_ras_drv->smu_eeprom_funcs->get_timestamp(adev,
-									 index, timestamp);
-	return -EOPNOTSUPP;
-}
-
-int amdgpu_ras_smu_get_badpage_ipid(struct amdgpu_device *adev,
-				    uint16_t index, uint64_t *ipid)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return -EOPNOTSUPP;
-
-	if (smu_ras_drv->smu_eeprom_funcs->get_badpage_ipid)
-		return smu_ras_drv->smu_eeprom_funcs->get_badpage_ipid(adev,
-									    index, ipid);
-	return -EOPNOTSUPP;
-}
-
-int amdgpu_ras_smu_erase_ras_table(struct amdgpu_device *adev,
-				   uint32_t *result)
-{
-	const struct ras_smu_drv *smu_ras_drv = amdgpu_ras_get_smu_ras_drv(adev);
-
-	if (!amdgpu_ras_smu_eeprom_supported(adev))
-		return -EOPNOTSUPP;
-
-	if (smu_ras_drv->smu_eeprom_funcs->erase_ras_table)
-		return smu_ras_drv->smu_eeprom_funcs->erase_ras_table(adev,
-									   result);
-	return -EOPNOTSUPP;
 }

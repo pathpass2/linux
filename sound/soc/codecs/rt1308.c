@@ -11,8 +11,10 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
+#include <linux/of_gpio.h>
 #include <linux/acpi.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
@@ -523,7 +525,7 @@ static int rt1308_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	unsigned int reg_val = 0, reg1_val = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		rt1308->master = 0;
 		break;
 	default:
@@ -771,7 +773,7 @@ static const struct regmap_config rt1308_regmap = {
 	.max_register = RT1308_MAX_REG,
 	.volatile_reg = rt1308_volatile_register,
 	.readable_reg = rt1308_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = rt1308_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1308_reg),
 	.use_single_read = true,
@@ -781,21 +783,21 @@ static const struct regmap_config rt1308_regmap = {
 #ifdef CONFIG_OF
 static const struct of_device_id rt1308_of_match[] = {
 	{ .compatible = "realtek,rt1308", },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(of, rt1308_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1308_acpi_match[] = {
-	{ "10EC1308" },
-	{ }
+	{ "10EC1308", 0, },
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, rt1308_acpi_match);
 #endif
 
 static const struct i2c_device_id rt1308_i2c_id[] = {
-	{ "rt1308" },
+	{ "rt1308", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1308_i2c_id);
@@ -860,7 +862,7 @@ static struct i2c_driver rt1308_i2c_driver = {
 		.of_match_table = of_match_ptr(rt1308_of_match),
 		.acpi_match_table = ACPI_PTR(rt1308_acpi_match),
 	},
-	.probe = rt1308_i2c_probe,
+	.probe_new = rt1308_i2c_probe,
 	.shutdown = rt1308_i2c_shutdown,
 	.id_table = rt1308_i2c_id,
 };

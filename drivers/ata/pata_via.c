@@ -201,9 +201,11 @@ static int via_cable_detect(struct ata_port *ap) {
 	   two drives */
 	if (ata66 & (0x10100000 >> (16 * ap->port_no)))
 		return ATA_CBL_PATA80;
-
 	/* Check with ACPI so we can spot BIOS reported SATA bridges */
-	return ata_acpi_cbl_pata_type(ap);
+	if (ata_acpi_init_gtm(ap) &&
+	    ata_acpi_cbl_80wire(ap, ata_acpi_init_gtm(ap)))
+		return ATA_CBL_PATA80;
+	return ATA_CBL_PATA40;
 }
 
 static int via_pre_reset(struct ata_link *link, unsigned long deadline)
@@ -366,8 +368,7 @@ static unsigned int via_mode_filter(struct ata_device *dev, unsigned int mask)
 	}
 
 	if (dev->class == ATA_DEV_ATAPI &&
-	    (dmi_check_system(no_atapi_dma_dmi_table) ||
-	     config->id == PCI_DEVICE_ID_VIA_6415)) {
+	    dmi_check_system(no_atapi_dma_dmi_table)) {
 		ata_dev_warn(dev, "controller locks up on ATAPI DMA, forcing PIO\n");
 		mask &= ATA_MASK_PIO;
 	}
@@ -442,7 +443,7 @@ static int via_port_start(struct ata_port *ap)
 	return 0;
 }
 
-static const struct scsi_host_template via_sht = {
+static struct scsi_host_template via_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -451,7 +452,7 @@ static struct ata_port_operations via_port_ops = {
 	.cable_detect	= via_cable_detect,
 	.set_piomode	= via_set_piomode,
 	.set_dmamode	= via_set_dmamode,
-	.reset.prereset	= via_pre_reset,
+	.prereset	= via_pre_reset,
 	.sff_tf_load	= via_tf_load,
 	.port_start	= via_port_start,
 	.mode_filter	= via_mode_filter,

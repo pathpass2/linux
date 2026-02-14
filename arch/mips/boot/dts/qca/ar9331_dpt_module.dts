@@ -97,7 +97,3 @@
 &phy_port4 {
 	status = "okay";
 };
-
-&wifi {
-	status = "okay";
-};

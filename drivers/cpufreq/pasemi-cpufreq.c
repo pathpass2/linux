@@ -204,19 +204,21 @@ out:
 	return err;
 }
 
-static void pas_cpufreq_cpu_exit(struct cpufreq_policy *policy)
+static int pas_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 {
 	/*
 	 * We don't support CPU hotplug. Don't unmap after the system
 	 * has already made it to a running state.
 	 */
 	if (system_state >= SYSTEM_RUNNING)
-		return;
+		return 0;
 
 	if (sdcasr_mapbase)
 		iounmap(sdcasr_mapbase);
 	if (sdcpwr_mapbase)
 		iounmap(sdcpwr_mapbase);
+
+	return 0;
 }
 
 static int pas_cpufreq_target(struct cpufreq_policy *policy,
@@ -245,6 +247,7 @@ static struct cpufreq_driver pas_cpufreq_driver = {
 	.exit		= pas_cpufreq_cpu_exit,
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= pas_cpufreq_target,
+	.attr		= cpufreq_generic_attr,
 };
 
 /*
@@ -268,6 +271,5 @@ static void __exit pas_cpufreq_exit(void)
 module_init(pas_cpufreq_init);
 module_exit(pas_cpufreq_exit);
 
-MODULE_DESCRIPTION("cpufreq driver for PA Semi PWRficient");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Egor Martovetsky <egor@pasemi.com>, Olof Johansson <olof@lixom.net>");

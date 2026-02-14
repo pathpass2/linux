@@ -1,7 +1,7 @@
 .. SPDX-License-Identifier: GPL-2.0
 
 ===============
-Fault-injection
+fault-injection
 ===============
 
 .. toctree::
@@ -11,3 +11,10 @@ Fault-injection
     notifier-error-inject
     nvme-fault-injection
     provoke-crashes
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

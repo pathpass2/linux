@@ -383,6 +383,7 @@ static __init bool randomized_test(void)
 		for (i = 0; i < NUM_QUERIES; ++i) {
 			get_random_bytes(ip, 4);
 			if (lookup(t.root4, 32, ip) != horrible_allowedips_lookup_v4(&h, (struct in_addr *)ip)) {
+				horrible_allowedips_lookup_v4(&h, (struct in_addr *)ip);
 				pr_err("allowedips random v4 self-test: FAIL\n");
 				goto free;
 			}
@@ -458,10 +459,6 @@ static __init struct wg_peer *init_peer(void)
 
 #define insert(version, mem, ipa, ipb, ipc, ipd, cidr)                       \
 	wg_allowedips_insert_v##version(&t, ip##version(ipa, ipb, ipc, ipd), \
-					cidr, mem, &mutex)
-
-#define remove(version, mem, ipa, ipb, ipc, ipd, cidr)                      \
-	wg_allowedips_remove_v##version(&t, ip##version(ipa, ipb, ipc, ipd), \
 					cidr, mem, &mutex)
 
 #define maybe_fail() do {                                               \
@@ -589,50 +586,6 @@ bool __init wg_allowedips_selftest(void)
 	test_negative(4, a, 192, 0, 0, 0);
 	test_negative(4, a, 255, 0, 0, 0);
 
-	insert(4, a, 1, 0, 0, 0, 32);
-	insert(4, a, 192, 0, 0, 0, 24);
-	insert(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef, 128);
-	insert(6, a, 0x24446800, 0xf0e40800, 0xeeaebeef, 0, 98);
-	test(4, a, 1, 0, 0, 0);
-	test(4, a, 192, 0, 0, 1);
-	test(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef);
-	test(6, a, 0x24446800, 0xf0e40800, 0xeeaebeef, 0x10101010);
-	/* Must be an exact match to remove */
-	remove(4, a, 192, 0, 0, 0, 32);
-	test(4, a, 192, 0, 0, 1);
-	/* NULL peer should have no effect and return 0 */
-	test_boolean(!remove(4, NULL, 192, 0, 0, 0, 24));
-	test(4, a, 192, 0, 0, 1);
-	/* different peer should have no effect and return 0 */
-	test_boolean(!remove(4, b, 192, 0, 0, 0, 24));
-	test(4, a, 192, 0, 0, 1);
-	/* invalid CIDR should have no effect and return -EINVAL */
-	test_boolean(remove(4, b, 192, 0, 0, 0, 33) == -EINVAL);
-	test(4, a, 192, 0, 0, 1);
-	remove(4, a, 192, 0, 0, 0, 24);
-	test_negative(4, a, 192, 0, 0, 1);
-	remove(4, a, 1, 0, 0, 0, 32);
-	test_negative(4, a, 1, 0, 0, 0);
-	/* Must be an exact match to remove */
-	remove(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef, 96);
-	test(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef);
-	/* NULL peer should have no effect and return 0 */
-	test_boolean(!remove(6, NULL, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef, 128));
-	test(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef);
-	/* different peer should have no effect and return 0 */
-	test_boolean(!remove(6, b, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef, 128));
-	test(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef);
-	/* invalid CIDR should have no effect and return -EINVAL */
-	test_boolean(remove(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef, 129)  == -EINVAL);
-	test(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef);
-	remove(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef, 128);
-	test_negative(6, a, 0x24446801, 0x40e40800, 0xdeaebeef, 0xdefbeef);
-	/* Must match the peer to remove */
-	remove(6, b, 0x24446800, 0xf0e40800, 0xeeaebeef, 0, 98);
-	test(6, a, 0x24446800, 0xf0e40800, 0xeeaebeef, 0x10101010);
-	remove(6, a, 0x24446800, 0xf0e40800, 0xeeaebeef, 0, 98);
-	test_negative(6, a, 0x24446800, 0xf0e40800, 0xeeaebeef, 0x10101010);
-
 	wg_allowedips_free(&t, &mutex);
 	wg_allowedips_init(&t);
 	insert(4, a, 192, 168, 0, 0, 16);
@@ -640,20 +593,16 @@ bool __init wg_allowedips_selftest(void)
 	wg_allowedips_remove_by_peer(&t, a, &mutex);
 	test_negative(4, a, 192, 168, 0, 1);
 
-	/* These will hit the WARN_ON(len >= MAX_ALLOWEDIPS_DEPTH) in free_node
+	/* These will hit the WARN_ON(len >= MAX_ALLOWEDIPS_BITS) in free_node
 	 * if something goes wrong.
 	 */
-	for (i = 0; i < 64; ++i) {
-		part = cpu_to_be64(~0LLU << i);
-		memset(&ip, 0xff, 8);
-		memcpy((u8 *)&ip + 8, &part, 8);
-		wg_allowedips_insert_v6(&t, &ip, 128, a, &mutex);
-		memcpy(&ip, &part, 8);
-		memset((u8 *)&ip + 8, 0, 8);
+	for (i = 0; i < MAX_ALLOWEDIPS_BITS; ++i) {
+		part = cpu_to_be64(~(1LLU << (i % 64)));
+		memset(&ip, 0xff, 16);
+		memcpy((u8 *)&ip + (i < 64) * 8, &part, 8);
 		wg_allowedips_insert_v6(&t, &ip, 128, a, &mutex);
 	}
-	memset(&ip, 0, 16);
-	wg_allowedips_insert_v6(&t, &ip, 128, a, &mutex);
+
 	wg_allowedips_free(&t, &mutex);
 
 	wg_allowedips_init(&t);

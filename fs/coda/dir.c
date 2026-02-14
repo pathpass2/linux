@@ -111,7 +111,7 @@ static inline void coda_dir_update_mtime(struct inode *dir)
 	/* optimistically we can also act as if our nose bleeds. The
 	 * granularity of the mtime is coarse anyways so we might actually be
 	 * right most of the time. Note: we only do this for directories. */
-	inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir));
+	dir->i_mtime = dir->i_ctime = current_time(dir);
 #endif
 }
 
@@ -166,8 +166,8 @@ err_out:
 	return error;
 }
 
-static struct dentry *coda_mkdir(struct mnt_idmap *idmap, struct inode *dir,
-				 struct dentry *de, umode_t mode)
+static int coda_mkdir(struct mnt_idmap *idmap, struct inode *dir,
+		      struct dentry *de, umode_t mode)
 {
 	struct inode *inode;
 	struct coda_vattr attrs;
@@ -177,14 +177,14 @@ static struct dentry *coda_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	struct CodaFid newfid;
 
 	if (is_root_inode(dir) && coda_iscontrol(name, len))
-		return ERR_PTR(-EPERM);
+		return -EPERM;
 
 	attrs.va_mode = mode;
-	error = venus_mkdir(dir->i_sb, coda_i2f(dir),
+	error = venus_mkdir(dir->i_sb, coda_i2f(dir), 
 			       name, len, &newfid, &attrs);
 	if (error)
 		goto err_out;
-
+         
 	inode = coda_iget(dir->i_sb, &newfid, &attrs);
 	if (IS_ERR(inode)) {
 		error = PTR_ERR(inode);
@@ -195,10 +195,10 @@ static struct dentry *coda_mkdir(struct mnt_idmap *idmap, struct inode *dir,
 	coda_dir_inc_nlink(dir);
 	coda_dir_update_mtime(dir);
 	d_instantiate(de, inode);
-	return NULL;
+	return 0;
 err_out:
 	d_drop(de);
-	return ERR_PTR(error);
+	return error;
 }
 
 /* try to make de an entry in dir_inodde linked to source_de */ 
@@ -429,16 +429,30 @@ static int coda_readdir(struct file *coda_file, struct dir_context *ctx)
 	cfi = coda_ftoc(coda_file);
 	host_file = cfi->cfi_container;
 
-	ret = iterate_dir(host_file, ctx);
-	if (ret != -ENOTDIR)
+	if (host_file->f_op->iterate || host_file->f_op->iterate_shared) {
+		struct inode *host_inode = file_inode(host_file);
+		ret = -ENOENT;
+		if (!IS_DEADDIR(host_inode)) {
+			if (host_file->f_op->iterate_shared) {
+				inode_lock_shared(host_inode);
+				ret = host_file->f_op->iterate_shared(host_file, ctx);
+				file_accessed(host_file);
+				inode_unlock_shared(host_inode);
+			} else {
+				inode_lock(host_inode);
+				ret = host_file->f_op->iterate(host_file, ctx);
+				file_accessed(host_file);
+				inode_unlock(host_inode);
+			}
+		}
 		return ret;
+	}
 	/* Venus: we must read Venus dirents from a file */
 	return coda_venus_readdir(coda_file, ctx);
 }
 
 /* called when a cache lookup succeeds */
-static int coda_dentry_revalidate(struct inode *dir, const struct qstr *name,
-				  struct dentry *de, unsigned int flags)
+static int coda_dentry_revalidate(struct dentry *de, unsigned int flags)
 {
 	struct inode *inode;
 	struct coda_inode_info *cii;
@@ -571,11 +585,10 @@ const struct inode_operations coda_dir_inode_operations = {
 	.setattr	= coda_setattr,
 };
 
-WRAP_DIR_ITER(coda_readdir) // FIXME!
 const struct file_operations coda_dir_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
-	.iterate_shared	= shared_coda_readdir,
+	.iterate	= coda_readdir,
 	.open		= coda_open,
 	.release	= coda_release,
 	.fsync		= coda_fsync,

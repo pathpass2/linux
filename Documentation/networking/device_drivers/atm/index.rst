@@ -11,3 +11,10 @@ Contents:
    cxacru
    fore200e
    iphase
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

@@ -41,42 +41,30 @@ static void rv_list(int argc, char **argv)
 {
 	static const char *const usage[] = {
 		"",
-		"  usage: rv list [-h] [container]",
+		"  usage: rv list [-h]",
 		"",
 		"	list all available monitors",
 		"",
 		"	-h/--help: print this menu",
-		"",
-		"	[container]: list only monitors in this container",
 		NULL,
 	};
-	int i, print_help = 0, retval = 0;
-	char *container = NULL;
+	int i;
 
-	if (argc == 2) {
-		if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
-			print_help = 1;
-			retval = 0;
-		} else if (argv[1][0] == '-') {
-			/* assume invalid option */
-			print_help = 1;
-			retval = 1;
-		} else
-			container = argv[1];
-	} else if (argc > 2) {
-		/* more than 2 is always usage */
-		print_help = 1;
-		retval = 1;
-	}
-	if (print_help) {
+	if (argc > 1) {
 		fprintf(stderr, "rv version %s\n", VERSION);
+
+		/* more than 1 is always usage */
 		for (i = 0; usage[i]; i++)
 			fprintf(stderr, "%s\n", usage[i]);
-		exit(retval);
+
+		/* but only -h is valid */
+		if (!strcmp(argv[1], "-h") || !strcmp(argv[1], "--help"))
+			exit(0);
+		else
+			exit(1);
 	}
 
-	ikm_list_monitors(container);
-
+	ikm_list_monitors();
 	exit(0);
 }
 
@@ -86,7 +74,7 @@ static void rv_list(int argc, char **argv)
 static void rv_mon(int argc, char **argv)
 {
 	char *monitor_name;
-	int i, run = 0;
+	int i, run;
 
 	static const char *const usage[] = {
 		"",
@@ -191,7 +179,6 @@ int main(int argc, char **argv)
 		 * and exit.
 		 */
 		signal(SIGINT, stop_rv);
-		signal(SIGTERM, stop_rv);
 
 		rv_mon(argc - 1, &argv[1]);
 	}

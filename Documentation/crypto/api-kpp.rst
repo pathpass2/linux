@@ -1,6 +1,3 @@
-Key-agreement Protocol Primitives (KPP)
-=======================================
-
 Key-agreement Protocol Primitives (KPP) Cipher Algorithm Definitions
 --------------------------------------------------------------------
 

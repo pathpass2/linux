@@ -13,7 +13,7 @@
 	*(__kvm_ex_table)					\
 	__stop___kvm_ex_table = .;
 
-#define HYPERVISOR_RODATA_SECTIONS				\
+#define HYPERVISOR_DATA_SECTIONS				\
 	HYP_SECTION_NAME(.rodata) : {				\
 		. = ALIGN(PAGE_SIZE);				\
 		__hyp_rodata_start = .;				\
@@ -21,15 +21,6 @@
 		*(HYP_SECTION_NAME(.rodata))			\
 		. = ALIGN(PAGE_SIZE);				\
 		__hyp_rodata_end = .;				\
-	}
-
-#define HYPERVISOR_DATA_SECTION					\
-	HYP_SECTION_NAME(.data) : {				\
-		. = ALIGN(PAGE_SIZE);				\
-		__hyp_data_start = .;				\
-		*(HYP_SECTION_NAME(.data))			\
-		. = ALIGN(PAGE_SIZE);				\
-		__hyp_data_end = .;				\
 	}
 
 #define HYPERVISOR_PERCPU_SECTION				\
@@ -60,8 +51,7 @@
 #define SBSS_ALIGN			PAGE_SIZE
 #else /* CONFIG_KVM */
 #define HYPERVISOR_EXTABLE
-#define HYPERVISOR_RODATA_SECTIONS
-#define HYPERVISOR_DATA_SECTION
+#define HYPERVISOR_DATA_SECTIONS
 #define HYPERVISOR_PERCPU_SECTION
 #define HYPERVISOR_RELOC_SECTION
 #define SBSS_ALIGN			0
@@ -136,9 +126,9 @@ jiffies = jiffies_64;
 #ifdef CONFIG_UNWIND_TABLES
 #define UNWIND_DATA_SECTIONS				\
 	.eh_frame : {					\
-		__pi___eh_frame_start = .;		\
+		__eh_frame_start = .;			\
 		*(.eh_frame)				\
-		__pi___eh_frame_end = .;		\
+		__eh_frame_end = .;			\
 	}
 #else
 #define UNWIND_DATA_SECTIONS
@@ -172,7 +162,6 @@ SECTIONS
 	/DISCARD/ : {
 		*(.interp .dynamic)
 		*(.dynsym .dynstr .hash .gnu.hash)
-		*(.ARM.attributes)
 	}
 
 	. = KIMAGE_VADDR;
@@ -192,17 +181,10 @@ SECTIONS
 			KPROBES_TEXT
 			HYPERVISOR_TEXT
 			*(.gnu.warning)
+		. = ALIGN(16);
+		*(.got)			/* Global offset table		*/
 	}
 
-	. = ALIGN(SEGMENT_ALIGN);
-	_etext = .;			/* End of text section */
-
-	/* everything from this point to __init_begin will be marked RO NX */
-	RO_DATA(PAGE_SIZE)
-
-	HYPERVISOR_RODATA_SECTIONS
-
-	.got : { *(.got) }
 	/*
 	 * Make sure that the .got.plt is either completely empty or it
 	 * contains only the lazy dispatch entries.
@@ -210,6 +192,14 @@ SECTIONS
 	.got.plt : { *(.got.plt) }
 	ASSERT(SIZEOF(.got.plt) == 0 || SIZEOF(.got.plt) == 0x18,
 	       "Unexpected GOT/PLT entries detected!")
+
+	. = ALIGN(SEGMENT_ALIGN);
+	_etext = .;			/* End of text section */
+
+	/* everything from this point to __init_begin will be marked RO NX */
+	RO_DATA(PAGE_SIZE)
+
+	HYPERVISOR_DATA_SECTIONS
 
 	/* code sections that are never executed via the kernel mapping */
 	.rodata.text : {
@@ -259,9 +249,9 @@ SECTIONS
 	__inittext_end = .;
 	__initdata_begin = .;
 
-	__pi_init_idmap_pg_dir = .;
+	init_idmap_pg_dir = .;
 	. += INIT_IDMAP_DIR_SIZE;
-	__pi_init_idmap_pg_end = .;
+	init_idmap_pg_end = .;
 
 	.init.data : {
 		INIT_DATA
@@ -275,37 +265,30 @@ SECTIONS
 		EXIT_DATA
 	}
 
-	RUNTIME_CONST_VARIABLES
-
 	PERCPU_SECTION(L1_CACHE_BYTES)
 	HYPERVISOR_PERCPU_SECTION
 
 	HYPERVISOR_RELOC_SECTION
 
 	.rela.dyn : ALIGN(8) {
-		__pi_rela_start = .;
+		__rela_start = .;
 		*(.rela .rela*)
-		__pi_rela_end = .;
+		__rela_end = .;
 	}
 
 	.relr.dyn : ALIGN(8) {
-		__pi_relr_start = .;
+		__relr_start = .;
 		*(.relr.dyn)
-		__pi_relr_end = .;
+		__relr_end = .;
 	}
 
 	. = ALIGN(SEGMENT_ALIGN);
 	__initdata_end = .;
 	__init_end = .;
 
-	.data.rel.ro : { *(.data.rel.ro) }
-	ASSERT(SIZEOF(.data.rel.ro) == 0, "Unexpected RELRO detected!")
-
 	_data = .;
 	_sdata = .;
 	RW_DATA(L1_CACHE_BYTES, PAGE_SIZE, THREAD_ALIGN)
-
-	HYPERVISOR_DATA_SECTION
 
 	/*
 	 * Data written with the MMU off but read with the MMU on requires
@@ -329,23 +312,16 @@ SECTIONS
 	__pecoff_data_rawsize = ABSOLUTE(. - __initdata_begin);
 	_edata = .;
 
-	/* start of zero-init region */
 	BSS_SECTION(SBSS_ALIGN, 0, 0)
-	__pi___bss_start = __bss_start;
 
 	. = ALIGN(PAGE_SIZE);
-	__pi_init_pg_dir = .;
+	init_pg_dir = .;
 	. += INIT_DIR_SIZE;
-	__pi_init_pg_end = .;
-	/* end of zero-init region */
-
-	. += SZ_4K;		/* stack for the early C runtime */
-	early_init_stack = .;
+	init_pg_end = .;
 
 	. = ALIGN(SEGMENT_ALIGN);
 	__pecoff_data_size = ABSOLUTE(. - __initdata_begin);
 	_end = .;
-	__pi__end = .;
 
 	STABS_DEBUG
 	DWARF_DEBUG
@@ -361,6 +337,9 @@ SECTIONS
 		*(.plt) *(.plt.*) *(.iplt) *(.igot .igot.plt)
 	}
 	ASSERT(SIZEOF(.plt) == 0, "Unexpected run-time procedure linkages detected!")
+
+	.data.rel.ro : { *(.data.rel.ro) }
+	ASSERT(SIZEOF(.data.rel.ro) == 0, "Unexpected RELRO detected!")
 }
 
 #include "image-vars.h"

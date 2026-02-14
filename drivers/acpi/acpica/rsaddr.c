@@ -277,8 +277,7 @@ acpi_rs_get_address_common(struct acpi_resource *resource,
 	/* Validate the Resource Type */
 
 	if ((aml->address.resource_type > 2) &&
-	    (aml->address.resource_type < 0xC0) &&
-	    (aml->address.resource_type != 0x0A)) {
+	    (aml->address.resource_type < 0xC0)) {
 		return (FALSE);
 	}
 

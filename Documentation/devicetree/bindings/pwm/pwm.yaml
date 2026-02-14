@@ -13,13 +13,11 @@ select: false
 
 properties:
   $nodename:
-    pattern: "^pwm(@.*|-([0-9]|[1-9][0-9]+))?$"
+    pattern: "^pwm(@.*|-[0-9a-f])*$"
 
   "#pwm-cells":
-    description: |
-      Number of cells in a PWM specifier. Typically the cells represent, in
-      order: the chip-relative PWM number, the PWM period in nanoseconds and
-      optionally a number of flags (defined in <dt-bindings/pwm/pwm.h>).
+    description:
+      Number of cells in a PWM specifier.
 
 required:
   - "#pwm-cells"

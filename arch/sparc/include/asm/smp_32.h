@@ -10,15 +10,15 @@
 #include <linux/threads.h>
 #include <asm/head.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/cpumask.h>
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #ifdef CONFIG_SMP
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/ptrace.h>
 #include <asm/asi.h>
@@ -105,7 +105,7 @@ int hard_smp_processor_id(void);
 
 void smp_setup_cpu_possible_map(void);
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 /* Sparc specific messages. */
 #define MSG_CROSS_CALL         0x0005       /* run func on cpus */

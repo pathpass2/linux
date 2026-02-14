@@ -9,37 +9,28 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/ptp_clock_kernel.h>
 #include <linux/slab.h>
 
 #include "rcar_gen4_ptp.h"
-
-#define PTPTMEC_REG		0x0010
-#define PTPTMDC_REG		0x0014
-#define PTPTIVC0_REG		0x0020
-#define PTPTOVC00_REG		0x0030
-#define PTPTOVC10_REG		0x0034
-#define PTPTOVC20_REG		0x0038
-#define PTPGPTPTM00_REG		0x0050
-#define PTPGPTPTM10_REG		0x0054
-#define PTPGPTPTM20_REG		0x0058
-
-struct rcar_gen4_ptp_private {
-	void __iomem *addr;
-	struct ptp_clock *clock;
-	struct ptp_clock_info info;
-	spinlock_t lock;	/* For multiple registers access */
-	s64 default_addend;
-	bool initialized;
-};
-
 #define ptp_to_priv(ptp)	container_of(ptp, struct rcar_gen4_ptp_private, info)
+
+static const struct rcar_gen4_ptp_reg_offset s4_offs = {
+	.enable = PTPTMEC,
+	.disable = PTPTMDC,
+	.increment = PTPTIVC0,
+	.config_t0 = PTPTOVC00,
+	.config_t1 = PTPTOVC10,
+	.config_t2 = PTPTOVC20,
+	.monitor_t0 = PTPGPTPTM00,
+	.monitor_t1 = PTPGPTPTM10,
+	.monitor_t2 = PTPGPTPTM20,
+};
 
 static int rcar_gen4_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 {
 	struct rcar_gen4_ptp_private *ptp_priv = ptp_to_priv(ptp);
+	bool neg_adj = scaled_ppm < 0 ? true : false;
 	s64 addend = ptp_priv->default_addend;
-	bool neg_adj = scaled_ppm < 0;
 	s64 diff;
 
 	if (neg_adj)
@@ -47,21 +38,20 @@ static int rcar_gen4_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 	diff = div_s64(addend * scaled_ppm_to_ppb(scaled_ppm), NSEC_PER_SEC);
 	addend = neg_adj ? addend - diff : addend + diff;
 
-	iowrite32(addend, ptp_priv->addr + PTPTIVC0_REG);
+	iowrite32(addend, ptp_priv->addr + ptp_priv->offs->increment);
 
 	return 0;
 }
 
+/* Caller must hold the lock */
 static void _rcar_gen4_ptp_gettime(struct ptp_clock_info *ptp,
 				   struct timespec64 *ts)
 {
 	struct rcar_gen4_ptp_private *ptp_priv = ptp_to_priv(ptp);
 
-	lockdep_assert_held(&ptp_priv->lock);
-
-	ts->tv_nsec = ioread32(ptp_priv->addr + PTPGPTPTM00_REG);
-	ts->tv_sec = ioread32(ptp_priv->addr + PTPGPTPTM10_REG) |
-		     ((s64)ioread32(ptp_priv->addr + PTPGPTPTM20_REG) << 32);
+	ts->tv_nsec = ioread32(ptp_priv->addr + ptp_priv->offs->monitor_t0);
+	ts->tv_sec = ioread32(ptp_priv->addr + ptp_priv->offs->monitor_t1) |
+		     ((s64)ioread32(ptp_priv->addr + ptp_priv->offs->monitor_t2) << 32);
 }
 
 static int rcar_gen4_ptp_gettime(struct ptp_clock_info *ptp,
@@ -83,14 +73,14 @@ static void _rcar_gen4_ptp_settime(struct ptp_clock_info *ptp,
 {
 	struct rcar_gen4_ptp_private *ptp_priv = ptp_to_priv(ptp);
 
-	iowrite32(1, ptp_priv->addr + PTPTMDC_REG);
-	iowrite32(0, ptp_priv->addr + PTPTOVC20_REG);
-	iowrite32(0, ptp_priv->addr + PTPTOVC10_REG);
-	iowrite32(0, ptp_priv->addr + PTPTOVC00_REG);
-	iowrite32(1, ptp_priv->addr + PTPTMEC_REG);
-	iowrite32(ts->tv_sec >> 32, ptp_priv->addr + PTPTOVC20_REG);
-	iowrite32(ts->tv_sec, ptp_priv->addr + PTPTOVC10_REG);
-	iowrite32(ts->tv_nsec, ptp_priv->addr + PTPTOVC00_REG);
+	iowrite32(1, ptp_priv->addr + ptp_priv->offs->disable);
+	iowrite32(0, ptp_priv->addr + ptp_priv->offs->config_t2);
+	iowrite32(0, ptp_priv->addr + ptp_priv->offs->config_t1);
+	iowrite32(0, ptp_priv->addr + ptp_priv->offs->config_t0);
+	iowrite32(1, ptp_priv->addr + ptp_priv->offs->enable);
+	iowrite32(ts->tv_sec >> 32, ptp_priv->addr + ptp_priv->offs->config_t2);
+	iowrite32(ts->tv_sec, ptp_priv->addr + ptp_priv->offs->config_t1);
+	iowrite32(ts->tv_nsec, ptp_priv->addr + ptp_priv->offs->config_t0);
 }
 
 static int rcar_gen4_ptp_settime(struct ptp_clock_info *ptp,
@@ -140,46 +130,44 @@ static struct ptp_clock_info rcar_gen4_ptp_info = {
 	.enable = rcar_gen4_ptp_enable,
 };
 
-static s64 rcar_gen4_ptp_rate_to_increment(u32 rate)
+static void rcar_gen4_ptp_set_offs(struct rcar_gen4_ptp_private *ptp_priv,
+				   enum rcar_gen4_ptp_reg_layout layout)
 {
-	/* Timer increment in ns.
-	 * bit[31:27] - integer
-	 * bit[26:0]  - decimal
-	 * increment[ns] = perid[ns] * 2^27 => (1ns * 2^27) / rate[hz]
-	 */
-	return div_s64(1000000000LL << 27, rate);
+	WARN_ON(layout != RCAR_GEN4_PTP_REG_LAYOUT_S4);
+
+	ptp_priv->offs = &s4_offs;
 }
 
-int rcar_gen4_ptp_register(struct rcar_gen4_ptp_private *ptp_priv, u32 rate)
+int rcar_gen4_ptp_register(struct rcar_gen4_ptp_private *ptp_priv,
+			   enum rcar_gen4_ptp_reg_layout layout, u32 clock)
 {
 	if (ptp_priv->initialized)
 		return 0;
 
 	spin_lock_init(&ptp_priv->lock);
 
-	ptp_priv->default_addend = rcar_gen4_ptp_rate_to_increment(rate);
-	iowrite32(ptp_priv->default_addend, ptp_priv->addr + PTPTIVC0_REG);
+	rcar_gen4_ptp_set_offs(ptp_priv, layout);
+
+	ptp_priv->default_addend = clock;
+	iowrite32(ptp_priv->default_addend, ptp_priv->addr + ptp_priv->offs->increment);
 	ptp_priv->clock = ptp_clock_register(&ptp_priv->info, NULL);
 	if (IS_ERR(ptp_priv->clock))
 		return PTR_ERR(ptp_priv->clock);
 
-	iowrite32(0x01, ptp_priv->addr + PTPTMEC_REG);
+	iowrite32(0x01, ptp_priv->addr + ptp_priv->offs->enable);
 	ptp_priv->initialized = true;
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(rcar_gen4_ptp_register);
 
 int rcar_gen4_ptp_unregister(struct rcar_gen4_ptp_private *ptp_priv)
 {
-	iowrite32(1, ptp_priv->addr + PTPTMDC_REG);
+	iowrite32(1, ptp_priv->addr + ptp_priv->offs->disable);
 
 	return ptp_clock_unregister(ptp_priv->clock);
 }
-EXPORT_SYMBOL_GPL(rcar_gen4_ptp_unregister);
 
-struct rcar_gen4_ptp_private *rcar_gen4_ptp_alloc(struct platform_device *pdev,
-						  void __iomem *addr)
+struct rcar_gen4_ptp_private *rcar_gen4_ptp_alloc(struct platform_device *pdev)
 {
 	struct rcar_gen4_ptp_private *ptp;
 
@@ -189,31 +177,5 @@ struct rcar_gen4_ptp_private *rcar_gen4_ptp_alloc(struct platform_device *pdev,
 
 	ptp->info = rcar_gen4_ptp_info;
 
-	ptp->addr = addr;
-
 	return ptp;
 }
-EXPORT_SYMBOL_GPL(rcar_gen4_ptp_alloc);
-
-int rcar_gen4_ptp_clock_index(struct rcar_gen4_ptp_private *priv)
-{
-	if (!priv->initialized)
-		return -1;
-
-	return ptp_clock_index(priv->clock);
-}
-EXPORT_SYMBOL_GPL(rcar_gen4_ptp_clock_index);
-
-void rcar_gen4_ptp_gettime64(struct rcar_gen4_ptp_private *priv,
-			     struct timespec64 *ts)
-{
-	if (!priv->initialized)
-		return;
-
-	priv->info.gettime64(&priv->info, ts);
-}
-EXPORT_SYMBOL_GPL(rcar_gen4_ptp_gettime64);
-
-MODULE_AUTHOR("Yoshihiro Shimoda");
-MODULE_DESCRIPTION("Renesas R-Car Gen4 gPTP driver");
-MODULE_LICENSE("GPL");

@@ -29,6 +29,11 @@ static const struct inode_operations hfs_file_inode_operations;
 
 #define HFS_VALID_MODE_BITS  (S_IFREG | S_IFDIR | S_IRWXUGO)
 
+static int hfs_writepage(struct page *page, struct writeback_control *wbc)
+{
+	return block_write_full_page(page, hfs_get_block, wbc);
+}
+
 static int hfs_read_folio(struct file *file, struct folio *folio)
 {
 	return block_read_full_folio(folio, hfs_get_block);
@@ -44,13 +49,13 @@ static void hfs_write_failed(struct address_space *mapping, loff_t to)
 	}
 }
 
-int hfs_write_begin(const struct kiocb *iocb, struct address_space *mapping,
-		    loff_t pos, unsigned int len, struct folio **foliop,
-		    void **fsdata)
+int hfs_write_begin(struct file *file, struct address_space *mapping,
+		loff_t pos, unsigned len, struct page **pagep, void **fsdata)
 {
 	int ret;
 
-	ret = cont_write_begin(iocb, mapping, pos, len, foliop, fsdata,
+	*pagep = NULL;
+	ret = cont_write_begin(file, mapping, pos, len, pagep, fsdata,
 				hfs_get_block,
 				&HFS_I(mapping->host)->phys_size);
 	if (unlikely(ret))
@@ -157,10 +162,9 @@ const struct address_space_operations hfs_btree_aops = {
 	.dirty_folio	= block_dirty_folio,
 	.invalidate_folio = block_invalidate_folio,
 	.read_folio	= hfs_read_folio,
-	.writepages	= hfs_writepages,
+	.writepage	= hfs_writepage,
 	.write_begin	= hfs_write_begin,
 	.write_end	= generic_write_end,
-	.migrate_folio	= buffer_migrate_folio,
 	.bmap		= hfs_bmap,
 	.release_folio	= hfs_release_folio,
 };
@@ -184,44 +188,25 @@ struct inode *hfs_new_inode(struct inode *dir, const struct qstr *name, umode_t 
 {
 	struct super_block *sb = dir->i_sb;
 	struct inode *inode = new_inode(sb);
-	s64 next_id;
-	s64 file_count;
-	s64 folder_count;
-	int err = -ENOMEM;
-
 	if (!inode)
-		goto out_err;
-
-	err = -ERANGE;
+		return NULL;
 
 	mutex_init(&HFS_I(inode)->extents_lock);
 	INIT_LIST_HEAD(&HFS_I(inode)->open_dir_list);
 	spin_lock_init(&HFS_I(inode)->open_dir_lock);
 	hfs_cat_build_key(sb, (btree_key *)&HFS_I(inode)->cat_key, dir->i_ino, name);
-	next_id = atomic64_inc_return(&HFS_SB(sb)->next_id);
-	if (next_id > U32_MAX) {
-		atomic64_dec(&HFS_SB(sb)->next_id);
-		pr_err("cannot create new inode: next CNID exceeds limit\n");
-		goto out_discard;
-	}
-	inode->i_ino = (u32)next_id;
+	inode->i_ino = HFS_SB(sb)->next_id++;
 	inode->i_mode = mode;
 	inode->i_uid = current_fsuid();
 	inode->i_gid = current_fsgid();
 	set_nlink(inode, 1);
-	simple_inode_init_ts(inode);
+	inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
 	HFS_I(inode)->flags = 0;
 	HFS_I(inode)->rsrc_inode = NULL;
 	HFS_I(inode)->fs_blocks = 0;
-	HFS_I(inode)->tz_secondswest = sys_tz.tz_minuteswest * 60;
 	if (S_ISDIR(mode)) {
 		inode->i_size = 2;
-		folder_count = atomic64_inc_return(&HFS_SB(sb)->folder_count);
-		if (folder_count> U32_MAX) {
-			atomic64_dec(&HFS_SB(sb)->folder_count);
-			pr_err("cannot create new inode: folder count exceeds limit\n");
-			goto out_discard;
-		}
+		HFS_SB(sb)->folder_count++;
 		if (dir->i_ino == HFS_ROOT_CNID)
 			HFS_SB(sb)->root_dirs++;
 		inode->i_op = &hfs_dir_inode_operations;
@@ -230,12 +215,7 @@ struct inode *hfs_new_inode(struct inode *dir, const struct qstr *name, umode_t 
 		inode->i_mode &= ~HFS_SB(inode->i_sb)->s_dir_umask;
 	} else if (S_ISREG(mode)) {
 		HFS_I(inode)->clump_blocks = HFS_SB(sb)->clumpablks;
-		file_count = atomic64_inc_return(&HFS_SB(sb)->file_count);
-		if (file_count > U32_MAX) {
-			atomic64_dec(&HFS_SB(sb)->file_count);
-			pr_err("cannot create new inode: file count exceeds limit\n");
-			goto out_discard;
-		}
+		HFS_SB(sb)->file_count++;
 		if (dir->i_ino == HFS_ROOT_CNID)
 			HFS_SB(sb)->root_files++;
 		inode->i_op = &hfs_file_inode_operations;
@@ -259,28 +239,22 @@ struct inode *hfs_new_inode(struct inode *dir, const struct qstr *name, umode_t 
 	hfs_mark_mdb_dirty(sb);
 
 	return inode;
-
-	out_discard:
-		iput(inode);
-	out_err:
-		return ERR_PTR(err);
 }
 
 void hfs_delete_inode(struct inode *inode)
 {
 	struct super_block *sb = inode->i_sb;
 
-	hfs_dbg("ino %lu\n", inode->i_ino);
+	hfs_dbg(INODE, "delete_inode: %lu\n", inode->i_ino);
 	if (S_ISDIR(inode->i_mode)) {
-		atomic64_dec(&HFS_SB(sb)->folder_count);
+		HFS_SB(sb)->folder_count--;
 		if (HFS_I(inode)->cat_key.ParID == cpu_to_be32(HFS_ROOT_CNID))
 			HFS_SB(sb)->root_dirs--;
 		set_bit(HFS_FLG_MDB_DIRTY, &HFS_SB(sb)->flags);
 		hfs_mark_mdb_dirty(sb);
 		return;
 	}
-
-	atomic64_dec(&HFS_SB(sb)->file_count);
+	HFS_SB(sb)->file_count--;
 	if (HFS_I(inode)->cat_key.ParID == cpu_to_be32(HFS_ROOT_CNID))
 		HFS_SB(sb)->root_files--;
 	if (S_ISREG(inode->i_mode)) {
@@ -305,8 +279,6 @@ void hfs_inode_read_fork(struct inode *inode, struct hfs_extent *ext,
 	for (count = 0, i = 0; i < 3; i++)
 		count += be16_to_cpu(ext[i].count);
 	HFS_I(inode)->first_blocks = count;
-	HFS_I(inode)->cached_start = 0;
-	HFS_I(inode)->cached_blocks = 0;
 
 	inode->i_size = HFS_I(inode)->phys_size = log_size;
 	HFS_I(inode)->fs_blocks = (log_size + sb->s_blocksize - 1) >> sb->s_blocksize_bits;
@@ -383,8 +355,8 @@ static int hfs_read_inode(struct inode *inode, void *data)
 			inode->i_mode |= S_IWUGO;
 		inode->i_mode &= ~hsb->s_file_umask;
 		inode->i_mode |= S_IFREG;
-		inode_set_mtime_to_ts(inode,
-				      inode_set_atime_to_ts(inode, inode_set_ctime_to_ts(inode, hfs_m_to_utime(rec->file.MdDat))));
+		inode->i_ctime = inode->i_atime = inode->i_mtime =
+				hfs_m_to_utime(rec->file.MdDat);
 		inode->i_op = &hfs_file_inode_operations;
 		inode->i_fop = &hfs_file_operations;
 		inode->i_mapping->a_ops = &hfs_aops;
@@ -394,8 +366,8 @@ static int hfs_read_inode(struct inode *inode, void *data)
 		inode->i_size = be16_to_cpu(rec->dir.Val) + 2;
 		HFS_I(inode)->fs_blocks = 0;
 		inode->i_mode = S_IFDIR | (S_IRWXUGO & ~hsb->s_dir_umask);
-		inode_set_mtime_to_ts(inode,
-				      inode_set_atime_to_ts(inode, inode_set_ctime_to_ts(inode, hfs_m_to_utime(rec->dir.MdDat))));
+		inode->i_ctime = inode->i_atime = inode->i_mtime =
+				hfs_m_to_utime(rec->dir.MdDat);
 		inode->i_op = &hfs_dir_inode_operations;
 		inode->i_fop = &hfs_dir_operations;
 		break;
@@ -431,7 +403,7 @@ struct inode *hfs_iget(struct super_block *sb, struct hfs_cat_key *key, hfs_cat_
 		return NULL;
 	}
 	inode = iget5_locked(sb, cnid, hfs_test_inode, hfs_read_inode, &data);
-	if (inode && (inode_state_read_once(inode) & I_NEW))
+	if (inode && (inode->i_state & I_NEW))
 		unlock_new_inode(inode);
 	return inode;
 }
@@ -455,7 +427,7 @@ int hfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 	hfs_cat_rec rec;
 	int res;
 
-	hfs_dbg("ino %lu\n", inode->i_ino);
+	hfs_dbg(INODE, "hfs_write_inode: %lu\n", inode->i_ino);
 	res = hfs_ext_write_extent(inode);
 	if (res)
 		return res;
@@ -502,7 +474,7 @@ int hfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 		    be32_to_cpu(rec.dir.DirID) != inode->i_ino) {
 		}
 
-		rec.dir.MdDat = hfs_u_to_mtime(inode_get_mtime(inode));
+		rec.dir.MdDat = hfs_u_to_mtime(inode->i_mtime);
 		rec.dir.Val = cpu_to_be16(inode->i_size - 2);
 
 		hfs_bnode_write(fd.bnode, &rec, fd.entryoffset,
@@ -530,7 +502,7 @@ int hfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 		else
 			rec.file.Flags |= HFS_FIL_LOCK;
 		hfs_inode_write_fork(inode, rec.file.ExtRec, &rec.file.LgLen, &rec.file.PyLen);
-		rec.file.MdDat = hfs_u_to_mtime(inode_get_mtime(inode));
+		rec.file.MdDat = hfs_u_to_mtime(inode->i_mtime);
 
 		hfs_bnode_write(fd.bnode, &rec, fd.entryoffset,
 			    sizeof(struct hfs_cat_file));
@@ -682,7 +654,8 @@ int hfs_inode_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
 
 		truncate_setsize(inode, attr->ia_size);
 		hfs_file_truncate(inode);
-		simple_inode_init_ts(inode);
+		inode->i_atime = inode->i_mtime = inode->i_ctime =
+						  current_time(inode);
 	}
 
 	setattr_copy(&nop_mnt_idmap, inode, attr);
@@ -720,9 +693,8 @@ static const struct file_operations hfs_file_operations = {
 	.llseek		= generic_file_llseek,
 	.read_iter	= generic_file_read_iter,
 	.write_iter	= generic_file_write_iter,
-	.mmap_prepare	= generic_file_mmap_prepare,
-	.splice_read	= filemap_splice_read,
-	.splice_write	= iter_file_splice_write,
+	.mmap		= generic_file_mmap,
+	.splice_read	= generic_file_splice_read,
 	.fsync		= hfs_file_fsync,
 	.open		= hfs_file_open,
 	.release	= hfs_file_release,

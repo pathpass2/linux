@@ -5,6 +5,7 @@
 #include <sysdep/archsetjmp.h>
 #include <os.h>
 
+extern int signals_enabled;
 extern int setjmp(jmp_buf);
 extern void longjmp(jmp_buf, int);
 
@@ -14,7 +15,7 @@ extern void longjmp(jmp_buf, int);
 
 #define UML_SETJMP(buf) ({				\
 	int n, enable;					\
-	enable = um_get_signals();			\
+	enable = *(volatile int *)&signals_enabled;	\
 	n = setjmp(*buf);				\
 	if(n != 0)					\
 		um_set_signals_trace(enable);		\

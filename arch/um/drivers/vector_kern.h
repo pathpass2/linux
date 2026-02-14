@@ -14,7 +14,6 @@
 #include <linux/ctype.h>
 #include <linux/workqueue.h>
 #include <linux/interrupt.h>
-#include <asm/atomic.h>
 
 #include "vector_user.h"
 
@@ -45,8 +44,7 @@ struct vector_queue {
 	struct net_device *dev;
 	spinlock_t head_lock;
 	spinlock_t tail_lock;
-	atomic_t queue_depth;
-	int head, tail, max_depth, max_iov_frags;
+	int queue_depth, head, tail, max_depth, max_iov_frags;
 	short options;
 };
 
@@ -73,6 +71,7 @@ struct vector_estats {
 
 struct vector_private {
 	struct list_head list;
+	spinlock_t lock;
 	struct net_device *dev;
 	struct napi_struct		napi	____cacheline_aligned;
 

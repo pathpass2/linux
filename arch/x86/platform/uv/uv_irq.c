@@ -35,7 +35,7 @@ static void uv_program_mmr(struct irq_cfg *cfg, struct uv_irq_2_mmr_pnode *info)
 	mmr_value = 0;
 	entry = (struct uv_IO_APIC_route_entry *)&mmr_value;
 	entry->vector		= cfg->vector;
-	entry->delivery_mode	= APIC_DELIVERY_MODE_FIXED;
+	entry->delivery_mode	= apic->delivery_mode;
 	entry->dest_mode	= apic->dest_mode_logical;
 	entry->polarity		= 0;
 	entry->trigger		= 0;
@@ -58,7 +58,7 @@ uv_set_irq_affinity(struct irq_data *data, const struct cpumask *mask,
 	ret = parent->chip->irq_set_affinity(parent, mask, force);
 	if (ret >= 0) {
 		uv_program_mmr(cfg, data->chip_data);
-		vector_schedule_cleanup(cfg);
+		send_cleanup_vector(cfg);
 	}
 
 	return ret;
@@ -92,6 +92,8 @@ static int uv_domain_alloc(struct irq_domain *domain, unsigned int virq,
 	if (ret >= 0) {
 		if (info->uv.limit == UV_AFFINITY_CPU)
 			irq_set_status_flags(virq, IRQ_NO_BALANCING);
+		else
+			irq_set_status_flags(virq, IRQ_MOVE_PCNTXT);
 
 		chip_data->pnode = uv_blade_to_pnode(info->uv.blade);
 		chip_data->offset = info->uv.offset;
@@ -111,6 +113,7 @@ static void uv_domain_free(struct irq_domain *domain, unsigned int virq,
 
 	BUG_ON(nr_irqs != 1);
 	kfree(irq_data->chip_data);
+	irq_clear_status_flags(virq, IRQ_MOVE_PCNTXT);
 	irq_clear_status_flags(virq, IRQ_NO_BALANCING);
 	irq_domain_free_irqs_top(domain, virq, nr_irqs);
 }

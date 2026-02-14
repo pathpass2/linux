@@ -24,12 +24,14 @@
 #include <linux/types.h>
 
 struct ntxec_pwm {
+	struct device *dev;
 	struct ntxec *ec;
+	struct pwm_chip chip;
 };
 
 static struct ntxec_pwm *ntxec_pwm_from_chip(struct pwm_chip *chip)
 {
-	return pwmchip_get_drvdata(chip);
+	return container_of(chip, struct ntxec_pwm, chip);
 }
 
 #define NTXEC_REG_AUTO_OFF_HI	0xa1
@@ -125,6 +127,7 @@ static int ntxec_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm_dev,
 }
 
 static const struct pwm_ops ntxec_pwm_ops = {
+	.owner = THIS_MODULE,
 	.apply = ntxec_pwm_apply,
 	/*
 	 * No .get_state callback, because the current state cannot be read
@@ -138,15 +141,19 @@ static int ntxec_pwm_probe(struct platform_device *pdev)
 	struct ntxec_pwm *priv;
 	struct pwm_chip *chip;
 
-	device_set_of_node_from_dev(&pdev->dev, pdev->dev.parent);
+	pdev->dev.of_node = pdev->dev.parent->of_node;
 
-	chip = devm_pwmchip_alloc(&pdev->dev, 1, sizeof(*priv));
-	if (IS_ERR(chip))
-		return PTR_ERR(chip);
-	priv = ntxec_pwm_from_chip(chip);
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
 
 	priv->ec = ec;
+	priv->dev = &pdev->dev;
+
+	chip = &priv->chip;
+	chip->dev = &pdev->dev;
 	chip->ops = &ntxec_pwm_ops;
+	chip->npwm = 1;
 
 	return devm_pwmchip_add(&pdev->dev, chip);
 }

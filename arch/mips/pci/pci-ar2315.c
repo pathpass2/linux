@@ -16,7 +16,7 @@
  * the CFG_SEL bit in the PCI_MISC_CONFIG register.
  *
  * Devices on the bus can perform DMA requests via chip BAR1. PCI host
- * controller BARs are programmed as if an external device is programmed.
+ * controller BARs are programmend as if an external device is programmed.
  * Which means that during configuration, IDSEL pin of the chip should be
  * asserted.
  *
@@ -469,8 +469,8 @@ static int ar2315_pci_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	apc->domain = irq_domain_create_linear(NULL, AR2315_PCI_IRQ_COUNT,
-					       &ar2315_pci_irq_domain_ops, apc);
+	apc->domain = irq_domain_add_linear(NULL, AR2315_PCI_IRQ_COUNT,
+					    &ar2315_pci_irq_domain_ops, apc);
 	if (!apc->domain) {
 		dev_err(dev, "failed to add IRQ domain\n");
 		return -ENOMEM;

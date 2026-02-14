@@ -38,7 +38,7 @@ properties:
 
 patternProperties:
   "^partition-.*$":
-    $ref: partition.yaml#/$defs/partition-node
+    $ref: partition.yaml#
 
 required:
   - partitions-table-offset

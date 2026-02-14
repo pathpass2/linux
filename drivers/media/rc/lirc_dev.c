@@ -27,9 +27,7 @@ static dev_t lirc_base_dev;
 static DEFINE_IDA(lirc_ida);
 
 /* Only used for sysfs but defined to void otherwise */
-static const struct class lirc_class = {
-	.name = "lirc",
-};
+static struct class *lirc_class;
 
 /**
  * lirc_raw_event() - Send raw IR data to lirc to be relayed to userspace
@@ -278,11 +276,7 @@ static ssize_t lirc_transmit(struct file *file, const char __user *buf,
 		if (ret < 0)
 			goto out_kfree_raw;
 
-		/* drop trailing space */
-		if (!(ret % 2))
-			count = ret - 1;
-		else
-			count = ret;
+		count = ret;
 
 		txbuf = kmalloc_array(count, sizeof(unsigned int), GFP_KERNEL);
 		if (!txbuf) {
@@ -706,6 +700,7 @@ static const struct file_operations lirc_fops = {
 	.poll		= lirc_poll,
 	.open		= lirc_open,
 	.release	= lirc_close,
+	.llseek		= no_llseek,
 };
 
 static void lirc_release_device(struct device *ld)
@@ -725,7 +720,7 @@ int lirc_register(struct rc_dev *dev)
 		return minor;
 
 	device_initialize(&dev->lirc_dev);
-	dev->lirc_dev.class = &lirc_class;
+	dev->lirc_dev.class = lirc_class;
 	dev->lirc_dev.parent = &dev->dev;
 	dev->lirc_dev.release = lirc_release_device;
 	dev->lirc_dev.devt = MKDEV(MAJOR(lirc_base_dev), minor);
@@ -736,11 +731,11 @@ int lirc_register(struct rc_dev *dev)
 
 	cdev_init(&dev->lirc_cdev, &lirc_fops);
 
-	get_device(&dev->dev);
-
 	err = cdev_device_add(&dev->lirc_cdev, &dev->lirc_dev);
 	if (err)
-		goto out_put_device;
+		goto out_ida;
+
+	get_device(&dev->dev);
 
 	switch (dev->driver_type) {
 	case RC_DRIVER_SCANCODE:
@@ -764,8 +759,7 @@ int lirc_register(struct rc_dev *dev)
 
 	return 0;
 
-out_put_device:
-	put_device(&dev->lirc_dev);
+out_ida:
 	ida_free(&lirc_ida, minor);
 	return err;
 }
@@ -791,13 +785,15 @@ int __init lirc_dev_init(void)
 {
 	int retval;
 
-	retval = class_register(&lirc_class);
-	if (retval)
-		return retval;
+	lirc_class = class_create(THIS_MODULE, "lirc");
+	if (IS_ERR(lirc_class)) {
+		pr_err("class_create failed\n");
+		return PTR_ERR(lirc_class);
+	}
 
 	retval = alloc_chrdev_region(&lirc_base_dev, 0, RC_DEV_MAX, "lirc");
 	if (retval) {
-		class_unregister(&lirc_class);
+		class_destroy(lirc_class);
 		pr_err("alloc_chrdev_region failed\n");
 		return retval;
 	}
@@ -810,29 +806,29 @@ int __init lirc_dev_init(void)
 
 void __exit lirc_dev_exit(void)
 {
-	class_unregister(&lirc_class);
+	class_destroy(lirc_class);
 	unregister_chrdev_region(lirc_base_dev, RC_DEV_MAX);
 }
 
-struct rc_dev *rc_dev_get_from_fd(int fd, bool write)
+struct rc_dev *rc_dev_get_from_fd(int fd)
 {
-	CLASS(fd, f)(fd);
+	struct fd f = fdget(fd);
 	struct lirc_fh *fh;
 	struct rc_dev *dev;
 
-	if (fd_empty(f))
+	if (!f.file)
 		return ERR_PTR(-EBADF);
 
-	if (fd_file(f)->f_op != &lirc_fops)
+	if (f.file->f_op != &lirc_fops) {
+		fdput(f);
 		return ERR_PTR(-EINVAL);
+	}
 
-	if (write && !(fd_file(f)->f_mode & FMODE_WRITE))
-		return ERR_PTR(-EPERM);
-
-	fh = fd_file(f)->private_data;
+	fh = f.file->private_data;
 	dev = fh->rc;
 
 	get_device(&dev->dev);
+	fdput(f);
 
 	return dev;
 }

@@ -12,24 +12,14 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - enum:
-          - samsung,exynos5250-trng
-          - samsung,exynos850-trng
-      - items:
-          - const: google,gs101-trng
-          - const: samsung,exynos850-trng
+    const: samsung,exynos5250-trng
 
   clocks:
-    minItems: 1
-    maxItems: 2
+    maxItems: 1
 
   clock-names:
-    minItems: 1
-    maxItems: 2
-
-  power-domains:
-    maxItems: 1
+    items:
+      - const: secss
 
   reg:
     maxItems: 1
@@ -39,35 +29,6 @@ required:
   - clocks
   - clock-names
   - reg
-
-allOf:
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: samsung,exynos850-trng
-
-    then:
-      properties:
-        clocks:
-          items:
-            - description: SSS (Security Sub System) operating clock
-            - description: SSS (Security Sub System) bus clock
-
-        clock-names:
-          items:
-            - const: secss
-            - const: pclk
-
-    else:
-      properties:
-        clocks:
-          items:
-            - description: SSS (Security Sub System) operating clock
-
-        clock-names:
-          items:
-            - const: secss
 
 additionalProperties: false
 

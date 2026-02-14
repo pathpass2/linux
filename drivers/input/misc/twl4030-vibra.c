@@ -165,10 +165,15 @@ static DEFINE_SIMPLE_DEV_PM_OPS(twl4030_vibra_pm_ops,
 
 static bool twl4030_vibra_check_coexist(struct device_node *parent)
 {
-	struct device_node *node __free(device_node) =
-		of_get_child_by_name(parent, "codec");
+	struct device_node *node;
 
-	return node != NULL;
+	node = of_get_child_by_name(parent, "codec");
+	if (node) {
+		of_node_put(node);
+		return true;
+	}
+
+	return false;
 }
 
 static int twl4030_vibra_probe(struct platform_device *pdev)

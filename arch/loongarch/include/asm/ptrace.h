@@ -33,9 +33,9 @@ struct pt_regs {
 	unsigned long __last[];
 } __aligned(8);
 
-static __always_inline bool regs_irqs_disabled(struct pt_regs *regs)
+static inline int regs_irqs_disabled(struct pt_regs *regs)
 {
-	return !(regs->csr_prmd & CSR_PRMD_PIE);
+	return arch_irqs_disabled_flags(regs->csr_prmd);
 }
 
 static inline unsigned long kernel_stack_pointer(struct pt_regs *regs)
@@ -55,7 +55,7 @@ static inline void instruction_pointer_set(struct pt_regs *regs, unsigned long v
 
 /* Query offset/name of register from its name/offset */
 extern int regs_query_register_offset(const char *name);
-#define MAX_REG_OFFSET (offsetof(struct pt_regs, __last) - sizeof(unsigned long))
+#define MAX_REG_OFFSET (offsetof(struct pt_regs, __last))
 
 /**
  * regs_get_register() - get register value from its offset
@@ -154,15 +154,10 @@ static inline long regs_return_value(struct pt_regs *regs)
 	return regs->regs[4];
 }
 
-static inline void regs_set_return_value(struct pt_regs *regs, unsigned long val)
-{
-	regs->regs[4] = val;
-}
-
 #define instruction_pointer(regs) ((regs)->csr_era)
 #define profile_pc(regs) instruction_pointer(regs)
 
-extern void die(const char *str, struct pt_regs *regs);
+extern void die(const char *, struct pt_regs *) __noreturn;
 
 static inline void die_if_kernel(const char *str, struct pt_regs *regs)
 {

@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
-#include "vmlinux.h"
+#include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <stdbool.h>
 
 char _license[] SEC("license") = "GPL";
 
-extern int bpf_fentry_test1(int a) __ksym;
-extern int bpf_modify_return_test(int a, int *b) __ksym;
-
+extern const void bpf_fentry_test1 __ksym;
 extern const void bpf_fentry_test2 __ksym;
 extern const void bpf_fentry_test3 __ksym;
 extern const void bpf_fentry_test4 __ksym;
+extern const void bpf_modify_return_test __ksym;
+extern const void bpf_fentry_test6 __ksym;
+extern const void bpf_fentry_test7 __ksym;
 
 extern bool CONFIG_X86_KERNEL_IBT __kconfig __weak;
 
@@ -81,48 +83,3 @@ int test6(struct pt_regs *ctx)
 	test6_result = (const void *) addr == 0;
 	return 0;
 }
-
-unsigned long uprobe_trigger;
-
-__u64 test7_result = 0;
-SEC("uprobe//proc/self/exe:uprobe_trigger")
-int BPF_UPROBE(test7)
-{
-	__u64 addr = bpf_get_func_ip(ctx);
-
-	test7_result = (const void *) addr == (const void *) uprobe_trigger;
-	return 0;
-}
-
-__u64 test8_result = 0;
-SEC("uretprobe//proc/self/exe:uprobe_trigger")
-int BPF_URETPROBE(test8, int ret)
-{
-	__u64 addr = bpf_get_func_ip(ctx);
-
-	test8_result = (const void *) addr == (const void *) uprobe_trigger;
-	return 0;
-}
-
-__u64 test9_entry_result = 0;
-__u64 test9_exit_result = 0;
-#if defined(bpf_target_x86) || defined(bpf_target_arm64)
-SEC("fsession/bpf_fentry_test1")
-int BPF_PROG(test9, int a)
-{
-	__u64 addr = bpf_get_func_ip(ctx);
-
-	if (bpf_session_is_return(ctx))
-		test9_exit_result = (const void *) addr == &bpf_fentry_test1;
-	else
-		test9_entry_result = (const void *) addr == &bpf_fentry_test1;
-	return 0;
-}
-#else
-SEC("fentry/bpf_fentry_test1")
-int BPF_PROG(test9, int a)
-{
-	test9_entry_result = test9_exit_result = 1;
-	return 0;
-}
-#endif

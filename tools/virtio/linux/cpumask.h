@@ -4,8 +4,4 @@
 
 #include <linux/kernel.h>
 
-struct cpumask {
-	unsigned long bits[1];
-};
-
 #endif /* _LINUX_CPUMASK_H */

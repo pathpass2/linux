@@ -7,7 +7,6 @@ PARPORT interface documentation
 Described here are the following functions:
 
 Global functions::
-
   parport_register_driver
   parport_unregister_driver
   parport_enumerate
@@ -35,7 +34,6 @@ Global functions::
 Port functions (can be overridden by low-level drivers):
 
   SPP::
-
     port->ops->read_data
     port->ops->write_data
     port->ops->read_status
@@ -48,20 +46,17 @@ Port functions (can be overridden by low-level drivers):
     port->ops->data_reverse
 
   EPP::
-
     port->ops->epp_write_data
     port->ops->epp_read_data
     port->ops->epp_write_addr
     port->ops->epp_read_addr
 
   ECP::
-
     port->ops->ecp_write_data
     port->ops->ecp_read_data
     port->ops->ecp_write_addr
 
   Other::
-
     port->ops->nibble_read_data
     port->ops->byte_read_data
     port->ops->compat_write_data

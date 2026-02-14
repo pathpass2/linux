@@ -127,11 +127,8 @@ static int query_capability(struct pfru_update_cap_info *cap_hdr,
 					  pfru_dev->rev_id,
 					  PFRU_FUNC_QUERY_UPDATE_CAP,
 					  NULL, ACPI_TYPE_PACKAGE);
-	if (!out_obj) {
-		dev_dbg(pfru_dev->parent_dev,
-			"Query cap failed with no object\n");
+	if (!out_obj)
 		return ret;
-	}
 
 	if (out_obj->package.count < CAP_NR_IDX ||
 	    out_obj->package.elements[CAP_STATUS_IDX].type != ACPI_TYPE_INTEGER ||
@@ -144,17 +141,13 @@ static int query_capability(struct pfru_update_cap_info *cap_hdr,
 	    out_obj->package.elements[CAP_DRV_SVN_IDX].type != ACPI_TYPE_INTEGER ||
 	    out_obj->package.elements[CAP_PLAT_ID_IDX].type != ACPI_TYPE_BUFFER ||
 	    out_obj->package.elements[CAP_OEM_ID_IDX].type != ACPI_TYPE_BUFFER ||
-	    out_obj->package.elements[CAP_OEM_INFO_IDX].type != ACPI_TYPE_BUFFER) {
-		dev_dbg(pfru_dev->parent_dev,
-			"Query cap failed with invalid package count/type\n");
+	    out_obj->package.elements[CAP_OEM_INFO_IDX].type != ACPI_TYPE_BUFFER)
 		goto free_acpi_buffer;
-	}
 
 	cap_hdr->status = out_obj->package.elements[CAP_STATUS_IDX].integer.value;
 	if (cap_hdr->status != DSM_SUCCEED) {
 		ret = -EBUSY;
-		dev_dbg(pfru_dev->parent_dev, "Query cap Error Status:%d\n",
-			cap_hdr->status);
+		dev_dbg(pfru_dev->parent_dev, "Error Status:%d\n", cap_hdr->status);
 		goto free_acpi_buffer;
 	}
 
@@ -200,32 +193,24 @@ static int query_buffer(struct pfru_com_buf_info *info,
 	out_obj = acpi_evaluate_dsm_typed(handle, &pfru_guid,
 					  pfru_dev->rev_id, PFRU_FUNC_QUERY_BUF,
 					  NULL, ACPI_TYPE_PACKAGE);
-	if (!out_obj) {
-		dev_dbg(pfru_dev->parent_dev,
-			"Query buf failed with no object\n");
+	if (!out_obj)
 		return ret;
-	}
 
 	if (out_obj->package.count < BUF_NR_IDX ||
 	    out_obj->package.elements[BUF_STATUS_IDX].type != ACPI_TYPE_INTEGER ||
 	    out_obj->package.elements[BUF_EXT_STATUS_IDX].type != ACPI_TYPE_INTEGER ||
 	    out_obj->package.elements[BUF_ADDR_LOW_IDX].type != ACPI_TYPE_INTEGER ||
 	    out_obj->package.elements[BUF_ADDR_HI_IDX].type != ACPI_TYPE_INTEGER ||
-	    out_obj->package.elements[BUF_SIZE_IDX].type != ACPI_TYPE_INTEGER) {
-		dev_dbg(pfru_dev->parent_dev,
-			"Query buf failed with invalid package count/type\n");
+	    out_obj->package.elements[BUF_SIZE_IDX].type != ACPI_TYPE_INTEGER)
 		goto free_acpi_buffer;
-	}
 
 	info->status = out_obj->package.elements[BUF_STATUS_IDX].integer.value;
 	info->ext_status =
 		out_obj->package.elements[BUF_EXT_STATUS_IDX].integer.value;
 	if (info->status != DSM_SUCCEED) {
 		ret = -EBUSY;
-		dev_dbg(pfru_dev->parent_dev,
-			"Query buf failed with Error Status:%d\n", info->status);
-		dev_dbg(pfru_dev->parent_dev,
-			"Query buf failed with Error Extended Status:%d\n", info->ext_status);
+		dev_dbg(pfru_dev->parent_dev, "Error Status:%d\n", info->status);
+		dev_dbg(pfru_dev->parent_dev, "Error Extended Status:%d\n", info->ext_status);
 
 		goto free_acpi_buffer;
 	}
@@ -310,16 +295,12 @@ static bool applicable_image(const void *data, struct pfru_update_cap_info *cap,
 	m_img_hdr = data + size;
 
 	type = get_image_type(m_img_hdr, pfru_dev);
-	if (type < 0) {
-		dev_dbg(pfru_dev->parent_dev, "Invalid image type\n");
+	if (type < 0)
 		return false;
-	}
 
 	size = adjust_efi_size(m_img_hdr, size);
-	if (size < 0) {
-		dev_dbg(pfru_dev->parent_dev, "Invalid image size\n");
+	if (size < 0)
 		return false;
-	}
 
 	auth = data + size;
 	size += sizeof(u64) + auth->auth_info.hdr.len;
@@ -329,7 +310,7 @@ static bool applicable_image(const void *data, struct pfru_update_cap_info *cap,
 	if (type == PFRU_CODE_INJECT_TYPE)
 		return payload_hdr->rt_ver >= cap->code_rt_version;
 
-	return payload_hdr->svn_ver >= cap->drv_svn;
+	return payload_hdr->rt_ver >= cap->drv_rt_version;
 }
 
 static void print_update_debug_info(struct pfru_updated_result *result,
@@ -365,11 +346,8 @@ static int start_update(int action, struct pfru_device *pfru_dev)
 	out_obj = acpi_evaluate_dsm_typed(handle, &pfru_guid,
 					  pfru_dev->rev_id, PFRU_FUNC_START,
 					  &in_obj, ACPI_TYPE_PACKAGE);
-	if (!out_obj) {
-		dev_dbg(pfru_dev->parent_dev,
-			"Update failed to start with no object\n");
+	if (!out_obj)
 		return ret;
-	}
 
 	if (out_obj->package.count < UPDATE_NR_IDX ||
 	    out_obj->package.elements[UPDATE_STATUS_IDX].type != ACPI_TYPE_INTEGER ||
@@ -377,11 +355,8 @@ static int start_update(int action, struct pfru_device *pfru_dev)
 	    out_obj->package.elements[UPDATE_AUTH_TIME_LOW_IDX].type != ACPI_TYPE_INTEGER ||
 	    out_obj->package.elements[UPDATE_AUTH_TIME_HI_IDX].type != ACPI_TYPE_INTEGER ||
 	    out_obj->package.elements[UPDATE_EXEC_TIME_LOW_IDX].type != ACPI_TYPE_INTEGER ||
-	    out_obj->package.elements[UPDATE_EXEC_TIME_HI_IDX].type != ACPI_TYPE_INTEGER) {
-		dev_dbg(pfru_dev->parent_dev,
-			"Update failed with invalid package count/type\n");
+	    out_obj->package.elements[UPDATE_EXEC_TIME_HI_IDX].type != ACPI_TYPE_INTEGER)
 		goto free_acpi_buffer;
-	}
 
 	update_result.status =
 		out_obj->package.elements[UPDATE_STATUS_IDX].integer.value;
@@ -390,10 +365,8 @@ static int start_update(int action, struct pfru_device *pfru_dev)
 
 	if (update_result.status != DSM_SUCCEED) {
 		ret = -EBUSY;
-		dev_dbg(pfru_dev->parent_dev,
-			"Update failed with Error Status:%d\n", update_result.status);
-		dev_dbg(pfru_dev->parent_dev,
-			"Update failed with Error Extended Status:%d\n",
+		dev_dbg(pfru_dev->parent_dev, "Error Status:%d\n", update_result.status);
+		dev_dbg(pfru_dev->parent_dev, "Error Extended Status:%d\n",
 			update_result.ext_status);
 
 		goto free_acpi_buffer;
@@ -477,10 +450,8 @@ static ssize_t pfru_write(struct file *file, const char __user *buf,
 	if (ret)
 		return ret;
 
-	if (len > buf_info.buf_size) {
-		dev_dbg(pfru_dev->parent_dev, "Capsule image size too large\n");
+	if (len > buf_info.buf_size)
 		return -EINVAL;
-	}
 
 	iov.iov_base = (void __user *)buf;
 	iov.iov_len = len;
@@ -489,14 +460,10 @@ static ssize_t pfru_write(struct file *file, const char __user *buf,
 	/* map the communication buffer */
 	phy_addr = (phys_addr_t)((buf_info.addr_hi << 32) | buf_info.addr_lo);
 	buf_ptr = memremap(phy_addr, buf_info.buf_size, MEMREMAP_WB);
-	if (!buf_ptr) {
-		dev_dbg(pfru_dev->parent_dev, "Failed to remap the buffer\n");
+	if (!buf_ptr)
 		return -ENOMEM;
-	}
 
 	if (!copy_from_iter_full(buf_ptr, len, &iter)) {
-		dev_dbg(pfru_dev->parent_dev,
-			"Failed to copy the data from the user space buffer\n");
 		ret = -EINVAL;
 		goto unmap;
 	}
@@ -522,11 +489,13 @@ static const struct file_operations acpi_pfru_fops = {
 	.llseek		= noop_llseek,
 };
 
-static void acpi_pfru_remove(struct platform_device *pdev)
+static int acpi_pfru_remove(struct platform_device *pdev)
 {
 	struct pfru_device *pfru_dev = platform_get_drvdata(pdev);
 
 	misc_deregister(&pfru_dev->miscdev);
+
+	return 0;
 }
 
 static void pfru_put_idx(void *data)

@@ -2,7 +2,7 @@
 #ifndef _ASM_S390_ASM_CONST_H
 #define _ASM_S390_ASM_CONST_H
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 #  define stringify_in_c(...)	__VA_ARGS__
 #else
 /* This version of stringify will deal with commas... */

@@ -2,8 +2,6 @@
 #ifndef _ASM_X86_FTRACE_H
 #define _ASM_X86_FTRACE_H
 
-#include <asm/ptrace.h>
-
 #ifdef CONFIG_FUNCTION_TRACER
 #ifndef CC_USING_FENTRY
 # error Compiler does not support fentry?
@@ -22,7 +20,9 @@
 #define ARCH_SUPPORTS_FTRACE_OPS 1
 #endif
 
-#ifndef __ASSEMBLER__
+#define HAVE_FUNCTION_GRAPH_RET_ADDR_PTR
+
+#ifndef __ASSEMBLY__
 extern void __fentry__(void);
 
 static inline unsigned long ftrace_call_adjust(unsigned long addr)
@@ -34,49 +34,38 @@ static inline unsigned long ftrace_call_adjust(unsigned long addr)
 	return addr;
 }
 
-static inline unsigned long arch_ftrace_get_symaddr(unsigned long fentry_ip)
-{
-	if (is_endbr((void*)(fentry_ip - ENDBR_INSN_SIZE)))
-		fentry_ip -= ENDBR_INSN_SIZE;
-
-	return fentry_ip;
-}
-#define ftrace_get_symaddr(fentry_ip)	arch_ftrace_get_symaddr(fentry_ip)
-
 #ifdef CONFIG_HAVE_DYNAMIC_FTRACE_WITH_ARGS
-
-#include <linux/ftrace_regs.h>
+struct ftrace_regs {
+	struct pt_regs		regs;
+};
 
 static __always_inline struct pt_regs *
 arch_ftrace_get_regs(struct ftrace_regs *fregs)
 {
 	/* Only when FL_SAVE_REGS is set, cs will be non zero */
-	if (!arch_ftrace_regs(fregs)->regs.cs)
+	if (!fregs->regs.cs)
 		return NULL;
-	return &arch_ftrace_regs(fregs)->regs;
+	return &fregs->regs;
 }
-
-#define arch_ftrace_partial_regs(regs) do {	\
-	regs->flags |= X86_EFLAGS_FIXED;	\
-	regs->cs = __KERNEL_CS;			\
-} while (0)
-
-#define arch_ftrace_fill_perf_regs(fregs, _regs) do {	\
-		(_regs)->ip = arch_ftrace_regs(fregs)->regs.ip;		\
-		(_regs)->sp = arch_ftrace_regs(fregs)->regs.sp;		\
-		(_regs)->cs = __KERNEL_CS;		\
-		(_regs)->flags = 0;			\
-	} while (0)
 
 #define ftrace_regs_set_instruction_pointer(fregs, _ip)	\
-	do { arch_ftrace_regs(fregs)->regs.ip = (_ip); } while (0)
+	do { (fregs)->regs.ip = (_ip); } while (0)
 
+#define ftrace_regs_get_instruction_pointer(fregs) \
+	((fregs)->regs.ip)
 
-static __always_inline unsigned long
-ftrace_regs_get_return_address(struct ftrace_regs *fregs)
-{
-	return *(unsigned long *)ftrace_regs_get_stack_pointer(fregs);
-}
+#define ftrace_regs_get_argument(fregs, n) \
+	regs_get_kernel_argument(&(fregs)->regs, n)
+#define ftrace_regs_get_stack_pointer(fregs) \
+	kernel_stack_pointer(&(fregs)->regs)
+#define ftrace_regs_return_value(fregs) \
+	regs_return_value(&(fregs)->regs)
+#define ftrace_regs_set_return_value(fregs, ret) \
+	regs_set_return_value(&(fregs)->regs, ret)
+#define ftrace_override_function_with_return(fregs) \
+	override_function_with_return(&(fregs)->regs)
+#define ftrace_regs_query_register_offset(name) \
+	regs_query_register_offset(name)
 
 struct ftrace_ops;
 #define ftrace_graph_func ftrace_graph_func
@@ -101,7 +90,7 @@ __arch_ftrace_set_direct_caller(struct pt_regs *regs, unsigned long addr)
 	regs->orig_ax = addr;
 }
 #define arch_ftrace_set_direct_caller(fregs, addr) \
-	__arch_ftrace_set_direct_caller(&arch_ftrace_regs(fregs)->regs, addr)
+	__arch_ftrace_set_direct_caller(&(fregs)->regs, addr)
 #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
 
 #ifdef CONFIG_DYNAMIC_FTRACE
@@ -111,14 +100,11 @@ struct dyn_arch_ftrace {
 };
 
 #endif /*  CONFIG_DYNAMIC_FTRACE */
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* CONFIG_FUNCTION_TRACER */
 
 
-#ifndef __ASSEMBLER__
-
-void prepare_ftrace_return(unsigned long ip, unsigned long *parent,
-			   unsigned long frame_pointer);
+#ifndef __ASSEMBLY__
 
 #if defined(CONFIG_FUNCTION_TRACER) && defined(CONFIG_DYNAMIC_FTRACE)
 extern void set_ftrace_ops_ro(void);
@@ -159,6 +145,6 @@ static inline bool arch_trace_is_compat_syscall(struct pt_regs *regs)
 }
 #endif /* CONFIG_FTRACE_SYSCALLS && CONFIG_IA32_EMULATION */
 #endif /* !COMPILE_OFFSETS */
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #endif /* _ASM_X86_FTRACE_H */

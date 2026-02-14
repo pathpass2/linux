@@ -5,7 +5,7 @@
  * Copyright (c) 2016, Jelle van der Waa <jelle@vdwaa.nl>
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/iio/iio.h>
@@ -95,8 +95,10 @@ static int dmard09_probe(struct i2c_client *client)
 	struct dmard09_data *data;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&client->dev, "iio allocation failed\n");
 		return -ENOMEM;
+	}
 
 	data = iio_priv(indio_dev);
 	data->client = client;
@@ -123,8 +125,8 @@ static int dmard09_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id dmard09_id[] = {
-	{ "dmard09" },
-	{ }
+	{ "dmard09", 0 },
+	{ },
 };
 
 MODULE_DEVICE_TABLE(i2c, dmard09_id);
@@ -133,7 +135,7 @@ static struct i2c_driver dmard09_driver = {
 	.driver = {
 		.name = DMARD09_DRV_NAME
 	},
-	.probe = dmard09_probe,
+	.probe_new = dmard09_probe,
 	.id_table = dmard09_id,
 };
 

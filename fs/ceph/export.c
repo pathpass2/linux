@@ -3,11 +3,10 @@
 
 #include <linux/exportfs.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "super.h"
 #include "mds_client.h"
-#include "crypto.h"
 
 /*
  * Basic fh
@@ -33,19 +32,11 @@ struct ceph_nfs_snapfh {
 	u32 hash;
 } __attribute__ ((packed));
 
-#define BYTES_PER_U32		(sizeof(u32))
-#define CEPH_FH_BASIC_SIZE \
-	(sizeof(struct ceph_nfs_fh) / BYTES_PER_U32)
-#define CEPH_FH_WITH_PARENT_SIZE \
-	(sizeof(struct ceph_nfs_confh) / BYTES_PER_U32)
-#define CEPH_FH_SNAPPED_INODE_SIZE \
-	(sizeof(struct ceph_nfs_snapfh) / BYTES_PER_U32)
-
 static int ceph_encode_snapfh(struct inode *inode, u32 *rawfh, int *max_len,
 			      struct inode *parent_inode)
 {
-	struct ceph_client *cl = ceph_inode_to_client(inode);
-	static const int snap_handle_length = CEPH_FH_SNAPPED_INODE_SIZE;
+	static const int snap_handle_length =
+		sizeof(struct ceph_nfs_snapfh) >> 2;
 	struct ceph_nfs_snapfh *sfh = (void *)rawfh;
 	u64 snapid = ceph_snap(inode);
 	int ret;
@@ -87,16 +78,17 @@ static int ceph_encode_snapfh(struct inode *inode, u32 *rawfh, int *max_len,
 	*max_len = snap_handle_length;
 	ret = FILEID_BTRFS_WITH_PARENT;
 out:
-	doutc(cl, "%p %llx.%llx ret=%d\n", inode, ceph_vinop(inode), ret);
+	dout("encode_snapfh %llx.%llx ret=%d\n", ceph_vinop(inode), ret);
 	return ret;
 }
 
 static int ceph_encode_fh(struct inode *inode, u32 *rawfh, int *max_len,
 			  struct inode *parent_inode)
 {
-	struct ceph_client *cl = ceph_inode_to_client(inode);
-	static const int handle_length = CEPH_FH_BASIC_SIZE;
-	static const int connected_handle_length = CEPH_FH_WITH_PARENT_SIZE;
+	static const int handle_length =
+		sizeof(struct ceph_nfs_fh) >> 2;
+	static const int connected_handle_length =
+		sizeof(struct ceph_nfs_confh) >> 2;
 	int type;
 
 	if (ceph_snap(inode) != CEPH_NOSNAP)
@@ -112,15 +104,15 @@ static int ceph_encode_fh(struct inode *inode, u32 *rawfh, int *max_len,
 
 	if (parent_inode) {
 		struct ceph_nfs_confh *cfh = (void *)rawfh;
-		doutc(cl, "%p %llx.%llx with parent %p %llx.%llx\n", inode,
-		      ceph_vinop(inode), parent_inode, ceph_vinop(parent_inode));
+		dout("encode_fh %llx with parent %llx\n",
+		     ceph_ino(inode), ceph_ino(parent_inode));
 		cfh->ino = ceph_ino(inode);
 		cfh->parent_ino = ceph_ino(parent_inode);
 		*max_len = connected_handle_length;
 		type = FILEID_INO32_GEN_PARENT;
 	} else {
 		struct ceph_nfs_fh *fh = (void *)rawfh;
-		doutc(cl, "%p %llx.%llx\n", inode, ceph_vinop(inode));
+		dout("encode_fh %llx\n", ceph_ino(inode));
 		fh->ino = ceph_ino(inode);
 		*max_len = handle_length;
 		type = FILEID_INO32_GEN;
@@ -130,7 +122,7 @@ static int ceph_encode_fh(struct inode *inode, u32 *rawfh, int *max_len,
 
 static struct inode *__lookup_inode(struct super_block *sb, u64 ino)
 {
-	struct ceph_mds_client *mdsc = ceph_sb_to_fs_client(sb)->mdsc;
+	struct ceph_mds_client *mdsc = ceph_sb_to_client(sb)->mdsc;
 	struct inode *inode;
 	struct ceph_vino vino;
 	int err;
@@ -212,8 +204,7 @@ static struct dentry *__snapfh_to_dentry(struct super_block *sb,
 					  struct ceph_nfs_snapfh *sfh,
 					  bool want_parent)
 {
-	struct ceph_mds_client *mdsc = ceph_sb_to_fs_client(sb)->mdsc;
-	struct ceph_client *cl = mdsc->fsc->client;
+	struct ceph_mds_client *mdsc = ceph_sb_to_client(sb)->mdsc;
 	struct ceph_mds_request *req;
 	struct inode *inode;
 	struct ceph_vino vino;
@@ -286,11 +277,14 @@ static struct dentry *__snapfh_to_dentry(struct super_block *sb,
 	ceph_mdsc_put_request(req);
 
 	if (want_parent) {
-		doutc(cl, "%llx.%llx\n err=%d\n", vino.ino, vino.snap, err);
+		dout("snapfh_to_parent %llx.%llx\n err=%d\n",
+		     vino.ino, vino.snap, err);
 	} else {
-		doutc(cl, "%llx.%llx parent %llx hash %x err=%d", vino.ino,
-		      vino.snap, sfh->parent_ino, sfh->hash, err);
+		dout("snapfh_to_dentry %llx.%llx parent %llx hash %x err=%d",
+		      vino.ino, vino.snap, sfh->parent_ino, sfh->hash, err);
 	}
+	if (IS_ERR(inode))
+		return ERR_CAST(inode);
 	/* see comments in ceph_get_parent() */
 	return unlinked ? d_obtain_root(inode) : d_obtain_alias(inode);
 }
@@ -302,7 +296,6 @@ static struct dentry *ceph_fh_to_dentry(struct super_block *sb,
 					struct fid *fid,
 					int fh_len, int fh_type)
 {
-	struct ceph_fs_client *fsc = ceph_sb_to_fs_client(sb);
 	struct ceph_nfs_fh *fh = (void *)fid->raw;
 
 	if (fh_type == FILEID_BTRFS_WITH_PARENT) {
@@ -313,17 +306,17 @@ static struct dentry *ceph_fh_to_dentry(struct super_block *sb,
 	if (fh_type != FILEID_INO32_GEN  &&
 	    fh_type != FILEID_INO32_GEN_PARENT)
 		return NULL;
-	if (fh_len < sizeof(*fh) / BYTES_PER_U32)
+	if (fh_len < sizeof(*fh) / 4)
 		return NULL;
 
-	doutc(fsc->client, "%llx\n", fh->ino);
+	dout("fh_to_dentry %llx\n", fh->ino);
 	return __fh_to_dentry(sb, fh->ino);
 }
 
 static struct dentry *__get_parent(struct super_block *sb,
 				   struct dentry *child, u64 ino)
 {
-	struct ceph_mds_client *mdsc = ceph_sb_to_fs_client(sb)->mdsc;
+	struct ceph_mds_client *mdsc = ceph_sb_to_client(sb)->mdsc;
 	struct ceph_mds_request *req;
 	struct inode *inode;
 	int mask;
@@ -369,7 +362,6 @@ static struct dentry *__get_parent(struct super_block *sb,
 static struct dentry *ceph_get_parent(struct dentry *child)
 {
 	struct inode *inode = d_inode(child);
-	struct ceph_client *cl = ceph_inode_to_client(inode);
 	struct dentry *dn;
 
 	if (ceph_snap(inode) != CEPH_NOSNAP) {
@@ -398,9 +390,9 @@ static struct dentry *ceph_get_parent(struct dentry *child)
 			}
 			dir = snapdir;
 		}
-		/* If directory has already been deleted, further get_parent
+		/* If directory has already been deleted, futher get_parent
 		 * will fail. Do not mark snapdir dentry as disconnected,
-		 * this prevents exportfs from doing further get_parent. */
+		 * this prevent exportfs from doing futher get_parent. */
 		if (unlinked)
 			dn = d_obtain_root(dir);
 		else
@@ -409,8 +401,8 @@ static struct dentry *ceph_get_parent(struct dentry *child)
 		dn = __get_parent(child->d_sb, child, 0);
 	}
 out:
-	doutc(cl, "child %p %p %llx.%llx err=%ld\n", child, inode,
-	      ceph_vinop(inode), (long)PTR_ERR_OR_ZERO(dn));
+	dout("get_parent %p ino %llx.%llx err=%ld\n",
+	     child, ceph_vinop(inode), (long)PTR_ERR_OR_ZERO(dn));
 	return dn;
 }
 
@@ -421,7 +413,6 @@ static struct dentry *ceph_fh_to_parent(struct super_block *sb,
 					struct fid *fid,
 					int fh_len, int fh_type)
 {
-	struct ceph_fs_client *fsc = ceph_sb_to_fs_client(sb);
 	struct ceph_nfs_confh *cfh = (void *)fid->raw;
 	struct dentry *dentry;
 
@@ -432,10 +423,10 @@ static struct dentry *ceph_fh_to_parent(struct super_block *sb,
 
 	if (fh_type != FILEID_INO32_GEN_PARENT)
 		return NULL;
-	if (fh_len < sizeof(*cfh) / BYTES_PER_U32)
+	if (fh_len < sizeof(*cfh) / 4)
 		return NULL;
 
-	doutc(fsc->client, "%llx\n", cfh->parent_ino);
+	dout("fh_to_parent %llx\n", cfh->parent_ino);
 	dentry = __get_parent(sb, NULL, cfh->ino);
 	if (unlikely(dentry == ERR_PTR(-ENOENT)))
 		dentry = __fh_to_dentry(sb, cfh->parent_ino);
@@ -447,7 +438,7 @@ static int __get_snap_name(struct dentry *parent, char *name,
 {
 	struct inode *inode = d_inode(child);
 	struct inode *dir = d_inode(parent);
-	struct ceph_fs_client *fsc = ceph_inode_to_fs_client(inode);
+	struct ceph_fs_client *fsc = ceph_inode_to_client(inode);
 	struct ceph_mds_request *req = NULL;
 	char *last_name = NULL;
 	unsigned next_offset = 2;
@@ -457,13 +448,7 @@ static int __get_snap_name(struct dentry *parent, char *name,
 		goto out;
 	if (ceph_snap(inode) == CEPH_SNAPDIR) {
 		if (ceph_snap(dir) == CEPH_NOSNAP) {
-			/*
-			 * .get_name() from struct export_operations
-			 * assumes that its 'name' parameter is pointing
-			 * to a NAME_MAX+1 sized buffer
-			 */
-			strscpy(name, fsc->mount_options->snapdir_name,
-				NAME_MAX + 1);
+			strcpy(name, fsc->mount_options->snapdir_name);
 			err = 0;
 		}
 		goto out;
@@ -540,8 +525,8 @@ out:
 	if (req)
 		ceph_mdsc_put_request(req);
 	kfree(last_name);
-	doutc(fsc->client, "child dentry %p %p %llx.%llx err=%d\n", child,
-	      inode, ceph_vinop(inode), err);
+	dout("get_snap_name %p ino %llx.%llx err=%d\n",
+	     child, ceph_vinop(inode), err);
 	return err;
 }
 
@@ -550,61 +535,42 @@ static int ceph_get_name(struct dentry *parent, char *name,
 {
 	struct ceph_mds_client *mdsc;
 	struct ceph_mds_request *req;
-	struct inode *dir = d_inode(parent);
 	struct inode *inode = d_inode(child);
-	struct ceph_mds_reply_info_parsed *rinfo;
 	int err;
 
 	if (ceph_snap(inode) != CEPH_NOSNAP)
 		return __get_snap_name(parent, name, child);
 
-	mdsc = ceph_inode_to_fs_client(inode)->mdsc;
+	mdsc = ceph_inode_to_client(inode)->mdsc;
 	req = ceph_mdsc_create_request(mdsc, CEPH_MDS_OP_LOOKUPNAME,
 				       USE_ANY_MDS);
 	if (IS_ERR(req))
 		return PTR_ERR(req);
 
-	inode_lock(dir);
+	inode_lock(d_inode(parent));
+
 	req->r_inode = inode;
 	ihold(inode);
 	req->r_ino2 = ceph_vino(d_inode(parent));
-	req->r_parent = dir;
-	ihold(dir);
+	req->r_parent = d_inode(parent);
+	ihold(req->r_parent);
 	set_bit(CEPH_MDS_R_PARENT_LOCKED, &req->r_req_flags);
 	req->r_num_caps = 2;
 	err = ceph_mdsc_do_request(mdsc, NULL, req);
-	inode_unlock(dir);
 
-	if (err)
-		goto out;
+	inode_unlock(d_inode(parent));
 
-	rinfo = &req->r_reply_info;
-	if (!IS_ENCRYPTED(dir)) {
+	if (!err) {
+		struct ceph_mds_reply_info_parsed *rinfo = &req->r_reply_info;
 		memcpy(name, rinfo->dname, rinfo->dname_len);
 		name[rinfo->dname_len] = 0;
+		dout("get_name %p ino %llx.%llx name %s\n",
+		     child, ceph_vinop(inode), name);
 	} else {
-		struct fscrypt_str oname = FSTR_INIT(NULL, 0);
-		struct ceph_fname fname = { .dir	= dir,
-					    .name	= rinfo->dname,
-					    .ctext	= rinfo->altname,
-					    .name_len	= rinfo->dname_len,
-					    .ctext_len	= rinfo->altname_len };
-
-		err = ceph_fname_alloc_buffer(dir, &oname);
-		if (err < 0)
-			goto out;
-
-		err = ceph_fname_to_usr(&fname, NULL, &oname, NULL);
-		if (!err) {
-			memcpy(name, oname.name, oname.len);
-			name[oname.len] = 0;
-		}
-		ceph_fname_free_buffer(dir, &oname);
+		dout("get_name %p ino %llx.%llx err %d\n",
+		     child, ceph_vinop(inode), err);
 	}
-out:
-	doutc(mdsc->fsc->client, "child dentry %p %p %llx.%llx err %d %s%s\n",
-	      child, inode, ceph_vinop(inode), err, err ? "" : "name ",
-	      err ? "" : name);
+
 	ceph_mdsc_put_request(req);
 	return err;
 }

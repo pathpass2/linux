@@ -4,14 +4,12 @@
  *  Copyright (C) 2007, 2008 Rusty Russell IBM Corporation
  */
 
-#include <asm/barrier.h>
 #include <linux/err.h>
 #include <linux/hw_random.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock.h>
 #include <linux/virtio.h>
 #include <linux/virtio_rng.h>
-#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 
@@ -29,25 +27,23 @@ struct virtrng_info {
 	unsigned int data_avail;
 	unsigned int data_idx;
 	/* minimal size returned by rng_buffer_size() */
-	__dma_from_device_group_begin();
 #if SMP_CACHE_BYTES < 32
 	u8 data[32];
 #else
 	u8 data[SMP_CACHE_BYTES];
 #endif
-	__dma_from_device_group_end();
 };
 
 static void random_recv_done(struct virtqueue *vq)
 {
 	struct virtrng_info *vi = vq->vdev->priv;
-	unsigned int len;
 
 	/* We can get spurious callbacks, e.g. shared IRQs + virtio_pci. */
-	if (!virtqueue_get_buf(vi->vq, &len))
+	if (!virtqueue_get_buf(vi->vq, &vi->data_avail))
 		return;
 
-	smp_store_release(&vi->data_avail, len);
+	vi->data_idx = 0;
+
 	complete(&vi->have_data);
 }
 
@@ -56,6 +52,7 @@ static void request_entropy(struct virtrng_info *vi)
 	struct scatterlist sg;
 
 	reinit_completion(&vi->have_data);
+	vi->data_avail = 0;
 	vi->data_idx = 0;
 
 	sg_init_one(&sg, vi->data, sizeof(vi->data));
@@ -91,7 +88,7 @@ static int virtio_read(struct hwrng *rng, void *buf, size_t size, bool wait)
 	read = 0;
 
 	/* copy available data */
-	if (smp_load_acquire(&vi->data_avail)) {
+	if (vi->data_avail) {
 		chunk = copy_data(vi, buf, size);
 		size -= chunk;
 		read += chunk;
@@ -138,7 +135,7 @@ static int probe_common(struct virtio_device *vdev)
 	if (!vi)
 		return -ENOMEM;
 
-	vi->index = index = ida_alloc(&rng_index_ida, GFP_KERNEL);
+	vi->index = index = ida_simple_get(&rng_index_ida, 0, 0, GFP_KERNEL);
 	if (index < 0) {
 		err = index;
 		goto err_ida;
@@ -169,7 +166,7 @@ static int probe_common(struct virtio_device *vdev)
 	return 0;
 
 err_find:
-	ida_free(&rng_index_ida, index);
+	ida_simple_remove(&rng_index_ida, index);
 err_ida:
 	kfree(vi);
 	return err;
@@ -187,7 +184,7 @@ static void remove_common(struct virtio_device *vdev)
 		hwrng_unregister(&vi->hwrng);
 	virtio_reset_device(vdev);
 	vdev->config->del_vqs(vdev);
-	ida_free(&rng_index_ida, vi->index);
+	ida_simple_remove(&rng_index_ida, vi->index);
 	kfree(vi);
 }
 
@@ -211,6 +208,7 @@ static void virtrng_scan(struct virtio_device *vdev)
 		vi->hwrng_register_done = true;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int virtrng_freeze(struct virtio_device *vdev)
 {
 	remove_common(vdev);
@@ -240,6 +238,7 @@ static int virtrng_restore(struct virtio_device *vdev)
 
 	return err;
 }
+#endif
 
 static const struct virtio_device_id id_table[] = {
 	{ VIRTIO_ID_RNG, VIRTIO_DEV_ANY_ID },
@@ -248,12 +247,15 @@ static const struct virtio_device_id id_table[] = {
 
 static struct virtio_driver virtio_rng_driver = {
 	.driver.name =	KBUILD_MODNAME,
+	.driver.owner =	THIS_MODULE,
 	.id_table =	id_table,
 	.probe =	virtrng_probe,
 	.remove =	virtrng_remove,
 	.scan =		virtrng_scan,
-	.freeze =	pm_sleep_ptr(virtrng_freeze),
-	.restore =	pm_sleep_ptr(virtrng_restore),
+#ifdef CONFIG_PM_SLEEP
+	.freeze =	virtrng_freeze,
+	.restore =	virtrng_restore,
+#endif
 };
 
 module_virtio_driver(virtio_rng_driver);

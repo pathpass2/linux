@@ -44,7 +44,7 @@
  */
 #define __HYPERVISOR_VIRT_START 0xF5800000
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct cpu_user_regs {
     uint32_t ebx;
@@ -85,7 +85,7 @@ typedef struct xen_callback xen_callback_t;
 
 #define XEN_CALLBACK(__cs, __eip)				\
 	((struct xen_callback){ .cs = (__cs), .eip = (unsigned long)(__eip) })
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 
 /*

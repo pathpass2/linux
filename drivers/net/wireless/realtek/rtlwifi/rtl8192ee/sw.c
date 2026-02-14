@@ -24,6 +24,9 @@ static void rtl92ee_init_aspm_vars(struct ieee80211_hw *hw)
 	struct rtl_priv *rtlpriv = rtl_priv(hw);
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
 
+	/*close ASPM for AMD defaultly */
+	rtlpci->const_amdpci_aspm = 0;
+
 	/**
 	 * ASPM PS mode.
 	 * 0 - Disable ASPM,
@@ -31,7 +34,7 @@ static void rtl92ee_init_aspm_vars(struct ieee80211_hw *hw)
 	 * 2 - Enable ASPM with Clock Req,
 	 * 3 - Alwyas Enable ASPM with Clock Req,
 	 * 4 - Always Enable ASPM without Clock Req.
-	 * set default to RTL8192CE:3 RTL8192E:2
+	 * set defult to RTL8192CE:3 RTL8192E:2
 	 */
 	rtlpci->const_pci_aspm = 3;
 
@@ -176,7 +179,7 @@ static bool rtl92ee_get_btc_status(void)
 	return true;
 }
 
-static const struct rtl_hal_ops rtl8192ee_hal_ops = {
+static struct rtl_hal_ops rtl8192ee_hal_ops = {
 	.init_sw_vars = rtl92ee_init_sw_vars,
 	.deinit_sw_vars = rtl92ee_deinit_sw_vars,
 	.read_eeprom_info = rtl92ee_read_eeprom_info,
@@ -196,6 +199,7 @@ static const struct rtl_hal_ops rtl8192ee_hal_ops = {
 	.get_hw_reg = rtl92ee_get_hw_reg,
 	.set_hw_reg = rtl92ee_set_hw_reg,
 	.update_rate_tbl = rtl92ee_update_hal_rate_tbl,
+	.pre_fill_tx_bd_desc = rtl92ee_pre_fill_tx_bd_desc,
 	.rx_desc_buff_remained_cnt = rtl92ee_rx_desc_buff_remained_cnt,
 	.rx_check_dma_ok = rtl92ee_rx_check_dma_ok,
 	.fill_tx_desc = rtl92ee_tx_fill_desc,
@@ -216,6 +220,7 @@ static const struct rtl_hal_ops rtl8192ee_hal_ops = {
 	.tx_polling = rtl92ee_tx_polling,
 	.enable_hw_sec = rtl92ee_enable_hw_security_config,
 	.set_key = rtl92ee_set_key,
+	.init_sw_leds = rtl92ee_init_sw_leds,
 	.get_bbreg = rtl92ee_phy_query_bb_reg,
 	.set_bbreg = rtl92ee_phy_set_bb_reg,
 	.get_rfreg = rtl92ee_phy_query_rf_reg,

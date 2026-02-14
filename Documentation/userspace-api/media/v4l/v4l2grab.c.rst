@@ -1,5 +1,4 @@
 .. SPDX-License-Identifier: GFDL-1.1-no-invariants-or-later
-.. c:namespace:: V4L
 
 file: media/v4l/v4l2grab.c
 ==========================

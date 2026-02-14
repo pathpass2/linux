@@ -64,23 +64,21 @@
 #define CS_DEFAULT		2
 
 /* file attributes */
-#define EXFAT_ATTR_READONLY	0x0001
-#define EXFAT_ATTR_HIDDEN	0x0002
-#define EXFAT_ATTR_SYSTEM	0x0004
-#define EXFAT_ATTR_VOLUME	0x0008
-#define EXFAT_ATTR_SUBDIR	0x0010
-#define EXFAT_ATTR_ARCHIVE	0x0020
+#define ATTR_READONLY		0x0001
+#define ATTR_HIDDEN		0x0002
+#define ATTR_SYSTEM		0x0004
+#define ATTR_VOLUME		0x0008
+#define ATTR_SUBDIR		0x0010
+#define ATTR_ARCHIVE		0x0020
 
-#define EXFAT_ATTR_RWMASK	(EXFAT_ATTR_HIDDEN | EXFAT_ATTR_SYSTEM | \
-				 EXFAT_ATTR_VOLUME | EXFAT_ATTR_SUBDIR | \
-				 EXFAT_ATTR_ARCHIVE)
+#define ATTR_RWMASK		(ATTR_HIDDEN | ATTR_SYSTEM | ATTR_VOLUME | \
+				 ATTR_SUBDIR | ATTR_ARCHIVE)
 
 #define BOOTSEC_JUMP_BOOT_LEN		3
 #define BOOTSEC_FS_NAME_LEN		8
 #define BOOTSEC_OLDBPB_LEN		53
 
 #define EXFAT_FILE_NAME_LEN		15
-#define EXFAT_VOLUME_LABEL_LEN		11
 
 #define EXFAT_MIN_SECT_SIZE_BITS		9
 #define EXFAT_MAX_SECT_SIZE_BITS		12
@@ -160,11 +158,6 @@ struct exfat_dentry {
 			__le32 start_clu;
 			__le64 size;
 		} __packed upcase; /* up-case table directory entry */
-		struct {
-			__u8 char_count;
-			__le16 volume_label[EXFAT_VOLUME_LABEL_LEN];
-			__u8 reserved[8];
-		} __packed volume_label; /* volume label directory entry */
 		struct {
 			__u8 flags;
 			__u8 vendor_guid[16];

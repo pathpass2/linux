@@ -20,12 +20,11 @@ properties:
           - const: brcm,sdhci-brcmstb
       - items:
           - enum:
-              - brcm,bcm2712-sdhci
-              - brcm,bcm72116-sdhci
-              - brcm,bcm74165b0-sdhci
               - brcm,bcm7445-sdhci
+          - const: brcm,sdhci-brcmstb
+      - items:
+          - enum:
               - brcm,bcm7425-sdhci
-              - brcm,bcm74371-sdhci
           - const: brcm,sdhci-brcmstb
 
   reg:
@@ -63,7 +62,7 @@ properties:
     description: Specifies that controller should use auto CMD12
 
 allOf:
-  - $ref: sdhci-common.yaml#
+  - $ref: mmc-controller.yaml#
   - if:
       properties:
         clock-names:

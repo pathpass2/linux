@@ -20,23 +20,20 @@
  * driver.
  */
 
-#include <linux/aperture.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
-#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_aperture.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_dma.h>
-#include <drm/drm_fourcc.h>
-#include <drm/drm_print.h>
+#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_vblank.h>
 
 #include <soc/bcm2835/raspberrypi-firmware.h>
@@ -48,6 +45,7 @@
 
 #define DRIVER_NAME "vc4"
 #define DRIVER_DESC "Broadcom VC4 graphics"
+#define DRIVER_DATE "20140616"
 #define DRIVER_MAJOR 0
 #define DRIVER_MINOR 0
 #define DRIVER_PATCHLEVEL 0
@@ -100,7 +98,7 @@ static int vc4_get_param_ioctl(struct drm_device *dev, void *data,
 	if (args->pad != 0)
 		return -EINVAL;
 
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return -ENODEV;
 
 	if (!vc4->v3d)
@@ -149,7 +147,7 @@ static int vc4_open(struct drm_device *dev, struct drm_file *file)
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_file *vc4file;
 
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return -ENODEV;
 
 	vc4file = kzalloc(sizeof(*vc4file), GFP_KERNEL);
@@ -167,7 +165,7 @@ static void vc4_close(struct drm_device *dev, struct drm_file *file)
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_file *vc4file = file->driver_priv;
 
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return;
 
 	if (vc4file->bin_bo_used)
@@ -214,7 +212,6 @@ const struct drm_driver vc4_drm_driver = {
 	.gem_create_object = vc4_create_object,
 
 	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(vc4_bo_dumb_create),
-	DRM_FBDEV_DMA_DRIVER_OPS,
 
 	.ioctls = vc4_drm_ioctls,
 	.num_ioctls = ARRAY_SIZE(vc4_drm_ioctls),
@@ -222,6 +219,7 @@ const struct drm_driver vc4_drm_driver = {
 
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,
+	.date = DRIVER_DATE,
 	.major = DRIVER_MAJOR,
 	.minor = DRIVER_MINOR,
 	.patchlevel = DRIVER_PATCHLEVEL,
@@ -237,12 +235,12 @@ const struct drm_driver vc5_drm_driver = {
 #endif
 
 	DRM_GEM_DMA_DRIVER_OPS_WITH_DUMB_CREATE(vc5_dumb_create),
-	DRM_FBDEV_DMA_DRIVER_OPS,
 
 	.fops = &vc4_drm_fops,
 
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,
+	.date = DRIVER_DATE,
 	.major = DRIVER_MAJOR,
 	.minor = DRIVER_MINOR,
 	.patchlevel = DRIVER_PATCHLEVEL,
@@ -277,7 +275,6 @@ static void vc4_component_unbind_all(void *ptr)
 
 static const struct of_device_id vc4_dma_range_matches[] = {
 	{ .compatible = "brcm,bcm2711-hvs" },
-	{ .compatible = "brcm,bcm2712-hvs" },
 	{ .compatible = "brcm,bcm2835-hvs" },
 	{ .compatible = "brcm,bcm2835-v3d" },
 	{ .compatible = "brcm,cygnus-v3d" },
@@ -294,22 +291,16 @@ static int vc4_drm_bind(struct device *dev)
 	struct vc4_dev *vc4;
 	struct device_node *node;
 	struct drm_crtc *crtc;
-	enum vc4_gen gen;
+	bool is_vc5;
 	int ret = 0;
 
 	dev->coherent_dma_mask = DMA_BIT_MASK(32);
 
-	gen = (enum vc4_gen)of_device_get_match_data(dev);
-
-	if (gen > VC4_GEN_4)
+	is_vc5 = of_device_is_compatible(dev->of_node, "brcm,bcm2711-vc5");
+	if (is_vc5)
 		driver = &vc5_drm_driver;
 	else
 		driver = &vc4_drm_driver;
-
-	if (gen >= VC4_GEN_6_C)
-		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
-	else
-		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 
 	node = of_find_matching_node_and_match(NULL, vc4_dma_range_matches,
 					       NULL);
@@ -324,30 +315,30 @@ static int vc4_drm_bind(struct device *dev)
 	vc4 = devm_drm_dev_alloc(dev, driver, struct vc4_dev, base);
 	if (IS_ERR(vc4))
 		return PTR_ERR(vc4);
-	vc4->gen = gen;
+	vc4->is_vc5 = is_vc5;
 	vc4->dev = dev;
 
 	drm = &vc4->base;
 	platform_set_drvdata(pdev, drm);
 
-	if (gen == VC4_GEN_4) {
+	if (!is_vc5) {
 		ret = drmm_mutex_init(drm, &vc4->bin_bo_lock);
 		if (ret)
-			goto err;
+			return ret;
 
 		ret = vc4_bo_cache_init(drm);
 		if (ret)
-			goto err;
+			return ret;
 	}
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
-		goto err;
+		return ret;
 
-	if (gen == VC4_GEN_4) {
+	if (!is_vc5) {
 		ret = vc4_gem_init(drm);
 		if (ret)
-			goto err;
+			return ret;
 	}
 
 	node = of_find_compatible_node(NULL, NULL, "raspberrypi,bcm2835-firmware");
@@ -355,15 +346,13 @@ static int vc4_drm_bind(struct device *dev)
 		firmware = rpi_firmware_get(node);
 		of_node_put(node);
 
-		if (!firmware) {
-			ret = -EPROBE_DEFER;
-			goto err;
-		}
+		if (!firmware)
+			return -EPROBE_DEFER;
 	}
 
-	ret = aperture_remove_all_conflicting_devices(driver->name);
+	ret = drm_aperture_remove_framebuffers(false, driver);
 	if (ret)
-		goto err;
+		return ret;
 
 	if (firmware) {
 		ret = rpi_firmware_property(firmware,
@@ -377,33 +366,32 @@ static int vc4_drm_bind(struct device *dev)
 
 	ret = component_bind_all(dev, drm);
 	if (ret)
-		goto err;
+		return ret;
 
 	ret = devm_add_action_or_reset(dev, vc4_component_unbind_all, vc4);
 	if (ret)
-		goto err;
+		return ret;
 
 	ret = vc4_plane_create_additional_planes(drm);
 	if (ret)
-		goto err;
+		goto unbind_all;
 
 	ret = vc4_kms_load(drm);
 	if (ret < 0)
-		goto err;
+		goto unbind_all;
 
 	drm_for_each_crtc(crtc, drm)
 		vc4_crtc_disable_at_boot(crtc);
 
 	ret = drm_dev_register(drm, 0);
 	if (ret < 0)
-		goto err;
+		goto unbind_all;
 
-	drm_client_setup_with_fourcc(drm, DRM_FORMAT_RGB565);
+	drm_fbdev_generic_setup(drm, 16);
 
 	return 0;
 
-err:
-	platform_set_drvdata(pdev, NULL);
+unbind_all:
 	return ret;
 }
 
@@ -413,7 +401,6 @@ static void vc4_drm_unbind(struct device *dev)
 
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
-	dev_set_drvdata(dev, NULL);
 }
 
 static const struct component_master_ops vc4_drm_ops = {
@@ -452,22 +439,17 @@ static int vc4_platform_drm_probe(struct platform_device *pdev)
 	return component_master_add_with_match(dev, &vc4_drm_ops, match);
 }
 
-static void vc4_platform_drm_remove(struct platform_device *pdev)
+static int vc4_platform_drm_remove(struct platform_device *pdev)
 {
 	component_master_del(&pdev->dev, &vc4_drm_ops);
-}
 
-static void vc4_platform_drm_shutdown(struct platform_device *pdev)
-{
-	drm_atomic_helper_shutdown(platform_get_drvdata(pdev));
+	return 0;
 }
 
 static const struct of_device_id vc4_of_match[] = {
-	{ .compatible = "brcm,bcm2711-vc5", .data = (void *)VC4_GEN_5 },
-	/* NB GEN_6_C will be corrected on D0 hw to GEN_6_D via vc4_hvs_bind */
-	{ .compatible = "brcm,bcm2712-vc6", .data = (void *)VC4_GEN_6_C },
-	{ .compatible = "brcm,bcm2835-vc4", .data = (void *)VC4_GEN_4 },
-	{ .compatible = "brcm,cygnus-vc4", .data = (void *)VC4_GEN_4 },
+	{ .compatible = "brcm,bcm2711-vc5", },
+	{ .compatible = "brcm,bcm2835-vc4", },
+	{ .compatible = "brcm,cygnus-vc4", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, vc4_of_match);
@@ -475,7 +457,6 @@ MODULE_DEVICE_TABLE(of, vc4_of_match);
 static struct platform_driver vc4_platform_driver = {
 	.probe		= vc4_platform_drm_probe,
 	.remove		= vc4_platform_drm_remove,
-	.shutdown	= vc4_platform_drm_shutdown,
 	.driver		= {
 		.name	= "vc4-drm",
 		.of_match_table = vc4_of_match,

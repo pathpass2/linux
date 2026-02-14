@@ -19,36 +19,6 @@
 #include <asm/facility.h>
 #include <asm/processor.h>
 #include <asm/sclp.h>
-#include "dat.h"
-#include "gmap.h"
-
-#define KVM_S390_UCONTROL_MEMSLOT (KVM_USER_MEM_SLOTS + 0)
-
-union kvm_s390_quad {
-	__uint128_t sixteen;
-	unsigned long eight;
-	unsigned int four;
-	unsigned short two;
-	unsigned char one;
-};
-
-static inline void kvm_s390_fpu_store(struct kvm_run *run)
-{
-	fpu_stfpc(&run->s.regs.fpc);
-	if (cpu_has_vx())
-		save_vx_regs((__vector128 *)&run->s.regs.vrs);
-	else
-		save_fp_regs((freg_t *)&run->s.regs.fprs);
-}
-
-static inline void kvm_s390_fpu_load(struct kvm_run *run)
-{
-	fpu_lfpc_safe(&run->s.regs.fpc);
-	if (cpu_has_vx())
-		load_vx_regs((__vector128 *)&run->s.regs.vrs);
-	else
-		load_fp_regs((freg_t *)&run->s.regs.fprs);
-}
 
 /* Transactional Memory Execution related macros */
 #define IS_TE_ENABLED(vcpu)	((vcpu->arch.sie_block->ecb & ECB_TE))
@@ -116,7 +86,9 @@ static inline int is_vcpu_idle(struct kvm_vcpu *vcpu)
 static inline int kvm_is_ucontrol(struct kvm *kvm)
 {
 #ifdef CONFIG_KVM_S390_UCONTROL
-	return test_bit(GMAP_FLAG_IS_UCONTROL, &kvm->arch.gmap->flags);
+	if (kvm->arch.gmap)
+		return 0;
+	return 1;
 #else
 	return 0;
 #endif
@@ -146,21 +118,6 @@ static inline u64 kvm_s390_get_base_disp_s(struct kvm_vcpu *vcpu, u8 *ar)
 		*ar = base2;
 
 	return (base2 ? vcpu->run->s.regs.gprs[base2] : 0) + disp2;
-}
-
-static inline u64 kvm_s390_get_base_disp_siy(struct kvm_vcpu *vcpu, u8 *ar)
-{
-	u32 base1 = vcpu->arch.sie_block->ipb >> 28;
-	s64 disp1;
-
-	/* The displacement is a 20bit _SIGNED_ value */
-	disp1 = sign_extend64(((vcpu->arch.sie_block->ipb & 0x0fff0000) >> 16) +
-			      ((vcpu->arch.sie_block->ipb & 0xff00) << 4), 19);
-
-	if (ar)
-		*ar = base1;
-
-	return (base1 ? vcpu->run->s.regs.gprs[base1] : 0) + disp1;
 }
 
 static inline void kvm_s390_get_base_disp_sse(struct kvm_vcpu *vcpu,
@@ -277,25 +234,11 @@ static inline unsigned long kvm_s390_get_gfn_end(struct kvm_memslots *slots)
 
 static inline u32 kvm_s390_get_gisa_desc(struct kvm *kvm)
 {
-	u32 gd;
-
-	if (!kvm->arch.gisa_int.origin)
-		return 0;
-
-	gd = virt_to_phys(kvm->arch.gisa_int.origin);
+	u32 gd = virt_to_phys(kvm->arch.gisa_int.origin);
 
 	if (gd && sclp.has_gisaf)
 		gd |= GISA_FORMAT1;
 	return gd;
-}
-
-static inline hva_t gpa_to_hva(struct kvm *kvm, gpa_t gpa)
-{
-	hva_t hva = gfn_to_hva(kvm, gpa_to_gfn(gpa));
-
-	if (!kvm_is_error_hva(hva))
-		hva |= offset_in_page(gpa);
-	return hva;
 }
 
 /* implemented in pv.c */
@@ -316,9 +259,6 @@ int kvm_s390_pv_dump_stor_state(struct kvm *kvm, void __user *buff_user,
 				u64 *gaddr, u64 buff_user_len, u16 *rc, u16 *rrc);
 int kvm_s390_pv_dump_complete(struct kvm *kvm, void __user *buff_user,
 			      u16 *rc, u16 *rrc);
-int kvm_s390_pv_destroy_page(struct kvm *kvm, unsigned long gaddr);
-int kvm_s390_pv_convert_to_secure(struct kvm *kvm, unsigned long gaddr);
-int kvm_s390_pv_make_secure(struct kvm *kvm, unsigned long gaddr, void *uvcb);
 
 static inline u64 kvm_s390_pv_get_handle(struct kvm *kvm)
 {
@@ -330,39 +270,16 @@ static inline u64 kvm_s390_pv_cpu_get_handle(struct kvm_vcpu *vcpu)
 	return vcpu->arch.pv.handle;
 }
 
-/**
- * __kvm_s390_pv_destroy_page() - Destroy a guest page.
- * @page: the page to destroy
- *
- * An attempt will be made to destroy the given guest page. If the attempt
- * fails, an attempt is made to export the page. If both attempts fail, an
- * appropriate error is returned.
- *
- * Context: must be called holding the mm lock for gmap->mm
- */
-static inline int __kvm_s390_pv_destroy_page(struct page *page)
+static inline bool kvm_s390_pv_is_protected(struct kvm *kvm)
 {
-	struct folio *folio = page_folio(page);
-	int rc;
+	lockdep_assert_held(&kvm->lock);
+	return !!kvm_s390_pv_get_handle(kvm);
+}
 
-	/* Large folios cannot be secure. Small folio implies FW_LEVEL_PTE. */
-	if (folio_test_large(folio))
-		return -EFAULT;
-
-	rc = uv_destroy_folio(folio);
-	/*
-	 * Fault handlers can race; it is possible that two CPUs will fault
-	 * on the same secure page. One CPU can destroy the page, reboot,
-	 * re-enter secure mode and import it, while the second CPU was
-	 * stuck at the beginning of the handler. At some point the second
-	 * CPU will be able to progress, and it will not be able to destroy
-	 * the page. In that case we do not want to terminate the process,
-	 * we instead try to export the page.
-	 */
-	if (rc)
-		rc = uv_convert_from_secure_folio(folio);
-
-	return rc;
+static inline bool kvm_s390_pv_cpu_is_protected(struct kvm_vcpu *vcpu)
+{
+	lockdep_assert_held(&vcpu->mutex);
+	return !!kvm_s390_pv_cpu_get_handle(vcpu);
 }
 
 /* implemented in interrupt.c */
@@ -440,7 +357,8 @@ int kvm_s390_skey_check_enable(struct kvm_vcpu *vcpu);
 /* implemented in vsie.c */
 int kvm_s390_handle_vsie(struct kvm_vcpu *vcpu);
 void kvm_s390_vsie_kick(struct kvm_vcpu *vcpu);
-void kvm_s390_vsie_gmap_notifier(struct gmap *gmap, gpa_t start, gpa_t end);
+void kvm_s390_vsie_gmap_notifier(struct gmap *gmap, unsigned long start,
+				 unsigned long end);
 void kvm_s390_vsie_init(struct kvm *kvm);
 void kvm_s390_vsie_destroy(struct kvm *kvm);
 
@@ -450,6 +368,7 @@ int kvm_s390_handle_sigp_pei(struct kvm_vcpu *vcpu);
 
 /* implemented in kvm-s390.c */
 int kvm_s390_try_set_tod_clock(struct kvm *kvm, const struct kvm_s390_vm_tod_clock *gtod);
+long kvm_arch_fault_in_page(struct kvm_vcpu *vcpu, gpa_t gpa, int writable);
 int kvm_s390_store_status_unloaded(struct kvm_vcpu *vcpu, unsigned long addr);
 int kvm_s390_vcpu_store_status(struct kvm_vcpu *vcpu, unsigned long addr);
 int kvm_s390_vcpu_start(struct kvm_vcpu *vcpu);
@@ -464,10 +383,6 @@ void kvm_s390_vcpu_unsetup_cmma(struct kvm_vcpu *vcpu);
 void kvm_s390_set_cpu_timer(struct kvm_vcpu *vcpu, __u64 cputm);
 __u64 kvm_s390_get_cpu_timer(struct kvm_vcpu *vcpu);
 int kvm_s390_cpus_from_pv(struct kvm *kvm, u16 *rc, u16 *rrc);
-int __kvm_s390_mprotect_many(struct gmap *gmap, gpa_t gpa, u8 npages, unsigned int prot,
-			     unsigned long bits);
-
-bool kvm_arch_setup_async_pf(struct kvm_vcpu *vcpu);
 
 /* implemented in diag.c */
 int kvm_s390_handle_diag(struct kvm_vcpu *vcpu);
@@ -569,6 +484,13 @@ void kvm_s390_prepare_debug_exit(struct kvm_vcpu *vcpu);
 int kvm_s390_handle_per_ifetch_icpt(struct kvm_vcpu *vcpu);
 int kvm_s390_handle_per_event(struct kvm_vcpu *vcpu);
 
+/* support for Basic/Extended SCA handling */
+static inline union ipte_control *kvm_s390_get_ipte_control(struct kvm *kvm)
+{
+	struct bsca_block *sca = kvm->arch.sca; /* SCA version doesn't matter */
+
+	return &sca->ipte_control;
+}
 static inline int kvm_s390_use_sca_entries(void)
 {
 	/*
@@ -576,17 +498,10 @@ static inline int kvm_s390_use_sca_entries(void)
 	 * might use the entries. By not setting the entries and keeping them
 	 * invalid, hardware will not access them but intercept.
 	 */
-	return sclp.has_sigpif && sclp.has_esca;
+	return sclp.has_sigpif;
 }
 void kvm_s390_reinject_machine_check(struct kvm_vcpu *vcpu,
 				     struct mcck_volatile_info *mcck_info);
-
-static inline bool kvm_s390_cur_gmap_fault_is_write(void)
-{
-	if (current->thread.gmap_int_code == PGM_PROTECTION)
-		return true;
-	return test_facility(75) && (current->thread.gmap_teid.fsi == TEID_FSI_STORE);
-}
 
 /**
  * kvm_s390_vcpu_crypto_reset_all

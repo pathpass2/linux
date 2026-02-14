@@ -81,7 +81,7 @@ struct vimc_pipeline_config {
  * Topology Configuration
  */
 
-static const struct vimc_ent_config ent_config[] = {
+static struct vimc_ent_config ent_config[] = {
 	[SENSOR_A] = {
 		.name = "Sensor A",
 		.type = &vimc_sensor_type
@@ -366,6 +366,8 @@ static int vimc_probe(struct platform_device *pdev)
 	/* Initialize media device */
 	strscpy(vimc->mdev.model, VIMC_MDEV_MODEL_NAME,
 		sizeof(vimc->mdev.model));
+	snprintf(vimc->mdev.bus_info, sizeof(vimc->mdev.bus_info),
+		 "platform:%s", VIMC_PDEV_NAME);
 	vimc->mdev.dev = &pdev->dev;
 	media_device_init(&vimc->mdev);
 
@@ -385,7 +387,7 @@ static int vimc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void vimc_remove(struct platform_device *pdev)
+static int vimc_remove(struct platform_device *pdev)
 {
 	struct vimc_device *vimc = platform_get_drvdata(pdev);
 
@@ -395,6 +397,8 @@ static void vimc_remove(struct platform_device *pdev)
 	media_device_unregister(&vimc->mdev);
 	v4l2_device_unregister(&vimc->v4l2_dev);
 	v4l2_device_put(&vimc->v4l2_dev);
+
+	return 0;
 }
 
 static void vimc_dev_release(struct device *dev)

@@ -49,7 +49,7 @@ enum asymmetric_payload_bits {
  */
 struct asymmetric_key_id {
 	unsigned short	len;
-	unsigned char	data[] __counted_by(len);
+	unsigned char	data[];
 };
 
 struct asymmetric_key_ids {

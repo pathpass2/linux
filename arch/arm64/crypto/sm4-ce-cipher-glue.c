@@ -32,8 +32,9 @@ static void sm4_ce_encrypt(struct crypto_tfm *tfm, u8 *out, const u8 *in)
 	if (!crypto_simd_usable()) {
 		sm4_crypt_block(ctx->rkey_enc, out, in);
 	} else {
-		scoped_ksimd()
-			sm4_ce_do_crypt(ctx->rkey_enc, out, in);
+		kernel_neon_begin();
+		sm4_ce_do_crypt(ctx->rkey_enc, out, in);
+		kernel_neon_end();
 	}
 }
 
@@ -44,8 +45,9 @@ static void sm4_ce_decrypt(struct crypto_tfm *tfm, u8 *out, const u8 *in)
 	if (!crypto_simd_usable()) {
 		sm4_crypt_block(ctx->rkey_dec, out, in);
 	} else {
-		scoped_ksimd()
-			sm4_ce_do_crypt(ctx->rkey_dec, out, in);
+		kernel_neon_begin();
+		sm4_ce_do_crypt(ctx->rkey_dec, out, in);
+		kernel_neon_end();
 	}
 }
 

@@ -5,7 +5,7 @@
  * Copyright (C) 2019-2022 Maximilian Luz <luzmaximilian@gmail.com>
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/atomic.h>
 #include <linux/error-injection.h>
 #include <linux/jiffies.h>
@@ -671,7 +671,7 @@ static void ssh_ptl_timeout_reaper_mod(struct ssh_ptl *ptl, ktime_t now,
 	/* Re-adjust / schedule reaper only if it is above resolution delta. */
 	if (ktime_before(aexp, ptl->rtx_timeout.expires)) {
 		ptl->rtx_timeout.expires = expires;
-		mod_delayed_work(system_percpu_wq, &ptl->rtx_timeout.reaper, delta);
+		mod_delayed_work(system_wq, &ptl->rtx_timeout.reaper, delta);
 	}
 
 	spin_unlock(&ptl->rtx_timeout.lock);
@@ -1887,9 +1887,9 @@ int ssh_ptl_rx_stop(struct ssh_ptl *ptl)
  * Return: Returns the number of bytes transferred (positive or zero) on
  * success. Returns %-ESHUTDOWN if the packet layer has been shut down.
  */
-ssize_t ssh_ptl_rx_rcvbuf(struct ssh_ptl *ptl, const u8 *buf, size_t n)
+int ssh_ptl_rx_rcvbuf(struct ssh_ptl *ptl, const u8 *buf, size_t n)
 {
-	size_t used;
+	int used;
 
 	if (test_bit(SSH_PTL_SF_SHUTDOWN_BIT, &ptl->state))
 		return -ESHUTDOWN;

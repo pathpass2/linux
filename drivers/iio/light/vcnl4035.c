@@ -8,7 +8,6 @@
  * TODO: Proximity
  */
 #include <linux/bitops.h>
-#include <linux/bitfield.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
@@ -23,6 +22,8 @@
 #include <linux/iio/triggered_buffer.h>
 
 #define VCNL4035_DRV_NAME	"vcnl4035"
+#define VCNL4035_IRQ_NAME	"vcnl4035_event"
+#define VCNL4035_REGMAP_NAME	"vcnl4035_regmap"
 
 /* Device registers */
 #define VCNL4035_ALS_CONF	0x00
@@ -41,7 +42,6 @@
 #define VCNL4035_ALS_PERS_MASK		GENMASK(3, 2)
 #define VCNL4035_INT_ALS_IF_H_MASK	BIT(12)
 #define VCNL4035_INT_ALS_IF_L_MASK	BIT(13)
-#define VCNL4035_DEV_ID_MASK		GENMASK(7, 0)
 
 /* Default values */
 #define VCNL4035_MODE_ALS_ENABLE	BIT(0)
@@ -89,7 +89,7 @@ static irqreturn_t vcnl4035_drdy_irq_thread(int irq, void *private)
 							IIO_EV_TYPE_THRESH,
 							IIO_EV_DIR_EITHER),
 				iio_get_time_ns(indio_dev));
-		iio_trigger_poll_nested(data->drdy_trigger0);
+		iio_trigger_poll_chained(data->drdy_trigger0);
 		return IRQ_HANDLED;
 	}
 
@@ -103,7 +103,7 @@ static irqreturn_t vcnl4035_trigger_consumer_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct vcnl4035_data *data = iio_priv(indio_dev);
 	/* Ensure naturally aligned timestamp */
-	u8 buffer[ALIGN(sizeof(u16), sizeof(s64)) + sizeof(s64)]  __aligned(8) = { };
+	u8 buffer[ALIGN(sizeof(u16), sizeof(s64)) + sizeof(s64)]  __aligned(8);
 	int ret;
 
 	ret = regmap_read(data->regmap, VCNL4035_ALS_DATA, (int *)buffer);
@@ -141,37 +141,17 @@ static const struct iio_trigger_ops vcnl4035_trigger_ops = {
 
 static int vcnl4035_set_pm_runtime_state(struct vcnl4035_data *data, bool on)
 {
+	int ret;
 	struct device *dev = &data->client->dev;
 
-	if (on)
-		return pm_runtime_resume_and_get(dev);
+	if (on) {
+		ret = pm_runtime_resume_and_get(dev);
+	} else {
+		pm_runtime_mark_last_busy(dev);
+		ret = pm_runtime_put_autosuspend(dev);
+	}
 
-	return pm_runtime_put_autosuspend(dev);
-}
-
-static int vcnl4035_read_info_raw(struct iio_dev *indio_dev,
-				  struct iio_chan_spec const *chan, int *val)
-{
-	struct vcnl4035_data *data = iio_priv(indio_dev);
-	int ret;
-	int raw_data;
-	unsigned int reg;
-
-	if (!iio_device_claim_direct(indio_dev))
-		return -EBUSY;
-
-	if (chan->channel)
-		reg = VCNL4035_ALS_DATA;
-	else
-		reg = VCNL4035_WHITE_DATA;
-	ret = regmap_read(data->regmap, reg, &raw_data);
-	iio_device_release_direct(indio_dev);
-	if (ret)
-		return ret;
-
-	*val = raw_data;
-
-	return IIO_VAL_INT;
+	return ret;
 }
 
 /*
@@ -193,13 +173,28 @@ static int vcnl4035_read_raw(struct iio_dev *indio_dev,
 {
 	struct vcnl4035_data *data = iio_priv(indio_dev);
 	int ret;
+	int raw_data;
+	unsigned int reg;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
 		ret = vcnl4035_set_pm_runtime_state(data, true);
 		if  (ret < 0)
 			return ret;
-		ret = vcnl4035_read_info_raw(indio_dev, chan, val);
+
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (!ret) {
+			if (chan->channel)
+				reg = VCNL4035_ALS_DATA;
+			else
+				reg = VCNL4035_WHITE_DATA;
+			ret = regmap_read(data->regmap, reg, &raw_data);
+			iio_device_release_direct_mode(indio_dev);
+			if (!ret) {
+				*val = raw_data;
+				ret = IIO_VAL_INT;
+			}
+		}
 		vcnl4035_set_pm_runtime_state(data, false);
 		return ret;
 	case IIO_CHAN_INFO_INT_TIME:
@@ -418,7 +413,6 @@ static int vcnl4035_init(struct vcnl4035_data *data)
 		return ret;
 	}
 
-	id = FIELD_GET(VCNL4035_DEV_ID_MASK, id);
 	if (id != VCNL4035_DEV_ID_VAL) {
 		dev_err(&data->client->dev, "Wrong id, got %x, expected %x\n",
 			id, VCNL4035_DEV_ID_VAL);
@@ -496,7 +490,7 @@ static bool vcnl4035_is_volatile_reg(struct device *dev, unsigned int reg)
 }
 
 static const struct regmap_config vcnl4035_regmap_config = {
-	.name		= "vcnl4035_regmap",
+	.name		= VCNL4035_REGMAP_NAME,
 	.reg_bits	= 8,
 	.val_bits	= 16,
 	.max_register	= VCNL4035_DEV_ID,
@@ -538,7 +532,7 @@ static int vcnl4035_probe_trigger(struct iio_dev *indio_dev)
 	ret = devm_request_threaded_irq(&data->client->dev, data->client->irq,
 			NULL, vcnl4035_drdy_irq_thread,
 			IRQF_TRIGGER_LOW | IRQF_ONESHOT,
-			"vcnl4035_event", indio_dev);
+			VCNL4035_IRQ_NAME, indio_dev);
 	if (ret < 0)
 		dev_err(&data->client->dev, "request irq %d for trigger0 failed\n",
 				data->client->irq);
@@ -656,7 +650,7 @@ static DEFINE_RUNTIME_DEV_PM_OPS(vcnl4035_pm_ops, vcnl4035_runtime_suspend,
 				 vcnl4035_runtime_resume, NULL);
 
 static const struct i2c_device_id vcnl4035_id[] = {
-	{ "vcnl4035" },
+	{ "vcnl4035", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, vcnl4035_id);
@@ -673,7 +667,7 @@ static struct i2c_driver vcnl4035_driver = {
 		.pm	= pm_ptr(&vcnl4035_pm_ops),
 		.of_match_table = vcnl4035_of_match,
 	},
-	.probe = vcnl4035_probe,
+	.probe_new = vcnl4035_probe,
 	.remove	= vcnl4035_remove,
 	.id_table = vcnl4035_id,
 };

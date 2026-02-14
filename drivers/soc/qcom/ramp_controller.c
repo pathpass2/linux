@@ -229,6 +229,7 @@ static const struct regmap_config qrc_regmap_config = {
 	.reg_stride = 4,
 	.val_bits = 32,
 	.max_register =	0x68,
+	.fast_io = true,
 };
 
 static const struct reg_sequence msm8976_cfg_dfs_sid[] = {
@@ -295,7 +296,7 @@ static int qcom_ramp_controller_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	qrc->desc = device_get_match_data(&pdev->dev);
-	if (!qrc->desc)
+	if (!qrc)
 		return -EINVAL;
 
 	qrc->regmap = devm_regmap_init_mmio(&pdev->dev, base, &qrc_regmap_config);
@@ -307,15 +308,12 @@ static int qcom_ramp_controller_probe(struct platform_device *pdev)
 	return qcom_ramp_controller_start(qrc);
 }
 
-static void qcom_ramp_controller_remove(struct platform_device *pdev)
+static int qcom_ramp_controller_remove(struct platform_device *pdev)
 {
 	struct qcom_ramp_controller *qrc = platform_get_drvdata(pdev);
-	int ret;
 
-	ret = rc_write_cfg(qrc, qrc->desc->cfg_ramp_dis,
-			   RC_DCVS_CFG_SID, qrc->desc->num_ramp_dis);
-	if (ret)
-		dev_err(&pdev->dev, "Failed to send disable sequence\n");
+	return rc_write_cfg(qrc, qrc->desc->cfg_ramp_dis,
+			    RC_DCVS_CFG_SID, qrc->desc->num_ramp_dis);
 }
 
 static const struct of_device_id qcom_ramp_controller_match_table[] = {
@@ -330,7 +328,7 @@ static struct platform_driver qcom_ramp_controller_driver = {
 		.of_match_table = qcom_ramp_controller_match_table,
 		.suppress_bind_attrs = true,
 	},
-	.probe = qcom_ramp_controller_probe,
+	.probe  = qcom_ramp_controller_probe,
 	.remove = qcom_ramp_controller_remove,
 };
 

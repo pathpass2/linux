@@ -49,7 +49,8 @@ void virtual_early_config(void)
 void __init szmem(unsigned int node)
 {
 	u32 i, mem_type;
-	phys_addr_t node_id, mem_start, mem_size;
+	static unsigned long num_physpages;
+	u64 node_id, node_psize, start_pfn, end_pfn, mem_start, mem_size;
 
 	/* Otherwise come from DTB */
 	if (loongson_sysconf.fw_interface != LOONGSON_LEFI)
@@ -63,49 +64,30 @@ void __init szmem(unsigned int node)
 
 		mem_type = loongson_memmap->map[i].mem_type;
 		mem_size = loongson_memmap->map[i].mem_size;
-
-		/* Memory size comes in MB if MEM_SIZE_IS_IN_BYTES not set */
-		if (mem_size & MEM_SIZE_IS_IN_BYTES)
-			mem_size &= ~MEM_SIZE_IS_IN_BYTES;
-		else
-			mem_size = mem_size << 20;
-
-		mem_start = (node_id << 44) | loongson_memmap->map[i].mem_start;
+		mem_start = loongson_memmap->map[i].mem_start;
 
 		switch (mem_type) {
 		case SYSTEM_RAM_LOW:
 		case SYSTEM_RAM_HIGH:
-		case UMA_VIDEO_RAM:
-			pr_info("Node %d, mem_type:%d\t[%pa], %pa bytes usable\n",
-				(u32)node_id, mem_type, &mem_start, &mem_size);
-			memblock_add_node(mem_start, mem_size, node,
+			start_pfn = ((node_id << 44) + mem_start) >> PAGE_SHIFT;
+			node_psize = (mem_size << 20) >> PAGE_SHIFT;
+			end_pfn  = start_pfn + node_psize;
+			num_physpages += node_psize;
+			pr_info("Node%d: mem_type:%d, mem_start:0x%llx, mem_size:0x%llx MB\n",
+				(u32)node_id, mem_type, mem_start, mem_size);
+			pr_info("       start_pfn:0x%llx, end_pfn:0x%llx, num_physpages:0x%lx\n",
+				start_pfn, end_pfn, num_physpages);
+			memblock_add_node(PFN_PHYS(start_pfn),
+					  PFN_PHYS(node_psize), node,
 					  MEMBLOCK_NONE);
 			break;
 		case SYSTEM_RAM_RESERVED:
-		case VIDEO_ROM:
-		case ADAPTER_ROM:
-		case ACPI_TABLE:
-		case SMBIOS_TABLE:
-			pr_info("Node %d, mem_type:%d\t[%pa], %pa bytes reserved\n",
-				(u32)node_id, mem_type, &mem_start, &mem_size);
-			memblock_reserve(mem_start, mem_size);
-			break;
-		/* We should not reserve VUMA_VIDEO_RAM as it overlaps with MMIO */
-		case VUMA_VIDEO_RAM:
-		default:
-			pr_info("Node %d, mem_type:%d\t[%pa], %pa bytes unhandled\n",
-				(u32)node_id, mem_type, &mem_start, &mem_size);
+			pr_info("Node%d: mem_type:%d, mem_start:0x%llx, mem_size:0x%llx MB\n",
+				(u32)node_id, mem_type, mem_start, mem_size);
+			memblock_reserve(((node_id << 44) + mem_start), mem_size << 20);
 			break;
 		}
 	}
-
-	/* Reserve vgabios if it comes from firmware */
-	if (loongson_sysconf.vgabios_addr)
-		memblock_reserve(virt_to_phys((void *)loongson_sysconf.vgabios_addr),
-				SZ_256K);
-	/* set nid for reserved memory */
-	memblock_set_node((u64)node << 44, (u64)(node + 1) << 44,
-			&memblock.reserved, node);
 }
 
 #ifndef CONFIG_NUMA
@@ -128,7 +110,7 @@ void __init prom_init(void)
 	}
 
 	/* init base address of io space */
-	set_io_port_base((unsigned long)PCI_IOBASE);
+	set_io_port_base(PCI_IOBASE);
 
 	if (loongson_sysconf.early_config)
 		loongson_sysconf.early_config();
@@ -178,9 +160,9 @@ static int __init add_legacy_isa_io(struct fwnode_handle *fwnode, resource_size_
 		return -EINVAL;
 	}
 
-	vaddr = (unsigned long)PCI_IOBASE + range->io_start;
+	vaddr = PCI_IOBASE + range->io_start;
 
-	vmap_page_range(vaddr, vaddr + size, hw_start, pgprot_device(PAGE_KERNEL));
+	ioremap_page_range(vaddr, vaddr + size, hw_start, pgprot_device(PAGE_KERNEL));
 
 	return 0;
 }

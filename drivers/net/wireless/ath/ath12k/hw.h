@@ -1,14 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (c) 2018-2021 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+ * Copyright (c) 2021-2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef ATH12K_HW_H
 #define ATH12K_HW_H
 
 #include <linux/mhi.h>
-#include <linux/uuid.h>
 
 #include "wmi.h"
 #include "hal.h"
@@ -16,21 +15,26 @@
 /* Target configuration defines */
 
 /* Num VDEVS per radio */
-#define TARGET_NUM_VDEVS(ab)    ((ab)->profile_param->num_vdevs)
+#define TARGET_NUM_VDEVS	(16 + 1)
 
-/* Max num of stations for Single Radio mode */
-#define TARGET_NUM_STATIONS_SINGLE(ab) ((ab)->profile_param->max_client_single)
+#define TARGET_NUM_PEERS_PDEV	(512 + TARGET_NUM_VDEVS)
 
-/* Max num of stations for DBS */
-#define TARGET_NUM_STATIONS_DBS(ab)    ((ab)->profile_param->max_client_dbs)
+/* Num of peers for Single Radio mode */
+#define TARGET_NUM_PEERS_SINGLE		(TARGET_NUM_PEERS_PDEV)
 
-/* Max num of stations for DBS_SBS */
-#define TARGET_NUM_STATIONS_DBS_SBS(ab) \
-	((ab)->profile_param->max_client_dbs_sbs)
+/* Num of peers for DBS */
+#define TARGET_NUM_PEERS_DBS		(2 * TARGET_NUM_PEERS_PDEV)
 
-#define TARGET_NUM_STATIONS(ab, x)     TARGET_NUM_STATIONS_##x(ab)
+/* Num of peers for DBS_SBS */
+#define TARGET_NUM_PEERS_DBS_SBS	(3 * TARGET_NUM_PEERS_PDEV)
 
+/* Max num of stations (per radio) */
+#define TARGET_NUM_STATIONS	512
+
+#define TARGET_NUM_PEERS(x)	TARGET_NUM_PEERS_##x
 #define TARGET_NUM_PEER_KEYS	2
+#define TARGET_NUM_TIDS(x)	(2 * TARGET_NUM_PEERS(x) + \
+				 4 * TARGET_NUM_VDEVS + 8)
 
 #define TARGET_AST_SKID_LIMIT	16
 #define TARGET_NUM_OFFLD_PEERS	4
@@ -62,9 +66,7 @@
 #define TARGET_NUM_WDS_ENTRIES		32
 #define TARGET_DMA_BURST_SIZE		1
 #define TARGET_RX_BATCHMODE		1
-#define TARGET_EMA_MAX_PROFILE_PERIOD	8
 
-#define ATH12K_HW_DEFAULT_QUEUE		0
 #define ATH12K_HW_MAX_QUEUES		4
 #define ATH12K_QUEUE_LEN		4096
 
@@ -78,11 +80,7 @@
 #define ATH12K_DEFAULT_CAL_FILE		"caldata.bin"
 #define ATH12K_AMSS_FILE		"amss.bin"
 #define ATH12K_M3_FILE			"m3.bin"
-#define ATH12K_AUX_UC_FILE		"aux_ucode.bin"
 #define ATH12K_REGDB_FILE_NAME		"regdb.bin"
-
-#define ATH12K_PCIE_MAX_PAYLOAD_SIZE	128
-#define ATH12K_IPQ5332_USERPD_ID	1
 
 enum ath12k_hw_rate_cck {
 	ATH12K_HW_RATE_CCK_LP_11M = 0,
@@ -107,7 +105,6 @@ enum ath12k_hw_rate_ofdm {
 
 enum ath12k_bus {
 	ATH12K_BUS_PCI,
-	ATH12K_BUS_AHB,
 };
 
 #define ATH12K_EXT_IRQ_GRP_NUM_MAX 11
@@ -120,7 +117,6 @@ enum hal_encrypt_type;
 struct ath12k_hw_ring_mask {
 	u8 tx[ATH12K_EXT_IRQ_GRP_NUM_MAX];
 	u8 rx_mon_dest[ATH12K_EXT_IRQ_GRP_NUM_MAX];
-	u8 rx_mon_status[ATH12K_EXT_IRQ_GRP_NUM_MAX];
 	u8 rx[ATH12K_EXT_IRQ_GRP_NUM_MAX];
 	u8 rx_err[ATH12K_EXT_IRQ_GRP_NUM_MAX];
 	u8 rx_wbm_rel[ATH12K_EXT_IRQ_GRP_NUM_MAX];
@@ -129,9 +125,9 @@ struct ath12k_hw_ring_mask {
 	u8 tx_mon_dest[ATH12K_EXT_IRQ_GRP_NUM_MAX];
 };
 
-enum ath12k_m3_fw_loaders {
-	ath12k_m3_fw_loader_driver,
-	ath12k_m3_fw_loader_remoteproc,
+struct ath12k_hw_hal_params {
+	enum hal_rx_buf_return_buf_manager rx_buf_rbm;
+	u32	  wbm2sw_cc_enable;
 };
 
 struct ath12k_hw_params {
@@ -142,8 +138,6 @@ struct ath12k_hw_params {
 		const char *dir;
 		size_t board_size;
 		size_t cal_offset;
-		enum ath12k_m3_fw_loaders m3_loader;
-		bool download_aux_ucode:1;
 	} fw;
 
 	u8 max_radios;
@@ -153,6 +147,7 @@ struct ath12k_hw_params {
 
 	const struct ath12k_hw_ops *hw_ops;
 	const struct ath12k_hw_ring_mask *ring_mask;
+	const struct ath12k_hw_regs *regs;
 
 	const struct ce_attr *host_ce_config;
 	u32 ce_count;
@@ -161,8 +156,10 @@ struct ath12k_hw_params {
 	const struct service_to_pipe *svc_to_ce_map;
 	u32 svc_to_ce_map_len;
 
+	const struct ath12k_hw_hal_params *hal_params;
+
 	bool rxdma1_enable:1;
-	int num_rxdma_per_pdev;
+	int num_rxmda_per_pdev;
 	int num_rxdma_dst_ring;
 	bool rx_mac_buf_ring:1;
 	bool vdev_start_delay:1;
@@ -176,9 +173,8 @@ struct ath12k_hw_params {
 	bool tcl_ring_retry:1;
 	bool reoq_lut_support:1;
 	bool supports_shadow_regs:1;
-	bool supports_aspm:1;
-	bool current_cc_support:1;
 
+	u32 hal_desc_sz;
 	u32 num_tcl_banks;
 	u32 max_tx_ring;
 
@@ -187,32 +183,7 @@ struct ath12k_hw_params {
 	void (*wmi_init)(struct ath12k_base *ab,
 			 struct ath12k_wmi_resource_config_arg *config);
 
-	u64 qmi_cnss_feature_bitmap;
-
-	u32 rfkill_pin;
-	u32 rfkill_cfg;
-	u32 rfkill_on_level;
-
-	u32 rddm_size;
-
-	u8 def_num_link;
-	u16 max_mlo_peer;
-
-	u32 otp_board_id_register;
-
-	bool supports_sta_ps;
-
-	const guid_t *acpi_guid;
-	bool supports_dynamic_smps_6ghz;
-
-	u32 iova_mask;
-
-	const struct ce_ie_addr *ce_ie_addr;
-	const struct ce_remap *ce_remap;
-	u32 bdf_addr_offset;
-
-	/* setup REO queue, frag etc only for primary link peer */
-	bool dp_primary_link_only:1;
+	const struct hal_ops *hal_ops;
 };
 
 struct ath12k_hw_ops {
@@ -222,8 +193,6 @@ struct ath12k_hw_ops {
 	int (*rxdma_ring_sel_config)(struct ath12k_base *ab);
 	u8 (*get_ring_selector)(struct sk_buff *skb);
 	bool (*dp_srng_is_tx_comp_ring)(int ring_num);
-	bool (*is_frame_link_agnostic)(struct ath12k_link_vif *arvif,
-				       struct ieee80211_mgmt *mgmt);
 };
 
 static inline
@@ -265,28 +234,79 @@ enum ath12k_bd_ie_board_type {
 	ATH12K_BD_IE_BOARD_DATA = 1,
 };
 
-enum ath12k_bd_ie_regdb_type {
-	ATH12K_BD_IE_REGDB_NAME = 0,
-	ATH12K_BD_IE_REGDB_DATA = 1,
-};
-
 enum ath12k_bd_ie_type {
 	/* contains sub IEs of enum ath12k_bd_ie_board_type */
 	ATH12K_BD_IE_BOARD = 0,
-	/* contains sub IEs of enum ath12k_bd_ie_regdb_type */
-	ATH12K_BD_IE_REGDB = 1,
+	ATH12K_BD_IE_BOARD_EXT = 1,
 };
 
-static inline const char *ath12k_bd_ie_type_str(enum ath12k_bd_ie_type type)
-{
-	switch (type) {
-	case ATH12K_BD_IE_BOARD:
-		return "board data";
-	case ATH12K_BD_IE_REGDB:
-		return "regdb data";
-	}
+struct ath12k_hw_regs {
+	u32 hal_tcl1_ring_id;
+	u32 hal_tcl1_ring_misc;
+	u32 hal_tcl1_ring_tp_addr_lsb;
+	u32 hal_tcl1_ring_tp_addr_msb;
+	u32 hal_tcl1_ring_consumer_int_setup_ix0;
+	u32 hal_tcl1_ring_consumer_int_setup_ix1;
+	u32 hal_tcl1_ring_msi1_base_lsb;
+	u32 hal_tcl1_ring_msi1_base_msb;
+	u32 hal_tcl1_ring_msi1_data;
+	u32 hal_tcl_ring_base_lsb;
 
-	return "unknown";
-}
+	u32 hal_tcl_status_ring_base_lsb;
+
+	u32 hal_wbm_idle_ring_base_lsb;
+	u32 hal_wbm_idle_ring_misc_addr;
+	u32 hal_wbm_r0_idle_list_cntl_addr;
+	u32 hal_wbm_r0_idle_list_size_addr;
+	u32 hal_wbm_scattered_ring_base_lsb;
+	u32 hal_wbm_scattered_ring_base_msb;
+	u32 hal_wbm_scattered_desc_head_info_ix0;
+	u32 hal_wbm_scattered_desc_head_info_ix1;
+	u32 hal_wbm_scattered_desc_tail_info_ix0;
+	u32 hal_wbm_scattered_desc_tail_info_ix1;
+	u32 hal_wbm_scattered_desc_ptr_hp_addr;
+
+	u32 hal_wbm_sw_release_ring_base_lsb;
+	u32 hal_wbm_sw1_release_ring_base_lsb;
+	u32 hal_wbm0_release_ring_base_lsb;
+	u32 hal_wbm1_release_ring_base_lsb;
+
+	u32 pcie_qserdes_sysclk_en_sel;
+	u32 pcie_pcs_osc_dtct_config_base;
+
+	u32 hal_ppe_rel_ring_base;
+
+	u32 hal_reo2_ring_base;
+	u32 hal_reo1_misc_ctrl_addr;
+	u32 hal_reo1_sw_cookie_cfg0;
+	u32 hal_reo1_sw_cookie_cfg1;
+	u32 hal_reo1_qdesc_lut_base0;
+	u32 hal_reo1_qdesc_lut_base1;
+	u32 hal_reo1_ring_base_lsb;
+	u32 hal_reo1_ring_base_msb;
+	u32 hal_reo1_ring_id;
+	u32 hal_reo1_ring_misc;
+	u32 hal_reo1_ring_hp_addr_lsb;
+	u32 hal_reo1_ring_hp_addr_msb;
+	u32 hal_reo1_ring_producer_int_setup;
+	u32 hal_reo1_ring_msi1_base_lsb;
+	u32 hal_reo1_ring_msi1_base_msb;
+	u32 hal_reo1_ring_msi1_data;
+	u32 hal_reo1_aging_thres_ix0;
+	u32 hal_reo1_aging_thres_ix1;
+	u32 hal_reo1_aging_thres_ix2;
+	u32 hal_reo1_aging_thres_ix3;
+
+	u32 hal_reo2_sw0_ring_base;
+
+	u32 hal_sw2reo_ring_base;
+	u32 hal_sw2reo1_ring_base;
+
+	u32 hal_reo_cmd_ring_base;
+
+	u32 hal_reo_status_ring_base;
+};
+
+int ath12k_hw_init(struct ath12k_base *ab);
 
 #endif

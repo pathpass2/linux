@@ -10,14 +10,19 @@
 #include <errno.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include "bpf_kfuncs.h"
-#include "err.h"
 
 #define MAX_DATA_SIZE (1024 * 1024)
 #define MAX_SIG_SIZE 1024
 
+extern struct bpf_key *bpf_lookup_user_key(__u32 serial, __u64 flags) __ksym;
+extern struct bpf_key *bpf_lookup_system_key(__u64 id) __ksym;
+extern void bpf_key_put(struct bpf_key *key) __ksym;
+extern int bpf_verify_pkcs7_signature(struct bpf_dynptr *data_ptr,
+				      struct bpf_dynptr *sig_ptr,
+				      struct bpf_key *trusted_keyring) __ksym;
+
 __u32 monitored_pid;
-__s32 user_keyring_serial;
+__u32 user_keyring_serial;
 __u64 system_keyring_id;
 
 struct data {
@@ -37,7 +42,7 @@ struct {
 char _license[] SEC("license") = "GPL";
 
 SEC("lsm.s/bpf")
-int BPF_PROG(bpf, int cmd, union bpf_attr *attr, unsigned int size, bool kernel)
+int BPF_PROG(bpf, int cmd, union bpf_attr *attr, unsigned int size)
 {
 	struct bpf_dynptr data_ptr, sig_ptr;
 	struct data *data_val;
@@ -56,12 +61,12 @@ int BPF_PROG(bpf, int cmd, union bpf_attr *attr, unsigned int size, bool kernel)
 
 	ret = bpf_probe_read_kernel(&value, sizeof(value), &attr->value);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = bpf_copy_from_user(data_val, sizeof(struct data),
 				 (void *)(unsigned long)value);
 	if (ret)
-		goto out;
+		return ret;
 
 	if (data_val->data_len > sizeof(data_val->data))
 		return -EINVAL;
@@ -84,9 +89,6 @@ int BPF_PROG(bpf, int cmd, union bpf_attr *attr, unsigned int size, bool kernel)
 	ret = bpf_verify_pkcs7_signature(&data_ptr, &sig_ptr, trusted_keyring);
 
 	bpf_key_put(trusted_keyring);
-
-out:
-	set_if_not_errno_or_zero(ret, -EFAULT);
 
 	return ret;
 }

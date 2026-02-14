@@ -21,13 +21,15 @@
 
 #include "internal.h"
 
+#define DRV_NAME	"dw_dmac"
+
 static int dw_probe(struct platform_device *pdev)
 {
 	const struct dw_dma_chip_pdata *match;
 	struct dw_dma_chip_pdata *data;
 	struct dw_dma_chip *chip;
 	struct device *dev = &pdev->dev;
-	int ret;
+	int err;
 
 	match = device_get_match_data(dev);
 	if (!match)
@@ -49,9 +51,9 @@ static int dw_probe(struct platform_device *pdev)
 	if (IS_ERR(chip->regs))
 		return PTR_ERR(chip->regs);
 
-	ret = dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
-	if (ret)
-		return ret;
+	err = dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+	if (err)
+		return err;
 
 	if (!data->pdata)
 		data->pdata = dev_get_platdata(dev);
@@ -67,14 +69,14 @@ static int dw_probe(struct platform_device *pdev)
 	chip->clk = devm_clk_get_optional(chip->dev, "hclk");
 	if (IS_ERR(chip->clk))
 		return PTR_ERR(chip->clk);
-	ret = clk_prepare_enable(chip->clk);
-	if (ret)
-		return ret;
+	err = clk_prepare_enable(chip->clk);
+	if (err)
+		return err;
 
 	pm_runtime_enable(&pdev->dev);
 
-	ret = data->probe(chip);
-	if (ret)
+	err = data->probe(chip);
+	if (err)
 		goto err_dw_dma_probe;
 
 	platform_set_drvdata(pdev, data);
@@ -88,10 +90,10 @@ static int dw_probe(struct platform_device *pdev)
 err_dw_dma_probe:
 	pm_runtime_disable(&pdev->dev);
 	clk_disable_unprepare(chip->clk);
-	return ret;
+	return err;
 }
 
-static void dw_remove(struct platform_device *pdev)
+static int dw_remove(struct platform_device *pdev)
 {
 	struct dw_dma_chip_pdata *data = platform_get_drvdata(pdev);
 	struct dw_dma_chip *chip = data->chip;
@@ -107,6 +109,8 @@ static void dw_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 	clk_disable_unprepare(chip->clk);
+
+	return 0;
 }
 
 static void dw_shutdown(struct platform_device *pdev)
@@ -155,6 +159,8 @@ static const struct acpi_device_id dw_dma_acpi_id_table[] = {
 MODULE_DEVICE_TABLE(acpi, dw_dma_acpi_id_table);
 #endif
 
+#ifdef CONFIG_PM_SLEEP
+
 static int dw_suspend_late(struct device *dev)
 {
 	struct dw_dma_chip_pdata *data = dev_get_drvdata(dev);
@@ -179,8 +185,10 @@ static int dw_resume_early(struct device *dev)
 	return do_dw_dma_enable(chip);
 }
 
+#endif /* CONFIG_PM_SLEEP */
+
 static const struct dev_pm_ops dw_dev_pm_ops = {
-	LATE_SYSTEM_SLEEP_PM_OPS(dw_suspend_late, dw_resume_early)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(dw_suspend_late, dw_resume_early)
 };
 
 static struct platform_driver dw_driver = {
@@ -188,8 +196,8 @@ static struct platform_driver dw_driver = {
 	.remove		= dw_remove,
 	.shutdown       = dw_shutdown,
 	.driver = {
-		.name	= "dw_dmac",
-		.pm	= pm_sleep_ptr(&dw_dev_pm_ops),
+		.name	= DRV_NAME,
+		.pm	= &dw_dev_pm_ops,
 		.of_match_table = of_match_ptr(dw_dma_of_id_table),
 		.acpi_match_table = ACPI_PTR(dw_dma_acpi_id_table),
 	},
@@ -209,3 +217,4 @@ module_exit(dw_exit);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Synopsys DesignWare DMA Controller platform driver");
+MODULE_ALIAS("platform:" DRV_NAME);

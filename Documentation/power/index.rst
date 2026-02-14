@@ -19,7 +19,6 @@ Power Management
     power_supply_class
     runtime_pm
     s2ram
-    shutdown-debugging
     suspend-and-cpuhotplug
     suspend-and-interrupts
     swsusp-and-swap-files
@@ -38,3 +37,10 @@ Power Management
     regulator/machine
     regulator/overview
     regulator/regulator
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

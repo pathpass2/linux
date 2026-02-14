@@ -23,13 +23,9 @@
 
 /**
  * sk_stream_write_space - stream socket write_space callback.
- * @sk: pointer to the socket structure
+ * @sk: socket
  *
- * This function is invoked when there's space available in the socket's
- * send buffer for writing. It first checks if the socket is writable,
- * clears the SOCK_NOSPACE flag indicating that memory for writing
- * is now available, wakes up any processes waiting for write operations
- * and sends asynchronous notifications if needed.
+ * FIXME: write proper description
  */
 void sk_stream_write_space(struct sock *sk)
 {
@@ -77,13 +73,13 @@ int sk_stream_wait_connect(struct sock *sk, long *timeo_p)
 		add_wait_queue(sk_sleep(sk), &wait);
 		sk->sk_write_pending++;
 		done = sk_wait_event(sk, timeo_p,
-				     !READ_ONCE(sk->sk_err) &&
-				     !((1 << READ_ONCE(sk->sk_state)) &
+				     !sk->sk_err &&
+				     !((1 << sk->sk_state) &
 				       ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)), &wait);
 		remove_wait_queue(sk_sleep(sk), &wait);
 		sk->sk_write_pending--;
 	} while (!done);
-	return done < 0 ? done : 0;
+	return 0;
 }
 EXPORT_SYMBOL(sk_stream_wait_connect);
 
@@ -91,9 +87,9 @@ EXPORT_SYMBOL(sk_stream_wait_connect);
  * sk_stream_closing - Return 1 if we still have things to send in our buffers.
  * @sk: socket to verify
  */
-static int sk_stream_closing(const struct sock *sk)
+static inline int sk_stream_closing(struct sock *sk)
 {
-	return (1 << READ_ONCE(sk->sk_state)) &
+	return (1 << sk->sk_state) &
 	       (TCPF_FIN_WAIT1 | TCPF_CLOSING | TCPF_LAST_ACK);
 }
 
@@ -121,7 +117,7 @@ EXPORT_SYMBOL(sk_stream_wait_close);
  */
 int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 {
-	int ret, err = 0;
+	int err = 0;
 	long vm_wait = 0;
 	long current_timeo = *timeo_p;
 	DEFINE_WAIT_FUNC(wait, woken_wake_function);
@@ -146,13 +142,11 @@ int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 
 		set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
 		sk->sk_write_pending++;
-		ret = sk_wait_event(sk, &current_timeo, READ_ONCE(sk->sk_err) ||
-				    (READ_ONCE(sk->sk_shutdown) & SEND_SHUTDOWN) ||
-				    (sk_stream_memory_free(sk) && !vm_wait),
-				    &wait);
+		sk_wait_event(sk, &current_timeo, sk->sk_err ||
+						  (sk->sk_shutdown & SEND_SHUTDOWN) ||
+						  (sk_stream_memory_free(sk) &&
+						  !vm_wait), &wait);
 		sk->sk_write_pending--;
-		if (ret < 0)
-			goto do_error;
 
 		if (vm_wait) {
 			vm_wait -= current_timeo;

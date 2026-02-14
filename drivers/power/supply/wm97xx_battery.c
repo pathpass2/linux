@@ -178,6 +178,12 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 				     "failed to get charge GPIO\n");
 	if (charge_gpiod) {
 		gpiod_set_consumer_name(charge_gpiod, "BATT CHRG");
+		ret = request_irq(gpiod_to_irq(charge_gpiod),
+				wm97xx_chrg_irq, 0,
+				"AC Detect", dev);
+		if (ret)
+			return dev_err_probe(&dev->dev, ret,
+					     "failed to request GPIO irq\n");
 		props++;	/* POWER_SUPPLY_PROP_STATUS */
 	}
 
@@ -192,9 +198,11 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 	if (pdata->min_voltage >= 0)
 		props++;	/* POWER_SUPPLY_PROP_VOLTAGE_MIN */
 
-	prop = devm_kcalloc(&dev->dev, props, sizeof(*prop), GFP_KERNEL);
-	if (!prop)
-		return -ENOMEM;
+	prop = kcalloc(props, sizeof(*prop), GFP_KERNEL);
+	if (!prop) {
+		ret = -ENOMEM;
+		goto err3;
+	}
 
 	prop[i++] = POWER_SUPPLY_PROP_PRESENT;
 	if (charge_gpiod)
@@ -223,28 +231,31 @@ static int wm97xx_bat_probe(struct platform_device *dev)
 	bat_psy_desc.properties = prop;
 	bat_psy_desc.num_properties = props;
 
-	bat_psy = devm_power_supply_register(&dev->dev, &bat_psy_desc, &cfg);
-	if (IS_ERR(bat_psy))
-		return PTR_ERR(bat_psy);
-
-	schedule_work(&bat_work);
-
-	if (charge_gpiod) {
-		ret = request_irq(gpiod_to_irq(charge_gpiod), wm97xx_chrg_irq,
-				  0, "AC Detect", dev);
-		if (ret)
-			return dev_err_probe(&dev->dev, ret,
-					     "failed to request GPIO irq\n");
+	bat_psy = power_supply_register(&dev->dev, &bat_psy_desc, &cfg);
+	if (!IS_ERR(bat_psy)) {
+		schedule_work(&bat_work);
+	} else {
+		ret = PTR_ERR(bat_psy);
+		goto err4;
 	}
 
 	return 0;
+err4:
+	kfree(prop);
+err3:
+	if (charge_gpiod)
+		free_irq(gpiod_to_irq(charge_gpiod), dev);
+	return ret;
 }
 
-static void wm97xx_bat_remove(struct platform_device *dev)
+static int wm97xx_bat_remove(struct platform_device *dev)
 {
 	if (charge_gpiod)
 		free_irq(gpiod_to_irq(charge_gpiod), dev);
 	cancel_work_sync(&bat_work);
+	power_supply_unregister(bat_psy);
+	kfree(prop);
+	return 0;
 }
 
 static struct platform_driver wm97xx_bat_driver = {
@@ -260,5 +271,6 @@ static struct platform_driver wm97xx_bat_driver = {
 
 module_platform_driver(wm97xx_bat_driver);
 
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Marek Vasut <marek.vasut@gmail.com>");
 MODULE_DESCRIPTION("WM97xx battery driver");

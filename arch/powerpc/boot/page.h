@@ -5,7 +5,7 @@
  * Copyright (C) 2001 PPC64 Team, IBM Corp
  */
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 #define ASM_CONST(x) x
 #else
 #define __ASM_CONST(x) x##UL

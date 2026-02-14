@@ -142,14 +142,14 @@ struct dw_spi_dma_ops {
 	int (*dma_init)(struct device *dev, struct dw_spi *dws);
 	void (*dma_exit)(struct dw_spi *dws);
 	int (*dma_setup)(struct dw_spi *dws, struct spi_transfer *xfer);
-	bool (*can_dma)(struct spi_controller *ctlr, struct spi_device *spi,
+	bool (*can_dma)(struct spi_controller *master, struct spi_device *spi,
 			struct spi_transfer *xfer);
 	int (*dma_transfer)(struct dw_spi *dws, struct spi_transfer *xfer);
 	void (*dma_stop)(struct dw_spi *dws);
 };
 
 struct dw_spi {
-	struct spi_controller	*ctlr;
+	struct spi_controller	*master;
 
 	u32			ip;		/* Synopsys DW SSI IP-core ID */
 	u32			ver;		/* Synopsys component version */
@@ -164,8 +164,8 @@ struct dw_spi {
 	u32			max_freq;	/* max bus freq supported */
 
 	u32			reg_io_width;	/* DR I/O width in bytes */
-	u32			num_cs;		/* chip select lines */
 	u16			bus_num;
+	u16			num_cs;		/* supported slave numbers */
 	void (*set_cs)(struct spi_device *spi, bool enable);
 
 	/* Current message transfer state info */
@@ -190,7 +190,6 @@ struct dw_spi {
 	struct dma_chan		*rxchan;
 	u32			rxburst;
 	u32			dma_sg_burst;
-	u32			dma_addr_widths;
 	unsigned long		dma_chan_busy;
 	dma_addr_t		dma_addr; /* phy address of the Data register */
 	const struct dw_spi_dma_ops *dma_ops;
@@ -288,10 +287,10 @@ extern void dw_spi_set_cs(struct spi_device *spi, bool enable);
 extern void dw_spi_update_config(struct dw_spi *dws, struct spi_device *spi,
 				 struct dw_spi_cfg *cfg);
 extern int dw_spi_check_status(struct dw_spi *dws, bool raw);
-extern int dw_spi_add_controller(struct device *dev, struct dw_spi *dws);
-extern void dw_spi_remove_controller(struct dw_spi *dws);
-extern int dw_spi_suspend_controller(struct dw_spi *dws);
-extern int dw_spi_resume_controller(struct dw_spi *dws);
+extern int dw_spi_add_host(struct device *dev, struct dw_spi *dws);
+extern void dw_spi_remove_host(struct dw_spi *dws);
+extern int dw_spi_suspend_host(struct dw_spi *dws);
+extern int dw_spi_resume_host(struct dw_spi *dws);
 
 #ifdef CONFIG_SPI_DW_DMA
 

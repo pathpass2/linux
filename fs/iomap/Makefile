@@ -4,16 +4,14 @@
 # All Rights Reserved.
 #
 
-ccflags-y += -I $(src)		# needed for trace events
+ccflags-y += -I $(srctree)/$(src)		# needed for trace events
 
 obj-$(CONFIG_FS_IOMAP)		+= iomap.o
 
 iomap-y				+= trace.o \
-				   iter.o \
-				   buffered-io.o
-iomap-$(CONFIG_BLOCK)		+= direct-io.o \
-				   ioend.o \
+				   iter.o
+iomap-$(CONFIG_BLOCK)		+= buffered-io.o \
+				   direct-io.o \
 				   fiemap.o \
-				   seek.o \
-				   bio.o
+				   seek.o
 iomap-$(CONFIG_SWAP)		+= swapfile.o

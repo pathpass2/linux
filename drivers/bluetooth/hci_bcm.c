@@ -55,14 +55,12 @@
  * @drive_rts_on_open: drive RTS signal on ->open() when platform requires it
  * @no_uart_clock_set: UART clock set command for >3Mbps mode is unavailable
  * @max_autobaud_speed: max baudrate supported by device in autobaud mode
- * @max_speed: max baudrate supported
  */
 struct bcm_device_data {
 	bool	no_early_set_baudrate;
 	bool	drive_rts_on_open;
 	bool	no_uart_clock_set;
 	u32	max_autobaud_speed;
-	u32	max_speed;
 };
 
 /**
@@ -326,6 +324,7 @@ static irqreturn_t bcm_host_wake(int irq, void *data)
 	bt_dev_dbg(bdev, "Host wake IRQ");
 
 	pm_runtime_get(bdev->dev);
+	pm_runtime_mark_last_busy(bdev->dev);
 	pm_runtime_put_autosuspend(bdev->dev);
 
 	return IRQ_HANDLED;
@@ -642,8 +641,7 @@ static int bcm_setup(struct hci_uart *hu)
 	 * Allow the bootloader to set a valid address through the
 	 * device tree.
 	 */
-	if (hci_test_quirk(hu->hdev, HCI_QUIRK_INVALID_BDADDR))
-		hci_set_quirk(hu->hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
+	set_bit(HCI_QUIRK_USE_BDADDR_PROPERTY, &hu->hdev->quirks);
 
 	if (!bcm_request_irq(bcm))
 		err = bcm_setup_sleep(hu);
@@ -697,7 +695,7 @@ static int bcm_recv(struct hci_uart *hu, const void *data, int count)
 	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
 		return -EUNATCH;
 
-	bcm->rx_skb = h4_recv_buf(hu, bcm->rx_skb, data, count,
+	bcm->rx_skb = h4_recv_buf(hu->hdev, bcm->rx_skb, data, count,
 				  bcm_recv_pkts, ARRAY_SIZE(bcm_recv_pkts));
 	if (IS_ERR(bcm->rx_skb)) {
 		int err = PTR_ERR(bcm->rx_skb);
@@ -709,6 +707,7 @@ static int bcm_recv(struct hci_uart *hu, const void *data, int count)
 		mutex_lock(&bcm_device_lock);
 		if (bcm->dev && bcm_device_exists(bcm->dev)) {
 			pm_runtime_get(bcm->dev->dev);
+			pm_runtime_mark_last_busy(bcm->dev->dev);
 			pm_runtime_put_autosuspend(bcm->dev->dev);
 		}
 		mutex_unlock(&bcm_device_lock);
@@ -746,8 +745,10 @@ static struct sk_buff *bcm_dequeue(struct hci_uart *hu)
 
 	skb = skb_dequeue(&bcm->txq);
 
-	if (bdev)
+	if (bdev) {
+		pm_runtime_mark_last_busy(bdev->dev);
 		pm_runtime_put_autosuspend(bdev->dev);
+	}
 
 	mutex_unlock(&bcm_device_lock);
 
@@ -887,7 +888,7 @@ unlock:
 #endif
 
 /* Some firmware reports an IRQ which does not work (wrong pin in fw table?) */
-static struct gpiod_lookup_table irq_on_int33fc02_pin17_gpios = {
+static struct gpiod_lookup_table asus_tf103c_irq_gpios = {
 	.dev_id = "serial0-0",
 	.table = {
 		GPIO_LOOKUP("INT33FC:02", 17, "host-wakeup-alt", GPIO_ACTIVE_HIGH),
@@ -897,31 +898,12 @@ static struct gpiod_lookup_table irq_on_int33fc02_pin17_gpios = {
 
 static const struct dmi_system_id bcm_broken_irq_dmi_table[] = {
 	{
-		.ident = "Acer Iconia One 7 B1-750",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Insyde"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "VESPA2"),
-		},
-		.driver_data = &irq_on_int33fc02_pin17_gpios,
-	},
-	{
 		.ident = "Asus TF103C",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TF103C"),
 		},
-		.driver_data = &irq_on_int33fc02_pin17_gpios,
-	},
-	{
-		.ident = "Lenovo Yoga Tablet 2 830F/L / 1050F/L",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Intel Corp."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "VALLEYVIEW C0 PLATFORM"),
-			DMI_MATCH(DMI_BOARD_NAME, "BYT-T FFD8"),
-			/* Partial match on beginning of BIOS version */
-			DMI_MATCH(DMI_BIOS_VERSION, "BLADE_21"),
-		},
-		.driver_data = &irq_on_int33fc02_pin17_gpios,
+		.driver_data = &asus_tf103c_irq_gpios,
 	},
 	{
 		.ident = "Meegopad T08",
@@ -1064,17 +1046,17 @@ static struct clk *bcm_get_txco(struct device *dev)
 	struct clk *clk;
 
 	/* New explicit name */
-	clk = devm_clk_get_optional(dev, "txco");
-	if (clk)
+	clk = devm_clk_get(dev, "txco");
+	if (!IS_ERR(clk) || PTR_ERR(clk) == -EPROBE_DEFER)
 		return clk;
 
 	/* Deprecated name */
-	clk = devm_clk_get_optional(dev, "extclk");
-	if (clk)
+	clk = devm_clk_get(dev, "extclk");
+	if (!IS_ERR(clk) || PTR_ERR(clk) == -EPROBE_DEFER)
 		return clk;
 
 	/* Original code used no name at all */
-	return devm_clk_get_optional(dev, NULL);
+	return devm_clk_get(dev, NULL);
 }
 
 static int bcm_get_resources(struct bcm_device *dev)
@@ -1089,12 +1071,21 @@ static int bcm_get_resources(struct bcm_device *dev)
 		return 0;
 
 	dev->txco_clk = bcm_get_txco(dev->dev);
-	if (IS_ERR(dev->txco_clk))
+
+	/* Handle deferred probing */
+	if (dev->txco_clk == ERR_PTR(-EPROBE_DEFER))
 		return PTR_ERR(dev->txco_clk);
 
-	dev->lpo_clk = devm_clk_get_optional(dev->dev, "lpo");
-	if (IS_ERR(dev->lpo_clk))
+	/* Ignore all other errors as before */
+	if (IS_ERR(dev->txco_clk))
+		dev->txco_clk = NULL;
+
+	dev->lpo_clk = devm_clk_get(dev->dev, "lpo");
+	if (dev->lpo_clk == ERR_PTR(-EPROBE_DEFER))
 		return PTR_ERR(dev->lpo_clk);
+
+	if (IS_ERR(dev->lpo_clk))
+		dev->lpo_clk = NULL;
 
 	/* Check if we accidentally fetched the lpo clock twice */
 	if (dev->lpo_clk && clk_is_match(dev->lpo_clk, dev->txco_clk)) {
@@ -1280,7 +1271,7 @@ static int bcm_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void bcm_remove(struct platform_device *pdev)
+static int bcm_remove(struct platform_device *pdev)
 {
 	struct bcm_device *dev = platform_get_drvdata(pdev);
 
@@ -1289,6 +1280,8 @@ static void bcm_remove(struct platform_device *pdev)
 	mutex_unlock(&bcm_device_lock);
 
 	dev_info(&pdev->dev, "%s device unregistered.\n", dev->name);
+
+	return 0;
 }
 
 static const struct hci_uart_proto bcm_proto = {
@@ -1307,12 +1300,6 @@ static const struct hci_uart_proto bcm_proto = {
 };
 
 #ifdef CONFIG_ACPI
-
-/* bcm43430a0/a1 BT does not support 48MHz UART clock, limit to 2000000 baud */
-static struct bcm_device_data bcm43430_device_data = {
-	.max_speed = 2000000,
-};
-
 static const struct acpi_device_id bcm_acpi_match[] = {
 	{ "BCM2E00" },
 	{ "BCM2E01" },
@@ -1427,19 +1414,19 @@ static const struct acpi_device_id bcm_acpi_match[] = {
 	{ "BCM2E71" },
 	{ "BCM2E72" },
 	{ "BCM2E73" },
-	{ "BCM2E74", (long)&bcm43430_device_data },
-	{ "BCM2E75", (long)&bcm43430_device_data },
+	{ "BCM2E74" },
+	{ "BCM2E75" },
 	{ "BCM2E76" },
 	{ "BCM2E77" },
 	{ "BCM2E78" },
 	{ "BCM2E79" },
 	{ "BCM2E7A" },
-	{ "BCM2E7B", (long)&bcm43430_device_data },
+	{ "BCM2E7B" },
 	{ "BCM2E7C" },
 	{ "BCM2E7D" },
 	{ "BCM2E7E" },
 	{ "BCM2E7F" },
-	{ "BCM2E80", (long)&bcm43430_device_data },
+	{ "BCM2E80" },
 	{ "BCM2E81" },
 	{ "BCM2E82" },
 	{ "BCM2E83" },
@@ -1448,7 +1435,7 @@ static const struct acpi_device_id bcm_acpi_match[] = {
 	{ "BCM2E86" },
 	{ "BCM2E87" },
 	{ "BCM2E88" },
-	{ "BCM2E89", (long)&bcm43430_device_data },
+	{ "BCM2E89" },
 	{ "BCM2E8A" },
 	{ "BCM2E8B" },
 	{ "BCM2E8C" },
@@ -1457,30 +1444,29 @@ static const struct acpi_device_id bcm_acpi_match[] = {
 	{ "BCM2E90" },
 	{ "BCM2E92" },
 	{ "BCM2E93" },
-	{ "BCM2E94", (long)&bcm43430_device_data },
+	{ "BCM2E94" },
 	{ "BCM2E95" },
 	{ "BCM2E96" },
 	{ "BCM2E97" },
 	{ "BCM2E98" },
-	{ "BCM2E99", (long)&bcm43430_device_data },
+	{ "BCM2E99" },
 	{ "BCM2E9A" },
-	{ "BCM2E9B", (long)&bcm43430_device_data },
+	{ "BCM2E9B" },
 	{ "BCM2E9C" },
 	{ "BCM2E9D" },
-	{ "BCM2E9F", (long)&bcm43430_device_data },
 	{ "BCM2EA0" },
 	{ "BCM2EA1" },
-	{ "BCM2EA2", (long)&bcm43430_device_data },
-	{ "BCM2EA3", (long)&bcm43430_device_data },
-	{ "BCM2EA4", (long)&bcm43430_device_data }, /* bcm43455 */
+	{ "BCM2EA2" },
+	{ "BCM2EA3" },
+	{ "BCM2EA4" },
 	{ "BCM2EA5" },
 	{ "BCM2EA6" },
 	{ "BCM2EA7" },
 	{ "BCM2EA8" },
 	{ "BCM2EA9" },
-	{ "BCM2EAA", (long)&bcm43430_device_data },
-	{ "BCM2EAB", (long)&bcm43430_device_data },
-	{ "BCM2EAC", (long)&bcm43430_device_data },
+	{ "BCM2EAA" },
+	{ "BCM2EAB" },
+	{ "BCM2EAC" },
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, bcm_acpi_match);
@@ -1549,8 +1535,6 @@ static int bcm_serdev_probe(struct serdev_device *serdev)
 		bcmdev->no_early_set_baudrate = data->no_early_set_baudrate;
 		bcmdev->drive_rts_on_open = data->drive_rts_on_open;
 		bcmdev->no_uart_clock_set = data->no_uart_clock_set;
-		if (data->max_speed && bcmdev->oper_speed > data->max_speed)
-			bcmdev->oper_speed = data->max_speed;
 	}
 
 	return hci_uart_register_device(&bcmdev->serdev_hu, &bcm_proto);

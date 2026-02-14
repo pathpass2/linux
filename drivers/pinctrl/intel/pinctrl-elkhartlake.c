@@ -9,7 +9,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
@@ -20,6 +19,13 @@
 #define EHL_HOSTSW_OWN	0x0b0
 #define EHL_GPI_IS	0x100
 #define EHL_GPI_IE	0x120
+
+#define EHL_GPP(r, s, e)				\
+	{						\
+		.reg_num = (r),				\
+		.base = (s),				\
+		.size = ((e) - (s) + 1),		\
+	}
 
 #define EHL_COMMUNITY(b, s, e, g)			\
 	INTEL_COMMUNITY_GPPS(b, s, e, g, EHL)
@@ -99,9 +105,9 @@ static const struct pinctrl_pin_desc ehl_community0_pins[] = {
 };
 
 static const struct intel_padgroup ehl_community0_gpps[] = {
-	INTEL_GPP(0, 0, 25, 0),		/* GPP_B */
-	INTEL_GPP(1, 26, 41, 26),	/* GPP_T */
-	INTEL_GPP(2, 42, 66, 42),	/* GPP_G */
+	EHL_GPP(0, 0, 25),	/* GPP_B */
+	EHL_GPP(1, 26, 41),	/* GPP_T */
+	EHL_GPP(2, 42, 66),	/* GPP_G */
 };
 
 static const struct intel_community ehl_community0[] = {
@@ -238,11 +244,11 @@ static const struct pinctrl_pin_desc ehl_community1_pins[] = {
 };
 
 static const struct intel_padgroup ehl_community1_gpps[] = {
-	INTEL_GPP(0, 0, 15, 0),		/* GPP_V */
-	INTEL_GPP(1, 16, 39, 16),	/* GPP_H */
-	INTEL_GPP(2, 40, 60, 40),	/* GPP_D */
-	INTEL_GPP(3, 61, 84, 61),	/* GPP_U */
-	INTEL_GPP(4, 85, 112, 85),	/* vGPIO */
+	EHL_GPP(0, 0, 15),	/* GPP_V */
+	EHL_GPP(1, 16, 39),	/* GPP_H */
+	EHL_GPP(2, 40, 60),	/* GPP_D */
+	EHL_GPP(3, 61, 84),	/* GPP_U */
+	EHL_GPP(4, 85, 112),	/* vGPIO */
 };
 
 static const struct intel_community ehl_community1[] = {
@@ -255,43 +261,6 @@ static const struct intel_pinctrl_soc_data ehl_community1_soc_data = {
 	.npins = ARRAY_SIZE(ehl_community1_pins),
 	.communities = ehl_community1,
 	.ncommunities = ARRAY_SIZE(ehl_community1),
-};
-
-static const struct pinctrl_pin_desc ehl_community2_pins[] = {
-	/* DSW */
-	PINCTRL_PIN(0, "BATLOWB"),
-	PINCTRL_PIN(1, "ACPRESENT"),
-	PINCTRL_PIN(2, "LAN_WAKEB"),
-	PINCTRL_PIN(3, "PWRBTNB"),
-	PINCTRL_PIN(4, "SLP_S3B"),
-	PINCTRL_PIN(5, "SLP_S4B"),
-	PINCTRL_PIN(6, "SLP_AB"),
-	PINCTRL_PIN(7, "GPD_7"),
-	PINCTRL_PIN(8, "SUSCLK"),
-	PINCTRL_PIN(9, "SLP_WLANB"),
-	PINCTRL_PIN(10, "SLP_S5B"),
-	PINCTRL_PIN(11, "LANPHYPC"),
-	PINCTRL_PIN(12, "INPUT3VSEL"),
-	PINCTRL_PIN(13, "SLP_LANB"),
-	PINCTRL_PIN(14, "SLP_SUSB"),
-	PINCTRL_PIN(15, "WAKEB"),
-	PINCTRL_PIN(16, "DRAM_RESETB"),
-};
-
-static const struct intel_padgroup ehl_community2_gpps[] = {
-	INTEL_GPP(0, 0, 16, 0),		/* DSW */
-};
-
-static const struct intel_community ehl_community2[] = {
-	EHL_COMMUNITY(0, 0, 16, ehl_community2_gpps),
-};
-
-static const struct intel_pinctrl_soc_data ehl_community2_soc_data = {
-	.uid = "2",
-	.pins = ehl_community2_pins,
-	.npins = ARRAY_SIZE(ehl_community2_pins),
-	.communities = ehl_community2,
-	.ncommunities = ARRAY_SIZE(ehl_community2),
 };
 
 static const struct pinctrl_pin_desc ehl_community3_pins[] = {
@@ -349,10 +318,10 @@ static const struct pinctrl_pin_desc ehl_community3_pins[] = {
 };
 
 static const struct intel_padgroup ehl_community3_gpps[] = {
-	INTEL_GPP(0, 0, 16,  0),	/* CPU */
-	INTEL_GPP(1, 17, 18, 17),	/* GPP_S */
-	INTEL_GPP(2, 19, 42, 19),	/* GPP_A */
-	INTEL_GPP(3, 43, 46, 43),	/* vGPIO_3 */
+	EHL_GPP(0, 0, 16),	/* CPU */
+	EHL_GPP(1, 17, 18),	/* GPP_S */
+	EHL_GPP(2, 19, 42),	/* GPP_A */
+	EHL_GPP(3, 43, 46),	/* vGPIO_3 */
 };
 
 static const struct intel_community ehl_community3[] = {
@@ -455,10 +424,10 @@ static const struct pinctrl_pin_desc ehl_community4_pins[] = {
 };
 
 static const struct intel_padgroup ehl_community4_gpps[] = {
-	INTEL_GPP(0, 0, 23, 0),		/* GPP_C */
-	INTEL_GPP(1, 24, 48, 24),	/* GPP_F */
-	INTEL_GPP(2, 49, 54, 49),	/* HVCMOS */
-	INTEL_GPP(3, 55, 79, 55),	/* GPP_E */
+	EHL_GPP(0, 0, 23),	/* GPP_C */
+	EHL_GPP(1, 24, 48),	/* GPP_F */
+	EHL_GPP(2, 49, 54),	/* HVCMOS */
+	EHL_GPP(3, 55, 79),	/* GPP_E */
 };
 
 static const struct intel_community ehl_community4[] = {
@@ -486,7 +455,7 @@ static const struct pinctrl_pin_desc ehl_community5_pins[] = {
 };
 
 static const struct intel_padgroup ehl_community5_gpps[] = {
-	INTEL_GPP(0, 0, 7, 0),		/* GPP_R */
+	EHL_GPP(0, 0, 7),	/* GPP_R */
 };
 
 static const struct intel_community ehl_community5[] = {
@@ -504,7 +473,6 @@ static const struct intel_pinctrl_soc_data ehl_community5_soc_data = {
 static const struct intel_pinctrl_soc_data *ehl_soc_data_array[] = {
 	&ehl_community0_soc_data,
 	&ehl_community1_soc_data,
-	&ehl_community2_soc_data,
 	&ehl_community3_soc_data,
 	&ehl_community4_soc_data,
 	&ehl_community5_soc_data,
@@ -517,17 +485,19 @@ static const struct acpi_device_id ehl_pinctrl_acpi_match[] = {
 };
 MODULE_DEVICE_TABLE(acpi, ehl_pinctrl_acpi_match);
 
+static INTEL_PINCTRL_PM_OPS(ehl_pinctrl_pm_ops);
+
 static struct platform_driver ehl_pinctrl_driver = {
 	.probe = intel_pinctrl_probe_by_uid,
 	.driver = {
 		.name = "elkhartlake-pinctrl",
 		.acpi_match_table = ehl_pinctrl_acpi_match,
-		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
+		.pm = &ehl_pinctrl_pm_ops,
 	},
 };
+
 module_platform_driver(ehl_pinctrl_driver);
 
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Elkhart Lake PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("PINCTRL_INTEL");

@@ -4,31 +4,10 @@
  */
 
 #include <drm/drm_mipi_dsi.h>
-#include <drm/drm_print.h>
 
-#include "intel_display_core.h"
+#include "i915_drv.h"
 #include "intel_dsi.h"
 #include "intel_panel.h"
-
-void intel_dsi_wait_panel_power_cycle(struct intel_dsi *intel_dsi)
-{
-	ktime_t panel_power_on_time;
-	s64 panel_power_off_duration;
-
-	panel_power_on_time = ktime_get_boottime();
-	panel_power_off_duration = ktime_ms_delta(panel_power_on_time,
-						  intel_dsi->panel_power_off_time);
-
-	if (panel_power_off_duration < (s64)intel_dsi->panel_pwr_cycle_delay)
-		msleep(intel_dsi->panel_pwr_cycle_delay - panel_power_off_duration);
-}
-
-void intel_dsi_shutdown(struct intel_encoder *encoder)
-{
-	struct intel_dsi *intel_dsi = enc_to_intel_dsi(encoder);
-
-	intel_dsi_wait_panel_power_cycle(intel_dsi);
-}
 
 int intel_dsi_bitrate(const struct intel_dsi *intel_dsi)
 {
@@ -59,16 +38,19 @@ int intel_dsi_get_modes(struct drm_connector *connector)
 }
 
 enum drm_mode_status intel_dsi_mode_valid(struct drm_connector *connector,
-					  const struct drm_display_mode *mode)
+					  struct drm_display_mode *mode)
 {
-	struct intel_display *display = to_intel_display(connector->dev);
+	struct drm_i915_private *dev_priv = to_i915(connector->dev);
 	struct intel_connector *intel_connector = to_intel_connector(connector);
 	const struct drm_display_mode *fixed_mode =
 		intel_panel_fixed_mode(intel_connector, mode);
-	int max_dotclk = display->cdclk.max_dotclk_freq;
+	int max_dotclk = to_i915(connector->dev)->max_dotclk_freq;
 	enum drm_mode_status status;
 
-	drm_dbg_kms(display->drm, "\n");
+	drm_dbg_kms(&dev_priv->drm, "\n");
+
+	if (mode->flags & DRM_MODE_FLAG_DBLSCAN)
+		return MODE_NO_DBLESCAN;
 
 	status = intel_panel_mode_valid(intel_connector, mode);
 	if (status != MODE_OK)
@@ -77,7 +59,7 @@ enum drm_mode_status intel_dsi_mode_valid(struct drm_connector *connector,
 	if (fixed_mode->clock > max_dotclk)
 		return MODE_CLOCK_HIGH;
 
-	return intel_mode_valid_max_plane_size(display, mode, 1);
+	return intel_mode_valid_max_plane_size(dev_priv, mode, false);
 }
 
 struct intel_dsi_host *intel_dsi_host_init(struct intel_dsi *intel_dsi,
@@ -117,14 +99,14 @@ struct intel_dsi_host *intel_dsi_host_init(struct intel_dsi *intel_dsi,
 enum drm_panel_orientation
 intel_dsi_get_panel_orientation(struct intel_connector *connector)
 {
-	struct intel_display *display = to_intel_display(connector);
+	struct drm_i915_private *dev_priv = to_i915(connector->base.dev);
 	enum drm_panel_orientation orientation;
 
 	orientation = connector->panel.vbt.dsi.orientation;
 	if (orientation != DRM_MODE_PANEL_ORIENTATION_UNKNOWN)
 		return orientation;
 
-	orientation = display->vbt.orientation;
+	orientation = dev_priv->display.vbt.orientation;
 	if (orientation != DRM_MODE_PANEL_ORIENTATION_UNKNOWN)
 		return orientation;
 

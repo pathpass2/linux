@@ -17,16 +17,9 @@
 	compatible = "purism,librem5", "fsl,imx8mq";
 	chassis-type = "handset";
 
-	aliases {
-		rtc0 = &rtc;
-		rtc1 = &snvs_rtc;
-	};
-
 	backlight_dsi: backlight-dsi {
 		compatible = "led-backlight";
 		leds = <&led_backlight>;
-		brightness-levels = <255>;
-		default-brightness-level = <190>;
 	};
 
 	pmic_osc: clock-pmic {
@@ -50,6 +43,7 @@
 			gpios = <&gpio1 17 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEDOWN>;
 			debounce-interval = <50>;
+			wakeup-source;
 		};
 
 		key-vol-up {
@@ -57,6 +51,7 @@
 			gpios = <&gpio1 16 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEUP>;
 			debounce-interval = <50>;
+			wakeup-source;
 		};
 	};
 
@@ -89,20 +84,11 @@
 		compatible = "regulator-fixed";
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_audiopwr>;
-		regulator-name = "AUD_1V8";
+		regulator-name = "AUDIO_PWR_EN";
 		regulator-min-microvolt = <1800000>;
 		regulator-max-microvolt = <1800000>;
 		gpio = <&gpio1 4 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
-		regulator-always-on;
-	};
-
-	reg_mic_2v4: regulator-mic-2v4 {
-		compatible = "regulator-fixed";
-		regulator-name = "MIC_2V4";
-		regulator-min-microvolt = <2400000>;
-		regulator-max-microvolt = <2400000>;
-		vin-supply = <&reg_aud_1v8>;
 	};
 
 	/*
@@ -246,7 +232,7 @@
 			"Headset Mic", "MICBIAS",
 			"IN3R", "Headset Mic",
 			"DMICDAT", "Digital Mic";
-		simple-audio-card,hp-det-gpios = <&gpio3 9 GPIO_ACTIVE_HIGH>;
+		simple-audio-card,hp-det-gpio = <&gpio3 9 GPIO_ACTIVE_HIGH>;
 
 		simple-audio-card,cpu {
 			sound-dai = <&sai2>;
@@ -292,7 +278,7 @@
 
 	vibrator {
 		compatible = "pwm-vibrator";
-		pwms = <&pwm1 0 50000 0>;
+		pwms = <&pwm1 0 1000000000 0>;
 		pwm-names = "enable";
 		vcc-supply = <&reg_vdd_3v3>;
 	};
@@ -331,10 +317,6 @@
 
 		opp-100000000 {
 			opp-hz = /bits/ 64 <100000000>;
-		};
-
-		opp-166000000 {
-			opp-hz = /bits/ 64 <166935483>;
 		};
 
 		opp-800000000 {
@@ -384,21 +366,11 @@
 		gpio-hog;
 		gpios = <1 GPIO_ACTIVE_HIGH>;
 		input;
-		line-name = "pmic-5v";
+		lane-mapping = "pmic-5v";
 	};
 };
 
 &iomuxc {
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_hog>;
-
-	pinctrl_hog: hoggrp {
-		fsl,pins = <
-			/* CLKO2 for cameras on both CSI1 and CSI2 */
-			MX8MQ_IOMUXC_GPIO1_IO15_CCMSRCGPCMIX_CLKO2      0x1f
-		>;
-	};
-
 	pinctrl_audiopwr: audiopwrgrp {
 		fsl,pins = <
 			/* AUDIO_POWER_EN_3V3 */
@@ -517,24 +489,10 @@
 		>;
 	};
 
-	pinctrl_i2c1_gpio: i2c1-gpiogrp {
-		fsl,pins = <
-			MX8MQ_IOMUXC_I2C1_SCL_GPIO5_IO14	0x26
-			MX8MQ_IOMUXC_I2C1_SDA_GPIO5_IO15	0x26
-		>;
-	};
-
 	pinctrl_i2c2: i2c2grp {
 		fsl,pins = <
 			MX8MQ_IOMUXC_I2C2_SCL_I2C2_SCL		0x40000026
 			MX8MQ_IOMUXC_I2C2_SDA_I2C2_SDA		0x40000026
-		>;
-	};
-
-	pinctrl_i2c2_gpio: i2c2-gpiogrp {
-		fsl,pins = <
-			MX8MQ_IOMUXC_I2C2_SCL_GPIO5_IO16	0x26
-			MX8MQ_IOMUXC_I2C2_SDA_GPIO5_IO17	0x26
 		>;
 	};
 
@@ -545,13 +503,6 @@
 		>;
 	};
 
-	pinctrl_i2c3_gpio: i2c3-gpiogrp {
-		fsl,pins = <
-			MX8MQ_IOMUXC_I2C3_SCL_GPIO5_IO18	0x26
-			MX8MQ_IOMUXC_I2C3_SDA_GPIO5_IO19	0x26
-		>;
-	};
-
 	pinctrl_i2c4: i2c4grp {
 		fsl,pins = <
 			MX8MQ_IOMUXC_I2C4_SCL_I2C4_SCL		0x40000026
@@ -559,19 +510,12 @@
 		>;
 	};
 
-	pinctrl_i2c4_gpio: i2c4-gpiogrp {
-		fsl,pins = <
-			MX8MQ_IOMUXC_I2C4_SCL_GPIO5_IO20	0x26
-			MX8MQ_IOMUXC_I2C4_SDA_GPIO5_IO21	0x26
-		>;
-	};
-
 	pinctrl_keys: keysgrp {
 		fsl,pins = <
 			/* VOL- */
-			MX8MQ_IOMUXC_ENET_MDIO_GPIO1_IO17	0x01c0
+			MX8MQ_IOMUXC_ENET_MDIO_GPIO1_IO17	0x01C0
 			/* VOL+ */
-			MX8MQ_IOMUXC_ENET_MDC_GPIO1_IO16	0x01c0
+			MX8MQ_IOMUXC_ENET_MDC_GPIO1_IO16	0x01C0
 		>;
 	};
 
@@ -653,7 +597,7 @@
 	pinctrl_tcpc: tcpcgrp {
 		fsl,pins = <
 			/* TCPC_INT */
-			MX8MQ_IOMUXC_GPIO1_IO10_GPIO1_IO10	0x01c0
+			MX8MQ_IOMUXC_GPIO1_IO10_GPIO1_IO10	0x01C0
 		>;
 	};
 
@@ -718,7 +662,7 @@
 		>;
 	};
 
-	pinctrl_usdhc1_100mhz: usdhc1-100mhzgrp {
+	pinctrl_usdhc1_100mhz: usdhc1grp100mhz {
 		fsl,pins = <
 			MX8MQ_IOMUXC_SD1_CLK_USDHC1_CLK			0x8d
 			MX8MQ_IOMUXC_SD1_CMD_USDHC1_CMD			0xcd
@@ -735,7 +679,7 @@
 		>;
 	};
 
-	pinctrl_usdhc1_200mhz: usdhc1-200mhzgrp {
+	pinctrl_usdhc1_200mhz: usdhc1grp200mhz {
 		fsl,pins = <
 			MX8MQ_IOMUXC_SD1_CLK_USDHC1_CLK			0x9f
 			MX8MQ_IOMUXC_SD1_CMD_USDHC1_CMD			0xdf
@@ -765,7 +709,7 @@
 		>;
 	};
 
-	pinctrl_usdhc2_100mhz: usdhc2-100mhzgrp {
+	pinctrl_usdhc2_100mhz: usdhc2grp100mhz {
 		fsl,pins = <
 			MX8MQ_IOMUXC_SD2_CD_B_GPIO2_IO12	0x80
 			MX8MQ_IOMUXC_SD2_CLK_USDHC2_CLK		0x8d
@@ -778,7 +722,7 @@
 		>;
 	};
 
-	pinctrl_usdhc2_200mhz: usdhc2-200mhzgrp {
+	pinctrl_usdhc2_200mhz: usdhc2grp200mhz {
 		fsl,pins = <
 			MX8MQ_IOMUXC_SD2_CD_B_GPIO2_IO12	0x80
 			MX8MQ_IOMUXC_SD2_CLK_USDHC2_CLK		0x9f
@@ -814,12 +758,9 @@
 };
 
 &i2c1 {
-	clock-frequency = <384000>;
-	pinctrl-names = "default", "gpio";
+	clock-frequency = <387000>;
+	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c1>;
-	pinctrl-1 = <&pinctrl_i2c1_gpio>;
-	scl-gpios = <&gpio5 14 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
-	sda-gpios = <&gpio5 15 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	status = "okay";
 
 	typec_pd: usb-pd@3f {
@@ -830,7 +771,6 @@
 		interrupt-parent = <&gpio1>;
 		interrupts = <10 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-names = "irq";
-		wakeup-source;
 
 		connector {
 			compatible = "usb-c-connector";
@@ -866,7 +806,6 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_pmic>, <&pinctrl_camera_pwr>;
 		clocks = <&pmic_osc>;
-		#clock-cells = <0>;
 		clock-names = "osc";
 		clock-output-names = "pmic_clk";
 		interrupt-parent = <&gpio1>;
@@ -880,9 +819,9 @@
 				regulator-max-microvolt = <1300000>;
 				regulator-boot-on;
 				regulator-ramp-delay = <1250>;
-				rohm,dvs-run-voltage = <880000>;
-				rohm,dvs-idle-voltage = <820000>;
-				rohm,dvs-suspend-voltage = <810000>;
+				rohm,dvs-run-voltage = <900000>;
+				rohm,dvs-idle-voltage = <850000>;
+				rohm,dvs-suspend-voltage = <800000>;
 				regulator-always-on;
 			};
 
@@ -892,8 +831,8 @@
 				regulator-max-microvolt = <1300000>;
 				regulator-boot-on;
 				regulator-ramp-delay = <1250>;
-				rohm,dvs-run-voltage = <950000>;
-				rohm,dvs-idle-voltage = <850000>;
+				rohm,dvs-run-voltage = <1000000>;
+				rohm,dvs-idle-voltage = <900000>;
 				regulator-always-on;
 			};
 
@@ -902,14 +841,14 @@
 				regulator-min-microvolt = <700000>;
 				regulator-max-microvolt = <1300000>;
 				regulator-boot-on;
-				rohm,dvs-run-voltage = <850000>;
+				rohm,dvs-run-voltage = <900000>;
 			};
 
 			buck4_reg: BUCK4 {
 				regulator-name = "buck4";
 				regulator-min-microvolt = <700000>;
 				regulator-max-microvolt = <1300000>;
-				rohm,dvs-run-voltage = <930000>;
+				rohm,dvs-run-voltage = <1000000>;
 			};
 
 			buck5_reg: BUCK5 {
@@ -1006,7 +945,7 @@
 		};
 	};
 
-	rtc: rtc@68 {
+	rtc@68 {
 		compatible = "microcrystal,rv4162";
 		reg = <0x68>;
 		pinctrl-names = "default";
@@ -1017,15 +956,12 @@
 };
 
 &i2c2 {
-	clock-frequency = <384000>;
-	pinctrl-names = "default", "gpio";
+	clock-frequency = <387000>;
+	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c2>;
-	pinctrl-1 = <&pinctrl_i2c2_gpio>;
-	scl-gpios = <&gpio5 16 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
-	sda-gpios = <&gpio5 17 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	status = "okay";
 
-	magnetometer: magnetometer@1e	{
+	magnetometer@1e	{
 		compatible = "st,lsm9ds1-magn";
 		reg = <0x1e>;
 		pinctrl-names = "default";
@@ -1037,7 +973,7 @@
 	};
 
 	regulator@3e {
-		compatible = "ti,tps65132";
+		compatible = "tps65132";
 		reg = <0x3e>;
 
 		reg_lcd_avdd: outp {
@@ -1069,12 +1005,9 @@
 };
 
 &i2c3 {
-	clock-frequency = <384000>;
-	pinctrl-names = "default", "gpio";
+	clock-frequency = <387000>;
+	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c3>;
-	pinctrl-1 = <&pinctrl_i2c3_gpio>;
-	scl-gpios = <&gpio5 18 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
-	sda-gpios = <&gpio5 19 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	status = "okay";
 
 	codec: audio-codec@1a {
@@ -1085,11 +1018,12 @@
 		assigned-clock-parents = <&clk IMX8MQ_AUDIO_PLL1_OUT>;
 		assigned-clock-rates = <24576000>;
 		#sound-dai-cells = <0>;
+		mic-cfg = <0x200>;
 		DCVDD-supply = <&reg_aud_1v8>;
 		DBVDD-supply = <&reg_aud_1v8>;
 		AVDD-supply = <&reg_aud_1v8>;
 		CPVDD-supply = <&reg_aud_1v8>;
-		MICVDD-supply = <&reg_mic_2v4>;
+		MICVDD-supply = <&reg_aud_1v8>;
 		PLLVDD-supply = <&reg_aud_1v8>;
 		SPKVDD1-supply = <&reg_vsys_3v4>;
 		SPKVDD2-supply = <&reg_vsys_3v4>;
@@ -1161,12 +1095,9 @@
 };
 
 &i2c4 {
-	clock-frequency = <384000>;
-	pinctrl-names = "default", "gpio";
+	clock-frequency = <387000>;
+	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c4>;
-	pinctrl-1 = <&pinctrl_i2c4_gpio>;
-	scl-gpios = <&gpio5 20 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
-	sda-gpios = <&gpio5 21 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
 	status = "okay";
 
 	vcm@c {
@@ -1195,12 +1126,13 @@
 		pinctrl-0 = <&pinctrl_charger_in>;
 		interrupt-parent = <&gpio3>;
 		interrupts = <3 IRQ_TYPE_EDGE_FALLING>;
-		ti,battery-regulation-voltage = <4208000>; /* uV */
-		ti,termination-current = <128000>;  /* uA */
-		ti,precharge-current = <128000>; /* uA */
+		phys = <&usb3_phy0>;
+		ti,precharge-current = <130000>; /* uA */
 		ti,minimum-sys-voltage = <3700000>; /* uV */
 		ti,boost-voltage = <5000000>; /* uV */
 		ti,boost-max-current = <1500000>; /* uA */
+		ti,use-vinmin-threshold = <1>; /* enable VINDPM */
+		ti,vinmin-threshold = <3900000>; /* uV */
 		monitored-battery = <&bat>;
 		power-supplies = <&typec_pd>;
 	};
@@ -1211,7 +1143,6 @@
 };
 
 &mipi_csi1 {
-	assigned-clock-rates = <266000000>, <200000000>, <66000000>;
 	status = "okay";
 
 	ports {
@@ -1320,6 +1251,10 @@
 	status = "okay";
 };
 
+&snvs_rtc {
+	status = "disabled";
+};
+
 &uart1 { /* console */
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_uart1>;
@@ -1361,28 +1296,26 @@
 };
 
 &usb_dwc3_0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
 	dr_mode = "otg";
+	snps,dis_u3_susphy_quirk;
 	usb-role-switch;
 	status = "okay";
 
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
+	port@0 {
+		reg = <0>;
 
-		port@0 {
-			reg = <0>;
-
-			typec_hs: endpoint {
-				remote-endpoint = <&usb_con_hs>;
-			};
+		typec_hs: endpoint {
+			remote-endpoint = <&usb_con_hs>;
 		};
+	};
 
-		port@1 {
-			reg = <1>;
+	port@1 {
+		reg = <1>;
 
-			typec_ss: endpoint {
-				remote-endpoint = <&usb_con_ss>;
-			};
+		typec_ss: endpoint {
+			remote-endpoint = <&usb_con_ss>;
 		};
 	};
 };
@@ -1416,14 +1349,14 @@
 	pinctrl-2 = <&pinctrl_usdhc1_200mhz>;
 	bus-width = <8>;
 	vmmc-supply = <&reg_vdd_3v3>;
-	vqmmc-supply = <&reg_vdd_1v8>;
+	power-supply = <&reg_vdd_1v8>;
 	non-removable;
 	status = "okay";
 };
 
 &usdhc2 {
 	assigned-clocks = <&clk IMX8MQ_CLK_USDHC2>;
-	assigned-clock-rates = <50000000>;
+	assigned-clock-rates = <200000000>;
 	pinctrl-names = "default", "state_100mhz", "state_200mhz";
 	pinctrl-0 = <&pinctrl_usdhc2>;
 	pinctrl-1 = <&pinctrl_usdhc2_100mhz>;
@@ -1431,12 +1364,11 @@
 	bus-width = <4>;
 	vmmc-supply = <&reg_wifi_3v3>;
 	mmc-pwrseq = <&usdhc2_pwrseq>;
-	post-power-on-delay-ms = <20>;
+	post-power-on-delay-ms = <1000>;
 	cd-gpios = <&gpio2 12 GPIO_ACTIVE_LOW>;
 	max-frequency = <50000000>;
 	disable-wp;
 	cap-sdio-irq;
-	cap-power-off-card;
 	keep-power-in-suspend;
 	wakeup-source;
 	status = "okay";
@@ -1447,14 +1379,4 @@
 	pinctrl-0 = <&pinctrl_wdog>;
 	fsl,ext-reset-output;
 	status = "okay";
-};
-
-&a53_opp_table {
-	opp-1000000000 {
-		opp-microvolt = <850000>;
-	};
-
-	opp-1500000000 {
-		opp-microvolt = <950000>;
-	};
 };

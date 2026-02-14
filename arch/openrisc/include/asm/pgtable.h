@@ -23,7 +23,7 @@
 
 #include <asm-generic/pgtable-nopmd.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <asm/mmu.h>
 #include <asm/fixmap.h>
 
@@ -46,7 +46,7 @@ extern void paging_init(void);
  * hook is made available.
  */
 #define set_pte(pteptr, pteval) ((*(pteptr)) = (pteval))
-
+#define set_pte_at(mm, addr, ptep, pteval) set_pte(ptep, pteval)
 /*
  * (pmds are folded into pgds so this doesn't get actually called,
  * but the define is needed for a generic inline function.)
@@ -183,6 +183,23 @@ extern void paging_init(void);
 extern unsigned long empty_zero_page[2048];
 #define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
 
+/* number of bits that fit into a memory pointer */
+#define BITS_PER_PTR			(8*sizeof(unsigned long))
+
+/* to align the pointer to a pointer address */
+#define PTR_MASK			(~(sizeof(void *)-1))
+
+/* sizeof(void*)==1<<SIZEOF_PTR_LOG2 */
+/* 64-bit machines, beware!  SRB. */
+#define SIZEOF_PTR_LOG2			2
+
+/* to find an entry in a page-table */
+#define PAGE_PTR(address) \
+((unsigned long)(address)>>(PAGE_SHIFT-SIZEOF_PTR_LOG2)&PTR_MASK&~PAGE_MASK)
+
+/* to set the page-dir */
+#define SET_PAGE_DIR(tsk, pgdir)
+
 #define pte_none(x)	(!pte_val(x))
 #define pte_present(x)	(pte_val(x) & _PAGE_PRESENT)
 #define pte_clear(mm, addr, xp)	do { pte_val(*(xp)) = 0; } while (0)
@@ -233,7 +250,7 @@ static inline pte_t pte_mkold(pte_t pte)
 	return pte;
 }
 
-static inline pte_t pte_mkwrite_novma(pte_t pte)
+static inline pte_t pte_mkwrite(pte_t pte)
 {
 	pte_val(pte) |= _PAGE_WRITE;
 	return pte;
@@ -281,6 +298,8 @@ static inline pte_t __mk_pte(void *page, pgprot_t pgprot)
 	pte_val(pte) = __pa(page) | pgprot_val(pgprot);
 	return pte;
 }
+
+#define mk_pte(page, pgprot) __mk_pte(page_address(page), (pgprot))
 
 #define mk_pte_phys(physpage, pgprot) \
 ({                                                                      \
@@ -338,7 +357,6 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 #define __pmd_offset(address) \
 	(((address) >> PMD_SHIFT) & (PTRS_PER_PMD-1))
 
-#define PFN_PTE_SHIFT		PAGE_SHIFT
 #define pte_pfn(x)		((unsigned long)(((x).pte)) >> PAGE_SHIFT)
 #define pfn_pte(pfn, prot)  __pte((((pfn) << PAGE_SHIFT)) | pgprot_val(prot))
 
@@ -361,16 +379,12 @@ static inline void update_tlb(struct vm_area_struct *vma,
 extern void update_cache(struct vm_area_struct *vma,
 	unsigned long address, pte_t *pte);
 
-static inline void update_mmu_cache_range(struct vm_fault *vmf,
-		struct vm_area_struct *vma, unsigned long address,
-		pte_t *ptep, unsigned int nr)
+static inline void update_mmu_cache(struct vm_area_struct *vma,
+	unsigned long address, pte_t *pte)
 {
-	update_tlb(vma, address, ptep);
-	update_cache(vma, address, ptep);
+	update_tlb(vma, address, pte);
+	update_cache(vma, address, pte);
 }
-
-#define update_mmu_cache(vma, addr, ptep) \
-	update_mmu_cache_range(NULL, vma, addr, ptep, 1)
 
 /* __PHX__ FIXME, SWAP, this probably doesn't work */
 
@@ -394,7 +408,7 @@ static inline void update_mmu_cache_range(struct vm_fault *vmf,
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)		((pte_t) { (x).val })
 
-static inline bool pte_swp_exclusive(pte_t pte)
+static inline int pte_swp_exclusive(pte_t pte)
 {
 	return pte_val(pte) & _PAGE_SWP_EXCLUSIVE;
 }
@@ -413,5 +427,5 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 
 typedef pte_t *pte_addr_t;
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* __ASM_OPENRISC_PGTABLE_H */

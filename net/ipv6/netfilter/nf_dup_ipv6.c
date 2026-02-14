@@ -38,7 +38,7 @@ static bool nf_dup_ipv6_route(struct net *net, struct sk_buff *skb,
 	}
 	skb_dst_drop(skb);
 	skb_dst_set(skb, dst);
-	skb->dev      = dst_dev(dst);
+	skb->dev      = dst->dev;
 	skb->protocol = htons(ETH_P_IPV6);
 
 	return true;
@@ -47,12 +47,11 @@ static bool nf_dup_ipv6_route(struct net *net, struct sk_buff *skb,
 void nf_dup_ipv6(struct net *net, struct sk_buff *skb, unsigned int hooknum,
 		 const struct in6_addr *gw, int oif)
 {
-	local_bh_disable();
-	if (current->in_nf_duplicate)
-		goto out;
+	if (this_cpu_read(nf_skb_duplicated))
+		return;
 	skb = pskb_copy(skb, GFP_ATOMIC);
 	if (skb == NULL)
-		goto out;
+		return;
 
 #if IS_ENABLED(CONFIG_NF_CONNTRACK)
 	nf_reset_ct(skb);
@@ -64,14 +63,12 @@ void nf_dup_ipv6(struct net *net, struct sk_buff *skb, unsigned int hooknum,
 		--iph->hop_limit;
 	}
 	if (nf_dup_ipv6_route(net, skb, gw, oif)) {
-		current->in_nf_duplicate = true;
+		__this_cpu_write(nf_skb_duplicated, true);
 		ip6_local_out(net, skb->sk, skb);
-		current->in_nf_duplicate = false;
+		__this_cpu_write(nf_skb_duplicated, false);
 	} else {
 		kfree_skb(skb);
 	}
-out:
-	local_bh_enable();
 }
 EXPORT_SYMBOL_GPL(nf_dup_ipv6);
 

@@ -33,55 +33,25 @@
 #include <asm/smap.h>
 #include <asm/gsseg.h>
 
-/*
- * The first GDT descriptor is reserved as 'NULL descriptor'.  As bits 0
- * and 1 of a segment selector, i.e., the RPL bits, are NOT used to index
- * GDT, selector values 0~3 all point to the NULL descriptor, thus values
- * 0, 1, 2 and 3 are all valid NULL selector values.
- *
- * However IRET zeros ES, FS, GS, and DS segment registers if any of them
- * is found to have any nonzero NULL selector value, which can be used by
- * userspace in pre-FRED systems to spot any interrupt/exception by loading
- * a nonzero NULL selector and waiting for it to become zero.  Before FRED
- * there was nothing software could do to prevent such an information leak.
- *
- * ERETU, the only legit instruction to return to userspace from kernel
- * under FRED, by design does NOT zero any segment register to avoid this
- * problem behavior.
- *
- * As such, leave NULL selector values 0~3 unchanged.
- */
-static inline u16 fixup_rpl(u16 sel)
-{
-	return sel <= 3 ? sel : sel | 3;
-}
-
 #ifdef CONFIG_IA32_EMULATION
-#include <asm/unistd_32_ia32.h>
+#include <asm/ia32_unistd.h>
 
 static inline void reload_segments(struct sigcontext_32 *sc)
 {
-	u16 cur;
+	unsigned int cur;
 
-	/*
-	 * Reload fs and gs if they have changed in the signal
-	 * handler.  This does not handle long fs/gs base changes in
-	 * the handler, but does not clobber them at least in the
-	 * normal case.
-	 */
 	savesegment(gs, cur);
-	if (fixup_rpl(sc->gs) != cur)
-		load_gs_index(fixup_rpl(sc->gs));
+	if ((sc->gs | 0x03) != cur)
+		load_gs_index(sc->gs | 0x03);
 	savesegment(fs, cur);
-	if (fixup_rpl(sc->fs) != cur)
-		loadsegment(fs, fixup_rpl(sc->fs));
-
+	if ((sc->fs | 0x03) != cur)
+		loadsegment(fs, sc->fs | 0x03);
 	savesegment(ds, cur);
-	if (fixup_rpl(sc->ds) != cur)
-		loadsegment(ds, fixup_rpl(sc->ds));
+	if ((sc->ds | 0x03) != cur)
+		loadsegment(ds, sc->ds | 0x03);
 	savesegment(es, cur);
-	if (fixup_rpl(sc->es) != cur)
-		loadsegment(es, fixup_rpl(sc->es));
+	if ((sc->es | 0x03) != cur)
+		loadsegment(es, sc->es | 0x03);
 }
 
 #define sigset32_t			compat_sigset_t
@@ -135,12 +105,18 @@ static bool ia32_restore_sigcontext(struct pt_regs *regs,
 	regs->orig_ax = -1;
 
 #ifdef CONFIG_IA32_EMULATION
+	/*
+	 * Reload fs and gs if they have changed in the signal
+	 * handler.  This does not handle long fs/gs base changes in
+	 * the handler, but does not clobber them at least in the
+	 * normal case.
+	 */
 	reload_segments(&sc);
 #else
-	loadsegment(gs, fixup_rpl(sc.gs));
-	regs->fs = fixup_rpl(sc.fs);
-	regs->es = fixup_rpl(sc.es);
-	regs->ds = fixup_rpl(sc.ds);
+	loadsegment(gs, sc.gs);
+	regs->fs = sc.fs;
+	regs->es = sc.es;
+	regs->ds = sc.ds;
 #endif
 
 	return fpu__restore_sig(compat_ptr(sc.fpstate), 1);
@@ -151,8 +127,6 @@ SYSCALL32_DEFINE0(sigreturn)
 	struct pt_regs *regs = current_pt_regs();
 	struct sigframe_ia32 __user *frame = (struct sigframe_ia32 __user *)(regs->sp-8);
 	sigset_t set;
-
-	prevent_single_step_upon_eretu(regs);
 
 	if (!access_ok(frame, sizeof(*frame)))
 		goto badframe;
@@ -176,8 +150,6 @@ SYSCALL32_DEFINE0(rt_sigreturn)
 	struct pt_regs *regs = current_pt_regs();
 	struct rt_sigframe_ia32 __user *frame;
 	sigset_t set;
-
-	prevent_single_step_upon_eretu(regs);
 
 	frame = (struct rt_sigframe_ia32 __user *)(regs->sp - 4);
 
@@ -282,7 +254,7 @@ int ia32_setup_frame(struct ksignal *ksig, struct pt_regs *regs)
 		/* Return stub is in 32bit vsyscall page */
 		if (current->mm->context.vdso)
 			restorer = current->mm->context.vdso +
-				vdso32_image.sym___kernel_sigreturn;
+				vdso_image_32.sym___kernel_sigreturn;
 		else
 			restorer = &frame->retcode;
 	}
@@ -368,7 +340,7 @@ int ia32_setup_rt_frame(struct ksignal *ksig, struct pt_regs *regs)
 		restorer = ksig->ka.sa.sa_restorer;
 	else
 		restorer = current->mm->context.vdso +
-			vdso32_image.sym___kernel_rt_sigreturn;
+			vdso_image_32.sym___kernel_rt_sigreturn;
 	unsafe_put_user(ptr_to_compat(restorer), &frame->pretcode, Efault);
 
 	/*
@@ -430,7 +402,7 @@ Efault:
 */
 static_assert(NSIGILL  == 11);
 static_assert(NSIGFPE  == 15);
-static_assert(NSIGSEGV == 10);
+static_assert(NSIGSEGV == 9);
 static_assert(NSIGBUS  == 5);
 static_assert(NSIGTRAP == 6);
 static_assert(NSIGCHLD == 6);

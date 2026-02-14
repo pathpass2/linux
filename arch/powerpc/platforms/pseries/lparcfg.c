@@ -29,6 +29,7 @@
 #include <asm/firmware.h>
 #include <asm/rtas.h>
 #include <asm/time.h>
+#include <asm/vdso_datapage.h>
 #include <asm/vio.h>
 #include <asm/mmu.h>
 #include <asm/machdep.h>
@@ -78,8 +79,6 @@ struct hvcall_ppp_data {
 	u8	capped;
 	u8	weight;
 	u8	unallocated_weight;
-	u8      resource_group_index;
-	u16     active_procs_in_resource_group;
 	u16	active_procs_in_pool;
 	u16	active_system_procs;
 	u16	phys_platform_procs;
@@ -88,7 +87,7 @@ struct hvcall_ppp_data {
 };
 
 /*
- * H_GET_PPP hcall returns info in 5 parms.
+ * H_GET_PPP hcall returns info in 4 parms.
  *  entitled_capacity,unallocated_capacity,
  *  aggregation, resource_capability).
  *
@@ -96,11 +95,11 @@ struct hvcall_ppp_data {
  *  R5 = Unallocated Processor Capacity Percentage.
  *  R6 (AABBCCDDEEFFGGHH).
  *      XXXX - reserved (0)
- *          XXXX - Active Cores in Resource Group
+ *          XXXX - reserved (0)
  *              XXXX - Group Number
  *                  XXXX - Pool Number.
  *  R7 (IIJJKKLLMMNNOOPP).
- *      XX - Resource group Number
+ *      XX - reserved. (0)
  *        XX - bit 0-6 reserved (0).   bit 7 is Capped indicator.
  *          XX - variable processor Capacity Weight
  *            XX - Unallocated Variable Processor Capacity Weight.
@@ -114,19 +113,17 @@ struct hvcall_ppp_data {
  */
 static unsigned int h_get_ppp(struct hvcall_ppp_data *ppp_data)
 {
-	unsigned long retbuf[PLPAR_HCALL9_BUFSIZE] = {0};
-	long rc;
+	unsigned long rc;
+	unsigned long retbuf[PLPAR_HCALL9_BUFSIZE];
 
 	rc = plpar_hcall9(H_GET_PPP, retbuf);
 
 	ppp_data->entitlement = retbuf[0];
 	ppp_data->unallocated_entitlement = retbuf[1];
 
-	ppp_data->active_procs_in_resource_group = (retbuf[2] >> 4 * 8) & 0xffff;
 	ppp_data->group_num = (retbuf[2] >> 2 * 8) & 0xffff;
 	ppp_data->pool_num = retbuf[2] & 0xffff;
 
-	ppp_data->resource_group_index = (retbuf[3] >> 7 *  8) & 0xff;
 	ppp_data->capped = (retbuf[3] >> 6 * 8) & 0x01;
 	ppp_data->weight = (retbuf[3] >> 5 * 8) & 0xff;
 	ppp_data->unallocated_weight = (retbuf[3] >> 4 * 8) & 0xff;
@@ -173,23 +170,19 @@ out:
 	kfree(buf);
 }
 
-static long h_pic(unsigned long *pool_idle_time,
-		  unsigned long *num_procs)
+static unsigned h_pic(unsigned long *pool_idle_time,
+		      unsigned long *num_procs)
 {
-	long rc;
-	unsigned long retbuf[PLPAR_HCALL_BUFSIZE] = {0};
+	unsigned long rc;
+	unsigned long retbuf[PLPAR_HCALL_BUFSIZE];
 
 	rc = plpar_hcall(H_PIC, retbuf);
 
-	if (pool_idle_time)
-		*pool_idle_time = retbuf[0];
-	if (num_procs)
-		*num_procs = retbuf[1];
+	*pool_idle_time = retbuf[0];
+	*num_procs = retbuf[1];
 
 	return rc;
 }
-
-unsigned long boot_pool_idle_time;
 
 /*
  * parse_ppp_data
@@ -200,7 +193,7 @@ static void parse_ppp_data(struct seq_file *m)
 	struct hvcall_ppp_data ppp_data;
 	struct device_node *root;
 	const __be32 *perf_level;
-	long rc;
+	int rc;
 
 	rc = h_get_ppp(&ppp_data);
 	if (rc)
@@ -213,7 +206,7 @@ static void parse_ppp_data(struct seq_file *m)
 	           ppp_data.active_system_procs);
 
 	/* pool related entries are appropriate for shared configs */
-	if (lppaca_shared_proc()) {
+	if (lppaca_shared_proc(get_lppaca())) {
 		unsigned long pool_idle_time, pool_procs;
 
 		seq_printf(m, "pool=%d\n", ppp_data.pool_num);
@@ -222,15 +215,9 @@ static void parse_ppp_data(struct seq_file *m)
 		seq_printf(m, "pool_capacity=%d\n",
 			   ppp_data.active_procs_in_pool * 100);
 
-		/* In case h_pic call is not successful, this would result in
-		 * APP values being wrong in tools like lparstat.
-		 */
-
-		if (h_pic(&pool_idle_time, &pool_procs) == H_SUCCESS) {
-			seq_printf(m, "pool_idle_time=%ld\n", pool_idle_time);
-			seq_printf(m, "pool_num_procs=%ld\n", pool_procs);
-			seq_printf(m, "boot_pool_idle_time=%ld\n", boot_pool_idle_time);
-		}
+		h_pic(&pool_idle_time, &pool_procs);
+		seq_printf(m, "pool_idle_time=%ld\n", pool_idle_time);
+		seq_printf(m, "pool_num_procs=%ld\n", pool_procs);
 	}
 
 	seq_printf(m, "unallocated_capacity_weight=%d\n",
@@ -239,13 +226,6 @@ static void parse_ppp_data(struct seq_file *m)
 	seq_printf(m, "capped=%d\n", ppp_data.capped);
 	seq_printf(m, "unallocated_capacity=%lld\n",
 		   ppp_data.unallocated_entitlement);
-
-	if (ppp_data.active_procs_in_resource_group)  {
-		seq_printf(m, "resource_group_number=%d\n",
-				ppp_data.resource_group_index);
-		seq_printf(m, "resource_group_active_processors=%d\n",
-				ppp_data.active_procs_in_resource_group);
-	}
 
 	/* The last bits of information returned from h_get_ppp are only
 	 * valid if the ibm,partition-performance-parameters-level
@@ -366,13 +346,9 @@ static int read_rtas_lpar_name(struct seq_file *m)
  */
 static int read_dt_lpar_name(struct seq_file *m)
 {
-	struct device_node *root = of_find_node_by_path("/");
 	const char *name;
-	int ret;
 
-	ret = of_property_read_string(root, "ibm,partition-name", &name);
-	of_node_put(root);
-	if (ret)
+	if (of_property_read_string(of_root, "ibm,partition-name", &name))
 		return -ENOENT;
 
 	seq_printf(m, "partition_name=%s\n", name);
@@ -381,8 +357,8 @@ static int read_dt_lpar_name(struct seq_file *m)
 
 static void read_lpar_name(struct seq_file *m)
 {
-	if (read_rtas_lpar_name(m))
-		read_dt_lpar_name(m);
+	if (read_rtas_lpar_name(m) && read_dt_lpar_name(m))
+		pr_err_once("Error can't get the LPAR name");
 }
 
 #define SPLPAR_MAXLENGTH 1026*(sizeof(char))
@@ -540,7 +516,7 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 		lrdrp = of_get_property(rtas_node, "ibm,lrdr-capacity", NULL);
 
 	if (lrdrp == NULL) {
-		partition_potential_processors = num_possible_cpus();
+		partition_potential_processors = vdso_data->processorCount;
 	} else {
 		partition_potential_processors = be32_to_cpup(lrdrp + 4);
 	}
@@ -563,7 +539,7 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 	} else {		/* non SPLPAR case */
 
 		seq_printf(m, "system_active_processors=%d\n",
-			   partition_active_processors);
+			   partition_potential_processors);
 
 		seq_printf(m, "system_potential_processors=%d\n",
 			   partition_potential_processors);
@@ -584,7 +560,7 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 		   partition_potential_processors);
 
 	seq_printf(m, "shared_processor_mode=%d\n",
-		   lppaca_shared_proc());
+		   lppaca_shared_proc(get_lppaca()));
 
 #ifdef CONFIG_PPC_64S_HASH_MMU
 	if (!radix_enabled())
@@ -812,7 +788,6 @@ static const struct proc_ops lparcfg_proc_ops = {
 static int __init lparcfg_init(void)
 {
 	umode_t mode = 0444;
-	long retval;
 
 	/* Allow writing if we have FW_FEATURE_SPLPAR */
 	if (firmware_has_feature(FW_FEATURE_SPLPAR))
@@ -822,16 +797,6 @@ static int __init lparcfg_init(void)
 		printk(KERN_ERR "Failed to create powerpc/lparcfg\n");
 		return -EIO;
 	}
-
-	/* If this call fails, it would result in APP values
-	 * being wrong for since boot reports of lparstat
-	 */
-	retval = h_pic(&boot_pool_idle_time, NULL);
-
-	if (retval != H_SUCCESS)
-		pr_debug("H_PIC failed during lparcfg init retval: %ld\n",
-			 retval);
-
 	return 0;
 }
 machine_device_initcall(pseries, lparcfg_init);

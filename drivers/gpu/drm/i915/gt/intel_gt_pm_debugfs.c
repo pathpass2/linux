@@ -7,8 +7,6 @@
 #include <linux/seq_file.h>
 #include <linux/string_helpers.h>
 
-#include <drm/drm_print.h>
-
 #include "i915_drv.h"
 #include "i915_reg.h"
 #include "intel_gt.h"
@@ -24,12 +22,12 @@
 #include "intel_rps.h"
 #include "intel_runtime_pm.h"
 #include "intel_uncore.h"
-#include "vlv_iosf_sb.h"
+#include "vlv_sideband.h"
 
 void intel_gt_pm_debugfs_forcewake_user_open(struct intel_gt *gt)
 {
 	atomic_inc(&gt->user_wakeref);
-	intel_gt_pm_get_untracked(gt);
+	intel_gt_pm_get(gt);
 	if (GRAPHICS_VER(gt->i915) >= 6)
 		intel_uncore_forcewake_user_get(gt->uncore);
 }
@@ -38,7 +36,7 @@ void intel_gt_pm_debugfs_forcewake_user_release(struct intel_gt *gt)
 {
 	if (GRAPHICS_VER(gt->i915) >= 6)
 		intel_uncore_forcewake_user_put(gt->uncore);
-	intel_gt_pm_put_untracked(gt);
+	intel_gt_pm_put(gt);
 	atomic_dec(&gt->user_wakeref);
 }
 
@@ -73,8 +71,6 @@ static int fw_domains_show(struct seq_file *m, void *data)
 	struct intel_uncore_forcewake_domain *fw_domain;
 	unsigned int tmp;
 
-	spin_lock_irq(&uncore->lock);
-
 	seq_printf(m, "user.bypass_count = %u\n",
 		   uncore->user_forcewake_count);
 
@@ -82,8 +78,6 @@ static int fw_domains_show(struct seq_file *m, void *data)
 		seq_printf(m, "%s.wake_count = %u\n",
 			   intel_uncore_forcewake_domain_to_str(fw_domain->id),
 			   READ_ONCE(fw_domain->wake_count));
-
-	spin_unlock_irq(&uncore->lock);
 
 	return 0;
 }
@@ -296,6 +290,7 @@ static int mtl_drpc(struct seq_file *m)
 		seq_puts(m, "RC6\n");
 		break;
 	default:
+		MISSING_CASE(REG_FIELD_GET(MTL_CC_MASK, gt_core_status));
 		seq_puts(m, "Unknown\n");
 		break;
 	}
@@ -368,11 +363,12 @@ void intel_gt_pm_frequency_dump(struct intel_gt *gt, struct drm_printer *p)
 		drm_printf(p, "SW control enabled: %s\n",
 			   str_yes_no((rpmodectl & GEN6_RP_MEDIA_MODE_MASK) == GEN6_RP_MEDIA_SW_MODE));
 
-		vlv_iosf_sb_get(&i915->drm, BIT(VLV_IOSF_SB_PUNIT));
-		freq_sts = vlv_iosf_sb_read(&i915->drm, VLV_IOSF_SB_PUNIT, PUNIT_REG_GPU_FREQ_STS);
-		vlv_iosf_sb_put(&i915->drm, BIT(VLV_IOSF_SB_PUNIT));
+		vlv_punit_get(i915);
+		freq_sts = vlv_punit_read(i915, PUNIT_REG_GPU_FREQ_STS);
+		vlv_punit_put(i915);
 
 		drm_printf(p, "PUNIT_REG_GPU_FREQ_STS: 0x%08x\n", freq_sts);
+		drm_printf(p, "DDR freq: %d MHz\n", i915->mem_freq);
 
 		drm_printf(p, "actual GPU freq: %d MHz\n",
 			   intel_gpu_freq(rps, (freq_sts >> 8) & 0xff));
@@ -396,6 +392,10 @@ void intel_gt_pm_frequency_dump(struct intel_gt *gt, struct drm_printer *p)
 	} else {
 		drm_puts(p, "no P-state info available\n");
 	}
+
+	drm_printf(p, "Current CD clock frequency: %d kHz\n", i915->display.cdclk.hw.cdclk);
+	drm_printf(p, "Max CD clock frequency: %d kHz\n", i915->display.cdclk.max_cdclk_freq);
+	drm_printf(p, "Max pixel clock frequency: %d kHz\n", i915->max_dotclk_freq);
 
 	intel_runtime_pm_put(uncore->rpm, wakeref);
 }
@@ -433,7 +433,7 @@ static int llc_show(struct seq_file *m, void *data)
 		max_gpu_freq /= GEN9_FREQ_SCALER;
 	}
 
-	seq_puts(m, "GPU freq (MHz)\tEffective GPU freq (MHz)\tEffective Ring freq (MHz)\n");
+	seq_puts(m, "GPU freq (MHz)\tEffective CPU freq (MHz)\tEffective Ring freq (MHz)\n");
 
 	wakeref = intel_runtime_pm_get(gt->uncore->rpm);
 	for (gpu_freq = min_gpu_freq; gpu_freq <= max_gpu_freq; gpu_freq++) {
@@ -539,10 +539,7 @@ static bool rps_eval(void *data)
 {
 	struct intel_gt *gt = data;
 
-	if (intel_guc_slpc_is_used(gt_to_guc(gt)))
-		return false;
-	else
-		return HAS_RPS(gt->i915);
+	return HAS_RPS(gt->i915);
 }
 
 DEFINE_INTEL_GT_DEBUGFS_ATTRIBUTE(rps_boost);
@@ -588,14 +585,13 @@ DEFINE_SIMPLE_ATTRIBUTE(perf_limit_reasons_fops, perf_limit_reasons_get,
 void intel_gt_pm_debugfs_register(struct intel_gt *gt, struct dentry *root)
 {
 	static const struct intel_gt_debugfs_file files[] = {
-		{ .name = "drpc", .fops = &drpc_fops },
-		{ .name = "frequency", .fops = &frequency_fops },
-		{ .name = "forcewake", .fops = &fw_domains_fops },
-		{ .name = "forcewake_user", .fops = &forcewake_user_fops},
-		{ .name = "llc", .fops = &llc_fops, .eval = llc_eval },
-		{ .name = "rps_boost", .fops = &rps_boost_fops, .eval = rps_eval },
-		{ .name = "perf_limit_reasons", .fops = &perf_limit_reasons_fops,
-		  .eval = perf_limit_reasons_eval },
+		{ "drpc", &drpc_fops, NULL },
+		{ "frequency", &frequency_fops, NULL },
+		{ "forcewake", &fw_domains_fops, NULL },
+		{ "forcewake_user", &forcewake_user_fops, NULL},
+		{ "llc", &llc_fops, llc_eval },
+		{ "rps_boost", &rps_boost_fops, rps_eval },
+		{ "perf_limit_reasons", &perf_limit_reasons_fops, perf_limit_reasons_eval },
 	};
 
 	intel_gt_debugfs_register_files(root, files, ARRAY_SIZE(files), gt);

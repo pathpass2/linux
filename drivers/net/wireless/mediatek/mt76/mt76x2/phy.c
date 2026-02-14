@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (C) 2016 Felix Fietkau <nbd@nbd.name>
  * Copyright (C) 2018 Lorenzo Bianconi <lorenzo.bianconi83@gmail.com>
@@ -280,7 +280,7 @@ void mt76x2_phy_update_channel_gain(struct mt76x02_dev *dev)
 	int low_gain;
 	u32 val;
 
-	dev->cal.avg_rssi_all = mt76_get_min_avg_rssi(&dev->mt76, 0);
+	dev->cal.avg_rssi_all = mt76_get_min_avg_rssi(&dev->mt76, false);
 	if (!dev->cal.avg_rssi_all)
 		dev->cal.avg_rssi_all = -75;
 

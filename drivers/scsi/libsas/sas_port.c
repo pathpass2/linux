@@ -28,7 +28,7 @@ static void sas_resume_port(struct asd_sas_phy *phy)
 	struct domain_device *dev, *n;
 	struct asd_sas_port *port = phy->port;
 	struct sas_ha_struct *sas_ha = phy->ha;
-	struct sas_internal *si = to_sas_internal(sas_ha->shost->transportt);
+	struct sas_internal *si = to_sas_internal(sas_ha->core.shost->transportt);
 
 	if (si->dft->lldd_port_formed)
 		si->dft->lldd_port_formed(phy);
@@ -83,6 +83,7 @@ static void sas_form_port_add_phy(struct asd_sas_port *port,
 		memcpy(port->sas_addr, phy->sas_addr, SAS_ADDR_SIZE);
 
 	if (*(u64 *)port->attached_sas_addr == 0) {
+		port->class = phy->class;
 		memcpy(port->attached_sas_addr, phy->attached_sas_addr,
 		       SAS_ADDR_SIZE);
 		port->iproto = phy->iproto;
@@ -108,12 +109,12 @@ static void sas_form_port(struct asd_sas_phy *phy)
 	struct asd_sas_port *port = phy->port;
 	struct domain_device *port_dev = NULL;
 	struct sas_internal *si =
-		to_sas_internal(sas_ha->shost->transportt);
+		to_sas_internal(sas_ha->core.shost->transportt);
 	unsigned long flags;
 
 	if (port) {
 		if (!phy_is_wideport_member(port, phy))
-			sas_deform_port(phy, false);
+			sas_deform_port(phy, 0);
 		else if (phy->suspended) {
 			phy->suspended = 0;
 			sas_resume_port(phy);
@@ -206,12 +207,12 @@ static void sas_form_port(struct asd_sas_phy *phy)
  * This is called when the physical link to the other phy has been
  * lost (on this phy), in Event thread context. We cannot delay here.
  */
-void sas_deform_port(struct asd_sas_phy *phy, bool gone)
+void sas_deform_port(struct asd_sas_phy *phy, int gone)
 {
 	struct sas_ha_struct *sas_ha = phy->ha;
 	struct asd_sas_port *port = phy->port;
 	struct sas_internal *si =
-		to_sas_internal(sas_ha->shost->transportt);
+		to_sas_internal(sas_ha->core.shost->transportt);
 	struct domain_device *dev;
 	unsigned long flags;
 
@@ -248,6 +249,7 @@ void sas_deform_port(struct asd_sas_phy *phy, bool gone)
 		INIT_LIST_HEAD(&port->phy_list);
 		memset(port->sas_addr, 0, SAS_ADDR_SIZE);
 		memset(port->attached_sas_addr, 0, SAS_ADDR_SIZE);
+		port->class = 0;
 		port->iproto = 0;
 		port->tproto = 0;
 		port->oob_mode = 0;
@@ -301,7 +303,7 @@ void sas_porte_link_reset_err(struct work_struct *work)
 	struct asd_sas_event *ev = to_asd_sas_event(work);
 	struct asd_sas_phy *phy = ev->phy;
 
-	sas_deform_port(phy, true);
+	sas_deform_port(phy, 1);
 }
 
 void sas_porte_timer_event(struct work_struct *work)
@@ -309,7 +311,7 @@ void sas_porte_timer_event(struct work_struct *work)
 	struct asd_sas_event *ev = to_asd_sas_event(work);
 	struct asd_sas_phy *phy = ev->phy;
 
-	sas_deform_port(phy, true);
+	sas_deform_port(phy, 1);
 }
 
 void sas_porte_hard_reset(struct work_struct *work)
@@ -317,7 +319,7 @@ void sas_porte_hard_reset(struct work_struct *work)
 	struct asd_sas_event *ev = to_asd_sas_event(work);
 	struct asd_sas_phy *phy = ev->phy;
 
-	sas_deform_port(phy, true);
+	sas_deform_port(phy, 1);
 }
 
 /* ---------- SAS port registration ---------- */
@@ -358,7 +360,8 @@ void sas_unregister_ports(struct sas_ha_struct *sas_ha)
 
 	for (i = 0; i < sas_ha->num_phys; i++)
 		if (sas_ha->sas_phy[i]->port)
-			sas_deform_port(sas_ha->sas_phy[i], false);
+			sas_deform_port(sas_ha->sas_phy[i], 0);
+
 }
 
 const work_func_t sas_port_event_fns[PORT_NUM_EVENTS] = {

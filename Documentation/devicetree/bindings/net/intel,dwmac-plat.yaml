@@ -19,7 +19,7 @@ select:
     - compatible
 
 allOf:
-  - $ref: snps,dwmac.yaml#
+  - $ref: "snps,dwmac.yaml#"
 
 properties:
   compatible:
@@ -40,12 +40,6 @@ properties:
       - const: stmmaceth
       - const: ptp_ref
       - const: tx_clk
-
-  interrupts:
-    maxItems: 1
-
-  interrupt-names:
-    const: macirq
 
 required:
   - compatible

@@ -5,7 +5,6 @@
  */
 
 #include <linux/clk.h>
-#include <linux/of.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge_connector.h>
@@ -99,7 +98,6 @@ static void tegra_rgb_encoder_disable(struct drm_encoder *encoder)
 
 static void tegra_rgb_encoder_enable(struct drm_encoder *encoder)
 {
-	struct drm_display_mode *mode = &encoder->crtc->state->adjusted_mode;
 	struct tegra_output *output = encoder_to_output(encoder);
 	struct tegra_rgb *rgb = to_rgb(output);
 	u32 value;
@@ -109,19 +107,10 @@ static void tegra_rgb_encoder_enable(struct drm_encoder *encoder)
 	value = DE_SELECT_ACTIVE | DE_CONTROL_NORMAL;
 	tegra_dc_writel(rgb->dc, value, DC_DISP_DATA_ENABLE_OPTIONS);
 
-	/* configure H- and V-sync signal polarities */
+	/* XXX: parameterize? */
 	value = tegra_dc_readl(rgb->dc, DC_COM_PIN_OUTPUT_POLARITY(1));
-
-	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
-		value |= LHS_OUTPUT_POLARITY_LOW;
-	else
-		value &= ~LHS_OUTPUT_POLARITY_LOW;
-
-	if (mode->flags & DRM_MODE_FLAG_NVSYNC)
-		value |= LVS_OUTPUT_POLARITY_LOW;
-	else
-		value &= ~LVS_OUTPUT_POLARITY_LOW;
-
+	value &= ~LVS_OUTPUT_POLARITY_LOW;
+	value &= ~LHS_OUTPUT_POLARITY_LOW;
 	tegra_dc_writel(rgb->dc, value, DC_COM_PIN_OUTPUT_POLARITY(1));
 
 	/* XXX: parameterize? */
@@ -200,11 +189,6 @@ static const struct drm_encoder_helper_funcs tegra_rgb_encoder_helper_funcs = {
 	.atomic_check = tegra_rgb_encoder_atomic_check,
 };
 
-static void tegra_dc_of_node_put(void *data)
-{
-	of_node_put(data);
-}
-
 int tegra_dc_rgb_probe(struct tegra_dc *dc)
 {
 	struct device_node *np;
@@ -212,14 +196,7 @@ int tegra_dc_rgb_probe(struct tegra_dc *dc)
 	int err;
 
 	np = of_get_child_by_name(dc->dev->of_node, "rgb");
-	if (!np)
-		return -ENODEV;
-
-	err = devm_add_action_or_reset(dc->dev, tegra_dc_of_node_put, np);
-	if (err < 0)
-		return err;
-
-	if (!of_device_is_available(np))
+	if (!np || !of_device_is_available(np))
 		return -ENODEV;
 
 	rgb = devm_kzalloc(dc->dev, sizeof(*rgb), GFP_KERNEL);
@@ -237,28 +214,26 @@ int tegra_dc_rgb_probe(struct tegra_dc *dc)
 	rgb->clk = devm_clk_get(dc->dev, NULL);
 	if (IS_ERR(rgb->clk)) {
 		dev_err(dc->dev, "failed to get clock\n");
-		err = PTR_ERR(rgb->clk);
-		goto remove;
+		return PTR_ERR(rgb->clk);
 	}
 
 	rgb->clk_parent = devm_clk_get(dc->dev, "parent");
 	if (IS_ERR(rgb->clk_parent)) {
 		dev_err(dc->dev, "failed to get parent clock\n");
-		err = PTR_ERR(rgb->clk_parent);
-		goto remove;
+		return PTR_ERR(rgb->clk_parent);
 	}
 
 	err = clk_set_parent(rgb->clk, rgb->clk_parent);
 	if (err < 0) {
 		dev_err(dc->dev, "failed to set parent clock: %d\n", err);
-		goto remove;
+		return err;
 	}
 
 	rgb->pll_d_out0 = clk_get_sys(NULL, "pll_d_out0");
 	if (IS_ERR(rgb->pll_d_out0)) {
 		err = PTR_ERR(rgb->pll_d_out0);
 		dev_err(dc->dev, "failed to get pll_d_out0: %d\n", err);
-		goto remove;
+		return err;
 	}
 
 	if (dc->soc->has_pll_d2_out0) {
@@ -266,27 +241,21 @@ int tegra_dc_rgb_probe(struct tegra_dc *dc)
 		if (IS_ERR(rgb->pll_d2_out0)) {
 			err = PTR_ERR(rgb->pll_d2_out0);
 			dev_err(dc->dev, "failed to get pll_d2_out0: %d\n", err);
-			goto put_pll;
+			return err;
 		}
 	}
 
 	dc->rgb = &rgb->output;
 
 	return 0;
-
-put_pll:
-	clk_put(rgb->pll_d_out0);
-remove:
-	tegra_output_remove(&rgb->output);
-	return err;
 }
 
-void tegra_dc_rgb_remove(struct tegra_dc *dc)
+int tegra_dc_rgb_remove(struct tegra_dc *dc)
 {
 	struct tegra_rgb *rgb;
 
 	if (!dc->rgb)
-		return;
+		return 0;
 
 	rgb = to_rgb(dc->rgb);
 	clk_put(rgb->pll_d2_out0);
@@ -294,6 +263,8 @@ void tegra_dc_rgb_remove(struct tegra_dc *dc)
 
 	tegra_output_remove(dc->rgb);
 	dc->rgb = NULL;
+
+	return 0;
 }
 
 int tegra_dc_rgb_init(struct drm_device *drm, struct tegra_dc *dc)

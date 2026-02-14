@@ -31,7 +31,6 @@
 
 #define FRU_EEPROM_MADDR_6      0x60000
 #define FRU_EEPROM_MADDR_8      0x80000
-#define FRU_EEPROM_MADDR_INV    0xFFFFF
 
 static bool is_fru_eeprom_supported(struct amdgpu_device *adev, u32 *fru_addr)
 {
@@ -43,9 +42,8 @@ static bool is_fru_eeprom_supported(struct amdgpu_device *adev, u32 *fru_addr)
 
 	/* The i2c access is blocked on VF
 	 * TODO: Need other way to get the info
-	 * Also, FRU not valid for APU devices.
 	 */
-	if (amdgpu_sriov_vf(adev) || (adev->flags & AMD_IS_APU))
+	if (amdgpu_sriov_vf(adev))
 		return false;
 
 	/* The default I2C EEPROM address of the FRU.
@@ -59,56 +57,40 @@ static bool is_fru_eeprom_supported(struct amdgpu_device *adev, u32 *fru_addr)
 	 * for ease/speed/readability. For now, 2 string comparisons are
 	 * reasonable and not too expensive
 	 */
-	switch (amdgpu_ip_version(adev, MP1_HWIP, 0)) {
-	case IP_VERSION(11, 0, 2):
-		switch (adev->asic_type) {
-		case CHIP_VEGA20:
-			/* D161 and D163 are the VG20 server SKUs */
-			if (atom_ctx && (strnstr(atom_ctx->vbios_pn, "D161",
-						 sizeof(atom_ctx->vbios_pn)) ||
-					 strnstr(atom_ctx->vbios_pn, "D163",
-						 sizeof(atom_ctx->vbios_pn)))) {
-				if (fru_addr)
-					*fru_addr = FRU_EEPROM_MADDR_6;
-				return true;
-			} else {
-				return false;
-			}
-		case CHIP_ARCTURUS:
-		default:
-			return false;
-		}
-	case IP_VERSION(11, 0, 7):
-		if (atom_ctx && strnstr(atom_ctx->vbios_pn, "D603",
-					sizeof(atom_ctx->vbios_pn))) {
-			if (strnstr(atom_ctx->vbios_pn, "D603GLXE",
-				    sizeof(atom_ctx->vbios_pn))) {
-				return false;
-			}
-
+	switch (adev->asic_type) {
+	case CHIP_VEGA20:
+		/* D161 and D163 are the VG20 server SKUs */
+		if (strnstr(atom_ctx->vbios_version, "D161",
+			    sizeof(atom_ctx->vbios_version)) ||
+		    strnstr(atom_ctx->vbios_version, "D163",
+			    sizeof(atom_ctx->vbios_version))) {
 			if (fru_addr)
 				*fru_addr = FRU_EEPROM_MADDR_6;
 			return true;
-
 		} else {
 			return false;
 		}
-	case IP_VERSION(13, 0, 2):
+	case CHIP_ALDEBARAN:
 		/* All Aldebaran SKUs have an FRU */
-		if (atom_ctx && !strnstr(atom_ctx->vbios_pn, "D673",
-					 sizeof(atom_ctx->vbios_pn)))
+		if (!strnstr(atom_ctx->vbios_version, "D673",
+			     sizeof(atom_ctx->vbios_version)))
 			if (fru_addr)
 				*fru_addr = FRU_EEPROM_MADDR_6;
 		return true;
-	case IP_VERSION(13, 0, 6):
-	case IP_VERSION(13, 0, 14):
-			if (fru_addr)
-				*fru_addr = FRU_EEPROM_MADDR_8;
-			return true;
-	case IP_VERSION(13, 0, 12):
-			if (fru_addr)
-				*fru_addr = FRU_EEPROM_MADDR_INV;
-			return true;
+	case CHIP_SIENNA_CICHLID:
+		if (strnstr(atom_ctx->vbios_version, "D603",
+			    sizeof(atom_ctx->vbios_version))) {
+			if (strnstr(atom_ctx->vbios_version, "D603GLXE",
+				    sizeof(atom_ctx->vbios_version))) {
+				return false;
+			} else {
+				if (fru_addr)
+					*fru_addr = FRU_EEPROM_MADDR_6;
+				return true;
+			}
+		} else {
+			return false;
+		}
 	default:
 		return false;
 	}
@@ -116,7 +98,6 @@ static bool is_fru_eeprom_supported(struct amdgpu_device *adev, u32 *fru_addr)
 
 int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 {
-	struct amdgpu_fru_info *fru_info;
 	unsigned char buf[8], *pia;
 	u32 addr, fru_addr;
 	int size, len;
@@ -125,27 +106,9 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 	if (!is_fru_eeprom_supported(adev, &fru_addr))
 		return 0;
 
-	/* FRU data avaialble, but no direct EEPROM access */
-	if (fru_addr == FRU_EEPROM_MADDR_INV)
-		return 0;
-
-	if (!adev->fru_info) {
-		adev->fru_info = kzalloc(sizeof(*adev->fru_info), GFP_KERNEL);
-		if (!adev->fru_info)
-			return -ENOMEM;
-	}
-
-	fru_info = adev->fru_info;
-	/* For Arcturus-and-later, default value of serial_number is unique_id
-	 * so convert it to a 16-digit HEX string for convenience and
-	 * backwards-compatibility.
-	 */
-	sprintf(fru_info->serial, "%llx", adev->unique_id);
-
 	/* If algo exists, it means that the i2c_adapter's initialized */
 	if (!adev->pm.fru_eeprom_i2c_bus || !adev->pm.fru_eeprom_i2c_bus->algo) {
-		dev_warn(adev->dev,
-			 "Cannot access FRU, EEPROM accessor not initialized");
+		DRM_WARN("Cannot access FRU, EEPROM accessor not initialized");
 		return -ENODEV;
 	}
 
@@ -153,22 +116,19 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 	len = amdgpu_eeprom_read(adev->pm.fru_eeprom_i2c_bus, fru_addr, buf,
 				 sizeof(buf));
 	if (len != 8) {
-		dev_err(adev->dev, "Couldn't read the IPMI Common Header: %d",
-			len);
+		DRM_ERROR("Couldn't read the IPMI Common Header: %d", len);
 		return len < 0 ? len : -EIO;
 	}
 
 	if (buf[0] != 1) {
-		dev_err(adev->dev, "Bad IPMI Common Header version: 0x%02x",
-			buf[0]);
+		DRM_ERROR("Bad IPMI Common Header version: 0x%02x", buf[0]);
 		return -EIO;
 	}
 
 	for (csum = 0; len > 0; len--)
 		csum += buf[len - 1];
 	if (csum) {
-		dev_err(adev->dev, "Bad IPMI Common Header checksum: 0x%02x",
-			csum);
+		DRM_ERROR("Bad IPMI Common Header checksum: 0x%02x", csum);
 		return -EIO;
 	}
 
@@ -183,14 +143,12 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 	/* Read the header of the PIA. */
 	len = amdgpu_eeprom_read(adev->pm.fru_eeprom_i2c_bus, addr, buf, 3);
 	if (len != 3) {
-		dev_err(adev->dev,
-			"Couldn't read the Product Info Area header: %d", len);
+		DRM_ERROR("Couldn't read the Product Info Area header: %d", len);
 		return len < 0 ? len : -EIO;
 	}
 
 	if (buf[0] != 1) {
-		dev_err(adev->dev, "Bad IPMI Product Info Area version: 0x%02x",
-			buf[0]);
+		DRM_ERROR("Bad IPMI Product Info Area version: 0x%02x", buf[0]);
 		return -EIO;
 	}
 
@@ -203,49 +161,40 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 	len = amdgpu_eeprom_read(adev->pm.fru_eeprom_i2c_bus, addr, pia, size);
 	if (len != size) {
 		kfree(pia);
-		dev_err(adev->dev, "Couldn't read the Product Info Area: %d",
-			len);
+		DRM_ERROR("Couldn't read the Product Info Area: %d", len);
 		return len < 0 ? len : -EIO;
 	}
 
 	for (csum = 0; size > 0; size--)
 		csum += pia[size - 1];
 	if (csum) {
-		dev_err(adev->dev, "Bad Product Info Area checksum: 0x%02x",
-			csum);
-		kfree(pia);
+		DRM_ERROR("Bad Product Info Area checksum: 0x%02x", csum);
 		return -EIO;
 	}
 
 	/* Now extract useful information from the PIA.
 	 *
-	 * Read Manufacturer Name field whose length is [3].
+	 * Skip the Manufacturer Name at [3] and go directly to
+	 * the Product Name field.
 	 */
-	addr = 3;
+	addr = 3 + 1 + (pia[3] & 0x3F);
 	if (addr + 1 >= len)
 		goto Out;
-	memcpy(fru_info->manufacturer_name, pia + addr + 1,
-	       min_t(size_t, sizeof(fru_info->manufacturer_name),
+	memcpy(adev->product_name, pia + addr + 1,
+	       min_t(size_t,
+		     sizeof(adev->product_name),
 		     pia[addr] & 0x3F));
-	fru_info->manufacturer_name[sizeof(fru_info->manufacturer_name) - 1] =
-		'\0';
-
-	/* Read Product Name field. */
-	addr += 1 + (pia[addr] & 0x3F);
-	if (addr + 1 >= len)
-		goto Out;
-	memcpy(fru_info->product_name, pia + addr + 1,
-	       min_t(size_t, sizeof(fru_info->product_name), pia[addr] & 0x3F));
-	fru_info->product_name[sizeof(fru_info->product_name) - 1] = '\0';
+	adev->product_name[sizeof(adev->product_name) - 1] = '\0';
 
 	/* Go to the Product Part/Model Number field. */
 	addr += 1 + (pia[addr] & 0x3F);
 	if (addr + 1 >= len)
 		goto Out;
-	memcpy(fru_info->product_number, pia + addr + 1,
-	       min_t(size_t, sizeof(fru_info->product_number),
+	memcpy(adev->product_number, pia + addr + 1,
+	       min_t(size_t,
+		     sizeof(adev->product_number),
 		     pia[addr] & 0x3F));
-	fru_info->product_number[sizeof(fru_info->product_number) - 1] = '\0';
+	adev->product_number[sizeof(adev->product_number) - 1] = '\0';
 
 	/* Go to the Product Version field. */
 	addr += 1 + (pia[addr] & 0x3F);
@@ -254,155 +203,11 @@ int amdgpu_fru_get_product_info(struct amdgpu_device *adev)
 	addr += 1 + (pia[addr] & 0x3F);
 	if (addr + 1 >= len)
 		goto Out;
-	memcpy(fru_info->serial, pia + addr + 1,
-	       min_t(size_t, sizeof(fru_info->serial), pia[addr] & 0x3F));
-	fru_info->serial[sizeof(fru_info->serial) - 1] = '\0';
-
-	/* Asset Tag field */
-	addr += 1 + (pia[addr] & 0x3F);
-
-	/* FRU File Id field. This could be 'null'. */
-	addr += 1 + (pia[addr] & 0x3F);
-	if ((addr + 1 >= len) || !(pia[addr] & 0x3F))
-		goto Out;
-	memcpy(fru_info->fru_id, pia + addr + 1,
-	       min_t(size_t, sizeof(fru_info->fru_id), pia[addr] & 0x3F));
-	fru_info->fru_id[sizeof(fru_info->fru_id) - 1] = '\0';
-
+	memcpy(adev->serial, pia + addr + 1, min_t(size_t,
+						   sizeof(adev->serial),
+						   pia[addr] & 0x3F));
+	adev->serial[sizeof(adev->serial) - 1] = '\0';
 Out:
 	kfree(pia);
 	return 0;
-}
-
-/**
- * DOC: product_name
- *
- * The amdgpu driver provides a sysfs API for reporting the product name
- * for the device
- * The file product_name is used for this and returns the product name
- * as returned from the FRU.
- * NOTE: This is only available for certain server cards
- */
-
-static ssize_t amdgpu_fru_product_name_show(struct device *dev,
-					    struct device_attribute *attr,
-					    char *buf)
-{
-	struct drm_device *ddev = dev_get_drvdata(dev);
-	struct amdgpu_device *adev = drm_to_adev(ddev);
-
-	return sysfs_emit(buf, "%s\n", adev->fru_info->product_name);
-}
-
-static DEVICE_ATTR(product_name, 0444, amdgpu_fru_product_name_show, NULL);
-
-/**
- * DOC: product_number
- *
- * The amdgpu driver provides a sysfs API for reporting the part number
- * for the device
- * The file product_number is used for this and returns the part number
- * as returned from the FRU.
- * NOTE: This is only available for certain server cards
- */
-
-static ssize_t amdgpu_fru_product_number_show(struct device *dev,
-					      struct device_attribute *attr,
-					      char *buf)
-{
-	struct drm_device *ddev = dev_get_drvdata(dev);
-	struct amdgpu_device *adev = drm_to_adev(ddev);
-
-	return sysfs_emit(buf, "%s\n", adev->fru_info->product_number);
-}
-
-static DEVICE_ATTR(product_number, 0444, amdgpu_fru_product_number_show, NULL);
-
-/**
- * DOC: serial_number
- *
- * The amdgpu driver provides a sysfs API for reporting the serial number
- * for the device
- * The file serial_number is used for this and returns the serial number
- * as returned from the FRU.
- * NOTE: This is only available for certain server cards
- */
-
-static ssize_t amdgpu_fru_serial_number_show(struct device *dev,
-					     struct device_attribute *attr,
-					     char *buf)
-{
-	struct drm_device *ddev = dev_get_drvdata(dev);
-	struct amdgpu_device *adev = drm_to_adev(ddev);
-
-	return sysfs_emit(buf, "%s\n", adev->fru_info->serial);
-}
-
-static DEVICE_ATTR(serial_number, 0444, amdgpu_fru_serial_number_show, NULL);
-
-/**
- * DOC: fru_id
- *
- * The amdgpu driver provides a sysfs API for reporting FRU File Id
- * for the device.
- * The file fru_id is used for this and returns the File Id value
- * as returned from the FRU.
- * NOTE: This is only available for certain server cards
- */
-
-static ssize_t amdgpu_fru_id_show(struct device *dev,
-				  struct device_attribute *attr, char *buf)
-{
-	struct drm_device *ddev = dev_get_drvdata(dev);
-	struct amdgpu_device *adev = drm_to_adev(ddev);
-
-	return sysfs_emit(buf, "%s\n", adev->fru_info->fru_id);
-}
-
-static DEVICE_ATTR(fru_id, 0444, amdgpu_fru_id_show, NULL);
-
-/**
- * DOC: manufacturer
- *
- * The amdgpu driver provides a sysfs API for reporting manufacturer name from
- * FRU information.
- * The file manufacturer returns the value as returned from the FRU.
- * NOTE: This is only available for certain server cards
- */
-
-static ssize_t amdgpu_fru_manufacturer_name_show(struct device *dev,
-						 struct device_attribute *attr,
-						 char *buf)
-{
-	struct drm_device *ddev = dev_get_drvdata(dev);
-	struct amdgpu_device *adev = drm_to_adev(ddev);
-
-	return sysfs_emit(buf, "%s\n", adev->fru_info->manufacturer_name);
-}
-
-static DEVICE_ATTR(manufacturer, 0444, amdgpu_fru_manufacturer_name_show, NULL);
-
-static const struct attribute *amdgpu_fru_attributes[] = {
-	&dev_attr_product_name.attr,
-	&dev_attr_product_number.attr,
-	&dev_attr_serial_number.attr,
-	&dev_attr_fru_id.attr,
-	&dev_attr_manufacturer.attr,
-	NULL
-};
-
-int amdgpu_fru_sysfs_init(struct amdgpu_device *adev)
-{
-	if (!is_fru_eeprom_supported(adev, NULL) || !adev->fru_info)
-		return 0;
-
-	return sysfs_create_files(&adev->dev->kobj, amdgpu_fru_attributes);
-}
-
-void amdgpu_fru_sysfs_fini(struct amdgpu_device *adev)
-{
-	if (!adev->fru_info)
-		return;
-
-	sysfs_remove_files(&adev->dev->kobj, amdgpu_fru_attributes);
 }

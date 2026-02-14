@@ -13,7 +13,6 @@
 #include <rdma/uverbs_std_types.h>
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/fs.h>
-#include <rdma/ib_ucaps.h>
 #include "mlx5_ib.h"
 #include "devx.h"
 #include "qp.h"
@@ -28,19 +27,6 @@ enum devx_obj_flags {
 	DEVX_OBJ_FLAGS_INDIRECT_MKEY = 1 << 0,
 	DEVX_OBJ_FLAGS_DCT = 1 << 1,
 	DEVX_OBJ_FLAGS_CQ = 1 << 2,
-	DEVX_OBJ_FLAGS_HW_FREED = 1 << 3,
-};
-
-#define MAX_ASYNC_CMDS 8
-
-struct mlx5_async_cmd {
-	struct ib_uobject *uobject;
-	void *in;
-	int in_size;
-	u32 out[MLX5_ST_SZ_DW(general_obj_out_cmd_hdr)];
-	int err;
-	struct mlx5_async_work cb_work;
-	struct completion comp;
 };
 
 struct devx_async_data {
@@ -123,27 +109,7 @@ devx_ufile2uctx(const struct uverbs_attr_bundle *attrs)
 	return to_mucontext(ib_uverbs_get_ucontext(attrs));
 }
 
-static int set_uctx_ucaps(struct mlx5_ib_dev *dev, u64 req_ucaps, u32 *cap)
-{
-	if (UCAP_ENABLED(req_ucaps, RDMA_UCAP_MLX5_CTRL_LOCAL)) {
-		if (MLX5_CAP_GEN(dev->mdev, uctx_cap) & MLX5_UCTX_CAP_RDMA_CTRL)
-			*cap |= MLX5_UCTX_CAP_RDMA_CTRL;
-		else
-			return -EOPNOTSUPP;
-	}
-
-	if (UCAP_ENABLED(req_ucaps, RDMA_UCAP_MLX5_CTRL_OTHER_VHCA)) {
-		if (MLX5_CAP_GEN(dev->mdev, uctx_cap) &
-		    MLX5_UCTX_CAP_RDMA_CTRL_OTHER_VHCA)
-			*cap |= MLX5_UCTX_CAP_RDMA_CTRL_OTHER_VHCA;
-		else
-			return -EOPNOTSUPP;
-	}
-
-	return 0;
-}
-
-int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user, u64 req_ucaps)
+int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user)
 {
 	u32 in[MLX5_ST_SZ_DW(create_uctx_in)] = {};
 	u32 out[MLX5_ST_SZ_DW(create_uctx_out)] = {};
@@ -157,21 +123,13 @@ int mlx5_ib_devx_create(struct mlx5_ib_dev *dev, bool is_user, u64 req_ucaps)
 		return -EINVAL;
 
 	uctx = MLX5_ADDR_OF(create_uctx_in, in, uctx);
-	if (is_user &&
-	    (MLX5_CAP_GEN(dev->mdev, uctx_cap) & MLX5_UCTX_CAP_RAW_TX) &&
-	    rdma_dev_has_raw_cap(&dev->ib_dev))
+	if (is_user && capable(CAP_NET_RAW) &&
+	    (MLX5_CAP_GEN(dev->mdev, uctx_cap) & MLX5_UCTX_CAP_RAW_TX))
 		cap |= MLX5_UCTX_CAP_RAW_TX;
-	if (is_user &&
+	if (is_user && capable(CAP_SYS_RAWIO) &&
 	    (MLX5_CAP_GEN(dev->mdev, uctx_cap) &
-	     MLX5_UCTX_CAP_INTERNAL_DEV_RES) &&
-	    capable(CAP_SYS_RAWIO))
+	     MLX5_UCTX_CAP_INTERNAL_DEV_RES))
 		cap |= MLX5_UCTX_CAP_INTERNAL_DEV_RES;
-
-	if (req_ucaps) {
-		err = set_uctx_ucaps(dev, req_ucaps, &cap);
-		if (err)
-			return err;
-	}
 
 	MLX5_SET(create_uctx_in, in, opcode, MLX5_CMD_OP_CREATE_UCTX);
 	MLX5_SET(uctx, uctx, cap, cap);
@@ -233,7 +191,6 @@ static u16 get_legacy_obj_type(u16 opcode)
 {
 	switch (opcode) {
 	case MLX5_CMD_OP_CREATE_RQ:
-	case MLX5_CMD_OP_CREATE_RMP:
 		return MLX5_EVENT_QUEUE_TYPE_RQ;
 	case MLX5_CMD_OP_CREATE_QP:
 		return MLX5_EVENT_QUEUE_TYPE_QP;
@@ -709,21 +666,7 @@ static bool devx_is_valid_obj_id(struct uverbs_attr_bundle *attrs,
 				      obj_id;
 
 	case MLX5_IB_OBJECT_DEVX_OBJ:
-	{
-		u16 opcode = MLX5_GET(general_obj_in_cmd_hdr, in, opcode);
-		struct devx_obj *devx_uobj = uobj->object;
-
-		if (opcode == MLX5_CMD_OP_QUERY_FLOW_COUNTER &&
-		    devx_uobj->flow_counter_bulk_size) {
-			u64 end;
-
-			end = devx_uobj->obj_id +
-				devx_uobj->flow_counter_bulk_size;
-			return devx_uobj->obj_id <= obj_id && end > obj_id;
-		}
-
-		return devx_uobj->obj_id == obj_id;
-	}
+		return ((struct devx_obj *)uobj->object)->obj_id == obj_id;
 
 	default:
 		return false;
@@ -1045,7 +988,7 @@ static int UVERBS_HANDLER(MLX5_IB_METHOD_DEVX_QUERY_EQN)(
 		return PTR_ERR(c);
 	dev = to_mdev(c->ibucontext.device);
 
-	err = mlx5_comp_eqn_get(dev->mdev, user_vector, &dev_eqn);
+	err = mlx5_vector2eqn(dev->mdev, user_vector, &dev_eqn);
 	if (err < 0)
 		return err;
 
@@ -1225,11 +1168,6 @@ static void devx_obj_build_destroy_cmd(void *in, void *out, void *din,
 			 MLX5_GET(create_flow_table_in,  in, other_vport));
 		MLX5_SET(destroy_flow_table_in, din, vport_number,
 			 MLX5_GET(create_flow_table_in,  in, vport_number));
-		MLX5_SET(destroy_flow_table_in, din, other_eswitch,
-			 MLX5_GET(create_flow_table_in,  in, other_eswitch));
-		MLX5_SET(destroy_flow_table_in, din, eswitch_owner_vhca_id,
-			 MLX5_GET(create_flow_table_in, in,
-				  eswitch_owner_vhca_id));
 		MLX5_SET(destroy_flow_table_in, din, table_type,
 			 MLX5_GET(create_flow_table_in,  in, table_type));
 		MLX5_SET(destroy_flow_table_in, din, table_id, *obj_id);
@@ -1242,11 +1180,6 @@ static void devx_obj_build_destroy_cmd(void *in, void *out, void *din,
 			 MLX5_GET(create_flow_group_in, in, other_vport));
 		MLX5_SET(destroy_flow_group_in, din, vport_number,
 			 MLX5_GET(create_flow_group_in, in, vport_number));
-		MLX5_SET(destroy_flow_group_in, din, other_eswitch,
-			 MLX5_GET(create_flow_group_in, in, other_eswitch));
-		MLX5_SET(destroy_flow_group_in, din, eswitch_owner_vhca_id,
-			 MLX5_GET(create_flow_group_in, in,
-				  eswitch_owner_vhca_id));
 		MLX5_SET(destroy_flow_group_in, din, table_type,
 			 MLX5_GET(create_flow_group_in, in, table_type));
 		MLX5_SET(destroy_flow_group_in, din, table_id,
@@ -1261,10 +1194,6 @@ static void devx_obj_build_destroy_cmd(void *in, void *out, void *din,
 			 MLX5_GET(set_fte_in,  in, other_vport));
 		MLX5_SET(delete_fte_in, din, vport_number,
 			 MLX5_GET(set_fte_in, in, vport_number));
-		MLX5_SET(delete_fte_in, din, other_eswitch,
-			 MLX5_GET(set_fte_in,  in, other_eswitch));
-		MLX5_SET(delete_fte_in, din, eswitch_owner_vhca_id,
-			 MLX5_GET(set_fte_in, in, eswitch_owner_vhca_id));
 		MLX5_SET(delete_fte_in, din, table_type,
 			 MLX5_GET(set_fte_in, in, table_type));
 		MLX5_SET(delete_fte_in, din, table_id,
@@ -1408,10 +1337,6 @@ static int devx_handle_mkey_create(struct mlx5_ib_dev *dev,
 	}
 
 	MLX5_SET(create_mkey_in, in, mkey_umem_valid, 1);
-	/* TPH is not allowed to bypass the regular kernel's verbs flow */
-	MLX5_SET(mkc, mkc, pcie_tph_en, 0);
-	MLX5_SET(mkc, mkc, pcie_tph_steering_tag_index,
-		 MLX5_MKC_PCIE_TPH_NO_STEERING_TAG_INDEX);
 	return 0;
 }
 
@@ -1466,9 +1391,7 @@ static int devx_obj_cleanup(struct ib_uobject *uobject,
 		 */
 		mlx5r_deref_wait_odp_mkey(&obj->mkey);
 
-	if (obj->flags & DEVX_OBJ_FLAGS_HW_FREED)
-		ret = 0;
-	else if (obj->flags & DEVX_OBJ_FLAGS_DCT)
+	if (obj->flags & DEVX_OBJ_FLAGS_DCT)
 		ret = mlx5_core_destroy_dct(obj->ib_dev, &obj->core_dct);
 	else if (obj->flags & DEVX_OBJ_FLAGS_CQ)
 		ret = mlx5_core_destroy_cq(obj->ib_dev->mdev, &obj->core_cq);
@@ -1594,17 +1517,10 @@ static int UVERBS_HANDLER(MLX5_IB_METHOD_DEVX_OBJ_CREATE)(
 		goto obj_free;
 
 	if (opcode == MLX5_CMD_OP_ALLOC_FLOW_COUNTER) {
-		u32 bulk = MLX5_GET(alloc_flow_counter_in,
-				    cmd_in,
-				    flow_counter_bulk_log_size);
-
-		if (bulk)
-			bulk = 1 << bulk;
-		else
-			bulk = 128UL * MLX5_GET(alloc_flow_counter_in,
-						cmd_in,
-						flow_counter_bulk);
-		obj->flow_counter_bulk_size = bulk;
+		u8 bulk = MLX5_GET(alloc_flow_counter_in,
+				   cmd_in,
+				   flow_counter_bulk);
+		obj->flow_counter_bulk_size = 128UL * bulk;
 	}
 
 	uobj->object = obj;
@@ -1977,7 +1893,6 @@ subscribe_event_xa_alloc(struct mlx5_devx_event_table *devx_event_table,
 			/* Level1 is valid for future use, no need to free */
 			return -ENOMEM;
 
-		INIT_LIST_HEAD(&obj_event->obj_sub_list);
 		err = xa_insert(&event->object_ids,
 				key_level2,
 				obj_event,
@@ -1986,6 +1901,7 @@ subscribe_event_xa_alloc(struct mlx5_devx_event_table *devx_event_table,
 			kfree(obj_event);
 			return err;
 		}
+		INIT_LIST_HEAD(&obj_event->obj_sub_list);
 	}
 
 	return 0;
@@ -2077,6 +1993,7 @@ static int UVERBS_HANDLER(MLX5_IB_METHOD_DEVX_SUBSCRIBE_EVENT)(
 	int redirect_fd;
 	bool use_eventfd = false;
 	int num_events;
+	int num_alloc_xa_entries = 0;
 	u16 obj_type = 0;
 	u64 cookie = 0;
 	u32 obj_id = 0;
@@ -2158,6 +2075,7 @@ static int UVERBS_HANDLER(MLX5_IB_METHOD_DEVX_SUBSCRIBE_EVENT)(
 		if (err)
 			goto err;
 
+		num_alloc_xa_entries++;
 		event_sub = kzalloc(sizeof(*event_sub), GFP_KERNEL);
 		if (!event_sub) {
 			err = -ENOMEM;
@@ -2561,7 +2479,7 @@ static void dispatch_event_fd(struct list_head *fd_list,
 
 	list_for_each_entry_rcu(item, fd_list, xa_list) {
 		if (item->eventfd)
-			eventfd_signal(item->eventfd);
+			eventfd_signal(item->eventfd, 1);
 		else
 			deliver_event(item, data);
 	}
@@ -2621,7 +2539,7 @@ int mlx5_ib_devx_init(struct mlx5_ib_dev *dev)
 	struct mlx5_devx_event_table *table = &dev->devx_event_table;
 	int uid;
 
-	uid = mlx5_ib_devx_create(dev, false, 0);
+	uid = mlx5_ib_devx_create(dev, false);
 	if (uid > 0) {
 		dev->devx_whitelist_uid = uid;
 		xa_init(&table->event_xa);
@@ -2656,88 +2574,6 @@ void mlx5_ib_devx_cleanup(struct mlx5_ib_dev *dev)
 
 		mlx5_ib_devx_destroy(dev, dev->devx_whitelist_uid);
 	}
-}
-
-static void devx_async_destroy_cb(int status, struct mlx5_async_work *context)
-{
-	struct mlx5_async_cmd *devx_out = container_of(context,
-					  struct mlx5_async_cmd, cb_work);
-	struct devx_obj *obj = devx_out->uobject->object;
-
-	if (!status)
-		obj->flags |= DEVX_OBJ_FLAGS_HW_FREED;
-
-	complete(&devx_out->comp);
-}
-
-static void devx_async_destroy(struct mlx5_ib_dev *dev,
-			       struct mlx5_async_cmd *cmd)
-{
-	init_completion(&cmd->comp);
-	cmd->err = mlx5_cmd_exec_cb(&dev->async_ctx, cmd->in, cmd->in_size,
-				    &cmd->out, sizeof(cmd->out),
-				    devx_async_destroy_cb, &cmd->cb_work);
-}
-
-static void devx_wait_async_destroy(struct mlx5_async_cmd *cmd)
-{
-	if (!cmd->err)
-		wait_for_completion(&cmd->comp);
-	atomic_set(&cmd->uobject->usecnt, 0);
-}
-
-void mlx5_ib_ufile_hw_cleanup(struct ib_uverbs_file *ufile)
-{
-	struct mlx5_async_cmd *async_cmd;
-	struct ib_ucontext *ucontext = ufile->ucontext;
-	struct ib_device *device = ucontext->device;
-	struct mlx5_ib_dev *dev = to_mdev(device);
-	struct ib_uobject *uobject;
-	struct devx_obj *obj;
-	int head = 0;
-	int tail = 0;
-
-	async_cmd = kcalloc(MAX_ASYNC_CMDS, sizeof(*async_cmd), GFP_KERNEL);
-	if (!async_cmd)
-		return;
-
-	list_for_each_entry(uobject, &ufile->uobjects, list) {
-		WARN_ON(uverbs_try_lock_object(uobject, UVERBS_LOOKUP_WRITE));
-
-		/*
-		 * Currently we only support QP destruction, if other objects
-		 * are to be destroyed need to add type synchronization to the
-		 * cleanup algorithm and handle pre/post FW cleanup for the
-		 * new types if needed.
-		 */
-		if (uobj_get_object_id(uobject) != MLX5_IB_OBJECT_DEVX_OBJ ||
-		    (get_dec_obj_type(uobject->object, MLX5_EVENT_TYPE_MAX) !=
-		     MLX5_OBJ_TYPE_QP)) {
-			atomic_set(&uobject->usecnt, 0);
-			continue;
-		}
-
-		obj = uobject->object;
-
-		async_cmd[tail % MAX_ASYNC_CMDS].in = obj->dinbox;
-		async_cmd[tail % MAX_ASYNC_CMDS].in_size = obj->dinlen;
-		async_cmd[tail % MAX_ASYNC_CMDS].uobject = uobject;
-
-		devx_async_destroy(dev, &async_cmd[tail % MAX_ASYNC_CMDS]);
-		tail++;
-
-		if (tail - head == MAX_ASYNC_CMDS) {
-			devx_wait_async_destroy(&async_cmd[head % MAX_ASYNC_CMDS]);
-			head++;
-		}
-	}
-
-	while (head != tail) {
-		devx_wait_async_destroy(&async_cmd[head % MAX_ASYNC_CMDS]);
-		head++;
-	}
-
-	kfree(async_cmd);
 }
 
 static ssize_t devx_async_cmd_event_read(struct file *filp, char __user *buf,
@@ -2818,6 +2654,7 @@ static const struct file_operations devx_async_cmd_event_fops = {
 	.read	 = devx_async_cmd_event_read,
 	.poll    = devx_async_cmd_event_poll,
 	.release = uverbs_uobject_fd_release,
+	.llseek	 = no_llseek,
 };
 
 static ssize_t devx_async_event_read(struct file *filp, char __user *buf,
@@ -2932,6 +2769,7 @@ static const struct file_operations devx_async_event_fops = {
 	.read	 = devx_async_event_read,
 	.poll    = devx_async_event_poll,
 	.release = uverbs_uobject_fd_release,
+	.llseek	 = no_llseek,
 };
 
 static void devx_async_cmd_event_destroy_uobj(struct ib_uobject *uobj,
@@ -3092,7 +2930,7 @@ DECLARE_UVERBS_NAMED_METHOD(
 	MLX5_IB_METHOD_DEVX_OBJ_MODIFY,
 	UVERBS_ATTR_IDR(MLX5_IB_ATTR_DEVX_OBJ_MODIFY_HANDLE,
 			UVERBS_IDR_ANY_OBJECT,
-			UVERBS_ACCESS_READ,
+			UVERBS_ACCESS_WRITE,
 			UA_MANDATORY),
 	UVERBS_ATTR_PTR_IN(
 		MLX5_IB_ATTR_DEVX_OBJ_MODIFY_CMD_IN,

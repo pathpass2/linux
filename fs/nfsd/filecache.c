@@ -39,7 +39,6 @@
 #include <linux/fsnotify.h>
 #include <linux/seq_file.h>
 #include <linux/rhashtable.h>
-#include <linux/nfslocalio.h>
 
 #include "vfs.h"
 #include "nfsd.h"
@@ -53,19 +52,21 @@
 #define NFSD_FILE_CACHE_UP		     (0)
 
 /* We only care about NFSD_MAY_READ/WRITE for this cache */
-#define NFSD_FILE_MAY_MASK	(NFSD_MAY_READ|NFSD_MAY_WRITE|NFSD_MAY_LOCALIO)
+#define NFSD_FILE_MAY_MASK	(NFSD_MAY_READ|NFSD_MAY_WRITE)
 
 static DEFINE_PER_CPU(unsigned long, nfsd_file_cache_hits);
 static DEFINE_PER_CPU(unsigned long, nfsd_file_acquisitions);
-static DEFINE_PER_CPU(unsigned long, nfsd_file_allocations);
 static DEFINE_PER_CPU(unsigned long, nfsd_file_releases);
 static DEFINE_PER_CPU(unsigned long, nfsd_file_total_age);
 static DEFINE_PER_CPU(unsigned long, nfsd_file_evictions);
 
 struct nfsd_fcache_disposal {
+	struct work_struct work;
 	spinlock_t lock;
 	struct list_head freeme;
 };
+
+static struct workqueue_struct *nfsd_filecache_wq __read_mostly;
 
 static struct kmem_cache		*nfsd_file_slab;
 static struct kmem_cache		*nfsd_file_mark_slab;
@@ -73,8 +74,69 @@ static struct list_lru			nfsd_file_lru;
 static unsigned long			nfsd_file_flags;
 static struct fsnotify_group		*nfsd_file_fsnotify_group;
 static struct delayed_work		nfsd_filecache_laundrette;
-static struct rhltable			nfsd_file_rhltable
+static struct rhashtable		nfsd_file_rhash_tbl
 						____cacheline_aligned_in_smp;
+
+enum nfsd_file_lookup_type {
+	NFSD_FILE_KEY_INODE,
+	NFSD_FILE_KEY_FULL,
+};
+
+struct nfsd_file_lookup_key {
+	struct inode			*inode;
+	struct net			*net;
+	const struct cred		*cred;
+	unsigned char			need;
+	bool				gc;
+	enum nfsd_file_lookup_type	type;
+};
+
+/*
+ * The returned hash value is based solely on the address of an in-code
+ * inode, a pointer to a slab-allocated object. The entropy in such a
+ * pointer is concentrated in its middle bits.
+ */
+static u32 nfsd_file_inode_hash(const struct inode *inode, u32 seed)
+{
+	unsigned long ptr = (unsigned long)inode;
+	u32 k;
+
+	k = ptr >> L1_CACHE_SHIFT;
+	k &= 0x00ffffff;
+	return jhash2(&k, 1, seed);
+}
+
+/**
+ * nfsd_file_key_hashfn - Compute the hash value of a lookup key
+ * @data: key on which to compute the hash value
+ * @len: rhash table's key_len parameter (unused)
+ * @seed: rhash table's random seed of the day
+ *
+ * Return value:
+ *   Computed 32-bit hash value
+ */
+static u32 nfsd_file_key_hashfn(const void *data, u32 len, u32 seed)
+{
+	const struct nfsd_file_lookup_key *key = data;
+
+	return nfsd_file_inode_hash(key->inode, seed);
+}
+
+/**
+ * nfsd_file_obj_hashfn - Compute the hash value of an nfsd_file
+ * @data: object on which to compute the hash value
+ * @len: rhash table's key_len parameter (unused)
+ * @seed: rhash table's random seed of the day
+ *
+ * Return value:
+ *   Computed 32-bit hash value
+ */
+static u32 nfsd_file_obj_hashfn(const void *data, u32 len, u32 seed)
+{
+	const struct nfsd_file *nf = data;
+
+	return nfsd_file_inode_hash(nf->nf_inode, seed);
+}
 
 static bool
 nfsd_match_cred(const struct cred *c1, const struct cred *c2)
@@ -96,16 +158,53 @@ nfsd_match_cred(const struct cred *c1, const struct cred *c2)
 	return true;
 }
 
+/**
+ * nfsd_file_obj_cmpfn - Match a cache item against search criteria
+ * @arg: search criteria
+ * @ptr: cache item to check
+ *
+ * Return values:
+ *   %0 - Item matches search criteria
+ *   %1 - Item does not match search criteria
+ */
+static int nfsd_file_obj_cmpfn(struct rhashtable_compare_arg *arg,
+			       const void *ptr)
+{
+	const struct nfsd_file_lookup_key *key = arg->key;
+	const struct nfsd_file *nf = ptr;
+
+	switch (key->type) {
+	case NFSD_FILE_KEY_INODE:
+		if (nf->nf_inode != key->inode)
+			return 1;
+		break;
+	case NFSD_FILE_KEY_FULL:
+		if (nf->nf_inode != key->inode)
+			return 1;
+		if (nf->nf_may != key->need)
+			return 1;
+		if (nf->nf_net != key->net)
+			return 1;
+		if (!nfsd_match_cred(nf->nf_cred, key->cred))
+			return 1;
+		if (!!test_bit(NFSD_FILE_GC, &nf->nf_flags) != key->gc)
+			return 1;
+		if (test_bit(NFSD_FILE_HASHED, &nf->nf_flags) == 0)
+			return 1;
+		break;
+	}
+	return 0;
+}
+
 static const struct rhashtable_params nfsd_file_rhash_params = {
 	.key_len		= sizeof_field(struct nfsd_file, nf_inode),
 	.key_offset		= offsetof(struct nfsd_file, nf_inode),
-	.head_offset		= offsetof(struct nfsd_file, nf_rlist),
-
-	/*
-	 * Start with a single page hash table to reduce resizing churn
-	 * on light workloads.
-	 */
-	.min_size		= 256,
+	.head_offset		= offsetof(struct nfsd_file, nf_rhash),
+	.hashfn			= nfsd_file_key_hashfn,
+	.obj_hashfn		= nfsd_file_obj_hashfn,
+	.obj_cmpfn		= nfsd_file_obj_cmpfn,
+	/* Reduce resizing churn on light workloads */
+	.min_size		= 512,		/* buckets */
 	.automatic_shrinking	= true,
 };
 
@@ -113,7 +212,7 @@ static void
 nfsd_file_schedule_laundrette(void)
 {
 	if (test_bit(NFSD_FILE_CACHE_UP, &nfsd_file_flags))
-		queue_delayed_work(system_dfl_wq, &nfsd_filecache_laundrette,
+		queue_delayed_work(system_wq, &nfsd_filecache_laundrette,
 				   NFSD_LAUNDRETTE_DELAY);
 }
 
@@ -153,7 +252,7 @@ nfsd_file_mark_put(struct nfsd_file_mark *nfm)
 }
 
 static struct nfsd_file_mark *
-nfsd_file_mark_find_or_create(struct inode *inode)
+nfsd_file_mark_find_or_create(struct nfsd_file *nf, struct inode *inode)
 {
 	int			err;
 	struct fsnotify_mark	*mark;
@@ -161,8 +260,8 @@ nfsd_file_mark_find_or_create(struct inode *inode)
 
 	do {
 		fsnotify_group_lock(nfsd_file_fsnotify_group);
-		mark = fsnotify_find_inode_mark(inode,
-						nfsd_file_fsnotify_group);
+		mark = fsnotify_find_mark(&inode->i_fsnotify_marks,
+					  nfsd_file_fsnotify_group);
 		if (mark) {
 			nfm = nfsd_file_mark_get(container_of(mark,
 						 struct nfsd_file_mark,
@@ -208,32 +307,27 @@ nfsd_file_mark_find_or_create(struct inode *inode)
 }
 
 static struct nfsd_file *
-nfsd_file_alloc(struct net *net, struct inode *inode, unsigned char need,
-		bool want_gc)
+nfsd_file_alloc(struct nfsd_file_lookup_key *key, unsigned int may)
 {
 	struct nfsd_file *nf;
 
 	nf = kmem_cache_alloc(nfsd_file_slab, GFP_KERNEL);
-	if (unlikely(!nf))
-		return NULL;
-
-	this_cpu_inc(nfsd_file_allocations);
-	INIT_LIST_HEAD(&nf->nf_lru);
-	INIT_LIST_HEAD(&nf->nf_gc);
-	nf->nf_birthtime = ktime_get();
-	nf->nf_file = NULL;
-	nf->nf_cred = get_current_cred();
-	nf->nf_net = net;
-	nf->nf_flags = want_gc ?
-		BIT(NFSD_FILE_HASHED) | BIT(NFSD_FILE_PENDING) | BIT(NFSD_FILE_GC) :
-		BIT(NFSD_FILE_HASHED) | BIT(NFSD_FILE_PENDING);
-	nf->nf_inode = inode;
-	refcount_set(&nf->nf_ref, 1);
-	nf->nf_may = need;
-	nf->nf_mark = NULL;
-	nf->nf_dio_mem_align = 0;
-	nf->nf_dio_offset_align = 0;
-	nf->nf_dio_read_offset_align = 0;
+	if (nf) {
+		INIT_LIST_HEAD(&nf->nf_lru);
+		nf->nf_birthtime = ktime_get();
+		nf->nf_file = NULL;
+		nf->nf_cred = get_current_cred();
+		nf->nf_net = key->net;
+		nf->nf_flags = 0;
+		__set_bit(NFSD_FILE_HASHED, &nf->nf_flags);
+		__set_bit(NFSD_FILE_PENDING, &nf->nf_flags);
+		if (key->gc)
+			__set_bit(NFSD_FILE_GC, &nf->nf_flags);
+		nf->nf_inode = key->inode;
+		refcount_set(&nf->nf_ref, 1);
+		nf->nf_may = key->need;
+		nf->nf_mark = NULL;
+	}
 	return nf;
 }
 
@@ -258,8 +352,8 @@ static void
 nfsd_file_hash_remove(struct nfsd_file *nf)
 {
 	trace_nfsd_file_unhash(nf);
-	rhltable_remove(&nfsd_file_rhltable, &nf->nf_rlist,
-			nfsd_file_rhash_params);
+	rhashtable_remove_fast(&nfsd_file_rhash_tbl, &nf->nf_rhash,
+			       nfsd_file_rhash_params);
 }
 
 static bool
@@ -286,8 +380,10 @@ nfsd_file_free(struct nfsd_file *nf)
 	if (nf->nf_mark)
 		nfsd_file_mark_put(nf->nf_mark);
 	if (nf->nf_file) {
+		get_file(nf->nf_file);
+		filp_close(nf->nf_file, NULL);
 		nfsd_file_check_write_error(nf);
-		nfsd_filp_close(nf->nf_file);
+		fput(nf->nf_file);
 	}
 
 	/*
@@ -306,35 +402,26 @@ nfsd_file_check_writeback(struct nfsd_file *nf)
 	struct file *file = nf->nf_file;
 	struct address_space *mapping;
 
-	/* File not open for write? */
-	if (!(file->f_mode & FMODE_WRITE))
+	if (!file || !(file->f_mode & FMODE_WRITE))
 		return false;
-
-	/*
-	 * Some filesystems (e.g. NFS) flush all dirty data on close.
-	 * On others, there is no need to wait for writeback.
-	 */
-	if (!(file_inode(file)->i_sb->s_export_op->flags & EXPORT_OP_FLUSH_ON_CLOSE))
-		return false;
-
 	mapping = file->f_mapping;
 	return mapping_tagged(mapping, PAGECACHE_TAG_DIRTY) ||
 		mapping_tagged(mapping, PAGECACHE_TAG_WRITEBACK);
 }
 
-static void nfsd_file_lru_add(struct nfsd_file *nf)
+static bool nfsd_file_lru_add(struct nfsd_file *nf)
 {
-	refcount_inc(&nf->nf_ref);
-	if (list_lru_add_obj(&nfsd_file_lru, &nf->nf_lru))
+	set_bit(NFSD_FILE_REFERENCED, &nf->nf_flags);
+	if (list_lru_add(&nfsd_file_lru, &nf->nf_lru)) {
 		trace_nfsd_file_lru_add(nf);
-	else
-		WARN_ON(1);
-	nfsd_file_schedule_laundrette();
+		return true;
+	}
+	return false;
 }
 
 static bool nfsd_file_lru_remove(struct nfsd_file *nf)
 {
-	if (list_lru_del_obj(&nfsd_file_lru, &nf->nf_lru)) {
+	if (list_lru_del(&nfsd_file_lru, &nf->nf_lru)) {
 		trace_nfsd_file_lru_del(nf);
 		return true;
 	}
@@ -365,45 +452,32 @@ nfsd_file_put(struct nfsd_file *nf)
 
 	if (test_bit(NFSD_FILE_GC, &nf->nf_flags) &&
 	    test_bit(NFSD_FILE_HASHED, &nf->nf_flags)) {
-		set_bit(NFSD_FILE_REFERENCED, &nf->nf_flags);
-		set_bit(NFSD_FILE_RECENT, &nf->nf_flags);
-	}
+		/*
+		 * If this is the last reference (nf_ref == 1), then try to
+		 * transfer it to the LRU.
+		 */
+		if (refcount_dec_not_one(&nf->nf_ref))
+			return;
 
+		/* Try to add it to the LRU.  If that fails, decrement. */
+		if (nfsd_file_lru_add(nf)) {
+			/* If it's still hashed, we're done */
+			if (test_bit(NFSD_FILE_HASHED, &nf->nf_flags)) {
+				nfsd_file_schedule_laundrette();
+				return;
+			}
+
+			/*
+			 * We're racing with unhashing, so try to remove it from
+			 * the LRU. If removal fails, then someone else already
+			 * has our reference.
+			 */
+			if (!nfsd_file_lru_remove(nf))
+				return;
+		}
+	}
 	if (refcount_dec_and_test(&nf->nf_ref))
 		nfsd_file_free(nf);
-}
-
-/**
- * nfsd_file_put_local - put nfsd_file reference and arm nfsd_net_put in caller
- * @pnf: nfsd_file of which to put the reference
- *
- * First save the associated net to return to caller, then put
- * the reference of the nfsd_file.
- */
-struct net *
-nfsd_file_put_local(struct nfsd_file __rcu **pnf)
-{
-	struct nfsd_file *nf;
-	struct net *net = NULL;
-
-	nf = unrcu_pointer(xchg(pnf, NULL));
-	if (nf) {
-		net = nf->nf_net;
-		nfsd_file_put(nf);
-	}
-	return net;
-}
-
-/**
- * nfsd_file_file - get the backing file of an nfsd_file
- * @nf: nfsd_file of which to access the backing file.
- *
- * Return backing file for @nf.
- */
-struct file *
-nfsd_file_file(struct nfsd_file *nf)
-{
-	return nf->nf_file;
 }
 
 static void
@@ -412,71 +486,55 @@ nfsd_file_dispose_list(struct list_head *dispose)
 	struct nfsd_file *nf;
 
 	while (!list_empty(dispose)) {
-		nf = list_first_entry(dispose, struct nfsd_file, nf_gc);
-		list_del_init(&nf->nf_gc);
+		nf = list_first_entry(dispose, struct nfsd_file, nf_lru);
+		list_del_init(&nf->nf_lru);
 		nfsd_file_free(nf);
 	}
 }
 
-/**
- * nfsd_file_dispose_list_delayed - move list of dead files to net's freeme list
- * @dispose: list of nfsd_files to be disposed
- *
- * Transfers each file to the "freeme" list for its nfsd_net, to eventually
- * be disposed of by the per-net garbage collector.
- */
 static void
-nfsd_file_dispose_list_delayed(struct list_head *dispose)
+nfsd_file_list_remove_disposal(struct list_head *dst,
+		struct nfsd_fcache_disposal *l)
 {
-	while(!list_empty(dispose)) {
-		struct nfsd_file *nf = list_first_entry(dispose,
-						struct nfsd_file, nf_gc);
-		struct nfsd_net *nn = net_generic(nf->nf_net, nfsd_net_id);
-		struct nfsd_fcache_disposal *l = nn->fcache_disposal;
-		struct svc_serv *serv;
+	spin_lock(&l->lock);
+	list_splice_init(&l->freeme, dst);
+	spin_unlock(&l->lock);
+}
 
-		spin_lock(&l->lock);
-		list_move_tail(&nf->nf_gc, &l->freeme);
-		spin_unlock(&l->lock);
+static void
+nfsd_file_list_add_disposal(struct list_head *files, struct net *net)
+{
+	struct nfsd_net *nn = net_generic(net, nfsd_net_id);
+	struct nfsd_fcache_disposal *l = nn->fcache_disposal;
 
-		/*
-		 * The filecache laundrette is shut down after the
-		 * nn->nfsd_serv pointer is cleared, but before the
-		 * svc_serv is freed.
-		 */
-		serv = nn->nfsd_serv;
-		if (serv)
-			svc_wake_up(serv);
+	spin_lock(&l->lock);
+	list_splice_tail_init(files, &l->freeme);
+	spin_unlock(&l->lock);
+	queue_work(nfsd_filecache_wq, &l->work);
+}
+
+static void
+nfsd_file_list_add_pernet(struct list_head *dst, struct list_head *src,
+		struct net *net)
+{
+	struct nfsd_file *nf, *tmp;
+
+	list_for_each_entry_safe(nf, tmp, src, nf_lru) {
+		if (nf->nf_net == net)
+			list_move_tail(&nf->nf_lru, dst);
 	}
 }
 
-/**
- * nfsd_file_net_dispose - deal with nfsd_files waiting to be disposed.
- * @nn: nfsd_net in which to find files to be disposed.
- *
- * When files held open for nfsv3 are removed from the filecache, whether
- * due to memory pressure or garbage collection, they are queued to
- * a per-net-ns queue.  This function completes the disposal, either
- * directly or by waking another nfsd thread to help with the work.
- */
-void nfsd_file_net_dispose(struct nfsd_net *nn)
+static void
+nfsd_file_dispose_list_delayed(struct list_head *dispose)
 {
-	struct nfsd_fcache_disposal *l = nn->fcache_disposal;
+	LIST_HEAD(list);
+	struct nfsd_file *nf;
 
-	if (!list_empty(&l->freeme)) {
-		LIST_HEAD(dispose);
-		int i;
-
-		spin_lock(&l->lock);
-		for (i = 0; i < 8 && !list_empty(&l->freeme); i++)
-			list_move(l->freeme.next, &dispose);
-		spin_unlock(&l->lock);
-		if (!list_empty(&l->freeme))
-			/* Wake up another thread to share the work
-			 * *before* doing any actual disposing.
-			 */
-			svc_wake_up(nn->nfsd_serv);
-		nfsd_file_dispose_list(&dispose);
+	while(!list_empty(dispose)) {
+		nf = list_first_entry(dispose, struct nfsd_file, nf_lru);
+		nfsd_file_list_add_pernet(&list, dispose, nf->nf_net);
+		nfsd_file_list_add_disposal(&list, nf->nf_net);
 	}
 }
 
@@ -484,6 +542,7 @@ void nfsd_file_net_dispose(struct nfsd_net *nn)
  * nfsd_file_lru_cb - Examine an entry on the LRU list
  * @item: LRU entry to examine
  * @lru: controlling LRU
+ * @lock: LRU list lock (unused)
  * @arg: dispose list
  *
  * Return values:
@@ -493,7 +552,9 @@ void nfsd_file_net_dispose(struct nfsd_net *nn)
  */
 static enum lru_status
 nfsd_file_lru_cb(struct list_head *item, struct list_lru_one *lru,
-		 void *arg)
+		 spinlock_t *lock, void *arg)
+	__releases(lock)
+	__acquires(lock)
 {
 	struct list_head *head = arg;
 	struct nfsd_file *nf = list_entry(item, struct nfsd_file, nf_lru);
@@ -517,71 +578,31 @@ nfsd_file_lru_cb(struct list_head *item, struct list_lru_one *lru,
 	}
 
 	/*
-	 * Put the reference held on behalf of the LRU if it is the last
-	 * reference, else rotate.
+	 * Put the reference held on behalf of the LRU. If it wasn't the last
+	 * one, then just remove it from the LRU and ignore it.
 	 */
-	if (!refcount_dec_if_one(&nf->nf_ref)) {
+	if (!refcount_dec_and_test(&nf->nf_ref)) {
 		trace_nfsd_file_gc_in_use(nf);
-		return LRU_ROTATE;
+		list_lru_isolate(lru, &nf->nf_lru);
+		return LRU_REMOVED;
 	}
 
 	/* Refcount went to zero. Unhash it and queue it to the dispose list */
 	nfsd_file_unhash(nf);
-	list_lru_isolate(lru, &nf->nf_lru);
-	list_add(&nf->nf_gc, head);
+	list_lru_isolate_move(lru, &nf->nf_lru, head);
 	this_cpu_inc(nfsd_file_evictions);
 	trace_nfsd_file_gc_disposed(nf);
 	return LRU_REMOVED;
 }
 
-static enum lru_status
-nfsd_file_gc_cb(struct list_head *item, struct list_lru_one *lru,
-		 void *arg)
-{
-	struct nfsd_file *nf = list_entry(item, struct nfsd_file, nf_lru);
-
-	if (test_and_clear_bit(NFSD_FILE_RECENT, &nf->nf_flags)) {
-		/*
-		 * "REFERENCED" really means "should be at the end of the
-		 * LRU. As we are putting it there we can clear the flag.
-		 */
-		clear_bit(NFSD_FILE_REFERENCED, &nf->nf_flags);
-		trace_nfsd_file_gc_aged(nf);
-		return LRU_ROTATE;
-	}
-	return nfsd_file_lru_cb(item, lru, arg);
-}
-
-/* If the shrinker runs between calls to list_lru_walk_node() in
- * nfsd_file_gc(), the "remaining" count will be wrong.  This could
- * result in premature freeing of some files.  This may not matter much
- * but is easy to fix with this spinlock which temporarily disables
- * the shrinker.
- */
-static DEFINE_SPINLOCK(nfsd_gc_lock);
 static void
 nfsd_file_gc(void)
 {
-	unsigned long ret = 0;
 	LIST_HEAD(dispose);
-	int nid;
+	unsigned long ret;
 
-	spin_lock(&nfsd_gc_lock);
-	for_each_node_state(nid, N_NORMAL_MEMORY) {
-		unsigned long remaining = list_lru_count_node(&nfsd_file_lru, nid);
-
-		while (remaining > 0) {
-			unsigned long nr = min(remaining, NFSD_FILE_GC_BATCH);
-
-			remaining -= nr;
-			ret += list_lru_walk_node(&nfsd_file_lru, nid, nfsd_file_gc_cb,
-						  &dispose, &nr);
-			if (nr)
-				/* walk aborted early */
-				remaining = 0;
-		}
-	}
-	spin_unlock(&nfsd_gc_lock);
+	ret = list_lru_walk(&nfsd_file_lru, nfsd_file_lru_cb,
+			    &dispose, list_lru_count(&nfsd_file_lru));
 	trace_nfsd_file_gc_removed(ret, list_lru_count(&nfsd_file_lru));
 	nfsd_file_dispose_list_delayed(&dispose);
 }
@@ -589,9 +610,9 @@ nfsd_file_gc(void)
 static void
 nfsd_file_gc_worker(struct work_struct *work)
 {
+	nfsd_file_gc();
 	if (list_lru_count(&nfsd_file_lru))
-		nfsd_file_gc();
-	nfsd_file_schedule_laundrette();
+		nfsd_file_schedule_laundrette();
 }
 
 static unsigned long
@@ -606,18 +627,18 @@ nfsd_file_lru_scan(struct shrinker *s, struct shrink_control *sc)
 	LIST_HEAD(dispose);
 	unsigned long ret;
 
-	if (!spin_trylock(&nfsd_gc_lock))
-		return SHRINK_STOP;
-
 	ret = list_lru_shrink_walk(&nfsd_file_lru, sc,
 				   nfsd_file_lru_cb, &dispose);
-	spin_unlock(&nfsd_gc_lock);
 	trace_nfsd_file_shrinker_removed(ret, list_lru_count(&nfsd_file_lru));
 	nfsd_file_dispose_list_delayed(&dispose);
 	return ret;
 }
 
-static struct shrinker *nfsd_file_shrinker;
+static struct shrinker	nfsd_file_shrinker = {
+	.scan_objects = nfsd_file_lru_scan,
+	.count_objects = nfsd_file_lru_count,
+	.seeks = 1,
+};
 
 /**
  * nfsd_file_cond_queue - conditionally unhash and queue a nfsd_file
@@ -647,7 +668,7 @@ nfsd_file_cond_queue(struct nfsd_file *nf, struct list_head *dispose)
 
 	/* If refcount goes to 0, then put on the dispose list */
 	if (refcount_sub_and_test(decrement, &nf->nf_ref)) {
-		list_add(&nf->nf_gc, dispose);
+		list_add(&nf->nf_lru, dispose);
 		trace_nfsd_file_closing(nf);
 	}
 }
@@ -657,8 +678,8 @@ nfsd_file_cond_queue(struct nfsd_file *nf, struct list_head *dispose)
  * @inode:   inode on which to close out nfsd_files
  * @dispose: list on which to gather nfsd_files to close out
  *
- * An nfsd_file represents a struct file being held open on behalf of nfsd.
- * An open file however can block other activity (such as leases), or cause
+ * An nfsd_file represents a struct file being held open on behalf of nfsd. An
+ * open file however can block other activity (such as leases), or cause
  * undesirable behavior (e.g. spurious silly-renames when reexporting NFS).
  *
  * This function is intended to find open nfsd_files when this sort of
@@ -671,17 +692,20 @@ nfsd_file_cond_queue(struct nfsd_file *nf, struct list_head *dispose)
 static void
 nfsd_file_queue_for_close(struct inode *inode, struct list_head *dispose)
 {
-	struct rhlist_head *tmp, *list;
+	struct nfsd_file_lookup_key key = {
+		.type	= NFSD_FILE_KEY_INODE,
+		.inode	= inode,
+	};
 	struct nfsd_file *nf;
 
 	rcu_read_lock();
-	list = rhltable_lookup(&nfsd_file_rhltable, &inode,
-			       nfsd_file_rhash_params);
-	rhl_for_each_entry_rcu(nf, tmp, list, nf_rlist) {
-		if (!test_bit(NFSD_FILE_GC, &nf->nf_flags))
-			continue;
+	do {
+		nf = rhashtable_lookup(&nfsd_file_rhash_tbl, &key,
+				       nfsd_file_rhash_params);
+		if (!nf)
+			break;
 		nfsd_file_cond_queue(nf, dispose);
-	}
+	} while (1);
 	rcu_read_unlock();
 }
 
@@ -716,23 +740,47 @@ nfsd_file_close_inode(struct inode *inode)
 void
 nfsd_file_close_inode_sync(struct inode *inode)
 {
+	struct nfsd_file *nf;
 	LIST_HEAD(dispose);
 
 	trace_nfsd_file_close(inode);
 
 	nfsd_file_queue_for_close(inode, &dispose);
-	nfsd_file_dispose_list(&dispose);
+	while (!list_empty(&dispose)) {
+		nf = list_first_entry(&dispose, struct nfsd_file, nf_lru);
+		list_del_init(&nf->nf_lru);
+		nfsd_file_free(nf);
+	}
+	flush_delayed_fput();
+}
+
+/**
+ * nfsd_file_delayed_close - close unused nfsd_files
+ * @work: dummy
+ *
+ * Walk the LRU list and destroy any entries that have not been used since
+ * the last scan.
+ */
+static void
+nfsd_file_delayed_close(struct work_struct *work)
+{
+	LIST_HEAD(head);
+	struct nfsd_fcache_disposal *l = container_of(work,
+			struct nfsd_fcache_disposal, work);
+
+	nfsd_file_list_remove_disposal(&head, l);
+	nfsd_file_dispose_list(&head);
 }
 
 static int
 nfsd_file_lease_notifier_call(struct notifier_block *nb, unsigned long arg,
 			    void *data)
 {
-	struct file_lease *fl = data;
+	struct file_lock *fl = data;
 
 	/* Only close files for F_SETLEASE leases */
-	if (fl->c.flc_flags & FL_LEASE)
-		nfsd_file_close_inode(file_inode(fl->c.flc_file));
+	if (fl->fl_flags & FL_LEASE)
+		nfsd_file_close_inode(file_inode(fl->fl_file));
 	return 0;
 }
 
@@ -781,22 +829,29 @@ nfsd_file_cache_init(void)
 	if (test_and_set_bit(NFSD_FILE_CACHE_UP, &nfsd_file_flags) == 1)
 		return 0;
 
-	ret = rhltable_init(&nfsd_file_rhltable, &nfsd_file_rhash_params);
+	ret = rhashtable_init(&nfsd_file_rhash_tbl, &nfsd_file_rhash_params);
 	if (ret)
-		goto out;
+		return ret;
 
 	ret = -ENOMEM;
-	nfsd_file_slab = KMEM_CACHE(nfsd_file, 0);
+	nfsd_filecache_wq = alloc_workqueue("nfsd_filecache", 0, 0);
+	if (!nfsd_filecache_wq)
+		goto out;
+
+	nfsd_file_slab = kmem_cache_create("nfsd_file",
+				sizeof(struct nfsd_file), 0, 0, NULL);
 	if (!nfsd_file_slab) {
 		pr_err("nfsd: unable to create nfsd_file_slab\n");
 		goto out_err;
 	}
 
-	nfsd_file_mark_slab = KMEM_CACHE(nfsd_file_mark, 0);
+	nfsd_file_mark_slab = kmem_cache_create("nfsd_file_mark",
+					sizeof(struct nfsd_file_mark), 0, 0, NULL);
 	if (!nfsd_file_mark_slab) {
 		pr_err("nfsd: unable to create nfsd_file_mark_slab\n");
 		goto out_err;
 	}
+
 
 	ret = list_lru_init(&nfsd_file_lru);
 	if (ret) {
@@ -804,18 +859,11 @@ nfsd_file_cache_init(void)
 		goto out_err;
 	}
 
-	nfsd_file_shrinker = shrinker_alloc(0, "nfsd-filecache");
-	if (!nfsd_file_shrinker) {
-		ret = -ENOMEM;
-		pr_err("nfsd: failed to allocate nfsd_file_shrinker\n");
+	ret = register_shrinker(&nfsd_file_shrinker, "nfsd-filecache");
+	if (ret) {
+		pr_err("nfsd: failed to register nfsd_file_shrinker: %d\n", ret);
 		goto out_lru;
 	}
-
-	nfsd_file_shrinker->count_objects = nfsd_file_lru_count;
-	nfsd_file_shrinker->scan_objects = nfsd_file_lru_scan;
-	nfsd_file_shrinker->seeks = 1;
-
-	shrinker_register(nfsd_file_shrinker);
 
 	ret = lease_register_notifier(&nfsd_file_lease_notifier);
 	if (ret) {
@@ -824,7 +872,7 @@ nfsd_file_cache_init(void)
 	}
 
 	nfsd_file_fsnotify_group = fsnotify_alloc_group(&nfsd_file_fsnotify_ops,
-							0);
+							FSNOTIFY_GROUP_NOFS);
 	if (IS_ERR(nfsd_file_fsnotify_group)) {
 		pr_err("nfsd: unable to create fsnotify group: %ld\n",
 			PTR_ERR(nfsd_file_fsnotify_group));
@@ -835,13 +883,11 @@ nfsd_file_cache_init(void)
 
 	INIT_DELAYED_WORK(&nfsd_filecache_laundrette, nfsd_file_gc_worker);
 out:
-	if (ret)
-		clear_bit(NFSD_FILE_CACHE_UP, &nfsd_file_flags);
 	return ret;
 out_notifier:
 	lease_unregister_notifier(&nfsd_file_lease_notifier);
 out_shrinker:
-	shrinker_free(nfsd_file_shrinker);
+	unregister_shrinker(&nfsd_file_shrinker);
 out_lru:
 	list_lru_destroy(&nfsd_file_lru);
 out_err:
@@ -849,7 +895,9 @@ out_err:
 	nfsd_file_slab = NULL;
 	kmem_cache_destroy(nfsd_file_mark_slab);
 	nfsd_file_mark_slab = NULL;
-	rhltable_destroy(&nfsd_file_rhltable);
+	destroy_workqueue(nfsd_filecache_wq);
+	nfsd_filecache_wq = NULL;
+	rhashtable_destroy(&nfsd_file_rhash_tbl);
 	goto out;
 }
 
@@ -858,8 +906,7 @@ out_err:
  * @net: net-namespace to shut down the cache (may be NULL)
  *
  * Walk the nfsd_file cache and close out any that match @net. If @net is NULL,
- * then close out everything. Called when an nfsd instance is being shut down,
- * and when the exports table is flushed.
+ * then close out everything. Called when an nfsd instance is being shut down.
  */
 static void
 __nfsd_file_cache_purge(struct net *net)
@@ -868,15 +915,7 @@ __nfsd_file_cache_purge(struct net *net)
 	struct nfsd_file *nf;
 	LIST_HEAD(dispose);
 
-#if IS_ENABLED(CONFIG_NFS_LOCALIO)
-	if (net) {
-		struct nfsd_net *nn = net_generic(net, nfsd_net_id);
-		nfs_localio_invalidate_clients(&nn->local_clients,
-					       &nn->local_clients_lock);
-	}
-#endif
-
-	rhltable_walk_enter(&nfsd_file_rhltable, &iter);
+	rhashtable_walk_enter(&nfsd_file_rhash_tbl, &iter);
 	do {
 		rhashtable_walk_start(&iter);
 
@@ -902,6 +941,7 @@ nfsd_alloc_fcache_disposal(void)
 	l = kmalloc(sizeof(*l), GFP_KERNEL);
 	if (!l)
 		return NULL;
+	INIT_WORK(&l->work, nfsd_file_delayed_close);
 	spin_lock_init(&l->lock);
 	INIT_LIST_HEAD(&l->freeme);
 	return l;
@@ -910,6 +950,7 @@ nfsd_alloc_fcache_disposal(void)
 static void
 nfsd_free_fcache_disposal(struct nfsd_fcache_disposal *l)
 {
+	cancel_work_sync(&l->work);
 	nfsd_file_dispose_list(&l->freeme);
 	kfree(l);
 }
@@ -962,7 +1003,7 @@ nfsd_file_cache_shutdown(void)
 		return;
 
 	lease_unregister_notifier(&nfsd_file_lease_notifier);
-	shrinker_free(nfsd_file_shrinker);
+	unregister_shrinker(&nfsd_file_shrinker);
 	/*
 	 * make sure all callers of nfsd_file_lru_cb are done before
 	 * calling nfsd_file_cache_purge
@@ -978,45 +1019,17 @@ nfsd_file_cache_shutdown(void)
 	fsnotify_wait_marks_destroyed();
 	kmem_cache_destroy(nfsd_file_mark_slab);
 	nfsd_file_mark_slab = NULL;
-	rhltable_destroy(&nfsd_file_rhltable);
+	destroy_workqueue(nfsd_filecache_wq);
+	nfsd_filecache_wq = NULL;
+	rhashtable_destroy(&nfsd_file_rhash_tbl);
 
 	for_each_possible_cpu(i) {
 		per_cpu(nfsd_file_cache_hits, i) = 0;
 		per_cpu(nfsd_file_acquisitions, i) = 0;
-		per_cpu(nfsd_file_allocations, i) = 0;
 		per_cpu(nfsd_file_releases, i) = 0;
 		per_cpu(nfsd_file_total_age, i) = 0;
 		per_cpu(nfsd_file_evictions, i) = 0;
 	}
-}
-
-static struct nfsd_file *
-nfsd_file_lookup_locked(const struct net *net, const struct cred *cred,
-			struct inode *inode, unsigned char need,
-			bool want_gc)
-{
-	struct rhlist_head *tmp, *list;
-	struct nfsd_file *nf;
-
-	list = rhltable_lookup(&nfsd_file_rhltable, &inode,
-			       nfsd_file_rhash_params);
-	rhl_for_each_entry_rcu(nf, tmp, list, nf_rlist) {
-		if (nf->nf_may != need)
-			continue;
-		if (nf->nf_net != net)
-			continue;
-		if (!nfsd_match_cred(nf->nf_cred, cred))
-			continue;
-		if (test_bit(NFSD_FILE_GC, &nf->nf_flags) != want_gc)
-			continue;
-		if (test_bit(NFSD_FILE_HASHED, &nf->nf_flags) == 0)
-			continue;
-
-		if (!nfsd_file_get(nf))
-			continue;
-		return nf;
-	}
-	return NULL;
 }
 
 /**
@@ -1033,176 +1046,123 @@ nfsd_file_lookup_locked(const struct net *net, const struct cred *cred,
 bool
 nfsd_file_is_cached(struct inode *inode)
 {
-	struct rhlist_head *tmp, *list;
-	struct nfsd_file *nf;
+	struct nfsd_file_lookup_key key = {
+		.type	= NFSD_FILE_KEY_INODE,
+		.inode	= inode,
+	};
 	bool ret = false;
 
-	rcu_read_lock();
-	list = rhltable_lookup(&nfsd_file_rhltable, &inode,
-			       nfsd_file_rhash_params);
-	rhl_for_each_entry_rcu(nf, tmp, list, nf_rlist)
-		if (test_bit(NFSD_FILE_GC, &nf->nf_flags)) {
-			ret = true;
-			break;
-		}
-	rcu_read_unlock();
-
+	if (rhashtable_lookup_fast(&nfsd_file_rhash_tbl, &key,
+				   nfsd_file_rhash_params) != NULL)
+		ret = true;
 	trace_nfsd_file_is_cached(inode, (int)ret);
 	return ret;
 }
 
 static __be32
-nfsd_file_get_dio_attrs(const struct svc_fh *fhp, struct nfsd_file *nf)
-{
-	struct inode *inode = file_inode(nf->nf_file);
-	struct kstat stat;
-	__be32 status;
-
-	/* Currently only need to get DIO alignment info for regular files */
-	if (!S_ISREG(inode->i_mode))
-		return nfs_ok;
-
-	status = fh_getattr(fhp, &stat);
-	if (status != nfs_ok)
-		return status;
-
-	trace_nfsd_file_get_dio_attrs(inode, &stat);
-
-	if (stat.result_mask & STATX_DIOALIGN) {
-		nf->nf_dio_mem_align = stat.dio_mem_align;
-		nf->nf_dio_offset_align = stat.dio_offset_align;
-	}
-	if (stat.result_mask & STATX_DIO_READ_ALIGN)
-		nf->nf_dio_read_offset_align = stat.dio_read_offset_align;
-	else
-		nf->nf_dio_read_offset_align = nf->nf_dio_offset_align;
-
-	return nfs_ok;
-}
-
-static __be32
-nfsd_file_do_acquire(struct svc_rqst *rqstp, struct net *net,
-		     struct svc_cred *cred,
-		     struct auth_domain *client,
-		     struct svc_fh *fhp,
+nfsd_file_do_acquire(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		     unsigned int may_flags, struct file *file,
-		     umode_t type, bool want_gc, struct nfsd_file **pnf)
+		     struct nfsd_file **pnf, bool want_gc)
 {
-	unsigned char need = may_flags & NFSD_FILE_MAY_MASK;
-	struct nfsd_file *new, *nf;
-	bool stale_retry = true;
+	struct nfsd_file_lookup_key key = {
+		.type	= NFSD_FILE_KEY_FULL,
+		.need	= may_flags & NFSD_FILE_MAY_MASK,
+		.net	= SVC_NET(rqstp),
+		.gc	= want_gc,
+	};
 	bool open_retry = true;
-	struct inode *inode;
+	struct nfsd_file *nf;
 	__be32 status;
 	int ret;
 
-retry:
-	if (rqstp)
-		status = fh_verify(rqstp, fhp, type,
-				   may_flags|NFSD_MAY_OWNER_OVERRIDE);
-	else
-		status = fh_verify_local(net, cred, client, fhp, type,
-					 may_flags|NFSD_MAY_OWNER_OVERRIDE);
-
+	status = fh_verify(rqstp, fhp, S_IFREG,
+				may_flags|NFSD_MAY_OWNER_OVERRIDE);
 	if (status != nfs_ok)
 		return status;
-	inode = d_inode(fhp->fh_dentry);
+	key.inode = d_inode(fhp->fh_dentry);
+	key.cred = get_current_cred();
 
+retry:
 	rcu_read_lock();
-	nf = nfsd_file_lookup_locked(net, current_cred(), inode, need, want_gc);
+	nf = rhashtable_lookup(&nfsd_file_rhash_tbl, &key,
+			       nfsd_file_rhash_params);
+	nf = nfsd_file_get(nf);
 	rcu_read_unlock();
 
-	if (nf)
+	if (nf) {
+		if (nfsd_file_lru_remove(nf))
+			WARN_ON_ONCE(refcount_dec_and_test(&nf->nf_ref));
 		goto wait_for_construction;
+	}
 
-	new = nfsd_file_alloc(net, inode, need, want_gc);
-	if (!new) {
+	nf = nfsd_file_alloc(&key, may_flags);
+	if (!nf) {
 		status = nfserr_jukebox;
-		goto out;
+		goto out_status;
 	}
 
-	rcu_read_lock();
-	spin_lock(&inode->i_lock);
-	nf = nfsd_file_lookup_locked(net, current_cred(), inode, need, want_gc);
-	if (unlikely(nf)) {
-		spin_unlock(&inode->i_lock);
-		rcu_read_unlock();
-		nfsd_file_free(new);
-		goto wait_for_construction;
-	}
-	nf = new;
-	ret = rhltable_insert(&nfsd_file_rhltable, &nf->nf_rlist,
-			      nfsd_file_rhash_params);
-	spin_unlock(&inode->i_lock);
-	rcu_read_unlock();
+	ret = rhashtable_lookup_insert_key(&nfsd_file_rhash_tbl,
+					   &key, &nf->nf_rhash,
+					   nfsd_file_rhash_params);
 	if (likely(ret == 0))
 		goto open_file;
 
-	trace_nfsd_file_insert_err(rqstp, inode, may_flags, ret);
+	nfsd_file_slab_free(&nf->nf_rcu);
+	nf = NULL;
+	if (ret == -EEXIST)
+		goto retry;
+	trace_nfsd_file_insert_err(rqstp, key.inode, may_flags, ret);
 	status = nfserr_jukebox;
-	goto construction_err;
+	goto out_status;
 
 wait_for_construction:
 	wait_on_bit(&nf->nf_flags, NFSD_FILE_PENDING, TASK_UNINTERRUPTIBLE);
 
 	/* Did construction of this file fail? */
 	if (!test_bit(NFSD_FILE_HASHED, &nf->nf_flags)) {
-		trace_nfsd_file_cons_err(rqstp, inode, may_flags, nf);
+		trace_nfsd_file_cons_err(rqstp, key.inode, may_flags, nf);
 		if (!open_retry) {
 			status = nfserr_jukebox;
-			goto construction_err;
+			goto out;
 		}
-		nfsd_file_put(nf);
 		open_retry = false;
-		fh_put(fhp);
+		if (refcount_dec_and_test(&nf->nf_ref))
+			nfsd_file_free(nf);
 		goto retry;
 	}
+
 	this_cpu_inc(nfsd_file_cache_hits);
 
 	status = nfserrno(nfsd_open_break_lease(file_inode(nf->nf_file), may_flags));
-	if (status != nfs_ok) {
-		nfsd_file_put(nf);
-		nf = NULL;
-	}
-
 out:
 	if (status == nfs_ok) {
 		this_cpu_inc(nfsd_file_acquisitions);
 		nfsd_file_check_write_error(nf);
 		*pnf = nf;
+	} else {
+		if (refcount_dec_and_test(&nf->nf_ref))
+			nfsd_file_free(nf);
+		nf = NULL;
 	}
-	trace_nfsd_file_acquire(rqstp, inode, may_flags, nf, status);
+
+out_status:
+	put_cred(key.cred);
+	trace_nfsd_file_acquire(rqstp, key.inode, may_flags, nf, status);
 	return status;
 
 open_file:
 	trace_nfsd_file_alloc(nf);
-
-	if (type == S_IFREG)
-		nf->nf_mark = nfsd_file_mark_find_or_create(inode);
-
-	if (type != S_IFREG || nf->nf_mark) {
+	nf->nf_mark = nfsd_file_mark_find_or_create(nf, key.inode);
+	if (nf->nf_mark) {
 		if (file) {
 			get_file(file);
 			nf->nf_file = file;
 			status = nfs_ok;
 			trace_nfsd_file_opened(nf, status);
 		} else {
-			ret = nfsd_open_verified(fhp, type, may_flags, &nf->nf_file);
-			if (ret == -EOPENSTALE && stale_retry) {
-				stale_retry = false;
-				nfsd_file_unhash(nf);
-				clear_and_wake_up_bit(NFSD_FILE_PENDING,
-						      &nf->nf_flags);
-				if (refcount_dec_and_test(&nf->nf_ref))
-					nfsd_file_free(nf);
-				nf = NULL;
-				fh_put(fhp);
-				goto retry;
-			}
-			status = nfserrno(ret);
+			status = nfsd_open_verified(rqstp, fhp, may_flags,
+						    &nf->nf_file);
 			trace_nfsd_file_open(nf, status);
-			if (status == nfs_ok)
-				status = nfsd_file_get_dio_attrs(fhp, nf);
 		}
 	} else
 		status = nfserr_jukebox;
@@ -1210,19 +1170,13 @@ open_file:
 	 * If construction failed, or we raced with a call to unlink()
 	 * then unhash.
 	 */
-	if (status != nfs_ok || inode->i_nlink == 0)
+	if (status == nfs_ok && key.inode->i_nlink == 0)
+		status = nfserr_jukebox;
+	if (status != nfs_ok)
 		nfsd_file_unhash(nf);
-	else if (want_gc)
-		nfsd_file_lru_add(nf);
-
-	clear_and_wake_up_bit(NFSD_FILE_PENDING, &nf->nf_flags);
-	if (status == nfs_ok)
-		goto out;
-
-construction_err:
-	if (refcount_dec_and_test(&nf->nf_ref))
-		nfsd_file_free(nf);
-	nf = NULL;
+	clear_bit_unlock(NFSD_FILE_PENDING, &nf->nf_flags);
+	smp_mb__after_atomic();
+	wake_up_bit(&nf->nf_flags, NFSD_FILE_PENDING);
 	goto out;
 }
 
@@ -1238,18 +1192,14 @@ construction_err:
  * seconds after the final nfsd_file_put() in case the caller
  * wants to re-use it.
  *
- * Return values:
- *   %nfs_ok - @pnf points to an nfsd_file with its reference
- *   count boosted.
- *
- * On error, an nfsstat value in network byte order is returned.
+ * Returns nfs_ok and sets @pnf on success; otherwise an nfsstat in
+ * network byte order is returned.
  */
 __be32
 nfsd_file_acquire_gc(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		     unsigned int may_flags, struct nfsd_file **pnf)
 {
-	return nfsd_file_do_acquire(rqstp, SVC_NET(rqstp), NULL, NULL,
-				    fhp, may_flags, NULL, S_IFREG, true, pnf);
+	return nfsd_file_do_acquire(rqstp, fhp, may_flags, NULL, pnf, true);
 }
 
 /**
@@ -1263,64 +1213,14 @@ nfsd_file_acquire_gc(struct svc_rqst *rqstp, struct svc_fh *fhp,
  * but not garbage-collected. The object is unhashed after the
  * final nfsd_file_put().
  *
- * Return values:
- *   %nfs_ok - @pnf points to an nfsd_file with its reference
- *   count boosted.
- *
- * On error, an nfsstat value in network byte order is returned.
+ * Returns nfs_ok and sets @pnf on success; otherwise an nfsstat in
+ * network byte order is returned.
  */
 __be32
 nfsd_file_acquire(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		  unsigned int may_flags, struct nfsd_file **pnf)
 {
-	return nfsd_file_do_acquire(rqstp, SVC_NET(rqstp), NULL, NULL,
-				    fhp, may_flags, NULL, S_IFREG, false, pnf);
-}
-
-/**
- * nfsd_file_acquire_local - Get a struct nfsd_file with an open file for localio
- * @net: The network namespace in which to perform a lookup
- * @cred: the user credential with which to validate access
- * @client: the auth_domain for LOCALIO lookup
- * @fhp: the NFS filehandle of the file to be opened
- * @may_flags: NFSD_MAY_ settings for the file
- * @pnf: OUT: new or found "struct nfsd_file" object
- *
- * This file lookup interface provide access to a file given the
- * filehandle and credential.  No connection-based authorisation
- * is performed and in that way it is quite different to other
- * file access mediated by nfsd.  It allows a kernel module such as the NFS
- * client to reach across network and filesystem namespaces to access
- * a file.  The security implications of this should be carefully
- * considered before use.
- *
- * The nfsd_file_object returned by this API is reference-counted
- * but not garbage-collected. The object is unhashed after the
- * final nfsd_file_put().
- *
- * Return values:
- *   %nfs_ok - @pnf points to an nfsd_file with its reference
- *   count boosted.
- *
- * On error, an nfsstat value in network byte order is returned.
- */
-__be32
-nfsd_file_acquire_local(struct net *net, struct svc_cred *cred,
-			struct auth_domain *client, struct svc_fh *fhp,
-			unsigned int may_flags, struct nfsd_file **pnf)
-{
-	/*
-	 * Save creds before calling nfsd_file_do_acquire() (which calls
-	 * nfsd_setuser). Important because caller (LOCALIO) is from
-	 * client context.
-	 */
-	const struct cred *save_cred = get_current_cred();
-	__be32 beres;
-
-	beres = nfsd_file_do_acquire(NULL, net, cred, client, fhp, may_flags,
-				     NULL, S_IFREG, false, pnf);
-	put_cred(revert_creds(save_cred));
-	return beres;
+	return nfsd_file_do_acquire(rqstp, fhp, may_flags, NULL, pnf, false);
 }
 
 /**
@@ -1335,45 +1235,15 @@ nfsd_file_acquire_local(struct net *net, struct svc_cred *cred,
  * and @file is non-NULL, use it to instantiate a new nfsd_file instead of
  * opening a new one.
  *
- * Return values:
- *   %nfs_ok - @pnf points to an nfsd_file with its reference
- *   count boosted.
- *
- * On error, an nfsstat value in network byte order is returned.
+ * Returns nfs_ok and sets @pnf on success; otherwise an nfsstat in
+ * network byte order is returned.
  */
 __be32
 nfsd_file_acquire_opened(struct svc_rqst *rqstp, struct svc_fh *fhp,
 			 unsigned int may_flags, struct file *file,
 			 struct nfsd_file **pnf)
 {
-	return nfsd_file_do_acquire(rqstp, SVC_NET(rqstp), NULL, NULL,
-				    fhp, may_flags, file, S_IFREG, false, pnf);
-}
-
-/**
- * nfsd_file_acquire_dir - Get a struct nfsd_file with an open directory
- * @rqstp: the RPC transaction being executed
- * @fhp: the NFS filehandle of the file to be opened
- * @pnf: OUT: new or found "struct nfsd_file" object
- *
- * The nfsd_file_object returned by this API is reference-counted
- * but not garbage-collected. The object is unhashed after the
- * final nfsd_file_put(). This opens directories only, and only
- * in O_RDONLY mode.
- *
- * Return values:
- *   %nfs_ok - @pnf points to an nfsd_file with its reference
- *   count boosted.
- *
- * On error, an nfsstat value in network byte order is returned.
- */
-__be32
-nfsd_file_acquire_dir(struct svc_rqst *rqstp, struct svc_fh *fhp,
-		      struct nfsd_file **pnf)
-{
-	return nfsd_file_do_acquire(rqstp, SVC_NET(rqstp), NULL, NULL, fhp,
-				    NFSD_MAY_READ|NFSD_MAY_64BIT_COOKIE,
-				    NULL, S_IFDIR, false, pnf);
+	return nfsd_file_do_acquire(rqstp, fhp, may_flags, file, pnf, false);
 }
 
 /*
@@ -1383,7 +1253,7 @@ nfsd_file_acquire_dir(struct svc_rqst *rqstp, struct svc_fh *fhp,
  */
 int nfsd_file_cache_stats_show(struct seq_file *m, void *v)
 {
-	unsigned long allocations = 0, releases = 0, evictions = 0;
+	unsigned long releases = 0, evictions = 0;
 	unsigned long hits = 0, acquisitions = 0;
 	unsigned int i, count = 0, buckets = 0;
 	unsigned long lru = 0, total_age = 0;
@@ -1397,7 +1267,7 @@ int nfsd_file_cache_stats_show(struct seq_file *m, void *v)
 		lru = list_lru_count(&nfsd_file_lru);
 
 		rcu_read_lock();
-		ht = &nfsd_file_rhltable.ht;
+		ht = &nfsd_file_rhash_tbl;
 		count = atomic_read(&ht->nelems);
 		tbl = rht_dereference_rcu(ht->tbl, ht);
 		buckets = tbl->size;
@@ -1408,18 +1278,16 @@ int nfsd_file_cache_stats_show(struct seq_file *m, void *v)
 	for_each_possible_cpu(i) {
 		hits += per_cpu(nfsd_file_cache_hits, i);
 		acquisitions += per_cpu(nfsd_file_acquisitions, i);
-		allocations += per_cpu(nfsd_file_allocations, i);
 		releases += per_cpu(nfsd_file_releases, i);
 		total_age += per_cpu(nfsd_file_total_age, i);
 		evictions += per_cpu(nfsd_file_evictions, i);
 	}
 
-	seq_printf(m, "total inodes:  %u\n", count);
+	seq_printf(m, "total entries: %u\n", count);
 	seq_printf(m, "hash buckets:  %u\n", buckets);
 	seq_printf(m, "lru entries:   %lu\n", lru);
 	seq_printf(m, "cache hits:    %lu\n", hits);
 	seq_printf(m, "acquisitions:  %lu\n", acquisitions);
-	seq_printf(m, "allocations:   %lu\n", allocations);
 	seq_printf(m, "releases:      %lu\n", releases);
 	seq_printf(m, "evictions:     %lu\n", evictions);
 	if (releases)

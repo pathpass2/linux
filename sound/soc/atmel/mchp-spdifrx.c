@@ -503,6 +503,11 @@ unlock:
 	return ret;
 }
 
+static const struct snd_soc_dai_ops mchp_spdifrx_dai_ops = {
+	.trigger	= mchp_spdifrx_trigger,
+	.hw_params	= mchp_spdifrx_hw_params,
+};
+
 #define MCHP_SPDIF_RATES	SNDRV_PCM_RATE_8000_192000
 
 #define MCHP_SPDIF_FORMATS	(SNDRV_PCM_FMTBIT_S16_LE |	\
@@ -577,6 +582,7 @@ static int mchp_spdifrx_cs_get(struct mchp_spdifrx_dev *dev,
 	       sizeof(ch_stat->data));
 
 pm_runtime_put:
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 unlock:
 	mutex_unlock(&dev->mlock);
@@ -659,6 +665,7 @@ static int mchp_spdifrx_subcode_ch_get(struct mchp_spdifrx_dev *dev,
 	       sizeof(user_data->data));
 
 pm_runtime_put:
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 unlock:
 	mutex_unlock(&dev->mlock);
@@ -724,6 +731,7 @@ static int mchp_spdifrx_ulock_get(struct snd_kcontrol *kcontrol,
 
 	uvalue->value.integer.value[0] = ctrl->ulock;
 
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 unlock:
 	mutex_unlock(&dev->mlock);
@@ -759,6 +767,7 @@ static int mchp_spdifrx_badf_get(struct snd_kcontrol *kcontrol,
 		ctrl->badf = 0;
 	}
 
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 unlock:
 	mutex_unlock(&dev->mlock);
@@ -807,6 +816,7 @@ static int mchp_spdifrx_signal_get(struct snd_kcontrol *kcontrol,
 		regmap_read(dev->regmap, SPDIFRX_RSR, &val);
 	}
 
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 
 unlock:
@@ -870,6 +880,7 @@ static int mchp_spdifrx_rate_get(struct snd_kcontrol *kcontrol,
 	ucontrol->value.integer.value[0] = rate / (32 * SPDIFRX_RSR_IFS(val));
 
 pm_runtime_put:
+	pm_runtime_mark_last_busy(dev->dev);
 	pm_runtime_put_autosuspend(dev->dev);
 unlock:
 	mutex_unlock(&dev->mlock);
@@ -998,17 +1009,12 @@ static int mchp_spdifrx_dai_remove(struct snd_soc_dai *dai)
 	return 0;
 }
 
-static const struct snd_soc_dai_ops mchp_spdifrx_dai_ops = {
-	.probe		= mchp_spdifrx_dai_probe,
-	.remove		= mchp_spdifrx_dai_remove,
-	.trigger	= mchp_spdifrx_trigger,
-	.hw_params	= mchp_spdifrx_hw_params,
-};
-
 static struct snd_soc_dai_driver mchp_spdifrx_dai = {
 	.name = "mchp-spdifrx",
+	.probe	= mchp_spdifrx_dai_probe,
+	.remove	= mchp_spdifrx_dai_remove,
 	.capture = {
-		.stream_name = "Capture",
+		.stream_name = "S/PDIF Capture",
 		.channels_min = SPDIFRX_CHANNELS,
 		.channels_max = SPDIFRX_CHANNELS,
 		.rates = MCHP_SPDIF_RATES,
@@ -1177,13 +1183,15 @@ pm_runtime_disable:
 	return err;
 }
 
-static void mchp_spdifrx_remove(struct platform_device *pdev)
+static int mchp_spdifrx_remove(struct platform_device *pdev)
 {
 	struct mchp_spdifrx_dev *dev = platform_get_drvdata(pdev);
 
 	pm_runtime_disable(dev->dev);
 	if (!pm_runtime_status_suspended(dev->dev))
 		mchp_spdifrx_runtime_suspend(dev->dev);
+
+	return 0;
 }
 
 static struct platform_driver mchp_spdifrx_driver = {
@@ -1191,7 +1199,7 @@ static struct platform_driver mchp_spdifrx_driver = {
 	.remove = mchp_spdifrx_remove,
 	.driver	= {
 		.name	= "mchp_spdifrx",
-		.of_match_table = mchp_spdifrx_dt_ids,
+		.of_match_table = of_match_ptr(mchp_spdifrx_dt_ids),
 		.pm	= pm_ptr(&mchp_spdifrx_pm_ops),
 	},
 };

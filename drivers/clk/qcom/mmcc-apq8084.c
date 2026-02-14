@@ -6,9 +6,9 @@
 #include <linux/clk-provider.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
+#include <linux/reset-controller.h>
 
 #include <dt-bindings/clock/qcom,mmcc-apq8084.h>
 #include <dt-bindings/reset/qcom,mmcc-apq8084.h>
@@ -338,7 +338,7 @@ static struct clk_rcg2 mmss_ahb_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mmss_axi_clk[] = {
+static struct freq_tbl ftbl_mmss_axi_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	F(37500000, P_GPLL0, 16, 0, 0),
 	F(50000000, P_GPLL0, 12, 0, 0),
@@ -348,7 +348,6 @@ static const struct freq_tbl ftbl_mmss_axi_clk[] = {
 	F(333430000, P_MMPLL1, 3.5, 0, 0),
 	F(400000000, P_MMPLL0, 2, 0, 0),
 	F(466800000, P_MMPLL1, 2.5, 0, 0),
-	{ }
 };
 
 static struct clk_rcg2 mmss_axi_clk_src = {
@@ -364,7 +363,7 @@ static struct clk_rcg2 mmss_axi_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_ocmemnoc_clk[] = {
+static struct freq_tbl ftbl_ocmemnoc_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	F(37500000, P_GPLL0, 16, 0, 0),
 	F(50000000, P_GPLL0, 12, 0, 0),
@@ -373,7 +372,6 @@ static const struct freq_tbl ftbl_ocmemnoc_clk[] = {
 	F(150000000, P_GPLL0, 4, 0, 0),
 	F(228570000, P_MMPLL0, 3.5, 0, 0),
 	F(320000000, P_MMPLL0, 2.5, 0, 0),
-	{ }
 };
 
 static struct clk_rcg2 ocmemnoc_clk_src = {
@@ -389,7 +387,7 @@ static struct clk_rcg2 ocmemnoc_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_csi0_3_clk[] = {
+static struct freq_tbl ftbl_camss_csi0_3_clk[] = {
 	F(100000000, P_GPLL0, 6, 0, 0),
 	F(200000000, P_MMPLL0, 4, 0, 0),
 	{ }
@@ -447,7 +445,7 @@ static struct clk_rcg2 csi3_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_vfe_vfe0_1_clk[] = {
+static struct freq_tbl ftbl_camss_vfe_vfe0_1_clk[] = {
 	F(37500000, P_GPLL0, 16, 0, 0),
 	F(50000000, P_GPLL0, 12, 0, 0),
 	F(60000000, P_GPLL0, 10, 0, 0),
@@ -490,7 +488,7 @@ static struct clk_rcg2 vfe1_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mdss_mdp_clk[] = {
+static struct freq_tbl ftbl_mdss_mdp_clk[] = {
 	F(37500000, P_GPLL0, 16, 0, 0),
 	F(60000000, P_GPLL0, 10, 0, 0),
 	F(75000000, P_GPLL0, 8, 0, 0),
@@ -530,7 +528,7 @@ static struct clk_rcg2 gfx3d_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_jpeg_jpeg0_2_clk[] = {
+static struct freq_tbl ftbl_camss_jpeg_jpeg0_2_clk[] = {
 	F(75000000, P_GPLL0, 8, 0, 0),
 	F(133330000, P_GPLL0, 4.5, 0, 0),
 	F(200000000, P_GPLL0, 3, 0, 0),
@@ -607,7 +605,7 @@ static struct clk_rcg2 pclk1_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_venus0_vcodec0_clk[] = {
+static struct freq_tbl ftbl_venus0_vcodec0_clk[] = {
 	F(50000000, P_GPLL0, 12, 0, 0),
 	F(100000000, P_GPLL0, 6, 0, 0),
 	F(133330000, P_GPLL0, 4.5, 0, 0),
@@ -631,7 +629,7 @@ static struct clk_rcg2 vcodec0_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_avsync_vp_clk[] = {
+static struct freq_tbl ftbl_avsync_vp_clk[] = {
 	F(150000000, P_GPLL0, 4, 0, 0),
 	F(320000000, P_MMPLL0, 2.5, 0, 0),
 	{ }
@@ -650,7 +648,7 @@ static struct clk_rcg2 vp_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_cci_cci_clk[] = {
+static struct freq_tbl ftbl_camss_cci_cci_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	{ }
 };
@@ -669,7 +667,7 @@ static struct clk_rcg2 cci_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_gp0_1_clk[] = {
+static struct freq_tbl ftbl_camss_gp0_1_clk[] = {
 	F(10000, P_XO, 16, 1, 120),
 	F(24000, P_XO, 16, 1, 50),
 	F(6000000, P_GPLL0, 10, 1, 10),
@@ -707,7 +705,7 @@ static struct clk_rcg2 camss_gp1_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_mclk0_3_clk[] = {
+static struct freq_tbl ftbl_camss_mclk0_3_clk[] = {
 	F(4800000, P_XO, 4, 0, 0),
 	F(6000000, P_GPLL0, 10, 1, 10),
 	F(8000000, P_GPLL0, 15, 1, 5),
@@ -777,7 +775,7 @@ static struct clk_rcg2 mclk3_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_phy0_2_csi0_2phytimer_clk[] = {
+static struct freq_tbl ftbl_camss_phy0_2_csi0_2phytimer_clk[] = {
 	F(100000000, P_GPLL0, 6, 0, 0),
 	F(200000000, P_MMPLL0, 4, 0, 0),
 	{ }
@@ -822,7 +820,7 @@ static struct clk_rcg2 csi2phytimer_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_camss_vfe_cpp_clk[] = {
+static struct freq_tbl ftbl_camss_vfe_cpp_clk[] = {
 	F(133330000, P_GPLL0, 4.5, 0, 0),
 	F(266670000, P_MMPLL0, 3, 0, 0),
 	F(320000000, P_MMPLL0, 2.5, 0, 0),
@@ -871,7 +869,7 @@ static struct clk_rcg2 byte1_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mdss_edpaux_clk[] = {
+static struct freq_tbl ftbl_mdss_edpaux_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	{ }
 };
@@ -889,7 +887,7 @@ static struct clk_rcg2 edpaux_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mdss_edplink_clk[] = {
+static struct freq_tbl ftbl_mdss_edplink_clk[] = {
 	F(135000000, P_EDPLINK, 2, 0, 0),
 	F(270000000, P_EDPLINK, 11, 0, 0),
 	{ }
@@ -909,7 +907,7 @@ static struct clk_rcg2 edplink_clk_src = {
 	},
 };
 
-static const struct freq_tbl edp_pixel_freq_tbl[] = {
+static struct freq_tbl edp_pixel_freq_tbl[] = {
 	{ .src = P_EDPVCO },
 	{ }
 };
@@ -928,7 +926,7 @@ static struct clk_rcg2 edppixel_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mdss_esc0_1_clk[] = {
+static struct freq_tbl ftbl_mdss_esc0_1_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	{ }
 };
@@ -959,7 +957,7 @@ static struct clk_rcg2 esc1_clk_src = {
 	},
 };
 
-static const struct freq_tbl extpclk_freq_tbl[] = {
+static struct freq_tbl extpclk_freq_tbl[] = {
 	{ .src = P_HDMIPLL },
 	{ }
 };
@@ -978,7 +976,7 @@ static struct clk_rcg2 extpclk_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mdss_hdmi_clk[] = {
+static struct freq_tbl ftbl_mdss_hdmi_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	{ }
 };
@@ -996,7 +994,7 @@ static struct clk_rcg2 hdmi_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mdss_vsync_clk[] = {
+static struct freq_tbl ftbl_mdss_vsync_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	{ }
 };
@@ -1014,7 +1012,7 @@ static struct clk_rcg2 vsync_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_mmss_rbcpr_clk[] = {
+static struct freq_tbl ftbl_mmss_rbcpr_clk[] = {
 	F(50000000, P_GPLL0, 12, 0, 0),
 	{ }
 };
@@ -1032,7 +1030,7 @@ static struct clk_rcg2 rbcpr_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_oxili_rbbmtimer_clk[] = {
+static struct freq_tbl ftbl_oxili_rbbmtimer_clk[] = {
 	F(19200000, P_XO, 1, 0, 0),
 	{ }
 };
@@ -1050,7 +1048,7 @@ static struct clk_rcg2 rbbmtimer_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_vpu_maple_clk[] = {
+static struct freq_tbl ftbl_vpu_maple_clk[] = {
 	F(50000000, P_GPLL0, 12, 0, 0),
 	F(100000000, P_GPLL0, 6, 0, 0),
 	F(133330000, P_GPLL0, 4.5, 0, 0),
@@ -1073,7 +1071,7 @@ static struct clk_rcg2 maple_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_vpu_vdp_clk[] = {
+static struct freq_tbl ftbl_vpu_vdp_clk[] = {
 	F(50000000, P_GPLL0, 12, 0, 0),
 	F(100000000, P_GPLL0, 6, 0, 0),
 	F(200000000, P_MMPLL0, 4, 0, 0),
@@ -1095,7 +1093,7 @@ static struct clk_rcg2 vdp_clk_src = {
 	},
 };
 
-static const struct freq_tbl ftbl_vpu_bus_clk[] = {
+static struct freq_tbl ftbl_vpu_bus_clk[] = {
 	F(40000000, P_GPLL0, 15, 0, 0),
 	F(80000000, P_MMPLL0, 10, 0, 0),
 	{ }

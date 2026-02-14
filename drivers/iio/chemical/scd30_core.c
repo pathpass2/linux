@@ -5,7 +5,6 @@
  * Copyright (c) 2020 Tomasz Duszynski <tomasz.duszynski@octakon.com>
  */
 #include <linux/bits.h>
-#include <linux/cleanup.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -199,103 +198,112 @@ static int scd30_read_raw(struct iio_dev *indio_dev, struct iio_chan_spec const 
 			  int *val, int *val2, long mask)
 {
 	struct scd30_state *state = iio_priv(indio_dev);
-	int ret;
+	int ret = -EINVAL;
 	u16 tmp;
 
-	guard(mutex)(&state->lock);
+	mutex_lock(&state->lock);
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
 	case IIO_CHAN_INFO_PROCESSED:
 		if (chan->output) {
 			*val = state->pressure_comp;
-			return IIO_VAL_INT;
+			ret = IIO_VAL_INT;
+			break;
 		}
 
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			break;
 
 		ret = scd30_read(state);
 		if (ret) {
-			iio_device_release_direct(indio_dev);
-			return ret;
+			iio_device_release_direct_mode(indio_dev);
+			break;
 		}
 
 		*val = state->meas[chan->address];
-		iio_device_release_direct(indio_dev);
-		return IIO_VAL_INT;
+		iio_device_release_direct_mode(indio_dev);
+		ret = IIO_VAL_INT;
+		break;
 	case IIO_CHAN_INFO_SCALE:
 		*val = 0;
 		*val2 = 1;
-		return IIO_VAL_INT_PLUS_MICRO;
+		ret = IIO_VAL_INT_PLUS_MICRO;
+		break;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		ret = scd30_command_read(state, CMD_MEAS_INTERVAL, &tmp);
 		if (ret)
-			return ret;
+			break;
 
 		*val = 0;
 		*val2 = 1000000000 / tmp;
-		return IIO_VAL_INT_PLUS_NANO;
+		ret = IIO_VAL_INT_PLUS_NANO;
+		break;
 	case IIO_CHAN_INFO_CALIBBIAS:
 		ret = scd30_command_read(state, CMD_TEMP_OFFSET, &tmp);
 		if (ret)
-			return ret;
+			break;
 
 		*val = tmp;
-		return IIO_VAL_INT;
-	default:
-		return -EINVAL;
+		ret = IIO_VAL_INT;
+		break;
 	}
+	mutex_unlock(&state->lock);
+
+	return ret;
 }
 
 static int scd30_write_raw(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
 			   int val, int val2, long mask)
 {
 	struct scd30_state *state = iio_priv(indio_dev);
-	int ret;
+	int ret = -EINVAL;
 
-	guard(mutex)(&state->lock);
+	mutex_lock(&state->lock);
 	switch (mask) {
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		if (val)
-			return -EINVAL;
+			break;
 
 		val = 1000000000 / val2;
 		if (val < SCD30_MEAS_INTERVAL_MIN_S || val > SCD30_MEAS_INTERVAL_MAX_S)
-			return -EINVAL;
+			break;
 
 		ret = scd30_command_write(state, CMD_MEAS_INTERVAL, val);
 		if (ret)
-			return ret;
+			break;
 
 		state->meas_interval = val;
-		return 0;
+		break;
 	case IIO_CHAN_INFO_RAW:
 		switch (chan->type) {
 		case IIO_PRESSURE:
 			if (val < SCD30_PRESSURE_COMP_MIN_MBAR ||
 			    val > SCD30_PRESSURE_COMP_MAX_MBAR)
-				return -EINVAL;
+				break;
 
 			ret = scd30_command_write(state, CMD_START_MEAS, val);
 			if (ret)
-				return ret;
+				break;
 
 			state->pressure_comp = val;
-			return 0;
+			break;
 		default:
-			return -EINVAL;
+			break;
 		}
+		break;
 	case IIO_CHAN_INFO_CALIBBIAS:
 		if (val < 0 || val > SCD30_TEMP_OFFSET_MAX)
-			return -EINVAL;
+			break;
 		/*
 		 * Manufacturer does not explicitly specify min/max sensible
 		 * values hence check is omitted for simplicity.
 		 */
-		return scd30_command_write(state, CMD_TEMP_OFFSET / 10, val);
-	default:
-		return -EINVAL;
+		ret = scd30_command_write(state, CMD_TEMP_OFFSET / 10, val);
 	}
+	mutex_unlock(&state->lock);
+
+	return ret;
 }
 
 static int scd30_write_raw_get_fmt(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
@@ -586,8 +594,8 @@ static irqreturn_t scd30_trigger_handler(int irq, void *p)
 	struct scd30_state *state = iio_priv(indio_dev);
 	struct {
 		int data[SCD30_MEAS_COUNT];
-		aligned_s64 ts;
-	} scan = { };
+		s64 ts __aligned(8);
+	} scan;
 	int ret;
 
 	mutex_lock(&state->lock);
@@ -595,13 +603,13 @@ static irqreturn_t scd30_trigger_handler(int irq, void *p)
 		ret = scd30_read_poll(state);
 	else
 		ret = scd30_read_meas(state);
+	memset(&scan, 0, sizeof(scan));
 	memcpy(scan.data, state->meas, sizeof(state->meas));
 	mutex_unlock(&state->lock);
 	if (ret)
 		goto out;
 
-	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
-				    iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, &scan, iio_get_time_ns(indio_dev));
 out:
 	iio_trigger_notify_done(indio_dev->trig);
 	return IRQ_HANDLED;
@@ -635,7 +643,7 @@ static int scd30_setup_trigger(struct iio_dev *indio_dev)
 	trig = devm_iio_trigger_alloc(dev, "%s-dev%d", indio_dev->name,
 				      iio_device_id(indio_dev));
 	if (!trig)
-		return -ENOMEM;
+		return dev_err_probe(dev, -ENOMEM, "failed to allocate trigger\n");
 
 	trig->ops = &scd30_trigger_ops;
 	iio_trigger_set_drvdata(trig, indio_dev);
@@ -739,7 +747,7 @@ int scd30_probe(struct device *dev, int irq, const char *name, void *priv,
 
 	return devm_iio_device_register(dev, indio_dev);
 }
-EXPORT_SYMBOL_NS(scd30_probe, "IIO_SCD30");
+EXPORT_SYMBOL_NS(scd30_probe, IIO_SCD30);
 
 MODULE_AUTHOR("Tomasz Duszynski <tomasz.duszynski@octakon.com>");
 MODULE_DESCRIPTION("Sensirion SCD30 carbon dioxide sensor core driver");

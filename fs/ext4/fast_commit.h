@@ -97,9 +97,6 @@ enum {
 	EXT4_FC_REASON_FALLOC_RANGE,
 	EXT4_FC_REASON_INODE_JOURNAL_DATA,
 	EXT4_FC_REASON_ENCRYPTED_FILENAME,
-	EXT4_FC_REASON_MIGRATE,
-	EXT4_FC_REASON_VERITY,
-	EXT4_FC_REASON_MOVE_EXT,
 	EXT4_FC_REASON_MAX
 };
 
@@ -112,7 +109,8 @@ struct ext4_fc_dentry_update {
 	int fcd_op;		/* Type of update create / unlink / link */
 	int fcd_parent;		/* Parent inode number */
 	int fcd_ino;		/* Inode number */
-	struct name_snapshot fcd_name;	/* Dirent name */
+	struct qstr fcd_name;	/* Dirent name */
+	unsigned char fcd_iname[DNAME_INLINE_LEN];	/* Dirent name string */
 	struct list_head fcd_list;
 	struct list_head fcd_dilist;
 };

@@ -87,21 +87,23 @@ static void __init init_vec_parent_group(void)
 	acpi_table_parse(ACPI_SIG_MCFG, early_pci_mcfg_parse);
 }
 
-int __init arch_probe_nr_irqs(void)
+static int __init get_ipi_irq(void)
 {
-	int nr_io_pics = bitmap_weight(loongson_sysconf.cores_io_master, NR_CPUS);
+	struct irq_domain *d = irq_find_matching_fwnode(cpuintc_handle, DOMAIN_BUS_ANY);
 
-	if (!cpu_has_avecint)
-		irq_set_nr_irqs(64 + NR_VECTORS * nr_io_pics);
-	else
-		irq_set_nr_irqs(64 + NR_VECTORS * (nr_cpu_ids + nr_io_pics));
+	if (d)
+		return irq_create_mapping(d, EXCCODE_IPI - EXCCODE_INT_START);
 
-	return NR_IRQS_LEGACY;
+	return -EINVAL;
 }
 
 void __init init_IRQ(void)
 {
 	int i;
+#ifdef CONFIG_SMP
+	int r, ipi_irq;
+	static int ipi_dummy_dev;
+#endif
 	unsigned int order = get_order(IRQ_STACK_SIZE);
 	struct page *page;
 
@@ -111,8 +113,17 @@ void __init init_IRQ(void)
 	init_vec_parent_group();
 	irqchip_init();
 #ifdef CONFIG_SMP
-	mp_ops.init_ipi();
+	ipi_irq = get_ipi_irq();
+	if (ipi_irq < 0)
+		panic("IPI IRQ mapping failed\n");
+	irq_set_percpu_devid(ipi_irq);
+	r = request_percpu_irq(ipi_irq, loongson_ipi_interrupt, "IPI", &ipi_dummy_dev);
+	if (r < 0)
+		panic("IPI IRQ request failed\n");
 #endif
+
+	for (i = 0; i < NR_IRQS; i++)
+		irq_set_noprobe(i);
 
 	for_each_possible_cpu(i) {
 		page = alloc_pages_node(cpu_to_node(i), GFP_KERNEL, order);
@@ -122,5 +133,5 @@ void __init init_IRQ(void)
 			per_cpu(irq_stack, i), per_cpu(irq_stack, i) + IRQ_STACK_SIZE);
 	}
 
-	set_csr_ecfg(ECFGF_SIP0 | ECFGF_IP0 | ECFGF_IP1 | ECFGF_IP2 | ECFGF_IPI | ECFGF_PMC);
+	set_csr_ecfg(ECFGF_IP0 | ECFGF_IP1 | ECFGF_IP2 | ECFGF_IPI | ECFGF_PMC);
 }

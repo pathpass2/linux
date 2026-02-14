@@ -13,14 +13,13 @@
 #include <linux/const.h>
 #include <asm/page.h>
 #include <asm/vdso.h>
-#include <vdso/datapage.h>
 
 OUTPUT_FORMAT("elf32-littlearm", "elf32-bigarm", "elf32-littlearm")
 OUTPUT_ARCH(arm)
 
 SECTIONS
 {
-	VDSO_VVAR_SYMS
+	PROVIDE(_start = .);
 
 	. = SIZEOF_HEADERS;
 
@@ -74,7 +73,6 @@ VERSION
 		__vdso_gettimeofday;
 		__vdso_clock_getres;
 		__vdso_clock_gettime64;
-		__vdso_clock_getres_time64;
 	local: *;
 	};
 }

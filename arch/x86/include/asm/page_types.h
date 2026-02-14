@@ -6,7 +6,10 @@
 #include <linux/types.h>
 #include <linux/mem_encrypt.h>
 
-#include <vdso/page.h>
+/* PAGE_SHIFT determines the page size */
+#define PAGE_SHIFT		12
+#define PAGE_SIZE		(_AC(1,UL) << PAGE_SHIFT)
+#define PAGE_MASK		(~(PAGE_SIZE-1))
 
 #define __VIRTUAL_MASK		((1UL << __VIRTUAL_MASK_SHIFT) - 1)
 
@@ -28,10 +31,10 @@
 
 #define VM_DATA_DEFAULT_FLAGS	VM_DATA_FLAGS_TSK_EXEC
 
-/* Physical address where kernel should be loaded. */
-#define LOAD_PHYSICAL_ADDR	__ALIGN_KERNEL_MASK(CONFIG_PHYSICAL_START, CONFIG_PHYSICAL_ALIGN - 1)
+#define __PHYSICAL_START	ALIGN(CONFIG_PHYSICAL_START, \
+				      CONFIG_PHYSICAL_ALIGN)
 
-#define __START_KERNEL		(__START_KERNEL_map + LOAD_PHYSICAL_ADDR)
+#define __START_KERNEL		(__START_KERNEL_map + __PHYSICAL_START)
 
 #ifdef CONFIG_X86_64
 #include <asm/page_64_types.h>
@@ -41,7 +44,7 @@
 #define IOREMAP_MAX_ORDER       (PMD_SHIFT)
 #endif	/* CONFIG_X86_64 */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #ifdef CONFIG_DYNAMIC_PHYSICAL_MASK
 extern phys_addr_t physical_mask;
@@ -64,6 +67,6 @@ bool pfn_range_is_mapped(unsigned long start_pfn, unsigned long end_pfn);
 
 extern void initmem_init(void);
 
-#endif	/* !__ASSEMBLER__ */
+#endif	/* !__ASSEMBLY__ */
 
 #endif	/* _ASM_X86_PAGE_DEFS_H */

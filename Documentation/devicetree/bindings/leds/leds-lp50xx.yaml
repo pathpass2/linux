@@ -81,12 +81,7 @@ patternProperties:
 
         properties:
           reg:
-            items:
-              - minimum: 0
-                maximum: 2
-
-            description:
-              This property denotes the index within the LED bank.
+            maxItems: 1
 
         required:
           - reg
@@ -143,18 +138,18 @@ examples:
                 color = <LED_COLOR_ID_RGB>;
                 function = LED_FUNCTION_STANDBY;
 
-                led@0 {
-                    reg = <0x0>;
+                led@3 {
+                    reg = <0x3>;
                     color = <LED_COLOR_ID_RED>;
                 };
 
-                led@1 {
-                    reg = <0x1>;
+                led@4 {
+                    reg = <0x4>;
                     color = <LED_COLOR_ID_GREEN>;
                 };
 
-                led@2 {
-                    reg = <0x2>;
+                led@5 {
+                    reg = <0x5>;
                     color = <LED_COLOR_ID_BLUE>;
                 };
             };

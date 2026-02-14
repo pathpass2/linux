@@ -24,7 +24,7 @@
 
 #include "link_enc_cfg.h"
 #include "resource.h"
-#include "link_service.h"
+#include "link.h"
 
 #define DC_LOGGER dc->ctx->logger
 
@@ -44,8 +44,20 @@ static bool is_dig_link_enc_stream(struct dc_stream_state *stream)
 			 * yet match.
 			 */
 			if (link_enc && ((uint32_t)stream->link->connector_signal & link_enc->output_signals)) {
-				is_dig_stream = true;
-				break;
+				if (dc_is_dp_signal(stream->signal)) {
+					/* DIGs do not support DP2.0 streams with 128b/132b encoding. */
+					struct dc_link_settings link_settings = {0};
+
+					link_decide_link_settings(stream, &link_settings);
+					if ((link_settings.link_rate >= LINK_RATE_LOW) &&
+							link_settings.link_rate <= LINK_RATE_HIGH3) {
+						is_dig_stream = true;
+						break;
+					}
+				} else {
+					is_dig_stream = true;
+					break;
+				}
 			}
 		}
 	}
@@ -157,22 +169,10 @@ static void add_link_enc_assignment(
 /* Return first available DIG link encoder. */
 static enum engine_id find_first_avail_link_enc(
 		const struct dc_context *ctx,
-		const struct dc_state *state,
-		enum engine_id eng_id_requested)
+		const struct dc_state *state)
 {
 	enum engine_id eng_id = ENGINE_ID_UNKNOWN;
 	int i;
-
-	if (eng_id_requested != ENGINE_ID_UNKNOWN) {
-
-		for (i = 0; i < ctx->dc->res_pool->res_cap->num_dig_link_enc; i++) {
-			eng_id = state->res_ctx.link_enc_cfg_ctx.link_enc_avail[i];
-			if (eng_id == eng_id_requested)
-				return eng_id;
-		}
-	}
-
-	eng_id = ENGINE_ID_UNKNOWN;
 
 	for (i = 0; i < ctx->dc->res_pool->res_cap->num_dig_link_enc; i++) {
 		eng_id = state->res_ctx.link_enc_cfg_ctx.link_enc_avail[i];
@@ -236,8 +236,6 @@ static struct link_encoder *get_link_enc_used_by_link(
 
 	for (i = 0; i < MAX_PIPES; i++) {
 		struct link_enc_assignment assignment = state->res_ctx.link_enc_cfg_ctx.link_enc_assignments[i];
-		if (assignment.eng_id == ENGINE_ID_UNKNOWN)
-			continue;
 
 		if (assignment.valid == true && are_ep_ids_equal(&assignment.ep_id, &ep_id))
 			link_enc = link->dc->res_pool->link_encoders[assignment.eng_id - ENGINE_ID_DIGA];
@@ -289,7 +287,7 @@ void link_enc_cfg_link_encs_assign(
 		struct dc_stream_state *streams[],
 		uint8_t stream_count)
 {
-	enum engine_id eng_id = ENGINE_ID_UNKNOWN, eng_id_req = ENGINE_ID_UNKNOWN;
+	enum engine_id eng_id = ENGINE_ID_UNKNOWN;
 	int i;
 	int j;
 
@@ -379,14 +377,8 @@ void link_enc_cfg_link_encs_assign(
 		 * assigned to that endpoint.
 		 */
 		link_enc = get_link_enc_used_by_link(state, stream->link);
-		if (link_enc == NULL) {
-
-			if (stream->link->ep_type == DISPLAY_ENDPOINT_USB4_DPIA &&
-					stream->link->dpia_preferred_eng_id != ENGINE_ID_UNKNOWN)
-				eng_id_req = stream->link->dpia_preferred_eng_id;
-
-			eng_id = find_first_avail_link_enc(stream->ctx, state, eng_id_req);
-		}
+		if (link_enc == NULL)
+			eng_id = find_first_avail_link_enc(stream->ctx, state);
 		else
 			eng_id =  link_enc->preferred_engine;
 
@@ -410,9 +402,7 @@ void link_enc_cfg_link_encs_assign(
 			DC_LOG_DEBUG("%s: CUR %s(%d) - enc_id(%d)\n",
 					__func__,
 					assignment.ep_id.ep_type == DISPLAY_ENDPOINT_PHY ? "PHY" : "DPIA",
-					assignment.ep_id.ep_type == DISPLAY_ENDPOINT_PHY ?
-							assignment.ep_id.link_id.enum_id :
-							assignment.ep_id.link_id.enum_id - 1,
+					assignment.ep_id.link_id.enum_id - 1,
 					assignment.eng_id);
 	}
 	for (i = 0; i < MAX_PIPES; i++) {
@@ -423,9 +413,7 @@ void link_enc_cfg_link_encs_assign(
 			DC_LOG_DEBUG("%s: NEW %s(%d) - enc_id(%d)\n",
 					__func__,
 					assignment.ep_id.ep_type == DISPLAY_ENDPOINT_PHY ? "PHY" : "DPIA",
-					assignment.ep_id.ep_type == DISPLAY_ENDPOINT_PHY ?
-							assignment.ep_id.link_id.enum_id :
-							assignment.ep_id.link_id.enum_id - 1,
+					assignment.ep_id.link_id.enum_id - 1,
 					assignment.eng_id);
 	}
 
@@ -490,6 +478,7 @@ struct dc_link *link_enc_cfg_get_link_using_link_enc(
 	if (stream)
 		link = stream->link;
 
+	// dm_output_to_console("%s: No link using DIG(%d).\n", __func__, eng_id);
 	return link;
 }
 
@@ -507,8 +496,6 @@ struct link_encoder *link_enc_cfg_get_link_enc_used_by_link(
 
 	for (i = 0; i < MAX_PIPES; i++) {
 		struct link_enc_assignment assignment = get_assignment(dc, i);
-		if (assignment.eng_id == ENGINE_ID_UNKNOWN)
-			continue;
 
 		if (assignment.valid == true && are_ep_ids_equal(&assignment.ep_id, &ep_id)) {
 			link_enc = link->dc->res_pool->link_encoders[assignment.eng_id - ENGINE_ID_DIGA];
@@ -522,17 +509,17 @@ struct link_encoder *link_enc_cfg_get_link_enc_used_by_link(
 struct link_encoder *link_enc_cfg_get_next_avail_link_enc(struct dc *dc)
 {
 	struct link_encoder *link_enc = NULL;
-	enum engine_id encs_assigned[MAX_LINK_ENCODERS];
+	enum engine_id encs_assigned[MAX_DIG_LINK_ENCODERS];
 	int i;
 
-	for (i = 0; i < MAX_LINK_ENCODERS; i++)
+	for (i = 0; i < MAX_DIG_LINK_ENCODERS; i++)
 		encs_assigned[i] = ENGINE_ID_UNKNOWN;
 
 	/* Add assigned encoders to list. */
 	for (i = 0; i < MAX_PIPES; i++) {
 		struct link_enc_assignment assignment = get_assignment(dc, i);
 
-		if (assignment.valid && assignment.eng_id != ENGINE_ID_UNKNOWN)
+		if (assignment.valid)
 			encs_assigned[assignment.eng_id - ENGINE_ID_DIGA] = assignment.eng_id;
 	}
 
@@ -543,6 +530,17 @@ struct link_encoder *link_enc_cfg_get_next_avail_link_enc(struct dc *dc)
 			break;
 		}
 	}
+
+	return link_enc;
+}
+
+struct link_encoder *link_enc_cfg_get_link_enc_used_by_stream(
+		struct dc *dc,
+		const struct dc_stream_state *stream)
+{
+	struct link_encoder *link_enc;
+
+	link_enc = link_enc_cfg_get_link_enc_used_by_link(dc, stream->link);
 
 	return link_enc;
 }
@@ -582,9 +580,6 @@ struct link_encoder *link_enc_cfg_get_link_enc_used_by_stream_current(
 	for (i = 0; i < MAX_PIPES; i++) {
 		struct link_enc_assignment assignment =
 			dc->current_state->res_ctx.link_enc_cfg_ctx.link_enc_assignments[i];
-
-		if (assignment.eng_id == ENGINE_ID_UNKNOWN)
-			continue;
 
 		if (assignment.valid == true && are_ep_ids_equal(&assignment.ep_id, &ep_id)) {
 			link_enc = stream->link->dc->res_pool->link_encoders[assignment.eng_id - ENGINE_ID_DIGA];
@@ -627,6 +622,7 @@ bool link_enc_cfg_validate(struct dc *dc, struct dc_state *state)
 	int i, j;
 	uint8_t valid_count = 0;
 	uint8_t dig_stream_count = 0;
+	int matching_stream_ptrs = 0;
 	int eng_ids_per_ep_id[MAX_PIPES] = {0};
 	int ep_ids_per_eng_id[MAX_PIPES] = {0};
 	int valid_bitmap = 0;
@@ -649,7 +645,9 @@ bool link_enc_cfg_validate(struct dc *dc, struct dc_state *state)
 		struct link_enc_assignment assignment = state->res_ctx.link_enc_cfg_ctx.link_enc_assignments[i];
 
 		if (assignment.valid) {
-			if (assignment.stream != state->streams[i])
+			if (assignment.stream == state->streams[i])
+				matching_stream_ptrs++;
+			else
 				valid_stream_ptrs = false;
 		}
 	}

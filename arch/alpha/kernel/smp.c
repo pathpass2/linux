@@ -38,7 +38,6 @@
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
-#include <asm/cacheflush.h>
 
 #include "proto.h"
 #include "irq_impl.h"
@@ -468,6 +467,11 @@ smp_prepare_cpus(unsigned int max_cpus)
 	smp_num_cpus = smp_num_probed;
 }
 
+void
+smp_prepare_boot_cpu(void)
+{
+}
+
 int
 __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
@@ -558,7 +562,7 @@ handle_ipi(struct pt_regs *regs)
 }
 
 void
-arch_smp_send_reschedule(int cpu)
+smp_send_reschedule(int cpu)
 {
 #ifdef DEBUG_IPI_MSG
 	if (cpu == hard_smp_processor_id())

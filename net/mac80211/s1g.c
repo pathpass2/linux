@@ -2,7 +2,6 @@
 /*
  * S1G handling
  * Copyright(c) 2020 Adapt-IP
- * Copyright (C) 2023 Intel Corporation
  */
 #include <linux/ieee80211.h>
 #include <net/mac80211.h>
@@ -154,11 +153,11 @@ void ieee80211_s1g_rx_twt_action(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_local *local = sdata->local;
 	struct sta_info *sta;
 
-	lockdep_assert_wiphy(local->hw.wiphy);
+	mutex_lock(&local->sta_mtx);
 
 	sta = sta_info_get_bss(sdata, mgmt->sa);
 	if (!sta)
-		return;
+		goto out;
 
 	switch (mgmt->u.action.u.s1g.action_code) {
 	case WLAN_S1G_TWT_SETUP:
@@ -170,6 +169,9 @@ void ieee80211_s1g_rx_twt_action(struct ieee80211_sub_if_data *sdata,
 	default:
 		break;
 	}
+
+out:
+	mutex_unlock(&local->sta_mtx);
 }
 
 void ieee80211_s1g_status_twt_action(struct ieee80211_sub_if_data *sdata,
@@ -179,11 +181,11 @@ void ieee80211_s1g_status_twt_action(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_local *local = sdata->local;
 	struct sta_info *sta;
 
-	lockdep_assert_wiphy(local->hw.wiphy);
+	mutex_lock(&local->sta_mtx);
 
 	sta = sta_info_get_bss(sdata, mgmt->da);
 	if (!sta)
-		return;
+		goto out;
 
 	switch (mgmt->u.action.u.s1g.action_code) {
 	case WLAN_S1G_TWT_SETUP:
@@ -193,30 +195,7 @@ void ieee80211_s1g_status_twt_action(struct ieee80211_sub_if_data *sdata,
 	default:
 		break;
 	}
-}
 
-void ieee80211_s1g_cap_to_sta_s1g_cap(struct ieee80211_sub_if_data *sdata,
-				      const struct ieee80211_s1g_cap *s1g_cap_ie,
-				      struct link_sta_info *link_sta)
-{
-	struct ieee80211_sta_s1g_cap *s1g_cap = &link_sta->pub->s1g_cap;
-
-	memset(s1g_cap, 0, sizeof(*s1g_cap));
-
-	memcpy(s1g_cap->cap, s1g_cap_ie->capab_info, sizeof(s1g_cap->cap));
-	memcpy(s1g_cap->nss_mcs, s1g_cap_ie->supp_mcs_nss,
-	       sizeof(s1g_cap->nss_mcs));
-
-	s1g_cap->s1g = true;
-
-	/* Maximum MPDU length is 1 bit for S1G */
-	if (s1g_cap->cap[3] & S1G_CAP3_MAX_MPDU_LEN) {
-		link_sta->pub->agg.max_amsdu_len =
-			IEEE80211_MAX_MPDU_LEN_VHT_7991;
-	} else {
-		link_sta->pub->agg.max_amsdu_len =
-			IEEE80211_MAX_MPDU_LEN_VHT_3895;
-	}
-
-	ieee80211_sta_recalc_aggregates(&link_sta->sta->sta);
+out:
+	mutex_unlock(&local->sta_mtx);
 }

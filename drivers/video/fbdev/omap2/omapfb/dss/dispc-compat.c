@@ -6,7 +6,6 @@
 
 #define DSS_SUBSYS_NAME "APPLY"
 
-#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>

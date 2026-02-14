@@ -55,6 +55,7 @@ struct seq_oss_chinfo {
 struct seq_oss_synthinfo {
 	struct snd_seq_oss_arg arg;
 	struct seq_oss_chinfo *ch;
+	struct seq_oss_synth_sysex *sysex;
 	int nr_voices;
 	int opened;
 	int is_midi;
@@ -115,6 +116,10 @@ __poll_t snd_seq_oss_poll(struct seq_oss_devinfo *dp, struct file *file, poll_ta
 
 void snd_seq_oss_reset(struct seq_oss_devinfo *dp);
 
+/* */
+void snd_seq_oss_process_queue(struct seq_oss_devinfo *dp, abstime_t time);
+
+
 /* proc interface */
 void snd_seq_oss_system_info_read(struct snd_info_buffer *buf);
 void snd_seq_oss_midi_info_read(struct snd_info_buffer *buf);
@@ -137,7 +142,12 @@ snd_seq_oss_dispatch(struct seq_oss_devinfo *dp, struct snd_seq_event *ev, int a
 static inline int
 snd_seq_oss_control(struct seq_oss_devinfo *dp, unsigned int type, void *arg)
 {
-	return snd_seq_kernel_client_ioctl(dp->cseq, type, arg);
+	int err;
+
+	snd_seq_client_ioctl_lock(dp->cseq);
+	err = snd_seq_kernel_client_ctl(dp->cseq, type, arg);
+	snd_seq_client_ioctl_unlock(dp->cseq);
+	return err;
 }
 
 /* fill the addresses in header */
@@ -150,5 +160,9 @@ snd_seq_oss_fill_addr(struct seq_oss_devinfo *dp, struct snd_seq_event *ev,
 	ev->dest.client = dest_client;
 	ev->dest.port = dest_port;
 }
+
+
+/* misc. functions for proc interface */
+char *enabled_str(int bool);
 
 #endif /* __SEQ_OSS_DEVICE_H */

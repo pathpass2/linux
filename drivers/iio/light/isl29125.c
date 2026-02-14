@@ -51,6 +51,11 @@
 struct isl29125_data {
 	struct i2c_client *client;
 	u8 conf1;
+	/* Ensure timestamp is naturally aligned */
+	struct {
+		u16 chans[3];
+		s64 timestamp __aligned(8);
+	} scan;
 };
 
 #define ISL29125_CHANNEL(_color, _si) { \
@@ -126,10 +131,11 @@ static int isl29125_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		ret = isl29125_read_data(data, chan->scan_index);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		if (ret < 0)
 			return ret;
 		*val = ret;
@@ -174,22 +180,18 @@ static irqreturn_t isl29125_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct isl29125_data *data = iio_priv(indio_dev);
 	int i, j = 0;
-	/* Ensure timestamp is naturally aligned */
-	struct {
-		u16 chans[3];
-		aligned_s64 timestamp;
-	} scan = { };
 
-	iio_for_each_active_channel(indio_dev, i) {
+	for_each_set_bit(i, indio_dev->active_scan_mask,
+		indio_dev->masklength) {
 		int ret = i2c_smbus_read_word_data(data->client,
 			isl29125_regs[i].data);
 		if (ret < 0)
 			goto done;
 
-		scan.chans[j++] = ret;
+		data->scan.chans[j++] = ret;
 	}
 
-	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
+	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
 		iio_get_time_ns(indio_dev));
 
 done:
@@ -325,7 +327,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(isl29125_pm_ops, isl29125_suspend,
 				isl29125_resume);
 
 static const struct i2c_device_id isl29125_id[] = {
-	{ "isl29125" },
+	{ "isl29125", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, isl29125_id);
@@ -335,7 +337,7 @@ static struct i2c_driver isl29125_driver = {
 		.name	= ISL29125_DRV_NAME,
 		.pm	= pm_sleep_ptr(&isl29125_pm_ops),
 	},
-	.probe		= isl29125_probe,
+	.probe_new	= isl29125_probe,
 	.remove		= isl29125_remove,
 	.id_table	= isl29125_id,
 };

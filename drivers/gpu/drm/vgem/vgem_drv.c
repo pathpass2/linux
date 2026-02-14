@@ -32,7 +32,7 @@
 
 #include <linux/dma-buf.h>
 #include <linux/module.h>
-#include <linux/device/faux.h>
+#include <linux/platform_device.h>
 #include <linux/shmem_fs.h>
 #include <linux/vmalloc.h>
 
@@ -47,12 +47,13 @@
 
 #define DRIVER_NAME	"vgem"
 #define DRIVER_DESC	"Virtual GEM provider"
+#define DRIVER_DATE	"20120112"
 #define DRIVER_MAJOR	1
 #define DRIVER_MINOR	0
 
 static struct vgem_device {
 	struct drm_device drm;
-	struct faux_device *faux_dev;
+	struct platform_device *platform;
 } *vgem_device;
 
 static int vgem_open(struct drm_device *dev, struct drm_file *file)
@@ -120,6 +121,7 @@ static const struct drm_driver vgem_driver = {
 
 	.name	= DRIVER_NAME,
 	.desc	= DRIVER_DESC,
+	.date	= DRIVER_DATE,
 	.major	= DRIVER_MAJOR,
 	.minor	= DRIVER_MINOR,
 };
@@ -127,27 +129,27 @@ static const struct drm_driver vgem_driver = {
 static int __init vgem_init(void)
 {
 	int ret;
-	struct faux_device *fdev;
+	struct platform_device *pdev;
 
-	fdev = faux_device_create("vgem", NULL, NULL);
-	if (!fdev)
-		return -ENODEV;
+	pdev = platform_device_register_simple("vgem", -1, NULL, 0);
+	if (IS_ERR(pdev))
+		return PTR_ERR(pdev);
 
-	if (!devres_open_group(&fdev->dev, NULL, GFP_KERNEL)) {
+	if (!devres_open_group(&pdev->dev, NULL, GFP_KERNEL)) {
 		ret = -ENOMEM;
 		goto out_unregister;
 	}
 
-	dma_coerce_mask_and_coherent(&fdev->dev,
+	dma_coerce_mask_and_coherent(&pdev->dev,
 				     DMA_BIT_MASK(64));
 
-	vgem_device = devm_drm_dev_alloc(&fdev->dev, &vgem_driver,
+	vgem_device = devm_drm_dev_alloc(&pdev->dev, &vgem_driver,
 					 struct vgem_device, drm);
 	if (IS_ERR(vgem_device)) {
 		ret = PTR_ERR(vgem_device);
 		goto out_devres;
 	}
-	vgem_device->faux_dev = fdev;
+	vgem_device->platform = pdev;
 
 	/* Final step: expose the device/driver to userspace */
 	ret = drm_dev_register(&vgem_device->drm, 0);
@@ -157,19 +159,19 @@ static int __init vgem_init(void)
 	return 0;
 
 out_devres:
-	devres_release_group(&fdev->dev, NULL);
+	devres_release_group(&pdev->dev, NULL);
 out_unregister:
-	faux_device_destroy(fdev);
+	platform_device_unregister(pdev);
 	return ret;
 }
 
 static void __exit vgem_exit(void)
 {
-	struct faux_device *fdev = vgem_device->faux_dev;
+	struct platform_device *pdev = vgem_device->platform;
 
 	drm_dev_unregister(&vgem_device->drm);
-	devres_release_group(&fdev->dev, NULL);
-	faux_device_destroy(fdev);
+	devres_release_group(&pdev->dev, NULL);
+	platform_device_unregister(pdev);
 }
 
 module_init(vgem_init);

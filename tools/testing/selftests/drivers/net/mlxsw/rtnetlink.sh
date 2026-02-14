@@ -16,6 +16,7 @@ ALL_TESTS="
 	bridge_deletion_test
 	bridge_vlan_flags_test
 	vlan_1_test
+	lag_bridge_upper_test
 	duplicate_vlans_test
 	vlan_rif_refcount_test
 	subport_rif_refcount_test
@@ -186,7 +187,10 @@ bridge_vlan_flags_test()
 
 	# If we did not handle references correctly, then this should produce a
 	# trace
-	devlink_reload
+	devlink dev reload "$DEVLINK_DEV"
+
+	# Allow netdevices to be re-created following the reload
+	sleep 20
 
 	log_test "bridge vlan flags"
 }
@@ -205,6 +209,33 @@ vlan_1_test()
 	log_test "vlan 1"
 
 	ip link del dev $swp1.1
+}
+
+lag_bridge_upper_test()
+{
+	# Test that ports cannot be enslaved to LAG devices that have uppers
+	# and that failure is handled gracefully. See commit b3529af6bb0d
+	# ("spectrum: Reference count VLAN entries") for more details
+	RET=0
+
+	ip link add name bond1 type bond mode 802.3ad
+
+	ip link add name br0 type bridge vlan_filtering 1
+	ip link set dev bond1 master br0
+
+	ip link set dev $swp1 down
+	ip link set dev $swp1 master bond1 &> /dev/null
+	check_fail $? "managed to enslave port to lag when should not"
+
+	# This might generate a trace, if we did not handle the failure
+	# correctly
+	ip -6 address add 2001:db8:1::1/64 dev $swp1
+	ip -6 address del 2001:db8:1::1/64 dev $swp1
+
+	log_test "lag with bridge upper"
+
+	ip link del dev br0
+	ip link del dev bond1
 }
 
 duplicate_vlans_test()
@@ -479,6 +510,9 @@ vlan_interface_uppers_test()
 	ip link set dev $swp1 master br0
 
 	ip link add link br0 name br0.10 type vlan id 10
+	ip link add link br0.10 name macvlan0 \
+		type macvlan mode private &> /dev/null
+	check_fail $? "managed to create a macvlan when should not"
 
 	ip -6 address add 2001:db8:1::1/64 dev br0.10
 	ip link add link br0.10 name macvlan0 type macvlan mode private
@@ -920,9 +954,12 @@ devlink_reload_test()
 	# devlink reload can be performed without errors
 	RET=0
 
-	devlink_reload
+	devlink dev reload "$DEVLINK_DEV"
+	check_err $? "devlink reload failed"
 
 	log_test "devlink reload - last test"
+
+	sleep 20
 }
 
 trap cleanup EXIT

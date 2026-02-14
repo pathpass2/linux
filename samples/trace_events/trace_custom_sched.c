@@ -8,6 +8,7 @@
 #define pr_fmt(fmt) fmt
 
 #include <linux/trace_events.h>
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/sched.h>
 

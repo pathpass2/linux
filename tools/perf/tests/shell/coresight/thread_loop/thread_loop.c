@@ -34,8 +34,8 @@ static void *thrfn(void *arg)
 	}
 	asm volatile(
 		"loop:\n"
-		"add %w[i], %w[i], #1\n"
-		"cmp %w[i], %w[len]\n"
+		"add %[i], %[i], #1\n"
+		"cmp %[i], %[len]\n"
 		"blt loop\n"
 		: /* out */
 		: /* in */ [i] "r" (i), [len] "r" (len)
@@ -57,6 +57,7 @@ static pthread_t new_thr(void *(*fn) (void *arg), void *arg)
 int main(int argc, char **argv)
 {
 	unsigned int i, len, thr;
+	pthread_t threads[256];
 	struct args args[256];
 
 	if (argc < 3) {

@@ -10,7 +10,6 @@
 #include <linux/fault-inject.h>
 
 #include <drm/drm_debugfs.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_file.h>
 #include <drm/drm_framebuffer.h>
 
@@ -117,36 +116,6 @@ static const struct file_operations msm_gpu_fops = {
 	.release = msm_gpu_release,
 };
 
-#ifdef CONFIG_DRM_MSM_KMS
-static int msm_fb_show(struct seq_file *m, void *arg)
-{
-	struct drm_info_node *node = m->private;
-	struct drm_device *dev = node->minor->dev;
-	struct drm_framebuffer *fb, *fbdev_fb = NULL;
-
-	if (dev->fb_helper && dev->fb_helper->fb) {
-		seq_puts(m, "fbcon ");
-		fbdev_fb = dev->fb_helper->fb;
-		msm_framebuffer_describe(fbdev_fb, m);
-	}
-
-	mutex_lock(&dev->mode_config.fb_lock);
-	list_for_each_entry(fb, &dev->mode_config.fb_list, head) {
-		if (fb == fbdev_fb)
-			continue;
-
-		seq_puts(m, "user ");
-		msm_framebuffer_describe(fb, m);
-	}
-	mutex_unlock(&dev->mode_config.fb_lock);
-
-	return 0;
-}
-
-static struct drm_info_list msm_kms_debugfs_list[] = {
-		{ "fb", msm_fb_show },
-};
-
 /*
  * Display Snapshot:
  */
@@ -210,27 +179,6 @@ static const struct file_operations msm_kms_fops = {
 	.release = msm_kms_release,
 };
 
-static void msm_debugfs_kms_init(struct drm_minor *minor)
-{
-	struct drm_device *dev = minor->dev;
-	struct msm_drm_private *priv = dev->dev_private;
-
-	drm_debugfs_create_files(msm_kms_debugfs_list,
-				 ARRAY_SIZE(msm_kms_debugfs_list),
-				 minor->debugfs_root, minor);
-	debugfs_create_file("kms", 0400, minor->debugfs_root,
-			    dev, &msm_kms_fops);
-
-	if (priv->kms->funcs->debugfs_init)
-		priv->kms->funcs->debugfs_init(priv->kms, minor);
-
-}
-#else /* ! CONFIG_DRM_MSM_KMS */
-static void msm_debugfs_kms_init(struct drm_minor *minor)
-{
-}
-#endif
-
 /*
  * Other debugfs:
  */
@@ -259,39 +207,10 @@ DEFINE_DEBUGFS_ATTRIBUTE(shrink_fops,
 			 shrink_get, shrink_set,
 			 "0x%08llx\n");
 
-/*
- * Return the number of microseconds to wait until stall-on-fault is
- * re-enabled. If 0 then it is already enabled or will be re-enabled on the
- * next submit (unless there's a leftover devcoredump). This is useful for
- * kernel tests that intentionally produce a fault and check the devcoredump to
- * wait until the cooldown period is over.
- */
-
-static int
-stall_reenable_time_get(void *data, u64 *val)
-{
-	struct msm_drm_private *priv = data;
-	unsigned long irq_flags;
-
-	spin_lock_irqsave(&priv->fault_stall_lock, irq_flags);
-
-	if (priv->stall_enabled)
-		*val = 0;
-	else
-		*val = max(ktime_us_delta(priv->stall_reenable_time, ktime_get()), 0);
-
-	spin_unlock_irqrestore(&priv->fault_stall_lock, irq_flags);
-
-	return 0;
-}
-
-DEFINE_DEBUGFS_ATTRIBUTE(stall_reenable_time_fops,
-			 stall_reenable_time_get, NULL,
-			 "%lld\n");
 
 static int msm_gem_show(struct seq_file *m, void *arg)
 {
-	struct drm_info_node *node = m->private;
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
 	struct drm_device *dev = node->minor->dev;
 	struct msm_drm_private *priv = dev->dev_private;
 	int ret;
@@ -309,7 +228,7 @@ static int msm_gem_show(struct seq_file *m, void *arg)
 
 static int msm_mm_show(struct seq_file *m, void *arg)
 {
-	struct drm_info_node *node = m->private;
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
 	struct drm_device *dev = node->minor->dev;
 	struct drm_printer p = drm_seq_file_printer(m);
 
@@ -318,35 +237,54 @@ static int msm_mm_show(struct seq_file *m, void *arg)
 	return 0;
 }
 
+static int msm_fb_show(struct seq_file *m, void *arg)
+{
+	struct drm_info_node *node = (struct drm_info_node *) m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct msm_drm_private *priv = dev->dev_private;
+	struct drm_framebuffer *fb, *fbdev_fb = NULL;
+
+	if (priv->fbdev) {
+		seq_printf(m, "fbcon ");
+		fbdev_fb = priv->fbdev->fb;
+		msm_framebuffer_describe(fbdev_fb, m);
+	}
+
+	mutex_lock(&dev->mode_config.fb_lock);
+	list_for_each_entry(fb, &dev->mode_config.fb_list, head) {
+		if (fb == fbdev_fb)
+			continue;
+
+		seq_printf(m, "user ");
+		msm_framebuffer_describe(fb, m);
+	}
+	mutex_unlock(&dev->mode_config.fb_lock);
+
+	return 0;
+}
+
 static struct drm_info_list msm_debugfs_list[] = {
 		{"gem", msm_gem_show},
 		{ "mm", msm_mm_show },
+		{ "fb", msm_fb_show },
 };
 
 static int late_init_minor(struct drm_minor *minor)
 {
-	struct drm_device *dev;
-	struct msm_drm_private *priv;
 	int ret;
 
 	if (!minor)
 		return 0;
 
-	dev = minor->dev;
-	priv = dev->dev_private;
-
-	if (!priv->gpu_pdev)
-		return 0;
-
 	ret = msm_rd_debugfs_init(minor);
 	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "could not install rd debugfs\n");
+		DRM_DEV_ERROR(minor->dev->dev, "could not install rd debugfs\n");
 		return ret;
 	}
 
 	ret = msm_perf_debugfs_init(minor);
 	if (ret) {
-		DRM_DEV_ERROR(dev->dev, "could not install perf debugfs\n");
+		DRM_DEV_ERROR(minor->dev->dev, "could not install perf debugfs\n");
 		return ret;
 	}
 
@@ -363,14 +301,21 @@ int msm_debugfs_late_init(struct drm_device *dev)
 	return ret;
 }
 
-static void msm_debugfs_gpu_init(struct drm_minor *minor)
+void msm_debugfs_init(struct drm_minor *minor)
 {
 	struct drm_device *dev = minor->dev;
 	struct msm_drm_private *priv = dev->dev_private;
 	struct dentry *gpu_devfreq;
 
+	drm_debugfs_create_files(msm_debugfs_list,
+				 ARRAY_SIZE(msm_debugfs_list),
+				 minor->debugfs_root, minor);
+
 	debugfs_create_file("gpu", S_IRUSR, minor->debugfs_root,
 		dev, &msm_gpu_fops);
+
+	debugfs_create_file("kms", S_IRUSR, minor->debugfs_root,
+		dev, &msm_kms_fops);
 
 	debugfs_create_u32("hangcheck_period_ms", 0600, minor->debugfs_root,
 		&priv->hangcheck_period);
@@ -378,8 +323,8 @@ static void msm_debugfs_gpu_init(struct drm_minor *minor)
 	debugfs_create_bool("disable_err_irq", 0600, minor->debugfs_root,
 		&priv->disable_err_irq);
 
-	debugfs_create_file("stall_reenable_time_us", 0400, minor->debugfs_root,
-		priv, &stall_reenable_time_fops);
+	debugfs_create_file("shrink", S_IRWXU, minor->debugfs_root,
+		dev, &shrink_fops);
 
 	gpu_devfreq = debugfs_create_dir("devfreq", minor->debugfs_root);
 
@@ -391,30 +336,16 @@ static void msm_debugfs_gpu_init(struct drm_minor *minor)
 
 	debugfs_create_u32("downdifferential",0600, gpu_devfreq,
 			   &priv->gpu_devfreq_config.downdifferential);
-}
 
-void msm_debugfs_init(struct drm_minor *minor)
-{
-	struct drm_device *dev = minor->dev;
-	struct msm_drm_private *priv = dev->dev_private;
+	if (priv->kms && priv->kms->funcs->debugfs_init)
+		priv->kms->funcs->debugfs_init(priv->kms, minor);
 
-	drm_debugfs_create_files(msm_debugfs_list,
-				 ARRAY_SIZE(msm_debugfs_list),
-				 minor->debugfs_root, minor);
-
-	if (priv->gpu_pdev)
-		msm_debugfs_gpu_init(minor);
-
-	if (priv->kms)
-		msm_debugfs_kms_init(minor);
-
-	debugfs_create_file("shrink", S_IRWXU, minor->debugfs_root,
-		dev, &shrink_fops);
-
+#ifdef CONFIG_FAULT_INJECTION
 	fault_create_debugfs_attr("fail_gem_alloc", minor->debugfs_root,
 				  &fail_gem_alloc);
 	fault_create_debugfs_attr("fail_gem_iova", minor->debugfs_root,
 				  &fail_gem_iova);
+#endif
 }
 #endif
 

@@ -179,7 +179,6 @@
 #define PDC_PAT_PD		74L         /* Protection Domain Info   */
 #define PDC_PAT_PD_GET_ADDR_MAP		0L  /* Get Address Map          */
 #define PDC_PAT_PD_GET_PDC_INTERF_REV	1L  /* Get PDC Interface Revisions */
-#define PDC_PAT_PD_GET_PLATFORM_COUNTER	10L /* Get 64-bit free running counter */
 
 #define PDC_PAT_CAPABILITY_BIT_PDC_SERIALIZE	(1UL << 0)
 #define PDC_PAT_CAPABILITY_BIT_PDC_POLLING	(1UL << 1)
@@ -211,7 +210,7 @@
 #define PDC_PAT_SYSTEM_INFO	76L
 /* PDC_PAT_SYSTEM_INFO uses the same options as PDC_SYSTEM_INFO function. */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <linux/types.h>
 
 #ifdef CONFIG_64BIT
@@ -374,11 +373,9 @@ extern int pdc_pat_pd_get_addr_map(unsigned long *actual_len, void *mem_addr,
 		unsigned long count, unsigned long offset);
 extern int pdc_pat_pd_get_pdc_revisions(unsigned long *legacy_rev,
 		unsigned long *pat_rev, unsigned long *pdc_cap);
-extern int pdc_pat_pd_get_platform_counter(uint64_t **addr,
-		unsigned long *freq, unsigned long *uniq);
 
-extern int pdc_pat_io_pci_cfg_read(unsigned long pci_addr, int pci_size, u32 *val);
-extern int pdc_pat_io_pci_cfg_write(unsigned long pci_addr, int pci_size, u32 val);
+extern int pdc_pat_io_pci_cfg_read(unsigned long pci_addr, int pci_size, u32 *val); 
+extern int pdc_pat_io_pci_cfg_write(unsigned long pci_addr, int pci_size, u32 val); 
 
 extern int pdc_pat_mem_pdt_info(struct pdc_pat_mem_retinfo *rinfo);
 extern int pdc_pat_mem_pdt_cell_info(struct pdc_pat_mem_cell_pdt_retinfo *rinfo,
@@ -392,6 +389,6 @@ extern int pdc_pat_mem_get_dimm_phys_location(
                 struct pdc_pat_mem_phys_mem_location *pret,
                 unsigned long phys_addr);
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* ! __PARISC_PATPDC_H */

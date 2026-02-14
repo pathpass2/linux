@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/fault-inject.h>
-#include <linux/error-injection.h>
-#include <linux/debugfs.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include "slab.h"
@@ -16,23 +14,23 @@ static struct {
 	.cache_filter = false,
 };
 
-int should_failslab(struct kmem_cache *s, gfp_t gfpflags)
+bool __should_failslab(struct kmem_cache *s, gfp_t gfpflags)
 {
 	int flags = 0;
 
 	/* No fault-injection for bootstrap cache */
 	if (unlikely(s == kmem_cache))
-		return 0;
+		return false;
 
 	if (gfpflags & __GFP_NOFAIL)
-		return 0;
+		return false;
 
 	if (failslab.ignore_gfp_reclaim &&
 			(gfpflags & __GFP_DIRECT_RECLAIM))
-		return 0;
+		return false;
 
 	if (failslab.cache_filter && !(s->flags & SLAB_FAILSLAB))
-		return 0;
+		return false;
 
 	/*
 	 * In some cases, it expects to specify __GFP_NOWARN
@@ -43,9 +41,8 @@ int should_failslab(struct kmem_cache *s, gfp_t gfpflags)
 	if (gfpflags & __GFP_NOWARN)
 		flags |= FAULT_NOWARN;
 
-	return should_fail_ex(&failslab.attr, s->object_size, flags) ? -ENOMEM : 0;
+	return should_fail_ex(&failslab.attr, s->object_size, flags);
 }
-ALLOW_ERROR_INJECTION(should_failslab, ERRNO);
 
 static int __init setup_failslab(char *str)
 {

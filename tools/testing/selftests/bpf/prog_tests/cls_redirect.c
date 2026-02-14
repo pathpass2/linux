@@ -10,11 +10,9 @@
 #include <netinet/tcp.h>
 
 #include <test_progs.h>
-#include "network_helpers.h"
 
 #include "progs/test_cls_redirect.h"
 #include "test_cls_redirect.skel.h"
-#include "test_cls_redirect_dynptr.skel.h"
 #include "test_cls_redirect_subprogs.skel.h"
 
 #define ENCAP_IP INADDR_LOOPBACK
@@ -22,37 +20,112 @@
 
 static int duration = 0;
 
+struct addr_port {
+	in_port_t port;
+	union {
+		struct in_addr in_addr;
+		struct in6_addr in6_addr;
+	};
+};
 
-static bool set_up_conn(const struct sockaddr_storage *addr, socklen_t len, int type,
-			int *server, int *conn,
-			struct sockaddr_storage *src,
-			struct sockaddr_storage *dst)
+struct tuple {
+	int family;
+	struct addr_port src;
+	struct addr_port dst;
+};
+
+static int start_server(const struct sockaddr *addr, socklen_t len, int type)
+{
+	int fd = socket(addr->sa_family, type, 0);
+	if (CHECK_FAIL(fd == -1))
+		return -1;
+	if (CHECK_FAIL(bind(fd, addr, len) == -1))
+		goto err;
+	if (type == SOCK_STREAM && CHECK_FAIL(listen(fd, 128) == -1))
+		goto err;
+
+	return fd;
+
+err:
+	close(fd);
+	return -1;
+}
+
+static int connect_to_server(const struct sockaddr *addr, socklen_t len,
+			     int type)
+{
+	int fd = socket(addr->sa_family, type, 0);
+	if (CHECK_FAIL(fd == -1))
+		return -1;
+	if (CHECK_FAIL(connect(fd, addr, len)))
+		goto err;
+
+	return fd;
+
+err:
+	close(fd);
+	return -1;
+}
+
+static bool fill_addr_port(const struct sockaddr *sa, struct addr_port *ap)
+{
+	const struct sockaddr_in6 *in6;
+	const struct sockaddr_in *in;
+
+	switch (sa->sa_family) {
+	case AF_INET:
+		in = (const struct sockaddr_in *)sa;
+		ap->in_addr = in->sin_addr;
+		ap->port = in->sin_port;
+		return true;
+
+	case AF_INET6:
+		in6 = (const struct sockaddr_in6 *)sa;
+		ap->in6_addr = in6->sin6_addr;
+		ap->port = in6->sin6_port;
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+static bool set_up_conn(const struct sockaddr *addr, socklen_t len, int type,
+			int *server, int *conn, struct tuple *tuple)
 {
 	struct sockaddr_storage ss;
 	socklen_t slen = sizeof(ss);
+	struct sockaddr *sa = (struct sockaddr *)&ss;
 
-	*server = start_server_addr(type, addr, len, NULL);
+	*server = start_server(addr, len, type);
 	if (*server < 0)
 		return false;
 
-	if (CHECK_FAIL(getsockname(*server, (struct sockaddr *)&ss, &slen)))
+	if (CHECK_FAIL(getsockname(*server, sa, &slen)))
 		goto close_server;
 
-	*conn = connect_to_addr(type, &ss, slen, NULL);
+	*conn = connect_to_server(sa, slen, type);
 	if (*conn < 0)
 		goto close_server;
 
 	/* We want to simulate packets arriving at conn, so we have to
 	 * swap src and dst.
 	 */
-	slen = sizeof(*dst);
-	if (CHECK_FAIL(getsockname(*conn, (struct sockaddr *)dst, &slen)))
+	slen = sizeof(ss);
+	if (CHECK_FAIL(getsockname(*conn, sa, &slen)))
 		goto close_conn;
 
-	slen = sizeof(*src);
-	if (CHECK_FAIL(getpeername(*conn, (struct sockaddr *)src, &slen)))
+	if (CHECK_FAIL(!fill_addr_port(sa, &tuple->dst)))
 		goto close_conn;
 
+	slen = sizeof(ss);
+	if (CHECK_FAIL(getpeername(*conn, sa, &slen)))
+		goto close_conn;
+
+	if (CHECK_FAIL(!fill_addr_port(sa, &tuple->src)))
+		goto close_conn;
+
+	tuple->family = ss.ss_family;
 	return true;
 
 close_conn:
@@ -68,16 +141,17 @@ static socklen_t prepare_addr(struct sockaddr_storage *addr, int family)
 {
 	struct sockaddr_in *addr4;
 	struct sockaddr_in6 *addr6;
-	memset(addr, 0, sizeof(*addr));
 
 	switch (family) {
 	case AF_INET:
 		addr4 = (struct sockaddr_in *)addr;
+		memset(addr4, 0, sizeof(*addr4));
 		addr4->sin_family = family;
 		addr4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 		return sizeof(*addr4);
 	case AF_INET6:
 		addr6 = (struct sockaddr_in6 *)addr;
+		memset(addr6, 0, sizeof(*addr6));
 		addr6->sin6_family = family;
 		addr6->sin6_addr = in6addr_loopback;
 		return sizeof(*addr6);
@@ -199,15 +273,9 @@ static void encap_init(encap_headers_t *encap, uint8_t hop_count, uint8_t proto)
 }
 
 static size_t build_input(const struct test_cfg *test, void *const buf,
-			  const struct sockaddr_storage *src,
-			  const struct sockaddr_storage *dst)
+			  const struct tuple *tuple)
 {
-	struct sockaddr_in6 *src_in6 = (struct sockaddr_in6 *)src;
-	struct sockaddr_in6 *dst_in6 = (struct sockaddr_in6 *)dst;
-	struct sockaddr_in *src_in = (struct sockaddr_in *)src;
-	struct sockaddr_in *dst_in = (struct sockaddr_in *)dst;
-	sa_family_t family = src->ss_family;
-	in_port_t sport, dport;
+	in_port_t sport = tuple->src.port;
 	encap_headers_t encap;
 	struct iphdr ip;
 	struct ipv6hdr ipv6;
@@ -217,11 +285,8 @@ static size_t build_input(const struct test_cfg *test, void *const buf,
 	uint8_t *p = buf;
 	int proto;
 
-	sport = (family == AF_INET) ? src_in->sin_port : src_in6->sin6_port;
-	dport = (family == AF_INET) ? dst_in->sin_port : dst_in6->sin6_port;
-
 	proto = IPPROTO_IPIP;
-	if (family == AF_INET6)
+	if (tuple->family == AF_INET6)
 		proto = IPPROTO_IPV6;
 
 	encap_init(&encap, test->hops == ONE_HOP ? 1 : 0, proto);
@@ -236,15 +301,15 @@ static size_t build_input(const struct test_cfg *test, void *const buf,
 	if (test->type == UDP)
 		proto = IPPROTO_UDP;
 
-	switch (family) {
+	switch (tuple->family) {
 	case AF_INET:
 		ip = (struct iphdr){
 			.ihl = 5,
 			.version = 4,
 			.ttl = IPDEFTTL,
 			.protocol = proto,
-			.saddr = src_in->sin_addr.s_addr,
-			.daddr = dst_in->sin_addr.s_addr,
+			.saddr = tuple->src.in_addr.s_addr,
+			.daddr = tuple->dst.in_addr.s_addr,
 		};
 		p = mempcpy(p, &ip, sizeof(ip));
 		break;
@@ -253,8 +318,8 @@ static size_t build_input(const struct test_cfg *test, void *const buf,
 			.version = 6,
 			.hop_limit = IPDEFTTL,
 			.nexthdr = proto,
-			.saddr = src_in6->sin6_addr,
-			.daddr = dst_in6->sin6_addr,
+			.saddr = tuple->src.in6_addr,
+			.daddr = tuple->dst.in6_addr,
 		};
 		p = mempcpy(p, &ipv6, sizeof(ipv6));
 		break;
@@ -269,16 +334,18 @@ static size_t build_input(const struct test_cfg *test, void *const buf,
 	case TCP:
 		tcp = (struct tcphdr){
 			.source = sport,
-			.dest = dport,
-			.syn = (test->flags == SYN),
-			.ack = (test->flags == ACK),
+			.dest = tuple->dst.port,
 		};
+		if (test->flags == SYN)
+			tcp.syn = true;
+		if (test->flags == ACK)
+			tcp.ack = true;
 		p = mempcpy(p, &tcp, sizeof(tcp));
 		break;
 	case UDP:
 		udp = (struct udphdr){
 			.source = sport,
-			.dest = dport,
+			.dest = tuple->dst.port,
 		};
 		p = mempcpy(p, &udp, sizeof(udp));
 		break;
@@ -303,26 +370,27 @@ static void test_cls_redirect_common(struct bpf_program *prog)
 	LIBBPF_OPTS(bpf_test_run_opts, tattr);
 	int families[] = { AF_INET, AF_INET6 };
 	struct sockaddr_storage ss;
+	struct sockaddr *addr;
 	socklen_t slen;
 	int i, j, err, prog_fd;
 	int servers[__NR_KIND][ARRAY_SIZE(families)] = {};
 	int conns[__NR_KIND][ARRAY_SIZE(families)] = {};
-	struct sockaddr_storage srcs[__NR_KIND][ARRAY_SIZE(families)];
-	struct sockaddr_storage dsts[__NR_KIND][ARRAY_SIZE(families)];
+	struct tuple tuples[__NR_KIND][ARRAY_SIZE(families)];
 
+	addr = (struct sockaddr *)&ss;
 	for (i = 0; i < ARRAY_SIZE(families); i++) {
 		slen = prepare_addr(&ss, families[i]);
 		if (CHECK_FAIL(!slen))
 			goto cleanup;
 
-		if (CHECK_FAIL(!set_up_conn(&ss, slen, SOCK_DGRAM,
+		if (CHECK_FAIL(!set_up_conn(addr, slen, SOCK_DGRAM,
 					    &servers[UDP][i], &conns[UDP][i],
-					    &srcs[UDP][i], &dsts[UDP][i])))
+					    &tuples[UDP][i])))
 			goto cleanup;
 
-		if (CHECK_FAIL(!set_up_conn(&ss, slen, SOCK_STREAM,
+		if (CHECK_FAIL(!set_up_conn(addr, slen, SOCK_STREAM,
 					    &servers[TCP][i], &conns[TCP][i],
-					    &srcs[TCP][i], &dsts[TCP][i])))
+					    &tuples[TCP][i])))
 			goto cleanup;
 	}
 
@@ -331,12 +399,11 @@ static void test_cls_redirect_common(struct bpf_program *prog)
 		struct test_cfg *test = &tests[i];
 
 		for (j = 0; j < ARRAY_SIZE(families); j++) {
-			struct sockaddr_storage *src = &srcs[test->type][j];
-			struct sockaddr_storage *dst = &dsts[test->type][j];
+			struct tuple *tuple = &tuples[test->type][j];
 			char input[256];
 			char tmp[256];
 
-			test_str(tmp, sizeof(tmp), test, families[j]);
+			test_str(tmp, sizeof(tmp), test, tuple->family);
 			if (!test__start_subtest(tmp))
 				continue;
 
@@ -344,7 +411,7 @@ static void test_cls_redirect_common(struct bpf_program *prog)
 			tattr.data_size_out = sizeof(tmp);
 
 			tattr.data_in = input;
-			tattr.data_size_in = build_input(test, input, src, dst);
+			tattr.data_size_in = build_input(test, input, tuple);
 			if (CHECK_FAIL(!tattr.data_size_in))
 				continue;
 
@@ -377,28 +444,6 @@ static void test_cls_redirect_common(struct bpf_program *prog)
 cleanup:
 	close_fds((int *)servers, sizeof(servers) / sizeof(servers[0][0]));
 	close_fds((int *)conns, sizeof(conns) / sizeof(conns[0][0]));
-}
-
-static void test_cls_redirect_dynptr(void)
-{
-	struct test_cls_redirect_dynptr *skel;
-	int err;
-
-	skel = test_cls_redirect_dynptr__open();
-	if (!ASSERT_OK_PTR(skel, "skel_open"))
-		return;
-
-	skel->rodata->ENCAPSULATION_IP = htonl(ENCAP_IP);
-	skel->rodata->ENCAPSULATION_PORT = htons(ENCAP_PORT);
-
-	err = test_cls_redirect_dynptr__load(skel);
-	if (!ASSERT_OK(err, "skel_load"))
-		goto cleanup;
-
-	test_cls_redirect_common(skel->progs.cls_redirect);
-
-cleanup:
-	test_cls_redirect_dynptr__destroy(skel);
 }
 
 static void test_cls_redirect_inlined(void)
@@ -451,6 +496,4 @@ void test_cls_redirect(void)
 		test_cls_redirect_inlined();
 	if (test__start_subtest("cls_redirect_subprogs"))
 		test_cls_redirect_subprogs();
-	if (test__start_subtest("cls_redirect_dynptr"))
-		test_cls_redirect_dynptr();
 }

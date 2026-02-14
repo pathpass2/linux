@@ -138,8 +138,8 @@ static int cros_ec_regulator_init_info(struct device *dev,
 	data->num_voltages =
 		min_t(u16, ARRAY_SIZE(resp.voltages_mv), resp.num_voltages);
 	data->voltages_mV =
-		devm_kmemdup_array(dev, resp.voltages_mv, data->num_voltages,
-				   sizeof(resp.voltages_mv[0]), GFP_KERNEL);
+		devm_kmemdup(dev, resp.voltages_mv,
+			     sizeof(u16) * data->num_voltages, GFP_KERNEL);
 	if (!data->voltages_mV)
 		return -ENOMEM;
 
@@ -215,7 +215,6 @@ static struct platform_driver cros_ec_regulator_driver = {
 	.probe		= cros_ec_regulator_probe,
 	.driver		= {
 		.name		= "cros-ec-regulator",
-		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = regulator_cros_ec_of_match,
 	},
 };

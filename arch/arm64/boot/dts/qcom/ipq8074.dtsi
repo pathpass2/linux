@@ -29,45 +29,44 @@
 	};
 
 	cpus {
-		#address-cells = <1>;
-		#size-cells = <0>;
+		#address-cells = <0x1>;
+		#size-cells = <0x0>;
 
-		cpu0: cpu@0 {
+		CPU0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			reg = <0x0>;
-			next-level-cache = <&l2_0>;
+			next-level-cache = <&L2_0>;
 			enable-method = "psci";
 		};
 
-		cpu1: cpu@1 {
+		CPU1: cpu@1 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x1>;
-			next-level-cache = <&l2_0>;
+			next-level-cache = <&L2_0>;
 		};
 
-		cpu2: cpu@2 {
+		CPU2: cpu@2 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x2>;
-			next-level-cache = <&l2_0>;
+			next-level-cache = <&L2_0>;
 		};
 
-		cpu3: cpu@3 {
+		CPU3: cpu@3 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
 			reg = <0x3>;
-			next-level-cache = <&l2_0>;
+			next-level-cache = <&L2_0>;
 		};
 
-		l2_0: l2-cache {
+		L2_0: l2-cache {
 			compatible = "cache";
-			cache-level = <2>;
-			cache-unified;
+			cache-level = <0x2>;
 		};
 	};
 
@@ -86,65 +85,60 @@
 		#size-cells = <2>;
 		ranges;
 
-		bootloader@4a600000 {
-			reg = <0x0 0x4a600000 0x0 0x400000>;
-			no-map;
-		};
-
-		sbl@4aa00000 {
-			reg = <0x0 0x4aa00000 0x0 0x100000>;
-			no-map;
-		};
-
 		smem@4ab00000 {
 			compatible = "qcom,smem";
-			reg = <0x0 0x4ab00000 0x0 0x100000>;
+			reg = <0x0 0x4ab00000 0x0 0x00100000>;
 			no-map;
 
-			hwlocks = <&tcsr_mutex 3>;
+			hwlocks = <&tcsr_mutex 0>;
 		};
 
 		memory@4ac00000 {
-			reg = <0x0 0x4ac00000 0x0 0x400000>;
 			no-map;
+			reg = <0x0 0x4ac00000 0x0 0x00400000>;
 		};
 	};
 
 	firmware {
 		scm {
 			compatible = "qcom,scm-ipq8074", "qcom,scm";
-			qcom,dload-mode = <&tcsr 0x6100>;
 		};
 	};
 
-	soc: soc@0 {
-		#address-cells = <1>;
-		#size-cells = <1>;
+	soc: soc {
+		#address-cells = <0x1>;
+		#size-cells = <0x1>;
 		ranges = <0 0 0 0xffffffff>;
 		compatible = "simple-bus";
 
 		ssphy_1: phy@58000 {
 			compatible = "qcom,ipq8074-qmp-usb3-phy";
-			reg = <0x00058000 0x1000>;
+			reg = <0x00058000 0x1c4>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
 
 			clocks = <&gcc GCC_USB1_AUX_CLK>,
-				 <&xo>,
-				 <&gcc GCC_USB1_PHY_CFG_AHB_CLK>,
-				 <&gcc GCC_USB1_PIPE_CLK>;
-			clock-names = "aux",
-				      "ref",
-				      "cfg_ahb",
-				      "pipe";
-			clock-output-names = "usb3phy_1_cc_pipe_clk";
-			#clock-cells = <0>;
-			#phy-cells = <0>;
+				<&gcc GCC_USB1_PHY_CFG_AHB_CLK>,
+				<&xo>;
+			clock-names = "aux", "cfg_ahb", "ref";
 
 			resets = <&gcc GCC_USB1_PHY_BCR>,
-				 <&gcc GCC_USB3PHY_1_PHY_BCR>;
-			reset-names = "phy",
-				      "phy_phy";
-
+				<&gcc GCC_USB3PHY_1_PHY_BCR>;
+			reset-names = "phy","common";
 			status = "disabled";
+
+			usb1_ssphy: phy@58200 {
+				reg = <0x00058200 0x130>,     /* Tx */
+				      <0x00058400 0x200>,     /* Rx */
+				      <0x00058800 0x1f8>,     /* PCS */
+				      <0x00058600 0x044>;     /* PCS misc */
+				#phy-cells = <0>;
+				#clock-cells = <0>;
+				clocks = <&gcc GCC_USB1_PIPE_CLK>;
+				clock-names = "pipe0";
+				clock-output-names = "usb3phy_1_cc_pipe_clk";
+			};
 		};
 
 		qusb_phy_1: phy@59000 {
@@ -162,26 +156,32 @@
 
 		ssphy_0: phy@78000 {
 			compatible = "qcom,ipq8074-qmp-usb3-phy";
-			reg = <0x00078000 0x1000>;
+			reg = <0x00078000 0x1c4>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
 
 			clocks = <&gcc GCC_USB0_AUX_CLK>,
-				 <&xo>,
-				 <&gcc GCC_USB0_PHY_CFG_AHB_CLK>,
-				 <&gcc GCC_USB0_PIPE_CLK>;
-			clock-names = "aux",
-				      "ref",
-				      "cfg_ahb",
-				      "pipe";
-			clock-output-names = "usb3phy_0_cc_pipe_clk";
-			#clock-cells = <0>;
-			#phy-cells = <0>;
+				<&gcc GCC_USB0_PHY_CFG_AHB_CLK>,
+				<&xo>;
+			clock-names = "aux", "cfg_ahb", "ref";
 
 			resets = <&gcc GCC_USB0_PHY_BCR>,
-				 <&gcc GCC_USB3PHY_0_PHY_BCR>;
-			reset-names = "phy",
-				      "phy_phy";
-
+				<&gcc GCC_USB3PHY_0_PHY_BCR>;
+			reset-names = "phy","common";
 			status = "disabled";
+
+			usb0_ssphy: phy@78200 {
+				reg = <0x00078200 0x130>,     /* Tx */
+				      <0x00078400 0x200>,     /* Rx */
+				      <0x00078800 0x1f8>,     /* PCS */
+				      <0x00078600 0x044>;     /* PCS misc */
+				#phy-cells = <0>;
+				#clock-cells = <0>;
+				clocks = <&gcc GCC_USB0_PIPE_CLK>;
+				clock-names = "pipe0";
+				clock-output-names = "usb3phy_0_cc_pipe_clk";
+			};
 		};
 
 		qusb_phy_0: phy@79000 {
@@ -199,48 +199,59 @@
 
 		pcie_qmp0: phy@84000 {
 			compatible = "qcom,ipq8074-qmp-gen3-pcie-phy";
-			reg = <0x00084000 0x1000>;
+			reg = <0x00084000 0x1bc>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
 
 			clocks = <&gcc GCC_PCIE0_AUX_CLK>,
-				 <&gcc GCC_PCIE0_AHB_CLK>,
-				 <&gcc GCC_PCIE0_PIPE_CLK>;
-			clock-names = "aux",
-				      "cfg_ahb",
-				      "pipe";
-
-			clock-output-names = "pcie20_phy0_pipe_clk";
-			#clock-cells = <0>;
-
-			#phy-cells = <0>;
-
+				<&gcc GCC_PCIE0_AHB_CLK>;
+			clock-names = "aux", "cfg_ahb";
 			resets = <&gcc GCC_PCIE0_PHY_BCR>,
-				 <&gcc GCC_PCIE0PHY_PHY_BCR>;
+				<&gcc GCC_PCIE0PHY_PHY_BCR>;
 			reset-names = "phy",
 				      "common";
 			status = "disabled";
+
+			pcie_phy0: phy@84200 {
+				reg = <0x84200 0x16c>,
+				      <0x84400 0x200>,
+				      <0x84800 0x1f0>,
+				      <0x84c00 0xf4>;
+				#phy-cells = <0>;
+				#clock-cells = <0>;
+				clocks = <&gcc GCC_PCIE0_PIPE_CLK>;
+				clock-names = "pipe0";
+				clock-output-names = "pcie20_phy0_pipe_clk";
+			};
 		};
 
 		pcie_qmp1: phy@8e000 {
 			compatible = "qcom,ipq8074-qmp-pcie-phy";
-			reg = <0x0008e000 0x1000>;
+			reg = <0x0008e000 0x1c4>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
 
 			clocks = <&gcc GCC_PCIE1_AUX_CLK>,
-				 <&gcc GCC_PCIE1_AHB_CLK>,
-				 <&gcc GCC_PCIE1_PIPE_CLK>;
-			clock-names = "aux",
-				      "cfg_ahb",
-				      "pipe";
-
-			clock-output-names = "pcie20_phy1_pipe_clk";
-			#clock-cells = <0>;
-
-			#phy-cells = <0>;
-
+				<&gcc GCC_PCIE1_AHB_CLK>;
+			clock-names = "aux", "cfg_ahb";
 			resets = <&gcc GCC_PCIE1_PHY_BCR>,
-				 <&gcc GCC_PCIE1PHY_PHY_BCR>;
+				<&gcc GCC_PCIE1PHY_PHY_BCR>;
 			reset-names = "phy",
 				      "common";
 			status = "disabled";
+
+			pcie_phy1: phy@8e200 {
+				reg = <0x8e200 0x130>,
+				      <0x8e400 0x200>,
+				      <0x8e800 0x1f8>;
+				#phy-cells = <0>;
+				#clock-cells = <0>;
+				clocks = <&gcc GCC_PCIE1_PIPE_CLK>;
+				clock-names = "pipe0";
+				clock-output-names = "pcie20_phy1_pipe_clk";
+			};
 		};
 
 		mdio: mdio@90000 {
@@ -251,8 +262,6 @@
 
 			clocks = <&gcc GCC_MDIO_AHB_CLK>;
 			clock-names = "gcc_mdio_ahb_clk";
-
-			clock-frequency = <6250000>;
 
 			status = "disabled";
 		};
@@ -312,20 +321,13 @@
 			interrupts = <GIC_SPI 208 IRQ_TYPE_LEVEL_HIGH>;
 			gpio-controller;
 			gpio-ranges = <&tlmm 0 0 70>;
-			#gpio-cells = <2>;
+			#gpio-cells = <0x2>;
 			interrupt-controller;
-			#interrupt-cells = <2>;
+			#interrupt-cells = <0x2>;
 
 			serial_4_pins: serial4-state {
 				pins = "gpio23", "gpio24";
 				function = "blsp4_uart1";
-				drive-strength = <8>;
-				bias-disable;
-			};
-
-			serial_5_pins: serial5-state {
-				pins = "gpio9", "gpio16";
-				function = "blsp5_uart";
 				drive-strength = <8>;
 				bias-disable;
 			};
@@ -356,24 +358,18 @@
 				       "gpio5", "gpio6", "gpio7",
 				       "gpio8", "gpio10", "gpio11",
 				       "gpio12", "gpio13", "gpio14",
-				       "gpio15", "gpio17";
+				       "gpio15", "gpio16", "gpio17";
 				function = "qpic";
 				drive-strength = <8>;
 				bias-disable;
 			};
 		};
 
-		gcc: clock-controller@1800000 {
+		gcc: gcc@1800000 {
 			compatible = "qcom,gcc-ipq8074";
 			reg = <0x01800000 0x80000>;
-			clocks = <&xo>,
-				 <&sleep_clk>,
-				 <&pcie_qmp0>,
-				 <&pcie_qmp1>;
-			clock-names = "xo",
-				      "sleep_clk",
-				      "pcie0_pipe",
-				      "pcie1_pipe";
+			clocks = <&xo>, <&sleep_clk>;
+			clock-names = "xo", "sleep_clk";
 			#clock-cells = <1>;
 			#power-domain-cells = <1>;
 			#reset-cells = <1>;
@@ -383,11 +379,6 @@
 			compatible = "qcom,tcsr-mutex";
 			reg = <0x01905000 0x20000>;
 			#hwlock-cells = <1>;
-		};
-
-		tcsr: syscon@1937000 {
-			compatible = "qcom,tcsr-ipq8074", "syscon";
-			reg = <0x01937000 0x21000>;
 		};
 
 		spmi_bus: spmi@200f000 {
@@ -406,10 +397,11 @@
 			#size-cells = <0>;
 			interrupt-controller;
 			#interrupt-cells = <4>;
+			cell-index = <0>;
 		};
 
 		sdhc_1: mmc@7824900 {
-			compatible = "qcom,ipq8074-sdhci", "qcom,sdhci-msm-v4";
+			compatible = "qcom,sdhci-msm-v4";
 			reg = <0x7824900 0x500>, <0x7824000 0x800>;
 			reg-names = "hc", "core";
 
@@ -478,24 +470,13 @@
 			status = "disabled";
 		};
 
-		blsp1_uart6: serial@78b4000 {
-			compatible = "qcom,msm-uartdm-v1.4", "qcom,msm-uartdm";
-			reg = <0x078b4000 0x200>;
-			interrupts = <GIC_SPI 309 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&gcc GCC_BLSP1_UART6_APPS_CLK>,
-				 <&gcc GCC_BLSP1_AHB_CLK>;
-			clock-names = "core", "iface";
-			pinctrl-0 = <&serial_5_pins>;
-			pinctrl-names = "default";
-			status = "disabled";
-		};
-
 		blsp1_spi1: spi@78b5000 {
 			compatible = "qcom,spi-qup-v2.2.1";
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <0x078b5000 0x600>;
 			interrupts = <GIC_SPI 95 IRQ_TYPE_LEVEL_HIGH>;
+			spi-max-frequency = <50000000>;
 			clocks = <&gcc GCC_BLSP1_QUP1_SPI_APPS_CLK>,
 				<&gcc GCC_BLSP1_AHB_CLK>;
 			clock-names = "core", "iface";
@@ -538,20 +519,6 @@
 			status = "disabled";
 		};
 
-		blsp1_spi4: spi@78b8000 {
-			compatible = "qcom,spi-qup-v2.2.1";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x78b8000 0x600>;
-			interrupts = <GIC_SPI 98 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&gcc GCC_BLSP1_QUP4_SPI_APPS_CLK>,
-				 <&gcc GCC_BLSP1_AHB_CLK>;
-			clock-names = "core", "iface";
-			dmas = <&blsp_dma 18>, <&blsp_dma 19>;
-			dma-names = "tx", "rx";
-			status = "disabled";
-		};
-
 		blsp1_i2c5: i2c@78b9000 {
 			compatible = "qcom,i2c-qup-v2.2.1";
 			#address-cells = <1>;
@@ -562,20 +529,6 @@
 				 <&gcc GCC_BLSP1_AHB_CLK>;
 			clock-names = "core", "iface";
 			clock-frequency = <400000>;
-			dmas = <&blsp_dma 20>, <&blsp_dma 21>;
-			dma-names = "tx", "rx";
-			status = "disabled";
-		};
-
-		blsp1_spi5: spi@78b9000 {
-			compatible = "qcom,spi-qup-v2.2.1";
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0x78b9000 0x600>;
-			interrupts = <GIC_SPI 299 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&gcc GCC_BLSP1_QUP5_SPI_APPS_CLK>,
-				 <&gcc GCC_BLSP1_AHB_CLK>;
-			clock-names = "core", "iface";
 			dmas = <&blsp_dma 20>, <&blsp_dma 21>;
 			dma-names = "tx", "rx";
 			status = "disabled";
@@ -648,13 +601,6 @@
 						<133330000>,
 						<19200000>;
 
-			interrupts = <GIC_SPI 134 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 130 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 220 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "pwr_event",
-					  "qusb2_phy",
-					  "ss_phy_irq";
-
 			power-domains = <&gcc USB0_GDSC>;
 
 			resets = <&gcc GCC_USB0_BCR>;
@@ -664,9 +610,8 @@
 				compatible = "snps,dwc3";
 				reg = <0x8a00000 0xcd00>;
 				interrupts = <GIC_SPI 140 IRQ_TYPE_LEVEL_HIGH>;
-				phys = <&qusb_phy_0>, <&ssphy_0>;
+				phys = <&qusb_phy_0>, <&usb0_ssphy>;
 				phy-names = "usb2-phy", "usb3-phy";
-				snps,parkmode-disable-ss-quirk;
 				snps,is-utmi-l1-suspend;
 				snps,hird-threshold = /bits/ 8 <0x0>;
 				snps,dis_u2_susphy_quirk;
@@ -698,13 +643,6 @@
 						<133330000>,
 						<19200000>;
 
-			interrupts = <GIC_SPI 128 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 136 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 225 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "pwr_event",
-					  "qusb2_phy",
-					  "ss_phy_irq";
-
 			power-domains = <&gcc USB1_GDSC>;
 
 			resets = <&gcc GCC_USB1_BCR>;
@@ -714,9 +652,8 @@
 				compatible = "snps,dwc3";
 				reg = <0x8c00000 0xcd00>;
 				interrupts = <GIC_SPI 99 IRQ_TYPE_LEVEL_HIGH>;
-				phys = <&qusb_phy_1>, <&ssphy_1>;
+				phys = <&qusb_phy_1>, <&usb1_ssphy>;
 				phy-names = "usb2-phy", "usb3-phy";
-				snps,parkmode-disable-ss-quirk;
 				snps,is-utmi-l1-suspend;
 				snps,hird-threshold = /bits/ 8 <0x0>;
 				snps,dis_u2_susphy_quirk;
@@ -730,7 +667,7 @@
 			#address-cells = <1>;
 			#size-cells = <1>;
 			interrupt-controller;
-			#interrupt-cells = <3>;
+			#interrupt-cells = <0x3>;
 			reg = <0x0b000000 0x1000>, <0x0b002000 0x1000>;
 			ranges = <0 0xb00a000 0xffd>;
 
@@ -750,11 +687,10 @@
 		};
 
 		apcs_glb: mailbox@b111000 {
-			compatible = "qcom,ipq8074-apcs-apps-global",
-				     "qcom,ipq6018-apcs-apps-global";
+			compatible = "qcom,ipq8074-apcs-apps-global";
 			reg = <0x0b111000 0x1000>;
-			clocks = <&a53pll>, <&xo>, <&gcc GPLL0>;
-			clock-names = "pll", "xo", "gpll0";
+			clocks = <&a53pll>, <&xo>;
+			clock-names = "pll", "xo";
 
 			#clock-cells = <1>;
 			#mbox-cells = <1>;
@@ -826,12 +762,12 @@
 			};
 		};
 
-		pcie1: pcie@10000000 {
+		pcie1: pci@10000000 {
 			compatible = "qcom,pcie-ipq8074";
-			reg = <0x10000000 0xf1d>,
-			      <0x10000f20 0xa8>,
-			      <0x00088000 0x2000>,
-			      <0x10100000 0x1000>;
+			reg =  <0x10000000 0xf1d>,
+			       <0x10000f20 0xa8>,
+			       <0x00088000 0x2000>,
+			       <0x10100000 0x1000>;
 			reg-names = "dbi", "elbi", "parf", "config";
 			device_type = "pci";
 			linux,pci-domain = <1>;
@@ -841,39 +777,25 @@
 			#address-cells = <3>;
 			#size-cells = <2>;
 
-			phys = <&pcie_qmp1>;
+			phys = <&pcie_phy1>;
 			phy-names = "pciephy";
 
-			ranges = <0x81000000 0x0 0x00000000 0x10200000 0x0 0x10000>,   /* I/O */
-				 <0x82000000 0x0 0x10220000 0x10220000 0x0 0xfde0000>; /* MEM */
+			ranges = <0x81000000 0 0x10200000 0x10200000
+				  0 0x10000>,   /* downstream I/O */
+				 <0x82000000 0 0x10220000 0x10220000
+				  0 0xfde0000>; /* non-prefetchable memory */
 
-			interrupts = <GIC_SPI 85 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 30 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 31 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 32 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 35 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 137 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "msi0",
-					  "msi1",
-					  "msi2",
-					  "msi3",
-					  "msi4",
-					  "msi5",
-					  "msi6",
-					  "msi7",
-					  "global";
+			interrupts = <GIC_SPI 85 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "msi";
 			#interrupt-cells = <1>;
 			interrupt-map-mask = <0 0 0 0x7>;
-			interrupt-map = <0 0 0 1 &intc 0 GIC_SPI 142
+			interrupt-map = <0 0 0 1 &intc 0 142
 					 IRQ_TYPE_LEVEL_HIGH>, /* int_a */
-					<0 0 0 2 &intc 0 GIC_SPI 143
+					<0 0 0 2 &intc 0 143
 					 IRQ_TYPE_LEVEL_HIGH>, /* int_b */
-					<0 0 0 3 &intc 0 GIC_SPI 144
+					<0 0 0 3 &intc 0 144
 					 IRQ_TYPE_LEVEL_HIGH>, /* int_c */
-					<0 0 0 4 &intc 0 GIC_SPI 145
+					<0 0 0 4 &intc 0 145
 					 IRQ_TYPE_LEVEL_HIGH>; /* int_d */
 
 			clocks = <&gcc GCC_SYS_NOC_PCIE1_AXI_CLK>,
@@ -901,19 +823,9 @@
 				      "ahb",
 				      "axi_m_sticky";
 			status = "disabled";
-
-			pcie@0 {
-				device_type = "pci";
-				reg = <0x0 0x0 0x0 0x0 0x0>;
-				bus-range = <0x01 0xff>;
-
-				#address-cells = <3>;
-				#size-cells = <2>;
-				ranges;
-			};
 		};
 
-		pcie0: pcie@20000000 {
+		pcie0: pci@20000000 {
 			compatible = "qcom,pcie-ipq8074-gen3";
 			reg = <0x20000000 0xf1d>,
 			      <0x20000f20 0xa8>,
@@ -929,39 +841,25 @@
 			#address-cells = <3>;
 			#size-cells = <2>;
 
-			phys = <&pcie_qmp0>;
+			phys = <&pcie_phy0>;
 			phy-names = "pciephy";
 
-			ranges = <0x81000000 0x0 0x00000000 0x20200000 0x0 0x10000>,   /* I/O */
-				 <0x82000000 0x0 0x20220000 0x20220000 0x0 0xfde0000>; /* MEM */
+			ranges = <0x81000000 0 0x20200000 0x20200000
+				  0 0x10000>, /* downstream I/O */
+				 <0x82000000 0 0x20220000 0x20220000
+				  0 0xfde0000>; /* non-prefetchable memory */
 
-			interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 55 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 56 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 57 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 63 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 68 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 72 IRQ_TYPE_LEVEL_HIGH>,
-				     <GIC_SPI 51 IRQ_TYPE_LEVEL_HIGH>;
-			interrupt-names = "msi0",
-					  "msi1",
-					  "msi2",
-					  "msi3",
-					  "msi4",
-					  "msi5",
-					  "msi6",
-					  "msi7",
-					  "global";
+			interrupts = <GIC_SPI 52 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "msi";
 			#interrupt-cells = <1>;
 			interrupt-map-mask = <0 0 0 0x7>;
-			interrupt-map = <0 0 0 1 &intc 0 GIC_SPI 75
+			interrupt-map = <0 0 0 1 &intc 0 75
 					 IRQ_TYPE_LEVEL_HIGH>, /* int_a */
-					<0 0 0 2 &intc 0 GIC_SPI 78
+					<0 0 0 2 &intc 0 78
 					 IRQ_TYPE_LEVEL_HIGH>, /* int_b */
-					<0 0 0 3 &intc 0 GIC_SPI 79
+					<0 0 0 3 &intc 0 79
 					 IRQ_TYPE_LEVEL_HIGH>, /* int_c */
-					<0 0 0 4 &intc 0 GIC_SPI 83
+					<0 0 0 4 &intc 0 83
 					 IRQ_TYPE_LEVEL_HIGH>; /* int_d */
 
 			clocks = <&gcc GCC_SYS_NOC_PCIE0_AXI_CLK>,
@@ -992,16 +890,6 @@
 				      "axi_m_sticky",
 				      "axi_s_sticky";
 			status = "disabled";
-
-			pcie@0 {
-				device_type = "pci";
-				reg = <0x0 0x0 0x0 0x0 0x0>;
-				bus-range = <0x01 0xff>;
-
-				#address-cells = <3>;
-				#size-cells = <2>;
-				ranges;
-			};
 		};
 	};
 
@@ -1016,170 +904,86 @@
 	thermal-zones {
 		nss-top-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 4>;
-
-			trips {
-				nss-top-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		nss0-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 5>;
-
-			trips {
-				nss-0-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		nss1-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 6>;
-
-			trips {
-				nss-1-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		wcss-phya0-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 7>;
-
-			trips {
-				wcss-phya0-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		wcss-phya1-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 8>;
-
-			trips {
-				wcss-phya1-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		cpu0_thermal: cpu0-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 9>;
-
-			trips {
-				cpu0-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		cpu1_thermal: cpu1-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 10>;
-
-			trips {
-				cpu1-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		cpu2_thermal: cpu2-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 11>;
-
-			trips {
-				cpu2-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		cpu3_thermal: cpu3-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 12>;
-
-			trips {
-				cpu3-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		cluster_thermal: cluster-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 13>;
-
-			trips {
-				cluster-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		wcss-phyb0-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 14>;
-
-			trips {
-				wcss-phyb0-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 
 		wcss-phyb1-thermal {
 			polling-delay-passive = <250>;
+			polling-delay = <1000>;
 
 			thermal-sensors = <&tsens 15>;
-
-			trips {
-				wcss-phyb1-crit {
-					temperature = <110000>;
-					hysteresis = <1000>;
-					type = "critical";
-				};
-			};
 		};
 	};
 };

@@ -1,1 +1,1 @@
-perf-util-y += util/
+perf-y += util/

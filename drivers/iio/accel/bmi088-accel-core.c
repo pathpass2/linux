@@ -2,8 +2,6 @@
 /*
  * 3-axis accelerometer driver supporting following Bosch-Sensortec chips:
  *  - BMI088
- *  - BMI085
- *  - BMI090L
  *
  * Copyright (c) 2018-2021, Topic Embedded Products
  */
@@ -18,7 +16,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "bmi088-accel.h"
 
@@ -114,6 +112,11 @@ enum bmi088_odr_modes {
 	BMI088_ACCEL_MODE_ODR_1600 = 0xc,
 };
 
+struct bmi088_scale_info {
+	int scale;
+	u8 reg_range;
+};
+
 struct bmi088_accel_chip_info {
 	const char *name;
 	u8 chip_id;
@@ -145,9 +148,9 @@ const struct regmap_config bmi088_regmap_conf = {
 	.val_bits = 8,
 	.max_register = 0x7E,
 	.volatile_table = &bmi088_volatile_table,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 };
-EXPORT_SYMBOL_NS_GPL(bmi088_regmap_conf, "IIO_BMI088");
+EXPORT_SYMBOL_NS_GPL(bmi088_regmap_conf, IIO_BMI088);
 
 static int bmi088_accel_power_up(struct bmi088_accel_data *data)
 {
@@ -313,13 +316,12 @@ static int bmi088_accel_read_raw(struct iio_dev *indio_dev,
 			if (ret)
 				return ret;
 
-			if (!iio_device_claim_direct(indio_dev)) {
-				ret = -EBUSY;
+			ret = iio_device_claim_direct_mode(indio_dev);
+			if (ret)
 				goto out_read_raw_pm_put;
-			}
 
 			ret = bmi088_accel_get_axis(data, chan, val);
-			iio_device_release_direct(indio_dev);
+			iio_device_release_direct_mode(indio_dev);
 			if (!ret)
 				ret = IIO_VAL_INT;
 
@@ -375,6 +377,7 @@ static int bmi088_accel_read_raw(struct iio_dev *indio_dev,
 	return -EINVAL;
 
 out_read_raw_pm_put:
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return ret;
@@ -418,6 +421,7 @@ static int bmi088_accel_write_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		ret = bmi088_accel_set_scale(data, val, val2);
+		pm_runtime_mark_last_busy(dev);
 		pm_runtime_put_autosuspend(dev);
 		return ret;
 	case IIO_CHAN_INFO_SAMP_FREQ:
@@ -426,6 +430,7 @@ static int bmi088_accel_write_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		ret = bmi088_accel_set_sample_freq(data, val);
+		pm_runtime_mark_last_busy(dev);
 		pm_runtime_put_autosuspend(dev);
 		return ret;
 	default:
@@ -585,7 +590,7 @@ int bmi088_accel_core_probe(struct device *dev, struct regmap *regmap,
 
 	return ret;
 }
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_probe, "IIO_BMI088");
+EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_probe, IIO_BMI088);
 
 
 void bmi088_accel_core_remove(struct device *dev)
@@ -599,7 +604,7 @@ void bmi088_accel_core_remove(struct device *dev)
 	pm_runtime_set_suspended(dev);
 	bmi088_accel_power_down(data);
 }
-EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_remove, "IIO_BMI088");
+EXPORT_SYMBOL_NS_GPL(bmi088_accel_core_remove, IIO_BMI088);
 
 static int bmi088_accel_runtime_suspend(struct device *dev)
 {

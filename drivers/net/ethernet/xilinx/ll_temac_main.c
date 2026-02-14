@@ -35,10 +35,12 @@
 #include <linux/netdevice.h>
 #include <linux/if_ether.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
+#include <linux/of_address.h>
 #include <linux/skbuff.h>
 #include <linux/spinlock.h>
 #include <linux/tcp.h>      /* needed for sizeof(tcphdr) */
@@ -1309,7 +1311,7 @@ ll_temac_ethtools_set_ringparam(struct net_device *ndev,
 	if (ering->rx_pending > RX_BD_NUM_MAX ||
 	    ering->rx_mini_pending ||
 	    ering->rx_jumbo_pending ||
-	    ering->tx_pending > TX_BD_NUM_MAX)
+	    ering->rx_pending > TX_BD_NUM_MAX)
 		return -EINVAL;
 
 	if (netif_running(ndev))
@@ -1443,7 +1445,7 @@ static int temac_probe(struct platform_device *pdev)
 	}
 
 	/* map device registers */
-	lp->regs = devm_platform_ioremap_resource(pdev, 0);
+	lp->regs = devm_platform_ioremap_resource_byname(pdev, 0);
 	if (IS_ERR(lp->regs)) {
 		dev_err(&pdev->dev, "could not map TEMAC registers\n");
 		return -ENOMEM;
@@ -1565,16 +1567,12 @@ static int temac_probe(struct platform_device *pdev)
 	}
 
 	/* Error handle returned DMA RX and TX interrupts */
-	if (lp->rx_irq <= 0) {
-		rc = lp->rx_irq ?: -EINVAL;
-		return dev_err_probe(&pdev->dev, rc,
+	if (lp->rx_irq < 0)
+		return dev_err_probe(&pdev->dev, lp->rx_irq,
 				     "could not get DMA RX irq\n");
-	}
-	if (lp->tx_irq <= 0) {
-		rc = lp->tx_irq ?: -EINVAL;
-		return dev_err_probe(&pdev->dev, rc,
+	if (lp->tx_irq < 0)
+		return dev_err_probe(&pdev->dev, lp->tx_irq,
 				     "could not get DMA TX irq\n");
-	}
 
 	if (temac_np) {
 		/* Retrieve the MAC address */
@@ -1595,7 +1593,7 @@ static int temac_probe(struct platform_device *pdev)
 	if (temac_np) {
 		lp->phy_node = of_parse_phandle(temac_np, "phy-handle", 0);
 		if (lp->phy_node)
-			dev_dbg(lp->dev, "using PHY node %pOF\n", lp->phy_node);
+			dev_dbg(lp->dev, "using PHY node %pOF\n", temac_np);
 	} else if (pdata) {
 		snprintf(lp->phy_name, sizeof(lp->phy_name),
 			 PHY_ID_FMT, lp->mii_bus->id, pdata->phy_addr);
@@ -1626,7 +1624,7 @@ err_sysfs_create:
 	return rc;
 }
 
-static void temac_remove(struct platform_device *pdev)
+static int temac_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct temac_local *lp = netdev_priv(ndev);
@@ -1636,6 +1634,7 @@ static void temac_remove(struct platform_device *pdev)
 	if (lp->phy_node)
 		of_node_put(lp->phy_node);
 	temac_mdio_teardown(lp);
+	return 0;
 }
 
 static const struct of_device_id temac_of_match[] = {

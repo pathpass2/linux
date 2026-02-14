@@ -64,7 +64,7 @@ struct sbi_regs {
  */
 
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 static inline int acquire_sbi(int devid, int mask)
 {
@@ -111,6 +111,6 @@ static inline void set_sbi_ctl(int devid, int cfgno, int cfg)
 			      "i" (ASI_M_CTL));
 }
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #endif /* !(_SPARC_SBI_H) */

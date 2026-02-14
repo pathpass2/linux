@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright (c) 2020 Facebook */
-#include <vmlinux.h>
+#include "bpf_iter.h"
 #include <bpf/bpf_helpers.h>
 
 char _license[] SEC("license") = "GPL";
@@ -35,8 +35,6 @@ int dump_task_stack(struct bpf_iter__task *ctx)
 	return 0;
 }
 
-int num_user_stacks = 0;
-
 SEC("iter/task")
 int get_task_user_stacks(struct bpf_iter__task *ctx)
 {
@@ -52,9 +50,6 @@ int get_task_user_stacks(struct bpf_iter__task *ctx)
 			MAX_STACK_TRACE_DEPTH * SIZE_OF_ULONG, BPF_F_USER_STACK);
 	if (res <= 0)
 		return 0;
-
-	/* Only one task, the current one, should succeed */
-	++num_user_stacks;
 
 	buf_sz += res;
 

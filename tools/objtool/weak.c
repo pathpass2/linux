@@ -8,8 +8,6 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <objtool/objtool.h>
-#include <objtool/arch.h>
-#include <objtool/builtin.h>
 
 #define UNSUPPORTED(name)						\
 ({									\
@@ -25,9 +23,4 @@ int __weak orc_dump(const char *_objname)
 int __weak orc_create(struct objtool_file *file)
 {
 	UNSUPPORTED("ORC");
-}
-
-int __weak cmd_klp(int argc, const char **argv)
-{
-	UNSUPPORTED("klp");
 }

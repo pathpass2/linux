@@ -28,8 +28,7 @@ properties:
     maxItems: 1
     description: |
       This interrupt which is used to signal an event by the secure world
-      software is expected to be either a per-cpu interrupt or an
-      edge-triggered peripheral interrupt.
+      software is expected to be edge-triggered.
 
   method:
     enum: [smc, hvc]

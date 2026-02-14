@@ -29,9 +29,6 @@
 
 #include "intel_display_types.h"
 
-struct intel_dsi_host;
-struct ref_tracker;
-
 #define INTEL_DSI_VIDEO_MODE	0
 #define INTEL_DSI_COMMAND_MODE	1
 
@@ -40,11 +37,13 @@ struct ref_tracker;
 #define DSI_DUAL_LINK_FRONT_BACK	1
 #define DSI_DUAL_LINK_PIXEL_ALT		2
 
+struct intel_dsi_host;
+
 struct intel_dsi {
 	struct intel_encoder base;
 
 	struct intel_dsi_host *dsi_hosts[I915_MAX_PORTS];
-	struct ref_tracker *io_wakeref[I915_MAX_PORTS];
+	intel_wakeref_t io_wakeref[I915_MAX_PORTS];
 
 	/* GPIO Desc for panel and backlight control */
 	struct gpio_desc *gpio_panel;
@@ -58,6 +57,9 @@ struct intel_dsi {
 		u16 phys;	/* ICL DSI */
 	};
 
+	/* if true, use HS mode, otherwise LP */
+	bool hs;
+
 	/* virtual channel */
 	int channel;
 
@@ -67,7 +69,7 @@ struct intel_dsi {
 	/* number of DSI lanes */
 	unsigned int lane_count;
 
-	/* i2c bus associated with the target device */
+	/* i2c bus associated with the slave device */
 	int i2c_bus_num;
 
 	/*
@@ -91,6 +93,7 @@ struct intel_dsi {
 	bool bgr_enabled;
 
 	u8 pixel_overlap;
+	u32 port_bits;
 	u32 bw_timer;
 	u32 dphy_reg;
 
@@ -166,11 +169,9 @@ enum drm_panel_orientation
 intel_dsi_get_panel_orientation(struct intel_connector *connector);
 int intel_dsi_get_modes(struct drm_connector *connector);
 enum drm_mode_status intel_dsi_mode_valid(struct drm_connector *connector,
-					  const struct drm_display_mode *mode);
+					  struct drm_display_mode *mode);
 struct intel_dsi_host *intel_dsi_host_init(struct intel_dsi *intel_dsi,
 					   const struct mipi_dsi_host_ops *funcs,
 					   enum port port);
-void intel_dsi_wait_panel_power_cycle(struct intel_dsi *intel_dsi);
-void intel_dsi_shutdown(struct intel_encoder *encoder);
 
 #endif /* _INTEL_DSI_H */

@@ -523,9 +523,9 @@ Linux 里这是提倡的做法，因为这样可以很简单的给读者提供�
 
 .. code-block:: c
 
-	err_free_bar:
+	 err_free_bar:
 		kfree(foo->bar);
-	err_free_foo:
+	 err_free_foo:
 		kfree(foo);
 		return ret;
 
@@ -545,7 +545,7 @@ Linux 里这是提倡的做法，因为这样可以很简单的给读者提供�
 也可以加上它做这些事情的原因。
 
 当注释内核 API 函数时，请使用 kernel-doc 格式。详见
-Documentation/translations/zh_CN/doc-guide/index.rst 和 tools/docs/kernel-doc 。
+Documentation/translations/zh_CN/doc-guide/index.rst 和 scripts/kernel-doc 。
 
 长 (多行) 注释的首选风格是：
 
@@ -558,6 +558,17 @@ Documentation/translations/zh_CN/doc-guide/index.rst 和 tools/docs/kernel-doc �
 	 *
 	 * Description:  A column of asterisks on the left side,
 	 * with beginning and ending almost-blank lines.
+	 */
+
+对于在 net/ 和 drivers/net/ 的文件，首选的长 (多行) 注释风格有些不同。
+
+.. code-block:: c
+
+	/* The preferred comment style for files in net/ and drivers/net
+	 * looks like this.
+	 *
+	 * It is nearly the same as the generally preferred comment style,
+	 * but there is no initial almost-blank line.
 	 */
 
 注释数据也是很重要的，不管是基本类型还是衍生类型。为了方便实现这一点，每一行
@@ -643,7 +654,7 @@ Documentation/translations/zh_CN/doc-guide/index.rst 和 tools/docs/kernel-doc �
 请注意，您还可以使用 ``clang-format`` 工具帮助您处理这些规则，快速自动重新格
 式化部分代码，并审阅整个文件以发现代码风格错误、打字错误和可能的改进。它还可
 以方便地排序 ``#include`` ，对齐变量/宏，重排文本和其他类似任务。
-详见 Documentation/dev-tools/clang-format.rst 。
+详见 Documentation/process/clang-format.rst 。
 
 
 10) Kconfig 配置文件

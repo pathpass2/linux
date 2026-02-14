@@ -7,7 +7,6 @@
  * Author: Liam Girdwood <lrg@slimlogic.co.uk>
  */
 
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -17,6 +16,7 @@
 #include <linux/i2c.h>
 #include <linux/spi/spi.h>
 #include <linux/slab.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -389,10 +389,10 @@ static int wm8510_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		clk |= 0x0001;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		break;
 	default:
 		return -EINVAL;
@@ -504,7 +504,6 @@ static int wm8510_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
 	struct wm8510_priv *wm8510 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	u16 power1 = snd_soc_component_read(component, WM8510_POWER1) & ~0x3;
 
 	switch (level) {
@@ -517,7 +516,7 @@ static int wm8510_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_STANDBY:
 		power1 |= WM8510_POWER1_BIASEN | WM8510_POWER1_BUFIOEN;
 
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			regcache_sync(wm8510->regmap);
 
 			/* Initial cap charge at VMID 5k */
@@ -608,7 +607,7 @@ static const struct regmap_config wm8510_regmap = {
 
 	.reg_defaults = wm8510_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8510_reg_defaults),
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.volatile_reg = wm8510_volatile,
 };
@@ -669,7 +668,7 @@ static int wm8510_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm8510_i2c_id[] = {
-	{ "wm8510" },
+	{ "wm8510", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8510_i2c_id);
@@ -679,7 +678,7 @@ static struct i2c_driver wm8510_i2c_driver = {
 		.name = "wm8510",
 		.of_match_table = wm8510_of_match,
 	},
-	.probe = wm8510_i2c_probe,
+	.probe_new = wm8510_i2c_probe,
 	.id_table = wm8510_i2c_id,
 };
 #endif

@@ -36,7 +36,7 @@
 	    ".align 4						\n"	\
 	    ".globl " STATIC_CALL_TRAMP_STR(name) "		\n"	\
 	    STATIC_CALL_TRAMP_STR(name) ":			\n"	\
-	    ANNOTATE_NOENDBR "					\n"	\
+	    ANNOTATE_NOENDBR						\
 	    insns "						\n"	\
 	    ".byte 0x0f, 0xb9, 0xcc				\n"	\
 	    ".type " STATIC_CALL_TRAMP_STR(name) ", @function	\n"	\
@@ -46,7 +46,7 @@
 #define ARCH_DEFINE_STATIC_CALL_TRAMP(name, func)			\
 	__ARCH_DEFINE_STATIC_CALL_TRAMP(name, ".byte 0xe9; .long " #func " - (. + 4)")
 
-#ifdef CONFIG_MITIGATION_RETHUNK
+#ifdef CONFIG_RETHUNK
 #define ARCH_DEFINE_STATIC_CALL_NULL_TRAMP(name)			\
 	__ARCH_DEFINE_STATIC_CALL_TRAMP(name, "jmp __x86_return_thunk")
 #else
@@ -64,20 +64,5 @@
 	    ".popsection					\n")
 
 extern bool __static_call_fixup(void *tramp, u8 op, void *dest);
-
-extern void __static_call_update_early(void *tramp, void *func);
-
-#define static_call_update_early(name, _func)				\
-({									\
-	typeof(&STATIC_CALL_TRAMP(name)) __F = (_func);			\
-	if (static_call_initialized) {					\
-		__static_call_update(&STATIC_CALL_KEY(name),		\
-				     STATIC_CALL_TRAMP_ADDR(name), __F);\
-	} else {							\
-		WRITE_ONCE(STATIC_CALL_KEY(name).func, _func);		\
-		__static_call_update_early(STATIC_CALL_TRAMP_ADDR(name),\
-					   __F);			\
-	}								\
-})
 
 #endif /* _ASM_STATIC_CALL_H */

@@ -14,7 +14,6 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
-#include <linux/string.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
@@ -51,7 +50,8 @@ static struct snd_soc_jack_pin cht_bsw_headset_pins[] = {
 static int platform_clock_control(struct snd_soc_dapm_widget *w,
 		struct snd_kcontrol *k, int  event)
 {
-	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
+	struct snd_soc_dapm_context *dapm = w->dapm;
+	struct snd_soc_card *card = dapm->card;
 	struct snd_soc_dai *codec_dai;
 	struct cht_mc_private *ctx = snd_soc_card_get_drvdata(card);
 	int ret;
@@ -93,12 +93,8 @@ static int platform_clock_control(struct snd_soc_dapm_widget *w,
 		 * when codec is runtime suspended. Codec needs clock for jack
 		 * detection and button press.
 		 */
-		ret = snd_soc_dai_set_sysclk(codec_dai, RT5670_SCLK_S_RCCLK,
-					     48000 * 512, SND_SOC_CLOCK_IN);
-		if (ret < 0) {
-			dev_err(card->dev, "failed to set codec sysclk: %d\n", ret);
-			return ret;
-		}
+		snd_soc_dai_set_sysclk(codec_dai, RT5670_SCLK_S_RCCLK,
+				       48000 * 512, SND_SOC_CLOCK_IN);
 
 		if (ctx->mclk)
 			clk_disable_unprepare(ctx->mclk);
@@ -159,8 +155,8 @@ static const struct snd_kcontrol_new cht_mc_controls[] = {
 static int cht_aif1_hw_params(struct snd_pcm_substream *substream,
 					struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int ret;
 
 	/* set codec PLL source to the 19.2MHz platform clock (MCLK) */
@@ -192,8 +188,7 @@ static const struct acpi_gpio_mapping cht_rt5672_gpios[] = {
 static int cht_codec_init(struct snd_soc_pcm_runtime *runtime)
 {
 	int ret;
-	struct snd_soc_dapm_context *dapm = snd_soc_card_to_dapm(runtime->card);
-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(runtime, 0);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(runtime, 0);
 	struct snd_soc_component *component = codec_dai->component;
 	struct cht_mc_private *ctx = snd_soc_card_get_drvdata(runtime->card);
 
@@ -215,11 +210,11 @@ static int cht_codec_init(struct snd_soc_pcm_runtime *runtime)
 				RT5670_CLK_SEL_I2S1_ASRC);
 
 	if (ctx->use_ssp0) {
-		ret = snd_soc_dapm_add_routes(dapm,
+		ret = snd_soc_dapm_add_routes(&runtime->card->dapm,
 					      cht_audio_ssp0_map,
 					      ARRAY_SIZE(cht_audio_ssp0_map));
 	} else {
-		ret = snd_soc_dapm_add_routes(dapm,
+		ret = snd_soc_dapm_add_routes(&runtime->card->dapm,
 					      cht_audio_ssp2_map,
 					      ARRAY_SIZE(cht_audio_ssp2_map));
 	}
@@ -302,7 +297,7 @@ static int cht_codec_fixup(struct snd_soc_pcm_runtime *rtd,
 	 * board. Since we only support 2 channels anyways, there is no need
 	 * for TDM on any cht-bsw-rt5672 designs. So we use I2S 2ch everywhere.
 	 */
-	ret = snd_soc_dai_set_fmt(snd_soc_rtd_to_cpu(rtd, 0),
+	ret = snd_soc_dai_set_fmt(asoc_rtd_to_cpu(rtd, 0),
 				  SND_SOC_DAIFMT_I2S     |
 				  SND_SOC_DAIFMT_NB_NF   |
 				  SND_SOC_DAIFMT_BP_FP);
@@ -311,7 +306,7 @@ static int cht_codec_fixup(struct snd_soc_pcm_runtime *rtd,
 		return ret;
 	}
 
-	ret = snd_soc_dai_set_tdm_slot(snd_soc_rtd_to_cpu(rtd, 0), 0x3, 0x3, 2, bits);
+	ret = snd_soc_dai_set_tdm_slot(asoc_rtd_to_cpu(rtd, 0), 0x3, 0x3, 2, bits);
 	if (ret < 0) {
 		dev_err(rtd->dev, "can't set I2S config, err %d\n", ret);
 		return ret;
@@ -359,6 +354,8 @@ static struct snd_soc_dai_link cht_dailink[] = {
 		.stream_name = "Audio",
 		.nonatomic = true,
 		.dynamic = 1,
+		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 		.ops = &cht_aif1_ops,
 		SND_SOC_DAILINK_REG(media, dummy, platform),
 	},
@@ -367,7 +364,7 @@ static struct snd_soc_dai_link cht_dailink[] = {
 		.stream_name = "Deep-Buffer Audio",
 		.nonatomic = true,
 		.dynamic = 1,
-		.playback_only = 1,
+		.dpcm_playback = 1,
 		.ops = &cht_aif1_ops,
 		SND_SOC_DAILINK_REG(deepbuffer, dummy, platform),
 	},
@@ -380,6 +377,8 @@ static struct snd_soc_dai_link cht_dailink[] = {
 		.no_pcm = 1,
 		.init = cht_codec_init,
 		.be_hw_params_fixup = cht_codec_fixup,
+		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 		.ops = &cht_be_ssp2_ops,
 		SND_SOC_DAILINK_REG(ssp2_port, ssp2_codec, platform),
 	},
@@ -459,12 +458,11 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 	if (!drv)
 		return -ENOMEM;
 
-	strscpy(drv->codec_name, RT5672_I2C_DEFAULT, sizeof(drv->codec_name));
+	strcpy(drv->codec_name, RT5672_I2C_DEFAULT);
 
 	/* find index of codec dai */
 	for (i = 0; i < ARRAY_SIZE(cht_dailink); i++) {
-		if (cht_dailink[i].num_codecs &&
-		    !strcmp(cht_dailink[i].codecs->name, RT5672_I2C_DEFAULT)) {
+		if (!strcmp(cht_dailink[i].codecs->name, RT5672_I2C_DEFAULT)) {
 			dai_index = i;
 			break;
 		}
@@ -476,11 +474,7 @@ static int snd_cht_mc_probe(struct platform_device *pdev)
 		snprintf(drv->codec_name, sizeof(drv->codec_name),
 			 "i2c-%s", acpi_dev_name(adev));
 		cht_dailink[dai_index].codecs->name = drv->codec_name;
-	}  else {
-		dev_err(&pdev->dev, "Error cannot find '%s' dev\n", mach->id);
-		return -ENOENT;
 	}
-
 	acpi_dev_put(adev);
 
 	/* Use SSP0 on Bay Trail CR devices */

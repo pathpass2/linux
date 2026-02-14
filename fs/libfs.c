@@ -6,7 +6,6 @@
 
 #include <linux/blkdev.h>
 #include <linux/export.h>
-#include <linux/filelock.h>
 #include <linux/pagemap.h>
 #include <linux/slab.h>
 #include <linux/cred.h>
@@ -24,7 +23,6 @@
 #include <linux/fsnotify.h>
 #include <linux/unicode.h>
 #include <linux/fscrypt.h>
-#include <linux/pidfs.h>
 
 #include <linux/uaccess.h>
 
@@ -35,7 +33,7 @@ int simple_getattr(struct mnt_idmap *idmap, const struct path *path,
 		   unsigned int query_flags)
 {
 	struct inode *inode = d_inode(path->dentry);
-	generic_fillattr(&nop_mnt_idmap, request_mask, inode, stat);
+	generic_fillattr(&nop_mnt_idmap, inode, stat);
 	stat->blocks = inode->i_mapping->nrpages << (PAGE_SHIFT - 9);
 	return 0;
 }
@@ -43,9 +41,6 @@ EXPORT_SYMBOL(simple_getattr);
 
 int simple_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
-	u64 id = huge_encode_dev(dentry->d_sb->s_dev);
-
-	buf->f_fsid = u64_to_fsid(id);
 	buf->f_type = dentry->d_sb->s_magic;
 	buf->f_bsize = PAGE_SIZE;
 	buf->f_namelen = NAME_MAX;
@@ -63,6 +58,11 @@ int always_delete_dentry(const struct dentry *dentry)
 }
 EXPORT_SYMBOL(always_delete_dentry);
 
+const struct dentry_operations simple_dentry_operations = {
+	.d_delete = always_delete_dentry,
+};
+EXPORT_SYMBOL(simple_dentry_operations);
+
 /*
  * Lookup the data. This is trivial - if the dentry didn't already
  * exist, we know it is negative.  Set d_op to delete negative dentries.
@@ -71,14 +71,8 @@ struct dentry *simple_lookup(struct inode *dir, struct dentry *dentry, unsigned 
 {
 	if (dentry->d_name.len > NAME_MAX)
 		return ERR_PTR(-ENAMETOOLONG);
-	if (!dentry->d_op && !(dentry->d_flags & DCACHE_DONTCACHE)) {
-		spin_lock(&dentry->d_lock);
-		dentry->d_flags |= DCACHE_DONTCACHE;
-		spin_unlock(&dentry->d_lock);
-	}
-	if (IS_ENABLED(CONFIG_UNICODE) && IS_CASEFOLDED(dir))
-		return NULL;
-
+	if (!dentry->d_sb->s_d_op)
+		d_set_d_op(dentry, &simple_dentry_operations);
 	d_add(dentry, NULL);
 	return NULL;
 }
@@ -107,16 +101,15 @@ EXPORT_SYMBOL(dcache_dir_close);
  * If no such element exists, NULL is returned.
  */
 static struct dentry *scan_positives(struct dentry *cursor,
-					struct hlist_node **p,
+					struct list_head *p,
 					loff_t count,
 					struct dentry *last)
 {
 	struct dentry *dentry = cursor->d_parent, *found = NULL;
 
 	spin_lock(&dentry->d_lock);
-	while (*p) {
-		struct dentry *d = hlist_entry(*p, struct dentry, d_sib);
-		p = &d->d_sib.next;
+	while ((p = p->next) != &dentry->d_subdirs) {
+		struct dentry *d = list_entry(p, struct dentry, d_child);
 		// we must at least skip cursors, to avoid livelocks
 		if (d->d_flags & DCACHE_DENTRY_CURSOR)
 			continue;
@@ -130,10 +123,8 @@ static struct dentry *scan_positives(struct dentry *cursor,
 			count = 1;
 		}
 		if (need_resched()) {
-			if (!hlist_unhashed(&cursor->d_sib))
-				__hlist_del(&cursor->d_sib);
-			hlist_add_behind(&cursor->d_sib, &d->d_sib);
-			p = &cursor->d_sib.next;
+			list_move(&cursor->d_child, p);
+			p = &cursor->d_child;
 			spin_unlock(&dentry->d_lock);
 			cond_resched();
 			spin_lock(&dentry->d_lock);
@@ -165,12 +156,13 @@ loff_t dcache_dir_lseek(struct file *file, loff_t offset, int whence)
 		inode_lock_shared(dentry->d_inode);
 
 		if (offset > 2)
-			to = scan_positives(cursor, &dentry->d_children.first,
+			to = scan_positives(cursor, &dentry->d_subdirs,
 					    offset - 2, NULL);
 		spin_lock(&dentry->d_lock);
-		hlist_del_init(&cursor->d_sib);
 		if (to)
-			hlist_add_behind(&cursor->d_sib, &to->d_sib);
+			list_move(&cursor->d_child, &to->d_child);
+		else
+			list_del_init(&cursor->d_child);
 		spin_unlock(&dentry->d_lock);
 		dput(to);
 
@@ -182,6 +174,12 @@ loff_t dcache_dir_lseek(struct file *file, loff_t offset, int whence)
 }
 EXPORT_SYMBOL(dcache_dir_lseek);
 
+/* Relationship between i_mode and the DT_xxx types */
+static inline unsigned char dt_type(struct inode *inode)
+{
+	return (inode->i_mode >> 12) & 15;
+}
+
 /*
  * Directory is locked and all positive dentries in it are safe, since
  * for ramfs-type trees they can't go away without unlink() or rmdir(),
@@ -192,29 +190,32 @@ int dcache_readdir(struct file *file, struct dir_context *ctx)
 {
 	struct dentry *dentry = file->f_path.dentry;
 	struct dentry *cursor = file->private_data;
+	struct list_head *anchor = &dentry->d_subdirs;
 	struct dentry *next = NULL;
-	struct hlist_node **p;
+	struct list_head *p;
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
 
 	if (ctx->pos == 2)
-		p = &dentry->d_children.first;
+		p = anchor;
+	else if (!list_empty(&cursor->d_child))
+		p = &cursor->d_child;
 	else
-		p = &cursor->d_sib.next;
+		return 0;
 
 	while ((next = scan_positives(cursor, p, 1, next)) != NULL) {
 		if (!dir_emit(ctx, next->d_name.name, next->d_name.len,
-			      d_inode(next)->i_ino,
-			      fs_umode_to_dtype(d_inode(next)->i_mode)))
+			      d_inode(next)->i_ino, dt_type(d_inode(next))))
 			break;
 		ctx->pos++;
-		p = &next->d_sib.next;
+		p = &next->d_child;
 	}
 	spin_lock(&dentry->d_lock);
-	hlist_del_init(&cursor->d_sib);
 	if (next)
-		hlist_add_before(&cursor->d_sib, &next->d_sib);
+		list_move_tail(&cursor->d_child, &next->d_child);
+	else
+		list_del_init(&cursor->d_child);
 	spin_unlock(&dentry->d_lock);
 	dput(next);
 
@@ -243,344 +244,14 @@ const struct inode_operations simple_dir_inode_operations = {
 };
 EXPORT_SYMBOL(simple_dir_inode_operations);
 
-/* simple_offset_add() never assigns these to a dentry */
-enum {
-	DIR_OFFSET_FIRST	= 2,		/* Find first real entry */
-	DIR_OFFSET_EOD		= S32_MAX,
-};
-
-/* simple_offset_add() allocation range */
-enum {
-	DIR_OFFSET_MIN		= DIR_OFFSET_FIRST + 1,
-	DIR_OFFSET_MAX		= DIR_OFFSET_EOD - 1,
-};
-
-static void offset_set(struct dentry *dentry, long offset)
+static struct dentry *find_next_child(struct dentry *parent, struct dentry *prev)
 {
-	dentry->d_fsdata = (void *)offset;
-}
-
-static long dentry2offset(struct dentry *dentry)
-{
-	return (long)dentry->d_fsdata;
-}
-
-static struct lock_class_key simple_offset_lock_class;
-
-/**
- * simple_offset_init - initialize an offset_ctx
- * @octx: directory offset map to be initialized
- *
- */
-void simple_offset_init(struct offset_ctx *octx)
-{
-	mt_init_flags(&octx->mt, MT_FLAGS_ALLOC_RANGE);
-	lockdep_set_class(&octx->mt.ma_lock, &simple_offset_lock_class);
-	octx->next_offset = DIR_OFFSET_MIN;
-}
-
-/**
- * simple_offset_add - Add an entry to a directory's offset map
- * @octx: directory offset ctx to be updated
- * @dentry: new dentry being added
- *
- * Returns zero on success. @octx and the dentry's offset are updated.
- * Otherwise, a negative errno value is returned.
- */
-int simple_offset_add(struct offset_ctx *octx, struct dentry *dentry)
-{
-	unsigned long offset;
-	int ret;
-
-	if (dentry2offset(dentry) != 0)
-		return -EBUSY;
-
-	ret = mtree_alloc_cyclic(&octx->mt, &offset, dentry, DIR_OFFSET_MIN,
-				 DIR_OFFSET_MAX, &octx->next_offset,
-				 GFP_KERNEL);
-	if (unlikely(ret < 0))
-		return ret == -EBUSY ? -ENOSPC : ret;
-
-	offset_set(dentry, offset);
-	return 0;
-}
-
-static int simple_offset_replace(struct offset_ctx *octx, struct dentry *dentry,
-				 long offset)
-{
-	int ret;
-
-	ret = mtree_store(&octx->mt, offset, dentry, GFP_KERNEL);
-	if (ret)
-		return ret;
-	offset_set(dentry, offset);
-	return 0;
-}
-
-/**
- * simple_offset_remove - Remove an entry to a directory's offset map
- * @octx: directory offset ctx to be updated
- * @dentry: dentry being removed
- *
- */
-void simple_offset_remove(struct offset_ctx *octx, struct dentry *dentry)
-{
-	long offset;
-
-	offset = dentry2offset(dentry);
-	if (offset == 0)
-		return;
-
-	mtree_erase(&octx->mt, offset);
-	offset_set(dentry, 0);
-}
-
-/**
- * simple_offset_rename - handle directory offsets for rename
- * @old_dir: parent directory of source entry
- * @old_dentry: dentry of source entry
- * @new_dir: parent_directory of destination entry
- * @new_dentry: dentry of destination
- *
- * Caller provides appropriate serialization.
- *
- * User space expects the directory offset value of the replaced
- * (new) directory entry to be unchanged after a rename.
- *
- * Caller must have grabbed a slot for new_dentry in the maple_tree
- * associated with new_dir, even if dentry is negative.
- */
-void simple_offset_rename(struct inode *old_dir, struct dentry *old_dentry,
-			  struct inode *new_dir, struct dentry *new_dentry)
-{
-	struct offset_ctx *old_ctx = old_dir->i_op->get_offset_ctx(old_dir);
-	struct offset_ctx *new_ctx = new_dir->i_op->get_offset_ctx(new_dir);
-	long new_offset = dentry2offset(new_dentry);
-
-	if (WARN_ON(!new_offset))
-		return;
-
-	simple_offset_remove(old_ctx, old_dentry);
-	offset_set(new_dentry, 0);
-	WARN_ON(simple_offset_replace(new_ctx, old_dentry, new_offset));
-}
-
-/**
- * simple_offset_rename_exchange - exchange rename with directory offsets
- * @old_dir: parent of dentry being moved
- * @old_dentry: dentry being moved
- * @new_dir: destination parent
- * @new_dentry: destination dentry
- *
- * This API preserves the directory offset values. Caller provides
- * appropriate serialization.
- *
- * Returns zero on success. Otherwise a negative errno is returned and the
- * rename is rolled back.
- */
-int simple_offset_rename_exchange(struct inode *old_dir,
-				  struct dentry *old_dentry,
-				  struct inode *new_dir,
-				  struct dentry *new_dentry)
-{
-	struct offset_ctx *old_ctx = old_dir->i_op->get_offset_ctx(old_dir);
-	struct offset_ctx *new_ctx = new_dir->i_op->get_offset_ctx(new_dir);
-	long old_index = dentry2offset(old_dentry);
-	long new_index = dentry2offset(new_dentry);
-	int ret;
-
-	if (WARN_ON(!old_index || !new_index))
-		return -EINVAL;
-
-	ret = mtree_store(&new_ctx->mt, new_index, old_dentry, GFP_KERNEL);
-	if (WARN_ON(ret))
-		return ret;
-
-	ret = mtree_store(&old_ctx->mt, old_index, new_dentry, GFP_KERNEL);
-	if (WARN_ON(ret)) {
-		mtree_store(&new_ctx->mt, new_index, new_dentry, GFP_KERNEL);
-		return ret;
-	}
-
-	offset_set(old_dentry, new_index);
-	offset_set(new_dentry, old_index);
-	simple_rename_exchange(old_dir, old_dentry, new_dir, new_dentry);
-	return 0;
-}
-
-/**
- * simple_offset_destroy - Release offset map
- * @octx: directory offset ctx that is about to be destroyed
- *
- * During fs teardown (eg. umount), a directory's offset map might still
- * contain entries. xa_destroy() cleans out anything that remains.
- */
-void simple_offset_destroy(struct offset_ctx *octx)
-{
-	mtree_destroy(&octx->mt);
-}
-
-/**
- * offset_dir_llseek - Advance the read position of a directory descriptor
- * @file: an open directory whose position is to be updated
- * @offset: a byte offset
- * @whence: enumerator describing the starting position for this update
- *
- * SEEK_END, SEEK_DATA, and SEEK_HOLE are not supported for directories.
- *
- * Returns the updated read position if successful; otherwise a
- * negative errno is returned and the read position remains unchanged.
- */
-static loff_t offset_dir_llseek(struct file *file, loff_t offset, int whence)
-{
-	switch (whence) {
-	case SEEK_CUR:
-		offset += file->f_pos;
-		fallthrough;
-	case SEEK_SET:
-		if (offset >= 0)
-			break;
-		fallthrough;
-	default:
-		return -EINVAL;
-	}
-
-	return vfs_setpos(file, offset, LONG_MAX);
-}
-
-static struct dentry *find_positive_dentry(struct dentry *parent,
-					   struct dentry *dentry,
-					   bool next)
-{
-	struct dentry *found = NULL;
+	struct dentry *child = NULL;
+	struct list_head *p = prev ? &prev->d_child : &parent->d_subdirs;
 
 	spin_lock(&parent->d_lock);
-	if (next)
-		dentry = d_next_sibling(dentry);
-	else if (!dentry)
-		dentry = d_first_child(parent);
-	hlist_for_each_entry_from(dentry, d_sib) {
-		if (!simple_positive(dentry))
-			continue;
-		spin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);
-		if (simple_positive(dentry))
-			found = dget_dlock(dentry);
-		spin_unlock(&dentry->d_lock);
-		if (likely(found))
-			break;
-	}
-	spin_unlock(&parent->d_lock);
-	return found;
-}
-
-static noinline_for_stack struct dentry *
-offset_dir_lookup(struct dentry *parent, loff_t offset)
-{
-	struct inode *inode = d_inode(parent);
-	struct offset_ctx *octx = inode->i_op->get_offset_ctx(inode);
-	struct dentry *child, *found = NULL;
-
-	MA_STATE(mas, &octx->mt, offset, offset);
-
-	if (offset == DIR_OFFSET_FIRST)
-		found = find_positive_dentry(parent, NULL, false);
-	else {
-		rcu_read_lock();
-		child = mas_find_rev(&mas, DIR_OFFSET_MIN);
-		found = find_positive_dentry(parent, child, false);
-		rcu_read_unlock();
-	}
-	return found;
-}
-
-static bool offset_dir_emit(struct dir_context *ctx, struct dentry *dentry)
-{
-	struct inode *inode = d_inode(dentry);
-
-	return dir_emit(ctx, dentry->d_name.name, dentry->d_name.len,
-			inode->i_ino, fs_umode_to_dtype(inode->i_mode));
-}
-
-static void offset_iterate_dir(struct file *file, struct dir_context *ctx)
-{
-	struct dentry *dir = file->f_path.dentry;
-	struct dentry *dentry;
-
-	dentry = offset_dir_lookup(dir, ctx->pos);
-	if (!dentry)
-		goto out_eod;
-	while (true) {
-		struct dentry *next;
-
-		ctx->pos = dentry2offset(dentry);
-		if (!offset_dir_emit(ctx, dentry))
-			break;
-
-		next = find_positive_dentry(dir, dentry, true);
-		dput(dentry);
-
-		if (!next)
-			goto out_eod;
-		dentry = next;
-	}
-	dput(dentry);
-	return;
-
-out_eod:
-	ctx->pos = DIR_OFFSET_EOD;
-}
-
-/**
- * offset_readdir - Emit entries starting at offset @ctx->pos
- * @file: an open directory to iterate over
- * @ctx: directory iteration context
- *
- * Caller must hold @file's i_rwsem to prevent insertion or removal of
- * entries during this call.
- *
- * On entry, @ctx->pos contains an offset that represents the first entry
- * to be read from the directory.
- *
- * The operation continues until there are no more entries to read, or
- * until the ctx->actor indicates there is no more space in the caller's
- * output buffer.
- *
- * On return, @ctx->pos contains an offset that will read the next entry
- * in this directory when offset_readdir() is called again with @ctx.
- * Caller places this value in the d_off field of the last entry in the
- * user's buffer.
- *
- * Return values:
- *   %0 - Complete
- */
-static int offset_readdir(struct file *file, struct dir_context *ctx)
-{
-	struct dentry *dir = file->f_path.dentry;
-
-	lockdep_assert_held(&d_inode(dir)->i_rwsem);
-
-	if (!dir_emit_dots(file, ctx))
-		return 0;
-	if (ctx->pos != DIR_OFFSET_EOD)
-		offset_iterate_dir(file, ctx);
-	return 0;
-}
-
-const struct file_operations simple_offset_dir_operations = {
-	.llseek		= offset_dir_llseek,
-	.iterate_shared	= offset_readdir,
-	.read		= generic_read_dir,
-	.fsync		= noop_fsync,
-	.setlease	= generic_setlease,
-};
-
-struct dentry *find_next_child(struct dentry *parent, struct dentry *prev)
-{
-	struct dentry *child = NULL, *d;
-
-	spin_lock(&parent->d_lock);
-	d = prev ? d_next_sibling(prev) : d_first_child(parent);
-	hlist_for_each_entry_from(d, d_sib) {
+	while ((p = p->next) != &parent->d_subdirs) {
+		struct dentry *d = container_of(p, struct dentry, d_child);
 		if (simple_positive(d)) {
 			spin_lock_nested(&d->d_lock, DENTRY_D_LOCK_NESTED);
 			if (simple_positive(d))
@@ -594,45 +265,44 @@ struct dentry *find_next_child(struct dentry *parent, struct dentry *prev)
 	dput(prev);
 	return child;
 }
-EXPORT_SYMBOL(find_next_child);
 
-static void __simple_recursive_removal(struct dentry *dentry,
-                              void (*callback)(struct dentry *),
-			      bool locked)
+void simple_recursive_removal(struct dentry *dentry,
+                              void (*callback)(struct dentry *))
 {
 	struct dentry *this = dget(dentry);
 	while (true) {
 		struct dentry *victim = NULL, *child;
 		struct inode *inode = this->d_inode;
 
-		inode_lock_nested(inode, I_MUTEX_CHILD);
+		inode_lock(inode);
 		if (d_is_dir(this))
 			inode->i_flags |= S_DEAD;
 		while ((child = find_next_child(this, victim)) == NULL) {
 			// kill and ascend
 			// update metadata while it's still locked
-			inode_set_ctime_current(inode);
+			inode->i_ctime = current_time(inode);
 			clear_nlink(inode);
 			inode_unlock(inode);
 			victim = this;
 			this = this->d_parent;
 			inode = this->d_inode;
-			if (!locked || victim != dentry)
-				inode_lock_nested(inode, I_MUTEX_CHILD);
+			inode_lock(inode);
 			if (simple_positive(victim)) {
 				d_invalidate(victim);	// avoid lost mounts
+				if (d_is_dir(victim))
+					fsnotify_rmdir(inode, victim);
+				else
+					fsnotify_unlink(inode, victim);
 				if (callback)
 					callback(victim);
-				fsnotify_delete(inode, d_inode(victim), victim);
-				d_make_discardable(victim);
+				dput(victim);		// unpin it
 			}
 			if (victim == dentry) {
-				inode_set_mtime_to_ts(inode,
-						      inode_set_ctime_current(inode));
+				inode->i_ctime = inode->i_mtime =
+					current_time(inode);
 				if (d_is_dir(dentry))
 					drop_nlink(inode);
-				if (!locked)
-					inode_unlock(inode);
+				inode_unlock(inode);
 				dput(dentry);
 				return;
 			}
@@ -641,34 +311,7 @@ static void __simple_recursive_removal(struct dentry *dentry,
 		this = child;
 	}
 }
-
-void simple_recursive_removal(struct dentry *dentry,
-                              void (*callback)(struct dentry *))
-{
-	return __simple_recursive_removal(dentry, callback, false);
-}
 EXPORT_SYMBOL(simple_recursive_removal);
-
-void simple_remove_by_name(struct dentry *parent, const char *name,
-                           void (*callback)(struct dentry *))
-{
-	struct dentry *dentry;
-
-	dentry = lookup_noperm_positive_unlocked(&QSTR(name), parent);
-	if (!IS_ERR(dentry)) {
-		simple_recursive_removal(dentry, callback);
-		dput(dentry);	// paired with lookup_noperm_positive_unlocked()
-	}
-}
-EXPORT_SYMBOL(simple_remove_by_name);
-
-/* caller holds parent directory with I_MUTEX_PARENT */
-void locked_recursive_removal(struct dentry *dentry,
-                              void (*callback)(struct dentry *))
-{
-	return __simple_recursive_removal(dentry, callback, true);
-}
-EXPORT_SYMBOL(locked_recursive_removal);
 
 static const struct super_operations simple_super_operations = {
 	.statfs		= simple_statfs,
@@ -684,10 +327,8 @@ static int pseudo_fs_fill_super(struct super_block *s, struct fs_context *fc)
 	s->s_blocksize_bits = PAGE_SHIFT;
 	s->s_magic = ctx->magic;
 	s->s_op = ctx->ops ?: &simple_super_operations;
-	s->s_export_op = ctx->eops;
 	s->s_xattr = ctx->xattr;
 	s->s_time_gran = 1;
-	s->s_d_flags |= ctx->s_d_flags;
 	root = new_inode(s);
 	if (!root)
 		return -ENOMEM;
@@ -699,11 +340,11 @@ static int pseudo_fs_fill_super(struct super_block *s, struct fs_context *fc)
 	 */
 	root->i_ino = 1;
 	root->i_mode = S_IFDIR | S_IRUSR | S_IWUSR;
-	simple_inode_init_ts(root);
+	root->i_atime = root->i_mtime = root->i_ctime = current_time(root);
 	s->s_root = d_make_root(root);
 	if (!s->s_root)
 		return -ENOMEM;
-	set_default_d_op(s, ctx->dops);
+	s->s_d_op = ctx->dops;
 	return 0;
 }
 
@@ -755,11 +396,11 @@ int simple_link(struct dentry *old_dentry, struct inode *dir, struct dentry *den
 {
 	struct inode *inode = d_inode(old_dentry);
 
-	inode_set_mtime_to_ts(dir,
-			      inode_set_ctime_to_ts(dir, inode_set_ctime_current(inode)));
+	inode->i_ctime = dir->i_ctime = dir->i_mtime = current_time(inode);
 	inc_nlink(inode);
 	ihold(inode);
-	d_make_persistent(dentry, inode);
+	dget(dentry);
+	d_instantiate(dentry, inode);
 	return 0;
 }
 EXPORT_SYMBOL(simple_link);
@@ -770,7 +411,7 @@ int simple_empty(struct dentry *dentry)
 	int ret = 0;
 
 	spin_lock(&dentry->d_lock);
-	hlist_for_each_entry(child, &dentry->d_children, d_sib) {
+	list_for_each_entry(child, &dentry->d_subdirs, d_child) {
 		spin_lock_nested(&child->d_lock, DENTRY_D_LOCK_NESTED);
 		if (simple_positive(child)) {
 			spin_unlock(&child->d_lock);
@@ -785,28 +426,13 @@ out:
 }
 EXPORT_SYMBOL(simple_empty);
 
-void __simple_unlink(struct inode *dir, struct dentry *dentry)
+int simple_unlink(struct inode *dir, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
 
-	inode_set_mtime_to_ts(dir,
-			      inode_set_ctime_to_ts(dir, inode_set_ctime_current(inode)));
+	inode->i_ctime = dir->i_ctime = dir->i_mtime = current_time(inode);
 	drop_nlink(inode);
-}
-EXPORT_SYMBOL(__simple_unlink);
-
-void __simple_rmdir(struct inode *dir, struct dentry *dentry)
-{
-	drop_nlink(d_inode(dentry));
-	__simple_unlink(dir, dentry);
-	drop_nlink(dir);
-}
-EXPORT_SYMBOL(__simple_rmdir);
-
-int simple_unlink(struct inode *dir, struct dentry *dentry)
-{
-	__simple_unlink(dir, dentry);
-	d_make_discardable(dentry);
+	dput(dentry);
 	return 0;
 }
 EXPORT_SYMBOL(simple_unlink);
@@ -816,37 +442,12 @@ int simple_rmdir(struct inode *dir, struct dentry *dentry)
 	if (!simple_empty(dentry))
 		return -ENOTEMPTY;
 
-	__simple_rmdir(dir, dentry);
-	d_make_discardable(dentry);
+	drop_nlink(d_inode(dentry));
+	simple_unlink(dir, dentry);
+	drop_nlink(dir);
 	return 0;
 }
 EXPORT_SYMBOL(simple_rmdir);
-
-/**
- * simple_rename_timestamp - update the various inode timestamps for rename
- * @old_dir: old parent directory
- * @old_dentry: dentry that is being renamed
- * @new_dir: new parent directory
- * @new_dentry: target for rename
- *
- * POSIX mandates that the old and new parent directories have their ctime and
- * mtime updated, and that inodes of @old_dentry and @new_dentry (if any), have
- * their ctime updated.
- */
-void simple_rename_timestamp(struct inode *old_dir, struct dentry *old_dentry,
-			     struct inode *new_dir, struct dentry *new_dentry)
-{
-	struct inode *newino = d_inode(new_dentry);
-
-	inode_set_mtime_to_ts(old_dir, inode_set_ctime_current(old_dir));
-	if (new_dir != old_dir)
-		inode_set_mtime_to_ts(new_dir,
-				      inode_set_ctime_current(new_dir));
-	inode_set_ctime_current(d_inode(old_dentry));
-	if (newino)
-		inode_set_ctime_current(newino);
-}
-EXPORT_SYMBOL_GPL(simple_rename_timestamp);
 
 int simple_rename_exchange(struct inode *old_dir, struct dentry *old_dentry,
 			   struct inode *new_dir, struct dentry *new_dentry)
@@ -863,7 +464,11 @@ int simple_rename_exchange(struct inode *old_dir, struct dentry *old_dentry,
 			inc_nlink(old_dir);
 		}
 	}
-	simple_rename_timestamp(old_dir, old_dentry, new_dir, new_dentry);
+	old_dir->i_ctime = old_dir->i_mtime =
+	new_dir->i_ctime = new_dir->i_mtime =
+	d_inode(old_dentry)->i_ctime =
+	d_inode(new_dentry)->i_ctime = current_time(old_dir);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(simple_rename_exchange);
@@ -872,6 +477,7 @@ int simple_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 		  struct dentry *old_dentry, struct inode *new_dir,
 		  struct dentry *new_dentry, unsigned int flags)
 {
+	struct inode *inode = d_inode(old_dentry);
 	int they_are_dirs = d_is_dir(old_dentry);
 
 	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE))
@@ -894,7 +500,9 @@ int simple_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 		inc_nlink(new_dir);
 	}
 
-	simple_rename_timestamp(old_dir, old_dentry, new_dir, new_dentry);
+	old_dir->i_ctime = old_dir->i_mtime = new_dir->i_ctime =
+		new_dir->i_mtime = inode->i_ctime = current_time(old_dir);
+
 	return 0;
 }
 EXPORT_SYMBOL(simple_rename);
@@ -941,24 +549,25 @@ static int simple_read_folio(struct file *file, struct folio *folio)
 	return 0;
 }
 
-int simple_write_begin(const struct kiocb *iocb, struct address_space *mapping,
+int simple_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len,
-			struct folio **foliop, void **fsdata)
+			struct page **pagep, void **fsdata)
 {
-	struct folio *folio;
+	struct page *page;
+	pgoff_t index;
 
-	folio = __filemap_get_folio(mapping, pos / PAGE_SIZE, FGP_WRITEBEGIN,
-			mapping_gfp_mask(mapping));
-	if (IS_ERR(folio))
-		return PTR_ERR(folio);
+	index = pos >> PAGE_SHIFT;
 
-	*foliop = folio;
+	page = grab_cache_page_write_begin(mapping, index);
+	if (!page)
+		return -ENOMEM;
 
-	if (!folio_test_uptodate(folio) && (len != folio_size(folio))) {
-		size_t from = offset_in_folio(folio, pos);
+	*pagep = page;
 
-		folio_zero_segments(folio, 0, from,
-				from + len, folio_size(folio));
+	if (!PageUptodate(page) && (len != PAGE_SIZE)) {
+		unsigned from = pos & (PAGE_SIZE - 1);
+
+		zero_user_segments(page, 0, from, from + len, PAGE_SIZE);
 	}
 	return 0;
 }
@@ -966,19 +575,18 @@ EXPORT_SYMBOL(simple_write_begin);
 
 /**
  * simple_write_end - .write_end helper for non-block-device FSes
- * @iocb: kernel I/O control block
+ * @file: See .write_end of address_space_operations
  * @mapping: 		"
  * @pos: 		"
  * @len: 		"
  * @copied: 		"
- * @folio: 		"
+ * @page: 		"
  * @fsdata: 		"
  *
- * simple_write_end does the minimum needed for updating a folio after
- * writing is done. It has the same API signature as the .write_end of
+ * simple_write_end does the minimum needed for updating a page after writing is
+ * done. It has the same API signature as the .write_end of
  * address_space_operations vector. So it can just be set onto .write_end for
- * FSes that don't need any other processing. i_rwsem is assumed to be held
- * exclusively.
+ * FSes that don't need any other processing. i_mutex is assumed to be held.
  * Block based filesystems should use generic_write_end().
  * NOTE: Even though i_size might get updated by this function, mark_inode_dirty
  * is not called, so a filesystem that actually does store data in .write_inode
@@ -987,33 +595,32 @@ EXPORT_SYMBOL(simple_write_begin);
  *
  * Use *ONLY* with simple_read_folio()
  */
-static int simple_write_end(const struct kiocb *iocb,
-			    struct address_space *mapping,
-			    loff_t pos, unsigned len, unsigned copied,
-			    struct folio *folio, void *fsdata)
+static int simple_write_end(struct file *file, struct address_space *mapping,
+			loff_t pos, unsigned len, unsigned copied,
+			struct page *page, void *fsdata)
 {
-	struct inode *inode = folio->mapping->host;
+	struct inode *inode = page->mapping->host;
 	loff_t last_pos = pos + copied;
 
-	/* zero the stale part of the folio if we did a short copy */
-	if (!folio_test_uptodate(folio)) {
+	/* zero the stale part of the page if we did a short copy */
+	if (!PageUptodate(page)) {
 		if (copied < len) {
-			size_t from = offset_in_folio(folio, pos);
+			unsigned from = pos & (PAGE_SIZE - 1);
 
-			folio_zero_range(folio, from + copied, len - copied);
+			zero_user(page, from + copied, len - copied);
 		}
-		folio_mark_uptodate(folio);
+		SetPageUptodate(page);
 	}
 	/*
 	 * No need to use i_size_read() here, the i_size
-	 * cannot change under us because we hold the i_rwsem.
+	 * cannot change under us because we hold the i_mutex.
 	 */
 	if (last_pos > inode->i_size)
 		i_size_write(inode, last_pos);
 
-	folio_mark_dirty(folio);
-	folio_unlock(folio);
-	folio_put(folio);
+	set_page_dirty(page);
+	unlock_page(page);
+	put_page(page);
 
 	return copied;
 }
@@ -1038,6 +645,7 @@ int simple_fill_super(struct super_block *s, unsigned long magic,
 		      const struct tree_descr *files)
 {
 	struct inode *inode;
+	struct dentry *root;
 	struct dentry *dentry;
 	int i;
 
@@ -1056,12 +664,12 @@ int simple_fill_super(struct super_block *s, unsigned long magic,
 	 */
 	inode->i_ino = 1;
 	inode->i_mode = S_IFDIR | 0755;
-	simple_inode_init_ts(inode);
+	inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 	inode->i_op = &simple_dir_inode_operations;
 	inode->i_fop = &simple_dir_operations;
 	set_nlink(inode, 2);
-	s->s_root = d_make_root(inode);
-	if (!s->s_root)
+	root = d_make_root(inode);
+	if (!root)
 		return -ENOMEM;
 	for (i = 0; !files->name || files->name[0]; i++, files++) {
 		if (!files->name)
@@ -1073,22 +681,27 @@ int simple_fill_super(struct super_block *s, unsigned long magic,
 				"with an index of 1!\n", __func__,
 				s->s_type->name);
 
-		dentry = d_alloc_name(s->s_root, files->name);
+		dentry = d_alloc_name(root, files->name);
 		if (!dentry)
-			return -ENOMEM;
+			goto out;
 		inode = new_inode(s);
 		if (!inode) {
 			dput(dentry);
-			return -ENOMEM;
+			goto out;
 		}
 		inode->i_mode = S_IFREG | files->mode;
-		simple_inode_init_ts(inode);
+		inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 		inode->i_fop = files->ops;
 		inode->i_ino = i;
-		d_make_persistent(dentry, inode);
-		dput(dentry);
+		d_add(dentry, inode);
 	}
+	s->s_root = root;
 	return 0;
+out:
+	d_genocide(root);
+	shrink_dcache_parent(root);
+	dput(root);
+	return -ENOMEM;
 }
 EXPORT_SYMBOL(simple_fill_super);
 
@@ -1433,47 +1046,6 @@ ssize_t simple_attr_write_signed(struct file *file, const char __user *buf,
 EXPORT_SYMBOL_GPL(simple_attr_write_signed);
 
 /**
- * generic_encode_ino32_fh - generic export_operations->encode_fh function
- * @inode:   the object to encode
- * @fh:      where to store the file handle fragment
- * @max_len: maximum length to store there (in 4 byte units)
- * @parent:  parent directory inode, if wanted
- *
- * This generic encode_fh function assumes that the 32 inode number
- * is suitable for locating an inode, and that the generation number
- * can be used to check that it is still valid.  It places them in the
- * filehandle fragment where export_decode_fh expects to find them.
- */
-int generic_encode_ino32_fh(struct inode *inode, __u32 *fh, int *max_len,
-			    struct inode *parent)
-{
-	struct fid *fid = (void *)fh;
-	int len = *max_len;
-	int type = FILEID_INO32_GEN;
-
-	if (parent && (len < 4)) {
-		*max_len = 4;
-		return FILEID_INVALID;
-	} else if (len < 2) {
-		*max_len = 2;
-		return FILEID_INVALID;
-	}
-
-	len = 2;
-	fid->i32.ino = inode->i_ino;
-	fid->i32.gen = inode->i_generation;
-	if (parent) {
-		fid->i32.parent_ino = parent->i_ino;
-		fid->i32.parent_gen = parent->i_generation;
-		len = 4;
-		type = FILEID_INO32_GEN_PARENT;
-	}
-	*max_len = len;
-	return type;
-}
-EXPORT_SYMBOL_GPL(generic_encode_ino32_fh);
-
-/**
  * generic_fh_to_dentry - generic helper for the fh_to_dentry export operation
  * @sb:		filesystem to do the file handle conversion on
  * @fid:	file handle to convert
@@ -1563,9 +1135,9 @@ int __generic_file_fsync(struct file *file, loff_t start, loff_t end,
 
 	inode_lock(inode);
 	ret = sync_mapping_buffers(inode->i_mapping);
-	if (!(inode_state_read_once(inode) & I_DIRTY_ALL))
+	if (!(inode->i_state & I_DIRTY_ALL))
 		goto out;
-	if (datasync && !(inode_state_read_once(inode) & I_DIRTY_DATASYNC))
+	if (datasync && !(inode->i_state & I_DIRTY_DATASYNC))
 		goto out;
 
 	err = sync_inode_metadata(inode, 1);
@@ -1617,17 +1189,13 @@ EXPORT_SYMBOL(generic_file_fsync);
 int generic_check_addressable(unsigned blocksize_bits, u64 num_blocks)
 {
 	u64 last_fs_block = num_blocks - 1;
-	u64 last_fs_page, max_bytes;
-
-	if (check_shl_overflow(num_blocks, blocksize_bits, &max_bytes))
-		return -EFBIG;
-
-	last_fs_page = (max_bytes >> PAGE_SHIFT) - 1;
+	u64 last_fs_page =
+		last_fs_block >> (PAGE_SHIFT - blocksize_bits);
 
 	if (unlikely(num_blocks == 0))
 		return 0;
 
-	if (blocksize_bits < 9)
+	if ((blocksize_bits < 9) || (blocksize_bits > PAGE_SHIFT))
 		return -EINVAL;
 
 	if ((last_fs_block > (sector_t)(~0ULL) >> (blocksize_bits - 9)) ||
@@ -1685,19 +1253,33 @@ struct inode *alloc_anon_inode(struct super_block *s)
 	 * list because mark_inode_dirty() will think
 	 * that it already _is_ on the dirty list.
 	 */
-	inode_state_assign_raw(inode, I_DIRTY);
-	/*
-	 * Historically anonymous inodes don't have a type at all and
-	 * userspace has come to rely on this.
-	 */
+	inode->i_state = I_DIRTY;
 	inode->i_mode = S_IRUSR | S_IWUSR;
 	inode->i_uid = current_fsuid();
 	inode->i_gid = current_fsgid();
-	inode->i_flags |= S_PRIVATE | S_ANON_INODE;
-	simple_inode_init_ts(inode);
+	inode->i_flags |= S_PRIVATE;
+	inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 	return inode;
 }
 EXPORT_SYMBOL(alloc_anon_inode);
+
+/**
+ * simple_nosetlease - generic helper for prohibiting leases
+ * @filp: file pointer
+ * @arg: type of lease to obtain
+ * @flp: new lease supplied for insertion
+ * @priv: private data for lm_setup operation
+ *
+ * Generic helper for filesystems that do not wish to allow leases to be set.
+ * All arguments are ignored and it just returns -EINVAL.
+ */
+int
+simple_nosetlease(struct file *filp, long arg, struct file_lock **flp,
+		  void **priv)
+{
+	return -EINVAL;
+}
+EXPORT_SYMBOL(simple_nosetlease);
 
 /**
  * simple_get_link - generic helper to get the target of "fast" symlinks
@@ -1733,6 +1315,15 @@ static struct dentry *empty_dir_lookup(struct inode *dir, struct dentry *dentry,
 	return ERR_PTR(-ENOENT);
 }
 
+static int empty_dir_getattr(struct mnt_idmap *idmap,
+			     const struct path *path, struct kstat *stat,
+			     u32 request_mask, unsigned int query_flags)
+{
+	struct inode *inode = d_inode(path->dentry);
+	generic_fillattr(&nop_mnt_idmap, inode, stat);
+	return 0;
+}
+
 static int empty_dir_setattr(struct mnt_idmap *idmap,
 			     struct dentry *dentry, struct iattr *attr)
 {
@@ -1746,7 +1337,9 @@ static ssize_t empty_dir_listxattr(struct dentry *dentry, char *list, size_t siz
 
 static const struct inode_operations empty_dir_inode_operations = {
 	.lookup		= empty_dir_lookup,
+	.permission	= generic_permission,
 	.setattr	= empty_dir_setattr,
+	.getattr	= empty_dir_getattr,
 	.listxattr	= empty_dir_listxattr,
 };
 
@@ -1793,6 +1386,16 @@ bool is_empty_dir_inode(struct inode *inode)
 }
 
 #if IS_ENABLED(CONFIG_UNICODE)
+/*
+ * Determine if the name of a dentry should be casefolded.
+ *
+ * Return: if names will need casefolding
+ */
+static bool needs_casefold(const struct inode *dir)
+{
+	return IS_CASEFOLDED(dir) && dir->i_sb->s_encoding;
+}
+
 /**
  * generic_ci_d_compare - generic d_compare implementation for casefolding filesystems
  * @dentry:	dentry whose name we are checking against
@@ -1802,52 +1405,44 @@ bool is_empty_dir_inode(struct inode *inode)
  *
  * Return: 0 if names match, 1 if mismatch, or -ERRNO
  */
-int generic_ci_d_compare(const struct dentry *dentry, unsigned int len,
-			 const char *str, const struct qstr *name)
+static int generic_ci_d_compare(const struct dentry *dentry, unsigned int len,
+				const char *str, const struct qstr *name)
 {
-	const struct dentry *parent;
-	const struct inode *dir;
-	union shortname_store strbuf;
-	struct qstr qstr;
+	const struct dentry *parent = READ_ONCE(dentry->d_parent);
+	const struct inode *dir = READ_ONCE(parent->d_inode);
+	const struct super_block *sb = dentry->d_sb;
+	const struct unicode_map *um = sb->s_encoding;
+	struct qstr qstr = QSTR_INIT(str, len);
+	char strbuf[DNAME_INLINE_LEN];
+	int ret;
 
-	/*
-	 * Attempt a case-sensitive match first. It is cheaper and
-	 * should cover most lookups, including all the sane
-	 * applications that expect a case-sensitive filesystem.
-	 *
-	 * This comparison is safe under RCU because the caller
-	 * guarantees the consistency between str and len. See
-	 * __d_lookup_rcu_op_compare() for details.
-	 */
-	if (len == name->len && !memcmp(str, name->name, len))
-		return 0;
-
-	parent = READ_ONCE(dentry->d_parent);
-	dir = READ_ONCE(parent->d_inode);
-	if (!dir || !IS_CASEFOLDED(dir))
-		return 1;
-
-	qstr.len = len;
-	qstr.name = str;
+	if (!dir || !needs_casefold(dir))
+		goto fallback;
 	/*
 	 * If the dentry name is stored in-line, then it may be concurrently
 	 * modified by a rename.  If this happens, the VFS will eventually retry
 	 * the lookup, so it doesn't matter what ->d_compare() returns.
 	 * However, it's unsafe to call utf8_strncasecmp() with an unstable
 	 * string.  Therefore, we have to copy the name into a temporary buffer.
-	 * As above, len is guaranteed to match str, so the shortname case
-	 * is exactly when str points to ->d_shortname.
 	 */
-	if (qstr.name == dentry->d_shortname.string) {
-		strbuf = dentry->d_shortname; // NUL is guaranteed to be in there
-		qstr.name = strbuf.string;
+	if (len <= DNAME_INLINE_LEN - 1) {
+		memcpy(strbuf, str, len);
+		strbuf[len] = 0;
+		qstr.name = strbuf;
 		/* prevent compiler from optimizing out the temporary buffer */
 		barrier();
 	}
+	ret = utf8_strncasecmp(um, name, &qstr);
+	if (ret >= 0)
+		return ret;
 
-	return utf8_strncasecmp(dentry->d_sb->s_encoding, name, &qstr);
+	if (sb_has_strict_encoding(sb))
+		return -EINVAL;
+fallback:
+	if (len != name->len)
+		return 1;
+	return !!memcmp(str, name->name, len);
 }
-EXPORT_SYMBOL(generic_ci_d_compare);
 
 /**
  * generic_ci_d_hash - generic d_hash implementation for casefolding filesystems
@@ -1856,14 +1451,14 @@ EXPORT_SYMBOL(generic_ci_d_compare);
  *
  * Return: 0 if hash was successful or unchanged, and -EINVAL on error
  */
-int generic_ci_d_hash(const struct dentry *dentry, struct qstr *str)
+static int generic_ci_d_hash(const struct dentry *dentry, struct qstr *str)
 {
 	const struct inode *dir = READ_ONCE(dentry->d_inode);
 	struct super_block *sb = dentry->d_sb;
 	const struct unicode_map *um = sb->s_encoding;
-	int ret;
+	int ret = 0;
 
-	if (!dir || !IS_CASEFOLDED(dir))
+	if (!dir || !needs_casefold(dir))
 		return 0;
 
 	ret = utf8_casefold_hash(um, dentry, str);
@@ -1871,89 +1466,11 @@ int generic_ci_d_hash(const struct dentry *dentry, struct qstr *str)
 		return -EINVAL;
 	return 0;
 }
-EXPORT_SYMBOL(generic_ci_d_hash);
 
 static const struct dentry_operations generic_ci_dentry_ops = {
 	.d_hash = generic_ci_d_hash,
 	.d_compare = generic_ci_d_compare,
-#ifdef CONFIG_FS_ENCRYPTION
-	.d_revalidate = fscrypt_d_revalidate,
-#endif
 };
-
-/**
- * generic_ci_match() - Match a name (case-insensitively) with a dirent.
- * This is a filesystem helper for comparison with directory entries.
- * generic_ci_d_compare should be used in VFS' ->d_compare instead.
- *
- * @parent: Inode of the parent of the dirent under comparison
- * @name: name under lookup.
- * @folded_name: Optional pre-folded name under lookup
- * @de_name: Dirent name.
- * @de_name_len: dirent name length.
- *
- * Test whether a case-insensitive directory entry matches the filename
- * being searched.  If @folded_name is provided, it is used instead of
- * recalculating the casefold of @name.
- *
- * Return: > 0 if the directory entry matches, 0 if it doesn't match, or
- * < 0 on error.
- */
-int generic_ci_match(const struct inode *parent,
-		     const struct qstr *name,
-		     const struct qstr *folded_name,
-		     const u8 *de_name, u32 de_name_len)
-{
-	const struct super_block *sb = parent->i_sb;
-	const struct unicode_map *um = sb->s_encoding;
-	struct fscrypt_str decrypted_name = FSTR_INIT(NULL, de_name_len);
-	struct qstr dirent = QSTR_INIT(de_name, de_name_len);
-	int res = 0;
-
-	if (IS_ENCRYPTED(parent)) {
-		const struct fscrypt_str encrypted_name =
-			FSTR_INIT((u8 *) de_name, de_name_len);
-
-		if (WARN_ON_ONCE(!fscrypt_has_encryption_key(parent)))
-			return -EINVAL;
-
-		decrypted_name.name = kmalloc(de_name_len, GFP_KERNEL);
-		if (!decrypted_name.name)
-			return -ENOMEM;
-		res = fscrypt_fname_disk_to_usr(parent, 0, 0, &encrypted_name,
-						&decrypted_name);
-		if (res < 0) {
-			kfree(decrypted_name.name);
-			return res;
-		}
-		dirent.name = decrypted_name.name;
-		dirent.len = decrypted_name.len;
-	}
-
-	/*
-	 * Attempt a case-sensitive match first. It is cheaper and
-	 * should cover most lookups, including all the sane
-	 * applications that expect a case-sensitive filesystem.
-	 */
-
-	if (dirent.len == name->len &&
-	    !memcmp(name->name, dirent.name, dirent.len))
-		goto out;
-
-	if (folded_name->name)
-		res = utf8_strncasecmp_folded(um, folded_name, &dirent);
-	else
-		res = utf8_strncasecmp(um, name, &dirent);
-
-out:
-	kfree(decrypted_name.name);
-	if (res < 0 && sb_has_strict_encoding(sb)) {
-		pr_err_ratelimited("Directory contains filename that is invalid UTF-8");
-		return 0;
-	}
-	return !res;
-}
-EXPORT_SYMBOL(generic_ci_match);
 #endif
 
 #ifdef CONFIG_FS_ENCRYPTION
@@ -1962,33 +1479,64 @@ static const struct dentry_operations generic_encrypted_dentry_ops = {
 };
 #endif
 
+#if defined(CONFIG_FS_ENCRYPTION) && IS_ENABLED(CONFIG_UNICODE)
+static const struct dentry_operations generic_encrypted_ci_dentry_ops = {
+	.d_hash = generic_ci_d_hash,
+	.d_compare = generic_ci_d_compare,
+	.d_revalidate = fscrypt_d_revalidate,
+};
+#endif
+
 /**
- * generic_set_sb_d_ops - helper for choosing the set of
- * filesystem-wide dentry operations for the enabled features
- * @sb: superblock to be configured
+ * generic_set_encrypted_ci_d_ops - helper for setting d_ops for given dentry
+ * @dentry:	dentry to set ops on
  *
- * Filesystems supporting casefolding and/or fscrypt can call this
- * helper at mount-time to configure default dentry_operations to the
- * best set of dentry operations required for the enabled features.
- * The helper must be called after these have been configured, but
- * before the root dentry is created.
+ * Casefolded directories need d_hash and d_compare set, so that the dentries
+ * contained in them are handled case-insensitively.  Note that these operations
+ * are needed on the parent directory rather than on the dentries in it, and
+ * while the casefolding flag can be toggled on and off on an empty directory,
+ * dentry_operations can't be changed later.  As a result, if the filesystem has
+ * casefolding support enabled at all, we have to give all dentries the
+ * casefolding operations even if their inode doesn't have the casefolding flag
+ * currently (and thus the casefolding ops would be no-ops for now).
+ *
+ * Encryption works differently in that the only dentry operation it needs is
+ * d_revalidate, which it only needs on dentries that have the no-key name flag.
+ * The no-key flag can't be set "later", so we don't have to worry about that.
+ *
+ * Finally, to maximize compatibility with overlayfs (which isn't compatible
+ * with certain dentry operations) and to avoid taking an unnecessary
+ * performance hit, we use custom dentry_operations for each possible
+ * combination rather than always installing all operations.
  */
-void generic_set_sb_d_ops(struct super_block *sb)
+void generic_set_encrypted_ci_d_ops(struct dentry *dentry)
 {
+#ifdef CONFIG_FS_ENCRYPTION
+	bool needs_encrypt_ops = dentry->d_flags & DCACHE_NOKEY_NAME;
+#endif
 #if IS_ENABLED(CONFIG_UNICODE)
-	if (sb->s_encoding) {
-		set_default_d_op(sb, &generic_ci_dentry_ops);
+	bool needs_ci_ops = dentry->d_sb->s_encoding;
+#endif
+#if defined(CONFIG_FS_ENCRYPTION) && IS_ENABLED(CONFIG_UNICODE)
+	if (needs_encrypt_ops && needs_ci_ops) {
+		d_set_d_op(dentry, &generic_encrypted_ci_dentry_ops);
 		return;
 	}
 #endif
 #ifdef CONFIG_FS_ENCRYPTION
-	if (sb->s_cop) {
-		set_default_d_op(sb, &generic_encrypted_dentry_ops);
+	if (needs_encrypt_ops) {
+		d_set_d_op(dentry, &generic_encrypted_dentry_ops);
+		return;
+	}
+#endif
+#if IS_ENABLED(CONFIG_UNICODE)
+	if (needs_ci_ops) {
+		d_set_d_op(dentry, &generic_ci_dentry_ops);
 		return;
 	}
 #endif
 }
-EXPORT_SYMBOL(generic_set_sb_d_ops);
+EXPORT_SYMBOL(generic_set_encrypted_ci_d_ops);
 
 /**
  * inode_maybe_inc_iversion - increments i_version
@@ -2016,19 +1564,13 @@ bool inode_maybe_inc_iversion(struct inode *inode, bool force)
 	 * information, but the legacy inode_inc_iversion code used a spinlock
 	 * to serialize increments.
 	 *
-	 * We add a full memory barrier to ensure that any de facto ordering
-	 * with other state is preserved (either implicitly coming from cmpxchg
-	 * or explicitly from smp_mb if we don't know upfront if we will execute
-	 * the former).
+	 * Here, we add full memory barriers to ensure that any de-facto
+	 * ordering with other info is preserved.
 	 *
-	 * These barriers pair with inode_query_iversion().
+	 * This barrier pairs with the barrier in inode_query_iversion()
 	 */
+	smp_mb();
 	cur = inode_peek_iversion_raw(inode);
-	if (!force && !(cur & I_VERSION_QUERIED)) {
-		smp_mb();
-		cur = inode_peek_iversion_raw(inode);
-	}
-
 	do {
 		/* If flag is clear then we needn't do anything */
 		if (!force && !(cur & I_VERSION_QUERIED))
@@ -2057,268 +1599,22 @@ EXPORT_SYMBOL(inode_maybe_inc_iversion);
 u64 inode_query_iversion(struct inode *inode)
 {
 	u64 cur, new;
-	bool fenced = false;
 
-	/*
-	 * Memory barriers (implicit in cmpxchg, explicit in smp_mb) pair with
-	 * inode_maybe_inc_iversion(), see that routine for more details.
-	 */
 	cur = inode_peek_iversion_raw(inode);
 	do {
 		/* If flag is already set, then no need to swap */
 		if (cur & I_VERSION_QUERIED) {
-			if (!fenced)
-				smp_mb();
+			/*
+			 * This barrier (and the implicit barrier in the
+			 * cmpxchg below) pairs with the barrier in
+			 * inode_maybe_inc_iversion().
+			 */
+			smp_mb();
 			break;
 		}
 
-		fenced = true;
 		new = cur | I_VERSION_QUERIED;
 	} while (!atomic64_try_cmpxchg(&inode->i_version, &cur, new));
 	return cur >> I_VERSION_QUERIED_SHIFT;
 }
 EXPORT_SYMBOL(inode_query_iversion);
-
-ssize_t direct_write_fallback(struct kiocb *iocb, struct iov_iter *iter,
-		ssize_t direct_written, ssize_t buffered_written)
-{
-	struct address_space *mapping = iocb->ki_filp->f_mapping;
-	loff_t pos = iocb->ki_pos - buffered_written;
-	loff_t end = iocb->ki_pos - 1;
-	int err;
-
-	/*
-	 * If the buffered write fallback returned an error, we want to return
-	 * the number of bytes which were written by direct I/O, or the error
-	 * code if that was zero.
-	 *
-	 * Note that this differs from normal direct-io semantics, which will
-	 * return -EFOO even if some bytes were written.
-	 */
-	if (unlikely(buffered_written < 0)) {
-		if (direct_written)
-			return direct_written;
-		return buffered_written;
-	}
-
-	/*
-	 * We need to ensure that the page cache pages are written to disk and
-	 * invalidated to preserve the expected O_DIRECT semantics.
-	 */
-	err = filemap_write_and_wait_range(mapping, pos, end);
-	if (err < 0) {
-		/*
-		 * We don't know how much we wrote, so just return the number of
-		 * bytes which were direct-written
-		 */
-		iocb->ki_pos -= buffered_written;
-		if (direct_written)
-			return direct_written;
-		return err;
-	}
-	invalidate_mapping_pages(mapping, pos >> PAGE_SHIFT, end >> PAGE_SHIFT);
-	return direct_written + buffered_written;
-}
-EXPORT_SYMBOL_GPL(direct_write_fallback);
-
-/**
- * simple_inode_init_ts - initialize the timestamps for a new inode
- * @inode: inode to be initialized
- *
- * When a new inode is created, most filesystems set the timestamps to the
- * current time. Add a helper to do this.
- */
-struct timespec64 simple_inode_init_ts(struct inode *inode)
-{
-	struct timespec64 ts = inode_set_ctime_current(inode);
-
-	inode_set_atime_to_ts(inode, ts);
-	inode_set_mtime_to_ts(inode, ts);
-	return ts;
-}
-EXPORT_SYMBOL(simple_inode_init_ts);
-
-struct dentry *stashed_dentry_get(struct dentry **stashed)
-{
-	struct dentry *dentry;
-
-	guard(rcu)();
-	dentry = rcu_dereference(*stashed);
-	if (!dentry)
-		return NULL;
-	if (IS_ERR(dentry))
-		return dentry;
-	if (!lockref_get_not_dead(&dentry->d_lockref))
-		return NULL;
-	return dentry;
-}
-
-static struct dentry *prepare_anon_dentry(struct dentry **stashed,
-					  struct super_block *sb,
-					  void *data)
-{
-	struct dentry *dentry;
-	struct inode *inode;
-	const struct stashed_operations *sops = sb->s_fs_info;
-	int ret;
-
-	inode = new_inode_pseudo(sb);
-	if (!inode) {
-		sops->put_data(data);
-		return ERR_PTR(-ENOMEM);
-	}
-
-	inode->i_flags |= S_IMMUTABLE;
-	inode->i_mode = S_IFREG;
-	simple_inode_init_ts(inode);
-
-	ret = sops->init_inode(inode, data);
-	if (ret < 0) {
-		iput(inode);
-		return ERR_PTR(ret);
-	}
-
-	/* Notice when this is changed. */
-	WARN_ON_ONCE(!S_ISREG(inode->i_mode));
-
-	dentry = d_alloc_anon(sb);
-	if (!dentry) {
-		iput(inode);
-		return ERR_PTR(-ENOMEM);
-	}
-
-	/* Store address of location where dentry's supposed to be stashed. */
-	dentry->d_fsdata = stashed;
-
-	/* @data is now owned by the fs */
-	d_instantiate(dentry, inode);
-	return dentry;
-}
-
-struct dentry *stash_dentry(struct dentry **stashed, struct dentry *dentry)
-{
-	guard(rcu)();
-	for (;;) {
-		struct dentry *old;
-
-		/* Assume any old dentry was cleared out. */
-		old = cmpxchg(stashed, NULL, dentry);
-		if (likely(!old))
-			return dentry;
-
-		/* Check if somebody else installed a reusable dentry. */
-		if (lockref_get_not_dead(&old->d_lockref))
-			return old;
-
-		/* There's an old dead dentry there, try to take it over. */
-		if (likely(try_cmpxchg(stashed, &old, dentry)))
-			return dentry;
-	}
-}
-
-/**
- * path_from_stashed - create path from stashed or new dentry
- * @stashed:    where to retrieve or stash dentry
- * @mnt:        mnt of the filesystems to use
- * @data:       data to store in inode->i_private
- * @path:       path to create
- *
- * The function tries to retrieve a stashed dentry from @stashed. If the dentry
- * is still valid then it will be reused. If the dentry isn't able the function
- * will allocate a new dentry and inode. It will then check again whether it
- * can reuse an existing dentry in case one has been added in the meantime or
- * update @stashed with the newly added dentry.
- *
- * Special-purpose helper for nsfs and pidfs.
- *
- * Return: On success zero and on failure a negative error is returned.
- */
-int path_from_stashed(struct dentry **stashed, struct vfsmount *mnt, void *data,
-		      struct path *path)
-{
-	struct dentry *dentry, *res;
-	const struct stashed_operations *sops = mnt->mnt_sb->s_fs_info;
-
-	/* See if dentry can be reused. */
-	res = stashed_dentry_get(stashed);
-	if (IS_ERR(res))
-		return PTR_ERR(res);
-	if (res) {
-		sops->put_data(data);
-		goto make_path;
-	}
-
-	/* Allocate a new dentry. */
-	dentry = prepare_anon_dentry(stashed, mnt->mnt_sb, data);
-	if (IS_ERR(dentry))
-		return PTR_ERR(dentry);
-
-	/* Added a new dentry. @data is now owned by the filesystem. */
-	if (sops->stash_dentry)
-		res = sops->stash_dentry(stashed, dentry);
-	else
-		res = stash_dentry(stashed, dentry);
-	if (IS_ERR(res)) {
-		dput(dentry);
-		return PTR_ERR(res);
-	}
-	if (res != dentry)
-		dput(dentry);
-
-make_path:
-	path->dentry = res;
-	path->mnt = mntget(mnt);
-	VFS_WARN_ON_ONCE(path->dentry->d_fsdata != stashed);
-	VFS_WARN_ON_ONCE(d_inode(path->dentry)->i_private != data);
-	return 0;
-}
-
-void stashed_dentry_prune(struct dentry *dentry)
-{
-	struct dentry **stashed = dentry->d_fsdata;
-	struct inode *inode = d_inode(dentry);
-
-	if (WARN_ON_ONCE(!stashed))
-		return;
-
-	if (!inode)
-		return;
-
-	/*
-	 * Only replace our own @dentry as someone else might've
-	 * already cleared out @dentry and stashed their own
-	 * dentry in there.
-	 */
-	cmpxchg(stashed, dentry, NULL);
-}
-
-/**
- * simple_start_creating - prepare to create a given name
- * @parent: directory in which to prepare to create the name
- * @name:   the name to be created
- *
- * Required lock is taken and a lookup in performed prior to creating an
- * object in a directory.  No permission checking is performed.
- *
- * Returns: a negative dentry on which vfs_create() or similar may
- *  be attempted, or an error.
- */
-struct dentry *simple_start_creating(struct dentry *parent, const char *name)
-{
-	struct qstr qname = QSTR(name);
-	int err;
-
-	err = lookup_noperm_common(&qname, parent);
-	if (err)
-		return ERR_PTR(err);
-	return start_dirop(parent, &qname, LOOKUP_CREATE | LOOKUP_EXCL);
-}
-EXPORT_SYMBOL(simple_start_creating);
-
-/* parent must have been held exclusive since simple_start_creating() */
-void simple_done_creating(struct dentry *child)
-{
-	inode_unlock(child->d_parent->d_inode);
-	dput(child);
-}
-EXPORT_SYMBOL(simple_done_creating);

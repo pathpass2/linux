@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 %YAML 1.2
 ---
-$id: http://devicetree.org/schemas/display/msm/mdp4.yaml#
-$schema: http://devicetree.org/meta-schemas/core.yaml#
+$id: "http://devicetree.org/schemas/display/msm/mdp4.yaml#"
+$schema: "http://devicetree.org/meta-schemas/core.yaml#"
 
 title: Qualcomm Adreno/Snapdragon MDP4 display controller
 
@@ -18,10 +18,9 @@ properties:
 
   clocks:
     minItems: 6
-    maxItems: 8
+    maxItems: 6
 
   clock-names:
-    minItems: 6
     items:
       - const: core_clk
       - const: iface_clk
@@ -29,12 +28,6 @@ properties:
       - const: lut_clk
       - const: hdmi_clk
       - const: tv_clk
-      - const: lcdc_clk
-      - const: pxo
-        description: XO used to drive the internal LVDS PLL
-
-  '#clock-cells':
-    const: 0
 
   reg:
     maxItems: 1

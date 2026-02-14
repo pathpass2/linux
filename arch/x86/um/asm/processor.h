@@ -21,10 +21,10 @@
 
 #include <asm/user.h>
 
-/* PAUSE is a good thing to insert into busy-wait loops. */
-static __always_inline void native_pause(void)
+/* REP NOP (PAUSE) is a good thing to insert into busy-wait loops. */
+static __always_inline void rep_nop(void)
 {
-	__asm__ __volatile__("pause": : :"memory");
+	__asm__ __volatile__("rep;nop": : :"memory");
 }
 
 static __always_inline void cpu_relax(void)
@@ -33,7 +33,7 @@ static __always_inline void cpu_relax(void)
 	    time_travel_mode == TT_MODE_EXTERNAL)
 		time_travel_ndelay(1);
 	else
-		native_pause();
+		rep_nop();
 }
 
 #define task_pt_regs(t) (&(t)->thread.regs)

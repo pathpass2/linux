@@ -58,31 +58,19 @@ struct regulator {
 	struct dentry *debugfs;
 };
 
-extern const struct class regulator_class;
+extern struct class regulator_class;
 
 static inline struct regulator_dev *dev_to_rdev(struct device *dev)
 {
 	return container_of(dev, struct regulator_dev, dev);
 }
 
-enum regulator_get_type {
-	NORMAL_GET,
-	EXCLUSIVE_GET,
-	OPTIONAL_GET,
-	MAX_GET_TYPE
-};
-
 #ifdef CONFIG_OF
-struct regulator_dev *of_regulator_dev_lookup(struct device *dev,
-					      struct device_node *np,
-					      const char *supply);
+struct regulator_dev *of_find_regulator_by_node(struct device_node *np);
 struct regulator_init_data *regulator_of_get_init_data(struct device *dev,
 			         const struct regulator_desc *desc,
 				 struct regulator_config *config,
 				 struct device_node **node);
-
-struct regulator *_of_regulator_get(struct device *dev, struct device_node *node,
-				    const char *id, enum regulator_get_type get_type);
 
 struct regulator_dev *of_parse_coupled_regulator(struct regulator_dev *rdev,
 						 int index);
@@ -92,11 +80,10 @@ int of_get_n_coupled(struct regulator_dev *rdev);
 bool of_check_coupling_data(struct regulator_dev *rdev);
 
 #else
-static inline struct regulator_dev *of_regulator_dev_lookup(struct device *dev,
-							    struct device_node *np,
-							    const char *supply)
+static inline struct regulator_dev *
+of_find_regulator_by_node(struct device_node *np)
 {
-	return ERR_PTR(-ENODEV);
+	return NULL;
 }
 
 static inline struct regulator_init_data *
@@ -126,11 +113,13 @@ static inline bool of_check_coupling_data(struct regulator_dev *rdev)
 }
 
 #endif
+enum regulator_get_type {
+	NORMAL_GET,
+	EXCLUSIVE_GET,
+	OPTIONAL_GET,
+	MAX_GET_TYPE
+};
 
-int _regulator_get_common_check(struct device *dev, const char *id,
-				enum regulator_get_type get_type);
-struct regulator *_regulator_get_common(struct regulator_dev *rdev, struct device *dev,
-					const char *id, enum regulator_get_type get_type);
 struct regulator *_regulator_get(struct device *dev, const char *id,
 				 enum regulator_get_type get_type);
 int _regulator_bulk_get(struct device *dev, int num_consumers,

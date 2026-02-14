@@ -3,8 +3,8 @@
  * CAN driver for PEAK System USB adapters
  * Derived from the PCAN project file driver/src/pcan_usb_core.c
  *
- * Copyright (C) 2003-2025 PEAK System-Technik GmbH
- * Author: Stéphane Grosjean <stephane.grosjean@hms-networks.com>
+ * Copyright (C) 2003-2010 PEAK System-Technik GmbH
+ * Copyright (C) 2010-2012 Stephane Grosjean <s.grosjean@peak-system.com>
  *
  * Many thanks to Klaus Hitschler <klaus.hitschler@gmx.de>
  */
@@ -24,7 +24,7 @@
 
 #include "pcan_usb_core.h"
 
-MODULE_AUTHOR("Stéphane Grosjean <stephane.grosjean@hms-networks.com>");
+MODULE_AUTHOR("Stephane Grosjean <s.grosjean@peak-system.com>");
 MODULE_DESCRIPTION("CAN driver for PEAK-System USB adapters");
 MODULE_LICENSE("GPL v2");
 
@@ -111,7 +111,7 @@ void peak_usb_update_ts_now(struct peak_time_ref *time_ref, u32 ts_now)
 		u32 delta_ts = time_ref->ts_dev_2 - time_ref->ts_dev_1;
 
 		if (time_ref->ts_dev_2 < time_ref->ts_dev_1)
-			delta_ts &= (1ULL << time_ref->adapter->ts_used_bits) - 1;
+			delta_ts &= (1 << time_ref->adapter->ts_used_bits) - 1;
 
 		time_ref->ts_total += delta_ts;
 	}
@@ -212,6 +212,19 @@ void peak_usb_get_ts_time(struct peak_time_ref *time_ref, u32 ts, ktime_t *time)
 	} else {
 		*time = ktime_get();
 	}
+}
+
+/*
+ * post received skb after having set any hw timestamp
+ */
+int peak_usb_netif_rx(struct sk_buff *skb,
+		      struct peak_time_ref *time_ref, u32 ts_low)
+{
+	struct skb_shared_hwtstamps *hwts = skb_hwtstamps(skb);
+
+	peak_usb_get_ts_time(time_ref, ts_low, &hwts->hwtstamp);
+
+	return netif_rx(skb);
 }
 
 /* post received skb with native 64-bit hw timestamp */
@@ -770,7 +783,7 @@ static int peak_usb_set_data_bittiming(struct net_device *netdev)
 	const struct peak_usb_adapter *pa = dev->adapter;
 
 	if (pa->dev_set_data_bittiming) {
-		struct can_bittiming *bt = &dev->can.fd.data_bittiming;
+		struct can_bittiming *bt = &dev->can.data_bittiming;
 		int err = pa->dev_set_data_bittiming(dev, bt);
 
 		if (err)
@@ -784,33 +797,37 @@ static int peak_usb_set_data_bittiming(struct net_device *netdev)
 	return 0;
 }
 
-static int peak_hwtstamp_get(struct net_device *netdev,
-			     struct kernel_hwtstamp_config *config)
+static int peak_eth_ioctl(struct net_device *netdev, struct ifreq *ifr, int cmd)
 {
-	config->tx_type = HWTSTAMP_TX_OFF;
-	config->rx_filter = HWTSTAMP_FILTER_ALL;
+	struct hwtstamp_config hwts_cfg = { 0 };
 
-	return 0;
-}
+	switch (cmd) {
+	case SIOCSHWTSTAMP: /* set */
+		if (copy_from_user(&hwts_cfg, ifr->ifr_data, sizeof(hwts_cfg)))
+			return -EFAULT;
+		if (hwts_cfg.tx_type == HWTSTAMP_TX_OFF &&
+		    hwts_cfg.rx_filter == HWTSTAMP_FILTER_ALL)
+			return 0;
+		return -ERANGE;
 
-static int peak_hwtstamp_set(struct net_device *netdev,
-			     struct kernel_hwtstamp_config *config,
-			     struct netlink_ext_ack *extack)
-{
-	if (config->tx_type == HWTSTAMP_TX_OFF &&
-	    config->rx_filter == HWTSTAMP_FILTER_ALL)
+	case SIOCGHWTSTAMP: /* get */
+		hwts_cfg.tx_type = HWTSTAMP_TX_OFF;
+		hwts_cfg.rx_filter = HWTSTAMP_FILTER_ALL;
+		if (copy_to_user(ifr->ifr_data, &hwts_cfg, sizeof(hwts_cfg)))
+			return -EFAULT;
 		return 0;
 
-	NL_SET_ERR_MSG_MOD(extack, "Only RX HWTSTAMP_FILTER_ALL is supported");
-	return -ERANGE;
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
 static const struct net_device_ops peak_usb_netdev_ops = {
 	.ndo_open = peak_usb_ndo_open,
 	.ndo_stop = peak_usb_ndo_stop,
+	.ndo_eth_ioctl = peak_eth_ioctl,
 	.ndo_start_xmit = peak_usb_ndo_start_xmit,
-	.ndo_hwtstamp_get = peak_hwtstamp_get,
-	.ndo_hwtstamp_set = peak_hwtstamp_set,
+	.ndo_change_mtu = can_change_mtu,
 };
 
 /* CAN-USB devices generally handle 32-bit CAN channel IDs.
@@ -893,12 +910,15 @@ int peak_usb_set_eeprom(struct net_device *netdev,
 	return 0;
 }
 
-int pcan_get_ts_info(struct net_device *dev, struct kernel_ethtool_ts_info *info)
+int pcan_get_ts_info(struct net_device *dev, struct ethtool_ts_info *info)
 {
 	info->so_timestamping =
 		SOF_TIMESTAMPING_TX_SOFTWARE |
+		SOF_TIMESTAMPING_RX_SOFTWARE |
+		SOF_TIMESTAMPING_SOFTWARE |
 		SOF_TIMESTAMPING_RX_HARDWARE |
 		SOF_TIMESTAMPING_RAW_HARDWARE;
+	info->phc_index = -1;
 	info->tx_types = BIT(HWTSTAMP_TX_OFF);
 	info->rx_filters = BIT(HWTSTAMP_FILTER_ALL);
 
@@ -950,8 +970,8 @@ static int peak_usb_create_dev(const struct peak_usb_adapter *peak_usb_adapter,
 	dev->can.clock = peak_usb_adapter->clock;
 	dev->can.bittiming_const = peak_usb_adapter->bittiming_const;
 	dev->can.do_set_bittiming = peak_usb_set_bittiming;
-	dev->can.fd.data_bittiming_const = peak_usb_adapter->data_bittiming_const;
-	dev->can.fd.do_set_data_bittiming = peak_usb_set_data_bittiming;
+	dev->can.data_bittiming_const = peak_usb_adapter->data_bittiming_const;
+	dev->can.do_set_data_bittiming = peak_usb_set_data_bittiming;
 	dev->can.do_set_mode = peak_usb_set_mode;
 	dev->can.do_get_berr_counter = peak_usb_adapter->do_get_berr_counter;
 	dev->can.ctrlmode_supported = peak_usb_adapter->ctrlmode_supported;
@@ -1136,7 +1156,7 @@ static void __exit peak_usb_exit(void)
 	int err;
 
 	/* last chance do send any synchronous commands here */
-	err = driver_for_each_device(&peak_usb_driver.driver, NULL,
+	err = driver_for_each_device(&peak_usb_driver.drvwrap.driver, NULL,
 				     NULL, peak_usb_do_device_exit);
 	if (err)
 		pr_err("%s: failed to stop all can devices (err %d)\n",

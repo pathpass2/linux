@@ -378,8 +378,8 @@ static void slic_xmit_complete(struct slic_device *sdev)
 	smp_wmb();
 
 	u64_stats_update_begin(&sdev->stats.syncp);
-	u64_stats_add(&sdev->stats.tx_bytes, bytes);
-	u64_stats_add(&sdev->stats.tx_packets, frames);
+	sdev->stats.tx_bytes += bytes;
+	sdev->stats.tx_packets += frames;
 	u64_stats_update_end(&sdev->stats.syncp);
 
 	netif_tx_lock(dev);
@@ -615,8 +615,8 @@ static void slic_handle_receive(struct slic_device *sdev, unsigned int todo,
 	}
 
 	u64_stats_update_begin(&sdev->stats.syncp);
-	u64_stats_add(&sdev->stats.rx_bytes, bytes);
-	u64_stats_add(&sdev->stats.rx_packets, frames);
+	sdev->stats.rx_bytes += bytes;
+	sdev->stats.rx_packets += frames;
 	u64_stats_update_end(&sdev->stats.syncp);
 
 	slic_refill_rx_queue(sdev, GFP_ATOMIC);
@@ -1520,8 +1520,10 @@ static void slic_get_ethtool_stats(struct net_device *dev,
 
 static void slic_get_strings(struct net_device *dev, u32 stringset, u8 *data)
 {
-	if (stringset == ETH_SS_STATS)
+	if (stringset == ETH_SS_STATS) {
 		memcpy(data, slic_stats_strings, sizeof(slic_stats_strings));
+		data += sizeof(slic_stats_strings);
+	}
 }
 
 static void slic_get_drvinfo(struct net_device *dev,
@@ -1678,15 +1680,17 @@ static int slic_init(struct slic_device *sdev)
 	slic_card_reset(sdev);
 
 	err = slic_load_firmware(sdev);
-	if (err)
-		return dev_err_probe(&sdev->pdev->dev, err,
-			"failed to load firmware\n");
+	if (err) {
+		dev_err(&sdev->pdev->dev, "failed to load firmware\n");
+		return err;
+	}
 
 	/* we need the shared memory to read EEPROM so set it up temporarily */
 	err = slic_init_shmem(sdev);
-	if (err)
-		return dev_err_probe(&sdev->pdev->dev, err,
-			"failed to init shared memory\n");
+	if (err) {
+		dev_err(&sdev->pdev->dev, "failed to init shared memory\n");
+		return err;
+	}
 
 	err = slic_read_eeprom(sdev);
 	if (err) {
@@ -1739,9 +1743,10 @@ static int slic_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	int err;
 
 	err = pci_enable_device(pdev);
-	if (err)
-		return dev_err_probe(&pdev->dev, err,
-			"failed to enable PCI device\n");
+	if (err) {
+		dev_err(&pdev->dev, "failed to enable PCI device\n");
+		return err;
+	}
 
 	pci_set_master(pdev);
 	pci_try_set_mwi(pdev);

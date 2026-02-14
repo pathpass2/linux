@@ -5,7 +5,6 @@ obj-$(CONFIG_FS_VERITY) += enable.o \
 			   init.o \
 			   measure.o \
 			   open.o \
-			   pagecache.o \
 			   read_metadata.o \
 			   verify.o
 

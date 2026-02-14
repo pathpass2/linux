@@ -19,7 +19,6 @@
 
 #define RTL_USB_MAX_TXQ_NUM		4		/* max tx queue */
 #define RTL_USB_MAX_EP_NUM		6		/* max ep number */
-#define RTL_USB_MAX_BULKOUT_NUM		4
 #define RTL_USB_MAX_TX_URBS_NUM		8
 
 enum rtl_txq {
@@ -95,7 +94,6 @@ struct rtl_usb {
 
 	/* Tx */
 	u8 out_ep_nums ;
-	u8 out_eps[RTL_USB_MAX_BULKOUT_NUM];
 	u8 out_queue_sel;
 	struct rtl_ep_map ep_map;
 
@@ -136,7 +134,9 @@ struct rtl_usb_priv {
 
 int rtl_usb_probe(struct usb_interface *intf,
 		  const struct usb_device_id *id,
-		  const struct rtl_hal_cfg *rtl92cu_hal_cfg);
+		  struct rtl_hal_cfg *rtl92cu_hal_cfg);
 void rtl_usb_disconnect(struct usb_interface *intf);
+int rtl_usb_suspend(struct usb_interface *pusb_intf, pm_message_t message);
+int rtl_usb_resume(struct usb_interface *pusb_intf);
 
 #endif

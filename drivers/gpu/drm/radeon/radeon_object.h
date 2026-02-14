@@ -152,7 +152,7 @@ extern void radeon_bo_force_delete(struct radeon_device *rdev);
 extern int radeon_bo_init(struct radeon_device *rdev);
 extern void radeon_bo_fini(struct radeon_device *rdev);
 extern int radeon_bo_list_validate(struct radeon_device *rdev,
-				   struct drm_exec *exec,
+				   struct ww_acquire_ctx *ticket,
 				   struct list_head *head, int ring);
 extern int radeon_bo_set_tiling_flags(struct radeon_bo *bo,
 				u32 tiling_flags, u32 pitch);
@@ -169,22 +169,15 @@ extern void radeon_bo_fence(struct radeon_bo *bo, struct radeon_fence *fence,
 /*
  * sub allocation
  */
-static inline struct radeon_sa_manager *
-to_radeon_sa_manager(struct drm_suballoc_manager *manager)
+
+static inline uint64_t radeon_sa_bo_gpu_addr(struct radeon_sa_bo *sa_bo)
 {
-	return container_of(manager, struct radeon_sa_manager, base);
+	return sa_bo->manager->gpu_addr + sa_bo->soffset;
 }
 
-static inline uint64_t radeon_sa_bo_gpu_addr(struct drm_suballoc *sa_bo)
+static inline void * radeon_sa_bo_cpu_addr(struct radeon_sa_bo *sa_bo)
 {
-	return to_radeon_sa_manager(sa_bo->manager)->gpu_addr +
-		drm_suballoc_soffset(sa_bo);
-}
-
-static inline void *radeon_sa_bo_cpu_addr(struct drm_suballoc *sa_bo)
-{
-	return to_radeon_sa_manager(sa_bo->manager)->cpu_ptr +
-		drm_suballoc_soffset(sa_bo);
+	return sa_bo->manager->cpu_ptr + sa_bo->soffset;
 }
 
 extern int radeon_sa_bo_manager_init(struct radeon_device *rdev,
@@ -197,10 +190,12 @@ extern int radeon_sa_bo_manager_start(struct radeon_device *rdev,
 				      struct radeon_sa_manager *sa_manager);
 extern int radeon_sa_bo_manager_suspend(struct radeon_device *rdev,
 					struct radeon_sa_manager *sa_manager);
-extern int radeon_sa_bo_new(struct radeon_sa_manager *sa_manager,
-			    struct drm_suballoc **sa_bo,
-			    unsigned int size, unsigned int align);
-extern void radeon_sa_bo_free(struct drm_suballoc **sa_bo,
+extern int radeon_sa_bo_new(struct radeon_device *rdev,
+			    struct radeon_sa_manager *sa_manager,
+			    struct radeon_sa_bo **sa_bo,
+			    unsigned size, unsigned align);
+extern void radeon_sa_bo_free(struct radeon_device *rdev,
+			      struct radeon_sa_bo **sa_bo,
 			      struct radeon_fence *fence);
 #if defined(CONFIG_DEBUG_FS)
 extern void radeon_sa_bo_dump_debug_info(struct radeon_sa_manager *sa_manager,

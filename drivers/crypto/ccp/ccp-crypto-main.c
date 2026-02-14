@@ -7,17 +7,14 @@
  * Author: Tom Lendacky <thomas.lendacky@amd.com>
  */
 
-#include <crypto/internal/akcipher.h>
-#include <crypto/internal/hash.h>
-#include <crypto/internal/skcipher.h>
-#include <linux/ccp.h>
-#include <linux/err.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/module.h>
+#include <linux/ccp.h>
 #include <linux/scatterlist.h>
-#include <linux/slab.h>
-#include <linux/spinlock.h>
+#include <crypto/internal/hash.h>
+#include <crypto/internal/akcipher.h>
 
 #include "ccp-crypto.h"
 

@@ -5,8 +5,6 @@
  * Copyright (C) 2007 David Brownell
  */
 
-#include <linux/delay.h>
-#include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
@@ -38,19 +36,19 @@ static const struct i2c_device_id pcf857x_id[] = {
 MODULE_DEVICE_TABLE(i2c, pcf857x_id);
 
 static const struct of_device_id pcf857x_of_table[] = {
-	{ .compatible = "nxp,pcf8574", (void *)8 },
-	{ .compatible = "nxp,pcf8574a", (void *)8 },
-	{ .compatible = "nxp,pca8574", (void *)8 },
-	{ .compatible = "nxp,pca9670", (void *)8 },
-	{ .compatible = "nxp,pca9672", (void *)8 },
-	{ .compatible = "nxp,pca9674", (void *)8 },
-	{ .compatible = "nxp,pcf8575", (void *)16 },
-	{ .compatible = "nxp,pca8575", (void *)16 },
-	{ .compatible = "nxp,pca9671", (void *)16 },
-	{ .compatible = "nxp,pca9673", (void *)16 },
-	{ .compatible = "nxp,pca9675", (void *)16 },
-	{ .compatible = "maxim,max7328", (void *)8 },
-	{ .compatible = "maxim,max7329", (void *)8 },
+	{ .compatible = "nxp,pcf8574" },
+	{ .compatible = "nxp,pcf8574a" },
+	{ .compatible = "nxp,pca8574" },
+	{ .compatible = "nxp,pca9670" },
+	{ .compatible = "nxp,pca9672" },
+	{ .compatible = "nxp,pca9674" },
+	{ .compatible = "nxp,pcf8575" },
+	{ .compatible = "nxp,pca8575" },
+	{ .compatible = "nxp,pca9671" },
+	{ .compatible = "nxp,pca9673" },
+	{ .compatible = "nxp,pca9675" },
+	{ .compatible = "maxim,max7328" },
+	{ .compatible = "maxim,max7329" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, pcf857x_of_table);
@@ -171,24 +169,21 @@ static int pcf857x_output(struct gpio_chip *chip, unsigned int offset, int value
 	return status;
 }
 
-static int pcf857x_set(struct gpio_chip *chip, unsigned int offset, int value)
+static void pcf857x_set(struct gpio_chip *chip, unsigned int offset, int value)
 {
-	return pcf857x_output(chip, offset, value);
+	pcf857x_output(chip, offset, value);
 }
 
-static int pcf857x_set_multiple(struct gpio_chip *chip, unsigned long *mask,
-				unsigned long *bits)
+static void pcf857x_set_multiple(struct gpio_chip *chip, unsigned long *mask,
+				 unsigned long *bits)
 {
 	struct pcf857x *gpio = gpiochip_get_data(chip);
-	int status;
 
 	mutex_lock(&gpio->lock);
 	gpio->out &= ~*mask;
 	gpio->out |= *bits & *mask;
-	status = gpio->write(gpio->client, gpio->out);
+	gpio->write(gpio->client, gpio->out);
 	mutex_unlock(&gpio->lock);
-
-	return status;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -277,10 +272,12 @@ static const struct irq_chip pcf857x_irq_chip = {
 
 static int pcf857x_probe(struct i2c_client *client)
 {
-	struct gpio_desc *reset_gpio;
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct pcf857x *gpio;
 	unsigned int n_latch = 0;
 	int status;
+
+	device_property_read_u32(&client->dev, "lines-initial-states", &n_latch);
 
 	/* Allocate, initialize, and register this gpio_chip. */
 	gpio = devm_kzalloc(&client->dev, sizeof(*gpio), GFP_KERNEL);
@@ -299,31 +296,7 @@ static int pcf857x_probe(struct i2c_client *client)
 	gpio->chip.set_multiple		= pcf857x_set_multiple;
 	gpio->chip.direction_input	= pcf857x_input;
 	gpio->chip.direction_output	= pcf857x_output;
-	gpio->chip.ngpio		= (uintptr_t)i2c_get_match_data(client);
-
-	reset_gpio = devm_gpiod_get_optional(&client->dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(reset_gpio))
-		return dev_err_probe(&client->dev, PTR_ERR(reset_gpio),
-				     "failed to get reset GPIO\n");
-
-	if (reset_gpio) {
-		/* Reset already held with devm_gpiod_get_optional with GPIOD_OUT_HIGH */
-		fsleep(4); /* tw(rst) > 4us */
-		gpiod_set_value_cansleep(reset_gpio, 0);
-		fsleep(100); /* trst > 100uS */
-
-		/*
-		 * Performing a reset means "The PCA9670 registers and I2C-bus
-		 * state machine will be held in their default state until the
-		 * RESET input is once again HIGH".
-		 *
-		 * This is the same as writing 1 for all pins, which is the same
-		 * as n_latch=0, the default value of the variable.
-		 */
-	} else {
-		device_property_read_u32(&client->dev, "lines-initial-states",
-					 &n_latch);
-	}
+	gpio->chip.ngpio		= id->driver_data;
 
 	/* NOTE:  the OnSemi jlc1562b is also largely compatible with
 	 * these parts, notably for output.  It has a low-resolution
@@ -446,7 +419,7 @@ static struct i2c_driver pcf857x_driver = {
 		.name	= "pcf857x",
 		.of_match_table = pcf857x_of_table,
 	},
-	.probe = pcf857x_probe,
+	.probe_new = pcf857x_probe,
 	.shutdown = pcf857x_shutdown,
 	.id_table = pcf857x_id,
 };
@@ -466,6 +439,5 @@ static void __exit pcf857x_exit(void)
 }
 module_exit(pcf857x_exit);
 
-MODULE_DESCRIPTION("Driver for pcf857x, pca857x, and pca967x I2C GPIO expanders");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David Brownell");

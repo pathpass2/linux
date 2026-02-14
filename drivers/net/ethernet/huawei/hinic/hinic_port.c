@@ -456,6 +456,9 @@ int hinic_set_vlan_fliter(struct hinic_dev *nic_dev, u32 en)
 	u16 out_size = sizeof(vlan_filter);
 	int err;
 
+	if (!hwdev)
+		return -EINVAL;
+
 	vlan_filter.func_idx = HINIC_HWIF_FUNC_IDX(hwif);
 	vlan_filter.enable = en;
 
@@ -469,7 +472,7 @@ int hinic_set_vlan_fliter(struct hinic_dev *nic_dev, u32 en)
 		err = HINIC_MGMT_CMD_UNSUPPORTED;
 	} else if (err || !out_size || vlan_filter.status) {
 		dev_err(&pdev->dev,
-			"Failed to set vlan filter, err: %d, status: 0x%x, out size: 0x%x\n",
+			"Failed to set vlan fliter, err: %d, status: 0x%x, out size: 0x%x\n",
 			err, vlan_filter.status, out_size);
 		err = -EINVAL;
 	}

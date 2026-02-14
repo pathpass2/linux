@@ -17,7 +17,8 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_irq.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/spi/spi.h>
 
@@ -339,7 +340,7 @@ static irqreturn_t a3700_spi_interrupt(int irq, void *dev_id)
 static bool a3700_spi_wait_completion(struct spi_device *spi)
 {
 	struct a3700_spi *a3700_spi;
-	unsigned long time_left;
+	unsigned int timeout;
 	unsigned int ctrl_reg;
 	unsigned long timeout_jiffies;
 
@@ -361,12 +362,12 @@ static bool a3700_spi_wait_completion(struct spi_device *spi)
 		     a3700_spi->wait_mask);
 
 	timeout_jiffies = msecs_to_jiffies(A3700_SPI_TIMEOUT);
-	time_left = wait_for_completion_timeout(&a3700_spi->done,
-						timeout_jiffies);
+	timeout = wait_for_completion_timeout(&a3700_spi->done,
+					      timeout_jiffies);
 
 	a3700_spi->wait_mask = 0;
 
-	if (time_left)
+	if (timeout)
 		return true;
 
 	/* there might be the case that right after we checked the
@@ -436,9 +437,9 @@ static void a3700_spi_set_cs(struct spi_device *spi, bool enable)
 	struct a3700_spi *a3700_spi = spi_controller_get_devdata(spi->controller);
 
 	if (!enable)
-		a3700_spi_activate_cs(a3700_spi, spi_get_chipselect(spi, 0));
+		a3700_spi_activate_cs(a3700_spi, spi->chip_select);
 	else
-		a3700_spi_deactivate_cs(a3700_spi, spi_get_chipselect(spi, 0));
+		a3700_spi_deactivate_cs(a3700_spi, spi->chip_select);
 }
 
 static void a3700_spi_header_set(struct a3700_spi *a3700_spi)
@@ -813,6 +814,7 @@ MODULE_DEVICE_TABLE(of, a3700_spi_dt_ids);
 static int a3700_spi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct device_node *of_node = dev->of_node;
 	struct spi_controller *host;
 	struct a3700_spi *spi;
 	u32 num_cs = 0;
@@ -825,13 +827,14 @@ static int a3700_spi_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	if (of_property_read_u32(dev->of_node, "num-cs", &num_cs)) {
+	if (of_property_read_u32(of_node, "num-cs", &num_cs)) {
 		dev_err(dev, "could not find num-cs\n");
 		ret = -ENXIO;
 		goto error;
 	}
 
 	host->bus_num = pdev->id;
+	host->dev.of_node = of_node;
 	host->mode_bits = SPI_MODE_3;
 	host->num_chipselect = num_cs;
 	host->bits_per_word_mask = SPI_BPW_MASK(8) | SPI_BPW_MASK(32);
@@ -863,9 +866,15 @@ static int a3700_spi_probe(struct platform_device *pdev)
 
 	init_completion(&spi->done);
 
-	spi->clk = devm_clk_get_prepared(dev, NULL);
+	spi->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(spi->clk)) {
 		dev_err(dev, "could not find clk: %ld\n", PTR_ERR(spi->clk));
+		goto error;
+	}
+
+	ret = clk_prepare(spi->clk);
+	if (ret) {
+		dev_err(dev, "could not prepare clk: %d\n", ret);
 		goto error;
 	}
 
@@ -880,21 +889,33 @@ static int a3700_spi_probe(struct platform_device *pdev)
 			       dev_name(dev), host);
 	if (ret) {
 		dev_err(dev, "could not request IRQ: %d\n", ret);
-		goto error;
+		goto error_clk;
 	}
 
 	ret = devm_spi_register_controller(dev, host);
 	if (ret) {
 		dev_err(dev, "Failed to register host\n");
-		goto error;
+		goto error_clk;
 	}
 
 	return 0;
 
+error_clk:
+	clk_unprepare(spi->clk);
 error:
 	spi_controller_put(host);
 out:
 	return ret;
+}
+
+static int a3700_spi_remove(struct platform_device *pdev)
+{
+	struct spi_controller *host = platform_get_drvdata(pdev);
+	struct a3700_spi *spi = spi_controller_get_devdata(host);
+
+	clk_unprepare(spi->clk);
+
+	return 0;
 }
 
 static struct platform_driver a3700_spi_driver = {
@@ -903,6 +924,7 @@ static struct platform_driver a3700_spi_driver = {
 		.of_match_table = of_match_ptr(a3700_spi_dt_ids),
 	},
 	.probe		= a3700_spi_probe,
+	.remove		= a3700_spi_remove,
 };
 
 module_platform_driver(a3700_spi_driver);

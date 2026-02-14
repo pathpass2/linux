@@ -7,7 +7,6 @@
 struct tcf_connmark_parms {
 	struct net *net;
 	u16 zone;
-	int action;
 	struct rcu_head rcu;
 };
 

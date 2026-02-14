@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) Rockchip Electronics Co., Ltd.
+ * Copyright (C) Fuzhou Rockchip Electronics Co.Ltd
  * Author: Chris Zhong <zyw@rock-chips.com>
  */
 
@@ -77,7 +77,7 @@
 #define SOURCE_PIF_PKT_ALLOC_WR_EN	0x30830
 #define SOURCE_PIF_SW_RESET		0x30834
 
-/* below registers need access by mailbox */
+/* bellow registers need access by mailbox */
 /* source car addr */
 #define SOURCE_HDTX_CAR			0x0900
 #define SOURCE_DPTX_CAR			0x0904

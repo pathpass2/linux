@@ -194,7 +194,12 @@ int __nf_ct_try_assign_helper(struct nf_conn *ct, struct nf_conn *tmpl,
 	struct nf_conntrack_helper *helper = NULL;
 	struct nf_conn_help *help;
 
-	/* We already got a helper explicitly attached (e.g. nft_ct) */
+	/* We already got a helper explicitly attached. The function
+	 * nf_conntrack_alter_reply - in case NAT is in use - asks for looking
+	 * the helper up again. Since now the user is in full control of
+	 * making consistent helper configurations, skip this automatic
+	 * re-lookup, otherwise we'll lose the helper.
+	 */
 	if (test_bit(IPS_HELPER_BIT, &ct->status))
 		return 0;
 
@@ -355,9 +360,6 @@ int nf_conntrack_helper_register(struct nf_conntrack_helper *me)
 	BUG_ON(me->expect_class_max >= NF_CT_MAX_EXPECT_CLASSES);
 	BUG_ON(strlen(me->name) > NF_CT_HELPER_NAME_LEN - 1);
 
-	if (!nf_ct_helper_hash)
-		return -ENOENT;
-
 	if (me->expect_policy->max_expected > NF_CT_EXPECT_MAX_CNT)
 		return -EINVAL;
 
@@ -368,7 +370,7 @@ int nf_conntrack_helper_register(struct nf_conntrack_helper *me)
 			    (cur->tuple.src.l3num == NFPROTO_UNSPEC ||
 			     cur->tuple.src.l3num == me->tuple.src.l3num) &&
 			    cur->tuple.dst.protonum == me->tuple.dst.protonum) {
-				ret = -EBUSY;
+				ret = -EEXIST;
 				goto out;
 			}
 		}
@@ -379,7 +381,7 @@ int nf_conntrack_helper_register(struct nf_conntrack_helper *me)
 		hlist_for_each_entry(cur, &nf_ct_helper_hash[h], hnode) {
 			if (nf_ct_tuple_src_mask_cmp(&cur->tuple, &me->tuple,
 						     &mask)) {
-				ret = -EBUSY;
+				ret = -EEXIST;
 				goto out;
 			}
 		}
@@ -513,5 +515,4 @@ int nf_conntrack_helper_init(void)
 void nf_conntrack_helper_fini(void)
 {
 	kvfree(nf_ct_helper_hash);
-	nf_ct_helper_hash = NULL;
 }

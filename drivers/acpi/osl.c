@@ -149,7 +149,7 @@ void acpi_os_printf(const char *fmt, ...)
 }
 EXPORT_SYMBOL(acpi_os_printf);
 
-void __printf(1, 0) acpi_os_vprintf(const char *fmt, va_list args)
+void acpi_os_vprintf(const char *fmt, va_list args)
 {
 	static char buffer[512];
 
@@ -276,7 +276,7 @@ acpi_map_lookup_virt(void __iomem *virt, acpi_size size)
 	return NULL;
 }
 
-#if defined(CONFIG_ARM64) || defined(CONFIG_RISCV)
+#if defined(CONFIG_IA64) || defined(CONFIG_ARM64)
 /* ioremap will take care of cache attributes */
 #define should_use_kmap(pfn)   0
 #else
@@ -398,7 +398,7 @@ static void acpi_os_drop_map_ref(struct acpi_ioremap *map)
 	list_del_rcu(&map->list);
 
 	INIT_RCU_WORK(&map->track.rwork, acpi_os_map_remove);
-	queue_rcu_work(system_percpu_wq, &map->track.rwork);
+	queue_rcu_work(system_wq, &map->track.rwork);
 }
 
 /**
@@ -493,7 +493,7 @@ EXPORT_SYMBOL(acpi_os_unmap_generic_address);
 
 #ifdef ACPI_FUTURE_USAGE
 acpi_status
-acpi_os_get_physical_address(void *virt, acpi_physical_address *phys)
+acpi_os_get_physical_address(void *virt, acpi_physical_address * phys)
 {
 	if (!phys || !virt)
 		return AE_BAD_PARAMETER;
@@ -544,7 +544,11 @@ acpi_os_predefined_override(const struct acpi_predefined_names *init_val,
 
 static irqreturn_t acpi_irq(int irq, void *dev_id)
 {
-	if ((*acpi_irq_handler)(acpi_irq_context)) {
+	u32 handled;
+
+	handled = (*acpi_irq_handler) (acpi_irq_context);
+
+	if (handled) {
 		acpi_irq_handled++;
 		return IRQ_HANDLED;
 	} else {
@@ -578,8 +582,7 @@ acpi_os_install_interrupt_handler(u32 gsi, acpi_osd_handler handler,
 
 	acpi_irq_handler = handler;
 	acpi_irq_context = context;
-	if (request_threaded_irq(irq, NULL, acpi_irq, IRQF_SHARED | IRQF_ONESHOT,
-			         "acpi", acpi_irq)) {
+	if (request_irq(irq, acpi_irq, IRQF_SHARED, "acpi", acpi_irq)) {
 		pr_err("SCI (IRQ%d) allocation failed\n", irq);
 		acpi_irq_handler = NULL;
 		return AE_NOT_ACQUIRED;
@@ -607,27 +610,7 @@ acpi_status acpi_os_remove_interrupt_handler(u32 gsi, acpi_osd_handler handler)
 
 void acpi_os_sleep(u64 ms)
 {
-	u64 usec = ms * USEC_PER_MSEC, delta_us = 50;
-
-	/*
-	 * Use a hrtimer because the timer wheel timers are optimized for
-	 * cancelation before they expire and this timer is not going to be
-	 * canceled.
-	 *
-	 * Set the delta between the requested sleep time and the effective
-	 * deadline to at least 50 us in case there is an opportunity for timer
-	 * coalescing.
-	 *
-	 * Moreover, longer sleeps can be assumed to need somewhat less timer
-	 * precision, so sacrifice some of it for making the timer a more likely
-	 * candidate for coalescing by setting the delta to 1% of the sleep time
-	 * if it is above 5 ms (this value is chosen so that the delta is a
-	 * continuous function of the sleep time).
-	 */
-	if (ms > 5)
-		delta_us = (USEC_PER_MSEC / 100) * ms;
-
-	usleep_range(usec, usec + delta_us);
+	msleep(ms);
 }
 
 void acpi_os_stall(u32 us)
@@ -662,15 +645,6 @@ acpi_status acpi_os_read_port(acpi_io_address port, u32 *value, u32 width)
 {
 	u32 dummy;
 
-	if (!IS_ENABLED(CONFIG_HAS_IOPORT)) {
-		/*
-		 * set all-1 result as if reading from non-existing
-		 * I/O port
-		 */
-		*value = GENMASK(width, 0);
-		return AE_NOT_IMPLEMENTED;
-	}
-
 	if (value)
 		*value = 0;
 	else
@@ -694,9 +668,6 @@ EXPORT_SYMBOL(acpi_os_read_port);
 
 acpi_status acpi_os_write_port(acpi_io_address port, u32 value, u32 width)
 {
-	if (!IS_ENABLED(CONFIG_HAS_IOPORT))
-		return AE_NOT_IMPLEMENTED;
-
 	if (width <= 8) {
 		outb(value, port);
 	} else if (width <= 16) {
@@ -813,7 +784,7 @@ acpi_os_write_memory(acpi_physical_address phys_addr, u64 value, u32 width)
 
 #ifdef CONFIG_PCI
 acpi_status
-acpi_os_read_pci_configuration(struct acpi_pci_id *pci_id, u32 reg,
+acpi_os_read_pci_configuration(struct acpi_pci_id * pci_id, u32 reg,
 			       u64 *value, u32 width)
 {
 	int result, size;
@@ -845,7 +816,7 @@ acpi_os_read_pci_configuration(struct acpi_pci_id *pci_id, u32 reg,
 }
 
 acpi_status
-acpi_os_write_pci_configuration(struct acpi_pci_id *pci_id, u32 reg,
+acpi_os_write_pci_configuration(struct acpi_pci_id * pci_id, u32 reg,
 				u64 value, u32 width)
 {
 	int result, size;
@@ -1092,9 +1063,10 @@ int __init acpi_debugger_init(void)
 acpi_status acpi_os_execute(acpi_execute_type type,
 			    acpi_osd_exec_callback function, void *context)
 {
+	acpi_status status = AE_OK;
 	struct acpi_os_dpc *dpc;
+	struct workqueue_struct *queue;
 	int ret;
-
 	ACPI_DEBUG_PRINT((ACPI_DB_EXEC,
 			  "Scheduling function [%p(%p)] for deferred execution.\n",
 			  function, context));
@@ -1103,9 +1075,9 @@ acpi_status acpi_os_execute(acpi_execute_type type,
 		ret = acpi_debugger_create_thread(function, context);
 		if (ret) {
 			pr_err("Kernel thread creation failed\n");
-			return AE_ERROR;
+			status = AE_ERROR;
 		}
-		return AE_OK;
+		goto out_thread;
 	}
 
 	/*
@@ -1123,41 +1095,43 @@ acpi_status acpi_os_execute(acpi_execute_type type,
 
 	dpc->function = function;
 	dpc->context = context;
-	INIT_WORK(&dpc->work, acpi_os_execute_deferred);
 
 	/*
 	 * To prevent lockdep from complaining unnecessarily, make sure that
 	 * there is a different static lockdep key for each workqueue by using
 	 * INIT_WORK() for each of them separately.
 	 */
-	switch (type) {
-	case OSL_NOTIFY_HANDLER:
-		ret = queue_work(kacpi_notify_wq, &dpc->work);
-		break;
-	case OSL_GPE_HANDLER:
-		/*
-		 * On some machines, a software-initiated SMI causes corruption
-		 * unless the SMI runs on CPU 0.  An SMI can be initiated by
-		 * any AML, but typically it's done in GPE-related methods that
-		 * are run via workqueues, so we can avoid the known corruption
-		 * cases by always queueing on CPU 0.
-		 */
-		ret = queue_work_on(0, kacpid_wq, &dpc->work);
-		break;
-	default:
+	if (type == OSL_NOTIFY_HANDLER) {
+		queue = kacpi_notify_wq;
+		INIT_WORK(&dpc->work, acpi_os_execute_deferred);
+	} else if (type == OSL_GPE_HANDLER) {
+		queue = kacpid_wq;
+		INIT_WORK(&dpc->work, acpi_os_execute_deferred);
+	} else {
 		pr_err("Unsupported os_execute type %d.\n", type);
-		goto err;
+		status = AE_ERROR;
 	}
+
+	if (ACPI_FAILURE(status))
+		goto err_workqueue;
+
+	/*
+	 * On some machines, a software-initiated SMI causes corruption unless
+	 * the SMI runs on CPU 0.  An SMI can be initiated by any AML, but
+	 * typically it's done in GPE-related methods that are run via
+	 * workqueues, so we can avoid the known corruption cases by always
+	 * queueing on CPU 0.
+	 */
+	ret = queue_work_on(0, queue, &dpc->work);
 	if (!ret) {
 		pr_err("Unable to queue work\n");
-		goto err;
+		status = AE_ERROR;
 	}
-
-	return AE_OK;
-
-err:
-	kfree(dpc);
-	return AE_ERROR;
+err_workqueue:
+	if (ACPI_FAILURE(status))
+		kfree(dpc);
+out_thread:
+	return status;
 }
 EXPORT_SYMBOL(acpi_os_execute);
 
@@ -1223,7 +1197,7 @@ bool acpi_queue_hotplug_work(struct work_struct *work)
 }
 
 acpi_status
-acpi_os_create_semaphore(u32 max_units, u32 initial_units, acpi_handle *handle)
+acpi_os_create_semaphore(u32 max_units, u32 initial_units, acpi_handle * handle)
 {
 	struct semaphore *sem = NULL;
 
@@ -1547,18 +1521,19 @@ void acpi_os_delete_lock(acpi_spinlock handle)
 acpi_cpu_flags acpi_os_acquire_lock(acpi_spinlock lockp)
 	__acquires(lockp)
 {
-	spin_lock(lockp);
-	return 0;
+	acpi_cpu_flags flags;
+	spin_lock_irqsave(lockp, flags);
+	return flags;
 }
 
 /*
  * Release a spinlock. See above.
  */
 
-void acpi_os_release_lock(acpi_spinlock lockp, acpi_cpu_flags not_used)
+void acpi_os_release_lock(acpi_spinlock lockp, acpi_cpu_flags flags)
 	__releases(lockp)
 {
-	spin_unlock(lockp);
+	spin_unlock_irqrestore(lockp, flags);
 }
 
 #ifndef ACPI_USE_LOCAL_CACHE
@@ -1579,7 +1554,7 @@ void acpi_os_release_lock(acpi_spinlock lockp, acpi_cpu_flags not_used)
  ******************************************************************************/
 
 acpi_status
-acpi_os_create_cache(char *name, u16 size, u16 depth, acpi_cache_t **cache)
+acpi_os_create_cache(char *name, u16 size, u16 depth, acpi_cache_t ** cache)
 {
 	*cache = kmem_cache_create(name, size, 0, 0, NULL);
 	if (*cache == NULL)
@@ -1600,10 +1575,10 @@ acpi_os_create_cache(char *name, u16 size, u16 depth, acpi_cache_t **cache)
  *
  ******************************************************************************/
 
-acpi_status acpi_os_purge_cache(acpi_cache_t *cache)
+acpi_status acpi_os_purge_cache(acpi_cache_t * cache)
 {
 	kmem_cache_shrink(cache);
-	return AE_OK;
+	return (AE_OK);
 }
 
 /*******************************************************************************
@@ -1619,10 +1594,10 @@ acpi_status acpi_os_purge_cache(acpi_cache_t *cache)
  *
  ******************************************************************************/
 
-acpi_status acpi_os_delete_cache(acpi_cache_t *cache)
+acpi_status acpi_os_delete_cache(acpi_cache_t * cache)
 {
 	kmem_cache_destroy(cache);
-	return AE_OK;
+	return (AE_OK);
 }
 
 /*******************************************************************************
@@ -1639,10 +1614,10 @@ acpi_status acpi_os_delete_cache(acpi_cache_t *cache)
  *
  ******************************************************************************/
 
-acpi_status acpi_os_release_object(acpi_cache_t *cache, void *object)
+acpi_status acpi_os_release_object(acpi_cache_t * cache, void *object)
 {
 	kmem_cache_free(cache, object);
-	return AE_OK;
+	return (AE_OK);
 }
 #endif
 
@@ -1694,8 +1669,8 @@ acpi_status __init acpi_os_initialize(void)
 
 acpi_status __init acpi_os_initialize1(void)
 {
-	kacpid_wq = alloc_workqueue("kacpid", WQ_PERCPU, 1);
-	kacpi_notify_wq = alloc_workqueue("kacpi_notify", WQ_PERCPU, 0);
+	kacpid_wq = alloc_workqueue("kacpid", 0, 1);
+	kacpi_notify_wq = alloc_workqueue("kacpi_notify", 0, 1);
 	kacpi_hotplug_wq = alloc_ordered_workqueue("kacpi_hotplug", 0);
 	BUG_ON(!kacpid_wq);
 	BUG_ON(!kacpi_notify_wq);
@@ -1733,7 +1708,6 @@ acpi_status acpi_os_prepare_sleep(u8 sleep_state, u32 pm1a_control,
 				  u32 pm1b_control)
 {
 	int rc = 0;
-
 	if (__acpi_os_prepare_sleep)
 		rc = __acpi_os_prepare_sleep(sleep_state,
 					     pm1a_control, pm1b_control);
@@ -1756,7 +1730,6 @@ acpi_status acpi_os_prepare_extended_sleep(u8 sleep_state, u32 val_a,
 				  u32 val_b)
 {
 	int rc = 0;
-
 	if (__acpi_os_prepare_extended_sleep)
 		rc = __acpi_os_prepare_extended_sleep(sleep_state,
 					     val_a, val_b);

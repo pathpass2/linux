@@ -3,9 +3,6 @@
 
 #include <linux/kernel.h>
 #include <linux/debugfs.h>
-
-#include <net/ipv6.h>
-
 #include "mtk_eth_soc.h"
 
 struct mtk_flow_addr_info
@@ -50,14 +47,16 @@ static const char *mtk_foe_pkt_type_str(int type)
 static void
 mtk_print_addr(struct seq_file *m, u32 *addr, bool ipv6)
 {
-	__be32 n_addr[IPV6_ADDR_WORDS];
+	u32 n_addr[4];
+	int i;
 
 	if (!ipv6) {
 		seq_printf(m, "%pI4h", addr);
 		return;
 	}
 
-	ipv6_addr_cpu_to_be32(n_addr, addr);
+	for (i = 0; i < ARRAY_SIZE(n_addr); i++)
+		n_addr[i] = htonl(addr[i]);
 	seq_printf(m, "%pI6", n_addr);
 }
 
@@ -83,7 +82,6 @@ mtk_ppe_debugfs_foe_show(struct seq_file *m, void *private, bool bind)
 		struct mtk_foe_entry *entry = mtk_foe_get_entry(ppe, i);
 		struct mtk_foe_mac_info *l2;
 		struct mtk_flow_addr_info ai = {};
-		struct mtk_foe_accounting *acct;
 		unsigned char h_source[ETH_ALEN];
 		unsigned char h_dest[ETH_ALEN];
 		int type, state;
@@ -97,9 +95,7 @@ mtk_ppe_debugfs_foe_show(struct seq_file *m, void *private, bool bind)
 		if (bind && state != MTK_FOE_STATE_BIND)
 			continue;
 
-		acct = mtk_foe_entry_get_mib(ppe, i, NULL);
-
-		type = mtk_get_ib1_pkt_type(ppe->eth, entry->ib1);
+		type = FIELD_GET(MTK_FOE_IB1_PACKET_TYPE, entry->ib1);
 		seq_printf(m, "%05x %s %7s", i,
 			   mtk_foe_entry_state_str(state),
 			   mtk_foe_pkt_type_str(type));
@@ -157,11 +153,9 @@ mtk_ppe_debugfs_foe_show(struct seq_file *m, void *private, bool bind)
 		*((__be16 *)&h_dest[4]) = htons(l2->dest_mac_lo);
 
 		seq_printf(m, " eth=%pM->%pM etype=%04x"
-			      " vlan=%d,%d ib1=%08x ib2=%08x"
-			      " packets=%llu bytes=%llu\n",
+			      " vlan=%d,%d ib1=%08x ib2=%08x\n",
 			   h_source, h_dest, ntohs(l2->etype),
-			   l2->vlan1, l2->vlan2, entry->ib1, ib2,
-			   acct ? acct->packets : 0, acct ? acct->bytes : 0);
+			   l2->vlan1, l2->vlan2, entry->ib1, ib2);
 	}
 
 	return 0;

@@ -3,7 +3,6 @@
  * Copyright (c) 2015, Sony Mobile Communications Inc.
  * Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
  */
-#include <linux/cleanup.h>
 #include <linux/device.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -61,15 +60,20 @@ static struct qcom_smem_state *of_node_to_state(struct device_node *np)
 {
 	struct qcom_smem_state *state;
 
-	guard(mutex)(&list_lock);
+	mutex_lock(&list_lock);
 
 	list_for_each_entry(state, &smem_states, list) {
 		if (state->of_node == np) {
 			kref_get(&state->refcount);
-			return state;
+			goto unlock;
 		}
 	}
-	return ERR_PTR(-EPROBE_DEFER);
+	state = ERR_PTR(-EPROBE_DEFER);
+
+unlock:
+	mutex_unlock(&list_lock);
+
+	return state;
 }
 
 /**
@@ -112,8 +116,7 @@ struct qcom_smem_state *qcom_smem_state_get(struct device *dev,
 
 	if (args.args_count != 1) {
 		dev_err(dev, "invalid #qcom,smem-state-cells\n");
-		state = ERR_PTR(-EINVAL);
-		goto put;
+		return ERR_PTR(-EINVAL);
 	}
 
 	state = of_node_to_state(args.np);

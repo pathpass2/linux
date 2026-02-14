@@ -51,27 +51,9 @@ config X86_AMD_PSTATE
 
 	  If in doubt, say N.
 
-config X86_AMD_PSTATE_DEFAULT_MODE
-	int "AMD Processor P-State default mode"
-	depends on X86_AMD_PSTATE
-	default 3 if X86_AMD_PSTATE
-	range 1 4
-	help
-	  Select the default mode the amd-pstate driver will use on
-	  supported hardware.
-	  The value set has the following meanings:
-		1 -> Disabled
-		2 -> Passive
-		3 -> Active (EPP)
-		4 -> Guided
-
-	  For details, take a look at:
-	  <file:Documentation/admin-guide/pm/amd-pstate.rst>.
-
 config X86_AMD_PSTATE_UT
 	tristate "selftest for AMD Processor P-State driver"
 	depends on X86 && ACPI_PROCESSOR
-	depends on X86_AMD_PSTATE
 	default n
 	help
 	  This kernel module is used for testing. It's safe to say M here.
@@ -339,16 +321,4 @@ config X86_SPEEDSTEP_RELAXED_CAP_CHECK
 	  capable, don't always indicate that they are speedstep capable. This
 	  option lets the probing code bypass some of those checks if the
 	  parameter "relaxed_check=1" is passed to the module.
-
-config CPUFREQ_ARCH_CUR_FREQ
-	default y
-	bool "Current frequency derived from HW provided feedback"
-	help
-	  This determines whether the scaling_cur_freq sysfs attribute returns
-	  the last requested frequency or a more precise value based on hardware
-	  provided feedback (as architected counters).
-	  Given that a more precise frequency can now be provided via the
-	  cpuinfo_avg_freq attribute, by enabling this option,
-	  scaling_cur_freq maintains the provision of a counter based frequency,
-	  for compatibility reasons.
 

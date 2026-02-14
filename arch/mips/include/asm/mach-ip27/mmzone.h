@@ -22,6 +22,7 @@ struct node_data {
 
 extern struct node_data *__node_data[];
 
+#define NODE_DATA(n)		(&__node_data[(n)]->pglist)
 #define hub_data(n)		(&__node_data[(n)]->hub)
 
 #endif /* _ASM_MACH_MMZONE_H */

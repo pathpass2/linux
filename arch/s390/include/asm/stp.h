@@ -94,6 +94,5 @@ struct stp_stzi {
 int stp_sync_check(void);
 int stp_island_check(void);
 void stp_queue_work(void);
-bool stp_enabled(void);
 
 #endif /* __S390_STP_H */

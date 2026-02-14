@@ -94,6 +94,14 @@ struct mp2629_prop {
 	int shift;
 };
 
+static enum power_supply_usb_type mp2629_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_SDP,
+	POWER_SUPPLY_USB_TYPE_DCP,
+	POWER_SUPPLY_USB_TYPE_CDP,
+	POWER_SUPPLY_USB_TYPE_PD_DRP,
+	POWER_SUPPLY_USB_TYPE_UNKNOWN
+};
+
 static enum power_supply_property mp2629_charger_usb_props[] = {
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_USB_TYPE,
@@ -479,11 +487,8 @@ unlock:
 static const struct power_supply_desc mp2629_usb_desc = {
 	.name		= "mp2629_usb",
 	.type		= POWER_SUPPLY_TYPE_USB,
-	.usb_types	= BIT(POWER_SUPPLY_USB_TYPE_SDP) |
-			  BIT(POWER_SUPPLY_USB_TYPE_CDP) |
-			  BIT(POWER_SUPPLY_USB_TYPE_DCP) |
-			  BIT(POWER_SUPPLY_USB_TYPE_PD_DRP) |
-			  BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+	.usb_types      = mp2629_usb_types,
+	.num_usb_types  = ARRAY_SIZE(mp2629_usb_types),
 	.properties	= mp2629_charger_usb_props,
 	.num_properties	= ARRAY_SIZE(mp2629_charger_usb_props),
 	.get_property	= mp2629_charger_usb_get_prop,

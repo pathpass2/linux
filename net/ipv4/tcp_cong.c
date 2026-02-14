@@ -16,7 +16,6 @@
 #include <linux/gfp.h>
 #include <linux/jhash.h>
 #include <net/tcp.h>
-#include <net/tcp_ecn.h>
 #include <trace/events/tcp.h>
 
 static DEFINE_SPINLOCK(tcp_cong_list_lock);
@@ -47,7 +46,8 @@ void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
 }
 
 /* Must be called with rcu lock held */
-static struct tcp_congestion_ops *tcp_ca_find_autoload(const char *name)
+static struct tcp_congestion_ops *tcp_ca_find_autoload(struct net *net,
+						       const char *name)
 {
 	struct tcp_congestion_ops *ca = tcp_ca_find(name);
 
@@ -75,28 +75,20 @@ struct tcp_congestion_ops *tcp_ca_find_key(u32 key)
 	return NULL;
 }
 
-int tcp_validate_congestion_control(struct tcp_congestion_ops *ca)
+/*
+ * Attach new congestion control algorithm to the list
+ * of available options.
+ */
+int tcp_register_congestion_control(struct tcp_congestion_ops *ca)
 {
+	int ret = 0;
+
 	/* all algorithms must implement these */
 	if (!ca->ssthresh || !ca->undo_cwnd ||
 	    !(ca->cong_avoid || ca->cong_control)) {
 		pr_err("%s does not implement required ops\n", ca->name);
 		return -EINVAL;
 	}
-
-	return 0;
-}
-
-/* Attach new congestion control algorithm to the list
- * of available options.
- */
-int tcp_register_congestion_control(struct tcp_congestion_ops *ca)
-{
-	int ret;
-
-	ret = tcp_validate_congestion_control(ca);
-	if (ret)
-		return ret;
 
 	ca->key = jhash(ca->name, sizeof(ca->name), strlen(ca->name));
 
@@ -138,47 +130,7 @@ void tcp_unregister_congestion_control(struct tcp_congestion_ops *ca)
 }
 EXPORT_SYMBOL_GPL(tcp_unregister_congestion_control);
 
-/* Replace a registered old ca with a new one.
- *
- * The new ca must have the same name as the old one, that has been
- * registered.
- */
-int tcp_update_congestion_control(struct tcp_congestion_ops *ca, struct tcp_congestion_ops *old_ca)
-{
-	struct tcp_congestion_ops *existing;
-	int ret = 0;
-
-	ca->key = jhash(ca->name, sizeof(ca->name), strlen(ca->name));
-
-	spin_lock(&tcp_cong_list_lock);
-	existing = tcp_ca_find_key(old_ca->key);
-	if (ca->key == TCP_CA_UNSPEC || !existing || strcmp(existing->name, ca->name)) {
-		pr_notice("%s not registered or non-unique key\n",
-			  ca->name);
-		ret = -EINVAL;
-	} else if (existing != old_ca) {
-		pr_notice("invalid old congestion control algorithm to replace\n");
-		ret = -EINVAL;
-	} else {
-		/* Add the new one before removing the old one to keep
-		 * one implementation available all the time.
-		 */
-		list_add_tail_rcu(&ca->list, &tcp_cong_list);
-		list_del_rcu(&existing->list);
-		pr_debug("%s updated\n", ca->name);
-	}
-	spin_unlock(&tcp_cong_list_lock);
-
-	/* Wait for outstanding readers to complete before the
-	 * module or struct_ops gets removed entirely.
-	 */
-	if (!ret)
-		synchronize_rcu();
-
-	return ret;
-}
-
-u32 tcp_ca_get_key_by_name(const char *name, bool *ecn_ca)
+u32 tcp_ca_get_key_by_name(struct net *net, const char *name, bool *ecn_ca)
 {
 	const struct tcp_congestion_ops *ca;
 	u32 key = TCP_CA_UNSPEC;
@@ -186,7 +138,7 @@ u32 tcp_ca_get_key_by_name(const char *name, bool *ecn_ca)
 	might_sleep();
 
 	rcu_read_lock();
-	ca = tcp_ca_find_autoload(name);
+	ca = tcp_ca_find_autoload(net, name);
 	if (ca) {
 		key = ca->key;
 		*ecn_ca = ca->flags & TCP_CONG_NEEDS_ECN;
@@ -203,10 +155,9 @@ char *tcp_ca_get_name_by_key(u32 key, char *buffer)
 
 	rcu_read_lock();
 	ca = tcp_ca_find_key(key);
-	if (ca) {
-		strscpy(buffer, ca->name, TCP_CA_NAME_MAX);
-		ret = buffer;
-	}
+	if (ca)
+		ret = strncpy(buffer, ca->name,
+			      TCP_CA_NAME_MAX);
 	rcu_read_unlock();
 
 	return ret;
@@ -228,7 +179,7 @@ void tcp_assign_congestion_control(struct sock *sk)
 
 	memset(icsk->icsk_ca_priv, 0, sizeof(icsk->icsk_ca_priv));
 	if (ca->flags & TCP_CONG_NEEDS_ECN)
-		INET_ECN_xmit_ect_1_negotiation(sk);
+		INET_ECN_xmit(sk);
 	else
 		INET_ECN_dontxmit(sk);
 }
@@ -258,7 +209,7 @@ static void tcp_reinit_congestion_control(struct sock *sk,
 	memset(icsk->icsk_ca_priv, 0, sizeof(icsk->icsk_ca_priv));
 
 	if (ca->flags & TCP_CONG_NEEDS_ECN)
-		INET_ECN_xmit_ect_1_negotiation(sk);
+		INET_ECN_xmit(sk);
 	else
 		INET_ECN_dontxmit(sk);
 
@@ -271,9 +222,8 @@ void tcp_cleanup_congestion_control(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 
-	if (icsk->icsk_ca_initialized && icsk->icsk_ca_ops->release)
+	if (icsk->icsk_ca_ops->release)
 		icsk->icsk_ca_ops->release(sk);
-	icsk->icsk_ca_initialized = 0;
 	bpf_module_put(icsk->icsk_ca_ops, icsk->icsk_ca_ops->owner);
 }
 
@@ -285,7 +235,7 @@ int tcp_set_default_congestion_control(struct net *net, const char *name)
 	int ret;
 
 	rcu_read_lock();
-	ca = tcp_ca_find_autoload(name);
+	ca = tcp_ca_find_autoload(net, name);
 	if (!ca) {
 		ret = -ENOENT;
 	} else if (!bpf_try_module_get(ca, ca->owner)) {
@@ -340,7 +290,7 @@ void tcp_get_default_congestion_control(struct net *net, char *name)
 
 	rcu_read_lock();
 	ca = rcu_dereference(net->ipv4.tcp_congestion_control);
-	strscpy(name, ca->name, TCP_CA_NAME_MAX);
+	strncpy(name, ca->name, TCP_CA_NAME_MAX);
 	rcu_read_unlock();
 }
 
@@ -423,7 +373,7 @@ int tcp_set_congestion_control(struct sock *sk, const char *name, bool load,
 	if (!load)
 		ca = tcp_ca_find(name);
 	else
-		ca = tcp_ca_find_autoload(name);
+		ca = tcp_ca_find_autoload(sock_net(sk), name);
 
 	/* No change asking for existing value */
 	if (ca == icsk->icsk_ca_ops) {

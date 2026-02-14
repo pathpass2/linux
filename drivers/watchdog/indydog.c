@@ -149,6 +149,7 @@ static int indydog_notify_sys(struct notifier_block *this,
 
 static const struct file_operations indydog_fops = {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.write		= indydog_write,
 	.unlocked_ioctl	= indydog_ioctl,
 	.compat_ioctl	= compat_ptr_ioctl,

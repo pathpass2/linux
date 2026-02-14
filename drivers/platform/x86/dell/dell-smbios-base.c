@@ -11,7 +11,6 @@
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/container_of.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/capability.h>
@@ -26,20 +25,14 @@ static u32 da_supported_commands;
 static int da_num_tokens;
 static struct platform_device *platform_device;
 static struct calling_interface_token *da_tokens;
-static struct token_sysfs_data *token_entries;
+static struct device_attribute *token_location_attrs;
+static struct device_attribute *token_value_attrs;
 static struct attribute **token_attrs;
 static DEFINE_MUTEX(smbios_mutex);
-
-struct token_sysfs_data {
-	struct device_attribute location_attr;
-	struct device_attribute value_attr;
-	struct calling_interface_token *token;
-};
 
 struct smbios_device {
 	struct list_head list;
 	struct device *device;
-	int priority;
 	int (*call_fn)(struct calling_interface_buffer *arg);
 };
 
@@ -78,7 +71,6 @@ static struct smbios_call call_blacklist[] = {
 	/* handled by kernel: dell-laptop */
 	{0x0000, CLASS_INFO, SELECT_RFKILL},
 	{0x0000, CLASS_KBD_BACKLIGHT, SELECT_KBD_BACKLIGHT},
-	{0x0000, CLASS_INFO, SELECT_THERMAL_MANAGEMENT},
 };
 
 struct token_range {
@@ -146,7 +138,7 @@ int dell_smbios_error(int value)
 }
 EXPORT_SYMBOL_GPL(dell_smbios_error);
 
-int dell_smbios_register_device(struct device *d, int priority, void *call_fn)
+int dell_smbios_register_device(struct device *d, void *call_fn)
 {
 	struct smbios_device *priv;
 
@@ -155,7 +147,6 @@ int dell_smbios_register_device(struct device *d, int priority, void *call_fn)
 		return -ENOMEM;
 	get_device(d);
 	priv->device = d;
-	priv->priority = priority;
 	priv->call_fn = call_fn;
 	mutex_lock(&smbios_mutex);
 	list_add_tail(&priv->list, &smbios_device_list);
@@ -294,56 +285,34 @@ EXPORT_SYMBOL_GPL(dell_smbios_call_filter);
 
 int dell_smbios_call(struct calling_interface_buffer *buffer)
 {
-	struct smbios_device *selected = NULL;
+	int (*call_fn)(struct calling_interface_buffer *) = NULL;
+	struct device *selected_dev = NULL;
 	struct smbios_device *priv;
 	int ret;
 
 	mutex_lock(&smbios_mutex);
 	list_for_each_entry(priv, &smbios_device_list, list) {
-		if (!selected || priv->priority >= selected->priority) {
-			dev_dbg(priv->device, "Trying device ID: %d\n", priv->priority);
-			selected = priv;
+		if (!selected_dev || priv->device->id >= selected_dev->id) {
+			dev_dbg(priv->device, "Trying device ID: %d\n",
+				priv->device->id);
+			call_fn = priv->call_fn;
+			selected_dev = priv->device;
 		}
 	}
 
-	if (!selected) {
+	if (!selected_dev) {
 		ret = -ENODEV;
 		pr_err("No dell-smbios drivers are loaded\n");
 		goto out_smbios_call;
 	}
 
-	ret = selected->call_fn(buffer);
+	ret = call_fn(buffer);
 
 out_smbios_call:
 	mutex_unlock(&smbios_mutex);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(dell_smbios_call);
-
-void dell_fill_request(struct calling_interface_buffer *buffer,
-			       u32 arg0, u32 arg1, u32 arg2, u32 arg3)
-{
-	memset(buffer, 0, sizeof(struct calling_interface_buffer));
-	buffer->input[0] = arg0;
-	buffer->input[1] = arg1;
-	buffer->input[2] = arg2;
-	buffer->input[3] = arg3;
-}
-EXPORT_SYMBOL_GPL(dell_fill_request);
-
-int dell_send_request(struct calling_interface_buffer *buffer,
-			     u16 class, u16 select)
-{
-	int ret;
-
-	buffer->cmd_class = class;
-	buffer->cmd_select = select;
-	ret = dell_smbios_call(buffer);
-	if (ret != 0)
-		return ret;
-	return dell_smbios_error(buffer->output[0]);
-}
-EXPORT_SYMBOL_GPL(dell_send_request);
 
 struct calling_interface_token *dell_smbios_find_token(int tokenid)
 {
@@ -380,15 +349,6 @@ void dell_laptop_call_notifier(unsigned long action, void *data)
 	blocking_notifier_call_chain(&dell_laptop_chain_head, action, data);
 }
 EXPORT_SYMBOL_GPL(dell_laptop_call_notifier);
-
-bool dell_smbios_class_is_supported(u16 class)
-{
-	/* Classes over 30 always unsupported */
-	if (class > 30)
-		return false;
-	return da_supported_commands & (1 << class);
-}
-EXPORT_SYMBOL_GPL(dell_smbios_class_is_supported);
 
 static void __init parse_da_table(const struct dmi_header *dm)
 {
@@ -456,26 +416,47 @@ static void __init find_tokens(const struct dmi_header *dm, void *dummy)
 	}
 }
 
+static int match_attribute(struct device *dev,
+			   struct device_attribute *attr)
+{
+	int i;
+
+	for (i = 0; i < da_num_tokens * 2; i++) {
+		if (!token_attrs[i])
+			continue;
+		if (strcmp(token_attrs[i]->name, attr->attr.name) == 0)
+			return i/2;
+	}
+	dev_dbg(dev, "couldn't match: %s\n", attr->attr.name);
+	return -EINVAL;
+}
+
 static ssize_t location_show(struct device *dev,
 			     struct device_attribute *attr, char *buf)
 {
-	struct token_sysfs_data *data = container_of(attr, struct token_sysfs_data, location_attr);
+	int i;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
-	return sysfs_emit(buf, "%08x", data->token->location);
+	i = match_attribute(dev, attr);
+	if (i > 0)
+		return sysfs_emit(buf, "%08x", da_tokens[i].location);
+	return 0;
 }
 
 static ssize_t value_show(struct device *dev,
 			  struct device_attribute *attr, char *buf)
 {
-	struct token_sysfs_data *data = container_of(attr, struct token_sysfs_data, value_attr);
+	int i;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
-	return sysfs_emit(buf, "%08x", data->token->value);
+	i = match_attribute(dev, attr);
+	if (i > 0)
+		return sysfs_emit(buf, "%08x", da_tokens[i].value);
+	return 0;
 }
 
 static struct attribute_group smbios_attribute_group = {
@@ -492,15 +473,22 @@ static int build_tokens_sysfs(struct platform_device *dev)
 {
 	char *location_name;
 	char *value_name;
+	size_t size;
 	int ret;
 	int i, j;
 
-	token_entries = kcalloc(da_num_tokens, sizeof(*token_entries), GFP_KERNEL);
-	if (!token_entries)
+	/* (number of tokens  + 1 for null terminated */
+	size = sizeof(struct device_attribute) * (da_num_tokens + 1);
+	token_location_attrs = kzalloc(size, GFP_KERNEL);
+	if (!token_location_attrs)
 		return -ENOMEM;
+	token_value_attrs = kzalloc(size, GFP_KERNEL);
+	if (!token_value_attrs)
+		goto out_allocate_value;
 
 	/* need to store both location and value + terminator*/
-	token_attrs = kcalloc((2 * da_num_tokens) + 1, sizeof(*token_attrs), GFP_KERNEL);
+	size = sizeof(struct attribute *) * ((2 * da_num_tokens) + 1);
+	token_attrs = kzalloc(size, GFP_KERNEL);
 	if (!token_attrs)
 		goto out_allocate_attrs;
 
@@ -508,34 +496,32 @@ static int build_tokens_sysfs(struct platform_device *dev)
 		/* skip empty */
 		if (da_tokens[i].tokenID == 0)
 			continue;
-
-		token_entries[i].token = &da_tokens[i];
-
 		/* add location */
 		location_name = kasprintf(GFP_KERNEL, "%04x_location",
 					  da_tokens[i].tokenID);
 		if (location_name == NULL)
 			goto out_unwind_strings;
-
-		sysfs_attr_init(&token_entries[i].location_attr.attr);
-		token_entries[i].location_attr.attr.name = location_name;
-		token_entries[i].location_attr.attr.mode = 0444;
-		token_entries[i].location_attr.show = location_show;
-		token_attrs[j++] = &token_entries[i].location_attr.attr;
+		sysfs_attr_init(&token_location_attrs[i].attr);
+		token_location_attrs[i].attr.name = location_name;
+		token_location_attrs[i].attr.mode = 0444;
+		token_location_attrs[i].show = location_show;
+		token_attrs[j++] = &token_location_attrs[i].attr;
 
 		/* add value */
 		value_name = kasprintf(GFP_KERNEL, "%04x_value",
 				       da_tokens[i].tokenID);
-		if (!value_name) {
-			kfree(location_name);
-			goto out_unwind_strings;
-		}
+		if (value_name == NULL)
+			goto loop_fail_create_value;
+		sysfs_attr_init(&token_value_attrs[i].attr);
+		token_value_attrs[i].attr.name = value_name;
+		token_value_attrs[i].attr.mode = 0444;
+		token_value_attrs[i].show = value_show;
+		token_attrs[j++] = &token_value_attrs[i].attr;
+		continue;
 
-		sysfs_attr_init(&token_entries[i].value_attr.attr);
-		token_entries[i].value_attr.attr.name = value_name;
-		token_entries[i].value_attr.attr.mode = 0444;
-		token_entries[i].value_attr.show = value_show;
-		token_attrs[j++] = &token_entries[i].value_attr.attr;
+loop_fail_create_value:
+		kfree(location_name);
+		goto out_unwind_strings;
 	}
 	smbios_attribute_group.attrs = token_attrs;
 
@@ -546,12 +532,14 @@ static int build_tokens_sysfs(struct platform_device *dev)
 
 out_unwind_strings:
 	while (i--) {
-		kfree(token_entries[i].location_attr.attr.name);
-		kfree(token_entries[i].value_attr.attr.name);
+		kfree(token_location_attrs[i].attr.name);
+		kfree(token_value_attrs[i].attr.name);
 	}
 	kfree(token_attrs);
 out_allocate_attrs:
-	kfree(token_entries);
+	kfree(token_value_attrs);
+out_allocate_value:
+	kfree(token_location_attrs);
 
 	return -ENOMEM;
 }
@@ -563,11 +551,12 @@ static void free_group(struct platform_device *pdev)
 	sysfs_remove_group(&pdev->dev.kobj,
 				&smbios_attribute_group);
 	for (i = 0; i < da_num_tokens; i++) {
-		kfree(token_entries[i].location_attr.attr.name);
-		kfree(token_entries[i].value_attr.attr.name);
+		kfree(token_location_attrs[i].attr.name);
+		kfree(token_value_attrs[i].attr.name);
 	}
 	kfree(token_attrs);
-	kfree(token_entries);
+	kfree(token_value_attrs);
+	kfree(token_location_attrs);
 }
 
 static int __init dell_smbios_init(void)
@@ -575,7 +564,6 @@ static int __init dell_smbios_init(void)
 	int ret, wmi, smm;
 
 	if (!dmi_find_device(DMI_DEV_TYPE_OEM_STRING, "Dell System", NULL) &&
-	    !dmi_find_device(DMI_DEV_TYPE_OEM_STRING, "Alienware", NULL) &&
 	    !dmi_find_device(DMI_DEV_TYPE_OEM_STRING, "www.dell.com", NULL)) {
 		pr_err("Unable to run on non-Dell system\n");
 		return -ENODEV;
@@ -622,10 +610,7 @@ static int __init dell_smbios_init(void)
 	return 0;
 
 fail_sysfs:
-	if (!wmi)
-		exit_dell_smbios_wmi();
-	if (!smm)
-		exit_dell_smbios_smm();
+	free_group(platform_device);
 
 fail_create_group:
 	platform_device_del(platform_device);

@@ -20,10 +20,9 @@ Description:
 		  rule format: action [condition ...]
 
 		  action: measure | dont_measure | appraise | dont_appraise |
-			  audit | dont_audit | hash | dont_hash
+			  audit | hash | dont_hash
 		  condition:= base | lsm  [option]
 			base:	[[func=] [mask=] [fsmagic=] [fsuuid=] [fsname=]
-				[fs_subtype=]
 				[uid=] [euid=] [gid=] [egid=]
 				[fowner=] [fgroup=]]
 			lsm:	[[subj_user=] [subj_role=] [subj_type=]
@@ -58,9 +57,9 @@ Description:
 				stored in security.ima xattr. Requires
 				specifying "digest_type=verity" first.)
 
-			appraise_flag:= [check_blacklist] (deprecated)
-			Setting the check_blacklist flag is no longer necessary.
-			All appraisal functions set it by default.
+			appraise_flag:= [check_blacklist]
+			Currently, blacklist check is only for files signed with appended
+			signature.
 			digest_type:= verity
 			    Require fs-verity's file digest instead of the
 			    regular IMA file hash.

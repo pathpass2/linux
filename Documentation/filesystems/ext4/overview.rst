@@ -16,15 +16,12 @@ All fields in ext4 are written to disk in little-endian order. HOWEVER,
 all fields in jbd2 (the journal) are written to disk in big-endian
 order.
 
-.. toctree::
-
-   blocks
-   blockgroup
-   special_inodes
-   allocators
-   checksums
-   bigalloc
-   inlinedata
-   eainode
-   verity
-   atomic_writes
+.. include:: blocks.rst
+.. include:: blockgroup.rst
+.. include:: special_inodes.rst
+.. include:: allocators.rst
+.. include:: checksums.rst
+.. include:: bigalloc.rst
+.. include:: inlinedata.rst
+.. include:: eainode.rst
+.. include:: verity.rst

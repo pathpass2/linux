@@ -452,7 +452,7 @@ static u32 xlp9xx_i2c_functionality(struct i2c_adapter *adapter)
 }
 
 static const struct i2c_algorithm xlp9xx_i2c_algo = {
-	.xfer = xlp9xx_i2c_xfer,
+	.master_xfer = xlp9xx_i2c_xfer,
 	.functionality = xlp9xx_i2c_functionality,
 };
 
@@ -529,8 +529,10 @@ static int xlp9xx_i2c_probe(struct platform_device *pdev)
 
 	err = devm_request_irq(&pdev->dev, priv->irq, xlp9xx_i2c_isr, 0,
 			       pdev->name, priv);
-	if (err)
-		return dev_err_probe(&pdev->dev, err, "IRQ request failed!\n");
+	if (err) {
+		dev_err(&pdev->dev, "IRQ request failed!\n");
+		return err;
+	}
 
 	init_completion(&priv->msg_complete);
 	priv->adapter.dev.parent = &pdev->dev;
@@ -557,7 +559,7 @@ static int xlp9xx_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void xlp9xx_i2c_remove(struct platform_device *pdev)
+static int xlp9xx_i2c_remove(struct platform_device *pdev)
 {
 	struct xlp9xx_i2c_dev *priv;
 
@@ -566,6 +568,8 @@ static void xlp9xx_i2c_remove(struct platform_device *pdev)
 	synchronize_irq(priv->irq);
 	i2c_del_adapter(&priv->adapter);
 	xlp9xx_write_i2c_reg(priv, XLP9XX_I2C_CTRL, 0);
+
+	return 0;
 }
 
 #ifdef CONFIG_ACPI

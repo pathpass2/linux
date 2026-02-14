@@ -264,10 +264,10 @@ int gcov_info_is_compatible(struct gcov_info *info1, struct gcov_info *info2)
 
 /**
  * gcov_info_add - add up profiling data
- * @dst: profiling data set to which data is added
- * @src: profiling data set which is added
+ * @dest: profiling data set to which data is added
+ * @source: profiling data set which is added
  *
- * Adds profiling counts of @src to @dst.
+ * Adds profiling counts of @source to @dest.
  */
 void gcov_info_add(struct gcov_info *dst, struct gcov_info *src)
 {

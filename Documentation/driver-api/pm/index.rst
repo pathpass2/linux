@@ -10,3 +10,10 @@ CPU and Device Power Management
    devices
    notifiers
    types
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

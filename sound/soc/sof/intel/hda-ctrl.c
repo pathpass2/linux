@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2018 Intel Corporation
+// Copyright(c) 2018 Intel Corporation. All rights reserved.
 //
 // Authors: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 //	    Ranjani Sridharan <ranjani.sridharan@linux.intel.com>
@@ -19,7 +19,6 @@
 #include <sound/hdaudio_ext.h>
 #include <sound/hda_register.h>
 #include <sound/hda_component.h>
-#include <sound/hda-mlink.h>
 #include "../ops.h"
 #include "hda.h"
 
@@ -128,7 +127,6 @@ int hda_dsp_ctrl_get_caps(struct snd_sof_dev *sdev)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(hda_dsp_ctrl_get_caps, "SND_SOC_SOF_INTEL_HDA_COMMON");
 
 void hda_dsp_ctrl_ppcap_enable(struct snd_sof_dev *sdev, bool enable)
 {
@@ -137,7 +135,6 @@ void hda_dsp_ctrl_ppcap_enable(struct snd_sof_dev *sdev, bool enable)
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_PP_BAR, SOF_HDA_REG_PP_PPCTL,
 				SOF_HDA_PPCTL_GPROCEN, val);
 }
-EXPORT_SYMBOL_NS(hda_dsp_ctrl_ppcap_enable, "SND_SOC_SOF_INTEL_HDA_COMMON");
 
 void hda_dsp_ctrl_ppcap_int_enable(struct snd_sof_dev *sdev, bool enable)
 {
@@ -146,7 +143,6 @@ void hda_dsp_ctrl_ppcap_int_enable(struct snd_sof_dev *sdev, bool enable)
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_PP_BAR, SOF_HDA_REG_PP_PPCTL,
 				SOF_HDA_PPCTL_PIE, val);
 }
-EXPORT_SYMBOL_NS(hda_dsp_ctrl_ppcap_int_enable, "SND_SOC_SOF_INTEL_HDA_COMMON");
 
 void hda_dsp_ctrl_misc_clock_gating(struct snd_sof_dev *sdev, bool enable)
 {
@@ -162,18 +158,16 @@ void hda_dsp_ctrl_misc_clock_gating(struct snd_sof_dev *sdev, bool enable)
  */
 int hda_dsp_ctrl_clock_power_gating(struct snd_sof_dev *sdev, bool enable)
 {
-	struct sof_intel_hda_dev *hda = sdev->pdata->hw_pdata;
 	u32 val;
 
 	/* enable/disable audio dsp clock gating */
 	val = enable ? PCI_CGCTL_ADSPDCGE : 0;
 	snd_sof_pci_update_bits(sdev, PCI_CGCTL, PCI_CGCTL_ADSPDCGE, val);
 
-	/* disable the DMI link when requested. But enable only if it wasn't disabled previously */
+	/* enable/disable DMI Link L1 support */
 	val = enable ? HDA_VS_INTEL_EM2_L1SEN : 0;
-	if (!enable || !hda->l1_disabled)
-		snd_sof_dsp_update_bits(sdev, HDA_DSP_HDA_BAR, HDA_VS_INTEL_EM2,
-					HDA_VS_INTEL_EM2_L1SEN, val);
+	snd_sof_dsp_update_bits(sdev, HDA_DSP_HDA_BAR, HDA_VS_INTEL_EM2,
+				HDA_VS_INTEL_EM2_L1SEN, val);
 
 	/* enable/disable audio dsp power gating */
 	val = enable ? 0 : PCI_PGCTL_ADSPPGD;
@@ -181,14 +175,12 @@ int hda_dsp_ctrl_clock_power_gating(struct snd_sof_dev *sdev, bool enable)
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(hda_dsp_ctrl_clock_power_gating, "SND_SOC_SOF_INTEL_HDA_COMMON");
 
-int hda_dsp_ctrl_init_chip(struct snd_sof_dev *sdev, bool detect_codec)
+int hda_dsp_ctrl_init_chip(struct snd_sof_dev *sdev)
 {
 	struct hdac_bus *bus = sof_to_bus(sdev);
 	struct hdac_stream *stream;
 	int sd_offset, ret = 0;
-	u32 gctl;
 
 	if (bus->chip_init)
 		return 0;
@@ -196,12 +188,6 @@ int hda_dsp_ctrl_init_chip(struct snd_sof_dev *sdev, bool detect_codec)
 	hda_codec_set_codec_wakeup(sdev, true);
 
 	hda_dsp_ctrl_misc_clock_gating(sdev, false);
-
-	/* clear WAKE_STS if not in reset */
-	gctl = snd_sof_dsp_read(sdev, HDA_DSP_HDA_BAR, SOF_HDA_GCTL);
-	if (gctl & SOF_HDA_GCTL_RESET)
-		snd_sof_dsp_write(sdev, HDA_DSP_HDA_BAR,
-				  SOF_HDA_WAKESTS, SOF_HDA_WAKESTS_INT_MASK);
 
 	/* reset HDA controller */
 	ret = hda_dsp_ctrl_link_reset(sdev, true);
@@ -220,11 +206,7 @@ int hda_dsp_ctrl_init_chip(struct snd_sof_dev *sdev, bool detect_codec)
 	}
 	usleep_range(1000, 1200);
 
-	/* Accept unsolicited responses */
-	snd_hdac_chip_updatel(bus, GCTL, AZX_GCTL_UNSOL, AZX_GCTL_UNSOL);
-
-	if (detect_codec)
-		hda_codec_detect_mask(sdev);
+	hda_codec_detect_mask(sdev);
 
 	/* clear stream status */
 	list_for_each_entry(stream, &bus->stream_list, list) {
@@ -236,7 +218,7 @@ int hda_dsp_ctrl_init_chip(struct snd_sof_dev *sdev, bool detect_codec)
 
 	/* clear WAKESTS */
 	snd_sof_dsp_write(sdev, HDA_DSP_HDA_BAR, SOF_HDA_WAKESTS,
-			  bus->codec_mask);
+			  SOF_HDA_WAKESTS_INT_MASK);
 
 	hda_codec_rirb_status_clear(sdev);
 
@@ -270,7 +252,6 @@ err:
 
 	return ret;
 }
-EXPORT_SYMBOL_NS(hda_dsp_ctrl_init_chip, "SND_SOC_SOF_INTEL_HDA_COMMON");
 
 void hda_dsp_ctrl_stop_chip(struct snd_sof_dev *sdev)
 {
@@ -330,9 +311,3 @@ void hda_dsp_ctrl_stop_chip(struct snd_sof_dev *sdev)
 
 	bus->chip_init = false;
 }
-
-MODULE_LICENSE("Dual BSD/GPL");
-MODULE_DESCRIPTION("SOF helpers for HDaudio platforms");
-MODULE_IMPORT_NS("SND_SOC_SOF_HDA_MLINK");
-MODULE_IMPORT_NS("SND_SOC_SOF_HDA_AUDIO_CODEC");
-MODULE_IMPORT_NS("SND_SOC_SOF_HDA_AUDIO_CODEC_I915");

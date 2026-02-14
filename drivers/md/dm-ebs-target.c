@@ -103,7 +103,7 @@ static int __ebs_rw_bvec(struct ebs_c *ec, enum req_op op, struct bio_vec *bv,
 			} else {
 				flush_dcache_page(bv->bv_page);
 				memcpy(ba, pa, cur_len);
-				dm_bufio_mark_buffer_dirty(b);
+				dm_bufio_mark_partial_buffer_dirty(b, buf_off, buf_off + cur_len);
 			}
 
 			dm_bufio_release(b);
@@ -390,12 +390,6 @@ static int ebs_map(struct dm_target *ti, struct bio *bio)
 	return DM_MAPIO_REMAPPED;
 }
 
-static void ebs_postsuspend(struct dm_target *ti)
-{
-	struct ebs_c *ec = ti->private;
-	dm_bufio_client_reset(ec->bufio);
-}
-
 static void ebs_status(struct dm_target *ti, status_type_t type,
 		       unsigned int status_flags, char *result, unsigned int maxlen)
 {
@@ -415,8 +409,7 @@ static void ebs_status(struct dm_target *ti, status_type_t type,
 	}
 }
 
-static int ebs_prepare_ioctl(struct dm_target *ti, struct block_device **bdev,
-			     unsigned int cmd, unsigned long arg, bool *forward)
+static int ebs_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
 {
 	struct ebs_c *ec = ti->private;
 	struct dm_dev *dev = ec->dev;
@@ -435,7 +428,7 @@ static void ebs_io_hints(struct dm_target *ti, struct queue_limits *limits)
 	limits->logical_block_size = to_bytes(ec->e_bs);
 	limits->physical_block_size = to_bytes(ec->u_bs);
 	limits->alignment_offset = limits->physical_block_size;
-	limits->io_min = limits->logical_block_size;
+	blk_limits_io_min(limits, limits->logical_block_size);
 }
 
 static int ebs_iterate_devices(struct dm_target *ti,
@@ -449,19 +442,35 @@ static int ebs_iterate_devices(struct dm_target *ti,
 static struct target_type ebs_target = {
 	.name		 = "ebs",
 	.version	 = {1, 0, 1},
-	.features	 = 0,
+	.features	 = DM_TARGET_PASSES_INTEGRITY,
 	.module		 = THIS_MODULE,
 	.ctr		 = ebs_ctr,
 	.dtr		 = ebs_dtr,
 	.map		 = ebs_map,
-	.postsuspend	 = ebs_postsuspend,
 	.status		 = ebs_status,
 	.io_hints	 = ebs_io_hints,
 	.prepare_ioctl	 = ebs_prepare_ioctl,
 	.iterate_devices = ebs_iterate_devices,
 };
-module_dm(ebs);
 
-MODULE_AUTHOR("Heinz Mauelshagen <dm-devel@lists.linux.dev>");
+static int __init dm_ebs_init(void)
+{
+	int r = dm_register_target(&ebs_target);
+
+	if (r < 0)
+		DMERR("register failed %d", r);
+
+	return r;
+}
+
+static void dm_ebs_exit(void)
+{
+	dm_unregister_target(&ebs_target);
+}
+
+module_init(dm_ebs_init);
+module_exit(dm_ebs_exit);
+
+MODULE_AUTHOR("Heinz Mauelshagen <dm-devel@redhat.com>");
 MODULE_DESCRIPTION(DM_NAME " emulated block size target");
 MODULE_LICENSE("GPL");

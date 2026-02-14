@@ -34,22 +34,19 @@
 /*
  * Initialize a devices private memory region
  */
-int qbman_init_private_mem(struct device *dev, int idx, const char *compat,
-			   dma_addr_t *addr, size_t *size)
+int qbman_init_private_mem(struct device *dev, int idx, dma_addr_t *addr,
+				size_t *size)
 {
 	struct device_node *mem_node;
 	struct reserved_mem *rmem;
-	int err;
+	struct property *prop;
+	int len, err;
 	__be32 *res_array;
 
 	mem_node = of_parse_phandle(dev->of_node, "memory-region", idx);
 	if (!mem_node) {
-		mem_node = of_find_compatible_node(NULL, NULL, compat);
-		if (!mem_node) {
-			dev_err(dev, "No memory-region found for index %d or compatible '%s'\n",
-				idx, compat);
-			return -ENODEV;
-		}
+		dev_err(dev, "No memory-region found for index %d\n", idx);
+		return -ENODEV;
 	}
 
 	rmem = of_reserved_mem_lookup(mem_node);
@@ -66,9 +63,8 @@ int qbman_init_private_mem(struct device *dev, int idx, const char *compat,
 	 * This is needed because QBMan HW does not allow the base address/
 	 * size to be modified once set.
 	 */
-	if (!of_property_present(mem_node, "reg")) {
-		struct property *prop;
-
+	prop = of_find_property(mem_node, "reg", &len);
+	if (!prop) {
 		prop = devm_kzalloc(dev, sizeof(*prop), GFP_KERNEL);
 		if (!prop)
 			return -ENOMEM;

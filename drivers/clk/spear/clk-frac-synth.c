@@ -52,16 +52,14 @@ static unsigned long frac_calc_rate(struct clk_hw *hw, unsigned long prate,
 	return prate;
 }
 
-static int clk_frac_determine_rate(struct clk_hw *hw,
-				   struct clk_rate_request *req)
+static long clk_frac_round_rate(struct clk_hw *hw, unsigned long drate,
+		unsigned long *prate)
 {
 	struct clk_frac *frac = to_clk_frac(hw);
 	int unused;
 
-	req->rate = clk_round_rate_index(hw, req->rate, req->best_parent_rate,
-					 frac_calc_rate, frac->rtbl_cnt, &unused);
-
-	return 0;
+	return clk_round_rate_index(hw, drate, *prate, frac_calc_rate,
+			frac->rtbl_cnt, &unused);
 }
 
 static unsigned long clk_frac_recalc_rate(struct clk_hw *hw,
@@ -117,7 +115,7 @@ static int clk_frac_set_rate(struct clk_hw *hw, unsigned long drate,
 
 static const struct clk_ops clk_frac_ops = {
 	.recalc_rate = clk_frac_recalc_rate,
-	.determine_rate = clk_frac_determine_rate,
+	.round_rate = clk_frac_round_rate,
 	.set_rate = clk_frac_set_rate,
 };
 

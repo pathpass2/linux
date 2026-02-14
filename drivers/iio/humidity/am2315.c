@@ -35,7 +35,7 @@ struct am2315_data {
 	/* Ensure timestamp is naturally aligned */
 	struct {
 		s16 chans[2];
-		aligned_s64 timestamp;
+		s64 timestamp __aligned(8);
 	} scan;
 };
 
@@ -174,7 +174,8 @@ static irqreturn_t am2315_trigger_handler(int irq, void *p)
 		data->scan.chans[1] = sensor_data.temp_data;
 	} else {
 		i = 0;
-		iio_for_each_active_channel(indio_dev, bit) {
+		for_each_set_bit(bit, indio_dev->active_scan_mask,
+				 indio_dev->masklength) {
 			data->scan.chans[i] = (bit ? sensor_data.temp_data :
 					       sensor_data.hum_data);
 			i++;
@@ -224,8 +225,10 @@ static int am2315_probe(struct i2c_client *client)
 	struct am2315_data *data;
 
 	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&client->dev, "iio allocation failed!\n");
 		return -ENOMEM;
+	}
 
 	data = iio_priv(indio_dev);
 	data->client = client;
@@ -250,8 +253,8 @@ static int am2315_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id am2315_i2c_id[] = {
-	{ "am2315" },
-	{ }
+	{"am2315", 0},
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, am2315_i2c_id);
 
@@ -259,7 +262,7 @@ static struct i2c_driver am2315_driver = {
 	.driver = {
 		.name = "am2315",
 	},
-	.probe =        am2315_probe,
+	.probe_new =        am2315_probe,
 	.id_table =         am2315_i2c_id,
 };
 

@@ -332,7 +332,7 @@ struct nci_core_init_rsp_1 {
 	__le32	nfcc_features;
 	__u8	num_supported_rf_interfaces;
 	__u8	supported_rf_interfaces[];	/* variable size array */
-	/* continued in nci_core_init_rsp_2 */
+	/* continuted in nci_core_init_rsp_2 */
 } __packed;
 
 struct nci_core_init_rsp_2 {
@@ -475,7 +475,7 @@ struct nci_rf_discover_ntf {
 #define NCI_OP_RF_INTF_ACTIVATED_NTF	nci_opcode_pack(NCI_GID_RF_MGMT, 0x05)
 struct activation_params_nfca_poll_iso_dep {
 	__u8	rats_res_len;
-	__u8	rats_res[NFC_ATS_MAXSIZE];
+	__u8	rats_res[20];
 };
 
 struct activation_params_nfcb_poll_iso_dep {

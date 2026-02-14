@@ -18,11 +18,11 @@
 #include <linux/ethtool.h>
 #include <linux/topology.h>
 #include <linux/gfp.h>
+#include <linux/aer.h>
 #include <linux/interrupt.h>
 #include "net_driver.h"
 #include <net/gre.h>
 #include <net/udp_tunnel.h>
-#include <net/netdev_queues.h>
 #include "efx.h"
 #include "efx_common.h"
 #include "efx_channels.h"
@@ -33,7 +33,6 @@
 #include "io.h"
 #include "selftest.h"
 #include "sriov.h"
-#include "efx_devlink.h"
 
 #include "mcdi_port_common.h"
 #include "mcdi_pcol.h"
@@ -300,7 +299,7 @@ static int efx_probe_nic(struct efx_nic *efx)
 	if (efx->n_channels > 1)
 		netdev_rss_key_fill(efx->rss_context.rx_hash_key,
 				    sizeof(efx->rss_context.rx_hash_key));
-	efx_set_default_rx_indir_table(efx, efx->rss_context.rx_indir_table);
+	efx_set_default_rx_indir_table(efx, &efx->rss_context);
 
 	/* Initialise the interrupt moderation settings */
 	efx->irq_mod_step_us = DIV_ROUND_UP(efx->timer_quantum_ns, 1000);
@@ -418,6 +417,14 @@ unsigned int efx_usecs_to_ticks(struct efx_nic *efx, unsigned int usecs)
 	return usecs * 1000 / efx->timer_quantum_ns;
 }
 
+unsigned int efx_ticks_to_usecs(struct efx_nic *efx, unsigned int ticks)
+{
+	/* We must round up when converting ticks to microseconds
+	 * because we round down when converting the other way.
+	 */
+	return DIV_ROUND_UP(ticks * efx->timer_quantum_ns, 1000);
+}
+
 /* Set interrupt moderation parameters */
 int efx_init_irq_moderation(struct efx_nic *efx, unsigned int tx_usecs,
 			    unsigned int rx_usecs, bool rx_adaptive,
@@ -476,6 +483,33 @@ void efx_get_irq_moderation(struct efx_nic *efx, unsigned int *tx_usecs,
 
 /**************************************************************************
  *
+ * ioctls
+ *
+ *************************************************************************/
+
+/* Net device ioctl
+ * Context: process, rtnl_lock() held.
+ */
+static int efx_ioctl(struct net_device *net_dev, struct ifreq *ifr, int cmd)
+{
+	struct efx_nic *efx = efx_netdev_priv(net_dev);
+	struct mii_ioctl_data *data = if_mii(ifr);
+
+	if (cmd == SIOCSHWTSTAMP)
+		return efx_ptp_set_ts_config(efx, ifr);
+	if (cmd == SIOCGHWTSTAMP)
+		return efx_ptp_get_ts_config(efx, ifr);
+
+	/* Convert phy_id from older PRTAD/DEVAD format */
+	if ((cmd == SIOCGMIIREG || cmd == SIOCSMIIREG) &&
+	    (data->phy_id & 0xfc00) == 0x0400)
+		data->phy_id ^= MDIO_PHY_ID_C45 | 0x0400;
+
+	return mdio_mii_ioctl(&efx->mdio, data, cmd);
+}
+
+/**************************************************************************
+ *
  * Kernel net device interface
  *
  *************************************************************************/
@@ -507,6 +541,7 @@ int efx_net_open(struct net_device *net_dev)
 	else
 		efx->state = STATE_NET_UP;
 
+	efx_selftest_async_start(efx);
 	return 0;
 }
 
@@ -547,23 +582,6 @@ static int efx_vlan_rx_kill_vid(struct net_device *net_dev, __be16 proto, u16 vi
 		return -EOPNOTSUPP;
 }
 
-static int efx_hwtstamp_set(struct net_device *net_dev,
-			    struct kernel_hwtstamp_config *config,
-			    struct netlink_ext_ack *extack)
-{
-	struct efx_nic *efx = efx_netdev_priv(net_dev);
-
-	return efx_ptp_set_ts_config(efx, config, extack);
-}
-
-static int efx_hwtstamp_get(struct net_device *net_dev,
-			    struct kernel_hwtstamp_config *config)
-{
-	struct efx_nic *efx = efx_netdev_priv(net_dev);
-
-	return efx_ptp_get_ts_config(efx, config);
-}
-
 static const struct net_device_ops efx_netdev_ops = {
 	.ndo_open		= efx_net_open,
 	.ndo_stop		= efx_net_stop,
@@ -571,6 +589,7 @@ static const struct net_device_ops efx_netdev_ops = {
 	.ndo_tx_timeout		= efx_watchdog,
 	.ndo_start_xmit		= efx_hard_start_xmit,
 	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_eth_ioctl		= efx_ioctl,
 	.ndo_change_mtu		= efx_change_mtu,
 	.ndo_set_mac_address	= efx_set_mac_address,
 	.ndo_set_rx_mode	= efx_set_rx_mode,
@@ -578,8 +597,6 @@ static const struct net_device_ops efx_netdev_ops = {
 	.ndo_features_check	= efx_features_check,
 	.ndo_vlan_rx_add_vid	= efx_vlan_rx_add_vid,
 	.ndo_vlan_rx_kill_vid	= efx_vlan_rx_kill_vid,
-	.ndo_hwtstamp_set	= efx_hwtstamp_set,
-	.ndo_hwtstamp_get	= efx_hwtstamp_get,
 #ifdef CONFIG_SFC_SRIOV
 	.ndo_set_vf_mac		= efx_sriov_set_vf_mac,
 	.ndo_set_vf_vlan	= efx_sriov_set_vf_vlan,
@@ -589,118 +606,12 @@ static const struct net_device_ops efx_netdev_ops = {
 #endif
 	.ndo_get_phys_port_id   = efx_get_phys_port_id,
 	.ndo_get_phys_port_name	= efx_get_phys_port_name,
+	.ndo_setup_tc		= efx_setup_tc,
 #ifdef CONFIG_RFS_ACCEL
 	.ndo_rx_flow_steer	= efx_filter_rfs,
 #endif
 	.ndo_xdp_xmit		= efx_xdp_xmit,
 	.ndo_bpf		= efx_xdp
-};
-
-static void efx_get_queue_stats_rx(struct net_device *net_dev, int idx,
-				   struct netdev_queue_stats_rx *stats)
-{
-	struct efx_nic *efx = efx_netdev_priv(net_dev);
-	struct efx_rx_queue *rx_queue;
-	struct efx_channel *channel;
-
-	channel = efx_get_channel(efx, idx);
-	rx_queue = efx_channel_get_rx_queue(channel);
-	/* Count only packets since last time datapath was started */
-	stats->packets = rx_queue->rx_packets - rx_queue->old_rx_packets;
-	stats->bytes = rx_queue->rx_bytes - rx_queue->old_rx_bytes;
-	stats->hw_drops = efx_get_queue_stat_rx_hw_drops(channel) -
-			  channel->old_n_rx_hw_drops;
-	stats->hw_drop_overruns = channel->n_rx_nodesc_trunc -
-				  channel->old_n_rx_hw_drop_overruns;
-}
-
-static void efx_get_queue_stats_tx(struct net_device *net_dev, int idx,
-				   struct netdev_queue_stats_tx *stats)
-{
-	struct efx_nic *efx = efx_netdev_priv(net_dev);
-	struct efx_tx_queue *tx_queue;
-	struct efx_channel *channel;
-
-	channel = efx_get_tx_channel(efx, idx);
-	stats->packets = 0;
-	stats->bytes = 0;
-	stats->hw_gso_packets = 0;
-	stats->hw_gso_wire_packets = 0;
-	efx_for_each_channel_tx_queue(tx_queue, channel) {
-		stats->packets += tx_queue->complete_packets -
-				  tx_queue->old_complete_packets;
-		stats->bytes += tx_queue->complete_bytes -
-				tx_queue->old_complete_bytes;
-		/* Note that, unlike stats->packets and stats->bytes,
-		 * these count TXes enqueued, rather than completed,
-		 * which may not be what users expect.
-		 */
-		stats->hw_gso_packets += tx_queue->tso_bursts -
-					 tx_queue->old_tso_bursts;
-		stats->hw_gso_wire_packets += tx_queue->tso_packets -
-					      tx_queue->old_tso_packets;
-	}
-}
-
-static void efx_get_base_stats(struct net_device *net_dev,
-			       struct netdev_queue_stats_rx *rx,
-			       struct netdev_queue_stats_tx *tx)
-{
-	struct efx_nic *efx = efx_netdev_priv(net_dev);
-	struct efx_tx_queue *tx_queue;
-	struct efx_rx_queue *rx_queue;
-	struct efx_channel *channel;
-
-	rx->packets = 0;
-	rx->bytes = 0;
-	rx->hw_drops = 0;
-	rx->hw_drop_overruns = 0;
-	tx->packets = 0;
-	tx->bytes = 0;
-	tx->hw_gso_packets = 0;
-	tx->hw_gso_wire_packets = 0;
-
-	/* Count all packets on non-core queues, and packets before last
-	 * datapath start on core queues.
-	 */
-	efx_for_each_channel(channel, efx) {
-		rx_queue = efx_channel_get_rx_queue(channel);
-		if (channel->channel >= net_dev->real_num_rx_queues) {
-			rx->packets += rx_queue->rx_packets;
-			rx->bytes += rx_queue->rx_bytes;
-			rx->hw_drops += efx_get_queue_stat_rx_hw_drops(channel);
-			rx->hw_drop_overruns += channel->n_rx_nodesc_trunc;
-		} else {
-			rx->packets += rx_queue->old_rx_packets;
-			rx->bytes += rx_queue->old_rx_bytes;
-			rx->hw_drops += channel->old_n_rx_hw_drops;
-			rx->hw_drop_overruns += channel->old_n_rx_hw_drop_overruns;
-		}
-		efx_for_each_channel_tx_queue(tx_queue, channel) {
-			if (channel->channel < efx->tx_channel_offset ||
-			    channel->channel >= efx->tx_channel_offset +
-						net_dev->real_num_tx_queues) {
-				tx->packets += tx_queue->complete_packets;
-				tx->bytes += tx_queue->complete_bytes;
-				tx->hw_gso_packets += tx_queue->tso_bursts;
-				tx->hw_gso_wire_packets += tx_queue->tso_packets;
-			} else {
-				tx->packets += tx_queue->old_complete_packets;
-				tx->bytes += tx_queue->old_complete_bytes;
-				tx->hw_gso_packets += tx_queue->old_tso_bursts;
-				tx->hw_gso_wire_packets += tx_queue->old_tso_packets;
-			}
-			/* Include XDP TX in device-wide stats */
-			tx->packets += tx_queue->complete_xdp_packets;
-			tx->bytes += tx_queue->complete_xdp_bytes;
-		}
-	}
-}
-
-static const struct netdev_stat_ops efx_stat_ops = {
-	.get_queue_stats_rx	= efx_get_queue_stats_rx,
-	.get_queue_stats_tx	= efx_get_queue_stats_tx,
-	.get_base_stats		= efx_get_base_stats,
 };
 
 static int efx_xdp_setup_prog(struct efx_nic *efx, struct bpf_prog *prog)
@@ -793,7 +704,6 @@ static int efx_register_netdev(struct efx_nic *efx)
 	net_dev->watchdog_timeo = 5 * HZ;
 	net_dev->irq = efx->pci_dev->irq;
 	net_dev->netdev_ops = &efx_netdev_ops;
-	net_dev->stat_ops = &efx_stat_ops;
 	if (efx_nic_rev(efx) >= EFX_REV_HUNT_A0)
 		net_dev->priv_flags |= IFF_UNICAST_FLT;
 	net_dev->ethtool_ops = &efx_ethtool_ops;
@@ -899,10 +809,6 @@ static const struct pci_device_id efx_pci_table[] = {
 	 .driver_data = (unsigned long) &efx_hunt_a0_nic_type},
 	{PCI_DEVICE(PCI_VENDOR_ID_SOLARFLARE, 0x1b03),  /* SFC9250 VF */
 	 .driver_data = (unsigned long) &efx_hunt_a0_vf_nic_type},
-	{PCI_DEVICE(PCI_VENDOR_ID_SOLARFLARE, 0x0c03),  /* X4 PF (FF/LL) */
-	 .driver_data = (unsigned long)&efx_x4_nic_type},
-	{PCI_DEVICE(PCI_VENDOR_ID_SOLARFLARE, 0x2c03),  /* X4 PF (FF only) */
-	 .driver_data = (unsigned long)&efx_x4_nic_type},
 	{0}			/* end of list */
 };
 
@@ -973,7 +879,6 @@ static void efx_pci_remove(struct pci_dev *pci_dev)
 	if (efx->type->sriov_fini)
 		efx->type->sriov_fini(efx);
 
-	efx_fini_devlink_lock(efx);
 	efx_unregister_netdev(efx);
 
 	efx_mtd_remove(efx);
@@ -983,11 +888,12 @@ static void efx_pci_remove(struct pci_dev *pci_dev)
 	efx_fini_io(efx);
 	pci_dbg(efx->pci_dev, "shutdown successful\n");
 
-	efx_fini_devlink_and_unlock(efx);
 	efx_fini_struct(efx);
 	free_netdev(efx->net_dev);
 	probe_data = container_of(efx, struct efx_probe_data, efx);
 	kfree(probe_data);
+
+	pci_disable_pcie_error_reporting(pci_dev);
 };
 
 /* NIC VPD information
@@ -1123,13 +1029,7 @@ static int efx_pci_probe_post_io(struct efx_nic *efx)
 				NETDEV_XDP_ACT_REDIRECT |
 				NETDEV_XDP_ACT_NDO_XMIT;
 
-	/* devlink creation, registration and lock */
-	rc = efx_probe_devlink_and_lock(efx);
-	if (rc)
-		pci_err(efx->pci_dev, "devlink registration failed");
-
 	rc = efx_register_netdev(efx);
-	efx_probe_devlink_unlock(efx);
 	if (!rc)
 		return 0;
 
@@ -1178,6 +1078,7 @@ static int efx_pci_probe(struct pci_dev *pci_dev,
 	rc = efx_init_struct(efx, pci_dev);
 	if (rc)
 		goto fail1;
+	efx->mdio.dev = net_dev;
 
 	pci_info(pci_dev, "Solarflare NIC detected\n");
 
@@ -1221,6 +1122,8 @@ static int efx_pci_probe(struct pci_dev *pci_dev,
 	if (rc && rc != -EPERM)
 		netif_warn(efx, probe, efx->net_dev,
 			   "failed to create MTDs (%d)\n", rc);
+
+	(void)pci_enable_pcie_error_reporting(pci_dev);
 
 	if (efx->type->udp_tnl_push_ports)
 		efx->type->udp_tnl_push_ports(efx);

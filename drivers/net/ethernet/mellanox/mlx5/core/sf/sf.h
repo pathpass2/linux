@@ -12,22 +12,17 @@
 int mlx5_sf_hw_table_init(struct mlx5_core_dev *dev);
 void mlx5_sf_hw_table_cleanup(struct mlx5_core_dev *dev);
 
-int mlx5_sf_hw_notifier_init(struct mlx5_core_dev *dev);
-void mlx5_sf_hw_notifier_cleanup(struct mlx5_core_dev *dev);
+int mlx5_sf_hw_table_create(struct mlx5_core_dev *dev);
 void mlx5_sf_hw_table_destroy(struct mlx5_core_dev *dev);
 
-int mlx5_sf_notifiers_init(struct mlx5_core_dev *dev);
 int mlx5_sf_table_init(struct mlx5_core_dev *dev);
-void mlx5_sf_notifiers_cleanup(struct mlx5_core_dev *dev);
 void mlx5_sf_table_cleanup(struct mlx5_core_dev *dev);
-bool mlx5_sf_table_empty(const struct mlx5_core_dev *dev);
 
 int mlx5_devlink_sf_port_new(struct devlink *devlink,
 			     const struct devlink_port_new_attrs *add_attr,
 			     struct netlink_ext_ack *extack,
-			     struct devlink_port **dl_port);
-int mlx5_devlink_sf_port_del(struct devlink *devlink,
-			     struct devlink_port *dl_port,
+			     unsigned int *new_port_index);
+int mlx5_devlink_sf_port_del(struct devlink *devlink, unsigned int port_index,
 			     struct netlink_ext_ack *extack);
 int mlx5_devlink_sf_port_fn_state_get(struct devlink_port *dl_port,
 				      enum devlink_port_fn_state *state,
@@ -47,22 +42,13 @@ static inline void mlx5_sf_hw_table_cleanup(struct mlx5_core_dev *dev)
 {
 }
 
-static inline int mlx5_sf_hw_notifier_init(struct mlx5_core_dev *dev)
+static inline int mlx5_sf_hw_table_create(struct mlx5_core_dev *dev)
 {
 	return 0;
-}
-
-static inline void mlx5_sf_hw_notifier_cleanup(struct mlx5_core_dev *dev)
-{
 }
 
 static inline void mlx5_sf_hw_table_destroy(struct mlx5_core_dev *dev)
 {
-}
-
-static inline int mlx5_sf_notifiers_init(struct mlx5_core_dev *dev)
-{
-	return 0;
 }
 
 static inline int mlx5_sf_table_init(struct mlx5_core_dev *dev)
@@ -70,17 +56,8 @@ static inline int mlx5_sf_table_init(struct mlx5_core_dev *dev)
 	return 0;
 }
 
-static inline void mlx5_sf_notifiers_cleanup(struct mlx5_core_dev *dev)
-{
-}
-
 static inline void mlx5_sf_table_cleanup(struct mlx5_core_dev *dev)
 {
-}
-
-static inline bool mlx5_sf_table_empty(const struct mlx5_core_dev *dev)
-{
-	return true;
 }
 
 #endif

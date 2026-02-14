@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2019 Intel Corporation.
 
+#include <asm/unaligned.h>
 #include <linux/acpi.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -10,8 +11,6 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
-#include <linux/unaligned.h>
-
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
@@ -494,8 +493,6 @@ static const struct ov5675_mode supported_modes[] = {
 };
 
 struct ov5675 {
-	struct device *dev;
-
 	struct v4l2_subdev sd;
 	struct media_pad pad;
 	struct v4l2_ctrl_handler ctrl_handler;
@@ -513,8 +510,11 @@ struct ov5675 {
 	/* Current mode */
 	const struct ov5675_mode *cur_mode;
 
-	/* To serialize asynchronous callbacks */
+	/* To serialize asynchronus callbacks */
 	struct mutex mutex;
+
+	/* Streaming on/off */
+	bool streaming;
 
 	/* True if the device has been identified */
 	bool identified;
@@ -587,6 +587,7 @@ static int ov5675_write_reg(struct ov5675 *ov5675, u16 reg, u16 len, u32 val)
 static int ov5675_write_reg_list(struct ov5675 *ov5675,
 				 const struct ov5675_reg_list *r_list)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(&ov5675->sd);
 	unsigned int i;
 	int ret;
 
@@ -594,7 +595,7 @@ static int ov5675_write_reg_list(struct ov5675 *ov5675,
 		ret = ov5675_write_reg(ov5675, r_list->regs[i].address, 1,
 				       r_list->regs[i].val);
 		if (ret) {
-			dev_err_ratelimited(ov5675->dev,
+			dev_err_ratelimited(&client->dev,
 				    "failed to write reg 0x%4.4x. error = %d",
 				    r_list->regs[i].address, ret);
 			return ret;
@@ -702,6 +703,7 @@ static int ov5675_set_ctrl(struct v4l2_ctrl *ctrl)
 {
 	struct ov5675 *ov5675 = container_of(ctrl->handler,
 					     struct ov5675, ctrl_handler);
+	struct i2c_client *client = v4l2_get_subdevdata(&ov5675->sd);
 	s64 exposure_max;
 	int ret = 0;
 
@@ -717,7 +719,7 @@ static int ov5675_set_ctrl(struct v4l2_ctrl *ctrl)
 	}
 
 	/* V4L2 controls values will be applied only when power is already up */
-	if (!pm_runtime_get_if_in_use(ov5675->dev))
+	if (!pm_runtime_get_if_in_use(&client->dev))
 		return 0;
 
 	switch (ctrl->id) {
@@ -733,7 +735,7 @@ static int ov5675_set_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_EXPOSURE:
 		/* 4 least significant bits of expsoure are fractional part
 		 * val = val << 4
-		 * for ov5675, the unit of exposure is different from other
+		 * for ov5675, the unit of exposure is differnt from other
 		 * OmniVision sensors, its exposure value is twice of the
 		 * register value, the exposure should be divided by 2 before
 		 * set register, e.g. val << 3.
@@ -766,7 +768,7 @@ static int ov5675_set_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	}
 
-	pm_runtime_put(ov5675->dev);
+	pm_runtime_put(&client->dev);
 
 	return ret;
 }
@@ -777,6 +779,7 @@ static const struct v4l2_ctrl_ops ov5675_ctrl_ops = {
 
 static int ov5675_init_controls(struct ov5675 *ov5675)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(&ov5675->sd);
 	struct v4l2_fwnode_device_properties props;
 	struct v4l2_ctrl_handler *ctrl_hdlr;
 	s64 exposure_max, h_blank;
@@ -839,7 +842,7 @@ static int ov5675_init_controls(struct ov5675 *ov5675)
 		return ctrl_hdlr->error;
 	}
 
-	ret = v4l2_fwnode_device_parse(ov5675->dev, &props);
+	ret = v4l2_fwnode_device_parse(&client->dev, &props);
 	if (ret)
 		goto error;
 
@@ -869,6 +872,7 @@ static void ov5675_update_pad_format(const struct ov5675_mode *mode,
 
 static int ov5675_identify_module(struct ov5675 *ov5675)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(&ov5675->sd);
 	int ret;
 	u32 val;
 
@@ -881,7 +885,7 @@ static int ov5675_identify_module(struct ov5675 *ov5675)
 		return ret;
 
 	if (val != OV5675_CHIP_ID) {
-		dev_err(ov5675->dev, "chip id mismatch: %x!=%x",
+		dev_err(&client->dev, "chip id mismatch: %x!=%x",
 			OV5675_CHIP_ID, val);
 		return -ENXIO;
 	}
@@ -893,6 +897,7 @@ static int ov5675_identify_module(struct ov5675 *ov5675)
 
 static int ov5675_start_streaming(struct ov5675 *ov5675)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(&ov5675->sd);
 	const struct ov5675_reg_list *reg_list;
 	int link_freq_index, ret;
 
@@ -904,14 +909,14 @@ static int ov5675_start_streaming(struct ov5675 *ov5675)
 	reg_list = &link_freq_configs[link_freq_index].reg_list;
 	ret = ov5675_write_reg_list(ov5675, reg_list);
 	if (ret) {
-		dev_err(ov5675->dev, "failed to set plls");
+		dev_err(&client->dev, "failed to set plls");
 		return ret;
 	}
 
 	reg_list = &ov5675->cur_mode->reg_list;
 	ret = ov5675_write_reg_list(ov5675, reg_list);
 	if (ret) {
-		dev_err(ov5675->dev, "failed to set mode");
+		dev_err(&client->dev, "failed to set mode");
 		return ret;
 	}
 
@@ -922,7 +927,7 @@ static int ov5675_start_streaming(struct ov5675 *ov5675)
 	ret = ov5675_write_reg(ov5675, OV5675_REG_MODE_SELECT,
 			       OV5675_REG_VALUE_08BIT, OV5675_MODE_STREAMING);
 	if (ret) {
-		dev_err(ov5675->dev, "failed to set stream");
+		dev_err(&client->dev, "failed to set stream");
 		return ret;
 	}
 
@@ -931,19 +936,25 @@ static int ov5675_start_streaming(struct ov5675 *ov5675)
 
 static void ov5675_stop_streaming(struct ov5675 *ov5675)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(&ov5675->sd);
+
 	if (ov5675_write_reg(ov5675, OV5675_REG_MODE_SELECT,
 			     OV5675_REG_VALUE_08BIT, OV5675_MODE_STANDBY))
-		dev_err(ov5675->dev, "failed to set stream");
+		dev_err(&client->dev, "failed to set stream");
 }
 
 static int ov5675_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct ov5675 *ov5675 = to_ov5675(sd);
+	struct i2c_client *client = v4l2_get_subdevdata(sd);
 	int ret = 0;
+
+	if (ov5675->streaming == enable)
+		return 0;
 
 	mutex_lock(&ov5675->mutex);
 	if (enable) {
-		ret = pm_runtime_resume_and_get(ov5675->dev);
+		ret = pm_runtime_resume_and_get(&client->dev);
 		if (ret < 0) {
 			mutex_unlock(&ov5675->mutex);
 			return ret;
@@ -953,13 +964,14 @@ static int ov5675_set_stream(struct v4l2_subdev *sd, int enable)
 		if (ret) {
 			enable = 0;
 			ov5675_stop_streaming(ov5675);
-			pm_runtime_put(ov5675->dev);
+			pm_runtime_put(&client->dev);
 		}
 	} else {
 		ov5675_stop_streaming(ov5675);
-		pm_runtime_put(ov5675->dev);
+		pm_runtime_put(&client->dev);
 	}
 
+	ov5675->streaming = enable;
 	mutex_unlock(&ov5675->mutex);
 
 	return ret;
@@ -967,10 +979,12 @@ static int ov5675_set_stream(struct v4l2_subdev *sd, int enable)
 
 static int ov5675_power_off(struct device *dev)
 {
+	/* 512 xvclk cycles after the last SCCB transation or MIPI frame end */
+	u32 delay_us = DIV_ROUND_UP(512, OV5675_XVCLK_19_2 / 1000 / 1000);
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov5675 *ov5675 = to_ov5675(sd);
 
-	usleep_range(90, 100);
+	usleep_range(delay_us, delay_us * 2);
 
 	clk_disable_unprepare(ov5675->xvclk);
 	gpiod_set_value_cansleep(ov5675->reset_gpio, 1);
@@ -981,6 +995,7 @@ static int ov5675_power_off(struct device *dev)
 
 static int ov5675_power_on(struct device *dev)
 {
+	u32 delay_us = DIV_ROUND_UP(8192, OV5675_XVCLK_19_2 / 1000 / 1000);
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov5675 *ov5675 = to_ov5675(sd);
 	int ret;
@@ -1006,11 +1021,44 @@ static int ov5675_power_on(struct device *dev)
 
 	gpiod_set_value_cansleep(ov5675->reset_gpio, 0);
 
-	/* Worst case quiesence gap is 1.365 milliseconds @ 6MHz XVCLK
-	 * Add an additional threshold grace period to ensure reset
-	 * completion before initiating our first I2C transaction.
-	 */
-	usleep_range(1500, 1600);
+	/* 8192 xvclk cycles prior to the first SCCB transation */
+	usleep_range(delay_us, delay_us * 2);
+
+	return 0;
+}
+
+static int __maybe_unused ov5675_suspend(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov5675 *ov5675 = to_ov5675(sd);
+
+	mutex_lock(&ov5675->mutex);
+	if (ov5675->streaming)
+		ov5675_stop_streaming(ov5675);
+
+	mutex_unlock(&ov5675->mutex);
+
+	return 0;
+}
+
+static int __maybe_unused ov5675_resume(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov5675 *ov5675 = to_ov5675(sd);
+	int ret;
+
+	mutex_lock(&ov5675->mutex);
+	if (ov5675->streaming) {
+		ret = ov5675_start_streaming(ov5675);
+		if (ret) {
+			ov5675->streaming = false;
+			ov5675_stop_streaming(ov5675);
+			mutex_unlock(&ov5675->mutex);
+			return ret;
+		}
+	}
+
+	mutex_unlock(&ov5675->mutex);
 
 	return 0;
 }
@@ -1031,7 +1079,7 @@ static int ov5675_set_format(struct v4l2_subdev *sd,
 	mutex_lock(&ov5675->mutex);
 	ov5675_update_pad_format(mode, &fmt->format);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 	} else {
 		ov5675->cur_mode = mode;
 		__v4l2_ctrl_s_ctrl(ov5675->link_freq, mode->link_freq_index);
@@ -1064,8 +1112,9 @@ static int ov5675_get_format(struct v4l2_subdev *sd,
 
 	mutex_lock(&ov5675->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-		fmt->format = *v4l2_subdev_state_get_format(sd_state,
-							    fmt->pad);
+		fmt->format = *v4l2_subdev_get_try_format(&ov5675->sd,
+							  sd_state,
+							  fmt->pad);
 	else
 		ov5675_update_pad_format(ov5675->cur_mode, &fmt->format);
 
@@ -1135,7 +1184,7 @@ static int ov5675_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 
 	mutex_lock(&ov5675->mutex);
 	ov5675_update_pad_format(&supported_modes[0],
-				 v4l2_subdev_state_get_format(fh->state, 0));
+				 v4l2_subdev_get_try_format(sd, fh->state, 0));
 	mutex_unlock(&ov5675->mutex);
 
 	return 0;
@@ -1166,9 +1215,8 @@ static const struct v4l2_subdev_internal_ops ov5675_internal_ops = {
 	.open = ov5675_open,
 };
 
-static int ov5675_get_hwcfg(struct ov5675 *ov5675)
+static int ov5675_get_hwcfg(struct ov5675 *ov5675, struct device *dev)
 {
-	struct device *dev = ov5675->dev;
 	struct fwnode_handle *ep;
 	struct fwnode_handle *fwnode = dev_fwnode(dev);
 	struct v4l2_fwnode_endpoint bus_cfg = {
@@ -1181,13 +1229,24 @@ static int ov5675_get_hwcfg(struct ov5675 *ov5675)
 	if (!fwnode)
 		return -ENXIO;
 
-	ov5675->xvclk = devm_v4l2_sensor_clk_get(dev, NULL);
+	ov5675->xvclk = devm_clk_get_optional(dev, NULL);
 	if (IS_ERR(ov5675->xvclk))
 		return dev_err_probe(dev, PTR_ERR(ov5675->xvclk),
-				     "failed to get xvclk: %pe\n",
-				     ov5675->xvclk);
+				     "failed to get xvclk: %ld\n",
+				     PTR_ERR(ov5675->xvclk));
 
-	xvclk_rate = clk_get_rate(ov5675->xvclk);
+	if (ov5675->xvclk) {
+		xvclk_rate = clk_get_rate(ov5675->xvclk);
+	} else {
+		ret = fwnode_property_read_u32(fwnode, "clock-frequency",
+					       &xvclk_rate);
+
+		if (ret) {
+			dev_err(dev, "can't get clock frequency");
+			return ret;
+		}
+	}
+
 	if (xvclk_rate != OV5675_XVCLK_19_2) {
 		dev_err(dev, "external clock rate %u is unsupported",
 			xvclk_rate);
@@ -1261,12 +1320,12 @@ static void ov5675_remove(struct i2c_client *client)
 	v4l2_async_unregister_subdev(sd);
 	media_entity_cleanup(&sd->entity);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
-	pm_runtime_disable(ov5675->dev);
+	pm_runtime_disable(&client->dev);
 	mutex_destroy(&ov5675->mutex);
 
-	if (!pm_runtime_status_suspended(ov5675->dev))
-		ov5675_power_off(ov5675->dev);
-	pm_runtime_set_suspended(ov5675->dev);
+	if (!pm_runtime_status_suspended(&client->dev))
+		ov5675_power_off(&client->dev);
+	pm_runtime_set_suspended(&client->dev);
 }
 
 static int ov5675_probe(struct i2c_client *client)
@@ -1279,25 +1338,26 @@ static int ov5675_probe(struct i2c_client *client)
 	if (!ov5675)
 		return -ENOMEM;
 
-	ov5675->dev = &client->dev;
-
-	ret = ov5675_get_hwcfg(ov5675);
-	if (ret)
-		return ret;
-
-	v4l2_i2c_subdev_init(&ov5675->sd, client, &ov5675_subdev_ops);
-
-	ret = ov5675_power_on(ov5675->dev);
+	ret = ov5675_get_hwcfg(ov5675, &client->dev);
 	if (ret) {
-		dev_err(ov5675->dev, "failed to power on: %d\n", ret);
+		dev_err(&client->dev, "failed to get HW configuration: %d",
+			ret);
 		return ret;
 	}
 
-	full_power = acpi_dev_state_d0(ov5675->dev);
+	v4l2_i2c_subdev_init(&ov5675->sd, client, &ov5675_subdev_ops);
+
+	ret = ov5675_power_on(&client->dev);
+	if (ret) {
+		dev_err(&client->dev, "failed to power on: %d\n", ret);
+		return ret;
+	}
+
+	full_power = acpi_dev_state_d0(&client->dev);
 	if (full_power) {
 		ret = ov5675_identify_module(ov5675);
 		if (ret) {
-			dev_err(ov5675->dev, "failed to find sensor: %d", ret);
+			dev_err(&client->dev, "failed to find sensor: %d", ret);
 			goto probe_power_off;
 		}
 	}
@@ -1306,7 +1366,7 @@ static int ov5675_probe(struct i2c_client *client)
 	ov5675->cur_mode = &supported_modes[0];
 	ret = ov5675_init_controls(ov5675);
 	if (ret) {
-		dev_err(ov5675->dev, "failed to init controls: %d", ret);
+		dev_err(&client->dev, "failed to init controls: %d", ret);
 		goto probe_error_v4l2_ctrl_handler_free;
 	}
 
@@ -1317,22 +1377,22 @@ static int ov5675_probe(struct i2c_client *client)
 	ov5675->pad.flags = MEDIA_PAD_FL_SOURCE;
 	ret = media_entity_pads_init(&ov5675->sd.entity, 1, &ov5675->pad);
 	if (ret) {
-		dev_err(ov5675->dev, "failed to init entity pads: %d", ret);
+		dev_err(&client->dev, "failed to init entity pads: %d", ret);
 		goto probe_error_v4l2_ctrl_handler_free;
 	}
 
 	ret = v4l2_async_register_subdev_sensor(&ov5675->sd);
 	if (ret < 0) {
-		dev_err(ov5675->dev, "failed to register V4L2 subdev: %d",
+		dev_err(&client->dev, "failed to register V4L2 subdev: %d",
 			ret);
 		goto probe_error_media_entity_cleanup;
 	}
 
 	/* Set the device's state to active if it's in D0 state. */
 	if (full_power)
-		pm_runtime_set_active(ov5675->dev);
-	pm_runtime_enable(ov5675->dev);
-	pm_runtime_idle(ov5675->dev);
+		pm_runtime_set_active(&client->dev);
+	pm_runtime_enable(&client->dev);
+	pm_runtime_idle(&client->dev);
 
 	return 0;
 
@@ -1343,12 +1403,13 @@ probe_error_v4l2_ctrl_handler_free:
 	v4l2_ctrl_handler_free(ov5675->sd.ctrl_handler);
 	mutex_destroy(&ov5675->mutex);
 probe_power_off:
-	ov5675_power_off(ov5675->dev);
+	ov5675_power_off(&client->dev);
 
 	return ret;
 }
 
 static const struct dev_pm_ops ov5675_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(ov5675_suspend, ov5675_resume)
 	SET_RUNTIME_PM_OPS(ov5675_power_off, ov5675_power_on, NULL)
 };
 
@@ -1374,13 +1435,13 @@ static struct i2c_driver ov5675_i2c_driver = {
 		.acpi_match_table = ACPI_PTR(ov5675_acpi_ids),
 		.of_match_table = ov5675_of_match,
 	},
-	.probe = ov5675_probe,
+	.probe_new = ov5675_probe,
 	.remove = ov5675_remove,
 	.flags = I2C_DRV_ACPI_WAIVE_D0_PROBE,
 };
 
 module_i2c_driver(ov5675_i2c_driver);
 
-MODULE_AUTHOR("Shawn Tu");
+MODULE_AUTHOR("Shawn Tu <shawnx.tu@intel.com>");
 MODULE_DESCRIPTION("OmniVision OV5675 sensor driver");
 MODULE_LICENSE("GPL v2");

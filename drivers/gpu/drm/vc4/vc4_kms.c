@@ -19,7 +19,6 @@
 #include <drm/drm_crtc.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem_framebuffer_helper.h>
-#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -32,8 +31,11 @@ struct vc4_ctm_state {
 	int fifo;
 };
 
-#define to_vc4_ctm_state(_state)				\
-	container_of_const(_state, struct vc4_ctm_state, base)
+static struct vc4_ctm_state *
+to_vc4_ctm_state(const struct drm_private_state *priv)
+{
+	return container_of(priv, struct vc4_ctm_state, base);
+}
 
 struct vc4_load_tracker_state {
 	struct drm_private_state base;
@@ -41,8 +43,11 @@ struct vc4_load_tracker_state {
 	u64 membus_load;
 };
 
-#define to_vc4_load_tracker_state(_state)				\
-	container_of_const(_state, struct vc4_load_tracker_state, base)
+static struct vc4_load_tracker_state *
+to_vc4_load_tracker_state(const struct drm_private_state *priv)
+{
+	return container_of(priv, struct vc4_load_tracker_state, base);
+}
 
 static struct vc4_ctm_state *vc4_get_ctm_state(struct drm_atomic_state *state,
 					       struct drm_private_obj *manager)
@@ -139,8 +144,6 @@ vc4_ctm_commit(struct vc4_dev *vc4, struct drm_atomic_state *state)
 	struct vc4_ctm_state *ctm_state = to_vc4_ctm_state(vc4->ctm_manager.state);
 	struct drm_color_ctm *ctm = ctm_state->ctm;
 
-	WARN_ON_ONCE(vc4->gen > VC4_GEN_5);
-
 	if (ctm_state->fifo) {
 		HVS_WRITE(SCALER_OLEDCOEF2,
 			  VC4_SET_FIELD(vc4_ctm_s31_32_to_s0_9(ctm->matrix[0]),
@@ -216,8 +219,6 @@ static void vc4_hvs_pv_muxing_commit(struct vc4_dev *vc4,
 	struct drm_crtc *crtc;
 	unsigned int i;
 
-	WARN_ON_ONCE(vc4->gen != VC4_GEN_4);
-
 	for_each_new_crtc_in_state(state, crtc, crtc_state, i) {
 		struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
 		struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc_state);
@@ -260,8 +261,6 @@ static void vc5_hvs_pv_muxing_commit(struct vc4_dev *vc4,
 	unsigned char mux;
 	unsigned int i;
 	u32 reg;
-
-	WARN_ON_ONCE(vc4->gen != VC4_GEN_5);
 
 	for_each_new_crtc_in_state(state, crtc, crtc_state, i) {
 		struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc_state);
@@ -327,62 +326,17 @@ static void vc5_hvs_pv_muxing_commit(struct vc4_dev *vc4,
 	}
 }
 
-static void vc6_hvs_pv_muxing_commit(struct vc4_dev *vc4,
-				     struct drm_atomic_state *state)
-{
-	struct vc4_hvs *hvs = vc4->hvs;
-	struct drm_crtc_state *crtc_state;
-	struct drm_crtc *crtc;
-	unsigned int i;
-
-	WARN_ON_ONCE(vc4->gen != VC4_GEN_6_C && vc4->gen != VC4_GEN_6_D);
-
-	for_each_new_crtc_in_state(state, crtc, crtc_state, i) {
-		struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc_state);
-		struct vc4_encoder *vc4_encoder;
-		struct drm_encoder *encoder;
-		unsigned char mux;
-		u32 reg;
-
-		if (!vc4_state->update_muxing)
-			continue;
-
-		if (vc4_state->assigned_channel != 1)
-			continue;
-
-		encoder = vc4_get_crtc_encoder(crtc, crtc_state);
-		vc4_encoder = to_vc4_encoder(encoder);
-		switch (vc4_encoder->type) {
-		case VC4_ENCODER_TYPE_HDMI1:
-			mux = 0;
-			break;
-
-		case VC4_ENCODER_TYPE_TXP1:
-			mux = 2;
-			break;
-
-		default:
-			drm_err(&vc4->base, "Unhandled encoder type for PV muxing %d",
-				vc4_encoder->type);
-			mux = 0;
-			break;
-		}
-
-		reg = HVS_READ(SCALER6_CONTROL);
-		HVS_WRITE(SCALER6_CONTROL,
-			  (reg & ~SCALER6_CONTROL_DSP1_TARGET_MASK) |
-			  VC4_SET_FIELD(mux, SCALER6_CONTROL_DSP1_TARGET));
-	}
-}
-
 static void vc4_atomic_commit_tail(struct drm_atomic_state *state)
 {
 	struct drm_device *dev = state->dev;
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct vc4_hvs *hvs = vc4->hvs;
+	struct drm_crtc_state *new_crtc_state;
 	struct vc4_hvs_state *new_hvs_state;
+	struct drm_crtc *crtc;
 	struct vc4_hvs_state *old_hvs_state;
 	unsigned int channel;
+	int i;
 
 	old_hvs_state = vc4_hvs_get_old_global_state(state);
 	if (WARN_ON(IS_ERR(old_hvs_state)))
@@ -392,20 +346,14 @@ static void vc4_atomic_commit_tail(struct drm_atomic_state *state)
 	if (WARN_ON(IS_ERR(new_hvs_state)))
 		return;
 
-	if (vc4->gen < VC4_GEN_6_C) {
-		struct drm_crtc_state *new_crtc_state;
-		struct drm_crtc *crtc;
-		int i;
+	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
+		struct vc4_crtc_state *vc4_crtc_state;
 
-		for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
-			struct vc4_crtc_state *vc4_crtc_state;
+		if (!new_crtc_state->commit)
+			continue;
 
-			if (!new_crtc_state->commit)
-				continue;
-
-			vc4_crtc_state = to_vc4_crtc_state(new_crtc_state);
-			vc4_hvs_mask_underrun(hvs, vc4_crtc_state->assigned_channel);
-		}
+		vc4_crtc_state = to_vc4_crtc_state(new_crtc_state);
+		vc4_hvs_mask_underrun(hvs, vc4_crtc_state->assigned_channel);
 	}
 
 	for (channel = 0; channel < HVS_NUM_CHANNELS; channel++) {
@@ -427,7 +375,7 @@ static void vc4_atomic_commit_tail(struct drm_atomic_state *state)
 		old_hvs_state->fifo_state[channel].pending_commit = NULL;
 	}
 
-	if (vc4->gen == VC4_GEN_5) {
+	if (vc4->is_vc5) {
 		unsigned long state_rate = max(old_hvs_state->core_clock_rate,
 					       new_hvs_state->core_clock_rate);
 		unsigned long core_rate = clamp_t(unsigned long, state_rate,
@@ -440,32 +388,16 @@ static void vc4_atomic_commit_tail(struct drm_atomic_state *state)
 		 * modeset.
 		 */
 		WARN_ON(clk_set_min_rate(hvs->core_clk, core_rate));
-		WARN_ON(clk_set_min_rate(hvs->disp_clk, core_rate));
 	}
 
 	drm_atomic_helper_commit_modeset_disables(dev, state);
 
-	if (vc4->gen <= VC4_GEN_5)
-		vc4_ctm_commit(vc4, state);
+	vc4_ctm_commit(vc4, state);
 
-	switch (vc4->gen) {
-	case VC4_GEN_4:
-		vc4_hvs_pv_muxing_commit(vc4, state);
-		break;
-
-	case VC4_GEN_5:
+	if (vc4->is_vc5)
 		vc5_hvs_pv_muxing_commit(vc4, state);
-		break;
-
-	case VC4_GEN_6_C:
-	case VC4_GEN_6_D:
-		vc6_hvs_pv_muxing_commit(vc4, state);
-		break;
-
-	default:
-		drm_err(dev, "Unknown VC4 generation: %d", vc4->gen);
-		break;
-	}
+	else
+		vc4_hvs_pv_muxing_commit(vc4, state);
 
 	drm_atomic_helper_commit_planes(dev, state,
 					DRM_PLANE_COMMIT_ACTIVE_ONLY);
@@ -480,7 +412,7 @@ static void vc4_atomic_commit_tail(struct drm_atomic_state *state)
 
 	drm_atomic_helper_cleanup_planes(dev, state);
 
-	if (vc4->gen == VC4_GEN_5) {
+	if (vc4->is_vc5) {
 		unsigned long core_rate = min_t(unsigned long,
 						hvs->max_core_rate,
 						new_hvs_state->core_clock_rate);
@@ -492,7 +424,6 @@ static void vc4_atomic_commit_tail(struct drm_atomic_state *state)
 		 * requirements.
 		 */
 		WARN_ON(clk_set_min_rate(hvs->core_clk, core_rate));
-		WARN_ON(clk_set_min_rate(hvs->disp_clk, core_rate));
 
 		drm_dbg(dev, "Core clock actual rate: %lu Hz\n",
 			clk_get_rate(hvs->core_clk));
@@ -531,13 +462,12 @@ static int vc4_atomic_commit_setup(struct drm_atomic_state *state)
 
 static struct drm_framebuffer *vc4_fb_create(struct drm_device *dev,
 					     struct drm_file *file_priv,
-					     const struct drm_format_info *info,
 					     const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	struct vc4_dev *vc4 = to_vc4_dev(dev);
 	struct drm_mode_fb_cmd2 mode_cmd_local;
 
-	if (WARN_ON_ONCE(vc4->gen > VC4_GEN_4))
+	if (WARN_ON_ONCE(vc4->is_vc5))
 		return ERR_PTR(-ENODEV);
 
 	/* If the user didn't specify a modifier, use the
@@ -570,7 +500,7 @@ static struct drm_framebuffer *vc4_fb_create(struct drm_device *dev,
 		mode_cmd = &mode_cmd_local;
 	}
 
-	return drm_gem_fb_create(dev, file_priv, info, mode_cmd);
+	return drm_gem_fb_create(dev, file_priv, mode_cmd);
 }
 
 /* Our CTM has some peculiar limitations: we can only enable it for one CRTC
@@ -787,7 +717,7 @@ static void vc4_hvs_channels_destroy_state(struct drm_private_obj *obj,
 static void vc4_hvs_channels_print_state(struct drm_printer *p,
 					 const struct drm_private_state *state)
 {
-	const struct vc4_hvs_state *hvs_state = to_vc4_hvs_state(state);
+	struct vc4_hvs_state *hvs_state = to_vc4_hvs_state(state);
 	unsigned int i;
 
 	drm_printf(p, "HVS State\n");
@@ -1116,7 +1046,7 @@ int vc4_kms_load(struct drm_device *dev)
 	 * the BCM2711, but the load tracker computations are used for
 	 * the core clock rate calculation.
 	 */
-	if (vc4->gen == VC4_GEN_4) {
+	if (!vc4->is_vc5) {
 		/* Start with the load tracker enabled. Can be
 		 * disabled through the debugfs load_tracker file.
 		 */
@@ -1132,10 +1062,7 @@ int vc4_kms_load(struct drm_device *dev)
 		return ret;
 	}
 
-	if (vc4->gen >= VC4_GEN_6_C) {
-		dev->mode_config.max_width = 8192;
-		dev->mode_config.max_height = 8192;
-	} else if (vc4->gen >= VC4_GEN_5) {
+	if (vc4->is_vc5) {
 		dev->mode_config.max_width = 7680;
 		dev->mode_config.max_height = 7680;
 	} else {
@@ -1143,7 +1070,7 @@ int vc4_kms_load(struct drm_device *dev)
 		dev->mode_config.max_height = 2048;
 	}
 
-	dev->mode_config.funcs = (vc4->gen > VC4_GEN_4) ? &vc5_mode_funcs : &vc4_mode_funcs;
+	dev->mode_config.funcs = vc4->is_vc5 ? &vc5_mode_funcs : &vc4_mode_funcs;
 	dev->mode_config.helper_private = &vc4_mode_config_helpers;
 	dev->mode_config.preferred_depth = 24;
 	dev->mode_config.async_page_flip = true;

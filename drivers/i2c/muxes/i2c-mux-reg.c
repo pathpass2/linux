@@ -159,6 +159,7 @@ static int i2c_mux_reg_probe(struct platform_device *pdev)
 	struct regmux *mux;
 	struct i2c_adapter *parent;
 	struct resource *res;
+	unsigned int class;
 	int i, ret, nr;
 
 	mux = devm_kzalloc(&pdev->dev, sizeof(*mux), GFP_KERNEL);
@@ -212,8 +213,9 @@ static int i2c_mux_reg_probe(struct platform_device *pdev)
 
 	for (i = 0; i < mux->data.n_values; i++) {
 		nr = mux->data.base_nr ? (mux->data.base_nr + i) : 0;
+		class = mux->data.classes ? mux->data.classes[i] : 0;
 
-		ret = i2c_mux_add_adapter(muxc, nr, mux->data.values[i]);
+		ret = i2c_mux_add_adapter(muxc, nr, mux->data.values[i], class);
 		if (ret)
 			goto err_del_mux_adapters;
 	}
@@ -231,12 +233,14 @@ err_put_parent:
 	return ret;
 }
 
-static void i2c_mux_reg_remove(struct platform_device *pdev)
+static int i2c_mux_reg_remove(struct platform_device *pdev)
 {
 	struct i2c_mux_core *muxc = platform_get_drvdata(pdev);
 
 	i2c_mux_del_adapters(muxc);
 	i2c_put_adapter(muxc->parent);
+
+	return 0;
 }
 
 static const struct of_device_id i2c_mux_reg_of_match[] = {
@@ -247,10 +251,10 @@ MODULE_DEVICE_TABLE(of, i2c_mux_reg_of_match);
 
 static struct platform_driver i2c_mux_reg_driver = {
 	.probe	= i2c_mux_reg_probe,
-	.remove = i2c_mux_reg_remove,
+	.remove	= i2c_mux_reg_remove,
 	.driver	= {
 		.name	= "i2c-mux-reg",
-		.of_match_table = i2c_mux_reg_of_match,
+		.of_match_table = of_match_ptr(i2c_mux_reg_of_match),
 	},
 };
 

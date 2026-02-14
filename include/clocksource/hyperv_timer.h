@@ -15,7 +15,7 @@
 
 #include <linux/clocksource.h>
 #include <linux/math64.h>
-#include <hyperv/hvhdk.h>
+#include <asm/hyperv-tlfs.h>
 
 #define HV_MAX_MAX_DELTA_TICKS 0xffffffff
 #define HV_MIN_DELTA_TICKS 1
@@ -38,11 +38,8 @@ extern void hv_remap_tsc_clocksource(void);
 extern unsigned long hv_get_tsc_pfn(void);
 extern struct ms_hyperv_tsc_page *hv_get_tsc_page(void);
 
-extern void hv_adj_sched_clock_offset(u64 offset);
-
-static __always_inline bool
-hv_read_tsc_page_tsc(const struct ms_hyperv_tsc_page *tsc_pg,
-		     u64 *cur_tsc, u64 *time)
+static inline notrace u64
+hv_read_tsc_page_tsc(const struct ms_hyperv_tsc_page *tsc_pg, u64 *cur_tsc)
 {
 	u64 scale, offset;
 	u32 sequence;
@@ -66,7 +63,7 @@ hv_read_tsc_page_tsc(const struct ms_hyperv_tsc_page *tsc_pg,
 	do {
 		sequence = READ_ONCE(tsc_pg->tsc_sequence);
 		if (!sequence)
-			return false;
+			return U64_MAX;
 		/*
 		 * Make sure we read sequence before we read other values from
 		 * TSC page.
@@ -85,8 +82,15 @@ hv_read_tsc_page_tsc(const struct ms_hyperv_tsc_page *tsc_pg,
 
 	} while (READ_ONCE(tsc_pg->tsc_sequence) != sequence);
 
-	*time = mul_u64_u64_shr(*cur_tsc, scale, 64) + offset;
-	return true;
+	return mul_u64_u64_shr(*cur_tsc, scale, 64) + offset;
+}
+
+static inline notrace u64
+hv_read_tsc_page(const struct ms_hyperv_tsc_page *tsc_pg)
+{
+	u64 cur_tsc;
+
+	return hv_read_tsc_page_tsc(tsc_pg, &cur_tsc);
 }
 
 #else /* CONFIG_HYPERV_TIMER */
@@ -100,10 +104,10 @@ static inline struct ms_hyperv_tsc_page *hv_get_tsc_page(void)
 	return NULL;
 }
 
-static __always_inline bool
-hv_read_tsc_page_tsc(const struct ms_hyperv_tsc_page *tsc_pg, u64 *cur_tsc, u64 *time)
+static inline u64 hv_read_tsc_page_tsc(const struct ms_hyperv_tsc_page *tsc_pg,
+				       u64 *cur_tsc)
 {
-	return false;
+	return U64_MAX;
 }
 
 static inline int hv_stimer_cleanup(unsigned int cpu) { return 0; }

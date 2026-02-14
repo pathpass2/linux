@@ -115,8 +115,8 @@ static inline void atl1e_irq_reset(struct atl1e_adapter *adapter)
  */
 static void atl1e_phy_config(struct timer_list *t)
 {
-	struct atl1e_adapter *adapter = timer_container_of(adapter, t,
-							   phy_config_timer);
+	struct atl1e_adapter *adapter = from_timer(adapter, t,
+						   phy_config_timer);
 	struct atl1e_hw *hw = &adapter->hw;
 	unsigned long flags;
 
@@ -232,7 +232,7 @@ static void atl1e_link_chg_event(struct atl1e_adapter *adapter)
 
 static void atl1e_del_timer(struct atl1e_adapter *adapter)
 {
-	timer_delete_sync(&adapter->phy_config_timer);
+	del_timer_sync(&adapter->phy_config_timer);
 }
 
 static void atl1e_cancel_work(struct atl1e_adapter *adapter)
@@ -428,7 +428,7 @@ static int atl1e_change_mtu(struct net_device *netdev, int new_mtu)
 	if (netif_running(netdev)) {
 		while (test_and_set_bit(__AT_RESETTING, &adapter->flags))
 			msleep(1);
-		WRITE_ONCE(netdev->mtu, new_mtu);
+		netdev->mtu = new_mtu;
 		adapter->hw.max_frame_size = new_mtu;
 		adapter->hw.rx_jumbo_th = (max_frame + 7) >> 3;
 		atl1e_down(adapter);
@@ -866,13 +866,10 @@ static int atl1e_setup_ring_resources(struct atl1e_adapter *adapter)
 		netdev_err(adapter->netdev, "offset(%d) > ring size(%d) !!\n",
 			   offset, adapter->ring_size);
 		err = -1;
-		goto free_buffer;
+		goto failed;
 	}
 
 	return 0;
-free_buffer:
-	kfree(tx_ring->tx_buffer);
-	tx_ring->tx_buffer = NULL;
 failed:
 	if (adapter->ring_vir_addr != NULL) {
 		dma_free_coherent(&pdev->dev, adapter->ring_size,
@@ -1644,11 +1641,8 @@ static int atl1e_tso_csum(struct atl1e_adapter *adapter,
 			real_len = (((unsigned char *)ip_hdr(skb) - skb->data)
 					+ ntohs(ip_hdr(skb)->tot_len));
 
-			if (real_len < skb->len) {
-				err = pskb_trim(skb, real_len);
-				if (err)
-					return err;
-			}
+			if (real_len < skb->len)
+				pskb_trim(skb, real_len);
 
 			hdr_len = skb_tcp_all_headers(skb);
 			if (unlikely(skb->len == hdr_len)) {

@@ -14,12 +14,11 @@
 #include <linux/sysfs.h>
 
 struct blk_trace {
-	int version;
 	int trace_state;
 	struct rchan *rchan;
 	unsigned long __percpu *sequence;
 	unsigned char __percpu *msg_data;
-	u64 act_mask;
+	u16 act_mask;
 	u64 start_lba;
 	u64 end_lba;
 	u32 pid;
@@ -86,14 +85,10 @@ extern int blk_trace_remove(struct request_queue *q);
 # define blk_add_driver_data(rq, data, len)		do {} while (0)
 # define blk_trace_setup(q, name, dev, bdev, arg)	(-ENOTTY)
 # define blk_trace_startstop(q, start)			(-ENOTTY)
+# define blk_trace_remove(q)				(-ENOTTY)
 # define blk_add_trace_msg(q, fmt, ...)			do { } while (0)
 # define blk_add_cgroup_trace_msg(q, cg, fmt, ...)	do { } while (0)
 # define blk_trace_note_message_enabled(q)		(false)
-
-static inline int blk_trace_remove(struct request_queue *q)
-{
-	return -ENOTTY;
-}
 #endif /* CONFIG_BLK_DEV_IO_TRACE */
 
 #ifdef CONFIG_COMPAT

@@ -7,6 +7,7 @@
 
 #include <linux/backlight.h>
 #include <linux/err.h>
+#include <linux/fb.h>
 #include <linux/init.h>
 #include <linux/mfd/ipaq-micro.h>
 #include <linux/module.h>
@@ -41,7 +42,7 @@ static const struct backlight_ops micro_bl_ops = {
 static const struct backlight_properties micro_bl_props = {
 	.type = BACKLIGHT_RAW,
 	.max_brightness = 255,
-	.power = BACKLIGHT_POWER_ON,
+	.power = FB_BLANK_UNBLANK,
 	.brightness = 64,
 };
 

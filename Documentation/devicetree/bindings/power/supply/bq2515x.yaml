@@ -53,15 +53,14 @@ properties:
     minimum: 50000
     maximum: 500000
 
-  monitored-battery: true
+  monitored-battery:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: phandle to the battery node being monitored
 
 required:
   - compatible
   - reg
   - monitored-battery
-
-allOf:
-  - $ref: power-supply.yaml#
 
 additionalProperties: false
 
@@ -74,7 +73,7 @@ examples:
       constant-charge-voltage-max-microvolt = <4000000>;
     };
     #include <dt-bindings/gpio/gpio.h>
-    i2c {
+    i2c0 {
       #address-cells = <1>;
       #size-cells = <0>;
 

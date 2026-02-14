@@ -46,11 +46,14 @@
  * specified by @pbn to the GC pagecache with the key @blkoff.
  * This function sets @vbn (@pbn if @vbn is zero) in b_blocknr of the buffer.
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOENT	- The block specified with @pbn does not exist.
- * * %-ENOMEM	- Insufficient memory available.
+ * Return Value: On success, 0 is returned. On Error, one of the following
+ * negative error code is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
+ *
+ * %-ENOENT - The block specified with @pbn does not exist.
  */
 int nilfs_gccache_submit_read_data(struct inode *inode, sector_t blkoff,
 				   sector_t pbn, __u64 vbn,
@@ -70,8 +73,10 @@ int nilfs_gccache_submit_read_data(struct inode *inode, sector_t blkoff,
 		struct the_nilfs *nilfs = inode->i_sb->s_fs_info;
 
 		err = nilfs_dat_translate(nilfs->ns_dat, vbn, &pbn);
-		if (unlikely(err)) /* -EIO, -ENOMEM, -ENOENT */
+		if (unlikely(err)) { /* -EIO, -ENOMEM, -ENOENT */
+			brelse(bh);
 			goto failed;
+		}
 	}
 
 	lock_buffer(bh);
@@ -80,8 +85,10 @@ int nilfs_gccache_submit_read_data(struct inode *inode, sector_t blkoff,
 		goto out;
 	}
 
-	if (!buffer_mapped(bh))
+	if (!buffer_mapped(bh)) {
+		bh->b_bdev = inode->i_sb->s_bdev;
 		set_buffer_mapped(bh);
+	}
 	bh->b_blocknr = pbn;
 	bh->b_end_io = end_buffer_read_sync;
 	get_bh(bh);
@@ -93,10 +100,8 @@ int nilfs_gccache_submit_read_data(struct inode *inode, sector_t blkoff,
 	*out_bh = bh;
 
  failed:
-	folio_unlock(bh->b_folio);
-	folio_put(bh->b_folio);
-	if (unlikely(err))
-		brelse(bh);
+	unlock_page(bh->b_page);
+	put_page(bh->b_page);
 	return err;
 }
 
@@ -111,11 +116,12 @@ int nilfs_gccache_submit_read_data(struct inode *inode, sector_t blkoff,
  * specified by @vbn to the GC pagecache.  @pbn can be supplied by the
  * caller to avoid translation of the disk block address.
  *
- * Return: 0 on success, or one of the following negative error codes on
- * failure:
- * * %-EIO	- I/O error (including metadata corruption).
- * * %-ENOENT	- Invalid virtual block address.
- * * %-ENOMEM	- Insufficient memory available.
+ * Return Value: On success, 0 is returned. On Error, one of the following
+ * negative error code is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
  */
 int nilfs_gccache_submit_read_node(struct inode *inode, sector_t pbn,
 				   __u64 vbn, struct buffer_head **out_bh)
@@ -159,7 +165,7 @@ int nilfs_init_gcinode(struct inode *inode)
 
 	inode->i_mode = S_IFREG;
 	mapping_set_gfp_mask(inode->i_mapping, GFP_NOFS);
-	inode->i_mapping->a_ops = &nilfs_buffer_cache_aops;
+	inode->i_mapping->a_ops = &empty_aops;
 
 	ii->i_flags = 0;
 	nilfs_bmap_init_gc(ii->i_bmap);
@@ -169,7 +175,6 @@ int nilfs_init_gcinode(struct inode *inode)
 
 /**
  * nilfs_remove_all_gcinodes() - remove all unprocessed gc inodes
- * @nilfs: NILFS filesystem instance
  */
 void nilfs_remove_all_gcinodes(struct the_nilfs *nilfs)
 {

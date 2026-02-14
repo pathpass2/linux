@@ -23,7 +23,6 @@
 /delete-node/ &mba_mem;
 /delete-node/ &mpss_mem;
 /delete-node/ &peripheral_region;
-/delete-node/ &res_hyp_mem;
 /delete-node/ &rmtfs_mem;
 /delete-node/ &smem_mem;
 
@@ -47,6 +46,8 @@
 	};
 
 	clocks {
+		compatible = "simple-bus";
+
 		divclk4: divclk4 {
 			compatible = "fixed-clock";
 			#clock-cells = <0>;
@@ -377,8 +378,8 @@
 &blsp2_i2c1 {
 	status = "okay";
 
-	sideinteraction: touch@2c {
-		compatible = "adi,ad7147_captouch";
+	sideinteraction: ad7147_captouch@2c {
+		compatible = "ad,ad7147_captouch";
 		reg = <0x2c>;
 
 		pinctrl-names = "default", "sleep";
@@ -386,6 +387,11 @@
 		pinctrl-1 = <&grip_sleep>;
 
 		interrupts = <&tlmm 96 IRQ_TYPE_EDGE_FALLING>;
+
+		button_num = <8>;
+		touchpad_num = <0>;
+		wheel_num = <0>;
+		slider_num = <0>;
 
 		vcc-supply = <&vreg_l18a_2p85>;
 	};
@@ -536,7 +542,8 @@
 };
 
 &pmi8994_spmi_regulators {
-	vdd_gfx: s2 {
+	vdd_gfx: s2@1700 {
+		reg = <0x1700 0x100>;
 		regulator-min-microvolt = <980000>;
 		regulator-max-microvolt = <980000>;
 	};

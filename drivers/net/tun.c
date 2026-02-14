@@ -54,7 +54,6 @@
 #include <linux/if_tun.h>
 #include <linux/if_vlan.h>
 #include <linux/crc32.h>
-#include <linux/math.h>
 #include <linux/nsproxy.h>
 #include <linux/virtio_net.h>
 #include <linux/rcupdate.h>
@@ -71,19 +70,16 @@
 #include <linux/bpf_trace.h>
 #include <linux/mutex.h>
 #include <linux/ieee802154.h>
-#include <uapi/linux/if_ltalk.h>
+#include <linux/if_ltalk.h>
 #include <uapi/linux/if_fddi.h>
 #include <uapi/linux/if_hippi.h>
 #include <uapi/linux/if_fc.h>
 #include <net/ax25.h>
 #include <net/rose.h>
 #include <net/6lowpan.h>
-#include <net/rps.h>
 
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
-
-#include "tun_vnet.h"
 
 static void tun_default_link_ksettings(struct net_device *dev,
 				       struct ethtool_link_ksettings *cmd);
@@ -96,6 +92,9 @@ static void tun_default_link_ksettings(struct net_device *dev,
  * overload it to mean fasync when stored there.
  */
 #define TUN_FASYNC	IFF_ATTACH_QUEUE
+/* High bits in flags field are unused. */
+#define TUN_VNET_LE     0x80000000
+#define TUN_VNET_BE     0x40000000
 
 #define TUN_FEATURES (IFF_NO_PI | IFF_ONE_QUEUE | IFF_VNET_HDR | \
 		      IFF_MULTI_QUEUE | IFF_NAPI | IFF_NAPI_FRAGS)
@@ -186,8 +185,7 @@ struct tun_struct {
 	struct net_device	*dev;
 	netdev_features_t	set_features;
 #define TUN_USER_FEATURES (NETIF_F_HW_CSUM|NETIF_F_TSO_ECN|NETIF_F_TSO| \
-			  NETIF_F_TSO6 | NETIF_F_GSO_UDP_L4 | \
-			  NETIF_F_GSO_UDP_TUNNEL | NETIF_F_GSO_UDP_TUNNEL_CSUM)
+			  NETIF_F_TSO6 | NETIF_F_GSO_UDP_L4)
 
 	int			align;
 	int			vnet_hdr_sz;
@@ -298,6 +296,70 @@ static bool tun_napi_frags_enabled(const struct tun_file *tfile)
 	return tfile->napi_frags_enabled;
 }
 
+#ifdef CONFIG_TUN_VNET_CROSS_LE
+static inline bool tun_legacy_is_little_endian(struct tun_struct *tun)
+{
+	return tun->flags & TUN_VNET_BE ? false :
+		virtio_legacy_is_little_endian();
+}
+
+static long tun_get_vnet_be(struct tun_struct *tun, int __user *argp)
+{
+	int be = !!(tun->flags & TUN_VNET_BE);
+
+	if (put_user(be, argp))
+		return -EFAULT;
+
+	return 0;
+}
+
+static long tun_set_vnet_be(struct tun_struct *tun, int __user *argp)
+{
+	int be;
+
+	if (get_user(be, argp))
+		return -EFAULT;
+
+	if (be)
+		tun->flags |= TUN_VNET_BE;
+	else
+		tun->flags &= ~TUN_VNET_BE;
+
+	return 0;
+}
+#else
+static inline bool tun_legacy_is_little_endian(struct tun_struct *tun)
+{
+	return virtio_legacy_is_little_endian();
+}
+
+static long tun_get_vnet_be(struct tun_struct *tun, int __user *argp)
+{
+	return -EINVAL;
+}
+
+static long tun_set_vnet_be(struct tun_struct *tun, int __user *argp)
+{
+	return -EINVAL;
+}
+#endif /* CONFIG_TUN_VNET_CROSS_LE */
+
+static inline bool tun_is_little_endian(struct tun_struct *tun)
+{
+	return tun->flags & TUN_VNET_LE ||
+		tun_legacy_is_little_endian(tun);
+}
+
+static inline u16 tun16_to_cpu(struct tun_struct *tun, __virtio16 val)
+{
+	return __virtio16_to_cpu(tun_is_little_endian(tun), val);
+}
+
+static inline __virtio16 cpu_to_tun16(struct tun_struct *tun, u16 val)
+{
+	return __cpu_to_virtio16(tun_is_little_endian(tun), val);
+}
+
 static inline u32 tun_hashfn(u32 rxhash)
 {
 	return rxhash & TUN_MASK_FLOW_ENTRIES;
@@ -378,7 +440,7 @@ static void tun_flow_delete_by_queue(struct tun_struct *tun, u16 queue_index)
 
 static void tun_flow_cleanup(struct timer_list *t)
 {
-	struct tun_struct *tun = timer_container_of(tun, t, flow_gc_timer);
+	struct tun_struct *tun = from_timer(tun, t, flow_gc_timer);
 	unsigned long delay = tun->ageing_time;
 	unsigned long next_timer = jiffies + delay;
 	unsigned long count = 0;
@@ -461,7 +523,8 @@ static inline void tun_flow_save_rps_rxhash(struct tun_flow_entry *e, u32 hash)
 static u16 tun_automq_select_queue(struct tun_struct *tun, struct sk_buff *skb)
 {
 	struct tun_flow_entry *e;
-	u32 txq, numqueues;
+	u32 txq = 0;
+	u32 numqueues = 0;
 
 	numqueues = READ_ONCE(tun->numqueues);
 
@@ -471,7 +534,8 @@ static u16 tun_automq_select_queue(struct tun_struct *tun, struct sk_buff *skb)
 		tun_flow_save_rps_rxhash(e, txq);
 		txq = e->queue_index;
 	} else {
-		txq = reciprocal_scale(txq, numqueues);
+		/* use multiply and shift instead of expensive divide */
+		txq = ((u64)txq * numqueues) >> 32;
 	}
 
 	return txq;
@@ -516,7 +580,7 @@ static inline bool tun_not_capable(struct tun_struct *tun)
 	struct net *net = dev_net(tun->dev);
 
 	return ((uid_valid(tun->owner) && !uid_eq(cred->euid, tun->owner)) ||
-		(gid_valid(tun->group) && !in_egroup_p(tun->group))) &&
+		  (gid_valid(tun->group) && !in_egroup_p(tun->group))) &&
 		!ns_capable(net->user_ns, CAP_NET_ADMIN);
 }
 
@@ -589,7 +653,6 @@ static void __tun_detach(struct tun_file *tfile, bool clean)
 				   tun->tfiles[tun->numqueues - 1]);
 		ntfile = rtnl_dereference(tun->tfiles[index]);
 		ntfile->queue_index = index;
-		ntfile->xdp_rxq.queue_index = index;
 		rcu_assign_pointer(tun->tfiles[tun->numqueues - 1],
 				   NULL);
 
@@ -914,24 +977,27 @@ static int tun_net_init(struct net_device *dev)
 	struct ifreq *ifr = tun->ifr;
 	int err;
 
+	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
+	if (!dev->tstats)
+		return -ENOMEM;
+
 	spin_lock_init(&tun->lock);
 
 	err = security_tun_dev_alloc_security(&tun->security);
-	if (err < 0)
+	if (err < 0) {
+		free_percpu(dev->tstats);
 		return err;
+	}
 
 	tun_flow_init(tun);
 
-	dev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 	dev->hw_features = NETIF_F_SG | NETIF_F_FRAGLIST |
 			   TUN_USER_FEATURES | NETIF_F_HW_VLAN_CTAG_TX |
 			   NETIF_F_HW_VLAN_STAG_TX;
-	dev->hw_enc_features = dev->hw_features;
-	dev->features = dev->hw_features;
+	dev->features = dev->hw_features | NETIF_F_LLTX;
 	dev->vlan_features = dev->features &
 			     ~(NETIF_F_HW_VLAN_CTAG_TX |
 			       NETIF_F_HW_VLAN_STAG_TX);
-	dev->lltx = true;
 
 	tun->flags = (tun->flags & ~TUN_FEATURES) |
 		      (ifr->ifr_flags & TUN_FEATURES);
@@ -942,6 +1008,7 @@ static int tun_net_init(struct net_device *dev)
 	if (err < 0) {
 		tun_flow_uninit(tun);
 		security_tun_dev_free_security(tun->security);
+		free_percpu(dev->tstats);
 		return err;
 	}
 	return 0;
@@ -1002,8 +1069,8 @@ static unsigned int run_ebpf_filter(struct tun_struct *tun,
 /* Net device start xmit */
 static netdev_tx_t tun_net_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	enum skb_drop_reason drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
 	struct tun_struct *tun = netdev_priv(dev);
+	enum skb_drop_reason drop_reason;
 	int txq = skb->queue_mapping;
 	struct netdev_queue *queue;
 	struct tun_file *tfile;
@@ -1032,8 +1099,10 @@ static netdev_tx_t tun_net_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (tfile->socket.sk->sk_filter &&
-	    sk_filter_reason(tfile->socket.sk, skb, &drop_reason))
+	    sk_filter(tfile->socket.sk, skb)) {
+		drop_reason = SKB_DROP_REASON_SOCKET_FILTER;
 		goto drop;
+	}
 
 	len = run_ebpf_filter(tun, skb, len);
 	if (len == 0) {
@@ -1065,7 +1134,7 @@ static netdev_tx_t tun_net_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto drop;
 	}
 
-	/* dev->lltx requires to do our own update of trans_start */
+	/* NETIF_F_LLTX requires to do our own update of trans_start */
 	queue = netdev_get_tx_queue(dev, txq);
 	txq_trans_cond_update(queue);
 
@@ -1275,6 +1344,7 @@ static const struct net_device_ops tap_netdev_ops = {
 	.ndo_select_queue	= tun_select_queue,
 	.ndo_features_check	= passthru_features_check,
 	.ndo_set_rx_headroom	= tun_set_headroom,
+	.ndo_get_stats64	= dev_get_tstats64,
 	.ndo_bpf		= tun_xdp,
 	.ndo_xdp_xmit		= tun_xdp_xmit,
 	.ndo_change_carrier	= tun_net_change_carrier,
@@ -1295,7 +1365,7 @@ static void tun_flow_init(struct tun_struct *tun)
 
 static void tun_flow_uninit(struct tun_struct *tun)
 {
-	timer_delete_sync(&tun->flow_gc_timer);
+	del_timer_sync(&tun->flow_gc_timer);
 	tun_flow_flush(tun);
 }
 
@@ -1416,8 +1486,7 @@ static struct sk_buff *tun_napi_alloc_frags(struct tun_file *tfile,
 	skb->truesize += skb->data_len;
 
 	for (i = 1; i < it->nr_segs; i++) {
-		const struct iovec *iov = iter_iov(it) + i;
-		size_t fragsz = iov->iov_len;
+		size_t fragsz = it->iov[i].iov_len;
 		struct page *page;
 		void *frag;
 
@@ -1453,13 +1522,11 @@ static struct sk_buff *tun_alloc_skb(struct tun_file *tfile,
 	int err;
 
 	/* Under a page?  Don't bother with paged skb. */
-	if (prepad + len < PAGE_SIZE)
+	if (prepad + len < PAGE_SIZE || !linear)
 		linear = len;
 
-	if (len - linear > MAX_SKB_FRAGS * (PAGE_SIZE << PAGE_ALLOC_COSTLY_ORDER))
-		linear = len - MAX_SKB_FRAGS * (PAGE_SIZE << PAGE_ALLOC_COSTLY_ORDER);
 	skb = sock_alloc_send_pskb(sk, prepad + linear, len - linear, noblock,
-				   &err, PAGE_ALLOC_COSTLY_ORDER);
+				   &err, 0);
 	if (!skb)
 		return ERR_PTR(err);
 
@@ -1526,7 +1593,7 @@ static bool tun_can_build_skb(struct tun_struct *tun, struct tun_file *tfile,
 	if (zerocopy)
 		return false;
 
-	if (SKB_DATA_ALIGN(len + TUN_RX_PAD + XDP_PACKET_HEADROOM) +
+	if (SKB_DATA_ALIGN(len + TUN_RX_PAD) +
 	    SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) > PAGE_SIZE)
 		return false;
 
@@ -1535,8 +1602,7 @@ static bool tun_can_build_skb(struct tun_struct *tun, struct tun_file *tfile,
 
 static struct sk_buff *__tun_build_skb(struct tun_file *tfile,
 				       struct page_frag *alloc_frag, char *buf,
-				       int buflen, int len, int pad,
-				       int metasize)
+				       int buflen, int len, int pad)
 {
 	struct sk_buff *skb = build_skb(buf, buflen);
 
@@ -1545,8 +1611,6 @@ static struct sk_buff *__tun_build_skb(struct tun_file *tfile,
 
 	skb_reserve(skb, pad);
 	skb_put(skb, len);
-	if (metasize)
-		skb_metadata_set(skb, metasize);
 	skb_set_owner_w(skb, tfile->socket.sk);
 
 	get_page(alloc_frag->page);
@@ -1563,19 +1627,13 @@ static int tun_xdp_act(struct tun_struct *tun, struct bpf_prog *xdp_prog,
 	switch (act) {
 	case XDP_REDIRECT:
 		err = xdp_do_redirect(tun->dev, xdp, xdp_prog);
-		if (err) {
-			dev_core_stats_rx_dropped_inc(tun->dev);
+		if (err)
 			return err;
-		}
-		dev_sw_netstats_rx_add(tun->dev, xdp->data_end - xdp->data);
 		break;
 	case XDP_TX:
 		err = tun_xdp_tx(tun->dev, xdp);
-		if (err < 0) {
-			dev_core_stats_rx_dropped_inc(tun->dev);
+		if (err < 0)
 			return err;
-		}
-		dev_sw_netstats_rx_add(tun->dev, xdp->data_end - xdp->data);
 		break;
 	case XDP_PASS:
 		break;
@@ -1600,13 +1658,11 @@ static struct sk_buff *tun_build_skb(struct tun_struct *tun,
 				     int len, int *skb_xdp)
 {
 	struct page_frag *alloc_frag = &current->task_frag;
-	struct bpf_net_context __bpf_net_ctx, *bpf_net_ctx;
 	struct bpf_prog *xdp_prog;
 	int buflen = SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 	char *buf;
 	size_t copied;
 	int pad = TUN_RX_PAD;
-	int metasize = 0;
 	int err = 0;
 
 	rcu_read_lock();
@@ -1634,21 +1690,20 @@ static struct sk_buff *tun_build_skb(struct tun_struct *tun,
 	if (hdr->gso_type || !xdp_prog) {
 		*skb_xdp = 1;
 		return __tun_build_skb(tfile, alloc_frag, buf, buflen, len,
-				       pad, metasize);
+				       pad);
 	}
 
 	*skb_xdp = 0;
 
 	local_bh_disable();
 	rcu_read_lock();
-	bpf_net_ctx = bpf_net_ctx_set(&__bpf_net_ctx);
 	xdp_prog = rcu_dereference(tun->xdp_prog);
 	if (xdp_prog) {
 		struct xdp_buff xdp;
 		u32 act;
 
 		xdp_init_buff(&xdp, buflen, &tfile->xdp_rxq);
-		xdp_prepare_buff(&xdp, buf, pad, len, true);
+		xdp_prepare_buff(&xdp, buf, pad, len, false);
 
 		act = bpf_prog_run_xdp(xdp_prog, &xdp);
 		if (act == XDP_REDIRECT || act == XDP_TX) {
@@ -1669,21 +1724,13 @@ static struct sk_buff *tun_build_skb(struct tun_struct *tun,
 
 		pad = xdp.data - xdp.data_hard_start;
 		len = xdp.data_end - xdp.data;
-
-		/* It is known that the xdp_buff was prepared with metadata
-		 * support, so the metasize will never be negative.
-		 */
-		metasize = xdp.data - xdp.data_meta;
 	}
-	bpf_net_ctx_clear(bpf_net_ctx);
 	rcu_read_unlock();
 	local_bh_enable();
 
-	return __tun_build_skb(tfile, alloc_frag, buf, buflen, len, pad,
-			       metasize);
+	return __tun_build_skb(tfile, alloc_frag, buf, buflen, len, pad);
 
 out:
-	bpf_net_ctx_clear(bpf_net_ctx);
 	rcu_read_unlock();
 	local_bh_enable();
 	return NULL;
@@ -1698,26 +1745,15 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 	struct sk_buff *skb;
 	size_t total_len = iov_iter_count(from);
 	size_t len = total_len, align = tun->align, linear;
-	struct virtio_net_hdr_v1_hash_tunnel hdr;
-	struct virtio_net_hdr *gso;
+	struct virtio_net_hdr gso = { 0 };
 	int good_linear;
 	int copylen;
-	int hdr_len = 0;
 	bool zerocopy = false;
 	int err;
 	u32 rxhash = 0;
 	int skb_xdp = 1;
 	bool frags = tun_napi_frags_enabled(tfile);
 	enum skb_drop_reason drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
-	netdev_features_t features = 0;
-
-	/*
-	 * Keep it easy and always zero the whole buffer, even if the
-	 * tunnel-related field will be touched only when the feature
-	 * is enabled and the hdr size id compatible.
-	 */
-	memset(&hdr, 0, sizeof(hdr));
-	gso = (struct virtio_net_hdr *)&hdr;
 
 	if (!(tun->flags & IFF_NO_PI)) {
 		if (len < sizeof(pi))
@@ -1731,18 +1767,26 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 	if (tun->flags & IFF_VNET_HDR) {
 		int vnet_hdr_sz = READ_ONCE(tun->vnet_hdr_sz);
 
-		features = tun_vnet_hdr_guest_features(vnet_hdr_sz);
-		hdr_len = __tun_vnet_hdr_get(vnet_hdr_sz, tun->flags,
-					     features, from, gso);
-		if (hdr_len < 0)
-			return hdr_len;
-
+		if (len < vnet_hdr_sz)
+			return -EINVAL;
 		len -= vnet_hdr_sz;
+
+		if (!copy_from_iter_full(&gso, sizeof(gso), from))
+			return -EFAULT;
+
+		if ((gso.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) &&
+		    tun16_to_cpu(tun, gso.csum_start) + tun16_to_cpu(tun, gso.csum_offset) + 2 > tun16_to_cpu(tun, gso.hdr_len))
+			gso.hdr_len = cpu_to_tun16(tun, tun16_to_cpu(tun, gso.csum_start) + tun16_to_cpu(tun, gso.csum_offset) + 2);
+
+		if (tun16_to_cpu(tun, gso.hdr_len) > len)
+			return -EINVAL;
+		iov_iter_advance(from, vnet_hdr_sz - sizeof(gso));
 	}
 
 	if ((tun->flags & TUN_TYPE_MASK) == IFF_TAP) {
 		align += NET_IP_ALIGN;
-		if (unlikely(len < ETH_HLEN || (hdr_len && hdr_len < ETH_HLEN)))
+		if (unlikely(len < ETH_HLEN ||
+			     (gso.hdr_len && tun16_to_cpu(tun, gso.hdr_len) < ETH_HLEN)))
 			return -EINVAL;
 	}
 
@@ -1755,7 +1799,9 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 		 * enough room for skb expand head in case it is used.
 		 * The rest of the buffer is mapped from userspace.
 		 */
-		copylen = min(hdr_len ? hdr_len : GOODCOPY_LEN, good_linear);
+		copylen = gso.hdr_len ? tun16_to_cpu(tun, gso.hdr_len) : GOODCOPY_LEN;
+		if (copylen > good_linear)
+			copylen = good_linear;
 		linear = copylen;
 		iov_iter_advance(&i, copylen);
 		if (iov_iter_npages(&i, INT_MAX) <= MAX_SKB_FRAGS)
@@ -1767,7 +1813,7 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 		 * (e.g gso or jumbo packet), we will do it at after
 		 * skb was created with generic XDP routine.
 		 */
-		skb = tun_build_skb(tun, tfile, from, gso, len, &skb_xdp);
+		skb = tun_build_skb(tun, tfile, from, &gso, len, &skb_xdp);
 		err = PTR_ERR_OR_ZERO(skb);
 		if (err)
 			goto drop;
@@ -1776,7 +1822,10 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 	} else {
 		if (!zerocopy) {
 			copylen = len;
-			linear = min(hdr_len, good_linear);
+			if (tun16_to_cpu(tun, gso.hdr_len) > good_linear)
+				linear = good_linear;
+			else
+				linear = tun16_to_cpu(tun, gso.hdr_len);
 		}
 
 		if (frags) {
@@ -1788,9 +1837,6 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 			 */
 			zerocopy = false;
 		} else {
-			if (!linear)
-				linear = min_t(size_t, good_linear, copylen);
-
 			skb = tun_alloc_skb(tfile, align, copylen, linear,
 					    noblock);
 		}
@@ -1811,7 +1857,7 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 		}
 	}
 
-	if (tun_vnet_hdr_tnl_to_skb(tun->flags, features, skb, &hdr)) {
+	if (virtio_net_hdr_to_skb(skb, &gso, tun_is_little_endian(tun))) {
 		atomic_long_inc(&tun->rx_frame_errors);
 		err = -EINVAL;
 		goto free_skb;
@@ -1854,7 +1900,7 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 		skb_zcopy_init(skb, msg_control);
 	} else if (msg_control) {
 		struct ubuf_info *uarg = msg_control;
-		uarg->ops->complete(NULL, uarg, false);
+		uarg->callback(NULL, uarg, false);
 	}
 
 	skb_reset_network_header(skb);
@@ -1869,15 +1915,12 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 		rcu_read_lock();
 		xdp_prog = rcu_dereference(tun->xdp_prog);
 		if (xdp_prog) {
-			ret = do_xdp_generic(xdp_prog, &skb);
+			ret = do_xdp_generic(xdp_prog, skb);
 			if (ret != XDP_PASS) {
 				rcu_read_unlock();
 				local_bh_enable();
 				goto unlock_frags;
 			}
-
-			if (frags && skb != tfile->napi.skb)
-				tfile->napi.skb = skb;
 		}
 		rcu_read_unlock();
 		local_bh_enable();
@@ -1933,14 +1976,6 @@ napi_busy:
 		int queue_len;
 
 		spin_lock_bh(&queue->lock);
-
-		if (unlikely(tfile->detached)) {
-			spin_unlock_bh(&queue->lock);
-			rcu_read_unlock();
-			err = -EBUSY;
-			goto free_skb;
-		}
-
 		__skb_queue_tail(queue, skb);
 		queue_len = skb_queue_len(queue);
 		spin_unlock(&queue->lock);
@@ -2009,15 +2044,18 @@ static ssize_t tun_put_user_xdp(struct tun_struct *tun,
 {
 	int vnet_hdr_sz = 0;
 	size_t size = xdp_frame->len;
-	ssize_t ret;
+	size_t ret;
 
 	if (tun->flags & IFF_VNET_HDR) {
 		struct virtio_net_hdr gso = { 0 };
 
 		vnet_hdr_sz = READ_ONCE(tun->vnet_hdr_sz);
-		ret = tun_vnet_hdr_put(vnet_hdr_sz, iter, &gso);
-		if (ret)
-			return ret;
+		if (unlikely(iov_iter_count(iter) < vnet_hdr_sz))
+			return -EINVAL;
+		if (unlikely(copy_to_iter(&gso, sizeof(gso), iter) !=
+			     sizeof(gso)))
+			return -EFAULT;
+		iov_iter_advance(iter, vnet_hdr_sz - sizeof(gso));
 	}
 
 	ret = copy_to_iter(xdp_frame->data, size, iter) + vnet_hdr_sz;
@@ -2040,7 +2078,6 @@ static ssize_t tun_put_user(struct tun_struct *tun,
 	int vlan_offset = 0;
 	int vlan_hlen = 0;
 	int vnet_hdr_sz = 0;
-	int ret;
 
 	if (skb_vlan_tag_present(skb))
 		vlan_hlen = VLAN_HLEN;
@@ -2065,23 +2102,31 @@ static ssize_t tun_put_user(struct tun_struct *tun,
 	}
 
 	if (vnet_hdr_sz) {
-		struct virtio_net_hdr_v1_hash_tunnel hdr;
-		struct virtio_net_hdr *gso;
+		struct virtio_net_hdr gso;
 
-		ret = tun_vnet_hdr_tnl_from_skb(tun->flags, tun->dev, skb,
-						&hdr);
-		if (ret)
-			return ret;
+		if (iov_iter_count(iter) < vnet_hdr_sz)
+			return -EINVAL;
 
-		/*
-		 * Drop the packet if the configured header size is too small
-		 * WRT the enabled offloads.
-		 */
-		gso = (struct virtio_net_hdr *)&hdr;
-		ret = __tun_vnet_hdr_put(vnet_hdr_sz, tun->dev->features,
-					 iter, gso);
-		if (ret)
-			return ret;
+		if (virtio_net_hdr_from_skb(skb, &gso,
+					    tun_is_little_endian(tun), true,
+					    vlan_hlen)) {
+			struct skb_shared_info *sinfo = skb_shinfo(skb);
+			pr_err("unexpected GSO type: "
+			       "0x%x, gso_size %d, hdr_len %d\n",
+			       sinfo->gso_type, tun16_to_cpu(tun, gso.gso_size),
+			       tun16_to_cpu(tun, gso.hdr_len));
+			print_hex_dump(KERN_ERR, "tun: ",
+				       DUMP_PREFIX_NONE,
+				       16, 1, skb->head,
+				       min((int)tun16_to_cpu(tun, gso.hdr_len), 64), true);
+			WARN_ON_ONCE(1);
+			return -EINVAL;
+		}
+
+		if (copy_to_iter(&gso, sizeof(gso), iter) != sizeof(gso))
+			return -EFAULT;
+
+		iov_iter_advance(iter, vnet_hdr_sz - sizeof(gso));
 	}
 
 	if (vlan_hlen) {
@@ -2252,6 +2297,7 @@ static void tun_free_netdev(struct net_device *dev)
 
 	BUG_ON(!(list_empty(&tun->disabled)));
 
+	free_percpu(dev->tstats);
 	tun_flow_uninit(tun);
 	security_tun_dev_free_security(tun->security);
 	__tun_set_ebpf(tun, &tun->steering_prog, NULL);
@@ -2379,21 +2425,16 @@ static int tun_xdp_one(struct tun_struct *tun,
 		       struct tun_page *tpage)
 {
 	unsigned int datasize = xdp->data_end - xdp->data;
-	struct virtio_net_hdr *gso = xdp->data_hard_start;
-	struct virtio_net_hdr_v1_hash_tunnel *tnl_hdr;
+	struct tun_xdp_hdr *hdr = xdp->data_hard_start;
+	struct virtio_net_hdr *gso = &hdr->gso;
 	struct bpf_prog *xdp_prog;
 	struct sk_buff *skb = NULL;
 	struct sk_buff_head *queue;
-	netdev_features_t features;
 	u32 rxhash = 0, act;
-	int buflen = xdp->frame_sz;
-	int metasize = 0;
+	int buflen = hdr->buflen;
 	int ret = 0;
 	bool skb_xdp = false;
 	struct page *page;
-
-	if (unlikely(datasize < ETH_HLEN))
-		return -EINVAL;
 
 	xdp_prog = rcu_dereference(tun->xdp_prog);
 	if (xdp_prog) {
@@ -2403,6 +2444,7 @@ static int tun_xdp_one(struct tun_struct *tun,
 		}
 
 		xdp_init_buff(xdp, buflen, &tfile->xdp_rxq);
+		xdp_set_data_meta_invalid(xdp);
 
 		act = bpf_prog_run_xdp(xdp_prog, xdp);
 		ret = tun_xdp_act(tun, xdp_prog, xdp, act);
@@ -2442,17 +2484,7 @@ build:
 	skb_reserve(skb, xdp->data - xdp->data_hard_start);
 	skb_put(skb, xdp->data_end - xdp->data);
 
-	/* The externally provided xdp_buff may have no metadata support, which
-	 * is marked by xdp->data_meta being xdp->data + 1. This will lead to a
-	 * metasize of -1 and is the reason why the condition checks for > 0.
-	 */
-	metasize = xdp->data - xdp->data_meta;
-	if (metasize > 0)
-		skb_metadata_set(skb, metasize);
-
-	features = tun_vnet_hdr_guest_features(READ_ONCE(tun->vnet_hdr_sz));
-	tnl_hdr = (struct virtio_net_hdr_v1_hash_tunnel *)gso;
-	if (tun_vnet_hdr_tnl_to_skb(tun->flags, features, skb, tnl_hdr)) {
+	if (virtio_net_hdr_to_skb(skb, gso, tun_is_little_endian(tun))) {
 		atomic_long_inc(&tun->rx_frame_errors);
 		kfree_skb(skb);
 		ret = -EINVAL;
@@ -2465,7 +2497,7 @@ build:
 	skb_record_rx_queue(skb, tfile->queue_index);
 
 	if (skb_xdp) {
-		ret = do_xdp_generic(xdp_prog, &skb);
+		ret = do_xdp_generic(xdp_prog, skb);
 		if (ret != XDP_PASS) {
 			ret = 0;
 			goto out;
@@ -2479,13 +2511,6 @@ build:
 	if (tfile->napi_enabled) {
 		queue = &tfile->sk.sk_write_queue;
 		spin_lock(&queue->lock);
-
-		if (unlikely(tfile->detached)) {
-			spin_unlock(&queue->lock);
-			kfree_skb(skb);
-			return -EBUSY;
-		}
-
 		__skb_queue_tail(queue, skb);
 		spin_unlock(&queue->lock);
 		ret = 1;
@@ -2519,7 +2544,6 @@ static int tun_sendmsg(struct socket *sock, struct msghdr *m, size_t total_len)
 
 	if (m->msg_controllen == sizeof(struct tun_msg_ctl) &&
 	    ctl && ctl->type == TUN_MSG_PTR) {
-		struct bpf_net_context __bpf_net_ctx, *bpf_net_ctx;
 		struct tun_page tpage;
 		int n = ctl->num;
 		int flush = 0, queued = 0;
@@ -2528,7 +2552,6 @@ static int tun_sendmsg(struct socket *sock, struct msghdr *m, size_t total_len)
 
 		local_bh_disable();
 		rcu_read_lock();
-		bpf_net_ctx = bpf_net_ctx_set(&__bpf_net_ctx);
 
 		for (i = 0; i < n; i++) {
 			xdp = &((struct xdp_buff *)ctl->ptr)[i];
@@ -2543,7 +2566,6 @@ static int tun_sendmsg(struct socket *sock, struct msghdr *m, size_t total_len)
 		if (tfile->napi_enabled && queued > 0)
 			napi_schedule(&tfile->napi);
 
-		bpf_net_ctx_clear(bpf_net_ctx);
 		rcu_read_unlock();
 		local_bh_enable();
 
@@ -2826,19 +2848,17 @@ static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr)
 	if (netif_running(tun->dev))
 		netif_tx_wake_all_queues(tun->dev);
 
-	strscpy(ifr->ifr_name, tun->dev->name);
+	strcpy(ifr->ifr_name, tun->dev->name);
 	return 0;
 }
 
 static void tun_get_iff(struct tun_struct *tun, struct ifreq *ifr)
 {
-	strscpy(ifr->ifr_name, tun->dev->name);
+	strcpy(ifr->ifr_name, tun->dev->name);
 
 	ifr->ifr_flags = tun_flags(tun);
 
 }
-
-#define PLAIN_GSO (NETIF_F_GSO_UDP_L4 | NETIF_F_TSO | NETIF_F_TSO6)
 
 /* This is like a cut-down ethtool ops, except done via tun fd so no
  * privs required. */
@@ -2868,18 +2888,6 @@ static int set_offload(struct tun_struct *tun, unsigned long arg)
 		if (arg & TUN_F_USO4 && arg & TUN_F_USO6) {
 			features |= NETIF_F_GSO_UDP_L4;
 			arg &= ~(TUN_F_USO4 | TUN_F_USO6);
-		}
-
-		/*
-		 * Tunnel offload is allowed only if some plain offload is
-		 * available, too.
-		 */
-		if (features & PLAIN_GSO && arg & TUN_F_UDP_TUNNEL_GSO) {
-			features |= NETIF_F_GSO_UDP_TUNNEL;
-			if (arg & TUN_F_UDP_TUNNEL_GSO_CSUM)
-				features |= NETIF_F_GSO_UDP_TUNNEL_CSUM;
-			arg &= ~(TUN_F_UDP_TUNNEL_GSO |
-				 TUN_F_UDP_TUNNEL_GSO_CSUM);
 		}
 	}
 
@@ -3044,12 +3052,13 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 	struct net *net = sock_net(&tfile->sk);
 	struct tun_struct *tun;
 	void __user* argp = (void __user*)arg;
-	unsigned int carrier;
+	unsigned int ifindex, carrier;
 	struct ifreq ifr;
 	kuid_t owner;
 	kgid_t group;
-	int ifindex;
 	int sndbuf;
+	int vnet_hdr_sz;
+	int le;
 	int ret;
 	bool do_notify = false;
 
@@ -3102,9 +3111,7 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 		ret = -EFAULT;
 		if (copy_from_user(&ifindex, argp, sizeof(ifindex)))
 			goto unlock;
-		ret = -EINVAL;
-		if (ifindex < 0)
-			goto unlock;
+
 		ret = 0;
 		tfile->ifindex = ifindex;
 		goto unlock;
@@ -3226,20 +3233,14 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 
 	case SIOCGIFHWADDR:
 		/* Get hw address */
-		netif_get_mac_address(&ifr.ifr_hwaddr, net, tun->dev->name);
+		dev_get_mac_address(&ifr.ifr_hwaddr, net, tun->dev->name);
 		if (copy_to_user(argp, &ifr, ifreq_len))
 			ret = -EFAULT;
 		break;
 
 	case SIOCSIFHWADDR:
 		/* Set hw address */
-		if (tun->dev->addr_len > sizeof(ifr.ifr_hwaddr)) {
-			ret = -EINVAL;
-			break;
-		}
-		ret = dev_set_mac_address_user(tun->dev,
-					       (struct sockaddr_storage *)&ifr.ifr_hwaddr,
-					       NULL);
+		ret = dev_set_mac_address_user(tun->dev, &ifr.ifr_hwaddr, NULL);
 		break;
 
 	case TUNGETSNDBUF:
@@ -3260,6 +3261,50 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 
 		tun->sndbuf = sndbuf;
 		tun_set_sndbuf(tun);
+		break;
+
+	case TUNGETVNETHDRSZ:
+		vnet_hdr_sz = tun->vnet_hdr_sz;
+		if (copy_to_user(argp, &vnet_hdr_sz, sizeof(vnet_hdr_sz)))
+			ret = -EFAULT;
+		break;
+
+	case TUNSETVNETHDRSZ:
+		if (copy_from_user(&vnet_hdr_sz, argp, sizeof(vnet_hdr_sz))) {
+			ret = -EFAULT;
+			break;
+		}
+		if (vnet_hdr_sz < (int)sizeof(struct virtio_net_hdr)) {
+			ret = -EINVAL;
+			break;
+		}
+
+		tun->vnet_hdr_sz = vnet_hdr_sz;
+		break;
+
+	case TUNGETVNETLE:
+		le = !!(tun->flags & TUN_VNET_LE);
+		if (put_user(le, (int __user *)argp))
+			ret = -EFAULT;
+		break;
+
+	case TUNSETVNETLE:
+		if (get_user(le, (int __user *)argp)) {
+			ret = -EFAULT;
+			break;
+		}
+		if (le)
+			tun->flags |= TUN_VNET_LE;
+		else
+			tun->flags &= ~TUN_VNET_LE;
+		break;
+
+	case TUNGETVNETBE:
+		ret = tun_get_vnet_be(tun, argp);
+		break;
+
+	case TUNSETVNETBE:
+		ret = tun_set_vnet_be(tun, argp);
 		break;
 
 	case TUNATTACHFILTER:
@@ -3317,7 +3362,7 @@ static long __tun_chr_ioctl(struct file *file, unsigned int cmd,
 		break;
 
 	default:
-		ret = tun_vnet_ioctl(&tun->vnet_hdr_sz, &tun->flags, cmd, argp);
+		ret = -EINVAL;
 		break;
 	}
 
@@ -3371,12 +3416,6 @@ static int tun_chr_fasync(int fd, struct file *file, int on)
 	struct tun_file *tfile = file->private_data;
 	int ret;
 
-	if (on) {
-		ret = file_f_owner_allocate(file);
-		if (ret)
-			goto out;
-	}
-
 	if ((ret = fasync_helper(fd, file, on, &tfile->fasync)) < 0)
 		goto out;
 
@@ -3414,7 +3453,7 @@ static int tun_chr_open(struct inode *inode, struct file * file)
 	tfile->socket.file = file;
 	tfile->socket.ops = &tun_socket_ops;
 
-	sock_init_data_uid(&tfile->socket, &tfile->sk, current_fsuid());
+	sock_init_data_uid(&tfile->socket, &tfile->sk, inode->i_uid);
 
 	tfile->sk.sk_write_space = tun_sock_write_space;
 	tfile->sk.sk_sndbuf = INT_MAX;
@@ -3424,8 +3463,6 @@ static int tun_chr_open(struct inode *inode, struct file * file)
 
 	sock_set_flag(&tfile->sk, SOCK_ZEROCOPY);
 
-	/* tun groks IOCB_NOWAIT just fine, mark it as such */
-	file->f_mode |= FMODE_NOWAIT;
 	return 0;
 }
 
@@ -3462,6 +3499,7 @@ static void tun_chr_show_fdinfo(struct seq_file *m, struct file *file)
 
 static const struct file_operations tun_fops = {
 	.owner	= THIS_MODULE,
+	.llseek = no_llseek,
 	.read_iter  = tun_chr_read_iter,
 	.write_iter = tun_chr_write_iter,
 	.poll	= tun_chr_poll,
@@ -3574,22 +3612,12 @@ static int tun_set_coalesce(struct net_device *dev,
 	return 0;
 }
 
-static void tun_get_channels(struct net_device *dev,
-			     struct ethtool_channels *channels)
-{
-	struct tun_struct *tun = netdev_priv(dev);
-
-	channels->combined_count = tun->numqueues;
-	channels->max_combined = tun->flags & IFF_MULTI_QUEUE ? MAX_TAP_QUEUES : 1;
-}
-
 static const struct ethtool_ops tun_ethtool_ops = {
 	.supported_coalesce_params = ETHTOOL_COALESCE_RX_MAX_FRAMES,
 	.get_drvinfo	= tun_get_drvinfo,
 	.get_msglevel	= tun_get_msglevel,
 	.set_msglevel	= tun_set_msglevel,
 	.get_link	= ethtool_op_get_link,
-	.get_channels   = tun_get_channels,
 	.get_ts_info	= ethtool_op_get_ts_info,
 	.get_coalesce   = tun_get_coalesce,
 	.set_coalesce   = tun_set_coalesce,
@@ -3616,9 +3644,9 @@ static int tun_queue_resize(struct tun_struct *tun)
 	list_for_each_entry(tfile, &tun->disabled, next)
 		rings[i++] = &tfile->tx_ring;
 
-	ret = ptr_ring_resize_multiple_bh(rings, n,
-					  dev->tx_queue_len, GFP_KERNEL,
-					  tun_ptr_free);
+	ret = ptr_ring_resize_multiple(rings, n,
+				       dev->tx_queue_len, GFP_KERNEL,
+				       tun_ptr_free);
 
 	kfree(rings);
 	return ret;
@@ -3692,7 +3720,7 @@ err_linkops:
 	return ret;
 }
 
-static void __exit tun_cleanup(void)
+static void tun_cleanup(void)
 {
 	misc_deregister(&tun_miscdev);
 	rtnl_link_unregister(&tun_link_ops);
@@ -3735,4 +3763,3 @@ MODULE_AUTHOR(DRV_COPYRIGHT);
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(TUN_MINOR);
 MODULE_ALIAS("devname:net/tun");
-MODULE_IMPORT_NS("NETDEV_INTERNAL");

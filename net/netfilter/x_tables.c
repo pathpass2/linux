@@ -768,7 +768,7 @@ void xt_compat_match_from_user(struct xt_entry_match *m, void **dstptr,
 	m->u.user.match_size = msize;
 	strscpy(name, match->name, sizeof(name));
 	module_put(match->me);
-	strscpy_pad(m->u.user.name, name, sizeof(m->u.user.name));
+	strncpy(m->u.user.name, name, sizeof(m->u.user.name));
 
 	*size += off;
 	*dstptr += msize;
@@ -1142,14 +1142,13 @@ void xt_compat_target_from_user(struct xt_entry_target *t, void **dstptr,
 	if (target->compat_from_user)
 		target->compat_from_user(t->data, ct->data);
 	else
-		unsafe_memcpy(t->data, ct->data, tsize - sizeof(*ct),
-			      /* UAPI 0-sized destination */);
+		memcpy(t->data, ct->data, tsize - sizeof(*ct));
 
 	tsize += off;
 	t->u.user.target_size = tsize;
 	strscpy(name, target->name, sizeof(name));
 	module_put(target->me);
-	strscpy_pad(t->u.user.name, name, sizeof(t->u.user.name));
+	strncpy(t->u.user.name, name, sizeof(t->u.user.name));
 
 	*size += off;
 	*dstptr += tsize;
@@ -1269,7 +1268,7 @@ struct xt_table *xt_find_table_lock(struct net *net, u_int8_t af,
 
 	/* and once again: */
 	list_for_each_entry(t, &xt_net->tables[af], list)
-		if (strcmp(t->name, name) == 0 && owner == t->me)
+		if (strcmp(t->name, name) == 0)
 			return t;
 
 	module_put(owner);
@@ -1317,12 +1316,11 @@ void xt_compat_unlock(u_int8_t af)
 EXPORT_SYMBOL_GPL(xt_compat_unlock);
 #endif
 
-struct static_key xt_tee_enabled __read_mostly;
-EXPORT_SYMBOL_GPL(xt_tee_enabled);
-
-#ifdef CONFIG_NETFILTER_XTABLES_LEGACY
 DEFINE_PER_CPU(seqcount_t, xt_recseq);
 EXPORT_PER_CPU_SYMBOL_GPL(xt_recseq);
+
+struct static_key xt_tee_enabled __read_mostly;
+EXPORT_SYMBOL_GPL(xt_tee_enabled);
 
 static int xt_jumpstack_alloc(struct xt_table_info *i)
 {
@@ -1515,7 +1513,6 @@ void *xt_unregister_table(struct xt_table *table)
 	return private;
 }
 EXPORT_SYMBOL_GPL(xt_unregister_table);
-#endif
 
 #ifdef CONFIG_PROC_FS
 static void *xt_table_seq_start(struct seq_file *seq, loff_t *pos)
@@ -1764,7 +1761,7 @@ EXPORT_SYMBOL_GPL(xt_hook_ops_alloc);
 int xt_register_template(const struct xt_table *table,
 			 int (*table_init)(struct net *net))
 {
-	int ret = -EBUSY, af = table->af;
+	int ret = -EEXIST, af = table->af;
 	struct xt_template *t;
 
 	mutex_lock(&xt[af].mutex);
@@ -1899,7 +1896,6 @@ void xt_proto_fini(struct net *net, u_int8_t af)
 }
 EXPORT_SYMBOL_GPL(xt_proto_fini);
 
-#ifdef CONFIG_NETFILTER_XTABLES_LEGACY
 /**
  * xt_percpu_counter_alloc - allocate x_tables rule counter
  *
@@ -1954,7 +1950,6 @@ void xt_percpu_counter_free(struct xt_counters *counters)
 		free_percpu((void __percpu *)pcnt);
 }
 EXPORT_SYMBOL_GPL(xt_percpu_counter_free);
-#endif
 
 static int __net_init xt_net_init(struct net *net)
 {
@@ -1987,10 +1982,8 @@ static int __init xt_init(void)
 	unsigned int i;
 	int rv;
 
-	if (IS_ENABLED(CONFIG_NETFILTER_XTABLES_LEGACY)) {
-		for_each_possible_cpu(i) {
-			seqcount_init(&per_cpu(xt_recseq, i));
-		}
+	for_each_possible_cpu(i) {
+		seqcount_init(&per_cpu(xt_recseq, i));
 	}
 
 	xt = kcalloc(NFPROTO_NUMPROTO, sizeof(struct xt_af), GFP_KERNEL);
@@ -2021,3 +2014,4 @@ static void __exit xt_fini(void)
 
 module_init(xt_init);
 module_exit(xt_fini);
+

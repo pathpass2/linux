@@ -13,6 +13,7 @@ static int cxl_dax_region_probe(struct device *dev)
 	struct cxl_region *cxlr = cxlr_dax->cxlr;
 	struct dax_region *dax_region;
 	struct dev_dax_data data;
+	struct dev_dax *dev_dax;
 
 	if (nid == NUMA_NO_NODE)
 		nid = memory_add_physaddr_to_nid(cxlr_dax->hpa_range.start);
@@ -26,10 +27,14 @@ static int cxl_dax_region_probe(struct device *dev)
 		.dax_region = dax_region,
 		.id = -1,
 		.size = range_len(&cxlr_dax->hpa_range),
-		.memmap_on_memory = true,
 	};
+	dev_dax = devm_create_dev_dax(&data);
+	if (IS_ERR(dev_dax))
+		return PTR_ERR(dev_dax);
 
-	return PTR_ERR_OR_ZERO(devm_create_dev_dax(&data));
+	/* child dev_dax instances now own the lifetime of the dax_region */
+	dax_region_put(dax_region);
+	return 0;
 }
 
 static struct cxl_driver cxl_dax_region_driver = {
@@ -43,7 +48,6 @@ static struct cxl_driver cxl_dax_region_driver = {
 
 module_cxl_driver(cxl_dax_region_driver);
 MODULE_ALIAS_CXL(CXL_DEVICE_DAX_REGION);
-MODULE_DESCRIPTION("CXL DAX: direct access to CXL regions");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Intel Corporation");
-MODULE_IMPORT_NS("CXL");
+MODULE_IMPORT_NS(CXL);

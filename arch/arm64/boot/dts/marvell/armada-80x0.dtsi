@@ -89,7 +89,7 @@
 			marvell,function = "dev";
 		};
 
-		nand_rb: nand-rb-pins {
+		nand_rb: nand-rb {
 			marvell,pins = "mpp13", "mpp12";
 			marvell,function = "nf";
 		};

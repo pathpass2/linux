@@ -46,14 +46,13 @@ static inline unsigned long tag2ul(char *arg, const char *tag)
 	return simple_strtoul(num, 0, 10);
 }
 
-static void __init prom_setup_cmdline(void)
+void __init prom_setup_cmdline(void)
 {
 	static char cmd_line[COMMAND_LINE_SIZE] __initdata;
 	char *cp, *board;
 	int prom_argc;
 	char **prom_argv;
 	int i;
-	size_t len;
 
 	prom_argc = fw_arg0;
 	prom_argv = (char **) fw_arg1;
@@ -83,20 +82,20 @@ static void __init prom_setup_cmdline(void)
 				mips_machtype = MACH_MIKROTIK_RB532;
 		}
 
-		len = strlen(prom_argv[i]);
-		memcpy(cp, prom_argv[i], len + 1);
-		cp += len;
+		strcpy(cp, prom_argv[i]);
+		cp += strlen(prom_argv[i]);
 	}
 	*(cp++) = ' ';
 
-	len = strlen(arcs_cmdline);
-	if (len > 0) {
+	i = strlen(arcs_cmdline);
+	if (i > 0) {
 		*(cp++) = ' ';
-		memcpy(cp, arcs_cmdline, len + 1);
-		cp += len;
+		strcpy(cp, arcs_cmdline);
+		cp += strlen(arcs_cmdline);
 	}
 	cmd_line[COMMAND_LINE_SIZE - 1] = '\0';
-	strscpy(arcs_cmdline, cmd_line);
+
+	strcpy(arcs_cmdline, cmd_line);
 }
 
 void __init prom_init(void)

@@ -3,7 +3,6 @@
 
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/string.h>
 
 #include "wl1251.h"
 #include "reg.h"
@@ -150,7 +149,15 @@ int wl1251_acx_fw_version(struct wl1251 *wl, char *buf, size_t len)
 		goto out;
 	}
 
-	strscpy(buf, rev->fw_version, len);
+	/* be careful with the buffer sizes */
+	strncpy(buf, rev->fw_version, min(len, sizeof(rev->fw_version)));
+
+	/*
+	 * if the firmware version string is exactly
+	 * sizeof(rev->fw_version) long or fw_len is less than
+	 * sizeof(rev->fw_version) it won't be null terminated
+	 */
+	buf[min(len, sizeof(rev->fw_version)) - 1] = '\0';
 
 out:
 	kfree(rev);
@@ -823,6 +830,41 @@ int wl1251_acx_statistics(struct wl1251 *wl, struct acx_statistics *stats)
 	}
 
 	return 0;
+}
+
+int wl1251_acx_rate_policies(struct wl1251 *wl)
+{
+	struct acx_rate_policy *acx;
+	int ret = 0;
+
+	wl1251_debug(DEBUG_ACX, "acx rate policies");
+
+	acx = kzalloc(sizeof(*acx), GFP_KERNEL);
+	if (!acx)
+		return -ENOMEM;
+
+	/* configure one default (one-size-fits-all) rate class */
+	acx->rate_class_cnt = 2;
+	acx->rate_class[0].enabled_rates = ACX_RATE_MASK_UNSPECIFIED;
+	acx->rate_class[0].short_retry_limit = ACX_RATE_RETRY_LIMIT;
+	acx->rate_class[0].long_retry_limit = ACX_RATE_RETRY_LIMIT;
+	acx->rate_class[0].aflags = 0;
+
+	/* no-retry rate class */
+	acx->rate_class[1].enabled_rates = ACX_RATE_MASK_UNSPECIFIED;
+	acx->rate_class[1].short_retry_limit = 0;
+	acx->rate_class[1].long_retry_limit = 0;
+	acx->rate_class[1].aflags = 0;
+
+	ret = wl1251_cmd_configure(wl, ACX_RATE_POLICY, acx, sizeof(*acx));
+	if (ret < 0) {
+		wl1251_warning("Setting of rate policies failed: %d", ret);
+		goto out;
+	}
+
+out:
+	kfree(acx);
+	return ret;
 }
 
 int wl1251_acx_mem_cfg(struct wl1251 *wl)

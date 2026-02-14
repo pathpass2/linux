@@ -2,7 +2,7 @@
 /*
  * SolidRun DPU driver for control plane
  *
- * Copyright (C) 2022-2023 SolidRun
+ * Copyright (C) 2022 SolidRun
  *
  * Author: Alvaro Karsz <alvaro.karsz@solid-run.com>
  *
@@ -16,12 +16,14 @@
 /* SNET signature */
 #define SNET_SIGNATURE          0xD0D06363
 /* Max. config version that we can work with */
-#define SNET_CFG_VERSION        0x2
+#define SNET_CFG_VERSION        0x1
 /* Queue align */
 #define SNET_QUEUE_ALIGNMENT    PAGE_SIZE
 /* Kick value to notify that new data is available */
 #define SNET_KICK_VAL           0x1
 #define SNET_CONFIG_OFF         0x0
+/* ACK timeout for a message */
+#define SNET_ACK_TIMEOUT	2000000
 /* How long we are willing to wait for a SNET device */
 #define SNET_DETECT_TIMEOUT	5000000
 /* How long should we wait for the DPU to read our config */
@@ -30,16 +32,61 @@
 #define SNET_GENERAL_CFG_LEN	36
 #define SNET_GENERAL_CFG_VQ_LEN	40
 
+enum snet_msg {
+	SNET_MSG_DESTROY = 1,
+};
+
 static struct snet *vdpa_to_snet(struct vdpa_device *vdpa)
 {
 	return container_of(vdpa, struct snet, vdpa);
+}
+
+static int snet_wait_for_msg_ack(struct snet *snet)
+{
+	struct pci_dev *pdev = snet->pdev;
+	int ret;
+	u32 val;
+
+	/* The DPU will clear the messages offset once messages
+	 * are processed.
+	 */
+	ret = readx_poll_timeout(ioread32, snet->bar + snet->psnet->cfg.msg_off,
+				 val, !val, 10, SNET_ACK_TIMEOUT);
+	if (ret)
+		SNET_WARN(pdev, "Timeout waiting for message ACK\n");
+
+	return ret;
+}
+
+/* Sends a message to the DPU.
+ * If blocking is set, the function will return once the
+ * message was processed by the DPU (or timeout).
+ */
+static int snet_send_msg(struct snet *snet, u32 msg, bool blocking)
+{
+	int ret = 0;
+
+	/* Make sure the DPU acked last message before issuing a new one */
+	ret = snet_wait_for_msg_ack(snet);
+	if (ret)
+		return ret;
+
+	/* Write the message */
+	snet_write32(snet, snet->psnet->cfg.msg_off, msg);
+
+	if (blocking)
+		ret = snet_wait_for_msg_ack(snet);
+	else /* If non-blocking, flush the write by issuing a read */
+		snet_read32(snet, snet->psnet->cfg.msg_off);
+
+	return ret;
 }
 
 static irqreturn_t snet_cfg_irq_hndlr(int irq, void *data)
 {
 	struct snet *snet = data;
 	/* Call callback if any */
-	if (likely(snet->cb.callback))
+	if (snet->cb.callback)
 		return snet->cb.callback(snet->cb.private);
 
 	return IRQ_HANDLED;
@@ -49,7 +96,7 @@ static irqreturn_t snet_vq_irq_hndlr(int irq, void *data)
 {
 	struct snet_vq *vq = data;
 	/* Call callback if any */
-	if (likely(vq->cb.callback))
+	if (vq->cb.callback)
 		return vq->cb.callback(vq->cb.private);
 
 	return IRQ_HANDLED;
@@ -106,22 +153,10 @@ static void snet_kick_vq(struct vdpa_device *vdev, u16 idx)
 {
 	struct snet *snet = vdpa_to_snet(vdev);
 	/* not ready - ignore */
-	if (unlikely(!snet->vqs[idx]->ready))
+	if (!snet->vqs[idx]->ready)
 		return;
 
 	iowrite32(SNET_KICK_VAL, snet->vqs[idx]->kick_ptr);
-}
-
-static void snet_kick_vq_with_data(struct vdpa_device *vdev, u32 data)
-{
-	struct snet *snet = vdpa_to_snet(vdev);
-	u16 idx = data & 0xFFFF;
-
-	/* not ready - ignore */
-	if (unlikely(!snet->vqs[idx]->ready))
-		return;
-
-	iowrite32((data & 0xFFFF0000) | SNET_KICK_VAL, snet->vqs[idx]->kick_ptr);
 }
 
 static void snet_set_vq_cb(struct vdpa_device *vdev, u16 idx, struct vdpa_callback *cb)
@@ -146,48 +181,33 @@ static bool snet_get_vq_ready(struct vdpa_device *vdev, u16 idx)
 	return snet->vqs[idx]->ready;
 }
 
-static bool snet_vq_state_is_initial(struct snet *snet, const struct vdpa_vq_state *state)
+static int snet_set_vq_state(struct vdpa_device *vdev, u16 idx, const struct vdpa_vq_state *state)
 {
+	struct snet *snet = vdpa_to_snet(vdev);
+	/* Setting the VQ state is not supported.
+	 * If the asked state is the same as the initial one
+	 * we can ignore it.
+	 */
 	if (SNET_HAS_FEATURE(snet, VIRTIO_F_RING_PACKED)) {
 		const struct vdpa_vq_state_packed *p = &state->packed;
 
 		if (p->last_avail_counter == 1 && p->last_used_counter == 1 &&
 		    p->last_avail_idx == 0 && p->last_used_idx == 0)
-			return true;
+			return 0;
 	} else {
 		const struct vdpa_vq_state_split *s = &state->split;
 
 		if (s->avail_index == 0)
-			return true;
+			return 0;
 	}
-
-	return false;
-}
-
-static int snet_set_vq_state(struct vdpa_device *vdev, u16 idx, const struct vdpa_vq_state *state)
-{
-	struct snet *snet = vdpa_to_snet(vdev);
-
-	/* We can set any state for config version 2+ */
-	if (SNET_CFG_VER(snet, 2)) {
-		memcpy(&snet->vqs[idx]->vq_state, state, sizeof(*state));
-		return 0;
-	}
-
-	/* Older config - we can't set the VQ state.
-	 * Return 0 only if this is the initial state we use in the DPU.
-	 */
-	if (snet_vq_state_is_initial(snet, state))
-		return 0;
 
 	return -EOPNOTSUPP;
 }
 
 static int snet_get_vq_state(struct vdpa_device *vdev, u16 idx, struct vdpa_vq_state *state)
 {
-	struct snet *snet = vdpa_to_snet(vdev);
-
-	return snet_read_vq_state(snet, idx, state);
+	/* Not supported */
+	return -EOPNOTSUPP;
 }
 
 static int snet_get_vq_irq(struct vdpa_device *vdev, u16 idx)
@@ -212,9 +232,9 @@ static int snet_reset_dev(struct snet *snet)
 	if (!snet->status)
 		return 0;
 
-	/* If DPU started, destroy it */
+	/* If DPU started, send a destroy message */
 	if (snet->status & VIRTIO_CONFIG_S_DRIVER_OK)
-		ret = snet_destroy_dev(snet);
+		ret = snet_send_msg(snet, SNET_MSG_DESTROY, true);
 
 	/* Clear VQs */
 	for (i = 0; i < snet->cfg->vq_num; i++) {
@@ -238,7 +258,7 @@ static int snet_reset_dev(struct snet *snet)
 	snet->dpu_ready = false;
 
 	if (ret)
-		SNET_WARN(pdev, "Incomplete reset to SNET[%u] device, err: %d\n", snet->sid, ret);
+		SNET_WARN(pdev, "Incomplete reset to SNET[%u] device\n", snet->sid);
 	else
 		SNET_DBG(pdev, "Reset SNET[%u] device\n", snet->sid);
 
@@ -336,7 +356,7 @@ static int snet_write_conf(struct snet *snet)
 	 * |             DESC AREA                |
 	 * |            DEVICE AREA               |
 	 * |            DRIVER AREA               |
-	 * |    VQ STATE (CFG 2+)     |   RSVD    |
+	 * |             RESERVED                 |
 	 *
 	 * Magic number should be written last, this is the DPU indication that the data is ready
 	 */
@@ -371,15 +391,12 @@ static int snet_write_conf(struct snet *snet)
 		off += 8;
 		snet_write64(snet, off, snet->vqs[i]->driver_area);
 		off += 8;
-		/* Write VQ state if config version is 2+ */
-		if (SNET_CFG_VER(snet, 2))
-			snet_write32(snet, off, *(u32 *)&snet->vqs[i]->vq_state);
-		off += 4;
-
 		/* Ignore reserved */
-		off += 4;
+		off += 8;
 	}
 
+	/* Clear snet messages address for this device */
+	snet_write32(snet, snet->psnet->cfg.msg_off, 0);
 	/* Write magic number - data is ready */
 	snet_write32(snet, snet->psnet->cfg.host_cfg_off, SNET_SIGNATURE);
 
@@ -495,39 +512,10 @@ static void snet_set_config(struct vdpa_device *vdev, unsigned int offset,
 		iowrite8(*buf_ptr++, cfg_ptr + i);
 }
 
-static int snet_suspend(struct vdpa_device *vdev)
-{
-	struct snet *snet = vdpa_to_snet(vdev);
-	int ret;
-
-	ret = snet_suspend_dev(snet);
-	if (ret)
-		SNET_ERR(snet->pdev, "SNET[%u] suspend failed, err: %d\n", snet->sid, ret);
-	else
-		SNET_DBG(snet->pdev, "Suspend SNET[%u] device\n", snet->sid);
-
-	return ret;
-}
-
-static int snet_resume(struct vdpa_device *vdev)
-{
-	struct snet *snet = vdpa_to_snet(vdev);
-	int ret;
-
-	ret = snet_resume_dev(snet);
-	if (ret)
-		SNET_ERR(snet->pdev, "SNET[%u] resume failed, err: %d\n", snet->sid, ret);
-	else
-		SNET_DBG(snet->pdev, "Resume SNET[%u] device\n", snet->sid);
-
-	return ret;
-}
-
 static const struct vdpa_config_ops snet_config_ops = {
 	.set_vq_address         = snet_set_vq_address,
 	.set_vq_num             = snet_set_vq_num,
 	.kick_vq                = snet_kick_vq,
-	.kick_vq_with_data	= snet_kick_vq_with_data,
 	.set_vq_cb              = snet_set_vq_cb,
 	.set_vq_ready           = snet_set_vq_ready,
 	.get_vq_ready           = snet_get_vq_ready,
@@ -549,45 +537,38 @@ static const struct vdpa_config_ops snet_config_ops = {
 	.set_status             = snet_set_status,
 	.get_config             = snet_get_config,
 	.set_config             = snet_set_config,
-	.suspend		= snet_suspend,
-	.resume			= snet_resume,
 };
 
 static int psnet_open_pf_bar(struct pci_dev *pdev, struct psnet *psnet)
 {
-	char *name;
-	unsigned short i;
-	bool bars_found = false;
-
-	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "psnet[%s]-bars", pci_name(pdev));
-	if (!name)
-		return -ENOMEM;
-
+	char name[50];
+	int ret, i, mask = 0;
 	/* We don't know which BAR will be used to communicate..
 	 * We will map every bar with len > 0.
 	 *
 	 * Later, we will discover the BAR and unmap all other BARs.
 	 */
 	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
-		void __iomem *io;
-
-		if (pci_resource_len(pdev, i) == 0)
-			continue;
-
-		io = pcim_iomap_region(pdev, i, name);
-		if (IS_ERR(io)) {
-			SNET_ERR(pdev, "Failed to request and map PCI BARs\n");
-			return PTR_ERR(io);
-		}
-
-		psnet->bars[i] = io;
-		bars_found = true;
+		if (pci_resource_len(pdev, i))
+			mask |= (1 << i);
 	}
 
 	/* No BAR can be used.. */
-	if (!bars_found) {
+	if (!mask) {
 		SNET_ERR(pdev, "Failed to find a PCI BAR\n");
 		return -ENODEV;
+	}
+
+	snprintf(name, sizeof(name), "psnet[%s]-bars", pci_name(pdev));
+	ret = pcim_iomap_regions(pdev, mask, name);
+	if (ret) {
+		SNET_ERR(pdev, "Failed to request and map PCI BARs\n");
+		return ret;
+	}
+
+	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
+		if (mask & (1 << i))
+			psnet->bars[i] = pcim_iomap_table(pdev)[i];
 	}
 
 	return 0;
@@ -595,21 +576,18 @@ static int psnet_open_pf_bar(struct pci_dev *pdev, struct psnet *psnet)
 
 static int snet_open_vf_bar(struct pci_dev *pdev, struct snet *snet)
 {
-	char *name;
-	void __iomem *io;
+	char name[50];
+	int ret;
 
-	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "snet[%s]-bars", pci_name(pdev));
-	if (!name)
-		return -ENOMEM;
-
+	snprintf(name, sizeof(name), "snet[%s]-bar", pci_name(pdev));
 	/* Request and map BAR */
-	io = pcim_iomap_region(pdev, snet->psnet->cfg.vf_bar, name);
-	if (IS_ERR(io)) {
+	ret = pcim_iomap_regions(pdev, BIT(snet->psnet->cfg.vf_bar), name);
+	if (ret) {
 		SNET_ERR(pdev, "Failed to request and map PCI BAR for a VF\n");
-		return PTR_ERR(io);
+		return ret;
 	}
 
-	snet->bar = io;
+	snet->bar = pcim_iomap_table(pdev)[snet->psnet->cfg.vf_bar];
 
 	return 0;
 }
@@ -658,12 +636,15 @@ static int psnet_detect_bar(struct psnet *psnet, u32 off)
 
 static void psnet_unmap_unused_bars(struct pci_dev *pdev, struct psnet *psnet)
 {
-	unsigned short i;
+	int i, mask = 0;
 
 	for (i = 0; i < PCI_STD_NUM_BARS; i++) {
 		if (psnet->bars[i] && i != psnet->barno)
-			pcim_iounmap_region(pdev, i);
+			mask |= (1 << i);
 	}
+
+	if (mask)
+		pcim_iounmap_regions(pdev, mask);
 }
 
 /* Read SNET config from PCI BAR */
@@ -716,7 +697,7 @@ static int psnet_read_cfg(struct pci_dev *pdev, struct psnet *psnet)
 	off += 4;
 	cfg->hwmon_off = psnet_read32(psnet, off);
 	off += 4;
-	cfg->ctrl_off = psnet_read32(psnet, off);
+	cfg->msg_off = psnet_read32(psnet, off);
 	off += 4;
 	cfg->flags = psnet_read32(psnet, off);
 	off += 4;
@@ -1008,17 +989,13 @@ static int snet_vdpa_probe_vf(struct pci_dev *pdev)
 	}
 
 	/* Allocate vdpa device */
-	snet = vdpa_alloc_device(struct snet, vdpa, &pdev->dev, &snet_config_ops,
-				 NULL, 1, 1, NULL, false);
+	snet = vdpa_alloc_device(struct snet, vdpa, &pdev->dev, &snet_config_ops, 1, 1, NULL,
+				 false);
 	if (!snet) {
 		SNET_ERR(pdev, "Failed to allocate a vdpa device\n");
 		ret = -ENOMEM;
 		goto free_irqs;
 	}
-
-	/* Init control mutex and spinlock */
-	mutex_init(&snet->ctrl_lock);
-	spin_lock_init(&snet->ctrl_spinlock);
 
 	/* Save pci device pointer */
 	snet->pdev = pdev;
@@ -1036,9 +1013,6 @@ static int snet_vdpa_probe_vf(struct pci_dev *pdev)
 	/* Create a VirtIO config pointer */
 	snet->cfg->virtio_cfg = snet->bar + snet->psnet->cfg.virtio_cfg_off;
 
-	/* Clear control registers */
-	snet_ctrl_clear(snet);
-
 	pci_set_master(pdev);
 	pci_set_drvdata(pdev, snet);
 
@@ -1052,8 +1026,8 @@ static int snet_vdpa_probe_vf(struct pci_dev *pdev)
 	 */
 	snet_reserve_irq_idx(pf_irqs ? pdev_pf : pdev, snet);
 
-	/* set map metadata */
-	snet->vdpa.vmap.dma_dev = &pdev->dev;
+	/*set DMA device*/
+	snet->vdpa.dma_dev = &pdev->dev;
 
 	/* Register VDPA device */
 	ret = vdpa_register_device(&snet->vdpa, snet->cfg->vq_num);

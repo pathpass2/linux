@@ -7,7 +7,6 @@
  */
 
 #include <linux/crash_dump.h>
-#include <linux/export.h>
 #include <asm/lowcore.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -23,7 +22,6 @@
 #include <asm/ipl.h>
 #include <asm/sclp.h>
 #include <asm/maccess.h>
-#include <asm/fpu.h>
 
 #define PTR_ADD(x, y) (((char *) (x)) + ((unsigned long) (y)))
 #define PTR_SUB(x, y) (((char *) (x)) - ((unsigned long) (y)))
@@ -64,7 +62,9 @@ struct save_area * __init save_area_alloc(bool is_boot_cpu)
 {
 	struct save_area *sa;
 
-	sa = memblock_alloc_or_panic(sizeof(*sa), 8);
+	sa = memblock_alloc(sizeof(*sa), 8);
+	if (!sa)
+		return NULL;
 
 	if (is_boot_cpu)
 		list_add(&sa->list, &dump_save_areas);
@@ -236,16 +236,14 @@ int remap_oldmem_pfn_range(struct vm_area_struct *vma, unsigned long from,
 						       prot);
 }
 
-/*
- * Return true only when in a kdump or stand-alone kdump environment.
- * Note that /proc/vmcore might also be available in "standard zfcp/nvme dump"
- * environments, where this function returns false; see dump_available().
- */
-bool is_kdump_kernel(void)
+static const char *nt_name(Elf64_Word type)
 {
-	return oldmem_data.start;
+	const char *name = "LINUX";
+
+	if (type == NT_PRPSINFO || type == NT_PRSTATUS || type == NT_PRFPREG)
+		name = KEXEC_CORE_NOTE_NAME;
+	return name;
 }
-EXPORT_SYMBOL_GPL(is_kdump_kernel);
 
 /*
  * Initialize ELF note
@@ -271,8 +269,10 @@ static void *nt_init_name(void *buf, Elf64_Word type, void *desc, int d_len,
 	return PTR_ADD(buf, len);
 }
 
-#define nt_init(buf, type, desc) \
-	nt_init_name(buf, NT_ ## type, &(desc), sizeof(desc), NN_ ## type)
+static inline void *nt_init(void *buf, Elf64_Word type, void *desc, int d_len)
+{
+	return nt_init_name(buf, type, desc, d_len, nt_name(type));
+}
 
 /*
  * Calculate the size of ELF note
@@ -288,7 +288,10 @@ static size_t nt_size_name(int d_len, const char *name)
 	return size;
 }
 
-#define nt_size(type, desc) nt_size_name(sizeof(desc), NN_ ## type)
+static inline size_t nt_size(Elf64_Word type, int d_len)
+{
+	return nt_size_name(d_len, nt_name(type));
+}
 
 /*
  * Fill ELF notes for one CPU with save area registers
@@ -309,16 +312,18 @@ static void *fill_cpu_elf_notes(void *ptr, int cpu, struct save_area *sa)
 	memcpy(&nt_fpregset.fpc, &sa->fpc, sizeof(sa->fpc));
 	memcpy(&nt_fpregset.fprs, &sa->fprs, sizeof(sa->fprs));
 	/* Create ELF notes for the CPU */
-	ptr = nt_init(ptr, PRSTATUS, nt_prstatus);
-	ptr = nt_init(ptr, PRFPREG, nt_fpregset);
-	ptr = nt_init(ptr, S390_TIMER, sa->timer);
-	ptr = nt_init(ptr, S390_TODCMP, sa->todcmp);
-	ptr = nt_init(ptr, S390_TODPREG, sa->todpreg);
-	ptr = nt_init(ptr, S390_CTRS, sa->ctrs);
-	ptr = nt_init(ptr, S390_PREFIX, sa->prefix);
-	if (cpu_has_vx()) {
-		ptr = nt_init(ptr, S390_VXRS_HIGH, sa->vxrs_high);
-		ptr = nt_init(ptr, S390_VXRS_LOW, sa->vxrs_low);
+	ptr = nt_init(ptr, NT_PRSTATUS, &nt_prstatus, sizeof(nt_prstatus));
+	ptr = nt_init(ptr, NT_PRFPREG, &nt_fpregset, sizeof(nt_fpregset));
+	ptr = nt_init(ptr, NT_S390_TIMER, &sa->timer, sizeof(sa->timer));
+	ptr = nt_init(ptr, NT_S390_TODCMP, &sa->todcmp, sizeof(sa->todcmp));
+	ptr = nt_init(ptr, NT_S390_TODPREG, &sa->todpreg, sizeof(sa->todpreg));
+	ptr = nt_init(ptr, NT_S390_CTRS, &sa->ctrs, sizeof(sa->ctrs));
+	ptr = nt_init(ptr, NT_S390_PREFIX, &sa->prefix, sizeof(sa->prefix));
+	if (MACHINE_HAS_VX) {
+		ptr = nt_init(ptr, NT_S390_VXRS_HIGH,
+			      &sa->vxrs_high, sizeof(sa->vxrs_high));
+		ptr = nt_init(ptr, NT_S390_VXRS_LOW,
+			      &sa->vxrs_low, sizeof(sa->vxrs_low));
 	}
 	return ptr;
 }
@@ -331,16 +336,16 @@ static size_t get_cpu_elf_notes_size(void)
 	struct save_area *sa = NULL;
 	size_t size;
 
-	size =	nt_size(PRSTATUS, struct elf_prstatus);
-	size += nt_size(PRFPREG, elf_fpregset_t);
-	size += nt_size(S390_TIMER, sa->timer);
-	size += nt_size(S390_TODCMP, sa->todcmp);
-	size += nt_size(S390_TODPREG, sa->todpreg);
-	size += nt_size(S390_CTRS, sa->ctrs);
-	size += nt_size(S390_PREFIX, sa->prefix);
-	if (cpu_has_vx()) {
-		size += nt_size(S390_VXRS_HIGH, sa->vxrs_high);
-		size += nt_size(S390_VXRS_LOW, sa->vxrs_low);
+	size =	nt_size(NT_PRSTATUS, sizeof(struct elf_prstatus));
+	size +=  nt_size(NT_PRFPREG, sizeof(elf_fpregset_t));
+	size +=  nt_size(NT_S390_TIMER, sizeof(sa->timer));
+	size +=  nt_size(NT_S390_TODCMP, sizeof(sa->todcmp));
+	size +=  nt_size(NT_S390_TODPREG, sizeof(sa->todpreg));
+	size +=  nt_size(NT_S390_CTRS, sizeof(sa->ctrs));
+	size +=  nt_size(NT_S390_PREFIX, sizeof(sa->prefix));
+	if (MACHINE_HAS_VX) {
+		size += nt_size(NT_S390_VXRS_HIGH, sizeof(sa->vxrs_high));
+		size += nt_size(NT_S390_VXRS_LOW, sizeof(sa->vxrs_low));
 	}
 
 	return size;
@@ -355,8 +360,8 @@ static void *nt_prpsinfo(void *ptr)
 
 	memset(&prpsinfo, 0, sizeof(prpsinfo));
 	prpsinfo.pr_sname = 'R';
-	strscpy(prpsinfo.pr_fname, "vmlinux");
-	return nt_init(ptr, PRPSINFO, prpsinfo);
+	strcpy(prpsinfo.pr_fname, "vmlinux");
+	return nt_init(ptr, NT_PRPSINFO, &prpsinfo, sizeof(prpsinfo));
 }
 
 /*
@@ -445,7 +450,7 @@ static void *nt_final(void *ptr)
 /*
  * Initialize ELF header (new kernel)
  */
-static void *ehdr_init(Elf64_Ehdr *ehdr, int phdr_count)
+static void *ehdr_init(Elf64_Ehdr *ehdr, int mem_chunk_cnt)
 {
 	memset(ehdr, 0, sizeof(*ehdr));
 	memcpy(ehdr->e_ident, ELFMAG, SELFMAG);
@@ -459,8 +464,7 @@ static void *ehdr_init(Elf64_Ehdr *ehdr, int phdr_count)
 	ehdr->e_phoff = sizeof(Elf64_Ehdr);
 	ehdr->e_ehsize = sizeof(Elf64_Ehdr);
 	ehdr->e_phentsize = sizeof(Elf64_Phdr);
-	/* Number of PT_LOAD program headers plus PT_NOTE program header */
-	ehdr->e_phnum = phdr_count + 1;
+	ehdr->e_phnum = mem_chunk_cnt + 1;
 	return ehdr + 1;
 }
 
@@ -491,75 +495,25 @@ static int get_mem_chunk_cnt(void)
 	return cnt;
 }
 
-static void fill_ptload(Elf64_Phdr *phdr, unsigned long paddr,
-		unsigned long vaddr, unsigned long size)
-{
-	phdr->p_type = PT_LOAD;
-	phdr->p_vaddr = vaddr;
-	phdr->p_offset = paddr;
-	phdr->p_paddr = paddr;
-	phdr->p_filesz = size;
-	phdr->p_memsz = size;
-	phdr->p_flags = PF_R | PF_W | PF_X;
-	phdr->p_align = PAGE_SIZE;
-}
-
 /*
  * Initialize ELF loads (new kernel)
  */
-static void loads_init(Elf64_Phdr *phdr, bool os_info_has_vm)
+static void loads_init(Elf64_Phdr *phdr, u64 loads_offset)
 {
-	unsigned long old_identity_base = 0;
 	phys_addr_t start, end;
 	u64 idx;
 
-	if (os_info_has_vm)
-		old_identity_base = os_info_old_value(OS_INFO_IDENTITY_BASE);
 	for_each_physmem_range(idx, &oldmem_type, &start, &end) {
-		fill_ptload(phdr, start, old_identity_base + start,
-			    end - start);
+		phdr->p_filesz = end - start;
+		phdr->p_type = PT_LOAD;
+		phdr->p_offset = start;
+		phdr->p_vaddr = start;
+		phdr->p_paddr = start;
+		phdr->p_memsz = end - start;
+		phdr->p_flags = PF_R | PF_W | PF_X;
+		phdr->p_align = PAGE_SIZE;
 		phdr++;
 	}
-}
-
-static bool os_info_has_vm(void)
-{
-	return os_info_old_value(OS_INFO_KASLR_OFFSET);
-}
-
-#ifdef CONFIG_PROC_VMCORE_DEVICE_RAM
-/*
- * Fill PT_LOAD for a physical memory range owned by a device and detected by
- * its device driver.
- */
-void elfcorehdr_fill_device_ram_ptload_elf64(Elf64_Phdr *phdr,
-		unsigned long long paddr, unsigned long long size)
-{
-	unsigned long old_identity_base = 0;
-
-	if (os_info_has_vm())
-		old_identity_base = os_info_old_value(OS_INFO_IDENTITY_BASE);
-	fill_ptload(phdr, paddr, old_identity_base + paddr, size);
-}
-#endif
-
-/*
- * Prepare PT_LOAD type program header for kernel image region
- */
-static void text_init(Elf64_Phdr *phdr)
-{
-	unsigned long start_phys = os_info_old_value(OS_INFO_IMAGE_PHYS);
-	unsigned long start = os_info_old_value(OS_INFO_IMAGE_START);
-	unsigned long end = os_info_old_value(OS_INFO_IMAGE_END);
-
-	phdr->p_type = PT_LOAD;
-	phdr->p_vaddr = start;
-	phdr->p_filesz = end - start;
-	phdr->p_memsz = end - start;
-	phdr->p_offset = start_phys;
-	phdr->p_paddr = start_phys;
-	phdr->p_flags = PF_R | PF_W | PF_X;
-	phdr->p_align = PAGE_SIZE;
 }
 
 /*
@@ -587,7 +541,7 @@ static void *notes_init(Elf64_Phdr *phdr, void *ptr, u64 notes_offset)
 	return ptr;
 }
 
-static size_t get_elfcorehdr_size(int phdr_count)
+static size_t get_elfcorehdr_size(int mem_chunk_cnt)
 {
 	size_t size;
 
@@ -595,7 +549,7 @@ static size_t get_elfcorehdr_size(int phdr_count)
 	/* PT_NOTES */
 	size += sizeof(Elf64_Phdr);
 	/* nt_prpsinfo */
-	size += nt_size(PRPSINFO, struct elf_prpsinfo);
+	size += nt_size(NT_PRPSINFO, sizeof(struct elf_prpsinfo));
 	/* regsets */
 	size += get_cpu_cnt() * get_cpu_elf_notes_size();
 	/* nt_vmcoreinfo */
@@ -603,7 +557,7 @@ static size_t get_elfcorehdr_size(int phdr_count)
 	/* nt_final */
 	size += sizeof(Elf64_Nhdr);
 	/* PT_LOADS */
-	size += phdr_count * sizeof(Elf64_Phdr);
+	size += mem_chunk_cnt * sizeof(Elf64_Phdr);
 
 	return size;
 }
@@ -613,10 +567,10 @@ static size_t get_elfcorehdr_size(int phdr_count)
  */
 int elfcorehdr_alloc(unsigned long long *addr, unsigned long long *size)
 {
-	Elf64_Phdr *phdr_notes, *phdr_loads, *phdr_text;
-	int mem_chunk_cnt, phdr_text_cnt;
-	size_t alloc_size;
+	Elf64_Phdr *phdr_notes, *phdr_loads;
+	int mem_chunk_cnt;
 	void *ptr, *hdr;
+	u32 alloc_size;
 	u64 hdr_off;
 
 	/* If we are not in kdump or zfcp/nvme dump mode return */
@@ -634,14 +588,12 @@ int elfcorehdr_alloc(unsigned long long *addr, unsigned long long *size)
 	}
 
 	mem_chunk_cnt = get_mem_chunk_cnt();
-	phdr_text_cnt = os_info_has_vm() ? 1 : 0;
 
-	alloc_size = get_elfcorehdr_size(mem_chunk_cnt + phdr_text_cnt);
+	alloc_size = get_elfcorehdr_size(mem_chunk_cnt);
 
 	hdr = kzalloc(alloc_size, GFP_KERNEL);
 
-	/*
-	 * Without elfcorehdr /proc/vmcore cannot be created. Thus creating
+	/* Without elfcorehdr /proc/vmcore cannot be created. Thus creating
 	 * a dump with this crash kernel will fail. Panic now to allow other
 	 * dump mechanisms to take over.
 	 */
@@ -649,25 +601,18 @@ int elfcorehdr_alloc(unsigned long long *addr, unsigned long long *size)
 		panic("s390 kdump allocating elfcorehdr failed");
 
 	/* Init elf header */
-	phdr_notes = ehdr_init(hdr, mem_chunk_cnt + phdr_text_cnt);
+	ptr = ehdr_init(hdr, mem_chunk_cnt);
 	/* Init program headers */
-	if (phdr_text_cnt) {
-		phdr_text = phdr_notes + 1;
-		phdr_loads = phdr_text + 1;
-	} else {
-		phdr_loads = phdr_notes + 1;
-	}
-	ptr = PTR_ADD(phdr_loads, sizeof(Elf64_Phdr) * mem_chunk_cnt);
+	phdr_notes = ptr;
+	ptr = PTR_ADD(ptr, sizeof(Elf64_Phdr));
+	phdr_loads = ptr;
+	ptr = PTR_ADD(ptr, sizeof(Elf64_Phdr) * mem_chunk_cnt);
 	/* Init notes */
 	hdr_off = PTR_DIFF(ptr, hdr);
 	ptr = notes_init(phdr_notes, ptr, ((unsigned long) hdr) + hdr_off);
-	/* Init kernel text program header */
-	if (phdr_text_cnt)
-		text_init(phdr_text);
 	/* Init loads */
-	loads_init(phdr_loads, phdr_text_cnt);
-	/* Finalize program headers */
 	hdr_off = PTR_DIFF(ptr, hdr);
+	loads_init(phdr_loads, hdr_off);
 	*addr = (unsigned long long) hdr;
 	*size = (unsigned long long) hdr_off;
 	BUG_ON(elfcorehdr_size > alloc_size);

@@ -89,7 +89,7 @@ nv40_gr_chan_bind(struct nvkm_object *object, struct nvkm_gpuobj *parent,
 }
 
 static int
-nv40_gr_chan_fini(struct nvkm_object *object, enum nvkm_suspend_state suspend)
+nv40_gr_chan_fini(struct nvkm_object *object, bool suspend)
 {
 	struct nv40_gr_chan *chan = nv40_gr_chan(object);
 	struct nv40_gr *gr = chan->gr;
@@ -101,7 +101,7 @@ nv40_gr_chan_fini(struct nvkm_object *object, enum nvkm_suspend_state suspend)
 	nvkm_mask(device, 0x400720, 0x00000001, 0x00000000);
 
 	if (nvkm_rd32(device, 0x40032c) == inst) {
-		if (suspend != NVKM_POWEROFF) {
+		if (suspend) {
 			nvkm_wr32(device, 0x400720, 0x00000000);
 			nvkm_wr32(device, 0x400784, inst);
 			nvkm_mask(device, 0x400310, 0x00000020, 0x00000020);
@@ -145,7 +145,7 @@ nv40_gr_chan = {
 };
 
 int
-nv40_gr_chan_new(struct nvkm_gr *base, struct nvkm_chan *fifoch,
+nv40_gr_chan_new(struct nvkm_gr *base, struct nvkm_fifo_chan *fifoch,
 		 const struct nvkm_oclass *oclass, struct nvkm_object **pobject)
 {
 	struct nv40_gr *gr = nv40_gr(base);
@@ -386,7 +386,7 @@ nv40_gr_init(struct nvkm_gr *base)
 	}
 
 	/* begin RAM config */
-	vramsz = device->func->resource_size(device, NVKM_BAR1_FB) - 1;
+	vramsz = device->func->resource_size(device, 1) - 1;
 	switch (device->chipset) {
 	case 0x40:
 		nvkm_wr32(device, 0x4009A4, nvkm_rd32(device, 0x100200));

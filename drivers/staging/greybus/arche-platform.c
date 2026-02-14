@@ -20,7 +20,6 @@
 #include <linux/suspend.h>
 #include <linux/time.h>
 #include <linux/greybus.h>
-#include <linux/of.h>
 #include "arche_platform.h"
 
 #if IS_ENABLED(CONFIG_USB_HSIC_USB3613)
@@ -560,7 +559,7 @@ static int arche_remove_child(struct device *dev, void *unused)
 	return 0;
 }
 
-static void arche_platform_remove(struct platform_device *pdev)
+static int arche_platform_remove(struct platform_device *pdev)
 {
 	struct arche_platform_drvdata *arche_pdata = platform_get_drvdata(pdev);
 
@@ -571,6 +570,8 @@ static void arche_platform_remove(struct platform_device *pdev)
 
 	if (usb3613_hub_mode_ctrl(false))
 		dev_warn(arche_pdata->dev, "failed to control hub device\n");
+		/* TODO: Should we do anything more here ?? */
+	return 0;
 }
 
 static __maybe_unused int arche_platform_suspend(struct device *dev)
@@ -619,7 +620,14 @@ static const struct of_device_id arche_platform_of_match[] = {
 	{ .compatible = "google,arche-platform", },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, arche_platform_of_match);
+
+static const struct of_device_id arche_combined_id[] = {
+	/* Use PID/VID of SVC device */
+	{ .compatible = "google,arche-platform", },
+	{ .compatible = "usbffff,2", },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, arche_combined_id);
 
 static struct platform_driver arche_platform_device_driver = {
 	.probe		= arche_platform_probe,

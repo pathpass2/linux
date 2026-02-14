@@ -4,12 +4,12 @@
  * Copyright 2020 Google LLC.
  */
 
+#include "bpf_misc.h"
 #include "vmlinux.h"
-#include <errno.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-#include "bpf_misc.h"
+#include <errno.h>
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -89,16 +89,14 @@ SEC("lsm/file_mprotect")
 int BPF_PROG(test_int_hook, struct vm_area_struct *vma,
 	     unsigned long reqprot, unsigned long prot, int ret)
 {
-	struct mm_struct *mm = vma->vm_mm;
-
-	if (ret != 0 || !mm)
+	if (ret != 0)
 		return ret;
 
-	__s32 pid = bpf_get_current_pid_tgid() >> 32;
+	__u32 pid = bpf_get_current_pid_tgid() >> 32;
 	int is_stack = 0;
 
-	is_stack = (vma->vm_start <= mm->start_stack &&
-		    vma->vm_end >= mm->start_stack);
+	is_stack = (vma->vm_start <= vma->vm_mm->start_stack &&
+		    vma->vm_end >= vma->vm_mm->start_stack);
 
 	if (is_stack && monitored_pid == pid) {
 		mprotect_count++;

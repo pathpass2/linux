@@ -234,10 +234,6 @@ ACK attributes may be present::
   | ** optionally extended ACK                 |
   ----------------------------------------------
 
-Note that some implementations may issue custom ``NLMSG_DONE`` messages
-in reply to ``do`` action requests. In that case the payload is
-implementation-specific and may also be absent.
-
 .. _res_fam:
 
 Resolving the Family ID
@@ -532,8 +528,6 @@ families may, however, require a larger buffer. 32kB buffer is recommended
 for most efficient handling of dumps (larger buffer fits more dumped
 objects and therefore fewer recvmsg() calls are needed).
 
-.. _classic_netlink:
-
 Classic Netlink
 ===============
 
@@ -621,7 +615,7 @@ and ``SET``. Each object can handle all or some of those requests
 is defined by the 2 lowest bits of the message type, so commands for
 new objects would always be allocated with a stride of 4.
 
-Each object would also have its own fixed metadata shared by all request
+Each object would also have it's own fixed metadata shared by all request
 types (e.g. struct ifinfomsg for netdev requests, struct ifaddrmsg for address
 requests, struct tcmsg for qdisc requests).
 

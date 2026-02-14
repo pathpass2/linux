@@ -14,8 +14,6 @@
 
 #include <linux/compiler.h>
 #include <linux/stringify.h>
-
-#include <asm/bootparam.h>
 #include <asm/ptrace.h>
 #include <asm/types.h>
 #include <asm/regs.h>
@@ -105,7 +103,7 @@
 #error Unsupported xtensa ABI
 #endif
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #if defined(__XTENSA_WINDOWED_ABI__)
 
@@ -115,9 +113,9 @@
 #define MAKE_RA_FOR_CALL(ra,ws)   (((ra) & 0x3fffffff) | (ws) << 30)
 
 /* Convert return address to a valid pc
- * Note: 'text' is the address within the same 1GB range as the ra
+ * Note: We assume that the stack pointer is in the same 1GB ranges as the ra
  */
-#define MAKE_PC_FROM_RA(ra, text) (((ra) & 0x3fffffff) | ((unsigned long)(text) & 0xc0000000))
+#define MAKE_PC_FROM_RA(ra,sp)    (((ra) & 0x3fffffff) | ((sp) & 0xc0000000))
 
 #elif defined(__XTENSA_CALL0_ABI__)
 
@@ -127,9 +125,9 @@
 #define MAKE_RA_FOR_CALL(ra, ws)   (ra)
 
 /* Convert return address to a valid pc
- * Note: 'text' is not used as 'ra' is always the full address
+ * Note: We assume that the stack pointer is in the same 1GB ranges as the ra
  */
-#define MAKE_PC_FROM_RA(ra, text)  (ra)
+#define MAKE_PC_FROM_RA(ra, sp)    (ra)
 
 #else
 #error Unsupported Xtensa ABI
@@ -160,7 +158,9 @@ struct thread_struct {
 	struct perf_event *ptrace_bp[XCHAL_NUM_IBREAK];
 	struct perf_event *ptrace_wp[XCHAL_NUM_DBREAK];
 #endif
-} __aligned(16);
+	/* Make structure 16 bytes aligned. */
+	int align[0] __attribute__ ((aligned(16)));
+};
 
 /* This decides where the kernel will search for a free chunk of vm
  * space during mmap's.
@@ -217,9 +217,6 @@ struct mm_struct;
 
 extern unsigned long __get_wchan(struct task_struct *p);
 
-void init_arch(bp_tag_t *bp_start);
-void do_notify_resume(struct pt_regs *regs);
-
 #define KSTK_EIP(tsk)		(task_pt_regs(tsk)->pc)
 #define KSTK_ESP(tsk)		(task_pt_regs(tsk)->areg[1])
 
@@ -263,5 +260,5 @@ static inline unsigned long get_er(unsigned long addr)
 
 #endif /* XCHAL_HAVE_EXTERN_REGS */
 
-#endif	/* __ASSEMBLER__ */
+#endif	/* __ASSEMBLY__ */
 #endif	/* _XTENSA_PROCESSOR_H */

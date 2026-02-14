@@ -11,12 +11,7 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - const: st,stm32mp1,pwr-reg
-      - items:
-          - const: st,stm32mp13-pwr-reg
-          - const: st,stm32mp1,pwr-reg
+    const: st,stm32mp1,pwr-reg
 
   reg:
     maxItems: 1
@@ -30,8 +25,8 @@ properties:
 patternProperties:
   "^(reg11|reg18|usb33)$":
     type: object
-    $ref: regulator.yaml#
-    unevaluatedProperties: false
+
+    $ref: "regulator.yaml#"
 
 required:
   - compatible

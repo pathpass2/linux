@@ -119,13 +119,11 @@ static int uhci_pci_init(struct usb_hcd *hcd)
 
 	uhci->rh_numports = uhci_count_ports(hcd);
 
-	/*
-	 * Intel controllers report the OverCurrent bit active on.  VIA
-	 * and ZHAOXIN controllers report it active off, so we'll adjust
-	 * the bit value.  (It's not standardized in the UHCI spec.)
+	/* Intel controllers report the OverCurrent bit active on.
+	 * VIA controllers report it active off, so we'll adjust the
+	 * bit value.  (It's not standardized in the UHCI spec.)
 	 */
-	if (to_pci_dev(uhci_dev(uhci))->vendor == PCI_VENDOR_ID_VIA ||
-			to_pci_dev(uhci_dev(uhci))->vendor == PCI_VENDOR_ID_ZHAOXIN)
+	if (to_pci_dev(uhci_dev(uhci))->vendor == PCI_VENDOR_ID_VIA)
 		uhci->oc_low = 1;
 
 	/* HP's server management chip requires a longer port reset delay. */
@@ -169,7 +167,7 @@ static void uhci_shutdown(struct pci_dev *pdev)
 
 #ifdef CONFIG_PM
 
-static int uhci_pci_resume(struct usb_hcd *hcd, pm_message_t state);
+static int uhci_pci_resume(struct usb_hcd *hcd, bool hibernated);
 
 static int uhci_pci_suspend(struct usb_hcd *hcd, bool do_wakeup)
 {
@@ -204,15 +202,14 @@ done_okay:
 
 	/* Check for race with a wakeup request */
 	if (do_wakeup && HCD_WAKEUP_PENDING(hcd)) {
-		uhci_pci_resume(hcd, PMSG_SUSPEND);
+		uhci_pci_resume(hcd, false);
 		rc = -EBUSY;
 	}
 	return rc;
 }
 
-static int uhci_pci_resume(struct usb_hcd *hcd, pm_message_t msg)
+static int uhci_pci_resume(struct usb_hcd *hcd, bool hibernated)
 {
-	bool hibernated = (msg.event == PM_EVENT_RESTORE);
 	struct uhci_hcd *uhci = hcd_to_uhci(hcd);
 
 	dev_dbg(uhci_dev(uhci), "%s\n", __func__);

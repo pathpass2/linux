@@ -334,8 +334,6 @@ int vb2_ioctl_streamon(struct file *file, void *priv, enum v4l2_buf_type i);
 int vb2_ioctl_streamoff(struct file *file, void *priv, enum v4l2_buf_type i);
 int vb2_ioctl_expbuf(struct file *file, void *priv,
 	struct v4l2_exportbuffer *p);
-int vb2_ioctl_remove_bufs(struct file *file, void *priv,
-			  struct v4l2_remove_buffers *p);
 
 /* struct v4l2_file_operations helpers */
 
@@ -366,6 +364,24 @@ unsigned long vb2_fop_get_unmapped_area(struct file *file, unsigned long addr,
  * will have stopped streaming as well.
  */
 void vb2_video_unregister_device(struct video_device *vdev);
+
+/**
+ * vb2_ops_wait_prepare - helper function to lock a struct &vb2_queue
+ *
+ * @vq: pointer to &struct vb2_queue
+ *
+ * ..note:: only use if vq->lock is non-NULL.
+ */
+void vb2_ops_wait_prepare(struct vb2_queue *vq);
+
+/**
+ * vb2_ops_wait_finish - helper function to unlock a struct &vb2_queue
+ *
+ * @vq: pointer to &struct vb2_queue
+ *
+ * ..note:: only use if vq->lock is non-NULL.
+ */
+void vb2_ops_wait_finish(struct vb2_queue *vq);
 
 struct media_request;
 int vb2_request_validate(struct media_request *req);

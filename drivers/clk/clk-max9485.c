@@ -159,32 +159,29 @@ static unsigned long max9485_clkout_recalc_rate(struct clk_hw *hw,
 	return 0;
 }
 
-static int max9485_clkout_determine_rate(struct clk_hw *hw,
-					 struct clk_rate_request *req)
+static long max9485_clkout_round_rate(struct clk_hw *hw, unsigned long rate,
+				      unsigned long *parent_rate)
 {
 	const struct max9485_rate *curr, *prev = NULL;
 
 	for (curr = max9485_rates; curr->out != 0; curr++) {
 		/* Exact matches */
-		if (curr->out == req->rate)
-			return 0;
+		if (curr->out == rate)
+			return rate;
 
 		/*
 		 * Find the first entry that has a frequency higher than the
 		 * requested one.
 		 */
-		if (curr->out > req->rate) {
+		if (curr->out > rate) {
 			unsigned int mid;
 
 			/*
 			 * If this is the first entry, clamp the value to the
 			 * lowest possible frequency.
 			 */
-			if (!prev) {
-				req->rate = curr->out;
-
-				return 0;
-			}
+			if (!prev)
+				return curr->out;
 
 			/*
 			 * Otherwise, determine whether the previous entry or
@@ -192,18 +189,14 @@ static int max9485_clkout_determine_rate(struct clk_hw *hw,
 			 */
 			mid = prev->out + ((curr->out - prev->out) / 2);
 
-			req->rate = mid > req->rate ? prev->out : curr->out;
-
-			return 0;
+			return (mid > rate) ? prev->out : curr->out;
 		}
 
 		prev = curr;
 	}
 
 	/* If the last entry was still too high, clamp the value */
-	req->rate = prev->out;
-
-	return 0;
+	return prev->out;
 }
 
 struct max9485_clk {
@@ -228,7 +221,7 @@ static const struct max9485_clk max9485_clks[MAX9485_NUM_CLKS] = {
 		.parent_index = -1,
 		.ops = {
 			.set_rate	= max9485_clkout_set_rate,
-			.determine_rate = max9485_clkout_determine_rate,
+			.round_rate	= max9485_clkout_round_rate,
 			.recalc_rate	= max9485_clkout_recalc_rate,
 		},
 	},
@@ -383,7 +376,7 @@ static struct i2c_driver max9485_driver = {
 		.pm		= &max9485_pm_ops,
 		.of_match_table	= max9485_dt_ids,
 	},
-	.probe = max9485_i2c_probe,
+	.probe_new = max9485_i2c_probe,
 	.id_table = max9485_i2c_ids,
 };
 module_i2c_driver(max9485_driver);

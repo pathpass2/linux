@@ -69,15 +69,11 @@ int cpuidle_play_dead(void)
 	if (!drv)
 		return -ENODEV;
 
-	for (i = drv->state_count - 1; i >= 0; i--) {
+	/* Find lowest-power state that supports long-term idle */
+	for (i = drv->state_count - 1; i >= 0; i--)
 		if (drv->states[i].enter_dead)
-			drv->states[i].enter_dead(dev, i);
-	}
+			return drv->states[i].enter_dead(dev, i);
 
-	/*
-	 * If :enter_dead() is successful, it will never return, so reaching
-	 * here means that all of them failed above or were not present.
-	 */
 	return -ENODEV;
 }
 
@@ -149,7 +145,7 @@ static noinstr void enter_s2idle_proper(struct cpuidle_driver *drv,
 
 	instrumentation_begin();
 
-	time_start = ns_to_ktime(local_clock_noinstr());
+	time_start = ns_to_ktime(local_clock());
 
 	tick_freeze();
 	/*
@@ -173,7 +169,7 @@ static noinstr void enter_s2idle_proper(struct cpuidle_driver *drv,
 	tick_unfreeze();
 	start_critical_timings();
 
-	time_end = ns_to_ktime(local_clock_noinstr());
+	time_end = ns_to_ktime(local_clock());
 
 	dev->states_usage[index].s2idle_time += ktime_us_delta(time_end, time_start);
 	dev->states_usage[index].s2idle_usage++;
@@ -184,22 +180,20 @@ static noinstr void enter_s2idle_proper(struct cpuidle_driver *drv,
  * cpuidle_enter_s2idle - Enter an idle state suitable for suspend-to-idle.
  * @drv: cpuidle driver for the given CPU.
  * @dev: cpuidle device for the given CPU.
- * @latency_limit_ns: Idle state exit latency limit
  *
  * If there are states with the ->enter_s2idle callback, find the deepest of
  * them and enter it with frozen tick.
  */
-int cpuidle_enter_s2idle(struct cpuidle_driver *drv, struct cpuidle_device *dev,
-			 u64 latency_limit_ns)
+int cpuidle_enter_s2idle(struct cpuidle_driver *drv, struct cpuidle_device *dev)
 {
 	int index;
 
 	/*
-	 * Find the deepest state with ->enter_s2idle present that meets the
-	 * specified latency limit, which guarantees that interrupts won't be
-	 * enabled when it exits and allows the tick to be frozen safely.
+	 * Find the deepest state with ->enter_s2idle present, which guarantees
+	 * that interrupts won't be enabled when it exits and allows the tick to
+	 * be frozen safely.
 	 */
-	index = find_deepest_state(drv, dev, latency_limit_ns, 0, true);
+	index = find_deepest_state(drv, dev, U64_MAX, 0, true);
 	if (index > 0) {
 		enter_s2idle_proper(drv, dev, index);
 		local_irq_enable();
@@ -234,19 +228,22 @@ noinstr int cpuidle_enter_state(struct cpuidle_device *dev,
 	if (broadcast && tick_broadcast_enter()) {
 		index = find_deepest_state(drv, dev, target_state->exit_latency_ns,
 					   CPUIDLE_FLAG_TIMER_STOP, false);
-
+		if (index < 0) {
+			default_idle_call();
+			return -EBUSY;
+		}
 		target_state = &drv->states[index];
 		broadcast = false;
 	}
 
 	if (target_state->flags & CPUIDLE_FLAG_TLB_FLUSHED)
-		leave_mm();
+		leave_mm(dev->cpu);
 
 	/* Take note of the planned idle state. */
 	sched_idle_set_state(target_state);
 
 	trace_cpu_idle(index, dev->cpu);
-	time_start = ns_to_ktime(local_clock_noinstr());
+	time_start = ns_to_ktime(local_clock());
 
 	stop_critical_timings();
 	if (!(target_state->flags & CPUIDLE_FLAG_RCU_IDLE)) {
@@ -279,7 +276,7 @@ noinstr int cpuidle_enter_state(struct cpuidle_device *dev,
 	start_critical_timings();
 
 	sched_clock_idle_wakeup_event();
-	time_end = ns_to_ktime(local_clock_noinstr());
+	time_end = ns_to_ktime(local_clock());
 	trace_cpu_idle(PWR_EVENT_EXIT, dev->cpu);
 
 	/* The cpu is no longer idle or about to enter idle. */
@@ -412,7 +409,7 @@ void cpuidle_reflect(struct cpuidle_device *dev, int index)
  * Min polling interval of 10usec is a guess. It is assuming that
  * for most users, the time for a single ping-pong workload like
  * perf bench pipe would generally complete within 10usec but
- * this is hardware dependent. Actual time can be estimated with
+ * this is hardware dependant. Actual time can be estimated with
  *
  * perf bench sched pipe -l 10000
  *
@@ -637,13 +634,7 @@ static void __cpuidle_device_init(struct cpuidle_device *dev)
 static int __cpuidle_register_device(struct cpuidle_device *dev)
 {
 	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
-	unsigned int cpu = dev->cpu;
 	int i, ret;
-
-	if (per_cpu(cpuidle_devices, cpu)) {
-		pr_info("CPU%d: cpuidle device already registered\n", cpu);
-		return -EEXIST;
-	}
 
 	if (!try_module_get(drv->owner))
 		return -EINVAL;
@@ -656,7 +647,7 @@ static int __cpuidle_register_device(struct cpuidle_device *dev)
 			dev->states_usage[i].disable |= CPUIDLE_STATE_DISABLED_BY_USER;
 	}
 
-	per_cpu(cpuidle_devices, cpu) = dev;
+	per_cpu(cpuidle_devices, dev->cpu) = dev;
 	list_add(&dev->device_list, &cpuidle_detected_devices);
 
 	ret = cpuidle_coupled_register_device(dev);
@@ -817,7 +808,7 @@ static int __init cpuidle_init(void)
 	if (cpuidle_disabled())
 		return -ENODEV;
 
-	return cpuidle_add_interface();
+	return cpuidle_add_interface(cpu_subsys.dev_root);
 }
 
 module_param(off, int, 0444);

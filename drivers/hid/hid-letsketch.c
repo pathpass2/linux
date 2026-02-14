@@ -41,7 +41,7 @@
 #include <linux/timer.h>
 #include <linux/usb.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "hid-ids.h"
 
@@ -155,8 +155,7 @@ static int letsketch_setup_input_tablet_pad(struct letsketch_data *data)
 
 static void letsketch_inrange_timeout(struct timer_list *t)
 {
-	struct letsketch_data *data = timer_container_of(data, t,
-							 inrange_timer);
+	struct letsketch_data *data = from_timer(data, t, inrange_timer);
 	struct input_dev *input = data->input_tablet;
 
 	input_report_key(input, BTN_TOOL_PEN, 0);
@@ -320,5 +319,4 @@ static struct hid_driver letsketch_driver = {
 module_hid_driver(letsketch_driver);
 
 MODULE_AUTHOR("Hans de Goede <hdegoede@redhat.com>");
-MODULE_DESCRIPTION("Driver for the LetSketch / VSON WP9620N drawing tablet");
 MODULE_LICENSE("GPL");

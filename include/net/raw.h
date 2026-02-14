@@ -22,7 +22,7 @@
 extern struct proto raw_prot;
 
 extern struct raw_hashinfo raw_v4_hashinfo;
-bool raw_v4_match(struct net *net, const struct sock *sk, unsigned short num,
+bool raw_v4_match(struct net *net, struct sock *sk, unsigned short num,
 		  __be32 raddr, __be32 laddr, int dif, int sdif);
 
 int raw_abort(struct sock *sk, int err);
@@ -37,7 +37,7 @@ int raw_rcv(struct sock *, struct sk_buff *);
 struct raw_hashinfo {
 	spinlock_t lock;
 
-	struct hlist_head ht[RAW_HTABLE_SIZE] ____cacheline_aligned;
+	struct hlist_nulls_head ht[RAW_HTABLE_SIZE] ____cacheline_aligned;
 };
 
 static inline u32 raw_hashfunc(const struct net *net, u32 proto)
@@ -51,7 +51,7 @@ static inline void raw_hashinfo_init(struct raw_hashinfo *hashinfo)
 
 	spin_lock_init(&hashinfo->lock);
 	for (i = 0; i < RAW_HTABLE_SIZE; i++)
-		INIT_HLIST_HEAD(&hashinfo->ht[i]);
+		INIT_HLIST_NULLS_HEAD(&hashinfo->ht[i], i);
 }
 
 #ifdef CONFIG_PROC_FS
@@ -81,10 +81,12 @@ struct raw_sock {
 	struct inet_sock   inet;
 	struct icmp_filter filter;
 	u32		   ipmr_table;
-	struct numa_drop_counters drop_counters;
 };
 
-#define raw_sk(ptr) container_of_const(ptr, struct raw_sock, inet.sk)
+static inline struct raw_sock *raw_sk(const struct sock *sk)
+{
+	return (struct raw_sock *)sk;
+}
 
 static inline bool raw_sk_bound_dev_eq(struct net *net, int bound_dev_if,
 				       int dif, int sdif)

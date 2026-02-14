@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: GPL-2.0
 
 lib_dir=$(dirname $0)/../../../net/forwarding
-ethtool_lib_dir=$(dirname $0)/../hw
 
 ALL_TESTS="
 	autoneg
@@ -12,7 +11,7 @@ ALL_TESTS="
 NUM_NETIFS=2
 : ${TIMEOUT:=30000} # ms
 source $lib_dir/lib.sh
-source $ethtool_lib_dir/ethtool_lib.sh
+source $lib_dir/ethtool_lib.sh
 
 setup_prepare()
 {
@@ -25,8 +24,8 @@ setup_prepare()
 	busywait "$TIMEOUT" wait_for_port_up ethtool $swp2
 	check_err $? "ports did not come up"
 
-	busywait $TIMEOUT sh -c "ethtool $swp1 | grep -q Lanes:"
-	if [[ $? -ne 0 ]]; then
+	local lanes_exist=$(ethtool $swp1 | grep 'Lanes:')
+	if [[ -z $lanes_exist ]]; then
 		log_test "SKIP: driver does not support lanes setting"
 		exit 1
 	fi
@@ -123,9 +122,8 @@ autoneg()
 			ethtool_set $swp1 speed $max_speed lanes $lanes
 			ip link set dev $swp1 up
 			ip link set dev $swp2 up
-
-			busywait $TIMEOUT sh -c "ethtool $swp1 | grep -q Lanes:"
-			check_err $? "Lanes parameter is not presented on time"
+			busywait "$TIMEOUT" wait_for_port_up ethtool $swp2
+			check_err $? "ports did not come up"
 
 			check_lanes $swp1 $lanes $max_speed
 			log_test "$lanes lanes is autonegotiated"
@@ -162,9 +160,8 @@ autoneg_force_mode()
 			ethtool_set $swp2 speed $max_speed lanes $lanes autoneg off
 			ip link set dev $swp1 up
 			ip link set dev $swp2 up
-
-			busywait $TIMEOUT sh -c "ethtool $swp1 | grep -q Lanes:"
-			check_err $? "Lanes parameter is not presented on time"
+			busywait "$TIMEOUT" wait_for_port_up ethtool $swp2
+			check_err $? "ports did not come up"
 
 			check_lanes $swp1 $lanes $max_speed
 			log_test "Autoneg off, $lanes lanes detected during force mode"

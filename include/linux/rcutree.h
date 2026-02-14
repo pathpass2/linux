@@ -21,7 +21,6 @@ void rcu_softirq_qs(void);
 void rcu_note_context_switch(bool preempt);
 int rcu_needs_cpu(void);
 void rcu_cpu_stall_reset(void);
-void rcu_request_urgent_qs_task(struct task_struct *t);
 
 /*
  * Note a virtualization-based context switch.  This is simply a
@@ -34,9 +33,13 @@ static inline void rcu_virt_note_context_switch(void)
 }
 
 void synchronize_rcu_expedited(void);
+void kvfree_call_rcu(struct rcu_head *head, void *ptr);
 
 void rcu_barrier(void);
-void rcu_momentary_eqs(void);
+bool rcu_eqs_special_set(int cpu);
+void rcu_momentary_dyntick_idle(void);
+void kfree_rcu_scheduler_running(void);
+bool rcu_gp_might_be_stalled(void);
 
 struct rcu_gp_oldstate {
 	unsigned long rgos_norm;
@@ -100,28 +103,16 @@ extern int rcu_scheduler_active;
 void rcu_end_inkernel_boot(void);
 bool rcu_inkernel_boot_has_ended(void);
 bool rcu_is_watching(void);
-#ifndef CONFIG_PREEMPT_RCU
+#ifndef CONFIG_PREEMPTION
 void rcu_all_qs(void);
 #endif
 
 /* RCUtree hotplug events */
 int rcutree_prepare_cpu(unsigned int cpu);
 int rcutree_online_cpu(unsigned int cpu);
-void rcutree_report_cpu_starting(unsigned int cpu);
-
-#ifdef CONFIG_HOTPLUG_CPU
+int rcutree_offline_cpu(unsigned int cpu);
 int rcutree_dead_cpu(unsigned int cpu);
 int rcutree_dying_cpu(unsigned int cpu);
-int rcutree_offline_cpu(unsigned int cpu);
-#else
-#define rcutree_dead_cpu NULL
-#define rcutree_dying_cpu NULL
-#define rcutree_offline_cpu NULL
-#endif
-
-void rcutree_migrate_callbacks(int cpu);
-
-/* Called from hotplug and also arm64 early secondary boot failure */
-void rcutree_report_cpu_dead(void);
+void rcu_cpu_starting(unsigned int cpu);
 
 #endif /* __LINUX_RCUTREE_H */

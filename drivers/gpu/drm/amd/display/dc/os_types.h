@@ -29,14 +29,14 @@
 
 #include <linux/slab.h>
 #include <linux/kgdb.h>
+#include <linux/kref.h>
+#include <linux/types.h>
 #include <linux/delay.h>
 #include <linux/mm.h>
-#include <linux/vmalloc.h>
 
 #include <asm/byteorder.h>
 
 #include <drm/display/drm_dp_helper.h>
-#include <drm/drm_device.h>
 #include <drm/drm_print.h>
 
 #include "cgs_common.h"
@@ -53,9 +53,11 @@
 
 #define dm_error(fmt, ...) DRM_ERROR(fmt, ##__VA_ARGS__)
 
-#if defined(CONFIG_DRM_AMD_DC_FP)
+#if defined(CONFIG_DRM_AMD_DC_DCN)
 #include "amdgpu_dm/dc_fpu.h"
-#endif /* CONFIG_DRM_AMD_DC_FP */
+#define DC_FP_START() dc_fpu_begin(__func__, __LINE__)
+#define DC_FP_END() dc_fpu_end(__func__, __LINE__)
+#endif
 
 /*
  *

@@ -36,7 +36,7 @@
 MODULE_DESCRIPTION("Driver for Alauda-based card readers");
 MODULE_AUTHOR("Daniel Drake <dsd@gentoo.org>");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("USB_STORAGE");
+MODULE_IMPORT_NS(USB_STORAGE);
 
 /*
  * Status bytes
@@ -105,8 +105,6 @@ struct alauda_info {
 	unsigned char sense_key;
 	unsigned long sense_asc;	/* additional sense code */
 	unsigned long sense_ascq;	/* additional sense code qualifier */
-
-	bool media_initialized;
 };
 
 #define short_pack(lsb,msb) ( ((u16)(lsb)) | ( ((u16)(msb))<<8 ) )
@@ -132,7 +130,7 @@ static int init_alauda(struct us_data *us);
 { USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
   .driver_info = (flags) }
 
-static const struct usb_device_id alauda_usb_ids[] = {
+static struct usb_device_id alauda_usb_ids[] = {
 #	include "unusual_alauda.h"
 	{ }		/* Terminating entry */
 };
@@ -154,7 +152,7 @@ MODULE_DEVICE_TABLE(usb, alauda_usb_ids);
 	.initFunction = init_function,	\
 }
 
-static const struct us_unusual_dev alauda_unusual_dev_list[] = {
+static struct us_unusual_dev alauda_unusual_dev_list[] = {
 #	include "unusual_alauda.h"
 	{ }		/* Terminating entry */
 };
@@ -174,7 +172,7 @@ struct alauda_card_info {
 	unsigned char zoneshift;	/* 1<<zs blocks per zone */
 };
 
-static const struct alauda_card_info alauda_card_ids[] = {
+static struct alauda_card_info alauda_card_ids[] = {
 	/* NAND flash */
 	{ 0x6e, 20, 8, 4, 8},	/* 1 MB */
 	{ 0xe8, 20, 8, 4, 8},	/* 1 MB */
@@ -200,7 +198,7 @@ static const struct alauda_card_info alauda_card_ids[] = {
 	{ 0,}
 };
 
-static const struct alauda_card_info *alauda_card_find_id(unsigned char id)
+static struct alauda_card_info *alauda_card_find_id(unsigned char id)
 {
 	int i;
 
@@ -320,8 +318,7 @@ static int alauda_get_media_status(struct us_data *us, unsigned char *data)
 	rc = usb_stor_ctrl_transfer(us, us->recv_ctrl_pipe,
 		command, 0xc0, 0, 1, data, 2);
 
-	if (rc == USB_STOR_XFER_GOOD)
-		usb_stor_dbg(us, "Media status %02X %02X\n", data[0], data[1]);
+	usb_stor_dbg(us, "Media status %02X %02X\n", data[0], data[1]);
 
 	return rc;
 }
@@ -383,7 +380,7 @@ static int alauda_init_media(struct us_data *us)
 {
 	unsigned char *data = us->iobuf;
 	int ready = 0;
-	const struct alauda_card_info *media_info;
+	struct alauda_card_info *media_info;
 	unsigned int num_zones;
 
 	while (ready == 0) {
@@ -457,14 +454,9 @@ static int alauda_init_media(struct us_data *us)
 static int alauda_check_media(struct us_data *us)
 {
 	struct alauda_info *info = (struct alauda_info *) us->extra;
-	unsigned char *status = us->iobuf;
-	int rc;
+	unsigned char status[2];
 
-	rc = alauda_get_media_status(us, status);
-	if (rc != USB_STOR_XFER_GOOD) {
-		status[0] = 0xF0;	/* Pretend there's no media */
-		status[1] = 0;
-	}
+	alauda_get_media_status(us, status);
 
 	/* Check for no media or door open */
 	if ((status[0] & 0x80) || ((status[0] & 0x1F) == 0x10)
@@ -478,12 +470,11 @@ static int alauda_check_media(struct us_data *us)
 	}
 
 	/* Check for media change */
-	if (status[0] & 0x08 || !info->media_initialized) {
+	if (status[0] & 0x08) {
 		usb_stor_dbg(us, "Media change detected\n");
 		alauda_free_maps(&MEDIA_INFO(us));
-		rc = alauda_init_media(us);
-		if (rc == USB_STOR_TRANSPORT_GOOD)
-			info->media_initialized = true;
+		alauda_init_media(us);
+
 		info->sense_key = UNIT_ATTENTION;
 		info->sense_asc = 0x28;
 		info->sense_ascq = 0x00;
@@ -1132,7 +1123,7 @@ static int alauda_transport(struct scsi_cmnd *srb, struct us_data *us)
 	int rc;
 	struct alauda_info *info = (struct alauda_info *) us->extra;
 	unsigned char *ptr = us->iobuf;
-	static const unsigned char inquiry_response[36] = {
+	static unsigned char inquiry_response[36] = {
 		0x00, 0x80, 0x00, 0x01, 0x1F, 0x00, 0x00, 0x00
 	};
 

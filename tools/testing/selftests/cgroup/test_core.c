@@ -5,8 +5,6 @@
 #include <linux/sched.h>
 #include <sys/types.h>
 #include <sys/mman.h>
-#include <sys/mount.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -17,13 +15,8 @@
 #include <string.h>
 #include <pthread.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 #include "cgroup_util.h"
-
-static bool nsdelegate;
-#ifndef CLONE_NEWCGROUP
-#define CLONE_NEWCGROUP 0
-#endif
 
 static int touch_anon(char *buf, size_t size)
 {
@@ -152,9 +145,6 @@ static int test_cgcore_populated(const char *root)
 	char *cg_test_c = NULL, *cg_test_d = NULL;
 	int cgroup_fd = -EBADF;
 	pid_t pid;
-
-	if (cg_test_v1_named)
-		return KSFT_SKIP;
 
 	cg_test_a = cg_name(root, "cg_test_a");
 	cg_test_b = cg_name(root, "cg_test_a/cg_test_b");
@@ -285,9 +275,6 @@ static int test_cgcore_invalid_domain(const char *root)
 	int ret = KSFT_FAIL;
 	char *grandparent = NULL, *parent = NULL, *child = NULL;
 
-	if (cg_test_v1_named)
-		return KSFT_SKIP;
-
 	grandparent = cg_name(root, "cg_test_grandparent");
 	parent = cg_name(root, "cg_test_grandparent/cg_test_parent");
 	child = cg_name(root, "cg_test_grandparent/cg_test_parent/cg_test_child");
@@ -350,9 +337,6 @@ static int test_cgcore_parent_becomes_threaded(const char *root)
 	int ret = KSFT_FAIL;
 	char *parent = NULL, *child = NULL;
 
-	if (cg_test_v1_named)
-		return KSFT_SKIP;
-
 	parent = cg_name(root, "cg_test_parent");
 	child = cg_name(root, "cg_test_parent/cg_test_child");
 	if (!parent || !child)
@@ -392,8 +376,7 @@ static int test_cgcore_no_internal_process_constraint_on_threads(const char *roo
 	int ret = KSFT_FAIL;
 	char *parent = NULL, *child = NULL;
 
-	if (cg_test_v1_named ||
-	    cg_read_strstr(root, "cgroup.controllers", "cpu") ||
+	if (cg_read_strstr(root, "cgroup.controllers", "cpu") ||
 	    cg_write(root, "cgroup.subtree_control", "+cpu")) {
 		ret = KSFT_SKIP;
 		goto cleanup;
@@ -445,9 +428,6 @@ static int test_cgcore_top_down_constraint_enable(const char *root)
 	int ret = KSFT_FAIL;
 	char *parent = NULL, *child = NULL;
 
-	if (cg_test_v1_named)
-		return KSFT_SKIP;
-
 	parent = cg_name(root, "cg_test_parent");
 	child = cg_name(root, "cg_test_parent/cg_test_child");
 	if (!parent || !child)
@@ -482,9 +462,6 @@ static int test_cgcore_top_down_constraint_disable(const char *root)
 {
 	int ret = KSFT_FAIL;
 	char *parent = NULL, *child = NULL;
-
-	if (cg_test_v1_named)
-		return KSFT_SKIP;
 
 	parent = cg_name(root, "cg_test_parent");
 	child = cg_name(root, "cg_test_parent/cg_test_child");
@@ -526,9 +503,6 @@ static int test_cgcore_internal_process_constraint(const char *root)
 {
 	int ret = KSFT_FAIL;
 	char *parent = NULL, *child = NULL;
-
-	if (cg_test_v1_named)
-		return KSFT_SKIP;
 
 	parent = cg_name(root, "cg_test_parent");
 	child = cg_name(root, "cg_test_parent/cg_test_child");
@@ -597,7 +571,7 @@ static int test_cgcore_proc_migration(const char *root)
 	}
 
 	cg_enter_current(dst);
-	if (cg_read_lc(dst, CG_THREADS_FILE) != n_threads + 1)
+	if (cg_read_lc(dst, "cgroup.threads") != n_threads + 1)
 		goto cleanup;
 
 	ret = KSFT_PASS;
@@ -629,7 +603,7 @@ static void *migrating_thread_fn(void *arg)
 	char lines[3][PATH_MAX];
 
 	for (g = 1; g < 3; ++g)
-		snprintf(lines[g], sizeof(lines[g]), CG_PATH_FORMAT, grps[g] + strlen(grps[0]));
+		snprintf(lines[g], sizeof(lines[g]), "0::%s", grps[g] + strlen(grps[0]));
 
 	for (i = 0; i < n_iterations; ++i) {
 		cg_enter_current_thread(grps[(i % 2) + 1]);
@@ -666,12 +640,10 @@ static int test_cgcore_thread_migration(const char *root)
 	if (cg_create(grps[2]))
 		goto cleanup;
 
-	if (!cg_test_v1_named) {
-		if (cg_write(grps[1], "cgroup.type", "threaded"))
-			goto cleanup;
-		if (cg_write(grps[2], "cgroup.type", "threaded"))
-			goto cleanup;
-	}
+	if (cg_write(grps[1], "cgroup.type", "threaded"))
+		goto cleanup;
+	if (cg_write(grps[2], "cgroup.type", "threaded"))
+		goto cleanup;
 
 	if (cg_enter_current(grps[1]))
 		goto cleanup;
@@ -685,7 +657,7 @@ static int test_cgcore_thread_migration(const char *root)
 	if (retval)
 		goto cleanup;
 
-	snprintf(line, sizeof(line), CG_PATH_FORMAT, grps[1] + strlen(grps[0]));
+	snprintf(line, sizeof(line), "0::%s", grps[1] + strlen(grps[0]));
 	if (proc_read_strstr(0, 1, "cgroup", line))
 		goto cleanup;
 
@@ -711,7 +683,7 @@ cleanup:
  */
 static int test_cgcore_lesser_euid_open(const char *root)
 {
-	const uid_t test_euid = TEST_UID;
+	const uid_t test_euid = 65534;	/* usually nobody, any !root is fine */
 	int ret = KSFT_FAIL;
 	char *cg_test_a = NULL, *cg_test_b = NULL;
 	char *cg_test_a_procs = NULL, *cg_test_b_procs = NULL;
@@ -803,9 +775,6 @@ static int test_cgcore_lesser_ns_open(const char *root)
 	pid_t pid;
 	int status;
 
-	if (!nsdelegate)
-		return KSFT_SKIP;
-
 	cg_test_a = cg_name(root, "cg_test_a");
 	cg_test_b = cg_name(root, "cg_test_b");
 
@@ -868,38 +837,6 @@ cleanup:
 	return ret;
 }
 
-static int setup_named_v1_root(char *root, size_t len, const char *name)
-{
-	char options[PATH_MAX];
-	int r;
-
-	r = snprintf(root, len, "/mnt/cg_selftest");
-	if (r < 0)
-		return r;
-
-	r = snprintf(options, sizeof(options), "none,name=%s", name);
-	if (r < 0)
-		return r;
-
-	r = mkdir(root, 0755);
-	if (r < 0 && errno != EEXIST)
-		return r;
-
-	r = mount("none", root, "cgroup", 0, options);
-	if (r < 0)
-		return r;
-
-	return 0;
-}
-
-static void cleanup_named_v1_root(char *root)
-{
-	if (!cg_test_v1_named)
-		return;
-	umount(root);
-	rmdir(root);
-}
-
 #define T(x) { x, #x }
 struct corecg_test {
 	int (*fn)(const char *root);
@@ -923,22 +860,15 @@ struct corecg_test {
 int main(int argc, char *argv[])
 {
 	char root[PATH_MAX];
-	int i;
+	int i, ret = EXIT_SUCCESS;
 
-	ksft_print_header();
-	ksft_set_plan(ARRAY_SIZE(tests));
-	if (cg_find_unified_root(root, sizeof(root), &nsdelegate)) {
-		if (setup_named_v1_root(root, sizeof(root), CG_NAMED_NAME))
-			ksft_exit_skip("cgroup v2 isn't mounted and could not setup named v1 hierarchy\n");
-		cg_test_v1_named = true;
-		goto post_v2_setup;
-	}
+	if (cg_find_unified_root(root, sizeof(root)))
+		ksft_exit_skip("cgroup v2 isn't mounted\n");
 
 	if (cg_read_strstr(root, "cgroup.subtree_control", "memory"))
 		if (cg_write(root, "cgroup.subtree_control", "+memory"))
 			ksft_exit_skip("Failed to set memory controller\n");
 
-post_v2_setup:
 	for (i = 0; i < ARRAY_SIZE(tests); i++) {
 		switch (tests[i].fn(root)) {
 		case KSFT_PASS:
@@ -948,11 +878,11 @@ post_v2_setup:
 			ksft_test_result_skip("%s\n", tests[i].name);
 			break;
 		default:
+			ret = EXIT_FAILURE;
 			ksft_test_result_fail("%s\n", tests[i].name);
 			break;
 		}
 	}
 
-	cleanup_named_v1_root(root);
-	ksft_finished();
+	return ret;
 }

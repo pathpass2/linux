@@ -1,3 +1,3 @@
 .. SPDX-License-Identifier: GPL-2.0
 
-.. kernel-feat:: features
+.. kernel-feat:: $srctree/Documentation/features

@@ -160,7 +160,7 @@ static int __tb_xdomain_response(struct tb_ctl *ctl, const void *response,
  * This can be used to send a XDomain response message to the other
  * domain. No response for the message is expected.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: %0 in case of success and negative errno in case of failure
  */
 int tb_xdomain_response(struct tb_xdomain *xd, const void *response,
 			size_t size, enum tb_cfg_pkg_type type)
@@ -212,7 +212,7 @@ static int __tb_xdomain_request(struct tb_ctl *ctl, const void *request,
  * the other domain. The function waits until the response is received
  * or when timeout triggers. Whichever comes first.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: %0 in case of success and negative errno in case of failure
  */
 int tb_xdomain_request(struct tb_xdomain *xd, const void *request,
 	size_t request_size, enum tb_cfg_pkg_type request_type,
@@ -250,7 +250,7 @@ static int tb_xdp_handle_error(const struct tb_xdp_error_response *res)
 	case ERROR_UNKNOWN_DOMAIN:
 		return -EIO;
 	case ERROR_NOT_SUPPORTED:
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 	case ERROR_NOT_READY:
 		return -EAGAIN;
 	default:
@@ -537,8 +537,9 @@ static int tb_xdp_link_state_status_request(struct tb_ctl *ctl, u64 route,
 static int tb_xdp_link_state_status_response(struct tb *tb, struct tb_ctl *ctl,
 					     struct tb_xdomain *xd, u8 sequence)
 {
+	struct tb_switch *sw = tb_to_switch(xd->dev.parent);
 	struct tb_xdp_link_state_status_response res;
-	struct tb_port *port = tb_xdomain_downstream_port(xd);
+	struct tb_port *port = tb_port_at(xd->route, sw);
 	u32 val[2];
 	int ret;
 
@@ -613,8 +614,6 @@ static int tb_xdp_link_state_change_response(struct tb_ctl *ctl, u64 route,
  * messages. After this function is called the service driver needs to
  * be able to handle calls to callback whenever a package with the
  * registered protocol is received.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_register_protocol_handler(struct tb_protocol_handler *handler)
 {
@@ -705,27 +704,6 @@ out_unlock:
 	mutex_unlock(&xdomain_lock);
 }
 
-static void start_handshake(struct tb_xdomain *xd)
-{
-	xd->state = XDOMAIN_STATE_INIT;
-	queue_delayed_work(xd->tb->wq, &xd->state_work,
-			   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
-}
-
-/* Can be called from state_work */
-static void __stop_handshake(struct tb_xdomain *xd)
-{
-	cancel_delayed_work_sync(&xd->properties_changed_work);
-	xd->properties_changed_retries = 0;
-	xd->state_retries = 0;
-}
-
-static void stop_handshake(struct tb_xdomain *xd)
-{
-	cancel_delayed_work_sync(&xd->state_work);
-	__stop_handshake(xd);
-}
-
 static void tb_xdp_handle_request(struct work_struct *work)
 {
 	struct xdomain_request_work *xw = container_of(work, typeof(*xw), work);
@@ -788,15 +766,6 @@ static void tb_xdp_handle_request(struct work_struct *work)
 	case UUID_REQUEST:
 		tb_dbg(tb, "%llx: received XDomain UUID request\n", route);
 		ret = tb_xdp_uuid_response(ctl, route, sequence, uuid);
-		/*
-		 * If we've stopped the discovery with an error such as
-		 * timing out, we will restart the handshake now that we
-		 * received UUID request from the remote host.
-		 */
-		if (!ret && xd && xd->state == XDOMAIN_STATE_ERROR) {
-			dev_dbg(&xd->dev, "restarting handshake\n");
-			start_handshake(xd);
-		}
 		break;
 
 	case LINK_STATE_STATUS_REQUEST:
@@ -879,8 +848,6 @@ tb_xdp_schedule_request(struct tb *tb, const struct tb_xdp_header *hdr,
  * @drv: Driver to register
  *
  * Registers new service driver from @drv to the bus.
- *
- * Return: %0 on success, negative errno otherwise.
  */
 int tb_register_service_driver(struct tb_service_driver *drv)
 {
@@ -1001,12 +968,12 @@ static void tb_service_release(struct device *dev)
 	struct tb_xdomain *xd = tb_service_parent(svc);
 
 	tb_service_debugfs_remove(svc);
-	ida_free(&xd->service_ids, svc->id);
+	ida_simple_remove(&xd->service_ids, svc->id);
 	kfree(svc->key);
 	kfree(svc);
 }
 
-const struct device_type tb_service_type = {
+struct device_type tb_service_type = {
 	.name = "thunderbolt_service",
 	.groups = tb_service_attr_groups,
 	.uevent = tb_service_uevent,
@@ -1030,7 +997,7 @@ static int remove_missing_service(struct device *dev, void *data)
 	return 0;
 }
 
-static int find_service(struct device *dev, const void *data)
+static int find_service(struct device *dev, void *data)
 {
 	const struct tb_property *p = data;
 	struct tb_service *svc;
@@ -1103,7 +1070,7 @@ static void enumerate_services(struct tb_xdomain *xd)
 			break;
 		}
 
-		id = ida_alloc(&xd->service_ids, GFP_KERNEL);
+		id = ida_simple_get(&xd->service_ids, 0, 0, GFP_KERNEL);
 		if (id < 0) {
 			kfree(svc->key);
 			kfree(svc);
@@ -1170,7 +1137,7 @@ static int tb_xdomain_update_link_attributes(struct tb_xdomain *xd)
 	struct tb_port *port;
 	int ret;
 
-	port = tb_xdomain_downstream_port(xd);
+	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
 
 	ret = tb_port_get_link_speed(port);
 	if (ret < 0)
@@ -1211,8 +1178,9 @@ static int tb_xdomain_get_uuid(struct tb_xdomain *xd)
 		if (xd->state_retries-- > 0) {
 			dev_dbg(&xd->dev, "failed to request UUID, retrying\n");
 			return -EAGAIN;
+		} else {
+			dev_dbg(&xd->dev, "failed to read remote UUID\n");
 		}
-		dev_dbg(&xd->dev, "failed to read remote UUID\n");
 		return ret;
 	}
 
@@ -1284,7 +1252,8 @@ static int tb_xdomain_get_link_status(struct tb_xdomain *xd)
 static int tb_xdomain_link_state_change(struct tb_xdomain *xd,
 					unsigned int width)
 {
-	struct tb_port *port = tb_xdomain_downstream_port(xd);
+	struct tb_switch *sw = tb_to_switch(xd->dev.parent);
+	struct tb_port *port = tb_port_at(xd->route, sw);
 	struct tb *tb = xd->tb;
 	u8 tlw, tls;
 	u32 val;
@@ -1324,16 +1293,13 @@ static int tb_xdomain_link_state_change(struct tb_xdomain *xd,
 
 static int tb_xdomain_bond_lanes_uuid_high(struct tb_xdomain *xd)
 {
-	unsigned int width, width_mask;
 	struct tb_port *port;
-	int ret;
+	int ret, width;
 
 	if (xd->target_link_width == LANE_ADP_CS_1_TARGET_WIDTH_SINGLE) {
-		width = TB_LINK_WIDTH_SINGLE;
-		width_mask = width;
+		width = 1;
 	} else if (xd->target_link_width == LANE_ADP_CS_1_TARGET_WIDTH_DUAL) {
-		width = TB_LINK_WIDTH_DUAL;
-		width_mask = width | TB_LINK_WIDTH_ASYM_TX | TB_LINK_WIDTH_ASYM_RX;
+		width = 2;
 	} else {
 		if (xd->state_retries-- > 0) {
 			dev_dbg(&xd->dev,
@@ -1344,7 +1310,7 @@ static int tb_xdomain_bond_lanes_uuid_high(struct tb_xdomain *xd)
 		return -ETIMEDOUT;
 	}
 
-	port = tb_xdomain_downstream_port(xd);
+	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
 
 	/*
 	 * We can't use tb_xdomain_lane_bonding_enable() here because it
@@ -1365,16 +1331,15 @@ static int tb_xdomain_bond_lanes_uuid_high(struct tb_xdomain *xd)
 		return ret;
 	}
 
-	ret = tb_port_wait_for_link_width(port, width_mask,
-					  XDOMAIN_BONDING_TIMEOUT);
+	ret = tb_port_wait_for_link_width(port, width, XDOMAIN_BONDING_TIMEOUT);
 	if (ret) {
 		dev_warn(&xd->dev, "error waiting for link width to become %d\n",
-			 width_mask);
+			 width);
 		return ret;
 	}
 
-	port->bonded = width > TB_LINK_WIDTH_SINGLE;
-	port->dual_link_port->bonded = width > TB_LINK_WIDTH_SINGLE;
+	port->bonded = width == 2;
+	port->dual_link_port->bonded = width == 2;
 
 	tb_port_update_credits(port);
 	tb_xdomain_update_link_attributes(xd);
@@ -1402,10 +1367,12 @@ static int tb_xdomain_get_properties(struct tb_xdomain *xd)
 			dev_dbg(&xd->dev,
 				"failed to request remote properties, retrying\n");
 			return -EAGAIN;
+		} else {
+			/* Give up now */
+			dev_err(&xd->dev,
+				"failed read XDomain properties from %pUb\n",
+				xd->remote_uuid);
 		}
-		/* Give up now */
-		dev_err(&xd->dev, "failed read XDomain properties from %pUb\n",
-			xd->remote_uuid);
 
 		return ret;
 	}
@@ -1461,15 +1428,10 @@ static int tb_xdomain_get_properties(struct tb_xdomain *xd)
 		if (xd->bonding_possible) {
 			struct tb_port *port;
 
-			port = tb_xdomain_downstream_port(xd);
+			port = tb_port_at(xd->route, tb_xdomain_parent(xd));
 			if (!port->bonded)
 				tb_port_disable(port->dual_link_port);
 		}
-
-		dev_dbg(&xd->dev, "current link speed %u.0 Gb/s\n",
-			xd->link_speed);
-		dev_dbg(&xd->dev, "current link width %s\n",
-			tb_width_name(xd->link_width));
 
 		if (device_add(&xd->dev)) {
 			dev_err(&xd->dev, "failed to add XDomain device\n");
@@ -1560,13 +1522,6 @@ static void tb_xdomain_queue_properties_changed(struct tb_xdomain *xd)
 			   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
 }
 
-static void tb_xdomain_failed(struct tb_xdomain *xd)
-{
-	xd->state = XDOMAIN_STATE_ERROR;
-	queue_delayed_work(xd->tb->wq, &xd->state_work,
-			   msecs_to_jiffies(XDOMAIN_DEFAULT_TIMEOUT));
-}
-
 static void tb_xdomain_state_work(struct work_struct *work)
 {
 	struct tb_xdomain *xd = container_of(work, typeof(*xd), state_work.work);
@@ -1593,7 +1548,7 @@ static void tb_xdomain_state_work(struct work_struct *work)
 		if (ret) {
 			if (ret == -EAGAIN)
 				goto retry_state;
-			tb_xdomain_failed(xd);
+			xd->state = XDOMAIN_STATE_ERROR;
 		} else {
 			tb_xdomain_queue_properties_changed(xd);
 			if (xd->bonding_possible)
@@ -1658,7 +1613,7 @@ static void tb_xdomain_state_work(struct work_struct *work)
 		if (ret) {
 			if (ret == -EAGAIN)
 				goto retry_state;
-			tb_xdomain_failed(xd);
+			xd->state = XDOMAIN_STATE_ERROR;
 		} else {
 			xd->state = XDOMAIN_STATE_ENUMERATED;
 		}
@@ -1669,8 +1624,6 @@ static void tb_xdomain_state_work(struct work_struct *work)
 		break;
 
 	case XDOMAIN_STATE_ERROR:
-		dev_dbg(&xd->dev, "discovery failed, stopping handshake\n");
-		__stop_handshake(xd);
 		break;
 
 	default:
@@ -1787,57 +1740,16 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR(rx_speed, 0444, speed_show, NULL);
 static DEVICE_ATTR(tx_speed, 0444, speed_show, NULL);
 
-static ssize_t rx_lanes_show(struct device *dev, struct device_attribute *attr,
-			     char *buf)
+static ssize_t lanes_show(struct device *dev, struct device_attribute *attr,
+			  char *buf)
 {
 	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
-	unsigned int width;
 
-	switch (xd->link_width) {
-	case TB_LINK_WIDTH_SINGLE:
-	case TB_LINK_WIDTH_ASYM_TX:
-		width = 1;
-		break;
-	case TB_LINK_WIDTH_DUAL:
-		width = 2;
-		break;
-	case TB_LINK_WIDTH_ASYM_RX:
-		width = 3;
-		break;
-	default:
-		WARN_ON_ONCE(1);
-		return -EINVAL;
-	}
-
-	return sysfs_emit(buf, "%u\n", width);
+	return sysfs_emit(buf, "%u\n", xd->link_width);
 }
-static DEVICE_ATTR(rx_lanes, 0444, rx_lanes_show, NULL);
 
-static ssize_t tx_lanes_show(struct device *dev, struct device_attribute *attr,
-			     char *buf)
-{
-	struct tb_xdomain *xd = container_of(dev, struct tb_xdomain, dev);
-	unsigned int width;
-
-	switch (xd->link_width) {
-	case TB_LINK_WIDTH_SINGLE:
-	case TB_LINK_WIDTH_ASYM_RX:
-		width = 1;
-		break;
-	case TB_LINK_WIDTH_DUAL:
-		width = 2;
-		break;
-	case TB_LINK_WIDTH_ASYM_TX:
-		width = 3;
-		break;
-	default:
-		WARN_ON_ONCE(1);
-		return -EINVAL;
-	}
-
-	return sysfs_emit(buf, "%u\n", width);
-}
-static DEVICE_ATTR(tx_lanes, 0444, tx_lanes_show, NULL);
+static DEVICE_ATTR(rx_lanes, 0444, lanes_show, NULL);
+static DEVICE_ATTR(tx_lanes, 0444, lanes_show, NULL);
 
 static struct attribute *xdomain_attrs[] = {
 	&dev_attr_device.attr,
@@ -1881,6 +1793,21 @@ static void tb_xdomain_release(struct device *dev)
 	kfree(xd);
 }
 
+static void start_handshake(struct tb_xdomain *xd)
+{
+	xd->state = XDOMAIN_STATE_INIT;
+	queue_delayed_work(xd->tb->wq, &xd->state_work,
+			   msecs_to_jiffies(XDOMAIN_SHORT_TIMEOUT));
+}
+
+static void stop_handshake(struct tb_xdomain *xd)
+{
+	cancel_delayed_work_sync(&xd->properties_changed_work);
+	cancel_delayed_work_sync(&xd->state_work);
+	xd->properties_changed_retries = 0;
+	xd->state_retries = 0;
+}
+
 static int __maybe_unused tb_xdomain_suspend(struct device *dev)
 {
 	stop_handshake(tb_to_xdomain(dev));
@@ -1897,70 +1824,24 @@ static const struct dev_pm_ops tb_xdomain_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(tb_xdomain_suspend, tb_xdomain_resume)
 };
 
-const struct device_type tb_xdomain_type = {
+struct device_type tb_xdomain_type = {
 	.name = "thunderbolt_xdomain",
 	.release = tb_xdomain_release,
 	.pm = &tb_xdomain_pm_ops,
 };
 EXPORT_SYMBOL_GPL(tb_xdomain_type);
 
-static void tb_xdomain_link_init(struct tb_xdomain *xd, struct tb_port *down)
-{
-	if (!down->dual_link_port)
-		return;
-
-	/*
-	 * Gen 4 links come up already as bonded so only update the port
-	 * structures here.
-	 */
-	if (tb_port_get_link_generation(down) >= 4) {
-		down->bonded = true;
-		down->dual_link_port->bonded = true;
-	} else {
-		xd->bonding_possible = true;
-	}
-}
-
-static void tb_xdomain_link_exit(struct tb_xdomain *xd)
-{
-	struct tb_port *down = tb_xdomain_downstream_port(xd);
-
-	if (!down->dual_link_port)
-		return;
-
-	if (tb_port_get_link_generation(down) >= 4) {
-		down->bonded = false;
-		down->dual_link_port->bonded = false;
-	} else if (xd->link_width > TB_LINK_WIDTH_SINGLE) {
-		/*
-		 * Just return port structures back to way they were and
-		 * update credits. No need to update userspace because
-		 * the XDomain is removed soon anyway.
-		 */
-		tb_port_lane_bonding_disable(down);
-		tb_port_update_credits(down);
-	} else if (down->dual_link_port) {
-		/*
-		 * Re-enable the lane 1 adapter we disabled at the end
-		 * of tb_xdomain_get_properties().
-		 */
-		tb_port_enable(down->dual_link_port);
-	}
-}
-
 /**
  * tb_xdomain_alloc() - Allocate new XDomain object
  * @tb: Domain where the XDomain belongs
- * @parent: Parent device (the switch through which the other domain
- *	    is reached).
+ * @parent: Parent device (the switch through the connection to the
+ *	    other domain is reached).
  * @route: Route string used to reach the other domain
  * @local_uuid: Our local domain UUID
  * @remote_uuid: UUID of the other domain (optional)
  *
  * Allocates new XDomain structure and returns pointer to that. The
  * object must be released by calling tb_xdomain_put().
- *
- * Return: Pointer to &struct tb_xdomain, %NULL in case of failure.
  */
 struct tb_xdomain *tb_xdomain_alloc(struct tb *tb, struct device *parent,
 				    u64 route, const uuid_t *local_uuid,
@@ -2000,8 +1881,7 @@ struct tb_xdomain *tb_xdomain_alloc(struct tb *tb, struct device *parent,
 			goto err_free_local_uuid;
 	} else {
 		xd->needs_uuid = true;
-
-		tb_xdomain_link_init(xd, down);
+		xd->bonding_possible = !!down->dual_link_port;
 	}
 
 	device_initialize(&xd->dev);
@@ -2070,8 +1950,6 @@ void tb_xdomain_remove(struct tb_xdomain *xd)
 
 	device_for_each_child_reverse(&xd->dev, xd, unregister_service);
 
-	tb_xdomain_link_exit(xd);
-
 	/*
 	 * Undo runtime PM here explicitly because it is possible that
 	 * the XDomain was never added to the bus and thus device_del()
@@ -2097,15 +1975,14 @@ void tb_xdomain_remove(struct tb_xdomain *xd)
  * to enable bonding by first enabling the port and waiting for the CL0
  * state.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: %0 in case of success and negative errno in case of error.
  */
 int tb_xdomain_lane_bonding_enable(struct tb_xdomain *xd)
 {
-	unsigned int width_mask;
 	struct tb_port *port;
 	int ret;
 
-	port = tb_xdomain_downstream_port(xd);
+	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
 	if (!port->dual_link_port)
 		return -ENODEV;
 
@@ -2125,12 +2002,7 @@ int tb_xdomain_lane_bonding_enable(struct tb_xdomain *xd)
 		return ret;
 	}
 
-	/* Any of the widths are all bonded */
-	width_mask = TB_LINK_WIDTH_DUAL | TB_LINK_WIDTH_ASYM_TX |
-		     TB_LINK_WIDTH_ASYM_RX;
-
-	ret = tb_port_wait_for_link_width(port, width_mask,
-					  XDOMAIN_BONDING_TIMEOUT);
+	ret = tb_port_wait_for_link_width(port, 2, XDOMAIN_BONDING_TIMEOUT);
 	if (ret) {
 		tb_port_warn(port, "failed to enable lane bonding\n");
 		return ret;
@@ -2155,13 +2027,10 @@ void tb_xdomain_lane_bonding_disable(struct tb_xdomain *xd)
 {
 	struct tb_port *port;
 
-	port = tb_xdomain_downstream_port(xd);
+	port = tb_port_at(xd->route, tb_xdomain_parent(xd));
 	if (port->dual_link_port) {
-		int ret;
-
 		tb_port_lane_bonding_disable(port);
-		ret = tb_port_wait_for_link_width(port, TB_LINK_WIDTH_SINGLE, 100);
-		if (ret == -ETIMEDOUT)
+		if (tb_port_wait_for_link_width(port, 1, 100) == -ETIMEDOUT)
 			tb_port_warn(port, "timeout disabling lane bonding\n");
 		tb_port_disable(port->dual_link_port);
 		tb_port_update_credits(port);
@@ -2177,14 +2046,10 @@ EXPORT_SYMBOL_GPL(tb_xdomain_lane_bonding_disable);
  * @xd: XDomain connection
  * @hopid: Preferred HopID or %-1 for next available
  *
- * Returned HopID is guaranteed to be within range supported by the input
- * lane adapter.
+ * Returns allocated HopID or negative errno. Specifically returns
+ * %-ENOSPC if there are no more available HopIDs. Returned HopID is
+ * guaranteed to be within range supported by the input lane adapter.
  * Call tb_xdomain_release_in_hopid() to release the allocated HopID.
- *
- * Return:
- * * Allocated HopID - On success.
- * * %-ENOSPC - If there are no more available HopIDs.
- * * Negative errno - Another error occurred.
  */
 int tb_xdomain_alloc_in_hopid(struct tb_xdomain *xd, int hopid)
 {
@@ -2203,14 +2068,10 @@ EXPORT_SYMBOL_GPL(tb_xdomain_alloc_in_hopid);
  * @xd: XDomain connection
  * @hopid: Preferred HopID or %-1 for next available
  *
- * Returned HopID is guaranteed to be within range supported by the
- * output lane adapter.
- * Call tb_xdomain_release_out_hopid() to release the allocated HopID.
- *
- * Return:
- * * Allocated HopID - On success.
- * * %-ENOSPC - If there are no more available HopIDs.
- * * Negative errno - Another error occurred.
+ * Returns allocated HopID or negative errno. Specifically returns
+ * %-ENOSPC if there are no more available HopIDs. Returned HopID is
+ * guaranteed to be within range supported by the output lane adapter.
+ * Call tb_xdomain_release_in_hopid() to release the allocated HopID.
  */
 int tb_xdomain_alloc_out_hopid(struct tb_xdomain *xd, int hopid)
 {
@@ -2259,7 +2120,7 @@ EXPORT_SYMBOL_GPL(tb_xdomain_release_out_hopid);
  * path. If a transmit or receive path is not needed, pass %-1 for those
  * parameters.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: %0 in case of success and negative errno in case of error
  */
 int tb_xdomain_enable_paths(struct tb_xdomain *xd, int transmit_path,
 			    int transmit_ring, int receive_path,
@@ -2284,7 +2145,7 @@ EXPORT_SYMBOL_GPL(tb_xdomain_enable_paths);
  * as path/ring parameter means don't care. Normally the callers should
  * pass the same values here as they do when paths are enabled.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: %0 in case of success and negative errno in case of error
  */
 int tb_xdomain_disable_paths(struct tb_xdomain *xd, int transmit_path,
 			     int transmit_ring, int receive_path,
@@ -2318,12 +2179,13 @@ static struct tb_xdomain *switch_find_xdomain(struct tb_switch *sw,
 				if (xd->remote_uuid &&
 				    uuid_equal(xd->remote_uuid, lookup->uuid))
 					return xd;
-			} else {
-				if (lookup->link && lookup->link == xd->link &&
-				    lookup->depth == xd->depth)
-					return xd;
-				if (lookup->route && lookup->route == xd->route)
-					return xd;
+			} else if (lookup->link &&
+				   lookup->link == xd->link &&
+				   lookup->depth == xd->depth) {
+				return xd;
+			} else if (lookup->route &&
+				   lookup->route == xd->route) {
+				return xd;
 			}
 		} else if (tb_port_has_remote(port)) {
 			xd = switch_find_xdomain(port->remote->sw, lookup);
@@ -2349,8 +2211,6 @@ static struct tb_xdomain *switch_find_xdomain(struct tb_switch *sw,
  * to the bus (handshake is still in progress).
  *
  * The caller needs to hold @tb->lock.
- *
- * Return: Pointer to &struct tb_xdomain or %NULL if not found.
  */
 struct tb_xdomain *tb_xdomain_find_by_uuid(struct tb *tb, const uuid_t *uuid)
 {
@@ -2380,8 +2240,6 @@ EXPORT_SYMBOL_GPL(tb_xdomain_find_by_uuid);
  * to the bus (handshake is still in progress).
  *
  * The caller needs to hold @tb->lock.
- *
- * Return: Pointer to &struct tb_xdomain or %NULL if not found.
  */
 struct tb_xdomain *tb_xdomain_find_by_link_depth(struct tb *tb, u8 link,
 						 u8 depth)
@@ -2411,8 +2269,6 @@ struct tb_xdomain *tb_xdomain_find_by_link_depth(struct tb *tb, u8 link,
  * to the bus (handshake is still in progress).
  *
  * The caller needs to hold @tb->lock.
- *
- * Return: Pointer to &struct tb_xdomain or %NULL if not found.
  */
 struct tb_xdomain *tb_xdomain_find_by_route(struct tb *tb, u64 route)
 {
@@ -2511,7 +2367,7 @@ static bool remove_directory(const char *key, const struct tb_property_dir *dir)
  * notified so they can re-read properties of this host if they are
  * interested.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Return: %0 on success and negative errno on failure
  */
 int tb_register_property_dir(const char *key, struct tb_property_dir *dir)
 {
@@ -2582,9 +2438,10 @@ int tb_xdomain_init(void)
 	 * Rest of the properties are filled dynamically based on these
 	 * when the P2P connection is made.
 	 */
-	tb_property_add_immediate(xdomain_property_dir, "vendorid", 0x1d6b);
-	tb_property_add_text(xdomain_property_dir, "vendorid", "Linux");
-	tb_property_add_immediate(xdomain_property_dir, "deviceid", 0x0004);
+	tb_property_add_immediate(xdomain_property_dir, "vendorid",
+				  PCI_VENDOR_ID_INTEL);
+	tb_property_add_text(xdomain_property_dir, "vendorid", "Intel Corp.");
+	tb_property_add_immediate(xdomain_property_dir, "deviceid", 0x1);
 	tb_property_add_immediate(xdomain_property_dir, "devicerv", 0x80000100);
 
 	xdomain_property_block_gen = get_random_u32();

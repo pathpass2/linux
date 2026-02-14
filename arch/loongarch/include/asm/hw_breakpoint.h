@@ -38,8 +38,8 @@ struct arch_hw_breakpoint {
  * Limits.
  * Changing these will require modifications to the register accessors.
  */
-#define LOONGARCH_MAX_BRP		14
-#define LOONGARCH_MAX_WRP		14
+#define LOONGARCH_MAX_BRP		8
+#define LOONGARCH_MAX_WRP		8
 
 /* Virtual debug register bases. */
 #define CSR_CFG_ADDR	0
@@ -75,8 +75,6 @@ do {								\
 #define CSR_MWPC_NUM		0x3f
 
 #define CTRL_PLV_ENABLE		0x1e
-#define CTRL_PLV0_ENABLE	0x02
-#define CTRL_PLV3_ENABLE	0x10
 
 #define MWPnCFG3_LoadEn		8
 #define MWPnCFG3_StoreEn	9
@@ -103,7 +101,7 @@ struct perf_event;
 struct perf_event_attr;
 
 extern int arch_bp_generic_fields(struct arch_hw_breakpoint_ctrl ctrl,
-				  int *gen_len, int *gen_type);
+				  int *gen_len, int *gen_type, int *offset);
 extern int arch_check_bp_in_kernelspace(struct arch_hw_breakpoint *hw);
 extern int hw_breakpoint_arch_parse(struct perf_event *bp,
 				    const struct perf_event_attr *attr,
@@ -134,13 +132,13 @@ static inline void hw_breakpoint_thread_switch(struct task_struct *next)
 /* Determine number of BRP registers available. */
 static inline int get_num_brps(void)
 {
-	return csr_read32(LOONGARCH_CSR_FWPC) & CSR_FWPC_NUM;
+	return csr_read64(LOONGARCH_CSR_FWPC) & CSR_FWPC_NUM;
 }
 
 /* Determine number of WRP registers available. */
 static inline int get_num_wrps(void)
 {
-	return csr_read32(LOONGARCH_CSR_MWPC) & CSR_MWPC_NUM;
+	return csr_read64(LOONGARCH_CSR_MWPC) & CSR_MWPC_NUM;
 }
 
 #endif	/* __KERNEL__ */

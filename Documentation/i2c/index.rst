@@ -18,7 +18,6 @@ Introduction
    i2c-topology
    muxes/i2c-mux-gpio
    i2c-sysfs
-   i2c-address-translators
 
 Writing device drivers
 ======================
@@ -66,3 +65,10 @@ Legacy documentation
    :maxdepth: 1
 
    old-module-parameters
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

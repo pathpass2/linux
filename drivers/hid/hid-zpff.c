@@ -138,5 +138,4 @@ static struct hid_driver zp_driver = {
 };
 module_hid_driver(zp_driver);
 
-MODULE_DESCRIPTION("Force feedback support for Zeroplus based devices");
 MODULE_LICENSE("GPL");

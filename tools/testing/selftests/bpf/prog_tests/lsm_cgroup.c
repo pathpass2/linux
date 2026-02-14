@@ -10,6 +10,10 @@
 #include "cgroup_helpers.h"
 #include "network_helpers.h"
 
+#ifndef ENOTSUPP
+#define ENOTSUPP 524
+#endif
+
 static struct btf *btf;
 
 static __u32 query_prog_cnt(int cgroup_fd, const char *attach_func)

@@ -2652,10 +2652,10 @@ int bnx2x_get_vf_config(struct net_device *dev, int vfidx,
 		/* vlan */
 		if (bulletin->valid_bitmap & (1 << VLAN_VALID))
 			/* vlan configured by ndo so its in bulletin board */
-			ivi->vlan = bulletin->vlan;
+			memcpy(&ivi->vlan, &bulletin->vlan, VLAN_HLEN);
 		else
 			/* function has not been loaded yet. Show vlans as 0s */
-			ivi->vlan = 0;
+			memset(&ivi->vlan, 0, VLAN_HLEN);
 
 		mutex_unlock(&bp->vfdb->bulletin_mutex);
 	}

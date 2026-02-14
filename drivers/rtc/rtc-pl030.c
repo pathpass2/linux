@@ -21,6 +21,7 @@
 #define RTC_CR_MIE	(1 << 0)
 
 struct pl030_rtc {
+	struct rtc_device	*rtc;
 	void __iomem		*base;
 };
 
@@ -85,7 +86,6 @@ static int pl030_probe(struct amba_device *dev, const struct amba_id *id)
 {
 	struct pl030_rtc *rtc;
 	int ret;
-	struct rtc_device *rtc_dev;
 
 	ret = amba_request_regions(dev, NULL);
 	if (ret)
@@ -97,14 +97,14 @@ static int pl030_probe(struct amba_device *dev, const struct amba_id *id)
 		goto err_rtc;
 	}
 
-	rtc_dev = devm_rtc_allocate_device(&dev->dev);
-	if (IS_ERR(rtc_dev)) {
-		ret = PTR_ERR(rtc_dev);
+	rtc->rtc = devm_rtc_allocate_device(&dev->dev);
+	if (IS_ERR(rtc->rtc)) {
+		ret = PTR_ERR(rtc->rtc);
 		goto err_rtc;
 	}
 
-	rtc_dev->ops = &pl030_ops;
-	rtc_dev->range_max = U32_MAX;
+	rtc->rtc->ops = &pl030_ops;
+	rtc->rtc->range_max = U32_MAX;
 	rtc->base = ioremap(dev->res.start, resource_size(&dev->res));
 	if (!rtc->base) {
 		ret = -ENOMEM;
@@ -121,7 +121,7 @@ static int pl030_probe(struct amba_device *dev, const struct amba_id *id)
 	if (ret)
 		goto err_irq;
 
-	ret = devm_rtc_register_device(rtc_dev);
+	ret = devm_rtc_register_device(rtc->rtc);
 	if (ret)
 		goto err_reg;
 
@@ -148,7 +148,7 @@ static void pl030_remove(struct amba_device *dev)
 	amba_release_regions(dev);
 }
 
-static const struct amba_id pl030_ids[] = {
+static struct amba_id pl030_ids[] = {
 	{
 		.id	= 0x00041030,
 		.mask	= 0x000fffff,

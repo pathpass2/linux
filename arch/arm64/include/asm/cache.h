@@ -33,9 +33,8 @@
  * the CPU.
  */
 #define ARCH_DMA_MINALIGN	(128)
-#define ARCH_KMALLOC_MINALIGN	(8)
 
-#if !defined(__ASSEMBLER__) && !defined(BUILD_VDSO)
+#ifndef __ASSEMBLY__
 
 #include <linux/bitops.h>
 #include <linux/kasan-enabled.h>
@@ -58,6 +57,7 @@ static inline unsigned int arch_slab_minalign(void)
 #define CTR_L1IP(ctr)		SYS_FIELD_GET(CTR_EL0, L1Ip, ctr)
 
 #define ICACHEF_ALIASING	0
+#define ICACHEF_VPIPT		1
 extern unsigned long __icache_flags;
 
 /*
@@ -67,6 +67,11 @@ extern unsigned long __icache_flags;
 static inline int icache_is_aliasing(void)
 {
 	return test_bit(ICACHEF_ALIASING, &__icache_flags);
+}
+
+static __always_inline int icache_is_vpipt(void)
+{
+	return test_bit(ICACHEF_VPIPT, &__icache_flags);
 }
 
 static inline u32 cache_type_cwg(void)
@@ -84,25 +89,6 @@ static inline int cache_line_size_of_cpu(void)
 }
 
 int cache_line_size(void);
-
-#define dma_get_cache_alignment	cache_line_size
-
-/* Compress a u64 MPIDR value into 32 bits. */
-static inline u64 arch_compact_of_hwid(u64 id)
-{
-	u64 aff3 = MPIDR_AFFINITY_LEVEL(id, 3);
-
-	/*
-	 * These bits are expected to be RES0. If not, return a value with
-	 * the upper 32 bits set to force the caller to give up on 32 bit
-	 * cache ids.
-	 */
-	if (FIELD_GET(GENMASK_ULL(63, 40), id))
-		return id;
-
-	return (aff3 << 24) | FIELD_GET(GENMASK_ULL(23, 0), id);
-}
-#define arch_compact_of_hwid	arch_compact_of_hwid
 
 /*
  * Read the effective value of CTR_EL0.
@@ -135,6 +121,6 @@ static inline u32 __attribute_const__ read_cpuid_effective_cachetype(void)
 	return ctr;
 }
 
-#endif /* !defined(__ASSEMBLER__) && !defined(BUILD_VDSO) */
+#endif	/* __ASSEMBLY__ */
 
 #endif

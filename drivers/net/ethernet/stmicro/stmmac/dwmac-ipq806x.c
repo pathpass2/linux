@@ -112,7 +112,7 @@ struct ipq806x_gmac {
 	phy_interface_t phy_mode;
 };
 
-static int get_clk_div_sgmii(struct ipq806x_gmac *gmac, int speed)
+static int get_clk_div_sgmii(struct ipq806x_gmac *gmac, unsigned int speed)
 {
 	struct device *dev = &gmac->pdev->dev;
 	int div;
@@ -138,7 +138,7 @@ static int get_clk_div_sgmii(struct ipq806x_gmac *gmac, int speed)
 	return div;
 }
 
-static int get_clk_div_rgmii(struct ipq806x_gmac *gmac, int speed)
+static int get_clk_div_rgmii(struct ipq806x_gmac *gmac, unsigned int speed)
 {
 	struct device *dev = &gmac->pdev->dev;
 	int div;
@@ -164,16 +164,13 @@ static int get_clk_div_rgmii(struct ipq806x_gmac *gmac, int speed)
 	return div;
 }
 
-static int ipq806x_gmac_set_speed(struct ipq806x_gmac *gmac, int speed)
+static int ipq806x_gmac_set_speed(struct ipq806x_gmac *gmac, unsigned int speed)
 {
 	uint32_t clk_bits, val;
 	int div;
 
 	switch (gmac->phy_mode) {
 	case PHY_INTERFACE_MODE_RGMII:
-	case PHY_INTERFACE_MODE_RGMII_ID:
-	case PHY_INTERFACE_MODE_RGMII_RXID:
-	case PHY_INTERFACE_MODE_RGMII_TXID:
 		div = get_clk_div_rgmii(gmac, speed);
 		clk_bits = NSS_COMMON_CLK_GATE_RGMII_RX_EN(gmac->id) |
 			   NSS_COMMON_CLK_GATE_RGMII_TX_EN(gmac->id);
@@ -211,12 +208,16 @@ static int ipq806x_gmac_set_speed(struct ipq806x_gmac *gmac, int speed)
 	return 0;
 }
 
-static int ipq806x_gmac_of_parse(struct ipq806x_gmac *gmac,
-				 struct plat_stmmacenet_data *plat_dat)
+static int ipq806x_gmac_of_parse(struct ipq806x_gmac *gmac)
 {
 	struct device *dev = &gmac->pdev->dev;
+	int ret;
 
-	gmac->phy_mode = plat_dat->phy_interface;
+	ret = of_get_phy_mode(dev->of_node, &gmac->phy_mode);
+	if (ret) {
+		dev_err(dev, "missing phy mode property\n");
+		return -EINVAL;
+	}
 
 	if (of_property_read_u32(dev->of_node, "qcom,id", &gmac->id) < 0) {
 		dev_err(dev, "missing qcom id property\n");
@@ -256,12 +257,11 @@ static int ipq806x_gmac_of_parse(struct ipq806x_gmac *gmac,
 	return PTR_ERR_OR_ZERO(gmac->qsgmii_csr);
 }
 
-static int ipq806x_gmac_set_clk_tx_rate(void *bsp_priv, struct clk *clk_tx_i,
-					phy_interface_t interface, int speed)
+static void ipq806x_gmac_fix_mac_speed(void *priv, unsigned int speed)
 {
-	struct ipq806x_gmac *gmac = bsp_priv;
+	struct ipq806x_gmac *gmac = priv;
 
-	return ipq806x_gmac_set_speed(gmac, speed);
+	ipq806x_gmac_set_speed(gmac, speed);
 }
 
 static int
@@ -384,20 +384,22 @@ static int ipq806x_gmac_probe(struct platform_device *pdev)
 	if (val)
 		return val;
 
-	plat_dat = devm_stmmac_probe_config_dt(pdev, stmmac_res.mac);
+	plat_dat = stmmac_probe_config_dt(pdev, stmmac_res.mac);
 	if (IS_ERR(plat_dat))
 		return PTR_ERR(plat_dat);
 
 	gmac = devm_kzalloc(dev, sizeof(*gmac), GFP_KERNEL);
-	if (!gmac)
-		return -ENOMEM;
+	if (!gmac) {
+		err = -ENOMEM;
+		goto err_remove_config_dt;
+	}
 
 	gmac->pdev = pdev;
 
-	err = ipq806x_gmac_of_parse(gmac, plat_dat);
+	err = ipq806x_gmac_of_parse(gmac);
 	if (err) {
 		dev_err(dev, "device tree parsing error\n");
-		return err;
+		goto err_remove_config_dt;
 	}
 
 	regmap_write(gmac->qsgmii_csr, QSGMII_PCS_CAL_LCKDT_CTL,
@@ -410,9 +412,6 @@ static int ipq806x_gmac_probe(struct platform_device *pdev)
 	val |= NSS_COMMON_GMAC_CTL_CSYS_REQ;
 	switch (gmac->phy_mode) {
 	case PHY_INTERFACE_MODE_RGMII:
-	case PHY_INTERFACE_MODE_RGMII_ID:
-	case PHY_INTERFACE_MODE_RGMII_RXID:
-	case PHY_INTERFACE_MODE_RGMII_TXID:
 		val |= NSS_COMMON_GMAC_CTL_PHY_IFACE_SEL;
 		break;
 	case PHY_INTERFACE_MODE_SGMII:
@@ -428,9 +427,6 @@ static int ipq806x_gmac_probe(struct platform_device *pdev)
 	val &= ~(1 << NSS_COMMON_CLK_SRC_CTRL_OFFSET(gmac->id));
 	switch (gmac->phy_mode) {
 	case PHY_INTERFACE_MODE_RGMII:
-	case PHY_INTERFACE_MODE_RGMII_ID:
-	case PHY_INTERFACE_MODE_RGMII_RXID:
-	case PHY_INTERFACE_MODE_RGMII_TXID:
 		val |= NSS_COMMON_CLK_SRC_CTRL_RGMII(gmac->id) <<
 			NSS_COMMON_CLK_SRC_CTRL_OFFSET(gmac->id);
 		break;
@@ -448,9 +444,6 @@ static int ipq806x_gmac_probe(struct platform_device *pdev)
 	val |= NSS_COMMON_CLK_GATE_PTP_EN(gmac->id);
 	switch (gmac->phy_mode) {
 	case PHY_INTERFACE_MODE_RGMII:
-	case PHY_INTERFACE_MODE_RGMII_ID:
-	case PHY_INTERFACE_MODE_RGMII_RXID:
-	case PHY_INTERFACE_MODE_RGMII_TXID:
 		val |= NSS_COMMON_CLK_GATE_RGMII_RX_EN(gmac->id) |
 			NSS_COMMON_CLK_GATE_RGMII_TX_EN(gmac->id);
 		break;
@@ -466,26 +459,35 @@ static int ipq806x_gmac_probe(struct platform_device *pdev)
 	if (gmac->phy_mode == PHY_INTERFACE_MODE_SGMII) {
 		err = ipq806x_gmac_configure_qsgmii_params(gmac);
 		if (err)
-			return err;
+			goto err_remove_config_dt;
 
 		err = ipq806x_gmac_configure_qsgmii_pcs_speed(gmac);
 		if (err)
-			return err;
+			goto err_remove_config_dt;
 	}
 
-	plat_dat->core_type = DWMAC_CORE_GMAC;
+	plat_dat->has_gmac = true;
 	plat_dat->bsp_priv = gmac;
-	plat_dat->set_clk_tx_rate = ipq806x_gmac_set_clk_tx_rate;
+	plat_dat->fix_mac_speed = ipq806x_gmac_fix_mac_speed;
 	plat_dat->multicast_filter_bins = 0;
 	plat_dat->tx_fifo_size = 8192;
 	plat_dat->rx_fifo_size = 8192;
 
-	return stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);
+	err = stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);
+	if (err)
+		goto err_remove_config_dt;
+
+	return 0;
 
 err_unsupported_phy:
 	dev_err(&pdev->dev, "Unsupported PHY mode: \"%s\"\n",
 		phy_modes(gmac->phy_mode));
-	return -EINVAL;
+	err = -EINVAL;
+
+err_remove_config_dt:
+	stmmac_remove_config_dt(pdev, plat_dat);
+
+	return err;
 }
 
 static const struct of_device_id ipq806x_gmac_dwmac_match[] = {

@@ -9,7 +9,6 @@
 
 #include <asm/desc.h>
 #include <asm/fpu/api.h>
-#include <asm/msr.h>
 
 /*
  * Image of the saved processor state, used by the low level ACPI suspend to

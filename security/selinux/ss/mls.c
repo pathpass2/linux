@@ -2,17 +2,21 @@
 /*
  * Implementation of the multi-level security (MLS) policy.
  *
- * Author : Stephen Smalley, <stephen.smalley.work@gmail.com>
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
-
 /*
  * Updated: Trusted Computer Solutions, Inc. <dgoeddel@trustedcs.com>
- *          Support for enhanced MLS infrastructure.
- *          Copyright (C) 2004-2006 Trusted Computer Solutions, Inc.
  *
+ *	Support for enhanced MLS infrastructure.
+ *
+ * Copyright (C) 2004-2006 Trusted Computer Solutions, Inc.
+ */
+/*
  * Updated: Hewlett-Packard <paul@paul-moore.com>
- *          Added support to import/export the MLS label from NetLabel
- *          Copyright (C) Hewlett-Packard Development Company, L.P., 2006
+ *
+ *      Added support to import/export the MLS label from NetLabel
+ *
+ * (c) Copyright Hewlett-Packard Development Company, L.P., 2006
  */
 
 #include <linux/kernel.h>
@@ -41,15 +45,14 @@ int mls_compute_context_len(struct policydb *p, struct context *context)
 
 	len = 1; /* for the beginning ":" */
 	for (l = 0; l < 2; l++) {
-		u32 index_sens = context->range.level[l].sens;
+		int index_sens = context->range.level[l].sens;
 		len += strlen(sym_name(p, SYM_LEVELS, index_sens - 1));
 
 		/* categories */
 		head = -2;
 		prev = -2;
 		e = &context->range.level[l].cat;
-		ebitmap_for_each_positive_bit(e, node, i)
-		{
+		ebitmap_for_each_positive_bit(e, node, i) {
 			if (i - prev > 1) {
 				/* one or more negative bits are skipped */
 				if (head != prev) {
@@ -83,7 +86,8 @@ int mls_compute_context_len(struct policydb *p, struct context *context)
  * the MLS fields of `context' into the string `*scontext'.
  * Update `*scontext' to point to the end of the MLS fields.
  */
-void mls_sid_to_context(struct policydb *p, struct context *context,
+void mls_sid_to_context(struct policydb *p,
+			struct context *context,
 			char **scontext)
 {
 	char *scontextp, *nm;
@@ -108,8 +112,7 @@ void mls_sid_to_context(struct policydb *p, struct context *context,
 		head = -2;
 		prev = -2;
 		e = &context->range.level[l].cat;
-		ebitmap_for_each_positive_bit(e, node, i)
-		{
+		ebitmap_for_each_positive_bit(e, node, i) {
 			if (i - prev > 1) {
 				/* one or more negative bits are skipped */
 				if (prev != head) {
@@ -171,7 +174,7 @@ int mls_level_isvalid(struct policydb *p, struct mls_level *l)
 	 * levdatum->level->cat and no bit in l->cat is larger than
 	 * p->p_cats.nprim.
 	 */
-	return ebitmap_contains(&levdatum->level.cat, &l->cat,
+	return ebitmap_contains(&levdatum->level->cat, &l->cat,
 				p->p_cats.nprim);
 }
 
@@ -227,14 +230,17 @@ int mls_context_isvalid(struct policydb *p, struct context *c)
  * Policy read-lock must be held for sidtab lookup.
  *
  */
-int mls_context_to_sid(struct policydb *pol, char oldc, char *scontext,
-		       struct context *context, struct sidtab *s, u32 def_sid)
+int mls_context_to_sid(struct policydb *pol,
+		       char oldc,
+		       char *scontext,
+		       struct context *context,
+		       struct sidtab *s,
+		       u32 def_sid)
 {
 	char *sensitivity, *cur_cat, *next_cat, *rngptr;
 	struct level_datum *levdatum;
 	struct cat_datum *catdatum, *rngdatum;
-	u32 i;
-	int l, rc;
+	int l, rc, i;
 	char *rangep[2];
 
 	if (!pol->mls_enabled) {
@@ -289,7 +295,7 @@ int mls_context_to_sid(struct policydb *pol, char oldc, char *scontext,
 		levdatum = symtab_search(&pol->p_levels, sensitivity);
 		if (!levdatum)
 			return -EINVAL;
-		context->range.level[l].sens = levdatum->level.sens;
+		context->range.level[l].sens = levdatum->level->sens;
 
 		/* Extract category set. */
 		while (next_cat != NULL) {
@@ -326,8 +332,7 @@ int mls_context_to_sid(struct policydb *pol, char oldc, char *scontext,
 				return -EINVAL;
 
 			for (i = catdatum->value; i < rngdatum->value; i++) {
-				rc = ebitmap_set_bit(
-					&context->range.level[l].cat, i, 1);
+				rc = ebitmap_set_bit(&context->range.level[l].cat, i, 1);
 				if (rc)
 					return rc;
 			}
@@ -365,8 +370,8 @@ int mls_from_string(struct policydb *p, char *str, struct context *context,
 	if (!tmpstr) {
 		rc = -ENOMEM;
 	} else {
-		rc = mls_context_to_sid(p, ':', tmpstr, context, NULL,
-					SECSID_NULL);
+		rc = mls_context_to_sid(p, ':', tmpstr, context,
+					NULL, SECSID_NULL);
 		kfree(tmpstr);
 	}
 
@@ -376,7 +381,8 @@ int mls_from_string(struct policydb *p, char *str, struct context *context,
 /*
  * Copies the MLS range `range' into `context'.
  */
-int mls_range_set(struct context *context, struct mls_range *range)
+int mls_range_set(struct context *context,
+				struct mls_range *range)
 {
 	int l, rc = 0;
 
@@ -392,8 +398,9 @@ int mls_range_set(struct context *context, struct mls_range *range)
 	return rc;
 }
 
-int mls_setup_user_range(struct policydb *p, struct context *fromcon,
-			 struct user_datum *user, struct context *usercon)
+int mls_setup_user_range(struct policydb *p,
+			 struct context *fromcon, struct user_datum *user,
+			 struct context *usercon)
 {
 	if (p->mls_enabled) {
 		struct mls_level *fromcon_sen = &(fromcon->range.level[0]);
@@ -436,14 +443,15 @@ int mls_setup_user_range(struct policydb *p, struct context *fromcon,
  * policy `oldp' to the values specified in the policy `newp',
  * storing the resulting context in `newc'.
  */
-int mls_convert_context(struct policydb *oldp, struct policydb *newp,
-			struct context *oldc, struct context *newc)
+int mls_convert_context(struct policydb *oldp,
+			struct policydb *newp,
+			struct context *oldc,
+			struct context *newc)
 {
 	struct level_datum *levdatum;
 	struct cat_datum *catdatum;
 	struct ebitmap_node *node;
-	u32 i;
-	int l;
+	int l, i;
 
 	if (!oldp->mls_enabled || !newp->mls_enabled)
 		return 0;
@@ -456,11 +464,10 @@ int mls_convert_context(struct policydb *oldp, struct policydb *newp,
 
 		if (!levdatum)
 			return -EINVAL;
-		newc->range.level[l].sens = levdatum->level.sens;
+		newc->range.level[l].sens = levdatum->level->sens;
 
-		ebitmap_for_each_positive_bit(&oldc->range.level[l].cat, node,
-					      i)
-		{
+		ebitmap_for_each_positive_bit(&oldc->range.level[l].cat,
+					      node, i) {
 			int rc;
 
 			catdatum = symtab_search(&newp->p_cats,
@@ -477,14 +484,18 @@ int mls_convert_context(struct policydb *oldp, struct policydb *newp,
 	return 0;
 }
 
-int mls_compute_sid(struct policydb *p, struct context *scontext,
-		    struct context *tcontext, u16 tclass, u32 specified,
-		    struct context *newcontext, bool sock)
+int mls_compute_sid(struct policydb *p,
+		    struct context *scontext,
+		    struct context *tcontext,
+		    u16 tclass,
+		    u32 specified,
+		    struct context *newcontext,
+		    bool sock)
 {
 	struct range_trans rtr;
 	struct mls_range *r;
 	struct class_datum *cladatum;
-	char default_range = 0;
+	int default_range = 0;
 
 	if (!p->mls_enabled)
 		return 0;
@@ -519,8 +530,8 @@ int mls_compute_sid(struct policydb *p, struct context *scontext,
 		case DEFAULT_TARGET_LOW_HIGH:
 			return mls_context_cpy(newcontext, tcontext);
 		case DEFAULT_GLBLUB:
-			return mls_context_glblub(newcontext, scontext,
-						  tcontext);
+			return mls_context_glblub(newcontext,
+						  scontext, tcontext);
 		}
 
 		fallthrough;
@@ -550,7 +561,8 @@ int mls_compute_sid(struct policydb *p, struct context *scontext,
  * NetLabel MLS sensitivity level field.
  *
  */
-void mls_export_netlbl_lvl(struct policydb *p, struct context *context,
+void mls_export_netlbl_lvl(struct policydb *p,
+			   struct context *context,
 			   struct netlbl_lsm_secattr *secattr)
 {
 	if (!p->mls_enabled)
@@ -571,7 +583,8 @@ void mls_export_netlbl_lvl(struct policydb *p, struct context *context,
  * NetLabel MLS sensitivity level into the context.
  *
  */
-void mls_import_netlbl_lvl(struct policydb *p, struct context *context,
+void mls_import_netlbl_lvl(struct policydb *p,
+			   struct context *context,
 			   struct netlbl_lsm_secattr *secattr)
 {
 	if (!p->mls_enabled)
@@ -592,7 +605,8 @@ void mls_import_netlbl_lvl(struct policydb *p, struct context *context,
  * MLS category field.  Returns zero on success, negative values on failure.
  *
  */
-int mls_export_netlbl_cat(struct policydb *p, struct context *context,
+int mls_export_netlbl_cat(struct policydb *p,
+			  struct context *context,
 			  struct netlbl_lsm_secattr *secattr)
 {
 	int rc;
@@ -621,7 +635,8 @@ int mls_export_netlbl_cat(struct policydb *p, struct context *context,
  * negative values on failure.
  *
  */
-int mls_import_netlbl_cat(struct policydb *p, struct context *context,
+int mls_import_netlbl_cat(struct policydb *p,
+			  struct context *context,
 			  struct netlbl_lsm_secattr *secattr)
 {
 	int rc;

@@ -48,9 +48,7 @@ static void show_backtrace(void)
 	stack_trace_print(stacks, len, 24);
 }
 
-static int sample_entry_handler(struct fprobe *fp, unsigned long ip,
-				unsigned long ret_ip,
-				struct ftrace_regs *fregs, void *data)
+static void sample_entry_handler(struct fprobe *fp, unsigned long ip, struct pt_regs *regs)
 {
 	if (use_trace)
 		/*
@@ -63,14 +61,11 @@ static int sample_entry_handler(struct fprobe *fp, unsigned long ip,
 	nhit++;
 	if (stackdump)
 		show_backtrace();
-	return 0;
 }
 
-static void sample_exit_handler(struct fprobe *fp, unsigned long ip,
-				unsigned long ret_ip, struct ftrace_regs *regs,
-				void *data)
+static void sample_exit_handler(struct fprobe *fp, unsigned long ip, struct pt_regs *regs)
 {
-	unsigned long rip = ret_ip;
+	unsigned long rip = instruction_pointer(regs);
 
 	if (use_trace)
 		/*
@@ -150,5 +145,4 @@ static void __exit fprobe_exit(void)
 
 module_init(fprobe_init)
 module_exit(fprobe_exit)
-MODULE_DESCRIPTION("sample kernel module showing the use of fprobe");
 MODULE_LICENSE("GPL");

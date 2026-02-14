@@ -34,6 +34,8 @@ MODULE_PARM_DESC(cpu_affinity, "Cpu num test is running on");
 
 static struct completion done;
 
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+
 static void busy_wait(ulong time)
 {
 	u64 start, end;
@@ -117,15 +119,12 @@ static int preemptirq_delay_run(void *data)
 {
 	int i;
 	int s = MIN(burst_size, NR_TEST_FUNCS);
-	cpumask_var_t cpu_mask;
-
-	if (!alloc_cpumask_var(&cpu_mask, GFP_KERNEL))
-		return -ENOMEM;
+	struct cpumask cpu_mask;
 
 	if (cpu_affinity > -1) {
-		cpumask_clear(cpu_mask);
-		cpumask_set_cpu(cpu_affinity, cpu_mask);
-		if (set_cpus_allowed_ptr(current, cpu_mask))
+		cpumask_clear(&cpu_mask);
+		cpumask_set_cpu(cpu_affinity, &cpu_mask);
+		if (set_cpus_allowed_ptr(current, &cpu_mask))
 			pr_err("cpu_affinity:%d, failed\n", cpu_affinity);
 	}
 
@@ -141,8 +140,6 @@ static int preemptirq_delay_run(void *data)
 	}
 
 	__set_current_state(TASK_RUNNING);
-
-	free_cpumask_var(cpu_mask);
 
 	return 0;
 }
@@ -218,5 +215,4 @@ static void __exit preemptirq_delay_exit(void)
 
 module_init(preemptirq_delay_init)
 module_exit(preemptirq_delay_exit)
-MODULE_DESCRIPTION("Preempt / IRQ disable delay thread to test latency tracers");
 MODULE_LICENSE("GPL v2");

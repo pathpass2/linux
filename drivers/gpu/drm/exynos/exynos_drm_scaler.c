@@ -11,7 +11,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
@@ -403,7 +403,7 @@ static int scaler_commit(struct exynos_drm_ipp *ipp,
 	return 0;
 }
 
-static const struct exynos_drm_ipp_funcs ipp_funcs = {
+static struct exynos_drm_ipp_funcs ipp_funcs = {
 	.commit = scaler_commit,
 };
 
@@ -539,13 +539,15 @@ err_ippdrv_register:
 	return ret;
 }
 
-static void scaler_remove(struct platform_device *pdev)
+static int scaler_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	component_del(dev, &scaler_component_ops);
 	pm_runtime_dont_use_autosuspend(dev);
 	pm_runtime_disable(dev);
+
+	return 0;
 }
 
 static int clk_disable_unprepare_wrapper(struct clk *clk)
@@ -722,6 +724,7 @@ struct platform_driver scaler_driver = {
 	.remove		= scaler_remove,
 	.driver		= {
 		.name	= "exynos-scaler",
+		.owner	= THIS_MODULE,
 		.pm	= pm_ptr(&scaler_pm_ops),
 		.of_match_table = exynos_scaler_match,
 	},

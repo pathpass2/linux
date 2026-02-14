@@ -12,11 +12,7 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - const: fsl,imx95-dwc3
-          - const: fsl,imx8mp-dwc3
-      - const: fsl,imx8mp-dwc3
+    const: fsl,imx8mp-dwc3
 
   reg:
     items:
@@ -56,7 +52,7 @@ properties:
   fsl,permanently-attached:
     type: boolean
     description:
-      Indicates if the device attached to a downstream port is
+      Indicates if the device atached to a downstream port is
       permanently attached.
 
   fsl,disable-port-power-control:
@@ -89,20 +85,12 @@ required:
   - reg
   - "#address-cells"
   - "#size-cells"
+  - dma-ranges
   - ranges
   - clocks
   - clock-names
   - interrupts
   - power-domains
-
-allOf:
-  - if:
-      properties:
-        compatible:
-          const: fsl,imx8mp-dwc3
-    then:
-      required:
-        - dma-ranges
 
 additionalProperties: false
 

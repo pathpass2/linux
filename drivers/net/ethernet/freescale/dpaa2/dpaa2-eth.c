@@ -516,6 +516,8 @@ struct sk_buff *dpaa2_eth_alloc_skb(struct dpaa2_eth_priv *priv,
 
 	memcpy(skb->data, fd_vaddr + fd_offset, fd_length);
 
+	dpaa2_eth_recycle_buf(priv, ch, dpaa2_fd_get_addr(fd));
+
 	return skb;
 }
 
@@ -587,7 +589,6 @@ void dpaa2_eth_rx(struct dpaa2_eth_priv *priv,
 	struct rtnl_link_stats64 *percpu_stats;
 	struct dpaa2_eth_drv_stats *percpu_extras;
 	struct device *dev = priv->net_dev->dev.parent;
-	bool recycle_rx_buf = false;
 	void *buf_data;
 	u32 xdp_act;
 
@@ -617,8 +618,6 @@ void dpaa2_eth_rx(struct dpaa2_eth_priv *priv,
 			dma_unmap_page(dev, addr, priv->rx_buf_size,
 				       DMA_BIDIRECTIONAL);
 			skb = dpaa2_eth_build_linear_skb(ch, fd, vaddr);
-		} else {
-			recycle_rx_buf = true;
 		}
 	} else if (fd_format == dpaa2_fd_sg) {
 		WARN_ON(priv->xdp_prog);
@@ -638,9 +637,6 @@ void dpaa2_eth_rx(struct dpaa2_eth_priv *priv,
 		goto err_build_skb;
 
 	dpaa2_eth_receive_skb(priv, ch, fd, vaddr, fq, percpu_stats, skb);
-
-	if (recycle_rx_buf)
-		dpaa2_eth_recycle_buf(priv, ch, dpaa2_fd_get_addr(fd));
 	return;
 
 err_build_skb:
@@ -1077,11 +1073,14 @@ static int dpaa2_eth_build_single_fd(struct dpaa2_eth_priv *priv,
 	dma_addr_t addr;
 
 	buffer_start = skb->data - dpaa2_eth_needed_headroom(skb);
-	aligned_start = PTR_ALIGN(buffer_start, DPAA2_ETH_TX_BUF_ALIGN);
+
+	/* If there's enough room to align the FD address, do it.
+	 * It will help hardware optimize accesses.
+	 */
+	aligned_start = PTR_ALIGN(buffer_start - DPAA2_ETH_TX_BUF_ALIGN,
+				  DPAA2_ETH_TX_BUF_ALIGN);
 	if (aligned_start >= skb->head)
 		buffer_start = aligned_start;
-	else
-		return -ENOMEM;
 
 	/* Store a backpointer to the skb at the beginning of the buffer
 	 * (in the private data area) such that we can release it
@@ -2584,58 +2583,49 @@ static int dpaa2_eth_set_features(struct net_device *net_dev,
 	return 0;
 }
 
-static int dpaa2_eth_hwtstamp_set(struct net_device *dev,
-				  struct kernel_hwtstamp_config *config,
-				  struct netlink_ext_ack *extack)
+static int dpaa2_eth_ts_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
 	struct dpaa2_eth_priv *priv = netdev_priv(dev);
+	struct hwtstamp_config config;
 
 	if (!dpaa2_ptp)
 		return -EINVAL;
 
-	switch (config->tx_type) {
+	if (copy_from_user(&config, rq->ifr_data, sizeof(config)))
+		return -EFAULT;
+
+	switch (config.tx_type) {
 	case HWTSTAMP_TX_OFF:
 	case HWTSTAMP_TX_ON:
 	case HWTSTAMP_TX_ONESTEP_SYNC:
-		priv->tx_tstamp_type = config->tx_type;
+		priv->tx_tstamp_type = config.tx_type;
 		break;
 	default:
 		return -ERANGE;
 	}
 
-	if (config->rx_filter == HWTSTAMP_FILTER_NONE) {
+	if (config.rx_filter == HWTSTAMP_FILTER_NONE) {
 		priv->rx_tstamp = false;
 	} else {
 		priv->rx_tstamp = true;
 		/* TS is set for all frame types, not only those requested */
-		config->rx_filter = HWTSTAMP_FILTER_ALL;
+		config.rx_filter = HWTSTAMP_FILTER_ALL;
 	}
 
 	if (priv->tx_tstamp_type == HWTSTAMP_TX_ONESTEP_SYNC)
 		dpaa2_ptp_onestep_reg_update_method(priv);
 
-	return 0;
-}
-
-static int dpaa2_eth_hwtstamp_get(struct net_device *dev,
-				  struct kernel_hwtstamp_config *config)
-{
-	struct dpaa2_eth_priv *priv = netdev_priv(dev);
-
-	if (!dpaa2_ptp)
-		return -EINVAL;
-
-	config->tx_type = priv->tx_tstamp_type;
-	config->rx_filter = priv->rx_tstamp ? HWTSTAMP_FILTER_ALL :
-			    HWTSTAMP_FILTER_NONE;
-
-	return 0;
+	return copy_to_user(rq->ifr_data, &config, sizeof(config)) ?
+			-EFAULT : 0;
 }
 
 static int dpaa2_eth_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
 	struct dpaa2_eth_priv *priv = netdev_priv(dev);
 	int err;
+
+	if (cmd == SIOCSHWTSTAMP)
+		return dpaa2_eth_ts_ioctl(dev, rq, cmd);
 
 	mutex_lock(&priv->mac_lock);
 
@@ -2706,7 +2696,7 @@ static int dpaa2_eth_change_mtu(struct net_device *dev, int new_mtu)
 		return err;
 
 out:
-	WRITE_ONCE(dev->mtu, new_mtu);
+	dev->mtu = new_mtu;
 	return 0;
 }
 
@@ -2904,13 +2894,10 @@ static int dpaa2_eth_xdp_xmit(struct net_device *net_dev, int n,
 static int update_xps(struct dpaa2_eth_priv *priv)
 {
 	struct net_device *net_dev = priv->net_dev;
-	int i, num_queues, netdev_queues;
+	struct cpumask xps_mask;
 	struct dpaa2_eth_fq *fq;
-	cpumask_var_t xps_mask;
+	int i, num_queues, netdev_queues;
 	int err = 0;
-
-	if (!alloc_cpumask_var(&xps_mask, GFP_KERNEL))
-		return -ENOMEM;
 
 	num_queues = dpaa2_eth_queue_count(priv);
 	netdev_queues = (net_dev->num_tc ? : 1) * num_queues;
@@ -2921,17 +2908,16 @@ static int update_xps(struct dpaa2_eth_priv *priv)
 	for (i = 0; i < netdev_queues; i++) {
 		fq = &priv->fq[i % num_queues];
 
-		cpumask_clear(xps_mask);
-		cpumask_set_cpu(fq->target_cpu, xps_mask);
+		cpumask_clear(&xps_mask);
+		cpumask_set_cpu(fq->target_cpu, &xps_mask);
 
-		err = netif_set_xps_queue(net_dev, xps_mask, i);
+		err = netif_set_xps_queue(net_dev, &xps_mask, i);
 		if (err) {
 			netdev_warn_once(net_dev, "Error setting XPS queue\n");
 			break;
 		}
 	}
 
-	free_cpumask_var(xps_mask);
 	return err;
 }
 
@@ -3042,9 +3028,7 @@ static const struct net_device_ops dpaa2_eth_ops = {
 	.ndo_xsk_wakeup = dpaa2_xsk_wakeup,
 	.ndo_setup_tc = dpaa2_eth_setup_tc,
 	.ndo_vlan_rx_add_vid = dpaa2_eth_rx_add_vid,
-	.ndo_vlan_rx_kill_vid = dpaa2_eth_rx_kill_vid,
-	.ndo_hwtstamp_get = dpaa2_eth_hwtstamp_get,
-	.ndo_hwtstamp_set = dpaa2_eth_hwtstamp_set,
+	.ndo_vlan_rx_kill_vid = dpaa2_eth_rx_kill_vid
 };
 
 static void dpaa2_eth_cdan_cb(struct dpaa2_io_notification_ctx *ctx)
@@ -3938,7 +3922,6 @@ static int dpaa2_eth_setup_rx_flow(struct dpaa2_eth_priv *priv,
 					 MEM_TYPE_PAGE_ORDER0, NULL);
 	if (err) {
 		dev_err(dev, "xdp_rxq_info_reg_mem_model failed\n");
-		xdp_rxq_info_unreg(&fq->channel->xdp_rxq);
 		return err;
 	}
 
@@ -4432,25 +4415,17 @@ static int dpaa2_eth_bind_dpni(struct dpaa2_eth_priv *priv)
 			return -EINVAL;
 		}
 		if (err)
-			goto out;
+			return err;
 	}
 
 	err = dpni_get_qdid(priv->mc_io, 0, priv->mc_token,
 			    DPNI_QUEUE_TX, &priv->tx_qdid);
 	if (err) {
 		dev_err(dev, "dpni_get_qdid() failed\n");
-		goto out;
+		return err;
 	}
 
 	return 0;
-
-out:
-	while (i--) {
-		if (priv->fq[i].type == DPAA2_RX_FQ &&
-		    xdp_rxq_info_is_reg(&priv->fq[i].channel->xdp_rxq))
-			xdp_rxq_info_unreg(&priv->fq[i].channel->xdp_rxq);
-	}
-	return err;
 }
 
 /* Allocate rings for storing incoming frame descriptors */
@@ -4613,13 +4588,12 @@ static int dpaa2_eth_netdev_init(struct net_device *net_dev)
 
 	net_dev->priv_flags |= supported;
 	net_dev->priv_flags &= ~not_supported;
-	net_dev->lltx = true;
 
 	/* Features */
 	net_dev->features = NETIF_F_RXCSUM |
 			    NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
 			    NETIF_F_SG | NETIF_F_HIGHDMA |
-			    NETIF_F_HW_TC | NETIF_F_TSO;
+			    NETIF_F_LLTX | NETIF_F_HW_TC | NETIF_F_TSO;
 	net_dev->gso_max_segs = DPAA2_ETH_ENQUEUE_MAX_FDS;
 	net_dev->hw_features = net_dev->features;
 	net_dev->xdp_features = NETDEV_XDP_ACT_BASIC |
@@ -4665,19 +4639,12 @@ static int dpaa2_eth_connect_mac(struct dpaa2_eth_priv *priv)
 		return PTR_ERR(dpmac_dev);
 	}
 
-	if (IS_ERR(dpmac_dev))
+	if (IS_ERR(dpmac_dev) || dpmac_dev->dev.type != &fsl_mc_bus_dpmac_type)
 		return 0;
 
-	if (dpmac_dev->dev.type != &fsl_mc_bus_dpmac_type) {
-		err = 0;
-		goto out_put_device;
-	}
-
 	mac = kzalloc(sizeof(struct dpaa2_mac), GFP_KERNEL);
-	if (!mac) {
-		err = -ENOMEM;
-		goto out_put_device;
-	}
+	if (!mac)
+		return -ENOMEM;
 
 	mac->mc_dev = dpmac_dev;
 	mac->mc_io = priv->mc_io;
@@ -4711,8 +4678,6 @@ err_close_mac:
 	dpaa2_mac_close(mac);
 err_free_mac:
 	kfree(mac);
-out_put_device:
-	put_device(&dpmac_dev->dev);
 	return err;
 }
 
@@ -4842,17 +4807,6 @@ static void dpaa2_eth_del_ch_napi(struct dpaa2_eth_priv *priv)
 	}
 }
 
-static void dpaa2_eth_free_rx_xdp_rxq(struct dpaa2_eth_priv *priv)
-{
-	int i;
-
-	for (i = 0; i < priv->num_fqs; i++) {
-		if (priv->fq[i].type == DPAA2_RX_FQ &&
-		    xdp_rxq_info_is_reg(&priv->fq[i].channel->xdp_rxq))
-			xdp_rxq_info_unreg(&priv->fq[i].channel->xdp_rxq);
-	}
-}
-
 static int dpaa2_eth_probe(struct fsl_mc_device *dpni_dev)
 {
 	struct device *dev;
@@ -4883,7 +4837,7 @@ static int dpaa2_eth_probe(struct fsl_mc_device *dpni_dev)
 	priv->tx_tstamp_type = HWTSTAMP_TX_OFF;
 	priv->rx_tstamp = false;
 
-	priv->dpaa2_ptp_wq = alloc_workqueue("dpaa2_ptp_wq", WQ_PERCPU, 0);
+	priv->dpaa2_ptp_wq = alloc_workqueue("dpaa2_ptp_wq", 0, 0);
 	if (!priv->dpaa2_ptp_wq) {
 		err = -ENOMEM;
 		goto err_wq_alloc;
@@ -5013,8 +4967,6 @@ static int dpaa2_eth_probe(struct fsl_mc_device *dpni_dev)
 	if (err)
 		goto err_dl_port_add;
 
-	net_dev->needed_headroom = DPAA2_ETH_SWA_SIZE + DPAA2_ETH_TX_BUF_ALIGN;
-
 	err = register_netdev(net_dev);
 	if (err < 0) {
 		dev_err(dev, "register_netdev() failed\n");
@@ -5056,7 +5008,6 @@ err_alloc_percpu_extras:
 	free_percpu(priv->percpu_stats);
 err_alloc_percpu_stats:
 	dpaa2_eth_del_ch_napi(priv);
-	dpaa2_eth_free_rx_xdp_rxq(priv);
 err_bind:
 	dpaa2_eth_free_dpbps(priv);
 err_dpbp_setup:
@@ -5074,7 +5025,7 @@ err_wq_alloc:
 	return err;
 }
 
-static void dpaa2_eth_remove(struct fsl_mc_device *ls_dev)
+static int dpaa2_eth_remove(struct fsl_mc_device *ls_dev)
 {
 	struct device *dev;
 	struct net_device *net_dev;
@@ -5109,7 +5060,6 @@ static void dpaa2_eth_remove(struct fsl_mc_device *ls_dev)
 	free_percpu(priv->percpu_extras);
 
 	dpaa2_eth_del_ch_napi(priv);
-	dpaa2_eth_free_rx_xdp_rxq(priv);
 	dpaa2_eth_free_dpbps(priv);
 	dpaa2_eth_free_dpio(priv);
 	dpaa2_eth_free_dpni(priv);
@@ -5123,6 +5073,8 @@ static void dpaa2_eth_remove(struct fsl_mc_device *ls_dev)
 	dev_dbg(net_dev->dev.parent, "Removed interface %s\n", net_dev->name);
 
 	free_netdev(net_dev);
+
+	return 0;
 }
 
 static const struct fsl_mc_device_id dpaa2_eth_match_id_table[] = {
@@ -5137,6 +5089,7 @@ MODULE_DEVICE_TABLE(fslmc, dpaa2_eth_match_id_table);
 static struct fsl_mc_driver dpaa2_eth_driver = {
 	.driver = {
 		.name = KBUILD_MODNAME,
+		.owner = THIS_MODULE,
 	},
 	.probe = dpaa2_eth_probe,
 	.remove = dpaa2_eth_remove,

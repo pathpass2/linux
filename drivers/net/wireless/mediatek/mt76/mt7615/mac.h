@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: BSD-3-Clause-Clear */
+/* SPDX-License-Identifier: ISC */
 /* Copyright (C) 2019 MediaTek Inc. */
 
 #ifndef __MT7615_MAC_H
@@ -18,6 +18,18 @@
 #define MT_RXD0_NORMAL_GROUP_2		BIT(26)
 #define MT_RXD0_NORMAL_GROUP_3		BIT(27)
 #define MT_RXD0_NORMAL_GROUP_4		BIT(28)
+
+enum rx_pkt_type {
+	PKT_TYPE_TXS,
+	PKT_TYPE_TXRXV,
+	PKT_TYPE_NORMAL,
+	PKT_TYPE_RX_DUP_RFB,
+	PKT_TYPE_RX_TMR,
+	PKT_TYPE_RETRIEVE,
+	PKT_TYPE_TXRX_NOTIFY,
+	PKT_TYPE_RX_EVENT,
+	PKT_TYPE_NORMAL_MCU,
+};
 
 #define MT_RXD1_NORMAL_BSSID		GENMASK(31, 26)
 #define MT_RXD1_NORMAL_PAYLOAD_FORMAT	GENMASK(25, 24)

@@ -9,13 +9,10 @@
  */
 
 #include <linux/acpi.h>
-#include <linux/ctype.h>
 #include <linux/device.h>
 #include <linux/dmi.h>
 #include <linux/efi_embedded_fw.h>
 #include <linux/i2c.h>
-#include <linux/init.h>
-#include <linux/kstrtox.h>
 #include <linux/notifier.h>
 #include <linux/property.h>
 #include <linux/string.h>
@@ -28,35 +25,6 @@ struct ts_dmi_data {
 };
 
 /* NOTE: Please keep all entries sorted alphabetically */
-
-static const struct property_entry archos_101_cesium_educ_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1850),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1280),
-	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
-	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
-	PROPERTY_ENTRY_BOOL("silead,home-button"),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-archos-101-cesium-educ.fw"),
-	{ }
-};
-
-static const struct ts_dmi_data archos_101_cesium_educ_data = {
-	.acpi_name      = "MSSL1680:00",
-	.properties     = archos_101_cesium_educ_props,
-};
-
-static const struct property_entry bush_bush_windows_tablet_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1850),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1280),
-	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
-	PROPERTY_ENTRY_BOOL("silead,home-button"),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-bush-bush-windows-tablet.fw"),
-	{ }
-};
-
-static const struct ts_dmi_data bush_bush_windows_tablet_data = {
-	.acpi_name      = "MSSL1680:00",
-	.properties     = bush_bush_windows_tablet_props,
-};
 
 static const struct property_entry chuwi_hi8_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1665),
@@ -77,11 +45,12 @@ static const struct property_entry chuwi_hi8_air_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1148),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3676-chuwi-hi8-air.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
 static const struct ts_dmi_data chuwi_hi8_air_data = {
-	.acpi_name	= "MSSL1680",
+	.acpi_name	= "MSSL1680:00",
 	.properties	= chuwi_hi8_air_props,
 };
 
@@ -92,6 +61,7 @@ static const struct property_entry chuwi_hi8_pro_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1148),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-chuwi-hi8-pro.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -119,6 +89,7 @@ static const struct property_entry chuwi_hi10_air_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-fuzz-x", 5),
 	PROPERTY_ENTRY_U32("touchscreen-fuzz-y", 4),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-chuwi-hi10-air.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -134,6 +105,7 @@ static const struct property_entry chuwi_hi10_plus_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1908),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1270),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-chuwi-hi10plus.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	PROPERTY_ENTRY_BOOL("silead,pen-supported"),
 	PROPERTY_ENTRY_U32("silead,pen-resolution-x", 8),
@@ -165,6 +137,7 @@ static const struct property_entry chuwi_hi10_pro_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-chuwi-hi10-pro.fw"),
 	PROPERTY_ENTRY_U32_ARRAY("silead,efi-fw-min-max", chuwi_hi10_pro_efi_min_max),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	PROPERTY_ENTRY_BOOL("silead,pen-supported"),
 	PROPERTY_ENTRY_U32("silead,pen-resolution-x", 8),
@@ -194,6 +167,7 @@ static const struct property_entry chuwi_hibook_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-chuwi-hibook.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -219,6 +193,7 @@ static const struct property_entry chuwi_vi8_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1140),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3676-chuwi-vi8.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -246,6 +221,7 @@ static const struct property_entry chuwi_vi10_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1858),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1280),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-chuwi-vi10.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -261,6 +237,7 @@ static const struct property_entry chuwi_surbook_mini_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 2040),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1524),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-chuwi-surbook-mini.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	{ }
 };
@@ -278,6 +255,7 @@ static const struct property_entry connect_tablet9_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-connect-tablet9.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -294,6 +272,7 @@ static const struct property_entry csl_panther_tab_hd_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-csl-panther-tab-hd.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -309,6 +288,7 @@ static const struct property_entry cube_iwork8_air_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 896),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3670-cube-iwork8-air.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -332,6 +312,7 @@ static const struct property_entry cube_knote_i1101_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1961),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1513),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-cube-knote-i1101.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -345,6 +326,7 @@ static const struct property_entry dexp_ursus_7w_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 890),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 630),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1686-dexp-ursus-7w.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -354,26 +336,12 @@ static const struct ts_dmi_data dexp_ursus_7w_data = {
 	.properties	= dexp_ursus_7w_props,
 };
 
-static const struct property_entry dexp_ursus_kx210i_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-min-x", 5),
-	PROPERTY_ENTRY_U32("touchscreen-min-y",  2),
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1720),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1137),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-dexp-ursus-kx210i.fw"),
-	PROPERTY_ENTRY_BOOL("silead,home-button"),
-	{ }
-};
-
-static const struct ts_dmi_data dexp_ursus_kx210i_data = {
-	.acpi_name	= "MSSL1680:00",
-	.properties	= dexp_ursus_kx210i_props,
-};
-
 static const struct property_entry digma_citi_e200_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1980),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1500),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1686-digma_citi_e200.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -400,13 +368,13 @@ static const struct property_entry gdix1001_upside_down_props[] = {
 	{ }
 };
 
-static const struct ts_dmi_data gdix1001_upside_down_data = {
-	.acpi_name	= "GDIX1001",
+static const struct ts_dmi_data gdix1001_00_upside_down_data = {
+	.acpi_name	= "GDIX1001:00",
 	.properties	= gdix1001_upside_down_props,
 };
 
-static const struct ts_dmi_data gdix1002_upside_down_data = {
-	.acpi_name	= "GDIX1002",
+static const struct ts_dmi_data gdix1001_01_upside_down_data = {
+	.acpi_name	= "GDIX1001:01",
 	.properties	= gdix1001_upside_down_props,
 };
 
@@ -432,6 +400,7 @@ static const struct property_entry irbis_tw90_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-irbis_tw90.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -447,6 +416,7 @@ static const struct property_entry irbis_tw118_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1960),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1510),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-irbis-tw118.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -463,6 +433,7 @@ static const struct property_entry itworks_tw891_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3670-itworks-tw891.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -475,6 +446,7 @@ static const struct property_entry jumper_ezpad_6_pro_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1980),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1500),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-jumper-ezpad-6-pro.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -489,6 +461,7 @@ static const struct property_entry jumper_ezpad_6_pro_b_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1500),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-jumper-ezpad-6-pro-b.fw"),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -504,6 +477,7 @@ static const struct property_entry jumper_ezpad_6_m4_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1950),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1525),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-jumper-ezpad-6-m4.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -520,6 +494,7 @@ static const struct property_entry jumper_ezpad_7_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1526),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-jumper-ezpad-7.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,stuck-controller-bug"),
 	{ }
 };
@@ -536,6 +511,7 @@ static const struct property_entry jumper_ezpad_mini3_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1138),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3676-jumper-ezpad-mini3.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -552,6 +528,7 @@ static const struct property_entry mpman_converter9_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-mpman-converter9.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -567,6 +544,7 @@ static const struct property_entry mpman_mpwin895cl_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1150),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-mpman-mpwin895cl.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -583,6 +561,7 @@ static const struct property_entry myria_my8307_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-myria-my8307.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -599,6 +578,7 @@ static const struct property_entry onda_obook_20_plus_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3676-onda-obook-20-plus.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -615,6 +595,7 @@ static const struct property_entry onda_v80_plus_v3_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1140),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3676-onda-v80-plus-v3.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -638,6 +619,7 @@ static const struct property_entry onda_v820w_32g_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1140),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-onda-v820w-32g.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -655,6 +637,7 @@ static const struct property_entry onda_v891_v5_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name",
 			      "gsl3676-onda-v891-v5.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -670,6 +653,7 @@ static const struct property_entry onda_v891w_v1_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1676),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1130),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-onda-v891w-v1.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -686,6 +670,7 @@ static const struct property_entry onda_v891w_v3_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1135),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3676-onda-v891w-v3.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -724,6 +709,7 @@ static const struct property_entry pipo_w11_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1984),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1532),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-pipo-w11.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -733,20 +719,6 @@ static const struct ts_dmi_data pipo_w11_data = {
 	.properties	= pipo_w11_props,
 };
 
-static const struct property_entry positivo_c4128b_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-min-x", 4),
-	PROPERTY_ENTRY_U32("touchscreen-min-y", 13),
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1915),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1269),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-positivo-c4128b.fw"),
-	{ }
-};
-
-static const struct ts_dmi_data positivo_c4128b_data = {
-	.acpi_name	= "MSSL1680:00",
-	.properties	= positivo_c4128b_props,
-};
-
 static const struct property_entry pov_mobii_wintab_p800w_v20_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-min-x", 32),
 	PROPERTY_ENTRY_U32("touchscreen-min-y", 16),
@@ -754,6 +726,7 @@ static const struct property_entry pov_mobii_wintab_p800w_v20_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1146),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-pov-mobii-wintab-p800w-v20.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -770,6 +743,7 @@ static const struct property_entry pov_mobii_wintab_p800w_v21_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1148),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-pov-mobii-wintab-p800w.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -786,6 +760,7 @@ static const struct property_entry pov_mobii_wintab_p1006w_v10_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1520),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-pov-mobii-wintab-p1006w-v10.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -802,6 +777,7 @@ static const struct property_entry predia_basic_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1144),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-predia-basic.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -818,6 +794,7 @@ static const struct property_entry rca_cambio_w101_v2_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 874),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-rca-cambio-w101-v2.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -832,44 +809,13 @@ static const struct property_entry rwc_nanote_p8_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1140),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-rwc-nanote-p8.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
 static const struct ts_dmi_data rwc_nanote_p8_data = {
 	.acpi_name = "MSSL1680:00",
 	.properties = rwc_nanote_p8_props,
-};
-
-static const struct property_entry rwc_nanote_next_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-min-x", 5),
-	PROPERTY_ENTRY_U32("touchscreen-min-y", 5),
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1785),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1145),
-	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-rwc-nanote-next.fw"),
-	{ }
-};
-
-static const struct ts_dmi_data rwc_nanote_next_data = {
-	.acpi_name = "MSSL1680:00",
-	.properties = rwc_nanote_next_props,
-};
-
-static const struct property_entry sary_tab_3_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1730),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1151),
-	PROPERTY_ENTRY_BOOL("touchscreen-inverted-x"),
-	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
-	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-sary-tab-3.fw"),
-	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
-	PROPERTY_ENTRY_BOOL("silead,home-button"),
-	{ }
-};
-
-static const struct ts_dmi_data sary_tab_3_data = {
-	.acpi_name	= "MSSL1680:00",
-	.properties	= sary_tab_3_props,
 };
 
 static const struct property_entry schneider_sct101ctm_props[] = {
@@ -879,6 +825,7 @@ static const struct property_entry schneider_sct101ctm_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-schneider-sct101ctm.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -888,21 +835,6 @@ static const struct ts_dmi_data schneider_sct101ctm_data = {
 	.properties	= schneider_sct101ctm_props,
 };
 
-static const struct property_entry globalspace_solt_ivw116_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-min-x", 7),
-	PROPERTY_ENTRY_U32("touchscreen-min-y", 22),
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1723),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1077),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-globalspace-solt-ivw116.fw"),
-	PROPERTY_ENTRY_BOOL("silead,home-button"),
-	{ }
-};
-
-static const struct ts_dmi_data globalspace_solt_ivw116_data = {
-	.acpi_name	= "MSSL1680:00",
-	.properties	= globalspace_solt_ivw116_props,
-};
-
 static const struct property_entry techbite_arc_11_6_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-min-x", 5),
 	PROPERTY_ENTRY_U32("touchscreen-min-y", 7),
@@ -910,6 +842,7 @@ static const struct property_entry techbite_arc_11_6_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1270),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-techbite-arc-11-6.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -925,6 +858,7 @@ static const struct property_entry teclast_tbook11_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1264),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-teclast-tbook11.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -943,35 +877,11 @@ static const struct ts_dmi_data teclast_tbook11_data = {
 	.properties	= teclast_tbook11_props,
 };
 
-static const struct property_entry teclast_x16_plus_props[] = {
-	PROPERTY_ENTRY_U32("touchscreen-min-x", 8),
-	PROPERTY_ENTRY_U32("touchscreen-min-y", 14),
-	PROPERTY_ENTRY_U32("touchscreen-size-x", 1916),
-	PROPERTY_ENTRY_U32("touchscreen-size-y", 1264),
-	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
-	PROPERTY_ENTRY_STRING("firmware-name", "gsl3692-teclast-x16-plus.fw"),
-	PROPERTY_ENTRY_BOOL("silead,home-button"),
-	{ }
-};
-
-static const struct ts_dmi_data teclast_x16_plus_data = {
-	.embedded_fw = {
-		.name	= "silead/gsl3692-teclast-x16-plus.fw",
-		.prefix = { 0xf0, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 },
-		.length	= 43560,
-		.sha256	= { 0x9d, 0xb0, 0x3d, 0xf1, 0x00, 0x3c, 0xb5, 0x25,
-			    0x62, 0x8a, 0xa0, 0x93, 0x4b, 0xe0, 0x4e, 0x75,
-			    0xd1, 0x27, 0xb1, 0x65, 0x3c, 0xba, 0xa5, 0x0f,
-			    0xcd, 0xb4, 0xbe, 0x00, 0xbb, 0xf6, 0x43, 0x29 },
-	},
-	.acpi_name	= "MSSL1680:00",
-	.properties	= teclast_x16_plus_props,
-};
-
 static const struct property_entry teclast_x3_plus_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1980),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1500),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-teclast-x3-plus.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -987,6 +897,7 @@ static const struct property_entry teclast_x98plus2_props[] = {
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-x"),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1686-teclast_x98plus2.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	{ }
 };
 
@@ -1000,6 +911,7 @@ static const struct property_entry trekstor_primebook_c11_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1530),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-trekstor-primebook-c11.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -1013,6 +925,7 @@ static const struct property_entry trekstor_primebook_c13_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 2624),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1920),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-trekstor-primebook-c13.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -1026,6 +939,7 @@ static const struct property_entry trekstor_primetab_t13b_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 2500),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1900),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-trekstor-primetab-t13b.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	PROPERTY_ENTRY_BOOL("touchscreen-inverted-y"),
 	{ }
@@ -1053,6 +967,7 @@ static const struct property_entry trekstor_surftab_twin_10_1_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1280),
 	PROPERTY_ENTRY_U32("touchscreen-inverted-y", 1),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3670-surftab-twin-10-1-st10432-8.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -1068,6 +983,7 @@ static const struct property_entry trekstor_surftab_wintron70_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 884),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 632),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1686-surftab-wintron70-st70416-6.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -1084,6 +1000,7 @@ static const struct property_entry viglen_connect_10_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-fuzz-y", 6),
 	PROPERTY_ENTRY_BOOL("touchscreen-swapped-x-y"),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl3680-viglen-connect-10.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -1097,6 +1014,7 @@ static const struct property_entry vinga_twizzle_j116_props[] = {
 	PROPERTY_ENTRY_U32("touchscreen-size-x", 1920),
 	PROPERTY_ENTRY_U32("touchscreen-size-y", 1280),
 	PROPERTY_ENTRY_STRING("firmware-name", "gsl1680-vinga-twizzle_j116.fw"),
+	PROPERTY_ENTRY_U32("silead,max-fingers", 10),
 	PROPERTY_ENTRY_BOOL("silead,home-button"),
 	{ }
 };
@@ -1108,20 +1026,6 @@ static const struct ts_dmi_data vinga_twizzle_j116_data = {
 
 /* NOTE: Please keep this table sorted alphabetically */
 const struct dmi_system_id touchscreen_dmi_table[] = {
-	{
-		/* Archos 101 Cesium Educ */
-		.driver_data = (void *)&archos_101_cesium_educ_data,
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "ARCHOS 101 Cesium Educ"),
-		},
-	},
-	{
-		/* Bush Windows tablet */
-		.driver_data = (void *)&bush_bush_windows_tablet_data,
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "Bush Windows tablet"),
-		},
-	},
 	{
 		/* Chuwi Hi8 */
 		.driver_data = (void *)&chuwi_hi8_data,
@@ -1212,15 +1116,6 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 		},
 	},
 	{
-		/* Chuwi Vi8 dual-boot (CWI506) */
-		.driver_data = (void *)&chuwi_vi8_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Insyde"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "i86"),
-			DMI_MATCH(DMI_BIOS_VERSION, "CHUWI2.D86JHBNR02"),
-		},
-	},
-	{
 		/* Chuwi Vi8 Plus (CWI519) */
 		.driver_data = (void *)&chuwi_vi8_plus_data,
 		.matches = {
@@ -1288,14 +1183,6 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Insyde"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "7W"),
-		},
-	},
-	{
-		/* DEXP Ursus KX210i */
-		.driver_data = (void *)&dexp_ursus_kx210i_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "INSYDE Corp."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "S107I"),
 		},
 	},
 	{
@@ -1380,17 +1267,6 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 		},
 	},
 	{
-		/* Jumper EZpad 6s Pro */
-		.driver_data = (void *)&jumper_ezpad_6_pro_b_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Jumper"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Ezpad"),
-			/* Above matches are too generic, add bios match */
-			DMI_MATCH(DMI_BIOS_VERSION, "E.WSA116_8.E1.042.bin"),
-			DMI_MATCH(DMI_BIOS_DATE, "01/08/2020"),
-		},
-	},
-	{
 		/* Jumper EZpad 6 m4 */
 		.driver_data = (void *)&jumper_ezpad_6_m4_data,
 		.matches = {
@@ -1417,18 +1293,6 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Insyde"),
 			/* jumperx.T87.KFBNEEA02 with the version-nr dropped */
 			DMI_MATCH(DMI_BIOS_VERSION, "jumperx.T87.KFBNEEA"),
-		},
-	},
-	{
-		/* Juno Tablet */
-		.driver_data = (void *)&gdix1002_upside_down_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Default string"),
-			/* Both product- and board-name being "Default string" is somewhat rare */
-			DMI_MATCH(DMI_PRODUCT_NAME, "Default string"),
-			DMI_MATCH(DMI_BOARD_NAME, "Default string"),
-			/* Above matches are too generic, add partial bios-version match */
-			DMI_MATCH(DMI_BIOS_VERSION, "JP2V1."),
 		},
 	},
 	{
@@ -1553,14 +1417,6 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 		},
 	},
 	{
-		/* Positivo C4128B */
-		.driver_data = (void *)&positivo_c4128b_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Positivo Tecnologia SA"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "C4128B-1"),
-		},
-	},
-	{
 		/* Point of View mobii wintab p800w (v2.0) */
 		.driver_data = (void *)&pov_mobii_wintab_p800w_v20_data,
 		.matches = {
@@ -1622,40 +1478,11 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 		},
 	},
 	{
-		/* RWC NANOTE NEXT */
-		.driver_data = (void *)&rwc_nanote_next_data,
-		.matches = {
-			DMI_MATCH(DMI_PRODUCT_NAME, "To be filled by O.E.M."),
-			DMI_MATCH(DMI_BOARD_NAME, "To be filled by O.E.M."),
-			DMI_MATCH(DMI_BOARD_VENDOR, "To be filled by O.E.M."),
-			/* Above matches are too generic, add bios-version match */
-			DMI_MATCH(DMI_BIOS_VERSION, "S8A70R100-V005"),
-		},
-	},
-	{
-		/* SARY Tab 3 */
-		.driver_data = (void *)&sary_tab_3_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "SARY"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "C210C"),
-			DMI_MATCH(DMI_PRODUCT_SKU, "TAB3"),
-		},
-	},
-	{
 		/* Schneider SCT101CTM */
 		.driver_data = (void *)&schneider_sct101ctm_data,
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Default string"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "SCT101CTM"),
-		},
-	},
-	{
-		/* GlobalSpace SoLT IVW 11.6" */
-		.driver_data = (void *)&globalspace_solt_ivw116_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Globalspace Tech Pvt Ltd"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "SolTIVW"),
-			DMI_MATCH(DMI_PRODUCT_SKU, "PN20170413488"),
 		},
 	},
 	{
@@ -1677,15 +1504,6 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 		},
 	},
 	{
-		/* Teclast X16 Plus */
-		.driver_data = (void *)&teclast_x16_plus_data,
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TECLAST"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Default string"),
-			DMI_MATCH(DMI_PRODUCT_SKU, "D3A5_A1"),
-		},
-	},
-	{
 		/* Teclast X3 Plus */
 		.driver_data = (void *)&teclast_x3_plus_data,
 		.matches = {
@@ -1696,7 +1514,7 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 	},
 	{
 		/* Teclast X89 (Android version / BIOS) */
-		.driver_data = (void *)&gdix1001_upside_down_data,
+		.driver_data = (void *)&gdix1001_00_upside_down_data,
 		.matches = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "WISKY"),
 			DMI_MATCH(DMI_BOARD_NAME, "3G062i"),
@@ -1704,7 +1522,7 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 	},
 	{
 		/* Teclast X89 (Windows version / BIOS) */
-		.driver_data = (void *)&gdix1001_upside_down_data,
+		.driver_data = (void *)&gdix1001_01_upside_down_data,
 		.matches = {
 			/* tPAD is too generic, also match on bios date */
 			DMI_MATCH(DMI_BOARD_VENDOR, "TECLAST"),
@@ -1722,7 +1540,7 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 	},
 	{
 		/* Teclast X98 Pro */
-		.driver_data = (void *)&gdix1001_upside_down_data,
+		.driver_data = (void *)&gdix1001_00_upside_down_data,
 		.matches = {
 			/*
 			 * Only match BIOS date, because the manufacturers
@@ -1826,7 +1644,7 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 	},
 	{
 		/* "WinBook TW100" */
-		.driver_data = (void *)&gdix1001_upside_down_data,
+		.driver_data = (void *)&gdix1001_00_upside_down_data,
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "WinBook"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TW100")
@@ -1834,7 +1652,7 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 	},
 	{
 		/* WinBook TW700 */
-		.driver_data = (void *)&gdix1001_upside_down_data,
+		.driver_data = (void *)&gdix1001_00_upside_down_data,
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "WinBook"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TW700")
@@ -1851,7 +1669,7 @@ const struct dmi_system_id touchscreen_dmi_table[] = {
 	{ }
 };
 
-static struct ts_dmi_data *ts_data;
+static const struct ts_dmi_data *ts_data;
 
 static void ts_dmi_add_props(struct i2c_client *client)
 {
@@ -1859,7 +1677,7 @@ static void ts_dmi_add_props(struct i2c_client *client)
 	int error;
 
 	if (has_acpi_companion(dev) &&
-	    strstarts(client->name, ts_data->acpi_name)) {
+	    !strncmp(ts_data->acpi_name, client->name, I2C_NAME_SIZE)) {
 		error = device_create_managed_software_node(dev, ts_data->properties, NULL);
 		if (error)
 			dev_err(dev, "failed to add properties: %d\n", error);
@@ -1886,64 +1704,6 @@ static int ts_dmi_notifier_call(struct notifier_block *nb,
 	return 0;
 }
 
-#define MAX_CMDLINE_PROPS 16
-
-static struct property_entry ts_cmdline_props[MAX_CMDLINE_PROPS + 1];
-
-static struct ts_dmi_data ts_cmdline_data = {
-	.properties = ts_cmdline_props,
-};
-
-static int __init ts_parse_props(char *str)
-{
-	/* Save the original str to show it on syntax errors */
-	char orig_str[256];
-	char *name, *value;
-	u32 u32val;
-	int i, ret;
-
-	strscpy(orig_str, str);
-
-	/*
-	 * str is part of the static_command_line from init/main.c and poking
-	 * holes in that by writing 0 to it is allowed, as is taking long
-	 * lasting references to it.
-	 */
-	ts_cmdline_data.acpi_name = strsep(&str, ":");
-
-	for (i = 0; i < MAX_CMDLINE_PROPS; i++) {
-		name = strsep(&str, ":");
-		if (!name || !name[0])
-			break;
-
-		/* Replace '=' with 0 and make value point past '=' or NULL */
-		value = name;
-		strsep(&value, "=");
-		if (!value) {
-			ts_cmdline_props[i] = PROPERTY_ENTRY_BOOL(name);
-		} else if (isdigit(value[0])) {
-			ret = kstrtou32(value, 0, &u32val);
-			if (ret)
-				goto syntax_error;
-
-			ts_cmdline_props[i] = PROPERTY_ENTRY_U32(name, u32val);
-		} else {
-			ts_cmdline_props[i] = PROPERTY_ENTRY_STRING(name, value);
-		}
-	}
-
-	if (!i || str)
-		goto syntax_error;
-
-	ts_data = &ts_cmdline_data;
-	return 1;
-
-syntax_error:
-	pr_err("Invalid '%s' value for 'i2c_touchscreen_props='\n", orig_str);
-	return 1; /* "i2c_touchscreen_props=" is still a known parameter */
-}
-__setup("i2c_touchscreen_props=", ts_parse_props);
-
 static struct notifier_block ts_dmi_notifier = {
 	.notifier_call = ts_dmi_notifier_call,
 };
@@ -1951,25 +1711,13 @@ static struct notifier_block ts_dmi_notifier = {
 static int __init ts_dmi_init(void)
 {
 	const struct dmi_system_id *dmi_id;
-	struct ts_dmi_data *ts_data_dmi;
 	int error;
 
 	dmi_id = dmi_first_match(touchscreen_dmi_table);
-	ts_data_dmi = dmi_id ? dmi_id->driver_data : NULL;
-
-	if (ts_data) {
-		/*
-		 * Kernel cmdline provided data takes precedence, copy over
-		 * DMI efi_embedded_fw info if available.
-		 */
-		if (ts_data_dmi)
-			ts_data->embedded_fw = ts_data_dmi->embedded_fw;
-	} else if (ts_data_dmi) {
-		ts_data = ts_data_dmi;
-	} else {
+	if (!dmi_id)
 		return 0; /* Not an error */
-	}
 
+	ts_data = dmi_id->driver_data;
 	/* Some dmi table entries only provide an efi_embedded_fw_desc */
 	if (!ts_data->properties)
 		return 0;

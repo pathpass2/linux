@@ -13,9 +13,9 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/clk.h>
-#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/of_irq.h>
 #include <linux/of_pci.h>
-#include <linux/platform_device.h>
 
 #include <asm/addrspace.h>
 
@@ -118,7 +118,7 @@ static int ltq_pci_startup(struct platform_device *pdev)
 
 	/* and enable the clocks */
 	clk_enable(clk_pci);
-	if (of_property_read_bool(node, "lantiq,external-clock"))
+	if (of_find_property(node, "lantiq,external-clock", NULL))
 		clk_enable(clk_external);
 	else
 		clk_disable(clk_external);
@@ -152,7 +152,7 @@ static int ltq_pci_startup(struct platform_device *pdev)
 		temp_buffer &= ~0xf0000;
 	/* enable internal arbiter */
 	temp_buffer |= (1 << INTERNAL_ARB_ENABLE_BIT);
-	/* enable internal PCI master request */
+	/* enable internal PCI master reqest */
 	temp_buffer &= (~(3 << PCI_MASTER0_REQ_MASK_2BITS));
 
 	/* enable EBU request */
@@ -234,7 +234,7 @@ static struct platform_driver ltq_pci_driver = {
 	},
 };
 
-static int __init pcibios_init(void)
+int __init pcibios_init(void)
 {
 	int ret = platform_driver_register(&ltq_pci_driver);
 	if (ret)

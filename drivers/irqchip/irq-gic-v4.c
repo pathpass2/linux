@@ -8,7 +8,6 @@
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/msi.h>
-#include <linux/pid.h>
 #include <linux/sched.h>
 
 #include <linux/irqchip/arm-gic-v4.h>
@@ -97,7 +96,7 @@ bool gic_cpuif_has_vsgi(void)
 
 	fld = cpuid_feature_extract_unsigned_field(reg, ID_AA64PFR0_EL1_GIC_SHIFT);
 
-	return fld >= ID_AA64PFR0_EL1_GIC_V4P1;
+	return fld >= 0x3;
 }
 #else
 bool gic_cpuif_has_vsgi(void)
@@ -342,10 +341,10 @@ int its_get_vlpi(int irq, struct its_vlpi_map *map)
 	return irq_set_vcpu_affinity(irq, &info);
 }
 
-void its_unmap_vlpi(int irq)
+int its_unmap_vlpi(int irq)
 {
 	irq_clear_status_flags(irq, IRQ_DISABLE_UNLAZY);
-	WARN_ON_ONCE(irq_set_vcpu_affinity(irq, NULL));
+	return irq_set_vcpu_affinity(irq, NULL);
 }
 
 int its_prop_update_vlpi(int irq, u8 config, bool inv)

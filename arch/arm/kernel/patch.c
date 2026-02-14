@@ -9,7 +9,7 @@
 #include <asm/fixmap.h>
 #include <asm/smp_plat.h>
 #include <asm/opcodes.h>
-#include <asm/text-patching.h>
+#include <asm/patch.h>
 
 struct patch {
 	void *addr;

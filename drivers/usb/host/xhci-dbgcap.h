@@ -81,7 +81,7 @@ enum dbc_state {
 	DS_ENABLED,
 	DS_CONNECTED,
 	DS_CONFIGURED,
-	DS_MAX
+	DS_STALLED,
 };
 
 struct dbc_ep {
@@ -89,14 +89,11 @@ struct dbc_ep {
 	struct list_head		list_pending;
 	struct xhci_ring		*ring;
 	unsigned int			direction:1;
-	unsigned int			halted:1;
 };
 
 #define DBC_QUEUE_SIZE			16
 #define DBC_WRITE_BUF_SIZE		8192
-#define DBC_POLL_INTERVAL_DEFAULT	64	/* milliseconds */
-#define DBC_POLL_INTERVAL_MAX		5000	/* milliseconds */
-#define DBC_XFER_INACTIVITY_TIMEOUT	10	/* milliseconds */
+
 /*
  * Private structure for DbC hardware state:
  */
@@ -111,10 +108,9 @@ struct dbc_port {
 	struct tasklet_struct		push;
 
 	struct list_head		write_pool;
-	unsigned int			tx_boundary;
+	struct kfifo			write_fifo;
 
 	bool				registered;
-	bool				tx_running;
 };
 
 struct dbc_driver {
@@ -136,15 +132,9 @@ struct xhci_dbc {
 	struct dbc_str_descs		*string;
 	dma_addr_t			string_dma;
 	size_t				string_size;
-	u16				idVendor;
-	u16				idProduct;
-	u16				bcdDevice;
-	u8				bInterfaceProtocol;
 
 	enum dbc_state			state;
 	struct delayed_work		event_work;
-	unsigned int			poll_interval;	/* ms */
-	unsigned long			xfer_timestamp;
 	unsigned			resume_required:1;
 	struct dbc_ep			eps[2];
 
@@ -190,7 +180,6 @@ struct dbc_request {
 enum evtreturn {
 	EVT_ERR	= -1,
 	EVT_DONE,
-	EVT_XFER_DONE,
 	EVT_GSER,
 	EVT_DISC,
 };

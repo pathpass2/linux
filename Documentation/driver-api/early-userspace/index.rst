@@ -9,3 +9,10 @@ Early Userspace
 
     early_userspace_support
     buffer-format
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

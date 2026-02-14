@@ -546,9 +546,11 @@ static int sun4i_tv_probe(struct platform_device *pdev)
 	return component_add(&pdev->dev, &sun4i_tv_ops);
 }
 
-static void sun4i_tv_remove(struct platform_device *pdev)
+static int sun4i_tv_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &sun4i_tv_ops);
+
+	return 0;
 }
 
 static const struct of_device_id sun4i_tv_of_table[] = {

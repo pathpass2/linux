@@ -30,9 +30,8 @@ tbf_test()
 	# This test is used for both ETS and PRIO. Even though we only need two
 	# bands, PRIO demands a minimum of three.
 	tc qdisc add dev $swp2 root handle 10: $QDISC 3 priomap 2 1 0
-	defer tc qdisc del dev $swp2 root
-
 	tbf_test_one 128K
+	tc qdisc del dev $swp2 root
 }
 
 tbf_root_test()
@@ -43,8 +42,6 @@ tbf_root_test()
 
 	tc qdisc replace dev $swp2 root handle 1: \
 		tbf rate 400Mbit burst $bs limit 1M
-	defer tc qdisc del dev $swp2 root
-
 	tc qdisc replace dev $swp2 parent 1:1 handle 10: \
 		$QDISC 3 priomap 2 1 0
 	tc qdisc replace dev $swp2 parent 10:3 handle 103: \
@@ -56,11 +53,9 @@ tbf_root_test()
 
 	do_tbf_test 10 400 $bs
 	do_tbf_test 11 400 $bs
-}
 
-if type -t sch_tbf_pre_hook >/dev/null; then
-	sch_tbf_pre_hook
-fi
+	tc qdisc del dev $swp2 root
+}
 
 trap cleanup EXIT
 

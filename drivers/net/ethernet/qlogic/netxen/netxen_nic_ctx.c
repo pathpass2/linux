@@ -571,6 +571,9 @@ static u64 ctx_addr_sig_regs[][3] = {
 #define CRB_CTX_ADDR_REG_HI(FUNC_ID)	(ctx_addr_sig_regs[FUNC_ID][2])
 #define CRB_CTX_SIGNATURE_REG(FUNC_ID)	(ctx_addr_sig_regs[FUNC_ID][1])
 
+#define lower32(x)	((u32)((x) & 0xffffffff))
+#define upper32(x)	((u32)(((u64)(x) >> 32) & 0xffffffff))
+
 static struct netxen_recv_crb recv_crb_registers[] = {
 	/* Instance 0 */
 	{
@@ -720,9 +723,9 @@ netxen_init_old_ctx(struct netxen_adapter *adapter)
 		NETXEN_CTX_SIGNATURE_V2 : NETXEN_CTX_SIGNATURE;
 
 	NXWR32(adapter, CRB_CTX_ADDR_REG_LO(port),
-			lower_32_bits(recv_ctx->phys_addr));
+			lower32(recv_ctx->phys_addr));
 	NXWR32(adapter, CRB_CTX_ADDR_REG_HI(port),
-			upper_32_bits(recv_ctx->phys_addr));
+			upper32(recv_ctx->phys_addr));
 	NXWR32(adapter, CRB_CTX_SIGNATURE_REG(port),
 			signature | port);
 	return 0;

@@ -3,7 +3,7 @@
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
  *
- * Copyright(c) 2018 Intel Corporation
+ * Copyright(c) 2018 Intel Corporation. All rights reserved.
  *
  * Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
  */
@@ -38,29 +38,17 @@ static inline void sof_ops_free(struct snd_sof_dev *sdev)
 /* Mandatory operations are verified during probing */
 
 /* init */
-static inline int snd_sof_probe_early(struct snd_sof_dev *sdev)
-{
-	if (sof_ops(sdev)->probe_early)
-		return sof_ops(sdev)->probe_early(sdev);
-
-	return 0;
-}
-
 static inline int snd_sof_probe(struct snd_sof_dev *sdev)
 {
 	return sof_ops(sdev)->probe(sdev);
 }
 
-static inline void snd_sof_remove(struct snd_sof_dev *sdev)
+static inline int snd_sof_remove(struct snd_sof_dev *sdev)
 {
 	if (sof_ops(sdev)->remove)
-		sof_ops(sdev)->remove(sdev);
-}
+		return sof_ops(sdev)->remove(sdev);
 
-static inline void snd_sof_remove_late(struct snd_sof_dev *sdev)
-{
-	if (sof_ops(sdev)->remove_late)
-		sof_ops(sdev)->remove_late(sdev);
+	return 0;
 }
 
 static inline int snd_sof_shutdown(struct snd_sof_dev *sdev)
@@ -214,7 +202,7 @@ static inline int snd_sof_dsp_get_mailbox_offset(struct snd_sof_dev *sdev)
 		return sof_ops(sdev)->get_mailbox_offset(sdev);
 
 	dev_err(sdev->dev, "error: %s not defined\n", __func__);
-	return -EOPNOTSUPP;
+	return -ENOTSUPP;
 }
 
 static inline int snd_sof_dsp_get_window_offset(struct snd_sof_dev *sdev,
@@ -224,7 +212,7 @@ static inline int snd_sof_dsp_get_window_offset(struct snd_sof_dev *sdev,
 		return sof_ops(sdev)->get_window_offset(sdev, id);
 
 	dev_err(sdev->dev, "error: %s not defined\n", __func__);
-	return -EOPNOTSUPP;
+	return -ENOTSUPP;
 }
 /* power management */
 static inline int snd_sof_dsp_resume(struct snd_sof_dev *sdev)
@@ -287,12 +275,16 @@ static inline int
 snd_sof_dsp_set_power_state(struct snd_sof_dev *sdev,
 			    const struct sof_dsp_power_state *target_state)
 {
-	guard(mutex)(&sdev->power_state_access);
+	int ret = 0;
+
+	mutex_lock(&sdev->power_state_access);
 
 	if (sof_ops(sdev)->set_power_state)
-		return sof_ops(sdev)->set_power_state(sdev, target_state);
+		ret = sof_ops(sdev)->set_power_state(sdev, target_state);
 
-	return 0;
+	mutex_unlock(&sdev->power_state_access);
+
+	return ret;
 }
 
 /* debug */
@@ -519,26 +511,12 @@ static inline int snd_sof_pcm_platform_ack(struct snd_sof_dev *sdev,
 	return 0;
 }
 
-static inline u64
-snd_sof_pcm_get_dai_frame_counter(struct snd_sof_dev *sdev,
-				  struct snd_soc_component *component,
-				  struct snd_pcm_substream *substream)
+static inline u64 snd_sof_pcm_get_stream_position(struct snd_sof_dev *sdev,
+						  struct snd_soc_component *component,
+						  struct snd_pcm_substream *substream)
 {
-	if (sof_ops(sdev) && sof_ops(sdev)->get_dai_frame_counter)
-		return sof_ops(sdev)->get_dai_frame_counter(sdev, component,
-							    substream);
-
-	return 0;
-}
-
-static inline u64
-snd_sof_pcm_get_host_byte_counter(struct snd_sof_dev *sdev,
-				  struct snd_soc_component *component,
-				  struct snd_pcm_substream *substream)
-{
-	if (sof_ops(sdev) && sof_ops(sdev)->get_host_byte_counter)
-		return sof_ops(sdev)->get_host_byte_counter(sdev, component,
-							    substream);
+	if (sof_ops(sdev) && sof_ops(sdev)->get_stream_position)
+		return sof_ops(sdev)->get_stream_position(sdev, component, substream);
 
 	return 0;
 }
@@ -577,15 +555,6 @@ snd_sof_set_mach_params(struct snd_soc_acpi_mach *mach,
 		sof_ops(sdev)->set_mach_params(mach, sdev);
 }
 
-static inline bool
-snd_sof_is_chain_dma_supported(struct snd_sof_dev *sdev, u32 dai_type)
-{
-	if (sof_ops(sdev) && sof_ops(sdev)->is_chain_dma_supported)
-		return sof_ops(sdev)->is_chain_dma_supported(sdev, dai_type);
-
-	return false;
-}
-
 /**
  * snd_sof_dsp_register_poll_timeout - Periodically poll an address
  * until a condition is met or a timeout occurs
@@ -593,12 +562,12 @@ snd_sof_is_chain_dma_supported(struct snd_sof_dev *sdev, u32 dai_type)
  * @addr: Address to poll
  * @val: Variable to read the value into
  * @cond: Break condition (usually involving @val)
- * @sleep_us: Maximum time to sleep between reads in us (0 tight-loops). Please
- *            read usleep_range() function description for details and
- *            limitations.
+ * @sleep_us: Maximum time to sleep between reads in us (0
+ *            tight-loops).  Should be less than ~20ms since usleep_range
+ *            is used (see Documentation/timers/timers-howto.rst).
  * @timeout_us: Timeout in us, 0 means never timeout
  *
- * Returns: 0 on success and -ETIMEDOUT upon a timeout. In either
+ * Returns 0 on success and -ETIMEDOUT upon a timeout. In either
  * case, the last read value at @addr is stored in @val. Must not
  * be called from atomic context if sleep_us or timeout_us are used.
  *

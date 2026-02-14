@@ -30,9 +30,9 @@
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-#include <linux/property.h>
 #include <linux/clk.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/mfd/syscon.h>
 #include <linux/regmap.h>
 
@@ -259,32 +259,49 @@ static int c_can_plat_probe(struct platform_device *pdev)
 	void __iomem *addr;
 	struct net_device *dev;
 	struct c_can_priv *priv;
+	const struct of_device_id *match;
 	struct resource *mem;
 	int irq;
 	struct clk *clk;
 	const struct c_can_driver_data *drvdata;
 	struct device_node *np = pdev->dev.of_node;
 
-	drvdata = device_get_match_data(&pdev->dev);
+	match = of_match_device(c_can_of_table, &pdev->dev);
+	if (match) {
+		drvdata = match->data;
+	} else if (pdev->id_entry->driver_data) {
+		drvdata = (struct c_can_driver_data *)
+			platform_get_device_id(pdev)->driver_data;
+	} else {
+		return -ENODEV;
+	}
 
 	/* get the appropriate clk */
 	clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(clk))
-		return PTR_ERR(clk);
+	if (IS_ERR(clk)) {
+		ret = PTR_ERR(clk);
+		goto exit;
+	}
 
 	/* get the platform data */
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (irq <= 0) {
+		ret = -ENODEV;
+		goto exit;
+	}
 
 	addr = devm_platform_get_and_ioremap_resource(pdev, 0, &mem);
-	if (IS_ERR(addr))
-		return PTR_ERR(addr);
+	if (IS_ERR(addr)) {
+		ret =  PTR_ERR(addr);
+		goto exit;
+	}
 
 	/* allocate the c_can device */
 	dev = alloc_c_can_dev(drvdata->msg_obj_num);
-	if (!dev)
-		return -ENOMEM;
+	if (!dev) {
+		ret = -ENOMEM;
+		goto exit;
+	}
 
 	priv = netdev_priv(dev);
 	switch (drvdata->id) {
@@ -316,22 +333,33 @@ static int c_can_plat_probe(struct platform_device *pdev)
 		/* Check if we need custom RAMINIT via syscon. Mostly for TI
 		 * platforms. Only supported with DT boot.
 		 */
-		if (np && of_property_present(np, "syscon-raminit")) {
-			unsigned int args[2];
+		if (np && of_property_read_bool(np, "syscon-raminit")) {
 			u32 id;
 			struct c_can_raminit *raminit = &priv->raminit_sys;
 
 			ret = -EINVAL;
-			raminit->syscon = syscon_regmap_lookup_by_phandle_args(np,
-									       "syscon-raminit",
-									       2, args);
+			raminit->syscon = syscon_regmap_lookup_by_phandle(np,
+									  "syscon-raminit");
 			if (IS_ERR(raminit->syscon)) {
+				/* can fail with -EPROBE_DEFER */
 				ret = PTR_ERR(raminit->syscon);
+				free_c_can_dev(dev);
+				return ret;
+			}
+
+			if (of_property_read_u32_index(np, "syscon-raminit", 1,
+						       &raminit->reg)) {
+				dev_err(&pdev->dev,
+					"couldn't get the RAMINIT reg. offset!\n");
 				goto exit_free_device;
 			}
 
-			raminit->reg = args[0];
-			id = args[1];
+			if (of_property_read_u32_index(np, "syscon-raminit", 2,
+						       &id)) {
+				dev_err(&pdev->dev,
+					"couldn't get the CAN instance ID\n");
+				goto exit_free_device;
+			}
 
 			if (id >= drvdata->raminit_num) {
 				dev_err(&pdev->dev,
@@ -366,22 +394,23 @@ static int c_can_plat_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(&pdev->dev, "registering %s failed (err=%d)\n",
 			KBUILD_MODNAME, ret);
-		goto exit_pm_runtime;
+		goto exit_free_device;
 	}
 
 	dev_info(&pdev->dev, "%s device registered (regs=%p, irq=%d)\n",
 		 KBUILD_MODNAME, priv->base, dev->irq);
 	return 0;
 
-exit_pm_runtime:
-	pm_runtime_disable(priv->device);
 exit_free_device:
+	pm_runtime_disable(priv->device);
 	free_c_can_dev(dev);
+exit:
+	dev_err(&pdev->dev, "probe failed\n");
 
 	return ret;
 }
 
-static void c_can_plat_remove(struct platform_device *pdev)
+static int c_can_plat_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct c_can_priv *priv = netdev_priv(dev);
@@ -389,6 +418,8 @@ static void c_can_plat_remove(struct platform_device *pdev)
 	unregister_c_can_dev(dev);
 	pm_runtime_disable(priv->device);
 	free_c_can_dev(dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM

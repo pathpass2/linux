@@ -36,7 +36,7 @@
 
 #define DART_MAX_STREAMS 256
 #define DART_MAX_TTBR 4
-#define MAX_DARTS_PER_DEVICE 3
+#define MAX_DARTS_PER_DEVICE 2
 
 /* Common registers */
 
@@ -81,7 +81,6 @@
 #define DART_T8020_TCR_BYPASS_DAPF      BIT(12)
 
 #define DART_T8020_TTBR       0x200
-#define DART_T8020_USB4_TTBR  0x400
 #define DART_T8020_TTBR_VALID BIT(31)
 #define DART_T8020_TTBR_ADDR_FIELD_SHIFT 0
 #define DART_T8020_TTBR_SHIFT 12
@@ -122,8 +121,6 @@
 #define DART_T8110_ERROR_ADDR_LO 0x170
 #define DART_T8110_ERROR_ADDR_HI 0x174
 
-#define DART_T8110_ERROR_STREAMS 0x1c0
-
 #define DART_T8110_PROTECT 0x200
 #define DART_T8110_UNPROTECT 0x204
 #define DART_T8110_PROTECT_LOCK 0x208
@@ -135,7 +132,6 @@
 #define DART_T8110_TCR                  0x1000
 #define DART_T8110_TCR_REMAP            GENMASK(11, 8)
 #define DART_T8110_TCR_REMAP_EN         BIT(7)
-#define DART_T8110_TCR_FOUR_LEVEL       BIT(3)
 #define DART_T8110_TCR_BYPASS_DAPF      BIT(2)
 #define DART_T8110_TCR_BYPASS_DART      BIT(1)
 #define DART_T8110_TCR_TRANSLATE_ENABLE BIT(0)
@@ -169,23 +165,22 @@ struct apple_dart_hw {
 
 	int max_sid_count;
 
-	u32 lock;
-	u32 lock_bit;
+	u64 lock;
+	u64 lock_bit;
 
-	u32 error;
+	u64 error;
 
-	u32 enable_streams;
+	u64 enable_streams;
 
-	u32 tcr;
-	u32 tcr_enabled;
-	u32 tcr_disabled;
-	u32 tcr_bypass;
-	u32 tcr_4level;
+	u64 tcr;
+	u64 tcr_enabled;
+	u64 tcr_disabled;
+	u64 tcr_bypass;
 
-	u32 ttbr;
-	u32 ttbr_valid;
-	u32 ttbr_addr_field_shift;
-	u32 ttbr_shift;
+	u64 ttbr;
+	u64 ttbr_valid;
+	u64 ttbr_addr_field_shift;
+	u64 ttbr_shift;
 	int ttbr_count;
 };
 
@@ -201,6 +196,7 @@ struct apple_dart_hw {
  * @lock: lock for hardware operations involving this dart
  * @pgsize: pagesize supported by this DART
  * @supports_bypass: indicates if this DART supports bypass mode
+ * @force_bypass: force bypass mode due to pagesize mismatch?
  * @sid2group: maps stream ids to iommu_groups
  * @iommu: iommu core device
  */
@@ -221,7 +217,7 @@ struct apple_dart {
 	u32 pgsize;
 	u32 num_streams;
 	u32 supports_bypass : 1;
-	u32 four_level : 1;
+	u32 force_bypass : 1;
 
 	struct iommu_group *sid2group[DART_MAX_STREAMS];
 	struct iommu_device iommu;
@@ -282,9 +278,6 @@ struct apple_dart_domain {
  * @streams: streams for this device
  */
 struct apple_dart_master_cfg {
-	/* Intersection of DART capabilitles */
-	u32 supports_bypass : 1;
-
 	struct apple_dart_stream_map stream_maps[MAX_DARTS_PER_DEVICE];
 };
 
@@ -310,19 +303,13 @@ static struct apple_dart_domain *to_dart_domain(struct iommu_domain *dom)
 }
 
 static void
-apple_dart_hw_enable_translation(struct apple_dart_stream_map *stream_map, int levels)
+apple_dart_hw_enable_translation(struct apple_dart_stream_map *stream_map)
 {
 	struct apple_dart *dart = stream_map->dart;
-	u32 tcr = dart->hw->tcr_enabled;
 	int sid;
 
-	if (levels == 4)
-		tcr |= dart->hw->tcr_4level;
-
-	WARN_ON(levels != 3 && levels != 4);
-	WARN_ON(levels == 4 && !dart->four_level);
 	for_each_set_bit(sid, stream_map->sidmap, dart->num_streams)
-		writel(tcr, dart->regs + DART_TCR(dart, sid));
+		writel(dart->hw->tcr_enabled, dart->regs + DART_TCR(dart, sid));
 }
 
 static void apple_dart_hw_disable_dma(struct apple_dart_stream_map *stream_map)
@@ -383,14 +370,12 @@ apple_dart_t8020_hw_stream_command(struct apple_dart_stream_map *stream_map,
 			     u32 command)
 {
 	unsigned long flags;
-	int ret, i;
+	int ret;
 	u32 command_reg;
 
 	spin_lock_irqsave(&stream_map->dart->lock, flags);
 
-	for (i = 0; i < BITS_TO_U32(stream_map->dart->num_streams); i++)
-		writel(stream_map->sidmap[i],
-		       stream_map->dart->regs + DART_T8020_STREAM_SELECT + 4 * i);
+	writel(stream_map->sidmap[0], stream_map->dart->regs + DART_T8020_STREAM_SELECT);
 	writel(command, stream_map->dart->regs + DART_T8020_STREAM_COMMAND);
 
 	ret = readl_poll_timeout_atomic(
@@ -521,11 +506,10 @@ static void apple_dart_iotlb_sync(struct iommu_domain *domain,
 	apple_dart_domain_flush_tlb(to_dart_domain(domain));
 }
 
-static int apple_dart_iotlb_sync_map(struct iommu_domain *domain,
-				     unsigned long iova, size_t size)
+static void apple_dart_iotlb_sync_map(struct iommu_domain *domain,
+				      unsigned long iova, size_t size)
 {
 	apple_dart_domain_flush_tlb(to_dart_domain(domain));
-	return 0;
 }
 
 static phys_addr_t apple_dart_iova_to_phys(struct iommu_domain *domain,
@@ -580,21 +564,18 @@ apple_dart_setup_translation(struct apple_dart_domain *domain,
 	for (; i < stream_map->dart->hw->ttbr_count; ++i)
 		apple_dart_hw_clear_ttbr(stream_map, i);
 
-	apple_dart_hw_enable_translation(stream_map,
-					 pgtbl_cfg->apple_dart_cfg.n_levels);
+	apple_dart_hw_enable_translation(stream_map);
 	stream_map->dart->hw->invalidate_tlb(stream_map);
 }
 
-static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
+static int apple_dart_finalize_domain(struct iommu_domain *domain,
 				      struct apple_dart_master_cfg *cfg)
 {
+	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
 	struct apple_dart *dart = cfg->stream_maps[0].dart;
 	struct io_pgtable_cfg pgtbl_cfg;
 	int ret = 0;
 	int i, j;
-
-	if (dart->pgsize > PAGE_SIZE)
-		return -EINVAL;
 
 	mutex_lock(&dart_domain->init_lock);
 
@@ -616,18 +597,17 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 		.iommu_dev = dart->dev,
 	};
 
-	dart_domain->pgtbl_ops = alloc_io_pgtable_ops(dart->hw->fmt, &pgtbl_cfg,
-						      &dart_domain->domain);
+	dart_domain->pgtbl_ops =
+		alloc_io_pgtable_ops(dart->hw->fmt, &pgtbl_cfg, domain);
 	if (!dart_domain->pgtbl_ops) {
 		ret = -ENOMEM;
 		goto done;
 	}
 
-	dart_domain->domain.pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
-	dart_domain->domain.geometry.aperture_start = 0;
-	dart_domain->domain.geometry.aperture_end =
-		(dma_addr_t)DMA_BIT_MASK(pgtbl_cfg.ias);
-	dart_domain->domain.geometry.force_aperture = true;
+	domain->pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
+	domain->geometry.aperture_start = 0;
+	domain->geometry.aperture_end = (dma_addr_t)DMA_BIT_MASK(dart->ias);
+	domain->geometry.force_aperture = true;
 
 	dart_domain->finalized = true;
 
@@ -671,74 +651,47 @@ static int apple_dart_domain_add_streams(struct apple_dart_domain *domain,
 				      true);
 }
 
-static int apple_dart_attach_dev_paging(struct iommu_domain *domain,
-					struct device *dev,
-					struct iommu_domain *old)
+static int apple_dart_attach_dev(struct iommu_domain *domain,
+				 struct device *dev)
 {
 	int ret, i;
 	struct apple_dart_stream_map *stream_map;
 	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
 
-	ret = apple_dart_finalize_domain(dart_domain, cfg);
-	if (ret)
-		return ret;
-
-	ret = apple_dart_domain_add_streams(dart_domain, cfg);
-	if (ret)
-		return ret;
-
-	for_each_stream_map(i, cfg, stream_map)
-		apple_dart_setup_translation(dart_domain, stream_map);
-	return 0;
-}
-
-static int apple_dart_attach_dev_identity(struct iommu_domain *domain,
-					  struct device *dev,
-					  struct iommu_domain *old)
-{
-	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
-	struct apple_dart_stream_map *stream_map;
-	int i;
-
-	if (!cfg->supports_bypass)
+	if (cfg->stream_maps[0].dart->force_bypass &&
+	    domain->type != IOMMU_DOMAIN_IDENTITY)
+		return -EINVAL;
+	if (!cfg->stream_maps[0].dart->supports_bypass &&
+	    domain->type == IOMMU_DOMAIN_IDENTITY)
 		return -EINVAL;
 
-	for_each_stream_map(i, cfg, stream_map)
-		apple_dart_hw_enable_bypass(stream_map);
-	return 0;
+	ret = apple_dart_finalize_domain(domain, cfg);
+	if (ret)
+		return ret;
+
+	switch (domain->type) {
+	case IOMMU_DOMAIN_DMA:
+	case IOMMU_DOMAIN_UNMANAGED:
+		ret = apple_dart_domain_add_streams(dart_domain, cfg);
+		if (ret)
+			return ret;
+
+		for_each_stream_map(i, cfg, stream_map)
+			apple_dart_setup_translation(dart_domain, stream_map);
+		break;
+	case IOMMU_DOMAIN_BLOCKED:
+		for_each_stream_map(i, cfg, stream_map)
+			apple_dart_hw_disable_dma(stream_map);
+		break;
+	case IOMMU_DOMAIN_IDENTITY:
+		for_each_stream_map(i, cfg, stream_map)
+			apple_dart_hw_enable_bypass(stream_map);
+		break;
+	}
+
+	return ret;
 }
-
-static const struct iommu_domain_ops apple_dart_identity_ops = {
-	.attach_dev = apple_dart_attach_dev_identity,
-};
-
-static struct iommu_domain apple_dart_identity_domain = {
-	.type = IOMMU_DOMAIN_IDENTITY,
-	.ops = &apple_dart_identity_ops,
-};
-
-static int apple_dart_attach_dev_blocked(struct iommu_domain *domain,
-					 struct device *dev,
-					 struct iommu_domain *old)
-{
-	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
-	struct apple_dart_stream_map *stream_map;
-	int i;
-
-	for_each_stream_map(i, cfg, stream_map)
-		apple_dart_hw_disable_dma(stream_map);
-	return 0;
-}
-
-static const struct iommu_domain_ops apple_dart_blocked_ops = {
-	.attach_dev = apple_dart_attach_dev_blocked,
-};
-
-static struct iommu_domain apple_dart_blocked_domain = {
-	.type = IOMMU_DOMAIN_BLOCKED,
-	.ops = &apple_dart_blocked_ops,
-};
 
 static struct iommu_device *apple_dart_probe_device(struct device *dev)
 {
@@ -761,12 +714,17 @@ static void apple_dart_release_device(struct device *dev)
 {
 	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
 
+	dev_iommu_priv_set(dev, NULL);
 	kfree(cfg);
 }
 
-static struct iommu_domain *apple_dart_domain_alloc_paging(struct device *dev)
+static struct iommu_domain *apple_dart_domain_alloc(unsigned int type)
 {
 	struct apple_dart_domain *dart_domain;
+
+	if (type != IOMMU_DOMAIN_DMA && type != IOMMU_DOMAIN_UNMANAGED &&
+	    type != IOMMU_DOMAIN_IDENTITY && type != IOMMU_DOMAIN_BLOCKED)
+		return NULL;
 
 	dart_domain = kzalloc(sizeof(*dart_domain), GFP_KERNEL);
 	if (!dart_domain)
@@ -774,16 +732,10 @@ static struct iommu_domain *apple_dart_domain_alloc_paging(struct device *dev)
 
 	mutex_init(&dart_domain->init_lock);
 
-	if (dev) {
-		struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
-		int ret;
+	/* no need to allocate pgtbl_ops or do any other finalization steps */
+	if (type == IOMMU_DOMAIN_IDENTITY || type == IOMMU_DOMAIN_BLOCKED)
+		dart_domain->finalized = true;
 
-		ret = apple_dart_finalize_domain(dart_domain, cfg);
-		if (ret) {
-			kfree(dart_domain);
-			return ERR_PTR(ret);
-		}
-	}
 	return &dart_domain->domain;
 }
 
@@ -791,13 +743,13 @@ static void apple_dart_domain_free(struct iommu_domain *domain)
 {
 	struct apple_dart_domain *dart_domain = to_dart_domain(domain);
 
-	free_io_pgtable_ops(dart_domain->pgtbl_ops);
+	if (dart_domain->pgtbl_ops)
+		free_io_pgtable_ops(dart_domain->pgtbl_ops);
 
 	kfree(dart_domain);
 }
 
-static int apple_dart_of_xlate(struct device *dev,
-			       const struct of_phandle_args *args)
+static int apple_dart_of_xlate(struct device *dev, struct of_phandle_args *args)
 {
 	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
 	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
@@ -805,30 +757,25 @@ static int apple_dart_of_xlate(struct device *dev,
 	struct apple_dart *cfg_dart;
 	int i, sid;
 
-	put_device(&iommu_pdev->dev);
-
 	if (args->args_count != 1)
 		return -EINVAL;
 	sid = args->args[0];
 
-	if (!cfg) {
+	if (!cfg)
 		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
-		if (!cfg)
-			return -ENOMEM;
-		/* Will be ANDed with DART capabilities */
-		cfg->supports_bypass = true;
-	}
+	if (!cfg)
+		return -ENOMEM;
 	dev_iommu_priv_set(dev, cfg);
 
 	cfg_dart = cfg->stream_maps[0].dart;
 	if (cfg_dart) {
+		if (cfg_dart->supports_bypass != dart->supports_bypass)
+			return -EINVAL;
+		if (cfg_dart->force_bypass != dart->force_bypass)
+			return -EINVAL;
 		if (cfg_dart->pgsize != dart->pgsize)
 			return -EINVAL;
-		if (cfg_dart->ias != dart->ias)
-			return -EINVAL;
 	}
-
-	cfg->supports_bypass &= dart->supports_bypass;
 
 	for (i = 0; i < MAX_DARTS_PER_DEVICE; ++i) {
 		if (cfg->stream_maps[i].dart == dart) {
@@ -935,7 +882,7 @@ static struct iommu_group *apple_dart_device_group(struct device *dev)
 
 		ret = apple_dart_merge_master_cfg(group_master_cfg, cfg);
 		if (ret) {
-			dev_err(dev, "Failed to merge DART IOMMU groups.\n");
+			dev_err(dev, "Failed to merge DART IOMMU grups.\n");
 			iommu_group_put(group);
 			res = ERR_PTR(ret);
 			goto out;
@@ -967,9 +914,9 @@ static int apple_dart_def_domain_type(struct device *dev)
 {
 	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
 
-	if (cfg->stream_maps[0].dart->pgsize > PAGE_SIZE)
+	if (cfg->stream_maps[0].dart->force_bypass)
 		return IOMMU_DOMAIN_IDENTITY;
-	if (!cfg->supports_bypass)
+	if (!cfg->stream_maps[0].dart->supports_bypass)
 		return IOMMU_DOMAIN_DMA;
 
 	return 0;
@@ -1001,18 +948,17 @@ static void apple_dart_get_resv_regions(struct device *dev,
 }
 
 static const struct iommu_ops apple_dart_iommu_ops = {
-	.identity_domain = &apple_dart_identity_domain,
-	.blocked_domain = &apple_dart_blocked_domain,
-	.domain_alloc_paging = apple_dart_domain_alloc_paging,
+	.domain_alloc = apple_dart_domain_alloc,
 	.probe_device = apple_dart_probe_device,
 	.release_device = apple_dart_release_device,
 	.device_group = apple_dart_device_group,
 	.of_xlate = apple_dart_of_xlate,
 	.def_domain_type = apple_dart_def_domain_type,
 	.get_resv_regions = apple_dart_get_resv_regions,
+	.pgsize_bitmap = -1UL, /* Restricted during dart probe */
 	.owner = THIS_MODULE,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
-		.attach_dev	= apple_dart_attach_dev_paging,
+		.attach_dev	= apple_dart_attach_dev,
 		.map_pages	= apple_dart_map_pages,
 		.unmap_pages	= apple_dart_unmap_pages,
 		.flush_iotlb_all = apple_dart_flush_iotlb_all,
@@ -1096,9 +1042,6 @@ static irqreturn_t apple_dart_t8110_irq(int irq, void *dev)
 		error, stream_idx, error_code, fault_name, addr);
 
 	writel(error, dart->regs + DART_T8110_ERROR);
-	for (int i = 0; i < BITS_TO_U32(dart->num_streams); i++)
-		writel(U32_MAX, dart->regs + DART_T8110_ERROR_STREAMS + 4 * i);
-
 	return IRQ_HANDLED;
 }
 
@@ -1159,7 +1102,6 @@ static int apple_dart_probe(struct platform_device *pdev)
 		dart->ias = FIELD_GET(DART_T8110_PARAMS3_VA_WIDTH, dart_params[2]);
 		dart->oas = FIELD_GET(DART_T8110_PARAMS3_PA_WIDTH, dart_params[2]);
 		dart->num_streams = FIELD_GET(DART_T8110_PARAMS4_NUM_SIDS, dart_params[3]);
-		dart->four_level = dart->ias > 36;
 		break;
 	}
 
@@ -1169,6 +1111,8 @@ static int apple_dart_probe(struct platform_device *pdev)
 		ret = -EINVAL;
 		goto err_clk_disable;
 	}
+
+	dart->force_bypass = dart->pgsize > PAGE_SIZE;
 
 	ret = apple_dart_hw_reset(dart);
 	if (ret)
@@ -1192,9 +1136,8 @@ static int apple_dart_probe(struct platform_device *pdev)
 
 	dev_info(
 		&pdev->dev,
-		"DART [pagesize %x, %d streams, bypass support: %d, bypass forced: %d, AS %d -> %d] initialized\n",
-		dart->pgsize, dart->num_streams, dart->supports_bypass,
-		dart->pgsize > PAGE_SIZE, dart->ias, dart->oas);
+		"DART [pagesize %x, %d streams, bypass support: %d, bypass forced: %d] initialized\n",
+		dart->pgsize, dart->num_streams, dart->supports_bypass, dart->force_bypass);
 	return 0;
 
 err_sysfs_remove:
@@ -1207,7 +1150,7 @@ err_clk_disable:
 	return ret;
 }
 
-static void apple_dart_remove(struct platform_device *pdev)
+static int apple_dart_remove(struct platform_device *pdev)
 {
 	struct apple_dart *dart = platform_get_drvdata(pdev);
 
@@ -1218,6 +1161,8 @@ static void apple_dart_remove(struct platform_device *pdev)
 	iommu_device_sysfs_remove(&dart->iommu);
 
 	clk_bulk_disable_unprepare(dart->num_clks, dart->clks);
+
+	return 0;
 }
 
 static const struct apple_dart_hw apple_dart_hw_t8103 = {
@@ -1245,33 +1190,6 @@ static const struct apple_dart_hw apple_dart_hw_t8103 = {
 	.ttbr_shift = DART_T8020_TTBR_SHIFT,
 	.ttbr_count = 4,
 };
-
-static const struct apple_dart_hw apple_dart_hw_t8103_usb4 = {
-	.type = DART_T8020,
-	.irq_handler = apple_dart_t8020_irq,
-	.invalidate_tlb = apple_dart_t8020_hw_invalidate_tlb,
-	.oas = 36,
-	.fmt = APPLE_DART,
-	.max_sid_count = 64,
-
-	.enable_streams = DART_T8020_STREAMS_ENABLE,
-	.lock = DART_T8020_CONFIG,
-	.lock_bit = DART_T8020_CONFIG_LOCK,
-
-	.error = DART_T8020_ERROR,
-
-	.tcr = DART_T8020_TCR,
-	.tcr_enabled = DART_T8020_TCR_TRANSLATE_ENABLE,
-	.tcr_disabled = 0,
-	.tcr_bypass = 0,
-
-	.ttbr = DART_T8020_USB4_TTBR,
-	.ttbr_valid = DART_T8020_TTBR_VALID,
-	.ttbr_addr_field_shift = DART_T8020_TTBR_ADDR_FIELD_SHIFT,
-	.ttbr_shift = DART_T8020_TTBR_SHIFT,
-	.ttbr_count = 4,
-};
-
 static const struct apple_dart_hw apple_dart_hw_t6000 = {
 	.type = DART_T6000,
 	.irq_handler = apple_dart_t8020_irq,
@@ -1315,7 +1233,6 @@ static const struct apple_dart_hw apple_dart_hw_t8110 = {
 	.tcr_enabled = DART_T8110_TCR_TRANSLATE_ENABLE,
 	.tcr_disabled = 0,
 	.tcr_bypass = DART_T8110_TCR_BYPASS_DAPF | DART_T8110_TCR_BYPASS_DART,
-	.tcr_4level = DART_T8110_TCR_FOUR_LEVEL,
 
 	.ttbr = DART_T8110_TTBR,
 	.ttbr_valid = DART_T8110_TTBR_VALID,
@@ -1330,7 +1247,7 @@ static __maybe_unused int apple_dart_suspend(struct device *dev)
 	unsigned int sid, idx;
 
 	for (sid = 0; sid < dart->num_streams; sid++) {
-		dart->save_tcr[sid] = readl(dart->regs + DART_TCR(dart, sid));
+		dart->save_tcr[sid] = readl_relaxed(dart->regs + DART_TCR(dart, sid));
 		for (idx = 0; idx < dart->hw->ttbr_count; idx++)
 			dart->save_ttbr[sid][idx] =
 				readl(dart->regs + DART_TTBR(dart, sid, idx));
@@ -1361,11 +1278,10 @@ static __maybe_unused int apple_dart_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(apple_dart_pm_ops, apple_dart_suspend, apple_dart_resume);
+DEFINE_SIMPLE_DEV_PM_OPS(apple_dart_pm_ops, apple_dart_suspend, apple_dart_resume);
 
 static const struct of_device_id apple_dart_of_match[] = {
 	{ .compatible = "apple,t8103-dart", .data = &apple_dart_hw_t8103 },
-	{ .compatible = "apple,t8103-usb4-dart", .data = &apple_dart_hw_t8103_usb4 },
 	{ .compatible = "apple,t8110-dart", .data = &apple_dart_hw_t8110 },
 	{ .compatible = "apple,t6000-dart", .data = &apple_dart_hw_t6000 },
 	{},
@@ -1380,7 +1296,7 @@ static struct platform_driver apple_dart_driver = {
 		.pm			= pm_sleep_ptr(&apple_dart_pm_ops),
 	},
 	.probe	= apple_dart_probe,
-	.remove = apple_dart_remove,
+	.remove	= apple_dart_remove,
 };
 
 module_platform_driver(apple_dart_driver);

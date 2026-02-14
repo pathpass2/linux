@@ -11,17 +11,28 @@
 #ifndef _EXYNOS_DRM_FBDEV_H_
 #define _EXYNOS_DRM_FBDEV_H_
 
-struct drm_fb_helper;
-struct drm_fb_helper_surface_size;
+#ifdef CONFIG_DRM_FBDEV_EMULATION
 
-#if defined(CONFIG_DRM_FBDEV_EMULATION)
-int exynos_drm_fbdev_driver_fbdev_probe(struct drm_fb_helper *fbh,
-					struct drm_fb_helper_surface_size *sizes);
-#define EXYNOS_DRM_FBDEV_DRIVER_OPS \
-	.fbdev_probe = exynos_drm_fbdev_driver_fbdev_probe
+int exynos_drm_fbdev_init(struct drm_device *dev);
+void exynos_drm_fbdev_fini(struct drm_device *dev);
+
 #else
-#define EXYNOS_DRM_FBDEV_DRIVER_OPS \
-	.fbdev_probe = NULL
+
+static inline int exynos_drm_fbdev_init(struct drm_device *dev)
+{
+	return 0;
+}
+
+static inline void exynos_drm_fbdev_fini(struct drm_device *dev)
+{
+}
+
+static inline void exynos_drm_fbdev_restore_mode(struct drm_device *dev)
+{
+}
+
+#define exynos_drm_output_poll_changed (NULL)
+
 #endif
 
 #endif

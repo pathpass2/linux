@@ -62,18 +62,10 @@ static int gfx_v11_0_3_rlc_gc_fed_irq(struct amdgpu_device *adev,
 		return -EINVAL;
 	}
 
-	dev_warn(adev->dev, "RLC %s FED IRQ\n", ras_if->name);
+	ih_data.head = *ras_if;
 
-	if (!amdgpu_sriov_vf(adev)) {
-		ih_data.head = *ras_if;
-		amdgpu_ras_interrupt_dispatch(adev, &ih_data);
-	} else {
-		if (adev->virt.ops && adev->virt.ops->ras_poison_handler)
-			adev->virt.ops->ras_poison_handler(adev, ras_if->block);
-		else
-			dev_warn(adev->dev,
-				"No ras_poison_handler interface in SRIOV for %s!\n", ras_if->name);
-	}
+	dev_warn(adev->dev, "RLC %s FED IRQ\n", ras_if->name);
+	amdgpu_ras_interrupt_dispatch(adev, &ih_data);
 
 	return 0;
 }
@@ -84,22 +76,8 @@ static int gfx_v11_0_3_poison_consumption_handler(struct amdgpu_device *adev,
 	/* Workaround: when vmid and pasid are both zero, trigger gpu reset in KGD. */
 	if (entry && (entry->client_id == SOC21_IH_CLIENTID_GFX) &&
 	    (entry->src_id == GFX_11_0_0__SRCID__RLC_GC_FED_INTERRUPT) &&
-	     !entry->vmid && !entry->pasid) {
-		struct amdgpu_ras *con = amdgpu_ras_get_context(adev);
-		uint32_t rlc_status0 = 0;
-
-		rlc_status0 = RREG32_SOC15(GC, 0, regRLC_RLCS_FED_STATUS_0);
-
-		if (REG_GET_FIELD(rlc_status0, RLC_RLCS_FED_STATUS_0, SDMA0_FED_ERR) ||
-		    REG_GET_FIELD(rlc_status0, RLC_RLCS_FED_STATUS_0, SDMA1_FED_ERR)) {
-			struct amdgpu_ras *ras = amdgpu_ras_get_context(adev);
-
-			ras->gpu_reset_flags |= AMDGPU_RAS_GPU_RESET_MODE2_RESET;
-		}
-
-		if (con && !amdgpu_ras_is_rma(adev))
-			amdgpu_ras_reset_gpu(adev);
-	}
+	     !entry->vmid && !entry->pasid)
+		amdgpu_ras_reset_gpu(adev);
 
 	return 0;
 }

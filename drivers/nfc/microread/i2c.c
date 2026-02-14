@@ -277,7 +277,7 @@ static void microread_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id microread_i2c_id[] = {
-	{ MICROREAD_I2C_DRIVER_NAME },
+	{ MICROREAD_I2C_DRIVER_NAME, 0},
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, microread_i2c_id);
@@ -286,7 +286,7 @@ static struct i2c_driver microread_i2c_driver = {
 	.driver = {
 		.name = MICROREAD_I2C_DRIVER_NAME,
 	},
-	.probe		= microread_i2c_probe,
+	.probe_new	= microread_i2c_probe,
 	.remove		= microread_i2c_remove,
 	.id_table	= microread_i2c_id,
 };

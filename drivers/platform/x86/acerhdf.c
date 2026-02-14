@@ -79,6 +79,7 @@ static unsigned int list_supported;
 static unsigned int fanstate = ACERHDF_FAN_AUTO;
 static char force_bios[16];
 static char force_product[16];
+static unsigned int prev_interval;
 static struct thermal_zone_device *thz_dev;
 static struct thermal_cooling_device *cl_dev;
 static struct platform_device *acerhdf_dev;
@@ -271,7 +272,7 @@ static const struct bios_settings bios_tbl[] __initconst = {
  * this struct is used to instruct thermal layer to use bang_bang instead of
  * default governor for acerhdf
  */
-static const struct thermal_zone_params acerhdf_zone_params = {
+static struct thermal_zone_params acerhdf_zone_params = {
 	.governor_name = "bang_bang",
 };
 
@@ -340,20 +341,25 @@ static void acerhdf_check_param(struct thermal_zone_device *thermal)
 		pr_err("fanoff temperature (%d) is above fanon temperature (%d), clamping to %d\n",
 		       fanoff, fanon, fanon);
 		fanoff = fanon;
-	}
+	};
 
 	trips[0].temperature = fanon;
 	trips[0].hysteresis  = fanon - fanoff;
 
-	if (kernelmode) {
+	if (kernelmode && prev_interval != interval) {
 		if (interval > ACERHDF_MAX_INTERVAL) {
 			pr_err("interval too high, set to %d\n",
 			       ACERHDF_MAX_INTERVAL);
 			interval = ACERHDF_MAX_INTERVAL;
 		}
-
 		if (verbose)
 			pr_notice("interval changed to: %d\n", interval);
+
+		if (thermal)
+			thermal->polling_delay_jiffies =
+				round_jiffies(msecs_to_jiffies(interval * 1000));
+
+		prev_interval = interval;
 	}
 }
 
@@ -378,13 +384,33 @@ static int acerhdf_get_ec_temp(struct thermal_zone_device *thermal, int *t)
 	return 0;
 }
 
-static bool acerhdf_should_bind(struct thermal_zone_device *thermal,
-				const struct thermal_trip *trip,
-				struct thermal_cooling_device *cdev,
-				struct cooling_spec *c)
+static int acerhdf_bind(struct thermal_zone_device *thermal,
+			struct thermal_cooling_device *cdev)
 {
 	/* if the cooling device is the one from acerhdf bind it */
-	return cdev == cl_dev && trip->type == THERMAL_TRIP_ACTIVE;
+	if (cdev != cl_dev)
+		return 0;
+
+	if (thermal_zone_bind_cooling_device(thermal, 0, cdev,
+			THERMAL_NO_LIMIT, THERMAL_NO_LIMIT,
+			THERMAL_WEIGHT_DEFAULT)) {
+		pr_err("error binding cooling dev\n");
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int acerhdf_unbind(struct thermal_zone_device *thermal,
+			  struct thermal_cooling_device *cdev)
+{
+	if (cdev != cl_dev)
+		return 0;
+
+	if (thermal_zone_unbind_cooling_device(thermal, 0, cdev)) {
+		pr_err("error unbinding cooling dev\n");
+		return -EINVAL;
+	}
+	return 0;
 }
 
 static inline void acerhdf_revert_to_bios_mode(void)
@@ -426,8 +452,9 @@ static int acerhdf_get_crit_temp(struct thermal_zone_device *thermal,
 }
 
 /* bind callback functions to thermalzone */
-static const struct thermal_zone_device_ops acerhdf_dev_ops = {
-	.should_bind = acerhdf_should_bind,
+static struct thermal_zone_device_ops acerhdf_dev_ops = {
+	.bind = acerhdf_bind,
+	.unbind = acerhdf_unbind,
 	.get_temp = acerhdf_get_ec_temp,
 	.change_mode = acerhdf_change_mode,
 	.get_crit_temp = acerhdf_get_crit_temp,
@@ -657,7 +684,7 @@ static int __init acerhdf_register_thermal(void)
 		return -EINVAL;
 
 	thz_dev = thermal_zone_device_register_with_trips("acerhdf", trips, ARRAY_SIZE(trips),
-							  NULL, &acerhdf_dev_ops,
+							  0, NULL, &acerhdf_dev_ops,
 							  &acerhdf_zone_params, 0,
 							  (kernelmode) ? interval*1000 : 0);
 	if (IS_ERR(thz_dev))
@@ -669,6 +696,13 @@ static int __init acerhdf_register_thermal(void)
 		ret = thermal_zone_device_disable(thz_dev);
 	if (ret)
 		return ret;
+
+	if (strcmp(thz_dev->governor->name,
+				acerhdf_zone_params.governor_name)) {
+		pr_err("Didn't get thermal governor %s, perhaps not compiled into thermal subsystem.\n",
+				acerhdf_zone_params.governor_name);
+		return -EINVAL;
+	}
 
 	return 0;
 }
@@ -767,5 +801,5 @@ static const struct kernel_param_ops interval_ops = {
 	.get = param_get_uint,
 };
 
-module_param_cb(interval, &interval_ops, &interval, 0000);
+module_param_cb(interval, &interval_ops, &interval, 0600);
 MODULE_PARM_DESC(interval, "Polling interval of temperature check");

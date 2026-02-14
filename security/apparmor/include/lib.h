@@ -16,37 +16,23 @@
 
 #include "match.h"
 
-extern struct aa_dfa *stacksplitdfa;
+/*
+ * DEBUG remains global (no per profile flag) since it is mostly used in sysctl
+ * which is not related to profile accesses.
+ */
 
+#define DEBUG_ON (aa_g_debug)
 /*
  * split individual debug cases out in preparation for finer grained
  * debug controls in the future.
  */
+#define AA_DEBUG_LABEL DEBUG_ON
 #define dbg_printk(__fmt, __args...) pr_debug(__fmt, ##__args)
-
-#define DEBUG_NONE 0
-#define DEBUG_LABEL_ABS_ROOT 1
-#define DEBUG_LABEL 2
-#define DEBUG_DOMAIN 4
-#define DEBUG_POLICY 8
-#define DEBUG_INTERFACE 0x10
-
-#define DEBUG_ALL 0x1f		/* update if new DEBUG_X added */
-#define DEBUG_PARSE_ERROR (-1)
-
-#define DEBUG_ON (aa_g_debug != DEBUG_NONE)
-#define DEBUG_ABS_ROOT (aa_g_debug & DEBUG_LABEL_ABS_ROOT)
-
-#define AA_DEBUG(opt, fmt, args...)					\
+#define AA_DEBUG(fmt, args...)						\
 	do {								\
-		if (aa_g_debug & opt)					\
-			pr_warn_ratelimited("%s: " fmt, __func__, ##args); \
+		if (DEBUG_ON)						\
+			pr_debug_ratelimited("AppArmor: " fmt, ##args);	\
 	} while (0)
-#define AA_DEBUG_LABEL(LAB, X, fmt, args...)				\
-do {									\
-	if ((LAB)->flags & FLAG_DEBUG1)					\
-		AA_DEBUG(X, fmt, args);					\
-} while (0)
 
 #define AA_WARN(X) WARN((X), "APPARMOR WARN %s: %s\n", __func__, #X)
 
@@ -60,15 +46,8 @@ do {									\
 #define AA_BUG_FMT(X, fmt, args...)					\
 	WARN((X), "AppArmor WARN %s: (" #X "): " fmt, __func__, ##args)
 #else
-#define AA_BUG_FMT(X, fmt, args...)					\
-	do {								\
-		BUILD_BUG_ON_INVALID(X);				\
-		no_printk(fmt, ##args);					\
-	} while (0)
+#define AA_BUG_FMT(X, fmt, args...) no_printk(fmt, ##args)
 #endif
-
-int aa_parse_debug_params(const char *str);
-int aa_print_debug_params(char *buffer);
 
 #define AA_ERROR(fmt, args...)						\
 	pr_err_ratelimited("AppArmor: " fmt, ##args)
@@ -78,6 +57,7 @@ extern int apparmor_initialized;
 
 /* fn's in lib */
 const char *skipn_spaces(const char *str, size_t n);
+char *aa_split_fqname(char *args, char **ns_name);
 const char *aa_splitn_fqname(const char *fqname, size_t n, const char **ns_name,
 			     size_t *ns_len);
 void aa_info_message(const char *str);
@@ -125,7 +105,6 @@ struct aa_str_table {
 };
 
 void aa_free_str_table(struct aa_str_table *table);
-bool aa_resize_str_table(struct aa_str_table *t, int newsize, gfp_t gfp);
 
 struct counted_str {
 	struct kref count;
@@ -171,7 +150,7 @@ struct aa_policy {
 
 /**
  * basename - find the last component of an hname
- * @hname: hname to find the base profile name component of  (NOT NULL)
+ * @name: hname to find the base profile name component of  (NOT NULL)
  *
  * Returns: the tail (base profile name) name component of an hname
  */
@@ -253,7 +232,7 @@ void aa_policy_destroy(struct aa_policy *policy);
  */
 #define fn_label_build(L, P, GFP, FN)					\
 ({									\
-	__label__ __do_cleanup, __done;					\
+	__label__ __cleanup, __done;					\
 	struct aa_label *__new_;					\
 									\
 	if ((L)->size > 1) {						\
@@ -271,7 +250,7 @@ void aa_policy_destroy(struct aa_policy *policy);
 			__new_ = (FN);					\
 			AA_BUG(!__new_);				\
 			if (IS_ERR(__new_))				\
-				goto __do_cleanup;			\
+				goto __cleanup;				\
 			__lvec[__j++] = __new_;				\
 		}							\
 		for (__j = __count = 0; __j < (L)->size; __j++)		\
@@ -293,7 +272,7 @@ void aa_policy_destroy(struct aa_policy *policy);
 			vec_cleanup(profile, __pvec, __count);		\
 		} else							\
 			__new_ = NULL;					\
-__do_cleanup:								\
+__cleanup:								\
 		vec_cleanup(label, __lvec, (L)->size);			\
 	} else {							\
 		(P) = labels_profile(L);				\
@@ -301,7 +280,7 @@ __do_cleanup:								\
 	}								\
 __done:									\
 	if (!__new_)							\
-		AA_DEBUG(DEBUG_LABEL, "label build failed\n");		\
+		AA_DEBUG("label build failed\n");			\
 	(__new_);							\
 })
 

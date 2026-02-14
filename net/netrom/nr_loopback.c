@@ -68,6 +68,6 @@ static void nr_loopback_timer(struct timer_list *unused)
 
 void nr_loopback_clear(void)
 {
-	timer_delete_sync(&loopback_timer);
+	del_timer_sync(&loopback_timer);
 	skb_queue_purge(&loopback_queue);
 }

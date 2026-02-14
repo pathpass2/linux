@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB */
 /* Copyright (c) 2018 Mellanox Technologies. */
 
-#include <net/flow.h>
-#include <net/inet_dscp.h>
+#include <net/inet_ecn.h>
 #include <net/vxlan.h>
 #include <net/gre.h>
 #include <net/geneve.h>
@@ -32,7 +31,8 @@ static void mlx5e_tc_tun_route_attr_cleanup(struct mlx5e_tc_tun_route_attr *attr
 {
 	if (attr->n)
 		neigh_release(attr->n);
-	dev_put(attr->route_dev);
+	if (attr->route_dev)
+		dev_put(attr->route_dev);
 }
 
 struct mlx5e_tc_tunnel *mlx5e_get_tc_tun(struct net_device *tunnel_dev)
@@ -68,14 +68,16 @@ static int get_route_and_out_devs(struct mlx5e_priv *priv,
 	 * while holding rcu read lock. Take the net_device for correctness
 	 * sake.
 	 */
-	dev_hold(uplink_upper);
+	if (uplink_upper)
+		dev_hold(uplink_upper);
 	rcu_read_unlock();
 
 	dst_is_lag_dev = (uplink_upper &&
 			  netif_is_lag_master(uplink_upper) &&
 			  real_dev == uplink_upper &&
 			  mlx5_lag_is_sriov(priv->mdev));
-	dev_put(uplink_upper);
+	if (uplink_upper)
+		dev_put(uplink_upper);
 
 	/* if the egress device isn't on the same HW e-switch or
 	 * it's a LAG device, use the uplink
@@ -234,7 +236,7 @@ int mlx5e_tc_tun_create_header_ipv4(struct mlx5e_priv *priv,
 	int err;
 
 	/* add the IP fields */
-	attr.fl.fl4.flowi4_dscp = inet_dsfield_to_dscp(tun_key->tos);
+	attr.fl.fl4.flowi4_tos = tun_key->tos & ~INET_ECN_MASK;
 	attr.fl.fl4.daddr = tun_key->u.ipv4.dst;
 	attr.fl.fl4.saddr = tun_key->u.ipv4.src;
 	attr.ttl = tun_key->ttl;
@@ -300,7 +302,6 @@ int mlx5e_tc_tun_create_header_ipv4(struct mlx5e_priv *priv,
 
 	e->encap_size = ipv4_encap_size;
 	e->encap_header = encap_header;
-	encap_header = NULL;
 
 	if (!(nud_state & NUD_VALID)) {
 		neigh_event_send(attr.n, NULL);
@@ -312,8 +313,8 @@ int mlx5e_tc_tun_create_header_ipv4(struct mlx5e_priv *priv,
 
 	memset(&reformat_params, 0, sizeof(reformat_params));
 	reformat_params.type = e->reformat_type;
-	reformat_params.size = e->encap_size;
-	reformat_params.data = e->encap_header;
+	reformat_params.size = ipv4_encap_size;
+	reformat_params.data = encap_header;
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev, &reformat_params,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {
@@ -350,7 +351,7 @@ int mlx5e_tc_tun_update_header_ipv4(struct mlx5e_priv *priv,
 	int err;
 
 	/* add the IP fields */
-	attr.fl.fl4.flowi4_dscp = inet_dsfield_to_dscp(tun_key->tos);
+	attr.fl.fl4.flowi4_tos = tun_key->tos & ~INET_ECN_MASK;
 	attr.fl.fl4.daddr = tun_key->u.ipv4.dst;
 	attr.fl.fl4.saddr = tun_key->u.ipv4.src;
 	attr.ttl = tun_key->ttl;
@@ -406,7 +407,6 @@ int mlx5e_tc_tun_update_header_ipv4(struct mlx5e_priv *priv,
 	e->encap_size = ipv4_encap_size;
 	kfree(e->encap_header);
 	e->encap_header = encap_header;
-	encap_header = NULL;
 
 	if (!(nud_state & NUD_VALID)) {
 		neigh_event_send(attr.n, NULL);
@@ -418,8 +418,8 @@ int mlx5e_tc_tun_update_header_ipv4(struct mlx5e_priv *priv,
 
 	memset(&reformat_params, 0, sizeof(reformat_params));
 	reformat_params.type = e->reformat_type;
-	reformat_params.size = e->encap_size;
-	reformat_params.data = e->encap_header;
+	reformat_params.size = ipv4_encap_size;
+	reformat_params.data = encap_header;
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev, &reformat_params,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {
@@ -570,7 +570,6 @@ int mlx5e_tc_tun_create_header_ipv6(struct mlx5e_priv *priv,
 
 	e->encap_size = ipv6_encap_size;
 	e->encap_header = encap_header;
-	encap_header = NULL;
 
 	if (!(nud_state & NUD_VALID)) {
 		neigh_event_send(attr.n, NULL);
@@ -582,8 +581,8 @@ int mlx5e_tc_tun_create_header_ipv6(struct mlx5e_priv *priv,
 
 	memset(&reformat_params, 0, sizeof(reformat_params));
 	reformat_params.type = e->reformat_type;
-	reformat_params.size = e->encap_size;
-	reformat_params.data = e->encap_header;
+	reformat_params.size = ipv6_encap_size;
+	reformat_params.data = encap_header;
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev, &reformat_params,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {
@@ -675,7 +674,6 @@ int mlx5e_tc_tun_update_header_ipv6(struct mlx5e_priv *priv,
 	e->encap_size = ipv6_encap_size;
 	kfree(e->encap_header);
 	e->encap_header = encap_header;
-	encap_header = NULL;
 
 	if (!(nud_state & NUD_VALID)) {
 		neigh_event_send(attr.n, NULL);
@@ -687,8 +685,8 @@ int mlx5e_tc_tun_update_header_ipv6(struct mlx5e_priv *priv,
 
 	memset(&reformat_params, 0, sizeof(reformat_params));
 	reformat_params.type = e->reformat_type;
-	reformat_params.size = e->encap_size;
-	reformat_params.data = e->encap_header;
+	reformat_params.size = ipv6_encap_size;
+	reformat_params.data = encap_header;
 	e->pkt_reformat = mlx5_packet_reformat_alloc(priv->mdev, &reformat_params,
 						     MLX5_FLOW_NAMESPACE_FDB);
 	if (IS_ERR(e->pkt_reformat)) {
@@ -847,12 +845,6 @@ int mlx5e_tc_tun_parse(struct net_device *filter_dev,
 
 		flow_rule_match_enc_control(rule, &match);
 		addr_type = match.key->addr_type;
-
-		if (flow_rule_has_enc_control_flags(match.mask->flags,
-						    extack)) {
-			err = -EOPNOTSUPP;
-			goto out;
-		}
 
 		/* For tunnel addr_type used same key id`s as for non-tunnel */
 		if (addr_type == FLOW_DISSECTOR_KEY_IPV4_ADDRS) {

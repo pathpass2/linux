@@ -18,7 +18,6 @@
 #include <linux/kobject.h>
 #include <linux/memblock.h>
 #include <linux/reboot.h>
-#include <linux/sysfb.h>
 #include <linux/uaccess.h>
 
 #include <asm/early_ioremap.h>
@@ -66,37 +65,25 @@ void __init efi_runtime_init(void)
 	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 }
 
-bool efi_poweroff_required(void)
+unsigned long __initdata screen_info_table = EFI_INVALID_TABLE_ADDR;
+
+static void __init init_screen_info(void)
 {
-	return efi_enabled(EFI_RUNTIME_SERVICES) &&
-		(acpi_gbl_reduced_hardware || acpi_no_s5);
-}
+	struct screen_info *si;
 
-unsigned long __initdata primary_display_table = EFI_INVALID_TABLE_ADDR;
-
-#if defined(CONFIG_SYSFB) || defined(CONFIG_EFI_EARLYCON)
-struct sysfb_display_info sysfb_primary_display __section(".data");
-EXPORT_SYMBOL_GPL(sysfb_primary_display);
-#endif
-
-static void __init init_primary_display(void)
-{
-	struct sysfb_display_info *dpy;
-
-	if (primary_display_table == EFI_INVALID_TABLE_ADDR)
+	if (screen_info_table == EFI_INVALID_TABLE_ADDR)
 		return;
 
-	dpy = early_memremap(primary_display_table, sizeof(*dpy));
-	if (!dpy) {
-		pr_err("Could not map primary_display config table\n");
+	si = early_memremap(screen_info_table, sizeof(*si));
+	if (!si) {
+		pr_err("Could not map screen_info config table\n");
 		return;
 	}
-	sysfb_primary_display = *dpy;
-	memset(dpy, 0, sizeof(*dpy));
-	early_memunmap(dpy, sizeof(*dpy));
+	screen_info = *si;
+	memset(si, 0, sizeof(*si));
+	early_memunmap(si, sizeof(*si));
 
-	memblock_reserve(__screen_info_lfb_base(&sysfb_primary_display.screen),
-			 sysfb_primary_display.screen.lfb_size);
+	memblock_reserve(screen_info.lfb_base, screen_info.lfb_size);
 }
 
 void __init efi_init(void)
@@ -116,9 +103,7 @@ void __init efi_init(void)
 
 	efi_systab_report_header(&efi_systab->hdr, efi_systab->fw_vendor);
 
-	if (IS_ENABLED(CONFIG_64BIT))
-		set_bit(EFI_64BIT, &efi.flags);
-
+	set_bit(EFI_64BIT, &efi.flags);
 	efi_nr_tables	 = efi_systab->nr_tables;
 	efi_config_table = (unsigned long)efi_systab->tables;
 
@@ -129,8 +114,7 @@ void __init efi_init(void)
 
 	set_bit(EFI_CONFIG_TABLES, &efi.flags);
 
-	if (IS_ENABLED(CONFIG_EFI_EARLYCON) || IS_ENABLED(CONFIG_SYSFB))
-		init_primary_display();
+	init_screen_info();
 
 	if (boot_memmap == EFI_INVALID_TABLE_ADDR)
 		return;
@@ -147,20 +131,6 @@ void __init efi_init(void)
 		if (efi_memmap_init_early(&data) < 0)
 			panic("Unable to map EFI memory map.\n");
 
-		/*
-		 * Reserve the physical memory region occupied by the EFI
-		 * memory map table (header + descriptors). This is crucial
-		 * for kdump, as the kdump kernel relies on this original
-		 * memmap passed by the bootloader. Without reservation,
-		 * this region could be overwritten by the primary kernel.
-		 * Also, set the EFI_PRESERVE_BS_REGIONS flag to indicate that
-		 * critical boot services code/data regions like this are preserved.
-		 */
-		memblock_reserve((phys_addr_t)boot_memmap, sizeof(*tbl) + data.size);
-		set_bit(EFI_PRESERVE_BS_REGIONS, &efi.flags);
-
 		early_memunmap(tbl, sizeof(*tbl));
 	}
-
-	efi_esrt_init();
 }

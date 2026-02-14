@@ -9,12 +9,8 @@
 #include <uapi/linux/iio/buffer.h>
 #include <linux/iio/buffer.h>
 
-struct dma_buf_attachment;
-struct dma_fence;
 struct iio_dev;
-struct iio_dma_buffer_block;
 struct iio_buffer;
-struct sg_table;
 
 /**
  * INDIO_BUFFER_FLAG_FIXED_WATERMARK - Watermark level of the buffer can not be
@@ -24,8 +20,7 @@ struct sg_table;
 
 /**
  * struct iio_buffer_access_funcs - access functions for buffers.
- * @store_to:		actually store stuff to the buffer - must be safe to
- *			call from any context (e.g. must not sleep).
+ * @store_to:		actually store stuff to the buffer
  * @read:		try to get a specified number of bytes (must exist)
  * @data_available:	indicates how much data is available for reading from
  *			the buffer.
@@ -44,17 +39,6 @@ struct sg_table;
  *                      device stops sampling. Calles are balanced with @enable.
  * @release:		called when the last reference to the buffer is dropped,
  *			should free all resources allocated by the buffer.
- * @attach_dmabuf:	called from userspace via ioctl to attach one external
- *			DMABUF.
- * @detach_dmabuf:	called from userspace via ioctl to detach one previously
- *			attached DMABUF.
- * @enqueue_dmabuf:	called from userspace via ioctl to queue this DMABUF
- *			object to this buffer. Requires a valid DMABUF fd, that
- *			was previouly attached to this buffer.
- * @get_dma_dev:	called to get the DMA channel associated with this buffer.
- * @lock_queue:		called when the core needs to lock the buffer queue;
- *                      it is used when enqueueing DMABUF objects.
- * @unlock_queue:       used to unlock a previously locked buffer queue
  * @modes:		Supported operating modes by this buffer type
  * @flags:		A bitmask combination of INDIO_BUFFER_FLAG_*
  *
@@ -83,18 +67,6 @@ struct iio_buffer_access_funcs {
 	int (*disable)(struct iio_buffer *buffer, struct iio_dev *indio_dev);
 
 	void (*release)(struct iio_buffer *buffer);
-
-	struct iio_dma_buffer_block * (*attach_dmabuf)(struct iio_buffer *buffer,
-						       struct dma_buf_attachment *attach);
-	void (*detach_dmabuf)(struct iio_buffer *buffer,
-			      struct iio_dma_buffer_block *block);
-	int (*enqueue_dmabuf)(struct iio_buffer *buffer,
-			      struct iio_dma_buffer_block *block,
-			      struct dma_fence *fence, struct sg_table *sgt,
-			      size_t size, bool cyclic);
-	struct device * (*get_dma_dev)(struct iio_buffer *buffer);
-	void (*lock_queue)(struct iio_buffer *buffer);
-	void (*unlock_queue)(struct iio_buffer *buffer);
 
 	unsigned int modes;
 	unsigned int flags;
@@ -164,12 +136,6 @@ struct iio_buffer {
 
 	/* @ref: Reference count of the buffer. */
 	struct kref ref;
-
-	/* @dmabufs: List of DMABUF attachments */
-	struct list_head dmabufs; /* P: dmabufs_mutex */
-
-	/* @dmabufs_mutex: Protects dmabufs */
-	struct mutex dmabufs_mutex;
 };
 
 /**
@@ -192,8 +158,6 @@ void iio_buffer_init(struct iio_buffer *buffer);
 
 struct iio_buffer *iio_buffer_get(struct iio_buffer *buffer);
 void iio_buffer_put(struct iio_buffer *buffer);
-
-void iio_buffer_signal_dmabuf_done(struct dma_fence *fence, int ret);
 
 #else /* CONFIG_IIO_BUFFER */
 

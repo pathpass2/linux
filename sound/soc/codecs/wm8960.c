@@ -120,15 +120,6 @@ static bool wm8960_volatile(struct device *dev, unsigned int reg)
 	}
 }
 
-#define WM8960_NUM_SUPPLIES 5
-static const char *wm8960_supply_names[WM8960_NUM_SUPPLIES] = {
-	"DCVDD",
-	"DBVDD",
-	"AVDD",
-	"SPKVDD1",
-	"SPKVDD2",
-};
-
 struct wm8960_priv {
 	struct clk *mclk;
 	struct regmap *regmap;
@@ -146,7 +137,6 @@ struct wm8960_priv {
 	bool is_stream_in_use[2];
 	struct wm8960_data pdata;
 	ktime_t dsch_start;
-	struct regulator_bulk_data supplies[WM8960_NUM_SUPPLIES];
 };
 
 #define wm8960_reset(c)	regmap_write(c, WM8960_RESET, 0)
@@ -165,7 +155,6 @@ static const char *wm8960_adc_data_output_sel[] = {
 	"Left Data = Right ADC; Right Data = Left ADC",
 };
 static const char *wm8960_dmonomix[] = {"Stereo", "Mono"};
-static const char *wm8960_dacslope[] = {"Normal", "Sloping"};
 
 static const struct soc_enum wm8960_enum[] = {
 	SOC_ENUM_SINGLE(WM8960_DACCTL1, 5, 4, wm8960_polarity),
@@ -176,7 +165,6 @@ static const struct soc_enum wm8960_enum[] = {
 	SOC_ENUM_SINGLE(WM8960_ALC3, 8, 2, wm8960_alcmode),
 	SOC_ENUM_SINGLE(WM8960_ADDCTL1, 2, 4, wm8960_adc_data_output_sel),
 	SOC_ENUM_SINGLE(WM8960_ADDCTL1, 4, 2, wm8960_dmonomix),
-	SOC_ENUM_SINGLE(WM8960_DACCTL2, 1, 2, wm8960_dacslope),
 };
 
 static const int deemph_settings[] = { 0, 32000, 44100, 48000 };
@@ -211,7 +199,7 @@ static int wm8960_set_deemph(struct snd_soc_component *component)
 static int wm8960_get_deemph(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct wm8960_priv *wm8960 = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = wm8960->deemph;
@@ -221,7 +209,7 @@ static int wm8960_get_deemph(struct snd_kcontrol *kcontrol,
 static int wm8960_put_deemph(struct snd_kcontrol *kcontrol,
 			     struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct wm8960_priv *wm8960 = snd_soc_component_get_drvdata(component);
 	unsigned int deemph = ucontrol->value.integer.value[0];
 
@@ -319,7 +307,6 @@ SOC_SINGLE_TLV("Right Output Mixer RINPUT3 Volume",
 
 SOC_ENUM("ADC Data Output Select", wm8960_enum[6]),
 SOC_ENUM("DAC Mono Mix", wm8960_enum[7]),
-SOC_ENUM("DAC Filter Characteristics", wm8960_enum[8]),
 };
 
 static const struct snd_kcontrol_new wm8960_lin_boost[] = {
@@ -488,7 +475,7 @@ static int wm8960_add_widgets(struct snd_soc_component *component)
 {
 	struct wm8960_priv *wm8960 = snd_soc_component_get_drvdata(component);
 	struct wm8960_data *pdata = &wm8960->pdata;
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	struct snd_soc_dapm_widget *w;
 
 	snd_soc_dapm_new_controls(dapm, wm8960_dapm_widgets,
@@ -540,10 +527,10 @@ static int wm8960_set_dai_fmt(struct snd_soc_dai *codec_dai,
 
 	/* set master/slave audio interface */
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBP_CFP:
+	case SND_SOC_DAIFMT_CBM_CFM:
 		iface |= 0x0040;
 		break;
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		break;
 	default:
 		return -EINVAL;
@@ -913,7 +900,6 @@ static int wm8960_set_bias_level_out3(struct snd_soc_component *component,
 				      enum snd_soc_bias_level level)
 {
 	struct wm8960_priv *wm8960 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	u16 pm2 = snd_soc_component_read(component, WM8960_POWER2);
 	int ret;
 	ktime_t tout;
@@ -923,7 +909,7 @@ static int wm8960_set_bias_level_out3(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_PREPARE:
-		switch (snd_soc_dapm_get_bias_level(dapm)) {
+		switch (snd_soc_component_get_bias_level(component)) {
 		case SND_SOC_BIAS_STANDBY:
 			if (!IS_ERR(wm8960->mclk)) {
 				ret = clk_prepare_enable(wm8960->mclk);
@@ -962,7 +948,7 @@ static int wm8960_set_bias_level_out3(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			/* ensure discharge is complete */
 			tout = WM8960_DSCH_TOUT - ktime_ms_delta(ktime_get(), wm8960->dsch_start);
 			if (tout > 0)
@@ -1010,7 +996,6 @@ static int wm8960_set_bias_level_capless(struct snd_soc_component *component,
 					 enum snd_soc_bias_level level)
 {
 	struct wm8960_priv *wm8960 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	u16 pm2 = snd_soc_component_read(component, WM8960_POWER2);
 	int reg, ret;
 
@@ -1019,7 +1004,7 @@ static int wm8960_set_bias_level_capless(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_PREPARE:
-		switch (snd_soc_dapm_get_bias_level(dapm)) {
+		switch (snd_soc_component_get_bias_level(component)) {
 		case SND_SOC_BIAS_STANDBY:
 			/* Enable anti pop mode */
 			snd_soc_component_update_bits(component, WM8960_APOP1,
@@ -1102,7 +1087,7 @@ static int wm8960_set_bias_level_capless(struct snd_soc_component *component,
 		break;
 
 	case SND_SOC_BIAS_STANDBY:
-		switch (snd_soc_dapm_get_bias_level(dapm)) {
+		switch (snd_soc_component_get_bias_level(component)) {
 		case SND_SOC_BIAS_PREPARE:
 			/* Disable HP discharge */
 			snd_soc_component_update_bits(component, WM8960_APOP2,
@@ -1402,7 +1387,7 @@ static const struct regmap_config wm8960_regmap = {
 
 	.reg_defaults = wm8960_reg_defaults,
 	.num_reg_defaults = ARRAY_SIZE(wm8960_reg_defaults),
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.volatile_reg = wm8960_volatile,
 };
@@ -1429,9 +1414,7 @@ static int wm8960_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8960_data *pdata = dev_get_platdata(&i2c->dev);
 	struct wm8960_priv *wm8960;
-	unsigned int i;
 	int ret;
-	u8 val;
 
 	wm8960 = devm_kzalloc(&i2c->dev, sizeof(struct wm8960_priv),
 			      GFP_KERNEL);
@@ -1442,55 +1425,21 @@ static int wm8960_i2c_probe(struct i2c_client *i2c)
 	if (IS_ERR(wm8960->mclk)) {
 		if (PTR_ERR(wm8960->mclk) == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
-	} else {
-		ret = clk_get_rate(wm8960->mclk);
-		if (ret >= 0) {
-			wm8960->freq_in = ret;
-		} else {
-			dev_err(&i2c->dev, "Failed to read MCLK rate: %d\n",
-				ret);
-		}
-	}
-
-	for (i = 0; i < ARRAY_SIZE(wm8960->supplies); i++)
-		wm8960->supplies[i].supply = wm8960_supply_names[i];
-
-	ret = devm_regulator_bulk_get(&i2c->dev, ARRAY_SIZE(wm8960->supplies),
-				 wm8960->supplies);
-	if (ret <  0) {
-		dev_err(&i2c->dev, "Failed to request supplies: %d\n", ret);
-		return ret;
-	}
-
-	ret = regulator_bulk_enable(ARRAY_SIZE(wm8960->supplies),
-				    wm8960->supplies);
-	if (ret < 0) {
-		dev_err(&i2c->dev, "Failed to enable supplies: %d\n", ret);
-		return ret;
 	}
 
 	wm8960->regmap = devm_regmap_init_i2c(i2c, &wm8960_regmap);
-	if (IS_ERR(wm8960->regmap)) {
-		ret = PTR_ERR(wm8960->regmap);
-		goto bulk_disable;
-	}
+	if (IS_ERR(wm8960->regmap))
+		return PTR_ERR(wm8960->regmap);
 
 	if (pdata)
 		memcpy(&wm8960->pdata, pdata, sizeof(struct wm8960_data));
 	else if (i2c->dev.of_node)
 		wm8960_set_pdata_from_of(i2c, &wm8960->pdata);
 
-	ret = i2c_master_recv(i2c, &val, sizeof(val));
-	if (ret >= 0) {
-		dev_err(&i2c->dev, "Not wm8960, wm8960 reg can not read by i2c\n");
-		ret = -EINVAL;
-		goto bulk_disable;
-	}
-
 	ret = wm8960_reset(wm8960->regmap);
 	if (ret != 0) {
 		dev_err(&i2c->dev, "Failed to issue reset\n");
-		goto bulk_disable;
+		return ret;
 	}
 
 	if (wm8960->pdata.shared_lrclk) {
@@ -1499,7 +1448,7 @@ static int wm8960_i2c_probe(struct i2c_client *i2c)
 		if (ret != 0) {
 			dev_err(&i2c->dev, "Failed to enable LRCM: %d\n",
 				ret);
-			goto bulk_disable;
+			return ret;
 		}
 	}
 
@@ -1533,25 +1482,15 @@ static int wm8960_i2c_probe(struct i2c_client *i2c)
 
 	ret = devm_snd_soc_register_component(&i2c->dev,
 			&soc_component_dev_wm8960, &wm8960_dai, 1);
-	if (ret)
-		goto bulk_disable;
 
-	return 0;
-
-bulk_disable:
-	regulator_bulk_disable(ARRAY_SIZE(wm8960->supplies), wm8960->supplies);
 	return ret;
 }
 
 static void wm8960_i2c_remove(struct i2c_client *client)
-{
-	struct wm8960_priv *wm8960 = i2c_get_clientdata(client);
-
-	regulator_bulk_disable(ARRAY_SIZE(wm8960->supplies), wm8960->supplies);
-}
+{}
 
 static const struct i2c_device_id wm8960_i2c_id[] = {
-	{ "wm8960" },
+	{ "wm8960", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8960_i2c_id);
@@ -1579,7 +1518,7 @@ static struct i2c_driver wm8960_i2c_driver = {
 		.of_match_table = of_match_ptr(wm8960_of_match),
 		.acpi_match_table = ACPI_PTR(wm8960_acpi_match),
 	},
-	.probe =    wm8960_i2c_probe,
+	.probe_new = wm8960_i2c_probe,
 	.remove =   wm8960_i2c_remove,
 	.id_table = wm8960_i2c_id,
 };

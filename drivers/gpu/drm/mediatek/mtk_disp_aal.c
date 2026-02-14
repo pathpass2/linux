@@ -3,46 +3,34 @@
  * Copyright (c) 2021 MediaTek Inc.
  */
 
-#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/soc/mediatek/mtk-cmdq.h>
 
-#include "mtk_crtc.h"
-#include "mtk_ddp_comp.h"
 #include "mtk_disp_drv.h"
+#include "mtk_drm_crtc.h"
+#include "mtk_drm_ddp_comp.h"
 #include "mtk_drm_drv.h"
 
 #define DISP_AAL_EN				0x0000
 #define AAL_EN						BIT(0)
-#define DISP_AAL_CFG				0x0020
-#define AAL_RELAY_MODE					BIT(0)
-#define AAL_GAMMA_LUT_EN				BIT(1)
 #define DISP_AAL_SIZE				0x0030
-#define DISP_AAL_SIZE_HSIZE				GENMASK(28, 16)
-#define DISP_AAL_SIZE_VSIZE				GENMASK(12, 0)
 #define DISP_AAL_OUTPUT_SIZE			0x04d8
-#define DISP_AAL_GAMMA_LUT			0x0700
-#define DISP_AAL_GAMMA_LUT_R				GENMASK(29, 20)
-#define DISP_AAL_GAMMA_LUT_G				GENMASK(19, 10)
-#define DISP_AAL_GAMMA_LUT_B				GENMASK(9, 0)
-#define DISP_AAL_LUT_BITS			10
-#define DISP_AAL_LUT_SIZE			512
+
 
 struct mtk_disp_aal_data {
 	bool has_gamma;
 };
 
- /**
-  * struct mtk_disp_aal - Display Adaptive Ambient Light driver structure
-  * @clk:      clock for DISP_AAL controller
-  * @regs:     MMIO registers base
-  * @cmdq_reg: CMDQ Client register
-  * @data:     platform specific data for DISP_AAL
-  */
+/**
+ * struct mtk_disp_aal - DISP_AAL driver structure
+ * @ddp_comp - structure containing type enum and hardware resources
+ * @crtc - associated crtc to report irq events to
+ */
 struct mtk_disp_aal {
 	struct clk *clk;
 	void __iomem *regs;
@@ -69,69 +57,17 @@ void mtk_aal_config(struct device *dev, unsigned int w,
 			   unsigned int bpc, struct cmdq_pkt *cmdq_pkt)
 {
 	struct mtk_disp_aal *aal = dev_get_drvdata(dev);
-	u32 sz;
 
-	sz = FIELD_PREP(DISP_AAL_SIZE_HSIZE, w);
-	sz |= FIELD_PREP(DISP_AAL_SIZE_VSIZE, h);
-
-	mtk_ddp_write(cmdq_pkt, sz, &aal->cmdq_reg, aal->regs, DISP_AAL_SIZE);
-	mtk_ddp_write(cmdq_pkt, sz, &aal->cmdq_reg, aal->regs, DISP_AAL_OUTPUT_SIZE);
-}
-
-/**
- * mtk_aal_gamma_get_lut_size() - Get gamma LUT size for AAL
- * @dev: Pointer to struct device
- *
- * Return: 0 if gamma control not supported in AAL or gamma LUT size
- */
-unsigned int mtk_aal_gamma_get_lut_size(struct device *dev)
-{
-	struct mtk_disp_aal *aal = dev_get_drvdata(dev);
-
-	if (aal->data && aal->data->has_gamma)
-		return DISP_AAL_LUT_SIZE;
-	return 0;
+	mtk_ddp_write(cmdq_pkt, w << 16 | h, &aal->cmdq_reg, aal->regs, DISP_AAL_SIZE);
+	mtk_ddp_write(cmdq_pkt, w << 16 | h, &aal->cmdq_reg, aal->regs, DISP_AAL_OUTPUT_SIZE);
 }
 
 void mtk_aal_gamma_set(struct device *dev, struct drm_crtc_state *state)
 {
 	struct mtk_disp_aal *aal = dev_get_drvdata(dev);
-	struct drm_color_lut *lut;
-	unsigned int i;
-	u32 cfg_val;
 
-	/* If gamma is not supported in AAL, go out immediately */
-	if (!(aal->data && aal->data->has_gamma))
-		return;
-
-	/* Also, if there's no gamma lut there's nothing to do here. */
-	if (!state->gamma_lut)
-		return;
-
-	lut = (struct drm_color_lut *)state->gamma_lut->data;
-	for (i = 0; i < DISP_AAL_LUT_SIZE; i++) {
-		struct drm_color_lut hwlut = {
-			.red = drm_color_lut_extract(lut[i].red, DISP_AAL_LUT_BITS),
-			.green = drm_color_lut_extract(lut[i].green, DISP_AAL_LUT_BITS),
-			.blue = drm_color_lut_extract(lut[i].blue, DISP_AAL_LUT_BITS)
-		};
-		u32 word;
-
-		word = FIELD_PREP(DISP_AAL_GAMMA_LUT_R, hwlut.red);
-		word |= FIELD_PREP(DISP_AAL_GAMMA_LUT_G, hwlut.green);
-		word |= FIELD_PREP(DISP_AAL_GAMMA_LUT_B, hwlut.blue);
-		writel(word, aal->regs + DISP_AAL_GAMMA_LUT + i * 4);
-	}
-
-	cfg_val = readl(aal->regs + DISP_AAL_CFG);
-
-	/* Enable the gamma table */
-	cfg_val |= FIELD_PREP(AAL_GAMMA_LUT_EN, 1);
-
-	/* Disable RELAY mode to pass the processed image */
-	cfg_val &= ~AAL_RELAY_MODE;
-
-	writel(cfg_val, aal->regs + DISP_AAL_CFG);
+	if (aal->data && aal->data->has_gamma)
+		mtk_gamma_set_common(aal->regs, state, false);
 }
 
 void mtk_aal_start(struct device *dev)
@@ -168,6 +104,7 @@ static int mtk_disp_aal_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mtk_disp_aal *priv;
+	struct resource *res;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -175,14 +112,17 @@ static int mtk_disp_aal_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	priv->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(priv->clk))
-		return dev_err_probe(dev, PTR_ERR(priv->clk),
-				     "failed to get aal clk\n");
+	if (IS_ERR(priv->clk)) {
+		dev_err(dev, "failed to get aal clk\n");
+		return PTR_ERR(priv->clk);
+	}
 
-	priv->regs = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(priv->regs))
-		return dev_err_probe(dev, PTR_ERR(priv->regs),
-				     "failed to ioremap aal\n");
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	priv->regs = devm_ioremap_resource(dev, res);
+	if (IS_ERR(priv->regs)) {
+		dev_err(dev, "failed to ioremap aal\n");
+		return PTR_ERR(priv->regs);
+	}
 
 #if IS_REACHABLE(CONFIG_MTK_CMDQ)
 	ret = cmdq_dev_get_client_reg(dev, &priv->cmdq_reg, 0);
@@ -195,14 +135,16 @@ static int mtk_disp_aal_probe(struct platform_device *pdev)
 
 	ret = component_add(dev, &mtk_disp_aal_component_ops);
 	if (ret)
-		return dev_err_probe(dev, ret, "Failed to add component\n");
+		dev_err(dev, "Failed to add component: %d\n", ret);
 
-	return 0;
+	return ret;
 }
 
-static void mtk_disp_aal_remove(struct platform_device *pdev)
+static int mtk_disp_aal_remove(struct platform_device *pdev)
 {
 	component_del(&pdev->dev, &mtk_disp_aal_component_ops);
+
+	return 0;
 }
 
 static const struct mtk_disp_aal_data mt8173_aal_driver_data = {
@@ -210,9 +152,10 @@ static const struct mtk_disp_aal_data mt8173_aal_driver_data = {
 };
 
 static const struct of_device_id mtk_disp_aal_driver_dt_match[] = {
-	{ .compatible = "mediatek,mt8173-disp-aal", .data = &mt8173_aal_driver_data },
-	{ .compatible = "mediatek,mt8183-disp-aal" },
-	{ /* sentinel */ }
+	{ .compatible = "mediatek,mt8173-disp-aal",
+	  .data = &mt8173_aal_driver_data},
+	{ .compatible = "mediatek,mt8183-disp-aal"},
+	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_disp_aal_driver_dt_match);
 
@@ -221,6 +164,7 @@ struct platform_driver mtk_disp_aal_driver = {
 	.remove		= mtk_disp_aal_remove,
 	.driver		= {
 		.name	= "mediatek-disp-aal",
+		.owner	= THIS_MODULE,
 		.of_match_table = mtk_disp_aal_driver_dt_match,
 	},
 };

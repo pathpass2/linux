@@ -56,14 +56,6 @@ enum dentist_dispclk_change_mode {
 	DISPCLK_CHANGE_MODE_RAMPING,
 };
 
-struct dp_dto_params {
-	int otg_inst;
-	enum signal_type signal;
-	enum streamclk_source clk_src;
-	uint64_t pixclk_hz;
-	uint64_t refclk_hz;
-};
-
 enum pixel_rate_div {
    PIXEL_RATE_DIV_BY_1 = 0,
    PIXEL_RATE_DIV_BY_2 = 1,
@@ -71,135 +63,16 @@ enum pixel_rate_div {
    PIXEL_RATE_DIV_NA = 0xF
 };
 
-struct dcn_dccg_reg_state {
-	uint32_t dc_mem_global_pwr_req_cntl;
-	uint32_t dccg_audio_dtbclk_dto_modulo;
-	uint32_t dccg_audio_dtbclk_dto_phase;
-	uint32_t dccg_audio_dto_source;
-	uint32_t dccg_audio_dto0_module;
-	uint32_t dccg_audio_dto0_phase;
-	uint32_t dccg_audio_dto1_module;
-	uint32_t dccg_audio_dto1_phase;
-	uint32_t dccg_cac_status;
-	uint32_t dccg_cac_status2;
-	uint32_t dccg_disp_cntl_reg;
-	uint32_t dccg_ds_cntl;
-	uint32_t dccg_ds_dto_incr;
-	uint32_t dccg_ds_dto_modulo;
-	uint32_t dccg_ds_hw_cal_interval;
-	uint32_t dccg_gate_disable_cntl;
-	uint32_t dccg_gate_disable_cntl2;
-	uint32_t dccg_gate_disable_cntl3;
-	uint32_t dccg_gate_disable_cntl4;
-	uint32_t dccg_gate_disable_cntl5;
-	uint32_t dccg_gate_disable_cntl6;
-	uint32_t dccg_global_fgcg_rep_cntl;
-	uint32_t dccg_gtc_cntl;
-	uint32_t dccg_gtc_current;
-	uint32_t dccg_gtc_dto_incr;
-	uint32_t dccg_gtc_dto_modulo;
-	uint32_t dccg_perfmon_cntl;
-	uint32_t dccg_perfmon_cntl2;
-	uint32_t dccg_soft_reset;
-	uint32_t dccg_test_clk_sel;
-	uint32_t dccg_vsync_cnt_ctrl;
-	uint32_t dccg_vsync_cnt_int_ctrl;
-	uint32_t dccg_vsync_otg0_latch_value;
-	uint32_t dccg_vsync_otg1_latch_value;
-	uint32_t dccg_vsync_otg2_latch_value;
-	uint32_t dccg_vsync_otg3_latch_value;
-	uint32_t dccg_vsync_otg4_latch_value;
-	uint32_t dccg_vsync_otg5_latch_value;
-	uint32_t dispclk_cgtt_blk_ctrl_reg;
-	uint32_t dispclk_freq_change_cntl;
-	uint32_t dp_dto_dbuf_en;
-	uint32_t dp_dto0_modulo;
-	uint32_t dp_dto0_phase;
-	uint32_t dp_dto1_modulo;
-	uint32_t dp_dto1_phase;
-	uint32_t dp_dto2_modulo;
-	uint32_t dp_dto2_phase;
-	uint32_t dp_dto3_modulo;
-	uint32_t dp_dto3_phase;
-	uint32_t dpiaclk_540m_dto_modulo;
-	uint32_t dpiaclk_540m_dto_phase;
-	uint32_t dpiaclk_810m_dto_modulo;
-	uint32_t dpiaclk_810m_dto_phase;
-	uint32_t dpiaclk_dto_cntl;
-	uint32_t dpiasymclk_cntl;
-	uint32_t dppclk_cgtt_blk_ctrl_reg;
-	uint32_t dppclk_ctrl;
-	uint32_t dppclk_dto_ctrl;
-	uint32_t dppclk0_dto_param;
-	uint32_t dppclk1_dto_param;
-	uint32_t dppclk2_dto_param;
-	uint32_t dppclk3_dto_param;
-	uint32_t dprefclk_cgtt_blk_ctrl_reg;
-	uint32_t dprefclk_cntl;
-	uint32_t dpstreamclk_cntl;
-	uint32_t dscclk_dto_ctrl;
-	uint32_t dscclk0_dto_param;
-	uint32_t dscclk1_dto_param;
-	uint32_t dscclk2_dto_param;
-	uint32_t dscclk3_dto_param;
-	uint32_t dtbclk_dto_dbuf_en;
-	uint32_t dtbclk_dto0_modulo;
-	uint32_t dtbclk_dto0_phase;
-	uint32_t dtbclk_dto1_modulo;
-	uint32_t dtbclk_dto1_phase;
-	uint32_t dtbclk_dto2_modulo;
-	uint32_t dtbclk_dto2_phase;
-	uint32_t dtbclk_dto3_modulo;
-	uint32_t dtbclk_dto3_phase;
-	uint32_t dtbclk_p_cntl;
-	uint32_t force_symclk_disable;
-	uint32_t hdmicharclk0_clock_cntl;
-	uint32_t hdmistreamclk_cntl;
-	uint32_t hdmistreamclk0_dto_param;
-	uint32_t microsecond_time_base_div;
-	uint32_t millisecond_time_base_div;
-	uint32_t otg_pixel_rate_div;
-	uint32_t otg0_phypll_pixel_rate_cntl;
-	uint32_t otg0_pixel_rate_cntl;
-	uint32_t otg1_phypll_pixel_rate_cntl;
-	uint32_t otg1_pixel_rate_cntl;
-	uint32_t otg2_phypll_pixel_rate_cntl;
-	uint32_t otg2_pixel_rate_cntl;
-	uint32_t otg3_phypll_pixel_rate_cntl;
-	uint32_t otg3_pixel_rate_cntl;
-	uint32_t phyasymclk_clock_cntl;
-	uint32_t phybsymclk_clock_cntl;
-	uint32_t phycsymclk_clock_cntl;
-	uint32_t phydsymclk_clock_cntl;
-	uint32_t phyesymclk_clock_cntl;
-	uint32_t phyplla_pixclk_resync_cntl;
-	uint32_t phypllb_pixclk_resync_cntl;
-	uint32_t phypllc_pixclk_resync_cntl;
-	uint32_t phyplld_pixclk_resync_cntl;
-	uint32_t phyplle_pixclk_resync_cntl;
-	uint32_t refclk_cgtt_blk_ctrl_reg;
-	uint32_t socclk_cgtt_blk_ctrl_reg;
-	uint32_t symclk_cgtt_blk_ctrl_reg;
-	uint32_t symclk_psp_cntl;
-	uint32_t symclk32_le_cntl;
-	uint32_t symclk32_se_cntl;
-	uint32_t symclka_clock_enable;
-	uint32_t symclkb_clock_enable;
-	uint32_t symclkc_clock_enable;
-	uint32_t symclkd_clock_enable;
-	uint32_t symclke_clock_enable;
-};
-
 struct dccg {
 	struct dc_context *ctx;
 	const struct dccg_funcs *funcs;
 	int pipe_dppclk_khz[MAX_PIPES];
 	int ref_dppclk;
-	bool dpp_clock_gated[MAX_PIPES];
 	//int dtbclk_khz[MAX_PIPES];/* TODO needs to be removed */
 	//int audio_dtbclk_khz;/* TODO needs to be removed */
 	//int ref_dtbclk_khz;/* TODO needs to be removed */
 };
+
 struct dtbclk_dto_params {
 	const struct dc_crtc_timing *timing;
 	int otg_inst;
@@ -224,10 +97,6 @@ struct dccg_funcs {
 	void (*otg_drop_pixel)(struct dccg *dccg,
 			uint32_t otg_inst);
 	void (*dccg_init)(struct dccg *dccg);
-	void (*set_dpstreamclk_root_clock_gating)(
-			struct dccg *dccg,
-			int dp_hpo_inst,
-			bool enable);
 
 	void (*set_dpstreamclk)(
 			struct dccg *dccg,
@@ -253,21 +122,11 @@ struct dccg_funcs {
 			struct dccg *dccg,
 			int hpo_le_inst);
 
-	void (*set_symclk32_le_root_clock_gating)(
-			struct dccg *dccg,
-			int hpo_le_inst,
-			bool enable);
-
 	void (*set_physymclk)(
 			struct dccg *dccg,
 			int phy_inst,
 			enum physymclk_clock_source clk_src,
 			bool force_enable);
-
-	void (*set_physymclk_root_clock_gating)(
-			struct dccg *dccg,
-			int phy_inst,
-			bool enable);
 
 	void (*set_dtbclk_dto)(
 			struct dccg *dccg,
@@ -289,51 +148,18 @@ struct dccg_funcs {
 		struct dccg *dccg,
 		int inst);
 
-	void (*set_pixel_rate_div)(struct dccg *dccg,
-			uint32_t otg_inst,
-			enum pixel_rate_div k1,
-			enum pixel_rate_div k2);
+void (*set_pixel_rate_div)(
+        struct dccg *dccg,
+        uint32_t otg_inst,
+        enum pixel_rate_div k1,
+        enum pixel_rate_div k2);
 
-	void (*get_pixel_rate_div)(struct dccg *dccg,
-			uint32_t otg_inst,
-			uint32_t *div_factor1,
-			uint32_t *div_factor2);
+void (*set_valid_pixel_rate)(
+        struct dccg *dccg,
+	int ref_dtbclk_khz,
+        int otg_inst,
+        int pixclk_khz);
 
-	void (*set_valid_pixel_rate)(
-			struct dccg *dccg,
-			int ref_dtbclk_khz,
-			int otg_inst,
-			int pixclk_khz);
-
-	void (*trigger_dio_fifo_resync)(
-			struct dccg *dccg);
-
-	void (*dpp_root_clock_control)(
-			struct dccg *dccg,
-			unsigned int dpp_inst,
-			bool clock_on);
-
-	void (*enable_symclk_se)(
-			struct dccg *dccg,
-			uint32_t stream_enc_inst,
-			uint32_t link_enc_inst);
-
-	void (*disable_symclk_se)(
-			struct dccg *dccg,
-			uint32_t stream_enc_inst,
-			uint32_t link_enc_inst);
-	void (*set_dp_dto)(
-			struct dccg *dccg,
-			const struct dp_dto_params *params);
-	void (*set_dtbclk_p_src)(
-			struct dccg *dccg,
-			enum streamclk_source src,
-			uint32_t otg_inst);
-	void (*set_dto_dscclk)(struct dccg *dccg, uint32_t dsc_inst, uint32_t num_slices_h);
-	void (*set_ref_dscclk)(struct dccg *dccg, uint32_t dsc_inst);
-	void (*dccg_root_gate_disable_control)(struct dccg *dccg, uint32_t pipe_idx, uint32_t disable_clock_gating);
-	void (*dccg_read_reg_state)(struct dccg *dccg, struct dcn_dccg_reg_state *dccg_reg_state);
-	void (*dccg_enable_global_fgcg)(struct dccg *dccg, bool enable);
 };
 
 #endif //__DAL_DCCG_H__

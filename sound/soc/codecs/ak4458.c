@@ -9,7 +9,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_gpio.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
@@ -45,6 +46,7 @@ struct ak4458_priv {
 	const struct ak4458_drvdata *drvdata;
 	struct device *dev;
 	struct regmap *regmap;
+	struct gpio_desc *reset_gpiod;
 	struct reset_control *reset;
 	struct gpio_desc *mute_gpiod;
 	int digfil;	/* SSLOW, SD, SLOW bits */
@@ -187,7 +189,7 @@ static const struct soc_enum ak4458_dif_enum =
 static int get_digfil(struct snd_kcontrol *kcontrol,
 		      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct ak4458_priv *ak4458 = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.enumerated.item[0] = ak4458->digfil;
@@ -198,7 +200,7 @@ static int get_digfil(struct snd_kcontrol *kcontrol,
 static int set_digfil(struct snd_kcontrol *kcontrol,
 		      struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct ak4458_priv *ak4458 = snd_soc_component_get_drvdata(component);
 	int num;
 
@@ -586,9 +588,13 @@ static const struct snd_pcm_hw_constraint_list ak4458_rate_constraints = {
 static int ak4458_startup(struct snd_pcm_substream *substream,
 			  struct snd_soc_dai *dai)
 {
-	return snd_pcm_hw_constraint_list(substream->runtime, 0,
-					  SNDRV_PCM_HW_PARAM_RATE,
-					  &ak4458_rate_constraints);
+	int ret;
+
+	ret = snd_pcm_hw_constraint_list(substream->runtime, 0,
+					 SNDRV_PCM_HW_PARAM_RATE,
+					 &ak4458_rate_constraints);
+
+	return ret;
 }
 
 static const struct snd_soc_dai_ops ak4458_dai_ops = {
@@ -626,7 +632,10 @@ static struct snd_soc_dai_driver ak4497_dai = {
 
 static void ak4458_reset(struct ak4458_priv *ak4458, bool active)
 {
-	if (!IS_ERR_OR_NULL(ak4458->reset)) {
+	if (ak4458->reset_gpiod) {
+		gpiod_set_value_cansleep(ak4458->reset_gpiod, active);
+		usleep_range(1000, 2000);
+	} else if (!IS_ERR_OR_NULL(ak4458->reset)) {
 		if (active)
 			reset_control_assert(ak4458->reset);
 		else
@@ -635,7 +644,8 @@ static void ak4458_reset(struct ak4458_priv *ak4458, bool active)
 	}
 }
 
-static int ak4458_runtime_suspend(struct device *dev)
+#ifdef CONFIG_PM
+static int __maybe_unused ak4458_runtime_suspend(struct device *dev)
 {
 	struct ak4458_priv *ak4458 = dev_get_drvdata(dev);
 
@@ -651,7 +661,7 @@ static int ak4458_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int ak4458_runtime_resume(struct device *dev)
+static int __maybe_unused ak4458_runtime_resume(struct device *dev)
 {
 	struct ak4458_priv *ak4458 = dev_get_drvdata(dev);
 	int ret;
@@ -671,16 +681,9 @@ static int ak4458_runtime_resume(struct device *dev)
 	regcache_cache_only(ak4458->regmap, false);
 	regcache_mark_dirty(ak4458->regmap);
 
-	ret = regcache_sync(ak4458->regmap);
-	if (ret)
-		goto err;
-
-	return 0;
-err:
-	regcache_cache_only(ak4458->regmap, true);
-	regulator_bulk_disable(ARRAY_SIZE(ak4458->supplies), ak4458->supplies);
-	return ret;
+	return regcache_sync(ak4458->regmap);
 }
+#endif /* CONFIG_PM */
 
 static const struct snd_soc_component_driver soc_codec_dev_ak4458 = {
 	.controls		= ak4458_snd_controls,
@@ -729,8 +732,9 @@ static const struct ak4458_drvdata ak4497_drvdata = {
 };
 
 static const struct dev_pm_ops ak4458_pm = {
-	RUNTIME_PM_OPS(ak4458_runtime_suspend, ak4458_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(ak4458_runtime_suspend, ak4458_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 };
 
 static int ak4458_i2c_probe(struct i2c_client *i2c)
@@ -754,6 +758,11 @@ static int ak4458_i2c_probe(struct i2c_client *i2c)
 	ak4458->reset = devm_reset_control_get_optional_shared(ak4458->dev, NULL);
 	if (IS_ERR(ak4458->reset))
 		return PTR_ERR(ak4458->reset);
+
+	ak4458->reset_gpiod = devm_gpiod_get_optional(ak4458->dev, "reset",
+						      GPIOD_OUT_LOW);
+	if (IS_ERR(ak4458->reset_gpiod))
+		return PTR_ERR(ak4458->reset_gpiod);
 
 	ak4458->mute_gpiod = devm_gpiod_get_optional(ak4458->dev, "mute",
 						     GPIOD_OUT_LOW);
@@ -783,12 +792,16 @@ static int ak4458_i2c_probe(struct i2c_client *i2c)
 
 	pm_runtime_enable(&i2c->dev);
 	regcache_cache_only(ak4458->regmap, true);
+	ak4458_reset(ak4458, false);
 
 	return 0;
 }
 
 static void ak4458_i2c_remove(struct i2c_client *i2c)
 {
+	struct ak4458_priv *ak4458 = i2c_get_clientdata(i2c);
+
+	ak4458_reset(ak4458, true);
 	pm_runtime_disable(&i2c->dev);
 }
 
@@ -802,10 +815,10 @@ MODULE_DEVICE_TABLE(of, ak4458_of_match);
 static struct i2c_driver ak4458_i2c_driver = {
 	.driver = {
 		.name = "ak4458",
-		.pm = pm_ptr(&ak4458_pm),
+		.pm = &ak4458_pm,
 		.of_match_table = ak4458_of_match,
 		},
-	.probe = ak4458_i2c_probe,
+	.probe_new = ak4458_i2c_probe,
 	.remove = ak4458_i2c_remove,
 };
 

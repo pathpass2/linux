@@ -21,6 +21,7 @@
 #include "omap_crtc.h"
 #include "omap_encoder.h"
 #include "omap_fb.h"
+#include "omap_fbdev.h"
 #include "omap_gem.h"
 #include "omap_irq.h"
 #include "omap_plane.h"
@@ -32,7 +33,6 @@
 #define MODULE_NAME     "omapdrm"
 
 struct omap_drm_usergart;
-struct omap_fbdev;
 
 struct omap_drm_pipeline {
 	struct drm_crtc *crtc;
@@ -77,6 +77,8 @@ struct omap_drm_private {
 
 	struct drm_private_obj glob_obj;
 
+	struct drm_fb_helper *fbdev;
+
 	struct workqueue_struct *wq;
 
 	/* lock for obj_list below */
@@ -98,8 +100,6 @@ struct omap_drm_private {
 
 	/* memory bandwidth limit if it is needed on the platform */
 	unsigned int max_bandwidth;
-
-	struct omap_fbdev *fbdev;
 };
 
 

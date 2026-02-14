@@ -148,21 +148,20 @@ static int nvec_kbd_probe(struct platform_device *pdev)
 	nvec_register_notifier(nvec, &keys_dev.notifier, 0);
 
 	/* Enable keyboard */
-	nvec_write_sync(nvec, enable_kbd, 2, NULL);
+	nvec_write_async(nvec, enable_kbd, 2);
 
 	/* configures wake on special keys */
-	nvec_write_sync(nvec, cnfg_wake, 4, NULL);
-
+	nvec_write_async(nvec, cnfg_wake, 4);
 	/* enable wake key reporting */
-	nvec_write_sync(nvec, cnfg_wake_key_reporting, 3, NULL);
+	nvec_write_async(nvec, cnfg_wake_key_reporting, 3);
 
 	/* Disable caps lock LED */
-	nvec_write_sync(nvec, clear_leds, sizeof(clear_leds), NULL);
+	nvec_write_async(nvec, clear_leds, sizeof(clear_leds));
 
 	return 0;
 }
 
-static void nvec_kbd_remove(struct platform_device *pdev)
+static int nvec_kbd_remove(struct platform_device *pdev)
 {
 	struct nvec_chip *nvec = dev_get_drvdata(pdev->dev.parent);
 	char disable_kbd[] = { NVEC_KBD, DISABLE_KBD },
@@ -171,6 +170,8 @@ static void nvec_kbd_remove(struct platform_device *pdev)
 	nvec_write_async(nvec, uncnfg_wake_key_reporting, 3);
 	nvec_write_async(nvec, disable_kbd, 2);
 	nvec_unregister_notifier(nvec, &keys_dev.notifier);
+
+	return 0;
 }
 
 static struct platform_driver nvec_kbd_driver = {

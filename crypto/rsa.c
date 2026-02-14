@@ -24,38 +24,14 @@ struct rsa_mpi_key {
 	MPI qinv;
 };
 
-static int rsa_check_payload(MPI x, MPI n)
-{
-	MPI n1;
-
-	if (mpi_cmp_ui(x, 1) <= 0)
-		return -EINVAL;
-
-	n1 = mpi_alloc(0);
-	if (!n1)
-		return -ENOMEM;
-
-	if (mpi_sub_ui(n1, n, 1) || mpi_cmp(x, n1) >= 0) {
-		mpi_free(n1);
-		return -EINVAL;
-	}
-
-	mpi_free(n1);
-	return 0;
-}
-
 /*
  * RSAEP function [RFC3447 sec 5.1.1]
  * c = m^e mod n;
  */
 static int _rsa_enc(const struct rsa_mpi_key *key, MPI c, MPI m)
 {
-	/*
-	 * Even though (1) in RFC3447 only requires 0 <= m <= n - 1, we are
-	 * slightly more conservative and require 1 < m < n - 1. This is in line
-	 * with SP 800-56Br2, Section 7.1.1.
-	 */
-	if (rsa_check_payload(m, key->n))
+	/* (1) Validate 0 <= m < n */
+	if (mpi_cmp_ui(m, 0) < 0 || mpi_cmp(m, key->n) >= 0)
 		return -EINVAL;
 
 	/* (2) c = m^e mod n */
@@ -74,12 +50,8 @@ static int _rsa_dec_crt(const struct rsa_mpi_key *key, MPI m_or_m1_or_h, MPI c)
 	MPI m2, m12_or_qh;
 	int ret = -ENOMEM;
 
-	/*
-	 * Even though (1) in RFC3447 only requires 0 <= c <= n - 1, we are
-	 * slightly more conservative and require 1 < c < n - 1. This is in line
-	 * with SP 800-56Br2, Section 7.1.2.
-	 */
-	if (rsa_check_payload(c, key->n))
+	/* (1) Validate 0 <= c < n */
+	if (mpi_cmp_ui(c, 0) < 0 || mpi_cmp(c, key->n) >= 0)
 		return -EINVAL;
 
 	m2 = mpi_alloc(0);
@@ -98,13 +70,14 @@ static int _rsa_dec_crt(const struct rsa_mpi_key *key, MPI m_or_m1_or_h, MPI c)
 		goto err_free_mpi;
 
 	/* (2iii) h = (m_1 - m_2) * qInv mod p */
-	ret = mpi_sub(m12_or_qh, m_or_m1_or_h, m2) ?:
-	      mpi_mulm(m_or_m1_or_h, m12_or_qh, key->qinv, key->p);
+	mpi_sub(m12_or_qh, m_or_m1_or_h, m2);
+	mpi_mulm(m_or_m1_or_h, m12_or_qh, key->qinv, key->p);
 
 	/* (2iv) m = m_2 + q * h */
-	ret = ret ?:
-	      mpi_mul(m12_or_qh, key->q, m_or_m1_or_h) ?:
-	      mpi_addm(m_or_m1_or_h, m2, m12_or_qh, key->n);
+	mpi_mul(m12_or_qh, key->q, m_or_m1_or_h);
+	mpi_addm(m_or_m1_or_h, m2, m12_or_qh, key->n);
+
+	ret = 0;
 
 err_free_mpi:
 	mpi_free(m12_or_qh);
@@ -232,40 +205,6 @@ static int rsa_check_key_length(unsigned int len)
 	return -EINVAL;
 }
 
-static int rsa_check_exponent_fips(MPI e)
-{
-	MPI e_max = NULL;
-	int err;
-
-	/* check if odd */
-	if (!mpi_test_bit(e, 0)) {
-		return -EINVAL;
-	}
-
-	/* check if 2^16 < e < 2^256. */
-	if (mpi_cmp_ui(e, 65536) <= 0) {
-		return -EINVAL;
-	}
-
-	e_max = mpi_alloc(0);
-	if (!e_max)
-		return -ENOMEM;
-
-	err = mpi_set_bit(e_max, 256);
-	if (err) {
-		mpi_free(e_max);
-		return err;
-	}
-
-	if (mpi_cmp(e, e_max) >= 0) {
-		mpi_free(e_max);
-		return -EINVAL;
-	}
-
-	mpi_free(e_max);
-	return 0;
-}
-
 static int rsa_set_pub_key(struct crypto_akcipher *tfm, const void *key,
 			   unsigned int keylen)
 {
@@ -289,11 +228,6 @@ static int rsa_set_pub_key(struct crypto_akcipher *tfm, const void *key,
 		goto err;
 
 	if (rsa_check_key_length(mpi_get_size(mpi_key->n) << 3)) {
-		rsa_free_mpi_key(mpi_key);
-		return -EINVAL;
-	}
-
-	if (fips_enabled && rsa_check_exponent_fips(mpi_key->e)) {
 		rsa_free_mpi_key(mpi_key);
 		return -EINVAL;
 	}
@@ -356,11 +290,6 @@ static int rsa_set_priv_key(struct crypto_akcipher *tfm, const void *key,
 		return -EINVAL;
 	}
 
-	if (fips_enabled && rsa_check_exponent_fips(mpi_key->e)) {
-		rsa_free_mpi_key(mpi_key);
-		return -EINVAL;
-	}
-
 	return 0;
 
 err:
@@ -407,30 +336,21 @@ static int __init rsa_init(void)
 		return err;
 
 	err = crypto_register_template(&rsa_pkcs1pad_tmpl);
-	if (err)
-		goto err_unregister_rsa;
-
-	err = crypto_register_template(&rsassa_pkcs1_tmpl);
-	if (err)
-		goto err_unregister_rsa_pkcs1pad;
+	if (err) {
+		crypto_unregister_akcipher(&rsa);
+		return err;
+	}
 
 	return 0;
-
-err_unregister_rsa_pkcs1pad:
-	crypto_unregister_template(&rsa_pkcs1pad_tmpl);
-err_unregister_rsa:
-	crypto_unregister_akcipher(&rsa);
-	return err;
 }
 
 static void __exit rsa_exit(void)
 {
-	crypto_unregister_template(&rsassa_pkcs1_tmpl);
 	crypto_unregister_template(&rsa_pkcs1pad_tmpl);
 	crypto_unregister_akcipher(&rsa);
 }
 
-module_init(rsa_init);
+subsys_initcall(rsa_init);
 module_exit(rsa_exit);
 MODULE_ALIAS_CRYPTO("rsa");
 MODULE_LICENSE("GPL");

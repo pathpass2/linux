@@ -21,8 +21,6 @@
 		gsc0 = &gsc_0;
 		gsc1 = &gsc_1;
 		gsc2 = &gsc_2;
-		mmc0 = &mshc_0;
-		mmc2 = &mshc_2;
 		pinctrl0 = &pinctrl_alive;
 		pinctrl1 = &pinctrl_aud;
 		pinctrl2 = &pinctrl_cpif;
@@ -42,6 +40,8 @@
 		spi2 = &spi_2;
 		spi3 = &spi_3;
 		spi4 = &spi_4;
+		mshc0 = &mshc_0;
+		mshc2 = &mshc_2;
 	};
 
 	chosen {
@@ -85,7 +85,7 @@
 		};
 	};
 
-	i2c_max98504: i2c-13 {
+	i2c_max98504: i2c-gpio-0 {
 		compatible = "i2c-gpio";
 		sda-gpios = <&gpd0 1 GPIO_ACTIVE_HIGH>;
 		scl-gpios = <&gpd0 0 GPIO_ACTIVE_HIGH>;
@@ -124,18 +124,20 @@
 		audio-amplifier = <&max98504>;
 		mic-bias-gpios = <&gpr3 2 GPIO_ACTIVE_HIGH>;
 		model = "wm5110";
-		audio-routing = /* Headphone */
-				"HP", "HPOUT1L",
-				"HP", "HPOUT1R",
+		samsung,audio-routing =
+			/* Headphone */
+			"HP", "HPOUT1L",
+			"HP", "HPOUT1R",
 
-				/* Speaker */
-				"SPK", "SPKOUT",
-				"SPKOUT", "HPOUT2L",
-				"SPKOUT", "HPOUT2R",
+			/* Speaker */
+			"SPK", "SPKOUT",
+			"SPKOUT", "HPOUT2L",
+			"SPKOUT", "HPOUT2R",
 
-				/* Receiver */
-				"RCV", "HPOUT3L",
-				"RCV", "HPOUT3R";
+			/* Receiver */
+			"RCV", "HPOUT3L",
+			"RCV", "HPOUT3R";
+		status = "okay";
 	};
 };
 
@@ -950,7 +952,6 @@
 
 &mshc_0 {
 	status = "okay";
-	mmc-ddr-1_8v;
 	mmc-hs200-1_8v;
 	mmc-hs400-1_8v;
 	cap-mmc-highspeed;
@@ -1102,7 +1103,7 @@
 
 	te_irq: te-irq-pins {
 		samsung,pins = "gpf1-3";
-		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-function = <0xf>;
 	};
 };
 

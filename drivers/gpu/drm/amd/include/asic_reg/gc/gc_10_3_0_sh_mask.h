@@ -17028,60 +17028,6 @@
 //CC_GC_EDC_CONFIG
 #define CC_GC_EDC_CONFIG__DIS_EDC__SHIFT                                                                      0x1
 #define CC_GC_EDC_CONFIG__DIS_EDC_MASK                                                                        0x00000002L
-//CP_ME1_INT_STAT_DEBUG
-#define CP_ME1_INT_STAT_DEBUG__CMP_QUERY_STATUS_INT_ASSERTED__SHIFT                                           0xc
-#define CP_ME1_INT_STAT_DEBUG__DEQUEUE_REQUEST_INT_ASSERTED__SHIFT                                            0xd
-#define CP_ME1_INT_STAT_DEBUG__CP_ECC_ERROR_INT_ASSERTED__SHIFT                                               0xe
-#define CP_ME1_INT_STAT_DEBUG__SUA_VIOLATION_INT_STATUS__SHIFT                                                0xf
-#define CP_ME1_INT_STAT_DEBUG__GPF_INT_ASSERTED__SHIFT                                                        0x10
-#define CP_ME1_INT_STAT_DEBUG__WRM_POLL_TIMEOUT_INT_ASSERTED__SHIFT                                           0x11
-#define CP_ME1_INT_STAT_DEBUG__PRIV_REG_INT_ASSERTED__SHIFT                                                   0x17
-#define CP_ME1_INT_STAT_DEBUG__OPCODE_ERROR_INT_ASSERTED__SHIFT                                               0x18
-#define CP_ME1_INT_STAT_DEBUG__TIME_STAMP_INT_ASSERTED__SHIFT                                                 0x1a
-#define CP_ME1_INT_STAT_DEBUG__RESERVED_BIT_ERROR_INT_ASSERTED__SHIFT                                         0x1b
-#define CP_ME1_INT_STAT_DEBUG__GENERIC2_INT_ASSERTED__SHIFT                                                   0x1d
-#define CP_ME1_INT_STAT_DEBUG__GENERIC1_INT_ASSERTED__SHIFT                                                   0x1e
-#define CP_ME1_INT_STAT_DEBUG__GENERIC0_INT_ASSERTED__SHIFT                                                   0x1f
-#define CP_ME1_INT_STAT_DEBUG__CMP_QUERY_STATUS_INT_ASSERTED_MASK                                             0x00001000L
-#define CP_ME1_INT_STAT_DEBUG__DEQUEUE_REQUEST_INT_ASSERTED_MASK                                              0x00002000L
-#define CP_ME1_INT_STAT_DEBUG__CP_ECC_ERROR_INT_ASSERTED_MASK                                                 0x00004000L
-#define CP_ME1_INT_STAT_DEBUG__SUA_VIOLATION_INT_STATUS_MASK                                                  0x00008000L
-#define CP_ME1_INT_STAT_DEBUG__GPF_INT_ASSERTED_MASK                                                          0x00010000L
-#define CP_ME1_INT_STAT_DEBUG__WRM_POLL_TIMEOUT_INT_ASSERTED_MASK                                             0x00020000L
-#define CP_ME1_INT_STAT_DEBUG__PRIV_REG_INT_ASSERTED_MASK                                                     0x00800000L
-#define CP_ME1_INT_STAT_DEBUG__OPCODE_ERROR_INT_ASSERTED_MASK                                                 0x01000000L
-#define CP_ME1_INT_STAT_DEBUG__TIME_STAMP_INT_ASSERTED_MASK                                                   0x04000000L
-#define CP_ME1_INT_STAT_DEBUG__RESERVED_BIT_ERROR_INT_ASSERTED_MASK                                           0x08000000L
-#define CP_ME1_INT_STAT_DEBUG__GENERIC2_INT_ASSERTED_MASK                                                     0x20000000L
-#define CP_ME1_INT_STAT_DEBUG__GENERIC1_INT_ASSERTED_MASK                                                     0x40000000L
-#define CP_ME1_INT_STAT_DEBUG__GENERIC0_INT_ASSERTED_MASK                                                     0x80000000L
-//CP_ME2_INT_STAT_DEBUG
-#define CP_ME2_INT_STAT_DEBUG__CMP_QUERY_STATUS_INT_ASSERTED__SHIFT                                           0xc
-#define CP_ME2_INT_STAT_DEBUG__DEQUEUE_REQUEST_INT_ASSERTED__SHIFT                                            0xd
-#define CP_ME2_INT_STAT_DEBUG__CP_ECC_ERROR_INT_ASSERTED__SHIFT                                               0xe
-#define CP_ME2_INT_STAT_DEBUG__SUA_VIOLATION_INT_STATUS__SHIFT                                                0xf
-#define CP_ME2_INT_STAT_DEBUG__GPF_INT_ASSERTED__SHIFT                                                        0x10
-#define CP_ME2_INT_STAT_DEBUG__WRM_POLL_TIMEOUT_INT_ASSERTED__SHIFT                                           0x11
-#define CP_ME2_INT_STAT_DEBUG__PRIV_REG_INT_ASSERTED__SHIFT                                                   0x17
-#define CP_ME2_INT_STAT_DEBUG__OPCODE_ERROR_INT_ASSERTED__SHIFT                                               0x18
-#define CP_ME2_INT_STAT_DEBUG__TIME_STAMP_INT_ASSERTED__SHIFT                                                 0x1a
-#define CP_ME2_INT_STAT_DEBUG__RESERVED_BIT_ERROR_INT_ASSERTED__SHIFT                                         0x1b
-#define CP_ME2_INT_STAT_DEBUG__GENERIC2_INT_ASSERTED__SHIFT                                                   0x1d
-#define CP_ME2_INT_STAT_DEBUG__GENERIC1_INT_ASSERTED__SHIFT                                                   0x1e
-#define CP_ME2_INT_STAT_DEBUG__GENERIC0_INT_ASSERTED__SHIFT                                                   0x1f
-#define CP_ME2_INT_STAT_DEBUG__CMP_QUERY_STATUS_INT_ASSERTED_MASK                                             0x00001000L
-#define CP_ME2_INT_STAT_DEBUG__DEQUEUE_REQUEST_INT_ASSERTED_MASK                                              0x00002000L
-#define CP_ME2_INT_STAT_DEBUG__CP_ECC_ERROR_INT_ASSERTED_MASK                                                 0x00004000L
-#define CP_ME2_INT_STAT_DEBUG__SUA_VIOLATION_INT_STATUS_MASK                                                  0x00008000L
-#define CP_ME2_INT_STAT_DEBUG__GPF_INT_ASSERTED_MASK                                                          0x00010000L
-#define CP_ME2_INT_STAT_DEBUG__WRM_POLL_TIMEOUT_INT_ASSERTED_MASK                                             0x00020000L
-#define CP_ME2_INT_STAT_DEBUG__PRIV_REG_INT_ASSERTED_MASK                                                     0x00800000L
-#define CP_ME2_INT_STAT_DEBUG__OPCODE_ERROR_INT_ASSERTED_MASK                                                 0x01000000L
-#define CP_ME2_INT_STAT_DEBUG__TIME_STAMP_INT_ASSERTED_MASK                                                   0x04000000L
-#define CP_ME2_INT_STAT_DEBUG__RESERVED_BIT_ERROR_INT_ASSERTED_MASK                                           0x08000000L
-#define CP_ME2_INT_STAT_DEBUG__GENERIC2_INT_ASSERTED_MASK                                                     0x20000000L
-#define CP_ME2_INT_STAT_DEBUG__GENERIC1_INT_ASSERTED_MASK                                                     0x40000000L
-#define CP_ME2_INT_STAT_DEBUG__GENERIC0_INT_ASSERTED_MASK                                                     0x80000000L
 //CP_ME1_PIPE_PRIORITY_CNTS
 #define CP_ME1_PIPE_PRIORITY_CNTS__PRIORITY1_CNT__SHIFT                                                       0x0
 #define CP_ME1_PIPE_PRIORITY_CNTS__PRIORITY2A_CNT__SHIFT                                                      0x8
@@ -18054,23 +18000,6 @@
 #define SPI_GDBG_WAVE_CNTL__STALL_VMID__SHIFT								      0x1
 #define SPI_GDBG_WAVE_CNTL__STALL_RA_MASK								      0x00000001L
 #define SPI_GDBG_WAVE_CNTL__STALL_VMID_MASK								      0x0001FFFEL
-//SPI_GDBG_TRAP_CONFIG
-#define SPI_GDBG_TRAP_CONFIG__ME_SEL__SHIFT                                                                   0x0
-#define SPI_GDBG_TRAP_CONFIG__PIPE_SEL__SHIFT                                                                 0x2
-#define SPI_GDBG_TRAP_CONFIG__QUEUE_SEL__SHIFT                                                                0x4
-#define SPI_GDBG_TRAP_CONFIG__ME_MATCH__SHIFT                                                                 0x7
-#define SPI_GDBG_TRAP_CONFIG__PIPE_MATCH__SHIFT                                                               0x8
-#define SPI_GDBG_TRAP_CONFIG__QUEUE_MATCH__SHIFT                                                              0x9
-#define SPI_GDBG_TRAP_CONFIG__TRAP_EN__SHIFT                                                                  0xf
-#define SPI_GDBG_TRAP_CONFIG__VMID_SEL__SHIFT                                                                 0x10
-#define SPI_GDBG_TRAP_CONFIG__ME_SEL_MASK                                                                     0x00000003L
-#define SPI_GDBG_TRAP_CONFIG__PIPE_SEL_MASK                                                                   0x0000000CL
-#define SPI_GDBG_TRAP_CONFIG__QUEUE_SEL_MASK                                                                  0x00000070L
-#define SPI_GDBG_TRAP_CONFIG__ME_MATCH_MASK                                                                   0x00000080L
-#define SPI_GDBG_TRAP_CONFIG__PIPE_MATCH_MASK                                                                 0x00000100L
-#define SPI_GDBG_TRAP_CONFIG__QUEUE_MATCH_MASK                                                                0x00000200L
-#define SPI_GDBG_TRAP_CONFIG__TRAP_EN_MASK                                                                    0x00008000L
-#define SPI_GDBG_TRAP_CONFIG__VMID_SEL_MASK                                                                   0xFFFF0000L
 //SPI_GDBG_TRAP_MASK
 #define SPI_GDBG_TRAP_MASK__EXCP_EN__SHIFT								      0x0
 #define SPI_GDBG_TRAP_MASK__REPLACE__SHIFT								      0x9
@@ -19093,13 +19022,6 @@
 #define TCP_WATCH3_CNTL__VMID_MASK                                                                            0x0F000000L
 #define TCP_WATCH3_CNTL__MODE_MASK                                                                            0x60000000L
 #define TCP_WATCH3_CNTL__VALID_MASK                                                                           0x80000000L
-//TCP_UTCL0_STATUS
-#define TCP_UTCL0_STATUS__FAULT_DETECTED__SHIFT                                                               0x0
-#define TCP_UTCL0_STATUS__RETRY_DETECTED__SHIFT                                                               0x1
-#define TCP_UTCL0_STATUS__PRT_DETECTED__SHIFT                                                                 0x2
-#define TCP_UTCL0_STATUS__FAULT_DETECTED_MASK                                                                 0x00000001L
-#define TCP_UTCL0_STATUS__RETRY_DETECTED_MASK                                                                 0x00000002L
-#define TCP_UTCL0_STATUS__PRT_DETECTED_MASK                                                                   0x00000004L
 //TCP_PERFCOUNTER_FILTER
 #define TCP_PERFCOUNTER_FILTER__BUFFER__SHIFT                                                                 0x0
 #define TCP_PERFCOUNTER_FILTER__FLAT__SHIFT                                                                   0x1
@@ -25860,9 +25782,6 @@
 //CP_CE_IB1_CMD_BUFSZ
 #define CP_CE_IB1_CMD_BUFSZ__IB1_CMD_REQSZ__SHIFT                                                             0x0
 #define CP_CE_IB1_CMD_BUFSZ__IB1_CMD_REQSZ_MASK                                                               0x000FFFFFL
-//CP_IB1_CMD_BUFSZ
-#define CP_IB1_CMD_BUFSZ__IB1_CMD_REQSZ__SHIFT                                                                0x0
-#define CP_IB1_CMD_BUFSZ__IB1_CMD_REQSZ_MASK                                                                  0x000FFFFFL
 //CP_CE_IB2_CMD_BUFSZ
 #define CP_CE_IB2_CMD_BUFSZ__IB2_CMD_REQSZ__SHIFT                                                             0x0
 #define CP_CE_IB2_CMD_BUFSZ__IB2_CMD_REQSZ_MASK                                                               0x000FFFFFL
@@ -47934,10 +47853,6 @@
 
 
 // addressBlock: sqind
-//SQ_DEBUG
-#define SQ_DEBUG__SINGLE_MEMOP_MASK 0x00000001L
-#define SQ_DEBUG__SINGLE_MEMOP__SHIFT 0x00000000
-
 //SQ_DEBUG_STS_GLOBAL
 #define SQ_DEBUG_STS_GLOBAL2__FIFO_LEVEL_GFX0_MASK 0x000000ffL
 #define SQ_DEBUG_STS_GLOBAL2__FIFO_LEVEL_GFX0__SHIFT 0x00000000

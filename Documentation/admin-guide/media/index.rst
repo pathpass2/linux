@@ -20,13 +20,16 @@ Documentation/driver-api/media/index.rst
   - for driver development information and Kernel APIs used by
     media devices;
 
-Documentation/process/debugging/media_specific_debugging_guide.rst
+The media subsystem
+===================
 
-  - for advice about essential tools and techniques to debug drivers on this
-    subsystem
+.. only:: html
+
+    .. class:: toc-title
+
+        Table of Contents
 
 .. toctree::
-	:caption: Table of Contents
 	:maxdepth: 2
 	:numbered:
 

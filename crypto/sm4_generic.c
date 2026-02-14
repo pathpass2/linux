@@ -14,7 +14,7 @@
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <asm/byteorder.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /**
  * sm4_setkey - Set the SM4 key.
@@ -83,7 +83,7 @@ static void __exit sm4_fini(void)
 	crypto_unregister_alg(&sm4_alg);
 }
 
-module_init(sm4_init);
+subsys_initcall(sm4_init);
 module_exit(sm4_fini);
 
 MODULE_DESCRIPTION("SM4 Cipher Algorithm");

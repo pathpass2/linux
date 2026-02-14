@@ -40,8 +40,8 @@ Here are the main features of EROFS:
  - Support multiple devices to refer to external blobs, which can be used
    for container images;
 
- - 32-bit block addresses for each device, therefore 16TiB address space at
-   most with 4KiB block size for now;
+ - 4KiB block size and 32-bit block addresses for each device, therefore
+   16TiB address space at most for now;
 
  - Two inode layouts for different requirements:
 
@@ -58,14 +58,12 @@ Here are the main features of EROFS:
 
  - Support extended attributes as an option;
 
- - Support a bloom filter that speeds up negative extended attribute lookups;
-
  - Support POSIX.1e ACLs by using extended attributes;
 
  - Support transparent data compression as an option:
-   LZ4, MicroLZMA, DEFLATE and Zstandard algorithms can be used on a per-file
-   basis; In addition, inplace decompression is also supported to avoid bounce
-   compressed buffers and unnecessary page cache thrashing.
+   LZ4 and MicroLZMA algorithms can be used on a per-file basis; In addition,
+   inplace decompression is also supported to avoid bounce compressed buffers
+   and page cache thrashing.
 
  - Support chunk-based data deduplication and rolling-hash compressed data
    deduplication;
@@ -75,7 +73,7 @@ Here are the main features of EROFS:
 
  - Support merging tail-end data into a special inode as fragments.
 
- - Support large folios to make use of THPs (Transparent Hugepages);
+ - Support large folios for uncompressed files.
 
  - Support direct I/O on uncompressed files to avoid double caching for loop
    devices;
@@ -90,10 +88,6 @@ development, such as a formatting tool (mkfs.erofs), an on-disk consistency &
 compatibility checking tool (fsck.erofs), and a debugging tool (dump.erofs):
 
 - git://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
-
-For more information, please also refer to the documentation site:
-
-- https://erofs.docs.kernel.org
 
 Bugs and patches are welcome, please kindly help us and send to the following
 linux-erofs mailing list:
@@ -116,7 +110,7 @@ cache_strategy=%s      Select a strategy for cached decompression from now on:
                                    cluster for further reading. It still does
                                    in-place I/O decompression for the rest
                                    compressed physical clusters;
-                       readaround  Cache both ends of incomplete compressed
+                       readaround  Cache the both ends of incomplete compressed
                                    physical clusters for further reading.
                                    It still does in-place I/O decompression
                                    for the rest compressed physical clusters.
@@ -125,18 +119,9 @@ dax={always,never}     Use direct access (no page cache).  See
                        Documentation/filesystems/dax.rst.
 dax                    A legacy option which is an alias for ``dax=always``.
 device=%s              Specify a path to an extra device to be used together.
-directio               (For file-backed mounts) Use direct I/O to access backing
-                       files, and asynchronous I/O will be enabled if supported.
 fsid=%s                Specify a filesystem image ID for Fscache back-end.
-domain_id=%s           Specify a trusted domain ID for fscache mode so that
-                       different images with the same blobs, identified by blob IDs,
-                       can share storage within the same trusted domain.
-                       Also used for different filesystems with inode page sharing
-                       enabled to share page cache within the trusted domain.
-fsoffset=%llu          Specify block-aligned filesystem offset for the primary device.
-inode_share            Enable inode page sharing for this filesystem.  Inodes with
-                       identical content within the same domain ID can share the
-                       page cache.
+domain_id=%s           Specify a domain ID in fscache mode so that different images
+                       with the same blobs under a given domain ID can share storage.
 ===================    =========================================================
 
 Sysfs Entries
@@ -162,7 +147,7 @@ to be as simple as possible::
   0 +1K
 
 All data areas should be aligned with the block size, but metadata areas
-may not. All metadata can be now observed in two different spaces (views):
+may not. All metadatas can be now observed in two different spaces (views):
 
  1. Inode metadata space
 
@@ -212,7 +197,7 @@ may not. All metadata can be now observed in two different spaces (views):
                                         |                  |
                                         |__________________| 64 bytes
 
-    Xattrs, extents, data inline are placed after the corresponding inode with
+    Xattrs, extents, data inline are followed by the corresponding inode with
     proper alignment, and they could be optional for different data mappings.
     _currently_ total 5 data layouts are supported:
 
@@ -282,38 +267,6 @@ chunk index form (see struct erofs_inode_chunk_index in erofs_fs.h for more
 details.)
 
 By the way, chunk-based files are all uncompressed for now.
-
-Long extended attribute name prefixes
--------------------------------------
-There are use cases where extended attributes with different values can have
-only a few common prefixes (such as overlayfs xattrs).  The predefined prefixes
-work inefficiently in both image size and runtime performance in such cases.
-
-The long xattr name prefixes feature is introduced to address this issue.  The
-overall idea is that, apart from the existing predefined prefixes, the xattr
-entry could also refer to user-specified long xattr name prefixes, e.g.
-"trusted.overlay.".
-
-When referring to a long xattr name prefix, the highest bit (bit 7) of
-erofs_xattr_entry.e_name_index is set, while the lower bits (bit 0-6) as a whole
-represent the index of the referred long name prefix among all long name
-prefixes.  Therefore, only the trailing part of the name apart from the long
-xattr name prefix is stored in erofs_xattr_entry.e_name, which could be empty if
-the full xattr name matches exactly as its long xattr name prefix.
-
-All long xattr prefixes are stored one by one in the packed inode as long as
-the packed inode is valid, or in the meta inode otherwise.  The
-xattr_prefix_count (of the on-disk superblock) indicates the total number of
-long xattr name prefixes, while (xattr_prefix_start * 4) indicates the start
-offset of long name prefixes in the packed/meta inode.  Note that, long extended
-attribute name prefixes are disabled if xattr_prefix_count is 0.
-
-Each long name prefix is stored in the format: ALIGN({__le16 len, data}, 4),
-where len represents the total size of the data part.  The data part is actually
-represented by 'struct erofs_xattr_long_prefix', where base_index represents the
-index of the predefined xattr name prefix, e.g. EROFS_XATTR_INDEX_TRUSTED for
-"trusted.overlay." long name prefix, while the infix string keeps the string
-after stripping the short prefix, e.g. "overlay." for the example above.
 
 Data compression
 ----------------

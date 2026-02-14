@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0-only 
 
 #include "util/cgroup.h"
 #include "util/data.h"
@@ -38,7 +38,6 @@
 #include <uapi/linux/mman.h> /* To get things like MAP_HUGETLB even on older libc headers */
 #include <api/fs/fs.h>
 #include <api/io.h>
-#include <api/io_dir.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -48,7 +47,7 @@
 
 unsigned int proc_map_timeout = DEFAULT_PROC_MAP_PARSE_TIMEOUT;
 
-int perf_tool__process_synth_event(const struct perf_tool *tool,
+int perf_tool__process_synth_event(struct perf_tool *tool,
 				   union perf_event *event,
 				   struct machine *machine,
 				   perf_event__handler_t process)
@@ -188,7 +187,7 @@ static int perf_event__prepare_comm(union perf_event *event, pid_t pid, pid_t ti
 	return 0;
 }
 
-pid_t perf_event__synthesize_comm(const struct perf_tool *tool,
+pid_t perf_event__synthesize_comm(struct perf_tool *tool,
 					 union perf_event *event, pid_t pid,
 					 perf_event__handler_t process,
 					 struct machine *machine)
@@ -219,7 +218,7 @@ static void perf_event__get_ns_link_info(pid_t pid, const char *ns,
 	}
 }
 
-int perf_event__synthesize_namespaces(const struct perf_tool *tool,
+int perf_event__synthesize_namespaces(struct perf_tool *tool,
 				      union perf_event *event,
 				      pid_t pid, pid_t tgid,
 				      perf_event__handler_t process,
@@ -258,7 +257,7 @@ int perf_event__synthesize_namespaces(const struct perf_tool *tool,
 	return 0;
 }
 
-static int perf_event__synthesize_fork(const struct perf_tool *tool,
+static int perf_event__synthesize_fork(struct perf_tool *tool,
 				       union perf_event *event,
 				       pid_t pid, pid_t tgid, pid_t ppid,
 				       perf_event__handler_t process,
@@ -368,11 +367,11 @@ static void perf_record_mmap2__read_build_id(struct perf_record_mmap2 *event,
 					     struct machine *machine,
 					     bool is_kernel)
 {
-	struct build_id bid = { .size = 0, };
+	struct build_id bid;
 	struct nsinfo *nsi;
 	struct nscookie nc;
 	struct dso *dso = NULL;
-	struct dso_id dso_id = dso_id_empty;
+	struct dso_id id;
 	int rc;
 
 	if (is_kernel) {
@@ -380,20 +379,14 @@ static void perf_record_mmap2__read_build_id(struct perf_record_mmap2 *event,
 		goto out;
 	}
 
-	if (event->header.misc & PERF_RECORD_MISC_MMAP_BUILD_ID) {
-		build_id__init(&dso_id.build_id, event->build_id, event->build_id_size);
-	} else {
-		dso_id.maj = event->maj;
-		dso_id.min = event->min;
-		dso_id.ino = event->ino;
-		dso_id.ino_generation = event->ino_generation;
-		dso_id.mmap2_valid = true;
-		dso_id.mmap2_ino_generation_valid = true;
-	}
+	id.maj = event->maj;
+	id.min = event->min;
+	id.ino = event->ino;
+	id.ino_generation = event->ino_generation;
 
-	dso = dsos__findnew_id(&machine->dsos, event->filename, &dso_id);
-	if (dso && dso__has_build_id(dso)) {
-		bid = *dso__bid(dso);
+	dso = dsos__findnew_id(&machine->dsos, event->filename, &id);
+	if (dso && dso->has_build_id) {
+		bid = dso->bid;
 		rc = 0;
 		goto out;
 	}
@@ -414,7 +407,7 @@ out:
 		event->__reserved_1 = 0;
 		event->__reserved_2 = 0;
 
-		if (dso && !dso__has_build_id(dso))
+		if (dso && !dso->has_build_id)
 			dso__set_build_id(dso, &bid);
 	} else {
 		if (event->filename[0] == '/') {
@@ -425,7 +418,7 @@ out:
 	dso__put(dso);
 }
 
-int perf_event__synthesize_mmap_events(const struct perf_tool *tool,
+int perf_event__synthesize_mmap_events(struct perf_tool *tool,
 				       union perf_event *event,
 				       pid_t pid, pid_t tgid,
 				       perf_event__handler_t process,
@@ -532,7 +525,7 @@ out:
 		event->mmap2.pid = tgid;
 		event->mmap2.tid = pid;
 
-		if (!symbol_conf.no_buildid_mmap2)
+		if (symbol_conf.buildid_mmap2)
 			perf_record_mmap2__read_build_id(&event->mmap2, machine, false);
 
 		if (perf_tool__process_synth_event(tool, event, machine, process) != 0) {
@@ -549,7 +542,7 @@ out:
 }
 
 #ifdef HAVE_FILE_HANDLE
-static int perf_event__synthesize_cgroup(const struct perf_tool *tool,
+static int perf_event__synthesize_cgroup(struct perf_tool *tool,
 					 union perf_event *event,
 					 char *path, size_t mount_len,
 					 perf_event__handler_t process,
@@ -589,7 +582,7 @@ static int perf_event__synthesize_cgroup(const struct perf_tool *tool,
 	return 0;
 }
 
-static int perf_event__walk_cgroup_tree(const struct perf_tool *tool,
+static int perf_event__walk_cgroup_tree(struct perf_tool *tool,
 					union perf_event *event,
 					char *path, size_t mount_len,
 					perf_event__handler_t process,
@@ -637,7 +630,7 @@ static int perf_event__walk_cgroup_tree(const struct perf_tool *tool,
 	return ret;
 }
 
-int perf_event__synthesize_cgroups(const struct perf_tool *tool,
+int perf_event__synthesize_cgroups(struct perf_tool *tool,
 				   perf_event__handler_t process,
 				   struct machine *machine)
 {
@@ -664,7 +657,7 @@ int perf_event__synthesize_cgroups(const struct perf_tool *tool,
 	return 0;
 }
 #else
-int perf_event__synthesize_cgroups(const struct perf_tool *tool __maybe_unused,
+int perf_event__synthesize_cgroups(struct perf_tool *tool __maybe_unused,
 				   perf_event__handler_t process __maybe_unused,
 				   struct machine *machine __maybe_unused)
 {
@@ -672,74 +665,18 @@ int perf_event__synthesize_cgroups(const struct perf_tool *tool __maybe_unused,
 }
 #endif
 
-struct perf_event__synthesize_modules_maps_cb_args {
-	const struct perf_tool *tool;
-	perf_event__handler_t process;
-	struct machine *machine;
-	union perf_event *event;
-};
-
-static int perf_event__synthesize_modules_maps_cb(struct map *map, void *data)
-{
-	struct perf_event__synthesize_modules_maps_cb_args *args = data;
-	union perf_event *event = args->event;
-	struct dso *dso;
-	size_t size;
-
-	if (!__map__is_kmodule(map))
-		return 0;
-
-	dso = map__dso(map);
-	if (!symbol_conf.no_buildid_mmap2) {
-		size = PERF_ALIGN(dso__long_name_len(dso) + 1, sizeof(u64));
-		event->mmap2.header.type = PERF_RECORD_MMAP2;
-		event->mmap2.header.size = (sizeof(event->mmap2) -
-					(sizeof(event->mmap2.filename) - size));
-		memset(event->mmap2.filename + size, 0, args->machine->id_hdr_size);
-		event->mmap2.header.size += args->machine->id_hdr_size;
-		event->mmap2.start = map__start(map);
-		event->mmap2.len   = map__size(map);
-		event->mmap2.pid   = args->machine->pid;
-
-		memcpy(event->mmap2.filename, dso__long_name(dso), dso__long_name_len(dso) + 1);
-
-		perf_record_mmap2__read_build_id(&event->mmap2, args->machine, false);
-	} else {
-		size = PERF_ALIGN(dso__long_name_len(dso) + 1, sizeof(u64));
-		event->mmap.header.type = PERF_RECORD_MMAP;
-		event->mmap.header.size = (sizeof(event->mmap) -
-					(sizeof(event->mmap.filename) - size));
-		memset(event->mmap.filename + size, 0, args->machine->id_hdr_size);
-		event->mmap.header.size += args->machine->id_hdr_size;
-		event->mmap.start = map__start(map);
-		event->mmap.len   = map__size(map);
-		event->mmap.pid   = args->machine->pid;
-
-		memcpy(event->mmap.filename, dso__long_name(dso), dso__long_name_len(dso) + 1);
-	}
-
-	if (perf_tool__process_synth_event(args->tool, event, args->machine, args->process) != 0)
-		return -1;
-
-	return 0;
-}
-
-int perf_event__synthesize_modules(const struct perf_tool *tool, perf_event__handler_t process,
+int perf_event__synthesize_modules(struct perf_tool *tool, perf_event__handler_t process,
 				   struct machine *machine)
 {
-	int rc;
+	int rc = 0;
+	struct map *pos;
 	struct maps *maps = machine__kernel_maps(machine);
-	struct perf_event__synthesize_modules_maps_cb_args args = {
-		.tool = tool,
-		.process = process,
-		.machine = machine,
-	};
-	size_t size = symbol_conf.no_buildid_mmap2
-		? sizeof(args.event->mmap)
-		: sizeof(args.event->mmap2);
+	union perf_event *event;
+	size_t size = symbol_conf.buildid_mmap2 ?
+			sizeof(event->mmap2) : sizeof(event->mmap);
 
-	args.event = zalloc(size + machine->id_hdr_size);
-	if (args.event == NULL) {
+	event = zalloc(size + machine->id_hdr_size);
+	if (event == NULL) {
 		pr_debug("Not enough memory synthesizing mmap event "
 			 "for kernel modules\n");
 		return -1;
@@ -750,13 +687,51 @@ int perf_event__synthesize_modules(const struct perf_tool *tool, perf_event__han
 	 * __perf_event_mmap
 	 */
 	if (machine__is_host(machine))
-		args.event->header.misc = PERF_RECORD_MISC_KERNEL;
+		event->header.misc = PERF_RECORD_MISC_KERNEL;
 	else
-		args.event->header.misc = PERF_RECORD_MISC_GUEST_KERNEL;
+		event->header.misc = PERF_RECORD_MISC_GUEST_KERNEL;
 
-	rc = maps__for_each_map(maps, perf_event__synthesize_modules_maps_cb, &args);
+	maps__for_each_entry(maps, pos) {
+		if (!__map__is_kmodule(pos))
+			continue;
 
-	free(args.event);
+		if (symbol_conf.buildid_mmap2) {
+			size = PERF_ALIGN(pos->dso->long_name_len + 1, sizeof(u64));
+			event->mmap2.header.type = PERF_RECORD_MMAP2;
+			event->mmap2.header.size = (sizeof(event->mmap2) -
+						(sizeof(event->mmap2.filename) - size));
+			memset(event->mmap2.filename + size, 0, machine->id_hdr_size);
+			event->mmap2.header.size += machine->id_hdr_size;
+			event->mmap2.start = pos->start;
+			event->mmap2.len   = pos->end - pos->start;
+			event->mmap2.pid   = machine->pid;
+
+			memcpy(event->mmap2.filename, pos->dso->long_name,
+			       pos->dso->long_name_len + 1);
+
+			perf_record_mmap2__read_build_id(&event->mmap2, machine, false);
+		} else {
+			size = PERF_ALIGN(pos->dso->long_name_len + 1, sizeof(u64));
+			event->mmap.header.type = PERF_RECORD_MMAP;
+			event->mmap.header.size = (sizeof(event->mmap) -
+						(sizeof(event->mmap.filename) - size));
+			memset(event->mmap.filename + size, 0, machine->id_hdr_size);
+			event->mmap.header.size += machine->id_hdr_size;
+			event->mmap.start = pos->start;
+			event->mmap.len   = pos->end - pos->start;
+			event->mmap.pid   = machine->pid;
+
+			memcpy(event->mmap.filename, pos->dso->long_name,
+			       pos->dso->long_name_len + 1);
+		}
+
+		if (perf_tool__process_synth_event(tool, event, machine, process) != 0) {
+			rc = -1;
+			break;
+		}
+	}
+
+	free(event);
 	return rc;
 }
 
@@ -770,14 +745,14 @@ static int __event__synthesize_thread(union perf_event *comm_event,
 				      union perf_event *fork_event,
 				      union perf_event *namespaces_event,
 				      pid_t pid, int full, perf_event__handler_t process,
-				      const struct perf_tool *tool, struct machine *machine,
+				      struct perf_tool *tool, struct machine *machine,
 				      bool needs_mmap, bool mmap_data)
 {
 	char filename[PATH_MAX];
-	struct io_dir iod;
-	struct io_dirent64 *dent;
+	struct dirent **dirent;
 	pid_t tgid, ppid;
 	int rc = 0;
+	int i, n;
 
 	/* special case: only send one comm event using passed in pid */
 	if (!full) {
@@ -809,19 +784,16 @@ static int __event__synthesize_thread(union perf_event *comm_event,
 	snprintf(filename, sizeof(filename), "%s/proc/%d/task",
 		 machine->root_dir, pid);
 
-	io_dir__init(&iod, open(filename, O_CLOEXEC | O_DIRECTORY | O_RDONLY));
-	if (iod.dirfd < 0)
-		return -1;
+	n = scandir(filename, &dirent, filter_task, NULL);
+	if (n < 0)
+		return n;
 
-	while ((dent = io_dir__readdir(&iod)) != NULL) {
+	for (i = 0; i < n; i++) {
 		char *end;
 		pid_t _pid;
 		bool kernel_thread = false;
 
-		if (!isdigit(dent->d_name[0]))
-			continue;
-
-		_pid = strtol(dent->d_name, &end, 10);
+		_pid = strtol(dirent[i]->d_name, &end, 10);
 		if (*end)
 			continue;
 
@@ -855,12 +827,14 @@ static int __event__synthesize_thread(union perf_event *comm_event,
 		}
 	}
 
-	close(iod.dirfd);
+	for (i = 0; i < n; i++)
+		zfree(&dirent[i]);
+	free(dirent);
 
 	return rc;
 }
 
-int perf_event__synthesize_thread_map(const struct perf_tool *tool,
+int perf_event__synthesize_thread_map(struct perf_tool *tool,
 				      struct perf_thread_map *threads,
 				      perf_event__handler_t process,
 				      struct machine *machine,
@@ -937,7 +911,7 @@ out:
 	return err;
 }
 
-static int __perf_event__synthesize_threads(const struct perf_tool *tool,
+static int __perf_event__synthesize_threads(struct perf_tool *tool,
 					    perf_event__handler_t process,
 					    struct machine *machine,
 					    bool needs_mmap,
@@ -1001,7 +975,7 @@ out:
 }
 
 struct synthesize_threads_arg {
-	const struct perf_tool *tool;
+	struct perf_tool *tool;
 	perf_event__handler_t process;
 	struct machine *machine;
 	bool needs_mmap;
@@ -1023,7 +997,7 @@ static void *synthesize_threads_worker(void *arg)
 	return NULL;
 }
 
-int perf_event__synthesize_threads(const struct perf_tool *tool,
+int perf_event__synthesize_threads(struct perf_tool *tool,
 				   perf_event__handler_t process,
 				   struct machine *machine,
 				   bool needs_mmap, bool mmap_data,
@@ -1063,11 +1037,11 @@ int perf_event__synthesize_threads(const struct perf_tool *tool,
 	if (thread_nr > n)
 		thread_nr = n;
 
-	synthesize_threads = calloc(thread_nr, sizeof(pthread_t));
+	synthesize_threads = calloc(sizeof(pthread_t), thread_nr);
 	if (synthesize_threads == NULL)
 		goto free_dirent;
 
-	args = calloc(thread_nr, sizeof(*args));
+	args = calloc(sizeof(*args), thread_nr);
 	if (args == NULL)
 		goto free_threads;
 
@@ -1112,20 +1086,20 @@ free_dirent:
 	return err;
 }
 
-int __weak perf_event__synthesize_extra_kmaps(const struct perf_tool *tool __maybe_unused,
+int __weak perf_event__synthesize_extra_kmaps(struct perf_tool *tool __maybe_unused,
 					      perf_event__handler_t process __maybe_unused,
 					      struct machine *machine __maybe_unused)
 {
 	return 0;
 }
 
-static int __perf_event__synthesize_kernel_mmap(const struct perf_tool *tool,
+static int __perf_event__synthesize_kernel_mmap(struct perf_tool *tool,
 						perf_event__handler_t process,
 						struct machine *machine)
 {
 	union perf_event *event;
-	size_t size = symbol_conf.no_buildid_mmap2 ?
-			sizeof(event->mmap) : sizeof(event->mmap2);
+	size_t size = symbol_conf.buildid_mmap2 ?
+			sizeof(event->mmap2) : sizeof(event->mmap);
 	struct map *map = machine__kernel_map(machine);
 	struct kmap *kmap;
 	int err;
@@ -1159,7 +1133,7 @@ static int __perf_event__synthesize_kernel_mmap(const struct perf_tool *tool,
 		event->header.misc = PERF_RECORD_MISC_GUEST_KERNEL;
 	}
 
-	if (!symbol_conf.no_buildid_mmap2) {
+	if (symbol_conf.buildid_mmap2) {
 		size = snprintf(event->mmap2.filename, sizeof(event->mmap2.filename),
 				"%s%s", machine->mmap_name, kmap->ref_reloc_sym->name) + 1;
 		size = PERF_ALIGN(size, sizeof(u64));
@@ -1167,8 +1141,8 @@ static int __perf_event__synthesize_kernel_mmap(const struct perf_tool *tool,
 		event->mmap2.header.size = (sizeof(event->mmap2) -
 				(sizeof(event->mmap2.filename) - size) + machine->id_hdr_size);
 		event->mmap2.pgoff = kmap->ref_reloc_sym->addr;
-		event->mmap2.start = map__start(map);
-		event->mmap2.len   = map__end(map) - event->mmap.start;
+		event->mmap2.start = map->start;
+		event->mmap2.len   = map->end - event->mmap.start;
 		event->mmap2.pid   = machine->pid;
 
 		perf_record_mmap2__read_build_id(&event->mmap2, machine, true);
@@ -1180,8 +1154,8 @@ static int __perf_event__synthesize_kernel_mmap(const struct perf_tool *tool,
 		event->mmap.header.size = (sizeof(event->mmap) -
 				(sizeof(event->mmap.filename) - size) + machine->id_hdr_size);
 		event->mmap.pgoff = kmap->ref_reloc_sym->addr;
-		event->mmap.start = map__start(map);
-		event->mmap.len   = map__end(map) - event->mmap.start;
+		event->mmap.start = map->start;
+		event->mmap.len   = map->end - event->mmap.start;
 		event->mmap.pid   = machine->pid;
 	}
 
@@ -1191,7 +1165,7 @@ static int __perf_event__synthesize_kernel_mmap(const struct perf_tool *tool,
 	return err;
 }
 
-int perf_event__synthesize_kernel_mmap(const struct perf_tool *tool,
+int perf_event__synthesize_kernel_mmap(struct perf_tool *tool,
 				       perf_event__handler_t process,
 				       struct machine *machine)
 {
@@ -1204,7 +1178,7 @@ int perf_event__synthesize_kernel_mmap(const struct perf_tool *tool,
 	return perf_event__synthesize_extra_kmaps(tool, process, machine);
 }
 
-int perf_event__synthesize_thread_map2(const struct perf_tool *tool,
+int perf_event__synthesize_thread_map2(struct perf_tool *tool,
 				      struct perf_thread_map *threads,
 				      perf_event__handler_t process,
 				      struct machine *machine)
@@ -1354,7 +1328,7 @@ static struct perf_record_cpu_map *cpu_map_event__new(const struct perf_cpu_map 
 }
 
 
-int perf_event__synthesize_cpu_map(const struct perf_tool *tool,
+int perf_event__synthesize_cpu_map(struct perf_tool *tool,
 				   const struct perf_cpu_map *map,
 				   perf_event__handler_t process,
 				   struct machine *machine)
@@ -1372,7 +1346,7 @@ int perf_event__synthesize_cpu_map(const struct perf_tool *tool,
 	return err;
 }
 
-int perf_event__synthesize_stat_config(const struct perf_tool *tool,
+int perf_event__synthesize_stat_config(struct perf_tool *tool,
 				       struct perf_stat_config *config,
 				       perf_event__handler_t process,
 				       struct machine *machine)
@@ -1399,7 +1373,6 @@ int perf_event__synthesize_stat_config(const struct perf_tool *tool,
 	ADD(AGGR_MODE,	config->aggr_mode)
 	ADD(INTERVAL,	config->interval)
 	ADD(SCALE,	config->scale)
-	ADD(AGGR_LEVEL,	config->aggr_level)
 
 	WARN_ONCE(i != PERF_STAT_CONFIG_TERM__MAX,
 		  "stat config terms unbalanced\n");
@@ -1411,7 +1384,7 @@ int perf_event__synthesize_stat_config(const struct perf_tool *tool,
 	return err;
 }
 
-int perf_event__synthesize_stat(const struct perf_tool *tool,
+int perf_event__synthesize_stat(struct perf_tool *tool,
 				struct perf_cpu cpu, u32 thread, u64 id,
 				struct perf_counts_values *count,
 				perf_event__handler_t process,
@@ -1433,7 +1406,7 @@ int perf_event__synthesize_stat(const struct perf_tool *tool,
 	return process(tool, (union perf_event *) &event, NULL, machine);
 }
 
-int perf_event__synthesize_stat_round(const struct perf_tool *tool,
+int perf_event__synthesize_stat_round(struct perf_tool *tool,
 				      u64 evtime, u64 type,
 				      perf_event__handler_t process,
 				      struct machine *machine)
@@ -1516,9 +1489,9 @@ size_t perf_event__sample_event_size(const struct perf_sample *sample, u64 type,
 	}
 
 	if (type & PERF_SAMPLE_REGS_USER) {
-		if (sample->user_regs && sample->user_regs->abi) {
+		if (sample->user_regs.abi) {
 			result += sizeof(u64);
-			sz = hweight64(sample->user_regs->mask) * sizeof(u64);
+			sz = hweight64(sample->user_regs.mask) * sizeof(u64);
 			result += sz;
 		} else {
 			result += sizeof(u64);
@@ -1544,9 +1517,9 @@ size_t perf_event__sample_event_size(const struct perf_sample *sample, u64 type,
 		result += sizeof(u64);
 
 	if (type & PERF_SAMPLE_REGS_INTR) {
-		if (sample->intr_regs && sample->intr_regs->abi) {
+		if (sample->intr_regs.abi) {
 			result += sizeof(u64);
-			sz = hweight64(sample->intr_regs->mask) * sizeof(u64);
+			sz = hweight64(sample->intr_regs.mask) * sizeof(u64);
 			result += sz;
 		} else {
 			result += sizeof(u64);
@@ -1573,16 +1546,10 @@ size_t perf_event__sample_event_size(const struct perf_sample *sample, u64 type,
 	return result;
 }
 
-static void perf_synthesize_sample_weight(const struct perf_sample *data,
+void __weak arch_perf_synthesize_sample_weight(const struct perf_sample *data,
 					       __u64 *array, u64 type __maybe_unused)
 {
 	*array = data->weight;
-
-	if (type & PERF_SAMPLE_WEIGHT_STRUCT) {
-		*array &= 0xffffffff;
-		*array |= ((u64)data->ins_lat << 32);
-		*array |= ((u64)data->weight3 << 48);
-	}
 }
 
 static __u64 *copy_read_group_values(__u64 *array, __u64 read_format,
@@ -1700,16 +1667,12 @@ int perf_event__synthesize_sample(union perf_event *event, u64 type, u64 read_fo
 	}
 
 	if (type & PERF_SAMPLE_RAW) {
-		u32 *array32 = (void *)array;
+		u.val32[0] = sample->raw_size;
+		*array = u.val64;
+		array = (void *)array + sizeof(u32);
 
-		*array32 = sample->raw_size;
-		array32++;
-
-		memcpy(array32, sample->raw_data, sample->raw_size);
-		array = (void *)(array32 + (sample->raw_size / sizeof(u32)));
-
-		/* make sure the array is 64-bit aligned */
-		BUG_ON(((long)array) % sizeof(u64));
+		memcpy(array, sample->raw_data, sample->raw_size);
+		array = (void *)array + sample->raw_size;
 	}
 
 	if (type & PERF_SAMPLE_BRANCH_STACK) {
@@ -1721,10 +1684,10 @@ int perf_event__synthesize_sample(union perf_event *event, u64 type, u64 read_fo
 	}
 
 	if (type & PERF_SAMPLE_REGS_USER) {
-		if (sample->user_regs && sample->user_regs->abi) {
-			*array++ = sample->user_regs->abi;
-			sz = hweight64(sample->user_regs->mask) * sizeof(u64);
-			memcpy(array, sample->user_regs->regs, sz);
+		if (sample->user_regs.abi) {
+			*array++ = sample->user_regs.abi;
+			sz = hweight64(sample->user_regs.mask) * sizeof(u64);
+			memcpy(array, sample->user_regs.regs, sz);
 			array = (void *)array + sz;
 		} else {
 			*array++ = 0;
@@ -1742,7 +1705,7 @@ int perf_event__synthesize_sample(union perf_event *event, u64 type, u64 read_fo
 	}
 
 	if (type & PERF_SAMPLE_WEIGHT_TYPE) {
-		perf_synthesize_sample_weight(sample, array, type);
+		arch_perf_synthesize_sample_weight(sample, array, type);
 		array++;
 	}
 
@@ -1757,10 +1720,10 @@ int perf_event__synthesize_sample(union perf_event *event, u64 type, u64 read_fo
 	}
 
 	if (type & PERF_SAMPLE_REGS_INTR) {
-		if (sample->intr_regs && sample->intr_regs->abi) {
-			*array++ = sample->intr_regs->abi;
-			sz = hweight64(sample->intr_regs->mask) * sizeof(u64);
-			memcpy(array, sample->intr_regs->regs, sz);
+		if (sample->intr_regs.abi) {
+			*array++ = sample->intr_regs.abi;
+			sz = hweight64(sample->intr_regs.mask) * sizeof(u64);
+			memcpy(array, sample->intr_regs.regs, sz);
 			array = (void *)array + sz;
 		} else {
 			*array++ = 0;
@@ -1844,7 +1807,7 @@ int perf_event__synthesize_id_sample(__u64 *array, u64 type, const struct perf_s
 	return (void *)array - (void *)start;
 }
 
-int __perf_event__synthesize_id_index(const struct perf_tool *tool, perf_event__handler_t process,
+int __perf_event__synthesize_id_index(struct perf_tool *tool, perf_event__handler_t process,
 				      struct evlist *evlist, struct machine *machine, size_t from)
 {
 	union perf_event *ev;
@@ -1936,13 +1899,13 @@ out_err:
 	return err;
 }
 
-int perf_event__synthesize_id_index(const struct perf_tool *tool, perf_event__handler_t process,
+int perf_event__synthesize_id_index(struct perf_tool *tool, perf_event__handler_t process,
 				    struct evlist *evlist, struct machine *machine)
 {
 	return __perf_event__synthesize_id_index(tool, process, evlist, machine, 0);
 }
 
-int __machine__synthesize_threads(struct machine *machine, const struct perf_tool *tool,
+int __machine__synthesize_threads(struct machine *machine, struct perf_tool *tool,
 				  struct target *target, struct perf_thread_map *threads,
 				  perf_event__handler_t process, bool needs_mmap,
 				  bool data_mmap, unsigned int nr_threads_synthesize)
@@ -2003,7 +1966,7 @@ static struct perf_record_event_update *event_update_event__new(size_t size, u64
 	return ev;
 }
 
-int perf_event__synthesize_event_update_unit(const struct perf_tool *tool, struct evsel *evsel,
+int perf_event__synthesize_event_update_unit(struct perf_tool *tool, struct evsel *evsel,
 					     perf_event__handler_t process)
 {
 	size_t size = strlen(evsel->unit);
@@ -2020,7 +1983,7 @@ int perf_event__synthesize_event_update_unit(const struct perf_tool *tool, struc
 	return err;
 }
 
-int perf_event__synthesize_event_update_scale(const struct perf_tool *tool, struct evsel *evsel,
+int perf_event__synthesize_event_update_scale(struct perf_tool *tool, struct evsel *evsel,
 					      perf_event__handler_t process)
 {
 	struct perf_record_event_update *ev;
@@ -2037,11 +2000,11 @@ int perf_event__synthesize_event_update_scale(const struct perf_tool *tool, stru
 	return err;
 }
 
-int perf_event__synthesize_event_update_name(const struct perf_tool *tool, struct evsel *evsel,
+int perf_event__synthesize_event_update_name(struct perf_tool *tool, struct evsel *evsel,
 					     perf_event__handler_t process)
 {
 	struct perf_record_event_update *ev;
-	size_t len = strlen(evsel__name(evsel));
+	size_t len = strlen(evsel->name);
 	int err;
 
 	ev = event_update_event__new(len + 1, PERF_EVENT_UPDATE__NAME, evsel->core.id[0]);
@@ -2054,10 +2017,10 @@ int perf_event__synthesize_event_update_name(const struct perf_tool *tool, struc
 	return err;
 }
 
-int perf_event__synthesize_event_update_cpus(const struct perf_tool *tool, struct evsel *evsel,
+int perf_event__synthesize_event_update_cpus(struct perf_tool *tool, struct evsel *evsel,
 					     perf_event__handler_t process)
 {
-	struct synthesize_cpu_map_data syn_data = { .map = evsel->core.pmu_cpus };
+	struct synthesize_cpu_map_data syn_data = { .map = evsel->core.own_cpus };
 	struct perf_record_event_update *ev;
 	int err;
 
@@ -2077,7 +2040,7 @@ int perf_event__synthesize_event_update_cpus(const struct perf_tool *tool, struc
 	return err;
 }
 
-int perf_event__synthesize_attrs(const struct perf_tool *tool, struct evlist *evlist,
+int perf_event__synthesize_attrs(struct perf_tool *tool, struct evlist *evlist,
 				 perf_event__handler_t process)
 {
 	struct evsel *evsel;
@@ -2105,7 +2068,7 @@ static bool has_scale(struct evsel *evsel)
 	return evsel->scale != 1;
 }
 
-int perf_event__synthesize_extra_attr(const struct perf_tool *tool, struct evlist *evsel_list,
+int perf_event__synthesize_extra_attr(struct perf_tool *tool, struct evlist *evsel_list,
 				      perf_event__handler_t process, bool is_pipe)
 {
 	struct evsel *evsel;
@@ -2138,7 +2101,7 @@ int perf_event__synthesize_extra_attr(const struct perf_tool *tool, struct evlis
 			}
 		}
 
-		if (evsel->core.pmu_cpus) {
+		if (evsel->core.own_cpus) {
 			err = perf_event__synthesize_event_update_cpus(tool, evsel, process);
 			if (err < 0) {
 				pr_err("Couldn't synthesize evsel cpus.\n");
@@ -2161,7 +2124,7 @@ int perf_event__synthesize_extra_attr(const struct perf_tool *tool, struct evlis
 	return 0;
 }
 
-int perf_event__synthesize_attr(const struct perf_tool *tool, struct perf_event_attr *attr,
+int perf_event__synthesize_attr(struct perf_tool *tool, struct perf_event_attr *attr,
 				u32 ids, u64 *id, perf_event__handler_t process)
 {
 	union perf_event *ev;
@@ -2179,7 +2142,7 @@ int perf_event__synthesize_attr(const struct perf_tool *tool, struct perf_event_
 		return -ENOMEM;
 
 	ev->attr.attr = *attr;
-	memcpy(perf_record_header_attr_id(ev), id, ids * sizeof(u64));
+	memcpy(ev->attr.id, id, ids * sizeof(u64));
 
 	ev->attr.header.type = PERF_RECORD_HEADER_ATTR;
 	ev->attr.header.size = (u16)size;
@@ -2195,7 +2158,7 @@ int perf_event__synthesize_attr(const struct perf_tool *tool, struct perf_event_
 }
 
 #ifdef HAVE_LIBTRACEEVENT
-int perf_event__synthesize_tracing_data(const struct perf_tool *tool, int fd, struct evlist *evlist,
+int perf_event__synthesize_tracing_data(struct perf_tool *tool, int fd, struct evlist *evlist,
 					perf_event__handler_t process)
 {
 	union perf_event ev;
@@ -2218,7 +2181,7 @@ int perf_event__synthesize_tracing_data(const struct perf_tool *tool, int fd, st
 	if (!tdata)
 		return -1;
 
-	memset(&ev, 0, sizeof(ev.tracing_data));
+	memset(&ev, 0, sizeof(ev));
 
 	ev.tracing_data.header.type = PERF_RECORD_HEADER_TRACING_DATA;
 	size = tdata->size;
@@ -2243,112 +2206,31 @@ int perf_event__synthesize_tracing_data(const struct perf_tool *tool, int fd, st
 }
 #endif
 
-int perf_event__synthesize_build_id(const struct perf_tool *tool,
-				    struct perf_sample *sample,
-				    struct machine *machine,
-				    perf_event__handler_t process,
-				    const struct evsel *evsel,
-				    __u16 misc,
-				    const struct build_id *bid,
-				    const char *filename)
+int perf_event__synthesize_build_id(struct perf_tool *tool, struct dso *pos, u16 misc,
+				    perf_event__handler_t process, struct machine *machine)
 {
 	union perf_event ev;
 	size_t len;
 
-	len = sizeof(ev.build_id) + strlen(filename) + 1;
-	len = PERF_ALIGN(len, sizeof(u64));
+	if (!pos->hit)
+		return 0;
 
-	memset(&ev, 0, len);
+	memset(&ev, 0, sizeof(ev));
 
-	ev.build_id.size = bid->size;
-	if (ev.build_id.size > sizeof(ev.build_id.build_id))
-		ev.build_id.size = sizeof(ev.build_id.build_id);
-	memcpy(ev.build_id.build_id, bid->data, ev.build_id.size);
+	len = pos->long_name_len + 1;
+	len = PERF_ALIGN(len, NAME_ALIGN);
+	ev.build_id.size = min(pos->bid.size, sizeof(pos->bid.data));
+	memcpy(&ev.build_id.build_id, pos->bid.data, ev.build_id.size);
 	ev.build_id.header.type = PERF_RECORD_HEADER_BUILD_ID;
 	ev.build_id.header.misc = misc | PERF_RECORD_MISC_BUILD_ID_SIZE;
 	ev.build_id.pid = machine->pid;
-	ev.build_id.header.size = len;
-	strcpy(ev.build_id.filename, filename);
+	ev.build_id.header.size = sizeof(ev.build_id) + len;
+	memcpy(&ev.build_id.filename, pos->long_name, pos->long_name_len);
 
-	if (evsel) {
-		void *array = &ev;
-		int ret;
-
-		array += ev.header.size;
-		ret = perf_event__synthesize_id_sample(array, evsel->core.attr.sample_type, sample);
-		if (ret < 0)
-			return ret;
-
-		if (ret & 7) {
-			pr_err("Bad id sample size %d\n", ret);
-			return -EINVAL;
-		}
-
-		ev.header.size += ret;
-	}
-
-	return process(tool, &ev, sample, machine);
+	return process(tool, &ev, NULL, machine);
 }
 
-int perf_event__synthesize_mmap2_build_id(const struct perf_tool *tool,
-					  struct perf_sample *sample,
-					  struct machine *machine,
-					  perf_event__handler_t process,
-					  const struct evsel *evsel,
-					  __u16 misc,
-					  __u32 pid, __u32 tid,
-					  __u64 start, __u64 len, __u64 pgoff,
-					  const struct build_id *bid,
-					  __u32 prot, __u32 flags,
-					  const char *filename)
-{
-	union perf_event ev;
-	size_t ev_len;
-	void *array;
-	int ret;
-
-	ev_len = sizeof(ev.mmap2) - sizeof(ev.mmap2.filename) + strlen(filename) + 1;
-	ev_len = PERF_ALIGN(ev_len, sizeof(u64));
-
-	memset(&ev, 0, ev_len);
-
-	ev.mmap2.header.type = PERF_RECORD_MMAP2;
-	ev.mmap2.header.misc = misc | PERF_RECORD_MISC_MMAP_BUILD_ID;
-	ev.mmap2.header.size = ev_len;
-
-	ev.mmap2.pid = pid;
-	ev.mmap2.tid = tid;
-	ev.mmap2.start = start;
-	ev.mmap2.len = len;
-	ev.mmap2.pgoff = pgoff;
-
-	ev.mmap2.build_id_size = bid->size;
-	if (ev.mmap2.build_id_size > sizeof(ev.mmap2.build_id))
-		ev.build_id.size = sizeof(ev.mmap2.build_id);
-	memcpy(ev.mmap2.build_id, bid->data, ev.mmap2.build_id_size);
-
-	ev.mmap2.prot = prot;
-	ev.mmap2.flags = flags;
-
-	memcpy(ev.mmap2.filename, filename, min(strlen(filename), sizeof(ev.mmap.filename)));
-
-	array = &ev;
-	array += ev.header.size;
-	ret = perf_event__synthesize_id_sample(array, evsel->core.attr.sample_type, sample);
-	if (ret < 0)
-		return ret;
-
-	if (ret & 7) {
-		pr_err("Bad id sample size %d\n", ret);
-		return -EINVAL;
-	}
-
-	ev.header.size += ret;
-
-	return process(tool, &ev, sample, machine);
-}
-
-int perf_event__synthesize_stat_events(struct perf_stat_config *config, const struct perf_tool *tool,
+int perf_event__synthesize_stat_events(struct perf_stat_config *config, struct perf_tool *tool,
 				       struct evlist *evlist, perf_event__handler_t process, bool attrs)
 {
 	int err;
@@ -2385,7 +2267,7 @@ int perf_event__synthesize_stat_events(struct perf_stat_config *config, const st
 
 extern const struct perf_header_feature_ops feat_ops[HEADER_LAST_FEATURE];
 
-int perf_event__synthesize_features(const struct perf_tool *tool, struct perf_session *session,
+int perf_event__synthesize_features(struct perf_tool *tool, struct perf_session *session,
 				    struct evlist *evlist, perf_event__handler_t process)
 {
 	struct perf_header *header = &session->header;
@@ -2448,7 +2330,7 @@ int perf_event__synthesize_features(const struct perf_tool *tool, struct perf_se
 	return ret;
 }
 
-int perf_event__synthesize_for_pipe(const struct perf_tool *tool,
+int perf_event__synthesize_for_pipe(struct perf_tool *tool,
 				    struct perf_session *session,
 				    struct perf_data *data,
 				    perf_event__handler_t process)

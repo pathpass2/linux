@@ -7,19 +7,18 @@
 
 
 #include <linux/dma-buf.h>
+#include <linux/pfn_t.h>
 #include <linux/shmem_fs.h>
 #include <linux/module.h>
 
-#include <drm/drm_dumb_buffers.h>
 #include <drm/drm_prime.h>
-#include <drm/drm_print.h>
 #include <drm/drm_vma_manager.h>
 #include <drm/exynos_drm.h>
 
 #include "exynos_drm_drv.h"
 #include "exynos_drm_gem.h"
 
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);
 
 static int exynos_drm_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma);
 
@@ -175,7 +174,7 @@ static struct exynos_drm_gem *exynos_drm_gem_init(struct drm_device *dev,
 		return ERR_PTR(ret);
 	}
 
-	DRM_DEV_DEBUG_KMS(dev->dev, "created file object = %p\n", obj->filp);
+	DRM_DEV_DEBUG_KMS(dev->dev, "created file object = %pK\n", obj->filp);
 
 	return exynos_gem;
 }
@@ -331,15 +330,14 @@ int exynos_drm_gem_dumb_create(struct drm_file *file_priv,
 	unsigned int flags;
 	int ret;
 
-	ret = drm_mode_size_dumb(dev, args, 0, 0);
-	if (ret)
-		return ret;
-
 	/*
 	 * allocate memory to be used for framebuffer.
 	 * - this callback would be called by user application
 	 *	with DRM_IOCTL_MODE_CREATE_DUMB command.
 	 */
+
+	args->pitch = args->width * ((args->bpp + 7) / 8);
+	args->size = args->pitch * args->height;
 
 	if (is_drm_iommu_supported(dev))
 		flags = EXYNOS_BO_NONCONTIG | EXYNOS_BO_WC;

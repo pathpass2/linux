@@ -413,7 +413,7 @@ static const struct iio_info imx7d_adc_iio_info = {
 
 static const struct of_device_id imx7d_adc_match[] = {
 	{ .compatible = "fsl,imx7d-adc", },
-	{ }
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, imx7d_adc_match);
 
@@ -482,8 +482,10 @@ static int imx7d_adc_probe(struct platform_device *pdev)
 	int ret;
 
 	indio_dev = devm_iio_device_alloc(dev, sizeof(*info));
-	if (!indio_dev)
+	if (!indio_dev) {
+		dev_err(&pdev->dev, "Failed allocating iio device\n");
 		return -ENOMEM;
+	}
 
 	info = iio_priv(indio_dev);
 	info->dev = dev;
@@ -494,7 +496,7 @@ static int imx7d_adc_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		return irq;
+		return dev_err_probe(dev, irq, "Failed getting irq\n");
 
 	info->clk = devm_clk_get(dev, "adc");
 	if (IS_ERR(info->clk))

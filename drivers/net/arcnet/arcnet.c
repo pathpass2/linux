@@ -54,7 +54,6 @@
 #include <linux/errqueue.h>
 
 #include <linux/leds.h>
-#include <linux/workqueue.h>
 
 #include "arcdevice.h"
 #include "com9026.h"
@@ -109,7 +108,6 @@ static int go_tx(struct net_device *dev);
 
 static int debug = ARCNET_DEBUG;
 module_param(debug, int, 0);
-MODULE_DESCRIPTION("ARCnet core driver");
 MODULE_LICENSE("GPL");
 
 static int __init arcnet_init(void)
@@ -198,10 +196,13 @@ static void arcnet_dump_packet(struct net_device *dev, int bufnum,
 void arcnet_led_event(struct net_device *dev, enum arcnet_led_event event)
 {
 	struct arcnet_local *lp = netdev_priv(dev);
+	unsigned long led_delay = 350;
+	unsigned long tx_delay = 50;
 
 	switch (event) {
 	case ARCNET_LED_EVENT_RECON:
-		led_trigger_blink_oneshot(lp->recon_led_trig, 350, 350, 0);
+		led_trigger_blink_oneshot(lp->recon_led_trig,
+					  &led_delay, &led_delay, 0);
 		break;
 	case ARCNET_LED_EVENT_OPEN:
 		led_trigger_event(lp->tx_led_trig, LED_OFF);
@@ -212,7 +213,8 @@ void arcnet_led_event(struct net_device *dev, enum arcnet_led_event event)
 		led_trigger_event(lp->recon_led_trig, LED_OFF);
 		break;
 	case ARCNET_LED_EVENT_TX:
-		led_trigger_blink_oneshot(lp->tx_led_trig, 50, 50, 0);
+		led_trigger_blink_oneshot(lp->tx_led_trig,
+					  &tx_delay, &tx_delay, 0);
 		break;
 	}
 }
@@ -382,7 +384,7 @@ static void arcdev_setup(struct net_device *dev)
 
 static void arcnet_timer(struct timer_list *t)
 {
-	struct arcnet_local *lp = timer_container_of(lp, t, timer);
+	struct arcnet_local *lp = from_timer(lp, t, timer);
 	struct net_device *dev = lp->dev;
 
 	spin_lock_irq(&lp->lock);
@@ -425,9 +427,9 @@ out:
 	rtnl_unlock();
 }
 
-static void arcnet_reply_work(struct work_struct *t)
+static void arcnet_reply_tasklet(struct tasklet_struct *t)
 {
-	struct arcnet_local *lp = from_work(lp, t, reply_work);
+	struct arcnet_local *lp = from_tasklet(lp, t, reply_tasklet);
 
 	struct sk_buff *ackskb, *skb;
 	struct sock_exterr_skb *serr;
@@ -466,7 +468,7 @@ static void arcnet_reply_work(struct work_struct *t)
 
 	ret = sock_queue_err_skb(sk, ackskb);
 	if (ret)
-		dev_kfree_skb_irq(ackskb);
+		kfree_skb(ackskb);
 
 	local_irq_enable();
 };
@@ -528,7 +530,7 @@ int arcnet_open(struct net_device *dev)
 		arc_cont(D_PROTO, "\n");
 	}
 
-	INIT_WORK(&lp->reply_work, arcnet_reply_work);
+	tasklet_setup(&lp->reply_tasklet, arcnet_reply_tasklet);
 
 	arc_printk(D_INIT, dev, "arcnet_open: resetting card.\n");
 
@@ -616,12 +618,12 @@ int arcnet_close(struct net_device *dev)
 	struct arcnet_local *lp = netdev_priv(dev);
 
 	arcnet_led_event(dev, ARCNET_LED_EVENT_STOP);
-	timer_delete_sync(&lp->timer);
+	del_timer_sync(&lp->timer);
 
 	netif_stop_queue(dev);
 	netif_carrier_off(dev);
 
-	cancel_work_sync(&lp->reply_work);
+	tasklet_kill(&lp->reply_tasklet);
 
 	/* flush TX and disable RX */
 	lp->hw.intmask(dev, 0);
@@ -985,7 +987,7 @@ irqreturn_t arcnet_interrupt(int irq, void *dev_id)
 						->ack_tx(dev, ackstatus);
 				}
 				lp->reply_status = ackstatus;
-				queue_work(system_bh_highpri_wq, &lp->reply_work);
+				tasklet_hi_schedule(&lp->reply_tasklet);
 			}
 			if (lp->cur_tx != -1)
 				release_arcbuf(dev, lp->cur_tx);

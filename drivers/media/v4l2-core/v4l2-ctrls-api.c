@@ -2,7 +2,7 @@
 /*
  * V4L2 controls framework uAPI implementation:
  *
- * Copyright (C) 2010-2021  Hans Verkuil <hverkuil@kernel.org>
+ * Copyright (C) 2010-2021  Hans Verkuil <hverkuil-cisco@xs4all.nl>
  */
 
 #define pr_fmt(fmt) "v4l2-ctrls: " fmt
@@ -90,22 +90,6 @@ static int req_to_user(struct v4l2_ext_control *c,
 static int def_to_user(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
 {
 	ctrl->type_ops->init(ctrl, 0, ctrl->p_new);
-
-	return ptr_to_user(c, ctrl, ctrl->p_new);
-}
-
-/* Helper function: copy the minimum control value back to the caller */
-static int min_to_user(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
-{
-	ctrl->type_ops->minimum(ctrl, 0, ctrl->p_new);
-
-	return ptr_to_user(c, ctrl, ctrl->p_new);
-}
-
-/* Helper function: copy the maximum control value back to the caller */
-static int max_to_user(struct v4l2_ext_control *c, struct v4l2_ctrl *ctrl)
-{
-	ctrl->type_ops->maximum(ctrl, 0, ctrl->p_new);
 
 	return ptr_to_user(c, ctrl, ctrl->p_new);
 }
@@ -245,8 +229,8 @@ static int prepare_ext_ctrls(struct v4l2_ctrl_handler *hdl,
 		cs->error_idx = i;
 
 		if (cs->which &&
-		    (cs->which < V4L2_CTRL_WHICH_DEF_VAL ||
-		     cs->which > V4L2_CTRL_WHICH_MAX_VAL) &&
+		    cs->which != V4L2_CTRL_WHICH_DEF_VAL &&
+		    cs->which != V4L2_CTRL_WHICH_REQUEST_VAL &&
 		    V4L2_CTRL_ID2WHICH(id) != cs->which) {
 			dprintk(vdev,
 				"invalid which 0x%x or control id 0x%x\n",
@@ -272,15 +256,6 @@ static int prepare_ext_ctrls(struct v4l2_ctrl_handler *hdl,
 		ctrl = ref->ctrl;
 		if (ctrl->flags & V4L2_CTRL_FLAG_DISABLED) {
 			dprintk(vdev, "control id 0x%x is disabled\n", id);
-			return -EINVAL;
-		}
-
-		if (!(ctrl->flags & V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX) &&
-		    (cs->which == V4L2_CTRL_WHICH_MIN_VAL ||
-		     cs->which == V4L2_CTRL_WHICH_MAX_VAL)) {
-			dprintk(vdev,
-				"invalid which 0x%x or control id 0x%x\n",
-				cs->which, id);
 			return -EINVAL;
 		}
 
@@ -393,8 +368,8 @@ static int prepare_ext_ctrls(struct v4l2_ctrl_handler *hdl,
  */
 static int class_check(struct v4l2_ctrl_handler *hdl, u32 which)
 {
-	if (which == 0 || (which >= V4L2_CTRL_WHICH_DEF_VAL &&
-			   which <= V4L2_CTRL_WHICH_MAX_VAL))
+	if (which == 0 || which == V4L2_CTRL_WHICH_DEF_VAL ||
+	    which == V4L2_CTRL_WHICH_REQUEST_VAL)
 		return 0;
 	return find_ref_lock(hdl, which | 1) ? 0 : -EINVAL;
 }
@@ -414,12 +389,10 @@ int v4l2_g_ext_ctrls_common(struct v4l2_ctrl_handler *hdl,
 	struct v4l2_ctrl_helper *helpers = helper;
 	int ret;
 	int i, j;
-	bool is_default, is_request, is_min, is_max;
+	bool is_default, is_request;
 
 	is_default = (cs->which == V4L2_CTRL_WHICH_DEF_VAL);
 	is_request = (cs->which == V4L2_CTRL_WHICH_REQUEST_VAL);
-	is_min = (cs->which == V4L2_CTRL_WHICH_MIN_VAL);
-	is_max = (cs->which == V4L2_CTRL_WHICH_MAX_VAL);
 
 	cs->error_idx = cs->count;
 	cs->which = V4L2_CTRL_ID2WHICH(cs->which);
@@ -459,14 +432,13 @@ int v4l2_g_ext_ctrls_common(struct v4l2_ctrl_handler *hdl,
 
 		/*
 		 * g_volatile_ctrl will update the new control values.
-		 * This makes no sense for V4L2_CTRL_WHICH_DEF_VAL,
-		 * V4L2_CTRL_WHICH_MIN_VAL, V4L2_CTRL_WHICH_MAX_VAL and
+		 * This makes no sense for V4L2_CTRL_WHICH_DEF_VAL and
 		 * V4L2_CTRL_WHICH_REQUEST_VAL. In the case of requests
 		 * it is v4l2_ctrl_request_complete() that copies the
 		 * volatile controls at the time of request completion
 		 * to the request, so you don't want to do that again.
 		 */
-		if (!is_default && !is_request && !is_min && !is_max &&
+		if (!is_default && !is_request &&
 		    ((master->flags & V4L2_CTRL_FLAG_VOLATILE) ||
 		    (master->has_volatiles && !is_cur_manual(master)))) {
 			for (j = 0; j < master->ncontrols; j++)
@@ -495,10 +467,6 @@ int v4l2_g_ext_ctrls_common(struct v4l2_ctrl_handler *hdl,
 				ret = -ENOMEM;
 			else if (is_request && ref->p_req_valid)
 				ret = req_to_user(cs->controls + idx, ref);
-			else if (is_min)
-				ret = min_to_user(cs->controls + idx, ref->ctrl);
-			else if (is_max)
-				ret = max_to_user(cs->controls + idx, ref->ctrl);
 			else if (is_volatile)
 				ret = new_to_user(cs->controls + idx, ref->ctrl);
 			else
@@ -596,11 +564,9 @@ int try_set_ext_ctrls_common(struct v4l2_fh *fh,
 
 	cs->error_idx = cs->count;
 
-	/* Default/minimum/maximum values cannot be changed */
-	if (cs->which == V4L2_CTRL_WHICH_DEF_VAL ||
-	    cs->which == V4L2_CTRL_WHICH_MIN_VAL ||
-	    cs->which == V4L2_CTRL_WHICH_MAX_VAL) {
-		dprintk(vdev, "%s: cannot change default/min/max value\n",
+	/* Default value cannot be changed */
+	if (cs->which == V4L2_CTRL_WHICH_DEF_VAL) {
+		dprintk(vdev, "%s: cannot change default value\n",
 			video_device_node_name(vdev));
 		return -EINVAL;
 	}
@@ -787,10 +753,9 @@ static int get_ctrl(struct v4l2_ctrl *ctrl, struct v4l2_ext_control *c)
 		for (i = 0; i < master->ncontrols; i++)
 			cur_to_new(master->cluster[i]);
 		ret = call_op(master, g_volatile_ctrl);
-		if (!ret)
-			ret = new_to_user(c, ctrl);
+		new_to_user(c, ctrl);
 	} else {
-		ret = cur_to_user(c, ctrl);
+		cur_to_user(c, ctrl);
 	}
 	v4l2_ctrl_unlock(master);
 	return ret;
@@ -805,10 +770,7 @@ int v4l2_g_ctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_control *control)
 	if (!ctrl || !ctrl->is_int)
 		return -EINVAL;
 	ret = get_ctrl(ctrl, &c);
-
-	if (!ret)
-		control->value = c.value;
-
+	control->value = c.value;
 	return ret;
 }
 EXPORT_SYMBOL(v4l2_g_ctrl);
@@ -849,11 +811,10 @@ static int set_ctrl_lock(struct v4l2_fh *fh, struct v4l2_ctrl *ctrl,
 	int ret;
 
 	v4l2_ctrl_lock(ctrl);
-	ret = user_to_new(c, ctrl);
+	user_to_new(c, ctrl);
+	ret = set_ctrl(fh, ctrl, 0);
 	if (!ret)
-		ret = set_ctrl(fh, ctrl, 0);
-	if (!ret)
-		ret = cur_to_user(c, ctrl);
+		cur_to_user(c, ctrl);
 	v4l2_ctrl_unlock(ctrl);
 	return ret;
 }
@@ -1091,40 +1052,35 @@ int v4l2_query_ext_ctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_query_ext_ctr
 		if (id >= node2id(hdl->ctrl_refs.prev)) {
 			ref = NULL; /* Yes, so there is no next control */
 		} else if (ref) {
-			struct v4l2_ctrl_ref *pos = ref;
-
 			/*
 			 * We found a control with the given ID, so just get
 			 * the next valid one in the list.
 			 */
-			ref = NULL;
-			list_for_each_entry_continue(pos, &hdl->ctrl_refs, node) {
-				is_compound = pos->ctrl->is_array ||
-					pos->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
-				if (id < pos->ctrl->id &&
-				    (is_compound & mask) == match) {
-					ref = pos;
+			list_for_each_entry_continue(ref, &hdl->ctrl_refs, node) {
+				is_compound = ref->ctrl->is_array ||
+					ref->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
+				if (id < ref->ctrl->id &&
+				    (is_compound & mask) == match)
 					break;
-				}
 			}
+			if (&ref->node == &hdl->ctrl_refs)
+				ref = NULL;
 		} else {
-			struct v4l2_ctrl_ref *pos;
-
 			/*
 			 * No control with the given ID exists, so start
 			 * searching for the next largest ID. We know there
 			 * is one, otherwise the first 'if' above would have
 			 * been true.
 			 */
-			list_for_each_entry(pos, &hdl->ctrl_refs, node) {
-				is_compound = pos->ctrl->is_array ||
-					pos->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
-				if (id < pos->ctrl->id &&
-				    (is_compound & mask) == match) {
-					ref = pos;
+			list_for_each_entry(ref, &hdl->ctrl_refs, node) {
+				is_compound = ref->ctrl->is_array ||
+					ref->ctrl->type >= V4L2_CTRL_COMPOUND_TYPES;
+				if (id < ref->ctrl->id &&
+				    (is_compound & mask) == match)
 					break;
-				}
 			}
+			if (&ref->node == &hdl->ctrl_refs)
+				ref = NULL;
 		}
 	}
 	mutex_unlock(hdl->lock);
@@ -1157,36 +1113,6 @@ int v4l2_query_ext_ctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_query_ext_ctr
 }
 EXPORT_SYMBOL(v4l2_query_ext_ctrl);
 
-void v4l2_query_ext_ctrl_to_v4l2_queryctrl(struct v4l2_queryctrl *to,
-					   const struct v4l2_query_ext_ctrl *from)
-{
-	to->id = from->id;
-	to->type = from->type;
-	to->flags = from->flags;
-	strscpy(to->name, from->name, sizeof(to->name));
-
-	switch (from->type) {
-	case V4L2_CTRL_TYPE_INTEGER:
-	case V4L2_CTRL_TYPE_BOOLEAN:
-	case V4L2_CTRL_TYPE_MENU:
-	case V4L2_CTRL_TYPE_INTEGER_MENU:
-	case V4L2_CTRL_TYPE_STRING:
-	case V4L2_CTRL_TYPE_BITMASK:
-		to->minimum = from->minimum;
-		to->maximum = from->maximum;
-		to->step = from->step;
-		to->default_value = from->default_value;
-		break;
-	default:
-		to->minimum = 0;
-		to->maximum = 0;
-		to->step = 0;
-		to->default_value = 0;
-		break;
-	}
-}
-EXPORT_SYMBOL(v4l2_query_ext_ctrl_to_v4l2_queryctrl);
-
 /* Implement VIDIOC_QUERYCTRL */
 int v4l2_queryctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_queryctrl *qc)
 {
@@ -1197,8 +1123,29 @@ int v4l2_queryctrl(struct v4l2_ctrl_handler *hdl, struct v4l2_queryctrl *qc)
 	if (rc)
 		return rc;
 
-	v4l2_query_ext_ctrl_to_v4l2_queryctrl(qc, &qec);
-
+	qc->id = qec.id;
+	qc->type = qec.type;
+	qc->flags = qec.flags;
+	strscpy(qc->name, qec.name, sizeof(qc->name));
+	switch (qc->type) {
+	case V4L2_CTRL_TYPE_INTEGER:
+	case V4L2_CTRL_TYPE_BOOLEAN:
+	case V4L2_CTRL_TYPE_MENU:
+	case V4L2_CTRL_TYPE_INTEGER_MENU:
+	case V4L2_CTRL_TYPE_STRING:
+	case V4L2_CTRL_TYPE_BITMASK:
+		qc->minimum = qec.minimum;
+		qc->maximum = qec.maximum;
+		qc->step = qec.step;
+		qc->default_value = qec.default_value;
+		break;
+	default:
+		qc->minimum = 0;
+		qc->maximum = 0;
+		qc->step = 0;
+		qc->default_value = 0;
+		break;
+	}
 	return 0;
 }
 EXPORT_SYMBOL(v4l2_queryctrl);
@@ -1232,7 +1179,7 @@ int v4l2_querymenu(struct v4l2_ctrl_handler *hdl, struct v4l2_querymenu *qm)
 		return -EINVAL;
 
 	/* Use mask to see if this menu item should be skipped */
-	if (i < BITS_PER_LONG_LONG && (ctrl->menu_skip_mask & BIT_ULL(i)))
+	if (ctrl->menu_skip_mask & (1ULL << i))
 		return -EINVAL;
 	/* Empty menu items should also be skipped */
 	if (ctrl->type == V4L2_CTRL_TYPE_MENU) {
@@ -1250,17 +1197,14 @@ EXPORT_SYMBOL(v4l2_querymenu);
  * VIDIOC_LOG_STATUS helpers
  */
 
-int v4l2_ctrl_log_status(struct file *file, void *priv)
+int v4l2_ctrl_log_status(struct file *file, void *fh)
 {
 	struct video_device *vfd = video_devdata(file);
+	struct v4l2_fh *vfh = file->private_data;
 
-	if (vfd->v4l2_dev) {
-		struct v4l2_fh *vfh = file_to_v4l2_fh(file);
-
+	if (test_bit(V4L2_FL_USES_V4L2_FH, &vfd->flags) && vfd->v4l2_dev)
 		v4l2_ctrl_handler_log_status(vfh->ctrl_handler,
 					     vfd->v4l2_dev->name);
-	}
-
 	return 0;
 }
 EXPORT_SYMBOL(v4l2_ctrl_log_status);
@@ -1351,7 +1295,7 @@ EXPORT_SYMBOL(v4l2_ctrl_subdev_subscribe_event);
  */
 __poll_t v4l2_ctrl_poll(struct file *file, struct poll_table_struct *wait)
 {
-	struct v4l2_fh *fh = file_to_v4l2_fh(file);
+	struct v4l2_fh *fh = file->private_data;
 
 	poll_wait(file, &fh->wait, wait);
 	if (v4l2_event_pending(fh))

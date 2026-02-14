@@ -12,7 +12,7 @@ description: |
   32 bit random number.
 
 maintainers:
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
 
 properties:
   compatible:

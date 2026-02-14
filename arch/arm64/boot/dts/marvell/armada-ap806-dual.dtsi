@@ -8,6 +8,9 @@
 #include "armada-ap806.dtsi"
 
 / {
+	model = "Marvell Armada AP806 Dual";
+	compatible = "marvell,armada-ap806-dual", "marvell,armada-ap806";
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -49,12 +52,11 @@
 			cache-line-size = <64>;
 			cache-sets = <512>;
 			cache-level = <2>;
-			cache-unified;
 		};
 	};
 
 	thermal-zones {
-		/delete-node/ ap-cpu2-thermal;
-		/delete-node/ ap-cpu3-thermal;
+		/delete-node/ ap-thermal-cpu2;
+		/delete-node/ ap-thermal-cpu3;
 	};
 };

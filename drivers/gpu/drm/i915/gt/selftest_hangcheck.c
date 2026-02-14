@@ -73,7 +73,7 @@ static int hang_init(struct hang *h, struct intel_gt *gt)
 	h->seqno = memset(vaddr, 0xff, PAGE_SIZE);
 
 	vaddr = i915_gem_object_pin_map_unlocked(h->obj,
-						 intel_gt_coherent_map_type(gt, h->obj, false));
+						 i915_coherent_map_type(gt->i915, h->obj, false));
 	if (IS_ERR(vaddr)) {
 		err = PTR_ERR(vaddr);
 		goto err_unpin_hws;
@@ -119,7 +119,7 @@ hang_create_request(struct hang *h, struct intel_engine_cs *engine)
 		return ERR_CAST(obj);
 	}
 
-	vaddr = i915_gem_object_pin_map_unlocked(obj, intel_gt_coherent_map_type(gt, obj, false));
+	vaddr = i915_gem_object_pin_map_unlocked(obj, i915_coherent_map_type(gt->i915, obj, false));
 	if (IS_ERR(vaddr)) {
 		i915_gem_object_put(obj);
 		i915_vm_put(vm);
@@ -319,7 +319,7 @@ static int igt_hang_sanitycheck(void *arg)
 		i915_request_add(rq);
 
 		timeout = 0;
-		intel_wedge_on_timeout(&w, gt, HZ / 5 /* 200ms */)
+		intel_wedge_on_timeout(&w, gt, HZ / 10 /* 100ms */)
 			timeout = i915_request_wait(rq, 0,
 						    MAX_SCHEDULE_TIMEOUT);
 		if (intel_gt_is_wedged(gt))
@@ -548,7 +548,7 @@ static int igt_reset_fail_engine(void *arg)
 	struct intel_engine_cs *engine;
 	enum intel_engine_id id;
 
-	/* Check that we can recover from engine-reset failures */
+	/* Check that we can recover from engine-reset failues */
 
 	if (!intel_has_reset_engine(gt))
 		return 0;
@@ -904,7 +904,7 @@ static void active_engine(struct kthread_work *work)
 			arg->result = PTR_ERR(ce[count]);
 			pr_err("[%s] Create context #%ld failed: %d!\n",
 			       engine->name, count, arg->result);
-			while (count--)
+			while (--count)
 				intel_context_put(ce[count]);
 			return;
 		}
@@ -1025,7 +1025,7 @@ static int __igt_reset_engines(struct intel_gt *gt,
 			threads[tmp].engine = other;
 			threads[tmp].flags = flags;
 
-			worker = kthread_run_worker(0, "igt/%s",
+			worker = kthread_create_worker(0, "igt/%s",
 						       other->name);
 			if (IS_ERR(worker)) {
 				err = PTR_ERR(worker);

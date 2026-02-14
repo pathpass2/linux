@@ -5,8 +5,6 @@
  *         Rick Chang <rick.chang@mediatek.com>
  */
 
-#include <linux/bitfield.h>
-#include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -14,7 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <media/media-device.h>
@@ -41,6 +39,7 @@ enum mtk_jpeg_color {
 	MTK_JPEG_COLOR_400		= 0x00110000
 };
 
+#if defined(CONFIG_OF)
 static const struct of_device_id mtk_jpegdec_hw_ids[] = {
 	{
 		.compatible = "mediatek,mt8195-jpgdec-hw",
@@ -48,6 +47,7 @@ static const struct of_device_id mtk_jpegdec_hw_ids[] = {
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_jpegdec_hw_ids);
+#endif
 
 static inline int mtk_jpeg_verify_align(u32 val, int align, u32 reg)
 {
@@ -281,43 +281,23 @@ static void mtk_jpeg_dec_set_brz_factor(void __iomem *base, u8 yscale_w,
 	writel(val, base + JPGDEC_REG_BRZ_FACTOR);
 }
 
-static void mtk_jpeg_dec_set_dst_bank0(void __iomem *base, bool support_34bit,
-				       dma_addr_t addr_y, dma_addr_t addr_u, dma_addr_t addr_v)
+static void mtk_jpeg_dec_set_dst_bank0(void __iomem *base, u32 addr_y,
+				       u32 addr_u, u32 addr_v)
 {
-	u32 val;
-
 	mtk_jpeg_verify_align(addr_y, 16, JPGDEC_REG_DEST_ADDR0_Y);
-	writel(lower_32_bits(addr_y), base + JPGDEC_REG_DEST_ADDR0_Y);
+	writel(addr_y, base + JPGDEC_REG_DEST_ADDR0_Y);
 	mtk_jpeg_verify_align(addr_u, 16, JPGDEC_REG_DEST_ADDR0_U);
-	writel(lower_32_bits(addr_u), base + JPGDEC_REG_DEST_ADDR0_U);
+	writel(addr_u, base + JPGDEC_REG_DEST_ADDR0_U);
 	mtk_jpeg_verify_align(addr_v, 16, JPGDEC_REG_DEST_ADDR0_V);
-	writel(lower_32_bits(addr_v), base + JPGDEC_REG_DEST_ADDR0_V);
-	if (support_34bit) {
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(addr_y));
-		writel(val, base + JPGDEC_REG_DEST_ADDR0_Y_EXT);
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(addr_u));
-		writel(val, base + JPGDEC_REG_DEST_ADDR0_U_EXT);
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(addr_v));
-		writel(val, base + JPGDEC_REG_DEST_ADDR0_V_EXT);
-	}
+	writel(addr_v, base + JPGDEC_REG_DEST_ADDR0_V);
 }
 
-static void mtk_jpeg_dec_set_dst_bank1(void __iomem *base, bool support_34bit,
-				       dma_addr_t addr_y, dma_addr_t addr_u, dma_addr_t addr_v)
+static void mtk_jpeg_dec_set_dst_bank1(void __iomem *base, u32 addr_y,
+				       u32 addr_u, u32 addr_v)
 {
-	u32 val;
-
-	writel(lower_32_bits(addr_y), base + JPGDEC_REG_DEST_ADDR1_Y);
-	writel(lower_32_bits(addr_u), base + JPGDEC_REG_DEST_ADDR1_U);
-	writel(lower_32_bits(addr_v), base + JPGDEC_REG_DEST_ADDR1_V);
-	if (support_34bit) {
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(addr_y));
-		writel(val, base + JPGDEC_REG_DEST_ADDR1_Y_EXT);
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(addr_u));
-		writel(val, base + JPGDEC_REG_DEST_ADDR1_U_EXT);
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(addr_v));
-		writel(val, base + JPGDEC_REG_DEST_ADDR1_V_EXT);
-	}
+	writel(addr_y, base + JPGDEC_REG_DEST_ADDR1_Y);
+	writel(addr_u, base + JPGDEC_REG_DEST_ADDR1_U);
+	writel(addr_v, base + JPGDEC_REG_DEST_ADDR1_V);
 }
 
 static void mtk_jpeg_dec_set_mem_stride(void __iomem *base, u32 stride_y,
@@ -344,30 +324,18 @@ static void mtk_jpeg_dec_set_dec_mode(void __iomem *base, u32 mode)
 	writel(mode & 0x03, base + JPGDEC_REG_OPERATION_MODE);
 }
 
-static void mtk_jpeg_dec_set_bs_write_ptr(void __iomem *base, bool support_34bit, dma_addr_t ptr)
+static void mtk_jpeg_dec_set_bs_write_ptr(void __iomem *base, u32 ptr)
 {
-	u32 val;
-
 	mtk_jpeg_verify_align(ptr, 16, JPGDEC_REG_FILE_BRP);
-	writel(lower_32_bits(ptr), base + JPGDEC_REG_FILE_BRP);
-	if (support_34bit) {
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(ptr));
-		writel(val, base + JPGDEC_REG_FILE_BRP_EXT);
-	}
+	writel(ptr, base + JPGDEC_REG_FILE_BRP);
 }
 
-static void mtk_jpeg_dec_set_bs_info(void __iomem *base, bool support_34bit,
-				     dma_addr_t addr, u32 size, u32 bitstream_size)
+static void mtk_jpeg_dec_set_bs_info(void __iomem *base, u32 addr, u32 size,
+				     u32 bitstream_size)
 {
-	u32 val;
-
 	mtk_jpeg_verify_align(addr, 16, JPGDEC_REG_FILE_ADDR);
 	mtk_jpeg_verify_align(size, 128, JPGDEC_REG_FILE_TOTAL_SIZE);
-	writel(lower_32_bits(addr), base + JPGDEC_REG_FILE_ADDR);
-	if (support_34bit) {
-		val = FIELD_PREP(MTK_JPEG_ADDR_MASK, upper_32_bits(addr));
-		writel(val, base + JPGDEC_REG_FILE_ADDR_EXT);
-	}
+	writel(addr, base + JPGDEC_REG_FILE_ADDR);
 	writel(size, base + JPGDEC_REG_FILE_TOTAL_SIZE);
 	writel(bitstream_size, base + JPGDEC_REG_BIT_STREAM_SIZE);
 }
@@ -438,7 +406,6 @@ static void mtk_jpeg_dec_set_sampling_factor(void __iomem *base, u32 comp_num,
 }
 
 void mtk_jpeg_dec_set_config(void __iomem *base,
-			     bool support_34bits,
 			     struct mtk_jpeg_dec_param *cfg,
 			     u32 bitstream_size,
 			     struct mtk_jpeg_bs *bs,
@@ -448,8 +415,8 @@ void mtk_jpeg_dec_set_config(void __iomem *base,
 	mtk_jpeg_dec_set_dec_mode(base, 0);
 	mtk_jpeg_dec_set_comp0_du(base, cfg->unit_num);
 	mtk_jpeg_dec_set_total_mcu(base, cfg->total_mcu);
-	mtk_jpeg_dec_set_bs_info(base, support_34bits, bs->str_addr, bs->size, bitstream_size);
-	mtk_jpeg_dec_set_bs_write_ptr(base, support_34bits, bs->end_addr);
+	mtk_jpeg_dec_set_bs_info(base, bs->str_addr, bs->size, bitstream_size);
+	mtk_jpeg_dec_set_bs_write_ptr(base, bs->end_addr);
 	mtk_jpeg_dec_set_du_membership(base, cfg->membership, 1,
 				       (cfg->comp_num == 1) ? 1 : 0);
 	mtk_jpeg_dec_set_comp_id(base, cfg->comp_id[0], cfg->comp_id[1],
@@ -467,9 +434,9 @@ void mtk_jpeg_dec_set_config(void __iomem *base,
 				    cfg->mem_stride[1]);
 	mtk_jpeg_dec_set_img_stride(base, cfg->img_stride[0],
 				    cfg->img_stride[1]);
-	mtk_jpeg_dec_set_dst_bank0(base, support_34bits, fb->plane_addr[0],
+	mtk_jpeg_dec_set_dst_bank0(base, fb->plane_addr[0],
 				   fb->plane_addr[1], fb->plane_addr[2]);
-	mtk_jpeg_dec_set_dst_bank1(base, support_34bits, 0, 0, 0);
+	mtk_jpeg_dec_set_dst_bank1(base, 0, 0, 0);
 	mtk_jpeg_dec_set_dma_group(base, cfg->dma_mcu, cfg->dma_group,
 				   cfg->dma_last_mcu);
 	mtk_jpeg_dec_set_pause_mcu_idx(base, cfg->total_mcu);
@@ -530,14 +497,14 @@ static void mtk_jpegdec_timeout_work(struct work_struct *work)
 
 	src_buf = cjpeg->hw_param.src_buffer;
 	dst_buf = cjpeg->hw_param.dst_buffer;
-	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf);
+	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf, true);
 
 	mtk_jpeg_dec_reset(cjpeg->reg_base);
 	clk_disable_unprepare(cjpeg->jdec_clk.clks->clk);
 	pm_runtime_put(cjpeg->dev);
 	cjpeg->hw_state = MTK_JPEG_HW_IDLE;
-	atomic_inc(&master_jpeg->hw_rdy);
-	wake_up(&master_jpeg->hw_wq);
+	atomic_inc(&master_jpeg->dechw_rdy);
+	wake_up(&master_jpeg->dec_hw_wq);
 	v4l2_m2m_buf_done(src_buf, buf_state);
 	mtk_jpegdec_put_buf(cjpeg);
 }
@@ -560,7 +527,7 @@ static irqreturn_t mtk_jpegdec_hw_irq_handler(int irq, void *priv)
 	ctx = jpeg->hw_param.curr_ctx;
 	src_buf = jpeg->hw_param.src_buffer;
 	dst_buf = jpeg->hw_param.dst_buffer;
-	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf);
+	v4l2_m2m_buf_copy_metadata(src_buf, dst_buf, true);
 
 	irq_status = mtk_jpeg_dec_get_int_status(jpeg->reg_base);
 	dec_irq_ret = mtk_jpeg_dec_enum_result(irq_status);
@@ -584,8 +551,8 @@ static irqreturn_t mtk_jpegdec_hw_irq_handler(int irq, void *priv)
 	clk_disable_unprepare(jpeg->jdec_clk.clks->clk);
 
 	jpeg->hw_state = MTK_JPEG_HW_IDLE;
-	wake_up(&master_jpeg->hw_wq);
-	atomic_inc(&master_jpeg->hw_rdy);
+	wake_up(&master_jpeg->dec_hw_wq);
+	atomic_inc(&master_jpeg->dechw_rdy);
 
 	return IRQ_HANDLED;
 }
@@ -613,6 +580,11 @@ static int mtk_jpegdec_hw_init_irq(struct mtk_jpegdec_comp_dev *dev)
 	return 0;
 }
 
+static void mtk_jpegdec_destroy_workqueue(void *data)
+{
+	destroy_workqueue(data);
+}
+
 static int mtk_jpegdec_hw_probe(struct platform_device *pdev)
 {
 	struct mtk_jpegdec_clk *jpegdec_clk;
@@ -636,6 +608,25 @@ static int mtk_jpegdec_hw_probe(struct platform_device *pdev)
 	dev->plat_dev = pdev;
 	dev->dev = &pdev->dev;
 
+	if (!master_dev->is_jpgdec_multihw) {
+		master_dev->is_jpgdec_multihw = true;
+		for (i = 0; i < MTK_JPEGDEC_HW_MAX; i++)
+			master_dev->dec_hw_dev[i] = NULL;
+
+		init_waitqueue_head(&master_dev->dec_hw_wq);
+		master_dev->workqueue = alloc_ordered_workqueue(MTK_JPEG_NAME,
+								WQ_MEM_RECLAIM
+								| WQ_FREEZABLE);
+		if (!master_dev->workqueue)
+			return -EINVAL;
+
+		ret = devm_add_action_or_reset(&pdev->dev, mtk_jpegdec_destroy_workqueue,
+					       master_dev->workqueue);
+		if (ret)
+			return ret;
+	}
+
+	atomic_set(&master_dev->dechw_rdy, MTK_JPEGDEC_HW_MAX);
 	spin_lock_init(&dev->hw_lock);
 	dev->hw_state = MTK_JPEG_HW_IDLE;
 
@@ -660,10 +651,14 @@ static int mtk_jpegdec_hw_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, ret,
 				     "Failed to register JPEGDEC irq handler.\n");
 
-	i = atomic_add_return(1, &master_dev->hw_index) - 1;
-	master_dev->dec_hw_dev[i] = dev;
-	master_dev->reg_decbase[i] = dev->reg_base;
-	dev->master_dev = master_dev;
+	for (i = 0; i < MTK_JPEGDEC_HW_MAX; i++) {
+		if (master_dev->dec_hw_dev[i])
+			continue;
+
+		master_dev->dec_hw_dev[i] = dev;
+		master_dev->reg_decbase[i] = dev->reg_base;
+		dev->master_dev = master_dev;
+	}
 
 	platform_set_drvdata(pdev, dev);
 	pm_runtime_enable(&pdev->dev);
@@ -675,7 +670,7 @@ static struct platform_driver mtk_jpegdec_hw_driver = {
 	.probe = mtk_jpegdec_hw_probe,
 	.driver = {
 		.name = "mtk-jpegdec-hw",
-		.of_match_table = mtk_jpegdec_hw_ids,
+		.of_match_table = of_match_ptr(mtk_jpegdec_hw_ids),
 	},
 };
 

@@ -6,7 +6,6 @@
 
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
-#include <linux/of.h>
 #include <linux/sort.h>
 #include <linux/sys_soc.h>
 
@@ -15,20 +14,20 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/drm_file.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_panel.h>
 #include <drm/drm_prime.h>
-#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
 #include "omap_dmm_tiler.h"
 #include "omap_drv.h"
-#include "omap_fbdev.h"
 
 #define DRIVER_NAME		MODULE_NAME
 #define DRIVER_DESC		"OMAP DRM"
+#define DRIVER_DATE		"20110917"
 #define DRIVER_MAJOR		1
 #define DRIVER_MINOR		0
 #define DRIVER_PATCHLEVEL	0
@@ -69,6 +68,7 @@ static void omap_atomic_commit_tail(struct drm_atomic_state *old_state)
 {
 	struct drm_device *dev = old_state->dev;
 	struct omap_drm_private *priv = dev->dev_private;
+	bool fence_cookie = dma_fence_begin_signalling();
 
 	dispc_runtime_get(priv->dispc);
 
@@ -91,8 +91,6 @@ static void omap_atomic_commit_tail(struct drm_atomic_state *old_state)
 		omap_atomic_wait_for_completion(dev, old_state);
 
 		drm_atomic_helper_commit_planes(dev, old_state, 0);
-
-		drm_atomic_helper_commit_hw_done(old_state);
 	} else {
 		/*
 		 * OMAP3 DSS seems to have issues with the work-around above,
@@ -102,9 +100,11 @@ static void omap_atomic_commit_tail(struct drm_atomic_state *old_state)
 		drm_atomic_helper_commit_planes(dev, old_state, 0);
 
 		drm_atomic_helper_commit_modeset_enables(dev, old_state);
-
-		drm_atomic_helper_commit_hw_done(old_state);
 	}
+
+	drm_atomic_helper_commit_hw_done(old_state);
+
+	dma_fence_end_signalling(fence_cookie);
 
 	/*
 	 * Wait for completion of the page flips to ensure that old buffers
@@ -219,6 +219,7 @@ static const struct drm_mode_config_helper_funcs omap_mode_config_helper_funcs =
 
 static const struct drm_mode_config_funcs omap_mode_config_funcs = {
 	.fb_create = omap_framebuffer_create,
+	.output_poll_changed = drm_fb_helper_output_poll_changed,
 	.atomic_check = omap_atomic_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
@@ -307,7 +308,7 @@ static void omap_disconnect_pipelines(struct drm_device *ddev)
 	for (i = 0; i < priv->num_pipes; i++) {
 		struct omap_drm_pipeline *pipe = &priv->pipes[i];
 
-		omapdss_device_disconnect(priv->dss, pipe->output);
+		omapdss_device_disconnect(NULL, pipe->output);
 
 		omapdss_device_put(pipe->output);
 		pipe->output = NULL;
@@ -325,7 +326,7 @@ static int omap_connect_pipelines(struct drm_device *ddev)
 	int r;
 
 	for_each_dss_output(output) {
-		r = omapdss_device_connect(priv->dss, output);
+		r = omapdss_device_connect(priv->dss, NULL, output);
 		if (r == -EPROBE_DEFER) {
 			omapdss_device_put(output);
 			return r;
@@ -379,8 +380,10 @@ static int omap_display_id(struct omap_dss_device *output)
 	struct device_node *node = NULL;
 
 	if (output->bridge) {
-		struct drm_bridge *bridge __free(drm_bridge_put) =
-			drm_bridge_chain_get_last_bridge(output->bridge->encoder);
+		struct drm_bridge *bridge = output->bridge;
+
+		while (drm_bridge_get_next_bridge(bridge))
+			bridge = drm_bridge_get_next_bridge(bridge);
 
 		node = bridge->of_node;
 	}
@@ -633,24 +636,37 @@ static int dev_open(struct drm_device *dev, struct drm_file *file)
 	return 0;
 }
 
-DEFINE_DRM_GEM_FOPS(omapdriver_fops);
+static const struct file_operations omapdriver_fops = {
+	.owner = THIS_MODULE,
+	.open = drm_open,
+	.unlocked_ioctl = drm_ioctl,
+	.compat_ioctl = drm_compat_ioctl,
+	.release = drm_release,
+	.mmap = omap_gem_mmap,
+	.poll = drm_poll,
+	.read = drm_read,
+	.llseek = noop_llseek,
+};
 
 static const struct drm_driver omap_drm_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM  |
 		DRIVER_ATOMIC | DRIVER_RENDER,
 	.open = dev_open,
+	.lastclose = drm_fb_helper_lastclose,
 #ifdef CONFIG_DEBUG_FS
 	.debugfs_init = omap_debugfs_init,
 #endif
+	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
+	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
 	.gem_prime_import = omap_gem_prime_import,
 	.dumb_create = omap_gem_dumb_create,
 	.dumb_map_offset = omap_gem_dumb_map_offset,
-	OMAP_FBDEV_DRIVER_OPS,
 	.ioctls = ioctls,
 	.num_ioctls = DRM_OMAP_NUM_IOCTLS,
 	.fops = &omapdriver_fops,
 	.name = DRIVER_NAME,
 	.desc = DRIVER_DESC,
+	.date = DRIVER_DATE,
 	.major = DRIVER_MAJOR,
 	.minor = DRIVER_MINOR,
 	.patchlevel = DRIVER_PATCHLEVEL,
@@ -693,10 +709,6 @@ static int omapdrm_init(struct omap_drm_private *priv, struct device *dev)
 	soc = soc_device_match(omapdrm_soc_devices);
 	priv->omaprev = soc ? (uintptr_t)soc->data : 0;
 	priv->wq = alloc_ordered_workqueue("omapdrm", 0);
-	if (!priv->wq) {
-		ret = -ENOMEM;
-		goto err_alloc_workqueue;
-	}
 
 	mutex_init(&priv->list_lock);
 	INIT_LIST_HEAD(&priv->obj_list);
@@ -729,6 +741,8 @@ static int omapdrm_init(struct omap_drm_private *priv, struct device *dev)
 		goto err_cleanup_modeset;
 	}
 
+	omap_fbdev_init(ddev);
+
 	drm_kms_helper_poll_init(ddev);
 
 	/*
@@ -739,12 +753,12 @@ static int omapdrm_init(struct omap_drm_private *priv, struct device *dev)
 	if (ret)
 		goto err_cleanup_helpers;
 
-	omap_fbdev_setup(ddev);
-
 	return 0;
 
 err_cleanup_helpers:
 	drm_kms_helper_poll_fini(ddev);
+
+	omap_fbdev_fini(ddev);
 err_cleanup_modeset:
 	omap_modeset_fini(ddev);
 err_free_overlays:
@@ -755,7 +769,6 @@ err_gem_deinit:
 	drm_mode_config_cleanup(ddev);
 	omap_gem_deinit(ddev);
 	destroy_workqueue(priv->wq);
-err_alloc_workqueue:
 	omap_disconnect_pipelines(ddev);
 	drm_dev_put(ddev);
 	return ret;
@@ -770,6 +783,8 @@ static void omapdrm_cleanup(struct omap_drm_private *priv)
 	drm_dev_unregister(ddev);
 
 	drm_kms_helper_poll_fini(ddev);
+
+	omap_fbdev_fini(ddev);
 
 	drm_atomic_helper_shutdown(ddev);
 
@@ -811,19 +826,14 @@ static int pdev_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void pdev_remove(struct platform_device *pdev)
+static int pdev_remove(struct platform_device *pdev)
 {
 	struct omap_drm_private *priv = platform_get_drvdata(pdev);
 
 	omapdrm_cleanup(priv);
 	kfree(priv);
-}
 
-static void pdev_shutdown(struct platform_device *pdev)
-{
-	struct omap_drm_private *priv = platform_get_drvdata(pdev);
-
-	drm_atomic_helper_shutdown(priv->ddev);
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -855,7 +865,6 @@ static struct platform_driver pdev = {
 	},
 	.probe = pdev_probe,
 	.remove = pdev_remove,
-	.shutdown = pdev_shutdown,
 };
 
 static struct platform_driver * const drivers[] = {

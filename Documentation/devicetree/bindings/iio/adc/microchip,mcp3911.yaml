@@ -18,22 +18,13 @@ description: |
 properties:
   compatible:
     enum:
-      - microchip,mcp3910
       - microchip,mcp3911
-      - microchip,mcp3912
-      - microchip,mcp3913
-      - microchip,mcp3914
-      - microchip,mcp3918
-      - microchip,mcp3919
 
   reg:
     maxItems: 1
 
   spi-max-frequency:
     maximum: 20000000
-
-  reset-gpios:
-    maxItems: 1
 
   clocks:
     description: |
@@ -74,7 +65,6 @@ unevaluatedProperties: false
 
 examples:
   - |
-    #include <dt-bindings/gpio/gpio.h>
     spi {
       #address-cells = <1>;
       #size-cells = <0>;
@@ -84,7 +74,6 @@ examples:
         reg = <0>;
         interrupt-parent = <&gpio5>;
         interrupts = <15 2>;
-        reset-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
         spi-max-frequency = <20000000>;
         microchip,device-addr = <0>;
         vref-supply = <&vref_reg>;

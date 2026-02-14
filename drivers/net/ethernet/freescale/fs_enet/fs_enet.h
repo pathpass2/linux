@@ -2,13 +2,15 @@
 #ifndef FS_ENET_H
 #define FS_ENET_H
 
-#include <linux/clk.h>
+#include <linux/mii.h>
 #include <linux/netdevice.h>
 #include <linux/types.h>
 #include <linux/list.h>
 #include <linux/phy.h>
-#include <linux/phylink.h>
 #include <linux/dma-mapping.h>
+
+#include <linux/fs_enet_pd.h>
+#include <asm/fs_pd.h>
 
 #ifdef CONFIG_CPM1
 #include <asm/cpm1.h>
@@ -77,8 +79,8 @@ struct fs_ops {
 	void (*free_bd)(struct net_device *dev);
 	void (*cleanup_data)(struct net_device *dev);
 	void (*set_multicast_list)(struct net_device *dev);
-	void (*restart)(struct net_device *dev, phy_interface_t interface,
-			int speed, int duplex);
+	void (*adjust_link)(struct net_device *dev);
+	void (*restart)(struct net_device *dev);
 	void (*stop)(struct net_device *dev);
 	void (*napi_clear_event)(struct net_device *dev);
 	void (*napi_enable)(struct net_device *dev);
@@ -91,6 +93,14 @@ struct fs_ops {
 	int (*get_regs)(struct net_device *dev, void *p, int *sizep);
 	int (*get_regs_len)(struct net_device *dev);
 	void (*tx_restart)(struct net_device *dev);
+};
+
+struct phy_info {
+	unsigned int id;
+	const char *name;
+	void (*startup) (struct net_device * dev);
+	void (*shutdown) (struct net_device * dev);
+	void (*ack_int) (struct net_device * dev);
 };
 
 /* The FEC stores dest/src/type, data, and checksum for receive packets.
@@ -107,17 +117,6 @@ struct fs_ops {
 /* This is needed so that invalidate_xxx wont invalidate too much */
 #define ENET_RX_ALIGN  16
 #define ENET_RX_FRSIZE L1_CACHE_ALIGN(PKT_MAXBUF_SIZE + ENET_RX_ALIGN - 1)
-
-struct fs_platform_info {
-	/* device specific information */
-	u32 cp_command;		/* CPM page/sblock/mcn */
-
-	u32 dpram_offset;
-
-	int rx_ring, tx_ring;	/* number of buffers on rx	*/
-	int rx_copybreak;	/* limit we copy small frames	*/
-	int napi_weight;	/* NAPI weight			*/
-};
 
 struct fs_enet_private {
 	struct napi_struct napi;
@@ -140,10 +139,13 @@ struct fs_enet_private {
 	cbd_t __iomem *cur_rx;
 	cbd_t __iomem *cur_tx;
 	int tx_free;
+	const struct phy_info *phy;
 	u32 msg_enable;
-	struct phylink *phylink;
-	struct phylink_config phylink_config;
+	struct mii_if_info mii_if;
+	unsigned int last_mii_status;
 	int interrupt;
+
+	int oldduplex, oldspeed, oldlink;	/* current settings */
 
 	/* event masks */
 	u32 ev_napi;		/* mask of NAPI events */
@@ -188,6 +190,11 @@ void fs_cleanup_bds(struct net_device *dev);
 
 #define DRV_MODULE_NAME		"fs_enet"
 #define PFX DRV_MODULE_NAME	": "
+
+/***************************************************************************/
+
+int fs_enet_platform_init(void);
+void fs_enet_platform_cleanup(void);
 
 /***************************************************************************/
 /* buffer descriptor access macros */

@@ -6,7 +6,7 @@
 #define MCOUNT_ADDR		((unsigned long)(_mcount))
 #define MCOUNT_INSN_SIZE	4 /* sizeof mcount call */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 void _mcount(void);
 #endif
 

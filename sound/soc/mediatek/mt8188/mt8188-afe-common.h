@@ -39,7 +39,7 @@ enum {
 	MT8188_AFE_MEMIF_END,
 	MT8188_AFE_MEMIF_NUM = (MT8188_AFE_MEMIF_END - MT8188_AFE_MEMIF_START),
 	MT8188_AFE_IO_START = MT8188_AFE_MEMIF_END,
-	MT8188_AFE_IO_DL_SRC = MT8188_AFE_IO_START,
+	MT8188_AFE_IO_ADDA = MT8188_AFE_IO_START,
 	MT8188_AFE_IO_DMIC_IN,
 	MT8188_AFE_IO_DPTX,
 	MT8188_AFE_IO_ETDM_START,
@@ -52,7 +52,6 @@ enum {
 	MT8188_AFE_IO_ETDM_NUM =
 		(MT8188_AFE_IO_ETDM_END - MT8188_AFE_IO_ETDM_START),
 	MT8188_AFE_IO_PCM = MT8188_AFE_IO_ETDM_END,
-	MT8188_AFE_IO_UL_SRC,
 	MT8188_AFE_IO_END,
 	MT8188_AFE_IO_NUM = (MT8188_AFE_IO_END - MT8188_AFE_IO_START),
 	MT8188_DAI_END = MT8188_AFE_IO_END,
@@ -137,7 +136,6 @@ struct mt8188_afe_private {
 int mt8188_afe_fs_timing(unsigned int rate);
 /* dai register */
 int mt8188_dai_adda_register(struct mtk_base_afe *afe);
-int mt8188_dai_dmic_register(struct mtk_base_afe *afe);
 int mt8188_dai_etdm_register(struct mtk_base_afe *afe);
 int mt8188_dai_pcm_register(struct mtk_base_afe *afe);
 

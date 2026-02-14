@@ -28,7 +28,7 @@ static int pefile_parse_binary(const void *pebuf, unsigned int pelen,
 	const struct pe32plus_opt_hdr *pe64;
 	const struct data_directory *ddir;
 	const struct data_dirent *dde;
-	const struct section_header *sec;
+	const struct section_header *secs, *sec;
 	size_t cursor, datalen = pelen;
 
 	kenter("");
@@ -40,13 +40,13 @@ static int pefile_parse_binary(const void *pebuf, unsigned int pelen,
 	} while (0)
 
 	chkaddr(0, 0, sizeof(*mz));
-	if (mz->magic != IMAGE_DOS_SIGNATURE)
+	if (mz->magic != MZ_MAGIC)
 		return -ELIBBAD;
 	cursor = sizeof(*mz);
 
 	chkaddr(cursor, mz->peaddr, sizeof(*pe));
 	pe = pebuf + mz->peaddr;
-	if (pe->magic != IMAGE_NT_SIGNATURE)
+	if (pe->magic != PE_MAGIC)
 		return -ELIBBAD;
 	cursor = mz->peaddr + sizeof(*pe);
 
@@ -55,7 +55,7 @@ static int pefile_parse_binary(const void *pebuf, unsigned int pelen,
 	pe64 = pebuf + cursor;
 
 	switch (pe32->magic) {
-	case IMAGE_NT_OPTIONAL_HDR32_MAGIC:
+	case PE_OPT_MAGIC_PE32:
 		chkaddr(0, cursor, sizeof(*pe32));
 		ctx->image_checksum_offset =
 			(unsigned long)&pe32->csum - (unsigned long)pebuf;
@@ -64,7 +64,7 @@ static int pefile_parse_binary(const void *pebuf, unsigned int pelen,
 		ctx->n_data_dirents = pe32->data_dirs;
 		break;
 
-	case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
+	case PE_OPT_MAGIC_PE32PLUS:
 		chkaddr(0, cursor, sizeof(*pe64));
 		ctx->image_checksum_offset =
 			(unsigned long)&pe64->csum - (unsigned long)pebuf;
@@ -110,7 +110,7 @@ static int pefile_parse_binary(const void *pebuf, unsigned int pelen,
 	ctx->n_sections = pe->sections;
 	if (ctx->n_sections > (ctx->header_size - cursor) / sizeof(*sec))
 		return -ELIBBAD;
-	ctx->secs = pebuf + cursor;
+	ctx->secs = secs = pebuf + cursor;
 
 	return 0;
 }
@@ -391,7 +391,7 @@ error_no_desc:
  * verify_pefile_signature - Verify the signature on a PE binary image
  * @pebuf: Buffer containing the PE binary image
  * @pelen: Length of the binary image
- * @trusted_keys: Signing certificate(s) to use as starting points
+ * @trust_keys: Signing certificate(s) to use as starting points
  * @usage: The use to which the key is being put.
  *
  * Validate that the certificate chain inside the PKCS#7 message inside the PE

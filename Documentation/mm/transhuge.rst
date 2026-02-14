@@ -31,10 +31,10 @@ Design principles
   feature that applies to all dynamic high order allocations in the
   kernel)
 
-get_user_pages and pin_user_pages
-=================================
+get_user_pages and follow_page
+==============================
 
-get_user_pages and pin_user_pages if run on a hugepage, will return the
+get_user_pages and follow_page if run on a hugepage, will return the
 head or tail pages as usual (exactly as they would do on
 hugetlbfs). Most GUP users will only care about the actual physical
 address of the page and its temporary pinning to release after the I/O
@@ -116,27 +116,14 @@ pages:
     succeeds on tail pages.
 
   - map/unmap of a PMD entry for the whole THP increment/decrement
-    folio->_entire_mapcount and folio->_large_mapcount.
-
-    We also maintain the two slots for tracking MM owners (MM ID and
-    corresponding mapcount), and the current status ("maybe mapped shared" vs.
-    "mapped exclusively").
-
-    With CONFIG_PAGE_MAPCOUNT, we also increment/decrement
-    folio->_nr_pages_mapped by ENTIRELY_MAPPED when _entire_mapcount goes
-    from -1 to 0 or 0 to -1.
+    folio->_entire_mapcount and also increment/decrement
+    folio->_nr_pages_mapped by COMPOUND_MAPPED when _entire_mapcount
+    goes from -1 to 0 or 0 to -1.
 
   - map/unmap of individual pages with PTE entry increment/decrement
-    folio->_large_mapcount.
-
-    We also maintain the two slots for tracking MM owners (MM ID and
-    corresponding mapcount), and the current status ("maybe mapped shared" vs.
-    "mapped exclusively").
-
-    With CONFIG_PAGE_MAPCOUNT, we also increment/decrement
-    page->_mapcount and increment/decrement folio->_nr_pages_mapped when
-    page->_mapcount goes from -1 to 0 or 0 to -1 as this counts the number
-    of pages mapped by PTE.
+    page->_mapcount and also increment/decrement folio->_nr_pages_mapped
+    when page->_mapcount goes from -1 to 0 or 0 to -1 as this counts
+    the number of pages mapped by PTE.
 
 split_huge_page internally has to distribute the refcounts in the head
 page to the tail pages before clearing all PG_head/tail bits from the page
@@ -164,12 +151,12 @@ clear where references should go after split: it will stay on the head page.
 Note that split_huge_pmd() doesn't have any limitations on refcounting:
 pmd can be split at any point and never fails.
 
-Partial unmap and deferred_split_folio() (anon THP only)
-========================================================
+Partial unmap and deferred_split_folio()
+========================================
 
 Unmapping part of THP (with munmap() or other way) is not going to free
 memory immediately. Instead, we detect that a subpage of THP is not in use
-in folio_remove_rmap_*() and queue the THP for splitting if memory pressure
+in page_remove_rmap() and queue the THP for splitting if memory pressure
 comes. Splitting will free up unused subpages.
 
 Splitting the page right away is not an option due to locking context in
@@ -180,13 +167,3 @@ a THP crosses a VMA boundary.
 The function deferred_split_folio() is used to queue a folio for splitting.
 The splitting itself will happen when we get memory pressure via shrinker
 interface.
-
-With CONFIG_PAGE_MAPCOUNT, we reliably detect partial mappings based on
-folio->_nr_pages_mapped.
-
-With CONFIG_NO_PAGE_MAPCOUNT, we detect partial mappings based on the
-average per-page mapcount in a THP: if the average is < 1, an anon THP is
-certainly partially mapped. As long as only a single process maps a THP,
-this detection is reliable. With long-running child processes, there can
-be scenarios where partial mappings can currently not be detected, and
-might need asynchronous detection during memory reclaim in the future.

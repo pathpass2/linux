@@ -121,11 +121,13 @@ static int da903x_led_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void da903x_led_remove(struct platform_device *pdev)
+static int da903x_led_remove(struct platform_device *pdev)
 {
 	struct da903x_led *led = platform_get_drvdata(pdev);
 
 	led_classdev_unregister(&led->cdev);
+
+	return 0;
 }
 
 static struct platform_driver da903x_led_driver = {

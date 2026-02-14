@@ -8,13 +8,12 @@ title: Peripheral-specific properties for a SPI bus.
 
 description:
   Many SPI controllers need to add properties to peripheral devices. They could
-  be common properties like spi-max-frequency, spi-cs-high, etc. or they could
-  be controller specific like delay in clock or data lines, etc. These
-  properties need to be defined in the peripheral node because they are
-  per-peripheral and there can be multiple peripherals attached to a
-  controller. All those properties are listed here. The controller specific
-  properties should go in their own separate schema that should be referenced
-  from here.
+  be common properties like spi-max-frequency, spi-cpha, etc. or they could be
+  controller specific like delay in clock or data lines, etc. These properties
+  need to be defined in the peripheral node because they are per-peripheral and
+  there can be multiple peripherals attached to a controller. All those
+  properties are listed here. The controller specific properties should go in
+  their own separate schema that should be referenced from here.
 
 maintainers:
   - Mark Brown <broonie@kernel.org>
@@ -64,23 +63,9 @@ properties:
     description:
       Bus width to the SPI bus used for read transfers.
       If 0 is provided, then no RX will be possible on this device.
-
-      Some SPI peripherals and controllers may have multiple data lanes for
-      receiving two or more words at the same time. If this is the case, each
-      index in the array represents the lane on both the SPI peripheral and
-      controller. Additional mapping properties may be needed if a lane is
-      skipped on either side.
-    $ref: /schemas/types.yaml#/definitions/uint32-array
-    items:
-      enum: [0, 1, 2, 4, 8]
-    default: [1]
-
-  spi-rx-lane-map:
-    description: Mapping of peripheral SDO lanes to controller SDI lanes.
-      Each index in the array represents a peripheral SDO lane, and the value
-      at that index represents the corresponding controller SDI lane.
-    $ref: /schemas/types.yaml#/definitions/uint32-array
-    default: [0, 1, 2, 3, 4, 5, 6, 7]
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1, 2, 4, 8]
+    default: 1
 
   spi-rx-delay-us:
     description:
@@ -95,23 +80,9 @@ properties:
     description:
       Bus width to the SPI bus used for write transfers.
       If 0 is provided, then no TX will be possible on this device.
-
-      Some SPI peripherals and controllers may have multiple data lanes for
-      transmitting two or more words at the same time. If this is the case, each
-      index in the array represents the lane on both the SPI peripheral and
-      controller. Additional mapping properties may be needed if a lane is
-      skipped on either side.
-    $ref: /schemas/types.yaml#/definitions/uint32-array
-    items:
-      enum: [0, 1, 2, 4, 8]
-    default: [1]
-
-  spi-tx-lane-map:
-    description: Mapping of peripheral SDI lanes to controller SDO lanes.
-      Each index in the array represents a peripheral SDI lane, and the value
-      at that index represents the corresponding controller SDO lane.
-    $ref: /schemas/types.yaml#/definitions/uint32-array
-    default: [0, 1, 2, 3, 4, 5, 6, 7]
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1, 2, 4, 8]
+    default: 1
 
   spi-tx-delay-us:
     description:
@@ -142,17 +113,9 @@ properties:
     minItems: 2
     maxItems: 4
 
-  st,spi-midi-ns:
-    deprecated: true
-    description: |
-      Only for STM32H7, (Master Inter-Data Idleness) minimum time
-      delay in nanoseconds inserted between two consecutive data frames.
-
 # The controller specific properties go here.
 allOf:
-  - $ref: arm,pl022-peripheral-props.yaml#
   - $ref: cdns,qspi-nor-peripheral-props.yaml#
-  - $ref: fsl,dspi-peripheral-props.yaml#
   - $ref: samsung,spi-peripheral-props.yaml#
   - $ref: nvidia,tegra210-quad-peripheral-props.yaml#
 

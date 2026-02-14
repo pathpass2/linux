@@ -29,19 +29,12 @@ static int em_text_match(struct sk_buff *skb, struct tcf_ematch *m,
 			 struct tcf_pkt_info *info)
 {
 	struct text_match *tm = EM_TEXT_PRIV(m);
-	unsigned char *ptr;
 	int from, to;
 
-	ptr = tcf_get_base_ptr(skb, tm->from_layer);
-	if (!ptr)
-		return 0;
-	from = ptr - skb->data;
+	from = tcf_get_base_ptr(skb, tm->from_layer) - skb->data;
 	from += tm->from_offset;
 
-	ptr = tcf_get_base_ptr(skb, tm->to_layer);
-	if (!ptr)
-		return 0;
-	to = ptr - skb->data;
+	to = tcf_get_base_ptr(skb, tm->to_layer) - skb->data;
 	to += tm->to_offset;
 
 	return skb_find_text(skb, from, to, tm->config) != UINT_MAX;
@@ -104,10 +97,8 @@ retry:
 
 static void em_text_destroy(struct tcf_ematch *m)
 {
-	if (EM_TEXT_PRIV(m) && EM_TEXT_PRIV(m)->config) {
+	if (EM_TEXT_PRIV(m) && EM_TEXT_PRIV(m)->config)
 		textsearch_destroy(EM_TEXT_PRIV(m)->config);
-		kfree(EM_TEXT_PRIV(m));
-	}
 }
 
 static int em_text_dump(struct sk_buff *skb, struct tcf_ematch *m)
@@ -115,7 +106,7 @@ static int em_text_dump(struct sk_buff *skb, struct tcf_ematch *m)
 	struct text_match *tm = EM_TEXT_PRIV(m);
 	struct tcf_em_text conf;
 
-	strscpy(conf.algo, tm->config->ops->name);
+	strncpy(conf.algo, tm->config->ops->name, sizeof(conf.algo) - 1);
 	conf.from_offset = tm->from_offset;
 	conf.to_offset = tm->to_offset;
 	conf.from_layer = tm->from_layer;
@@ -154,7 +145,6 @@ static void __exit exit_em_text(void)
 	tcf_em_unregister(&em_text_ops);
 }
 
-MODULE_DESCRIPTION("ematch classifier for embedded text in skbs");
 MODULE_LICENSE("GPL");
 
 module_init(init_em_text);

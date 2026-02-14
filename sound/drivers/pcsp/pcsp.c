@@ -47,12 +47,11 @@ static int snd_pcsp_create(struct snd_card *card)
 
 	if (!nopcm) {
 		if (resolution > PCSP_MAX_PERIOD_NS) {
-			dev_err(card->dev,
-				"PCSP: Timer resolution is not sufficient (%unS)\n",
-				resolution);
-			dev_err(card->dev,
-				"PCSP: Make sure you have HPET and ACPI enabled.\n");
-			dev_err(card->dev, "PCSP: Turned into nopcm mode.\n");
+			printk(KERN_ERR "PCSP: Timer resolution is not sufficient "
+				"(%unS)\n", resolution);
+			printk(KERN_ERR "PCSP: Make sure you have HPET and ACPI "
+				"enabled.\n");
+			printk(KERN_ERR "PCSP: Turned into nopcm mode.\n");
 			nopcm = 1;
 		}
 	}
@@ -62,8 +61,8 @@ static int snd_pcsp_create(struct snd_card *card)
 	else
 		min_div = MAX_DIV;
 #if PCSP_DEBUG
-	dev_dbg(card->dev, "PCSP: lpj=%li, min_div=%i, res=%u\n",
-		loops_per_jiffy, min_div, resolution);
+	printk(KERN_DEBUG "PCSP: lpj=%li, min_div=%i, res=%u\n",
+	       loops_per_jiffy, min_div, resolution);
 #endif
 
 	div = MAX_DIV / min_div;
@@ -103,7 +102,8 @@ static int snd_card_pcsp_probe(int devnum, struct device *dev)
 	if (devnum != 0)
 		return -EINVAL;
 
-	hrtimer_setup(&pcsp_chip.timer, pcsp_do_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	hrtimer_init(&pcsp_chip.timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	pcsp_chip.timer.function = pcsp_do_timer;
 
 	err = snd_devm_card_new(dev, index, id, THIS_MODULE, 0, &card);
 	if (err < 0)
@@ -122,8 +122,8 @@ static int snd_card_pcsp_probe(int devnum, struct device *dev)
 	if (err < 0)
 		return err;
 
-	strscpy(card->driver, "PC-Speaker");
-	strscpy(card->shortname, "pcsp");
+	strcpy(card->driver, "PC-Speaker");
+	strcpy(card->shortname, "pcsp");
 	sprintf(card->longname, "Internal PC-Speaker at port 0x%x",
 		pcsp_chip.port);
 
@@ -141,14 +141,14 @@ static int alsa_card_pcsp_init(struct device *dev)
 
 	err = snd_card_pcsp_probe(0, dev);
 	if (err) {
-		dev_err(dev, "PC-Speaker initialization failed.\n");
+		printk(KERN_ERR "PC-Speaker initialization failed.\n");
 		return err;
 	}
 
 	/* Well, CONFIG_DEBUG_PAGEALLOC makes the sound horrible. Lets alert */
 	if (debug_pagealloc_enabled()) {
-		dev_warn(dev,
-			 "PCSP: CONFIG_DEBUG_PAGEALLOC is enabled, which may make the sound noisy.\n");
+		printk(KERN_WARNING "PCSP: CONFIG_DEBUG_PAGEALLOC is enabled, "
+		       "which may make the sound noisy.\n");
 	}
 
 	return 0;
@@ -176,6 +176,7 @@ static void pcsp_stop_beep(struct snd_pcsp *chip)
 	pcspkr_stop_sound();
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int pcsp_suspend(struct device *dev)
 {
 	struct snd_pcsp *chip = dev_get_drvdata(dev);
@@ -183,7 +184,11 @@ static int pcsp_suspend(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(pcsp_pm, pcsp_suspend, NULL);
+static SIMPLE_DEV_PM_OPS(pcsp_pm, pcsp_suspend, NULL);
+#define PCSP_PM_OPS	&pcsp_pm
+#else
+#define PCSP_PM_OPS	NULL
+#endif	/* CONFIG_PM_SLEEP */
 
 static void pcsp_shutdown(struct platform_device *dev)
 {
@@ -194,7 +199,7 @@ static void pcsp_shutdown(struct platform_device *dev)
 static struct platform_driver pcsp_platform_driver = {
 	.driver		= {
 		.name	= "pcspkr",
-		.pm	= &pcsp_pm,
+		.pm	= PCSP_PM_OPS,
 	},
 	.probe		= pcsp_probe,
 	.shutdown	= pcsp_shutdown,

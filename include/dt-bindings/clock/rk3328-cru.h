@@ -201,6 +201,8 @@
 #define HCLK_RGA		340
 #define HCLK_HDCP		341
 
+#define CLK_NR_CLKS		(HCLK_HDCP + 1)
+
 /* soft-reset indices */
 #define SRST_CORE0_PO		0
 #define SRST_CORE1_PO		1

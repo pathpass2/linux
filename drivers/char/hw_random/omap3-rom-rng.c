@@ -20,6 +20,7 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
@@ -56,6 +57,7 @@ static int omap3_rom_rng_read(struct hwrng *rng, void *data, size_t max, bool w)
 	else
 		r = 4;
 
+	pm_runtime_mark_last_busy(ddata->dev);
 	pm_runtime_put_autosuspend(ddata->dev);
 
 	return r;
@@ -177,5 +179,4 @@ module_platform_driver(omap3_rom_rng_driver);
 MODULE_ALIAS("platform:omap3-rom-rng");
 MODULE_AUTHOR("Juha Yrjola");
 MODULE_AUTHOR("Pali Rohár <pali@kernel.org>");
-MODULE_DESCRIPTION("RNG driver for TI OMAP3 CPU family");
 MODULE_LICENSE("GPL");

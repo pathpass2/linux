@@ -93,14 +93,7 @@ typedef void (*dm_status_fn) (struct dm_target *ti, status_type_t status_type,
 typedef int (*dm_message_fn) (struct dm_target *ti, unsigned int argc, char **argv,
 			      char *result, unsigned int maxlen);
 
-/*
- * Called with *forward == true. If it remains true, the ioctl should be
- * forwarded to bdev. If it is reset to false, the target already fully handled
- * the ioctl and the return value is the return value for the whole ioctl.
- */
-typedef int (*dm_prepare_ioctl_fn) (struct dm_target *ti, struct block_device **bdev,
-				    unsigned int cmd, unsigned long arg,
-				    bool *forward);
+typedef int (*dm_prepare_ioctl_fn) (struct dm_target *ti, struct block_device **bdev);
 
 #ifdef CONFIG_BLK_DEV_ZONED
 typedef int (*dm_report_zones_fn) (struct dm_target *ti,
@@ -156,7 +149,7 @@ typedef int (*dm_busy_fn) (struct dm_target *ti);
  */
 typedef long (*dm_dax_direct_access_fn) (struct dm_target *ti, pgoff_t pgoff,
 		long nr_pages, enum dax_access_mode node, void **kaddr,
-		unsigned long *pfn);
+		pfn_t *pfn);
 typedef int (*dm_dax_zero_page_range_fn)(struct dm_target *ti, pgoff_t pgoff,
 		size_t nr_pages);
 
@@ -172,24 +165,20 @@ void dm_error(const char *message);
 
 struct dm_dev {
 	struct block_device *bdev;
-	struct file *bdev_file;
 	struct dax_device *dax_dev;
-	blk_mode_t mode;
+	fmode_t mode;
 	char name[16];
 };
+
+dev_t dm_get_dev_t(const char *path);
 
 /*
  * Constructors should call these functions to ensure destination devices
  * are opened/closed correctly.
  */
-int dm_get_device(struct dm_target *ti, const char *path, blk_mode_t mode,
+int dm_get_device(struct dm_target *ti, const char *path, fmode_t mode,
 		  struct dm_dev **result);
 void dm_put_device(struct dm_target *ti, struct dm_dev *d);
-
-/*
- * Helper function for getting devices
- */
-int dm_devt_from_path(const char *path, dev_t *dev_p);
 
 /*
  * Information about a target type
@@ -306,9 +295,6 @@ struct target_type {
 #define dm_target_supports_mixed_zoned_model(type) (false)
 #endif
 
-#define DM_TARGET_ATOMIC_WRITES		0x00000400
-#define dm_target_supports_atomic_writes(type) ((type)->features & DM_TARGET_ATOMIC_WRITES)
-
 struct dm_target {
 	struct dm_table *table;
 	struct target_type *type;
@@ -373,19 +359,6 @@ struct dm_target {
 	bool discards_supported:1;
 
 	/*
-	 * Automatically set by dm-core if this target supports
-	 * REQ_OP_ZONE_RESET_ALL. Otherwise, this operation will be emulated
-	 * using REQ_OP_ZONE_RESET. Target drivers must not set this manually.
-	 */
-	bool zone_reset_all_supported:1;
-
-	/*
-	 * Set if this target requires that discards be split on
-	 * 'max_discard_sectors' boundaries.
-	 */
-	bool max_discard_granularity:1;
-
-	/*
 	 * Set if we need to limit the number of in-flight bios when swapping.
 	 */
 	bool limit_swap_bios:1;
@@ -407,27 +380,6 @@ struct dm_target {
 	 * bio_set_dev(). NOTE: ideally a target should _not_ need this.
 	 */
 	bool needs_bio_set_dev:1;
-
-	/*
-	 * Set if the target supports flush optimization. If all the targets in
-	 * a table have flush_bypasses_map set, the dm core will not send
-	 * flushes to the targets via a ->map method. It will iterate over
-	 * dm_table->devices and send flushes to the devices directly. This
-	 * optimization reduces the number of flushes being sent when multiple
-	 * targets in a table use the same underlying device.
-	 *
-	 * This optimization may be enabled on targets that just pass the
-	 * flushes to the underlying devices without performing any other
-	 * actions on the flush request. Currently, dm-linear and dm-stripe
-	 * support it.
-	 */
-	bool flush_bypasses_map:1;
-
-	/*
-	 * Set if the target calls bio_integrity_alloc on bios received
-	 * in the map method.
-	 */
-	bool mempool_needs_integrity:1;
 };
 
 void *dm_per_bio_data(struct bio *bio, size_t data_size);
@@ -534,21 +486,16 @@ int dm_post_suspending(struct dm_target *ti);
 int dm_noflush_suspending(struct dm_target *ti);
 void dm_accept_partial_bio(struct bio *bio, unsigned int n_sectors);
 void dm_submit_bio_remap(struct bio *clone, struct bio *tgt_clone);
+union map_info *dm_get_rq_mapinfo(struct request *rq);
 
 #ifdef CONFIG_BLK_DEV_ZONED
 struct dm_report_zones_args {
 	struct dm_target *tgt;
-	struct gendisk *disk;
 	sector_t next_sector;
 
+	void *orig_data;
+	report_zones_cb orig_cb;
 	unsigned int zone_idx;
-
-	/* for block layer ->report_zones */
-	struct blk_report_zones_args *rep_args;
-
-	/* for internal users */
-	report_zones_cb cb;
-	void *data;
 
 	/* must be filled by ->report_zones before calling dm_report_zones_cb */
 	sector_t start;
@@ -565,6 +512,8 @@ int __init dm_early_create(struct dm_ioctl *dmi,
 			   struct dm_target_spec **spec_array,
 			   char **target_params_array);
 
+struct queue_limits *dm_get_queue_limits(struct mapped_device *md);
+
 /*
  * Geometry functions.
  */
@@ -580,7 +529,7 @@ int dm_set_geometry(struct mapped_device *md, struct hd_geometry *geo);
 /*
  * First create an empty table.
  */
-int dm_table_create(struct dm_table **result, blk_mode_t mode,
+int dm_table_create(struct dm_table **result, fmode_t mode,
 		    unsigned int num_targets, struct mapped_device *md);
 
 /*
@@ -623,7 +572,7 @@ void dm_sync_table(struct mapped_device *md);
  * Queries
  */
 sector_t dm_table_get_size(struct dm_table *t);
-blk_mode_t dm_table_get_mode(struct dm_table *t);
+fmode_t dm_table_get_mode(struct dm_table *t);
 struct mapped_device *dm_table_get_md(struct dm_table *t);
 const char *dm_table_device_name(struct dm_table *t);
 
@@ -675,26 +624,6 @@ void dm_destroy_crypto_profile(struct blk_crypto_profile *profile);
 #define DMEMIT_TARGET_NAME_VERSION(y) \
 		DMEMIT("target_name=%s,target_version=%u.%u.%u", \
 		       (y)->name, (y)->version[0], (y)->version[1], (y)->version[2])
-
-/**
- * module_dm() - Helper macro for DM targets that don't do anything
- * special in their module_init and module_exit.
- * Each module may only use this macro once, and calling it replaces
- * module_init() and module_exit().
- *
- * @name: DM target's name
- */
-#define module_dm(name) \
-static int __init dm_##name##_init(void) \
-{ \
-	return dm_register_target(&(name##_target)); \
-} \
-module_init(dm_##name##_init) \
-static void __exit dm_##name##_exit(void) \
-{ \
-	dm_unregister_target(&(name##_target)); \
-} \
-module_exit(dm_##name##_exit)
 
 /*
  * Definitions of return values from target end_io function.

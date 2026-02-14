@@ -26,18 +26,13 @@
  * for more details.
  *
  */
-
-#include <linux/export.h>
 #include <linux/fb.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
-#include <linux/sysfb.h>
-
+#include <video/edid.h>
 #include <video/of_videomode.h>
 #include <video/videomode.h>
-
 #include "../edid.h"
 
 /*
@@ -323,9 +318,9 @@ static void get_dpms_capabilities(unsigned char flags,
 	if (flags & DPMS_STANDBY)
 		specs->dpms |= FB_DPMS_STANDBY;
 	DPRINTK("      DPMS: Active %s, Suspend %s, Standby %s\n",
-	       str_yes_no(flags & DPMS_ACTIVE_OFF),
-	       str_yes_no(flags & DPMS_SUSPEND),
-	       str_yes_no(flags & DPMS_STANDBY));
+	       (flags & DPMS_ACTIVE_OFF) ? "yes" : "no",
+	       (flags & DPMS_SUSPEND)    ? "yes" : "no",
+	       (flags & DPMS_STANDBY)    ? "yes" : "no");
 }
 
 static void get_chroma(unsigned char *block, struct fb_monspecs *specs)
@@ -1316,7 +1311,7 @@ int fb_get_mode(int flags, u32 val, struct fb_var_screeninfo *var, struct fb_inf
 int fb_videomode_from_videomode(const struct videomode *vm,
 				struct fb_videomode *fbmode)
 {
-	unsigned int htotal, vtotal, total;
+	unsigned int htotal, vtotal;
 
 	fbmode->xres = vm->hactive;
 	fbmode->left_margin = vm->hback_porch;
@@ -1349,9 +1344,8 @@ int fb_videomode_from_videomode(const struct videomode *vm,
 	vtotal = vm->vactive + vm->vfront_porch + vm->vback_porch +
 		 vm->vsync_len;
 	/* prevent division by zero */
-	total = htotal * vtotal;
-	if (total) {
-		fbmode->refresh = vm->pixelclock / total;
+	if (htotal && vtotal) {
+		fbmode->refresh = vm->pixelclock / (htotal * vtotal);
 	/* a mode must have htotal and vtotal != 0 or it is invalid */
 	} else {
 		fbmode->refresh = 0;
@@ -1487,12 +1481,13 @@ int fb_validate_mode(const struct fb_var_screeninfo *var, struct fb_info *info)
 		-EINVAL : 0;
 }
 
+#if defined(CONFIG_FIRMWARE_EDID) && defined(CONFIG_X86)
+
 /*
  * We need to ensure that the EDID block is only returned for
  * the primary graphics adapter.
  */
 
-#if defined(CONFIG_FIRMWARE_EDID)
 const unsigned char *fb_firmware_edid(struct device *device)
 {
 	struct pci_dev *dev = NULL;
@@ -1506,7 +1501,7 @@ const unsigned char *fb_firmware_edid(struct device *device)
 		res = &dev->resource[PCI_ROM_RESOURCE];
 
 	if (res && res->flags & IORESOURCE_ROM_SHADOW)
-		edid = sysfb_primary_display.edid.dummy;
+		edid = edid_info.dummy;
 
 	return edid;
 }

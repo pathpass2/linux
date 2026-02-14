@@ -6,7 +6,6 @@
  *    Author(s): Peter Oberparleiter <peter.oberparleiter@de.ibm.com>
  */
 
-#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/string.h>

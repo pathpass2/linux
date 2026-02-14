@@ -1,6 +1,8 @@
-=======================================
-gxfb - AMD Geode GX2 framebuffer driver
-=======================================
+=============
+What is gxfb?
+=============
+
+.. [This file is cloned from VesaFB/aty128fb]
 
 This is a graphics framebuffer driver for AMD Geode GX2 based processors.
 

@@ -42,7 +42,6 @@ unsigned long relocated_restore_code __visible;
 
 /**
  *	pfn_is_nosave - check if given pfn is in the 'nosave' section
- *	@pfn: the page frame number to check.
  */
 int pfn_is_nosave(unsigned long pfn)
 {
@@ -87,10 +86,7 @@ static inline u32 compute_e820_crc32(struct e820_table *table)
 /**
  *	arch_hibernation_header_save - populate the architecture specific part
  *		of a hibernation image header
- *	@addr: address where architecture specific header data will be saved.
- *	@max_size: maximum size of architecture specific data in hibernation header.
- *
- *	Return: 0 on success, -EOVERFLOW if max_size is insufficient.
+ *	@addr: address to save the data at
  */
 int arch_hibernation_header_save(void *addr, unsigned int max_size)
 {
@@ -169,17 +165,17 @@ int relocate_restore_code(void)
 	pgd = (pgd_t *)__va(read_cr3_pa()) +
 		pgd_index(relocated_restore_code);
 	p4d = p4d_offset(pgd, relocated_restore_code);
-	if (p4d_leaf(*p4d)) {
+	if (p4d_large(*p4d)) {
 		set_p4d(p4d, __p4d(p4d_val(*p4d) & ~_PAGE_NX));
 		goto out;
 	}
 	pud = pud_offset(p4d, relocated_restore_code);
-	if (pud_leaf(*pud)) {
+	if (pud_large(*pud)) {
 		set_pud(pud, __pud(pud_val(*pud) & ~_PAGE_NX));
 		goto out;
 	}
 	pmd = pmd_offset(pud, relocated_restore_code);
-	if (pmd_leaf(*pmd)) {
+	if (pmd_large(*pmd)) {
 		set_pmd(pmd, __pmd(pmd_val(*pmd) & ~_PAGE_NX));
 		goto out;
 	}
@@ -192,8 +188,7 @@ out:
 
 int arch_resume_nosmt(void)
 {
-	int ret;
-
+	int ret = 0;
 	/*
 	 * We reached this while coming out of hibernation. This means
 	 * that SMT siblings are sleeping in hlt, as mwait is not safe
@@ -207,10 +202,18 @@ int arch_resume_nosmt(void)
 	 * Called with hotplug disabled.
 	 */
 	cpu_hotplug_enable();
+	if (cpu_smt_control == CPU_SMT_DISABLED ||
+			cpu_smt_control == CPU_SMT_FORCE_DISABLED) {
+		enum cpuhp_smt_control old = cpu_smt_control;
 
-	ret = arch_cpu_rescan_dead_smt_siblings();
-
+		ret = cpuhp_smt_enable();
+		if (ret)
+			goto out;
+		ret = cpuhp_smt_disable(old);
+		if (ret)
+			goto out;
+	}
+out:
 	cpu_hotplug_disable();
-
 	return ret;
 }

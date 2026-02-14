@@ -124,7 +124,7 @@ static int hclge_send_mbx_msg(struct hclge_vport *vport, u8 *msg, u16 msg_len,
 	return status;
 }
 
-int hclge_inform_vf_reset(struct hclge_vport *vport, u16 reset_type)
+static int hclge_inform_vf_reset(struct hclge_vport *vport, u16 reset_type)
 {
 	__le16 msg_data;
 	u8 dest_vfid;
@@ -193,10 +193,10 @@ static int hclge_get_ring_chain_from_mbx(
 		return -EINVAL;
 
 	for (i = 0; i < ring_num; i++) {
-		if (req->msg.param[i].tqp_index >= vport->nic.kinfo.num_tqps) {
+		if (req->msg.param[i].tqp_index >= vport->nic.kinfo.rss_size) {
 			dev_err(&hdev->pdev->dev, "tqp index(%u) is out of range(0-%u)\n",
 				req->msg.param[i].tqp_index,
-				vport->nic.kinfo.num_tqps - 1U);
+				vport->nic.kinfo.rss_size - 1U);
 			return -EINVAL;
 		}
 	}
@@ -749,17 +749,16 @@ static int hclge_get_rss_key(struct hclge_vport *vport,
 #define HCLGE_RSS_MBX_RESP_LEN	8
 	struct hclge_dev *hdev = vport->back;
 	struct hclge_comm_rss_cfg *rss_cfg;
-	int rss_hash_key_size;
 	u8 index;
 
 	index = mbx_req->msg.data[0];
 	rss_cfg = &hdev->rss_cfg;
-	rss_hash_key_size = sizeof(rss_cfg->rss_hash_key);
 
 	/* Check the query index of rss_hash_key from VF, make sure no
 	 * more than the size of rss_hash_key.
 	 */
-	if (((index + 1) * HCLGE_RSS_MBX_RESP_LEN) > rss_hash_key_size) {
+	if (((index + 1) * HCLGE_RSS_MBX_RESP_LEN) >
+	      sizeof(rss_cfg->rss_hash_key)) {
 		dev_warn(&hdev->pdev->dev,
 			 "failed to get the rss hash key, the index(%u) invalid !\n",
 			 index);
@@ -801,7 +800,7 @@ static void hclge_handle_link_change_event(struct hclge_dev *hdev,
 
 static bool hclge_cmd_crq_empty(struct hclge_hw *hw)
 {
-	int tail = hclge_read_dev(hw, HCLGE_COMM_NIC_CRQ_TAIL_REG);
+	u32 tail = hclge_read_dev(hw, HCLGE_COMM_NIC_CRQ_TAIL_REG);
 
 	return tail == hw->hw.cmq.crq.next_to_use;
 }
@@ -1078,13 +1077,12 @@ static void hclge_mbx_request_handling(struct hclge_mbx_ops_param *param)
 
 	hdev = param->vport->back;
 	cmd_func = hclge_mbx_ops_list[param->req->msg.code];
-	if (!cmd_func) {
+	if (cmd_func)
+		ret = cmd_func(param);
+	else
 		dev_err(&hdev->pdev->dev,
 			"un-supported mailbox message, code = %u\n",
 			param->req->msg.code);
-		return;
-	}
-	ret = cmd_func(param);
 
 	/* PF driver should not reply IMP */
 	if (hnae3_get_bit(param->req->mbx_need_resp, HCLGE_MBX_NEED_RESP_B) &&
@@ -1125,11 +1123,10 @@ void hclge_mbx_handler(struct hclge_dev *hdev)
 		req = (struct hclge_mbx_vf_to_pf_cmd *)desc->data;
 
 		flag = le16_to_cpu(crq->desc[crq->next_to_use].flag);
-		if (unlikely(!hnae3_get_bit(flag, HCLGE_CMDQ_RX_OUTVLD_B) ||
-			     req->mbx_src_vfid > hdev->num_req_vfs)) {
+		if (unlikely(!hnae3_get_bit(flag, HCLGE_CMDQ_RX_OUTVLD_B))) {
 			dev_warn(&hdev->pdev->dev,
-				 "dropped invalid mailbox message, code = %u, vfid = %u\n",
-				 req->msg.code, req->mbx_src_vfid);
+				 "dropped invalid mailbox message, code = %u\n",
+				 req->msg.code);
 
 			/* dropping/not processing this invalid message */
 			crq->desc[crq->next_to_use].flag = 0;

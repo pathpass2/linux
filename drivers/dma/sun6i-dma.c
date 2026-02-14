@@ -14,12 +14,11 @@
 #include <linux/dmapool.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/of_dma.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 #include <linux/types.h>
 
 #include "virt-dma.h"
@@ -554,7 +553,7 @@ static irqreturn_t sun6i_dma_interrupt(int irq, void *dev_id)
 			continue;
 
 		dev_dbg(sdev->slave.dev, "DMA irq status %s: 0x%x\n",
-			str_high_low(i), status);
+			i ? "high" : "low", status);
 
 		writel(status, sdev->base + DMA_IRQ_STAT(i));
 
@@ -1471,7 +1470,7 @@ err_chan_free:
 	return ret;
 }
 
-static void sun6i_dma_remove(struct platform_device *pdev)
+static int sun6i_dma_remove(struct platform_device *pdev)
 {
 	struct sun6i_dma_dev *sdc = platform_get_drvdata(pdev);
 
@@ -1485,6 +1484,8 @@ static void sun6i_dma_remove(struct platform_device *pdev)
 	reset_control_assert(sdc->rstc);
 
 	sun6i_dma_free(sdc);
+
+	return 0;
 }
 
 static struct platform_driver sun6i_dma_driver = {

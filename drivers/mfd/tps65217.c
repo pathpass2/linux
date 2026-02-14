@@ -17,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -158,8 +159,8 @@ static int tps65217_irq_init(struct tps65217 *tps, int irq)
 	tps65217_set_bits(tps, TPS65217_REG_INT, TPS65217_INT_MASK,
 			  TPS65217_INT_MASK, TPS65217_PROTECT_NONE);
 
-	tps->irq_domain = irq_domain_create_linear(dev_fwnode(tps->dev), TPS65217_NUM_IRQ,
-						   &tps65217_irq_domain_ops, tps);
+	tps->irq_domain = irq_domain_add_linear(tps->dev->of_node,
+		TPS65217_NUM_IRQ, &tps65217_irq_domain_ops, tps);
 	if (!tps->irq_domain) {
 		dev_err(tps->dev, "Could not create IRQ domain\n");
 		return -ENOMEM;
@@ -401,7 +402,7 @@ static struct i2c_driver tps65217_driver = {
 		.of_match_table = tps65217_of_match,
 	},
 	.id_table	= tps65217_id_table,
-	.probe		= tps65217_probe,
+	.probe_new	= tps65217_probe,
 	.remove		= tps65217_remove,
 };
 

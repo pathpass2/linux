@@ -23,11 +23,9 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 #include <linux/delay.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <video/udlfb.h>
 #include "edid.h"
-
-#define OUT_EP_NUM	1	/* The endpoint number we will use */
 
 static const struct fb_fix_screeninfo dlfb_fix = {
 	.id =           "udlfb",
@@ -39,7 +37,7 @@ static const struct fb_fix_screeninfo dlfb_fix = {
 	.accel =        FB_ACCEL_NONE,
 };
 
-static const u32 udlfb_info_flags = FBINFO_READS_FAST |
+static const u32 udlfb_info_flags = FBINFO_DEFAULT | FBINFO_READS_FAST |
 		FBINFO_VIRTFB |
 		FBINFO_HWACCEL_IMAGEBLIT | FBINFO_HWACCEL_FILLRECT |
 		FBINFO_HWACCEL_COPYAREA | FBINFO_MISC_ALWAYS_SETPAR;
@@ -330,8 +328,6 @@ static int dlfb_ops_mmap(struct fb_info *info, struct vm_area_struct *vma)
 
 	if (info->fbdefio)
 		return fb_deferred_io_mmap(info, vma);
-
-	vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
 
 	if (vma->vm_pgoff > (~0UL >> PAGE_SHIFT))
 		return -EINVAL;
@@ -718,6 +714,68 @@ static void dlfb_offload_damage(struct dlfb_data *dlfb, int x, int y, int width,
 }
 
 /*
+ * Path triggered by usermode clients who write to filesystem
+ * e.g. cat filename > /dev/fb1
+ * Not used by X Windows or text-mode console. But useful for testing.
+ * Slow because of extra copy and we must assume all pixels dirty.
+ */
+static ssize_t dlfb_ops_write(struct fb_info *info, const char __user *buf,
+			  size_t count, loff_t *ppos)
+{
+	ssize_t result;
+	struct dlfb_data *dlfb = info->par;
+	u32 offset = (u32) *ppos;
+
+	result = fb_sys_write(info, buf, count, ppos);
+
+	if (result > 0) {
+		int start = max((int)(offset / info->fix.line_length), 0);
+		int lines = min((u32)((result / info->fix.line_length) + 1),
+				(u32)info->var.yres);
+
+		dlfb_handle_damage(dlfb, 0, start, info->var.xres,
+			lines);
+	}
+
+	return result;
+}
+
+/* hardware has native COPY command (see libdlo), but not worth it for fbcon */
+static void dlfb_ops_copyarea(struct fb_info *info,
+				const struct fb_copyarea *area)
+{
+
+	struct dlfb_data *dlfb = info->par;
+
+	sys_copyarea(info, area);
+
+	dlfb_offload_damage(dlfb, area->dx, area->dy,
+			area->width, area->height);
+}
+
+static void dlfb_ops_imageblit(struct fb_info *info,
+				const struct fb_image *image)
+{
+	struct dlfb_data *dlfb = info->par;
+
+	sys_imageblit(info, image);
+
+	dlfb_offload_damage(dlfb, image->dx, image->dy,
+			image->width, image->height);
+}
+
+static void dlfb_ops_fillrect(struct fb_info *info,
+			  const struct fb_fillrect *rect)
+{
+	struct dlfb_data *dlfb = info->par;
+
+	sys_fillrect(info, rect);
+
+	dlfb_offload_damage(dlfb, rect->dx, rect->dy, rect->width,
+			      rect->height);
+}
+
+/*
  * NOTE: fb_defio.c is holding info->fbdefio.mutex
  *   Touching ANY framebuffer memory that triggers a page fault
  *   in fb_defio will cause a deadlock, when it also tries to
@@ -948,7 +1006,7 @@ static void dlfb_ops_destroy(struct fb_info *info)
 		fb_dealloc_cmap(&info->cmap);
 	if (info->monspecs.modedb)
 		fb_destroy_modedb(info->monspecs.modedb);
-	vfree(info->screen_buffer);
+	vfree(info->screen_base);
 
 	fb_destroy_modelist(&info->modelist);
 
@@ -1062,7 +1120,7 @@ static int dlfb_ops_set_par(struct fb_info *info)
 
 		/* paint greenscreen */
 
-		pix_framebuffer = (u16 *)info->screen_buffer;
+		pix_framebuffer = (u16 *) info->screen_base;
 		for (i = 0; i < info->fix.smem_len / 2; i++)
 			pix_framebuffer[i] = 0x37e6;
 	}
@@ -1126,31 +1184,14 @@ static int dlfb_ops_blank(int blank_mode, struct fb_info *info)
 	return 0;
 }
 
-static void dlfb_ops_damage_range(struct fb_info *info, off_t off, size_t len)
-{
-	struct dlfb_data *dlfb = info->par;
-	int start = max((int)(off / info->fix.line_length), 0);
-	int lines = min((u32)((len / info->fix.line_length) + 1), (u32)info->var.yres);
-
-	dlfb_handle_damage(dlfb, 0, start, info->var.xres, lines);
-}
-
-static void dlfb_ops_damage_area(struct fb_info *info, u32 x, u32 y, u32 width, u32 height)
-{
-	struct dlfb_data *dlfb = info->par;
-
-	dlfb_offload_damage(dlfb, x, y, width, height);
-}
-
-FB_GEN_DEFAULT_DEFERRED_SYSMEM_OPS(dlfb_ops,
-				   dlfb_ops_damage_range,
-				   dlfb_ops_damage_area)
-
 static const struct fb_ops dlfb_ops = {
 	.owner = THIS_MODULE,
-	__FB_DEFAULT_DEFERRED_OPS_RDWR(dlfb_ops),
+	.fb_read = fb_sys_read,
+	.fb_write = dlfb_ops_write,
 	.fb_setcolreg = dlfb_ops_setcolreg,
-	__FB_DEFAULT_DEFERRED_OPS_DRAW(dlfb_ops),
+	.fb_fillrect = dlfb_ops_fillrect,
+	.fb_copyarea = dlfb_ops_copyarea,
+	.fb_imageblit = dlfb_ops_imageblit,
 	.fb_mmap = dlfb_ops_mmap,
 	.fb_ioctl = dlfb_ops_ioctl,
 	.fb_open = dlfb_ops_open,
@@ -1178,7 +1219,7 @@ static void dlfb_deferred_vfree(struct dlfb_data *dlfb, void *mem)
 static int dlfb_realloc_framebuffer(struct dlfb_data *dlfb, struct fb_info *info, u32 new_len)
 {
 	u32 old_len = info->fix.smem_len;
-	const void *old_fb = info->screen_buffer;
+	const void *old_fb = (const void __force *)info->screen_base;
 	unsigned char *new_fb;
 	unsigned char *new_back = NULL;
 
@@ -1195,12 +1236,12 @@ static int dlfb_realloc_framebuffer(struct dlfb_data *dlfb, struct fb_info *info
 		}
 		memset(new_fb, 0xff, new_len);
 
-		if (info->screen_buffer) {
+		if (info->screen_base) {
 			memcpy(new_fb, old_fb, old_len);
-			dlfb_deferred_vfree(dlfb, info->screen_buffer);
+			dlfb_deferred_vfree(dlfb, (void __force *)info->screen_base);
 		}
 
-		info->screen_buffer = new_fb;
+		info->screen_base = (char __iomem *)new_fb;
 		info->fix.smem_len = new_len;
 		info->fix.smem_start = (unsigned long) new_fb;
 		info->flags = udlfb_info_flags;
@@ -1416,7 +1457,7 @@ static ssize_t metrics_cpu_kcycles_used_show(struct device *fbdev,
 
 static ssize_t edid_show(
 			struct file *filp,
-			struct kobject *kobj, const struct bin_attribute *a,
+			struct kobject *kobj, struct bin_attribute *a,
 			 char *buf, loff_t off, size_t count) {
 	struct device *fbdev = kobj_to_dev(kobj);
 	struct fb_info *fb_info = dev_get_drvdata(fbdev);
@@ -1438,7 +1479,7 @@ static ssize_t edid_show(
 
 static ssize_t edid_store(
 			struct file *filp,
-			struct kobject *kobj, const struct bin_attribute *a,
+			struct kobject *kobj, struct bin_attribute *a,
 			char *src, loff_t src_off, size_t src_size) {
 	struct device *fbdev = kobj_to_dev(kobj);
 	struct fb_info *fb_info = dev_get_drvdata(fbdev);
@@ -1500,16 +1541,24 @@ static const struct device_attribute fb_device_attrs[] = {
 static int dlfb_select_std_channel(struct dlfb_data *dlfb)
 {
 	int ret;
+	void *buf;
 	static const u8 set_def_chn[] = {
 				0x57, 0xCD, 0xDC, 0xA7,
 				0x1C, 0x88, 0x5E, 0x15,
 				0x60, 0xFE, 0xC6, 0x97,
 				0x16, 0x3D, 0x47, 0xF2  };
 
-	ret = usb_control_msg_send(dlfb->udev, 0, NR_USB_REQUEST_CHANNEL,
+	buf = kmemdup(set_def_chn, sizeof(set_def_chn), GFP_KERNEL);
+
+	if (!buf)
+		return -ENOMEM;
+
+	ret = usb_control_msg(dlfb->udev, usb_sndctrlpipe(dlfb->udev, 0),
+			NR_USB_REQUEST_CHANNEL,
 			(USB_DIR_OUT | USB_TYPE_VENDOR), 0, 0,
-			&set_def_chn, sizeof(set_def_chn), USB_CTRL_SET_TIMEOUT,
-			GFP_KERNEL);
+			buf, sizeof(set_def_chn), USB_CTRL_SET_TIMEOUT);
+
+	kfree(buf);
 
 	return ret;
 }
@@ -1603,7 +1652,7 @@ static int dlfb_usb_probe(struct usb_interface *intf,
 	struct fb_info *info;
 	int retval;
 	struct usb_device *usbdev = interface_to_usbdev(intf);
-	static u8 out_ep[] = {OUT_EP_NUM + USB_DIR_OUT, 0};
+	struct usb_endpoint_descriptor *out;
 
 	/* usb initialization */
 	dlfb = kzalloc(sizeof(*dlfb), GFP_KERNEL);
@@ -1617,9 +1666,9 @@ static int dlfb_usb_probe(struct usb_interface *intf,
 	dlfb->udev = usb_get_dev(usbdev);
 	usb_set_intfdata(intf, dlfb);
 
-	if (!usb_check_bulk_endpoints(intf, out_ep)) {
-		dev_err(&intf->dev, "Invalid DisplayLink device!\n");
-		retval = -EINVAL;
+	retval = usb_find_common_endpoints(intf->cur_altsetting, NULL, &out, NULL, NULL);
+	if (retval) {
+		dev_err(&intf->dev, "Device should have at lease 1 bulk endpoint!\n");
 		goto error;
 	}
 
@@ -1878,8 +1927,7 @@ retry:
 		}
 
 		/* urb->transfer_buffer_length set to actual before submit */
-		usb_fill_bulk_urb(urb, dlfb->udev,
-			usb_sndbulkpipe(dlfb->udev, OUT_EP_NUM),
+		usb_fill_bulk_urb(urb, dlfb->udev, usb_sndbulkpipe(dlfb->udev, 1),
 			buf, size, dlfb_urb_completion, unode);
 		urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 

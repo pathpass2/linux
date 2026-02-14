@@ -41,13 +41,15 @@ static inline void pmd_populate(struct mm_struct *mm, pmd_t *pmd,
  */
 static inline pgd_t *pgd_alloc(struct mm_struct *mm)
 {
-	pgd_t *ret = __pgd_alloc(mm, 0);
+	pgd_t *ret = (pgd_t *)__get_free_page(GFP_KERNEL);
 
-	if (ret)
+	if (ret) {
+		memset(ret, 0, USER_PTRS_PER_PGD * sizeof(pgd_t));
 		memcpy(ret + USER_PTRS_PER_PGD,
 		       swapper_pg_dir + USER_PTRS_PER_PGD,
 		       (PTRS_PER_PGD - USER_PTRS_PER_PGD) * sizeof(pgd_t));
 
+	}
 	return ret;
 }
 
@@ -65,6 +67,9 @@ extern inline pgd_t *pgd_alloc(struct mm_struct *mm)
 extern pte_t *pte_alloc_one_kernel(struct mm_struct *mm);
 
 #define __pte_free_tlb(tlb, pte, addr)	\
-	tlb_remove_ptdesc((tlb), page_ptdesc(pte))
+do {					\
+	pgtable_pte_page_dtor(pte);	\
+	tlb_remove_page((tlb), (pte));	\
+} while (0)
 
 #endif

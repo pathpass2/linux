@@ -54,7 +54,7 @@ static void quirk_fsl_pcie_early(struct pci_dev *dev)
 
 	/* if we aren't in host mode don't bother */
 	pci_read_config_byte(dev, PCI_HEADER_TYPE, &hdr_type);
-	if ((hdr_type & PCI_HEADER_TYPE_MASK) != PCI_HEADER_TYPE_BRIDGE)
+	if ((hdr_type & 0x7f) != PCI_HEADER_TYPE_BRIDGE)
 		return;
 
 	dev->class = PCI_CLASS_BRIDGE_PCI_NORMAL;
@@ -519,7 +519,7 @@ void fsl_pcibios_fixup_bus(struct pci_bus *bus)
 	}
 }
 
-static int fsl_add_bridge(struct platform_device *pdev, int is_primary)
+int fsl_add_bridge(struct platform_device *pdev, int is_primary)
 {
 	int len;
 	struct pci_controller *hose;
@@ -581,7 +581,7 @@ static int fsl_add_bridge(struct platform_device *pdev, int is_primary)
 		hose->ops = &fsl_indirect_pcie_ops;
 		/* For PCIE read HEADER_TYPE to identify controller mode */
 		early_read_config_byte(hose, 0, 0, PCI_HEADER_TYPE, &hdr_type);
-		if ((hdr_type & PCI_HEADER_TYPE_MASK) != PCI_HEADER_TYPE_BRIDGE)
+		if ((hdr_type & 0x7f) != PCI_HEADER_TYPE_BRIDGE)
 			goto no_bridge;
 
 	} else {
@@ -767,7 +767,7 @@ static int __init mpc83xx_pcie_setup(struct pci_controller *hose,
 	u32 cfg_bar;
 	int ret = -ENOMEM;
 
-	pcie = kzalloc(sizeof(*pcie), GFP_KERNEL);
+	pcie = zalloc_maybe_bootmem(sizeof(*pcie), GFP_KERNEL);
 	if (!pcie)
 		return ret;
 
@@ -1258,7 +1258,7 @@ static void fsl_pci_syscore_do_suspend(struct pci_controller *hose)
 	send_pme_turnoff_message(hose);
 }
 
-static int fsl_pci_syscore_suspend(void *data)
+static int fsl_pci_syscore_suspend(void)
 {
 	struct pci_controller *hose, *tmp;
 
@@ -1291,7 +1291,7 @@ static void fsl_pci_syscore_do_resume(struct pci_controller *hose)
 	setup_pci_atmu(hose);
 }
 
-static void fsl_pci_syscore_resume(void *data)
+static void fsl_pci_syscore_resume(void)
 {
 	struct pci_controller *hose, *tmp;
 
@@ -1299,13 +1299,9 @@ static void fsl_pci_syscore_resume(void *data)
 		fsl_pci_syscore_do_resume(hose);
 }
 
-static const struct syscore_ops pci_syscore_pm_ops = {
+static struct syscore_ops pci_syscore_pm_ops = {
 	.suspend = fsl_pci_syscore_suspend,
 	.resume = fsl_pci_syscore_resume,
-};
-
-static struct syscore pci_syscore_pm = {
-	.ops = &pci_syscore_pm_ops,
 };
 #endif
 
@@ -1357,13 +1353,12 @@ static struct platform_driver fsl_pci_driver = {
 		.of_match_table = pci_ids,
 	},
 	.probe = fsl_pci_probe,
-	.driver_managed_dma = true,
 };
 
 static int __init fsl_pci_init(void)
 {
 #ifdef CONFIG_PM_SLEEP
-	register_syscore(&pci_syscore_pm);
+	register_syscore_ops(&pci_syscore_pm_ops);
 #endif
 	return platform_driver_register(&fsl_pci_driver);
 }

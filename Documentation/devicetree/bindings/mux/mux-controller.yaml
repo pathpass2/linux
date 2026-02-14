@@ -20,6 +20,7 @@ description: |
   space is a simple zero-based enumeration. I.e. 0-1 for a 2-way multiplexer,
   0-7 for an 8-way multiplexer, etc.
 
+
   Mux controller nodes
   --------------------
 
@@ -73,7 +74,7 @@ select:
 
 properties:
   $nodename:
-    pattern: '^mux-controller(@.*|-([0-9]|[1-9][0-9]+))?$'
+    pattern: '^mux-controller(@.*|-[0-9a-f]+)?$'
 
   '#mux-control-cells':
     enum: [ 0, 1 ]

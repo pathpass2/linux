@@ -26,8 +26,6 @@
 #define mmSQ_DEBUG_STS_GLOBAL_BASE_IDX                                                                 0
 #define mmSQ_DEBUG_STS_GLOBAL2                                                                         0x10B0
 #define mmSQ_DEBUG_STS_GLOBAL2_BASE_IDX                                                                0
-#define mmSQ_DEBUG                                                                                     0x10B1
-#define mmSQ_DEBUG_BASE_IDX                                                                            0
 
 // addressBlock: gc_sdma0_sdma0dec
 // base address: 0x4980
@@ -4493,8 +4491,6 @@
 #define mmCP_ECC_FIRSTOCCURRENCE_RING2_BASE_IDX                                                        0
 #define mmGB_EDC_MODE                                                                                  0x1e1e
 #define mmGB_EDC_MODE_BASE_IDX                                                                         0
-#define mmCP_DEBUG                                                                                     0x1e1f
-#define mmCP_DEBUG_BASE_IDX                                                                            0
 #define mmCP_PQ_WPTR_POLL_CNTL                                                                         0x1e23
 #define mmCP_PQ_WPTR_POLL_CNTL_BASE_IDX                                                                0
 #define mmCP_PQ_WPTR_POLL_CNTL1                                                                        0x1e24
@@ -4535,10 +4531,6 @@
 #define mmCP_GFX_QUEUE_INDEX_BASE_IDX                                                                  0
 #define mmCC_GC_EDC_CONFIG                                                                             0x1e38
 #define mmCC_GC_EDC_CONFIG_BASE_IDX                                                                    0
-#define mmCP_ME1_INT_STAT_DEBUG                                                                        0x1e35
-#define mmCP_ME1_INT_STAT_DEBUG_BASE_IDX                                                               0
-#define mmCP_ME2_INT_STAT_DEBUG                                                                        0x1e36
-#define mmCP_ME2_INT_STAT_DEBUG_BASE_IDX                                                               0
 #define mmCP_ME1_PIPE_PRIORITY_CNTS                                                                    0x1e39
 #define mmCP_ME1_PIPE_PRIORITY_CNTS_BASE_IDX                                                           0
 #define mmCP_ME1_PIPE0_PRIORITY                                                                        0x1e3a
@@ -4857,18 +4849,10 @@
 #define mmSPI_WCL_PIPE_PERCENT_CS3_BASE_IDX                                                            0
 #define mmSPI_GDBG_WAVE_CNTL                                                                           0x1f71
 #define mmSPI_GDBG_WAVE_CNTL_BASE_IDX                                                                  0
-#define mmSPI_GDBG_TRAP_CONFIG                                                                         0x1f72
-#define mmSPI_GDBG_TRAP_CONFIG_BASE_IDX                                                                0
 #define mmSPI_GDBG_TRAP_MASK                                                                           0x1f73
 #define mmSPI_GDBG_TRAP_MASK_BASE_IDX                                                                  0
 #define mmSPI_GDBG_WAVE_CNTL2                                                                          0x1f74
 #define mmSPI_GDBG_WAVE_CNTL2_BASE_IDX                                                                 0
-#define mmSPI_GDBG_WAVE_CNTL3                                                                          0x1f75
-#define mmSPI_GDBG_WAVE_CNTL3_BASE_IDX                                                                 0
-#define mmSPI_GDBG_TRAP_DATA0                                                                          0x1f78
-#define mmSPI_GDBG_TRAP_DATA0_BASE_IDX                                                                 0
-#define mmSPI_GDBG_TRAP_DATA1                                                                          0x1f79
-#define mmSPI_GDBG_TRAP_DATA1_BASE_IDX                                                                 0
 #define mmSPI_COMPUTE_QUEUE_RESET                                                                      0x1f7b
 #define mmSPI_COMPUTE_QUEUE_RESET_BASE_IDX                                                             0
 #define mmSPI_RESOURCE_RESERVE_CU_0                                                                    0x1f7c
@@ -5157,8 +5141,6 @@
 #define mmTCP_WATCH3_ADDR_L_BASE_IDX                                                                   0
 #define mmTCP_WATCH3_CNTL                                                                              0x204b
 #define mmTCP_WATCH3_CNTL_BASE_IDX                                                                     0
-#define mmTCP_UTCL0_STATUS                                                                             0x2057
-#define mmTCP_UTCL0_STATUS_BASE_IDX                                                                    0
 #define mmTCP_PERFCOUNTER_FILTER                                                                       0x2059
 #define mmTCP_PERFCOUNTER_FILTER_BASE_IDX                                                              0
 #define mmTCP_PERFCOUNTER_FILTER_EN                                                                    0x205a
@@ -6955,8 +6937,6 @@
 #define mmCP_CE_IB1_CMD_BUFSZ_BASE_IDX                                                                 1
 #define mmCP_CE_IB2_CMD_BUFSZ                                                                          0x20bf
 #define mmCP_CE_IB2_CMD_BUFSZ_BASE_IDX                                                                 1
-#define mmCP_IB1_CMD_BUFSZ                                                                             0x20c0
-#define mmCP_IB1_CMD_BUFSZ_BASE_IDX                                                                    1
 #define mmCP_IB2_CMD_BUFSZ                                                                             0x20c1
 #define mmCP_IB2_CMD_BUFSZ_BASE_IDX                                                                    1
 #define mmCP_ST_CMD_BUFSZ                                                                              0x20c2
@@ -7419,8 +7399,6 @@
 #define mmCP_MES_DOORBELL_CONTROL5_BASE_IDX                                                            1
 #define mmCP_MES_DOORBELL_CONTROL6                                                                     0x2841
 #define mmCP_MES_DOORBELL_CONTROL6_BASE_IDX                                                            1
-#define mmCP_MES_DEBUG_INTERRUPT_INSTR_PNTR                                                            0x2842
-#define mmCP_MES_DEBUG_INTERRUPT_INSTR_PNTR_BASE_IDX                                                   1
 #define mmCP_MES_GP0_LO                                                                                0x2843
 #define mmCP_MES_GP0_LO_BASE_IDX                                                                       1
 #define mmCP_MES_GP0_HI                                                                                0x2844
@@ -9148,16 +9126,10 @@
 #define mmRLC_LB_CNTR_INIT_1_BASE_IDX                                                                  1
 #define mmRLC_LB_CNTR_1                                                                                0x4c1c
 #define mmRLC_LB_CNTR_1_BASE_IDX                                                                       1
-#define mmRLC_GPM_DEBUG_INST_ADDR                                                                      0x4c1d
-#define mmRLC_GPM_DEBUG_INST_ADDR_BASE_IDX                                                             1
 #define mmRLC_JUMP_TABLE_RESTORE                                                                       0x4c1e
 #define mmRLC_JUMP_TABLE_RESTORE_BASE_IDX                                                              1
 #define mmRLC_PG_DELAY_2                                                                               0x4c1f
 #define mmRLC_PG_DELAY_2_BASE_IDX                                                                      1
-#define mmRLC_GPM_DEBUG_INST_A                                                                         0x4c22
-#define mmRLC_GPM_DEBUG_INST_A_BASE_IDX                                                                1
-#define mmRLC_GPM_DEBUG_INST_B                                                                         0x4c23
-#define mmRLC_GPM_DEBUG_INST_B_BASE_IDX                                                                1
 #define mmRLC_GPU_CLOCK_COUNT_LSB                                                                      0x4c24
 #define mmRLC_GPU_CLOCK_COUNT_LSB_BASE_IDX                                                             1
 #define mmRLC_GPU_CLOCK_COUNT_MSB                                                                      0x4c25
@@ -9622,8 +9594,6 @@
 #define mmRLC_SPM_THREAD_TRACE_CTRL_BASE_IDX                                                           1
 #define mmRLC_LB_CNTR_2                                                                                0x4de7
 #define mmRLC_LB_CNTR_2_BASE_IDX                                                                       1
-#define mmRLC_LX6_CORE_PDEBUG_INST                                                                     0x4deb
-#define mmRLC_LX6_CORE_PDEBUG_INST_BASE_IDX                                                            1
 #define mmRLC_CPAXI_DOORBELL_MON_CTRL                                                                  0x4df1
 #define mmRLC_CPAXI_DOORBELL_MON_CTRL_BASE_IDX                                                         1
 #define mmRLC_CPAXI_DOORBELL_MON_STAT                                                                  0x4df2

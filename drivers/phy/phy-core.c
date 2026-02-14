@@ -11,7 +11,6 @@
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/err.h>
-#include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/of.h>
@@ -20,13 +19,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 
-static void phy_release(struct device *dev);
-static const struct class phy_class = {
-	.name = "phy",
-	.dev_release = phy_release,
-};
-
-static struct dentry *phy_debugfs_root;
+static struct class *phy_class;
 static DEFINE_MUTEX(phy_provider_mutex);
 static LIST_HEAD(phy_provider_list);
 static LIST_HEAD(phys);
@@ -145,10 +138,8 @@ static struct phy_provider *of_phy_provider_lookup(struct device_node *node)
 			return phy_provider;
 
 		for_each_child_of_node(phy_provider->children, child)
-			if (child == node) {
-				of_node_put(child);
+			if (child == node)
 				return phy_provider;
-			}
 	}
 
 	return ERR_PTR(-EPROBE_DEFER);
@@ -213,6 +204,30 @@ int phy_pm_runtime_put_sync(struct phy *phy)
 	return pm_runtime_put_sync(&phy->dev);
 }
 EXPORT_SYMBOL_GPL(phy_pm_runtime_put_sync);
+
+void phy_pm_runtime_allow(struct phy *phy)
+{
+	if (!phy)
+		return;
+
+	if (!pm_runtime_enabled(&phy->dev))
+		return;
+
+	pm_runtime_allow(&phy->dev);
+}
+EXPORT_SYMBOL_GPL(phy_pm_runtime_allow);
+
+void phy_pm_runtime_forbid(struct phy *phy)
+{
+	if (!phy)
+		return;
+
+	if (!pm_runtime_enabled(&phy->dev))
+		return;
+
+	pm_runtime_forbid(&phy->dev);
+}
+EXPORT_SYMBOL_GPL(phy_pm_runtime_forbid);
 
 /**
  * phy_init - phy internal initialization before phy operation
@@ -361,7 +376,7 @@ int phy_power_off(struct phy *phy)
 
 	mutex_lock(&phy->mutex);
 	if (phy->power_count == 1 && phy->ops->power_off) {
-		ret = phy->ops->power_off(phy);
+		ret =  phy->ops->power_off(phy);
 		if (ret < 0) {
 			dev_err(&phy->dev, "phy poweroff failed --> %d\n", ret);
 			mutex_unlock(&phy->mutex);
@@ -381,14 +396,13 @@ EXPORT_SYMBOL_GPL(phy_power_off);
 
 int phy_set_mode_ext(struct phy *phy, enum phy_mode mode, int submode)
 {
-	int ret = 0;
+	int ret;
 
-	if (!phy)
+	if (!phy || !phy->ops->set_mode)
 		return 0;
 
 	mutex_lock(&phy->mutex);
-	if (phy->ops->set_mode)
-		ret = phy->ops->set_mode(phy, mode, submode);
+	ret = phy->ops->set_mode(phy, mode, submode);
 	if (!ret)
 		phy->attrs.mode = mode;
 	mutex_unlock(&phy->mutex);
@@ -472,78 +486,6 @@ int phy_calibrate(struct phy *phy)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(phy_calibrate);
-
-/**
- * phy_notify_connect() - phy connect notification
- * @phy: the phy returned by phy_get()
- * @port: the port index for connect
- *
- * If the phy needs to get connection status, the callback can be used.
- * Returns: %0 if successful, a negative error code otherwise
- */
-int phy_notify_connect(struct phy *phy, int port)
-{
-	int ret;
-
-	if (!phy || !phy->ops->connect)
-		return 0;
-
-	mutex_lock(&phy->mutex);
-	ret = phy->ops->connect(phy, port);
-	mutex_unlock(&phy->mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(phy_notify_connect);
-
-/**
- * phy_notify_disconnect() - phy disconnect notification
- * @phy: the phy returned by phy_get()
- * @port: the port index for disconnect
- *
- * If the phy needs to get connection status, the callback can be used.
- *
- * Returns: %0 if successful, a negative error code otherwise
- */
-int phy_notify_disconnect(struct phy *phy, int port)
-{
-	int ret;
-
-	if (!phy || !phy->ops->disconnect)
-		return 0;
-
-	mutex_lock(&phy->mutex);
-	ret = phy->ops->disconnect(phy, port);
-	mutex_unlock(&phy->mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(phy_notify_disconnect);
-
-/**
- * phy_notify_state() - phy state notification
- * @phy: the PHY returned by phy_get()
- * @state: the PHY state
- *
- * Notify the PHY of a state transition. Used to notify and
- * configure the PHY accordingly.
- *
- * Returns: %0 if successful, a negative error code otherwise
- */
-int phy_notify_state(struct phy *phy, union phy_notify state)
-{
-	int ret;
-
-	if (!phy || !phy->ops->notify_phystate)
-		return 0;
-
-	mutex_lock(&phy->mutex);
-	ret = phy->ops->notify_phystate(phy, state);
-	mutex_unlock(&phy->mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(phy_notify_state);
 
 /**
  * phy_configure() - Changes the phy parameters
@@ -633,10 +575,8 @@ static struct phy *_of_phy_get(struct device_node *np, int index)
 		return ERR_PTR(-ENODEV);
 
 	/* This phy type handled by the usb-phy subsystem for now */
-	if (of_device_is_compatible(args.np, "usb-nop-xceiv")) {
-		phy = ERR_PTR(-ENODEV);
-		goto out_put_node;
-	}
+	if (of_device_is_compatible(args.np, "usb-nop-xceiv"))
+		return ERR_PTR(-ENODEV);
 
 	mutex_lock(&phy_provider_mutex);
 	phy_provider = of_phy_provider_lookup(args.np);
@@ -658,7 +598,6 @@ out_put_module:
 
 out_unlock:
 	mutex_unlock(&phy_provider_mutex);
-out_put_node:
 	of_node_put(args.np);
 
 	return phy;
@@ -671,7 +610,7 @@ out_put_node:
  *
  * Returns the phy driver, after getting a refcount to it; or
  * -ENODEV if there is no such phy. The caller is responsible for
- * calling of_phy_put() to release that count.
+ * calling phy_put() to release that count.
  */
 struct phy *of_phy_get(struct device_node *np, const char *con_id)
 {
@@ -744,32 +683,39 @@ void devm_phy_put(struct device *dev, struct phy *phy)
 	if (!phy)
 		return;
 
-	r = devres_release(dev, devm_phy_release, devm_phy_match, phy);
+	r = devres_destroy(dev, devm_phy_release, devm_phy_match, phy);
 	dev_WARN_ONCE(dev, r, "couldn't find PHY resource\n");
 }
 EXPORT_SYMBOL_GPL(devm_phy_put);
 
 /**
  * of_phy_simple_xlate() - returns the phy instance from phy provider
- * @dev: the PHY provider device (not used here)
- * @args: of_phandle_args
+ * @dev: the PHY provider device
+ * @args: of_phandle_args (not used here)
  *
  * Intended to be used by phy provider for the common case where #phy-cells is
  * 0. For other cases where #phy-cells is greater than '0', the phy provider
  * should provide a custom of_xlate function that reads the *args* and returns
  * the appropriate phy.
  */
-struct phy *of_phy_simple_xlate(struct device *dev,
-				const struct of_phandle_args *args)
+struct phy *of_phy_simple_xlate(struct device *dev, struct of_phandle_args
+	*args)
 {
-	struct device *target_dev;
+	struct phy *phy;
+	struct class_dev_iter iter;
 
-	target_dev = class_find_device_by_of_node(&phy_class, args->np);
-	if (!target_dev)
-		return ERR_PTR(-ENODEV);
+	class_dev_iter_init(&iter, phy_class, NULL, NULL);
+	while ((dev = class_dev_iter_next(&iter))) {
+		phy = to_phy(dev);
+		if (args->np != phy->dev.of_node)
+			continue;
 
-	put_device(target_dev);
-	return to_phy(target_dev);
+		class_dev_iter_exit(&iter);
+		return phy;
+	}
+
+	class_dev_iter_exit(&iter);
+	return ERR_PTR(-ENODEV);
 }
 EXPORT_SYMBOL_GPL(of_phy_simple_xlate);
 
@@ -1011,7 +957,7 @@ struct phy *phy_create(struct device *dev, struct device_node *node,
 	if (!phy)
 		return ERR_PTR(-ENOMEM);
 
-	id = ida_alloc(&phy_ida, GFP_KERNEL);
+	id = ida_simple_get(&phy_ida, 0, 0, GFP_KERNEL);
 	if (id < 0) {
 		dev_err(dev, "unable to get id\n");
 		ret = id;
@@ -1019,10 +965,9 @@ struct phy *phy_create(struct device *dev, struct device_node *node,
 	}
 
 	device_initialize(&phy->dev);
-	lockdep_register_key(&phy->lockdep_key);
-	mutex_init_with_key(&phy->mutex, &phy->lockdep_key);
+	mutex_init(&phy->mutex);
 
-	phy->dev.class = &phy_class;
+	phy->dev.class = phy_class;
 	phy->dev.parent = dev;
 	phy->dev.of_node = node ?: dev->of_node;
 	phy->id = id;
@@ -1050,8 +995,6 @@ struct phy *phy_create(struct device *dev, struct device_node *node,
 		pm_runtime_enable(&phy->dev);
 		pm_runtime_no_callbacks(&phy->dev);
 	}
-
-	phy->debugfs = debugfs_create_dir(dev_name(&phy->dev), phy_debugfs_root);
 
 	return phy;
 
@@ -1122,7 +1065,7 @@ void devm_phy_destroy(struct device *dev, struct phy *phy)
 {
 	int r;
 
-	r = devres_release(dev, devm_phy_consume, devm_phy_match, phy);
+	r = devres_destroy(dev, devm_phy_consume, devm_phy_match, phy);
 	dev_WARN_ONCE(dev, r, "couldn't find PHY resource\n");
 }
 EXPORT_SYMBOL_GPL(devm_phy_destroy);
@@ -1148,7 +1091,7 @@ EXPORT_SYMBOL_GPL(devm_phy_destroy);
 struct phy_provider *__of_phy_provider_register(struct device *dev,
 	struct device_node *children, struct module *owner,
 	struct phy * (*of_xlate)(struct device *dev,
-				 const struct of_phandle_args *args))
+				 struct of_phandle_args *args))
 {
 	struct phy_provider *phy_provider;
 
@@ -1211,7 +1154,7 @@ EXPORT_SYMBOL_GPL(__of_phy_provider_register);
 struct phy_provider *__devm_of_phy_provider_register(struct device *dev,
 	struct device_node *children, struct module *owner,
 	struct phy * (*of_xlate)(struct device *dev,
-				 const struct of_phandle_args *args))
+				 struct of_phandle_args *args))
 {
 	struct phy_provider **ptr, *phy_provider;
 
@@ -1260,12 +1203,12 @@ EXPORT_SYMBOL_GPL(of_phy_provider_unregister);
  * of_phy_provider_unregister to unregister the phy provider.
  */
 void devm_of_phy_provider_unregister(struct device *dev,
-				     struct phy_provider *phy_provider)
+	struct phy_provider *phy_provider)
 {
 	int r;
 
-	r = devres_release(dev, devm_phy_provider_release, devm_phy_match,
-			   phy_provider);
+	r = devres_destroy(dev, devm_phy_provider_release, devm_phy_match,
+		phy_provider);
 	dev_WARN_ONCE(dev, r, "couldn't find PHY provider device resource\n");
 }
 EXPORT_SYMBOL_GPL(devm_of_phy_provider_unregister);
@@ -1283,33 +1226,22 @@ static void phy_release(struct device *dev)
 
 	phy = to_phy(dev);
 	dev_vdbg(dev, "releasing '%s'\n", dev_name(dev));
-	debugfs_remove_recursive(phy->debugfs);
 	regulator_put(phy->pwr);
-	mutex_destroy(&phy->mutex);
-	lockdep_unregister_key(&phy->lockdep_key);
-	ida_free(&phy_ida, phy->id);
+	ida_simple_remove(&phy_ida, phy->id);
 	kfree(phy);
 }
 
 static int __init phy_core_init(void)
 {
-	int err;
-
-	err = class_register(&phy_class);
-	if (err) {
-		pr_err("failed to register phy class");
-		return err;
+	phy_class = class_create(THIS_MODULE, "phy");
+	if (IS_ERR(phy_class)) {
+		pr_err("failed to create phy class --> %ld\n",
+			PTR_ERR(phy_class));
+		return PTR_ERR(phy_class);
 	}
 
-	phy_debugfs_root = debugfs_create_dir("phy", NULL);
+	phy_class->dev_release = phy_release;
 
 	return 0;
 }
 device_initcall(phy_core_init);
-
-static void __exit phy_core_exit(void)
-{
-	debugfs_remove_recursive(phy_debugfs_root);
-	class_unregister(&phy_class);
-}
-module_exit(phy_core_exit);

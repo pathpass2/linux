@@ -3,16 +3,6 @@ Kernel driver sht21
 
 Supported chips:
 
-  * Sensirion SHT20
-
-    Prefix: 'sht20'
-
-    Addresses scanned: none
-
-    Datasheet: Publicly available at the Sensirion website
-
-    https://www.sensirion.com/file/datasheet_sht20
-
   * Sensirion SHT21
 
     Prefix: 'sht21'
@@ -23,6 +13,8 @@ Supported chips:
 
     https://www.sensirion.com/file/datasheet_sht21
 
+
+
   * Sensirion SHT25
 
     Prefix: 'sht25'
@@ -32,6 +24,8 @@ Supported chips:
     Datasheet: Publicly available at the Sensirion website
 
     https://www.sensirion.com/file/datasheet_sht25
+
+
 
 Author:
 
@@ -53,11 +47,13 @@ in the board setup code.
 sysfs-Interface
 ---------------
 
-=================== ============================================================
-temp1_input         Temperature input
-humidity1_input     Humidity input
-eic                 Electronic Identification Code
-=================== ============================================================
+temp1_input
+	- temperature input
+
+humidity1_input
+	- humidity input
+eic
+	- Electronic Identification Code
 
 Notes
 -----

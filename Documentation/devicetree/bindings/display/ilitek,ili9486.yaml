@@ -50,9 +50,14 @@ examples:
   - |
     #include <dt-bindings/gpio/gpio.h>
 
+    backlight: backlight {
+            compatible = "gpio-backlight";
+            gpios = <&gpio 22 GPIO_ACTIVE_HIGH>;
+    };
     spi {
             #address-cells = <1>;
             #size-cells = <0>;
+
 
             display@0{
                     compatible = "waveshare,rpi-lcd-35", "ilitek,ili9486";

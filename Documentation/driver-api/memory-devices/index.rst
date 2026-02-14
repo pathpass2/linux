@@ -9,3 +9,10 @@ Memory Controller drivers
 
     ti-emif
     ti-gpmc
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

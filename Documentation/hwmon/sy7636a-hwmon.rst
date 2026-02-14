@@ -17,10 +17,10 @@ the Silergy SY7636A PMIC.
 The following sensors are supported
 
   * Temperature
-      - Temperature of external NTC in milli-degree C
+      - SoC on-die temperature in milli-degree C
 
 sysfs-Interface
 ---------------
 
 temp0_input
-	- Temperature of external NTC (milli-degree C)
+	- SoC on-die temperature (milli-degree C)

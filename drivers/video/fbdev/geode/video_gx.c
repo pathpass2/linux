@@ -142,8 +142,8 @@ void gx_set_dclk_frequency(struct fb_info *info)
 		}
 	}
 
-	rdmsrq(MSR_GLCP_SYS_RSTPLL, sys_rstpll);
-	rdmsrq(MSR_GLCP_DOTPLL, dotpll);
+	rdmsrl(MSR_GLCP_SYS_RSTPLL, sys_rstpll);
+	rdmsrl(MSR_GLCP_DOTPLL, dotpll);
 
 	/* Program new M, N and P. */
 	dotpll &= 0x00000000ffffffffull;
@@ -151,7 +151,7 @@ void gx_set_dclk_frequency(struct fb_info *info)
 	dotpll |= MSR_GLCP_DOTPLL_DOTRESET;
 	dotpll &= ~MSR_GLCP_DOTPLL_BYPASS;
 
-	wrmsrq(MSR_GLCP_DOTPLL, dotpll);
+	wrmsrl(MSR_GLCP_DOTPLL, dotpll);
 
 	/* Program dividers. */
 	sys_rstpll &= ~( MSR_GLCP_SYS_RSTPLL_DOTPREDIV2
@@ -159,15 +159,15 @@ void gx_set_dclk_frequency(struct fb_info *info)
 			 | MSR_GLCP_SYS_RSTPLL_DOTPOSTDIV3 );
 	sys_rstpll |= pll_table[best_i].sys_rstpll_bits;
 
-	wrmsrq(MSR_GLCP_SYS_RSTPLL, sys_rstpll);
+	wrmsrl(MSR_GLCP_SYS_RSTPLL, sys_rstpll);
 
 	/* Clear reset bit to start PLL. */
 	dotpll &= ~(MSR_GLCP_DOTPLL_DOTRESET);
-	wrmsrq(MSR_GLCP_DOTPLL, dotpll);
+	wrmsrl(MSR_GLCP_DOTPLL, dotpll);
 
 	/* Wait for LOCK bit. */
 	do {
-		rdmsrq(MSR_GLCP_DOTPLL, dotpll);
+		rdmsrl(MSR_GLCP_DOTPLL, dotpll);
 	} while (timeout-- && !(dotpll & MSR_GLCP_DOTPLL_LOCK));
 }
 
@@ -180,10 +180,10 @@ gx_configure_tft(struct fb_info *info)
 
 	/* Set up the DF pad select MSR */
 
-	rdmsrq(MSR_GX_MSR_PADSEL, val);
+	rdmsrl(MSR_GX_MSR_PADSEL, val);
 	val &= ~MSR_GX_MSR_PADSEL_MASK;
 	val |= MSR_GX_MSR_PADSEL_TFT;
-	wrmsrq(MSR_GX_MSR_PADSEL, val);
+	wrmsrl(MSR_GX_MSR_PADSEL, val);
 
 	/* Turn off the panel */
 

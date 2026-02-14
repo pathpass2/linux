@@ -2,9 +2,7 @@
 #ifndef _I8042_SPARCIO_H
 #define _I8042_SPARCIO_H
 
-#include <linux/of.h>
-#include <linux/of_platform.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/types.h>
 
 #include <asm/io.h>
@@ -82,9 +80,11 @@ static int sparc_i8042_probe(struct platform_device *op)
 	return 0;
 }
 
-static void sparc_i8042_remove(struct platform_device *op)
+static int sparc_i8042_remove(struct platform_device *op)
 {
 	of_iounmap(kbd_res, kbd_iobase, 8);
+
+	return 0;
 }
 
 static const struct of_device_id sparc_i8042_match[] = {
@@ -106,10 +106,18 @@ static struct platform_driver sparc_i8042_driver = {
 
 static bool i8042_is_mr_coffee(void)
 {
-	struct device_node *root __free(device_node) = of_find_node_by_path("/");
-	const char *name = of_get_property(root, "name", NULL);
+	struct device_node *root;
+	const char *name;
+	bool is_mr_coffee;
 
-	return name && !strcmp(name, "SUNW,JavaStation-1");
+	root = of_find_node_by_path("/");
+
+	name = of_get_property(root, "name", NULL);
+	is_mr_coffee = name && !strcmp(name, "SUNW,JavaStation-1");
+
+	of_node_put(root);
+
+	return is_mr_coffee;
 }
 
 static int __init i8042_platform_init(void)

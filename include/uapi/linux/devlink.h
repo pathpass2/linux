@@ -139,8 +139,6 @@ enum devlink_command {
 	DEVLINK_CMD_SELFTESTS_GET,	/* can dump */
 	DEVLINK_CMD_SELFTESTS_RUN,
 
-	DEVLINK_CMD_NOTIFY_FILTER_SET,
-
 	/* add new commands above here */
 	__DEVLINK_CMD_MAX,
 	DEVLINK_CMD_MAX = __DEVLINK_CMD_MAX - 1
@@ -181,7 +179,6 @@ enum devlink_sb_threshold_type {
 enum devlink_eswitch_mode {
 	DEVLINK_ESWITCH_MODE_LEGACY,
 	DEVLINK_ESWITCH_MODE_SWITCHDEV,
-	DEVLINK_ESWITCH_MODE_SWITCHDEV_INACTIVE,
 };
 
 enum devlink_eswitch_inline_mode {
@@ -221,11 +218,6 @@ enum devlink_port_flavour {
 				      * port that faces the PCI SF.
 				      */
 };
-
-/* IEEE 802.1Qaz standard supported values. */
-
-#define DEVLINK_RATE_TCS_MAX 8
-#define DEVLINK_RATE_TC_INDEX_MAX (DEVLINK_RATE_TCS_MAX - 1)
 
 enum devlink_rate_type {
 	DEVLINK_RATE_TYPE_LEAF,
@@ -273,7 +265,7 @@ enum {
  * Documentation/networking/devlink/devlink-flash.rst
  *
  */
-enum devlink_flash_overwrite {
+enum {
 	DEVLINK_FLASH_OVERWRITE_SETTINGS_BIT,
 	DEVLINK_FLASH_OVERWRITE_IDENTIFIERS_BIT,
 
@@ -389,21 +381,6 @@ enum devlink_linecard_state {
 
 	__DEVLINK_LINECARD_STATE_MAX,
 	DEVLINK_LINECARD_STATE_MAX = __DEVLINK_LINECARD_STATE_MAX - 1
-};
-
-/* Variable attribute type. */
-enum devlink_var_attr_type {
-	/* Following values relate to the internal NLA_* values */
-	DEVLINK_VAR_ATTR_TYPE_U8 = 1,
-	DEVLINK_VAR_ATTR_TYPE_U16,
-	DEVLINK_VAR_ATTR_TYPE_U32,
-	DEVLINK_VAR_ATTR_TYPE_U64,
-	DEVLINK_VAR_ATTR_TYPE_STRING,
-	DEVLINK_VAR_ATTR_TYPE_FLAG,
-	DEVLINK_VAR_ATTR_TYPE_NUL_STRING = 10,
-	DEVLINK_VAR_ATTR_TYPE_BINARY,
-	__DEVLINK_VAR_ATTR_TYPE_CUSTOM_BASE = 0x80,
-	/* Any possible custom types, unrelated to NLA_* values go below */
 };
 
 enum devlink_attr {
@@ -635,29 +612,10 @@ enum devlink_attr {
 
 	DEVLINK_ATTR_REGION_DIRECT,		/* flag */
 
-	DEVLINK_ATTR_RATE_TC_BWS,		/* nested */
-
-	DEVLINK_ATTR_HEALTH_REPORTER_BURST_PERIOD,	/* u64 */
-
-	DEVLINK_ATTR_PARAM_VALUE_DEFAULT,	/* dynamic */
-	DEVLINK_ATTR_PARAM_RESET_DEFAULT,	/* flag */
-
-	/* Add new attributes above here, update the spec in
-	 * Documentation/netlink/specs/devlink.yaml and re-generate
-	 * net/devlink/netlink_gen.c.
-	 */
+	/* add new attributes above here, update the policy in devlink.c */
 
 	__DEVLINK_ATTR_MAX,
 	DEVLINK_ATTR_MAX = __DEVLINK_ATTR_MAX - 1
-};
-
-enum devlink_rate_tc_attr {
-	DEVLINK_RATE_TC_ATTR_UNSPEC,
-	DEVLINK_RATE_TC_ATTR_INDEX,		/* u8 */
-	DEVLINK_RATE_TC_ATTR_BW,		/* u32 */
-
-	__DEVLINK_RATE_TC_ATTR_MAX,
-	DEVLINK_RATE_TC_ATTR_MAX = __DEVLINK_RATE_TC_ATTR_MAX - 1
 };
 
 /* Mapping between internal resource described by the field and system
@@ -703,8 +661,6 @@ enum devlink_resource_unit {
 enum devlink_port_fn_attr_cap {
 	DEVLINK_PORT_FN_ATTR_CAP_ROCE_BIT,
 	DEVLINK_PORT_FN_ATTR_CAP_MIGRATABLE_BIT,
-	DEVLINK_PORT_FN_ATTR_CAP_IPSEC_CRYPTO_BIT,
-	DEVLINK_PORT_FN_ATTR_CAP_IPSEC_PACKET_BIT,
 
 	/* Add new caps above */
 	__DEVLINK_PORT_FN_ATTR_CAPS_MAX,
@@ -713,8 +669,6 @@ enum devlink_port_fn_attr_cap {
 #define DEVLINK_PORT_FN_CAP_ROCE _BITUL(DEVLINK_PORT_FN_ATTR_CAP_ROCE_BIT)
 #define DEVLINK_PORT_FN_CAP_MIGRATABLE \
 	_BITUL(DEVLINK_PORT_FN_ATTR_CAP_MIGRATABLE_BIT)
-#define DEVLINK_PORT_FN_CAP_IPSEC_CRYPTO _BITUL(DEVLINK_PORT_FN_ATTR_CAP_IPSEC_CRYPTO_BIT)
-#define DEVLINK_PORT_FN_CAP_IPSEC_PACKET _BITUL(DEVLINK_PORT_FN_ATTR_CAP_IPSEC_PACKET_BIT)
 
 enum devlink_port_function_attr {
 	DEVLINK_PORT_FUNCTION_ATTR_UNSPEC,
@@ -722,8 +676,6 @@ enum devlink_port_function_attr {
 	DEVLINK_PORT_FN_ATTR_STATE,	/* u8 */
 	DEVLINK_PORT_FN_ATTR_OPSTATE,	/* u8 */
 	DEVLINK_PORT_FN_ATTR_CAPS,	/* bitfield32 */
-	DEVLINK_PORT_FN_ATTR_DEVLINK,	/* nested */
-	DEVLINK_PORT_FN_ATTR_MAX_IO_EQS,	/* u32 */
 
 	__DEVLINK_PORT_FUNCTION_ATTR_MAX,
 	DEVLINK_PORT_FUNCTION_ATTR_MAX = __DEVLINK_PORT_FUNCTION_ATTR_MAX - 1

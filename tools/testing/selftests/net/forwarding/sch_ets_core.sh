@@ -165,31 +165,45 @@ h1_create()
 {
 	local i;
 
-	adf_simple_if_init $h1
-
+	simple_if_init $h1
 	mtu_set $h1 9900
-	defer mtu_restore $h1
-
 	for i in {0..2}; do
 		vlan_create $h1 1$i v$h1 $(sip $i)/28
-		defer vlan_destroy $h1 1$i
 		ip link set dev $h1.1$i type vlan egress 0:$i
 	done
+}
+
+h1_destroy()
+{
+	local i
+
+	for i in {0..2}; do
+		vlan_destroy $h1 1$i
+	done
+	mtu_restore $h1
+	simple_if_fini $h1
 }
 
 h2_create()
 {
 	local i
 
-	adf_simple_if_init $h2
-
+	simple_if_init $h2
 	mtu_set $h2 9900
-	defer mtu_restore $h2
-
 	for i in {0..2}; do
 		vlan_create $h2 1$i v$h2 $(dip $i)/28
-		defer vlan_destroy $h2 1$i
 	done
+}
+
+h2_destroy()
+{
+	local i
+
+	for i in {0..2}; do
+		vlan_destroy $h2 1$i
+	done
+	mtu_restore $h2
+	simple_if_fini $h2
 }
 
 ets_switch_create()
@@ -197,45 +211,44 @@ ets_switch_create()
 	local i
 
 	ip link set dev $swp1 up
-	defer ip link set dev $swp1 down
-
 	mtu_set $swp1 9900
-	defer mtu_restore $swp1
 
 	ip link set dev $swp2 up
-	defer ip link set dev $swp2 down
-
 	mtu_set $swp2 9900
-	defer mtu_restore $swp2
 
 	for i in {0..2}; do
 		vlan_create $swp1 1$i
-		defer vlan_destroy $swp1 1$i
 		ip link set dev $swp1.1$i type vlan ingress 0:0 1:1 2:2
 
 		vlan_create $swp2 1$i
-		defer vlan_destroy $swp2 1$i
 
 		ip link add dev br1$i type bridge
-		defer ip link del dev br1$i
-
 		ip link set dev $swp1.1$i master br1$i
-		defer ip link set dev $swp1.1$i nomaster
-
 		ip link set dev $swp2.1$i master br1$i
-		defer ip link set dev $swp2.1$i nomaster
 
 		ip link set dev br1$i up
-		defer ip link set dev br1$i down
-
 		ip link set dev $swp1.1$i up
-		defer ip link set dev $swp1.1$i down
-
 		ip link set dev $swp2.1$i up
-		defer ip link set dev $swp2.1$i down
+	done
+}
+
+ets_switch_destroy()
+{
+	local i
+
+	ets_delete_qdisc
+
+	for i in {0..2}; do
+		ip link del dev br1$i
+		vlan_destroy $swp2 1$i
+		vlan_destroy $swp1 1$i
 	done
 
-	defer ets_delete_qdisc
+	mtu_restore $swp2
+	ip link set dev $swp2 down
+
+	mtu_restore $swp1
+	ip link set dev $swp1 down
 }
 
 setup_prepare()
@@ -249,11 +262,22 @@ setup_prepare()
 	put=$swp2
 	hut=$h2
 
-	adf_vrf_prepare
+	vrf_prepare
 
 	h1_create
 	h2_create
 	switch_create
+}
+
+cleanup()
+{
+	pre_cleanup
+
+	switch_destroy
+	h2_destroy
+	h1_destroy
+
+	vrf_cleanup
 }
 
 ping_ipv4()

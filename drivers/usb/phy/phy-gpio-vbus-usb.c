@@ -325,7 +325,7 @@ static int gpio_vbus_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void gpio_vbus_remove(struct platform_device *pdev)
+static int gpio_vbus_remove(struct platform_device *pdev)
 {
 	struct gpio_vbus_data *gpio_vbus = platform_get_drvdata(pdev);
 
@@ -333,6 +333,8 @@ static void gpio_vbus_remove(struct platform_device *pdev)
 	cancel_delayed_work_sync(&gpio_vbus->work);
 
 	usb_remove_phy(&gpio_vbus->phy);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -374,7 +376,6 @@ static const struct of_device_id gpio_vbus_of_match[] = {
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, gpio_vbus_of_match);
 
 static struct platform_driver gpio_vbus_driver = {
 	.driver = {

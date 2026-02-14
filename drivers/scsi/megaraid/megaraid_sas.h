@@ -23,8 +23,8 @@
 /*
  * MegaRAID SAS Driver meta data
  */
-#define MEGASAS_VERSION				"07.734.00.00-rc1"
-#define MEGASAS_RELDATE				"Apr 03, 2025"
+#define MEGASAS_VERSION				"07.725.01.00-rc1"
+#define MEGASAS_RELDATE				"Mar 2, 2023"
 
 #define MEGASAS_MSIX_NAME_LEN			32
 
@@ -814,12 +814,12 @@ struct MR_HOST_DEVICE_LIST {
 	__le32			size;
 	__le32			count;
 	__le32			reserved[2];
-	struct MR_HOST_DEVICE_LIST_ENTRY	host_device_list[] __counted_by_le(count);
+	struct MR_HOST_DEVICE_LIST_ENTRY	host_device_list[1];
 } __packed;
 
 #define HOST_DEVICE_LIST_SZ (sizeof(struct MR_HOST_DEVICE_LIST) +	       \
 			      (sizeof(struct MR_HOST_DEVICE_LIST_ENTRY) *      \
-			      (MEGASAS_MAX_PD + MAX_LOGICAL_DRIVES_EXT)))
+			      (MEGASAS_MAX_PD + MAX_LOGICAL_DRIVES_EXT - 1)))
 
 
 /*
@@ -1722,9 +1722,11 @@ struct megasas_sge_skinny {
 } __packed;
 
 union megasas_sgl {
-	DECLARE_FLEX_ARRAY(struct megasas_sge32, sge32);
-	DECLARE_FLEX_ARRAY(struct megasas_sge64, sge64);
-	DECLARE_FLEX_ARRAY(struct megasas_sge_skinny, sge_skinny);
+
+	struct megasas_sge32 sge32[1];
+	struct megasas_sge64 sge64[1];
+	struct megasas_sge_skinny sge_skinny[1];
+
 } __attribute__ ((packed));
 
 struct megasas_header {
@@ -2332,7 +2334,7 @@ struct megasas_instance {
 	u32 support_morethan256jbod; /* FW support for more than 256 PD/JBOD */
 	bool use_seqnum_jbod_fp;   /* Added for PD sequence */
 	bool smp_affinity_enable;
-	struct mutex crashdump_lock;
+	spinlock_t crashdump_lock;
 
 	struct megasas_register_set __iomem *reg_set;
 	u32 __iomem *reply_post_host_index_addr[MR_MAX_MSIX_REG_ARRAY];
@@ -2473,7 +2475,7 @@ struct MR_LD_VF_MAP {
 	union MR_LD_REF ref;
 	u8 ldVfCount;
 	u8 reserved[6];
-	u8 policy[];
+	u8 policy[1];
 };
 
 struct MR_LD_VF_AFFILIATION {
@@ -2701,7 +2703,7 @@ int megasas_get_ctrl_info(struct megasas_instance *instance);
 int
 megasas_sync_pd_seq_num(struct megasas_instance *instance, bool pend);
 void megasas_set_dynamic_target_properties(struct scsi_device *sdev,
-		struct queue_limits *lim, bool is_target_prop);
+					   bool is_target_prop);
 int megasas_get_target_prop(struct megasas_instance *instance,
 			    struct scsi_device *sdev);
 void megasas_get_snapdump_properties(struct megasas_instance *instance);

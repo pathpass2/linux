@@ -82,7 +82,6 @@ struct drm_mode_config_funcs {
 	 */
 	struct drm_framebuffer *(*fb_create)(struct drm_device *dev,
 					     struct drm_file *file_priv,
-					     const struct drm_format_info *info,
 					     const struct drm_mode_fb_cmd2 *mode_cmd);
 
 	/**
@@ -96,7 +95,23 @@ struct drm_mode_config_funcs {
 	 * The format information specific to the given fb metadata, or
 	 * NULL if none is found.
 	 */
-	const struct drm_format_info *(*get_format_info)(u32 pixel_format, u64 modifier);
+	const struct drm_format_info *(*get_format_info)(const struct drm_mode_fb_cmd2 *mode_cmd);
+
+	/**
+	 * @output_poll_changed:
+	 *
+	 * Callback used by helpers to inform the driver of output configuration
+	 * changes.
+	 *
+	 * Drivers implementing fbdev emulation use drm_kms_helper_hotplug_event()
+	 * to call this hook to inform the fbdev helper of output changes.
+	 *
+	 * This hook is deprecated, drivers should instead use
+	 * drm_fbdev_generic_setup() which takes care of any necessary
+	 * hotplug event forwarding already without further involvement by
+	 * the driver.
+	 */
+	void (*output_poll_changed)(struct drm_device *dev);
 
 	/**
 	 * @mode_valid:
@@ -491,34 +506,6 @@ struct drm_mode_config {
 	struct list_head plane_list;
 
 	/**
-	 * @panic_lock:
-	 *
-	 * Raw spinlock used to protect critical sections of code that access
-	 * the display hardware or modeset software state, which the panic
-	 * printing code must be protected against. See drm_panic_trylock(),
-	 * drm_panic_lock() and drm_panic_unlock().
-	 */
-	struct raw_spinlock panic_lock;
-
-	/**
-	 * @num_colorop:
-	 *
-	 * Number of colorop objects on this device.
-	 * This is invariant over the lifetime of a device and hence doesn't
-	 * need any locks.
-	 */
-	int num_colorop;
-
-	/**
-	 * @colorop_list:
-	 *
-	 * List of colorop objects linked with &drm_colorop.head. This is
-	 * invariant over the lifetime of a device and hence doesn't need any
-	 * locks.
-	 */
-	struct list_head colorop_list;
-
-	/**
 	 * @num_crtc:
 	 *
 	 * Number of CRTCs on this device linked with &drm_crtc.head. This is invariant over the lifetime
@@ -551,8 +538,8 @@ struct drm_mode_config {
 	 */
 	struct list_head privobj_list;
 
-	unsigned int min_width, min_height;
-	unsigned int max_width, max_height;
+	int min_width, min_height;
+	int max_width, max_height;
 	const struct drm_mode_config_funcs *funcs;
 
 	/* output poll support */
@@ -904,6 +891,13 @@ struct drm_mode_config {
 	uint32_t preferred_depth, prefer_shadow;
 
 	/**
+	 * @prefer_shadow_fbdev:
+	 *
+	 * Hint to framebuffer emulation to prefer shadow-fb rendering.
+	 */
+	bool prefer_shadow_fbdev;
+
+	/**
 	 * @quirk_addfb_prefer_xbgr_30bpp:
 	 *
 	 * Special hack for legacy ADDFB to keep nouveau userspace happy. Should
@@ -954,17 +948,6 @@ struct drm_mode_config {
 	 * combination.
 	 */
 	struct drm_property *modifiers_property;
-
-	/**
-	 * @async_modifiers_property: Plane property to list support modifier/format
-	 * combination for asynchronous flips.
-	 */
-	struct drm_property *async_modifiers_property;
-
-	/**
-	 * @size_hints_property: Plane SIZE_HINTS property.
-	 */
-	struct drm_property *size_hints_property;
 
 	/* cursor size */
 	uint32_t cursor_width, cursor_height;

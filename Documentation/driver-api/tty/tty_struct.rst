@@ -72,7 +72,7 @@ TTY Struct Flags
 ================
 
 .. kernel-doc:: include/linux/tty.h
-   :identifiers: tty_struct_flags
+   :doc: TTY Struct Flags
 
 TTY Struct Reference
 ====================

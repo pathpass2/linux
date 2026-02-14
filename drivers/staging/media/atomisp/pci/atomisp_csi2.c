@@ -3,6 +3,17 @@
  * Support for Medifield PNW Camera Imaging ISP subsystem.
  *
  * Copyright (c) 2010 Intel Corporation. All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License version
+ * 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ *
  */
 
 #include <media/v4l2-event.h>
@@ -18,7 +29,8 @@ v4l2_mbus_framefmt *__csi2_get_format(struct atomisp_mipi_csi2_device *csi2,
 				      unsigned int pad)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_state_get_format(sd_state, pad);
+		return v4l2_subdev_get_try_format(&csi2->subdev, sd_state,
+						  pad);
 	else
 		return &csi2->formats[pad];
 }
@@ -96,12 +108,9 @@ int atomisp_csi2_set_ffmt(struct v4l2_subdev *sd,
 		actual_ffmt->height = clamp_t(u32, ffmt->height,
 					      ATOM_ISP_MIN_HEIGHT,
 					      ATOM_ISP_MAX_HEIGHT);
-		actual_ffmt->field = ffmt->field;
 
 		tmp_ffmt = *ffmt = *actual_ffmt;
 
-		/* Always use V4L2_FIELD_ANY to match the ISP sink pad */
-		tmp_ffmt.field = V4L2_FIELD_ANY;
 		return atomisp_csi2_set_ffmt(sd, sd_state, which,
 					     CSI2_PAD_SOURCE,
 					     &tmp_ffmt);
@@ -130,6 +139,27 @@ static int csi2_set_format(struct v4l2_subdev *sd,
 				     &fmt->format);
 }
 
+/*
+ * csi2_set_stream - Enable/Disable streaming on the CSI2 module
+ * @sd: ISP CSI2 V4L2 subdevice
+ * @enable: Enable/disable stream (1/0)
+ *
+ * Return 0 on success or a negative error code otherwise.
+ */
+static int csi2_set_stream(struct v4l2_subdev *sd, int enable)
+{
+	return 0;
+}
+
+/* subdev core operations */
+static const struct v4l2_subdev_core_ops csi2_core_ops = {
+};
+
+/* subdev video operations */
+static const struct v4l2_subdev_video_ops csi2_video_ops = {
+	.s_stream = csi2_set_stream,
+};
+
 /* subdev pad operations */
 static const struct v4l2_subdev_pad_ops csi2_pad_ops = {
 	.enum_mbus_code = csi2_enum_mbus_code,
@@ -140,6 +170,8 @@ static const struct v4l2_subdev_pad_ops csi2_pad_ops = {
 
 /* subdev operations */
 static const struct v4l2_subdev_ops csi2_ops = {
+	.core = &csi2_core_ops,
+	.video = &csi2_video_ops,
 	.pad = &csi2_pad_ops,
 };
 
@@ -290,15 +322,19 @@ static void atomisp_csi2_configure_isp2401(struct atomisp_sub_device *asd)
 
 	struct v4l2_control ctrl;
 	struct atomisp_device *isp = asd->isp;
+	struct camera_mipi_info *mipi_info;
 	int mipi_freq = 0;
 	enum atomisp_camera_port port;
+
 	int n;
 
-	port = isp->inputs[asd->input_curr].port;
+	mipi_info = atomisp_to_sensor_mipi_info(
+			isp->inputs[asd->input_curr].camera);
+	port = mipi_info->port;
 
 	ctrl.id = V4L2_CID_LINK_FREQ;
 	if (v4l2_g_ctrl
-	    (isp->inputs[asd->input_curr].sensor->ctrl_handler, &ctrl) == 0)
+	    (isp->inputs[asd->input_curr].camera->ctrl_handler, &ctrl) == 0)
 		mipi_freq = ctrl.value;
 
 	clk_termen = atomisp_csi2_configure_calc(coeff_clk_termen, mipi_freq,
@@ -338,10 +374,6 @@ int atomisp_mipi_csi2_init(struct atomisp_device *isp)
 	struct atomisp_mipi_csi2_device *csi2_port;
 	unsigned int i;
 	int ret;
-
-	ret = atomisp_csi2_bridge_init(isp);
-	if (ret < 0)
-		return ret;
 
 	for (i = 0; i < ATOMISP_CAMERA_NR_PORTS; i++) {
 		csi2_port = &isp->csi2_port[i];

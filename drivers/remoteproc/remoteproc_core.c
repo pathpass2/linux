@@ -16,25 +16,28 @@
 
 #define pr_fmt(fmt)    "%s: " fmt, __func__
 
-#include <asm/byteorder.h>
 #include <linux/delay.h>
-#include <linux/device.h>
-#include <linux/dma-mapping.h>
-#include <linux/elf.h>
-#include <linux/firmware.h>
-#include <linux/idr.h>
-#include <linux/iommu.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/of_platform.h>
+#include <linux/device.h>
 #include <linux/panic_notifier.h>
-#include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/mutex.h>
+#include <linux/dma-mapping.h>
+#include <linux/firmware.h>
+#include <linux/string.h>
+#include <linux/debugfs.h>
 #include <linux/rculist.h>
 #include <linux/remoteproc.h>
-#include <linux/slab.h>
-#include <linux/string.h>
+#include <linux/iommu.h>
+#include <linux/idr.h>
+#include <linux/elf.h>
+#include <linux/crc32.h>
+#include <linux/of_reserved_mem.h>
+#include <linux/virtio_ids.h>
 #include <linux/virtio_ring.h>
+#include <asm/byteorder.h>
+#include <linux/platform_device.h>
 
 #include "remoteproc_internal.h"
 
@@ -105,10 +108,10 @@ static int rproc_enable_iommu(struct rproc *rproc)
 		return 0;
 	}
 
-	domain = iommu_paging_domain_alloc(dev);
-	if (IS_ERR(domain)) {
+	domain = iommu_domain_alloc(dev->bus);
+	if (!domain) {
 		dev_err(dev, "can't alloc iommu domain\n");
-		return PTR_ERR(domain);
+		return -ENOMEM;
 	}
 
 	iommu_set_fault_handler(domain, rproc_iommu_fault, rproc);
@@ -155,6 +158,7 @@ phys_addr_t rproc_va_to_pa(void *cpu_addr)
 	WARN_ON(!virt_addr_valid(cpu_addr));
 	return virt_to_phys(cpu_addr);
 }
+EXPORT_SYMBOL(rproc_va_to_pa);
 
 /**
  * rproc_da_to_va() - lookup the kernel virtual address for a remoteproc address
@@ -694,7 +698,7 @@ static int rproc_alloc_carveout(struct rproc *rproc,
 		return -ENOMEM;
 	}
 
-	dev_dbg(dev, "carveout va %p, dma %pad, len 0x%zx\n",
+	dev_dbg(dev, "carveout va %pK, dma %pad, len 0x%zx\n",
 		va, &dma, mem->len);
 
 	if (mem->da != FW_RSC_ADDR_ANY && !rproc->domain) {
@@ -1612,7 +1616,7 @@ static int rproc_attach(struct rproc *rproc)
 	ret = rproc_set_rsc_table(rproc);
 	if (ret) {
 		dev_err(dev, "can't load resource table: %d\n", ret);
-		goto clean_up_resources;
+		goto unprepare_device;
 	}
 
 	/* reset max_notifyid */
@@ -1629,7 +1633,7 @@ static int rproc_attach(struct rproc *rproc)
 	ret = rproc_handle_resources(rproc, rproc_loading_handlers);
 	if (ret) {
 		dev_err(dev, "Failed to process resources: %d\n", ret);
-		goto clean_up_resources;
+		goto unprepare_device;
 	}
 
 	/* Allocate carveout resources associated to rproc */
@@ -1648,9 +1652,9 @@ static int rproc_attach(struct rproc *rproc)
 
 clean_up_resources:
 	rproc_resource_cleanup(rproc);
+unprepare_device:
 	/* release HW resources if needed */
 	rproc_unprepare_device(rproc);
-	kfree(rproc->clean_table);
 disable_iommu:
 	rproc_disable_iommu(rproc);
 	return ret;
@@ -1984,7 +1988,7 @@ EXPORT_SYMBOL(rproc_boot);
 int rproc_shutdown(struct rproc *rproc)
 {
 	struct device *dev = &rproc->dev;
-	int ret;
+	int ret = 0;
 
 	ret = mutex_lock_interruptible(&rproc->lock);
 	if (ret) {
@@ -2108,7 +2112,6 @@ EXPORT_SYMBOL(rproc_detach);
 struct rproc *rproc_get_by_phandle(phandle phandle)
 {
 	struct rproc *rproc = NULL, *r;
-	struct device_driver *driver;
 	struct device_node *np;
 
 	np = of_find_node_by_phandle(phandle);
@@ -2119,26 +2122,7 @@ struct rproc *rproc_get_by_phandle(phandle phandle)
 	list_for_each_entry_rcu(r, &rproc_list, node) {
 		if (r->dev.parent && device_match_of_node(r->dev.parent, np)) {
 			/* prevent underlying implementation from being removed */
-
-			/*
-			 * If the remoteproc's parent has a driver, the
-			 * remoteproc is not part of a cluster and we can use
-			 * that driver.
-			 */
-			driver = r->dev.parent->driver;
-
-			/*
-			 * If the remoteproc's parent does not have a driver,
-			 * look for the driver associated with the cluster.
-			 */
-			if (!driver) {
-				if (r->dev.parent->parent)
-					driver = r->dev.parent->parent->driver;
-				if (!driver)
-					break;
-			}
-
-			if (!try_module_get(driver->owner)) {
+			if (!try_module_get(r->dev.parent->driver->owner)) {
 				dev_err(&r->dev, "can't get owner\n");
 				break;
 			}
@@ -2481,13 +2465,6 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	rproc->dev.driver_data = rproc;
 	idr_init(&rproc->notifyids);
 
-	/* Assign a unique device index and name */
-	rproc->index = ida_alloc(&rproc_dev_index, GFP_KERNEL);
-	if (rproc->index < 0) {
-		dev_err(dev, "ida_alloc failed: %d\n", rproc->index);
-		goto put_device;
-	}
-
 	rproc->name = kstrdup_const(name, GFP_KERNEL);
 	if (!rproc->name)
 		goto put_device;
@@ -2497,6 +2474,13 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 
 	if (rproc_alloc_ops(rproc, ops))
 		goto put_device;
+
+	/* Assign a unique device index and name */
+	rproc->index = ida_alloc(&rproc_dev_index, GFP_KERNEL);
+	if (rproc->index < 0) {
+		dev_err(dev, "ida_alloc failed: %d\n", rproc->index);
+		goto put_device;
+	}
 
 	dev_set_name(&rproc->dev, "remoteproc%d", rproc->index);
 
@@ -2549,11 +2533,7 @@ EXPORT_SYMBOL(rproc_free);
  */
 void rproc_put(struct rproc *rproc)
 {
-	if (rproc->dev.parent->driver)
-		module_put(rproc->dev.parent->driver->owner);
-	else
-		module_put(rproc->dev.parent->parent->driver->owner);
-
+	module_put(rproc->dev.parent->driver->owner);
 	put_device(&rproc->dev);
 }
 EXPORT_SYMBOL(rproc_put);
@@ -2786,4 +2766,5 @@ static void __exit remoteproc_exit(void)
 }
 module_exit(remoteproc_exit);
 
+MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Generic Remote Processor Framework");

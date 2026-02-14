@@ -30,9 +30,7 @@ properties:
           - const: allwinner,sun50i-a64-rtc
           - const: allwinner,sun8i-h3-rtc
       - items:
-          - enum:
-              - allwinner,sun20i-d1-rtc
-              - allwinner,sun55i-a523-rtc
+          - const: allwinner,sun20i-d1-rtc
           - const: allwinner,sun50i-r329-rtc
 
   reg:
@@ -63,7 +61,7 @@ properties:
         - the Internal Oscillator, at index 2.
 
 allOf:
-  - $ref: rtc.yaml#
+  - $ref: "rtc.yaml#"
   - if:
       properties:
         compatible:

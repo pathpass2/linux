@@ -93,7 +93,7 @@ nv40_chan_ramfc = {
 
 static const struct nvkm_chan_func_userd
 nv40_chan_userd = {
-	.bar = NVKM_BAR0_PRI,
+	.bar = 0,
 	.base = 0xc00000,
 	.size = 0x001000,
 };

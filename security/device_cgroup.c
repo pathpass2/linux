@@ -216,7 +216,7 @@ static void devcgroup_offline(struct cgroup_subsys_state *css)
 }
 
 /*
- * called from kernel/cgroup/cgroup.c with cgroup_lock() held.
+ * called from kernel/cgroup.c with cgroup_lock() held.
  */
 static struct cgroup_subsys_state *
 devcgroup_css_alloc(struct cgroup_subsys_state *parent_css)
@@ -244,40 +244,45 @@ static void devcgroup_css_free(struct cgroup_subsys_state *css)
 #define DEVCG_DENY 2
 #define DEVCG_LIST 3
 
-static void seq_putaccess(struct seq_file *m, short access)
+#define MAJMINLEN 13
+#define ACCLEN 4
+
+static void set_access(char *acc, short access)
 {
+	int idx = 0;
+	memset(acc, 0, ACCLEN);
 	if (access & DEVCG_ACC_READ)
-		seq_putc(m, 'r');
+		acc[idx++] = 'r';
 	if (access & DEVCG_ACC_WRITE)
-		seq_putc(m, 'w');
+		acc[idx++] = 'w';
 	if (access & DEVCG_ACC_MKNOD)
-		seq_putc(m, 'm');
+		acc[idx++] = 'm';
 }
 
-static void seq_puttype(struct seq_file *m, short type)
+static char type_to_char(short type)
 {
 	if (type == DEVCG_DEV_ALL)
-		seq_putc(m, 'a');
-	else if (type == DEVCG_DEV_CHAR)
-		seq_putc(m, 'c');
-	else if (type == DEVCG_DEV_BLOCK)
-		seq_putc(m, 'b');
-	else
-		seq_putc(m, 'X');
+		return 'a';
+	if (type == DEVCG_DEV_CHAR)
+		return 'c';
+	if (type == DEVCG_DEV_BLOCK)
+		return 'b';
+	return 'X';
 }
 
-static void seq_putversion(struct seq_file *m, unsigned int version)
+static void set_majmin(char *str, unsigned m)
 {
-	if (version == ~0)
-		seq_putc(m, '*');
+	if (m == ~0)
+		strcpy(str, "*");
 	else
-		seq_printf(m, "%u", version);
+		sprintf(str, "%u", m);
 }
 
 static int devcgroup_seq_show(struct seq_file *m, void *v)
 {
 	struct dev_cgroup *devcgroup = css_to_devcgroup(seq_css(m));
 	struct dev_exception_item *ex;
+	char maj[MAJMINLEN], min[MAJMINLEN], acc[ACCLEN];
 
 	rcu_read_lock();
 	/*
@@ -287,17 +292,18 @@ static int devcgroup_seq_show(struct seq_file *m, void *v)
 	 * This way, the file remains as a "whitelist of devices"
 	 */
 	if (devcgroup->behavior == DEVCG_DEFAULT_ALLOW) {
-		seq_puts(m, "a *:* rwm\n");
+		set_access(acc, DEVCG_ACC_MASK);
+		set_majmin(maj, ~0);
+		set_majmin(min, ~0);
+		seq_printf(m, "%c %s:%s %s\n", type_to_char(DEVCG_DEV_ALL),
+			   maj, min, acc);
 	} else {
 		list_for_each_entry_rcu(ex, &devcgroup->exceptions, list) {
-			seq_puttype(m, ex->type);
-			seq_putc(m, ' ');
-			seq_putversion(m, ex->major);
-			seq_putc(m, ':');
-			seq_putversion(m, ex->minor);
-			seq_putc(m, ' ');
-			seq_putaccess(m, ex->access);
-			seq_putc(m, '\n');
+			set_access(acc, ex->access);
+			set_majmin(maj, ex->major);
+			set_majmin(min, ex->minor);
+			seq_printf(m, "%c %s:%s %s\n", type_to_char(ex->type),
+				   maj, min, acc);
 		}
 	}
 	rcu_read_unlock();
@@ -415,7 +421,7 @@ static bool verify_new_ex(struct dev_cgroup *dev_cgroup,
 		} else {
 			/*
 			 * new exception in the child will add more devices
-			 * that can be accessed, so it can't match any of
+			 * that can be acessed, so it can't match any of
 			 * parent's exceptions, even slightly
 			 */ 
 			match = match_exception_partial(&dev_cgroup->exceptions,
@@ -816,6 +822,7 @@ struct cgroup_subsys devices_cgrp_subsys = {
 
 /**
  * devcgroup_legacy_check_permission - checks if an inode operation is permitted
+ * @dev_cgroup: the dev cgroup to be tested against
  * @type: device type
  * @major: device major number
  * @minor: device minor number

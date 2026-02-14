@@ -17,8 +17,7 @@
 #include <linux/init.h>
 #include <linux/fb.h>
 #include <linux/mm.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include <asm/io.h>
 #include <asm/fbio.h>
@@ -33,8 +32,8 @@ static int cg3_setcolreg(unsigned, unsigned, unsigned, unsigned,
 			 unsigned, struct fb_info *);
 static int cg3_blank(int, struct fb_info *);
 
-static int cg3_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma);
-static int cg3_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg);
+static int cg3_mmap(struct fb_info *, struct vm_area_struct *);
+static int cg3_ioctl(struct fb_info *, unsigned int, unsigned long);
 
 /*
  *  Frame buffer operations
@@ -42,9 +41,16 @@ static int cg3_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned lon
 
 static const struct fb_ops cg3_ops = {
 	.owner			= THIS_MODULE,
-	FB_DEFAULT_SBUS_OPS(cg3),
 	.fb_setcolreg		= cg3_setcolreg,
 	.fb_blank		= cg3_blank,
+	.fb_fillrect		= cfb_fillrect,
+	.fb_copyarea		= cfb_copyarea,
+	.fb_imageblit		= cfb_imageblit,
+	.fb_mmap		= cg3_mmap,
+	.fb_ioctl		= cg3_ioctl,
+#ifdef CONFIG_COMPAT
+	.fb_compat_ioctl	= sbusfb_compat_ioctl,
+#endif
 };
 
 
@@ -209,7 +215,7 @@ static int cg3_blank(int blank, struct fb_info *info)
 	return 0;
 }
 
-static const struct sbus_mmap_map cg3_mmap_map[] = {
+static struct sbus_mmap_map cg3_mmap_map[] = {
 	{
 		.voff	= CG3_MMAP_OFFSET,
 		.poff	= CG3_RAM_OFFSET,
@@ -218,7 +224,7 @@ static const struct sbus_mmap_map cg3_mmap_map[] = {
 	{ .size = 0 }
 };
 
-static int cg3_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
+static int cg3_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
 	struct cg3_par *par = (struct cg3_par *)info->par;
 
@@ -228,7 +234,7 @@ static int cg3_sbusfb_mmap(struct fb_info *info, struct vm_area_struct *vma)
 				  vma);
 }
 
-static int cg3_sbusfb_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
+static int cg3_ioctl(struct fb_info *info, unsigned int cmd, unsigned long arg)
 {
 	return sbusfb_ioctl_helper(cmd, arg, info,
 				   FBTYPE_SUN3COLOR, 8, info->fix.smem_len);
@@ -378,6 +384,7 @@ static int cg3_probe(struct platform_device *op)
 	if (!par->regs)
 		goto out_release_fb;
 
+	info->flags = FBINFO_DEFAULT;
 	info->fbops = &cg3_ops;
 	info->screen_base = of_ioremap(&op->resource[0], CG3_RAM_OFFSET,
 				       info->fix.smem_len, "cg3 ram");
@@ -427,7 +434,7 @@ out_err:
 	return err;
 }
 
-static void cg3_remove(struct platform_device *op)
+static int cg3_remove(struct platform_device *op)
 {
 	struct fb_info *info = dev_get_drvdata(&op->dev);
 	struct cg3_par *par = info->par;
@@ -439,6 +446,8 @@ static void cg3_remove(struct platform_device *op)
 	of_iounmap(&op->resource[0], info->screen_base, info->fix.smem_len);
 
 	framebuffer_release(info);
+
+	return 0;
 }
 
 static const struct of_device_id cg3_match[] = {

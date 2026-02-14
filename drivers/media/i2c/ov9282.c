@@ -4,12 +4,11 @@
  *
  * Copyright (C) 2021 Intel Corporation
  */
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
-#include <linux/math.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -38,44 +37,12 @@
 #define OV9282_REG_ID		0x300a
 #define OV9282_ID		0x9281
 
-/* Output enable registers */
-#define OV9282_REG_OUTPUT_ENABLE4	0x3004
-#define OV9282_OUTPUT_ENABLE4_GPIO2	BIT(1)
-#define OV9282_OUTPUT_ENABLE4_D9	BIT(0)
-
-#define OV9282_REG_OUTPUT_ENABLE5	0x3005
-#define OV9282_OUTPUT_ENABLE5_D8	BIT(7)
-#define OV9282_OUTPUT_ENABLE5_D7	BIT(6)
-#define OV9282_OUTPUT_ENABLE5_D6	BIT(5)
-#define OV9282_OUTPUT_ENABLE5_D5	BIT(4)
-#define OV9282_OUTPUT_ENABLE5_D4	BIT(3)
-#define OV9282_OUTPUT_ENABLE5_D3	BIT(2)
-#define OV9282_OUTPUT_ENABLE5_D2	BIT(1)
-#define OV9282_OUTPUT_ENABLE5_D1	BIT(0)
-
-#define OV9282_REG_OUTPUT_ENABLE6	0x3006
-#define OV9282_OUTPUT_ENABLE6_D0	BIT(7)
-#define OV9282_OUTPUT_ENABLE6_PCLK	BIT(6)
-#define OV9282_OUTPUT_ENABLE6_HREF	BIT(5)
-#define OV9282_OUTPUT_ENABLE6_STROBE	BIT(3)
-#define OV9282_OUTPUT_ENABLE6_ILPWM	BIT(2)
-#define OV9282_OUTPUT_ENABLE6_VSYNC	BIT(1)
-
 /* Exposure control */
 #define OV9282_REG_EXPOSURE	0x3500
 #define OV9282_EXPOSURE_MIN	1
-#define OV9282_EXPOSURE_OFFSET	25
+#define OV9282_EXPOSURE_OFFSET	12
 #define OV9282_EXPOSURE_STEP	1
 #define OV9282_EXPOSURE_DEFAULT	0x0282
-
-/* AEC/AGC manual */
-#define OV9282_REG_AEC_MANUAL		0x3503
-#define OV9282_DIGFRAC_GAIN_DELAY	BIT(6)
-#define OV9282_GAIN_CHANGE_DELAY	BIT(5)
-#define OV9282_GAIN_DELAY		BIT(4)
-#define OV9282_GAIN_PREC16_EN		BIT(3)
-#define OV9282_GAIN_MANUAL_AS_SENSGAIN	BIT(2)
-#define OV9282_AEC_MANUAL_DEFAULT	0x00
 
 /* Analog gain control */
 #define OV9282_REG_AGAIN	0x3509
@@ -97,10 +64,6 @@
 
 #define OV9282_REG_MIPI_CTRL00	0x4800
 #define OV9282_GATED_CLOCK	BIT(5)
-
-/* Flash/Strobe control registers */
-#define OV9282_REG_STROBE_FRAME_SPAN		0x3925
-#define OV9282_STROBE_FRAME_SPAN_DEFAULT	0x0000001a
 
 /* Input clock rate */
 #define OV9282_INCLK_RATE	24000000
@@ -128,8 +91,6 @@
 
 #define OV9282_REG_MIN		0x00
 #define OV9282_REG_MAX		0xfffff
-
-#define OV9282_STROBE_SPAN_FACTOR	192
 
 static const char * const ov9282_supply_names[] = {
 	"avdd",		/* Analog power */
@@ -199,12 +160,12 @@ struct ov9282_mode {
  * @exp_ctrl: Pointer to exposure control
  * @again_ctrl: Pointer to analog gain control
  * @pixel_rate: Pointer to pixel rate control
- * @flash_duration: Pointer to flash duration control
  * @vblank: Vertical blanking in lines
  * @noncontinuous_clock: Selection of CSI2 noncontinuous clock mode
  * @cur_mode: Pointer to current selected sensor mode
  * @code: Mbus code currently selected
  * @mutex: Mutex for serializing sensor controls
+ * @streaming: Flag indicating streaming state
  */
 struct ov9282 {
 	struct device *dev;
@@ -222,12 +183,12 @@ struct ov9282 {
 		struct v4l2_ctrl *again_ctrl;
 	};
 	struct v4l2_ctrl *pixel_rate;
-	struct v4l2_ctrl *flash_duration;
 	u32 vblank;
 	bool noncontinuous_clock;
 	const struct ov9282_mode *cur_mode;
 	u32 code;
 	struct mutex mutex;
+	bool streaming;
 };
 
 static const s64 link_freq[] = {
@@ -245,9 +206,9 @@ static const struct ov9282_reg common_regs[] = {
 	{0x0302, 0x32},
 	{0x030e, 0x02},
 	{0x3001, 0x00},
-	{OV9282_REG_OUTPUT_ENABLE4, 0x00},
-	{OV9282_REG_OUTPUT_ENABLE5, 0x00},
-	{OV9282_REG_OUTPUT_ENABLE6, OV9282_OUTPUT_ENABLE6_ILPWM},
+	{0x3004, 0x00},
+	{0x3005, 0x00},
+	{0x3006, 0x04},
 	{0x3011, 0x0a},
 	{0x3013, 0x18},
 	{0x301c, 0xf0},
@@ -255,7 +216,7 @@ static const struct ov9282_reg common_regs[] = {
 	{0x3030, 0x10},
 	{0x3039, 0x32},
 	{0x303a, 0x00},
-	{OV9282_REG_AEC_MANUAL, OV9282_GAIN_PREC16_EN},
+	{0x3503, 0x08},
 	{0x3505, 0x8c},
 	{0x3507, 0x03},
 	{0x3508, 0x00},
@@ -337,8 +298,8 @@ static const struct ov9282_reg mode_1280x800_regs[] = {
 	{0x3813, 0x08},
 	{0x3814, 0x11},
 	{0x3815, 0x11},
-	{OV9282_REG_TIMING_FORMAT_1, 0x40},
-	{OV9282_REG_TIMING_FORMAT_2, 0x00},
+	{0x3820, 0x40},
+	{0x3821, 0x00},
 	{0x4003, 0x40},
 	{0x4008, 0x04},
 	{0x4009, 0x0b},
@@ -368,8 +329,8 @@ static const struct ov9282_reg mode_1280x720_regs[] = {
 	{0x3813, 0x08},
 	{0x3814, 0x11},
 	{0x3815, 0x11},
-	{OV9282_REG_TIMING_FORMAT_1, 0x3c},
-	{OV9282_REG_TIMING_FORMAT_2, 0x84},
+	{0x3820, 0x3c},
+	{0x3821, 0x84},
 	{0x4003, 0x40},
 	{0x4008, 0x02},
 	{0x4009, 0x05},
@@ -399,8 +360,8 @@ static const struct ov9282_reg mode_640x400_regs[] = {
 	{0x3813, 0x04},
 	{0x3814, 0x31},
 	{0x3815, 0x22},
-	{OV9282_REG_TIMING_FORMAT_1, 0x60},
-	{OV9282_REG_TIMING_FORMAT_2, 0x01},
+	{0x3820, 0x60},
+	{0x3821, 0x01},
 	{0x4008, 0x02},
 	{0x4009, 0x05},
 	{0x400c, 0x00},
@@ -614,15 +575,6 @@ static int ov9282_update_controls(struct ov9282 *ov9282,
 					mode->vblank_max, 1, mode->vblank);
 }
 
-static u32 ov9282_exposure_to_us(struct ov9282 *ov9282, u32 exposure)
-{
-	/* calculate exposure time in µs */
-	u32 frame_width = ov9282->cur_mode->width + ov9282->hblank_ctrl->val;
-	u32 trow_us = frame_width / (ov9282->pixel_rate->val / 1000000UL);
-
-	return exposure * trow_us;
-}
-
 /**
  * ov9282_update_exp_gain() - Set updated exposure and gain
  * @ov9282: pointer to ov9282 device
@@ -634,10 +586,9 @@ static u32 ov9282_exposure_to_us(struct ov9282 *ov9282, u32 exposure)
 static int ov9282_update_exp_gain(struct ov9282 *ov9282, u32 exposure, u32 gain)
 {
 	int ret;
-	u32 exposure_us = ov9282_exposure_to_us(ov9282, exposure);
 
-	dev_dbg(ov9282->dev, "Set exp %u (~%u us), analog gain %u",
-		exposure, exposure_us, gain);
+	dev_dbg(ov9282->dev, "Set exp %u, analog gain %u",
+		exposure, gain);
 
 	ret = ov9282_write_reg(ov9282, OV9282_REG_HOLD, 1, 1);
 	if (ret)
@@ -648,12 +599,6 @@ static int ov9282_update_exp_gain(struct ov9282 *ov9282, u32 exposure, u32 gain)
 		goto error_release_group_hold;
 
 	ret = ov9282_write_reg(ov9282, OV9282_REG_AGAIN, 1, gain);
-	if (ret)
-		goto error_release_group_hold;
-
-	ret = __v4l2_ctrl_modify_range(ov9282->flash_duration,
-				       0, exposure_us, 1,
-				       OV9282_STROBE_FRAME_SPAN_DEFAULT);
 
 error_release_group_hold:
 	ov9282_write_reg(ov9282, OV9282_REG_HOLD, 1, 0);
@@ -693,75 +638,6 @@ static int ov9282_set_ctrl_vflip(struct ov9282 *ov9282, int value)
 
 	return ov9282_write_reg(ov9282, OV9282_REG_TIMING_FORMAT_1, 1,
 				current_val);
-}
-
-static int ov9282_set_ctrl_flash_strobe_oe(struct ov9282 *ov9282, bool enable)
-{
-	u32 current_val;
-	int ret;
-
-	ret = ov9282_read_reg(ov9282, OV9282_REG_OUTPUT_ENABLE6, 1, &current_val);
-	if (ret)
-		return ret;
-
-	if (enable)
-		current_val |= OV9282_OUTPUT_ENABLE6_STROBE;
-	else
-		current_val &= ~OV9282_OUTPUT_ENABLE6_STROBE;
-
-	return ov9282_write_reg(ov9282, OV9282_REG_OUTPUT_ENABLE6, 1, current_val);
-}
-
-static u32 ov9282_us_to_flash_duration(struct ov9282 *ov9282, u32 value)
-{
-	/*
-	 * Calculate "strobe_frame_span" increments from a given value (µs).
-	 * This is quite tricky as "The step width of shift and span is
-	 * programmable under system clock domain.", but it's not documented
-	 * how to program this step width (at least in the datasheet available
-	 * to the author at time of writing).
-	 * The formula below is interpolated from different modes/framerates
-	 * and should work quite well for most settings.
-	 */
-	u32 frame_width = ov9282->cur_mode->width + ov9282->hblank_ctrl->val;
-
-	return value * OV9282_STROBE_SPAN_FACTOR / frame_width;
-}
-
-static u32 ov9282_flash_duration_to_us(struct ov9282 *ov9282, u32 value)
-{
-	/*
-	 * Calculate back to microseconds from "strobe_frame_span" increments.
-	 * As the calculation in ov9282_us_to_flash_duration uses an integer
-	 * divison round up here.
-	 */
-	u32 frame_width = ov9282->cur_mode->width + ov9282->hblank_ctrl->val;
-
-	return DIV_ROUND_UP(value * frame_width, OV9282_STROBE_SPAN_FACTOR);
-}
-
-static int ov9282_set_ctrl_flash_duration(struct ov9282 *ov9282, u32 value)
-{
-	u32 val = ov9282_us_to_flash_duration(ov9282, value);
-	int ret;
-
-	ret = ov9282_write_reg(ov9282, OV9282_REG_STROBE_FRAME_SPAN, 1,
-			       (val >> 24) & 0xff);
-	if (ret)
-		return ret;
-
-	ret = ov9282_write_reg(ov9282, OV9282_REG_STROBE_FRAME_SPAN + 1, 1,
-			       (val >> 16) & 0xff);
-	if (ret)
-		return ret;
-
-	ret = ov9282_write_reg(ov9282, OV9282_REG_STROBE_FRAME_SPAN + 2, 1,
-			       (val >> 8) & 0xff);
-	if (ret)
-		return ret;
-
-	return ov9282_write_reg(ov9282, OV9282_REG_STROBE_FRAME_SPAN + 3, 1,
-				val & 0xff);
 }
 
 /**
@@ -830,12 +706,6 @@ static int ov9282_set_ctrl(struct v4l2_ctrl *ctrl)
 		ret = ov9282_write_reg(ov9282, OV9282_REG_TIMING_HTS, 2,
 				       (ctrl->val + ov9282->cur_mode->width) >> 1);
 		break;
-	case V4L2_CID_FLASH_STROBE_OE:
-		ret = ov9282_set_ctrl_flash_strobe_oe(ov9282, ctrl->val);
-		break;
-	case V4L2_CID_FLASH_DURATION:
-		ret = ov9282_set_ctrl_flash_duration(ov9282, ctrl->val);
-		break;
 	default:
 		dev_err(ov9282->dev, "Invalid control %d", ctrl->id);
 		ret = -EINVAL;
@@ -846,36 +716,9 @@ static int ov9282_set_ctrl(struct v4l2_ctrl *ctrl)
 	return ret;
 }
 
-static int ov9282_try_ctrl(struct v4l2_ctrl *ctrl)
-{
-	struct ov9282 *ov9282 =
-		container_of_const(ctrl->handler, struct ov9282, ctrl_handler);
-
-	if (ctrl->id == V4L2_CID_FLASH_DURATION) {
-		u32 us = ctrl->val;
-		u32 fd = ov9282_us_to_flash_duration(ov9282, us);
-
-		/* get nearest strobe_duration value */
-		u32 us0 = ov9282_flash_duration_to_us(ov9282, fd);
-		u32 us1 = ov9282_flash_duration_to_us(ov9282, fd + 1);
-
-		if (abs(us1 - us) < abs(us - us0))
-			ctrl->val = us1;
-		else
-			ctrl->val = us0;
-
-		if (us != ctrl->val)
-			dev_dbg(ov9282->dev, "using next valid strobe_duration %u instead of %u\n",
-				ctrl->val, us);
-	}
-
-	return 0;
-}
-
 /* V4l2 subdevice control ops*/
 static const struct v4l2_ctrl_ops ov9282_ctrl_ops = {
 	.s_ctrl = ov9282_set_ctrl,
-	.try_ctrl = ov9282_try_ctrl,
 };
 
 /**
@@ -973,7 +816,7 @@ static int ov9282_get_pad_format(struct v4l2_subdev *sd,
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *framefmt;
 
-		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
+		framefmt = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 		fmt->format = *framefmt;
 	} else {
 		ov9282_fill_pad_format(ov9282, ov9282->cur_mode, ov9282->code,
@@ -1019,7 +862,7 @@ static int ov9282_set_pad_format(struct v4l2_subdev *sd,
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_mbus_framefmt *framefmt;
 
-		framefmt = v4l2_subdev_state_get_format(sd_state, fmt->pad);
+		framefmt = v4l2_subdev_get_try_format(sd, sd_state, fmt->pad);
 		*framefmt = fmt->format;
 	} else {
 		ret = ov9282_update_controls(ov9282, mode, fmt);
@@ -1035,14 +878,14 @@ static int ov9282_set_pad_format(struct v4l2_subdev *sd,
 }
 
 /**
- * ov9282_init_state() - Initialize sub-device state
+ * ov9282_init_pad_cfg() - Initialize sub-device pad configuration
  * @sd: pointer to ov9282 V4L2 sub-device structure
  * @sd_state: V4L2 sub-device configuration
  *
  * Return: 0 if successful, error code otherwise.
  */
-static int ov9282_init_state(struct v4l2_subdev *sd,
-			     struct v4l2_subdev_state *sd_state)
+static int ov9282_init_pad_cfg(struct v4l2_subdev *sd,
+			       struct v4l2_subdev_state *sd_state)
 {
 	struct ov9282 *ov9282 = to_ov9282(sd);
 	struct v4l2_subdev_format fmt = { 0 };
@@ -1061,7 +904,7 @@ __ov9282_get_pad_crop(struct ov9282 *ov9282,
 {
 	switch (which) {
 	case V4L2_SUBDEV_FORMAT_TRY:
-		return v4l2_subdev_state_get_crop(sd_state, pad);
+		return v4l2_subdev_get_try_crop(&ov9282->sd, sd_state, pad);
 	case V4L2_SUBDEV_FORMAT_ACTIVE:
 		return &ov9282->cur_mode->crop;
 	}
@@ -1194,6 +1037,11 @@ static int ov9282_set_stream(struct v4l2_subdev *sd, int enable)
 
 	mutex_lock(&ov9282->mutex);
 
+	if (ov9282->streaming == enable) {
+		mutex_unlock(&ov9282->mutex);
+		return 0;
+	}
+
 	if (enable) {
 		ret = pm_runtime_resume_and_get(ov9282->dev);
 		if (ret)
@@ -1206,6 +1054,8 @@ static int ov9282_set_stream(struct v4l2_subdev *sd, int enable)
 		ov9282_stop_streaming(ov9282);
 		pm_runtime_put(ov9282->dev);
 	}
+
+	ov9282->streaming = enable;
 
 	mutex_unlock(&ov9282->mutex);
 
@@ -1279,16 +1129,17 @@ static int ov9282_parse_hw_config(struct ov9282 *ov9282)
 	ov9282->reset_gpio = devm_gpiod_get_optional(ov9282->dev, "reset",
 						     GPIOD_OUT_LOW);
 	if (IS_ERR(ov9282->reset_gpio)) {
-		dev_err(ov9282->dev, "failed to get reset gpio %pe",
-			ov9282->reset_gpio);
+		dev_err(ov9282->dev, "failed to get reset gpio %ld",
+			PTR_ERR(ov9282->reset_gpio));
 		return PTR_ERR(ov9282->reset_gpio);
 	}
 
 	/* Get sensor input clock */
-	ov9282->inclk = devm_v4l2_sensor_clk_get(ov9282->dev, NULL);
-	if (IS_ERR(ov9282->inclk))
-		return dev_err_probe(ov9282->dev, PTR_ERR(ov9282->inclk),
-				     "could not get inclk\n");
+	ov9282->inclk = devm_clk_get(ov9282->dev, NULL);
+	if (IS_ERR(ov9282->inclk)) {
+		dev_err(ov9282->dev, "could not get inclk");
+		return PTR_ERR(ov9282->inclk);
+	}
 
 	ret = ov9282_configure_regulators(ov9282);
 	if (ret)
@@ -1350,6 +1201,7 @@ static const struct v4l2_subdev_video_ops ov9282_video_ops = {
 };
 
 static const struct v4l2_subdev_pad_ops ov9282_pad_ops = {
+	.init_cfg = ov9282_init_pad_cfg,
 	.enum_mbus_code = ov9282_enum_mbus_code,
 	.enum_frame_size = ov9282_enum_frame_size,
 	.get_fmt = ov9282_get_pad_format,
@@ -1361,10 +1213,6 @@ static const struct v4l2_subdev_ops ov9282_subdev_ops = {
 	.core = &ov9282_core_ops,
 	.video = &ov9282_video_ops,
 	.pad = &ov9282_pad_ops,
-};
-
-static const struct v4l2_subdev_internal_ops ov9282_internal_ops = {
-	.init_state = ov9282_init_state,
 };
 
 /**
@@ -1449,11 +1297,10 @@ static int ov9282_init_controls(struct ov9282 *ov9282)
 	const struct ov9282_mode *mode = ov9282->cur_mode;
 	struct v4l2_fwnode_device_properties props;
 	u32 hblank_min;
-	u32 exposure_us;
 	u32 lpfr;
 	int ret;
 
-	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 12);
+	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 10);
 	if (ret)
 		return ret;
 
@@ -1518,16 +1365,6 @@ static int ov9282_init_controls(struct ov9282 *ov9282)
 						OV9282_TIMING_HTS_MAX - mode->width,
 						1, hblank_min);
 
-	/* Flash/Strobe controls */
-	v4l2_ctrl_new_std(ctrl_hdlr, &ov9282_ctrl_ops,
-			  V4L2_CID_FLASH_STROBE_OE, 0, 1, 1, 0);
-
-	exposure_us = ov9282_exposure_to_us(ov9282, OV9282_EXPOSURE_DEFAULT);
-	ov9282->flash_duration =
-		v4l2_ctrl_new_std(ctrl_hdlr, &ov9282_ctrl_ops,
-				  V4L2_CID_FLASH_DURATION, 0, exposure_us, 1,
-				  OV9282_STROBE_FRAME_SPAN_DEFAULT);
-
 	ret = v4l2_fwnode_device_parse(ov9282->dev, &props);
 	if (!ret) {
 		/* Failure sets ctrl_hdlr->error, which we check afterwards anyway */
@@ -1566,7 +1403,6 @@ static int ov9282_probe(struct i2c_client *client)
 
 	/* Initialize subdev */
 	v4l2_i2c_subdev_init(&ov9282->sd, client, &ov9282_subdev_ops);
-	ov9282->sd.internal_ops = &ov9282_internal_ops;
 	v4l2_i2c_subdev_set_name(&ov9282->sd, client,
 				 device_get_match_data(ov9282->dev), NULL);
 
@@ -1676,7 +1512,7 @@ static const struct of_device_id ov9282_of_match[] = {
 MODULE_DEVICE_TABLE(of, ov9282_of_match);
 
 static struct i2c_driver ov9282_driver = {
-	.probe = ov9282_probe,
+	.probe_new = ov9282_probe,
 	.remove = ov9282_remove,
 	.driver = {
 		.name = "ov9282",

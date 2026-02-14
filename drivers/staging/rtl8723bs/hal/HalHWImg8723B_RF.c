@@ -78,6 +78,13 @@ static bool CheckPositive(
 	return false;
 }
 
+static bool CheckNegative(
+	struct dm_odm_t *pDM_Odm, const u32  Condition1, const u32 Condition2
+)
+{
+	return true;
+}
+
 /******************************************************************************
 *                           RadioA.TXT
 ******************************************************************************/
@@ -238,7 +245,10 @@ void ODM_ReadAndConfig_MP_8723B_RadioA(struct dm_odm_t *pDM_Odm)
 				READ_NEXT_PAIR(v1, v2, i);
 			} else {
 				READ_NEXT_PAIR(v1, v2, i);
-				bMatched = true;
+				if (!CheckNegative(pDM_Odm, v1, v2))
+					bMatched = false;
+				else
+					bMatched = true;
 				READ_NEXT_PAIR(v1, v2, i);
 			}
 

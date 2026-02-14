@@ -2,7 +2,6 @@
 # Recent Exynos platforms should just select COMMON_CLK_SAMSUNG:
 config COMMON_CLK_SAMSUNG
 	bool "Samsung Exynos clock controller support" if COMPILE_TEST
-	depends on OF
 	select S3C64XX_COMMON_CLK if ARM && ARCH_S3C64XX
 	select S5PV210_COMMON_CLK if ARM && ARCH_S5PV210
 	select EXYNOS_3250_COMMON_CLK if ARM && SOC_EXYNOS3250
@@ -94,16 +93,6 @@ config EXYNOS_CLKOUT
 	  Exynos SoC variants. Usually the XCLKOUT is used to monitor the
 	  status of the certains clocks from SoC, but it could also be tied to
 	  other devices as an input clock.
-
-config EXYNOS_ACPM_CLK
-	tristate "Clock driver controlled via ACPM interface"
-	depends on EXYNOS_ACPM_PROTOCOL || (COMPILE_TEST && !EXYNOS_ACPM_PROTOCOL)
-	help
-	  This driver provides support for clocks that are controlled by
-	  firmware that implements the ACPM interface.
-
-	  This driver uses the ACPM interface to interact with the firmware
-	  providing all the clock controlls.
 
 config TESLA_FSD_COMMON_CLK
 	bool "Tesla FSD clock controller support" if COMPILE_TEST

@@ -36,14 +36,14 @@
 #define BOOT_NVEC	(BOOT_REG_BASE | 0x04)
 #define BOOT_EVEC	(BOOT_REG_BASE | 0x08)
 
-static void __init ltq_soc_nmi_setup(void)
+void __init ltq_soc_nmi_setup(void)
 {
 	extern void (*nmi_handler)(void);
 
 	ltq_w32((unsigned long)&nmi_handler, (void *)BOOT_NVEC);
 }
 
-static void __init ltq_soc_ejtag_setup(void)
+void __init ltq_soc_ejtag_setup(void)
 {
 	extern void (*ejtag_debug_handler)(void);
 

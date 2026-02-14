@@ -41,7 +41,7 @@ enum ad7887_channels {
 };
 
 /**
- * struct ad7887_chip_info - chip specific information
+ * struct ad7887_chip_info - chip specifc information
  * @int_vref_mv:	the internal reference voltage
  * @channels:		channels specification
  * @num_channels:	number of channels
@@ -152,10 +152,11 @@ static int ad7887_read_raw(struct iio_dev *indio_dev,
 
 	switch (m) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		ret = ad7887_scan_direct(st, chan->address);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 
 		if (ret < 0)
 			return ret;
@@ -233,7 +234,7 @@ static void ad7887_reg_disable(void *data)
 
 static int ad7887_probe(struct spi_device *spi)
 {
-	const struct ad7887_platform_data *pdata = dev_get_platdata(&spi->dev);
+	struct ad7887_platform_data *pdata = spi->dev.platform_data;
 	struct ad7887_state *st;
 	struct iio_dev *indio_dev;
 	uint8_t mode;
@@ -328,8 +329,8 @@ static int ad7887_probe(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad7887_id[] = {
-	{ "ad7887", ID_AD7887 },
-	{ }
+	{"ad7887", ID_AD7887},
+	{}
 };
 MODULE_DEVICE_TABLE(spi, ad7887_id);
 

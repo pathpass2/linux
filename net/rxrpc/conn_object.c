@@ -31,13 +31,13 @@ void rxrpc_poke_conn(struct rxrpc_connection *conn, enum rxrpc_conn_trace why)
 	if (WARN_ON_ONCE(!local))
 		return;
 
-	spin_lock_irq(&local->lock);
+	spin_lock_bh(&local->lock);
 	busy = !list_empty(&conn->attend_link);
 	if (!busy) {
 		rxrpc_get_connection(conn, why);
 		list_add_tail(&conn->attend_link, &local->conn_attend_q);
 	}
-	spin_unlock_irq(&local->lock);
+	spin_unlock_bh(&local->lock);
 	rxrpc_wake_up_io_thread(local);
 }
 
@@ -67,13 +67,10 @@ struct rxrpc_connection *rxrpc_alloc_connection(struct rxrpc_net *rxnet,
 		INIT_WORK(&conn->destructor, rxrpc_clean_up_connection);
 		INIT_LIST_HEAD(&conn->proc_link);
 		INIT_LIST_HEAD(&conn->link);
-		INIT_LIST_HEAD(&conn->attend_link);
 		mutex_init(&conn->security_lock);
-		mutex_init(&conn->tx_data_alloc_lock);
 		skb_queue_head_init(&conn->rx_queue);
 		conn->rxnet = rxnet;
 		conn->security = &rxrpc_no_security;
-		rwlock_init(&conn->security_use_lock);
 		spin_lock_init(&conn->state_lock);
 		conn->debug_id = atomic_inc_return(&rxrpc_debug_id);
 		conn->idle_timestamp = jiffies;
@@ -121,13 +118,18 @@ struct rxrpc_connection *rxrpc_find_client_connection_rcu(struct rxrpc_local *lo
 	switch (srx->transport.family) {
 	case AF_INET:
 		if (peer->srx.transport.sin.sin_port !=
-		    srx->transport.sin.sin_port)
+		    srx->transport.sin.sin_port ||
+		    peer->srx.transport.sin.sin_addr.s_addr !=
+		    srx->transport.sin.sin_addr.s_addr)
 			goto not_found;
 		break;
 #ifdef CONFIG_AF_RXRPC_IPV6
 	case AF_INET6:
 		if (peer->srx.transport.sin6.sin6_port !=
-		    srx->transport.sin6.sin6_port)
+		    srx->transport.sin6.sin6_port ||
+		    memcmp(&peer->srx.transport.sin6.sin6_addr,
+			   &srx->transport.sin6.sin6_addr,
+			   sizeof(struct in6_addr)) != 0)
 			goto not_found;
 		break;
 #endif
@@ -198,9 +200,9 @@ void rxrpc_disconnect_call(struct rxrpc_call *call)
 	call->peer->cong_ssthresh = call->cong_ssthresh;
 
 	if (!hlist_unhashed(&call->error_link)) {
-		spin_lock_irq(&call->peer->lock);
+		spin_lock(&call->peer->lock);
 		hlist_del_init(&call->error_link);
-		spin_unlock_irq(&call->peer->lock);
+		spin_unlock(&call->peer->lock);
 	}
 
 	if (rxrpc_is_client_call(call)) {
@@ -210,7 +212,7 @@ void rxrpc_disconnect_call(struct rxrpc_call *call)
 		conn->idle_timestamp = jiffies;
 		if (atomic_dec_and_test(&conn->active))
 			rxrpc_set_service_reap_timer(conn->rxnet,
-						     jiffies + rxrpc_connection_expiry * HZ);
+						     jiffies + rxrpc_connection_expiry);
 	}
 
 	rxrpc_put_call(call, rxrpc_call_put_io_thread);
@@ -315,22 +317,15 @@ static void rxrpc_clean_up_connection(struct work_struct *work)
 	       !conn->channels[3].call);
 	ASSERT(list_empty(&conn->cache_link));
 
-	timer_delete_sync(&conn->timer);
+	del_timer_sync(&conn->timer);
 	cancel_work_sync(&conn->processor); /* Processing may restart the timer */
-	timer_delete_sync(&conn->timer);
+	del_timer_sync(&conn->timer);
 
 	write_lock(&rxnet->conn_lock);
 	list_del_init(&conn->proc_link);
 	write_unlock(&rxnet->conn_lock);
 
-	if (conn->pmtud_probe) {
-		trace_rxrpc_pmtud_lost(conn, 0);
-		conn->peer->pmtud_probing = false;
-		conn->peer->pmtud_pending = true;
-	}
-
 	rxrpc_purge_queue(&conn->rx_queue);
-	rxrpc_free_skb(conn->tx_response, rxrpc_skb_put_response);
 
 	rxrpc_kill_client_conn(conn);
 
@@ -346,7 +341,6 @@ static void rxrpc_clean_up_connection(struct work_struct *work)
 	 */
 	rxrpc_purge_queue(&conn->rx_queue);
 
-	page_frag_cache_drain(&conn->tx_data_alloc);
 	call_rcu(&conn->rcu, rxrpc_rcu_free_connection);
 }
 
@@ -367,7 +361,7 @@ void rxrpc_put_connection(struct rxrpc_connection *conn,
 	dead = __refcount_dec_and_test(&conn->ref, &r);
 	trace_rxrpc_conn(debug_id, r - 1, why);
 	if (dead) {
-		timer_delete(&conn->timer);
+		del_timer(&conn->timer);
 		cancel_work(&conn->processor);
 
 		if (in_softirq() || work_busy(&conn->processor) ||
@@ -472,7 +466,7 @@ void rxrpc_destroy_all_connections(struct rxrpc_net *rxnet)
 
 	atomic_dec(&rxnet->nr_conns);
 
-	timer_delete_sync(&rxnet->service_conn_reap_timer);
+	del_timer_sync(&rxnet->service_conn_reap_timer);
 	rxrpc_queue_work(&rxnet->service_conn_reaper);
 	flush_workqueue(rxrpc_workqueue);
 

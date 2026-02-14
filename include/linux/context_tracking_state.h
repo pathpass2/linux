@@ -7,16 +7,22 @@
 #include <linux/context_tracking_irq.h>
 
 /* Offset to allow distinguishing irq vs. task-based idle entry/exit. */
-#define CT_NESTING_IRQ_NONIDLE	((LONG_MAX / 2) + 1)
+#define DYNTICK_IRQ_NONIDLE	((LONG_MAX / 2) + 1)
 
 enum ctx_state {
-	CT_STATE_DISABLED	= -1,	/* returned by ct_state() if unknown */
-	CT_STATE_KERNEL		= 0,
-	CT_STATE_IDLE		= 1,
-	CT_STATE_USER		= 2,
-	CT_STATE_GUEST		= 3,
-	CT_STATE_MAX		= 4,
+	CONTEXT_DISABLED	= -1,	/* returned by ct_state() if unknown */
+	CONTEXT_KERNEL		= 0,
+	CONTEXT_IDLE		= 1,
+	CONTEXT_USER		= 2,
+	CONTEXT_GUEST		= 3,
+	CONTEXT_MAX		= 4,
 };
+
+/* Even value for idle, else odd. */
+#define RCU_DYNTICKS_IDX CONTEXT_MAX
+
+#define CT_STATE_MASK (CONTEXT_MAX - 1)
+#define CT_DYNTICKS_MASK (~CT_STATE_MASK)
 
 struct context_tracking {
 #ifdef CONFIG_CONTEXT_TRACKING_USER
@@ -33,100 +39,64 @@ struct context_tracking {
 	atomic_t state;
 #endif
 #ifdef CONFIG_CONTEXT_TRACKING_IDLE
-	long nesting;		/* Track process nesting level. */
-	long nmi_nesting;	/* Track irq/NMI nesting level. */
+	long dynticks_nesting;		/* Track process nesting level. */
+	long dynticks_nmi_nesting;	/* Track irq/NMI nesting level. */
 #endif
 };
 
-/*
- * We cram two different things within the same atomic variable:
- *
- *                     CT_RCU_WATCHING_START  CT_STATE_START
- *                                |                |
- *                                v                v
- *     MSB [ RCU watching counter ][ context_state ] LSB
- *         ^                       ^
- *         |                       |
- * CT_RCU_WATCHING_END        CT_STATE_END
- *
- * Bits are used from the LSB upwards, so unused bits (if any) will always be in
- * upper bits of the variable.
- */
 #ifdef CONFIG_CONTEXT_TRACKING
-#define CT_SIZE (sizeof(((struct context_tracking *)0)->state) * BITS_PER_BYTE)
-
-#define CT_STATE_WIDTH bits_per(CT_STATE_MAX - 1)
-#define CT_STATE_START 0
-#define CT_STATE_END   (CT_STATE_START + CT_STATE_WIDTH - 1)
-
-#define CT_RCU_WATCHING_MAX_WIDTH (CT_SIZE - CT_STATE_WIDTH)
-#define CT_RCU_WATCHING_WIDTH     (IS_ENABLED(CONFIG_RCU_DYNTICKS_TORTURE) ? 2 : CT_RCU_WATCHING_MAX_WIDTH)
-#define CT_RCU_WATCHING_START     (CT_STATE_END + 1)
-#define CT_RCU_WATCHING_END       (CT_RCU_WATCHING_START + CT_RCU_WATCHING_WIDTH - 1)
-#define CT_RCU_WATCHING           BIT(CT_RCU_WATCHING_START)
-
-#define CT_STATE_MASK        GENMASK(CT_STATE_END,        CT_STATE_START)
-#define CT_RCU_WATCHING_MASK GENMASK(CT_RCU_WATCHING_END, CT_RCU_WATCHING_START)
-
-#define CT_UNUSED_WIDTH (CT_RCU_WATCHING_MAX_WIDTH - CT_RCU_WATCHING_WIDTH)
-
-static_assert(CT_STATE_WIDTH        +
-	      CT_RCU_WATCHING_WIDTH +
-	      CT_UNUSED_WIDTH       ==
-	      CT_SIZE);
-
 DECLARE_PER_CPU(struct context_tracking, context_tracking);
-#endif	/* CONFIG_CONTEXT_TRACKING */
+#endif
 
 #ifdef CONFIG_CONTEXT_TRACKING_USER
 static __always_inline int __ct_state(void)
 {
-	return raw_atomic_read(this_cpu_ptr(&context_tracking.state)) & CT_STATE_MASK;
+	return arch_atomic_read(this_cpu_ptr(&context_tracking.state)) & CT_STATE_MASK;
 }
 #endif
 
 #ifdef CONFIG_CONTEXT_TRACKING_IDLE
-static __always_inline int ct_rcu_watching(void)
+static __always_inline int ct_dynticks(void)
 {
-	return atomic_read(this_cpu_ptr(&context_tracking.state)) & CT_RCU_WATCHING_MASK;
+	return atomic_read(this_cpu_ptr(&context_tracking.state)) & CT_DYNTICKS_MASK;
 }
 
-static __always_inline int ct_rcu_watching_cpu(int cpu)
+static __always_inline int ct_dynticks_cpu(int cpu)
 {
 	struct context_tracking *ct = per_cpu_ptr(&context_tracking, cpu);
 
-	return atomic_read(&ct->state) & CT_RCU_WATCHING_MASK;
+	return atomic_read(&ct->state) & CT_DYNTICKS_MASK;
 }
 
-static __always_inline int ct_rcu_watching_cpu_acquire(int cpu)
+static __always_inline int ct_dynticks_cpu_acquire(int cpu)
 {
 	struct context_tracking *ct = per_cpu_ptr(&context_tracking, cpu);
 
-	return atomic_read_acquire(&ct->state) & CT_RCU_WATCHING_MASK;
+	return atomic_read_acquire(&ct->state) & CT_DYNTICKS_MASK;
 }
 
-static __always_inline long ct_nesting(void)
+static __always_inline long ct_dynticks_nesting(void)
 {
-	return __this_cpu_read(context_tracking.nesting);
+	return __this_cpu_read(context_tracking.dynticks_nesting);
 }
 
-static __always_inline long ct_nesting_cpu(int cpu)
-{
-	struct context_tracking *ct = per_cpu_ptr(&context_tracking, cpu);
-
-	return ct->nesting;
-}
-
-static __always_inline long ct_nmi_nesting(void)
-{
-	return __this_cpu_read(context_tracking.nmi_nesting);
-}
-
-static __always_inline long ct_nmi_nesting_cpu(int cpu)
+static __always_inline long ct_dynticks_nesting_cpu(int cpu)
 {
 	struct context_tracking *ct = per_cpu_ptr(&context_tracking, cpu);
 
-	return ct->nmi_nesting;
+	return ct->dynticks_nesting;
+}
+
+static __always_inline long ct_dynticks_nmi_nesting(void)
+{
+	return __this_cpu_read(context_tracking.dynticks_nmi_nesting);
+}
+
+static __always_inline long ct_dynticks_nmi_nesting_cpu(int cpu)
+{
+	struct context_tracking *ct = per_cpu_ptr(&context_tracking, cpu);
+
+	return ct->dynticks_nmi_nesting;
 }
 #endif /* #ifdef CONFIG_CONTEXT_TRACKING_IDLE */
 
@@ -143,7 +113,7 @@ static __always_inline bool context_tracking_enabled_cpu(int cpu)
 	return context_tracking_enabled() && per_cpu(context_tracking.active, cpu);
 }
 
-static __always_inline bool context_tracking_enabled_this_cpu(void)
+static inline bool context_tracking_enabled_this_cpu(void)
 {
 	return context_tracking_enabled() && __this_cpu_read(context_tracking.active);
 }
@@ -153,14 +123,14 @@ static __always_inline bool context_tracking_enabled_this_cpu(void)
  *
  * Returns the current cpu's context tracking state if context tracking
  * is enabled.  If context tracking is disabled, returns
- * CT_STATE_DISABLED.  This should be used primarily for debugging.
+ * CONTEXT_DISABLED.  This should be used primarily for debugging.
  */
 static __always_inline int ct_state(void)
 {
 	int ret;
 
 	if (!context_tracking_enabled())
-		return CT_STATE_DISABLED;
+		return CONTEXT_DISABLED;
 
 	preempt_disable();
 	ret = __ct_state();

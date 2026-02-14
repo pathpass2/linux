@@ -105,7 +105,7 @@ int cw1200_pm_init(struct cw1200_pm_state *pm,
 
 void cw1200_pm_deinit(struct cw1200_pm_state *pm)
 {
-	timer_delete_sync(&pm->stay_awake);
+	del_timer_sync(&pm->stay_awake);
 }
 
 void cw1200_pm_stay_awake(struct cw1200_pm_state *pm,

@@ -21,7 +21,6 @@ properties:
           - fsl,imx28-lcdif
           - fsl,imx6sx-lcdif
           - fsl,imx8mp-lcdif
-          - fsl,imx93-lcdif
       - items:
           - enum:
               - fsl,imx6sl-lcdif
@@ -50,19 +49,8 @@ properties:
       - const: disp_axi
     minItems: 1
 
-  dmas:
-    items:
-      - description: DMA specifier for the RX DMA channel.
-
-  dma-names:
-    items:
-      - const: rx
-
   interrupts:
-    items:
-      - description: LCDIF DMA interrupt
-      - description: LCDIF Error interrupt
-    minItems: 1
+    maxItems: 1
 
   power-domains:
     maxItems: 1
@@ -71,23 +59,12 @@ properties:
     $ref: /schemas/graph.yaml#/properties/port
     description: The LCDIF output port
 
-  display:
-    $ref: /schemas/types.yaml#/definitions/phandle
-    description: phandle to display panel
-    deprecated: true
-
-  display0:
-    $ref: panel/panel-common.yaml#
-    deprecated: true
-
-  lcd-supply:
-    deprecated: true
-
 required:
   - compatible
   - reg
   - clocks
   - interrupts
+  - port
 
 additionalProperties: false
 
@@ -111,9 +88,7 @@ allOf:
       properties:
         compatible:
           contains:
-            enum:
-              - fsl,imx8mp-lcdif
-              - fsl,imx93-lcdif
+            const: fsl,imx8mp-lcdif
     then:
       properties:
         clocks:
@@ -132,7 +107,6 @@ allOf:
               enum:
                 - fsl,imx6sx-lcdif
                 - fsl,imx8mp-lcdif
-                - fsl,imx93-lcdif
     then:
       properties:
         clocks:
@@ -142,56 +116,16 @@ allOf:
   - if:
       properties:
         compatible:
-          const: fsl,imx6sx-lcdif
-    then:
-      required:
-        - power-domains
-  - if:
-      properties:
-        compatible:
           contains:
             enum:
               - fsl,imx6sl-lcdif
+              - fsl,imx6sx-lcdif
               - fsl,imx8mm-lcdif
               - fsl,imx8mn-lcdif
               - fsl,imx8mp-lcdif
-              - fsl,imx93-lcdif
     then:
       required:
         - power-domains
-  - if:
-      properties:
-        compatible:
-          contains:
-            enum:
-              - fsl,imx23-lcdif
-    then:
-      properties:
-        interrupts:
-          minItems: 2
-          maxItems: 2
-    else:
-      properties:
-        interrupts:
-          maxItems: 1
-
-  - if:
-      not:
-        properties:
-          compatible:
-            contains:
-              enum:
-                - fsl,imx28-lcdif
-    then:
-      properties:
-        dmas: false
-        dma-names: false
-        display: false
-        display0: false
-        lcd-supply: false
-
-      required:
-        - port
 
 examples:
   - |

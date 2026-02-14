@@ -94,7 +94,7 @@ int sja1110_pcs_mdio_read_c45(struct mii_bus *bus, int phy, int mmd, int reg)
 	return tmp & 0xffff;
 }
 
-int sja1110_pcs_mdio_write_c45(struct mii_bus *bus, int phy, int mmd, int reg,
+int sja1110_pcs_mdio_write_c45(struct mii_bus *bus, int phy, int reg, int mmd,
 			       u16 val)
 {
 	struct sja1105_mdio_private *mdio_priv = bus->priv;
@@ -400,7 +400,8 @@ static int sja1105_mdiobus_pcs_register(struct sja1105_private *priv)
 	}
 
 	for (port = 0; port < ds->num_ports; port++) {
-		struct phylink_pcs *pcs;
+		struct mdio_device *mdiodev;
+		struct dw_xpcs *xpcs;
 
 		if (dsa_is_unused_port(ds, port))
 			continue;
@@ -409,13 +410,19 @@ static int sja1105_mdiobus_pcs_register(struct sja1105_private *priv)
 		    priv->phy_mode[port] != PHY_INTERFACE_MODE_2500BASEX)
 			continue;
 
-		pcs = xpcs_create_pcs_mdiodev(bus, port);
-		if (IS_ERR(pcs)) {
-			rc = PTR_ERR(pcs);
+		mdiodev = mdio_device_create(bus, port);
+		if (IS_ERR(mdiodev)) {
+			rc = PTR_ERR(mdiodev);
 			goto out_pcs_free;
 		}
 
-		priv->pcs[port] = pcs;
+		xpcs = xpcs_create(mdiodev, priv->phy_mode[port]);
+		if (IS_ERR(xpcs)) {
+			rc = PTR_ERR(xpcs);
+			goto out_pcs_free;
+		}
+
+		priv->xpcs[port] = xpcs;
 	}
 
 	priv->mdio_pcs = bus;
@@ -424,10 +431,12 @@ static int sja1105_mdiobus_pcs_register(struct sja1105_private *priv)
 
 out_pcs_free:
 	for (port = 0; port < ds->num_ports; port++) {
-		if (priv->pcs[port]) {
-			xpcs_destroy_pcs(priv->pcs[port]);
-			priv->pcs[port] = NULL;
-		}
+		if (!priv->xpcs[port])
+			continue;
+
+		mdio_device_free(priv->xpcs[port]->mdiodev);
+		xpcs_destroy(priv->xpcs[port]);
+		priv->xpcs[port] = NULL;
 	}
 
 	mdiobus_unregister(bus);
@@ -445,10 +454,12 @@ static void sja1105_mdiobus_pcs_unregister(struct sja1105_private *priv)
 		return;
 
 	for (port = 0; port < ds->num_ports; port++) {
-		if (priv->pcs[port]) {
-			xpcs_destroy_pcs(priv->pcs[port]);
-			priv->pcs[port] = NULL;
-		}
+		if (!priv->xpcs[port])
+			continue;
+
+		mdio_device_free(priv->xpcs[port]->mdiodev);
+		xpcs_destroy(priv->xpcs[port]);
+		priv->xpcs[port] = NULL;
 	}
 
 	mdiobus_unregister(priv->mdio_pcs);
@@ -468,9 +479,12 @@ int sja1105_mdiobus_register(struct dsa_switch *ds)
 	if (rc)
 		return rc;
 
-	mdio_node = of_get_available_child_by_name(switch_node, "mdios");
+	mdio_node = of_get_child_by_name(switch_node, "mdios");
 	if (!mdio_node)
 		return 0;
+
+	if (!of_device_is_available(mdio_node))
+		goto out_put_mdio_node;
 
 	if (regs->mdio_100base_tx != SJA1105_RSV_ADDR) {
 		rc = sja1105_mdiobus_base_tx_register(priv, mdio_node);
@@ -484,6 +498,7 @@ int sja1105_mdiobus_register(struct dsa_switch *ds)
 			goto err_free_base_tx_mdiobus;
 	}
 
+out_put_mdio_node:
 	of_node_put(mdio_node);
 
 	return 0;

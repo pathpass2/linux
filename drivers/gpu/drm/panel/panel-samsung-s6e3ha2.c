@@ -12,7 +12,7 @@
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
 
 #include <drm/drm_mipi_dsi.h>
@@ -458,7 +458,7 @@ static int s6e3ha2_set_brightness(struct backlight_device *bl_dev)
 		return -EINVAL;
 	}
 
-	if (bl_dev->props.power > BACKLIGHT_POWER_REDUCED)
+	if (bl_dev->props.power > FB_BLANK_NORMAL)
 		return -EPERM;
 
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_on_f0(ctx));
@@ -508,7 +508,7 @@ static int s6e3ha2_disable(struct drm_panel *panel)
 	s6e3ha2_call_write_func(ret, mipi_dsi_dcs_set_display_off(dsi));
 
 	msleep(40);
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_REDUCED;
+	ctx->bl_dev->props.power = FB_BLANK_NORMAL;
 
 	return 0;
 }
@@ -554,7 +554,7 @@ static int s6e3ha2_prepare(struct drm_panel *panel)
 	if (ret < 0)
 		goto err;
 
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_REDUCED;
+	ctx->bl_dev->props.power = FB_BLANK_NORMAL;
 
 	return 0;
 
@@ -601,7 +601,7 @@ static int s6e3ha2_enable(struct drm_panel *panel)
 	s6e3ha2_call_write_func(ret, s6e3ha2_test_key_off_f0(ctx));
 
 	s6e3ha2_call_write_func(ret, mipi_dsi_dcs_set_display_on(dsi));
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_ON;
+	ctx->bl_dev->props.power = FB_BLANK_UNBLANK;
 
 	return 0;
 }
@@ -681,11 +681,9 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 	struct s6e3ha2 *ctx;
 	int ret;
 
-	ctx = devm_drm_panel_alloc(dev, struct s6e3ha2, panel,
-				   &s6e3ha2_drm_funcs,
-				   DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(dev, sizeof(*ctx), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
 
 	mipi_dsi_set_drvdata(dsi, ctx);
 
@@ -731,8 +729,10 @@ static int s6e3ha2_probe(struct mipi_dsi_device *dsi)
 
 	ctx->bl_dev->props.max_brightness = S6E3HA2_MAX_BRIGHTNESS;
 	ctx->bl_dev->props.brightness = S6E3HA2_DEFAULT_BRIGHTNESS;
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_OFF;
+	ctx->bl_dev->props.power = FB_BLANK_POWERDOWN;
 
+	drm_panel_init(&ctx->panel, dev, &s6e3ha2_drm_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 	ctx->panel.prepare_prev_first = true;
 
 	drm_panel_add(&ctx->panel);

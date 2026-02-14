@@ -22,7 +22,7 @@
  * Authors: Ben Skeggs
  */
 #include "pad.h"
-#include "auxch.h"
+#include "aux.h"
 #include "bus.h"
 
 void

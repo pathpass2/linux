@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2021-2022 Intel Corporation
+// Copyright(c) 2021-2022 Intel Corporation. All rights reserved.
 //
 // Authors: Cezary Rojewski <cezary.rojewski@intel.com>
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -16,52 +16,71 @@ int avs_ipc_set_boot_config(struct avs_dev *adev, u32 dma_id, u32 purge)
 {
 	union avs_global_msg msg = AVS_GLOBAL_REQUEST(ROM_CONTROL);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.boot_cfg.rom_ctrl_msg_type = AVS_ROM_SET_BOOT_CONFIG;
 	msg.boot_cfg.dma_id = dma_id;
 	msg.boot_cfg.purge_request = purge;
 	request.header = msg.val;
 
-	return avs_dsp_send_rom_msg(adev, &request, "set boot config");
+	ret = avs_dsp_send_rom_msg(adev, &request);
+	if (ret)
+		avs_ipc_err(adev, &request, "set boot config", ret);
+
+	return ret;
 }
 
 int avs_ipc_load_modules(struct avs_dev *adev, u16 *mod_ids, u32 num_mod_ids)
 {
 	union avs_global_msg msg = AVS_GLOBAL_REQUEST(LOAD_MULTIPLE_MODULES);
 	struct avs_ipc_msg request;
+	int ret;
 
 	msg.load_multi_mods.mod_cnt = num_mod_ids;
 	request.header = msg.val;
 	request.data = mod_ids;
 	request.size = sizeof(*mod_ids) * num_mod_ids;
 
-	return avs_dsp_send_msg_timeout(adev, &request, NULL, AVS_CL_TIMEOUT_MS,
-					"load multiple modules");
+	ret = avs_dsp_send_msg_timeout(adev, &request, NULL, AVS_CL_TIMEOUT_MS);
+	if (ret)
+		avs_ipc_err(adev, &request, "load multiple modules", ret);
+
+	return ret;
 }
 
 int avs_ipc_unload_modules(struct avs_dev *adev, u16 *mod_ids, u32 num_mod_ids)
 {
 	union avs_global_msg msg = AVS_GLOBAL_REQUEST(UNLOAD_MULTIPLE_MODULES);
 	struct avs_ipc_msg request;
+	int ret;
 
 	msg.load_multi_mods.mod_cnt = num_mod_ids;
 	request.header = msg.val;
 	request.data = mod_ids;
 	request.size = sizeof(*mod_ids) * num_mod_ids;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "unload multiple modules");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "unload multiple modules", ret);
+
+	return ret;
 }
 
 int avs_ipc_load_library(struct avs_dev *adev, u32 dma_id, u32 lib_id)
 {
 	union avs_global_msg msg = AVS_GLOBAL_REQUEST(LOAD_LIBRARY);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.load_lib.dma_id = dma_id;
 	msg.load_lib.lib_id = lib_id;
 	request.header = msg.val;
 
-	return avs_dsp_send_msg_timeout(adev, &request, NULL, AVS_CL_TIMEOUT_MS, "load library");
+	ret = avs_dsp_send_msg_timeout(adev, &request, NULL, AVS_CL_TIMEOUT_MS);
+	if (ret)
+		avs_ipc_err(adev, &request, "load library", ret);
+
+	return ret;
 }
 
 int avs_ipc_create_pipeline(struct avs_dev *adev, u16 req_size, u8 priority,
@@ -69,6 +88,7 @@ int avs_ipc_create_pipeline(struct avs_dev *adev, u16 req_size, u8 priority,
 {
 	union avs_global_msg msg = AVS_GLOBAL_REQUEST(CREATE_PIPELINE);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.create_ppl.ppl_mem_size = req_size;
 	msg.create_ppl.ppl_priority = priority;
@@ -77,18 +97,27 @@ int avs_ipc_create_pipeline(struct avs_dev *adev, u16 req_size, u8 priority,
 	msg.ext.create_ppl.attributes = attributes;
 	request.header = msg.val;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "create pipeline");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "create pipeline", ret);
+
+	return ret;
 }
 
 int avs_ipc_delete_pipeline(struct avs_dev *adev, u8 instance_id)
 {
 	union avs_global_msg msg = AVS_GLOBAL_REQUEST(DELETE_PIPELINE);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.ppl.instance_id = instance_id;
 	request.header = msg.val;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "delete pipeline");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "delete pipeline", ret);
+
+	return ret;
 }
 
 int avs_ipc_set_pipeline_state(struct avs_dev *adev, u8 instance_id,
@@ -96,12 +125,17 @@ int avs_ipc_set_pipeline_state(struct avs_dev *adev, u8 instance_id,
 {
 	union avs_global_msg msg = AVS_GLOBAL_REQUEST(SET_PIPELINE_STATE);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.set_ppl_state.ppl_id = instance_id;
 	msg.set_ppl_state.state = state;
 	request.header = msg.val;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "set pipeline state");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "set pipeline state", ret);
+
+	return ret;
 }
 
 int avs_ipc_get_pipeline_state(struct avs_dev *adev, u8 instance_id,
@@ -115,9 +149,13 @@ int avs_ipc_get_pipeline_state(struct avs_dev *adev, u8 instance_id,
 	msg.get_ppl_state.ppl_id = instance_id;
 	request.header = msg.val;
 
-	ret = avs_dsp_send_msg(adev, &request, &reply, "get pipeline state");
-	if (!ret)
-		*state = reply.rsp.ext.get_ppl_state.state;
+	ret = avs_dsp_send_msg(adev, &request, &reply);
+	if (ret) {
+		avs_ipc_err(adev, &request, "get pipeline state", ret);
+		return ret;
+	}
+
+	*state = reply.rsp.ext.get_ppl_state.state;
 	return ret;
 }
 
@@ -145,6 +183,7 @@ int avs_ipc_init_instance(struct avs_dev *adev, u16 module_id, u8 instance_id,
 {
 	union avs_module_msg msg = AVS_MODULE_REQUEST(INIT_INSTANCE);
 	struct avs_ipc_msg request;
+	int ret;
 
 	msg.module_id = module_id;
 	msg.instance_id = instance_id;
@@ -158,7 +197,11 @@ int avs_ipc_init_instance(struct avs_dev *adev, u16 module_id, u8 instance_id,
 	request.data = param;
 	request.size = param_size;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "init instance");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "init instance", ret);
+
+	return ret;
 }
 
 /*
@@ -179,12 +222,17 @@ int avs_ipc_delete_instance(struct avs_dev *adev, u16 module_id, u8 instance_id)
 {
 	union avs_module_msg msg = AVS_MODULE_REQUEST(DELETE_INSTANCE);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.module_id = module_id;
 	msg.instance_id = instance_id;
 	request.header = msg.val;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "delete instance");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "delete instance", ret);
+
+	return ret;
 }
 
 /*
@@ -204,6 +252,7 @@ int avs_ipc_bind(struct avs_dev *adev, u16 module_id, u8 instance_id,
 {
 	union avs_module_msg msg = AVS_MODULE_REQUEST(BIND);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.module_id = module_id;
 	msg.instance_id = instance_id;
@@ -213,7 +262,11 @@ int avs_ipc_bind(struct avs_dev *adev, u16 module_id, u8 instance_id,
 	msg.ext.bind_unbind.src_queue = src_queue;
 	request.header = msg.val;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "bind modules");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "bind modules", ret);
+
+	return ret;
 }
 
 /*
@@ -233,6 +286,7 @@ int avs_ipc_unbind(struct avs_dev *adev, u16 module_id, u8 instance_id,
 {
 	union avs_module_msg msg = AVS_MODULE_REQUEST(UNBIND);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.module_id = module_id;
 	msg.instance_id = instance_id;
@@ -242,7 +296,11 @@ int avs_ipc_unbind(struct avs_dev *adev, u16 module_id, u8 instance_id,
 	msg.ext.bind_unbind.src_queue = src_queue;
 	request.header = msg.val;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "unbind modules");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "unbind modules", ret);
+
+	return ret;
 }
 
 static int __avs_ipc_set_large_config(struct avs_dev *adev, u16 module_id, u8 instance_id,
@@ -251,6 +309,7 @@ static int __avs_ipc_set_large_config(struct avs_dev *adev, u16 module_id, u8 in
 {
 	union avs_module_msg msg = AVS_MODULE_REQUEST(LARGE_CONFIG_SET);
 	struct avs_ipc_msg request;
+	int ret;
 
 	msg.module_id = module_id;
 	msg.instance_id = instance_id;
@@ -263,7 +322,11 @@ static int __avs_ipc_set_large_config(struct avs_dev *adev, u16 module_id, u8 in
 	request.data = request_data;
 	request.size = request_size;
 
-	return avs_dsp_send_msg(adev, &request, NULL, "large config set");
+	ret = avs_dsp_send_msg(adev, &request, NULL);
+	if (ret)
+		avs_ipc_err(adev, &request, "large config set", ret);
+
+	return ret;
 }
 
 int avs_ipc_set_large_config(struct avs_dev *adev, u16 module_id,
@@ -335,8 +398,9 @@ int avs_ipc_get_large_config(struct avs_dev *adev, u16 module_id, u8 instance_id
 	request.size = request_size;
 	reply.size = AVS_MAILBOX_SIZE;
 
-	ret = avs_dsp_send_msg(adev, &request, &reply, "large config get");
+	ret = avs_dsp_send_msg(adev, &request, &reply);
 	if (ret) {
+		avs_ipc_err(adev, &request, "large config get", ret);
 		kfree(reply.data);
 		return ret;
 	}
@@ -358,6 +422,7 @@ int avs_ipc_set_dx(struct avs_dev *adev, u32 core_mask, bool powerup)
 	union avs_module_msg msg = AVS_MODULE_REQUEST(SET_DX);
 	struct avs_ipc_msg request;
 	struct avs_dxstate_info dx;
+	int ret;
 
 	dx.core_mask = core_mask;
 	dx.dx_mask = powerup ? core_mask : 0;
@@ -365,7 +430,11 @@ int avs_ipc_set_dx(struct avs_dev *adev, u32 core_mask, bool powerup)
 	request.data = &dx;
 	request.size = sizeof(dx);
 
-	return avs_dsp_send_pm_msg(adev, &request, NULL, true, "set dx");
+	ret = avs_dsp_send_pm_msg(adev, &request, NULL, true);
+	if (ret)
+		avs_ipc_err(adev, &request, "set dx", ret);
+
+	return ret;
 }
 
 /*
@@ -378,14 +447,18 @@ int avs_ipc_set_d0ix(struct avs_dev *adev, bool enable_pg, bool streaming)
 {
 	union avs_module_msg msg = AVS_MODULE_REQUEST(SET_D0IX);
 	struct avs_ipc_msg request = {{0}};
+	int ret;
 
 	msg.ext.set_d0ix.wake = enable_pg;
 	msg.ext.set_d0ix.streaming = streaming;
-	msg.ext.set_d0ix.prevent_pg = !enable_pg;
 
 	request.header = msg.val;
 
-	return avs_dsp_send_pm_msg(adev, &request, NULL, false, "set d0ix");
+	ret = avs_dsp_send_pm_msg(adev, &request, NULL, false);
+	if (ret)
+		avs_ipc_err(adev, &request, "set d0ix", ret);
+
+	return ret;
 }
 
 int avs_ipc_get_fw_config(struct avs_dev *adev, struct avs_fw_cfg *cfg)
@@ -400,12 +473,10 @@ int avs_ipc_get_fw_config(struct avs_dev *adev, struct avs_fw_cfg *cfg)
 				       AVS_BASEFW_FIRMWARE_CONFIG, NULL, 0,
 				       &payload, &payload_size);
 	if (ret)
-		goto err;
+		return ret;
 	/* Non-zero payload expected for FIRMWARE_CONFIG. */
-	if (!payload_size) {
-		ret = -EREMOTEIO;
-		goto err;
-	}
+	if (!payload_size)
+		return -EREMOTEIO;
 
 	while (offset < payload_size) {
 		tlv = (struct avs_tlv *)(payload + offset);
@@ -504,47 +575,6 @@ int avs_ipc_get_fw_config(struct avs_dev *adev, struct avs_fw_cfg *cfg)
 
 	/* No longer needed, free it as it's owned by the get_large_config() caller. */
 	kfree(payload);
-err:
-	if (ret)
-		dev_err(adev->dev, "get fw cfg failed: %d\n", ret);
-	return ret;
-}
-
-int avs_ipc_set_fw_config(struct avs_dev *adev, size_t num_tlvs, ...)
-{
-	struct avs_tlv *tlv;
-	void *payload;
-	size_t offset;
-	va_list args;
-	int ret, i;
-
-	payload = kzalloc(AVS_MAILBOX_SIZE, GFP_KERNEL);
-	if (!payload)
-		return -ENOMEM;
-
-	va_start(args, num_tlvs);
-	for (offset = i = 0; i < num_tlvs && offset < AVS_MAILBOX_SIZE - sizeof(*tlv); i++) {
-		tlv = (struct avs_tlv *)(payload + offset);
-		tlv->type = va_arg(args, u32);
-		tlv->length = va_arg(args, u32);
-
-		offset += sizeof(*tlv) + tlv->length;
-		if (offset > AVS_MAILBOX_SIZE)
-			break;
-
-		memcpy(tlv->value, va_arg(args, u8*), tlv->length);
-	}
-
-	if (i == num_tlvs)
-		ret = avs_ipc_set_large_config(adev, AVS_BASEFW_MOD_ID, AVS_BASEFW_INST_ID,
-					       AVS_BASEFW_FIRMWARE_CONFIG, payload, offset);
-	else
-		ret = -ERANGE;
-
-	va_end(args);
-	kfree(payload);
-	if (ret)
-		dev_err(adev->dev, "set fw cfg failed: %d\n", ret);
 	return ret;
 }
 
@@ -560,12 +590,10 @@ int avs_ipc_get_hw_config(struct avs_dev *adev, struct avs_hw_cfg *cfg)
 				       AVS_BASEFW_HARDWARE_CONFIG, NULL, 0,
 				       &payload, &payload_size);
 	if (ret)
-		goto err;
+		return ret;
 	/* Non-zero payload expected for HARDWARE_CONFIG. */
-	if (!payload_size) {
-		ret = -EREMOTEIO;
-		goto err;
-	}
+	if (!payload_size)
+		return -EREMOTEIO;
 
 	while (offset < payload_size) {
 		tlv = (struct avs_tlv *)(payload + offset);
@@ -635,9 +663,6 @@ int avs_ipc_get_hw_config(struct avs_dev *adev, struct avs_hw_cfg *cfg)
 exit:
 	/* No longer needed, free it as it's owned by the get_large_config() caller. */
 	kfree(payload);
-err:
-	if (ret)
-		dev_err(adev->dev, "get hw cfg failed: %d\n", ret);
 	return ret;
 }
 
@@ -677,6 +702,13 @@ int avs_ipc_copier_set_sink_format(struct avs_dev *adev, u16 module_id,
 					(u8 *)&cpr_fmt, sizeof(cpr_fmt));
 }
 
+int avs_ipc_peakvol_set_volume(struct avs_dev *adev, u16 module_id, u8 instance_id,
+			       struct avs_volume_cfg *vol)
+{
+	return avs_ipc_set_large_config(adev, module_id, instance_id, AVS_PEAKVOL_VOLUME, (u8 *)vol,
+					sizeof(*vol));
+}
+
 int avs_ipc_peakvol_get_volume(struct avs_dev *adev, u16 module_id, u8 instance_id,
 			       struct avs_volume_cfg **vols, size_t *num_vols)
 {
@@ -697,110 +729,6 @@ int avs_ipc_peakvol_get_volume(struct avs_dev *adev, u16 module_id, u8 instance_
 	*num_vols = payload_size / sizeof(**vols);
 
 	return 0;
-}
-
-int avs_ipc_peakvol_set_volume(struct avs_dev *adev, u16 module_id, u8 instance_id,
-			       struct avs_volume_cfg *vol)
-{
-	return avs_ipc_set_large_config(adev, module_id, instance_id, AVS_PEAKVOL_VOLUME,
-					(u8 *)vol, sizeof(*vol));
-}
-
-int avs_ipc_peakvol_set_volumes(struct avs_dev *adev, u16 module_id, u8 instance_id,
-				struct avs_volume_cfg *vols, size_t num_vols)
-{
-	struct avs_tlv *tlv;
-	size_t offset;
-	size_t size;
-	u8 *payload;
-	int ret, i;
-
-	size = num_vols * sizeof(*vols);
-	size += num_vols * sizeof(*tlv);
-	if (size > AVS_MAILBOX_SIZE)
-		return -EINVAL;
-
-	payload = kzalloc(AVS_MAILBOX_SIZE, GFP_KERNEL);
-	if (!payload)
-		return -ENOMEM;
-
-	for (offset = i = 0; i < num_vols; i++) {
-		tlv = (struct avs_tlv *)(payload + offset);
-
-		tlv->type = AVS_PEAKVOL_VOLUME;
-		tlv->length = sizeof(*vols);
-		memcpy(tlv->value, &vols[i], tlv->length);
-
-		offset += sizeof(*tlv) + tlv->length;
-	}
-
-	ret = avs_ipc_set_large_config(adev, module_id, instance_id, AVS_VENDOR_CONFIG, payload,
-				       size);
-	kfree(payload);
-	return ret;
-}
-
-int avs_ipc_peakvol_get_mute(struct avs_dev *adev, u16 module_id, u8 instance_id,
-			     struct avs_mute_cfg **mutes, size_t *num_mutes)
-{
-	size_t payload_size;
-	u8 *payload;
-	int ret;
-
-	ret = avs_ipc_get_large_config(adev, module_id, instance_id, AVS_PEAKVOL_MUTE, NULL, 0,
-				       &payload, &payload_size);
-	if (ret)
-		return ret;
-
-	/* Non-zero payload expected for PEAKVOL_MUTE. */
-	if (!payload_size)
-		return -EREMOTEIO;
-
-	*mutes = (struct avs_mute_cfg *)payload;
-	*num_mutes = payload_size / sizeof(**mutes);
-
-	return 0;
-}
-
-int avs_ipc_peakvol_set_mute(struct avs_dev *adev, u16 module_id, u8 instance_id,
-			     struct avs_mute_cfg *mute)
-{
-	return avs_ipc_set_large_config(adev, module_id, instance_id, AVS_PEAKVOL_MUTE,
-					(u8 *)mute, sizeof(*mute));
-}
-
-int avs_ipc_peakvol_set_mutes(struct avs_dev *adev, u16 module_id, u8 instance_id,
-			      struct avs_mute_cfg *mutes, size_t num_mutes)
-{
-	struct avs_tlv *tlv;
-	size_t offset;
-	size_t size;
-	u8 *payload;
-	int ret, i;
-
-	size = num_mutes * sizeof(*mutes);
-	size += num_mutes * sizeof(*tlv);
-	if (size > AVS_MAILBOX_SIZE)
-		return -EINVAL;
-
-	payload = kzalloc(AVS_MAILBOX_SIZE, GFP_KERNEL);
-	if (!payload)
-		return -ENOMEM;
-
-	for (offset = i = 0; i < num_mutes; i++) {
-		tlv = (struct avs_tlv *)(payload + offset);
-
-		tlv->type = AVS_PEAKVOL_MUTE;
-		tlv->length = sizeof(*mutes);
-		memcpy(tlv->value, &mutes[i], tlv->length);
-
-		offset += sizeof(*tlv) + tlv->length;
-	}
-
-	ret = avs_ipc_set_large_config(adev, module_id, instance_id, AVS_VENDOR_CONFIG, payload,
-				       size);
-	kfree(payload);
-	return ret;
 }
 
 #ifdef CONFIG_DEBUG_FS

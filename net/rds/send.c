@@ -103,12 +103,13 @@ EXPORT_SYMBOL_GPL(rds_send_path_reset);
 
 static int acquire_in_xmit(struct rds_conn_path *cp)
 {
-	return test_and_set_bit_lock(RDS_IN_XMIT, &cp->cp_flags) == 0;
+	return test_and_set_bit(RDS_IN_XMIT, &cp->cp_flags) == 0;
 }
 
 static void release_in_xmit(struct rds_conn_path *cp)
 {
-	clear_bit_unlock(RDS_IN_XMIT, &cp->cp_flags);
+	clear_bit(RDS_IN_XMIT, &cp->cp_flags);
+	smp_mb__after_atomic();
 	/*
 	 * We don't use wait_on_bit()/wake_up_bit() because our waking is in a
 	 * hot path and finding waiters is very rare.  We don't want to walk
@@ -117,57 +118,6 @@ static void release_in_xmit(struct rds_conn_path *cp)
 	 */
 	if (waitqueue_active(&cp->cp_waitq))
 		wake_up_all(&cp->cp_waitq);
-}
-
-/*
- * Helper function for multipath fanout to ensure lane 0 transmits queued
- * messages before other lanes to prevent out-of-order delivery.
- *
- * Returns true if lane 0 still has messages or false otherwise
- */
-static bool rds_mprds_cp0_catchup(struct rds_connection *conn)
-{
-	struct rds_conn_path *cp0 = conn->c_path;
-	struct rds_message *rm0;
-	unsigned long flags;
-	bool ret = false;
-
-	spin_lock_irqsave(&cp0->cp_lock, flags);
-
-	/* the oldest / first message in the retransmit queue
-	 * has to be at or beyond c_cp0_mprds_catchup_tx_seq
-	 */
-	if (!list_empty(&cp0->cp_retrans)) {
-		rm0 = list_entry(cp0->cp_retrans.next, struct rds_message,
-				 m_conn_item);
-		if (be64_to_cpu(rm0->m_inc.i_hdr.h_sequence) <
-		    conn->c_cp0_mprds_catchup_tx_seq) {
-			/* the retransmit queue of cp_index#0 has not
-			 * quite caught up yet
-			 */
-			ret = true;
-			goto unlock;
-		}
-	}
-
-	/* the oldest / first message of the send queue
-	 * has to be at or beyond c_cp0_mprds_catchup_tx_seq
-	 */
-	rm0 = cp0->cp_xmit_rm;
-	if (!rm0 && !list_empty(&cp0->cp_send_queue))
-		rm0 = list_entry(cp0->cp_send_queue.next, struct rds_message,
-				 m_conn_item);
-	if (rm0 && be64_to_cpu(rm0->m_inc.i_hdr.h_sequence) <
-	    conn->c_cp0_mprds_catchup_tx_seq) {
-		/* the send queue of cp_index#0 has not quite
-		 * caught up yet
-		 */
-		ret = true;
-	}
-
-unlock:
-	spin_unlock_irqrestore(&cp0->cp_lock, flags);
-	return ret;
 }
 
 /*
@@ -283,7 +233,7 @@ restart:
 		 * If not already working on one, grab the next message.
 		 *
 		 * cp_xmit_rm holds a ref while we're sending this message down
-		 * the connection.  We can use this ref while holding the
+		 * the connction.  We can use this ref while holding the
 		 * send_sem.. rds_send_reset() is serialized with it.
 		 */
 		if (!rm) {
@@ -298,14 +248,6 @@ restart:
 			 */
 			if (batch_count >= send_batch_count)
 				goto over_batch;
-
-			/* make sure cp_index#0 caught up during fan-out in
-			 * order to avoid lane races
-			 */
-			if (cp->cp_index > 0 && rds_mprds_cp0_catchup(conn)) {
-				rds_stats_inc(s_mprds_catchup_tx0_retries);
-				goto over_batch;
-			}
 
 			spin_lock_irqsave(&cp->cp_lock, flags);
 
@@ -517,8 +459,7 @@ over_batch:
 			if (rds_destroy_pending(cp->cp_conn))
 				ret = -ENETUNREACH;
 			else
-				queue_delayed_work(cp->cp_wq,
-						   &cp->cp_send_w, 1);
+				queue_delayed_work(rds_wq, &cp->cp_send_w, 1);
 			rcu_read_unlock();
 		} else if (raced) {
 			rds_stats_inc(s_send_lock_queue_raced);
@@ -1101,6 +1042,39 @@ static int rds_cmsg_send(struct rds_sock *rs, struct rds_message *rm,
 	return ret;
 }
 
+static int rds_send_mprds_hash(struct rds_sock *rs,
+			       struct rds_connection *conn, int nonblock)
+{
+	int hash;
+
+	if (conn->c_npaths == 0)
+		hash = RDS_MPATH_HASH(rs, RDS_MPATH_WORKERS);
+	else
+		hash = RDS_MPATH_HASH(rs, conn->c_npaths);
+	if (conn->c_npaths == 0 && hash != 0) {
+		rds_send_ping(conn, 0);
+
+		/* The underlying connection is not up yet.  Need to wait
+		 * until it is up to be sure that the non-zero c_path can be
+		 * used.  But if we are interrupted, we have to use the zero
+		 * c_path in case the connection ends up being non-MP capable.
+		 */
+		if (conn->c_npaths == 0) {
+			/* Cannot wait for the connection be made, so just use
+			 * the base c_path.
+			 */
+			if (nonblock)
+				return 0;
+			if (wait_event_interruptible(conn->c_hs_waitq,
+						     conn->c_npaths != 0))
+				hash = 0;
+		}
+		if (conn->c_npaths == 1)
+			hash = 0;
+	}
+	return hash;
+}
+
 static int rds_rdma_bytes(struct msghdr *msg, size_t *rdma_bytes)
 {
 	struct rds_rdma_args *args;
@@ -1330,39 +1304,21 @@ int rds_sendmsg(struct socket *sock, struct msghdr *msg, size_t payload_len)
 		rs->rs_conn = conn;
 	}
 
-	if (conn->c_trans->t_mp_capable) {
-		/* Use c_path[0] until we learn that
-		 * the peer supports more (c_npaths > 1)
-		 */
-		cpath = &conn->c_path[RDS_MPATH_HASH(rs, conn->c_npaths ? : 1)];
-	} else {
+	if (conn->c_trans->t_mp_capable)
+		cpath = &conn->c_path[rds_send_mprds_hash(rs, conn, nonblock)];
+	else
 		cpath = &conn->c_path[0];
-	}
-
-	 /* If we're multipath capable and path 0 is down, queue reconnect
-	  * and send a ping. This initiates the multipath handshake through
-	  * rds_send_probe(), which sends RDS_EXTHDR_NPATHS to the peer,
-	  * starting multipath capability negotiation.
-	  */
-	if (conn->c_trans->t_mp_capable &&
-	    !rds_conn_path_up(&conn->c_path[0])) {
-		/* Ensures that only one request is queued.  And
-		 * rds_send_ping() ensures that only one ping is
-		 * outstanding.
-		 */
-		if (!test_and_set_bit(RDS_RECONNECT_PENDING,
-				      &conn->c_path[0].cp_flags))
-			queue_delayed_work(conn->c_path[0].cp_wq,
-					   &conn->c_path[0].cp_conn_w, 0);
-		rds_send_ping(conn, 0);
-	}
 
 	rm->m_conn_path = cpath;
 
 	/* Parse any control messages the user may have included. */
 	ret = rds_cmsg_send(rs, rm, msg, &allocated_mr, &vct);
-	if (ret)
+	if (ret) {
+		/* Trigger connection so that its ready for the next retry */
+		if (ret ==  -EAGAIN)
+			rds_conn_connect_if_down(conn);
 		goto out;
+	}
 
 	if (rm->rdma.op_active && !conn->c_trans->xmit_rdma) {
 		printk_ratelimited(KERN_NOTICE "rdma_op %p conn xmit_rdma %p\n",
@@ -1429,7 +1385,7 @@ int rds_sendmsg(struct socket *sock, struct msghdr *msg, size_t payload_len)
 		if (rds_destroy_pending(cpath->cp_conn))
 			ret = -ENETUNREACH;
 		else
-			queue_delayed_work(cpath->cp_wq, &cpath->cp_send_w, 1);
+			queue_delayed_work(rds_wq, &cpath->cp_send_w, 1);
 		rcu_read_unlock();
 	}
 	if (ret)
@@ -1503,28 +1459,26 @@ rds_send_probe(struct rds_conn_path *cp, __be16 sport,
 
 	if (RDS_HS_PROBE(be16_to_cpu(sport), be16_to_cpu(dport)) &&
 	    cp->cp_conn->c_trans->t_mp_capable) {
-		__be16 npaths = cpu_to_be16(RDS_MPATH_WORKERS);
-		__be32 my_gen_num = cpu_to_be32(cp->cp_conn->c_my_gen_num);
-		u8 dummy = 0;
+		u16 npaths = cpu_to_be16(RDS_MPATH_WORKERS);
+		u32 my_gen_num = cpu_to_be32(cp->cp_conn->c_my_gen_num);
 
 		rds_message_add_extension(&rm->m_inc.i_hdr,
-					  RDS_EXTHDR_NPATHS, &npaths);
+					  RDS_EXTHDR_NPATHS, &npaths,
+					  sizeof(npaths));
 		rds_message_add_extension(&rm->m_inc.i_hdr,
 					  RDS_EXTHDR_GEN_NUM,
-					  &my_gen_num);
-		rds_message_add_extension(&rm->m_inc.i_hdr,
-					  RDS_EXTHDR_SPORT_IDX,
-					  &dummy);
+					  &my_gen_num,
+					  sizeof(u32));
 	}
 	spin_unlock_irqrestore(&cp->cp_lock, flags);
 
 	rds_stats_inc(s_send_queued);
 	rds_stats_inc(s_send_pong);
 
-	/* schedule the send work on cp_wq */
+	/* schedule the send work on rds_wq */
 	rcu_read_lock();
 	if (!rds_destroy_pending(cp->cp_conn))
-		queue_delayed_work(cp->cp_wq, &cp->cp_send_w, 1);
+		queue_delayed_work(rds_wq, &cp->cp_send_w, 1);
 	rcu_read_unlock();
 
 	rds_message_put(rm);

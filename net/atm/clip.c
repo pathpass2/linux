@@ -45,8 +45,7 @@
 #include <net/atmclip.h>
 
 static struct net_device *clip_devs;
-static struct atm_vcc __rcu *atmarpd;
-static DEFINE_MUTEX(atmarpd_lock);
+static struct atm_vcc *atmarpd;
 static struct timer_list idle_timer;
 static const struct neigh_ops clip_neigh_ops;
 
@@ -54,35 +53,24 @@ static int to_atmarpd(enum atmarp_ctrl_type type, int itf, __be32 ip)
 {
 	struct sock *sk;
 	struct atmarp_ctrl *ctrl;
-	struct atm_vcc *vcc;
 	struct sk_buff *skb;
-	int err = 0;
 
 	pr_debug("(%d)\n", type);
-
-	rcu_read_lock();
-	vcc = rcu_dereference(atmarpd);
-	if (!vcc) {
-		err = -EUNATCH;
-		goto unlock;
-	}
+	if (!atmarpd)
+		return -EUNATCH;
 	skb = alloc_skb(sizeof(struct atmarp_ctrl), GFP_ATOMIC);
-	if (!skb) {
-		err = -ENOMEM;
-		goto unlock;
-	}
+	if (!skb)
+		return -ENOMEM;
 	ctrl = skb_put(skb, sizeof(struct atmarp_ctrl));
 	ctrl->type = type;
 	ctrl->itf_num = itf;
 	ctrl->ip = ip;
-	atm_force_charge(vcc, skb->truesize);
+	atm_force_charge(atmarpd, skb->truesize);
 
-	sk = sk_atm(vcc);
+	sk = sk_atm(atmarpd);
 	skb_queue_tail(&sk->sk_receive_queue, skb);
 	sk->sk_data_ready(sk);
-unlock:
-	rcu_read_unlock();
-	return err;
+	return 0;
 }
 
 static void link_vcc(struct clip_vcc *clip_vcc, struct atmarp_entry *entry)
@@ -168,10 +156,10 @@ static int neigh_check_cb(struct neighbour *n)
 
 static void idle_timer_check(struct timer_list *unused)
 {
-	spin_lock(&arp_tbl.lock);
+	write_lock(&arp_tbl.lock);
 	__neigh_for_each_release(&arp_tbl, neigh_check_cb);
 	mod_timer(&idle_timer, jiffies + CLIP_CHECK_INTERVAL * HZ);
-	spin_unlock(&arp_tbl.lock);
+	write_unlock(&arp_tbl.lock);
 }
 
 static int clip_arp_rcv(struct sk_buff *skb)
@@ -205,6 +193,12 @@ static void clip_push(struct atm_vcc *vcc, struct sk_buff *skb)
 
 	pr_debug("\n");
 
+	if (!clip_devs) {
+		atm_return(vcc, skb->truesize);
+		kfree_skb(skb);
+		return;
+	}
+
 	if (!skb) {
 		pr_debug("removing VCC %p\n", clip_vcc);
 		if (clip_vcc->entry)
@@ -214,11 +208,6 @@ static void clip_push(struct atm_vcc *vcc, struct sk_buff *skb)
 		return;
 	}
 	atm_return(vcc, skb->truesize);
-	if (!clip_devs) {
-		kfree_skb(skb);
-		return;
-	}
-
 	skb->dev = clip_vcc->entry ? clip_vcc->entry->neigh->dev : clip_devs;
 	/* clip_vcc->entry == NULL if we don't have an IP address yet */
 	if (!skb->dev) {
@@ -356,7 +345,7 @@ static netdev_tx_t clip_start_xmit(struct sk_buff *skb,
 		dev->stats.tx_dropped++;
 		return NETDEV_TX_OK;
 	}
-	rt = dst_rtable(dst);
+	rt = (struct rtable *) dst;
 	if (rt->rt_gw_family == AF_INET)
 		daddr = &rt->rt_gw4;
 	else
@@ -429,8 +418,6 @@ static int clip_mkip(struct atm_vcc *vcc, int timeout)
 
 	if (!vcc->push)
 		return -EBADFD;
-	if (vcc->user_back)
-		return -EINVAL;
 	clip_vcc = kmalloc(sizeof(struct clip_vcc), GFP_KERNEL);
 	if (!clip_vcc)
 		return -ENOMEM;
@@ -476,7 +463,7 @@ static int clip_setentry(struct atm_vcc *vcc, __be32 ip)
 		unlink_clip_vcc(clip_vcc);
 		return 0;
 	}
-	rt = ip_route_output(&init_net, ip, 0, 0, 0, RT_SCOPE_LINK);
+	rt = ip_route_output(&init_net, ip, 0, 1, 0);
 	if (IS_ERR(rt))
 		return PTR_ERR(rt);
 	neigh = __neigh_lookup(&arp_tbl, &ip, rt->dst.dev, 1);
@@ -621,27 +608,17 @@ static void atmarpd_close(struct atm_vcc *vcc)
 {
 	pr_debug("\n");
 
-	mutex_lock(&atmarpd_lock);
-	RCU_INIT_POINTER(atmarpd, NULL);
-	mutex_unlock(&atmarpd_lock);
-
-	synchronize_rcu();
+	rtnl_lock();
+	atmarpd = NULL;
 	skb_queue_purge(&sk_atm(vcc)->sk_receive_queue);
+	rtnl_unlock();
 
 	pr_debug("(done)\n");
 	module_put(THIS_MODULE);
 }
 
-static int atmarpd_send(struct atm_vcc *vcc, struct sk_buff *skb)
-{
-	atm_return_tx(vcc, skb);
-	dev_kfree_skb_any(skb);
-	return 0;
-}
-
 static const struct atmdev_ops atmarpd_dev_ops = {
-	.close = atmarpd_close,
-	.send = atmarpd_send
+	.close = atmarpd_close
 };
 
 
@@ -655,18 +632,15 @@ static struct atm_dev atmarpd_dev = {
 
 static int atm_init_atmarp(struct atm_vcc *vcc)
 {
-	if (vcc->push == clip_push)
-		return -EINVAL;
-
-	mutex_lock(&atmarpd_lock);
+	rtnl_lock();
 	if (atmarpd) {
-		mutex_unlock(&atmarpd_lock);
+		rtnl_unlock();
 		return -EADDRINUSE;
 	}
 
 	mod_timer(&idle_timer, jiffies + CLIP_CHECK_INTERVAL * HZ);
 
-	rcu_assign_pointer(atmarpd, vcc);
+	atmarpd = vcc;
 	set_bit(ATM_VF_META, &vcc->flags);
 	set_bit(ATM_VF_READY, &vcc->flags);
 	    /* allow replies and avoid getting closed if signaling dies */
@@ -675,14 +649,13 @@ static int atm_init_atmarp(struct atm_vcc *vcc)
 	vcc->push = NULL;
 	vcc->pop = NULL; /* crash */
 	vcc->push_oam = NULL; /* crash */
-	mutex_unlock(&atmarpd_lock);
+	rtnl_unlock();
 	return 0;
 }
 
 static int clip_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 {
 	struct atm_vcc *vcc = ATM_SD(sock);
-	struct sock *sk = sock->sk;
 	int err = 0;
 
 	switch (cmd) {
@@ -703,18 +676,14 @@ static int clip_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		err = clip_create(arg);
 		break;
 	case ATMARPD_CTRL:
-		lock_sock(sk);
 		err = atm_init_atmarp(vcc);
 		if (!err) {
 			sock->state = SS_CONNECTED;
 			__module_get(THIS_MODULE);
 		}
-		release_sock(sk);
 		break;
 	case ATMARP_MKIP:
-		lock_sock(sk);
 		err = clip_mkip(vcc, arg);
-		release_sock(sk);
 		break;
 	case ATMARP_SETENTRY:
 		err = clip_setentry(vcc, (__force __be32)arg);
@@ -935,7 +904,7 @@ static void atm_clip_exit_noproc(void)
 	/* First, stop the idle timer, so it stops banging
 	 * on the table.
 	 */
-	timer_delete_sync(&idle_timer);
+	del_timer_sync(&idle_timer);
 
 	dev = clip_devs;
 	while (dev) {

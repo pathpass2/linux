@@ -32,39 +32,47 @@ static int nfs_symlink_filler(struct file *file, struct folio *folio)
 	int error;
 
 	error = NFS_PROTO(inode)->readlink(inode, &folio->page, 0, PAGE_SIZE);
-	folio_end_read(folio, error == 0);
-	return error;
+	if (error < 0)
+		goto error;
+	folio_mark_uptodate(folio);
+	folio_unlock(folio);
+	return 0;
+
+error:
+	folio_set_error(folio);
+	folio_unlock(folio);
+	return -EIO;
 }
 
 static const char *nfs_get_link(struct dentry *dentry,
 				struct inode *inode,
 				struct delayed_call *done)
 {
-	struct folio *folio;
+	struct page *page;
 	void *err;
 
 	if (!dentry) {
 		err = ERR_PTR(nfs_revalidate_mapping_rcu(inode));
 		if (err)
 			return err;
-		folio = filemap_get_folio(inode->i_mapping, 0);
-		if (IS_ERR(folio))
+		page = find_get_page(inode->i_mapping, 0);
+		if (!page)
 			return ERR_PTR(-ECHILD);
-		if (!folio_test_uptodate(folio)) {
-			folio_put(folio);
+		if (!PageUptodate(page)) {
+			put_page(page);
 			return ERR_PTR(-ECHILD);
 		}
 	} else {
 		err = ERR_PTR(nfs_revalidate_mapping(inode, inode->i_mapping));
 		if (err)
 			return err;
-		folio = read_cache_folio(&inode->i_data, 0, nfs_symlink_filler,
+		page = read_cache_page(&inode->i_data, 0, nfs_symlink_filler,
 				NULL);
-		if (IS_ERR(folio))
-			return ERR_CAST(folio);
+		if (IS_ERR(page))
+			return ERR_CAST(page);
 	}
-	set_delayed_call(done, page_put_link, folio);
-	return folio_address(folio);
+	set_delayed_call(done, page_put_link, page);
+	return page_address(page);
 }
 
 /*

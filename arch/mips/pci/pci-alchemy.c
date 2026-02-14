@@ -304,7 +304,7 @@ static int alchemy_pci_def_idsel(unsigned int devsel, int assert)
 }
 
 /* save PCI controller register contents. */
-static int alchemy_pci_suspend(void *data)
+static int alchemy_pci_suspend(void)
 {
 	struct alchemy_pci_context *ctx = __alchemy_pci_ctx;
 	if (!ctx)
@@ -326,7 +326,7 @@ static int alchemy_pci_suspend(void *data)
 	return 0;
 }
 
-static void alchemy_pci_resume(void *data)
+static void alchemy_pci_resume(void)
 {
 	struct alchemy_pci_context *ctx = __alchemy_pci_ctx;
 	if (!ctx)
@@ -354,13 +354,9 @@ static void alchemy_pci_resume(void *data)
 	alchemy_pci_wired_entry(ctx);	/* install it */
 }
 
-static const struct syscore_ops alchemy_pci_syscore_ops = {
-	.suspend = alchemy_pci_suspend,
-	.resume = alchemy_pci_resume,
-};
-
-static struct syscore alchemy_pci_syscore = {
-	.ops = &alchemy_pci_syscore_ops,
+static struct syscore_ops alchemy_pci_pmops = {
+	.suspend	= alchemy_pci_suspend,
+	.resume		= alchemy_pci_resume,
 };
 
 static int alchemy_pci_probe(struct platform_device *pdev)
@@ -457,7 +453,7 @@ static int alchemy_pci_probe(struct platform_device *pdev)
 
 	/* we can't ioremap the entire pci config space because it's too large,
 	 * nor can we dynamically ioremap it because some drivers use the
-	 * PCI config routines from within atomic context and that becomes a
+	 * PCI config routines from within atomic contex and that becomes a
 	 * problem in get_vm_area().  Instead we use one wired TLB entry to
 	 * handle all config accesses for all busses.
 	 */
@@ -482,7 +478,7 @@ static int alchemy_pci_probe(struct platform_device *pdev)
 
 	__alchemy_pci_ctx = ctx;
 	platform_set_drvdata(pdev, ctx);
-	register_syscore(&alchemy_pci_syscore);
+	register_syscore_ops(&alchemy_pci_pmops);
 	register_pci_controller(&ctx->alchemy_pci_ctrl);
 
 	dev_info(&pdev->dev, "PCI controller at %ld MHz\n",

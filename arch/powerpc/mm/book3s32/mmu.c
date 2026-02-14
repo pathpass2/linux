@@ -25,7 +25,7 @@
 
 #include <asm/mmu.h>
 #include <asm/machdep.h>
-#include <asm/text-patching.h>
+#include <asm/code-patching.h>
 #include <asm/sections.h>
 
 #include <mm/mmu_decl.h>
@@ -127,7 +127,7 @@ static void setibat(int index, unsigned long virt, phys_addr_t phys,
 	wimgxpp = (flags & _PAGE_COHERENT) | (_PAGE_EXEC ? BPP_RX : BPP_XX);
 	bat[0].batu = virt | (bl << 2) | 2; /* Vs=1, Vp=0 */
 	bat[0].batl = BAT_PHYS_ADDR(phys) | wimgxpp;
-	if (!is_kernel_addr(virt))
+	if (flags & _PAGE_USER)
 		bat[0].batu |= 1;	/* Vp = 1 */
 }
 
@@ -184,7 +184,7 @@ unsigned long __init mmu_mapin_ram(unsigned long base, unsigned long top)
 
 static bool is_module_segment(unsigned long addr)
 {
-	if (!IS_ENABLED(CONFIG_EXECMEM))
+	if (!IS_ENABLED(CONFIG_MODULES))
 		return false;
 	if (addr < ALIGN_DOWN(MODULES_VADDR, SZ_256M))
 		return false;
@@ -193,7 +193,7 @@ static bool is_module_segment(unsigned long addr)
 	return true;
 }
 
-int mmu_mark_initmem_nx(void)
+void mmu_mark_initmem_nx(void)
 {
 	int nb = mmu_has_feature(MMU_FTR_USE_HIGH_BATS) ? 8 : 4;
 	int i;
@@ -204,7 +204,7 @@ int mmu_mark_initmem_nx(void)
 
 	for (i = 0; i < nb - 1 && base < top;) {
 		size = bat_block_size(base, top);
-		setibat(i++, PAGE_OFFSET + base, base, size, PAGE_KERNEL_X);
+		setibat(i++, PAGE_OFFSET + base, base, size, PAGE_KERNEL_TEXT);
 		base += size;
 	}
 	if (base < top) {
@@ -215,7 +215,7 @@ int mmu_mark_initmem_nx(void)
 				pr_warn("Some RW data is getting mapped X. "
 					"Adjust CONFIG_DATA_SHIFT to avoid that.\n");
 		}
-		setibat(i++, PAGE_OFFSET + base, base, size, PAGE_KERNEL_X);
+		setibat(i++, PAGE_OFFSET + base, base, size, PAGE_KERNEL_TEXT);
 		base += size;
 	}
 	for (; i < nb; i++)
@@ -223,17 +223,16 @@ int mmu_mark_initmem_nx(void)
 
 	update_bats();
 
-	for (i = ALIGN(TASK_SIZE, SZ_256M) >> 28; i < 16; i++) {
+	for (i = TASK_SIZE >> 28; i < 16; i++) {
 		/* Do not set NX on VM space for modules */
 		if (is_module_segment(i << 28))
 			continue;
 
 		mtsr(mfsr(i << 28) | 0x10000000, i << 28);
 	}
-	return 0;
 }
 
-int mmu_mark_rodata_ro(void)
+void mmu_mark_rodata_ro(void)
 {
 	int nb = mmu_has_feature(MMU_FTR_USE_HIGH_BATS) ? 8 : 4;
 	int i;
@@ -246,8 +245,6 @@ int mmu_mark_rodata_ro(void)
 	}
 
 	update_bats();
-
-	return 0;
 }
 
 /*
@@ -280,10 +277,10 @@ void __init setbat(int index, unsigned long virt, phys_addr_t phys,
 	/* Do DBAT first */
 	wimgxpp = flags & (_PAGE_WRITETHRU | _PAGE_NO_CACHE
 			   | _PAGE_COHERENT | _PAGE_GUARDED);
-	wimgxpp |= (flags & _PAGE_WRITE) ? BPP_RW : BPP_RX;
+	wimgxpp |= (flags & _PAGE_RW)? BPP_RW: BPP_RX;
 	bat[1].batu = virt | (bl << 2) | 2; /* Vs=1, Vp=0 */
 	bat[1].batl = BAT_PHYS_ADDR(phys) | wimgxpp;
-	if (!is_kernel_addr(virt))
+	if (flags & _PAGE_USER)
 		bat[1].batu |= 1; 	/* Vp = 1 */
 	if (flags & _PAGE_GUARDED) {
 		/* G bit must be zero in IBATs */
@@ -375,7 +372,10 @@ void __init MMU_init_hw(void)
 	 * Find some memory for the hash table.
 	 */
 	if ( ppc_md.progress ) ppc_md.progress("hash:find piece", 0x322);
-	Hash = memblock_alloc_or_panic(Hash_size, Hash_size);
+	Hash = memblock_alloc(Hash_size, Hash_size);
+	if (!Hash)
+		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
+		      __func__, Hash_size, Hash_size);
 	_SDR1 = __pa(Hash) | SDR1_LOW_BITS;
 
 	pr_info("Total memory = %lldMB; using %ldkB for hash table\n",

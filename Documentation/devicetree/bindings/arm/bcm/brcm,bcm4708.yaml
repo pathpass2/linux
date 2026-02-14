@@ -25,16 +25,13 @@ properties:
           - enum:
               - asus,rt-ac56u
               - asus,rt-ac68u
-              - buffalo,wxr-1750dhp
-              - buffalo,wzr-1166dhp
-              - buffalo,wzr-1166dhp2
               - buffalo,wzr-1750dhp
               - linksys,ea6300-v1
               - linksys,ea6500-v2
-              - luxul,xap-1510-v1
+              - luxul,xap-1510v1
               - luxul,xwc-1000
-              - netgear,r6250-v1
-              - netgear,r6300-v2
+              - netgear,r6250v1
+              - netgear,r6300v2
               - smartrg,sr400ac
               - brcm,bcm94708
           - const: brcm,bcm4708
@@ -45,8 +42,8 @@ properties:
               - asus,rt-n18u
               - buffalo,wzr-600dhp2
               - buffalo,wzr-900dhp
-              - luxul,xap-1410-v1
-              - luxul,xwr-1200-v1
+              - luxul,xap-1410v1
+              - luxul,xwr-1200v1
               - tplink,archer-c5-v2
           - const: brcm,bcm47081
           - const: brcm,bcm4708
@@ -54,7 +51,6 @@ properties:
       - description: BCM4709 based boards
         items:
           - enum:
-              - asus,rt-ac3200
               - asus,rt-ac87u
               - buffalo,wxr-1900dhp
               - linksys,ea9200
@@ -68,8 +64,6 @@ properties:
       - description: BCM47094 based boards
         items:
           - enum:
-              - asus,rt-ac3100
-              - asus,rt-ac5300
               - asus,rt-ac88u
               - dlink,dir-885l
               - dlink,dir-890l
@@ -78,7 +72,7 @@ properties:
               - luxul,xap-1610-v1
               - luxul,xbr-4500-v1
               - luxul,xwc-2000-v1
-              - luxul,xwr-3100-v1
+              - luxul,xwr-3100v1
               - luxul,xwr-3150-v1
               - netgear,r8500
               - phicomm,k3

@@ -187,9 +187,6 @@ static const unsigned int i2c_sda_c_pins[]	= { GPIODV_28 };
 static const unsigned int i2c_sck_c_dv19_pins[] = { GPIODV_19 };
 static const unsigned int i2c_sda_c_dv18_pins[] = { GPIODV_18 };
 
-static const unsigned int i2c_sck_d_pins[]	= { GPIOX_11 };
-static const unsigned int i2c_sda_d_pins[]	= { GPIOX_10 };
-
 static const unsigned int eth_mdio_pins[]	= { GPIOZ_0 };
 static const unsigned int eth_mdc_pins[]	= { GPIOZ_1 };
 static const unsigned int eth_clk_rx_clk_pins[] = { GPIOZ_2 };
@@ -304,7 +301,7 @@ static const unsigned int spdif_out_ao_9_pins[] = { GPIOAO_9 };
 static const unsigned int ao_cec_pins[]		= { GPIOAO_8 };
 static const unsigned int ee_cec_pins[]		= { GPIOAO_8 };
 
-static const struct meson_pmx_group meson_gxl_periphs_groups[] = {
+static struct meson_pmx_group meson_gxl_periphs_groups[] = {
 	GPIO_GROUP(GPIOZ_0),
 	GPIO_GROUP(GPIOZ_1),
 	GPIO_GROUP(GPIOZ_2),
@@ -414,8 +411,6 @@ static const struct meson_pmx_group meson_gxl_periphs_groups[] = {
 	GPIO_GROUP(GPIO_TEST_N),
 
 	/* Bank X */
-	GROUP(i2c_sda_d,	5,	5),
-	GROUP(i2c_sck_d,	5,	4),
 	GROUP(sdio_d0,		5,	31),
 	GROUP(sdio_d1,		5,	30),
 	GROUP(sdio_d2,		5,	29),
@@ -532,7 +527,7 @@ static const struct meson_pmx_group meson_gxl_periphs_groups[] = {
 	GROUP(pwm_f_clk,	8,	30),
 };
 
-static const struct meson_pmx_group meson_gxl_aobus_groups[] = {
+static struct meson_pmx_group meson_gxl_aobus_groups[] = {
 	GPIO_GROUP(GPIOAO_0),
 	GPIO_GROUP(GPIOAO_1),
 	GPIO_GROUP(GPIOAO_2),
@@ -656,10 +651,6 @@ static const char * const i2c_c_groups[] = {
 	"i2c_sck_c", "i2c_sda_c", "i2c_sda_c_dv18", "i2c_sck_c_dv19",
 };
 
-static const char * const i2c_d_groups[] = {
-	"i2c_sck_d", "i2c_sda_d",
-};
-
 static const char * const eth_groups[] = {
 	"eth_mdio", "eth_mdc", "eth_clk_rx_clk", "eth_rx_dv",
 	"eth_rxd0", "eth_rxd1", "eth_rxd2", "eth_rxd3",
@@ -772,7 +763,7 @@ static const char * const cec_ao_groups[] = {
 	"ao_cec", "ee_cec",
 };
 
-static const struct meson_pmx_func meson_gxl_periphs_functions[] = {
+static struct meson_pmx_func meson_gxl_periphs_functions[] = {
 	FUNCTION(gpio_periphs),
 	FUNCTION(emmc),
 	FUNCTION(nor),
@@ -786,7 +777,6 @@ static const struct meson_pmx_func meson_gxl_periphs_functions[] = {
 	FUNCTION(i2c_a),
 	FUNCTION(i2c_b),
 	FUNCTION(i2c_c),
-	FUNCTION(i2c_d),
 	FUNCTION(eth),
 	FUNCTION(pwm_a),
 	FUNCTION(pwm_b),
@@ -803,7 +793,7 @@ static const struct meson_pmx_func meson_gxl_periphs_functions[] = {
 	FUNCTION(tsin_b),
 };
 
-static const struct meson_pmx_func meson_gxl_aobus_functions[] = {
+static struct meson_pmx_func meson_gxl_aobus_functions[] = {
 	FUNCTION(gpio_aobus),
 	FUNCTION(uart_ao),
 	FUNCTION(uart_ao_b),
@@ -817,7 +807,7 @@ static const struct meson_pmx_func meson_gxl_aobus_functions[] = {
 	FUNCTION(cec_ao),
 };
 
-static const struct meson_bank meson_gxl_periphs_banks[] = {
+static struct meson_bank meson_gxl_periphs_banks[] = {
 	/*   name    first      last       irq	     pullen  pull    dir     out     in  */
 	BANK("X",    GPIOX_0,	GPIOX_18,   89, 107, 4,  0,  4,  0,  12, 0,  13, 0,  14, 0),
 	BANK("DV",   GPIODV_0,	GPIODV_29,  83,  88, 0,  0,  0,  0,  0,  0,  1,  0,  2,  0),
@@ -828,12 +818,12 @@ static const struct meson_bank meson_gxl_periphs_banks[] = {
 	BANK("CLK",  GPIOCLK_0,	GPIOCLK_1, 108, 109, 3, 28,  3, 28,  9, 28, 10, 28, 11, 28),
 };
 
-static const struct meson_bank meson_gxl_aobus_banks[] = {
+static struct meson_bank meson_gxl_aobus_banks[] = {
 	/*   name    first      last      irq	pullen  pull    dir     out     in  */
 	BANK("AO",   GPIOAO_0,  GPIOAO_9, 0, 9, 0,  16, 0, 0,   0,  0,  0, 16,  1,  0),
 };
 
-static const struct meson_pinctrl_data meson_gxl_periphs_pinctrl_data = {
+static struct meson_pinctrl_data meson_gxl_periphs_pinctrl_data = {
 	.name		= "periphs-banks",
 	.pins		= meson_gxl_periphs_pins,
 	.groups		= meson_gxl_periphs_groups,
@@ -846,7 +836,7 @@ static const struct meson_pinctrl_data meson_gxl_periphs_pinctrl_data = {
 	.pmx_ops	= &meson8_pmx_ops,
 };
 
-static const struct meson_pinctrl_data meson_gxl_aobus_pinctrl_data = {
+static struct meson_pinctrl_data meson_gxl_aobus_pinctrl_data = {
 	.name		= "aobus-banks",
 	.pins		= meson_gxl_aobus_pins,
 	.groups		= meson_gxl_aobus_groups,
@@ -881,5 +871,4 @@ static struct platform_driver meson_gxl_pinctrl_driver = {
 	},
 };
 module_platform_driver(meson_gxl_pinctrl_driver);
-MODULE_DESCRIPTION("Amlogic Meson GXL pinctrl driver");
 MODULE_LICENSE("GPL v2");

@@ -119,7 +119,7 @@ static void ntb_netdev_rx_handler(struct ntb_transport_qp *qp, void *qp_data,
 	skb->protocol = eth_type_trans(skb, ndev);
 	skb->ip_summed = CHECKSUM_NONE;
 
-	if (netif_rx(skb) == NET_RX_DROP) {
+	if (__netif_rx(skb) == NET_RX_DROP) {
 		ndev->stats.rx_errors++;
 		ndev->stats.rx_dropped++;
 	} else {
@@ -229,7 +229,7 @@ err:
 
 static void ntb_netdev_tx_timer(struct timer_list *t)
 {
-	struct ntb_netdev *dev = timer_container_of(dev, t, tx_timer);
+	struct ntb_netdev *dev = from_timer(dev, t, tx_timer);
 	struct net_device *ndev = dev->ndev;
 
 	if (ntb_transport_tx_free_entry(dev->qp) < tx_stop) {
@@ -291,7 +291,7 @@ static int ntb_netdev_close(struct net_device *ndev)
 	while ((skb = ntb_transport_rx_remove(dev->qp, &len)))
 		dev_kfree_skb(skb);
 
-	timer_delete_sync(&dev->tx_timer);
+	del_timer_sync(&dev->tx_timer);
 
 	return 0;
 }
@@ -306,7 +306,7 @@ static int ntb_netdev_change_mtu(struct net_device *ndev, int new_mtu)
 		return -EINVAL;
 
 	if (!netif_running(ndev)) {
-		WRITE_ONCE(ndev->mtu, new_mtu);
+		ndev->mtu = new_mtu;
 		return 0;
 	}
 
@@ -335,7 +335,7 @@ static int ntb_netdev_change_mtu(struct net_device *ndev, int new_mtu)
 		}
 	}
 
-	WRITE_ONCE(ndev->mtu, new_mtu);
+	ndev->mtu = new_mtu;
 
 	ntb_transport_link_up(dev->qp);
 
@@ -493,7 +493,7 @@ static int __init ntb_netdev_init_module(void)
 
 	return 0;
 }
-late_initcall(ntb_netdev_init_module);
+module_init(ntb_netdev_init_module);
 
 static void __exit ntb_netdev_exit_module(void)
 {

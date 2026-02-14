@@ -385,8 +385,9 @@ static irqreturn_t cpcap_adc_irq_thread(int irq, void *data)
 	struct cpcap_adc *ddata = iio_priv(indio_dev);
 	int error;
 
-	error = regmap_set_bits(ddata->reg, CPCAP_REG_ADCC2,
-				CPCAP_BIT_ADTRIG_DIS);
+	error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+				   CPCAP_BIT_ADTRIG_DIS,
+				   CPCAP_BIT_ADTRIG_DIS);
 	if (error)
 		return IRQ_NONE;
 
@@ -423,19 +424,23 @@ static void cpcap_adc_setup_calibrate(struct cpcap_adc *ddata,
 	if (error)
 		return;
 
-	error = regmap_clear_bits(ddata->reg, CPCAP_REG_ADCC2,
-				  CPCAP_BIT_ATOX_PS_FACTOR |
-				  CPCAP_BIT_ADC_PS_FACTOR1 |
-				  CPCAP_BIT_ADC_PS_FACTOR0);
+	error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+				   CPCAP_BIT_ATOX_PS_FACTOR |
+				   CPCAP_BIT_ADC_PS_FACTOR1 |
+				   CPCAP_BIT_ADC_PS_FACTOR0,
+				   0);
 	if (error)
 		return;
 
-	error = regmap_set_bits(ddata->reg, CPCAP_REG_ADCC2,
-				CPCAP_BIT_ADTRIG_DIS);
+	error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+				   CPCAP_BIT_ADTRIG_DIS,
+				   CPCAP_BIT_ADTRIG_DIS);
 	if (error)
 		return;
 
-	error = regmap_set_bits(ddata->reg, CPCAP_REG_ADCC2, CPCAP_BIT_ASC);
+	error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+				   CPCAP_BIT_ASC,
+				   CPCAP_BIT_ASC);
 	if (error)
 		return;
 
@@ -450,8 +455,8 @@ static void cpcap_adc_setup_calibrate(struct cpcap_adc *ddata,
 		dev_err(ddata->dev,
 			"Timeout waiting for calibration to complete\n");
 
-	error = regmap_clear_bits(ddata->reg, CPCAP_REG_ADCC1,
-				  CPCAP_BIT_CAL_MODE);
+	error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC1,
+				   CPCAP_BIT_CAL_MODE, 0);
 	if (error)
 		return;
 }
@@ -597,23 +602,26 @@ static void cpcap_adc_setup_bank(struct cpcap_adc *ddata,
 		return;
 
 	if (req->timing == CPCAP_ADC_TIMING_IMM) {
-		error = regmap_set_bits(ddata->reg, CPCAP_REG_ADCC2,
-					CPCAP_BIT_ADTRIG_DIS);
+		error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+					   CPCAP_BIT_ADTRIG_DIS,
+					   CPCAP_BIT_ADTRIG_DIS);
 		if (error)
 			return;
 
-		error = regmap_set_bits(ddata->reg, CPCAP_REG_ADCC2,
-					CPCAP_BIT_ASC);
+		error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+					   CPCAP_BIT_ASC,
+					   CPCAP_BIT_ASC);
 		if (error)
 			return;
 	} else {
-		error = regmap_set_bits(ddata->reg, CPCAP_REG_ADCC2,
-					CPCAP_BIT_ADTRIG_ONESHOT);
+		error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+					   CPCAP_BIT_ADTRIG_ONESHOT,
+					   CPCAP_BIT_ADTRIG_ONESHOT);
 		if (error)
 			return;
 
-		error = regmap_clear_bits(ddata->reg, CPCAP_REG_ADCC2,
-					  CPCAP_BIT_ADTRIG_DIS);
+		error = regmap_update_bits(ddata->reg, CPCAP_REG_ADCC2,
+					   CPCAP_BIT_ADTRIG_DIS, 0);
 		if (error)
 			return;
 	}
@@ -942,7 +950,7 @@ static const struct of_device_id cpcap_adc_id_table[] = {
 		.compatible = "motorola,mapphone-cpcap-adc",
 		.data = &mapphone_adc,
 	},
-	{ }
+	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, cpcap_adc_id_table);
 
@@ -953,9 +961,11 @@ static int cpcap_adc_probe(struct platform_device *pdev)
 	int error;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*ddata));
-	if (!indio_dev)
-		return -ENOMEM;
+	if (!indio_dev) {
+		dev_err(&pdev->dev, "failed to allocate iio device\n");
 
+		return -ENOMEM;
+	}
 	ddata = iio_priv(indio_dev);
 	ddata->ato = device_get_match_data(&pdev->dev);
 	if (!ddata->ato)

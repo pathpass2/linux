@@ -92,3 +92,4 @@ module_platform_driver(sl28cpld_intc_driver);
 
 MODULE_DESCRIPTION("sl28cpld Interrupt Controller Driver");
 MODULE_AUTHOR("Michael Walle <michael@walle.cc>");
+MODULE_LICENSE("GPL");

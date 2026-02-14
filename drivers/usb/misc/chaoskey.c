@@ -27,8 +27,6 @@ static struct usb_class_driver chaoskey_class;
 static int chaoskey_rng_read(struct hwrng *rng, void *data,
 			     size_t max, bool wait);
 
-static DEFINE_MUTEX(chaoskey_list_lock);
-
 #define usb_dbg(usb_if, format, arg...) \
 	dev_dbg(&(usb_if)->dev, format, ## arg)
 
@@ -235,7 +233,6 @@ static void chaoskey_disconnect(struct usb_interface *interface)
 	usb_deregister_dev(interface, &chaoskey_class);
 
 	usb_set_intfdata(interface, NULL);
-	mutex_lock(&chaoskey_list_lock);
 	mutex_lock(&dev->lock);
 
 	dev->present = false;
@@ -247,7 +244,6 @@ static void chaoskey_disconnect(struct usb_interface *interface)
 	} else
 		mutex_unlock(&dev->lock);
 
-	mutex_unlock(&chaoskey_list_lock);
 	usb_dbg(interface, "disconnect done");
 }
 
@@ -255,7 +251,6 @@ static int chaoskey_open(struct inode *inode, struct file *file)
 {
 	struct chaoskey *dev;
 	struct usb_interface *interface;
-	int rv = 0;
 
 	/* get the interface from minor number and driver information */
 	interface = usb_find_interface(&chaoskey_driver, iminor(inode));
@@ -271,23 +266,18 @@ static int chaoskey_open(struct inode *inode, struct file *file)
 	}
 
 	file->private_data = dev;
-	mutex_lock(&chaoskey_list_lock);
 	mutex_lock(&dev->lock);
-	if (dev->present)
-		++dev->open;
-	else
-		rv = -ENODEV;
+	++dev->open;
 	mutex_unlock(&dev->lock);
-	mutex_unlock(&chaoskey_list_lock);
 
-	return rv;
+	usb_dbg(interface, "open success");
+	return 0;
 }
 
 static int chaoskey_release(struct inode *inode, struct file *file)
 {
 	struct chaoskey *dev = file->private_data;
 	struct usb_interface *interface;
-	int rv = 0;
 
 	if (dev == NULL)
 		return -ENODEV;
@@ -296,15 +286,14 @@ static int chaoskey_release(struct inode *inode, struct file *file)
 
 	usb_dbg(interface, "release");
 
-	mutex_lock(&chaoskey_list_lock);
 	mutex_lock(&dev->lock);
 
 	usb_dbg(interface, "open count at release is %d", dev->open);
 
 	if (dev->open <= 0) {
 		usb_dbg(interface, "invalid open count (%d)", dev->open);
-		rv = -ENODEV;
-		goto bail;
+		mutex_unlock(&dev->lock);
+		return -ENODEV;
 	}
 
 	--dev->open;
@@ -313,15 +302,13 @@ static int chaoskey_release(struct inode *inode, struct file *file)
 		if (dev->open == 0) {
 			mutex_unlock(&dev->lock);
 			chaoskey_free(dev);
-			goto destruction;
-		}
-	}
-bail:
-	mutex_unlock(&dev->lock);
-destruction:
-	mutex_unlock(&chaoskey_list_lock);
+		} else
+			mutex_unlock(&dev->lock);
+	} else
+		mutex_unlock(&dev->lock);
+
 	usb_dbg(interface, "release success");
-	return rv;
+	return 0;
 }
 
 static void chaos_read_callback(struct urb *urb)
@@ -444,19 +431,9 @@ static ssize_t chaoskey_read(struct file *file,
 			goto bail;
 		mutex_unlock(&dev->rng_lock);
 
-		if (file->f_flags & O_NONBLOCK) {
-			result = mutex_trylock(&dev->lock);
-			if (result == 0) {
-				result = -EAGAIN;
-				goto bail;
-			} else {
-				result = 0;
-			}
-		} else {
-			result = mutex_lock_interruptible(&dev->lock);
-			if (result)
-				goto bail;
-		}
+		result = mutex_lock_interruptible(&dev->lock);
+		if (result)
+			goto bail;
 		if (dev->valid == dev->used) {
 			result = _chaoskey_fill(dev);
 			if (result < 0) {

@@ -76,8 +76,6 @@ out:
 fail:
 	posix_acl_release(resp->acl_access);
 	posix_acl_release(resp->acl_default);
-	resp->acl_access = NULL;
-	resp->acl_default = NULL;
 	goto out;
 }
 
@@ -222,6 +220,8 @@ static void nfs3svc_release_getacl(struct svc_rqst *rqstp)
 	posix_acl_release(resp->acl_access);
 	posix_acl_release(resp->acl_default);
 }
+
+struct nfsd3_voidargs { int dummy; };
 
 #define ST 1		/* status*/
 #define AT 21		/* attributes */

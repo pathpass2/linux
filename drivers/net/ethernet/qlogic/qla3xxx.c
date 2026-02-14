@@ -1501,7 +1501,7 @@ static int ql_finish_auto_neg(struct ql3_adapter *qdev)
 				     "Remote error detected. Calling ql_port_start()\n");
 			/*
 			 * ql_port_start() is shared code and needs
-			 * to lock the PHY on its own.
+			 * to lock the PHY on it's own.
 			 */
 			ql_sem_unlock(qdev, QL_PHY_GIO_SEM_MASK);
 			if (ql_port_start(qdev))	/* Restart port */
@@ -2591,7 +2591,6 @@ static int ql_alloc_buffer_queues(struct ql3_adapter *qdev)
 
 	if (qdev->lrg_buf_q_alloc_virt_addr == NULL) {
 		netdev_err(qdev->ndev, "lBufQ failed\n");
-		kfree(qdev->lrg_buf);
 		return -ENOMEM;
 	}
 	qdev->lrg_buf_q_virt_addr = qdev->lrg_buf_q_alloc_virt_addr;
@@ -2616,7 +2615,6 @@ static int ql_alloc_buffer_queues(struct ql3_adapter *qdev)
 				  qdev->lrg_buf_q_alloc_size,
 				  qdev->lrg_buf_q_alloc_virt_addr,
 				  qdev->lrg_buf_q_alloc_phy_addr);
-		kfree(qdev->lrg_buf);
 		return -ENOMEM;
 	}
 
@@ -3420,7 +3418,7 @@ static int ql_adapter_down(struct ql3_adapter *qdev, int do_reset)
 		pci_disable_msi(qdev->pdev);
 	}
 
-	timer_delete_sync(&qdev->adapter_timer);
+	del_timer_sync(&qdev->adapter_timer);
 
 	napi_disable(&qdev->napi);
 
@@ -3735,7 +3733,7 @@ static void ql_get_board_info(struct ql3_adapter *qdev)
 
 static void ql3xxx_timer(struct timer_list *t)
 {
-	struct ql3_adapter *qdev = timer_container_of(qdev, t, adapter_timer);
+	struct ql3_adapter *qdev = from_timer(qdev, t, adapter_timer);
 	queue_delayed_work(qdev->workqueue, &qdev->link_state_work, 0);
 }
 

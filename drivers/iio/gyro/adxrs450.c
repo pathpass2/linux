@@ -95,10 +95,12 @@ static int adxrs450_spi_read_reg_16(struct iio_dev *indio_dev,
 	struct spi_transfer xfers[] = {
 		{
 			.tx_buf = &st->tx,
+			.bits_per_word = 8,
 			.len = sizeof(st->tx),
 			.cs_change = 1,
 		}, {
 			.rx_buf = &st->rx,
+			.bits_per_word = 8,
 			.len = sizeof(st->rx),
 		},
 	};
@@ -167,10 +169,12 @@ static int adxrs450_spi_sensor_data(struct iio_dev *indio_dev, s16 *val)
 	struct spi_transfer xfers[] = {
 		{
 			.tx_buf = &st->tx,
+			.bits_per_word = 8,
 			.len = sizeof(st->tx),
 			.cs_change = 1,
 		}, {
 			.rx_buf = &st->rx,
+			.bits_per_word = 8,
 			.len = sizeof(st->rx),
 		},
 	};
@@ -205,6 +209,7 @@ static int adxrs450_spi_initial(struct adxrs450_state *st,
 	struct spi_transfer xfers = {
 		.tx_buf = &st->tx,
 		.rx_buf = &st->rx,
+		.bits_per_word = 8,
 		.len = sizeof(st->tx),
 	};
 
@@ -441,7 +446,7 @@ static int adxrs450_probe(struct spi_device *spi)
 static const struct spi_device_id adxrs450_id[] = {
 	{"adxrs450", ID_ADXRS450},
 	{"adxrs453", ID_ADXRS453},
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(spi, adxrs450_id);
 

@@ -15,6 +15,7 @@
 #include <linux/mfd/axp20x.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -28,11 +29,6 @@
 #define AXP20X_GPIO_FUNCTION_OUT_LOW	0
 #define AXP20X_GPIO_FUNCTION_OUT_HIGH	1
 #define AXP20X_GPIO_FUNCTION_INPUT	2
-
-#define AXP20X_GPIO3_FUNCTIONS		GENMASK(2, 1)
-#define AXP20X_GPIO3_FUNCTION_OUT_LOW	0
-#define AXP20X_GPIO3_FUNCTION_OUT_HIGH	2
-#define AXP20X_GPIO3_FUNCTION_INPUT	4
 
 #define AXP20X_FUNC_GPIO_OUT		0
 #define AXP20X_FUNC_GPIO_IN		1
@@ -77,7 +73,6 @@ static const struct pinctrl_pin_desc axp209_pins[] = {
 	PINCTRL_PIN(0, "GPIO0"),
 	PINCTRL_PIN(1, "GPIO1"),
 	PINCTRL_PIN(2, "GPIO2"),
-	PINCTRL_PIN(3, "GPIO3"),
 };
 
 static const struct pinctrl_pin_desc axp22x_pins[] = {
@@ -124,19 +119,16 @@ static int axp20x_gpio_get_reg(unsigned int offset)
 	return -EINVAL;
 }
 
+static int axp20x_gpio_input(struct gpio_chip *chip, unsigned int offset)
+{
+	return pinctrl_gpio_direction_input(chip->base + offset);
+}
+
 static int axp20x_gpio_get(struct gpio_chip *chip, unsigned int offset)
 {
 	struct axp20x_pctl *pctl = gpiochip_get_data(chip);
 	unsigned int val;
 	int ret;
-
-	/* AXP209 has GPIO3 status sharing the settings register */
-	if (offset == 3) {
-		ret = regmap_read(pctl->regmap, AXP20X_GPIO3_CTRL, &val);
-		if (ret)
-			return ret;
-		return !!(val & BIT(0));
-	}
 
 	ret = regmap_read(pctl->regmap, AXP20X_GPIO20_SS, &val);
 	if (ret)
@@ -151,17 +143,6 @@ static int axp20x_gpio_get_direction(struct gpio_chip *chip,
 	struct axp20x_pctl *pctl = gpiochip_get_data(chip);
 	unsigned int val;
 	int reg, ret;
-
-	/* AXP209 GPIO3 settings have a different layout */
-	if (offset == 3) {
-		ret = regmap_read(pctl->regmap, AXP20X_GPIO3_CTRL, &val);
-		if (ret)
-			return ret;
-		if (val & AXP20X_GPIO3_FUNCTION_INPUT)
-			return GPIO_LINE_DIRECTION_IN;
-
-		return GPIO_LINE_DIRECTION_OUT;
-	}
 
 	reg = axp20x_gpio_get_reg(offset);
 	if (reg < 0)
@@ -192,30 +173,25 @@ static int axp20x_gpio_get_direction(struct gpio_chip *chip,
 static int axp20x_gpio_output(struct gpio_chip *chip, unsigned int offset,
 			      int value)
 {
-	return chip->set(chip, offset, value);
+	chip->set(chip, offset, value);
+
+	return 0;
 }
 
-static int axp20x_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			   int value)
+static void axp20x_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			    int value)
 {
 	struct axp20x_pctl *pctl = gpiochip_get_data(chip);
 	int reg;
 
-	/* AXP209 has GPIO3 status sharing the settings register */
-	if (offset == 3)
-		return regmap_update_bits(pctl->regmap, AXP20X_GPIO3_CTRL,
-					  AXP20X_GPIO3_FUNCTIONS,
-					  value ?
-						AXP20X_GPIO3_FUNCTION_OUT_HIGH :
-						AXP20X_GPIO3_FUNCTION_OUT_LOW);
-
 	reg = axp20x_gpio_get_reg(offset);
 	if (reg < 0)
-		return reg;
+		return;
 
-	return regmap_update_bits(pctl->regmap, reg, AXP20X_GPIO_FUNCTIONS,
-				  value ? AXP20X_GPIO_FUNCTION_OUT_HIGH :
-					  AXP20X_GPIO_FUNCTION_OUT_LOW);
+	regmap_update_bits(pctl->regmap, reg,
+			   AXP20X_GPIO_FUNCTIONS,
+			   value ? AXP20X_GPIO_FUNCTION_OUT_HIGH :
+			   AXP20X_GPIO_FUNCTION_OUT_LOW);
 }
 
 static int axp20x_pmx_set(struct pinctrl_dev *pctldev, unsigned int offset,
@@ -223,13 +199,6 @@ static int axp20x_pmx_set(struct pinctrl_dev *pctldev, unsigned int offset,
 {
 	struct axp20x_pctl *pctl = pinctrl_dev_get_drvdata(pctldev);
 	int reg;
-
-	/* AXP209 GPIO3 settings have a different layout */
-	if (offset == 3)
-		return regmap_update_bits(pctl->regmap, AXP20X_GPIO3_CTRL,
-				   AXP20X_GPIO3_FUNCTIONS,
-				   config == AXP20X_MUX_GPIO_OUT ? AXP20X_GPIO3_FUNCTION_OUT_LOW :
-				   AXP20X_GPIO3_FUNCTION_INPUT);
 
 	reg = axp20x_gpio_get_reg(offset);
 	if (reg < 0)
@@ -464,7 +433,7 @@ static int axp20x_pctl_probe(struct platform_device *pdev)
 	pctl->chip.get			= axp20x_gpio_get;
 	pctl->chip.get_direction	= axp20x_gpio_get_direction;
 	pctl->chip.set			= axp20x_gpio_set;
-	pctl->chip.direction_input	= pinctrl_gpio_direction_input;
+	pctl->chip.direction_input	= axp20x_gpio_input;
 	pctl->chip.direction_output	= axp20x_gpio_output;
 
 	pctl->desc = of_device_get_match_data(dev);

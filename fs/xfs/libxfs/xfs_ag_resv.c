@@ -3,7 +3,7 @@
  * Copyright (C) 2016 Oracle.  All Rights Reserved.
  * Author: Darrick J. Wong <darrick.wong@oracle.com>
  */
-#include "xfs_platform.h"
+#include "xfs.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
@@ -70,7 +70,6 @@ xfs_ag_resv_critical(
 	struct xfs_perag		*pag,
 	enum xfs_ag_resv_type		type)
 {
-	struct xfs_mount		*mp = pag_mount(pag);
 	xfs_extlen_t			avail;
 	xfs_extlen_t			orig;
 
@@ -92,8 +91,9 @@ xfs_ag_resv_critical(
 	trace_xfs_ag_resv_critical(pag, type, avail);
 
 	/* Critically low if less than 10% or max btree height remains. */
-	return avail < orig / 10 || avail < mp->m_agbtree_maxlevels ||
-		XFS_TEST_ERROR(mp, XFS_ERRTAG_AG_RESV_CRITICAL);
+	return XFS_TEST_ERROR(avail < orig / 10 ||
+			      avail < pag->pag_mount->m_agbtree_maxlevels,
+			pag->pag_mount, XFS_ERRTAG_AG_RESV_CRITICAL);
 }
 
 /*
@@ -113,7 +113,6 @@ xfs_ag_resv_needed(
 	case XFS_AG_RESV_RMAPBT:
 		len -= xfs_perag_resv(pag, type)->ar_reserved;
 		break;
-	case XFS_AG_RESV_METAFILE:
 	case XFS_AG_RESV_NONE:
 		/* empty */
 		break;
@@ -127,19 +126,20 @@ xfs_ag_resv_needed(
 }
 
 /* Clean out a reservation */
-static void
+static int
 __xfs_ag_resv_free(
 	struct xfs_perag		*pag,
 	enum xfs_ag_resv_type		type)
 {
 	struct xfs_ag_resv		*resv;
 	xfs_extlen_t			oldresv;
+	int				error;
 
 	trace_xfs_ag_resv_free(pag, type, 0);
 
 	resv = xfs_perag_resv(pag, type);
-	if (pag_agno(pag) == 0)
-		pag_mount(pag)->m_ag_max_usable += resv->ar_asked;
+	if (pag->pag_agno == 0)
+		pag->pag_mount->m_ag_max_usable += resv->ar_asked;
 	/*
 	 * RMAPBT blocks come from the AGFL and AGFL blocks are always
 	 * considered "free", so whatever was reserved at mount time must be
@@ -149,19 +149,30 @@ __xfs_ag_resv_free(
 		oldresv = resv->ar_orig_reserved;
 	else
 		oldresv = resv->ar_reserved;
-	xfs_add_fdblocks(pag_mount(pag), oldresv);
+	error = xfs_mod_fdblocks(pag->pag_mount, oldresv, true);
 	resv->ar_reserved = 0;
 	resv->ar_asked = 0;
 	resv->ar_orig_reserved = 0;
+
+	if (error)
+		trace_xfs_ag_resv_free_error(pag->pag_mount, pag->pag_agno,
+				error, _RET_IP_);
+	return error;
 }
 
 /* Free a per-AG reservation. */
-void
+int
 xfs_ag_resv_free(
 	struct xfs_perag		*pag)
 {
-	__xfs_ag_resv_free(pag, XFS_AG_RESV_RMAPBT);
-	__xfs_ag_resv_free(pag, XFS_AG_RESV_METADATA);
+	int				error;
+	int				err2;
+
+	error = __xfs_ag_resv_free(pag, XFS_AG_RESV_RMAPBT);
+	err2 = __xfs_ag_resv_free(pag, XFS_AG_RESV_METADATA);
+	if (err2 && !error)
+		error = err2;
+	return error;
 }
 
 static int
@@ -171,7 +182,7 @@ __xfs_ag_resv_init(
 	xfs_extlen_t			ask,
 	xfs_extlen_t			used)
 {
-	struct xfs_mount		*mp = pag_mount(pag);
+	struct xfs_mount		*mp = pag->pag_mount;
 	struct xfs_ag_resv		*resv;
 	int				error;
 	xfs_extlen_t			hidden_space;
@@ -202,15 +213,16 @@ __xfs_ag_resv_init(
 		return -EINVAL;
 	}
 
-	if (XFS_TEST_ERROR(mp, XFS_ERRTAG_AG_RESV_FAIL))
+	if (XFS_TEST_ERROR(false, mp, XFS_ERRTAG_AG_RESV_FAIL))
 		error = -ENOSPC;
 	else
-		error = xfs_dec_fdblocks(mp, hidden_space, true);
+		error = xfs_mod_fdblocks(mp, -(int64_t)hidden_space, true);
 	if (error) {
-		trace_xfs_ag_resv_init_error(pag, error, _RET_IP_);
+		trace_xfs_ag_resv_init_error(pag->pag_mount, pag->pag_agno,
+				error, _RET_IP_);
 		xfs_warn(mp,
 "Per-AG reservation for AG %u failed.  Filesystem may run out of space.",
-				pag_agno(pag));
+				pag->pag_agno);
 		return error;
 	}
 
@@ -220,7 +232,7 @@ __xfs_ag_resv_init(
 	 * counter, we only make the adjustment for AG 0.  This assumes that
 	 * there aren't any AGs hungrier for per-AG reservation than AG 0.
 	 */
-	if (pag_agno(pag) == 0)
+	if (pag->pag_agno == 0)
 		mp->m_ag_max_usable -= ask;
 
 	resv = xfs_perag_resv(pag, type);
@@ -238,7 +250,7 @@ xfs_ag_resv_init(
 	struct xfs_perag		*pag,
 	struct xfs_trans		*tp)
 {
-	struct xfs_mount		*mp = pag_mount(pag);
+	struct xfs_mount		*mp = pag->pag_mount;
 	xfs_extlen_t			ask;
 	xfs_extlen_t			used;
 	int				error = 0, error2;
@@ -347,7 +359,6 @@ xfs_ag_resv_alloc_extent(
 
 	switch (type) {
 	case XFS_AG_RESV_AGFL:
-	case XFS_AG_RESV_METAFILE:
 		return;
 	case XFS_AG_RESV_METADATA:
 	case XFS_AG_RESV_RMAPBT:
@@ -390,7 +401,6 @@ xfs_ag_resv_free_extent(
 
 	switch (type) {
 	case XFS_AG_RESV_AGFL:
-	case XFS_AG_RESV_METAFILE:
 		return;
 	case XFS_AG_RESV_METADATA:
 	case XFS_AG_RESV_RMAPBT:
@@ -401,8 +411,6 @@ xfs_ag_resv_free_extent(
 		fallthrough;
 	case XFS_AG_RESV_NONE:
 		xfs_trans_mod_sb(tp, XFS_TRANS_SB_FDBLOCKS, (int64_t)len);
-		fallthrough;
-	case XFS_AG_RESV_IGNORE:
 		return;
 	}
 

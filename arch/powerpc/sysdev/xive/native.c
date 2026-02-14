@@ -415,7 +415,7 @@ static void xive_native_setup_cpu(unsigned int cpu, struct xive_cpu *xc)
 		return;
 	}
 
-	/* Grab its CAM value */
+	/* Grab it's CAM value */
 	rc = opal_xive_get_vp_info(vp, NULL, &vp_cam_be, NULL, NULL);
 	if (rc) {
 		pr_err("Failed to get pool VP info CPU %d\n", cpu);
@@ -559,7 +559,9 @@ bool __init xive_native_init(void)
 	struct device_node *np;
 	struct resource r;
 	void __iomem *tima;
+	struct property *prop;
 	u8 max_prio = 7;
+	const __be32 *p;
 	u32 val, cpu;
 	s64 rc;
 
@@ -590,16 +592,18 @@ bool __init xive_native_init(void)
 		max_prio = val - 1;
 
 	/* Iterate the EQ sizes and pick one */
-	of_property_for_each_u32(np, "ibm,xive-eq-sizes", val) {
+	of_property_for_each_u32(np, "ibm,xive-eq-sizes", prop, p, val) {
 		xive_queue_shift = val;
 		if (val == PAGE_SHIFT)
 			break;
 	}
 
 	/* Do we support single escalation */
-	xive_has_single_esc = of_property_read_bool(np, "single-escalation-support");
+	if (of_get_property(np, "single-escalation-support", NULL) != NULL)
+		xive_has_single_esc = true;
 
-	xive_has_save_restore = of_property_read_bool(np, "vp-save-restore");
+	if (of_get_property(np, "vp-save-restore", NULL))
+		xive_has_save_restore = true;
 
 	/* Configure Thread Management areas for KVM */
 	for_each_possible_cpu(cpu)
@@ -800,7 +804,7 @@ int xive_native_get_queue_info(u32 vp_id, u32 prio,
 	if (out_qpage)
 		*out_qpage = be64_to_cpu(qpage);
 	if (out_qsize)
-		*out_qsize = be64_to_cpu(qsize);
+		*out_qsize = be32_to_cpu(qsize);
 	if (out_qeoi_page)
 		*out_qeoi_page = be64_to_cpu(qeoi_page);
 	if (out_escalate_irq)

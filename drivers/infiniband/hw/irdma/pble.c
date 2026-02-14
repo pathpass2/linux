@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 OR Linux-OpenIB
+// SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
 /* Copyright (c) 2015 - 2021 Intel Corporation */
 #include "osdep.h"
 #include "hmc.h"
@@ -71,7 +71,7 @@ int irdma_hmc_init_pble(struct irdma_sc_dev *dev,
 static void get_sd_pd_idx(struct irdma_hmc_pble_rsrc *pble_rsrc,
 			  struct sd_pd_idx *idx)
 {
-	idx->sd_idx = pble_rsrc->next_fpm_addr / IRDMA_HMC_DIRECT_BP_SIZE;
+	idx->sd_idx = (u32)pble_rsrc->next_fpm_addr / IRDMA_HMC_DIRECT_BP_SIZE;
 	idx->pd_idx = (u32)(pble_rsrc->next_fpm_addr / IRDMA_HMC_PAGED_BP_SIZE);
 	idx->rel_pd_idx = (idx->pd_idx % IRDMA_HMC_PD_CNT_IN_SD);
 }
@@ -108,7 +108,7 @@ static int add_sd_direct(struct irdma_hmc_pble_rsrc *pble_rsrc,
 	chunk->vaddr = sd_entry->u.bp.addr.va + offset;
 	chunk->fpm_addr = pble_rsrc->next_fpm_addr;
 	ibdev_dbg(to_ibdev(dev),
-		  "PBLE: chunk_size[%lld] = 0x%llx vaddr=0x%p fpm_addr = %llx\n",
+		  "PBLE: chunk_size[%lld] = 0x%llx vaddr=0x%pK fpm_addr = %llx\n",
 		  chunk->size, chunk->size, chunk->vaddr, chunk->fpm_addr);
 
 	return 0;
@@ -193,15 +193,8 @@ static enum irdma_sd_entry_type irdma_get_type(struct irdma_sc_dev *dev,
 {
 	enum irdma_sd_entry_type sd_entry_type;
 
-	if (dev->hw_attrs.uk_attrs.hw_rev >= IRDMA_GEN_3)
-		sd_entry_type = (!idx->rel_pd_idx &&
-				 pages == IRDMA_HMC_PD_CNT_IN_SD) ?
-				 IRDMA_SD_TYPE_DIRECT : IRDMA_SD_TYPE_PAGED;
-	else
-		sd_entry_type = (!idx->rel_pd_idx &&
-				 pages == IRDMA_HMC_PD_CNT_IN_SD &&
-				 dev->privileged) ?
-				 IRDMA_SD_TYPE_DIRECT : IRDMA_SD_TYPE_PAGED;
+	sd_entry_type = !idx->rel_pd_idx && pages == IRDMA_HMC_PD_CNT_IN_SD ?
+			IRDMA_SD_TYPE_DIRECT : IRDMA_SD_TYPE_PAGED;
 	return sd_entry_type;
 }
 
@@ -286,11 +279,10 @@ static int add_pble_prm(struct irdma_hmc_pble_rsrc *pble_rsrc)
 	sd_reg_val = (sd_entry_type == IRDMA_SD_TYPE_PAGED) ?
 			     sd_entry->u.pd_table.pd_page_addr.pa :
 			     sd_entry->u.bp.addr.pa;
-	if ((dev->privileged && !sd_entry->valid) ||
-	    dev->hw_attrs.uk_attrs.hw_rev >= IRDMA_GEN_3) {
-		ret_code = irdma_hmc_sd_one(dev, hmc_info->hmc_fn_id,
-					    sd_reg_val, idx->sd_idx,
-					    sd_entry->entry_type, true);
+
+	if (!sd_entry->valid) {
+		ret_code = irdma_hmc_sd_one(dev, hmc_info->hmc_fn_id, sd_reg_val,
+					    idx->sd_idx, sd_entry->entry_type, true);
 		if (ret_code)
 			goto error;
 	}
@@ -431,15 +423,15 @@ static int get_lvl1_pble(struct irdma_hmc_pble_rsrc *pble_rsrc,
  * get_lvl1_lvl2_pble - calls get_lvl1 and get_lvl2 pble routine
  * @pble_rsrc: pble resources
  * @palloc: contains all inforamtion regarding pble (idx + pble addr)
- * @lvl: Bitmask for requested pble level
+ * @level1_only: flag for a level 1 PBLE
  */
 static int get_lvl1_lvl2_pble(struct irdma_hmc_pble_rsrc *pble_rsrc,
-			      struct irdma_pble_alloc *palloc, u8 lvl)
+			      struct irdma_pble_alloc *palloc, bool level1_only)
 {
 	int status = 0;
 
 	status = get_lvl1_pble(pble_rsrc, palloc);
-	if (!status || lvl == PBLE_LEVEL_1 || palloc->total_cnt <= PBLE_PER_PAGE)
+	if (!status || level1_only || palloc->total_cnt <= PBLE_PER_PAGE)
 		return status;
 
 	status = get_lvl2_pble(pble_rsrc, palloc);
@@ -452,11 +444,11 @@ static int get_lvl1_lvl2_pble(struct irdma_hmc_pble_rsrc *pble_rsrc,
  * @pble_rsrc: pble resources
  * @palloc: contains all inforamtion regarding pble (idx + pble addr)
  * @pble_cnt: #of pbles requested
- * @lvl: requested pble level mask
+ * @level1_only: true if only pble level 1 to acquire
  */
 int irdma_get_pble(struct irdma_hmc_pble_rsrc *pble_rsrc,
 		   struct irdma_pble_alloc *palloc, u32 pble_cnt,
-		   u8 lvl)
+		   bool level1_only)
 {
 	int status = 0;
 	int max_sds = 0;
@@ -470,7 +462,7 @@ int irdma_get_pble(struct irdma_hmc_pble_rsrc *pble_rsrc,
 	/*check first to see if we can get pble's without acquiring
 	 * additional sd's
 	 */
-	status = get_lvl1_lvl2_pble(pble_rsrc, palloc, lvl);
+	status = get_lvl1_lvl2_pble(pble_rsrc, palloc, level1_only);
 	if (!status)
 		goto exit;
 
@@ -480,9 +472,9 @@ int irdma_get_pble(struct irdma_hmc_pble_rsrc *pble_rsrc,
 		if (status)
 			break;
 
-		status = get_lvl1_lvl2_pble(pble_rsrc, palloc, lvl);
+		status = get_lvl1_lvl2_pble(pble_rsrc, palloc, level1_only);
 		/* if level1_only, only go through it once */
-		if (!status || lvl)
+		if (!status || level1_only)
 			break;
 	}
 
@@ -506,14 +498,12 @@ exit:
 void irdma_free_pble(struct irdma_hmc_pble_rsrc *pble_rsrc,
 		     struct irdma_pble_alloc *palloc)
 {
+	pble_rsrc->freedpbles += palloc->total_cnt;
+
 	if (palloc->level == PBLE_LEVEL_2)
 		free_lvl2(pble_rsrc, palloc);
 	else
 		irdma_prm_return_pbles(&pble_rsrc->pinfo,
 				       &palloc->level1.chunkinfo);
-
-	mutex_lock(&pble_rsrc->pble_mutex_lock);
-	pble_rsrc->freedpbles += palloc->total_cnt;
 	pble_rsrc->stats_alloc_freed++;
-	mutex_unlock(&pble_rsrc->pble_mutex_lock);
 }

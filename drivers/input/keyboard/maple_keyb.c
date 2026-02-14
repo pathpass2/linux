@@ -132,11 +132,14 @@ static void dc_kbd_callback(struct mapleq *mq)
 	 * We should always get the lock because the only
 	 * time it may be locked is if the driver is in the cleanup phase.
 	 */
-	scoped_guard(mutex_try, &maple_keyb_mutex) {
+	if (likely(mutex_trylock(&maple_keyb_mutex))) {
+
 		if (buf[1] == mapledev->function) {
 			memcpy(kbd->new, buf + 2, 8);
 			dc_scan_kbd(kbd);
 		}
+
+		mutex_unlock(&maple_keyb_mutex);
 	}
 }
 
@@ -151,7 +154,7 @@ static int probe_maple_kbd(struct device *dev)
 	mdev = to_maple_dev(dev);
 	mdrv = to_maple_driver(dev->driver);
 
-	kbd = kzalloc(sizeof(*kbd), GFP_KERNEL);
+	kbd = kzalloc(sizeof(struct dc_kbd), GFP_KERNEL);
 	if (!kbd) {
 		error = -ENOMEM;
 		goto fail;
@@ -208,12 +211,14 @@ static int remove_maple_kbd(struct device *dev)
 	struct maple_device *mdev = to_maple_dev(dev);
 	struct dc_kbd *kbd = maple_get_drvdata(mdev);
 
-	guard(mutex)(&maple_keyb_mutex);
+	mutex_lock(&maple_keyb_mutex);
 
 	input_unregister_device(kbd->dev);
 	kfree(kbd);
 
 	maple_set_drvdata(mdev, NULL);
+
+	mutex_unlock(&maple_keyb_mutex);
 	return 0;
 }
 

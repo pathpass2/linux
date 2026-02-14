@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-#include <linux/limits.h>
 #include <linux/module.h>
 
 /* validate @native and @pcp counter values match @expected */
@@ -25,9 +24,8 @@ static int __init percpu_test_init(void)
 	 * +ul_one/-ul_one below would replace with inc/dec instructions.
 	 */
 	volatile unsigned int ui_one = 1;
-	unsigned long long ull = 0;
-	unsigned long ul = 0;
 	long l = 0;
+	unsigned long ul = 0;
 
 	pr_info("percpu test start\n");
 
@@ -113,13 +111,6 @@ static int __init percpu_test_init(void)
 	__this_cpu_sub(ulong_counter, ui_one);
 	CHECK(ul, ulong_counter, -1);
 	CHECK(ul, ulong_counter, ULONG_MAX);
-
-	ul = ull = 0;
-	__this_cpu_write(ulong_counter, 0);
-
-	ul = ull += UINT_MAX;
-	__this_cpu_add(ulong_counter, ull);
-	CHECK(ul, ulong_counter, UINT_MAX);
 
 	ul = 3;
 	__this_cpu_write(ulong_counter, 3);

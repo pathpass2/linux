@@ -25,9 +25,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
 #include <linux/io.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/pm_runtime.h>
 
 #include <drm/drm_atomic_helper.h>
@@ -36,7 +35,6 @@
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
-#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
@@ -553,6 +551,8 @@ struct vc4_dsi {
 	struct vc4_encoder encoder;
 	struct mipi_dsi_host dsi_host;
 
+	struct kref kref;
+
 	struct platform_device *pdev;
 
 	struct drm_bridge *out_bridge;
@@ -600,19 +600,23 @@ struct vc4_dsi {
 	struct debugfs_regset32 regset;
 };
 
-#define host_to_dsi(host)					\
-	container_of_const(host, struct vc4_dsi, dsi_host)
+#define host_to_dsi(host) container_of(host, struct vc4_dsi, dsi_host)
 
-#define to_vc4_dsi(_encoder)					\
-	container_of_const(_encoder, struct vc4_dsi, encoder.base)
+static inline struct vc4_dsi *
+to_vc4_dsi(struct drm_encoder *encoder)
+{
+	return container_of(encoder, struct vc4_dsi, encoder.base);
+}
 
-#define bridge_to_vc4_dsi(_bridge)				\
-	container_of_const(_bridge, struct vc4_dsi, bridge)
+static inline struct vc4_dsi *
+bridge_to_vc4_dsi(struct drm_bridge *bridge)
+{
+	return container_of(bridge, struct vc4_dsi, bridge);
+}
 
 static inline void
 dsi_dma_workaround_write(struct vc4_dsi *dsi, u32 offset, u32 val)
 {
-	struct drm_device *drm = dsi->bridge.dev;
 	struct dma_chan *chan = dsi->reg_dma_chan;
 	struct dma_async_tx_descriptor *tx;
 	dma_cookie_t cookie;
@@ -633,19 +637,19 @@ dsi_dma_workaround_write(struct vc4_dsi *dsi, u32 offset, u32 val)
 						  dsi->reg_dma_paddr,
 						  4, 0);
 	if (!tx) {
-		drm_err(drm, "Failed to set up DMA register write\n");
+		DRM_ERROR("Failed to set up DMA register write\n");
 		return;
 	}
 
 	cookie = tx->tx_submit(tx);
 	ret = dma_submit_error(cookie);
 	if (ret) {
-		drm_err(drm, "Failed to submit DMA: %d\n", ret);
+		DRM_ERROR("Failed to submit DMA: %d\n", ret);
 		return;
 	}
 	ret = dma_sync_wait(chan, cookie);
 	if (ret)
-		drm_err(drm, "Failed to wait for DMA: %d\n", ret);
+		DRM_ERROR("Failed to wait for DMA: %d\n", ret);
 }
 
 #define DSI_READ(offset)								\
@@ -799,7 +803,7 @@ dsi_esc_timing(u32 ns)
 }
 
 static void vc4_dsi_bridge_disable(struct drm_bridge *bridge,
-				   struct drm_atomic_state *state)
+				   struct drm_bridge_state *state)
 {
 	struct vc4_dsi *dsi = bridge_to_vc4_dsi(bridge);
 	u32 disp0_ctrl;
@@ -810,7 +814,7 @@ static void vc4_dsi_bridge_disable(struct drm_bridge *bridge,
 }
 
 static void vc4_dsi_bridge_post_disable(struct drm_bridge *bridge,
-					struct drm_atomic_state *state)
+					struct drm_bridge_state *state)
 {
 	struct vc4_dsi *dsi = bridge_to_vc4_dsi(bridge);
 	struct device *dev = &dsi->pdev->dev;
@@ -872,8 +876,9 @@ static bool vc4_dsi_bridge_mode_fixup(struct drm_bridge *bridge,
 }
 
 static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
-				      struct drm_atomic_state *state)
+				      struct drm_bridge_state *old_state)
 {
+	struct drm_atomic_state *state = old_state->base.state;
 	struct vc4_dsi *dsi = bridge_to_vc4_dsi(bridge);
 	const struct drm_crtc_state *crtc_state;
 	struct device *dev = &dsi->pdev->dev;
@@ -892,7 +897,7 @@ static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
 
 	ret = pm_runtime_resume_and_get(dev);
 	if (ret) {
-		drm_err(bridge->dev, "Failed to runtime PM enable on DSI%d\n", dsi->variant->port);
+		DRM_ERROR("Failed to runtime PM enable on DSI%d\n", dsi->variant->port);
 		return;
 	}
 
@@ -985,14 +990,13 @@ static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
 
 	ret = clk_prepare_enable(dsi->escape_clock);
 	if (ret) {
-		drm_err(bridge->dev, "Failed to turn on DSI escape clock: %d\n",
-			ret);
+		DRM_ERROR("Failed to turn on DSI escape clock: %d\n", ret);
 		return;
 	}
 
 	ret = clk_prepare_enable(dsi->pll_phy_clock);
 	if (ret) {
-		drm_err(bridge->dev, "Failed to turn on DSI PLL: %d\n", ret);
+		DRM_ERROR("Failed to turn on DSI PLL: %d\n", ret);
 		return;
 	}
 
@@ -1014,7 +1018,7 @@ static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
 
 	ret = clk_prepare_enable(dsi->pixel_clock);
 	if (ret) {
-		drm_err(bridge->dev, "Failed to turn on DSI pixel clock: %d\n", ret);
+		DRM_ERROR("Failed to turn on DSI pixel clock: %d\n", ret);
 		return;
 	}
 
@@ -1141,7 +1145,7 @@ static void vc4_dsi_bridge_pre_enable(struct drm_bridge *bridge,
 }
 
 static void vc4_dsi_bridge_enable(struct drm_bridge *bridge,
-				  struct drm_atomic_state *state)
+				  struct drm_bridge_state *old_state)
 {
 	struct vc4_dsi *dsi = bridge_to_vc4_dsi(bridge);
 	bool debug_dump_regs = false;
@@ -1159,13 +1163,12 @@ static void vc4_dsi_bridge_enable(struct drm_bridge *bridge,
 }
 
 static int vc4_dsi_bridge_attach(struct drm_bridge *bridge,
-				 struct drm_encoder *encoder,
 				 enum drm_bridge_attach_flags flags)
 {
 	struct vc4_dsi *dsi = bridge_to_vc4_dsi(bridge);
 
 	/* Attach the panel or bridge to the dsi bridge */
-	return drm_bridge_attach(encoder, dsi->out_bridge,
+	return drm_bridge_attach(bridge->encoder, dsi->out_bridge,
 				 &dsi->bridge, flags);
 }
 
@@ -1173,7 +1176,6 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 				     const struct mipi_dsi_msg *msg)
 {
 	struct vc4_dsi *dsi = host_to_dsi(host);
-	struct drm_device *drm = dsi->bridge.dev;
 	struct mipi_dsi_packet packet;
 	u32 pkth = 0, pktc = 0;
 	int i, ret;
@@ -1305,8 +1307,8 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 						  DSI_RXPKT1H_BC_PARAM);
 
 			if (rxlen != msg->rx_len) {
-				drm_err(drm, "DSI returned %db, expecting %db\n",
-					rxlen, (int)msg->rx_len);
+				DRM_ERROR("DSI returned %db, expecting %db\n",
+					  rxlen, (int)msg->rx_len);
 				ret = -ENXIO;
 				goto reset_fifo_and_return;
 			}
@@ -1328,7 +1330,7 @@ static ssize_t vc4_dsi_host_transfer(struct mipi_dsi_host *host,
 	return ret;
 
 reset_fifo_and_return:
-	drm_err(drm, "DSI transfer failed, resetting: %d\n", ret);
+	DRM_ERROR("DSI transfer failed, resetting: %d\n", ret);
 
 	DSI_PORT_WRITE(TXPKT1C, DSI_PORT_READ(TXPKT1C) & ~DSI_TXPKT1C_CMD_EN);
 	udelay(1);
@@ -1470,8 +1472,7 @@ static void dsi_handle_error(struct vc4_dsi *dsi,
 	if (!(stat & bit))
 		return;
 
-	drm_err(dsi->bridge.dev, "DSI%d: %s error\n", dsi->variant->port,
-		type);
+	DRM_ERROR("DSI%d: %s error\n", dsi->variant->port, type);
 	*ret = IRQ_HANDLED;
 }
 
@@ -1621,11 +1622,29 @@ static void vc4_dsi_dma_chan_release(void *ptr)
 	dsi->reg_dma_chan = NULL;
 }
 
+static void vc4_dsi_release(struct kref *kref)
+{
+	struct vc4_dsi *dsi =
+		container_of(kref, struct vc4_dsi, kref);
+
+	kfree(dsi);
+}
+
+static void vc4_dsi_get(struct vc4_dsi *dsi)
+{
+	kref_get(&dsi->kref);
+}
+
+static void vc4_dsi_put(struct vc4_dsi *dsi)
+{
+	kref_put(&dsi->kref, &vc4_dsi_release);
+}
+
 static void vc4_dsi_release_action(struct drm_device *drm, void *ptr)
 {
 	struct vc4_dsi *dsi = ptr;
 
-	drm_bridge_put(&dsi->bridge);
+	vc4_dsi_put(dsi);
 }
 
 static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
@@ -1636,7 +1655,7 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 	struct drm_encoder *encoder = &dsi->encoder.base;
 	int ret;
 
-	drm_bridge_get(&dsi->bridge);
+	vc4_dsi_get(dsi);
 
 	ret = drmm_add_action_or_reset(drm, vc4_dsi_release_action, dsi);
 	if (ret)
@@ -1672,7 +1691,7 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 						      &dsi->reg_dma_paddr,
 						      GFP_KERNEL);
 		if (!dsi->reg_dma_mem) {
-			drm_err(drm, "Failed to get DMA memory\n");
+			DRM_ERROR("Failed to get DMA memory\n");
 			return -ENOMEM;
 		}
 
@@ -1687,8 +1706,8 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 		if (IS_ERR(dsi->reg_dma_chan)) {
 			ret = PTR_ERR(dsi->reg_dma_chan);
 			if (ret != -EPROBE_DEFER)
-				drm_err(drm, "Failed to get DMA channel: %d\n",
-					ret);
+				DRM_ERROR("Failed to get DMA channel: %d\n",
+					  ret);
 			return ret;
 		}
 
@@ -1791,12 +1810,15 @@ static int vc4_dsi_dev_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct vc4_dsi *dsi;
 
-	dsi = devm_drm_bridge_alloc(&pdev->dev, struct vc4_dsi, bridge, &vc4_dsi_bridge_funcs);
-	if (IS_ERR(dsi))
-		return PTR_ERR(dsi);
+	dsi = kzalloc(sizeof(*dsi), GFP_KERNEL);
+	if (!dsi)
+		return -ENOMEM;
 	dev_set_drvdata(dev, dsi);
 
+	kref_init(&dsi->kref);
+
 	dsi->pdev = pdev;
+	dsi->bridge.funcs = &vc4_dsi_bridge_funcs;
 #ifdef CONFIG_OF
 	dsi->bridge.of_node = dev->of_node;
 #endif
@@ -1808,12 +1830,15 @@ static int vc4_dsi_dev_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void vc4_dsi_dev_remove(struct platform_device *pdev)
+static int vc4_dsi_dev_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct vc4_dsi *dsi = dev_get_drvdata(dev);
 
 	mipi_dsi_host_unregister(&dsi->dsi_host);
+	vc4_dsi_put(dsi);
+
+	return 0;
 }
 
 struct platform_driver vc4_dsi_driver = {

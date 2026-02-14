@@ -447,13 +447,9 @@ static int set_user_sq_size(struct mlx4_ib_dev *dev,
 			    struct mlx4_ib_qp *qp,
 			    struct mlx4_ib_create_qp *ucmd)
 {
-	u32 cnt;
-
 	/* Sanity check SQ size before proceeding */
-	if (check_shl_overflow(1, ucmd->log_sq_bb_count, &cnt) ||
-	    cnt > dev->dev->caps.max_wqes)
-		return -EINVAL;
-	if (ucmd->log_sq_stride >
+	if ((1 << ucmd->log_sq_bb_count) > dev->dev->caps.max_wqes	 ||
+	    ucmd->log_sq_stride >
 		ilog2(roundup_pow_of_two(dev->dev->caps.max_sq_desc_sz)) ||
 	    ucmd->log_sq_stride < MLX4_IB_MIN_SQ_STRIDE)
 		return -EINVAL;
@@ -565,15 +561,15 @@ static int set_qp_rss(struct mlx4_ib_dev *dev, struct mlx4_ib_rss *rss_ctx,
 		return (-EOPNOTSUPP);
 	}
 
-	if (ucmd->rx_hash_fields_mask & ~(u64)(MLX4_IB_RX_HASH_SRC_IPV4	|
-					       MLX4_IB_RX_HASH_DST_IPV4	|
-					       MLX4_IB_RX_HASH_SRC_IPV6	|
-					       MLX4_IB_RX_HASH_DST_IPV6	|
-					       MLX4_IB_RX_HASH_SRC_PORT_TCP |
-					       MLX4_IB_RX_HASH_DST_PORT_TCP |
-					       MLX4_IB_RX_HASH_SRC_PORT_UDP |
-					       MLX4_IB_RX_HASH_DST_PORT_UDP |
-					       MLX4_IB_RX_HASH_INNER)) {
+	if (ucmd->rx_hash_fields_mask & ~(MLX4_IB_RX_HASH_SRC_IPV4	|
+					  MLX4_IB_RX_HASH_DST_IPV4	|
+					  MLX4_IB_RX_HASH_SRC_IPV6	|
+					  MLX4_IB_RX_HASH_DST_IPV6	|
+					  MLX4_IB_RX_HASH_SRC_PORT_TCP	|
+					  MLX4_IB_RX_HASH_DST_PORT_TCP	|
+					  MLX4_IB_RX_HASH_SRC_PORT_UDP	|
+					  MLX4_IB_RX_HASH_DST_PORT_UDP  |
+					  MLX4_IB_RX_HASH_INNER)) {
 		pr_debug("RX Hash fields_mask has unsupported mask (0x%llx)\n",
 			 ucmd->rx_hash_fields_mask);
 		return (-EOPNOTSUPP);
@@ -925,12 +921,8 @@ static int create_rq(struct ib_pd *pd, struct ib_qp_init_attr *init_attr,
 	}
 
 	shift = mlx4_ib_umem_calc_optimal_mtt_size(qp->umem, 0, &n);
-	if (shift < 0) {
-		err = shift;
-		goto err_buf;
-	}
-
 	err = mlx4_mtt_init(dev->dev, n, shift, &qp->mtt);
+
 	if (err)
 		goto err_buf;
 
@@ -1112,12 +1104,8 @@ static int create_qp_common(struct ib_pd *pd, struct ib_qp_init_attr *init_attr,
 		}
 
 		shift = mlx4_ib_umem_calc_optimal_mtt_size(qp->umem, 0, &n);
-		if (shift < 0) {
-			err = shift;
-			goto err_buf;
-		}
-
 		err = mlx4_mtt_init(dev->dev, n, shift, &qp->mtt);
+
 		if (err)
 			goto err_buf;
 
@@ -1652,8 +1640,7 @@ int mlx4_ib_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *init_attr,
 			sqp->roce_v2_gsi = ib_create_qp(pd, init_attr);
 
 			if (IS_ERR(sqp->roce_v2_gsi)) {
-				pr_err("Failed to create GSI QP for RoCEv2 (%pe)\n",
-				       sqp->roce_v2_gsi);
+				pr_err("Failed to create GSI QP for RoCEv2 (%ld)\n", PTR_ERR(sqp->roce_v2_gsi));
 				sqp->roce_v2_gsi = NULL;
 			} else {
 				to_mqp(sqp->roce_v2_gsi)->flags |=

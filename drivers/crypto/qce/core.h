@@ -6,16 +6,13 @@
 #ifndef _CORE_H_
 #define _CORE_H_
 
-#include <linux/mutex.h>
-#include <linux/workqueue.h>
-
 #include "dma.h"
 
 /**
  * struct qce_device - crypto engine device structure
  * @queue: crypto request queue
  * @lock: the lock protects queue and req
- * @done_work: workqueue context
+ * @done_tasklet: done tasklet object
  * @req: current active request
  * @result: result of current transform
  * @base: virtual IO base
@@ -31,14 +28,13 @@
  */
 struct qce_device {
 	struct crypto_queue queue;
-	struct mutex lock;
-	struct work_struct done_work;
+	spinlock_t lock;
+	struct tasklet_struct done_tasklet;
 	struct crypto_async_request *req;
 	int result;
 	void __iomem *base;
 	struct device *dev;
 	struct clk *core, *iface, *bus;
-	struct icc_path *mem_path;
 	struct qce_dma_data dma;
 	int burst_size;
 	unsigned int pipe_pair_id;

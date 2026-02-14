@@ -16,7 +16,7 @@
 #include "trace_output.h"	/* for trace_event_sem */
 #include "trace_dynevent.h"
 
-DEFINE_MUTEX(dyn_event_ops_mutex);
+static DEFINE_MUTEX(dyn_event_ops_mutex);
 static LIST_HEAD(dyn_event_ops_list);
 
 bool trace_event_dyn_try_get_ref(struct trace_event_call *dyn_call)
@@ -74,19 +74,24 @@ int dyn_event_release(const char *raw_command, struct dyn_event_operations *type
 	struct dyn_event *pos, *n;
 	char *system = NULL, *event, *p;
 	int argc, ret = -ENOENT;
-	char **argv __free(argv_free) = argv_split(GFP_KERNEL, raw_command, &argc);
+	char **argv;
 
+	argv = argv_split(GFP_KERNEL, raw_command, &argc);
 	if (!argv)
 		return -ENOMEM;
 
 	if (argv[0][0] == '-') {
-		if (argv[0][1] != ':')
-			return -EINVAL;
+		if (argv[0][1] != ':') {
+			ret = -EINVAL;
+			goto out;
+		}
 		event = &argv[0][2];
 	} else {
 		event = strchr(argv[0], ':');
-		if (!event)
-			return -EINVAL;
+		if (!event) {
+			ret = -EINVAL;
+			goto out;
+		}
 		event++;
 	}
 
@@ -96,8 +101,10 @@ int dyn_event_release(const char *raw_command, struct dyn_event_operations *type
 		event = p + 1;
 		*p = '\0';
 	}
-	if (!system && event[0] == '\0')
-		return -EINVAL;
+	if (!system && event[0] == '\0') {
+		ret = -EINVAL;
+		goto out;
+	}
 
 	mutex_lock(&event_mutex);
 	for_each_dyn_event_safe(pos, n) {
@@ -113,20 +120,8 @@ int dyn_event_release(const char *raw_command, struct dyn_event_operations *type
 	}
 	tracing_reset_all_online_cpus();
 	mutex_unlock(&event_mutex);
-	return ret;
-}
-
-/*
- * Locked version of event creation. The event creation must be protected by
- * dyn_event_ops_mutex because of protecting trace_probe_log.
- */
-int dyn_event_create(const char *raw_command, struct dyn_event_operations *type)
-{
-	int ret;
-
-	mutex_lock(&dyn_event_ops_mutex);
-	ret = type->create(raw_command);
-	mutex_unlock(&dyn_event_ops_mutex);
+out:
+	argv_free(argv);
 	return ret;
 }
 
@@ -144,16 +139,9 @@ static int create_dyn_event(const char *raw_command)
 		if (!ret || ret != -ECANCELED)
 			break;
 	}
-	if (ret == -ECANCELED) {
-		static const char *err_msg[] = {"No matching dynamic event type"};
-
-		/* Wrong dynamic event. Leave an error message. */
-		tracing_log_err(NULL, "dynevent", raw_command, err_msg,
-				0, 0);
-		ret = -EINVAL;
-	}
-
 	mutex_unlock(&dyn_event_ops_mutex);
+	if (ret == -ECANCELED)
+		ret = -EINVAL;
 
 	return ret;
 }
@@ -236,10 +224,6 @@ out:
 static int dyn_event_open(struct inode *inode, struct file *file)
 {
 	int ret;
-
-	ret = security_locked_down(LOCKDOWN_TRACEFS);
-	if (ret)
-		return ret;
 
 	ret = tracing_check_open_get_tr(NULL);
 	if (ret)

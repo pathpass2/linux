@@ -376,7 +376,7 @@ static int rt9467_set_value_from_ranges(struct rt9467_chg_data *data,
 	if (rsel == RT9467_RANGE_VMIVR) {
 		ret = linear_range_get_selector_high(range, value, &sel, &found);
 		if (ret)
-			sel = range->max_sel;
+			value = range->max_sel;
 	} else {
 		linear_range_get_selector_within(range, value, &sel);
 	}
@@ -588,10 +588,6 @@ static int rt9467_run_aicl(struct rt9467_chg_data *data)
 	aicl_vth = mivr_vth + RT9467_AICLVTH_GAP_uV;
 	ret = rt9467_set_value_from_ranges(data, F_AICL_VTH,
 					   RT9467_RANGE_AICL_VTH, aicl_vth);
-	if (ret) {
-		dev_err(data->dev, "Failed to set AICL VTH\n");
-		return ret;
-	}
 
 	/* Trigger AICL function */
 	ret = regmap_field_write(data->rm_field[F_AICL_MEAS], 1);
@@ -602,8 +598,8 @@ static int rt9467_run_aicl(struct rt9467_chg_data *data)
 
 	reinit_completion(&data->aicl_done);
 	ret = wait_for_completion_timeout(&data->aicl_done, msecs_to_jiffies(3500));
-	if (ret == 0)
-		return -ETIMEDOUT;
+	if (ret)
+		return ret;
 
 	ret = rt9467_get_value_from_ranges(data, F_IAICR, RT9467_RANGE_IAICR, &aicr_get);
 	if (ret) {
@@ -634,12 +630,17 @@ out:
 	return ret;
 }
 
+static const enum power_supply_usb_type rt9467_chg_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_UNKNOWN,
+	POWER_SUPPLY_USB_TYPE_SDP,
+	POWER_SUPPLY_USB_TYPE_DCP,
+	POWER_SUPPLY_USB_TYPE_CDP,
+};
+
 static const enum power_supply_property rt9467_chg_properties[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_ONLINE,
-	POWER_SUPPLY_PROP_VOLTAGE_NOW,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
-	POWER_SUPPLY_PROP_CURRENT_NOW,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
@@ -662,8 +663,6 @@ static int rt9467_psy_get_property(struct power_supply *psy,
 		return rt9467_psy_get_status(data, &val->intval);
 	case POWER_SUPPLY_PROP_ONLINE:
 		return regmap_field_read(data->rm_field[F_PWR_RDY], &val->intval);
-	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		return rt9467_get_adc(data, RT9467_ADC_VBUS_DIV5, &val->intval);
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		mutex_lock(&data->attach_lock);
 		if (data->psy_usb_type == POWER_SUPPLY_USB_TYPE_UNKNOWN ||
@@ -673,8 +672,6 @@ static int rt9467_psy_get_property(struct power_supply *psy,
 			val->intval = 1500000;
 		mutex_unlock(&data->attach_lock);
 		return 0;
-	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		return rt9467_get_adc(data, RT9467_ADC_IBUS, &val->intval);
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
 		mutex_lock(&data->ichg_ieoc_lock);
 		val->intval = data->ichg_ua;
@@ -748,6 +745,8 @@ static int rt9467_psy_set_property(struct power_supply *psy,
 						    RT9467_RANGE_IPREC, val->intval);
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
 		return rt9467_psy_set_ieoc(data, val->intval);
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		return regmap_field_write(data->rm_field[F_USBCHGEN], val->intval);
 	default:
 		return -EINVAL;
 	}
@@ -765,6 +764,7 @@ static int rt9467_chg_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
 	case POWER_SUPPLY_PROP_CHARGE_TERM_CURRENT:
 	case POWER_SUPPLY_PROP_PRECHARGE_CURRENT:
+	case POWER_SUPPLY_PROP_USB_TYPE:
 		return 1;
 	default:
 		return 0;
@@ -774,10 +774,8 @@ static int rt9467_chg_prop_is_writeable(struct power_supply *psy,
 static const struct power_supply_desc rt9467_chg_psy_desc = {
 	.name = "rt9467-charger",
 	.type = POWER_SUPPLY_TYPE_USB,
-	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_SDP) |
-		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
-		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
-		     BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+	.usb_types = rt9467_chg_usb_types,
+	.num_usb_types = ARRAY_SIZE(rt9467_chg_usb_types),
 	.properties = rt9467_chg_properties,
 	.num_properties = ARRAY_SIZE(rt9467_chg_properties),
 	.property_is_writeable = rt9467_chg_prop_is_writeable,
@@ -836,7 +834,7 @@ static int rt9467_register_psy(struct rt9467_chg_data *data)
 {
 	struct power_supply_config cfg = {
 		.drv_data = data,
-		.fwnode = dev_fwnode(data->dev),
+		.of_node = dev_of_node(data->dev),
 		.attr_grp = rt9467_sysfs_groups,
 	};
 
@@ -1025,7 +1023,7 @@ static int rt9467_request_interrupt(struct rt9467_chg_data *data)
 	for (i = 0; i < num_chg_irqs; i++) {
 		virq = regmap_irq_get_virq(data->irq_chip_data, chg_irqs[i].hwirq);
 		if (virq <= 0)
-			return dev_err_probe(dev, -EINVAL, "Failed to get (%s) irq\n",
+			return dev_err_probe(dev, virq, "Failed to get (%s) irq\n",
 					     chg_irqs[i].name);
 
 		ret = devm_request_threaded_irq(dev, virq, NULL, chg_irqs[i].handler,
@@ -1151,6 +1149,27 @@ static int rt9467_reset_chip(struct rt9467_chg_data *data)
 	return regmap_field_write(data->rm_field[F_RST], 1);
 }
 
+static void rt9467_chg_destroy_adc_lock(void *data)
+{
+	struct mutex *adc_lock = data;
+
+	mutex_destroy(adc_lock);
+}
+
+static void rt9467_chg_destroy_attach_lock(void *data)
+{
+	struct mutex *attach_lock = data;
+
+	mutex_destroy(attach_lock);
+}
+
+static void rt9467_chg_destroy_ichg_ieoc_lock(void *data)
+{
+	struct mutex *ichg_ieoc_lock = data;
+
+	mutex_destroy(ichg_ieoc_lock);
+}
+
 static void rt9467_chg_complete_aicl_done(void *data)
 {
 	struct completion *aicl_done = data;
@@ -1173,7 +1192,7 @@ static int rt9467_charger_probe(struct i2c_client *i2c)
 	i2c_set_clientdata(i2c, data);
 
 	/* Default pull charge enable gpio to make 'CHG_EN' by SW control only */
-	ceb_gpio = devm_gpiod_get_optional(dev, "charge-enable", GPIOD_OUT_HIGH);
+	ceb_gpio = devm_gpiod_get_optional(dev, "charge-enable", GPIOD_OUT_LOW);
 	if (IS_ERR(ceb_gpio))
 		return dev_err_probe(dev, PTR_ERR(ceb_gpio),
 				     "Failed to config charge enable gpio\n");
@@ -1203,23 +1222,29 @@ static int rt9467_charger_probe(struct i2c_client *i2c)
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to add irq chip\n");
 
-	ret = devm_mutex_init(dev, &data->adc_lock);
+	mutex_init(&data->adc_lock);
+	ret = devm_add_action_or_reset(dev, rt9467_chg_destroy_adc_lock,
+				       &data->adc_lock);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "Failed to init ADC lock\n");
 
-	ret = devm_mutex_init(dev, &data->attach_lock);
+	mutex_init(&data->attach_lock);
+	ret = devm_add_action_or_reset(dev, rt9467_chg_destroy_attach_lock,
+				       &data->attach_lock);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "Failed to init attach lock\n");
 
-	ret = devm_mutex_init(dev, &data->ichg_ieoc_lock);
+	mutex_init(&data->ichg_ieoc_lock);
+	ret = devm_add_action_or_reset(dev, rt9467_chg_destroy_ichg_ieoc_lock,
+				       &data->ichg_ieoc_lock);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "Failed to init ICHG/IEOC lock\n");
 
 	init_completion(&data->aicl_done);
 	ret = devm_add_action_or_reset(dev, rt9467_chg_complete_aicl_done,
 				       &data->aicl_done);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "Failed to init AICL done completion\n");
 
 	ret = rt9467_do_charger_init(data);
 	if (ret)
@@ -1247,7 +1272,7 @@ static struct i2c_driver rt9467_charger_driver = {
 		.name = "rt9467-charger",
 		.of_match_table = rt9467_charger_of_match_table,
 	},
-	.probe = rt9467_charger_probe,
+	.probe_new = rt9467_charger_probe,
 };
 module_i2c_driver(rt9467_charger_driver);
 

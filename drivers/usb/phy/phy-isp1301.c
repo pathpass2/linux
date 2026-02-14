@@ -25,7 +25,7 @@ struct isp1301 {
 #define phy_to_isp(p)		(container_of((p), struct isp1301, phy))
 
 static const struct i2c_device_id isp1301_id[] = {
-	{ "isp1301" },
+	{ "isp1301", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, isp1301_id);
@@ -132,7 +132,7 @@ static struct i2c_driver isp1301_driver = {
 		.name = DRV_NAME,
 		.of_match_table = isp1301_of_match,
 	},
-	.probe = isp1301_probe,
+	.probe_new = isp1301_probe,
 	.remove = isp1301_remove,
 	.id_table = isp1301_id,
 };
@@ -149,12 +149,7 @@ struct i2c_client *isp1301_get_client(struct device_node *node)
 		return client;
 
 	/* non-DT: only one ISP1301 chip supported */
-	if (isp1301_i2c_client) {
-		get_device(&isp1301_i2c_client->dev);
-		return isp1301_i2c_client;
-	}
-
-	return NULL;
+	return isp1301_i2c_client;
 }
 EXPORT_SYMBOL_GPL(isp1301_get_client);
 

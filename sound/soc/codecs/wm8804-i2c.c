@@ -31,7 +31,7 @@ static void wm8804_i2c_remove(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm8804_i2c_id[] = {
-	{ "wm8804" },
+	{ "wm8804", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm8804_i2c_id);
@@ -56,11 +56,11 @@ MODULE_DEVICE_TABLE(acpi, wm8804_acpi_match);
 static struct i2c_driver wm8804_i2c_driver = {
 	.driver = {
 		.name = "wm8804",
-		.pm = pm_ptr(&wm8804_pm),
+		.pm = &wm8804_pm,
 		.of_match_table = of_match_ptr(wm8804_of_match),
 		.acpi_match_table = ACPI_PTR(wm8804_acpi_match),
 	},
-	.probe = wm8804_i2c_probe,
+	.probe_new = wm8804_i2c_probe,
 	.remove = wm8804_i2c_remove,
 	.id_table = wm8804_i2c_id
 };

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2022 Intel Corporation
+// Copyright(c) 2022 Intel Corporation. All rights reserved.
 //
 // Author: Liam Girdwood <liam.r.girdwood@linux.intel.com>
 
@@ -126,7 +126,7 @@ static int trace_filter_parse(struct snd_sof_dev *sdev, char *string,
 		capacity += TRACE_FILTER_ELEMENTS_PER_ENTRY;
 		entry = strchr(entry + 1, entry_delimiter[0]);
 	}
-	*out = kmalloc_array(capacity, sizeof(**out), GFP_KERNEL);
+	*out = kmalloc(capacity * sizeof(**out), GFP_KERNEL);
 	if (!*out)
 		return -ENOMEM;
 
@@ -150,6 +150,7 @@ static int ipc3_trace_update_filter(struct snd_sof_dev *sdev, int num_elems,
 				    struct sof_ipc_trace_filter_elem *elems)
 {
 	struct sof_ipc_trace_filter *msg;
+	struct sof_ipc_reply reply;
 	size_t size;
 	int ret;
 
@@ -171,17 +172,13 @@ static int ipc3_trace_update_filter(struct snd_sof_dev *sdev, int num_elems,
 		dev_err(sdev->dev, "enabling device failed: %d\n", ret);
 		goto error;
 	}
-
-	/* Make sure the DSP/firmware is booted up */
-	ret = snd_sof_boot_dsp_firmware(sdev);
-	if (!ret)
-		ret = sof_ipc_tx_message_no_reply(sdev->ipc, msg, msg->hdr.size);
-
+	ret = sof_ipc_tx_message(sdev->ipc, msg, msg->hdr.size, &reply, sizeof(reply));
+	pm_runtime_mark_last_busy(sdev->dev);
 	pm_runtime_put_autosuspend(sdev->dev);
 
 error:
 	kfree(msg);
-	return ret;
+	return ret ? ret : reply.error;
 }
 
 static ssize_t dfsentry_trace_filter_write(struct file *file, const char __user *from,
@@ -190,6 +187,7 @@ static ssize_t dfsentry_trace_filter_write(struct file *file, const char __user 
 	struct snd_sof_dfsentry *dfse = file->private_data;
 	struct sof_ipc_trace_filter_elem *elems = NULL;
 	struct snd_sof_dev *sdev = dfse->sdev;
+	loff_t pos = 0;
 	int num_elems;
 	char *string;
 	int ret;
@@ -200,9 +198,15 @@ static ssize_t dfsentry_trace_filter_write(struct file *file, const char __user 
 		return -EINVAL;
 	}
 
-	string = memdup_user_nul(from, count);
-	if (IS_ERR(string))
-		return PTR_ERR(string);
+	string = kmalloc(count + 1, GFP_KERNEL);
+	if (!string)
+		return -ENOMEM;
+
+	/* assert null termination */
+	string[count] = 0;
+	ret = simple_write_to_buffer(string, count, &pos, from, count);
+	if (ret < 0)
+		goto error;
 
 	ret = trace_filter_parse(sdev, string, &num_elems, &elems);
 	if (ret < 0)
@@ -430,6 +434,7 @@ static int ipc3_dtrace_enable(struct snd_sof_dev *sdev)
 	struct sof_ipc_fw_ready *ready = &sdev->fw_ready;
 	struct sof_ipc_fw_version *v = &ready->version;
 	struct sof_ipc_dma_trace_params_ext params;
+	struct sof_ipc_reply ipc_reply;
 	int ret;
 
 	if (!sdev->fw_trace_is_supported)
@@ -469,7 +474,7 @@ static int ipc3_dtrace_enable(struct snd_sof_dev *sdev)
 
 	/* send IPC to the DSP */
 	priv->dtrace_state = SOF_DTRACE_INITIALIZING;
-	ret = sof_ipc_tx_message_no_reply(sdev->ipc, &params, sizeof(params));
+	ret = sof_ipc_tx_message(sdev->ipc, &params, sizeof(params), &ipc_reply, sizeof(ipc_reply));
 	if (ret < 0) {
 		dev_err(sdev->dev, "can't set params for DMA for trace %d\n", ret);
 		goto trace_release;
@@ -498,7 +503,7 @@ static int ipc3_dtrace_init(struct snd_sof_dev *sdev)
 	int ret;
 
 	/* dtrace is only supported with SOF_IPC */
-	if (sdev->pdata->ipc_type != SOF_IPC_TYPE_3)
+	if (sdev->pdata->ipc_type != SOF_IPC)
 		return -EOPNOTSUPP;
 
 	if (sdev->fw_trace_data) {
@@ -599,6 +604,7 @@ static void ipc3_dtrace_release(struct snd_sof_dev *sdev, bool only_stop)
 	struct sof_ipc_fw_ready *ready = &sdev->fw_ready;
 	struct sof_ipc_fw_version *v = &ready->version;
 	struct sof_ipc_cmd_hdr hdr;
+	struct sof_ipc_reply ipc_reply;
 	int ret;
 
 	if (!sdev->fw_trace_is_supported || priv->dtrace_state == SOF_DTRACE_DISABLED)
@@ -617,7 +623,8 @@ static void ipc3_dtrace_release(struct snd_sof_dev *sdev, bool only_stop)
 		hdr.size = sizeof(hdr);
 		hdr.cmd = SOF_IPC_GLB_TRACE_MSG | SOF_IPC_TRACE_DMA_FREE;
 
-		ret = sof_ipc_tx_message_no_reply(sdev->ipc, &hdr, hdr.size);
+		ret = sof_ipc_tx_message(sdev->ipc, &hdr, hdr.size,
+					 &ipc_reply, sizeof(ipc_reply));
 		if (ret < 0)
 			dev_err(sdev->dev, "DMA_TRACE_FREE failed with error: %d\n", ret);
 	}

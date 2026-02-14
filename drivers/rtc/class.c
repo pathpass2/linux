@@ -21,6 +21,7 @@
 #include "rtc-core.h"
 
 static DEFINE_IDA(rtc_ida);
+struct class *rtc_class;
 
 static void rtc_device_release(struct device *dev)
 {
@@ -198,11 +199,6 @@ static SIMPLE_DEV_PM_OPS(rtc_class_dev_pm_ops, rtc_suspend, rtc_resume);
 #define RTC_CLASS_DEV_PM_OPS	NULL
 #endif
 
-const struct class rtc_class = {
-	.name = "rtc",
-	.pm = RTC_CLASS_DEV_PM_OPS,
-};
-
 /* Ensure the caller will set the id before releasing the device */
 static struct rtc_device *rtc_allocate_device(void)
 {
@@ -224,7 +220,7 @@ static struct rtc_device *rtc_allocate_device(void)
 
 	rtc->irq_freq = 1;
 	rtc->max_user_freq = 64;
-	rtc->dev.class = &rtc_class;
+	rtc->dev.class = rtc_class;
 	rtc->dev.groups = rtc_get_dev_attribute_groups();
 	rtc->dev.release = rtc_device_release;
 
@@ -240,7 +236,8 @@ static struct rtc_device *rtc_allocate_device(void)
 	/* Init uie timer */
 	rtc_timer_init(&rtc->uie_rtctimer, rtc_uie_update_irq, rtc);
 	/* Init pie timer */
-	hrtimer_setup(&rtc->pie_timer, rtc_pie_update_irq, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	hrtimer_init(&rtc->pie_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	rtc->pie_timer.function = rtc_pie_update_irq;
 	rtc->pie_enabled = 0;
 
 	set_bit(RTC_FEATURE_ALARM, rtc->features);
@@ -259,7 +256,7 @@ static int rtc_device_get_id(struct device *dev)
 		of_id = of_alias_get_id(dev->parent->of_node, "rtc");
 
 	if (of_id >= 0) {
-		id = ida_alloc_range(&rtc_ida, of_id, of_id, GFP_KERNEL);
+		id = ida_simple_get(&rtc_ida, of_id, of_id + 1, GFP_KERNEL);
 		if (id < 0)
 			dev_warn(dev, "/aliases ID %d not available\n", of_id);
 	}
@@ -326,7 +323,7 @@ static void rtc_device_get_offset(struct rtc_device *rtc)
 	 *
 	 * Otherwise the offset seconds should be 0.
 	 */
-	if ((rtc->start_secs >= 0 && rtc->start_secs > rtc->range_max) ||
+	if (rtc->start_secs > rtc->range_max ||
 	    rtc->start_secs + range_secs - 1 < rtc->range_min)
 		rtc->offset_secs = rtc->start_secs - rtc->range_min;
 	else if (rtc->start_secs > rtc->range_min)
@@ -478,14 +475,13 @@ EXPORT_SYMBOL_GPL(devm_rtc_device_register);
 
 static int __init rtc_init(void)
 {
-	int err;
-
-	err = class_register(&rtc_class);
-	if (err)
-		return err;
-
+	rtc_class = class_create(THIS_MODULE, "rtc");
+	if (IS_ERR(rtc_class)) {
+		pr_err("couldn't create class\n");
+		return PTR_ERR(rtc_class);
+	}
+	rtc_class->pm = RTC_CLASS_DEV_PM_OPS;
 	rtc_dev_init();
-
 	return 0;
 }
 subsys_initcall(rtc_init);

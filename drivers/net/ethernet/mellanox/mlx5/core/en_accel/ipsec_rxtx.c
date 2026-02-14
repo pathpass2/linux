@@ -37,7 +37,6 @@
 #include "ipsec.h"
 #include "ipsec_rxtx.h"
 #include "en.h"
-#include "esw/ipsec_fs.h"
 
 enum {
 	MLX5E_IPSEC_TX_SYNDROME_OFFLOAD = 0x8,
@@ -59,9 +58,7 @@ static int mlx5e_ipsec_remove_trailer(struct sk_buff *skb, struct xfrm_state *x)
 
 	trailer_len = alen + plen + 2;
 
-	ret = pskb_trim(skb, skb->len - trailer_len);
-	if (unlikely(ret))
-		return ret;
+	pskb_trim(skb, skb->len - trailer_len);
 	if (skb->protocol == htons(ETH_P_IP)) {
 		ipv4hdr->tot_len = htons(ntohs(ipv4hdr->tot_len) - trailer_len);
 		ip_send_check(ipv4hdr);
@@ -304,10 +301,17 @@ drop:
 	return false;
 }
 
+enum {
+	MLX5E_IPSEC_OFFLOAD_RX_SYNDROME_DECRYPTED,
+	MLX5E_IPSEC_OFFLOAD_RX_SYNDROME_AUTH_FAILED,
+	MLX5E_IPSEC_OFFLOAD_RX_SYNDROME_BAD_TRAILER,
+};
+
 void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 				       struct sk_buff *skb,
-				       u32 ipsec_meta_data)
+				       struct mlx5_cqe64 *cqe)
 {
+	u32 ipsec_meta_data = be32_to_cpu(cqe->ft_metadata);
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 	struct mlx5e_ipsec *ipsec = priv->ipsec;
 	struct mlx5e_ipsec_sa_entry *sa_entry;
@@ -327,10 +331,6 @@ void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 	if (unlikely(!sa_entry)) {
 		rcu_read_unlock();
 		atomic64_inc(&ipsec->sw_stats.ipsec_rx_drop_sadb_miss);
-		/* Clear secpath to prevent invalid dereference
-		 * in downstream XFRM policy checks.
-		 */
-		secpath_reset(skb);
 		return;
 	}
 	xfrm_state_hold(sa_entry->x);
@@ -341,24 +341,18 @@ void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 
 	xo = xfrm_offload(skb);
 	xo->flags = CRYPTO_DONE;
-	xo->status = CRYPTO_SUCCESS;
-}
 
-int mlx5_esw_ipsec_rx_make_metadata(struct mlx5e_priv *priv, u32 id, u32 *metadata)
-{
-	struct mlx5e_ipsec *ipsec = priv->ipsec;
-	u32 ipsec_obj_id;
-	int err;
-
-	if (!ipsec || !ipsec->is_uplink_rep)
-		return -EINVAL;
-
-	err = mlx5_esw_ipsec_rx_ipsec_obj_id_search(priv, id, &ipsec_obj_id);
-	if (err) {
-		atomic64_inc(&ipsec->sw_stats.ipsec_rx_drop_sadb_miss);
-		return err;
+	switch (MLX5_IPSEC_METADATA_SYNDROM(ipsec_meta_data)) {
+	case MLX5E_IPSEC_OFFLOAD_RX_SYNDROME_DECRYPTED:
+		xo->status = CRYPTO_SUCCESS;
+		break;
+	case MLX5E_IPSEC_OFFLOAD_RX_SYNDROME_AUTH_FAILED:
+		xo->status = CRYPTO_TUNNEL_ESP_AUTH_FAILED;
+		break;
+	case MLX5E_IPSEC_OFFLOAD_RX_SYNDROME_BAD_TRAILER:
+		xo->status = CRYPTO_INVALID_PACKET_SYNTAX;
+		break;
+	default:
+		atomic64_inc(&ipsec->sw_stats.ipsec_rx_drop_syndrome);
 	}
-
-	*metadata = ipsec_obj_id;
-	return 0;
 }

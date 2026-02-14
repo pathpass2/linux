@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+// SPDX-License-Identifier: (GPL-2.0+ or MIT)
 // Copyright (C) 2022 Jisheng Zhang <jszhang@kernel.org>
 // Copyright (C) 2022 Samuel Holland <samuel@sholland.org>
 
@@ -57,18 +57,6 @@
 
 &ehci1 {
 	status = "okay";
-};
-
-&ledc {
-	pinctrl-0 = <&ledc_pc0_pin>;
-	pinctrl-names = "default";
-	status = "okay";
-
-	multi-led@0 {
-		reg = <0x0>;
-		color = <LED_COLOR_ID_RGB>;
-		function = LED_FUNCTION_STATUS;
-	};
 };
 
 &mmc1 {

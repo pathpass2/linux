@@ -104,8 +104,7 @@ unsigned int ucb1x00_io_read(struct ucb1x00 *ucb)
 	return ucb1x00_reg_read(ucb, UCB_IO_DATA);
 }
 
-static int ucb1x00_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			    int value)
+static void ucb1x00_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 {
 	struct ucb1x00 *ucb = gpiochip_get_data(chip);
 	unsigned long flags;
@@ -120,8 +119,6 @@ static int ucb1x00_gpio_set(struct gpio_chip *chip, unsigned int offset,
 	ucb1x00_reg_write(ucb, UCB_IO_DATA, ucb->io_out);
 	ucb1x00_disable(ucb);
 	spin_unlock_irqrestore(&ucb->io_lock, flags);
-
-	return 0;
 }
 
 static int ucb1x00_gpio_get(struct gpio_chip *chip, unsigned offset)

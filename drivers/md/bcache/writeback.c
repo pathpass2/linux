@@ -331,26 +331,26 @@ static void dirty_init(struct keybuf_key *w)
 	struct dirty_io *io = w->private;
 	struct bio *bio = &io->bio;
 
-	bio_init_inline(bio, NULL,
+	bio_init(bio, NULL, bio->bi_inline_vecs,
 		 DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS), 0);
 	if (!io->dc->writeback_percent)
-		bio->bi_ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0);
+		bio_set_prio(bio, IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
 
 	bio->bi_iter.bi_size	= KEY_SIZE(&w->key) << 9;
 	bio->bi_private		= w;
 	bch_bio_map(bio, NULL);
 }
 
-static CLOSURE_CALLBACK(dirty_io_destructor)
+static void dirty_io_destructor(struct closure *cl)
 {
-	closure_type(io, struct dirty_io, cl);
+	struct dirty_io *io = container_of(cl, struct dirty_io, cl);
 
 	kfree(io);
 }
 
-static CLOSURE_CALLBACK(write_dirty_finish)
+static void write_dirty_finish(struct closure *cl)
 {
-	closure_type(io, struct dirty_io, cl);
+	struct dirty_io *io = container_of(cl, struct dirty_io, cl);
 	struct keybuf_key *w = io->bio.bi_private;
 	struct cached_dev *dc = io->dc;
 
@@ -400,9 +400,9 @@ static void dirty_endio(struct bio *bio)
 	closure_put(&io->cl);
 }
 
-static CLOSURE_CALLBACK(write_dirty)
+static void write_dirty(struct closure *cl)
 {
-	closure_type(io, struct dirty_io, cl);
+	struct dirty_io *io = container_of(cl, struct dirty_io, cl);
 	struct keybuf_key *w = io->bio.bi_private;
 	struct cached_dev *dc = io->dc;
 
@@ -462,9 +462,9 @@ static void read_dirty_endio(struct bio *bio)
 	dirty_endio(bio);
 }
 
-static CLOSURE_CALLBACK(read_dirty_submit)
+static void read_dirty_submit(struct closure *cl)
 {
-	closure_type(io, struct dirty_io, cl);
+	struct dirty_io *io = container_of(cl, struct dirty_io, cl);
 
 	closure_bio_submit(io->dc->disk.c, &io->bio, cl);
 
@@ -536,9 +536,9 @@ static void read_dirty(struct cached_dev *dc)
 		for (i = 0; i < nk; i++) {
 			w = keys[i];
 
-			io = kzalloc(sizeof(*io) + sizeof(struct bio_vec) *
-				DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS),
-				GFP_KERNEL);
+			io = kzalloc(struct_size(io, bio.bi_inline_vecs,
+						DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS)),
+				     GFP_KERNEL);
 			if (!io)
 				goto err;
 
@@ -805,7 +805,8 @@ static int bch_writeback_thread(void *arg)
 			 * may set BCH_ENABLE_AUTO_GC via sysfs, then when
 			 * BCH_DO_AUTO_GC is set, garbage collection thread
 			 * will be wake up here. After moving gc, the shrunk
-			 * btree may be helpful for following write requests.
+			 * btree and discarded free buckets SSD space may be
+			 * helpful for following write requests.
 			 */
 			if (c->gc_after_writeback ==
 			    (BCH_ENABLE_AUTO_GC|BCH_DO_AUTO_GC)) {
@@ -889,16 +890,6 @@ static int bch_root_node_dirty_init(struct cache_set *c,
 	if (ret < 0)
 		pr_warn("sectors dirty init failed, ret=%d!\n", ret);
 
-	/*
-	 * The op may be added to cache_set's btree_cache_wait
-	 * in mca_cannibalize(), must ensure it is removed from
-	 * the list and release btree_cache_alloc_lock before
-	 * free op memory.
-	 * Otherwise, the btree_cache_wait will be damaged.
-	 */
-	bch_cannibalize_unlock(c);
-	finish_wait(&c->btree_cache_wait, &(&op.op)->wait);
-
 	return ret;
 }
 
@@ -907,15 +898,15 @@ static int bch_dirty_init_thread(void *arg)
 	struct dirty_init_thrd_info *info = arg;
 	struct bch_dirty_init_state *state = info->state;
 	struct cache_set *c = state->c;
-	struct btree_iter_stack iter;
+	struct btree_iter iter;
 	struct bkey *k, *p;
 	int cur_idx, prev_idx, skip_nr;
 
 	k = p = NULL;
-	prev_idx = 0;
+	cur_idx = prev_idx = 0;
 
-	bch_btree_iter_stack_init(&c->root->keys, &iter, NULL);
-	k = bch_btree_iter_next_filter(&iter.iter, &c->root->keys, bch_ptr_bad);
+	bch_btree_iter_init(&c->root->keys, &iter, NULL);
+	k = bch_btree_iter_next_filter(&iter, &c->root->keys, bch_ptr_bad);
 	BUG_ON(!k);
 
 	p = k;
@@ -929,7 +920,7 @@ static int bch_dirty_init_thread(void *arg)
 		skip_nr = cur_idx - prev_idx;
 
 		while (skip_nr) {
-			k = bch_btree_iter_next_filter(&iter.iter,
+			k = bch_btree_iter_next_filter(&iter,
 						       &c->root->keys,
 						       bch_ptr_bad);
 			if (k)
@@ -976,35 +967,24 @@ static int bch_btre_dirty_init_thread_nr(void)
 void bch_sectors_dirty_init(struct bcache_device *d)
 {
 	int i;
-	struct btree *b = NULL;
 	struct bkey *k = NULL;
-	struct btree_iter_stack iter;
+	struct btree_iter iter;
 	struct sectors_dirty_init op;
 	struct cache_set *c = d->c;
 	struct bch_dirty_init_state state;
 
-retry_lock:
-	b = c->root;
-	rw_lock(0, b, b->level);
-	if (b != c->root) {
-		rw_unlock(0, b);
-		goto retry_lock;
-	}
-
 	/* Just count root keys if no leaf node */
+	rw_lock(0, c->root, c->root->level);
 	if (c->root->level == 0) {
 		bch_btree_op_init(&op.op, -1);
 		op.inode = d->id;
 		op.count = 0;
 
 		for_each_key_filter(&c->root->keys,
-				    k, &iter, bch_ptr_invalid) {
-			if (KEY_INODE(k) != op.inode)
-				continue;
+				    k, &iter, bch_ptr_invalid)
 			sectors_dirty_init_fn(&op.op, c->root, k);
-		}
 
-		rw_unlock(0, b);
+		rw_unlock(0, c->root);
 		return;
 	}
 
@@ -1024,24 +1004,23 @@ retry_lock:
 		if (atomic_read(&state.enough))
 			break;
 
-		atomic_inc(&state.started);
 		state.infos[i].state = &state;
 		state.infos[i].thread =
 			kthread_run(bch_dirty_init_thread, &state.infos[i],
 				    "bch_dirtcnt[%d]", i);
 		if (IS_ERR(state.infos[i].thread)) {
 			pr_err("fails to run thread bch_dirty_init[%d]\n", i);
-			atomic_dec(&state.started);
 			for (--i; i >= 0; i--)
 				kthread_stop(state.infos[i].thread);
 			goto out;
 		}
+		atomic_inc(&state.started);
 	}
 
 out:
 	/* Must wait for all threads to stop. */
 	wait_event(state.wait, atomic_read(&state.started) == 0);
-	rw_unlock(0, b);
+	rw_unlock(0, c->root);
 }
 
 void bch_cached_dev_writeback_init(struct cached_dev *dc)
@@ -1075,7 +1054,7 @@ void bch_cached_dev_writeback_init(struct cached_dev *dc)
 int bch_cached_dev_writeback_start(struct cached_dev *dc)
 {
 	dc->writeback_write_wq = alloc_workqueue("bcache_writeback_wq",
-						WQ_MEM_RECLAIM | WQ_PERCPU, 0);
+						WQ_MEM_RECLAIM, 0);
 	if (!dc->writeback_write_wq)
 		return -ENOMEM;
 

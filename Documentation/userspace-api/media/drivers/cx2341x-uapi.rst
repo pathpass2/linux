@@ -130,7 +130,7 @@ Raw format c example
 Format of embedded V4L2_MPEG_STREAM_VBI_FMT_IVTV VBI data
 ---------------------------------------------------------
 
-Author: Hans Verkuil <hverkuil@kernel.org>
+Author: Hans Verkuil <hverkuil@xs4all.nl>
 
 
 This section describes the V4L2_MPEG_STREAM_VBI_FMT_IVTV format of the VBI data

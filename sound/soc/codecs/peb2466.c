@@ -6,7 +6,7 @@
 //
 // Author: Herve Codina <herve.codina@bootlin.com>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/clk.h>
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
@@ -26,7 +26,8 @@ struct peb2466_lookup {
 	unsigned int count;
 };
 
-#define PEB2466_TLV_SIZE ARRAY_SIZE(((unsigned int[]){TLV_DB_SCALE_ITEM(0, 0, 0)}))
+#define PEB2466_TLV_SIZE  (sizeof((unsigned int []){TLV_DB_SCALE_ITEM(0, 0, 0)}) / \
+			   sizeof(unsigned int))
 
 struct peb2466_lkup_ctrl {
 	int reg;
@@ -228,8 +229,7 @@ static int peb2466_reg_read(void *context, unsigned int reg, unsigned int *val)
 	case PEB2466_CMD_XOP:
 	case PEB2466_CMD_SOP:
 		ret = peb2466_read_byte(peb2466, reg, &tmp);
-		if (!ret)
-			*val = tmp;
+		*val = tmp;
 		break;
 	default:
 		dev_err(&peb2466->spi->dev, "Not a XOP or SOP command\n");
@@ -276,7 +276,7 @@ static int peb2466_lkup_ctrl_put(struct snd_kcontrol *kcontrol,
 {
 	struct peb2466_lkup_ctrl *lkup_ctrl =
 		(struct peb2466_lkup_ctrl *)kcontrol->private_value;
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct peb2466 *peb2466 = snd_soc_component_get_drvdata(component);
 	unsigned int index;
 	int ret;
@@ -377,7 +377,7 @@ static const struct soc_enum peb2466_tg_freq[][2] = {
 static int peb2466_tg_freq_get(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct peb2466 *peb2466 = snd_soc_component_get_drvdata(component);
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 
@@ -415,7 +415,7 @@ static int peb2466_tg_freq_get(struct snd_kcontrol *kcontrol,
 static int peb2466_tg_freq_put(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component = snd_soc_kcontrol_component(kcontrol);
 	struct peb2466 *peb2466 = snd_soc_component_get_drvdata(component);
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	unsigned int *tg_freq_item;
@@ -814,7 +814,7 @@ static int peb2466_dai_startup(struct snd_pcm_substream *substream,
 					  &peb2466_sample_bits_constr);
 }
 
-static const u64 peb2466_dai_formats[] = {
+static u64 peb2466_dai_formats[] = {
 	SND_SOC_POSSIBLE_DAIFMT_DSP_A	|
 	SND_SOC_POSSIBLE_DAIFMT_DSP_B,
 };
@@ -1726,8 +1726,7 @@ end:
 	return ret;
 }
 
-static int peb2466_chip_gpio_set(struct gpio_chip *c, unsigned int offset,
-				 int val)
+static void peb2466_chip_gpio_set(struct gpio_chip *c, unsigned int offset, int val)
 {
 	struct peb2466 *peb2466 = gpiochip_get_data(c);
 	unsigned int xr_reg;
@@ -1741,14 +1740,14 @@ static int peb2466_chip_gpio_set(struct gpio_chip *c, unsigned int offset,
 		 */
 		dev_warn(&peb2466->spi->dev, "cannot set gpio %d (read-only)\n",
 			 offset);
-		return -EINVAL;
+		return;
 	}
 
 	ret = peb2466_chip_gpio_offset_to_data_regmask(offset, &xr_reg, &mask);
 	if (ret) {
 		dev_err(&peb2466->spi->dev, "cannot set gpio %d (%d)\n",
 			offset, ret);
-		return ret;
+		return;
 	}
 
 	ret = peb2466_chip_gpio_update_bits(peb2466, xr_reg, mask, val ? mask : 0);
@@ -1756,8 +1755,6 @@ static int peb2466_chip_gpio_set(struct gpio_chip *c, unsigned int offset,
 		dev_err(&peb2466->spi->dev, "set gpio %d (0x%x, 0x%x) failed (%d)\n",
 			offset, xr_reg, mask, ret);
 	}
-
-	return ret;
 }
 
 static int peb2466_chip_gpio_get(struct gpio_chip *c, unsigned int offset)
@@ -1882,9 +1879,7 @@ static int peb2466_chip_direction_output(struct gpio_chip *c, unsigned int offse
 		return -EINVAL;
 	}
 
-	ret = peb2466_chip_gpio_set(c, offset, val);
-	if (ret)
-		return ret;
+	peb2466_chip_gpio_set(c, offset, val);
 
 	if (offset < 16) {
 		/* SOx_{0,1} */
@@ -1980,9 +1975,12 @@ static int peb2466_spi_probe(struct spi_device *spi)
 	if (IS_ERR(peb2466->reset_gpio))
 		return PTR_ERR(peb2466->reset_gpio);
 
-	peb2466->mclk = devm_clk_get_enabled(&peb2466->spi->dev, "mclk");
+	peb2466->mclk = devm_clk_get(&peb2466->spi->dev, "mclk");
 	if (IS_ERR(peb2466->mclk))
 		return PTR_ERR(peb2466->mclk);
+	ret = clk_prepare_enable(peb2466->mclk);
+	if (ret)
+		return ret;
 
 	if (peb2466->reset_gpio) {
 		gpiod_set_value_cansleep(peb2466->reset_gpio, 1);
@@ -2033,7 +2031,15 @@ static int peb2466_spi_probe(struct spi_device *spi)
 	return 0;
 
 failed:
+	clk_disable_unprepare(peb2466->mclk);
 	return ret;
+}
+
+static void peb2466_spi_remove(struct spi_device *spi)
+{
+	struct peb2466 *peb2466 = spi_get_drvdata(spi);
+
+	clk_disable_unprepare(peb2466->mclk);
 }
 
 static const struct of_device_id peb2466_of_match[] = {
@@ -2055,6 +2061,7 @@ static struct spi_driver peb2466_spi_driver = {
 	},
 	.id_table = peb2466_id_table,
 	.probe  = peb2466_spi_probe,
+	.remove = peb2466_spi_remove,
 };
 
 module_spi_driver(peb2466_spi_driver);

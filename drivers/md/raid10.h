@@ -18,6 +18,11 @@
 struct raid10_info {
 	struct md_rdev	*rdev, *replacement;
 	sector_t	head_position;
+	int		recovery_disabled;	/* matches
+						 * mddev->recovery_disabled
+						 * when we shouldn't try
+						 * recovering this device.
+						 */
 };
 
 struct r10conf {
@@ -95,7 +100,7 @@ struct r10conf {
 	/* When taking over an array from a different personality, we store
 	 * the new thread here until we fully activate the array.
 	 */
-	struct md_thread __rcu	*thread;
+	struct md_thread	*thread;
 
 	/*
 	 * Keep track of cluster resync window to send to other nodes.
@@ -118,6 +123,7 @@ struct r10bio {
 	sector_t		sector;	/* virtual sector number */
 	int			sectors;
 	unsigned long		state;
+	unsigned long		start_time;
 	struct mddev		*mddev;
 	/*
 	 * original bio going to /dev/mdx
@@ -156,12 +162,11 @@ enum r10bio_state {
 	R10BIO_IsSync,
 	R10BIO_IsRecover,
 	R10BIO_IsReshape,
+	R10BIO_Degraded,
 /* Set ReadError on bios that experience a read error
  * so that raid10d knows what to do with them.
  */
 	R10BIO_ReadError,
-/* For bio_split errors, record that bi_end_io was called. */
-	R10BIO_Returned,
 /* If a write for this request means we can clear some
  * known-bad-block records, we set this flag.
  */

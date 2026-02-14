@@ -40,7 +40,7 @@
 #include "en/txrx.h"
 
 /* Bit31: IPsec marker, Bit30: reserved, Bit29-24: IPsec syndrome, Bit23-0: IPsec obj id */
-#define MLX5_IPSEC_METADATA_MARKER(metadata)  ((((metadata) >> 30) & 0x3) == 0x2)
+#define MLX5_IPSEC_METADATA_MARKER(metadata)  (((metadata) >> 31) & 0x1)
 #define MLX5_IPSEC_METADATA_SYNDROM(metadata) (((metadata) >> 24) & GENMASK(5, 0))
 #define MLX5_IPSEC_METADATA_HANDLE(metadata)  ((metadata) & GENMASK(23, 0))
 
@@ -53,6 +53,7 @@ struct mlx5e_accel_tx_ipsec_state {
 
 #ifdef CONFIG_MLX5_EN_IPSEC
 
+void mlx5e_ipsec_inverse_table_init(void);
 void mlx5e_ipsec_set_iv_esn(struct sk_buff *skb, struct xfrm_state *x,
 			    struct xfrm_offload *xo);
 void mlx5e_ipsec_set_iv(struct sk_buff *skb, struct xfrm_state *x,
@@ -65,8 +66,7 @@ void mlx5e_ipsec_handle_tx_wqe(struct mlx5e_tx_wqe *wqe,
 			       struct mlx5_wqe_inline_seg *inlseg);
 void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 				       struct sk_buff *skb,
-				       u32 ipsec_meta_data);
-int mlx5_esw_ipsec_rx_make_metadata(struct mlx5e_priv *priv, u32 id, u32 *metadata);
+				       struct mlx5_cqe64 *cqe);
 static inline unsigned int mlx5e_ipsec_tx_ids_len(struct mlx5e_accel_tx_ipsec_state *ipsec_st)
 {
 	return ipsec_st->tailen;
@@ -97,11 +97,18 @@ mlx5e_ipsec_feature_check(struct sk_buff *skb, netdev_features_t features)
 		if (!x || !x->xso.offload_handle)
 			goto out_disable;
 
-		/* Only support UDP or TCP L4 checksum */
-		if (xo->inner_ipproto &&
-		    xo->inner_ipproto != IPPROTO_UDP &&
-		    xo->inner_ipproto != IPPROTO_TCP)
-			goto out_disable;
+		if (xo->inner_ipproto) {
+			/* Cannot support tunnel packet over IPsec tunnel mode
+			 * because we cannot offload three IP header csum
+			 */
+			if (x->props.mode == XFRM_MODE_TUNNEL)
+				goto out_disable;
+
+			/* Only support UDP or TCP L4 checksum */
+			if (xo->inner_ipproto != IPPROTO_UDP &&
+			    xo->inner_ipproto != IPPROTO_TCP)
+				goto out_disable;
+		}
 
 		return features;
 
@@ -116,7 +123,6 @@ static inline bool
 mlx5e_ipsec_txwqe_build_eseg_csum(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 				  struct mlx5_wqe_eth_seg *eseg)
 {
-	struct mlx5_core_dev *mdev = sq->mdev;
 	u8 inner_ipproto;
 
 	if (!mlx5e_ipsec_eseg_meta(eseg))
@@ -126,12 +132,9 @@ mlx5e_ipsec_txwqe_build_eseg_csum(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 	inner_ipproto = xfrm_offload(skb)->inner_ipproto;
 	if (inner_ipproto) {
 		eseg->cs_flags |= MLX5_ETH_WQE_L3_INNER_CSUM;
-		if (inner_ipproto == IPPROTO_TCP || inner_ipproto == IPPROTO_UDP) {
-			mlx5e_swp_encap_csum_partial(mdev, skb, true);
+		if (inner_ipproto == IPPROTO_TCP || inner_ipproto == IPPROTO_UDP)
 			eseg->cs_flags |= MLX5_ETH_WQE_L4_INNER_CSUM;
-		}
 	} else if (likely(skb->ip_summed == CHECKSUM_PARTIAL)) {
-		mlx5e_swp_encap_csum_partial(mdev, skb, false);
 		eseg->cs_flags |= MLX5_ETH_WQE_L4_CSUM;
 		sq->stats->csum_partial_inner++;
 	}
@@ -142,7 +145,7 @@ mlx5e_ipsec_txwqe_build_eseg_csum(struct mlx5e_txqsq *sq, struct sk_buff *skb,
 static inline
 void mlx5e_ipsec_offload_handle_rx_skb(struct net_device *netdev,
 				       struct sk_buff *skb,
-				       u32 ipsec_meta_data)
+				       struct mlx5_cqe64 *cqe)
 {}
 
 static inline bool mlx5e_ipsec_eseg_meta(struct mlx5_wqe_eth_seg *eseg)

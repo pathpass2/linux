@@ -7,7 +7,6 @@
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/shmem_fs.h>
-#include <linux/vmalloc.h>
 
 #include "i915_drv.h"
 #include "gem/i915_gem_object.h"
@@ -34,17 +33,18 @@ struct file *shmem_create_from_data(const char *name, void *data, size_t len)
 
 struct file *shmem_create_from_object(struct drm_i915_gem_object *obj)
 {
+	struct drm_i915_private *i915 = to_i915(obj->base.dev);
 	enum i915_map_type map_type;
 	struct file *file;
 	void *ptr;
 
 	if (i915_gem_object_is_shmem(obj)) {
 		file = obj->base.filp;
-		get_file(file);
+		atomic_long_inc(&file->f_count);
 		return file;
 	}
 
-	map_type = i915_gem_object_is_lmem(obj) ? I915_MAP_WC : I915_MAP_WB;
+	map_type = i915_coherent_map_type(i915, obj, true);
 	ptr = i915_gem_object_pin_map_unlocked(obj, map_type);
 	if (IS_ERR(ptr))
 		return ERR_CAST(ptr);
@@ -108,7 +108,7 @@ static int __shmem_rw(struct file *file, loff_t off,
 		if (IS_ERR(page))
 			return PTR_ERR(page);
 
-		vaddr = kmap_local_page(page);
+		vaddr = kmap(page);
 		if (write) {
 			memcpy(vaddr + offset_in_page(off), ptr, this);
 			set_page_dirty(page);
@@ -116,7 +116,7 @@ static int __shmem_rw(struct file *file, loff_t off,
 			memcpy(ptr, vaddr + offset_in_page(off), this);
 		}
 		mark_page_accessed(page);
-		kunmap_local(vaddr);
+		kunmap(page);
 		put_page(page);
 
 		len -= this;
@@ -143,11 +143,11 @@ int shmem_read_to_iosys_map(struct file *file, loff_t off,
 		if (IS_ERR(page))
 			return PTR_ERR(page);
 
-		vaddr = kmap_local_page(page);
+		vaddr = kmap(page);
 		iosys_map_memcpy_to(map, map_off, vaddr + offset_in_page(off),
 				    this);
 		mark_page_accessed(page);
-		kunmap_local(vaddr);
+		kunmap(page);
 		put_page(page);
 
 		len -= this;

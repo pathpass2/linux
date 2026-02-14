@@ -13,9 +13,11 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
+#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/acpi.h>
 #include <linux/regmap.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_device.h>
 #include <linux/firmware.h>
 #include <sound/core.h>
@@ -1034,7 +1036,8 @@ static void rt1011_reset(struct regmap *regmap)
 static int rt1011_recv_spk_mode_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct rt1011_priv *rt1011 =
 		snd_soc_component_get_drvdata(component);
 
@@ -1046,15 +1049,15 @@ static int rt1011_recv_spk_mode_get(struct snd_kcontrol *kcontrol,
 static int rt1011_recv_spk_mode_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
-	struct snd_soc_dapm_context *dapm = snd_soc_dapm_kcontrol_to_dapm(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct rt1011_priv *rt1011 =
 		snd_soc_component_get_drvdata(component);
 
 	if (ucontrol->value.integer.value[0] == rt1011->recv_spk_mode)
 		return 0;
 
-	if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+	if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 		rt1011->recv_spk_mode = ucontrol->value.integer.value[0];
 
 		if (rt1011->recv_spk_mode) {
@@ -1109,7 +1112,8 @@ static bool rt1011_validate_bq_drc_coeff(unsigned short reg)
 static int rt1011_bq_drc_coeff_get(struct snd_kcontrol *kcontrol,
 					struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct rt1011_priv *rt1011 =
 		snd_soc_component_get_drvdata(component);
 	struct rt1011_bq_drc_params *bq_drc_info;
@@ -1145,7 +1149,8 @@ static int rt1011_bq_drc_coeff_get(struct snd_kcontrol *kcontrol,
 static int rt1011_bq_drc_coeff_put(struct snd_kcontrol *kcontrol,
 					struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct rt1011_priv *rt1011 =
 		snd_soc_component_get_drvdata(component);
 	struct rt1011_bq_drc_params *bq_drc_info;
@@ -1221,11 +1226,10 @@ static int rt1011_r0_cali_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct rt1011_priv *rt1011 = snd_soc_component_get_drvdata(component);
 
 	rt1011->cali_done = 0;
-	if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF &&
+	if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF &&
 		ucontrol->value.integer.value[0])
 		rt1011_calibrate(rt1011, 1);
 
@@ -1262,7 +1266,6 @@ static int rt1011_r0_load_mode_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct rt1011_priv *rt1011 = snd_soc_component_get_drvdata(component);
 	struct device *dev;
 	unsigned int r0_integer, r0_factor, format;
@@ -1274,7 +1277,7 @@ static int rt1011_r0_load_mode_put(struct snd_kcontrol *kcontrol,
 		return -EINVAL;
 
 	dev = regmap_get_device(rt1011->regmap);
-	if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+	if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 		rt1011->r0_reg = ucontrol->value.integer.value[0];
 
 		format = 2147483648U; /* 2^24 * 128 */
@@ -1318,7 +1321,8 @@ static SOC_ENUM_SINGLE_DECL(rt1011_i2s_ref_enum, 0, 0,
 static int rt1011_i2s_ref_put(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct rt1011_priv *rt1011 =
 		snd_soc_component_get_drvdata(component);
 
@@ -1346,7 +1350,8 @@ static int rt1011_i2s_ref_put(struct snd_kcontrol *kcontrol,
 static int rt1011_i2s_ref_get(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct rt1011_priv *rt1011 =
 		snd_soc_component_get_drvdata(component);
 
@@ -1661,13 +1666,14 @@ static int rt1011_hw_params(struct snd_pcm_substream *substream,
 static int rt1011_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
 	struct snd_soc_component *component = dai->component;
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(component);
 	unsigned int reg_val = 0, reg_bclk_inv = 0;
 	int ret = 0;
 
 	snd_soc_dapm_mutex_lock(dapm);
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
-	case SND_SOC_DAIFMT_CBC_CFC:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		reg_val |= RT1011_I2S_TDM_MS_S;
 		break;
 	default:
@@ -1841,7 +1847,8 @@ static int rt1011_set_tdm_slot(struct snd_soc_dai *dai,
 	unsigned int tx_mask, unsigned int rx_mask, int slots, int slot_width)
 {
 	struct snd_soc_component *component = dai->component;
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(component);
 	unsigned int val = 0, tdm_en = 0, rx_slotnum, tx_slotnum;
 	int ret = 0, first_bit, last_bit;
 
@@ -2177,7 +2184,7 @@ static const struct regmap_config rt1011_regmap = {
 	.max_register = RT1011_MAX_REG + 1,
 	.volatile_reg = rt1011_volatile_register,
 	.readable_reg = rt1011_readable_register,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 	.reg_defaults = rt1011_reg,
 	.num_reg_defaults = ARRAY_SIZE(rt1011_reg),
 	.use_single_read = true,
@@ -2187,21 +2194,21 @@ static const struct regmap_config rt1011_regmap = {
 #if defined(CONFIG_OF)
 static const struct of_device_id rt1011_of_match[] = {
 	{ .compatible = "realtek,rt1011", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, rt1011_of_match);
 #endif
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id rt1011_acpi_match[] = {
-	{ "10EC1011" },
-	{ }
+	{"10EC1011", 0,},
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, rt1011_acpi_match);
 #endif
 
 static const struct i2c_device_id rt1011_i2c_id[] = {
-	{ "rt1011" },
+	{ "rt1011", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt1011_i2c_id);
@@ -2213,7 +2220,8 @@ static int rt1011_calibrate(struct rt1011_priv *rt1011, unsigned char cali_flag)
 	unsigned int dc_offset;
 	unsigned int r0_integer, r0_factor, format;
 	struct device *dev = regmap_get_device(rt1011->regmap);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(rt1011->component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(rt1011->component);
 	int ret = 0;
 
 	snd_soc_dapm_mutex_lock(dapm);
@@ -2475,7 +2483,7 @@ static struct i2c_driver rt1011_i2c_driver = {
 		.of_match_table = of_match_ptr(rt1011_of_match),
 		.acpi_match_table = ACPI_PTR(rt1011_acpi_match)
 	},
-	.probe = rt1011_i2c_probe,
+	.probe_new = rt1011_i2c_probe,
 	.shutdown = rt1011_i2c_shutdown,
 	.id_table = rt1011_i2c_id,
 };

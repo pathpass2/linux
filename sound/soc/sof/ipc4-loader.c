@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2022 Intel Corporation
+// Copyright(c) 2022 Intel Corporation. All rights reserved.
 
 #include <linux/firmware.h>
 #include <sound/sof/ext_manifest4.h>
@@ -80,14 +80,6 @@ static ssize_t sof_ipc4_fw_parse_ext_man(struct snd_sof_dev *sdev,
 	dev_dbg(sdev->dev, "Header length: %u, module count: %u\n",
 		fw_header->len, fw_header->num_module_entries);
 
-	/* copy the fw_version of basefw into debugfs at first boot */
-	if (fw == sdev->basefw.fw) {
-		sdev->fw_version.major = fw_header->major_version;
-		sdev->fw_version.minor = fw_header->minor_version;
-		sdev->fw_version.micro = fw_header->hotfix_version;
-		sdev->fw_version.build = fw_header->build_version;
-	}
-
 	fw_lib->modules = devm_kmalloc_array(sdev->dev, fw_header->num_module_entries,
 					     sizeof(*fw_module), GFP_KERNEL);
 	if (!fw_lib->modules)
@@ -120,13 +112,16 @@ static ssize_t sof_ipc4_fw_parse_ext_man(struct snd_sof_dev *sdev,
 				return -EINVAL;
 			}
 
-			fw_module->fw_mod_cfg = &fm_config[fm_entry->cfg_offset];
+			/* a module's config is always the same size */
+			fw_module->bss_size = fm_config[fm_entry->cfg_offset].is_bytes;
 
 			dev_dbg(sdev->dev,
 				"module %s: UUID %pUL cfg_count: %u, bss_size: %#x\n",
 				fm_entry->name, &fm_entry->uuid, fm_entry->cfg_count,
-				fm_config[fm_entry->cfg_offset].is_bytes);
+				fw_module->bss_size);
 		} else {
+			fw_module->bss_size = 0;
+
 			dev_dbg(sdev->dev, "module %s: UUID %pUL\n", fm_entry->name,
 				&fm_entry->uuid);
 		}
@@ -169,13 +164,20 @@ static size_t sof_ipc4_fw_parse_basefw_ext_man(struct snd_sof_dev *sdev)
 	return payload_offset;
 }
 
-static int sof_ipc4_load_library(struct snd_sof_dev *sdev, unsigned long lib_id,
-				 const char *lib_filename, bool optional)
+static int sof_ipc4_load_library_by_uuid(struct snd_sof_dev *sdev,
+					 unsigned long lib_id, const guid_t *uuid)
 {
 	struct sof_ipc4_fw_data *ipc4_data = sdev->private;
 	struct sof_ipc4_fw_library *fw_lib;
+	const char *fw_filename;
 	ssize_t payload_offset;
-	int ret, i;
+	int ret, i, err;
+
+	if (!sdev->pdata->fw_lib_prefix) {
+		dev_err(sdev->dev,
+			"Library loading is not supported due to not set library path\n");
+		return -EINVAL;
+	}
 
 	if (!ipc4_data->load_library) {
 		dev_err(sdev->dev, "Library loading is not supported on this platform\n");
@@ -186,25 +188,20 @@ static int sof_ipc4_load_library(struct snd_sof_dev *sdev, unsigned long lib_id,
 	if (!fw_lib)
 		return -ENOMEM;
 
-	if (optional) {
-		ret = firmware_request_nowarn(&fw_lib->sof_fw.fw, lib_filename,
-					      sdev->dev);
-		if (ret < 0) {
-			/* optional library, override the error */
-			ret = 0;
-			goto free_fw_lib;
-		}
-	} else {
-		ret = request_firmware(&fw_lib->sof_fw.fw, lib_filename,
-				       sdev->dev);
-		if (ret < 0) {
-			dev_err(sdev->dev, "Library file '%s' is missing\n",
-				lib_filename);
-			goto free_fw_lib;
-		}
+	fw_filename = kasprintf(GFP_KERNEL, "%s/%pUL.bin",
+				sdev->pdata->fw_lib_prefix, uuid);
+	if (!fw_filename) {
+		ret = -ENOMEM;
+		goto free_fw_lib;
 	}
 
-	dev_dbg(sdev->dev, "Library file '%s' loaded\n", lib_filename);
+	ret = request_firmware(&fw_lib->sof_fw.fw, fw_filename, sdev->dev);
+	if (ret < 0) {
+		dev_err(sdev->dev, "Library file '%s' is missing\n", fw_filename);
+		goto free_filename;
+	} else {
+		dev_dbg(sdev->dev, "Library file '%s' loaded\n", fw_filename);
+	}
 
 	payload_offset = sof_ipc4_fw_parse_ext_man(sdev, fw_lib);
 	if (payload_offset <= 0) {
@@ -223,7 +220,25 @@ static int sof_ipc4_load_library(struct snd_sof_dev *sdev, unsigned long lib_id,
 	for (i = 0; i < fw_lib->num_modules; i++)
 		fw_lib->modules[i].man4_module_entry.id |= (lib_id << SOF_IPC4_MOD_LIB_ID_SHIFT);
 
+	/*
+	 * Make sure that the DSP is booted and stays up while attempting the
+	 * loading the library for the first time
+	 */
+	ret = pm_runtime_resume_and_get(sdev->dev);
+	if (ret < 0 && ret != -EACCES) {
+		dev_err_ratelimited(sdev->dev, "%s: pm_runtime resume failed: %d\n",
+				    __func__, ret);
+		goto release;
+	}
+
 	ret = ipc4_data->load_library(sdev, fw_lib, false);
+
+	pm_runtime_mark_last_busy(sdev->dev);
+	err = pm_runtime_put_autosuspend(sdev->dev);
+	if (err < 0)
+		dev_err_ratelimited(sdev->dev, "%s: pm_runtime idle failed: %d\n",
+				    __func__, err);
+
 	if (ret)
 		goto release;
 
@@ -231,113 +246,18 @@ static int sof_ipc4_load_library(struct snd_sof_dev *sdev, unsigned long lib_id,
 	if (unlikely(ret))
 		goto release;
 
+	kfree(fw_filename);
+
 	return 0;
 
 release:
 	release_firmware(fw_lib->sof_fw.fw);
 	/* Allocated within sof_ipc4_fw_parse_ext_man() */
 	devm_kfree(sdev->dev, fw_lib->modules);
+free_filename:
+	kfree(fw_filename);
 free_fw_lib:
 	devm_kfree(sdev->dev, fw_lib);
-
-	return ret;
-}
-
-/**
- * sof_ipc4_complete_split_release - loads the library parts of a split firmware
- * @sdev: SOF device
- *
- * With IPC4 the firmware can be a single binary or a split release.
- * - single binary: only the basefw
- * - split release: basefw and two libraries (openmodules, debug)
- *
- * With split firmware release it is also allowed that for example only the
- * debug library is present (the openmodules content is built in the basefw).
- *
- * To handle the permutations try to load the openmodules then the debug
- * libraries as optional ones after the basefw boot.
- *
- * The libraries for the split release are stored alongside the basefw on the
- * filesystem.
- */
-int sof_ipc4_complete_split_release(struct snd_sof_dev *sdev)
-{
-	static const char * const lib_bundle[] = { "openmodules", "debug" };
-	const char *fw_filename = sdev->pdata->fw_filename;
-	const char *lib_filename, *p;
-	size_t lib_name_base_size;
-	unsigned long lib_id = 1;
-	char *lib_name_base;
-	int i;
-
-	p = strstr(fw_filename, ".ri");
-	if (!p || strlen(p) != 3) {
-		dev_info(sdev->dev,
-			 "%s: Firmware name '%s' is missing .ri extension\n",
-			 __func__, fw_filename);
-		return 0;
-	}
-
-	/* Space for the firmware basename + '\0', without the extension */
-	lib_name_base_size = strlen(fw_filename) - 2;
-	lib_name_base = kzalloc(lib_name_base_size, GFP_KERNEL);
-	if (!lib_name_base)
-		return -ENOMEM;
-
-	/*
-	 * strscpy will 0 terminate the copied string, removing the '.ri' from
-	 * the end of the fw_filename, for example:
-	 * fw_filename:		"sof-ptl.ri\0"
-	 * lib_name_base:	"sof-ptl\0"
-	 */
-	strscpy(lib_name_base, fw_filename, lib_name_base_size);
-
-	for (i = 0; i < ARRAY_SIZE(lib_bundle); i++) {
-		int ret;
-
-		lib_filename = kasprintf(GFP_KERNEL, "%s/%s-%s.ri",
-					 sdev->pdata->fw_filename_prefix,
-					 lib_name_base, lib_bundle[i]);
-		if (!lib_filename) {
-			kfree(lib_name_base);
-			return -ENOMEM;
-		}
-
-		ret = sof_ipc4_load_library(sdev, lib_id, lib_filename, true);
-		if (ret)
-			dev_warn(sdev->dev, "%s: Failed to load %s: %d\n",
-				 __func__, lib_filename, ret);
-		else
-			lib_id++;
-
-		kfree(lib_filename);
-	}
-
-	kfree(lib_name_base);
-
-	return 0;
-}
-
-static int sof_ipc4_load_library_by_uuid(struct snd_sof_dev *sdev,
-					 unsigned long lib_id, const guid_t *uuid)
-{
-	const char *lib_filename;
-	int ret;
-
-	if (!sdev->pdata->fw_lib_prefix) {
-		dev_err(sdev->dev,
-			"Library loading is not supported due to not set library path\n");
-		return -EINVAL;
-	}
-
-	lib_filename = kasprintf(GFP_KERNEL, "%s/%pUL.bin",
-				 sdev->pdata->fw_lib_prefix, uuid);
-	if (!lib_filename)
-		return -ENOMEM;
-
-	ret = sof_ipc4_load_library(sdev, lib_id, lib_filename, false);
-
-	kfree(lib_filename);
 
 	return ret;
 }
@@ -474,48 +394,6 @@ int sof_ipc4_query_fw_configuration(struct snd_sof_dev *sdev)
 				goto out;
 			}
 			break;
-		case SOF_IPC4_FW_CONTEXT_SAVE:
-			ipc4_data->fw_context_save = *tuple->value;
-			/*
-			 * Set the default libraries_restored value - if full
-			 * context save is supported then it means that
-			 * libraries are restored
-			 */
-			ipc4_data->libraries_restored = ipc4_data->fw_context_save;
-			break;
-		default:
-			break;
-		}
-
-		offset += sizeof(*tuple) + tuple->size;
-	}
-
-	/* Get the hardware configuration */
-	msg.primary = SOF_IPC4_MSG_TARGET(SOF_IPC4_MODULE_MSG);
-	msg.primary |= SOF_IPC4_MSG_DIR(SOF_IPC4_MSG_REQUEST);
-	msg.primary |= SOF_IPC4_MOD_ID(SOF_IPC4_MOD_INIT_BASEFW_MOD_ID);
-	msg.primary |= SOF_IPC4_MOD_INSTANCE(SOF_IPC4_MOD_INIT_BASEFW_INSTANCE_ID);
-	msg.extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(SOF_IPC4_FW_PARAM_HW_CONFIG_GET);
-
-	msg.data_size = sdev->ipc->max_payload_size;
-
-	ret = iops->set_get_data(sdev, &msg, msg.data_size, false);
-	if (ret)
-		goto out;
-
-	offset = 0;
-	while (offset < msg.data_size) {
-		tuple = (struct sof_ipc4_tuple *)((u8 *)msg.data_ptr + offset);
-
-		switch (tuple->type) {
-		case SOF_IPC4_HW_CFG_INTEL_MIC_PRIVACY_CAPS:
-			if (ipc4_data->intel_configure_mic_privacy) {
-				struct sof_ipc4_intel_mic_privacy_cap *caps;
-
-				caps = (struct sof_ipc4_intel_mic_privacy_cap *)tuple->value;
-				ipc4_data->intel_configure_mic_privacy(sdev, caps);
-			}
-			break;
 		default:
 			break;
 		}
@@ -546,68 +424,6 @@ int sof_ipc4_reload_fw_libraries(struct snd_sof_dev *sdev)
 	}
 
 	return ret;
-}
-
-/**
- * sof_ipc4_update_cpc_from_manifest - Update the cpc in base config from manifest
- * @sdev: SOF device
- * @fw_module: pointer struct sof_ipc4_fw_module to parse
- * @basecfg: Pointer to the base_config to update
- */
-void sof_ipc4_update_cpc_from_manifest(struct snd_sof_dev *sdev,
-				       struct sof_ipc4_fw_module *fw_module,
-				       struct sof_ipc4_base_module_cfg *basecfg)
-{
-	const struct sof_man4_module_config *fw_mod_cfg;
-	u32 cpc_pick = 0;
-	u32 max_cpc = 0;
-	const char *msg;
-	int i;
-
-	if (!fw_module->fw_mod_cfg) {
-		msg = "No mod_cfg available for CPC lookup in the firmware file's manifest";
-		goto no_cpc;
-	}
-
-	/*
-	 * Find the best matching (highest) CPC value based on the module's
-	 * IBS/OBS configuration inferred from the audio format selection.
-	 *
-	 * The CPC value in each module config entry has been measured and
-	 * recorded as a IBS/OBS/CPC triplet and stored in the firmware file's
-	 * manifest
-	 */
-	fw_mod_cfg = fw_module->fw_mod_cfg;
-	for (i = 0; i < fw_module->man4_module_entry.cfg_count; i++) {
-		if (basecfg->obs == fw_mod_cfg[i].obs &&
-		    basecfg->ibs == fw_mod_cfg[i].ibs &&
-		    cpc_pick < fw_mod_cfg[i].cpc)
-			cpc_pick = fw_mod_cfg[i].cpc;
-
-		if (max_cpc < fw_mod_cfg[i].cpc)
-			max_cpc = fw_mod_cfg[i].cpc;
-	}
-
-	basecfg->cpc = cpc_pick;
-
-	/* We have a matching configuration for CPC */
-	if (basecfg->cpc)
-		return;
-
-	/*
-	 * No matching IBS/OBS found, the firmware manifest is missing
-	 * information in the module's module configuration table.
-	 */
-	if (!max_cpc)
-		msg = "No CPC value available in the firmware file's manifest";
-	else if (!cpc_pick)
-		msg = "No CPC match in the firmware file's manifest";
-
-no_cpc:
-	dev_dbg(sdev->dev, "%s (UUID: %pUL): %s (ibs/obs: %u/%u)\n",
-		fw_module->man4_module_entry.name,
-		&fw_module->man4_module_entry.uuid, msg, basecfg->ibs,
-		basecfg->obs);
 }
 
 const struct sof_ipc_fw_loader_ops ipc4_loader_ops = {

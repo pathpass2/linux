@@ -3,12 +3,11 @@
 #define __LINUX_PAGE_EXT_H
 
 #include <linux/types.h>
-#include <linux/mmzone.h>
 #include <linux/stacktrace.h>
+#include <linux/stackdepot.h>
 
 struct pglist_data;
 
-#ifdef CONFIG_PAGE_EXTENSION
 /**
  * struct page_ext_operations - per page_ext client operations
  * @offset: Offset to the client's data within page_ext. Offset is returned to
@@ -29,6 +28,10 @@ struct page_ext_operations {
 	void (*init)(void);
 	bool need_shared_flags;
 };
+
+extern bool deferred_struct_pages;
+
+#ifdef CONFIG_PAGE_EXTENSION
 
 /*
  * The page_ext_flags users must set need_shared_flags to true.
@@ -70,38 +73,16 @@ extern void page_ext_init(void);
 static inline void page_ext_init_flatmem_late(void)
 {
 }
-
-static inline bool page_ext_iter_next_fast_possible(unsigned long next_pfn)
-{
-	/*
-	 * page_ext is allocated per memory section. Once we cross a
-	 * memory section, we have to fetch the new pointer.
-	 */
-	return next_pfn % PAGES_PER_SECTION;
-}
 #else
 extern void page_ext_init_flatmem(void);
 extern void page_ext_init_flatmem_late(void);
 static inline void page_ext_init(void)
 {
 }
-
-static inline bool page_ext_iter_next_fast_possible(unsigned long next_pfn)
-{
-	return true;
-}
 #endif
 
-extern struct page_ext *page_ext_get(const struct page *page);
-extern struct page_ext *page_ext_from_phys(phys_addr_t phys);
+extern struct page_ext *page_ext_get(struct page *page);
 extern void page_ext_put(struct page_ext *page_ext);
-extern struct page_ext *page_ext_lookup(unsigned long pfn);
-
-static inline void *page_ext_data(struct page_ext *page_ext,
-				  struct page_ext_operations *ops)
-{
-	return (void *)(page_ext) + ops->offset;
-}
 
 static inline struct page_ext *page_ext_next(struct page_ext *curr)
 {
@@ -109,83 +90,6 @@ static inline struct page_ext *page_ext_next(struct page_ext *curr)
 	next += page_ext_size;
 	return next;
 }
-
-struct page_ext_iter {
-	unsigned long index;
-	unsigned long start_pfn;
-	struct page_ext *page_ext;
-};
-
-/**
- * page_ext_iter_begin() - Prepare for iterating through page extensions.
- * @iter: page extension iterator.
- * @pfn: PFN of the page we're interested in.
- *
- * Must be called with RCU read lock taken.
- *
- * Return: NULL if no page_ext exists for this page.
- */
-static inline struct page_ext *page_ext_iter_begin(struct page_ext_iter *iter,
-						unsigned long pfn)
-{
-	iter->index = 0;
-	iter->start_pfn = pfn;
-	iter->page_ext = page_ext_lookup(pfn);
-
-	return iter->page_ext;
-}
-
-/**
- * page_ext_iter_next() - Get next page extension
- * @iter: page extension iterator.
- *
- * Must be called with RCU read lock taken.
- *
- * Return: NULL if no next page_ext exists.
- */
-static inline struct page_ext *page_ext_iter_next(struct page_ext_iter *iter)
-{
-	unsigned long pfn;
-
-	if (WARN_ON_ONCE(!iter->page_ext))
-		return NULL;
-
-	iter->index++;
-	pfn = iter->start_pfn + iter->index;
-
-	if (page_ext_iter_next_fast_possible(pfn))
-		iter->page_ext = page_ext_next(iter->page_ext);
-	else
-		iter->page_ext = page_ext_lookup(pfn);
-
-	return iter->page_ext;
-}
-
-/**
- * page_ext_iter_get() - Get current page extension
- * @iter: page extension iterator.
- *
- * Return: NULL if no page_ext exists for this iterator.
- */
-static inline struct page_ext *page_ext_iter_get(const struct page_ext_iter *iter)
-{
-	return iter->page_ext;
-}
-
-/**
- * for_each_page_ext(): iterate through page_ext objects.
- * @__page: the page we're interested in
- * @__pgcount: how many pages to iterate through
- * @__page_ext: struct page_ext pointer where the current page_ext
- *              object is returned
- * @__iter: struct page_ext_iter object (defined in the stack)
- *
- * IMPORTANT: must be called with RCU read lock taken.
- */
-#define for_each_page_ext(__page, __pgcount, __page_ext, __iter) \
-	for (__page_ext = page_ext_iter_begin(&__iter, page_to_pfn(__page));\
-		__page_ext && __iter.index < __pgcount;          \
-		__page_ext = page_ext_iter_next(&__iter))
 
 #else /* !CONFIG_PAGE_EXTENSION */
 struct page_ext;
@@ -211,12 +115,7 @@ static inline void page_ext_init_flatmem(void)
 {
 }
 
-static inline struct page_ext *page_ext_get(const struct page *page)
-{
-	return NULL;
-}
-
-static inline struct page_ext *page_ext_from_phys(phys_addr_t phys)
+static inline struct page_ext *page_ext_get(struct page *page)
 {
 	return NULL;
 }

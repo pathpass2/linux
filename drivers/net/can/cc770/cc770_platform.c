@@ -70,10 +70,17 @@ static void cc770_platform_write_reg(const struct cc770_priv *priv, int reg,
 static int cc770_get_of_node_data(struct platform_device *pdev,
 				  struct cc770_priv *priv)
 {
-	u32 clkext = CC770_PLATFORM_CAN_CLOCK, clkout = 0;
 	struct device_node *np = pdev->dev.of_node;
+	const u32 *prop;
+	int prop_size;
+	u32 clkext;
 
-	of_property_read_u32(np, "bosch,external-clock-frequency", &clkext);
+	prop = of_get_property(np, "bosch,external-clock-frequency",
+			       &prop_size);
+	if (prop && (prop_size ==  sizeof(u32)))
+		clkext = *prop;
+	else
+		clkext = CC770_PLATFORM_CAN_CLOCK; /* default */
 	priv->can.clock.freq = clkext;
 
 	/* The system clock may not exceed 10 MHz */
@@ -91,7 +98,7 @@ static int cc770_get_of_node_data(struct platform_device *pdev,
 	if (of_property_read_bool(np, "bosch,iso-low-speed-mux"))
 		priv->cpu_interface |= CPUIF_MUX;
 
-	if (!of_property_read_bool(np, "bosch,no-comperator-bypass"))
+	if (!of_get_property(np, "bosch,no-comperator-bypass", NULL))
 		priv->bus_config |= BUSCFG_CBY;
 	if (of_property_read_bool(np, "bosch,disconnect-rx0-input"))
 		priv->bus_config |= BUSCFG_DR0;
@@ -102,22 +109,25 @@ static int cc770_get_of_node_data(struct platform_device *pdev,
 	if (of_property_read_bool(np, "bosch,polarity-dominant"))
 		priv->bus_config |= BUSCFG_POL;
 
-	of_property_read_u32(np, "bosch,clock-out-frequency", &clkout);
-	if (clkout > 0) {
-		u32 cdv = clkext / clkout;
+	prop = of_get_property(np, "bosch,clock-out-frequency", &prop_size);
+	if (prop && (prop_size == sizeof(u32)) && *prop > 0) {
+		u32 cdv = clkext / *prop;
+		int slew;
 
 		if (cdv > 0 && cdv < 16) {
-			u32 slew;
-
 			priv->cpu_interface |= CPUIF_CEN;
 			priv->clkout |= (cdv - 1) & CLKOUT_CD_MASK;
 
-			if (of_property_read_u32(np, "bosch,slew-rate", &slew)) {
+			prop = of_get_property(np, "bosch,slew-rate",
+					       &prop_size);
+			if (prop && (prop_size == sizeof(u32))) {
+				slew = *prop;
+			} else {
 				/* Determine default slew rate */
 				slew = (CLKOUT_SL_MASK >>
 					CLKOUT_SL_SHIFT) -
 					((cdv * clkext - 1) / 8000000);
-				if (slew > (CLKOUT_SL_MASK >> CLKOUT_SL_SHIFT))
+				if (slew < 0)
 					slew = 0;
 			}
 			priv->clkout |= (slew << CLKOUT_SL_SHIFT) &
@@ -220,7 +230,7 @@ exit_release_mem:
 	return err;
 }
 
-static void cc770_platform_remove(struct platform_device *pdev)
+static int cc770_platform_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct cc770_priv *priv = netdev_priv(dev);
@@ -232,6 +242,8 @@ static void cc770_platform_remove(struct platform_device *pdev)
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	release_mem_region(mem->start, resource_size(mem));
+
+	return 0;
 }
 
 static const struct of_device_id cc770_platform_table[] = {

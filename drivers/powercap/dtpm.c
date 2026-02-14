@@ -522,7 +522,7 @@ static int dtpm_for_each_child(const struct dtpm_node *hierarchy,
 
 /**
  * dtpm_create_hierarchy - Create the dtpm hierarchy
- * @dtpm_match_table: Pointer to the array of device ID structures
+ * @hierarchy: An array of struct dtpm_node describing the hierarchy
  *
  * The function is called by the platform specific code with the
  * description of the different node in the hierarchy. It creates the
@@ -548,7 +548,9 @@ static int dtpm_for_each_child(const struct dtpm_node *hierarchy,
  */
 int dtpm_create_hierarchy(struct of_device_id *dtpm_match_table)
 {
+	const struct of_device_id *match;
 	const struct dtpm_node *hierarchy;
+	struct device_node *np;
 	int i, ret;
 
 	mutex_lock(&dtpm_lock);
@@ -565,7 +567,19 @@ int dtpm_create_hierarchy(struct of_device_id *dtpm_match_table)
 		goto out_pct;
 	}
 
-	hierarchy = of_machine_get_match_data(dtpm_match_table);
+	ret = -ENODEV;
+	np = of_find_node_by_path("/");
+	if (!np)
+		goto out_err;
+
+	match = of_match_node(dtpm_match_table, np);
+
+	of_node_put(np);
+
+	if (!match)
+		goto out_err;
+
+	hierarchy = match->data;
 	if (!hierarchy) {
 		ret = -EFAULT;
 		goto out_err;

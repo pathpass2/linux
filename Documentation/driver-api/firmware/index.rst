@@ -10,3 +10,10 @@ Linux Firmware API
    request_firmware
    fw_upload
    other_interfaces
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

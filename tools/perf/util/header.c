@@ -24,7 +24,6 @@
 #include <bpf/libbpf.h>
 #endif
 #include <perf/cpumap.h>
-#include <tools/libc_compat.h> // reallocarray
 
 #include "dso.h"
 #include "evlist.h"
@@ -38,13 +37,11 @@
 #include "debug.h"
 #include "cpumap.h"
 #include "pmu.h"
-#include "pmus.h"
 #include "vdso.h"
 #include "strbuf.h"
 #include "build-id.h"
 #include "data.h"
 #include <api/fs/fs.h>
-#include <api/io_dir.h>
 #include "asm/bug.h"
 #include "tool.h"
 #include "time-utils.h"
@@ -54,12 +51,13 @@
 #include "bpf-event.h"
 #include "bpf-utils.h"
 #include "clockid.h"
+#include "pmu-hybrid.h"
 
 #include <linux/ctype.h>
 #include <internal/lib.h>
 
 #ifdef HAVE_LIBTRACEEVENT
-#include <event-parse.h>
+#include <traceevent/event-parse.h>
 #endif
 
 /*
@@ -335,6 +333,7 @@ static int write_build_id(struct feat_fd *ff,
 		pr_debug("failed to write buildid table\n");
 		return err;
 	}
+	perf_session__cache_build_ids(session);
 
 	return 0;
 }
@@ -456,8 +455,6 @@ static int write_cpudesc(struct feat_fd *ff,
 #define CPUINFO_PROC	{ "Processor", }
 #elif defined(__xtensa__)
 #define CPUINFO_PROC	{ "core ID", }
-#elif defined(__loongarch__)
-#define CPUINFO_PROC	{ "Model Name", }
 #else
 #define CPUINFO_PROC	{ "model name", }
 #endif
@@ -556,7 +553,6 @@ static int write_event_desc(struct feat_fd *ff,
 static int write_cmdline(struct feat_fd *ff,
 			 struct evlist *evlist __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	char pbuf[MAXPATHLEN], *buf;
 	int i, ret, n;
 
@@ -564,7 +560,7 @@ static int write_cmdline(struct feat_fd *ff,
 	buf = perf_exe(pbuf, MAXPATHLEN);
 
 	/* account for binary path */
-	n = env->nr_cmdline + 1;
+	n = perf_env.nr_cmdline + 1;
 
 	ret = do_write(ff, &n, sizeof(n));
 	if (ret < 0)
@@ -574,8 +570,8 @@ static int write_cmdline(struct feat_fd *ff,
 	if (ret < 0)
 		return ret;
 
-	for (i = 0 ; i < env->nr_cmdline; i++) {
-		ret = do_write_string(ff, env->cmdline_argv[i]);
+	for (i = 0 ; i < perf_env.nr_cmdline; i++) {
+		ret = do_write_string(ff, perf_env.cmdline_argv[i]);
 		if (ret < 0)
 			return ret;
 	}
@@ -586,7 +582,6 @@ static int write_cmdline(struct feat_fd *ff,
 static int write_cpu_topology(struct feat_fd *ff,
 			      struct evlist *evlist __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct cpu_topology *tp;
 	u32 i;
 	int ret, j;
@@ -614,17 +609,17 @@ static int write_cpu_topology(struct feat_fd *ff,
 			break;
 	}
 
-	ret = perf_env__read_cpu_topology_map(env);
+	ret = perf_env__read_cpu_topology_map(&perf_env);
 	if (ret < 0)
 		goto done;
 
-	for (j = 0; j < env->nr_cpus_avail; j++) {
-		ret = do_write(ff, &env->cpu[j].core_id,
-			       sizeof(env->cpu[j].core_id));
+	for (j = 0; j < perf_env.nr_cpus_avail; j++) {
+		ret = do_write(ff, &perf_env.cpu[j].core_id,
+			       sizeof(perf_env.cpu[j].core_id));
 		if (ret < 0)
 			return ret;
-		ret = do_write(ff, &env->cpu[j].socket_id,
-			       sizeof(env->cpu[j].socket_id));
+		ret = do_write(ff, &perf_env.cpu[j].socket_id,
+			       sizeof(perf_env.cpu[j].socket_id));
 		if (ret < 0)
 			return ret;
 	}
@@ -642,9 +637,9 @@ static int write_cpu_topology(struct feat_fd *ff,
 			goto done;
 	}
 
-	for (j = 0; j < env->nr_cpus_avail; j++) {
-		ret = do_write(ff, &env->cpu[j].die_id,
-			       sizeof(env->cpu[j].die_id));
+	for (j = 0; j < perf_env.nr_cpus_avail; j++) {
+		ret = do_write(ff, &perf_env.cpu[j].die_id,
+			       sizeof(perf_env.cpu[j].die_id));
 		if (ret < 0)
 			return ret;
 	}
@@ -750,14 +745,20 @@ static int write_pmu_mappings(struct feat_fd *ff,
 	 * Do a first pass to count number of pmu to avoid lseek so this
 	 * works in pipe mode as well.
 	 */
-	while ((pmu = perf_pmus__scan(pmu)))
+	while ((pmu = perf_pmu__scan(pmu))) {
+		if (!pmu->name)
+			continue;
 		pmu_num++;
+	}
 
 	ret = do_write(ff, &pmu_num, sizeof(pmu_num));
 	if (ret < 0)
 		return ret;
 
-	while ((pmu = perf_pmus__scan(pmu))) {
+	while ((pmu = perf_pmu__scan(pmu))) {
+		if (!pmu->name)
+			continue;
+
 		ret = do_write(ff, &pmu->type, sizeof(pmu->type));
 		if (ret < 0)
 			return ret;
@@ -785,7 +786,7 @@ static int write_pmu_mappings(struct feat_fd *ff,
 static int write_group_desc(struct feat_fd *ff,
 			    struct evlist *evlist)
 {
-	u32 nr_groups = evlist__nr_groups(evlist);
+	u32 nr_groups = evlist->core.nr_groups;
 	struct evsel *evsel;
 	int ret;
 
@@ -821,29 +822,9 @@ static int write_group_desc(struct feat_fd *ff,
  * Each architecture should provide a more precise id string that
  * can be use to match the architecture's "mapfile".
  */
-char * __weak get_cpuid_str(struct perf_cpu cpu __maybe_unused)
+char * __weak get_cpuid_str(struct perf_pmu *pmu __maybe_unused)
 {
 	return NULL;
-}
-
-char *get_cpuid_allow_env_override(struct perf_cpu cpu)
-{
-	char *cpuid;
-	static bool printed;
-
-	cpuid = getenv("PERF_CPUID");
-	if (cpuid)
-		cpuid = strdup(cpuid);
-	if (!cpuid)
-		cpuid = get_cpuid_str(cpu);
-	if (!cpuid)
-		return NULL;
-
-	if (!printed) {
-		pr_debug("Using CPUID %s\n", cpuid);
-		printed = true;
-	}
-	return cpuid;
 }
 
 /* Return zero when the cpuid from the mapfile.csv matches the
@@ -878,19 +859,18 @@ int __weak strcmp_cpuid_str(const char *mapcpuid, const char *cpuid)
  * default get_cpuid(): nothing gets recorded
  * actual implementation must be in arch/$(SRCARCH)/util/header.c
  */
-int __weak get_cpuid(char *buffer __maybe_unused, size_t sz __maybe_unused,
-		     struct perf_cpu cpu __maybe_unused)
+int __weak get_cpuid(char *buffer __maybe_unused, size_t sz __maybe_unused)
 {
 	return ENOSYS; /* Not implemented */
 }
 
-static int write_cpuid(struct feat_fd *ff, struct evlist *evlist)
+static int write_cpuid(struct feat_fd *ff,
+		       struct evlist *evlist __maybe_unused)
 {
-	struct perf_cpu cpu = perf_cpu_map__min(evlist->core.all_cpus);
 	char buffer[64];
 	int ret;
 
-	ret = get_cpuid(buffer, sizeof(buffer), cpu);
+	ret = get_cpuid(buffer, sizeof(buffer));
 	if (ret)
 		return -1;
 
@@ -1010,6 +990,57 @@ static int write_dir_format(struct feat_fd *ff,
 	return do_write(ff, &data->dir.version, sizeof(data->dir.version));
 }
 
+/*
+ * Check whether a CPU is online
+ *
+ * Returns:
+ *     1 -> if CPU is online
+ *     0 -> if CPU is offline
+ *    -1 -> error case
+ */
+int is_cpu_online(unsigned int cpu)
+{
+	char *str;
+	size_t strlen;
+	char buf[256];
+	int status = -1;
+	struct stat statbuf;
+
+	snprintf(buf, sizeof(buf),
+		"/sys/devices/system/cpu/cpu%d", cpu);
+	if (stat(buf, &statbuf) != 0)
+		return 0;
+
+	/*
+	 * Check if /sys/devices/system/cpu/cpux/online file
+	 * exists. Some cases cpu0 won't have online file since
+	 * it is not expected to be turned off generally.
+	 * In kernels without CONFIG_HOTPLUG_CPU, this
+	 * file won't exist
+	 */
+	snprintf(buf, sizeof(buf),
+		"/sys/devices/system/cpu/cpu%d/online", cpu);
+	if (stat(buf, &statbuf) != 0)
+		return 1;
+
+	/*
+	 * Read online file using sysfs__read_str.
+	 * If read or open fails, return -1.
+	 * If read succeeds, return value from file
+	 * which gets stored in "str"
+	 */
+	snprintf(buf, sizeof(buf),
+		"devices/system/cpu/cpu%d/online", cpu);
+
+	if (sysfs__read_str(buf, &str, &strlen) < 0)
+		return status;
+
+	status = atoi(str);
+
+	free(str);
+	return status;
+}
+
 #ifdef HAVE_LIBBPF_SUPPORT
 static int write_bpf_prog_info(struct feat_fd *ff,
 			       struct evlist *evlist __maybe_unused)
@@ -1017,13 +1048,13 @@ static int write_bpf_prog_info(struct feat_fd *ff,
 	struct perf_env *env = &ff->ph->env;
 	struct rb_root *root;
 	struct rb_node *next;
-	int ret = 0;
+	int ret;
 
 	down_read(&env->bpf_progs.lock);
 
 	ret = do_write(ff, &env->bpf_progs.infos_cnt,
 		       sizeof(env->bpf_progs.infos_cnt));
-	if (ret < 0 || env->bpf_progs.infos_cnt == 0)
+	if (ret < 0)
 		goto out;
 
 	root = &env->bpf_progs.infos;
@@ -1059,14 +1090,14 @@ static int write_bpf_btf(struct feat_fd *ff,
 	struct perf_env *env = &ff->ph->env;
 	struct rb_root *root;
 	struct rb_node *next;
-	int ret = 0;
+	int ret;
 
 	down_read(&env->bpf_progs.lock);
 
 	ret = do_write(ff, &env->bpf_progs.btfs_cnt,
 		       sizeof(env->bpf_progs.btfs_cnt));
 
-	if (ret < 0 || env->bpf_progs.btfs_cnt == 0)
+	if (ret < 0)
 		goto out;
 
 	root = &env->bpf_progs.btfs;
@@ -1182,54 +1213,38 @@ static void cpu_cache_level__fprintf(FILE *out, struct cpu_cache_level *c)
 	fprintf(out, "L%d %-15s %8s [%s]\n", c->level, c->type, c->size, c->map);
 }
 
-/*
- * Build caches levels for a particular CPU from the data in
- * /sys/devices/system/cpu/cpu<cpu>/cache/
- * The cache level data is stored in caches[] from index at
- * *cntp.
- */
-int build_caches_for_cpu(u32 cpu, struct cpu_cache_level caches[], u32 *cntp)
-{
-	u16 level;
-
-	for (level = 0; level < MAX_CACHE_LVL; level++) {
-		struct cpu_cache_level c;
-		int err;
-		u32 i;
-
-		err = cpu_cache_level__read(&c, cpu, level);
-		if (err < 0)
-			return err;
-
-		if (err == 1)
-			break;
-
-		for (i = 0; i < *cntp; i++) {
-			if (cpu_cache_level__cmp(&c, &caches[i]))
-				break;
-		}
-
-		if (i == *cntp) {
-			caches[*cntp] = c;
-			*cntp = *cntp + 1;
-		} else
-			cpu_cache_level__free(&c);
-	}
-
-	return 0;
-}
+#define MAX_CACHE_LVL 4
 
 static int build_caches(struct cpu_cache_level caches[], u32 *cntp)
 {
-	u32 nr, cpu, cnt = 0;
+	u32 i, cnt = 0;
+	u32 nr, cpu;
+	u16 level;
 
 	nr = cpu__max_cpu().cpu;
 
 	for (cpu = 0; cpu < nr; cpu++) {
-		int ret = build_caches_for_cpu(cpu, caches, &cnt);
+		for (level = 0; level < MAX_CACHE_LVL; level++) {
+			struct cpu_cache_level c;
+			int err;
 
-		if (ret)
-			return ret;
+			err = cpu_cache_level__read(&c, cpu, level);
+			if (err < 0)
+				return err;
+
+			if (err == 1)
+				break;
+
+			for (i = 0; i < cnt; i++) {
+				if (cpu_cache_level__cmp(&c, &caches[i]))
+					break;
+			}
+
+			if (i == cnt)
+				caches[cnt++] = c;
+			else
+				cpu_cache_level__free(&c);
+		}
 	}
 	*cntp = cnt;
 	return 0;
@@ -1313,11 +1328,11 @@ static int memory_node__read(struct memory_node *n, unsigned long idx)
 {
 	unsigned int phys, size = 0;
 	char path[PATH_MAX];
-	struct io_dirent64 *ent;
-	struct io_dir dir;
+	struct dirent *ent;
+	DIR *dir;
 
 #define for_each_memory(mem, dir)					\
-	while ((ent = io_dir__readdir(&dir)) != NULL)			\
+	while ((ent = readdir(dir)))					\
 		if (strcmp(ent->d_name, ".") &&				\
 		    strcmp(ent->d_name, "..") &&			\
 		    sscanf(ent->d_name, "memory%u", &mem) == 1)
@@ -1326,9 +1341,9 @@ static int memory_node__read(struct memory_node *n, unsigned long idx)
 		  "%s/devices/system/node/node%lu",
 		  sysfs__mountpoint(), idx);
 
-	io_dir__init(&dir, open(path, O_CLOEXEC | O_DIRECTORY | O_RDONLY));
-	if (dir.dirfd < 0) {
-		pr_warning("failed: can't open memory sysfs data '%s'\n", path);
+	dir = opendir(path);
+	if (!dir) {
+		pr_warning("failed: can't open memory sysfs data\n");
 		return -1;
 	}
 
@@ -1340,29 +1355,21 @@ static int memory_node__read(struct memory_node *n, unsigned long idx)
 
 	n->set = bitmap_zalloc(size);
 	if (!n->set) {
-		close(dir.dirfd);
+		closedir(dir);
 		return -ENOMEM;
 	}
 
 	n->node = idx;
 	n->size = size;
 
-	io_dir__rewinddir(&dir);
+	rewinddir(dir);
 
 	for_each_memory(phys, dir) {
 		__set_bit(phys, n->set);
 	}
 
-	close(dir.dirfd);
+	closedir(dir);
 	return 0;
-}
-
-static void memory_node__delete_nodes(struct memory_node *nodesp, u64 cnt)
-{
-	for (u64 i = 0; i < cnt; i++)
-		bitmap_free(nodesp[i].set);
-
-	free(nodesp);
 }
 
 static int memory_node__sort(const void *a, const void *b)
@@ -1373,26 +1380,25 @@ static int memory_node__sort(const void *a, const void *b)
 	return na->node - nb->node;
 }
 
-static int build_mem_topology(struct memory_node **nodesp, u64 *cntp)
+static int build_mem_topology(struct memory_node *nodes, u64 size, u64 *cntp)
 {
 	char path[PATH_MAX];
-	struct io_dirent64 *ent;
-	struct io_dir dir;
+	struct dirent *ent;
+	DIR *dir;
+	u64 cnt = 0;
 	int ret = 0;
-	size_t cnt = 0, size = 0;
-	struct memory_node *nodes = NULL;
 
 	scnprintf(path, PATH_MAX, "%s/devices/system/node/",
 		  sysfs__mountpoint());
 
-	io_dir__init(&dir, open(path, O_CLOEXEC | O_DIRECTORY | O_RDONLY));
-	if (dir.dirfd < 0) {
+	dir = opendir(path);
+	if (!dir) {
 		pr_debug2("%s: couldn't read %s, does this arch have topology information?\n",
 			  __func__, path);
 		return -1;
 	}
 
-	while (!ret && (ent = io_dir__readdir(&dir))) {
+	while (!ret && (ent = readdir(dir))) {
 		unsigned int idx;
 		int r;
 
@@ -1404,33 +1410,25 @@ static int build_mem_topology(struct memory_node **nodesp, u64 *cntp)
 		if (r != 1)
 			continue;
 
-		if (cnt >= size) {
-			struct memory_node *new_nodes =
-				reallocarray(nodes, cnt + 4, sizeof(*nodes));
-
-			if (!new_nodes) {
-				pr_err("Failed to write MEM_TOPOLOGY, size %zd nodes\n", size);
-				ret = -ENOMEM;
-				goto out;
-			}
-			nodes = new_nodes;
-			size += 4;
+		if (WARN_ONCE(cnt >= size,
+			"failed to write MEM_TOPOLOGY, way too many nodes\n")) {
+			closedir(dir);
+			return -1;
 		}
-		ret = memory_node__read(&nodes[cnt], idx);
-		if (!ret)
-			cnt += 1;
+
+		ret = memory_node__read(&nodes[cnt++], idx);
 	}
-out:
-	close(dir.dirfd);
-	if (!ret) {
-		*cntp = cnt;
-		*nodesp = nodes;
+
+	*cntp = cnt;
+	closedir(dir);
+
+	if (!ret)
 		qsort(nodes, cnt, sizeof(nodes[0]), memory_node__sort);
-	} else
-		memory_node__delete_nodes(nodes, cnt);
 
 	return ret;
 }
+
+#define MAX_MEMORY_NODES 2000
 
 /*
  * The MEM_TOPOLOGY holds physical memory map for every
@@ -1450,8 +1448,8 @@ out:
 static int write_mem_topology(struct feat_fd *ff __maybe_unused,
 			      struct evlist *evlist __maybe_unused)
 {
-	struct memory_node *nodes = NULL;
-	u64 bsize, version = 1, i, nr = 0;
+	static struct memory_node nodes[MAX_MEMORY_NODES];
+	u64 bsize, version = 1, i, nr;
 	int ret;
 
 	ret = sysfs__read_xll("devices/system/memory/block_size_bytes",
@@ -1459,7 +1457,7 @@ static int write_mem_topology(struct feat_fd *ff __maybe_unused,
 	if (ret)
 		return ret;
 
-	ret = build_mem_topology(&nodes, &nr);
+	ret = build_mem_topology(&nodes[0], MAX_MEMORY_NODES, &nr);
 	if (ret)
 		return ret;
 
@@ -1494,7 +1492,6 @@ static int write_mem_topology(struct feat_fd *ff __maybe_unused,
 	}
 
 out:
-	memory_node__delete_nodes(nodes, nr);
 	return ret;
 }
 
@@ -1554,7 +1551,7 @@ static int __write_pmu_caps(struct feat_fd *ff, struct perf_pmu *pmu,
 static int write_cpu_pmu_caps(struct feat_fd *ff,
 			      struct evlist *evlist __maybe_unused)
 {
-	struct perf_pmu *cpu_pmu = perf_pmus__find_core_pmu();
+	struct perf_pmu *cpu_pmu = perf_pmu__find("cpu");
 	int ret;
 
 	if (!cpu_pmu)
@@ -1574,16 +1571,9 @@ static int write_pmu_caps(struct feat_fd *ff,
 	int nr_pmu = 0;
 	int ret;
 
-	while ((pmu = perf_pmus__scan(pmu))) {
-		if (!strcmp(pmu->name, "cpu")) {
-			/*
-			 * The "cpu" PMU is special and covered by
-			 * HEADER_CPU_PMU_CAPS. Note, core PMUs are
-			 * counted/written here for ARM, s390 and Intel hybrid.
-			 */
-			continue;
-		}
-		if (perf_pmu__caps_parse(pmu) <= 0)
+	while ((pmu = perf_pmu__scan(pmu))) {
+		if (!pmu->name || !strcmp(pmu->name, "cpu") ||
+		    perf_pmu__caps_parse(pmu) <= 0)
 			continue;
 		nr_pmu++;
 	}
@@ -1596,17 +1586,22 @@ static int write_pmu_caps(struct feat_fd *ff,
 		return 0;
 
 	/*
-	 * Note older perf tools assume core PMUs come first, this is a property
-	 * of perf_pmus__scan.
+	 * Write hybrid pmu caps first to maintain compatibility with
+	 * older perf tool.
 	 */
 	pmu = NULL;
-	while ((pmu = perf_pmus__scan(pmu))) {
-		if (!strcmp(pmu->name, "cpu")) {
-			/* Skip as above. */
+	perf_pmu__for_each_hybrid_pmu(pmu) {
+		ret = __write_pmu_caps(ff, pmu, true);
+		if (ret < 0)
+			return ret;
+	}
+
+	pmu = NULL;
+	while ((pmu = perf_pmu__scan(pmu))) {
+		if (!pmu->name || !strcmp(pmu->name, "cpu") ||
+		    !pmu->nr_caps || perf_pmu__is_hybrid(pmu->name))
 			continue;
-		}
-		if (perf_pmu__caps_parse(pmu) <= 0)
-			continue;
+
 		ret = __write_pmu_caps(ff, pmu, true);
 		if (ret < 0)
 			return ret;
@@ -1815,17 +1810,14 @@ static void print_bpf_prog_info(struct feat_fd *ff, FILE *fp)
 	root = &env->bpf_progs.infos;
 	next = rb_first(root);
 
-	if (!next)
-		printf("# bpf_prog_info empty\n");
-
 	while (next) {
 		struct bpf_prog_info_node *node;
 
 		node = rb_entry(next, struct bpf_prog_info_node, rb_node);
 		next = rb_next(&node->rb_node);
 
-		__bpf_event__print_bpf_prog_info(&node->info_linear->info,
-						 env, fp);
+		bpf_event__print_bpf_prog_info(&node->info_linear->info,
+					       env, fp);
 	}
 
 	up_read(&env->bpf_progs.lock);
@@ -1841,9 +1833,6 @@ static void print_bpf_btf(struct feat_fd *ff, FILE *fp)
 
 	root = &env->bpf_progs.btfs;
 	next = rb_first(root);
-
-	if (!next)
-		printf("# btf info empty\n");
 
 	while (next) {
 		struct btf_node *node;
@@ -2118,39 +2107,29 @@ static void print_cpu_pmu_caps(struct feat_fd *ff, FILE *fp)
 
 static void print_pmu_caps(struct feat_fd *ff, FILE *fp)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct pmu_caps *pmu_caps;
 
-	for (int i = 0; i < env->nr_pmus_with_caps; i++) {
-		pmu_caps = &env->pmu_caps[i];
+	for (int i = 0; i < ff->ph->env.nr_pmus_with_caps; i++) {
+		pmu_caps = &ff->ph->env.pmu_caps[i];
 		__print_pmu_caps(fp, pmu_caps->nr_caps, pmu_caps->caps,
 				 pmu_caps->pmu_name);
-	}
-
-	if (strcmp(perf_env__arch(env), "x86") == 0 &&
-	    perf_env__has_pmu_mapping(env, "ibs_op")) {
-		char *max_precise = perf_env__find_pmu_cap(env, "cpu", "max_precise");
-
-		if (max_precise != NULL && atoi(max_precise) == 0)
-			fprintf(fp, "# AMD systems uses ibs_op// PMU for some precise events, e.g.: cycles:p, see the 'perf list' man page for further details.\n");
 	}
 }
 
 static void print_pmu_mappings(struct feat_fd *ff, FILE *fp)
 {
-	struct perf_env *env = &ff->ph->env;
 	const char *delimiter = "# pmu mappings: ";
 	char *str, *tmp;
 	u32 pmu_num;
 	u32 type;
 
-	pmu_num = env->nr_pmu_mappings;
+	pmu_num = ff->ph->env.nr_pmu_mappings;
 	if (!pmu_num) {
 		fprintf(fp, "# pmu mappings: not available\n");
 		return;
 	}
 
-	str = env->pmu_mappings;
+	str = ff->ph->env.pmu_mappings;
 
 	while (pmu_num) {
 		type = strtoul(str, &tmp, 0);
@@ -2232,18 +2211,17 @@ static void memory_node__fprintf(struct memory_node *n,
 
 static void print_mem_topology(struct feat_fd *ff, FILE *fp)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct memory_node *nodes;
 	int i, nr;
 
-	nodes = env->memory_nodes;
-	nr    = env->nr_memory_nodes;
+	nodes = ff->ph->env.memory_nodes;
+	nr    = ff->ph->env.nr_memory_nodes;
 
 	fprintf(fp, "# memory nodes (nr %d, block size 0x%llx):\n",
-		nr, env->memory_bsize);
+		nr, ff->ph->env.memory_bsize);
 
 	for (i = 0; i < nr; i++) {
-		memory_node__fprintf(&nodes[i], env->memory_bsize, fp);
+		memory_node__fprintf(&nodes[i], ff->ph->env.memory_bsize, fp);
 	}
 }
 
@@ -2289,7 +2267,7 @@ static int __event_process_build_id(struct perf_record_header_build_id *bev,
 
 		build_id__init(&bid, bev->data, size);
 		dso__set_build_id(dso, &bid);
-		dso__set_header_build_id(dso, true);
+		dso->header_build_id = 1;
 
 		if (dso_space != DSO_SPACE__USER) {
 			struct kmod_path m = { .name = NULL, };
@@ -2297,13 +2275,13 @@ static int __event_process_build_id(struct perf_record_header_build_id *bev,
 			if (!kmod_path__parse_name(&m, filename) && m.kmod)
 				dso__set_module_info(dso, &m, machine);
 
-			dso__set_kernel(dso, dso_space);
+			dso->kernel = dso_space;
 			free(m.name);
 		}
 
-		build_id__snprintf(dso__bid(dso), sbuild_id, sizeof(sbuild_id));
+		build_id__sprintf(&dso->bid, sbuild_id);
 		pr_debug("build id event received for %s: %s [%zu]\n",
-			 dso__long_name(dso), sbuild_id, size);
+			 dso->long_name, sbuild_id, size);
 		dso__put(dso);
 	}
 
@@ -2441,7 +2419,6 @@ static int process_build_id(struct feat_fd *ff, void *data __maybe_unused)
 
 static int process_nrcpus(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	int ret;
 	u32 nr_cpus_avail, nr_cpus_online;
 
@@ -2452,21 +2429,20 @@ static int process_nrcpus(struct feat_fd *ff, void *data __maybe_unused)
 	ret = do_read_u32(ff, &nr_cpus_online);
 	if (ret)
 		return ret;
-	env->nr_cpus_avail = (int)nr_cpus_avail;
-	env->nr_cpus_online = (int)nr_cpus_online;
+	ff->ph->env.nr_cpus_avail = (int)nr_cpus_avail;
+	ff->ph->env.nr_cpus_online = (int)nr_cpus_online;
 	return 0;
 }
 
 static int process_total_mem(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	u64 total_mem;
 	int ret;
 
 	ret = do_read_u64(ff, &total_mem);
 	if (ret)
 		return -1;
-	env->total_mem = (unsigned long long)total_mem;
+	ff->ph->env.total_mem = (unsigned long long)total_mem;
 	return 0;
 }
 
@@ -2527,14 +2503,13 @@ process_event_desc(struct feat_fd *ff, void *data __maybe_unused)
 
 static int process_cmdline(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	char *str, *cmdline = NULL, **argv = NULL;
 	u32 nr, i, len = 0;
 
 	if (do_read_u32(ff, &nr))
 		return -1;
 
-	env->nr_cmdline = nr;
+	ff->ph->env.nr_cmdline = nr;
 
 	cmdline = zalloc(ff->size + nr + 1);
 	if (!cmdline)
@@ -2554,8 +2529,8 @@ static int process_cmdline(struct feat_fd *ff, void *data __maybe_unused)
 		len += strlen(str) + 1;
 		free(str);
 	}
-	env->cmdline = cmdline;
-	env->cmdline_argv = (const char **) argv;
+	ff->ph->env.cmdline = cmdline;
+	ff->ph->env.cmdline_argv = (const char **) argv;
 	return 0;
 
 error:
@@ -2567,20 +2542,21 @@ error:
 static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 {
 	u32 nr, i;
-	char *str = NULL;
+	char *str;
 	struct strbuf sb;
-	struct perf_env *env = &ff->ph->env;
-	int cpu_nr = env->nr_cpus_avail;
+	int cpu_nr = ff->ph->env.nr_cpus_avail;
 	u64 size = 0;
+	struct perf_header *ph = ff->ph;
+	bool do_core_id_test = true;
 
-	env->cpu = calloc(cpu_nr, sizeof(*env->cpu));
-	if (!env->cpu)
+	ph->env.cpu = calloc(cpu_nr, sizeof(*ph->env.cpu));
+	if (!ph->env.cpu)
 		return -1;
 
 	if (do_read_u32(ff, &nr))
 		goto free_cpu;
 
-	env->nr_sibling_cores = nr;
+	ph->env.nr_sibling_cores = nr;
 	size += sizeof(u32);
 	if (strbuf_init(&sb, 128) < 0)
 		goto free_cpu;
@@ -2594,14 +2570,14 @@ static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 		if (strbuf_add(&sb, str, strlen(str) + 1) < 0)
 			goto error;
 		size += string_size(str);
-		zfree(&str);
+		free(str);
 	}
-	env->sibling_cores = strbuf_detach(&sb, NULL);
+	ph->env.sibling_cores = strbuf_detach(&sb, NULL);
 
 	if (do_read_u32(ff, &nr))
 		return -1;
 
-	env->nr_sibling_threads = nr;
+	ph->env.nr_sibling_threads = nr;
 	size += sizeof(u32);
 
 	for (i = 0; i < nr; i++) {
@@ -2613,30 +2589,45 @@ static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 		if (strbuf_add(&sb, str, strlen(str) + 1) < 0)
 			goto error;
 		size += string_size(str);
-		zfree(&str);
+		free(str);
 	}
-	env->sibling_threads = strbuf_detach(&sb, NULL);
+	ph->env.sibling_threads = strbuf_detach(&sb, NULL);
 
 	/*
 	 * The header may be from old perf,
 	 * which doesn't include core id and socket id information.
 	 */
 	if (ff->size <= size) {
-		zfree(&env->cpu);
+		zfree(&ph->env.cpu);
 		return 0;
 	}
+
+	/* On s390 the socket_id number is not related to the numbers of cpus.
+	 * The socket_id number might be higher than the numbers of cpus.
+	 * This depends on the configuration.
+	 * AArch64 is the same.
+	 */
+	if (ph->env.arch && (!strncmp(ph->env.arch, "s390", 4)
+			  || !strncmp(ph->env.arch, "aarch64", 7)))
+		do_core_id_test = false;
 
 	for (i = 0; i < (u32)cpu_nr; i++) {
 		if (do_read_u32(ff, &nr))
 			goto free_cpu;
 
-		env->cpu[i].core_id = nr;
+		ph->env.cpu[i].core_id = nr;
 		size += sizeof(u32);
 
 		if (do_read_u32(ff, &nr))
 			goto free_cpu;
 
-		env->cpu[i].socket_id = nr;
+		if (do_core_id_test && nr != (u32)-1 && nr > (u32)cpu_nr) {
+			pr_debug("socket_id number is too big."
+				 "You may need to upgrade the perf tool.\n");
+			goto free_cpu;
+		}
+
+		ph->env.cpu[i].socket_id = nr;
 		size += sizeof(u32);
 	}
 
@@ -2650,7 +2641,7 @@ static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 	if (do_read_u32(ff, &nr))
 		return -1;
 
-	env->nr_sibling_dies = nr;
+	ph->env.nr_sibling_dies = nr;
 	size += sizeof(u32);
 
 	for (i = 0; i < nr; i++) {
@@ -2662,30 +2653,28 @@ static int process_cpu_topology(struct feat_fd *ff, void *data __maybe_unused)
 		if (strbuf_add(&sb, str, strlen(str) + 1) < 0)
 			goto error;
 		size += string_size(str);
-		zfree(&str);
+		free(str);
 	}
-	env->sibling_dies = strbuf_detach(&sb, NULL);
+	ph->env.sibling_dies = strbuf_detach(&sb, NULL);
 
 	for (i = 0; i < (u32)cpu_nr; i++) {
 		if (do_read_u32(ff, &nr))
 			goto free_cpu;
 
-		env->cpu[i].die_id = nr;
+		ph->env.cpu[i].die_id = nr;
 	}
 
 	return 0;
 
 error:
 	strbuf_release(&sb);
-	zfree(&str);
 free_cpu:
-	zfree(&env->cpu);
+	zfree(&ph->env.cpu);
 	return -1;
 }
 
 static int process_numa_topology(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct numa_node *nodes, *n;
 	u32 nr, i;
 	char *str;
@@ -2716,12 +2705,13 @@ static int process_numa_topology(struct feat_fd *ff, void *data __maybe_unused)
 			goto error;
 
 		n->map = perf_cpu_map__new(str);
-		free(str);
 		if (!n->map)
 			goto error;
+
+		free(str);
 	}
-	env->nr_numa_nodes = nr;
-	env->numa_nodes = nodes;
+	ff->ph->env.nr_numa_nodes = nr;
+	ff->ph->env.numa_nodes = nodes;
 	return 0;
 
 error:
@@ -2731,7 +2721,6 @@ error:
 
 static int process_pmu_mappings(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	char *name;
 	u32 pmu_num;
 	u32 type;
@@ -2745,7 +2734,7 @@ static int process_pmu_mappings(struct feat_fd *ff, void *data __maybe_unused)
 		return 0;
 	}
 
-	env->nr_pmu_mappings = pmu_num;
+	ff->ph->env.nr_pmu_mappings = pmu_num;
 	if (strbuf_init(&sb, 128) < 0)
 		return -1;
 
@@ -2764,14 +2753,12 @@ static int process_pmu_mappings(struct feat_fd *ff, void *data __maybe_unused)
 			goto error;
 
 		if (!strcmp(name, "msr"))
-			env->msr_pmu_type = type;
+			ff->ph->env.msr_pmu_type = type;
 
 		free(name);
 		pmu_num--;
 	}
-	/* AMD may set it by evlist__has_amd_ibs() from perf_session__new() */
-	free(env->pmu_mappings);
-	env->pmu_mappings = strbuf_detach(&sb, NULL);
+	ff->ph->env.pmu_mappings = strbuf_detach(&sb, NULL);
 	return 0;
 
 error:
@@ -2781,7 +2768,6 @@ error:
 
 static int process_group_desc(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	size_t ret = -1;
 	u32 i, nr, nr_groups;
 	struct perf_session *session;
@@ -2795,7 +2781,7 @@ static int process_group_desc(struct feat_fd *ff, void *data __maybe_unused)
 	if (do_read_u32(ff, &nr_groups))
 		return -1;
 
-	env->nr_groups = nr_groups;
+	ff->ph->env.nr_groups = nr_groups;
 	if (!nr_groups) {
 		pr_debug("group desc not available\n");
 		return 0;
@@ -2821,10 +2807,11 @@ static int process_group_desc(struct feat_fd *ff, void *data __maybe_unused)
 	 * Rebuild group relationship based on the group_desc
 	 */
 	session = container_of(ff->ph, struct perf_session, header);
+	session->evlist->core.nr_groups = nr_groups;
 
 	i = nr = 0;
 	evlist__for_each_entry(session->evlist, evsel) {
-		if (i < nr_groups && evsel->core.idx == (int) desc[i].leader_idx) {
+		if (evsel->core.idx == (int) desc[i].leader_idx) {
 			evsel__set_leader(evsel, evsel);
 			/* {anon_group} is a dummy name */
 			if (strcmp(desc[i].name, "{anon_group}")) {
@@ -2879,7 +2866,6 @@ static int process_auxtrace(struct feat_fd *ff, void *data __maybe_unused)
 
 static int process_cache(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct cpu_cache_level *caches;
 	u32 cnt, i, version;
 
@@ -2897,10 +2883,10 @@ static int process_cache(struct feat_fd *ff, void *data __maybe_unused)
 		return -1;
 
 	for (i = 0; i < cnt; i++) {
-		struct cpu_cache_level *c = &caches[i];
+		struct cpu_cache_level c;
 
 		#define _R(v)						\
-			if (do_read_u32(ff, &c->v))			\
+			if (do_read_u32(ff, &c.v))\
 				goto out_free_caches;			\
 
 		_R(level)
@@ -2910,25 +2896,22 @@ static int process_cache(struct feat_fd *ff, void *data __maybe_unused)
 		#undef _R
 
 		#define _R(v)					\
-			c->v = do_read_string(ff);		\
-			if (!c->v)				\
-				goto out_free_caches;		\
+			c.v = do_read_string(ff);		\
+			if (!c.v)				\
+				goto out_free_caches;
 
 		_R(type)
 		_R(size)
 		_R(map)
 		#undef _R
+
+		caches[i] = c;
 	}
 
-	env->caches = caches;
-	env->caches_cnt = cnt;
+	ff->ph->env.caches = caches;
+	ff->ph->env.caches_cnt = cnt;
 	return 0;
 out_free_caches:
-	for (i = 0; i < cnt; i++) {
-		free(caches[i].type);
-		free(caches[i].size);
-		free(caches[i].map);
-	}
 	free(caches);
 	return -1;
 }
@@ -2957,7 +2940,6 @@ static int process_sample_time(struct feat_fd *ff, void *data __maybe_unused)
 static int process_mem_topology(struct feat_fd *ff,
 				void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct memory_node *nodes;
 	u64 version, i, nr, bsize;
 	int ret = -1;
@@ -2996,9 +2978,9 @@ static int process_mem_topology(struct feat_fd *ff,
 		nodes[i] = n;
 	}
 
-	env->memory_bsize    = bsize;
-	env->memory_nodes    = nodes;
-	env->nr_memory_nodes = nr;
+	ff->ph->env.memory_bsize    = bsize;
+	ff->ph->env.memory_nodes    = nodes;
+	ff->ph->env.nr_memory_nodes = nr;
 	ret = 0;
 
 out:
@@ -3010,9 +2992,7 @@ out:
 static int process_clockid(struct feat_fd *ff,
 			   void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
-
-	if (do_read_u64(ff, &env->clock.clockid_res_ns))
+	if (do_read_u64(ff, &ff->ph->env.clock.clockid_res_ns))
 		return -1;
 
 	return 0;
@@ -3021,7 +3001,6 @@ static int process_clockid(struct feat_fd *ff,
 static int process_clock_data(struct feat_fd *ff,
 			      void *_data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	u32 data32;
 	u64 data64;
 
@@ -3036,27 +3015,26 @@ static int process_clock_data(struct feat_fd *ff,
 	if (do_read_u32(ff, &data32))
 		return -1;
 
-	env->clock.clockid = data32;
+	ff->ph->env.clock.clockid = data32;
 
 	/* TOD ref time */
 	if (do_read_u64(ff, &data64))
 		return -1;
 
-	env->clock.tod_ns = data64;
+	ff->ph->env.clock.tod_ns = data64;
 
 	/* clockid ref time */
 	if (do_read_u64(ff, &data64))
 		return -1;
 
-	env->clock.clockid_ns = data64;
-	env->clock.enabled = true;
+	ff->ph->env.clock.clockid_ns = data64;
+	ff->ph->env.clock.enabled = true;
 	return 0;
 }
 
 static int process_hybrid_topology(struct feat_fd *ff,
 				   void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct hybrid_node *nodes, *n;
 	u32 nr, i;
 
@@ -3080,8 +3058,8 @@ static int process_hybrid_topology(struct feat_fd *ff,
 			goto error;
 	}
 
-	env->nr_hybrid_nodes = nr;
-	env->hybrid_nodes = nodes;
+	ff->ph->env.nr_hybrid_nodes = nr;
+	ff->ph->env.hybrid_nodes = nodes;
 	return 0;
 
 error:
@@ -3167,11 +3145,7 @@ static int process_bpf_prog_info(struct feat_fd *ff, void *data __maybe_unused)
 		/* after reading from file, translate offset to address */
 		bpil_offs_to_addr(info_linear);
 		info_node->info_linear = info_linear;
-		info_node->metadata = NULL;
-		if (!__perf_env__insert_bpf_prog_info(env, info_node)) {
-			free(info_linear);
-			free(info_node);
-		}
+		perf_env__insert_bpf_prog_info(env, info_node);
 	}
 
 	up_write(&env->bpf_progs.lock);
@@ -3218,8 +3192,7 @@ static int process_bpf_btf(struct feat_fd *ff, void *data __maybe_unused)
 		if (__do_read(ff, node->data, data_size))
 			goto out;
 
-		if (!__perf_env__insert_btf(env, node))
-			free(node);
+		perf_env__insert_btf(env, node);
 		node = NULL;
 	}
 
@@ -3234,30 +3207,26 @@ out:
 static int process_compressed(struct feat_fd *ff,
 			      void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
-
-	if (do_read_u32(ff, &(env->comp_ver)))
+	if (do_read_u32(ff, &(ff->ph->env.comp_ver)))
 		return -1;
 
-	if (do_read_u32(ff, &(env->comp_type)))
+	if (do_read_u32(ff, &(ff->ph->env.comp_type)))
 		return -1;
 
-	if (do_read_u32(ff, &(env->comp_level)))
+	if (do_read_u32(ff, &(ff->ph->env.comp_level)))
 		return -1;
 
-	if (do_read_u32(ff, &(env->comp_ratio)))
+	if (do_read_u32(ff, &(ff->ph->env.comp_ratio)))
 		return -1;
 
-	if (do_read_u32(ff, &(env->comp_mmap_len)))
+	if (do_read_u32(ff, &(ff->ph->env.comp_mmap_len)))
 		return -1;
 
 	return 0;
 }
 
 static int __process_pmu_caps(struct feat_fd *ff, int *nr_caps,
-			      char ***caps, unsigned int *max_branches,
-			      unsigned int *br_cntr_nr,
-			      unsigned int *br_cntr_width)
+			      char ***caps, unsigned int *max_branches)
 {
 	char *name, *value, *ptr;
 	u32 nr_pmu_caps, i;
@@ -3292,12 +3261,6 @@ static int __process_pmu_caps(struct feat_fd *ff, int *nr_caps,
 		if (!strcmp(name, "branches"))
 			*max_branches = atoi(value);
 
-		if (!strcmp(name, "branch_counter_nr"))
-			*br_cntr_nr = atoi(value);
-
-		if (!strcmp(name, "branch_counter_width"))
-			*br_cntr_width = atoi(value);
-
 		free(value);
 		free(name);
 	}
@@ -3320,21 +3283,17 @@ error:
 static int process_cpu_pmu_caps(struct feat_fd *ff,
 				void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
-	int ret = __process_pmu_caps(ff, &env->nr_cpu_pmu_caps,
-				     &env->cpu_pmu_caps,
-				     &env->max_branches,
-				     &env->br_cntr_nr,
-				     &env->br_cntr_width);
+	int ret = __process_pmu_caps(ff, &ff->ph->env.nr_cpu_pmu_caps,
+				     &ff->ph->env.cpu_pmu_caps,
+				     &ff->ph->env.max_branches);
 
-	if (!ret && !env->cpu_pmu_caps)
+	if (!ret && !ff->ph->env.cpu_pmu_caps)
 		pr_debug("cpu pmu capabilities not available\n");
 	return ret;
 }
 
 static int process_pmu_caps(struct feat_fd *ff, void *data __maybe_unused)
 {
-	struct perf_env *env = &ff->ph->env;
 	struct pmu_caps *pmu_caps;
 	u32 nr_pmu, i;
 	int ret;
@@ -3355,9 +3314,7 @@ static int process_pmu_caps(struct feat_fd *ff, void *data __maybe_unused)
 	for (i = 0; i < nr_pmu; i++) {
 		ret = __process_pmu_caps(ff, &pmu_caps[i].nr_caps,
 					 &pmu_caps[i].caps,
-					 &pmu_caps[i].max_branches,
-					 &pmu_caps[i].br_cntr_nr,
-					 &pmu_caps[i].br_cntr_width);
+					 &pmu_caps[i].max_branches);
 		if (ret)
 			goto err;
 
@@ -3372,8 +3329,8 @@ static int process_pmu_caps(struct feat_fd *ff, void *data __maybe_unused)
 		}
 	}
 
-	env->nr_pmus_with_caps = nr_pmu;
-	env->pmu_caps = pmu_caps;
+	ff->ph->env.nr_pmus_with_caps = nr_pmu;
+	ff->ph->env.pmu_caps = pmu_caps;
 	return 0;
 
 err:
@@ -3598,15 +3555,17 @@ static int perf_header__adds_write(struct perf_header *header,
 				   struct feat_copier *fc)
 {
 	int nr_sections;
-	struct feat_fd ff = {
-		.fd  = fd,
-		.ph = header,
-	};
+	struct feat_fd ff;
 	struct perf_file_section *feat_sec, *p;
 	int sec_size;
 	u64 sec_start;
 	int feat;
 	int err;
+
+	ff = (struct feat_fd){
+		.fd  = fd,
+		.ph = header,
+	};
 
 	nr_sections = bitmap_weight(header->adds_features, HEADER_FEAT_BITS);
 	if (!nr_sections)
@@ -3634,7 +3593,6 @@ static int perf_header__adds_write(struct perf_header *header,
 	err = do_write(&ff, feat_sec, sec_size);
 	if (err < 0)
 		pr_debug("failed to write feature section\n");
-	free(ff.buf); /* TODO: added to silence clang-tidy. */
 	free(feat_sec);
 	return err;
 }
@@ -3642,10 +3600,10 @@ static int perf_header__adds_write(struct perf_header *header,
 int perf_header__write_pipe(int fd)
 {
 	struct perf_pipe_file_header f_header;
-	struct feat_fd ff = {
-		.fd = fd,
-	};
+	struct feat_fd ff;
 	int err;
+
+	ff = (struct feat_fd){ .fd = fd };
 
 	f_header = (struct perf_pipe_file_header){
 		.magic	   = PERF_MAGIC,
@@ -3657,57 +3615,36 @@ int perf_header__write_pipe(int fd)
 		pr_debug("failed to write perf pipe header\n");
 		return err;
 	}
-	free(ff.buf);
+
 	return 0;
 }
 
 static int perf_session__do_write_header(struct perf_session *session,
 					 struct evlist *evlist,
 					 int fd, bool at_exit,
-					 struct feat_copier *fc,
-					 bool write_attrs_after_data)
+					 struct feat_copier *fc)
 {
 	struct perf_file_header f_header;
+	struct perf_file_attr   f_attr;
 	struct perf_header *header = &session->header;
 	struct evsel *evsel;
-	struct feat_fd ff = {
-		.ph = header,
-		.fd = fd,
-	};
-	u64 attr_offset = sizeof(f_header), attr_size = 0;
+	struct feat_fd ff;
+	u64 attr_offset;
 	int err;
 
-	if (write_attrs_after_data && at_exit) {
-		/*
-		 * Write features at the end of the file first so that
-		 * attributes may come after them.
-		 */
-		if (!header->data_offset && header->data_size) {
-			pr_err("File contains data but offset unknown\n");
-			err = -1;
-			goto err_out;
-		}
-		header->feat_offset = header->data_offset + header->data_size;
-		err = perf_header__adds_write(header, evlist, fd, fc);
-		if (err < 0)
-			goto err_out;
-		attr_offset = lseek(fd, 0, SEEK_CUR);
-	} else {
-		lseek(fd, attr_offset, SEEK_SET);
-	}
+	ff = (struct feat_fd){ .fd = fd};
+	lseek(fd, sizeof(f_header), SEEK_SET);
 
 	evlist__for_each_entry(session->evlist, evsel) {
-		evsel->id_offset = attr_offset;
-		/* Avoid writing at the end of the file until the session is exiting. */
-		if (!write_attrs_after_data || at_exit) {
-			err = do_write(&ff, evsel->core.id, evsel->core.ids * sizeof(u64));
-			if (err < 0) {
-				pr_debug("failed to write perf header\n");
-				goto err_out;
-			}
+		evsel->id_offset = lseek(fd, 0, SEEK_CUR);
+		err = do_write(&ff, evsel->core.id, evsel->core.ids * sizeof(u64));
+		if (err < 0) {
+			pr_debug("failed to write perf header\n");
+			return err;
 		}
-		attr_offset += evsel->core.ids * sizeof(u64);
 	}
+
+	attr_offset = lseek(ff.fd, 0, SEEK_CUR);
 
 	evlist__for_each_entry(evlist, evsel) {
 		if (evsel->core.attr.size < sizeof(evsel->core.attr)) {
@@ -3718,46 +3655,37 @@ static int perf_session__do_write_header(struct perf_session *session,
 			 */
 			evsel->core.attr.size = sizeof(evsel->core.attr);
 		}
-		/* Avoid writing at the end of the file until the session is exiting. */
-		if (!write_attrs_after_data || at_exit) {
-			struct perf_file_attr f_attr = {
-				.attr = evsel->core.attr,
-				.ids  = {
-					.offset = evsel->id_offset,
-					.size   = evsel->core.ids * sizeof(u64),
-				}
-			};
-			err = do_write(&ff, &f_attr, sizeof(f_attr));
-			if (err < 0) {
-				pr_debug("failed to write perf header attribute\n");
-				goto err_out;
+		f_attr = (struct perf_file_attr){
+			.attr = evsel->core.attr,
+			.ids  = {
+				.offset = evsel->id_offset,
+				.size   = evsel->core.ids * sizeof(u64),
 			}
+		};
+		err = do_write(&ff, &f_attr, sizeof(f_attr));
+		if (err < 0) {
+			pr_debug("failed to write perf header attribute\n");
+			return err;
 		}
-		attr_size += sizeof(struct perf_file_attr);
 	}
 
-	if (!header->data_offset) {
-		if (write_attrs_after_data)
-			header->data_offset = sizeof(f_header);
-		else
-			header->data_offset = attr_offset + attr_size;
-	}
+	if (!header->data_offset)
+		header->data_offset = lseek(fd, 0, SEEK_CUR);
 	header->feat_offset = header->data_offset + header->data_size;
 
-	if (!write_attrs_after_data && at_exit) {
-		/* Write features now feat_offset is known. */
+	if (at_exit) {
 		err = perf_header__adds_write(header, evlist, fd, fc);
 		if (err < 0)
-			goto err_out;
+			return err;
 	}
 
 	f_header = (struct perf_file_header){
 		.magic	   = PERF_MAGIC,
 		.size	   = sizeof(f_header),
-		.attr_size = sizeof(struct perf_file_attr),
+		.attr_size = sizeof(f_attr),
 		.attrs = {
 			.offset = attr_offset,
-			.size   = attr_size,
+			.size   = evlist->core.nr_entries * sizeof(f_attr),
 		},
 		.data = {
 			.offset = header->data_offset,
@@ -3772,22 +3700,18 @@ static int perf_session__do_write_header(struct perf_session *session,
 	err = do_write(&ff, &f_header, sizeof(f_header));
 	if (err < 0) {
 		pr_debug("failed to write perf header\n");
-		goto err_out;
-	} else {
-		lseek(fd, 0, SEEK_END);
-		err = 0;
+		return err;
 	}
-err_out:
-	free(ff.buf);
-	return err;
+	lseek(fd, header->data_offset + header->data_size, SEEK_SET);
+
+	return 0;
 }
 
 int perf_session__write_header(struct perf_session *session,
 			       struct evlist *evlist,
 			       int fd, bool at_exit)
 {
-	return perf_session__do_write_header(session, evlist, fd, at_exit, /*fc=*/NULL,
-					     /*write_attrs_after_data=*/false);
+	return perf_session__do_write_header(session, evlist, fd, at_exit, NULL);
 }
 
 size_t perf_session__data_offset(const struct evlist *evlist)
@@ -3807,11 +3731,9 @@ size_t perf_session__data_offset(const struct evlist *evlist)
 int perf_session__inject_header(struct perf_session *session,
 				struct evlist *evlist,
 				int fd,
-				struct feat_copier *fc,
-				bool write_attrs_after_data)
+				struct feat_copier *fc)
 {
-	return perf_session__do_write_header(session, evlist, fd, true, fc,
-					     write_attrs_after_data);
+	return perf_session__do_write_header(session, evlist, fd, true, fc);
 }
 
 static int perf_header__getbuffer64(struct perf_header *header,
@@ -4004,24 +3926,6 @@ int perf_file_header__read(struct perf_file_header *header,
 			     adds_features));
 	}
 
-	if (header->size > header->attrs.offset) {
-		pr_err("Perf file header corrupt: header overlaps attrs\n");
-		return -1;
-	}
-
-	if (header->size > header->data.offset) {
-		pr_err("Perf file header corrupt: header overlaps data\n");
-		return -1;
-	}
-
-	if ((header->attrs.offset <= header->data.offset &&
-	     header->attrs.offset + header->attrs.size > header->data.offset) ||
-	    (header->attrs.offset > header->data.offset &&
-	     header->data.offset + header->data.size > header->attrs.offset)) {
-		pr_err("Perf file header corrupt: Attributes and data overlap\n");
-		return -1;
-	}
-
 	if (header->size != sizeof(*header)) {
 		/* Support the previous format */
 		if (header->size == offsetof(typeof(*header), adds_features))
@@ -4102,8 +4006,13 @@ static int perf_file_section__process(struct perf_file_section *section,
 
 static int perf_file_header__read_pipe(struct perf_pipe_file_header *header,
 				       struct perf_header *ph,
-				       struct perf_data *data)
+				       struct perf_data* data,
+				       bool repipe, int repipe_fd)
 {
+	struct feat_fd ff = {
+		.fd = repipe_fd,
+		.ph = ph,
+	};
 	ssize_t ret;
 
 	ret = perf_data__read(data, header, sizeof(*header));
@@ -4118,15 +4027,19 @@ static int perf_file_header__read_pipe(struct perf_pipe_file_header *header,
 	if (ph->needs_swap)
 		header->size = bswap_64(header->size);
 
+	if (repipe && do_write(&ff, header, sizeof(*header)) < 0)
+		return -1;
+
 	return 0;
 }
 
-static int perf_header__read_pipe(struct perf_session *session)
+static int perf_header__read_pipe(struct perf_session *session, int repipe_fd)
 {
 	struct perf_header *header = &session->header;
 	struct perf_pipe_file_header f_header;
 
-	if (perf_file_header__read_pipe(&f_header, header, session->data) < 0) {
+	if (perf_file_header__read_pipe(&f_header, header, session->data,
+					session->repipe, repipe_fd) < 0) {
 		pr_debug("incompatible file format\n");
 		return -EINVAL;
 	}
@@ -4226,7 +4139,7 @@ static int evlist__prepare_tracepoint_events(struct evlist *evlist, struct tep_h
 }
 #endif
 
-int perf_session__read_header(struct perf_session *session)
+int perf_session__read_header(struct perf_session *session, int repipe_fd)
 {
 	struct perf_data *data = session->data;
 	struct perf_header *header = &session->header;
@@ -4240,14 +4153,14 @@ int perf_session__read_header(struct perf_session *session)
 	if (session->evlist == NULL)
 		return -ENOMEM;
 
-	session->evlist->session = session;
+	session->evlist->env = &header->env;
 	session->machines.host.env = &header->env;
 
 	/*
 	 * We can read 'pipe' data event from regular file,
 	 * check for the pipe header regardless of source.
 	 */
-	err = perf_header__read_pipe(session);
+	err = perf_header__read_pipe(session, repipe_fd);
 	if (!err || perf_data__is_pipe(data)) {
 		data->is_pipe = true;
 		return err;
@@ -4353,12 +4266,12 @@ out_delete_evlist:
 int perf_event__process_feature(struct perf_session *session,
 				union perf_event *event)
 {
+	struct perf_tool *tool = session->tool;
 	struct feat_fd ff = { .fd = 0 };
 	struct perf_record_header_feature *fe = (struct perf_record_header_feature *)event;
 	int type = fe->header.type;
 	u64 feat = fe->feat_id;
 	int ret = 0;
-	bool print = dump_trace;
 
 	if (type < 0 || type >= PERF_RECORD_HEADER_MAX) {
 		pr_warning("invalid record type %d in pipe-mode\n", type);
@@ -4369,35 +4282,28 @@ int perf_event__process_feature(struct perf_session *session,
 		return -1;
 	}
 
+	if (!feat_ops[feat].process)
+		return 0;
+
 	ff.buf  = (void *)fe->data;
 	ff.size = event->header.size - sizeof(*fe);
 	ff.ph = &session->header;
 
-	if (feat_ops[feat].process && feat_ops[feat].process(&ff, NULL)) {
+	if (feat_ops[feat].process(&ff, NULL)) {
 		ret = -1;
 		goto out;
 	}
 
-	if (session->tool->show_feat_hdr) {
-		if (!feat_ops[feat].full_only ||
-		    session->tool->show_feat_hdr >= SHOW_FEAT_HEADER_FULL_INFO) {
-			print = true;
-		} else {
-			fprintf(stdout, "# %s info available, use -I to display\n",
-				feat_ops[feat].name);
-		}
+	if (!feat_ops[feat].print || !tool->show_feat_hdr)
+		goto out;
+
+	if (!feat_ops[feat].full_only ||
+	    tool->show_feat_hdr >= SHOW_FEAT_HEADER_FULL_INFO) {
+		feat_ops[feat].print(&ff, stdout);
+	} else {
+		fprintf(stdout, "# %s info available, use -I to display\n",
+			feat_ops[feat].name);
 	}
-
-	if (dump_trace)
-		printf(", ");
-
-	if (print) {
-		if (feat_ops[feat].print)
-			feat_ops[feat].print(&ff, stdout);
-		else
-			printf("# %s", feat_ops[feat].name);
-	}
-
 out:
 	free_event_desc(ff.events);
 	return ret;
@@ -4425,10 +4331,9 @@ size_t perf_event__fprintf_event_update(union perf_event *event, FILE *fp)
 		ret += fprintf(fp, "... ");
 
 		map = cpu_map__new_data(&ev->cpus.cpus);
-		if (map) {
+		if (map)
 			ret += cpu_map__fprintf(map, fp);
-			perf_cpu_map__put(map);
-		} else
+		else
 			ret += fprintf(fp, "failed to get cpus\n");
 		break;
 	default:
@@ -4439,22 +4344,13 @@ size_t perf_event__fprintf_event_update(union perf_event *event, FILE *fp)
 	return ret;
 }
 
-size_t perf_event__fprintf_attr(union perf_event *event, FILE *fp)
-{
-	return perf_event_attr__fprintf(fp, &event->attr.attr, __desc_attr__fprintf, NULL);
-}
-
-int perf_event__process_attr(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_attr(struct perf_tool *tool __maybe_unused,
 			     union perf_event *event,
 			     struct evlist **pevlist)
 {
-	u32 i, n_ids;
-	u64 *ids;
+	u32 i, ids, n_ids;
 	struct evsel *evsel;
 	struct evlist *evlist = *pevlist;
-
-	if (dump_trace)
-		perf_event__fprintf_attr(event, stdout);
 
 	if (evlist == NULL) {
 		*pevlist = evlist = evlist__new();
@@ -4468,8 +4364,9 @@ int perf_event__process_attr(const struct perf_tool *tool __maybe_unused,
 
 	evlist__add(evlist, evsel);
 
-	n_ids = event->header.size - sizeof(event->header) - event->attr.attr.size;
-	n_ids = n_ids / sizeof(u64);
+	ids = event->header.size;
+	ids -= (void *)&event->attr.id - (void *)event;
+	n_ids = ids / sizeof(u64);
 	/*
 	 * We don't have the cpu and thread maps on the header, so
 	 * for allocating the perf_sample_id table we fake 1 cpu and
@@ -4478,15 +4375,14 @@ int perf_event__process_attr(const struct perf_tool *tool __maybe_unused,
 	if (perf_evsel__alloc_id(&evsel->core, 1, n_ids))
 		return -ENOMEM;
 
-	ids = perf_record_header_attr_id(event);
 	for (i = 0; i < n_ids; i++) {
-		perf_evlist__id_add(&evlist->core, &evsel->core, 0, i, ids[i]);
+		perf_evlist__id_add(&evlist->core, &evsel->core, 0, i, event->attr.id[i]);
 	}
 
 	return 0;
 }
 
-int perf_event__process_event_update(const struct perf_tool *tool __maybe_unused,
+int perf_event__process_event_update(struct perf_tool *tool __maybe_unused,
 				     union perf_event *event,
 				     struct evlist **pevlist)
 {
@@ -4522,8 +4418,8 @@ int perf_event__process_event_update(const struct perf_tool *tool __maybe_unused
 	case PERF_EVENT_UPDATE__CPUS:
 		map = cpu_map__new_data(&ev->cpus.cpus);
 		if (map) {
-			perf_cpu_map__put(evsel->core.pmu_cpus);
-			evsel->core.pmu_cpus = map;
+			perf_cpu_map__put(evsel->core.own_cpus);
+			evsel->core.own_cpus = map;
 		} else
 			pr_err("failed to get event_update cpus\n");
 	default:
@@ -4534,8 +4430,7 @@ int perf_event__process_event_update(const struct perf_tool *tool __maybe_unused
 }
 
 #ifdef HAVE_LIBTRACEEVENT
-int perf_event__process_tracing_data(const struct perf_tool *tool __maybe_unused,
-				     struct perf_session *session,
+int perf_event__process_tracing_data(struct perf_session *session,
 				     union perf_event *event)
 {
 	ssize_t size_read, padding, size = event->tracing_data.size;
@@ -4557,14 +4452,15 @@ int perf_event__process_tracing_data(const struct perf_tool *tool __maybe_unused
 		      SEEK_SET);
 	}
 
-	size_read = trace_report(fd, &session->tevent, session->trace_event_repipe);
+	size_read = trace_report(fd, &session->tevent,
+				 session->repipe);
 	padding = PERF_ALIGN(size_read, sizeof(u64)) - size_read;
 
 	if (readn(fd, buf, padding) < 0) {
 		pr_err("%s: reading input file", __func__);
 		return -1;
 	}
-	if (session->trace_event_repipe) {
+	if (session->repipe) {
 		int retw = write(STDOUT_FILENO, buf, padding);
 		if (retw <= 0 || retw != padding) {
 			pr_err("%s: repiping tracing data padding", __func__);
@@ -4583,8 +4479,7 @@ int perf_event__process_tracing_data(const struct perf_tool *tool __maybe_unused
 }
 #endif
 
-int perf_event__process_build_id(const struct perf_tool *tool __maybe_unused,
-				 struct perf_session *session,
+int perf_event__process_build_id(struct perf_session *session,
 				 union perf_event *event)
 {
 	__event_process_build_id(&event->build_id,

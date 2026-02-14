@@ -22,6 +22,7 @@ const char *const rxrpc_call_states[NR__RXRPC_CALL_STATES] = {
 	[RXRPC_CALL_CLIENT_AWAIT_REPLY]		= "ClAwtRpl",
 	[RXRPC_CALL_CLIENT_RECV_REPLY]		= "ClRcvRpl",
 	[RXRPC_CALL_SERVER_PREALLOC]		= "SvPrealc",
+	[RXRPC_CALL_SERVER_SECURING]		= "SvSecure",
 	[RXRPC_CALL_SERVER_RECV_REQUEST]	= "SvRcvReq",
 	[RXRPC_CALL_SERVER_ACK_REQUEST]		= "SvAckReq",
 	[RXRPC_CALL_SERVER_SEND_REPLY]		= "SvSndRpl",
@@ -39,8 +40,10 @@ const char *const rxrpc_call_completions[NR__RXRPC_CALL_COMPLETIONS] = {
 
 struct kmem_cache *rxrpc_call_jar;
 
-static DEFINE_SEMAPHORE(rxrpc_call_limiter, 1000);
-static DEFINE_SEMAPHORE(rxrpc_kernel_call_limiter, 1000);
+static struct semaphore rxrpc_call_limiter =
+	__SEMAPHORE_INITIALIZER(rxrpc_call_limiter, 1000);
+static struct semaphore rxrpc_kernel_call_limiter =
+	__SEMAPHORE_INITIALIZER(rxrpc_kernel_call_limiter, 1000);
 
 void rxrpc_poke_call(struct rxrpc_call *call, enum rxrpc_call_poke_trace what)
 {
@@ -48,7 +51,7 @@ void rxrpc_poke_call(struct rxrpc_call *call, enum rxrpc_call_poke_trace what)
 	bool busy;
 
 	if (!test_bit(RXRPC_CALL_DISCONNECTED, &call->flags)) {
-		spin_lock_irq(&local->lock);
+		spin_lock_bh(&local->lock);
 		busy = !list_empty(&call->attend_link);
 		trace_rxrpc_poke_call(call, busy, what);
 		if (!busy && !rxrpc_try_get_call(call, rxrpc_call_get_poke))
@@ -56,7 +59,7 @@ void rxrpc_poke_call(struct rxrpc_call *call, enum rxrpc_call_poke_trace what)
 		if (!busy) {
 			list_add_tail(&call->attend_link, &local->call_attend_q);
 		}
-		spin_unlock_irq(&local->lock);
+		spin_unlock_bh(&local->lock);
 		if (!busy)
 			rxrpc_wake_up_io_thread(local);
 	}
@@ -64,14 +67,23 @@ void rxrpc_poke_call(struct rxrpc_call *call, enum rxrpc_call_poke_trace what)
 
 static void rxrpc_call_timer_expired(struct timer_list *t)
 {
-	struct rxrpc_call *call = timer_container_of(call, t, timer);
+	struct rxrpc_call *call = from_timer(call, t, timer);
 
 	_enter("%d", call->debug_id);
 
 	if (!__rxrpc_call_is_complete(call)) {
-		trace_rxrpc_timer_expired(call);
+		trace_rxrpc_timer_expired(call, jiffies);
 		rxrpc_poke_call(call, rxrpc_call_poke_timer);
 	}
+}
+
+void rxrpc_reduce_call_timer(struct rxrpc_call *call,
+			     unsigned long expire_at,
+			     unsigned long now,
+			     enum rxrpc_timer_trace why)
+{
+	trace_rxrpc_timer(call, why, now);
+	timer_reduce(&call->timer, expire_at);
 }
 
 static struct lock_class_key rxrpc_call_user_mutex_lock_class_key;
@@ -145,36 +157,33 @@ struct rxrpc_call *rxrpc_alloc_call(struct rxrpc_sock *rx, gfp_t gfp,
 	INIT_LIST_HEAD(&call->recvmsg_link);
 	INIT_LIST_HEAD(&call->sock_link);
 	INIT_LIST_HEAD(&call->attend_link);
+	INIT_LIST_HEAD(&call->tx_sendmsg);
+	INIT_LIST_HEAD(&call->tx_buffer);
 	skb_queue_head_init(&call->recvmsg_queue);
-	skb_queue_head_init(&call->rx_queue);
 	skb_queue_head_init(&call->rx_oos_queue);
 	init_waitqueue_head(&call->waitq);
 	spin_lock_init(&call->notify_lock);
+	spin_lock_init(&call->tx_lock);
 	refcount_set(&call->ref, 1);
-	call->debug_id		= debug_id;
-	call->tx_total_len	= -1;
-	call->tx_jumbo_max	= 1;
-	call->next_rx_timo	= 20 * HZ;
-	call->next_req_timo	= 1 * HZ;
-	call->ackr_window	= 1;
-	call->ackr_wtop		= 1;
-	call->delay_ack_at	= KTIME_MAX;
-	call->rack_timo_at	= KTIME_MAX;
-	call->ping_at		= KTIME_MAX;
-	call->keepalive_at	= KTIME_MAX;
-	call->expect_rx_by	= KTIME_MAX;
-	call->expect_req_by	= KTIME_MAX;
-	call->expect_term_by	= KTIME_MAX;
+	call->debug_id = debug_id;
+	call->tx_total_len = -1;
+	call->next_rx_timo = 20 * HZ;
+	call->next_req_timo = 1 * HZ;
+	call->ackr_window = 1;
+	call->ackr_wtop = 1;
 
 	memset(&call->sock_node, 0xed, sizeof(call->sock_node));
 
 	call->rx_winsize = rxrpc_rx_window_size;
 	call->tx_winsize = 16;
 
-	call->cong_cwnd = RXRPC_MIN_CWND;
+	if (RXRPC_TX_SMSS > 2190)
+		call->cong_cwnd = 2;
+	else if (RXRPC_TX_SMSS > 1095)
+		call->cong_cwnd = 3;
+	else
+		call->cong_cwnd = 4;
 	call->cong_ssthresh = RXRPC_TX_MAX_WINDOW;
-
-	rxrpc_call_init_rtt(call);
 
 	call->rxnet = rxnet;
 	call->rtt_avail = RXRPC_CALL_RTT_AVAIL_MASK;
@@ -186,6 +195,7 @@ struct rxrpc_call *rxrpc_alloc_call(struct rxrpc_sock *rx, gfp_t gfp,
  * Allocate a new client call.
  */
 static struct rxrpc_call *rxrpc_alloc_client_call(struct rxrpc_sock *rx,
+						  struct sockaddr_rxrpc *srx,
 						  struct rxrpc_conn_parameters *cp,
 						  struct rxrpc_call_params *p,
 						  gfp_t gfp,
@@ -203,12 +213,10 @@ static struct rxrpc_call *rxrpc_alloc_client_call(struct rxrpc_sock *rx,
 	now = ktime_get_real();
 	call->acks_latest_ts	= now;
 	call->cong_tstamp	= now;
-	call->dest_srx		= cp->peer->srx;
-	call->dest_srx.srx_service = cp->service_id;
+	call->dest_srx		= *srx;
 	call->interruptibility	= p->interruptibility;
 	call->tx_total_len	= p->tx_total_len;
 	call->key		= key_get(cp->key);
-	call->peer		= rxrpc_get_peer(cp->peer, rxrpc_peer_get_call);
 	call->local		= rxrpc_get_local(cp->local, rxrpc_local_get_call);
 	call->security_level	= cp->security_level;
 	if (p->kernel)
@@ -217,13 +225,6 @@ static struct rxrpc_call *rxrpc_alloc_client_call(struct rxrpc_sock *rx,
 		__set_bit(RXRPC_CALL_UPGRADE, &call->flags);
 	if (cp->exclusive)
 		__set_bit(RXRPC_CALL_EXCLUSIVE, &call->flags);
-
-	if (p->timeouts.normal)
-		call->next_rx_timo = umin(p->timeouts.normal, 1);
-	if (p->timeouts.idle)
-		call->next_req_timo = umin(p->timeouts.idle, 1);
-	if (p->timeouts.hard)
-		call->hard_timo = p->timeouts.hard;
 
 	ret = rxrpc_init_client_call_security(call);
 	if (ret < 0) {
@@ -246,13 +247,18 @@ static struct rxrpc_call *rxrpc_alloc_client_call(struct rxrpc_sock *rx,
  */
 void rxrpc_start_call_timer(struct rxrpc_call *call)
 {
-	if (call->hard_timo) {
-		ktime_t delay = ms_to_ktime(call->hard_timo * 1000);
+	unsigned long now = jiffies;
+	unsigned long j = now + MAX_JIFFY_OFFSET;
 
-		call->expect_term_by = ktime_add(ktime_get_real(), delay);
-		trace_rxrpc_timer_set(call, delay, rxrpc_timer_trace_hard);
-	}
-	call->timer.expires = jiffies;
+	call->delay_ack_at = j;
+	call->ack_lost_at = j;
+	call->resend_at = j;
+	call->ping_at = j;
+	call->keepalive_at = j;
+	call->expect_rx_by = j;
+	call->expect_req_by = j;
+	call->expect_term_by = j;
+	call->timer.expires = now;
 }
 
 /*
@@ -295,15 +301,19 @@ static int rxrpc_connect_call(struct rxrpc_call *call, gfp_t gfp)
 
 	_enter("{%d,%lx},", call->debug_id, call->user_call_ID);
 
+	call->peer = rxrpc_lookup_peer(local, &call->dest_srx, gfp);
+	if (!call->peer)
+		goto error;
+
 	ret = rxrpc_look_up_bundle(call, gfp);
 	if (ret < 0)
 		goto error;
 
 	trace_rxrpc_client(NULL, -1, rxrpc_client_queue_new_call);
 	rxrpc_get_call(call, rxrpc_call_get_io_thread);
-	spin_lock_irq(&local->client_call_lock);
+	spin_lock(&local->client_call_lock);
 	list_add_tail(&call->wait_link, &local->new_client_calls);
-	spin_unlock_irq(&local->client_call_lock);
+	spin_unlock(&local->client_call_lock);
 	rxrpc_wake_up_io_thread(local);
 	return 0;
 
@@ -319,10 +329,11 @@ error:
  */
 struct rxrpc_call *rxrpc_new_client_call(struct rxrpc_sock *rx,
 					 struct rxrpc_conn_parameters *cp,
+					 struct sockaddr_rxrpc *srx,
 					 struct rxrpc_call_params *p,
 					 gfp_t gfp,
 					 unsigned int debug_id)
-	__releases(&rx->sk.sk_lock)
+	__releases(&rx->sk.sk_lock.slock)
 	__acquires(&call->user_mutex)
 {
 	struct rxrpc_call *call, *xcall;
@@ -333,18 +344,13 @@ struct rxrpc_call *rxrpc_new_client_call(struct rxrpc_sock *rx,
 
 	_enter("%p,%lx", rx, p->user_call_ID);
 
-	if (WARN_ON_ONCE(!cp->peer)) {
-		release_sock(&rx->sk);
-		return ERR_PTR(-EIO);
-	}
-
 	limiter = rxrpc_get_call_slot(p, gfp);
 	if (!limiter) {
 		release_sock(&rx->sk);
 		return ERR_PTR(-ERESTARTSYS);
 	}
 
-	call = rxrpc_alloc_client_call(rx, cp, p, gfp, debug_id);
+	call = rxrpc_alloc_client_call(rx, srx, cp, p, gfp, debug_id);
 	if (IS_ERR(call)) {
 		release_sock(&rx->sk);
 		up(limiter);
@@ -433,7 +439,7 @@ error_attached_to_socket:
 
 /*
  * Set up an incoming call.  call->conn points to the connection.
- * This is called with interrupts disabled and isn't allowed to fail.
+ * This is called in BH context and isn't allowed to fail.
  */
 void rxrpc_incoming_call(struct rxrpc_sock *rx,
 			 struct rxrpc_call *call,
@@ -452,16 +458,17 @@ void rxrpc_incoming_call(struct rxrpc_sock *rx,
 	call->cong_tstamp	= skb->tstamp;
 
 	__set_bit(RXRPC_CALL_EXPOSED, &call->flags);
-	rxrpc_set_call_state(call, RXRPC_CALL_SERVER_RECV_REQUEST);
+	rxrpc_set_call_state(call, RXRPC_CALL_SERVER_SECURING);
 
 	spin_lock(&conn->state_lock);
 
 	switch (conn->state) {
 	case RXRPC_CONN_SERVICE_UNSECURED:
 	case RXRPC_CONN_SERVICE_CHALLENGING:
-		__set_bit(RXRPC_CALL_CONN_CHALLENGING, &call->flags);
+		rxrpc_set_call_state(call, RXRPC_CALL_SERVER_SECURING);
 		break;
 	case RXRPC_CONN_SERVICE:
+		rxrpc_set_call_state(call, RXRPC_CALL_SERVER_RECV_REQUEST);
 		break;
 
 	case RXRPC_CONN_ABORTED:
@@ -529,30 +536,12 @@ void rxrpc_get_call(struct rxrpc_call *call, enum rxrpc_call_trace why)
 }
 
 /*
- * Clean up the transmission buffers.
+ * Clean up the Rx skb ring.
  */
-static void rxrpc_cleanup_tx_buffers(struct rxrpc_call *call)
+static void rxrpc_cleanup_ring(struct rxrpc_call *call)
 {
-	struct rxrpc_txqueue *tq, *next;
-
-	for (tq = call->tx_queue; tq; tq = next) {
-		next = tq->next;
-		for (int i = 0; i < RXRPC_NR_TXQUEUE; i++)
-			if (tq->bufs[i])
-				rxrpc_put_txbuf(tq->bufs[i], rxrpc_txbuf_put_cleaned);
-		trace_rxrpc_tq(call, tq, 0, rxrpc_tq_cleaned);
-		kfree(tq);
-	}
-}
-
-/*
- * Clean up the receive buffers.
- */
-static void rxrpc_cleanup_rx_buffers(struct rxrpc_call *call)
-{
-	rxrpc_purge_queue(&call->recvmsg_queue);
-	rxrpc_purge_queue(&call->rx_queue);
-	rxrpc_purge_queue(&call->rx_oos_queue);
+	skb_queue_purge(&call->recvmsg_queue);
+	skb_queue_purge(&call->rx_oos_queue);
 }
 
 /*
@@ -561,7 +550,7 @@ static void rxrpc_cleanup_rx_buffers(struct rxrpc_call *call)
 void rxrpc_release_call(struct rxrpc_sock *rx, struct rxrpc_call *call)
 {
 	struct rxrpc_connection *conn = call->conn;
-	bool putu = false;
+	bool put = false, putu = false;
 
 	_enter("{%d,%d}", call->debug_id, refcount_read(&call->ref));
 
@@ -573,13 +562,23 @@ void rxrpc_release_call(struct rxrpc_sock *rx, struct rxrpc_call *call)
 
 	rxrpc_put_call_slot(call);
 
-	/* Note that at this point, the call may still be on or may have been
-	 * added back on to the socket receive queue.  recvmsg() must discard
-	 * released calls.  The CALL_RELEASED flag should prevent further
-	 * notifications.
-	 */
-	spin_lock_irq(&rx->recvmsg_lock);
-	spin_unlock_irq(&rx->recvmsg_lock);
+	/* Make sure we don't get any more notifications */
+	spin_lock(&rx->recvmsg_lock);
+
+	if (!list_empty(&call->recvmsg_link)) {
+		_debug("unlinking once-pending call %p { e=%lx f=%lx }",
+		       call, call->events, call->flags);
+		list_del(&call->recvmsg_link);
+		put = true;
+	}
+
+	/* list_empty() must return false in rxrpc_notify_socket() */
+	call->recvmsg_link.next = NULL;
+	call->recvmsg_link.prev = NULL;
+
+	spin_unlock(&rx->recvmsg_lock);
+	if (put)
+		rxrpc_put_call(call, rxrpc_call_put_unnotify);
 
 	write_lock(&rx->call_lock);
 
@@ -626,12 +625,6 @@ void rxrpc_release_calls_on_socket(struct rxrpc_sock *rx)
 				    rxrpc_abort_call_sock_release);
 		rxrpc_release_call(rx, call);
 		rxrpc_put_call(call, rxrpc_call_put_release_sock);
-	}
-
-	while ((call = list_first_entry_or_null(&rx->recvmsg_q,
-						struct rxrpc_call, recvmsg_link))) {
-		list_del_init(&call->recvmsg_link);
-		rxrpc_put_call(call, rxrpc_call_put_release_recvmsg_q);
 	}
 
 	_leave("");
@@ -683,11 +676,22 @@ static void rxrpc_rcu_free_call(struct rcu_head *rcu)
 static void rxrpc_destroy_call(struct work_struct *work)
 {
 	struct rxrpc_call *call = container_of(work, struct rxrpc_call, destroyer);
+	struct rxrpc_txbuf *txb;
 
-	timer_delete_sync(&call->timer);
+	del_timer_sync(&call->timer);
 
-	rxrpc_cleanup_tx_buffers(call);
-	rxrpc_cleanup_rx_buffers(call);
+	rxrpc_cleanup_ring(call);
+	while ((txb = list_first_entry_or_null(&call->tx_sendmsg,
+					       struct rxrpc_txbuf, call_link))) {
+		list_del(&txb->call_link);
+		rxrpc_put_txbuf(txb, rxrpc_txbuf_put_cleaned);
+	}
+	while ((txb = list_first_entry_or_null(&call->tx_buffer,
+					       struct rxrpc_txbuf, call_link))) {
+		list_del(&txb->call_link);
+		rxrpc_put_txbuf(txb, rxrpc_txbuf_put_cleaned);
+	}
+
 	rxrpc_put_txbuf(call->tx_pending, rxrpc_txbuf_put_cleaned);
 	rxrpc_put_connection(call->conn, rxrpc_conn_put_call);
 	rxrpc_deactivate_bundle(call->bundle);
@@ -707,7 +711,7 @@ void rxrpc_cleanup_call(struct rxrpc_call *call)
 	ASSERTCMP(__rxrpc_call_state(call), ==, RXRPC_CALL_COMPLETE);
 	ASSERT(test_bit(RXRPC_CALL_RELEASED, &call->flags));
 
-	timer_delete(&call->timer);
+	del_timer(&call->timer);
 
 	if (rcu_read_lock_held())
 		/* Can't use the rxrpc workqueue as we need to cancel/flush
@@ -756,23 +760,3 @@ void rxrpc_destroy_all_calls(struct rxrpc_net *rxnet)
 	atomic_dec(&rxnet->nr_calls);
 	wait_var_event(&rxnet->nr_calls, !atomic_read(&rxnet->nr_calls));
 }
-
-/**
- * rxrpc_kernel_query_call_security - Query call's security parameters
- * @call: The call to query
- * @_service_id: Where to return the service ID
- * @_enctype: Where to return the "encoding type"
- *
- * This queries the security parameters of a call, setting *@_service_id and
- * *@_enctype and returning the security class.
- *
- * Return: The security class protocol number.
- */
-u8 rxrpc_kernel_query_call_security(struct rxrpc_call *call,
-				    u16 *_service_id, u32 *_enctype)
-{
-	*_service_id = call->dest_srx.srx_service;
-	*_enctype = call->security_enctype;
-	return call->security_ix;
-}
-EXPORT_SYMBOL(rxrpc_kernel_query_call_security);

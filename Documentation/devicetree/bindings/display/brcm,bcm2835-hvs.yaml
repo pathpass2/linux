@@ -13,27 +13,17 @@ properties:
   compatible:
     enum:
       - brcm,bcm2711-hvs
-      - brcm,bcm2712-hvs
       - brcm,bcm2835-hvs
 
   reg:
     maxItems: 1
 
   interrupts:
-    minItems: 1
-    maxItems: 3
-
-  interrupt-names:
-    minItems: 1
-    maxItems: 3
+    maxItems: 1
 
   clocks:
-    minItems: 1
-    maxItems: 2
-
-  clock-names:
-    minItems: 1
-    maxItems: 2
+    maxItems: 1
+    description: Core Clock
 
 required:
   - compatible
@@ -42,68 +32,15 @@ required:
 
 additionalProperties: false
 
-allOf:
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: brcm,bcm2711-hvs
+if:
+  properties:
+    compatible:
+      contains:
+        const: brcm,bcm2711-hvs
 
-    then:
-      properties:
-        clocks:
-          items:
-            - description: Core Clock
-        interrupts:
-          maxItems: 1
-        clock-names: false
-        interrupt-names: false
-
-      required:
-        - clocks
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: brcm,bcm2712-hvs
-
-    then:
-      properties:
-        clocks:
-          minItems: 2
-          maxItems: 2
-        clock-names:
-          items:
-            - const: core
-            - const: disp
-        interrupts:
-          items:
-            - description: Channel 0 End of frame
-            - description: Channel 1 End of frame
-            - description: Channel 2 End of frame
-        interrupt-names:
-          items:
-            - const: ch0-eof
-            - const: ch1-eof
-            - const: ch2-eof
-      required:
-        - clocks
-        - clock-names
-        - interrupt-names
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: brcm,bcm2835-hvs
-
-    then:
-      properties:
-        interrupts:
-          maxItems: 1
-        clock-names: false
-        interrupt-names: false
+then:
+  required:
+    - clocks
 
 examples:
   - |

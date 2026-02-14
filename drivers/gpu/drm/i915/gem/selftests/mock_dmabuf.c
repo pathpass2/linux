@@ -4,7 +4,6 @@
  * Copyright © 2016 Intel Corporation
  */
 
-#include <linux/vmalloc.h>
 #include "mock_dmabuf.h"
 
 static struct sg_table *mock_map_dma_buf(struct dma_buf_attachment *attachment,
@@ -103,7 +102,8 @@ static struct dma_buf *mock_dmabuf(int npages)
 	struct dma_buf *dmabuf;
 	int i;
 
-	mock = kmalloc(struct_size(mock, pages, npages), GFP_KERNEL);
+	mock = kmalloc(sizeof(*mock) + npages * sizeof(struct page *),
+		       GFP_KERNEL);
 	if (!mock)
 		return ERR_PTR(-ENOMEM);
 

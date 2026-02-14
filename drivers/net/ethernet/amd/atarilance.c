@@ -79,7 +79,6 @@ static int lance_debug = 1;
 #endif
 module_param(lance_debug, int, 0);
 MODULE_PARM_DESC(lance_debug, "atarilance debug level (0-3)");
-MODULE_DESCRIPTION("Atari LANCE Ethernet driver");
 MODULE_LICENSE("GPL");
 
 /* Print debug messages on probing? */
@@ -368,7 +367,7 @@ static void *slow_memcpy( void *dst, const void *src, size_t len )
 }
 
 
-static struct net_device * __init atarilance_probe(void)
+struct net_device * __init atarilance_probe(void)
 {
 	int i;
 	static int found;

@@ -97,17 +97,17 @@ static void i2c_amd_cmd_completion(struct amd_i2c_common *i2c_common)
 static int i2c_amd_check_cmd_completion(struct amd_i2c_dev *i2c_dev)
 {
 	struct amd_i2c_common *i2c_common = &i2c_dev->common;
-	unsigned long time_left;
+	unsigned long timeout;
 
-	time_left = wait_for_completion_timeout(&i2c_dev->cmd_complete,
-						i2c_dev->adap.timeout);
+	timeout = wait_for_completion_timeout(&i2c_dev->cmd_complete,
+					      i2c_dev->adap.timeout);
 
 	if ((i2c_common->reqcmd == i2c_read ||
 	     i2c_common->reqcmd == i2c_write) &&
 	    i2c_common->msg->len > 32)
 		i2c_amd_dma_unmap(i2c_common);
 
-	if (time_left == 0) {
+	if (timeout == 0) {
 		amd_mp2_rw_timeout(i2c_common);
 		return -ETIMEDOUT;
 	}
@@ -179,7 +179,7 @@ static u32 i2c_amd_func(struct i2c_adapter *a)
 }
 
 static const struct i2c_algorithm i2c_amd_algorithm = {
-	.xfer = i2c_amd_xfer,
+	.master_xfer = i2c_amd_xfer,
 	.functionality = i2c_amd_func,
 };
 
@@ -322,7 +322,7 @@ static int i2c_amd_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void i2c_amd_remove(struct platform_device *pdev)
+static int i2c_amd_remove(struct platform_device *pdev)
 {
 	struct amd_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
 	struct amd_i2c_common *i2c_common = &i2c_dev->common;
@@ -336,11 +336,12 @@ static void i2c_amd_remove(struct platform_device *pdev)
 	i2c_unlock_bus(&i2c_dev->adap, I2C_LOCK_ROOT_ADAPTER);
 
 	i2c_del_adapter(&i2c_dev->adap);
+	return 0;
 }
 
 static const struct acpi_device_id i2c_amd_acpi_match[] = {
 	{ "AMDI0011" },
-	{ }
+	{ },
 };
 MODULE_DEVICE_TABLE(acpi, i2c_amd_acpi_match);
 

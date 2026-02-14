@@ -21,8 +21,6 @@
 #include <asm/console.h>
 #include <linux/uaccess.h>
 
-#include "proto.h"
-
 
 static DEFINE_SPINLOCK(srmcons_callback_lock);
 static int srm_is_registered_console = 0;
@@ -55,7 +53,7 @@ srmcons_do_receive_chars(struct tty_port *port)
 	do {
 		result.as_long = callback_getc(0);
 		if (result.bits.status < 2) {
-			tty_insert_flip_char(port, (u8)result.bits.c, 0);
+			tty_insert_flip_char(port, (char)result.bits.c, 0);
 			count++;
 		}
 	} while((result.bits.status & 1) && (++loops < 10));
@@ -69,8 +67,7 @@ srmcons_do_receive_chars(struct tty_port *port)
 static void
 srmcons_receive_chars(struct timer_list *t)
 {
-	struct srmcons_private *srmconsp = timer_container_of(srmconsp, t,
-							      timer);
+	struct srmcons_private *srmconsp = from_timer(srmconsp, t, timer);
 	struct tty_port *port = &srmconsp->port;
 	unsigned long flags;
 	int incr = 10;
@@ -91,27 +88,30 @@ srmcons_receive_chars(struct timer_list *t)
 }
 
 /* called with callback_lock held */
-static void
-srmcons_do_write(struct tty_port *port, const u8 *buf, size_t count)
+static int
+srmcons_do_write(struct tty_port *port, const char *buf, int count)
 {
-	size_t c;
+	static char str_cr[1] = "\r";
+	long c, remaining = count;
 	srmcons_result result;
+	char *cur;
+	int need_cr;
 
-	while (count > 0) {
-		bool need_cr = false;
+	for (cur = (char *)buf; remaining > 0; ) {
+		need_cr = 0;
 		/* 
 		 * Break it up into reasonable size chunks to allow a chance
 		 * for input to get in
 		 */
-		for (c = 0; c < min_t(size_t, 128U, count) && !need_cr; c++)
-			if (buf[c] == '\n')
-				need_cr = true;
+		for (c = 0; c < min_t(long, 128L, remaining) && !need_cr; c++)
+			if (cur[c] == '\n')
+				need_cr = 1;
 		
 		while (c > 0) {
-			result.as_long = callback_puts(0, buf, c);
+			result.as_long = callback_puts(0, cur, c);
 			c -= result.bits.c;
-			count -= result.bits.c;
-			buf += result.bits.c;
+			remaining -= result.bits.c;
+			cur += result.bits.c;
 
 			/*
 			 * Check for pending input iff a tty port was provided
@@ -121,20 +121,22 @@ srmcons_do_write(struct tty_port *port, const u8 *buf, size_t count)
 		}
 
 		while (need_cr) {
-			result.as_long = callback_puts(0, "\r", 1);
+			result.as_long = callback_puts(0, str_cr, 1);
 			if (result.bits.c > 0)
-				need_cr = false;
+				need_cr = 0;
 		}
 	}
+	return count;
 }
 
-static ssize_t
-srmcons_write(struct tty_struct *tty, const u8 *buf, size_t count)
+static int
+srmcons_write(struct tty_struct *tty,
+	      const unsigned char *buf, int count)
 {
 	unsigned long flags;
 
 	spin_lock_irqsave(&srmcons_callback_lock, flags);
-	srmcons_do_write(tty->port, buf, count);
+	srmcons_do_write(tty->port, (const char *) buf, count);
 	spin_unlock_irqrestore(&srmcons_callback_lock, flags);
 
 	return count;
@@ -178,7 +180,7 @@ srmcons_close(struct tty_struct *tty, struct file *filp)
 
 	if (tty->count == 1) {
 		port->tty = NULL;
-		timer_delete(&srmconsp->timer);
+		del_timer(&srmconsp->timer);
 	}
 
 	spin_unlock_irqrestore(&port->lock, flags);
@@ -197,44 +199,40 @@ static const struct tty_operations srmcons_ops = {
 static int __init
 srmcons_init(void)
 {
-	struct tty_driver *driver;
-	int err;
-
 	timer_setup(&srmcons_singleton.timer, srmcons_receive_chars, 0);
+	if (srm_is_registered_console) {
+		struct tty_driver *driver;
+		int err;
 
-	if (!srm_is_registered_console)
-		return -ENODEV;
+		driver = tty_alloc_driver(MAX_SRM_CONSOLE_DEVICES, 0);
+		if (IS_ERR(driver))
+			return PTR_ERR(driver);
 
-	driver = tty_alloc_driver(MAX_SRM_CONSOLE_DEVICES, 0);
-	if (IS_ERR(driver))
-		return PTR_ERR(driver);
+		tty_port_init(&srmcons_singleton.port);
 
-	tty_port_init(&srmcons_singleton.port);
+		driver->driver_name = "srm";
+		driver->name = "srm";
+		driver->major = 0; 	/* dynamic */
+		driver->minor_start = 0;
+		driver->type = TTY_DRIVER_TYPE_SYSTEM;
+		driver->subtype = SYSTEM_TYPE_SYSCONS;
+		driver->init_termios = tty_std_termios;
+		tty_set_operations(driver, &srmcons_ops);
+		tty_port_link_device(&srmcons_singleton.port, driver, 0);
+		err = tty_register_driver(driver);
+		if (err) {
+			tty_driver_kref_put(driver);
+			tty_port_destroy(&srmcons_singleton.port);
+			return err;
+		}
+		srmcons_driver = driver;
+	}
 
-	driver->driver_name = "srm";
-	driver->name = "srm";
-	driver->major = 0;	/* dynamic */
-	driver->minor_start = 0;
-	driver->type = TTY_DRIVER_TYPE_SYSTEM;
-	driver->subtype = SYSTEM_TYPE_SYSCONS;
-	driver->init_termios = tty_std_termios;
-	tty_set_operations(driver, &srmcons_ops);
-	tty_port_link_device(&srmcons_singleton.port, driver, 0);
-	err = tty_register_driver(driver);
-	if (err)
-		goto err_free_drv;
-
-	srmcons_driver = driver;
-
-	return 0;
-err_free_drv:
-	tty_driver_kref_put(driver);
-	tty_port_destroy(&srmcons_singleton.port);
-
-	return err;
+	return -ENODEV;
 }
 device_initcall(srmcons_init);
 
+
 /*
  * The console driver
  */

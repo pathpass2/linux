@@ -492,24 +492,20 @@ static int synic_set_irq(struct kvm_vcpu_hv_synic *synic, u32 sint)
 	irq.vector = vector;
 	irq.level = 1;
 
-	ret = kvm_irq_delivery_to_apic(vcpu->kvm, vcpu->arch.apic, &irq);
+	ret = kvm_irq_delivery_to_apic(vcpu->kvm, vcpu->arch.apic, &irq, NULL);
 	trace_kvm_hv_synic_set_irq(vcpu->vcpu_id, sint, irq.vector, ret);
 	return ret;
 }
 
-int kvm_hv_synic_set_irq(struct kvm_kernel_irq_routing_entry *e, struct kvm *kvm,
-			 int irq_source_id, int level, bool line_status)
+int kvm_hv_synic_set_irq(struct kvm *kvm, u32 vpidx, u32 sint)
 {
 	struct kvm_vcpu_hv_synic *synic;
 
-	if (!level)
-		return -1;
-
-	synic = synic_get(kvm, e->hv_sint.vcpu);
+	synic = synic_get(kvm, vpidx);
 	if (!synic)
 		return -EINVAL;
 
-	return synic_set_irq(synic, e->hv_sint.sint);
+	return synic_set_irq(synic, sint);
 }
 
 void kvm_hv_synic_send_eoi(struct kvm_vcpu *vcpu, int vector)
@@ -731,12 +727,10 @@ static int stimer_set_count(struct kvm_vcpu_hv_stimer *stimer, u64 count,
 
 	stimer_cleanup(stimer);
 	stimer->count = count;
-	if (!host) {
-		if (stimer->count == 0)
-			stimer->config.enable = 0;
-		else if (stimer->config.auto_enable)
-			stimer->config.enable = 1;
-	}
+	if (stimer->count == 0)
+		stimer->config.enable = 0;
+	else if (stimer->config.auto_enable)
+		stimer->config.enable = 1;
 
 	if (stimer->config.enable)
 		stimer_mark_pending(stimer, false);
@@ -923,7 +917,7 @@ bool kvm_hv_assist_page_enabled(struct kvm_vcpu *vcpu)
 		return false;
 	return vcpu->arch.pv_eoi.msr_val & KVM_MSR_ENABLED;
 }
-EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_hv_assist_page_enabled);
+EXPORT_SYMBOL_GPL(kvm_hv_assist_page_enabled);
 
 int kvm_hv_get_assist_page(struct kvm_vcpu *vcpu)
 {
@@ -935,7 +929,7 @@ int kvm_hv_get_assist_page(struct kvm_vcpu *vcpu)
 	return kvm_read_guest_cached(vcpu->kvm, &vcpu->arch.pv_eoi.data,
 				     &hv_vcpu->vp_assist_page, sizeof(struct hv_vp_assist_page));
 }
-EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_hv_get_assist_page);
+EXPORT_SYMBOL_GPL(kvm_hv_get_assist_page);
 
 static void stimer_prepare_msg(struct kvm_vcpu_hv_stimer *stimer)
 {
@@ -956,7 +950,8 @@ static void stimer_init(struct kvm_vcpu_hv_stimer *stimer, int timer_index)
 {
 	memset(stimer, 0, sizeof(*stimer));
 	stimer->index = timer_index;
-	hrtimer_setup(&stimer->timer, stimer_timer_callback, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	hrtimer_init(&stimer->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	stimer->timer.function = stimer_timer_callback;
 	stimer_prepare_msg(stimer);
 }
 
@@ -1168,15 +1163,15 @@ void kvm_hv_setup_tsc_page(struct kvm *kvm,
 	BUILD_BUG_ON(sizeof(tsc_seq) != sizeof(hv->tsc_ref.tsc_sequence));
 	BUILD_BUG_ON(offsetof(struct ms_hyperv_tsc_page, tsc_sequence) != 0);
 
-	guard(mutex)(&hv->hv_lock);
+	mutex_lock(&hv->hv_lock);
 
 	if (hv->hv_tsc_page_status == HV_TSC_PAGE_BROKEN ||
 	    hv->hv_tsc_page_status == HV_TSC_PAGE_SET ||
 	    hv->hv_tsc_page_status == HV_TSC_PAGE_UNSET)
-		return;
+		goto out_unlock;
 
 	if (!(hv->hv_tsc_page & HV_X64_MSR_TSC_REFERENCE_ENABLE))
-		return;
+		goto out_unlock;
 
 	gfn = hv->hv_tsc_page >> HV_X64_MSR_TSC_REFERENCE_ADDRESS_SHIFT;
 	/*
@@ -1192,7 +1187,7 @@ void kvm_hv_setup_tsc_page(struct kvm *kvm,
 			goto out_err;
 
 		hv->hv_tsc_page_status = HV_TSC_PAGE_SET;
-		return;
+		goto out_unlock;
 	}
 
 	/*
@@ -1228,10 +1223,12 @@ void kvm_hv_setup_tsc_page(struct kvm *kvm,
 		goto out_err;
 
 	hv->hv_tsc_page_status = HV_TSC_PAGE_SET;
-	return;
+	goto out_unlock;
 
 out_err:
 	hv->hv_tsc_page_status = HV_TSC_PAGE_BROKEN;
+out_unlock:
+	mutex_unlock(&hv->hv_lock);
 }
 
 void kvm_hv_request_tsc_page_update(struct kvm *kvm)
@@ -1296,6 +1293,7 @@ static bool hv_check_msr_access(struct kvm_vcpu_hv *hv_vcpu, u32 msr)
 	case HV_X64_MSR_VP_ASSIST_PAGE:
 		return hv_vcpu->cpuid_cache.features_eax &
 			HV_MSR_APIC_ACCESS_AVAILABLE;
+		break;
 	case HV_X64_MSR_TSC_FREQUENCY:
 	case HV_X64_MSR_APIC_FREQUENCY:
 		return hv_vcpu->cpuid_cache.features_eax &
@@ -1321,56 +1319,6 @@ static bool hv_check_msr_access(struct kvm_vcpu_hv *hv_vcpu, u32 msr)
 	}
 
 	return false;
-}
-
-#define KVM_HV_WIN2016_GUEST_ID 0x1040a00003839
-#define KVM_HV_WIN2016_GUEST_ID_MASK (~GENMASK_ULL(23, 16)) /* mask out the service version */
-
-/*
- * Hyper-V enabled Windows Server 2016 SMP VMs fail to boot in !XSAVES && XSAVEC
- * configuration.
- * Such configuration can result from, for example, AMD Erratum 1386 workaround.
- *
- * Print a notice so users aren't left wondering what's suddenly gone wrong.
- */
-static void __kvm_hv_xsaves_xsavec_maybe_warn(struct kvm_vcpu *vcpu)
-{
-	struct kvm *kvm = vcpu->kvm;
-	struct kvm_hv *hv = to_kvm_hv(kvm);
-
-	/* Check again under the hv_lock.  */
-	if (hv->xsaves_xsavec_checked)
-		return;
-
-	if ((hv->hv_guest_os_id & KVM_HV_WIN2016_GUEST_ID_MASK) !=
-	    KVM_HV_WIN2016_GUEST_ID)
-		return;
-
-	hv->xsaves_xsavec_checked = true;
-
-	/* UP configurations aren't affected */
-	if (atomic_read(&kvm->online_vcpus) < 2)
-		return;
-
-	if (guest_cpuid_has(vcpu, X86_FEATURE_XSAVES) ||
-	    !guest_cpu_cap_has(vcpu, X86_FEATURE_XSAVEC))
-		return;
-
-	pr_notice_ratelimited("Booting SMP Windows KVM VM with !XSAVES && XSAVEC. "
-			      "If it fails to boot try disabling XSAVEC in the VM config.\n");
-}
-
-void kvm_hv_xsaves_xsavec_maybe_warn(struct kvm_vcpu *vcpu)
-{
-	struct kvm_hv *hv = to_kvm_hv(vcpu->kvm);
-
-	if (!vcpu->arch.hyperv_enabled ||
-	    hv->xsaves_xsavec_checked)
-		return;
-
-	mutex_lock(&hv->hv_lock);
-	__kvm_hv_xsaves_xsavec_maybe_warn(vcpu);
-	mutex_unlock(&hv->hv_lock);
 }
 
 static int kvm_hv_set_msr_pw(struct kvm_vcpu *vcpu, u32 msr, u64 data,
@@ -1418,7 +1366,7 @@ static int kvm_hv_set_msr_pw(struct kvm_vcpu *vcpu, u32 msr, u64 data,
 		}
 
 		/* vmcall/vmmcall */
-		kvm_x86_call(patch_hypercall)(vcpu, instructions + i);
+		static_call(kvm_x86_patch_hypercall)(vcpu, instructions + i);
 		i += 3;
 
 		/* ret */
@@ -1568,7 +1516,7 @@ static int kvm_hv_set_msr(struct kvm_vcpu *vcpu, u32 msr, u64 data, bool host)
 		 * only, there can be valuable data in the rest which needs
 		 * to be preserved e.g. on migration.
 		 */
-		if (put_user(0, (u32 __user *)addr))
+		if (__put_user(0, (u32 __user *)addr))
 			return 1;
 		hv_vcpu->hv_vapic = data;
 		kvm_vcpu_mark_page_dirty(vcpu, gfn);
@@ -1738,8 +1686,7 @@ static int kvm_hv_get_msr(struct kvm_vcpu *vcpu, u32 msr, u64 *pdata,
 		data = (u64)vcpu->arch.virtual_tsc_khz * 1000;
 		break;
 	case HV_X64_MSR_APIC_FREQUENCY:
-		data = div64_u64(1000000000ULL,
-				 vcpu->kvm->arch.apic_bus_cycle_ns);
+		data = APIC_BUS_FREQUENCY;
 		break;
 	default:
 		kvm_pr_unimpl_rdmsr(vcpu, msr);
@@ -1981,16 +1928,13 @@ int kvm_hv_vcpu_flush_tlb(struct kvm_vcpu *vcpu)
 		if (entries[i] == KVM_HV_TLB_FLUSHALL_ENTRY)
 			goto out_flush_all;
 
-		if (is_noncanonical_invlpg_address(entries[i], vcpu))
-			continue;
-
 		/*
 		 * Lower 12 bits of 'address' encode the number of additional
 		 * pages to flush.
 		 */
 		gva = entries[i] & PAGE_MASK;
 		for (j = 0; j < (entries[i] & ~PAGE_MASK) + 1; j++)
-			kvm_x86_call(flush_tlb_gva)(vcpu, gva + j * PAGE_SIZE);
+			static_call(kvm_x86_flush_tlb_gva)(vcpu, gva + j * PAGE_SIZE);
 
 		++vcpu->stat.tlb_flush;
 	}
@@ -2006,11 +1950,11 @@ out_flush_all:
 static u64 kvm_hv_flush_tlb(struct kvm_vcpu *vcpu, struct kvm_hv_hcall *hc)
 {
 	struct kvm_vcpu_hv *hv_vcpu = to_hv_vcpu(vcpu);
-	unsigned long *vcpu_mask = hv_vcpu->vcpu_mask;
 	u64 *sparse_banks = hv_vcpu->sparse_banks;
 	struct kvm *kvm = vcpu->kvm;
 	struct hv_tlb_flush_ex flush_ex;
 	struct hv_tlb_flush flush;
+	DECLARE_BITMAP(vcpu_mask, KVM_MAX_VCPUS);
 	struct kvm_vcpu_hv_tlb_flush_fifo *tlb_flush_fifo;
 	/*
 	 * Normally, there can be no more than 'KVM_HV_TLB_FLUSH_FIFO_SIZE'
@@ -2230,9 +2174,6 @@ static u64 kvm_hv_send_ipi(struct kvm_vcpu *vcpu, struct kvm_hv_hcall *hc)
 	u32 vector;
 	bool all_cpus;
 
-	if (!lapic_in_kernel(vcpu))
-		return HV_STATUS_INVALID_HYPERCALL_INPUT;
-
 	if (hc->code == HVCALL_SEND_IPI) {
 		if (!hc->fast) {
 			if (unlikely(kvm_read_guest(kvm, hc->ingpa, &send_ipi,
@@ -2446,7 +2387,7 @@ static u16 kvm_hvcall_signal_event(struct kvm_vcpu *vcpu, struct kvm_hv_hcall *h
 	if (!eventfd)
 		return HV_STATUS_INVALID_PORT_ID;
 
-	eventfd_signal(eventfd);
+	eventfd_signal(eventfd, 1);
 	return HV_STATUS_SUCCESS;
 }
 
@@ -2534,7 +2475,7 @@ int kvm_hv_hypercall(struct kvm_vcpu *vcpu)
 	 * hypercall generates UD from non zero cpl and real mode
 	 * per HYPER-V spec
 	 */
-	if (kvm_x86_call(get_cpl)(vcpu) != 0 || !is_protmode(vcpu)) {
+	if (static_call(kvm_x86_get_cpl)(vcpu) != 0 || !is_protmode(vcpu)) {
 		kvm_queue_exception(vcpu, UD_VECTOR);
 		return 1;
 	}
@@ -2859,8 +2800,7 @@ int kvm_get_hv_cpuid(struct kvm_vcpu *vcpu, struct kvm_cpuid2 *cpuid,
 			ent->eax |= HV_X64_REMOTE_TLB_FLUSH_RECOMMENDED;
 			ent->eax |= HV_X64_APIC_ACCESS_RECOMMENDED;
 			ent->eax |= HV_X64_RELAXED_TIMING_RECOMMENDED;
-			if (!vcpu || lapic_in_kernel(vcpu))
-				ent->eax |= HV_X64_CLUSTER_IPI_RECOMMENDED;
+			ent->eax |= HV_X64_CLUSTER_IPI_RECOMMENDED;
 			ent->eax |= HV_X64_EX_PROCESSOR_MASKS_RECOMMENDED;
 			if (evmcs_ver)
 				ent->eax |= HV_X64_ENLIGHTENED_VMCS_RECOMMENDED;

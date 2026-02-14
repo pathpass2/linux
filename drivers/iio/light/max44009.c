@@ -422,7 +422,7 @@ static int max44009_write_event_config(struct iio_dev *indio_dev,
 				       const struct iio_chan_spec *chan,
 				       enum iio_event_type type,
 				       enum iio_event_direction dir,
-				       bool state)
+				       int state)
 {
 	struct max44009_data *data = iio_priv(indio_dev);
 	int ret;
@@ -527,14 +527,8 @@ static int max44009_probe(struct i2c_client *client)
 	return devm_iio_device_register(&client->dev, indio_dev);
 }
 
-static const struct of_device_id max44009_of_match[] = {
-	{ .compatible = "maxim,max44009" },
-	{ }
-};
-MODULE_DEVICE_TABLE(of, max44009_of_match);
-
 static const struct i2c_device_id max44009_id[] = {
-	{ "max44009" },
+	{ "max44009", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max44009_id);
@@ -542,12 +536,17 @@ MODULE_DEVICE_TABLE(i2c, max44009_id);
 static struct i2c_driver max44009_driver = {
 	.driver = {
 		.name = MAX44009_DRV_NAME,
-		.of_match_table = max44009_of_match,
 	},
-	.probe = max44009_probe,
+	.probe_new = max44009_probe,
 	.id_table = max44009_id,
 };
 module_i2c_driver(max44009_driver);
+
+static const struct of_device_id max44009_of_match[] = {
+	{ .compatible = "maxim,max44009" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, max44009_of_match);
 
 MODULE_AUTHOR("Robert Eshleman <bobbyeshleman@gmail.com>");
 MODULE_LICENSE("GPL v2");

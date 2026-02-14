@@ -32,33 +32,28 @@
  * - future firmware versions could add support for >1 planes
  */
 static const struct venus_format venc_formats[] = {
-	[VENUS_FMT_NV12] = {
+	{
 		.pixfmt = V4L2_PIX_FMT_NV12,
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
-	},
-	[VENUS_FMT_H264] = {
-		.pixfmt = V4L2_PIX_FMT_H264,
-		.num_planes = 1,
-		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
-	},
-	[VENUS_FMT_VP8] = {
-		.pixfmt = V4L2_PIX_FMT_VP8,
-		.num_planes = 1,
-		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
-	},
-	[VENUS_FMT_HEVC] = {
-		.pixfmt = V4L2_PIX_FMT_HEVC,
-		.num_planes = 1,
-		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
-	},
-	[VENUS_FMT_MPEG4] = {
+	}, {
 		.pixfmt = V4L2_PIX_FMT_MPEG4,
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
-	},
-	[VENUS_FMT_H263] = {
+	}, {
 		.pixfmt = V4L2_PIX_FMT_H263,
+		.num_planes = 1,
+		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+	}, {
+		.pixfmt = V4L2_PIX_FMT_H264,
+		.num_planes = 1,
+		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+	}, {
+		.pixfmt = V4L2_PIX_FMT_VP8,
+		.num_planes = 1,
+		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
+	}, {
+		.pixfmt = V4L2_PIX_FMT_HEVC,
 		.num_planes = 1,
 		.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE,
 	},
@@ -144,13 +139,9 @@ static int venc_v4l2_to_hfi(int id, int value)
 static int
 venc_querycap(struct file *file, void *fh, struct v4l2_capability *cap)
 {
-	struct venus_inst *inst = to_inst(file);
-	struct venus_core *core = inst->core;
-
 	strscpy(cap->driver, "qcom-venus", sizeof(cap->driver));
 	strscpy(cap->card, "Qualcomm Venus video encoder", sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info),
-		 "plat:%s:enc", dev_name(core->dev));
+	strscpy(cap->bus_info, "platform:qcom-venus", sizeof(cap->bus_info));
 
 	return 0;
 }
@@ -245,6 +236,8 @@ static int venc_s_fmt(struct file *file, void *fh, struct v4l2_format *f)
 	struct vb2_queue *q;
 
 	q = v4l2_m2m_get_vq(inst->m2m_ctx, f->type);
+	if (!q)
+		return -EINVAL;
 
 	if (vb2_is_busy(q))
 		return -EBUSY;
@@ -413,9 +406,11 @@ static int venc_s_parm(struct file *file, void *fh, struct v4l2_streamparm *a)
 	us_per_frame = timeperframe->numerator * (u64)USEC_PER_SEC;
 	do_div(us_per_frame, timeperframe->denominator);
 
-	us_per_frame = clamp(us_per_frame, 1, USEC_PER_SEC);
-	fps = USEC_PER_SEC / (u32)us_per_frame;
-	fps = min(VENUS_MAX_FPS, fps);
+	if (!us_per_frame)
+		return -EINVAL;
+
+	fps = (u64)USEC_PER_SEC;
+	do_div(fps, us_per_frame);
 
 	inst->timeperframe = *timeperframe;
 	inst->fps = fps;
@@ -525,51 +520,6 @@ static int venc_subscribe_event(struct v4l2_fh *fh,
 	}
 }
 
-static int
-venc_encoder_cmd(struct file *file, void *fh, struct v4l2_encoder_cmd *cmd)
-{
-	struct venus_inst *inst = to_inst(file);
-	struct hfi_frame_data fdata = {0};
-	int ret = 0;
-
-	ret = v4l2_m2m_ioctl_try_encoder_cmd(file, fh, cmd);
-	if (ret)
-		return ret;
-
-	mutex_lock(&inst->lock);
-
-	if (cmd->cmd == V4L2_ENC_CMD_STOP &&
-	    inst->enc_state == VENUS_ENC_STATE_ENCODING) {
-		/*
-		 * Implement V4L2_ENC_CMD_STOP by enqueue an empty buffer on
-		 * encoder input to signal EOS.
-		 */
-		if (!(inst->streamon_out && inst->streamon_cap))
-			goto unlock;
-
-		fdata.buffer_type = HFI_BUFFER_INPUT;
-		fdata.flags |= HFI_BUFFERFLAG_EOS;
-		fdata.device_addr = 0xdeadb000;
-
-		ret = hfi_session_process_buf(inst, &fdata);
-
-		inst->enc_state = VENUS_ENC_STATE_DRAIN;
-	} else if (cmd->cmd == V4L2_ENC_CMD_START) {
-		if (inst->enc_state == VENUS_ENC_STATE_DRAIN) {
-			ret = -EBUSY;
-			goto unlock;
-		}
-		if (inst->enc_state == VENUS_ENC_STATE_STOPPED) {
-			vb2_clear_last_buffer_dequeued(&inst->fh.m2m_ctx->cap_q_ctx.q);
-			inst->enc_state = VENUS_ENC_STATE_ENCODING;
-		}
-	}
-
-unlock:
-	mutex_unlock(&inst->lock);
-	return ret;
-}
-
 static const struct v4l2_ioctl_ops venc_ioctl_ops = {
 	.vidioc_querycap = venc_querycap,
 	.vidioc_enum_fmt_vid_cap = venc_enum_fmt,
@@ -598,7 +548,6 @@ static const struct v4l2_ioctl_ops venc_ioctl_ops = {
 	.vidioc_subscribe_event = venc_subscribe_event,
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 	.vidioc_try_encoder_cmd = v4l2_m2m_ioctl_try_encoder_cmd,
-	.vidioc_encoder_cmd = venc_encoder_cmd,
 };
 
 static int venc_pm_get(struct venus_inst *inst)
@@ -668,7 +617,6 @@ static int venc_set_properties(struct venus_inst *inst)
 	struct hfi_idr_period idrp;
 	struct hfi_quantization quant;
 	struct hfi_quantization_range quant_range;
-	struct hfi_quantization_range_v2 quant_range_v2;
 	struct hfi_enable en;
 	struct hfi_ltr_mode ltr_mode;
 	struct hfi_intra_refresh intra_refresh = {};
@@ -734,29 +682,6 @@ static int venc_set_properties(struct venus_inst *inst)
 		if (ret)
 			return ret;
 
-		if (ctr->layer_bitrate) {
-			unsigned int i;
-
-			ptype = HFI_PROPERTY_PARAM_VENC_HIER_P_MAX_NUM_ENH_LAYER;
-			ret = hfi_session_set_property(inst, ptype, &ctr->h264_hier_layers);
-			if (ret)
-				return ret;
-
-			ptype = HFI_PROPERTY_CONFIG_VENC_HIER_P_ENH_LAYER;
-			ret = hfi_session_set_property(inst, ptype, &ctr->layer_bitrate);
-			if (ret)
-				return ret;
-
-			for (i = 0; i < ctr->h264_hier_layers; ++i) {
-				ptype = HFI_PROPERTY_CONFIG_VENC_TARGET_BITRATE;
-				brate.bitrate = ctr->h264_hier_layer_bitrate[i];
-				brate.layer_id = i;
-
-				ret = hfi_session_set_property(inst, ptype, &brate);
-				if (ret)
-					return ret;
-			}
-		}
 	}
 
 	if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_H264 ||
@@ -846,33 +771,18 @@ static int venc_set_properties(struct venus_inst *inst)
 			return ret;
 	}
 
-	if (!ctr->layer_bitrate) {
-		if (!ctr->bitrate)
-			bitrate = 64000;
-		else
-			bitrate = ctr->bitrate;
+	if (!ctr->bitrate)
+		bitrate = 64000;
+	else
+		bitrate = ctr->bitrate;
 
-		ptype = HFI_PROPERTY_CONFIG_VENC_TARGET_BITRATE;
-		brate.bitrate = bitrate;
-		brate.layer_id = 0;
+	ptype = HFI_PROPERTY_CONFIG_VENC_TARGET_BITRATE;
+	brate.bitrate = bitrate;
+	brate.layer_id = 0;
 
-		ret = hfi_session_set_property(inst, ptype, &brate);
-		if (ret)
-			return ret;
-
-		if (!ctr->bitrate_peak)
-			bitrate *= 2;
-		else
-			bitrate = ctr->bitrate_peak;
-
-		ptype = HFI_PROPERTY_CONFIG_VENC_MAX_BITRATE;
-		brate.bitrate = bitrate;
-		brate.layer_id = 0;
-
-		ret = hfi_session_set_property(inst, ptype, &brate);
-		if (ret)
-			return ret;
-	}
+	ret = hfi_session_set_property(inst, ptype, &brate);
+	if (ret)
+		return ret;
 
 	if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_H264 ||
 	    inst->fmt_cap->pixfmt == V4L2_PIX_FMT_HEVC) {
@@ -886,6 +796,19 @@ static int venc_set_properties(struct venus_inst *inst)
 		if (ret)
 			return ret;
 	}
+
+	if (!ctr->bitrate_peak)
+		bitrate *= 2;
+	else
+		bitrate = ctr->bitrate_peak;
+
+	ptype = HFI_PROPERTY_CONFIG_VENC_MAX_BITRATE;
+	brate.bitrate = bitrate;
+	brate.layer_id = 0;
+
+	ret = hfi_session_set_property(inst, ptype, &brate);
+	if (ret)
+		return ret;
 
 	ptype = HFI_PROPERTY_PARAM_VENC_SESSION_QP;
 	if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_HEVC) {
@@ -902,40 +825,16 @@ static int venc_set_properties(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	if (inst->core->res->hfi_version == HFI_VERSION_4XX ||
-	    inst->core->res->hfi_version == HFI_VERSION_6XX) {
-		ptype = HFI_PROPERTY_PARAM_VENC_SESSION_QP_RANGE_V2;
-
-		if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_HEVC) {
-			quant_range_v2.min_qp.qp_packed = ctr->hevc_min_qp;
-			quant_range_v2.max_qp.qp_packed = ctr->hevc_max_qp;
-		} else if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_VP8) {
-			quant_range_v2.min_qp.qp_packed = ctr->vp8_min_qp;
-			quant_range_v2.max_qp.qp_packed = ctr->vp8_max_qp;
-		} else {
-			quant_range_v2.min_qp.qp_packed = ctr->h264_min_qp;
-			quant_range_v2.max_qp.qp_packed = ctr->h264_max_qp;
-		}
-
-		ret = hfi_session_set_property(inst, ptype, &quant_range_v2);
+	ptype = HFI_PROPERTY_PARAM_VENC_SESSION_QP_RANGE;
+	if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_HEVC) {
+		quant_range.min_qp = ctr->hevc_min_qp;
+		quant_range.max_qp = ctr->hevc_max_qp;
 	} else {
-		ptype = HFI_PROPERTY_PARAM_VENC_SESSION_QP_RANGE;
-
-		if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_HEVC) {
-			quant_range.min_qp = ctr->hevc_min_qp;
-			quant_range.max_qp = ctr->hevc_max_qp;
-		} else if (inst->fmt_cap->pixfmt == V4L2_PIX_FMT_VP8) {
-			quant_range.min_qp = ctr->vp8_min_qp;
-			quant_range.max_qp = ctr->vp8_max_qp;
-		} else {
-			quant_range.min_qp = ctr->h264_min_qp;
-			quant_range.max_qp = ctr->h264_max_qp;
-		}
-
-		quant_range.layer_id = 0;
-		ret = hfi_session_set_property(inst, ptype, &quant_range);
+		quant_range.min_qp = ctr->h264_min_qp;
+		quant_range.max_qp = ctr->h264_max_qp;
 	}
-
+	quant_range.layer_id = 0;
+	ret = hfi_session_set_property(inst, ptype, &quant_range);
 	if (ret)
 		return ret;
 
@@ -1232,7 +1131,7 @@ static int venc_verify_conf(struct venus_inst *inst)
 		return ret;
 
 	if (inst->num_output_bufs < bufreq.count_actual ||
-	    inst->num_output_bufs < hfi_bufreq_get_count_min(&bufreq, ver))
+	    inst->num_output_bufs < HFI_BUFREQ_COUNT_MIN(&bufreq, ver))
 		return -EINVAL;
 
 	ret = venus_helper_get_bufreq(inst, HFI_BUFFER_INPUT, &bufreq);
@@ -1240,7 +1139,7 @@ static int venc_verify_conf(struct venus_inst *inst)
 		return ret;
 
 	if (inst->num_input_bufs < bufreq.count_actual ||
-	    inst->num_input_bufs < hfi_bufreq_get_count_min(&bufreq, ver))
+	    inst->num_input_bufs < HFI_BUFREQ_COUNT_MIN(&bufreq, ver))
 		return -EINVAL;
 
 	return 0;
@@ -1297,8 +1196,6 @@ static int venc_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (ret)
 		goto error;
 
-	inst->enc_state = VENUS_ENC_STATE_ENCODING;
-
 	mutex_unlock(&inst->lock);
 
 	return 0;
@@ -1318,21 +1215,10 @@ error:
 static void venc_vb2_buf_queue(struct vb2_buffer *vb)
 {
 	struct venus_inst *inst = vb2_get_drv_priv(vb->vb2_queue);
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 
 	venc_pm_get_put(inst);
 
 	mutex_lock(&inst->lock);
-
-	if (inst->enc_state == VENUS_ENC_STATE_STOPPED) {
-		vbuf->sequence = inst->sequence_cap++;
-		vbuf->field = V4L2_FIELD_NONE;
-		vb2_set_plane_payload(vb, 0, 0);
-		v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_DONE);
-		mutex_unlock(&inst->lock);
-		return;
-	}
-
 	venus_helper_vb2_buf_queue(vb);
 	mutex_unlock(&inst->lock);
 }
@@ -1374,10 +1260,6 @@ static void venc_buf_done(struct venus_inst *inst, unsigned int buf_type,
 		vb->planes[0].data_offset = data_offset;
 		vb->timestamp = timestamp_us * NSEC_PER_USEC;
 		vbuf->sequence = inst->sequence_cap++;
-		if ((vbuf->flags & V4L2_BUF_FLAG_LAST) &&
-		    inst->enc_state == VENUS_ENC_STATE_DRAIN) {
-			inst->enc_state = VENUS_ENC_STATE_STOPPED;
-		}
 	} else {
 		vbuf->sequence = inst->sequence_out++;
 	}
@@ -1423,9 +1305,8 @@ static int m2m_queue_init(void *priv, struct vb2_queue *src_vq,
 	src_vq->drv_priv = inst;
 	src_vq->buf_struct_size = sizeof(struct venus_buffer);
 	src_vq->allow_zero_bytesused = 1;
-	src_vq->min_queued_buffers = 1;
+	src_vq->min_buffers_needed = 1;
 	src_vq->dev = inst->core->dev;
-	src_vq->lock = &inst->ctx_q_lock;
 	if (inst->core->res->hfi_version == HFI_VERSION_1XX)
 		src_vq->bidirectional = 1;
 	ret = vb2_queue_init(src_vq);
@@ -1440,16 +1321,15 @@ static int m2m_queue_init(void *priv, struct vb2_queue *src_vq,
 	dst_vq->drv_priv = inst;
 	dst_vq->buf_struct_size = sizeof(struct venus_buffer);
 	dst_vq->allow_zero_bytesused = 1;
-	dst_vq->min_queued_buffers = 1;
+	dst_vq->min_buffers_needed = 1;
 	dst_vq->dev = inst->core->dev;
-	dst_vq->lock = &inst->ctx_q_lock;
 	return vb2_queue_init(dst_vq);
 }
 
 static void venc_inst_init(struct venus_inst *inst)
 {
-	inst->fmt_cap = &venc_formats[VENUS_FMT_H264];
-	inst->fmt_out = &venc_formats[VENUS_FMT_NV12];
+	inst->fmt_cap = &venc_formats[3];
+	inst->fmt_out = &venc_formats[0];
 	inst->width = 1280;
 	inst->height = ALIGN(720, 32);
 	inst->out_width = 1280;
@@ -1475,7 +1355,6 @@ static int venc_open(struct file *file)
 	INIT_LIST_HEAD(&inst->internalbufs);
 	INIT_LIST_HEAD(&inst->list);
 	mutex_init(&inst->lock);
-	mutex_init(&inst->ctx_q_lock);
 
 	inst->core = core;
 	inst->session_type = VIDC_SESSION_TYPE_ENC;
@@ -1483,14 +1362,15 @@ static int venc_open(struct file *file)
 	inst->core_acquired = false;
 	inst->nonblock = file->f_flags & O_NONBLOCK;
 
-	if (inst->enc_state == VENUS_ENC_STATE_DEINIT)
-		inst->enc_state = VENUS_ENC_STATE_INIT;
-
 	venus_helper_init_instance(inst);
 
 	ret = venc_ctrl_init(inst);
 	if (ret)
 		goto err_free;
+
+	ret = hfi_session_create(inst, &venc_hfi_ops);
+	if (ret)
+		goto err_ctrl_deinit;
 
 	venc_inst_init(inst);
 
@@ -1501,33 +1381,30 @@ static int venc_open(struct file *file)
 	inst->m2m_dev = v4l2_m2m_init(&venc_m2m_ops);
 	if (IS_ERR(inst->m2m_dev)) {
 		ret = PTR_ERR(inst->m2m_dev);
-		goto err_ctrl_deinit;
+		goto err_session_destroy;
 	}
 
 	inst->m2m_ctx = v4l2_m2m_ctx_init(inst->m2m_dev, inst, m2m_queue_init);
 	if (IS_ERR(inst->m2m_ctx)) {
 		ret = PTR_ERR(inst->m2m_ctx);
-		goto err_m2m_dev_release;
+		goto err_m2m_release;
 	}
-
-	ret = hfi_session_create(inst, &venc_hfi_ops);
-	if (ret)
-		goto err_m2m_ctx_release;
 
 	v4l2_fh_init(&inst->fh, core->vdev_enc);
 
 	inst->fh.ctrl_handler = &inst->ctrl_handler;
-	v4l2_fh_add(&inst->fh, file);
+	v4l2_fh_add(&inst->fh);
 	inst->fh.m2m_ctx = inst->m2m_ctx;
+	file->private_data = &inst->fh;
 
 	return 0;
 
-err_m2m_ctx_release:
-	v4l2_m2m_ctx_release(inst->m2m_ctx);
-err_m2m_dev_release:
+err_m2m_release:
 	v4l2_m2m_release(inst->m2m_dev);
+err_session_destroy:
+	hfi_session_destroy(inst);
 err_ctrl_deinit:
-	v4l2_ctrl_handler_free(&inst->ctrl_handler);
+	venc_ctrl_deinit(inst);
 err_free:
 	kfree(inst);
 	return ret;
@@ -1538,8 +1415,15 @@ static int venc_close(struct file *file)
 	struct venus_inst *inst = to_inst(file);
 
 	venc_pm_get(inst);
-	venus_close_common(inst, file);
-	inst->enc_state = VENUS_ENC_STATE_DEINIT;
+
+	v4l2_m2m_ctx_release(inst->m2m_ctx);
+	v4l2_m2m_release(inst->m2m_dev);
+	venc_ctrl_deinit(inst);
+	hfi_session_destroy(inst);
+	mutex_destroy(&inst->lock);
+	v4l2_fh_del(&inst->fh);
+	v4l2_fh_exit(&inst->fh);
+
 	venc_pm_put(inst, false);
 
 	kfree(inst);
@@ -1562,9 +1446,12 @@ static int venc_probe(struct platform_device *pdev)
 	struct venus_core *core;
 	int ret;
 
+	if (!dev->parent)
+		return -EPROBE_DEFER;
+
 	core = dev_get_drvdata(dev->parent);
 	if (!core)
-		return -EINVAL;
+		return -EPROBE_DEFER;
 
 	platform_set_drvdata(pdev, core);
 
@@ -1605,7 +1492,7 @@ err_vdev_release:
 	return ret;
 }
 
-static void venc_remove(struct platform_device *pdev)
+static int venc_remove(struct platform_device *pdev)
 {
 	struct venus_core *core = dev_get_drvdata(pdev->dev.parent);
 
@@ -1614,6 +1501,8 @@ static void venc_remove(struct platform_device *pdev)
 
 	if (core->pm_ops->venc_put)
 		core->pm_ops->venc_put(core->dev_enc);
+
+	return 0;
 }
 
 static __maybe_unused int venc_runtime_suspend(struct device *dev)
@@ -1663,5 +1552,6 @@ static struct platform_driver qcom_venus_enc_driver = {
 };
 module_platform_driver(qcom_venus_enc_driver);
 
+MODULE_ALIAS("platform:qcom-venus-encoder");
 MODULE_DESCRIPTION("Qualcomm Venus video encoder driver");
 MODULE_LICENSE("GPL v2");

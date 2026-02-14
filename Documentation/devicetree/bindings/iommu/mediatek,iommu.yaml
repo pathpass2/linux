@@ -52,7 +52,7 @@ description: |+
   As above, The Multimedia HW will go through SMI and M4U while it
   access EMI. SMI is a bridge between m4u and the Multimedia HW. It contain
   smi local arbiter and smi common. It will control whether the Multimedia
-  HW should go through the m4u for translation or bypass it and talk
+  HW should go though the m4u for translation or bypass it and talk
   directly with EMI. And also SMI help control the power domain and clocks for
   each local arbiter.
 
@@ -74,17 +74,10 @@ properties:
           - mediatek,mt2712-m4u  # generation two
           - mediatek,mt6779-m4u  # generation two
           - mediatek,mt6795-m4u  # generation two
-          - mediatek,mt6893-iommu-mm         # generation two
           - mediatek,mt8167-m4u  # generation two
           - mediatek,mt8173-m4u  # generation two
           - mediatek,mt8183-m4u  # generation two
           - mediatek,mt8186-iommu-mm         # generation two
-          - mediatek,mt8188-iommu-vdo        # generation two
-          - mediatek,mt8188-iommu-vpp        # generation two
-          - mediatek,mt8188-iommu-infra      # generation two
-          - mediatek,mt8189-iommu-apu        # generation two
-          - mediatek,mt8189-iommu-infra      # generation two
-          - mediatek,mt8189-iommu-mm         # generation two
           - mediatek,mt8192-m4u  # generation two
           - mediatek,mt8195-iommu-vdo        # generation two
           - mediatek,mt8195-iommu-vpp        # generation two
@@ -130,13 +123,10 @@ properties:
     description: |
       This is the mtk_m4u_id according to the HW. Specifies the mtk_m4u_id as
       defined in
-      dt-binding/memory/mediatek,mt8188-memory-port.h for mt8188,
-      dt-binding/memory/mediatek,mt8189-memory-port.h for mt8189,
       dt-binding/memory/mt2701-larb-port.h for mt2701 and mt7623,
       dt-binding/memory/mt2712-larb-port.h for mt2712,
       dt-binding/memory/mt6779-larb-port.h for mt6779,
       dt-binding/memory/mt6795-larb-port.h for mt6795,
-      dt-binding/memory/mediatek,mt6893-memory-port.h for mt6893,
       dt-binding/memory/mt8167-larb-port.h for mt8167,
       dt-binding/memory/mt8173-larb-port.h for mt8173,
       dt-binding/memory/mt8183-larb-port.h for mt8183,
@@ -163,12 +153,8 @@ allOf:
               - mediatek,mt2701-m4u
               - mediatek,mt2712-m4u
               - mediatek,mt6795-m4u
-              - mediatek,mt6893-iommu-mm
               - mediatek,mt8173-m4u
               - mediatek,mt8186-iommu-mm
-              - mediatek,mt8188-iommu-vdo
-              - mediatek,mt8188-iommu-vpp
-              - mediatek,mt8189-iommu-mm
               - mediatek,mt8192-m4u
               - mediatek,mt8195-iommu-vdo
               - mediatek,mt8195-iommu-vpp
@@ -181,11 +167,7 @@ allOf:
       properties:
         compatible:
           enum:
-            - mediatek,mt6893-iommu-mm
             - mediatek,mt8186-iommu-mm
-            - mediatek,mt8188-iommu-vdo
-            - mediatek,mt8188-iommu-vpp
-            - mediatek,mt8189-iommu-mm
             - mediatek,mt8192-m4u
             - mediatek,mt8195-iommu-vdo
             - mediatek,mt8195-iommu-vpp
@@ -212,11 +194,7 @@ allOf:
         properties:
           compatible:
             contains:
-              enum:
-                - mediatek,mt8188-iommu-infra
-                - mediatek,mt8189-iommu-apu
-                - mediatek,mt8189-iommu-infra
-                - mediatek,mt8195-iommu-infra
+              const: mediatek,mt8195-iommu-infra
 
     then:
       required:

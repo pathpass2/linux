@@ -790,5 +790,4 @@ static void __exit ariadne_cleanup_module(void)
 module_init(ariadne_init_module);
 module_exit(ariadne_cleanup_module);
 
-MODULE_DESCRIPTION("Ariadne Ethernet Driver");
 MODULE_LICENSE("GPL");

@@ -48,16 +48,15 @@ static int wm8350_gpio_get(struct gpio_chip *chip, unsigned offset)
 		return 0;
 }
 
-static int wm8350_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			   int value)
+static void wm8350_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 {
 	struct wm8350_gpio_data *wm8350_gpio = gpiochip_get_data(chip);
 	struct wm8350 *wm8350 = wm8350_gpio->wm8350;
 
 	if (value)
-		return wm8350_set_bits(wm8350, WM8350_GPIO_LEVEL, 1 << offset);
-
-	return wm8350_clear_bits(wm8350, WM8350_GPIO_LEVEL, 1 << offset);
+		wm8350_set_bits(wm8350, WM8350_GPIO_LEVEL, 1 << offset);
+	else
+		wm8350_clear_bits(wm8350, WM8350_GPIO_LEVEL, 1 << offset);
 }
 
 static int wm8350_gpio_direction_out(struct gpio_chip *chip,
@@ -73,7 +72,9 @@ static int wm8350_gpio_direction_out(struct gpio_chip *chip,
 		return ret;
 
 	/* Don't have an atomic direction/value setup */
-	return wm8350_gpio_set(chip, offset, value);
+	wm8350_gpio_set(chip, offset, value);
+
+	return 0;
 }
 
 static int wm8350_gpio_to_irq(struct gpio_chip *chip, unsigned offset)

@@ -10,7 +10,7 @@ description: The datasheet claims this is based around a display controller
   named DB7430 with a separate backlight controller.
 
 maintainers:
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
 
 allOf:
   - $ref: panel-common.yaml#
@@ -20,8 +20,7 @@ properties:
   compatible:
     const: samsung,lms397kf04
 
-  reg:
-    maxItems: 1
+  reg: true
 
   reset-gpios: true
 

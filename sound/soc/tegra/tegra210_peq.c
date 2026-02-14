@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -100,7 +101,7 @@ static int tegra210_peq_get(struct snd_kcontrol *kcontrol,
 {
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_ope *ope = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int mask = (1 << fls(mc->max)) - 1;
 	unsigned int val;
@@ -123,7 +124,7 @@ static int tegra210_peq_put(struct snd_kcontrol *kcontrol,
 {
 	struct soc_mixer_control *mc =
 		(struct soc_mixer_control *)kcontrol->private_value;
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_ope *ope = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int mask = (1 << fls(mc->max)) - 1;
 	bool change = false;
@@ -146,7 +147,7 @@ static int tegra210_peq_ram_get(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_value *ucontrol)
 {
 	struct tegra_soc_bytes *params = (void *)kcontrol->private_value;
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_ope *ope = snd_soc_component_get_drvdata(cmpnt);
 	u32 i, reg_ctrl = params->soc.base;
 	u32 reg_data = reg_ctrl + cmpnt->val_bytes;
@@ -169,7 +170,7 @@ static int tegra210_peq_ram_put(struct snd_kcontrol *kcontrol,
 				     struct snd_ctl_elem_value *ucontrol)
 {
 	struct tegra_soc_bytes *params = (void *)kcontrol->private_value;
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_ope *ope = snd_soc_component_get_drvdata(cmpnt);
 	u32 i, reg_ctrl = params->soc.base;
 	u32 reg_data = reg_ctrl + cmpnt->val_bytes;
@@ -306,7 +307,6 @@ static const struct regmap_config tegra210_peq_regmap_config = {
 	.precious_reg		= tegra210_peq_precious_reg,
 	.reg_defaults		= tegra210_peq_reg_defaults,
 	.num_reg_defaults	= ARRAY_SIZE(tegra210_peq_reg_defaults),
-	.reg_default_cb		= regmap_default_zero_cb,
 	.cache_type		= REGCACHE_FLAT,
 };
 

@@ -53,7 +53,7 @@
 
 static void __iomem *versatile_sys_base;
 
-static unsigned int mmc_status(struct device *dev)
+unsigned int mmc_status(struct device *dev)
 {
 	struct amba_device *adev = container_of(dev, struct amba_device, dev);
 	u32 mask;
@@ -134,7 +134,7 @@ static void __init versatile_dt_pci_init(void)
 	val = readl(versatile_sys_base + VERSATILE_SYS_PCICTL_OFFSET);
 	if (val & 1) {
 		/*
-		 * Enable PCI accesses. Note that the documentation is
+		 * Enable PCI accesses. Note that the documentaton is
 		 * inconsistent whether or not this is needed, but the old
 		 * driver had it so we will keep it.
 		 */

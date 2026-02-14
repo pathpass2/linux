@@ -7,6 +7,39 @@
 
 #include <arm64/renesas/rzg2ul-smarc-som.dtsi>
 
-&sbc {
+/ {
+	aliases {
+		/delete-property/ ethernet0;
+		/delete-property/ ethernet1;
+	};
+
+	chosen {
+		bootargs = "ignore_loglevel";
+	};
+};
+
+&dmac {
+	status = "disabled";
+};
+
+&eth0 {
+	status = "disabled";
+
+	phy0: ethernet-phy@7 {
+		/delete-property/ interrupt-parent;
+		/delete-property/ interrupts;
+	};
+};
+
+&eth1 {
+	status = "disabled";
+
+	phy1: ethernet-phy@7 {
+		/delete-property/ interrupt-parent;
+		/delete-property/ interrupts;
+	};
+};
+
+&sdhi0 {
 	status = "disabled";
 };

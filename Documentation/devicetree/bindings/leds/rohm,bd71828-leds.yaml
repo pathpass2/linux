@@ -10,14 +10,15 @@ maintainers:
   - Matti Vaittinen <mazziesaccount@gmail.com>
 
 description: |
-  This module is part of the ROHM BD71828 and BD72720 MFD device. For more
-  details see Documentation/devicetree/bindings/mfd/rohm,bd71828-pmic.yaml
-  and Documentation/devicetree/bindings/mfd/rohm,bd72720-pmic.yaml
+  This module is part of the ROHM BD71828 MFD device. For more details
+  see Documentation/devicetree/bindings/mfd/rohm,bd71828-pmic.yaml.
 
   The LED controller is represented as a sub-node of the PMIC node on the device
-  tree. This should be located under "leds" - node in PMIC node.
+  tree.
 
   The device has two LED outputs referred as GRNLED and AMBLED in data-sheet.
+
+select: false
 
 properties:
   compatible:
@@ -31,7 +32,7 @@ patternProperties:
     properties:
       rohm,led-compatible:
         description: LED identification string
-        $ref: /schemas/types.yaml#/definitions/string
+        $ref: "/schemas/types.yaml#/definitions/string"
         enum:
           - bd71828-ambled
           - bd71828-grnled

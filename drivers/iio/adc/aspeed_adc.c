@@ -108,6 +108,7 @@ struct adc_gain {
 struct aspeed_adc_data {
 	struct device		*dev;
 	const struct aspeed_adc_model_data *model_data;
+	struct regulator	*regulator;
 	void __iomem		*base;
 	spinlock_t		clk_lock;
 	struct clk_hw		*fixed_div_clk;
@@ -403,6 +404,13 @@ static void aspeed_adc_power_down(void *data)
 	       priv_data->base + ASPEED_REG_ENGINE_CONTROL);
 }
 
+static void aspeed_adc_reg_disable(void *data)
+{
+	struct regulator *reg = data;
+
+	regulator_disable(reg);
+}
+
 static int aspeed_adc_vref_config(struct iio_dev *indio_dev)
 {
 	struct aspeed_adc_data *data = iio_priv(indio_dev);
@@ -415,14 +423,18 @@ static int aspeed_adc_vref_config(struct iio_dev *indio_dev)
 	}
 	adc_engine_control_reg_val =
 		readl(data->base + ASPEED_REG_ENGINE_CONTROL);
-
-	ret = devm_regulator_get_enable_read_voltage(data->dev, "vref");
-	if (ret < 0 && ret != -ENODEV)
-		return ret;
-
-	if (ret != -ENODEV) {
-		data->vref_mv = ret / 1000;
-
+	data->regulator = devm_regulator_get_optional(data->dev, "vref");
+	if (!IS_ERR(data->regulator)) {
+		ret = regulator_enable(data->regulator);
+		if (ret)
+			return ret;
+		ret = devm_add_action_or_reset(
+			data->dev, aspeed_adc_reg_disable, data->regulator);
+		if (ret)
+			return ret;
+		data->vref_mv = regulator_get_voltage(data->regulator);
+		/* Conversion from uV to mV */
+		data->vref_mv /= 1000;
 		if ((data->vref_mv >= 1550) && (data->vref_mv <= 2700))
 			writel(adc_engine_control_reg_val |
 				FIELD_PREP(
@@ -441,6 +453,8 @@ static int aspeed_adc_vref_config(struct iio_dev *indio_dev)
 			return -EOPNOTSUPP;
 		}
 	} else {
+		if (PTR_ERR(data->regulator) != -ENODEV)
+			return PTR_ERR(data->regulator);
 		data->vref_mv = 2500000;
 		of_property_read_u32(data->dev->of_node,
 				     "aspeed,int-vref-microvolt",
@@ -555,7 +569,8 @@ static int aspeed_adc_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	if (of_property_present(data->dev->of_node, "aspeed,battery-sensing")) {
+	if (of_find_property(data->dev->of_node, "aspeed,battery-sensing",
+			     NULL)) {
 		if (data->model_data->bat_sense_sup) {
 			data->battery_sensing = 1;
 			if (readl(data->base + ASPEED_REG_ENGINE_CONTROL) &
@@ -645,16 +660,6 @@ static const struct aspeed_adc_trim_locate ast2600_adc1_trim = {
 	.field = GENMASK(7, 4),
 };
 
-static const struct aspeed_adc_trim_locate ast2700_adc0_trim = {
-	.offset = 0x820,
-	.field = GENMASK(3, 0),
-};
-
-static const struct aspeed_adc_trim_locate ast2700_adc1_trim = {
-	.offset = 0x820,
-	.field = GENMASK(7, 4),
-};
-
 static const struct aspeed_adc_model_data ast2400_model_data = {
 	.model_name = "ast2400-adc",
 	.vref_fixed_mv = 2500,
@@ -699,36 +704,12 @@ static const struct aspeed_adc_model_data ast2600_adc1_model_data = {
 	.trim_locate = &ast2600_adc1_trim,
 };
 
-static const struct aspeed_adc_model_data ast2700_adc0_model_data = {
-	.model_name = "ast2700-adc0",
-	.min_sampling_rate = 10000,
-	.max_sampling_rate = 500000,
-	.wait_init_sequence = true,
-	.bat_sense_sup = true,
-	.scaler_bit_width = 16,
-	.num_channels = 8,
-	.trim_locate = &ast2700_adc0_trim,
-};
-
-static const struct aspeed_adc_model_data ast2700_adc1_model_data = {
-	.model_name = "ast2700-adc1",
-	.min_sampling_rate = 10000,
-	.max_sampling_rate = 500000,
-	.wait_init_sequence = true,
-	.bat_sense_sup = true,
-	.scaler_bit_width = 16,
-	.num_channels = 8,
-	.trim_locate = &ast2700_adc1_trim,
-};
-
 static const struct of_device_id aspeed_adc_matches[] = {
 	{ .compatible = "aspeed,ast2400-adc", .data = &ast2400_model_data },
 	{ .compatible = "aspeed,ast2500-adc", .data = &ast2500_model_data },
 	{ .compatible = "aspeed,ast2600-adc0", .data = &ast2600_adc0_model_data },
 	{ .compatible = "aspeed,ast2600-adc1", .data = &ast2600_adc1_model_data },
-	{ .compatible = "aspeed,ast2700-adc0", .data = &ast2700_adc0_model_data },
-	{ .compatible = "aspeed,ast2700-adc1", .data = &ast2700_adc1_model_data },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, aspeed_adc_matches);
 

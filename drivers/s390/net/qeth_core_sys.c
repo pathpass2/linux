@@ -7,7 +7,8 @@
  *		 Frank Blaschka <frank.blaschka@de.ibm.com>
  */
 
-#define pr_fmt(fmt) "qeth: " fmt
+#define KMSG_COMPONENT "qeth"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/list.h>
 #include <linux/rwsem.h>
@@ -517,32 +518,28 @@ static ssize_t qeth_hw_trap_store(struct device *dev,
 	if (qeth_card_hw_is_reachable(card))
 		state = 1;
 
-	if (sysfs_streq(buf, "arm")) {
-		if (state && !card->info.hwtrap) {
+	if (sysfs_streq(buf, "arm") && !card->info.hwtrap) {
+		if (state) {
 			if (qeth_is_diagass_supported(card,
 			    QETH_DIAGS_CMD_TRAP)) {
 				rc = qeth_hw_trap(card, QETH_DIAGS_TRAP_ARM);
 				if (!rc)
 					card->info.hwtrap = 1;
-			} else {
+			} else
 				rc = -EINVAL;
-			}
-		} else {
+		} else
 			card->info.hwtrap = 1;
-		}
-	} else if (sysfs_streq(buf, "disarm")) {
-		if (state && card->info.hwtrap) {
+	} else if (sysfs_streq(buf, "disarm") && card->info.hwtrap) {
+		if (state) {
 			rc = qeth_hw_trap(card, QETH_DIAGS_TRAP_DISARM);
 			if (!rc)
 				card->info.hwtrap = 0;
-		} else {
+		} else
 			card->info.hwtrap = 0;
-		}
-	} else if (sysfs_streq(buf, "trap") && state && card->info.hwtrap) {
+	} else if (sysfs_streq(buf, "trap") && state && card->info.hwtrap)
 		rc = qeth_hw_trap(card, QETH_DIAGS_TRAP_CAPTURE);
-	} else {
+	else
 		rc = -EINVAL;
-	}
 
 	mutex_unlock(&card->conf_mutex);
 	return rc ? rc : count;

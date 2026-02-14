@@ -35,7 +35,34 @@ __init bool sysfb_parse_mode(const struct screen_info *si,
 	if (type != VIDEO_TYPE_VLFB && type != VIDEO_TYPE_EFI)
 		return false;
 
-	bits_per_pixel = __screen_info_lfb_bits_per_pixel(si);
+	/*
+	 * The meaning of depth and bpp for direct-color formats is
+	 * inconsistent:
+	 *
+	 *  - DRM format info specifies depth as the number of color
+	 *    bits; including alpha, but not including filler bits.
+	 *  - Linux' EFI platform code computes lfb_depth from the
+	 *    individual color channels, including the reserved bits.
+	 *  - VBE 1.1 defines lfb_depth for XRGB1555 as 16, but later
+	 *    versions use 15.
+	 *  - On the kernel command line, 'bpp' of 32 is usually
+	 *    XRGB8888 including the filler bits, but 15 is XRGB1555
+	 *    not including the filler bit.
+	 *
+	 * It's not easily possible to fix this in struct screen_info,
+	 * as this could break UAPI. The best solution is to compute
+	 * bits_per_pixel here and ignore lfb_depth. In the loop below,
+	 * ignore simplefb formats with alpha bits, as EFI and VESA
+	 * don't specify alpha channels.
+	 */
+	if (si->lfb_depth > 8) {
+		bits_per_pixel = max(max3(si->red_size + si->red_pos,
+					  si->green_size + si->green_pos,
+					  si->blue_size + si->blue_pos),
+				     si->rsvd_size + si->rsvd_pos);
+	} else {
+		bits_per_pixel = si->lfb_depth;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(formats); ++i) {
 		const struct simplefb_format *f = &formats[i];
@@ -62,8 +89,7 @@ __init bool sysfb_parse_mode(const struct screen_info *si,
 }
 
 __init struct platform_device *sysfb_create_simplefb(const struct screen_info *si,
-						     const struct simplefb_platform_data *mode,
-						     struct device *parent)
+						     const struct simplefb_platform_data *mode)
 {
 	struct platform_device *pd;
 	struct resource res;
@@ -115,9 +141,7 @@ __init struct platform_device *sysfb_create_simplefb(const struct screen_info *s
 	if (!pd)
 		return ERR_PTR(-ENOMEM);
 
-	pd->dev.parent = parent;
-
-	sysfb_set_efifb_fwnode(si, pd);
+	sysfb_set_efifb_fwnode(pd);
 
 	ret = platform_device_add_resources(pd, &res, 1);
 	if (ret)

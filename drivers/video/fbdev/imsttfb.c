@@ -995,7 +995,7 @@ imsttfb_fillrect(struct fb_info *info, const struct fb_fillrect *rect)
 	bgc |= (bgc << 8);
 	bgc |= (bgc << 16);
 
-	Bpp = info->var.bits_per_pixel >> 3;
+	Bpp = info->var.bits_per_pixel >> 3,
 	line_pitch = info->fix.line_length;
 
 	dy = rect->dy * line_pitch;
@@ -1036,7 +1036,7 @@ imsttfb_copyarea(struct fb_info *info, const struct fb_copyarea *area)
 	__u32 Bpp, line_pitch, fb_offset_old, fb_offset_new, sp, dp_octl;
  	__u32 cnt, bltctl, sx, sy, dx, dy, height, width;
 
-	Bpp = info->var.bits_per_pixel >> 3;
+	Bpp = info->var.bits_per_pixel >> 3,
 
 	sx = area->sx * Bpp;
 	sy = area->sy;
@@ -1336,7 +1336,6 @@ static struct pci_driver imsttfb_pci_driver = {
 
 static const struct fb_ops imsttfb_ops = {
 	.owner 		= THIS_MODULE,
-	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= imsttfb_check_var,
 	.fb_set_par 	= imsttfb_set_par,
 	.fb_setcolreg 	= imsttfb_setcolreg,
@@ -1346,10 +1345,9 @@ static const struct fb_ops imsttfb_ops = {
 	.fb_copyarea	= imsttfb_copyarea,
 	.fb_imageblit	= cfb_imageblit,
 	.fb_ioctl 	= imsttfb_ioctl,
-	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
-static int init_imstt(struct fb_info *info)
+static void init_imstt(struct fb_info *info)
 {
 	struct imstt_par *par = info->par;
 	__u32 i, tmp, *ip, *end;
@@ -1421,7 +1419,8 @@ static int init_imstt(struct fb_info *info)
 	if ((info->var.xres * info->var.yres) * (info->var.bits_per_pixel >> 3) > info->fix.smem_len
 	    || !(compute_imstt_regvals(par, info->var.xres, info->var.yres))) {
 		printk("imsttfb: %ux%ux%u not supported\n", info->var.xres, info->var.yres, info->var.bits_per_pixel);
-		return -ENODEV;
+		framebuffer_release(info);
+		return;
 	}
 
 	sprintf(info->fix.id, "IMS TT (%s)", par->ramdac == IBM ? "IBM" : "TVP");
@@ -1448,22 +1447,21 @@ static int init_imstt(struct fb_info *info)
 	info->var.pixclock = 1000000 / getclkMHz(par);
 
 	info->fbops = &imsttfb_ops;
-	info->flags = FBINFO_HWACCEL_COPYAREA |
+	info->flags = FBINFO_DEFAULT |
+                      FBINFO_HWACCEL_COPYAREA |
 	              FBINFO_HWACCEL_FILLRECT |
 	              FBINFO_HWACCEL_YPAN;
 
-	if (fb_alloc_cmap(&info->cmap, 0, 0))
-		return -ENODEV;
+	fb_alloc_cmap(&info->cmap, 0, 0);
 
 	if (register_framebuffer(info) < 0) {
-		fb_dealloc_cmap(&info->cmap);
-		return -ENODEV;
+		framebuffer_release(info);
+		return;
 	}
 
 	tmp = (read_reg_le32(par->dc_regs, SSTATUS) & 0x0f00) >> 8;
 	fb_info(info, "%s frame buffer; %uMB vram; chip version %u\n",
 		info->fix.id, info->fix.smem_len >> 20, tmp);
-	return 0;
 }
 
 static int imsttfb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -1496,8 +1494,8 @@ static int imsttfb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	if (!request_mem_region(addr, size, "imsttfb")) {
 		printk(KERN_ERR "imsttfb: Can't reserve memory region\n");
-		ret = -ENODEV;
-		goto release_info;
+		framebuffer_release(info);
+		return -ENODEV;
 	}
 
 	switch (pdev->device) {
@@ -1514,39 +1512,34 @@ static int imsttfb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 			printk(KERN_INFO "imsttfb: Device 0x%x unknown, "
 					 "contact maintainer.\n", pdev->device);
 			ret = -ENODEV;
-			goto release_mem_region;
+			goto error;
 	}
 
 	info->fix.smem_start = addr;
 	info->screen_base = (__u8 *)ioremap(addr, par->ramdac == IBM ?
 					    0x400000 : 0x800000);
 	if (!info->screen_base)
-		goto release_mem_region;
+		goto error;
 	info->fix.mmio_start = addr + 0x800000;
 	par->dc_regs = ioremap(addr + 0x800000, 0x1000);
 	if (!par->dc_regs)
-		goto unmap_screen_base;
+		goto error;
 	par->cmap_regs_phys = addr + 0x840000;
 	par->cmap_regs = (__u8 *)ioremap(addr + 0x840000, 0x1000);
 	if (!par->cmap_regs)
-		goto unmap_dc_regs;
+		goto error;
 	info->pseudo_palette = par->palette;
-	ret = init_imstt(info);
-	if (ret)
-		goto unmap_cmap_regs;
+	init_imstt(info);
 
 	pci_set_drvdata(pdev, info);
 	return 0;
 
-unmap_cmap_regs:
-	iounmap(par->cmap_regs);
-unmap_dc_regs:
-	iounmap(par->dc_regs);
-unmap_screen_base:
-	iounmap(info->screen_base);
-release_mem_region:
+error:
+	if (par->dc_regs)
+		iounmap(par->dc_regs);
+	if (info->screen_base)
+		iounmap(info->screen_base);
 	release_mem_region(addr, size);
-release_info:
 	framebuffer_release(info);
 	return ret;
 }

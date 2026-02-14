@@ -7,7 +7,6 @@
  */
 
 #include <sys/mman.h>
-#include <errno.h>
 #include <inttypes.h>
 #include <asm/bug.h>
 #include <linux/zalloc.h>
@@ -231,7 +230,9 @@ void mmap__munmap(struct mmap *map)
 {
 	bitmap_free(map->affinity_mask.bits);
 
+#ifndef PYTHON_PERF
 	zstd_fini(&map->zstd_data);
+#endif
 
 	perf_mmap__aio_munmap(map);
 	if (map->data != NULL) {
@@ -245,8 +246,9 @@ static void build_node_mask(int node, struct mmap_cpu_mask *mask)
 {
 	int idx, nr_cpus;
 	struct perf_cpu cpu;
-	struct perf_cpu_map *cpu_map = cpu_map__online();
+	const struct perf_cpu_map *cpu_map = NULL;
 
+	cpu_map = cpu_map__online();
 	if (!cpu_map)
 		return;
 
@@ -256,7 +258,6 @@ static void build_node_mask(int node, struct mmap_cpu_mask *mask)
 		if (cpu__get_node(cpu) == node)
 			__set_bit(cpu.cpu, mask->bits);
 	}
-	perf_cpu_map__put(cpu_map);
 }
 
 static int perf_mmap__setup_affinity_mask(struct mmap *map, struct mmap_params *mp)
@@ -294,12 +295,15 @@ int mmap__mmap(struct mmap *map, struct mmap_params *mp, int fd, struct perf_cpu
 
 	map->core.flush = mp->flush;
 
-	if (zstd_init(&map->zstd_data, mp->comp_level)) {
+	map->comp_level = mp->comp_level;
+#ifndef PYTHON_PERF
+	if (zstd_init(&map->zstd_data, map->comp_level)) {
 		pr_debug2("failed to init mmap compressor, error %d\n", errno);
 		return -1;
 	}
+#endif
 
-	if (mp->comp_level && !perf_mmap__aio_enabled(map)) {
+	if (map->comp_level && !perf_mmap__aio_enabled(map)) {
 		map->data = mmap(NULL, mmap__mmap_len(map), PROT_READ|PROT_WRITE,
 				 MAP_PRIVATE|MAP_ANONYMOUS, 0, 0);
 		if (map->data == MAP_FAILED) {
@@ -356,4 +360,15 @@ int perf_mmap__push(struct mmap *md, void *to,
 	perf_mmap__consume(&md->core);
 out:
 	return rc;
+}
+
+int mmap_cpu_mask__duplicate(struct mmap_cpu_mask *original, struct mmap_cpu_mask *clone)
+{
+	clone->nbits = original->nbits;
+	clone->bits  = bitmap_zalloc(original->nbits);
+	if (!clone->bits)
+		return -ENOMEM;
+
+	memcpy(clone->bits, original->bits, MMAP_CPU_MASK_BYTES(original));
+	return 0;
 }

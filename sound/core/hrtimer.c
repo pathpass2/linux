@@ -6,7 +6,6 @@
 
 #include <linux/init.h>
 #include <linux/slab.h>
-#include <linux/string.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/hrtimer.h>
@@ -36,27 +35,29 @@ static enum hrtimer_restart snd_hrtimer_callback(struct hrtimer *hrt)
 	unsigned long ticks;
 	enum hrtimer_restart ret = HRTIMER_NORESTART;
 
-	scoped_guard(spinlock, &t->lock) {
-		if (!t->running)
-			return HRTIMER_NORESTART; /* fast path */
-		stime->in_callback = true;
-		ticks = t->sticks;
-	}
+	spin_lock(&t->lock);
+	if (!t->running)
+		goto out; /* fast path */
+	stime->in_callback = true;
+	ticks = t->sticks;
+	spin_unlock(&t->lock);
 
 	/* calculate the drift */
-	delta = ktime_sub(hrtimer_cb_get_time(hrt), hrtimer_get_expires(hrt));
+	delta = ktime_sub(hrt->base->get_time(), hrtimer_get_expires(hrt));
 	if (delta > 0)
 		ticks += ktime_divns(delta, ticks * resolution);
 
 	snd_timer_interrupt(stime->timer, ticks);
 
-	guard(spinlock)(&t->lock);
+	spin_lock(&t->lock);
 	if (t->running) {
 		hrtimer_add_expires_ns(hrt, t->sticks * resolution);
 		ret = HRTIMER_RESTART;
 	}
 
 	stime->in_callback = false;
+ out:
+	spin_unlock(&t->lock);
 	return ret;
 }
 
@@ -67,8 +68,9 @@ static int snd_hrtimer_open(struct snd_timer *t)
 	stime = kzalloc(sizeof(*stime), GFP_KERNEL);
 	if (!stime)
 		return -ENOMEM;
+	hrtimer_init(&stime->hrt, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	stime->timer = t;
-	hrtimer_setup(&stime->hrt, snd_hrtimer_callback, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	stime->hrt.function = snd_hrtimer_callback;
 	t->private_data = stime;
 	return 0;
 }
@@ -78,10 +80,10 @@ static int snd_hrtimer_close(struct snd_timer *t)
 	struct snd_hrtimer *stime = t->private_data;
 
 	if (stime) {
-		scoped_guard(spinlock_irq, &t->lock) {
-			t->running = 0; /* just to be sure */
-			stime->in_callback = 1; /* skip start/stop */
-		}
+		spin_lock_irq(&t->lock);
+		t->running = 0; /* just to be sure */
+		stime->in_callback = 1; /* skip start/stop */
+		spin_unlock_irq(&t->lock);
 
 		hrtimer_cancel(&stime->hrt);
 		kfree(stime);
@@ -139,7 +141,7 @@ static int __init snd_hrtimer_init(void)
 		return err;
 
 	timer->module = THIS_MODULE;
-	strscpy(timer->name, "HR timer");
+	strcpy(timer->name, "HR timer");
 	timer->hw = hrtimer_hw;
 	timer->hw.resolution = resolution;
 	timer->hw.ticks = NANO_SEC / resolution;

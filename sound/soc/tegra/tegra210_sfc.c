@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// SPDX-FileCopyrightText: Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES.
-// All rights reserved.
 //
 // tegra210_sfc.c - Tegra210 SFC driver
+//
+// Copyright (c) 2021 NVIDIA CORPORATION.  All rights reserved.
 
 #include <linux/clk.h>
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -41,7 +42,6 @@ static const int tegra210_sfc_rates[TEGRA210_SFC_NUM_RATES] = {
 	32000,
 	44100,
 	48000,
-	64000,
 	88200,
 	96000,
 	176400,
@@ -2857,7 +2857,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_8to32,
 		coef_8to44,
 		coef_8to48,
-		UNSUPP_CONV,
 		coef_8to88,
 		coef_8to96,
 		UNSUPP_CONV,
@@ -2873,7 +2872,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_11to32,
 		coef_11to44,
 		coef_11to48,
-		UNSUPP_CONV,
 		coef_11to88,
 		coef_11to96,
 		UNSUPP_CONV,
@@ -2889,7 +2887,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_16to32,
 		coef_16to44,
 		coef_16to48,
-		UNSUPP_CONV,
 		coef_16to88,
 		coef_16to96,
 		coef_16to176,
@@ -2905,7 +2902,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_22to32,
 		coef_22to44,
 		coef_22to48,
-		UNSUPP_CONV,
 		coef_22to88,
 		coef_22to96,
 		coef_22to176,
@@ -2921,7 +2917,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_24to32,
 		coef_24to44,
 		coef_24to48,
-		UNSUPP_CONV,
 		coef_24to88,
 		coef_24to96,
 		coef_24to176,
@@ -2937,7 +2932,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		BYPASS_CONV,
 		coef_32to44,
 		coef_32to48,
-		UNSUPP_CONV,
 		coef_32to88,
 		coef_32to96,
 		coef_32to176,
@@ -2953,7 +2947,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_44to32,
 		BYPASS_CONV,
 		coef_44to48,
-		UNSUPP_CONV,
 		coef_44to88,
 		coef_44to96,
 		coef_44to176,
@@ -2969,27 +2962,10 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_48to32,
 		coef_48to44,
 		BYPASS_CONV,
-		UNSUPP_CONV,
 		coef_48to88,
 		coef_48to96,
 		coef_48to176,
 		coef_48to192,
-	},
-	/* Convertions from 64 kHz */
-	{
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
-		UNSUPP_CONV,
 	},
 	/* Convertions from 88.2 kHz */
 	{
@@ -3001,7 +2977,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_88to32,
 		coef_88to44,
 		coef_88to48,
-		UNSUPP_CONV,
 		BYPASS_CONV,
 		coef_88to96,
 		coef_88to176,
@@ -3016,7 +2991,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_96to32,
 		coef_96to44,
 		coef_96to48,
-		UNSUPP_CONV,
 		coef_96to88,
 		BYPASS_CONV,
 		coef_96to176,
@@ -3032,7 +3006,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_176to32,
 		coef_176to44,
 		coef_176to48,
-		UNSUPP_CONV,
 		coef_176to88,
 		coef_176to96,
 		BYPASS_CONV,
@@ -3048,7 +3021,6 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 		coef_192to32,
 		coef_192to44,
 		coef_192to48,
-		UNSUPP_CONV,
 		coef_192to88,
 		coef_192to96,
 		coef_192to176,
@@ -3056,7 +3028,7 @@ static s32 *coef_addr_table[TEGRA210_SFC_NUM_RATES][TEGRA210_SFC_NUM_RATES] = {
 	},
 };
 
-static int tegra210_sfc_runtime_suspend(struct device *dev)
+static int __maybe_unused tegra210_sfc_runtime_suspend(struct device *dev)
 {
 	struct tegra210_sfc *sfc = dev_get_drvdata(dev);
 
@@ -3066,7 +3038,7 @@ static int tegra210_sfc_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-static int tegra210_sfc_runtime_resume(struct device *dev)
+static int __maybe_unused tegra210_sfc_runtime_resume(struct device *dev)
 {
 	struct tegra210_sfc *sfc = dev_get_drvdata(dev);
 
@@ -3133,7 +3105,6 @@ static int tegra210_sfc_set_audio_cif(struct tegra210_sfc *sfc,
 	case SNDRV_PCM_FORMAT_S16_LE:
 		audio_bits = TEGRA_ACIF_BITS_16;
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
 	case SNDRV_PCM_FORMAT_S32_LE:
 		audio_bits = TEGRA_ACIF_BITS_32;
 		break;
@@ -3276,7 +3247,7 @@ static int tegra210_sfc_init(struct snd_soc_dapm_widget *w,
 static int tegra210_sfc_iget_stereo_to_mono(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 
 	ucontrol->value.enumerated.item[0] = sfc->stereo_to_mono[SFC_RX_PATH];
@@ -3287,7 +3258,7 @@ static int tegra210_sfc_iget_stereo_to_mono(struct snd_kcontrol *kcontrol,
 static int tegra210_sfc_iput_stereo_to_mono(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int value = ucontrol->value.enumerated.item[0];
 
@@ -3302,7 +3273,7 @@ static int tegra210_sfc_iput_stereo_to_mono(struct snd_kcontrol *kcontrol,
 static int tegra210_sfc_iget_mono_to_stereo(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 
 	ucontrol->value.enumerated.item[0] = sfc->mono_to_stereo[SFC_RX_PATH];
@@ -3313,7 +3284,7 @@ static int tegra210_sfc_iget_mono_to_stereo(struct snd_kcontrol *kcontrol,
 static int tegra210_sfc_iput_mono_to_stereo(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int value = ucontrol->value.enumerated.item[0];
 
@@ -3328,7 +3299,7 @@ static int tegra210_sfc_iput_mono_to_stereo(struct snd_kcontrol *kcontrol,
 static int tegra210_sfc_oget_stereo_to_mono(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 
 	ucontrol->value.enumerated.item[0] = sfc->stereo_to_mono[SFC_TX_PATH];
@@ -3339,7 +3310,7 @@ static int tegra210_sfc_oget_stereo_to_mono(struct snd_kcontrol *kcontrol,
 static int tegra210_sfc_oput_stereo_to_mono(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int value = ucontrol->value.enumerated.item[0];
 
@@ -3354,7 +3325,7 @@ static int tegra210_sfc_oput_stereo_to_mono(struct snd_kcontrol *kcontrol,
 static int tegra210_sfc_oget_mono_to_stereo(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 
 	ucontrol->value.enumerated.item[0] = sfc->mono_to_stereo[SFC_TX_PATH];
@@ -3365,7 +3336,7 @@ static int tegra210_sfc_oget_mono_to_stereo(struct snd_kcontrol *kcontrol,
 static int tegra210_sfc_oput_mono_to_stereo(struct snd_kcontrol *kcontrol,
 				    struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *cmpnt = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *cmpnt = snd_soc_kcontrol_component(kcontrol);
 	struct tegra210_sfc *sfc = snd_soc_component_get_drvdata(cmpnt);
 	unsigned int value = ucontrol->value.enumerated.item[0];
 
@@ -3396,7 +3367,6 @@ static struct snd_soc_dai_driver tegra210_sfc_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
-				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.capture = {
@@ -3406,7 +3376,6 @@ static struct snd_soc_dai_driver tegra210_sfc_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
-				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.ops = &tegra210_sfc_in_dai_ops,
@@ -3420,7 +3389,6 @@ static struct snd_soc_dai_driver tegra210_sfc_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
-				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.capture = {
@@ -3430,7 +3398,6 @@ static struct snd_soc_dai_driver tegra210_sfc_dais[] = {
 			.rates = SNDRV_PCM_RATE_8000_192000,
 			.formats = SNDRV_PCM_FMTBIT_S8 |
 				SNDRV_PCM_FMTBIT_S16_LE |
-				SNDRV_PCM_FMTBIT_S24_LE |
 				SNDRV_PCM_FMTBIT_S32_LE,
 		},
 		.ops = &tegra210_sfc_out_dai_ops,
@@ -3569,7 +3536,6 @@ static const struct regmap_config tegra210_sfc_regmap_config = {
 	.precious_reg		= tegra210_sfc_precious_reg,
 	.reg_defaults		= tegra210_sfc_reg_defaults,
 	.num_reg_defaults	= ARRAY_SIZE(tegra210_sfc_reg_defaults),
-	.reg_default_cb		= regmap_default_zero_cb,
 	.cache_type		= REGCACHE_FLAT,
 };
 
@@ -3618,22 +3584,25 @@ static int tegra210_sfc_platform_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void tegra210_sfc_platform_remove(struct platform_device *pdev)
+static int tegra210_sfc_platform_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static const struct dev_pm_ops tegra210_sfc_pm_ops = {
-	RUNTIME_PM_OPS(tegra210_sfc_runtime_suspend,
-		       tegra210_sfc_runtime_resume, NULL)
-	SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(tegra210_sfc_runtime_suspend,
+			   tegra210_sfc_runtime_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 };
 
 static struct platform_driver tegra210_sfc_driver = {
 	.driver = {
 		.name = "tegra210-sfc",
 		.of_match_table = tegra210_sfc_of_match,
-		.pm = pm_ptr(&tegra210_sfc_pm_ops),
+		.pm = &tegra210_sfc_pm_ops,
 	},
 	.probe = tegra210_sfc_platform_probe,
 	.remove = tegra210_sfc_platform_remove,

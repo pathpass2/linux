@@ -13,9 +13,7 @@
  */
 
 #ifdef __GNUC__
-#ifdef __MINGW_PRINTF_FORMAT
-#define PRINTF(i, j)	__attribute__((format (__MINGW_PRINTF_FORMAT, i, j)))
-#elif __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 4)
+#if __GNUC__ >= 5 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 4)
 #define PRINTF(i, j)	__attribute__((format (gnu_printf, i, j)))
 #else
 #define PRINTF(i, j)	__attribute__((format (printf, i, j)))
@@ -42,11 +40,6 @@ static inline void NORETURN PRINTF(1, 2) die(const char *str, ...)
 	exit(1);
 }
 
-/**
- * Writes path to fp, escaping spaces with a backslash.
- */
-void fprint_path_escaped(FILE *fp, const char *path);
-
 static inline void *xmalloc(size_t len)
 {
 	void *new = malloc(len);
@@ -72,7 +65,7 @@ extern char *xstrndup(const char *s, size_t len);
 
 extern int PRINTF(2, 3) xasprintf(char **strp, const char *fmt, ...);
 extern int PRINTF(2, 3) xasprintf_append(char **strp, const char *fmt, ...);
-extern int PRINTF(2, 0) xavsprintf_append(char **strp, const char *fmt, va_list ap);
+extern int xavsprintf_append(char **strp, const char *fmt, va_list ap);
 extern char *join_path(const char *path, const char *name);
 
 /**

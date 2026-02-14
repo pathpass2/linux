@@ -218,8 +218,8 @@ static u32 hpt37x_find_mode(struct ata_port *ap, int speed)
 	return 0xffffffffU;	/* silence compiler warning */
 }
 
-static int hpt_dma_broken(const struct ata_device *dev, char *modestr,
-			  const char * const list[])
+static int hpt_dma_blacklisted(const struct ata_device *dev, char *modestr,
+			       const char * const list[])
 {
 	unsigned char model_num[ATA_ID_PROD_LEN + 1];
 	int i;
@@ -281,9 +281,9 @@ static const char * const bad_ata100_5[] = {
 static unsigned int hpt370_filter(struct ata_device *adev, unsigned int mask)
 {
 	if (adev->class == ATA_DEV_ATA) {
-		if (hpt_dma_broken(adev, "UDMA", bad_ata33))
+		if (hpt_dma_blacklisted(adev, "UDMA", bad_ata33))
 			mask &= ~ATA_MASK_UDMA;
-		if (hpt_dma_broken(adev, "UDMA100", bad_ata100_5))
+		if (hpt_dma_blacklisted(adev, "UDMA100", bad_ata100_5))
 			mask &= ~(0xE0 << ATA_SHIFT_UDMA);
 	}
 	return mask;
@@ -300,7 +300,7 @@ static unsigned int hpt370_filter(struct ata_device *adev, unsigned int mask)
 static unsigned int hpt370a_filter(struct ata_device *adev, unsigned int mask)
 {
 	if (adev->class == ATA_DEV_ATA) {
-		if (hpt_dma_broken(adev, "UDMA100", bad_ata100_5))
+		if (hpt_dma_blacklisted(adev, "UDMA100", bad_ata100_5))
 			mask &= ~(0xE0 << ATA_SHIFT_UDMA);
 	}
 	return mask;
@@ -526,7 +526,7 @@ static void hpt37x_bmdma_stop(struct ata_queued_cmd *qc)
 }
 
 
-static const struct scsi_host_template hpt37x_sht = {
+static struct scsi_host_template hpt37x_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -543,7 +543,7 @@ static struct ata_port_operations hpt370_port_ops = {
 	.cable_detect	= hpt37x_cable_detect,
 	.set_piomode	= hpt37x_set_piomode,
 	.set_dmamode	= hpt37x_set_dmamode,
-	.reset.prereset	= hpt37x_pre_reset,
+	.prereset	= hpt37x_pre_reset,
 };
 
 /*
@@ -567,7 +567,7 @@ static struct ata_port_operations hpt302_port_ops = {
 	.cable_detect	= hpt37x_cable_detect,
 	.set_piomode	= hpt37x_set_piomode,
 	.set_dmamode	= hpt37x_set_dmamode,
-	.reset.prereset	= hpt37x_pre_reset,
+	.prereset	= hpt37x_pre_reset,
 };
 
 /*

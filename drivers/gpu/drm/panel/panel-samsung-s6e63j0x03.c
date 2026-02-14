@@ -11,7 +11,6 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/regulator/consumer.h>
 
@@ -226,7 +225,7 @@ static int s6e63j0x03_disable(struct drm_panel *panel)
 	if (ret < 0)
 		return ret;
 
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_REDUCED;
+	ctx->bl_dev->props.power = FB_BLANK_NORMAL;
 
 	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
 	if (ret < 0)
@@ -246,7 +245,7 @@ static int s6e63j0x03_unprepare(struct drm_panel *panel)
 	if (ret < 0)
 		return ret;
 
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_OFF;
+	ctx->bl_dev->props.power = FB_BLANK_POWERDOWN;
 
 	return 0;
 }
@@ -333,7 +332,7 @@ static int s6e63j0x03_prepare(struct drm_panel *panel)
 	if (ret < 0)
 		goto err;
 
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_REDUCED;
+	ctx->bl_dev->props.power = FB_BLANK_NORMAL;
 
 	return 0;
 
@@ -394,7 +393,7 @@ static int s6e63j0x03_enable(struct drm_panel *panel)
 	if (ret < 0)
 		return ret;
 
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_ON;
+	ctx->bl_dev->props.power = FB_BLANK_UNBLANK;
 
 	return 0;
 }
@@ -437,11 +436,9 @@ static int s6e63j0x03_probe(struct mipi_dsi_device *dsi)
 	struct s6e63j0x03 *ctx;
 	int ret;
 
-	ctx = devm_drm_panel_alloc(dev, struct s6e63j0x03, panel,
-				   &s6e63j0x03_funcs,
-				   DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
+	ctx = devm_kzalloc(dev, sizeof(struct s6e63j0x03), GFP_KERNEL);
+	if (!ctx)
+		return -ENOMEM;
 
 	mipi_dsi_set_drvdata(dsi, ctx);
 
@@ -464,6 +461,8 @@ static int s6e63j0x03_probe(struct mipi_dsi_device *dsi)
 		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
 				     "cannot get reset-gpio\n");
 
+	drm_panel_init(&ctx->panel, dev, &s6e63j0x03_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 	ctx->panel.prepare_prev_first = true;
 
 	ctx->bl_dev = backlight_device_register("s6e63j0x03", dev, ctx,
@@ -474,7 +473,7 @@ static int s6e63j0x03_probe(struct mipi_dsi_device *dsi)
 
 	ctx->bl_dev->props.max_brightness = MAX_BRIGHTNESS;
 	ctx->bl_dev->props.brightness = DEFAULT_BRIGHTNESS;
-	ctx->bl_dev->props.power = BACKLIGHT_POWER_OFF;
+	ctx->bl_dev->props.power = FB_BLANK_POWERDOWN;
 
 	drm_panel_add(&ctx->panel);
 

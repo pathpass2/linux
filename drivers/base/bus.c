@@ -57,7 +57,7 @@ static int __must_check bus_rescan_devices_helper(struct device *dev,
  * NULL.  A call to subsys_put() must be done when finished with the pointer in
  * order for it to be properly freed.
  */
-struct subsys_private *bus_to_subsys(const struct bus_type *bus)
+static struct subsys_private *bus_to_subsys(const struct bus_type *bus)
 {
 	struct subsys_private *sp = NULL;
 	struct kobject *kobj;
@@ -84,7 +84,7 @@ done:
 	return sp;
 }
 
-static const struct bus_type *bus_get(const struct bus_type *bus)
+static struct bus_type *bus_get(struct bus_type *bus)
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
 
@@ -152,8 +152,7 @@ static ssize_t bus_attr_show(struct kobject *kobj, struct attribute *attr,
 {
 	struct bus_attribute *bus_attr = to_bus_attr(attr);
 	struct subsys_private *subsys_priv = to_subsys_private(kobj);
-	/* return -EIO for reading a bus attribute without show() */
-	ssize_t ret = -EIO;
+	ssize_t ret = 0;
 
 	if (bus_attr->show)
 		ret = bus_attr->show(subsys_priv->bus, buf);
@@ -165,8 +164,7 @@ static ssize_t bus_attr_store(struct kobject *kobj, struct attribute *attr,
 {
 	struct bus_attribute *bus_attr = to_bus_attr(attr);
 	struct subsys_private *subsys_priv = to_subsys_private(kobj);
-	/* return -EIO for writing a bus attribute without store() */
-	ssize_t ret = -EIO;
+	ssize_t ret = 0;
 
 	if (bus_attr->store)
 		ret = bus_attr->store(subsys_priv->bus, buf, count);
@@ -235,7 +233,7 @@ static const struct kset_uevent_ops bus_uevent_ops = {
 static ssize_t unbind_store(struct device_driver *drv, const char *buf,
 			    size_t count)
 {
-	const struct bus_type *bus = bus_get(drv->bus);
+	struct bus_type *bus = bus_get(drv->bus);
 	struct device *dev;
 	int err = -ENODEV;
 
@@ -258,7 +256,7 @@ static DRIVER_ATTR_IGNORE_LOCKDEP(unbind, 0200, NULL, unbind_store);
 static ssize_t bind_store(struct device_driver *drv, const char *buf,
 			  size_t count)
 {
-	const struct bus_type *bus = bus_get(drv->bus);
+	struct bus_type *bus = bus_get(drv->bus);
 	struct device *dev;
 	int err = -ENODEV;
 
@@ -276,7 +274,7 @@ static ssize_t bind_store(struct device_driver *drv, const char *buf,
 }
 static DRIVER_ATTR_IGNORE_LOCKDEP(bind, 0200, NULL, bind_store);
 
-static ssize_t drivers_autoprobe_show(const struct bus_type *bus, char *buf)
+static ssize_t drivers_autoprobe_show(struct bus_type *bus, char *buf)
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
 	int ret;
@@ -289,7 +287,7 @@ static ssize_t drivers_autoprobe_show(const struct bus_type *bus, char *buf)
 	return ret;
 }
 
-static ssize_t drivers_autoprobe_store(const struct bus_type *bus,
+static ssize_t drivers_autoprobe_store(struct bus_type *bus,
 				       const char *buf, size_t count)
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
@@ -306,7 +304,7 @@ static ssize_t drivers_autoprobe_store(const struct bus_type *bus,
 	return count;
 }
 
-static ssize_t drivers_probe_store(const struct bus_type *bus,
+static ssize_t drivers_probe_store(struct bus_type *bus,
 				   const char *buf, size_t count)
 {
 	struct device *dev;
@@ -324,19 +322,6 @@ static ssize_t drivers_probe_store(const struct bus_type *bus,
 static struct device *next_device(struct klist_iter *i)
 {
 	struct klist_node *n = klist_next(i);
-	struct device *dev = NULL;
-	struct device_private *dev_prv;
-
-	if (n) {
-		dev_prv = to_device_private_bus(n);
-		dev = dev_prv->device;
-	}
-	return dev;
-}
-
-static struct device *prev_device(struct klist_iter *i)
-{
-	struct klist_node *n = klist_prev(i);
 	struct device *dev = NULL;
 	struct device_private *dev_prv;
 
@@ -367,7 +352,7 @@ static struct device *prev_device(struct klist_iter *i)
  * count in the supplied callback.
  */
 int bus_for_each_dev(const struct bus_type *bus, struct device *start,
-		     void *data, device_iter_t fn)
+		     void *data, int (*fn)(struct device *, void *))
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
 	struct klist_iter i;
@@ -404,7 +389,7 @@ EXPORT_SYMBOL_GPL(bus_for_each_dev);
  */
 struct device *bus_find_device(const struct bus_type *bus,
 			       struct device *start, const void *data,
-			       device_match_t match)
+			       int (*match)(struct device *dev, const void *data))
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
 	struct klist_iter i;
@@ -415,42 +400,14 @@ struct device *bus_find_device(const struct bus_type *bus,
 
 	klist_iter_init_node(&sp->klist_devices, &i,
 			     (start ? &start->p->knode_bus : NULL));
-	while ((dev = next_device(&i))) {
-		if (match(dev, data)) {
-			get_device(dev);
+	while ((dev = next_device(&i)))
+		if (match(dev, data) && get_device(dev))
 			break;
-		}
-	}
 	klist_iter_exit(&i);
 	subsys_put(sp);
 	return dev;
 }
 EXPORT_SYMBOL_GPL(bus_find_device);
-
-struct device *bus_find_device_reverse(const struct bus_type *bus,
-				       struct device *start, const void *data,
-				       device_match_t match)
-{
-	struct subsys_private *sp = bus_to_subsys(bus);
-	struct klist_iter i;
-	struct device *dev;
-
-	if (!sp)
-		return NULL;
-
-	klist_iter_init_node(&sp->klist_devices, &i,
-			     (start ? &start->p->knode_bus : NULL));
-	while ((dev = prev_device(&i))) {
-		if (match(dev, data)) {
-			get_device(dev);
-			break;
-		}
-	}
-	klist_iter_exit(&i);
-	subsys_put(sp);
-	return dev;
-}
-EXPORT_SYMBOL_GPL(bus_find_device_reverse);
 
 static struct device_driver *next_driver(struct klist_iter *i)
 {
@@ -571,7 +528,8 @@ void bus_probe_device(struct device *dev)
 	if (!sp)
 		return;
 
-	device_initial_probe(dev);
+	if (sp->drivers_autoprobe)
+		device_initial_probe(dev);
 
 	mutex_lock(&sp->mutex);
 	list_for_each_entry(sif, &sp->interfaces, node)
@@ -716,12 +674,7 @@ int bus_add_driver(struct device_driver *drv)
 		if (error)
 			goto out_del_list;
 	}
-	error = module_add_driver(drv->owner, drv);
-	if (error) {
-		printk(KERN_ERR "%s: failed to create module links for %s\n",
-			__func__, drv->name);
-		goto out_detach;
-	}
+	module_add_driver(drv->owner, drv);
 
 	error = driver_create_file(drv, &driver_attr_uevent);
 	if (error) {
@@ -746,8 +699,6 @@ int bus_add_driver(struct device_driver *drv)
 
 	return 0;
 
-out_detach:
-	driver_detach(drv);
 out_del_list:
 	klist_del(&priv->knode_bus);
 out_unregister:
@@ -818,7 +769,7 @@ static int __must_check bus_rescan_devices_helper(struct device *dev,
  * attached and rescan it against existing drivers to see if it matches
  * any by calling device_attach() for the unbound devices.
  */
-int bus_rescan_devices(const struct bus_type *bus)
+int bus_rescan_devices(struct bus_type *bus)
 {
 	return bus_for_each_dev(bus, NULL, NULL, bus_rescan_devices_helper);
 }
@@ -857,7 +808,7 @@ static void klist_devices_put(struct klist_node *n)
 	put_device(dev);
 }
 
-static ssize_t bus_uevent_store(const struct bus_type *bus,
+static ssize_t bus_uevent_store(struct bus_type *bus,
 				const char *buf, size_t count)
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
@@ -890,7 +841,7 @@ static struct bus_attribute bus_attr_uevent = __ATTR(uevent, 0200, NULL,
  * infrastructure, then register the children subsystems it has:
  * the devices and drivers that belong to the subsystem.
  */
-int bus_register(const struct bus_type *bus)
+int bus_register(struct bus_type *bus)
 {
 	int retval;
 	struct subsys_private *priv;
@@ -962,8 +913,6 @@ bus_devices_fail:
 	bus_remove_file(bus, &bus_attr_uevent);
 bus_uevent_fail:
 	kset_unregister(&priv->subsys);
-	/* Above kset_unregister() will kfree @priv */
-	priv = NULL;
 out:
 	kfree(priv);
 	return retval;
@@ -986,8 +935,8 @@ void bus_unregister(const struct bus_type *bus)
 		return;
 
 	pr_debug("bus: '%s': unregistering\n", bus->name);
-	if (sp->dev_root)
-		device_unregister(sp->dev_root);
+	if (bus->dev_root)
+		device_unregister(bus->dev_root);
 
 	bus_kobj = &sp->subsys.kobj;
 	sysfs_remove_groups(bus_kobj, bus->bus_groups);
@@ -1081,7 +1030,7 @@ static void device_insertion_sort_klist(struct device *a, struct list_head *list
 	list_move_tail(&a->p->knode_bus.n_node, list);
 }
 
-void bus_sort_breadthfirst(const struct bus_type *bus,
+void bus_sort_breadthfirst(struct bus_type *bus,
 			   int (*compare)(const struct device *a,
 					  const struct device *b))
 {
@@ -1245,23 +1194,16 @@ static void system_root_device_release(struct device *dev)
 	kfree(dev);
 }
 
-static int subsys_register(const struct bus_type *subsys,
+static int subsys_register(struct bus_type *subsys,
 			   const struct attribute_group **groups,
 			   struct kobject *parent_of_root)
 {
-	struct subsys_private *sp;
 	struct device *dev;
 	int err;
 
 	err = bus_register(subsys);
 	if (err < 0)
 		return err;
-
-	sp = bus_to_subsys(subsys);
-	if (!sp) {
-		err = -EINVAL;
-		goto err_sp;
-	}
 
 	dev = kzalloc(sizeof(struct device), GFP_KERNEL);
 	if (!dev) {
@@ -1281,8 +1223,7 @@ static int subsys_register(const struct bus_type *subsys,
 	if (err < 0)
 		goto err_dev_reg;
 
-	sp->dev_root = dev;
-	subsys_put(sp);
+	subsys->dev_root = dev;
 	return 0;
 
 err_dev_reg:
@@ -1291,8 +1232,6 @@ err_dev_reg:
 err_name:
 	kfree(dev);
 err_dev:
-	subsys_put(sp);
-err_sp:
 	bus_unregister(subsys);
 	return err;
 }
@@ -1315,7 +1254,7 @@ err_sp:
  * directory itself and not some create fake root-device placed in
  * /sys/devices/system/<name>.
  */
-int subsys_system_register(const struct bus_type *subsys,
+int subsys_system_register(struct bus_type *subsys,
 			   const struct attribute_group **groups)
 {
 	return subsys_register(subsys, groups, &system_kset->kobj);
@@ -1328,17 +1267,17 @@ EXPORT_SYMBOL_GPL(subsys_system_register);
  * @groups: default attributes for the root device
  *
  * All 'virtual' subsystems have a /sys/devices/system/<name> root device
- * with the name of the subsystem.  The root device can carry subsystem-wide
+ * with the name of the subystem.  The root device can carry subsystem-wide
  * attributes.  All registered devices are below this single root device.
  * There's no restriction on device naming.  This is for kernel software
  * constructs which need sysfs interface.
  */
-int subsys_virtual_register(const struct bus_type *subsys,
+int subsys_virtual_register(struct bus_type *subsys,
 			    const struct attribute_group **groups)
 {
 	struct kobject *virtual_dir;
 
-	virtual_dir = virtual_device_parent();
+	virtual_dir = virtual_device_parent(NULL);
 	if (!virtual_dir)
 		return -ENOMEM;
 
@@ -1358,7 +1297,7 @@ EXPORT_SYMBOL_GPL(subsys_virtual_register);
  * from being unregistered or unloaded while the caller is using it.
  * The caller is responsible for preventing this.
  */
-struct device_driver *driver_find(const char *name, const struct bus_type *bus)
+struct device_driver *driver_find(const char *name, struct bus_type *bus)
 {
 	struct subsys_private *sp = bus_to_subsys(bus);
 	struct kobject *k;
@@ -1410,15 +1349,9 @@ bool bus_is_registered(const struct bus_type *bus)
  */
 struct device *bus_get_dev_root(const struct bus_type *bus)
 {
-	struct subsys_private *sp = bus_to_subsys(bus);
-	struct device *dev_root;
-
-	if (!sp)
-		return NULL;
-
-	dev_root = get_device(sp->dev_root);
-	subsys_put(sp);
-	return dev_root;
+	if (bus)
+		return get_device(bus->dev_root);
+	return NULL;
 }
 EXPORT_SYMBOL_GPL(bus_get_dev_root);
 
@@ -1429,13 +1362,8 @@ int __init buses_init(void)
 		return -ENOMEM;
 
 	system_kset = kset_create_and_add("system", NULL, &devices_kset->kobj);
-	if (!system_kset) {
-		/* Do error handling here as devices_init() do */
-		kset_unregister(bus_kset);
-		bus_kset = NULL;
-		pr_err("%s: failed to create and add kset 'bus'\n", __func__);
+	if (!system_kset)
 		return -ENOMEM;
-	}
 
 	return 0;
 }

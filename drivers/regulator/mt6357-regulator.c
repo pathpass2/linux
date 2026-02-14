@@ -123,7 +123,7 @@ struct mt6357_regulator_info {
  *
  * Regulators that use regmap for their register I/O can set the
  * da_vsel_reg and da_vsel_mask fields in the info structure and
- * then use this as their get_voltage_sel operation.
+ * then use this as their get_voltage_vsel operation.
  */
 static int mt6357_get_buck_voltage_sel(struct regulator_dev *rdev)
 {
@@ -439,7 +439,6 @@ MODULE_DEVICE_TABLE(platform, mt6357_platform_ids);
 static struct platform_driver mt6357_regulator_driver = {
 	.driver = {
 		.name = "mt6357-regulator",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = mt6357_regulator_probe,
 	.id_table = mt6357_platform_ids,

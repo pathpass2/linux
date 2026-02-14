@@ -107,7 +107,7 @@ int dm_register_path_selector(struct path_selector_type *pst)
 
 	if (__find_path_selector_type(pst->name)) {
 		kfree(psi);
-		r = -EBUSY;
+		r = -EEXIST;
 	} else
 		list_add(&psi->list, &_path_selectors);
 
@@ -117,16 +117,16 @@ int dm_register_path_selector(struct path_selector_type *pst)
 }
 EXPORT_SYMBOL_GPL(dm_register_path_selector);
 
-void dm_unregister_path_selector(struct path_selector_type *pst)
+int dm_unregister_path_selector(struct path_selector_type *pst)
 {
 	struct ps_internal *psi;
 
 	down_write(&_ps_lock);
 
 	psi = __find_path_selector_type(pst->name);
-	if (WARN_ON(!psi)) {
+	if (!psi) {
 		up_write(&_ps_lock);
-		return;
+		return -EINVAL;
 	}
 
 	list_del(&psi->list);
@@ -134,5 +134,7 @@ void dm_unregister_path_selector(struct path_selector_type *pst)
 	up_write(&_ps_lock);
 
 	kfree(psi);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(dm_unregister_path_selector);

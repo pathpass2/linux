@@ -39,7 +39,7 @@ static int lpit_read_residency_counter_us(u64 *counter, bool io_mem)
 		return 0;
 	}
 
-	err = rdmsrq_safe(residency_info_ffh.gaddr.address, counter);
+	err = rdmsrl_safe(residency_info_ffh.gaddr.address, counter);
 	if (!err) {
 		u64 mask = GENMASK_ULL(residency_info_ffh.gaddr.bit_offset +
 				       residency_info_ffh.gaddr. bit_width - 1,
@@ -98,14 +98,8 @@ EXPORT_SYMBOL_GPL(lpit_read_residency_count_address);
 static void lpit_update_residency(struct lpit_residency_info *info,
 				 struct acpi_lpit_native *lpit_native)
 {
-	struct device *dev_root = bus_get_dev_root(&cpu_subsys);
-
-	/* Silently fail, if cpuidle attribute group is not present */
-	if (!dev_root)
-		return;
-
 	info->frequency = lpit_native->counter_frequency ?
-				lpit_native->counter_frequency : mul_u32_u32(tsc_khz, 1000U);
+				lpit_native->counter_frequency : tsc_khz * 1000;
 	if (!info->frequency)
 		info->frequency = 1;
 
@@ -114,18 +108,18 @@ static void lpit_update_residency(struct lpit_residency_info *info,
 		info->iomem_addr = ioremap(info->gaddr.address,
 						   info->gaddr.bit_width / 8);
 		if (!info->iomem_addr)
-			goto exit;
+			return;
 
-		sysfs_add_file_to_group(&dev_root->kobj,
+		/* Silently fail, if cpuidle attribute group is not present */
+		sysfs_add_file_to_group(&cpu_subsys.dev_root->kobj,
 					&dev_attr_low_power_idle_system_residency_us.attr,
 					"cpuidle");
 	} else if (info->gaddr.space_id == ACPI_ADR_SPACE_FIXED_HARDWARE) {
-		sysfs_add_file_to_group(&dev_root->kobj,
+		/* Silently fail, if cpuidle attribute group is not present */
+		sysfs_add_file_to_group(&cpu_subsys.dev_root->kobj,
 					&dev_attr_low_power_idle_cpu_residency_us.attr,
 					"cpuidle");
 	}
-exit:
-	put_device(dev_root);
 }
 
 static void lpit_process(u64 begin, u64 end)

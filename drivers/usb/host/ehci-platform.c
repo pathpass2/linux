@@ -27,7 +27,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/sys_soc.h>
@@ -112,7 +111,8 @@ static void ehci_platform_power_off(struct platform_device *dev)
 	int clk;
 
 	for (clk = EHCI_MAX_CLKS - 1; clk >= 0; clk--)
-		clk_disable_unprepare(priv->clks[clk]);
+		if (priv->clks[clk])
+			clk_disable_unprepare(priv->clks[clk]);
 }
 
 static struct hc_driver __read_mostly ehci_platform_hc_driver;
@@ -198,8 +198,7 @@ static void quirk_poll_work(struct work_struct *work)
 
 static void quirk_poll_timer(struct timer_list *t)
 {
-	struct ehci_platform_priv *priv = timer_container_of(priv, t,
-							     poll_timer);
+	struct ehci_platform_priv *priv = from_timer(priv, t, poll_timer);
 	struct ehci_hcd *ehci = container_of((void *)priv, struct ehci_hcd,
 					     priv);
 
@@ -225,7 +224,7 @@ static void quirk_poll_init(struct ehci_platform_priv *priv)
 
 static void quirk_poll_end(struct ehci_platform_priv *priv)
 {
-	timer_delete_sync(&priv->poll_timer);
+	del_timer_sync(&priv->poll_timer);
 	cancel_delayed_work(&priv->poll_work);
 }
 
@@ -239,11 +238,9 @@ static int ehci_platform_probe(struct platform_device *dev)
 	struct usb_hcd *hcd;
 	struct resource *res_mem;
 	struct usb_ehci_pdata *pdata = dev_get_platdata(&dev->dev);
-	const struct of_device_id *match;
 	struct ehci_platform_priv *priv;
 	struct ehci_hcd *ehci;
 	int err, irq, clk = 0;
-	bool dma_mask_64;
 
 	if (usb_disabled())
 		return -ENODEV;
@@ -255,13 +252,8 @@ static int ehci_platform_probe(struct platform_device *dev)
 	if (!pdata)
 		pdata = &ehci_platform_defaults;
 
-	dma_mask_64 = pdata->dma_mask_64;
-	match = of_match_device(dev->dev.driver->of_match_table, &dev->dev);
-	if (match && match->data)
-		dma_mask_64 = true;
-
 	err = dma_coerce_mask_and_coherent(&dev->dev,
-		dma_mask_64 ? DMA_BIT_MASK(64) : DMA_BIT_MASK(32));
+		pdata->dma_mask_64 ? DMA_BIT_MASK(64) : DMA_BIT_MASK(32));
 	if (err) {
 		dev_err(&dev->dev, "Error: DMA mask configuration failed\n");
 		return err;
@@ -305,9 +297,7 @@ static int ehci_platform_probe(struct platform_device *dev)
 		if (of_device_is_compatible(dev->dev.of_node,
 					    "aspeed,ast2500-ehci") ||
 		    of_device_is_compatible(dev->dev.of_node,
-					    "aspeed,ast2600-ehci") ||
-		    of_device_is_compatible(dev->dev.of_node,
-					    "aspeed,ast2700-ehci"))
+					    "aspeed,ast2600-ehci"))
 			ehci->is_aspeed = 1;
 
 		if (soc_device_match(quirk_poll_match))
@@ -369,7 +359,8 @@ static int ehci_platform_probe(struct platform_device *dev)
 			goto err_reset;
 	}
 
-	hcd->regs = devm_platform_get_and_ioremap_resource(dev, 0, &res_mem);
+	res_mem = platform_get_resource(dev, IORESOURCE_MEM, 0);
+	hcd->regs = devm_ioremap_resource(&dev->dev, res_mem);
 	if (IS_ERR(hcd->regs)) {
 		err = PTR_ERR(hcd->regs);
 		goto err_power;
@@ -409,7 +400,7 @@ err_put_clks:
 	return err;
 }
 
-static void ehci_platform_remove(struct platform_device *dev)
+static int ehci_platform_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
 	struct usb_ehci_pdata *pdata = dev_get_platdata(&dev->dev);
@@ -433,6 +424,8 @@ static void ehci_platform_remove(struct platform_device *dev)
 
 	if (pdata == &ehci_platform_defaults)
 		dev->dev.platform_data = NULL;
+
+	return 0;
 }
 
 static int __maybe_unused ehci_platform_suspend(struct device *dev)
@@ -454,17 +447,6 @@ static int __maybe_unused ehci_platform_suspend(struct device *dev)
 	if (pdata->power_suspend)
 		pdata->power_suspend(pdev);
 
-	ret = reset_control_assert(priv->rsts);
-	if (ret) {
-		if (pdata->power_on)
-			pdata->power_on(pdev);
-
-		ehci_resume(hcd, false);
-
-		if (priv->quirk_poll)
-			quirk_poll_init(priv);
-	}
-
 	return ret;
 }
 
@@ -475,18 +457,11 @@ static int __maybe_unused ehci_platform_resume(struct device *dev)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct ehci_platform_priv *priv = hcd_to_ehci_priv(hcd);
 	struct device *companion_dev;
-	int err;
-
-	err = reset_control_deassert(priv->rsts);
-	if (err)
-		return err;
 
 	if (pdata->power_on) {
-		err = pdata->power_on(pdev);
-		if (err < 0) {
-			reset_control_assert(priv->rsts);
+		int err = pdata->power_on(pdev);
+		if (err < 0)
 			return err;
-		}
 	}
 
 	companion_dev = usb_of_get_companion_dev(hcd->self.controller);
@@ -512,7 +487,6 @@ static const struct of_device_id vt8500_ehci_ids[] = {
 	{ .compatible = "wm,prizm-ehci", },
 	{ .compatible = "generic-ehci", },
 	{ .compatible = "cavium,octeon-6335-ehci", },
-	{ .compatible = "aspeed,ast2700-ehci",	.data = (void *)1 },
 	{}
 };
 MODULE_DEVICE_TABLE(of, vt8500_ehci_ids);

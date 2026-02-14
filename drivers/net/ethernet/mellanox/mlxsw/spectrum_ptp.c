@@ -16,7 +16,6 @@
 #include "spectrum.h"
 #include "spectrum_ptp.h"
 #include "core.h"
-#include "txheader.h"
 
 #define MLXSW_SP1_PTP_CLOCK_CYCLES_SHIFT	29
 #define MLXSW_SP1_PTP_CLOCK_FREQ_KHZ		156257 /* 6.4nSec */
@@ -46,7 +45,7 @@ struct mlxsw_sp2_ptp_state {
 	refcount_t ptp_port_enabled_ref; /* Number of ports with time stamping
 					  * enabled.
 					  */
-	struct kernel_hwtstamp_config config;
+	struct hwtstamp_config config;
 	struct mutex lock; /* Protects 'config' and HW configuration. */
 };
 
@@ -131,7 +130,7 @@ static u64 __mlxsw_sp1_ptp_read_frc(struct mlxsw_sp1_ptp_clock *clock,
 	return (u64) frc_l | (u64) frc_h2 << 32;
 }
 
-static u64 mlxsw_sp1_ptp_read_frc(struct cyclecounter *cc)
+static u64 mlxsw_sp1_ptp_read_frc(const struct cyclecounter *cc)
 {
 	struct mlxsw_sp1_ptp_clock *clock =
 		container_of(cc, struct mlxsw_sp1_ptp_clock, cycles);
@@ -1083,14 +1082,14 @@ void mlxsw_sp1_ptp_fini(struct mlxsw_sp_ptp_state *ptp_state_common)
 }
 
 int mlxsw_sp1_ptp_hwtstamp_get(struct mlxsw_sp_port *mlxsw_sp_port,
-			       struct kernel_hwtstamp_config *config)
+			       struct hwtstamp_config *config)
 {
 	*config = mlxsw_sp_port->ptp.hwtstamp_config;
 	return 0;
 }
 
 static int
-mlxsw_sp1_ptp_get_message_types(const struct kernel_hwtstamp_config *config,
+mlxsw_sp1_ptp_get_message_types(const struct hwtstamp_config *config,
 				u16 *p_ing_types, u16 *p_egr_types,
 				enum hwtstamp_rx_filters *p_rx_filter)
 {
@@ -1246,8 +1245,7 @@ void mlxsw_sp1_ptp_shaper_work(struct work_struct *work)
 }
 
 int mlxsw_sp1_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
-			       struct kernel_hwtstamp_config *config,
-			       struct netlink_ext_ack *extack)
+			       struct hwtstamp_config *config)
 {
 	enum hwtstamp_rx_filters rx_filter;
 	u16 ing_types;
@@ -1271,14 +1269,14 @@ int mlxsw_sp1_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
 	if (err)
 		return err;
 
-	/* Notify the caller what we are actually timestamping. */
+	/* Notify the ioctl caller what we are actually timestamping. */
 	config->rx_filter = rx_filter;
 
 	return 0;
 }
 
 int mlxsw_sp1_ptp_get_ts_info(struct mlxsw_sp *mlxsw_sp,
-			      struct kernel_ethtool_ts_info *info)
+			      struct ethtool_ts_info *info)
 {
 	info->phc_index = ptp_clock_index(mlxsw_sp->clock->ptp);
 
@@ -1353,10 +1351,6 @@ struct mlxsw_sp_ptp_state *mlxsw_sp2_ptp_init(struct mlxsw_sp *mlxsw_sp)
 {
 	struct mlxsw_sp2_ptp_state *ptp_state;
 	int err;
-
-	/* Max FID will be used in data path, check validity as part of init. */
-	if (!MLXSW_CORE_RES_VALID(mlxsw_sp->core, FID))
-		return ERR_PTR(-EIO);
 
 	ptp_state = kzalloc(sizeof(*ptp_state), GFP_KERNEL);
 	if (!ptp_state)
@@ -1452,7 +1446,7 @@ void mlxsw_sp2_ptp_transmitted(struct mlxsw_sp *mlxsw_sp,
 }
 
 int mlxsw_sp2_ptp_hwtstamp_get(struct mlxsw_sp_port *mlxsw_sp_port,
-			       struct kernel_hwtstamp_config *config)
+			       struct hwtstamp_config *config)
 {
 	struct mlxsw_sp2_ptp_state *ptp_state;
 
@@ -1466,7 +1460,7 @@ int mlxsw_sp2_ptp_hwtstamp_get(struct mlxsw_sp_port *mlxsw_sp_port,
 }
 
 static int
-mlxsw_sp2_ptp_get_message_types(const struct kernel_hwtstamp_config *config,
+mlxsw_sp2_ptp_get_message_types(const struct hwtstamp_config *config,
 				u16 *p_ing_types, u16 *p_egr_types,
 				enum hwtstamp_rx_filters *p_rx_filter)
 {
@@ -1543,7 +1537,7 @@ static int mlxsw_sp2_ptp_mtpcpc_set(struct mlxsw_sp *mlxsw_sp, bool ptp_trap_en,
 
 static int mlxsw_sp2_ptp_enable(struct mlxsw_sp *mlxsw_sp, u16 ing_types,
 				u16 egr_types,
-				struct kernel_hwtstamp_config new_config)
+				struct hwtstamp_config new_config)
 {
 	struct mlxsw_sp2_ptp_state *ptp_state = mlxsw_sp2_ptp_state(mlxsw_sp);
 	int err;
@@ -1557,7 +1551,7 @@ static int mlxsw_sp2_ptp_enable(struct mlxsw_sp *mlxsw_sp, u16 ing_types,
 }
 
 static int mlxsw_sp2_ptp_disable(struct mlxsw_sp *mlxsw_sp,
-				 struct kernel_hwtstamp_config new_config)
+				 struct hwtstamp_config new_config)
 {
 	struct mlxsw_sp2_ptp_state *ptp_state = mlxsw_sp2_ptp_state(mlxsw_sp);
 	int err;
@@ -1572,7 +1566,7 @@ static int mlxsw_sp2_ptp_disable(struct mlxsw_sp *mlxsw_sp,
 
 static int mlxsw_sp2_ptp_configure_port(struct mlxsw_sp_port *mlxsw_sp_port,
 					u16 ing_types, u16 egr_types,
-					struct kernel_hwtstamp_config new_config)
+					struct hwtstamp_config new_config)
 {
 	struct mlxsw_sp2_ptp_state *ptp_state;
 	int err;
@@ -1593,7 +1587,7 @@ static int mlxsw_sp2_ptp_configure_port(struct mlxsw_sp_port *mlxsw_sp_port,
 }
 
 static int mlxsw_sp2_ptp_deconfigure_port(struct mlxsw_sp_port *mlxsw_sp_port,
-					  struct kernel_hwtstamp_config new_config)
+					  struct hwtstamp_config new_config)
 {
 	struct mlxsw_sp2_ptp_state *ptp_state;
 	int err;
@@ -1615,12 +1609,11 @@ err_ptp_disable:
 }
 
 int mlxsw_sp2_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
-			       struct kernel_hwtstamp_config *config,
-			       struct netlink_ext_ack *extack)
+			       struct hwtstamp_config *config)
 {
-	struct kernel_hwtstamp_config new_config;
 	struct mlxsw_sp2_ptp_state *ptp_state;
 	enum hwtstamp_rx_filters rx_filter;
+	struct hwtstamp_config new_config;
 	u16 new_ing_types, new_egr_types;
 	bool ptp_enabled;
 	int err;
@@ -1654,7 +1647,7 @@ int mlxsw_sp2_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
 	mlxsw_sp_port->ptp.ing_types = new_ing_types;
 	mlxsw_sp_port->ptp.egr_types = new_egr_types;
 
-	/* Notify the caller what we are actually timestamping. */
+	/* Notify the ioctl caller what we are actually timestamping. */
 	config->rx_filter = rx_filter;
 	mutex_unlock(&ptp_state->lock);
 
@@ -1668,7 +1661,7 @@ err_get_message_types:
 }
 
 int mlxsw_sp2_ptp_get_ts_info(struct mlxsw_sp *mlxsw_sp,
-			      struct kernel_ethtool_ts_info *info)
+			      struct ethtool_ts_info *info)
 {
 	info->phc_index = ptp_clock_index(mlxsw_sp->clock->ptp);
 
@@ -1684,4 +1677,38 @@ int mlxsw_sp2_ptp_get_ts_info(struct mlxsw_sp *mlxsw_sp,
 			   BIT(HWTSTAMP_FILTER_PTP_V2_EVENT);
 
 	return 0;
+}
+
+int mlxsw_sp_ptp_txhdr_construct(struct mlxsw_core *mlxsw_core,
+				 struct mlxsw_sp_port *mlxsw_sp_port,
+				 struct sk_buff *skb,
+				 const struct mlxsw_tx_info *tx_info)
+{
+	mlxsw_sp_txhdr_construct(skb, tx_info);
+	return 0;
+}
+
+int mlxsw_sp2_ptp_txhdr_construct(struct mlxsw_core *mlxsw_core,
+				  struct mlxsw_sp_port *mlxsw_sp_port,
+				  struct sk_buff *skb,
+				  const struct mlxsw_tx_info *tx_info)
+{
+	/* In Spectrum-2 and Spectrum-3, in order for PTP event packets to have
+	 * their correction field correctly set on the egress port they must be
+	 * transmitted as data packets. Such packets ingress the ASIC via the
+	 * CPU port and must have a VLAN tag, as the CPU port is not configured
+	 * with a PVID. Push the default VLAN (4095), which is configured as
+	 * egress untagged on all the ports.
+	 */
+	if (!skb_vlan_tagged(skb)) {
+		skb = vlan_insert_tag_set_proto(skb, htons(ETH_P_8021Q),
+						MLXSW_SP_DEFAULT_VID);
+		if (!skb) {
+			this_cpu_inc(mlxsw_sp_port->pcpu_stats->tx_dropped);
+			return -ENOMEM;
+		}
+	}
+
+	return mlxsw_sp_txhdr_ptp_data_construct(mlxsw_core, mlxsw_sp_port, skb,
+						 tx_info);
 }

@@ -2,7 +2,7 @@
 #ifndef _ASM_PARISC_CURRENT_H
 #define _ASM_PARISC_CURRENT_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 struct task_struct;
 
 static __always_inline struct task_struct *get_current(void)
@@ -16,6 +16,6 @@ static __always_inline struct task_struct *get_current(void)
 
 #define current get_current()
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _ASM_PARISC_CURRENT_H */

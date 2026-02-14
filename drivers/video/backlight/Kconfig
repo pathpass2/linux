@@ -70,7 +70,7 @@ config LCD_ILI9320
 	  then say y to include a power driver for it.
 
 config LCD_TDO24M
-	tristate "Toppoly TDO24M and TDO35S LCD Panels support"
+	tristate "Toppoly TDO24M  and TDO35S LCD Panels support"
 	depends on SPI_MASTER
 	help
 	  If you have a Toppoly TDO24M/TDO35S series LCD panel, say y here to
@@ -156,14 +156,6 @@ config BACKLIGHT_ATMEL_LCDC
 	  If in doubt, it's safe to enable this option; it doesn't kick
 	  in unless the board's description says it's wired that way.
 
-config BACKLIGHT_AW99706
-	tristate "Backlight Driver for Awinic AW99706"
-	depends on I2C
-	select REGMAP_I2C
-	help
-	  If you have a LCD backlight connected to the WLED output of AW99706
-	  WLED output, say Y here to enable this driver.
-
 config BACKLIGHT_EP93XX
 	tristate "Cirrus EP93xx Backlight Driver"
 	depends on FB_EP93XX
@@ -190,14 +182,6 @@ config BACKLIGHT_KTD253
 	  Say y to enabled the backlight driver for the Kinetic KTD253
 	  which is a 1-wire GPIO-controlled backlight found in some mobile
 	  phones.
-
-config BACKLIGHT_KTD2801
-	tristate "Backlight Driver for Kinetic KTD2801"
-	depends on GPIOLIB || COMPILE_TEST
-	select LEDS_EXPRESSWIRE
-	help
-	  Say Y to enable the backlight driver for the Kinetic KTD2801 1-wire
-	  GPIO-controlled backlight found in Samsung Galaxy Core Prime VE LTE.
 
 config BACKLIGHT_KTZ8866
 	tristate "Backlight Driver for Kinetic KTZ8866"
@@ -251,6 +235,13 @@ config BACKLIGHT_HP700
 	  If you have an HP Jornada 700 series,
 	  say Y to include backlight control driver.
 
+config BACKLIGHT_CARILLO_RANCH
+	tristate "Intel Carillo Ranch Backlight Driver"
+	depends on LCD_CLASS_DEVICE && PCI && X86 && FB_LE80578
+	help
+	  If you have a Intel LE80578 (Carillo Ranch) say Y to enable the
+	  backlight driver.
+
 config BACKLIGHT_PWM
 	tristate "Generic PWM based Backlight Driver"
 	depends on PWM
@@ -294,21 +285,9 @@ config BACKLIGHT_MT6370
 config BACKLIGHT_APPLE
 	tristate "Apple Backlight Driver"
 	depends on X86 && ACPI
-	depends on ACPI_VIDEO=n || ACPI_VIDEO
 	help
 	  If you have an Intel-based Apple say Y to enable a driver for its
 	  backlight.
-
-config BACKLIGHT_APPLE_DWI
-	tristate "Apple DWI 2-Wire Interface Backlight Driver"
-	depends on ARCH_APPLE || COMPILE_TEST
-	help
-	  Say Y to enable the backlight driver for backlight controllers
-	  attached via the Apple DWI 2-wire interface which is found in some
-	  Apple iPhones, iPads and iPod touches.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called apple_dwi_bl.
 
 config BACKLIGHT_QCOM_WLED
 	tristate "Qualcomm PMIC WLED Driver"
@@ -379,19 +358,19 @@ config BACKLIGHT_88PM860X
 	help
 	  Say Y to enable the backlight driver for Marvell 88PM8606.
 
+config BACKLIGHT_PCF50633
+	tristate "Backlight driver for NXP PCF50633 MFD"
+	depends on MFD_PCF50633
+	help
+	  If you have a backlight driven by a NXP PCF50633 MFD, say Y here to
+	  enable its driver.
+
 config BACKLIGHT_AAT2870
 	tristate "AnalogicTech AAT2870 Backlight"
 	depends on MFD_AAT2870_CORE
 	help
 	  If you have a AnalogicTech AAT2870 say Y to enable the
 	  backlight driver.
-
-config BACKLIGHT_LM3509
-	tristate "Backlight Driver for LM3509"
-	depends on I2C
-	select REGMAP_I2C
-	help
-	  This supports TI LM3509 Backlight Driver
 
 config BACKLIGHT_LM3630A
 	tristate "Backlight Driver for LM3630A"
@@ -421,17 +400,6 @@ config BACKLIGHT_LP8788
 	depends on MFD_LP8788 && PWM
 	help
 	  This supports TI LP8788 backlight driver.
-
-config BACKLIGHT_MP3309C
-	tristate "Backlight Driver for MPS MP3309C"
-	depends on I2C && PWM
-	select REGMAP_I2C
-	help
-	  This supports MPS MP3309C backlight WLED driver in both PWM and
-	  analog/I2C dimming modes.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called mp3309c.
 
 config BACKLIGHT_PANDORA
 	tristate "Backlight driver for Pandora console"

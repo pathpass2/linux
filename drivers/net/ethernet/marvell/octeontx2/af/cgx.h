@@ -32,14 +32,9 @@
 #define CGX_LMAC_TYPE_MASK		0xF
 #define CGXX_CMRX_INT			0x040
 #define FW_CGX_INT			BIT_ULL(1)
-#define CGXX_CMR_GLOBAL_CONFIG          0x08
-#define CGX_NIX0_RESET			BIT_ULL(2)
-#define CGX_NIX1_RESET			BIT_ULL(3)
-#define CGX_NSCI_DROP			BIT_ULL(9)
 #define CGXX_CMRX_INT_ENA_W1S		0x058
 #define CGXX_CMRX_RX_ID_MAP		0x060
 #define CGXX_CMRX_RX_STAT0		0x070
-#define CGXX_CMRX_RX_LOGL_XON		0x100
 #define CGXX_CMRX_RX_LMACS		0x128
 #define CGXX_CMRX_RX_DMAC_CTL0		(0x1F8 + mac_ops->csr_offset)
 #define CGX_DMAC_CTL0_CAM_ENABLE	BIT_ULL(3)
@@ -114,7 +109,6 @@ enum LMAC_TYPE {
 	LMAC_MODE_50G_R		= 8,
 	LMAC_MODE_100G_R	= 9,
 	LMAC_MODE_USXGMII	= 10,
-	LMAC_MODE_USGMII	= 11,
 	LMAC_MODE_MAX,
 };
 
@@ -145,7 +139,6 @@ int cgx_lmac_evh_register(struct cgx_event_cb *cb, void *cgxd, int lmac_id);
 int cgx_lmac_evh_unregister(void *cgxd, int lmac_id);
 int cgx_get_tx_stats(void *cgxd, int lmac_id, int idx, u64 *tx_stat);
 int cgx_get_rx_stats(void *cgxd, int lmac_id, int idx, u64 *rx_stat);
-int cgx_stats_reset(void *cgxd, int lmac_id);
 int cgx_lmac_rx_tx_enable(void *cgxd, int lmac_id, bool enable);
 int cgx_lmac_tx_enable(void *cgxd, int lmac_id, bool enable);
 int cgx_lmac_addr_set(u8 cgx_id, u8 lmac_id, u8 *mac_addr);
@@ -161,13 +154,16 @@ int cgx_get_link_info(void *cgxd, int lmac_id,
 		      struct cgx_link_user_info *linfo);
 int cgx_lmac_linkup_start(void *cgxd);
 int cgx_get_fwdata_base(u64 *base);
+int cgx_lmac_get_pause_frm(void *cgxd, int lmac_id,
+			   u8 *tx_pause, u8 *rx_pause);
+int cgx_lmac_set_pause_frm(void *cgxd, int lmac_id,
+			   u8 tx_pause, u8 rx_pause);
 void cgx_lmac_ptp_config(void *cgxd, int lmac_id, bool enable);
 u8 cgx_lmac_get_p2x(int cgx_id, int lmac_id);
 int cgx_set_fec(u64 fec, int cgx_id, int lmac_id);
 int cgx_get_fec_stats(void *cgxd, int lmac_id, struct cgx_fec_stats_rsp *rsp);
 int cgx_get_phy_fec_stats(void *cgxd, int lmac_id);
 int cgx_set_link_mode(void *cgxd, struct cgx_set_link_mode_args args,
-		      struct cgx_lmac_fwdata_s *linkmodes,
 		      int cgx_id, int lmac_id);
 u64 cgx_features_get(void *cgxd);
 struct mac_ops *get_mac_ops(void *cgxd);
@@ -185,6 +181,4 @@ int cgx_lmac_get_pfc_frm_cfg(void *cgxd, int lmac_id, u8 *tx_pause,
 			     u8 *rx_pause);
 int verify_lmac_fc_cfg(void *cgxd, int lmac_id, u8 tx_pause, u8 rx_pause,
 		       int pfvf_idx);
-int cgx_lmac_reset(void *cgxd, int lmac_id, u8 pf_req_flr);
-u32 cgx_get_fifo_len(void *cgxd);
 #endif /* CGX_H */

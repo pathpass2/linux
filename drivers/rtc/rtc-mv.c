@@ -264,7 +264,7 @@ static int __init mv_rtc_probe(struct platform_device *pdev)
 	}
 
 	if (pdata->irq >= 0)
-		device_init_wakeup(&pdev->dev, true);
+		device_init_wakeup(&pdev->dev, 1);
 	else
 		clear_bit(RTC_FEATURE_ALARM, pdata->rtc->features);
 
@@ -282,15 +282,17 @@ out:
 	return ret;
 }
 
-static void __exit mv_rtc_remove(struct platform_device *pdev)
+static int __exit mv_rtc_remove(struct platform_device *pdev)
 {
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 
 	if (pdata->irq >= 0)
-		device_init_wakeup(&pdev->dev, false);
+		device_init_wakeup(&pdev->dev, 0);
 
 	if (!IS_ERR(pdata->clk))
 		clk_disable_unprepare(pdata->clk);
+
+	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -301,13 +303,7 @@ static const struct of_device_id rtc_mv_of_match_table[] = {
 MODULE_DEVICE_TABLE(of, rtc_mv_of_match_table);
 #endif
 
-/*
- * mv_rtc_remove() lives in .exit.text. For drivers registered via
- * module_platform_driver_probe() this is ok because they cannot get unbound at
- * runtime. So mark the driver struct with __refdata to prevent modpost
- * triggering a section mismatch warning.
- */
-static struct platform_driver mv_rtc_driver __refdata = {
+static struct platform_driver mv_rtc_driver = {
 	.remove		= __exit_p(mv_rtc_remove),
 	.driver		= {
 		.name	= "rtc-mv",

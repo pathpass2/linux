@@ -175,16 +175,12 @@ static int ichx_gpio_direction_input(struct gpio_chip *gpio, unsigned int nr)
 static int ichx_gpio_direction_output(struct gpio_chip *gpio, unsigned int nr,
 					int val)
 {
-	int ret;
-
 	/* Disable blink hardware which is available for GPIOs from 0 to 31. */
 	if (nr < 32 && ichx_priv.desc->have_blink)
 		ichx_write_bit(GPO_BLINK, nr, 0, 0);
 
 	/* Set GPIO output value. */
-	ret = ichx_write_bit(GPIO_LVL, nr, val, 0);
-	if (ret)
-		return ret;
+	ichx_write_bit(GPIO_LVL, nr, val, 0);
 
 	/*
 	 * Try setting pin as an output and verify it worked since many pins
@@ -256,9 +252,9 @@ static int ich6_gpio_request(struct gpio_chip *chip, unsigned int nr)
 	return ichx_gpio_request(chip, nr);
 }
 
-static int ichx_gpio_set(struct gpio_chip *chip, unsigned int nr, int val)
+static void ichx_gpio_set(struct gpio_chip *chip, unsigned int nr, int val)
 {
-	return ichx_write_bit(GPIO_LVL, nr, val, 0);
+	ichx_write_bit(GPIO_LVL, nr, val, 0);
 }
 
 static void ichx_gpiolib_setup(struct gpio_chip *chip)
@@ -461,7 +457,7 @@ static int ichx_gpio_probe(struct platform_device *pdev)
 
 init:
 	ichx_gpiolib_setup(&ichx_priv.chip);
-	err = devm_gpiochip_add_data(dev, &ichx_priv.chip, NULL);
+	err = gpiochip_add_data(&ichx_priv.chip, NULL);
 	if (err) {
 		dev_err(dev, "Failed to register GPIOs\n");
 		return err;
@@ -473,11 +469,19 @@ init:
 	return 0;
 }
 
+static int ichx_gpio_remove(struct platform_device *pdev)
+{
+	gpiochip_remove(&ichx_priv.chip);
+
+	return 0;
+}
+
 static struct platform_driver ichx_gpio_driver = {
 	.driver		= {
 		.name	= DRV_NAME,
 	},
 	.probe		= ichx_gpio_probe,
+	.remove		= ichx_gpio_remove,
 };
 
 module_platform_driver(ichx_gpio_driver);

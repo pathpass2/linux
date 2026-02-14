@@ -17,7 +17,6 @@
 #include <linux/thermal.h>
 
 #include "thermal_hwmon.h"
-#include "thermal_core.h"
 
 /* hwmon sys I/F */
 /* thermal zone devices with the same type share one hwmon device */
@@ -63,7 +62,7 @@ temp_input_show(struct device *dev, struct device_attribute *attr, char *buf)
 	if (ret)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", temperature);
+	return sprintf(buf, "%d\n", temperature);
 }
 
 static ssize_t
@@ -78,13 +77,19 @@ temp_crit_show(struct device *dev, struct device_attribute *attr, char *buf)
 	int temperature;
 	int ret;
 
-	guard(thermal_zone)(tz);
+	mutex_lock(&tz->lock);
 
-	ret = tz->ops.get_crit_temp(tz, &temperature);
+	if (device_is_registered(&tz->device))
+		ret = tz->ops->get_crit_temp(tz, &temperature);
+	else
+		ret = -ENODEV;
+
+	mutex_unlock(&tz->lock);
+
 	if (ret)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", temperature);
+	return sprintf(buf, "%d\n", temperature);
 }
 
 
@@ -96,7 +101,7 @@ thermal_hwmon_lookup_by_type(const struct thermal_zone_device *tz)
 
 	mutex_lock(&thermal_hwmon_list_lock);
 	list_for_each_entry(hwmon, &thermal_hwmon_list, node) {
-		strscpy(type, tz->type);
+		strcpy(type, tz->type);
 		strreplace(type, '-', '_');
 		if (!strcmp(hwmon->type, type)) {
 			mutex_unlock(&thermal_hwmon_list_lock);
@@ -129,7 +134,7 @@ thermal_hwmon_lookup_temp(const struct thermal_hwmon_device *hwmon,
 static bool thermal_zone_crit_temp_valid(struct thermal_zone_device *tz)
 {
 	int temp;
-	return tz->ops.get_crit_temp && !tz->ops.get_crit_temp(tz, &temp);
+	return tz->ops->get_crit_temp && !tz->ops->get_crit_temp(tz, &temp);
 }
 
 int thermal_add_hwmon_sysfs(struct thermal_zone_device *tz)
@@ -258,30 +263,27 @@ static void devm_thermal_hwmon_release(struct device *dev, void *res)
 	thermal_remove_hwmon_sysfs(*(struct thermal_zone_device **)res);
 }
 
-int devm_thermal_add_hwmon_sysfs(struct device *dev, struct thermal_zone_device *tz)
+int devm_thermal_add_hwmon_sysfs(struct thermal_zone_device *tz)
 {
 	struct thermal_zone_device **ptr;
 	int ret;
 
 	ptr = devres_alloc(devm_thermal_hwmon_release, sizeof(*ptr),
 			   GFP_KERNEL);
-	if (!ptr) {
-		dev_warn(dev, "Failed to allocate device resource data\n");
+	if (!ptr)
 		return -ENOMEM;
-	}
 
 	ret = thermal_add_hwmon_sysfs(tz);
 	if (ret) {
-		dev_warn(dev, "Failed to add hwmon sysfs attributes\n");
 		devres_free(ptr);
 		return ret;
 	}
 
 	*ptr = tz;
-	devres_add(dev, ptr);
+	devres_add(&tz->device, ptr);
 
 	return ret;
 }
 EXPORT_SYMBOL_GPL(devm_thermal_add_hwmon_sysfs);
 
-MODULE_IMPORT_NS("HWMON_THERMAL");
+MODULE_IMPORT_NS(HWMON_THERMAL);

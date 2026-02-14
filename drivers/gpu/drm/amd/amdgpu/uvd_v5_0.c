@@ -42,7 +42,7 @@ static void uvd_v5_0_set_ring_funcs(struct amdgpu_device *adev);
 static void uvd_v5_0_set_irq_funcs(struct amdgpu_device *adev);
 static int uvd_v5_0_start(struct amdgpu_device *adev);
 static void uvd_v5_0_stop(struct amdgpu_device *adev);
-static int uvd_v5_0_set_clockgating_state(struct amdgpu_ip_block *ip_block,
+static int uvd_v5_0_set_clockgating_state(void *handle,
 					  enum amd_clockgating_state state);
 static void uvd_v5_0_enable_mgcg(struct amdgpu_device *adev,
 				 bool enable);
@@ -88,9 +88,9 @@ static void uvd_v5_0_ring_set_wptr(struct amdgpu_ring *ring)
 	WREG32(mmUVD_RBC_RB_WPTR, lower_32_bits(ring->wptr));
 }
 
-static int uvd_v5_0_early_init(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_early_init(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	adev->uvd.num_uvd_inst = 1;
 
 	uvd_v5_0_set_ring_funcs(adev);
@@ -99,10 +99,10 @@ static int uvd_v5_0_early_init(struct amdgpu_ip_block *ip_block)
 	return 0;
 }
 
-static int uvd_v5_0_sw_init(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_sw_init(void *handle)
 {
 	struct amdgpu_ring *ring;
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	int r;
 
 	/* UVD TRAP */
@@ -125,13 +125,15 @@ static int uvd_v5_0_sw_init(struct amdgpu_ip_block *ip_block)
 	if (r)
 		return r;
 
+	r = amdgpu_uvd_entity_init(adev);
+
 	return r;
 }
 
-static int uvd_v5_0_sw_fini(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_sw_fini(void *handle)
 {
 	int r;
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	r = amdgpu_uvd_suspend(adev);
 	if (r)
@@ -143,19 +145,19 @@ static int uvd_v5_0_sw_fini(struct amdgpu_ip_block *ip_block)
 /**
  * uvd_v5_0_hw_init - start and test UVD block
  *
- * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
+ * @handle: handle used to pass amdgpu_device pointer
  *
  * Initialize the hardware, boot up the VCPU and do some testing
  */
-static int uvd_v5_0_hw_init(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_hw_init(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	struct amdgpu_ring *ring = &adev->uvd.inst->ring;
 	uint32_t tmp;
 	int r;
 
 	amdgpu_asic_set_uvd_clocks(adev, 10000, 10000);
-	uvd_v5_0_set_clockgating_state(ip_block, AMD_CG_STATE_UNGATE);
+	uvd_v5_0_set_clockgating_state(adev, AMD_CG_STATE_UNGATE);
 	uvd_v5_0_enable_mgcg(adev, true);
 
 	r = amdgpu_ring_test_helper(ring);
@@ -164,7 +166,7 @@ static int uvd_v5_0_hw_init(struct amdgpu_ip_block *ip_block)
 
 	r = amdgpu_ring_alloc(ring, 10);
 	if (r) {
-		drm_err(adev_to_drm(adev), "ring alloc failed (%d).\n", r);
+		DRM_ERROR("amdgpu: ring failed to lock UVD ring (%d).\n", r);
 		goto done;
 	}
 
@@ -191,7 +193,7 @@ static int uvd_v5_0_hw_init(struct amdgpu_ip_block *ip_block)
 
 done:
 	if (!r)
-		drm_info(adev_to_drm(adev), "UVD initialized successfully.\n");
+		DRM_INFO("UVD initialized successfully.\n");
 
 	return r;
 
@@ -200,13 +202,13 @@ done:
 /**
  * uvd_v5_0_hw_fini - stop the hardware block
  *
- * @ip_block: Pointer to the amdgpu_ip_block for this hw instance.
+ * @handle: handle used to pass amdgpu_device pointer
  *
  * Stop the UVD block, mark ring as not ready any more
  */
-static int uvd_v5_0_hw_fini(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_hw_fini(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	cancel_delayed_work_sync(&adev->uvd.idle_work);
 
@@ -216,17 +218,10 @@ static int uvd_v5_0_hw_fini(struct amdgpu_ip_block *ip_block)
 	return 0;
 }
 
-static int uvd_v5_0_prepare_suspend(struct amdgpu_ip_block *ip_block)
-{
-	struct amdgpu_device *adev = ip_block->adev;
-
-	return amdgpu_uvd_prepare_suspend(adev);
-}
-
-static int uvd_v5_0_suspend(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_suspend(void *handle)
 {
 	int r;
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	/*
 	 * Proper cleanups before halting the HW engine:
@@ -252,22 +247,23 @@ static int uvd_v5_0_suspend(struct amdgpu_ip_block *ip_block)
 						       AMD_CG_STATE_GATE);
 	}
 
-	r = uvd_v5_0_hw_fini(ip_block);
+	r = uvd_v5_0_hw_fini(adev);
 	if (r)
 		return r;
 
 	return amdgpu_uvd_suspend(adev);
 }
 
-static int uvd_v5_0_resume(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_resume(void *handle)
 {
 	int r;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
-	r = amdgpu_uvd_resume(ip_block->adev);
+	r = amdgpu_uvd_resume(adev);
 	if (r)
 		return r;
 
-	return uvd_v5_0_hw_init(ip_block);
+	return uvd_v5_0_hw_init(adev);
 }
 
 /**
@@ -580,17 +576,17 @@ static void uvd_v5_0_ring_insert_nop(struct amdgpu_ring *ring, uint32_t count)
 	}
 }
 
-static bool uvd_v5_0_is_idle(struct amdgpu_ip_block *ip_block)
+static bool uvd_v5_0_is_idle(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	return !(RREG32(mmSRBM_STATUS) & SRBM_STATUS__UVD_BUSY_MASK);
 }
 
-static int uvd_v5_0_wait_for_idle(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_wait_for_idle(void *handle)
 {
 	unsigned i;
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	for (i = 0; i < adev->usec_timeout; i++) {
 		if (!(RREG32(mmSRBM_STATUS) & SRBM_STATUS__UVD_BUSY_MASK))
@@ -599,9 +595,9 @@ static int uvd_v5_0_wait_for_idle(struct amdgpu_ip_block *ip_block)
 	return -ETIMEDOUT;
 }
 
-static int uvd_v5_0_soft_reset(struct amdgpu_ip_block *ip_block)
+static int uvd_v5_0_soft_reset(void *handle)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 
 	uvd_v5_0_stop(adev);
 
@@ -790,15 +786,15 @@ static void uvd_v5_0_enable_mgcg(struct amdgpu_device *adev,
 	}
 }
 
-static int uvd_v5_0_set_clockgating_state(struct amdgpu_ip_block *ip_block,
+static int uvd_v5_0_set_clockgating_state(void *handle,
 					  enum amd_clockgating_state state)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	bool enable = (state == AMD_CG_STATE_GATE);
 
 	if (enable) {
 		/* wait for STATUS to clear */
-		if (uvd_v5_0_wait_for_idle(ip_block))
+		if (uvd_v5_0_wait_for_idle(handle))
 			return -EBUSY;
 		uvd_v5_0_enable_clock_gating(adev, true);
 
@@ -812,7 +808,7 @@ static int uvd_v5_0_set_clockgating_state(struct amdgpu_ip_block *ip_block,
 	return 0;
 }
 
-static int uvd_v5_0_set_powergating_state(struct amdgpu_ip_block *ip_block,
+static int uvd_v5_0_set_powergating_state(void *handle,
 					  enum amd_powergating_state state)
 {
 	/* This doesn't actually powergate the UVD block.
@@ -822,7 +818,7 @@ static int uvd_v5_0_set_powergating_state(struct amdgpu_ip_block *ip_block,
 	 * revisit this when there is a cleaner line between
 	 * the smc and the hw blocks
 	 */
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	int ret = 0;
 
 	if (state == AMD_PG_STATE_GATE) {
@@ -837,16 +833,16 @@ out:
 	return ret;
 }
 
-static void uvd_v5_0_get_clockgating_state(struct amdgpu_ip_block *ip_block, u64 *flags)
+static void uvd_v5_0_get_clockgating_state(void *handle, u64 *flags)
 {
-	struct amdgpu_device *adev = ip_block->adev;
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
 	int data;
 
 	mutex_lock(&adev->pm.mutex);
 
 	if (RREG32_SMC(ixCURRENT_PG_STATUS) &
 				CURRENT_PG_STATUS__UVD_PG_STATUS_MASK) {
-		drm_info(adev_to_drm(adev), "Cannot get clockgating state when UVD is powergated.\n");
+		DRM_INFO("Cannot get clockgating state when UVD is powergated.\n");
 		goto out;
 	}
 
@@ -862,11 +858,11 @@ out:
 static const struct amd_ip_funcs uvd_v5_0_ip_funcs = {
 	.name = "uvd_v5_0",
 	.early_init = uvd_v5_0_early_init,
+	.late_init = NULL,
 	.sw_init = uvd_v5_0_sw_init,
 	.sw_fini = uvd_v5_0_sw_fini,
 	.hw_init = uvd_v5_0_hw_init,
 	.hw_fini = uvd_v5_0_hw_fini,
-	.prepare_suspend = uvd_v5_0_prepare_suspend,
 	.suspend = uvd_v5_0_suspend,
 	.resume = uvd_v5_0_resume,
 	.is_idle = uvd_v5_0_is_idle,

@@ -11,8 +11,8 @@
  *
  */
 
-#ifndef _UAPI_LINUX_IF_ALG_H
-#define _UAPI_LINUX_IF_ALG_H
+#ifndef _LINUX_IF_ALG_H
+#define _LINUX_IF_ALG_H
 
 #include <linux/types.h>
 
@@ -42,7 +42,7 @@ struct sockaddr_alg_new {
 
 struct af_alg_iv {
 	__u32	ivlen;
-	__u8	iv[] __counted_by(ivlen);
+	__u8	iv[];
 };
 
 /* Socket options */
@@ -58,4 +58,4 @@ struct af_alg_iv {
 #define ALG_OP_DECRYPT			0
 #define ALG_OP_ENCRYPT			1
 
-#endif	/* _UAPI_LINUX_IF_ALG_H */
+#endif	/* _LINUX_IF_ALG_H */

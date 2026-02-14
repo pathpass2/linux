@@ -8,6 +8,7 @@
  */
 #include <linux/module.h>
 #include <linux/regmap.h>
+#include <linux/acpi.h>
 #include <linux/bitops.h>
 #include <linux/bitfield.h>
 

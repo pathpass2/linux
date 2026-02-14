@@ -138,5 +138,4 @@ const struct attribute_group *vivaldi_attribute_groups[] = {
 };
 EXPORT_SYMBOL_GPL(vivaldi_attribute_groups);
 
-MODULE_DESCRIPTION("Helpers for ChromeOS HID Vivaldi keyboards");
 MODULE_LICENSE("GPL");

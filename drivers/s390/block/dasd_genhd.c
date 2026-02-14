@@ -11,6 +11,8 @@
  *
  */
 
+#define KMSG_COMPONENT "dasd"
+
 #include <linux/interrupt.h>
 #include <linux/major.h>
 #include <linux/fs.h>
@@ -18,11 +20,13 @@
 
 #include <linux/uaccess.h>
 
+/* This is ugly... */
+#define PRINTK_HEADER "dasd_gendisk:"
+
 #include "dasd_int.h"
 
 static unsigned int queue_depth = 32;
 static unsigned int nr_hw_queues = 4;
-static void dasd_gd_free(struct gendisk *gdp);
 
 module_param(queue_depth, uint, 0444);
 MODULE_PARM_DESC(queue_depth, "Default queue depth for new DASD devices");
@@ -31,71 +35,30 @@ module_param(nr_hw_queues, uint, 0444);
 MODULE_PARM_DESC(nr_hw_queues, "Default number of hardware queues for new DASD devices");
 
 /*
- * Set device name.
- *   dasda - dasdz : 26 devices
- *   dasdaa - dasdzz : 676 devices, added up = 702
- *   dasdaaa - dasdzzz : 17576 devices, added up = 18278
- *   dasdaaaa - dasdzzzz : 456976 devices, added up = 475252
- */
-static int dasd_name_format(char *prefix, int index, char *buf, int buflen)
-{
-	const int base = 'z' - 'a' + 1;
-	char *begin = buf + strlen(prefix);
-	char *end = buf + buflen;
-	char *p;
-	int unit;
-
-	p = end - 1;
-	*p = '\0';
-	unit = base;
-	do {
-		if (p == begin)
-			return -EINVAL;
-		*--p = 'a' + (index % unit);
-		index = (index / unit) - 1;
-	} while (index >= 0);
-
-	memmove(begin, p, end - p);
-	memcpy(buf, prefix, strlen(prefix));
-
-	return 0;
-}
-
-/*
  * Allocate and register gendisk structure for device.
  */
 int dasd_gendisk_alloc(struct dasd_block *block)
 {
-	struct queue_limits lim = {
-		/*
-		 * With page sized segments, each segment can be translated into
-		 * one idaw/tidaw.
-		 */
-		.max_segment_size = PAGE_SIZE,
-		.seg_boundary_mask = PAGE_SIZE - 1,
-		.max_segments = USHRT_MAX,
-	};
 	struct gendisk *gdp;
 	struct dasd_device *base;
-	unsigned int devindex;
-	int rc;
+	int len, rc;
 
 	/* Make sure the minor for this device exists. */
 	base = block->base;
-	devindex = base->devindex;
-	if (devindex >= DASD_PER_MAJOR)
+	if (base->devindex >= DASD_PER_MAJOR)
 		return -EBUSY;
 
 	block->tag_set.ops = &dasd_mq_ops;
 	block->tag_set.cmd_size = sizeof(struct dasd_ccw_req);
 	block->tag_set.nr_hw_queues = nr_hw_queues;
 	block->tag_set.queue_depth = queue_depth;
+	block->tag_set.flags = BLK_MQ_F_SHOULD_MERGE;
 	block->tag_set.numa_node = NUMA_NO_NODE;
 	rc = blk_mq_alloc_tag_set(&block->tag_set);
 	if (rc)
 		return rc;
 
-	gdp = blk_mq_alloc_disk(&block->tag_set, &lim, block);
+	gdp = blk_mq_alloc_disk(&block->tag_set, block);
 	if (IS_ERR(gdp)) {
 		blk_mq_free_tag_set(&block->tag_set);
 		return PTR_ERR(gdp);
@@ -103,17 +66,31 @@ int dasd_gendisk_alloc(struct dasd_block *block)
 
 	/* Initialize gendisk structure. */
 	gdp->major = DASD_MAJOR;
-	gdp->first_minor = devindex << DASD_PARTN_BITS;
+	gdp->first_minor = base->devindex << DASD_PARTN_BITS;
 	gdp->minors = 1 << DASD_PARTN_BITS;
 	gdp->fops = &dasd_device_operations;
 
-	rc = dasd_name_format("dasd", devindex, gdp->disk_name, sizeof(gdp->disk_name));
-	if (rc) {
-		DBF_DEV_EVENT(DBF_ERR, block->base,
-			      "setting disk name failed, rc %d", rc);
-		dasd_gd_free(gdp);
-		return rc;
+	/*
+	 * Set device name.
+	 *   dasda - dasdz : 26 devices
+	 *   dasdaa - dasdzz : 676 devices, added up = 702
+	 *   dasdaaa - dasdzzz : 17576 devices, added up = 18278
+	 *   dasdaaaa - dasdzzzz : 456976 devices, added up = 475252
+	 */
+	len = sprintf(gdp->disk_name, "dasd");
+	if (base->devindex > 25) {
+		if (base->devindex > 701) {
+			if (base->devindex > 18277)
+			        len += sprintf(gdp->disk_name + len, "%c",
+					       'a'+(((base->devindex-18278)
+						     /17576)%26));
+			len += sprintf(gdp->disk_name + len, "%c",
+				       'a'+(((base->devindex-702)/676)%26));
+		}
+		len += sprintf(gdp->disk_name + len, "%c",
+			       'a'+(((base->devindex-26)/26)%26));
 	}
+	len += sprintf(gdp->disk_name + len, "%c", 'a'+(base->devindex%26));
 
 	if (base->features & DASD_FEATURE_READONLY ||
 	    test_bit(DASD_FLAG_DEVICE_RO, &base->flags))
@@ -132,22 +109,14 @@ int dasd_gendisk_alloc(struct dasd_block *block)
 }
 
 /*
- * Free gendisk structure
- */
-static void dasd_gd_free(struct gendisk *gd)
-{
-	del_gendisk(gd);
-	gd->private_data = NULL;
-	put_disk(gd);
-}
-
-/*
  * Unregister and free gendisk structure for device.
  */
 void dasd_gendisk_free(struct dasd_block *block)
 {
 	if (block->gdp) {
-		dasd_gd_free(block->gdp);
+		del_gendisk(block->gdp);
+		block->gdp->private_data = NULL;
+		put_disk(block->gdp);
 		block->gdp = NULL;
 		blk_mq_free_tag_set(&block->tag_set);
 	}
@@ -158,15 +127,14 @@ void dasd_gendisk_free(struct dasd_block *block)
  */
 int dasd_scan_partitions(struct dasd_block *block)
 {
-	struct file *bdev_file;
+	struct block_device *bdev;
 	int rc;
 
-	bdev_file = bdev_file_open_by_dev(disk_devt(block->gdp), BLK_OPEN_READ,
-				       NULL, NULL);
-	if (IS_ERR(bdev_file)) {
+	bdev = blkdev_get_by_dev(disk_devt(block->gdp), FMODE_READ, NULL);
+	if (IS_ERR(bdev)) {
 		DBF_DEV_EVENT(DBF_ERR, block->base,
 			      "scan partitions error, blkdev_get returned %ld",
-			      PTR_ERR(bdev_file));
+			      PTR_ERR(bdev));
 		return -ENODEV;
 	}
 
@@ -178,15 +146,16 @@ int dasd_scan_partitions(struct dasd_block *block)
 				"scan partitions error, rc %d", rc);
 
 	/*
-	 * Since the matching fput() call to the
-	 * bdev_file_open_by_path() in this function is not called before
-	 * dasd_destroy_partitions the offline open_count limit needs to be
-	 * increased from 0 to 1. This is done by setting device->bdev_file
-	 * (see dasd_generic_set_offline). As long as the partition detection
-	 * is running no offline should be allowed. That is why the assignment
-	 * to block->bdev_file is done AFTER the BLKRRPART ioctl.
+	 * Since the matching blkdev_put call to the blkdev_get in
+	 * this function is not called before dasd_destroy_partitions
+	 * the offline open_count limit needs to be increased from
+	 * 0 to 1. This is done by setting device->bdev (see
+	 * dasd_generic_set_offline). As long as the partition
+	 * detection is running no offline should be allowed. That
+	 * is why the assignment to device->bdev is done AFTER
+	 * the BLKRRPART ioctl.
 	 */
-	block->bdev_file = bdev_file;
+	block->bdev = bdev;
 	return 0;
 }
 
@@ -196,21 +165,21 @@ int dasd_scan_partitions(struct dasd_block *block)
  */
 void dasd_destroy_partitions(struct dasd_block *block)
 {
-	struct file *bdev_file;
+	struct block_device *bdev;
 
 	/*
-	 * Get the bdev_file pointer from the device structure and clear
-	 * device->bdev_file to lower the offline open_count limit again.
+	 * Get the bdev pointer from the device structure and clear
+	 * device->bdev to lower the offline open_count limit again.
 	 */
-	bdev_file = block->bdev_file;
-	block->bdev_file = NULL;
+	bdev = block->bdev;
+	block->bdev = NULL;
 
-	mutex_lock(&file_bdev(bdev_file)->bd_disk->open_mutex);
-	bdev_disk_changed(file_bdev(bdev_file)->bd_disk, true);
-	mutex_unlock(&file_bdev(bdev_file)->bd_disk->open_mutex);
+	mutex_lock(&bdev->bd_disk->open_mutex);
+	bdev_disk_changed(bdev->bd_disk, true);
+	mutex_unlock(&bdev->bd_disk->open_mutex);
 
 	/* Matching blkdev_put to the blkdev_get in dasd_scan_partitions. */
-	fput(bdev_file);
+	blkdev_put(bdev, FMODE_READ);
 }
 
 int dasd_gendisk_init(void)

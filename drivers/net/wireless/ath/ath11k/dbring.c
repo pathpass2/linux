@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 /*
  * Copyright (c) 2019-2020 The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #include "core.h"
@@ -27,19 +26,19 @@ int ath11k_dbring_validate_buffer(struct ath11k *ar, void *buffer, u32 size)
 static void ath11k_dbring_fill_magic_value(struct ath11k *ar,
 					   void *buffer, u32 size)
 {
-	/* memset32 function fills buffer payload with the ATH11K_DB_MAGIC_VALUE
-	 * and the variable size is expected to be the number of u32 values
-	 * to be stored, not the number of bytes.
-	 */
-	size = size / sizeof(u32);
+	u32 *temp;
+	int idx;
 
-	memset32(buffer, ATH11K_DB_MAGIC_VALUE, size);
+	size = size >> 2;
+
+	for (idx = 0, temp = buffer; idx < size; idx++, temp++)
+		*temp++ = ATH11K_DB_MAGIC_VALUE;
 }
 
-int ath11k_dbring_bufs_replenish(struct ath11k *ar,
-				 struct ath11k_dbring *ring,
-				 struct ath11k_dbring_element *buff,
-				 enum wmi_direct_buffer_module id)
+static int ath11k_dbring_bufs_replenish(struct ath11k *ar,
+					struct ath11k_dbring *ring,
+					struct ath11k_dbring_element *buff,
+					enum wmi_direct_buffer_module id)
 {
 	struct ath11k_base *ab = ar->ab;
 	struct hal_srng *srng;
@@ -78,9 +77,6 @@ int ath11k_dbring_bufs_replenish(struct ath11k *ar,
 		ret = -ENOENT;
 		goto err_idr_remove;
 	}
-
-	if (id == WMI_DIRECT_BUF_CFR)
-		ath11k_cfr_lut_update_paddr(ar, paddr, buf_id);
 
 	buff->paddr = paddr;
 
@@ -156,12 +152,13 @@ int ath11k_dbring_wmi_cfg_setup(struct ath11k *ar,
 				struct ath11k_dbring *ring,
 				enum wmi_direct_buffer_module id)
 {
-	struct ath11k_wmi_pdev_dma_ring_cfg_req_cmd param = {};
-	int ret, i;
+	struct ath11k_wmi_pdev_dma_ring_cfg_req_cmd param = {0};
+	int ret;
 
 	if (id >= WMI_DIRECT_BUF_MAX)
 		return -EINVAL;
 
+	param.pdev_id		= DP_SW2HW_MACID(ring->pdev_id);
 	param.module_id		= id;
 	param.base_paddr_lo	= lower_32_bits(ring->refill_srng.paddr);
 	param.base_paddr_hi	= upper_32_bits(ring->refill_srng.paddr);
@@ -174,23 +171,10 @@ int ath11k_dbring_wmi_cfg_setup(struct ath11k *ar,
 	param.num_resp_per_event = ring->num_resp_per_event;
 	param.event_timeout_ms	= ring->event_timeout_ms;
 
-	/* For single pdev, 2GHz and 5GHz use one DBR. */
-	if (ar->ab->hw_params.single_pdev_only) {
-		for (i = 0; i < ar->ab->target_pdev_count; i++) {
-			param.pdev_id = ar->ab->target_pdev_ids[i].pdev_id;
-			ret = ath11k_wmi_pdev_dma_ring_cfg(ar, &param);
-			if (ret) {
-				ath11k_warn(ar->ab, "failed to setup db ring cfg\n");
-				return ret;
-			}
-		}
-	} else {
-		param.pdev_id = DP_SW2HW_MACID(ring->pdev_id);
-		ret = ath11k_wmi_pdev_dma_ring_cfg(ar, &param);
-		if (ret) {
-			ath11k_warn(ar->ab, "failed to setup db ring cfg\n");
-			return ret;
-		}
+	ret = ath11k_wmi_pdev_dma_ring_cfg(ar, &param);
+	if (ret) {
+		ath11k_warn(ar->ab, "failed to setup db ring cfg\n");
+		return ret;
 	}
 
 	return 0;
@@ -295,14 +279,9 @@ int ath11k_dbring_buffer_release_event(struct ath11k_base *ab,
 	int size;
 	dma_addr_t paddr;
 	int ret = 0;
-	int status;
 
 	pdev_idx = ev->fixed.pdev_id;
 	module_id = ev->fixed.module_id;
-
-	if (ab->hw_params.single_pdev_only &&
-	    pdev_idx < ab->target_pdev_count)
-		pdev_idx = 0;
 
 	if (pdev_idx >= ab->num_radios) {
 		ath11k_warn(ab, "Invalid pdev id %d\n", pdev_idx);
@@ -328,9 +307,6 @@ int ath11k_dbring_buffer_release_event(struct ath11k_base *ab,
 	switch (ev->fixed.module_id) {
 	case WMI_DIRECT_BUF_SPECTRAL:
 		ring = ath11k_spectral_get_dbring(ar);
-		break;
-	case WMI_DIRECT_BUF_CFR:
-		ring = ath11k_cfr_get_dbring(ar);
 		break;
 	default:
 		ring = NULL;
@@ -382,12 +358,8 @@ int ath11k_dbring_buffer_release_event(struct ath11k_base *ab,
 			handler_data.data = PTR_ALIGN(vaddr_unalign,
 						      ring->buf_align);
 			handler_data.data_sz = ring->buf_sz;
-			handler_data.buff = buff;
-			handler_data.buf_id = buf_id;
 
-			status = ring->handler(ar, &handler_data);
-			if (status == ATH11K_CORRELATE_STATUS_HOLD)
-				continue;
+			ring->handler(ar, &handler_data);
 		}
 
 		buff->paddr = 0;

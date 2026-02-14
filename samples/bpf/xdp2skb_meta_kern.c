@@ -32,7 +32,7 @@ SEC("xdp_mark")
 int _xdp_mark(struct xdp_md *ctx)
 {
 	struct meta_info *meta;
-	void *data;
+	void *data, *data_end;
 	int ret;
 
 	/* Reserve space in-front of data pointer for our meta info.
@@ -63,6 +63,7 @@ SEC("tc_mark")
 int _tc_mark(struct __sk_buff *ctx)
 {
 	void *data      = (void *)(unsigned long)ctx->data;
+	void *data_end  = (void *)(unsigned long)ctx->data_end;
 	void *data_meta = (void *)(unsigned long)ctx->data_meta;
 	struct meta_info *meta = data_meta;
 

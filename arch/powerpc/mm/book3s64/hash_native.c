@@ -27,6 +27,8 @@
 #include <asm/ppc-opcode.h>
 #include <asm/feature-fixups.h>
 
+#include <misc/cxl-base.h>
+
 #ifdef DEBUG_LOW
 #define DBG_LOW(fmt...) udbg_printf(fmt)
 #else
@@ -215,8 +217,10 @@ static inline void __tlbiel(unsigned long vpn, int psize, int apsize, int ssize)
 static inline void tlbie(unsigned long vpn, int psize, int apsize,
 			 int ssize, int local)
 {
-	unsigned int use_local = local && mmu_has_feature(MMU_FTR_TLBIEL);
+	unsigned int use_local;
 	int lock_tlbie = !mmu_has_feature(MMU_FTR_LOCKLESS_TLBIE);
+
+	use_local = local && mmu_has_feature(MMU_FTR_TLBIEL) && !cxl_ctx_in_use();
 
 	if (use_local)
 		use_local = mmu_psize_defs[psize].tlbiel;
@@ -324,12 +328,10 @@ static long native_hpte_insert(unsigned long hpte_group, unsigned long vpn,
 
 static long native_hpte_remove(unsigned long hpte_group)
 {
-	unsigned long hpte_v, flags;
 	struct hash_pte *hptep;
 	int i;
 	int slot_offset;
-
-	local_irq_save(flags);
+	unsigned long hpte_v;
 
 	DBG_LOW("    remove(group=%lx)\n", hpte_group);
 
@@ -354,16 +356,13 @@ static long native_hpte_remove(unsigned long hpte_group)
 		slot_offset &= 0x7;
 	}
 
-	if (i == HPTES_PER_GROUP) {
-		i = -1;
-		goto out;
-	}
+	if (i == HPTES_PER_GROUP)
+		return -1;
 
 	/* Invalidate the hpte. NOTE: this also unlocks it */
 	release_hpte_lock();
 	hptep->v = 0;
-out:
-	local_irq_restore(flags);
+
 	return i;
 }
 
@@ -785,6 +784,10 @@ static void native_flush_hash_range(unsigned long number, int local)
 	unsigned long psize = batch->psize;
 	int ssize = batch->ssize;
 	int i;
+	unsigned int use_local;
+
+	use_local = local && mmu_has_feature(MMU_FTR_TLBIEL) &&
+		mmu_psize_defs[psize].tlbiel && !cxl_ctx_in_use();
 
 	local_irq_save(flags);
 
@@ -819,8 +822,7 @@ static void native_flush_hash_range(unsigned long number, int local)
 		} pte_iterate_hashed_end();
 	}
 
-	if (mmu_has_feature(MMU_FTR_TLBIEL) &&
-	    mmu_psize_defs[psize].tlbiel && local) {
+	if (use_local) {
 		asm volatile("ptesync":::"memory");
 		for (i = 0; i < number; i++) {
 			vpn = batch->vpn[i];

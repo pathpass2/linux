@@ -178,13 +178,89 @@ struct _vcs_dpi_soc_bounding_box_st dcn3_0_soc = {
 };
 
 
+void optc3_fpu_set_vrr_m_const(struct timing_generator *optc,
+		double vtotal_avg)
+{
+	struct optc *optc1 = DCN10TG_FROM_TG(optc);
+	double vtotal_min, vtotal_max;
+	double ratio, modulo, phase;
+	uint32_t vblank_start;
+	uint32_t v_total_mask_value = 0;
+
+	dc_assert_fp_enabled();
+
+	/* Compute VTOTAL_MIN and VTOTAL_MAX, so that
+	 * VOTAL_MAX - VTOTAL_MIN = 1
+	 */
+	v_total_mask_value = 16;
+	vtotal_min = dcn_bw_floor(vtotal_avg);
+	vtotal_max = dcn_bw_ceil(vtotal_avg);
+
+	/* Check that bottom VBLANK is at least 2 lines tall when running with
+	 * VTOTAL_MIN. Note that VTOTAL registers are defined as 'total number
+	 * of lines in a frame - 1'.
+	 */
+	REG_GET(OTG_V_BLANK_START_END, OTG_V_BLANK_START,
+		&vblank_start);
+	ASSERT(vtotal_min >= vblank_start + 1);
+
+	/* Special case where the average frame rate can be achieved
+	 * without using the DTO
+	 */
+	if (vtotal_min == vtotal_max) {
+		REG_SET(OTG_V_TOTAL, 0, OTG_V_TOTAL, (uint32_t)vtotal_min);
+
+		optc->funcs->set_vtotal_min_max(optc, 0, 0);
+		REG_SET(OTG_M_CONST_DTO0, 0, OTG_M_CONST_DTO_PHASE, 0);
+		REG_SET(OTG_M_CONST_DTO1, 0, OTG_M_CONST_DTO_MODULO, 0);
+		REG_UPDATE_3(OTG_V_TOTAL_CONTROL,
+			OTG_V_TOTAL_MIN_SEL, 0,
+			OTG_V_TOTAL_MAX_SEL, 0,
+			OTG_SET_V_TOTAL_MIN_MASK_EN, 0);
+		return;
+	}
+
+	ratio = vtotal_max - vtotal_avg;
+	modulo = 65536.0 * 65536.0 - 1.0; /* 2^32 - 1 */
+	phase = ratio * modulo;
+
+	/* Special cases where the DTO phase gets rounded to 0 or
+	 * to DTO modulo
+	 */
+	if (phase <= 0 || phase >= modulo) {
+		REG_SET(OTG_V_TOTAL, 0, OTG_V_TOTAL,
+			phase <= 0 ?
+				(uint32_t)vtotal_max : (uint32_t)vtotal_min);
+		REG_SET(OTG_V_TOTAL_MIN, 0, OTG_V_TOTAL_MIN, 0);
+		REG_SET(OTG_V_TOTAL_MAX, 0, OTG_V_TOTAL_MAX, 0);
+		REG_SET(OTG_M_CONST_DTO0, 0, OTG_M_CONST_DTO_PHASE, 0);
+		REG_SET(OTG_M_CONST_DTO1, 0, OTG_M_CONST_DTO_MODULO, 0);
+		REG_UPDATE_3(OTG_V_TOTAL_CONTROL,
+			OTG_V_TOTAL_MIN_SEL, 0,
+			OTG_V_TOTAL_MAX_SEL, 0,
+			OTG_SET_V_TOTAL_MIN_MASK_EN, 0);
+		return;
+	}
+	REG_UPDATE_6(OTG_V_TOTAL_CONTROL,
+		OTG_V_TOTAL_MIN_SEL, 1,
+		OTG_V_TOTAL_MAX_SEL, 1,
+		OTG_SET_V_TOTAL_MIN_MASK_EN, 1,
+		OTG_SET_V_TOTAL_MIN_MASK, v_total_mask_value,
+		OTG_VTOTAL_MID_REPLACING_MIN_EN, 0,
+		OTG_VTOTAL_MID_REPLACING_MAX_EN, 0);
+	REG_SET(OTG_V_TOTAL, 0, OTG_V_TOTAL, (uint32_t)vtotal_min);
+	optc->funcs->set_vtotal_min_max(optc, vtotal_min, vtotal_max);
+	REG_SET(OTG_M_CONST_DTO0, 0, OTG_M_CONST_DTO_PHASE, (uint32_t)phase);
+	REG_SET(OTG_M_CONST_DTO1, 0, OTG_M_CONST_DTO_MODULO, (uint32_t)modulo);
+}
+
 void dcn30_fpu_populate_dml_writeback_from_context(
 		struct dc *dc, struct resource_context *res_ctx, display_e2e_pipe_params_st *pipes)
 {
 	int pipe_cnt, i, j;
 	double max_calc_writeback_dispclk;
 	double writeback_dispclk;
-	struct writeback_st dout_wb = {0};
+	struct writeback_st dout_wb;
 
 	dc_assert_fp_enabled();
 
@@ -292,9 +368,7 @@ void dcn30_fpu_update_soc_for_wm_a(struct dc *dc, struct dc_state *context)
 	dc_assert_fp_enabled();
 
 	if (dc->clk_mgr->bw_params->wm_table.nv_entries[WM_A].valid) {
-		if (!context->bw_ctx.bw.dcn.clk.fw_based_mclk_switching ||
-				context->bw_ctx.dml.soc.dram_clock_change_latency_us == 0)
-			context->bw_ctx.dml.soc.dram_clock_change_latency_us = dc->clk_mgr->bw_params->wm_table.nv_entries[WM_A].dml_input.pstate_latency_us;
+		context->bw_ctx.dml.soc.dram_clock_change_latency_us = dc->clk_mgr->bw_params->wm_table.nv_entries[WM_A].dml_input.pstate_latency_us;
 		context->bw_ctx.dml.soc.sr_enter_plus_exit_time_us = dc->clk_mgr->bw_params->wm_table.nv_entries[WM_A].dml_input.sr_enter_plus_exit_time_us;
 		context->bw_ctx.dml.soc.sr_exit_time_us = dc->clk_mgr->bw_params->wm_table.nv_entries[WM_A].dml_input.sr_exit_time_us;
 	}
@@ -310,42 +384,8 @@ void dcn30_fpu_calculate_wm_and_dlg(
 	int i, pipe_idx;
 	double dcfclk = context->bw_ctx.dml.vba.DCFCLKState[vlevel][maxMpcComb];
 	bool pstate_en = context->bw_ctx.dml.vba.DRAMClockChangeSupport[vlevel][maxMpcComb] != dm_dram_clock_change_unsupported;
-	unsigned int dummy_latency_index = 0;
-	struct dc_stream_status *stream_status = NULL;
 
 	dc_assert_fp_enabled();
-
-	context->bw_ctx.bw.dcn.clk.fw_based_mclk_switching = false;
-	for (i = 0; i < context->stream_count; i++) {
-		stream_status = NULL;
-		if (context->streams[i])
-			stream_status = dc_state_get_stream_status(context, context->streams[i]);
-		if (stream_status)
-			stream_status->fpo_in_use = false;
-	}
-
-	if (!pstate_en) {
-		/* only when the mclk switch can not be natural, is the fw based vblank stretch attempted */
-		context->bw_ctx.bw.dcn.clk.fw_based_mclk_switching =
-			dcn30_can_support_mclk_switch_using_fw_based_vblank_stretch(dc, context);
-
-		if (context->bw_ctx.bw.dcn.clk.fw_based_mclk_switching) {
-			dummy_latency_index = dcn30_find_dummy_latency_index_for_fw_based_mclk_switch(dc,
-				context, pipes, pipe_cnt, vlevel);
-
-			/* After calling dcn30_find_dummy_latency_index_for_fw_based_mclk_switch
-			 * we reinstate the original dram_clock_change_latency_us on the context
-			 * and all variables that may have changed up to this point, except the
-			 * newly found dummy_latency_index
-			 */
-			context->bw_ctx.dml.soc.dram_clock_change_latency_us = dc->clk_mgr->bw_params->wm_table.nv_entries[WM_A].dml_input.pstate_latency_us;
-			dcn30_internal_validate_bw(dc, context, pipes, &pipe_cnt, &vlevel,
-				DC_VALIDATE_MODE_AND_PROGRAMMING, true);
-			maxMpcComb = context->bw_ctx.dml.vba.maxMpcComb;
-			dcfclk = context->bw_ctx.dml.vba.DCFCLKState[vlevel][context->bw_ctx.dml.vba.maxMpcComb];
-			pstate_en = context->bw_ctx.dml.vba.DRAMClockChangeSupport[vlevel][maxMpcComb] != dm_dram_clock_change_unsupported;
-		}
-	}
 
 	if (context->bw_ctx.dml.soc.min_dcfclk > dcfclk)
 		dcfclk = context->bw_ctx.dml.soc.min_dcfclk;
@@ -409,29 +449,15 @@ void dcn30_fpu_calculate_wm_and_dlg(
 		unsigned int min_dram_speed_mts = context->bw_ctx.dml.vba.DRAMSpeed;
 		unsigned int min_dram_speed_mts_margin = 160;
 
-		context->bw_ctx.dml.soc.dram_clock_change_latency_us =
-			dc->clk_mgr->bw_params->dummy_pstate_table[0].dummy_pstate_latency_us;
+		if (context->bw_ctx.dml.vba.DRAMClockChangeSupport[vlevel][context->bw_ctx.dml.vba.maxMpcComb] == dm_dram_clock_change_unsupported)
+			min_dram_speed_mts = dc->clk_mgr->bw_params->clk_table.entries[dc->clk_mgr->bw_params->clk_table.num_entries - 1].memclk_mhz * 16;
 
-		if (context->bw_ctx.dml.vba.DRAMClockChangeSupport[vlevel][maxMpcComb] ==
-			dm_dram_clock_change_unsupported) {
-			int min_dram_speed_mts_offset = dc->clk_mgr->bw_params->clk_table.num_entries - 1;
+		/* find largest table entry that is lower than dram speed, but lower than DPM0 still uses DPM0 */
+		for (i = 3; i > 0; i--)
+			if (min_dram_speed_mts + min_dram_speed_mts_margin > dc->clk_mgr->bw_params->dummy_pstate_table[i].dram_speed_mts)
+				break;
 
-			min_dram_speed_mts =
-				dc->clk_mgr->bw_params->clk_table.entries[min_dram_speed_mts_offset].memclk_mhz * 16;
-		}
-
-		if (!context->bw_ctx.bw.dcn.clk.fw_based_mclk_switching) {
-			/* find largest table entry that is lower than dram speed,
-			 * but lower than DPM0 still uses DPM0
-			 */
-			for (dummy_latency_index = 3; dummy_latency_index > 0; dummy_latency_index--)
-				if (min_dram_speed_mts + min_dram_speed_mts_margin >
-					dc->clk_mgr->bw_params->dummy_pstate_table[dummy_latency_index].dram_speed_mts)
-					break;
-		}
-
-		context->bw_ctx.dml.soc.dram_clock_change_latency_us =
-			dc->clk_mgr->bw_params->dummy_pstate_table[dummy_latency_index].dummy_pstate_latency_us;
+		context->bw_ctx.dml.soc.dram_clock_change_latency_us = dc->clk_mgr->bw_params->dummy_pstate_table[i].dummy_pstate_latency_us;
 
 		context->bw_ctx.dml.soc.sr_enter_plus_exit_time_us = dc->clk_mgr->bw_params->wm_table.nv_entries[WM_C].dml_input.sr_enter_plus_exit_time_us;
 		context->bw_ctx.dml.soc.sr_exit_time_us = dc->clk_mgr->bw_params->wm_table.nv_entries[WM_C].dml_input.sr_exit_time_us;
@@ -492,20 +518,6 @@ void dcn30_fpu_calculate_wm_and_dlg(
 			pipes[pipe_idx].clks_cfg.dppclk_mhz = dc->debug.min_dpp_clk_khz / 1000.0;
 
 		pipe_idx++;
-	}
-
-	// WA: restrict FPO to use first non-strobe mode (NV24 BW issue)
-	if (context->bw_ctx.bw.dcn.clk.fw_based_mclk_switching &&
-			dc->dml.soc.num_chans <= 4 &&
-			context->bw_ctx.dml.vba.DRAMSpeed <= 1700 &&
-			context->bw_ctx.dml.vba.DRAMSpeed >= 1500) {
-
-		for (i = 0; i < dc->dml.soc.num_states; i++) {
-			if (dc->dml.soc.clock_limits[i].dram_speed_mts > 1700) {
-				context->bw_ctx.dml.vba.DRAMSpeed = dc->dml.soc.clock_limits[i].dram_speed_mts;
-				break;
-			}
-		}
 	}
 
 	dcn20_calculate_dlg_params(dc, context, pipes, pipe_cnt, vlevel);
@@ -603,19 +615,10 @@ void dcn30_fpu_update_bw_bounding_box(struct dc *dc,
 }
 
 /**
- * dcn30_find_dummy_latency_index_for_fw_based_mclk_switch() - Finds
- * dummy_latency_index when MCLK switching using firmware based vblank stretch
- * is enabled. This function will iterate through the table of dummy pstate
- * latencies until the lowest value that allows
+ * Finds dummy_latency_index when MCLK switching using firmware based
+ * vblank stretch is enabled. This function will iterate through the
+ * table of dummy pstate latencies until the lowest value that allows
  * dm_allow_self_refresh_and_mclk_switch to happen is found
- *
- * @dc: Current DC state
- * @context: new dc state
- * @pipes: DML pipe params
- * @pipe_cnt: number of DML pipes
- * @vlevel: Voltage level calculated by DML
- *
- * Return: lowest dummy_latency_index value
  */
 int dcn30_find_dummy_latency_index_for_fw_based_mclk_switch(struct dc *dc,
 							    struct dc_state *context,
@@ -631,8 +634,7 @@ int dcn30_find_dummy_latency_index_for_fw_based_mclk_switch(struct dc *dc,
 	while (dummy_latency_index < max_latency_table_entries) {
 		context->bw_ctx.dml.soc.dram_clock_change_latency_us =
 				dc->clk_mgr->bw_params->dummy_pstate_table[dummy_latency_index].dummy_pstate_latency_us;
-		dcn30_internal_validate_bw(dc, context, pipes, &pipe_cnt, &vlevel,
-			DC_VALIDATE_MODE_AND_PROGRAMMING, true);
+		dcn30_internal_validate_bw(dc, context, pipes, &pipe_cnt, &vlevel, false, true);
 
 		if (context->bw_ctx.dml.soc.allow_dram_self_refresh_or_dram_clock_change_in_vblank ==
 			dm_allow_self_refresh_and_mclk_switch)

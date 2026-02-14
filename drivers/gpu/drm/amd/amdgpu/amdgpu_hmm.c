@@ -129,25 +129,13 @@ static const struct mmu_interval_notifier_ops amdgpu_hmm_hsa_ops = {
  */
 int amdgpu_hmm_register(struct amdgpu_bo *bo, unsigned long addr)
 {
-	int r;
-
 	if (bo->kfd_bo)
-		r = mmu_interval_notifier_insert(&bo->notifier, current->mm,
+		return mmu_interval_notifier_insert(&bo->notifier, current->mm,
 						    addr, amdgpu_bo_size(bo),
 						    &amdgpu_hmm_hsa_ops);
-	else
-		r = mmu_interval_notifier_insert(&bo->notifier, current->mm, addr,
-							amdgpu_bo_size(bo),
-							&amdgpu_hmm_gfx_ops);
-	if (r)
-		/*
-		 * Make sure amdgpu_hmm_unregister() doesn't call
-		 * mmu_interval_notifier_remove() when the notifier isn't properly
-		 * initialized.
-		 */
-		bo->notifier.mm = NULL;
-
-	return r;
+	return mmu_interval_notifier_insert(&bo->notifier, current->mm, addr,
+					    amdgpu_bo_size(bo),
+					    &amdgpu_hmm_gfx_ops);
 }
 
 /**
@@ -167,14 +155,19 @@ void amdgpu_hmm_unregister(struct amdgpu_bo *bo)
 
 int amdgpu_hmm_range_get_pages(struct mmu_interval_notifier *notifier,
 			       uint64_t start, uint64_t npages, bool readonly,
-			       void *owner,
-			       struct amdgpu_hmm_range *range)
+			       void *owner, struct page **pages,
+			       struct hmm_range **phmm_range)
 {
+	struct hmm_range *hmm_range;
 	unsigned long end;
 	unsigned long timeout;
+	unsigned long i;
 	unsigned long *pfns;
 	int r = 0;
-	struct hmm_range *hmm_range = &range->hmm_range;
+
+	hmm_range = kzalloc(sizeof(*hmm_range), GFP_KERNEL);
+	if (unlikely(!hmm_range))
+		return -ENOMEM;
 
 	pfns = kvmalloc_array(npages, sizeof(*pfns), GFP_KERNEL);
 	if (unlikely(!pfns)) {
@@ -197,12 +190,19 @@ int amdgpu_hmm_range_get_pages(struct mmu_interval_notifier *notifier,
 		pr_debug("hmm range: start = 0x%lx, end = 0x%lx",
 			hmm_range->start, hmm_range->end);
 
-		timeout = jiffies + msecs_to_jiffies(HMM_RANGE_DEFAULT_TIMEOUT);
+		/* Assuming 512MB takes maxmium 1 second to fault page address */
+		timeout = max((hmm_range->end - hmm_range->start) >> 29, 1UL);
+		timeout *= HMM_RANGE_DEFAULT_TIMEOUT;
+		timeout = jiffies + msecs_to_jiffies(timeout);
 
 retry:
 		hmm_range->notifier_seq = mmu_interval_read_begin(notifier);
 		r = hmm_range_fault(hmm_range);
 		if (unlikely(r)) {
+			/*
+			 * FIXME: This timeout should encompass the retry from
+			 * mmu_interval_read_retry() as well.
+			 */
 			if (r == -EBUSY && !time_after(jiffies, timeout))
 				goto retry;
 			goto out_free_pfns;
@@ -212,82 +212,40 @@ retry:
 			break;
 		hmm_range->hmm_pfns += MAX_WALK_BYTE >> PAGE_SHIFT;
 		hmm_range->start = hmm_range->end;
+		schedule();
 	} while (hmm_range->end < end);
 
 	hmm_range->start = start;
 	hmm_range->hmm_pfns = pfns;
 
+	/*
+	 * Due to default_flags, all pages are HMM_PFN_VALID or
+	 * hmm_range_fault() fails. FIXME: The pages cannot be touched outside
+	 * the notifier_lock, and mmu_interval_read_retry() must be done first.
+	 */
+	for (i = 0; pages && i < npages; i++)
+		pages[i] = hmm_pfn_to_page(pfns[i]);
+
+	*phmm_range = hmm_range;
+
 	return 0;
 
 out_free_pfns:
 	kvfree(pfns);
-	hmm_range->hmm_pfns = NULL;
 out_free_range:
-	if (r == -EBUSY)
-		r = -EAGAIN;
+	kfree(hmm_range);
+
 	return r;
 }
 
-/**
- * amdgpu_hmm_range_valid - check if an HMM range is still valid
- * @range: pointer to the &struct amdgpu_hmm_range to validate
- *
- * Determines whether the given HMM range @range is still valid by
- * checking for invalidations via the MMU notifier sequence. This is
- * typically used to verify that the range has not been invalidated
- * by concurrent address space updates before it is accessed.
- *
- * Return:
- * * true if @range is valid and can be used safely
- * * false if @range is NULL or has been invalidated
- */
-bool amdgpu_hmm_range_valid(struct amdgpu_hmm_range *range)
+bool amdgpu_hmm_range_get_pages_done(struct hmm_range *hmm_range)
 {
-	if (!range)
-		return false;
+	bool r;
 
-	return !mmu_interval_read_retry(range->hmm_range.notifier,
-					range->hmm_range.notifier_seq);
-}
+	r = mmu_interval_read_retry(hmm_range->notifier,
+				    hmm_range->notifier_seq);
+	kvfree(hmm_range->hmm_pfns);
+	kfree(hmm_range);
 
-/**
- * amdgpu_hmm_range_alloc - allocate and initialize an AMDGPU HMM range
- * @bo: optional buffer object to associate with this HMM range
- *
- * Allocates memory for amdgpu_hmm_range and associates it with the @bo passed.
- * The reference count of the @bo is incremented.
- *
- * Return:
- * Pointer to a newly allocated struct amdgpu_hmm_range on success,
- * or NULL if memory allocation fails.
- */
-struct amdgpu_hmm_range *amdgpu_hmm_range_alloc(struct amdgpu_bo *bo)
-{
-	struct amdgpu_hmm_range *range;
-
-	range = kzalloc(sizeof(*range), GFP_KERNEL);
-	if (!range)
-		return NULL;
-
-	range->bo = amdgpu_bo_ref(bo);
-	return range;
-}
-
-/**
- * amdgpu_hmm_range_free - release an AMDGPU HMM range
- * @range: pointer to the range object to free
- *
- * Releases all resources held by @range, including the associated
- * hmm_pfns and the dropping reference of associated bo if any.
- *
- * Return: void
- */
-void amdgpu_hmm_range_free(struct amdgpu_hmm_range *range)
-{
-	if (!range)
-		return;
-
-	kvfree(range->hmm_range.hmm_pfns);
-	amdgpu_bo_unref(&range->bo);
-	kfree(range);
+	return r;
 }

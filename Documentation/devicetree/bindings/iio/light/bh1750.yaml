@@ -24,10 +24,6 @@ properties:
   reg:
     maxItems: 1
 
-  reset-gpios:
-    description: GPIO connected to the DVI reset pin (active low)
-    maxItems: 1
-
 required:
   - compatible
   - reg
@@ -36,7 +32,6 @@ additionalProperties: false
 
 examples:
   - |
-    #include <dt-bindings/gpio/gpio.h>
     i2c {
       #address-cells = <1>;
       #size-cells = <0>;
@@ -44,7 +39,6 @@ examples:
       light-sensor@23 {
         compatible = "rohm,bh1750";
         reg = <0x23>;
-        reset-gpios = <&gpio2 17 GPIO_ACTIVE_LOW>;
       };
     };
 

@@ -293,11 +293,13 @@ static void offb_destroy(struct fb_info *info)
 
 static const struct fb_ops offb_ops = {
 	.owner		= THIS_MODULE,
-	FB_DEFAULT_IOMEM_OPS,
 	.fb_destroy	= offb_destroy,
 	.fb_setcolreg	= offb_setcolreg,
 	.fb_set_par	= offb_set_par,
 	.fb_blank	= offb_blank,
+	.fb_fillrect	= cfb_fillrect,
+	.fb_copyarea	= cfb_copyarea,
+	.fb_imageblit	= cfb_imageblit,
 };
 
 static void __iomem *offb_map_reg(struct device_node *np, int index,
@@ -357,7 +359,7 @@ static void offb_init_palette_hacks(struct fb_info *info, struct device_node *dp
 			par->cmap_type = cmap_gxt2000;
 	} else if (of_node_name_prefix(dp, "vga,Display-")) {
 		/* Look for AVIVO initialized by SLOF */
-		struct device_node *pciparent __free(device_node) = of_get_parent(dp);
+		struct device_node *pciparent = of_get_parent(dp);
 		const u32 *vid, *did;
 		vid = of_get_property(pciparent, "vendor-id", NULL);
 		did = of_get_property(pciparent, "device-id", NULL);
@@ -369,6 +371,7 @@ static void offb_init_palette_hacks(struct fb_info *info, struct device_node *dp
 			if (par->cmap_adr)
 				par->cmap_type = cmap_avivo;
 		}
+		of_node_put(pciparent);
 	} else if (dp && of_device_is_compatible(dp, "qemu,std-vga")) {
 #ifdef __BIG_ENDIAN
 		const __be32 io_of_addr[3] = { 0x01000000, 0x0, 0x0 };
@@ -422,9 +425,11 @@ static void offb_init_fb(struct platform_device *parent, const char *name,
 	fix = &info->fix;
 	var = &info->var;
 
-	if (name)
-		snprintf(fix->id, sizeof(fix->id), "OFfb %s", name);
-	else
+	if (name) {
+		strcpy(fix->id, "OFfb ");
+		strncat(fix->id, name, sizeof(fix->id) - sizeof("OFfb "));
+		fix->id[sizeof(fix->id) - 1] = '\0';
+	} else
 		snprintf(fix->id, sizeof(fix->id), "OFfb %pOFn", dp);
 
 
@@ -509,7 +514,7 @@ static void offb_init_fb(struct platform_device *parent, const char *name,
 	info->fbops = &offb_ops;
 	info->screen_base = ioremap(address, fix->smem_len);
 	info->pseudo_palette = par->pseudo_palette;
-	info->flags = foreign_endian;
+	info->flags = FBINFO_DEFAULT | foreign_endian;
 
 	fb_alloc_cmap(&info->cmap, 256, 0);
 
@@ -653,12 +658,14 @@ static void offb_init_nodriver(struct platform_device *parent, struct device_nod
 	}
 }
 
-static void offb_remove(struct platform_device *pdev)
+static int offb_remove(struct platform_device *pdev)
 {
 	struct fb_info *info = platform_get_drvdata(pdev);
 
 	if (info)
 		unregister_framebuffer(info);
+
+	return 0;
 }
 
 static int offb_probe_bootx_noscreen(struct platform_device *pdev)
@@ -717,5 +724,4 @@ static void __exit offb_exit(void)
 }
 module_exit(offb_exit);
 
-MODULE_DESCRIPTION("Open Firmware frame buffer device driver");
 MODULE_LICENSE("GPL");

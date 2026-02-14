@@ -6,8 +6,8 @@
  *	KISS TNC driver.
  */
  
-#ifndef _UAPI__LINUX_SLIP_H
-#define _UAPI__LINUX_SLIP_H
+#ifndef __LINUX_SLIP_H
+#define __LINUX_SLIP_H
 
 #define		SL_MODE_SLIP		0
 #define		SL_MODE_CSLIP		1

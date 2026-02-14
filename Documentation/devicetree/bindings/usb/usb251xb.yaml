@@ -231,7 +231,7 @@ properties:
       power-on sequence to a port until the port has adequate power.
 
   swap-dx-lanes:
-    $ref: /schemas/types.yaml#/definitions/uint32-array
+    $ref: /schemas/types.yaml#/definitions/uint8-array
     description: |
       Specifies the ports which will swap the differential-pair (D+/D-),
       default is not-swapped.
@@ -240,6 +240,7 @@ additionalProperties: false
 
 required:
   - compatible
+  - reg
 
 examples:
   - |
@@ -267,12 +268,4 @@ examples:
         /* correct misplaced usb connectors on port 1,2 */
         swap-dx-lanes = <1 2>;
       };
-    };
-
-  - |
-    #include <dt-bindings/gpio/gpio.h>
-    usb-hub {
-      /* I2C is not connected */
-      compatible = "microchip,usb2512b";
-      reset-gpios = <&porta 8 GPIO_ACTIVE_LOW>;
     };

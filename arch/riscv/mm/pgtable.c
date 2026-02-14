@@ -5,60 +5,6 @@
 #include <linux/kernel.h>
 #include <linux/pgtable.h>
 
-int ptep_set_access_flags(struct vm_area_struct *vma,
-			  unsigned long address, pte_t *ptep,
-			  pte_t entry, int dirty)
-{
-	if (riscv_has_extension_unlikely(RISCV_ISA_EXT_SVVPTC)) {
-		if (!pte_same(ptep_get(ptep), entry)) {
-			__set_pte_at(vma->vm_mm, ptep, entry);
-			/* Here only not svadu is impacted */
-			flush_tlb_page(vma, address);
-			return true;
-		}
-
-		return false;
-	}
-
-	if (!pte_same(ptep_get(ptep), entry))
-		__set_pte_at(vma->vm_mm, ptep, entry);
-	/*
-	 * update_mmu_cache will unconditionally execute, handling both
-	 * the case that the PTE changed and the spurious fault case.
-	 */
-	return true;
-}
-
-int ptep_test_and_clear_young(struct vm_area_struct *vma,
-			      unsigned long address,
-			      pte_t *ptep)
-{
-	if (!pte_young(ptep_get(ptep)))
-		return 0;
-	return test_and_clear_bit(_PAGE_ACCESSED_OFFSET, &pte_val(*ptep));
-}
-EXPORT_SYMBOL_GPL(ptep_test_and_clear_young);
-
-#ifdef CONFIG_64BIT
-pud_t *pud_offset(p4d_t *p4d, unsigned long address)
-{
-	if (pgtable_l4_enabled)
-		return p4d_pgtable(p4dp_get(p4d)) + pud_index(address);
-
-	return (pud_t *)p4d;
-}
-EXPORT_SYMBOL_GPL(pud_offset);
-
-p4d_t *p4d_offset(pgd_t *pgd, unsigned long address)
-{
-	if (pgtable_l5_enabled)
-		return pgd_pgtable(pgdp_get(pgd)) + p4d_index(address);
-
-	return (p4d_t *)pgd;
-}
-EXPORT_SYMBOL_GPL(p4d_offset);
-#endif
-
 #ifdef CONFIG_HAVE_ARCH_HUGE_VMAP
 int p4d_set_huge(p4d_t *p4d, phys_addr_t addr, pgprot_t prot)
 {
@@ -79,7 +25,7 @@ int pud_set_huge(pud_t *pud, phys_addr_t phys, pgprot_t prot)
 
 int pud_clear_huge(pud_t *pud)
 {
-	if (!pud_leaf(pudp_get(pud)))
+	if (!pud_leaf(READ_ONCE(*pud)))
 		return 0;
 	pud_clear(pud);
 	return 1;
@@ -87,7 +33,7 @@ int pud_clear_huge(pud_t *pud)
 
 int pud_free_pmd_page(pud_t *pud, unsigned long addr)
 {
-	pmd_t *pmd = pud_pgtable(pudp_get(pud));
+	pmd_t *pmd = pud_pgtable(*pud);
 	int i;
 
 	pud_clear(pud);
@@ -117,7 +63,7 @@ int pmd_set_huge(pmd_t *pmd, phys_addr_t phys, pgprot_t prot)
 
 int pmd_clear_huge(pmd_t *pmd)
 {
-	if (!pmd_leaf(pmdp_get(pmd)))
+	if (!pmd_leaf(READ_ONCE(*pmd)))
 		return 0;
 	pmd_clear(pmd);
 	return 1;
@@ -125,7 +71,7 @@ int pmd_clear_huge(pmd_t *pmd)
 
 int pmd_free_pte_page(pmd_t *pmd, unsigned long addr)
 {
-	pte_t *pte = (pte_t *)pmd_page_vaddr(pmdp_get(pmd));
+	pte_t *pte = (pte_t *)pmd_page_vaddr(*pmd);
 
 	pmd_clear(pmd);
 
@@ -142,7 +88,7 @@ pmd_t pmdp_collapse_flush(struct vm_area_struct *vma,
 	pmd_t pmd = pmdp_huge_get_and_clear(vma->vm_mm, address, pmdp);
 
 	VM_BUG_ON(address & ~HPAGE_PMD_MASK);
-	VM_BUG_ON(pmd_trans_huge(pmdp_get(pmdp)));
+	VM_BUG_ON(pmd_trans_huge(*pmdp));
 	/*
 	 * When leaf PTE entries (regular pages) are collapsed into a leaf
 	 * PMD entry (huge page), a valid non-leaf PTE is converted into a
@@ -154,30 +100,4 @@ pmd_t pmdp_collapse_flush(struct vm_area_struct *vma,
 	flush_tlb_mm(vma->vm_mm);
 	return pmd;
 }
-
-pud_t pudp_invalidate(struct vm_area_struct *vma, unsigned long address,
-		      pud_t *pudp)
-{
-	VM_WARN_ON_ONCE(!pud_present(*pudp));
-	pud_t old = pudp_establish(vma, address, pudp, pud_mkinvalid(*pudp));
-
-	flush_pud_tlb_range(vma, address, address + HPAGE_PUD_SIZE);
-	return old;
-}
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
-
-pte_t pte_mkwrite(pte_t pte, struct vm_area_struct *vma)
-{
-	if (vma->vm_flags & VM_SHADOW_STACK)
-		return pte_mkwrite_shstk(pte);
-
-	return pte_mkwrite_novma(pte);
-}
-
-pmd_t pmd_mkwrite(pmd_t pmd, struct vm_area_struct *vma)
-{
-	if (vma->vm_flags & VM_SHADOW_STACK)
-		return pmd_mkwrite_shstk(pmd);
-
-	return pmd_mkwrite_novma(pmd);
-}

@@ -18,6 +18,10 @@
 
 #define RTW_USB_VENQT_CMD_IDX		0x00
 
+#define RTW_USB_SUPER_SPEED_BULK_SIZE	1024
+#define RTW_USB_HIGH_SPEED_BULK_SIZE	512
+#define RTW_USB_FULL_SPEED_BULK_SIZE	64
+
 #define RTW_USB_TX_SEL_HQ		BIT(0)
 #define RTW_USB_TX_SEL_LQ		BIT(1)
 #define RTW_USB_TX_SEL_NQ		BIT(2)
@@ -38,7 +42,6 @@
 #define RTW_USB_RXAGG_TIMEOUT		10
 
 #define RTW_USB_RXCB_NUM		4
-#define RTW_USB_RX_SKB_NUM		8
 
 #define RTW_USB_EP_MAX			4
 
@@ -55,6 +58,7 @@ struct rx_usb_ctrl_block {
 	struct rtw_dev *rtwdev;
 	struct urb *rx_urb;
 	struct sk_buff *rx_skb;
+	int n;
 };
 
 struct rtw_usb_tx_data {
@@ -70,10 +74,12 @@ struct rtw_usb {
 	__le32 *usb_data;
 	unsigned int usb_data_index;
 
+	u32 bulkout_size;
 	u8 pipe_interrupt;
 	u8 pipe_in;
 	u8 out_ep[RTW_USB_EP_MAX];
-	int qsel_to_ep[TX_DESC_QSEL_MAX];
+	u8 qsel_to_ep[TX_DESC_QSEL_MAX];
+	u8 usb_txagg_num;
 
 	struct workqueue_struct *txwq, *rxwq;
 
@@ -82,9 +88,7 @@ struct rtw_usb {
 
 	struct rx_usb_ctrl_block rx_cb[RTW_USB_RXCB_NUM];
 	struct sk_buff_head rx_queue;
-	struct sk_buff_head rx_free_queue;
 	struct work_struct rx_work;
-	struct work_struct rx_urb_work;
 };
 
 static inline struct rtw_usb_tx_data *rtw_usb_get_tx_data(struct sk_buff *skb)

@@ -16,8 +16,7 @@ properties:
       - brcm,iproc-nic-i2c
 
   reg:
-    minItems: 1
-    maxItems: 2
+    maxItems: 1
 
   clock-frequency:
     enum: [ 100000, 400000 ]
@@ -42,15 +41,8 @@ allOf:
           contains:
             const: brcm,iproc-nic-i2c
     then:
-      properties:
-        reg:
-          minItems: 2
       required:
         - brcm,ape-hsls-addr-mask
-    else:
-      properties:
-        reg:
-          maxItems: 1
 
 unevaluatedProperties: false
 

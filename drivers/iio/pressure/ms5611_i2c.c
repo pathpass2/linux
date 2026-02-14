@@ -16,7 +16,7 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include "ms5611.h"
 
@@ -125,11 +125,11 @@ static struct i2c_driver ms5611_driver = {
 		.of_match_table = ms5611_i2c_matches,
 	},
 	.id_table = ms5611_id,
-	.probe = ms5611_i2c_probe,
+	.probe_new = ms5611_i2c_probe,
 };
 module_i2c_driver(ms5611_driver);
 
 MODULE_AUTHOR("Tomasz Duszynski <tduszyns@gmail.com>");
 MODULE_DESCRIPTION("MS5611 i2c driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_MS5611");
+MODULE_IMPORT_NS(IIO_MS5611);

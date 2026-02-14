@@ -10,8 +10,6 @@
 #define ONE_PT_CALIB		0x1
 #define ONE_PT_CALIB2		0x2
 #define TWO_PT_CALIB		0x3
-#define ONE_PT_CALIB2_NO_OFFSET	0x6
-#define TWO_PT_CALIB_NO_OFFSET	0x7
 #define CAL_DEGC_PT1		30
 #define CAL_DEGC_PT2		120
 #define SLOPE_FACTOR		1000
@@ -34,9 +32,7 @@ enum tsens_ver {
 	VER_0 = 0,
 	VER_0_1,
 	VER_1_X,
-	VER_1_X_NO_RPM,
 	VER_2_X,
-	VER_2_X_NO_RPM,
 };
 
 enum tsens_irq_type {
@@ -61,8 +57,6 @@ struct tsens_sensor {
 	unsigned int			hw_id;
 	int				slope;
 	u32				status;
-	int				p1_calib_offset;
-	int				p2_calib_offset;
 };
 
 /**
@@ -170,7 +164,6 @@ enum regfield_ids {
 	TSENS_SW_RST,
 	SENSOR_EN,
 	CODE_OR_TEMP,
-	MAIN_MEASURE_PERIOD,
 
 	/* ----- TM ------ */
 	/* TRDY */
@@ -588,7 +581,7 @@ struct tsens_priv {
 	struct dentry			*debug_root;
 	struct dentry			*debug;
 
-	struct tsens_sensor		sensor[] __counted_by(num_sensors);
+	struct tsens_sensor		sensor[];
 };
 
 /**
@@ -637,26 +630,17 @@ void compute_intercept_slope(struct tsens_priv *priv, u32 *pt1, u32 *pt2, u32 mo
 int init_common(struct tsens_priv *priv);
 int get_temp_tsens_valid(const struct tsens_sensor *s, int *temp);
 int get_temp_common(const struct tsens_sensor *s, int *temp);
-#ifdef CONFIG_SUSPEND
-int tsens_resume_common(struct tsens_priv *priv);
-#else
-#define tsens_resume_common            NULL
-#endif
 
 /* TSENS target */
 extern struct tsens_plat_data data_8960;
 
 /* TSENS v0.1 targets */
-extern struct tsens_plat_data data_8226, data_8909, data_8916, data_8939, data_8974, data_9607;
+extern struct tsens_plat_data data_8916, data_8939, data_8974, data_9607;
 
 /* TSENS v1 targets */
-extern struct tsens_plat_data data_tsens_v1, data_8937, data_8976, data_8956;
-
-/* TSENS v1 with no RPM targets */
-extern const struct tsens_plat_data data_ipq5018;
+extern struct tsens_plat_data data_tsens_v1, data_8976, data_8956;
 
 /* TSENS v2 targets */
 extern struct tsens_plat_data data_8996, data_ipq8074, data_tsens_v2;
-extern const struct tsens_plat_data data_ipq5332, data_ipq5424;
 
 #endif /* __QCOM_TSENS_H__ */

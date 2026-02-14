@@ -116,5 +116,4 @@ static const struct msu_buffer sink_mbuf = {
 
 module_intel_th_msu_buffer(sink_mbuf);
 
-MODULE_DESCRIPTION("example software sink buffer for Intel TH MSU");
 MODULE_LICENSE("GPL v2");

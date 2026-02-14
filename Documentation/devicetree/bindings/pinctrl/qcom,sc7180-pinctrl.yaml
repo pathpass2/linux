@@ -8,7 +8,7 @@ title: Qualcomm SC7180 TLMM pin controller
 
 maintainers:
   - Bjorn Andersson <andersson@kernel.org>
-  - Krzysztof Kozlowski <krzk@kernel.org>
+  - Krzysztof Kozlowski <krzysztof.kozlowski@linaro.org>
 
 description:
   Top Level Mode Multiplexer pin controller in Qualcomm SC7180 SoC.
@@ -28,6 +28,13 @@ properties:
 
   interrupts:
     maxItems: 1
+
+  interrupt-controller: true
+  "#interrupt-cells": true
+  gpio-controller: true
+  "#gpio-cells": true
+  gpio-ranges: true
+  wakeup-parent: true
 
   gpio-reserved-ranges:
     minItems: 1
@@ -52,7 +59,6 @@ $defs:
       Pinctrl node's client devices use subnodes for desired pin configuration.
       Client device subnodes use below standard properties.
     $ref: qcom,tlmm-common.yaml#/$defs/qcom-tlmm-state
-    unevaluatedProperties: false
 
     properties:
       pins:
@@ -94,8 +100,18 @@ $defs:
                 _V_GPIO, _V_PPS_IN, _V_PPS_OUT, vsense_trigger, wlan1_adc0,
                 wlan1_adc1, wlan2_adc0, wlan2_adc1 ]
 
+      bias-pull-down: true
+      bias-pull-up: true
+      bias-disable: true
+      drive-strength: true
+      input-enable: true
+      output-high: true
+      output-low: true
+
     required:
       - pins
+
+    additionalProperties: false
 
 allOf:
   - $ref: /schemas/pinctrl/qcom,tlmm-common.yaml#
@@ -105,7 +121,7 @@ required:
   - reg
   - reg-names
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

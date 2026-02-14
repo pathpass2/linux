@@ -1108,7 +1108,7 @@ static int alc5632_i2c_probe(struct i2c_client *client)
 	struct alc5632_priv *alc5632;
 	int ret, ret1, ret2;
 	unsigned int vid1, vid2;
-	unsigned int matched_id;
+	const struct i2c_device_id *id;
 
 	alc5632 = devm_kzalloc(&client->dev,
 			 sizeof(struct alc5632_priv), GFP_KERNEL);
@@ -1134,9 +1134,9 @@ static int alc5632_i2c_probe(struct i2c_client *client)
 
 	vid2 >>= 8;
 
-	matched_id = (uintptr_t)i2c_get_match_data(client);
+	id = i2c_match_id(alc5632_i2c_table, client);
 
-	if ((vid1 != 0x10EC) || (vid2 != matched_id)) {
+	if ((vid1 != 0x10EC) || (vid2 != id->driver_data)) {
 		dev_err(&client->dev,
 		"Device is not a ALC5632: VID1=0x%x, VID2=0x%x\n", vid1, vid2);
 		return -EINVAL;
@@ -1182,7 +1182,7 @@ static struct i2c_driver alc5632_i2c_driver = {
 		.name = "alc5632",
 		.of_match_table = of_match_ptr(alc5632_of_match),
 	},
-	.probe = alc5632_i2c_probe,
+	.probe_new = alc5632_i2c_probe,
 	.id_table = alc5632_i2c_table,
 };
 

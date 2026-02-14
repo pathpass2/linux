@@ -9,20 +9,19 @@ title: Cadence SD/SDIO/eMMC Host Controller (SD4HC)
 maintainers:
   - Masahiro Yamada <yamada.masahiro@socionext.com>
 
+allOf:
+  - $ref: mmc-controller.yaml
+
 properties:
   compatible:
     items:
       - enum:
-          - amd,pensando-elba-sd4hc
           - microchip,mpfs-sd4hc
-          - microchip,pic64gx-sd4hc
-          - mobileye,eyeq-sd4hc
           - socionext,uniphier-sd4hc
       - const: cdns,sd4hc
 
   reg:
-    minItems: 1
-    maxItems: 2
+    maxItems: 1
 
   interrupts:
     maxItems: 1
@@ -120,26 +119,6 @@ required:
   - reg
   - interrupts
   - clocks
-
-allOf:
-  - $ref: sdhci-common.yaml
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: amd,pensando-elba-sd4hc
-    then:
-      properties:
-        reg:
-          items:
-            - description: Host controller registers
-            - description: Elba byte-lane enable register for writes
-      required:
-        - resets
-    else:
-      properties:
-        reg:
-          maxItems: 1
 
 unevaluatedProperties: false
 

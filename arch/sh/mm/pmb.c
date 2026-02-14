@@ -857,7 +857,7 @@ static int __init pmb_debugfs_init(void)
 subsys_initcall(pmb_debugfs_init);
 
 #ifdef CONFIG_PM
-static void pmb_syscore_resume(void *data)
+static void pmb_syscore_resume(void)
 {
 	struct pmb_entry *pmbe;
 	int i;
@@ -874,17 +874,13 @@ static void pmb_syscore_resume(void *data)
 	read_unlock(&pmb_rwlock);
 }
 
-static const struct syscore_ops pmb_syscore_ops = {
+static struct syscore_ops pmb_syscore_ops = {
 	.resume = pmb_syscore_resume,
-};
-
-static struct syscore pmb_syscore = {
-	.ops = &pmb_syscore_ops,
 };
 
 static int __init pmb_sysdev_init(void)
 {
-	register_syscore(&pmb_syscore);
+	register_syscore_ops(&pmb_syscore_ops);
 	return 0;
 }
 subsys_initcall(pmb_sysdev_init);

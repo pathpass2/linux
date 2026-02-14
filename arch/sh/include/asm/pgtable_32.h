@@ -170,7 +170,7 @@ static inline unsigned long copy_ptea_attributes(unsigned long x)
 	(PTE_MASK | _PAGE_ACCESSED | _PAGE_CACHABLE | \
 	 _PAGE_DIRTY | _PAGE_SPECIAL)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #if defined(CONFIG_X2TLB) /* SH-X2 TLB */
 #define PAGE_NONE	__pgprot(_PAGE_PROTNONE | _PAGE_CACHABLE | \
@@ -287,9 +287,9 @@ static inline unsigned long copy_ptea_attributes(unsigned long x)
 				__pgprot(0)
 #endif
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /*
  * Certain architectures need to do special things when PTEs
@@ -307,13 +307,14 @@ static inline void set_pte(pte_t *ptep, pte_t pte)
 #define set_pte(pteptr, pteval) (*(pteptr) = pteval)
 #endif
 
+#define set_pte_at(mm,addr,ptep,pteval) set_pte(ptep,pteval)
+
 /*
  * (pmds are folded into pgds so this doesn't get actually called,
  * but the define is needed for a generic inline function.)
  */
 #define set_pmd(pmdptr, pmdval) (*(pmdptr) = pmdval)
 
-#define PFN_PTE_SHIFT	PAGE_SHIFT
 #define pfn_pte(pfn, prot) \
 	__pte(((unsigned long long)(pfn) << PAGE_SHIFT) | pgprot_val(prot))
 #define pfn_pmd(pfn, prot) \
@@ -322,7 +323,7 @@ static inline void set_pte(pte_t *ptep, pte_t pte)
 #define pte_none(x)		(!pte_val(x))
 #define pte_present(x)		((x).pte_low & (_PAGE_PRESENT | _PAGE_PROTNONE))
 
-#define pte_clear(mm, addr, ptep) set_pte(ptep, __pte(0))
+#define pte_clear(mm,addr,xp) do { set_pte_at(mm, addr, xp, __pte(0)); } while (0)
 
 #define pmd_none(x)	(!pmd_val(x))
 #define pmd_present(x)	(pmd_val(x))
@@ -358,11 +359,11 @@ static inline pte_t pte_##fn(pte_t pte) { pte.pte_##h op; return pte; }
  * kernel permissions), we attempt to couple them a bit more sanely here.
  */
 PTE_BIT_FUNC(high, wrprotect, &= ~(_PAGE_EXT_USER_WRITE | _PAGE_EXT_KERN_WRITE));
-PTE_BIT_FUNC(high, mkwrite_novma, |= _PAGE_EXT_USER_WRITE | _PAGE_EXT_KERN_WRITE);
+PTE_BIT_FUNC(high, mkwrite, |= _PAGE_EXT_USER_WRITE | _PAGE_EXT_KERN_WRITE);
 PTE_BIT_FUNC(high, mkhuge, |= _PAGE_SZHUGE);
 #else
 PTE_BIT_FUNC(low, wrprotect, &= ~_PAGE_RW);
-PTE_BIT_FUNC(low, mkwrite_novma, |= _PAGE_RW);
+PTE_BIT_FUNC(low, mkwrite, |= _PAGE_RW);
 PTE_BIT_FUNC(low, mkhuge, |= _PAGE_SZHUGE);
 #endif
 
@@ -379,6 +380,14 @@ PTE_BIT_FUNC(low, mkspecial, |= _PAGE_SPECIAL);
 	__pgprot(pgprot_val(prot) & ~_PAGE_CACHABLE)
 
 #define pgprot_noncached	 pgprot_writecombine
+
+/*
+ * Conversion functions: convert a page and protection to a page entry,
+ * and a page entry and page directory to the page they refer to.
+ *
+ * extern pte_t mk_pte(struct page *page, pgprot_t pgprot)
+ */
+#define mk_pte(page, pgprot)	pfn_pte(page_to_pfn(page), (pgprot))
 
 static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 {
@@ -470,7 +479,7 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 /* In both cases, we borrow bit 6 to store the exclusive marker in swap PTEs. */
 #define _PAGE_SWP_EXCLUSIVE	_PAGE_USER
 
-static inline bool pte_swp_exclusive(pte_t pte)
+static inline int pte_swp_exclusive(pte_t pte)
 {
 	return pte.pte_low & _PAGE_SWP_EXCLUSIVE;
 }
@@ -478,5 +487,5 @@ static inline bool pte_swp_exclusive(pte_t pte)
 PTE_BIT_FUNC(low, swp_mkexclusive, |= _PAGE_SWP_EXCLUSIVE);
 PTE_BIT_FUNC(low, swp_clear_exclusive, &= ~_PAGE_SWP_EXCLUSIVE);
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 #endif /* __ASM_SH_PGTABLE_32_H */

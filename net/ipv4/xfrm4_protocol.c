@@ -76,7 +76,7 @@ int xfrm4_rcv_encap(struct sk_buff *skb, int nexthdr, __be32 spi,
 		const struct iphdr *iph = ip_hdr(skb);
 
 		if (ip_route_input_noref(skb, iph->daddr, iph->saddr,
-					 ip4h_dscp(iph), skb->dev))
+					 iph->tos, skb->dev))
 			goto drop;
 	}
 

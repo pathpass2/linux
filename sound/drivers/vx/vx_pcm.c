@@ -190,10 +190,8 @@ static int vx_set_ibl(struct vx_core *chip, struct vx_ibl_info *info)
 	info->max_size = rmh.Stat[1];
 	info->min_size = rmh.Stat[2];
 	info->granularity = rmh.Stat[3];
-	dev_dbg(chip->card->dev,
-		"%s: size = %d, max = %d, min = %d, gran = %d\n",
-		__func__, info->size, info->max_size, info->min_size,
-		info->granularity);
+	snd_printdd(KERN_DEBUG "vx_set_ibl: size = %d, max = %d, min = %d, gran = %d\n",
+		   info->size, info->max_size, info->min_size, info->granularity);
 	return 0;
 }
 
@@ -618,23 +616,24 @@ static int vx_pcm_playback_transfer_chunk(struct vx_core *chip,
 	if (space < 0) {
 		/* disconnect the host, SIZE_HBUF command always switches to the stream mode */
 		vx_send_rih(chip, IRQ_CONNECT_STREAM_NEXT);
-		dev_dbg(chip->card->dev, "error hbuffer\n");
+		snd_printd("error hbuffer\n");
 		return space;
 	}
 	if (space < size) {
 		vx_send_rih(chip, IRQ_CONNECT_STREAM_NEXT);
-		dev_dbg(chip->card->dev, "no enough hbuffer space %d\n", space);
+		snd_printd("no enough hbuffer space %d\n", space);
 		return -EIO; /* XRUN */
 	}
 		
 	/* we don't need irqsave here, because this function
 	 * is called from either trigger callback or irq handler
 	 */
-	guard(mutex)(&chip->lock);
+	mutex_lock(&chip->lock);
 	vx_pseudo_dma_write(chip, runtime, pipe, size);
 	err = vx_notify_end_of_buffer(chip, pipe);
 	/* disconnect the host, SIZE_HBUF command always switches to the stream mode */
 	vx_send_rih_nolock(chip, IRQ_CONNECT_STREAM_NEXT);
+	mutex_unlock(&chip->lock);
 	return err;
 }
 
@@ -796,8 +795,7 @@ static int vx_pcm_prepare(struct snd_pcm_substream *subs)
 		/* IEC958 status (raw-mode) was changed */
 		/* we reopen the pipe */
 		struct vx_rmh rmh;
-		dev_dbg(chip->card->dev,
-			"reopen the pipe with data_mode = %d\n", data_mode);
+		snd_printdd(KERN_DEBUG "reopen the pipe with data_mode = %d\n", data_mode);
 		vx_init_rmh(&rmh, CMD_FREE_PIPE);
 		vx_set_pipe_cmd_params(&rmh, 0, pipe->number, 0);
 		err = vx_send_msg(chip, &rmh);
@@ -814,9 +812,8 @@ static int vx_pcm_prepare(struct snd_pcm_substream *subs)
 	}
 
 	if (chip->pcm_running && chip->freq != runtime->rate) {
-		dev_err(chip->card->dev,
-			"vx: cannot set different clock %d from the current %d\n",
-			runtime->rate, chip->freq);
+		snd_printk(KERN_ERR "vx: cannot set different clock %d "
+			   "from the current %d\n", runtime->rate, chip->freq);
 		return -EINVAL;
 	}
 	vx_set_clock(chip, runtime->rate);
@@ -1094,7 +1091,7 @@ void vx_pcm_update_intr(struct vx_core *chip, unsigned int events)
 			chip->irq_rmh.Cmd[0] |= 0x00000002;	/* SEL_END_OF_BUF_EVENTS */
 
 		if (vx_send_msg(chip, &chip->irq_rmh) < 0) {
-			dev_dbg(chip->card->dev, "msg send error!!\n");
+			snd_printdd(KERN_ERR "msg send error!!\n");
 			return;
 		}
 
@@ -1144,8 +1141,7 @@ static int vx_init_audio_io(struct vx_core *chip)
 
 	vx_init_rmh(&rmh, CMD_SUPPORTED);
 	if (vx_send_msg(chip, &rmh) < 0) {
-		dev_err(chip->card->dev,
-			"vx: cannot get the supported audio data\n");
+		snd_printk(KERN_ERR "vx: cannot get the supported audio data\n");
 		return -ENXIO;
 	}
 
@@ -1225,7 +1221,7 @@ int snd_vx_pcm_new(struct vx_core *chip)
 		pcm->private_free = snd_vx_pcm_free;
 		pcm->info_flags = 0;
 		pcm->nonatomic = true;
-		strscpy(pcm->name, chip->card->shortname);
+		strcpy(pcm->name, chip->card->shortname);
 		chip->pcm[i] = pcm;
 	}
 

@@ -13,9 +13,9 @@
 #include <linux/logic_pio.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
-#include <linux/platform_device.h>
 #include <linux/serial_8250.h>
 #include <linux/slab.h>
 
@@ -657,7 +657,7 @@ static int hisi_lpc_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static void hisi_lpc_remove(struct platform_device *pdev)
+static int hisi_lpc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct hisi_lpc_dev *lpcdev = dev_get_drvdata(dev);
@@ -669,6 +669,8 @@ static void hisi_lpc_remove(struct platform_device *pdev)
 		of_platform_depopulate(dev);
 
 	logic_pio_unregister_range(range);
+
+	return 0;
 }
 
 static const struct of_device_id hisi_lpc_of_match[] = {

@@ -71,8 +71,7 @@ Userspace interface
 The userspace interface is divided in control operations and low-level data
 exchange operation.
 
-Control operations
-------------------
+CONTROL OPERATIONS:
 
 Generic netlink is used to implement the interface to the control operations.
 The operations are composed by commands and events, all listed below:
@@ -101,8 +100,7 @@ relevant information such as the supported NFC protocols.
 All polling operations requested through one netlink socket are stopped when
 it's closed.
 
-Low-level data exchange
------------------------
+LOW-LEVEL DATA EXCHANGE:
 
 The userspace must use PF_NFC sockets to perform any data communication with
 targets. All NFC sockets use AF_NFC::

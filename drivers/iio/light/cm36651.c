@@ -529,7 +529,7 @@ static int cm36651_write_prox_event_config(struct iio_dev *indio_dev,
 					const struct iio_chan_spec *chan,
 					enum iio_event_type type,
 					enum iio_event_direction dir,
-					bool state)
+					int state)
 {
 	struct cm36651_data *cm36651 = iio_priv(indio_dev);
 	int cmd, ret;
@@ -683,7 +683,7 @@ static int cm36651_probe(struct i2c_client *client)
 
 	ret = iio_device_register(indio_dev);
 	if (ret) {
-		dev_err(&client->dev, "%s: register device failed\n", __func__);
+		dev_err(&client->dev, "%s: regist device failed\n", __func__);
 		goto error_free_irq;
 	}
 
@@ -713,7 +713,7 @@ static void cm36651_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id cm36651_id[] = {
-	{ "cm36651" },
+	{ "cm36651", 0 },
 	{ }
 };
 
@@ -730,7 +730,7 @@ static struct i2c_driver cm36651_driver = {
 		.name	= "cm36651",
 		.of_match_table = cm36651_of_match,
 	},
-	.probe		= cm36651_probe,
+	.probe_new	= cm36651_probe,
 	.remove		= cm36651_remove,
 	.id_table	= cm36651_id,
 };

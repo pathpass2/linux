@@ -12,7 +12,7 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <linux/slab.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 
 /* "Force inline" macro (not required, but helpful for performance)  */

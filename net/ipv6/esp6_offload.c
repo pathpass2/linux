@@ -17,7 +17,6 @@
 #include <linux/err.h>
 #include <linux/module.h>
 #include <net/gro.h>
-#include <net/gso.h>
 #include <net/ip.h>
 #include <net/xfrm.h>
 #include <net/esp.h>
@@ -34,9 +33,7 @@ static __u16 esp6_nexthdr_esp_offset(struct ipv6hdr *ipv6_hdr, int nhlen)
 	int off = sizeof(struct ipv6hdr);
 	struct ipv6_opt_hdr *exthdr;
 
-	/* ESP or ESPINUDP */
-	if (likely(ipv6_hdr->nexthdr == NEXTHDR_ESP ||
-		   ipv6_hdr->nexthdr == NEXTHDR_UDP))
+	if (likely(ipv6_hdr->nexthdr == NEXTHDR_ESP))
 		return offsetof(struct ipv6hdr, nexthdr);
 
 	while (off < nhlen) {
@@ -56,13 +53,9 @@ static struct sk_buff *esp6_gro_receive(struct list_head *head,
 	int offset = skb_gro_offset(skb);
 	struct xfrm_offload *xo;
 	struct xfrm_state *x;
-	int encap_type = 0;
 	__be32 seq;
 	__be32 spi;
 	int nhoff;
-
-	if (NAPI_GRO_CB(skb)->proto == IPPROTO_UDP)
-		encap_type = UDP_ENCAP_ESPINUDP;
 
 	if (!pskb_pull(skb, offset))
 		return NULL;
@@ -80,16 +73,9 @@ static struct sk_buff *esp6_gro_receive(struct list_head *head,
 		if (sp->len == XFRM_MAX_DEPTH)
 			goto out_reset;
 
-		x = xfrm_input_state_lookup(dev_net(skb->dev), skb->mark,
-					    (xfrm_address_t *)&ipv6_hdr(skb)->daddr,
-					    spi, IPPROTO_ESP, AF_INET6);
-
-		if (unlikely(x && x->dir && x->dir != XFRM_SA_DIR_IN)) {
-			/* non-offload path will record the error and audit log */
-			xfrm_state_put(x);
-			x = NULL;
-		}
-
+		x = xfrm_state_lookup(dev_net(skb->dev), skb->mark,
+				      (xfrm_address_t *)&ipv6_hdr(skb)->daddr,
+				      spi, IPPROTO_ESP, AF_INET6);
 		if (!x)
 			goto out_reset;
 
@@ -117,7 +103,7 @@ static struct sk_buff *esp6_gro_receive(struct list_head *head,
 
 	/* We don't need to handle errors from xfrm_input, it does all
 	 * the error handling and frees the resources on error. */
-	xfrm_input(skb, IPPROTO_ESP, spi, encap_type);
+	xfrm_input(skb, IPPROTO_ESP, spi, -2);
 
 	return ERR_PTR(-EINPROGRESS);
 out_reset:
@@ -158,10 +144,8 @@ static struct sk_buff *xfrm6_tunnel_gso_segment(struct xfrm_state *x,
 						struct sk_buff *skb,
 						netdev_features_t features)
 {
-	struct xfrm_offload *xo = xfrm_offload(skb);
-	const struct xfrm_mode *inner_mode = xfrm_ip2inner_mode(x, xo->proto);
-	__be16 type = inner_mode->family == AF_INET ? htons(ETH_P_IP)
-						    : htons(ETH_P_IPV6);
+	__be16 type = x->inner_mode.family == AF_INET ? htons(ETH_P_IP)
+						      : htons(ETH_P_IPV6);
 
 	return skb_eth_gso_segment(skb, features, type);
 }
@@ -390,9 +374,6 @@ static int esp6_xmit(struct xfrm_state *x, struct sk_buff *skb,  netdev_features
 
 	secpath_reset(skb);
 
-	if (skb_needs_linearize(skb, skb->dev->features) &&
-	    __skb_linearize(skb))
-		return -ENOMEM;
 	return 0;
 }
 

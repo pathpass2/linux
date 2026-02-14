@@ -30,7 +30,8 @@
  *
  */
 
-#define pr_fmt(fmt) "IPVS: " fmt
+#define KMSG_COMPONENT "IPVS"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/ip.h>
 #include <linux/slab.h>
@@ -269,4 +270,3 @@ static void __exit ip_vs_dh_cleanup(void)
 module_init(ip_vs_dh_init);
 module_exit(ip_vs_dh_cleanup);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("ipvs destination hashing scheduler");

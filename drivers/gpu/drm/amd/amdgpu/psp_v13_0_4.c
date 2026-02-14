@@ -40,7 +40,7 @@ static int psp_v13_0_4_init_microcode(struct psp_context *psp)
 
 	amdgpu_ucode_ip_version_decode(adev, MP0_HWIP, ucode_prefix, sizeof(ucode_prefix));
 
-	switch (amdgpu_ip_version(adev, MP0_HWIP, 0)) {
+	switch (adev->ip_versions[MP0_HWIP][0]) {
 	case IP_VERSION(13, 0, 4):
 		err = psp_init_toc_microcode(psp, ucode_prefix);
 		if (err)
@@ -76,9 +76,11 @@ static int psp_v13_0_4_wait_for_bootloader(struct psp_context *psp)
 	for (retry_loop = 0; retry_loop < 10; retry_loop++) {
 		/* Wait for bootloader to signify that is
 		    ready having bit 31 of C2PMSG_35 set to 1 */
-		ret = psp_wait_for(
-			psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_35),
-			0x80000000, 0x80000000, PSP_WAITREG_NOVERBOSE);
+		ret = psp_wait_for(psp,
+				   SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_35),
+				   0x80000000,
+				   0x80000000,
+				   false);
 
 		if (ret == 0)
 			return 0;
@@ -183,8 +185,8 @@ static int psp_v13_0_4_bootloader_load_sos(struct psp_context *psp)
 	/* there might be handshake issue with hardware which needs delay */
 	mdelay(20);
 	ret = psp_wait_for(psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_81),
-			   RREG32_SOC15(MP0, 0, regMP0_SMN_C2PMSG_81), 0,
-			   PSP_WAITREG_CHANGED);
+			   RREG32_SOC15(MP0, 0, regMP0_SMN_C2PMSG_81),
+			   0, true);
 
 	return ret;
 }
@@ -202,9 +204,8 @@ static int psp_v13_0_4_ring_stop(struct psp_context *psp,
 		/* there might be handshake issue with hardware which needs delay */
 		mdelay(20);
 		/* Wait for response flag (bit 31) */
-		ret = psp_wait_for(
-			psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_101),
-			MBOX_TOS_RESP_FLAG, MBOX_TOS_RESP_MASK, 0);
+		ret = psp_wait_for(psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_101),
+				   0x80000000, 0x80000000, false);
 	} else {
 		/* Write the ring destroy command*/
 		WREG32_SOC15(MP0, 0, regMP0_SMN_C2PMSG_64,
@@ -212,9 +213,8 @@ static int psp_v13_0_4_ring_stop(struct psp_context *psp,
 		/* there might be handshake issue with hardware which needs delay */
 		mdelay(20);
 		/* Wait for response flag (bit 31) */
-		ret = psp_wait_for(
-			psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_64),
-			MBOX_TOS_RESP_FLAG, MBOX_TOS_RESP_MASK, 0);
+		ret = psp_wait_for(psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_64),
+				   0x80000000, 0x80000000, false);
 	}
 
 	return ret;
@@ -250,15 +250,13 @@ static int psp_v13_0_4_ring_create(struct psp_context *psp,
 		mdelay(20);
 
 		/* Wait for response flag (bit 31) in C2PMSG_101 */
-		ret = psp_wait_for(
-			psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_101),
-			MBOX_TOS_RESP_FLAG, MBOX_TOS_RESP_MASK, 0);
+		ret = psp_wait_for(psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_101),
+				   0x80000000, 0x8000FFFF, false);
 
 	} else {
 		/* Wait for sOS ready for ring creation */
-		ret = psp_wait_for(
-			psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_64),
-			MBOX_TOS_READY_FLAG, MBOX_TOS_READY_MASK, 0);
+		ret = psp_wait_for(psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_64),
+				   0x80000000, 0x80000000, false);
 		if (ret) {
 			DRM_ERROR("Failed to wait for trust OS ready for ring creation\n");
 			return ret;
@@ -282,9 +280,8 @@ static int psp_v13_0_4_ring_create(struct psp_context *psp,
 		mdelay(20);
 
 		/* Wait for response flag (bit 31) in C2PMSG_64 */
-		ret = psp_wait_for(
-			psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_64),
-			MBOX_TOS_RESP_FLAG, MBOX_TOS_RESP_MASK, 0);
+		ret = psp_wait_for(psp, SOC15_REG_OFFSET(MP0, 0, regMP0_SMN_C2PMSG_64),
+				   0x80000000, 0x8000FFFF, false);
 	}
 
 	return ret;

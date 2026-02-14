@@ -9,7 +9,7 @@
 #include <linux/host1x.h>
 #include <linux/iommu.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_opp.h>
@@ -46,7 +46,6 @@ struct gr3d {
 	unsigned int nclocks;
 	struct reset_control_bulk_data resets[RST_GR3D_MAX];
 	unsigned int nresets;
-	struct dev_pm_domain_list *pd_list;
 
 	DECLARE_BITMAP(addr_regs, GR3D_NUM_REGS);
 };
@@ -81,15 +80,22 @@ static int gr3d_init(struct host1x_client *client)
 		goto free;
 	}
 
+	pm_runtime_enable(client->dev);
+	pm_runtime_use_autosuspend(client->dev);
+	pm_runtime_set_autosuspend_delay(client->dev, 200);
+
 	err = tegra_drm_register_client(dev->dev_private, drm);
 	if (err < 0) {
 		dev_err(client->dev, "failed to register client: %d\n", err);
-		goto detach_iommu;
+		goto disable_rpm;
 	}
 
 	return 0;
 
-detach_iommu:
+disable_rpm:
+	pm_runtime_dont_use_autosuspend(client->dev);
+	pm_runtime_force_suspend(client->dev);
+
 	host1x_client_iommu_detach(client);
 free:
 	host1x_syncpt_put(client->syncpts[0]);
@@ -370,13 +376,18 @@ static int gr3d_power_up_legacy_domain(struct device *dev, const char *name,
 	return 0;
 }
 
+static void gr3d_del_link(void *link)
+{
+	device_link_del(link);
+}
+
 static int gr3d_init_power(struct device *dev, struct gr3d *gr3d)
 {
-	struct dev_pm_domain_attach_data pd_data = {
-		.pd_names = (const char *[]) { "3d0", "3d1" },
-		.num_pd_names = 2,
-		.pd_flags = PD_FLAG_REQUIRED_OPP,
-	};
+	static const char * const opp_genpd_names[] = { "3d0", "3d1", NULL };
+	const u32 link_flags = DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME;
+	struct device **opp_virt_devs, *pd_dev;
+	struct device_link *link;
+	unsigned int i;
 	int err;
 
 	err = of_count_phandle_with_args(dev->of_node, "power-domains",
@@ -410,9 +421,28 @@ static int gr3d_init_power(struct device *dev, struct gr3d *gr3d)
 	if (dev->pm_domain)
 		return 0;
 
-	err = devm_pm_domain_attach_list(dev, &pd_data, &gr3d->pd_list);
-	if (err < 0)
+	err = devm_pm_opp_attach_genpd(dev, opp_genpd_names, &opp_virt_devs);
+	if (err)
 		return err;
+
+	for (i = 0; opp_genpd_names[i]; i++) {
+		pd_dev = opp_virt_devs[i];
+		if (!pd_dev) {
+			dev_err(dev, "failed to get %s power domain\n",
+				opp_genpd_names[i]);
+			return -EINVAL;
+		}
+
+		link = device_link_add(dev, pd_dev, link_flags);
+		if (!link) {
+			dev_err(dev, "failed to link to %s\n", dev_name(pd_dev));
+			return -EINVAL;
+		}
+
+		err = devm_add_action_or_reset(dev, gr3d_del_link, link);
+		if (err)
+			return err;
+	}
 
 	return 0;
 }
@@ -520,12 +550,19 @@ static int gr3d_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void gr3d_remove(struct platform_device *pdev)
+static int gr3d_remove(struct platform_device *pdev)
 {
 	struct gr3d *gr3d = platform_get_drvdata(pdev);
+	int err;
 
-	pm_runtime_disable(&pdev->dev);
-	host1x_client_unregister(&gr3d->client.base);
+	err = host1x_client_unregister(&gr3d->client.base);
+	if (err < 0) {
+		dev_err(&pdev->dev, "failed to unregister host1x client: %d\n",
+			err);
+		return err;
+	}
+
+	return 0;
 }
 
 static int __maybe_unused gr3d_runtime_suspend(struct device *dev)
@@ -577,10 +614,6 @@ static int __maybe_unused gr3d_runtime_resume(struct device *dev)
 		dev_err(dev, "failed to deassert reset: %d\n", err);
 		goto disable_clk;
 	}
-
-	pm_runtime_enable(dev);
-	pm_runtime_use_autosuspend(dev);
-	pm_runtime_set_autosuspend_delay(dev, 500);
 
 	return 0;
 

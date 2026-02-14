@@ -1071,7 +1071,7 @@ EXPORT_SYMBOL(mptscsih_flush_running_cmds);
  *
  *	Returns: None.
  *
- *	Called from sdev_destroy.
+ *	Called from slave_destroy.
  */
 static void
 mptscsih_search_running_cmds(MPT_SCSI_HOST *hd, VirtDevice *vdevice)
@@ -1231,6 +1231,7 @@ mptscsih_suspend(struct pci_dev *pdev, pm_message_t state)
 	MPT_ADAPTER 		*ioc = pci_get_drvdata(pdev);
 
 	scsi_block_requests(ioc->sh);
+	flush_scheduled_work();
 	mptscsih_shutdown(pdev);
 	return mpt_suspend(pdev,state);
 }
@@ -1309,7 +1310,8 @@ int mptscsih_show_info(struct seq_file *m, struct Scsi_Host *host)
  *
  *	Returns 0. (rtn value discarded by linux scsi mid-layer)
  */
-enum scsi_qc_status mptscsih_qcmd(struct scsi_cmnd *SCpnt)
+int
+mptscsih_qcmd(struct scsi_cmnd *SCpnt)
 {
 	MPT_SCSI_HOST		*hd;
 	MPT_FRAME_HDR		*mf;
@@ -1792,7 +1794,7 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /**
- *	mptscsih_dev_reset - Perform a SCSI LOGICAL_UNIT_RESET!
+ *	mptscsih_dev_reset - Perform a SCSI TARGET_RESET!  new_eh variant
  *	@SCpnt: Pointer to scsi_cmnd structure, IO which reset is due to
  *
  *	(linux scsi_host_template.eh_dev_reset_handler routine)
@@ -1810,13 +1812,13 @@ mptscsih_dev_reset(struct scsi_cmnd * SCpnt)
 	/* If we can't locate our host adapter structure, return FAILED status.
 	 */
 	if ((hd = shost_priv(SCpnt->device->host)) == NULL){
-		printk(KERN_ERR MYNAM ": lun reset: "
+		printk(KERN_ERR MYNAM ": target reset: "
 		   "Can't locate host! (sc=%p)\n", SCpnt);
 		return FAILED;
 	}
 
 	ioc = hd->ioc;
-	printk(MYIOC_s_INFO_FMT "attempting lun reset! (sc=%p)\n",
+	printk(MYIOC_s_INFO_FMT "attempting target reset! (sc=%p)\n",
 	       ioc->name, SCpnt);
 	scsi_print_command(SCpnt);
 
@@ -1826,14 +1828,21 @@ mptscsih_dev_reset(struct scsi_cmnd * SCpnt)
 		goto out;
 	}
 
+	/* Target reset to hidden raid component is not supported
+	 */
+	if (vdevice->vtarget->tflags & MPT_TARGET_FLAGS_RAID_COMPONENT) {
+		retval = FAILED;
+		goto out;
+	}
+
 	retval = mptscsih_IssueTaskMgmt(hd,
-				MPI_SCSITASKMGMT_TASKTYPE_LOGICAL_UNIT_RESET,
+				MPI_SCSITASKMGMT_TASKTYPE_TARGET_RESET,
 				vdevice->vtarget->channel,
-				vdevice->vtarget->id, vdevice->lun, 0,
+				vdevice->vtarget->id, 0, 0,
 				mptscsih_get_tm_timeout(ioc));
 
  out:
-	printk (MYIOC_s_INFO_FMT "lun reset: %s (sc=%p)\n",
+	printk (MYIOC_s_INFO_FMT "target reset: %s (sc=%p)\n",
 	    ioc->name, ((retval == 0) ? "SUCCESS" : "FAILED" ), SCpnt);
 
 	if (retval == 0)
@@ -2073,7 +2082,7 @@ mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf,
  *	This is anyones guess quite frankly.
  */
 int
-mptscsih_bios_param(struct scsi_device * sdev, struct gendisk *unused,
+mptscsih_bios_param(struct scsi_device * sdev, struct block_device *bdev,
 		sector_t capacity, int geom[])
 {
 	int		heads;
@@ -2271,7 +2280,7 @@ EXPORT_SYMBOL(mptscsih_raid_id_to_num);
  *	Called if no device present or device being unloaded
  */
 void
-mptscsih_sdev_destroy(struct scsi_device *sdev)
+mptscsih_slave_destroy(struct scsi_device *sdev)
 {
 	struct Scsi_Host	*host = sdev->host;
 	MPT_SCSI_HOST		*hd = shost_priv(host);
@@ -2339,7 +2348,7 @@ mptscsih_change_queue_depth(struct scsi_device *sdev, int qdepth)
  *	Return non-zero if fails.
  */
 int
-mptscsih_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
+mptscsih_slave_configure(struct scsi_device *sdev)
 {
 	struct Scsi_Host	*sh = sdev->host;
 	VirtTarget		*vtarget;
@@ -2377,6 +2386,8 @@ mptscsih_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
 	dsprintk(ioc, printk(MYIOC_s_DEBUG_FMT
 		"tagged %d, simple %d\n",
 		ioc->name,sdev->tagged_supported, sdev->simple_tags));
+
+	blk_queue_dma_alignment (sdev->request_queue, 512 - 1);
 
 	return 0;
 }
@@ -2855,14 +2866,14 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		timeout = 10;
 		break;
 
-	case RESERVE_6:
+	case RESERVE:
 		cmdLen = 6;
 		dir = MPI_SCSIIO_CONTROL_READ;
 		CDB[0] = cmd;
 		timeout = 10;
 		break;
 
-	case RELEASE_6:
+	case RELEASE:
 		cmdLen = 6;
 		dir = MPI_SCSIIO_CONTROL_READ;
 		CDB[0] = cmd;
@@ -3242,8 +3253,8 @@ EXPORT_SYMBOL(mptscsih_resume);
 EXPORT_SYMBOL(mptscsih_show_info);
 EXPORT_SYMBOL(mptscsih_info);
 EXPORT_SYMBOL(mptscsih_qcmd);
-EXPORT_SYMBOL(mptscsih_sdev_destroy);
-EXPORT_SYMBOL(mptscsih_sdev_configure);
+EXPORT_SYMBOL(mptscsih_slave_destroy);
+EXPORT_SYMBOL(mptscsih_slave_configure);
 EXPORT_SYMBOL(mptscsih_abort);
 EXPORT_SYMBOL(mptscsih_dev_reset);
 EXPORT_SYMBOL(mptscsih_bus_reset);

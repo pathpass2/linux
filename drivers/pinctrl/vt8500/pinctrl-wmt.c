@@ -507,8 +507,8 @@ static int wmt_gpio_get_value(struct gpio_chip *chip, unsigned offset)
 	return !!(readl_relaxed(data->base + reg_data_in) & BIT(bit));
 }
 
-static int wmt_gpio_set_value(struct gpio_chip *chip, unsigned int offset,
-			      int val)
+static void wmt_gpio_set_value(struct gpio_chip *chip, unsigned offset,
+			       int val)
 {
 	struct wmt_pinctrl_data *data = gpiochip_get_data(chip);
 	u32 bank = WMT_BANK_FROM_PIN(offset);
@@ -517,27 +517,25 @@ static int wmt_gpio_set_value(struct gpio_chip *chip, unsigned int offset,
 
 	if (reg_data_out == NO_REG) {
 		dev_err(data->dev, "no data out register defined\n");
-		return -EINVAL;
+		return;
 	}
 
 	if (val)
 		wmt_setbits(data, reg_data_out, BIT(bit));
 	else
 		wmt_clearbits(data, reg_data_out, BIT(bit));
+}
 
-	return 0;
+static int wmt_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
+{
+	return pinctrl_gpio_direction_input(chip->base + offset);
 }
 
 static int wmt_gpio_direction_output(struct gpio_chip *chip, unsigned offset,
 				     int value)
 {
-	int ret;
-
-	ret = wmt_gpio_set_value(chip, offset, value);
-	if (ret)
-		return ret;
-
-	return pinctrl_gpio_direction_output(chip, offset);
+	wmt_gpio_set_value(chip, offset, value);
+	return pinctrl_gpio_direction_output(chip->base + offset);
 }
 
 static const struct gpio_chip wmt_gpio_chip = {
@@ -546,7 +544,7 @@ static const struct gpio_chip wmt_gpio_chip = {
 	.request = gpiochip_generic_request,
 	.free = gpiochip_generic_free,
 	.get_direction = wmt_gpio_get_direction,
-	.direction_input = pinctrl_gpio_direction_input,
+	.direction_input = wmt_gpio_direction_input,
 	.direction_output = wmt_gpio_direction_output,
 	.get = wmt_gpio_get_value,
 	.set = wmt_gpio_set_value,

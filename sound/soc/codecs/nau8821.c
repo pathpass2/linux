@@ -10,11 +10,10 @@
 #include <linux/acpi.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
-#include <linux/dmi.h>
-#include <linux/i2c.h>
 #include <linux/init.h>
-#include <linux/math64.h>
+#include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/math64.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <sound/core.h>
@@ -24,16 +23,7 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 #include <sound/tlv.h>
-
 #include "nau8821.h"
-
-#define NAU8821_QUIRK_JD_ACTIVE_HIGH			BIT(0)
-#define NAU8821_QUIRK_JD_DB_BYPASS			BIT(1)
-
-static int nau8821_quirk;
-static int quirk_override = -1;
-module_param_named(quirk, quirk_override, uint, 0444);
-MODULE_PARM_DESC(quirk, "Board-specific quirk override");
 
 #define NAU_FREF_MAX 13500000
 #define NAU_FVCO_MAX 100000000
@@ -289,8 +279,10 @@ static int nau8821_biq_coeff_get(struct snd_kcontrol *kcontrol,
 	if (!component->regmap)
 		return -EINVAL;
 
-	return regmap_raw_read(component->regmap, NAU8821_R21_BIQ0_COF1,
+	regmap_raw_read(component->regmap, NAU8821_R21_BIQ0_COF1,
 		ucontrol->value.bytes.data, params->max);
+
+	return 0;
 }
 
 static int nau8821_biq_coeff_put(struct snd_kcontrol *kcontrol,
@@ -299,7 +291,6 @@ static int nau8821_biq_coeff_put(struct snd_kcontrol *kcontrol,
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct soc_bytes_ext *params = (void *)kcontrol->private_value;
 	void *data;
-	int ret;
 
 	if (!component->regmap)
 		return -EINVAL;
@@ -309,12 +300,12 @@ static int nau8821_biq_coeff_put(struct snd_kcontrol *kcontrol,
 	if (!data)
 		return -ENOMEM;
 
-	ret = regmap_raw_write(component->regmap, NAU8821_R21_BIQ0_COF1,
+	regmap_raw_write(component->regmap, NAU8821_R21_BIQ0_COF1,
 		data, params->max);
 
 	kfree(data);
 
-	return ret;
+	return 0;
 }
 
 static const char * const nau8821_adc_decimation[] = {
@@ -331,92 +322,12 @@ static const struct soc_enum nau8821_dac_oversampl_enum =
 	SOC_ENUM_SINGLE(NAU8821_R2C_DAC_CTRL1, NAU8821_DAC_OVERSAMPLE_SFT,
 		ARRAY_SIZE(nau8821_dac_oversampl), nau8821_dac_oversampl);
 
-static const char * const nau8821_adc_drc_noise_gate[] = {
-	"1:1", "2:1", "4:1", "8:1" };
-
-static const struct soc_enum nau8821_adc_drc_noise_gate_enum =
-	SOC_ENUM_SINGLE(NAU8821_R38_ADC_DRC_SLOPES, NAU8821_DRC_NG_SLP_ADC_SFT,
-		ARRAY_SIZE(nau8821_adc_drc_noise_gate),
-		nau8821_adc_drc_noise_gate);
-
-static const char * const nau8821_adc_drc_expansion_slope[] = {
-	"1:1", "2:1", "4:1" };
-
-static const struct soc_enum nau8821_adc_drc_expansion_slope_enum =
-	SOC_ENUM_SINGLE(NAU8821_R38_ADC_DRC_SLOPES, NAU8821_DRC_EXP_SLP_ADC_SFT,
-		ARRAY_SIZE(nau8821_adc_drc_expansion_slope),
-		nau8821_adc_drc_expansion_slope);
-
-static const char * const nau8821_adc_drc_lower_region[] = {
-	"0", "1:2", "1:4", "1:8", "1:16", "", "", "1:1" };
-
-static const struct soc_enum nau8821_adc_drc_lower_region_enum =
-	SOC_ENUM_SINGLE(NAU8821_R38_ADC_DRC_SLOPES,
-		NAU8821_DRC_CMP2_SLP_ADC_SFT,
-		ARRAY_SIZE(nau8821_adc_drc_lower_region),
-		nau8821_adc_drc_lower_region);
-
-static const char * const nau8821_higher_region[] = {
-	"0", "1:2", "1:4", "1:8", "1:16", "", "", "1:1" };
-
-static const struct soc_enum nau8821_higher_region_enum =
-	SOC_ENUM_SINGLE(NAU8821_R38_ADC_DRC_SLOPES,
-		NAU8821_DRC_CMP1_SLP_ADC_SFT,
-		ARRAY_SIZE(nau8821_higher_region),
-		nau8821_higher_region);
-
-static const char * const nau8821_limiter_slope[] = {
-	"0", "1:2", "1:4", "1:8", "1:16", "1:32", "1:64", "1:1" };
-
-static const struct soc_enum nau8821_limiter_slope_enum =
-	SOC_ENUM_SINGLE(NAU8821_R38_ADC_DRC_SLOPES,
-		NAU8821_DRC_LMT_SLP_ADC_SFT, ARRAY_SIZE(nau8821_limiter_slope),
-		nau8821_limiter_slope);
-
-static const char * const nau8821_detection_attack_time[] = {
-	"Ts", "3Ts", "7Ts", "15Ts", "31Ts", "63Ts", "127Ts", "255Ts",
-	"", "511Ts" };
-
-static const struct soc_enum nau8821_detection_attack_time_enum =
-	SOC_ENUM_SINGLE(NAU8821_R39_ADC_DRC_ATKDCY,
-		NAU8821_DRC_PK_COEF1_ADC_SFT,
-		ARRAY_SIZE(nau8821_detection_attack_time),
-		nau8821_detection_attack_time);
-
-static const char * const nau8821_detection_release_time[] = {
-	"63Ts", "127Ts", "255Ts", "511Ts", "1023Ts", "2047Ts", "4095Ts",
-	"8191Ts", "", "16383Ts" };
-
-static const struct soc_enum nau8821_detection_release_time_enum =
-	SOC_ENUM_SINGLE(NAU8821_R39_ADC_DRC_ATKDCY,
-		NAU8821_DRC_PK_COEF2_ADC_SFT,
-		ARRAY_SIZE(nau8821_detection_release_time),
-		nau8821_detection_release_time);
-
-static const char * const nau8821_attack_time[] = {
-	"Ts", "3Ts", "7Ts", "15Ts", "31Ts", "63Ts", "127Ts", "255Ts",
-	"511Ts", "1023Ts", "2047Ts", "4095Ts", "8191Ts" };
-
-static const struct soc_enum nau8821_attack_time_enum =
-	SOC_ENUM_SINGLE(NAU8821_R39_ADC_DRC_ATKDCY, NAU8821_DRC_ATK_ADC_SFT,
-		ARRAY_SIZE(nau8821_attack_time), nau8821_attack_time);
-
-static const char * const nau8821_decay_time[] = {
-	"63Ts", "127Ts", "255Ts", "511Ts", "1023Ts", "2047Ts", "4095Ts",
-	"8191Ts", "16383Ts", "32757Ts", "65535Ts" };
-
-static const struct soc_enum nau8821_decay_time_enum =
-	SOC_ENUM_SINGLE(NAU8821_R39_ADC_DRC_ATKDCY, NAU8821_DRC_DCY_ADC_SFT,
-		ARRAY_SIZE(nau8821_decay_time), nau8821_decay_time);
-
 static const DECLARE_TLV_DB_MINMAX_MUTE(adc_vol_tlv, -6600, 2400);
 static const DECLARE_TLV_DB_MINMAX_MUTE(sidetone_vol_tlv, -4200, 0);
 static const DECLARE_TLV_DB_MINMAX(hp_vol_tlv, -900, 0);
 static const DECLARE_TLV_DB_SCALE(playback_vol_tlv, -6600, 50, 1);
 static const DECLARE_TLV_DB_MINMAX(fepga_gain_tlv, -100, 3600);
 static const DECLARE_TLV_DB_MINMAX_MUTE(crosstalk_vol_tlv, -7000, 2400);
-static const DECLARE_TLV_DB_MINMAX(drc_knee4_tlv, -9800, -3500);
-static const DECLARE_TLV_DB_MINMAX(drc_knee3_tlv, -8100, -1800);
 
 static const struct snd_kcontrol_new nau8821_controls[] = {
 	SOC_DOUBLE_TLV("Mic Volume", NAU8821_R35_ADC_DGAIN_CTRL1,
@@ -435,22 +346,6 @@ static const struct snd_kcontrol_new nau8821_controls[] = {
 	SOC_DOUBLE_TLV("Headphone Crosstalk Volume",
 		NAU8821_R2F_DAC_DGAIN_CTRL,
 		0, 8, 0xff, 0, crosstalk_vol_tlv),
-	SOC_SINGLE_TLV("ADC DRC KNEE4", NAU8821_R37_ADC_DRC_KNEE_IP34,
-		NAU8821_DRC_KNEE4_IP_ADC_SFT, 0x3f, 1, drc_knee4_tlv),
-	SOC_SINGLE_TLV("ADC DRC KNEE3", NAU8821_R37_ADC_DRC_KNEE_IP34,
-		NAU8821_DRC_KNEE3_IP_ADC_SFT, 0x3f, 1, drc_knee3_tlv),
-
-	SOC_ENUM("ADC DRC Noise Gate", nau8821_adc_drc_noise_gate_enum),
-	SOC_ENUM("ADC DRC Expansion Slope", nau8821_adc_drc_expansion_slope_enum),
-	SOC_ENUM("ADC DRC Lower Region", nau8821_adc_drc_lower_region_enum),
-	SOC_ENUM("ADC DRC Higher Region", nau8821_higher_region_enum),
-	SOC_ENUM("ADC DRC Limiter Slope", nau8821_limiter_slope_enum),
-	SOC_ENUM("ADC DRC Peak Detection Attack Time", nau8821_detection_attack_time_enum),
-	SOC_ENUM("ADC DRC Peak Detection Release Time", nau8821_detection_release_time_enum),
-	SOC_ENUM("ADC DRC Attack Time", nau8821_attack_time_enum),
-	SOC_ENUM("ADC DRC Decay Time", nau8821_decay_time_enum),
-	SOC_SINGLE("DRC Enable Switch", NAU8821_R36_ADC_DRC_KNEE_IP12,
-		NAU8821_DRC_ENA_ADC_SFT, 1, 0),
 
 	SOC_ENUM("ADC Decimation Rate", nau8821_adc_decimation_enum),
 	SOC_ENUM("DAC Oversampling Rate", nau8821_dac_oversampl_enum),
@@ -512,9 +407,13 @@ static int nau8821_left_adc_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		msleep(nau8821->adc_delay);
+		msleep(125);
+		regmap_update_bits(nau8821->regmap, NAU8821_R01_ENA_CTRL,
+			NAU8821_EN_ADCL, NAU8821_EN_ADCL);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+		regmap_update_bits(nau8821->regmap,
+			NAU8821_R01_ENA_CTRL, NAU8821_EN_ADCL, 0);
 		break;
 	default:
 		return -EINVAL;
@@ -532,9 +431,13 @@ static int nau8821_right_adc_event(struct snd_soc_dapm_widget *w,
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
-		msleep(nau8821->adc_delay);
+		msleep(125);
+		regmap_update_bits(nau8821->regmap, NAU8821_R01_ENA_CTRL,
+			NAU8821_EN_ADCR, NAU8821_EN_ADCR);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
+		regmap_update_bits(nau8821->regmap,
+			NAU8821_R01_ENA_CTRL, NAU8821_EN_ADCR, 0);
 		break;
 	default:
 		return -EINVAL;
@@ -617,36 +520,6 @@ static int system_clock_control(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
-static int nau8821_left_fepga_event(struct snd_soc_dapm_widget *w,
-		struct snd_kcontrol *kcontrol, int event)
-{
-	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
-	struct nau8821 *nau8821 = snd_soc_component_get_drvdata(component);
-
-	if (!nau8821->left_input_single_end)
-		return 0;
-
-	switch (event) {
-	case SND_SOC_DAPM_POST_PMU:
-		regmap_update_bits(nau8821->regmap, NAU8821_R77_FEPGA,
-			NAU8821_ACDC_CTRL_MASK | NAU8821_FEPGA_MODEL_MASK,
-			NAU8821_ACDC_VREF_MICN | NAU8821_FEPGA_MODEL_AAF);
-		regmap_update_bits(nau8821->regmap, NAU8821_R76_BOOST,
-			NAU8821_HP_BOOST_DISCHRG_EN, NAU8821_HP_BOOST_DISCHRG_EN);
-		break;
-	case SND_SOC_DAPM_POST_PMD:
-		regmap_update_bits(nau8821->regmap, NAU8821_R77_FEPGA,
-			NAU8821_ACDC_CTRL_MASK | NAU8821_FEPGA_MODEL_MASK, 0);
-		regmap_update_bits(nau8821->regmap, NAU8821_R76_BOOST,
-			NAU8821_HP_BOOST_DISCHRG_EN, 0);
-		break;
-	default:
-		break;
-	}
-
-	return 0;
-}
-
 static const struct snd_soc_dapm_widget nau8821_dapm_widgets[] = {
 	SND_SOC_DAPM_SUPPLY("System Clock", SND_SOC_NOPM, 0, 0,
 		system_clock_control, SND_SOC_DAPM_POST_PMD),
@@ -658,10 +531,8 @@ static const struct snd_soc_dapm_widget nau8821_dapm_widgets[] = {
 		NAU8821_POWERUP_ADCL_SFT, 0),
 	SND_SOC_DAPM_ADC("ADCR Power", NULL, NAU8821_R72_ANALOG_ADC_2,
 		NAU8821_POWERUP_ADCR_SFT, 0),
-	/* single-ended design only on the left */
 	SND_SOC_DAPM_PGA_S("Frontend PGA L", 1, NAU8821_R7F_POWER_UP_CONTROL,
-		NAU8821_PUP_PGA_L_SFT, 0, nau8821_left_fepga_event,
-		SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
+		NAU8821_PUP_PGA_L_SFT, 0, NULL, 0),
 	SND_SOC_DAPM_PGA_S("Frontend PGA R", 1, NAU8821_R7F_POWER_UP_CONTROL,
 		NAU8821_PUP_PGA_R_SFT, 0, NULL, 0),
 	SND_SOC_DAPM_PGA_S("ADCL Digital path", 0, NAU8821_R01_ENA_CTRL,
@@ -807,20 +678,16 @@ nau8821_get_osr(struct nau8821 *nau8821, int stream)
 	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		regmap_read(nau8821->regmap, NAU8821_R2C_DAC_CTRL1, &osr);
 		osr &= NAU8821_DAC_OVERSAMPLE_MASK;
-
 		if (osr >= ARRAY_SIZE(osr_dac_sel))
 			return NULL;
-
 		return &osr_dac_sel[osr];
+	} else {
+		regmap_read(nau8821->regmap, NAU8821_R2B_ADC_RATE, &osr);
+		osr &= NAU8821_ADC_SYNC_DOWN_MASK;
+		if (osr >= ARRAY_SIZE(osr_adc_sel))
+			return NULL;
+		return &osr_adc_sel[osr];
 	}
-
-	regmap_read(nau8821->regmap, NAU8821_R2B_ADC_RATE, &osr);
-	osr &= NAU8821_ADC_SYNC_DOWN_MASK;
-
-	if (osr >= ARRAY_SIZE(osr_adc_sel))
-		return NULL;
-
-	return &osr_adc_sel[osr];
 }
 
 static int nau8821_dai_startup(struct snd_pcm_substream *substream,
@@ -873,16 +740,15 @@ static int nau8821_hw_params(struct snd_pcm_substream *substream,
 	if (ctrl_val & NAU8821_I2S_MS_MASTER) {
 		/* get the bclk and fs ratio */
 		bclk_fs = snd_soc_params_to_bclk(params) / nau8821->fs;
-
 		if (bclk_fs <= 32)
 			clk_div = 3;
 		else if (bclk_fs <= 64)
 			clk_div = 2;
 		else if (bclk_fs <= 128)
 			clk_div = 1;
-		else
+		else {
 			return -EINVAL;
-
+		}
 		regmap_update_bits(nau8821->regmap, NAU8821_R1D_I2S_PCM_CTRL2,
 			NAU8821_I2S_LRC_DIV_MASK | NAU8821_I2S_BLK_DIV_MASK,
 			(clk_div << NAU8821_I2S_LRC_DIV_SFT) | clk_div);
@@ -1028,17 +894,12 @@ static bool nau8821_is_jack_inserted(struct regmap *regmap)
 	return active_high == is_high;
 }
 
-static void nau8821_irq_status_clear(struct regmap *regmap, int active_irq)
+static void nau8821_int_status_clear_all(struct regmap *regmap)
 {
-	int clear_irq, i;
+	int active_irq, clear_irq, i;
 
-	if (active_irq) {
-		regmap_write(regmap, NAU8821_R11_INT_CLR_KEY_STATUS, active_irq);
-		return;
-	}
-
-	/* Reset the interruption status from rightmost bit if the
-	 * corresponding irq event occurs.
+	/* Reset the intrruption status from rightmost bit if the corres-
+	 * ponding irq event occurs.
 	 */
 	regmap_read(regmap, NAU8821_R10_IRQ_STATUS, &active_irq);
 	for (i = 0; i < NAU8821_REG_DATA_LEN; i++) {
@@ -1053,6 +914,7 @@ static void nau8821_eject_jack(struct nau8821 *nau8821)
 {
 	struct snd_soc_dapm_context *dapm = nau8821->dapm;
 	struct regmap *regmap = nau8821->regmap;
+	struct snd_soc_component *component = snd_soc_dapm_to_component(dapm);
 
 	/* Detach 2kOhm Resistors from MICBIAS to MICGND */
 	regmap_update_bits(regmap, NAU8821_R74_MIC_BIAS,
@@ -1060,32 +922,28 @@ static void nau8821_eject_jack(struct nau8821 *nau8821)
 	/* HPL/HPR short to ground */
 	regmap_update_bits(regmap, NAU8821_R0D_JACK_DET_CTRL,
 		NAU8821_SPKR_DWN1R | NAU8821_SPKR_DWN1L, 0);
-	snd_soc_dapm_disable_pin(dapm, "MICBIAS");
+	snd_soc_component_disable_pin(component, "MICBIAS");
 	snd_soc_dapm_sync(dapm);
 
-	/* Disable & mask both insertion & ejection IRQs */
-	regmap_update_bits(regmap, NAU8821_R12_INTERRUPT_DIS_CTRL,
-			   NAU8821_IRQ_INSERT_DIS | NAU8821_IRQ_EJECT_DIS,
-			   NAU8821_IRQ_INSERT_DIS | NAU8821_IRQ_EJECT_DIS);
-	regmap_update_bits(regmap, NAU8821_R0F_INTERRUPT_MASK,
-			   NAU8821_IRQ_INSERT_EN | NAU8821_IRQ_EJECT_EN,
-			   NAU8821_IRQ_INSERT_EN | NAU8821_IRQ_EJECT_EN);
-
 	/* Clear all interruption status */
-	nau8821_irq_status_clear(regmap, 0);
+	nau8821_int_status_clear_all(regmap);
 
-	/* Enable & unmask the insertion IRQ */
+	/* Enable the insertion interruption, disable the ejection inter-
+	 * ruption, and then bypass de-bounce circuit.
+	 */
 	regmap_update_bits(regmap, NAU8821_R12_INTERRUPT_DIS_CTRL,
-			   NAU8821_IRQ_INSERT_DIS, 0);
+		NAU8821_IRQ_EJECT_DIS | NAU8821_IRQ_INSERT_DIS,
+		NAU8821_IRQ_EJECT_DIS);
+	/* Mask unneeded IRQs: 1 - disable, 0 - enable */
 	regmap_update_bits(regmap, NAU8821_R0F_INTERRUPT_MASK,
-			   NAU8821_IRQ_INSERT_EN, 0);
+		NAU8821_IRQ_EJECT_EN | NAU8821_IRQ_INSERT_EN,
+		NAU8821_IRQ_EJECT_EN);
 
-	/* Bypass de-bounce circuit */
 	regmap_update_bits(regmap, NAU8821_R0D_JACK_DET_CTRL,
 		NAU8821_JACK_DET_DB_BYPASS, NAU8821_JACK_DET_DB_BYPASS);
 
 	/* Close clock for jack type detection at manual mode */
-	if (snd_soc_dapm_get_bias_level(dapm) < SND_SOC_BIAS_PREPARE)
+	if (dapm->bias_level < SND_SOC_BIAS_PREPARE)
 		nau8821_configure_sysclk(nau8821, NAU8821_CLK_DIS, 0);
 
 	/* Recover to normal channel input */
@@ -1104,15 +962,21 @@ static void nau8821_eject_jack(struct nau8821 *nau8821)
 			NAU8821_IRQ_KEY_RELEASE_DIS |
 			NAU8821_IRQ_KEY_PRESS_DIS);
 	}
+
 }
 
 static void nau8821_jdet_work(struct work_struct *work)
 {
 	struct nau8821 *nau8821 =
-		container_of(work, struct nau8821, jdet_work.work);
+		container_of(work, struct nau8821, jdet_work);
 	struct snd_soc_dapm_context *dapm = nau8821->dapm;
+	struct snd_soc_component *component = snd_soc_dapm_to_component(dapm);
 	struct regmap *regmap = nau8821->regmap;
 	int jack_status_reg, mic_detected, event = 0, event_mask = 0;
+
+	snd_soc_component_force_enable_pin(component, "MICBIAS");
+	snd_soc_dapm_sync(dapm);
+	msleep(20);
 
 	regmap_read(regmap, NAU8821_R58_I2C_DEVICE_ID, &jack_status_reg);
 	mic_detected = !(jack_status_reg & NAU8821_KEYDET);
@@ -1136,17 +1000,13 @@ static void nau8821_jdet_work(struct work_struct *work)
 				NAU8821_R12_INTERRUPT_DIS_CTRL,
 				NAU8821_IRQ_KEY_RELEASE_DIS |
 				NAU8821_IRQ_KEY_PRESS_DIS, 0);
-		} else {
-			snd_soc_dapm_disable_pin(dapm, "MICBIAS");
-			snd_soc_dapm_sync(dapm);
 		}
 	} else {
 		dev_dbg(nau8821->dev, "Headphone connected\n");
 		event |= SND_JACK_HEADPHONE;
-		snd_soc_dapm_disable_pin(dapm, "MICBIAS");
+		snd_soc_component_disable_pin(component, "MICBIAS");
 		snd_soc_dapm_sync(dapm);
 	}
-
 	event_mask |= SND_JACK_HEADSET;
 	snd_soc_jack_report(nau8821->jack, event, event_mask);
 }
@@ -1156,17 +1016,8 @@ static void nau8821_setup_inserted_irq(struct nau8821 *nau8821)
 {
 	struct regmap *regmap = nau8821->regmap;
 
-	/* Disable & mask insertion IRQ */
-	regmap_update_bits(regmap, NAU8821_R12_INTERRUPT_DIS_CTRL,
-			   NAU8821_IRQ_INSERT_DIS, NAU8821_IRQ_INSERT_DIS);
-	regmap_update_bits(regmap, NAU8821_R0F_INTERRUPT_MASK,
-			   NAU8821_IRQ_INSERT_EN, NAU8821_IRQ_INSERT_EN);
-
-	/* Clear insert IRQ status */
-	nau8821_irq_status_clear(regmap, NAU8821_JACK_INSERT_DETECTED);
-
 	/* Enable internal VCO needed for interruptions */
-	if (snd_soc_dapm_get_bias_level(nau8821->dapm) < SND_SOC_BIAS_PREPARE)
+	if (nau8821->dapm->bias_level < SND_SOC_BIAS_PREPARE)
 		nau8821_configure_sysclk(nau8821, NAU8821_CLK_INTERNAL, 0);
 
 	/* Chip needs one FSCLK cycle in order to generate interruptions,
@@ -1179,23 +1030,21 @@ static void nau8821_setup_inserted_irq(struct nau8821 *nau8821)
 	regmap_update_bits(regmap, NAU8821_R1D_I2S_PCM_CTRL2,
 		NAU8821_I2S_MS_MASK, NAU8821_I2S_MS_SLAVE);
 
-	/* Do not bypass de-bounce circuit */
-	if (!(nau8821_quirk & NAU8821_QUIRK_JD_DB_BYPASS))
-		regmap_update_bits(regmap, NAU8821_R0D_JACK_DET_CTRL,
-				   NAU8821_JACK_DET_DB_BYPASS, 0);
+	/* Not bypass de-bounce circuit */
+	regmap_update_bits(regmap, NAU8821_R0D_JACK_DET_CTRL,
+		NAU8821_JACK_DET_DB_BYPASS, 0);
 
-	/* Unmask & enable the ejection IRQs */
 	regmap_update_bits(regmap, NAU8821_R0F_INTERRUPT_MASK,
-			   NAU8821_IRQ_EJECT_EN, 0);
+		NAU8821_IRQ_EJECT_EN, 0);
 	regmap_update_bits(regmap, NAU8821_R12_INTERRUPT_DIS_CTRL,
-			   NAU8821_IRQ_EJECT_DIS, 0);
+		NAU8821_IRQ_EJECT_DIS, 0);
 }
 
 static irqreturn_t nau8821_interrupt(int irq, void *data)
 {
 	struct nau8821 *nau8821 = (struct nau8821 *)data;
 	struct regmap *regmap = nau8821->regmap;
-	int active_irq, event = 0, event_mask = 0;
+	int active_irq, clear_irq = 0, event = 0, event_mask = 0;
 
 	if (regmap_read(regmap, NAU8821_R10_IRQ_STATUS, &active_irq)) {
 		dev_err(nau8821->dev, "failed to read irq status\n");
@@ -1206,39 +1055,47 @@ static irqreturn_t nau8821_interrupt(int irq, void *data)
 
 	if ((active_irq & NAU8821_JACK_EJECT_IRQ_MASK) ==
 		NAU8821_JACK_EJECT_DETECTED) {
-		cancel_delayed_work_sync(&nau8821->jdet_work);
 		regmap_update_bits(regmap, NAU8821_R71_ANALOG_ADC_1,
 			NAU8821_MICDET_MASK, NAU8821_MICDET_DIS);
 		nau8821_eject_jack(nau8821);
 		event_mask |= SND_JACK_HEADSET;
+		clear_irq = NAU8821_JACK_EJECT_IRQ_MASK;
 	} else if (active_irq & NAU8821_KEY_SHORT_PRESS_IRQ) {
 		event |= NAU8821_BUTTON;
 		event_mask |= NAU8821_BUTTON;
-		nau8821_irq_status_clear(regmap, NAU8821_KEY_SHORT_PRESS_IRQ);
+		clear_irq = NAU8821_KEY_SHORT_PRESS_IRQ;
 	} else if (active_irq & NAU8821_KEY_RELEASE_IRQ) {
 		event_mask = NAU8821_BUTTON;
-		nau8821_irq_status_clear(regmap, NAU8821_KEY_RELEASE_IRQ);
+		clear_irq = NAU8821_KEY_RELEASE_IRQ;
 	} else if ((active_irq & NAU8821_JACK_INSERT_IRQ_MASK) ==
 		NAU8821_JACK_INSERT_DETECTED) {
-		cancel_delayed_work_sync(&nau8821->jdet_work);
 		regmap_update_bits(regmap, NAU8821_R71_ANALOG_ADC_1,
 			NAU8821_MICDET_MASK, NAU8821_MICDET_EN);
 		if (nau8821_is_jack_inserted(regmap)) {
-			/* Detect microphone and jack type */
-			snd_soc_dapm_force_enable_pin(nau8821->dapm, "MICBIAS");
-			snd_soc_dapm_sync(nau8821->dapm);
-			schedule_delayed_work(&nau8821->jdet_work, msecs_to_jiffies(20));
+			/* detect microphone and jack type */
+			cancel_work_sync(&nau8821->jdet_work);
+			schedule_work(&nau8821->jdet_work);
 			/* Turn off insertion interruption at manual mode */
+			regmap_update_bits(regmap,
+				NAU8821_R12_INTERRUPT_DIS_CTRL,
+				NAU8821_IRQ_INSERT_DIS,
+				NAU8821_IRQ_INSERT_DIS);
+			regmap_update_bits(regmap,
+				NAU8821_R0F_INTERRUPT_MASK,
+				NAU8821_IRQ_INSERT_EN,
+				NAU8821_IRQ_INSERT_EN);
 			nau8821_setup_inserted_irq(nau8821);
 		} else {
 			dev_warn(nau8821->dev,
 				"Inserted IRQ fired but not connected\n");
 			nau8821_eject_jack(nau8821);
 		}
-	} else {
-		/* Clear the rightmost interrupt */
-		nau8821_irq_status_clear(regmap, active_irq);
 	}
+
+	if (!clear_irq)
+		clear_irq = active_irq;
+	/* clears the rightmost interruption */
+	regmap_write(regmap, NAU8821_R11_INT_CLR_KEY_STATUS, clear_irq);
 
 	if (event_mask)
 		snd_soc_jack_report(nau8821->jack, event, event_mask);
@@ -1263,20 +1120,13 @@ static const struct regmap_config nau8821_regmap_config = {
 static int nau8821_component_probe(struct snd_soc_component *component)
 {
 	struct nau8821 *nau8821 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_dapm_context *dapm =
+		snd_soc_component_get_dapm(component);
 
 	nau8821->dapm = dapm;
 
 	return 0;
 }
-
-static void nau8821_component_remove(struct snd_soc_component *component)
-{
-	struct nau8821 *nau8821 = snd_soc_component_get_drvdata(component);
-
-	if (nau8821->jdet_active)
-		cancel_delayed_work_sync(&nau8821->jdet_work);
-};
 
 /**
  * nau8821_calc_fll_param - Calculate FLL parameters.
@@ -1541,7 +1391,7 @@ static int nau8821_resume_setup(struct nau8821 *nau8821)
 	nau8821_configure_sysclk(nau8821, NAU8821_CLK_DIS, 0);
 	if (nau8821->irq) {
 		/* Clear all interruption status */
-		nau8821_irq_status_clear(regmap, 0);
+		nau8821_int_status_clear_all(regmap);
 
 		/* Enable both insertion and ejection interruptions, and then
 		 * bypass de-bounce circuit.
@@ -1573,7 +1423,8 @@ static int nau8821_set_bias_level(struct snd_soc_component *component,
 
 	case SND_SOC_BIAS_STANDBY:
 		/* Setup codec configuration after resume */
-		if (snd_soc_dapm_get_bias_level(nau8821->dapm) == SND_SOC_BIAS_OFF)
+		if (snd_soc_component_get_bias_level(component) ==
+			SND_SOC_BIAS_OFF)
 			nau8821_resume_setup(nau8821);
 		break;
 
@@ -1611,13 +1462,9 @@ static int __maybe_unused nau8821_suspend(struct snd_soc_component *component)
 
 	if (nau8821->irq)
 		disable_irq(nau8821->irq);
-
-	if (nau8821->jdet_active)
-		cancel_delayed_work_sync(&nau8821->jdet_work);
-
-	snd_soc_dapm_force_bias_level(nau8821->dapm, SND_SOC_BIAS_OFF);
+	snd_soc_component_force_bias_level(component, SND_SOC_BIAS_OFF);
 	/* Power down codec power; don't support button wakeup */
-	snd_soc_dapm_disable_pin(nau8821->dapm, "MICBIAS");
+	snd_soc_component_disable_pin(component, "MICBIAS");
 	snd_soc_dapm_sync(nau8821->dapm);
 	regcache_cache_only(nau8821->regmap, true);
 	regcache_mark_dirty(nau8821->regmap);
@@ -1639,7 +1486,6 @@ static int __maybe_unused nau8821_resume(struct snd_soc_component *component)
 
 static const struct snd_soc_component_driver nau8821_component_driver = {
 	.probe			= nau8821_component_probe,
-	.remove			= nau8821_component_remove,
 	.set_sysclk		= nau8821_set_sysclk,
 	.set_pll		= nau8821_set_fll,
 	.set_bias_level		= nau8821_set_bias_level,
@@ -1674,20 +1520,16 @@ int nau8821_enable_jack_detect(struct snd_soc_component *component,
 	int ret;
 
 	nau8821->jack = jack;
-
-	if (nau8821->jdet_active)
-		return 0;
-
 	/* Initiate jack detection work queue */
-	INIT_DELAYED_WORK(&nau8821->jdet_work, nau8821_jdet_work);
-	nau8821->jdet_active = true;
-
+	INIT_WORK(&nau8821->jdet_work, nau8821_jdet_work);
 	ret = devm_request_threaded_irq(nau8821->dev, nau8821->irq, NULL,
 		nau8821_interrupt, IRQF_TRIGGER_LOW | IRQF_ONESHOT,
 		"nau8821", nau8821);
-	if (ret)
+	if (ret) {
 		dev_err(nau8821->dev, "Cannot request irq %d (%d)\n",
 			nau8821->irq, ret);
+		return ret;
+	}
 
 	return ret;
 }
@@ -1716,7 +1558,6 @@ static void nau8821_print_device_properties(struct nau8821 *nau8821)
 	dev_dbg(dev, "dmic-clk-threshold:       %d\n",
 		nau8821->dmic_clk_threshold);
 	dev_dbg(dev, "key_enable:       %d\n", nau8821->key_enable);
-	dev_dbg(dev, "adc-delay-ms:		%d\n", nau8821->adc_delay);
 }
 
 static int nau8821_read_device_properties(struct device *dev,
@@ -1732,8 +1573,6 @@ static int nau8821_read_device_properties(struct device *dev,
 		"nuvoton,jkdet-pull-up");
 	nau8821->key_enable = device_property_read_bool(dev,
 		"nuvoton,key-enable");
-	nau8821->left_input_single_end = device_property_read_bool(dev,
-		"nuvoton,left-input-single-end");
 	ret = device_property_read_u32(dev, "nuvoton,jkdet-polarity",
 		&nau8821->jkdet_polarity);
 	if (ret)
@@ -1758,16 +1597,6 @@ static int nau8821_read_device_properties(struct device *dev,
 		&nau8821->dmic_clk_threshold);
 	if (ret)
 		nau8821->dmic_clk_threshold = 3072000;
-	ret = device_property_read_u32(dev, "nuvoton,dmic-slew-rate",
-		&nau8821->dmic_slew_rate);
-	if (ret)
-		nau8821->dmic_slew_rate = 0;
-	ret = device_property_read_u32(dev, "nuvoton,adc-delay-ms",
-		&nau8821->adc_delay);
-	if (ret)
-		nau8821->adc_delay = 125;
-	if (nau8821->adc_delay < 125 || nau8821->adc_delay > 500)
-		dev_warn(dev, "Please set the suitable delay time!\n");
 
 	return 0;
 }
@@ -1827,15 +1656,6 @@ static void nau8821_init_regs(struct nau8821 *nau8821)
 		NAU8821_ADC_SYNC_DOWN_MASK, NAU8821_ADC_SYNC_DOWN_64);
 	regmap_update_bits(regmap, NAU8821_R2C_DAC_CTRL1,
 		NAU8821_DAC_OVERSAMPLE_MASK, NAU8821_DAC_OVERSAMPLE_64);
-	regmap_update_bits(regmap, NAU8821_R13_DMIC_CTRL,
-		NAU8821_DMIC_SLEW_MASK, nau8821->dmic_slew_rate <<
-		NAU8821_DMIC_SLEW_SFT);
-	if (nau8821->left_input_single_end) {
-		regmap_update_bits(regmap, NAU8821_R6B_PGA_MUTE,
-			NAU8821_MUTE_MICNL_EN, NAU8821_MUTE_MICNL_EN);
-		regmap_update_bits(regmap, NAU8821_R74_MIC_BIAS,
-			NAU8821_MICBIAS_LOWNOISE_EN, NAU8821_MICBIAS_LOWNOISE_EN);
-	}
 }
 
 static int nau8821_setup_irq(struct nau8821 *nau8821)
@@ -1876,49 +1696,6 @@ static int nau8821_setup_irq(struct nau8821 *nau8821)
 	return 0;
 }
 
-/* Please keep this list alphabetically sorted */
-static const struct dmi_system_id nau8821_quirk_table[] = {
-	{
-		/* Positivo CW14Q01P-V2 */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Positivo Tecnologia SA"),
-			DMI_MATCH(DMI_BOARD_NAME, "CW14Q01P-V2"),
-		},
-		.driver_data = (void *)(NAU8821_QUIRK_JD_ACTIVE_HIGH),
-	},
-	{
-		/* Valve Steam Deck LCD */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Valve"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Jupiter"),
-		},
-		.driver_data = (void *)(NAU8821_QUIRK_JD_DB_BYPASS),
-	},
-	{
-		/* Valve Steam Deck OLED */
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Valve"),
-			DMI_MATCH(DMI_PRODUCT_NAME, "Galileo"),
-		},
-		.driver_data = (void *)(NAU8821_QUIRK_JD_DB_BYPASS),
-	},
-	{}
-};
-
-static void nau8821_check_quirks(void)
-{
-	const struct dmi_system_id *dmi_id;
-
-	if (quirk_override != -1) {
-		nau8821_quirk = quirk_override;
-		return;
-	}
-
-	dmi_id = dmi_first_match(nau8821_quirk_table);
-	if (dmi_id)
-		nau8821_quirk = (unsigned long)dmi_id->driver_data;
-}
-
 static int nau8821_i2c_probe(struct i2c_client *i2c)
 {
 	struct device *dev = &i2c->dev;
@@ -1939,15 +1716,6 @@ static int nau8821_i2c_probe(struct i2c_client *i2c)
 
 	nau8821->dev = dev;
 	nau8821->irq = i2c->irq;
-
-	nau8821_check_quirks();
-
-	if (nau8821_quirk & NAU8821_QUIRK_JD_ACTIVE_HIGH)
-		nau8821->jkdet_polarity = 0;
-
-	if (nau8821_quirk & NAU8821_QUIRK_JD_DB_BYPASS)
-		dev_dbg(dev, "Force bypassing jack detection debounce circuit\n");
-
 	nau8821_print_device_properties(nau8821);
 
 	nau8821_reset_chip(nau8821->regmap);
@@ -1968,7 +1736,7 @@ static int nau8821_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id nau8821_i2c_ids[] = {
-	{ "nau8821" },
+	{ "nau8821", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, nau8821_i2c_ids);
@@ -1995,7 +1763,7 @@ static struct i2c_driver nau8821_driver = {
 		.of_match_table = of_match_ptr(nau8821_of_ids),
 		.acpi_match_table = ACPI_PTR(nau8821_acpi_match),
 	},
-	.probe = nau8821_i2c_probe,
+	.probe_new = nau8821_i2c_probe,
 	.id_table = nau8821_i2c_ids,
 };
 module_i2c_driver(nau8821_driver);

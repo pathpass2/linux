@@ -13,7 +13,6 @@
 #include <linux/delay.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 #include <linux/errno.h>
 #include <linux/list.h>
 #include <linux/dma-mapping.h>
@@ -322,16 +321,10 @@ static void musb_advance_schedule(struct musb *musb, struct urb *urb,
 	musb_giveback(musb, urb, status);
 	qh->is_ready = ready;
 
-	/*
-	 * musb->lock had been unlocked in musb_giveback, so qh may
-	 * be freed, need to get it again
-	 */
-	qh = musb_ep_get_qh(hw_ep, is_in);
-
 	/* reclaim resources (and bandwidth) ASAP; deschedule it, and
 	 * invalidate qh as soon as list_empty(&hep->urb_list)
 	 */
-	if (qh && list_empty(&qh->hep->urb_list)) {
+	if (list_empty(&qh->hep->urb_list)) {
 		struct list_head	*head;
 		struct dma_controller	*dma = musb->dma_controller;
 
@@ -799,9 +792,10 @@ static void musb_ep_program(struct musb *musb, u8 epnum,
 		}
 
 		if (can_bulk_split(musb, qh->type))
-			load_count = min_t(u32, hw_ep->max_packet_sz_tx, len);
+			load_count = min((u32) hw_ep->max_packet_sz_tx,
+						len);
 		else
-			load_count = min_t(u32, packet_sz, len);
+			load_count = min((u32) packet_sz, len);
 
 		if (dma_channel && musb_tx_dma_program(dma_controller,
 					hw_ep, qh, urb, offset, len))
@@ -1029,7 +1023,7 @@ static bool musb_h_ep0_continue(struct musb *musb, u16 len, struct urb *urb)
 					+ urb->actual_length);
 			musb_dbg(musb, "Sending %d byte%s to ep0 fifo %p",
 					fifo_count,
-					str_plural(fifo_count),
+					(fifo_count == 1) ? "" : "s",
 					fifo_dest);
 			musb_write_fifo(hw_ep, fifo_count, fifo_dest);
 
@@ -2404,7 +2398,6 @@ static int musb_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
 		 * and its URB list has emptied, recycle this qh.
 		 */
 		if (ready && list_empty(&qh->hep->urb_list)) {
-			musb_ep_set_qh(qh->hw_ep, is_in, NULL);
 			qh->hep->hcpriv = NULL;
 			list_del(&qh->ring);
 			kfree(qh);

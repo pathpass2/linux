@@ -24,8 +24,6 @@
  */
 #ifndef __LINK_FACTORY_H__
 #define __LINK_FACTORY_H__
-#include "link_service.h"
-struct dc_link *link_create(const struct link_init_data *init_params);
-void link_destroy(struct dc_link **link);
+#include "link.h"
 
 #endif /* __LINK_FACTORY_H__ */

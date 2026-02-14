@@ -39,7 +39,7 @@ static const struct musb_register_map musb_regmap[] = {
 	{ "IntrUsbE",	MUSB_INTRUSBE,	8 },
 	{ "DevCtl",	MUSB_DEVCTL,	8 },
 	{ "VControl",	0x68,		32 },
-	{ "HWVers",	MUSB_HWVERS,	16 },
+	{ "HWVers",	0x69,		16 },
 	{ "LinkInfo",	MUSB_LINKINFO,	8 },
 	{ "VPLen",	MUSB_VPLEN,	8 },
 	{ "HS_EOF1",	MUSB_HS_EOF1,	8 },
@@ -106,6 +106,7 @@ static int musb_regdump_show(struct seq_file *s, void *unused)
 		}
 	}
 
+	pm_runtime_mark_last_busy(musb->controller);
 	pm_runtime_put_autosuspend(musb->controller);
 	return 0;
 }
@@ -118,6 +119,7 @@ static int musb_test_mode_show(struct seq_file *s, void *unused)
 
 	pm_runtime_get_sync(musb->controller);
 	test = musb_readb(musb->mregs, MUSB_TESTMODE);
+	pm_runtime_mark_last_busy(musb->controller);
 	pm_runtime_put_autosuspend(musb->controller);
 
 	if (test == (MUSB_TEST_FORCE_HOST | MUSB_TEST_FORCE_FS))
@@ -214,6 +216,7 @@ static ssize_t musb_test_mode_write(struct file *file,
 	musb_writeb(musb->mregs, MUSB_TESTMODE, test);
 
 ret:
+	pm_runtime_mark_last_busy(musb->controller);
 	pm_runtime_put_autosuspend(musb->controller);
 	return count;
 }
@@ -240,6 +243,7 @@ static int musb_softconnect_show(struct seq_file *s, void *unused)
 		reg = musb_readb(musb->mregs, MUSB_DEVCTL);
 		connect = reg & MUSB_DEVCTL_SESSION ? 1 : 0;
 
+		pm_runtime_mark_last_busy(musb->controller);
 		pm_runtime_put_autosuspend(musb->controller);
 		break;
 	default:
@@ -300,6 +304,7 @@ static ssize_t musb_softconnect_write(struct file *file,
 		}
 	}
 
+	pm_runtime_mark_last_busy(musb->controller);
 	pm_runtime_put_autosuspend(musb->controller);
 	return count;
 }

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) OR BSD-3-Clause)
----
+
 name: fou
 
 protocol: genetlink-legacy
@@ -15,10 +15,10 @@ kernel-policy: global
 definitions:
   -
     type: enum
-    name: encap-type
+    name: encap_type
     name-prefix: fou-encap-
     enum-name:
-    entries: [unspec, direct, gue]
+    entries: [ unspec, direct, gue ]
 
 attribute-sets:
   -
@@ -39,32 +39,30 @@ attribute-sets:
       -
         name: ipproto
         type: u8
-        checks:
-          min: 1
       -
         name: type
         type: u8
       -
-        name: remcsum-nopartial
+        name: remcsum_nopartial
         type: flag
       -
-        name: local-v4
+        name: local_v4
         type: u32
       -
-        name: local-v6
+        name: local_v6
         type: binary
         checks:
-          exact-len: 16
+          min-len: 16
       -
-        name: peer-v4
+        name: peer_v4
         type: u32
       -
-        name: peer-v6
+        name: peer_v6
         type: binary
         checks:
-          exact-len: 16
+          min-len: 16
       -
-        name: peer-port
+        name: peer_port
         type: u16
         byte-order: big-endian
       -
@@ -83,8 +81,8 @@ operations:
       doc: Add port.
       attribute-set: fou
 
-      dont-validate: [strict, dump]
-      flags: [admin-perm]
+      dont-validate: [ strict, dump ]
+      flags: [ admin-perm ]
 
       do:
         request: &all_attrs
@@ -92,12 +90,12 @@ operations:
             - port
             - ipproto
             - type
-            - remcsum-nopartial
-            - local-v4
-            - peer-v4
-            - local-v6
-            - peer-v6
-            - peer-port
+            - remcsum_nopartial
+            - local_v4
+            - peer_v4
+            - local_v6
+            - peer_v6
+            - peer_port
             - ifindex
 
     -
@@ -105,26 +103,26 @@ operations:
       doc: Delete port.
       attribute-set: fou
 
-      dont-validate: [strict, dump]
-      flags: [admin-perm]
+      dont-validate: [ strict, dump ]
+      flags: [ admin-perm ]
 
       do:
-        request: &select_attrs
+        request:  &select_attrs
           attributes:
-            - af
-            - ifindex
-            - port
-            - peer-port
-            - local-v4
-            - peer-v4
-            - local-v6
-            - peer-v6
+          - af
+          - ifindex
+          - port
+          - peer_port
+          - local_v4
+          - peer_v4
+          - local_v6
+          - peer_v6
 
     -
       name: get
       doc: Get tunnel info.
       attribute-set: fou
-      dont-validate: [strict, dump]
+      dont-validate: [ strict, dump ]
 
       do:
         request: *select_attrs

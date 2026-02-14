@@ -106,33 +106,33 @@ struct wm8994_priv {
 	int vss_ena[3];
 	int enh_eq_ena[3];
 
-	/* Platform dependent DRC configuration */
+	/* Platform dependant DRC configuration */
 	const char **drc_texts;
 	int drc_cfg[WM8994_NUM_DRC];
 	struct soc_enum drc_enum;
 
-	/* Platform dependent ReTune mobile configuration */
+	/* Platform dependant ReTune mobile configuration */
 	int num_retune_mobile_texts;
 	const char **retune_mobile_texts;
 	int retune_mobile_cfg[WM8994_NUM_EQ];
 	struct soc_enum retune_mobile_enum;
 
-	/* Platform dependent MBC configuration */
+	/* Platform dependant MBC configuration */
 	int mbc_cfg;
 	const char **mbc_texts;
 	struct soc_enum mbc_enum;
 
-	/* Platform dependent VSS configuration */
+	/* Platform dependant VSS configuration */
 	int vss_cfg;
 	const char **vss_texts;
 	struct soc_enum vss_enum;
 
-	/* Platform dependent VSS HPF configuration */
+	/* Platform dependant VSS HPF configuration */
 	int vss_hpf_cfg;
 	const char **vss_hpf_texts;
 	struct soc_enum vss_hpf_enum;
 
-	/* Platform dependent enhanced EQ configuration */
+	/* Platform dependant enhanced EQ configuration */
 	int enh_eq_cfg;
 	const char **enh_eq_texts;
 	struct soc_enum enh_eq_enum;

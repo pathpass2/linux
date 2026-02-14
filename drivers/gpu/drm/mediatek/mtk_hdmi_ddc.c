@@ -20,6 +20,7 @@
 #include <linux/of_platform.h>
 
 #include "mtk_drm_drv.h"
+#include "mtk_hdmi.h"
 
 #define SIF1_CLOK		(288)
 #define DDC_DDCMCTL0		(0x0)
@@ -278,20 +279,25 @@ static int mtk_hdmi_ddc_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	ddc->clk = devm_clk_get(dev, "ddc-i2c");
-	if (IS_ERR(ddc->clk))
-		return dev_err_probe(dev, PTR_ERR(ddc->clk),
-				     "get ddc_clk failed\n");
+	if (IS_ERR(ddc->clk)) {
+		dev_err(dev, "get ddc_clk failed: %p ,\n", ddc->clk);
+		return PTR_ERR(ddc->clk);
+	}
 
-	ddc->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &mem);
+	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ddc->regs = devm_ioremap_resource(&pdev->dev, mem);
 	if (IS_ERR(ddc->regs))
 		return PTR_ERR(ddc->regs);
 
 	ret = clk_prepare_enable(ddc->clk);
-	if (ret)
-		return dev_err_probe(dev, ret, "enable ddc clk failed!\n");
+	if (ret) {
+		dev_err(dev, "enable ddc clk failed!\n");
+		return ret;
+	}
 
-	strscpy(ddc->adap.name, "mediatek-hdmi-ddc", sizeof(ddc->adap.name));
+	strlcpy(ddc->adap.name, "mediatek-hdmi-ddc", sizeof(ddc->adap.name));
 	ddc->adap.owner = THIS_MODULE;
+	ddc->adap.class = I2C_CLASS_DDC;
 	ddc->adap.algo = &mtk_hdmi_ddc_algorithm;
 	ddc->adap.retries = 3;
 	ddc->adap.dev.of_node = dev->of_node;
@@ -300,8 +306,8 @@ static int mtk_hdmi_ddc_probe(struct platform_device *pdev)
 
 	ret = i2c_add_adapter(&ddc->adap);
 	if (ret < 0) {
-		clk_disable_unprepare(ddc->clk);
-		return dev_err_probe(dev, ret, "failed to add bus to i2c core\n");
+		dev_err(dev, "failed to add bus to i2c core\n");
+		goto err_clk_disable;
 	}
 
 	platform_set_drvdata(pdev, ddc);
@@ -312,14 +318,20 @@ static int mtk_hdmi_ddc_probe(struct platform_device *pdev)
 		&mem->end);
 
 	return 0;
+
+err_clk_disable:
+	clk_disable_unprepare(ddc->clk);
+	return ret;
 }
 
-static void mtk_hdmi_ddc_remove(struct platform_device *pdev)
+static int mtk_hdmi_ddc_remove(struct platform_device *pdev)
 {
 	struct mtk_hdmi_ddc *ddc = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&ddc->adap);
 	clk_disable_unprepare(ddc->clk);
+
+	return 0;
 }
 
 static const struct of_device_id mtk_hdmi_ddc_match[] = {
@@ -336,7 +348,6 @@ struct platform_driver mtk_hdmi_ddc_driver = {
 		.of_match_table = mtk_hdmi_ddc_match,
 	},
 };
-module_platform_driver(mtk_hdmi_ddc_driver);
 
 MODULE_AUTHOR("Jie Qiu <jie.qiu@mediatek.com>");
 MODULE_DESCRIPTION("MediaTek HDMI DDC Driver");

@@ -15,63 +15,69 @@
 #endif
 
 #define __HAVE_ARCH_MEMCPY 1
+#if defined(__SANITIZE_MEMORY__) && defined(__NO_FORTIFY)
+#undef memcpy
+#define memcpy __msan_memcpy
+#else
 extern void *memcpy(void *to, const void *from, size_t len);
+#endif
 extern void *__memcpy(void *to, const void *from, size_t len);
 
 #define __HAVE_ARCH_MEMSET
+#if defined(__SANITIZE_MEMORY__) && defined(__NO_FORTIFY)
+extern void *__msan_memset(void *s, int c, size_t n);
+#undef memset
+#define memset __msan_memset
+#else
 void *memset(void *s, int c, size_t n);
+#endif
 void *__memset(void *s, int c, size_t n);
-KCFI_REFERENCE(__memset);
 
-/*
- * KMSAN needs to instrument as much code as possible. Use C versions of
- * memsetXX() from lib/string.c under KMSAN.
- */
-#if !defined(CONFIG_KMSAN)
 #define __HAVE_ARCH_MEMSET16
 static inline void *memset16(uint16_t *s, uint16_t v, size_t n)
 {
-	const auto s0 = s;
-	asm volatile (
-		"rep stosw"
-		: "+D" (s), "+c" (n)
-		: "a" (v)
-		: "memory"
-	);
-	return s0;
+	long d0, d1;
+	asm volatile("rep\n\t"
+		     "stosw"
+		     : "=&c" (d0), "=&D" (d1)
+		     : "a" (v), "1" (s), "0" (n)
+		     : "memory");
+	return s;
 }
 
 #define __HAVE_ARCH_MEMSET32
 static inline void *memset32(uint32_t *s, uint32_t v, size_t n)
 {
-	const auto s0 = s;
-	asm volatile (
-		"rep stosl"
-		: "+D" (s), "+c" (n)
-		: "a" (v)
-		: "memory"
-	);
-	return s0;
+	long d0, d1;
+	asm volatile("rep\n\t"
+		     "stosl"
+		     : "=&c" (d0), "=&D" (d1)
+		     : "a" (v), "1" (s), "0" (n)
+		     : "memory");
+	return s;
 }
 
 #define __HAVE_ARCH_MEMSET64
 static inline void *memset64(uint64_t *s, uint64_t v, size_t n)
 {
-	const auto s0 = s;
-	asm volatile (
-		"rep stosq"
-		: "+D" (s), "+c" (n)
-		: "a" (v)
-		: "memory"
-	);
-	return s0;
+	long d0, d1;
+	asm volatile("rep\n\t"
+		     "stosq"
+		     : "=&c" (d0), "=&D" (d1)
+		     : "a" (v), "1" (s), "0" (n)
+		     : "memory");
+	return s;
 }
-#endif
 
 #define __HAVE_ARCH_MEMMOVE
+#if defined(__SANITIZE_MEMORY__) && defined(__NO_FORTIFY)
+#undef memmove
+void *__msan_memmove(void *dest, const void *src, size_t len);
+#define memmove __msan_memmove
+#else
 void *memmove(void *dest, const void *src, size_t count);
+#endif
 void *__memmove(void *dest, const void *src, size_t count);
-KCFI_REFERENCE(__memmove);
 
 int memcmp(const void *cs, const void *ct, size_t count);
 size_t strlen(const char *s);

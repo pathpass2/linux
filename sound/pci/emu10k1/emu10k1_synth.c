@@ -16,11 +16,13 @@ MODULE_LICENSE("GPL");
 /*
  * create a new hardware dependent device for Emu10k1
  */
-static int snd_emu10k1_synth_probe(struct snd_seq_device *dev)
+static int snd_emu10k1_synth_probe(struct device *_dev)
 {
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emux *emux;
 	struct snd_emu10k1 *hw;
 	struct snd_emu10k1_synth_arg *arg;
+	unsigned long flags;
 
 	arg = SNDRV_SEQ_DEVICE_ARGPTR(dev);
 	if (arg == NULL)
@@ -41,6 +43,7 @@ static int snd_emu10k1_synth_probe(struct snd_seq_device *dev)
 	emux->hw = hw;
 	emux->max_voices = arg->max_voices;
 	emux->num_ports = arg->seq_ports;
+	emux->pitch_shift = -501;
 	emux->memhdr = hw->memhdr;
 	/* maximum two ports */
 	emux->midi_ports = arg->seq_ports < 2 ? arg->seq_ports : 2;
@@ -54,32 +57,36 @@ static int snd_emu10k1_synth_probe(struct snd_seq_device *dev)
 		return -ENOMEM;
 	}
 
-	guard(spinlock_irq)(&hw->voice_lock);
+	spin_lock_irqsave(&hw->voice_lock, flags);
 	hw->synth = emux;
 	hw->get_synth_voice = snd_emu10k1_synth_get_voice;
+	spin_unlock_irqrestore(&hw->voice_lock, flags);
 
 	dev->driver_data = emux;
 
 	return 0;
 }
 
-static void snd_emu10k1_synth_remove(struct snd_seq_device *dev)
+static int snd_emu10k1_synth_remove(struct device *_dev)
 {
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emux *emux;
 	struct snd_emu10k1 *hw;
+	unsigned long flags;
 
 	if (dev->driver_data == NULL)
-		return; /* not registered actually */
+		return 0; /* not registered actually */
 
 	emux = dev->driver_data;
 
 	hw = emux->hw;
-	scoped_guard(spinlock_irq, &hw->voice_lock) {
-		hw->synth = NULL;
-		hw->get_synth_voice = NULL;
-	}
+	spin_lock_irqsave(&hw->voice_lock, flags);
+	hw->synth = NULL;
+	hw->get_synth_voice = NULL;
+	spin_unlock_irqrestore(&hw->voice_lock, flags);
 
 	snd_emux_free(emux);
+	return 0;
 }
 
 /*
@@ -87,10 +94,10 @@ static void snd_emu10k1_synth_remove(struct snd_seq_device *dev)
  */
 
 static struct snd_seq_driver emu10k1_synth_driver = {
-	.probe = snd_emu10k1_synth_probe,
-	.remove = snd_emu10k1_synth_remove,
 	.driver = {
 		.name = KBUILD_MODNAME,
+		.probe = snd_emu10k1_synth_probe,
+		.remove = snd_emu10k1_synth_remove,
 	},
 	.id = SNDRV_SEQ_DEV_ID_EMU10K1_SYNTH,
 	.argsize = sizeof(struct snd_emu10k1_synth_arg),

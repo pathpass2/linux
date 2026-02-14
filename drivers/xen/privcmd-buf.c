@@ -19,7 +19,6 @@
 
 #include "privcmd.h"
 
-MODULE_DESCRIPTION("Xen Mmap of hypercall buffers");
 MODULE_LICENSE("GPL");
 
 struct privcmd_buf_private {

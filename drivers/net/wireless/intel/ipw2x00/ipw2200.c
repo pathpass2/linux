@@ -377,6 +377,19 @@ static inline u8 _ipw_read8(struct ipw_priv *ipw, unsigned long ofs)
 	_ipw_read8(ipw, ofs); \
 })
 
+/* 16-bit direct read (low 4K) */
+static inline u16 _ipw_read16(struct ipw_priv *ipw, unsigned long ofs)
+{
+	return readw(ipw->hw_base + ofs);
+}
+
+/* alias to 16-bit direct read (low 4K of SRAM/regs), with debug wrapper */
+#define ipw_read16(ipw, ofs) ({ \
+	IPW_DEBUG_IO("%s %d: read_direct16(0x%08X)\n", __FILE__, __LINE__, \
+			(u32)(ofs)); \
+	_ipw_read16(ipw, ofs); \
+})
+
 /* 32-bit direct read (low 4K) */
 static inline u32 _ipw_read32(struct ipw_priv *ipw, unsigned long ofs)
 {
@@ -1176,20 +1189,23 @@ static ssize_t debug_level_show(struct device_driver *d, char *buf)
 static ssize_t debug_level_store(struct device_driver *d, const char *buf,
 				 size_t count)
 {
-	unsigned long val;
+	char *p = (char *)buf;
+	u32 val;
 
-	int result = kstrtoul(buf, 0, &val);
-
-	if (result == -EINVAL)
+	if (p[1] == 'x' || p[1] == 'X' || p[0] == 'x' || p[0] == 'X') {
+		p++;
+		if (p[0] == 'x' || p[0] == 'X')
+			p++;
+		val = simple_strtoul(p, &p, 16);
+	} else
+		val = simple_strtoul(p, &p, 10);
+	if (p == buf)
 		printk(KERN_INFO DRV_NAME
 		       ": %s is not in hex or decimal form.\n", buf);
-	else if (result == -ERANGE)
-		printk(KERN_INFO DRV_NAME
-			 ": %s has overflowed.\n", buf);
 	else
 		ipw_debug_level = val;
 
-	return count;
+	return strnlen(buf, count);
 }
 static DRIVER_ATTR_RW(debug_level);
 
@@ -1218,9 +1234,9 @@ static struct ipw_fw_error *ipw_alloc_error_log(struct ipw_priv *priv)
 	u32 base = ipw_read32(priv, IPW_ERROR_LOG);
 	u32 elem_len = ipw_read_reg32(priv, base);
 
-	error = kmalloc(size_add(struct_size(error, elem, elem_len),
-				 array_size(sizeof(*error->log), log_len)),
-			GFP_ATOMIC);
+	error = kmalloc(sizeof(*error) +
+			sizeof(*error->elem) * elem_len +
+			sizeof(*error->log) * log_len, GFP_ATOMIC);
 	if (!error) {
 		IPW_ERROR("Memory allocation for firmware error log "
 			  "failed.\n");
@@ -1231,6 +1247,7 @@ static struct ipw_fw_error *ipw_alloc_error_log(struct ipw_priv *priv)
 	error->config = priv->config;
 	error->elem_len = elem_len;
 	error->log_len = log_len;
+	error->elem = (struct ipw_error_elem *)error->payload;
 	error->log = (struct ipw_event *)(error->elem + elem_len);
 
 	ipw_capture_event_log(priv, log_len, error->log);
@@ -1458,13 +1475,25 @@ static ssize_t scan_age_store(struct device *d, struct device_attribute *attr,
 {
 	struct ipw_priv *priv = dev_get_drvdata(d);
 	struct net_device *dev = priv->net_dev;
+	char buffer[] = "00000000";
+	unsigned long len =
+	    (sizeof(buffer) - 1) > count ? count : sizeof(buffer) - 1;
+	unsigned long val;
+	char *p = buffer;
 
 	IPW_DEBUG_INFO("enter\n");
 
-	unsigned long val;
-	int result = kstrtoul(buf, 0, &val);
+	strncpy(buffer, buf, len);
+	buffer[len] = 0;
 
-	if (result == -EINVAL || result == -ERANGE) {
+	if (p[1] == 'x' || p[1] == 'X' || p[0] == 'x' || p[0] == 'X') {
+		p++;
+		if (p[0] == 'x' || p[0] == 'X')
+			p++;
+		val = simple_strtoul(p, &p, 16);
+	} else
+		val = simple_strtoul(p, &p, 10);
+	if (p == buffer) {
 		IPW_DEBUG_INFO("%s: user supplied invalid value.\n", dev->name);
 	} else {
 		priv->ieee->scan_age = val;
@@ -1472,7 +1501,7 @@ static ssize_t scan_age_store(struct device *d, struct device_attribute *attr,
 	}
 
 	IPW_DEBUG_INFO("exit\n");
-	return count;
+	return len;
 }
 
 static DEVICE_ATTR_RW(scan_age);
@@ -3295,7 +3324,7 @@ static int ipw_init_nic(struct ipw_priv *priv)
 	rc = ipw_poll_bit(priv, IPW_GP_CNTRL_RW,
 			  IPW_GP_CNTRL_BIT_CLOCK_READY, 250);
 	if (rc < 0)
-		IPW_DEBUG_INFO("FAILED wait for clock stabilization\n");
+		IPW_DEBUG_INFO("FAILED wait for clock stablization\n");
 
 	/* assert SW reset */
 	ipw_set_bit(priv, IPW_RESET_REG, IPW_RESET_REG_SW_RESET);
@@ -4415,7 +4444,7 @@ static void handle_scan_event(struct ipw_priv *priv)
 				      round_jiffies_relative(msecs_to_jiffies(4000)));
 	} else {
 		priv->user_requested_scan = 0;
-		mod_delayed_work(system_percpu_wq, &priv->scan_event, 0);
+		mod_delayed_work(system_wq, &priv->scan_event, 0);
 	}
 }
 
@@ -6463,14 +6492,6 @@ static int ipw_set_rsn_capa(struct ipw_priv *priv,
  * WE-18 support
  */
 
-static int ipw_wx_get_name(struct net_device *dev,
-			   struct iw_request_info *info,
-			   union iwreq_data *wrqu, char *extra)
-{
-	strcpy(wrqu->name, "IEEE 802.11");
-	return 0;
-}
-
 /* SIOCSIWGENIE */
 static int ipw_wx_set_genie(struct net_device *dev,
 			    struct iw_request_info *info,
@@ -6557,7 +6578,7 @@ static int ipw_wx_set_auth(struct net_device *dev,
 	struct ipw_priv *priv = libipw_priv(dev);
 	struct libipw_device *ieee = priv->ieee;
 	struct iw_param *param = &wrqu->param;
-	struct libipw_crypt_data *crypt;
+	struct lib80211_crypt_data *crypt;
 	unsigned long flags;
 	int ret = 0;
 
@@ -6656,7 +6677,7 @@ static int ipw_wx_get_auth(struct net_device *dev,
 {
 	struct ipw_priv *priv = libipw_priv(dev);
 	struct libipw_device *ieee = priv->ieee;
-	struct libipw_crypt_data *crypt;
+	struct lib80211_crypt_data *crypt;
 	struct iw_param *param = &wrqu->param;
 
 	switch (param->flags & IW_AUTH_INDEX) {
@@ -9664,30 +9685,31 @@ static int ipw_wx_get_wireless_mode(struct net_device *dev,
 	mutex_lock(&priv->mutex);
 	switch (priv->ieee->mode) {
 	case IEEE_A:
-		strscpy_pad(extra, "802.11a (1)", MAX_WX_STRING);
+		strncpy(extra, "802.11a (1)", MAX_WX_STRING);
 		break;
 	case IEEE_B:
-		strscpy_pad(extra, "802.11b (2)", MAX_WX_STRING);
+		strncpy(extra, "802.11b (2)", MAX_WX_STRING);
 		break;
 	case IEEE_A | IEEE_B:
-		strscpy_pad(extra, "802.11ab (3)", MAX_WX_STRING);
+		strncpy(extra, "802.11ab (3)", MAX_WX_STRING);
 		break;
 	case IEEE_G:
-		strscpy_pad(extra, "802.11g (4)", MAX_WX_STRING);
+		strncpy(extra, "802.11g (4)", MAX_WX_STRING);
 		break;
 	case IEEE_A | IEEE_G:
-		strscpy_pad(extra, "802.11ag (5)", MAX_WX_STRING);
+		strncpy(extra, "802.11ag (5)", MAX_WX_STRING);
 		break;
 	case IEEE_B | IEEE_G:
-		strscpy_pad(extra, "802.11bg (6)", MAX_WX_STRING);
+		strncpy(extra, "802.11bg (6)", MAX_WX_STRING);
 		break;
 	case IEEE_A | IEEE_B | IEEE_G:
-		strscpy_pad(extra, "802.11abg (7)", MAX_WX_STRING);
+		strncpy(extra, "802.11abg (7)", MAX_WX_STRING);
 		break;
 	default:
-		strscpy_pad(extra, "unknown", MAX_WX_STRING);
+		strncpy(extra, "unknown", MAX_WX_STRING);
 		break;
 	}
+	extra[MAX_WX_STRING - 1] = '\0';
 
 	IPW_DEBUG_WX("PRIV GET MODE: %s\n", extra);
 
@@ -9834,7 +9856,7 @@ static int ipw_wx_sw_reset(struct net_device *dev,
 
 /* Rebase the WE IOCTLs to zero for the handler array */
 static iw_handler ipw_wx_handlers[] = {
-	IW_HANDLER(SIOCGIWNAME, ipw_wx_get_name),
+	IW_HANDLER(SIOCGIWNAME, cfg80211_wext_giwname),
 	IW_HANDLER(SIOCSIWFREQ, ipw_wx_set_freq),
 	IW_HANDLER(SIOCGIWFREQ, ipw_wx_get_freq),
 	IW_HANDLER(SIOCSIWMODE, ipw_wx_set_mode),
@@ -9864,10 +9886,10 @@ static iw_handler ipw_wx_handlers[] = {
 	IW_HANDLER(SIOCGIWENCODE, ipw_wx_get_encode),
 	IW_HANDLER(SIOCSIWPOWER, ipw_wx_set_power),
 	IW_HANDLER(SIOCGIWPOWER, ipw_wx_get_power),
-	IW_HANDLER(SIOCSIWSPY, ipw_wx_set_spy),
-	IW_HANDLER(SIOCGIWSPY, ipw_wx_get_spy),
-	IW_HANDLER(SIOCSIWTHRSPY, ipw_wx_set_thrspy),
-	IW_HANDLER(SIOCGIWTHRSPY, ipw_wx_get_thrspy),
+	IW_HANDLER(SIOCSIWSPY, iw_handler_set_spy),
+	IW_HANDLER(SIOCGIWSPY, iw_handler_get_spy),
+	IW_HANDLER(SIOCSIWTHRSPY, iw_handler_set_thrspy),
+	IW_HANDLER(SIOCGIWTHRSPY, iw_handler_get_thrspy),
 	IW_HANDLER(SIOCSIWGENIE, ipw_wx_set_genie),
 	IW_HANDLER(SIOCGIWGENIE, ipw_wx_get_genie),
 	IW_HANDLER(SIOCSIWMLME, ipw_wx_set_mlme),
@@ -10385,6 +10407,7 @@ static void ipw_ethtool_get_drvinfo(struct net_device *dev,
 {
 	struct ipw_priv *p = libipw_priv(dev);
 	char vers[64];
+	char date[32];
 	u32 len;
 
 	strscpy(info->driver, DRV_NAME, sizeof(info->driver));
@@ -10392,8 +10415,11 @@ static void ipw_ethtool_get_drvinfo(struct net_device *dev,
 
 	len = sizeof(vers);
 	ipw_get_ordinal(p, IPW_ORD_STAT_FW_VERSION, vers, &len);
+	len = sizeof(date);
+	ipw_get_ordinal(p, IPW_ORD_STAT_FW_DATE, date, &len);
 
-	strscpy(info->fw_version, vers, sizeof(info->fw_version));
+	snprintf(info->fw_version, sizeof(info->fw_version), "%s (%s)",
+		 vers, date);
 	strscpy(info->bus_info, pci_name(p->pci_dev),
 		sizeof(info->bus_info));
 }
@@ -11644,7 +11670,8 @@ static int ipw_pci_probe(struct pci_dev *pdev,
 	priv->ieee->worst_rssi = -85;
 
 	net_dev->netdev_ops = &ipw_netdev_ops;
-	priv->ieee->spy_enabled = true;
+	priv->wireless_data.spy_data = &priv->ieee->spy_data;
+	net_dev->wireless_data = &priv->wireless_data;
 	net_dev->wireless_handlers = &ipw_wx_handler_def;
 	net_dev->ethtool_ops = &ipw_ethtool_ops;
 

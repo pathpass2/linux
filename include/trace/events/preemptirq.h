@@ -43,6 +43,8 @@ DEFINE_EVENT(preemptirq_template, irq_enable,
 #else
 #define trace_irq_enable(...)
 #define trace_irq_disable(...)
+#define trace_irq_enable_rcuidle(...)
+#define trace_irq_disable_rcuidle(...)
 #endif
 
 #ifdef CONFIG_TRACE_PREEMPT_TOGGLE
@@ -56,6 +58,8 @@ DEFINE_EVENT(preemptirq_template, preempt_enable,
 #else
 #define trace_preempt_enable(...)
 #define trace_preempt_disable(...)
+#define trace_preempt_enable_rcuidle(...)
+#define trace_preempt_disable_rcuidle(...)
 #endif
 
 #endif /* _TRACE_PREEMPTIRQ_H */
@@ -65,6 +69,10 @@ DEFINE_EVENT(preemptirq_template, preempt_enable,
 #else /* !CONFIG_PREEMPTIRQ_TRACEPOINTS */
 #define trace_irq_enable(...)
 #define trace_irq_disable(...)
+#define trace_irq_enable_rcuidle(...)
+#define trace_irq_disable_rcuidle(...)
 #define trace_preempt_enable(...)
 #define trace_preempt_disable(...)
+#define trace_preempt_enable_rcuidle(...)
+#define trace_preempt_disable_rcuidle(...)
 #endif

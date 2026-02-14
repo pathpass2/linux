@@ -6,14 +6,8 @@
  *	    Keyur Chudgar <kchudgar@apm.com>
  */
 
-#include <linux/acpi.h>
-#include <linux/clk.h>
-#include <linux/err.h>
-#include <linux/gpio/consumer.h>
-#include <linux/io.h>
-#include <linux/types.h>
-#include <linux/workqueue.h>
-
+#include <linux/of_gpio.h>
+#include <linux/gpio.h>
 #include "xgene_enet_main.h"
 #include "xgene_enet_hw.h"
 #include "xgene_enet_xgmac.h"

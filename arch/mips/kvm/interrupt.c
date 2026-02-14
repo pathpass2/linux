@@ -27,11 +27,27 @@ void kvm_mips_deliver_interrupts(struct kvm_vcpu *vcpu, u32 cause)
 	unsigned long *pending_clr = &vcpu->arch.pending_exceptions_clr;
 	unsigned int priority;
 
-	for_each_set_bit(priority, pending_clr, MIPS_EXC_MAX + 1)
+	if (!(*pending) && !(*pending_clr))
+		return;
+
+	priority = __ffs(*pending_clr);
+	while (priority <= MIPS_EXC_MAX) {
 		kvm_mips_callbacks->irq_clear(vcpu, priority, cause);
 
-	for_each_set_bit(priority, pending, MIPS_EXC_MAX + 1)
+		priority = find_next_bit(pending_clr,
+					 BITS_PER_BYTE * sizeof(*pending_clr),
+					 priority + 1);
+	}
+
+	priority = __ffs(*pending);
+	while (priority <= MIPS_EXC_MAX) {
 		kvm_mips_callbacks->irq_deliver(vcpu, priority, cause);
+
+		priority = find_next_bit(pending,
+					 BITS_PER_BYTE * sizeof(*pending),
+					 priority + 1);
+	}
+
 }
 
 int kvm_mips_pending_timer(struct kvm_vcpu *vcpu)

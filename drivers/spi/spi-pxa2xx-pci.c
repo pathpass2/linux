@@ -6,20 +6,14 @@
  * Copyright (C) 2016, 2021 Intel Corporation
  */
 #include <linux/clk-provider.h>
-#include <linux/device.h>
-#include <linux/err.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/pm.h>
-#include <linux/pm_runtime.h>
-#include <linux/sprintf.h>
-#include <linux/string.h>
-#include <linux/types.h>
+#include <linux/platform_device.h>
+
+#include <linux/spi/pxa2xx_spi.h>
 
 #include <linux/dmaengine.h>
 #include <linux/platform_data/dma-dw.h>
-
-#include "spi-pxa2xx.h"
 
 #define PCI_DEVICE_ID_INTEL_QUARK_X1000		0x0935
 #define PCI_DEVICE_ID_INTEL_BYT			0x0f0e
@@ -265,27 +259,29 @@ static int pxa2xx_spi_pci_probe(struct pci_dev *dev,
 		const struct pci_device_id *ent)
 {
 	const struct pxa_spi_info *info;
+	struct platform_device_info pi;
 	int ret;
-	struct pxa2xx_spi_controller *pdata;
+	struct platform_device *pdev;
+	struct pxa2xx_spi_controller spi_pdata;
 	struct ssp_device *ssp;
 
 	ret = pcim_enable_device(dev);
 	if (ret)
 		return ret;
 
-	pdata = devm_kzalloc(&dev->dev, sizeof(*pdata), GFP_KERNEL);
-	if (!pdata)
-		return -ENOMEM;
+	ret = pcim_iomap_regions(dev, 1 << 0, "PXA2xx SPI");
+	if (ret)
+		return ret;
 
-	ssp = &pdata->ssp;
+	memset(&spi_pdata, 0, sizeof(spi_pdata));
+
+	ssp = &spi_pdata.ssp;
 	ssp->dev = &dev->dev;
 	ssp->phys_base = pci_resource_start(dev, 0);
-	ssp->mmio_base = pcim_iomap_region(dev, 0, "PXA2xx SPI");
-	if (IS_ERR(ssp->mmio_base))
-		return PTR_ERR(ssp->mmio_base);
+	ssp->mmio_base = pcim_iomap_table(dev)[0];
 
 	info = (struct pxa_spi_info *)ent->driver_data;
-	ret = info->setup(dev, pdata);
+	ret = info->setup(dev, &spi_pdata);
 	if (ret)
 		return ret;
 
@@ -296,24 +292,28 @@ static int pxa2xx_spi_pci_probe(struct pci_dev *dev,
 		return ret;
 	ssp->irq = pci_irq_vector(dev, 0);
 
-	ret = pxa2xx_spi_probe(&dev->dev, ssp, pdata);
-	if (ret)
-		return ret;
+	memset(&pi, 0, sizeof(pi));
+	pi.fwnode = dev_fwnode(&dev->dev);
+	pi.parent = &dev->dev;
+	pi.name = "pxa2xx-spi";
+	pi.id = ssp->port_id;
+	pi.data = &spi_pdata;
+	pi.size_data = sizeof(spi_pdata);
 
-	pm_runtime_set_autosuspend_delay(&dev->dev, 50);
-	pm_runtime_use_autosuspend(&dev->dev);
-	pm_runtime_put_autosuspend(&dev->dev);
-	pm_runtime_allow(&dev->dev);
+	pdev = platform_device_register_full(&pi);
+	if (IS_ERR(pdev))
+		return PTR_ERR(pdev);
+
+	pci_set_drvdata(dev, pdev);
 
 	return 0;
 }
 
 static void pxa2xx_spi_pci_remove(struct pci_dev *dev)
 {
-	pm_runtime_forbid(&dev->dev);
-	pm_runtime_get_noresume(&dev->dev);
+	struct platform_device *pdev = pci_get_drvdata(dev);
 
-	pxa2xx_spi_remove(&dev->dev);
+	platform_device_unregister(pdev);
 }
 
 static const struct pci_device_id pxa2xx_spi_pci_devices[] = {
@@ -335,9 +335,6 @@ MODULE_DEVICE_TABLE(pci, pxa2xx_spi_pci_devices);
 static struct pci_driver pxa2xx_spi_pci_driver = {
 	.name           = "pxa2xx_spi_pci",
 	.id_table       = pxa2xx_spi_pci_devices,
-	.driver = {
-		.pm	= pm_ptr(&pxa2xx_spi_pm_ops),
-	},
 	.probe          = pxa2xx_spi_pci_probe,
 	.remove         = pxa2xx_spi_pci_remove,
 };
@@ -346,5 +343,4 @@ module_pci_driver(pxa2xx_spi_pci_driver);
 
 MODULE_DESCRIPTION("CE4100/LPSS PCI-SPI glue code for PXA's driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("SPI_PXA2xx");
 MODULE_AUTHOR("Sebastian Andrzej Siewior <bigeasy@linutronix.de>");

@@ -27,7 +27,6 @@
 #define FILE_LOCK_DEFERRED 1
 
 struct file_lock;
-struct file_lease;
 
 struct file_lock_operations {
 	void (*fl_copy_lock)(struct file_lock *, struct file_lock *);
@@ -40,16 +39,12 @@ struct lock_manager_operations {
 	void (*lm_put_owner)(fl_owner_t);
 	void (*lm_notify)(struct file_lock *);	/* unblock callback */
 	int (*lm_grant)(struct file_lock *, int);
+	bool (*lm_break)(struct file_lock *);
+	int (*lm_change)(struct file_lock *, int, struct list_head *);
+	void (*lm_setup)(struct file_lock *, void **);
+	bool (*lm_breaker_owns_lease)(struct file_lock *);
 	bool (*lm_lock_expirable)(struct file_lock *cfl);
 	void (*lm_expire_lock)(void);
-};
-
-struct lease_manager_operations {
-	bool (*lm_break)(struct file_lease *);
-	int (*lm_change)(struct file_lease *, int, struct list_head *);
-	void (*lm_setup)(struct file_lease *, void **);
-	bool (*lm_breaker_owns_lease)(struct file_lease *);
-	int (*lm_open_conflict)(struct file *, int);
 };
 
 struct lock_manager {
@@ -90,30 +85,30 @@ bool opens_in_grace(struct net *);
  *
  * Obviously, the last two criteria only matter for POSIX locks.
  */
-
-struct file_lock_core {
-	struct file_lock_core *flc_blocker;	/* The lock that is blocking us */
-	struct list_head flc_list;	/* link into file_lock_context */
-	struct hlist_node flc_link;	/* node in global lists */
-	struct list_head flc_blocked_requests;	/* list of requests with
+struct file_lock {
+	struct file_lock *fl_blocker;	/* The lock, that is blocking us */
+	struct list_head fl_list;	/* link into file_lock_context */
+	struct hlist_node fl_link;	/* node in global lists */
+	struct list_head fl_blocked_requests;	/* list of requests with
 						 * ->fl_blocker pointing here
 						 */
-	struct list_head flc_blocked_member;	/* node in
+	struct list_head fl_blocked_member;	/* node in
 						 * ->fl_blocker->fl_blocked_requests
 						 */
-	fl_owner_t flc_owner;
-	unsigned int flc_flags;
-	unsigned char flc_type;
-	pid_t flc_pid;
-	int flc_link_cpu;		/* what cpu's list is this on? */
-	wait_queue_head_t flc_wait;
-	struct file *flc_file;
-};
-
-struct file_lock {
-	struct file_lock_core c;
+	fl_owner_t fl_owner;
+	unsigned int fl_flags;
+	unsigned char fl_type;
+	unsigned int fl_pid;
+	int fl_link_cpu;		/* what cpu's list is this on? */
+	wait_queue_head_t fl_wait;
+	struct file *fl_file;
 	loff_t fl_start;
 	loff_t fl_end;
+
+	struct fasync_struct *	fl_fasync; /* for lease break notifications */
+	/* for lease breaks: */
+	unsigned long fl_break_time;
+	unsigned long fl_downgrade_time;
 
 	const struct file_lock_operations *fl_ops;	/* Callbacks for filesystems */
 	const struct lock_manager_operations *fl_lmops;	/* Callbacks for lockmanagers */
@@ -129,15 +124,6 @@ struct file_lock {
 			struct inode *inode;
 		} ceph;
 	} fl_u;
-} __randomize_layout;
-
-struct file_lease {
-	struct file_lock_core c;
-	struct fasync_struct *	fl_fasync; /* for lease break notifications */
-	/* for lease breaks: */
-	unsigned long fl_break_time;
-	unsigned long fl_downgrade_time;
-	const struct lease_manager_operations *fl_lmops; /* Callbacks for lease managers */
 } __randomize_layout;
 
 struct file_lock_context {
@@ -158,46 +144,14 @@ int fcntl_setlk64(unsigned int, struct file *, unsigned int,
 			struct flock64 *);
 #endif
 
-int fcntl_setlease(unsigned int fd, struct file *filp, int arg);
+int fcntl_setlease(unsigned int fd, struct file *filp, long arg);
 int fcntl_getlease(struct file *filp);
-int fcntl_setdeleg(unsigned int fd, struct file *filp, struct delegation *deleg);
-int fcntl_getdeleg(struct file *filp, struct delegation *deleg);
-
-static inline bool lock_is_unlock(struct file_lock *fl)
-{
-	return fl->c.flc_type == F_UNLCK;
-}
-
-static inline bool lock_is_read(struct file_lock *fl)
-{
-	return fl->c.flc_type == F_RDLCK;
-}
-
-static inline bool lock_is_write(struct file_lock *fl)
-{
-	return fl->c.flc_type == F_WRLCK;
-}
-
-static inline void locks_wake_up_waiter(struct file_lock_core *flc)
-{
-	wake_up(&flc->flc_wait);
-}
-
-static inline void locks_wake_up(struct file_lock *fl)
-{
-	locks_wake_up_waiter(&fl->c);
-}
-
-static inline bool locks_can_async_lock(const struct file_operations *fops)
-{
-	return !fops->lock || fops->fop_flags & FOP_ASYNC_LOCK;
-}
 
 /* fs/locks.c */
 void locks_free_lock_context(struct inode *inode);
 void locks_free_lock(struct file_lock *fl);
 void locks_init_lock(struct file_lock *);
-struct file_lock *locks_alloc_lock(void);
+struct file_lock * locks_alloc_lock(void);
 void locks_copy_lock(struct file_lock *, struct file_lock *);
 void locks_copy_conflock(struct file_lock *, struct file_lock *);
 void locks_remove_posix(struct file *, fl_owner_t);
@@ -211,23 +165,11 @@ int vfs_lock_file(struct file *, unsigned int, struct file_lock *, struct file_l
 int vfs_cancel_lock(struct file *filp, struct file_lock *fl);
 bool vfs_inode_has_locks(struct inode *inode);
 int locks_lock_inode_wait(struct inode *inode, struct file_lock *fl);
-
-void locks_init_lease(struct file_lease *);
-void locks_free_lease(struct file_lease *fl);
-struct file_lease *locks_alloc_lease(void);
-
-#define LEASE_BREAK_LEASE		BIT(0)	// break leases and delegations
-#define LEASE_BREAK_DELEG		BIT(1)	// break delegations only
-#define LEASE_BREAK_LAYOUT		BIT(2)	// break layouts only
-#define LEASE_BREAK_NONBLOCK		BIT(3)	// non-blocking break
-#define LEASE_BREAK_OPEN_RDONLY		BIT(4)	// readonly open event
-
-int __break_lease(struct inode *inode, unsigned int flags);
+int __break_lease(struct inode *inode, unsigned int flags, unsigned int type);
 void lease_get_mtime(struct inode *, struct timespec64 *time);
-int generic_setlease(struct file *, int, struct file_lease **, void **priv);
-int kernel_setlease(struct file *, int, struct file_lease **, void **);
-int vfs_setlease(struct file *, int, struct file_lease **, void **);
-int lease_modify(struct file_lease *, int, struct list_head *);
+int generic_setlease(struct file *, long, struct file_lock **, void **priv);
+int vfs_setlease(struct file *, long, struct file_lock **, void **);
+int lease_modify(struct file_lock *, int, struct list_head *);
 
 struct notifier_block;
 int lease_register_notifier(struct notifier_block *);
@@ -242,14 +184,7 @@ bool locks_owner_has_blockers(struct file_lock_context *flctx,
 static inline struct file_lock_context *
 locks_inode_context(const struct inode *inode)
 {
-	/*
-	 * Paired with smp_store_release in locks_get_lock_context().
-	 *
-	 * Ensures ->i_flctx will be visible if we spotted the flag.
-	 */
-	if (likely(!(smp_load_acquire(&inode->i_opflags) & IOP_FLCTX)))
-		return NULL;
-	return READ_ONCE(inode->i_flctx);
+	return smp_load_acquire(&inode->i_flctx);
 }
 
 #else /* !CONFIG_FILE_LOCKING */
@@ -278,7 +213,7 @@ static inline int fcntl_setlk64(unsigned int fd, struct file *file,
 	return -EACCES;
 }
 #endif
-static inline int fcntl_setlease(unsigned int fd, struct file *filp, int arg)
+static inline int fcntl_setlease(unsigned int fd, struct file *filp, long arg)
 {
 	return -EINVAL;
 }
@@ -288,46 +223,12 @@ static inline int fcntl_getlease(struct file *filp)
 	return F_UNLCK;
 }
 
-static inline int fcntl_setdeleg(unsigned int fd, struct file *filp, struct delegation *deleg)
-{
-	return -EINVAL;
-}
-
-static inline int fcntl_getdeleg(struct file *filp, struct delegation *deleg)
-{
-	return -EINVAL;
-}
-
-static inline bool lock_is_unlock(struct file_lock *fl)
-{
-	return false;
-}
-
-static inline bool lock_is_read(struct file_lock *fl)
-{
-	return false;
-}
-
-static inline bool lock_is_write(struct file_lock *fl)
-{
-	return false;
-}
-
-static inline void locks_wake_up(struct file_lock *fl)
-{
-}
-
 static inline void
 locks_free_lock_context(struct inode *inode)
 {
 }
 
 static inline void locks_init_lock(struct file_lock *fl)
-{
-	return;
-}
-
-static inline void locks_init_lease(struct file_lease *fl)
 {
 	return;
 }
@@ -394,7 +295,7 @@ static inline int locks_lock_inode_wait(struct inode *inode, struct file_lock *f
 	return -ENOLCK;
 }
 
-static inline int __break_lease(struct inode *inode, unsigned int flags)
+static inline int __break_lease(struct inode *inode, unsigned int mode, unsigned int type)
 {
 	return 0;
 }
@@ -405,25 +306,19 @@ static inline void lease_get_mtime(struct inode *inode,
 	return;
 }
 
-static inline int generic_setlease(struct file *filp, int arg,
-				    struct file_lease **flp, void **priv)
+static inline int generic_setlease(struct file *filp, long arg,
+				    struct file_lock **flp, void **priv)
 {
 	return -EINVAL;
 }
 
-static inline int kernel_setlease(struct file *filp, int arg,
-			       struct file_lease **lease, void **priv)
+static inline int vfs_setlease(struct file *filp, long arg,
+			       struct file_lock **lease, void **priv)
 {
 	return -EINVAL;
 }
 
-static inline int vfs_setlease(struct file *filp, int arg,
-			       struct file_lease **lease, void **priv)
-{
-	return -EINVAL;
-}
-
-static inline int lease_modify(struct file_lease *fl, int arg,
+static inline int lease_modify(struct file_lock *fl, int arg,
 			       struct list_head *dispose)
 {
 	return -EINVAL;
@@ -446,140 +341,89 @@ locks_inode_context(const struct inode *inode)
 
 #endif /* !CONFIG_FILE_LOCKING */
 
-/* for walking lists of file_locks linked by fl_list */
-#define for_each_file_lock(_fl, _head)	list_for_each_entry(_fl, _head, c.flc_list)
-
 static inline int locks_lock_file_wait(struct file *filp, struct file_lock *fl)
 {
 	return locks_lock_inode_wait(file_inode(filp), fl);
 }
 
 #ifdef CONFIG_FILE_LOCKING
-static inline unsigned int openmode_to_lease_flags(unsigned int mode)
-{
-	unsigned int flags = 0;
-
-	if ((mode & O_ACCMODE) == O_RDONLY)
-		flags |= LEASE_BREAK_OPEN_RDONLY;
-	if (mode & O_NONBLOCK)
-		flags |= LEASE_BREAK_NONBLOCK;
-	return flags;
-}
-
 static inline int break_lease(struct inode *inode, unsigned int mode)
 {
-	struct file_lock_context *flctx;
-
 	/*
 	 * Since this check is lockless, we must ensure that any refcounts
 	 * taken are done before checking i_flctx->flc_lease. Otherwise, we
 	 * could end up racing with tasks trying to set a new lease on this
 	 * file.
 	 */
-	flctx = locks_inode_context(inode);
-	if (!flctx)
-		return 0;
 	smp_mb();
-	if (!list_empty_careful(&flctx->flc_lease))
-		return __break_lease(inode, LEASE_BREAK_LEASE | openmode_to_lease_flags(mode));
+	if (inode->i_flctx && !list_empty_careful(&inode->i_flctx->flc_lease))
+		return __break_lease(inode, mode, FL_LEASE);
 	return 0;
 }
 
-static inline int break_deleg(struct inode *inode, unsigned int flags)
+static inline int break_deleg(struct inode *inode, unsigned int mode)
 {
-	struct file_lock_context *flctx;
-
 	/*
 	 * Since this check is lockless, we must ensure that any refcounts
 	 * taken are done before checking i_flctx->flc_lease. Otherwise, we
 	 * could end up racing with tasks trying to set a new lease on this
 	 * file.
 	 */
-	flctx = locks_inode_context(inode);
-	if (!flctx)
-		return 0;
 	smp_mb();
-	if (!list_empty_careful(&flctx->flc_lease)) {
-		flags |= LEASE_BREAK_DELEG;
-		return __break_lease(inode, flags);
-	}
+	if (inode->i_flctx && !list_empty_careful(&inode->i_flctx->flc_lease))
+		return __break_lease(inode, mode, FL_DELEG);
 	return 0;
 }
 
-struct delegated_inode {
-	struct inode *di_inode;
-};
-
-static inline bool is_delegated(struct delegated_inode *di)
-{
-	return di->di_inode;
-}
-
-static inline int try_break_deleg(struct inode *inode,
-				  struct delegated_inode *di)
+static inline int try_break_deleg(struct inode *inode, struct inode **delegated_inode)
 {
 	int ret;
 
-	ret = break_deleg(inode, LEASE_BREAK_NONBLOCK);
-	if (ret == -EWOULDBLOCK && di) {
-		di->di_inode = inode;
+	ret = break_deleg(inode, O_WRONLY|O_NONBLOCK);
+	if (ret == -EWOULDBLOCK && delegated_inode) {
+		*delegated_inode = inode;
 		ihold(inode);
 	}
 	return ret;
 }
 
-static inline int break_deleg_wait(struct delegated_inode *di)
+static inline int break_deleg_wait(struct inode **delegated_inode)
 {
 	int ret;
 
-	ret = break_deleg(di->di_inode, 0);
-	iput(di->di_inode);
-	di->di_inode = NULL;
+	ret = break_deleg(*delegated_inode, O_WRONLY);
+	iput(*delegated_inode);
+	*delegated_inode = NULL;
 	return ret;
 }
 
 static inline int break_layout(struct inode *inode, bool wait)
 {
-	struct file_lock_context *flctx;
-
 	smp_mb();
-	flctx = locks_inode_context(inode);
-	if (flctx && !list_empty_careful(&flctx->flc_lease)) {
-		unsigned int flags = LEASE_BREAK_LAYOUT;
-
-		if (!wait)
-			flags |= LEASE_BREAK_NONBLOCK;
-
-		return __break_lease(inode, flags);
-	}
+	if (inode->i_flctx && !list_empty_careful(&inode->i_flctx->flc_lease))
+		return __break_lease(inode,
+				wait ? O_WRONLY : O_WRONLY | O_NONBLOCK,
+				FL_LAYOUT);
 	return 0;
 }
 
 #else /* !CONFIG_FILE_LOCKING */
-struct delegated_inode { };
-
-static inline bool is_delegated(struct delegated_inode *di)
-{
-	return false;
-}
-
-static inline int break_lease(struct inode *inode, bool wait)
+static inline int break_lease(struct inode *inode, unsigned int mode)
 {
 	return 0;
 }
 
-static inline int break_deleg(struct inode *inode, unsigned int flags)
+static inline int break_deleg(struct inode *inode, unsigned int mode)
 {
 	return 0;
 }
 
-static inline int try_break_deleg(struct inode *inode,
-				  struct delegated_inode *delegated_inode)
+static inline int try_break_deleg(struct inode *inode, struct inode **delegated_inode)
 {
 	return 0;
 }
 
-static inline int break_deleg_wait(struct delegated_inode *delegated_inode)
+static inline int break_deleg_wait(struct inode **delegated_inode)
 {
 	BUG();
 	return 0;

@@ -298,7 +298,7 @@ static int icside_dma_init(struct pata_icside_info *info)
 }
 
 
-static const struct scsi_host_template pata_icside_sht = {
+static struct scsi_host_template pata_icside_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= SG_MAX_SEGMENTS,
 	.dma_boundary		= IOMD_DMA_BOUNDARY,
@@ -328,6 +328,8 @@ static void pata_icside_postreset(struct ata_link *link, unsigned int *classes)
 
 static struct ata_port_operations pata_icside_port_ops = {
 	.inherits		= &ata_bmdma_port_ops,
+	/* no need to build any PRD tables for DMA */
+	.qc_prep		= ata_noop_qc_prep,
 	.sff_data_xfer		= ata_sff_data_xfer32,
 	.bmdma_setup		= pata_icside_bmdma_setup,
 	.bmdma_start		= pata_icside_bmdma_start,
@@ -336,7 +338,7 @@ static struct ata_port_operations pata_icside_port_ops = {
 
 	.cable_detect		= ata_cable_40wire,
 	.set_dmamode		= pata_icside_set_dmamode,
-	.reset.postreset	= pata_icside_postreset,
+	.postreset		= pata_icside_postreset,
 
 	.port_start		= ATA_OP_NULL,	/* don't need PRD table */
 };

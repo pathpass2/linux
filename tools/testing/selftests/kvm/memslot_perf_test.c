@@ -25,7 +25,6 @@
 #include <test_util.h>
 #include <kvm_util.h>
 #include <processor.h>
-#include <ucall_common.h>
 
 #define MEM_EXTRA_SIZE		SZ_64K
 
@@ -114,9 +113,6 @@ static_assert(ATOMIC_BOOL_LOCK_FREE == 2, "atomic bool is not lockless");
 static sem_t vcpu_ready;
 
 static bool map_unmap_verify;
-#ifdef __x86_64__
-static bool disable_slot_zap_quirk;
-#endif
 
 static bool verbose;
 #define pr_info_v(...)				\
@@ -161,7 +157,7 @@ static void *vcpu_worker(void *__data)
 				goto done;
 			break;
 		case UCALL_ABORT:
-			REPORT_GUEST_ASSERT(uc);
+			REPORT_GUEST_ASSERT_1(uc, "val = %lu");
 			break;
 		case UCALL_DONE:
 			goto done;
@@ -179,11 +175,11 @@ static void wait_for_vcpu(void)
 	struct timespec ts;
 
 	TEST_ASSERT(!clock_gettime(CLOCK_REALTIME, &ts),
-		    "clock_gettime() failed: %d", errno);
+		    "clock_gettime() failed: %d\n", errno);
 
 	ts.tv_sec += 2;
 	TEST_ASSERT(!sem_timedwait(&vcpu_ready, &ts),
-		    "sem_timedwait() failed: %d", errno);
+		    "sem_timedwait() failed: %d\n", errno);
 }
 
 static void *vm_gpa2hva(struct vm_data *data, uint64_t gpa, uint64_t *rempages)
@@ -340,7 +336,7 @@ static bool prepare_vm(struct vm_data *data, int nslots, uint64_t *maxslots,
 
 		gpa = vm_phy_pages_alloc(data->vm, npages, guest_addr, slot);
 		TEST_ASSERT(gpa == guest_addr,
-			    "vm_phy_pages_alloc() failed");
+			    "vm_phy_pages_alloc() failed\n");
 
 		data->hva_slots[slot - 1] = addr_gpa2hva(data->vm, guest_addr);
 		memset(data->hva_slots[slot - 1], 0, npages * guest_page_size);
@@ -418,7 +414,7 @@ static bool _guest_should_exit(void)
  */
 static noinline void host_perform_sync(struct sync_area *sync)
 {
-	alarm(10);
+	alarm(2);
 
 	atomic_store_explicit(&sync->sync_flag, true, memory_order_release);
 	while (atomic_load_explicit(&sync->sync_flag, memory_order_acquire))
@@ -564,7 +560,7 @@ static void guest_code_test_memslot_rw(void)
 		     ptr < MEM_TEST_GPA + MEM_TEST_SIZE; ptr += page_size) {
 			uint64_t val = *(uint64_t *)ptr;
 
-			GUEST_ASSERT_EQ(val, MEM_TEST_VAL_2);
+			GUEST_ASSERT_1(val == MEM_TEST_VAL_2, val);
 			*(uint64_t *)ptr = 0;
 		}
 
@@ -581,11 +577,6 @@ static bool test_memslot_move_prepare(struct vm_data *data,
 {
 	uint32_t guest_page_size = data->vm->page_size;
 	uint64_t movesrcgpa, movetestgpa;
-
-#ifdef __x86_64__
-	if (disable_slot_zap_quirk)
-		vm_enable_cap(data->vm, KVM_CAP_DISABLE_QUIRKS2, KVM_X86_QUIRK_SLOT_ZAP_ALL);
-#endif
 
 	movesrcgpa = vm_slot2gpa(data, data->nslots - 1);
 
@@ -905,7 +896,6 @@ static void help(char *name, struct test_args *targs)
 	pr_info(" -h: print this help screen.\n");
 	pr_info(" -v: enable verbose mode (not for benchmarking).\n");
 	pr_info(" -d: enable extra debug checks.\n");
-	pr_info(" -q: Disable memslot zap quirk during memslot move.\n");
 	pr_info(" -s: specify memslot count cap (-1 means no cap; currently: %i)\n",
 		targs->nslots);
 	pr_info(" -f: specify the first test to run (currently: %i; max %zu)\n",
@@ -964,7 +954,7 @@ static bool parse_args(int argc, char *argv[],
 	uint32_t max_mem_slots;
 	int opt;
 
-	while ((opt = getopt(argc, argv, "hvdqs:f:e:l:r:")) != -1) {
+	while ((opt = getopt(argc, argv, "hvds:f:e:l:r:")) != -1) {
 		switch (opt) {
 		case 'h':
 		default:
@@ -976,13 +966,6 @@ static bool parse_args(int argc, char *argv[],
 		case 'd':
 			map_unmap_verify = true;
 			break;
-#ifdef __x86_64__
-		case 'q':
-			disable_slot_zap_quirk = true;
-			TEST_REQUIRE(kvm_check_cap(KVM_CAP_DISABLE_QUIRKS2) &
-				     KVM_X86_QUIRK_SLOT_ZAP_ALL);
-			break;
-#endif
 		case 's':
 			targs->nslots = atoi_paranoid(optarg);
 			if (targs->nslots <= 1 && targs->nslots != -1) {
@@ -1050,8 +1033,9 @@ static bool test_loop(const struct test_data *data,
 		      struct test_result *rbestruntime)
 {
 	uint64_t maxslots;
-	struct test_result result = {};
+	struct test_result result;
 
+	result.nloops = 0;
 	if (!test_execute(targs->nslots, &maxslots, targs->seconds, data,
 			  &result.nloops,
 			  &result.slot_runtime, &result.guest_runtime)) {
@@ -1105,7 +1089,7 @@ int main(int argc, char *argv[])
 		.seconds = 5,
 		.runs = 1,
 	};
-	struct test_result rbestslottime = {};
+	struct test_result rbestslottime;
 	int tctr;
 
 	if (!check_memory_sizes())
@@ -1114,10 +1098,11 @@ int main(int argc, char *argv[])
 	if (!parse_args(argc, argv, &targs))
 		return -1;
 
+	rbestslottime.slottimens = 0;
 	for (tctr = targs.tfirst; tctr <= targs.tlast; tctr++) {
 		const struct test_data *data = &tests[tctr];
 		unsigned int runctr;
-		struct test_result rbestruntime = {};
+		struct test_result rbestruntime;
 
 		if (tctr > targs.tfirst)
 			pr_info("\n");
@@ -1125,6 +1110,7 @@ int main(int argc, char *argv[])
 		pr_info("Testing %s performance with %i runs, %d seconds each\n",
 			data->name, targs.runs, targs.seconds);
 
+		rbestruntime.runtimens = 0;
 		for (runctr = 0; runctr < targs.runs; runctr++)
 			if (!test_loop(data, &targs,
 				       &rbestslottime, &rbestruntime))

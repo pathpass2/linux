@@ -8,8 +8,6 @@
  * Copyright (C) 2009 Bernie Thompson <bernie@plugable.com>
  */
 
-#include <linux/unaligned.h>
-
 #include <drm/drm.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -25,99 +23,72 @@
 #define WRITES_IN_FLIGHT (20)
 #define MAX_VENDOR_DESCRIPTOR_SIZE 256
 
-#define UDL_SKU_PIXEL_LIMIT_DEFAULT	2080000
-
 static struct urb *udl_get_urb_locked(struct udl_device *udl, long timeout);
-
-/*
- * Try to make sense of whatever we parse. Therefore return @end on
- * errors, but don't fail hard.
- */
-static const u8 *udl_parse_key_value_pair(struct udl_device *udl, const u8 *pos, const u8 *end)
-{
-	u16 key;
-	u8 len;
-
-	/* read key */
-	if (pos >= end - 2)
-		return end;
-	key = get_unaligned_le16(pos);
-	pos += 2;
-
-	/* read value length */
-	if (pos >= end - 1)
-		return end;
-	len = *pos++;
-
-	/* read value */
-	if (pos >= end - len)
-		return end;
-	switch (key) {
-	case 0x0200: { /* maximum number of pixels */
-		unsigned int sku_pixel_limit;
-
-		if (len < sizeof(__le32))
-			break;
-		sku_pixel_limit = get_unaligned_le32(pos);
-		if (sku_pixel_limit >= 16 * UDL_SKU_PIXEL_LIMIT_DEFAULT)
-			break; /* almost 100 MiB, so probably bogus */
-		udl->sku_pixel_limit = sku_pixel_limit;
-		break;
-	}
-	default:
-		break;
-	}
-	pos += len;
-
-	return pos;
-}
 
 static int udl_parse_vendor_descriptor(struct udl_device *udl)
 {
-	struct drm_device *dev = &udl->drm;
 	struct usb_device *udev = udl_to_usb_device(udl);
-	bool detected = false;
-	void *buf;
-	int ret;
-	unsigned int len;
-	const u8 *desc;
-	const u8 *desc_end;
+	char *desc;
+	char *buf;
+	char *desc_end;
+
+	u8 total_len = 0;
 
 	buf = kzalloc(MAX_VENDOR_DESCRIPTOR_SIZE, GFP_KERNEL);
 	if (!buf)
-		return -ENOMEM;
-
-	ret = usb_get_descriptor(udev, 0x5f, /* vendor specific */
-				 0, buf, MAX_VENDOR_DESCRIPTOR_SIZE);
-	if (ret < 0)
-		goto out;
-	len = ret;
-
-	if (len < 5)
-		goto out;
-
+		return false;
 	desc = buf;
-	desc_end = desc + len;
 
-	if ((desc[0] != len) ||    /* descriptor length */
-	    (desc[1] != 0x5f) ||   /* vendor descriptor type */
-	    (desc[2] != 0x01) ||   /* version (2 bytes) */
-	    (desc[3] != 0x00) ||
-	    (desc[4] != len - 2))  /* length after type */
-		goto out;
-	desc += 5;
+	total_len = usb_get_descriptor(udev, 0x5f, /* vendor specific */
+				    0, desc, MAX_VENDOR_DESCRIPTOR_SIZE);
+	if (total_len > 5) {
+		DRM_INFO("vendor descriptor length:%x data:%11ph\n",
+			total_len, desc);
 
-	detected = true;
+		if ((desc[0] != total_len) || /* descriptor length */
+		    (desc[1] != 0x5f) ||   /* vendor descriptor type */
+		    (desc[2] != 0x01) ||   /* version (2 bytes) */
+		    (desc[3] != 0x00) ||
+		    (desc[4] != total_len - 2)) /* length after type */
+			goto unrecognized;
 
-	while (desc < desc_end)
-		desc = udl_parse_key_value_pair(udl, desc, desc_end);
+		desc_end = desc + total_len;
+		desc += 5; /* the fixed header we've already parsed */
 
-out:
-	if (!detected)
-		drm_warn(dev, "Unrecognized vendor firmware descriptor\n");
+		while (desc < desc_end) {
+			u8 length;
+			u16 key;
+
+			key = le16_to_cpu(*((u16 *) desc));
+			desc += sizeof(u16);
+			length = *desc;
+			desc++;
+
+			switch (key) {
+			case 0x0200: { /* max_area */
+				u32 max_area;
+				max_area = le32_to_cpu(*((u32 *)desc));
+				DRM_DEBUG("DL chip limited to %d pixel modes\n",
+					max_area);
+				udl->sku_pixel_limit = max_area;
+				break;
+			}
+			default:
+				break;
+			}
+			desc += length;
+		}
+	}
+
+	goto success;
+
+unrecognized:
+	/* allow udlfb to load for now even if firmware unrecognized */
+	DRM_ERROR("Unrecognized vendor firmware descriptor\n");
+
+success:
 	kfree(buf);
-
-	return 0;
+	return true;
 }
 
 /*
@@ -174,8 +145,9 @@ void udl_urb_completion(struct urb *urb)
 	wake_up(&udl->urbs.sleep);
 }
 
-static void udl_free_urb_list(struct udl_device *udl)
+static void udl_free_urb_list(struct drm_device *dev)
 {
+	struct udl_device *udl = to_udl(dev);
 	struct urb_node *unode;
 	struct urb *urb;
 
@@ -200,8 +172,9 @@ static void udl_free_urb_list(struct udl_device *udl)
 	wake_up_all(&udl->urbs.sleep);
 }
 
-static int udl_alloc_urb_list(struct udl_device *udl, int count, size_t size)
+static int udl_alloc_urb_list(struct drm_device *dev, int count, size_t size)
 {
+	struct udl_device *udl = to_udl(dev);
 	struct urb *urb;
 	struct urb_node *unode;
 	char *buf;
@@ -237,7 +210,7 @@ retry:
 			usb_free_urb(urb);
 			if (size > PAGE_SIZE) {
 				size /= 2;
-				udl_free_urb_list(udl);
+				udl_free_urb_list(dev);
 				goto retry;
 			}
 			break;
@@ -282,12 +255,13 @@ static struct urb *udl_get_urb_locked(struct udl_device *udl, long timeout)
 	list_del_init(&unode->entry);
 	udl->urbs.available--;
 
-	return unode->urb;
+	return unode ? unode->urb : NULL;
 }
 
 #define GET_URB_TIMEOUT	HZ
-struct urb *udl_get_urb(struct udl_device *udl)
+struct urb *udl_get_urb(struct drm_device *dev)
 {
+	struct udl_device *udl = to_udl(dev);
 	struct urb *urb;
 
 	spin_lock_irq(&udl->urbs.lock);
@@ -296,8 +270,9 @@ struct urb *udl_get_urb(struct udl_device *udl)
 	return urb;
 }
 
-int udl_submit_urb(struct udl_device *udl, struct urb *urb, size_t len)
+int udl_submit_urb(struct drm_device *dev, struct urb *urb, size_t len)
 {
+	struct udl_device *udl = to_udl(dev);
 	int ret;
 
 	if (WARN_ON(len > udl->urbs.size)) {
@@ -315,9 +290,9 @@ int udl_submit_urb(struct udl_device *udl, struct urb *urb, size_t len)
 }
 
 /* wait until all pending URBs have been processed */
-void udl_sync_pending_urbs(struct udl_device *udl)
+void udl_sync_pending_urbs(struct drm_device *dev)
 {
-	struct drm_device *dev = &udl->drm;
+	struct udl_device *udl = to_udl(dev);
 
 	spin_lock_irq(&udl->urbs.lock);
 	/* 2 seconds as a sane timeout */
@@ -333,55 +308,53 @@ int udl_init(struct udl_device *udl)
 {
 	struct drm_device *dev = &udl->drm;
 	int ret = -ENOMEM;
-	struct device *dma_dev;
 
 	DRM_DEBUG("\n");
 
-	dma_dev = usb_intf_get_dma_device(to_usb_interface(dev->dev));
-	if (dma_dev) {
-		drm_dev_set_dma_dev(dev, dma_dev);
-		put_device(dma_dev);
-	} else {
+	udl->dmadev = usb_intf_get_dma_device(to_usb_interface(dev->dev));
+	if (!udl->dmadev)
 		drm_warn(dev, "buffer sharing not supported"); /* not an error */
-	}
 
-	/*
-	 * Not all devices provide vendor descriptors with device
-	 * information. Initialize to default values of real-world
-	 * devices. It is just enough memory for FullHD.
-	 */
-	udl->sku_pixel_limit = UDL_SKU_PIXEL_LIMIT_DEFAULT;
+	mutex_init(&udl->gem_lock);
 
-	ret = udl_parse_vendor_descriptor(udl);
-	if (ret)
+	if (!udl_parse_vendor_descriptor(udl)) {
+		ret = -ENODEV;
+		DRM_ERROR("firmware not recognized. Assume incompatible device\n");
 		goto err;
+	}
 
 	if (udl_select_std_channel(udl))
 		DRM_ERROR("Selecting channel failed\n");
 
-	if (!udl_alloc_urb_list(udl, WRITES_IN_FLIGHT, MAX_TRANSFER)) {
+	if (!udl_alloc_urb_list(dev, WRITES_IN_FLIGHT, MAX_TRANSFER)) {
 		DRM_ERROR("udl_alloc_urb_list failed\n");
-		ret = -ENOMEM;
 		goto err;
 	}
 
 	DRM_DEBUG("\n");
-	ret = udl_modeset_init(udl);
+	ret = udl_modeset_init(dev);
 	if (ret)
 		goto err;
+
+	drm_kms_helper_poll_init(dev);
 
 	return 0;
 
 err:
 	if (udl->urbs.count)
-		udl_free_urb_list(udl);
+		udl_free_urb_list(dev);
+	put_device(udl->dmadev);
 	DRM_ERROR("%d\n", ret);
 	return ret;
 }
 
-int udl_drop_usb(struct udl_device *udl)
+int udl_drop_usb(struct drm_device *dev)
 {
-	udl_free_urb_list(udl);
+	struct udl_device *udl = to_udl(dev);
+
+	udl_free_urb_list(dev);
+	put_device(udl->dmadev);
+	udl->dmadev = NULL;
 
 	return 0;
 }

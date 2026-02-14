@@ -48,6 +48,7 @@
 #include <linux/cache.h>
 #include <linux/firmware.h>
 #include <linux/log2.h>
+#include <linux/aer.h>
 #include <linux/crash_dump.h>
 
 #if IS_ENABLED(CONFIG_CNIC)
@@ -367,7 +368,6 @@ static void bnx2_setup_cnic_irq_info(struct bnx2 *bp)
 	cp->irq_arr[0].status_blk = (void *)
 		((unsigned long) bnapi->status_blk.msi +
 		(BNX2_SBLK_MSIX_ALIGN_SIZE * sb_id));
-	cp->irq_arr[0].status_blk_map = bp->status_blk_mapping;
 	cp->irq_arr[0].status_blk_num = sb_id;
 	cp->num_irq = 1;
 }
@@ -2956,6 +2956,7 @@ bnx2_reuse_rx_skb_pages(struct bnx2 *bp, struct bnx2_rx_ring_info *rxr,
 		shinfo = skb_shinfo(skb);
 		shinfo->nr_frags--;
 		page = skb_frag_page(&shinfo->frags[shinfo->nr_frags]);
+		__skb_frag_set_page(&shinfo->frags[shinfo->nr_frags], NULL);
 
 		cons_rx_pg->page = page;
 		dev_kfree_skb(skb);
@@ -3828,7 +3829,7 @@ load_rv2p_fw(struct bnx2 *bp, u32 rv2p_proc,
 	return 0;
 }
 
-static void
+static int
 load_cpu_fw(struct bnx2 *bp, const struct cpu_reg *cpu_reg,
 	    const struct bnx2_mips_fw_file_entry *fw_entry)
 {
@@ -3896,34 +3897,48 @@ load_cpu_fw(struct bnx2 *bp, const struct cpu_reg *cpu_reg,
 	val &= ~cpu_reg->mode_value_halt;
 	bnx2_reg_wr_ind(bp, cpu_reg->state, cpu_reg->state_value_clear);
 	bnx2_reg_wr_ind(bp, cpu_reg->mode, val);
+
+	return 0;
 }
 
-static void
+static int
 bnx2_init_cpus(struct bnx2 *bp)
 {
 	const struct bnx2_mips_fw_file *mips_fw =
 		(const struct bnx2_mips_fw_file *) bp->mips_firmware->data;
 	const struct bnx2_rv2p_fw_file *rv2p_fw =
 		(const struct bnx2_rv2p_fw_file *) bp->rv2p_firmware->data;
+	int rc;
 
 	/* Initialize the RV2P processor. */
 	load_rv2p_fw(bp, RV2P_PROC1, &rv2p_fw->proc1);
 	load_rv2p_fw(bp, RV2P_PROC2, &rv2p_fw->proc2);
 
 	/* Initialize the RX Processor. */
-	load_cpu_fw(bp, &cpu_reg_rxp, &mips_fw->rxp);
+	rc = load_cpu_fw(bp, &cpu_reg_rxp, &mips_fw->rxp);
+	if (rc)
+		goto init_cpu_err;
 
 	/* Initialize the TX Processor. */
-	load_cpu_fw(bp, &cpu_reg_txp, &mips_fw->txp);
+	rc = load_cpu_fw(bp, &cpu_reg_txp, &mips_fw->txp);
+	if (rc)
+		goto init_cpu_err;
 
 	/* Initialize the TX Patch-up Processor. */
-	load_cpu_fw(bp, &cpu_reg_tpat, &mips_fw->tpat);
+	rc = load_cpu_fw(bp, &cpu_reg_tpat, &mips_fw->tpat);
+	if (rc)
+		goto init_cpu_err;
 
 	/* Initialize the Completion Processor. */
-	load_cpu_fw(bp, &cpu_reg_com, &mips_fw->com);
+	rc = load_cpu_fw(bp, &cpu_reg_com, &mips_fw->com);
+	if (rc)
+		goto init_cpu_err;
 
 	/* Initialize the Command Processor. */
-	load_cpu_fw(bp, &cpu_reg_cp, &mips_fw->cp);
+	rc = load_cpu_fw(bp, &cpu_reg_cp, &mips_fw->cp);
+
+init_cpu_err:
+	return rc;
 }
 
 static void
@@ -4936,7 +4951,8 @@ bnx2_init_chip(struct bnx2 *bp)
 	} else
 		bnx2_init_context(bp);
 
-	bnx2_init_cpus(bp);
+	if ((rc = bnx2_init_cpus(bp)) != 0)
+		return rc;
 
 	bnx2_init_nvram(bp);
 
@@ -6163,7 +6179,7 @@ bnx2_5708_serdes_timer(struct bnx2 *bp)
 static void
 bnx2_timer(struct timer_list *t)
 {
-	struct bnx2 *bp = timer_container_of(bp, t, timer);
+	struct bnx2 *bp = from_timer(bp, t, timer);
 
 	if (!netif_running(bp->dev))
 		return;
@@ -6400,7 +6416,7 @@ bnx2_open(struct net_device *dev)
 				rc = bnx2_request_irq(bp);
 
 			if (rc) {
-				timer_delete_sync(&bp->timer);
+				del_timer_sync(&bp->timer);
 				goto open_err;
 			}
 			bnx2_enable_int(bp);
@@ -6444,6 +6460,7 @@ bnx2_reset_task(struct work_struct *work)
 	if (!(pcicmd & PCI_COMMAND_MEMORY)) {
 		/* in case PCI block has reset */
 		pci_restore_state(bp->pdev);
+		pci_save_state(bp->pdev);
 	}
 	rc = bnx2_init_nic(bp, 1);
 	if (rc) {
@@ -6751,7 +6768,7 @@ bnx2_close(struct net_device *dev)
 	bnx2_disable_int_sync(bp);
 	bnx2_napi_disable(bp);
 	netif_tx_disable(dev);
-	timer_delete_sync(&bp->timer);
+	del_timer_sync(&bp->timer);
 	bnx2_shutdown_chip(bp);
 	bnx2_free_irq(bp);
 	bnx2_free_skbs(bp);
@@ -7911,7 +7928,7 @@ bnx2_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct bnx2 *bp = netdev_priv(dev);
 
-	WRITE_ONCE(dev->mtu, new_mtu);
+	dev->mtu = new_mtu;
 	return bnx2_change_ring_size(bp, bp->rx_ring_size, bp->tx_ring_size,
 				     false);
 }
@@ -8076,6 +8093,7 @@ bnx2_init_board(struct pci_dev *pdev, struct net_device *dev)
 	int rc, i, j;
 	u32 reg;
 	u64 dma_mask, persist_dma_mask;
+	int err;
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	bp = netdev_priv(dev);
@@ -8158,6 +8176,12 @@ bnx2_init_board(struct pci_dev *pdev, struct net_device *dev)
 		bp->flags |= BNX2_FLAG_PCIE;
 		if (BNX2_CHIP_REV(bp) == BNX2_CHIP_REV_Ax)
 			bp->flags |= BNX2_FLAG_JUMBO_BROKEN;
+
+		/* AER (Advanced Error Reporting) hooks */
+		err = pci_enable_pcie_error_reporting(pdev);
+		if (!err)
+			bp->flags |= BNX2_FLAG_AER_ENABLED;
+
 	} else {
 		bp->pcix_cap = pci_find_capability(pdev, PCI_CAP_ID_PCIX);
 		if (bp->pcix_cap == 0) {
@@ -8436,6 +8460,11 @@ bnx2_init_board(struct pci_dev *pdev, struct net_device *dev)
 	return 0;
 
 err_out_unmap:
+	if (bp->flags & BNX2_FLAG_AER_ENABLED) {
+		pci_disable_pcie_error_reporting(pdev);
+		bp->flags &= ~BNX2_FLAG_AER_ENABLED;
+	}
+
 	pci_iounmap(pdev, bp->regview);
 	bp->regview = NULL;
 
@@ -8601,13 +8630,18 @@ bnx2_remove_one(struct pci_dev *pdev)
 
 	unregister_netdev(dev);
 
-	timer_delete_sync(&bp->timer);
+	del_timer_sync(&bp->timer);
 	cancel_work_sync(&bp->reset_task);
 
 	pci_iounmap(bp->pdev, bp->regview);
 
 	bnx2_free_stats_blk(dev);
 	kfree(bp->temp_stats_blk);
+
+	if (bp->flags & BNX2_FLAG_AER_ENABLED) {
+		pci_disable_pcie_error_reporting(pdev);
+		bp->flags &= ~BNX2_FLAG_AER_ENABLED;
+	}
 
 	bnx2_release_firmware(bp);
 
@@ -8628,7 +8662,7 @@ bnx2_suspend(struct device *device)
 		cancel_work_sync(&bp->reset_task);
 		bnx2_netif_stop(bp, true);
 		netif_device_detach(dev);
-		timer_delete_sync(&bp->timer);
+		del_timer_sync(&bp->timer);
 		bnx2_shutdown_chip(bp);
 		__bnx2_free_irq(bp);
 		bnx2_free_skbs(bp);
@@ -8686,7 +8720,7 @@ static pci_ers_result_t bnx2_io_error_detected(struct pci_dev *pdev,
 
 	if (netif_running(dev)) {
 		bnx2_netif_stop(bp, true);
-		timer_delete_sync(&bp->timer);
+		del_timer_sync(&bp->timer);
 		bnx2_reset_nic(bp, BNX2_DRV_MSG_CODE_RESET);
 	}
 
@@ -8717,6 +8751,7 @@ static pci_ers_result_t bnx2_io_slot_reset(struct pci_dev *pdev)
 	} else {
 		pci_set_master(pdev);
 		pci_restore_state(pdev);
+		pci_save_state(pdev);
 
 		if (netif_running(dev))
 			err = bnx2_init_nic(bp, 1);
@@ -8730,6 +8765,9 @@ static pci_ers_result_t bnx2_io_slot_reset(struct pci_dev *pdev)
 		dev_close(dev);
 	}
 	rtnl_unlock();
+
+	if (!(bp->flags & BNX2_FLAG_AER_ENABLED))
+		return result;
 
 	return result;
 }

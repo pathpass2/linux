@@ -13,13 +13,11 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/nvmem-consumer.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/thermal.h>
 #include <dt-bindings/thermal/mediatek,lvts-thermal.h>
-
-#include "../thermal_hwmon.h"
 
 #define LVTS_MONCTL0(__base)	(__base + 0x0000)
 #define LVTS_MONCTL1(__base)	(__base + 0x0004)
@@ -44,11 +42,6 @@
 #define LVTS_EDATA01(__base)	(__base + 0x0058)
 #define LVTS_EDATA02(__base)	(__base + 0x005C)
 #define LVTS_EDATA03(__base)	(__base + 0x0060)
-#define LVTS_MSROFT(__base)		(__base + 0x006C)
-#define LVTS_ATP0(__base)		(__base + 0x0070)
-#define LVTS_ATP1(__base)		(__base + 0x0074)
-#define LVTS_ATP2(__base)		(__base + 0x0078)
-#define LVTS_ATP3(__base)		(__base + 0x007C)
 #define LVTS_MSR0(__base)		(__base + 0x0090)
 #define LVTS_MSR1(__base)		(__base + 0x0094)
 #define LVTS_MSR2(__base)		(__base + 0x0098)
@@ -63,103 +56,50 @@
 #define LVTS_PROTTC(__base)		(__base + 0x00CC)
 #define LVTS_CLKEN(__base)		(__base + 0x00E4)
 
-#define LVTS_PERIOD_UNIT			0
-#define LVTS_GROUP_INTERVAL			0
-#define LVTS_FILTER_INTERVAL		0
-#define LVTS_SENSOR_INTERVAL		0
-#define LVTS_HW_FILTER				0x0
+#define LVTS_PERIOD_UNIT			((118 * 1000) / (256 * 38))
+#define LVTS_GROUP_INTERVAL			1
+#define LVTS_FILTER_INTERVAL		1
+#define LVTS_SENSOR_INTERVAL		1
+#define LVTS_HW_FILTER				0x2
 #define LVTS_TSSEL_CONF				0x13121110
 #define LVTS_CALSCALE_CONF			0x300
-
-#define LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR0		BIT(3)
-#define LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR1		BIT(8)
-#define LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR2		BIT(13)
-#define LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR3		BIT(25)
-#define LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR0		BIT(2)
-#define LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR1		BIT(7)
-#define LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR2		BIT(12)
-#define LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR3		BIT(24)
+#define LVTS_MONINT_CONF			0x9FBF7BDE
 
 #define LVTS_INT_SENSOR0			0x0009001F
-#define LVTS_INT_SENSOR1			0x001203E0
+#define LVTS_INT_SENSOR1			0X000881F0
 #define LVTS_INT_SENSOR2			0x00247C00
 #define LVTS_INT_SENSOR3			0x1FC00000
 
 #define LVTS_SENSOR_MAX				4
 #define LVTS_GOLDEN_TEMP_MAX		62
 #define LVTS_GOLDEN_TEMP_DEFAULT	50
-#define LVTS_COEFF_A_MT8195			-250460
-#define LVTS_COEFF_B_MT8195			250460
-#define LVTS_COEFF_A_MT7987			-204650
-#define LVTS_COEFF_B_MT7987			204650
-#define LVTS_COEFF_A_MT7988			-204650
-#define LVTS_COEFF_B_MT7988			204650
-#define LVTS_COEFF_A_MT8196			391460
-#define LVTS_COEFF_B_MT8196			-391460
+#define LVTS_COEFF_A				-250460
+#define LVTS_COEFF_B				250460
 
-#define LVTS_MSR_OFFSET_MT8196		-984
+#define LVTS_MSR_IMMEDIATE_MODE		0
+#define LVTS_MSR_FILTERED_MODE		1
 
-#define LVTS_MSR_READ_TIMEOUT_US	400
-#define LVTS_MSR_READ_WAIT_US		(LVTS_MSR_READ_TIMEOUT_US / 2)
-
-#define LVTS_MINIMUM_THRESHOLD		20000
-
-#define LVTS_MAX_CAL_OFFSETS		3
-#define LVTS_NUM_CAL_OFFSETS_MT7988	3
-#define LVTS_NUM_CAL_OFFSETS_MT8196	2
+#define LVTS_HW_SHUTDOWN_MT8195		105000
 
 static int golden_temp = LVTS_GOLDEN_TEMP_DEFAULT;
-static int golden_temp_offset;
-
-enum lvts_msr_mode {
-	LVTS_MSR_IMMEDIATE_MODE,
-	LVTS_MSR_FILTERED_MODE,
-	LVTS_MSR_ATP_MODE,
-};
+static int coeff_b = LVTS_COEFF_B;
 
 struct lvts_sensor_data {
 	int dt_id;
-	u8 cal_offsets[LVTS_MAX_CAL_OFFSETS];
 };
 
 struct lvts_ctrl_data {
 	struct lvts_sensor_data lvts_sensor[LVTS_SENSOR_MAX];
-	u8 valid_sensor_mask;
+	int cal_offset[LVTS_SENSOR_MAX];
+	int hw_tshut_temp;
+	int num_lvts_sensor;
 	int offset;
-	enum lvts_msr_mode mode;
-};
-
-#define VALID_SENSOR_MAP(s0, s1, s2, s3) \
-	.valid_sensor_mask = (((s0) ? BIT(0) : 0) | \
-			      ((s1) ? BIT(1) : 0) | \
-			      ((s2) ? BIT(2) : 0) | \
-			      ((s3) ? BIT(3) : 0))
-
-#define lvts_for_each_valid_sensor(i, lvts_ctrl) \
-	for ((i) = 0; (i) < LVTS_SENSOR_MAX; (i)++) \
-		if (!((lvts_ctrl)->valid_sensor_mask & BIT(i))) \
-			continue; \
-		else
-
-struct lvts_platform_ops {
-	int (*lvts_raw_to_temp)(u32 raw_temp, int temp_factor);
-	u32 (*lvts_temp_to_raw)(int temperature, int temp_factor);
+	int mode;
 };
 
 struct lvts_data {
 	const struct lvts_ctrl_data *lvts_ctrl;
-	const struct lvts_platform_ops *ops;
-	const u32 *conn_cmd;
-	const u32 *init_cmd;
-	int num_cal_offsets;
 	int num_lvts_ctrl;
-	int num_conn_cmd;
-	int num_init_cmd;
-	int temp_factor;
-	int temp_offset;
-	int gt_calib_bit_offset;
-	unsigned int def_calibration;
-	u16 msr_offset;
 };
 
 struct lvts_sensor {
@@ -168,19 +108,15 @@ struct lvts_sensor {
 	void __iomem *base;
 	int id;
 	int dt_id;
-	int low_thresh;
-	int high_thresh;
 };
 
 struct lvts_ctrl {
 	struct lvts_sensor sensors[LVTS_SENSOR_MAX];
-	const struct lvts_data *lvts_data;
 	u32 calibration[LVTS_SENSOR_MAX];
-	u8 valid_sensor_mask;
+	u32 hw_tshut_raw_temp;
+	int num_lvts_sensor;
 	int mode;
 	void __iomem *base;
-	int low_thresh;
-	int high_thresh;
 };
 
 struct lvts_domain {
@@ -228,11 +164,6 @@ static const struct debugfs_reg32 lvts_regs[] = {
 	LVTS_DEBUG_FS_REGS(LVTS_EDATA01),
 	LVTS_DEBUG_FS_REGS(LVTS_EDATA02),
 	LVTS_DEBUG_FS_REGS(LVTS_EDATA03),
-	LVTS_DEBUG_FS_REGS(LVTS_MSROFT),
-	LVTS_DEBUG_FS_REGS(LVTS_ATP0),
-	LVTS_DEBUG_FS_REGS(LVTS_ATP1),
-	LVTS_DEBUG_FS_REGS(LVTS_ATP2),
-	LVTS_DEBUG_FS_REGS(LVTS_ATP3),
 	LVTS_DEBUG_FS_REGS(LVTS_MSR0),
 	LVTS_DEBUG_FS_REGS(LVTS_MSR1),
 	LVTS_DEBUG_FS_REGS(LVTS_MSR2),
@@ -248,13 +179,6 @@ static const struct debugfs_reg32 lvts_regs[] = {
 	LVTS_DEBUG_FS_REGS(LVTS_CLKEN),
 };
 
-static void lvts_debugfs_exit(void *data)
-{
-	struct lvts_domain *lvts_td = data;
-
-	debugfs_remove_recursive(lvts_td->dom_dentry);
-}
-
 static int lvts_debugfs_init(struct device *dev, struct lvts_domain *lvts_td)
 {
 	struct debugfs_regset32 *regset;
@@ -264,7 +188,7 @@ static int lvts_debugfs_init(struct device *dev, struct lvts_domain *lvts_td)
 	int i;
 
 	lvts_td->dom_dentry = debugfs_create_dir(dev_name(dev), NULL);
-	if (IS_ERR(lvts_td->dom_dentry))
+	if (!lvts_td->dom_dentry)
 		return 0;
 
 	for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
@@ -273,7 +197,7 @@ static int lvts_debugfs_init(struct device *dev, struct lvts_domain *lvts_td)
 
 		sprintf(name, "controller%d", i);
 		dentry = debugfs_create_dir(name, lvts_td->dom_dentry);
-		if (IS_ERR(dentry))
+		if (!dentry)
 			continue;
 
 		regset = devm_kzalloc(dev, sizeof(*regset), GFP_KERNEL);
@@ -287,7 +211,12 @@ static int lvts_debugfs_init(struct device *dev, struct lvts_domain *lvts_td)
 		debugfs_create_regset32("registers", 0400, dentry, regset);
 	}
 
-	return devm_add_action_or_reset(dev, lvts_debugfs_exit, lvts_td);
+	return 0;
+}
+
+static void lvts_debugfs_exit(struct lvts_domain *lvts_td)
+{
+	debugfs_remove_recursive(lvts_td->dom_dentry);
 }
 
 #else
@@ -298,55 +227,34 @@ static inline int lvts_debugfs_init(struct device *dev,
 	return 0;
 }
 
+static void lvts_debugfs_exit(struct lvts_domain *lvts_td) { }
+
 #endif
 
-static int lvts_raw_to_temp(u32 raw_temp, const struct lvts_data *lvts_data)
-{
-	return lvts_data->ops->lvts_raw_to_temp(raw_temp & 0xFFFF, lvts_data->temp_factor);
-}
-
-static u32 lvts_temp_to_raw(int temperature, const struct lvts_data *lvts_data)
-{
-	return lvts_data->ops->lvts_temp_to_raw(temperature, lvts_data->temp_factor);
-}
-
-static int lvts_raw_to_temp_mt7988(u32 raw_temp, int temp_factor)
+static int lvts_raw_to_temp(u32 raw_temp)
 {
 	int temperature;
 
-	temperature = ((s64)(raw_temp & 0xFFFF) * temp_factor) >> 14;
-	temperature += golden_temp_offset;
+	temperature = ((s64)(raw_temp & 0xFFFF) * LVTS_COEFF_A) >> 14;
+	temperature += coeff_b;
 
 	return temperature;
 }
 
-static u32 lvts_temp_to_raw_mt7988(int temperature, int temp_factor)
+static u32 lvts_temp_to_raw(int temperature)
 {
-	u32 raw_temp = ((s64)(golden_temp_offset - temperature)) << 14;
+	u32 raw_temp = ((s64)(coeff_b - temperature)) << 14;
 
-	raw_temp = div_s64(raw_temp, -temp_factor);
+	raw_temp = div_s64(raw_temp, -LVTS_COEFF_A);
 
 	return raw_temp;
 }
 
-static u32 lvts_temp_to_raw_mt8196(int temperature, int temp_factor)
-{
-	u32 raw_temp;
-
-	raw_temp = temperature - golden_temp_offset;
-
-	return div_s64((s64)temp_factor << 14, raw_temp);
-}
-
 static int lvts_get_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct lvts_sensor *lvts_sensor = thermal_zone_device_priv(tz);
-	struct lvts_ctrl *lvts_ctrl = container_of(lvts_sensor, struct lvts_ctrl,
-						   sensors[lvts_sensor->id]);
-	const struct lvts_data *lvts_data = lvts_ctrl->lvts_data;
+	struct lvts_sensor *lvts_sensor = tz->devdata;
 	void __iomem *msr = lvts_sensor->msr;
 	u32 value;
-	int rc;
 
 	/*
 	 * Measurement registers:
@@ -359,8 +267,7 @@ static int lvts_get_temp(struct thermal_zone_device *tz, int *temp)
 	 * 16	: Valid temperature
 	 * 15-0	: Raw temperature
 	 */
-	rc = readl_poll_timeout(msr, value, value & BIT(16),
-				LVTS_MSR_READ_WAIT_US, LVTS_MSR_READ_TIMEOUT_US);
+	value = readl(msr);
 
 	/*
 	 * As the thermal zone temperature will read before the
@@ -373,121 +280,46 @@ static int lvts_get_temp(struct thermal_zone_device *tz, int *temp)
 	 * functionning temperature and directly jump to a system
 	 * shutdown.
 	 */
-	if (rc)
+	if (!(value & BIT(16)))
 		return -EAGAIN;
 
-	*temp = lvts_raw_to_temp(value, lvts_data);
+	*temp = lvts_raw_to_temp(value & 0xFFFF);
 
 	return 0;
 }
 
-static void lvts_update_irq_mask(struct lvts_ctrl *lvts_ctrl)
-{
-	static const u32 high_offset_inten_masks[] = {
-		LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR0,
-		LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR1,
-		LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR2,
-		LVTS_MONINT_OFFSET_HIGH_INTEN_SENSOR3,
-	};
-	static const u32 low_offset_inten_masks[] = {
-		LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR0,
-		LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR1,
-		LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR2,
-		LVTS_MONINT_OFFSET_LOW_INTEN_SENSOR3,
-	};
-	u32 value = 0;
-	int i;
-
-	value = readl(LVTS_MONINT(lvts_ctrl->base));
-
-	lvts_for_each_valid_sensor(i, lvts_ctrl) {
-		if (lvts_ctrl->sensors[i].high_thresh == lvts_ctrl->high_thresh
-		    && lvts_ctrl->sensors[i].low_thresh == lvts_ctrl->low_thresh) {
-			/*
-			 * The minimum threshold needs to be configured in the
-			 * OFFSETL register to get working interrupts, but we
-			 * don't actually want to generate interrupts when
-			 * crossing it.
-			 */
-			if (lvts_ctrl->low_thresh == -INT_MAX) {
-				value &= ~low_offset_inten_masks[i];
-				value |= high_offset_inten_masks[i];
-			} else {
-				value |= low_offset_inten_masks[i] | high_offset_inten_masks[i];
-			}
-		} else {
-			value &= ~(low_offset_inten_masks[i] | high_offset_inten_masks[i]);
-		}
-	}
-
-	writel(value, LVTS_MONINT(lvts_ctrl->base));
-}
-
-static bool lvts_should_update_thresh(struct lvts_ctrl *lvts_ctrl, int high)
-{
-	int i;
-
-	if (high > lvts_ctrl->high_thresh)
-		return true;
-
-	lvts_for_each_valid_sensor(i, lvts_ctrl)
-		if (lvts_ctrl->sensors[i].high_thresh == lvts_ctrl->high_thresh
-		    && lvts_ctrl->sensors[i].low_thresh == lvts_ctrl->low_thresh)
-			return false;
-
-	return true;
-}
-
 static int lvts_set_trips(struct thermal_zone_device *tz, int low, int high)
 {
-	struct lvts_sensor *lvts_sensor = thermal_zone_device_priv(tz);
-	struct lvts_ctrl *lvts_ctrl = container_of(lvts_sensor, struct lvts_ctrl,
-						   sensors[lvts_sensor->id]);
-	const struct lvts_data *lvts_data = lvts_ctrl->lvts_data;
+	struct lvts_sensor *lvts_sensor = tz->devdata;
 	void __iomem *base = lvts_sensor->base;
-	u32 raw_low = lvts_temp_to_raw(low != -INT_MAX ? low : LVTS_MINIMUM_THRESHOLD,
-				       lvts_data);
-	u32 raw_high = lvts_temp_to_raw(high, lvts_data);
-	bool should_update_thresh;
+	u32 raw_low = lvts_temp_to_raw(low);
+	u32 raw_high = lvts_temp_to_raw(high);
 
-	lvts_sensor->low_thresh = low;
-	lvts_sensor->high_thresh = high;
-
-	should_update_thresh = lvts_should_update_thresh(lvts_ctrl, high);
-	if (should_update_thresh) {
-		lvts_ctrl->high_thresh = high;
-		lvts_ctrl->low_thresh = low;
+	/*
+	 * Hot to normal temperature threshold
+	 *
+	 * LVTS_H2NTHRE
+	 *
+	 * Bits:
+	 *
+	 * 14-0 : Raw temperature for threshold
+	 */
+	if (low != -INT_MAX) {
+		dev_dbg(&tz->device, "Setting low limit temperature interrupt: %d\n", low);
+		writel(raw_low, LVTS_H2NTHRE(base));
 	}
-	lvts_update_irq_mask(lvts_ctrl);
-
-	if (!should_update_thresh)
-		return 0;
 
 	/*
-	 * Low offset temperature threshold
+	 * Hot temperature threshold
 	 *
-	 * LVTS_OFFSETL
+	 * LVTS_HTHRE
 	 *
 	 * Bits:
 	 *
 	 * 14-0 : Raw temperature for threshold
 	 */
-	pr_debug("%s: Setting low limit temperature interrupt: %d\n",
-		 thermal_zone_device_type(tz), low);
-	writel(raw_low, LVTS_OFFSETL(base));
-
-	/*
-	 * High offset temperature threshold
-	 *
-	 * LVTS_OFFSETH
-	 *
-	 * Bits:
-	 *
-	 * 14-0 : Raw temperature for threshold
-	 */
-	pr_debug("%s: Setting high limit temperature interrupt: %d\n",
-		 thermal_zone_device_type(tz), high);
-	writel(raw_high, LVTS_OFFSETH(base));
+	dev_dbg(&tz->device, "Setting high limit temperature interrupt: %d\n", high);
+	writel(raw_high, LVTS_HTHRE(base));
 
 	return 0;
 }
@@ -496,7 +328,7 @@ static irqreturn_t lvts_ctrl_irq_handler(struct lvts_ctrl *lvts_ctrl)
 {
 	irqreturn_t iret = IRQ_NONE;
 	u32 value;
-	static const u32 masks[] = {
+	u32 masks[] = {
 		LVTS_INT_SENSOR0,
 		LVTS_INT_SENSOR1,
 		LVTS_INT_SENSOR2,
@@ -561,8 +393,8 @@ static irqreturn_t lvts_ctrl_irq_handler(struct lvts_ctrl *lvts_ctrl)
 	 *                  => 0x1FC00000
 	 * sensor 2 interrupt: 0000 0000 0010 0100 0111 1100 0000 0000
 	 *                  => 0x00247C00
-	 * sensor 1 interrupt: 0000 0000 0001 0010 0000 0011 1110 0000
-	 *                  => 0X001203E0
+	 * sensor 1 interrupt: 0000 0000 0001 0001 0000 0011 1110 0000
+	 *                  => 0X000881F0
 	 * sensor 0 interrupt: 0000 0000 0000 1001 0000 0000 0001 1111
 	 *                  => 0x0009001F
 	 */
@@ -615,7 +447,7 @@ static irqreturn_t lvts_irq_handler(int irq, void *data)
 
 	for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
 
-		aux = lvts_ctrl_irq_handler(&lvts_td->lvts_ctrl[i]);
+		aux = lvts_ctrl_irq_handler(lvts_td->lvts_ctrl);
 		if (aux != IRQ_HANDLED)
 			continue;
 
@@ -625,7 +457,7 @@ static irqreturn_t lvts_irq_handler(int irq, void *data)
 	return iret;
 }
 
-static const struct thermal_zone_device_ops lvts_ops = {
+static struct thermal_zone_device_ops lvts_ops = {
 	.get_temp = lvts_get_temp,
 	.set_trips = lvts_set_trips,
 };
@@ -634,7 +466,6 @@ static int lvts_sensor_init(struct device *dev, struct lvts_ctrl *lvts_ctrl,
 					const struct lvts_ctrl_data *lvts_ctrl_data)
 {
 	struct lvts_sensor *lvts_sensor = lvts_ctrl->sensors;
-
 	void __iomem *msr_regs[] = {
 		LVTS_MSR0(lvts_ctrl->base),
 		LVTS_MSR1(lvts_ctrl->base),
@@ -649,16 +480,9 @@ static int lvts_sensor_init(struct device *dev, struct lvts_ctrl *lvts_ctrl,
 		LVTS_IMMD3(lvts_ctrl->base)
 	};
 
-	void __iomem *atp_regs[] = {
-		LVTS_ATP0(lvts_ctrl->base),
-		LVTS_ATP1(lvts_ctrl->base),
-		LVTS_ATP2(lvts_ctrl->base),
-		LVTS_ATP3(lvts_ctrl->base)
-	};
-
 	int i;
 
-	lvts_for_each_valid_sensor(i, lvts_ctrl_data) {
+	for (i = 0; i < lvts_ctrl_data->num_lvts_sensor; i++) {
 
 		int dt_id = lvts_ctrl_data->lvts_sensor[i].dt_id;
 
@@ -691,47 +515,12 @@ static int lvts_sensor_init(struct device *dev, struct lvts_ctrl *lvts_ctrl,
 		/*
 		 * Each sensor has its own register address to read from.
 		 */
-		switch (lvts_ctrl_data->mode) {
-		case LVTS_MSR_IMMEDIATE_MODE:
-			lvts_sensor[i].msr = imm_regs[i];
-			break;
-		case LVTS_MSR_FILTERED_MODE:
-			lvts_sensor[i].msr = msr_regs[i];
-			break;
-		case LVTS_MSR_ATP_MODE:
-			lvts_sensor[i].msr = atp_regs[i];
-			break;
-		default:
-			lvts_sensor[i].msr = imm_regs[i];
-			break;
-		}
+		lvts_sensor[i].msr = lvts_ctrl_data->mode == LVTS_MSR_IMMEDIATE_MODE ?
+			imm_regs[i] : msr_regs[i];
+	};
 
-		lvts_sensor[i].low_thresh = INT_MIN;
-		lvts_sensor[i].high_thresh = INT_MIN;
-	}
+	lvts_ctrl->num_lvts_sensor = lvts_ctrl_data->num_lvts_sensor;
 
-	lvts_ctrl->valid_sensor_mask = lvts_ctrl_data->valid_sensor_mask;
-
-	return 0;
-}
-
-static int lvts_decode_sensor_calibration(const struct lvts_sensor_data *sensor,
-					const u8 *efuse_calibration, u32 calib_len,
-					u8 num_offsets, u32 *calib)
-{
-	int i;
-	u32 calib_val = 0;
-
-	for (i = 0; i < num_offsets; i++) {
-		u8 offset = sensor->cal_offsets[i];
-
-		if (offset >= calib_len)
-			return -EINVAL;
-		// Pack each calibration byte into the correct position
-		calib_val |= efuse_calibration[offset] << (8 * i);
-	}
-
-	*calib = calib_val;
 	return 0;
 }
 
@@ -739,130 +528,39 @@ static int lvts_decode_sensor_calibration(const struct lvts_sensor_data *sensor,
  * The efuse blob values follows the sensor enumeration per thermal
  * controller. The decoding of the stream is as follow:
  *
- * MT8192 :
- * Stream index map for MCU Domain mt8192 :
+ *                        <--?-> <----big0 ???---> <-sensor0-> <-0->
+ *                        ------------------------------------------
+ * index in the stream: : | 0x0 | 0x1 | 0x2 | 0x3 | 0x4 | 0x5 | 0x6 |
+ *                        ------------------------------------------
  *
- * <-----mcu-tc#0-----> <-----sensor#0----->        <-----sensor#1----->
- *  0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B
+ *                        <--sensor1--><-0-> <----big1 ???---> <-sen
+ *                        ------------------------------------------
+ *                        | 0x7 | 0x8 | 0x9 | 0xA | 0xB | OxC | OxD |
+ *                        ------------------------------------------
  *
- * <-----sensor#2----->        <-----sensor#3----->
- *  0x0C | 0x0D | 0x0E | 0x0F | 0x10 | 0x11 | 0x12 | 0x13
+ *                        sor0-> <-0-> <-sensor1-> <-0-> ..........
+ *                        ------------------------------------------
+ *                        | 0x7 | 0x8 | 0x9 | 0xA | 0xB | OxC | OxD |
+ *                        ------------------------------------------
  *
- * <-----sensor#4----->        <-----sensor#5----->        <-----sensor#6----->        <-----sensor#7----->
- *  0x14 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x1F | 0x20 | 0x21 | 0x22 | 0x23
+ * And so on ...
  *
- * Stream index map for AP Domain mt8192 :
+ * The data description gives the offset of the calibration data in
+ * this bytes stream for each sensor.
  *
- * <-----sensor#0----->        <-----sensor#1----->
- *  0x24 | 0x25 | 0x26 | 0x27 | 0x28 | 0x29 | 0x2A | 0x2B
- *
- * <-----sensor#2----->        <-----sensor#3----->
- *  0x2C | 0x2D | 0x2E | 0x2F | 0x30 | 0x31 | 0x32 | 0x33
- *
- * <-----sensor#4----->        <-----sensor#5----->
- *  0x34 | 0x35 | 0x36 | 0x37 | 0x38 | 0x39 | 0x3A | 0x3B
- *
- * <-----sensor#6----->        <-----sensor#7----->        <-----sensor#8----->
- *  0x3C | 0x3D | 0x3E | 0x3F | 0x40 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45 | 0x46 | 0x47
- *
- * MT8195 :
- * Stream index map for MCU Domain mt8195 :
- *
- * <-----mcu-tc#0-----> <-----sensor#0-----> <-----sensor#1----->
- *  0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07 | 0x08 | 0x09
- *
- * <-----mcu-tc#1-----> <-----sensor#2-----> <-----sensor#3----->
- *  0x0A | 0x0B | 0x0C | 0x0D | 0x0E | 0x0F | 0x10 | 0x11 | 0x12
- *
- * <-----mcu-tc#2-----> <-----sensor#4-----> <-----sensor#5-----> <-----sensor#6-----> <-----sensor#7----->
- *  0x13 | 0x14 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x1F | 0x20 | 0x21
- *
- * Stream index map for AP Domain mt8195 :
- *
- * <-----ap--tc#0-----> <-----sensor#0-----> <-----sensor#1----->
- *  0x22 | 0x23 | 0x24 | 0x25 | 0x26 | 0x27 | 0x28 | 0x29 | 0x2A
- *
- * <-----ap--tc#1-----> <-----sensor#2-----> <-----sensor#3----->
- *  0x2B | 0x2C | 0x2D | 0x2E | 0x2F | 0x30 | 0x31 | 0x32 | 0x33
- *
- * <-----ap--tc#2-----> <-----sensor#4-----> <-----sensor#5-----> <-----sensor#6----->
- *  0x34 | 0x35 | 0x36 | 0x37 | 0x38 | 0x39 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F
- *
- * <-----ap--tc#3-----> <-----sensor#7-----> <-----sensor#8----->
- *  0x40 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45 | 0x46 | 0x47 | 0x48
- *
- * MT8196 :
- * Stream index map for MCU Domain mt8196 :
- *
- * <-sensor#1--> <-sensor#0--> <-sensor#3--> <-sensor#2-->
- *  0x04 | 0x05 | 0x06 | 0x07 | 0x08 | 0x09 | 0x0A | 0x0B
- *
- * <-sensor#5--> <-sensor#4--> <-sensor#7--> <-sensor#6-->
- *  0x0C | 0x0D | 0x0E | 0x0F | 0x10 | 0x11 | 0x12 | 0x13
- *
- * <-sensor#9--> <-sensor#8--> <-sensor#11-> <-sensor#10->
- *  0x14 | 0x15 | 0x16 | 0x17 | 0x18 | 0x19 | 0x1A | 0X1B
- *
- * <-sensor#13-> <-sensor#12-> <-sensor#15-> <-sensor#14->
- *  0x1C | 0x1D | 0x1E | 0x1F | 0x20 | 0x21 | 0x22 | 0x23
- *
- * Stream index map for APU Domain mt8196 :
- *
- * <-sensor#1--> <-sensor#0--> <-sensor#3--> <-sensor#2-->
- *  0x24 | 0x25 | 0x26 | 0x27 | 0x28 | 0x29 | 0x2A | 0x2B
- *
- * Stream index map for GPU Domain mt8196 :
- *
- * <-sensor#1--> <-sensor#0-->
- *  0x2C | 0x2D | 0x2E | 0x2F
- *
- * Stream index map for AP Domain mt8196 :
- *
- * <-sensor#1--> <-sensor#0--> <-sensor#3--> <-sensor#2-->
- *  0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35 | 0x36 | 0x37
- *
- * <-sensor#5--> <-sensor#4--> <-sensor#6--> <-sensor#7-->
- *  0x38 | 0x39 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F
- *
- * Note: In some cases, values don't strictly follow a little endian ordering.
- * The data description gives byte offsets constituting each calibration value
- * for each sensor.
+ * Each thermal controller can handle up to 4 sensors max, we don't
+ * care if there are less as the array of calibration is sized to 4
+ * anyway. The unused sensor slot will be zeroed.
  */
 static int lvts_calibration_init(struct device *dev, struct lvts_ctrl *lvts_ctrl,
 					const struct lvts_ctrl_data *lvts_ctrl_data,
-					u8 *efuse_calibration,
-					size_t calib_len)
+					u8 *efuse_calibration)
 {
-	const struct lvts_data *lvts_data = lvts_ctrl->lvts_data;
-	int i, ret;
-	u32 gt;
+	int i;
 
-	/* A zero value for gt means that device has invalid efuse data */
-	gt = (((u32 *)efuse_calibration)[0] >> lvts_data->gt_calib_bit_offset) & 0xff;
-
-	lvts_for_each_valid_sensor(i, lvts_ctrl_data) {
-		const struct lvts_sensor_data *sensor =
-					&lvts_ctrl_data->lvts_sensor[i];
-		u32 calib = 0;
-
-		ret = lvts_decode_sensor_calibration(sensor, efuse_calibration,
-						     calib_len,
-						     lvts_data->num_cal_offsets,
-						     &calib);
-		if (ret)
-			return ret;
-
-		if (gt) {
-			lvts_ctrl->calibration[i] = calib;
-			if (lvts_ctrl->lvts_data->msr_offset)
-				lvts_ctrl->calibration[i] += lvts_ctrl->lvts_data->msr_offset;
-		} else if (lvts_ctrl->lvts_data->def_calibration) {
-			lvts_ctrl->calibration[i] = lvts_ctrl->lvts_data->def_calibration;
-		} else {
-			dev_err(dev, "efuse contains invalid calibration data and no default given.\n");
-			return -ENODATA;
-		}
-	}
+	for (i = 0; i < lvts_ctrl_data->num_lvts_sensor; i++)
+		memcpy(&lvts_ctrl->calibration[i],
+		       efuse_calibration + lvts_ctrl_data->cal_offset[i], 2);
 
 	return 0;
 }
@@ -902,10 +600,8 @@ static int lvts_calibration_read(struct device *dev, struct lvts_domain *lvts_td
 
 		lvts_td->calib = devm_krealloc(dev, lvts_td->calib,
 					       lvts_td->calib_len + len, GFP_KERNEL);
-		if (!lvts_td->calib) {
-			kfree(efuse);
+		if (!lvts_td->calib)
 			return -ENOMEM;
-		}
 
 		memcpy(lvts_td->calib + lvts_td->calib_len, efuse, len);
 
@@ -917,24 +613,16 @@ static int lvts_calibration_read(struct device *dev, struct lvts_domain *lvts_td
 	return 0;
 }
 
-static int lvts_golden_temp_init(struct device *dev, u8 *calib,
-				 const struct lvts_data *lvts_data)
+static int lvts_golden_temp_init(struct device *dev, u32 *value)
 {
 	u32 gt;
 
-	/*
-	 * The golden temp information is contained in the first 32-bit
-	 * word  of efuse data at a specific bit offset.
-	 */
-	gt = (((u32 *)calib)[0] >> lvts_data->gt_calib_bit_offset) & 0xff;
+	gt = (*value) >> 24;
 
-	/* A zero value for gt means that device has invalid efuse data */
 	if (gt && gt < LVTS_GOLDEN_TEMP_MAX)
 		golden_temp = gt;
 
-	golden_temp_offset = golden_temp * 500 + lvts_data->temp_offset;
-
-	dev_info(dev, "%sgolden temp=%d\n", gt ? "" : "fake ", golden_temp);
+	coeff_b = golden_temp * 500 + LVTS_COEFF_B;
 
 	return 0;
 }
@@ -953,7 +641,11 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 	if (ret)
 		return ret;
 
-	ret = lvts_golden_temp_init(dev, lvts_td->calib, lvts_data);
+	/*
+	 * The golden temp information is contained in the first chunk
+	 * of efuse data.
+	 */
+	ret = lvts_golden_temp_init(dev, (u32 *)lvts_td->calib);
 	if (ret)
 		return ret;
 
@@ -964,7 +656,6 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 	for (i = 0; i < lvts_data->num_lvts_ctrl; i++) {
 
 		lvts_ctrl[i].base = lvts_td->base + lvts_data->lvts_ctrl[i].offset;
-		lvts_ctrl[i].lvts_data = lvts_data;
 
 		ret = lvts_sensor_init(dev, &lvts_ctrl[i],
 				       &lvts_data->lvts_ctrl[i]);
@@ -973,8 +664,7 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 
 		ret = lvts_calibration_init(dev, &lvts_ctrl[i],
 					    &lvts_data->lvts_ctrl[i],
-					    lvts_td->calib,
-					    lvts_td->calib_len);
+					    lvts_td->calib);
 		if (ret)
 			return ret;
 
@@ -984,8 +674,12 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 		 */
 		lvts_ctrl[i].mode = lvts_data->lvts_ctrl[i].mode;
 
-		lvts_ctrl[i].low_thresh = INT_MIN;
-		lvts_ctrl[i].high_thresh = INT_MIN;
+		/*
+		 * The temperature to raw temperature must be done
+		 * after initializing the calibration.
+		 */
+		lvts_ctrl[i].hw_tshut_raw_temp =
+			lvts_temp_to_raw(lvts_data->lvts_ctrl[i].hw_tshut_temp);
 	}
 
 	/*
@@ -999,39 +693,13 @@ static int lvts_ctrl_init(struct device *dev, struct lvts_domain *lvts_td,
 	return 0;
 }
 
-static void lvts_ctrl_monitor_enable(struct device *dev, struct lvts_ctrl *lvts_ctrl, bool enable)
-{
-	/*
-	 * Bitmaps to enable each sensor on filtered mode in the MONCTL0
-	 * register.
-	 */
-	static const u8 sensor_filt_bitmap[] = { BIT(0), BIT(1), BIT(2), BIT(3) };
-	u32 sensor_map = 0;
-	int i;
-
-	if (lvts_ctrl->mode == LVTS_MSR_IMMEDIATE_MODE)
-		return;
-
-	if (enable) {
-		lvts_for_each_valid_sensor(i, lvts_ctrl)
-			sensor_map |= sensor_filt_bitmap[i];
-	}
-
-	/*
-	 * Bits:
-	 *      9: Single point access flow
-	 *    0-3: Enable sensing point 0-3
-	 */
-	writel(sensor_map | BIT(9), LVTS_MONCTL0(lvts_ctrl->base));
-}
-
 /*
  * At this point the configuration register is the only place in the
  * driver where we write multiple values. Per hardware constraint,
  * each write in the configuration register must be separated by a
  * delay of 2 us.
  */
-static void lvts_write_config(struct lvts_ctrl *lvts_ctrl, const u32 *cmds, int nr_cmds)
+static void lvts_write_config(struct lvts_ctrl *lvts_ctrl, u32 *cmds, int nr_cmds)
 {
 	int i;
 
@@ -1058,6 +726,7 @@ static int lvts_irq_init(struct lvts_ctrl *lvts_ctrl)
 	 *         10 : Selected sensor with bits 19-18
 	 *         11 : Reserved
 	 */
+	writel(BIT(16), LVTS_PROTCTL(lvts_ctrl->base));
 
 	/*
 	 * LVTS_PROTTA : Stage 1 temperature threshold
@@ -1070,8 +739,8 @@ static int lvts_irq_init(struct lvts_ctrl *lvts_ctrl)
 	 *
 	 * writel(0x0, LVTS_PROTTA(lvts_ctrl->base));
 	 * writel(0x0, LVTS_PROTTB(lvts_ctrl->base));
-	 * writel(0x0, LVTS_PROTTC(lvts_ctrl->base));
 	 */
+	writel(lvts_ctrl->hw_tshut_raw_temp, LVTS_PROTTC(lvts_ctrl->base));
 
 	/*
 	 * LVTS_MONINT : Interrupt configuration register
@@ -1079,7 +748,7 @@ static int lvts_irq_init(struct lvts_ctrl *lvts_ctrl)
 	 * The LVTS_MONINT register layout is the same as the LVTS_MONINTSTS
 	 * register, except we set the bits to enable the interrupt.
 	 */
-	writel(0, LVTS_MONINT(lvts_ctrl->base));
+	writel(LVTS_MONINT_CONF, LVTS_MONINT(lvts_ctrl->base));
 
 	return 0;
 }
@@ -1114,10 +783,9 @@ static int lvts_ctrl_set_enable(struct lvts_ctrl *lvts_ctrl, int enable)
 
 static int lvts_ctrl_connect(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 {
-	const struct lvts_data *lvts_data = lvts_ctrl->lvts_data;
-	u32 id;
+	u32 id, cmds[] = { 0xC103FFFF, 0xC502FF55 };
 
-	lvts_write_config(lvts_ctrl, lvts_data->conn_cmd, lvts_data->num_conn_cmd);
+	lvts_write_config(lvts_ctrl, cmds, ARRAY_SIZE(cmds));
 
 	/*
 	 * LVTS_ID : Get ID and status of the thermal controller
@@ -1136,9 +804,17 @@ static int lvts_ctrl_connect(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 
 static int lvts_ctrl_initialize(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 {
-	const struct lvts_data *lvts_data = lvts_ctrl->lvts_data;
+	/*
+	 * Write device mask: 0xC1030000
+	 */
+	u32 cmds[] = {
+		0xC1030E01, 0xC1030CFC, 0xC1030A8C, 0xC103098D, 0xC10308F1,
+		0xC10307A6, 0xC10306B8, 0xC1030500, 0xC1030420, 0xC1030300,
+		0xC1030030, 0xC10300F6, 0xC1030050, 0xC1030060, 0xC10300AC,
+		0xC10300FC, 0xC103009D, 0xC10300F1, 0xC10300E1
+	};
 
-	lvts_write_config(lvts_ctrl, lvts_data->init_cmd, lvts_data->num_init_cmd);
+	lvts_write_config(lvts_ctrl, cmds, ARRAY_SIZE(cmds));
 
 	return 0;
 }
@@ -1162,17 +838,6 @@ static int lvts_ctrl_calibrate(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 	 */
 	for (i = 0; i < LVTS_SENSOR_MAX; i++)
 		writel(lvts_ctrl->calibration[i], lvts_edata[i]);
-
-	/* LVTS_MSROFT : Constant offset applied to MSR values
-	 * for post-processing
-	 *
-	 * Bits:
-	 *
-	 * 20-0 : Constant data added to MSR values
-	 */
-	if (lvts_ctrl->lvts_data->msr_offset)
-		writel(lvts_ctrl->lvts_data->msr_offset,
-		       LVTS_MSROFT(lvts_ctrl->base));
 
 	return 0;
 }
@@ -1222,6 +887,24 @@ static int lvts_ctrl_configure(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 	value = LVTS_HW_FILTER << 9 |  LVTS_HW_FILTER << 6 |
 			LVTS_HW_FILTER << 3 | LVTS_HW_FILTER;
 	writel(value, LVTS_MSRCTL0(lvts_ctrl->base));
+
+	/*
+	 * LVTS_MSRCTL1 : Measurement control
+	 *
+	 * Bits:
+	 *
+	 * 9: Ignore MSRCTL0 config and do immediate measurement on sensor3
+	 * 6: Ignore MSRCTL0 config and do immediate measurement on sensor2
+	 * 5: Ignore MSRCTL0 config and do immediate measurement on sensor1
+	 * 4: Ignore MSRCTL0 config and do immediate measurement on sensor0
+	 *
+	 * That configuration will ignore the filtering and the delays
+	 * introduced below in MONCTL1 and MONCTL2
+	 */
+	if (lvts_ctrl->mode == LVTS_MSR_IMMEDIATE_MODE) {
+		value = BIT(9) | BIT(6) | BIT(5) | BIT(4);
+		writel(value, LVTS_MSRCTL1(lvts_ctrl->base));
+	}
 
 	/*
 	 * LVTS_MONCTL1 : Period unit and group interval configuration
@@ -1288,17 +971,8 @@ static int lvts_ctrl_start(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 	struct thermal_zone_device *tz;
 	u32 sensor_map = 0;
 	int i;
-	/*
-	 * Bitmaps to enable each sensor on immediate and filtered modes, as
-	 * described in MSRCTL1 and MONCTL0 registers below, respectively.
-	 */
-	u32 sensor_imm_bitmap[] = { BIT(4), BIT(5), BIT(6), BIT(9) };
-	u32 sensor_filt_bitmap[] = { BIT(0), BIT(1), BIT(2), BIT(3) };
 
-	u32 *sensor_bitmap = lvts_ctrl->mode == LVTS_MSR_IMMEDIATE_MODE ?
-			     sensor_imm_bitmap : sensor_filt_bitmap;
-
-	lvts_for_each_valid_sensor(i, lvts_ctrl) {
+	for (i = 0; i < lvts_ctrl->num_lvts_sensor; i++) {
 
 		int dt_id = lvts_sensors[i].dt_id;
 
@@ -1316,8 +990,6 @@ static int lvts_ctrl_start(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 			return PTR_ERR(tz);
 		}
 
-		devm_thermal_add_hwmon_sysfs(dev, tz);
-
 		/*
 		 * The thermal zone pointer will be needed in the
 		 * interrupt handler, we store it in the sensor
@@ -1334,38 +1006,20 @@ static int lvts_ctrl_start(struct device *dev, struct lvts_ctrl *lvts_ctrl)
 		 * map, so we can enable the temperature monitoring in
 		 * the hardware thermal controller.
 		 */
-		sensor_map |= sensor_bitmap[i];
+		sensor_map |= BIT(i);
 	}
 
 	/*
+	 * Bits:
+	 *      9: Single point access flow
+	 *    0-3: Enable sensing point 0-3
+	 *
 	 * The initialization of the thermal zones give us
 	 * which sensor point to enable. If any thermal zone
 	 * was not described in the device tree, it won't be
 	 * enabled here in the sensor map.
 	 */
-	if (lvts_ctrl->mode == LVTS_MSR_IMMEDIATE_MODE) {
-		/*
-		 * LVTS_MSRCTL1 : Measurement control
-		 *
-		 * Bits:
-		 *
-		 * 9: Ignore MSRCTL0 config and do immediate measurement on sensor3
-		 * 6: Ignore MSRCTL0 config and do immediate measurement on sensor2
-		 * 5: Ignore MSRCTL0 config and do immediate measurement on sensor1
-		 * 4: Ignore MSRCTL0 config and do immediate measurement on sensor0
-		 *
-		 * That configuration will ignore the filtering and the delays
-		 * introduced in MONCTL1 and MONCTL2
-		 */
-		writel(sensor_map, LVTS_MSRCTL1(lvts_ctrl->base));
-	} else {
-		/*
-		 * Bits:
-		 *      9: Single point access flow
-		 *    0-3: Enable sensing point 0-3
-		 */
-		writel(sensor_map | BIT(9), LVTS_MONCTL0(lvts_ctrl->base));
-	}
+	writel(sensor_map | BIT(9), LVTS_MONCTL0(lvts_ctrl->base));
 
 	return 0;
 }
@@ -1455,8 +1109,6 @@ static int lvts_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	lvts_data = of_device_get_match_data(dev);
-	if (!lvts_data)
-		return -ENODEV;
 
 	lvts_td->clk = devm_clk_get_enabled(dev, NULL);
 	if (IS_ERR(lvts_td->clk))
@@ -1476,9 +1128,7 @@ static int lvts_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		return irq;
-
-	golden_temp_offset = lvts_data->temp_offset;
+		return dev_err_probe(dev, irq, "No irq resource\n");
 
 	ret = lvts_domain_init(dev, lvts_td, lvts_data);
 	if (ret)
@@ -1498,7 +1148,7 @@ static int lvts_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void lvts_remove(struct platform_device *pdev)
+static int lvts_remove(struct platform_device *pdev)
 {
 	struct lvts_domain *lvts_td;
 	int i;
@@ -1507,689 +1157,57 @@ static void lvts_remove(struct platform_device *pdev)
 
 	for (i = 0; i < lvts_td->num_lvts_ctrl; i++)
 		lvts_ctrl_set_enable(&lvts_td->lvts_ctrl[i], false);
-}
 
-static const struct lvts_ctrl_data mt7987_lvts_ap_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT7987_CPU,
-			  .cal_offsets = { 0x04, 0x05, 0x06 } },
-			{ .dt_id = MT7987_ETH2P5G,
-			  .cal_offsets = { 0x08, 0x09, 0x0a } },
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x0,
-		.mode = LVTS_MSR_FILTERED_MODE,
-	},
-};
-
-static const struct lvts_ctrl_data mt7988_lvts_ap_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT7988_CPU_0,
-			  .cal_offsets = { 0x00, 0x01, 0x02 } },
-			{ .dt_id = MT7988_CPU_1,
-			  .cal_offsets = { 0x04, 0x05, 0x06 } },
-			{ .dt_id = MT7988_ETH2P5G_0,
-			  .cal_offsets = { 0x08, 0x09, 0x0a } },
-			{ .dt_id = MT7988_ETH2P5G_1,
-			  .cal_offsets = { 0x0c, 0x0d, 0x0e } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x0,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT7988_TOPS_0,
-			   .cal_offsets = { 0x14, 0x15, 0x16 } },
-			{ .dt_id = MT7988_TOPS_1,
-			   .cal_offsets = { 0x18, 0x19, 0x1a } },
-			{ .dt_id = MT7988_ETHWARP_0,
-			   .cal_offsets = { 0x1c, 0x1d, 0x1e } },
-			{ .dt_id = MT7988_ETHWARP_1,
-			   .cal_offsets = { 0x20, 0x21, 0x22 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x100,
-	}
-};
-
-static int lvts_suspend(struct device *dev)
-{
-	struct lvts_domain *lvts_td;
-	int i;
-
-	lvts_td = dev_get_drvdata(dev);
-
-	for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
-		lvts_ctrl_monitor_enable(dev, &lvts_td->lvts_ctrl[i], false);
-		usleep_range(100, 200);
-		lvts_ctrl_set_enable(&lvts_td->lvts_ctrl[i], false);
-	}
-
-	clk_disable_unprepare(lvts_td->clk);
+	lvts_debugfs_exit(lvts_td);
 
 	return 0;
 }
 
-static int lvts_resume(struct device *dev)
-{
-	struct lvts_domain *lvts_td;
-	int i, ret;
-
-	lvts_td = dev_get_drvdata(dev);
-
-	ret = clk_prepare_enable(lvts_td->clk);
-	if (ret)
-		return ret;
-
-	for (i = 0; i < lvts_td->num_lvts_ctrl; i++) {
-		lvts_ctrl_set_enable(&lvts_td->lvts_ctrl[i], true);
-		usleep_range(100, 200);
-		lvts_ctrl_monitor_enable(dev, &lvts_td->lvts_ctrl[i], true);
-	}
-
-	return 0;
-}
-
-static const u32 default_conn_cmds[] = { 0xC103FFFF, 0xC502FF55 };
-static const u32 mt7988_conn_cmds[] = { 0xC103FFFF, 0xC502FC55 };
-
-/*
- * Write device mask: 0xC1030000
- */
-static const u32 default_init_cmds[] = {
-	0xC1030E01, 0xC1030CFC, 0xC1030A8C, 0xC103098D, 0xC10308F1,
-	0xC10307A6, 0xC10306B8, 0xC1030500, 0xC1030420, 0xC1030300,
-	0xC1030030, 0xC10300F6, 0xC1030050, 0xC1030060, 0xC10300AC,
-	0xC10300FC, 0xC103009D, 0xC10300F1, 0xC10300E1
-};
-
-static const u32 mt7987_init_cmds[] = {
-	0xC1030300, 0xC1030420, 0xC1030500, 0xC10307A6, 0xC10308C7,
-	0xC103098D, 0xC1030C7C, 0xC1030AA8, 0xC10308CE, 0xC10308C7,
-	0xC1030B04, 0xC1030E01, 0xC10306B8
-};
-
-static const u32 mt7988_init_cmds[] = {
-	0xC1030300, 0xC1030420, 0xC1030500, 0xC10307A6, 0xC1030CFC,
-	0xC1030A8C, 0xC103098D, 0xC10308F1, 0xC1030B04, 0xC1030E01,
-	0xC10306B8
-};
-
-/*
- * The MT8186 calibration data is stored as packed 3-byte little-endian
- * values using a weird layout that makes sense only when viewed as a 32-bit
- * hexadecimal word dump. Let's suppose SxBy where x = sensor number and
- * y = byte number where the LSB is y=0. We then have:
- *
- *   [S0B2-S0B1-S0B0-S1B2] [S1B1-S1B0-S2B2-S2B1] [S2B0-S3B2-S3B1-S3B0]
- *
- * However, when considering a byte stream, those appear as follows:
- *
- *   [S1B2] [S0B0[ [S0B1] [S0B2] [S2B1] [S2B2] [S1B0] [S1B1] [S3B0] [S3B1] [S3B2] [S2B0]
- *
- * Hence the rather confusing offsets provided below.
- */
-static const struct lvts_ctrl_data mt8186_lvts_data_ctrl[] = {
+static const struct lvts_ctrl_data mt8195_lvts_data_ctrl[] = {
 	{
+		.cal_offset = { 0x04, 0x07 },
 		.lvts_sensor = {
-			{ .dt_id = MT8186_LITTLE_CPU0,
-			  .cal_offsets = { 5, 6, 7 } },
-			{ .dt_id = MT8186_LITTLE_CPU1,
-			  .cal_offsets = { 10, 11, 4 } },
-			{ .dt_id = MT8186_LITTLE_CPU2,
-			  .cal_offsets = { 15, 8, 9 } },
-			{ .dt_id = MT8186_CAM,
-			  .cal_offsets = { 12, 13, 14 } }
+			{ .dt_id = MT8195_MCU_BIG_CPU0 },
+			{ .dt_id = MT8195_MCU_BIG_CPU1 }
 		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
+		.num_lvts_sensor = 2,
 		.offset = 0x0,
+		.hw_tshut_temp = LVTS_HW_SHUTDOWN_MT8195,
 	},
 	{
+		.cal_offset = { 0x0d, 0x10 },
 		.lvts_sensor = {
-			{ .dt_id = MT8186_BIG_CPU0,
-			  .cal_offsets = { 22, 23, 16 } },
-			{ .dt_id = MT8186_BIG_CPU1,
-			  .cal_offsets = { 27, 20, 21 } }
+			{ .dt_id = MT8195_MCU_BIG_CPU2 },
+			{ .dt_id = MT8195_MCU_BIG_CPU3 }
 		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
+		.num_lvts_sensor = 2,
 		.offset = 0x100,
+		.hw_tshut_temp = LVTS_HW_SHUTDOWN_MT8195,
 	},
 	{
+		.cal_offset = { 0x16, 0x19, 0x1c, 0x1f },
 		.lvts_sensor = {
-			{ .dt_id = MT8186_NNA,
-			  .cal_offsets = { 29, 30, 31 } },
-			{ .dt_id = MT8186_ADSP,
-			  .cal_offsets = { 34, 35, 28 } },
-			{ .dt_id = MT8186_GPU,
-			  .cal_offsets = { 39, 32, 33 } }
+			{ .dt_id = MT8195_MCU_LITTLE_CPU0 },
+			{ .dt_id = MT8195_MCU_LITTLE_CPU1 },
+			{ .dt_id = MT8195_MCU_LITTLE_CPU2 },
+			{ .dt_id = MT8195_MCU_LITTLE_CPU3 }
 		},
-		VALID_SENSOR_MAP(1, 1, 1, 0),
+		.num_lvts_sensor = 4,
 		.offset = 0x200,
+		.hw_tshut_temp = LVTS_HW_SHUTDOWN_MT8195,
 	}
-};
-
-static const struct lvts_ctrl_data mt8188_lvts_mcu_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8188_MCU_LITTLE_CPU0,
-			  .cal_offsets = { 22, 23, 24 } },
-			{ .dt_id = MT8188_MCU_LITTLE_CPU1,
-			  .cal_offsets = { 25, 26, 27 } },
-			{ .dt_id = MT8188_MCU_LITTLE_CPU2,
-			  .cal_offsets = { 28, 29, 30 } },
-			{ .dt_id = MT8188_MCU_LITTLE_CPU3,
-			  .cal_offsets = { 31, 32, 33 } },
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x0,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8188_MCU_BIG_CPU0,
-			  .cal_offsets = { 34, 35, 36 } },
-			{ .dt_id = MT8188_MCU_BIG_CPU1,
-			  .cal_offsets = { 37, 38, 39 } },
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x100,
-	}
-};
-
-static const struct lvts_ctrl_data mt8188_lvts_ap_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-
-			{ /* unused */ },
-			{ .dt_id = MT8188_AP_APU,
-			  .cal_offsets = { 40, 41, 42 } },
-		},
-		VALID_SENSOR_MAP(0, 1, 0, 0),
-		.offset = 0x0,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8188_AP_GPU0,
-			  .cal_offsets = { 43, 44, 45 } },
-			{ .dt_id = MT8188_AP_GPU1,
-			  .cal_offsets = { 46, 47, 48 } },
-			{ .dt_id = MT8188_AP_ADSP,
-			  .cal_offsets = { 49, 50, 51 } },
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 0),
-		.offset = 0x100,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8188_AP_VDO,
-			  .cal_offsets = { 52, 53, 54 } },
-			{ .dt_id = MT8188_AP_INFRA,
-			  .cal_offsets = { 55, 56, 57 } },
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x200,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8188_AP_CAM1,
-			  .cal_offsets = { 58, 59, 60 } },
-			{ .dt_id = MT8188_AP_CAM2,
-			  .cal_offsets = { 61, 62, 63 } },
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x300,
-	}
-};
-
-static const struct lvts_ctrl_data mt8192_lvts_mcu_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8192_MCU_BIG_CPU0,
-			  .cal_offsets = { 0x04, 0x05, 0x06 } },
-			{ .dt_id = MT8192_MCU_BIG_CPU1,
-			  .cal_offsets = { 0x08, 0x09, 0x0a } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x0,
-		.mode = LVTS_MSR_FILTERED_MODE,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8192_MCU_BIG_CPU2,
-			  .cal_offsets = { 0x0c, 0x0d, 0x0e } },
-			{ .dt_id = MT8192_MCU_BIG_CPU3,
-			  .cal_offsets = { 0x10, 0x11, 0x12 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x100,
-		.mode = LVTS_MSR_FILTERED_MODE,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8192_MCU_LITTLE_CPU0,
-			  .cal_offsets = { 0x14, 0x15, 0x16 } },
-			{ .dt_id = MT8192_MCU_LITTLE_CPU1,
-			  .cal_offsets = { 0x18, 0x19, 0x1a } },
-			{ .dt_id = MT8192_MCU_LITTLE_CPU2,
-			  .cal_offsets = { 0x1c, 0x1d, 0x1e } },
-			{ .dt_id = MT8192_MCU_LITTLE_CPU3,
-			  .cal_offsets = { 0x20, 0x21, 0x22 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x200,
-		.mode = LVTS_MSR_FILTERED_MODE,
-	}
-};
-
-static const struct lvts_ctrl_data mt8192_lvts_ap_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8192_AP_VPU0,
-			  .cal_offsets = { 0x24, 0x25, 0x26 } },
-			{ .dt_id = MT8192_AP_VPU1,
-			  .cal_offsets = { 0x28, 0x29, 0x2a } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x0,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8192_AP_GPU0,
-			  .cal_offsets = { 0x2c, 0x2d, 0x2e } },
-			{ .dt_id = MT8192_AP_GPU1,
-			  .cal_offsets = { 0x30, 0x31, 0x32 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x100,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8192_AP_INFRA,
-			  .cal_offsets = { 0x34, 0x35, 0x36 } },
-			{ .dt_id = MT8192_AP_CAM,
-			  .cal_offsets = { 0x38, 0x39, 0x3a } },
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x200,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8192_AP_MD0,
-			  .cal_offsets = { 0x3c, 0x3d, 0x3e } },
-			{ .dt_id = MT8192_AP_MD1,
-			  .cal_offsets = { 0x40, 0x41, 0x42 } },
-			{ .dt_id = MT8192_AP_MD2,
-			  .cal_offsets = { 0x44, 0x45, 0x46 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 0),
-		.offset = 0x300,
-	}
-};
-
-static const struct lvts_ctrl_data mt8195_lvts_mcu_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8195_MCU_BIG_CPU0,
-			  .cal_offsets = { 0x04, 0x05, 0x06 } },
-			{ .dt_id = MT8195_MCU_BIG_CPU1,
-			  .cal_offsets = { 0x07, 0x08, 0x09 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x0,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8195_MCU_BIG_CPU2,
-			  .cal_offsets = { 0x0d, 0x0e, 0x0f } },
-			{ .dt_id = MT8195_MCU_BIG_CPU3,
-			  .cal_offsets = { 0x10, 0x11, 0x12 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x100,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8195_MCU_LITTLE_CPU0,
-			  .cal_offsets = { 0x16, 0x17, 0x18 } },
-			{ .dt_id = MT8195_MCU_LITTLE_CPU1,
-			  .cal_offsets = { 0x19, 0x1a, 0x1b } },
-			{ .dt_id = MT8195_MCU_LITTLE_CPU2,
-			  .cal_offsets = { 0x1c, 0x1d, 0x1e } },
-			{ .dt_id = MT8195_MCU_LITTLE_CPU3,
-			  .cal_offsets = { 0x1f, 0x20, 0x21 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x200,
-	}
-};
-
-static const struct lvts_ctrl_data mt8195_lvts_ap_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8195_AP_VPU0,
-			  .cal_offsets = { 0x25, 0x26, 0x27 } },
-			{ .dt_id = MT8195_AP_VPU1,
-			  .cal_offsets = { 0x28, 0x29, 0x2a } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x0,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8195_AP_GPU0,
-			  .cal_offsets = { 0x2e, 0x2f, 0x30 } },
-			{ .dt_id = MT8195_AP_GPU1,
-			  .cal_offsets = { 0x31, 0x32, 0x33 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x100,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8195_AP_VDEC,
-			  .cal_offsets = { 0x37, 0x38, 0x39 } },
-			{ .dt_id = MT8195_AP_IMG,
-			  .cal_offsets = { 0x3a, 0x3b, 0x3c } },
-			{ .dt_id = MT8195_AP_INFRA,
-			  .cal_offsets = { 0x3d, 0x3e, 0x3f } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 0),
-		.offset = 0x200,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8195_AP_CAM0,
-			  .cal_offsets = { 0x43, 0x44, 0x45 } },
-			{ .dt_id = MT8195_AP_CAM1,
-			  .cal_offsets = { 0x46, 0x47, 0x48 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 0, 0),
-		.offset = 0x300,
-	}
-};
-
-static const struct lvts_ctrl_data mt8196_lvts_mcu_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8196_MCU_MEDIUM_CPU6_0,
-			  .cal_offsets = { 0x06, 0x07 } },
-			{ .dt_id = MT8196_MCU_MEDIUM_CPU6_1,
-			  .cal_offsets = { 0x04, 0x05 } },
-			{ .dt_id = MT8196_MCU_DSU2,
-			  .cal_offsets = { 0x0A, 0x0B } },
-			{ .dt_id = MT8196_MCU_DSU3,
-			  .cal_offsets = { 0x08, 0x09 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x0,
-		.mode = LVTS_MSR_ATP_MODE,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8196_MCU_LITTLE_CPU3,
-			  .cal_offsets = { 0x0E, 0x0F } },
-			{ .dt_id = MT8196_MCU_LITTLE_CPU0,
-			  .cal_offsets = { 0x0C, 0x0D } },
-			{ .dt_id = MT8196_MCU_LITTLE_CPU1,
-			  .cal_offsets = { 0x12, 0x13 } },
-			{ .dt_id = MT8196_MCU_LITTLE_CPU2,
-			  .cal_offsets = { 0x10, 0x11 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x100,
-		.mode = LVTS_MSR_ATP_MODE,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8196_MCU_MEDIUM_CPU4_0,
-			  .cal_offsets = { 0x16, 0x17 } },
-			{ .dt_id = MT8196_MCU_MEDIUM_CPU4_1,
-			  .cal_offsets = { 0x14, 0x15 } },
-			{ .dt_id = MT8196_MCU_MEDIUM_CPU5_0,
-			  .cal_offsets = { 0x1A, 0x1B } },
-			{ .dt_id = MT8196_MCU_MEDIUM_CPU5_1,
-			  .cal_offsets = { 0x18, 0x19 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x200,
-		.mode = LVTS_MSR_ATP_MODE,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8196_MCU_DSU0,
-			  .cal_offsets = { 0x1E, 0x1F } },
-			{ .dt_id = MT8196_MCU_DSU1,
-			  .cal_offsets = { 0x1C, 0x1D } },
-			{ .dt_id = MT8196_MCU_BIG_CPU7_0,
-			  .cal_offsets = { 0x22, 0x23 } },
-			{ .dt_id = MT8196_MCU_BIG_CPU7_1,
-			  .cal_offsets = { 0x20, 0x21 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x300,
-		.mode = LVTS_MSR_ATP_MODE,
-	}
-};
-
-static const struct lvts_ctrl_data mt8196_lvts_ap_data_ctrl[] = {
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8196_AP_TOP0,
-			  .cal_offsets = { 0x32, 0x33 } },
-			{ .dt_id = MT8196_AP_TOP1,
-			  .cal_offsets = { 0x30, 0x31 } },
-			{ .dt_id = MT8196_AP_TOP2,
-			  .cal_offsets = { 0x36, 0x37 } },
-			{ .dt_id = MT8196_AP_TOP3,
-			  .cal_offsets = { 0x34, 0x35 } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x0,
-		.mode = LVTS_MSR_ATP_MODE,
-	},
-	{
-		.lvts_sensor = {
-			{ .dt_id = MT8196_AP_BOT0,
-			  .cal_offsets = { 0x3A, 0x3B } },
-			{ .dt_id = MT8196_AP_BOT1,
-			  .cal_offsets = { 0x38, 0x39 } },
-			{ .dt_id = MT8196_AP_BOT2,
-			  .cal_offsets = { 0x3E, 0x3F } },
-			{ .dt_id = MT8196_AP_BOT3,
-			  .cal_offsets = { 0x3C, 0x3D } }
-		},
-		VALID_SENSOR_MAP(1, 1, 1, 1),
-		.offset = 0x100,
-		.mode = LVTS_MSR_ATP_MODE,
-	}
-};
-
-static const struct lvts_platform_ops lvts_platform_ops_mt7988 = {
-	.lvts_raw_to_temp = lvts_raw_to_temp_mt7988,
-	.lvts_temp_to_raw = lvts_temp_to_raw_mt7988,
-};
-
-static const struct lvts_platform_ops lvts_platform_ops_mt8196 = {
-	.lvts_raw_to_temp = lvts_raw_to_temp_mt7988,
-	.lvts_temp_to_raw = lvts_temp_to_raw_mt8196,
-};
-
-static const struct lvts_data mt7987_lvts_ap_data = {
-	.lvts_ctrl	= mt7987_lvts_ap_data_ctrl,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt7987_lvts_ap_data_ctrl),
-	.conn_cmd	= mt7988_conn_cmds,
-	.init_cmd	= mt7987_init_cmds,
-	.num_conn_cmd	= ARRAY_SIZE(mt7988_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(mt7987_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT7987,
-	.temp_offset	= LVTS_COEFF_B_MT7987,
-	.gt_calib_bit_offset = 32,
-	.def_calibration = 19380,
-};
-
-static const struct lvts_data mt7988_lvts_ap_data = {
-	.lvts_ctrl	= mt7988_lvts_ap_data_ctrl,
-	.conn_cmd	= mt7988_conn_cmds,
-	.init_cmd	= mt7988_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt7988_lvts_ap_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(mt7988_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(mt7988_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT7988,
-	.temp_offset	= LVTS_COEFF_B_MT7988,
-	.gt_calib_bit_offset = 24,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
-};
-
-static const struct lvts_data mt8186_lvts_data = {
-	.lvts_ctrl	= mt8186_lvts_data_ctrl,
-	.conn_cmd	= default_conn_cmds,
-	.init_cmd	= default_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8186_lvts_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT7988,
-	.temp_offset	= LVTS_COEFF_B_MT7988,
-	.gt_calib_bit_offset = 24,
-	.def_calibration = 19000,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
-};
-
-static const struct lvts_data mt8188_lvts_mcu_data = {
-	.lvts_ctrl	= mt8188_lvts_mcu_data_ctrl,
-	.conn_cmd	= default_conn_cmds,
-	.init_cmd	= default_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8188_lvts_mcu_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT8195,
-	.temp_offset	= LVTS_COEFF_B_MT8195,
-	.gt_calib_bit_offset = 20,
-	.def_calibration = 35000,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
-};
-
-static const struct lvts_data mt8188_lvts_ap_data = {
-	.lvts_ctrl	= mt8188_lvts_ap_data_ctrl,
-	.conn_cmd	= default_conn_cmds,
-	.init_cmd	= default_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8188_lvts_ap_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT8195,
-	.temp_offset	= LVTS_COEFF_B_MT8195,
-	.gt_calib_bit_offset = 20,
-	.def_calibration = 35000,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
-};
-
-static const struct lvts_data mt8192_lvts_mcu_data = {
-	.lvts_ctrl	= mt8192_lvts_mcu_data_ctrl,
-	.conn_cmd	= default_conn_cmds,
-	.init_cmd	= default_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8192_lvts_mcu_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT8195,
-	.temp_offset	= LVTS_COEFF_B_MT8195,
-	.gt_calib_bit_offset = 24,
-	.def_calibration = 35000,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
-};
-
-static const struct lvts_data mt8192_lvts_ap_data = {
-	.lvts_ctrl	= mt8192_lvts_ap_data_ctrl,
-	.conn_cmd	= default_conn_cmds,
-	.init_cmd	= default_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8192_lvts_ap_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT8195,
-	.temp_offset	= LVTS_COEFF_B_MT8195,
-	.gt_calib_bit_offset = 24,
-	.def_calibration = 35000,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
 };
 
 static const struct lvts_data mt8195_lvts_mcu_data = {
-	.lvts_ctrl	= mt8195_lvts_mcu_data_ctrl,
-	.conn_cmd	= default_conn_cmds,
-	.init_cmd	= default_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8195_lvts_mcu_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT8195,
-	.temp_offset	= LVTS_COEFF_B_MT8195,
-	.gt_calib_bit_offset = 24,
-	.def_calibration = 35000,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
-};
-
-static const struct lvts_data mt8195_lvts_ap_data = {
-	.lvts_ctrl	= mt8195_lvts_ap_data_ctrl,
-	.conn_cmd	= default_conn_cmds,
-	.init_cmd	= default_init_cmds,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8195_lvts_ap_data_ctrl),
-	.num_conn_cmd	= ARRAY_SIZE(default_conn_cmds),
-	.num_init_cmd	= ARRAY_SIZE(default_init_cmds),
-	.temp_factor	= LVTS_COEFF_A_MT8195,
-	.temp_offset	= LVTS_COEFF_B_MT8195,
-	.gt_calib_bit_offset = 24,
-	.def_calibration = 35000,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT7988,
-	.ops = &lvts_platform_ops_mt7988,
-};
-
-static const struct lvts_data mt8196_lvts_mcu_data = {
-	.lvts_ctrl	= mt8196_lvts_mcu_data_ctrl,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8196_lvts_mcu_data_ctrl),
-	.temp_factor	= LVTS_COEFF_A_MT8196,
-	.temp_offset	= LVTS_COEFF_B_MT8196,
-	.gt_calib_bit_offset = 0,
-	.def_calibration = 14437,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT8196,
-	.msr_offset = LVTS_MSR_OFFSET_MT8196,
-	.ops = &lvts_platform_ops_mt8196,
-};
-
-static const struct lvts_data mt8196_lvts_ap_data = {
-	.lvts_ctrl	= mt8196_lvts_ap_data_ctrl,
-	.num_lvts_ctrl	= ARRAY_SIZE(mt8196_lvts_ap_data_ctrl),
-	.temp_factor	= LVTS_COEFF_A_MT8196,
-	.temp_offset	= LVTS_COEFF_B_MT8196,
-	.gt_calib_bit_offset = 0,
-	.def_calibration = 14437,
-	.num_cal_offsets = LVTS_NUM_CAL_OFFSETS_MT8196,
-	.msr_offset = LVTS_MSR_OFFSET_MT8196,
-	.ops = &lvts_platform_ops_mt8196,
+	.lvts_ctrl	= mt8195_lvts_data_ctrl,
+	.num_lvts_ctrl	= ARRAY_SIZE(mt8195_lvts_data_ctrl),
 };
 
 static const struct of_device_id lvts_of_match[] = {
-	{ .compatible = "mediatek,mt7987-lvts-ap", .data = &mt7987_lvts_ap_data },
-	{ .compatible = "mediatek,mt7988-lvts-ap", .data = &mt7988_lvts_ap_data },
-	{ .compatible = "mediatek,mt8186-lvts", .data = &mt8186_lvts_data },
-	{ .compatible = "mediatek,mt8188-lvts-mcu", .data = &mt8188_lvts_mcu_data },
-	{ .compatible = "mediatek,mt8188-lvts-ap", .data = &mt8188_lvts_ap_data },
-	{ .compatible = "mediatek,mt8192-lvts-mcu", .data = &mt8192_lvts_mcu_data },
-	{ .compatible = "mediatek,mt8192-lvts-ap", .data = &mt8192_lvts_ap_data },
 	{ .compatible = "mediatek,mt8195-lvts-mcu", .data = &mt8195_lvts_mcu_data },
-	{ .compatible = "mediatek,mt8195-lvts-ap", .data = &mt8195_lvts_ap_data },
-	{ .compatible = "mediatek,mt8196-lvts-mcu", .data = &mt8196_lvts_mcu_data },
-	{ .compatible = "mediatek,mt8196-lvts-ap", .data = &mt8196_lvts_ap_data },
 	{},
 };
 MODULE_DEVICE_TABLE(of, lvts_of_match);
-
-static const struct dev_pm_ops lvts_pm_ops = {
-	NOIRQ_SYSTEM_SLEEP_PM_OPS(lvts_suspend, lvts_resume)
-};
 
 static struct platform_driver lvts_driver = {
 	.probe = lvts_probe,
@@ -2197,7 +1215,6 @@ static struct platform_driver lvts_driver = {
 	.driver = {
 		.name = "mtk-lvts-thermal",
 		.of_match_table = lvts_of_match,
-		.pm = &lvts_pm_ops,
 	},
 };
 module_platform_driver(lvts_driver);

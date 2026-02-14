@@ -1,5 +1,6 @@
-// SPDX-License-Identifier: MIT
 /*
+ * SPDX-License-Identifier: MIT
+ *
  * Copyright © 2008-2012 Intel Corporation
  */
 
@@ -7,9 +8,7 @@
 #include <linux/mutex.h>
 
 #include <drm/drm_mm.h>
-#include <drm/drm_print.h>
-#include <drm/intel/display_parent_interface.h>
-#include <drm/intel/i915_drm.h>
+#include <drm/i915_drm.h>
 
 #include "gem/i915_gem_lmem.h"
 #include "gem/i915_gem_region.h"
@@ -26,11 +25,6 @@
 #include "intel_mchbar_regs.h"
 #include "intel_pci_config.h"
 
-struct intel_stolen_node {
-	struct drm_i915_private *i915;
-	struct drm_mm_node node;
-};
-
 /*
  * The BIOS typically reserves some of the system's memory for the exclusive
  * use of the integrated graphics. This memory is no longer available for
@@ -43,9 +37,9 @@ struct intel_stolen_node {
  * for is a boon.
  */
 
-static int __i915_gem_stolen_insert_node_in_range(struct drm_i915_private *i915,
-						  struct drm_mm_node *node, u64 size,
-						  unsigned int alignment, u64 start, u64 end)
+int i915_gem_stolen_insert_node_in_range(struct drm_i915_private *i915,
+					 struct drm_mm_node *node, u64 size,
+					 unsigned alignment, u64 start, u64 end)
 {
 	int ret;
 
@@ -65,41 +59,22 @@ static int __i915_gem_stolen_insert_node_in_range(struct drm_i915_private *i915,
 	return ret;
 }
 
-static int i915_gem_stolen_insert_node_in_range(struct intel_stolen_node *node, u64 size,
-						unsigned int alignment, u64 start, u64 end)
+int i915_gem_stolen_insert_node(struct drm_i915_private *i915,
+				struct drm_mm_node *node, u64 size,
+				unsigned alignment)
 {
-	return __i915_gem_stolen_insert_node_in_range(node->i915, &node->node,
-						      size, alignment,
-						      start, end);
+	return i915_gem_stolen_insert_node_in_range(i915, node,
+						    size, alignment,
+						    I915_GEM_STOLEN_BIAS,
+						    U64_MAX);
 }
 
-static int __i915_gem_stolen_insert_node(struct drm_i915_private *i915,
-					 struct drm_mm_node *node, u64 size,
-					 unsigned int alignment)
-{
-	return __i915_gem_stolen_insert_node_in_range(i915, node,
-						      size, alignment,
-						      I915_GEM_STOLEN_BIAS,
-						      U64_MAX);
-}
-
-static int i915_gem_stolen_insert_node(struct intel_stolen_node *node, u64 size,
-				       unsigned int alignment)
-{
-	return __i915_gem_stolen_insert_node(node->i915, &node->node, size, alignment);
-}
-
-static void __i915_gem_stolen_remove_node(struct drm_i915_private *i915,
-					  struct drm_mm_node *node)
+void i915_gem_stolen_remove_node(struct drm_i915_private *i915,
+				 struct drm_mm_node *node)
 {
 	mutex_lock(&i915->mm.stolen_lock);
 	drm_mm_remove_node(node);
 	mutex_unlock(&i915->mm.stolen_lock);
-}
-
-static void i915_gem_stolen_remove_node(struct intel_stolen_node *node)
-{
-	__i915_gem_stolen_remove_node(node->i915, &node->node);
 }
 
 static bool valid_stolen_size(struct drm_i915_private *i915, struct resource *dsm)
@@ -411,27 +386,6 @@ static void icl_get_stolen_reserved(struct drm_i915_private *i915,
 
 	drm_dbg(&i915->drm, "GEN6_STOLEN_RESERVED = 0x%016llx\n", reg_val);
 
-	/* Wa_14019821291 */
-	if (MEDIA_VER_FULL(i915) == IP_VER(13, 0)) {
-		/*
-		 * This workaround is primarily implemented by the BIOS.  We
-		 * just need to figure out whether the BIOS has applied the
-		 * workaround (meaning the programmed address falls within
-		 * the DSM) and, if so, reserve that part of the DSM to
-		 * prevent accidental reuse.  The DSM location should be just
-		 * below the WOPCM.
-		 */
-		u64 gscpsmi_base = intel_uncore_read64_2x32(uncore,
-							    MTL_GSCPSMI_BASEADDR_LSB,
-							    MTL_GSCPSMI_BASEADDR_MSB);
-		if (gscpsmi_base >= i915->dsm.stolen.start &&
-		    gscpsmi_base < i915->dsm.stolen.end) {
-			*base = gscpsmi_base;
-			*size = i915->dsm.stolen.end - gscpsmi_base;
-			return;
-		}
-	}
-
 	switch (reg_val & GEN8_STOLEN_RESERVED_SIZE_MASK) {
 	case GEN8_STOLEN_RESERVED_1M:
 		*size = 1024 * 1024;
@@ -482,7 +436,7 @@ static int init_reserved_stolen(struct drm_i915_private *i915)
 		icl_get_stolen_reserved(i915, uncore,
 					&reserved_base, &reserved_size);
 	} else if (GRAPHICS_VER(i915) >= 8) {
-		if (IS_CHERRYVIEW(i915) || IS_BROXTON(i915) || IS_GEMINILAKE(i915))
+		if (IS_LP(i915))
 			chv_get_stolen_reserved(i915, uncore,
 						&reserved_base, &reserved_size);
 		else
@@ -566,9 +520,7 @@ static int i915_gem_init_stolen(struct intel_memory_region *mem)
 
 	/* Exclude the reserved region from driver use */
 	mem->region.end = i915->dsm.reserved.start - 1;
-	mem->io = DEFINE_RES_MEM(mem->io.start,
-				 min(resource_size(&mem->io),
-				     resource_size(&mem->region)));
+	mem->io_size = min(mem->io_size, resource_size(&mem->region));
 
 	i915->dsm.usable_size = resource_size(&mem->region);
 
@@ -582,14 +534,6 @@ static int i915_gem_init_stolen(struct intel_memory_region *mem)
 
 	/* Basic memrange allocator for stolen space. */
 	drm_mm_init(&i915->mm.stolen, 0, i915->dsm.usable_size);
-
-	/*
-	 * Access to stolen lmem beyond certain size for MTL A0 stepping
-	 * would crash the machine. Disable stolen lmem for userspace access
-	 * by setting usable_size to zero.
-	 */
-	if (IS_METEORLAKE(i915) && INTEL_REVID(i915) == 0x0)
-		i915->dsm.usable_size = 0;
 
 	return 0;
 }
@@ -613,9 +557,7 @@ static void dbg_poison(struct i915_ggtt *ggtt,
 
 		ggtt->vm.insert_page(&ggtt->vm, addr,
 				     ggtt->error_capture.start,
-				     i915_gem_get_pat_index(ggtt->vm.i915,
-							    I915_CACHE_NONE),
-				     0);
+				     I915_CACHE_NONE, 0);
 		mb();
 
 		s = io_mapping_map_wc(&ggtt->iomap,
@@ -709,7 +651,7 @@ i915_gem_object_release_stolen(struct drm_i915_gem_object *obj)
 	struct drm_mm_node *stolen = fetch_and_zero(&obj->stolen);
 
 	GEM_BUG_ON(!stolen);
-	__i915_gem_stolen_remove_node(i915, stolen);
+	i915_gem_stolen_remove_node(i915, stolen);
 	kfree(stolen);
 
 	i915_gem_object_release_memory_region(obj);
@@ -779,7 +721,7 @@ static int _i915_gem_object_stolen_init(struct intel_memory_region *mem,
 	 * With discrete devices, where we lack a mappable aperture there is no
 	 * possible way to ever access this memory on the CPU side.
 	 */
-	if (mem->type == INTEL_MEMORY_STOLEN_LOCAL && !resource_size(&mem->io) &&
+	if (mem->type == INTEL_MEMORY_STOLEN_LOCAL && !mem->io_size &&
 	    !(flags & I915_BO_ALLOC_GPU_ONLY))
 		return -ENOSPC;
 
@@ -798,8 +740,8 @@ static int _i915_gem_object_stolen_init(struct intel_memory_region *mem,
 		ret = drm_mm_reserve_node(&i915->mm.stolen, stolen);
 		mutex_unlock(&i915->mm.stolen_lock);
 	} else {
-		ret = __i915_gem_stolen_insert_node(i915, stolen, size,
-						    mem->min_page_size);
+		ret = i915_gem_stolen_insert_node(i915, stolen, size,
+						  mem->min_page_size);
 	}
 	if (ret)
 		goto err_free;
@@ -811,7 +753,7 @@ static int _i915_gem_object_stolen_init(struct intel_memory_region *mem,
 	return 0;
 
 err_remove:
-	__i915_gem_stolen_remove_node(i915, stolen);
+	i915_gem_stolen_remove_node(i915, stolen);
 err_free:
 	kfree(stolen);
 	return ret;
@@ -853,6 +795,7 @@ static const struct intel_memory_region_ops i915_region_stolen_smem_ops = {
 
 static int init_stolen_lmem(struct intel_memory_region *mem)
 {
+	struct drm_i915_private *i915 = mem->i915;
 	int err;
 
 	if (GEM_WARN_ON(resource_size(&mem->region) == 0))
@@ -864,9 +807,13 @@ static int init_stolen_lmem(struct intel_memory_region *mem)
 		return 0;
 	}
 
-	if (resource_size(&mem->io) &&
-	    !io_mapping_init_wc(&mem->iomap, mem->io.start, resource_size(&mem->io)))
+	if (mem->io_size &&
+	    !io_mapping_init_wc(&mem->iomap, mem->io_start, mem->io_size))
 		goto err_cleanup;
+
+	drm_dbg(&i915->drm, "Stolen Local memory IO start: %pa\n",
+		&mem->io_start);
+	drm_dbg(&i915->drm, "Stolen Local DSM base: %pa\n", &mem->region.start);
 
 	return 0;
 
@@ -877,7 +824,7 @@ err_cleanup:
 
 static int release_stolen_lmem(struct intel_memory_region *mem)
 {
-	if (resource_size(&mem->io))
+	if (mem->io_size)
 		io_mapping_fini(&mem->iomap);
 	i915_gem_cleanup_stolen(mem->i915);
 	return 0;
@@ -935,7 +882,7 @@ i915_gem_stolen_lmem_setup(struct drm_i915_private *i915, u16 type,
 	} else {
 		resource_size_t lmem_range;
 
-		lmem_range = intel_gt_mcr_read_any(to_gt(i915), XEHP_TILE0_ADDR_RANGE) & 0xFFFF;
+		lmem_range = intel_gt_mcr_read_any(&i915->gt0, XEHP_TILE0_ADDR_RANGE) & 0xFFFF;
 		lmem_size = lmem_range >> XEHP_TILE_LMEM_RANGE_SHIFT;
 		lmem_size *= SZ_1G;
 	}
@@ -943,9 +890,8 @@ i915_gem_stolen_lmem_setup(struct drm_i915_private *i915, u16 type,
 	if (HAS_LMEMBAR_SMEM_STOLEN(i915)) {
 		/*
 		 * MTL dsm size is in GGC register.
-		 * Also MTL uses offset to GSMBASE in ptes, so i915
-		 * uses dsm_base = 8MBs to setup stolen region, since
-		 * DSMBASE = GSMBASE + 8MB.
+		 * Also MTL uses offset to DSMBASE in ptes, so i915
+		 * uses dsm_base = 0 to setup stolen region.
 		 */
 		ret = mtl_get_gms_size(uncore);
 		if (ret < 0) {
@@ -953,33 +899,27 @@ i915_gem_stolen_lmem_setup(struct drm_i915_private *i915, u16 type,
 			return ERR_PTR(ret);
 		}
 
-		dsm_base = SZ_8M;
+		dsm_base = 0;
 		dsm_size = (resource_size_t)(ret * SZ_1M);
 
 		GEM_BUG_ON(pci_resource_len(pdev, GEN12_LMEM_BAR) != SZ_256M);
-		GEM_BUG_ON((dsm_base + dsm_size) > lmem_size);
+		GEM_BUG_ON((dsm_size + SZ_8M) > lmem_size);
 	} else {
 		/* Use DSM base address instead for stolen memory */
-		dsm_base = intel_uncore_read64(uncore, GEN6_DSMBASE) & GEN11_BDSM_MASK;
-		if (lmem_size < dsm_base) {
-			drm_dbg(&i915->drm,
-				"Disabling stolen memory support due to OOB placement: lmem_size = %pa vs dsm_base = %pa\n",
-				&lmem_size, &dsm_base);
-			return NULL;
-		}
-		dsm_size = ALIGN_DOWN(lmem_size - dsm_base, SZ_1M);
+		dsm_base = intel_uncore_read64(uncore, GEN12_DSMBASE) & GEN12_BDSM_MASK;
+		if (WARN_ON(lmem_size < dsm_base))
+			return ERR_PTR(-ENODEV);
+		dsm_size = lmem_size - dsm_base;
 	}
 
-	if (i915_direct_stolen_access(i915)) {
-		drm_dbg(&i915->drm, "Using direct DSM access\n");
-		io_start = intel_uncore_read64(uncore, GEN6_DSMBASE) & GEN11_BDSM_MASK;
-		io_size = dsm_size;
+	io_size = dsm_size;
+	if (HAS_LMEMBAR_SMEM_STOLEN(i915)) {
+		io_start = pci_resource_start(pdev, GEN12_LMEM_BAR) + SZ_8M;
 	} else if (pci_resource_len(pdev, GEN12_LMEM_BAR) < lmem_size) {
 		io_start = 0;
 		io_size = 0;
 	} else {
 		io_start = pci_resource_start(pdev, GEN12_LMEM_BAR) + dsm_base;
-		io_size = dsm_size;
 	}
 
 	min_page_size = HAS_64K_PAGES(i915) ? I915_GTT_PAGE_SIZE_64K :
@@ -1025,80 +965,3 @@ bool i915_gem_object_is_stolen(const struct drm_i915_gem_object *obj)
 {
 	return obj->ops == &i915_gem_object_stolen_ops;
 }
-
-static bool i915_gem_stolen_initialized(struct drm_device *drm)
-{
-	struct drm_i915_private *i915 = to_i915(drm);
-
-	return drm_mm_initialized(&i915->mm.stolen);
-}
-
-static u64 i915_gem_stolen_area_address(struct drm_device *drm)
-{
-	struct drm_i915_private *i915 = to_i915(drm);
-
-	return i915->dsm.stolen.start;
-}
-
-static u64 i915_gem_stolen_area_size(struct drm_device *drm)
-{
-	struct drm_i915_private *i915 = to_i915(drm);
-
-	return resource_size(&i915->dsm.stolen);
-}
-
-static u64 i915_gem_stolen_node_offset(const struct intel_stolen_node *node)
-{
-	return node->node.start;
-}
-
-static u64 i915_gem_stolen_node_address(const struct intel_stolen_node *node)
-{
-	struct drm_i915_private *i915 = node->i915;
-
-	return i915->dsm.stolen.start + i915_gem_stolen_node_offset(node);
-}
-
-static bool i915_gem_stolen_node_allocated(const struct intel_stolen_node *node)
-{
-	return drm_mm_node_allocated(&node->node);
-}
-
-static u64 i915_gem_stolen_node_size(const struct intel_stolen_node *node)
-{
-	return node->node.size;
-}
-
-static struct intel_stolen_node *i915_gem_stolen_node_alloc(struct drm_device *drm)
-{
-	struct drm_i915_private *i915 = to_i915(drm);
-	struct intel_stolen_node *node;
-
-	node = kzalloc(sizeof(*node), GFP_KERNEL);
-	if (!node)
-		return NULL;
-
-	node->i915 = i915;
-
-	return node;
-}
-
-static void i915_gem_stolen_node_free(const struct intel_stolen_node *node)
-{
-	kfree(node);
-}
-
-const struct intel_display_stolen_interface i915_display_stolen_interface = {
-	.insert_node_in_range = i915_gem_stolen_insert_node_in_range,
-	.insert_node = i915_gem_stolen_insert_node,
-	.remove_node = i915_gem_stolen_remove_node,
-	.initialized = i915_gem_stolen_initialized,
-	.node_allocated = i915_gem_stolen_node_allocated,
-	.node_offset = i915_gem_stolen_node_offset,
-	.area_address = i915_gem_stolen_area_address,
-	.area_size = i915_gem_stolen_area_size,
-	.node_address = i915_gem_stolen_node_address,
-	.node_size = i915_gem_stolen_node_size,
-	.node_alloc = i915_gem_stolen_node_alloc,
-	.node_free = i915_gem_stolen_node_free,
-};

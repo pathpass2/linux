@@ -5,9 +5,8 @@
 
 #include <linux/limits.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_reserved_mem.h>
-#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/remoteproc.h>
 #include <linux/reset.h>
@@ -52,36 +51,41 @@ static int rcar_rproc_prepare(struct rproc *rproc)
 {
 	struct device *dev = rproc->dev.parent;
 	struct device_node *np = dev->of_node;
+	struct of_phandle_iterator it;
 	struct rproc_mem_entry *mem;
-	int i = 0;
+	struct reserved_mem *rmem;
 	u32 da;
 
 	/* Register associated reserved memory regions */
-	while (1) {
-		struct resource res;
-		int ret;
+	of_phandle_iterator_init(&it, np, "memory-region", NULL, 0);
+	while (of_phandle_iterator_next(&it) == 0) {
 
-		ret = of_reserved_mem_region_to_resource(np, i++, &res);
-		if (ret)
-			return 0;
+		rmem = of_reserved_mem_lookup(it.node);
+		if (!rmem) {
+			dev_err(&rproc->dev,
+				"unable to acquire memory-region\n");
+			return -EINVAL;
+		}
 
-		if (res.start > U32_MAX)
+		if (rmem->base > U32_MAX)
 			return -EINVAL;
 
 		/* No need to translate pa to da, R-Car use same map */
-		da = res.start;
+		da = rmem->base;
 		mem = rproc_mem_entry_init(dev, NULL,
-					   res.start,
-					   resource_size(&res), da,
+					   rmem->base,
+					   rmem->size, da,
 					   rcar_rproc_mem_alloc,
 					   rcar_rproc_mem_release,
-					   res.name);
+					   it.node->name);
 
 		if (!mem)
 			return -ENOMEM;
 
 		rproc_add_carveout(rproc, mem);
 	}
+
+	return 0;
 }
 
 static int rcar_rproc_parse_fw(struct rproc *rproc, const struct firmware *fw)
@@ -188,11 +192,13 @@ pm_disable:
 	return ret;
 }
 
-static void rcar_rproc_remove(struct platform_device *pdev)
+static int rcar_rproc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	pm_runtime_disable(dev);
+
+	return 0;
 }
 
 static const struct of_device_id rcar_rproc_of_match[] = {

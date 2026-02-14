@@ -54,10 +54,6 @@ properties:
       - const: apb_pclk
       - const: atclk
 
-  label:
-    description:
-      Description of a coresight device.
-
   power-domains:
     maxItems: 1
 

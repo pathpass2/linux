@@ -86,13 +86,6 @@ properties:
         - tx-m
         - rx-m
 
-  port:
-    $ref: audio-graph-port.yaml#
-    unevaluatedProperties: false
-
-  power-domains:
-    maxItems: 1
-
   rockchip,grf:
     $ref: /schemas/types.yaml#/definitions/phandle
     description:
@@ -134,6 +127,7 @@ properties:
       Specify that the GPIO lines on the I2S bus are multiplexed such that
       the direction (input/output) needs to be dynamically adjusted.
     type: boolean
+
 
 required:
   - compatible

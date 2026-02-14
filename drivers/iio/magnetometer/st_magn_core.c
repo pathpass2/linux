@@ -427,7 +427,6 @@ static const struct st_sensor_settings st_magn_sensors_settings[] = {
 		.wai_addr = ST_SENSORS_DEFAULT_WAI_ADDRESS,
 		.sensors_supported = {
 			[0] = LSM9DS0_IMU_DEV_NAME,
-			[1] = LSM303D_IMU_DEV_NAME,
 		},
 		.ch = (struct iio_chan_spec *)st_magn_4_16bit_channels,
 		.odr = {
@@ -601,7 +600,7 @@ const struct st_sensor_settings *st_magn_get_settings(const char *name)
 
 	return &st_magn_sensors_settings[index];
 }
-EXPORT_SYMBOL_NS(st_magn_get_settings, "IIO_ST_SENSORS");
+EXPORT_SYMBOL_NS(st_magn_get_settings, IIO_ST_SENSORS);
 
 int st_magn_common_probe(struct iio_dev *indio_dev)
 {
@@ -648,9 +647,9 @@ int st_magn_common_probe(struct iio_dev *indio_dev)
 
 	return devm_iio_device_register(parent, indio_dev);
 }
-EXPORT_SYMBOL_NS(st_magn_common_probe, "IIO_ST_SENSORS");
+EXPORT_SYMBOL_NS(st_magn_common_probe, IIO_ST_SENSORS);
 
 MODULE_AUTHOR("Denis Ciocca <denis.ciocca@st.com>");
 MODULE_DESCRIPTION("STMicroelectronics magnetometers driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("IIO_ST_SENSORS");
+MODULE_IMPORT_NS(IIO_ST_SENSORS);

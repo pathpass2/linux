@@ -18,7 +18,7 @@
 #include <linux/iio/sysfs.h>
 #include <linux/property.h>
 #include <linux/spi/spi.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /*
  * The MSB of the register value determines whether the following byte will

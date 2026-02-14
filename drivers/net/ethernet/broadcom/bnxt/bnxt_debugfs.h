@@ -7,7 +7,7 @@
  * the Free Software Foundation.
  */
 
-#include <linux/bnxt/hsi.h>
+#include "bnxt_hsi.h"
 #include "bnxt.h"
 
 #ifdef CONFIG_DEBUG_FS

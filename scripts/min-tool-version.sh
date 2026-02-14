@@ -14,27 +14,23 @@ fi
 
 case "$1" in
 binutils)
-	echo 2.30.0
+	echo 2.25.0
 	;;
 gcc)
-	if [ "$ARCH" = parisc64 ]; then
-		echo 12.0.0
-	else
-		echo 8.1.0
-	fi
+	echo 5.1.0
 	;;
 llvm)
-	if [ "$SRCARCH" = loongarch ]; then
-		echo 18.0.0
-	else
+	if [ "$SRCARCH" = s390 ]; then
 		echo 15.0.0
+	else
+		echo 11.0.0
 	fi
 	;;
 rustc)
-	echo 1.78.0
+	echo 1.62.0
 	;;
 bindgen)
-	echo 0.65.1
+	echo 0.56.0
 	;;
 *)
 	echo "$1: unknown tool" >&2

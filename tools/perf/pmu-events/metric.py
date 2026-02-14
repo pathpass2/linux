@@ -4,14 +4,8 @@ import ast
 import decimal
 import json
 import re
-from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple, Union
 
-class MetricConstraint(Enum):
-  GROUPED_EVENTS = 0
-  NO_GROUP_EVENTS = 1
-  NO_GROUP_EVENTS_NMI = 2
-  NO_GROUP_EVENTS_SMT = 3
 
 class Expression:
   """Abstract base class of elements in a metric expression."""
@@ -49,9 +43,6 @@ class Expression:
 
   def __and__(self, other: Union[int, float, 'Expression']) -> 'Operator':
     return Operator('&', self, other)
-
-  def __rand__(self, other: Union[int, float, 'Expression']) -> 'Operator':
-    return Operator('&', other, self)
 
   def __lt__(self, other: Union[int, float, 'Expression']) -> 'Operator':
     return Operator('<', self, other)
@@ -97,10 +88,7 @@ def _Constify(val: Union[bool, int, float, Expression]) -> Expression:
 
 
 # Simple lookup for operator precedence, used to avoid unnecessary
-# brackets. Precedence matches that of the simple expression parser
-# but differs from python where comparisons are lower precedence than
-# the bitwise &, ^, | but not the logical versions that the expression
-# parser doesn't have.
+# brackets. Precedence matches that of python and the simple expression parser.
 _PRECEDENCE = {
     '|': 0,
     '^': 1,
@@ -414,31 +402,19 @@ def source_count(event: Event) -> Function:
   return Function('source_count', event)
 
 
-def has_event(event: Event) -> Function:
-  # pylint: disable=redefined-builtin
-  # pylint: disable=invalid-name
-  return Function('has_event', event)
-
-def strcmp_cpuid_str(cpuid: Event) -> Function:
-  # pylint: disable=redefined-builtin
-  # pylint: disable=invalid-name
-  return Function('strcmp_cpuid_str', cpuid)
-
 class Metric:
   """An individual metric that will specifiable on the perf command line."""
   groups: Set[str]
   expr: Expression
   scale_unit: str
-  constraint: MetricConstraint
-  threshold: Optional[Expression]
+  constraint: bool
 
   def __init__(self,
                name: str,
                description: str,
                expr: Expression,
                scale_unit: str,
-               constraint: MetricConstraint = MetricConstraint.GROUPED_EVENTS,
-               threshold: Optional[Expression] = None):
+               constraint: bool = False):
     self.name = name
     self.description = description
     self.expr = expr.Simplify()
@@ -449,7 +425,6 @@ class Metric:
     else:
       self.scale_unit = f'1{scale_unit}'
     self.constraint = constraint
-    self.threshold = threshold
     self.groups = set()
 
   def __lt__(self, other):
@@ -458,8 +433,7 @@ class Metric:
 
   def AddToMetricGroup(self, group):
     """Callback used when being added to a MetricGroup."""
-    if group.name:
-      self.groups.add(group.name)
+    self.groups.add(group.name)
 
   def Flatten(self) -> Set['Metric']:
     """Return a leaf metric."""
@@ -474,15 +448,20 @@ class Metric:
         'MetricExpr': self.expr.ToPerfJson(),
         'ScaleUnit': self.scale_unit
     }
-    if self.constraint != MetricConstraint.GROUPED_EVENTS:
-      result['MetricConstraint'] = self.constraint.name
-    if self.threshold:
-      result['MetricThreshold'] = self.threshold.ToPerfJson()
+    if self.constraint:
+      result['MetricConstraint'] = 'NO_NMI_WATCHDOG'
 
     return result
 
-  def ToMetricGroupDescriptions(self, root: bool = True) -> Dict[str, str]:
-    return {}
+
+class _MetricJsonEncoder(json.JSONEncoder):
+  """Special handling for Metric objects."""
+
+  def default(self, o):
+    if isinstance(o, Metric):
+      return o.ToPerfJson()
+    return json.JSONEncoder.default(self, o)
+
 
 class MetricGroup:
   """A group of metrics.
@@ -492,16 +471,12 @@ class MetricGroup:
   which can facilitate arrangements similar to trees.
   """
 
-  def __init__(self, name: str,
-               metric_list: List[Union[Optional[Metric], Optional['MetricGroup']]],
-               description: Optional[str] = None):
+  def __init__(self, name: str, metric_list: List[Union[Metric,
+                                                        'MetricGroup']]):
     self.name = name
-    self.metric_list = []
-    self.description = description
+    self.metric_list = metric_list
     for metric in metric_list:
-      if metric:
-        self.metric_list.append(metric)
-        metric.AddToMetricGroup(self)
+      metric.AddToMetricGroup(self)
 
   def AddToMetricGroup(self, group):
     """Callback used when a MetricGroup is added into another."""
@@ -516,36 +491,11 @@ class MetricGroup:
 
     return result
 
-  def ToPerfJson(self) -> List[Dict[str, str]]:
-    result = []
-    for x in sorted(self.Flatten()):
-      result.append(x.ToPerfJson())
-    return result
-
-  def ToMetricGroupDescriptions(self, root: bool = True) -> Dict[str, str]:
-    result = {self.name: self.description} if self.description else {}
-    for x in self.metric_list:
-      result.update(x.ToMetricGroupDescriptions(False))
-    return result
+  def ToPerfJson(self) -> str:
+    return json.dumps(sorted(self.Flatten()), indent=2, cls=_MetricJsonEncoder)
 
   def __str__(self) -> str:
-    return str(self.ToPerfJson())
-
-
-def JsonEncodeMetric(x: MetricGroup):
-  class MetricJsonEncoder(json.JSONEncoder):
-    """Special handling for Metric objects."""
-
-    def default(self, o):
-      if isinstance(o, Metric) or isinstance(o, MetricGroup):
-        return o.ToPerfJson()
-      return json.JSONEncoder.default(self, o)
-
-  return json.dumps(x, indent=2, cls=MetricJsonEncoder)
-
-
-def JsonEncodeMetricGroupDescriptions(x: MetricGroup):
-  return json.dumps(x.ToMetricGroupDescriptions(), indent=2)
+    return self.ToPerfJson()
 
 
 class _RewriteIfExpToSelect(ast.NodeTransformer):
@@ -579,28 +529,14 @@ def ParsePerfJson(orig: str) -> Expression:
   """
   # pylint: disable=eval-used
   py = orig.strip()
-  # First try to convert everything that looks like a string (event name) into Event(r"EVENT_NAME").
-  # This isn't very selective so is followed up by converting some unwanted conversions back again
   py = re.sub(r'([a-zA-Z][^-+/\* \\\(\),]*(?:\\.[^-+/\* \\\(\),]*)*)',
               r'Event(r"\1")', py)
-  # If it started with a # it should have been a literal, rather than an event name
   py = re.sub(r'#Event\(r"([^"]*)"\)', r'Literal("#\1")', py)
-  # Fix events wrongly broken at a ','
-  while True:
-    prev_py = py
-    py = re.sub(r'Event\(r"([^"]*)"\),Event\(r"([^"]*)"\)', r'Event(r"\1,\2")', py)
-    if py == prev_py:
-      break
-  # Convert accidentally converted hex constants ("0Event(r"xDEADBEEF)"") back to a constant,
-  # but keep it wrapped in Event(), otherwise Python drops the 0x prefix and it gets interpreted as
-  # a double by the Bison parser
-  py = re.sub(r'0Event\(r"[xX]([0-9a-fA-F]*)"\)', r'Event("0x\1")', py)
-  # Convert accidentally converted scientific notation constants back
-  py = re.sub(r'([0-9]+)Event\(r"(e[0-9]*)"\)', r'\1\2', py)
-  # Convert all the known keywords back from events to just the keyword
-  keywords = ['if', 'else', 'min', 'max', 'd_ratio', 'source_count', 'has_event', 'strcmp_cpuid_str']
+  py = re.sub(r'([0-9]+)Event\(r"(e[0-9]+)"\)', r'\1\2', py)
+  keywords = ['if', 'else', 'min', 'max', 'd_ratio', 'source_count']
   for kw in keywords:
     py = re.sub(rf'Event\(r"{kw}"\)', kw, py)
+
   try:
     parsed = ast.parse(py, mode='eval')
   except SyntaxError as e:
@@ -609,34 +545,29 @@ def ParsePerfJson(orig: str) -> Expression:
   parsed = ast.fix_missing_locations(parsed)
   return _Constify(eval(compile(parsed, orig, 'eval')))
 
-def RewriteMetricsInTermsOfOthers(metrics: List[Tuple[str, str, Expression]]
-                                  )-> Dict[Tuple[str, str], Expression]:
+
+def RewriteMetricsInTermsOfOthers(metrics: List[Tuple[str, Expression]]
+                                  )-> Dict[str, Expression]:
   """Shorten metrics by rewriting in terms of others.
 
   Args:
-    metrics (list): pmus, metric names and their expressions.
+    metrics (list): pairs of metric names and their expressions.
   Returns:
-    Dict: mapping from a pmu, metric name pair to a shortened expression.
+    Dict: mapping from a metric name to a shortened expression.
   """
-  updates: Dict[Tuple[str, str], Expression] = dict()
-  for outer_pmu, outer_name, outer_expression in metrics:
-    if outer_pmu is None:
-      outer_pmu = 'cpu'
+  updates: Dict[str, Expression] = dict()
+  for outer_name, outer_expression in metrics:
     updated = outer_expression
     while True:
-      for inner_pmu, inner_name, inner_expression in metrics:
-        if inner_pmu is None:
-          inner_pmu = 'cpu'
-        if inner_pmu.lower() != outer_pmu.lower():
-          continue
+      for inner_name, inner_expression in metrics:
         if inner_name.lower() == outer_name.lower():
           continue
-        if (inner_pmu, inner_name) in updates:
-          inner_expression = updates[(inner_pmu, inner_name)]
+        if inner_name in updates:
+          inner_expression = updates[inner_name]
         updated = updated.Substitute(inner_name, inner_expression)
       if updated.Equals(outer_expression):
         break
-      if (outer_pmu, outer_name) in updates and updated.Equals(updates[(outer_pmu, outer_name)]):
+      if outer_name in updates and updated.Equals(updates[outer_name]):
         break
-      updates[(outer_pmu, outer_name)] = updated
+      updates[outer_name] = updated
   return updates

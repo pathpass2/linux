@@ -5,7 +5,7 @@
  * Copyright (C) 2022 Loongson Technology Corporation Limited
  */
 
-#include <linux/export.h>
+#include <asm/export.h>
 #include <asm/ftrace.h>
 #include <asm/regdef.h>
 #include <asm/stackframe.h>
@@ -79,23 +79,18 @@ SYM_FUNC_START(ftrace_graph_caller)
 SYM_FUNC_END(ftrace_graph_caller)
 
 SYM_FUNC_START(return_to_handler)
-	/* Save return value regs */
-	PTR_ADDI	sp, sp, -PT_SIZE
-	PTR_S		a0, sp, PT_R4
-	PTR_S		a1, sp, PT_R5
-	PTR_S		zero, sp, PT_R22
+	PTR_ADDI	sp, sp, -2 * SZREG
+	PTR_S		a0, sp, 0
+	PTR_S		a1, sp, SZREG
 
-	move		a0, sp
 	bl		ftrace_return_to_handler
 
 	/* Restore the real parent address: a0 -> ra */
 	move		ra, a0
 
-	/* Restore return value regs */
-	PTR_L		a0, sp, PT_R4
-	PTR_L		a1, sp, PT_R5
-	PTR_ADDI	sp, sp, PT_SIZE
-
+	PTR_L		a0, sp, 0
+	PTR_L		a1, sp, SZREG
+	PTR_ADDI	sp, sp, 2 * SZREG
 	jr		ra
 SYM_FUNC_END(return_to_handler)
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */

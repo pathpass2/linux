@@ -11,22 +11,10 @@ maintainers:
 
 properties:
   compatible:
-    oneOf:
-      - enum:
-          - google,gs101-dwusb3
-          - samsung,exynos2200-dwusb3
-          - samsung,exynos5250-dwusb3
-          - samsung,exynos5433-dwusb3
-          - samsung,exynos7-dwusb3
-          - samsung,exynos7870-dwusb3
-          - samsung,exynos850-dwusb3
-          - samsung,exynosautov920-dwusb3
-      - items:
-          - const: samsung,exynos8890-dwusb3
-          - const: samsung,exynos7-dwusb3
-      - items:
-          - const: samsung,exynos990-dwusb3
-          - const: samsung,exynos850-dwusb3
+    enum:
+      - samsung,exynos5250-dwusb3
+      - samsung,exynos5433-dwusb3
+      - samsung,exynos7-dwusb3
 
   '#address-cells':
     const: 1
@@ -38,9 +26,6 @@ properties:
   clock-names:
     minItems: 1
     maxItems: 4
-
-  power-domains:
-    maxItems: 1
 
   ranges: true
 
@@ -65,41 +50,10 @@ required:
   - clock-names
   - ranges
   - '#size-cells'
+  - vdd10-supply
   - vdd33-supply
 
 allOf:
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: google,gs101-dwusb3
-    then:
-      properties:
-        clocks:
-          minItems: 4
-          maxItems: 4
-        clock-names:
-          items:
-            - const: bus_early
-            - const: susp_clk
-            - const: link_aclk
-            - const: link_pclk
-      required:
-        - vdd10-supply
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: samsung,exynos2200-dwusb3
-    then:
-      properties:
-        clocks:
-          maxItems: 1
-        clock-names:
-          items:
-            - const: link_aclk
-
   - if:
       properties:
         compatible:
@@ -113,14 +67,12 @@ allOf:
         clock-names:
           items:
             - const: usbdrd30
-      required:
-        - vdd10-supply
 
   - if:
       properties:
         compatible:
           contains:
-            const: samsung,exynos5433-dwusb3
+            const: samsung,exynos54333-dwusb3
     then:
       properties:
         clocks:
@@ -130,10 +82,8 @@ allOf:
           items:
             - const: aclk
             - const: susp_clk
-            - const: phyclk
             - const: pipe_pclk
-      required:
-        - vdd10-supply
+            - const: phyclk
 
   - if:
       properties:
@@ -150,56 +100,6 @@ allOf:
             - const: usbdrd30
             - const: usbdrd30_susp_clk
             - const: usbdrd30_axius_clk
-      required:
-        - vdd10-supply
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: samsung,exynos7870-dwusb3
-    then:
-      properties:
-        clocks:
-          minItems: 3
-          maxItems: 3
-        clock-names:
-          items:
-            - const: bus_early
-            - const: ref
-            - const: ctrl
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: samsung,exynos850-dwusb3
-    then:
-      properties:
-        clocks:
-          minItems: 2
-          maxItems: 2
-        clock-names:
-          items:
-            - const: bus_early
-            - const: ref
-      required:
-        - vdd10-supply
-
-  - if:
-      properties:
-        compatible:
-          contains:
-            const: samsung,exynosautov920-dwusb3
-    then:
-      properties:
-        clocks:
-          minItems: 2
-          maxItems: 2
-        clock-names:
-          items:
-            - const: ref
-            - const: susp_clk
 
 additionalProperties: false
 

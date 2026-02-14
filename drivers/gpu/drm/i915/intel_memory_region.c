@@ -5,7 +5,6 @@
 
 #include <linux/prandom.h>
 
-#include <drm/drm_print.h>
 #include <uapi/drm/i915_drm.h>
 
 #include "intel_memory_region.h"
@@ -51,7 +50,7 @@ static int __iopagetest(struct intel_memory_region *mem,
 	if (memchr_inv(result, value, sizeof(result))) {
 		dev_err(mem->i915->drm.dev,
 			"Failed to read back from memory region:%pR at [%pa + %pa] for %ps; wrote %x, read (%x, %x, %x)\n",
-			&mem->region, &mem->io.start, &offset, caller,
+			&mem->region, &mem->io_start, &offset, caller,
 			value, result[0], result[1], result[2]);
 		return -EINVAL;
 	}
@@ -68,11 +67,11 @@ static int iopagetest(struct intel_memory_region *mem,
 	int err;
 	int i;
 
-	va = ioremap_wc(mem->io.start + offset, PAGE_SIZE);
+	va = ioremap_wc(mem->io_start + offset, PAGE_SIZE);
 	if (!va) {
 		dev_err(mem->i915->drm.dev,
 			"Failed to ioremap memory region [%pa + %pa] for %ps\n",
-			&mem->io.start, &offset, caller);
+			&mem->io_start, &offset, caller);
 		return -EFAULT;
 	}
 
@@ -103,10 +102,10 @@ static int iomemtest(struct intel_memory_region *mem,
 	resource_size_t last, page;
 	int err;
 
-	if (resource_size(&mem->io) < PAGE_SIZE)
+	if (mem->io_size < PAGE_SIZE)
 		return 0;
 
-	last = resource_size(&mem->io) - PAGE_SIZE;
+	last = mem->io_size - PAGE_SIZE;
 
 	/*
 	 * Quick test to check read/write access to the iomap (backing store).
@@ -172,17 +171,6 @@ intel_memory_region_by_type(struct drm_i915_private *i915,
 	return NULL;
 }
 
-bool intel_memory_type_is_local(enum intel_memory_type mem_type)
-{
-	switch (mem_type) {
-	case INTEL_MEMORY_LOCAL:
-	case INTEL_MEMORY_STOLEN_LOCAL:
-		return true;
-	default:
-		return false;
-	}
-}
-
 /**
  * intel_memory_region_reserve - Reserve a memory range
  * @mem: The region for which we want to reserve a range.
@@ -219,29 +207,13 @@ static int intel_memory_region_memtest(struct intel_memory_region *mem,
 	struct drm_i915_private *i915 = mem->i915;
 	int err = 0;
 
-	if (!mem->io.start)
+	if (!mem->io_start)
 		return 0;
 
 	if (IS_ENABLED(CONFIG_DRM_I915_DEBUG_GEM) || i915->params.memtest)
 		err = iomemtest(mem, i915->params.memtest, caller);
 
 	return err;
-}
-
-const char *intel_memory_type_str(enum intel_memory_type type)
-{
-	switch (type) {
-	case INTEL_MEMORY_SYSTEM:
-		return "system";
-	case INTEL_MEMORY_LOCAL:
-		return "local";
-	case INTEL_MEMORY_STOLEN_LOCAL:
-		return "stolen-local";
-	case INTEL_MEMORY_STOLEN_SYSTEM:
-		return "stolen-system";
-	default:
-		return "unknown";
-	}
 }
 
 struct intel_memory_region *
@@ -264,15 +236,13 @@ intel_memory_region_create(struct drm_i915_private *i915,
 
 	mem->i915 = i915;
 	mem->region = DEFINE_RES_MEM(start, size);
-	mem->io = DEFINE_RES_MEM(io_start, io_size);
+	mem->io_start = io_start;
+	mem->io_size = io_size;
 	mem->min_page_size = min_page_size;
 	mem->ops = ops;
 	mem->total = size;
 	mem->type = type;
 	mem->instance = instance;
-
-	snprintf(mem->uabi_name, sizeof(mem->uabi_name), "%s%u",
-		 intel_memory_type_str(type), instance);
 
 	mutex_init(&mem->objects.lock);
 	INIT_LIST_HEAD(&mem->objects.list);
@@ -344,7 +314,7 @@ int intel_memory_regions_hw_probe(struct drm_i915_private *i915)
 		struct intel_memory_region *mem = ERR_PTR(-ENODEV);
 		u16 type, instance;
 
-		if (!HAS_REGION(i915, i))
+		if (!HAS_REGION(i915, BIT(i)))
 			continue;
 
 		type = intel_region_map[i].class;
@@ -380,28 +350,8 @@ int intel_memory_regions_hw_probe(struct drm_i915_private *i915)
 			goto out_cleanup;
 		}
 
-		if (mem) { /* Skip on non-fatal errors */
-			mem->id = i;
-			i915->mm.regions[i] = mem;
-		}
-	}
-
-	for (i = 0; i < ARRAY_SIZE(i915->mm.regions); i++) {
-		struct intel_memory_region *mem = i915->mm.regions[i];
-		u64 region_size, io_size;
-
-		if (!mem)
-			continue;
-
-		region_size = resource_size(&mem->region) >> 20;
-		io_size = resource_size(&mem->io) >> 20;
-
-		if (resource_size(&mem->io))
-			drm_dbg(&i915->drm, "Memory region(%d): %s: %llu MiB %pR, io: %llu MiB %pR\n",
-				mem->id, mem->name, region_size, &mem->region, io_size, &mem->io);
-		else
-			drm_dbg(&i915->drm, "Memory region(%d): %s: %llu MiB %pR, io: n/a\n",
-				mem->id, mem->name, region_size, &mem->region);
+		mem->id = i;
+		i915->mm.regions[i] = mem;
 	}
 
 	return 0;

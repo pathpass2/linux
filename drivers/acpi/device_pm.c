@@ -397,19 +397,6 @@ void acpi_device_fix_up_power_extended(struct acpi_device *adev)
 }
 EXPORT_SYMBOL_GPL(acpi_device_fix_up_power_extended);
 
-/**
- * acpi_device_fix_up_power_children - Force a device's children into D0.
- * @adev: Parent device object whose children's power state is to be fixed up.
- *
- * Call acpi_device_fix_up_power() for @adev's children so long as they
- * are reported as present and enabled.
- */
-void acpi_device_fix_up_power_children(struct acpi_device *adev)
-{
-	acpi_dev_for_each_child(adev, fix_up_power_if_applicable, NULL);
-}
-EXPORT_SYMBOL_GPL(acpi_device_fix_up_power_children);
-
 int acpi_device_update_power(struct acpi_device *device, int *state_p)
 {
 	int state;
@@ -586,7 +573,8 @@ acpi_status acpi_add_pm_notifier(struct acpi_device *adev, struct device *dev,
 		goto out;
 
 	mutex_lock(&acpi_pm_notifier_lock);
-	adev->wakeup.ws = wakeup_source_register(dev, dev_name(&adev->dev));
+	adev->wakeup.ws = wakeup_source_register(&adev->dev,
+						 dev_name(&adev->dev));
 	adev->wakeup.context.dev = dev;
 	adev->wakeup.context.func = func;
 	adev->wakeup.flags.notifier_present = true;
@@ -1118,8 +1106,6 @@ int acpi_subsys_prepare(struct device *dev)
 {
 	struct acpi_device *adev = ACPI_COMPANION(dev);
 
-	dev_pm_set_strict_midlayer(dev, true);
-
 	if (dev->driver && dev->driver->pm && dev->driver->pm->prepare) {
 		int ret = dev->driver->pm->prepare(dev);
 
@@ -1148,8 +1134,6 @@ void acpi_subsys_complete(struct device *dev)
 	 */
 	if (pm_runtime_suspended(dev) && pm_resume_via_firmware())
 		pm_request_resume(dev);
-
-	dev_pm_set_strict_midlayer(dev, false);
 }
 EXPORT_SYMBOL_GPL(acpi_subsys_complete);
 
@@ -1164,7 +1148,7 @@ EXPORT_SYMBOL_GPL(acpi_subsys_complete);
  */
 int acpi_subsys_suspend(struct device *dev)
 {
-	if (!dev_pm_smart_suspend(dev) ||
+	if (!dev_pm_test_driver_flags(dev, DPM_FLAG_SMART_SUSPEND) ||
 	    acpi_dev_needs_resume(dev, ACPI_COMPANION(dev)))
 		pm_runtime_resume(dev);
 
@@ -1251,7 +1235,7 @@ static int acpi_subsys_resume_early(struct device *dev)
 		return 0;
 
 	if (pm && !pm->resume_early) {
-		dev_dbg(dev, "Postponing ACPI PM to normal resume stage\n");
+		dev_dbg(dev, "postponing D0 transition to normal resume stage\n");
 		return 0;
 	}
 
@@ -1273,7 +1257,7 @@ static int acpi_subsys_resume(struct device *dev)
 	int ret = 0;
 
 	if (!dev_pm_skip_resume(dev) && pm && !pm->resume_early) {
-		dev_dbg(dev, "Applying postponed ACPI PM\n");
+		dev_dbg(dev, "executing postponed D0 transition\n");
 		ret = acpi_dev_resume(dev);
 	}
 
@@ -1323,7 +1307,7 @@ EXPORT_SYMBOL_GPL(acpi_subsys_restore_early);
  */
 int acpi_subsys_poweroff(struct device *dev)
 {
-	if (!dev_pm_smart_suspend(dev) ||
+	if (!dev_pm_test_driver_flags(dev, DPM_FLAG_SMART_SUSPEND) ||
 	    acpi_dev_needs_resume(dev, ACPI_COMPANION(dev)))
 		pm_runtime_resume(dev);
 
@@ -1365,8 +1349,6 @@ static int acpi_subsys_poweroff_noirq(struct device *dev)
 }
 #endif /* CONFIG_PM_SLEEP */
 
-static void acpi_dev_pm_detach(struct device *dev, bool power_off);
-
 static struct dev_pm_domain acpi_general_pm_domain = {
 	.ops = {
 		.runtime_suspend = acpi_subsys_runtime_suspend,
@@ -1387,7 +1369,6 @@ static struct dev_pm_domain acpi_general_pm_domain = {
 		.restore_early = acpi_subsys_restore_early,
 #endif
 	},
-	.detach = acpi_dev_pm_detach,
 };
 
 /**
@@ -1457,15 +1438,6 @@ int acpi_dev_pm_attach(struct device *dev, bool power_on)
 		return 0;
 
 	/*
-	 * Skip devices whose ACPI companions don't support power management and
-	 * don't have a wakeup GPE.
-	 */
-	if (!acpi_device_power_manageable(adev) && !acpi_device_can_wakeup(adev)) {
-		dev_dbg(dev, "No ACPI power management or wakeup GPE\n");
-		return 0;
-	}
-
-	/*
 	 * Only attach the power domain to the first device if the
 	 * companion is shared by multiple. This is to prevent doing power
 	 * management twice.
@@ -1480,6 +1452,7 @@ int acpi_dev_pm_attach(struct device *dev, bool power_on)
 		acpi_device_wakeup_disable(adev);
 	}
 
+	dev->pm_domain->detach = acpi_dev_pm_detach;
 	return 1;
 }
 EXPORT_SYMBOL_GPL(acpi_dev_pm_attach);

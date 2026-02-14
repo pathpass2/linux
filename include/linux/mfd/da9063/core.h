@@ -78,7 +78,6 @@ struct da9063 {
 	enum da9063_type type;
 	unsigned char	variant_code;
 	unsigned int	flags;
-	bool use_sw_pm;
 
 	/* Control interface */
 	struct regmap	*regmap;

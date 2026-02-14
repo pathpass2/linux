@@ -5,14 +5,12 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <linux/types.h>
-#include <linux/seq_file.h>
 #include <linux/memblock.h>
 #include <linux/sizes.h>
 #include <linux/printk.h>
 #include <../selftests/kselftest.h>
 
 #define MEM_SIZE		SZ_32K
-#define PHYS_MEM_SIZE		SZ_16M
 #define NUMA_NODES		8
 
 #define INIT_MEMBLOCK_REGIONS			128
@@ -39,9 +37,6 @@ enum test_flags {
 		test_fail(); \
 	assert((_expected) == (_seen)); \
 } while (0)
-
-#define ASSERT_TRUE(_seen) ASSERT_EQ(true, _seen)
-#define ASSERT_FALSE(_seen) ASSERT_EQ(false, _seen)
 
 /**
  * ASSERT_NE():

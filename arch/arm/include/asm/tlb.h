@@ -26,13 +26,20 @@
 
 #else /* !CONFIG_MMU */
 
+#include <linux/swap.h>
 #include <asm/tlbflush.h>
+
+static inline void __tlb_remove_table(void *_table)
+{
+	free_page_and_swap_cache((struct page *)_table);
+}
+
 #include <asm-generic/tlb.h>
 
 static inline void
 __pte_free_tlb(struct mmu_gather *tlb, pgtable_t pte, unsigned long addr)
 {
-	struct ptdesc *ptdesc = page_ptdesc(pte);
+	pgtable_pte_page_dtor(pte);
 
 #ifndef CONFIG_ARM_LPAE
 	/*
@@ -43,16 +50,17 @@ __pte_free_tlb(struct mmu_gather *tlb, pgtable_t pte, unsigned long addr)
 	__tlb_adjust_range(tlb, addr - PAGE_SIZE, 2 * PAGE_SIZE);
 #endif
 
-	tlb_remove_ptdesc(tlb, ptdesc);
+	tlb_remove_table(tlb, pte);
 }
 
 static inline void
 __pmd_free_tlb(struct mmu_gather *tlb, pmd_t *pmdp, unsigned long addr)
 {
 #ifdef CONFIG_ARM_LPAE
-	struct ptdesc *ptdesc = virt_to_ptdesc(pmdp);
+	struct page *page = virt_to_page(pmdp);
 
-	tlb_remove_ptdesc(tlb, ptdesc);
+	pgtable_pmd_page_dtor(page);
+	tlb_remove_table(tlb, page);
 #endif
 }
 

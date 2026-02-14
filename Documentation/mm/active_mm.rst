@@ -2,12 +2,6 @@
 Active MM
 =========
 
-Note, the mm_count refcount may no longer include the "lazy" users
-(running tasks with ->active_mm == mm && ->mm == NULL) on kernels
-with CONFIG_MMU_LAZY_TLB_REFCOUNT=n. Taking and releasing these lazy
-references must be done with mmgrab_lazy_tlb() and mmdrop_lazy_tlb()
-helpers, which abstract this config option.
-
 ::
 
  List:       linux-kernel
@@ -92,4 +86,4 @@ helpers, which abstract this config option.
  and register state is separate, the alpha PALcode joins the two, and you
  need to switch both together).
 
- (From https://lore.kernel.org/lkml/Pine.LNX.4.10.9907301410280.752-100000@penguin.transmeta.com/)
+ (From http://marc.info/?l=linux-kernel&m=93337278602211&w=2)

@@ -163,9 +163,9 @@ static int skb_get_type(struct __sk_buff *skb)
 		ip6h = data + sizeof(struct ethhdr);
 		if (ip6h + 1 > data_end)
 			return -1;
-		if (v6_equal(ip6h->saddr, (struct in6_addr){{ip6_src}}))
+		if (v6_equal(ip6h->saddr, (struct in6_addr)ip6_src))
 			ns = SRC_NS;
-		else if (v6_equal(ip6h->saddr, (struct in6_addr){{ip6_dst}}))
+		else if (v6_equal(ip6h->saddr, (struct in6_addr)ip6_dst))
 			ns = DST_NS;
 		inet_proto = ip6h->nexthdr;
 		trans = ip6h + 1;
@@ -222,20 +222,16 @@ int egress_host(struct __sk_buff *skb)
 		return TC_ACT_OK;
 
 	if (skb_proto(skb_type) == IPPROTO_TCP) {
-		if (skb->tstamp_type == BPF_SKB_CLOCK_MONOTONIC &&
-		    skb->tstamp)
-			inc_dtimes(EGRESS_ENDHOST);
-		else
-			inc_errs(EGRESS_ENDHOST);
-	} else if (skb_proto(skb_type) == IPPROTO_UDP) {
-		if (skb->tstamp_type == BPF_SKB_CLOCK_TAI &&
+		if (skb->tstamp_type == BPF_SKB_TSTAMP_DELIVERY_MONO &&
 		    skb->tstamp)
 			inc_dtimes(EGRESS_ENDHOST);
 		else
 			inc_errs(EGRESS_ENDHOST);
 	} else {
-		if (skb->tstamp_type == BPF_SKB_CLOCK_REALTIME &&
+		if (skb->tstamp_type == BPF_SKB_TSTAMP_UNSPEC &&
 		    skb->tstamp)
+			inc_dtimes(EGRESS_ENDHOST);
+		else
 			inc_errs(EGRESS_ENDHOST);
 	}
 
@@ -256,7 +252,7 @@ int ingress_host(struct __sk_buff *skb)
 	if (!skb_type)
 		return TC_ACT_OK;
 
-	if (skb->tstamp_type == BPF_SKB_CLOCK_MONOTONIC &&
+	if (skb->tstamp_type == BPF_SKB_TSTAMP_DELIVERY_MONO &&
 	    skb->tstamp == EGRESS_FWDNS_MAGIC)
 		inc_dtimes(INGRESS_ENDHOST);
 	else
@@ -319,6 +315,7 @@ int egress_fwdns_prio100(struct __sk_buff *skb)
 SEC("tc")
 int ingress_fwdns_prio101(struct __sk_buff *skb)
 {
+	__u64 expected_dtime = EGRESS_ENDHOST_MAGIC;
 	int skb_type;
 
 	skb_type = skb_get_type(skb);
@@ -326,24 +323,29 @@ int ingress_fwdns_prio101(struct __sk_buff *skb)
 		/* Should have handled in prio100 */
 		return TC_ACT_SHOT;
 
+	if (skb_proto(skb_type) == IPPROTO_UDP)
+		expected_dtime = 0;
+
 	if (skb->tstamp_type) {
 		if (fwdns_clear_dtime() ||
-		    (skb->tstamp_type != BPF_SKB_CLOCK_MONOTONIC &&
-		    skb->tstamp_type != BPF_SKB_CLOCK_TAI) ||
-		    skb->tstamp != EGRESS_ENDHOST_MAGIC)
+		    skb->tstamp_type != BPF_SKB_TSTAMP_DELIVERY_MONO ||
+		    skb->tstamp != expected_dtime)
 			inc_errs(INGRESS_FWDNS_P101);
 		else
 			inc_dtimes(INGRESS_FWDNS_P101);
 	} else {
-		if (!fwdns_clear_dtime())
+		if (!fwdns_clear_dtime() && expected_dtime)
 			inc_errs(INGRESS_FWDNS_P101);
 	}
 
-	if (skb->tstamp_type == BPF_SKB_CLOCK_MONOTONIC) {
+	if (skb->tstamp_type == BPF_SKB_TSTAMP_DELIVERY_MONO) {
 		skb->tstamp = INGRESS_FWDNS_MAGIC;
 	} else {
 		if (bpf_skb_set_tstamp(skb, INGRESS_FWDNS_MAGIC,
-				       BPF_SKB_CLOCK_MONOTONIC))
+				       BPF_SKB_TSTAMP_DELIVERY_MONO))
+			inc_errs(SET_DTIME);
+		if (!bpf_skb_set_tstamp(skb, INGRESS_FWDNS_MAGIC,
+					BPF_SKB_TSTAMP_UNSPEC))
 			inc_errs(SET_DTIME);
 	}
 
@@ -368,7 +370,7 @@ int egress_fwdns_prio101(struct __sk_buff *skb)
 
 	if (skb->tstamp_type) {
 		if (fwdns_clear_dtime() ||
-		    skb->tstamp_type != BPF_SKB_CLOCK_MONOTONIC ||
+		    skb->tstamp_type != BPF_SKB_TSTAMP_DELIVERY_MONO ||
 		    skb->tstamp != INGRESS_FWDNS_MAGIC)
 			inc_errs(EGRESS_FWDNS_P101);
 		else
@@ -378,11 +380,14 @@ int egress_fwdns_prio101(struct __sk_buff *skb)
 			inc_errs(EGRESS_FWDNS_P101);
 	}
 
-	if (skb->tstamp_type == BPF_SKB_CLOCK_MONOTONIC) {
+	if (skb->tstamp_type == BPF_SKB_TSTAMP_DELIVERY_MONO) {
 		skb->tstamp = EGRESS_FWDNS_MAGIC;
 	} else {
 		if (bpf_skb_set_tstamp(skb, EGRESS_FWDNS_MAGIC,
-				       BPF_SKB_CLOCK_MONOTONIC))
+				       BPF_SKB_TSTAMP_DELIVERY_MONO))
+			inc_errs(SET_DTIME);
+		if (!bpf_skb_set_tstamp(skb, INGRESS_FWDNS_MAGIC,
+					BPF_SKB_TSTAMP_UNSPEC))
 			inc_errs(SET_DTIME);
 	}
 

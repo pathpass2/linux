@@ -34,6 +34,12 @@ static const struct can_bittiming_const mscan_bittiming_const = {
 	.brp_inc = 1,
 };
 
+struct mscan_state {
+	u8 mode;
+	u8 canrier;
+	u8 cantier;
+};
+
 static enum can_state state_map[] = {
 	CAN_STATE_ERROR_ACTIVE,
 	CAN_STATE_ERROR_WARNING,
@@ -607,6 +613,7 @@ static const struct net_device_ops mscan_netdev_ops = {
 	.ndo_open	= mscan_open,
 	.ndo_stop	= mscan_close,
 	.ndo_start_xmit	= mscan_start_xmit,
+	.ndo_change_mtu	= can_change_mtu,
 };
 
 static const struct ethtool_ops mscan_ethtool_ops = {

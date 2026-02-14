@@ -6,9 +6,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -33,9 +30,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -60,9 +54,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -87,9 +78,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -114,9 +102,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -141,9 +126,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -168,9 +150,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -195,9 +174,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -227,9 +203,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -259,9 +232,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -291,9 +261,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -305,7 +272,7 @@
         "cmdUnderTest": "$TC actions add action nat ingress default 10.10.10.1 index 12",
         "expExitCode": "0",
         "verifyCmd": "$TC actions get action nat index 12",
-        "matchPattern": "action order [0-9]+:  nat ingress 0.0.0.0/0 10.10.10.1 pass.*index 12 ref",
+        "matchPattern": "action order [0-9]+:  nat ingress 0.0.0.0/32 10.10.10.1 pass.*index 12 ref",
         "matchCount": "1",
         "teardown": [
             "$TC actions flush action nat"
@@ -318,9 +285,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -332,7 +296,7 @@
         "cmdUnderTest": "$TC actions add action nat ingress any 10.10.10.1 index 12",
         "expExitCode": "0",
         "verifyCmd": "$TC actions get action nat index 12",
-        "matchPattern": "action order [0-9]+:  nat ingress 0.0.0.0/0 10.10.10.1 pass.*index 12 ref",
+        "matchPattern": "action order [0-9]+:  nat ingress 0.0.0.0/32 10.10.10.1 pass.*index 12 ref",
         "matchCount": "1",
         "teardown": [
             "$TC actions flush action nat"
@@ -345,9 +309,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -359,7 +320,7 @@
         "cmdUnderTest": "$TC actions add action nat ingress all 10.10.10.1 index 12",
         "expExitCode": "0",
         "verifyCmd": "$TC actions get action nat index 12",
-        "matchPattern": "action order [0-9]+:  nat ingress 0.0.0.0/0 10.10.10.1 pass.*index 12 ref",
+        "matchPattern": "action order [0-9]+:  nat ingress 0.0.0.0/32 10.10.10.1 pass.*index 12 ref",
         "matchCount": "1",
         "teardown": [
             "$TC actions flush action nat"
@@ -372,9 +333,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -399,9 +357,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -426,9 +381,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -453,9 +405,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -480,9 +429,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -507,9 +453,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -534,9 +477,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -548,7 +488,7 @@
         "cmdUnderTest": "$TC actions add action nat egress default 20.20.20.1 pipe index 10",
         "expExitCode": "0",
         "verifyCmd": "$TC actions get action nat index 10",
-        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/0 20.20.20.1 pipe.*index 10 ref",
+        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/32 20.20.20.1 pipe.*index 10 ref",
         "matchCount": "1",
         "teardown": [
             "$TC actions flush action nat"
@@ -561,9 +501,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -575,7 +512,7 @@
         "cmdUnderTest": "$TC actions add action nat egress any 20.20.20.1 pipe index 10",
         "expExitCode": "0",
         "verifyCmd": "$TC actions get action nat index 10",
-        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/0 20.20.20.1 pipe.*index 10 ref",
+        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/32 20.20.20.1 pipe.*index 10 ref",
         "matchCount": "1",
         "teardown": [
             "$TC actions flush action nat"
@@ -588,9 +525,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -602,7 +536,7 @@
         "cmdUnderTest": "$TC actions add action nat egress all 20.20.20.1 pipe index 10",
         "expExitCode": "0",
         "verifyCmd": "$TC actions get action nat index 10",
-        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/0 20.20.20.1 pipe.*index 10 ref",
+        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/32 20.20.20.1 pipe.*index 10 ref",
         "matchCount": "1",
         "teardown": [
             "$TC actions flush action nat"
@@ -615,9 +549,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -629,7 +560,7 @@
         "cmdUnderTest": "$TC actions add action nat egress all 20.20.20.1 pipe index 10 cookie aa1bc2d3eeff112233445566778800a1",
         "expExitCode": "0",
         "verifyCmd": "$TC actions get action nat index 10",
-        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/0 20.20.20.1 pipe.*index 10 ref.*cookie aa1bc2d3eeff112233445566778800a1",
+        "matchPattern": "action order [0-9]+:  nat egress 0.0.0.0/32 20.20.20.1 pipe.*index 10 ref.*cookie aa1bc2d3eeff112233445566778800a1",
         "matchCount": "1",
         "teardown": [
             "$TC actions flush action nat"
@@ -642,9 +573,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -669,9 +597,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -697,9 +622,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",
@@ -725,9 +647,6 @@
             "actions",
             "nat"
         ],
-        "plugins": {
-           "requires": "nsPlugin"
-        },
         "setup": [
             [
                 "$TC actions flush action nat",

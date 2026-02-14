@@ -289,7 +289,7 @@ static struct platform_driver dma_driver = {
 	},
 };
 
-static int __init
+int __init
 dma_init(void)
 {
 	return platform_driver_register(&dma_driver);

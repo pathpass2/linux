@@ -11,7 +11,7 @@
 #
 # Authors: Paul E. McKenney <paulmck@linux.ibm.com>
 
-T="`mktemp -d ${TMPDIR-/tmp}/parse-console.sh.XXXXXX`"
+T=${TMPDIR-/tmp}/parse-console.sh.$$
 file="$1"
 title="$2"
 
@@ -148,7 +148,7 @@ then
 			summary="$summary  KCSAN: $n_kcsan"
 		fi
 	fi
-	n_calltrace=`grep -Ec 'Call Trace:|Call trace:' $file`
+	n_calltrace=`grep -c 'Call Trace:' $file`
 	if test "$n_calltrace" -ne 0
 	then
 		summary="$summary  Call Traces: $n_calltrace"
@@ -181,11 +181,4 @@ done
 if ! test -s $file.diags
 then
 	rm -f $file.diags
-fi
-
-# Call extract_ftrace_from_console function, if the output is empty,
-# don't create $file.ftrace. Otherwise output the results to $file.ftrace
-extract_ftrace_from_console $file > $file.ftrace
-if [ ! -s $file.ftrace ]; then
-	rm -f $file.ftrace
 fi

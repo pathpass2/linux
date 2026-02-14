@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
-#include <linux/string.h>
 
 #include <sound/control.h>
 #include <sound/core.h>
@@ -81,9 +80,10 @@ static u32 n64mi_read_reg(struct n64audio *priv, const u8 reg)
 static void n64audio_push(struct n64audio *priv)
 {
 	struct snd_pcm_runtime *runtime = priv->chan.substream->runtime;
+	unsigned long flags;
 	u32 count;
 
-	guard(spinlock_irqsave)(&priv->chan.lock);
+	spin_lock_irqsave(&priv->chan.lock, flags);
 
 	count = priv->chan.writesize;
 
@@ -103,12 +103,15 @@ static void n64audio_push(struct n64audio *priv)
 	priv->chan.nextpos %= priv->chan.bufsize;
 
 	runtime->delay = runtime->period_size;
+
+	spin_unlock_irqrestore(&priv->chan.lock, flags);
 }
 
 static irqreturn_t n64audio_isr(int irq, void *dev_id)
 {
 	struct n64audio *priv = dev_id;
 	const u32 intrs = n64mi_read_reg(priv, MI_INTR_REG);
+	unsigned long flags;
 
 	// Check it's ours
 	if (!(intrs & MI_INTR_AI))
@@ -117,9 +120,11 @@ static irqreturn_t n64audio_isr(int irq, void *dev_id)
 	n64audio_write_reg(priv, AI_STATUS_REG, 1);
 
 	if (priv->chan.substream && snd_pcm_running(priv->chan.substream)) {
-		scoped_guard(spinlock_irqsave, &priv->chan.lock) {
-			priv->chan.pos = priv->chan.nextpos;
-		}
+		spin_lock_irqsave(&priv->chan.lock, flags);
+
+		priv->chan.pos = priv->chan.nextpos;
+
+		spin_unlock_irqrestore(&priv->chan.lock, flags);
 
 		snd_pcm_period_elapsed(priv->chan.substream);
 		if (priv->chan.substream && snd_pcm_running(priv->chan.substream))
@@ -215,7 +220,7 @@ static int n64audio_pcm_prepare(struct snd_pcm_substream *substream)
 		rate = 16;
 	n64audio_write_reg(priv, AI_BITCLOCK_REG, rate - 1);
 
-	guard(spinlock_irq)(&priv->chan.lock);
+	spin_lock_irq(&priv->chan.lock);
 
 	/* Setup the pseudo-dma transfer pointers.  */
 	priv->chan.pos = 0;
@@ -224,6 +229,7 @@ static int n64audio_pcm_prepare(struct snd_pcm_substream *substream)
 	priv->chan.writesize = snd_pcm_lib_period_bytes(substream);
 	priv->chan.bufsize = snd_pcm_lib_buffer_bytes(substream);
 
+	spin_unlock_irq(&priv->chan.lock);
 	return 0;
 }
 
@@ -321,14 +327,14 @@ static int __init n64audio_probe(struct platform_device *pdev)
 		goto fail_dma_alloc;
 
 	pcm->private_data = priv;
-	strscpy(pcm->name, "N64 Audio");
+	strcpy(pcm->name, "N64 Audio");
 
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &n64audio_pcm_ops);
 	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_VMALLOC, card->dev, 0, 0);
 
-	strscpy(card->driver, "N64 Audio");
-	strscpy(card->shortname, "N64 Audio");
-	strscpy(card->longname, "N64 Audio");
+	strcpy(card->driver, "N64 Audio");
+	strcpy(card->shortname, "N64 Audio");
+	strcpy(card->longname, "N64 Audio");
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {

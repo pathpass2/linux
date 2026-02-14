@@ -144,7 +144,7 @@
 		compatible = "simple-audio-card";
 		simple-audio-card,name = "rk817_int";
 		simple-audio-card,format = "i2s";
-		simple-audio-card,hp-det-gpios = <&gpio2 RK_PC6 GPIO_ACTIVE_HIGH>;
+		simple-audio-card,hp-det-gpio = <&gpio2 RK_PC6 GPIO_ACTIVE_HIGH>;
 		simple-audio-card,mclk-fs = <256>;
 		simple-audio-card,widgets =
 			"Microphone", "Mic Jack",
@@ -165,7 +165,7 @@
 		};
 	};
 
-	vccsys: regulator-vccsys {
+	vccsys: vccsys {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc3v8_sys";
 		regulator-always-on;
@@ -173,7 +173,7 @@
 		regulator-max-microvolt = <3800000>;
 	};
 
-	vcc_host: regulator-vcc-host {
+	vcc_host: vcc_host {
 		compatible = "regulator-fixed";
 		regulator-name = "vcc_host";
 		regulator-min-microvolt = <5000000>;
@@ -220,8 +220,6 @@
 };
 
 &dsi {
-	#address-cells = <1>;
-	#size-cells = <0>;
 	status = "okay";
 
 	ports {
@@ -237,8 +235,10 @@
 	internal_display: panel@0 {
 		reg = <0>;
 		backlight = <&backlight>;
+		iovcc-supply = <&vcc_lcd>;
 		reset-gpios = <&gpio3 RK_PC0 GPIO_ACTIVE_LOW>;
 		rotation = <270>;
+		vdd-supply = <&vcc_lcd>;
 
 		port {
 			mipi_in_panel: endpoint {

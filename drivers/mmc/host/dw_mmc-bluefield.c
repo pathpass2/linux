@@ -3,7 +3,6 @@
  * Copyright (C) 2018 Mellanox Technologies.
  */
 
-#include <linux/arm-smccc.h>
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/mmc/host.h>
@@ -21,9 +20,6 @@
 #define BLUEFIELD_UHS_REG_EXT_SAMPLE	2
 #define BLUEFIELD_UHS_REG_EXT_DRIVE	4
 
-/* SMC call for RST_N */
-#define BLUEFIELD_SMC_SET_EMMC_RST_N	0x82000007
-
 static void dw_mci_bluefield_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 {
 	u32 reg;
@@ -38,20 +34,8 @@ static void dw_mci_bluefield_set_ios(struct dw_mci *host, struct mmc_ios *ios)
 	mci_writel(host, UHS_REG_EXT, reg);
 }
 
-static void dw_mci_bluefield_hw_reset(struct dw_mci *host)
-{
-		struct arm_smccc_res res = { 0 };
-
-		arm_smccc_smc(BLUEFIELD_SMC_SET_EMMC_RST_N, 0, 0, 0, 0, 0, 0, 0,
-			      &res);
-
-		if (res.a0)
-			pr_err("RST_N failed.\n");
-}
-
 static const struct dw_mci_drv_data bluefield_drv_data = {
-	.set_ios		= dw_mci_bluefield_set_ios,
-	.hw_reset		= dw_mci_bluefield_hw_reset
+	.set_ios		= dw_mci_bluefield_set_ios
 };
 
 static const struct of_device_id dw_mci_bluefield_match[] = {

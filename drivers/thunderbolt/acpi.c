@@ -12,7 +12,7 @@
 #include "tb.h"
 
 static acpi_status tb_acpi_add_link(acpi_handle handle, u32 level, void *data,
-				    void **ret)
+				    void **return_value)
 {
 	struct acpi_device *adev = acpi_fetch_acpi_dev(handle);
 	struct fwnode_handle *fwnode;
@@ -32,20 +32,40 @@ static acpi_status tb_acpi_add_link(acpi_handle handle, u32 level, void *data,
 		goto out_put;
 
 	/*
-	 * Ignore USB3 ports here as USB core will set up device links between
-	 * tunneled USB3 devices and NHI host during USB device creation.
-	 * USB3 ports might not even have a physical device yet if xHCI driver
-	 * isn't bound yet.
+	 * Try to find physical device walking upwards to the hierarcy.
+	 * We need to do this because the xHCI driver might not yet be
+	 * bound so the USB3 SuperSpeed ports are not yet created.
 	 */
-	dev = acpi_get_first_physical_node(adev);
-	if (!dev || !dev_is_pci(dev))
+	do {
+		dev = acpi_get_first_physical_node(adev);
+		if (dev)
+			break;
+
+		adev = acpi_dev_parent(adev);
+	} while (adev);
+
+	/*
+	 * Check that the device is PCIe. This is because USB3
+	 * SuperSpeed ports have this property and they are not power
+	 * managed with the xHCI and the SuperSpeed hub so we create the
+	 * link from xHCI instead.
+	 */
+	while (dev && !dev_is_pci(dev))
+		dev = dev->parent;
+
+	if (!dev)
 		goto out_put;
 
-	/* Check that this matches a PCIe root/downstream port. */
+	/*
+	 * Check that this actually matches the type of device we
+	 * expect. It should either be xHCI or PCIe root/downstream
+	 * port.
+	 */
 	pdev = to_pci_dev(dev);
-	if (pci_is_pcie(pdev) &&
-	    (pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT ||
-	     pci_pcie_type(pdev) == PCI_EXP_TYPE_DOWNSTREAM)) {
+	if (pdev->class == PCI_CLASS_SERIAL_USB_XHCI ||
+	    (pci_is_pcie(pdev) &&
+		(pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT ||
+		 pci_pcie_type(pdev) == PCI_EXP_TYPE_DOWNSTREAM))) {
 		const struct device_link *link;
 
 		/*
@@ -64,7 +84,6 @@ static acpi_status tb_acpi_add_link(acpi_handle handle, u32 level, void *data,
 		if (link) {
 			dev_dbg(&nhi->pdev->dev, "created link from %s\n",
 				dev_name(&pdev->dev));
-			*(bool *)ret = true;
 		} else {
 			dev_warn(&nhi->pdev->dev, "device link creation from %s failed\n",
 				 dev_name(&pdev->dev));
@@ -85,38 +104,29 @@ out_put:
  * Goes over ACPI namespace finding tunneled ports that reference to
  * @nhi ACPI node. For each reference a device link is added. The link
  * is automatically removed by the driver core.
- *
- * Returns %true if at least one link was created, %false otherwise.
  */
-bool tb_acpi_add_links(struct tb_nhi *nhi)
+void tb_acpi_add_links(struct tb_nhi *nhi)
 {
 	acpi_status status;
-	bool ret = false;
 
 	if (!has_acpi_companion(&nhi->pdev->dev))
-		return false;
+		return;
 
 	/*
 	 * Find all devices that have usb4-host-controller interface
 	 * property that references to this NHI.
 	 */
 	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, ACPI_ROOT_OBJECT, 32,
-				     tb_acpi_add_link, NULL, nhi, (void **)&ret);
-	if (ACPI_FAILURE(status)) {
+				     tb_acpi_add_link, NULL, nhi, NULL);
+	if (ACPI_FAILURE(status))
 		dev_warn(&nhi->pdev->dev, "failed to enumerate tunneled ports\n");
-		return false;
-	}
-
-	return ret;
 }
 
 /**
  * tb_acpi_is_native() - Did the platform grant native TBT/USB4 control
  *
- * Return: %true if the platform granted OS native control over
- * TBT/USB4, %false otherwise.
- *
- * When returned %true, software based connection manager can be used,
+ * Returns %true if the platform granted OS native control over
+ * TBT/USB4. In this case software based connection manager can be used,
  * otherwise there is firmware based connection manager running.
  */
 bool tb_acpi_is_native(void)
@@ -128,8 +138,8 @@ bool tb_acpi_is_native(void)
 /**
  * tb_acpi_may_tunnel_usb3() - Is USB3 tunneling allowed by the platform
  *
- * Return: %true if software based connection manager is used and
- * platform allows native USB 3.x tunneling, %false otherwise.
+ * When software based connection manager is used, this function
+ * returns %true if platform allows native USB3 tunneling.
  */
 bool tb_acpi_may_tunnel_usb3(void)
 {
@@ -141,8 +151,8 @@ bool tb_acpi_may_tunnel_usb3(void)
 /**
  * tb_acpi_may_tunnel_dp() - Is DisplayPort tunneling allowed by the platform
  *
- * Return: %true if software based connection manager is used and
- * platform allows native DP tunneling, %false otherwise.
+ * When software based connection manager is used, this function
+ * returns %true if platform allows native DP tunneling.
  */
 bool tb_acpi_may_tunnel_dp(void)
 {
@@ -154,8 +164,8 @@ bool tb_acpi_may_tunnel_dp(void)
 /**
  * tb_acpi_may_tunnel_pcie() - Is PCIe tunneling allowed by the platform
  *
- * Return: %true if software based connection manager is used and
- * platform allows native PCIe tunneling, %false otherwise.
+ * When software based connection manager is used, this function
+ * returns %true if platform allows native PCIe tunneling.
  */
 bool tb_acpi_may_tunnel_pcie(void)
 {
@@ -167,8 +177,8 @@ bool tb_acpi_may_tunnel_pcie(void)
 /**
  * tb_acpi_is_xdomain_allowed() - Are XDomain connections allowed
  *
- * Return: %true if software based connection manager is used and
- * platform allows XDomain tunneling, %false otherwise.
+ * When software based connection manager is used, this function
+ * returns %true if platform allows XDomain connections.
  */
 bool tb_acpi_is_xdomain_allowed(void)
 {
@@ -258,7 +268,7 @@ static int tb_acpi_retimer_set_power(struct tb_port *port, bool power)
  *
  * This should only be called if the USB4/TBT link is not up.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Returns %0 on success.
  */
 int tb_acpi_power_on_retimers(struct tb_port *port)
 {
@@ -272,7 +282,7 @@ int tb_acpi_power_on_retimers(struct tb_port *port)
  * This is the opposite of tb_acpi_power_on_retimers(). After returning
  * successfully the normal operations with the @port can continue.
  *
- * Return: %0 on success, negative errno otherwise.
+ * Returns %0 on success.
  */
 int tb_acpi_power_off_retimers(struct tb_port *port)
 {
@@ -286,15 +296,16 @@ static bool tb_acpi_bus_match(struct device *dev)
 
 static struct acpi_device *tb_acpi_switch_find_companion(struct tb_switch *sw)
 {
-	struct tb_switch *parent_sw = tb_switch_parent(sw);
 	struct acpi_device *adev = NULL;
+	struct tb_switch *parent_sw;
 
 	/*
 	 * Device routers exists under the downstream facing USB4 port
 	 * of the parent router. Their _ADR is always 0.
 	 */
+	parent_sw = tb_switch_parent(sw);
 	if (parent_sw) {
-		struct tb_port *port = tb_switch_downstream_port(sw);
+		struct tb_port *port = tb_port_at(tb_route(sw), parent_sw);
 		struct acpi_device *port_adev;
 
 		port_adev = acpi_find_child_by_adr(ACPI_COMPANION(&parent_sw->dev),
@@ -330,7 +341,7 @@ static struct acpi_device *tb_acpi_find_companion(struct device *dev)
 	 */
 	if (tb_is_switch(dev))
 		return tb_acpi_switch_find_companion(tb_to_switch(dev));
-	if (tb_is_usb4_port_device(dev))
+	else if (tb_is_usb4_port_device(dev))
 		return acpi_find_child_by_adr(ACPI_COMPANION(dev->parent),
 					      tb_to_usb4_port_device(dev)->port->port);
 	return NULL;

@@ -9,11 +9,11 @@
 /* Disable profiling for userspace code */
 #define DISABLE_BRANCH_PROFILING
 
-#include <vdso/gettime.h>
 #include <linux/time.h>
+#include <linux/getcpu.h>
 #include <asm/unistd.h>
 
-int __vdso_clock_gettime(clockid_t clock, struct __kernel_timespec *ts)
+int __vdso_clock_gettime(clockid_t clock, struct __kernel_old_timespec *ts)
 {
 	long ret;
 
@@ -24,7 +24,7 @@ int __vdso_clock_gettime(clockid_t clock, struct __kernel_timespec *ts)
 
 	return ret;
 }
-int clock_gettime(clockid_t, struct __kernel_timespec *)
+int clock_gettime(clockid_t, struct __kernel_old_timespec *)
 	__attribute__((weak, alias("__vdso_clock_gettime")));
 
 int __vdso_gettimeofday(struct __kernel_old_timeval *tv, struct timezone *tz)
@@ -52,3 +52,21 @@ __kernel_old_time_t __vdso_time(__kernel_old_time_t *t)
 	return secs;
 }
 __kernel_old_time_t time(__kernel_old_time_t *t) __attribute__((weak, alias("__vdso_time")));
+
+long
+__vdso_getcpu(unsigned *cpu, unsigned *node, struct getcpu_cache *unused)
+{
+	/*
+	 * UML does not support SMP, we can cheat here. :)
+	 */
+
+	if (cpu)
+		*cpu = 0;
+	if (node)
+		*node = 0;
+
+	return 0;
+}
+
+long getcpu(unsigned *cpu, unsigned *node, struct getcpu_cache *tcache)
+	__attribute__((weak, alias("__vdso_getcpu")));

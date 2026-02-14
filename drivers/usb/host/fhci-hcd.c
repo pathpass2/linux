@@ -22,10 +22,9 @@
 #include <linux/io.h>
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
-#include <linux/platform_device.h>
+#include <linux/of_platform.h>
 #include <linux/slab.h>
 #include <linux/gpio/consumer.h>
 #include <soc/fsl/qe/qe.h>
@@ -758,7 +757,7 @@ err_regs:
 	return ret;
 }
 
-static void fhci_remove(struct device *dev)
+static int fhci_remove(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct fhci_hcd *fhci = hcd_to_fhci(hcd);
@@ -772,11 +771,12 @@ static void fhci_remove(struct device *dev)
 		qe_pin_free(fhci->pins[j]);
 	fhci_dfs_destroy(fhci);
 	usb_put_hcd(hcd);
+	return 0;
 }
 
-static void of_fhci_remove(struct platform_device *ofdev)
+static int of_fhci_remove(struct platform_device *ofdev)
 {
-	fhci_remove(&ofdev->dev);
+	return fhci_remove(&ofdev->dev);
 }
 
 static const struct of_device_id of_fhci_match[] = {

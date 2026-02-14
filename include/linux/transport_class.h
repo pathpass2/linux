@@ -56,7 +56,6 @@ struct anon_transport_class cls = {				\
 struct transport_container {
 	struct attribute_container ac;
 	const struct attribute_group *statistics;
-	const struct attribute_group *encryption;
 };
 
 #define attribute_container_to_transport_container(x) \
@@ -88,9 +87,9 @@ transport_unregister_device(struct device *dev)
 	transport_destroy_device(dev);
 }
 
-static inline void transport_container_register(struct transport_container *tc)
+static inline int transport_container_register(struct transport_container *tc)
 {
-	attribute_container_register(&tc->ac);
+	return attribute_container_register(&tc->ac);
 }
 
 static inline void transport_container_unregister(struct transport_container *tc)
@@ -100,7 +99,7 @@ static inline void transport_container_unregister(struct transport_container *tc
 }
 
 int transport_class_register(struct transport_class *);
-void anon_transport_class_register(struct anon_transport_class *);
+int anon_transport_class_register(struct anon_transport_class *);
 void transport_class_unregister(struct transport_class *);
 void anon_transport_class_unregister(struct anon_transport_class *);
 

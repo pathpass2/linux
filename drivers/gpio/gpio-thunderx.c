@@ -14,7 +14,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/property.h>
 #include <linux/spinlock.h>
 
 #define GPIO_RX_DAT	0x0
@@ -116,8 +115,8 @@ static int thunderx_gpio_dir_in(struct gpio_chip *chip, unsigned int line)
 	return 0;
 }
 
-static int thunderx_gpio_set(struct gpio_chip *chip, unsigned int line,
-			     int value)
+static void thunderx_gpio_set(struct gpio_chip *chip, unsigned int line,
+			      int value)
 {
 	struct thunderx_gpio *txgpio = gpiochip_get_data(chip);
 	int bank = line / 64;
@@ -127,8 +126,6 @@ static int thunderx_gpio_set(struct gpio_chip *chip, unsigned int line,
 		(bank * GPIO_2ND_BANK) + (value ? GPIO_TX_SET : GPIO_TX_CLR);
 
 	writeq(BIT_ULL(bank_bit), reg);
-
-	return 0;
 }
 
 static int thunderx_gpio_dir_out(struct gpio_chip *chip, unsigned int line,
@@ -271,9 +268,9 @@ static int thunderx_gpio_get(struct gpio_chip *chip, unsigned int line)
 		return masked_bits != 0;
 }
 
-static int thunderx_gpio_set_multiple(struct gpio_chip *chip,
-				      unsigned long *mask,
-				      unsigned long *bits)
+static void thunderx_gpio_set_multiple(struct gpio_chip *chip,
+				       unsigned long *mask,
+				       unsigned long *bits)
 {
 	int bank;
 	u64 set_bits, clear_bits;
@@ -285,8 +282,6 @@ static int thunderx_gpio_set_multiple(struct gpio_chip *chip,
 		writeq(set_bits, txgpio->register_base + (bank * GPIO_2ND_BANK) + GPIO_TX_SET);
 		writeq(clear_bits, txgpio->register_base + (bank * GPIO_2ND_BANK) + GPIO_TX_CLR);
 	}
-
-	return 0;
 }
 
 static void thunderx_gpio_irq_ack(struct irq_data *d)
@@ -359,22 +354,16 @@ static int thunderx_gpio_irq_set_type(struct irq_data *d,
 	return IRQ_SET_MASK_OK;
 }
 
-static void thunderx_gpio_irq_enable(struct irq_data *d)
+static void thunderx_gpio_irq_enable(struct irq_data *data)
 {
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-
-	gpiochip_enable_irq(gc, irqd_to_hwirq(d));
-	irq_chip_enable_parent(d);
-	thunderx_gpio_irq_unmask(d);
+	irq_chip_enable_parent(data);
+	thunderx_gpio_irq_unmask(data);
 }
 
-static void thunderx_gpio_irq_disable(struct irq_data *d)
+static void thunderx_gpio_irq_disable(struct irq_data *data)
 {
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-
-	thunderx_gpio_irq_mask(d);
-	irq_chip_disable_parent(d);
-	gpiochip_disable_irq(gc, irqd_to_hwirq(d));
+	thunderx_gpio_irq_mask(data);
+	irq_chip_disable_parent(data);
 }
 
 /*
@@ -383,7 +372,7 @@ static void thunderx_gpio_irq_disable(struct irq_data *d)
  * semantics and other acknowledgment tasks associated with the GPIO
  * mechanism.
  */
-static const struct irq_chip thunderx_gpio_irq_chip = {
+static struct irq_chip thunderx_gpio_irq_chip = {
 	.name			= "GPIO",
 	.irq_enable		= thunderx_gpio_irq_enable,
 	.irq_disable		= thunderx_gpio_irq_disable,
@@ -394,8 +383,8 @@ static const struct irq_chip thunderx_gpio_irq_chip = {
 	.irq_eoi		= irq_chip_eoi_parent,
 	.irq_set_affinity	= irq_chip_set_affinity_parent,
 	.irq_set_type		= thunderx_gpio_irq_set_type,
-	.flags			= IRQCHIP_SET_TYPE_MASKED | IRQCHIP_IMMUTABLE,
-	GPIOCHIP_IRQ_RESOURCE_HELPERS,
+
+	.flags			= IRQCHIP_SET_TYPE_MASKED
 };
 
 static int thunderx_gpio_child_to_parent_hwirq(struct gpio_chip *gc,
@@ -537,8 +526,8 @@ static int thunderx_gpio_probe(struct pci_dev *pdev,
 	chip->set_multiple = thunderx_gpio_set_multiple;
 	chip->set_config = thunderx_gpio_set_config;
 	girq = &chip->irq;
-	gpio_irq_chip_set_chip(girq, &thunderx_gpio_irq_chip);
-	girq->fwnode = dev_fwnode(dev);
+	girq->chip = &thunderx_gpio_irq_chip;
+	girq->fwnode = of_node_to_fwnode(dev->of_node);
 	girq->parent_domain =
 		irq_get_irq_data(txgpio->msix_entries[0].vector)->domain;
 	girq->child_to_parent_hwirq = thunderx_gpio_child_to_parent_hwirq;
@@ -554,7 +543,7 @@ static int thunderx_gpio_probe(struct pci_dev *pdev,
 	for (i = 0; i < ngpio; i++) {
 		struct irq_fwspec fwspec;
 
-		fwspec.fwnode = dev_fwnode(dev);
+		fwspec.fwnode = of_node_to_fwnode(dev->of_node);
 		fwspec.param_count = 2;
 		fwspec.param[0] = i;
 		fwspec.param[1] = IRQ_TYPE_NONE;

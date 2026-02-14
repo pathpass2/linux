@@ -311,7 +311,9 @@ static int eem_bind(struct usb_configuration *c, struct usb_function *f)
 	if (status)
 		goto fail;
 
-	DBG(cdev, "CDC Ethernet (EEM): IN/%s OUT/%s\n",
+	DBG(cdev, "CDC Ethernet (EEM): %s speed IN/%s OUT/%s\n",
+			gadget_is_superspeed(c->cdev->gadget) ? "super" :
+			gadget_is_dualspeed(c->cdev->gadget) ? "dual" : "full",
 			eem->port.in_ep->name, eem->port.out_ep->name);
 	return 0;
 
@@ -477,13 +479,8 @@ static int eem_unwrap(struct gether *port,
 				req->complete = eem_cmd_complete;
 				req->zero = 1;
 				req->context = ctx;
-				if (usb_ep_queue(port->in_ep, req, GFP_ATOMIC)) {
+				if (usb_ep_queue(port->in_ep, req, GFP_ATOMIC))
 					DBG(cdev, "echo response queue fail\n");
-					kfree(ctx);
-					kfree(req->buf);
-					usb_ep_free_request(ep, req);
-					dev_kfree_skb_any(skb2);
-				}
 				break;
 
 			case 1:  /* echo response */
@@ -679,6 +676,5 @@ static struct usb_function *eem_alloc(struct usb_function_instance *fi)
 }
 
 DECLARE_USB_FUNCTION_INIT(eem, eem_alloc_inst, eem_alloc);
-MODULE_DESCRIPTION("USB CDC Ethernet (EEM) link function driver");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David Brownell");

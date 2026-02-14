@@ -6,9 +6,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/string_helpers.h>
 
-#include <drm/drm_print.h>
-
-#include "display/vlv_clock.h"
 #include "gem/i915_gem_region.h"
 #include "i915_drv.h"
 #include "i915_reg.h"
@@ -56,6 +53,11 @@ static struct drm_i915_private *rc6_to_i915(struct intel_rc6 *rc)
 	return rc6_to_gt(rc)->i915;
 }
 
+static void set(struct intel_uncore *uncore, i915_reg_t reg, u32 val)
+{
+	intel_uncore_write_fw(uncore, reg, val);
+}
+
 static void gen11_rc6_enable(struct intel_rc6 *rc6)
 {
 	struct intel_gt *gt = rc6_to_gt(rc6);
@@ -70,19 +72,19 @@ static void gen11_rc6_enable(struct intel_rc6 *rc6)
 	 */
 	if (!intel_uc_uses_guc_rc(&gt->uc)) {
 		/* 2b: Program RC6 thresholds.*/
-		intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 54 << 16 | 85);
-		intel_uncore_write_fw(uncore, GEN10_MEDIA_WAKE_RATE_LIMIT, 150);
+		set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 54 << 16 | 85);
+		set(uncore, GEN10_MEDIA_WAKE_RATE_LIMIT, 150);
 
-		intel_uncore_write_fw(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
-		intel_uncore_write_fw(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
+		set(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
+		set(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
 		for_each_engine(engine, rc6_to_gt(rc6), id)
-			intel_uncore_write_fw(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
+			set(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
 
-		intel_uncore_write_fw(uncore, GUC_MAX_IDLE_COUNT, 0xA);
+		set(uncore, GUC_MAX_IDLE_COUNT, 0xA);
 
-		intel_uncore_write_fw(uncore, GEN6_RC_SLEEP, 0);
+		set(uncore, GEN6_RC_SLEEP, 0);
 
-		intel_uncore_write_fw(uncore, GEN6_RC6_THRESHOLD, 50000); /* 50/125ms per EI */
+		set(uncore, GEN6_RC6_THRESHOLD, 50000); /* 50/125ms per EI */
 	}
 
 	/*
@@ -103,8 +105,8 @@ static void gen11_rc6_enable(struct intel_rc6 *rc6)
 	 * Broadwell+, To be conservative, we want to factor in a context
 	 * switch on top (due to ksoftirqd).
 	 */
-	intel_uncore_write_fw(uncore, GEN9_MEDIA_PG_IDLE_HYSTERESIS, 60);
-	intel_uncore_write_fw(uncore, GEN9_RENDER_PG_IDLE_HYSTERESIS, 60);
+	set(uncore, GEN9_MEDIA_PG_IDLE_HYSTERESIS, 60);
+	set(uncore, GEN9_RENDER_PG_IDLE_HYSTERESIS, 60);
 
 	/* 3a: Enable RC6
 	 *
@@ -112,7 +114,7 @@ static void gen11_rc6_enable(struct intel_rc6 *rc6)
 	 * thus allowing GuC to control RC6 entry/exit fully instead.
 	 * We will not set the HW ENABLE and EI bits
 	 */
-	if (!intel_guc_rc_enable(gt_to_guc(gt)))
+	if (!intel_guc_rc_enable(&gt->uc.guc))
 		rc6->ctl_enable = GEN6_RC_CTL_RC6_ENABLE;
 	else
 		rc6->ctl_enable =
@@ -120,19 +122,26 @@ static void gen11_rc6_enable(struct intel_rc6 *rc6)
 			GEN6_RC_CTL_RC6_ENABLE |
 			GEN6_RC_CTL_EI_MODE(1);
 
-	pg_enable =
-		GEN9_RENDER_PG_ENABLE |
-		GEN9_MEDIA_PG_ENABLE |
-		GEN11_MEDIA_SAMPLER_PG_ENABLE;
+	/* Wa_16011777198 - Render powergating must remain disabled */
+	if (IS_DG2_GRAPHICS_STEP(gt->i915, G10, STEP_A0, STEP_C0) ||
+	    IS_DG2_GRAPHICS_STEP(gt->i915, G11, STEP_A0, STEP_B0))
+		pg_enable =
+			GEN9_MEDIA_PG_ENABLE |
+			GEN11_MEDIA_SAMPLER_PG_ENABLE;
+	else
+		pg_enable =
+			GEN9_RENDER_PG_ENABLE |
+			GEN9_MEDIA_PG_ENABLE |
+			GEN11_MEDIA_SAMPLER_PG_ENABLE;
 
-	if (GRAPHICS_VER(gt->i915) >= 12 && !IS_DG1(gt->i915)) {
+	if (GRAPHICS_VER(gt->i915) >= 12) {
 		for (i = 0; i < I915_MAX_VCS; i++)
 			if (HAS_ENGINE(gt, _VCS(i)))
 				pg_enable |= (VDN_HCP_POWERGATE_ENABLE(i) |
 					      VDN_MFX_POWERGATE_ENABLE(i));
 	}
 
-	intel_uncore_write_fw(uncore, GEN9_PG_ENABLE, pg_enable);
+	set(uncore, GEN9_PG_ENABLE, pg_enable);
 }
 
 static void gen9_rc6_enable(struct intel_rc6 *rc6)
@@ -143,26 +152,26 @@ static void gen9_rc6_enable(struct intel_rc6 *rc6)
 
 	/* 2b: Program RC6 thresholds.*/
 	if (GRAPHICS_VER(rc6_to_i915(rc6)) >= 11) {
-		intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 54 << 16 | 85);
-		intel_uncore_write_fw(uncore, GEN10_MEDIA_WAKE_RATE_LIMIT, 150);
+		set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 54 << 16 | 85);
+		set(uncore, GEN10_MEDIA_WAKE_RATE_LIMIT, 150);
 	} else if (IS_SKYLAKE(rc6_to_i915(rc6))) {
 		/*
 		 * WaRsDoubleRc6WrlWithCoarsePowerGating:skl Doubling WRL only
 		 * when CPG is enabled
 		 */
-		intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 108 << 16);
+		set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 108 << 16);
 	} else {
-		intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 54 << 16);
+		set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 54 << 16);
 	}
 
-	intel_uncore_write_fw(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
-	intel_uncore_write_fw(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
+	set(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
+	set(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
 	for_each_engine(engine, rc6_to_gt(rc6), id)
-		intel_uncore_write_fw(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
+		set(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
 
-	intel_uncore_write_fw(uncore, GUC_MAX_IDLE_COUNT, 0xA);
+	set(uncore, GUC_MAX_IDLE_COUNT, 0xA);
 
-	intel_uncore_write_fw(uncore, GEN6_RC_SLEEP, 0);
+	set(uncore, GEN6_RC_SLEEP, 0);
 
 	/*
 	 * 2c: Program Coarse Power Gating Policies.
@@ -185,11 +194,11 @@ static void gen9_rc6_enable(struct intel_rc6 *rc6)
 	 * conservative, we have to factor in a context switch on top (due
 	 * to ksoftirqd).
 	 */
-	intel_uncore_write_fw(uncore, GEN9_MEDIA_PG_IDLE_HYSTERESIS, 250);
-	intel_uncore_write_fw(uncore, GEN9_RENDER_PG_IDLE_HYSTERESIS, 250);
+	set(uncore, GEN9_MEDIA_PG_IDLE_HYSTERESIS, 250);
+	set(uncore, GEN9_RENDER_PG_IDLE_HYSTERESIS, 250);
 
 	/* 3a: Enable RC6 */
-	intel_uncore_write_fw(uncore, GEN6_RC6_THRESHOLD, 37500); /* 37.5/125ms per EI */
+	set(uncore, GEN6_RC6_THRESHOLD, 37500); /* 37.5/125ms per EI */
 
 	rc6->ctl_enable =
 		GEN6_RC_CTL_HW_ENABLE |
@@ -201,8 +210,8 @@ static void gen9_rc6_enable(struct intel_rc6 *rc6)
 	 *   - Render/Media PG need to be disabled with RC6.
 	 */
 	if (!NEEDS_WaRsDisableCoarsePowerGating(rc6_to_i915(rc6)))
-		intel_uncore_write_fw(uncore, GEN9_PG_ENABLE,
-				      GEN9_RENDER_PG_ENABLE | GEN9_MEDIA_PG_ENABLE);
+		set(uncore, GEN9_PG_ENABLE,
+		    GEN9_RENDER_PG_ENABLE | GEN9_MEDIA_PG_ENABLE);
 }
 
 static void gen8_rc6_enable(struct intel_rc6 *rc6)
@@ -212,13 +221,13 @@ static void gen8_rc6_enable(struct intel_rc6 *rc6)
 	enum intel_engine_id id;
 
 	/* 2b: Program RC6 thresholds.*/
-	intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 40 << 16);
-	intel_uncore_write_fw(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
-	intel_uncore_write_fw(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
+	set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 40 << 16);
+	set(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
+	set(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
 	for_each_engine(engine, rc6_to_gt(rc6), id)
-		intel_uncore_write_fw(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
-	intel_uncore_write_fw(uncore, GEN6_RC_SLEEP, 0);
-	intel_uncore_write_fw(uncore, GEN6_RC6_THRESHOLD, 625); /* 800us/1.28 for TO */
+		set(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
+	set(uncore, GEN6_RC_SLEEP, 0);
+	set(uncore, GEN6_RC6_THRESHOLD, 625); /* 800us/1.28 for TO */
 
 	/* 3: Enable RC6 */
 	rc6->ctl_enable =
@@ -236,20 +245,20 @@ static void gen6_rc6_enable(struct intel_rc6 *rc6)
 	u32 rc6vids, rc6_mask;
 	int ret;
 
-	intel_uncore_write_fw(uncore, GEN6_RC1_WAKE_RATE_LIMIT, 1000 << 16);
-	intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 40 << 16 | 30);
-	intel_uncore_write_fw(uncore, GEN6_RC6pp_WAKE_RATE_LIMIT, 30);
-	intel_uncore_write_fw(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000);
-	intel_uncore_write_fw(uncore, GEN6_RC_IDLE_HYSTERSIS, 25);
+	set(uncore, GEN6_RC1_WAKE_RATE_LIMIT, 1000 << 16);
+	set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 40 << 16 | 30);
+	set(uncore, GEN6_RC6pp_WAKE_RATE_LIMIT, 30);
+	set(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000);
+	set(uncore, GEN6_RC_IDLE_HYSTERSIS, 25);
 
 	for_each_engine(engine, rc6_to_gt(rc6), id)
-		intel_uncore_write_fw(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
+		set(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
 
-	intel_uncore_write_fw(uncore, GEN6_RC_SLEEP, 0);
-	intel_uncore_write_fw(uncore, GEN6_RC1e_THRESHOLD, 1000);
-	intel_uncore_write_fw(uncore, GEN6_RC6_THRESHOLD, 50000);
-	intel_uncore_write_fw(uncore, GEN6_RC6p_THRESHOLD, 150000);
-	intel_uncore_write_fw(uncore, GEN6_RC6pp_THRESHOLD, 64000); /* unused */
+	set(uncore, GEN6_RC_SLEEP, 0);
+	set(uncore, GEN6_RC1e_THRESHOLD, 1000);
+	set(uncore, GEN6_RC6_THRESHOLD, 50000);
+	set(uncore, GEN6_RC6p_THRESHOLD, 150000);
+	set(uncore, GEN6_RC6pp_THRESHOLD, 64000); /* unused */
 
 	/* We don't use those on Haswell */
 	rc6_mask = GEN6_RC_CTL_RC6_ENABLE;
@@ -344,7 +353,7 @@ static int vlv_rc6_init(struct intel_rc6 *rc6)
 		return PTR_ERR(pctx);
 	}
 
-	GEM_BUG_ON(range_end_overflows_t(u64,
+	GEM_BUG_ON(range_overflows_end_t(u64,
 					 i915->dsm.stolen.start,
 					 pctx->stolen->start,
 					 U32_MAX));
@@ -363,22 +372,22 @@ static void chv_rc6_enable(struct intel_rc6 *rc6)
 	enum intel_engine_id id;
 
 	/* 2a: Program RC6 thresholds.*/
-	intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 40 << 16);
-	intel_uncore_write_fw(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
-	intel_uncore_write_fw(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
+	set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 40 << 16);
+	set(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000); /* 12500 * 1280ns */
+	set(uncore, GEN6_RC_IDLE_HYSTERSIS, 25); /* 25 * 1280ns */
 
 	for_each_engine(engine, rc6_to_gt(rc6), id)
-		intel_uncore_write_fw(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
-	intel_uncore_write_fw(uncore, GEN6_RC_SLEEP, 0);
+		set(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
+	set(uncore, GEN6_RC_SLEEP, 0);
 
 	/* TO threshold set to 500 us (0x186 * 1.28 us) */
-	intel_uncore_write_fw(uncore, GEN6_RC6_THRESHOLD, 0x186);
+	set(uncore, GEN6_RC6_THRESHOLD, 0x186);
 
 	/* Allows RC6 residency counter to work */
-	intel_uncore_write_fw(uncore, VLV_COUNTER_CONTROL,
-			      _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH |
-						 VLV_MEDIA_RC6_COUNT_EN |
-						 VLV_RENDER_RC6_COUNT_EN));
+	set(uncore, VLV_COUNTER_CONTROL,
+	    _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH |
+			       VLV_MEDIA_RC6_COUNT_EN |
+			       VLV_RENDER_RC6_COUNT_EN));
 
 	/* 3: Enable RC6 */
 	rc6->ctl_enable = GEN7_RC_CTL_TO_MODE;
@@ -390,40 +399,25 @@ static void vlv_rc6_enable(struct intel_rc6 *rc6)
 	struct intel_engine_cs *engine;
 	enum intel_engine_id id;
 
-	intel_uncore_write_fw(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 0x00280000);
-	intel_uncore_write_fw(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000);
-	intel_uncore_write_fw(uncore, GEN6_RC_IDLE_HYSTERSIS, 25);
+	set(uncore, GEN6_RC6_WAKE_RATE_LIMIT, 0x00280000);
+	set(uncore, GEN6_RC_EVALUATION_INTERVAL, 125000);
+	set(uncore, GEN6_RC_IDLE_HYSTERSIS, 25);
 
 	for_each_engine(engine, rc6_to_gt(rc6), id)
-		intel_uncore_write_fw(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
+		set(uncore, RING_MAX_IDLE(engine->mmio_base), 10);
 
-	intel_uncore_write_fw(uncore, GEN6_RC6_THRESHOLD, 0x557);
+	set(uncore, GEN6_RC6_THRESHOLD, 0x557);
 
 	/* Allows RC6 residency counter to work */
-	intel_uncore_write_fw(uncore, VLV_COUNTER_CONTROL,
-			      _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH |
-						 VLV_MEDIA_RC0_COUNT_EN |
-						 VLV_RENDER_RC0_COUNT_EN |
-						 VLV_MEDIA_RC6_COUNT_EN |
-						 VLV_RENDER_RC6_COUNT_EN));
+	set(uncore, VLV_COUNTER_CONTROL,
+	    _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH |
+			       VLV_MEDIA_RC0_COUNT_EN |
+			       VLV_RENDER_RC0_COUNT_EN |
+			       VLV_MEDIA_RC6_COUNT_EN |
+			       VLV_RENDER_RC6_COUNT_EN));
 
 	rc6->ctl_enable =
 	    GEN7_RC_CTL_TO_MODE | VLV_RC_CTL_CTX_RST_PARALLEL;
-}
-
-bool intel_check_bios_c6_setup(struct intel_rc6 *rc6)
-{
-	if (!rc6->bios_state_captured) {
-		struct intel_uncore *uncore = rc6_to_uncore(rc6);
-		intel_wakeref_t wakeref;
-
-		with_intel_runtime_pm(uncore->rpm, wakeref)
-			rc6->bios_rc_state = intel_uncore_read(uncore, GEN6_RC_STATE);
-
-		rc6->bios_state_captured = true;
-	}
-
-	return rc6->bios_rc_state & RC_SW_TARGET_STATE_MASK;
 }
 
 static bool bxt_check_bios_rc6_setup(struct intel_rc6 *rc6)
@@ -509,14 +503,8 @@ static bool rc6_supported(struct intel_rc6 *rc6)
 		return false;
 	}
 
-	if (IS_METEORLAKE(gt->i915) &&
-	    !intel_check_bios_c6_setup(rc6)) {
-		drm_notice(&i915->drm,
-			   "C6 disabled by BIOS\n");
-		return false;
-	}
-
-	if (IS_MEDIA_GT_IP_STEP(gt, IP_VER(13, 0), STEP_A0, STEP_B0)) {
+	if (IS_MTL_MEDIA_STEP(gt->i915, STEP_A0, STEP_B0) &&
+	    gt->type == GT_MEDIA) {
 		drm_notice(&i915->drm,
 			   "Media RC6 disabled on A step\n");
 		return false;
@@ -561,35 +549,31 @@ static void __intel_rc6_disable(struct intel_rc6 *rc6)
 	struct intel_gt *gt = rc6_to_gt(rc6);
 
 	/* Take control of RC6 back from GuC */
-	intel_guc_rc_disable(gt_to_guc(gt));
+	intel_guc_rc_disable(&gt->uc.guc);
 
 	intel_uncore_forcewake_get(uncore, FORCEWAKE_ALL);
 	if (GRAPHICS_VER(i915) >= 9)
-		intel_uncore_write_fw(uncore, GEN9_PG_ENABLE, 0);
-	intel_uncore_write_fw(uncore, GEN6_RC_CONTROL, 0);
-	intel_uncore_write_fw(uncore, GEN6_RC_STATE, 0);
+		set(uncore, GEN9_PG_ENABLE, 0);
+	set(uncore, GEN6_RC_CONTROL, 0);
+	set(uncore, GEN6_RC_STATE, 0);
 	intel_uncore_forcewake_put(uncore, FORCEWAKE_ALL);
 }
 
 static void rc6_res_reg_init(struct intel_rc6 *rc6)
 {
-	i915_reg_t res_reg[INTEL_RC6_RES_MAX] = {
-		[0 ... INTEL_RC6_RES_MAX - 1] = INVALID_MMIO_REG,
-	};
+	memset(rc6->res_reg, INVALID_MMIO_REG.reg, sizeof(rc6->res_reg));
 
 	switch (rc6_to_gt(rc6)->type) {
 	case GT_MEDIA:
-		res_reg[INTEL_RC6_RES_RC6] = MTL_MEDIA_MC6;
+		rc6->res_reg[INTEL_RC6_RES_RC6] = MTL_MEDIA_MC6;
 		break;
 	default:
-		res_reg[INTEL_RC6_RES_RC6_LOCKED] = GEN6_GT_GFX_RC6_LOCKED;
-		res_reg[INTEL_RC6_RES_RC6] = GEN6_GT_GFX_RC6;
-		res_reg[INTEL_RC6_RES_RC6p] = GEN6_GT_GFX_RC6p;
-		res_reg[INTEL_RC6_RES_RC6pp] = GEN6_GT_GFX_RC6pp;
+		rc6->res_reg[INTEL_RC6_RES_RC6_LOCKED] = GEN6_GT_GFX_RC6_LOCKED;
+		rc6->res_reg[INTEL_RC6_RES_RC6] = GEN6_GT_GFX_RC6;
+		rc6->res_reg[INTEL_RC6_RES_RC6p] = GEN6_GT_GFX_RC6p;
+		rc6->res_reg[INTEL_RC6_RES_RC6pp] = GEN6_GT_GFX_RC6pp;
 		break;
 	}
-
-	memcpy(rc6->res_reg, res_reg, sizeof(res_reg));
 }
 
 void intel_rc6_init(struct intel_rc6 *rc6)
@@ -678,7 +662,7 @@ void intel_rc6_unpark(struct intel_rc6 *rc6)
 		return;
 
 	/* Restore HW timers for automatic RC6 entry while busy */
-	intel_uncore_write_fw(uncore, GEN6_RC_CONTROL, rc6->ctl_enable);
+	set(uncore, GEN6_RC_CONTROL, rc6->ctl_enable);
 }
 
 void intel_rc6_park(struct intel_rc6 *rc6)
@@ -698,7 +682,7 @@ void intel_rc6_park(struct intel_rc6 *rc6)
 		return;
 
 	/* Turn off the HW timers and go directly to rc6 */
-	intel_uncore_write_fw(uncore, GEN6_RC_CONTROL, GEN6_RC_CTL_RC6_ENABLE);
+	set(uncore, GEN6_RC_CONTROL, GEN6_RC_CTL_RC6_ENABLE);
 
 	if (HAS_RC6pp(rc6_to_i915(rc6)))
 		target = 0x6; /* deepest rc6 */
@@ -706,7 +690,7 @@ void intel_rc6_park(struct intel_rc6 *rc6)
 		target = 0x5; /* deep rc6 */
 	else
 		target = 0x4; /* normal rc6 */
-	intel_uncore_write_fw(uncore, GEN6_RC_STATE, target << RC_SW_TARGET_STATE_SHIFT);
+	set(uncore, GEN6_RC_STATE, target << RC_SW_TARGET_STATE_SHIFT);
 }
 
 void intel_rc6_disable(struct intel_rc6 *rc6)
@@ -723,13 +707,8 @@ void intel_rc6_disable(struct intel_rc6 *rc6)
 void intel_rc6_fini(struct intel_rc6 *rc6)
 {
 	struct drm_i915_gem_object *pctx;
-	struct intel_uncore *uncore = rc6_to_uncore(rc6);
 
 	intel_rc6_disable(rc6);
-
-	/* We want the BIOS C6 state preserved across loads for MTL */
-	if (IS_METEORLAKE(rc6_to_i915(rc6)) && rc6->bios_state_captured)
-		intel_uncore_write_fw(uncore, GEN6_RC_STATE, rc6->bios_rc_state);
 
 	pctx = fetch_and_zero(&rc6->pctx);
 	if (pctx)
@@ -760,18 +739,18 @@ static u64 vlv_residency_raw(struct intel_uncore *uncore, const i915_reg_t reg)
 	 * before we have set the default VLV_COUNTER_CONTROL value. So always
 	 * set the high bit to be safe.
 	 */
-	intel_uncore_write_fw(uncore, VLV_COUNTER_CONTROL,
-			      _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH));
+	set(uncore, VLV_COUNTER_CONTROL,
+	    _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH));
 	upper = intel_uncore_read_fw(uncore, reg);
 	do {
 		tmp = upper;
 
-		intel_uncore_write_fw(uncore, VLV_COUNTER_CONTROL,
-				      _MASKED_BIT_DISABLE(VLV_COUNT_RANGE_HIGH));
+		set(uncore, VLV_COUNTER_CONTROL,
+		    _MASKED_BIT_DISABLE(VLV_COUNT_RANGE_HIGH));
 		lower = intel_uncore_read_fw(uncore, reg);
 
-		intel_uncore_write_fw(uncore, VLV_COUNTER_CONTROL,
-				      _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH));
+		set(uncore, VLV_COUNTER_CONTROL,
+		    _MASKED_BIT_ENABLE(VLV_COUNT_RANGE_HIGH));
 		upper = intel_uncore_read_fw(uncore, reg);
 	} while (upper != tmp && --loop);
 
@@ -805,7 +784,7 @@ u64 intel_rc6_residency_ns(struct intel_rc6 *rc6, enum intel_rc6_res_type id)
 	/* On VLV and CHV, residency time is in CZ units rather than 1.28us */
 	if (IS_VALLEYVIEW(i915) || IS_CHERRYVIEW(i915)) {
 		mul = 1000000;
-		div = vlv_clock_get_czclk(&i915->drm);
+		div = i915->czclk_freq;
 		overflow_hw = BIT_ULL(40);
 		time_hw = vlv_residency_raw(uncore, reg);
 	} else {

@@ -14,51 +14,34 @@
  * by a different driver.
  *
  * Supported sensors:
- *
- * - LSM6DS3
+ * - LSM6DS3:
  *   - Accelerometer/Gyroscope supported ODR [Hz]: 12.5, 26, 52, 104, 208, 416
  *   - Accelerometer supported full-scale [g]: +-2/+-4/+-8/+-16
  *   - Gyroscope supported full-scale [dps]: +-125/+-245/+-500/+-1000/+-2000
  *   - FIFO size: 8KB
  *
- * - ISM330DLC
- * - LSM6DS3H
- * - LSM6DS3TR-C
- * - LSM6DSL
- * - LSM6DSM
+ * - LSM6DS3H/LSM6DSL/LSM6DSM/ISM330DLC/LSM6DS3TR-C:
  *   - Accelerometer/Gyroscope supported ODR [Hz]: 12.5, 26, 52, 104, 208, 416
  *   - Accelerometer supported full-scale [g]: +-2/+-4/+-8/+-16
  *   - Gyroscope supported full-scale [dps]: +-125/+-245/+-500/+-1000/+-2000
  *   - FIFO size: 4KB
  *
- * - ASM330LHH
- * - ASM330LHHX
- * - ASM330LHHXG1
- * - ISM330DHCX
- * - ISM330IS
- * - LSM6DSO
- * - LSM6DSO16IS
- * - LSM6DSOP
- * - LSM6DSOX
- * - LSM6DSR
- * - LSM6DST
- * - LSM6DSTX
+ * - LSM6DSO/LSM6DSOX/ASM330LHH/ASM330LHHX/LSM6DSR/ISM330DHCX/LSM6DST/LSM6DSOP/
+ *   LSM6DSTX/LSM6DSO16IS/ISM330IS:
  *   - Accelerometer/Gyroscope supported ODR [Hz]: 12.5, 26, 52, 104, 208, 416,
  *     833
  *   - Accelerometer supported full-scale [g]: +-2/+-4/+-8/+-16
  *   - Gyroscope supported full-scale [dps]: +-125/+-245/+-500/+-1000/+-2000
  *   - FIFO size: 3KB
  *
- * - LSM6DSV
- * - LSM6DSV16X
+ * - LSM6DSV/LSM6DSV16X:
  *   - Accelerometer/Gyroscope supported ODR [Hz]: 7.5, 15, 30, 60, 120, 240,
  *     480, 960
  *   - Accelerometer supported full-scale [g]: +-2/+-4/+-8/+-16
  *   - Gyroscope supported full-scale [dps]: +-125/+-250/+-500/+-1000/+-2000
  *   - FIFO size: 3KB
  *
- * - LSM6DS0
- * - LSM9DS1
+ * - LSM9DS1/LSM6DS0:
  *   - Accelerometer supported ODR [Hz]: 10, 50, 119, 238, 476, 952
  *   - Accelerometer supported full-scale [g]: +-2/+-4/+-8/+-16
  *   - Gyroscope supported ODR [Hz]: 15, 60, 119, 238, 476, 952
@@ -73,7 +56,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/acpi.h>
 #include <linux/delay.h>
 #include <linux/iio/events.h>
 #include <linux/iio/iio.h>
@@ -94,17 +76,12 @@
 
 #define ST_LSM6DSX_REG_WHOAMI_ADDR		0x0f
 
+#define ST_LSM6DSX_TS_SENSITIVITY		25000UL /* 25us */
+
 static const struct iio_chan_spec st_lsm6dsx_acc_channels[] = {
 	ST_LSM6DSX_CHANNEL_ACC(IIO_ACCEL, 0x28, IIO_MOD_X, 0),
 	ST_LSM6DSX_CHANNEL_ACC(IIO_ACCEL, 0x2a, IIO_MOD_Y, 1),
 	ST_LSM6DSX_CHANNEL_ACC(IIO_ACCEL, 0x2c, IIO_MOD_Z, 2),
-	IIO_CHAN_SOFT_TIMESTAMP(3),
-};
-
-static const struct iio_chan_spec st_lsm6ds0_acc_channels[] = {
-	ST_LSM6DSX_CHANNEL(IIO_ACCEL, 0x28, IIO_MOD_X, 0),
-	ST_LSM6DSX_CHANNEL(IIO_ACCEL, 0x2a, IIO_MOD_Y, 1),
-	ST_LSM6DSX_CHANNEL(IIO_ACCEL, 0x2c, IIO_MOD_Z, 2),
 	IIO_CHAN_SOFT_TIMESTAMP(3),
 };
 
@@ -149,8 +126,8 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 		},
 		.channels = {
 			[ST_LSM6DSX_ID_ACC] = {
-				.chan = st_lsm6ds0_acc_channels,
-				.len = ARRAY_SIZE(st_lsm6ds0_acc_channels),
+				.chan = st_lsm6dsx_acc_channels,
+				.len = ARRAY_SIZE(st_lsm6dsx_acc_channels),
 			},
 			[ST_LSM6DSX_ID_GYRO] = {
 				.chan = st_lsm6ds0_gyro_channels,
@@ -657,24 +634,6 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 				.fs_len = 4,
 			},
 		},
-		.samples_to_discard = {
-			[ST_LSM6DSX_ID_ACC] = {
-				.val[0] = {  12500, 1 },
-				.val[1] = {  26000, 1 },
-				.val[2] = {  52000, 1 },
-				.val[3] = { 104000, 2 },
-				.val[4] = { 208000, 2 },
-				.val[5] = { 416000, 2 },
-			},
-			[ST_LSM6DSX_ID_GYRO] = {
-				.val[0] = {  12500,  2 },
-				.val[1] = {  26000,  5 },
-				.val[2] = {  52000,  7 },
-				.val[3] = { 104000, 12 },
-				.val[4] = { 208000, 20 },
-				.val[5] = { 416000, 36 },
-			},
-		},
 		.irq_config = {
 			.irq1 = {
 				.addr = 0x0d,
@@ -843,10 +802,6 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 				.name = ST_ASM330LHHX_DEV_NAME,
 				.wai = 0x6b,
 			}, {
-				.hw_id = ST_ASM330LHHXG1_ID,
-				.name = ST_ASM330LHHXG1_DEV_NAME,
-				.wai = 0x6b,
-			}, {
 				.hw_id = ST_LSM6DSTX_ID,
 				.name = ST_LSM6DSTX_DEV_NAME,
 				.wai = 0x6d,
@@ -988,8 +943,6 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 				.mask = GENMASK(7, 6),
 			},
 			.freq_fine = 0x63,
-			.ts_sensitivity = 25000,
-			.ts_trim_coeff = 37500,
 		},
 		.shub_settings = {
 			.page_mux = {
@@ -1061,10 +1014,6 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 				.hw_id = ST_LSM6DSOP_ID,
 				.name = ST_LSM6DSOP_DEV_NAME,
 				.wai = 0x6c,
-			}, {
-				.hw_id = ST_ASM330LHB_ID,
-				.name = ST_ASM330LHB_DEV_NAME,
-				.wai = 0x6b,
 			},
 		},
 		.channels = {
@@ -1203,8 +1152,6 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 				.mask = GENMASK(7, 6),
 			},
 			.freq_fine = 0x63,
-			.ts_sensitivity = 25000,
-			.ts_trim_coeff = 37500,
 		},
 		.event_settings = {
 			.enable_reg = {
@@ -1380,8 +1327,6 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 				.mask = GENMASK(7, 6),
 			},
 			.freq_fine = 0x4f,
-			.ts_sensitivity = 21701,
-			.ts_trim_coeff = 28212,
 		},
 		.shub_settings = {
 			.page_mux = {
@@ -1456,8 +1401,8 @@ static const struct st_lsm6dsx_settings st_lsm6dsx_sensor_settings[] = {
 		},
 		.channels = {
 			[ST_LSM6DSX_ID_ACC] = {
-				.chan = st_lsm6ds0_acc_channels,
-				.len = ARRAY_SIZE(st_lsm6ds0_acc_channels),
+				.chan = st_lsm6dsx_acc_channels,
+				.len = ARRAY_SIZE(st_lsm6dsx_acc_channels),
 			},
 			[ST_LSM6DSX_ID_GYRO] = {
 				.chan = st_lsm6dsx_gyro_channels,
@@ -1815,11 +1760,12 @@ static int st_lsm6dsx_read_raw(struct iio_dev *iio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(iio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(iio_dev);
+		if (ret)
+			break;
 
 		ret = st_lsm6dsx_read_oneshot(sensor, ch->address, val);
-		iio_device_release_direct(iio_dev);
+		iio_device_release_direct_mode(iio_dev);
 		break;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = sensor->odr / 1000;
@@ -1844,10 +1790,11 @@ static int st_lsm6dsx_write_raw(struct iio_dev *iio_dev,
 				int val, int val2, long mask)
 {
 	struct st_lsm6dsx_sensor *sensor = iio_priv(iio_dev);
-	int err = 0;
+	int err;
 
-	if (!iio_device_claim_direct(iio_dev))
-		return -EBUSY;
+	err = iio_device_claim_direct_mode(iio_dev);
+	if (err)
+		return err;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SCALE:
@@ -1858,12 +1805,10 @@ static int st_lsm6dsx_write_raw(struct iio_dev *iio_dev,
 
 		val = val * 1000 + val2 / 1000;
 		val = st_lsm6dsx_check_odr(sensor, val, &data);
-		if (val < 0) {
+		if (val < 0)
 			err = val;
-		} else {
+		else
 			sensor->odr = val;
-			sensor->hwfifo_odr_mHz = val;
-		}
 		break;
 	}
 	default:
@@ -1871,12 +1816,12 @@ static int st_lsm6dsx_write_raw(struct iio_dev *iio_dev,
 		break;
 	}
 
-	iio_device_release_direct(iio_dev);
+	iio_device_release_direct_mode(iio_dev);
 
 	return err;
 }
 
-static int st_lsm6dsx_event_setup(struct st_lsm6dsx_hw *hw, bool state)
+static int st_lsm6dsx_event_setup(struct st_lsm6dsx_hw *hw, int state)
 {
 	const struct st_lsm6dsx_reg *reg;
 	unsigned int data;
@@ -1970,7 +1915,7 @@ static int
 st_lsm6dsx_write_event_config(struct iio_dev *iio_dev,
 			      const struct iio_chan_spec *chan,
 			      enum iio_event_type type,
-			      enum iio_event_direction dir, bool state)
+			      enum iio_event_direction dir, int state)
 {
 	struct st_lsm6dsx_sensor *sensor = iio_priv(iio_dev);
 	struct st_lsm6dsx_hw *hw = sensor->hw;
@@ -2048,10 +1993,10 @@ st_lsm6dsx_sysfs_sampling_frequency_avail(struct device *dev,
 
 	odr_table = &sensor->hw->settings->odr_table[sensor->id];
 	for (i = 0; i < odr_table->odr_len; i++)
-	     len += sysfs_emit_at(buf, len, "%d.%03d%c",
-				  odr_table->odr_avl[i].milli_hz / 1000,
-				  odr_table->odr_avl[i].milli_hz % 1000,
-				  (i == odr_table->odr_len - 1) ? '\n' : ' ');
+		len += scnprintf(buf + len, PAGE_SIZE - len, "%d.%03d ",
+				 odr_table->odr_avl[i].milli_hz / 1000,
+				 odr_table->odr_avl[i].milli_hz % 1000);
+	buf[len - 1] = '\n';
 
 	return len;
 }
@@ -2067,9 +2012,9 @@ static ssize_t st_lsm6dsx_sysfs_scale_avail(struct device *dev,
 
 	fs_table = &hw->settings->fs_table[sensor->id];
 	for (i = 0; i < fs_table->fs_len; i++)
-	     len += sysfs_emit_at(buf, len, "0.%09u%c",
-				  fs_table->fs_avl[i].gain,
-				  (i == fs_table->fs_len - 1) ? '\n' : ' ');
+		len += scnprintf(buf + len, PAGE_SIZE - len, "0.%09u ",
+				 fs_table->fs_avl[i].gain);
+	buf[len - 1] = '\n';
 
 	return len;
 }
@@ -2138,16 +2083,29 @@ static const struct iio_info st_lsm6dsx_gyro_info = {
 	.write_raw_get_fmt = st_lsm6dsx_write_raw_get_fmt,
 };
 
+static int st_lsm6dsx_get_drdy_pin(struct st_lsm6dsx_hw *hw, int *drdy_pin)
+{
+	struct device *dev = hw->dev;
+
+	if (!dev_fwnode(dev))
+		return -EINVAL;
+
+	return device_property_read_u32(dev, "st,drdy-int-pin", drdy_pin);
+}
+
 static int
 st_lsm6dsx_get_drdy_reg(struct st_lsm6dsx_hw *hw,
 			const struct st_lsm6dsx_reg **drdy_reg)
 {
-	struct device *dev = hw->dev;
-	const struct st_sensors_platform_data *pdata = dev_get_platdata(dev);
 	int err = 0, drdy_pin;
 
-	if (device_property_read_u32(dev, "st,drdy-int-pin", &drdy_pin) < 0)
+	if (st_lsm6dsx_get_drdy_pin(hw, &drdy_pin) < 0) {
+		struct st_sensors_platform_data *pdata;
+		struct device *dev = hw->dev;
+
+		pdata = (struct st_sensors_platform_data *)dev->platform_data;
 		drdy_pin = pdata ? pdata->drdy_int_pin : 1;
+	}
 
 	switch (drdy_pin) {
 	case 1:
@@ -2170,14 +2128,15 @@ st_lsm6dsx_get_drdy_reg(struct st_lsm6dsx_hw *hw,
 static int st_lsm6dsx_init_shub(struct st_lsm6dsx_hw *hw)
 {
 	const struct st_lsm6dsx_shub_settings *hub_settings;
+	struct st_sensors_platform_data *pdata;
 	struct device *dev = hw->dev;
-	const struct st_sensors_platform_data *pdata = dev_get_platdata(dev);
 	unsigned int data;
 	int err = 0;
 
 	hub_settings = &hw->settings->shub_settings;
 
-	if (device_property_read_bool(dev, "st,pullups") ||
+	pdata = (struct st_sensors_platform_data *)dev->platform_data;
+	if ((dev_fwnode(dev) && device_property_read_bool(dev, "st,pullups")) ||
 	    (pdata && pdata->pullups)) {
 		if (hub_settings->pullup_en.sec_page) {
 			err = st_lsm6dsx_set_page(hw, true);
@@ -2261,13 +2220,20 @@ static int st_lsm6dsx_init_hw_timer(struct st_lsm6dsx_hw *hw)
 	}
 
 	/* calibrate timestamp sensitivity */
-	hw->ts_gain = ts_settings->ts_sensitivity;
+	hw->ts_gain = ST_LSM6DSX_TS_SENSITIVITY;
 	if (ts_settings->freq_fine) {
 		err = regmap_read(hw->regmap, ts_settings->freq_fine, &val);
 		if (err < 0)
 			return err;
 
-		hw->ts_gain -= ((s8)val * ts_settings->ts_trim_coeff) / 1000;
+		/*
+		 * linearize the AN5192 formula:
+		 * 1 / (1 + x) ~= 1 - x (Taylor’s Series)
+		 * ttrim[s] = 1 / (40000 * (1 + 0.0015 * val))
+		 * ttrim[ns] ~= 25000 - 37.5 * val
+		 * ttrim[ns] ~= 25000 - (37500 * val) / 1000
+		 */
+		hw->ts_gain -= ((s8)val * 37500) / 1000;
 	}
 
 	return 0;
@@ -2390,7 +2356,6 @@ static struct iio_dev *st_lsm6dsx_alloc_iiodev(struct st_lsm6dsx_hw *hw,
 	sensor->id = id;
 	sensor->hw = hw;
 	sensor->odr = hw->settings->odr_table[id].odr_avl[0].milli_hz;
-	sensor->hwfifo_odr_mHz = sensor->odr;
 	sensor->gain = hw->settings->fs_table[id].fs_avl[0].gain;
 	sensor->watermark = 1;
 
@@ -2525,14 +2490,15 @@ static irqreturn_t st_lsm6dsx_sw_trigger_handler_thread(int irq,
 
 static int st_lsm6dsx_irq_setup(struct st_lsm6dsx_hw *hw)
 {
+	struct st_sensors_platform_data *pdata;
 	const struct st_lsm6dsx_reg *reg;
 	struct device *dev = hw->dev;
-	const struct st_sensors_platform_data *pdata = dev_get_platdata(dev);
 	unsigned long irq_type;
 	bool irq_active_low;
 	int err;
 
-	irq_type = irq_get_trigger_type(hw->irq);
+	irq_type = irqd_get_trigger_type(irq_get_irq_data(hw->irq));
+
 	switch (irq_type) {
 	case IRQF_TRIGGER_HIGH:
 	case IRQF_TRIGGER_RISING:
@@ -2554,7 +2520,8 @@ static int st_lsm6dsx_irq_setup(struct st_lsm6dsx_hw *hw)
 	if (err < 0)
 		return err;
 
-	if (device_property_read_bool(dev, "drive-open-drain") ||
+	pdata = (struct st_sensors_platform_data *)dev->platform_data;
+	if ((dev_fwnode(dev) && device_property_read_bool(dev, "drive-open-drain")) ||
 	    (pdata && pdata->open_drain)) {
 		reg = &hw->settings->irq_config.od;
 		err = regmap_update_bits(hw->regmap, reg->addr, reg->mask,
@@ -2638,7 +2605,7 @@ static int st_lsm6dsx_init_regulators(struct device *dev)
 int st_lsm6dsx_probe(struct device *dev, int irq, int hw_id,
 		     struct regmap *regmap)
 {
-	const struct st_sensors_platform_data *pdata = dev_get_platdata(dev);
+	struct st_sensors_platform_data *pdata = dev->platform_data;
 	const struct st_lsm6dsx_shub_settings *hub_settings;
 	struct st_lsm6dsx_hw *hw;
 	const char *name = NULL;
@@ -2648,7 +2615,7 @@ int st_lsm6dsx_probe(struct device *dev, int irq, int hw_id,
 	if (!hw)
 		return -ENOMEM;
 
-	dev_set_drvdata(dev, hw);
+	dev_set_drvdata(dev, (void *)hw);
 
 	mutex_init(&hw->fifo_lock);
 	mutex_init(&hw->conf_lock);
@@ -2682,7 +2649,8 @@ int st_lsm6dsx_probe(struct device *dev, int irq, int hw_id,
 
 	hub_settings = &hw->settings->shub_settings;
 	if (hub_settings->master_en.addr &&
-	    !device_property_read_bool(dev, "st,disable-sensor-hub")) {
+	    (!dev_fwnode(dev) ||
+	     !device_property_read_bool(dev, "st,disable-sensor-hub"))) {
 		err = st_lsm6dsx_shub_probe(hw, name);
 		if (err < 0)
 			return err;
@@ -2708,11 +2676,9 @@ int st_lsm6dsx_probe(struct device *dev, int irq, int hw_id,
 			return err;
 	}
 
-	if (!iio_read_acpi_mount_matrix(hw->dev, &hw->orientation, "ROTM")) {
-		err = iio_read_mount_matrix(hw->dev, &hw->orientation);
-		if (err)
-			return err;
-	}
+	err = iio_read_mount_matrix(hw->dev, &hw->orientation);
+	if (err)
+		return err;
 
 	for (i = 0; i < ST_LSM6DSX_ID_MAX; i++) {
 		if (!hw->iio_devs[i])
@@ -2723,16 +2689,13 @@ int st_lsm6dsx_probe(struct device *dev, int irq, int hw_id,
 			return err;
 	}
 
-	if (device_property_read_bool(dev, "wakeup-source") ||
-	    (pdata && pdata->wakeup_source)) {
-		err = devm_device_init_wakeup(dev);
-		if (err)
-			return dev_err_probe(dev, err, "Failed to init wakeup\n");
-	}
+	if ((dev_fwnode(dev) && device_property_read_bool(dev, "wakeup-source")) ||
+	    (pdata && pdata->wakeup_source))
+		device_init_wakeup(dev, true);
 
 	return 0;
 }
-EXPORT_SYMBOL_NS(st_lsm6dsx_probe, "IIO_LSM6DSX");
+EXPORT_SYMBOL_NS(st_lsm6dsx_probe, IIO_LSM6DSX);
 
 static int st_lsm6dsx_suspend(struct device *dev)
 {

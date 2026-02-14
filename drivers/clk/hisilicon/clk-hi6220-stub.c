@@ -14,7 +14,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/mailbox_client.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 
 /* Stub clocks id */
@@ -161,11 +161,11 @@ static int hi6220_stub_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	return ret;
 }
 
-static int hi6220_stub_clk_determine_rate(struct clk_hw *hw,
-					  struct clk_rate_request *req)
+static long hi6220_stub_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+		unsigned long *parent_rate)
 {
 	struct hi6220_stub_clk *stub_clk = to_stub_clk(hw);
-	unsigned long new_rate = req->rate / 1000;  /* kHz */
+	unsigned long new_rate = rate / 1000;  /* kHz */
 
 	switch (stub_clk->id) {
 	case HI6220_STUB_ACPU0:
@@ -181,14 +181,12 @@ static int hi6220_stub_clk_determine_rate(struct clk_hw *hw,
 		break;
 	}
 
-	req->rate = new_rate;
-
-	return 0;
+	return new_rate;
 }
 
 static const struct clk_ops hi6220_stub_clk_ops = {
 	.recalc_rate	= hi6220_stub_clk_recalc_rate,
-	.determine_rate = hi6220_stub_clk_determine_rate,
+	.round_rate	= hi6220_stub_clk_round_rate,
 	.set_rate	= hi6220_stub_clk_set_rate,
 };
 

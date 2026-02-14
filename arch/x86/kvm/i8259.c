@@ -31,8 +31,6 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/bitops.h>
-
-#include "ioapic.h"
 #include "irq.h"
 
 #include <linux/kvm_host.h>
@@ -187,11 +185,8 @@ void kvm_pic_update_irq(struct kvm_pic *s)
 	pic_unlock(s);
 }
 
-int kvm_pic_set_irq(struct kvm_kernel_irq_routing_entry *e, struct kvm *kvm,
-		    int irq_source_id, int level, bool line_status)
+int kvm_pic_set_irq(struct kvm_pic *s, int irq, int irq_source_id, int level)
 {
-	struct kvm_pic *s = kvm->arch.vpic;
-	int irq = e->irqchip.pin;
 	int ret, irq_level;
 
 	BUG_ON(irq < 0 || irq >= PIC_NUM_PINS);
@@ -206,6 +201,16 @@ int kvm_pic_set_irq(struct kvm_kernel_irq_routing_entry *e, struct kvm *kvm,
 	pic_unlock(s);
 
 	return ret;
+}
+
+void kvm_pic_clear_all(struct kvm_pic *s, int irq_source_id)
+{
+	int i;
+
+	pic_lock(s);
+	for (i = 0; i < PIC_NUM_PINS; i++)
+		__clear_bit(irq_source_id, &s->irq_states[i]);
+	pic_unlock(s);
 }
 
 /*
@@ -406,10 +411,7 @@ static u32 pic_poll_read(struct kvm_kpic_state *s, u32 addr1)
 		pic_clear_isr(s, ret);
 		if (addr1 >> 7 || ret != 2)
 			pic_update_irq(s->pics_state);
-		/* Bit 7 is 1, means there's an interrupt */
-		ret |= 0x80;
 	} else {
-		/* Bit 7 is 0, means there's no interrupt */
 		ret = 0x07;
 		pic_update_irq(s->pics_state);
 	}
@@ -562,7 +564,7 @@ static void pic_irq_request(struct kvm *kvm, int level)
 {
 	struct kvm_pic *s = kvm->arch.vpic;
 
-	if (!s->output && level)
+	if (!s->output)
 		s->wakeup_needed = true;
 	s->output = level;
 }

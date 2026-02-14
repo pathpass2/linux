@@ -63,6 +63,20 @@ void pstack__push(struct pstack *pstack, void *key)
 	pstack->entries[pstack->top++] = key;
 }
 
+void *pstack__pop(struct pstack *pstack)
+{
+	void *ret;
+
+	if (pstack->top == 0) {
+		pr_err("%s: underflow!\n", __func__);
+		return NULL;
+	}
+
+	ret = pstack->entries[--pstack->top];
+	pstack->entries[pstack->top] = NULL;
+	return ret;
+}
+
 void *pstack__peek(struct pstack *pstack)
 {
 	if (pstack->top == 0)

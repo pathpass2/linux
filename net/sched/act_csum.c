@@ -77,8 +77,8 @@ static int tcf_csum_init(struct net *net, struct nlattr *nla,
 		}
 		ret = ACT_P_CREATED;
 	} else if (err > 0) {
-		if (bind) /* dont override defaults */
-			return ACT_P_BOUND;
+		if (bind)/* dont override defaults */
+			return 0;
 		if (!(flags & TCA_ACT_FLAGS_REPLACE)) {
 			tcf_idr_release(*a, bind);
 			return -EEXIST;
@@ -99,7 +99,6 @@ static int tcf_csum_init(struct net *net, struct nlattr *nla,
 		goto put_chain;
 	}
 	params_new->update_flags = parm->update_flags;
-	params_new->action = parm->action;
 
 	spin_lock_bh(&p->tcf_lock);
 	goto_ch = tcf_action_set_ctrlact(*a, parm->action, goto_ch);
@@ -377,7 +376,8 @@ static int tcf_csum_sctp(struct sk_buff *skb, unsigned int ihl,
 
 	sctph->checksum = sctp_compute_cksum(skb,
 					     skb_network_offset(skb) + ihl);
-	skb_reset_csum_not_inet(skb);
+	skb->ip_summed = CHECKSUM_NONE;
+	skb->csum_not_inet = 0;
 
 	return 1;
 }
@@ -581,7 +581,7 @@ TC_INDIRECT_SCOPE int tcf_csum_act(struct sk_buff *skb,
 	tcf_lastuse_update(&p->tcf_tm);
 	tcf_action_update_bstats(&p->common, skb);
 
-	action = params->action;
+	action = READ_ONCE(p->tcf_action);
 	if (unlikely(action == TC_ACT_SHOT))
 		goto drop;
 
@@ -632,9 +632,9 @@ drop:
 static int tcf_csum_dump(struct sk_buff *skb, struct tc_action *a, int bind,
 			 int ref)
 {
-	const struct tcf_csum *p = to_tcf_csum(a);
 	unsigned char *b = skb_tail_pointer(skb);
-	const struct tcf_csum_params *params;
+	struct tcf_csum *p = to_tcf_csum(a);
+	struct tcf_csum_params *params;
 	struct tc_csum opt = {
 		.index   = p->tcf_index,
 		.refcnt  = refcount_read(&p->tcf_refcnt) - ref,
@@ -642,9 +642,10 @@ static int tcf_csum_dump(struct sk_buff *skb, struct tc_action *a, int bind,
 	};
 	struct tcf_t t;
 
-	rcu_read_lock();
-	params = rcu_dereference(p->params);
-	opt.action = params->action;
+	spin_lock_bh(&p->tcf_lock);
+	params = rcu_dereference_protected(p->params,
+					   lockdep_is_held(&p->tcf_lock));
+	opt.action = p->tcf_action;
 	opt.update_flags = params->update_flags;
 
 	if (nla_put(skb, TCA_CSUM_PARMS, sizeof(opt), &opt))
@@ -653,12 +654,12 @@ static int tcf_csum_dump(struct sk_buff *skb, struct tc_action *a, int bind,
 	tcf_tm_dump(&t, &p->tcf_tm);
 	if (nla_put_64bit(skb, TCA_CSUM_TM, sizeof(t), &t, TCA_CSUM_PAD))
 		goto nla_put_failure;
-	rcu_read_unlock();
+	spin_unlock_bh(&p->tcf_lock);
 
 	return skb->len;
 
 nla_put_failure:
-	rcu_read_unlock();
+	spin_unlock_bh(&p->tcf_lock);
 	nlmsg_trim(skb, b);
 	return -1;
 }
@@ -709,7 +710,6 @@ static struct tc_action_ops act_csum_ops = {
 	.offload_act_setup = tcf_csum_offload_act_setup,
 	.size		= sizeof(struct tcf_csum),
 };
-MODULE_ALIAS_NET_ACT("csum");
 
 static __net_init int csum_init_net(struct net *net)
 {

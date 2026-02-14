@@ -30,13 +30,6 @@ enum tb_cfg_error {
 	TB_CFG_ERROR_FLOW_CONTROL_ERROR = 13,
 	TB_CFG_ERROR_LOCK = 15,
 	TB_CFG_ERROR_DP_BW = 32,
-	TB_CFG_ERROR_ROP_CMPLT = 33,
-	TB_CFG_ERROR_POP_CMPLT = 34,
-	TB_CFG_ERROR_PCIE_WAKE = 35,
-	TB_CFG_ERROR_DP_CON_CHANGE = 36,
-	TB_CFG_ERROR_DPTX_DISCOVERY = 37,
-	TB_CFG_ERROR_LINK_RECOVERY = 38,
-	TB_CFG_ERROR_ASYM_LINK = 39,
 };
 
 /* common header */
@@ -98,6 +91,12 @@ struct cfg_reset_pkg {
 	struct tb_cfg_header header;
 } __packed;
 
+/* TB_CFG_PKG_PREPARE_TO_SLEEP */
+struct cfg_pts_pkg {
+	struct tb_cfg_header header;
+	u32 data;
+} __packed;
+
 /* ICM messages */
 
 enum icm_pkg_code {
@@ -118,7 +117,6 @@ enum icm_event_code {
 	ICM_EVENT_DEVICE_DISCONNECTED = 0x4,
 	ICM_EVENT_XDOMAIN_CONNECTED = 0x6,
 	ICM_EVENT_XDOMAIN_DISCONNECTED = 0x7,
-	ICM_EVENT_DP_CONFIG_CHANGED = 0x8,
 	ICM_EVENT_RTD3_VETO = 0xa,
 };
 

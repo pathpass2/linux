@@ -735,7 +735,7 @@ static const struct pinmux_ops tb10x_pinmux_ops = {
 	.set_mux = tb10x_pctl_set_mux,
 };
 
-static const struct pinctrl_desc tb10x_pindesc = {
+static struct pinctrl_desc tb10x_pindesc = {
 	.name = "TB10x",
 	.pins = tb10x_pins,
 	.npins = ARRAY_SIZE(tb10x_pins),
@@ -804,11 +804,13 @@ fail:
 	return ret;
 }
 
-static void tb10x_pinctrl_remove(struct platform_device *pdev)
+static int tb10x_pinctrl_remove(struct platform_device *pdev)
 {
 	struct tb10x_pinctrl *state = platform_get_drvdata(pdev);
 
 	mutex_destroy(&state->mutex);
+
+	return 0;
 }
 
 
@@ -823,12 +825,11 @@ static struct platform_driver tb10x_pinctrl_pdrv = {
 	.remove  = tb10x_pinctrl_remove,
 	.driver  = {
 		.name  = "tb10x_pinctrl",
-		.of_match_table = tb10x_pinctrl_dt_ids,
+		.of_match_table = of_match_ptr(tb10x_pinctrl_dt_ids),
 	}
 };
 
 module_platform_driver(tb10x_pinctrl_pdrv);
 
 MODULE_AUTHOR("Christian Ruppert <christian.ruppert@abilis.com>");
-MODULE_DESCRIPTION("Abilis Systems TB10x pinctrl driver");
 MODULE_LICENSE("GPL");

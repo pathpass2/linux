@@ -7,7 +7,6 @@
  */
 #include <linux/module.h>
 #include <linux/spinlock.h>
-#include <linux/string_choices.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/clkdev.h>
@@ -271,28 +270,23 @@ static unsigned long xgene_clk_pmd_recalc_rate(struct clk_hw *hw,
 	return ret;
 }
 
-static int xgene_clk_pmd_determine_rate(struct clk_hw *hw,
-					struct clk_rate_request *req)
+static long xgene_clk_pmd_round_rate(struct clk_hw *hw, unsigned long rate,
+				     unsigned long *parent_rate)
 {
 	struct xgene_clk_pmd *fd = to_xgene_clk_pmd(hw);
 	u64 ret, scale;
 
-	if (!req->rate || req->rate >= req->best_parent_rate) {
-		req->rate = req->best_parent_rate;
-
-		return 0;
-	}
+	if (!rate || rate >= *parent_rate)
+		return *parent_rate;
 
 	/* freq = parent_rate * scaler / denom */
-	ret = req->rate * fd->denom;
-	scale = DIV_ROUND_UP_ULL(ret, req->best_parent_rate);
+	ret = rate * fd->denom;
+	scale = DIV_ROUND_UP_ULL(ret, *parent_rate);
 
-	ret = (u64)req->best_parent_rate * scale;
+	ret = (u64)*parent_rate * scale;
 	do_div(ret, fd->denom);
 
-	req->rate = ret;
-
-	return 0;
+	return ret;
 }
 
 static int xgene_clk_pmd_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -338,7 +332,7 @@ static int xgene_clk_pmd_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops xgene_clk_pmd_ops = {
 	.recalc_rate = xgene_clk_pmd_recalc_rate,
-	.determine_rate = xgene_clk_pmd_determine_rate,
+	.round_rate = xgene_clk_pmd_round_rate,
 	.set_rate = xgene_clk_pmd_set_rate,
 };
 
@@ -526,7 +520,8 @@ static int xgene_clk_is_enabled(struct clk_hw *hw)
 		data = xgene_clk_read(pclk->param.csr_reg +
 					pclk->param.reg_clk_offset);
 		pr_debug("%s clock is %s\n", clk_hw_get_name(hw),
-			str_enabled_disabled(data & pclk->param.reg_clk_mask));
+			data & pclk->param.reg_clk_mask ? "enabled" :
+							"disabled");
 	} else {
 		return 1;
 	}
@@ -598,25 +593,23 @@ static int xgene_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	return parent_rate / divider_save;
 }
 
-static int xgene_clk_determine_rate(struct clk_hw *hw,
-				    struct clk_rate_request *req)
+static long xgene_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+				unsigned long *prate)
 {
 	struct xgene_clk *pclk = to_xgene_clk(hw);
-	unsigned long parent_rate = req->best_parent_rate;
+	unsigned long parent_rate = *prate;
 	u32 divider;
 
 	if (pclk->param.divider_reg) {
 		/* Let's compute the divider */
-		if (req->rate > parent_rate)
-			req->rate = parent_rate;
-		divider = parent_rate / req->rate;   /* Rounded down */
+		if (rate > parent_rate)
+			rate = parent_rate;
+		divider = parent_rate / rate;   /* Rounded down */
 	} else {
 		divider = 1;
 	}
 
-	req->rate = parent_rate / divider;
-
-	return 0;
+	return parent_rate / divider;
 }
 
 static const struct clk_ops xgene_clk_ops = {
@@ -625,7 +618,7 @@ static const struct clk_ops xgene_clk_ops = {
 	.is_enabled = xgene_clk_is_enabled,
 	.recalc_rate = xgene_clk_recalc_rate,
 	.set_rate = xgene_clk_set_rate,
-	.determine_rate = xgene_clk_determine_rate,
+	.round_rate = xgene_clk_round_rate,
 };
 
 static struct clk *xgene_register_clk(struct device *dev,

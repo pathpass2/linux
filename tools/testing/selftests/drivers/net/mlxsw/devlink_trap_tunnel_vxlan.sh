@@ -183,7 +183,7 @@ ecn_decap_test()
 
 	log_test "$desc: Inner ECN is not ECT and outer is $ecn_desc"
 
-	kill_process $mz_pid
+	kill $mz_pid && wait $mz_pid &> /dev/null
 	tc filter del dev $swp1 egress protocol ip pref 1 handle 101 flower
 }
 
@@ -253,7 +253,7 @@ corrupted_packet_test()
 
 	log_test "$desc"
 
-	kill_process $mz_pid
+	kill $mz_pid && wait $mz_pid &> /dev/null
 	tc filter del dev $swp1 egress protocol ip pref 1 handle 101 flower
 }
 

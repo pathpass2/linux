@@ -41,8 +41,7 @@ properties:
 patternProperties:
   "^sdhci@[0-9a-f]+$":
     type: object
-    $ref: sdhci-common.yaml
-    unevaluatedProperties: false
+    $ref: mmc-controller.yaml
 
     properties:
       compatible:

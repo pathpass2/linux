@@ -72,7 +72,6 @@
 #include <linux/kobject.h>
 #include <linux/prefetch.h>
 #include <linux/platform_device.h>
-#include <linux/string_choices.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/dma-mapping.h>
@@ -596,7 +595,7 @@ void musb_load_testpacket(struct musb *musb)
  */
 static void musb_otg_timer_func(struct timer_list *t)
 {
-	struct musb	*musb = timer_container_of(musb, t, otg_timer);
+	struct musb	*musb = from_timer(musb, t, otg_timer);
 	unsigned long	flags;
 
 	spin_lock_irqsave(&musb->lock, flags);
@@ -921,7 +920,7 @@ b_host:
 		musb_set_state(musb, OTG_STATE_B_HOST);
 		if (musb->hcd)
 			musb->hcd->self.is_b_host = 1;
-		timer_delete(&musb->otg_timer);
+		del_timer(&musb->otg_timer);
 		break;
 	default:
 		if ((devctl & MUSB_DEVCTL_VBUS)
@@ -1015,7 +1014,7 @@ static void musb_handle_intr_reset(struct musb *musb)
 				+ msecs_to_jiffies(TA_WAIT_BCON(musb)));
 			break;
 		case OTG_STATE_A_PERIPHERAL:
-			timer_delete(&musb->otg_timer);
+			del_timer(&musb->otg_timer);
 			musb_g_reset(musb);
 			break;
 		case OTG_STATE_B_WAIT_ACON:
@@ -1271,7 +1270,7 @@ MODULE_PARM_DESC(fifo_mode, "initial endpoint configuration");
  */
 
 /* mode 0 - fits in 2KB */
-static const struct musb_fifo_cfg mode_0_cfg[] = {
+static struct musb_fifo_cfg mode_0_cfg[] = {
 { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, },
 { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, },
 { .hw_ep_num = 2, .style = FIFO_RXTX, .maxpacket = 512, },
@@ -1280,7 +1279,7 @@ static const struct musb_fifo_cfg mode_0_cfg[] = {
 };
 
 /* mode 1 - fits in 4KB */
-static const struct musb_fifo_cfg mode_1_cfg[] = {
+static struct musb_fifo_cfg mode_1_cfg[] = {
 { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
 { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
 { .hw_ep_num = 2, .style = FIFO_RXTX, .maxpacket = 512, .mode = BUF_DOUBLE, },
@@ -1289,7 +1288,7 @@ static const struct musb_fifo_cfg mode_1_cfg[] = {
 };
 
 /* mode 2 - fits in 4KB */
-static const struct musb_fifo_cfg mode_2_cfg[] = {
+static struct musb_fifo_cfg mode_2_cfg[] = {
 { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, },
 { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, },
 { .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, },
@@ -1299,7 +1298,7 @@ static const struct musb_fifo_cfg mode_2_cfg[] = {
 };
 
 /* mode 3 - fits in 4KB */
-static const struct musb_fifo_cfg mode_3_cfg[] = {
+static struct musb_fifo_cfg mode_3_cfg[] = {
 { .hw_ep_num = 1, .style = FIFO_TX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
 { .hw_ep_num = 1, .style = FIFO_RX,   .maxpacket = 512, .mode = BUF_DOUBLE, },
 { .hw_ep_num = 2, .style = FIFO_TX,   .maxpacket = 512, },
@@ -1309,7 +1308,7 @@ static const struct musb_fifo_cfg mode_3_cfg[] = {
 };
 
 /* mode 4 - fits in 16KB */
-static const struct musb_fifo_cfg mode_4_cfg[] = {
+static struct musb_fifo_cfg mode_4_cfg[] = {
 { .hw_ep_num =  1, .style = FIFO_TX,   .maxpacket = 512, },
 { .hw_ep_num =  1, .style = FIFO_RX,   .maxpacket = 512, },
 { .hw_ep_num =  2, .style = FIFO_TX,   .maxpacket = 512, },
@@ -1340,7 +1339,7 @@ static const struct musb_fifo_cfg mode_4_cfg[] = {
 };
 
 /* mode 5 - fits in 8KB */
-static const struct musb_fifo_cfg mode_5_cfg[] = {
+static struct musb_fifo_cfg mode_5_cfg[] = {
 { .hw_ep_num =  1, .style = FIFO_TX,   .maxpacket = 512, },
 { .hw_ep_num =  1, .style = FIFO_RX,   .maxpacket = 512, },
 { .hw_ep_num =  2, .style = FIFO_TX,   .maxpacket = 512, },
@@ -1388,7 +1387,7 @@ fifo_setup(struct musb *musb, struct musb_hw_ep  *hw_ep,
 
 	/* expect hw_ep has already been zero-initialized */
 
-	size = ffs(max_t(u16, maxpacket, 8)) - 1;
+	size = ffs(max(maxpacket, (u16) 8)) - 1;
 	maxpacket = 1 << size;
 
 	c_size = size - 3;
@@ -1447,7 +1446,7 @@ fifo_setup(struct musb *musb, struct musb_hw_ep  *hw_ep,
 	return offset + (maxpacket << ((c_size & MUSB_FIFOSZ_DPB) ? 1 : 0));
 }
 
-static const struct musb_fifo_cfg ep0_cfg = {
+static struct musb_fifo_cfg ep0_cfg = {
 	.style = FIFO_RXTX, .maxpacket = 64,
 };
 
@@ -1938,7 +1937,7 @@ vbus_show(struct device *dev, struct device_attribute *attr, char *buf)
 	pm_runtime_put_sync(dev);
 
 	return sprintf(buf, "Vbus %s, timeout %lu msec\n",
-			str_on_off(vbus), val);
+			vbus ? "on" : "off", val);
 }
 static DEVICE_ATTR_RW(vbus);
 
@@ -2031,6 +2030,7 @@ static void musb_pm_runtime_check_session(struct musb *musb)
 		if (!musb->session)
 			break;
 		trace_musb_state(musb, devctl, "Allow PM on possible host mode disconnect");
+		pm_runtime_mark_last_busy(musb->controller);
 		pm_runtime_put_autosuspend(musb->controller);
 		musb->session = false;
 		return;
@@ -2062,6 +2062,7 @@ static void musb_pm_runtime_check_session(struct musb *musb)
 					      msecs_to_jiffies(3000));
 	} else {
 		trace_musb_state(musb, devctl, "Allow PM with no session");
+		pm_runtime_mark_last_busy(musb->controller);
 		pm_runtime_put_autosuspend(musb->controller);
 	}
 
@@ -2088,6 +2089,7 @@ static void musb_irq_work(struct work_struct *data)
 		sysfs_notify(&musb->controller->kobj, NULL, "mode");
 	}
 
+	pm_runtime_mark_last_busy(musb->controller);
 	pm_runtime_put_autosuspend(musb->controller);
 }
 
@@ -2328,6 +2330,7 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 
 	spin_lock_init(&musb->lock);
 	spin_lock_init(&musb->list_lock);
+	musb->board_set_power = plat->set_power;
 	musb->min_power = plat->min_power;
 	musb->ops = plat->platform_ops;
 	musb->port_mode = plat->mode;
@@ -2561,6 +2564,7 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 	musb_init_debugfs(musb);
 
 	musb->is_initialized = 1;
+	pm_runtime_mark_last_busy(musb->controller);
 	pm_runtime_put_autosuspend(musb->controller);
 
 	return 0;
@@ -2607,8 +2611,8 @@ static int musb_probe(struct platform_device *pdev)
 	int		irq = platform_get_irq_byname(pdev, "mc");
 	void __iomem	*base;
 
-	if (irq < 0)
-		return irq;
+	if (irq <= 0)
+		return -ENODEV;
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
@@ -2617,7 +2621,7 @@ static int musb_probe(struct platform_device *pdev)
 	return musb_init_controller(dev, irq, base);
 }
 
-static void musb_remove(struct platform_device *pdev)
+static int musb_remove(struct platform_device *pdev)
 {
 	struct device	*dev = &pdev->dev;
 	struct musb	*musb = dev_to_musb(dev);
@@ -2653,6 +2657,7 @@ static void musb_remove(struct platform_device *pdev)
 	usb_phy_shutdown(musb->xceiv);
 	musb_free(musb);
 	device_init_wakeup(dev, 0);
+	return 0;
 }
 
 #ifdef	CONFIG_PM
@@ -2883,6 +2888,7 @@ static int musb_resume(struct device *dev)
 			error);
 	spin_unlock_irqrestore(&musb->lock, flags);
 
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return 0;

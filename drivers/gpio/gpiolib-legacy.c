@@ -1,10 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <linux/bitops.h>
-#include <linux/device.h>
-#include <linux/errno.h>
-#include <linux/export.h>
-#include <linux/gfp.h>
-
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 
@@ -12,9 +6,6 @@
 
 #include "gpiolib.h"
 
-/*
- * **DEPRECATED** This function is deprecated and must not be used in new code.
- */
 void gpio_free(unsigned gpio)
 {
 	gpiod_free(gpio_to_desc(gpio));
@@ -26,84 +17,97 @@ EXPORT_SYMBOL_GPL(gpio_free);
  * @gpio:	the GPIO number
  * @flags:	GPIO configuration as specified by GPIOF_*
  * @label:	a literal description string of this GPIO
- *
- * **DEPRECATED** This function is deprecated and must not be used in new code.
- *
- * Returns:
- * 0 on success, or negative errno on failure.
  */
 int gpio_request_one(unsigned gpio, unsigned long flags, const char *label)
 {
+	struct gpio_desc *desc;
 	int err;
 
-	err = gpio_request(gpio, label);
+	desc = gpio_to_desc(gpio);
+
+	/* Compatibility: assume unavailable "valid" GPIOs will appear later */
+	if (!desc && gpio_is_valid(gpio))
+		return -EPROBE_DEFER;
+
+	err = gpiod_request(desc, label);
 	if (err)
 		return err;
 
-	if (flags & GPIOF_IN)
-		err = gpio_direction_input(gpio);
+	if (flags & GPIOF_OPEN_DRAIN)
+		set_bit(FLAG_OPEN_DRAIN, &desc->flags);
+
+	if (flags & GPIOF_OPEN_SOURCE)
+		set_bit(FLAG_OPEN_SOURCE, &desc->flags);
+
+	if (flags & GPIOF_ACTIVE_LOW)
+		set_bit(FLAG_ACTIVE_LOW, &desc->flags);
+
+	if (flags & GPIOF_DIR_IN)
+		err = gpiod_direction_input(desc);
 	else
-		err = gpio_direction_output(gpio, !!(flags & GPIOF_OUT_INIT_HIGH));
+		err = gpiod_direction_output_raw(desc,
+				(flags & GPIOF_INIT_HIGH) ? 1 : 0);
 
 	if (err)
-		gpio_free(gpio);
+		goto free_gpio;
 
+	if (flags & GPIOF_EXPORT) {
+		err = gpiod_export(desc, flags & GPIOF_EXPORT_CHANGEABLE);
+		if (err)
+			goto free_gpio;
+	}
+
+	return 0;
+
+ free_gpio:
+	gpiod_free(desc);
 	return err;
 }
 EXPORT_SYMBOL_GPL(gpio_request_one);
 
-/*
- * **DEPRECATED** This function is deprecated and must not be used in new code.
- */
 int gpio_request(unsigned gpio, const char *label)
 {
-	struct gpio_desc *desc;
+	struct gpio_desc *desc = gpio_to_desc(gpio);
 
 	/* Compatibility: assume unavailable "valid" GPIOs will appear later */
-	desc = gpio_to_desc(gpio);
-	if (!desc)
+	if (!desc && gpio_is_valid(gpio))
 		return -EPROBE_DEFER;
 
 	return gpiod_request(desc, label);
 }
 EXPORT_SYMBOL_GPL(gpio_request);
 
-static void devm_gpio_release(void *gpio)
+/**
+ * gpio_request_array - request multiple GPIOs in a single call
+ * @array:	array of the 'struct gpio'
+ * @num:	how many GPIOs in the array
+ */
+int gpio_request_array(const struct gpio *array, size_t num)
 {
-	gpio_free((unsigned)(unsigned long)gpio);
+	int i, err;
+
+	for (i = 0; i < num; i++, array++) {
+		err = gpio_request_one(array->gpio, array->flags, array->label);
+		if (err)
+			goto err_free;
+	}
+	return 0;
+
+err_free:
+	while (i--)
+		gpio_free((--array)->gpio);
+	return err;
 }
+EXPORT_SYMBOL_GPL(gpio_request_array);
 
 /**
- * devm_gpio_request_one - request a single GPIO with initial setup
- * @dev: device to request for
- * @gpio: the GPIO number
- * @flags: GPIO configuration as specified by GPIOF_*
- * @label: a literal description string of this GPIO
- *
- * **DEPRECATED** This function is deprecated and must not be used in new code.
- *
- * Returns:
- * 0 on success, or negative errno on failure.
+ * gpio_free_array - release multiple GPIOs in a single call
+ * @array:	array of the 'struct gpio'
+ * @num:	how many GPIOs in the array
  */
-int devm_gpio_request_one(struct device *dev, unsigned gpio,
-			  unsigned long flags, const char *label)
+void gpio_free_array(const struct gpio *array, size_t num)
 {
-	int rc;
-
-	rc = gpio_request(gpio, label);
-	if (rc)
-		return rc;
-
-	if (flags & GPIOF_IN)
-		rc = gpio_direction_input(gpio);
-	else
-		rc = gpio_direction_output(gpio, !!(flags & GPIOF_OUT_INIT_HIGH));
-
-	if (rc) {
-		gpio_free(gpio);
-		return rc;
-	}
-
-	return devm_add_action_or_reset(dev, devm_gpio_release, (void *)(unsigned long)gpio);
+	while (num--)
+		gpio_free((array++)->gpio);
 }
-EXPORT_SYMBOL_GPL(devm_gpio_request_one);
+EXPORT_SYMBOL_GPL(gpio_free_array);

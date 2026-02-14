@@ -16,3 +16,10 @@ Virtualization Support
    coco/sev-guest
    coco/tdx-guest
    hyperv/index
+
+.. only:: html and subproject
+
+   Indices
+   =======
+
+   * :ref:`genindex`

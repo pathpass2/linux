@@ -50,7 +50,6 @@ SECTIONS
         .text                   : AT(ADDR(.text) - LOAD_OFFSET)
 	{
           _stext = .;
-	  HEAD_TEXT
 	  TEXT_TEXT
 	  SCHED_TEXT
 	  LOCK_TEXT
@@ -83,6 +82,8 @@ SECTIONS
 	/* Init code and data */
 	. = ALIGN(PAGE_SIZE);
 	__init_begin = .;
+
+	HEAD_TEXT_SECTION
 
 	/* Page aligned */
 	INIT_TEXT_SECTION(PAGE_SIZE)

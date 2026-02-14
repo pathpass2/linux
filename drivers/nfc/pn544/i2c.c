@@ -17,7 +17,7 @@
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <net/nfc/hci.h>
 #include <net/nfc/llc.h>
@@ -44,7 +44,7 @@
 					 PN544_HCI_I2C_LLC_MAX_PAYLOAD)
 
 static const struct i2c_device_id pn544_hci_i2c_id_table[] = {
-	{ "pn544" },
+	{"pn544", 0},
 	{}
 };
 
@@ -125,6 +125,8 @@ struct pn544_i2c_fw_secure_blob {
 #define PN544_FW_CMD_RESULT_WRITE_FAILED 0x74
 #define PN544_FW_CMD_RESULT_COMMAND_REJECTED 0xE0
 #define PN544_FW_CMD_RESULT_CHUNK_ERROR 0xE6
+
+#define MIN(X, Y) ((X) < (Y) ? (X) : (Y))
 
 #define PN544_FW_WRITE_BUFFER_MAX_LEN 0x9f7
 #define PN544_FW_I2C_MAX_PAYLOAD PN544_HCI_I2C_LLC_MAX_SIZE
@@ -951,7 +953,7 @@ static struct i2c_driver pn544_hci_i2c_driver = {
 		   .of_match_table = of_match_ptr(of_pn544_i2c_match),
 		   .acpi_match_table = ACPI_PTR(pn544_hci_i2c_acpi_match),
 		  },
-	.probe = pn544_hci_i2c_probe,
+	.probe_new = pn544_hci_i2c_probe,
 	.id_table = pn544_hci_i2c_id_table,
 	.remove = pn544_hci_i2c_remove,
 };

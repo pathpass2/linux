@@ -96,6 +96,10 @@ static struct mlx5e_ethtool_table *get_flow_table(struct mlx5e_priv *priv,
 	case UDP_V4_FLOW:
 	case TCP_V6_FLOW:
 	case UDP_V6_FLOW:
+		max_tuples = ETHTOOL_NUM_L3_L4_FTS;
+		prio = MLX5E_ETHTOOL_L3_L4_PRIO + (max_tuples - num_tuples);
+		eth_ft = &ethtool->l3_l4_ft[prio];
+		break;
 	case IP_USER_FLOW:
 	case IPV6_USER_FLOW:
 		max_tuples = ETHTOOL_NUM_L3_L4_FTS;
@@ -704,7 +708,7 @@ static int validate_flow(struct mlx5e_priv *priv,
 		num_tuples += ret;
 		break;
 	default:
-		return -EOPNOTSUPP;
+		return -ENOTSUPP;
 	}
 	if ((fs->flow_type & FLOW_EXT)) {
 		ret = validate_vlan(fs);
@@ -734,7 +738,7 @@ mlx5e_ethtool_flow_replace(struct mlx5e_priv *priv,
 	if (num_tuples <= 0) {
 		netdev_warn(priv->netdev, "%s: flow is not valid %d\n",
 			    __func__, num_tuples);
-		return num_tuples < 0 ? num_tuples : -EINVAL;
+		return num_tuples;
 	}
 
 	eth_ft = get_flow_table(priv, fs, num_tuples);
@@ -884,30 +888,22 @@ static int flow_type_to_traffic_type(u32 flow_type)
 	case ESP_V6_FLOW:
 		return MLX5_TT_IPV6_IPSEC_ESP;
 	case IPV4_FLOW:
-	case IP_USER_FLOW:
 		return MLX5_TT_IPV4;
 	case IPV6_FLOW:
-	case IPV6_USER_FLOW:
 		return MLX5_TT_IPV6;
 	default:
 		return -EINVAL;
 	}
 }
 
-int mlx5e_ethtool_set_rxfh_fields(struct mlx5e_priv *priv,
-				  const struct ethtool_rxfh_fields *nfc,
-				  struct netlink_ext_ack *extack)
+static int mlx5e_set_rss_hash_opt(struct mlx5e_priv *priv,
+				  struct ethtool_rxnfc *nfc)
 {
 	u8 rx_hash_field = 0;
-	u32 flow_type = 0;
-	u32 rss_idx;
 	int err;
 	int tt;
 
-	rss_idx = nfc->rss_context;
-
-	flow_type = flow_type_mask(nfc->flow_type);
-	tt = flow_type_to_traffic_type(flow_type);
+	tt = flow_type_to_traffic_type(nfc->flow_type);
 	if (tt < 0)
 		return tt;
 
@@ -915,10 +911,10 @@ int mlx5e_ethtool_set_rxfh_fields(struct mlx5e_priv *priv,
 	 *  on src IP, dest IP, TCP/UDP src port and TCP/UDP dest
 	 *  port.
 	 */
-	if (flow_type != TCP_V4_FLOW &&
-	    flow_type != TCP_V6_FLOW &&
-	    flow_type != UDP_V4_FLOW &&
-	    flow_type != UDP_V6_FLOW)
+	if (nfc->flow_type != TCP_V4_FLOW &&
+	    nfc->flow_type != TCP_V6_FLOW &&
+	    nfc->flow_type != UDP_V4_FLOW &&
+	    nfc->flow_type != UDP_V6_FLOW)
 		return -EOPNOTSUPP;
 
 	if (nfc->data & ~(RXH_IP_SRC | RXH_IP_DST |
@@ -935,31 +931,23 @@ int mlx5e_ethtool_set_rxfh_fields(struct mlx5e_priv *priv,
 		rx_hash_field |= MLX5_HASH_FIELD_SEL_L4_DPORT;
 
 	mutex_lock(&priv->state_lock);
-	err = mlx5e_rx_res_rss_set_hash_fields(priv->rx_res, rss_idx, tt, rx_hash_field);
+	err = mlx5e_rx_res_rss_set_hash_fields(priv->rx_res, tt, rx_hash_field);
 	mutex_unlock(&priv->state_lock);
 
 	return err;
 }
 
-int mlx5e_ethtool_get_rxfh_fields(struct mlx5e_priv *priv,
-				  struct ethtool_rxfh_fields *nfc)
+static int mlx5e_get_rss_hash_opt(struct mlx5e_priv *priv,
+				  struct ethtool_rxnfc *nfc)
 {
-	int hash_field = 0;
-	u32 flow_type = 0;
-	u32 rss_idx;
+	u32 hash_field = 0;
 	int tt;
 
-	rss_idx = nfc->rss_context;
-
-	flow_type = flow_type_mask(nfc->flow_type);
-	tt = flow_type_to_traffic_type(flow_type);
+	tt = flow_type_to_traffic_type(nfc->flow_type);
 	if (tt < 0)
 		return tt;
 
-	hash_field = mlx5e_rx_res_rss_get_hash_fields(priv->rx_res, rss_idx, tt);
-	if (hash_field < 0)
-		return hash_field;
-
+	hash_field = mlx5e_rx_res_rss_get_hash_fields(priv->rx_res, tt);
 	nfc->data = 0;
 
 	if (hash_field & MLX5_HASH_FIELD_SEL_SRC_IP)
@@ -985,6 +973,9 @@ int mlx5e_ethtool_set_rxnfc(struct mlx5e_priv *priv, struct ethtool_rxnfc *cmd)
 	case ETHTOOL_SRXCLSRLDEL:
 		err = mlx5e_ethtool_flow_remove(priv, cmd->fs.location);
 		break;
+	case ETHTOOL_SRXFH:
+		err = mlx5e_set_rss_hash_opt(priv, cmd);
+		break;
 	default:
 		err = -EOPNOTSUPP;
 		break;
@@ -1008,6 +999,9 @@ int mlx5e_ethtool_get_rxnfc(struct mlx5e_priv *priv,
 		break;
 	case ETHTOOL_GRXCLSRLALL:
 		err = mlx5e_ethtool_get_all_flows(priv, info, rule_locs);
+		break;
+	case ETHTOOL_GRXFH:
+		err =  mlx5e_get_rss_hash_opt(priv, info);
 		break;
 	default:
 		err = -EOPNOTSUPP;

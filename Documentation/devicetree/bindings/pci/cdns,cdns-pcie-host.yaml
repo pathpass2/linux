@@ -10,7 +10,8 @@ maintainers:
   - Tom Joseph <tjoseph@cadence.com>
 
 allOf:
-  - $ref: cdns-pcie-host.yaml#
+  - $ref: /schemas/pci/pci-bus.yaml#
+  - $ref: "cdns-pcie-host.yaml#"
 
 properties:
   compatible:
@@ -23,6 +24,8 @@ properties:
     items:
       - const: reg
       - const: cfg
+
+  msi-parent: true
 
 required:
   - reg

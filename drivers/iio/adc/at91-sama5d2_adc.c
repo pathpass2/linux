@@ -9,7 +9,6 @@
  */
 
 #include <linux/bitops.h>
-#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
@@ -330,7 +329,7 @@ static const struct at91_adc_reg_layout sama7g5_layout = {
 #define AT91_HWFIFO_MAX_SIZE_STR	"128"
 #define AT91_HWFIFO_MAX_SIZE		128
 
-#define AT91_SAMA_CHAN_SINGLE(index, num, addr, rbits)			\
+#define AT91_SAMA5D2_CHAN_SINGLE(index, num, addr)			\
 	{								\
 		.type = IIO_VOLTAGE,					\
 		.channel = num,						\
@@ -338,7 +337,7 @@ static const struct at91_adc_reg_layout sama7g5_layout = {
 		.scan_index = index,					\
 		.scan_type = {						\
 			.sign = 'u',					\
-			.realbits = rbits,				\
+			.realbits = 14,					\
 			.storagebits = 16,				\
 		},							\
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),		\
@@ -351,13 +350,7 @@ static const struct at91_adc_reg_layout sama7g5_layout = {
 		.indexed = 1,						\
 	}
 
-#define AT91_SAMA5D2_CHAN_SINGLE(index, num, addr)			\
-	AT91_SAMA_CHAN_SINGLE(index, num, addr, 14)
-
-#define AT91_SAMA7G5_CHAN_SINGLE(index, num, addr)			\
-	AT91_SAMA_CHAN_SINGLE(index, num, addr, 16)
-
-#define AT91_SAMA_CHAN_DIFF(index, num, num2, addr, rbits)		\
+#define AT91_SAMA5D2_CHAN_DIFF(index, num, num2, addr)			\
 	{								\
 		.type = IIO_VOLTAGE,					\
 		.differential = 1,					\
@@ -367,7 +360,7 @@ static const struct at91_adc_reg_layout sama7g5_layout = {
 		.scan_index = index,					\
 		.scan_type = {						\
 			.sign = 's',					\
-			.realbits = rbits,				\
+			.realbits = 14,					\
 			.storagebits = 16,				\
 		},							\
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),		\
@@ -379,12 +372,6 @@ static const struct at91_adc_reg_layout sama7g5_layout = {
 		.datasheet_name = "CH"#num"-CH"#num2,			\
 		.indexed = 1,						\
 	}
-
-#define AT91_SAMA5D2_CHAN_DIFF(index, num, num2, addr)			\
-	AT91_SAMA_CHAN_DIFF(index, num, num2, addr, 14)
-
-#define AT91_SAMA7G5_CHAN_DIFF(index, num, num2, addr)			\
-	AT91_SAMA_CHAN_DIFF(index, num, num2, addr, 16)
 
 #define AT91_SAMA5D2_CHAN_TOUCH(num, name, mod)				\
 	{								\
@@ -586,6 +573,15 @@ struct at91_adc_temp {
 	u16				saved_oversampling;
 };
 
+/*
+ * Buffer size requirements:
+ * No channels * bytes_per_channel(2) + timestamp bytes (8)
+ * Divided by 2 because we need half words.
+ * We assume 32 channels for now, has to be increased if needed.
+ * Nobody minds a buffer being too big.
+ */
+#define AT91_BUFFER_MAX_HWORDS ((32 * 2 + 8) / 2)
+
 struct at91_adc_state {
 	void __iomem			*base;
 	int				irq;
@@ -607,8 +603,8 @@ struct at91_adc_state {
 	struct at91_adc_temp		temp_st;
 	struct iio_dev			*indio_dev;
 	struct device			*dev;
-	/* We assume 32 channels for now, has to be increased if needed. */
-	IIO_DECLARE_BUFFER_WITH_TS(u16, buffer, 32);
+	/* Ensure naturally aligned timestamp */
+	u16				buffer[AT91_BUFFER_MAX_HWORDS] __aligned(8);
 	/*
 	 * lock to prevent concurrent 'single conversion' requests through
 	 * sysfs.
@@ -670,30 +666,30 @@ static const struct iio_chan_spec at91_sama5d2_adc_channels[] = {
 };
 
 static const struct iio_chan_spec at91_sama7g5_adc_channels[] = {
-	AT91_SAMA7G5_CHAN_SINGLE(0, 0, 0x60),
-	AT91_SAMA7G5_CHAN_SINGLE(1, 1, 0x64),
-	AT91_SAMA7G5_CHAN_SINGLE(2, 2, 0x68),
-	AT91_SAMA7G5_CHAN_SINGLE(3, 3, 0x6c),
-	AT91_SAMA7G5_CHAN_SINGLE(4, 4, 0x70),
-	AT91_SAMA7G5_CHAN_SINGLE(5, 5, 0x74),
-	AT91_SAMA7G5_CHAN_SINGLE(6, 6, 0x78),
-	AT91_SAMA7G5_CHAN_SINGLE(7, 7, 0x7c),
-	AT91_SAMA7G5_CHAN_SINGLE(8, 8, 0x80),
-	AT91_SAMA7G5_CHAN_SINGLE(9, 9, 0x84),
-	AT91_SAMA7G5_CHAN_SINGLE(10, 10, 0x88),
-	AT91_SAMA7G5_CHAN_SINGLE(11, 11, 0x8c),
-	AT91_SAMA7G5_CHAN_SINGLE(12, 12, 0x90),
-	AT91_SAMA7G5_CHAN_SINGLE(13, 13, 0x94),
-	AT91_SAMA7G5_CHAN_SINGLE(14, 14, 0x98),
-	AT91_SAMA7G5_CHAN_SINGLE(15, 15, 0x9c),
-	AT91_SAMA7G5_CHAN_DIFF(16, 0, 1, 0x60),
-	AT91_SAMA7G5_CHAN_DIFF(17, 2, 3, 0x68),
-	AT91_SAMA7G5_CHAN_DIFF(18, 4, 5, 0x70),
-	AT91_SAMA7G5_CHAN_DIFF(19, 6, 7, 0x78),
-	AT91_SAMA7G5_CHAN_DIFF(20, 8, 9, 0x80),
-	AT91_SAMA7G5_CHAN_DIFF(21, 10, 11, 0x88),
-	AT91_SAMA7G5_CHAN_DIFF(22, 12, 13, 0x90),
-	AT91_SAMA7G5_CHAN_DIFF(23, 14, 15, 0x98),
+	AT91_SAMA5D2_CHAN_SINGLE(0, 0, 0x60),
+	AT91_SAMA5D2_CHAN_SINGLE(1, 1, 0x64),
+	AT91_SAMA5D2_CHAN_SINGLE(2, 2, 0x68),
+	AT91_SAMA5D2_CHAN_SINGLE(3, 3, 0x6c),
+	AT91_SAMA5D2_CHAN_SINGLE(4, 4, 0x70),
+	AT91_SAMA5D2_CHAN_SINGLE(5, 5, 0x74),
+	AT91_SAMA5D2_CHAN_SINGLE(6, 6, 0x78),
+	AT91_SAMA5D2_CHAN_SINGLE(7, 7, 0x7c),
+	AT91_SAMA5D2_CHAN_SINGLE(8, 8, 0x80),
+	AT91_SAMA5D2_CHAN_SINGLE(9, 9, 0x84),
+	AT91_SAMA5D2_CHAN_SINGLE(10, 10, 0x88),
+	AT91_SAMA5D2_CHAN_SINGLE(11, 11, 0x8c),
+	AT91_SAMA5D2_CHAN_SINGLE(12, 12, 0x90),
+	AT91_SAMA5D2_CHAN_SINGLE(13, 13, 0x94),
+	AT91_SAMA5D2_CHAN_SINGLE(14, 14, 0x98),
+	AT91_SAMA5D2_CHAN_SINGLE(15, 15, 0x9c),
+	AT91_SAMA5D2_CHAN_DIFF(16, 0, 1, 0x60),
+	AT91_SAMA5D2_CHAN_DIFF(17, 2, 3, 0x68),
+	AT91_SAMA5D2_CHAN_DIFF(18, 4, 5, 0x70),
+	AT91_SAMA5D2_CHAN_DIFF(19, 6, 7, 0x78),
+	AT91_SAMA5D2_CHAN_DIFF(20, 8, 9, 0x80),
+	AT91_SAMA5D2_CHAN_DIFF(21, 10, 11, 0x88),
+	AT91_SAMA5D2_CHAN_DIFF(22, 12, 13, 0x90),
+	AT91_SAMA5D2_CHAN_DIFF(23, 14, 15, 0x98),
 	IIO_CHAN_SOFT_TIMESTAMP(24),
 	AT91_SAMA5D2_CHAN_TEMP(AT91_SAMA7G5_ADC_TEMP_CHANNEL, "temp", 0xdc),
 };
@@ -896,6 +892,7 @@ static int at91_adc_config_emr(struct at91_adc_state *st,
 	emr |= osr | AT91_SAMA5D2_TRACKX(trackx);
 	at91_adc_writel(st, EMR, emr);
 
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
 
 	st->oversampling_ratio = oversampling_ratio;
@@ -970,6 +967,7 @@ static int at91_adc_configure_touch(struct at91_adc_state *st, bool state)
 				AT91_SAMA5D2_IER_PEN | AT91_SAMA5D2_IER_NOPEN);
 		at91_adc_writel(st, TSMR, 0);
 
+		pm_runtime_mark_last_busy(st->dev);
 		pm_runtime_put_autosuspend(st->dev);
 		return 0;
 	}
@@ -1140,8 +1138,10 @@ static int at91_adc_configure_trigger(struct iio_trigger *trig, bool state)
 
 	at91_adc_configure_trigger_registers(st, state);
 
-	if (!state)
+	if (!state) {
+		pm_runtime_mark_last_busy(st->dev);
 		pm_runtime_put_autosuspend(st->dev);
+	}
 
 	return 0;
 }
@@ -1194,7 +1194,7 @@ static void at91_dma_buffer_done(void *data)
 {
 	struct iio_dev *indio_dev = data;
 
-	iio_trigger_poll_nested(indio_dev->trig);
+	iio_trigger_poll_chained(indio_dev->trig);
 }
 
 static int at91_adc_dma_start(struct iio_dev *indio_dev)
@@ -1332,6 +1332,7 @@ static int at91_adc_buffer_prepare(struct iio_dev *indio_dev)
 		at91_adc_writel(st, IER, AT91_SAMA5D2_IER_DRDY);
 
 pm_runtime_put:
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
 	return ret;
 }
@@ -1389,6 +1390,7 @@ static int at91_adc_buffer_postdisable(struct iio_dev *indio_dev)
 	if (st->dma_st.dma_chan)
 		dmaengine_terminate_sync(st->dma_st.dma_chan);
 
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
 
 	return 0;
@@ -1407,7 +1409,7 @@ static struct iio_trigger *at91_adc_allocate_trigger(struct iio_dev *indio,
 	trig = devm_iio_trigger_alloc(&indio->dev, "%s-dev%d-%s", indio->name,
 				iio_device_id(indio), trigger_name);
 	if (!trig)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
 	trig->dev.parent = indio->dev.parent;
 	iio_trigger_set_drvdata(trig, indio);
@@ -1597,6 +1599,7 @@ static void at91_adc_setup_samp_freq(struct iio_dev *indio_dev, unsigned freq,
 	mr |= AT91_SAMA5D2_MR_TRACKTIM(tracktim);
 	at91_adc_writel(st, MR, mr);
 
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
 
 	dev_dbg(&indio_dev->dev, "freq: %u, startup: %u, prescal: %u, tracktim=%u\n",
@@ -1802,6 +1805,7 @@ static int at91_adc_read_info_raw(struct iio_dev *indio_dev,
 	at91_adc_readl(st, LCDR);
 
 pm_runtime_put:
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
 	return ret;
 }
@@ -1810,10 +1814,19 @@ static int at91_adc_read_info_locked(struct iio_dev *indio_dev,
 				     struct iio_chan_spec const *chan, int *val)
 {
 	struct at91_adc_state *st = iio_priv(indio_dev);
+	int ret;
 
-	guard(mutex)(&st->lock);
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret)
+		return ret;
 
-	return at91_adc_read_info_raw(indio_dev, chan, val);
+	mutex_lock(&st->lock);
+	ret = at91_adc_read_info_raw(indio_dev, chan, val);
+	mutex_unlock(&st->lock);
+
+	iio_device_release_direct_mode(indio_dev);
+
+	return ret;
 }
 
 static void at91_adc_temp_sensor_configure(struct at91_adc_state *st,
@@ -1858,11 +1871,14 @@ static int at91_adc_read_temp(struct iio_dev *indio_dev,
 	u32 tmp;
 	int ret, vbg, vtemp;
 
-	guard(mutex)(&st->lock);
+	ret = iio_device_claim_direct_mode(indio_dev);
+	if (ret)
+		return ret;
+	mutex_lock(&st->lock);
 
 	ret = pm_runtime_resume_and_get(st->dev);
 	if (ret < 0)
-		return ret;
+		goto unlock;
 
 	at91_adc_temp_sensor_configure(st, true);
 
@@ -1882,7 +1898,11 @@ static int at91_adc_read_temp(struct iio_dev *indio_dev,
 restore_config:
 	/* Revert previous settings. */
 	at91_adc_temp_sensor_configure(st, false);
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
+unlock:
+	mutex_unlock(&st->lock);
+	iio_device_release_direct_mode(indio_dev);
 	if (ret < 0)
 		return ret;
 
@@ -1904,16 +1924,10 @@ static int at91_adc_read_raw(struct iio_dev *indio_dev,
 			     int *val, int *val2, long mask)
 {
 	struct at91_adc_state *st = iio_priv(indio_dev);
-	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
-
-		ret = at91_adc_read_info_locked(indio_dev, chan, val);
-		iio_device_release_direct(indio_dev);
-		return ret;
+		return at91_adc_read_info_locked(indio_dev, chan, val);
 
 	case IIO_CHAN_INFO_SCALE:
 		*val = st->vref_uv / 1000;
@@ -1925,13 +1939,7 @@ static int at91_adc_read_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_PROCESSED:
 		if (chan->type != IIO_TEMP)
 			return -EINVAL;
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
-
-		ret = at91_adc_read_temp(indio_dev, chan, val);
-		iio_device_release_direct(indio_dev);
-
-		return ret;
+		return at91_adc_read_temp(indio_dev, chan, val);
 
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		*val = at91_adc_get_sample_freq(st);
@@ -1959,26 +1967,28 @@ static int at91_adc_write_raw(struct iio_dev *indio_dev,
 		if (val == st->oversampling_ratio)
 			return 0;
 
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		mutex_lock(&st->lock);
 		/* update ratio */
 		ret = at91_adc_config_emr(st, val, 0);
 		mutex_unlock(&st->lock);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		return ret;
 	case IIO_CHAN_INFO_SAMP_FREQ:
 		if (val < st->soc_info.min_sample_rate ||
 		    val > st->soc_info.max_sample_rate)
 			return -EINVAL;
 
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		mutex_lock(&st->lock);
 		at91_adc_setup_samp_freq(indio_dev, val,
 					 st->soc_info.startup_time, 0);
 		mutex_unlock(&st->lock);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		return 0;
 	default:
 		return -EINVAL;
@@ -2390,8 +2400,12 @@ static int at91_adc_probe(struct platform_device *pdev)
 	st->dma_st.phys_addr = res->start;
 
 	st->irq = platform_get_irq(pdev, 0);
-	if (st->irq < 0)
+	if (st->irq <= 0) {
+		if (!st->irq)
+			st->irq = -ENXIO;
+
 		return st->irq;
+	}
 
 	st->per_clk = devm_clk_get(&pdev->dev, "adc_clk");
 	if (IS_ERR(st->per_clk))
@@ -2456,6 +2470,7 @@ static int at91_adc_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev, "version: %x\n",
 		 readl_relaxed(st->base + st->soc_info.platform->layout->VERSION));
 
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
 
 	return 0;
@@ -2475,13 +2490,12 @@ reg_disable:
 	return ret;
 }
 
-static void at91_adc_remove(struct platform_device *pdev)
+static int at91_adc_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
 	struct at91_adc_state *st = iio_priv(indio_dev);
 
 	iio_device_unregister(indio_dev);
-	cancel_work_sync(&st->touch_st.workq);
 
 	at91_adc_dma_disable(st);
 
@@ -2491,6 +2505,8 @@ static void at91_adc_remove(struct platform_device *pdev)
 
 	regulator_disable(st->vref);
 	regulator_disable(st->reg);
+
+	return 0;
 }
 
 static int at91_adc_suspend(struct device *dev)
@@ -2558,6 +2574,7 @@ static int at91_adc_resume(struct device *dev)
 		at91_adc_configure_trigger_registers(st, true);
 	}
 
+	pm_runtime_mark_last_busy(st->dev);
 	pm_runtime_put_autosuspend(st->dev);
 
 	return 0;

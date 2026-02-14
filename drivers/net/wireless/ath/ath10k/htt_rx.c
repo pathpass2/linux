@@ -3,11 +3,7 @@
  * Copyright (c) 2005-2011 Atheros Communications Inc.
  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018, The Linux Foundation. All rights reserved.
- * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
-
-#include <linux/export.h>
 
 #include "core.h"
 #include "htc.h"
@@ -260,8 +256,7 @@ static void ath10k_htt_rx_msdu_buff_replenish(struct ath10k_htt *htt)
 
 static void ath10k_htt_rx_ring_refill_retry(struct timer_list *t)
 {
-	struct ath10k_htt *htt = timer_container_of(htt, t,
-						    rx_ring.refill_retry_timer);
+	struct ath10k_htt *htt = from_timer(htt, t, rx_ring.refill_retry_timer);
 
 	ath10k_htt_rx_msdu_buff_replenish(htt);
 }
@@ -291,7 +286,7 @@ void ath10k_htt_rx_free(struct ath10k_htt *htt)
 	if (htt->ar->bus_param.dev_type == ATH10K_DEV_TYPE_HL)
 		return;
 
-	timer_delete_sync(&htt->rx_ring.refill_retry_timer);
+	del_timer_sync(&htt->rx_ring.refill_retry_timer);
 
 	skb_queue_purge(&htt->rx_msdus_q);
 	skb_queue_purge(&htt->rx_in_ord_compl_q);
@@ -1299,7 +1294,7 @@ static void ath10k_htt_rx_h_ppdu(struct ath10k *ar,
 		status->encoding = RX_ENC_LEGACY;
 		status->bw = RATE_INFO_BW_20;
 
-		status->flag &= ~RX_FLAG_MACTIME;
+		status->flag &= ~RX_FLAG_MACTIME_END;
 		status->flag |= RX_FLAG_NO_SIGNAL_VAL;
 
 		status->flag &= ~(RX_FLAG_AMPDU_IS_LAST);
@@ -1377,7 +1372,7 @@ static void ath10k_process_rx(struct ath10k *ar, struct sk_buff *skb)
 	}
 
 	ath10k_dbg(ar, ATH10K_DBG_DATA,
-		   "rx skb %p len %u peer %pM %s %s sn %u %s%s%s%s%s%s %srate_idx %u vht_nss %u freq %u band %u flag 0x%x fcs-err %i mic-err %i amsdu-more %i\n",
+		   "rx skb %pK len %u peer %pM %s %s sn %u %s%s%s%s%s%s %srate_idx %u vht_nss %u freq %u band %u flag 0x%x fcs-err %i mic-err %i amsdu-more %i\n",
 		   skb,
 		   skb->len,
 		   ieee80211_get_SA(hdr),
@@ -1884,7 +1879,7 @@ static bool ath10k_htt_rx_h_frag_pn_check(struct ath10k *ar,
 					  enum htt_rx_mpdu_encrypt_type enctype)
 {
 	struct ath10k_peer *peer;
-	union htt_rx_pn_t *last_pn, new_pn = {};
+	union htt_rx_pn_t *last_pn, new_pn = {0};
 	struct ieee80211_hdr *hdr;
 	u8 tid, frag_number;
 	u32 seq;
@@ -2402,7 +2397,7 @@ static bool ath10k_htt_rx_pn_check_replay_hl(struct ath10k *ar,
 	bool last_pn_valid, pn_invalid = false;
 	enum htt_txrx_sec_cast_type sec_index;
 	enum htt_security_types sec_type;
-	union htt_rx_pn_t new_pn = {};
+	union htt_rx_pn_t new_pn = {0};
 	struct htt_hl_rx_desc *rx_desc;
 	union htt_rx_pn_t *last_pn;
 	u32 rx_desc_info, tid;
@@ -2465,7 +2460,7 @@ static bool ath10k_htt_rx_proc_rx_ind_hl(struct ath10k_htt *htt,
 	struct fw_rx_desc_hl *fw_desc;
 	enum htt_txrx_sec_cast_type sec_index;
 	enum htt_security_types sec_type;
-	union htt_rx_pn_t new_pn = {};
+	union htt_rx_pn_t new_pn = {0};
 	struct htt_hl_rx_desc *rx_desc;
 	struct ieee80211_hdr *hdr;
 	struct ieee80211_rx_status *rx_status;
@@ -2767,7 +2762,7 @@ static bool ath10k_htt_rx_proc_rx_frag_ind_hl(struct ath10k_htt *htt,
 	struct htt_rx_indication_hl *rx_hl;
 	enum htt_security_types sec_type;
 	u32 tid, frag, seq, rx_desc_info;
-	union htt_rx_pn_t new_pn = {};
+	union htt_rx_pn_t new_pn = {0};
 	struct htt_hl_rx_desc *rx_desc;
 	u16 peer_id, sc, hdr_space;
 	union htt_rx_pn_t *last_pn;
@@ -2969,6 +2964,7 @@ static void ath10k_htt_rx_tx_compl_ind(struct ath10k *ar,
 		break;
 	case HTT_DATA_TX_STATUS_DISCARD:
 	case HTT_DATA_TX_STATUS_POSTPONE:
+	case HTT_DATA_TX_STATUS_DOWNLOAD_FAIL:
 		tx_done.status = HTT_TX_COMPL_STATE_DISCARD;
 		break;
 	default:

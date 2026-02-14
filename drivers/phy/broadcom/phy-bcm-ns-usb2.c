@@ -24,6 +24,9 @@ struct bcm_ns_usb2 {
 	struct phy *phy;
 	struct regmap *clkset;
 	void __iomem *base;
+
+	/* Deprecated binding */
+	void __iomem *dmu;
 };
 
 static int bcm_ns_usb2_phy_init(struct phy *phy)
@@ -46,7 +49,10 @@ static int bcm_ns_usb2_phy_init(struct phy *phy)
 		goto err_clk_off;
 	}
 
-	usb2ctl = readl(usb2->base);
+	if (usb2->base)
+		usb2ctl = readl(usb2->base);
+	else
+		usb2ctl = readl(usb2->dmu + BCMA_DMU_CRU_USB2_CONTROL);
 
 	if (usb2ctl & BCMA_DMU_CRU_USB2_CONTROL_USB_PLL_PDIV_MASK) {
 		usb_pll_pdiv = usb2ctl;
@@ -60,16 +66,24 @@ static int bcm_ns_usb2_phy_init(struct phy *phy)
 	usb_pll_ndiv = (1920000000 * usb_pll_pdiv) / ref_clk_rate;
 
 	/* Unlock DMU PLL settings with some magic value */
-	regmap_write(usb2->clkset, 0, 0x0000ea68);
+	if (usb2->clkset)
+		regmap_write(usb2->clkset, 0, 0x0000ea68);
+	else
+		writel(0x0000ea68, usb2->dmu + BCMA_DMU_CRU_CLKSET_KEY);
 
 	/* Write USB 2.0 PLL control setting */
 	usb2ctl &= ~BCMA_DMU_CRU_USB2_CONTROL_USB_PLL_NDIV_MASK;
 	usb2ctl |= usb_pll_ndiv << BCMA_DMU_CRU_USB2_CONTROL_USB_PLL_NDIV_SHIFT;
-
-	writel(usb2ctl, usb2->base);
+	if (usb2->base)
+		writel(usb2ctl, usb2->base);
+	else
+		writel(usb2ctl, usb2->dmu + BCMA_DMU_CRU_USB2_CONTROL);
 
 	/* Lock DMU PLL settings */
-	regmap_write(usb2->clkset, 0, 0x00000000);
+	if (usb2->clkset)
+		regmap_write(usb2->clkset, 0, 0x00000000);
+	else
+		writel(0x00000000, usb2->dmu + BCMA_DMU_CRU_CLKSET_KEY);
 
 err_clk_off:
 	clk_disable_unprepare(usb2->ref_clk);
@@ -93,17 +107,27 @@ static int bcm_ns_usb2_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	usb2->dev = dev;
 
-	usb2->base = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(usb2->base)) {
-		dev_err(dev, "Failed to map control reg\n");
-		return PTR_ERR(usb2->base);
-	}
+	if (of_find_property(dev->of_node, "brcm,syscon-clkset", NULL)) {
+		usb2->base = devm_platform_ioremap_resource(pdev, 0);
+		if (IS_ERR(usb2->base)) {
+			dev_err(dev, "Failed to map control reg\n");
+			return PTR_ERR(usb2->base);
+		}
 
-	usb2->clkset = syscon_regmap_lookup_by_phandle(dev->of_node,
-						       "brcm,syscon-clkset");
-	if (IS_ERR(usb2->clkset)) {
-		dev_err(dev, "Failed to lookup clkset regmap\n");
-		return PTR_ERR(usb2->clkset);
+		usb2->clkset = syscon_regmap_lookup_by_phandle(dev->of_node,
+							       "brcm,syscon-clkset");
+		if (IS_ERR(usb2->clkset)) {
+			dev_err(dev, "Failed to lookup clkset regmap\n");
+			return PTR_ERR(usb2->clkset);
+		}
+	} else {
+		usb2->dmu = devm_platform_ioremap_resource_byname(pdev, "dmu");
+		if (IS_ERR(usb2->dmu)) {
+			dev_err(dev, "Failed to map DMU regs\n");
+			return PTR_ERR(usb2->dmu);
+		}
+
+		dev_warn(dev, "using deprecated DT binding\n");
 	}
 
 	usb2->ref_clk = devm_clk_get(dev, "phy-ref-clk");
@@ -138,5 +162,4 @@ static struct platform_driver bcm_ns_usb2_driver = {
 };
 module_platform_driver(bcm_ns_usb2_driver);
 
-MODULE_DESCRIPTION("Broadcom Northstar USB 2.0 PHY Driver");
 MODULE_LICENSE("GPL v2");

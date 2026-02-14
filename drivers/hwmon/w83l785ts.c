@@ -74,7 +74,7 @@ static struct w83l785ts_data *w83l785ts_update_device(struct device *dev);
  */
 
 static const struct i2c_device_id w83l785ts_id[] = {
-	{ "w83l785ts" },
+	{ "w83l785ts", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, w83l785ts_id);
@@ -84,7 +84,7 @@ static struct i2c_driver w83l785ts_driver = {
 	.driver = {
 		.name	= "w83l785ts",
 	},
-	.probe		= w83l785ts_probe,
+	.probe_new	= w83l785ts_probe,
 	.remove		= w83l785ts_remove,
 	.id_table	= w83l785ts_id,
 	.detect		= w83l785ts_detect,

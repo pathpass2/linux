@@ -5,7 +5,8 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <linux/compiler.h>
+
+#define NORETURN __attribute__((__noreturn__))
 
 static inline void report(const char *prefix, const char *err, va_list params)
 {
@@ -14,14 +15,14 @@ static inline void report(const char *prefix, const char *err, va_list params)
 	fprintf(stderr, " %s%s\n", prefix, msg);
 }
 
-static __noreturn inline void die(const char *err, ...)
+static NORETURN inline void die(const char *err, ...)
 {
 	va_list params;
 
 	va_start(params, err);
 	report(" Fatal: ", err, params);
-	va_end(params);
 	exit(128);
+	va_end(params);
 }
 
 #define zfree(ptr) ({ free(*ptr); *ptr = NULL; })

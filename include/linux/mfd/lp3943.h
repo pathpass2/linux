@@ -11,6 +11,7 @@
 #define __MFD_LP3943_H__
 
 #include <linux/gpio.h>
+#include <linux/pwm.h>
 #include <linux/regmap.h>
 
 /* Registers */

@@ -4,6 +4,7 @@
 #include <linux/pagemap.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/pfn_t.h>
 #include <linux/cdev.h>
 #include <linux/slab.h>
 #include <linux/dax.h>
@@ -13,9 +14,8 @@
 #include "dax-private.h"
 #include "bus.h"
 
-static int __check_vma(struct dev_dax *dev_dax, vm_flags_t vm_flags,
-		       unsigned long start, unsigned long end, struct file *file,
-		       const char *func)
+static int check_vma(struct dev_dax *dev_dax, struct vm_area_struct *vma,
+		const char *func)
 {
 	struct device *dev = &dev_dax->dev;
 	unsigned long mask;
@@ -24,7 +24,7 @@ static int __check_vma(struct dev_dax *dev_dax, vm_flags_t vm_flags,
 		return -ENXIO;
 
 	/* prevent private mappings from being established */
-	if ((vm_flags & VM_MAYSHARE) != VM_MAYSHARE) {
+	if ((vma->vm_flags & VM_MAYSHARE) != VM_MAYSHARE) {
 		dev_info_ratelimited(dev,
 				"%s: %s: fail, attempted private mapping\n",
 				current->comm, func);
@@ -32,15 +32,15 @@ static int __check_vma(struct dev_dax *dev_dax, vm_flags_t vm_flags,
 	}
 
 	mask = dev_dax->align - 1;
-	if (start & mask || end & mask) {
+	if (vma->vm_start & mask || vma->vm_end & mask) {
 		dev_info_ratelimited(dev,
 				"%s: %s: fail, unaligned vma (%#lx - %#lx, %#lx)\n",
-				current->comm, func, start, end,
+				current->comm, func, vma->vm_start, vma->vm_end,
 				mask);
 		return -EINVAL;
 	}
 
-	if (!file_is_dax(file)) {
+	if (!vma_is_dax(vma)) {
 		dev_info_ratelimited(dev,
 				"%s: %s: fail, vma is not DAX capable\n",
 				current->comm, func);
@@ -48,13 +48,6 @@ static int __check_vma(struct dev_dax *dev_dax, vm_flags_t vm_flags,
 	}
 
 	return 0;
-}
-
-static int check_vma(struct dev_dax *dev_dax, struct vm_area_struct *vma,
-		     const char *func)
-{
-	return __check_vma(dev_dax, vma->vm_flags, vma->vm_start, vma->vm_end,
-			   vma->vm_file, func);
 }
 
 /* see "strong" declaration in tools/testing/nvdimm/dax-dev.c */
@@ -80,7 +73,7 @@ __weak phys_addr_t dax_pgoff_to_phys(struct dev_dax *dev_dax, pgoff_t pgoff,
 	return -1;
 }
 
-static void dax_set_mapping(struct vm_fault *vmf, unsigned long pfn,
+static void dax_set_mapping(struct vm_fault *vmf, pfn_t pfn,
 			      unsigned long fault_size)
 {
 	unsigned long i, nr_pages = fault_size / PAGE_SIZE;
@@ -93,16 +86,17 @@ static void dax_set_mapping(struct vm_fault *vmf, unsigned long pfn,
 		nr_pages = 1;
 
 	pgoff = linear_page_index(vmf->vma,
-			ALIGN_DOWN(vmf->address, fault_size));
+			ALIGN(vmf->address, fault_size));
 
 	for (i = 0; i < nr_pages; i++) {
-		struct folio *folio = pfn_folio(pfn + i);
+		struct page *page = pfn_to_page(pfn_t_to_pfn(pfn) + i);
 
-		if (folio->mapping)
+		page = compound_head(page);
+		if (page->mapping)
 			continue;
 
-		folio->mapping = filp->f_mapping;
-		folio->index = pgoff + i;
+		page->mapping = filp->f_mapping;
+		page->index = pgoff + i;
 	}
 }
 
@@ -111,7 +105,7 @@ static vm_fault_t __dev_dax_pte_fault(struct dev_dax *dev_dax,
 {
 	struct device *dev = &dev_dax->dev;
 	phys_addr_t phys;
-	unsigned long pfn;
+	pfn_t pfn;
 	unsigned int fault_size = PAGE_SIZE;
 
 	if (check_vma(dev_dax, vmf->vma, __func__))
@@ -132,12 +126,11 @@ static vm_fault_t __dev_dax_pte_fault(struct dev_dax *dev_dax,
 		return VM_FAULT_SIGBUS;
 	}
 
-	pfn = PHYS_PFN(phys);
+	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
 
 	dax_set_mapping(vmf, pfn, fault_size);
 
-	return vmf_insert_page_mkwrite(vmf, pfn_to_page(pfn),
-					vmf->flags & FAULT_FLAG_WRITE);
+	return vmf_insert_mixed(vmf->vma, vmf->address, pfn);
 }
 
 static vm_fault_t __dev_dax_pmd_fault(struct dev_dax *dev_dax,
@@ -147,7 +140,7 @@ static vm_fault_t __dev_dax_pmd_fault(struct dev_dax *dev_dax,
 	struct device *dev = &dev_dax->dev;
 	phys_addr_t phys;
 	pgoff_t pgoff;
-	unsigned long pfn;
+	pfn_t pfn;
 	unsigned int fault_size = PMD_SIZE;
 
 	if (check_vma(dev_dax, vmf->vma, __func__))
@@ -176,12 +169,11 @@ static vm_fault_t __dev_dax_pmd_fault(struct dev_dax *dev_dax,
 		return VM_FAULT_SIGBUS;
 	}
 
-	pfn = PHYS_PFN(phys);
+	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
 
 	dax_set_mapping(vmf, pfn, fault_size);
 
-	return vmf_insert_folio_pmd(vmf, page_folio(pfn_to_page(pfn)),
-				vmf->flags & FAULT_FLAG_WRITE);
+	return vmf_insert_pfn_pmd(vmf, pfn, vmf->flags & FAULT_FLAG_WRITE);
 }
 
 #ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
@@ -192,7 +184,7 @@ static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
 	struct device *dev = &dev_dax->dev;
 	phys_addr_t phys;
 	pgoff_t pgoff;
-	unsigned long pfn;
+	pfn_t pfn;
 	unsigned int fault_size = PUD_SIZE;
 
 
@@ -222,12 +214,11 @@ static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
 		return VM_FAULT_SIGBUS;
 	}
 
-	pfn = PHYS_PFN(phys);
+	pfn = phys_to_pfn_t(phys, PFN_DEV|PFN_MAP);
 
 	dax_set_mapping(vmf, pfn, fault_size);
 
-	return vmf_insert_folio_pud(vmf, page_folio(pfn_to_page(pfn)),
-				vmf->flags & FAULT_FLAG_WRITE);
+	return vmf_insert_pfn_pud(vmf, pfn, vmf->flags & FAULT_FLAG_WRITE);
 }
 #else
 static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
@@ -237,26 +228,32 @@ static vm_fault_t __dev_dax_pud_fault(struct dev_dax *dev_dax,
 }
 #endif /* !CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD */
 
-static vm_fault_t dev_dax_huge_fault(struct vm_fault *vmf, unsigned int order)
+static vm_fault_t dev_dax_huge_fault(struct vm_fault *vmf,
+		enum page_entry_size pe_size)
 {
 	struct file *filp = vmf->vma->vm_file;
 	vm_fault_t rc = VM_FAULT_SIGBUS;
 	int id;
 	struct dev_dax *dev_dax = filp->private_data;
 
-	dev_dbg(&dev_dax->dev, "%s: op=%s addr=%#lx order=%d\n", current->comm,
-		(vmf->flags & FAULT_FLAG_WRITE) ? "write" : "read",
-		vmf->address & ~((1UL << (order + PAGE_SHIFT)) - 1), order);
+	dev_dbg(&dev_dax->dev, "%s: %s (%#lx - %#lx) size = %d\n", current->comm,
+			(vmf->flags & FAULT_FLAG_WRITE) ? "write" : "read",
+			vmf->vma->vm_start, vmf->vma->vm_end, pe_size);
 
 	id = dax_read_lock();
-	if (order == 0)
+	switch (pe_size) {
+	case PE_SIZE_PTE:
 		rc = __dev_dax_pte_fault(dev_dax, vmf);
-	else if (order == PMD_ORDER)
+		break;
+	case PE_SIZE_PMD:
 		rc = __dev_dax_pmd_fault(dev_dax, vmf);
-	else if (order == PUD_ORDER)
+		break;
+	case PE_SIZE_PUD:
 		rc = __dev_dax_pud_fault(dev_dax, vmf);
-	else
+		break;
+	default:
 		rc = VM_FAULT_SIGBUS;
+	}
 
 	dax_read_unlock(id);
 
@@ -265,7 +262,7 @@ static vm_fault_t dev_dax_huge_fault(struct vm_fault *vmf, unsigned int order)
 
 static vm_fault_t dev_dax_fault(struct vm_fault *vmf)
 {
-	return dev_dax_huge_fault(vmf, 0);
+	return dev_dax_huge_fault(vmf, PE_SIZE_PTE);
 }
 
 static int dev_dax_may_split(struct vm_area_struct *vma, unsigned long addr)
@@ -293,9 +290,8 @@ static const struct vm_operations_struct dax_vm_ops = {
 	.pagesize = dev_dax_pagesize,
 };
 
-static int dax_mmap_prepare(struct vm_area_desc *desc)
+static int dax_mmap(struct file *filp, struct vm_area_struct *vma)
 {
-	struct file *filp = desc->file;
 	struct dev_dax *dev_dax = filp->private_data;
 	int rc, id;
 
@@ -306,14 +302,13 @@ static int dax_mmap_prepare(struct vm_area_desc *desc)
 	 * fault time.
 	 */
 	id = dax_read_lock();
-	rc = __check_vma(dev_dax, desc->vm_flags, desc->start, desc->end, filp,
-			 __func__);
+	rc = check_vma(dev_dax, vma, __func__);
 	dax_read_unlock(id);
 	if (rc)
 		return rc;
 
-	desc->vm_ops = &dax_vm_ops;
-	desc->vm_flags |= VM_HUGEPAGE;
+	vma->vm_ops = &dax_vm_ops;
+	vm_flags_set(vma, VM_HUGEPAGE);
 	return 0;
 }
 
@@ -340,13 +335,14 @@ static unsigned long dax_get_unmapped_area(struct file *filp,
 	if ((off + len_align) < off)
 		goto out;
 
-	addr_align = mm_get_unmapped_area(filp, addr, len_align, pgoff, flags);
+	addr_align = current->mm->get_unmapped_area(filp, addr, len_align,
+			pgoff, flags);
 	if (!IS_ERR_VALUE(addr_align)) {
 		addr_align += (off - addr_align) & (align - 1);
 		return addr_align;
 	}
  out:
-	return mm_get_unmapped_area(filp, addr, len, pgoff, flags);
+	return current->mm->get_unmapped_area(filp, addr, len, pgoff, flags);
 }
 
 static const struct address_space_operations dev_dax_aops = {
@@ -386,8 +382,8 @@ static const struct file_operations dax_fops = {
 	.open = dax_open,
 	.release = dax_release,
 	.get_unmapped_area = dax_get_unmapped_area,
-	.mmap_prepare = dax_mmap_prepare,
-	.fop_flags = FOP_MMAP_SYNC,
+	.mmap = dax_mmap,
+	.mmap_supported_flags = MAP_SYNC,
 };
 
 static void dev_dax_cdev_del(void *cdev)
@@ -400,7 +396,7 @@ static void dev_dax_kill(void *dev_dax)
 	kill_dev_dax(dev_dax);
 }
 
-static int dev_dax_probe(struct dev_dax *dev_dax)
+int dev_dax_probe(struct dev_dax *dev_dax)
 {
 	struct dax_device *dax_dev = dev_dax->dax_dev;
 	struct device *dev = &dev_dax->dev;
@@ -475,6 +471,7 @@ static int dev_dax_probe(struct dev_dax *dev_dax)
 	run_dax(dax_dev);
 	return devm_add_action_or_reset(dev, dev_dax_kill, dev_dax);
 }
+EXPORT_SYMBOL_GPL(dev_dax_probe);
 
 static struct dax_device_driver device_dax_driver = {
 	.probe = dev_dax_probe,
@@ -492,7 +489,6 @@ static void __exit dax_exit(void)
 }
 
 MODULE_AUTHOR("Intel Corporation");
-MODULE_DESCRIPTION("Device DAX: direct access device driver");
 MODULE_LICENSE("GPL v2");
 module_init(dax_init);
 module_exit(dax_exit);

@@ -4,10 +4,8 @@
  * Copyright 2019,2020,2022 NXP
  */
 
-#include <linux/export.h>
 #include <linux/media-bus-format.h>
 #include <linux/mfd/syscon.h>
-#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
 
@@ -21,14 +19,12 @@ bool ldb_channel_is_single_link(struct ldb_channel *ldb_ch)
 {
 	return ldb_ch->link_type == LDB_CH_SINGLE_LINK;
 }
-EXPORT_SYMBOL_GPL(ldb_channel_is_single_link);
 
 bool ldb_channel_is_split_link(struct ldb_channel *ldb_ch)
 {
 	return ldb_ch->link_type == LDB_CH_DUAL_LINK_EVEN_ODD_PIXELS ||
 	       ldb_ch->link_type == LDB_CH_DUAL_LINK_ODD_EVEN_PIXELS;
 }
-EXPORT_SYMBOL_GPL(ldb_channel_is_split_link);
 
 int ldb_bridge_atomic_check_helper(struct drm_bridge *bridge,
 				   struct drm_bridge_state *bridge_state,
@@ -42,7 +38,6 @@ int ldb_bridge_atomic_check_helper(struct drm_bridge *bridge,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(ldb_bridge_atomic_check_helper);
 
 void ldb_bridge_mode_set_helper(struct drm_bridge *bridge,
 				const struct drm_display_mode *mode,
@@ -74,7 +69,6 @@ void ldb_bridge_mode_set_helper(struct drm_bridge *bridge,
 		break;
 	}
 }
-EXPORT_SYMBOL_GPL(ldb_bridge_mode_set_helper);
 
 void ldb_bridge_enable_helper(struct drm_bridge *bridge)
 {
@@ -87,7 +81,6 @@ void ldb_bridge_enable_helper(struct drm_bridge *bridge)
 	 */
 	regmap_write(ldb->regmap, ldb->ctrl_reg, ldb->ldb_ctrl);
 }
-EXPORT_SYMBOL_GPL(ldb_bridge_enable_helper);
 
 void ldb_bridge_disable_helper(struct drm_bridge *bridge)
 {
@@ -102,9 +95,8 @@ void ldb_bridge_disable_helper(struct drm_bridge *bridge)
 
 	regmap_write(ldb->regmap, ldb->ctrl_reg, ldb->ldb_ctrl);
 }
-EXPORT_SYMBOL_GPL(ldb_bridge_disable_helper);
 
-int ldb_bridge_attach_helper(struct drm_bridge *bridge, struct drm_encoder *encoder,
+int ldb_bridge_attach_helper(struct drm_bridge *bridge,
 			     enum drm_bridge_attach_flags flags)
 {
 	struct ldb_channel *ldb_ch = bridge->driver_private;
@@ -116,10 +108,15 @@ int ldb_bridge_attach_helper(struct drm_bridge *bridge, struct drm_encoder *enco
 		return -EINVAL;
 	}
 
-	return drm_bridge_attach(encoder, ldb_ch->next_bridge, bridge,
-				 DRM_BRIDGE_ATTACH_NO_CONNECTOR);
+	if (!bridge->encoder) {
+		DRM_DEV_ERROR(ldb->dev, "missing encoder\n");
+		return -ENODEV;
+	}
+
+	return drm_bridge_attach(bridge->encoder,
+				ldb_ch->next_bridge, bridge,
+				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
 }
-EXPORT_SYMBOL_GPL(ldb_bridge_attach_helper);
 
 int ldb_init_helper(struct ldb *ldb)
 {
@@ -160,7 +157,6 @@ int ldb_init_helper(struct ldb *ldb)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(ldb_init_helper);
 
 int ldb_find_next_bridge_helper(struct ldb *ldb)
 {
@@ -188,9 +184,9 @@ int ldb_find_next_bridge_helper(struct ldb *ldb)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(ldb_find_next_bridge_helper);
 
-void ldb_add_bridge_helper(struct ldb *ldb)
+void ldb_add_bridge_helper(struct ldb *ldb,
+			   const struct drm_bridge_funcs *bridge_funcs)
 {
 	struct ldb_channel *ldb_ch;
 	int i;
@@ -202,12 +198,12 @@ void ldb_add_bridge_helper(struct ldb *ldb)
 			continue;
 
 		ldb_ch->bridge.driver_private = ldb_ch;
+		ldb_ch->bridge.funcs = bridge_funcs;
 		ldb_ch->bridge.of_node = ldb_ch->np;
 
 		drm_bridge_add(&ldb_ch->bridge);
 	}
 }
-EXPORT_SYMBOL_GPL(ldb_add_bridge_helper);
 
 void ldb_remove_bridge_helper(struct ldb *ldb)
 {
@@ -223,8 +219,3 @@ void ldb_remove_bridge_helper(struct ldb *ldb)
 		drm_bridge_remove(&ldb_ch->bridge);
 	}
 }
-EXPORT_SYMBOL_GPL(ldb_remove_bridge_helper);
-
-MODULE_DESCRIPTION("i.MX8 LVDS Display Bridge(LDB)/Pixel Mapper bridge helper");
-MODULE_AUTHOR("Liu Ying <victor.liu@nxp.com>");
-MODULE_LICENSE("GPL");

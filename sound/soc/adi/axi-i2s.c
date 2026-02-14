@@ -147,7 +147,6 @@ static int axi_i2s_dai_probe(struct snd_soc_dai *dai)
 }
 
 static const struct snd_soc_dai_ops axi_i2s_dai_ops = {
-	.probe = axi_i2s_dai_probe,
 	.startup = axi_i2s_startup,
 	.shutdown = axi_i2s_shutdown,
 	.trigger = axi_i2s_trigger,
@@ -155,6 +154,7 @@ static const struct snd_soc_dai_ops axi_i2s_dai_ops = {
 };
 
 static struct snd_soc_dai_driver axi_i2s_dai = {
+	.probe = axi_i2s_dai_probe,
 	.ops = &axi_i2s_dai_ops,
 	.symmetric_rate = 1,
 };
@@ -264,8 +264,8 @@ static int axi_i2s_probe(struct platform_device *pdev)
 		goto err_clk_disable;
 
 	dev_info(&pdev->dev, "probed, capture %s, playback %s\n",
-		 str_enabled_disabled(i2s->has_capture),
-		 str_enabled_disabled(i2s->has_playback));
+		 i2s->has_capture ? "enabled" : "disabled",
+		 i2s->has_playback ? "enabled" : "disabled");
 
 	return 0;
 
@@ -274,11 +274,13 @@ err_clk_disable:
 	return ret;
 }
 
-static void axi_i2s_dev_remove(struct platform_device *pdev)
+static int axi_i2s_dev_remove(struct platform_device *pdev)
 {
 	struct axi_i2s *i2s = platform_get_drvdata(pdev);
 
 	clk_disable_unprepare(i2s->clk);
+
+	return 0;
 }
 
 static const struct of_device_id axi_i2s_of_match[] = {

@@ -22,8 +22,6 @@
 #include "dm-ima.h"
 
 #define DM_RESERVED_MAX_IOS		1024
-#define DM_MAX_TARGETS			1048576
-#define DM_MAX_TARGET_PARAMS		1024
 
 struct dm_io;
 
@@ -139,8 +137,8 @@ struct mapped_device {
 	struct srcu_struct io_barrier;
 
 #ifdef CONFIG_BLK_DEV_ZONED
-	void *zone_revalidate_map;
-	struct task_struct *revalidate_map_task;
+	unsigned int nr_zones;
+	unsigned int *zwp_offset;
 #endif
 
 #ifdef CONFIG_IMA
@@ -161,7 +159,9 @@ struct mapped_device {
 #define DMF_SUSPENDED_INTERNALLY 7
 #define DMF_POST_SUSPENDING 8
 #define DMF_EMULATE_ZONE_APPEND 9
-#define DMF_QUEUE_STOPPED 10
+
+void disable_discard(struct mapped_device *md);
+void disable_write_zeroes(struct mapped_device *md);
 
 static inline sector_t dm_get_size(struct mapped_device *md)
 {
@@ -204,14 +204,14 @@ struct dm_table {
 
 	bool integrity_supported:1;
 	bool singleton:1;
-	/* set if all the targets in the table have "flush_bypasses_map" set */
-	bool flush_bypasses_map:1;
+	unsigned integrity_added:1;
 
 	/*
-	 * Indicates the rw permissions for the new logical device.  This
-	 * should be a combination of BLK_OPEN_READ and BLK_OPEN_WRITE.
+	 * Indicates the rw permissions for the new logical
+	 * device.  This should be a combination of FMODE_READ
+	 * and FMODE_WRITE.
 	 */
-	blk_mode_t mode;
+	fmode_t mode;
 
 	/* a list of devices used by this table */
 	struct list_head devices;
@@ -290,7 +290,6 @@ struct dm_io {
 	struct dm_io *next;
 	struct dm_stats_aux stats_aux;
 	blk_status_t status;
-	bool requeue_flush_with_data;
 	atomic_t io_count;
 	struct mapped_device *md;
 
@@ -308,8 +307,7 @@ struct dm_io {
  */
 enum {
 	DM_IO_ACCOUNTED,
-	DM_IO_WAS_SPLIT,
-	DM_IO_BLK_STAT
+	DM_IO_WAS_SPLIT
 };
 
 static inline bool dm_io_flagged(struct dm_io *io, unsigned int bit)

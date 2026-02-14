@@ -48,20 +48,18 @@ struct zynq_pll {
  * @prate:	Clock frequency of parent clock
  * Return:	frequency closest to @rate the hardware can generate.
  */
-static int zynq_pll_determine_rate(struct clk_hw *hw,
-				   struct clk_rate_request *req)
+static long zynq_pll_round_rate(struct clk_hw *hw, unsigned long rate,
+		unsigned long *prate)
 {
 	u32 fbdiv;
 
-	fbdiv = DIV_ROUND_CLOSEST(req->rate, req->best_parent_rate);
+	fbdiv = DIV_ROUND_CLOSEST(rate, *prate);
 	if (fbdiv < PLL_FBDIV_MIN)
 		fbdiv = PLL_FBDIV_MIN;
 	else if (fbdiv > PLL_FBDIV_MAX)
 		fbdiv = PLL_FBDIV_MAX;
 
-	req->rate = req->best_parent_rate * fbdiv;
-
-	return 0;
+	return *prate * fbdiv;
 }
 
 /**
@@ -169,7 +167,7 @@ static const struct clk_ops zynq_pll_ops = {
 	.enable = zynq_pll_enable,
 	.disable = zynq_pll_disable,
 	.is_enabled = zynq_pll_is_enabled,
-	.determine_rate = zynq_pll_determine_rate,
+	.round_rate = zynq_pll_round_rate,
 	.recalc_rate = zynq_pll_recalc_rate
 };
 

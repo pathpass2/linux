@@ -269,7 +269,7 @@ static int wdat_wdt_stop(struct watchdog_device *wdd)
 
 static int wdat_wdt_ping(struct watchdog_device *wdd)
 {
-	return wdat_wdt_run_action(to_wdat_wdt(wdd), ACPI_WDAT_RESET, wdd->timeout, NULL);
+	return wdat_wdt_run_action(to_wdat_wdt(wdd), ACPI_WDAT_RESET, 0, NULL);
 }
 
 static int wdat_wdt_set_timeout(struct watchdog_device *wdd,
@@ -326,27 +326,19 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	wdat = devm_kzalloc(dev, sizeof(*wdat), GFP_KERNEL);
-	if (!wdat) {
-		ret = -ENOMEM;
-		goto out_put_table;
-	}
+	if (!wdat)
+		return -ENOMEM;
 
 	regs = devm_kcalloc(dev, pdev->num_resources, sizeof(*regs),
 			    GFP_KERNEL);
-	if (!regs) {
-		ret = -ENOMEM;
-		goto out_put_table;
-	}
+	if (!regs)
+		return -ENOMEM;
 
 	/* WDAT specification wants to have >= 1ms period */
-	if (tbl->timer_period < 1) {
-		ret = -EINVAL;
-		goto out_put_table;
-	}
-	if (tbl->min_count > tbl->max_count) {
-		ret = -EINVAL;
-		goto out_put_table;
-	}
+	if (tbl->timer_period < 1)
+		return -EINVAL;
+	if (tbl->min_count > tbl->max_count)
+		return -EINVAL;
 
 	wdat->period = tbl->timer_period;
 	wdat->wdd.min_timeout = DIV_ROUND_UP(wdat->period * tbl->min_count, 1000);
@@ -363,20 +355,15 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 		res = &pdev->resource[i];
 		if (resource_type(res) == IORESOURCE_MEM) {
 			reg = devm_ioremap_resource(dev, res);
-			if (IS_ERR(reg)) {
-				ret = PTR_ERR(reg);
-				goto out_put_table;
-			}
+			if (IS_ERR(reg))
+				return PTR_ERR(reg);
 		} else if (resource_type(res) == IORESOURCE_IO) {
 			reg = devm_ioport_map(dev, res->start, 1);
-			if (!reg) {
-				ret = -ENOMEM;
-				goto out_put_table;
-			}
+			if (!reg)
+				return -ENOMEM;
 		} else {
 			dev_err(dev, "Unsupported resource\n");
-			ret = -EINVAL;
-			goto out_put_table;
+			return -EINVAL;
 		}
 
 		regs[i] = reg;
@@ -398,10 +385,8 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 		}
 
 		instr = devm_kzalloc(dev, sizeof(*instr), GFP_KERNEL);
-		if (!instr) {
-			ret = -ENOMEM;
-			goto out_put_table;
-		}
+		if (!instr)
+			return -ENOMEM;
 
 		INIT_LIST_HEAD(&instr->node);
 		instr->entry = entries[i];
@@ -432,8 +417,7 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 
 		if (!instr->reg) {
 			dev_err(dev, "I/O resource not found\n");
-			ret = -EINVAL;
-			goto out_put_table;
+			return -EINVAL;
 		}
 
 		instructions = wdat->instructions[action];
@@ -441,10 +425,8 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 			instructions = devm_kzalloc(dev,
 						    sizeof(*instructions),
 						    GFP_KERNEL);
-			if (!instructions) {
-				ret = -ENOMEM;
-				goto out_put_table;
-			}
+			if (!instructions)
+				return -ENOMEM;
 
 			INIT_LIST_HEAD(instructions);
 			wdat->instructions[action] = instructions;
@@ -461,7 +443,7 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 
 	ret = wdat_wdt_enable_reboot(wdat);
 	if (ret)
-		goto out_put_table;
+		return ret;
 
 	platform_set_drvdata(pdev, wdat);
 
@@ -478,16 +460,12 @@ static int wdat_wdt_probe(struct platform_device *pdev)
 
 	ret = wdat_wdt_set_timeout(&wdat->wdd, timeout);
 	if (ret)
-		goto out_put_table;
+		return ret;
 
 	watchdog_set_nowayout(&wdat->wdd, nowayout);
 	watchdog_stop_on_reboot(&wdat->wdd);
 	watchdog_stop_on_unregister(&wdat->wdd);
-	ret = devm_watchdog_register_device(dev, &wdat->wdd);
-
-out_put_table:
-	acpi_put_table((struct acpi_table_header *)tbl);
-	return ret;
+	return devm_watchdog_register_device(dev, &wdat->wdd);
 }
 
 static int wdat_wdt_suspend_noirq(struct device *dev)

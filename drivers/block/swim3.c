@@ -246,9 +246,10 @@ static int grab_drive(struct floppy_state *fs, enum swim_state state,
 		      int interruptible);
 static void release_drive(struct floppy_state *fs);
 static int fd_eject(struct floppy_state *fs);
-static int floppy_ioctl(struct block_device *bdev, blk_mode_t mode,
+static int floppy_ioctl(struct block_device *bdev, fmode_t mode,
 			unsigned int cmd, unsigned long param);
-static int floppy_open(struct gendisk *disk, blk_mode_t mode);
+static int floppy_open(struct block_device *bdev, fmode_t mode);
+static void floppy_release(struct gendisk *disk, fmode_t mode);
 static unsigned int floppy_check_events(struct gendisk *disk,
 					unsigned int clearing);
 static int floppy_revalidate(struct gendisk *disk);
@@ -362,7 +363,7 @@ static void set_timeout(struct floppy_state *fs, int nticks,
 			void (*proc)(struct timer_list *t))
 {
 	if (fs->timeout_pending)
-		timer_delete(&fs->timeout);
+		del_timer(&fs->timeout);
 	fs->timeout.expires = jiffies + nticks;
 	fs->timeout.function = proc;
 	add_timer(&fs->timeout);
@@ -555,7 +556,7 @@ static void act(struct floppy_state *fs)
 
 static void scan_timeout(struct timer_list *t)
 {
-	struct floppy_state *fs = timer_container_of(fs, t, timeout);
+	struct floppy_state *fs = from_timer(fs, t, timeout);
 	struct swim3 __iomem *sw = fs->swim3;
 	unsigned long flags;
 
@@ -579,7 +580,7 @@ static void scan_timeout(struct timer_list *t)
 
 static void seek_timeout(struct timer_list *t)
 {
-	struct floppy_state *fs = timer_container_of(fs, t, timeout);
+	struct floppy_state *fs = from_timer(fs, t, timeout);
 	struct swim3 __iomem *sw = fs->swim3;
 	unsigned long flags;
 
@@ -598,7 +599,7 @@ static void seek_timeout(struct timer_list *t)
 
 static void settle_timeout(struct timer_list *t)
 {
-	struct floppy_state *fs = timer_container_of(fs, t, timeout);
+	struct floppy_state *fs = from_timer(fs, t, timeout);
 	struct swim3 __iomem *sw = fs->swim3;
 	unsigned long flags;
 
@@ -627,7 +628,7 @@ static void settle_timeout(struct timer_list *t)
 
 static void xfer_timeout(struct timer_list *t)
 {
-	struct floppy_state *fs = timer_container_of(fs, t, timeout);
+	struct floppy_state *fs = from_timer(fs, t, timeout);
 	struct swim3 __iomem *sw = fs->swim3;
 	struct dbdma_regs __iomem *dr = fs->dma;
 	unsigned long flags;
@@ -677,7 +678,7 @@ static irqreturn_t swim3_interrupt(int irq, void *dev_id)
 			out_8(&sw->control_bic, DO_ACTION | WRITE_SECTORS);
 			out_8(&sw->select, RELAX);
 			out_8(&sw->intr_enable, 0);
-			timer_delete(&fs->timeout);
+			del_timer(&fs->timeout);
 			fs->timeout_pending = 0;
 			if (sw->ctrack == 0xff) {
 				swim3_err("%s", "Seen sector but cyl=ff?\n");
@@ -706,7 +707,7 @@ static irqreturn_t swim3_interrupt(int irq, void *dev_id)
 			out_8(&sw->control_bic, DO_SEEK);
 			out_8(&sw->select, RELAX);
 			out_8(&sw->intr_enable, 0);
-			timer_delete(&fs->timeout);
+			del_timer(&fs->timeout);
 			fs->timeout_pending = 0;
 			if (fs->state == seeking)
 				++fs->retries;
@@ -716,7 +717,7 @@ static irqreturn_t swim3_interrupt(int irq, void *dev_id)
 		break;
 	case settling:
 		out_8(&sw->intr_enable, 0);
-		timer_delete(&fs->timeout);
+		del_timer(&fs->timeout);
 		fs->timeout_pending = 0;
 		act(fs);
 		break;
@@ -726,7 +727,7 @@ static irqreturn_t swim3_interrupt(int irq, void *dev_id)
 		out_8(&sw->intr_enable, 0);
 		out_8(&sw->control_bic, WRITE_SECTORS | DO_ACTION);
 		out_8(&sw->select, RELAX);
-		timer_delete(&fs->timeout);
+		del_timer(&fs->timeout);
 		fs->timeout_pending = 0;
 		dr = fs->dma;
 		cp = fs->dma_cmd;
@@ -840,7 +841,6 @@ static int grab_drive(struct floppy_state *fs, enum swim_state state,
 static void release_drive(struct floppy_state *fs)
 {
 	struct request_queue *q = disks[fs->index]->queue;
-	unsigned int memflags;
 	unsigned long flags;
 
 	swim3_dbg("%s", "-> release drive\n");
@@ -849,10 +849,10 @@ static void release_drive(struct floppy_state *fs)
 	fs->state = idle;
 	spin_unlock_irqrestore(&swim3_lock, flags);
 
-	memflags = blk_mq_freeze_queue(q);
+	blk_mq_freeze_queue(q);
 	blk_mq_quiesce_queue(q);
 	blk_mq_unquiesce_queue(q);
-	blk_mq_unfreeze_queue(q, memflags);
+	blk_mq_unfreeze_queue(q);
 }
 
 static int fd_eject(struct floppy_state *fs)
@@ -883,7 +883,7 @@ static int fd_eject(struct floppy_state *fs)
 static struct floppy_struct floppy_type =
 	{ 2880,18,2,80,0,0x1B,0x00,0xCF,0x6C,NULL };	/*  7 1.44MB 3.5"   */
 
-static int floppy_locked_ioctl(struct block_device *bdev, blk_mode_t mode,
+static int floppy_locked_ioctl(struct block_device *bdev, fmode_t mode,
 			unsigned int cmd, unsigned long param)
 {
 	struct floppy_state *fs = bdev->bd_disk->private_data;
@@ -911,7 +911,7 @@ static int floppy_locked_ioctl(struct block_device *bdev, blk_mode_t mode,
 	return -ENOTTY;
 }
 
-static int floppy_ioctl(struct block_device *bdev, blk_mode_t mode,
+static int floppy_ioctl(struct block_device *bdev, fmode_t mode,
 				 unsigned int cmd, unsigned long param)
 {
 	int ret;
@@ -923,9 +923,9 @@ static int floppy_ioctl(struct block_device *bdev, blk_mode_t mode,
 	return ret;
 }
 
-static int floppy_open(struct gendisk *disk, blk_mode_t mode)
+static int floppy_open(struct block_device *bdev, fmode_t mode)
 {
-	struct floppy_state *fs = disk->private_data;
+	struct floppy_state *fs = bdev->bd_disk->private_data;
 	struct swim3 __iomem *sw = fs->swim3;
 	int n, err = 0;
 
@@ -958,18 +958,18 @@ static int floppy_open(struct gendisk *disk, blk_mode_t mode)
 		swim3_action(fs, SETMFM);
 		swim3_select(fs, RELAX);
 
-	} else if (fs->ref_count == -1 || mode & BLK_OPEN_EXCL)
+	} else if (fs->ref_count == -1 || mode & FMODE_EXCL)
 		return -EBUSY;
 
-	if (err == 0 && !(mode & BLK_OPEN_NDELAY) &&
-	    (mode & (BLK_OPEN_READ | BLK_OPEN_WRITE))) {
-		if (disk_check_media_change(disk))
-			floppy_revalidate(disk);
+	if (err == 0 && (mode & FMODE_NDELAY) == 0
+	    && (mode & (FMODE_READ|FMODE_WRITE))) {
+		if (bdev_check_media_change(bdev))
+			floppy_revalidate(bdev->bd_disk);
 		if (fs->ejected)
 			err = -ENXIO;
 	}
 
-	if (err == 0 && (mode & BLK_OPEN_WRITE)) {
+	if (err == 0 && (mode & FMODE_WRITE)) {
 		if (fs->write_prot < 0)
 			fs->write_prot = swim3_readbit(fs, WRITE_PROT);
 		if (fs->write_prot)
@@ -985,7 +985,7 @@ static int floppy_open(struct gendisk *disk, blk_mode_t mode)
 		return err;
 	}
 
-	if (mode & BLK_OPEN_EXCL)
+	if (mode & FMODE_EXCL)
 		fs->ref_count = -1;
 	else
 		++fs->ref_count;
@@ -993,18 +993,18 @@ static int floppy_open(struct gendisk *disk, blk_mode_t mode)
 	return 0;
 }
 
-static int floppy_unlocked_open(struct gendisk *disk, blk_mode_t mode)
+static int floppy_unlocked_open(struct block_device *bdev, fmode_t mode)
 {
 	int ret;
 
 	mutex_lock(&swim3_mutex);
-	ret = floppy_open(disk, mode);
+	ret = floppy_open(bdev, mode);
 	mutex_unlock(&swim3_mutex);
 
 	return ret;
 }
 
-static void floppy_release(struct gendisk *disk)
+static void floppy_release(struct gendisk *disk, fmode_t mode)
 {
 	struct floppy_state *fs = disk->private_data;
 	struct swim3 __iomem *sw = fs->swim3;
@@ -1190,9 +1190,6 @@ static int swim3_add_device(struct macio_dev *mdev, int index)
 static int swim3_attach(struct macio_dev *mdev,
 			const struct of_device_id *match)
 {
-	struct queue_limits lim = {
-		.features		= BLK_FEAT_ROTATIONAL,
-	};
 	struct floppy_state *fs;
 	struct gendisk *disk;
 	int rc;
@@ -1209,11 +1206,12 @@ static int swim3_attach(struct macio_dev *mdev,
 	fs = &floppy_states[floppy_count];
 	memset(fs, 0, sizeof(*fs));
 
-	rc = blk_mq_alloc_sq_tag_set(&fs->tag_set, &swim3_mq_ops, 2, 0);
+	rc = blk_mq_alloc_sq_tag_set(&fs->tag_set, &swim3_mq_ops, 2,
+			BLK_MQ_F_SHOULD_MERGE);
 	if (rc)
 		goto out_unregister;
 
-	disk = blk_mq_alloc_disk(&fs->tag_set, &lim, fs);
+	disk = blk_mq_alloc_disk(&fs->tag_set, fs);
 	if (IS_ERR(disk)) {
 		rc = PTR_ERR(disk);
 		goto out_free_tag_set;
@@ -1280,7 +1278,7 @@ static struct macio_driver swim3_driver =
 };
 
 
-static int swim3_init(void)
+int swim3_init(void)
 {
 	macio_register_driver(&swim3_driver);
 	return 0;

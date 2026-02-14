@@ -24,11 +24,8 @@
 #include <linux/wait.h>
 #include <linux/acpi.h>
 #include <linux/freezer.h>
-#include <linux/dmi.h>
 #include "tpm.h"
 #include "tpm_tis_core.h"
-
-#define TPM_TIS_MAX_UNHANDLED_IRQS	1000
 
 static void tpm_tis_clkrun_enable(struct tpm_chip *chip, bool value);
 
@@ -47,20 +44,6 @@ static bool wait_for_tpm_stat_cond(struct tpm_chip *chip, u8 mask,
 	return false;
 }
 
-static u8 tpm_tis_filter_sts_mask(u8 int_mask, u8 sts_mask)
-{
-	if (!(int_mask & TPM_INTF_STS_VALID_INT))
-		sts_mask &= ~TPM_STS_VALID;
-
-	if (!(int_mask & TPM_INTF_DATA_AVAIL_INT))
-		sts_mask &= ~TPM_STS_DATA_AVAIL;
-
-	if (!(int_mask & TPM_INTF_CMD_READY_INT))
-		sts_mask &= ~TPM_STS_COMMAND_READY;
-
-	return sts_mask;
-}
-
 static int wait_for_tpm_stat(struct tpm_chip *chip, u8 mask,
 		unsigned long timeout, wait_queue_head_t *queue,
 		bool check_cancel)
@@ -70,55 +53,41 @@ static int wait_for_tpm_stat(struct tpm_chip *chip, u8 mask,
 	long rc;
 	u8 status;
 	bool canceled = false;
-	u8 sts_mask;
-	int ret = 0;
 
 	/* check current status */
 	status = chip->ops->status(chip);
 	if ((status & mask) == mask)
 		return 0;
 
-	sts_mask = mask & (TPM_STS_VALID | TPM_STS_DATA_AVAIL |
-			   TPM_STS_COMMAND_READY);
-	/* check what status changes can be handled by irqs */
-	sts_mask = tpm_tis_filter_sts_mask(priv->int_mask, sts_mask);
-
 	stop = jiffies + timeout;
-	/* process status changes with irq support */
-	if (sts_mask) {
-		ret = -ETIME;
+
+	if (chip->flags & TPM_CHIP_FLAG_IRQ) {
 again:
 		timeout = stop - jiffies;
 		if ((long)timeout <= 0)
 			return -ETIME;
 		rc = wait_event_interruptible_timeout(*queue,
-			wait_for_tpm_stat_cond(chip, sts_mask, check_cancel,
+			wait_for_tpm_stat_cond(chip, mask, check_cancel,
 					       &canceled),
 			timeout);
 		if (rc > 0) {
 			if (canceled)
 				return -ECANCELED;
-			ret = 0;
+			return 0;
 		}
 		if (rc == -ERESTARTSYS && freezing(current)) {
 			clear_thread_flag(TIF_SIGPENDING);
 			goto again;
 		}
+	} else {
+		do {
+			usleep_range(priv->timeout_min,
+				     priv->timeout_max);
+			status = chip->ops->status(chip);
+			if ((status & mask) == mask)
+				return 0;
+		} while (time_before(jiffies, stop));
 	}
-
-	if (ret)
-		return ret;
-
-	mask &= ~sts_mask;
-	if (!mask) /* all done */
-		return 0;
-	/* process status changes without irq support */
-	do {
-		usleep_range(priv->timeout_min, priv->timeout_max);
-		status = chip->ops->status(chip);
-		if ((status & mask) == mask)
-			return 0;
-	} while (time_before(jiffies, stop));
 	return -ETIME;
 }
 
@@ -167,27 +136,16 @@ static bool check_locality(struct tpm_chip *chip, int l)
 	return false;
 }
 
-static int __tpm_tis_relinquish_locality(struct tpm_tis_data *priv, int l)
+static int release_locality(struct tpm_chip *chip, int l)
 {
+	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
+
 	tpm_tis_write8(priv, TPM_ACCESS(l), TPM_ACCESS_ACTIVE_LOCALITY);
 
 	return 0;
 }
 
-static int tpm_tis_relinquish_locality(struct tpm_chip *chip, int l)
-{
-	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
-
-	mutex_lock(&priv->locality_count_mutex);
-	priv->locality_count--;
-	if (priv->locality_count == 0)
-		__tpm_tis_relinquish_locality(priv, l);
-	mutex_unlock(&priv->locality_count_mutex);
-
-	return 0;
-}
-
-static int __tpm_tis_request_locality(struct tpm_chip *chip, int l)
+static int request_locality(struct tpm_chip *chip, int l)
 {
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
 	unsigned long stop, timeout;
@@ -228,20 +186,6 @@ again:
 	return -1;
 }
 
-static int tpm_tis_request_locality(struct tpm_chip *chip, int l)
-{
-	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
-	int ret = 0;
-
-	mutex_lock(&priv->locality_count_mutex);
-	if (priv->locality_count == 0)
-		ret = __tpm_tis_request_locality(chip, l);
-	if (!ret)
-		priv->locality_count++;
-	mutex_unlock(&priv->locality_count_mutex);
-	return ret;
-}
-
 static u8 tpm_tis_status(struct tpm_chip *chip)
 {
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
@@ -265,7 +209,8 @@ static u8 tpm_tis_status(struct tpm_chip *chip)
 
 			/*
 			 * Dump stack for forensics, as invalid TPM_STS.x could be
-			 * potentially triggered by impaired tpm_try_get_ops().
+			 * potentially triggered by impaired tpm_try_get_ops() or
+			 * tpm_find_get_ops().
 			 */
 			dump_stack();
 		}
@@ -338,13 +283,18 @@ static int recv_data(struct tpm_chip *chip, u8 *buf, size_t count)
 	return size;
 }
 
-static int tpm_tis_try_recv(struct tpm_chip *chip, u8 *buf, size_t count)
+static int tpm_tis_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 {
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
 	int size = 0;
 	int status;
 	u32 expected;
 	int rc;
+
+	if (count < TPM_HEADER_SIZE) {
+		size = -EIO;
+		goto out;
+	}
 
 	size = recv_data(chip, buf, TPM_HEADER_SIZE);
 	/* read first 10 bytes, including tag, paramsize, and result */
@@ -359,13 +309,8 @@ static int tpm_tis_try_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 		goto out;
 	}
 
-	rc = recv_data(chip, &buf[TPM_HEADER_SIZE],
-		       expected - TPM_HEADER_SIZE);
-	if (rc < 0) {
-		size = rc;
-		goto out;
-	}
-	size += rc;
+	size += recv_data(chip, &buf[TPM_HEADER_SIZE],
+			  expected - TPM_HEADER_SIZE);
 	if (size < expected) {
 		dev_err(&chip->dev, "Unable to read remainder of result\n");
 		size = -ETIME;
@@ -378,7 +323,7 @@ static int tpm_tis_try_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 		goto out;
 	}
 	status = tpm_tis_status(chip);
-	if (status & TPM_STS_DATA_AVAIL) {
+	if (status & TPM_STS_DATA_AVAIL) {	/* retry? */
 		dev_err(&chip->dev, "Error left over data\n");
 		size = -EIO;
 		goto out;
@@ -392,34 +337,8 @@ static int tpm_tis_try_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 	}
 
 out:
-	return size;
-}
-
-static int tpm_tis_recv(struct tpm_chip *chip, u8 *buf, size_t count)
-{
-	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
-	unsigned int try;
-	int rc = 0;
-
-	if (count < TPM_HEADER_SIZE)
-		return -EIO;
-
-	for (try = 0; try < TPM_RETRY; try++) {
-		rc = tpm_tis_try_recv(chip, buf, count);
-
-		if (rc == -EIO)
-			/* Data transfer errors, indicated by EIO, can be
-			 * recovered by rereading the response.
-			 */
-			tpm_tis_write8(priv, TPM_STS(priv->locality),
-				       TPM_STS_RESPONSE_RETRY);
-		else
-			break;
-	}
-
 	tpm_tis_ready(chip);
-
-	return rc;
+	return size;
 }
 
 /*
@@ -432,7 +351,7 @@ static int tpm_tis_send_data(struct tpm_chip *chip, const u8 *buf, size_t len)
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
 	int rc, status, burstcnt;
 	size_t count = 0;
-	bool itpm = test_bit(TPM_TIS_ITPM_WORKAROUND, &priv->flags);
+	bool itpm = priv->flags & TPM_TIS_ITPM_WORKAROUND;
 
 	status = tpm_tis_status(chip);
 	if ((status & TPM_STS_COMMAND_READY) == 0) {
@@ -462,10 +381,7 @@ static int tpm_tis_send_data(struct tpm_chip *chip, const u8 *buf, size_t len)
 
 		if (wait_for_tpm_stat(chip, TPM_STS_VALID, chip->timeout_c,
 					&priv->int_queue, false) < 0) {
-			if (test_bit(TPM_TIS_STATUS_VALID_RETRY, &priv->flags))
-				rc = -EAGAIN;
-			else
-				rc = -ETIME;
+			rc = -ETIME;
 			goto out_err;
 		}
 		status = tpm_tis_status(chip);
@@ -482,21 +398,12 @@ static int tpm_tis_send_data(struct tpm_chip *chip, const u8 *buf, size_t len)
 
 	if (wait_for_tpm_stat(chip, TPM_STS_VALID, chip->timeout_c,
 				&priv->int_queue, false) < 0) {
-		if (test_bit(TPM_TIS_STATUS_VALID_RETRY, &priv->flags))
-			rc = -EAGAIN;
-		else
-			rc = -ETIME;
+		rc = -ETIME;
 		goto out_err;
 	}
 	status = tpm_tis_status(chip);
 	if (!itpm && (status & TPM_STS_DATA_EXPECT) != 0) {
 		rc = -EIO;
-		goto out_err;
-	}
-
-	rc = tpm_tis_verify_crc(priv, len, buf);
-	if (rc < 0) {
-		dev_err(&chip->dev, "CRC mismatch for command.\n");
 		goto out_err;
 	}
 
@@ -507,29 +414,25 @@ out_err:
 	return rc;
 }
 
-static void __tpm_tis_disable_interrupts(struct tpm_chip *chip)
+static void disable_interrupts(struct tpm_chip *chip)
 {
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
-	u32 int_mask = 0;
-
-	tpm_tis_read32(priv, TPM_INT_ENABLE(priv->locality), &int_mask);
-	int_mask &= ~TPM_GLOBAL_INT_ENABLE;
-	tpm_tis_write32(priv, TPM_INT_ENABLE(priv->locality), int_mask);
-
-	chip->flags &= ~TPM_CHIP_FLAG_IRQ;
-}
-
-static void tpm_tis_disable_interrupts(struct tpm_chip *chip)
-{
-	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
+	u32 intmask;
+	int rc;
 
 	if (priv->irq == 0)
 		return;
 
-	__tpm_tis_disable_interrupts(chip);
+	rc = tpm_tis_read32(priv, TPM_INT_ENABLE(priv->locality), &intmask);
+	if (rc < 0)
+		intmask = 0;
+
+	intmask &= ~TPM_GLOBAL_INT_ENABLE;
+	rc = tpm_tis_write32(priv, TPM_INT_ENABLE(priv->locality), intmask);
 
 	devm_free_irq(chip->dev.parent, priv->irq, chip);
 	priv->irq = 0;
+	chip->flags &= ~TPM_CHIP_FLAG_IRQ;
 }
 
 /*
@@ -543,18 +446,15 @@ static int tpm_tis_send_main(struct tpm_chip *chip, const u8 *buf, size_t len)
 	int rc;
 	u32 ordinal;
 	unsigned long dur;
-	unsigned int try;
 
-	for (try = 0; try < TPM_RETRY; try++) {
-		rc = tpm_tis_send_data(chip, buf, len);
-		if (rc >= 0)
-			/* Data transfer done successfully */
-			break;
-		else if (rc != -EAGAIN && rc != -EIO)
-			/* Data transfer failed, not recoverable */
-			return rc;
+	rc = tpm_tis_send_data(chip, buf, len);
+	if (rc < 0)
+		return rc;
 
-		usleep_range(priv->timeout_min, priv->timeout_max);
+	rc = tpm_tis_verify_crc(priv, len, buf);
+	if (rc < 0) {
+		dev_err(&chip->dev, "CRC mismatch for command.\n");
+		return rc;
 	}
 
 	/* go and do it */
@@ -579,14 +479,12 @@ out_err:
 	return rc;
 }
 
-static int tpm_tis_send(struct tpm_chip *chip, u8 *buf, size_t bufsiz,
-			size_t len)
+static int tpm_tis_send(struct tpm_chip *chip, u8 *buf, size_t len)
 {
 	int rc, irq;
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
 
-	if (!(chip->flags & TPM_CHIP_FLAG_IRQ) ||
-	     test_bit(TPM_TIS_IRQ_TESTED, &priv->flags))
+	if (!(chip->flags & TPM_CHIP_FLAG_IRQ) || priv->irq_tested)
 		return tpm_tis_send_main(chip, buf, len);
 
 	/* Verify receipt of the expected IRQ */
@@ -596,11 +494,11 @@ static int tpm_tis_send(struct tpm_chip *chip, u8 *buf, size_t bufsiz,
 	rc = tpm_tis_send_main(chip, buf, len);
 	priv->irq = irq;
 	chip->flags |= TPM_CHIP_FLAG_IRQ;
-	if (!test_bit(TPM_TIS_IRQ_TESTED, &priv->flags))
+	if (!priv->irq_tested)
 		tpm_msleep(1);
-	if (!test_bit(TPM_TIS_IRQ_TESTED, &priv->flags))
-		tpm_tis_disable_interrupts(chip);
-	set_bit(TPM_TIS_IRQ_TESTED, &priv->flags);
+	if (!priv->irq_tested)
+		disable_interrupts(chip);
+	priv->irq_tested = true;
 	return rc;
 }
 
@@ -743,7 +641,7 @@ static int probe_itpm(struct tpm_chip *chip)
 	size_t len = sizeof(cmd_getticks);
 	u16 vendor;
 
-	if (test_bit(TPM_TIS_ITPM_WORKAROUND, &priv->flags))
+	if (priv->flags & TPM_TIS_ITPM_WORKAROUND)
 		return 0;
 
 	rc = tpm_tis_read16(priv, TPM_DID_VID(0), &vendor);
@@ -754,7 +652,7 @@ static int probe_itpm(struct tpm_chip *chip)
 	if (vendor != TPM_VID_INTEL)
 		return 0;
 
-	if (tpm_tis_request_locality(chip, 0) != 0)
+	if (request_locality(chip, 0) != 0)
 		return -EBUSY;
 
 	rc = tpm_tis_send_data(chip, cmd_getticks, len);
@@ -763,19 +661,19 @@ static int probe_itpm(struct tpm_chip *chip)
 
 	tpm_tis_ready(chip);
 
-	set_bit(TPM_TIS_ITPM_WORKAROUND, &priv->flags);
+	priv->flags |= TPM_TIS_ITPM_WORKAROUND;
 
 	rc = tpm_tis_send_data(chip, cmd_getticks, len);
 	if (rc == 0)
 		dev_info(&chip->dev, "Detected an iTPM.\n");
 	else {
-		clear_bit(TPM_TIS_ITPM_WORKAROUND, &priv->flags);
+		priv->flags &= ~TPM_TIS_ITPM_WORKAROUND;
 		rc = -EFAULT;
 	}
 
 out:
 	tpm_tis_ready(chip);
-	tpm_tis_relinquish_locality(chip, priv->locality);
+	release_locality(chip, priv->locality);
 
 	return rc;
 }
@@ -799,119 +697,60 @@ static bool tpm_tis_req_canceled(struct tpm_chip *chip, u8 status)
 	return status == TPM_STS_COMMAND_READY;
 }
 
-static irqreturn_t tpm_tis_revert_interrupts(struct tpm_chip *chip)
-{
-	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
-	const char *product;
-	const char *vendor;
-
-	dev_warn(&chip->dev, FW_BUG
-		 "TPM interrupt storm detected, polling instead\n");
-
-	vendor = dmi_get_system_info(DMI_SYS_VENDOR);
-	product = dmi_get_system_info(DMI_PRODUCT_VERSION);
-
-	if (vendor && product) {
-		dev_info(&chip->dev,
-			"Consider adding the following entry to tpm_tis_dmi_table:\n");
-		dev_info(&chip->dev, "\tDMI_SYS_VENDOR: %s\n", vendor);
-		dev_info(&chip->dev, "\tDMI_PRODUCT_VERSION: %s\n", product);
-	}
-
-	if (tpm_tis_request_locality(chip, 0) != 0)
-		return IRQ_NONE;
-
-	__tpm_tis_disable_interrupts(chip);
-	tpm_tis_relinquish_locality(chip, 0);
-
-	schedule_work(&priv->free_irq_work);
-
-	return IRQ_HANDLED;
-}
-
-static irqreturn_t tpm_tis_update_unhandled_irqs(struct tpm_chip *chip)
-{
-	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
-	irqreturn_t irqret = IRQ_HANDLED;
-
-	if (!(chip->flags & TPM_CHIP_FLAG_IRQ))
-		return IRQ_HANDLED;
-
-	if (time_after(jiffies, priv->last_unhandled_irq + HZ/10))
-		priv->unhandled_irqs = 1;
-	else
-		priv->unhandled_irqs++;
-
-	priv->last_unhandled_irq = jiffies;
-
-	if (priv->unhandled_irqs > TPM_TIS_MAX_UNHANDLED_IRQS)
-		irqret = tpm_tis_revert_interrupts(chip);
-
-	return irqret;
-}
-
 static irqreturn_t tis_int_handler(int dummy, void *dev_id)
 {
 	struct tpm_chip *chip = dev_id;
 	struct tpm_tis_data *priv = dev_get_drvdata(&chip->dev);
 	u32 interrupt;
-	int rc;
+	int i, rc;
 
 	rc = tpm_tis_read32(priv, TPM_INT_STATUS(priv->locality), &interrupt);
 	if (rc < 0)
-		goto err;
+		return IRQ_NONE;
 
 	if (interrupt == 0)
-		goto err;
+		return IRQ_NONE;
 
-	set_bit(TPM_TIS_IRQ_TESTED, &priv->flags);
+	priv->irq_tested = true;
 	if (interrupt & TPM_INTF_DATA_AVAIL_INT)
 		wake_up_interruptible(&priv->read_queue);
-
+	if (interrupt & TPM_INTF_LOCALITY_CHANGE_INT)
+		for (i = 0; i < 5; i++)
+			if (check_locality(chip, i))
+				break;
 	if (interrupt &
 	    (TPM_INTF_LOCALITY_CHANGE_INT | TPM_INTF_STS_VALID_INT |
 	     TPM_INTF_CMD_READY_INT))
 		wake_up_interruptible(&priv->int_queue);
 
 	/* Clear interrupts handled with TPM_EOI */
-	tpm_tis_request_locality(chip, 0);
 	rc = tpm_tis_write32(priv, TPM_INT_STATUS(priv->locality), interrupt);
-	tpm_tis_relinquish_locality(chip, 0);
 	if (rc < 0)
-		goto err;
+		return IRQ_NONE;
 
 	tpm_tis_read32(priv, TPM_INT_STATUS(priv->locality), &interrupt);
 	return IRQ_HANDLED;
-
-err:
-	return tpm_tis_update_unhandled_irqs(chip);
 }
 
-static void tpm_tis_gen_interrupt(struct tpm_chip *chip)
+static int tpm_tis_gen_interrupt(struct tpm_chip *chip)
 {
 	const char *desc = "attempting to generate an interrupt";
 	u32 cap2;
 	cap_t cap;
 	int ret;
 
-	chip->flags |= TPM_CHIP_FLAG_IRQ;
+	ret = request_locality(chip, 0);
+	if (ret < 0)
+		return ret;
 
 	if (chip->flags & TPM_CHIP_FLAG_TPM2)
 		ret = tpm2_get_tpm_pt(chip, 0x100, &cap2, desc);
 	else
 		ret = tpm1_getcap(chip, TPM_CAP_PROP_TIS_TIMEOUT, &cap, desc, 0);
 
-	if (ret)
-		chip->flags &= ~TPM_CHIP_FLAG_IRQ;
-}
+	release_locality(chip, 0);
 
-static void tpm_tis_free_irq_func(struct work_struct *work)
-{
-	struct tpm_tis_data *priv = container_of(work, typeof(*priv), free_irq_work);
-	struct tpm_chip *chip = priv->chip;
-
-	devm_free_irq(chip->dev.parent, priv->irq, chip);
-	priv->irq = 0;
+	return ret;
 }
 
 /* Register the IRQ and issue a command that will cause an interrupt. If an
@@ -926,65 +765,60 @@ static int tpm_tis_probe_irq_single(struct tpm_chip *chip, u32 intmask,
 	int rc;
 	u32 int_status;
 
-	rc = devm_request_threaded_irq(chip->dev.parent, irq, NULL,
-				       tis_int_handler, IRQF_ONESHOT | flags,
-				       dev_name(&chip->dev), chip);
-	if (rc) {
+	if (devm_request_irq(chip->dev.parent, irq, tis_int_handler, flags,
+			     dev_name(&chip->dev), chip) != 0) {
 		dev_info(&chip->dev, "Unable to request irq: %d for probe\n",
 			 irq);
 		return -1;
 	}
 	priv->irq = irq;
 
-	rc = tpm_tis_request_locality(chip, 0);
-	if (rc < 0)
-		return rc;
-
 	rc = tpm_tis_read8(priv, TPM_INT_VECTOR(priv->locality),
 			   &original_int_vec);
-	if (rc < 0) {
-		tpm_tis_relinquish_locality(chip, priv->locality);
+	if (rc < 0)
 		return rc;
-	}
 
 	rc = tpm_tis_write8(priv, TPM_INT_VECTOR(priv->locality), irq);
 	if (rc < 0)
-		goto restore_irqs;
+		return rc;
 
 	rc = tpm_tis_read32(priv, TPM_INT_STATUS(priv->locality), &int_status);
 	if (rc < 0)
-		goto restore_irqs;
+		return rc;
 
 	/* Clear all existing */
 	rc = tpm_tis_write32(priv, TPM_INT_STATUS(priv->locality), int_status);
 	if (rc < 0)
-		goto restore_irqs;
+		return rc;
+
 	/* Turn on */
 	rc = tpm_tis_write32(priv, TPM_INT_ENABLE(priv->locality),
 			     intmask | TPM_GLOBAL_INT_ENABLE);
 	if (rc < 0)
-		goto restore_irqs;
+		return rc;
 
-	clear_bit(TPM_TIS_IRQ_TESTED, &priv->flags);
+	priv->irq_tested = false;
 
 	/* Generate an interrupt by having the core call through to
 	 * tpm_tis_send
 	 */
-	tpm_tis_gen_interrupt(chip);
+	rc = tpm_tis_gen_interrupt(chip);
+	if (rc < 0)
+		return rc;
 
-restore_irqs:
 	/* tpm_tis_send will either confirm the interrupt is working or it
 	 * will call disable_irq which undoes all of the above.
 	 */
 	if (!(chip->flags & TPM_CHIP_FLAG_IRQ)) {
-		tpm_tis_write8(priv, TPM_INT_VECTOR(priv->locality),
-			       original_int_vec);
-		rc = -1;
+		rc = tpm_tis_write8(priv, original_int_vec,
+				TPM_INT_VECTOR(priv->locality));
+		if (rc < 0)
+			return rc;
+
+		return 1;
 	}
 
-	tpm_tis_relinquish_locality(chip, priv->locality);
-
-	return rc;
+	return 0;
 }
 
 /* Try to find the IRQ the TPM is using. This is for legacy x86 systems that
@@ -1027,8 +861,6 @@ void tpm_tis_remove(struct tpm_chip *chip)
 		interrupt = 0;
 
 	tpm_tis_write32(priv, reg, ~TPM_GLOBAL_INT_ENABLE & interrupt);
-	if (priv->free_irq_work.func)
-		flush_work(&priv->free_irq_work);
 
 	tpm_tis_clkrun_enable(chip, false);
 
@@ -1065,6 +897,11 @@ static void tpm_tis_clkrun_enable(struct tpm_chip *chip, bool value)
 		clkrun_val &= ~LPC_CLKRUN_EN;
 		iowrite32(clkrun_val, data->ilb_base_addr + LPC_CNTRL_OFFSET);
 
+		/*
+		 * Write any random value on port 0x80 which is on LPC, to make
+		 * sure LPC clock is running before sending any TPM command.
+		 */
+		outb(0xCC, 0x80);
 	} else {
 		data->clkrun_enabled--;
 		if (data->clkrun_enabled)
@@ -1075,15 +912,13 @@ static void tpm_tis_clkrun_enable(struct tpm_chip *chip, bool value)
 		/* Enable LPC CLKRUN# */
 		clkrun_val |= LPC_CLKRUN_EN;
 		iowrite32(clkrun_val, data->ilb_base_addr + LPC_CNTRL_OFFSET);
-	}
 
-#ifdef CONFIG_HAS_IOPORT
-	/*
-	 * Write any random value on port 0x80 which is on LPC, to make
-	 * sure LPC clock is running before sending any TPM command.
-	 */
-	outb(0xCC, 0x80);
-#endif
+		/*
+		 * Write any random value on port 0x80 which is on LPC, to make
+		 * sure LPC clock is running before sending any TPM command.
+		 */
+		outb(0xCC, 0x80);
+	}
 }
 
 static const struct tpm_class_ops tpm_tis = {
@@ -1097,8 +932,8 @@ static const struct tpm_class_ops tpm_tis = {
 	.req_complete_mask = TPM_STS_DATA_AVAIL | TPM_STS_VALID,
 	.req_complete_val = TPM_STS_DATA_AVAIL | TPM_STS_VALID,
 	.req_canceled = tpm_tis_req_canceled,
-	.request_locality = tpm_tis_request_locality,
-	.relinquish_locality = tpm_tis_relinquish_locality,
+	.request_locality = request_locality,
+	.relinquish_locality = release_locality,
 	.clk_enable = tpm_tis_clkrun_enable,
 };
 
@@ -1129,13 +964,9 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 	chip->timeout_b = msecs_to_jiffies(TIS_TIMEOUT_B_MAX);
 	chip->timeout_c = msecs_to_jiffies(TIS_TIMEOUT_C_MAX);
 	chip->timeout_d = msecs_to_jiffies(TIS_TIMEOUT_D_MAX);
-	priv->chip = chip;
 	priv->timeout_min = TPM_TIMEOUT_USECS_MIN;
 	priv->timeout_max = TPM_TIMEOUT_USECS_MAX;
 	priv->phy_ops = phy_ops;
-	priv->locality_count = 0;
-	mutex_init(&priv->locality_count_mutex);
-	INIT_WORK(&priv->free_irq_work, tpm_tis_free_irq_func);
 
 	dev_set_drvdata(&chip->dev, priv);
 
@@ -1150,9 +981,6 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 		priv->timeout_min = TIS_TIMEOUT_MIN_ATML;
 		priv->timeout_max = TIS_TIMEOUT_MAX_ATML;
 	}
-
-	if (priv->manufacturer_id == TPM_VID_IFX)
-		set_bit(TPM_TIS_STATUS_VALID_RETRY, &priv->flags);
 
 	if (is_bsw()) {
 		priv->ilb_base_addr = ioremap(INTEL_LEGACY_BLK_BASE_ADDR,
@@ -1181,50 +1009,18 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 	if (rc < 0)
 		goto out_err;
 
-	/* Figure out the capabilities */
-	rc = tpm_tis_read32(priv, TPM_INTF_CAPS(priv->locality), &intfcaps);
-	if (rc < 0)
-		goto out_err;
-
-	dev_dbg(dev, "TPM interface capabilities (0x%x):\n",
-		intfcaps);
-	if (intfcaps & TPM_INTF_BURST_COUNT_STATIC)
-		dev_dbg(dev, "\tBurst Count Static\n");
-	if (intfcaps & TPM_INTF_CMD_READY_INT) {
-		intmask |= TPM_INTF_CMD_READY_INT;
-		dev_dbg(dev, "\tCommand Ready Int Support\n");
-	}
-	if (intfcaps & TPM_INTF_INT_EDGE_FALLING)
-		dev_dbg(dev, "\tInterrupt Edge Falling\n");
-	if (intfcaps & TPM_INTF_INT_EDGE_RISING)
-		dev_dbg(dev, "\tInterrupt Edge Rising\n");
-	if (intfcaps & TPM_INTF_INT_LEVEL_LOW)
-		dev_dbg(dev, "\tInterrupt Level Low\n");
-	if (intfcaps & TPM_INTF_INT_LEVEL_HIGH)
-		dev_dbg(dev, "\tInterrupt Level High\n");
-	if (intfcaps & TPM_INTF_LOCALITY_CHANGE_INT) {
-		intmask |= TPM_INTF_LOCALITY_CHANGE_INT;
-		dev_dbg(dev, "\tLocality Change Int Support\n");
-	}
-	if (intfcaps & TPM_INTF_STS_VALID_INT) {
-		intmask |= TPM_INTF_STS_VALID_INT;
-		dev_dbg(dev, "\tSts Valid Int Support\n");
-	}
-	if (intfcaps & TPM_INTF_DATA_AVAIL_INT) {
-		intmask |= TPM_INTF_DATA_AVAIL_INT;
-		dev_dbg(dev, "\tData Avail Int Support\n");
-	}
-
+	intmask |= TPM_INTF_CMD_READY_INT | TPM_INTF_LOCALITY_CHANGE_INT |
+		   TPM_INTF_DATA_AVAIL_INT | TPM_INTF_STS_VALID_INT;
 	intmask &= ~TPM_GLOBAL_INT_ENABLE;
 
-	rc = tpm_tis_request_locality(chip, 0);
+	rc = request_locality(chip, 0);
 	if (rc < 0) {
 		rc = -ENODEV;
 		goto out_err;
 	}
 
 	tpm_tis_write32(priv, TPM_INT_ENABLE(priv->locality), intmask);
-	tpm_tis_relinquish_locality(chip, 0);
+	release_locality(chip, 0);
 
 	rc = tpm_chip_start(chip);
 	if (rc)
@@ -1248,14 +1044,35 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 		goto out_err;
 	}
 
+	/* Figure out the capabilities */
+	rc = tpm_tis_read32(priv, TPM_INTF_CAPS(priv->locality), &intfcaps);
+	if (rc < 0)
+		goto out_err;
+
+	dev_dbg(dev, "TPM interface capabilities (0x%x):\n",
+		intfcaps);
+	if (intfcaps & TPM_INTF_BURST_COUNT_STATIC)
+		dev_dbg(dev, "\tBurst Count Static\n");
+	if (intfcaps & TPM_INTF_CMD_READY_INT)
+		dev_dbg(dev, "\tCommand Ready Int Support\n");
+	if (intfcaps & TPM_INTF_INT_EDGE_FALLING)
+		dev_dbg(dev, "\tInterrupt Edge Falling\n");
+	if (intfcaps & TPM_INTF_INT_EDGE_RISING)
+		dev_dbg(dev, "\tInterrupt Edge Rising\n");
+	if (intfcaps & TPM_INTF_INT_LEVEL_LOW)
+		dev_dbg(dev, "\tInterrupt Level Low\n");
+	if (intfcaps & TPM_INTF_INT_LEVEL_HIGH)
+		dev_dbg(dev, "\tInterrupt Level High\n");
+	if (intfcaps & TPM_INTF_LOCALITY_CHANGE_INT)
+		dev_dbg(dev, "\tLocality Change Int Support\n");
+	if (intfcaps & TPM_INTF_STS_VALID_INT)
+		dev_dbg(dev, "\tSts Valid Int Support\n");
+	if (intfcaps & TPM_INTF_DATA_AVAIL_INT)
+		dev_dbg(dev, "\tData Avail Int Support\n");
+
 	/* INTERRUPT Setup */
 	init_waitqueue_head(&priv->read_queue);
 	init_waitqueue_head(&priv->int_queue);
-
-	rc = tpm_chip_bootstrap(chip);
-	if (rc)
-		goto out_err;
-
 	if (irq != -1) {
 		/*
 		 * Before doing irq testing issue a command to the TPM in polling mode
@@ -1263,13 +1080,13 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 		 * proper timeouts for the driver.
 		 */
 
-		rc = tpm_tis_request_locality(chip, 0);
+		rc = request_locality(chip, 0);
 		if (rc < 0)
 			goto out_err;
 
 		rc = tpm_get_timeouts(chip);
 
-		tpm_tis_relinquish_locality(chip, 0);
+		release_locality(chip, 0);
 
 		if (rc) {
 			dev_err(dev, "Could not get TPM timeouts and durations\n");
@@ -1277,23 +1094,17 @@ int tpm_tis_core_init(struct device *dev, struct tpm_tis_data *priv, int irq,
 			goto out_err;
 		}
 
-		if (irq)
+		if (irq) {
 			tpm_tis_probe_irq_single(chip, intmask, IRQF_SHARED,
 						 irq);
-		else
-			tpm_tis_probe_irq(chip, intmask);
-
-		if (chip->flags & TPM_CHIP_FLAG_IRQ) {
-			priv->int_mask = intmask;
-		} else {
-			dev_err(&chip->dev, FW_BUG
+			if (!(chip->flags & TPM_CHIP_FLAG_IRQ)) {
+				dev_err(&chip->dev, FW_BUG
 					"TPM interrupt not working, polling instead\n");
 
-			rc = tpm_tis_request_locality(chip, 0);
-			if (rc < 0)
-				goto out_err;
-			tpm_tis_disable_interrupts(chip);
-			tpm_tis_relinquish_locality(chip, 0);
+				disable_interrupts(chip);
+			}
+		} else {
+			tpm_tis_probe_irq(chip, intmask);
 		}
 	}
 
@@ -1322,20 +1133,31 @@ static void tpm_tis_reenable_interrupts(struct tpm_chip *chip)
 	u32 intmask;
 	int rc;
 
-	/*
-	 * Re-enable interrupts that device may have lost or BIOS/firmware may
-	 * have disabled.
+	if (chip->ops->clk_enable != NULL)
+		chip->ops->clk_enable(chip, true);
+
+	/* reenable interrupts that device may have lost or
+	 * BIOS/firmware may have disabled
 	 */
 	rc = tpm_tis_write8(priv, TPM_INT_VECTOR(priv->locality), priv->irq);
-	if (rc < 0) {
-		dev_err(&chip->dev, "Setting IRQ failed.\n");
-		return;
-	}
-
-	intmask = priv->int_mask | TPM_GLOBAL_INT_ENABLE;
-	rc = tpm_tis_write32(priv, TPM_INT_ENABLE(priv->locality), intmask);
 	if (rc < 0)
-		dev_err(&chip->dev, "Enabling interrupts failed.\n");
+		goto out;
+
+	rc = tpm_tis_read32(priv, TPM_INT_ENABLE(priv->locality), &intmask);
+	if (rc < 0)
+		goto out;
+
+	intmask |= TPM_INTF_CMD_READY_INT
+	    | TPM_INTF_LOCALITY_CHANGE_INT | TPM_INTF_DATA_AVAIL_INT
+	    | TPM_INTF_STS_VALID_INT | TPM_GLOBAL_INT_ENABLE;
+
+	tpm_tis_write32(priv, TPM_INT_ENABLE(priv->locality), intmask);
+
+out:
+	if (chip->ops->clk_enable != NULL)
+		chip->ops->clk_enable(chip, false);
+
+	return;
 }
 
 int tpm_tis_resume(struct device *dev)
@@ -1343,32 +1165,33 @@ int tpm_tis_resume(struct device *dev)
 	struct tpm_chip *chip = dev_get_drvdata(dev);
 	int ret;
 
-	ret = tpm_chip_start(chip);
-	if (ret)
-		return ret;
-
 	if (chip->flags & TPM_CHIP_FLAG_IRQ)
 		tpm_tis_reenable_interrupts(chip);
+
+	ret = tpm_pm_resume(dev);
+	if (ret)
+		return ret;
 
 	/*
 	 * TPM 1.2 requires self-test on resume. This function actually returns
 	 * an error code but for unknown reason it isn't handled.
 	 */
-	if (!(chip->flags & TPM_CHIP_FLAG_TPM2))
+	if (!(chip->flags & TPM_CHIP_FLAG_TPM2)) {
+		ret = request_locality(chip, 0);
+		if (ret < 0)
+			return ret;
+
 		tpm1_do_selftest(chip);
 
-	tpm_chip_stop(chip);
-
-	ret = tpm_pm_resume(dev);
-	if (ret)
-		return ret;
+		release_locality(chip, 0);
+	}
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(tpm_tis_resume);
 #endif
 
-MODULE_AUTHOR("Leendert van Doorn <leendert@watson.ibm.com>");
+MODULE_AUTHOR("Leendert van Doorn (leendert@watson.ibm.com)");
 MODULE_DESCRIPTION("TPM Driver");
 MODULE_VERSION("2.0");
 MODULE_LICENSE("GPL");

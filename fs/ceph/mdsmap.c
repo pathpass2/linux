@@ -7,11 +7,10 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 
+#include <linux/ceph/mdsmap.h>
 #include <linux/ceph/messenger.h>
 #include <linux/ceph/decode.h>
 
-#include "mdsmap.h"
-#include "mds_client.h"
 #include "super.h"
 
 #define CEPH_MDS_IS_READY(i, ignore_laggy) \
@@ -115,10 +114,8 @@ bad:
  * Ignore any fields we don't care about (there are quite a few of
  * them).
  */
-struct ceph_mdsmap *ceph_mdsmap_decode(struct ceph_mds_client *mdsc, void **p,
-				       void *end, bool msgr2)
+struct ceph_mdsmap *ceph_mdsmap_decode(void **p, void *end, bool msgr2)
 {
-	struct ceph_client *cl = mdsc->fsc->client;
 	struct ceph_mdsmap *m;
 	const void *start = *p;
 	int i, j, n;
@@ -236,18 +233,20 @@ struct ceph_mdsmap *ceph_mdsmap_decode(struct ceph_mds_client *mdsc, void **p,
 			*p = info_end;
 		}
 
-		doutc(cl, "%d/%d %lld mds%d.%d %s %s%s\n", i+1, n, global_id,
-		      mds, inc, ceph_pr_addr(&addr),
-		      ceph_mds_state_name(state), laggy ? "(laggy)" : "");
+		dout("mdsmap_decode %d/%d %lld mds%d.%d %s %s%s\n",
+		     i+1, n, global_id, mds, inc,
+		     ceph_pr_addr(&addr),
+		     ceph_mds_state_name(state),
+		     laggy ? "(laggy)" : "");
 
 		if (mds < 0 || mds >= m->possible_max_rank) {
-			pr_warn_client(cl, "got incorrect mds(%d)\n", mds);
+			pr_warn("mdsmap_decode got incorrect mds(%d)\n", mds);
 			continue;
 		}
 
 		if (state <= 0) {
-			doutc(cl, "got incorrect state(%s)\n",
-			      ceph_mds_state_name(state));
+			dout("mdsmap_decode got incorrect state(%s)\n",
+			     ceph_mds_state_name(state));
 			continue;
 		}
 
@@ -353,33 +352,10 @@ struct ceph_mdsmap *ceph_mdsmap_decode(struct ceph_mds_client *mdsc, void **p,
 		__decode_and_drop_type(p, end, u8, bad_ext);
 	}
 	if (mdsmap_ev >= 8) {
-		size_t fsname_len;
-
 		/* enabled */
 		ceph_decode_8_safe(p, end, m->m_enabled, bad_ext);
-
 		/* fs_name */
-		m->m_fs_name = ceph_extract_encoded_string(p, end,
-							   &fsname_len,
-							   GFP_NOFS);
-		if (IS_ERR(m->m_fs_name)) {
-			m->m_fs_name = NULL;
-			goto nomem;
-		}
-
-		/* validate fsname against mds_namespace */
-		if (!namespace_equals(mdsc->fsc->mount_options, m->m_fs_name,
-				      fsname_len)) {
-			pr_warn_client(cl, "fsname %s doesn't match mds_namespace %s\n",
-				       m->m_fs_name,
-				       mdsc->fsc->mount_options->mds_namespace);
-			goto bad;
-		}
-	} else {
-		m->m_enabled = false;
-		m->m_fs_name = kstrdup(CEPH_OLD_FS_NAME, GFP_NOFS);
-		if (!m->m_fs_name)
-			goto nomem;
+		ceph_decode_skip_string(p, end, bad_ext);
 	}
 	/* damaged */
 	if (mdsmap_ev >= 9) {
@@ -403,23 +379,22 @@ struct ceph_mdsmap *ceph_mdsmap_decode(struct ceph_mds_client *mdsc, void **p,
 		ceph_decode_skip_8(p, end, bad_ext);
 		/* required_client_features */
 		ceph_decode_skip_set(p, end, 64, bad_ext);
-		/* bal_rank_mask */
-		ceph_decode_skip_string(p, end, bad_ext);
-	}
-	if (mdsmap_ev >= 18) {
 		ceph_decode_64_safe(p, end, m->m_max_xattr_size, bad_ext);
+	} else {
+		/* This forces the usage of the (sync) SETXATTR Op */
+		m->m_max_xattr_size = 0;
 	}
 bad_ext:
-	doutc(cl, "m_enabled: %d, m_damaged: %d, m_num_laggy: %d\n",
-	      !!m->m_enabled, !!m->m_damaged, m->m_num_laggy);
+	dout("mdsmap_decode m_enabled: %d, m_damaged: %d, m_num_laggy: %d\n",
+	     !!m->m_enabled, !!m->m_damaged, m->m_num_laggy);
 	*p = end;
-	doutc(cl, "success epoch %u\n", m->m_epoch);
+	dout("mdsmap_decode success epoch %u\n", m->m_epoch);
 	return m;
 nomem:
 	err = -ENOMEM;
 	goto out_err;
 corrupt:
-	pr_err_client(cl, "corrupt mdsmap\n");
+	pr_err("corrupt mdsmap\n");
 	print_hex_dump(KERN_DEBUG, "mdsmap: ",
 		       DUMP_PREFIX_OFFSET, 16, 1,
 		       start, end - start, true);
@@ -441,7 +416,6 @@ void ceph_mdsmap_destroy(struct ceph_mdsmap *m)
 		kfree(m->m_info);
 	}
 	kfree(m->m_data_pg_pools);
-	kfree(m->m_fs_name);
 	kfree(m);
 }
 

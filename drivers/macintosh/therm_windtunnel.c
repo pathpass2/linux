@@ -36,9 +36,7 @@
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/kthread.h>
-#include <linux/of.h>
 #include <linux/of_platform.h>
-#include <linux/platform_device.h>
 
 #include <asm/machdep.h>
 #include <asm/io.h>
@@ -444,7 +442,7 @@ static struct i2c_driver g4fan_driver = {
 	.driver = {
 		.name	= "therm_windtunnel",
 	},
-	.probe		= do_probe,
+	.probe_new	= do_probe,
 	.remove		= do_remove,
 	.id_table	= therm_windtunnel_id,
 };
@@ -481,9 +479,11 @@ static int therm_of_probe(struct platform_device *dev)
 	return -ENODEV;
 }
 
-static void therm_of_remove(struct platform_device *dev)
+static int
+therm_of_remove( struct platform_device *dev )
 {
 	i2c_del_driver( &g4fan_driver );
+	return 0;
 }
 
 static const struct of_device_id therm_of_match[] = {{
@@ -549,7 +549,7 @@ g4fan_exit( void )
 	platform_driver_unregister( &therm_of_driver );
 
 	if( x.of_dev )
-		of_platform_device_destroy(&x.of_dev->dev, NULL);
+		of_device_unregister( x.of_dev );
 }
 
 module_init(g4fan_init);

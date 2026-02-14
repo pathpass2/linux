@@ -17,7 +17,7 @@
 
 #include <media/tuner.h>
 #include "tuner-simple.h"
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 /* debug */
 static int dvb_usb_m920x_debug;
@@ -277,6 +277,7 @@ static int m920x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[], int nu
 			char *read = kmalloc(1, GFP_KERNEL);
 			if (!read) {
 				ret = -ENOMEM;
+				kfree(read);
 				goto unlock;
 			}
 
@@ -287,10 +288,8 @@ static int m920x_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg msg[], int nu
 
 				if ((ret = m920x_read(d->udev, M9206_I2C, 0x0,
 						      0x20 | stop,
-						      read, 1)) != 0) {
-					kfree(read);
+						      read, 1)) != 0)
 					goto unlock;
-				}
 				msg[i].buf[j] = read[0];
 			}
 
@@ -319,7 +318,7 @@ static u32 m920x_i2c_func(struct i2c_adapter *adapter)
 	return I2C_FUNC_I2C;
 }
 
-static const struct i2c_algorithm m920x_i2c_algo = {
+static struct i2c_algorithm m920x_i2c_algo = {
 	.master_xfer   = m920x_i2c_xfer,
 	.functionality = m920x_i2c_func,
 };
@@ -909,7 +908,7 @@ enum {
 	AZUREWAVE_TWINHAN_VP7049,
 };
 
-static const struct usb_device_id m920x_table[] = {
+static struct usb_device_id m920x_table[] = {
 	DVB_USB_DEV(MSI, MSI_MEGASKY580),
 	DVB_USB_DEV(ANUBIS_ELECTRONIC, ANUBIS_MSI_DIGI_VOX_MINI_II),
 	DVB_USB_DEV(ANUBIS_ELECTRONIC, ANUBIS_LIFEVIEW_TV_WALKER_TWIN_COLD),

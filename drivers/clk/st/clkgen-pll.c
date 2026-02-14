@@ -395,28 +395,25 @@ static unsigned long recalc_stm_pll3200c32(struct clk_hw *hw,
 	return rate;
 }
 
-static int stm_pll3200c32_determine_rate(struct clk_hw *hw,
-					 struct clk_rate_request *req)
+static long round_rate_stm_pll3200c32(struct clk_hw *hw, unsigned long rate,
+		unsigned long *prate)
 {
 	struct stm_pll params;
 
-	if (!clk_pll3200c32_get_params(req->best_parent_rate, req->rate, &params))
-		clk_pll3200c32_get_rate(req->best_parent_rate, &params,
-					&req->rate);
+	if (!clk_pll3200c32_get_params(*prate, rate, &params))
+		clk_pll3200c32_get_rate(*prate, &params, &rate);
 	else {
 		pr_debug("%s: %s rate %ld Invalid\n", __func__,
-			 __clk_get_name(hw->clk), req->rate);
-		req->rate = 0;
-
+			 __clk_get_name(hw->clk), rate);
 		return 0;
 	}
 
 	pr_debug("%s: %s new rate %ld [ndiv=%u] [idf=%u]\n",
 		 __func__, __clk_get_name(hw->clk),
-		 req->rate, (unsigned int)params.ndiv,
+		 rate, (unsigned int)params.ndiv,
 		 (unsigned int)params.idf);
 
-	return 0;
+	return rate;
 }
 
 static int set_rate_stm_pll3200c32(struct clk_hw *hw, unsigned long rate,
@@ -552,28 +549,25 @@ static unsigned long recalc_stm_pll4600c28(struct clk_hw *hw,
 	return rate;
 }
 
-static int stm_pll4600c28_determine_rate(struct clk_hw *hw,
-					 struct clk_rate_request *req)
+static long round_rate_stm_pll4600c28(struct clk_hw *hw, unsigned long rate,
+				      unsigned long *prate)
 {
 	struct stm_pll params;
 
-	if (!clk_pll4600c28_get_params(req->best_parent_rate, req->rate, &params)) {
-		clk_pll4600c28_get_rate(req->best_parent_rate, &params,
-					&req->rate);
+	if (!clk_pll4600c28_get_params(*prate, rate, &params)) {
+		clk_pll4600c28_get_rate(*prate, &params, &rate);
 	} else {
 		pr_debug("%s: %s rate %ld Invalid\n", __func__,
-			 __clk_get_name(hw->clk), req->rate);
-		req->rate = 0;
-
+			 __clk_get_name(hw->clk), rate);
 		return 0;
 	}
 
 	pr_debug("%s: %s new rate %ld [ndiv=%u] [idf=%u]\n",
 		 __func__, __clk_get_name(hw->clk),
-		 req->rate, (unsigned int)params.ndiv,
+		 rate, (unsigned int)params.ndiv,
 		 (unsigned int)params.idf);
 
-	return 0;
+	return rate;
 }
 
 static int set_rate_stm_pll4600c28(struct clk_hw *hw, unsigned long rate,
@@ -634,7 +628,7 @@ static const struct clk_ops stm_pll3200c32_a9_ops = {
 	.disable	= clkgen_pll_disable,
 	.is_enabled	= clkgen_pll_is_enabled,
 	.recalc_rate	= recalc_stm_pll3200c32,
-	.determine_rate = stm_pll3200c32_determine_rate,
+	.round_rate	= round_rate_stm_pll3200c32,
 	.set_rate	= set_rate_stm_pll3200c32,
 };
 
@@ -643,7 +637,7 @@ static const struct clk_ops stm_pll4600c28_ops = {
 	.disable	= clkgen_pll_disable,
 	.is_enabled	= clkgen_pll_is_enabled,
 	.recalc_rate	= recalc_stm_pll4600c28,
-	.determine_rate = stm_pll4600c28_determine_rate,
+	.round_rate	= round_rate_stm_pll4600c28,
 	.set_rate	= set_rate_stm_pll4600c28,
 };
 

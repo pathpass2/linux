@@ -337,7 +337,7 @@ static unsigned int hpt3x2n_qc_issue(struct ata_queued_cmd *qc)
 	return ata_bmdma_qc_issue(qc);
 }
 
-static const struct scsi_host_template hpt3x2n_sht = {
+static struct scsi_host_template hpt3x2n_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
@@ -356,7 +356,7 @@ static struct ata_port_operations hpt3xxn_port_ops = {
 	.cable_detect	= hpt3x2n_cable_detect,
 	.set_piomode	= hpt3x2n_set_piomode,
 	.set_dmamode	= hpt3x2n_set_dmamode,
-	.reset.prereset	= hpt3x2n_pre_reset,
+	.prereset	= hpt3x2n_pre_reset,
 };
 
 /*

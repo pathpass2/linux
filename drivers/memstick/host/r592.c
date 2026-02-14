@@ -44,10 +44,12 @@ static const char *tpc_names[] = {
  * memstick_debug_get_tpc_name - debug helper that returns string for
  * a TPC number
  */
-static __maybe_unused const char *memstick_debug_get_tpc_name(int tpc)
+const char *memstick_debug_get_tpc_name(int tpc)
 {
 	return tpc_names[tpc-1];
 }
+EXPORT_SYMBOL(memstick_debug_get_tpc_name);
+
 
 /* Read a register*/
 static inline u32 r592_read_reg(struct r592_device *dev, int address)
@@ -614,7 +616,7 @@ static void r592_update_card_detect(struct r592_device *dev)
 /* Timer routine that fires 1 second after last card detection event, */
 static void r592_detect_timer(struct timer_list *t)
 {
-	struct r592_device *dev = timer_container_of(dev, t, detect_timer);
+	struct r592_device *dev = from_timer(dev, t, detect_timer);
 	r592_update_card_detect(dev);
 	memstick_detect_change(dev->host);
 }
@@ -675,7 +677,7 @@ static irqreturn_t r592_irq(int irq, void *data)
 	return ret;
 }
 
-/* External interface: set settings */
+/* External inteface: set settings */
 static int r592_set_param(struct memstick_host *host,
 			enum memstick_param param, int value)
 {
@@ -827,7 +829,7 @@ static void r592_remove(struct pci_dev *pdev)
 	/* Stop the processing thread.
 	That ensures that we won't take any more requests */
 	kthread_stop(dev->io_thread);
-	timer_delete_sync(&dev->detect_timer);
+
 	r592_enable_device(dev, false);
 
 	while (!error && dev->req) {
@@ -854,7 +856,7 @@ static int r592_suspend(struct device *core_dev)
 
 	r592_clear_interrupts(dev);
 	memstick_suspend_host(dev->host);
-	timer_delete_sync(&dev->detect_timer);
+	del_timer_sync(&dev->detect_timer);
 	return 0;
 }
 

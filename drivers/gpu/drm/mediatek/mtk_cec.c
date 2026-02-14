@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 
 #include "mtk_cec.h"
+#include "mtk_hdmi.h"
 #include "mtk_drm_drv.h"
 
 #define TR_CONFIG		0x00
@@ -101,7 +102,6 @@ void mtk_cec_set_hpd_event(struct device *dev,
 	cec->hpd_event = hpd_event;
 	spin_unlock_irqrestore(&cec->lock, flags);
 }
-EXPORT_SYMBOL_NS_GPL(mtk_cec_set_hpd_event, "DRM_MTK_HDMI_V1");
 
 bool mtk_cec_hpd_high(struct device *dev)
 {
@@ -112,7 +112,6 @@ bool mtk_cec_hpd_high(struct device *dev)
 
 	return (status & (HDMI_PORD | HDMI_HTPLG)) == (HDMI_PORD | HDMI_HTPLG);
 }
-EXPORT_SYMBOL_NS_GPL(mtk_cec_hpd_high, "DRM_MTK_HDMI_V1");
 
 static void mtk_cec_htplg_irq_init(struct mtk_cec *cec)
 {
@@ -186,6 +185,7 @@ static int mtk_cec_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mtk_cec *cec;
+	struct resource *res;
 	int ret;
 
 	cec = devm_kzalloc(dev, sizeof(*cec), GFP_KERNEL);
@@ -195,15 +195,20 @@ static int mtk_cec_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, cec);
 	spin_lock_init(&cec->lock);
 
-	cec->regs = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(cec->regs))
-		return dev_err_probe(dev, PTR_ERR(cec->regs),
-				     "Failed to ioremap cec\n");
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	cec->regs = devm_ioremap_resource(dev, res);
+	if (IS_ERR(cec->regs)) {
+		ret = PTR_ERR(cec->regs);
+		dev_err(dev, "Failed to ioremap cec: %d\n", ret);
+		return ret;
+	}
 
 	cec->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(cec->clk))
-		return dev_err_probe(dev, PTR_ERR(cec->clk),
-				     "Failed to get cec clock\n");
+	if (IS_ERR(cec->clk)) {
+		ret = PTR_ERR(cec->clk);
+		dev_err(dev, "Failed to get cec clock: %d\n", ret);
+		return ret;
+	}
 
 	cec->irq = platform_get_irq(pdev, 0);
 	if (cec->irq < 0)
@@ -213,12 +218,16 @@ static int mtk_cec_probe(struct platform_device *pdev)
 					mtk_cec_htplg_isr_thread,
 					IRQF_SHARED | IRQF_TRIGGER_LOW |
 					IRQF_ONESHOT, "hdmi hpd", dev);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to register cec irq\n");
+	if (ret) {
+		dev_err(dev, "Failed to register cec irq: %d\n", ret);
+		return ret;
+	}
 
 	ret = clk_prepare_enable(cec->clk);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to enable cec clock\n");
+	if (ret) {
+		dev_err(dev, "Failed to enable cec clock: %d\n", ret);
+		return ret;
+	}
 
 	mtk_cec_htplg_irq_init(cec);
 	mtk_cec_htplg_irq_enable(cec);
@@ -226,12 +235,13 @@ static int mtk_cec_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void mtk_cec_remove(struct platform_device *pdev)
+static int mtk_cec_remove(struct platform_device *pdev)
 {
 	struct mtk_cec *cec = platform_get_drvdata(pdev);
 
 	mtk_cec_htplg_irq_disable(cec);
 	clk_disable_unprepare(cec->clk);
+	return 0;
 }
 
 static const struct of_device_id mtk_cec_of_ids[] = {
@@ -248,7 +258,3 @@ struct platform_driver mtk_cec_driver = {
 		.of_match_table = mtk_cec_of_ids,
 	},
 };
-module_platform_driver(mtk_cec_driver);
-
-MODULE_DESCRIPTION("MediaTek HDMI CEC Driver");
-MODULE_LICENSE("GPL");

@@ -154,6 +154,13 @@ enum mt6360_pmu_chg_type {
 	MT6360_CHG_TYPE_MAX,
 };
 
+static enum power_supply_usb_type mt6360_charger_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_UNKNOWN,
+	POWER_SUPPLY_USB_TYPE_SDP,
+	POWER_SUPPLY_USB_TYPE_DCP,
+	POWER_SUPPLY_USB_TYPE_CDP,
+};
+
 static int mt6360_get_chrdet_ext_stat(struct mt6360_chg_info *mci,
 					     bool *pwr_rdy)
 {
@@ -567,10 +574,8 @@ static const struct power_supply_desc mt6360_charger_desc = {
 	.get_property		= mt6360_charger_get_property,
 	.set_property		= mt6360_charger_set_property,
 	.property_is_writeable	= mt6360_charger_property_is_writeable,
-	.usb_types		= BIT(POWER_SUPPLY_USB_TYPE_SDP) |
-				  BIT(POWER_SUPPLY_USB_TYPE_CDP) |
-				  BIT(POWER_SUPPLY_USB_TYPE_DCP) |
-				  BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+	.usb_types		= mt6360_charger_usb_types,
+	.num_usb_types		= ARRAY_SIZE(mt6360_charger_usb_types),
 };
 
 static const struct regulator_ops mt6360_chg_otg_ops = {
@@ -583,7 +588,7 @@ static const struct regulator_ops mt6360_chg_otg_ops = {
 };
 
 static const struct regulator_desc mt6360_otg_rdesc = {
-	.of_match = "usb-otg-vbus-regulator",
+	.of_match = "usb-otg-vbus",
 	.name = "usb-otg-vbus",
 	.ops = &mt6360_chg_otg_ops,
 	.owner = THIS_MODULE,
@@ -791,9 +796,7 @@ static int mt6360_charger_probe(struct platform_device *pdev)
 	mci->vinovp = 6500000;
 	mutex_init(&mci->chgdet_lock);
 	platform_set_drvdata(pdev, mci);
-	ret = devm_work_autocancel(&pdev->dev, &mci->chrdet_work, mt6360_chrdet_work);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "Failed to set delayed work\n");
+	devm_work_autocancel(&pdev->dev, &mci->chrdet_work, mt6360_chrdet_work);
 
 	ret = device_property_read_u32(&pdev->dev, "richtek,vinovp-microvolt", &mci->vinovp);
 	if (ret)
@@ -810,7 +813,7 @@ static int mt6360_charger_probe(struct platform_device *pdev)
 	memcpy(&mci->psy_desc, &mt6360_charger_desc, sizeof(mci->psy_desc));
 	mci->psy_desc.name = dev_name(&pdev->dev);
 	charger_cfg.drv_data = mci;
-	charger_cfg.fwnode = dev_fwnode(&pdev->dev);
+	charger_cfg.of_node = pdev->dev.of_node;
 	mci->psy = devm_power_supply_register(&pdev->dev,
 					      &mci->psy_desc, &charger_cfg);
 	if (IS_ERR(mci->psy))

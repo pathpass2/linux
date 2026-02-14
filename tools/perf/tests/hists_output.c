@@ -54,7 +54,6 @@ static int add_hist_entries(struct hists *hists, struct machine *machine)
 	struct perf_sample sample = { .period = 100, };
 	size_t i;
 
-	addr_location__init(&al);
 	for (i = 0; i < ARRAY_SIZE(fake_samples); i++) {
 		struct hist_entry_iter iter = {
 			.evsel = evsel,
@@ -74,21 +73,19 @@ static int add_hist_entries(struct hists *hists, struct machine *machine)
 
 		if (hist_entry_iter__add(&iter, &al, sysctl_perf_event_max_stack,
 					 NULL) < 0) {
+			addr_location__put(&al);
 			goto out;
 		}
 
 		fake_samples[i].thread = al.thread;
-		map__put(fake_samples[i].map);
-		fake_samples[i].map = map__get(al.map);
+		fake_samples[i].map = al.map;
 		fake_samples[i].sym = al.sym;
 	}
 
-	addr_location__exit(&al);
 	return TEST_OK;
 
 out:
 	pr_debug("Not enough memory for adding a hist entry\n");
-	addr_location__exit(&al);
 	return TEST_FAIL;
 }
 
@@ -116,23 +113,13 @@ static void del_hist_entries(struct hists *hists)
 	}
 }
 
-static void put_fake_samples(void)
-{
-	size_t i;
-
-	for (i = 0; i < ARRAY_SIZE(fake_samples); i++) {
-		map__put(fake_samples[i].map);
-		fake_samples[i].map = NULL;
-	}
-}
-
 typedef int (*test_fn_t)(struct evsel *, struct machine *);
 
 #define COMM(he)  (thread__comm_str(he->thread))
-#define DSO(he)   (dso__short_name(map__dso(he->ms.map)))
+#define DSO(he)   (he->ms.map->dso->short_name)
 #define SYM(he)   (he->ms.sym->name)
 #define CPU(he)   (he->cpu)
-#define PID(he)   (thread__tid(he->thread))
+#define PID(he)   (he->thread->tid)
 
 /* default sort keys (no field) */
 static int test1(struct evsel *evsel, struct machine *machine)
@@ -146,7 +133,7 @@ static int test1(struct evsel *evsel, struct machine *machine)
 	field_order = NULL;
 	sort_order = NULL; /* equivalent to sort_order = "comm,dso,sym" */
 
-	setup_sorting(/*evlist=*/NULL, machine->env);
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -248,7 +235,7 @@ static int test2(struct evsel *evsel, struct machine *machine)
 	field_order = "overhead,cpu";
 	sort_order = "pid";
 
-	setup_sorting(/*evlist=*/NULL, machine->env);
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -304,7 +291,7 @@ static int test3(struct evsel *evsel, struct machine *machine)
 	field_order = "comm,overhead,dso";
 	sort_order = NULL;
 
-	setup_sorting(/*evlist=*/NULL, machine->env);
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -378,7 +365,7 @@ static int test4(struct evsel *evsel, struct machine *machine)
 	field_order = "dso,sym,comm,overhead,dso";
 	sort_order = "sym";
 
-	setup_sorting(/*evlist=*/NULL, machine->env);
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -480,7 +467,7 @@ static int test5(struct evsel *evsel, struct machine *machine)
 	field_order = "cpu,pid,comm,dso,sym";
 	sort_order = "dso,pid";
 
-	setup_sorting(/*evlist=*/NULL, machine->env);
+	setup_sorting(NULL);
 
 	/*
 	 * expected output:
@@ -633,7 +620,6 @@ out:
 	/* tear down everything */
 	evlist__delete(evlist);
 	machines__exit(&machines);
-	put_fake_samples();
 
 	return err;
 }

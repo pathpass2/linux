@@ -139,7 +139,7 @@ static struct clk * __init vf610_get_fixed_clock(
 	return clk;
 };
 
-static int vf610_clk_suspend(void *data)
+static int vf610_clk_suspend(void)
 {
 	int i;
 
@@ -156,7 +156,7 @@ static int vf610_clk_suspend(void *data)
 	return 0;
 }
 
-static void vf610_clk_resume(void *data)
+static void vf610_clk_resume(void)
 {
 	int i;
 
@@ -171,13 +171,9 @@ static void vf610_clk_resume(void *data)
 		writel_relaxed(ccgr[i], CCM_CCGRx(i));
 }
 
-static const struct syscore_ops vf610_clk_syscore_ops = {
+static struct syscore_ops vf610_clk_syscore_ops = {
 	.suspend = vf610_clk_suspend,
 	.resume = vf610_clk_resume,
-};
-
-static struct syscore vf610_clk_syscore = {
-	.ops = &vf610_clk_syscore_ops,
 };
 
 static void __init vf610_clocks_init(struct device_node *ccm_node)
@@ -466,7 +462,7 @@ static void __init vf610_clocks_init(struct device_node *ccm_node)
 	for (i = 0; i < ARRAY_SIZE(clks_init_on); i++)
 		clk_prepare_enable(clk[clks_init_on[i]]);
 
-	register_syscore(&vf610_clk_syscore);
+	register_syscore_ops(&vf610_clk_syscore_ops);
 
 	/* Add the clocks to provider list */
 	clk_data.clks = clk;

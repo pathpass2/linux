@@ -14,8 +14,6 @@
 #define BSS_FIRST_SECTIONS *(.bss..swapper_pg_dir) \
 			   *(.bss..invalid_pg_dir)
 
-#define RO_EXCEPTION_TABLE_ALIGN	16
-
 /* Handle ro_after_init data on our own. */
 #define RO_AFTER_INIT_DATA
 
@@ -39,7 +37,7 @@ PHDRS {
 
 SECTIONS
 {
-	. = TEXT_OFFSET;
+	. = 0x100000;
 	.text : {
 		_stext = .;		/* Start of text section */
 		_text = .;		/* Text and read-only data */
@@ -51,7 +49,7 @@ SECTIONS
 		IRQENTRY_TEXT
 		SOFTIRQENTRY_TEXT
 		FTRACE_HOTPATCH_TRAMPOLINES_TEXT
-		*(.text..*_indirect_*)
+		*(.text.*_indirect_*)
 		*(.gnu.warning)
 		. = ALIGN(PAGE_SIZE);
 		_etext = .;		/* End of text section */
@@ -68,29 +66,11 @@ SECTIONS
 		 *(.data..ro_after_init)
 		JUMP_TABLE_DATA
 	} :data
+	EXCEPTION_TABLE(16)
 	. = ALIGN(PAGE_SIZE);
 	__end_ro_after_init = .;
 
-	. = ALIGN(8);
-	.skey_region_table : {
-		__skey_region_start = .;
-		KEEP(*(.skey_region))
-		__skey_region_end = .;
-	}
-
-	.data.rel.ro : {
-		*(.data.rel.ro .data.rel.ro.*)
-	}
-	.got : {
-		__got_start = .;
-		*(.got)
-		__got_end = .;
-	}
-
 	RW_DATA(0x100, PAGE_SIZE, THREAD_SIZE)
-	.data.rel : {
-		*(.data.rel*)
-	}
 	BOOT_DATA_PRESERVED
 
 	. = ALIGN(8);
@@ -150,15 +130,6 @@ SECTIONS
 		*(.altinstr_replacement)
 	}
 
-#ifdef CONFIG_STACKPROTECTOR
-	. = ALIGN(8);
-	.stack_prot_table : {
-		__stack_prot_start = .;
-		KEEP(*(__stack_protector_loc))
-		__stack_prot_end = .;
-	}
-#endif
-
 	/*
 	 * Table with the patch locations to undo expolines
 	*/
@@ -199,16 +170,25 @@ SECTIONS
 	.amode31.data : {
 		*(.amode31.data)
 	}
-	. = _samode31 + AMODE31_SIZE;
+	. = ALIGN(PAGE_SIZE);
 	_eamode31 = .;
 
 	/* early.c uses stsi, which requires page aligned data. */
 	. = ALIGN(PAGE_SIZE);
 	INIT_DATA_SECTION(0x100)
 
-	RUNTIME_CONST_VARIABLES
-
 	PERCPU_SECTION(0x100)
+
+	.dynsym ALIGN(8) : {
+		__dynsym_start = .;
+		*(.dynsym)
+		__dynsym_end = .;
+	}
+	.rela.dyn ALIGN(8) : {
+		__rela_dyn_start = .;
+		*(.rela*)
+		__rela_dyn_end = .;
+	}
 
 	. = ALIGN(PAGE_SIZE);
 	__init_end = .;		/* freed after init ends here */
@@ -218,38 +198,12 @@ SECTIONS
 	. = ALIGN(PAGE_SIZE);
 	_end = . ;
 
-	/* Debugging sections.	*/
-	STABS_DEBUG
-	DWARF_DEBUG
-	ELF_DETAILS
-
-	/*
-	 * Make sure that the .got.plt is either completely empty or it
-	 * contains only the three reserved double words.
-	 */
-	.got.plt : {
-		*(.got.plt)
-	}
-	ASSERT(SIZEOF(.got.plt) == 0 || SIZEOF(.got.plt) == 0x18, "Unexpected GOT/PLT entries detected!")
-
-	/*
-	 * Sections that should stay zero sized, which is safer to
-	 * explicitly check instead of blindly discarding.
-	 */
-	.plt : {
-		*(.plt) *(.plt.*) *(.iplt) *(.igot .igot.plt)
-	}
-	ASSERT(SIZEOF(.plt) == 0, "Unexpected run-time procedure linkages detected!")
-	.rela.dyn : {
-		*(.rela.*) *(.rela_*)
-	}
-	ASSERT(SIZEOF(.rela.dyn) == 0, "Unexpected run-time relocations (.rela) detected!")
-
 	/*
 	 * uncompressed image info used by the decompressor
 	 * it should match struct vmlinux_info
 	 */
 	.vmlinux.info 0 (INFO) : {
+		QUAD(_stext)					/* default_lma */
 		QUAD(startup_continue)				/* entry */
 		QUAD(__bss_start - _stext)			/* image_size */
 		QUAD(__bss_stop - __bss_start)			/* bss_size */
@@ -258,26 +212,19 @@ SECTIONS
 		QUAD(__boot_data_preserved_start)		/* bootdata_preserved_off */
 		QUAD(__boot_data_preserved_end -
 		     __boot_data_preserved_start)		/* bootdata_preserved_size */
-		QUAD(__got_start)				/* got_start */
-		QUAD(__got_end)					/* got_end */
+		QUAD(__dynsym_start)				/* dynsym_start */
+		QUAD(__rela_dyn_start)				/* rela_dyn_start */
+		QUAD(__rela_dyn_end)				/* rela_dyn_end */
 		QUAD(_eamode31 - _samode31)			/* amode31_size */
 		QUAD(init_mm)
 		QUAD(swapper_pg_dir)
 		QUAD(invalid_pg_dir)
-		QUAD(__alt_instructions)
-		QUAD(__alt_instructions_end)
-#ifdef CONFIG_STACKPROTECTOR
-		QUAD(__stack_prot_start)
-		QUAD(__stack_prot_end)
-#endif
-#ifdef CONFIG_KASAN
-		QUAD(kasan_early_shadow_page)
-		QUAD(kasan_early_shadow_pte)
-		QUAD(kasan_early_shadow_pmd)
-		QUAD(kasan_early_shadow_pud)
-		QUAD(kasan_early_shadow_p4d)
-#endif
 	} :NONE
+
+	/* Debugging sections.	*/
+	STABS_DEBUG
+	DWARF_DEBUG
+	ELF_DETAILS
 
 	/* Sections to be discarded */
 	DISCARDS

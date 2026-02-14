@@ -3,6 +3,7 @@
 #include <linux/clk-provider.h>
 #include <linux/init.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 
 #include <dt-bindings/clock/bcm3368-clock.h>
@@ -540,7 +541,7 @@ out_err:
 	return ret;
 }
 
-static void clk_bcm63xx_remove(struct platform_device *pdev)
+static int clk_bcm63xx_remove(struct platform_device *pdev)
 {
 	struct clk_bcm63xx_hw *hw = platform_get_drvdata(pdev);
 	int i;
@@ -551,6 +552,8 @@ static void clk_bcm63xx_remove(struct platform_device *pdev)
 		if (!IS_ERR(hw->data.hws[i]))
 			clk_hw_unregister_gate(hw->data.hws[i]);
 	}
+
+	return 0;
 }
 
 static const struct of_device_id clk_bcm63xx_dt_ids[] = {

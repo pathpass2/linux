@@ -59,16 +59,15 @@ static __always_inline bool is_kfence_address(const void *addr)
 }
 
 /**
- * kfence_alloc_pool_and_metadata() - allocate the KFENCE pool and KFENCE
- * metadata via memblock
+ * kfence_alloc_pool() - allocate the KFENCE pool via memblock
  */
-void __init kfence_alloc_pool_and_metadata(void);
+void __init kfence_alloc_pool(void);
 
 /**
  * kfence_init() - perform KFENCE initialization at boot time
  *
- * Requires that kfence_alloc_pool_and_metadata() was called before. This sets
- * up the allocation gate timer, and requires that workqueues are available.
+ * Requires that kfence_alloc_pool() was called before. This sets up the
+ * allocation gate timer, and requires that workqueues are available.
  */
 void __init kfence_init(void);
 
@@ -124,7 +123,7 @@ static __always_inline void *kfence_alloc(struct kmem_cache *s, size_t size, gfp
 	if (!static_branch_likely(&kfence_allocation_key))
 		return NULL;
 #endif
-	if (likely(atomic_read(&kfence_allocation_gate) > 0))
+	if (likely(atomic_read(&kfence_allocation_gate)))
 		return NULL;
 	return __kfence_alloc(s, size, flags);
 }
@@ -211,7 +210,6 @@ struct kmem_obj_info;
  * __kfence_obj_info() - fill kmem_obj_info struct
  * @kpp: kmem_obj_info to be filled
  * @object: the object
- * @slab: the slab
  *
  * Return:
  * * false - not a KFENCE object
@@ -224,10 +222,8 @@ bool __kfence_obj_info(struct kmem_obj_info *kpp, void *object, struct slab *sla
 
 #else /* CONFIG_KFENCE */
 
-#define kfence_sample_interval	(0)
-
 static inline bool is_kfence_address(const void *addr) { return false; }
-static inline void kfence_alloc_pool_and_metadata(void) { }
+static inline void kfence_alloc_pool(void) { }
 static inline void kfence_init(void) { }
 static inline void kfence_shutdown_cache(struct kmem_cache *s) { }
 static inline void *kfence_alloc(struct kmem_cache *s, size_t size, gfp_t flags) { return NULL; }

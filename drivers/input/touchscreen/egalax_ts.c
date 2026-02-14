@@ -23,7 +23,6 @@
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 #include <linux/bitops.h>
 #include <linux/input/mt.h>
 
@@ -103,7 +102,7 @@ static irqreturn_t egalax_ts_interrupt(int irq, void *dev_id)
 	input_mt_report_slot_state(input_dev, MT_TOOL_FINGER, down);
 
 	dev_dbg(&client->dev, "%s id:%d x:%d y:%d z:%d",
-		str_down_up(down), id, x, y, z);
+		down ? "down" : "up", id, x, y, z);
 
 	if (down) {
 		input_report_abs(input_dev, ABS_MT_POSITION_X, x);
@@ -219,7 +218,7 @@ static int egalax_ts_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id egalax_ts_id[] = {
-	{ "egalax_ts" },
+	{ "egalax_ts", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, egalax_ts_id);
@@ -265,7 +264,7 @@ static struct i2c_driver egalax_ts_driver = {
 		.of_match_table	= egalax_ts_dt_ids,
 	},
 	.id_table	= egalax_ts_id,
-	.probe		= egalax_ts_probe,
+	.probe_new	= egalax_ts_probe,
 };
 
 module_i2c_driver(egalax_ts_driver);

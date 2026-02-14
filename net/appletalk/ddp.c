@@ -88,7 +88,6 @@ static inline void atalk_remove_socket(struct sock *sk)
 static struct sock *atalk_search_socket(struct sockaddr_at *to,
 					struct atalk_iface *atif)
 {
-	struct sock *def_socket = NULL;
 	struct sock *s;
 
 	read_lock_bh(&atalk_sockets_lock);
@@ -99,20 +98,8 @@ static struct sock *atalk_search_socket(struct sockaddr_at *to,
 			continue;
 
 		if (to->sat_addr.s_net == ATADDR_ANYNET &&
-		    to->sat_addr.s_node == ATADDR_BCAST) {
-			if (atif->address.s_node == at->src_node &&
-			    atif->address.s_net == at->src_net) {
-				/* This socket's address matches the address of the interface
-				 * that received the packet -- use it
-				 */
-				goto found;
-			}
-
-			/* Continue searching for a socket matching the interface address,
-			 * but use this socket by default if no other one is found
-			 */
-			def_socket = s;
-		}
+		    to->sat_addr.s_node == ATADDR_BCAST)
+			goto found;
 
 		if (to->sat_addr.s_net == at->src_net &&
 		    (to->sat_addr.s_node == at->src_node ||
@@ -129,7 +116,7 @@ static struct sock *atalk_search_socket(struct sockaddr_at *to,
 			goto found;
 		}
 	}
-	s = def_socket;
+	s = NULL;
 found:
 	read_unlock_bh(&atalk_sockets_lock);
 	return s;
@@ -169,7 +156,7 @@ found:
 
 static void atalk_destroy_timer(struct timer_list *t)
 {
-	struct sock *sk = timer_container_of(sk, t, sk_timer);
+	struct sock *sk = from_timer(sk, t, sk_timer);
 
 	if (sk_has_allocations(sk)) {
 		sk->sk_timer.expires = jiffies + SOCK_DESTROY_TIME;
@@ -576,7 +563,6 @@ static int atrtr_create(struct rtentry *r, struct net_device *devhint)
 
 	/* Fill in the routing entry */
 	rt->target  = ta->sat_addr;
-	dev_put(rt->dev); /* Release old device */
 	dev_hold(devhint);
 	rt->dev     = devhint;
 	rt->flags   = r->rt_flags;
@@ -1149,7 +1135,7 @@ out:
 }
 
 /* Set the address 'our end' of the connection */
-static int atalk_bind(struct socket *sock, struct sockaddr_unsized *uaddr, int addr_len)
+static int atalk_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 {
 	struct sockaddr_at *addr = (struct sockaddr_at *)uaddr;
 	struct sock *sk = sock->sk;
@@ -1204,7 +1190,7 @@ out:
 }
 
 /* Set the address we talk to */
-static int atalk_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
+static int atalk_connect(struct socket *sock, struct sockaddr *uaddr,
 			 int addr_len, int flags)
 {
 	struct sock *sk = sock->sk;
@@ -1297,6 +1283,39 @@ out:
 	release_sock(sk);
 	return err;
 }
+
+#if IS_ENABLED(CONFIG_IPDDP)
+static __inline__ int is_ip_over_ddp(struct sk_buff *skb)
+{
+	return skb->data[12] == 22;
+}
+
+static int handle_ip_over_ddp(struct sk_buff *skb)
+{
+	struct net_device *dev = __dev_get_by_name(&init_net, "ipddp0");
+	struct net_device_stats *stats;
+
+	/* This needs to be able to handle ipddp"N" devices */
+	if (!dev) {
+		kfree_skb(skb);
+		return NET_RX_DROP;
+	}
+
+	skb->protocol = htons(ETH_P_IP);
+	skb_pull(skb, 13);
+	skb->dev   = dev;
+	skb_reset_transport_header(skb);
+
+	stats = netdev_priv(dev);
+	stats->rx_packets++;
+	stats->rx_bytes += skb->len + 13;
+	return netif_rx(skb);  /* Send the SKB up to a higher place. */
+}
+#else
+/* make it easy for gcc to optimize this test out, i.e. kill the code */
+#define is_ip_over_ddp(skb) 0
+#define handle_ip_over_ddp(skb) 0
+#endif
 
 static int atalk_route_packet(struct sk_buff *skb, struct net_device *dev,
 			      struct ddpehdr *ddp, __u16 len_hops, int origlen)
@@ -1461,6 +1480,9 @@ static int atalk_rcv(struct sk_buff *skb, struct net_device *dev,
 		return atalk_route_packet(skb, dev, ddp, len_hops, origlen);
 	}
 
+	/* if IP over DDP is not selected this code will be optimized out */
+	if (is_ip_over_ddp(skb))
+		return handle_ip_over_ddp(skb);
 	/*
 	 * Which socket - atalk_search_socket() looks for a *full match*
 	 * of the <net, node, port> tuple.
@@ -1595,7 +1617,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	}
 
 	/* Build a packet */
-	net_dbg_ratelimited("SK %p: Got address.\n", sk);
+	SOCK_DEBUG(sk, "SK %p: Got address.\n", sk);
 
 	/* For headers */
 	size = sizeof(struct ddpehdr) + len + ddp_dl->header_length;
@@ -1616,7 +1638,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 
 	dev = rt->dev;
 
-	net_dbg_ratelimited("SK %p: Size needed %d, device %s\n",
+	SOCK_DEBUG(sk, "SK %p: Size needed %d, device %s\n",
 			sk, size, dev->name);
 
 	hard_header_len = dev->hard_header_len;
@@ -1645,7 +1667,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	skb_reserve(skb, hard_header_len);
 	skb->dev = dev;
 
-	net_dbg_ratelimited("SK %p: Begin build.\n", sk);
+	SOCK_DEBUG(sk, "SK %p: Begin build.\n", sk);
 
 	ddp = skb_put(skb, sizeof(struct ddpehdr));
 	ddp->deh_len_hops  = htons(len + sizeof(*ddp));
@@ -1656,7 +1678,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	ddp->deh_dport = usat->sat_port;
 	ddp->deh_sport = at->src_port;
 
-	net_dbg_ratelimited("SK %p: Copy user data (%zd bytes).\n", sk, len);
+	SOCK_DEBUG(sk, "SK %p: Copy user data (%zd bytes).\n", sk, len);
 
 	err = memcpy_from_msg(skb_put(skb, len), msg, len);
 	if (err) {
@@ -1680,7 +1702,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 
 		if (skb2) {
 			loopback = 1;
-			net_dbg_ratelimited("SK %p: send out(copy).\n", sk);
+			SOCK_DEBUG(sk, "SK %p: send out(copy).\n", sk);
 			/*
 			 * If it fails it is queued/sent above in the aarp queue
 			 */
@@ -1689,7 +1711,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	}
 
 	if (dev->flags & IFF_LOOPBACK || loopback) {
-		net_dbg_ratelimited("SK %p: Loop back.\n", sk);
+		SOCK_DEBUG(sk, "SK %p: Loop back.\n", sk);
 		/* loop back */
 		skb_orphan(skb);
 		if (ddp->deh_dnode == ATADDR_BCAST) {
@@ -1703,7 +1725,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 		}
 		ddp_dl->request(ddp_dl, skb, dev->dev_addr);
 	} else {
-		net_dbg_ratelimited("SK %p: send out.\n", sk);
+		SOCK_DEBUG(sk, "SK %p: send out.\n", sk);
 		if (rt->flags & RTF_GATEWAY) {
 		    gsat.sat_addr = rt->gateway;
 		    usat = &gsat;
@@ -1714,7 +1736,7 @@ static int atalk_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 		 */
 		aarp_send_ddp(dev, skb, &usat->sat_addr, NULL);
 	}
-	net_dbg_ratelimited("SK %p: Done write (%zd).\n", sk, len);
+	SOCK_DEBUG(sk, "SK %p: Done write (%zd).\n", sk, len);
 
 out:
 	release_sock(sk);
@@ -1789,14 +1811,15 @@ static int atalk_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		break;
 	}
 	case TIOCINQ: {
-		struct sk_buff *skb;
+		/*
+		 * These two are safe on a single CPU system as only
+		 * user tasks fiddle here
+		 */
+		struct sk_buff *skb = skb_peek(&sk->sk_receive_queue);
 		long amount = 0;
 
-		spin_lock_irq(&sk->sk_receive_queue.lock);
-		skb = skb_peek(&sk->sk_receive_queue);
 		if (skb)
 			amount = skb->len - sizeof(struct ddpehdr);
-		spin_unlock_irq(&sk->sk_receive_queue.lock);
 		rc = put_user(amount, (int __user *)argp);
 		break;
 	}
@@ -1906,6 +1929,7 @@ static const struct proto_ops atalk_dgram_ops = {
 	.sendmsg	= atalk_sendmsg,
 	.recvmsg	= atalk_recvmsg,
 	.mmap		= sock_no_mmap,
+	.sendpage	= sock_no_sendpage,
 };
 
 static struct notifier_block ddp_notifier = {

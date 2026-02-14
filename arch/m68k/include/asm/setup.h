@@ -28,9 +28,9 @@
 
 #define CL_SIZE COMMAND_LINE_SIZE
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 extern unsigned long m68k_machtype;
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #if !defined(CONFIG_AMIGA)
 #  define MACH_IS_AMIGA (0)
@@ -199,7 +199,7 @@ extern unsigned long m68k_machtype;
 #endif
 
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 extern unsigned long m68k_cputype;
 extern unsigned long m68k_fputype;
 extern unsigned long m68k_mmutype;
@@ -213,7 +213,7 @@ extern unsigned long vme_brdtype;
      */
 
 extern int m68k_is040or060;
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #if !defined(CONFIG_M68020)
 #  define CPU_IS_020 (0)
@@ -321,7 +321,7 @@ extern int m68k_is040or060;
 
 #define NUM_MEMINFO	4
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 struct m68k_mem_info {
 	unsigned long addr;		/* physical address of memory chunk */
 	unsigned long size;		/* length of memory chunk (in bytes) */

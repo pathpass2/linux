@@ -459,7 +459,6 @@ static int ml26124_set_bias_level(struct snd_soc_component *component,
 		enum snd_soc_bias_level level)
 {
 	struct ml26124_priv *priv = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 
 	switch (level) {
 	case SND_SOC_BIAS_ON:
@@ -474,7 +473,7 @@ static int ml26124_set_bias_level(struct snd_soc_component *component,
 		break;
 	case SND_SOC_BIAS_STANDBY:
 		/* VMID ON */
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF) {
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
 			snd_soc_component_update_bits(component, ML26124_PW_REF_PW_MNG,
 					    ML26124_VMID, ML26124_VMID);
 			msleep(500);
@@ -573,7 +572,7 @@ static int ml26124_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id ml26124_i2c_id[] = {
-	{ "ml26124" },
+	{ "ml26124", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ml26124_i2c_id);
@@ -582,7 +581,7 @@ static struct i2c_driver ml26124_i2c_driver = {
 	.driver = {
 		.name = "ml26124",
 	},
-	.probe = ml26124_i2c_probe,
+	.probe_new = ml26124_i2c_probe,
 	.id_table = ml26124_i2c_id,
 };
 

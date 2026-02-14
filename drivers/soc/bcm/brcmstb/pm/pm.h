@@ -60,7 +60,7 @@
 			   PM_DEEP_STANDBY | \
 			   PM_PLL_PWRDOWN | PM_PWR_DOWN)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #ifndef CONFIG_MIPS
 extern const unsigned long brcmstb_pm_do_s2_sz;

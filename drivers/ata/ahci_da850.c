@@ -137,13 +137,13 @@ static int ahci_da850_hardreset(struct ata_link *link,
 
 static struct ata_port_operations ahci_da850_port_ops = {
 	.inherits = &ahci_platform_ops,
-	.reset.softreset = ahci_da850_softreset,
+	.softreset = ahci_da850_softreset,
 	/*
 	 * No need to override .pmp_softreset - it's only used for actual
 	 * PMP-enabled ports.
 	 */
-	.reset.hardreset = ahci_da850_hardreset,
-	.pmp_reset.hardreset = ahci_da850_hardreset,
+	.hardreset = ahci_da850_hardreset,
+	.pmp_hardreset = ahci_da850_hardreset,
 };
 
 static const struct ata_port_info ahci_da850_port_info = {
@@ -153,7 +153,7 @@ static const struct ata_port_info ahci_da850_port_info = {
 	.port_ops	= &ahci_da850_port_ops,
 };
 
-static const struct scsi_host_template ahci_platform_sht = {
+static struct scsi_host_template ahci_platform_sht = {
 	AHCI_SHT(DRV_NAME),
 };
 

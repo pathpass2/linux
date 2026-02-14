@@ -32,6 +32,8 @@
 #  define ffs_dump_mem(prefix, ptr, len) do { } while (0)
 #endif /* VERBOSE_DEBUG */
 
+#define ENTER()    pr_vdebug("%s()\n", __func__)
+
 struct f_fs_opts;
 
 struct ffs_dev {
@@ -176,7 +178,7 @@ struct ffs_data {
 	/* reference counter */
 	refcount_t			ref;
 	/* how many files are opened (EP0 and others) */
-	int				opened;
+	atomic_t			opened;
 
 	/* EP0 state */
 	enum ffs_state			state;

@@ -9,7 +9,6 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm.h>
 
 #include <linux/pinctrl/pinctrl.h>
 
@@ -20,6 +19,13 @@
 #define EBG_HOSTSW_OWN	0x130
 #define EBG_GPI_IS	0x200
 #define EBG_GPI_IE	0x210
+
+#define EBG_GPP(r, s, e)				\
+	{						\
+		.reg_num = (r),				\
+		.base = (s),				\
+		.size = ((e) - (s) + 1),		\
+	}
 
 #define EBG_COMMUNITY(b, s, e, g)			\
 	INTEL_COMMUNITY_GPPS(b, s, e, g, EBG)
@@ -304,31 +310,31 @@ static const struct pinctrl_pin_desc ebg_pins[] = {
 };
 
 static const struct intel_padgroup ebg_community0_gpps[] = {
-	INTEL_GPP(0, 0, 20, 0),		/* GPP_A */
-	INTEL_GPP(1, 21, 44, 21),	/* GPP_B */
-	INTEL_GPP(2, 45, 65, 45),	/* SPI */
+	EBG_GPP(0, 0, 20),	/* GPP_A */
+	EBG_GPP(1, 21, 44),	/* GPP_B */
+	EBG_GPP(2, 45, 65),	/* SPI */
 };
 
 static const struct intel_padgroup ebg_community1_gpps[] = {
-	INTEL_GPP(0, 66, 87, 66),	/* GPP_C */
-	INTEL_GPP(1, 88, 111, 88),	/* GPP_D */
+	EBG_GPP(0, 66, 87),	/* GPP_C */
+	EBG_GPP(1, 88, 111),	/* GPP_D */
 };
 
 static const struct intel_padgroup ebg_community3_gpps[] = {
-	INTEL_GPP(0, 112, 135, 112),	/* GPP_E */
-	INTEL_GPP(1, 136, 145, 136),	/* JTAG */
+	EBG_GPP(0, 112, 135),	/* GPP_E */
+	EBG_GPP(1, 136, 145),	/* JTAG */
 };
 
 static const struct intel_padgroup ebg_community4_gpps[] = {
-	INTEL_GPP(0, 146, 165, 146),	/* GPP_H */
-	INTEL_GPP(1, 166, 183, 166),	/* GPP_J */
+	EBG_GPP(0, 146, 165),	/* GPP_H */
+	EBG_GPP(1, 166, 183),	/* GPP_J */
 };
 
 static const struct intel_padgroup ebg_community5_gpps[] = {
-	INTEL_GPP(0, 184, 207, 184),	/* GPP_I */
-	INTEL_GPP(1, 208, 225, 208),	/* GPP_L */
-	INTEL_GPP(2, 226, 243, 226),	/* GPP_M */
-	INTEL_GPP(3, 244, 261, 244),	/* GPP_N */
+	EBG_GPP(0, 184, 207),	/* GPP_I */
+	EBG_GPP(1, 208, 225),	/* GPP_L */
+	EBG_GPP(2, 226, 243),	/* GPP_M */
+	EBG_GPP(3, 244, 261),	/* GPP_N */
 };
 
 static const struct intel_community ebg_communities[] = {
@@ -352,17 +358,19 @@ static const struct acpi_device_id ebg_pinctrl_acpi_match[] = {
 };
 MODULE_DEVICE_TABLE(acpi, ebg_pinctrl_acpi_match);
 
+static INTEL_PINCTRL_PM_OPS(ebg_pinctrl_pm_ops);
+
 static struct platform_driver ebg_pinctrl_driver = {
 	.probe = intel_pinctrl_probe_by_hid,
 	.driver = {
 		.name = "emmitsburg-pinctrl",
 		.acpi_match_table = ebg_pinctrl_acpi_match,
-		.pm = pm_sleep_ptr(&intel_pinctrl_pm_ops),
+		.pm = &ebg_pinctrl_pm_ops,
 	},
 };
+
 module_platform_driver(ebg_pinctrl_driver);
 
 MODULE_AUTHOR("Andy Shevchenko <andriy.shevchenko@linux.intel.com>");
 MODULE_DESCRIPTION("Intel Emmitsburg PCH pinctrl/GPIO driver");
 MODULE_LICENSE("GPL v2");
-MODULE_IMPORT_NS("PINCTRL_INTEL");

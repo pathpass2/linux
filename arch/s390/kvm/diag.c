@@ -10,30 +10,12 @@
 
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
-#include <asm/gmap_helpers.h>
+#include <asm/gmap.h>
 #include <asm/virtio-ccw.h>
 #include "kvm-s390.h"
 #include "trace.h"
 #include "trace-s390.h"
 #include "gaccess.h"
-#include "gmap.h"
-
-static void do_discard_gfn_range(struct kvm_vcpu *vcpu, gfn_t gfn_start, gfn_t gfn_end)
-{
-	struct kvm_memslot_iter iter;
-	struct kvm_memory_slot *slot;
-	struct kvm_memslots *slots;
-	unsigned long start, end;
-
-	slots = kvm_vcpu_memslots(vcpu);
-
-	kvm_for_each_memslot_in_gfn_range(&iter, slots, gfn_start, gfn_end) {
-		slot = iter.slot;
-		start = __gfn_to_hva_memslot(slot, max(gfn_start, slot->base_gfn));
-		end = __gfn_to_hva_memslot(slot, min(gfn_end, slot->base_gfn + slot->npages));
-		gmap_helper_discard(vcpu->kvm->mm, start, end);
-	}
-}
 
 static int diag_release_pages(struct kvm_vcpu *vcpu)
 {
@@ -50,13 +32,12 @@ static int diag_release_pages(struct kvm_vcpu *vcpu)
 
 	VCPU_EVENT(vcpu, 5, "diag release pages %lX %lX", start, end);
 
-	mmap_read_lock(vcpu->kvm->mm);
 	/*
 	 * We checked for start >= end above, so lets check for the
 	 * fast path (no prefix swap page involved)
 	 */
 	if (end <= prefix || start >= prefix + 2 * PAGE_SIZE) {
-		do_discard_gfn_range(vcpu, gpa_to_gfn(start), gpa_to_gfn(end));
+		gmap_discard(vcpu->arch.gmap, start, end);
 	} else {
 		/*
 		 * This is slow path.  gmap_discard will check for start
@@ -64,14 +45,13 @@ static int diag_release_pages(struct kvm_vcpu *vcpu)
 		 * prefix and let gmap_discard make some of these calls
 		 * NOPs.
 		 */
-		do_discard_gfn_range(vcpu, gpa_to_gfn(start), gpa_to_gfn(prefix));
+		gmap_discard(vcpu->arch.gmap, start, prefix);
 		if (start <= prefix)
-			do_discard_gfn_range(vcpu, 0, 1);
+			gmap_discard(vcpu->arch.gmap, 0, PAGE_SIZE);
 		if (end > prefix + PAGE_SIZE)
-			do_discard_gfn_range(vcpu, 1, 2);
-		do_discard_gfn_range(vcpu, gpa_to_gfn(prefix) + 2, gpa_to_gfn(end));
+			gmap_discard(vcpu->arch.gmap, PAGE_SIZE, 2 * PAGE_SIZE);
+		gmap_discard(vcpu->arch.gmap, prefix + 2 * PAGE_SIZE, end);
 	}
-	mmap_read_unlock(vcpu->kvm->mm);
 	return 0;
 }
 
@@ -97,7 +77,7 @@ static int __diag_page_ref_service(struct kvm_vcpu *vcpu)
 	vcpu->stat.instruction_diagnose_258++;
 	if (vcpu->run->s.regs.gprs[rx] & 7)
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
-	rc = read_guest_real(vcpu, vcpu->run->s.regs.gprs[rx], &parm, sizeof(parm));
+	rc = read_guest(vcpu, vcpu->run->s.regs.gprs[rx], rx, &parm, sizeof(parm));
 	if (rc)
 		return kvm_s390_inject_prog_cond(vcpu, rc);
 	if (parm.parm_version != 2 || parm.parm_len < 5 || parm.code != 0x258)
@@ -122,7 +102,7 @@ static int __diag_page_ref_service(struct kvm_vcpu *vcpu)
 		    parm.token_addr & 7 || parm.zarch != 0x8000000000000000ULL)
 			return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
 
-		if (!kvm_is_gpa_in_memslot(vcpu->kvm, parm.token_addr))
+		if (kvm_is_error_gpa(vcpu->kvm, parm.token_addr))
 			return kvm_s390_inject_program_int(vcpu, PGM_ADDRESSING);
 
 		vcpu->arch.pfault_token = parm.token_addr;
@@ -186,7 +166,6 @@ static int diag9c_forwarding_overrun(void)
 static int __diag_time_slice_end_directed(struct kvm_vcpu *vcpu)
 {
 	struct kvm_vcpu *tcpu;
-	int tcpu_cpu;
 	int tid;
 
 	tid = vcpu->run->s.regs.gprs[(vcpu->arch.sie_block->ipa & 0xf0) >> 4];
@@ -202,15 +181,14 @@ static int __diag_time_slice_end_directed(struct kvm_vcpu *vcpu)
 		goto no_yield;
 
 	/* target guest VCPU already running */
-	tcpu_cpu = READ_ONCE(tcpu->cpu);
-	if (tcpu_cpu >= 0) {
+	if (READ_ONCE(tcpu->cpu) >= 0) {
 		if (!diag9c_forwarding_hz || diag9c_forwarding_overrun())
 			goto no_yield;
 
 		/* target host CPU already running */
-		if (!vcpu_is_preempted(tcpu_cpu))
+		if (!vcpu_is_preempted(tcpu->cpu))
 			goto no_yield;
-		smp_yield_cpu(tcpu_cpu);
+		smp_yield_cpu(tcpu->cpu);
 		VCPU_EVENT(vcpu, 5,
 			   "diag time slice end directed to %d: yield forwarded",
 			   tid);

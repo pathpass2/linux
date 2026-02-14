@@ -7,22 +7,22 @@ Landlock LSM: kernel documentation
 ==================================
 
 :Author: Mickaël Salaün
-:Date: September 2025
+:Date: December 2022
 
 Landlock's goal is to create scoped access-control (i.e. sandboxing).  To
 harden a whole system, this feature should be available to any process,
-including unprivileged ones.  Because such a process may be compromised or
+including unprivileged ones.  Because such process may be compromised or
 backdoored (i.e. untrusted), Landlock's features must be safe to use from the
 kernel and other processes point of view.  Landlock's interface must therefore
 expose a minimal attack surface.
 
 Landlock is designed to be usable by unprivileged processes while following the
 system security policy enforced by other access control mechanisms (e.g. DAC,
-LSM).  A Landlock rule shall not interfere with other access-controls enforced
-on the system, only add more restrictions.
+LSM).  Indeed, a Landlock rule shall not interfere with other access-controls
+enforced on the system, only add more restrictions.
 
 Any user can enforce Landlock rulesets on their processes.  They are merged and
-evaluated against inherited rulesets in a way that ensures that only more
+evaluated according to the inherited ones in a way that ensures that only more
 constraints can be added.
 
 User space documentation can be found here:
@@ -43,12 +43,8 @@ Guiding principles for safe access controls
   only impact the processes requesting them.
 * Resources (e.g. file descriptors) directly obtained from the kernel by a
   sandboxed process shall retain their scoped accesses (at the time of resource
-  acquisition) whatever process uses them.
+  acquisition) whatever process use them.
   Cf. `File descriptor access rights`_.
-* Access denials shall be logged according to system and Landlock domain
-  configurations.  Log entries must contain information about the cause of the
-  denial and the owner of the related security policy.  Such log generation
-  should have a negligible performance and memory impact on allowed requests.
 
 Design choices
 ==============
@@ -75,7 +71,7 @@ the same results, when they are executed under the same Landlock domain.
 Taking the ``LANDLOCK_ACCESS_FS_TRUNCATE`` right as an example, it may be
 allowed to open a file for writing without being allowed to
 :manpage:`ftruncate` the resulting file descriptor if the related file
-hierarchy doesn't grant that access right.  The following sequences of
+hierarchy doesn't grant such access right.  The following sequences of
 operations have the same semantic and should then have the same result:
 
 * ``truncate(path);``
@@ -85,7 +81,7 @@ Similarly to file access modes (e.g. ``O_RDWR``), Landlock access rights
 attached to file descriptors are retained even if they are passed between
 processes (e.g. through a Unix domain socket).  Such access rights will then be
 enforced even if the receiving process is not sandboxed by Landlock.  Indeed,
-this is required to keep access controls consistent over the whole system, and
+this is required to keep a consistent access control over the whole system, and
 this avoids unattended bypasses through file descriptor passing (i.e. confused
 deputy attack).
 
@@ -110,12 +106,6 @@ Filesystem
 .. kernel-doc:: security/landlock/fs.h
     :identifiers:
 
-Process credential
-------------------
-
-.. kernel-doc:: security/landlock/cred.h
-    :identifiers:
-
 Ruleset and domain
 ------------------
 
@@ -133,16 +123,6 @@ makes the reasoning much easier and helps avoid pitfalls.
 
 .. kernel-doc:: security/landlock/ruleset.h
     :identifiers:
-
-.. kernel-doc:: security/landlock/domain.h
-    :identifiers:
-
-Additional documentation
-========================
-
-* Documentation/userspace-api/landlock.rst
-* Documentation/admin-guide/LSM/landlock.rst
-* https://landlock.io
 
 .. Links
 .. _tools/testing/selftests/landlock/:

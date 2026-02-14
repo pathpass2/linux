@@ -131,8 +131,7 @@ struct iio_cb_buffer;
 /**
  * iio_channel_get_all_cb() - register callback for triggered capture
  * @dev:		Pointer to client device.
- * @cb:			Callback function. Must be safe to call from any context
- *			(e.g. must not sleep).
+ * @cb:			Callback function.
  * @private:		Private data passed to callback.
  *
  * NB right now we have no ability to mux data from multiple devices.
@@ -202,9 +201,8 @@ struct iio_dev
  * @chan:		The channel being queried.
  * @val:		Value read back.
  *
- * Note, if standard units are required, raw reads from iio channels
- * need the offset (default 0) and scale (default 1) to be applied
- * as (raw + offset) * scale.
+ * Note raw reads from iio channels are in adc counts and hence
+ * scale will need to be applied if standard units required.
  */
 int iio_read_channel_raw(struct iio_channel *chan,
 			 int *val);
@@ -214,9 +212,8 @@ int iio_read_channel_raw(struct iio_channel *chan,
  * @chan:		The channel being queried.
  * @val:		Value read back.
  *
- * Note, if standard units are required, raw reads from iio channels
- * need the offset (default 0) and scale (default 1) to be applied
- * as (raw + offset) * scale.
+ * Note raw reads from iio channels are in adc counts and hence
+ * scale will need to be applied if standard units required.
  *
  * In opposit to the normal iio_read_channel_raw this function
  * returns the average of multiple reads.
@@ -284,9 +281,8 @@ int iio_read_channel_attribute(struct iio_channel *chan, int *val,
  * @chan:		The channel being queried.
  * @val:		Value being written.
  *
- * Note that for raw writes to iio channels, if the value provided is
- * in standard units, the affect of the scale and offset must be removed
- * as (value / scale) - offset.
+ * Note raw writes to iio channels are in dac counts and hence
+ * scale will need to be applied if standard units required.
  */
 int iio_write_channel_raw(struct iio_channel *chan, int val);
 
@@ -296,23 +292,10 @@ int iio_write_channel_raw(struct iio_channel *chan, int val);
  * @chan:		The channel being queried.
  * @val:		Value read back.
  *
- * Note, if standard units are required, raw reads from iio channels
- * need the offset (default 0) and scale (default 1) to be applied
- * as (raw + offset) * scale.
+ * Note raw reads from iio channels are in adc counts and hence
+ * scale will need to be applied if standard units are required.
  */
 int iio_read_max_channel_raw(struct iio_channel *chan, int *val);
-
-/**
- * iio_read_min_channel_raw() - read minimum available raw value from a given
- *				channel, i.e. the minimum possible value.
- * @chan:		The channel being queried.
- * @val:		Value read back.
- *
- * Note, if standard units are required, raw reads from iio channels
- * need the offset (default 0) and scale (default 1) to be applied
- * as (raw + offset) * scale.
- */
-int iio_read_min_channel_raw(struct iio_channel *chan, int *val);
 
 /**
  * iio_read_avail_channel_raw() - read available raw values from a given channel
@@ -325,9 +308,8 @@ int iio_read_min_channel_raw(struct iio_channel *chan, int *val);
  * For ranges, three vals are always returned; min, step and max.
  * For lists, all the possible values are enumerated.
  *
- * Note, if standard units are required, raw available values from iio
- * channels need the offset (default 0) and scale (default 1) to be applied
- * as (raw + offset) * scale.
+ * Note raw available values from iio channels are in adc counts and
+ * hence scale will need to be applied if standard units are required.
  */
 int iio_read_avail_channel_raw(struct iio_channel *chan,
 			       const int **vals, int *length);
@@ -383,24 +365,6 @@ int iio_read_channel_scale(struct iio_channel *chan, int *val,
 			   int *val2);
 
 /**
- * iio_multiply_value() - Multiply an IIO value
- * @result:	Destination pointer for the multiplication result
- * @multiplier:	Multiplier.
- * @type:	One of the IIO_VAL_* constants. This decides how the @val and
- *		@val2 parameters are interpreted.
- * @val:	Value being multiplied.
- * @val2:	Value being multiplied. @val2 use depends on type.
- *
- * Multiply an IIO value with a s64 multiplier storing the result as
- * IIO_VAL_INT. This is typically used for scaling.
- *
- * Returns:
- * IIO_VAL_INT on success or a negative error-number on failure.
- */
-int iio_multiply_value(int *result, s64 multiplier,
-		       unsigned int type, int val, int val2);
-
-/**
  * iio_convert_raw_to_processed() - Converts a raw value to a processed value
  * @chan:		The channel being queried
  * @raw:		The raw IIO to convert
@@ -437,7 +401,7 @@ unsigned int iio_get_channel_ext_info_count(struct iio_channel *chan);
  * @chan:		The channel being queried.
  * @attr:		The ext_info attribute to read.
  * @buf:		Where to store the attribute value. Assumed to hold
- *			at least PAGE_SIZE bytes and to be aligned at PAGE_SIZE.
+ *			at least PAGE_SIZE bytes.
  *
  * Returns the number of bytes written to buf (perhaps w/o zero termination;
  * it need not even be a string), or an error code.
@@ -459,15 +423,5 @@ ssize_t iio_read_channel_ext_info(struct iio_channel *chan,
  */
 ssize_t iio_write_channel_ext_info(struct iio_channel *chan, const char *attr,
 				   const char *buf, size_t len);
-
-/**
- * iio_read_channel_label() - read label for a given channel
- * @chan:		The channel being queried.
- * @buf:		Where to store the attribute value. Assumed to hold
- *			at least PAGE_SIZE bytes and to be aligned at PAGE_SIZE.
- *
- * Returns the number of bytes written to buf, or an error code.
- */
-ssize_t iio_read_channel_label(struct iio_channel *chan, char *buf);
 
 #endif

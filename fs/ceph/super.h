@@ -3,9 +3,8 @@
 #define _FS_CEPH_SUPER_H
 
 #include <linux/ceph/ceph_debug.h>
-#include <linux/ceph/osd_client.h>
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/backing-dev.h>
 #include <linux/completion.h>
 #include <linux/exportfs.h>
@@ -23,7 +22,6 @@
 #include <linux/hashtable.h>
 
 #include <linux/ceph/libceph.h>
-#include "crypto.h"
 
 /* large granularity for statfs utilization stats to facilitate
  * large volume sizes on 32-bit machines. */
@@ -44,7 +42,6 @@
 #define CEPH_MOUNT_OPT_NOCOPYFROM      (1<<14) /* don't use RADOS 'copy-from' op */
 #define CEPH_MOUNT_OPT_ASYNC_DIROPS    (1<<15) /* allow async directory ops */
 #define CEPH_MOUNT_OPT_NOPAGECACHE     (1<<16) /* bypass pagecache altogether */
-#define CEPH_MOUNT_OPT_SPARSEREAD      (1<<17) /* always do sparse reads */
 
 #define CEPH_MOUNT_OPT_DEFAULT			\
 	(CEPH_MOUNT_OPT_DCACHE |		\
@@ -60,7 +57,7 @@
 
 /* max size of osd read request, limited by libceph */
 #define CEPH_MAX_READ_SIZE              CEPH_MSG_MAX_DATA_LEN
-/* osd has a configurable limitation of max write size.
+/* osd has a configurable limitaion of max write size.
  * CEPH_MSG_MAX_DATA_LEN should be small enough. */
 #define CEPH_MAX_WRITE_SIZE		CEPH_MSG_MAX_DATA_LEN
 #define CEPH_RASIZE_DEFAULT             (8192*1024)    /* max readahead */
@@ -101,34 +98,7 @@ struct ceph_mount_options {
 	char *server_path;    /* default NULL (means "/") */
 	char *fscache_uniq;   /* default NULL */
 	char *mon_addr;
-	struct fscrypt_dummy_policy dummy_enc_policy;
 };
-
-#define CEPH_NAMESPACE_WILDCARD		"*"
-
-static inline bool ceph_namespace_match(const char *pattern,
-					const char *target)
-{
-	if (!pattern || !pattern[0] ||
-	    !strcmp(pattern, CEPH_NAMESPACE_WILDCARD))
-		return true;
-
-	return !strcmp(pattern, target);
-}
-
-/*
- * Check if the mds namespace in ceph_mount_options matches
- * the passed in namespace string. First time match (when
- * ->mds_namespace is NULL) is treated specially, since
- * ->mds_namespace needs to be initialized by the caller.
- */
-static inline bool namespace_equals(struct ceph_mount_options *fsopt,
-				    const char *namespace, size_t len)
-{
-	return !(fsopt->mds_namespace &&
-		 (strlen(fsopt->mds_namespace) != len ||
-		  strncmp(fsopt->mds_namespace, namespace, len)));
-}
 
 /* mount state */
 enum {
@@ -184,10 +154,8 @@ struct ceph_fs_client {
 #ifdef CONFIG_CEPH_FSCACHE
 	struct fscache_volume *fscache;
 #endif
-#ifdef CONFIG_FS_ENCRYPTION
-	struct fscrypt_dummy_policy fsc_dummy_enc_policy;
-#endif
 };
+
 
 /*
  * File i/o capability.  This tracks shared state with the metadata
@@ -226,10 +194,9 @@ struct ceph_cap {
 	struct list_head caps_item;
 };
 
-#define CHECK_CAPS_AUTHONLY     1  /* only check auth cap */
-#define CHECK_CAPS_FLUSH        2  /* flush any dirty caps */
-#define CHECK_CAPS_NOINVAL      4  /* don't invalidate pagecache */
-#define CHECK_CAPS_FLUSH_FORCE  8  /* force flush any caps */
+#define CHECK_CAPS_AUTHONLY   1  /* only check auth cap */
+#define CHECK_CAPS_FLUSH      2  /* flush any dirty caps */
+#define CHECK_CAPS_NOINVAL    4  /* don't invalidate pagecache */
 
 struct ceph_cap_flush {
 	u64 tid;
@@ -452,11 +419,6 @@ struct ceph_inode_info {
 	u32 i_truncate_seq;        /* last truncate to smaller size */
 	u64 i_truncate_size;       /*  and the size we last truncated down to */
 	int i_truncate_pending;    /*  still need to call vmtruncate */
-	/*
-	 * For none fscrypt case it equals to i_truncate_size or it will
-	 * equals to fscrypt_file_size
-	 */
-	u64 i_truncate_pagecache_size;
 
 	u64 i_max_size;            /* max file size authorized by mds */
 	u64 i_reported_size; /* (max_)size reported to or requested of mds */
@@ -487,27 +449,6 @@ struct ceph_inode_info {
 
 	struct work_struct i_work;
 	unsigned long  i_work_mask;
-
-#ifdef CONFIG_FS_ENCRYPTION
-	struct fscrypt_inode_info *i_crypt_info;
-	u32 fscrypt_auth_len;
-	u32 fscrypt_file_len;
-	u8 *fscrypt_auth;
-	u8 *fscrypt_file;
-#endif
-};
-
-struct ceph_netfs_request_data {
-	int caps;
-
-	/*
-	 * Maximum size of a file readahead request.
-	 * The fadvise could update the bdi's default ra_pages.
-	 */
-	unsigned int file_ra_pages;
-
-	/* Set it if fadvise disables file readahead entirely */
-	bool file_ra_disabled;
 };
 
 static inline struct ceph_inode_info *
@@ -517,13 +458,13 @@ ceph_inode(const struct inode *inode)
 }
 
 static inline struct ceph_fs_client *
-ceph_inode_to_fs_client(const struct inode *inode)
+ceph_inode_to_client(const struct inode *inode)
 {
 	return (struct ceph_fs_client *)inode->i_sb->s_fs_info;
 }
 
 static inline struct ceph_fs_client *
-ceph_sb_to_fs_client(const struct super_block *sb)
+ceph_sb_to_client(const struct super_block *sb)
 {
 	return (struct ceph_fs_client *)sb->s_fs_info;
 }
@@ -531,13 +472,7 @@ ceph_sb_to_fs_client(const struct super_block *sb)
 static inline struct ceph_mds_client *
 ceph_sb_to_mdsc(const struct super_block *sb)
 {
-	return (struct ceph_mds_client *)ceph_sb_to_fs_client(sb)->mdsc;
-}
-
-static inline struct ceph_client *
-ceph_inode_to_client(const struct inode *inode)
-{
-	return (struct ceph_client *)ceph_inode_to_fs_client(inode)->client;
+	return (struct ceph_mds_client *)ceph_sb_to_client(sb)->mdsc;
 }
 
 static inline struct ceph_vino
@@ -593,7 +528,7 @@ static inline u64 ceph_snap(struct inode *inode)
  */
 static inline u64 ceph_present_ino(struct super_block *sb, u64 ino)
 {
-	if (unlikely(ceph_test_mount_opt(ceph_sb_to_fs_client(sb), INO32)))
+	if (unlikely(ceph_test_mount_opt(ceph_sb_to_client(sb), INO32)))
 		return ceph_ino_to_ino32(ino);
 	return ino;
 }
@@ -665,8 +600,7 @@ static inline struct inode *ceph_find_inode(struct super_block *sb,
 #define CEPH_I_FLUSH_SNAPS	(1 << 8)  /* need flush snapss */
 #define CEPH_I_ERROR_WRITE	(1 << 9) /* have seen write errors */
 #define CEPH_I_ERROR_FILELOCK	(1 << 10) /* have seen file lock errors */
-#define CEPH_I_ODIRECT_BIT	(11) /* inode in direct I/O mode */
-#define CEPH_I_ODIRECT		(1 << CEPH_I_ODIRECT_BIT)
+#define CEPH_I_ODIRECT		(1 << 11) /* inode in direct I/O mode */
 #define CEPH_ASYNC_CREATE_BIT	(12)	  /* async create in flight for this */
 #define CEPH_I_ASYNC_CREATE	(1 << CEPH_ASYNC_CREATE_BIT)
 #define CEPH_I_SHUTDOWN		(1 << 13) /* inode is no longer usable */
@@ -824,6 +758,7 @@ extern int __ceph_mark_dirty_caps(struct ceph_inode_info *ci, int mask,
 
 extern int __ceph_caps_revoking_other(struct ceph_inode_info *ci,
 				      struct ceph_cap *ocap, int mask);
+extern int ceph_caps_revoking(struct ceph_inode_info *ci, int mask);
 extern int __ceph_caps_used(struct ceph_inode_info *ci);
 
 static inline bool __ceph_is_file_opened(struct ceph_inode_info *ci)
@@ -931,7 +866,7 @@ ceph_find_rw_context(struct ceph_file_info *cf)
 }
 
 struct ceph_readdir_cache_control {
-	struct folio *folio;
+	struct page  *page;
 	struct dentry **dentries;
 	int index;
 };
@@ -1050,7 +985,6 @@ static inline bool __ceph_have_pending_cap_snap(struct ceph_inode_info *ci)
 /* inode.c */
 struct ceph_mds_reply_info_in;
 struct ceph_mds_reply_dirfrag;
-struct ceph_acl_sec_ctx;
 
 extern const struct inode_operations ceph_file_iops;
 
@@ -1058,14 +992,8 @@ extern struct inode *ceph_alloc_inode(struct super_block *sb);
 extern void ceph_evict_inode(struct inode *inode);
 extern void ceph_free_inode(struct inode *inode);
 
-struct inode *ceph_new_inode(struct inode *dir, struct dentry *dentry,
-			     umode_t *mode, struct ceph_acl_sec_ctx *as_ctx);
-void ceph_as_ctx_to_req(struct ceph_mds_request *req,
-			struct ceph_acl_sec_ctx *as_ctx);
-
 extern struct inode *ceph_get_inode(struct super_block *sb,
-				    struct ceph_vino vino,
-				    struct inode *newino);
+				    struct ceph_vino vino);
 extern struct inode *ceph_get_snapdir(struct inode *parent);
 extern int ceph_fill_file_size(struct inode *inode, int issued,
 			       u32 truncate_seq, u64 truncate_size, u64 size);
@@ -1082,6 +1010,8 @@ extern int ceph_fill_trace(struct super_block *sb,
 			   struct ceph_mds_request *req);
 extern int ceph_readdir_prepopulate(struct ceph_mds_request *req,
 				    struct ceph_mds_session *session);
+
+extern int ceph_inode_holds_cap(struct inode *inode, int mask);
 
 extern bool ceph_inode_set_size(struct inode *inode, loff_t size);
 extern void __ceph_do_pending_vmtruncate(struct inode *inode);
@@ -1122,13 +1052,7 @@ static inline int ceph_do_getattr(struct inode *inode, int mask, bool force)
 }
 extern int ceph_permission(struct mnt_idmap *idmap,
 			   struct inode *inode, int mask);
-
-struct ceph_iattr {
-	struct ceph_fscrypt_auth	*fscrypt_auth;
-};
-
-extern int __ceph_setattr(struct mnt_idmap *idmap, struct inode *inode,
-			  struct iattr *attr, struct ceph_iattr *cia);
+extern int __ceph_setattr(struct inode *inode, struct iattr *attr);
 extern int ceph_setattr(struct mnt_idmap *idmap,
 			struct dentry *dentry, struct iattr *attr);
 extern int ceph_getattr(struct mnt_idmap *idmap,
@@ -1139,7 +1063,7 @@ void ceph_inode_shutdown(struct inode *inode);
 static inline bool ceph_inode_is_shutdown(struct inode *inode)
 {
 	unsigned long flags = READ_ONCE(ceph_inode(inode)->i_ceph_flags);
-	struct ceph_fs_client *fsc = ceph_inode_to_fs_client(inode);
+	struct ceph_fs_client *fsc = ceph_inode_to_client(inode);
 	int state = READ_ONCE(fsc->mount_state);
 
 	return (flags & CEPH_I_SHUTDOWN) || state >= CEPH_MOUNT_SHUTDOWN;
@@ -1152,7 +1076,7 @@ ssize_t __ceph_getxattr(struct inode *, const char *, void *, size_t);
 extern ssize_t ceph_listxattr(struct dentry *, char *, size_t);
 extern struct ceph_buffer *__ceph_build_xattrs_blob(struct ceph_inode_info *ci);
 extern void __ceph_destroy_xattrs(struct ceph_inode_info *ci);
-extern const struct xattr_handler * const ceph_xattr_handlers[];
+extern const struct xattr_handler *ceph_xattr_handlers[];
 
 struct ceph_acl_sec_ctx {
 #ifdef CONFIG_CEPH_FS_POSIX_ACL
@@ -1160,10 +1084,8 @@ struct ceph_acl_sec_ctx {
 	void *acl;
 #endif
 #ifdef CONFIG_CEPH_FS_SECURITY_LABEL
-	struct lsm_context lsmctx;
-#endif
-#ifdef CONFIG_FS_ENCRYPTION
-	struct ceph_fscrypt_auth *fscrypt_auth;
+	void *sec_ctx;
+	u32 sec_ctxlen;
 #endif
 	struct ceph_pagelist *pagelist;
 };
@@ -1232,6 +1154,10 @@ static inline void ceph_init_inode_acls(struct inode *inode,
 					struct ceph_acl_sec_ctx *as_ctx)
 {
 }
+static inline int ceph_acl_chmod(struct dentry *dentry, struct inode *inode)
+{
+	return 0;
+}
 
 static inline void ceph_forget_all_cached_acls(struct inode *inode)
 {
@@ -1251,8 +1177,7 @@ extern void ceph_add_cap(struct inode *inode,
 			 unsigned cap, unsigned seq, u64 realmino, int flags,
 			 struct ceph_cap **new_cap);
 extern void __ceph_remove_cap(struct ceph_cap *cap, bool queue_release);
-extern void ceph_remove_cap(struct ceph_mds_client *mdsc, struct ceph_cap *cap,
-			    bool queue_release);
+extern void ceph_remove_cap(struct ceph_cap *cap, bool queue_release);
 extern void __ceph_remove_caps(struct ceph_inode_info *ci);
 extern void ceph_put_cap(struct ceph_mds_client *mdsc,
 			 struct ceph_cap *cap);
@@ -1267,8 +1192,6 @@ extern void ceph_kick_flushing_caps(struct ceph_mds_client *mdsc,
 				    struct ceph_mds_session *session);
 void ceph_kick_flushing_inode_caps(struct ceph_mds_session *session,
 				   struct ceph_inode_info *ci);
-extern struct ceph_cap *__get_cap_for_mds(struct ceph_inode_info *ci,
-					  int mds);
 extern struct ceph_cap *ceph_get_cap_for_mds(struct ceph_inode_info *ci,
 					     int mds);
 extern void ceph_take_cap_refs(struct ceph_inode_info *ci, int caps,
@@ -1276,6 +1199,8 @@ extern void ceph_take_cap_refs(struct ceph_inode_info *ci, int caps,
 extern void ceph_get_cap_refs(struct ceph_inode_info *ci, int caps);
 extern void ceph_put_cap_refs(struct ceph_inode_info *ci, int had);
 extern void ceph_put_cap_refs_async(struct ceph_inode_info *ci, int had);
+extern void ceph_put_cap_refs_no_check_caps(struct ceph_inode_info *ci,
+					    int had);
 extern void ceph_put_wrbuffer_cap_refs(struct ceph_inode_info *ci, int nr,
 				       struct ceph_snap_context *snapc);
 extern void __ceph_remove_capsnap(struct inode *inode,
@@ -1290,7 +1215,6 @@ extern bool __ceph_should_report_size(struct ceph_inode_info *ci);
 extern void ceph_check_caps(struct ceph_inode_info *ci, int flags);
 extern unsigned long ceph_check_delayed_caps(struct ceph_mds_client *mdsc);
 extern void ceph_flush_dirty_caps(struct ceph_mds_client *mdsc);
-extern void ceph_flush_cap_releases(struct ceph_mds_client *mdsc);
 extern int  ceph_drop_caps_for_unlink(struct inode *inode);
 extern int ceph_encode_inode_release(void **p, struct inode *inode,
 				     int mds, int drop, int unless, int force);
@@ -1298,8 +1222,6 @@ extern int ceph_encode_dentry_release(void **p, struct dentry *dn,
 				      struct inode *dir,
 				      int mds, int drop, int unless);
 
-extern int __ceph_get_caps(struct inode *inode, struct ceph_file_info *fi,
-			   int need, int want, loff_t endoff, int *got);
 extern int ceph_get_caps(struct file *filp, int need, int want,
 			 loff_t endoff, int *got);
 extern int ceph_try_get_caps(struct inode *inode,
@@ -1314,7 +1236,7 @@ extern void __ceph_touch_fmode(struct ceph_inode_info *ci,
 /* addr.c */
 extern const struct address_space_operations ceph_aops;
 extern const struct netfs_request_ops ceph_netfs_ops;
-int ceph_mmap_prepare(struct vm_area_desc *desc);
+extern int ceph_mmap(struct file *file, struct vm_area_struct *vma);
 extern int ceph_uninline_data(struct file *file);
 extern int ceph_pool_perm_check(struct inode *inode, int need);
 extern void ceph_pool_perm_destroy(struct ceph_mds_client* mdsc);
@@ -1335,9 +1257,6 @@ extern int ceph_renew_caps(struct inode *inode, int fmode);
 extern int ceph_open(struct inode *inode, struct file *file);
 extern int ceph_atomic_open(struct inode *dir, struct dentry *dentry,
 			    struct file *file, unsigned flags, umode_t mode);
-extern ssize_t __ceph_sync_read(struct inode *inode, loff_t *ki_pos,
-				struct iov_iter *to, int *retry_op,
-				u64 *last_objver);
 extern int ceph_release(struct inode *inode, struct file *filp);
 extern void ceph_fill_inline_data(struct inode *inode, struct page *locked_page,
 				  char *data, size_t len);
@@ -1428,19 +1347,6 @@ static inline void __ceph_update_quota(struct ceph_inode_info *ci,
 		ceph_adjust_quota_realms_count(&ci->netfs.inode, has_quota);
 }
 
-static inline int __ceph_sparse_read_ext_count(struct inode *inode, u64 len)
-{
-	int cnt = 0;
-
-	if (IS_ENCRYPTED(inode)) {
-		cnt = len >> CEPH_FSCRYPT_BLOCK_SHIFT;
-		if (cnt > CEPH_SPARSE_EXT_ARRAY_INITIAL)
-			cnt = 0;
-	}
-
-	return cnt;
-}
-
 extern void ceph_handle_quota(struct ceph_mds_client *mdsc,
 			      struct ceph_mds_session *session,
 			      struct ceph_msg *msg);
@@ -1454,9 +1360,4 @@ extern bool ceph_quota_update_statfs(struct ceph_fs_client *fsc,
 				     struct kstatfs *buf);
 extern void ceph_cleanup_quotarealms_inodes(struct ceph_mds_client *mdsc);
 
-bool ceph_inc_mds_stopping_blocker(struct ceph_mds_client *mdsc,
-			       struct ceph_mds_session *session);
-void ceph_dec_mds_stopping_blocker(struct ceph_mds_client *mdsc);
-bool ceph_inc_osd_stopping_blocker(struct ceph_mds_client *mdsc);
-void ceph_dec_osd_stopping_blocker(struct ceph_mds_client *mdsc);
 #endif /* _FS_CEPH_SUPER_H */

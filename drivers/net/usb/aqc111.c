@@ -20,6 +20,8 @@
 
 #include "aqc111.h"
 
+#define DRIVER_NAME "aqc111"
+
 static int aqc111_read_cmd_nopm(struct usbnet *dev, u8 cmd, u16 value,
 				u16 index, u16 size, void *data)
 {
@@ -28,13 +30,10 @@ static int aqc111_read_cmd_nopm(struct usbnet *dev, u8 cmd, u16 value,
 	ret = usbnet_read_cmd_nopm(dev, cmd, USB_DIR_IN | USB_TYPE_VENDOR |
 				   USB_RECIP_DEVICE, value, index, data, size);
 
-	if (unlikely(ret < size)) {
+	if (unlikely(ret < 0))
 		netdev_warn(dev->net,
 			    "Failed to read(0x%x) reg index 0x%04x: %d\n",
 			    cmd, index, ret);
-
-		ret = ret < 0 ? ret : -ENODATA;
-	}
 
 	return ret;
 }
@@ -47,13 +46,10 @@ static int aqc111_read_cmd(struct usbnet *dev, u8 cmd, u16 value,
 	ret = usbnet_read_cmd(dev, cmd, USB_DIR_IN | USB_TYPE_VENDOR |
 			      USB_RECIP_DEVICE, value, index, data, size);
 
-	if (unlikely(ret < size)) {
+	if (unlikely(ret < 0))
 		netdev_warn(dev->net,
 			    "Failed to read(0x%x) reg index 0x%04x: %d\n",
 			    cmd, index, ret);
-
-		ret = ret < 0 ? ret : -ENODATA;
-	}
 
 	return ret;
 }
@@ -205,10 +201,13 @@ static void aqc111_get_drvinfo(struct net_device *net,
 
 	/* Inherit standard device info */
 	usbnet_get_drvinfo(net, info);
+	strscpy(info->driver, DRIVER_NAME, sizeof(info->driver));
 	snprintf(info->fw_version, sizeof(info->fw_version), "%u.%u.%u",
 		 aqc111_data->fw_ver.major,
 		 aqc111_data->fw_ver.minor,
 		 aqc111_data->fw_ver.rev);
+	info->eedump_len = 0x00;
+	info->regdump_len = 0x00;
 }
 
 static void aqc111_get_wol(struct net_device *net,
@@ -425,7 +424,7 @@ static int aqc111_change_mtu(struct net_device *net, int new_mtu)
 	u16 reg16 = 0;
 	u8 buf[5];
 
-	WRITE_ONCE(net->mtu, new_mtu);
+	net->mtu = new_mtu;
 	dev->hard_mtu = net->mtu + net->hard_header_len;
 
 	aqc111_read16_cmd(dev, AQ_ACCESS_MAC, SFR_MEDIUM_STATUS_MODE,
@@ -1080,17 +1079,17 @@ static int aqc111_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 	u16 pkt_count = 0;
 	u64 desc_hdr = 0;
 	u16 vlan_tag = 0;
-	u32 skb_len;
+	u32 skb_len = 0;
 
 	if (!skb)
 		goto err;
 
-	skb_len = skb->len;
-	if (skb_len < sizeof(desc_hdr))
+	if (skb->len == 0)
 		goto err;
 
+	skb_len = skb->len;
 	/* RX Descriptor Header */
-	skb_trim(skb, skb_len - sizeof(desc_hdr));
+	skb_trim(skb, skb->len - sizeof(desc_hdr));
 	desc_hdr = le64_to_cpup((u64 *)skb_tail_pointer(skb));
 
 	/* Check these packets */
@@ -1142,15 +1141,17 @@ static int aqc111_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 			continue;
 		}
 
-		new_skb = netdev_alloc_skb_ip_align(dev->net, pkt_len);
+		/* Clone SKB */
+		new_skb = skb_clone(skb, GFP_ATOMIC);
 
 		if (!new_skb)
 			goto err;
 
-		skb_put(new_skb, pkt_len);
-		memcpy(new_skb->data, skb->data, pkt_len);
+		new_skb->len = pkt_len;
 		skb_pull(new_skb, AQ_RX_HW_PAD);
+		skb_set_tail_pointer(new_skb, new_skb->len);
 
+		new_skb->truesize = SKB_TRUESIZE(new_skb->len);
 		if (aqc111_data->rx_checksum)
 			aqc111_rx_checksum(new_skb, pkt_desc);
 

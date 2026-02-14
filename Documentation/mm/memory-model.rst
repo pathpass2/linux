@@ -97,6 +97,9 @@ sections:
   `mem_section` objects and the number of rows is calculated to fit
   all the memory sections.
 
+The architecture setup code should call sparse_init() to
+initialize the memory sections and the memory maps.
+
 With SPARSEMEM there are two possible ways to convert a PFN to the
 corresponding `struct page` - a "classic sparse" and "sparse
 vmemmap". The selection is made at build time and it is determined by
@@ -162,7 +165,7 @@ The users of `ZONE_DEVICE` are:
 * pmem: Map platform persistent memory to be used as a direct-I/O target
   via DAX mappings.
 
-* hmm: Extend `ZONE_DEVICE` with `->page_fault()` and `->folio_free()`
+* hmm: Extend `ZONE_DEVICE` with `->page_fault()` and `->page_free()`
   event callbacks to allow a device-driver to coordinate memory management
   events related to device-memory, typically GPU memory. See
   Documentation/mm/hmm.rst.

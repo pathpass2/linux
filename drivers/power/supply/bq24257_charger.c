@@ -35,15 +35,20 @@
 
 #define BQ24257_ILIM_SET_DELAY		1000	/* msec */
 
+/*
+ * When adding support for new devices make sure that enum bq2425x_chip and
+ * bq2425x_chip_name[] always stay in sync!
+ */
 enum bq2425x_chip {
 	BQ24250,
 	BQ24251,
 	BQ24257,
 };
 
-struct bq2425x_chip_info {
-	const char *const name;
-	enum bq2425x_chip chip;
+static const char *const bq2425x_chip_name[] = {
+	"bq24250",
+	"bq24251",
+	"bq24257",
 };
 
 enum bq24257_fields {
@@ -79,7 +84,7 @@ struct bq24257_device {
 	struct device *dev;
 	struct power_supply *charger;
 
-	const struct bq2425x_chip_info *info;
+	enum bq2425x_chip chip;
 
 	struct regmap *rmap;
 	struct regmap_field *rmap_fields[F_MAX_FIELDS];
@@ -113,7 +118,7 @@ static const struct regmap_config bq24257_regmap_config = {
 	.val_bits = 8,
 
 	.max_register = BQ24257_REG_7,
-	.cache_type = REGCACHE_MAPLE,
+	.cache_type = REGCACHE_RBTREE,
 
 	.volatile_reg = bq24257_is_volatile_reg,
 };
@@ -324,7 +329,7 @@ static int bq24257_power_supply_get_property(struct power_supply *psy,
 		break;
 
 	case POWER_SUPPLY_PROP_MODEL_NAME:
-		val->strval = bq->info->name;
+		val->strval = bq2425x_chip_name[bq->chip];
 		break;
 
 	case POWER_SUPPLY_PROP_ONLINE:
@@ -759,7 +764,7 @@ static ssize_t bq24257_show_ovp_voltage(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
-	struct power_supply *psy = dev_to_psy(dev);
+	struct power_supply *psy = dev_get_drvdata(dev);
 	struct bq24257_device *bq = power_supply_get_drvdata(psy);
 
 	return sysfs_emit(buf, "%u\n", bq24257_vovp_map[bq->init_data.vovp]);
@@ -769,7 +774,7 @@ static ssize_t bq24257_show_in_dpm_voltage(struct device *dev,
 					   struct device_attribute *attr,
 					   char *buf)
 {
-	struct power_supply *psy = dev_to_psy(dev);
+	struct power_supply *psy = dev_get_drvdata(dev);
 	struct bq24257_device *bq = power_supply_get_drvdata(psy);
 
 	return sysfs_emit(buf, "%u\n", bq24257_vindpm_map[bq->init_data.vindpm]);
@@ -779,7 +784,7 @@ static ssize_t bq24257_sysfs_show_enable(struct device *dev,
 					 struct device_attribute *attr,
 					 char *buf)
 {
-	struct power_supply *psy = dev_to_psy(dev);
+	struct power_supply *psy = dev_get_drvdata(dev);
 	struct bq24257_device *bq = power_supply_get_drvdata(psy);
 	int ret;
 
@@ -801,7 +806,7 @@ static ssize_t bq24257_sysfs_set_enable(struct device *dev,
 					const char *buf,
 					size_t count)
 {
-	struct power_supply *psy = dev_to_psy(dev);
+	struct power_supply *psy = dev_get_drvdata(dev);
 	struct bq24257_device *bq = power_supply_get_drvdata(psy);
 	long val;
 	int ret;
@@ -942,8 +947,10 @@ static int bq24257_fw_probe(struct bq24257_device *bq)
 
 static int bq24257_probe(struct i2c_client *client)
 {
+	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct i2c_adapter *adapter = client->adapter;
 	struct device *dev = &client->dev;
+	const struct acpi_device_id *acpi_id;
 	struct bq24257_device *bq;
 	int ret;
 	int i;
@@ -960,9 +967,17 @@ static int bq24257_probe(struct i2c_client *client)
 	bq->client = client;
 	bq->dev = dev;
 
-	bq->info = i2c_get_match_data(client);
-	if (!bq->info)
-		return dev_err_probe(dev, -ENODEV, "Failed to match device\n");
+	if (ACPI_HANDLE(dev)) {
+		acpi_id = acpi_match_device(dev->driver->acpi_match_table,
+					    &client->dev);
+		if (!acpi_id) {
+			dev_err(dev, "Failed to match ACPI device\n");
+			return -ENODEV;
+		}
+		bq->chip = (enum bq2425x_chip)acpi_id->driver_data;
+	} else {
+		bq->chip = (enum bq2425x_chip)id->driver_data;
+	}
 
 	mutex_init(&bq->lock);
 
@@ -1000,7 +1015,7 @@ static int bq24257_probe(struct i2c_client *client)
 	 * used for the automatic setting of the input current limit setting so
 	 * explicitly disable that feature.
 	 */
-	if (bq->info->chip == BQ24250)
+	if (bq->chip == BQ24250)
 		bq->iilimit_autoset_enable = false;
 
 	if (bq->iilimit_autoset_enable)
@@ -1013,7 +1028,7 @@ static int bq24257_probe(struct i2c_client *client)
 	 * the PG state. We also use a SW-based approach for all other devices
 	 * if the PG pin is either not defined or can't be probed.
 	 */
-	if (bq->info->chip != BQ24250)
+	if (bq->chip != BQ24250)
 		bq24257_pg_gpio_probe(bq);
 
 	if (PTR_ERR(bq->pg) == -EPROBE_DEFER)
@@ -1051,7 +1066,7 @@ static int bq24257_probe(struct i2c_client *client)
 					bq24257_irq_handler_thread,
 					IRQF_TRIGGER_FALLING |
 					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
-					bq->info->name, bq);
+					bq2425x_chip_name[bq->chip], bq);
 	if (ret) {
 		dev_err(dev, "Failed to request IRQ #%d\n", client->irq);
 		return ret;
@@ -1117,43 +1132,28 @@ static const struct dev_pm_ops bq24257_pm = {
 	SET_SYSTEM_SLEEP_PM_OPS(bq24257_suspend, bq24257_resume)
 };
 
-static const struct bq2425x_chip_info bq24250_info = {
-	.name = "bq24250",
-	.chip = BQ24250,
-};
-
-static const struct bq2425x_chip_info bq24251_info = {
-	.name = "bq24251",
-	.chip = BQ24251,
-};
-
-static const struct bq2425x_chip_info bq24257_info = {
-	.name = "bq24257",
-	.chip = BQ24257,
-};
-
 static const struct i2c_device_id bq24257_i2c_ids[] = {
-	{ "bq24250", (kernel_ulong_t)&bq24250_info },
-	{ "bq24251", (kernel_ulong_t)&bq24251_info },
-	{ "bq24257", (kernel_ulong_t)&bq24257_info },
-	{}
+	{ "bq24250", BQ24250 },
+	{ "bq24251", BQ24251 },
+	{ "bq24257", BQ24257 },
+	{},
 };
 MODULE_DEVICE_TABLE(i2c, bq24257_i2c_ids);
 
-static const struct of_device_id bq24257_of_match[] __maybe_unused = {
-	{ .compatible = "ti,bq24250", &bq24250_info },
-	{ .compatible = "ti,bq24251", &bq24251_info },
-	{ .compatible = "ti,bq24257", &bq24257_info },
-	{}
+static const struct of_device_id bq24257_of_match[] = {
+	{ .compatible = "ti,bq24250", },
+	{ .compatible = "ti,bq24251", },
+	{ .compatible = "ti,bq24257", },
+	{ },
 };
 MODULE_DEVICE_TABLE(of, bq24257_of_match);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id bq24257_acpi_match[] = {
-	{ "BQ242500", (kernel_ulong_t)&bq24250_info },
-	{ "BQ242510", (kernel_ulong_t)&bq24251_info },
-	{ "BQ242570", (kernel_ulong_t)&bq24257_info },
-	{}
+	{ "BQ242500", BQ24250 },
+	{ "BQ242510", BQ24251 },
+	{ "BQ242570", BQ24257 },
+	{},
 };
 MODULE_DEVICE_TABLE(acpi, bq24257_acpi_match);
 #endif
@@ -1165,7 +1165,7 @@ static struct i2c_driver bq24257_driver = {
 		.acpi_match_table = ACPI_PTR(bq24257_acpi_match),
 		.pm = &bq24257_pm,
 	},
-	.probe = bq24257_probe,
+	.probe_new = bq24257_probe,
 	.remove = bq24257_remove,
 	.id_table = bq24257_i2c_ids,
 };

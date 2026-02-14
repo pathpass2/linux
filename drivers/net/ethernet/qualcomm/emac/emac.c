@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_net.h>
+#include <linux/of_device.h>
 #include <linux/phy.h>
 #include <linux/platform_device.h>
 #include <linux/acpi.h>
@@ -216,7 +217,7 @@ static int emac_change_mtu(struct net_device *netdev, int new_mtu)
 	netif_dbg(adpt, hw, adpt->netdev,
 		  "changing MTU from %d to %d\n", netdev->mtu,
 		  new_mtu);
-	WRITE_ONCE(netdev->mtu, new_mtu);
+	netdev->mtu = new_mtu;
 
 	if (netif_running(netdev))
 		return emac_reinit_locked(adpt);
@@ -718,7 +719,7 @@ err_undo_netdev:
 	return ret;
 }
 
-static void emac_remove(struct platform_device *pdev)
+static int emac_remove(struct platform_device *pdev)
 {
 	struct net_device *netdev = dev_get_drvdata(&pdev->dev);
 	struct emac_adapter *adpt = netdev_priv(netdev);
@@ -742,6 +743,8 @@ static void emac_remove(struct platform_device *pdev)
 	iounmap(adpt->phy.base);
 
 	free_netdev(netdev);
+
+	return 0;
 }
 
 static void emac_shutdown(struct platform_device *pdev)
@@ -760,7 +763,7 @@ static void emac_shutdown(struct platform_device *pdev)
 
 static struct platform_driver emac_platform_driver = {
 	.probe	= emac_probe,
-	.remove = emac_remove,
+	.remove	= emac_remove,
 	.driver = {
 		.name		= "qcom-emac",
 		.of_match_table = emac_dt_match,
@@ -771,6 +774,5 @@ static struct platform_driver emac_platform_driver = {
 
 module_platform_driver(emac_platform_driver);
 
-MODULE_DESCRIPTION("Qualcomm EMAC Gigabit Ethernet driver");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:qcom-emac");

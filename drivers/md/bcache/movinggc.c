@@ -35,16 +35,16 @@ static bool moving_pred(struct keybuf *buf, struct bkey *k)
 
 /* Moving GC - IO loop */
 
-static CLOSURE_CALLBACK(moving_io_destructor)
+static void moving_io_destructor(struct closure *cl)
 {
-	closure_type(io, struct moving_io, cl);
+	struct moving_io *io = container_of(cl, struct moving_io, cl);
 
 	kfree(io);
 }
 
-static CLOSURE_CALLBACK(write_moving_finish)
+static void write_moving_finish(struct closure *cl)
 {
-	closure_type(io, struct moving_io, cl);
+	struct moving_io *io = container_of(cl, struct moving_io, cl);
 	struct bio *bio = &io->bio.bio;
 
 	bio_free_pages(bio);
@@ -79,19 +79,19 @@ static void moving_init(struct moving_io *io)
 {
 	struct bio *bio = &io->bio.bio;
 
-	bio_init_inline(bio, NULL,
+	bio_init(bio, NULL, bio->bi_inline_vecs,
 		 DIV_ROUND_UP(KEY_SIZE(&io->w->key), PAGE_SECTORS), 0);
 	bio_get(bio);
-	bio->bi_ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0);
+	bio_set_prio(bio, IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 0));
 
 	bio->bi_iter.bi_size	= KEY_SIZE(&io->w->key) << 9;
 	bio->bi_private		= &io->cl;
 	bch_bio_map(bio, NULL);
 }
 
-static CLOSURE_CALLBACK(write_moving)
+static void write_moving(struct closure *cl)
 {
-	closure_type(io, struct moving_io, cl);
+	struct moving_io *io = container_of(cl, struct moving_io, cl);
 	struct data_insert_op *op = &io->op;
 
 	if (!op->status) {
@@ -113,9 +113,9 @@ static CLOSURE_CALLBACK(write_moving)
 	continue_at(cl, write_moving_finish, op->wq);
 }
 
-static CLOSURE_CALLBACK(read_moving_submit)
+static void read_moving_submit(struct closure *cl)
 {
-	closure_type(io, struct moving_io, cl);
+	struct moving_io *io = container_of(cl, struct moving_io, cl);
 	struct bio *bio = &io->bio.bio;
 
 	bch_submit_bbio(bio, io->op.c, &io->w->key, 0);
@@ -145,9 +145,9 @@ static void read_moving(struct cache_set *c)
 			continue;
 		}
 
-		io = kzalloc(sizeof(*io) + sizeof(struct bio_vec) *
-				DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS),
-				GFP_KERNEL);
+		io = kzalloc(struct_size(io, bio.bio.bi_inline_vecs,
+					 DIV_ROUND_UP(KEY_SIZE(&w->key), PAGE_SECTORS)),
+			     GFP_KERNEL);
 		if (!io)
 			goto err;
 

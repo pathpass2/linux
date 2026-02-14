@@ -11,7 +11,6 @@
 
 #include "mcs.h"
 #include "rvu.h"
-#include "mcs_reg.h"
 #include "lmac_common.h"
 
 #define M(_name, _id, _fn_name, _req_type, _rsp_type)			\
@@ -32,42 +31,6 @@ static struct _req_type __maybe_unused					\
 
 MBOX_UP_MCS_MESSAGES
 #undef M
-
-void rvu_mcs_ptp_cfg(struct rvu *rvu, u8 rpm_id, u8 lmac_id, bool ena)
-{
-	struct mcs *mcs;
-	u64 cfg;
-	u8 port;
-
-	if (!rvu->mcs_blk_cnt)
-		return;
-
-	/* When ptp is enabled, RPM appends 8B header for all
-	 * RX packets. MCS PEX need to configure to skip 8B
-	 * during packet parsing.
-	 */
-
-	/* CNF10K-B */
-	if (rvu->mcs_blk_cnt > 1) {
-		mcs = mcs_get_pdata(rpm_id);
-		cfg = mcs_reg_read(mcs, MCSX_PEX_RX_SLAVE_PEX_CONFIGURATION);
-		if (ena)
-			cfg |= BIT_ULL(lmac_id);
-		else
-			cfg &= ~BIT_ULL(lmac_id);
-		mcs_reg_write(mcs, MCSX_PEX_RX_SLAVE_PEX_CONFIGURATION, cfg);
-		return;
-	}
-	/* CN10KB */
-	mcs = mcs_get_pdata(0);
-	port = (rpm_id * rvu->hw->lmac_per_cgx) + lmac_id;
-	cfg = mcs_reg_read(mcs, MCSX_PEX_RX_SLAVE_PORT_CFGX(port));
-	if (ena)
-		cfg |= BIT_ULL(0);
-	else
-		cfg &= ~BIT_ULL(0);
-	mcs_reg_write(mcs, MCSX_PEX_RX_SLAVE_PORT_CFGX(port), cfg);
-}
 
 int rvu_mbox_handler_mcs_set_lmac_mode(struct rvu *rvu,
 				       struct mcs_set_lmac_mode *req,
@@ -97,7 +60,7 @@ int mcs_add_intr_wq_entry(struct mcs *mcs, struct mcs_intr_event *event)
 	if (pcifunc & RVU_PFVF_FUNC_MASK)
 		pfvf = &mcs->vf[rvu_get_hwvf(rvu, pcifunc)];
 	else
-		pfvf = &mcs->pf[rvu_get_pf(rvu->pdev, pcifunc)];
+		pfvf = &mcs->pf[rvu_get_pf(pcifunc)];
 
 	event->intr_mask &= pfvf->intr_mask;
 
@@ -121,17 +84,13 @@ int mcs_add_intr_wq_entry(struct mcs *mcs, struct mcs_intr_event *event)
 static int mcs_notify_pfvf(struct mcs_intr_event *event, struct rvu *rvu)
 {
 	struct mcs_intr_info *req;
-	int pf;
+	int err, pf;
 
-	pf = rvu_get_pf(rvu->pdev, event->pcifunc);
-
-	mutex_lock(&rvu->mbox_lock);
+	pf = rvu_get_pf(event->pcifunc);
 
 	req = otx2_mbox_alloc_msg_mcs_intr_notify(rvu, pf);
-	if (!req) {
-		mutex_unlock(&rvu->mbox_lock);
+	if (!req)
 		return -ENOMEM;
-	}
 
 	req->mcs_id = event->mcs_id;
 	req->intr_mask = event->intr_mask;
@@ -139,13 +98,10 @@ static int mcs_notify_pfvf(struct mcs_intr_event *event, struct rvu *rvu)
 	req->hdr.pcifunc = event->pcifunc;
 	req->lmac_id = event->lmac_id;
 
-	otx2_mbox_wait_for_zero(&rvu->afpf_wq_info.mbox_up, pf);
-
-	otx2_mbox_msg_send_up(&rvu->afpf_wq_info.mbox_up, pf);
-
-	otx2_mbox_wait_for_rsp(&rvu->afpf_wq_info.mbox_up, pf);
-
-	mutex_unlock(&rvu->mbox_lock);
+	otx2_mbox_msg_send(&rvu->afpf_wq_info.mbox_up, pf);
+	err = otx2_mbox_wait_for_rsp(&rvu->afpf_wq_info.mbox_up, pf);
+	if (err)
+		dev_warn(rvu->dev, "MCS notification to pf %d failed\n", pf);
 
 	return 0;
 }
@@ -193,7 +149,7 @@ int rvu_mbox_handler_mcs_intr_cfg(struct rvu *rvu,
 	if (pcifunc & RVU_PFVF_FUNC_MASK)
 		pfvf = &mcs->vf[rvu_get_hwvf(rvu, pcifunc)];
 	else
-		pfvf = &mcs->pf[rvu_get_pf(rvu->pdev, pcifunc)];
+		pfvf = &mcs->pf[rvu_get_pf(pcifunc)];
 
 	mcs->pf_map[0] = pcifunc;
 	pfvf->intr_mask = req->intr_mask;
@@ -913,7 +869,7 @@ int rvu_mcs_init(struct rvu *rvu)
 	/* Initialize the wq for handling mcs interrupts */
 	INIT_LIST_HEAD(&rvu->mcs_intrq_head);
 	INIT_WORK(&rvu->mcs_intr_work, mcs_intr_handler_task);
-	rvu->mcs_intr_wq = alloc_workqueue("mcs_intr_wq", WQ_PERCPU, 0);
+	rvu->mcs_intr_wq = alloc_workqueue("mcs_intr_wq", 0, 0);
 	if (!rvu->mcs_intr_wq) {
 		dev_err(rvu->dev, "mcs alloc workqueue failed\n");
 		return -ENOMEM;
@@ -927,6 +883,7 @@ void rvu_mcs_exit(struct rvu *rvu)
 	if (!rvu->mcs_intr_wq)
 		return;
 
+	flush_workqueue(rvu->mcs_intr_wq);
 	destroy_workqueue(rvu->mcs_intr_wq);
 	rvu->mcs_intr_wq = NULL;
 }

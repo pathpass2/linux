@@ -7,6 +7,9 @@
 #include <linux/atomic.h>
 #include <linux/workqueue.h>
 #include <linux/netfilter/nf_conntrack_tcp.h>
+#ifdef CONFIG_NF_CT_PROTO_DCCP
+#include <linux/netfilter/nf_conntrack_dccp.h>
+#endif
 #ifdef CONFIG_NF_CT_PROTO_SCTP
 #include <linux/netfilter/nf_conntrack_sctp.h>
 #endif
@@ -47,6 +50,13 @@ struct nf_icmp_net {
 	unsigned int timeout;
 };
 
+#ifdef CONFIG_NF_CT_PROTO_DCCP
+struct nf_dccp_net {
+	u8 dccp_loose;
+	unsigned int dccp_timeout[CT_DCCP_MAX + 1];
+};
+#endif
+
 #ifdef CONFIG_NF_CT_PROTO_SCTP
 struct nf_sctp_net {
 	unsigned int timeouts[SCTP_CONNTRACK_MAX];
@@ -72,6 +82,9 @@ struct nf_ip_net {
 	struct nf_udp_net	udp;
 	struct nf_icmp_net	icmp;
 	struct nf_icmp_net	icmpv6;
+#ifdef CONFIG_NF_CT_PROTO_DCCP
+	struct nf_dccp_net	dccp;
+#endif
 #ifdef CONFIG_NF_CT_PROTO_SCTP
 	struct nf_sctp_net	sctp;
 #endif
@@ -94,7 +107,7 @@ struct netns_ct {
 	struct nf_ct_event_notifier __rcu *nf_conntrack_event_cb;
 	struct nf_ip_net	nf_ct_proto;
 #if defined(CONFIG_NF_CONNTRACK_LABELS)
-	atomic_t		labels_used;
+	unsigned int		labels_used;
 #endif
 };
 #endif

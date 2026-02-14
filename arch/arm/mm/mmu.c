@@ -21,13 +21,12 @@
 #include <asm/sections.h>
 #include <asm/setup.h>
 #include <asm/smp_plat.h>
-#include <asm/tcm.h>
 #include <asm/tlb.h>
 #include <asm/highmem.h>
 #include <asm/system_info.h>
 #include <asm/traps.h>
 #include <asm/procinfo.h>
-#include <asm/page.h>
+#include <asm/memory.h>
 #include <asm/pgalloc.h>
 #include <asm/kasan_def.h>
 
@@ -38,6 +37,7 @@
 
 #include "fault.h"
 #include "mm.h"
+#include "tcm.h"
 
 extern unsigned long __atags_pointer;
 
@@ -45,7 +45,7 @@ extern unsigned long __atags_pointer;
  * empty_zero_page is a special page that is used for
  * zero-initialized data and COW.
  */
-unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)] __page_aligned_bss;
+struct page *empty_zero_page;
 EXPORT_SYMBOL(empty_zero_page);
 
 /*
@@ -726,18 +726,22 @@ EXPORT_SYMBOL(phys_mem_access_prot);
 
 static void __init *early_alloc(unsigned long sz)
 {
-	return memblock_alloc_or_panic(sz, sz);
+	void *ptr = memblock_alloc(sz, sz);
 
+	if (!ptr)
+		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
+		      __func__, sz, sz);
+
+	return ptr;
 }
 
 static void *__init late_alloc(unsigned long sz)
 {
-	void *ptdesc = pagetable_alloc(GFP_PGTABLE_KERNEL & ~__GFP_HIGHMEM,
-			get_order(sz));
+	void *ptr = (void *)__get_free_pages(GFP_PGTABLE_KERNEL, get_order(sz));
 
-	if (!ptdesc || !pagetable_pte_ctor(NULL, ptdesc))
+	if (!ptr || !pgtable_pte_page_ctor(virt_to_page(ptr)))
 		BUG();
-	return ptdesc_address(ptdesc);
+	return ptr;
 }
 
 static pte_t * __init arm_pte_alloc(pmd_t *pmd, unsigned long addr,
@@ -1022,7 +1026,10 @@ void __init iotable_init(struct map_desc *io_desc, int nr)
 	if (!nr)
 		return;
 
-	svm = memblock_alloc_or_panic(sizeof(*svm) * nr, __alignof__(*svm));
+	svm = memblock_alloc(sizeof(*svm) * nr, __alignof__(*svm));
+	if (!svm)
+		panic("%s: Failed to allocate %zu bytes align=0x%zx\n",
+		      __func__, sizeof(*svm) * nr, __alignof__(*svm));
 
 	for (md = io_desc; nr; md++, nr--) {
 		create_mapping(md);
@@ -1044,7 +1051,10 @@ void __init vm_reserve_area_early(unsigned long addr, unsigned long size,
 	struct vm_struct *vm;
 	struct static_vm *svm;
 
-	svm = memblock_alloc_or_panic(sizeof(*svm), __alignof__(*svm));
+	svm = memblock_alloc(sizeof(*svm), __alignof__(*svm));
+	if (!svm)
+		panic("%s: Failed to allocate %zu bytes align=0x%zx\n",
+		      __func__, sizeof(*svm), __alignof__(*svm));
 
 	vm = &svm->vm;
 	vm->addr = (void *)addr;
@@ -1392,6 +1402,18 @@ static void __init devicemaps_init(const struct machine_desc *mdesc)
 	}
 
 	/*
+	 * Map the kernel if it is XIP.
+	 * It is always first in the modulearea.
+	 */
+#ifdef CONFIG_XIP_KERNEL
+	map.pfn = __phys_to_pfn(CONFIG_XIP_PHYS_ADDR & SECTION_MASK);
+	map.virtual = MODULES_VADDR;
+	map.length = ((unsigned long)_exiprom - map.virtual + ~SECTION_MASK) & SECTION_MASK;
+	map.type = MT_ROM;
+	create_mapping(&map);
+#endif
+
+	/*
 	 * Map the cache flushing regions.
 	 */
 #ifdef FLUSH_BASE
@@ -1580,27 +1602,12 @@ static void __init map_kernel(void)
 	 * This will only persist until we turn on proper memory management later on
 	 * and we remap the whole kernel with page granularity.
 	 */
-#ifdef CONFIG_XIP_KERNEL
-	phys_addr_t kernel_nx_start = kernel_sec_start;
-#else
 	phys_addr_t kernel_x_start = kernel_sec_start;
 	phys_addr_t kernel_x_end = round_up(__pa(__init_end), SECTION_SIZE);
 	phys_addr_t kernel_nx_start = kernel_x_end;
-#endif
 	phys_addr_t kernel_nx_end = kernel_sec_end;
 	struct map_desc map;
 
-	/*
-	 * Map the kernel if it is XIP.
-	 * It is always first in the modulearea.
-	 */
-#ifdef CONFIG_XIP_KERNEL
-	map.pfn = __phys_to_pfn(CONFIG_XIP_PHYS_ADDR & SECTION_MASK);
-	map.virtual = MODULES_VADDR;
-	map.length = ((unsigned long)_exiprom - map.virtual + ~SECTION_MASK) & SECTION_MASK;
-	map.type = MT_ROM;
-	create_mapping(&map);
-#else
 	map.pfn = __phys_to_pfn(kernel_x_start);
 	map.virtual = __phys_to_virt(kernel_x_start);
 	map.length = kernel_x_end - kernel_x_start;
@@ -1610,7 +1617,7 @@ static void __init map_kernel(void)
 	/* If the nx part is small it may end up covered by the tail of the RWX section */
 	if (kernel_x_end == kernel_nx_end)
 		return;
-#endif
+
 	map.pfn = __phys_to_pfn(kernel_nx_start);
 	map.virtual = __phys_to_virt(kernel_nx_start);
 	map.length = kernel_nx_end - kernel_nx_start;
@@ -1630,7 +1637,7 @@ static void __init early_paging_init(const struct machine_desc *mdesc)
 {
 	pgtables_remap *lpae_pgtables_remap;
 	unsigned long pa_pgd;
-	u32 cr, ttbcr, tmp;
+	unsigned int cr, ttbcr;
 	long long offset;
 
 	if (!mdesc->pv_fixup)
@@ -1679,10 +1686,9 @@ static void __init early_paging_init(const struct machine_desc *mdesc)
 	 */
 	cr = get_cr();
 	set_cr(cr & ~(CR_I | CR_C));
-	ttbcr = cpu_get_ttbcr();
-	/* Disable all kind of caching of the translation table */
-	tmp = ttbcr & ~(TTBCR_ORGN0_MASK | TTBCR_IRGN0_MASK);
-	cpu_set_ttbcr(tmp);
+	asm("mrc p15, 0, %0, c2, c0, 2" : "=r" (ttbcr));
+	asm volatile("mcr p15, 0, %0, c2, c0, 2"
+		: : "r" (ttbcr & ~(3 << 8 | 3 << 10)));
 	flush_cache_all();
 
 	/*
@@ -1694,7 +1700,7 @@ static void __init early_paging_init(const struct machine_desc *mdesc)
 	lpae_pgtables_remap(offset, pa_pgd);
 
 	/* Re-enable the caches and cacheable TLB walks */
-	cpu_set_ttbcr(ttbcr);
+	asm volatile("mcr p15, 0, %0, c2, c0, 2" : : "r" (ttbcr));
 	set_cr(cr);
 }
 
@@ -1754,11 +1760,8 @@ static void __init early_fixmap_shutdown(void)
  */
 void __init paging_init(const struct machine_desc *mdesc)
 {
-#ifdef CONFIG_XIP_KERNEL
-	/* Store the kernel RW RAM region start/end in these variables */
-	kernel_sec_start = CONFIG_PHYS_OFFSET & SECTION_MASK;
-	kernel_sec_end = round_up(__pa(_end), SECTION_SIZE);
-#endif
+	void *zero_page;
+
 	pr_debug("physical kernel sections: 0x%08llx-0x%08llx\n",
 		 kernel_sec_start, kernel_sec_end);
 
@@ -1779,7 +1782,13 @@ void __init paging_init(const struct machine_desc *mdesc)
 
 	top_pmd = pmd_off_k(0xffff0000);
 
+	/* allocate the zero page. */
+	zero_page = early_alloc(PAGE_SIZE);
+
 	bootmem_init();
+
+	empty_zero_page = virt_to_page(zero_page);
+	__flush_dcache_page(NULL, empty_zero_page);
 }
 
 void __init early_mm_init(const struct machine_desc *mdesc)
@@ -1788,8 +1797,8 @@ void __init early_mm_init(const struct machine_desc *mdesc)
 	early_paging_init(mdesc);
 }
 
-void set_ptes(struct mm_struct *mm, unsigned long addr,
-			      pte_t *ptep, pte_t pteval, unsigned int nr)
+void set_pte_at(struct mm_struct *mm, unsigned long addr,
+			      pte_t *ptep, pte_t pteval)
 {
 	unsigned long ext = 0;
 
@@ -1799,11 +1808,5 @@ void set_ptes(struct mm_struct *mm, unsigned long addr,
 		ext |= PTE_EXT_NG;
 	}
 
-	for (;;) {
-		set_pte_ext(ptep, pteval, ext);
-		if (--nr == 0)
-			break;
-		ptep++;
-		pteval = pte_next_pfn(pteval);
-	}
+	set_pte_ext(ptep, pteval, ext);
 }

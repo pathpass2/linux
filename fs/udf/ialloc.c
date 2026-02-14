@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ialloc.c
  *
@@ -6,6 +5,11 @@
  *	Inode allocation handling routines for the OSTA-UDF(tm) filesystem.
  *
  * COPYRIGHT
+ *	This file is distributed under the terms of the GNU General Public
+ *	License (GPL). Copies of the GPL can be obtained from:
+ *		ftp://prep.ai.mit.edu/pub/gnu/GPL
+ *	Each contributing author retains all rights to their own work.
+ *
  *  (C) 1998-2001 Ben Fennema
  *
  * HISTORY
@@ -100,8 +104,8 @@ struct inode *udf_new_inode(struct inode *dir, umode_t mode)
 		iinfo->i_alloc_type = ICBTAG_FLAG_AD_SHORT;
 	else
 		iinfo->i_alloc_type = ICBTAG_FLAG_AD_LONG;
-	simple_inode_init_ts(inode);
-	iinfo->i_crtime = inode_get_mtime(inode);
+	inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
+	iinfo->i_crtime = inode->i_mtime;
 	if (unlikely(insert_inode_locked(inode) < 0)) {
 		make_bad_inode(inode);
 		iput(inode);

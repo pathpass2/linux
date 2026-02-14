@@ -359,7 +359,6 @@ int nfc_llcp_send_symm(struct nfc_dev *dev)
 	struct sk_buff *skb;
 	struct nfc_llcp_local *local;
 	u16 size = 0;
-	int err;
 
 	local = nfc_llcp_find_local(dev);
 	if (local == NULL)
@@ -369,10 +368,8 @@ int nfc_llcp_send_symm(struct nfc_dev *dev)
 	size += dev->tx_headroom + dev->tx_tailroom + NFC_HEADER_SIZE;
 
 	skb = alloc_skb(size, GFP_KERNEL);
-	if (skb == NULL) {
-		err = -ENOMEM;
-		goto out;
-	}
+	if (skb == NULL)
+		return -ENOMEM;
 
 	skb_reserve(skb, dev->tx_headroom + NFC_HEADER_SIZE);
 
@@ -382,11 +379,8 @@ int nfc_llcp_send_symm(struct nfc_dev *dev)
 
 	nfc_llcp_send_to_raw_sock(local, skb, NFC_DIRECTION_TX);
 
-	err = nfc_data_exchange(dev, local->target_idx, skb,
+	return nfc_data_exchange(dev, local->target_idx, skb,
 				 nfc_llcp_recv, local);
-out:
-	nfc_llcp_local_put(local);
-	return err;
 }
 
 int nfc_llcp_send_connect(struct nfc_llcp_sock *sock)
@@ -396,8 +390,7 @@ int nfc_llcp_send_connect(struct nfc_llcp_sock *sock)
 	const u8 *service_name_tlv = NULL;
 	const u8 *miux_tlv = NULL;
 	const u8 *rw_tlv = NULL;
-	u8 service_name_tlv_length = 0;
-	u8 miux_tlv_length,  rw_tlv_length, rw;
+	u8 service_name_tlv_length, miux_tlv_length,  rw_tlv_length, rw;
 	int err;
 	u16 size = 0;
 	__be16 miux;
@@ -778,23 +771,8 @@ int nfc_llcp_send_ui_frame(struct nfc_llcp_sock *sock, u8 ssap, u8 dsap,
 		if (likely(frag_len > 0))
 			skb_put_data(pdu, msg_ptr, frag_len);
 
-		spin_lock(&local->tx_queue.lock);
-
-		if (list_empty(&local->list)) {
-			spin_unlock(&local->tx_queue.lock);
-
-			kfree_skb(pdu);
-
-			len -= remaining_len;
-			if (len == 0)
-				len = -ENXIO;
-			break;
-		}
-
 		/* No need to check for the peer RW for UI frames */
-		__skb_queue_tail(&local->tx_queue, pdu);
-
-		spin_unlock(&local->tx_queue.lock);
+		skb_queue_tail(&local->tx_queue, pdu);
 
 		remaining_len -= frag_len;
 		msg_ptr += frag_len;

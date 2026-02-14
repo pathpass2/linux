@@ -11,6 +11,7 @@
 #include <linux/i2c.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of_irq.h>
+#include <linux/of_gpio.h>
 #include <linux/acpi.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
@@ -572,7 +573,7 @@ static void st21nfca_hci_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id st21nfca_hci_i2c_id_table[] = {
-	{ ST21NFCA_HCI_DRIVER_NAME },
+	{ST21NFCA_HCI_DRIVER_NAME, 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, st21nfca_hci_i2c_id_table);
@@ -596,7 +597,7 @@ static struct i2c_driver st21nfca_hci_i2c_driver = {
 		.of_match_table = of_match_ptr(of_st21nfca_i2c_match),
 		.acpi_match_table = ACPI_PTR(st21nfca_hci_i2c_acpi_match),
 	},
-	.probe = st21nfca_hci_i2c_probe,
+	.probe_new = st21nfca_hci_i2c_probe,
 	.id_table = st21nfca_hci_i2c_id_table,
 	.remove = st21nfca_hci_i2c_remove,
 };

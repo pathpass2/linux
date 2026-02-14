@@ -259,8 +259,13 @@ int hl_mem_mgr_mmap(struct hl_mem_mgr *mmg, struct vm_area_struct *vma,
 		goto put_mem;
 	}
 
+#ifdef _HAS_TYPE_ARG_IN_ACCESS_OK
+	if (!access_ok(VERIFY_WRITE, (void __user *)(uintptr_t)vma->vm_start,
+		       user_mem_size)) {
+#else
 	if (!access_ok((void __user *)(uintptr_t)vma->vm_start,
 		       user_mem_size)) {
+#endif
 		dev_err(mmg->dev, "%s: User pointer is invalid - 0x%lx\n",
 			buf->behavior->topic, vma->vm_start);
 
@@ -270,7 +275,7 @@ int hl_mem_mgr_mmap(struct hl_mem_mgr *mmg, struct vm_area_struct *vma,
 
 	if (atomic_cmpxchg(&buf->mmap, 0, 1)) {
 		dev_err(mmg->dev,
-			"%s, Memory mmap failed, already mapped to user\n",
+			"%s, Memory mmap failed, already mmaped to user\n",
 			buf->behavior->topic);
 		rc = -EINVAL;
 		goto put_mem;
@@ -313,75 +318,31 @@ void hl_mem_mgr_init(struct device *dev, struct hl_mem_mgr *mmg)
 	idr_init(&mmg->handles);
 }
 
-static void hl_mem_mgr_fini_stats_reset(struct hl_mem_mgr_fini_stats *stats)
-{
-	if (!stats)
-		return;
-
-	memset(stats, 0, sizeof(*stats));
-}
-
-static void hl_mem_mgr_fini_stats_inc(u64 mem_id, struct hl_mem_mgr_fini_stats *stats)
-{
-	if (!stats)
-		return;
-
-	switch (mem_id) {
-	case HL_MMAP_TYPE_CB:
-		++stats->n_busy_cb;
-		break;
-	case HL_MMAP_TYPE_TS_BUFF:
-		++stats->n_busy_ts;
-		break;
-	default:
-		/* we currently store only CB/TS so this shouldn't happen */
-		++stats->n_busy_other;
-	}
-}
-
 /**
  * hl_mem_mgr_fini - release unified memory manager
  *
  * @mmg: parent unified memory manager
- * @stats: if non-NULL, will return some counters for handles that could not be removed.
  *
  * Release the unified memory manager. Shall be called from an interrupt context.
  */
-void hl_mem_mgr_fini(struct hl_mem_mgr *mmg, struct hl_mem_mgr_fini_stats *stats)
+void hl_mem_mgr_fini(struct hl_mem_mgr *mmg)
 {
 	struct hl_mmap_mem_buf *buf;
 	struct idr *idp;
 	const char *topic;
-	u64 mem_id;
 	u32 id;
-
-	hl_mem_mgr_fini_stats_reset(stats);
 
 	idp = &mmg->handles;
 
 	idr_for_each_entry(idp, buf, id) {
 		topic = buf->behavior->topic;
-		mem_id = buf->behavior->mem_id;
-		if (hl_mmap_mem_buf_put(buf) != 1) {
+		if (hl_mmap_mem_buf_put(buf) != 1)
 			dev_err(mmg->dev,
 				"%s: Buff handle %u for CTX is still alive\n",
 				topic, id);
-			hl_mem_mgr_fini_stats_inc(mem_id, stats);
-		}
 	}
-}
 
-/**
- * hl_mem_mgr_idr_destroy() - destroy memory manager IDR.
- * @mmg: parent unified memory manager
- *
- * Destroy the memory manager IDR.
- * Shall be called when IDR is empty and no memory buffers are in use.
- */
-void hl_mem_mgr_idr_destroy(struct hl_mem_mgr *mmg)
-{
-	if (!idr_is_empty(&mmg->handles))
-		dev_crit(mmg->dev, "memory manager IDR is destroyed while it is not empty!\n");
+	/* TODO: can it happen that some buffer is still in use at this point? */
 
 	idr_destroy(&mmg->handles);
 }

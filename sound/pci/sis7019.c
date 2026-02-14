@@ -90,7 +90,11 @@ struct voice {
  * we're not doing power management, we still need to allocate a page
  * for the silence buffer.
  */
+#ifdef CONFIG_PM_SLEEP
 #define SIS_SUSPEND_PAGES	4
+#else
+#define SIS_SUSPEND_PAGES	1
+#endif
 
 struct sis7019 {
 	unsigned long ioport;
@@ -383,7 +387,9 @@ static void __sis_unmap_silence(struct sis7019 *sis)
 
 static void sis_free_voice(struct sis7019 *sis, struct voice *voice)
 {
-	guard(spinlock_irqsave)(&sis->voice_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sis->voice_lock, flags);
 	if (voice->timing) {
 		__sis_unmap_silence(sis);
 		voice->timing->flags &= ~(VOICE_IN_USE | VOICE_SSO_TIMING |
@@ -391,6 +397,7 @@ static void sis_free_voice(struct sis7019 *sis, struct voice *voice)
 		voice->timing = NULL;
 	}
 	voice->flags &= ~(VOICE_IN_USE | VOICE_SSO_TIMING | VOICE_SYNC_TIMING);
+	spin_unlock_irqrestore(&sis->voice_lock, flags);
 }
 
 static struct voice *__sis_alloc_playback_voice(struct sis7019 *sis)
@@ -414,8 +421,14 @@ found_one:
 
 static struct voice *sis_alloc_playback_voice(struct sis7019 *sis)
 {
-	guard(spinlock_irqsave)(&sis->voice_lock);
-	return __sis_alloc_playback_voice(sis);
+	struct voice *voice;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sis->voice_lock, flags);
+	voice = __sis_alloc_playback_voice(sis);
+	spin_unlock_irqrestore(&sis->voice_lock, flags);
+
+	return voice;
 }
 
 static int sis_alloc_timing_voice(struct snd_pcm_substream *substream,
@@ -425,6 +438,7 @@ static int sis_alloc_timing_voice(struct snd_pcm_substream *substream,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct voice *voice = runtime->private_data;
 	unsigned int period_size, buffer_size;
+	unsigned long flags;
 	int needed;
 
 	/* If there are one or two periods per buffer, we don't need a
@@ -437,11 +451,11 @@ static int sis_alloc_timing_voice(struct snd_pcm_substream *substream,
 			period_size != (buffer_size / 2));
 
 	if (needed && !voice->timing) {
-		scoped_guard(spinlock_irqsave, &sis->voice_lock) {
-			voice->timing = __sis_alloc_playback_voice(sis);
-			if (voice->timing)
-				__sis_map_silence(sis);
-		}
+		spin_lock_irqsave(&sis->voice_lock, flags);
+		voice->timing = __sis_alloc_playback_voice(sis);
+		if (voice->timing)
+			__sis_map_silence(sis);
+		spin_unlock_irqrestore(&sis->voice_lock, flags);
 		if (!voice->timing)
 			return -ENOMEM;
 		voice->timing->substream = substream;
@@ -635,16 +649,17 @@ static int sis_capture_open(struct snd_pcm_substream *substream)
 	struct sis7019 *sis = snd_pcm_substream_chip(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct voice *voice = &sis->capture_voice;
+	unsigned long flags;
 
 	/* FIXME: The driver only supports recording from one channel
 	 * at the moment, but it could support more.
 	 */
-	scoped_guard(spinlock_irqsave, &sis->voice_lock) {
-		if (voice->flags & VOICE_IN_USE)
-			voice = NULL;
-		else
-			voice->flags |= VOICE_IN_USE;
-	}
+	spin_lock_irqsave(&sis->voice_lock, flags);
+	if (voice->flags & VOICE_IN_USE)
+		voice = NULL;
+	else
+		voice->flags |= VOICE_IN_USE;
+	spin_unlock_irqrestore(&sis->voice_lock, flags);
 
 	if (!voice)
 		return -EAGAIN;
@@ -857,7 +872,7 @@ static int sis_pcm_create(struct sis7019 *sis)
 		return rc;
 
 	pcm->private_data = sis;
-	strscpy(pcm->name, "SiS7019");
+	strcpy(pcm->name, "SiS7019");
 	sis->pcm = pcm;
 
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &sis_playback_ops);
@@ -891,7 +906,7 @@ static unsigned short sis_ac97_rw(struct sis7019 *sis, int codec, u32 cmd)
 	/* Get the AC97 semaphore -- software first, so we don't spin
 	 * pounding out IO reads on the hardware semaphore...
 	 */
-	guard(mutex)(&sis->ac97_mutex);
+	mutex_lock(&sis->ac97_mutex);
 
 	count = 0xffff;
 	while ((inw(io + SIS_AC97_SEMA) & SIS_AC97_SEMA_BUSY) && --count)
@@ -930,6 +945,8 @@ static unsigned short sis_ac97_rw(struct sis7019 *sis, int codec, u32 cmd)
 timeout_sema:
 	outl(SIS_AC97_SEMA_RELEASE, io + SIS_AC97_SEMA);
 timeout:
+	mutex_unlock(&sis->ac97_mutex);
+
 	if (!count) {
 		dev_err(&sis->pci->dev, "ac97 codec %d timeout cmd 0x%08x\n",
 					codec, cmd);
@@ -1135,6 +1152,7 @@ static int sis_chip_init(struct sis7019 *sis)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int sis_suspend(struct device *dev)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
@@ -1213,7 +1231,11 @@ error:
 	return -EIO;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(sis_pm, sis_suspend, sis_resume);
+static SIMPLE_DEV_PM_OPS(sis_pm, sis_suspend, sis_resume);
+#define SIS_PM_OPS	&sis_pm
+#else
+#define SIS_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
 
 static int sis_alloc_suspend(struct sis7019 *sis)
 {
@@ -1260,7 +1282,7 @@ static int sis_chip_create(struct snd_card *card,
 	sis->irq = -1;
 	sis->ioport = pci_resource_start(pci, 0);
 
-	rc = pcim_request_all_regions(pci, "SiS7019");
+	rc = pci_request_regions(pci, "SiS7019");
 	if (rc) {
 		dev_err(&pci->dev, "unable request regions\n");
 		return rc;
@@ -1335,8 +1357,8 @@ static int __snd_sis7019_probe(struct pci_dev *pci,
 	if (rc < 0)
 		return rc;
 
-	strscpy(card->driver, "SiS7019");
-	strscpy(card->shortname, "SiS7019");
+	strcpy(card->driver, "SiS7019");
+	strcpy(card->shortname, "SiS7019");
 	rc = sis_chip_create(card, pci);
 	if (rc)
 		return rc;
@@ -1375,7 +1397,7 @@ static struct pci_driver sis7019_driver = {
 	.id_table = snd_sis7019_ids,
 	.probe = snd_sis7019_probe,
 	.driver = {
-		.pm = &sis_pm,
+		.pm = SIS_PM_OPS,
 	},
 };
 

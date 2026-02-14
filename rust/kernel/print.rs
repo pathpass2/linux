@@ -2,35 +2,27 @@
 
 //! Printing facilities.
 //!
-//! C header: [`include/linux/printk.h`](srctree/include/linux/printk.h)
+//! C header: [`include/linux/printk.h`](../../../../include/linux/printk.h)
 //!
-//! Reference: <https://docs.kernel.org/core-api/printk-basics.html>
+//! Reference: <https://www.kernel.org/doc/html/latest/core-api/printk-basics.html>
 
-use crate::{
+use core::{
     ffi::{c_char, c_void},
     fmt,
-    prelude::*,
-    str::RawFormatter,
-    sync::atomic::{
-        Atomic,
-        AtomicType,
-        Relaxed, //
-    },
 };
 
+use crate::str::RawFormatter;
+
+#[cfg(CONFIG_PRINTK)]
+use crate::bindings;
+
 // Called from `vsprintf` with format specifier `%pA`.
-#[expect(clippy::missing_safety_doc)]
-#[export]
-unsafe extern "C" fn rust_fmt_argument(
-    buf: *mut c_char,
-    end: *mut c_char,
-    ptr: *const c_void,
-) -> *mut c_char {
+#[no_mangle]
+unsafe fn rust_fmt_argument(buf: *mut c_char, end: *mut c_char, ptr: *const c_void) -> *mut c_char {
     use fmt::Write;
     // SAFETY: The C contract guarantees that `buf` is valid if it's less than `end`.
     let mut w = unsafe { RawFormatter::from_ptrs(buf.cast(), end.cast()) };
-    // SAFETY: TODO.
-    let _ = w.write_fmt(unsafe { *ptr.cast::<fmt::Arguments<'_>>() });
+    let _ = w.write_fmt(unsafe { *(ptr as *const fmt::Arguments<'_>) });
     w.pos().cast()
 }
 
@@ -39,6 +31,8 @@ unsafe extern "C" fn rust_fmt_argument(
 /// Public but hidden since it should only be used from public macros.
 #[doc(hidden)]
 pub mod format_strings {
+    use crate::bindings;
+
     /// The length we copy from the `KERN_*` kernel prefixes.
     const LENGTH_PREFIX: usize = 2;
 
@@ -50,7 +44,7 @@ pub mod format_strings {
     /// The format string is always the same for a given level, i.e. for a
     /// given `prefix`, which are the kernel's `KERN_*` constants.
     ///
-    /// [`_printk`]: srctree/include/linux/printk.h
+    /// [`_printk`]: ../../../../include/linux/printk.h
     const fn generate(is_cont: bool, prefix: &[u8; 3]) -> [u8; LENGTH] {
         // Ensure the `KERN_*` macros are what we expect.
         assert!(prefix[0] == b'\x01');
@@ -99,7 +93,7 @@ pub mod format_strings {
 /// The format string must be one of the ones in [`format_strings`], and
 /// the module name must be null-terminated.
 ///
-/// [`_printk`]: srctree/include/linux/_printk.h
+/// [`_printk`]: ../../../../include/linux/_printk.h
 #[doc(hidden)]
 #[cfg_attr(not(CONFIG_PRINTK), allow(unused_variables))]
 pub unsafe fn call_printk(
@@ -109,12 +103,11 @@ pub unsafe fn call_printk(
 ) {
     // `_printk` does not seem to fail in any path.
     #[cfg(CONFIG_PRINTK)]
-    // SAFETY: TODO.
     unsafe {
         bindings::_printk(
-            format_string.as_ptr(),
+            format_string.as_ptr() as _,
             module_name.as_ptr(),
-            core::ptr::from_ref(&args).cast::<c_void>(),
+            &args as *const _ as *const c_void,
         );
     }
 }
@@ -123,7 +116,7 @@ pub unsafe fn call_printk(
 ///
 /// Public but hidden since it should only be used from public macros.
 ///
-/// [`_printk`]: srctree/include/linux/printk.h
+/// [`_printk`]: ../../../../include/linux/printk.h
 #[doc(hidden)]
 #[cfg_attr(not(CONFIG_PRINTK), allow(unused_variables))]
 pub fn call_printk_cont(args: fmt::Arguments<'_>) {
@@ -133,8 +126,8 @@ pub fn call_printk_cont(args: fmt::Arguments<'_>) {
     #[cfg(CONFIG_PRINTK)]
     unsafe {
         bindings::_printk(
-            format_strings::CONT.as_ptr(),
-            core::ptr::from_ref(&args).cast::<c_void>(),
+            format_strings::CONT.as_ptr() as _,
+            &args as *const _ as *const c_void,
         );
     }
 }
@@ -145,7 +138,7 @@ pub fn call_printk_cont(args: fmt::Arguments<'_>) {
 #[doc(hidden)]
 #[cfg(not(testlib))]
 #[macro_export]
-#[expect(clippy::crate_in_macro_def)]
+#[allow(clippy::crate_in_macro_def)]
 macro_rules! print_macro (
     // The non-continuation cases (most of them, e.g. `INFO`).
     ($format_string:path, false, $($arg:tt)+) => (
@@ -154,7 +147,7 @@ macro_rules! print_macro (
         // takes borrows on the arguments, but does not extend the scope of temporaries.
         // Therefore, a `match` expression is used to keep them around, since
         // the scrutinee is kept until the end of the `match`.
-        match $crate::prelude::fmt!($($arg)+) {
+        match format_args!($($arg)+) {
             // SAFETY: This hidden macro should only be called by the documented
             // printing macros which ensure the format string is one of the fixed
             // ones. All `__LOG_PREFIX`s are null-terminated as they are generated
@@ -173,7 +166,7 @@ macro_rules! print_macro (
     // The `CONT` case.
     ($format_string:path, true, $($arg:tt)+) => (
         $crate::print::call_printk_cont(
-            $crate::prelude::fmt!($($arg)+),
+            format_args!($($arg)+),
         );
     );
 );
@@ -203,11 +196,10 @@ macro_rules! print_macro (
 /// Equivalent to the kernel's [`pr_emerg`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_emerg`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_emerg
+/// [`pr_emerg`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_emerg
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -228,11 +220,10 @@ macro_rules! pr_emerg (
 /// Equivalent to the kernel's [`pr_alert`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_alert`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_alert
+/// [`pr_alert`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_alert
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -253,11 +244,10 @@ macro_rules! pr_alert (
 /// Equivalent to the kernel's [`pr_crit`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_crit`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_crit
+/// [`pr_crit`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_crit
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -278,11 +268,10 @@ macro_rules! pr_crit (
 /// Equivalent to the kernel's [`pr_err`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_err`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_err
+/// [`pr_err`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_err
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -303,11 +292,10 @@ macro_rules! pr_err (
 /// Equivalent to the kernel's [`pr_warn`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_warn`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_warn
+/// [`pr_warn`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_warn
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -328,11 +316,10 @@ macro_rules! pr_warn (
 /// Equivalent to the kernel's [`pr_notice`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_notice`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_notice
+/// [`pr_notice`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_notice
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -353,11 +340,10 @@ macro_rules! pr_notice (
 /// Equivalent to the kernel's [`pr_info`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_info`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_info
+/// [`pr_info`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_info
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -380,11 +366,10 @@ macro_rules! pr_info (
 /// yet.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_debug`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_debug
+/// [`pr_debug`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_debug
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -408,12 +393,10 @@ macro_rules! pr_debug (
 /// Equivalent to the kernel's [`pr_cont`] macro.
 ///
 /// Mimics the interface of [`std::print!`]. See [`core::fmt`] and
-/// [`std::format!`] for information about the formatting syntax.
+/// `alloc::format!` for information about the formatting syntax.
 ///
-/// [`pr_info!`]: crate::pr_info!
-/// [`pr_cont`]: https://docs.kernel.org/core-api/printk-basics.html#c.pr_cont
+/// [`pr_cont`]: https://www.kernel.org/doc/html/latest/core-api/printk-basics.html#c.pr_cont
 /// [`std::print!`]: https://doc.rust-lang.org/std/macro.print.html
-/// [`std::format!`]: https://doc.rust-lang.org/std/macro.format.html
 ///
 /// # Examples
 ///
@@ -426,153 +409,5 @@ macro_rules! pr_debug (
 macro_rules! pr_cont (
     ($($arg:tt)*) => (
         $crate::print_macro!($crate::print::format_strings::CONT, true, $($arg)*)
-    )
-);
-
-/// A lightweight `call_once` primitive.
-///
-/// This structure provides the Rust equivalent of the kernel's `DO_ONCE_LITE` macro.
-/// While it would be possible to implement the feature entirely as a Rust macro,
-/// the functionality that can be implemented as regular functions has been
-/// extracted and implemented as the `OnceLite` struct for better code maintainability.
-pub struct OnceLite(Atomic<State>);
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-enum State {
-    Incomplete = 0,
-    Complete = 1,
-}
-
-// SAFETY: `State` and `i32` has the same size and alignment, and it's round-trip
-// transmutable to `i32`.
-unsafe impl AtomicType for State {
-    type Repr = i32;
-}
-
-impl OnceLite {
-    /// Creates a new [`OnceLite`] in the incomplete state.
-    #[inline(always)]
-    #[allow(clippy::new_without_default)]
-    pub const fn new() -> Self {
-        OnceLite(Atomic::new(State::Incomplete))
-    }
-
-    /// Calls the provided function exactly once.
-    ///
-    /// There is no other synchronization between two `call_once()`s
-    /// except that only one will execute `f`, in other words, callers
-    /// should not use a failed `call_once()` as a proof that another
-    /// `call_once()` has already finished and the effect is observable
-    /// to this thread.
-    pub fn call_once<F>(&self, f: F) -> bool
-    where
-        F: FnOnce(),
-    {
-        // Avoid expensive cmpxchg if already completed.
-        // ORDERING: `Relaxed` is used here since no synchronization is required.
-        let old = self.0.load(Relaxed);
-        if old == State::Complete {
-            return false;
-        }
-
-        // ORDERING: `Relaxed` is used here since no synchronization is required.
-        let old = self.0.xchg(State::Complete, Relaxed);
-        if old == State::Complete {
-            return false;
-        }
-
-        f();
-        true
-    }
-}
-
-/// Run the given function exactly once.
-///
-/// This is equivalent to the kernel's `DO_ONCE_LITE` macro.
-///
-/// # Examples
-///
-/// ```
-/// kernel::do_once_lite! {
-///     kernel::pr_info!("This will be printed only once\n");
-/// };
-/// ```
-#[macro_export]
-macro_rules! do_once_lite {
-    { $($e:tt)* } => {{
-        #[link_section = ".data..once"]
-        static ONCE: $crate::print::OnceLite = $crate::print::OnceLite::new();
-        ONCE.call_once(|| { $($e)* });
-    }};
-}
-
-/// Prints an emergency-level message (level 0) only once.
-///
-/// Equivalent to the kernel's `pr_emerg_once` macro.
-#[macro_export]
-macro_rules! pr_emerg_once (
-    ($($arg:tt)*) => (
-        $crate::do_once_lite! { $crate::pr_emerg!($($arg)*) }
-    )
-);
-
-/// Prints an alert-level message (level 1) only once.
-///
-/// Equivalent to the kernel's `pr_alert_once` macro.
-#[macro_export]
-macro_rules! pr_alert_once (
-    ($($arg:tt)*) => (
-        $crate::do_once_lite! { $crate::pr_alert!($($arg)*) }
-    )
-);
-
-/// Prints a critical-level message (level 2) only once.
-///
-/// Equivalent to the kernel's `pr_crit_once` macro.
-#[macro_export]
-macro_rules! pr_crit_once (
-    ($($arg:tt)*) => (
-        $crate::do_once_lite! { $crate::pr_crit!($($arg)*) }
-    )
-);
-
-/// Prints an error-level message (level 3) only once.
-///
-/// Equivalent to the kernel's `pr_err_once` macro.
-#[macro_export]
-macro_rules! pr_err_once (
-    ($($arg:tt)*) => (
-        $crate::do_once_lite! { $crate::pr_err!($($arg)*) }
-    )
-);
-
-/// Prints a warning-level message (level 4) only once.
-///
-/// Equivalent to the kernel's `pr_warn_once` macro.
-#[macro_export]
-macro_rules! pr_warn_once (
-    ($($arg:tt)*) => (
-        $crate::do_once_lite! { $crate::pr_warn!($($arg)*) }
-    )
-);
-
-/// Prints a notice-level message (level 5) only once.
-///
-/// Equivalent to the kernel's `pr_notice_once` macro.
-#[macro_export]
-macro_rules! pr_notice_once (
-    ($($arg:tt)*) => (
-        $crate::do_once_lite! { $crate::pr_notice!($($arg)*) }
-    )
-);
-
-/// Prints an info-level message (level 6) only once.
-///
-/// Equivalent to the kernel's `pr_info_once` macro.
-#[macro_export]
-macro_rules! pr_info_once (
-    ($($arg:tt)*) => (
-        $crate::do_once_lite! { $crate::pr_info!($($arg)*) }
     )
 );

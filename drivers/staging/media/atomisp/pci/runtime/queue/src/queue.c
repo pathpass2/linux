@@ -2,6 +2,15 @@
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 #include "ia_css_queue.h"
@@ -72,7 +81,7 @@ int ia_css_queue_uninit(ia_css_queue_t *qhandle)
 
 int ia_css_queue_enqueue(ia_css_queue_t *qhandle, uint32_t item)
 {
-	int error;
+	int error = 0;
 
 	if (!qhandle)
 		return -EINVAL;
@@ -114,7 +123,7 @@ int ia_css_queue_enqueue(ia_css_queue_t *qhandle, uint32_t item)
 
 		/* c. Store the queue object */
 		/* Set only fields requiring update with
-		 * valid value. Avoids unnecessary calls
+		 * valid value. Avoids uncessary calls
 		 * to load/store functions
 		 */
 		ignore_desc_flags = QUEUE_IGNORE_SIZE_START_STEP_FLAGS;
@@ -129,7 +138,7 @@ int ia_css_queue_enqueue(ia_css_queue_t *qhandle, uint32_t item)
 
 int ia_css_queue_dequeue(ia_css_queue_t *qhandle, uint32_t *item)
 {
-	int error;
+	int error = 0;
 
 	if (!qhandle || NULL == item)
 		return -EINVAL;
@@ -171,7 +180,7 @@ int ia_css_queue_dequeue(ia_css_queue_t *qhandle, uint32_t *item)
 
 		/* c. Store the queue object */
 		/* Set only fields requiring update with
-		 * valid value. Avoids unnecessary calls
+		 * valid value. Avoids uncessary calls
 		 * to load/store functions
 		 */
 		ignore_desc_flags = QUEUE_IGNORE_SIZE_END_STEP_FLAGS;
@@ -184,7 +193,7 @@ int ia_css_queue_dequeue(ia_css_queue_t *qhandle, uint32_t *item)
 
 int ia_css_queue_is_full(ia_css_queue_t *qhandle, bool *is_full)
 {
-	int error;
+	int error = 0;
 
 	if ((!qhandle) || (!is_full))
 		return -EINVAL;
@@ -216,7 +225,7 @@ int ia_css_queue_is_full(ia_css_queue_t *qhandle, bool *is_full)
 
 int ia_css_queue_get_free_space(ia_css_queue_t *qhandle, uint32_t *size)
 {
-	int error;
+	int error = 0;
 
 	if ((!qhandle) || (!size))
 		return -EINVAL;
@@ -248,7 +257,7 @@ int ia_css_queue_get_free_space(ia_css_queue_t *qhandle, uint32_t *size)
 
 int ia_css_queue_get_used_space(ia_css_queue_t *qhandle, uint32_t *size)
 {
-	int error;
+	int error = 0;
 
 	if ((!qhandle) || (!size))
 		return -EINVAL;
@@ -280,8 +289,8 @@ int ia_css_queue_get_used_space(ia_css_queue_t *qhandle, uint32_t *size)
 
 int ia_css_queue_peek(ia_css_queue_t *qhandle, u32 offset, uint32_t *element)
 {
-	u32 num_elems;
-	int error;
+	u32 num_elems = 0;
+	int error = 0;
 
 	if ((!qhandle) || (!element))
 		return -EINVAL;
@@ -329,7 +338,7 @@ int ia_css_queue_peek(ia_css_queue_t *qhandle, u32 offset, uint32_t *element)
 
 int ia_css_queue_is_empty(ia_css_queue_t *qhandle, bool *is_empty)
 {
-	int error;
+	int error = 0;
 
 	if ((!qhandle) || (!is_empty))
 		return -EINVAL;
@@ -361,7 +370,7 @@ int ia_css_queue_is_empty(ia_css_queue_t *qhandle, bool *is_empty)
 
 int ia_css_queue_get_size(ia_css_queue_t *qhandle, uint32_t *size)
 {
-	int error;
+	int error = 0;
 
 	if ((!qhandle) || (!size))
 		return -EINVAL;

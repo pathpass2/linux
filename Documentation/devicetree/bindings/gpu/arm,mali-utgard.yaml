@@ -29,13 +29,10 @@ properties:
               - allwinner,sun50i-a64-mali
               - rockchip,rk3036-mali
               - rockchip,rk3066-mali
-              - rockchip,rk3128-mali
               - rockchip,rk3188-mali
               - rockchip,rk3228-mali
               - samsung,exynos4210-mali
-              - st,stih410-mali
               - stericsson,db8500-mali
-              - xlnx,zynqmp-mali
           - const: arm,mali-400
       - items:
           - enum:
@@ -47,7 +44,6 @@ properties:
               - hisilicon,hi6220-mali
               - mediatek,mt7623-mali
               - rockchip,rk3328-mali
-              - rockchip,rk3528-mali
           - const: arm,mali-450
 
       # "arm,mali-300"
@@ -149,7 +145,6 @@ allOf:
               - rockchip,rk3188-mali
               - rockchip,rk3228-mali
               - rockchip,rk3328-mali
-              - rockchip,rk3528-mali
     then:
       required:
         - resets

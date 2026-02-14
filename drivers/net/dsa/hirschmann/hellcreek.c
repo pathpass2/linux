@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+// SPDX-License-Identifier: (GPL-2.0 or MIT)
 /*
  * DSA driver for:
  * Hirschmann Hellcreek TSN switch.
@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_mdio.h>
 #include <linux/platform_device.h>
 #include <linux/bitops.h>
@@ -294,8 +295,12 @@ static void hellcreek_get_strings(struct dsa_switch *ds, int port,
 {
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(hellcreek_counter); ++i)
-		ethtool_puts(&data, hellcreek_counter[i].name);
+	for (i = 0; i < ARRAY_SIZE(hellcreek_counter); ++i) {
+		const struct hellcreek_counter *counter = &hellcreek_counter[i];
+
+		strscpy(data + i * ETH_GSTRING_LEN,
+			counter->name, ETH_GSTRING_LEN);
+	}
 }
 
 static int hellcreek_get_sset_count(struct dsa_switch *ds, int port, int sset)
@@ -1061,7 +1066,7 @@ static void hellcreek_setup_tc_identity_mapping(struct hellcreek *hellcreek)
 
 static int hellcreek_setup_fdb(struct hellcreek *hellcreek)
 {
-	static const struct hellcreek_fdb_entry l2_ptp = {
+	static struct hellcreek_fdb_entry l2_ptp = {
 		/* MAC: 01-1B-19-00-00-00 */
 		.mac	      = { 0x01, 0x1b, 0x19, 0x00, 0x00, 0x00 },
 		.portmask     = 0x03,	/* Management ports */
@@ -1072,7 +1077,7 @@ static int hellcreek_setup_fdb(struct hellcreek *hellcreek)
 		.reprio_tc    = 6,	/* TC: 6 as per IEEE 802.1AS */
 		.reprio_en    = 1,
 	};
-	static const struct hellcreek_fdb_entry udp4_ptp = {
+	static struct hellcreek_fdb_entry udp4_ptp = {
 		/* MAC: 01-00-5E-00-01-81 */
 		.mac	      = { 0x01, 0x00, 0x5e, 0x00, 0x01, 0x81 },
 		.portmask     = 0x03,	/* Management ports */
@@ -1083,7 +1088,7 @@ static int hellcreek_setup_fdb(struct hellcreek *hellcreek)
 		.reprio_tc    = 6,
 		.reprio_en    = 1,
 	};
-	static const struct hellcreek_fdb_entry udp6_ptp = {
+	static struct hellcreek_fdb_entry udp6_ptp = {
 		/* MAC: 33-33-00-00-01-81 */
 		.mac	      = { 0x33, 0x33, 0x00, 0x00, 0x01, 0x81 },
 		.portmask     = 0x03,	/* Management ports */
@@ -1094,7 +1099,7 @@ static int hellcreek_setup_fdb(struct hellcreek *hellcreek)
 		.reprio_tc    = 6,
 		.reprio_en    = 1,
 	};
-	static const struct hellcreek_fdb_entry l2_p2p = {
+	static struct hellcreek_fdb_entry l2_p2p = {
 		/* MAC: 01-80-C2-00-00-0E */
 		.mac	      = { 0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e },
 		.portmask     = 0x03,	/* Management ports */
@@ -1105,7 +1110,7 @@ static int hellcreek_setup_fdb(struct hellcreek *hellcreek)
 		.reprio_tc    = 6,	/* TC: 6 as per IEEE 802.1AS */
 		.reprio_en    = 1,
 	};
-	static const struct hellcreek_fdb_entry udp4_p2p = {
+	static struct hellcreek_fdb_entry udp4_p2p = {
 		/* MAC: 01-00-5E-00-00-6B */
 		.mac	      = { 0x01, 0x00, 0x5e, 0x00, 0x00, 0x6b },
 		.portmask     = 0x03,	/* Management ports */
@@ -1116,7 +1121,7 @@ static int hellcreek_setup_fdb(struct hellcreek *hellcreek)
 		.reprio_tc    = 6,
 		.reprio_en    = 1,
 	};
-	static const struct hellcreek_fdb_entry udp6_p2p = {
+	static struct hellcreek_fdb_entry udp6_p2p = {
 		/* MAC: 33-33-00-00-00-6B */
 		.mac	      = { 0x33, 0x33, 0x00, 0x00, 0x00, 0x6b },
 		.portmask     = 0x03,	/* Management ports */
@@ -1127,7 +1132,7 @@ static int hellcreek_setup_fdb(struct hellcreek *hellcreek)
 		.reprio_tc    = 6,
 		.reprio_en    = 1,
 	};
-	static const struct hellcreek_fdb_entry stp = {
+	static struct hellcreek_fdb_entry stp = {
 		/* MAC: 01-80-C2-00-00-00 */
 		.mac	      = { 0x01, 0x80, 0xc2, 0x00, 0x00, 0x00 },
 		.portmask     = 0x03,	/* Management ports */
@@ -1320,13 +1325,13 @@ static int hellcreek_devlink_region_fdb_snapshot(struct devlink *dl,
 	return 0;
 }
 
-static const struct devlink_region_ops hellcreek_region_vlan_ops = {
+static struct devlink_region_ops hellcreek_region_vlan_ops = {
 	.name	    = "vlan",
 	.snapshot   = hellcreek_devlink_region_vlan_snapshot,
 	.destructor = kfree,
 };
 
-static const struct devlink_region_ops hellcreek_region_fdb_ops = {
+static struct devlink_region_ops hellcreek_region_fdb_ops = {
 	.name	    = "fdb",
 	.snapshot   = hellcreek_devlink_region_fdb_snapshot,
 	.destructor = kfree,
@@ -1335,7 +1340,7 @@ static const struct devlink_region_ops hellcreek_region_fdb_ops = {
 static int hellcreek_setup_devlink_regions(struct dsa_switch *ds)
 {
 	struct hellcreek *hellcreek = ds->priv;
-	const struct devlink_region_ops *ops;
+	struct devlink_region_ops *ops;
 	struct devlink_region *region;
 	u64 size;
 	int ret;
@@ -1880,17 +1885,13 @@ static int hellcreek_port_setup_tc(struct dsa_switch *ds, int port,
 	case TC_SETUP_QDISC_TAPRIO: {
 		struct tc_taprio_qopt_offload *taprio = type_data;
 
-		switch (taprio->cmd) {
-		case TAPRIO_CMD_REPLACE:
-			if (!hellcreek_validate_schedule(hellcreek, taprio))
-				return -EOPNOTSUPP;
-
-			return hellcreek_port_set_schedule(ds, port, taprio);
-		case TAPRIO_CMD_DESTROY:
-			return hellcreek_port_del_schedule(ds, port);
-		default:
+		if (!hellcreek_validate_schedule(hellcreek, taprio))
 			return -EOPNOTSUPP;
-		}
+
+		if (taprio->enable)
+			return hellcreek_port_set_schedule(ds, port, taprio);
+
+		return hellcreek_port_del_schedule(ds, port);
 	}
 	default:
 		return -EOPNOTSUPP;
@@ -1926,8 +1927,6 @@ static const struct dsa_switch_ops hellcreek_ds_ops = {
 	.port_vlan_filtering   = hellcreek_vlan_filtering,
 	.setup		       = hellcreek_setup,
 	.teardown	       = hellcreek_teardown,
-	.port_hsr_join	       = dsa_port_simple_hsr_join,
-	.port_hsr_leave	       = dsa_port_simple_hsr_leave,
 };
 
 static int hellcreek_probe(struct platform_device *pdev)
@@ -2058,16 +2057,18 @@ err_ptp_setup:
 	return ret;
 }
 
-static void hellcreek_remove(struct platform_device *pdev)
+static int hellcreek_remove(struct platform_device *pdev)
 {
 	struct hellcreek *hellcreek = platform_get_drvdata(pdev);
 
 	if (!hellcreek)
-		return;
+		return 0;
 
 	hellcreek_hwtstamp_free(hellcreek);
 	hellcreek_ptp_free(hellcreek);
 	dsa_unregister_switch(hellcreek->ds);
+
+	return 0;
 }
 
 static void hellcreek_shutdown(struct platform_device *pdev)

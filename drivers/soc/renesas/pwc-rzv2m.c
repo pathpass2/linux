@@ -24,8 +24,8 @@ struct rzv2m_pwc_priv {
 	DECLARE_BITMAP(ch_en_bits, 2);
 };
 
-static int rzv2m_pwc_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			      int value)
+static void rzv2m_pwc_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			       int value)
 {
 	struct rzv2m_pwc_priv *priv = gpiochip_get_data(chip);
 	u32 reg;
@@ -38,8 +38,6 @@ static int rzv2m_pwc_gpio_set(struct gpio_chip *chip, unsigned int offset,
 	writel(reg, priv->base + PWC_GPIO);
 
 	assign_bit(offset, priv->ch_en_bits, value);
-
-	return 0;
 }
 
 static int rzv2m_pwc_gpio_get(struct gpio_chip *chip, unsigned int offset)
@@ -133,7 +131,7 @@ static struct platform_driver rzv2m_pwc_driver = {
 	.probe = rzv2m_pwc_probe,
 	.driver = {
 		.name = "rzv2m_pwc",
-		.of_match_table = rzv2m_pwc_of_match,
+		.of_match_table = of_match_ptr(rzv2m_pwc_of_match),
 	},
 };
 module_platform_driver(rzv2m_pwc_driver);

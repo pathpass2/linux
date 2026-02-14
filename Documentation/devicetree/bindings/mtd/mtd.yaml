@@ -10,11 +10,9 @@ maintainers:
   - Miquel Raynal <miquel.raynal@bootlin.com>
   - Richard Weinberger <richard@nod.at>
 
-select: false
-
 properties:
   $nodename:
-    pattern: "^(flash|.*sram|nand)(@.*)?$"
+    pattern: "^(flash|.*sram)(@.*)?$"
 
   label:
     description:
@@ -30,24 +28,22 @@ properties:
     deprecated: true
 
   partitions:
-    type: object
+    $ref: /schemas/mtd/partitions/partitions.yaml
 
     required:
       - compatible
 
 patternProperties:
-  "(^partition)?@[0-9a-f]+$":
-    $ref: /schemas/mtd/partitions/partition.yaml#/$defs/partition-node
+  "@[0-9a-f]+$":
+    $ref: partitions/partition.yaml
+    deprecated: true
+
+  "^partition@[0-9a-f]+":
+    $ref: partitions/partition.yaml
     deprecated: true
 
   "^otp(-[0-9]+)?$":
-    type: object
-
-    allOf:
-      - $ref: /schemas/nvmem/nvmem.yaml#
-      - $ref: /schemas/nvmem/nvmem-deprecated-cells.yaml#
-
-    unevaluatedProperties: false
+    $ref: ../nvmem/nvmem.yaml#
 
     description: |
       An OTP memory region. Some flashes provide a one-time-programmable

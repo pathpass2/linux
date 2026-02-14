@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/mfd/syscon.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -23,7 +24,6 @@
 #include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
-#include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
 #include <drm/exynos_drm.h>
 
@@ -188,7 +188,6 @@ struct fimd_context {
 	u32				i80ifcon;
 	bool				i80_if;
 	bool				suspended;
-	bool				dp_clk_enabled;
 	wait_queue_head_t		wait_vsync_queue;
 	atomic_t			wait_vsync_event;
 	atomic_t			win_updated;
@@ -482,7 +481,7 @@ static void fimd_commit(struct exynos_drm_crtc *crtc)
 	struct fimd_context *ctx = crtc->ctx;
 	struct drm_display_mode *mode = &crtc->base.state->adjusted_mode;
 	const struct fimd_driver_data *driver_data = ctx->driver_data;
-	void __iomem *timing_base = ctx->regs + driver_data->timing_base;
+	void *timing_base = ctx->regs + driver_data->timing_base;
 	u32 val;
 
 	if (ctx->suspended)
@@ -663,9 +662,9 @@ static void fimd_win_set_bldmod(struct fimd_context *ctx, unsigned int win,
 static void fimd_win_set_pixfmt(struct fimd_context *ctx, unsigned int win,
 				struct drm_framebuffer *fb, int width)
 {
-	struct exynos_drm_plane *plane = &ctx->planes[win];
+	struct exynos_drm_plane plane = ctx->planes[win];
 	struct exynos_drm_plane_state *state =
-		to_exynos_plane_state(plane->base.state);
+		to_exynos_plane_state(plane.base.state);
 	uint32_t pixel_format = fb->format->format;
 	unsigned int alpha = state->base.alpha;
 	u32 val = WINCONx_ENWIN;
@@ -733,7 +732,7 @@ static void fimd_win_set_pixfmt(struct fimd_context *ctx, unsigned int win,
 	/*
 	 * Setting dma-burst to 16Word causes permanent tearing for very small
 	 * buffers, e.g. cursor buffer. Burst Mode switching which based on
-	 * plane size is not recommended as plane size varies a lot towards the
+	 * plane size is not recommended as plane size varies alot towards the
 	 * end of the screen and rapid movement causes unstable DMA, but it is
 	 * still better to change dma-burst than displaying garbage.
 	 */
@@ -1049,18 +1048,7 @@ static void fimd_dp_clock_enable(struct exynos_drm_clk *clk, bool enable)
 	struct fimd_context *ctx = container_of(clk, struct fimd_context,
 						dp_clk);
 	u32 val = enable ? DP_MIE_CLK_DP_ENABLE : DP_MIE_CLK_DISABLE;
-
-	if (enable == ctx->dp_clk_enabled)
-		return;
-
-	if (enable)
-		pm_runtime_resume_and_get(ctx->dev);
-
-	ctx->dp_clk_enabled = enable;
 	writel(val, ctx->regs + DP_MIE_CLKCON);
-
-	if (!enable)
-		pm_runtime_put(ctx->dev);
 }
 
 static const struct exynos_drm_crtc_ops fimd_crtc_ops = {
@@ -1290,11 +1278,13 @@ err_disable_pm_runtime:
 	return ret;
 }
 
-static void fimd_remove(struct platform_device *pdev)
+static int fimd_remove(struct platform_device *pdev)
 {
 	pm_runtime_disable(&pdev->dev);
 
 	component_del(&pdev->dev, &fimd_component_ops);
+
+	return 0;
 }
 
 static int exynos_fimd_suspend(struct device *dev)
@@ -1339,6 +1329,7 @@ struct platform_driver fimd_driver = {
 	.remove		= fimd_remove,
 	.driver		= {
 		.name	= "exynos4-fb",
+		.owner	= THIS_MODULE,
 		.pm	= pm_ptr(&exynos_fimd_pm_ops),
 		.of_match_table = fimd_driver_dt_match,
 	},

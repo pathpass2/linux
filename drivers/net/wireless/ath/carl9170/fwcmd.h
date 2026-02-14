@@ -320,9 +320,9 @@ struct carl9170_rsp {
 		struct carl9170_u32_list	rreg_res;
 		struct carl9170_u32_list	echo;
 #ifdef __CARL9170FW__
-		DECLARE_FLEX_ARRAY(struct carl9170_tx_status, tx_status);
+		struct carl9170_tx_status	tx_status[0];
 #endif /* __CARL9170FW__ */
-		DECLARE_FLEX_ARRAY(struct _carl9170_tx_status, _tx_status);
+		struct _carl9170_tx_status	_tx_status[0];
 		struct carl9170_gpio		gpio;
 		struct carl9170_tsf_rsp		tsf;
 		struct carl9170_psm		psm;

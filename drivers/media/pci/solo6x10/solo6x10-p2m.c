@@ -57,7 +57,7 @@ int solo_p2m_dma_desc(struct solo_dev *solo_dev,
 		      int desc_cnt)
 {
 	struct solo_p2m_dev *p2m_dev;
-	unsigned long time_left;
+	unsigned int timeout;
 	unsigned int config = 0;
 	int ret = 0;
 	unsigned int p2m_id = 0;
@@ -99,12 +99,12 @@ int solo_p2m_dma_desc(struct solo_dev *solo_dev,
 			       desc[1].ctrl);
 	}
 
-	time_left = wait_for_completion_timeout(&p2m_dev->completion,
-						solo_dev->p2m_jiffies);
+	timeout = wait_for_completion_timeout(&p2m_dev->completion,
+					      solo_dev->p2m_jiffies);
 
 	if (WARN_ON_ONCE(p2m_dev->error))
 		ret = -EIO;
-	else if (time_left == 0) {
+	else if (timeout == 0) {
 		solo_dev->p2m_timeouts++;
 		ret = -EAGAIN;
 	}

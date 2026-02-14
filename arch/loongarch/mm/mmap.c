@@ -3,18 +3,17 @@
  * Copyright (C) 2020-2022 Loongson Technology Corporation Limited
  */
 #include <linux/export.h>
-#include <linux/hugetlb.h>
 #include <linux/io.h>
-#include <linux/kfence.h>
 #include <linux/memblock.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
 
-#define SHM_ALIGN_MASK	(SHMLBA - 1)
+unsigned long shm_align_mask = PAGE_SIZE - 1;	/* Sane caches */
+EXPORT_SYMBOL(shm_align_mask);
 
-#define COLOUR_ALIGN(addr, pgoff)			\
-	((((addr) + SHM_ALIGN_MASK) & ~SHM_ALIGN_MASK)	\
-	 + (((pgoff) << PAGE_SHIFT) & SHM_ALIGN_MASK))
+#define COLOUR_ALIGN(addr, pgoff)				\
+	((((addr) + shm_align_mask) & ~shm_align_mask) +	\
+	 (((pgoff) << PAGE_SHIFT) & shm_align_mask))
 
 enum mmap_allocation_direction {UP, DOWN};
 
@@ -26,7 +25,7 @@ static unsigned long arch_get_unmapped_area_common(struct file *filp,
 	struct vm_area_struct *vma;
 	unsigned long addr = addr0;
 	int do_color_align;
-	struct vm_unmapped_area_info info = {};
+	struct vm_unmapped_area_info info;
 
 	if (unlikely(len > TASK_SIZE))
 		return -ENOMEM;
@@ -41,7 +40,7 @@ static unsigned long arch_get_unmapped_area_common(struct file *filp,
 		 * cache aliasing constraints.
 		 */
 		if ((flags & MAP_SHARED) &&
-		    ((addr - (pgoff << PAGE_SHIFT)) & SHM_ALIGN_MASK))
+		    ((addr - (pgoff << PAGE_SHIFT)) & shm_align_mask))
 			return -EINVAL;
 		return addr;
 	}
@@ -64,11 +63,8 @@ static unsigned long arch_get_unmapped_area_common(struct file *filp,
 	}
 
 	info.length = len;
+	info.align_mask = do_color_align ? (PAGE_MASK & shm_align_mask) : 0;
 	info.align_offset = pgoff << PAGE_SHIFT;
-	if (filp && is_file_hugepages(filp))
-		info.align_mask = huge_page_mask_align(filp);
-	else
-		info.align_mask = do_color_align ? (PAGE_MASK & SHM_ALIGN_MASK) : 0;
 
 	if (dir == DOWN) {
 		info.flags = VM_UNMAPPED_AREA_TOPDOWN;
@@ -87,14 +83,14 @@ static unsigned long arch_get_unmapped_area_common(struct file *filp,
 		 */
 	}
 
+	info.flags = 0;
 	info.low_limit = mm->mmap_base;
 	info.high_limit = TASK_SIZE;
 	return vm_unmapped_area(&info);
 }
 
 unsigned long arch_get_unmapped_area(struct file *filp, unsigned long addr0,
-	unsigned long len, unsigned long pgoff, unsigned long flags,
-	vm_flags_t vm_flags)
+	unsigned long len, unsigned long pgoff, unsigned long flags)
 {
 	return arch_get_unmapped_area_common(filp,
 			addr0, len, pgoff, flags, UP);
@@ -106,7 +102,7 @@ unsigned long arch_get_unmapped_area(struct file *filp, unsigned long addr0,
  */
 unsigned long arch_get_unmapped_area_topdown(struct file *filp,
 	unsigned long addr0, unsigned long len, unsigned long pgoff,
-	unsigned long flags, vm_flags_t vm_flags)
+	unsigned long flags)
 {
 	return arch_get_unmapped_area_common(filp,
 			addr0, len, pgoff, flags, DOWN);
@@ -115,9 +111,6 @@ unsigned long arch_get_unmapped_area_topdown(struct file *filp,
 int __virt_addr_valid(volatile void *kaddr)
 {
 	unsigned long vaddr = (unsigned long)kaddr;
-
-	if (is_kfence_address((void *)kaddr))
-		return 1;
 
 	if ((vaddr < PAGE_OFFSET) || (vaddr >= vm_map_base))
 		return 0;

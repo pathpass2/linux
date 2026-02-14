@@ -12,7 +12,6 @@
 #include <linux/string.h>
 #include <linux/nodemask.h>
 #include <linux/memblock.h>
-#include <linux/numa_memblks.h>
 
 #include <asm/io.h>
 #include <linux/pci_ids.h>
@@ -25,7 +24,7 @@
 #include <asm/numa.h>
 #include <asm/mpspec.h>
 #include <asm/apic.h>
-#include <asm/amd/nb.h>
+#include <asm/amd_nb.h>
 
 static unsigned char __initdata nodeids[8];
 
@@ -55,11 +54,13 @@ static __init int find_northbridge(void)
 
 int __init amd_numa_init(void)
 {
-	unsigned int numnodes, cores, apicid;
-	u64 prevbase, start = PFN_PHYS(0);
+	u64 start = PFN_PHYS(0);
 	u64 end = PFN_PHYS(max_pfn);
-	u32 nodeid, reg;
+	unsigned numnodes;
+	u64 prevbase;
 	int i, j, nb;
+	u32 nodeid, reg;
+	unsigned int bits, cores, apicid_base;
 
 	if (!early_pci_allowed())
 		return -EINVAL;
@@ -157,18 +158,26 @@ int __init amd_numa_init(void)
 		return -ENOENT;
 
 	/*
-	 * We seem to have valid NUMA configuration. Map apicids to nodes
-	 * using the size of the core domain in the APIC space.
+	 * We seem to have valid NUMA configuration.  Map apicids to nodes
+	 * using the coreid bits from early_identify_cpu.
 	 */
-	cores = topology_get_domain_size(TOPO_CORE_DOMAIN);
+	bits = boot_cpu_data.x86_coreid_bits;
+	cores = 1 << bits;
+	apicid_base = 0;
 
-	apicid = boot_cpu_physical_apicid;
-	if (apicid > 0)
-		pr_info("BSP APIC ID: %02x\n", apicid);
+	/*
+	 * get boot-time SMP configuration:
+	 */
+	early_get_smp_config();
 
-	for_each_node_mask(i, numa_nodes_parsed) {
-		for (j = 0; j < cores; j++, apicid++)
-			set_apicid_to_node(apicid, i);
+	if (boot_cpu_physical_apicid > 0) {
+		pr_info("BSP APIC ID: %02x\n", boot_cpu_physical_apicid);
+		apicid_base = boot_cpu_physical_apicid;
 	}
+
+	for_each_node_mask(i, numa_nodes_parsed)
+		for (j = apicid_base; j < cores + apicid_base; j++)
+			set_apicid_to_node((i << bits) + j, i);
+
 	return 0;
 }

@@ -109,27 +109,6 @@ static const struct dmi_system_id dmi_use_low_level_irq[] = {
 };
 
 /*
- * Some devices have a wrong entry which points to a GPIO which is
- * required in another driver, so this driver must not claim it.
- */
-static const struct dmi_system_id dmi_invalid_acpi_index[] = {
-	{
-		/*
-		 * Lenovo Yoga Book X90F / X90L, the PNP0C40 home button entry
-		 * points to a GPIO which is not a home button and which is
-		 * required by the lenovo-yogabook driver.
-		 */
-		.matches = {
-			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel Corporation"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "CHERRYVIEW D1 PLATFORM"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_VERSION, "YETI-11"),
-		},
-		.driver_data = (void *)1l,
-	},
-	{} /* Terminating entry */
-};
-
-/*
  * Get the Nth GPIO number from the ACPI object.
  */
 static int soc_button_lookup_gpio(struct device *dev, int acpi_index,
@@ -158,8 +137,6 @@ soc_button_device_create(struct platform_device *pdev,
 	struct platform_device *pd;
 	struct gpio_keys_button *gpio_keys;
 	struct gpio_keys_platform_data *gpio_keys_pdata;
-	const struct dmi_system_id *dmi_id;
-	int invalid_acpi_index = -1;
 	int error, gpio, irq;
 	int n_buttons = 0;
 
@@ -177,15 +154,8 @@ soc_button_device_create(struct platform_device *pdev,
 	gpio_keys = (void *)(gpio_keys_pdata + 1);
 	n_buttons = 0;
 
-	dmi_id = dmi_first_match(dmi_invalid_acpi_index);
-	if (dmi_id)
-		invalid_acpi_index = (long)dmi_id->driver_data;
-
 	for (info = button_info; info->name; info++) {
 		if (info->autorepeat != autorepeat)
-			continue;
-
-		if (info->acpi_index == invalid_acpi_index)
 			continue;
 
 		error = soc_button_lookup_gpio(&pdev->dev, info->acpi_index, &gpio, &irq);
@@ -299,11 +269,6 @@ static int soc_button_parse_btn_desc(struct device *dev,
 		info->name = "power";
 		info->event_code = KEY_POWER;
 		info->wakeup = true;
-	} else if (upage == 0x01 && usage == 0xc6) {
-		info->name = "airplane mode switch";
-		info->event_type = EV_SW;
-		info->event_code = SW_RFKILL_ALL;
-		info->active_low = false;
 	} else if (upage == 0x01 && usage == 0xca) {
 		info->name = "rotation lock switch";
 		info->event_type = EV_SW;
@@ -416,7 +381,7 @@ out:
 	return button_info;
 }
 
-static void soc_button_remove(struct platform_device *pdev)
+static int soc_button_remove(struct platform_device *pdev)
 {
 	struct soc_button_data *priv = platform_get_drvdata(pdev);
 
@@ -425,6 +390,8 @@ static void soc_button_remove(struct platform_device *pdev)
 	for (i = 0; i < BUTTON_TYPES; i++)
 		if (priv->children[i])
 			platform_device_unregister(priv->children[i]);
+
+	return 0;
 }
 
 static int soc_button_probe(struct platform_device *pdev)
@@ -515,7 +482,7 @@ static const struct soc_device_data soc_device_INT33D3 = {
 };
 
 /*
- * Button info for Microsoft Surface 3 (non pro), this is identical to
+ * Button info for Microsoft Surface 3 (non pro), this is indentical to
  * the PNP0C40 info except that the home button is active-high.
  *
  * The Surface 3 Pro also has a MSHW0028 ACPI device, but that uses a custom
@@ -620,5 +587,4 @@ static struct platform_driver soc_button_driver = {
 };
 module_platform_driver(soc_button_driver);
 
-MODULE_DESCRIPTION("Windows-compatible SoC Button Array driver");
 MODULE_LICENSE("GPL");

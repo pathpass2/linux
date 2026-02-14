@@ -57,8 +57,8 @@
 #include <linux/if.h>
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/inetdevice.h>
 #include <linux/platform_device.h>
@@ -2294,7 +2294,7 @@ static int velocity_change_mtu(struct net_device *dev, int new_mtu)
 	int ret = 0;
 
 	if (!netif_running(dev)) {
-		WRITE_ONCE(dev->mtu, new_mtu);
+		dev->mtu = new_mtu;
 		goto out_0;
 	}
 
@@ -2320,8 +2320,7 @@ static int velocity_change_mtu(struct net_device *dev, int new_mtu)
 		if (ret < 0)
 			goto out_free_tmp_vptr_1;
 
-		netdev_lock(dev);
-		napi_disable_locked(&vptr->napi);
+		napi_disable(&vptr->napi);
 
 		spin_lock_irqsave(&vptr->lock, flags);
 
@@ -2337,19 +2336,18 @@ static int velocity_change_mtu(struct net_device *dev, int new_mtu)
 		tmp_vptr->rx = rx;
 		tmp_vptr->tx = tx;
 
-		WRITE_ONCE(dev->mtu, new_mtu);
+		dev->mtu = new_mtu;
 
 		velocity_init_registers(vptr, VELOCITY_INIT_COLD);
 
 		velocity_give_many_rx_descs(vptr);
 
-		napi_enable_locked(&vptr->napi);
+		napi_enable(&vptr->napi);
 
 		mac_enable_int(vptr->mac_regs);
 		netif_start_queue(dev);
 
 		spin_unlock_irqrestore(&vptr->lock, flags);
-		netdev_unlock(dev);
 
 		velocity_free_rings(tmp_vptr);
 
@@ -2959,9 +2957,11 @@ static int velocity_platform_probe(struct platform_device *pdev)
 	return velocity_probe(&pdev->dev, irq, info, BUS_PLATFORM);
 }
 
-static void velocity_platform_remove(struct platform_device *pdev)
+static int velocity_platform_remove(struct platform_device *pdev)
 {
 	velocity_remove(&pdev->dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

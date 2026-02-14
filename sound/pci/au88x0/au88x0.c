@@ -10,7 +10,7 @@
  *   Thanks to the ALSA developers, they helped a lot working out
  * the ALSA part.
  *   Thanks also to Sourceforge for maintaining the old binary drivers,
- * and the forum, where developers could communicate.
+ * and the forum, where developers could comunicate.
  *
  * Now at least i can play Legacy DOOM with MIDI music :-)
  */
@@ -160,11 +160,12 @@ snd_vortex_create(struct snd_card *card, struct pci_dev *pci)
 	// (1) PCI resource allocation
 	// Get MMIO area
 	//
-	chip->mmio = pcim_iomap_region(pci, 0, KBUILD_MODNAME);
-	if (IS_ERR(chip->mmio))
-		return PTR_ERR(chip->mmio);
+	err = pcim_iomap_regions(pci, 1 << 0, CARD_NAME_SHORT);
+	if (err)
+		return err;
 
 	chip->io = pci_resource_start(pci, 0);
+	chip->mmio = pcim_iomap_table(pci)[0];
 
 	/* Init audio core.
 	 * This must be done before we do request_irq otherwise we can get spurious
@@ -220,7 +221,7 @@ __snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 	snd_vortex_workaround(pci, pcifix[dev]);
 
 	// Card details needed in snd_vortex_midi
-	strscpy(card->driver, CARD_NAME_SHORT);
+	strcpy(card->driver, CARD_NAME_SHORT);
 	sprintf(card->shortname, "Aureal Vortex %s", CARD_NAME_SHORT);
 	sprintf(card->longname, "%s at 0x%lx irq %i",
 		card->shortname, chip->io, chip->irq);
@@ -270,7 +271,7 @@ __snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 		snd_vortex_synth_arg_t *arg;
 
 		arg = SNDRV_SEQ_DEVICE_ARGPTR(wave);
-		strscpy(wave->name, "Aureal Synth");
+		strcpy(wave->name, "Aureal Synth");
 		arg->hwptr = vortex;
 		arg->index = 1;
 		arg->seq_ports = seq_ports[dev];
@@ -280,11 +281,11 @@ __snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 
 	// (5)
 	err = pci_read_config_word(pci, PCI_DEVICE_ID, &chip->device);
-	if (err)
-		return pcibios_err_to_errno(err);
+	if (err < 0)
+		return err;
 	err = pci_read_config_word(pci, PCI_VENDOR_ID, &chip->vendor);
-	if (err)
-		return pcibios_err_to_errno(err);
+	if (err < 0)
+		return err;
 	chip->rev = pci->revision;
 #ifdef CHIP_AU8830
 	if ((chip->rev) != 0xfe && (chip->rev) != 0xfa) {

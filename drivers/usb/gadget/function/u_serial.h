@@ -17,10 +17,6 @@
 struct f_serial_opts {
 	struct usb_function_instance func_inst;
 	u8 port_num;
-	u8 protocol;
-
-	struct mutex lock; /* protect instances */
-	int instances;
 };
 
 /*
@@ -74,5 +70,9 @@ int gserial_connect(struct gserial *, u8 port_num);
 void gserial_disconnect(struct gserial *);
 void gserial_suspend(struct gserial *p);
 void gserial_resume(struct gserial *p);
+
+/* functions are bound to configurations by a config or gadget driver */
+int gser_bind_config(struct usb_configuration *c, u8 port_num);
+int obex_bind_config(struct usb_configuration *c, u8 port_num);
 
 #endif /* __U_SERIAL_H */

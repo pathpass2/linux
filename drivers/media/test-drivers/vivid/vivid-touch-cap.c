@@ -17,13 +17,16 @@ static int touch_cap_queue_setup(struct vb2_queue *vq, unsigned int *nbuffers,
 	unsigned int size = f->sizeimage;
 
 	if (*nplanes) {
-		if (*nplanes != 1)
+		if (sizes[0] < size)
 			return -EINVAL;
-		return sizes[0] < size ? -EINVAL : 0;
+	} else {
+		sizes[0] = size;
 	}
 
+	if (vq->num_buffers + *nbuffers < 2)
+		*nbuffers = 2 - vq->num_buffers;
+
 	*nplanes = 1;
-	sizes[0] = size;
 	return 0;
 }
 
@@ -110,6 +113,8 @@ const struct vb2_ops vivid_touch_cap_qops = {
 	.start_streaming	= touch_cap_start_streaming,
 	.stop_streaming		= touch_cap_stop_streaming,
 	.buf_request_complete	= touch_cap_buf_request_complete,
+	.wait_prepare		= vb2_ops_wait_prepare,
+	.wait_finish		= vb2_ops_wait_finish,
 };
 
 int vivid_enum_fmt_tch(struct file *file, void  *priv, struct v4l2_fmtdesc *f)

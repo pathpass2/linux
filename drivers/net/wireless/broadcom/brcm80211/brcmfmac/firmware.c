@@ -19,7 +19,7 @@
 
 #define BRCMF_FW_MAX_NVRAM_SIZE			64000
 #define BRCMF_FW_NVRAM_DEVPATH_LEN		19	/* devpath0=pcie/1/4/ */
-#define BRCMF_FW_NVRAM_PCIEDEV_LEN		20	/* pcie/1/4/ + \0 */
+#define BRCMF_FW_NVRAM_PCIEDEV_LEN		10	/* pcie/1/4/ + \0 */
 #define BRCMF_FW_DEFAULT_BOARDREV		"boardrev=0xff"
 #define BRCMF_FW_MACADDR_FMT			"macaddr=%pM"
 #define BRCMF_FW_MACADDR_LEN			(7 + ETH_ALEN * 3)
@@ -238,9 +238,9 @@ static void brcmf_fw_strip_multi_v1(struct nvram_parser *nvp, u16 domain_nr,
 				    u16 bus_nr)
 {
 	/* Device path with a leading '=' key-value separator */
-	char pci_path[20];
+	char pci_path[] = "=pci/?/?";
 	size_t pci_len;
-	char pcie_path[20];
+	char pcie_path[] = "=pcie/?/?";
 	size_t pcie_len;
 
 	u32 i, j;
@@ -554,16 +554,12 @@ static int brcmf_fw_request_nvram_done(const struct firmware *fw, void *ctx)
 		data = (u8 *)fw->data;
 		data_len = fw->size;
 	} else {
-		data = bcm47xx_nvram_get_contents(&data_len);
-		if (data) {
+		if ((data = bcm47xx_nvram_get_contents(&data_len)))
 			free_bcm47xx_nvram = true;
-		} else {
-			data = brcmf_fw_nvram_from_efi(&data_len);
-			if (data)
-				kfree_nvram = true;
-			else if (!(cur->flags & BRCMF_FW_REQF_OPTIONAL))
-				goto fail;
-		}
+		else if ((data = brcmf_fw_nvram_from_efi(&data_len)))
+			kfree_nvram = true;
+		else if (!(cur->flags & BRCMF_FW_REQF_OPTIONAL))
+			goto fail;
 	}
 
 	if (data)

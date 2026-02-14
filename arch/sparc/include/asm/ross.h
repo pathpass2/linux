@@ -95,7 +95,7 @@
 #define HYPERSPARC_ICCR_FTD     0x00000002
 #define HYPERSPARC_ICCR_ICE     0x00000001
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 static inline unsigned int get_ross_icr(void)
 {
@@ -187,6 +187,6 @@ static inline void hyper_flush_cache_page(unsigned long page)
 	}
 }
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 #endif /* !(_SPARC_ROSS_H) */

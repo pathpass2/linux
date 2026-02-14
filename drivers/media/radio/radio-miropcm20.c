@@ -23,7 +23,7 @@
  * This code has been reintroduced and converted to use
  * the new V4L2 RDS API by:
  *
- * Hans Verkuil <hverkuil@kernel.org>
+ * Hans Verkuil <hans.verkuil@cisco.com>
  */
 
 #include <linux/module.h>
@@ -199,9 +199,11 @@ static int pcm20_setfreq(struct pcm20 *dev, unsigned long freq)
 static int vidioc_querycap(struct file *file, void *priv,
 				struct v4l2_capability *v)
 {
+	struct pcm20 *dev = video_drvdata(file);
+
 	strscpy(v->driver, "Miro PCM20", sizeof(v->driver));
 	strscpy(v->card, "Miro PCM20", sizeof(v->card));
-	strscpy(v->bus_info, "ISA:radio-miropcm20", sizeof(v->bus_info));
+	snprintf(v->bus_info, sizeof(v->bus_info), "ISA:%s", dev->v4l2_dev.name);
 	return 0;
 }
 

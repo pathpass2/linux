@@ -15,16 +15,11 @@ description: |+
   MAC.
 
 allOf:
-  - $ref: mdio.yaml#
+  - $ref: "mdio.yaml#"
 
 properties:
   compatible:
-    oneOf:
-      - const: aspeed,ast2600-mdio
-      - items:
-          - enum:
-              - aspeed,ast2700-mdio
-          - const: aspeed,ast2600-mdio
+    const: aspeed,ast2600-mdio
 
   reg:
     maxItems: 1

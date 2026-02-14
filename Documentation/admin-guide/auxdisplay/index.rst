@@ -7,3 +7,10 @@ Auxiliary Display Support
 
     ks0108.rst
     cfag12864b.rst
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

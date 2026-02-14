@@ -14,12 +14,6 @@
 
 #define WARNING(s, args...)	pr_warn("SQUASHFS: "s, ## args)
 
-#ifdef CONFIG_SQUASHFS_FILE_CACHE
-#define SQUASHFS_READ_PAGES msblk->max_thread_num
-#else
-#define SQUASHFS_READ_PAGES 0
-#endif
-
 /* block.c */
 extern int squashfs_read_data(struct super_block *, u64, int, u64 *,
 				struct squashfs_page_actor *);
@@ -73,11 +67,12 @@ extern __le64 *squashfs_read_fragment_index_table(struct super_block *,
 				u64, u64, unsigned int);
 
 /* file.c */
-void squashfs_copy_cache(struct folio *, struct squashfs_cache_entry *,
-		size_t bytes, size_t offset);
+void squashfs_fill_page(struct page *, struct squashfs_cache_entry *, int, int);
+void squashfs_copy_cache(struct page *, struct squashfs_cache_entry *, int,
+				int);
 
 /* file_xxx.c */
-int squashfs_readpage_block(struct folio *, u64 block, int bsize, int expected);
+extern int squashfs_readpage_block(struct page *, u64, int, int);
 
 /* id.c */
 extern int squashfs_get_id(struct super_block *, unsigned int, unsigned int *);
@@ -107,7 +102,6 @@ extern const struct address_space_operations squashfs_aops;
 
 /* inode.c */
 extern const struct inode_operations squashfs_inode_ops;
-extern const struct file_operations squashfs_file_operations;
 
 /* namei.c */
 extern const struct inode_operations squashfs_dir_inode_ops;
@@ -117,4 +111,4 @@ extern const struct address_space_operations squashfs_symlink_aops;
 extern const struct inode_operations squashfs_symlink_inode_ops;
 
 /* xattr.c */
-extern const struct xattr_handler * const squashfs_xattr_handlers[];
+extern const struct xattr_handler *squashfs_xattr_handlers[];

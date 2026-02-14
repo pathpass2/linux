@@ -408,9 +408,13 @@ static int intel_qep_probe(struct pci_dev *pci, const struct pci_device_id *id)
 
 	pci_set_master(pci);
 
-	regs = pcim_iomap_region(pci, 0, pci_name(pci));
-	if (IS_ERR(regs))
-		return PTR_ERR(regs);
+	ret = pcim_iomap_regions(pci, BIT(0), pci_name(pci));
+	if (ret)
+		return ret;
+
+	regs = pcim_iomap_table(pci)[0];
+	if (!regs)
+		return -ENOMEM;
 
 	qep->dev = dev;
 	qep->regs = regs;
@@ -519,4 +523,4 @@ MODULE_AUTHOR("Jarkko Nikula <jarkko.nikula@linux.intel.com>");
 MODULE_AUTHOR("Raymond Tan <raymond.tan@intel.com>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Intel Quadrature Encoder Peripheral driver");
-MODULE_IMPORT_NS("COUNTER");
+MODULE_IMPORT_NS(COUNTER);

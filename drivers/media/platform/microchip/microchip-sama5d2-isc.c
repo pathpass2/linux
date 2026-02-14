@@ -353,29 +353,33 @@ static const u32 isc_sama5d2_gamma_table[][GAMMA_ENTRIES] = {
 static int isc_parse_dt(struct device *dev, struct isc_device *isc)
 {
 	struct device_node *np = dev->of_node;
-	struct device_node *epn;
+	struct device_node *epn = NULL;
 	struct isc_subdev_entity *subdev_entity;
 	unsigned int flags;
+	int ret;
 
 	INIT_LIST_HEAD(&isc->subdev_entities);
 
-	for_each_endpoint_of_node(np, epn) {
+	while (1) {
 		struct v4l2_fwnode_endpoint v4l2_epn = { .bus_type = 0 };
-		int ret;
+
+		epn = of_graph_get_next_endpoint(np, epn);
+		if (!epn)
+			return 0;
 
 		ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(epn),
 						 &v4l2_epn);
 		if (ret) {
-			of_node_put(epn);
+			ret = -EINVAL;
 			dev_err(dev, "Could not parse the endpoint\n");
-			return -EINVAL;
+			break;
 		}
 
 		subdev_entity = devm_kzalloc(dev, sizeof(*subdev_entity),
 					     GFP_KERNEL);
 		if (!subdev_entity) {
-			of_node_put(epn);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			break;
 		}
 		subdev_entity->epn = epn;
 
@@ -396,14 +400,16 @@ static int isc_parse_dt(struct device *dev, struct isc_device *isc)
 
 		list_add_tail(&subdev_entity->list, &isc->subdev_entities);
 	}
+	of_node_put(epn);
 
-	return 0;
+	return ret;
 }
 
 static int microchip_isc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct isc_device *isc;
+	struct resource *res;
 	void __iomem *io_base;
 	struct isc_subdev_entity *subdev_entity;
 	int irq;
@@ -417,7 +423,8 @@ static int microchip_isc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, isc);
 	isc->dev = dev;
 
-	io_base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	io_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(io_base))
 		return PTR_ERR(io_base);
 
@@ -518,15 +525,15 @@ static int microchip_isc_probe(struct platform_device *pdev)
 	}
 
 	list_for_each_entry(subdev_entity, &isc->subdev_entities, list) {
-		struct v4l2_async_connection *asd;
+		struct v4l2_async_subdev *asd;
 		struct fwnode_handle *fwnode =
 			of_fwnode_handle(subdev_entity->epn);
 
-		v4l2_async_nf_init(&subdev_entity->notifier, &isc->v4l2_dev);
+		v4l2_async_nf_init(&subdev_entity->notifier);
 
 		asd = v4l2_async_nf_add_fwnode_remote(&subdev_entity->notifier,
 						      fwnode,
-						      struct v4l2_async_connection);
+						      struct v4l2_async_subdev);
 
 		of_node_put(subdev_entity->epn);
 		subdev_entity->epn = NULL;
@@ -538,7 +545,8 @@ static int microchip_isc_probe(struct platform_device *pdev)
 
 		subdev_entity->notifier.ops = &microchip_isc_async_ops;
 
-		ret = v4l2_async_nf_register(&subdev_entity->notifier);
+		ret = v4l2_async_nf_register(&isc->v4l2_dev,
+					     &subdev_entity->notifier);
 		if (ret) {
 			dev_err(dev, "fail to register async notifier\n");
 			goto cleanup_subdev;
@@ -600,7 +608,7 @@ unprepare_hclk:
 	return ret;
 }
 
-static void microchip_isc_remove(struct platform_device *pdev)
+static int microchip_isc_remove(struct platform_device *pdev)
 {
 	struct isc_device *isc = platform_get_drvdata(pdev);
 
@@ -616,6 +624,8 @@ static void microchip_isc_remove(struct platform_device *pdev)
 	clk_disable_unprepare(isc->hclock);
 
 	microchip_isc_clk_cleanup(isc);
+
+	return 0;
 }
 
 static int __maybe_unused isc_runtime_suspend(struct device *dev)
@@ -658,7 +668,7 @@ MODULE_DEVICE_TABLE(of, microchip_isc_of_match);
 
 static struct platform_driver microchip_isc_driver = {
 	.probe	= microchip_isc_probe,
-	.remove = microchip_isc_remove,
+	.remove	= microchip_isc_remove,
 	.driver	= {
 		.name		= "microchip-sama5d2-isc",
 		.pm		= &microchip_isc_dev_pm_ops,

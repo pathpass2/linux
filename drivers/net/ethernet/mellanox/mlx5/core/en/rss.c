@@ -74,94 +74,27 @@ struct mlx5e_rss {
 	struct mlx5e_tir *tir[MLX5E_NUM_INDIR_TIRS];
 	struct mlx5e_tir *inner_tir[MLX5E_NUM_INDIR_TIRS];
 	struct mlx5e_rqt rqt;
-	struct mlx5_core_dev *mdev; /* primary */
-	struct mlx5e_rss_params params;
+	struct mlx5_core_dev *mdev;
+	u32 drop_rqn;
+	bool inner_ft_support;
 	bool enabled;
 	refcount_t refcnt;
 };
 
-bool mlx5e_rss_get_inner_ft_support(struct mlx5e_rss *rss)
+struct mlx5e_rss *mlx5e_rss_alloc(void)
 {
-	return rss->params.inner_ft_support;
+	return kvzalloc(sizeof(struct mlx5e_rss), GFP_KERNEL);
 }
 
-void mlx5e_rss_params_indir_modify_actual_size(struct mlx5e_rss *rss, u32 num_channels)
+void mlx5e_rss_free(struct mlx5e_rss *rss)
 {
-	rss->indir.actual_table_size = mlx5e_rqt_size(rss->mdev, num_channels);
-}
-
-int mlx5e_rss_params_indir_init(struct mlx5e_rss_params_indir *indir,
-				u32 actual_table_size, u32 max_table_size)
-{
-	indir->table = kvmalloc_array(max_table_size, sizeof(*indir->table), GFP_KERNEL);
-	if (!indir->table)
-		return -ENOMEM;
-
-	indir->max_table_size = max_table_size;
-	indir->actual_table_size = actual_table_size;
-
-	return 0;
-}
-
-void mlx5e_rss_params_indir_cleanup(struct mlx5e_rss_params_indir *indir)
-{
-	kvfree(indir->table);
-}
-
-static int mlx5e_rss_copy(struct mlx5e_rss *to, const struct mlx5e_rss *from)
-{
-	u32 *dst_indir_table;
-
-	if (to->indir.actual_table_size != from->indir.actual_table_size ||
-	    to->indir.max_table_size != from->indir.max_table_size) {
-		mlx5e_rss_warn(to->mdev,
-			       "Failed to copy RSS due to size mismatch, src (actual %u, max %u) != dst (actual %u, max %u)\n",
-			       from->indir.actual_table_size, from->indir.max_table_size,
-			       to->indir.actual_table_size, to->indir.max_table_size);
-		return -EINVAL;
-	}
-
-	dst_indir_table = to->indir.table;
-	*to = *from;
-	to->indir.table = dst_indir_table;
-	memcpy(to->indir.table, from->indir.table,
-	       from->indir.actual_table_size * sizeof(*from->indir.table));
-	return 0;
-}
-
-static struct mlx5e_rss *mlx5e_rss_init_copy(const struct mlx5e_rss *from)
-{
-	struct mlx5e_rss *rss;
-	int err;
-
-	rss = kvzalloc(sizeof(*rss), GFP_KERNEL);
-	if (!rss)
-		return ERR_PTR(-ENOMEM);
-
-	err = mlx5e_rss_params_indir_init(&rss->indir,
-					  from->indir.actual_table_size,
-					  from->indir.max_table_size);
-	if (err)
-		goto err_free_rss;
-
-	err = mlx5e_rss_copy(rss, from);
-	if (err)
-		goto err_free_indir;
-
-	return rss;
-
-err_free_indir:
-	mlx5e_rss_params_indir_cleanup(&rss->indir);
-err_free_rss:
 	kvfree(rss);
-	return ERR_PTR(err);
 }
 
 static void mlx5e_rss_params_init(struct mlx5e_rss *rss)
 {
 	enum mlx5_traffic_types tt;
 
-	rss->hash.symmetric = true;
 	rss->hash.hfunc = ETH_RSS_HASH_TOP;
 	netdev_rss_key_fill(rss->hash.toeplitz_hash_key,
 			    sizeof(rss->hash.toeplitz_hash_key));
@@ -192,12 +125,11 @@ mlx5e_rss_get_tt_config(struct mlx5e_rss *rss, enum mlx5_traffic_types tt)
 	return rss_tt;
 }
 
-static int
-mlx5e_rss_create_tir(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
-		     const struct mlx5e_packet_merge_param *pkt_merge_param,
-		     bool inner)
+static int mlx5e_rss_create_tir(struct mlx5e_rss *rss,
+				enum mlx5_traffic_types tt,
+				const struct mlx5e_packet_merge_param *init_pkt_merge_param,
+				bool inner)
 {
-	bool rss_inner = rss->params.inner_ft_support;
 	struct mlx5e_rss_params_traffic_type rss_tt;
 	struct mlx5e_tir_builder *builder;
 	struct mlx5e_tir **tir_p;
@@ -205,7 +137,7 @@ mlx5e_rss_create_tir(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
 	u32 rqtn;
 	int err;
 
-	if (inner && !rss_inner) {
+	if (inner && !rss->inner_ft_support) {
 		mlx5e_rss_warn(rss->mdev,
 			       "Cannot create inner indirect TIR[%d], RSS inner FT is not supported.\n",
 			       tt);
@@ -228,11 +160,9 @@ mlx5e_rss_create_tir(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
 
 	rqtn = mlx5e_rqt_get_rqtn(&rss->rqt);
 	mlx5e_tir_builder_build_rqt(builder, rss->mdev->mlx5e_res.hw_objs.td.tdn,
-				    rqtn, rss_inner);
-	mlx5e_tir_builder_build_packet_merge(builder, pkt_merge_param);
+				    rqtn, rss->inner_ft_support);
+	mlx5e_tir_builder_build_packet_merge(builder, init_pkt_merge_param);
 	rss_tt = mlx5e_rss_get_tt_config(rss, tt);
-	mlx5e_tir_builder_build_self_lb_block(builder, rss->params.self_lb_blk,
-					      rss->params.self_lb_blk);
 	mlx5e_tir_builder_build_rss(builder, &rss->hash, &rss_tt, inner);
 
 	err = mlx5e_tir_init(tir, builder, rss->mdev, true);
@@ -267,16 +197,15 @@ static void mlx5e_rss_destroy_tir(struct mlx5e_rss *rss, enum mlx5_traffic_types
 	*tir_p = NULL;
 }
 
-static int
-mlx5e_rss_create_tirs(struct mlx5e_rss *rss,
-		      const struct mlx5e_packet_merge_param *pkt_merge_param,
-		      bool inner)
+static int mlx5e_rss_create_tirs(struct mlx5e_rss *rss,
+				 const struct mlx5e_packet_merge_param *init_pkt_merge_param,
+				 bool inner)
 {
 	enum mlx5_traffic_types tt, max_tt;
 	int err;
 
 	for (tt = 0; tt < MLX5E_NUM_INDIR_TIRS; tt++) {
-		err = mlx5e_rss_create_tir(rss, tt, pkt_merge_param, inner);
+		err = mlx5e_rss_create_tir(rss, tt, init_pkt_merge_param, inner);
 		if (err)
 			goto err_destroy_tirs;
 	}
@@ -339,7 +268,7 @@ static int mlx5e_rss_update_tirs(struct mlx5e_rss *rss)
 				       tt, err);
 		}
 
-		if (!rss->params.inner_ft_support)
+		if (!rss->inner_ft_support)
 			continue;
 
 		err = mlx5e_rss_update_tir(rss, tt, true);
@@ -353,70 +282,47 @@ static int mlx5e_rss_update_tirs(struct mlx5e_rss *rss)
 	return retval;
 }
 
-static int mlx5e_rss_init_no_tirs(struct mlx5e_rss *rss)
+int mlx5e_rss_init_no_tirs(struct mlx5e_rss *rss, struct mlx5_core_dev *mdev,
+			   bool inner_ft_support, u32 drop_rqn)
 {
+	rss->mdev = mdev;
+	rss->inner_ft_support = inner_ft_support;
+	rss->drop_rqn = drop_rqn;
+
 	mlx5e_rss_params_init(rss);
 	refcount_set(&rss->refcnt, 1);
 
-	return mlx5e_rqt_init_direct(&rss->rqt, rss->mdev, true,
-				     rss->params.drop_rqn,
-				     rss->indir.max_table_size);
+	return mlx5e_rqt_init_direct(&rss->rqt, mdev, true, drop_rqn);
 }
 
-struct mlx5e_rss *
-mlx5e_rss_init(struct mlx5_core_dev *mdev,
-	       const struct mlx5e_rss_params *params,
-	       const struct mlx5e_rss_init_params *init_params)
+int mlx5e_rss_init(struct mlx5e_rss *rss, struct mlx5_core_dev *mdev,
+		   bool inner_ft_support, u32 drop_rqn,
+		   const struct mlx5e_packet_merge_param *init_pkt_merge_param)
 {
-	u32 rqt_max_size, rqt_size;
-	struct mlx5e_rss *rss;
 	int err;
 
-	rss = kvzalloc(sizeof(*rss), GFP_KERNEL);
-	if (!rss)
-		return ERR_PTR(-ENOMEM);
-
-	rqt_size = mlx5e_rqt_size(mdev, init_params->nch);
-	rqt_max_size = mlx5e_rqt_size(mdev, init_params->max_nch);
-	err = mlx5e_rss_params_indir_init(&rss->indir, rqt_size, rqt_max_size);
+	err = mlx5e_rss_init_no_tirs(rss, mdev, inner_ft_support, drop_rqn);
 	if (err)
-		goto err_free_rss;
+		goto err_out;
 
-	rss->mdev = mdev;
-	rss->params = *params;
-
-	err = mlx5e_rss_init_no_tirs(rss);
-	if (err)
-		goto err_free_indir;
-
-	if (init_params->type == MLX5E_RSS_INIT_NO_TIRS)
-		goto out;
-
-	err = mlx5e_rss_create_tirs(rss, init_params->pkt_merge_param,
-				    false);
+	err = mlx5e_rss_create_tirs(rss, init_pkt_merge_param, false);
 	if (err)
 		goto err_destroy_rqt;
 
-	if (params->inner_ft_support) {
-		err = mlx5e_rss_create_tirs(rss,
-					    init_params->pkt_merge_param,
-					    true);
+	if (inner_ft_support) {
+		err = mlx5e_rss_create_tirs(rss, init_pkt_merge_param, true);
 		if (err)
 			goto err_destroy_tirs;
 	}
 
-out:
-	return rss;
+	return 0;
 
 err_destroy_tirs:
 	mlx5e_rss_destroy_tirs(rss, false);
 err_destroy_rqt:
 	mlx5e_rqt_destroy(&rss->rqt);
-err_free_indir:
-	mlx5e_rss_params_indir_cleanup(&rss->indir);
-err_free_rss:
-	kvfree(rss);
-	return ERR_PTR(err);
+err_out:
+	return err;
 }
 
 int mlx5e_rss_cleanup(struct mlx5e_rss *rss)
@@ -426,12 +332,10 @@ int mlx5e_rss_cleanup(struct mlx5e_rss *rss)
 
 	mlx5e_rss_destroy_tirs(rss, false);
 
-	if (rss->params.inner_ft_support)
+	if (rss->inner_ft_support)
 		mlx5e_rss_destroy_tirs(rss, true);
 
 	mlx5e_rqt_destroy(&rss->rqt);
-	mlx5e_rss_params_indir_cleanup(&rss->indir);
-	kvfree(rss);
 
 	return 0;
 }
@@ -456,30 +360,20 @@ u32 mlx5e_rss_get_tirn(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
 {
 	struct mlx5e_tir *tir;
 
-	WARN_ON(inner && !rss->params.inner_ft_support);
+	WARN_ON(inner && !rss->inner_ft_support);
 	tir = rss_get_tir(rss, tt, inner);
 	WARN_ON(!tir);
 
 	return mlx5e_tir_get_tirn(tir);
 }
 
-u32 mlx5e_rss_get_rqtn(struct mlx5e_rss *rss)
-{
-	return mlx5e_rqt_get_rqtn(&rss->rqt);
-}
-
-bool mlx5e_rss_valid_tir(struct mlx5e_rss *rss, enum mlx5_traffic_types tt, bool inner)
-{
-	return !!rss_get_tir(rss, tt, inner);
-}
-
 /* Fill the "tirn" output parameter.
  * Create the requested TIR if it's its first usage.
  */
-int
-mlx5e_rss_obtain_tirn(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
-		      const struct mlx5e_packet_merge_param *pkt_merge_param,
-		      bool inner, u32 *tirn)
+int mlx5e_rss_obtain_tirn(struct mlx5e_rss *rss,
+			  enum mlx5_traffic_types tt,
+			  const struct mlx5e_packet_merge_param *init_pkt_merge_param,
+			  bool inner, u32 *tirn)
 {
 	struct mlx5e_tir *tir;
 
@@ -487,7 +381,7 @@ mlx5e_rss_obtain_tirn(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
 	if (!tir) { /* TIR doesn't exist, create one */
 		int err;
 
-		err = mlx5e_rss_create_tir(rss, tt, pkt_merge_param, inner);
+		err = mlx5e_rss_create_tir(rss, tt, init_pkt_merge_param, inner);
 		if (err)
 			return err;
 		tir = rss_get_tir(rss, tt, inner);
@@ -497,22 +391,21 @@ mlx5e_rss_obtain_tirn(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
 	return 0;
 }
 
-static int mlx5e_rss_apply(struct mlx5e_rss *rss, u32 *rqns, u32 *vhca_ids, unsigned int num_rqns)
+static int mlx5e_rss_apply(struct mlx5e_rss *rss, u32 *rqns, unsigned int num_rqns)
 {
 	int err;
 
-	err = mlx5e_rqt_redirect_indir(&rss->rqt, rqns, vhca_ids, num_rqns, rss->hash.hfunc,
-				       &rss->indir);
+	err = mlx5e_rqt_redirect_indir(&rss->rqt, rqns, num_rqns, rss->hash.hfunc, &rss->indir);
 	if (err)
 		mlx5e_rss_warn(rss->mdev, "Failed to redirect RQT %#x to channels: err = %d\n",
 			       mlx5e_rqt_get_rqtn(&rss->rqt), err);
 	return err;
 }
 
-void mlx5e_rss_enable(struct mlx5e_rss *rss, u32 *rqns, u32 *vhca_ids, unsigned int num_rqns)
+void mlx5e_rss_enable(struct mlx5e_rss *rss, u32 *rqns, unsigned int num_rqns)
 {
 	rss->enabled = true;
-	mlx5e_rss_apply(rss, rqns, vhca_ids, num_rqns);
+	mlx5e_rss_apply(rss, rqns, num_rqns);
 }
 
 void mlx5e_rss_disable(struct mlx5e_rss *rss)
@@ -520,11 +413,10 @@ void mlx5e_rss_disable(struct mlx5e_rss *rss)
 	int err;
 
 	rss->enabled = false;
-	err = mlx5e_rqt_redirect_direct(&rss->rqt, rss->params.drop_rqn, NULL);
+	err = mlx5e_rqt_redirect_direct(&rss->rqt, rss->drop_rqn);
 	if (err)
 		mlx5e_rss_warn(rss->mdev, "Failed to redirect RQT %#x to drop RQ %#x: err = %d\n",
-			       mlx5e_rqt_get_rqtn(&rss->rqt),
-			       rss->params.drop_rqn, err);
+			       mlx5e_rqt_get_rqtn(&rss->rqt), rss->drop_rqn, err);
 }
 
 int mlx5e_rss_packet_merge_set_param(struct mlx5e_rss *rss,
@@ -557,7 +449,7 @@ int mlx5e_rss_packet_merge_set_param(struct mlx5e_rss *rss,
 		}
 
 inner_tir:
-		if (!rss->params.inner_ft_support)
+		if (!rss->inner_ft_support)
 			continue;
 
 		tir = rss_get_tir(rss, tt, true);
@@ -576,12 +468,13 @@ inner_tir:
 	return final_err;
 }
 
-void mlx5e_rss_get_rxfh(struct mlx5e_rss *rss, u32 *indir, u8 *key, u8 *hfunc,
-			bool *symmetric)
+int mlx5e_rss_get_rxfh(struct mlx5e_rss *rss, u32 *indir, u8 *key, u8 *hfunc)
 {
+	unsigned int i;
+
 	if (indir)
-		memcpy(indir, rss->indir.table,
-		       rss->indir.actual_table_size * sizeof(*rss->indir.table));
+		for (i = 0; i < MLX5E_INDIR_RQT_SIZE; i++)
+			indir[i] = rss->indir.table[i];
 
 	if (key)
 		memcpy(key, rss->hash.toeplitz_hash_key,
@@ -590,22 +483,23 @@ void mlx5e_rss_get_rxfh(struct mlx5e_rss *rss, u32 *indir, u8 *key, u8 *hfunc,
 	if (hfunc)
 		*hfunc = rss->hash.hfunc;
 
-	if (symmetric)
-		*symmetric = rss->hash.symmetric;
+	return 0;
 }
 
 int mlx5e_rss_set_rxfh(struct mlx5e_rss *rss, const u32 *indir,
-		       const u8 *key, const u8 *hfunc, const bool *symmetric,
-		       u32 *rqns, u32 *vhca_ids, unsigned int num_rqns)
+		       const u8 *key, const u8 *hfunc,
+		       u32 *rqns, unsigned int num_rqns)
 {
 	bool changed_indir = false;
 	bool changed_hash = false;
 	struct mlx5e_rss *old_rss;
 	int err = 0;
 
-	old_rss = mlx5e_rss_init_copy(rss);
-	if (IS_ERR(old_rss))
-		return PTR_ERR(old_rss);
+	old_rss = mlx5e_rss_alloc();
+	if (!old_rss)
+		return -ENOMEM;
+
+	*old_rss = *rss;
 
 	if (hfunc && *hfunc != rss->hash.hfunc) {
 		switch (*hfunc) {
@@ -629,21 +523,18 @@ int mlx5e_rss_set_rxfh(struct mlx5e_rss *rss, const u32 *indir,
 	}
 
 	if (indir) {
+		unsigned int i;
+
 		changed_indir = true;
 
-		memcpy(rss->indir.table, indir,
-		       rss->indir.actual_table_size * sizeof(*rss->indir.table));
-	}
-
-	if (symmetric) {
-		rss->hash.symmetric = *symmetric;
-		changed_hash = true;
+		for (i = 0; i < MLX5E_INDIR_RQT_SIZE; i++)
+			rss->indir.table[i] = indir[i];
 	}
 
 	if (changed_indir && rss->enabled) {
-		err = mlx5e_rss_apply(rss, rqns, vhca_ids, num_rqns);
+		err = mlx5e_rss_apply(rss, rqns, num_rqns);
 		if (err) {
-			mlx5e_rss_copy(rss, old_rss);
+			*rss = *old_rss;
 			goto out;
 		}
 	}
@@ -652,9 +543,7 @@ int mlx5e_rss_set_rxfh(struct mlx5e_rss *rss, const u32 *indir,
 		mlx5e_rss_update_tirs(rss);
 
 out:
-	mlx5e_rss_params_indir_cleanup(&old_rss->indir);
-	kvfree(old_rss);
-
+	mlx5e_rss_free(old_rss);
 	return err;
 }
 
@@ -690,7 +579,7 @@ int mlx5e_rss_set_hash_fields(struct mlx5e_rss *rss, enum mlx5_traffic_types tt,
 		return err;
 	}
 
-	if (!(rss->params.inner_ft_support))
+	if (!(rss->inner_ft_support))
 		return 0;
 
 	err = mlx5e_rss_update_tir(rss, tt, true);

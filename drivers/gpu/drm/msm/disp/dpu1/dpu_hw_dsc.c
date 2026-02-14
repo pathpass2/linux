@@ -3,10 +3,6 @@
  * Copyright (c) 2020-2022, Linaro Limited
  */
 
-#include <drm/drm_managed.h>
-
-#include <drm/display/drm_dsc_helper.h>
-
 #include "dpu_kms.h"
 #include "dpu_hw_catalog.h"
 #include "dpu_hwio.h"
@@ -52,24 +48,22 @@ static void dpu_hw_dsc_config(struct dpu_hw_dsc *hw_dsc,
 	u32 slice_last_group_size;
 	u32 det_thresh_flatness;
 	bool is_cmd_mode = !(mode & DSC_MODE_VIDEO);
-	bool input_10_bits = dsc->bits_per_component == 10;
 
 	DPU_REG_WRITE(c, DSC_COMMON_MODE, mode);
 
 	if (is_cmd_mode)
 		initial_lines += 1;
 
-	slice_last_group_size = (dsc->slice_width + 2) % 3;
-
+	slice_last_group_size = 3 - (dsc->slice_width % 3);
 	data = (initial_lines << 20);
-	data |= (slice_last_group_size << 18);
+	data |= ((slice_last_group_size - 1) << 18);
 	/* bpp is 6.4 format, 4 LSBs bits are for fractional part */
 	data |= (dsc->bits_per_pixel << 8);
 	data |= (dsc->block_pred_enable << 7);
 	data |= (dsc->line_buf_depth << 3);
 	data |= (dsc->simple_422 << 2);
 	data |= (dsc->convert_rgb << 1);
-	data |= input_10_bits;
+	data |= dsc->bits_per_component;
 
 	DPU_REG_WRITE(c, DSC_ENC, data);
 
@@ -108,7 +102,7 @@ static void dpu_hw_dsc_config(struct dpu_hw_dsc *hw_dsc,
 	data |= dsc->final_offset;
 	DPU_REG_WRITE(c, DSC_DSC_OFFSET, data);
 
-	det_thresh_flatness = drm_dsc_flatness_det_thresh(dsc);
+	det_thresh_flatness = 7 + 2 * (dsc->bits_per_component - 8);
 	data = det_thresh_flatness << 10;
 	data |= dsc->flatness_max_qp << 5;
 	data |= dsc->flatness_min_qp;
@@ -160,6 +154,7 @@ static void dpu_hw_dsc_config_thresh(struct dpu_hw_dsc *hw_dsc,
 
 static void dpu_hw_dsc_bind_pingpong_blk(
 		struct dpu_hw_dsc *hw_dsc,
+		bool enable,
 		const enum dpu_pingpong pp)
 {
 	struct dpu_hw_blk_reg_map *c = &hw_dsc->hw;
@@ -168,49 +163,70 @@ static void dpu_hw_dsc_bind_pingpong_blk(
 
 	dsc_ctl_offset = DSC_CTL(hw_dsc->idx);
 
-	if (pp)
+	if (enable)
 		mux_cfg = (pp - PINGPONG_0) & 0x7;
 
-	if (pp)
-		DRM_DEBUG_KMS("Binding dsc:%d to pp:%d\n",
-			      hw_dsc->idx - DSC_0, pp - PINGPONG_0);
-	else
-		DRM_DEBUG_KMS("Unbinding dsc:%d from any pp\n",
-			      hw_dsc->idx - DSC_0);
+	DRM_DEBUG_KMS("%s dsc:%d %s pp:%d\n",
+			enable ? "Binding" : "Unbinding",
+			hw_dsc->idx - DSC_0,
+			enable ? "to" : "from",
+			pp - PINGPONG_0);
 
 	DPU_REG_WRITE(c, dsc_ctl_offset, mux_cfg);
 }
 
-/**
- * dpu_hw_dsc_init() - Initializes the DSC hw driver object.
- * @dev:  Corresponding device for devres management
- * @cfg:  DSC catalog entry for which driver object is required
- * @addr: Mapped register io address of MDP
- * @mdss_ver: dpu core's major and minor versions
- * Return: Error code or allocated dpu_hw_dsc context
- */
-struct dpu_hw_dsc *dpu_hw_dsc_init(struct drm_device *dev,
-				   const struct dpu_dsc_cfg *cfg,
-				   void __iomem *addr,
-				   const struct dpu_mdss_version *mdss_ver)
+static struct dpu_dsc_cfg *_dsc_offset(enum dpu_dsc dsc,
+				       const struct dpu_mdss_cfg *m,
+				       void __iomem *addr,
+				       struct dpu_hw_blk_reg_map *b)
+{
+	int i;
+
+	for (i = 0; i < m->dsc_count; i++) {
+		if (dsc == m->dsc[i].id) {
+			b->blk_addr = addr + m->dsc[i].base;
+			b->log_mask = DPU_DBG_MASK_DSC;
+			return &m->dsc[i];
+		}
+	}
+
+	return NULL;
+}
+
+static void _setup_dsc_ops(struct dpu_hw_dsc_ops *ops,
+			   unsigned long cap)
+{
+	ops->dsc_disable = dpu_hw_dsc_disable;
+	ops->dsc_config = dpu_hw_dsc_config;
+	ops->dsc_config_thresh = dpu_hw_dsc_config_thresh;
+	if (cap & BIT(DPU_DSC_OUTPUT_CTRL))
+		ops->dsc_bind_pingpong_blk = dpu_hw_dsc_bind_pingpong_blk;
+};
+
+struct dpu_hw_dsc *dpu_hw_dsc_init(enum dpu_dsc idx, void __iomem *addr,
+				   const struct dpu_mdss_cfg *m)
 {
 	struct dpu_hw_dsc *c;
+	struct dpu_dsc_cfg *cfg;
 
-	c = drmm_kzalloc(dev, sizeof(*c), GFP_KERNEL);
+	c = kzalloc(sizeof(*c), GFP_KERNEL);
 	if (!c)
 		return ERR_PTR(-ENOMEM);
 
-	c->hw.blk_addr = addr + cfg->base;
-	c->hw.log_mask = DPU_DBG_MASK_DSC;
+	cfg = _dsc_offset(idx, m, addr, &c->hw);
+	if (IS_ERR_OR_NULL(cfg)) {
+		kfree(c);
+		return ERR_PTR(-EINVAL);
+	}
 
-	c->idx = cfg->id;
+	c->idx = idx;
 	c->caps = cfg;
-
-	c->ops.dsc_disable = dpu_hw_dsc_disable;
-	c->ops.dsc_config = dpu_hw_dsc_config;
-	c->ops.dsc_config_thresh = dpu_hw_dsc_config_thresh;
-	if (mdss_ver->core_major_ver >= 5)
-		c->ops.dsc_bind_pingpong_blk = dpu_hw_dsc_bind_pingpong_blk;
+	_setup_dsc_ops(&c->ops, c->caps->features);
 
 	return c;
+}
+
+void dpu_hw_dsc_destroy(struct dpu_hw_dsc *dsc)
+{
+	kfree(dsc);
 }

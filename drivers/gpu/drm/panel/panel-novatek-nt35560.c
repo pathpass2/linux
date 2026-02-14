@@ -18,6 +18,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/regulator/consumer.h>
 
 #include <video/mipi_display.h>
@@ -148,20 +149,24 @@ static inline struct nt35560 *panel_to_nt35560(struct drm_panel *panel)
 static int nt35560_set_brightness(struct backlight_device *bl)
 {
 	struct nt35560 *nt = bl_get_data(bl);
-	struct mipi_dsi_multi_context dsi_ctx = {
-		.dsi = to_mipi_dsi_device(nt->dev)
-	};
-	int duty_ns = bl->props.brightness;
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(nt->dev);
 	int period_ns = 1023;
+	int duty_ns = bl->props.brightness;
 	u8 pwm_ratio;
 	u8 pwm_div;
+	u8 par;
+	int ret;
 
 	if (backlight_is_blank(bl)) {
 		/* Disable backlight */
-		mipi_dsi_dcs_write_seq_multi(&dsi_ctx,
-					     MIPI_DCS_WRITE_CONTROL_DISPLAY,
-					     0x00);
-		return dsi_ctx.accum_err;
+		par = 0x00;
+		ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY,
+					 &par, 1);
+		if (ret) {
+			dev_err(nt->dev, "failed to disable display backlight (%d)\n", ret);
+			return ret;
+		}
+		return 0;
 	}
 
 	/* Calculate the PWM duty cycle in n/256's */
@@ -172,6 +177,12 @@ static int nt35560_set_brightness(struct backlight_device *bl)
 
 	/* Set up PWM dutycycle ONE byte (differs from the standard) */
 	dev_dbg(nt->dev, "calculated duty cycle %02x\n", pwm_ratio);
+	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
+				 &pwm_ratio, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to set display PWM ratio (%d)\n", ret);
+		return ret;
+	}
 
 	/*
 	 * Sequence to write PWMDIV:
@@ -182,23 +193,46 @@ static int nt35560_set_brightness(struct backlight_device *bl)
 	 *	0x22		PWMDIV
 	 *	0x7F		0xAA   CMD2 page 1 lock
 	 */
-	mipi_dsi_dcs_write_var_seq_multi(&dsi_ctx,
-					 MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
-					 pwm_ratio);
-
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xf3, 0xaa);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x00, 0x01);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x7d, 0x01);
-
-	mipi_dsi_dcs_write_var_seq_multi(&dsi_ctx, 0x22, pwm_div);
-
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x7f, 0xaa);
+	par = 0xaa;
+	ret = mipi_dsi_dcs_write(dsi, 0xf3, &par, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to unlock CMD 2 (%d)\n", ret);
+		return ret;
+	}
+	par = 0x01;
+	ret = mipi_dsi_dcs_write(dsi, 0x00, &par, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to enter page 1 (%d)\n", ret);
+		return ret;
+	}
+	par = 0x01;
+	ret = mipi_dsi_dcs_write(dsi, 0x7d, &par, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to disable MTP reload (%d)\n", ret);
+		return ret;
+	}
+	ret = mipi_dsi_dcs_write(dsi, 0x22, &pwm_div, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to set PWM divisor (%d)\n", ret);
+		return ret;
+	}
+	par = 0xaa;
+	ret = mipi_dsi_dcs_write(dsi, 0x7f, &par, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to lock CMD 2 (%d)\n", ret);
+		return ret;
+	}
 
 	/* Enable backlight */
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY,
-				     0x24);
+	par = 0x24;
+	ret = mipi_dsi_dcs_write(dsi, MIPI_DCS_WRITE_CONTROL_DISPLAY,
+				 &par, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to enable display backlight (%d)\n", ret);
+		return ret;
+	}
 
-	return dsi_ctx.accum_err;
+	return 0;
 }
 
 static const struct backlight_ops nt35560_bl_ops = {
@@ -211,23 +245,32 @@ static const struct backlight_properties nt35560_bl_props = {
 	.max_brightness = 1023,
 };
 
-static void nt35560_read_id(struct mipi_dsi_multi_context *dsi_ctx)
+static int nt35560_read_id(struct nt35560 *nt)
 {
-	struct device *dev = &dsi_ctx->dsi->dev;
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(nt->dev);
 	u8 vendor, version, panel;
 	u16 val;
+	int ret;
 
-	mipi_dsi_dcs_read_multi(dsi_ctx, NT35560_DCS_READ_ID1, &vendor, 1);
-	mipi_dsi_dcs_read_multi(dsi_ctx, NT35560_DCS_READ_ID2, &version, 1);
-	mipi_dsi_dcs_read_multi(dsi_ctx, NT35560_DCS_READ_ID3, &panel, 1);
-
-	if (dsi_ctx->accum_err < 0)
-		return;
+	ret = mipi_dsi_dcs_read(dsi, NT35560_DCS_READ_ID1, &vendor, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "could not vendor ID byte\n");
+		return ret;
+	}
+	ret = mipi_dsi_dcs_read(dsi, NT35560_DCS_READ_ID2, &version, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "could not read device version byte\n");
+		return ret;
+	}
+	ret = mipi_dsi_dcs_read(dsi, NT35560_DCS_READ_ID3, &panel, 1);
+	if (ret < 0) {
+		dev_err(nt->dev, "could not read panel ID byte\n");
+		return ret;
+	}
 
 	if (vendor == 0x00) {
-		dev_err(dev, "device vendor ID is zero\n");
-		dsi_ctx->accum_err = -ENODEV;
-		return;
+		dev_err(nt->dev, "device vendor ID is zero\n");
+		return -ENODEV;
 	}
 
 	val = (vendor << 8) | panel;
@@ -236,16 +279,16 @@ static void nt35560_read_id(struct mipi_dsi_multi_context *dsi_ctx)
 	case DISPLAY_SONY_ACX424AKP_ID2:
 	case DISPLAY_SONY_ACX424AKP_ID3:
 	case DISPLAY_SONY_ACX424AKP_ID4:
-		dev_info(dev,
-			 "MTP vendor: %02x, version: %02x, panel: %02x\n",
+		dev_info(nt->dev, "MTP vendor: %02x, version: %02x, panel: %02x\n",
 			 vendor, version, panel);
 		break;
 	default:
-		dev_info(dev,
-			 "unknown vendor: %02x, version: %02x, panel: %02x\n",
+		dev_info(nt->dev, "unknown vendor: %02x, version: %02x, panel: %02x\n",
 			 vendor, version, panel);
 		break;
 	}
+
+	return 0;
 }
 
 static int nt35560_power_on(struct nt35560 *nt)
@@ -280,56 +323,92 @@ static void nt35560_power_off(struct nt35560 *nt)
 static int nt35560_prepare(struct drm_panel *panel)
 {
 	struct nt35560 *nt = panel_to_nt35560(panel);
-	struct mipi_dsi_multi_context dsi_ctx = {
-		.dsi = to_mipi_dsi_device(nt->dev)
-	};
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(nt->dev);
+	const u8 mddi = 3;
 	int ret;
 
 	ret = nt35560_power_on(nt);
 	if (ret)
 		return ret;
 
-	nt35560_read_id(&dsi_ctx);
+	ret = nt35560_read_id(nt);
+	if (ret) {
+		dev_err(nt->dev, "failed to read panel ID (%d)\n", ret);
+		goto err_power_off;
+	}
 
-	/* Enable tearing mode: send TE (tearing effect) at VBLANK */
-	mipi_dsi_dcs_set_tear_on_multi(&dsi_ctx,
+	/* Enabe tearing mode: send TE (tearing effect) at VBLANK */
+	ret = mipi_dsi_dcs_set_tear_on(dsi,
 				       MIPI_DSI_DCS_TEAR_MODE_VBLANK);
+	if (ret) {
+		dev_err(nt->dev, "failed to enable vblank TE (%d)\n", ret);
+		goto err_power_off;
+	}
 
 	/*
 	 * Set MDDI
 	 *
 	 * This presumably deactivates the Qualcomm MDDI interface and
 	 * selects DSI, similar code is found in other drivers such as the
-	 * Sharp LS043T1LE01.
+	 * Sharp LS043T1LE01 which makes us suspect that this panel may be
+	 * using a Novatek NT35565 or similar display driver chip that shares
+	 * this command. Due to the lack of documentation we cannot know for
+	 * sure.
 	 */
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, NT35560_DCS_SET_MDDI, 3);
-
-	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
-	mipi_dsi_msleep(&dsi_ctx, 140);
-
-	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
-	if (nt->video_mode) {
-		mipi_dsi_turn_on_peripheral_multi(&dsi_ctx);
+	ret = mipi_dsi_dcs_write(dsi, NT35560_DCS_SET_MDDI,
+				 &mddi, sizeof(mddi));
+	if (ret < 0) {
+		dev_err(nt->dev, "failed to set MDDI (%d)\n", ret);
+		goto err_power_off;
 	}
 
-	if (dsi_ctx.accum_err < 0)
-		nt35560_power_off(nt);
-	return dsi_ctx.accum_err;
+	/* Exit sleep mode */
+	ret = mipi_dsi_dcs_exit_sleep_mode(dsi);
+	if (ret) {
+		dev_err(nt->dev, "failed to exit sleep mode (%d)\n", ret);
+		goto err_power_off;
+	}
+	msleep(140);
+
+	ret = mipi_dsi_dcs_set_display_on(dsi);
+	if (ret) {
+		dev_err(nt->dev, "failed to turn display on (%d)\n", ret);
+		goto err_power_off;
+	}
+	if (nt->video_mode) {
+		/* In video mode turn peripheral on */
+		ret = mipi_dsi_turn_on_peripheral(dsi);
+		if (ret) {
+			dev_err(nt->dev, "failed to turn on peripheral\n");
+			goto err_power_off;
+		}
+	}
+
+	return 0;
+
+err_power_off:
+	nt35560_power_off(nt);
+	return ret;
 }
 
 static int nt35560_unprepare(struct drm_panel *panel)
 {
 	struct nt35560 *nt = panel_to_nt35560(panel);
-	struct mipi_dsi_multi_context dsi_ctx = {
-		.dsi = to_mipi_dsi_device(nt->dev)
-	};
+	struct mipi_dsi_device *dsi = to_mipi_dsi_device(nt->dev);
+	int ret;
 
-	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
-	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
+	ret = mipi_dsi_dcs_set_display_off(dsi);
+	if (ret) {
+		dev_err(nt->dev, "failed to turn display off (%d)\n", ret);
+		return ret;
+	}
 
-	if (dsi_ctx.accum_err < 0)
-		return dsi_ctx.accum_err;
-
+	/* Enter sleep mode */
+	ret = mipi_dsi_dcs_enter_sleep_mode(dsi);
+	if (ret) {
+		dev_err(nt->dev, "failed to enter sleep mode (%d)\n", ret);
+		return ret;
+	}
 	msleep(85);
 
 	nt35560_power_off(nt);
@@ -378,12 +457,9 @@ static int nt35560_probe(struct mipi_dsi_device *dsi)
 	struct nt35560 *nt;
 	int ret;
 
-	nt = devm_drm_panel_alloc(dev, struct nt35560, panel,
-				  &nt35560_drm_funcs,
-				  DRM_MODE_CONNECTOR_DSI);
-	if (IS_ERR(nt))
-		return PTR_ERR(nt);
-
+	nt = devm_kzalloc(dev, sizeof(struct nt35560), GFP_KERNEL);
+	if (!nt)
+		return -ENOMEM;
 	nt->video_mode = of_property_read_bool(dev->of_node,
 						"enforce-video-mode");
 
@@ -426,6 +502,9 @@ static int nt35560_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(nt->reset_gpio))
 		return dev_err_probe(dev, PTR_ERR(nt->reset_gpio),
 				     "failed to request GPIO\n");
+
+	drm_panel_init(&nt->panel, dev, &nt35560_drm_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 
 	nt->panel.backlight = devm_backlight_device_register(dev, "nt35560", dev, nt,
 					&nt35560_bl_ops, &nt35560_bl_props);

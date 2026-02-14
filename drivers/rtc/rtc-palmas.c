@@ -287,7 +287,7 @@ static int palmas_rtc_probe(struct platform_device *pdev)
 
 	palmas_rtc->irq = platform_get_irq(pdev, 0);
 
-	device_init_wakeup(&pdev->dev, true);
+	device_init_wakeup(&pdev->dev, 1);
 	palmas_rtc->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
 				&palmas_rtc_ops, THIS_MODULE);
 	if (IS_ERR(palmas_rtc->rtc)) {
@@ -308,9 +308,10 @@ static int palmas_rtc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void palmas_rtc_remove(struct platform_device *pdev)
+static int palmas_rtc_remove(struct platform_device *pdev)
 {
 	palmas_rtc_alarm_irq_enable(&pdev->dev, 0);
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP

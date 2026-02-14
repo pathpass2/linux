@@ -57,7 +57,7 @@ static u64 mmhub_v9_4_get_fb_location(struct amdgpu_device *adev)
 static void mmhub_v9_4_setup_hubid_vm_pt_regs(struct amdgpu_device *adev, int hubid,
 				uint32_t vmid, uint64_t value)
 {
-	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB0(0)];
+	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB_0];
 
 	WREG32_SOC15_OFFSET(MMHUB, 0,
 			    mmVML2VC0_VM_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32,
@@ -108,7 +108,7 @@ static void mmhub_v9_4_setup_vm_pt_regs(struct amdgpu_device *adev, uint32_t vmi
 }
 
 static void mmhub_v9_4_init_system_aperture_regs(struct amdgpu_device *adev,
-						int hubid)
+					         int hubid)
 {
 	uint64_t value;
 	uint32_t tmp;
@@ -196,36 +196,6 @@ static void mmhub_v9_4_init_tlb_regs(struct amdgpu_device *adev, int hubid)
 
 	WREG32_SOC15_OFFSET(MMHUB, 0, mmVMSHAREDVC0_MC_VM_MX_L1_TLB_CNTL,
 			    hubid * MMHUB_INSTANCE_REGISTER_OFFSET, tmp);
-}
-
-/* Set snoop bit for SDMA so that SDMA writes probe-invalidates RW lines */
-static void mmhub_v9_4_init_snoop_override_regs(struct amdgpu_device *adev, int hubid)
-{
-	uint32_t tmp;
-	int i;
-	uint32_t distance = mmDAGB1_WRCLI_GPU_SNOOP_OVERRIDE -
-			    mmDAGB0_WRCLI_GPU_SNOOP_OVERRIDE;
-	uint32_t huboffset = hubid * MMHUB_INSTANCE_REGISTER_OFFSET;
-
-	for (i = 0; i < 5 - (2 * hubid); i++) {
-		/* DAGB instances 0 to 4 are in hub0 and 5 to 7 are in hub1 */
-		tmp = RREG32_SOC15_OFFSET(MMHUB, 0,
-			mmDAGB0_WRCLI_GPU_SNOOP_OVERRIDE,
-			huboffset + i * distance);
-		tmp |= (1 << 15); /* SDMA client is BIT15 */
-		WREG32_SOC15_OFFSET(MMHUB, 0,
-			mmDAGB0_WRCLI_GPU_SNOOP_OVERRIDE,
-			huboffset + i * distance, tmp);
-
-		tmp = RREG32_SOC15_OFFSET(MMHUB, 0,
-			mmDAGB0_WRCLI_GPU_SNOOP_OVERRIDE_VALUE,
-			huboffset + i * distance);
-		tmp |= (1 << 15);
-		WREG32_SOC15_OFFSET(MMHUB, 0,
-			mmDAGB0_WRCLI_GPU_SNOOP_OVERRIDE_VALUE,
-			huboffset + i * distance, tmp);
-	}
-
 }
 
 static void mmhub_v9_4_init_cache_regs(struct amdgpu_device *adev, int hubid)
@@ -324,7 +294,7 @@ static void mmhub_v9_4_disable_identity_aperture(struct amdgpu_device *adev,
 
 static void mmhub_v9_4_setup_vmid_config(struct amdgpu_device *adev, int hubid)
 {
-	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB0(0)];
+	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB_0];
 	unsigned int num_level, block_size;
 	uint32_t tmp;
 	int i;
@@ -338,7 +308,7 @@ static void mmhub_v9_4_setup_vmid_config(struct amdgpu_device *adev, int hubid)
 
 	for (i = 0; i <= 14; i++) {
 		tmp = RREG32_SOC15_OFFSET(MMHUB, 0, mmVML2VC0_VM_CONTEXT1_CNTL,
-				hubid * MMHUB_INSTANCE_REGISTER_OFFSET + i * hub->ctx_distance);
+				hubid * MMHUB_INSTANCE_REGISTER_OFFSET + i);
 		tmp = REG_SET_FIELD(tmp, VML2VC0_VM_CONTEXT1_CNTL,
 				    ENABLE_CONTEXT, 1);
 		tmp = REG_SET_FIELD(tmp, VML2VC0_VM_CONTEXT1_CNTL,
@@ -393,7 +363,7 @@ static void mmhub_v9_4_setup_vmid_config(struct amdgpu_device *adev, int hubid)
 static void mmhub_v9_4_program_invalidation(struct amdgpu_device *adev,
 					    int hubid)
 {
-	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB0(0)];
+	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB_0];
 	unsigned i;
 
 	for (i = 0; i < 18; ++i) {
@@ -422,7 +392,6 @@ static int mmhub_v9_4_gart_enable(struct amdgpu_device *adev)
 		if (!amdgpu_sriov_vf(adev))
 			mmhub_v9_4_init_cache_regs(adev, i);
 
-		mmhub_v9_4_init_snoop_override_regs(adev, i);
 		mmhub_v9_4_enable_system_domain(adev, i);
 		if (!amdgpu_sriov_vf(adev))
 			mmhub_v9_4_disable_identity_aperture(adev, i);
@@ -435,7 +404,7 @@ static int mmhub_v9_4_gart_enable(struct amdgpu_device *adev)
 
 static void mmhub_v9_4_gart_disable(struct amdgpu_device *adev)
 {
-	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB0(0)];
+	struct amdgpu_vmhub *hub = &adev->vmhub[AMDGPU_MMHUB_0];
 	u32 tmp;
 	u32 i, j;
 
@@ -538,8 +507,8 @@ static void mmhub_v9_4_set_fault_enable_default(struct amdgpu_device *adev, bool
 
 static void mmhub_v9_4_init(struct amdgpu_device *adev)
 {
-	struct amdgpu_vmhub *hub[MMHUB_NUM_INSTANCES] = {
-		&adev->vmhub[AMDGPU_MMHUB0(0)], &adev->vmhub[AMDGPU_MMHUB1(0)]};
+	struct amdgpu_vmhub *hub[MMHUB_NUM_INSTANCES] =
+		{&adev->vmhub[AMDGPU_MMHUB_0], &adev->vmhub[AMDGPU_MMHUB_1]};
 	int i;
 
 	for (i = 0; i < MMHUB_NUM_INSTANCES; i++) {
@@ -688,7 +657,7 @@ static int mmhub_v9_4_set_clockgating(struct amdgpu_device *adev,
 
 static void mmhub_v9_4_get_clockgating(struct amdgpu_device *adev, u64 *flags)
 {
-	u32 data, data1;
+	int data, data1;
 
 	if (amdgpu_sriov_vf(adev))
 		*flags = 0;
@@ -1599,7 +1568,7 @@ static int mmhub_v9_4_get_ras_error_count(struct amdgpu_device *adev,
 	uint32_t sec_cnt, ded_cnt;
 
 	for (i = 0; i < ARRAY_SIZE(mmhub_v9_4_ras_fields); i++) {
-		if (mmhub_v9_4_ras_fields[i].reg_offset != reg->reg_offset)
+		if(mmhub_v9_4_ras_fields[i].reg_offset != reg->reg_offset)
 			continue;
 
 		sec_cnt = (value &

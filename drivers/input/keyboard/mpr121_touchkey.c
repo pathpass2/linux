@@ -82,6 +82,42 @@ static const struct mpr121_init_register init_reg_table[] = {
 	{ AUTO_CONFIG_CTRL_ADDR, 0x0b },
 };
 
+static void mpr121_vdd_supply_disable(void *data)
+{
+	struct regulator *vdd_supply = data;
+
+	regulator_disable(vdd_supply);
+}
+
+static struct regulator *mpr121_vdd_supply_init(struct device *dev)
+{
+	struct regulator *vdd_supply;
+	int err;
+
+	vdd_supply = devm_regulator_get(dev, "vdd");
+	if (IS_ERR(vdd_supply)) {
+		dev_err(dev, "failed to get vdd regulator: %ld\n",
+			PTR_ERR(vdd_supply));
+		return vdd_supply;
+	}
+
+	err = regulator_enable(vdd_supply);
+	if (err) {
+		dev_err(dev, "failed to enable vdd regulator: %d\n", err);
+		return ERR_PTR(err);
+	}
+
+	err = devm_add_action_or_reset(dev, mpr121_vdd_supply_disable,
+				       vdd_supply);
+	if (err) {
+		dev_err(dev, "failed to add disable regulator action: %d\n",
+			err);
+		return ERR_PTR(err);
+	}
+
+	return vdd_supply;
+}
+
 static void mpr_touchkey_report(struct input_dev *dev)
 {
 	struct mpr121_touchkey *mpr121 = input_get_drvdata(dev);
@@ -197,6 +233,7 @@ err_i2c_write:
 static int mpr_touchkey_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
+	struct regulator *vdd_supply;
 	int vdd_uv;
 	struct mpr121_touchkey *mpr121;
 	struct input_dev *input_dev;
@@ -204,9 +241,11 @@ static int mpr_touchkey_probe(struct i2c_client *client)
 	int error;
 	int i;
 
-	vdd_uv = devm_regulator_get_enable_read_voltage(dev, "vdd");
-	if (vdd_uv < 0)
-		return dev_err_probe(dev, vdd_uv, "failed to get vdd voltage\n");
+	vdd_supply = mpr121_vdd_supply_init(dev);
+	if (IS_ERR(vdd_supply))
+		return PTR_ERR(vdd_supply);
+
+	vdd_uv = regulator_get_voltage(vdd_supply);
 
 	mpr121 = devm_kzalloc(dev, sizeof(*mpr121), GFP_KERNEL);
 	if (!mpr121)
@@ -330,7 +369,7 @@ static int mpr_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(mpr121_touchkey_pm_ops, mpr_suspend, mpr_resume);
 
 static const struct i2c_device_id mpr121_id[] = {
-	{ "mpr121_touchkey" },
+	{ "mpr121_touchkey", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mpr121_id);
@@ -350,7 +389,7 @@ static struct i2c_driver mpr_touchkey_driver = {
 		.of_match_table = of_match_ptr(mpr121_touchkey_dt_match_table),
 	},
 	.id_table	= mpr121_id,
-	.probe		= mpr_touchkey_probe,
+	.probe_new	= mpr_touchkey_probe,
 };
 
 module_i2c_driver(mpr_touchkey_driver);

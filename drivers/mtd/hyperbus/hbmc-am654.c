@@ -174,30 +174,26 @@ static int am654_hbmc_probe(struct platform_device *pdev)
 	priv->hbdev.np = of_get_next_child(np, NULL);
 	ret = of_address_to_resource(priv->hbdev.np, 0, &res);
 	if (ret)
-		goto put_node;
+		return ret;
 
-	if (of_property_present(dev->of_node, "mux-controls")) {
+	if (of_property_read_bool(dev->of_node, "mux-controls")) {
 		struct mux_control *control = devm_mux_control_get(dev, NULL);
 
-		if (IS_ERR(control)) {
-			ret = PTR_ERR(control);
-			goto put_node;
-		}
+		if (IS_ERR(control))
+			return PTR_ERR(control);
 
 		ret = mux_control_select(control, 1);
 		if (ret) {
 			dev_err(dev, "Failed to select HBMC mux\n");
-			goto put_node;
+			return ret;
 		}
 		priv->mux_ctrl = control;
 	}
 
 	priv->hbdev.map.size = resource_size(&res);
 	priv->hbdev.map.virt = devm_ioremap_resource(dev, &res);
-	if (IS_ERR(priv->hbdev.map.virt)) {
-		ret = PTR_ERR(priv->hbdev.map.virt);
-		goto disable_mux;
-	}
+	if (IS_ERR(priv->hbdev.map.virt))
+		return PTR_ERR(priv->hbdev.map.virt);
 
 	priv->ctlr.dev = dev;
 	priv->ctlr.ops = &am654_hbmc_ops;
@@ -230,12 +226,10 @@ release_dma:
 disable_mux:
 	if (priv->mux_ctrl)
 		mux_control_deselect(priv->mux_ctrl);
-put_node:
-	of_node_put(priv->hbdev.np);
 	return ret;
 }
 
-static void am654_hbmc_remove(struct platform_device *pdev)
+static int am654_hbmc_remove(struct platform_device *pdev)
 {
 	struct am654_hbmc_priv *priv = platform_get_drvdata(pdev);
 	struct am654_hbmc_device_priv *dev_priv = priv->hbdev.priv;
@@ -247,7 +241,8 @@ static void am654_hbmc_remove(struct platform_device *pdev)
 
 	if (dev_priv->rx_chan)
 		dma_release_channel(dev_priv->rx_chan);
-	of_node_put(priv->hbdev.np);
+
+	return 0;
 }
 
 static const struct of_device_id am654_hbmc_dt_ids[] = {
@@ -272,4 +267,5 @@ module_platform_driver(am654_hbmc_platform_driver);
 
 MODULE_DESCRIPTION("HBMC driver for AM654 SoC");
 MODULE_LICENSE("GPL v2");
+MODULE_ALIAS("platform:hbmc-am654");
 MODULE_AUTHOR("Vignesh Raghavendra <vigneshr@ti.com>");

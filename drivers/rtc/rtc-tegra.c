@@ -274,12 +274,6 @@ static const struct of_device_id tegra_rtc_dt_match[] = {
 };
 MODULE_DEVICE_TABLE(of, tegra_rtc_dt_match);
 
-static const struct acpi_device_id tegra_rtc_acpi_match[] = {
-	{ "NVDA0280" },
-	{ }
-};
-MODULE_DEVICE_TABLE(acpi, tegra_rtc_acpi_match);
-
 static int tegra_rtc_probe(struct platform_device *pdev)
 {
 	struct tegra_rtc_info *info;
@@ -306,11 +300,13 @@ static int tegra_rtc_probe(struct platform_device *pdev)
 	info->rtc->ops = &tegra_rtc_ops;
 	info->rtc->range_max = U32_MAX;
 
-	if (dev_of_node(&pdev->dev)) {
-		info->clk = devm_clk_get_enabled(&pdev->dev, NULL);
-		if (IS_ERR(info->clk))
-			return PTR_ERR(info->clk);
-	}
+	info->clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(info->clk))
+		return PTR_ERR(info->clk);
+
+	ret = clk_prepare_enable(info->clk);
+	if (ret < 0)
+		return ret;
 
 	/* set context info */
 	info->pdev = pdev;
@@ -323,23 +319,39 @@ static int tegra_rtc_probe(struct platform_device *pdev)
 	writel(0xffffffff, info->base + TEGRA_RTC_REG_INTR_STATUS);
 	writel(0, info->base + TEGRA_RTC_REG_INTR_MASK);
 
-	device_init_wakeup(&pdev->dev, true);
+	device_init_wakeup(&pdev->dev, 1);
 
 	ret = devm_request_irq(&pdev->dev, info->irq, tegra_rtc_irq_handler,
 			       IRQF_TRIGGER_HIGH, dev_name(&pdev->dev),
 			       &pdev->dev);
-	if (ret)
-		return dev_err_probe(&pdev->dev, ret, "failed to request interrupt\n");
+	if (ret) {
+		dev_err(&pdev->dev, "failed to request interrupt: %d\n", ret);
+		goto disable_clk;
+	}
 
 	ret = devm_rtc_register_device(info->rtc);
 	if (ret)
-		return ret;
+		goto disable_clk;
 
 	dev_notice(&pdev->dev, "Tegra internal Real Time Clock\n");
 
 	return 0;
+
+disable_clk:
+	clk_disable_unprepare(info->clk);
+	return ret;
 }
 
+static int tegra_rtc_remove(struct platform_device *pdev)
+{
+	struct tegra_rtc_info *info = platform_get_drvdata(pdev);
+
+	clk_disable_unprepare(info->clk);
+
+	return 0;
+}
+
+#ifdef CONFIG_PM_SLEEP
 static int tegra_rtc_suspend(struct device *dev)
 {
 	struct tegra_rtc_info *info = dev_get_drvdata(dev);
@@ -377,8 +389,9 @@ static int tegra_rtc_resume(struct device *dev)
 
 	return 0;
 }
+#endif
 
-static DEFINE_SIMPLE_DEV_PM_OPS(tegra_rtc_pm_ops, tegra_rtc_suspend, tegra_rtc_resume);
+static SIMPLE_DEV_PM_OPS(tegra_rtc_pm_ops, tegra_rtc_suspend, tegra_rtc_resume);
 
 static void tegra_rtc_shutdown(struct platform_device *pdev)
 {
@@ -388,12 +401,12 @@ static void tegra_rtc_shutdown(struct platform_device *pdev)
 
 static struct platform_driver tegra_rtc_driver = {
 	.probe = tegra_rtc_probe,
+	.remove = tegra_rtc_remove,
 	.shutdown = tegra_rtc_shutdown,
 	.driver = {
 		.name = "tegra_rtc",
 		.of_match_table = tegra_rtc_dt_match,
-		.acpi_match_table = tegra_rtc_acpi_match,
-		.pm = pm_sleep_ptr(&tegra_rtc_pm_ops),
+		.pm = &tegra_rtc_pm_ops,
 	},
 };
 module_platform_driver(tegra_rtc_driver);

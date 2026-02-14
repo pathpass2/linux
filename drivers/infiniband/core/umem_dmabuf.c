@@ -10,7 +10,7 @@
 
 #include "uverbs.h"
 
-MODULE_IMPORT_NS("DMA_BUF");
+MODULE_IMPORT_NS(DMA_BUF);
 
 int ib_umem_dmabuf_map_pages(struct ib_umem_dmabuf *umem_dmabuf)
 {
@@ -22,9 +22,6 @@ int ib_umem_dmabuf_map_pages(struct ib_umem_dmabuf *umem_dmabuf)
 	int i;
 
 	dma_resv_assert_held(umem_dmabuf->attach->dmabuf->resv);
-
-	if (umem_dmabuf->revoked)
-		return -EINVAL;
 
 	if (umem_dmabuf->sgt)
 		goto wait_fence;
@@ -113,12 +110,10 @@ void ib_umem_dmabuf_unmap_pages(struct ib_umem_dmabuf *umem_dmabuf)
 }
 EXPORT_SYMBOL(ib_umem_dmabuf_unmap_pages);
 
-static struct ib_umem_dmabuf *
-ib_umem_dmabuf_get_with_dma_device(struct ib_device *device,
-				   struct device *dma_device,
-				   unsigned long offset, size_t size,
-				   int fd, int access,
-				   const struct dma_buf_attach_ops *ops)
+struct ib_umem_dmabuf *ib_umem_dmabuf_get(struct ib_device *device,
+					  unsigned long offset, size_t size,
+					  int fd, int access,
+					  const struct dma_buf_attach_ops *ops)
 {
 	struct dma_buf *dmabuf;
 	struct ib_umem_dmabuf *umem_dmabuf;
@@ -127,6 +122,9 @@ ib_umem_dmabuf_get_with_dma_device(struct ib_device *device,
 	struct ib_umem_dmabuf *ret = ERR_PTR(-EINVAL);
 
 	if (check_add_overflow(offset, (unsigned long)size, &end))
+		return ret;
+
+	if (unlikely(!ops || !ops->move_notify))
 		return ret;
 
 	dmabuf = dma_buf_get(fd);
@@ -154,7 +152,7 @@ ib_umem_dmabuf_get_with_dma_device(struct ib_device *device,
 
 	umem_dmabuf->attach = dma_buf_dynamic_attach(
 					dmabuf,
-					dma_device,
+					device->dma_device,
 					ops,
 					umem_dmabuf);
 	if (IS_ERR(umem_dmabuf->attach)) {
@@ -169,15 +167,6 @@ out_free_umem:
 out_release_dmabuf:
 	dma_buf_put(dmabuf);
 	return ret;
-}
-
-struct ib_umem_dmabuf *ib_umem_dmabuf_get(struct ib_device *device,
-					  unsigned long offset, size_t size,
-					  int fd, int access,
-					  const struct dma_buf_attach_ops *ops)
-{
-	return ib_umem_dmabuf_get_with_dma_device(device, device->dma_device,
-						  offset, size, fd, access, ops);
 }
 EXPORT_SYMBOL(ib_umem_dmabuf_get);
 
@@ -195,18 +184,16 @@ static struct dma_buf_attach_ops ib_umem_dmabuf_attach_pinned_ops = {
 	.move_notify = ib_umem_dmabuf_unsupported_move_notify,
 };
 
-struct ib_umem_dmabuf *
-ib_umem_dmabuf_get_pinned_with_dma_device(struct ib_device *device,
-					  struct device *dma_device,
-					  unsigned long offset, size_t size,
-					  int fd, int access)
+struct ib_umem_dmabuf *ib_umem_dmabuf_get_pinned(struct ib_device *device,
+						 unsigned long offset,
+						 size_t size, int fd,
+						 int access)
 {
 	struct ib_umem_dmabuf *umem_dmabuf;
 	int err;
 
-	umem_dmabuf = ib_umem_dmabuf_get_with_dma_device(device, dma_device, offset,
-							 size, fd, access,
-							 &ib_umem_dmabuf_attach_pinned_ops);
+	umem_dmabuf = ib_umem_dmabuf_get(device, offset, size, fd, access,
+					 &ib_umem_dmabuf_attach_pinned_ops);
 	if (IS_ERR(umem_dmabuf))
 		return umem_dmabuf;
 
@@ -230,41 +217,17 @@ err_release:
 	ib_umem_release(&umem_dmabuf->umem);
 	return ERR_PTR(err);
 }
-EXPORT_SYMBOL(ib_umem_dmabuf_get_pinned_with_dma_device);
-
-struct ib_umem_dmabuf *ib_umem_dmabuf_get_pinned(struct ib_device *device,
-						 unsigned long offset,
-						 size_t size, int fd,
-						 int access)
-{
-	return ib_umem_dmabuf_get_pinned_with_dma_device(device, device->dma_device,
-							 offset, size, fd, access);
-}
 EXPORT_SYMBOL(ib_umem_dmabuf_get_pinned);
-
-void ib_umem_dmabuf_revoke(struct ib_umem_dmabuf *umem_dmabuf)
-{
-	struct dma_buf *dmabuf = umem_dmabuf->attach->dmabuf;
-
-	dma_resv_lock(dmabuf->resv, NULL);
-	if (umem_dmabuf->revoked)
-		goto end;
-	ib_umem_dmabuf_unmap_pages(umem_dmabuf);
-	if (umem_dmabuf->pinned) {
-		dma_buf_unpin(umem_dmabuf->attach);
-		umem_dmabuf->pinned = 0;
-	}
-	umem_dmabuf->revoked = 1;
-end:
-	dma_resv_unlock(dmabuf->resv);
-}
-EXPORT_SYMBOL(ib_umem_dmabuf_revoke);
 
 void ib_umem_dmabuf_release(struct ib_umem_dmabuf *umem_dmabuf)
 {
 	struct dma_buf *dmabuf = umem_dmabuf->attach->dmabuf;
 
-	ib_umem_dmabuf_revoke(umem_dmabuf);
+	dma_resv_lock(dmabuf->resv, NULL);
+	ib_umem_dmabuf_unmap_pages(umem_dmabuf);
+	if (umem_dmabuf->pinned)
+		dma_buf_unpin(umem_dmabuf->attach);
+	dma_resv_unlock(dmabuf->resv);
 
 	dma_buf_detach(dmabuf, umem_dmabuf->attach);
 	dma_buf_put(dmabuf);

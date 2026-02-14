@@ -22,7 +22,6 @@
 #include <linux/seq_file.h>
 #include <linux/ftrace.h>
 #include <linux/irq.h>
-#include <linux/string_choices.h>
 
 #include <asm/ptrace.h>
 #include <asm/processor.h>
@@ -146,7 +145,9 @@ static int hv_irq_version;
  */
 static bool sun4v_cookie_only_virqs(void)
 {
-	return hv_irq_version >= 3;
+	if (hv_irq_version >= 3)
+		return true;
+	return false;
 }
 
 static void __init irq_init_hv(void)
@@ -169,7 +170,7 @@ static void __init irq_init_hv(void)
 
 	pr_info("SUN4V: Using IRQ API major %d, cookie only virqs %s\n",
 		hv_irq_version,
-		str_enabled_disabled(sun4v_cookie_only_virqs()));
+		sun4v_cookie_only_virqs() ? "enabled" : "disabled");
 }
 
 /* This function is for the timer interrupt.*/
@@ -303,9 +304,9 @@ int arch_show_interrupts(struct seq_file *p, int prec)
 {
 	int j;
 
-	seq_printf(p, "NMI:");
+	seq_printf(p, "NMI: ");
 	for_each_online_cpu(j)
-		seq_put_decimal_ull_width(p, " ", cpu_data(j).__nmi_count, 10);
+		seq_printf(p, "%10u ", cpu_data(j).__nmi_count);
 	seq_printf(p, "     Non-maskable interrupts\n");
 	return 0;
 }
@@ -348,13 +349,17 @@ static unsigned int sun4u_compute_tid(unsigned long imap, unsigned long cpuid)
 #ifdef CONFIG_SMP
 static int irq_choose_cpu(unsigned int irq, const struct cpumask *affinity)
 {
+	cpumask_t mask;
 	int cpuid;
 
-	if (cpumask_equal(affinity, cpu_online_mask)) {
+	cpumask_copy(&mask, affinity);
+	if (cpumask_equal(&mask, cpu_online_mask)) {
 		cpuid = map_to_cpu(irq);
 	} else {
-		cpuid = cpumask_first_and(affinity, cpu_online_mask);
-		cpuid = cpuid < nr_cpu_ids ? cpuid : map_to_cpu(irq);
+		cpumask_t tmp;
+
+		cpumask_and(&tmp, cpu_online_mask, &mask);
+		cpuid = cpumask_empty(&tmp) ? map_to_cpu(irq) : cpumask_first(&tmp);
 	}
 
 	return cpuid;
@@ -975,7 +980,7 @@ void notrace init_irqwork_curcpu(void)
  *
  * On SMP this gets invoked from the CPU trampoline before
  * the cpu has fully taken over the trap table from OBP,
- * and its kernel stack + %g6 thread register state is
+ * and it's kernel stack + %g6 thread register state is
  * not fully cooked yet.
  *
  * Therefore you cannot make any OBP calls, not even prom_printf,

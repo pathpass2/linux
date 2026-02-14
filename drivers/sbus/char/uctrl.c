@@ -15,7 +15,7 @@
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 
 #include <asm/openprom.h>
 #include <asm/oplib.h>
@@ -221,6 +221,7 @@ static irqreturn_t uctrl_interrupt(int irq, void *dev_id)
 
 static const struct file_operations uctrl_fops = {
 	.owner =	THIS_MODULE,
+	.llseek =	no_llseek,
 	.unlocked_ioctl =	uctrl_ioctl,
 	.open =		uctrl_open,
 };
@@ -398,7 +399,7 @@ out_free:
 	goto out;
 }
 
-static void uctrl_remove(struct platform_device *op)
+static int uctrl_remove(struct platform_device *op)
 {
 	struct uctrl_driver *p = dev_get_drvdata(&op->dev);
 
@@ -408,6 +409,7 @@ static void uctrl_remove(struct platform_device *op)
 		of_iounmap(&op->resource[0], p->regs, resource_size(&op->resource[0]));
 		kfree(p);
 	}
+	return 0;
 }
 
 static const struct of_device_id uctrl_match[] = {
@@ -430,5 +432,4 @@ static struct platform_driver uctrl_driver = {
 
 module_platform_driver(uctrl_driver);
 
-MODULE_DESCRIPTION("Tadpole TS102 Microcontroller driver");
 MODULE_LICENSE("GPL");

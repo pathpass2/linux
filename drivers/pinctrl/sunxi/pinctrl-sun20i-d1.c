@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/pinctrl.h>
 
 #include "pinctrl-sunxi.h"
@@ -820,13 +821,15 @@ static const struct sunxi_pinctrl_desc d1_pinctrl_data = {
 
 static int d1_pinctrl_probe(struct platform_device *pdev)
 {
-	return sunxi_pinctrl_init_with_flags(pdev, &d1_pinctrl_data,
-					     SUNXI_PINCTRL_NEW_REG_LAYOUT);
+	unsigned long variant = (unsigned long)of_device_get_match_data(&pdev->dev);
+
+	return sunxi_pinctrl_init_with_variant(pdev, &d1_pinctrl_data, variant);
 }
 
 static const struct of_device_id d1_pinctrl_match[] = {
 	{
 		.compatible = "allwinner,sun20i-d1-pinctrl",
+		.data = (void *)PINCTRL_SUN20I_D1
 	},
 	{}
 };

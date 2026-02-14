@@ -138,8 +138,8 @@ static int isl6271a_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id isl6271a_id[] = {
-	{ .name = "isl6271a", },
-	{ }
+	{.name = "isl6271a", 0 },
+	{ },
 };
 
 MODULE_DEVICE_TABLE(i2c, isl6271a_id);
@@ -147,9 +147,8 @@ MODULE_DEVICE_TABLE(i2c, isl6271a_id);
 static struct i2c_driver isl6271a_i2c_driver = {
 	.driver = {
 		.name = "isl6271a",
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
-	.probe = isl6271a_probe,
+	.probe_new = isl6271a_probe,
 	.id_table = isl6271a_id,
 };
 

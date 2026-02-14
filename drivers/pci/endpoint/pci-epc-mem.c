@@ -115,16 +115,6 @@ err_mem:
 }
 EXPORT_SYMBOL_GPL(pci_epc_multi_mem_init);
 
-/**
- * pci_epc_mem_init() - Initialize the pci_epc_mem structure
- * @epc: the EPC device that invoked pci_epc_mem_init
- * @base: Physical address of the window region
- * @size: Total Size of the window region
- * @page_size: Page size of the window region
- *
- * Invoke to initialize a single pci_epc_mem structure used by the
- * endpoint functions to allocate memory for mapping the PCI host memory
- */
 int pci_epc_mem_init(struct pci_epc *epc, phys_addr_t base,
 		     size_t size, size_t page_size)
 {
@@ -178,7 +168,7 @@ EXPORT_SYMBOL_GPL(pci_epc_mem_exit);
 void __iomem *pci_epc_mem_alloc_addr(struct pci_epc *epc,
 				     phys_addr_t *phys_addr, size_t size)
 {
-	void __iomem *virt_addr;
+	void __iomem *virt_addr = NULL;
 	struct pci_epc_mem *mem;
 	unsigned int page_shift;
 	size_t align_size;
@@ -188,13 +178,10 @@ void __iomem *pci_epc_mem_alloc_addr(struct pci_epc *epc,
 
 	for (i = 0; i < epc->num_windows; i++) {
 		mem = epc->windows[i];
-		if (size > mem->window.size)
-			continue;
-
+		mutex_lock(&mem->lock);
 		align_size = ALIGN(size, mem->window.page_size);
 		order = pci_epc_mem_get_order(mem, align_size);
 
-		mutex_lock(&mem->lock);
 		pageno = bitmap_find_free_region(mem->bitmap, mem->pages,
 						 order);
 		if (pageno >= 0) {
@@ -214,7 +201,7 @@ void __iomem *pci_epc_mem_alloc_addr(struct pci_epc *epc,
 		mutex_unlock(&mem->lock);
 	}
 
-	return NULL;
+	return virt_addr;
 }
 EXPORT_SYMBOL_GPL(pci_epc_mem_alloc_addr);
 

@@ -37,18 +37,21 @@ static int bd71815gpo_get(struct gpio_chip *chip, unsigned int offset)
 	return (val >> offset) & 1;
 }
 
-static int bd71815gpo_set(struct gpio_chip *chip, unsigned int offset,
-			  int value)
+static void bd71815gpo_set(struct gpio_chip *chip, unsigned int offset,
+			   int value)
 {
 	struct bd71815_gpio *bd71815 = gpiochip_get_data(chip);
-	int bit;
+	int ret, bit;
 
 	bit = BIT(offset);
 
 	if (value)
-		return regmap_set_bits(bd71815->regmap, BD71815_REG_GPO, bit);
+		ret = regmap_set_bits(bd71815->regmap, BD71815_REG_GPO, bit);
+	else
+		ret = regmap_clear_bits(bd71815->regmap, BD71815_REG_GPO, bit);
 
-	return regmap_clear_bits(bd71815->regmap, BD71815_REG_GPO, bit);
+	if (ret)
+		dev_warn(bd71815->dev, "failed to toggle GPO\n");
 }
 
 static int bd71815_gpio_set_config(struct gpio_chip *chip, unsigned int offset,

@@ -11,7 +11,7 @@ Prerequisites:
     gnuplot 5.0 or higher
     gnuplot-py 1.8 or higher
     (Most of the distributions have these required packages. They may be called
-     gnuplot-py, python-gnuplot or python3-gnuplot, gnuplot-nox, ... )
+     gnuplot-py, phython-gnuplot or phython3-gnuplot, gnuplot-nox, ... )
 
     Kernel config for Linux trace is enabled
 
@@ -30,7 +30,8 @@ import getopt
 import Gnuplot
 from numpy import *
 from decimal import *
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "intel_pstate_tracer"))
+sys.path.append('../intel_pstate_tracer')
+#import intel_pstate_tracer
 import intel_pstate_tracer as ipt
 
 __license__ = "GPL version 2"

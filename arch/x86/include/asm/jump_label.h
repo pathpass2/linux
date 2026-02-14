@@ -7,34 +7,40 @@
 #include <asm/asm.h>
 #include <asm/nops.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/stringify.h>
 #include <linux/types.h>
 
-#define JUMP_TABLE_ENTRY(key, label)			\
+#define JUMP_TABLE_ENTRY				\
 	".pushsection __jump_table,  \"aw\" \n\t"	\
 	_ASM_ALIGN "\n\t"				\
-	ANNOTATE_DATA_SPECIAL "\n"			\
 	".long 1b - . \n\t"				\
-	".long " label " - . \n\t"			\
-	_ASM_PTR " " key " - . \n\t"			\
+	".long %l[l_yes] - . \n\t"			\
+	_ASM_PTR "%c0 + %c1 - .\n\t"			\
 	".popsection \n\t"
 
-/* This macro is also expanded on the Rust side. */
 #ifdef CONFIG_HAVE_JUMP_LABEL_HACK
-#define ARCH_STATIC_BRANCH_ASM(key, label)		\
-	"1: jmp " label " # objtool NOPs this \n\t"	\
-	JUMP_TABLE_ENTRY(key " + 2", label)
+
+static __always_inline bool arch_static_branch(struct static_key *key, bool branch)
+{
+	asm_volatile_goto("1:"
+		"jmp %l[l_yes] # objtool NOPs this \n\t"
+		JUMP_TABLE_ENTRY
+		: :  "i" (key), "i" (2 | branch) : : l_yes);
+
+	return false;
+l_yes:
+	return true;
+}
+
 #else /* !CONFIG_HAVE_JUMP_LABEL_HACK */
-#define ARCH_STATIC_BRANCH_ASM(key, label)		\
-	"1: .byte " __stringify(BYTES_NOP5) "\n\t"	\
-	JUMP_TABLE_ENTRY(key, label)
-#endif /* CONFIG_HAVE_JUMP_LABEL_HACK */
 
 static __always_inline bool arch_static_branch(struct static_key * const key, const bool branch)
 {
-	asm goto(ARCH_STATIC_BRANCH_ASM("%c0 + %c1", "%l[l_yes]")
+	asm_volatile_goto("1:"
+		".byte " __stringify(BYTES_NOP5) "\n\t"
+		JUMP_TABLE_ENTRY
 		: :  "i" (key), "i" (branch) : : l_yes);
 
 	return false;
@@ -42,11 +48,13 @@ l_yes:
 	return true;
 }
 
+#endif /* CONFIG_HAVE_JUMP_LABEL_HACK */
+
 static __always_inline bool arch_static_branch_jump(struct static_key * const key, const bool branch)
 {
-	asm goto("1:"
+	asm_volatile_goto("1:"
 		"jmp %l[l_yes]\n\t"
-		JUMP_TABLE_ENTRY("%c0 + %c1", "%l[l_yes]")
+		JUMP_TABLE_ENTRY
 		: :  "i" (key), "i" (branch) : : l_yes);
 
 	return false;
@@ -56,6 +64,6 @@ l_yes:
 
 extern int arch_jump_entry_size(struct jump_entry *entry);
 
-#endif	/* __ASSEMBLER__ */
+#endif	/* __ASSEMBLY__ */
 
 #endif

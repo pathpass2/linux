@@ -46,11 +46,7 @@ out:
 		}
 		dd->sym_mapping = tmp;
 		sym = &dd->sym_mapping[dd->sym_count];
-
-		/* module is optional */
-		sym->module[0] = '\0';
-		/* trim the square brackets around the module name */
-		if (sscanf(buff, "%p %*c %s [%[^]]s", &address, sym->name, sym->module) < 2)
+		if (sscanf(buff, "%p %*c %s", &address, sym->name) != 2)
 			continue;
 		sym->address = (unsigned long)address;
 		if (!strcmp(sym->name, "__bpf_call_base")) {
@@ -199,13 +195,13 @@ static const char *print_imm(void *private_data,
 
 	if (insn->src_reg == BPF_PSEUDO_MAP_FD)
 		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
-			 "map[id:%d]", insn->imm);
+			 "map[id:%u]", insn->imm);
 	else if (insn->src_reg == BPF_PSEUDO_MAP_VALUE)
 		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
-			 "map[id:%d][0]+%d", insn->imm, (insn + 1)->imm);
+			 "map[id:%u][0]+%u", insn->imm, (insn + 1)->imm);
 	else if (insn->src_reg == BPF_PSEUDO_MAP_IDX_VALUE)
 		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
-			 "map[idx:%d]+%d", insn->imm, (insn + 1)->imm);
+			 "map[idx:%u]+%u", insn->imm, (insn + 1)->imm);
 	else if (insn->src_reg == BPF_PSEUDO_FUNC)
 		snprintf(dd->scratch_buff, sizeof(dd->scratch_buff),
 			 "subprog[%+d]", insn->imm);
@@ -349,7 +345,7 @@ void dump_xlated_plain(struct dump_data *dd, void *buf, unsigned int len,
 
 		double_insn = insn[i].code == (BPF_LD | BPF_IMM | BPF_DW);
 
-		printf("%4u: ", i);
+		printf("% 4d: ", i);
 		print_bpf_insn(&cbs, insn + i, true);
 
 		if (opcodes) {
@@ -365,8 +361,7 @@ void dump_xlated_plain(struct dump_data *dd, void *buf, unsigned int len,
 }
 
 void dump_xlated_for_graph(struct dump_data *dd, void *buf_start, void *buf_end,
-			   unsigned int start_idx,
-			   bool opcodes, bool linum)
+			   unsigned int start_idx)
 {
 	const struct bpf_insn_cbs cbs = {
 		.cb_print	= print_insn_for_graph,
@@ -374,61 +369,14 @@ void dump_xlated_for_graph(struct dump_data *dd, void *buf_start, void *buf_end,
 		.cb_imm		= print_imm,
 		.private_data	= dd,
 	};
-	const struct bpf_prog_linfo *prog_linfo = dd->prog_linfo;
-	const struct bpf_line_info *last_linfo = NULL;
-	struct bpf_func_info *record = dd->func_info;
 	struct bpf_insn *insn_start = buf_start;
 	struct bpf_insn *insn_end = buf_end;
 	struct bpf_insn *cur = insn_start;
-	struct btf *btf = dd->btf;
-	bool double_insn = false;
-	char func_sig[1024];
 
 	for (; cur <= insn_end; cur++) {
-		unsigned int insn_off;
-
-		if (double_insn) {
-			double_insn = false;
-			continue;
-		}
-		double_insn = cur->code == (BPF_LD | BPF_IMM | BPF_DW);
-
-		insn_off = (unsigned int)(cur - insn_start + start_idx);
-		if (btf && record) {
-			if (record->insn_off == insn_off) {
-				btf_dumper_type_only(btf, record->type_id,
-						     func_sig,
-						     sizeof(func_sig));
-				if (func_sig[0] != '\0')
-					printf("; %s:\\l\\\n", func_sig);
-				record = (void *)record + dd->finfo_rec_size;
-			}
-		}
-
-		if (prog_linfo) {
-			const struct bpf_line_info *linfo;
-
-			linfo = bpf_prog_linfo__lfind(prog_linfo, insn_off, 0);
-			if (linfo && linfo != last_linfo) {
-				btf_dump_linfo_dotlabel(btf, linfo, linum);
-				last_linfo = linfo;
-			}
-		}
-
-		printf("%u: ", insn_off);
+		printf("% 4d: ", (int)(cur - insn_start + start_idx));
 		print_bpf_insn(&cbs, cur, true);
-
-		if (opcodes) {
-			printf("\\ \\ \\ \\ ");
-			fprint_hex(stdout, cur, 8, " ");
-			if (double_insn && cur <= insn_end - 1) {
-				printf(" ");
-				fprint_hex(stdout, cur + 1, 8, " ");
-			}
-			printf("\\l\\\n");
-		}
-
 		if (cur != insn_end)
-			printf("| ");
+			printf(" | ");
 	}
 }

@@ -8,20 +8,15 @@
 #ifndef _XHCI_PLAT_H
 #define _XHCI_PLAT_H
 
-struct device;
-struct platform_device;
-struct usb_hcd;
+#include "xhci.h"	/* for hcd_to_xhci() */
 
 struct xhci_plat_priv {
 	const char *firmware_name;
 	unsigned long long quirks;
-	bool power_lost;
-	unsigned sideband_at_suspend:1;
 	void (*plat_start)(struct usb_hcd *);
 	int (*init_quirk)(struct usb_hcd *);
 	int (*suspend_quirk)(struct usb_hcd *);
 	int (*resume_quirk)(struct usb_hcd *);
-	int (*post_resume_quirk)(struct usb_hcd *);
 };
 
 #define hcd_to_xhci_priv(h) ((struct xhci_plat_priv *)hcd_to_xhci(h)->priv)
@@ -30,7 +25,7 @@ struct xhci_plat_priv {
 int xhci_plat_probe(struct platform_device *pdev, struct device *sysdev,
 		    const struct xhci_plat_priv *priv_match);
 
-void xhci_plat_remove(struct platform_device *dev);
+int xhci_plat_remove(struct platform_device *dev);
 extern const struct dev_pm_ops xhci_plat_pm_ops;
 
 #endif	/* _XHCI_PLAT_H */

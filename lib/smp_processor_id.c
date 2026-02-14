@@ -22,8 +22,10 @@ unsigned int check_preemption_disabled(const char *what1, const char *what2)
 	if (is_percpu_thread())
 		goto out;
 
+#ifdef CONFIG_SMP
 	if (current->migration_disabled)
 		goto out;
+#endif
 
 	/*
 	 * It is valid to assume CPU-locality during early bootup:

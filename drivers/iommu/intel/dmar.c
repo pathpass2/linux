@@ -32,7 +32,6 @@
 
 #include "iommu.h"
 #include "../irq_remapping.h"
-#include "../iommu-pages.h"
 #include "perf.h"
 #include "trace.h"
 #include "perfmon.h"
@@ -127,6 +126,8 @@ dmar_alloc_pci_notify_info(struct pci_dev *dev, unsigned long event)
 	size_t size;
 	struct pci_dev *tmp;
 	struct dmar_pci_notify_info *info;
+
+	BUG_ON(dev->is_virtfn);
 
 	/*
 	 * Ignore devices that have a domain number higher than what can
@@ -263,8 +264,7 @@ int dmar_insert_dev_scope(struct dmar_pci_notify_info *info,
 						   get_device(dev));
 				return 1;
 			}
-		if (WARN_ON(i >= devices_cnt))
-			return -EINVAL;
+		BUG_ON(i >= devices_cnt);
 	}
 
 	return 0;
@@ -935,10 +935,13 @@ void __init detect_intel_iommu(void)
 		pci_request_acs();
 	}
 
+#ifdef CONFIG_X86
 	if (!ret) {
 		x86_init.iommu.iommu_init = intel_iommu_init;
 		x86_platform.iommu_shutdown = intel_iommu_shutdown;
 	}
+
+#endif
 
 	if (dmar_tbl) {
 		acpi_put_table(dmar_tbl);
@@ -990,6 +993,8 @@ static int map_iommu(struct intel_iommu *iommu, struct dmar_drhd_unit *drhd)
 		warn_invalid_dmar(phys_addr, " returns all ones");
 		goto unmap;
 	}
+	if (ecap_vcs(iommu->ecap))
+		iommu->vccap = dmar_readq(iommu->reg + DMAR_VCCAP_REG);
 
 	/* the registers might be more than one page */
 	map_size = max_t(int, ecap_max_iotlb_offset(iommu->ecap),
@@ -1057,7 +1062,7 @@ static int alloc_iommu(struct dmar_drhd_unit *drhd)
 		err = iommu->seq_id;
 		goto error;
 	}
-	snprintf(iommu->name, sizeof(iommu->name), "dmar%d", iommu->seq_id);
+	sprintf(iommu->name, "dmar%d", iommu->seq_id);
 
 	err = map_iommu(iommu, drhd);
 	if (err) {
@@ -1065,6 +1070,7 @@ static int alloc_iommu(struct dmar_drhd_unit *drhd)
 		goto error_free_seq_id;
 	}
 
+	err = -EINVAL;
 	if (!cap_sagaw(iommu->cap) &&
 	    (!ecap_smts(iommu->ecap) || ecap_slts(iommu->ecap))) {
 		pr_info("%s: No supported address widths. Not attempting DMA translation.\n",
@@ -1092,13 +1098,8 @@ static int alloc_iommu(struct dmar_drhd_unit *drhd)
 	iommu->agaw = agaw;
 	iommu->msagaw = msagaw;
 	iommu->segment = drhd->segment;
-	iommu->device_rbtree = RB_ROOT;
-	spin_lock_init(&iommu->device_rbtree_lock);
-	mutex_init(&iommu->iopf_lock);
+
 	iommu->node = NUMA_NO_NODE;
-	spin_lock_init(&iommu->lock);
-	ida_init(&iommu->domain_ida);
-	mutex_init(&iommu->did_lock);
 
 	ver = readl(iommu->reg + DMAR_VER_REG);
 	pr_info("%s: reg_base_addr %llx ver %d:%d cap %llx ecap %llx\n",
@@ -1187,7 +1188,7 @@ static void free_iommu(struct intel_iommu *iommu)
 	}
 
 	if (iommu->qi) {
-		iommu_free_pages(iommu->qi->desc);
+		free_page((unsigned long)iommu->qi->desc);
 		kfree(iommu->qi->desc_status);
 		kfree(iommu->qi);
 	}
@@ -1195,7 +1196,6 @@ static void free_iommu(struct intel_iommu *iommu)
 	if (iommu->reg)
 		unmap_iommu(iommu);
 
-	ida_destroy(&iommu->domain_ida);
 	ida_free(&dmar_seq_ids, iommu->seq_id);
 	kfree(iommu);
 }
@@ -1205,7 +1205,9 @@ static void free_iommu(struct intel_iommu *iommu)
  */
 static inline void reclaim_free_desc(struct q_inval *qi)
 {
-	while (qi->desc_status[qi->free_tail] == QI_FREE && qi->free_tail != qi->free_head) {
+	while (qi->desc_status[qi->free_tail] == QI_DONE ||
+	       qi->desc_status[qi->free_tail] == QI_ABORT) {
+		qi->desc_status[qi->free_tail] = QI_FREE;
 		qi->free_tail = (qi->free_tail + 1) % QI_LENGTH;
 		qi->free_cnt++;
 	}
@@ -1272,8 +1274,6 @@ static int qi_check_fault(struct intel_iommu *iommu, int index, int wait_index)
 {
 	u32 fault;
 	int head, tail;
-	struct device *dev;
-	u64 iqe_err, ite_sid;
 	struct q_inval *qi = iommu->qi;
 	int shift = qi_shift(iommu);
 
@@ -1318,13 +1318,6 @@ static int qi_check_fault(struct intel_iommu *iommu, int index, int wait_index)
 		tail = readl(iommu->reg + DMAR_IQT_REG);
 		tail = ((tail >> shift) - 1 + QI_LENGTH) % QI_LENGTH;
 
-		/*
-		 * SID field is valid only when the ITE field is Set in FSTS_REG
-		 * see Intel VT-d spec r4.1, section 11.4.9.9
-		 */
-		iqe_err = dmar_readq(iommu->reg + DMAR_IQER_REG);
-		ite_sid = DMAR_IQER_REG_ITESID(iqe_err);
-
 		writel(DMA_FSTS_ITE, iommu->reg + DMAR_FSTS_REG);
 		pr_info("Invalidation Time-out Error (ITE) cleared\n");
 
@@ -1334,19 +1327,6 @@ static int qi_check_fault(struct intel_iommu *iommu, int index, int wait_index)
 			head = (head - 2 + QI_LENGTH) % QI_LENGTH;
 		} while (head != tail);
 
-		/*
-		 * If device was released or isn't present, no need to retry
-		 * the ATS invalidate request anymore.
-		 *
-		 * 0 value of ite_sid means old VT-d device, no ite_sid value.
-		 * see Intel VT-d spec r4.1, section 11.4.9.9
-		 */
-		if (ite_sid) {
-			dev = device_rbtree_find(iommu, ite_sid);
-			if (!dev || !dev_is_pci(dev) ||
-			    !pci_device_is_present(to_pci_dev(dev)))
-				return -ETIMEDOUT;
-		}
 		if (qi->desc_status[wait_index] == QI_ABORT)
 			return -EAGAIN;
 	}
@@ -1445,7 +1425,7 @@ restart:
 	 */
 	writel(qi->free_head << shift, iommu->reg + DMAR_IQT_REG);
 
-	while (READ_ONCE(qi->desc_status[wait_index]) != QI_DONE) {
+	while (qi->desc_status[wait_index] != QI_DONE) {
 		/*
 		 * We will leave the interrupts disabled, to prevent interrupt
 		 * context to queue another cmd while a cmd is already submitted
@@ -1462,16 +1442,8 @@ restart:
 		raw_spin_lock(&qi->q_lock);
 	}
 
-	/*
-	 * The reclaim code can free descriptors from multiple submissions
-	 * starting from the tail of the queue. When count == 0, the
-	 * status of the standalone wait descriptor at the tail of the queue
-	 * must be set to QI_FREE to allow the reclaim code to proceed.
-	 * It is also possible that descriptors from one of the previous
-	 * submissions has to be reclaimed by a subsequent submission.
-	 */
-	for (i = 0; i <= count; i++)
-		qi->desc_status[(index + i) % QI_LENGTH] = QI_FREE;
+	for (i = 0; i < count; i++)
+		qi->desc_status[(index + i) % QI_LENGTH] = QI_DONE;
 
 	reclaim_free_desc(qi);
 	raw_spin_unlock_irqrestore(&qi->q_lock, flags);
@@ -1527,9 +1499,24 @@ void qi_flush_context(struct intel_iommu *iommu, u16 did, u16 sid, u8 fm,
 void qi_flush_iotlb(struct intel_iommu *iommu, u16 did, u64 addr,
 		    unsigned int size_order, u64 type)
 {
-	struct qi_desc desc;
+	u8 dw = 0, dr = 0;
 
-	qi_desc_iotlb(iommu, did, addr, size_order, type, &desc);
+	struct qi_desc desc;
+	int ih = 0;
+
+	if (cap_write_drain(iommu->cap))
+		dw = 1;
+
+	if (cap_read_drain(iommu->cap))
+		dr = 1;
+
+	desc.qw0 = QI_IOTLB_DID(did) | QI_IOTLB_DR(dr) | QI_IOTLB_DW(dw)
+		| QI_IOTLB_GRAN(type) | QI_IOTLB_TYPE;
+	desc.qw1 = QI_IOTLB_ADDR(addr) | QI_IOTLB_IH(ih)
+		| QI_IOTLB_AM(size_order);
+	desc.qw2 = 0;
+	desc.qw3 = 0;
+
 	qi_submit_sync(iommu, &desc, 1, 0);
 }
 
@@ -1538,16 +1525,20 @@ void qi_flush_dev_iotlb(struct intel_iommu *iommu, u16 sid, u16 pfsid,
 {
 	struct qi_desc desc;
 
-	/*
-	 * VT-d spec, section 4.3:
-	 *
-	 * Software is recommended to not submit any Device-TLB invalidation
-	 * requests while address remapping hardware is disabled.
-	 */
-	if (!(iommu->gcmd & DMA_GCMD_TE))
-		return;
+	if (mask) {
+		addr |= (1ULL << (VTD_PAGE_SHIFT + mask - 1)) - 1;
+		desc.qw1 = QI_DEV_IOTLB_ADDR(addr) | QI_DEV_IOTLB_SIZE;
+	} else
+		desc.qw1 = QI_DEV_IOTLB_ADDR(addr);
 
-	qi_desc_dev_iotlb(sid, pfsid, qdep, addr, mask, &desc);
+	if (qdep >= QI_DEV_IOTLB_MAX_INVS)
+		qdep = 0;
+
+	desc.qw0 = QI_DEV_IOTLB_SID(sid) | QI_DEV_IOTLB_QDEP(qdep) |
+		   QI_DIOTLB_TYPE | QI_DEV_IOTLB_PFSID(pfsid);
+	desc.qw2 = 0;
+	desc.qw3 = 0;
+
 	qi_submit_sync(iommu, &desc, 1, 0);
 }
 
@@ -1567,7 +1558,28 @@ void qi_flush_piotlb(struct intel_iommu *iommu, u16 did, u32 pasid, u64 addr,
 		return;
 	}
 
-	qi_desc_piotlb(did, pasid, addr, npages, ih, &desc);
+	if (npages == -1) {
+		desc.qw0 = QI_EIOTLB_PASID(pasid) |
+				QI_EIOTLB_DID(did) |
+				QI_EIOTLB_GRAN(QI_GRAN_NONG_PASID) |
+				QI_EIOTLB_TYPE;
+		desc.qw1 = 0;
+	} else {
+		int mask = ilog2(__roundup_pow_of_two(npages));
+		unsigned long align = (1ULL << (VTD_PAGE_SHIFT + mask));
+
+		if (WARN_ON_ONCE(!IS_ALIGNED(addr, align)))
+			addr = ALIGN_DOWN(addr, align);
+
+		desc.qw0 = QI_EIOTLB_PASID(pasid) |
+				QI_EIOTLB_DID(did) |
+				QI_EIOTLB_GRAN(QI_GRAN_PSI_PASID) |
+				QI_EIOTLB_TYPE;
+		desc.qw1 = QI_EIOTLB_ADDR(addr) |
+				QI_EIOTLB_IH(ih) |
+				QI_EIOTLB_AM(mask);
+	}
+
 	qi_submit_sync(iommu, &desc, 1, 0);
 }
 
@@ -1575,20 +1587,43 @@ void qi_flush_piotlb(struct intel_iommu *iommu, u16 did, u32 pasid, u64 addr,
 void qi_flush_dev_iotlb_pasid(struct intel_iommu *iommu, u16 sid, u16 pfsid,
 			      u32 pasid,  u16 qdep, u64 addr, unsigned int size_order)
 {
+	unsigned long mask = 1UL << (VTD_PAGE_SHIFT + size_order - 1);
 	struct qi_desc desc = {.qw1 = 0, .qw2 = 0, .qw3 = 0};
 
-	/*
-	 * VT-d spec, section 4.3:
-	 *
-	 * Software is recommended to not submit any Device-TLB invalidation
-	 * requests while address remapping hardware is disabled.
-	 */
-	if (!(iommu->gcmd & DMA_GCMD_TE))
-		return;
+	desc.qw0 = QI_DEV_EIOTLB_PASID(pasid) | QI_DEV_EIOTLB_SID(sid) |
+		QI_DEV_EIOTLB_QDEP(qdep) | QI_DEIOTLB_TYPE |
+		QI_DEV_IOTLB_PFSID(pfsid);
 
-	qi_desc_dev_iotlb_pasid(sid, pfsid, pasid,
-				qdep, addr, size_order,
-				&desc);
+	/*
+	 * If S bit is 0, we only flush a single page. If S bit is set,
+	 * The least significant zero bit indicates the invalidation address
+	 * range. VT-d spec 6.5.2.6.
+	 * e.g. address bit 12[0] indicates 8KB, 13[0] indicates 16KB.
+	 * size order = 0 is PAGE_SIZE 4KB
+	 * Max Invs Pending (MIP) is set to 0 for now until we have DIT in
+	 * ECAP.
+	 */
+	if (!IS_ALIGNED(addr, VTD_PAGE_SIZE << size_order))
+		pr_warn_ratelimited("Invalidate non-aligned address %llx, order %d\n",
+				    addr, size_order);
+
+	/* Take page address */
+	desc.qw1 = QI_DEV_EIOTLB_ADDR(addr);
+
+	if (size_order) {
+		/*
+		 * Existing 0s in address below size_order may be the least
+		 * significant bit, we must set them to 1s to avoid having
+		 * smaller size than desired.
+		 */
+		desc.qw1 |= GENMASK_ULL(size_order + VTD_PAGE_SHIFT - 1,
+					VTD_PAGE_SHIFT);
+		/* Clear size_order bit to indicate size */
+		desc.qw1 &= ~mask;
+		/* Set the S bit to indicate flushing more than 1 page */
+		desc.qw1 |= QI_DEV_EIOTLB_SIZE;
+	}
+
 	qi_submit_sync(iommu, &desc, 1, 0);
 }
 
@@ -1655,7 +1690,7 @@ static void __dmar_enable_qi(struct intel_iommu *iommu)
 	 * is present.
 	 */
 	if (ecap_smts(iommu->ecap))
-		val |= BIT_ULL(11) | BIT_ULL(0);
+		val |= (1 << 11) | 1;
 
 	raw_spin_lock_irqsave(&iommu->register_lock, flags);
 
@@ -1681,7 +1716,7 @@ static void __dmar_enable_qi(struct intel_iommu *iommu)
 int dmar_enable_qi(struct intel_iommu *iommu)
 {
 	struct q_inval *qi;
-	void *desc;
+	struct page *desc_page;
 
 	if (!ecap_qis(iommu->ecap))
 		return -ENOENT;
@@ -1702,20 +1737,19 @@ int dmar_enable_qi(struct intel_iommu *iommu)
 	 * Need two pages to accommodate 256 descriptors of 256 bits each
 	 * if the remapping hardware supports scalable mode translation.
 	 */
-	desc = iommu_alloc_pages_node_sz(iommu->node, GFP_ATOMIC,
-					 ecap_smts(iommu->ecap) ? SZ_8K :
-								  SZ_4K);
-	if (!desc) {
+	desc_page = alloc_pages_node(iommu->node, GFP_ATOMIC | __GFP_ZERO,
+				     !!ecap_smts(iommu->ecap));
+	if (!desc_page) {
 		kfree(qi);
 		iommu->qi = NULL;
 		return -ENOMEM;
 	}
 
-	qi->desc = desc;
+	qi->desc = page_address(desc_page);
 
 	qi->desc_status = kcalloc(QI_LENGTH, sizeof(int), GFP_ATOMIC);
 	if (!qi->desc_status) {
-		iommu_free_pages(qi->desc);
+		free_page((unsigned long) qi->desc);
 		kfree(qi);
 		iommu->qi = NULL;
 		return -ENOMEM;
@@ -1896,6 +1930,19 @@ void dmar_msi_write(int irq, struct msi_msg *msg)
 	raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
 }
 
+void dmar_msi_read(int irq, struct msi_msg *msg)
+{
+	struct intel_iommu *iommu = irq_get_handler_data(irq);
+	int reg = dmar_msi_reg(iommu, irq);
+	unsigned long flag;
+
+	raw_spin_lock_irqsave(&iommu->register_lock, flag);
+	msg->data = readl(iommu->reg + reg + 4);
+	msg->address_lo = readl(iommu->reg + reg + 8);
+	msg->address_hi = readl(iommu->reg + reg + 12);
+	raw_spin_unlock_irqrestore(&iommu->register_lock, flag);
+}
+
 static int dmar_fault_do_one(struct intel_iommu *iommu, int type,
 		u8 fault_reason, u32 pasid, u16 source_id,
 		unsigned long long addr)
@@ -1914,7 +1961,7 @@ static int dmar_fault_do_one(struct intel_iommu *iommu, int type,
 		return 0;
 	}
 
-	if (pasid == IOMMU_PASID_INVALID)
+	if (pasid == INVALID_IOASID)
 		pr_err("[%s NO_PASID] Request device [%02x:%02x.%d] fault addr 0x%llx [fault reason 0x%02x] %s\n",
 		       type ? "DMA Read" : "DMA Write",
 		       source_id >> 8, PCI_SLOT(source_id & 0xFF),
@@ -1995,7 +2042,7 @@ irqreturn_t dmar_fault(int irq, void *dev_id)
 		if (!ratelimited)
 			/* Using pasid -1 if pasid is not present */
 			dmar_fault_do_one(iommu, type, fault_reason,
-					  pasid_present ? pasid : IOMMU_PASID_INVALID,
+					  pasid_present ? pasid : INVALID_IOASID,
 					  source_id, guest_addr);
 
 		fault_index++;
@@ -2036,7 +2083,7 @@ int dmar_set_interrupt(struct intel_iommu *iommu)
 	return ret;
 }
 
-int enable_drhd_fault_handling(unsigned int cpu)
+int __init enable_drhd_fault_handling(void)
 {
 	struct dmar_drhd_unit *drhd;
 	struct intel_iommu *iommu;
@@ -2044,15 +2091,9 @@ int enable_drhd_fault_handling(unsigned int cpu)
 	/*
 	 * Enable fault control interrupt.
 	 */
-	guard(rwsem_read)(&dmar_global_lock);
 	for_each_iommu(iommu, drhd) {
 		u32 fault_status;
-		int ret;
-
-		if (iommu->irq || iommu->node != cpu_to_node(cpu))
-			continue;
-
-		ret = dmar_set_interrupt(iommu);
+		int ret = dmar_set_interrupt(iommu);
 
 		if (ret) {
 			pr_err("DRHD %Lx: failed to enable fault, interrupt, ret %d\n",

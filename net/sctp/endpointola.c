@@ -35,15 +35,6 @@
 /* Forward declarations for internal helpers. */
 static void sctp_endpoint_bh_rcv(struct work_struct *work);
 
-static void gen_cookie_auth_key(struct hmac_sha256_key *key)
-{
-	u8 raw_key[SCTP_COOKIE_KEY_SIZE];
-
-	get_random_bytes(raw_key, sizeof(raw_key));
-	hmac_sha256_preparekey(key, raw_key, sizeof(raw_key));
-	memzero_explicit(raw_key, sizeof(raw_key));
-}
-
 /*
  * Initialize the base fields of the endpoint structure.
  */
@@ -53,6 +44,10 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 {
 	struct net *net = sock_net(sk);
 	struct sctp_shared_key *null_key;
+
+	ep->digest = kzalloc(SCTP_SIGNATURE_SIZE, gfp);
+	if (!ep->digest)
+		return NULL;
 
 	ep->asconf_enable = net->sctp.addip_enable;
 	ep->auth_enable = net->sctp.auth_enable;
@@ -95,8 +90,8 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 	/* Get the receive buffer policy for this endpoint */
 	ep->rcvbuf_policy = net->sctp.rcvbuf_policy;
 
-	/* Generate the cookie authentication key. */
-	gen_cookie_auth_key(&ep->cookie_auth_key);
+	/* Initialize the secret key used with cookie. */
+	get_random_bytes(ep->secret_key, sizeof(ep->secret_key));
 
 	/* SCTP-AUTH extensions*/
 	INIT_LIST_HEAD(&ep->endpoint_shared_keys);
@@ -123,6 +118,7 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 nomem_shkey:
 	sctp_auth_free(ep);
 nomem:
+	kfree(ep->digest);
 	return NULL;
 
 }
@@ -209,6 +205,9 @@ static void sctp_endpoint_destroy(struct sctp_endpoint *ep)
 		return;
 	}
 
+	/* Free the digest buffer */
+	kfree(ep->digest);
+
 	/* SCTP-AUTH: Free up AUTH releated data such as shared keys
 	 * chunks and hmacs arrays that were allocated
 	 */
@@ -219,7 +218,7 @@ static void sctp_endpoint_destroy(struct sctp_endpoint *ep)
 	sctp_inq_free(&ep->base.inqueue);
 	sctp_bind_addr_free(&ep->base.bind_addr);
 
-	memzero_explicit(&ep->cookie_auth_key, sizeof(ep->cookie_auth_key));
+	memset(ep->secret_key, 0, sizeof(ep->secret_key));
 
 	sk = ep->base.sk;
 	/* Remove and free the port */

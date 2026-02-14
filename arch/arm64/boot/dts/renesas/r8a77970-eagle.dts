@@ -29,15 +29,6 @@
 		stdout-path = "serial0:115200n8";
 	};
 
-	d1p8: regulator-fixed {
-		compatible = "regulator-fixed";
-		regulator-name = "fixed-1.8V";
-		regulator-min-microvolt = <1800000>;
-		regulator-max-microvolt = <1800000>;
-		regulator-boot-on;
-		regulator-always-on;
-	};
-
 	d3p3: regulator-fixed {
 		compatible = "regulator-fixed";
 		regulator-name = "fixed-3.3V";
@@ -111,7 +102,8 @@
 			     "ethernet-phy-ieee802.3-c22";
 		rxc-skew-ps = <1500>;
 		reg = <0>;
-		interrupts-extended = <&gpio1 17 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <17 IRQ_TYPE_LEVEL_LOW>;
 		reset-gpios = <&gpio1 16 GPIO_ACTIVE_LOW>;
 	};
 };
@@ -171,13 +163,8 @@
 	hdmi@39 {
 		compatible = "adi,adv7511w";
 		reg = <0x39>;
-		interrupts-extended = <&gpio1 20 IRQ_TYPE_LEVEL_LOW>;
-
-		avdd-supply = <&d1p8>;
-		dvdd-supply = <&d1p8>;
-		pvdd-supply = <&d1p8>;
-		dvdd-3v-supply = <&d3p3>;
-		bgvdd-supply = <&d1p8>;
+		interrupt-parent = <&gpio1>;
+		interrupts = <20 IRQ_TYPE_LEVEL_LOW>;
 
 		adi,input-depth = <8>;
 		adi,input-colorspace = "rgb";
@@ -364,7 +351,7 @@
 				reg = <0x00040000 0x080000>;
 				read-only;
 			};
-			cert-header-sa3@c0000 {
+			cert_header_sa3@c0000 {
 				reg = <0x000c0000 0x080000>;
 				read-only;
 			};
@@ -372,7 +359,7 @@
 				reg = <0x00140000 0x040000>;
 				read-only;
 			};
-			cert-header-sa6@180000 {
+			cert_header_sa6@180000 {
 				reg = <0x00180000 0x040000>;
 				read-only;
 			};
@@ -409,16 +396,10 @@
 &scif0 {
 	pinctrl-0 = <&scif0_pins>;
 	pinctrl-names = "default";
-	bootph-all;
 
 	status = "okay";
 };
 
 &scif_clk {
 	clock-frequency = <14745600>;
-};
-
-/* Firmware should reserve it but sadly doesn't */
-&swdt {
-	status = "reserved";
 };

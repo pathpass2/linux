@@ -2,7 +2,7 @@
 /*
  *  Support for the interrupt controllers found on Power Macintosh,
  *  currently Apple's "Grand Central" interrupt controller in all
- *  its incarnations. OpenPIC support used on newer machines is
+ *  it's incarnations. OpenPIC support used on newer machines is
  *  in a separate file
  *
  *  Copyright (C) 1997 Paul Mackerras (paulus@samba.org)
@@ -250,7 +250,7 @@ static unsigned int pmac_pic_get_irq(void)
 	raw_spin_unlock_irqrestore(&pmac_pic_lock, flags);
 	if (unlikely(irq < 0))
 		return 0;
-	return irq_find_mapping(pmac_pic_host, irq);
+	return irq_linear_revmap(pmac_pic_host, irq);
 }
 
 static int pmac_pic_host_match(struct irq_domain *h, struct device_node *node,
@@ -327,11 +327,10 @@ static void __init pmac_pic_probe_oldstyle(void)
 	/*
 	 * Allocate an irq host
 	 */
-	pmac_pic_host = irq_domain_create_linear(of_fwnode_handle(master),
-						 max_irqs,
-						 &pmac_pic_host_ops, NULL);
+	pmac_pic_host = irq_domain_add_linear(master, max_irqs,
+					      &pmac_pic_host_ops, NULL);
 	BUG_ON(pmac_pic_host == NULL);
-	irq_set_default_domain(pmac_pic_host);
+	irq_set_default_host(pmac_pic_host);
 
 	/* Get addresses of first controller if we have a node for it */
 	BUG_ON(of_address_to_resource(master, 0, &r));
@@ -451,7 +450,7 @@ static struct mpic * __init pmac_setup_one_mpic(struct device_node *np,
 
 	pmac_call_feature(PMAC_FTR_ENABLE_MPIC, np, 0, 0);
 
-	if (of_property_read_bool(np, "big-endian"))
+	if (of_get_property(np, "big-endian", NULL))
 		flags |= MPIC_BIG_ENDIAN;
 
 	/* Primary Big Endian means HT interrupts. This is quite dodgy
@@ -476,7 +475,8 @@ static int __init pmac_pic_probe_mpic(void)
 
 	/* We can have up to 2 MPICs cascaded */
 	for_each_node_by_type(np, "open-pic") {
-		if (master == NULL && !of_property_present(np, "interrupts"))
+		if (master == NULL &&
+		    of_get_property(np, "interrupts", NULL) == NULL)
 			master = of_node_get(np);
 		else if (slave == NULL)
 			slave = of_node_get(np);
@@ -528,7 +528,7 @@ void __init pmac_pic_init(void)
 #ifdef CONFIG_PPC32
 	if (!pmac_newworld)
 		of_irq_workarounds |= OF_IMAP_OLDWORLD_MAC;
-	if (of_property_read_bool(of_chosen, "linux,bootx"))
+	if (of_get_property(of_chosen, "linux,bootx", NULL) != NULL)
 		of_irq_workarounds |= OF_IMAP_NO_PHANDLE;
 
 	/* If we don't have phandles on a newworld, then try to locate a
@@ -600,7 +600,7 @@ not_found:
 	return viaint;
 }
 
-static int pmacpic_suspend(void *data)
+static int pmacpic_suspend(void)
 {
 	int viaint = pmacpic_find_viaint();
 
@@ -621,7 +621,7 @@ static int pmacpic_suspend(void *data)
         return 0;
 }
 
-static void pmacpic_resume(void *data)
+static void pmacpic_resume(void)
 {
 	int i;
 
@@ -634,19 +634,15 @@ static void pmacpic_resume(void *data)
 			pmac_unmask_irq(irq_get_irq_data(i));
 }
 
-static const struct syscore_ops pmacpic_syscore_ops = {
+static struct syscore_ops pmacpic_syscore_ops = {
 	.suspend	= pmacpic_suspend,
 	.resume		= pmacpic_resume,
-};
-
-static struct syscore pmacpic_syscore = {
-	.ops = &pmacpic_syscore_ops,
 };
 
 static int __init init_pmacpic_syscore(void)
 {
 	if (pmac_irq_hw[0])
-		register_syscore(&pmacpic_syscore);
+		register_syscore_ops(&pmacpic_syscore_ops);
 	return 0;
 }
 

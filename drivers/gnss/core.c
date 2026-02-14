@@ -206,6 +206,7 @@ static const struct file_operations gnss_fops = {
 	.read		= gnss_read,
 	.write		= gnss_write,
 	.poll		= gnss_poll,
+	.llseek		= no_llseek,
 };
 
 static struct class *gnss_class;
@@ -386,7 +387,7 @@ static int __init gnss_module_init(void)
 		return ret;
 	}
 
-	gnss_class = class_create("gnss");
+	gnss_class = class_create(THIS_MODULE, "gnss");
 	if (IS_ERR(gnss_class)) {
 		ret = PTR_ERR(gnss_class);
 		pr_err("failed to create class: %d\n", ret);

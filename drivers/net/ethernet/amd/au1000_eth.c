@@ -571,7 +571,7 @@ static struct db_dest *au1000_GetFreeDB(struct au1000_private *aup)
 	return pDB;
 }
 
-static void au1000_ReleaseDB(struct au1000_private *aup, struct db_dest *pDB)
+void au1000_ReleaseDB(struct au1000_private *aup, struct db_dest *pDB)
 {
 	struct db_dest *pDBfree = aup->pDBfree;
 	if (pDBfree)
@@ -1323,7 +1323,7 @@ out:
 	return err;
 }
 
-static void au1000_remove(struct platform_device *pdev)
+static int au1000_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct au1000_private *aup = netdev_priv(dev);
@@ -1359,6 +1359,8 @@ static void au1000_remove(struct platform_device *pdev)
 	release_mem_region(macen->start, resource_size(macen));
 
 	free_netdev(dev);
+
+	return 0;
 }
 
 static struct platform_driver au1000_eth_driver = {

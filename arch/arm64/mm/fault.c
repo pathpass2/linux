@@ -23,7 +23,6 @@
 #include <linux/sched/debug.h>
 #include <linux/highmem.h>
 #include <linux/perf_event.h>
-#include <linux/pkeys.h>
 #include <linux/preempt.h>
 #include <linux/hugetlb.h>
 
@@ -53,16 +52,20 @@ struct fault_info {
 };
 
 static const struct fault_info fault_info[];
+static struct fault_info debug_fault_info[];
 
 static inline const struct fault_info *esr_to_fault_info(unsigned long esr)
 {
 	return fault_info + (esr & ESR_ELx_FSC);
 }
 
+static inline const struct fault_info *esr_to_debug_fault_info(unsigned long esr)
+{
+	return debug_fault_info + DBG_ESR_EVT(esr);
+}
+
 static void data_abort_decode(unsigned long esr)
 {
-	unsigned long iss2 = ESR_ELx_ISS2(esr);
-
 	pr_alert("Data abort info:\n");
 
 	if (esr & ESR_ELx_ISV) {
@@ -75,21 +78,12 @@ static void data_abort_decode(unsigned long esr)
 			 (esr & ESR_ELx_SF) >> ESR_ELx_SF_SHIFT,
 			 (esr & ESR_ELx_AR) >> ESR_ELx_AR_SHIFT);
 	} else {
-		pr_alert("  ISV = 0, ISS = 0x%08lx, ISS2 = 0x%08lx\n",
-			 esr & ESR_ELx_ISS_MASK, iss2);
+		pr_alert("  ISV = 0, ISS = 0x%08lx\n", esr & ESR_ELx_ISS_MASK);
 	}
 
-	pr_alert("  CM = %lu, WnR = %lu, TnD = %lu, TagAccess = %lu\n",
+	pr_alert("  CM = %lu, WnR = %lu\n",
 		 (esr & ESR_ELx_CM) >> ESR_ELx_CM_SHIFT,
-		 (esr & ESR_ELx_WNR) >> ESR_ELx_WNR_SHIFT,
-		 (iss2 & ESR_ELx_TnD) >> ESR_ELx_TnD_SHIFT,
-		 (iss2 & ESR_ELx_TagAccess) >> ESR_ELx_TagAccess_SHIFT);
-
-	pr_alert("  GCS = %ld, Overlay = %lu, DirtyBit = %lu, Xs = %llu\n",
-		 (iss2 & ESR_ELx_GCS) >> ESR_ELx_GCS_SHIFT,
-		 (iss2 & ESR_ELx_Overlay) >> ESR_ELx_Overlay_SHIFT,
-		 (iss2 & ESR_ELx_DirtyBit) >> ESR_ELx_DirtyBit_SHIFT,
-		 (iss2 & ESR_ELx_Xs_MASK) >> ESR_ELx_Xs_SHIFT);
+		 (esr & ESR_ELx_WNR) >> ESR_ELx_WNR_SHIFT);
 }
 
 static void mem_abort_decode(unsigned long esr)
@@ -183,10 +177,7 @@ static void show_pte(unsigned long addr)
 			break;
 
 		ptep = pte_offset_map(pmdp, addr);
-		if (!ptep)
-			break;
-
-		pte = __ptep_get(ptep);
+		pte = READ_ONCE(*ptep);
 		pr_cont(", pte=%016llx", pte_val(pte));
 		pte_unmap(ptep);
 	} while(0);
@@ -200,16 +191,16 @@ static void show_pte(unsigned long addr)
  *
  * It needs to cope with hardware update of the accessed/dirty state by other
  * agents in the system and can safely skip the __sync_icache_dcache() call as,
- * like __set_ptes(), the PTE is never changed from no-exec to exec here.
+ * like set_pte_at(), the PTE is never changed from no-exec to exec here.
  *
  * Returns whether or not the PTE actually changed.
  */
-int __ptep_set_access_flags(struct vm_area_struct *vma,
-			    unsigned long address, pte_t *ptep,
-			    pte_t entry, int dirty)
+int ptep_set_access_flags(struct vm_area_struct *vma,
+			  unsigned long address, pte_t *ptep,
+			  pte_t entry, int dirty)
 {
 	pteval_t old_pteval, pteval;
-	pte_t pte = __ptep_get(ptep);
+	pte_t pte = READ_ONCE(*ptep);
 
 	if (pte_same(pte, entry))
 		return 0;
@@ -233,13 +224,9 @@ int __ptep_set_access_flags(struct vm_area_struct *vma,
 		pteval = cmpxchg_relaxed(&pte_val(*ptep), old_pteval, pteval);
 	} while (pteval != old_pteval);
 
-	/*
-	 * Invalidate the local stale read-only entry.  Remote stale entries
-	 * may still cause page faults and be invalidated via
-	 * flush_tlb_fix_spurious_fault().
-	 */
+	/* Invalidate a stale read-only entry */
 	if (dirty)
-		local_flush_tlb_page(vma, address);
+		flush_tlb_page(vma, address);
 	return 1;
 }
 
@@ -256,14 +243,16 @@ static bool is_el1_data_abort(unsigned long esr)
 static inline bool is_el1_permission_fault(unsigned long addr, unsigned long esr,
 					   struct pt_regs *regs)
 {
+	unsigned long fsc_type = esr & ESR_ELx_FSC_TYPE;
+
 	if (!is_el1_data_abort(esr) && !is_el1_instruction_abort(esr))
 		return false;
 
-	if (esr_fsc_is_permission_fault(esr))
+	if (fsc_type == ESR_ELx_FSC_PERM)
 		return true;
 
 	if (is_ttbr0_addr(addr) && system_uses_ttbr0_pan())
-		return esr_fsc_is_translation_fault(esr) &&
+		return fsc_type == ESR_ELx_FSC_FAULT &&
 			(regs->pstate & PSR_PAN_BIT);
 
 	return false;
@@ -276,7 +265,8 @@ static bool __kprobes is_spurious_el1_translation_fault(unsigned long addr,
 	unsigned long flags;
 	u64 par, dfsc;
 
-	if (!is_el1_data_abort(esr) || !esr_fsc_is_translation_fault(esr))
+	if (!is_el1_data_abort(esr) ||
+	    (esr & ESR_ELx_FSC_TYPE) != ESR_ELx_FSC_FAULT)
 		return false;
 
 	local_irq_save(flags);
@@ -297,7 +287,7 @@ static bool __kprobes is_spurious_el1_translation_fault(unsigned long addr,
 	 * treat the translation fault as spurious.
 	 */
 	dfsc = FIELD_GET(SYS_PAR_EL1_FST, par);
-	return !esr_fsc_is_translation_fault(dfsc);
+	return (dfsc & ESR_ELx_FSC_TYPE) != ESR_ELx_FSC_FAULT;
 }
 
 static void die_kernel_fault(const char *msg, unsigned long addr,
@@ -327,7 +317,7 @@ static void report_tag_fault(unsigned long addr, unsigned long esr,
 	 * find out access size.
 	 */
 	bool is_write = !!(esr & ESR_ELx_WNR);
-	kasan_report((void *)addr, 0, is_write, regs->pc);
+	kasan_report(addr, 0, is_write, regs->pc);
 }
 #else
 /* Tag faults aren't enabled without CONFIG_KASAN_HW_TAGS. */
@@ -364,6 +354,11 @@ static bool is_el1_mte_sync_tag_check_fault(unsigned long esr)
 	return false;
 }
 
+static bool is_translation_fault(unsigned long esr)
+{
+	return (esr & ESR_ELx_FSC_TYPE) == ESR_ELx_FSC_FAULT;
+}
+
 static void __do_kernel_fault(unsigned long addr, unsigned long esr,
 			      struct pt_regs *regs)
 {
@@ -373,7 +368,7 @@ static void __do_kernel_fault(unsigned long addr, unsigned long esr,
 	 * Are we prepared to handle this kernel fault?
 	 * We are almost certainly not prepared to handle instruction faults.
 	 */
-	if (!is_el1_instruction_abort(esr) && fixup_exception(regs, esr))
+	if (!is_el1_instruction_abort(esr) && fixup_exception(regs))
 		return;
 
 	if (WARN_RATELIMIT(is_spurious_el1_translation_fault(addr, esr, regs),
@@ -396,7 +391,7 @@ static void __do_kernel_fault(unsigned long addr, unsigned long esr,
 	} else if (addr < PAGE_SIZE) {
 		msg = "NULL pointer dereference";
 	} else {
-		if (esr_fsc_is_translation_fault(esr) &&
+		if (is_translation_fault(esr) &&
 		    kfence_handle_page_fault(addr, esr & ESR_ELx_WNR, regs))
 			return;
 
@@ -485,41 +480,36 @@ static void do_bad_area(unsigned long far, unsigned long esr,
 	}
 }
 
-static bool fault_from_pkey(struct vm_area_struct *vma, unsigned int mm_flags)
+#define VM_FAULT_BADMAP		0x010000
+#define VM_FAULT_BADACCESS	0x020000
+
+static vm_fault_t __do_page_fault(struct mm_struct *mm, unsigned long addr,
+				  unsigned int mm_flags, unsigned long vm_flags,
+				  struct pt_regs *regs)
 {
-	if (!system_supports_poe())
-		return false;
+	struct vm_area_struct *vma = find_vma(mm, addr);
+
+	if (unlikely(!vma))
+		return VM_FAULT_BADMAP;
 
 	/*
-	 * We do not check whether an Overlay fault has occurred because we
-	 * cannot make a decision based solely on its value:
-	 *
-	 * - If Overlay is set, a fault did occur due to POE, but it may be
-	 *   spurious in those cases where we update POR_EL0 without ISB (e.g.
-	 *   on context-switch). We would then need to manually check POR_EL0
-	 *   against vma_pkey(vma), which is exactly what
-	 *   arch_vma_access_permitted() does.
-	 *
-	 * - If Overlay is not set, we may still need to report a pkey fault.
-	 *   This is the case if an access was made within a mapping but with no
-	 *   page mapped, and POR_EL0 forbids the access (according to
-	 *   vma_pkey()). Such access will result in a SIGSEGV regardless
-	 *   because core code checks arch_vma_access_permitted(), but in order
-	 *   to report the correct error code - SEGV_PKUERR - we must handle
-	 *   that case here.
+	 * Ok, we have a good vm_area for this memory access, so we can handle
+	 * it.
 	 */
-	return !arch_vma_access_permitted(vma,
-			mm_flags & FAULT_FLAG_WRITE,
-			mm_flags & FAULT_FLAG_INSTRUCTION,
-			false);
-}
+	if (unlikely(vma->vm_start > addr)) {
+		if (!(vma->vm_flags & VM_GROWSDOWN))
+			return VM_FAULT_BADMAP;
+		if (expand_stack(vma, addr))
+			return VM_FAULT_BADMAP;
+	}
 
-static bool is_gcs_fault(unsigned long esr)
-{
-	if (!esr_is_data_abort(esr))
-		return false;
-
-	return ESR_ELx_ISS2(esr) & ESR_ELx_GCS;
+	/*
+	 * Check that the permissions on the VMA allow for the fault which
+	 * occurred.
+	 */
+	if (!(vma->vm_flags & vm_flags))
+		return VM_FAULT_BADACCESS;
+	return handle_mm_fault(vma, addr, mm_flags, regs);
 }
 
 static bool is_el0_instruction_abort(unsigned long esr)
@@ -536,35 +526,15 @@ static bool is_write_abort(unsigned long esr)
 	return (esr & ESR_ELx_WNR) && !(esr & ESR_ELx_CM);
 }
 
-static bool is_invalid_gcs_access(struct vm_area_struct *vma, u64 esr)
-{
-	if (!system_supports_gcs())
-		return false;
-
-	if (unlikely(is_gcs_fault(esr))) {
-		/* GCS accesses must be performed on a GCS page */
-		if (!(vma->vm_flags & VM_SHADOW_STACK))
-			return true;
-	} else if (unlikely(vma->vm_flags & VM_SHADOW_STACK)) {
-		/* Only GCS operations can write to a GCS page */
-		return esr_is_data_abort(esr) && is_write_abort(esr);
-	}
-
-	return false;
-}
-
 static int __kprobes do_page_fault(unsigned long far, unsigned long esr,
 				   struct pt_regs *regs)
 {
 	const struct fault_info *inf;
 	struct mm_struct *mm = current->mm;
 	vm_fault_t fault;
-	vm_flags_t vm_flags;
+	unsigned long vm_flags;
 	unsigned int mm_flags = FAULT_FLAG_DEFAULT;
 	unsigned long addr = untagged_addr(far);
-	struct vm_area_struct *vma;
-	int si_code;
-	int pkey = -1;
 
 	if (kprobe_page_fault(regs, esr))
 		return 0;
@@ -589,14 +559,6 @@ static int __kprobes do_page_fault(unsigned long far, unsigned long esr,
 		/* It was exec fault */
 		vm_flags = VM_EXEC;
 		mm_flags |= FAULT_FLAG_INSTRUCTION;
-	} else if (is_gcs_fault(esr)) {
-		/*
-		 * The GCS permission on a page implies both read and
-		 * write so always handle any GCS fault as a write fault,
-		 * we need to trigger CoW even for GCS reads.
-		 */
-		vm_flags = VM_WRITE;
-		mm_flags |= FAULT_FLAG_WRITE;
 	} else if (is_write_abort(esr)) {
 		/* It was write fault */
 		vm_flags = VM_WRITE;
@@ -607,7 +569,7 @@ static int __kprobes do_page_fault(unsigned long far, unsigned long esr,
 		/* Write implies read */
 		vm_flags |= VM_WRITE;
 		/* If EPAN is absent then exec implies read */
-		if (!alternative_has_cap_unlikely(ARM64_HAS_EPAN))
+		if (!cpus_have_const_cap(ARM64_HAS_EPAN))
 			vm_flags |= VM_EXEC;
 	}
 
@@ -616,88 +578,38 @@ static int __kprobes do_page_fault(unsigned long far, unsigned long esr,
 			die_kernel_fault("execution of user memory",
 					 addr, esr, regs);
 
-		if (!insn_may_access_user(regs->pc, esr))
+		if (!search_exception_tables(regs->pc))
 			die_kernel_fault("access to user memory outside uaccess routines",
 					 addr, esr, regs);
 	}
 
 	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
 
-	if (!(mm_flags & FAULT_FLAG_USER))
-		goto lock_mmap;
-
-	vma = lock_vma_under_rcu(mm, addr);
-	if (!vma)
-		goto lock_mmap;
-
-	if (is_invalid_gcs_access(vma, esr)) {
-		vma_end_read(vma);
-		fault = 0;
-		si_code = SEGV_ACCERR;
-		goto bad_area;
-	}
-
-	if (!(vma->vm_flags & vm_flags)) {
-		vma_end_read(vma);
-		fault = 0;
-		si_code = SEGV_ACCERR;
-		count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
-		goto bad_area;
-	}
-
-	if (fault_from_pkey(vma, mm_flags)) {
-		pkey = vma_pkey(vma);
-		vma_end_read(vma);
-		fault = 0;
-		si_code = SEGV_PKUERR;
-		count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
-		goto bad_area;
-	}
-
-	fault = handle_mm_fault(vma, addr, mm_flags | FAULT_FLAG_VMA_LOCK, regs);
-	if (!(fault & (VM_FAULT_RETRY | VM_FAULT_COMPLETED)))
-		vma_end_read(vma);
-
-	if (!(fault & VM_FAULT_RETRY)) {
-		count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
-		goto done;
-	}
-	count_vm_vma_lock_event(VMA_LOCK_RETRY);
-	if (fault & VM_FAULT_MAJOR)
-		mm_flags |= FAULT_FLAG_TRIED;
-
-	/* Quick path to respond to signals */
-	if (fault_signal_pending(fault, regs)) {
-		if (!user_mode(regs))
+	/*
+	 * As per x86, we may deadlock here. However, since the kernel only
+	 * validly references user space from well defined areas of the code,
+	 * we can bug out early if this is from code which shouldn't.
+	 */
+	if (!mmap_read_trylock(mm)) {
+		if (!user_mode(regs) && !search_exception_tables(regs->pc))
 			goto no_context;
-		return 0;
-	}
-lock_mmap:
-
 retry:
-	vma = lock_mm_and_find_vma(mm, addr, regs);
-	if (unlikely(!vma)) {
-		fault = 0;
-		si_code = SEGV_MAPERR;
-		goto bad_area;
+		mmap_read_lock(mm);
+	} else {
+		/*
+		 * The above mmap_read_trylock() might have succeeded in which
+		 * case, we'll have missed the might_sleep() from down_read().
+		 */
+		might_sleep();
+#ifdef CONFIG_DEBUG_VM
+		if (!user_mode(regs) && !search_exception_tables(regs->pc)) {
+			mmap_read_unlock(mm);
+			goto no_context;
+		}
+#endif
 	}
 
-	if (!(vma->vm_flags & vm_flags)) {
-		mmap_read_unlock(mm);
-		fault = 0;
-		si_code = SEGV_ACCERR;
-		goto bad_area;
-	}
-
-	if (fault_from_pkey(vma, mm_flags)) {
-		pkey = vma_pkey(vma);
-		mmap_read_unlock(mm);
-		fault = 0;
-		si_code = SEGV_PKUERR;
-		goto bad_area;
-	}
-
-	fault = handle_mm_fault(vma, addr, mm_flags, regs);
+	fault = __do_page_fault(mm, addr, mm_flags, vm_flags, regs);
 
 	/* Quick path to respond to signals */
 	if (fault_signal_pending(fault, regs)) {
@@ -716,13 +628,13 @@ retry:
 	}
 	mmap_read_unlock(mm);
 
-done:
-	/* Handle the "normal" (no error) case first. */
-	if (likely(!(fault & VM_FAULT_ERROR)))
+	/*
+	 * Handle the "normal" (no error) case first.
+	 */
+	if (likely(!(fault & (VM_FAULT_ERROR | VM_FAULT_BADMAP |
+			      VM_FAULT_BADACCESS))))
 		return 0;
 
-	si_code = SEGV_MAPERR;
-bad_area:
 	/*
 	 * If we are in kernel mode at this point, we have no context to
 	 * handle this fault with.
@@ -758,22 +670,12 @@ bad_area:
 		arm64_force_sig_mceerr(BUS_MCEERR_AR, far, lsb, inf->name);
 	} else {
 		/*
-		 * The pkey value that we return to userspace can be different
-		 * from the pkey that caused the fault.
-		 *
-		 * 1. T1   : mprotect_key(foo, PAGE_SIZE, pkey=4);
-		 * 2. T1   : set POR_EL0 to deny access to pkey=4, touches, page
-		 * 3. T1   : faults...
-		 * 4.    T2: mprotect_key(foo, PAGE_SIZE, pkey=5);
-		 * 5. T1   : enters fault handler, takes mmap_lock, etc...
-		 * 6. T1   : reaches here, sees vma_pkey(vma)=5, when we really
-		 *	     faulted on a pte with its pkey=4.
+		 * Something tried to access memory that isn't in our memory
+		 * map.
 		 */
-		/* Something tried to access memory that out of memory map */
-		if (si_code == SEGV_PKUERR)
-			arm64_force_sig_fault_pkey(far, inf->name, pkey);
-		else
-			arm64_force_sig_fault(SIGSEGV, si_code, far, inf->name);
+		arm64_force_sig_fault(SIGSEGV,
+				      fault == VM_FAULT_BADACCESS ? SEGV_ACCERR : SEGV_MAPERR,
+				      far, inf->name);
 	}
 
 	return 0;
@@ -836,7 +738,6 @@ static int do_sea(unsigned long far, unsigned long esr, struct pt_regs *regs)
 		 */
 		siaddr  = untagged_addr(far);
 	}
-	add_taint(TAINT_MACHINE_CHECK, LOCKDEP_STILL_OK);
 	arm64_notify_die(inf->name, regs, inf->sig, inf->code, siaddr, esr);
 
 	return 0;
@@ -848,12 +749,9 @@ static int do_tag_check_fault(unsigned long far, unsigned long esr,
 	/*
 	 * The architecture specifies that bits 63:60 of FAR_EL1 are UNKNOWN
 	 * for tag check faults. Set them to corresponding bits in the untagged
-	 * address if ARM64_MTE_FAR isn't supported.
-	 * Otherwise, bits 63:60 of FAR_EL1 are not UNKNOWN.
+	 * address.
 	 */
-	if (!cpus_have_cap(ARM64_MTE_FAR))
-		far = (__untagged_addr(far) & ~MTE_TAG_MASK) | (far & MTE_TAG_MASK);
-
+	far = (__untagged_addr(far) & ~MTE_TAG_MASK) | (far & MTE_TAG_MASK);
 	do_bad_area(far, esr, regs);
 	return 0;
 }
@@ -867,18 +765,18 @@ static const struct fault_info fault_info[] = {
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 1 translation fault"	},
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 2 translation fault"	},
 	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level 3 translation fault"	},
-	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 0 access flag fault"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 8"			},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 1 access flag fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 access flag fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 3 access flag fault"	},
-	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 0 permission fault"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 12"			},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 1 permission fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 permission fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 3 permission fault"	},
 	{ do_sea,		SIGBUS,  BUS_OBJERR,	"synchronous external abort"	},
 	{ do_tag_check_fault,	SIGSEGV, SEGV_MTESERR,	"synchronous tag check fault"	},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 18"			},
-	{ do_sea,		SIGKILL, SI_KERNEL,	"level -1 (translation table walk)"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 19"			},
 	{ do_sea,		SIGKILL, SI_KERNEL,	"level 0 (translation table walk)"	},
 	{ do_sea,		SIGKILL, SI_KERNEL,	"level 1 (translation table walk)"	},
 	{ do_sea,		SIGKILL, SI_KERNEL,	"level 2 (translation table walk)"	},
@@ -886,7 +784,7 @@ static const struct fault_info fault_info[] = {
 	{ do_sea,		SIGBUS,  BUS_OBJERR,	"synchronous parity or ECC error" },	// Reserved when RAS is implemented
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 25"			},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 26"			},
-	{ do_sea,		SIGKILL, SI_KERNEL,	"level -1 synchronous parity error (translation table walk)"	},	// Reserved when RAS is implemented
+	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 27"			},
 	{ do_sea,		SIGKILL, SI_KERNEL,	"level 0 synchronous parity error (translation table walk)"	},	// Reserved when RAS is implemented
 	{ do_sea,		SIGKILL, SI_KERNEL,	"level 1 synchronous parity error (translation table walk)"	},	// Reserved when RAS is implemented
 	{ do_sea,		SIGKILL, SI_KERNEL,	"level 2 synchronous parity error (translation table walk)"	},	// Reserved when RAS is implemented
@@ -900,9 +798,9 @@ static const struct fault_info fault_info[] = {
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 38"			},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 39"			},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 40"			},
-	{ do_bad,		SIGKILL, SI_KERNEL,	"level -1 address size fault"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 41"			},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 42"			},
-	{ do_translation_fault,	SIGSEGV, SEGV_MAPERR,	"level -1 translation fault"	},
+	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 43"			},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 44"			},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 45"			},
 	{ do_bad,		SIGKILL, SI_KERNEL,	"unknown 46"			},
@@ -952,6 +850,78 @@ void do_sp_pc_abort(unsigned long addr, unsigned long esr, struct pt_regs *regs)
 }
 NOKPROBE_SYMBOL(do_sp_pc_abort);
 
+int __init early_brk64(unsigned long addr, unsigned long esr,
+		       struct pt_regs *regs);
+
+/*
+ * __refdata because early_brk64 is __init, but the reference to it is
+ * clobbered at arch_initcall time.
+ * See traps.c and debug-monitors.c:debug_traps_init().
+ */
+static struct fault_info __refdata debug_fault_info[] = {
+	{ do_bad,	SIGTRAP,	TRAP_HWBKPT,	"hardware breakpoint"	},
+	{ do_bad,	SIGTRAP,	TRAP_HWBKPT,	"hardware single-step"	},
+	{ do_bad,	SIGTRAP,	TRAP_HWBKPT,	"hardware watchpoint"	},
+	{ do_bad,	SIGKILL,	SI_KERNEL,	"unknown 3"		},
+	{ do_bad,	SIGTRAP,	TRAP_BRKPT,	"aarch32 BKPT"		},
+	{ do_bad,	SIGKILL,	SI_KERNEL,	"aarch32 vector catch"	},
+	{ early_brk64,	SIGTRAP,	TRAP_BRKPT,	"aarch64 BRK"		},
+	{ do_bad,	SIGKILL,	SI_KERNEL,	"unknown 7"		},
+};
+
+void __init hook_debug_fault_code(int nr,
+				  int (*fn)(unsigned long, unsigned long, struct pt_regs *),
+				  int sig, int code, const char *name)
+{
+	BUG_ON(nr < 0 || nr >= ARRAY_SIZE(debug_fault_info));
+
+	debug_fault_info[nr].fn		= fn;
+	debug_fault_info[nr].sig	= sig;
+	debug_fault_info[nr].code	= code;
+	debug_fault_info[nr].name	= name;
+}
+
+/*
+ * In debug exception context, we explicitly disable preemption despite
+ * having interrupts disabled.
+ * This serves two purposes: it makes it much less likely that we would
+ * accidentally schedule in exception context and it will force a warning
+ * if we somehow manage to schedule by accident.
+ */
+static void debug_exception_enter(struct pt_regs *regs)
+{
+	preempt_disable();
+
+	/* This code is a bit fragile.  Test it. */
+	RCU_LOCKDEP_WARN(!rcu_is_watching(), "exception_enter didn't work");
+}
+NOKPROBE_SYMBOL(debug_exception_enter);
+
+static void debug_exception_exit(struct pt_regs *regs)
+{
+	preempt_enable_no_resched();
+}
+NOKPROBE_SYMBOL(debug_exception_exit);
+
+void do_debug_exception(unsigned long addr_if_watchpoint, unsigned long esr,
+			struct pt_regs *regs)
+{
+	const struct fault_info *inf = esr_to_debug_fault_info(esr);
+	unsigned long pc = instruction_pointer(regs);
+
+	debug_exception_enter(regs);
+
+	if (user_mode(regs) && !is_ttbr0_addr(pc))
+		arm64_apply_bp_hardening();
+
+	if (inf->fn(addr_if_watchpoint, esr, regs)) {
+		arm64_notify_die(inf->name, regs, inf->sig, inf->code, pc, esr);
+	}
+
+	debug_exception_exit(regs);
+}
+NOKPROBE_SYMBOL(do_debug_exception);
+
 /*
  * Used during anonymous page fault handling.
  */
@@ -968,24 +938,13 @@ struct folio *vma_alloc_zeroed_movable_folio(struct vm_area_struct *vma,
 	if (vma->vm_flags & VM_MTE)
 		flags |= __GFP_ZEROTAGS;
 
-	return vma_alloc_folio(flags, 0, vma, vaddr);
+	return vma_alloc_folio(flags, 0, vma, vaddr, false);
 }
 
-bool tag_clear_highpages(struct page *page, int numpages)
+void tag_clear_highpage(struct page *page)
 {
-	/*
-	 * Check if MTE is supported and fall back to clear_highpage().
-	 * get_huge_zero_folio() unconditionally passes __GFP_ZEROTAGS and
-	 * post_alloc_hook() will invoke tag_clear_highpages().
-	 */
-	if (!system_supports_mte())
-		return false;
-
-	/* Newly allocated pages, shouldn't have been tagged yet */
-	for (int i = 0; i < numpages; i++, page++) {
-		WARN_ON_ONCE(!try_page_mte_tagging(page));
-		mte_zero_clear_page_tags(page_address(page));
-		set_page_mte_tagged(page);
-	}
-	return true;
+	/* Newly allocated page, shouldn't have been tagged yet */
+	WARN_ON_ONCE(!try_page_mte_tagging(page));
+	mte_zero_clear_page_tags(page_address(page));
+	set_page_mte_tagged(page);
 }

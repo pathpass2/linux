@@ -106,7 +106,8 @@ static int cs47l15_adsp_power_ev(struct snd_soc_dapm_widget *w,
 static int cs47l15_in1_adc_get(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct cs47l15 *cs47l15 = snd_soc_component_get_drvdata(component);
 
 	ucontrol->value.integer.value[0] = !!cs47l15->in1_lp_mode;
@@ -117,7 +118,8 @@ static int cs47l15_in1_adc_get(struct snd_kcontrol *kcontrol,
 static int cs47l15_in1_adc_put(struct snd_kcontrol *kcontrol,
 			       struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
 	struct cs47l15 *cs47l15 = snd_soc_component_get_drvdata(component);
 
 	if (!!ucontrol->value.integer.value[0] == cs47l15->in1_lp_mode)
@@ -1141,10 +1143,6 @@ static int cs47l15_set_fll(struct snd_soc_component *component, int fll_id,
 	}
 }
 
-static const struct snd_soc_dai_ops cs47l15_dai_ops = {
-	.compress_new = snd_soc_new_compress,
-};
-
 static struct snd_soc_dai_driver cs47l15_dai[] = {
 	{
 		.name = "cs47l15-aif1",
@@ -1221,7 +1219,7 @@ static struct snd_soc_dai_driver cs47l15_dai[] = {
 			.rates = MADERA_RATES,
 			.formats = MADERA_FORMATS,
 		},
-		.ops = &cs47l15_dai_ops,
+		.compress_new = snd_soc_new_compress,
 	},
 	{
 		.name = "cs47l15-dsp-trace",
@@ -1244,12 +1242,12 @@ static int cs47l15_open(struct snd_soc_component *component,
 	struct madera *madera = priv->madera;
 	int n_adsp;
 
-	if (strcmp(snd_soc_rtd_to_codec(rtd, 0)->name, "cs47l15-dsp-trace") == 0) {
+	if (strcmp(asoc_rtd_to_codec(rtd, 0)->name, "cs47l15-dsp-trace") == 0) {
 		n_adsp = 0;
 	} else {
 		dev_err(madera->dev,
 			"No suitable compressed stream for DAI '%s'\n",
-			snd_soc_rtd_to_codec(rtd, 0)->name);
+			asoc_rtd_to_codec(rtd, 0)->name);
 		return -EINVAL;
 	}
 
@@ -1278,7 +1276,6 @@ static const struct snd_soc_dapm_route cs47l15_mono_routes[] = {
 
 static int cs47l15_component_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct cs47l15 *cs47l15 = snd_soc_component_get_drvdata(component);
 	struct madera *madera = cs47l15->core.madera;
 	int ret;
@@ -1286,7 +1283,7 @@ static int cs47l15_component_probe(struct snd_soc_component *component)
 	snd_soc_component_init_regmap(component, madera->regmap);
 
 	mutex_lock(&madera->dapm_ptr_lock);
-	madera->dapm = snd_soc_component_to_dapm(component);
+	madera->dapm = snd_soc_component_get_dapm(component);
 	mutex_unlock(&madera->dapm_ptr_lock);
 
 	ret = madera_init_inputs(component);
@@ -1299,7 +1296,7 @@ static int cs47l15_component_probe(struct snd_soc_component *component)
 	if (ret)
 		return ret;
 
-	snd_soc_dapm_disable_pin(dapm, "HAPTICS");
+	snd_soc_component_disable_pin(component, "HAPTICS");
 
 	ret = snd_soc_add_component_controls(component,
 					     madera_adsp_rate_controls,
@@ -1471,7 +1468,7 @@ error_core:
 	return ret;
 }
 
-static void cs47l15_remove(struct platform_device *pdev)
+static int cs47l15_remove(struct platform_device *pdev)
 {
 	struct cs47l15 *cs47l15 = platform_get_drvdata(pdev);
 
@@ -1485,6 +1482,8 @@ static void cs47l15_remove(struct platform_device *pdev)
 	madera_free_irq(cs47l15->core.madera, MADERA_IRQ_DSP_IRQ1, cs47l15);
 	madera_free_overheat(&cs47l15->core);
 	madera_core_free(&cs47l15->core);
+
+	return 0;
 }
 
 static struct platform_driver cs47l15_codec_driver = {
@@ -1492,7 +1491,7 @@ static struct platform_driver cs47l15_codec_driver = {
 		.name = "cs47l15-codec",
 	},
 	.probe = &cs47l15_probe,
-	.remove = cs47l15_remove,
+	.remove = &cs47l15_remove,
 };
 
 module_platform_driver(cs47l15_codec_driver);

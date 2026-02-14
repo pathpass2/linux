@@ -7,7 +7,6 @@
 
 #include <linux/sysfs.h>
 #include <linux/init.h>
-#include <linux/of.h>
 #include <linux/stat.h>
 #include <linux/slab.h>
 #include <linux/idr.h>
@@ -28,7 +27,7 @@ struct soc_device {
 	int soc_dev_num;
 };
 
-static const struct bus_type soc_bus_type = {
+static struct bus_type soc_bus_type = {
 	.name  = "soc",
 };
 static bool soc_bus_registered;
@@ -106,21 +105,9 @@ static void soc_release(struct device *dev)
 {
 	struct soc_device *soc_dev = container_of(dev, struct soc_device, dev);
 
-	ida_free(&soc_ida, soc_dev->soc_dev_num);
+	ida_simple_remove(&soc_ida, soc_dev->soc_dev_num);
 	kfree(soc_dev->dev.groups);
 	kfree(soc_dev);
-}
-
-static void soc_device_get_machine(struct soc_device_attribute *soc_dev_attr)
-{
-	struct device_node *np;
-
-	if (soc_dev_attr->machine)
-		return;
-
-	np = of_find_node_by_path("/");
-	of_property_read_string(np, "model", &soc_dev_attr->machine);
-	of_node_put(np);
 }
 
 static struct soc_device_attribute *early_soc_dev_attr;
@@ -130,8 +117,6 @@ struct soc_device *soc_device_register(struct soc_device_attribute *soc_dev_attr
 	struct soc_device *soc_dev;
 	const struct attribute_group **soc_attr_groups;
 	int ret;
-
-	soc_device_get_machine(soc_dev_attr);
 
 	if (!soc_bus_registered) {
 		if (early_soc_dev_attr)
@@ -155,7 +140,7 @@ struct soc_device *soc_device_register(struct soc_device_attribute *soc_dev_attr
 	soc_attr_groups[1] = soc_dev_attr->custom_attr_group;
 
 	/* Fetch a unique (reclaimable) SOC ID. */
-	ret = ida_alloc(&soc_ida, GFP_KERNEL);
+	ret = ida_simple_get(&soc_ida, 0, 0, GFP_KERNEL);
 	if (ret < 0)
 		goto out3;
 	soc_dev->soc_dev_num = ret;

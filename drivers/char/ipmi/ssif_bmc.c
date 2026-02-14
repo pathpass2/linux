@@ -177,15 +177,13 @@ static ssize_t ssif_bmc_write(struct file *file, const char __user *buf, size_t 
 	unsigned long flags;
 	ssize_t ret;
 
-	if (count < sizeof(msg.len) ||
-	    count > sizeof(struct ipmi_ssif_msg))
+	if (count > sizeof(struct ipmi_ssif_msg))
 		return -EINVAL;
 
 	if (copy_from_user(&msg, buf, count))
 		return -EFAULT;
 
-	if (!msg.len || msg.len > IPMI_SSIF_PAYLOAD_MAX ||
-	    count < sizeof_field(struct ipmi_ssif_msg, len) + msg.len)
+	if (!msg.len || count < sizeof_field(struct ipmi_ssif_msg, len) + msg.len)
 		return -EINVAL;
 
 	spin_lock_irqsave(&ssif_bmc->lock, flags);
@@ -209,7 +207,7 @@ static ssize_t ssif_bmc_write(struct file *file, const char __user *buf, size_t 
 	if (ret)
 		goto exit;
 
-	timer_delete(&ssif_bmc->response_timer);
+	del_timer(&ssif_bmc->response_timer);
 	ssif_bmc->response_timer_inited = false;
 
 	memcpy(&ssif_bmc->response, &msg, count);
@@ -292,13 +290,13 @@ static void complete_response(struct ssif_bmc_ctx *ssif_bmc)
 	ssif_bmc->nbytes_processed = 0;
 	ssif_bmc->remain_len = 0;
 	ssif_bmc->busy = false;
+	memset(&ssif_bmc->part_buf, 0, sizeof(struct ssif_part_buffer));
 	wake_up_all(&ssif_bmc->wait_queue);
 }
 
 static void response_timeout(struct timer_list *t)
 {
-	struct ssif_bmc_ctx *ssif_bmc = timer_container_of(ssif_bmc, t,
-							   response_timer);
+	struct ssif_bmc_ctx *ssif_bmc = from_timer(ssif_bmc, t, response_timer);
 	unsigned long flags;
 
 	spin_lock_irqsave(&ssif_bmc->lock, flags);
@@ -744,11 +742,9 @@ static void on_stop_event(struct ssif_bmc_ctx *ssif_bmc, u8 *val)
 			ssif_bmc->aborting = true;
 		}
 	} else if (ssif_bmc->state == SSIF_RES_SENDING) {
-		if (ssif_bmc->is_singlepart_read || ssif_bmc->block_num == 0xFF) {
-			memset(&ssif_bmc->part_buf, 0, sizeof(struct ssif_part_buffer));
+		if (ssif_bmc->is_singlepart_read || ssif_bmc->block_num == 0xFF)
 			/* Invalidate response buffer to denote it is sent */
 			complete_response(ssif_bmc);
-		}
 		ssif_bmc->state = SSIF_READY;
 	}
 
@@ -854,8 +850,8 @@ static const struct of_device_id ssif_bmc_match[] = {
 MODULE_DEVICE_TABLE(of, ssif_bmc_match);
 
 static const struct i2c_device_id ssif_bmc_id[] = {
-	{ DEVICE_NAME },
-	{ }
+	{ DEVICE_NAME, 0 },
+	{ },
 };
 MODULE_DEVICE_TABLE(i2c, ssif_bmc_id);
 
@@ -864,7 +860,7 @@ static struct i2c_driver ssif_bmc_driver = {
 		.name           = DEVICE_NAME,
 		.of_match_table = ssif_bmc_match,
 	},
-	.probe          = ssif_bmc_probe,
+	.probe_new      = ssif_bmc_probe,
 	.remove         = ssif_bmc_remove,
 	.id_table       = ssif_bmc_id,
 };

@@ -17,8 +17,6 @@
 #include <linux/rtnetlink.h>
 #include <linux/skbuff.h>
 
-#include <kunit/static_stub.h>
-
 #include <uapi/linux/if_arp.h>
 
 #include <net/mctp.h>
@@ -34,55 +32,20 @@ static const unsigned long mctp_key_lifetime = 6 * CONFIG_HZ;
 static void mctp_flow_prepare_output(struct sk_buff *skb, struct mctp_dev *dev);
 
 /* route output callbacks */
-static int mctp_dst_discard(struct mctp_dst *dst, struct sk_buff *skb)
+static int mctp_route_discard(struct mctp_route *route, struct sk_buff *skb)
 {
 	kfree_skb(skb);
 	return 0;
 }
 
-static struct mctp_sock *mctp_lookup_bind_details(struct net *net,
-						  struct sk_buff *skb,
-						  u8 type, u8 dest,
-						  u8 src, bool allow_net_any)
-{
-	struct mctp_skb_cb *cb = mctp_cb(skb);
-	struct sock *sk;
-	u8 hash;
-
-	WARN_ON_ONCE(!rcu_read_lock_held());
-
-	hash = mctp_bind_hash(type, dest, src);
-
-	sk_for_each_rcu(sk, &net->mctp.binds[hash]) {
-		struct mctp_sock *msk = container_of(sk, struct mctp_sock, sk);
-
-		if (!allow_net_any && msk->bind_net == MCTP_NET_ANY)
-			continue;
-
-		if (msk->bind_net != MCTP_NET_ANY && msk->bind_net != cb->net)
-			continue;
-
-		if (msk->bind_type != type)
-			continue;
-
-		if (msk->bind_peer_set &&
-		    !mctp_address_matches(msk->bind_peer_addr, src))
-			continue;
-
-		if (!mctp_address_matches(msk->bind_local_addr, dest))
-			continue;
-
-		return msk;
-	}
-
-	return NULL;
-}
-
 static struct mctp_sock *mctp_lookup_bind(struct net *net, struct sk_buff *skb)
 {
-	struct mctp_sock *msk;
+	struct mctp_skb_cb *cb = mctp_cb(skb);
 	struct mctp_hdr *mh;
+	struct sock *sk;
 	u8 type;
+
+	WARN_ON(!rcu_read_lock_held());
 
 	/* TODO: look up in skb->cb? */
 	mh = mctp_hdr(skb);
@@ -92,84 +55,31 @@ static struct mctp_sock *mctp_lookup_bind(struct net *net, struct sk_buff *skb)
 
 	type = (*(u8 *)skb->data) & 0x7f;
 
-	/* Look for binds in order of widening scope. A given destination or
-	 * source address also implies matching on a particular network.
-	 *
-	 * - Matching destination and source
-	 * - Matching destination
-	 * - Matching source
-	 * - Matching network, any address
-	 * - Any network or address
-	 */
+	sk_for_each_rcu(sk, &net->mctp.binds) {
+		struct mctp_sock *msk = container_of(sk, struct mctp_sock, sk);
 
-	msk = mctp_lookup_bind_details(net, skb, type, mh->dest, mh->src,
-				       false);
-	if (msk)
+		if (msk->bind_net != MCTP_NET_ANY && msk->bind_net != cb->net)
+			continue;
+
+		if (msk->bind_type != type)
+			continue;
+
+		if (!mctp_address_matches(msk->bind_addr, mh->dest))
+			continue;
+
 		return msk;
-	msk = mctp_lookup_bind_details(net, skb, type, MCTP_ADDR_ANY, mh->src,
-				       false);
-	if (msk)
-		return msk;
-	msk = mctp_lookup_bind_details(net, skb, type, mh->dest, MCTP_ADDR_ANY,
-				       false);
-	if (msk)
-		return msk;
-	msk = mctp_lookup_bind_details(net, skb, type, MCTP_ADDR_ANY,
-				       MCTP_ADDR_ANY, false);
-	if (msk)
-		return msk;
-	msk = mctp_lookup_bind_details(net, skb, type, MCTP_ADDR_ANY,
-				       MCTP_ADDR_ANY, true);
-	if (msk)
-		return msk;
+	}
 
 	return NULL;
 }
 
-/* A note on the key allocations.
- *
- * struct net->mctp.keys contains our set of currently-allocated keys for
- * MCTP tag management. The lookup tuple for these is the peer EID,
- * local EID and MCTP tag.
- *
- * In some cases, the peer EID may be MCTP_EID_ANY: for example, when a
- * broadcast message is sent, we may receive responses from any peer EID.
- * Because the broadcast dest address is equivalent to ANY, we create
- * a key with (local = local-eid, peer = ANY). This allows a match on the
- * incoming broadcast responses from any peer.
- *
- * We perform lookups when packets are received, and when tags are allocated
- * in two scenarios:
- *
- *  - when a packet is sent, with a locally-owned tag: we need to find an
- *    unused tag value for the (local, peer) EID pair.
- *
- *  - when a tag is manually allocated: we need to find an unused tag value
- *    for the peer EID, but don't have a specific local EID at that stage.
- *
- * in the latter case, on successful allocation, we end up with a tag with
- * (local = ANY, peer = peer-eid).
- *
- * So, the key set allows both a local EID of ANY, as well as a peer EID of
- * ANY in the lookup tuple. Both may be ANY if we prealloc for a broadcast.
- * The matching (in mctp_key_match()) during lookup allows the match value to
- * be ANY in either the dest or source addresses.
- *
- * When allocating (+ inserting) a tag, we need to check for conflicts amongst
- * the existing tag set. This requires macthing either exactly on the local
- * and peer addresses, or either being ANY.
- */
-
-static bool mctp_key_match(struct mctp_sk_key *key, unsigned int net,
-			   mctp_eid_t local, mctp_eid_t peer, u8 tag)
+static bool mctp_key_match(struct mctp_sk_key *key, mctp_eid_t local,
+			   mctp_eid_t peer, u8 tag)
 {
-	if (key->net != net)
-		return false;
-
 	if (!mctp_address_matches(key->local_addr, local))
 		return false;
 
-	if (!mctp_address_matches(key->peer_addr, peer))
+	if (key->peer_addr != peer)
 		return false;
 
 	if (key->tag != tag)
@@ -182,7 +92,7 @@ static bool mctp_key_match(struct mctp_sk_key *key, unsigned int net,
  * key exists.
  */
 static struct mctp_sk_key *mctp_lookup_key(struct net *net, struct sk_buff *skb,
-					   unsigned int netid, mctp_eid_t peer,
+					   mctp_eid_t peer,
 					   unsigned long *irqflags)
 	__acquires(&key->lock)
 {
@@ -198,7 +108,7 @@ static struct mctp_sk_key *mctp_lookup_key(struct net *net, struct sk_buff *skb,
 	spin_lock_irqsave(&net->mctp.keys_lock, flags);
 
 	hlist_for_each_entry(key, &net->mctp.keys, hlist) {
-		if (!mctp_key_match(key, netid, mh->dest, peer, tag))
+		if (!mctp_key_match(key, mh->dest, peer, tag))
 			continue;
 
 		spin_lock(&key->lock);
@@ -221,7 +131,6 @@ static struct mctp_sk_key *mctp_lookup_key(struct net *net, struct sk_buff *skb,
 }
 
 static struct mctp_sk_key *mctp_key_alloc(struct mctp_sock *msk,
-					  unsigned int net,
 					  mctp_eid_t local, mctp_eid_t peer,
 					  u8 tag, gfp_t gfp)
 {
@@ -231,7 +140,6 @@ static struct mctp_sk_key *mctp_key_alloc(struct mctp_sock *msk,
 	if (!key)
 		return NULL;
 
-	key->net = net;
 	key->peer_addr = peer;
 	key->local_addr = local;
 	key->tag = tag;
@@ -277,8 +185,8 @@ static int mctp_key_add(struct mctp_sk_key *key, struct mctp_sock *msk)
 	}
 
 	hlist_for_each_entry(tmp, &net->mctp.keys, hlist) {
-		if (mctp_key_match(tmp, key->net, key->local_addr,
-				   key->peer_addr, key->tag)) {
+		if (mctp_key_match(tmp, key->local_addr, key->peer_addr,
+				   key->tag)) {
 			spin_lock(&tmp->lock);
 			if (tmp->valid)
 				rc = -EEXIST;
@@ -366,10 +274,8 @@ static void mctp_flow_prepare_output(struct sk_buff *skb, struct mctp_dev *dev)
 
 	key = flow->key;
 
-	if (key->dev) {
-		WARN_ON(key->dev != dev);
+	if (WARN_ON(key->dev && key->dev != dev))
 		return;
-	}
 
 	mctp_dev_set_key(dev, key);
 }
@@ -378,7 +284,6 @@ static void mctp_skb_set_flow(struct sk_buff *skb, struct mctp_sk_key *key) {}
 static void mctp_flow_prepare_output(struct sk_buff *skb, struct mctp_dev *dev) {}
 #endif
 
-/* takes ownership of skb, both in success and failure cases */
 static int mctp_frag_queue(struct mctp_sk_key *key, struct sk_buff *skb)
 {
 	struct mctp_hdr *hdr = mctp_hdr(skb);
@@ -388,16 +293,8 @@ static int mctp_frag_queue(struct mctp_sk_key *key, struct sk_buff *skb)
 		& MCTP_HDR_SEQ_MASK;
 
 	if (!key->reasm_head) {
-		/* Since we're manipulating the shared frag_list, ensure it
-		 * isn't shared with any other SKBs. In the cloned case,
-		 * this will free the skb; callers can no longer access it
-		 * safely.
-		 */
-		key->reasm_head = skb_unshare(skb, GFP_ATOMIC);
-		if (!key->reasm_head)
-			return -ENOMEM;
-
-		key->reasm_tailp = &(skb_shinfo(key->reasm_head)->frag_list);
+		key->reasm_head = skb;
+		key->reasm_tailp = &(skb_shinfo(skb)->frag_list);
 		key->last_seq = this_seq;
 		return 0;
 	}
@@ -405,10 +302,10 @@ static int mctp_frag_queue(struct mctp_sk_key *key, struct sk_buff *skb)
 	exp_seq = (key->last_seq + 1) & MCTP_HDR_SEQ_MASK;
 
 	if (this_seq != exp_seq)
-		goto err_free;
+		return -EINVAL;
 
 	if (key->reasm_head->len + skb->len > mctp_message_maxlen)
-		goto err_free;
+		return -EINVAL;
 
 	skb->next = NULL;
 	skb->sk = NULL;
@@ -422,19 +319,14 @@ static int mctp_frag_queue(struct mctp_sk_key *key, struct sk_buff *skb)
 	key->reasm_head->truesize += skb->truesize;
 
 	return 0;
-
-err_free:
-	kfree_skb(skb);
-	return -EINVAL;
 }
 
-static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
+static int mctp_route_input(struct mctp_route *route, struct sk_buff *skb)
 {
 	struct mctp_sk_key *key, *any_key = NULL;
 	struct net *net = dev_net(skb->dev);
 	struct mctp_sock *msk;
 	struct mctp_hdr *mh;
-	unsigned int netid;
 	unsigned long f;
 	u8 tag, flags;
 	int rc;
@@ -442,18 +334,10 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 	msk = NULL;
 	rc = -EINVAL;
 
-	/* We may be receiving a locally-routed packet; drop source sk
-	 * accounting.
-	 *
-	 * From here, we will either queue the skb - either to a frag_queue, or
-	 * to a receiving socket. When that succeeds, we clear the skb pointer;
-	 * a non-NULL skb on exit will be otherwise unowned, and hence
-	 * kfree_skb()-ed.
+	/* we may be receiving a locally-routed packet; drop source sk
+	 * accounting
 	 */
 	skb_orphan(skb);
-
-	if (skb->pkt_type == PACKET_OUTGOING)
-		skb->pkt_type = PACKET_LOOPBACK;
 
 	/* ensure we have enough data for a header and a type */
 	if (skb->len < sizeof(struct mctp_hdr) + 1)
@@ -461,7 +345,6 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 
 	/* grab header, advance data ptr */
 	mh = mctp_hdr(skb);
-	netid = mctp_cb(skb)->net;
 	skb_pull(skb, sizeof(struct mctp_hdr));
 
 	if (mh->ver != 1)
@@ -475,7 +358,7 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 	/* lookup socket / reasm context, exactly matching (src,dest,tag).
 	 * we hold a ref on the key, and key->lock held.
 	 */
-	key = mctp_lookup_key(net, skb, netid, mh->src, &f);
+	key = mctp_lookup_key(net, skb, mh->src, &f);
 
 	if (flags & MCTP_HDR_FLAG_SOM) {
 		if (key) {
@@ -485,12 +368,8 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 			 * key lookup to find the socket, but don't use this
 			 * key for reassembly - we'll create a more specific
 			 * one for future packets if required (ie, !EOM).
-			 *
-			 * this lookup requires key->peer to be MCTP_ADDR_ANY,
-			 * it doesn't match just any key->peer.
 			 */
-			any_key = mctp_lookup_key(net, skb, netid,
-						  MCTP_ADDR_ANY, &f);
+			any_key = mctp_lookup_key(net, skb, MCTP_ADDR_ANY, &f);
 			if (any_key) {
 				msk = container_of(any_key->sk,
 						   struct mctp_sock, sk);
@@ -510,9 +389,7 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 		 * pending key.
 		 */
 		if (flags & MCTP_HDR_FLAG_EOM) {
-			rc = sock_queue_rcv_skb(&msk->sk, skb);
-			if (!rc)
-				skb = NULL;
+			sock_queue_rcv_skb(&msk->sk, skb);
 			if (key) {
 				/* we've hit a pending reassembly; not much we
 				 * can do but drop it
@@ -521,6 +398,7 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 						   MCTP_TRACE_KEY_REPLIED);
 				key = NULL;
 			}
+			rc = 0;
 			goto out_unlock;
 		}
 
@@ -528,7 +406,7 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 		 * packets for this message
 		 */
 		if (!key) {
-			key = mctp_key_alloc(msk, netid, mh->dest, mh->src,
+			key = mctp_key_alloc(msk, mh->dest, mh->src,
 					     tag, GFP_ATOMIC);
 			if (!key) {
 				rc = -ENOMEM;
@@ -539,12 +417,12 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 			 * key isn't observable yet
 			 */
 			mctp_frag_queue(key, skb);
-			skb = NULL;
 
 			/* if the key_add fails, we've raced with another
 			 * SOM packet with the same src, dest and tag. There's
 			 * no way to distinguish future packets, so all we
-			 * can do is drop.
+			 * can do is drop; we'll free the skb on exit from
+			 * this function.
 			 */
 			rc = mctp_key_add(key, msk);
 			if (!rc)
@@ -566,7 +444,6 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 				key = NULL;
 			} else {
 				rc = mctp_frag_queue(key, skb);
-				skb = NULL;
 			}
 		}
 
@@ -576,23 +453,17 @@ static int mctp_dst_input(struct mctp_dst *dst, struct sk_buff *skb)
 		 */
 
 		/* we need to be continuing an existing reassembly... */
-		if (!key->reasm_head) {
+		if (!key->reasm_head)
 			rc = -EINVAL;
-		} else {
+		else
 			rc = mctp_frag_queue(key, skb);
-			skb = NULL;
-		}
-
-		if (rc)
-			goto out_unlock;
 
 		/* end of message? deliver to socket, and we're done with
 		 * the reassembly/response key
 		 */
-		if (flags & MCTP_HDR_FLAG_EOM) {
-			rc = sock_queue_rcv_skb(key->sk, key->reasm_head);
-			if (!rc)
-				key->reasm_head = NULL;
+		if (!rc && flags & MCTP_HDR_FLAG_EOM) {
+			sock_queue_rcv_skb(key->sk, key->reasm_head);
+			key->reasm_head = NULL;
 			__mctp_key_done_in(key, net, f, MCTP_TRACE_KEY_REPLIED);
 			key = NULL;
 		}
@@ -611,36 +482,44 @@ out_unlock:
 	if (any_key)
 		mctp_key_unref(any_key);
 out:
-	kfree_skb(skb);
+	if (rc)
+		kfree_skb(skb);
 	return rc;
 }
 
-static int mctp_dst_output(struct mctp_dst *dst, struct sk_buff *skb)
+static unsigned int mctp_route_mtu(struct mctp_route *rt)
 {
+	return rt->mtu ?: READ_ONCE(rt->dev->dev->mtu);
+}
+
+static int mctp_route_output(struct mctp_route *route, struct sk_buff *skb)
+{
+	struct mctp_skb_cb *cb = mctp_cb(skb);
+	struct mctp_hdr *hdr = mctp_hdr(skb);
 	char daddr_buf[MAX_ADDR_LEN];
 	char *daddr = NULL;
+	unsigned int mtu;
 	int rc;
 
 	skb->protocol = htons(ETH_P_MCTP);
-	skb->pkt_type = PACKET_OUTGOING;
-	skb->dev = dst->dev->dev;
 
-	if (skb->len > dst->mtu) {
+	mtu = READ_ONCE(skb->dev->mtu);
+	if (skb->len > mtu) {
 		kfree_skb(skb);
 		return -EMSGSIZE;
 	}
 
-	/* direct route; use the hwaddr we stashed in sendmsg */
-	if (dst->halen) {
-		if (dst->halen != skb->dev->addr_len) {
+	if (cb->ifindex) {
+		/* direct route; use the hwaddr we stashed in sendmsg */
+		if (cb->halen != skb->dev->addr_len) {
 			/* sanity check, sendmsg should have already caught this */
 			kfree_skb(skb);
 			return -EMSGSIZE;
 		}
-		daddr = dst->haddr;
+		daddr = cb->haddr;
 	} else {
 		/* If lookup fails let the device handle daddr==NULL */
-		if (mctp_neigh_lookup(dst->dev, dst->nexthop, daddr_buf) == 0)
+		if (mctp_neigh_lookup(route->dev, hdr->dest, daddr_buf) == 0)
 			daddr = daddr_buf;
 	}
 
@@ -651,7 +530,7 @@ static int mctp_dst_output(struct mctp_dst *dst, struct sk_buff *skb)
 		return -EHOSTUNREACH;
 	}
 
-	mctp_flow_prepare_output(skb, dst->dev);
+	mctp_flow_prepare_output(skb, route->dev);
 
 	rc = dev_queue_xmit(skb);
 	if (rc)
@@ -664,8 +543,7 @@ static int mctp_dst_output(struct mctp_dst *dst, struct sk_buff *skb)
 static void mctp_route_release(struct mctp_route *rt)
 {
 	if (refcount_dec_and_test(&rt->refs)) {
-		if (rt->dst_type == MCTP_ROUTE_DIRECT)
-			mctp_dev_put(rt->dev);
+		mctp_dev_put(rt->dev);
 		kfree_rcu(rt, rcu);
 	}
 }
@@ -681,7 +559,7 @@ static struct mctp_route *mctp_route_alloc(void)
 
 	INIT_LIST_HEAD(&rt->list);
 	refcount_set(&rt->refs, 1);
-	rt->output = mctp_dst_discard;
+	rt->output = mctp_route_discard;
 
 	return rt;
 }
@@ -718,12 +596,11 @@ static void mctp_reserve_tag(struct net *net, struct mctp_sk_key *key,
 	refcount_inc(&key->refs);
 }
 
-/* Allocate a locally-owned tag value for (local, peer), and reserve
+/* Allocate a locally-owned tag value for (saddr, daddr), and reserve
  * it for the socket msk
  */
 struct mctp_sk_key *mctp_alloc_local_tag(struct mctp_sock *msk,
-					 unsigned int netid,
-					 mctp_eid_t local, mctp_eid_t peer,
+					 mctp_eid_t daddr, mctp_eid_t saddr,
 					 bool manual, u8 *tagp)
 {
 	struct net *net = sock_net(&msk->sk);
@@ -733,11 +610,11 @@ struct mctp_sk_key *mctp_alloc_local_tag(struct mctp_sock *msk,
 	u8 tagbits;
 
 	/* for NULL destination EIDs, we may get a response from any peer */
-	if (peer == MCTP_ADDR_NULL)
-		peer = MCTP_ADDR_ANY;
+	if (daddr == MCTP_ADDR_NULL)
+		daddr = MCTP_ADDR_ANY;
 
 	/* be optimistic, alloc now */
-	key = mctp_key_alloc(msk, netid, local, peer, 0, GFP_KERNEL);
+	key = mctp_key_alloc(msk, saddr, daddr, 0, GFP_KERNEL);
 	if (!key)
 		return ERR_PTR(-ENOMEM);
 
@@ -754,24 +631,12 @@ struct mctp_sk_key *mctp_alloc_local_tag(struct mctp_sock *msk,
 		 * lock held, they don't change over the lifetime of the key.
 		 */
 
-		/* tags are net-specific */
-		if (tmp->net != netid)
-			continue;
-
 		/* if we don't own the tag, it can't conflict */
 		if (tmp->tag & MCTP_HDR_FLAG_TO)
 			continue;
 
-		/* Since we're avoiding conflicting entries, match peer and
-		 * local addresses, including with a wildcard on ANY. See
-		 * 'A note on key allocations' for background.
-		 */
-		if (peer != MCTP_ADDR_ANY &&
-		    !mctp_address_matches(tmp->peer_addr, peer))
-			continue;
-
-		if (local != MCTP_ADDR_ANY &&
-		    !mctp_address_matches(tmp->local_addr, local))
+		if (!(mctp_address_matches(tmp->peer_addr, daddr) &&
+		      mctp_address_matches(tmp->local_addr, saddr)))
 			continue;
 
 		spin_lock(&tmp->lock);
@@ -798,7 +663,7 @@ struct mctp_sk_key *mctp_alloc_local_tag(struct mctp_sock *msk,
 	spin_unlock_irqrestore(&mns->keys_lock, flags);
 
 	if (!tagbits) {
-		mctp_key_unref(key);
+		kfree(key);
 		return ERR_PTR(-EBUSY);
 	}
 
@@ -806,7 +671,6 @@ struct mctp_sk_key *mctp_alloc_local_tag(struct mctp_sock *msk,
 }
 
 static struct mctp_sk_key *mctp_lookup_prealloc_tag(struct mctp_sock *msk,
-						    unsigned int netid,
 						    mctp_eid_t daddr,
 						    u8 req_tag, u8 *tagp)
 {
@@ -821,9 +685,6 @@ static struct mctp_sk_key *mctp_lookup_prealloc_tag(struct mctp_sock *msk,
 	spin_lock_irqsave(&mns->keys_lock, flags);
 
 	hlist_for_each_entry(tmp, &mns->keys, hlist) {
-		if (tmp->net != netid)
-			continue;
-
 		if (tmp->tag != req_tag)
 			continue;
 
@@ -854,16 +715,10 @@ static struct mctp_sk_key *mctp_lookup_prealloc_tag(struct mctp_sock *msk,
 }
 
 /* routing lookups */
-static unsigned int mctp_route_netid(struct mctp_route *rt)
-{
-	return rt->dst_type == MCTP_ROUTE_DIRECT ?
-		READ_ONCE(rt->dev->net) : rt->gateway.net;
-}
-
 static bool mctp_rt_match_eid(struct mctp_route *rt,
 			      unsigned int net, mctp_eid_t eid)
 {
-	return mctp_route_netid(rt) == net &&
+	return READ_ONCE(rt->dev->net) == net &&
 		rt->min <= eid && rt->max >= eid;
 }
 
@@ -872,150 +727,44 @@ static bool mctp_rt_compare_exact(struct mctp_route *rt1,
 				  struct mctp_route *rt2)
 {
 	ASSERT_RTNL();
-	return mctp_route_netid(rt1) == mctp_route_netid(rt2) &&
+	return rt1->dev->net == rt2->dev->net &&
 		rt1->min == rt2->min &&
 		rt1->max == rt2->max;
 }
 
-/* must only be called on a direct route, as the final output hop */
-static void mctp_dst_from_route(struct mctp_dst *dst, mctp_eid_t eid,
-				unsigned int mtu, struct mctp_route *route)
+struct mctp_route *mctp_route_lookup(struct net *net, unsigned int dnet,
+				     mctp_eid_t daddr)
 {
-	mctp_dev_hold(route->dev);
-	dst->nexthop = eid;
-	dst->dev = route->dev;
-	dst->mtu = READ_ONCE(dst->dev->dev->mtu);
-	if (mtu)
-		dst->mtu = min(dst->mtu, mtu);
-	dst->halen = 0;
-	dst->output = route->output;
-}
+	struct mctp_route *tmp, *rt = NULL;
 
-int mctp_dst_from_extaddr(struct mctp_dst *dst, struct net *net, int ifindex,
-			  unsigned char halen, const unsigned char *haddr)
-{
-	struct net_device *netdev;
-	struct mctp_dev *dev;
-	int rc = -ENOENT;
-
-	if (halen > sizeof(dst->haddr))
-		return -EINVAL;
-
-	rcu_read_lock();
-
-	netdev = dev_get_by_index_rcu(net, ifindex);
-	if (!netdev)
-		goto out_unlock;
-
-	if (netdev->addr_len != halen) {
-		rc = -EINVAL;
-		goto out_unlock;
+	list_for_each_entry_rcu(tmp, &net->mctp.routes, list) {
+		/* TODO: add metrics */
+		if (mctp_rt_match_eid(tmp, dnet, daddr)) {
+			if (refcount_inc_not_zero(&tmp->refs)) {
+				rt = tmp;
+				break;
+			}
+		}
 	}
 
-	dev = __mctp_dev_get(netdev);
-	if (!dev)
-		goto out_unlock;
-
-	dst->dev = dev;
-	dst->mtu = READ_ONCE(netdev->mtu);
-	dst->halen = halen;
-	dst->output = mctp_dst_output;
-	dst->nexthop = 0;
-	memcpy(dst->haddr, haddr, halen);
-
-	rc = 0;
-
-out_unlock:
-	rcu_read_unlock();
-	return rc;
+	return rt;
 }
 
-void mctp_dst_release(struct mctp_dst *dst)
-{
-	mctp_dev_put(dst->dev);
-}
-
-static struct mctp_route *mctp_route_lookup_single(struct net *net,
-						   unsigned int dnet,
-						   mctp_eid_t daddr)
+static struct mctp_route *mctp_route_lookup_null(struct net *net,
+						 struct net_device *dev)
 {
 	struct mctp_route *rt;
 
 	list_for_each_entry_rcu(rt, &net->mctp.routes, list) {
-		if (mctp_rt_match_eid(rt, dnet, daddr))
+		if (rt->dev->dev == dev && rt->type == RTN_LOCAL &&
+		    refcount_inc_not_zero(&rt->refs))
 			return rt;
 	}
 
 	return NULL;
 }
 
-/* populates *dst on successful lookup, if set */
-int mctp_route_lookup(struct net *net, unsigned int dnet,
-		      mctp_eid_t daddr, struct mctp_dst *dst)
-{
-	const unsigned int max_depth = 32;
-	unsigned int depth, mtu = 0;
-	int rc = -EHOSTUNREACH;
-
-	rcu_read_lock();
-
-	for (depth = 0; depth < max_depth; depth++) {
-		struct mctp_route *rt;
-
-		rt = mctp_route_lookup_single(net, dnet, daddr);
-		if (!rt)
-			break;
-
-		/* clamp mtu to the smallest in the path, allowing 0
-		 * to specify no restrictions
-		 */
-		if (mtu && rt->mtu)
-			mtu = min(mtu, rt->mtu);
-		else
-			mtu = mtu ?: rt->mtu;
-
-		if (rt->dst_type == MCTP_ROUTE_DIRECT) {
-			if (dst)
-				mctp_dst_from_route(dst, daddr, mtu, rt);
-			rc = 0;
-			break;
-
-		} else if (rt->dst_type == MCTP_ROUTE_GATEWAY) {
-			daddr = rt->gateway.eid;
-		}
-	}
-
-	rcu_read_unlock();
-
-	return rc;
-}
-
-static int mctp_route_lookup_null(struct net *net, struct net_device *dev,
-				  struct mctp_dst *dst)
-{
-	int rc = -EHOSTUNREACH;
-	struct mctp_route *rt;
-
-	rcu_read_lock();
-
-	list_for_each_entry_rcu(rt, &net->mctp.routes, list) {
-		if (rt->dst_type != MCTP_ROUTE_DIRECT || rt->type != RTN_LOCAL)
-			continue;
-
-		if (rt->dev->dev != dev)
-			continue;
-
-		mctp_dst_from_route(dst, 0, 0, rt);
-		rc = 0;
-		break;
-	}
-
-	rcu_read_unlock();
-
-	return rc;
-}
-
-static int mctp_do_fragment_route(struct mctp_dst *dst, struct sk_buff *skb,
+static int mctp_do_fragment_route(struct mctp_route *rt, struct sk_buff *skb,
 				  unsigned int mtu, u8 tag)
 {
 	const unsigned int hlen = sizeof(struct mctp_hdr);
@@ -1084,11 +833,8 @@ static int mctp_do_fragment_route(struct mctp_dst *dst, struct sk_buff *skb,
 		/* copy message payload */
 		skb_copy_bits(skb, pos, skb_transport_header(skb2), size);
 
-		/* we need to copy the extensions, for MCTP flow data */
-		skb_ext_copy(skb2, skb);
-
 		/* do route */
-		rc = dst->output(dst, skb2);
+		rc = rt->output(rt, skb2);
 		if (rc)
 			break;
 
@@ -1100,44 +846,75 @@ static int mctp_do_fragment_route(struct mctp_dst *dst, struct sk_buff *skb,
 	return rc;
 }
 
-int mctp_local_output(struct sock *sk, struct mctp_dst *dst,
+int mctp_local_output(struct sock *sk, struct mctp_route *rt,
 		      struct sk_buff *skb, mctp_eid_t daddr, u8 req_tag)
 {
 	struct mctp_sock *msk = container_of(sk, struct mctp_sock, sk);
+	struct mctp_skb_cb *cb = mctp_cb(skb);
+	struct mctp_route tmp_rt = {0};
 	struct mctp_sk_key *key;
 	struct mctp_hdr *hdr;
 	unsigned long flags;
-	unsigned int netid;
 	unsigned int mtu;
 	mctp_eid_t saddr;
+	bool ext_rt;
 	int rc;
 	u8 tag;
 
-	KUNIT_STATIC_STUB_REDIRECT(mctp_local_output, sk, dst, skb, daddr,
-				   req_tag);
-
 	rc = -ENODEV;
 
-	spin_lock_irqsave(&dst->dev->addrs_lock, flags);
-	if (dst->dev->num_addrs == 0) {
+	if (rt) {
+		ext_rt = false;
+		if (WARN_ON(!rt->dev))
+			goto out_release;
+
+	} else if (cb->ifindex) {
+		struct net_device *dev;
+
+		ext_rt = true;
+		rt = &tmp_rt;
+
+		rcu_read_lock();
+		dev = dev_get_by_index_rcu(sock_net(sk), cb->ifindex);
+		if (!dev) {
+			rcu_read_unlock();
+			return rc;
+		}
+		rt->dev = __mctp_dev_get(dev);
+		rcu_read_unlock();
+
+		if (!rt->dev)
+			goto out_release;
+
+		/* establish temporary route - we set up enough to keep
+		 * mctp_route_output happy
+		 */
+		rt->output = mctp_route_output;
+		rt->mtu = 0;
+
+	} else {
+		return -EINVAL;
+	}
+
+	spin_lock_irqsave(&rt->dev->addrs_lock, flags);
+	if (rt->dev->num_addrs == 0) {
 		rc = -EHOSTUNREACH;
 	} else {
 		/* use the outbound interface's first address as our source */
-		saddr = dst->dev->addrs[0];
+		saddr = rt->dev->addrs[0];
 		rc = 0;
 	}
-	spin_unlock_irqrestore(&dst->dev->addrs_lock, flags);
-	netid = READ_ONCE(dst->dev->net);
+	spin_unlock_irqrestore(&rt->dev->addrs_lock, flags);
 
 	if (rc)
 		goto out_release;
 
 	if (req_tag & MCTP_TAG_OWNER) {
 		if (req_tag & MCTP_TAG_PREALLOC)
-			key = mctp_lookup_prealloc_tag(msk, netid, daddr,
+			key = mctp_lookup_prealloc_tag(msk, daddr,
 						       req_tag, &tag);
 		else
-			key = mctp_alloc_local_tag(msk, netid, saddr, daddr,
+			key = mctp_alloc_local_tag(msk, daddr, saddr,
 						   false, &tag);
 
 		if (IS_ERR(key)) {
@@ -1153,13 +930,15 @@ int mctp_local_output(struct sock *sk, struct mctp_dst *dst,
 		tag = req_tag & MCTP_TAG_MASK;
 	}
 
-	skb->pkt_type = PACKET_OUTGOING;
 	skb->protocol = htons(ETH_P_MCTP);
 	skb->priority = 0;
 	skb_reset_transport_header(skb);
 	skb_push(skb, sizeof(struct mctp_hdr));
 	skb_reset_network_header(skb);
-	skb->dev = dst->dev->dev;
+	skb->dev = rt->dev->dev;
+
+	/* cb->net will have been set on initial ingress */
+	cb->src = saddr;
 
 	/* set up common header fields */
 	hdr = mctp_hdr(skb);
@@ -1167,64 +946,68 @@ int mctp_local_output(struct sock *sk, struct mctp_dst *dst,
 	hdr->dest = daddr;
 	hdr->src = saddr;
 
-	mtu = dst->mtu;
+	mtu = mctp_route_mtu(rt);
 
 	if (skb->len + sizeof(struct mctp_hdr) <= mtu) {
 		hdr->flags_seq_tag = MCTP_HDR_FLAG_SOM |
 			MCTP_HDR_FLAG_EOM | tag;
-		rc = dst->output(dst, skb);
+		rc = rt->output(rt, skb);
 	} else {
-		rc = mctp_do_fragment_route(dst, skb, mtu, tag);
+		rc = mctp_do_fragment_route(rt, skb, mtu, tag);
 	}
 
-	/* route output functions consume the skb, even on error */
-	skb = NULL;
-
 out_release:
-	kfree_skb(skb);
+	if (!ext_rt)
+		mctp_route_release(rt);
+
+	mctp_dev_put(tmp_rt.dev);
+
 	return rc;
 }
 
 /* route management */
-
-/* mctp_route_add(): Add the provided route, previously allocated via
- * mctp_route_alloc(). On success, takes ownership of @rt, which includes a
- * hold on rt->dev for usage in the route table. On failure a caller will want
- * to mctp_route_release().
- *
- * We expect that the caller has set rt->type, rt->dst_type, rt->min, rt->max,
- * rt->mtu and either rt->dev (with a reference held appropriately) or
- * rt->gateway. Other fields will be populated.
- */
-static int mctp_route_add(struct net *net, struct mctp_route *rt)
+static int mctp_route_add(struct mctp_dev *mdev, mctp_eid_t daddr_start,
+			  unsigned int daddr_extent, unsigned int mtu,
+			  unsigned char type)
 {
-	struct mctp_route *ert;
+	int (*rtfn)(struct mctp_route *rt, struct sk_buff *skb);
+	struct net *net = dev_net(mdev->dev);
+	struct mctp_route *rt, *ert;
 
-	if (!mctp_address_unicast(rt->min) || !mctp_address_unicast(rt->max))
+	if (!mctp_address_unicast(daddr_start))
 		return -EINVAL;
 
-	if (rt->dst_type == MCTP_ROUTE_DIRECT && !rt->dev)
+	if (daddr_extent > 0xff || daddr_start + daddr_extent >= 255)
 		return -EINVAL;
 
-	if (rt->dst_type == MCTP_ROUTE_GATEWAY && !rt->gateway.eid)
-		return -EINVAL;
-
-	switch (rt->type) {
+	switch (type) {
 	case RTN_LOCAL:
-		rt->output = mctp_dst_input;
+		rtfn = mctp_route_input;
 		break;
 	case RTN_UNICAST:
-		rt->output = mctp_dst_output;
+		rtfn = mctp_route_output;
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	ASSERT_RTNL();
+	rt = mctp_route_alloc();
+	if (!rt)
+		return -ENOMEM;
 
+	rt->min = daddr_start;
+	rt->max = daddr_start + daddr_extent;
+	rt->mtu = mtu;
+	rt->dev = mdev;
+	mctp_dev_hold(rt->dev);
+	rt->type = type;
+	rt->output = rtfn;
+
+	ASSERT_RTNL();
 	/* Prevent duplicate identical routes. */
 	list_for_each_entry(ert, &net->mctp.routes, list) {
 		if (mctp_rt_compare_exact(rt, ert)) {
+			mctp_route_release(rt);
 			return -EEXIST;
 		}
 	}
@@ -1234,10 +1017,10 @@ static int mctp_route_add(struct net *net, struct mctp_route *rt)
 	return 0;
 }
 
-static int mctp_route_remove(struct net *net, unsigned int netid,
-			     mctp_eid_t daddr_start, unsigned int daddr_extent,
-			     unsigned char type)
+static int mctp_route_remove(struct mctp_dev *mdev, mctp_eid_t daddr_start,
+			     unsigned int daddr_extent, unsigned char type)
 {
+	struct net *net = dev_net(mdev->dev);
 	struct mctp_route *rt, *tmp;
 	mctp_eid_t daddr_end;
 	bool dropped;
@@ -1251,7 +1034,7 @@ static int mctp_route_remove(struct net *net, unsigned int netid,
 	ASSERT_RTNL();
 
 	list_for_each_entry_safe(rt, tmp, &net->mctp.routes, list) {
-		if (mctp_route_netid(rt) == netid &&
+		if (rt->dev == mdev &&
 		    rt->min == daddr_start && rt->max == daddr_end &&
 		    rt->type == type) {
 			list_del_rcu(&rt->list);
@@ -1266,32 +1049,12 @@ static int mctp_route_remove(struct net *net, unsigned int netid,
 
 int mctp_route_add_local(struct mctp_dev *mdev, mctp_eid_t addr)
 {
-	struct mctp_route *rt;
-	int rc;
-
-	rt = mctp_route_alloc();
-	if (!rt)
-		return -ENOMEM;
-
-	rt->min = addr;
-	rt->max = addr;
-	rt->dst_type = MCTP_ROUTE_DIRECT;
-	rt->dev = mdev;
-	rt->type = RTN_LOCAL;
-
-	mctp_dev_hold(rt->dev);
-
-	rc = mctp_route_add(dev_net(mdev->dev), rt);
-	if (rc)
-		mctp_route_release(rt);
-
-	return rc;
+	return mctp_route_add(mdev, addr, 0, 0, RTN_LOCAL);
 }
 
 int mctp_route_remove_local(struct mctp_dev *mdev, mctp_eid_t addr)
 {
-	return mctp_route_remove(dev_net(mdev->dev), mdev->net,
-				 addr, 0, RTN_LOCAL);
+	return mctp_route_remove(mdev, addr, 0, RTN_LOCAL);
 }
 
 /* removes all entries for a given device */
@@ -1302,7 +1065,7 @@ void mctp_route_remove_dev(struct mctp_dev *mdev)
 
 	ASSERT_RTNL();
 	list_for_each_entry_safe(rt, tmp, &net->mctp.routes, list) {
-		if (rt->dst_type == MCTP_ROUTE_DIRECT && rt->dev == mdev) {
+		if (rt->dev == mdev) {
 			list_del_rcu(&rt->list);
 			/* TODO: immediate RTM_DELROUTE */
 			mctp_route_release(rt);
@@ -1319,9 +1082,8 @@ static int mctp_pkttype_receive(struct sk_buff *skb, struct net_device *dev,
 	struct net *net = dev_net(dev);
 	struct mctp_dev *mdev;
 	struct mctp_skb_cb *cb;
-	struct mctp_dst dst;
+	struct mctp_route *rt;
 	struct mctp_hdr *mh;
-	int rc;
 
 	rcu_read_lock();
 	mdev = __mctp_dev_get(dev);
@@ -1363,17 +1125,17 @@ static int mctp_pkttype_receive(struct sk_buff *skb, struct net_device *dev,
 	cb->net = READ_ONCE(mdev->net);
 	cb->ifindex = dev->ifindex;
 
-	rc = mctp_route_lookup(net, cb->net, mh->dest, &dst);
+	rt = mctp_route_lookup(net, cb->net, mh->dest);
 
 	/* NULL EID, but addressed to our physical address */
-	if (rc && mh->dest == MCTP_ADDR_NULL && skb->pkt_type == PACKET_HOST)
-		rc = mctp_route_lookup_null(net, dev, &dst);
+	if (!rt && mh->dest == MCTP_ADDR_NULL && skb->pkt_type == PACKET_HOST)
+		rt = mctp_route_lookup_null(net, dev);
 
-	if (rc)
+	if (!rt)
 		goto err_drop;
 
-	dst.output(&dst, skb);
-	mctp_dst_release(&dst);
+	rt->output(rt, skb);
+	mctp_route_release(rt);
 	mctp_dev_put(mdev);
 
 	return NET_RX_SUCCESS;
@@ -1395,28 +1157,19 @@ static const struct nla_policy rta_mctp_policy[RTA_MAX + 1] = {
 	[RTA_DST]		= { .type = NLA_U8 },
 	[RTA_METRICS]		= { .type = NLA_NESTED },
 	[RTA_OIF]		= { .type = NLA_U32 },
-	[RTA_GATEWAY]		= NLA_POLICY_EXACT_LEN(sizeof(struct mctp_fq_addr)),
 };
 
-static const struct nla_policy rta_metrics_policy[RTAX_MAX + 1] = {
-	[RTAX_MTU]		= { .type = NLA_U32 },
-};
-
-/* base parsing; common to both _lookup and _populate variants.
- *
- * For gateway routes (which have a RTA_GATEWAY, and no RTA_OIF), we populate
- * *gatweayp. for direct routes (RTA_OIF, no RTA_GATEWAY), we populate *mdev.
+/* Common part for RTM_NEWROUTE and RTM_DELROUTE parsing.
+ * tb must hold RTA_MAX+1 elements.
  */
-static int mctp_route_nlparse_common(struct net *net, struct nlmsghdr *nlh,
-				     struct netlink_ext_ack *extack,
-				     struct nlattr **tb, struct rtmsg **rtm,
-				     struct mctp_dev **mdev,
-				     struct mctp_fq_addr *gatewayp,
-				     mctp_eid_t *daddr_start)
+static int mctp_route_nlparse(struct sk_buff *skb, struct nlmsghdr *nlh,
+			      struct netlink_ext_ack *extack,
+			      struct nlattr **tb, struct rtmsg **rtm,
+			      struct mctp_dev **mdev, mctp_eid_t *daddr_start)
 {
-	struct mctp_fq_addr *gateway = NULL;
-	unsigned int ifindex = 0;
+	struct net *net = sock_net(skb->sk);
 	struct net_device *dev;
+	unsigned int ifindex;
 	int rc;
 
 	rc = nlmsg_parse(nlh, sizeof(struct rtmsg), tb, RTA_MAX,
@@ -1432,44 +1185,11 @@ static int mctp_route_nlparse_common(struct net *net, struct nlmsghdr *nlh,
 	}
 	*daddr_start = nla_get_u8(tb[RTA_DST]);
 
-	if (tb[RTA_OIF])
-		ifindex = nla_get_u32(tb[RTA_OIF]);
-
-	if (tb[RTA_GATEWAY])
-		gateway = nla_data(tb[RTA_GATEWAY]);
-
-	if (ifindex && gateway) {
-		NL_SET_ERR_MSG(extack,
-			       "cannot specify both ifindex and gateway");
-		return -EINVAL;
-
-	} else if (ifindex) {
-		dev = __dev_get_by_index(net, ifindex);
-		if (!dev) {
-			NL_SET_ERR_MSG(extack, "bad ifindex");
-			return -ENODEV;
-		}
-		*mdev = mctp_dev_get_rtnl(dev);
-		if (!*mdev)
-			return -ENODEV;
-		gatewayp->eid = 0;
-
-	} else if (gateway) {
-		if (!mctp_address_unicast(gateway->eid)) {
-			NL_SET_ERR_MSG(extack, "bad gateway");
-			return -EINVAL;
-		}
-
-		gatewayp->eid = gateway->eid;
-		gatewayp->net = gateway->net != MCTP_NET_ANY ?
-			gateway->net :
-			READ_ONCE(net->mctp.default_net);
-		*mdev = NULL;
-
-	} else {
-		NL_SET_ERR_MSG(extack, "no route output provided");
+	if (!tb[RTA_OIF]) {
+		NL_SET_ERR_MSG(extack, "ifindex missing");
 		return -EINVAL;
 	}
+	ifindex = nla_get_u32(tb[RTA_OIF]);
 
 	*rtm = nlmsg_data(nlh);
 	if ((*rtm)->rtm_family != AF_MCTP) {
@@ -1477,157 +1197,85 @@ static int mctp_route_nlparse_common(struct net *net, struct nlmsghdr *nlh,
 		return -EINVAL;
 	}
 
-	if ((*rtm)->rtm_type != RTN_UNICAST) {
-		NL_SET_ERR_MSG(extack, "rtm_type must be RTN_UNICAST");
+	dev = __dev_get_by_index(net, ifindex);
+	if (!dev) {
+		NL_SET_ERR_MSG(extack, "bad ifindex");
+		return -ENODEV;
+	}
+	*mdev = mctp_dev_get_rtnl(dev);
+	if (!*mdev)
+		return -ENODEV;
+
+	if (dev->flags & IFF_LOOPBACK) {
+		NL_SET_ERR_MSG(extack, "no routes to loopback");
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-/* Route parsing for lookup operations; we only need the "route target"
- * components (ie., network and dest-EID range).
- */
-static int mctp_route_nlparse_lookup(struct net *net, struct nlmsghdr *nlh,
-				     struct netlink_ext_ack *extack,
-				     unsigned char *type, unsigned int *netid,
-				     mctp_eid_t *daddr_start,
-				     unsigned int *daddr_extent)
-{
-	struct nlattr *tb[RTA_MAX + 1];
-	struct mctp_fq_addr gw;
-	struct mctp_dev *mdev;
-	struct rtmsg *rtm;
-	int rc;
-
-	rc = mctp_route_nlparse_common(net, nlh, extack, tb, &rtm,
-				       &mdev, &gw, daddr_start);
-	if (rc)
-		return rc;
-
-	if (mdev) {
-		*netid = mdev->net;
-	} else if (gw.eid) {
-		*netid = gw.net;
-	} else {
-		/* bug: _nlparse_common should not allow this */
-		return -1;
-	}
-
-	*type = rtm->rtm_type;
-	*daddr_extent = rtm->rtm_dst_len;
-
-	return 0;
-}
-
-/* Full route parse for RTM_NEWROUTE: populate @rt. On success,
- * MCTP_ROUTE_DIRECT routes (ie, those with a direct dev) will hold a reference
- * to that dev.
- */
-static int mctp_route_nlparse_populate(struct net *net, struct nlmsghdr *nlh,
-				       struct netlink_ext_ack *extack,
-				       struct mctp_route *rt)
-{
-	struct nlattr *tbx[RTAX_MAX + 1];
-	struct nlattr *tb[RTA_MAX + 1];
-	unsigned int daddr_extent;
-	struct mctp_fq_addr gw;
-	mctp_eid_t daddr_start;
-	struct mctp_dev *dev;
-	struct rtmsg *rtm;
-	u32 mtu = 0;
-	int rc;
-
-	rc = mctp_route_nlparse_common(net, nlh, extack, tb, &rtm,
-				       &dev, &gw, &daddr_start);
-	if (rc)
-		return rc;
-
-	daddr_extent = rtm->rtm_dst_len;
-
-	if (daddr_extent > 0xff || daddr_extent + daddr_start >= 255) {
-		NL_SET_ERR_MSG(extack, "invalid eid range");
-		return -EINVAL;
-	}
-
-	if (tb[RTA_METRICS]) {
-		rc = nla_parse_nested(tbx, RTAX_MAX, tb[RTA_METRICS],
-				      rta_metrics_policy, NULL);
-		if (rc < 0) {
-			NL_SET_ERR_MSG(extack, "incorrect RTA_METRICS format");
-			return rc;
-		}
-		if (tbx[RTAX_MTU])
-			mtu = nla_get_u32(tbx[RTAX_MTU]);
-	}
-
-	rt->type = rtm->rtm_type;
-	rt->min = daddr_start;
-	rt->max = daddr_start + daddr_extent;
-	rt->mtu = mtu;
-	if (gw.eid) {
-		rt->dst_type = MCTP_ROUTE_GATEWAY;
-		rt->gateway.eid = gw.eid;
-		rt->gateway.net = gw.net;
-	} else {
-		rt->dst_type = MCTP_ROUTE_DIRECT;
-		rt->dev = dev;
-		mctp_dev_hold(rt->dev);
-	}
-
-	return 0;
-}
+static const struct nla_policy rta_metrics_policy[RTAX_MAX + 1] = {
+	[RTAX_MTU]		= { .type = NLA_U32 },
+};
 
 static int mctp_newroute(struct sk_buff *skb, struct nlmsghdr *nlh,
 			 struct netlink_ext_ack *extack)
 {
-	struct net *net = sock_net(skb->sk);
-	struct mctp_route *rt;
+	struct nlattr *tb[RTA_MAX + 1];
+	struct nlattr *tbx[RTAX_MAX + 1];
+	mctp_eid_t daddr_start;
+	struct mctp_dev *mdev;
+	struct rtmsg *rtm;
+	unsigned int mtu;
 	int rc;
 
-	rt = mctp_route_alloc();
-	if (!rt)
-		return -ENOMEM;
-
-	rc = mctp_route_nlparse_populate(net, nlh, extack, rt);
+	rc = mctp_route_nlparse(skb, nlh, extack, tb,
+				&rtm, &mdev, &daddr_start);
 	if (rc < 0)
-		goto err_free;
+		return rc;
 
-	if (rt->dst_type == MCTP_ROUTE_DIRECT &&
-	    rt->dev->dev->flags & IFF_LOOPBACK) {
-		NL_SET_ERR_MSG(extack, "no routes to loopback");
-		rc = -EINVAL;
-		goto err_free;
+	if (rtm->rtm_type != RTN_UNICAST) {
+		NL_SET_ERR_MSG(extack, "rtm_type must be RTN_UNICAST");
+		return -EINVAL;
 	}
 
-	rc = mctp_route_add(net, rt);
-	if (!rc)
-		return 0;
+	mtu = 0;
+	if (tb[RTA_METRICS]) {
+		rc = nla_parse_nested(tbx, RTAX_MAX, tb[RTA_METRICS],
+				      rta_metrics_policy, NULL);
+		if (rc < 0)
+			return rc;
+		if (tbx[RTAX_MTU])
+			mtu = nla_get_u32(tbx[RTAX_MTU]);
+	}
 
-err_free:
-	mctp_route_release(rt);
+	if (rtm->rtm_type != RTN_UNICAST)
+		return -EINVAL;
+
+	rc = mctp_route_add(mdev, daddr_start, rtm->rtm_dst_len, mtu,
+			    rtm->rtm_type);
 	return rc;
 }
 
 static int mctp_delroute(struct sk_buff *skb, struct nlmsghdr *nlh,
 			 struct netlink_ext_ack *extack)
 {
-	struct net *net = sock_net(skb->sk);
-	unsigned int netid, daddr_extent;
-	unsigned char type = RTN_UNSPEC;
+	struct nlattr *tb[RTA_MAX + 1];
 	mctp_eid_t daddr_start;
+	struct mctp_dev *mdev;
+	struct rtmsg *rtm;
 	int rc;
 
-	rc = mctp_route_nlparse_lookup(net, nlh, extack, &type, &netid,
-				       &daddr_start, &daddr_extent);
+	rc = mctp_route_nlparse(skb, nlh, extack, tb,
+				&rtm, &mdev, &daddr_start);
 	if (rc < 0)
 		return rc;
 
 	/* we only have unicast routes */
-	if (type != RTN_UNICAST)
+	if (rtm->rtm_type != RTN_UNICAST)
 		return -EINVAL;
 
-	rc = mctp_route_remove(net, netid, daddr_start, daddr_extent, type);
+	rc = mctp_route_remove(mdev, daddr_start, rtm->rtm_dst_len, RTN_UNICAST);
 	return rc;
 }
 
@@ -1653,6 +1301,7 @@ static int mctp_fill_rtinfo(struct sk_buff *skb, struct mctp_route *rt,
 	hdr->rtm_tos = 0;
 	hdr->rtm_table = RT_TABLE_DEFAULT;
 	hdr->rtm_protocol = RTPROT_STATIC; /* everything is user-defined */
+	hdr->rtm_scope = RT_SCOPE_LINK; /* TODO: scope in mctp_route? */
 	hdr->rtm_type = rt->type;
 
 	if (nla_put_u8(skb, RTA_DST, rt->min))
@@ -1669,16 +1318,12 @@ static int mctp_fill_rtinfo(struct sk_buff *skb, struct mctp_route *rt,
 
 	nla_nest_end(skb, metrics);
 
-	if (rt->dst_type == MCTP_ROUTE_DIRECT) {
-		hdr->rtm_scope = RT_SCOPE_LINK;
+	if (rt->dev) {
 		if (nla_put_u32(skb, RTA_OIF, rt->dev->dev->ifindex))
 			goto cancel;
-	} else if (rt->dst_type == MCTP_ROUTE_GATEWAY) {
-		hdr->rtm_scope = RT_SCOPE_UNIVERSE;
-		if (nla_put(skb, RTA_GATEWAY,
-			    sizeof(rt->gateway), &rt->gateway))
-			goto cancel;
 	}
+
+	/* TODO: conditional neighbour physaddr? */
 
 	nlmsg_end(skb, nlh);
 
@@ -1726,7 +1371,7 @@ static int __net_init mctp_routes_net_init(struct net *net)
 	struct netns_mctp *ns = &net->mctp;
 
 	INIT_LIST_HEAD(&ns->routes);
-	hash_init(ns->binds);
+	INIT_HLIST_HEAD(&ns->binds);
 	mutex_init(&ns->bind_lock);
 	INIT_HLIST_HEAD(&ns->keys);
 	spin_lock_init(&ns->keys_lock);
@@ -1749,39 +1394,26 @@ static struct pernet_operations mctp_net_ops = {
 	.exit = mctp_routes_net_exit,
 };
 
-static const struct rtnl_msg_handler mctp_route_rtnl_msg_handlers[] = {
-	{THIS_MODULE, PF_MCTP, RTM_NEWROUTE, mctp_newroute, NULL, 0},
-	{THIS_MODULE, PF_MCTP, RTM_DELROUTE, mctp_delroute, NULL, 0},
-	{THIS_MODULE, PF_MCTP, RTM_GETROUTE, NULL, mctp_dump_rtinfo, 0},
-};
-
 int __init mctp_routes_init(void)
 {
-	int err;
-
 	dev_add_pack(&mctp_packet_type);
 
-	err = register_pernet_subsys(&mctp_net_ops);
-	if (err)
-		goto err_pernet;
+	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_GETROUTE,
+			     NULL, mctp_dump_rtinfo, 0);
+	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_NEWROUTE,
+			     mctp_newroute, NULL, 0);
+	rtnl_register_module(THIS_MODULE, PF_MCTP, RTM_DELROUTE,
+			     mctp_delroute, NULL, 0);
 
-	err = rtnl_register_many(mctp_route_rtnl_msg_handlers);
-	if (err)
-		goto err_rtnl;
-
-	return 0;
-
-err_rtnl:
-	unregister_pernet_subsys(&mctp_net_ops);
-err_pernet:
-	dev_remove_pack(&mctp_packet_type);
-	return err;
+	return register_pernet_subsys(&mctp_net_ops);
 }
 
 void mctp_routes_exit(void)
 {
-	rtnl_unregister_many(mctp_route_rtnl_msg_handlers);
 	unregister_pernet_subsys(&mctp_net_ops);
+	rtnl_unregister(PF_MCTP, RTM_DELROUTE);
+	rtnl_unregister(PF_MCTP, RTM_NEWROUTE);
+	rtnl_unregister(PF_MCTP, RTM_GETROUTE);
 	dev_remove_pack(&mctp_packet_type);
 }
 

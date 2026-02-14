@@ -3,13 +3,14 @@
  * zcore module to export memory content and register sets for creating system
  * dumps on SCSI/NVMe disks (zfcp/nvme dump).
  *
- * For more information please refer to Documentation/arch/s390/zfcpdump.rst
+ * For more information please refer to Documentation/s390/zfcpdump.rst
  *
  * Copyright IBM Corp. 2003, 2008
  * Author(s): Michael Holzheu
  */
 
-#define pr_fmt(fmt) "zdump: " fmt
+#define KMSG_COMPONENT "zdump"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -28,6 +29,7 @@
 #include <asm/irqflags.h>
 #include <asm/checksum.h>
 #include <asm/os_info.h>
+#include <asm/switch_to.h>
 #include <asm/maccess.h>
 #include "sclp.h"
 
@@ -49,7 +51,6 @@ static struct dentry *zcore_dir;
 static struct dentry *zcore_reipl_file;
 static struct dentry *zcore_hsa_file;
 static struct ipl_parameter_block *zcore_ipl_block;
-static unsigned long os_info_flags;
 
 static DEFINE_MUTEX(hsa_buf_mutex);
 static char hsa_buf[PAGE_SIZE] __aligned(PAGE_SIZE);
@@ -138,13 +139,7 @@ static ssize_t zcore_reipl_write(struct file *filp, const char __user *buf,
 {
 	if (zcore_ipl_block) {
 		diag308(DIAG308_SET, zcore_ipl_block);
-		if (os_info_flags & OS_INFO_FLAG_REIPL_CLEAR)
-			diag308(DIAG308_LOAD_CLEAR, NULL);
-		/* Use special diag308 subcode for CCW normal ipl */
-		if (zcore_ipl_block->pb0_hdr.pbt == IPL_PBT_CCW)
-			diag308(DIAG308_LOAD_NORMAL_DUMP, NULL);
-		else
-			diag308(DIAG308_LOAD_NORMAL, NULL);
+		diag308(DIAG308_LOAD_CLEAR, NULL);
 	}
 	return count;
 }
@@ -164,6 +159,7 @@ static const struct file_operations zcore_reipl_fops = {
 	.write		= zcore_reipl_write,
 	.open		= zcore_reipl_open,
 	.release	= zcore_reipl_release,
+	.llseek		= no_llseek,
 };
 
 static ssize_t zcore_hsa_read(struct file *filp, char __user *buf,
@@ -198,6 +194,7 @@ static const struct file_operations zcore_hsa_fops = {
 	.write		= zcore_hsa_write,
 	.read		= zcore_hsa_read,
 	.open		= nonseekable_open,
+	.llseek		= no_llseek,
 };
 
 static int __init check_sdias(void)
@@ -215,10 +212,7 @@ static int __init check_sdias(void)
  */
 static int __init zcore_reipl_init(void)
 {
-	struct os_info_entry *entry;
 	struct ipib_info ipib_info;
-	unsigned long os_info_addr;
-	struct os_info *os_info;
 	int rc;
 
 	rc = memcpy_hsa_kernel(&ipib_info, __LC_DUMP_REIPL, sizeof(ipib_info));
@@ -240,35 +234,6 @@ static int __init zcore_reipl_init(void)
 		free_page((unsigned long) zcore_ipl_block);
 		zcore_ipl_block = NULL;
 	}
-	/*
-	 * Read the bit-flags field from os_info flags entry.
-	 * Return zero even for os_info read or entry checksum errors in order
-	 * to continue dump processing, considering that os_info could be
-	 * corrupted on the panicked system.
-	 */
-	os_info = (void *)__get_free_page(GFP_KERNEL);
-	if (!os_info)
-		return -ENOMEM;
-	rc = memcpy_hsa_kernel(&os_info_addr, __LC_OS_INFO, sizeof(os_info_addr));
-	if (rc)
-		goto out;
-	if (os_info_addr < sclp.hsa_size)
-		rc = memcpy_hsa_kernel(os_info, os_info_addr, PAGE_SIZE);
-	else
-		rc = memcpy_real(os_info, os_info_addr, PAGE_SIZE);
-	if (rc || os_info_csum(os_info) != os_info->csum)
-		goto out;
-	entry = &os_info->entry[OS_INFO_FLAGS_ENTRY];
-	if (entry->addr && entry->size) {
-		if (entry->addr < sclp.hsa_size)
-			rc = memcpy_hsa_kernel(&os_info_flags, entry->addr, sizeof(os_info_flags));
-		else
-			rc = memcpy_real(&os_info_flags, entry->addr, sizeof(os_info_flags));
-		if (rc || (__force u32)csum_partial(&os_info_flags, entry->size, 0) != entry->csum)
-			os_info_flags = 0;
-	}
-out:
-	free_page((unsigned long)os_info);
 	return 0;
 }
 

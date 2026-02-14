@@ -24,14 +24,25 @@ static const struct mtk_gate_regs bdp1_cg_regs = {
 	.sta_ofs = 0x0110,
 };
 
-#define GATE_BDP0(_id, _name, _parent, _shift)			\
-	GATE_MTK(_id, _name, _parent, &bdp0_cg_regs, _shift, &mtk_clk_gate_ops_setclr_inv)
+#define GATE_BDP0(_id, _name, _parent, _shift) {	\
+		.id = _id,				\
+		.name = _name,				\
+		.parent_name = _parent,			\
+		.regs = &bdp0_cg_regs,			\
+		.shift = _shift,			\
+		.ops = &mtk_clk_gate_ops_setclr_inv,	\
+	}
 
-#define GATE_BDP1(_id, _name, _parent, _shift)			\
-	GATE_MTK(_id, _name, _parent, &bdp1_cg_regs, _shift, &mtk_clk_gate_ops_setclr_inv)
+#define GATE_BDP1(_id, _name, _parent, _shift) {	\
+		.id = _id,				\
+		.name = _name,				\
+		.parent_name = _parent,			\
+		.regs = &bdp1_cg_regs,			\
+		.shift = _shift,			\
+		.ops = &mtk_clk_gate_ops_setclr_inv,	\
+	}
 
 static const struct mtk_gate bdp_clks[] = {
-	GATE_DUMMY(CLK_DUMMY, "bdp_dummy"),
 	GATE_BDP0(CLK_BDP_BRG_BA, "brg_baclk", "mm_sel", 0),
 	GATE_BDP0(CLK_BDP_BRG_DRAM, "brg_dram", "mm_sel", 1),
 	GATE_BDP0(CLK_BDP_LARB_DRAM, "larb_dram", "mm_sel", 2),
@@ -96,7 +107,6 @@ static const struct of_device_id of_match_clk_mt2701_bdp[] = {
 		/* sentinel */
 	}
 };
-MODULE_DEVICE_TABLE(of, of_match_clk_mt2701_bdp);
 
 static struct platform_driver clk_mt2701_bdp_drv = {
 	.probe = mtk_clk_simple_probe,
@@ -106,7 +116,5 @@ static struct platform_driver clk_mt2701_bdp_drv = {
 		.of_match_table = of_match_clk_mt2701_bdp,
 	},
 };
-module_platform_driver(clk_mt2701_bdp_drv);
 
-MODULE_DESCRIPTION("MediaTek MT2701 BDP clocks driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(clk_mt2701_bdp_drv);

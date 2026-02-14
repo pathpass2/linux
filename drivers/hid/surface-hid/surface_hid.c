@@ -8,7 +8,7 @@
  *                         Maximilian Luz <luzmaximilian@gmail.com>
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/hid.h>
 #include <linux/kernel.h>
 #include <linux/module.h>

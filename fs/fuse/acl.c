@@ -12,6 +12,7 @@
 #include <linux/posix_acl_xattr.h>
 
 static struct posix_acl *__fuse_get_acl(struct fuse_conn *fc,
+					struct mnt_idmap *idmap,
 					struct inode *inode, int type, bool rcu)
 {
 	int size;
@@ -73,7 +74,7 @@ struct posix_acl *fuse_get_acl(struct mnt_idmap *idmap,
 	if (fuse_no_acl(fc, inode))
 		return ERR_PTR(-EOPNOTSUPP);
 
-	return __fuse_get_acl(fc, inode, type, false);
+	return __fuse_get_acl(fc, idmap, inode, type, false);
 }
 
 struct posix_acl *fuse_get_inode_acl(struct inode *inode, int type, bool rcu)
@@ -89,7 +90,8 @@ struct posix_acl *fuse_get_inode_acl(struct inode *inode, int type, bool rcu)
 	 */
 	if (!fc->posix_acl)
 		return NULL;
-	return __fuse_get_acl(fc,  inode, type, rcu);
+
+	return __fuse_get_acl(fc, &nop_mnt_idmap, inode, type, rcu);
 }
 
 int fuse_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
@@ -122,16 +124,20 @@ int fuse_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		 * them to be refreshed the next time they are used,
 		 * and it also updates i_ctime.
 		 */
-		size_t size;
+		size_t size = posix_acl_xattr_size(acl->a_count);
 		void *value;
 
-		value = posix_acl_to_xattr(fc->user_ns, acl, &size, GFP_KERNEL);
+		if (size > PAGE_SIZE)
+			return -E2BIG;
+
+		value = kmalloc(size, GFP_KERNEL);
 		if (!value)
 			return -ENOMEM;
 
-		if (size > PAGE_SIZE) {
+		ret = posix_acl_to_xattr(fc->user_ns, acl, value, size);
+		if (ret < 0) {
 			kfree(value);
-			return -E2BIG;
+			return ret;
 		}
 
 		/*
@@ -140,8 +146,8 @@ int fuse_set_acl(struct mnt_idmap *idmap, struct dentry *dentry,
 		 * be stripped.
 		 */
 		if (fc->posix_acl &&
-		    !in_group_or_capable(idmap, inode,
-					 i_gid_into_vfsgid(idmap, inode)))
+		    !vfsgid_in_group_p(i_gid_into_vfsgid(&nop_mnt_idmap, inode)) &&
+		    !capable_wrt_inode_uidgid(&nop_mnt_idmap, inode, CAP_FSETID))
 			extra_flags |= FUSE_SETXATTR_ACL_KILL_SGID;
 
 		ret = fuse_setxattr(inode, name, value, size, 0, extra_flags);

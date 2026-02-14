@@ -137,14 +137,14 @@ __found_pages:
 /*
  * check if the given pointer is valid for pages
  */
-static int is_valid_page(struct snd_trident *trident, unsigned long ptr)
+static int is_valid_page(unsigned long ptr)
 {
 	if (ptr & ~0x3fffffffUL) {
-		dev_err(trident->card->dev, "max memory size is 1GB!!\n");
+		snd_printk(KERN_ERR "max memory size is 1GB!!\n");
 		return 0;
 	}
 	if (ptr & (SNDRV_TRIDENT_PAGE_SIZE-1)) {
-		dev_err(trident->card->dev, "page is not aligned\n");
+		snd_printk(KERN_ERR "page is not aligned\n");
 		return 0;
 	}
 	return 1;
@@ -172,22 +172,26 @@ snd_trident_alloc_sg_pages(struct snd_trident *trident,
 
 	
 
-	guard(mutex)(&hdr->block_mutex);
+	mutex_lock(&hdr->block_mutex);
 	blk = search_empty(hdr, runtime->dma_bytes);
-	if (blk == NULL)
+	if (blk == NULL) {
+		mutex_unlock(&hdr->block_mutex);
 		return NULL;
+	}
 			   
 	/* set TLB entries */
 	idx = 0;
 	for (page = firstpg(blk); page <= lastpg(blk); page++, idx++) {
 		unsigned long ofs = idx << PAGE_SHIFT;
 		dma_addr_t addr = snd_pcm_sgbuf_get_addr(substream, ofs);
-		if (!is_valid_page(trident, addr)) {
+		if (! is_valid_page(addr)) {
 			__snd_util_mem_free(hdr, blk);
+			mutex_unlock(&hdr->block_mutex);
 			return NULL;
 		}
 		set_tlb_bus(trident, page, addr);
 	}
+	mutex_unlock(&hdr->block_mutex);
 	return blk;
 }
 
@@ -212,21 +216,25 @@ snd_trident_alloc_cont_pages(struct snd_trident *trident,
 	if (snd_BUG_ON(!hdr))
 		return NULL;
 
-	guard(mutex)(&hdr->block_mutex);
+	mutex_lock(&hdr->block_mutex);
 	blk = search_empty(hdr, runtime->dma_bytes);
-	if (blk == NULL)
+	if (blk == NULL) {
+		mutex_unlock(&hdr->block_mutex);
 		return NULL;
+	}
 			   
 	/* set TLB entries */
 	addr = runtime->dma_addr;
 	for (page = firstpg(blk); page <= lastpg(blk); page++,
 	     addr += SNDRV_TRIDENT_PAGE_SIZE) {
-		if (!is_valid_page(trident, addr)) {
+		if (! is_valid_page(addr)) {
 			__snd_util_mem_free(hdr, blk);
+			mutex_unlock(&hdr->block_mutex);
 			return NULL;
 		}
 		set_tlb_bus(trident, page, addr);
 	}
+	mutex_unlock(&hdr->block_mutex);
 	return blk;
 }
 
@@ -259,11 +267,12 @@ int snd_trident_free_pages(struct snd_trident *trident,
 		return -EINVAL;
 
 	hdr = trident->tlb.memhdr;
-	guard(mutex)(&hdr->block_mutex);
+	mutex_lock(&hdr->block_mutex);
 	/* reset TLB entries */
 	for (page = firstpg(blk); page <= lastpg(blk); page++)
 		set_silent_tlb(trident, page);
 	/* free memory block */
 	__snd_util_mem_free(hdr, blk);
+	mutex_unlock(&hdr->block_mutex);
 	return 0;
 }

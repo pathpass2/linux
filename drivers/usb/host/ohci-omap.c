@@ -152,7 +152,7 @@ static int ohci_omap_reset(struct usb_hcd *hcd)
 
 			rh &= ~RH_A_NOCP;
 
-			/* gpio9 for overcurrent detection */
+			/* gpio9 for overcurrent detction */
 			omap_cfg_reg(W8_1610_GPIO9);
 
 			/* for paranoia's sake:  disable USB.PUEN */
@@ -321,7 +321,7 @@ err_put_hcd:
  * the HCD's stop() method.  It is always called from a thread
  * context, normally "rmmod", "apmd", or something similar.
  */
-static void ohci_hcd_omap_remove(struct platform_device *pdev)
+static int ohci_hcd_omap_remove(struct platform_device *pdev)
 {
 	struct usb_hcd	*hcd = platform_get_drvdata(pdev);
 	struct ohci_omap_priv *priv = hcd_to_ohci_omap_priv(hcd);
@@ -340,6 +340,7 @@ static void ohci_hcd_omap_remove(struct platform_device *pdev)
 	clk_unprepare(priv->usb_host_ck);
 	clk_put(priv->usb_host_ck);
 	usb_put_hcd(hcd);
+	return 0;
 }
 
 /*-------------------------------------------------------------------------*/

@@ -488,7 +488,7 @@ static const struct efivar_operations efivar_ops = {
 #endif /* CONFIG_EFI */
 
 static ssize_t eventlog_write(struct file *filp, struct kobject *kobj,
-			       const struct bin_attribute *bin_attr,
+			       struct bin_attribute *bin_attr,
 			       char *buf, loff_t pos, size_t count)
 {
 	struct gsmi_set_eventlog_param param = {
@@ -528,7 +528,7 @@ static ssize_t eventlog_write(struct file *filp, struct kobject *kobj,
 
 }
 
-static const struct bin_attribute eventlog_bin_attr = {
+static struct bin_attribute eventlog_bin_attr = {
 	.attr = {.name = "append_to_eventlog", .mode = 0200},
 	.write = eventlog_write,
 };
@@ -918,8 +918,7 @@ static __init int gsmi_init(void)
 	gsmi_dev.pdev = platform_device_register_full(&gsmi_dev_info);
 	if (IS_ERR(gsmi_dev.pdev)) {
 		printk(KERN_ERR "gsmi: unable to register platform device\n");
-		ret = PTR_ERR(gsmi_dev.pdev);
-		goto out_unregister;
+		return PTR_ERR(gsmi_dev.pdev);
 	}
 
 	/* SMI access needs to be serialized */
@@ -1057,11 +1056,10 @@ out_err:
 	gsmi_buf_free(gsmi_dev.name_buf);
 	kmem_cache_destroy(gsmi_dev.mem_pool);
 	platform_device_unregister(gsmi_dev.pdev);
-out_unregister:
+	pr_info("gsmi: failed to load: %d\n", ret);
 #ifdef CONFIG_PM
 	platform_driver_unregister(&gsmi_driver_info);
 #endif
-	pr_info("gsmi: failed to load: %d\n", ret);
 	return ret;
 }
 
@@ -1092,5 +1090,4 @@ module_init(gsmi_init);
 module_exit(gsmi_exit);
 
 MODULE_AUTHOR("Google, Inc.");
-MODULE_DESCRIPTION("EFI SMI interface for Google platforms");
 MODULE_LICENSE("GPL");

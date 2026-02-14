@@ -1,6 +1,9 @@
-======================================
-lxfb - AMD Geode LX framebuffer driver
-======================================
+=============
+What is lxfb?
+=============
+
+.. [This file is cloned from VesaFB/aty128fb]
+
 
 This is a graphics framebuffer driver for AMD Geode LX based processors.
 

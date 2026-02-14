@@ -196,12 +196,14 @@ void __init of_fixed_clk_setup(struct device_node *node)
 }
 CLK_OF_DECLARE(fixed_clk, "fixed-clock", of_fixed_clk_setup);
 
-static void of_fixed_clk_remove(struct platform_device *pdev)
+static int of_fixed_clk_remove(struct platform_device *pdev)
 {
 	struct clk_hw *hw = platform_get_drvdata(pdev);
 
 	of_clk_del_provider(pdev->dev.of_node);
 	clk_hw_unregister_fixed_rate(hw);
+
+	return 0;
 }
 
 static int of_fixed_clk_probe(struct platform_device *pdev)

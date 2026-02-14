@@ -21,6 +21,7 @@ properties:
 
   regulators:
     type: object
+    $ref: regulator.yaml#
 
     description: |
       list of regulators provided by this controller, must be named
@@ -28,7 +29,7 @@ properties:
 
     properties:
       mps,switch-freq:
-        $ref: /schemas/types.yaml#/definitions/uint8
+        $ref: "/schemas/types.yaml#/definitions/uint8"
         enum: [0, 1, 2, 3]
         default: 2
         description: |
@@ -38,13 +39,11 @@ properties:
       ldortc:
         type: object
         $ref: regulator.yaml#
-        unevaluatedProperties: false
 
     patternProperties:
       "^ldo[1-4]$":
         type: object
         $ref: regulator.yaml#
-        unevaluatedProperties: false
 
       "^buck[1-4]$":
         type: object
@@ -52,14 +51,14 @@ properties:
 
         properties:
           mps,buck-softstart:
-            $ref: /schemas/types.yaml#/definitions/uint8
+            $ref: "/schemas/types.yaml#/definitions/uint8"
             enum: [0, 1, 2, 3]
             description: |
               defines the soft start time of this buck, must be one of the following
               corresponding values 150us, 300us, 610us, 920us
 
           mps,buck-phase-delay:
-            $ref: /schemas/types.yaml#/definitions/uint8
+            $ref: "/schemas/types.yaml#/definitions/uint8"
             enum: [0, 1, 2, 3]
             description: |
               defines the phase delay of this buck, must be one of the following
@@ -98,8 +97,8 @@ examples:
              regulator-name = "buck1";
              regulator-min-microvolt = <400000>;
              regulator-max-microvolt = <3587500>;
-             regulator-min-microamp = <460000>;
-             regulator-max-microamp = <7600000>;
+             regulator-min-microamp  = <460000>;
+             regulator-max-microamp  = <7600000>;
              regulator-boot-on;
              mps,buck-ovp-disable;
              mps,buck-phase-delay = /bits/ 8 <2>;

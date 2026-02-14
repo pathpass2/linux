@@ -66,7 +66,7 @@ static inline int crypto_ipsec_check_assoclen(unsigned int assoclen)
 
 struct aesgcm_ctx {
 	be128			ghash_key;
-	struct aes_enckey	aes_key;
+	struct crypto_aes_ctx	aes_ctx;
 	unsigned int		authsize;
 };
 

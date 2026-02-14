@@ -2202,12 +2202,11 @@ no_command:
  * Returns: 0 on success, else error.
  * Notes: io_request_lock is held, interrupts are disabled.
  */
-static enum scsi_qc_status
-fas216_queue_command_internal(struct scsi_cmnd *SCpnt,
-			      void (*done)(struct scsi_cmnd *))
+static int fas216_queue_command_internal(struct scsi_cmnd *SCpnt,
+					 void (*done)(struct scsi_cmnd *))
 {
 	FAS216_Info *info = (FAS216_Info *)SCpnt->device->host->hostdata;
-	enum scsi_qc_status result;
+	int result;
 
 	fas216_checkmagic(info);
 
@@ -2244,7 +2243,7 @@ fas216_queue_command_internal(struct scsi_cmnd *SCpnt,
 	return result;
 }
 
-static enum scsi_qc_status fas216_queue_command_lck(struct scsi_cmnd *SCpnt)
+static int fas216_queue_command_lck(struct scsi_cmnd *SCpnt)
 {
 	return fas216_queue_command_internal(SCpnt, scsi_done);
 }
@@ -2274,7 +2273,7 @@ static void fas216_internal_done(struct scsi_cmnd *SCpnt)
  * Returns: scsi result code.
  * Notes: io_request_lock is held, interrupts are disabled.
  */
-static enum scsi_qc_status fas216_noqueue_command_lck(struct scsi_cmnd *SCpnt)
+static int fas216_noqueue_command_lck(struct scsi_cmnd *SCpnt)
 {
 	FAS216_Info *info = (FAS216_Info *)SCpnt->device->host->hostdata;
 
@@ -2328,11 +2327,11 @@ DEF_SCSI_QCMD(fas216_noqueue_command)
  */
 static void fas216_eh_timer(struct timer_list *t)
 {
-	FAS216_Info *info = timer_container_of(info, t, eh_timer);
+	FAS216_Info *info = from_timer(info, t, eh_timer);
 
 	fas216_log(info, LOG_ERROR, "error handling timed out\n");
 
-	timer_delete(&info->eh_timer);
+	del_timer(&info->eh_timer);
 
 	if (info->rst_bus_status == 0)
 		info->rst_bus_status = -1;
@@ -2533,7 +2532,7 @@ int fas216_eh_device_reset(struct scsi_cmnd *SCpnt)
 		 */
 		wait_event(info->eh_wait, info->rst_dev_status);
 
-		timer_delete_sync(&info->eh_timer);
+		del_timer_sync(&info->eh_timer);
 		spin_lock_irqsave(&info->host_lock, flags);
 		info->rstSCpnt = NULL;
 
@@ -2623,7 +2622,7 @@ int fas216_eh_bus_reset(struct scsi_cmnd *SCpnt)
 	 * Wait one second for the interrupt.
 	 */
 	wait_event(info->eh_wait, info->rst_bus_status);
-	timer_delete_sync(&info->eh_timer);
+	del_timer_sync(&info->eh_timer);
 
 	fas216_log(info, LOG_ERROR, "bus reset complete: %s\n",
 		   info->rst_bus_status == 1 ? "success" : "failed");

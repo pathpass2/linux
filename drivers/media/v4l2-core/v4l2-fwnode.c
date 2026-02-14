@@ -127,7 +127,7 @@ static int v4l2_fwnode_endpoint_parse_csi2_bus(struct fwnode_handle *fwnode,
 {
 	struct v4l2_mbus_config_mipi_csi2 *bus = &vep->bus.mipi_csi2;
 	bool have_clk_lane = false, have_data_lanes = false,
-		have_lane_polarities = false, have_line_orders = false;
+		have_lane_polarities = false;
 	unsigned int flags = 0, lanes_used = 0;
 	u32 array[1 + V4L2_MBUS_CSI2_MAX_DATA_LANES];
 	u32 clock_lane = 0;
@@ -197,17 +197,6 @@ static int v4l2_fwnode_endpoint_parse_csi2_bus(struct fwnode_handle *fwnode,
 		have_lane_polarities = true;
 	}
 
-	rval = fwnode_property_count_u32(fwnode, "line-orders");
-	if (rval > 0) {
-		if (rval != num_data_lanes) {
-			pr_warn("invalid number of line-orders entries (need %u, got %u)\n",
-				num_data_lanes, rval);
-			return -EINVAL;
-		}
-
-		have_line_orders = true;
-	}
-
 	if (!fwnode_property_read_u32(fwnode, "clock-lanes", &v)) {
 		clock_lane = v;
 		pr_debug("clock lane position %u\n", v);
@@ -260,36 +249,6 @@ static int v4l2_fwnode_endpoint_parse_csi2_bus(struct fwnode_handle *fwnode,
 			}
 		} else {
 			pr_debug("no lane polarities defined, assuming not inverted\n");
-		}
-
-		if (have_line_orders) {
-			fwnode_property_read_u32_array(fwnode,
-						       "line-orders", array,
-						       num_data_lanes);
-
-			for (i = 0; i < num_data_lanes; i++) {
-				static const char * const orders[] = {
-					"ABC", "ACB", "BAC", "BCA", "CAB", "CBA"
-				};
-
-				if (array[i] >= ARRAY_SIZE(orders)) {
-					pr_warn("lane %u invalid line-order assuming ABC (got %u)\n",
-						i, array[i]);
-					bus->line_orders[i] =
-						V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ABC;
-					continue;
-				}
-
-				bus->line_orders[i] = array[i];
-				pr_debug("lane %u line order %s", i,
-					 orders[array[i]]);
-			}
-		} else {
-			for (i = 0; i < num_data_lanes; i++)
-				bus->line_orders[i] =
-					V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ABC;
-
-			pr_debug("no line orders defined, assuming ABC\n");
 		}
 	}
 
@@ -465,9 +424,6 @@ static int __v4l2_fwnode_endpoint_parse(struct fwnode_handle *fwnode,
 	enum v4l2_mbus_type mbus_type;
 	int rval;
 
-	if (!fwnode)
-		return -EINVAL;
-
 	pr_debug("===== begin parsing endpoint %pfw\n", fwnode);
 
 	fwnode_property_read_u32(fwnode, "bus-type", &bus_type);
@@ -612,29 +568,19 @@ int v4l2_fwnode_parse_link(struct fwnode_handle *fwnode,
 	link->local_id = fwep.id;
 	link->local_port = fwep.port;
 	link->local_node = fwnode_graph_get_port_parent(fwnode);
-	if (!link->local_node)
-		return -ENOLINK;
 
 	fwnode = fwnode_graph_get_remote_endpoint(fwnode);
-	if (!fwnode)
-		goto err_put_local_node;
+	if (!fwnode) {
+		fwnode_handle_put(fwnode);
+		return -ENOLINK;
+	}
 
 	fwnode_graph_parse_endpoint(fwnode, &fwep);
 	link->remote_id = fwep.id;
 	link->remote_port = fwep.port;
 	link->remote_node = fwnode_graph_get_port_parent(fwnode);
-	if (!link->remote_node)
-		goto err_put_remote_endpoint;
 
 	return 0;
-
-err_put_remote_endpoint:
-	fwnode_handle_put(fwnode);
-
-err_put_local_node:
-	fwnode_handle_put(link->local_node);
-
-	return -ENOLINK;
 }
 EXPORT_SYMBOL_GPL(v4l2_fwnode_parse_link);
 
@@ -852,6 +798,103 @@ int v4l2_fwnode_device_parse(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(v4l2_fwnode_device_parse);
 
+static int
+v4l2_async_nf_fwnode_parse_endpoint(struct device *dev,
+				    struct v4l2_async_notifier *notifier,
+				    struct fwnode_handle *endpoint,
+				    unsigned int asd_struct_size,
+				    parse_endpoint_func parse_endpoint)
+{
+	struct v4l2_fwnode_endpoint vep = { .bus_type = 0 };
+	struct v4l2_async_subdev *asd;
+	int ret;
+
+	asd = kzalloc(asd_struct_size, GFP_KERNEL);
+	if (!asd)
+		return -ENOMEM;
+
+	asd->match_type = V4L2_ASYNC_MATCH_FWNODE;
+	asd->match.fwnode =
+		fwnode_graph_get_remote_port_parent(endpoint);
+	if (!asd->match.fwnode) {
+		dev_dbg(dev, "no remote endpoint found\n");
+		ret = -ENOTCONN;
+		goto out_err;
+	}
+
+	ret = v4l2_fwnode_endpoint_alloc_parse(endpoint, &vep);
+	if (ret) {
+		dev_warn(dev, "unable to parse V4L2 fwnode endpoint (%d)\n",
+			 ret);
+		goto out_err;
+	}
+
+	ret = parse_endpoint ? parse_endpoint(dev, &vep, asd) : 0;
+	if (ret == -ENOTCONN)
+		dev_dbg(dev, "ignoring port@%u/endpoint@%u\n", vep.base.port,
+			vep.base.id);
+	else if (ret < 0)
+		dev_warn(dev,
+			 "driver could not parse port@%u/endpoint@%u (%d)\n",
+			 vep.base.port, vep.base.id, ret);
+	v4l2_fwnode_endpoint_free(&vep);
+	if (ret < 0)
+		goto out_err;
+
+	ret = __v4l2_async_nf_add_subdev(notifier, asd);
+	if (ret < 0) {
+		/* not an error if asd already exists */
+		if (ret == -EEXIST)
+			ret = 0;
+		goto out_err;
+	}
+
+	return 0;
+
+out_err:
+	fwnode_handle_put(asd->match.fwnode);
+	kfree(asd);
+
+	return ret == -ENOTCONN ? 0 : ret;
+}
+
+int
+v4l2_async_nf_parse_fwnode_endpoints(struct device *dev,
+				     struct v4l2_async_notifier *notifier,
+				     size_t asd_struct_size,
+				     parse_endpoint_func parse_endpoint)
+{
+	struct fwnode_handle *fwnode;
+	int ret = 0;
+
+	if (WARN_ON(asd_struct_size < sizeof(struct v4l2_async_subdev)))
+		return -EINVAL;
+
+	fwnode_graph_for_each_endpoint(dev_fwnode(dev), fwnode) {
+		struct fwnode_handle *dev_fwnode;
+		bool is_available;
+
+		dev_fwnode = fwnode_graph_get_port_parent(fwnode);
+		is_available = fwnode_device_is_available(dev_fwnode);
+		fwnode_handle_put(dev_fwnode);
+		if (!is_available)
+			continue;
+
+
+		ret = v4l2_async_nf_fwnode_parse_endpoint(dev, notifier,
+							  fwnode,
+							  asd_struct_size,
+							  parse_endpoint);
+		if (ret < 0)
+			break;
+	}
+
+	fwnode_handle_put(fwnode);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(v4l2_async_nf_parse_fwnode_endpoints);
+
 /*
  * v4l2_fwnode_reference_parse - parse references for async sub-devices
  * @dev: the device node the properties of which are parsed for references
@@ -875,10 +918,10 @@ static int v4l2_fwnode_reference_parse(struct device *dev,
 	     !(ret = fwnode_property_get_reference_args(dev_fwnode(dev), prop,
 							NULL, 0, index, &args));
 	     index++) {
-		struct v4l2_async_connection *asd;
+		struct v4l2_async_subdev *asd;
 
 		asd = v4l2_async_nf_add_fwnode(notifier, args.fwnode,
-					       struct v4l2_async_connection);
+					       struct v4l2_async_subdev);
 		fwnode_handle_put(args.fwnode);
 		if (IS_ERR(asd)) {
 			/* not an error if asd already exists */
@@ -1180,10 +1223,10 @@ v4l2_fwnode_reference_parse_int_props(struct device *dev,
 								  props,
 								  nprops)));
 	     index++) {
-		struct v4l2_async_connection *asd;
+		struct v4l2_async_subdev *asd;
 
 		asd = v4l2_async_nf_add_fwnode(notifier, fwnode,
-					       struct v4l2_async_connection);
+					       struct v4l2_async_subdev);
 		fwnode_handle_put(fwnode);
 		if (IS_ERR(asd)) {
 			ret = PTR_ERR(asd);
@@ -1223,9 +1266,7 @@ v4l2_async_nf_parse_fwnode_sensor(struct device *dev,
 	static const char * const led_props[] = { "led" };
 	static const struct v4l2_fwnode_int_props props[] = {
 		{ "flash-leds", led_props, ARRAY_SIZE(led_props) },
-		{ "mipi-img-flash-leds", },
-		{ "lens-focus", },
-		{ "mipi-img-lens-focus", },
+		{ "lens-focus", NULL, 0 },
 	};
 	unsigned int i;
 
@@ -1261,7 +1302,7 @@ int v4l2_async_register_subdev_sensor(struct v4l2_subdev *sd)
 	if (!notifier)
 		return -ENOMEM;
 
-	v4l2_async_subdev_nf_init(notifier, sd);
+	v4l2_async_nf_init(notifier);
 
 	ret = v4l2_subdev_get_privacy_led(sd);
 	if (ret < 0)
@@ -1271,7 +1312,7 @@ int v4l2_async_register_subdev_sensor(struct v4l2_subdev *sd)
 	if (ret < 0)
 		goto out_cleanup;
 
-	ret = v4l2_async_nf_register(notifier);
+	ret = v4l2_async_subdev_nf_register(sd, notifier);
 	if (ret < 0)
 		goto out_cleanup;
 
@@ -1295,7 +1336,6 @@ out_cleanup:
 }
 EXPORT_SYMBOL_GPL(v4l2_async_register_subdev_sensor);
 
-MODULE_DESCRIPTION("V4L2 fwnode binding parsing library");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sakari Ailus <sakari.ailus@linux.intel.com>");
 MODULE_AUTHOR("Sylwester Nawrocki <s.nawrocki@samsung.com>");

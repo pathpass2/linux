@@ -26,8 +26,6 @@
 
 	leds {
 		compatible = "gpio-leds";
-		pinctrl-names = "default";
-		pinctrl-0 = <&spi_quad_pins>;
 
 		led-power1 {
 			label = "udpu:green:power";
@@ -63,10 +61,10 @@
 	sfp_eth1: sfp-eth1 {
 		compatible = "sff,sfp";
 		i2c-bus = <&i2c1>;
-		los-gpios = <&gpiosb 7 GPIO_ACTIVE_HIGH>;
-		mod-def0-gpios = <&gpiosb 8 GPIO_ACTIVE_LOW>;
-		tx-disable-gpios = <&gpiosb 9 GPIO_ACTIVE_HIGH>;
-		tx-fault-gpios = <&gpiosb 10 GPIO_ACTIVE_HIGH>;
+		los-gpio = <&gpiosb 7 GPIO_ACTIVE_HIGH>;
+		mod-def0-gpio = <&gpiosb 8 GPIO_ACTIVE_LOW>;
+		tx-disable-gpio = <&gpiosb 9 GPIO_ACTIVE_HIGH>;
+		tx-fault-gpio = <&gpiosb 10 GPIO_ACTIVE_HIGH>;
 		maximum-power-milliwatt = <3000>;
 	};
 };
@@ -84,6 +82,8 @@
 
 &spi0 {
 	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi_quad_pins>;
 
 	flash@0 {
 		compatible = "jedec,spi-nor";
@@ -106,10 +106,6 @@
 			};
 		};
 	};
-};
-
-&spi_quad_pins {
-	function = "gpio";
 };
 
 &pinctrl_nb {

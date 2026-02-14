@@ -32,6 +32,7 @@
 		compatible = "dmic-codec";
 		num-channels = <2>;
 		wakeup-delay-ms = <50>;
+		status = "okay";
 		sound-name-prefix = "MIC";
 	};
 
@@ -52,7 +53,7 @@
 			linux,code = <BTN_0>;
 			gpios = <&gpio GPIOH_6 GPIO_ACTIVE_LOW>;
 			interrupt-parent = <&gpio_intc>;
-			interrupts = <IRQID_GPIOH_6 IRQ_TYPE_EDGE_BOTH>;
+			interrupts = <34 IRQ_TYPE_EDGE_BOTH>;
 		};
 
 		key-2 {
@@ -60,7 +61,7 @@
 			linux,code = <BTN_1>;
 			gpios = <&gpio GPIOH_7 GPIO_ACTIVE_LOW>;
 			interrupt-parent = <&gpio_intc>;
-			interrupts = <IRQID_GPIOH_7 IRQ_TYPE_EDGE_BOTH>;
+			interrupts = <35 IRQ_TYPE_EDGE_BOTH>;
 		};
 
 		key-3 {
@@ -68,7 +69,7 @@
 			linux,code = <BTN_2>;
 			gpios = <&gpio_ao GPIOAO_2 GPIO_ACTIVE_LOW>;
 			interrupt-parent = <&gpio_intc>;
-			interrupts = <IRQID_GPIOAO_2 IRQ_TYPE_EDGE_BOTH>;
+			interrupts = <2 IRQ_TYPE_EDGE_BOTH>;
 		};
 
 		key-mic-mute {
@@ -77,7 +78,7 @@
 			linux,input-type = <EV_SW>;
 			gpios = <&gpio_ao GPIOE_2 GPIO_ACTIVE_LOW>;
 			interrupt-parent = <&gpio_intc>;
-			interrupts = <IRQID_GPIOE_2 IRQ_TYPE_EDGE_BOTH>;
+			interrupts = <99 IRQ_TYPE_EDGE_BOTH>;
 		};
 
 		key-power {
@@ -85,7 +86,7 @@
 			linux,code = <KEY_POWER>;
 			gpios = <&gpio_ao GPIOAO_3 GPIO_ACTIVE_LOW>;
 			interrupt-parent = <&gpio_intc>;
-			interrupts = <IRQID_GPIOAO_3 IRQ_TYPE_EDGE_BOTH>;
+			interrupts = <3 IRQ_TYPE_EDGE_BOTH>;
 		};
 	};
 
@@ -127,7 +128,7 @@
 		reg = <0x0 0x0 0x0 0x40000000>;
 	};
 
-	ao_5v: regulator-ao-5v {
+	ao_5v: regulator-ao_5v {
 		compatible = "regulator-fixed";
 		regulator-name = "AO_5V";
 		regulator-min-microvolt = <5000000>;
@@ -136,7 +137,7 @@
 		regulator-always-on;
 	};
 
-	dc_in: regulator-dc-in {
+	dc_in: regulator-dc_in {
 		compatible = "regulator-fixed";
 		regulator-name = "DC_IN";
 		regulator-min-microvolt = <5000000>;
@@ -144,7 +145,7 @@
 		regulator-always-on;
 	};
 
-	emmc_1v8: regulator-emmc-1v8 {
+	emmc_1v8: regulator-emmc_1v8 {
 		compatible = "regulator-fixed";
 		regulator-name = "EMMC_1V8";
 		regulator-min-microvolt = <1800000>;
@@ -153,7 +154,7 @@
 		regulator-always-on;
 	};
 
-	vddao_3v3: regulator-vddao-3v3 {
+	vddao_3v3: regulator-vddao_3v3 {
 		compatible = "regulator-fixed";
 		regulator-name = "VDDAO_3V3";
 		regulator-min-microvolt = <3300000>;
@@ -163,7 +164,7 @@
 	};
 
 	/* Used by Tuner, RGB Led & IR Emitter LED array */
-	vddao_3v3_t: regulator-vddao-3v3-t {
+	vddao_3v3_t: regulator-vddao_3v3_t {
 		compatible = "regulator-fixed";
 		regulator-name = "VDDAO_3V3_T";
 		regulator-min-microvolt = <3300000>;
@@ -192,7 +193,7 @@
 		regulator-always-on;
 	};
 
-	vddio_ao1v8: regulator-vddio-ao1v8 {
+	vddio_ao1v8: regulator-vddio_ao1v8 {
 		compatible = "regulator-fixed";
 		regulator-name = "VDDIO_AO1V8";
 		regulator-min-microvolt = <1800000>;
@@ -239,16 +240,14 @@
 				"TODDR_B IN 1", "TDMIN_B OUT",
 				"TODDR_C IN 1", "TDMIN_B OUT";
 
-		clocks = <&clkc CLKID_MPLL2>,
-			 <&clkc CLKID_MPLL0>,
-			 <&clkc CLKID_MPLL1>;
-
 		assigned-clocks = <&clkc CLKID_MPLL2>,
 				  <&clkc CLKID_MPLL0>,
 				  <&clkc CLKID_MPLL1>;
+		assigned-clock-parents = <0>, <0>, <0>;
 		assigned-clock-rates = <294912000>,
 				       <270950400>,
 				       <393216000>;
+		status = "okay";
 
 		dai-link-0 {
 			sound-dai = <&frddr_a>;
@@ -356,18 +355,30 @@
 
 &cpu0 {
 	cpu-supply = <&vddcpu>;
+	operating-points-v2 = <&cpu_opp_table>;
+	clocks = <&clkc CLKID_CPU_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu1 {
 	cpu-supply = <&vddcpu>;
+	operating-points-v2 = <&cpu_opp_table>;
+	clocks = <&clkc CLKID_CPU1_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu2 {
 	cpu-supply = <&vddcpu>;
+	operating-points-v2 = <&cpu_opp_table>;
+	clocks = <&clkc CLKID_CPU2_CLK>;
+	clock-latency = <50000>;
 };
 
 &cpu3 {
 	cpu-supply = <&vddcpu>;
+	operating-points-v2 = <&cpu_opp_table>;
+	clocks = <&clkc CLKID_CPU3_CLK>;
+	clock-latency = <50000>;
 };
 
 &ethmac {
@@ -422,11 +433,15 @@
 	status = "okay";
 	pinctrl-0 = <&pwm_ao_a_pins>;
 	pinctrl-names = "default";
+	clocks = <&xtal>;
+	clock-names = "clkin0";
 };
 
 &pwm_AO_cd {
 	pinctrl-0 = <&pwm_ao_d_e_pins>;
 	pinctrl-names = "default";
+	clocks = <&xtal>;
+	clock-names = "clkin1";
 	status = "okay";
 };
 
@@ -434,6 +449,8 @@
 	status = "okay";
 	pinctrl-0 = <&pwm_e_pins>;
 	pinctrl-names = "default";
+	clocks = <&xtal>;
+	clock-names = "clkin0";
 };
 
 &saradc {
@@ -566,7 +583,7 @@
 	bluetooth {
 		compatible = "brcm,bcm43438-bt";
 		interrupt-parent = <&gpio_intc>;
-		interrupts = <IRQID_GPIOX_18 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <95 IRQ_TYPE_LEVEL_HIGH>;
 		interrupt-names = "host-wakeup";
 		shutdown-gpios = <&gpio GPIOX_17 GPIO_ACTIVE_HIGH>;
 		max-speed = <2000000>;

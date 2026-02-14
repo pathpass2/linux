@@ -359,7 +359,7 @@ static void ahd_linux_initialize_scsi_bus(struct ahd_softc *ahd);
 static u_int ahd_linux_user_tagdepth(struct ahd_softc *ahd,
 				     struct ahd_devinfo *devinfo);
 static void ahd_linux_device_queue_depth(struct scsi_device *);
-static enum scsi_qc_status ahd_linux_run_command(struct ahd_softc*,
+static int ahd_linux_run_command(struct ahd_softc*,
 				 struct ahd_linux_device *,
 				 struct scsi_cmnd *);
 static void ahd_linux_setup_tag_info_global(char *p);
@@ -536,18 +536,13 @@ ahd_linux_unmap_scb(struct ahd_softc *ahd, struct scb *scb)
 	struct scsi_cmnd *cmd;
 
 	cmd = scb->io_ctx;
-	if (cmd) {
-		ahd_sync_sglist(ahd, scb, BUS_DMASYNC_POSTWRITE);
-		scsi_dma_unmap(cmd);
-	}
+	ahd_sync_sglist(ahd, scb, BUS_DMASYNC_POSTWRITE);
+	scsi_dma_unmap(cmd);
 }
 
 /******************************** Macros **************************************/
-static inline unsigned int ahd_build_scsiid(struct ahd_softc *ahd,
-					    struct scsi_device *sdev)
-{
-	return ((sdev_id(sdev) << TID_SHIFT) & TID) | (ahd)->our_id;
-}
+#define BUILD_SCSIID(ahd, cmd)						\
+	(((scmd_id(cmd) << TID_SHIFT) & TID) | (ahd)->our_id)
 
 /*
  * Return a string describing the driver.
@@ -577,11 +572,11 @@ ahd_linux_info(struct Scsi_Host *host)
 /*
  * Queue an SCB to the controller.
  */
-static enum scsi_qc_status ahd_linux_queue_lck(struct scsi_cmnd *cmd)
+static int ahd_linux_queue_lck(struct scsi_cmnd *cmd)
 {
-	struct ahd_linux_device *dev = scsi_transport_device_data(cmd->device);
-	enum scsi_qc_status rtn = SCSI_MLQUEUE_HOST_BUSY;
-	struct ahd_softc *ahd;
+	struct	 ahd_softc *ahd;
+	struct	 ahd_linux_device *dev = scsi_transport_device_data(cmd->device);
+	int rtn = SCSI_MLQUEUE_HOST_BUSY;
 
 	ahd = *(struct ahd_softc **)cmd->device->host->hostdata;
 
@@ -672,7 +667,7 @@ ahd_linux_target_destroy(struct scsi_target *starget)
 }
 
 static int
-ahd_linux_sdev_init(struct scsi_device *sdev)
+ahd_linux_slave_alloc(struct scsi_device *sdev)
 {
 	struct	ahd_softc *ahd =
 		*((struct ahd_softc **)sdev->host->hostdata);
@@ -701,7 +696,7 @@ ahd_linux_sdev_init(struct scsi_device *sdev)
 }
 
 static int
-ahd_linux_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
+ahd_linux_slave_configure(struct scsi_device *sdev)
 {
 	if (bootverbose)
 		sdev_printk(KERN_INFO, sdev, "Slave Configure\n");
@@ -720,7 +715,7 @@ ahd_linux_sdev_configure(struct scsi_device *sdev, struct queue_limits *lim)
  * Return the disk geometry for the given SCSI device.
  */
 static int
-ahd_linux_biosparam(struct scsi_device *sdev, struct gendisk *disk,
+ahd_linux_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 		    sector_t capacity, int geom[])
 {
 	int	 heads;
@@ -731,7 +726,7 @@ ahd_linux_biosparam(struct scsi_device *sdev, struct gendisk *disk,
 
 	ahd = *((struct ahd_softc **)sdev->host->hostdata);
 
-	if (scsi_partsize(disk, capacity, geom))
+	if (scsi_partsize(bdev, capacity, geom))
 		return 0;
 
 	heads = 64;
@@ -816,14 +811,14 @@ ahd_linux_dev_reset(struct scsi_cmnd *cmd)
 
 	tinfo = ahd_fetch_transinfo(ahd, 'A', ahd->our_id,
 				    cmd->device->id, &tstate);
-	reset_scb->io_ctx = NULL;
+	reset_scb->io_ctx = cmd;
 	reset_scb->platform_data->dev = dev;
 	reset_scb->sg_count = 0;
 	ahd_set_residual(reset_scb, 0);
 	ahd_set_sense_residual(reset_scb, 0);
 	reset_scb->platform_data->xfer_len = 0;
 	reset_scb->hscb->control = 0;
-	reset_scb->hscb->scsiid = ahd_build_scsiid(ahd, cmd->device);
+	reset_scb->hscb->scsiid = BUILD_SCSIID(ahd,cmd);
 	reset_scb->hscb->lun = cmd->device->lun;
 	reset_scb->hscb->cdb_len = 0;
 	reset_scb->hscb->task_management = SIU_TASKMGMT_LUN_RESET;
@@ -906,8 +901,8 @@ struct scsi_host_template aic79xx_driver_template = {
 	.this_id		= -1,
 	.max_sectors		= 8192,
 	.cmd_per_lun		= 2,
-	.sdev_init		= ahd_linux_sdev_init,
-	.sdev_configure		= ahd_linux_sdev_configure,
+	.slave_alloc		= ahd_linux_slave_alloc,
+	.slave_configure	= ahd_linux_slave_configure,
 	.target_alloc		= ahd_linux_target_alloc,
 	.target_destroy		= ahd_linux_target_destroy,
 };
@@ -1535,7 +1530,7 @@ ahd_linux_device_queue_depth(struct scsi_device *sdev)
 	}
 }
 
-static enum scsi_qc_status
+static int
 ahd_linux_run_command(struct ahd_softc *ahd, struct ahd_linux_device *dev,
 		      struct scsi_cmnd *cmd)
 {
@@ -1582,7 +1577,7 @@ ahd_linux_run_command(struct ahd_softc *ahd, struct ahd_linux_device *dev,
 	 * Fill out basics of the HSCB.
 	 */
 	hscb->control = 0;
-	hscb->scsiid = ahd_build_scsiid(ahd, cmd->device);
+	hscb->scsiid = BUILD_SCSIID(ahd, cmd);
 	hscb->lun = cmd->device->lun;
 	scb->hscb->task_management = 0;
 	mask = SCB_GET_TARGET_MASK(ahd, scb);
@@ -1771,16 +1766,9 @@ ahd_done(struct ahd_softc *ahd, struct scb *scb)
 	dev = scb->platform_data->dev;
 	dev->active--;
 	dev->openings++;
-	if (cmd) {
-		if ((cmd->result & (CAM_DEV_QFRZN << 16)) != 0) {
-			cmd->result &= ~(CAM_DEV_QFRZN << 16);
-			dev->qfrozen--;
-		}
-	} else if (scb->flags & SCB_DEVICE_RESET) {
-		if (ahd->platform_data->eh_done)
-			complete(ahd->platform_data->eh_done);
-		ahd_free_scb(ahd, scb);
-		return;
+	if ((cmd->result & (CAM_DEV_QFRZN << 16)) != 0) {
+		cmd->result &= ~(CAM_DEV_QFRZN << 16);
+		dev->qfrozen--;
 	}
 	ahd_linux_unmap_scb(ahd, scb);
 
@@ -1834,8 +1822,7 @@ ahd_done(struct ahd_softc *ahd, struct scb *scb)
 		} else {
 			ahd_set_transaction_status(scb, CAM_REQ_CMP);
 		}
-	} else if (cmd &&
-		   ahd_get_transaction_status(scb) == CAM_SCSI_STATUS_ERROR) {
+	} else if (ahd_get_transaction_status(scb) == CAM_SCSI_STATUS_ERROR) {
 		ahd_linux_handle_scsi_status(ahd, cmd->device, scb);
 	}
 
@@ -1869,8 +1856,7 @@ ahd_done(struct ahd_softc *ahd, struct scb *scb)
 	}
 
 	ahd_free_scb(ahd, scb);
-	if (cmd)
-		ahd_linux_queue_cmd_complete(ahd, cmd);
+	ahd_linux_queue_cmd_complete(ahd, cmd);
 }
 
 static void

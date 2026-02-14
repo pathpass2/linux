@@ -161,9 +161,20 @@ static struct ch_tc_flower_entry *ch_flower_lookup(struct adapter *adap,
 
 static void cxgb4_process_flow_match(struct net_device *dev,
 				     struct flow_rule *rule,
-				     u16 addr_type,
 				     struct ch_filter_specification *fs)
 {
+	u16 addr_type = 0;
+
+	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CONTROL)) {
+		struct flow_match_control match;
+
+		flow_rule_match_control(rule, &match);
+		addr_type = match.key->addr_type;
+	} else if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPV4_ADDRS)) {
+		addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
+	} else if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPV6_ADDRS)) {
+		addr_type = FLOW_DISSECTOR_KEY_IPV6_ADDRS;
+	}
 
 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_BASIC)) {
 		struct flow_match_basic match;
@@ -294,7 +305,7 @@ static void cxgb4_process_flow_match(struct net_device *dev,
 	fs->mask.iport = ~0;
 }
 
-static int cxgb4_validate_flow_match(struct netlink_ext_ack *extack,
+static int cxgb4_validate_flow_match(struct net_device *dev,
 				     struct flow_rule *rule)
 {
 	struct flow_dissector *dissector = rule->match.dissector;
@@ -302,17 +313,16 @@ static int cxgb4_validate_flow_match(struct netlink_ext_ack *extack,
 	u16 ethtype_key = 0;
 
 	if (dissector->used_keys &
-	    ~(BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL) |
-	      BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
-	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
-	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
-	      BIT_ULL(FLOW_DISSECTOR_KEY_PORTS) |
-	      BIT_ULL(FLOW_DISSECTOR_KEY_ENC_KEYID) |
-	      BIT_ULL(FLOW_DISSECTOR_KEY_VLAN) |
-	      BIT_ULL(FLOW_DISSECTOR_KEY_IP))) {
-		NL_SET_ERR_MSG_FMT_MOD(extack,
-				       "Unsupported key used: 0x%llx",
-				       dissector->used_keys);
+	    ~(BIT(FLOW_DISSECTOR_KEY_CONTROL) |
+	      BIT(FLOW_DISSECTOR_KEY_BASIC) |
+	      BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
+	      BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
+	      BIT(FLOW_DISSECTOR_KEY_PORTS) |
+	      BIT(FLOW_DISSECTOR_KEY_ENC_KEYID) |
+	      BIT(FLOW_DISSECTOR_KEY_VLAN) |
+	      BIT(FLOW_DISSECTOR_KEY_IP))) {
+		netdev_warn(dev, "Unsupported key used: 0x%x\n",
+			    dissector->used_keys);
 		return -EOPNOTSUPP;
 	}
 
@@ -329,15 +339,13 @@ static int cxgb4_validate_flow_match(struct netlink_ext_ack *extack,
 		struct flow_match_ip match;
 
 		if (eth_ip_type != ETH_P_IP && eth_ip_type != ETH_P_IPV6) {
-			NL_SET_ERR_MSG_MOD(extack,
-					   "IP Key supported only with IPv4/v6");
+			netdev_err(dev, "IP Key supported only with IPv4/v6");
 			return -EINVAL;
 		}
 
 		flow_rule_match_ip(rule, &match);
 		if (match.mask->ttl) {
-			NL_SET_ERR_MSG_MOD(extack,
-					   "ttl match unsupported for offload");
+			netdev_warn(dev, "ttl match unsupported for offload");
 			return -EOPNOTSUPP;
 		}
 	}
@@ -568,7 +576,7 @@ static bool valid_l4_mask(u32 mask)
 	return hi && lo ? false : true;
 }
 
-static bool valid_pedit_action(struct netlink_ext_ack *extack,
+static bool valid_pedit_action(struct net_device *dev,
 			       const struct flow_action_entry *act,
 			       u8 *natmode_flags)
 {
@@ -587,7 +595,8 @@ static bool valid_pedit_action(struct netlink_ext_ack *extack,
 		case PEDIT_ETH_SMAC_47_16:
 			break;
 		default:
-			NL_SET_ERR_MSG_MOD(extack, "Unsupported pedit field");
+			netdev_err(dev, "%s: Unsupported pedit field\n",
+				   __func__);
 			return false;
 		}
 		break;
@@ -600,7 +609,8 @@ static bool valid_pedit_action(struct netlink_ext_ack *extack,
 			*natmode_flags |= CXGB4_ACTION_NATMODE_DIP;
 			break;
 		default:
-			NL_SET_ERR_MSG_MOD(extack, "Unsupported pedit field");
+			netdev_err(dev, "%s: Unsupported pedit field\n",
+				   __func__);
 			return false;
 		}
 		break;
@@ -619,7 +629,8 @@ static bool valid_pedit_action(struct netlink_ext_ack *extack,
 			*natmode_flags |= CXGB4_ACTION_NATMODE_DIP;
 			break;
 		default:
-			NL_SET_ERR_MSG_MOD(extack, "Unsupported pedit field");
+			netdev_err(dev, "%s: Unsupported pedit field\n",
+				   __func__);
 			return false;
 		}
 		break;
@@ -627,8 +638,8 @@ static bool valid_pedit_action(struct netlink_ext_ack *extack,
 		switch (offset) {
 		case PEDIT_TCP_SPORT_DPORT:
 			if (!valid_l4_mask(~mask)) {
-				NL_SET_ERR_MSG_MOD(extack,
-						   "Unsupported mask for TCP L4 ports");
+				netdev_err(dev, "%s: Unsupported mask for TCP L4 ports\n",
+					   __func__);
 				return false;
 			}
 			if (~mask & PEDIT_TCP_UDP_SPORT_MASK)
@@ -637,7 +648,8 @@ static bool valid_pedit_action(struct netlink_ext_ack *extack,
 				*natmode_flags |= CXGB4_ACTION_NATMODE_DPORT;
 			break;
 		default:
-			NL_SET_ERR_MSG_MOD(extack, "Unsupported pedit field");
+			netdev_err(dev, "%s: Unsupported pedit field\n",
+				   __func__);
 			return false;
 		}
 		break;
@@ -645,8 +657,8 @@ static bool valid_pedit_action(struct netlink_ext_ack *extack,
 		switch (offset) {
 		case PEDIT_UDP_SPORT_DPORT:
 			if (!valid_l4_mask(~mask)) {
-				NL_SET_ERR_MSG_MOD(extack,
-						   "Unsupported mask for UDP L4 ports");
+				netdev_err(dev, "%s: Unsupported mask for UDP L4 ports\n",
+					   __func__);
 				return false;
 			}
 			if (~mask & PEDIT_TCP_UDP_SPORT_MASK)
@@ -655,12 +667,13 @@ static bool valid_pedit_action(struct netlink_ext_ack *extack,
 				*natmode_flags |= CXGB4_ACTION_NATMODE_DPORT;
 			break;
 		default:
-			NL_SET_ERR_MSG_MOD(extack, "Unsupported pedit field");
+			netdev_err(dev, "%s: Unsupported pedit field\n",
+				   __func__);
 			return false;
 		}
 		break;
 	default:
-		NL_SET_ERR_MSG_MOD(extack, "Unsupported pedit type");
+		netdev_err(dev, "%s: Unsupported pedit type\n", __func__);
 		return false;
 	}
 	return true;
@@ -714,7 +727,8 @@ int cxgb4_validate_flow_actions(struct net_device *dev,
 			 * the provided output port is not valid
 			 */
 			if (!found) {
-				NL_SET_ERR_MSG_MOD(extack, "Out port invalid");
+				netdev_err(dev, "%s: Out port invalid\n",
+					   __func__);
 				return -EINVAL;
 			}
 			act_redir = true;
@@ -731,21 +745,21 @@ int cxgb4_validate_flow_actions(struct net_device *dev,
 			case FLOW_ACTION_VLAN_PUSH:
 			case FLOW_ACTION_VLAN_MANGLE:
 				if (proto != ETH_P_8021Q) {
-					NL_SET_ERR_MSG_MOD(extack,
-							   "Unsupported vlan proto");
+					netdev_err(dev, "%s: Unsupported vlan proto\n",
+						   __func__);
 					return -EOPNOTSUPP;
 				}
 				break;
 			default:
-				NL_SET_ERR_MSG_MOD(extack,
-						   "Unsupported vlan action");
+				netdev_err(dev, "%s: Unsupported vlan action\n",
+					   __func__);
 				return -EOPNOTSUPP;
 			}
 			act_vlan = true;
 			}
 			break;
 		case FLOW_ACTION_MANGLE: {
-			bool pedit_valid = valid_pedit_action(extack, act,
+			bool pedit_valid = valid_pedit_action(dev, act,
 							      &natmode_flags);
 
 			if (!pedit_valid)
@@ -757,14 +771,14 @@ int cxgb4_validate_flow_actions(struct net_device *dev,
 			/* Do nothing. cxgb4_set_filter will validate */
 			break;
 		default:
-			NL_SET_ERR_MSG_MOD(extack, "Unsupported action");
+			netdev_err(dev, "%s: Unsupported action\n", __func__);
 			return -EOPNOTSUPP;
 		}
 	}
 
 	if ((act_pedit || act_vlan) && !act_redir) {
-		NL_SET_ERR_MSG_MOD(extack,
-				   "pedit/vlan rewrite invalid without egress redirect");
+		netdev_err(dev, "%s: pedit/vlan rewrite invalid without egress redirect\n",
+			   __func__);
 		return -EINVAL;
 	}
 
@@ -844,38 +858,16 @@ int cxgb4_flow_rule_replace(struct net_device *dev, struct flow_rule *rule,
 {
 	struct adapter *adap = netdev2adap(dev);
 	struct filter_ctx ctx;
-	u16 addr_type = 0;
 	u8 inet_family;
 	int fidx, ret;
 
 	if (cxgb4_validate_flow_actions(dev, &rule->action, extack, 0))
 		return -EOPNOTSUPP;
 
-	if (cxgb4_validate_flow_match(extack, rule))
+	if (cxgb4_validate_flow_match(dev, rule))
 		return -EOPNOTSUPP;
 
-	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CONTROL)) {
-		struct flow_match_control match;
-
-		flow_rule_match_control(rule, &match);
-		addr_type = match.key->addr_type;
-
-		if (match.mask->flags & FLOW_DIS_IS_FRAGMENT) {
-			fs->val.frag = match.key->flags & FLOW_DIS_IS_FRAGMENT;
-			fs->mask.frag = true;
-		}
-
-		if (!flow_rule_is_supp_control_flags(FLOW_DIS_IS_FRAGMENT,
-						     match.mask->flags, extack))
-			return -EOPNOTSUPP;
-
-	} else if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPV4_ADDRS)) {
-		addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
-	} else if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPV6_ADDRS)) {
-		addr_type = FLOW_DISSECTOR_KEY_IPV6_ADDRS;
-	}
-
-	cxgb4_process_flow_match(dev, rule, addr_type, fs);
+	cxgb4_process_flow_match(dev, rule, fs);
 	cxgb4_process_flow_actions(dev, &rule->action, fs);
 
 	fs->hash = is_filter_exact_match(adap, fs);
@@ -909,7 +901,8 @@ int cxgb4_flow_rule_replace(struct net_device *dev, struct flow_rule *rule,
 	init_completion(&ctx.completion);
 	ret = __cxgb4_set_filter(dev, fidx, fs, &ctx);
 	if (ret) {
-		NL_SET_ERR_MSG_FMT_MOD(extack, "filter creation err %d", ret);
+		netdev_err(dev, "%s: filter creation err %d\n",
+			   __func__, ret);
 		return ret;
 	}
 
@@ -1059,7 +1052,7 @@ static void ch_flower_stats_handler(struct work_struct *work)
 
 static void ch_flower_stats_cb(struct timer_list *t)
 {
-	struct adapter *adap = timer_container_of(adap, t, flower_stats_timer);
+	struct adapter *adap = from_timer(adap, t, flower_stats_timer);
 
 	schedule_work(&adap->flower_stats_work);
 }
@@ -1142,7 +1135,7 @@ void cxgb4_cleanup_tc_flower(struct adapter *adap)
 		return;
 
 	if (adap->flower_stats_timer.function)
-		timer_shutdown_sync(&adap->flower_stats_timer);
+		del_timer_sync(&adap->flower_stats_timer);
 	cancel_work_sync(&adap->flower_stats_work);
 	rhashtable_destroy(&adap->flower_tbl);
 	adap->tc_flower_initialized = false;

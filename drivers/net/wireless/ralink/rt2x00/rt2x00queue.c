@@ -45,7 +45,7 @@ struct sk_buff *rt2x00queue_alloc_rxskb(struct queue_entry *entry, gfp_t gfp)
 
 	/*
 	 * For IV/EIV/ICV assembly we must make sure there is
-	 * at least 8 bytes available in headroom for IV/EIV
+	 * at least 8 bytes bytes available in headroom for IV/EIV
 	 * and 8 bytes for ICV data as tailroon.
 	 */
 	if (rt2x00_has_cap_hw_crypto(rt2x00dev)) {
@@ -416,6 +416,9 @@ static void rt2x00queue_create_tx_descriptor(struct rt2x00_dev *rt2x00dev,
 			__set_bit(ENTRY_TXD_RTS_FRAME, &txdesc->flags);
 		else
 			__set_bit(ENTRY_TXD_CTS_FRAME, &txdesc->flags);
+		if (tx_info->control.rts_cts_rate_idx >= 0)
+			rate =
+			    ieee80211_get_rts_cts_rate(rt2x00dev->hw, tx_info);
 	}
 
 	/*

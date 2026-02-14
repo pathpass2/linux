@@ -184,7 +184,7 @@ static void hvc_console_print(struct console *co, const char *b,
 					hvc_console_flush(cons_ops[index],
 						      vtermnos[index]);
 				}
-			} else {
+			} else if (r > 0) {
 				i -= r;
 				if (i > 0)
 					memmove(c, c+r, i);
@@ -496,11 +496,11 @@ static int hvc_push(struct hvc_struct *hp)
 	return n;
 }
 
-static ssize_t hvc_write(struct tty_struct *tty, const u8 *buf, size_t count)
+static int hvc_write(struct tty_struct *tty, const unsigned char *buf, int count)
 {
 	struct hvc_struct *hp = tty->driver_data;
 	unsigned long flags;
-	size_t rsize, written = 0;
+	int rsize, written = 0;
 
 	/* This write was probably executed during a tty close. */
 	if (!hp)
@@ -543,10 +543,10 @@ static ssize_t hvc_write(struct tty_struct *tty, const u8 *buf, size_t count)
 	}
 
 	/*
-	 * Kick thread to flush if there's still pending data
-	 * or to wakeup the write queue.
+	 * Racy, but harmless, kick thread if there is still pending data.
 	 */
-	hvc_kick();
+	if (hp->n_outbuf)
+		hvc_kick();
 
 	return written;
 }
@@ -922,7 +922,8 @@ struct hvc_struct *hvc_alloc(uint32_t vtermno, int data,
 			return ERR_PTR(err);
 	}
 
-	hp = kzalloc(struct_size(hp, outbuf, outbuf_size), GFP_KERNEL);
+	hp = kzalloc(ALIGN(sizeof(*hp), sizeof(long)) + outbuf_size,
+			GFP_KERNEL);
 	if (!hp)
 		return ERR_PTR(-ENOMEM);
 
@@ -930,6 +931,7 @@ struct hvc_struct *hvc_alloc(uint32_t vtermno, int data,
 	hp->data = data;
 	hp->ops = ops;
 	hp->outbuf_size = outbuf_size;
+	hp->outbuf = &((char *)hp)[ALIGN(sizeof(*hp), sizeof(long))];
 
 	tty_port_init(&hp->port);
 	hp->port.ops = &hvc_port_ops;
@@ -974,7 +976,7 @@ struct hvc_struct *hvc_alloc(uint32_t vtermno, int data,
 }
 EXPORT_SYMBOL_GPL(hvc_alloc);
 
-void hvc_remove(struct hvc_struct *hp)
+int hvc_remove(struct hvc_struct *hp)
 {
 	unsigned long flags;
 	struct tty_struct *tty;
@@ -1008,6 +1010,7 @@ void hvc_remove(struct hvc_struct *hp)
 		tty_vhangup(tty);
 		tty_kref_put(tty);
 	}
+	return 0;
 }
 EXPORT_SYMBOL_GPL(hvc_remove);
 

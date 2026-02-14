@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <sys/un.h>
 
-#include "kselftest_harness.h"
+#include "../../kselftest_harness.h"
 
 FIXTURE(diag_uid)
 {
@@ -148,6 +148,7 @@ void receive_response(struct __test_metadata *_metadata,
 		.msg_iov = &iov,
 		.msg_iovlen = 1
 	};
+	struct unix_diag_req *udr;
 	struct nlmsghdr *nlh;
 	int ret;
 

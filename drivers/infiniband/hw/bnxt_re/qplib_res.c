@@ -53,6 +53,12 @@
 #include "qplib_sp.h"
 #include "qplib_rcfw.h"
 
+static void bnxt_qplib_free_stats_ctx(struct pci_dev *pdev,
+				      struct bnxt_qplib_stats *stats);
+static int bnxt_qplib_alloc_stats_ctx(struct pci_dev *pdev,
+				      struct bnxt_qplib_chip_ctx *cctx,
+				      struct bnxt_qplib_stats *stats);
+
 /* PBL */
 static void __free_pbl(struct bnxt_qplib_res *res, struct bnxt_qplib_pbl *pbl,
 		       bool is_umem)
@@ -64,7 +70,9 @@ static void __free_pbl(struct bnxt_qplib_res *res, struct bnxt_qplib_pbl *pbl,
 		for (i = 0; i < pbl->pg_count; i++) {
 			if (pbl->pg_arr[i])
 				dma_free_coherent(&pdev->dev, pbl->pg_size,
-						  pbl->pg_arr[i],
+						  (void *)((unsigned long)
+						   pbl->pg_arr[i] &
+						  PAGE_MASK),
 						  pbl->pg_map_arr[i]);
 			else
 				dev_warn(&pdev->dev,
@@ -110,18 +118,16 @@ static int __alloc_pbl(struct bnxt_qplib_res *res,
 	else
 		pages = sginfo->npages;
 	/* page ptr arrays */
-	pbl->pg_arr = vmalloc_array(pages, sizeof(void *));
+	pbl->pg_arr = vmalloc(pages * sizeof(void *));
 	if (!pbl->pg_arr)
 		return -ENOMEM;
-	memset(pbl->pg_arr, 0, pages * sizeof(void *));
 
-	pbl->pg_map_arr = vmalloc_array(pages, sizeof(dma_addr_t));
+	pbl->pg_map_arr = vmalloc(pages * sizeof(dma_addr_t));
 	if (!pbl->pg_map_arr) {
 		vfree(pbl->pg_arr);
 		pbl->pg_arr = NULL;
 		return -ENOMEM;
 	}
-	memset(pbl->pg_map_arr, 0, pages * sizeof(dma_addr_t));
 	pbl->pg_count = 0;
 	pbl->pg_size = sginfo->pgsize;
 
@@ -209,9 +215,17 @@ int bnxt_qplib_alloc_init_hwq(struct bnxt_qplib_hwq *hwq,
 			return -EINVAL;
 		hwq_attr->sginfo->npages = npages;
 	} else {
-		npages = ib_umem_num_dma_blocks(hwq_attr->sginfo->umem,
-						hwq_attr->sginfo->pgsize);
+		unsigned long sginfo_num_pages = ib_umem_num_dma_blocks(
+			hwq_attr->sginfo->umem, hwq_attr->sginfo->pgsize);
+
 		hwq->is_user = true;
+		npages = sginfo_num_pages;
+		npages = (npages * PAGE_SIZE) /
+			  BIT_ULL(hwq_attr->sginfo->pgshft);
+		if ((sginfo_num_pages * PAGE_SIZE) %
+		     BIT_ULL(hwq_attr->sginfo->pgshft))
+			if (!npages)
+				npages++;
 	}
 
 	if (npages == MAX_PBL_LVL_0_PGS && !hwq_attr->sginfo->nopte) {
@@ -235,15 +249,13 @@ int bnxt_qplib_alloc_init_hwq(struct bnxt_qplib_hwq *hwq,
 			if (npbl % BIT(MAX_PDL_LVL_SHIFT))
 				npde++;
 			/* Alloc PDE pages */
-			sginfo.pgsize = npde * ROCE_PG_SIZE_4K;
+			sginfo.pgsize = npde * pg_size;
 			sginfo.npages = 1;
 			rc = __alloc_pbl(res, &hwq->pbl[PBL_LVL_0], &sginfo);
-			if (rc)
-				goto fail;
 
 			/* Alloc PBL pages */
 			sginfo.npages = npbl;
-			sginfo.pgsize = ROCE_PG_SIZE_4K;
+			sginfo.pgsize = PAGE_SIZE;
 			rc = __alloc_pbl(res, &hwq->pbl[PBL_LVL_1], &sginfo);
 			if (rc)
 				goto fail;
@@ -251,9 +263,22 @@ int bnxt_qplib_alloc_init_hwq(struct bnxt_qplib_hwq *hwq,
 			dst_virt_ptr =
 				(dma_addr_t **)hwq->pbl[PBL_LVL_0].pg_arr;
 			src_phys_ptr = hwq->pbl[PBL_LVL_1].pg_map_arr;
-			for (i = 0; i < hwq->pbl[PBL_LVL_1].pg_count; i++)
-				dst_virt_ptr[0][i] = src_phys_ptr[i] | flag;
-
+			if (hwq_attr->type == HWQ_TYPE_MR) {
+			/* For MR it is expected that we supply only 1 contigous
+			 * page i.e only 1 entry in the PDL that will contain
+			 * all the PBLs for the user supplied memory region
+			 */
+				for (i = 0; i < hwq->pbl[PBL_LVL_1].pg_count;
+				     i++)
+					dst_virt_ptr[0][i] = src_phys_ptr[i] |
+						flag;
+			} else {
+				for (i = 0; i < hwq->pbl[PBL_LVL_1].pg_count;
+				     i++)
+					dst_virt_ptr[PTR_PG(i)][PTR_IDX(i)] =
+						src_phys_ptr[i] |
+						PTU_PDE_VALID;
+			}
 			/* Alloc or init PTEs */
 			rc = __alloc_pbl(res, &hwq->pbl[PBL_LVL_2],
 					 hwq_attr->sginfo);
@@ -326,7 +351,7 @@ done:
 	hwq->cons = 0;
 	hwq->pdev = pdev;
 	hwq->depth = hwq_attr->depth;
-	hwq->max_elements = hwq->depth;
+	hwq->max_elements = depth;
 	hwq->element_size = stride;
 	hwq->qe_ppg = pg_size / stride;
 	/* For direct access to the elements */
@@ -344,8 +369,8 @@ fail:
 }
 
 /* Context Tables */
-void bnxt_qplib_free_hwctx(struct bnxt_qplib_res *res,
-			   struct bnxt_qplib_ctx *ctx)
+void bnxt_qplib_free_ctx(struct bnxt_qplib_res *res,
+			 struct bnxt_qplib_ctx *ctx)
 {
 	int i;
 
@@ -359,6 +384,7 @@ void bnxt_qplib_free_hwctx(struct bnxt_qplib_res *res,
 	/* restore original pde level before destroy */
 	ctx->tqm_ctx.pde.level = ctx->tqm_ctx.pde_level;
 	bnxt_qplib_free_hwq(res, &ctx->tqm_ctx.pde);
+	bnxt_qplib_free_stats_ctx(res->pdev, &ctx->stats);
 }
 
 static int bnxt_qplib_alloc_tqm_rings(struct bnxt_qplib_res *res,
@@ -367,7 +393,7 @@ static int bnxt_qplib_alloc_tqm_rings(struct bnxt_qplib_res *res,
 	struct bnxt_qplib_hwq_attr hwq_attr = {};
 	struct bnxt_qplib_sg_info sginfo = {};
 	struct bnxt_qplib_tqm_ctx *tqmctx;
-	int rc;
+	int rc = 0;
 	int i;
 
 	tqmctx = &ctx->tqm_ctx;
@@ -445,7 +471,7 @@ static void bnxt_qplib_map_tqm_pgtbl(struct bnxt_qplib_tqm_ctx *ctx)
 static int bnxt_qplib_setup_tqm_rings(struct bnxt_qplib_res *res,
 				      struct bnxt_qplib_ctx *ctx)
 {
-	int rc;
+	int rc = 0;
 
 	rc = bnxt_qplib_alloc_tqm_rings(res, ctx);
 	if (rc)
@@ -457,7 +483,7 @@ fail:
 }
 
 /*
- * Routine: bnxt_qplib_alloc_hwctx
+ * Routine: bnxt_qplib_alloc_ctx
  * Description:
  *     Context tables are memories which are used by the chip fw.
  *     The 6 tables defined are:
@@ -477,12 +503,16 @@ fail:
  * Returns:
  *     0 if success, else -ERRORS
  */
-int bnxt_qplib_alloc_hwctx(struct bnxt_qplib_res *res,
-			   struct bnxt_qplib_ctx *ctx)
+int bnxt_qplib_alloc_ctx(struct bnxt_qplib_res *res,
+			 struct bnxt_qplib_ctx *ctx,
+			 bool virt_fn, bool is_p5)
 {
 	struct bnxt_qplib_hwq_attr hwq_attr = {};
 	struct bnxt_qplib_sg_info sginfo = {};
-	int rc;
+	int rc = 0;
+
+	if (virt_fn || is_p5)
+		goto stats_alloc;
 
 	/* QPC Tables */
 	sginfo.pgsize = PAGE_SIZE;
@@ -529,11 +559,16 @@ int bnxt_qplib_alloc_hwctx(struct bnxt_qplib_res *res,
 	rc = bnxt_qplib_alloc_init_hwq(&ctx->tim_tbl, &hwq_attr);
 	if (rc)
 		goto fail;
+stats_alloc:
+	/* Stats */
+	rc = bnxt_qplib_alloc_stats_ctx(res->pdev, res->cctx, &ctx->stats);
+	if (rc)
+		goto fail;
 
 	return 0;
 
 fail:
-	bnxt_qplib_free_hwctx(res, ctx);
+	bnxt_qplib_free_ctx(res, ctx);
 	return rc;
 }
 
@@ -615,44 +650,31 @@ static void bnxt_qplib_init_sgid_tbl(struct bnxt_qplib_sgid_tbl *sgid_tbl,
 }
 
 /* PDs */
-int bnxt_qplib_alloc_pd(struct bnxt_qplib_res  *res, struct bnxt_qplib_pd *pd)
+int bnxt_qplib_alloc_pd(struct bnxt_qplib_pd_tbl *pdt, struct bnxt_qplib_pd *pd)
 {
-	struct bnxt_qplib_pd_tbl *pdt = &res->pd_tbl;
 	u32 bit_num;
-	int rc = 0;
 
-	mutex_lock(&res->pd_tbl_lock);
 	bit_num = find_first_bit(pdt->tbl, pdt->max);
-	if (bit_num == pdt->max) {
-		rc = -ENOMEM;
-		goto exit;
-	}
+	if (bit_num == pdt->max)
+		return -ENOMEM;
 
 	/* Found unused PD */
 	clear_bit(bit_num, pdt->tbl);
 	pd->id = bit_num;
-exit:
-	mutex_unlock(&res->pd_tbl_lock);
-	return rc;
+	return 0;
 }
 
 int bnxt_qplib_dealloc_pd(struct bnxt_qplib_res *res,
 			  struct bnxt_qplib_pd_tbl *pdt,
 			  struct bnxt_qplib_pd *pd)
 {
-	int rc = 0;
-
-	mutex_lock(&res->pd_tbl_lock);
 	if (test_and_set_bit(pd->id, pdt->tbl)) {
 		dev_warn(&res->pdev->dev, "Freeing an unused PD? pdn = %d\n",
 			 pd->id);
-		rc = -EINVAL;
-		goto exit;
+		return -EINVAL;
 	}
 	pd->id = 0;
-exit:
-	mutex_unlock(&res->pd_tbl_lock);
-	return rc;
+	return 0;
 }
 
 static void bnxt_qplib_free_pd_tbl(struct bnxt_qplib_pd_tbl *pdt)
@@ -677,82 +699,49 @@ static int bnxt_qplib_alloc_pd_tbl(struct bnxt_qplib_res *res,
 
 	pdt->max = max;
 	memset((u8 *)pdt->tbl, 0xFF, bytes);
-	mutex_init(&res->pd_tbl_lock);
 
 	return 0;
 }
 
 /* DPIs */
-int bnxt_qplib_alloc_dpi(struct bnxt_qplib_res *res,
-			 struct bnxt_qplib_dpi *dpi,
-			 void *app, u8 type)
+int bnxt_qplib_alloc_dpi(struct bnxt_qplib_dpi_tbl *dpit,
+			 struct bnxt_qplib_dpi     *dpi,
+			 void                      *app)
 {
-	struct bnxt_qplib_dpi_tbl *dpit = &res->dpi_tbl;
-	struct bnxt_qplib_reg_desc *reg;
 	u32 bit_num;
-	u64 umaddr;
-
-	reg = &dpit->wcreg;
-	mutex_lock(&res->dpi_tbl_lock);
 
 	bit_num = find_first_bit(dpit->tbl, dpit->max);
-	if (bit_num == dpit->max) {
-		mutex_unlock(&res->dpi_tbl_lock);
+	if (bit_num == dpit->max)
 		return -ENOMEM;
-	}
 
 	/* Found unused DPI */
 	clear_bit(bit_num, dpit->tbl);
 	dpit->app_tbl[bit_num] = app;
 
-	dpi->bit = bit_num;
-	dpi->dpi = bit_num + (reg->offset - dpit->ucreg.offset) / PAGE_SIZE;
+	dpi->dpi = bit_num;
+	dpi->dbr = dpit->dbr_bar_reg_iomem + (bit_num * PAGE_SIZE);
+	dpi->umdbr = dpit->unmapped_dbr + (bit_num * PAGE_SIZE);
 
-	umaddr = reg->bar_base + reg->offset + bit_num * PAGE_SIZE;
-	dpi->umdbr = umaddr;
-
-	switch (type) {
-	case BNXT_QPLIB_DPI_TYPE_KERNEL:
-		/* privileged dbr was already mapped just initialize it. */
-		dpi->umdbr = dpit->ucreg.bar_base +
-			     dpit->ucreg.offset + bit_num * PAGE_SIZE;
-		dpi->dbr = dpit->priv_db;
-		dpi->dpi = dpi->bit;
-		break;
-	case BNXT_QPLIB_DPI_TYPE_WC:
-		dpi->dbr = ioremap_wc(umaddr, PAGE_SIZE);
-		break;
-	default:
-		dpi->dbr = ioremap(umaddr, PAGE_SIZE);
-		break;
-	}
-
-	dpi->type = type;
-	mutex_unlock(&res->dpi_tbl_lock);
 	return 0;
-
 }
 
 int bnxt_qplib_dealloc_dpi(struct bnxt_qplib_res *res,
-			   struct bnxt_qplib_dpi *dpi)
+			   struct bnxt_qplib_dpi_tbl *dpit,
+			   struct bnxt_qplib_dpi     *dpi)
 {
-	struct bnxt_qplib_dpi_tbl *dpit = &res->dpi_tbl;
-
-	mutex_lock(&res->dpi_tbl_lock);
-	if (dpi->dpi && dpi->type != BNXT_QPLIB_DPI_TYPE_KERNEL)
-		pci_iounmap(res->pdev, dpi->dbr);
-
-	if (test_and_set_bit(dpi->bit, dpit->tbl)) {
-		dev_warn(&res->pdev->dev,
-			 "Freeing an unused DPI? dpi = %d, bit = %d\n",
-				dpi->dpi, dpi->bit);
-		mutex_unlock(&res->dpi_tbl_lock);
+	if (dpi->dpi >= dpit->max) {
+		dev_warn(&res->pdev->dev, "Invalid DPI? dpi = %d\n", dpi->dpi);
+		return -EINVAL;
+	}
+	if (test_and_set_bit(dpi->dpi, dpit->tbl)) {
+		dev_warn(&res->pdev->dev, "Freeing an unused DPI? dpi = %d\n",
+			 dpi->dpi);
 		return -EINVAL;
 	}
 	if (dpit->app_tbl)
-		dpit->app_tbl[dpi->bit] = NULL;
+		dpit->app_tbl[dpi->dpi] = NULL;
 	memset(dpi, 0, sizeof(*dpi));
-	mutex_unlock(&res->dpi_tbl_lock);
+
 	return 0;
 }
 
@@ -761,38 +750,52 @@ static void bnxt_qplib_free_dpi_tbl(struct bnxt_qplib_res     *res,
 {
 	kfree(dpit->tbl);
 	kfree(dpit->app_tbl);
-	dpit->tbl = NULL;
-	dpit->app_tbl = NULL;
-	dpit->max = 0;
+	if (dpit->dbr_bar_reg_iomem)
+		pci_iounmap(res->pdev, dpit->dbr_bar_reg_iomem);
+	memset(dpit, 0, sizeof(*dpit));
 }
 
-static int bnxt_qplib_alloc_dpi_tbl(struct bnxt_qplib_res *res,
-				    struct bnxt_qplib_dev_attr *dev_attr)
+static int bnxt_qplib_alloc_dpi_tbl(struct bnxt_qplib_res     *res,
+				    struct bnxt_qplib_dpi_tbl *dpit,
+				    u32                       dbr_offset)
 {
-	struct bnxt_qplib_dpi_tbl *dpit;
-	struct bnxt_qplib_reg_desc *reg;
-	unsigned long bar_len;
-	u32 dbr_offset;
-	u32 bytes;
+	u32 dbr_bar_reg = RCFW_DBR_PCI_BAR_REGION;
+	resource_size_t bar_reg_base;
+	u32 dbr_len, bytes;
 
-	dpit = &res->dpi_tbl;
-	reg = &dpit->wcreg;
-
-	if (!bnxt_qplib_is_chip_gen_p5_p7(res->cctx)) {
-		/* Offest should come from L2 driver */
-		dbr_offset = dev_attr->l2_db_size;
-		dpit->ucreg.offset = dbr_offset;
-		dpit->wcreg.offset = dbr_offset;
+	if (dpit->dbr_bar_reg_iomem) {
+		dev_err(&res->pdev->dev, "DBR BAR region %d already mapped\n",
+			dbr_bar_reg);
+		return -EALREADY;
 	}
 
-	bar_len = pci_resource_len(res->pdev, reg->bar_id);
-	dpit->max = (bar_len - reg->offset) / PAGE_SIZE;
-	if (dev_attr->max_dpi)
-		dpit->max = min_t(u32, dpit->max, dev_attr->max_dpi);
-
-	dpit->app_tbl = kcalloc(dpit->max,  sizeof(void *), GFP_KERNEL);
-	if (!dpit->app_tbl)
+	bar_reg_base = pci_resource_start(res->pdev, dbr_bar_reg);
+	if (!bar_reg_base) {
+		dev_err(&res->pdev->dev, "BAR region %d resc start failed\n",
+			dbr_bar_reg);
 		return -ENOMEM;
+	}
+
+	dbr_len = pci_resource_len(res->pdev, dbr_bar_reg) - dbr_offset;
+	if (!dbr_len || ((dbr_len & (PAGE_SIZE - 1)) != 0)) {
+		dev_err(&res->pdev->dev, "Invalid DBR length %d\n", dbr_len);
+		return -ENOMEM;
+	}
+
+	dpit->dbr_bar_reg_iomem = ioremap(bar_reg_base + dbr_offset,
+						  dbr_len);
+	if (!dpit->dbr_bar_reg_iomem) {
+		dev_err(&res->pdev->dev,
+			"FP: DBR BAR region %d mapping failed\n", dbr_bar_reg);
+		return -ENOMEM;
+	}
+
+	dpit->unmapped_dbr = bar_reg_base + dbr_offset;
+	dpit->max = dbr_len / PAGE_SIZE;
+
+	dpit->app_tbl = kcalloc(dpit->max, sizeof(void *), GFP_KERNEL);
+	if (!dpit->app_tbl)
+		goto unmap_io;
 
 	bytes = dpit->max >> 3;
 	if (!bytes)
@@ -802,20 +805,22 @@ static int bnxt_qplib_alloc_dpi_tbl(struct bnxt_qplib_res *res,
 	if (!dpit->tbl) {
 		kfree(dpit->app_tbl);
 		dpit->app_tbl = NULL;
-		return -ENOMEM;
+		goto unmap_io;
 	}
 
 	memset((u8 *)dpit->tbl, 0xFF, bytes);
-	mutex_init(&res->dpi_tbl_lock);
-	dpit->priv_db = dpit->ucreg.bar_reg + dpit->ucreg.offset;
 
 	return 0;
 
+unmap_io:
+	pci_iounmap(res->pdev, dpit->dbr_bar_reg_iomem);
+	dpit->dbr_bar_reg_iomem = NULL;
+	return -ENOMEM;
 }
 
 /* Stats */
-void bnxt_qplib_free_stats_ctx(struct pci_dev *pdev,
-			       struct bnxt_qplib_stats *stats)
+static void bnxt_qplib_free_stats_ctx(struct pci_dev *pdev,
+				      struct bnxt_qplib_stats *stats)
 {
 	if (stats->dma) {
 		dma_free_coherent(&pdev->dev, stats->size,
@@ -825,9 +830,9 @@ void bnxt_qplib_free_stats_ctx(struct pci_dev *pdev,
 	stats->fw_id = -1;
 }
 
-int bnxt_qplib_alloc_stats_ctx(struct pci_dev *pdev,
-			       struct bnxt_qplib_chip_ctx *cctx,
-			       struct bnxt_qplib_stats *stats)
+static int bnxt_qplib_alloc_stats_ctx(struct pci_dev *pdev,
+				      struct bnxt_qplib_chip_ctx *cctx,
+				      struct bnxt_qplib_stats *stats)
 {
 	memset(stats, 0, sizeof(*stats));
 	stats->fw_id = -1;
@@ -855,27 +860,19 @@ int bnxt_qplib_init_res(struct bnxt_qplib_res *res)
 
 void bnxt_qplib_free_res(struct bnxt_qplib_res *res)
 {
-	kfree(res->rcfw->qp_tbl);
 	bnxt_qplib_free_sgid_tbl(res, &res->sgid_tbl);
 	bnxt_qplib_free_pd_tbl(&res->pd_tbl);
 	bnxt_qplib_free_dpi_tbl(res, &res->dpi_tbl);
 }
 
-int bnxt_qplib_alloc_res(struct bnxt_qplib_res *res, struct net_device *netdev)
+int bnxt_qplib_alloc_res(struct bnxt_qplib_res *res, struct pci_dev *pdev,
+			 struct net_device *netdev,
+			 struct bnxt_qplib_dev_attr *dev_attr)
 {
-	struct bnxt_qplib_rcfw *rcfw = res->rcfw;
-	struct bnxt_qplib_dev_attr *dev_attr;
-	int rc;
+	int rc = 0;
 
+	res->pdev = pdev;
 	res->netdev = netdev;
-	dev_attr = res->dattr;
-
-	/* Allocate one extra to hold the QP1 entries */
-	rcfw->qp_tbl_size = max_t(u32, BNXT_RE_MAX_QPC_COUNT + 1, dev_attr->max_qp);
-	rcfw->qp_tbl = kcalloc(rcfw->qp_tbl_size, sizeof(struct bnxt_qplib_qp_node),
-			       GFP_KERNEL);
-	if (!rcfw->qp_tbl)
-		return -ENOMEM;
 
 	rc = bnxt_qplib_alloc_sgid_tbl(res, &res->sgid_tbl, dev_attr->max_sgid);
 	if (rc)
@@ -885,7 +882,7 @@ int bnxt_qplib_alloc_res(struct bnxt_qplib_res *res, struct net_device *netdev)
 	if (rc)
 		goto fail;
 
-	rc = bnxt_qplib_alloc_dpi_tbl(res, dev_attr);
+	rc = bnxt_qplib_alloc_dpi_tbl(res, &res->dpi_tbl, dev_attr->l2_db_size);
 	if (rc)
 		goto fail;
 
@@ -893,46 +890,6 @@ int bnxt_qplib_alloc_res(struct bnxt_qplib_res *res, struct net_device *netdev)
 fail:
 	bnxt_qplib_free_res(res);
 	return rc;
-}
-
-void bnxt_qplib_unmap_db_bar(struct bnxt_qplib_res *res)
-{
-	struct bnxt_qplib_reg_desc *reg;
-
-	reg = &res->dpi_tbl.ucreg;
-	if (reg->bar_reg)
-		pci_iounmap(res->pdev, reg->bar_reg);
-	reg->bar_reg = NULL;
-	reg->bar_base = 0;
-	reg->len = 0;
-	reg->bar_id = 0;
-}
-
-int bnxt_qplib_map_db_bar(struct bnxt_qplib_res *res)
-{
-	struct bnxt_qplib_reg_desc *ucreg;
-	struct bnxt_qplib_reg_desc *wcreg;
-
-	wcreg = &res->dpi_tbl.wcreg;
-	wcreg->bar_id = RCFW_DBR_PCI_BAR_REGION;
-	wcreg->bar_base = pci_resource_start(res->pdev, wcreg->bar_id);
-
-	ucreg = &res->dpi_tbl.ucreg;
-	ucreg->bar_id = RCFW_DBR_PCI_BAR_REGION;
-	ucreg->bar_base = pci_resource_start(res->pdev, ucreg->bar_id);
-	ucreg->len = ucreg->offset + PAGE_SIZE;
-	if (!ucreg->len || ((ucreg->len & (PAGE_SIZE - 1)) != 0)) {
-		dev_err(&res->pdev->dev, "QPLIB: invalid dbr length %d",
-			(int)ucreg->len);
-		return -EINVAL;
-	}
-	ucreg->bar_reg = ioremap(ucreg->bar_base, ucreg->len);
-	if (!ucreg->bar_reg) {
-		dev_err(&res->pdev->dev, "privileged dpi map failed!");
-		return -ENOMEM;
-	}
-
-	return 0;
 }
 
 int bnxt_qplib_determine_atomics(struct pci_dev *dev)

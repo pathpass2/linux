@@ -7,21 +7,18 @@
  * Copyright (c) 2016 Texas Instruments Incorporated
  */
 
-#include <crypto/aes.h>
-#include <crypto/engine.h>
-#include <crypto/gcm.h>
-#include <crypto/internal/aead.h>
-#include <crypto/scatterwalk.h>
-#include <crypto/skcipher.h>
 #include <linux/errno.h>
+#include <linux/scatterlist.h>
 #include <linux/dma-mapping.h>
 #include <linux/dmaengine.h>
-#include <linux/interrupt.h>
-#include <linux/kernel.h>
 #include <linux/omap-dma.h>
+#include <linux/interrupt.h>
 #include <linux/pm_runtime.h>
-#include <linux/scatterlist.h>
-#include <linux/string.h>
+#include <crypto/aes.h>
+#include <crypto/gcm.h>
+#include <crypto/scatterwalk.h>
+#include <crypto/skcipher.h>
+#include <crypto/internal/aead.h>
 
 #include "omap-crypto.h"
 #include "omap-aes.h"
@@ -38,6 +35,7 @@ static void omap_aes_gcm_finish_req(struct omap_aes_dev *dd, int ret)
 
 	crypto_finalize_aead_request(dd->engine, req, ret);
 
+	pm_runtime_mark_last_busy(dd->dev);
 	pm_runtime_put_autosuspend(dd->dev);
 }
 
@@ -177,7 +175,7 @@ static int do_encrypt_iv(struct aead_request *req, u32 *tag, u32 *iv)
 {
 	struct omap_aes_gcm_ctx *ctx = crypto_aead_ctx(crypto_aead_reqtfm(req));
 
-	aes_encrypt(&ctx->akey, (u8 *)tag, (const u8 *)iv);
+	aes_encrypt(&ctx->actx, (u8 *)tag, (u8 *)iv);
 	return 0;
 }
 
@@ -214,10 +212,12 @@ static int omap_aes_gcm_handle_queue(struct omap_aes_dev *dd,
 	return 0;
 }
 
-static int omap_aes_gcm_prepare_req(struct aead_request *req,
-				    struct omap_aes_dev *dd)
+static int omap_aes_gcm_prepare_req(struct crypto_engine *engine, void *areq)
 {
+	struct aead_request *req = container_of(areq, struct aead_request,
+						base);
 	struct omap_aes_reqctx *rctx = aead_request_ctx(req);
+	struct omap_aes_dev *dd = rctx->dd;
 	struct omap_aes_gcm_ctx *ctx = crypto_aead_ctx(crypto_aead_reqtfm(req));
 	int err;
 
@@ -314,7 +314,7 @@ int omap_aes_gcm_setkey(struct crypto_aead *tfm, const u8 *key,
 	struct omap_aes_gcm_ctx *ctx = crypto_aead_ctx(tfm);
 	int ret;
 
-	ret = aes_prepareenckey(&ctx->akey, key, keylen);
+	ret = aes_expandkey(&ctx->actx, key, keylen);
 	if (ret)
 		return ret;
 
@@ -334,7 +334,7 @@ int omap_aes_4106gcm_setkey(struct crypto_aead *tfm, const u8 *key,
 		return -EINVAL;
 	keylen -= 4;
 
-	ret = aes_prepareenckey(&ctx->akey, key, keylen);
+	ret = aes_expandkey(&ctx->actx, key, keylen);
 	if (ret)
 		return ret;
 
@@ -356,20 +356,16 @@ int omap_aes_4106gcm_setauthsize(struct crypto_aead *parent,
 	return crypto_rfc4106_check_authsize(authsize);
 }
 
-int omap_aes_gcm_crypt_req(struct crypto_engine *engine, void *areq)
+static int omap_aes_gcm_crypt_req(struct crypto_engine *engine, void *areq)
 {
 	struct aead_request *req = container_of(areq, struct aead_request,
 						base);
 	struct omap_aes_reqctx *rctx = aead_request_ctx(req);
 	struct omap_aes_dev *dd = rctx->dd;
-	int ret;
+	int ret = 0;
 
 	if (!dd)
 		return -ENODEV;
-
-	ret = omap_aes_gcm_prepare_req(req, dd);
-	if (ret)
-		return ret;
 
 	if (dd->in_sg_len)
 		ret = omap_aes_crypt_dma_start(dd);
@@ -381,6 +377,12 @@ int omap_aes_gcm_crypt_req(struct crypto_engine *engine, void *areq)
 
 int omap_aes_gcm_cra_init(struct crypto_aead *tfm)
 {
+	struct omap_aes_ctx *ctx = crypto_aead_ctx(tfm);
+
+	ctx->enginectx.op.prepare_request = omap_aes_gcm_prepare_req;
+	ctx->enginectx.op.unprepare_request = NULL;
+	ctx->enginectx.op.do_one_request = omap_aes_gcm_crypt_req;
+
 	crypto_aead_set_reqsize(tfm, sizeof(struct omap_aes_reqctx));
 
 	return 0;

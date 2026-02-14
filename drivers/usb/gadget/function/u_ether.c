@@ -16,9 +16,7 @@
 #include <linux/ctype.h>
 #include <linux/etherdevice.h>
 #include <linux/ethtool.h>
-#include <linux/hex.h>
 #include <linux/if_vlan.h>
-#include <linux/string_helpers.h>
 #include <linux/usb/composite.h>
 
 #include "u_ether.h"
@@ -94,10 +92,11 @@ struct eth_dev {
 
 #define DEFAULT_QLEN	2	/* double buffering by default */
 
-/* use deeper queues at high/super speed */
+/* for dual-speed hardware, use deeper queues at high/super speed */
 static inline int qlen(struct usb_gadget *gadget, unsigned qmult)
 {
-	if (gadget->speed == USB_SPEED_HIGH || gadget->speed >= USB_SPEED_SUPER)
+	if (gadget_is_dualspeed(gadget) && (gadget->speed == USB_SPEED_HIGH ||
+					    gadget->speed >= USB_SPEED_SUPER))
 		return qmult * DEFAULT_QLEN;
 	else
 		return DEFAULT_QLEN;
@@ -438,20 +437,6 @@ static inline int is_promisc(u16 cdc_filter)
 	return cdc_filter & USB_CDC_PACKET_TYPE_PROMISCUOUS;
 }
 
-static int ether_wakeup_host(struct gether *port)
-{
-	int			ret;
-	struct usb_function	*func = &port->func;
-	struct usb_gadget	*gadget = func->config->cdev->gadget;
-
-	if (func->func_suspended)
-		ret = usb_func_wakeup(func);
-	else
-		ret = usb_gadget_wakeup(gadget);
-
-	return ret;
-}
-
 static netdev_tx_t eth_start_xmit(struct sk_buff *skb,
 					struct net_device *net)
 {
@@ -471,15 +456,6 @@ static netdev_tx_t eth_start_xmit(struct sk_buff *skb,
 		in = NULL;
 		cdc_filter = 0;
 	}
-
-	if (dev->port_usb && dev->port_usb->is_suspend) {
-		DBG(dev, "Port suspended. Triggering wakeup\n");
-		netif_stop_queue(net);
-		spin_unlock_irqrestore(&dev->lock, flags);
-		ether_wakeup_host(dev->port_usb);
-		return NETDEV_TX_BUSY;
-	}
-
 	spin_unlock_irqrestore(&dev->lock, flags);
 
 	if (!in) {
@@ -719,7 +695,7 @@ static const struct net_device_ops eth_netdev_ops = {
 	.ndo_validate_addr	= eth_validate_addr,
 };
 
-static const struct device_type gadget_type = {
+static struct device_type gadget_type = {
 	.name	= "gadget",
 };
 
@@ -966,8 +942,6 @@ int gether_get_host_addr_cdc(struct net_device *net, char *host_addr, int len)
 	dev = netdev_priv(net);
 	snprintf(host_addr, len, "%pm", dev->host_mac);
 
-	string_upper(host_addr, host_addr);
-
 	return strlen(host_addr);
 }
 EXPORT_SYMBOL_GPL(gether_get_host_addr_cdc);
@@ -1033,51 +1007,12 @@ int gether_set_ifname(struct net_device *net, const char *name, int len)
 	if (!p || p[1] != 'd' || strchr(p + 2, '%'))
 		return -EINVAL;
 
-	strscpy(net->name, tmp);
+	strncpy(net->name, tmp, sizeof(net->name));
 	dev->ifname_set = true;
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(gether_set_ifname);
-
-void gether_suspend(struct gether *link)
-{
-	struct eth_dev *dev = link->ioport;
-	unsigned long flags;
-
-	if (!dev)
-		return;
-
-	if (atomic_read(&dev->tx_qlen)) {
-		/*
-		 * There is a transfer in progress. So we trigger a remote
-		 * wakeup to inform the host.
-		 */
-		if (!ether_wakeup_host(dev->port_usb))
-			return;
-	}
-	spin_lock_irqsave(&dev->lock, flags);
-	link->is_suspend = true;
-	spin_unlock_irqrestore(&dev->lock, flags);
-}
-EXPORT_SYMBOL_GPL(gether_suspend);
-
-void gether_resume(struct gether *link)
-{
-	struct eth_dev *dev = link->ioport;
-	unsigned long flags;
-
-	if (!dev)
-		return;
-
-	if (netif_queue_stopped(dev->net))
-		netif_start_queue(dev->net);
-
-	spin_lock_irqsave(&dev->lock, flags);
-	link->is_suspend = false;
-	spin_unlock_irqrestore(&dev->lock, flags);
-}
-EXPORT_SYMBOL_GPL(gether_resume);
 
 /*
  * gether_cleanup - remove Ethernet-over-USB device
@@ -1241,11 +1176,9 @@ void gether_disconnect(struct gether *link)
 
 	spin_lock(&dev->lock);
 	dev->port_usb = NULL;
-	link->is_suspend = false;
 	spin_unlock(&dev->lock);
 }
 EXPORT_SYMBOL_GPL(gether_disconnect);
 
-MODULE_DESCRIPTION("Ethernet-over-USB link layer utilities for Gadget stack");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David Brownell");

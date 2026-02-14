@@ -11,20 +11,14 @@ description:
   The RTC controller has separate IRQ lines for seconds and alarm.
 
 maintainers:
-  - Michal Simek <michal.simek@amd.com>
+  - Michal Simek <michal.simek@xilinx.com>
 
 allOf:
   - $ref: rtc.yaml#
 
 properties:
   compatible:
-    oneOf:
-      - const: xlnx,zynqmp-rtc
-      - items:
-          - enum:
-              - xlnx,versal-rtc
-              - xlnx,versal-net-rtc
-          - const: xlnx,zynqmp-rtc
+    const: xlnx,zynqmp-rtc
 
   reg:
     maxItems: 1
@@ -53,9 +47,6 @@ properties:
     maximum: 0x1FFFFF
     default: 0x198233
     deprecated: true
-
-  power-domains:
-    maxItems: 1
 
 required:
   - compatible

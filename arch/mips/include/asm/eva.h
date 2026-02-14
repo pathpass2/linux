@@ -13,7 +13,7 @@
 
 #include <kernel-entry-init.h>
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 
 #ifdef CONFIG_EVA
 
@@ -38,6 +38,6 @@ platform_eva_init
 
 #endif /* CONFIG_EVA */
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif

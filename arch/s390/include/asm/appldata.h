@@ -8,9 +8,8 @@
 #ifndef _ASM_S390_APPLDATA_H
 #define _ASM_S390_APPLDATA_H
 
-#include <linux/io.h>
-#include <asm/machine.h>
 #include <asm/diag.h>
+#include <asm/io.h>
 
 #define APPLDATA_START_INTERVAL_REC	0x80
 #define APPLDATA_STOP_REC		0x81
@@ -49,19 +48,19 @@ static inline int appldata_asm(struct appldata_parameter_list *parm_list,
 {
 	int ry;
 
-	if (!machine_is_vm())
+	if (!MACHINE_IS_VM)
 		return -EOPNOTSUPP;
 	parm_list->diag = 0xdc;
 	parm_list->function = fn;
 	parm_list->parlist_length = sizeof(*parm_list);
 	parm_list->buffer_length = length;
-	parm_list->product_id_addr = virt_to_phys(id);
+	parm_list->product_id_addr = (unsigned long) id;
 	parm_list->buffer_addr = virt_to_phys(buffer);
 	diag_stat_inc(DIAG_STAT_X0DC);
 	asm volatile(
 		"	diag	%1,%0,0xdc"
 		: "=d" (ry)
-		: "d" (virt_to_phys(parm_list)), "m" (*parm_list), "m" (*id)
+		: "d" (parm_list), "m" (*parm_list), "m" (*id)
 		: "cc");
 	return ry;
 }

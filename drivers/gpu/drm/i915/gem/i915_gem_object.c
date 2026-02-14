@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: MIT
 /*
  * Copyright © 2017 Intel Corporation
  *
@@ -27,7 +26,6 @@
 #include <linux/sched/mm.h>
 
 #include <drm/drm_cache.h>
-#include <drm/drm_print.h>
 
 #include "display/intel_frontbuffer.h"
 #include "pxp/intel_pxp.h"
@@ -39,7 +37,6 @@
 #include "i915_gem_dmabuf.h"
 #include "i915_gem_mman.h"
 #include "i915_gem_object.h"
-#include "i915_gem_object_frontbuffer.h"
 #include "i915_gem_ttm.h"
 #include "i915_memcpy.h"
 #include "i915_trace.h"
@@ -47,33 +44,6 @@
 static struct kmem_cache *slab_objects;
 
 static const struct drm_gem_object_funcs i915_gem_object_funcs;
-
-unsigned int i915_gem_get_pat_index(struct drm_i915_private *i915,
-				    enum i915_cache_level level)
-{
-	if (drm_WARN_ON(&i915->drm, level >= I915_MAX_CACHE_LEVEL))
-		return 0;
-
-	return INTEL_INFO(i915)->cachelevel_to_pat[level];
-}
-
-bool i915_gem_object_has_cache_level(const struct drm_i915_gem_object *obj,
-				     enum i915_cache_level lvl)
-{
-	/*
-	 * In case the pat_index is set by user space, this kernel mode
-	 * driver should leave the coherency to be managed by user space,
-	 * simply return true here.
-	 */
-	if (obj->pat_set_by_user)
-		return true;
-
-	/*
-	 * Otherwise the pat_index should have been converted from cache_level
-	 * so that the following comparison is valid.
-	 */
-	return obj->pat_index == i915_gem_get_pat_index(obj_to_i915(obj), lvl);
-}
 
 struct drm_i915_gem_object *i915_gem_object_alloc(void)
 {
@@ -107,10 +77,6 @@ void i915_gem_object_init(struct drm_i915_gem_object *obj,
 	INIT_LIST_HEAD(&obj->vma.list);
 
 	INIT_LIST_HEAD(&obj->mm.link);
-
-#ifdef CONFIG_PROC_FS
-	INIT_LIST_HEAD(&obj->client_link);
-#endif
 
 	INIT_LIST_HEAD(&obj->lut_list);
 	spin_lock_init(&obj->lut_lock);
@@ -158,40 +124,9 @@ void i915_gem_object_set_cache_coherency(struct drm_i915_gem_object *obj,
 {
 	struct drm_i915_private *i915 = to_i915(obj->base.dev);
 
-	obj->pat_index = i915_gem_get_pat_index(i915, cache_level);
+	obj->cache_level = cache_level;
 
 	if (cache_level != I915_CACHE_NONE)
-		obj->cache_coherent = (I915_BO_CACHE_COHERENT_FOR_READ |
-				       I915_BO_CACHE_COHERENT_FOR_WRITE);
-	else if (HAS_LLC(i915))
-		obj->cache_coherent = I915_BO_CACHE_COHERENT_FOR_READ;
-	else
-		obj->cache_coherent = 0;
-
-	obj->cache_dirty =
-		!(obj->cache_coherent & I915_BO_CACHE_COHERENT_FOR_WRITE) &&
-		!IS_DGFX(i915);
-}
-
-/**
- * i915_gem_object_set_pat_index - set PAT index to be used in PTE encode
- * @obj: #drm_i915_gem_object
- * @pat_index: PAT index
- *
- * This is a clone of i915_gem_object_set_cache_coherency taking pat index
- * instead of cache_level as its second argument.
- */
-void i915_gem_object_set_pat_index(struct drm_i915_gem_object *obj,
-				   unsigned int pat_index)
-{
-	struct drm_i915_private *i915 = to_i915(obj->base.dev);
-
-	if (obj->pat_index == pat_index)
-		return;
-
-	obj->pat_index = pat_index;
-
-	if (pat_index != i915_gem_get_pat_index(i915, I915_CACHE_NONE))
 		obj->cache_coherent = (I915_BO_CACHE_COHERENT_FOR_READ |
 				       I915_BO_CACHE_COHERENT_FOR_WRITE);
 	else if (HAS_LLC(i915))
@@ -216,12 +151,6 @@ bool i915_gem_object_can_bypass_llc(struct drm_i915_gem_object *obj)
 		return false;
 
 	/*
-	 * Always flush cache for UMD objects at creation time.
-	 */
-	if (obj->pat_set_by_user)
-		return true;
-
-	/*
 	 * EHL and JSL add the 'Bypass LLC' MOCS entry, which should make it
 	 * possible for userspace to bypass the GTT caching bits set by the
 	 * kernel, as per the given object cache_level. This is troublesome
@@ -233,7 +162,7 @@ bool i915_gem_object_can_bypass_llc(struct drm_i915_gem_object *obj)
 	 * it, but since i915 takes the stance of always zeroing memory before
 	 * handing it to userspace, we need to prevent this.
 	 */
-	return (IS_JASPERLAKE(i915) || IS_ELKHARTLAKE(i915));
+	return IS_JSL_EHL(i915);
 }
 
 static void i915_gem_close_object(struct drm_gem_object *gem, struct drm_file *file)
@@ -298,10 +227,6 @@ void __i915_gem_free_object_rcu(struct rcu_head *head)
 	struct drm_i915_gem_object *obj =
 		container_of(head, typeof(*obj), rcu);
 	struct drm_i915_private *i915 = to_i915(obj->base.dev);
-
-	/* We need to keep this alive for RCU read access from fdinfo. */
-	if (obj->mm.n_placements > 1)
-		kfree(obj->mm.placements);
 
 	i915_gem_object_free(obj);
 
@@ -399,6 +324,9 @@ void __i915_gem_free_object(struct drm_i915_gem_object *obj)
 	if (obj->ops->release)
 		obj->ops->release(obj);
 
+	if (obj->mm.n_placements > 1)
+		kfree(obj->mm.placements);
+
 	if (obj->shares_resv_from)
 		i915_vm_resv_put(obj->shares_resv_from);
 
@@ -449,8 +377,6 @@ static void i915_gem_free_object(struct drm_gem_object *gem_obj)
 
 	GEM_BUG_ON(i915_gem_object_is_framebuffer(obj));
 
-	i915_drm_client_remove_object(obj);
-
 	/*
 	 * Before we free the object, make sure any pure RCU-only
 	 * read-side critical sections are complete, e.g.
@@ -460,8 +386,8 @@ static void i915_gem_free_object(struct drm_gem_object *gem_obj)
 	atomic_inc(&i915->mm.free_count);
 
 	/*
-	 * Since we require blocking on drm_i915_gem_object->vma.lock to unbind
-	 * the freed object from the GPU before releasing resources back to the
+	 * Since we require blocking on struct_mutex to unbind the freed
+	 * object from the GPU before releasing resources back to the
 	 * system, we can not do that directly from the RCU callback (which may
 	 * be a softirq context), but must instead then defer that work onto a
 	 * kthread. We use the RCU callback rather than move the freed object
@@ -477,24 +403,24 @@ static void i915_gem_free_object(struct drm_gem_object *gem_obj)
 void __i915_gem_object_flush_frontbuffer(struct drm_i915_gem_object *obj,
 					 enum fb_op_origin origin)
 {
-	struct i915_frontbuffer *front;
+	struct intel_frontbuffer *front;
 
-	front = i915_gem_object_frontbuffer_lookup(obj);
+	front = __intel_frontbuffer_get(obj);
 	if (front) {
-		intel_frontbuffer_flush(&front->base, origin);
-		i915_gem_object_frontbuffer_put(front);
+		intel_frontbuffer_flush(front, origin);
+		intel_frontbuffer_put(front);
 	}
 }
 
 void __i915_gem_object_invalidate_frontbuffer(struct drm_i915_gem_object *obj,
 					      enum fb_op_origin origin)
 {
-	struct i915_frontbuffer *front;
+	struct intel_frontbuffer *front;
 
-	front = i915_gem_object_frontbuffer_lookup(obj);
+	front = __intel_frontbuffer_get(obj);
 	if (front) {
-		intel_frontbuffer_invalidate(&front->base, origin);
-		i915_gem_object_frontbuffer_put(front);
+		intel_frontbuffer_invalidate(front, origin);
+		intel_frontbuffer_put(front);
 	}
 }
 
@@ -502,15 +428,17 @@ static void
 i915_gem_object_read_from_page_kmap(struct drm_i915_gem_object *obj, u64 offset, void *dst, int size)
 {
 	pgoff_t idx = offset >> PAGE_SHIFT;
+	void *src_map;
 	void *src_ptr;
 
-	src_ptr = kmap_local_page(i915_gem_object_get_page(obj, idx))
-	          + offset_in_page(offset);
+	src_map = kmap_atomic(i915_gem_object_get_page(obj, idx));
+
+	src_ptr = src_map + offset_in_page(offset);
 	if (!(obj->cache_coherent & I915_BO_CACHE_COHERENT_FOR_READ))
 		drm_clflush_virt_range(src_ptr, size);
 	memcpy(dst, src_ptr, size);
 
-	kunmap_local(src_ptr);
+	kunmap_atomic(src_map);
 }
 
 static void
@@ -875,30 +803,6 @@ bool i915_gem_object_needs_ccs_pages(struct drm_i915_gem_object *obj)
 	return lmem_placement;
 }
 
-static int i915_gem_vmap_object(struct drm_gem_object *gem_obj,
-				struct iosys_map *map)
-{
-	struct drm_i915_gem_object *obj = to_intel_bo(gem_obj);
-	void *vaddr;
-
-	vaddr = i915_gem_object_pin_map(obj, I915_MAP_WB);
-	if (IS_ERR(vaddr))
-		return PTR_ERR(vaddr);
-
-	iosys_map_set_vaddr(map, vaddr);
-
-	return 0;
-}
-
-static void i915_gem_vunmap_object(struct drm_gem_object *gem_obj,
-				   struct iosys_map *map)
-{
-	struct drm_i915_gem_object *obj = to_intel_bo(gem_obj);
-
-	i915_gem_object_flush_map(obj);
-	i915_gem_object_unpin_map(obj);
-}
-
 void i915_gem_init__objects(struct drm_i915_private *i915)
 {
 	INIT_WORK(&i915->mm.free_work, __i915_gem_free_work);
@@ -922,8 +826,6 @@ static const struct drm_gem_object_funcs i915_gem_object_funcs = {
 	.free = i915_gem_free_object,
 	.close = i915_gem_close_object,
 	.export = i915_gem_prime_export,
-	.vmap = i915_gem_vmap_object,
-	.vunmap = i915_gem_vunmap_object,
 };
 
 /**
@@ -973,7 +875,7 @@ int i915_gem_object_wait_moving_fence(struct drm_i915_gem_object *obj,
 	return ret < 0 ? ret : 0;
 }
 
-/*
+/**
  * i915_gem_object_has_unknown_state - Return true if the object backing pages are
  * in an unknown_state. This means that userspace must NEVER be allowed to touch
  * the pages, with either the GPU or CPU.

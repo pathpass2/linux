@@ -11,11 +11,9 @@
 #include <linux/dma-buf.h>
 #include <linux/scatterlist.h>
 #include <linux/shmem_fs.h>
-#include <linux/vmalloc.h>
 
 #include <drm/drm_gem.h>
 #include <drm/drm_prime.h>
-#include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 
 #include <xen/balloon.h>

@@ -14,8 +14,9 @@
 #define	nettel_h
 /****************************************************************************/
 
+
 /****************************************************************************/
-#if defined(CONFIG_NETtel) || defined(CONFIG_CLEOPATRA)
+#ifdef CONFIG_NETtel
 /****************************************************************************/
 
 #ifdef CONFIG_COLDFIRE
@@ -25,7 +26,7 @@
 #endif
 
 /*---------------------------------------------------------------------------*/
-#if defined(CONFIG_M5307) || defined(CONFIG_M5407)
+#if defined(CONFIG_M5307)
 /*
  *	NETtel/5307 based hardware first. DTR/DCD lines are wired to
  *	GPIO lines. Most of the LED's are driver through a latch
@@ -38,7 +39,7 @@
 
 #define	NETtel_LEDADDR	0x30400000
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 extern volatile unsigned short ppdata;
 
@@ -80,7 +81,7 @@ static __inline__ void mcf_setppdata(unsigned int mask, unsigned int bits)
 #define	MCFPP_DTR0	0x0040
 #define	MCFPP_DTR1	0x0000		/* Port 1 no DTR support */
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 /*
  *	These functions defined to give quasi generic access to the
  *	PPIO bits used for DTR/DCD.

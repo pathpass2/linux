@@ -631,6 +631,49 @@ unsigned long sm501_set_clock(struct device *dev,
 
 EXPORT_SYMBOL_GPL(sm501_set_clock);
 
+/* sm501_find_clock
+ *
+ * finds the closest available frequency for a given clock
+*/
+
+unsigned long sm501_find_clock(struct device *dev,
+			       int clksrc,
+			       unsigned long req_freq)
+{
+	struct sm501_devdata *sm = dev_get_drvdata(dev);
+	unsigned long sm501_freq; /* the frequency achieveable by the 501 */
+	struct sm501_clock to;
+
+	switch (clksrc) {
+	case SM501_CLOCK_P2XCLK:
+		if (sm->rev >= 0xC0) {
+			/* SM502 -> use the programmable PLL */
+			sm501_freq = (sm501_calc_pll(2 * req_freq,
+						     &to, 5) / 2);
+		} else {
+			sm501_freq = (sm501_select_clock(2 * req_freq,
+							 &to, 5) / 2);
+		}
+		break;
+
+	case SM501_CLOCK_V2XCLK:
+		sm501_freq = (sm501_select_clock(2 * req_freq, &to, 3) / 2);
+		break;
+
+	case SM501_CLOCK_MCLK:
+	case SM501_CLOCK_M1XCLK:
+		sm501_freq = sm501_select_clock(req_freq, &to, 3);
+		break;
+
+	default:
+		sm501_freq = 0;		/* error */
+	}
+
+	return sm501_freq;
+}
+
+EXPORT_SYMBOL_GPL(sm501_find_clock);
+
 static struct sm501_device *to_sm_device(struct platform_device *pdev)
 {
 	return container_of(pdev, struct sm501_device, pdev);
@@ -872,13 +915,12 @@ static void sm501_gpio_ensure_gpio(struct sm501_gpio_chip *smchip,
 	}
 }
 
-static int sm501_gpio_set(struct gpio_chip *chip, unsigned int offset,
-			  int value)
+static void sm501_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 
 {
 	struct sm501_gpio_chip *smchip = gpiochip_get_data(chip);
 	struct sm501_gpio *smgpio = smchip->ourgpio;
-	unsigned long bit = BIT(offset);
+	unsigned long bit = 1 << offset;
 	void __iomem *regs = smchip->regbase;
 	unsigned long save;
 	unsigned long val;
@@ -897,8 +939,6 @@ static int sm501_gpio_set(struct gpio_chip *chip, unsigned int offset,
 	sm501_gpio_ensure_gpio(smchip, bit);
 
 	spin_unlock_irqrestore(&smgpio->lock, save);
-
-	return 0;
 }
 
 static int sm501_gpio_input(struct gpio_chip *chip, unsigned offset)
@@ -906,7 +946,7 @@ static int sm501_gpio_input(struct gpio_chip *chip, unsigned offset)
 	struct sm501_gpio_chip *smchip = gpiochip_get_data(chip);
 	struct sm501_gpio *smgpio = smchip->ourgpio;
 	void __iomem *regs = smchip->regbase;
-	unsigned long bit = BIT(offset);
+	unsigned long bit = 1 << offset;
 	unsigned long save;
 	unsigned long ddr;
 
@@ -931,7 +971,7 @@ static int sm501_gpio_output(struct gpio_chip *chip,
 {
 	struct sm501_gpio_chip *smchip = gpiochip_get_data(chip);
 	struct sm501_gpio *smgpio = smchip->ourgpio;
-	unsigned long bit = BIT(offset);
+	unsigned long bit = 1 << offset;
 	void __iomem *regs = smchip->regbase;
 	unsigned long save;
 	unsigned long val;
@@ -1627,7 +1667,7 @@ static void sm501_pci_remove(struct pci_dev *dev)
 	pci_disable_device(dev);
 }
 
-static void sm501_plat_remove(struct platform_device *dev)
+static int sm501_plat_remove(struct platform_device *dev)
 {
 	struct sm501_devdata *sm = platform_get_drvdata(dev);
 
@@ -1635,6 +1675,8 @@ static void sm501_plat_remove(struct platform_device *dev)
 	iounmap(sm->regs);
 
 	release_mem_region(sm->io_res->start, 0x100);
+
+	return 0;
 }
 
 static const struct pci_device_id sm501_pci_tbl[] = {

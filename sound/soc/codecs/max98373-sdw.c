@@ -20,13 +20,17 @@
 #include "max98373.h"
 #include "max98373-sdw.h"
 
+struct sdw_stream_data {
+	struct sdw_stream_runtime *sdw_stream;
+};
+
 static const u32 max98373_sdw_cache_reg[] = {
 	MAX98373_R2054_MEAS_ADC_PVDD_CH_READBACK,
 	MAX98373_R2055_MEAS_ADC_THERM_CH_READBACK,
 	MAX98373_R20B6_BDE_CUR_STATE_READBACK,
 };
 
-static const struct reg_default max98373_reg[] = {
+static struct reg_default max98373_reg[] = {
 	{MAX98373_R0040_SCP_INIT_STAT_1, 0x00},
 	{MAX98373_R0041_SCP_INIT_MASK_1, 0x00},
 	{MAX98373_R0042_SCP_INIT_STAT_2, 0x00},
@@ -246,7 +250,7 @@ static const struct regmap_config max98373_sdw_regmap = {
 };
 
 /* Power management functions and structure */
-static int max98373_suspend(struct device *dev)
+static __maybe_unused int max98373_suspend(struct device *dev)
 {
 	struct max98373_priv *max98373 = dev_get_drvdata(dev);
 	int i;
@@ -262,7 +266,7 @@ static int max98373_suspend(struct device *dev)
 
 #define MAX98373_PROBE_TIMEOUT 5000
 
-static int max98373_resume(struct device *dev)
+static __maybe_unused int max98373_resume(struct device *dev)
 {
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
 	struct max98373_priv *max98373 = dev_get_drvdata(dev);
@@ -292,8 +296,8 @@ regmap_sync:
 }
 
 static const struct dev_pm_ops max98373_pm = {
-	SYSTEM_SLEEP_PM_OPS(max98373_suspend, max98373_resume)
-	RUNTIME_PM_OPS(max98373_suspend, max98373_resume, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(max98373_suspend, max98373_resume)
+	SET_RUNTIME_PM_OPS(max98373_suspend, max98373_resume, NULL)
 };
 
 static int max98373_read_prop(struct sdw_slave *slave)
@@ -361,16 +365,27 @@ static int max98373_io_init(struct sdw_slave *slave)
 	struct device *dev = &slave->dev;
 	struct max98373_priv *max98373 = dev_get_drvdata(dev);
 
-	regcache_cache_only(max98373->regmap, false);
-	if (max98373->first_hw_init)
+	if (max98373->first_hw_init) {
+		regcache_cache_only(max98373->regmap, false);
 		regcache_cache_bypass(max98373->regmap, true);
+	}
 
 	/*
-	 * PM runtime status is marked as 'active' only when a Slave reports as Attached
+	 * PM runtime is only enabled when a Slave reports as Attached
 	 */
-	if (!max98373->first_hw_init)
+	if (!max98373->first_hw_init) {
+		/* set autosuspend parameters */
+		pm_runtime_set_autosuspend_delay(dev, 3000);
+		pm_runtime_use_autosuspend(dev);
+
 		/* update count of parent 'active' children */
 		pm_runtime_set_active(dev);
+
+		/* make sure the device does not suspend immediately */
+		pm_runtime_mark_last_busy(dev);
+
+		pm_runtime_enable(dev);
+	}
 
 	pm_runtime_get_noresume(dev);
 
@@ -458,6 +473,7 @@ static int max98373_io_init(struct sdw_slave *slave)
 	max98373->first_hw_init = true;
 	max98373->hw_init = true;
 
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return 0;
@@ -520,12 +536,12 @@ static int max98373_sdw_dai_hw_params(struct snd_pcm_substream *substream,
 		snd_soc_component_get_drvdata(component);
 	struct sdw_stream_config stream_config = {0};
 	struct sdw_port_config port_config = {0};
-	struct sdw_stream_runtime *sdw_stream;
+	struct sdw_stream_data *stream;
 	int ret, chan_sz, sampling_rate;
 
-	sdw_stream = snd_soc_dai_get_dma_data(dai, substream);
+	stream = snd_soc_dai_get_dma_data(dai, substream);
 
-	if (!sdw_stream)
+	if (!stream)
 		return -EINVAL;
 
 	if (!max98373->slave)
@@ -549,7 +565,7 @@ static int max98373_sdw_dai_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	ret = sdw_stream_add_slave(max98373->slave, &stream_config,
-				   &port_config, 1, sdw_stream);
+				   &port_config, 1, stream->sdw_stream);
 	if (ret) {
 		dev_err(dai->dev, "Unable to configure port\n");
 		return ret;
@@ -648,20 +664,32 @@ static int max98373_pcm_hw_free(struct snd_pcm_substream *substream,
 	struct snd_soc_component *component = dai->component;
 	struct max98373_priv *max98373 =
 		snd_soc_component_get_drvdata(component);
-	struct sdw_stream_runtime *sdw_stream =
+	struct sdw_stream_data *stream =
 		snd_soc_dai_get_dma_data(dai, substream);
 
 	if (!max98373->slave)
 		return -EINVAL;
 
-	sdw_stream_remove_slave(max98373->slave, sdw_stream);
+	sdw_stream_remove_slave(max98373->slave, stream->sdw_stream);
 	return 0;
 }
 
 static int max98373_set_sdw_stream(struct snd_soc_dai *dai,
 				   void *sdw_stream, int direction)
 {
-	snd_soc_dai_dma_data_set(dai, direction, sdw_stream);
+	struct sdw_stream_data *stream;
+
+	if (!sdw_stream)
+		return 0;
+
+	stream = kzalloc(sizeof(*stream), GFP_KERNEL);
+	if (!stream)
+		return -ENOMEM;
+
+	stream->sdw_stream = sdw_stream;
+
+	/* Use tx_mask or rx_mask to configure stream tag and set dma_data */
+	snd_soc_dai_dma_data_set(dai, direction, stream);
 
 	return 0;
 }
@@ -669,7 +697,11 @@ static int max98373_set_sdw_stream(struct snd_soc_dai *dai,
 static void max98373_shutdown(struct snd_pcm_substream *substream,
 			      struct snd_soc_dai *dai)
 {
+	struct sdw_stream_data *stream;
+
+	stream = snd_soc_dai_get_dma_data(dai, substream);
 	snd_soc_dai_set_dma_data(dai, substream, NULL);
+	kfree(stream);
 }
 
 static int max98373_sdw_set_tdm_slot(struct snd_soc_dai *dai,
@@ -741,8 +773,6 @@ static int max98373_init(struct sdw_slave *slave, struct regmap *regmap)
 	max98373->regmap = regmap;
 	max98373->slave = slave;
 
-	regcache_cache_only(max98373->regmap, true);
-
 	max98373->cache_num = ARRAY_SIZE(max98373_sdw_cache_reg);
 	max98373->cache = devm_kcalloc(dev, max98373->cache_num,
 				       sizeof(*max98373->cache),
@@ -763,27 +793,10 @@ static int max98373_init(struct sdw_slave *slave, struct regmap *regmap)
 	ret = devm_snd_soc_register_component(dev, &soc_codec_dev_max98373_sdw,
 					      max98373_sdw_dai,
 					      ARRAY_SIZE(max98373_sdw_dai));
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(dev, "Failed to register codec: %d\n", ret);
-		return ret;
-	}
 
-	/* set autosuspend parameters */
-	pm_runtime_set_autosuspend_delay(dev, 3000);
-	pm_runtime_use_autosuspend(dev);
-
-	/* make sure the device does not suspend immediately */
-	pm_runtime_mark_last_busy(dev);
-
-	pm_runtime_enable(dev);
-
-	/* important note: the device is NOT tagged as 'active' and will remain
-	 * 'suspended' until the hardware is enumerated/initialized. This is required
-	 * to make sure the ASoC framework use of pm_runtime_get_sync() does not silently
-	 * fail with -EACCESS because of race conditions between card creation and enumeration
-	 */
-
-	return 0;
+	return ret;
 }
 
 static int max98373_update_status(struct sdw_slave *slave,
@@ -820,7 +833,7 @@ static int max98373_bus_config(struct sdw_slave *slave,
  * slave_ops: callbacks for get_clock_stop_mode, clock_stop and
  * port_prep are not defined for now
  */
-static const struct sdw_slave_ops max98373_slave_ops = {
+static struct sdw_slave_ops max98373_slave_ops = {
 	.read_prop = max98373_read_prop,
 	.update_status = max98373_update_status,
 	.bus_config = max98373_bus_config,
@@ -841,7 +854,10 @@ static int max98373_sdw_probe(struct sdw_slave *slave,
 
 static int max98373_sdw_remove(struct sdw_slave *slave)
 {
-	pm_runtime_disable(&slave->dev);
+	struct max98373_priv *max98373 = dev_get_drvdata(&slave->dev);
+
+	if (max98373->first_hw_init)
+		pm_runtime_disable(&slave->dev);
 
 	return 0;
 }
@@ -871,9 +887,10 @@ MODULE_DEVICE_TABLE(sdw, max98373_id);
 static struct sdw_driver max98373_sdw_driver = {
 	.driver = {
 		.name = "max98373",
+		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(max98373_of_match),
 		.acpi_match_table = ACPI_PTR(max98373_acpi_match),
-		.pm = pm_ptr(&max98373_pm),
+		.pm = &max98373_pm,
 	},
 	.probe = max98373_sdw_probe,
 	.remove = max98373_sdw_remove,

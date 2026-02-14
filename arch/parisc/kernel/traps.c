@@ -31,13 +31,12 @@
 #include <linux/uaccess.h>
 #include <linux/kdebug.h>
 #include <linux/kfence.h>
-#include <linux/perf_event.h>
 
 #include <asm/assembly.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/traps.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/atomic.h>
 #include <asm/smp.h>
 #include <asm/pdc.h>
@@ -47,12 +46,6 @@
 #include <asm/cacheflush.h>
 #include <linux/kgdb.h>
 #include <linux/kprobes.h>
-
-#include "unaligned.h"
-
-#if defined(CONFIG_LIGHTWEIGHT_SPINLOCK_CHECK)
-#include <asm/spinlock.h>
-#endif
 
 #include "../math-emu/math-emu.h"	/* for handle_fpe() */
 
@@ -298,27 +291,21 @@ static void handle_break(struct pt_regs *regs)
 	}
 
 #ifdef CONFIG_KPROBES
-	if (unlikely(iir == PARISC_KPROBES_BREAK_INSN && !user_mode(regs))) {
+	if (unlikely(iir == PARISC_KPROBES_BREAK_INSN)) {
 		parisc_kprobe_break_handler(regs);
 		return;
 	}
-	if (unlikely(iir == PARISC_KPROBES_BREAK_INSN2 && !user_mode(regs))) {
+	if (unlikely(iir == PARISC_KPROBES_BREAK_INSN2)) {
 		parisc_kprobe_ss_handler(regs);
 		return;
 	}
 #endif
 
 #ifdef CONFIG_KGDB
-	if (unlikely((iir == PARISC_KGDB_COMPILED_BREAK_INSN ||
-		iir == PARISC_KGDB_BREAK_INSN)) && !user_mode(regs)) {
+	if (unlikely(iir == PARISC_KGDB_COMPILED_BREAK_INSN ||
+		iir == PARISC_KGDB_BREAK_INSN)) {
 		kgdb_handle_exception(9, SIGTRAP, 0, regs);
 		return;
-	}
-#endif
-
-#ifdef CONFIG_LIGHTWEIGHT_SPINLOCK_CHECK
-        if ((iir == SPINLOCK_BREAK_INSN) && !user_mode(regs)) {
-		die_if_kernel("Spinlock was trashed", regs, 1);
 	}
 #endif
 
@@ -338,7 +325,10 @@ static void default_trap(int code, struct pt_regs *regs)
 	show_regs(regs);
 }
 
-static void transfer_pim_to_trap_frame(struct pt_regs *regs)
+void (*cpu_lpmc) (int code, struct pt_regs *regs) __read_mostly = default_trap;
+
+
+void transfer_pim_to_trap_frame(struct pt_regs *regs)
 {
     register int i;
     extern unsigned int hpmc_pim_data[];
@@ -507,7 +497,7 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 	if (((unsigned long)regs->iaoq[0] & 3) &&
 	    ((unsigned long)regs->iasq[0] != (unsigned long)regs->sr[7])) { 
 		/* Kill the user process later */
-		regs->iaoq[0] = 0 | PRIV_USER;
+		regs->iaoq[0] = 0 | 3;
 		regs->iaoq[1] = regs->iaoq[0] + 4;
 		regs->iasq[0] = regs->iasq[1] = regs->sr[7];
 		regs->gr[0] &= ~PSW_B;
@@ -557,7 +547,7 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 		
 		flush_cache_all();
 		flush_tlb_all();
-		default_trap(code, regs);
+		cpu_lpmc(5, regs);
 		return;
 
 	case  PARISC_ITLB_TRAP:
@@ -634,7 +624,6 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 		/* Assist Exception Trap, i.e. floating point exception. */
 		die_if_kernel("Floating point exception", regs, 0); /* quiet */
 		__inc_irq_stat(irq_fpassist_count);
-		perf_sw_event(PERF_COUNT_SW_EMULATION_FAULTS, 1, regs, 0);
 		handle_fpe(regs);
 		return;
 
@@ -801,13 +790,14 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 }
 
 
-static void __init initialize_ivt(const void *iva)
+void __init initialize_ivt(const void *iva)
 {
 	extern const u32 os_hpmc[];
 
 	int i;
 	u32 check = 0;
 	u32 *ivap;
+	u32 *hpmcp;
 	u32 instr;
 
 	if (strcmp((const char *)iva, "cows can fly"))
@@ -839,6 +829,8 @@ static void __init initialize_ivt(const void *iva)
 
 	/* Setup IVA and compute checksum for HPMC handler */
 	ivap[6] = (u32)__pa(os_hpmc);
+
+	hpmcp = (u32 *)os_hpmc;
 
 	for (i=0; i<8; i++)
 	    check += ivap[i];

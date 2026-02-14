@@ -34,7 +34,6 @@ int __init read_initrd(void)
 
 static int __init uml_initrd_setup(char *line, int *add)
 {
-	*add = 0;
 	initrd = line;
 	return 0;
 }

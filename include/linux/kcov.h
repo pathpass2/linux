@@ -21,8 +21,6 @@ enum kcov_mode {
 	KCOV_MODE_TRACE_PC = 2,
 	/* Collecting comparison operands mode. */
 	KCOV_MODE_TRACE_CMP = 3,
-	/* The process owns a KCOV remote reference. */
-	KCOV_MODE_REMOTE = 4,
 };
 
 #define KCOV_IN_CTXSW	(1 << 30)
@@ -64,32 +62,15 @@ static inline void kcov_remote_start_usb(u64 id)
 
 static inline void kcov_remote_start_usb_softirq(u64 id)
 {
-	if (in_serving_softirq() && !in_hardirq())
+	if (in_serving_softirq())
 		kcov_remote_start_usb(id);
 }
 
 static inline void kcov_remote_stop_softirq(void)
 {
-	if (in_serving_softirq() && !in_hardirq())
+	if (in_serving_softirq())
 		kcov_remote_stop();
 }
-
-#ifdef CONFIG_64BIT
-typedef unsigned long kcov_u64;
-#else
-typedef unsigned long long kcov_u64;
-#endif
-
-void __sanitizer_cov_trace_pc(void);
-void __sanitizer_cov_trace_cmp1(u8 arg1, u8 arg2);
-void __sanitizer_cov_trace_cmp2(u16 arg1, u16 arg2);
-void __sanitizer_cov_trace_cmp4(u32 arg1, u32 arg2);
-void __sanitizer_cov_trace_cmp8(kcov_u64 arg1, kcov_u64 arg2);
-void __sanitizer_cov_trace_const_cmp1(u8 arg1, u8 arg2);
-void __sanitizer_cov_trace_const_cmp2(u16 arg1, u16 arg2);
-void __sanitizer_cov_trace_const_cmp4(u32 arg1, u32 arg2);
-void __sanitizer_cov_trace_const_cmp8(kcov_u64 arg1, kcov_u64 arg2);
-void __sanitizer_cov_trace_switch(kcov_u64 val, void *cases);
 
 #else
 

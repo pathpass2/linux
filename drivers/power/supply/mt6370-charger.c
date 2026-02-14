@@ -324,7 +324,7 @@ static int mt6370_chg_toggle_cfo(struct mt6370_priv *priv)
 
 	if (fl_strobe) {
 		dev_err(priv->dev, "Flash led is still in strobe mode\n");
-		return -EINVAL;
+		return ret;
 	}
 
 	/* cfo off */
@@ -624,6 +624,13 @@ static enum power_supply_property mt6370_chg_properties[] = {
 	POWER_SUPPLY_PROP_USB_TYPE,
 };
 
+static enum power_supply_usb_type mt6370_chg_usb_types[] = {
+	POWER_SUPPLY_USB_TYPE_UNKNOWN,
+	POWER_SUPPLY_USB_TYPE_SDP,
+	POWER_SUPPLY_USB_TYPE_CDP,
+	POWER_SUPPLY_USB_TYPE_DCP,
+};
+
 static const struct power_supply_desc mt6370_chg_psy_desc = {
 	.name = "mt6370-charger",
 	.type = POWER_SUPPLY_TYPE_USB,
@@ -632,10 +639,8 @@ static const struct power_supply_desc mt6370_chg_psy_desc = {
 	.get_property = mt6370_chg_get_property,
 	.set_property = mt6370_chg_set_property,
 	.property_is_writeable = mt6370_chg_property_is_writeable,
-	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_SDP) |
-		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
-		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
-		     BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+	.usb_types = mt6370_chg_usb_types,
+	.num_usb_types = ARRAY_SIZE(mt6370_chg_usb_types),
 };
 
 static const struct regulator_ops mt6370_chg_otg_ops = {
@@ -752,7 +757,7 @@ static int mt6370_chg_init_psy(struct mt6370_priv *priv)
 {
 	struct power_supply_config cfg = {
 		.drv_data = priv,
-		.fwnode = dev_fwnode(priv->dev),
+		.of_node = dev_of_node(priv->dev),
 	};
 
 	priv->psy = devm_power_supply_register(priv->dev, &mt6370_chg_psy_desc,
@@ -761,10 +766,18 @@ static int mt6370_chg_init_psy(struct mt6370_priv *priv)
 	return PTR_ERR_OR_ZERO(priv->psy);
 }
 
+static void mt6370_chg_destroy_attach_lock(void *data)
+{
+	struct mutex *attach_lock = data;
+
+	mutex_destroy(attach_lock);
+}
+
 static void mt6370_chg_destroy_wq(void *data)
 {
 	struct workqueue_struct *wq = data;
 
+	flush_workqueue(wq);
 	destroy_workqueue(wq);
 }
 
@@ -836,7 +849,9 @@ static int mt6370_chg_init_irq(struct mt6370_priv *priv)
 		ret = platform_get_irq_byname(to_platform_device(priv->dev),
 					      mt6370_chg_irqs[i].name);
 		if (ret < 0)
-			return ret;
+			return dev_err_probe(priv->dev, ret,
+					     "Failed to get irq %s\n",
+					     mt6370_chg_irqs[i].name);
 
 		priv->irq_nums[i] = ret;
 		ret = devm_request_threaded_irq(priv->dev, ret, NULL,
@@ -887,19 +902,22 @@ static int mt6370_chg_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to init psy\n");
 
-	ret = devm_mutex_init(dev, &priv->attach_lock);
+	mutex_init(&priv->attach_lock);
+	ret = devm_add_action_or_reset(dev, mt6370_chg_destroy_attach_lock,
+				       &priv->attach_lock);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "Failed to init attach lock\n");
 
 	priv->attach = MT6370_ATTACH_STAT_DETACH;
 
 	priv->wq = create_singlethread_workqueue(dev_name(priv->dev));
 	if (!priv->wq)
-		return -ENOMEM;
+		return dev_err_probe(dev, -ENOMEM,
+				     "Failed to create workqueue\n");
 
 	ret = devm_add_action_or_reset(dev, mt6370_chg_destroy_wq, priv->wq);
 	if (ret)
-		return ret;
+		return dev_err_probe(dev, ret, "Failed to init wq\n");
 
 	ret = devm_work_autocancel(dev, &priv->bc12_work, mt6370_chg_bc12_work_func);
 	if (ret)

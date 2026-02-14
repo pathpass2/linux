@@ -50,6 +50,9 @@
 #define IICB0MDSC	BIT(7)		/* Bus Mode */
 #define IICB0SLSE	BIT(1)		/* Start condition output */
 
+#define bit_setl(addr, val)		writel(readl(addr) | (val), (addr))
+#define bit_clrl(addr, val)		writel(readl(addr) & ~(val), (addr))
+
 struct rzv2m_i2c_priv {
 	void __iomem *base;
 	struct i2c_adapter adap;
@@ -74,16 +77,6 @@ static const struct bitrate_config bitrate_configs[] = {
 	[RZV2M_I2C_100K] = { 47, 3450 },
 	[RZV2M_I2C_400K] = { 52, 900 },
 };
-
-static inline void bit_setl(void __iomem *addr, u32 val)
-{
-	writel(readl(addr) | val, addr);
-}
-
-static inline void bit_clrl(void __iomem *addr, u32 val)
-{
-	writel(readl(addr) & ~val, addr);
-}
 
 static irqreturn_t rzv2m_i2c_tia_irq_handler(int this_irq, void *dev_id)
 {
@@ -287,15 +280,20 @@ static int rzv2m_i2c_send_address(struct rzv2m_i2c_priv *priv,
 	int ret;
 
 	if (msg->flags & I2C_M_TEN) {
-		/* 10-bit address: Send 1st address(extend code) */
-		addr = i2c_10bit_addr_hi_from_msg(msg);
+		/*
+		 * 10-bit address
+		 *   addr_1: 5'b11110 | addr[9:8] | (R/nW)
+		 *   addr_2: addr[7:0]
+		 */
+		addr = 0xf0 | ((msg->addr & GENMASK(9, 8)) >> 7);
+		addr |= !!(msg->flags & I2C_M_RD);
+		/* Send 1st address(extend code) */
 		ret = rzv2m_i2c_write_with_ack(priv, addr);
 		if (ret)
 			return ret;
 
-		/* 10-bit address: Send 2nd address */
-		addr = i2c_10bit_addr_lo_from_msg(msg);
-		ret = rzv2m_i2c_write_with_ack(priv, addr);
+		/* Send 2nd address */
+		ret = rzv2m_i2c_write_with_ack(priv, msg->addr & 0xff);
 	} else {
 		/* 7-bit address */
 		addr = i2c_8bit_addr_from_msg(msg);
@@ -316,8 +314,8 @@ static int rzv2m_i2c_stop_condition(struct rzv2m_i2c_priv *priv)
 				  100, jiffies_to_usecs(priv->adap.timeout));
 }
 
-static int rzv2m_i2c_xfer_msg(struct rzv2m_i2c_priv *priv,
-			      struct i2c_msg *msg, int stop)
+static int rzv2m_i2c_master_xfer_msg(struct rzv2m_i2c_priv *priv,
+				  struct i2c_msg *msg, int stop)
 {
 	unsigned int count = 0;
 	int ret, read = !!(msg->flags & I2C_M_RD);
@@ -346,8 +344,8 @@ static int rzv2m_i2c_xfer_msg(struct rzv2m_i2c_priv *priv,
 	return ret;
 }
 
-static int rzv2m_i2c_xfer(struct i2c_adapter *adap,
-			  struct i2c_msg *msgs, int num)
+static int rzv2m_i2c_master_xfer(struct i2c_adapter *adap,
+				 struct i2c_msg *msgs, int num)
 {
 	struct rzv2m_i2c_priv *priv = i2c_get_adapdata(adap);
 	struct device *dev = priv->adap.dev.parent;
@@ -365,13 +363,14 @@ static int rzv2m_i2c_xfer(struct i2c_adapter *adap,
 
 	/* I2C main transfer */
 	for (i = 0; i < num; i++) {
-		ret = rzv2m_i2c_xfer_msg(priv, &msgs[i], i == (num - 1));
+		ret = rzv2m_i2c_master_xfer_msg(priv, &msgs[i], i == (num - 1));
 		if (ret < 0)
 			goto out;
 	}
 	ret = num;
 
 out:
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return ret;
@@ -383,26 +382,12 @@ static u32 rzv2m_i2c_func(struct i2c_adapter *adap)
 	       I2C_FUNC_10BIT_ADDR;
 }
 
-static int rzv2m_i2c_disable(struct device *dev, struct rzv2m_i2c_priv *priv)
-{
-	int ret;
-
-	ret = pm_runtime_resume_and_get(dev);
-	if (ret < 0)
-		return ret;
-
-	bit_clrl(priv->base + IICB0CTL0, IICB0IICE);
-	pm_runtime_put(dev);
-
-	return 0;
-}
-
 static const struct i2c_adapter_quirks rzv2m_i2c_quirks = {
 	.flags = I2C_AQ_NO_ZERO_LEN,
 };
 
-static const struct i2c_algorithm rzv2m_i2c_algo = {
-	.xfer = rzv2m_i2c_xfer,
+static struct i2c_algorithm rzv2m_i2c_algo = {
+	.master_xfer = rzv2m_i2c_master_xfer,
 	.functionality = rzv2m_i2c_func,
 };
 
@@ -469,29 +454,37 @@ static int rzv2m_i2c_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, priv);
 
 	ret = i2c_add_numbered_adapter(adap);
-	if (ret < 0) {
-		rzv2m_i2c_disable(dev, priv);
+	if (ret < 0)
 		pm_runtime_disable(dev);
-	}
 
 	return ret;
 }
 
-static void rzv2m_i2c_remove(struct platform_device *pdev)
+static int rzv2m_i2c_remove(struct platform_device *pdev)
 {
 	struct rzv2m_i2c_priv *priv = platform_get_drvdata(pdev);
 	struct device *dev = priv->adap.dev.parent;
 
 	i2c_del_adapter(&priv->adap);
-	rzv2m_i2c_disable(dev, priv);
+	bit_clrl(priv->base + IICB0CTL0, IICB0IICE);
 	pm_runtime_disable(dev);
+
+	return 0;
 }
 
 static int rzv2m_i2c_suspend(struct device *dev)
 {
 	struct rzv2m_i2c_priv *priv = dev_get_drvdata(dev);
+	int ret;
 
-	return rzv2m_i2c_disable(dev, priv);
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+
+	bit_clrl(priv->base + IICB0CTL0, IICB0IICE);
+	pm_runtime_put(dev);
+
+	return 0;
 }
 
 static int rzv2m_i2c_resume(struct device *dev)
@@ -530,7 +523,7 @@ static struct platform_driver rzv2m_i2c_driver = {
 		.pm = pm_sleep_ptr(&rzv2m_i2c_pm_ops),
 	},
 	.probe	= rzv2m_i2c_probe,
-	.remove = rzv2m_i2c_remove,
+	.remove	= rzv2m_i2c_remove,
 };
 module_platform_driver(rzv2m_i2c_driver);
 

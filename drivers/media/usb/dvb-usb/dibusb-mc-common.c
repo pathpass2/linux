@@ -8,7 +8,6 @@
 
 #include "dibusb.h"
 
-MODULE_DESCRIPTION("Common methods for DIB3000MC");
 MODULE_LICENSE("GPL");
 
 /* 3000MC/P stuff */

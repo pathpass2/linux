@@ -12,7 +12,9 @@
 #include <linux/pm.h>
 #include <linux/ahci_platform.h>
 #include <linux/device.h>
+#include <linux/of_address.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/libata.h>
 #include "ahci.h"
@@ -88,7 +90,7 @@ MODULE_DEVICE_TABLE(acpi, ahci_qoriq_acpi_match);
 static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 			  unsigned long deadline)
 {
-	const unsigned int *timing = sata_ehc_deb_timing(&link->eh_context);
+	const unsigned long *timing = sata_ehc_deb_timing(&link->eh_context);
 	void __iomem *port_mmio = ahci_port_base(link->ap);
 	u32 px_cmd, px_is, px_val;
 	struct ata_port *ap = link->ap;
@@ -146,8 +148,8 @@ static int ahci_qoriq_hardreset(struct ata_link *link, unsigned int *class,
 }
 
 static struct ata_port_operations ahci_qoriq_ops = {
-	.inherits		= &ahci_ops,
-	.reset.hardreset	= ahci_qoriq_hardreset,
+	.inherits	= &ahci_ops,
+	.hardreset	= ahci_qoriq_hardreset,
 };
 
 static const struct ata_port_info ahci_qoriq_port_info = {
@@ -157,7 +159,7 @@ static const struct ata_port_info ahci_qoriq_port_info = {
 	.port_ops	= &ahci_qoriq_ops,
 };
 
-static const struct scsi_host_template ahci_qoriq_sht = {
+static struct scsi_host_template ahci_qoriq_sht = {
 	AHCI_SHT(DRV_NAME),
 };
 

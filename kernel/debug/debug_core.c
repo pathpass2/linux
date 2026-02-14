@@ -837,6 +837,10 @@ kgdb_handle_exception(int evector, int signo, int ecode, struct pt_regs *regs)
 {
 	struct kgdb_state kgdb_var;
 	struct kgdb_state *ks = &kgdb_var;
+	int ret = 0;
+
+	if (arch_kgdb_ops.enable_nmi)
+		arch_kgdb_ops.enable_nmi(0);
 	/*
 	 * Avoid entering the debugger if we were triggered due to an oops
 	 * but panic_timeout indicates the system should automatically
@@ -854,11 +858,15 @@ kgdb_handle_exception(int evector, int signo, int ecode, struct pt_regs *regs)
 	ks->linux_regs		= regs;
 
 	if (kgdb_reenter_check(ks))
-		return 0; /* Ouch, double exception ! */
+		goto out; /* Ouch, double exception ! */
 	if (kgdb_info[ks->cpu].enter_kgdb != 0)
-		return 0;
+		goto out;
 
-	return kgdb_cpu_enter(ks, regs, DCPU_WANT_MASTER);
+	ret = kgdb_cpu_enter(ks, regs, DCPU_WANT_MASTER);
+out:
+	if (arch_kgdb_ops.enable_nmi)
+		arch_kgdb_ops.enable_nmi(1);
+	return ret;
 }
 NOKPROBE_SYMBOL(kgdb_handle_exception);
 
@@ -960,7 +968,7 @@ static int __init opt_kgdb_con(char *str)
 early_param("kgdbcon", opt_kgdb_con);
 
 #ifdef CONFIG_MAGIC_SYSRQ
-static void sysrq_handle_dbg(u8 key)
+static void sysrq_handle_dbg(int key)
 {
 	if (!dbg_io_ops) {
 		pr_crit("ERROR: No KGDB I/O module available\n");
@@ -997,9 +1005,6 @@ void kgdb_panic(const char *msg)
 	 */
 	if (panic_timeout)
 		return;
-
-	debug_locks_off();
-	console_flush_on_panic(CONSOLE_FLUSH_PENDING);
 
 	if (dbg_kdb_mode)
 		kdb_printf("PANIC: %s\n", msg);

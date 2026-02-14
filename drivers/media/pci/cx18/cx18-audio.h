@@ -4,7 +4,7 @@
  *
  *  Derived from ivtv-audio.c
  *
- *  Copyright (C) 2007  Hans Verkuil <hverkuil@kernel.org>
+ *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  */
 
 int cx18_audio_set_io(struct cx18 *cx);

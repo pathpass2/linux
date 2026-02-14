@@ -130,19 +130,6 @@ static netdev_tx_t vcan_tx(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 }
 
-static void vcan_set_cap_info(struct net_device *dev)
-{
-	u32 can_cap = CAN_CAP_CC;
-
-	if (dev->mtu > CAN_MTU)
-		can_cap |= CAN_CAP_FD;
-
-	if (dev->mtu >= CANXL_MIN_MTU)
-		can_cap |= CAN_CAP_XL;
-
-	can_set_cap(dev, can_cap);
-}
-
 static int vcan_change_mtu(struct net_device *dev, int new_mtu)
 {
 	/* Do not allow changing the MTU while running */
@@ -153,8 +140,7 @@ static int vcan_change_mtu(struct net_device *dev, int new_mtu)
 	    !can_is_canxl_dev_mtu(new_mtu))
 		return -EINVAL;
 
-	WRITE_ONCE(dev->mtu, new_mtu);
-	vcan_set_cap_info(dev);
+	dev->mtu = new_mtu;
 	return 0;
 }
 
@@ -170,13 +156,12 @@ static const struct ethtool_ops vcan_ethtool_ops = {
 static void vcan_setup(struct net_device *dev)
 {
 	dev->type		= ARPHRD_CAN;
-	dev->mtu		= CANXL_MTU;
+	dev->mtu		= CANFD_MTU;
 	dev->hard_header_len	= 0;
 	dev->addr_len		= 0;
 	dev->tx_queue_len	= 0;
 	dev->flags		= IFF_NOARP;
 	can_set_ml_priv(dev, netdev_priv(dev));
-	vcan_set_cap_info(dev);
 
 	/* set flags according to driver capabilities */
 	if (echo)

@@ -7,12 +7,10 @@
  * Copyright (C) 2015, Motorola Mobility
  */
 
-#include <linux/bio.h>
-#include <linux/export.h>
-#include <linux/module.h>
-#include <linux/namei.h>
 #include <linux/pagemap.h>
-
+#include <linux/module.h>
+#include <linux/bio.h>
+#include <linux/namei.h>
 #include "fscrypt_private.h"
 
 /**
@@ -47,71 +45,50 @@ bool fscrypt_decrypt_bio(struct bio *bio)
 }
 EXPORT_SYMBOL(fscrypt_decrypt_bio);
 
-struct fscrypt_zero_done {
-	atomic_t		pending;
-	blk_status_t		status;
-	struct completion	done;
-};
-
-static void fscrypt_zeroout_range_done(struct fscrypt_zero_done *done)
-{
-	if (atomic_dec_and_test(&done->pending))
-		complete(&done->done);
-}
-
-static void fscrypt_zeroout_range_end_io(struct bio *bio)
-{
-	struct fscrypt_zero_done *done = bio->bi_private;
-
-	if (bio->bi_status)
-		cmpxchg(&done->status, 0, bio->bi_status);
-	fscrypt_zeroout_range_done(done);
-	bio_put(bio);
-}
-
 static int fscrypt_zeroout_range_inline_crypt(const struct inode *inode,
-					      pgoff_t lblk, sector_t sector,
+					      pgoff_t lblk, sector_t pblk,
 					      unsigned int len)
 {
 	const unsigned int blockbits = inode->i_blkbits;
 	const unsigned int blocks_per_page = 1 << (PAGE_SHIFT - blockbits);
-	struct fscrypt_zero_done done = {
-		.pending	= ATOMIC_INIT(1),
-		.done		= COMPLETION_INITIALIZER_ONSTACK(done.done),
-	};
+	struct bio *bio;
+	int ret, err = 0;
+	int num_pages = 0;
+
+	/* This always succeeds since __GFP_DIRECT_RECLAIM is set. */
+	bio = bio_alloc(inode->i_sb->s_bdev, BIO_MAX_VECS, REQ_OP_WRITE,
+			GFP_NOFS);
 
 	while (len) {
-		struct bio *bio;
-		unsigned int n;
+		unsigned int blocks_this_page = min(len, blocks_per_page);
+		unsigned int bytes_this_page = blocks_this_page << blockbits;
 
-		bio = bio_alloc(inode->i_sb->s_bdev, BIO_MAX_VECS, REQ_OP_WRITE,
-				GFP_NOFS);
-		bio->bi_iter.bi_sector = sector;
-		bio->bi_private = &done;
-		bio->bi_end_io = fscrypt_zeroout_range_end_io;
-		fscrypt_set_bio_crypt_ctx(bio, inode, lblk, GFP_NOFS);
-
-		for (n = 0; n < BIO_MAX_VECS; n++) {
-			unsigned int blocks_this_page =
-				min(len, blocks_per_page);
-			unsigned int bytes_this_page = blocks_this_page << blockbits;
-
-			__bio_add_page(bio, ZERO_PAGE(0), bytes_this_page, 0);
-			len -= blocks_this_page;
-			lblk += blocks_this_page;
-			sector += (bytes_this_page >> SECTOR_SHIFT);
-			if (!len || !fscrypt_mergeable_bio(bio, inode, lblk))
-				break;
+		if (num_pages == 0) {
+			fscrypt_set_bio_crypt_ctx(bio, inode, lblk, GFP_NOFS);
+			bio->bi_iter.bi_sector =
+					pblk << (blockbits - SECTOR_SHIFT);
 		}
-
-		atomic_inc(&done.pending);
-		blk_crypto_submit_bio(bio);
+		ret = bio_add_page(bio, ZERO_PAGE(0), bytes_this_page, 0);
+		if (WARN_ON(ret != bytes_this_page)) {
+			err = -EIO;
+			goto out;
+		}
+		num_pages++;
+		len -= blocks_this_page;
+		lblk += blocks_this_page;
+		pblk += blocks_this_page;
+		if (num_pages == BIO_MAX_VECS || !len ||
+		    !fscrypt_mergeable_bio(bio, inode, lblk)) {
+			err = submit_bio_wait(bio);
+			if (err)
+				goto out;
+			bio_reset(bio, inode->i_sb->s_bdev, REQ_OP_WRITE);
+			num_pages = 0;
+		}
 	}
-
-	fscrypt_zeroout_range_done(&done);
-
-	wait_for_completion(&done.done);
-	return blk_status_to_errno(done.status);
+out:
+	bio_put(bio);
+	return err;
 }
 
 /**
@@ -134,14 +111,10 @@ static int fscrypt_zeroout_range_inline_crypt(const struct inode *inode,
 int fscrypt_zeroout_range(const struct inode *inode, pgoff_t lblk,
 			  sector_t pblk, unsigned int len)
 {
-	const struct fscrypt_inode_info *ci = fscrypt_get_inode_info_raw(inode);
-	const unsigned int du_bits = ci->ci_data_unit_bits;
-	const unsigned int du_size = 1U << du_bits;
-	const unsigned int du_per_page_bits = PAGE_SHIFT - du_bits;
-	const unsigned int du_per_page = 1U << du_per_page_bits;
-	u64 du_index = (u64)lblk << (inode->i_blkbits - du_bits);
-	u64 du_remaining = (u64)len << (inode->i_blkbits - du_bits);
-	sector_t sector = pblk << (inode->i_blkbits - SECTOR_SHIFT);
+	const unsigned int blockbits = inode->i_blkbits;
+	const unsigned int blocksize = 1 << blockbits;
+	const unsigned int blocks_per_page_bits = PAGE_SHIFT - blockbits;
+	const unsigned int blocks_per_page = 1 << blocks_per_page_bits;
 	struct page *pages[16]; /* write up to 16 pages at a time */
 	unsigned int nr_pages;
 	unsigned int i;
@@ -153,12 +126,12 @@ int fscrypt_zeroout_range(const struct inode *inode, pgoff_t lblk,
 		return 0;
 
 	if (fscrypt_inode_uses_inline_crypto(inode))
-		return fscrypt_zeroout_range_inline_crypt(inode, lblk, sector,
+		return fscrypt_zeroout_range_inline_crypt(inode, lblk, pblk,
 							  len);
 
 	BUILD_BUG_ON(ARRAY_SIZE(pages) > BIO_MAX_VECS);
-	nr_pages = min_t(u64, ARRAY_SIZE(pages),
-			 (du_remaining + du_per_page - 1) >> du_per_page_bits);
+	nr_pages = min_t(unsigned int, ARRAY_SIZE(pages),
+			 (len + blocks_per_page - 1) >> blocks_per_page_bits);
 
 	/*
 	 * We need at least one page for ciphertext.  Allocate the first one
@@ -169,47 +142,47 @@ int fscrypt_zeroout_range(const struct inode *inode, pgoff_t lblk,
 	 */
 	for (i = 0; i < nr_pages; i++) {
 		pages[i] = fscrypt_alloc_bounce_page(i == 0 ? GFP_NOFS :
-						     GFP_NOWAIT);
+						     GFP_NOWAIT | __GFP_NOWARN);
 		if (!pages[i])
 			break;
 	}
 	nr_pages = i;
-	if (WARN_ON_ONCE(nr_pages <= 0))
+	if (WARN_ON(nr_pages <= 0))
 		return -EINVAL;
 
 	/* This always succeeds since __GFP_DIRECT_RECLAIM is set. */
 	bio = bio_alloc(inode->i_sb->s_bdev, nr_pages, REQ_OP_WRITE, GFP_NOFS);
 
 	do {
-		bio->bi_iter.bi_sector = sector;
+		bio->bi_iter.bi_sector = pblk << (blockbits - 9);
 
 		i = 0;
 		offset = 0;
 		do {
-			err = fscrypt_crypt_data_unit(ci, FS_ENCRYPT, du_index,
-						      ZERO_PAGE(0), pages[i],
-						      du_size, offset);
+			err = fscrypt_crypt_block(inode, FS_ENCRYPT, lblk,
+						  ZERO_PAGE(0), pages[i],
+						  blocksize, offset, GFP_NOFS);
 			if (err)
 				goto out;
-			du_index++;
-			sector += 1U << (du_bits - SECTOR_SHIFT);
-			du_remaining--;
-			offset += du_size;
-			if (offset == PAGE_SIZE || du_remaining == 0) {
+			lblk++;
+			pblk++;
+			len--;
+			offset += blocksize;
+			if (offset == PAGE_SIZE || len == 0) {
 				ret = bio_add_page(bio, pages[i++], offset, 0);
-				if (WARN_ON_ONCE(ret != offset)) {
+				if (WARN_ON(ret != offset)) {
 					err = -EIO;
 					goto out;
 				}
 				offset = 0;
 			}
-		} while (i != nr_pages && du_remaining != 0);
+		} while (i != nr_pages && len != 0);
 
 		err = submit_bio_wait(bio);
 		if (err)
 			goto out;
 		bio_reset(bio, inode->i_sb->s_bdev, REQ_OP_WRITE);
-	} while (du_remaining != 0);
+	} while (len != 0);
 	err = 0;
 out:
 	bio_put(bio);

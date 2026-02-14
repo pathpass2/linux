@@ -85,7 +85,6 @@ extern unsigned int visl_dprintk_nframes;
 extern bool keep_bitstream_buffers;
 extern int bitstream_trace_frame_start;
 extern unsigned int bitstream_trace_nframes;
-extern bool tpg_verbose;
 
 #define frame_dprintk(dev, current, fmt, arg...) \
 	do { \
@@ -128,7 +127,6 @@ enum visl_codec {
 	VISL_CODEC_VP9,
 	VISL_CODEC_H264,
 	VISL_CODEC_HEVC,
-	VISL_CODEC_AV1,
 };
 
 struct visl_blob {
@@ -163,7 +161,12 @@ struct visl_ctrl_desc {
 
 static inline struct visl_ctx *visl_file_to_ctx(struct file *file)
 {
-	return container_of(file_to_v4l2_fh(file), struct visl_ctx, fh);
+	return container_of(file->private_data, struct visl_ctx, fh);
+}
+
+static inline struct visl_ctx *visl_v4l2fh_to_ctx(struct v4l2_fh *v4l2_fh)
+{
+	return container_of(v4l2_fh, struct visl_ctx, fh);
 }
 
 void *visl_find_control_data(struct visl_ctx *ctx, u32 id);

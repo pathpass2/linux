@@ -14,3 +14,10 @@ Driver Model
    overview
    platform
    porting
+
+.. only::  subproject and html
+
+   Indices
+   =======
+
+   * :ref:`genindex`

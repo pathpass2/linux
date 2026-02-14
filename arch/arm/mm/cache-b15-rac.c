@@ -5,7 +5,6 @@
  * Copyright (C) 2015-2016 Broadcom
  */
 
-#include <linux/cfi_types.h>
 #include <linux/err.h>
 #include <linux/spinlock.h>
 #include <linux/io.h>
@@ -256,7 +255,7 @@ static int b15_rac_dead_cpu(unsigned int cpu)
 	return 0;
 }
 
-static int b15_rac_suspend(void *data)
+static int b15_rac_suspend(void)
 {
 	/* Suspend the read-ahead cache oeprations, forcing our cache
 	 * implementation to fallback to the regular ARMv7 calls.
@@ -271,7 +270,7 @@ static int b15_rac_suspend(void *data)
 	return 0;
 }
 
-static void b15_rac_resume(void *data)
+static void b15_rac_resume(void)
 {
 	/* Coming out of a S3 suspend/resume cycle, the read-ahead cache
 	 * register RAC_CONFIG0_REG will be restored to its default value, make
@@ -282,13 +281,9 @@ static void b15_rac_resume(void *data)
 	clear_bit(RAC_SUSPENDED, &b15_rac_flags);
 }
 
-static const struct syscore_ops b15_rac_syscore_ops = {
+static struct syscore_ops b15_rac_syscore_ops = {
 	.suspend	= b15_rac_suspend,
 	.resume		= b15_rac_resume,
-};
-
-static struct syscore b15_rac_syscore = {
-	.ops = &b15_rac_syscore_ops,
 };
 
 static int __init b15_rac_init(void)
@@ -351,7 +346,7 @@ static int __init b15_rac_init(void)
 	}
 
 	if (IS_ENABLED(CONFIG_PM_SLEEP))
-		register_syscore(&b15_rac_syscore);
+		register_syscore_ops(&b15_rac_syscore_ops);
 
 	spin_lock(&rac_lock);
 	reg = __raw_readl(b15_rac_base + RAC_CONFIG0_REG);

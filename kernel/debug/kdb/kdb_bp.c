@@ -460,15 +460,13 @@ static int kdb_bc(int argc, const char **argv)
 
 			break;
 		case KDBCMD_BE:
-			if (bp->bp_enabled)
-				break;
-
 			bp->bp_enabled = 1;
 
 			kdb_printf("Breakpoint %d at "
-				   kdb_bfd_vma_fmt " enabled\n",
+				   kdb_bfd_vma_fmt " enabled",
 				   i, bp->bp_addr);
 
+			kdb_printf("\n");
 			break;
 		case KDBCMD_BD:
 			if (!bp->bp_enabled)

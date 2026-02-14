@@ -8,7 +8,6 @@
 .text
 
 #include <linux/linkage.h>
-#include <linux/cfi_types.h>
 #include <asm/asm-offsets.h>
 
 #define a_offset	0
@@ -203,7 +202,7 @@
 	xor	%r8d,		d ## D;\
 	ror	$1,		d ## D;
 
-SYM_TYPED_FUNC_START(twofish_enc_blk)
+SYM_FUNC_START(twofish_enc_blk)
 	pushq    R1
 
 	/* %rdi contains the ctx address */
@@ -256,7 +255,7 @@ SYM_TYPED_FUNC_START(twofish_enc_blk)
 	RET
 SYM_FUNC_END(twofish_enc_blk)
 
-SYM_TYPED_FUNC_START(twofish_dec_blk)
+SYM_FUNC_START(twofish_dec_blk)
 	pushq    R1
 
 	/* %rdi contains the ctx address */

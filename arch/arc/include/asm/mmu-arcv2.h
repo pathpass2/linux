@@ -9,8 +9,6 @@
 #ifndef _ASM_ARC_MMU_ARCV2_H
 #define _ASM_ARC_MMU_ARCV2_H
 
-#include <soc/arc/arc_aux.h>
-
 /*
  * TLB Management regs
  */
@@ -69,7 +67,7 @@
 
 #define PTE_BITS_NON_RWX_IN_PD1	(PAGE_MASK_PHYS | _PAGE_CACHEABLE)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 struct mm_struct;
 extern int pae40_exist_but_not_enab(void);
@@ -100,6 +98,6 @@ static inline void mmu_setup_pgd(struct mm_struct *mm, void *pgd)
 	sr \reg, [ARC_REG_PID]
 .endm
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #endif

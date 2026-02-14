@@ -5,7 +5,7 @@
 #ifndef __ASM_CPU_OPS_SBI_H
 #define __ASM_CPU_OPS_SBI_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/threads.h>

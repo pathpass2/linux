@@ -40,40 +40,18 @@ MODULE_LICENSE("GPL");
 /*
  * bus definition
  */
-static int snd_seq_bus_match(struct device *dev, const struct device_driver *drv)
+static int snd_seq_bus_match(struct device *dev, struct device_driver *drv)
 {
 	struct snd_seq_device *sdev = to_seq_dev(dev);
-	const struct snd_seq_driver *sdrv = to_seq_drv(drv);
+	struct snd_seq_driver *sdrv = to_seq_drv(drv);
 
 	return strcmp(sdrv->id, sdev->id) == 0 &&
 		sdrv->argsize == sdev->argsize;
 }
 
-static int snd_seq_bus_probe(struct device *dev)
-{
-	struct snd_seq_device *sdev = to_seq_dev(dev);
-	const struct snd_seq_driver *sdrv = to_seq_drv(dev->driver);
-
-	if (sdrv->probe)
-		return sdrv->probe(sdev);
-	else
-		return 0;
-}
-
-static void snd_seq_bus_remove(struct device *dev)
-{
-	struct snd_seq_device *sdev = to_seq_dev(dev);
-	const struct snd_seq_driver *sdrv = to_seq_drv(dev->driver);
-
-	if (sdrv->remove)
-		sdrv->remove(sdev);
-}
-
-static const struct bus_type snd_seq_bus_type = {
+static struct bus_type snd_seq_bus_type = {
 	.name = "snd_seq",
 	.match = snd_seq_bus_match,
-	.probe = snd_seq_bus_probe,
-	.remove = snd_seq_bus_remove,
 };
 
 /*
@@ -256,7 +234,7 @@ int snd_seq_device_new(struct snd_card *card, int device, const char *id,
 		put_device(&dev->dev);
 		return err;
 	}
-
+	
 	if (result)
 		*result = dev;
 
@@ -269,12 +247,10 @@ EXPORT_SYMBOL(snd_seq_device_new);
  */
 int __snd_seq_driver_register(struct snd_seq_driver *drv, struct module *mod)
 {
-	if (WARN_ON(!drv->driver.name || !drv->id || drv->driver.probe || drv->driver.remove))
+	if (WARN_ON(!drv->driver.name || !drv->id))
 		return -EINVAL;
-
 	drv->driver.bus = &snd_seq_bus_type;
 	drv->driver.owner = mod;
-
 	return driver_register(&drv->driver);
 }
 EXPORT_SYMBOL_GPL(__snd_seq_driver_register);

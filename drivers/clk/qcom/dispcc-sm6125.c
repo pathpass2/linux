@@ -4,7 +4,6 @@
  */
 
 #include <linux/clk-provider.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -29,7 +28,7 @@ enum {
 	P_GPLL0_OUT_MAIN,
 };
 
-static const struct pll_vco disp_cc_pll_vco[] = {
+static struct pll_vco disp_cc_pll_vco[] = {
 	{ 500000000, 1000000000, 2 },
 };
 
@@ -683,7 +682,7 @@ static int disp_cc_sm6125_probe(struct platform_device *pdev)
 
 	clk_alpha_pll_configure(&disp_cc_pll0, regmap, &disp_cc_pll0_config);
 
-	return qcom_cc_really_probe(&pdev->dev, &disp_cc_sm6125_desc, regmap);
+	return qcom_cc_really_probe(pdev, &disp_cc_sm6125_desc, regmap);
 }
 
 static struct platform_driver disp_cc_sm6125_driver = {
@@ -694,7 +693,17 @@ static struct platform_driver disp_cc_sm6125_driver = {
 	},
 };
 
-module_platform_driver(disp_cc_sm6125_driver);
+static int __init disp_cc_sm6125_init(void)
+{
+	return platform_driver_register(&disp_cc_sm6125_driver);
+}
+subsys_initcall(disp_cc_sm6125_init);
+
+static void __exit disp_cc_sm6125_exit(void)
+{
+	platform_driver_unregister(&disp_cc_sm6125_driver);
+}
+module_exit(disp_cc_sm6125_exit);
 
 MODULE_DESCRIPTION("QTI DISPCC SM6125 Driver");
 MODULE_LICENSE("GPL v2");

@@ -11,6 +11,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
@@ -175,7 +176,7 @@ static const struct phy_ops brcm_usb_phy_ops = {
 };
 
 static struct phy *brcm_usb_phy_xlate(struct device *dev,
-				      const struct of_phandle_args *args)
+				      struct of_phandle_args *args)
 {
 	struct brcm_usb_phy_data *data = dev_get_drvdata(dev);
 
@@ -283,16 +284,6 @@ static const struct attribute_group brcm_usb_phy_group = {
 	.attrs = brcm_usb_phy_attrs,
 };
 
-static const struct match_chip_info chip_info_74110 = {
-	.init_func = &brcm_usb_dvr_init_74110,
-	.required_regs = {
-		BRCM_REGS_CTRL,
-		BRCM_REGS_XHCI_EC,
-		BRCM_REGS_XHCI_GBL,
-		-1,
-	},
-};
-
 static const struct match_chip_info chip_info_4908 = {
 	.init_func = &brcm_usb_dvr_init_4908,
 	.required_regs = {
@@ -335,10 +326,6 @@ static const struct match_chip_info chip_info_7445 = {
 };
 
 static const struct of_device_id brcm_usb_dt_ids[] = {
-	{
-		.compatible = "brcm,bcm74110-usb-phy",
-		.data = &chip_info_74110,
-	},
 	{
 		.compatible = "brcm,bcm4908-usb-phy",
 		.data = &chip_info_4908,
@@ -585,12 +572,14 @@ static int brcm_usb_phy_probe(struct platform_device *pdev)
 	return PTR_ERR_OR_ZERO(phy_provider);
 }
 
-static void brcm_usb_phy_remove(struct platform_device *pdev)
+static int brcm_usb_phy_remove(struct platform_device *pdev)
 {
 	struct brcm_usb_phy_data *priv = dev_get_drvdata(&pdev->dev);
 
 	sysfs_remove_group(&pdev->dev.kobj, &brcm_usb_phy_group);
 	unregister_pm_notifier(&priv->pm_notifier);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -691,6 +680,7 @@ static struct platform_driver brcm_usb_driver = {
 
 module_platform_driver(brcm_usb_driver);
 
+MODULE_ALIAS("platform:brcmstb-usb-phy");
 MODULE_AUTHOR("Al Cooper <acooper@broadcom.com>");
 MODULE_DESCRIPTION("BRCM USB PHY driver");
 MODULE_LICENSE("GPL v2");

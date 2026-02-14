@@ -9,13 +9,14 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/of_device.h>
+#include <linux/of_gpio.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/resource.h>
 #include <linux/types.h>
 #include <linux/phy/phy.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 
 #include "pcie-designware.h"
@@ -37,6 +38,7 @@
 #define PCIE_CFG_STATUS17		0x44
 #define PM_CURRENT_STATE(x)		(((x) >> 7) & 0x1)
 
+#define WAIT_LINKUP_TIMEOUT		4000
 #define PORT_CLK_RATE			100000000UL
 #define MAX_PAYLOAD_SIZE		256
 #define MAX_READ_REQ_SIZE		256
@@ -107,22 +109,10 @@ static int meson_pcie_get_mems(struct platform_device *pdev,
 			       struct meson_pcie *mp)
 {
 	struct dw_pcie *pci = &mp->pci;
-	struct resource *res;
 
-	/*
-	 * For the broken DTs that supply 'dbi' as 'elbi', parse the 'elbi'
-	 * region and assign it to both 'pci->elbi_base' and 'pci->dbi_space' so
-	 * that the DWC core can skip parsing both regions.
-	 */
-	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "elbi");
-	if (res) {
-		pci->elbi_base = devm_pci_remap_cfg_resource(pci->dev, res);
-		if (IS_ERR(pci->elbi_base))
-			return PTR_ERR(pci->elbi_base);
-
-		pci->dbi_base = pci->elbi_base;
-		pci->dbi_phys_addr = res->start;
-	}
+	pci->dbi_base = devm_platform_ioremap_resource_byname(pdev, "elbi");
+	if (IS_ERR(pci->dbi_base))
+		return PTR_ERR(pci->dbi_base);
 
 	mp->cfg_base = devm_platform_ioremap_resource_byname(pdev, "cfg");
 	if (IS_ERR(mp->cfg_base))
@@ -173,13 +163,6 @@ static int meson_pcie_reset(struct meson_pcie *mp)
 	return 0;
 }
 
-static inline void meson_pcie_disable_clock(void *data)
-{
-	struct clk *clk = data;
-
-	clk_disable_unprepare(clk);
-}
-
 static inline struct clk *meson_pcie_probe_clock(struct device *dev,
 						 const char *id, u64 rate)
 {
@@ -204,7 +187,9 @@ static inline struct clk *meson_pcie_probe_clock(struct device *dev,
 		return ERR_PTR(ret);
 	}
 
-	devm_add_action_or_reset(dev, meson_pcie_disable_clock, clk);
+	devm_add_action_or_reset(dev,
+				 (void (*) (void *))clk_disable_unprepare,
+				 clk);
 
 	return clk;
 }
@@ -346,13 +331,43 @@ static struct pci_ops meson_pci_ops = {
 	.write = pci_generic_config_write,
 };
 
-static bool meson_pcie_link_up(struct dw_pcie *pci)
+static int meson_pcie_link_up(struct dw_pcie *pci)
 {
 	struct meson_pcie *mp = to_meson_pcie(pci);
-	u32 state12;
+	struct device *dev = pci->dev;
+	u32 speed_okay = 0;
+	u32 cnt = 0;
+	u32 state12, state17, smlh_up, ltssm_up, rdlh_up;
 
-	state12 = meson_cfg_readl(mp, PCIE_CFG_STATUS12);
-	return IS_SMLH_LINK_UP(state12) && IS_RDLH_LINK_UP(state12);
+	do {
+		state12 = meson_cfg_readl(mp, PCIE_CFG_STATUS12);
+		state17 = meson_cfg_readl(mp, PCIE_CFG_STATUS17);
+		smlh_up = IS_SMLH_LINK_UP(state12);
+		rdlh_up = IS_RDLH_LINK_UP(state12);
+		ltssm_up = IS_LTSSM_UP(state12);
+
+		if (PM_CURRENT_STATE(state17) < PCIE_GEN3)
+			speed_okay = 1;
+
+		if (smlh_up)
+			dev_dbg(dev, "smlh_link_up is on\n");
+		if (rdlh_up)
+			dev_dbg(dev, "rdlh_link_up is on\n");
+		if (ltssm_up)
+			dev_dbg(dev, "ltssm_up is on\n");
+		if (speed_okay)
+			dev_dbg(dev, "speed_okay\n");
+
+		if (smlh_up && rdlh_up && ltssm_up && speed_okay)
+			return 1;
+
+		cnt++;
+
+		udelay(10);
+	} while (cnt < WAIT_LINKUP_TIMEOUT);
+
+	dev_err(dev, "error: wait linkup timeout\n");
+	return 0;
 }
 
 static int meson_pcie_host_init(struct dw_pcie_rp *pp)
@@ -369,7 +384,7 @@ static int meson_pcie_host_init(struct dw_pcie_rp *pp)
 }
 
 static const struct dw_pcie_host_ops meson_pcie_host_ops = {
-	.init = meson_pcie_host_init,
+	.host_init = meson_pcie_host_init,
 };
 
 static const struct dw_pcie_ops dw_pcie_ops = {

@@ -2,18 +2,16 @@
 #ifndef __PERF_VALUES_H
 #define __PERF_VALUES_H
 
-#include <stdio.h>
 #include <linux/types.h>
-
-struct evsel;
 
 struct perf_read_values {
 	int threads;
 	int threads_max;
 	u32 *pid, *tid;
-	int num_counters;
+	int counters;
 	int counters_max;
-	struct evsel **counters;
+	u64 *counterrawid;
+	char **countername;
 	u64 **value;
 };
 
@@ -22,7 +20,7 @@ void perf_read_values_destroy(struct perf_read_values *values);
 
 int perf_read_values_add_value(struct perf_read_values *values,
 				u32 pid, u32 tid,
-				struct evsel *evsel, u64 value);
+				u64 rawid, const char *name, u64 value);
 
 void perf_read_values_display(FILE *fp, struct perf_read_values *values,
 			      int raw);

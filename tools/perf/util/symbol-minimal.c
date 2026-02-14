@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <unistd.h>
+#include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdlib.h>
@@ -42,7 +43,7 @@ static int read_build_id(void *note_data, size_t note_len, struct build_id *bid,
 	void *ptr;
 
 	ptr = note_data;
-	while ((ptr + sizeof(*nhdr)) < (note_data + note_len)) {
+	while (ptr < (note_data + note_len)) {
 		const char *name;
 		size_t namesz, descsz;
 
@@ -87,120 +88,137 @@ int filename__read_debuglink(const char *filename __maybe_unused,
  */
 int filename__read_build_id(const char *filename, struct build_id *bid)
 {
-	int fd, ret = -1;
-	bool need_swap = false, elf32;
-	union {
-		struct {
-			Elf32_Ehdr ehdr32;
-			Elf32_Phdr *phdr32;
-		};
-		struct {
-			Elf64_Ehdr ehdr64;
-			Elf64_Phdr *phdr64;
-		};
-	} hdrs;
-	void *phdr, *buf = NULL;
-	ssize_t phdr_size, ehdr_size, buf_size = 0;
+	FILE *fp;
+	int ret = -1;
+	bool need_swap = false;
+	u8 e_ident[EI_NIDENT];
+	size_t buf_size;
+	void *buf;
+	int i;
 
-	if (!filename)
-		return -EFAULT;
-
-	errno = 0;
-	if (!is_regular_file(filename))
-		return errno == 0 ? -EWOULDBLOCK : -errno;
-
-	fd = open(filename, O_RDONLY);
-	if (fd < 0)
+	fp = fopen(filename, "r");
+	if (fp == NULL)
 		return -1;
 
-	if (read(fd, hdrs.ehdr32.e_ident, EI_NIDENT) != EI_NIDENT)
+	if (fread(e_ident, sizeof(e_ident), 1, fp) != 1)
 		goto out;
 
-	if (memcmp(hdrs.ehdr32.e_ident, ELFMAG, SELFMAG) ||
-	    hdrs.ehdr32.e_ident[EI_VERSION] != EV_CURRENT)
+	if (memcmp(e_ident, ELFMAG, SELFMAG) ||
+	    e_ident[EI_VERSION] != EV_CURRENT)
 		goto out;
 
-	need_swap = check_need_swap(hdrs.ehdr32.e_ident[EI_DATA]);
-	elf32 = hdrs.ehdr32.e_ident[EI_CLASS] == ELFCLASS32;
-	ehdr_size = (elf32 ? sizeof(hdrs.ehdr32) : sizeof(hdrs.ehdr64)) - EI_NIDENT;
+	need_swap = check_need_swap(e_ident[EI_DATA]);
 
-	if (read(fd,
-		 (elf32 ? (void *)&hdrs.ehdr32 : (void *)&hdrs.ehdr64) + EI_NIDENT,
-		 ehdr_size) != ehdr_size)
-		goto out;
+	/* for simplicity */
+	fseek(fp, 0, SEEK_SET);
 
-	if (need_swap) {
-		if (elf32) {
-			hdrs.ehdr32.e_phoff = bswap_32(hdrs.ehdr32.e_phoff);
-			hdrs.ehdr32.e_phentsize = bswap_16(hdrs.ehdr32.e_phentsize);
-			hdrs.ehdr32.e_phnum = bswap_16(hdrs.ehdr32.e_phnum);
-		} else {
-			hdrs.ehdr64.e_phoff = bswap_64(hdrs.ehdr64.e_phoff);
-			hdrs.ehdr64.e_phentsize = bswap_16(hdrs.ehdr64.e_phentsize);
-			hdrs.ehdr64.e_phnum = bswap_16(hdrs.ehdr64.e_phnum);
-		}
-	}
-	if ((elf32 && hdrs.ehdr32.e_phentsize != sizeof(Elf32_Phdr)) ||
-	    (!elf32 && hdrs.ehdr64.e_phentsize != sizeof(Elf64_Phdr)))
-		goto out;
+	if (e_ident[EI_CLASS] == ELFCLASS32) {
+		Elf32_Ehdr ehdr;
+		Elf32_Phdr *phdr;
 
-	phdr_size = elf32 ? sizeof(Elf32_Phdr) * hdrs.ehdr32.e_phnum
-			  : sizeof(Elf64_Phdr) * hdrs.ehdr64.e_phnum;
-	phdr = malloc(phdr_size);
-	if (phdr == NULL)
-		goto out;
-
-	lseek(fd, elf32 ? hdrs.ehdr32.e_phoff : hdrs.ehdr64.e_phoff, SEEK_SET);
-	if (read(fd, phdr, phdr_size) != phdr_size)
-		goto out_free;
-
-	if (elf32)
-		hdrs.phdr32 = phdr;
-	else
-		hdrs.phdr64 = phdr;
-
-	for (int i = 0; i < (elf32 ? hdrs.ehdr32.e_phnum : hdrs.ehdr64.e_phnum); i++) {
-		ssize_t p_filesz;
+		if (fread(&ehdr, sizeof(ehdr), 1, fp) != 1)
+			goto out;
 
 		if (need_swap) {
-			if (elf32) {
-				hdrs.phdr32[i].p_type = bswap_32(hdrs.phdr32[i].p_type);
-				hdrs.phdr32[i].p_offset = bswap_32(hdrs.phdr32[i].p_offset);
-				hdrs.phdr32[i].p_filesz = bswap_32(hdrs.phdr32[i].p_offset);
-			} else {
-				hdrs.phdr64[i].p_type = bswap_32(hdrs.phdr64[i].p_type);
-				hdrs.phdr64[i].p_offset = bswap_64(hdrs.phdr64[i].p_offset);
-				hdrs.phdr64[i].p_filesz = bswap_64(hdrs.phdr64[i].p_filesz);
-			}
+			ehdr.e_phoff = bswap_32(ehdr.e_phoff);
+			ehdr.e_phentsize = bswap_16(ehdr.e_phentsize);
+			ehdr.e_phnum = bswap_16(ehdr.e_phnum);
 		}
-		if ((elf32 ? hdrs.phdr32[i].p_type : hdrs.phdr64[i].p_type) != PT_NOTE)
-			continue;
 
-		p_filesz = elf32 ? hdrs.phdr32[i].p_filesz : hdrs.phdr64[i].p_filesz;
-		if (p_filesz > buf_size) {
+		buf_size = ehdr.e_phentsize * ehdr.e_phnum;
+		buf = malloc(buf_size);
+		if (buf == NULL)
+			goto out;
+
+		fseek(fp, ehdr.e_phoff, SEEK_SET);
+		if (fread(buf, buf_size, 1, fp) != 1)
+			goto out_free;
+
+		for (i = 0, phdr = buf; i < ehdr.e_phnum; i++, phdr++) {
 			void *tmp;
+			long offset;
 
-			buf_size = p_filesz;
+			if (need_swap) {
+				phdr->p_type = bswap_32(phdr->p_type);
+				phdr->p_offset = bswap_32(phdr->p_offset);
+				phdr->p_filesz = bswap_32(phdr->p_filesz);
+			}
+
+			if (phdr->p_type != PT_NOTE)
+				continue;
+
+			buf_size = phdr->p_filesz;
+			offset = phdr->p_offset;
 			tmp = realloc(buf, buf_size);
 			if (tmp == NULL)
 				goto out_free;
+
 			buf = tmp;
+			fseek(fp, offset, SEEK_SET);
+			if (fread(buf, buf_size, 1, fp) != 1)
+				goto out_free;
+
+			ret = read_build_id(buf, buf_size, bid, need_swap);
+			if (ret == 0)
+				ret = bid->size;
+			break;
 		}
-		lseek(fd, elf32 ? hdrs.phdr32[i].p_offset : hdrs.phdr64[i].p_offset, SEEK_SET);
-		if (read(fd, buf, p_filesz) != p_filesz)
+	} else {
+		Elf64_Ehdr ehdr;
+		Elf64_Phdr *phdr;
+
+		if (fread(&ehdr, sizeof(ehdr), 1, fp) != 1)
+			goto out;
+
+		if (need_swap) {
+			ehdr.e_phoff = bswap_64(ehdr.e_phoff);
+			ehdr.e_phentsize = bswap_16(ehdr.e_phentsize);
+			ehdr.e_phnum = bswap_16(ehdr.e_phnum);
+		}
+
+		buf_size = ehdr.e_phentsize * ehdr.e_phnum;
+		buf = malloc(buf_size);
+		if (buf == NULL)
+			goto out;
+
+		fseek(fp, ehdr.e_phoff, SEEK_SET);
+		if (fread(buf, buf_size, 1, fp) != 1)
 			goto out_free;
 
-		ret = read_build_id(buf, p_filesz, bid, need_swap);
-		if (ret == 0) {
-			ret = bid->size;
+		for (i = 0, phdr = buf; i < ehdr.e_phnum; i++, phdr++) {
+			void *tmp;
+			long offset;
+
+			if (need_swap) {
+				phdr->p_type = bswap_32(phdr->p_type);
+				phdr->p_offset = bswap_64(phdr->p_offset);
+				phdr->p_filesz = bswap_64(phdr->p_filesz);
+			}
+
+			if (phdr->p_type != PT_NOTE)
+				continue;
+
+			buf_size = phdr->p_filesz;
+			offset = phdr->p_offset;
+			tmp = realloc(buf, buf_size);
+			if (tmp == NULL)
+				goto out_free;
+
+			buf = tmp;
+			fseek(fp, offset, SEEK_SET);
+			if (fread(buf, buf_size, 1, fp) != 1)
+				goto out_free;
+
+			ret = read_build_id(buf, buf_size, bid, need_swap);
+			if (ret == 0)
+				ret = bid->size;
 			break;
 		}
 	}
 out_free:
 	free(buf);
-	free(phdr);
 out:
-	close(fd);
+	fclose(fp);
 	return ret;
 }
 
@@ -253,7 +271,7 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 out_close:
 	close(fd);
 out_errno:
-	RC_CHK_ACCESS(dso)->load_errno = errno;
+	dso->load_errno = errno;
 	return -1;
 }
 
@@ -323,12 +341,12 @@ int dso__load_sym(struct dso *dso, struct map *map __maybe_unused,
 		  struct symsrc *runtime_ss __maybe_unused,
 		  int kmodule __maybe_unused)
 {
-	struct build_id bid = { .size = 0, };
+	struct build_id bid;
 	int ret;
 
 	ret = fd__is_64_bit(ss->fd);
 	if (ret >= 0)
-		RC_CHK_ACCESS(dso)->is_64_bit = ret;
+		dso->is_64_bit = ret;
 
 	if (filename__read_build_id(ss->name, &bid) > 0)
 		dso__set_build_id(dso, &bid);
@@ -359,6 +377,13 @@ int kcore_copy(const char *from_dir __maybe_unused,
 
 void symbol__elf_init(void)
 {
+}
+
+char *dso__demangle_sym(struct dso *dso __maybe_unused,
+			int kmodule __maybe_unused,
+			const char *elf_name __maybe_unused)
+{
+	return NULL;
 }
 
 bool filename__has_section(const char *filename __maybe_unused, const char *sec __maybe_unused)

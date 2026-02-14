@@ -306,12 +306,15 @@ static ssize_t nfs_idmap_get_key(const char *name, size_t namelen,
 				 const char *type, void *data,
 				 size_t data_size, struct idmap *idmap)
 {
+	const struct cred *saved_cred;
 	struct key *rkey;
 	const struct user_key_payload *payload;
 	ssize_t ret;
 
-	scoped_with_creds(id_resolver_cache)
-		rkey = nfs_idmap_request_key(name, namelen, type, idmap);
+	saved_cred = override_creds(id_resolver_cache);
+	rkey = nfs_idmap_request_key(name, namelen, type, idmap);
+	revert_creds(saved_cred);
+
 	if (IS_ERR(rkey)) {
 		ret = PTR_ERR(rkey);
 		goto out;
@@ -421,16 +424,26 @@ static void nfs_idmap_pipe_destroy(struct dentry *dir,
 		struct rpc_pipe_dir_object *pdo)
 {
 	struct idmap *idmap = pdo->pdo_data;
+	struct rpc_pipe *pipe = idmap->idmap_pipe;
 
-	rpc_unlink(idmap->idmap_pipe);
+	if (pipe->dentry) {
+		rpc_unlink(pipe->dentry);
+		pipe->dentry = NULL;
+	}
 }
 
 static int nfs_idmap_pipe_create(struct dentry *dir,
 		struct rpc_pipe_dir_object *pdo)
 {
 	struct idmap *idmap = pdo->pdo_data;
+	struct rpc_pipe *pipe = idmap->idmap_pipe;
+	struct dentry *dentry;
 
-	return rpc_mkpipe_dentry(dir, "idmap", idmap, idmap->idmap_pipe);
+	dentry = rpc_mkpipe_dentry(dir, "idmap", idmap, pipe);
+	if (IS_ERR(dentry))
+		return PTR_ERR(dentry);
+	pipe->dentry = dentry;
+	return 0;
 }
 
 static const struct rpc_pipe_dir_object_ops nfs_idmap_pipe_dir_object_ops = {

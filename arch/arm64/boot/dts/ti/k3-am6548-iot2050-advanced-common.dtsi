@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) Siemens AG, 2018-2021
  *
@@ -11,7 +11,6 @@
 
 /dts-v1/;
 
-#include "k3-am654.dtsi"
 #include "k3-am65-iot2050-common.dtsi"
 
 / {
@@ -23,7 +22,7 @@
 };
 
 &main_pmx0 {
-	main_mmc0_pins_default: main-mmc0-default-pins {
+	main_mmc0_pins_default: main-mmc0-pins-default {
 		pinctrl-single,pins = <
 			AM65X_IOPAD(0x01a8, PIN_INPUT_PULLDOWN, 0)  /* (B25) MMC0_CLK */
 			AM65X_IOPAD(0x01ac, PIN_INPUT_PULLUP,   0)  /* (B27) MMC0_CMD */
@@ -44,10 +43,10 @@
 
 /* eMMC */
 &sdhci0 {
-	status = "okay";
 	pinctrl-names = "default";
 	pinctrl-0 = <&main_mmc0_pins_default>;
 	bus-width = <8>;
 	non-removable;
 	ti,driver-strength-ohm = <50>;
+	disable-wp;
 };

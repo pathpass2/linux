@@ -130,16 +130,6 @@ void _dev_info(const struct device *dev, const char *fmt, ...)
 	})
 
 /*
- * Dummy dev_printk for disabled debugging statements to use whilst maintaining
- * gcc's format checking.
- */
-#define dev_no_printk(level, dev, fmt, ...)				\
-	({								\
-		if (0)							\
-			_dev_printk(level, dev, fmt, ##__VA_ARGS__);	\
-	})
-
-/*
  * #defines for all the dev_<level> macros to prefix with whatever
  * possible use of #define dev_fmt(fmt) ...
  */
@@ -168,7 +158,10 @@ void _dev_info(const struct device *dev, const char *fmt, ...)
 	dev_printk(KERN_DEBUG, dev, dev_fmt(fmt), ##__VA_ARGS__)
 #else
 #define dev_dbg(dev, fmt, ...)						\
-	dev_no_printk(KERN_DEBUG, dev, dev_fmt(fmt), ##__VA_ARGS__)
+({									\
+	if (0)								\
+		dev_printk(KERN_DEBUG, dev, dev_fmt(fmt), ##__VA_ARGS__); \
+})
 #endif
 
 #ifdef CONFIG_PRINTK
@@ -254,14 +247,20 @@ do {									\
 } while (0)
 #else
 #define dev_dbg_ratelimited(dev, fmt, ...)				\
-	dev_no_printk(KERN_DEBUG, dev, dev_fmt(fmt), ##__VA_ARGS__)
+do {									\
+	if (0)								\
+		dev_printk(KERN_DEBUG, dev, dev_fmt(fmt), ##__VA_ARGS__); \
+} while (0)
 #endif
 
 #ifdef VERBOSE_DEBUG
 #define dev_vdbg	dev_dbg
 #else
 #define dev_vdbg(dev, fmt, ...)						\
-	dev_no_printk(KERN_DEBUG, dev, dev_fmt(fmt), ##__VA_ARGS__)
+({									\
+	if (0)								\
+		dev_printk(KERN_DEBUG, dev, dev_fmt(fmt), ##__VA_ARGS__); \
+})
 #endif
 
 /*
@@ -274,16 +273,5 @@ do {									\
 #define dev_WARN_ONCE(dev, condition, format, arg...) \
 	WARN_ONCE(condition, "%s %s: " format, \
 			dev_driver_string(dev), dev_name(dev), ## arg)
-
-__printf(3, 4) int dev_err_probe(const struct device *dev, int err, const char *fmt, ...);
-__printf(3, 4) int dev_warn_probe(const struct device *dev, int err, const char *fmt, ...);
-
-/* Simple helper for dev_err_probe() when ERR_PTR() is to be returned. */
-#define dev_err_ptr_probe(dev, ___err, fmt, ...) \
-	ERR_PTR(dev_err_probe(dev, ___err, fmt, ##__VA_ARGS__))
-
-/* Simple helper for dev_err_probe() when ERR_CAST() is to be returned. */
-#define dev_err_cast_probe(dev, ___err_ptr, fmt, ...) \
-	ERR_PTR(dev_err_probe(dev, PTR_ERR(___err_ptr), fmt, ##__VA_ARGS__))
 
 #endif /* _DEVICE_PRINTK_H_ */

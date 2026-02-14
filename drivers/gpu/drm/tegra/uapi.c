@@ -114,12 +114,9 @@ int tegra_drm_ioctl_channel_open(struct drm_device *drm, void *data, struct drm_
 		if (err)
 			goto put_channel;
 
-		if (supported) {
-			struct pid *pid = get_task_pid(current, PIDTYPE_TGID);
+		if (supported)
 			context->memory_context = host1x_memory_context_alloc(
-				host, client->base.dev, pid);
-			put_pid(pid);
-		}
+				host, client->base.dev, get_task_pid(current, PIDTYPE_TGID));
 
 		if (IS_ERR(context->memory_context)) {
 			if (PTR_ERR(context->memory_context) != -EOPNOTSUPP) {

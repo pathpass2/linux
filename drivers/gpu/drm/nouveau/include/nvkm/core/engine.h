@@ -3,7 +3,7 @@
 #define __NVKM_ENGINE_H__
 #define nvkm_engine(p) container_of((p), struct nvkm_engine, subdev)
 #include <core/subdev.h>
-struct nvkm_chan;
+struct nvkm_fifo_chan;
 struct nvkm_fb_tile;
 
 extern const struct nvkm_subdev_func nvkm_engine;
@@ -20,9 +20,8 @@ struct nvkm_engine_func {
 	int (*oneinit)(struct nvkm_engine *);
 	int (*info)(struct nvkm_engine *, u64 mthd, u64 *data);
 	int (*init)(struct nvkm_engine *);
-	int (*fini)(struct nvkm_engine *, enum nvkm_suspend_state suspend);
+	int (*fini)(struct nvkm_engine *, bool suspend);
 	int (*reset)(struct nvkm_engine *);
-	int (*nonstall)(struct nvkm_engine *);
 	void (*intr)(struct nvkm_engine *);
 	void (*tile)(struct nvkm_engine *, int region, struct nvkm_fb_tile *);
 	bool (*chsw_load)(struct nvkm_engine *);
@@ -33,7 +32,8 @@ struct nvkm_engine_func {
 	} base;
 
 	struct {
-		int (*cclass)(struct nvkm_chan *, const struct nvkm_oclass *,
+		int (*cclass)(struct nvkm_fifo_chan *,
+			      const struct nvkm_oclass *,
 			      struct nvkm_object **);
 		int (*sclass)(struct nvkm_oclass *, int index);
 	} fifo;

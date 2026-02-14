@@ -4,7 +4,7 @@
 
 #include <asm/setup.h>
 #include <asm/page.h>
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 #include <asm/thread_info.h>
 #endif
 
@@ -41,7 +41,7 @@
 #define ALLOWINT	(~0x700)
 #endif /* machine compilation types */
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 /*
  * This defines the normal kernel pt-regs layout.
  *

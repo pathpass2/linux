@@ -525,7 +525,6 @@ enum {
 	BRIDGE_VLANDB_ENTRY_MCAST_ROUTER,
 	BRIDGE_VLANDB_ENTRY_MCAST_N_GROUPS,
 	BRIDGE_VLANDB_ENTRY_MCAST_MAX_GROUPS,
-	BRIDGE_VLANDB_ENTRY_NEIGH_SUPPRESS,
 	__BRIDGE_VLANDB_ENTRY_MAX,
 };
 #define BRIDGE_VLANDB_ENTRY_MAX (__BRIDGE_VLANDB_ENTRY_MAX - 1)
@@ -634,11 +633,6 @@ enum {
 	MDBA_MDB_EATTR_GROUP_MODE,
 	MDBA_MDB_EATTR_SOURCE,
 	MDBA_MDB_EATTR_RTPROT,
-	MDBA_MDB_EATTR_DST,
-	MDBA_MDB_EATTR_DST_PORT,
-	MDBA_MDB_EATTR_VNI,
-	MDBA_MDB_EATTR_IFINDEX,
-	MDBA_MDB_EATTR_SRC_VNI,
 	__MDBA_MDB_EATTR_MAX
 };
 #define MDBA_MDB_EATTR_MAX (__MDBA_MDB_EATTR_MAX - 1)
@@ -699,11 +693,10 @@ struct br_mdb_entry {
 #define MDB_TEMPORARY 0
 #define MDB_PERMANENT 1
 	__u8 state;
-#define MDB_FLAGS_OFFLOAD		(1 << 0)
-#define MDB_FLAGS_FAST_LEAVE		(1 << 1)
-#define MDB_FLAGS_STAR_EXCL		(1 << 2)
-#define MDB_FLAGS_BLOCKED		(1 << 3)
-#define MDB_FLAGS_OFFLOAD_FAILED	(1 << 4)
+#define MDB_FLAGS_OFFLOAD	(1 << 0)
+#define MDB_FLAGS_FAST_LEAVE	(1 << 1)
+#define MDB_FLAGS_STAR_EXCL	(1 << 2)
+#define MDB_FLAGS_BLOCKED	(1 << 3)
 	__u8 flags;
 	__u16 vid;
 	struct {
@@ -724,24 +717,6 @@ enum {
 };
 #define MDBA_SET_ENTRY_MAX (__MDBA_SET_ENTRY_MAX - 1)
 
-/* [MDBA_GET_ENTRY] = {
- *    struct br_mdb_entry
- *    [MDBA_GET_ENTRY_ATTRS] = {
- *       [MDBE_ATTR_SOURCE]
- *          struct in_addr / struct in6_addr
- *       [MDBE_ATTR_SRC_VNI]
- *          u32
- *    }
- * }
- */
-enum {
-	MDBA_GET_ENTRY_UNSPEC,
-	MDBA_GET_ENTRY,
-	MDBA_GET_ENTRY_ATTRS,
-	__MDBA_GET_ENTRY_MAX,
-};
-#define MDBA_GET_ENTRY_MAX (__MDBA_GET_ENTRY_MAX - 1)
-
 /* [MDBA_SET_ENTRY_ATTRS] = {
  *    [MDBE_ATTR_xxx]
  *    ...
@@ -753,12 +728,6 @@ enum {
 	MDBE_ATTR_SRC_LIST,
 	MDBE_ATTR_GROUP_MODE,
 	MDBE_ATTR_RTPROT,
-	MDBE_ATTR_DST,
-	MDBE_ATTR_DST_PORT,
-	MDBE_ATTR_VNI,
-	MDBE_ATTR_IFINDEX,
-	MDBE_ATTR_SRC_VNI,
-	MDBE_ATTR_STATE_MASK,
 	__MDBE_ATTR_MAX,
 };
 #define MDBE_ATTR_MAX (__MDBE_ATTR_MAX - 1)
@@ -823,8 +792,6 @@ struct br_mcast_stats {
 /* bridge boolean options
  * BR_BOOLOPT_NO_LL_LEARN - disable learning from link-local packets
  * BR_BOOLOPT_MCAST_VLAN_SNOOPING - control vlan multicast snooping
- * BR_BOOLOPT_FDB_LOCAL_VLAN_0 - local FDB entries installed by the bridge
- *                               driver itself should only be added on VLAN 0
  *
  * IMPORTANT: if adding a new option do not forget to handle
  *            it in br_boolopt_toggle/get and bridge sysfs
@@ -833,8 +800,6 @@ enum br_boolopt_id {
 	BR_BOOLOPT_NO_LL_LEARN,
 	BR_BOOLOPT_MCAST_VLAN_SNOOPING,
 	BR_BOOLOPT_MST_ENABLE,
-	BR_BOOLOPT_MDB_OFFLOAD_FAIL_NOTIFICATION,
-	BR_BOOLOPT_FDB_LOCAL_VLAN_0,
 	BR_BOOLOPT_MAX
 };
 

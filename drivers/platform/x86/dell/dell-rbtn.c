@@ -295,6 +295,7 @@ static struct acpi_driver rbtn_driver = {
 		.remove = rbtn_remove,
 		.notify = rbtn_notify,
 	},
+	.owner = THIS_MODULE,
 };
 
 
@@ -394,15 +395,15 @@ static int rbtn_add(struct acpi_device *device)
 		return -EINVAL;
 	}
 
-	rbtn_data = devm_kzalloc(&device->dev, sizeof(*rbtn_data), GFP_KERNEL);
-	if (!rbtn_data)
-		return -ENOMEM;
-
 	ret = rbtn_acquire(device, true);
 	if (ret < 0) {
 		dev_err(&device->dev, "Cannot enable device\n");
 		return ret;
 	}
+
+	rbtn_data = devm_kzalloc(&device->dev, sizeof(*rbtn_data), GFP_KERNEL);
+	if (!rbtn_data)
+		return -ENOMEM;
 
 	rbtn_data->type = type;
 	device->driver_data = rbtn_data;
@@ -419,12 +420,10 @@ static int rbtn_add(struct acpi_device *device)
 		break;
 	default:
 		ret = -EINVAL;
-		break;
 	}
-	if (ret)
-		rbtn_acquire(device, false);
 
 	return ret;
+
 }
 
 static void rbtn_remove(struct acpi_device *device)
@@ -443,6 +442,7 @@ static void rbtn_remove(struct acpi_device *device)
 	}
 
 	rbtn_acquire(device, false);
+	device->driver_data = NULL;
 }
 
 static void rbtn_notify(struct acpi_device *device, u32 event)

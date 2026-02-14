@@ -23,32 +23,30 @@ MODULE_PARM_DESC(trypci,
 
 static int ipmi_pci_probe_regspacing(struct si_sm_io *io)
 {
-	unsigned char status;
-	int regspacing;
+	if (io->si_type == SI_KCS) {
+		unsigned char	status;
+		int		regspacing;
 
-	if (io->si_info->type != SI_KCS)
-		return DEFAULT_REGSPACING;
+		io->regsize = DEFAULT_REGSIZE;
+		io->regshift = 0;
 
-	io->regsize = DEFAULT_REGSIZE;
-	io->regshift = 0;
-
-	/* detect 1, 4, 16byte spacing */
-	for (regspacing = DEFAULT_REGSPACING; regspacing <= 16;) {
-		io->regspacing = regspacing;
-		if (io->io_setup(io)) {
-			dev_err(io->dev, "Could not setup I/O space\n");
-			return DEFAULT_REGSPACING;
+		/* detect 1, 4, 16byte spacing */
+		for (regspacing = DEFAULT_REGSPACING; regspacing <= 16;) {
+			io->regspacing = regspacing;
+			if (io->io_setup(io)) {
+				dev_err(io->dev, "Could not setup I/O space\n");
+				return DEFAULT_REGSPACING;
+			}
+			/* write invalid cmd */
+			io->outputb(io, 1, 0x10);
+			/* read status back */
+			status = io->inputb(io, 1);
+			io->io_cleanup(io);
+			if (status)
+				return regspacing;
+			regspacing *= 4;
 		}
-		/* write invalid cmd */
-		io->outputb(io, 1, 0x10);
-		/* read status back */
-		status = io->inputb(io, 1);
-		io->io_cleanup(io);
-		if (status)
-			return regspacing;
-		regspacing *= 4;
 	}
-
 	return DEFAULT_REGSPACING;
 }
 
@@ -76,15 +74,15 @@ static int ipmi_pci_probe(struct pci_dev *pdev,
 
 	switch (pdev->class) {
 	case PCI_CLASS_SERIAL_IPMI_SMIC:
-		io.si_info = &ipmi_smic_si_info;
+		io.si_type = SI_SMIC;
 		break;
 
 	case PCI_CLASS_SERIAL_IPMI_KCS:
-		io.si_info = &ipmi_kcs_si_info;
+		io.si_type = SI_KCS;
 		break;
 
 	case PCI_CLASS_SERIAL_IPMI_BT:
-		io.si_info = &ipmi_bt_si_info;
+		io.si_type = SI_BT;
 		break;
 
 	default:
@@ -99,9 +97,6 @@ static int ipmi_pci_probe(struct pci_dev *pdev,
 	}
 
 	if (pci_resource_flags(pdev, 0) & IORESOURCE_IO) {
-		if (!IS_ENABLED(CONFIG_HAS_IOPORT))
-			return -ENXIO;
-
 		io.addr_space = IPMI_IO_ADDR_SPACE;
 		io.io_setup = ipmi_si_port_setup;
 	} else {
@@ -120,7 +115,7 @@ static int ipmi_pci_probe(struct pci_dev *pdev,
 	if (io.irq)
 		io.irq_setup = ipmi_std_irq_setup;
 
-	dev_info(&pdev->dev, "%pR regsize %u spacing %u irq %d\n",
+	dev_info(&pdev->dev, "%pR regsize %d spacing %d irq %d\n",
 		 &pdev->resource[0], io.regsize, io.regspacing, io.irq);
 
 	return ipmi_si_add_smi(&io);

@@ -467,10 +467,10 @@ const struct stv6110x_devctl *stv6110x_attach(struct dvb_frontend *fe,
 	dev_info(&stv6110x->i2c->dev, "Attaching STV6110x\n");
 	return stv6110x->devctl;
 }
-EXPORT_SYMBOL_GPL(stv6110x_attach);
+EXPORT_SYMBOL(stv6110x_attach);
 
 static const struct i2c_device_id stv6110x_id_table[] = {
-	{ "stv6110x" },
+	{"stv6110x", 0},
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, stv6110x_id_table);
@@ -480,7 +480,7 @@ static struct i2c_driver stv6110x_driver = {
 		.name	= "stv6110x",
 		.suppress_bind_attrs = true,
 	},
-	.probe		= stv6110x_probe,
+	.probe_new	= stv6110x_probe,
 	.remove		= stv6110x_remove,
 	.id_table	= stv6110x_id_table,
 };

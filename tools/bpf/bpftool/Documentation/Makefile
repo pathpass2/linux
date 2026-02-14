@@ -5,6 +5,12 @@ INSTALL ?= install
 RM ?= rm -f
 RMDIR ?= rmdir --ignore-fail-on-non-empty
 
+ifeq ($(V),1)
+  Q =
+else
+  Q = @
+endif
+
 prefix ?= /usr/local
 mandir ?= $(prefix)/man
 man8dir = $(mandir)/man8
@@ -25,9 +31,9 @@ see_also = $(subst " ",, \
 	"\n" \
 	"SEE ALSO\n" \
 	"========\n" \
-	"**bpf**\ (2),\n" \
-	"**bpf-helpers**\\ (7)" \
-	$(foreach page,$(call list_pages,$(1)),",\n**$(page)**\\ (8)") \
+	"\t**bpf**\ (2),\n" \
+	"\t**bpf-helpers**\\ (7)" \
+	$(foreach page,$(call list_pages,$(1)),",\n\t**$(page)**\\ (8)") \
 	"\n")
 
 $(OUTPUT)%.8: %.rst

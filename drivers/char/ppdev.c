@@ -296,35 +296,28 @@ static int register_device(int minor, struct pp_struct *pp)
 	if (!port) {
 		pr_warn("%s: no associated port!\n", name);
 		rc = -ENXIO;
-		goto err_free_name;
+		goto err;
 	}
 
-	index = ida_alloc(&ida_index, GFP_KERNEL);
-	if (index < 0) {
-		pr_warn("%s: failed to get index!\n", name);
-		rc = index;
-		goto err_put_port;
-	}
-
+	index = ida_simple_get(&ida_index, 0, 0, GFP_KERNEL);
 	memset(&ppdev_cb, 0, sizeof(ppdev_cb));
 	ppdev_cb.irq_func = pp_irq;
 	ppdev_cb.flags = (pp->flags & PP_EXCL) ? PARPORT_FLAG_EXCL : 0;
 	ppdev_cb.private = pp;
 	pdev = parport_register_dev_model(port, name, &ppdev_cb, index);
+	parport_put_port(port);
 
 	if (!pdev) {
 		pr_warn("%s: failed to register device!\n", name);
 		rc = -ENXIO;
-		ida_free(&ida_index, index);
-		goto err_put_port;
+		ida_simple_remove(&ida_index, index);
+		goto err;
 	}
 
 	pp->pdev = pdev;
 	pp->index = index;
 	dev_dbg(&pdev->dev, "registered pardevice\n");
-err_put_port:
-	parport_put_port(port);
-err_free_name:
+err:
 	kfree(name);
 	return rc;
 }
@@ -757,7 +750,7 @@ static int pp_release(struct inode *inode, struct file *file)
 
 	if (pp->pdev) {
 		parport_unregister_device(pp->pdev);
-		ida_free(&ida_index, pp->index);
+		ida_simple_remove(&ida_index, pp->index);
 		pp->pdev = NULL;
 		pr_debug(CHRDEV "%x: unregistered pardevice\n", minor);
 	}
@@ -780,12 +773,11 @@ static __poll_t pp_poll(struct file *file, poll_table *wait)
 	return mask;
 }
 
-static const struct class ppdev_class = {
-	.name = CHRDEV,
-};
+static struct class *ppdev_class;
 
 static const struct file_operations pp_fops = {
 	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
 	.read		= pp_read,
 	.write		= pp_write,
 	.poll		= pp_poll,
@@ -802,7 +794,7 @@ static void pp_attach(struct parport *port)
 	if (devices[port->number])
 		return;
 
-	ret = device_create(&ppdev_class, port->dev,
+	ret = device_create(ppdev_class, port->dev,
 			    MKDEV(PP_MAJOR, port->number), NULL,
 			    "parport%d", port->number);
 	if (IS_ERR(ret)) {
@@ -818,7 +810,7 @@ static void pp_detach(struct parport *port)
 	if (!devices[port->number])
 		return;
 
-	device_destroy(&ppdev_class, MKDEV(PP_MAJOR, port->number));
+	device_destroy(ppdev_class, MKDEV(PP_MAJOR, port->number));
 	devices[port->number] = NULL;
 }
 
@@ -838,6 +830,7 @@ static struct parport_driver pp_driver = {
 	.probe		= pp_probe,
 	.match_port	= pp_attach,
 	.detach		= pp_detach,
+	.devmodel	= true,
 };
 
 static int __init ppdev_init(void)
@@ -848,10 +841,11 @@ static int __init ppdev_init(void)
 		pr_warn(CHRDEV ": unable to get major %d\n", PP_MAJOR);
 		return -EIO;
 	}
-	err = class_register(&ppdev_class);
-	if (err)
+	ppdev_class = class_create(THIS_MODULE, CHRDEV);
+	if (IS_ERR(ppdev_class)) {
+		err = PTR_ERR(ppdev_class);
 		goto out_chrdev;
-
+	}
 	err = parport_register_driver(&pp_driver);
 	if (err < 0) {
 		pr_warn(CHRDEV ": unable to register with parport\n");
@@ -862,7 +856,7 @@ static int __init ppdev_init(void)
 	goto out;
 
 out_class:
-	class_unregister(&ppdev_class);
+	class_destroy(ppdev_class);
 out_chrdev:
 	unregister_chrdev(PP_MAJOR, CHRDEV);
 out:
@@ -873,13 +867,12 @@ static void __exit ppdev_cleanup(void)
 {
 	/* Clean up all parport stuff */
 	parport_unregister_driver(&pp_driver);
-	class_unregister(&ppdev_class);
+	class_destroy(ppdev_class);
 	unregister_chrdev(PP_MAJOR, CHRDEV);
 }
 
 module_init(ppdev_init);
 module_exit(ppdev_cleanup);
 
-MODULE_DESCRIPTION("Support for user-space parallel port device drivers");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_CHARDEV_MAJOR(PP_MAJOR);

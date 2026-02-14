@@ -74,7 +74,7 @@ void clk_hw_forward_rate_request(const struct clk_hw *core,
 				 unsigned long parent_rate);
 
 /**
- * struct clk_duty - Structure encoding the duty cycle ratio of a clock
+ * struct clk_duty - Struture encoding the duty cycle ratio of a clock
  *
  * @num:	Numerator of the duty cycle ratio
  * @den:	Denominator of the duty cycle ratio
@@ -129,7 +129,7 @@ struct clk_duty {
  * @restore_context: Restore the context of the clock after a restoration
  *		of power.
  *
- * @recalc_rate: Recalculate the rate of this clock, by querying hardware. The
+ * @recalc_rate	Recalculate the rate of this clock, by querying hardware. The
  *		parent rate is an input parameter.  It is up to the caller to
  *		ensure that the prepare_mutex is held across this call. If the
  *		driver cannot figure out a rate for this clock, it must return
@@ -394,20 +394,6 @@ struct clk *clk_register_fixed_rate(struct device *dev, const char *name,
 	__clk_hw_register_fixed_rate((dev), NULL, (name), (parent_name), NULL, \
 				     NULL, (flags), (fixed_rate), 0, 0, true)
 /**
- * devm_clk_hw_register_fixed_rate_parent_data - register fixed-rate clock with
- * the clock framework
- * @dev: device that is registering this clock
- * @name: name of this clock
- * @parent_data: parent clk data
- * @flags: framework-specific flags
- * @fixed_rate: non-adjustable clock rate
- */
-#define devm_clk_hw_register_fixed_rate_parent_data(dev, name, parent_data, flags, \
-						    fixed_rate)			   \
-	__clk_hw_register_fixed_rate((dev), NULL, (name), NULL, NULL,		   \
-				     (parent_data), (flags), (fixed_rate), 0,	   \
-				     0, true)
-/**
  * clk_hw_register_fixed_rate_parent_hw - register fixed-rate clock with
  * the clock framework
  * @dev: device that is registering this clock
@@ -429,7 +415,7 @@ struct clk *clk_register_fixed_rate(struct device *dev, const char *name,
  * @flags: framework-specific flags
  * @fixed_rate: non-adjustable clock rate
  */
-#define clk_hw_register_fixed_rate_parent_data(dev, name, parent_data, flags, \
+#define clk_hw_register_fixed_rate_parent_data(dev, name, parent_hw, flags,   \
 					     fixed_rate)		      \
 	__clk_hw_register_fixed_rate((dev), NULL, (name), NULL, NULL,	      \
 				     (parent_data), (flags), (fixed_rate), 0, \
@@ -462,15 +448,15 @@ struct clk *clk_register_fixed_rate(struct device *dev, const char *name,
  */
 #define clk_hw_register_fixed_rate_with_accuracy_parent_hw(dev, name,	      \
 		parent_hw, flags, fixed_rate, fixed_accuracy)		      \
-	__clk_hw_register_fixed_rate((dev), NULL, (name), NULL, (parent_hw),  \
-				     NULL, (flags), (fixed_rate),	      \
+	__clk_hw_register_fixed_rate((dev), NULL, (name), NULL, (parent_hw)   \
+				     NULL, NULL, (flags), (fixed_rate),	      \
 				     (fixed_accuracy), 0, false)
 /**
  * clk_hw_register_fixed_rate_with_accuracy_parent_data - register fixed-rate
  * clock with the clock framework
  * @dev: device that is registering this clock
  * @name: name of this clock
- * @parent_data: name of clock's parent
+ * @parent_name: name of clock's parent
  * @flags: framework-specific flags
  * @fixed_rate: non-adjustable clock rate
  * @fixed_accuracy: non-adjustable clock accuracy
@@ -485,7 +471,7 @@ struct clk *clk_register_fixed_rate(struct device *dev, const char *name,
  * the clock framework
  * @dev: device that is registering this clock
  * @name: name of this clock
- * @parent_data: name of clock's parent
+ * @parent_name: name of clock's parent
  * @flags: framework-specific flags
  * @fixed_rate: non-adjustable clock rate
  */
@@ -622,43 +608,6 @@ struct clk *clk_register_gate(struct device *dev, const char *name,
 	__devm_clk_hw_register_gate((dev), NULL, (name), (parent_name), NULL, \
 			       NULL, (flags), (reg), (bit_idx),		      \
 			       (clk_gate_flags), (lock))
-/**
- * devm_clk_hw_register_gate_parent_hw - register a gate clock with the clock
- * framework
- * @dev: device that is registering this clock
- * @name: name of this clock
- * @parent_hw: pointer to parent clk
- * @flags: framework-specific flags for this clock
- * @reg: register address to control gating of this clock
- * @bit_idx: which bit in the register controls gating of this clock
- * @clk_gate_flags: gate-specific flags for this clock
- * @lock: shared register lock for this clock
- */
-#define devm_clk_hw_register_gate_parent_hw(dev, name, parent_hw, flags,      \
-					    reg, bit_idx, clk_gate_flags,     \
-					    lock)			      \
-	__devm_clk_hw_register_gate((dev), NULL, (name), NULL, (parent_hw),   \
-				    NULL, (flags), (reg), (bit_idx),	      \
-				    (clk_gate_flags), (lock))
-/**
- * devm_clk_hw_register_gate_parent_data - register a gate clock with the
- * clock framework
- * @dev: device that is registering this clock
- * @name: name of this clock
- * @parent_data: parent clk data
- * @flags: framework-specific flags for this clock
- * @reg: register address to control gating of this clock
- * @bit_idx: which bit in the register controls gating of this clock
- * @clk_gate_flags: gate-specific flags for this clock
- * @lock: shared register lock for this clock
- */
-#define devm_clk_hw_register_gate_parent_data(dev, name, parent_data, flags,  \
-					      reg, bit_idx, clk_gate_flags,   \
-					      lock)			      \
-	__devm_clk_hw_register_gate((dev), NULL, (name), NULL, NULL,	      \
-				    (parent_data), (flags), (reg), (bit_idx), \
-				    (clk_gate_flags), (lock))
-
 void clk_unregister_gate(struct clk *clk);
 void clk_hw_unregister_gate(struct clk_hw *hw);
 int clk_gate_is_enabled(struct clk_hw *hw);
@@ -681,7 +630,7 @@ struct clk_div_table {
  * Clock with an adjustable divider affecting its output frequency.  Implements
  * .recalc_rate, .set_rate and .round_rate
  *
- * @flags:
+ * Flags:
  * CLK_DIVIDER_ONE_BASED - by default the divisor is the value read from the
  *	register plus one.  If CLK_DIVIDER_ONE_BASED is set then the divider is
  *	the raw value read from the register, with the value of zero considered
@@ -707,15 +656,13 @@ struct clk_div_table {
  * CLK_DIVIDER_BIG_ENDIAN - By default little endian register accesses are used
  *	for the divider register.  Setting this flag makes the register accesses
  *	big endian.
- * CLK_DIVIDER_EVEN_INTEGERS - clock divisor is 2, 4, 6, 8, 10, etc.
- *	Formula is 2 * (value read from hardware + 1).
  */
 struct clk_divider {
 	struct clk_hw	hw;
 	void __iomem	*reg;
 	u8		shift;
 	u8		width;
-	u16		flags;
+	u8		flags;
 	const struct clk_div_table	*table;
 	spinlock_t	*lock;
 };
@@ -731,7 +678,6 @@ struct clk_divider {
 #define CLK_DIVIDER_READ_ONLY		BIT(5)
 #define CLK_DIVIDER_MAX_AT_ZERO		BIT(6)
 #define CLK_DIVIDER_BIG_ENDIAN		BIT(7)
-#define CLK_DIVIDER_EVEN_INTEGERS	BIT(8)
 
 extern const struct clk_ops clk_divider_ops;
 extern const struct clk_ops clk_divider_ro_ops;
@@ -761,21 +707,19 @@ struct clk_hw *__clk_hw_register_divider(struct device *dev,
 		struct device_node *np, const char *name,
 		const char *parent_name, const struct clk_hw *parent_hw,
 		const struct clk_parent_data *parent_data, unsigned long flags,
-		void __iomem *reg, u8 shift, u8 width,
-		unsigned long clk_divider_flags,
+		void __iomem *reg, u8 shift, u8 width, u8 clk_divider_flags,
 		const struct clk_div_table *table, spinlock_t *lock);
 struct clk_hw *__devm_clk_hw_register_divider(struct device *dev,
 		struct device_node *np, const char *name,
 		const char *parent_name, const struct clk_hw *parent_hw,
 		const struct clk_parent_data *parent_data, unsigned long flags,
-		void __iomem *reg, u8 shift, u8 width,
-		unsigned long clk_divider_flags,
+		void __iomem *reg, u8 shift, u8 width, u8 clk_divider_flags,
 		const struct clk_div_table *table, spinlock_t *lock);
 struct clk *clk_register_divider_table(struct device *dev, const char *name,
 		const char *parent_name, unsigned long flags,
 		void __iomem *reg, u8 shift, u8 width,
-		unsigned long clk_divider_flags,
-		const struct clk_div_table *table, spinlock_t *lock);
+		u8 clk_divider_flags, const struct clk_div_table *table,
+		spinlock_t *lock);
 /**
  * clk_register_divider - register a divider clock with the clock framework
  * @dev: device registering this clock
@@ -1121,27 +1065,17 @@ void of_fixed_factor_clk_setup(struct device_node *node);
  * @hw:		handle between common and hardware-specific interfaces
  * @mult:	multiplier
  * @div:	divider
- * @acc:	fixed accuracy in ppb
- * @flags:	behavior modifying flags
  *
  * Clock with a fixed multiplier and divider. The output frequency is the
  * parent clock rate divided by div and multiplied by mult.
- * Implements .recalc_rate, .set_rate, .round_rate and .recalc_accuracy
- *
- * Flags:
- * * CLK_FIXED_FACTOR_FIXED_ACCURACY - Use the value in @acc instead of the
- *                                     parent clk accuracy.
+ * Implements .recalc_rate, .set_rate and .round_rate
  */
 
 struct clk_fixed_factor {
 	struct clk_hw	hw;
 	unsigned int	mult;
 	unsigned int	div;
-	unsigned long	acc;
-	unsigned int	flags;
 };
-
-#define CLK_FIXED_FACTOR_FIXED_ACCURACY	BIT(0)
 
 #define to_clk_fixed_factor(_hw) container_of(_hw, struct clk_fixed_factor, hw)
 
@@ -1153,27 +1087,10 @@ void clk_unregister_fixed_factor(struct clk *clk);
 struct clk_hw *clk_hw_register_fixed_factor(struct device *dev,
 		const char *name, const char *parent_name, unsigned long flags,
 		unsigned int mult, unsigned int div);
-struct clk_hw *clk_hw_register_fixed_factor_fwname(struct device *dev,
-		struct device_node *np, const char *name, const char *fw_name,
-		unsigned long flags, unsigned int mult, unsigned int div);
-struct clk_hw *clk_hw_register_fixed_factor_with_accuracy_fwname(struct device *dev,
-		struct device_node *np, const char *name, const char *fw_name,
-		unsigned long flags, unsigned int mult, unsigned int div,
-		unsigned long acc);
-struct clk_hw *clk_hw_register_fixed_factor_index(struct device *dev,
-		const char *name, unsigned int index, unsigned long flags,
-		unsigned int mult, unsigned int div);
 void clk_hw_unregister_fixed_factor(struct clk_hw *hw);
 struct clk_hw *devm_clk_hw_register_fixed_factor(struct device *dev,
 		const char *name, const char *parent_name, unsigned long flags,
 		unsigned int mult, unsigned int div);
-struct clk_hw *devm_clk_hw_register_fixed_factor_fwname(struct device *dev,
-		struct device_node *np, const char *name, const char *fw_name,
-		unsigned long flags, unsigned int mult, unsigned int div);
-struct clk_hw *devm_clk_hw_register_fixed_factor_with_accuracy_fwname(struct device *dev,
-		struct device_node *np, const char *name, const char *fw_name,
-		unsigned long flags, unsigned int mult, unsigned int div,
-		unsigned long acc);
 struct clk_hw *devm_clk_hw_register_fixed_factor_index(struct device *dev,
 		const char *name, unsigned int index, unsigned long flags,
 		unsigned int mult, unsigned int div);
@@ -1194,12 +1111,11 @@ struct clk_hw *clk_hw_register_fixed_factor_parent_hw(struct device *dev,
  * @mwidth:	width of the numerator bit field
  * @nshift:	shift to the denominator bit field
  * @nwidth:	width of the denominator bit field
- * @approximation: clk driver's callback for calculating the divider clock
  * @lock:	register lock
  *
  * Clock with adjustable fractional divider affecting its output frequency.
  *
- * @flags:
+ * Flags:
  * CLK_FRAC_DIVIDER_ZERO_BASED - by default the numerator and denominator
  *	is the value read from the register. If CLK_FRAC_DIVIDER_ZERO_BASED
  *	is set then the numerator and denominator are both the value read
@@ -1219,8 +1135,10 @@ struct clk_fractional_divider {
 	void __iomem	*reg;
 	u8		mshift;
 	u8		mwidth;
+	u32		mmask;
 	u8		nshift;
 	u8		nwidth;
+	u32		nmask;
 	u8		flags;
 	void		(*approximation)(struct clk_hw *hw,
 				unsigned long rate, unsigned long *parent_rate,
@@ -1256,7 +1174,7 @@ void clk_hw_unregister_fractional_divider(struct clk_hw *hw);
  * Clock with an adjustable multiplier affecting its output frequency.
  * Implements .recalc_rate, .set_rate and .round_rate
  *
- * @flags:
+ * Flags:
  * CLK_MULTIPLIER_ZERO_BYPASS - By default, the multiplier is the value read
  *	from the register, with 0 being a valid value effectively
  *	zeroing the output clock rate. If CLK_MULTIPLIER_ZERO_BYPASS is
@@ -1360,32 +1278,6 @@ void clk_hw_unregister(struct clk_hw *hw);
 /* helper functions */
 const char *__clk_get_name(const struct clk *clk);
 const char *clk_hw_get_name(const struct clk_hw *hw);
-
-/**
- * clk_hw_get_dev() - get device from an hardware clock.
- * @hw: the clk_hw pointer to get the struct device from
- *
- * This is a helper to get the struct device associated with a hardware
- * clock. Some clock controllers, such as the one registered with
- * CLK_OF_DECLARE(), may have not provided a device pointer while
- * registering the clock.
- *
- * Return: the struct device associated with the clock, or NULL if there
- * is none.
- */
-struct device *clk_hw_get_dev(const struct clk_hw *hw);
-
-/**
- * clk_hw_get_of_node() - get device_node from a hardware clock.
- * @hw: the clk_hw pointer to get the struct device_node from
- *
- * This is a helper to get the struct device_node associated with a
- * hardware clock.
- *
- * Return: the struct device_node associated with the clock, or NULL
- * if there is none.
- */
-struct device_node *clk_hw_get_of_node(const struct clk_hw *hw);
 #ifdef CONFIG_COMMON_CLK
 struct clk_hw *__clk_get_hw(struct clk *clk);
 #else
@@ -1412,6 +1304,7 @@ unsigned long clk_hw_get_flags(const struct clk_hw *hw);
 	(clk_hw_get_flags((hw)) & CLK_SET_RATE_PARENT)
 
 bool clk_hw_is_prepared(const struct clk_hw *hw);
+bool clk_hw_rate_is_protected(const struct clk_hw *hw);
 bool clk_hw_is_enabled(const struct clk_hw *hw);
 bool __clk_is_enabled(struct clk *clk);
 struct clk *__clk_lookup(const char *name);
@@ -1423,8 +1316,6 @@ int __clk_mux_determine_rate_closest(struct clk_hw *hw,
 int clk_mux_determine_rate_flags(struct clk_hw *hw,
 				 struct clk_rate_request *req,
 				 unsigned long flags);
-int clk_hw_determine_rate_no_reparent(struct clk_hw *hw,
-				      struct clk_rate_request *req);
 void clk_hw_reparent(struct clk_hw *hw, struct clk_hw *new_parent);
 void clk_hw_get_rate_range(struct clk_hw *hw, unsigned long *min_rate,
 			   unsigned long *max_rate);
@@ -1469,7 +1360,7 @@ struct clk_onecell_data {
 
 struct clk_hw_onecell_data {
 	unsigned int num;
-	struct clk_hw *hws[] __counted_by(num);
+	struct clk_hw *hws[];
 };
 
 #define CLK_OF_DECLARE(name, compat, fn) \

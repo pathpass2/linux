@@ -611,7 +611,6 @@ out:
  * Returns 0 on success, negative value otherwise.
  */
 static int tomoyo_environ(struct tomoyo_execve *ee)
-	__must_hold_shared(&tomoyo_ss)
 {
 	struct tomoyo_request_info *r = &ee->r;
 	struct linux_binprm *bprm = ee->bprm;
@@ -723,21 +722,11 @@ int tomoyo_find_next_domain(struct linux_binprm *bprm)
 	ee->bprm = bprm;
 	ee->r.obj = &ee->obj;
 	ee->obj.path1 = bprm->file->f_path;
-	/*
-	 * Get symlink's pathname of program, but fallback to realpath if
-	 * symlink's pathname does not exist or symlink's pathname refers
-	 * to proc filesystem (e.g. /dev/fd/<num> or /proc/self/fd/<num> ).
-	 */
+	/* Get symlink's pathname of program. */
+	retval = -ENOENT;
 	exename.name = tomoyo_realpath_nofollow(original_name);
-	if (exename.name && !strncmp(exename.name, "proc:/", 6)) {
-		kfree(exename.name);
-		exename.name = NULL;
-	}
-	if (!exename.name) {
-		exename.name = tomoyo_realpath_from_path(&bprm->file->f_path);
-		if (!exename.name)
-			goto out;
-	}
+	if (!exename.name)
+		goto out;
 	tomoyo_fill_path_info(&exename);
 retry:
 	/* Check 'aggregator' directive. */
@@ -795,12 +784,13 @@ retry:
 		if (!strcmp(domainname, "parent")) {
 			char *cp;
 
-			strscpy(ee->tmp, old_domain->domainname->name, TOMOYO_EXEC_TMPSIZE);
+			strncpy(ee->tmp, old_domain->domainname->name,
+				TOMOYO_EXEC_TMPSIZE - 1);
 			cp = strrchr(ee->tmp, ' ');
 			if (cp)
 				*cp = '\0';
 		} else if (*domainname == '<')
-			strscpy(ee->tmp, domainname, TOMOYO_EXEC_TMPSIZE);
+			strncpy(ee->tmp, domainname, TOMOYO_EXEC_TMPSIZE - 1);
 		else
 			snprintf(ee->tmp, TOMOYO_EXEC_TMPSIZE - 1, "%s %s",
 				 old_domain->domainname->name, domainname);
@@ -921,12 +911,12 @@ bool tomoyo_dump_page(struct linux_binprm *bprm, unsigned long pos,
 #ifdef CONFIG_MMU
 	/*
 	 * This is called at execve() time in order to dig around
-	 * in the argv/environment of the new process
+	 * in the argv/environment of the new proceess
 	 * (represented by bprm).
 	 */
 	mmap_read_lock(bprm->mm);
 	ret = get_user_pages_remote(bprm->mm, pos, 1,
-				    FOLL_FORCE, &page, NULL);
+				    FOLL_FORCE, &page, NULL, NULL);
 	mmap_read_unlock(bprm->mm);
 	if (ret <= 0)
 		return false;
@@ -935,12 +925,17 @@ bool tomoyo_dump_page(struct linux_binprm *bprm, unsigned long pos,
 #endif
 	if (page != dump->page) {
 		const unsigned int offset = pos % PAGE_SIZE;
-		char *kaddr = kmap_local_page(page);
+		/*
+		 * Maybe kmap()/kunmap() should be used here.
+		 * But remove_arg_zero() uses kmap_atomic()/kunmap_atomic().
+		 * So do I.
+		 */
+		char *kaddr = kmap_atomic(page);
 
 		dump->page = page;
 		memcpy(dump->data + offset, kaddr + offset,
 		       PAGE_SIZE - offset);
-		kunmap_local(kaddr);
+		kunmap_atomic(kaddr);
 	}
 	/* Same with put_arg_page(page) in fs/exec.c */
 #ifdef CONFIG_MMU

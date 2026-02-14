@@ -250,19 +250,14 @@ Now we are ready to write the test cases.
 	};
 	kunit_test_suite(misc_example_test_suite);
 
-	MODULE_LICENSE("GPL");
-
 2. Add the following lines to ``drivers/misc/Kconfig``:
 
 .. code-block:: kconfig
 
 	config MISC_EXAMPLE_TEST
 		tristate "Test for my example" if !KUNIT_ALL_TESTS
-		depends on MISC_EXAMPLE && KUNIT
+		depends on MISC_EXAMPLE && KUNIT=y
 		default KUNIT_ALL_TESTS
-
-Note: If your test does not support being built as a loadable module (which is
-discouraged), replace tristate by bool, and depend on KUNIT=y instead of KUNIT.
 
 3. Add the following lines to ``drivers/misc/Makefile``:
 

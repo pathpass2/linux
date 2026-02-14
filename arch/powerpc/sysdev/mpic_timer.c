@@ -16,6 +16,7 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/syscore_ops.h>
 #include <sysdev/fsl_soc.h>
@@ -519,7 +520,7 @@ out:
 	kfree(priv);
 }
 
-static void mpic_timer_resume(void *data)
+static void mpic_timer_resume(void)
 {
 	struct timer_group_priv *priv;
 
@@ -535,12 +536,8 @@ static const struct of_device_id mpic_timer_ids[] = {
 	{},
 };
 
-static const struct syscore_ops mpic_timer_syscore_ops = {
+static struct syscore_ops mpic_timer_syscore_ops = {
 	.resume = mpic_timer_resume,
-};
-
-static struct syscore mpic_timer_syscore = {
-	.ops = &mpic_timer_syscore_ops,
 };
 
 static int __init mpic_timer_init(void)
@@ -550,7 +547,7 @@ static int __init mpic_timer_init(void)
 	for_each_matching_node(np, mpic_timer_ids)
 		timer_group_init(np);
 
-	register_syscore(&mpic_timer_syscore);
+	register_syscore_ops(&mpic_timer_syscore_ops);
 
 	if (list_empty(&timer_group_list))
 		return -ENODEV;

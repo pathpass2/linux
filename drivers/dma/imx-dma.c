@@ -17,12 +17,11 @@
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
-#include <linux/string_choices.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/dmaengine.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_dma.h>
 
 #include <asm/irq.h>
@@ -168,6 +167,7 @@ struct imxdma_channel {
 
 enum imx_dma_type {
 	IMX1_DMA,
+	IMX21_DMA,
 	IMX27_DMA,
 };
 
@@ -194,6 +194,8 @@ struct imxdma_filter_data {
 static const struct of_device_id imx_dma_of_dev_id[] = {
 	{
 		.compatible = "fsl,imx1-dma", .data = (const void *)IMX1_DMA,
+	}, {
+		.compatible = "fsl,imx21-dma", .data = (const void *)IMX21_DMA,
 	}, {
 		.compatible = "fsl,imx27-dma", .data = (const void *)IMX27_DMA,
 	}, {
@@ -324,7 +326,7 @@ static void imxdma_disable_hw(struct imxdma_channel *imxdmac)
 	dev_dbg(imxdma->dev, "%s channel %d\n", __func__, channel);
 
 	if (imxdma_hw_chain(imxdmac))
-		timer_delete(&imxdmac->watchdog);
+		del_timer(&imxdmac->watchdog);
 
 	local_irq_save(flags);
 	imx_dmav1_writel(imxdma, imx_dmav1_readl(imxdma, DMA_DIMR) |
@@ -337,8 +339,7 @@ static void imxdma_disable_hw(struct imxdma_channel *imxdmac)
 
 static void imxdma_watchdog(struct timer_list *t)
 {
-	struct imxdma_channel *imxdmac = timer_container_of(imxdmac, t,
-							    watchdog);
+	struct imxdma_channel *imxdmac = from_timer(imxdmac, t, watchdog);
 	struct imxdma_engine *imxdma = imxdmac->imxdma;
 	int channel = imxdmac->channel;
 
@@ -455,7 +456,7 @@ static void dma_irq_handle_channel(struct imxdma_channel *imxdmac)
 		}
 
 		if (imxdma_hw_chain(imxdmac)) {
-			timer_delete(&imxdmac->watchdog);
+			del_timer(&imxdmac->watchdog);
 			return;
 		}
 	}
@@ -749,6 +750,7 @@ static int imxdma_alloc_chan_resources(struct dma_chan *chan)
 		desc = kzalloc(sizeof(*desc), GFP_KERNEL);
 		if (!desc)
 			break;
+		memset(&desc->desc, 0, sizeof(struct dma_async_tx_descriptor));
 		dma_async_tx_descriptor_init(&desc->desc, chan);
 		desc->desc.tx_submit = imxdma_tx_submit;
 		/* txd.flags will be overwritten in prep funcs */
@@ -944,7 +946,7 @@ static struct dma_async_tx_descriptor *imxdma_prep_dma_interleaved(
 		"   src_sgl=%s dst_sgl=%s numf=%zu frame_size=%zu\n", __func__,
 		imxdmac->channel, (unsigned long long)xt->src_start,
 		(unsigned long long) xt->dst_start,
-		str_true_false(xt->src_sgl), str_true_false(xt->dst_sgl),
+		xt->src_sgl ? "true" : "false", xt->dst_sgl ? "true" : "false",
 		xt->numf, xt->frame_size);
 
 	if (list_empty(&imxdmac->ld_free) ||
@@ -1215,7 +1217,7 @@ static void imxdma_free_irq(struct platform_device *pdev, struct imxdma_engine *
 	}
 }
 
-static void imxdma_remove(struct platform_device *pdev)
+static int imxdma_remove(struct platform_device *pdev)
 {
 	struct imxdma_engine *imxdma = platform_get_drvdata(pdev);
 
@@ -1228,6 +1230,8 @@ static void imxdma_remove(struct platform_device *pdev)
 
 	clk_disable_unprepare(imxdma->dma_ipg);
 	clk_disable_unprepare(imxdma->dma_ahb);
+
+        return 0;
 }
 
 static struct platform_driver imxdma_driver = {

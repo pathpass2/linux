@@ -569,7 +569,8 @@ static struct v4l2_mbus_framefmt *__s5pcsis_get_format(
 		enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return sd_state ? v4l2_subdev_state_get_format(sd_state, 0) : NULL;
+		return sd_state ? v4l2_subdev_get_try_format(&state->sd,
+							     sd_state, 0) : NULL;
 
 	return &state->format;
 }
@@ -727,8 +728,7 @@ static int s5pcsis_parse_dt(struct platform_device *pdev,
 				 &state->max_num_lanes))
 		return -EINVAL;
 
-	/* from port@3 or port@4 */
-	node = of_graph_get_endpoint_by_regs(node, -1, -1);
+	node = of_graph_get_next_endpoint(node, NULL);
 	if (!node) {
 		dev_err(&pdev->dev, "No port node at %pOF\n",
 				pdev->dev.of_node);
@@ -940,19 +940,13 @@ static int s5pcsis_pm_resume(struct device *dev, bool runtime)
 					       state->supplies);
 			goto unlock;
 		}
-		ret = clk_enable(state->clock[CSIS_CLK_GATE]);
-		if (ret) {
-			phy_power_off(state->phy);
-			regulator_bulk_disable(CSIS_NUM_SUPPLIES,
-					       state->supplies);
-			goto unlock;
-		}
+		clk_enable(state->clock[CSIS_CLK_GATE]);
 	}
 	if (state->flags & ST_STREAMING)
 		s5pcsis_start_stream(state);
 
 	state->flags &= ~ST_SUSPENDED;
-unlock:
+ unlock:
 	mutex_unlock(&state->lock);
 	return ret ? -EAGAIN : 0;
 }
@@ -981,7 +975,7 @@ static int s5pcsis_runtime_resume(struct device *dev)
 }
 #endif
 
-static void s5pcsis_remove(struct platform_device *pdev)
+static int s5pcsis_remove(struct platform_device *pdev)
 {
 	struct v4l2_subdev *sd = platform_get_drvdata(pdev);
 	struct csis_state *state = sd_to_csis_state(sd);
@@ -993,6 +987,8 @@ static void s5pcsis_remove(struct platform_device *pdev)
 	s5pcsis_clk_put(state);
 
 	media_entity_cleanup(&state->sd.entity);
+
+	return 0;
 }
 
 static const struct dev_pm_ops s5pcsis_pm_ops = {

@@ -76,8 +76,9 @@ static int ps2mult_serio_write(struct serio *serio, unsigned char data)
 	struct ps2mult *psm = serio_get_drvdata(mx_port);
 	struct ps2mult_port *port = serio->port_data;
 	bool need_escape;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&psm->lock);
+	spin_lock_irqsave(&psm->lock, flags);
 
 	if (psm->out_port != port)
 		ps2mult_select_port(psm, port);
@@ -92,6 +93,8 @@ static int ps2mult_serio_write(struct serio *serio, unsigned char data)
 
 	serio_write(mx_port, data);
 
+	spin_unlock_irqrestore(&psm->lock, flags);
+
 	return 0;
 }
 
@@ -99,10 +102,11 @@ static int ps2mult_serio_start(struct serio *serio)
 {
 	struct ps2mult *psm = serio_get_drvdata(serio->parent);
 	struct ps2mult_port *port = serio->port_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&psm->lock);
-
+	spin_lock_irqsave(&psm->lock, flags);
 	port->registered = true;
+	spin_unlock_irqrestore(&psm->lock, flags);
 
 	return 0;
 }
@@ -111,10 +115,11 @@ static void ps2mult_serio_stop(struct serio *serio)
 {
 	struct ps2mult *psm = serio_get_drvdata(serio->parent);
 	struct ps2mult_port *port = serio->port_data;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&psm->lock);
-
+	spin_lock_irqsave(&psm->lock, flags);
 	port->registered = false;
+	spin_unlock_irqrestore(&psm->lock, flags);
 }
 
 static int ps2mult_create_port(struct ps2mult *psm, int i)
@@ -122,7 +127,7 @@ static int ps2mult_create_port(struct ps2mult *psm, int i)
 	struct serio *mx_serio = psm->mx_serio;
 	struct serio *serio;
 
-	serio = kzalloc(sizeof(*serio), GFP_KERNEL);
+	serio = kzalloc(sizeof(struct serio), GFP_KERNEL);
 	if (!serio)
 		return -ENOMEM;
 
@@ -143,12 +148,16 @@ static int ps2mult_create_port(struct ps2mult *psm, int i)
 
 static void ps2mult_reset(struct ps2mult *psm)
 {
-	guard(spinlock_irqsave)(&psm->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&psm->lock, flags);
 
 	serio_write(psm->mx_serio, PS2MULT_SESSION_END);
 	serio_write(psm->mx_serio, PS2MULT_SESSION_START);
 
 	ps2mult_select_port(psm, &psm->ports[PS2MULT_KBD_PORT]);
+
+	spin_unlock_irqrestore(&psm->lock, flags);
 }
 
 static int ps2mult_connect(struct serio *serio, struct serio_driver *drv)
@@ -225,10 +234,11 @@ static irqreturn_t ps2mult_interrupt(struct serio *serio,
 {
 	struct ps2mult *psm = serio_get_drvdata(serio);
 	struct ps2mult_port *in_port;
+	unsigned long flags;
 
 	dev_dbg(&serio->dev, "Received %02x flags %02x\n", data, dfl);
 
-	guard(spinlock_irqsave)(&psm->lock);
+	spin_lock_irqsave(&psm->lock, flags);
 
 	if (psm->escape) {
 		psm->escape = false;
@@ -275,6 +285,7 @@ static irqreturn_t ps2mult_interrupt(struct serio *serio,
 	}
 
  out:
+	spin_unlock_irqrestore(&psm->lock, flags);
 	return IRQ_HANDLED;
 }
 

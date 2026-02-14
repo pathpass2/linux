@@ -8,7 +8,6 @@
 #include <linux/compat.h>
 #include <asm/unistd.h>
 #include <linux/filelock.h>
-#include "internal.h"
 
 static bool nsec_valid(long nsec)
 {
@@ -23,7 +22,7 @@ int vfs_utimes(const struct path *path, struct timespec64 *times)
 	int error;
 	struct iattr newattrs;
 	struct inode *inode = path->dentry->d_inode;
-	struct delegated_inode delegated_inode = { };
+	struct inode *delegated_inode = NULL;
 
 	if (times) {
 		if (!nsec_valid(times[0].tv_nsec) ||
@@ -67,7 +66,7 @@ retry_deleg:
 	error = notify_change(mnt_idmap(path->mnt), path->dentry, &newattrs,
 			      &delegated_inode);
 	inode_unlock(inode);
-	if (is_delegated(&delegated_inode)) {
+	if (delegated_inode) {
 		error = break_deleg_wait(&delegated_inode);
 		if (!error)
 			goto retry_deleg;
@@ -77,7 +76,6 @@ retry_deleg:
 out:
 	return error;
 }
-EXPORT_SYMBOL_GPL(vfs_utimes);
 
 static int do_utimes_path(int dfd, const char __user *filename,
 		struct timespec64 *times, int flags)
@@ -90,30 +88,38 @@ static int do_utimes_path(int dfd, const char __user *filename,
 
 	if (!(flags & AT_SYMLINK_NOFOLLOW))
 		lookup_flags |= LOOKUP_FOLLOW;
+	if (flags & AT_EMPTY_PATH)
+		lookup_flags |= LOOKUP_EMPTY;
 
-	CLASS(filename_uflags, name)(filename, flags);
 retry:
-	error = filename_lookup(dfd, name, lookup_flags, &path, NULL);
+	error = user_path_at(dfd, filename, lookup_flags, &path);
 	if (error)
 		return error;
+
 	error = vfs_utimes(&path, times);
 	path_put(&path);
 	if (retry_estale(error, lookup_flags)) {
 		lookup_flags |= LOOKUP_REVAL;
 		goto retry;
 	}
+
 	return error;
 }
 
 static int do_utimes_fd(int fd, struct timespec64 *times, int flags)
 {
+	struct fd f;
+	int error;
+
 	if (flags)
 		return -EINVAL;
 
-	CLASS(fd, f)(fd);
-	if (fd_empty(f))
+	f = fdget(fd);
+	if (!f.file)
 		return -EBADF;
-	return vfs_utimes(&fd_file(f)->f_path, times);
+	error = vfs_utimes(&f.file->f_path, times);
+	fdput(f);
+	return error;
 }
 
 /*

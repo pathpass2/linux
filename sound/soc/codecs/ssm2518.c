@@ -500,7 +500,6 @@ static int ssm2518_set_bias_level(struct snd_soc_component *component,
 	enum snd_soc_bias_level level)
 {
 	struct ssm2518 *ssm2518 = snd_soc_component_get_drvdata(component);
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	int ret = 0;
 
 	switch (level) {
@@ -509,7 +508,7 @@ static int ssm2518_set_bias_level(struct snd_soc_component *component,
 	case SND_SOC_BIAS_PREPARE:
 		break;
 	case SND_SOC_BIAS_STANDBY:
-		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF)
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF)
 			ret = ssm2518_set_power(ssm2518, true);
 		break;
 	case SND_SOC_BIAS_OFF:
@@ -794,7 +793,7 @@ MODULE_DEVICE_TABLE(of, ssm2518_dt_ids);
 #endif
 
 static const struct i2c_device_id ssm2518_i2c_ids[] = {
-	{ "ssm2518" },
+	{ "ssm2518", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ssm2518_i2c_ids);
@@ -804,7 +803,7 @@ static struct i2c_driver ssm2518_driver = {
 		.name = "ssm2518",
 		.of_match_table = of_match_ptr(ssm2518_dt_ids),
 	},
-	.probe = ssm2518_i2c_probe,
+	.probe_new = ssm2518_i2c_probe,
 	.id_table = ssm2518_i2c_ids,
 };
 module_i2c_driver(ssm2518_driver);

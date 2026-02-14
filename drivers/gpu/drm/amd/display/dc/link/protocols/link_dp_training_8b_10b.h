@@ -54,8 +54,7 @@ enum link_training_result perform_8b_10b_channel_equalization_sequence(
 enum lttpr_mode dp_decide_8b_10b_lttpr_mode(struct dc_link *link);
 
 void decide_8b_10b_training_settings(
-	struct dc_link *link,
-	const struct link_resource *link_res,
+	 struct dc_link *link,
 	const struct dc_link_settings *link_setting,
 	struct link_training_settings *lt_settings);
 

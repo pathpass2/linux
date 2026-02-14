@@ -61,6 +61,11 @@ MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("T-platforms");
 
 /*
+ * csr_dbgdir - CSR read/write operations Debugfs directory
+ */
+static struct dentry *csr_dbgdir;
+
+/*
  * struct idt_89hpesx_dev - IDT 89HPESx device data structure
  * @eesize:	Size of EEPROM in bytes (calculated from "idt,eecompatible")
  * @eero:	EEPROM Read-only flag
@@ -124,7 +129,7 @@ struct idt_smb_seq {
 struct idt_eeprom_seq {
 	u8 cmd;
 	u8 eeaddr;
-	__le16 memaddr;
+	u16 memaddr;
 	u8 data;
 } __packed;
 
@@ -136,8 +141,8 @@ struct idt_eeprom_seq {
  */
 struct idt_csr_seq {
 	u8 cmd;
-	__le16 csraddr;
-	__le32 data;
+	u16 csraddr;
+	u32 data;
 } __packed;
 
 /*
@@ -842,7 +847,7 @@ err_mutex_unlock:
  * @count:	Number of bytes to write
  */
 static ssize_t eeprom_write(struct file *filp, struct kobject *kobj,
-			    const struct bin_attribute *attr,
+			    struct bin_attribute *attr,
 			    char *buf, loff_t off, size_t count)
 {
 	struct idt_89hpesx_dev *pdev;
@@ -866,7 +871,7 @@ static ssize_t eeprom_write(struct file *filp, struct kobject *kobj,
  * @count:	Number of bytes to write
  */
 static ssize_t eeprom_read(struct file *filp, struct kobject *kobj,
-			   const struct bin_attribute *attr,
+			   struct bin_attribute *attr,
 			   char *buf, loff_t off, size_t count)
 {
 	struct idt_89hpesx_dev *pdev;
@@ -900,7 +905,7 @@ static ssize_t idt_dbgfs_csr_write(struct file *filep, const char __user *ubuf,
 {
 	struct idt_89hpesx_dev *pdev = filep->private_data;
 	char *colon_ch, *csraddr_str, *csrval_str;
-	int ret;
+	int ret, csraddr_len;
 	u32 csraddr, csrval;
 	char *buf;
 
@@ -908,9 +913,15 @@ static ssize_t idt_dbgfs_csr_write(struct file *filep, const char __user *ubuf,
 		return 0;
 
 	/* Copy data from User-space */
-	buf = memdup_user_nul(ubuf, count);
-	if (IS_ERR(buf))
-		return PTR_ERR(buf);
+	buf = kmalloc(count + 1, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	if (copy_from_user(buf, ubuf, count)) {
+		ret = -EFAULT;
+		goto free_buf;
+	}
+	buf[count] = 0;
 
 	/* Find position of colon in the buffer */
 	colon_ch = strnchr(buf, count, ':');
@@ -922,16 +933,21 @@ static ssize_t idt_dbgfs_csr_write(struct file *filep, const char __user *ubuf,
 	 * no new CSR value
 	 */
 	if (colon_ch != NULL) {
-		/* Copy the register address to the substring buffer */
-		csraddr_str = kmemdup_nul(buf, colon_ch - buf, GFP_KERNEL);
+		csraddr_len = colon_ch - buf;
+		csraddr_str =
+			kmalloc(csraddr_len + 1, GFP_KERNEL);
 		if (csraddr_str == NULL) {
 			ret = -ENOMEM;
 			goto free_buf;
 		}
+		/* Copy the register address to the substring buffer */
+		strncpy(csraddr_str, buf, csraddr_len);
+		csraddr_str[csraddr_len] = '\0';
 		/* Register value must follow the colon */
 		csrval_str = colon_ch + 1;
 	} else /* if (str_colon == NULL) */ {
 		csraddr_str = (char *)buf; /* Just to shut warning up */
+		csraddr_len = strnlen(csraddr_str, count);
 		csrval_str = NULL;
 	}
 
@@ -1012,7 +1028,7 @@ static ssize_t idt_dbgfs_csr_read(struct file *filep, char __user *ubuf,
  * NOTE Size will be changed in compliance with OF node. EEPROM attribute will
  * be read-only as well if the corresponding flag is specified in OF node.
  */
-static const BIN_ATTR_RW(eeprom, EEPROM_DEF_SIZE);
+static BIN_ATTR_RW(eeprom, EEPROM_DEF_SIZE);
 
 /*
  * csr_dbgfs_ops - CSR debugfs-node read/write operations
@@ -1278,14 +1294,13 @@ static int idt_create_sysfs_files(struct idt_89hpesx_dev *pdev)
 		return 0;
 	}
 
-	/*
-	 * Allocate memory for attribute file and copy the declared EEPROM attr
-	 * structure to change some of fields
-	 */
-	pdev->ee_file = devm_kmemdup(dev, &bin_attr_eeprom,
-				     sizeof(*pdev->ee_file), GFP_KERNEL);
+	/* Allocate memory for attribute file */
+	pdev->ee_file = devm_kmalloc(dev, sizeof(*pdev->ee_file), GFP_KERNEL);
 	if (!pdev->ee_file)
 		return -ENOMEM;
+
+	/* Copy the declared EEPROM attr structure to change some of fields */
+	memcpy(pdev->ee_file, &bin_attr_eeprom, sizeof(*pdev->ee_file));
 
 	/* In case of read-only EEPROM get rid of write ability */
 	if (pdev->eero) {
@@ -1320,6 +1335,35 @@ static void idt_remove_sysfs_files(struct idt_89hpesx_dev *pdev)
 }
 
 /*
+ * idt_create_dbgfs_files() - create debugfs files
+ * @pdev:	Pointer to the driver data
+ */
+#define CSRNAME_LEN	((size_t)32)
+static void idt_create_dbgfs_files(struct idt_89hpesx_dev *pdev)
+{
+	struct i2c_client *cli = pdev->client;
+	char fname[CSRNAME_LEN];
+
+	/* Create Debugfs directory for CSR file */
+	snprintf(fname, CSRNAME_LEN, "%d-%04hx", cli->adapter->nr, cli->addr);
+	pdev->csr_dir = debugfs_create_dir(fname, csr_dbgdir);
+
+	/* Create Debugfs file for CSR read/write operations */
+	debugfs_create_file(cli->name, 0600, pdev->csr_dir, pdev,
+			    &csr_dbgfs_ops);
+}
+
+/*
+ * idt_remove_dbgfs_files() - remove debugfs files
+ * @pdev:	Pointer to the driver data
+ */
+static void idt_remove_dbgfs_files(struct idt_89hpesx_dev *pdev)
+{
+	/* Remove CSR directory and it sysfs-node */
+	debugfs_remove_recursive(pdev->csr_dir);
+}
+
+/*
  * idt_probe() - IDT 89HPESx driver probe() callback method
  */
 static int idt_probe(struct i2c_client *client)
@@ -1348,7 +1392,7 @@ static int idt_probe(struct i2c_client *client)
 		goto err_free_pdev;
 
 	/* Create debugfs files */
-	debugfs_create_file(pdev->client->name, 0600, client->debugfs, pdev, &csr_dbgfs_ops);
+	idt_create_dbgfs_files(pdev);
 
 	return 0;
 
@@ -1364,6 +1408,9 @@ err_free_pdev:
 static void idt_remove(struct i2c_client *client)
 {
 	struct idt_89hpesx_dev *pdev = i2c_get_clientdata(client);
+
+	/* Remove debugfs files first */
+	idt_remove_dbgfs_files(pdev);
 
 	/* Remove sysfs files */
 	idt_remove_sysfs_files(pdev);
@@ -1389,58 +1436,58 @@ MODULE_DEVICE_TABLE(i2c, ee_ids);
  * idt_ids - supported IDT 89HPESx devices
  */
 static const struct i2c_device_id idt_ids[] = {
-	{ "89hpes8nt2" },
-	{ "89hpes12nt3" },
+	{ "89hpes8nt2", 0 },
+	{ "89hpes12nt3", 0 },
 
-	{ "89hpes24nt6ag2" },
-	{ "89hpes32nt8ag2" },
-	{ "89hpes32nt8bg2" },
-	{ "89hpes12nt12g2" },
-	{ "89hpes16nt16g2" },
-	{ "89hpes24nt24g2" },
-	{ "89hpes32nt24ag2" },
-	{ "89hpes32nt24bg2" },
+	{ "89hpes24nt6ag2", 0 },
+	{ "89hpes32nt8ag2", 0 },
+	{ "89hpes32nt8bg2", 0 },
+	{ "89hpes12nt12g2", 0 },
+	{ "89hpes16nt16g2", 0 },
+	{ "89hpes24nt24g2", 0 },
+	{ "89hpes32nt24ag2", 0 },
+	{ "89hpes32nt24bg2", 0 },
 
-	{ "89hpes12n3" },
-	{ "89hpes12n3a" },
-	{ "89hpes24n3" },
-	{ "89hpes24n3a" },
+	{ "89hpes12n3", 0 },
+	{ "89hpes12n3a", 0 },
+	{ "89hpes24n3", 0 },
+	{ "89hpes24n3a", 0 },
 
-	{ "89hpes32h8" },
-	{ "89hpes32h8g2" },
-	{ "89hpes48h12" },
-	{ "89hpes48h12g2" },
-	{ "89hpes48h12ag2" },
-	{ "89hpes16h16" },
-	{ "89hpes22h16" },
-	{ "89hpes22h16g2" },
-	{ "89hpes34h16" },
-	{ "89hpes34h16g2" },
-	{ "89hpes64h16" },
-	{ "89hpes64h16g2" },
-	{ "89hpes64h16ag2" },
+	{ "89hpes32h8", 0 },
+	{ "89hpes32h8g2", 0 },
+	{ "89hpes48h12", 0 },
+	{ "89hpes48h12g2", 0 },
+	{ "89hpes48h12ag2", 0 },
+	{ "89hpes16h16", 0 },
+	{ "89hpes22h16", 0 },
+	{ "89hpes22h16g2", 0 },
+	{ "89hpes34h16", 0 },
+	{ "89hpes34h16g2", 0 },
+	{ "89hpes64h16", 0 },
+	{ "89hpes64h16g2", 0 },
+	{ "89hpes64h16ag2", 0 },
 
-	/* { "89hpes3t3" }, // No SMBus-slave iface */
-	{ "89hpes12t3g2" },
-	{ "89hpes24t3g2" },
-	/* { "89hpes4t4" }, // No SMBus-slave iface */
-	{ "89hpes16t4" },
-	{ "89hpes4t4g2" },
-	{ "89hpes10t4g2" },
-	{ "89hpes16t4g2" },
-	{ "89hpes16t4ag2" },
-	{ "89hpes5t5" },
-	{ "89hpes6t5" },
-	{ "89hpes8t5" },
-	{ "89hpes8t5a" },
-	{ "89hpes24t6" },
-	{ "89hpes6t6g2" },
-	{ "89hpes24t6g2" },
-	{ "89hpes16t7" },
-	{ "89hpes32t8" },
-	{ "89hpes32t8g2" },
-	{ "89hpes48t12" },
-	{ "89hpes48t12g2" },
+	/* { "89hpes3t3", 0 }, // No SMBus-slave iface */
+	{ "89hpes12t3g2", 0 },
+	{ "89hpes24t3g2", 0 },
+	/* { "89hpes4t4", 0 }, // No SMBus-slave iface */
+	{ "89hpes16t4", 0 },
+	{ "89hpes4t4g2", 0 },
+	{ "89hpes10t4g2", 0 },
+	{ "89hpes16t4g2", 0 },
+	{ "89hpes16t4ag2", 0 },
+	{ "89hpes5t5", 0 },
+	{ "89hpes6t5", 0 },
+	{ "89hpes8t5", 0 },
+	{ "89hpes8t5a", 0 },
+	{ "89hpes24t6", 0 },
+	{ "89hpes6t6g2", 0 },
+	{ "89hpes24t6g2", 0 },
+	{ "89hpes16t7", 0 },
+	{ "89hpes32t8", 0 },
+	{ "89hpes32t8g2", 0 },
+	{ "89hpes48t12", 0 },
+	{ "89hpes48t12g2", 0 },
 	{ /* END OF LIST */ }
 };
 MODULE_DEVICE_TABLE(i2c, idt_ids);
@@ -1509,8 +1556,42 @@ static struct i2c_driver idt_driver = {
 		.name = IDT_NAME,
 		.of_match_table = idt_of_match,
 	},
-	.probe = idt_probe,
+	.probe_new = idt_probe,
 	.remove = idt_remove,
 	.id_table = idt_ids,
 };
-module_i2c_driver(idt_driver);
+
+/*
+ * idt_init() - IDT 89HPESx driver init() callback method
+ */
+static int __init idt_init(void)
+{
+	int ret;
+
+	/* Create Debugfs directory first */
+	if (debugfs_initialized())
+		csr_dbgdir = debugfs_create_dir("idt_csr", NULL);
+
+	/* Add new i2c-device driver */
+	ret = i2c_add_driver(&idt_driver);
+	if (ret) {
+		debugfs_remove_recursive(csr_dbgdir);
+		return ret;
+	}
+
+	return 0;
+}
+module_init(idt_init);
+
+/*
+ * idt_exit() - IDT 89HPESx driver exit() callback method
+ */
+static void __exit idt_exit(void)
+{
+	/* Discard debugfs directory and all files if any */
+	debugfs_remove_recursive(csr_dbgdir);
+
+	/* Unregister i2c-device driver */
+	i2c_del_driver(&idt_driver);
+}
+module_exit(idt_exit);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
-// Copyright(c) 2021-2022 Intel Corporation
+// Copyright(c) 2021-2022 Intel Corporation. All rights reserved.
 //
 // Authors: Cezary Rojewski <cezary.rojewski@intel.com>
 //          Amadeusz Slawinski <amadeuszx.slawinski@linux.intel.com>
@@ -11,32 +11,24 @@
 #include <sound/hdaudio.h>
 #include <sound/soc.h>
 #include "avs.h"
-#include "debug.h"
 #include "messages.h"
 
-static int avs_dsp_init_probe(struct avs_dev *adev, struct snd_compr_params *params, int bps,
-			      union avs_connector_node_id node_id, size_t buffer_size)
+static int avs_dsp_init_probe(struct avs_dev *adev, union avs_connector_node_id node_id,
+			      size_t buffer_size)
 {
 	struct avs_probe_cfg cfg = {{0}};
 	struct avs_module_entry mentry;
-	u8 dummy;
-	int ret;
+	u16 dummy;
 
-	ret = avs_get_module_entry(adev, &AVS_PROBE_MOD_UUID, &mentry);
-	if (ret)
-		return ret;
+	avs_get_module_entry(adev, &AVS_PROBE_MOD_UUID, &mentry);
 
 	/*
-	 * Probe module uses no cycles, input and output frame sizes are unused.
-	 * It is also not owned by any pipeline.
+	 * Probe module uses no cycles, audio data format and input and output
+	 * frame sizes are unused. It is also not owned by any pipeline.
 	 */
 	cfg.base.ibs = 1;
 	/* BSS module descriptor is always segment of index=2. */
 	cfg.base.is_pages = mentry.segments[2].flags.length;
-	cfg.base.audio_fmt.sampling_freq = params->codec.sample_rate;
-	cfg.base.audio_fmt.bit_depth = bps;
-	cfg.base.audio_fmt.num_channels = params->codec.ch_out;
-	cfg.base.audio_fmt.valid_bit_depth = bps;
 	cfg.gtw_cfg.node_id = node_id;
 	cfg.gtw_cfg.dma_buffer_size = buffer_size;
 
@@ -47,12 +39,11 @@ static int avs_dsp_init_probe(struct avs_dev *adev, struct snd_compr_params *par
 static void avs_dsp_delete_probe(struct avs_dev *adev)
 {
 	struct avs_module_entry mentry;
-	int ret;
 
-	ret = avs_get_module_entry(adev, &AVS_PROBE_MOD_UUID, &mentry);
-	if (!ret)
-		/* There is only ever one probe module instance. */
-		avs_dsp_delete_module(adev, mentry.module_id, 0, INVALID_PIPELINE_ID, 0);
+	avs_get_module_entry(adev, &AVS_PROBE_MOD_UUID, &mentry);
+
+	/* There is only ever one probe module instance. */
+	avs_dsp_delete_module(adev, mentry.module_id, 0, INVALID_PIPELINE_ID, 0);
 }
 
 static inline struct hdac_ext_stream *avs_compr_get_host_stream(struct snd_compr_stream *cstream)
@@ -132,6 +123,8 @@ static int avs_probe_compr_set_params(struct snd_compr_stream *cstream,
 	struct hdac_ext_stream *host_stream = avs_compr_get_host_stream(cstream);
 	struct snd_compr_runtime *rtd = cstream->runtime;
 	struct avs_dev *adev = to_avs_dev(dai->dev);
+	/* compr params do not store bit depth, default to S32_LE. */
+	snd_pcm_format_t format = SNDRV_PCM_FORMAT_S32_LE;
 	unsigned int format_val;
 	int bps, ret;
 
@@ -144,14 +137,15 @@ static int avs_probe_compr_set_params(struct snd_compr_stream *cstream,
 	ret = snd_compr_malloc_pages(cstream, rtd->buffer_size);
 	if (ret < 0)
 		return ret;
-	bps = snd_pcm_format_physical_width(params->codec.format);
+	bps = snd_pcm_format_physical_width(format);
 	if (bps < 0)
 		return bps;
-	format_val = snd_hdac_stream_format(params->codec.ch_out, bps, params->codec.sample_rate);
+	format_val = snd_hdac_calc_stream_format(params->codec.sample_rate, params->codec.ch_out,
+						 format, bps, 0);
 	ret = snd_hdac_stream_set_params(hdac_stream(host_stream), format_val);
 	if (ret < 0)
 		return ret;
-	ret = snd_hdac_stream_setup(hdac_stream(host_stream), false);
+	ret = snd_hdac_stream_setup(hdac_stream(host_stream));
 	if (ret < 0)
 		return ret;
 
@@ -168,7 +162,7 @@ static int avs_probe_compr_set_params(struct snd_compr_stream *cstream,
 		node_id.vindex = hdac_stream(host_stream)->stream_tag - 1;
 		node_id.dma_type = AVS_DMA_HDA_HOST_INPUT;
 
-		ret = avs_dsp_init_probe(adev, params, bps, node_id, rtd->dma_bytes);
+		ret = avs_dsp_init_probe(adev, node_id, rtd->dma_bytes);
 		if (ret < 0) {
 			dev_err(dai->dev, "probe init failed: %d\n", ret);
 			avs_dsp_enable_d0ix(adev);
@@ -216,7 +210,7 @@ static int avs_probe_compr_trigger(struct snd_compr_stream *cstream, int cmd,
 }
 
 static int avs_probe_compr_pointer(struct snd_compr_stream *cstream,
-				   struct snd_compr_tstamp64 *tstamp, struct snd_soc_dai *dai)
+				   struct snd_compr_tstamp *tstamp, struct snd_soc_dai *dai)
 {
 	struct hdac_ext_stream *host_stream = avs_compr_get_host_stream(cstream);
 	struct snd_soc_pcm_stream *pstream;
@@ -255,16 +249,12 @@ static int avs_probe_compr_copy(struct snd_soc_component *comp, struct snd_compr
 	return count;
 }
 
-static const struct snd_soc_cdai_ops avs_probe_cdai_ops = {
+static const struct snd_soc_cdai_ops avs_probe_dai_ops = {
 	.startup = avs_probe_compr_open,
 	.shutdown = avs_probe_compr_free,
 	.set_params = avs_probe_compr_set_params,
 	.trigger = avs_probe_compr_trigger,
 	.pointer = avs_probe_compr_pointer,
-};
-
-static const struct snd_soc_dai_ops avs_probe_dai_ops = {
-	.compress_new = snd_soc_new_compress,
 };
 
 static const struct snd_compress_ops avs_probe_compress_ops = {
@@ -274,8 +264,8 @@ static const struct snd_compress_ops avs_probe_compress_ops = {
 static struct snd_soc_dai_driver probe_cpu_dais[] = {
 {
 	.name = "Probe Extraction CPU DAI",
-	.cops = &avs_probe_cdai_ops,
-	.ops  = &avs_probe_dai_ops,
+	.compress_new = snd_soc_new_compress,
+	.cops = &avs_probe_dai_ops,
 	.capture = {
 		.stream_name = "Probe Extraction",
 		.channels_min = 1,
@@ -293,22 +283,8 @@ static const struct snd_soc_component_driver avs_probe_component_driver = {
 	.module_get_upon_open	= 1, /* increment refcount when a stream is opened */
 };
 
-int avs_register_probe_component(struct avs_dev *adev, const char *name)
+int avs_probe_platform_register(struct avs_dev *adev, const char *name)
 {
-	struct snd_soc_component *component;
-	int ret;
-
-	component = devm_kzalloc(adev->dev, sizeof(*component), GFP_KERNEL);
-	if (!component)
-		return -ENOMEM;
-
-	component->name = devm_kstrdup(adev->dev, name, GFP_KERNEL);
-	if (!component->name)
-		return -ENOMEM;
-
-	ret = snd_soc_component_initialize(component, &avs_probe_component_driver, adev->dev);
-	if (ret)
-		return ret;
-
-	return snd_soc_add_component(component, probe_cpu_dais, ARRAY_SIZE(probe_cpu_dais));
+	return avs_soc_component_register(adev->dev, name, &avs_probe_component_driver,
+					  probe_cpu_dais, ARRAY_SIZE(probe_cpu_dais));
 }

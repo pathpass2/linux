@@ -119,5 +119,4 @@ int max1600_configure(struct max1600 *m, unsigned int vcc, unsigned int vpp)
 }
 EXPORT_SYMBOL_GPL(max1600_configure);
 
-MODULE_DESCRIPTION("MAX1600 PCMCIA power switch library");
 MODULE_LICENSE("GPL v2");

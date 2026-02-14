@@ -3,17 +3,19 @@
 #include <linux/types.h>
 #include <linux/io.h>
 #include <linux/mm.h>
-#include <linux/ioremap.h>
+
+#ifndef ioremap_cache
+/* temporary while we convert existing ioremap_cache users to memremap */
+__weak void __iomem *ioremap_cache(resource_size_t offset, unsigned long size)
+{
+	return ioremap(offset, size);
+}
+#endif
 
 #ifndef arch_memremap_wb
-static void *arch_memremap_wb(resource_size_t offset, unsigned long size,
-			      unsigned long flags)
+static void *arch_memremap_wb(resource_size_t offset, unsigned long size)
 {
-#ifdef ioremap_cache
 	return (__force void *)ioremap_cache(offset, size);
-#else
-	return (__force void *)ioremap(offset, size);
-#endif
 }
 #endif
 
@@ -92,7 +94,7 @@ void *memremap(resource_size_t offset, size_t size, unsigned long flags)
 		if (is_ram == REGION_INTERSECTS)
 			addr = try_ram_remap(offset, size, flags);
 		if (!addr)
-			addr = arch_memremap_wb(offset, size, flags);
+			addr = arch_memremap_wb(offset, size);
 	}
 
 	/*

@@ -13,13 +13,17 @@
 
 #include "internals.h"
 
-void irq_pm_handle_wakeup(struct irq_desc *desc)
+bool irq_pm_check_wakeup(struct irq_desc *desc)
 {
-	irqd_clear(&desc->irq_data, IRQD_WAKEUP_ARMED);
-	desc->istate |= IRQS_SUSPENDED | IRQS_PENDING;
-	desc->depth++;
-	irq_disable(desc);
-	pm_system_irq_wakeup(irq_desc_get_irq(desc));
+	if (irqd_is_wakeup_armed(&desc->irq_data)) {
+		irqd_clear(&desc->irq_data, IRQD_WAKEUP_ARMED);
+		desc->istate |= IRQS_SUSPENDED | IRQS_PENDING;
+		desc->depth++;
+		irq_disable(desc);
+		pm_system_irq_wakeup(irq_desc_get_irq(desc));
+		return true;
+	}
+	return false;
 }
 
 /*
@@ -42,7 +46,8 @@ void irq_pm_install_action(struct irq_desc *desc, struct irqaction *action)
 		desc->cond_suspend_depth++;
 
 	WARN_ON_ONCE(desc->no_suspend_depth &&
-		     (desc->no_suspend_depth + desc->cond_suspend_depth) != desc->nr_actions);
+		     (desc->no_suspend_depth +
+			desc->cond_suspend_depth) != desc->nr_actions);
 }
 
 /*
@@ -129,12 +134,14 @@ void suspend_device_irqs(void)
 	int irq;
 
 	for_each_irq_desc(irq, desc) {
+		unsigned long flags;
 		bool sync;
 
 		if (irq_settings_is_nested_thread(desc))
 			continue;
-		scoped_guard(raw_spinlock_irqsave, &desc->lock)
-			sync = suspend_device_irq(desc);
+		raw_spin_lock_irqsave(&desc->lock, flags);
+		sync = suspend_device_irq(desc);
+		raw_spin_unlock_irqrestore(&desc->lock, flags);
 
 		if (sync)
 			synchronize_irq(irq);
@@ -179,15 +186,18 @@ static void resume_irqs(bool want_early)
 	int irq;
 
 	for_each_irq_desc(irq, desc) {
-		bool is_early = desc->action &&	desc->action->flags & IRQF_EARLY_RESUME;
+		unsigned long flags;
+		bool is_early = desc->action &&
+			desc->action->flags & IRQF_EARLY_RESUME;
 
 		if (!is_early && want_early)
 			continue;
 		if (irq_settings_is_nested_thread(desc))
 			continue;
 
-		guard(raw_spinlock_irqsave)(&desc->lock);
+		raw_spin_lock_irqsave(&desc->lock, flags);
 		resume_irq(desc);
+		raw_spin_unlock_irqrestore(&desc->lock, flags);
 	}
 }
 
@@ -197,40 +207,41 @@ static void resume_irqs(bool want_early)
  */
 void rearm_wake_irq(unsigned int irq)
 {
-	scoped_irqdesc_get_and_buslock(irq, IRQ_GET_DESC_CHECK_GLOBAL) {
-		struct irq_desc *desc = scoped_irqdesc;
+	unsigned long flags;
+	struct irq_desc *desc = irq_get_desc_buslock(irq, &flags, IRQ_GET_DESC_CHECK_GLOBAL);
 
-		if (!(desc->istate & IRQS_SUSPENDED) || !irqd_is_wakeup_set(&desc->irq_data))
-			return;
+	if (!desc)
+		return;
 
-		desc->istate &= ~IRQS_SUSPENDED;
-		irqd_set(&desc->irq_data, IRQD_WAKEUP_ARMED);
-		__enable_irq(desc);
-	}
+	if (!(desc->istate & IRQS_SUSPENDED) ||
+	    !irqd_is_wakeup_set(&desc->irq_data))
+		goto unlock;
+
+	desc->istate &= ~IRQS_SUSPENDED;
+	irqd_set(&desc->irq_data, IRQD_WAKEUP_ARMED);
+	__enable_irq(desc);
+
+unlock:
+	irq_put_desc_busunlock(desc, flags);
 }
 
 /**
  * irq_pm_syscore_resume - enable interrupt lines early
- * @data: syscore context
  *
  * Enable all interrupt lines with %IRQF_EARLY_RESUME set.
  */
-static void irq_pm_syscore_resume(void *data)
+static void irq_pm_syscore_resume(void)
 {
 	resume_irqs(true);
 }
 
-static const struct syscore_ops irq_pm_syscore_ops = {
+static struct syscore_ops irq_pm_syscore_ops = {
 	.resume		= irq_pm_syscore_resume,
-};
-
-static struct syscore irq_pm_syscore = {
-	.ops = &irq_pm_syscore_ops,
 };
 
 static int __init irq_pm_init_ops(void)
 {
-	register_syscore(&irq_pm_syscore);
+	register_syscore_ops(&irq_pm_syscore_ops);
 	return 0;
 }
 

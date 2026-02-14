@@ -11,7 +11,6 @@
 #include <linux/cache.h>
 #include <linux/fs.h>
 #include <linux/export.h>
-#include <linux/hex.h>
 #include <linux/seq_file.h>
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
@@ -344,8 +343,8 @@ EXPORT_SYMBOL(seq_lseek);
 
 /**
  *	seq_release -	free the structures associated with sequential file.
- *	@inode: its inode
  *	@file: file in question
+ *	@inode: its inode
  *
  *	Frees the structures associated with sequential file; can be used
  *	as ->f_op->release() if you don't have private data to destroy.
@@ -670,11 +669,18 @@ void seq_putc(struct seq_file *m, char c)
 }
 EXPORT_SYMBOL(seq_putc);
 
-void __seq_puts(struct seq_file *m, const char *s)
+void seq_puts(struct seq_file *m, const char *s)
 {
-	seq_write(m, s, strlen(s));
+	int len = strlen(s);
+
+	if (m->count + len >= m->size) {
+		seq_set_overflow(m);
+		return;
+	}
+	memcpy(m->buf + m->count, s, len);
+	m->count += len;
 }
-EXPORT_SYMBOL(__seq_puts);
+EXPORT_SYMBOL(seq_puts);
 
 /**
  * seq_put_decimal_ull_width - A helper routine for putting decimal numbers

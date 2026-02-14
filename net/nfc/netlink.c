@@ -96,11 +96,6 @@ static int nfc_genl_send_target(struct sk_buff *msg, struct nfc_target *target,
 			goto nla_put_failure;
 	}
 
-	if (target->ats_len > 0 &&
-	    nla_put(msg, NFC_ATTR_TARGET_ATS, target->ats_len,
-		    target->ats))
-		goto nla_put_failure;
-
 	genlmsg_end(msg, hdr);
 	return 0;
 
@@ -115,10 +110,10 @@ static struct nfc_dev *__get_device_from_cb(struct netlink_callback *cb)
 	struct nfc_dev *dev;
 	u32 idx;
 
-	if (!info->info.attrs[NFC_ATTR_DEVICE_INDEX])
+	if (!info->attrs[NFC_ATTR_DEVICE_INDEX])
 		return ERR_PTR(-EINVAL);
 
-	idx = nla_get_u32(info->info.attrs[NFC_ATTR_DEVICE_INDEX]);
+	idx = nla_get_u32(info->attrs[NFC_ATTR_DEVICE_INDEX]);
 
 	dev = nfc_get_device(idx);
 	if (!dev)
@@ -974,7 +969,8 @@ static int nfc_genl_dep_link_down(struct sk_buff *skb, struct genl_info *info)
 	int rc;
 	u32 idx;
 
-	if (!info->attrs[NFC_ATTR_DEVICE_INDEX])
+	if (!info->attrs[NFC_ATTR_DEVICE_INDEX] ||
+	    !info->attrs[NFC_ATTR_TARGET_INDEX])
 		return -EINVAL;
 
 	idx = nla_get_u32(info->attrs[NFC_ATTR_DEVICE_INDEX]);
@@ -1022,7 +1018,8 @@ static int nfc_genl_llc_get_params(struct sk_buff *skb, struct genl_info *info)
 	struct sk_buff *msg = NULL;
 	u32 idx;
 
-	if (!info->attrs[NFC_ATTR_DEVICE_INDEX])
+	if (!info->attrs[NFC_ATTR_DEVICE_INDEX] ||
+	    !info->attrs[NFC_ATTR_FIRMWARE_NAME])
 		return -EINVAL;
 
 	idx = nla_get_u32(info->attrs[NFC_ATTR_DEVICE_INDEX]);
@@ -1042,13 +1039,10 @@ static int nfc_genl_llc_get_params(struct sk_buff *skb, struct genl_info *info)
 	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	if (!msg) {
 		rc = -ENOMEM;
-		goto put_local;
+		goto exit;
 	}
 
 	rc = nfc_genl_send_params(msg, local, info->snd_portid, info->snd_seq);
-
-put_local:
-	nfc_llcp_local_put(local);
 
 exit:
 	device_unlock(&dev->dev);
@@ -1111,7 +1105,7 @@ static int nfc_genl_llc_set_params(struct sk_buff *skb, struct genl_info *info)
 	if (info->attrs[NFC_ATTR_LLC_PARAM_LTO]) {
 		if (dev->dep_link_up) {
 			rc = -EINPROGRESS;
-			goto put_local;
+			goto exit;
 		}
 
 		local->lto = nla_get_u8(info->attrs[NFC_ATTR_LLC_PARAM_LTO]);
@@ -1122,9 +1116,6 @@ static int nfc_genl_llc_set_params(struct sk_buff *skb, struct genl_info *info)
 
 	if (info->attrs[NFC_ATTR_LLC_PARAM_MIUX])
 		local->miux = cpu_to_be16(miux);
-
-put_local:
-	nfc_llcp_local_put(local);
 
 exit:
 	device_unlock(&dev->dev);
@@ -1181,7 +1172,7 @@ static int nfc_genl_llc_sdreq(struct sk_buff *skb, struct genl_info *info)
 
 		if (rc != 0) {
 			rc = -EINVAL;
-			goto put_local;
+			goto exit;
 		}
 
 		if (!sdp_attrs[NFC_SDP_ATTR_URI])
@@ -1192,7 +1183,7 @@ static int nfc_genl_llc_sdreq(struct sk_buff *skb, struct genl_info *info)
 			continue;
 
 		uri = nla_data(sdp_attrs[NFC_SDP_ATTR_URI]);
-		if (*uri == 0)
+		if (uri == NULL || *uri == 0)
 			continue;
 
 		tid = local->sdreq_next_tid++;
@@ -1200,7 +1191,7 @@ static int nfc_genl_llc_sdreq(struct sk_buff *skb, struct genl_info *info)
 		sdreq = nfc_llcp_build_sdreq_tlv(tid, uri, uri_len);
 		if (sdreq == NULL) {
 			rc = -ENOMEM;
-			goto put_local;
+			goto exit;
 		}
 
 		tlvs_len += sdreq->tlv_len;
@@ -1210,14 +1201,10 @@ static int nfc_genl_llc_sdreq(struct sk_buff *skb, struct genl_info *info)
 
 	if (hlist_empty(&sdreq_list)) {
 		rc = -EINVAL;
-		goto put_local;
+		goto exit;
 	}
 
 	rc = nfc_llcp_send_snl_sdreq(local, &sdreq_list, tlvs_len);
-
-put_local:
-	nfc_llcp_local_put(local);
-
 exit:
 	device_unlock(&dev->dev);
 
@@ -1540,6 +1527,10 @@ static int nfc_genl_se_io(struct sk_buff *skb, struct genl_info *info)
 	}
 
 	apdu = nla_data(info->attrs[NFC_ATTR_SE_APDU]);
+	if (!apdu) {
+		rc = -EINVAL;
+		goto put_dev;
+	}
 
 	ctx = kzalloc(sizeof(struct se_io_ctx), GFP_KERNEL);
 	if (!ctx) {

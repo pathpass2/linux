@@ -24,8 +24,6 @@
 
 #include "../i915_selftest.h"
 
-#include "gt/intel_gt.h"
-
 static int intel_fw_table_check(const struct intel_forcewake_range *ranges,
 				unsigned int num_ranges,
 				bool is_watertight)
@@ -64,17 +62,18 @@ static int intel_fw_table_check(const struct intel_forcewake_range *ranges,
 static int intel_shadow_table_check(void)
 {
 	struct {
-		const struct i915_mmio_range *regs;
+		const struct i915_range *regs;
 		unsigned int size;
 	} range_lists[] = {
 		{ gen8_shadowed_regs, ARRAY_SIZE(gen8_shadowed_regs) },
 		{ gen11_shadowed_regs, ARRAY_SIZE(gen11_shadowed_regs) },
 		{ gen12_shadowed_regs, ARRAY_SIZE(gen12_shadowed_regs) },
 		{ dg2_shadowed_regs, ARRAY_SIZE(dg2_shadowed_regs) },
+		{ pvc_shadowed_regs, ARRAY_SIZE(pvc_shadowed_regs) },
 		{ mtl_shadowed_regs, ARRAY_SIZE(mtl_shadowed_regs) },
 		{ xelpmp_shadowed_regs, ARRAY_SIZE(xelpmp_shadowed_regs) },
 	};
-	const struct i915_mmio_range *range;
+	const struct i915_range *range;
 	unsigned int i, j;
 	s32 prev;
 
@@ -118,6 +117,8 @@ int intel_uncore_mock_selftests(void)
 		{ __gen9_fw_ranges, ARRAY_SIZE(__gen9_fw_ranges), true },
 		{ __gen11_fw_ranges, ARRAY_SIZE(__gen11_fw_ranges), true },
 		{ __gen12_fw_ranges, ARRAY_SIZE(__gen12_fw_ranges), true },
+		{ __xehp_fw_ranges, ARRAY_SIZE(__xehp_fw_ranges), true },
+		{ __pvc_fw_ranges, ARRAY_SIZE(__pvc_fw_ranges), true },
 		{ __mtl_fw_ranges, ARRAY_SIZE(__mtl_fw_ranges), true },
 		{ __xelpmp_fw_ranges, ARRAY_SIZE(__xelpmp_fw_ranges), true },
 	};
@@ -209,7 +210,7 @@ static int live_forcewake_ops(void *arg)
 
 	for_each_engine(engine, gt, id) {
 		i915_reg_t mmio = _MMIO(engine->mmio_base + r->offset);
-		u32 __iomem *reg = intel_uncore_regs(uncore) + engine->mmio_base + r->offset;
+		u32 __iomem *reg = uncore->regs + engine->mmio_base + r->offset;
 		enum forcewake_domains fw_domains;
 		u32 val;
 
@@ -277,15 +278,13 @@ static int live_forcewake_domains(void *arg)
 #define FW_RANGE 0x40000
 	struct intel_gt *gt = arg;
 	struct intel_uncore *uncore = gt->uncore;
-	struct drm_i915_private *i915 = gt->i915;
-	struct intel_display *display = i915->display;
 	unsigned long *valid;
 	u32 offset;
 	int err;
 
-	if (!HAS_FPGA_DBG_UNCLAIMED(display) &&
-	    !IS_VALLEYVIEW(i915) &&
-	    !IS_CHERRYVIEW(i915))
+	if (!HAS_FPGA_DBG_UNCLAIMED(gt->i915) &&
+	    !IS_VALLEYVIEW(gt->i915) &&
+	    !IS_CHERRYVIEW(gt->i915))
 		return 0;
 
 	/*

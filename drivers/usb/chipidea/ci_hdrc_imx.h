@@ -28,7 +28,6 @@ struct imx_usbmisc_data {
 	enum usb_dr_mode available_role; /* runtime usb dr mode */
 	int emp_curr_control;
 	int dc_vol_level_adjust;
-	int rise_fall_time_adjust;
 };
 
 int imx_usbmisc_init(struct imx_usbmisc_data *data);
@@ -37,6 +36,5 @@ int imx_usbmisc_hsic_set_connect(struct imx_usbmisc_data *data);
 int imx_usbmisc_charger_detection(struct imx_usbmisc_data *data, bool connect);
 int imx_usbmisc_suspend(struct imx_usbmisc_data *data, bool wakeup);
 int imx_usbmisc_resume(struct imx_usbmisc_data *data, bool wakeup);
-int imx_usbmisc_pullup(struct imx_usbmisc_data *data, bool on);
 
 #endif /* __DRIVER_USB_CHIPIDEA_CI_HDRC_IMX_H */

@@ -64,6 +64,11 @@ struct tcs3472_data {
 	u8 control;
 	u8 atime;
 	u8 apers;
+	/* Ensure timestamp is naturally aligned */
+	struct {
+		u16 chans[4];
+		s64 timestamp __aligned(8);
+	} scan;
 };
 
 static const struct iio_event_spec tcs3472_events[] = {
@@ -143,15 +148,16 @@ static int tcs3472_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		ret = tcs3472_req_data(data);
 		if (ret < 0) {
-			iio_device_release_direct(indio_dev);
+			iio_device_release_direct_mode(indio_dev);
 			return ret;
 		}
 		ret = i2c_smbus_read_word_data(data->client, chan->address);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		if (ret < 0)
 			return ret;
 		*val = ret;
@@ -321,7 +327,7 @@ static int tcs3472_read_event_config(struct iio_dev *indio_dev,
 
 static int tcs3472_write_event_config(struct iio_dev *indio_dev,
 	const struct iio_chan_spec *chan, enum iio_event_type type,
-	enum iio_event_direction dir, bool state)
+	enum iio_event_direction dir, int state)
 {
 	struct tcs3472_data *data = iio_priv(indio_dev);
 	int ret = 0;
@@ -372,26 +378,22 @@ static irqreturn_t tcs3472_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct tcs3472_data *data = iio_priv(indio_dev);
 	int i, j = 0;
-	/* Ensure timestamp is naturally aligned */
-	struct {
-		u16 chans[4];
-		aligned_s64 timestamp;
-	} scan = { };
 
 	int ret = tcs3472_req_data(data);
 	if (ret < 0)
 		goto done;
 
-	iio_for_each_active_channel(indio_dev, i) {
+	for_each_set_bit(i, indio_dev->active_scan_mask,
+		indio_dev->masklength) {
 		ret = i2c_smbus_read_word_data(data->client,
 			TCS3472_CDATA + 2*i);
 		if (ret < 0)
 			goto done;
 
-		scan.chans[j++] = ret;
+		data->scan.chans[j++] = ret;
 	}
 
-	iio_push_to_buffers_with_ts(indio_dev, &scan, sizeof(scan),
+	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
 		iio_get_time_ns(indio_dev));
 
 done:
@@ -597,7 +599,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(tcs3472_pm_ops, tcs3472_suspend,
 				tcs3472_resume);
 
 static const struct i2c_device_id tcs3472_id[] = {
-	{ "tcs3472" },
+	{ "tcs3472", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tcs3472_id);
@@ -607,7 +609,7 @@ static struct i2c_driver tcs3472_driver = {
 		.name	= TCS3472_DRV_NAME,
 		.pm	= pm_sleep_ptr(&tcs3472_pm_ops),
 	},
-	.probe		= tcs3472_probe,
+	.probe_new	= tcs3472_probe,
 	.remove		= tcs3472_remove,
 	.id_table	= tcs3472_id,
 };

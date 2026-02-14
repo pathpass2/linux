@@ -25,6 +25,7 @@ static int stm32_rcc_clock_init(struct device *dev,
 {
 	const struct stm32_rcc_match_data *data = match->data;
 	struct clk_hw_onecell_data *clk_data = data->hw_clks;
+	struct device_node *np = dev_of_node(dev);
 	struct clk_hw **hws;
 	int n, max_binding;
 
@@ -46,7 +47,7 @@ static int stm32_rcc_clock_init(struct device *dev,
 		struct clk_hw *hw = ERR_PTR(-ENOENT);
 
 		if (data->check_security &&
-		    data->check_security(dev->of_node, base, cfg_clock))
+		    data->check_security(base, cfg_clock))
 			continue;
 
 		if (cfg_clock->func)
@@ -63,13 +64,12 @@ static int stm32_rcc_clock_init(struct device *dev,
 			hws[cfg_clock->id] = hw;
 	}
 
-	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, clk_data);
+	return of_clk_add_hw_provider(np, of_clk_hw_onecell_get, clk_data);
 }
 
 int stm32_rcc_init(struct device *dev, const struct of_device_id *match_data,
 		   void __iomem *base)
 {
-	const struct stm32_rcc_match_data *rcc_match_data;
 	const struct of_device_id *match;
 	int err;
 
@@ -79,10 +79,8 @@ int stm32_rcc_init(struct device *dev, const struct of_device_id *match_data,
 		return -ENODEV;
 	}
 
-	rcc_match_data = match->data;
-
 	/* RCC Reset Configuration */
-	err = stm32_rcc_reset_init(dev, rcc_match_data->reset_data, base);
+	err = stm32_rcc_reset_init(dev, match, base);
 	if (err) {
 		pr_err("stm32 reset failed to initialize\n");
 		return err;
@@ -277,7 +275,6 @@ static int clk_stm32_mux_set_parent(struct clk_hw *hw, u8 index)
 }
 
 const struct clk_ops clk_stm32_mux_ops = {
-	.determine_rate	= __clk_mux_determine_rate,
 	.get_parent	= clk_stm32_mux_get_parent,
 	.set_parent	= clk_stm32_mux_set_parent,
 };
@@ -351,14 +348,14 @@ static int clk_stm32_divider_set_rate(struct clk_hw *hw, unsigned long rate,
 	return ret;
 }
 
-static int clk_stm32_divider_determine_rate(struct clk_hw *hw,
-					    struct clk_rate_request *req)
+static long clk_stm32_divider_round_rate(struct clk_hw *hw, unsigned long rate,
+					 unsigned long *prate)
 {
 	struct clk_stm32_div *div = to_clk_stm32_divider(hw);
 	const struct stm32_div_cfg *divider;
 
 	if (div->div_id == NO_STM32_DIV)
-		return 0;
+		return rate;
 
 	divider = &div->clock_data->dividers[div->div_id];
 
@@ -369,22 +366,14 @@ static int clk_stm32_divider_determine_rate(struct clk_hw *hw,
 		val =  readl(div->base + divider->offset) >> divider->shift;
 		val &= clk_div_mask(divider->width);
 
-		req->rate = divider_ro_round_rate(hw, req->rate,
-						  &req->best_parent_rate,
-						  divider->table,
-						  divider->width,
-						  divider->flags, val);
-
-		return 0;
+		return divider_ro_round_rate(hw, rate, prate, divider->table,
+				divider->width, divider->flags,
+				val);
 	}
 
-	req->rate = divider_round_rate_parent(hw, clk_hw_get_parent(hw),
-					      req->rate,
-					      &req->best_parent_rate,
-					      divider->table,
-					      divider->width, divider->flags);
-
-	return 0;
+	return divider_round_rate_parent(hw, clk_hw_get_parent(hw),
+					 rate, prate, divider->table,
+					 divider->width, divider->flags);
 }
 
 static unsigned long clk_stm32_divider_recalc_rate(struct clk_hw *hw,
@@ -400,7 +389,7 @@ static unsigned long clk_stm32_divider_recalc_rate(struct clk_hw *hw,
 
 const struct clk_ops clk_stm32_divider_ops = {
 	.recalc_rate	= clk_stm32_divider_recalc_rate,
-	.determine_rate = clk_stm32_divider_determine_rate,
+	.round_rate	= clk_stm32_divider_round_rate,
 	.set_rate	= clk_stm32_divider_set_rate,
 };
 
@@ -436,15 +425,15 @@ static unsigned long clk_stm32_composite_recalc_rate(struct clk_hw *hw,
 				      composite->div_id, parent_rate);
 }
 
-static int clk_stm32_composite_determine_rate(struct clk_hw *hw,
-					      struct clk_rate_request *req)
+static long clk_stm32_composite_round_rate(struct clk_hw *hw, unsigned long rate,
+					   unsigned long *prate)
 {
 	struct clk_stm32_composite *composite = to_clk_stm32_composite(hw);
+
 	const struct stm32_div_cfg *divider;
-	long rate;
 
 	if (composite->div_id == NO_STM32_DIV)
-		return 0;
+		return rate;
 
 	divider = &composite->clock_data->dividers[composite->div_id];
 
@@ -455,24 +444,14 @@ static int clk_stm32_composite_determine_rate(struct clk_hw *hw,
 		val =  readl(composite->base + divider->offset) >> divider->shift;
 		val &= clk_div_mask(divider->width);
 
-		rate = divider_ro_round_rate(hw, req->rate, &req->best_parent_rate,
-					     divider->table, divider->width, divider->flags,
-					     val);
-		if (rate < 0)
-			return rate;
-
-		req->rate = rate;
-		return 0;
+		return divider_ro_round_rate(hw, rate, prate, divider->table,
+				divider->width, divider->flags,
+				val);
 	}
 
-	rate = divider_round_rate_parent(hw, clk_hw_get_parent(hw),
-					 req->rate, &req->best_parent_rate,
-					 divider->table, divider->width, divider->flags);
-	if (rate < 0)
-		return rate;
-
-	req->rate = rate;
-	return 0;
+	return divider_round_rate_parent(hw, clk_hw_get_parent(hw),
+					 rate, prate, divider->table,
+					 divider->width, divider->flags);
 }
 
 static u8 clk_stm32_composite_get_parent(struct clk_hw *hw)
@@ -622,7 +601,7 @@ static void clk_stm32_composite_disable_unused(struct clk_hw *hw)
 const struct clk_ops clk_stm32_composite_ops = {
 	.set_rate	= clk_stm32_composite_set_rate,
 	.recalc_rate	= clk_stm32_composite_recalc_rate,
-	.determine_rate	= clk_stm32_composite_determine_rate,
+	.round_rate	= clk_stm32_composite_round_rate,
 	.get_parent	= clk_stm32_composite_get_parent,
 	.set_parent	= clk_stm32_composite_set_parent,
 	.enable		= clk_stm32_composite_gate_enable,
@@ -645,7 +624,7 @@ struct clk_hw *clk_stm32_mux_register(struct device *dev,
 	mux->lock = lock;
 	mux->clock_data = data->clock_data;
 
-	err = devm_clk_hw_register(dev, hw);
+	err = clk_hw_register(dev, hw);
 	if (err)
 		return ERR_PTR(err);
 
@@ -666,7 +645,7 @@ struct clk_hw *clk_stm32_gate_register(struct device *dev,
 	gate->lock = lock;
 	gate->clock_data = data->clock_data;
 
-	err = devm_clk_hw_register(dev, hw);
+	err = clk_hw_register(dev, hw);
 	if (err)
 		return ERR_PTR(err);
 
@@ -687,7 +666,7 @@ struct clk_hw *clk_stm32_div_register(struct device *dev,
 	div->lock = lock;
 	div->clock_data = data->clock_data;
 
-	err = devm_clk_hw_register(dev, hw);
+	err = clk_hw_register(dev, hw);
 	if (err)
 		return ERR_PTR(err);
 
@@ -708,7 +687,7 @@ struct clk_hw *clk_stm32_composite_register(struct device *dev,
 	composite->lock = lock;
 	composite->clock_data = data->clock_data;
 
-	err = devm_clk_hw_register(dev, hw);
+	err = clk_hw_register(dev, hw);
 	if (err)
 		return ERR_PTR(err);
 

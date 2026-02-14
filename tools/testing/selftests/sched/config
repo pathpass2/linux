@@ -1,1 +1,1 @@
-# empty
+CONFIG_SCHED_DEBUG=y

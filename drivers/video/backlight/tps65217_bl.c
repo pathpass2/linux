@@ -11,6 +11,7 @@
 #include <linux/kernel.h>
 #include <linux/backlight.h>
 #include <linux/err.h>
+#include <linux/fb.h>
 #include <linux/mfd/tps65217.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>

@@ -132,7 +132,7 @@ static int tegra_set_wake(struct irq_data *d, unsigned int enable)
 	return 0;
 }
 
-static int tegra_ictlr_suspend(void *data)
+static int tegra_ictlr_suspend(void)
 {
 	unsigned long flags;
 	unsigned int i;
@@ -161,7 +161,7 @@ static int tegra_ictlr_suspend(void *data)
 	return 0;
 }
 
-static void tegra_ictlr_resume(void *data)
+static void tegra_ictlr_resume(void)
 {
 	unsigned long flags;
 	unsigned int i;
@@ -184,18 +184,14 @@ static void tegra_ictlr_resume(void *data)
 	local_irq_restore(flags);
 }
 
-static const struct syscore_ops tegra_ictlr_syscore_ops = {
+static struct syscore_ops tegra_ictlr_syscore_ops = {
 	.suspend	= tegra_ictlr_suspend,
 	.resume		= tegra_ictlr_resume,
 };
 
-static struct syscore tegra_ictlr_syscore = {
-	.ops = &tegra_ictlr_syscore_ops,
-};
-
 static void tegra_ictlr_syscore_init(void)
 {
-	register_syscore(&tegra_ictlr_syscore);
+	register_syscore_ops(&tegra_ictlr_syscore_ops);
 }
 #else
 #define tegra_set_wake	NULL
@@ -334,8 +330,9 @@ static int __init tegra_ictlr_init(struct device_node *node,
 	     node, num_ictlrs, soc->num_ictlrs);
 
 
-	domain = irq_domain_create_hierarchy(parent_domain, 0, num_ictlrs * 32,
-					     of_fwnode_handle(node), &tegra_ictlr_domain_ops, lic);
+	domain = irq_domain_add_hierarchy(parent_domain, 0, num_ictlrs * 32,
+					  node, &tegra_ictlr_domain_ops,
+					  lic);
 	if (!domain) {
 		pr_err("%pOF: failed to allocated domain\n", node);
 		err = -ENOMEM;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-#include <tracefs.h>
+#include <tracefs/tracefs.h>
 
 int main(void)
 {

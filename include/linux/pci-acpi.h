@@ -12,8 +12,7 @@
 #include <linux/acpi.h>
 
 #ifdef CONFIG_ACPI
-extern acpi_status pci_acpi_add_root_pm_notifier(struct acpi_device *dev,
-						 struct acpi_pci_root *pci_root);
+extern acpi_status pci_acpi_add_bus_pm_notifier(struct acpi_device *dev);
 static inline acpi_status pci_acpi_remove_bus_pm_notifier(struct acpi_device *dev)
 {
 	return acpi_remove_pm_notifier(dev);

@@ -67,22 +67,19 @@ int utf8_to_utf32(const u8 *s, int inlen, unicode_t *pu)
 			l &= t->lmask;
 			if (l < t->lval || l > UNICODE_MAX ||
 					(l & SURROGATE_MASK) == SURROGATE_PAIR)
-				return -EILSEQ;
-
+				return -1;
 			*pu = (unicode_t) l;
 			return nc;
 		}
 		if (inlen <= nc)
-			return -EOVERFLOW;
-
+			return -1;
 		s++;
 		c = (*s ^ 0x80) & 0xFF;
 		if (c & 0xC0)
-			return -EILSEQ;
-
+			return -1;
 		l = (l << 6) | c;
 	}
-	return -EILSEQ;
+	return -1;
 }
 EXPORT_SYMBOL(utf8_to_utf32);
 
@@ -97,7 +94,7 @@ int utf32_to_utf8(unicode_t u, u8 *s, int maxout)
 
 	l = u;
 	if (l > UNICODE_MAX || (l & SURROGATE_MASK) == SURROGATE_PAIR)
-		return -EILSEQ;
+		return -1;
 
 	nc = 0;
 	for (t = utf8_table; t->cmask && maxout; t++, maxout--) {
@@ -113,7 +110,7 @@ int utf32_to_utf8(unicode_t u, u8 *s, int maxout)
 			return nc;
 		}
 	}
-	return -EOVERFLOW;
+	return -1;
 }
 EXPORT_SYMBOL(utf32_to_utf8);
 
@@ -220,16 +217,8 @@ int utf16s_to_utf8s(const wchar_t *pwcs, int inlen, enum utf16_endian endian,
 				inlen--;
 			}
 			size = utf32_to_utf8(u, op, maxout);
-			if (size < 0) {
-				if (size == -EILSEQ) {
-					/* Ignore character and move on */
-					continue;
-				}
-				/*
-				 * Stop filling the buffer with data once a character
-				 * does not fit anymore.
-				 */
-				break;
+			if (size == -1) {
+				/* Ignore character and move on */
 			} else {
 				op += size;
 				maxout -= size;
@@ -283,7 +272,7 @@ int unregister_nls(struct nls_table * nls)
 	return -EINVAL;
 }
 
-static struct nls_table *find_nls(const char *charset)
+static struct nls_table *find_nls(char *charset)
 {
 	struct nls_table *nls;
 	spin_lock(&nls_lock);
@@ -299,7 +288,7 @@ static struct nls_table *find_nls(const char *charset)
 	return nls;
 }
 
-struct nls_table *load_nls(const char *charset)
+struct nls_table *load_nls(char *charset)
 {
 	return try_then_request_module(find_nls(charset), "nls_%s", charset);
 }
@@ -556,5 +545,4 @@ EXPORT_SYMBOL(unload_nls);
 EXPORT_SYMBOL(load_nls);
 EXPORT_SYMBOL(load_nls_default);
 
-MODULE_DESCRIPTION("Base file system native language support");
 MODULE_LICENSE("Dual BSD/GPL");

@@ -90,17 +90,16 @@ static long cmm_alloc_pages(long nr, long *counter,
 			} else
 				free_page((unsigned long) npa);
 		}
-		diag10_range(virt_to_pfn((void *)addr), 1);
+		diag10_range(virt_to_pfn(addr), 1);
 		pa->pages[pa->index++] = addr;
 		(*counter)++;
 		spin_unlock(&cmm_lock);
 		nr--;
-		cond_resched();
 	}
 	return nr;
 }
 
-static long __cmm_free_pages(long nr, long *counter, struct cmm_page_array **list)
+static long cmm_free_pages(long nr, long *counter, struct cmm_page_array **list)
 {
 	struct cmm_page_array *pa;
 	unsigned long addr;
@@ -122,21 +121,6 @@ static long __cmm_free_pages(long nr, long *counter, struct cmm_page_array **lis
 	}
 	spin_unlock(&cmm_lock);
 	return nr;
-}
-
-static long cmm_free_pages(long nr, long *counter, struct cmm_page_array **list)
-{
-	long inc = 0;
-
-	while (nr) {
-		inc = min(256L, nr);
-		nr -= inc;
-		inc = __cmm_free_pages(inc, counter, list);
-		if (inc)
-			break;
-		cond_resched();
-	}
-	return nr + inc;
 }
 
 static int cmm_oom_notify(struct notifier_block *self,
@@ -201,10 +185,10 @@ static void cmm_set_timer(void)
 {
 	if (cmm_timed_pages_target <= 0 || cmm_timeout_seconds <= 0) {
 		if (timer_pending(&cmm_timer))
-			timer_delete(&cmm_timer);
+			del_timer(&cmm_timer);
 		return;
 	}
-	mod_timer(&cmm_timer, jiffies + secs_to_jiffies(cmm_timeout_seconds));
+	mod_timer(&cmm_timer, jiffies + msecs_to_jiffies(cmm_timeout_seconds * MSEC_PER_SEC));
 }
 
 static void cmm_timer_fn(struct timer_list *unused)
@@ -259,7 +243,7 @@ static int cmm_skip_blanks(char *cp, char **endp)
 	return str != cp;
 }
 
-static int cmm_pages_handler(const struct ctl_table *ctl, int write,
+static int cmm_pages_handler(struct ctl_table *ctl, int write,
 			     void *buffer, size_t *lenp, loff_t *ppos)
 {
 	long nr = cmm_get_pages();
@@ -278,7 +262,7 @@ static int cmm_pages_handler(const struct ctl_table *ctl, int write,
 	return 0;
 }
 
-static int cmm_timed_pages_handler(const struct ctl_table *ctl, int write,
+static int cmm_timed_pages_handler(struct ctl_table *ctl, int write,
 				   void *buffer, size_t *lenp,
 				   loff_t *ppos)
 {
@@ -298,7 +282,7 @@ static int cmm_timed_pages_handler(const struct ctl_table *ctl, int write,
 	return 0;
 }
 
-static int cmm_timeout_handler(const struct ctl_table *ctl, int write,
+static int cmm_timeout_handler(struct ctl_table *ctl, int write,
 			       void *buffer, size_t *lenp, loff_t *ppos)
 {
 	char buf[64], *p;
@@ -321,8 +305,8 @@ static int cmm_timeout_handler(const struct ctl_table *ctl, int write,
 		cmm_set_timeout(nr, seconds);
 		*ppos += *lenp;
 	} else {
-		len = scnprintf(buf, sizeof(buf), "%ld %ld\n",
-				cmm_timeout_pages, cmm_timeout_seconds);
+		len = sprintf(buf, "%ld %ld\n",
+			      cmm_timeout_pages, cmm_timeout_seconds);
 		if (len > *lenp)
 			len = *lenp;
 		memcpy(buffer, buf, len);
@@ -332,7 +316,7 @@ static int cmm_timeout_handler(const struct ctl_table *ctl, int write,
 	return 0;
 }
 
-static const struct ctl_table cmm_table[] = {
+static struct ctl_table cmm_table[] = {
 	{
 		.procname	= "cmm_pages",
 		.mode		= 0644,
@@ -348,6 +332,17 @@ static const struct ctl_table cmm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= cmm_timeout_handler,
 	},
+	{ }
+};
+
+static struct ctl_table cmm_dir_table[] = {
+	{
+		.procname	= "vm",
+		.maxlen		= 0,
+		.mode		= 0555,
+		.child		= cmm_table,
+	},
+	{ }
 };
 
 #ifdef CONFIG_CMM_IUCV
@@ -394,7 +389,7 @@ static int __init cmm_init(void)
 {
 	int rc = -ENOMEM;
 
-	cmm_sysctl_header = register_sysctl("vm", cmm_table);
+	cmm_sysctl_header = register_sysctl_table(cmm_dir_table);
 	if (!cmm_sysctl_header)
 		goto out_sysctl;
 #ifdef CONFIG_CMM_IUCV
@@ -424,7 +419,7 @@ out_smsg:
 #endif
 	unregister_sysctl_table(cmm_sysctl_header);
 out_sysctl:
-	timer_delete_sync(&cmm_timer);
+	del_timer_sync(&cmm_timer);
 	return rc;
 }
 module_init(cmm_init);
@@ -437,11 +432,10 @@ static void __exit cmm_exit(void)
 #endif
 	unregister_oom_notifier(&cmm_oom_nb);
 	kthread_stop(cmm_thread_ptr);
-	timer_delete_sync(&cmm_timer);
+	del_timer_sync(&cmm_timer);
 	cmm_free_pages(cmm_pages, &cmm_pages, &cmm_page_list);
 	cmm_free_pages(cmm_timed_pages, &cmm_timed_pages, &cmm_timed_page_list);
 }
 module_exit(cmm_exit);
 
-MODULE_DESCRIPTION("Cooperative memory management interface");
 MODULE_LICENSE("GPL");

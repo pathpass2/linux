@@ -104,6 +104,8 @@ static int amx3_common_init(int (*idle)(u32 wfi_flags))
 
 static int am33xx_suspend_init(int (*idle)(u32 wfi_flags))
 {
+	int ret;
+
 	gfx_l4ls_clkdm = clkdm_lookup("gfx_l4ls_gfx_clkdm");
 
 	if (!gfx_l4ls_clkdm) {
@@ -111,7 +113,9 @@ static int am33xx_suspend_init(int (*idle)(u32 wfi_flags))
 		return -ENODEV;
 	}
 
-	return amx3_common_init(idle);
+	ret = amx3_common_init(idle);
+
+	return ret;
 }
 
 static int am43xx_suspend_init(int (*idle)(u32 wfi_flags))
@@ -388,15 +392,12 @@ static int __init amx3_idle_init(struct device_node *cpu_node, int cpu)
 		if (!state_node)
 			break;
 
-		if (!of_device_is_available(state_node)) {
-			of_node_put(state_node);
+		if (!of_device_is_available(state_node))
 			continue;
-		}
 
 		if (i == CPUIDLE_STATE_MAX) {
 			pr_warn("%s: cpuidle states reached max possible\n",
 				__func__);
-			of_node_put(state_node);
 			break;
 		}
 
@@ -406,7 +407,6 @@ static int __init amx3_idle_init(struct device_node *cpu_node, int cpu)
 			states[state_count].wfi_flags |= WFI_FLAG_WAKE_M3 |
 							 WFI_FLAG_FLUSH_CACHE;
 
-		of_node_put(state_node);
 		state_count++;
 	}
 

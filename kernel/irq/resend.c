@@ -21,25 +21,26 @@
 
 #ifdef CONFIG_HARDIRQS_SW_RESEND
 
-/* hlist_head to handle software resend of interrupts: */
-static HLIST_HEAD(irq_resend_list);
-static DEFINE_RAW_SPINLOCK(irq_resend_lock);
+/* Bitmap to handle software resend of interrupts: */
+static DECLARE_BITMAP(irqs_resend, IRQ_BITMAP_BITS);
 
 /*
  * Run software resends of IRQ's
  */
 static void resend_irqs(struct tasklet_struct *unused)
 {
-	guard(raw_spinlock_irq)(&irq_resend_lock);
-	while (!hlist_empty(&irq_resend_list)) {
-		struct irq_desc *desc;
+	struct irq_desc *desc;
+	int irq;
 
-		desc = hlist_entry(irq_resend_list.first, struct irq_desc,  resend_node);
-		hlist_del_init(&desc->resend_node);
-
-		raw_spin_unlock(&irq_resend_lock);
+	while (!bitmap_empty(irqs_resend, nr_irqs)) {
+		irq = find_first_bit(irqs_resend, nr_irqs);
+		clear_bit(irq, irqs_resend);
+		desc = irq_to_desc(irq);
+		if (!desc)
+			continue;
+		local_irq_disable();
 		desc->handle_irq(desc);
-		raw_spin_lock(&irq_resend_lock);
+		local_irq_enable();
 	}
 }
 
@@ -48,11 +49,13 @@ static DECLARE_TASKLET(resend_tasklet, resend_irqs);
 
 static int irq_sw_resend(struct irq_desc *desc)
 {
+	unsigned int irq = irq_desc_get_irq(desc);
+
 	/*
 	 * Validate whether this interrupt can be safely injected from
 	 * non interrupt context
 	 */
-	if (irqd_is_handle_enforce_irqctx(&desc->irq_data))
+	if (handle_enforce_irqctx(&desc->irq_data))
 		return -EINVAL;
 
 	/*
@@ -67,35 +70,16 @@ static int irq_sw_resend(struct irq_desc *desc)
 		 */
 		if (!desc->parent_irq)
 			return -EINVAL;
-
-		desc = irq_to_desc(desc->parent_irq);
-		if (!desc)
-			return -EINVAL;
+		irq = desc->parent_irq;
 	}
 
-	/* Add to resend_list and activate the softirq: */
-	scoped_guard(raw_spinlock, &irq_resend_lock) {
-		if (hlist_unhashed(&desc->resend_node))
-			hlist_add_head(&desc->resend_node, &irq_resend_list);
-	}
+	/* Set it pending and activate the softirq: */
+	set_bit(irq, irqs_resend);
 	tasklet_schedule(&resend_tasklet);
 	return 0;
 }
 
-void clear_irq_resend(struct irq_desc *desc)
-{
-	guard(raw_spinlock)(&irq_resend_lock);
-	hlist_del_init(&desc->resend_node);
-}
-
-void irq_resend_init(struct irq_desc *desc)
-{
-	INIT_HLIST_NODE(&desc->resend_node);
-}
 #else
-void clear_irq_resend(struct irq_desc *desc) {}
-void irq_resend_init(struct irq_desc *desc) {}
-
 static int irq_sw_resend(struct irq_desc *desc)
 {
 	return -EINVAL;
@@ -170,24 +154,30 @@ int check_irq_resend(struct irq_desc *desc, bool inject)
  */
 int irq_inject_interrupt(unsigned int irq)
 {
-	int err = -EINVAL;
+	struct irq_desc *desc;
+	unsigned long flags;
+	int err;
 
 	/* Try the state injection hardware interface first */
 	if (!irq_set_irqchip_state(irq, IRQCHIP_STATE_PENDING, true))
 		return 0;
 
 	/* That failed, try via the resend mechanism */
-	scoped_irqdesc_get_and_buslock(irq, 0) {
-		struct irq_desc *desc = scoped_irqdesc;
+	desc = irq_get_desc_buslock(irq, &flags, 0);
+	if (!desc)
+		return -EINVAL;
 
-		/*
-		 * Only try to inject when the interrupt is:
-		 *  - not NMI type
-		 *  - activated
-		 */
-		if (!irq_is_nmi(desc) && irqd_is_activated(&desc->irq_data))
-			err = check_irq_resend(desc, true);
-	}
+	/*
+	 * Only try to inject when the interrupt is:
+	 *  - not NMI type
+	 *  - activated
+	 */
+	if ((desc->istate & IRQS_NMI) || !irqd_is_activated(&desc->irq_data))
+		err = -EINVAL;
+	else
+		err = check_irq_resend(desc, true);
+
+	irq_put_desc_busunlock(desc, flags);
 	return err;
 }
 EXPORT_SYMBOL_GPL(irq_inject_interrupt);

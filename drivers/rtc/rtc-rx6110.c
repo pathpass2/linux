@@ -13,6 +13,7 @@
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/spi/spi.h>
 #include <linux/i2c.h>
 
@@ -324,11 +325,13 @@ static int rx6110_probe(struct rx6110_data *rx6110, struct device *dev)
 	if (err)
 		return err;
 
+	rx6110->rtc->max_user_freq = 1;
+
 	return 0;
 }
 
 #if IS_ENABLED(CONFIG_SPI_MASTER)
-static const struct regmap_config regmap_spi_config = {
+static struct regmap_config regmap_spi_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = RX6110_REG_IRQ,
@@ -408,7 +411,7 @@ static void rx6110_spi_unregister(void)
 #endif /* CONFIG_SPI_MASTER */
 
 #if IS_ENABLED(CONFIG_I2C)
-static const struct regmap_config regmap_i2c_config = {
+static struct regmap_config regmap_i2c_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = RX6110_REG_IRQ,
@@ -449,7 +452,7 @@ static const struct acpi_device_id rx6110_i2c_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, rx6110_i2c_acpi_match);
 
 static const struct i2c_device_id rx6110_i2c_id[] = {
-	{ "rx6110" },
+	{ "rx6110", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rx6110_i2c_id);
@@ -459,7 +462,7 @@ static struct i2c_driver rx6110_i2c_driver = {
 		.name = RX6110_DRIVER_NAME,
 		.acpi_match_table = rx6110_i2c_acpi_match,
 	},
-	.probe		= rx6110_i2c_probe,
+	.probe_new	= rx6110_i2c_probe,
 	.id_table	= rx6110_i2c_id,
 };
 

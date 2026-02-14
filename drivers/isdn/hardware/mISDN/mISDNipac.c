@@ -21,7 +21,6 @@
 
 MODULE_AUTHOR("Karsten Keil");
 MODULE_VERSION(ISAC_REV);
-MODULE_DESCRIPTION("mISDN driver for ISAC specific functions");
 MODULE_LICENSE("GPL v2");
 
 #define ReadISAC(is, o)		(is->read_reg(is->dch.hw, o + is->off))
@@ -158,7 +157,7 @@ isac_fill_fifo(struct isac_hw *isac)
 	WriteISAC(isac, ISAC_CMDR, more ? 0x8 : 0xa);
 	if (test_and_set_bit(FLG_BUSY_TIMER, &isac->dch.Flags)) {
 		pr_debug("%s: %s dbusytimer running\n", isac->name, __func__);
-		timer_delete(&isac->dch.timer);
+		del_timer(&isac->dch.timer);
 	}
 	isac->dch.timer.expires = jiffies + ((DBUSY_TIMER_VALUE * HZ)/1000);
 	add_timer(&isac->dch.timer);
@@ -206,7 +205,7 @@ static void
 isac_xpr_irq(struct isac_hw *isac)
 {
 	if (test_and_clear_bit(FLG_BUSY_TIMER, &isac->dch.Flags))
-		timer_delete(&isac->dch.timer);
+		del_timer(&isac->dch.timer);
 	if (isac->dch.tx_skb && isac->dch.tx_idx < isac->dch.tx_skb->len) {
 		isac_fill_fifo(isac);
 	} else {
@@ -220,7 +219,7 @@ static void
 isac_retransmit(struct isac_hw *isac)
 {
 	if (test_and_clear_bit(FLG_BUSY_TIMER, &isac->dch.Flags))
-		timer_delete(&isac->dch.timer);
+		del_timer(&isac->dch.timer);
 	if (test_bit(FLG_TX_BUSY, &isac->dch.Flags)) {
 		/* Restart frame */
 		isac->dch.tx_idx = 0;
@@ -665,7 +664,7 @@ isac_l1cmd(struct dchannel *dch, u32 cmd)
 		}
 		test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
 		if (test_and_clear_bit(FLG_BUSY_TIMER, &dch->Flags))
-			timer_delete(&dch->timer);
+			del_timer(&dch->timer);
 		break;
 	case HW_POWERUP_REQ:
 		spin_lock_irqsave(isac->hwlock, flags);
@@ -698,7 +697,7 @@ isac_release(struct isac_hw *isac)
 	else if (isac->type != 0)
 		WriteISAC(isac, ISAC_MASK, 0xff);
 	if (isac->dch.timer.function != NULL) {
-		timer_delete(&isac->dch.timer);
+		del_timer(&isac->dch.timer);
 		isac->dch.timer.function = NULL;
 	}
 	kfree(isac->mon_rx);
@@ -713,7 +712,7 @@ isac_release(struct isac_hw *isac)
 static void
 dbusy_timer_handler(struct timer_list *t)
 {
-	struct isac_hw *isac = timer_container_of(isac, t, dch.timer);
+	struct isac_hw *isac = from_timer(isac, t, dch.timer);
 	int rbch, star;
 	u_long flags;
 

@@ -277,10 +277,6 @@ static irqreturn_t xlnx_rtc_interrupt(int irq, void *id)
 static int xlnx_rtc_probe(struct platform_device *pdev)
 {
 	struct xlnx_rtc_dev *xrtcdev;
-	bool is_alarm_set = false;
-	u32 pending_alrm_irq;
-	u32 current_time;
-	u32 alarm_time;
 	int ret;
 
 	xrtcdev = devm_kzalloc(&pdev->dev, sizeof(*xrtcdev), GFP_KERNEL);
@@ -299,17 +295,6 @@ static int xlnx_rtc_probe(struct platform_device *pdev)
 	xrtcdev->reg_base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(xrtcdev->reg_base))
 		return PTR_ERR(xrtcdev->reg_base);
-
-	/* Clear any pending alarm interrupts from previous kernel/boot */
-	pending_alrm_irq = readl(xrtcdev->reg_base + RTC_INT_STS) & RTC_INT_ALRM;
-	if (pending_alrm_irq)
-		writel(pending_alrm_irq, xrtcdev->reg_base + RTC_INT_STS);
-
-	/* Check if a valid alarm is already set from previous kernel/boot */
-	alarm_time = readl(xrtcdev->reg_base + RTC_ALRM);
-	current_time = readl(xrtcdev->reg_base + RTC_CUR_TM);
-	if (alarm_time > current_time && alarm_time != 0)
-		is_alarm_set = true;
 
 	xrtcdev->alarm_irq = platform_get_irq_byname(pdev, "alarm");
 	if (xrtcdev->alarm_irq < 0)
@@ -333,8 +318,8 @@ static int xlnx_rtc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	/* Getting the rtc info */
-	xrtcdev->rtc_clk = devm_clk_get_optional(&pdev->dev, "rtc");
+	/* Getting the rtc_clk info */
+	xrtcdev->rtc_clk = devm_clk_get_optional(&pdev->dev, "rtc_clk");
 	if (IS_ERR(xrtcdev->rtc_clk)) {
 		if (PTR_ERR(xrtcdev->rtc_clk) != -EPROBE_DEFER)
 			dev_warn(&pdev->dev, "Device clock not found.\n");
@@ -352,19 +337,17 @@ static int xlnx_rtc_probe(struct platform_device *pdev)
 
 	xlnx_init_rtc(xrtcdev);
 
-	/* Re-enable alarm interrupt if a valid alarm was found */
-	if (is_alarm_set)
-		writel(RTC_INT_ALRM, xrtcdev->reg_base + RTC_INT_EN);
-
-	device_init_wakeup(&pdev->dev, true);
+	device_init_wakeup(&pdev->dev, 1);
 
 	return devm_rtc_register_device(xrtcdev->rtc);
 }
 
-static void xlnx_rtc_remove(struct platform_device *pdev)
+static int xlnx_rtc_remove(struct platform_device *pdev)
 {
 	xlnx_rtc_alarm_irq_enable(&pdev->dev, 0);
-	device_init_wakeup(&pdev->dev, false);
+	device_init_wakeup(&pdev->dev, 0);
+
+	return 0;
 }
 
 static int __maybe_unused xlnx_rtc_suspend(struct device *dev)

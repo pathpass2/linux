@@ -173,8 +173,8 @@ static void tef6862_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tef6862_id[] = {
-	{ DRIVER_NAME },
-	{}
+	{DRIVER_NAME, 0},
+	{},
 };
 
 MODULE_DEVICE_TABLE(i2c, tef6862_id);
@@ -183,7 +183,7 @@ static struct i2c_driver tef6862_driver = {
 	.driver = {
 		.name	= DRIVER_NAME,
 	},
-	.probe		= tef6862_probe,
+	.probe_new	= tef6862_probe,
 	.remove		= tef6862_remove,
 	.id_table	= tef6862_id,
 };

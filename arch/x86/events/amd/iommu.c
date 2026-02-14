@@ -16,8 +16,6 @@
 #include <linux/slab.h>
 #include <linux/amd-iommu.h>
 
-#include <asm/msr.h>
-
 #include "../perf_event.h"
 #include "iommu.h"
 
@@ -32,7 +30,7 @@
 #define GET_DOMID_MASK(x)  (((x)->conf1 >> 16) & 0xFFFFULL)
 #define GET_PASID_MASK(x)  (((x)->conf1 >> 32) & 0xFFFFFULL)
 
-#define IOMMU_NAME_SIZE 24
+#define IOMMU_NAME_SIZE 16
 
 struct perf_amd_iommu {
 	struct list_head list;

@@ -11,7 +11,8 @@
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
 #include <linux/cpuidle.h>
@@ -48,7 +49,7 @@ static int qcom_cpu_spc(struct spm_driver_data *drv)
 	ret = cpu_suspend(0, qcom_pm_collapse);
 	/*
 	 * ARM common code executes WFI without calling into our driver and
-	 * if the SPM mode is not reset, then we may accidentally power down the
+	 * if the SPM mode is not reset, then we may accidently power down the
 	 * cpu when we intended only to gate the cpu clock.
 	 * Ensure the state is set to standby before returning.
 	 */
@@ -86,9 +87,9 @@ static const struct of_device_id qcom_idle_state_match[] = {
 
 static int spm_cpuidle_register(struct device *cpuidle_dev, int cpu)
 {
-	struct platform_device *pdev;
+	struct platform_device *pdev = NULL;
 	struct device_node *cpu_node, *saw_node;
-	struct cpuidle_qcom_spm_data *data;
+	struct cpuidle_qcom_spm_data *data = NULL;
 	int ret;
 
 	cpu_node = of_cpu_device_node_get(cpu);
@@ -96,23 +97,20 @@ static int spm_cpuidle_register(struct device *cpuidle_dev, int cpu)
 		return -ENODEV;
 
 	saw_node = of_parse_phandle(cpu_node, "qcom,saw", 0);
-	of_node_put(cpu_node);
 	if (!saw_node)
 		return -ENODEV;
 
 	pdev = of_find_device_by_node(saw_node);
 	of_node_put(saw_node);
+	of_node_put(cpu_node);
 	if (!pdev)
 		return -ENODEV;
 
 	data = devm_kzalloc(cpuidle_dev, sizeof(*data), GFP_KERNEL);
-	if (!data) {
-		put_device(&pdev->dev);
+	if (!data)
 		return -ENOMEM;
-	}
 
 	data->spm = dev_get_drvdata(&pdev->dev);
-	put_device(&pdev->dev);
 	if (!data->spm)
 		return -EINVAL;
 
@@ -138,7 +136,7 @@ static int spm_cpuidle_drv_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "set warm boot addr failed");
 
-	for_each_present_cpu(cpu) {
+	for_each_possible_cpu(cpu) {
 		ret = spm_cpuidle_register(&pdev->dev, cpu);
 		if (ret && ret != -ENODEV) {
 			dev_err(&pdev->dev,

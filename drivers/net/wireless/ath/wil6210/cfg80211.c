@@ -892,8 +892,10 @@ static int wil_cfg80211_scan(struct wiphy *wiphy,
 	struct wil6210_priv *wil = wiphy_to_wil(wiphy);
 	struct wireless_dev *wdev = request->wdev;
 	struct wil6210_vif *vif = wdev_to_vif(wil, wdev);
-	DEFINE_FLEX(struct wmi_start_scan_cmd, cmd,
-		    channel_list, num_channels, 4);
+	struct {
+		struct wmi_start_scan_cmd cmd;
+		u16 chnl[4];
+	} __packed cmd;
 	uint i, n;
 	int rc;
 
@@ -975,8 +977,9 @@ static int wil_cfg80211_scan(struct wiphy *wiphy,
 	vif->scan_request = request;
 	mod_timer(&vif->scan_timer, jiffies + WIL6210_SCAN_TO);
 
-	cmd->scan_type = WMI_ACTIVE_SCAN;
-	cmd->num_channels = 0;
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.cmd.scan_type = WMI_ACTIVE_SCAN;
+	cmd.cmd.num_channels = 0;
 	n = min(request->n_channels, 4U);
 	for (i = 0; i < n; i++) {
 		int ch = request->channels[i]->hw_value;
@@ -988,8 +991,7 @@ static int wil_cfg80211_scan(struct wiphy *wiphy,
 			continue;
 		}
 		/* 0-based channel indexes */
-		cmd->num_channels++;
-		cmd->channel_list[cmd->num_channels - 1].channel = ch - 1;
+		cmd.cmd.channel_list[cmd.cmd.num_channels++].channel = ch - 1;
 		wil_dbg_misc(wil, "Scan for ch %d  : %d MHz\n", ch,
 			     request->channels[i]->center_freq);
 	}
@@ -1005,19 +1007,20 @@ static int wil_cfg80211_scan(struct wiphy *wiphy,
 	if (rc)
 		goto out_restore;
 
-	if (wil->discovery_mode && cmd->scan_type == WMI_ACTIVE_SCAN) {
-		cmd->discovery_mode = 1;
+	if (wil->discovery_mode && cmd.cmd.scan_type == WMI_ACTIVE_SCAN) {
+		cmd.cmd.discovery_mode = 1;
 		wil_dbg_misc(wil, "active scan with discovery_mode=1\n");
 	}
 
 	if (vif->mid == 0)
 		wil->radio_wdev = wdev;
 	rc = wmi_send(wil, WMI_START_SCAN_CMDID, vif->mid,
-		      cmd, struct_size(cmd, channel_list, cmd->num_channels));
+		      &cmd, sizeof(cmd.cmd) +
+		      cmd.cmd.num_channels * sizeof(cmd.cmd.channel_list[0]));
 
 out_restore:
 	if (rc) {
-		timer_delete_sync(&vif->scan_timer);
+		del_timer_sync(&vif->scan_timer);
 		if (vif->mid == 0)
 			wil->radio_wdev = wil->main_ndev->ieee80211_ptr;
 		vif->scan_request = NULL;
@@ -1408,8 +1411,7 @@ static int wil_cfg80211_disconnect(struct wiphy *wiphy,
 	return rc;
 }
 
-static int wil_cfg80211_set_wiphy_params(struct wiphy *wiphy, int radio_idx,
-					 u32 changed)
+static int wil_cfg80211_set_wiphy_params(struct wiphy *wiphy, u32 changed)
 {
 	struct wil6210_priv *wil = wiphy_to_wil(wiphy);
 	int rc;
@@ -1494,7 +1496,6 @@ out:
 }
 
 static int wil_cfg80211_set_channel(struct wiphy *wiphy,
-				    struct net_device *dev,
 				    struct cfg80211_chan_def *chandef)
 {
 	struct wil6210_priv *wil = wiphy_to_wil(wiphy);
@@ -2081,12 +2082,11 @@ void wil_cfg80211_ap_recovery(struct wil6210_priv *wil)
 
 static int wil_cfg80211_change_beacon(struct wiphy *wiphy,
 				      struct net_device *ndev,
-				      struct cfg80211_ap_update *params)
+				      struct cfg80211_beacon_data *bcon)
 {
 	struct wil6210_priv *wil = wiphy_to_wil(wiphy);
 	struct wireless_dev *wdev = ndev->ieee80211_ptr;
 	struct wil6210_vif *vif = ndev_to_vif(ndev);
-	struct cfg80211_beacon_data *bcon = &params->beacon;
 	int rc;
 	u32 privacy = 0;
 
@@ -2708,7 +2708,6 @@ static void wil_wiphy_init(struct wiphy *wiphy)
 	wiphy->n_cipher_suites = ARRAY_SIZE(wil_cipher_suites);
 	wiphy->mgmt_stypes = wil_mgmt_stypes;
 	wiphy->features |= NL80211_FEATURE_SK_TX_STATUS;
-	wiphy->bss_param_support = WIPHY_BSS_PARAM_AP_ISOLATE;
 
 	wiphy->n_vendor_commands = ARRAY_SIZE(wil_nl80211_vendor_commands);
 	wiphy->vendor_commands = wil_nl80211_vendor_commands;
@@ -2735,7 +2734,7 @@ int wil_cfg80211_iface_combinations_from_fw(
 		return 0;
 	}
 
-	combo = (const struct wil_fw_concurrency_combo *)(conc + 1);
+	combo = conc->combos;
 	n_combos = le16_to_cpu(conc->n_combos);
 	for (i = 0; i < n_combos; i++) {
 		total_limits += combo->n_limits;
@@ -2751,7 +2750,7 @@ int wil_cfg80211_iface_combinations_from_fw(
 		return -ENOMEM;
 	iface_limit = (struct ieee80211_iface_limit *)(iface_combinations +
 						       n_combos);
-	combo = (const struct wil_fw_concurrency_combo *)(conc + 1);
+	combo = conc->combos;
 	for (i = 0; i < n_combos; i++) {
 		iface_combinations[i].max_interfaces = combo->max_interfaces;
 		iface_combinations[i].num_different_channels =

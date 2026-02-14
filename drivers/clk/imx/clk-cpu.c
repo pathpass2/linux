@@ -30,14 +30,12 @@ static unsigned long clk_cpu_recalc_rate(struct clk_hw *hw,
 	return clk_get_rate(cpu->div);
 }
 
-static int clk_cpu_determine_rate(struct clk_hw *hw,
-				  struct clk_rate_request *req)
+static long clk_cpu_round_rate(struct clk_hw *hw, unsigned long rate,
+			       unsigned long *prate)
 {
 	struct clk_cpu *cpu = to_clk_cpu(hw);
 
-	req->rate = clk_round_rate(cpu->pll, req->rate);
-
-	return 0;
+	return clk_round_rate(cpu->pll, rate);
 }
 
 static int clk_cpu_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -68,7 +66,7 @@ static int clk_cpu_set_rate(struct clk_hw *hw, unsigned long rate,
 
 static const struct clk_ops clk_cpu_ops = {
 	.recalc_rate	= clk_cpu_recalc_rate,
-	.determine_rate = clk_cpu_determine_rate,
+	.round_rate	= clk_cpu_round_rate,
 	.set_rate	= clk_cpu_set_rate,
 };
 

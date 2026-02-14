@@ -110,7 +110,6 @@ static ssize_t uwrite(void const *const buf, size_t const count)
 {
 	size_t cnt = count;
 	off_t idx = 0;
-	void *p = NULL;
 
 	file_updated = 1;
 
@@ -118,10 +117,7 @@ static ssize_t uwrite(void const *const buf, size_t const count)
 		off_t aoffset = (file_ptr + count) - file_end;
 
 		if (aoffset > file_append_size) {
-			p = realloc(file_append, aoffset);
-			if (!p)
-				free(file_append);
-			file_append = p;
+			file_append = realloc(file_append, aoffset);
 			file_append_size = aoffset;
 		}
 		if (!file_append) {
@@ -590,6 +586,7 @@ static int do_file(char const *const fname)
 		ideal_nop = ideal_nop4_arm64;
 		is_fake_mcount64 = arm64_is_fake_mcount;
 		break;
+	case EM_IA_64:	reltype = R_IA64_IMM64; break;
 	case EM_MIPS:	/* reltype: e_class    */ break;
 	case EM_LOONGARCH:	/* reltype: e_class    */ break;
 	case EM_PPC:	reltype = R_PPC_ADDR32; break;

@@ -32,7 +32,6 @@
 #include <linux/i2c.h>
 #include <linux/string.h>
 #include <linux/list.h>
-#include <linux/nvmem-provider.h>
 #include <linux/sysfs.h>
 #include <linux/ctype.h>
 #include <linux/hwmon-sysfs.h>
@@ -154,7 +153,7 @@ static const struct attribute_group ds1682_group = {
  * User data attribute
  */
 static ssize_t ds1682_eeprom_read(struct file *filp, struct kobject *kobj,
-				  const struct bin_attribute *attr,
+				  struct bin_attribute *attr,
 				  char *buf, loff_t off, size_t count)
 {
 	struct i2c_client *client = kobj_to_i2c_client(kobj);
@@ -172,7 +171,7 @@ static ssize_t ds1682_eeprom_read(struct file *filp, struct kobject *kobj,
 }
 
 static ssize_t ds1682_eeprom_write(struct file *filp, struct kobject *kobj,
-				   const struct bin_attribute *attr,
+				   struct bin_attribute *attr,
 				   char *buf, loff_t off, size_t count)
 {
 	struct i2c_client *client = kobj_to_i2c_client(kobj);
@@ -198,43 +197,11 @@ static const struct bin_attribute ds1682_eeprom_attr = {
 	.write = ds1682_eeprom_write,
 };
 
-static int ds1682_nvmem_read(void *priv, unsigned int offset, void *val,
-			     size_t bytes)
-{
-	struct i2c_client *client = priv;
-	int ret;
-
-	ret = i2c_smbus_read_i2c_block_data(client, DS1682_REG_EEPROM + offset,
-					    bytes, val);
-	return ret < 0 ? ret : 0;
-}
-
-static int ds1682_nvmem_write(void *priv, unsigned int offset, void *val,
-			      size_t bytes)
-{
-	struct i2c_client *client = priv;
-	int ret;
-
-	ret = i2c_smbus_write_i2c_block_data(client, DS1682_REG_EEPROM + offset,
-					     bytes, val);
-	return ret < 0 ? ret : 0;
-}
-
 /*
  * Called when a ds1682 device is matched with this driver
  */
 static int ds1682_probe(struct i2c_client *client)
 {
-	struct nvmem_config config = {
-		.dev = &client->dev,
-		.owner = THIS_MODULE,
-		.type = NVMEM_TYPE_EEPROM,
-		.reg_read = ds1682_nvmem_read,
-		.reg_write = ds1682_nvmem_write,
-		.size = DS1682_EEPROM_SIZE,
-		.priv = client,
-	};
-	struct nvmem_device *nvmem;
 	int rc;
 
 	if (!i2c_check_functionality(client->adapter,
@@ -243,10 +210,6 @@ static int ds1682_probe(struct i2c_client *client)
 		rc = -ENODEV;
 		goto exit;
 	}
-
-	nvmem = devm_nvmem_register(&client->dev, &config);
-	if (IS_ENABLED(CONFIG_NVMEM) && IS_ERR(nvmem))
-		return PTR_ERR(nvmem);
 
 	rc = sysfs_create_group(&client->dev.kobj, &ds1682_group);
 	if (rc)
@@ -271,7 +234,7 @@ static void ds1682_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ds1682_id[] = {
-	{ "ds1682" },
+	{ "ds1682", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ds1682_id);
@@ -287,7 +250,7 @@ static struct i2c_driver ds1682_driver = {
 		.name = "ds1682",
 		.of_match_table = ds1682_of_match,
 	},
-	.probe = ds1682_probe,
+	.probe_new = ds1682_probe,
 	.remove = ds1682_remove,
 	.id_table = ds1682_id,
 };

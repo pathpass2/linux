@@ -21,6 +21,36 @@
 
 #include "entry.h"
 
+#ifdef CONFIG_SPARC64
+
+#include <linux/jump_label.h>
+
+static void *module_map(unsigned long size)
+{
+	if (PAGE_ALIGN(size) > MODULES_LEN)
+		return NULL;
+	return __vmalloc_node_range(size, 1, MODULES_VADDR, MODULES_END,
+				GFP_KERNEL, PAGE_KERNEL, 0, NUMA_NO_NODE,
+				__builtin_return_address(0));
+}
+#else
+static void *module_map(unsigned long size)
+{
+	return vmalloc(size);
+}
+#endif /* CONFIG_SPARC64 */
+
+void *module_alloc(unsigned long size)
+{
+	void *ret;
+
+	ret = module_map(size);
+	if (ret)
+		memset(ret, 0, size);
+
+	return ret;
+}
+
 /* Make generic code ignore STT_REGISTER dummy undefined symbols.  */
 int module_frob_arch_sections(Elf_Ehdr *hdr,
 			      Elf_Shdr *sechdrs,
@@ -29,6 +59,7 @@ int module_frob_arch_sections(Elf_Ehdr *hdr,
 {
 	unsigned int symidx;
 	Elf_Sym *sym;
+	char *strtab;
 	int i;
 
 	for (symidx = 0; sechdrs[symidx].sh_type != SHT_SYMTAB; symidx++) {
@@ -38,6 +69,7 @@ int module_frob_arch_sections(Elf_Ehdr *hdr,
 		}
 	}
 	sym = (Elf_Sym *)sechdrs[symidx].sh_addr;
+	strtab = (char *)sechdrs[sechdrs[symidx].sh_link].sh_addr;
 
 	for (i = 1; i < sechdrs[symidx].sh_size / sizeof(Elf_Sym); i++) {
 		if (sym[i].st_shndx == SHN_UNDEF) {
@@ -85,7 +117,6 @@ int apply_relocate_add(Elf_Shdr *sechdrs,
 			break;
 #ifdef CONFIG_SPARC64
 		case R_SPARC_64:
-		case R_SPARC_UA64:
 			location[0] = v >> 56;
 			location[1] = v >> 48;
 			location[2] = v >> 40;
@@ -140,7 +171,7 @@ int apply_relocate_add(Elf_Shdr *sechdrs,
 			break;
 
 		default:
-			printk(KERN_ERR "module %s: Unknown relocation: 0x%x\n",
+			printk(KERN_ERR "module %s: Unknown relocation: %x\n",
 			       me->name,
 			       (int) (ELF_R_TYPE(rel[i].r_info) & 0xff));
 			return -ENOEXEC;

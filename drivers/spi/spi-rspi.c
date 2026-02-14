@@ -19,11 +19,12 @@
 #include <linux/clk.h>
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
 #include <linux/sh_dma.h>
 #include <linux/spi/spi.h>
+#include <linux/spi/rspi.h>
 #include <linux/spinlock.h>
 
 #define RSPI_SPCR		0x00	/* Control Register */
@@ -949,7 +950,7 @@ static int rspi_setup(struct spi_device *spi)
 	struct rspi_data *rspi = spi_controller_get_devdata(spi->controller);
 	u8 sslp;
 
-	if (spi_get_csgpiod(spi, 0))
+	if (spi->cs_gpiod)
 		return 0;
 
 	pm_runtime_get_sync(&rspi->pdev->dev);
@@ -957,9 +958,9 @@ static int rspi_setup(struct spi_device *spi)
 
 	sslp = rspi_read8(rspi, RSPI_SSLP);
 	if (spi->mode & SPI_CS_HIGH)
-		sslp |= SSLP_SSLP(spi_get_chipselect(spi, 0));
+		sslp |= SSLP_SSLP(spi->chip_select);
 	else
-		sslp &= ~SSLP_SSLP(spi_get_chipselect(spi, 0));
+		sslp &= ~SSLP_SSLP(spi->chip_select);
 	rspi_write8(rspi, sslp, RSPI_SSLP);
 
 	spin_unlock_irq(&rspi->lock);
@@ -1000,8 +1001,8 @@ static int rspi_prepare_message(struct spi_controller *ctlr,
 		rspi->spcmd |= SPCMD_LSBF;
 
 	/* Configure slave signal to assert */
-	rspi->spcmd |= SPCMD_SSLA(spi_get_csgpiod(spi, 0) ? rspi->ctlr->unused_native_cs
-						: spi_get_chipselect(spi, 0));
+	rspi->spcmd |= SPCMD_SSLA(spi->cs_gpiod ? rspi->ctlr->unused_native_cs
+						: spi->chip_select);
 
 	/* CMOS output mode and MOSI signal from previous transfer */
 	rspi->sppcr = 0;
@@ -1130,12 +1131,16 @@ static struct dma_chan *rspi_request_dma_chan(struct device *dev,
 static int rspi_request_dma(struct device *dev, struct spi_controller *ctlr,
 			    const struct resource *res)
 {
+	const struct rspi_plat_data *rspi_pd = dev_get_platdata(dev);
 	unsigned int dma_tx_id, dma_rx_id;
 
 	if (dev->of_node) {
 		/* In the OF case we will get the slave IDs from the DT */
 		dma_tx_id = 0;
 		dma_rx_id = 0;
+	} else if (rspi_pd && rspi_pd->dma_tx_id && rspi_pd->dma_rx_id) {
+		dma_tx_id = rspi_pd->dma_tx_id;
+		dma_rx_id = rspi_pd->dma_rx_id;
 	} else {
 		/* The driver assumes no error. */
 		return 0;
@@ -1167,12 +1172,14 @@ static void rspi_release_dma(struct spi_controller *ctlr)
 		dma_release_channel(ctlr->dma_rx);
 }
 
-static void rspi_remove(struct platform_device *pdev)
+static int rspi_remove(struct platform_device *pdev)
 {
 	struct rspi_data *rspi = platform_get_drvdata(pdev);
 
 	rspi_release_dma(rspi->ctlr);
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 static const struct spi_ops rspi_ops = {
@@ -1185,7 +1192,7 @@ static const struct spi_ops rspi_ops = {
 	.num_hw_ss =		2,
 };
 
-static const struct spi_ops rspi_rz_ops __maybe_unused = {
+static const struct spi_ops rspi_rz_ops = {
 	.set_config_register =	rspi_rz_set_config_register,
 	.transfer_one =		rspi_rz_transfer_one,
 	.min_div =		2,
@@ -1195,7 +1202,7 @@ static const struct spi_ops rspi_rz_ops __maybe_unused = {
 	.num_hw_ss =		1,
 };
 
-static const struct spi_ops qspi_ops __maybe_unused = {
+static const struct spi_ops qspi_ops = {
 	.set_config_register =	qspi_set_config_register,
 	.transfer_one =		qspi_transfer_one,
 	.extra_mode_bits =	SPI_TX_DUAL | SPI_TX_QUAD |
@@ -1207,7 +1214,8 @@ static const struct spi_ops qspi_ops __maybe_unused = {
 	.num_hw_ss =		1,
 };
 
-static const struct of_device_id rspi_of_match[] __maybe_unused = {
+#ifdef CONFIG_OF
+static const struct of_device_id rspi_of_match[] = {
 	/* RSPI on legacy SH */
 	{ .compatible = "renesas,rspi", .data = &rspi_ops },
 	/* RSPI on RZ/A1H */
@@ -1219,7 +1227,6 @@ static const struct of_device_id rspi_of_match[] __maybe_unused = {
 
 MODULE_DEVICE_TABLE(of, rspi_of_match);
 
-#ifdef CONFIG_OF
 static void rspi_reset_control_assert(void *data)
 {
 	reset_control_assert(data);
@@ -1285,10 +1292,11 @@ static int rspi_probe(struct platform_device *pdev)
 	struct spi_controller *ctlr;
 	struct rspi_data *rspi;
 	int ret;
+	const struct rspi_plat_data *rspi_pd;
 	const struct spi_ops *ops;
 	unsigned long clksrc;
 
-	ctlr = spi_alloc_host(&pdev->dev, sizeof(struct rspi_data));
+	ctlr = spi_alloc_master(&pdev->dev, sizeof(struct rspi_data));
 	if (ctlr == NULL)
 		return -ENOMEM;
 
@@ -1299,7 +1307,11 @@ static int rspi_probe(struct platform_device *pdev)
 			goto error1;
 	} else {
 		ops = (struct spi_ops *)pdev->id_entry->driver_data;
-		ctlr->num_chipselect = 2; /* default */
+		rspi_pd = dev_get_platdata(&pdev->dev);
+		if (rspi_pd && rspi_pd->num_chipselect)
+			ctlr->num_chipselect = rspi_pd->num_chipselect;
+		else
+			ctlr->num_chipselect = 2; /* default */
 	}
 
 	rspi = spi_controller_get_devdata(ctlr);
@@ -1307,7 +1319,8 @@ static int rspi_probe(struct platform_device *pdev)
 	rspi->ops = ops;
 	rspi->ctlr = ctlr;
 
-	rspi->addr = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	rspi->addr = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(rspi->addr)) {
 		ret = PTR_ERR(rspi->addr);
 		goto error1;
@@ -1338,6 +1351,7 @@ static int rspi_probe(struct platform_device *pdev)
 	ctlr->min_speed_hz = DIV_ROUND_UP(clksrc, ops->max_div);
 	ctlr->max_speed_hz = DIV_ROUND_UP(clksrc, ops->min_div);
 	ctlr->flags = ops->flags;
+	ctlr->dev.of_node = pdev->dev.of_node;
 	ctlr->use_gpio_descriptors = true;
 	ctlr->max_native_cs = rspi->ops->num_hw_ss;
 
@@ -1403,6 +1417,7 @@ static const struct platform_device_id spi_driver_ids[] = {
 
 MODULE_DEVICE_TABLE(platform, spi_driver_ids);
 
+#ifdef CONFIG_PM_SLEEP
 static int rspi_suspend(struct device *dev)
 {
 	struct rspi_data *rspi = dev_get_drvdata(dev);
@@ -1417,7 +1432,11 @@ static int rspi_resume(struct device *dev)
 	return spi_controller_resume(rspi->ctlr);
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(rspi_pm_ops, rspi_suspend, rspi_resume);
+static SIMPLE_DEV_PM_OPS(rspi_pm_ops, rspi_suspend, rspi_resume);
+#define DEV_PM_OPS	&rspi_pm_ops
+#else
+#define DEV_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
 
 static struct platform_driver rspi_driver = {
 	.probe =	rspi_probe,
@@ -1425,7 +1444,7 @@ static struct platform_driver rspi_driver = {
 	.id_table =	spi_driver_ids,
 	.driver		= {
 		.name = "renesas_spi",
-		.pm = pm_sleep_ptr(&rspi_pm_ops),
+		.pm = DEV_PM_OPS,
 		.of_match_table = of_match_ptr(rspi_of_match),
 	},
 };

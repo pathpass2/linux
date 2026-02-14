@@ -17,11 +17,12 @@
 #include <linux/bitfield.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
-#include <linux/regmap.h>
-#include <linux/mod_devicetable.h>
+#include <linux/of.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
+
+#define AL3010_DRV_NAME "al3010"
 
 #define AL3010_REG_SYSTEM		0x00
 #define AL3010_REG_DATA_LOW		0x0c
@@ -45,14 +46,8 @@ static const int al3010_scales[][2] = {
 	{0, 1187200}, {0, 296800}, {0, 74200}, {0, 18600}
 };
 
-static const struct regmap_config al3010_regmap_config = {
-	.reg_bits = 8,
-	.val_bits = 8,
-	.max_register = AL3010_REG_CONFIG,
-};
-
 struct al3010_data {
-	struct regmap *regmap;
+	struct i2c_client *client;
 };
 
 static const struct iio_chan_spec al3010_channels[] = {
@@ -74,36 +69,35 @@ static const struct attribute_group al3010_attribute_group = {
 	.attrs = al3010_attributes,
 };
 
-static int al3010_set_pwr_on(struct al3010_data *data)
+static int al3010_set_pwr(struct i2c_client *client, bool pwr)
 {
-	return regmap_write(data->regmap, AL3010_REG_SYSTEM, AL3010_CONFIG_ENABLE);
+	u8 val = pwr ? AL3010_CONFIG_ENABLE : AL3010_CONFIG_DISABLE;
+	return i2c_smbus_write_byte_data(client, AL3010_REG_SYSTEM, val);
 }
 
 static void al3010_set_pwr_off(void *_data)
 {
 	struct al3010_data *data = _data;
-	struct device *dev = regmap_get_device(data->regmap);
-	int ret;
 
-	ret = regmap_write(data->regmap, AL3010_REG_SYSTEM, AL3010_CONFIG_DISABLE);
-	if (ret)
-		dev_err(dev, "failed to write system register\n");
+	al3010_set_pwr(data->client, false);
 }
 
 static int al3010_init(struct al3010_data *data)
 {
-	struct device *dev = regmap_get_device(data->regmap);
 	int ret;
 
-	ret = al3010_set_pwr_on(data);
-	if (ret)
+	ret = al3010_set_pwr(data->client, true);
+
+	if (ret < 0)
 		return ret;
 
-	ret = devm_add_action_or_reset(dev, al3010_set_pwr_off, data);
-	if (ret)
+	ret = i2c_smbus_write_byte_data(data->client, AL3010_REG_CONFIG,
+					FIELD_PREP(AL3010_GAIN_MASK,
+						   AL3XXX_RANGE_3));
+	if (ret < 0)
 		return ret;
-	return regmap_write(data->regmap, AL3010_REG_CONFIG,
-			    FIELD_PREP(AL3010_GAIN_MASK, AL3XXX_RANGE_3));
+
+	return 0;
 }
 
 static int al3010_read_raw(struct iio_dev *indio_dev,
@@ -111,7 +105,7 @@ static int al3010_read_raw(struct iio_dev *indio_dev,
 			   int *val2, long mask)
 {
 	struct al3010_data *data = iio_priv(indio_dev);
-	int ret, gain, raw;
+	int ret;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
@@ -120,21 +114,21 @@ static int al3010_read_raw(struct iio_dev *indio_dev,
 		 * - low byte of output is stored at AL3010_REG_DATA_LOW
 		 * - high byte of output is stored at AL3010_REG_DATA_LOW + 1
 		 */
-		ret = regmap_read(data->regmap, AL3010_REG_DATA_LOW, &raw);
-		if (ret)
+		ret = i2c_smbus_read_word_data(data->client,
+					       AL3010_REG_DATA_LOW);
+		if (ret < 0)
 			return ret;
-
-		*val = raw;
-
+		*val = ret;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
-		ret = regmap_read(data->regmap, AL3010_REG_CONFIG, &gain);
-		if (ret)
+		ret = i2c_smbus_read_byte_data(data->client,
+					       AL3010_REG_CONFIG);
+		if (ret < 0)
 			return ret;
 
-		gain = FIELD_GET(AL3010_GAIN_MASK, gain);
-		*val = al3010_scales[gain][0];
-		*val2 = al3010_scales[gain][1];
+		ret = FIELD_GET(AL3010_GAIN_MASK, ret);
+		*val = al3010_scales[ret][0];
+		*val2 = al3010_scales[ret][1];
 
 		return IIO_VAL_INT_PLUS_MICRO;
 	}
@@ -146,7 +140,7 @@ static int al3010_write_raw(struct iio_dev *indio_dev,
 			    int val2, long mask)
 {
 	struct al3010_data *data = iio_priv(indio_dev);
-	unsigned int i;
+	int i;
 
 	switch (mask) {
 	case IIO_CHAN_INFO_SCALE:
@@ -155,8 +149,9 @@ static int al3010_write_raw(struct iio_dev *indio_dev,
 			    val2 != al3010_scales[i][1])
 				continue;
 
-			return regmap_write(data->regmap, AL3010_REG_CONFIG,
-					    FIELD_PREP(AL3010_GAIN_MASK, i));
+			return i2c_smbus_write_byte_data(data->client,
+					AL3010_REG_CONFIG,
+					FIELD_PREP(AL3010_GAIN_MASK, i));
 		}
 		break;
 	}
@@ -172,70 +167,69 @@ static const struct iio_info al3010_info = {
 static int al3010_probe(struct i2c_client *client)
 {
 	struct al3010_data *data;
-	struct device *dev = &client->dev;
 	struct iio_dev *indio_dev;
 	int ret;
 
-	indio_dev = devm_iio_device_alloc(dev, sizeof(*data));
+	indio_dev = devm_iio_device_alloc(&client->dev, sizeof(*data));
 	if (!indio_dev)
 		return -ENOMEM;
 
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
-	data->regmap = devm_regmap_init_i2c(client, &al3010_regmap_config);
-	if (IS_ERR(data->regmap))
-		return dev_err_probe(dev, PTR_ERR(data->regmap),
-				     "cannot allocate regmap\n");
+	data->client = client;
 
 	indio_dev->info = &al3010_info;
-	indio_dev->name = "al3010";
+	indio_dev->name = AL3010_DRV_NAME;
 	indio_dev->channels = al3010_channels;
 	indio_dev->num_channels = ARRAY_SIZE(al3010_channels);
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
 	ret = al3010_init(data);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to init ALS\n");
+	if (ret < 0) {
+		dev_err(&client->dev, "al3010 chip init failed\n");
+		return ret;
+	}
 
-	return devm_iio_device_register(dev, indio_dev);
+	ret = devm_add_action_or_reset(&client->dev,
+					al3010_set_pwr_off,
+					data);
+	if (ret < 0)
+		return ret;
+
+	return devm_iio_device_register(&client->dev, indio_dev);
 }
 
 static int al3010_suspend(struct device *dev)
 {
-	struct al3010_data *data = iio_priv(dev_get_drvdata(dev));
-
-	al3010_set_pwr_off(data);
-	return 0;
+	return al3010_set_pwr(to_i2c_client(dev), false);
 }
 
 static int al3010_resume(struct device *dev)
 {
-	struct al3010_data *data = iio_priv(dev_get_drvdata(dev));
-
-	return al3010_set_pwr_on(data);
+	return al3010_set_pwr(to_i2c_client(dev), true);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(al3010_pm_ops, al3010_suspend, al3010_resume);
 
 static const struct i2c_device_id al3010_id[] = {
 	{"al3010", },
-	{ }
+	{}
 };
 MODULE_DEVICE_TABLE(i2c, al3010_id);
 
 static const struct of_device_id al3010_of_match[] = {
 	{ .compatible = "dynaimage,al3010", },
-	{ }
+	{},
 };
 MODULE_DEVICE_TABLE(of, al3010_of_match);
 
 static struct i2c_driver al3010_driver = {
 	.driver = {
-		.name = "al3010",
+		.name = AL3010_DRV_NAME,
 		.of_match_table = al3010_of_match,
 		.pm = pm_sleep_ptr(&al3010_pm_ops),
 	},
-	.probe		= al3010_probe,
+	.probe_new	= al3010_probe,
 	.id_table	= al3010_id,
 };
 module_i2c_driver(al3010_driver);

@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: Register Bit LEDs
 
 maintainers:
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
 
 description: |+
   Register bit leds are used with syscon multifunctional devices where single
@@ -60,7 +60,7 @@ examples:
   - |
 
     syscon@10000000 {
-        compatible = "arm,realview-pb1176-syscon", "syscon", "simple-mfd";
+        compatible = "arm,realview-pb1176-syscon", "syscon";
         reg = <0x10000000 0x1000>;
         #address-cells = <1>;
         #size-cells = <1>;

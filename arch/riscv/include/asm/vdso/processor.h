@@ -2,11 +2,9 @@
 #ifndef __ASM_VDSO_PROCESSOR_H
 #define __ASM_VDSO_PROCESSOR_H
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <asm/barrier.h>
-#include <asm/errata_list.h>
-#include <asm/insn-def.h>
 
 static inline void cpu_relax(void)
 {
@@ -16,14 +14,19 @@ static inline void cpu_relax(void)
 	__asm__ __volatile__ ("div %0, %0, zero" : "=r" (dummy));
 #endif
 
+#ifdef __riscv_zihintpause
 	/*
 	 * Reduce instruction retirement.
 	 * This assumes the PC changes.
 	 */
-	ALT_RISCV_PAUSE();
+	__asm__ __volatile__ ("pause");
+#else
+	/* Encoding of the pause instruction */
+	__asm__ __volatile__ (".4byte 0x100000F");
+#endif
 	barrier();
 }
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_VDSO_PROCESSOR_H */

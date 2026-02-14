@@ -10,7 +10,6 @@
 #include <sys/sysinfo.h>
 #include <signal.h>
 #include "bench.h"
-#include "bpf_util.h"
 #include "testing_helpers.h"
 
 struct env env = {
@@ -18,7 +17,7 @@ struct env env = {
 	.duration_sec = 5,
 	.affinity = false,
 	.quiet = false,
-	.consumer_cnt = 0,
+	.consumer_cnt = 1,
 	.producer_cnt = 1,
 };
 
@@ -265,7 +264,6 @@ static const struct argp_option opts[] = {
 	{ "verbose", 'v', NULL, 0, "Verbose debug output"},
 	{ "affinity", 'a', NULL, 0, "Set consumer/producer thread affinity"},
 	{ "quiet", 'q', NULL, 0, "Be more quiet"},
-	{ "stacktrace", 's', NULL, 0, "Get stack trace"},
 	{ "prod-affinity", ARG_PROD_AFFINITY_SET, "CPUSET", 0,
 	  "Set of CPUs for producer threads; implies --affinity"},
 	{ "cons-affinity", ARG_CONS_AFFINITY_SET, "CPUSET", 0,
@@ -280,12 +278,6 @@ extern struct argp bench_local_storage_argp;
 extern struct argp bench_local_storage_rcu_tasks_trace_argp;
 extern struct argp bench_strncmp_argp;
 extern struct argp bench_hashmap_lookup_argp;
-extern struct argp bench_local_storage_create_argp;
-extern struct argp bench_htab_mem_argp;
-extern struct argp bench_trigger_batch_argp;
-extern struct argp bench_crypto_argp;
-extern struct argp bench_sockmap_argp;
-extern struct argp bench_lpm_trie_map_argp;
 
 static const struct argp_child bench_parsers[] = {
 	{ &bench_ringbufs_argp, 0, "Ring buffers benchmark", 0 },
@@ -296,12 +288,6 @@ static const struct argp_child bench_parsers[] = {
 	{ &bench_local_storage_rcu_tasks_trace_argp, 0,
 		"local_storage RCU Tasks Trace slowdown benchmark", 0 },
 	{ &bench_hashmap_lookup_argp, 0, "Hashmap lookup benchmark", 0 },
-	{ &bench_local_storage_create_argp, 0, "local-storage-create benchmark", 0 },
-	{ &bench_htab_mem_argp, 0, "hash map memory benchmark", 0 },
-	{ &bench_trigger_batch_argp, 0, "BPF triggering benchmark", 0 },
-	{ &bench_crypto_argp, 0, "bpf crypto benchmark", 0 },
-	{ &bench_sockmap_argp, 0, "bpf sockmap benchmark", 0 },
-	{ &bench_lpm_trie_map_argp, 0, "LPM trie map benchmark", 0 },
 	{},
 };
 
@@ -333,14 +319,14 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'p':
 		env.producer_cnt = strtol(arg, NULL, 10);
-		if (env.producer_cnt < 0) {
+		if (env.producer_cnt <= 0) {
 			fprintf(stderr, "Invalid producer count: %s\n", arg);
 			argp_usage(state);
 		}
 		break;
 	case 'c':
 		env.consumer_cnt = strtol(arg, NULL, 10);
-		if (env.consumer_cnt < 0) {
+		if (env.consumer_cnt <= 0) {
 			fprintf(stderr, "Invalid consumer count: %s\n", arg);
 			argp_usage(state);
 		}
@@ -350,9 +336,6 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 'q':
 		env.quiet = true;
-		break;
-	case 's':
-		env.stacktrace = true;
 		break;
 	case ARG_PROD_AFFINITY_SET:
 		env.affinity = true;
@@ -456,14 +439,12 @@ static void setup_timer()
 static void set_thread_affinity(pthread_t thread, int cpu)
 {
 	cpu_set_t cpuset;
-	int err;
 
 	CPU_ZERO(&cpuset);
 	CPU_SET(cpu, &cpuset);
-	err = pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset);
-	if (err) {
+	if (pthread_setaffinity_np(thread, sizeof(cpuset), &cpuset)) {
 		fprintf(stderr, "setting affinity to CPU #%d failed: %d\n",
-			cpu, -err);
+			cpu, errno);
 		exit(1);
 	}
 }
@@ -484,7 +465,7 @@ static int next_cpu(struct cpu_set *cpu_set)
 		exit(1);
 	}
 
-	return cpu_set->next_cpu++ % env.nr_cpus;
+	return cpu_set->next_cpu++;
 }
 
 static struct bench_state {
@@ -504,45 +485,18 @@ extern const struct bench bench_rename_kretprobe;
 extern const struct bench bench_rename_rawtp;
 extern const struct bench bench_rename_fentry;
 extern const struct bench bench_rename_fexit;
-
-/* pure counting benchmarks to establish theoretical limits */
-extern const struct bench bench_trig_usermode_count;
-extern const struct bench bench_trig_syscall_count;
-extern const struct bench bench_trig_kernel_count;
-
-/* batched, staying mostly in-kernel benchmarks */
-extern const struct bench bench_trig_kprobe;
-extern const struct bench bench_trig_kretprobe;
-extern const struct bench bench_trig_kprobe_multi;
-extern const struct bench bench_trig_kretprobe_multi;
-extern const struct bench bench_trig_fentry;
-extern const struct bench bench_trig_kprobe_multi_all;
-extern const struct bench bench_trig_kretprobe_multi_all;
-extern const struct bench bench_trig_fexit;
-extern const struct bench bench_trig_fmodret;
+extern const struct bench bench_trig_base;
 extern const struct bench bench_trig_tp;
 extern const struct bench bench_trig_rawtp;
-
-/* uprobe/uretprobe benchmarks */
-extern const struct bench bench_trig_uprobe_nop;
-extern const struct bench bench_trig_uretprobe_nop;
-extern const struct bench bench_trig_uprobe_push;
-extern const struct bench bench_trig_uretprobe_push;
-extern const struct bench bench_trig_uprobe_ret;
-extern const struct bench bench_trig_uretprobe_ret;
-extern const struct bench bench_trig_uprobe_multi_nop;
-extern const struct bench bench_trig_uretprobe_multi_nop;
-extern const struct bench bench_trig_uprobe_multi_push;
-extern const struct bench bench_trig_uretprobe_multi_push;
-extern const struct bench bench_trig_uprobe_multi_ret;
-extern const struct bench bench_trig_uretprobe_multi_ret;
-#ifdef __x86_64__
-extern const struct bench bench_trig_uprobe_nop5;
-extern const struct bench bench_trig_uretprobe_nop5;
-extern const struct bench bench_trig_uprobe_multi_nop5;
-extern const struct bench bench_trig_uretprobe_multi_nop5;
-#endif
-
+extern const struct bench bench_trig_kprobe;
+extern const struct bench bench_trig_fentry;
+extern const struct bench bench_trig_fentry_sleep;
+extern const struct bench bench_trig_fmodret;
+extern const struct bench bench_trig_uprobe_base;
+extern const struct bench bench_trig_uprobe_with_nop;
+extern const struct bench bench_trig_uretprobe_with_nop;
+extern const struct bench bench_trig_uprobe_without_nop;
+extern const struct bench bench_trig_uretprobe_without_nop;
 extern const struct bench bench_rb_libbpf;
 extern const struct bench bench_rb_custom;
 extern const struct bench bench_pb_libbpf;
@@ -561,18 +515,6 @@ extern const struct bench bench_local_storage_cache_interleaved_get;
 extern const struct bench bench_local_storage_cache_hashmap_control;
 extern const struct bench bench_local_storage_tasks_trace;
 extern const struct bench bench_bpf_hashmap_lookup;
-extern const struct bench bench_local_storage_create;
-extern const struct bench bench_htab_mem;
-extern const struct bench bench_crypto_encrypt;
-extern const struct bench bench_crypto_decrypt;
-extern const struct bench bench_sockmap;
-extern const struct bench bench_lpm_trie_noop;
-extern const struct bench bench_lpm_trie_baseline;
-extern const struct bench bench_lpm_trie_lookup;
-extern const struct bench bench_lpm_trie_insert;
-extern const struct bench bench_lpm_trie_update;
-extern const struct bench bench_lpm_trie_delete;
-extern const struct bench bench_lpm_trie_free;
 
 static const struct bench *benchs[] = {
 	&bench_count_global,
@@ -583,42 +525,18 @@ static const struct bench *benchs[] = {
 	&bench_rename_rawtp,
 	&bench_rename_fentry,
 	&bench_rename_fexit,
-	/* pure counting benchmarks for establishing theoretical limits */
-	&bench_trig_usermode_count,
-	&bench_trig_kernel_count,
-	&bench_trig_syscall_count,
-	/* batched, staying mostly in-kernel triggers */
-	&bench_trig_kprobe,
-	&bench_trig_kretprobe,
-	&bench_trig_kprobe_multi,
-	&bench_trig_kretprobe_multi,
-	&bench_trig_fentry,
-	&bench_trig_kprobe_multi_all,
-	&bench_trig_kretprobe_multi_all,
-	&bench_trig_fexit,
-	&bench_trig_fmodret,
+	&bench_trig_base,
 	&bench_trig_tp,
 	&bench_trig_rawtp,
-	/* uprobes */
-	&bench_trig_uprobe_nop,
-	&bench_trig_uretprobe_nop,
-	&bench_trig_uprobe_push,
-	&bench_trig_uretprobe_push,
-	&bench_trig_uprobe_ret,
-	&bench_trig_uretprobe_ret,
-	&bench_trig_uprobe_multi_nop,
-	&bench_trig_uretprobe_multi_nop,
-	&bench_trig_uprobe_multi_push,
-	&bench_trig_uretprobe_multi_push,
-	&bench_trig_uprobe_multi_ret,
-	&bench_trig_uretprobe_multi_ret,
-#ifdef __x86_64__
-	&bench_trig_uprobe_nop5,
-	&bench_trig_uretprobe_nop5,
-	&bench_trig_uprobe_multi_nop5,
-	&bench_trig_uretprobe_multi_nop5,
-#endif
-	/* ringbuf/perfbuf benchmarks */
+	&bench_trig_kprobe,
+	&bench_trig_fentry,
+	&bench_trig_fentry_sleep,
+	&bench_trig_fmodret,
+	&bench_trig_uprobe_base,
+	&bench_trig_uprobe_with_nop,
+	&bench_trig_uretprobe_with_nop,
+	&bench_trig_uprobe_without_nop,
+	&bench_trig_uretprobe_without_nop,
 	&bench_rb_libbpf,
 	&bench_rb_custom,
 	&bench_pb_libbpf,
@@ -637,18 +555,6 @@ static const struct bench *benchs[] = {
 	&bench_local_storage_cache_hashmap_control,
 	&bench_local_storage_tasks_trace,
 	&bench_bpf_hashmap_lookup,
-	&bench_local_storage_create,
-	&bench_htab_mem,
-	&bench_crypto_encrypt,
-	&bench_crypto_decrypt,
-	&bench_sockmap,
-	&bench_lpm_trie_noop,
-	&bench_lpm_trie_baseline,
-	&bench_lpm_trie_lookup,
-	&bench_lpm_trie_insert,
-	&bench_lpm_trie_update,
-	&bench_lpm_trie_delete,
-	&bench_lpm_trie_free,
 };
 
 static void find_benchmark(void)
@@ -691,15 +597,11 @@ static void setup_benchmark(void)
 		bench->setup();
 
 	for (i = 0; i < env.consumer_cnt; i++) {
-		if (!bench->consumer_thread) {
-			fprintf(stderr, "benchmark doesn't support consumers!\n");
-			exit(1);
-		}
 		err = pthread_create(&state.consumers[i], NULL,
 				     bench->consumer_thread, (void *)(long)i);
 		if (err) {
 			fprintf(stderr, "failed to create consumer thread #%d: %d\n",
-				i, -err);
+				i, -errno);
 			exit(1);
 		}
 		if (env.affinity)
@@ -714,15 +616,11 @@ static void setup_benchmark(void)
 		env.prod_cpus.next_cpu = env.cons_cpus.next_cpu;
 
 	for (i = 0; i < env.producer_cnt; i++) {
-		if (!bench->producer_thread) {
-			fprintf(stderr, "benchmark doesn't support producers!\n");
-			exit(1);
-		}
 		err = pthread_create(&state.producers[i], NULL,
 				     bench->producer_thread, (void *)(long)i);
 		if (err) {
 			fprintf(stderr, "failed to create producer thread #%d: %d\n",
-				i, -err);
+				i, -errno);
 			exit(1);
 		}
 		if (env.affinity)
@@ -755,7 +653,6 @@ static void collect_measurements(long delta_ns) {
 
 int main(int argc, char **argv)
 {
-	env.nr_cpus = get_nprocs();
 	parse_cmdline_args_init(argc, argv);
 
 	if (env.list) {

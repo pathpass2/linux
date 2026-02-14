@@ -20,8 +20,6 @@
 
 #define MHZ (1000 * 1000)
 
-#define MTK_WAIT_HWV_DONE_US	30
-
 struct platform_device;
 
 /*
@@ -175,25 +173,6 @@ struct mtk_composite {
 		.flags = 0,						\
 	}
 
-#define MUX_DIV_GATE(_id, _name, _parents,		\
-		_mux_reg, _mux_shift, _mux_width,	\
-		_div_reg, _div_shift, _div_width,	\
-		_gate_reg, _gate_shift) {		\
-		.id            = _id,			\
-		.name          = _name,			\
-		.parent_names  = _parents,		\
-		.num_parents   = ARRAY_SIZE(_parents),	\
-		.mux_reg       = _mux_reg,		\
-		.mux_shift     = _mux_shift,		\
-		.mux_width     = _mux_width,		\
-		.divider_reg   = _div_reg,		\
-		.divider_shift = _div_shift,		\
-		.divider_width = _div_width,		\
-		.gate_reg      = _gate_reg,		\
-		.gate_shift    = _gate_shift,		\
-		.flags         = CLK_SET_RATE_PARENT,	\
-	}
-
 int mtk_clk_register_composites(struct device *dev,
 				const struct mtk_composite *mcs, int num,
 				void __iomem *base, spinlock_t *lock,
@@ -223,8 +202,7 @@ struct mtk_clk_divider {
 		.div_width = _width,				\
 }
 
-int mtk_clk_register_dividers(struct device *dev,
-			      const struct mtk_clk_divider *mcds, int num,
+int mtk_clk_register_dividers(const struct mtk_clk_divider *mcds, int num,
 			      void __iomem *base, spinlock_t *lock,
 			      struct clk_hw_onecell_data *clk_data);
 void mtk_clk_unregister_dividers(const struct mtk_clk_divider *mcds, int num,
@@ -244,8 +222,6 @@ struct mtk_clk_desc {
 	size_t num_clks;
 	const struct mtk_composite *composite_clks;
 	size_t num_composite_clks;
-	const struct mtk_clk_divider *divider_clks;
-	size_t num_divider_clks;
 	const struct mtk_fixed_clk *fixed_clks;
 	size_t num_fixed_clks;
 	const struct mtk_fixed_factor *factor_clks;
@@ -258,14 +234,9 @@ struct mtk_clk_desc {
 
 	int (*clk_notifier_func)(struct device *dev, struct clk *clk);
 	unsigned int mfg_clk_idx;
-
-	bool need_runtime_pm;
 };
 
-int mtk_clk_pdev_probe(struct platform_device *pdev);
-void mtk_clk_pdev_remove(struct platform_device *pdev);
 int mtk_clk_simple_probe(struct platform_device *pdev);
-void mtk_clk_simple_remove(struct platform_device *pdev);
-struct regmap *mtk_clk_get_hwv_regmap(struct device_node *node);
+int mtk_clk_simple_remove(struct platform_device *pdev);
 
 #endif /* __DRV_CLK_MTK_H */

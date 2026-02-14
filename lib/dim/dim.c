@@ -54,8 +54,7 @@ void dim_park_tired(struct dim *dim)
 }
 EXPORT_SYMBOL(dim_park_tired);
 
-bool dim_calc_stats(const struct dim_sample *start,
-		    const struct dim_sample *end,
+void dim_calc_stats(struct dim_sample *start, struct dim_sample *end,
 		    struct dim_stats *curr_stats)
 {
 	/* u32 holds up to 71 minutes, should be enough */
@@ -67,7 +66,7 @@ bool dim_calc_stats(const struct dim_sample *start,
 			     start->comp_ctr);
 
 	if (!delta_us)
-		return false;
+		return;
 
 	curr_stats->ppms = DIV_ROUND_UP(npkts * USEC_PER_MSEC, delta_us);
 	curr_stats->bpms = DIV_ROUND_UP(nbytes * USEC_PER_MSEC, delta_us);
@@ -80,9 +79,5 @@ bool dim_calc_stats(const struct dim_sample *start,
 	else
 		curr_stats->cpe_ratio = 0;
 
-	return true;
 }
 EXPORT_SYMBOL(dim_calc_stats);
-
-MODULE_DESCRIPTION("Dynamic Interrupt Moderation (DIM) library");
-MODULE_LICENSE("Dual BSD/GPL");

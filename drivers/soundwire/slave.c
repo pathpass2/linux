@@ -5,7 +5,6 @@
 #include <linux/of.h>
 #include <linux/soundwire/sdw.h>
 #include <linux/soundwire/sdw_type.h>
-#include <sound/sdca.h>
 #include "bus.h"
 #include "sysfs_local.h"
 
@@ -13,17 +12,15 @@ static void sdw_slave_release(struct device *dev)
 {
 	struct sdw_slave *slave = dev_to_sdw_dev(dev);
 
-	of_node_put(slave->dev.of_node);
 	mutex_destroy(&slave->sdw_dev_lock);
 	kfree(slave);
 }
 
-const struct device_type sdw_slave_type = {
+struct device_type sdw_slave_type = {
 	.name =		"sdw_slave",
 	.release =	sdw_slave_release,
 	.uevent =	sdw_slave_uevent,
 };
-EXPORT_SYMBOL_GPL(sdw_slave_type);
 
 int sdw_slave_add(struct sdw_bus *bus,
 		  struct sdw_slave_id *id, struct fwnode_handle *fwnode)
@@ -42,14 +39,14 @@ int sdw_slave_add(struct sdw_bus *bus,
 	slave->dev.fwnode = fwnode;
 
 	if (id->unique_id == SDW_IGNORED_UNIQUE_ID) {
-		/* name shall be sdw:ctrl:link:mfg:part:class */
-		dev_set_name(&slave->dev, "sdw:%01x:%01x:%04x:%04x:%02x",
-			     bus->controller_id, bus->link_id, id->mfg_id, id->part_id,
+		/* name shall be sdw:link:mfg:part:class */
+		dev_set_name(&slave->dev, "sdw:%01x:%04x:%04x:%02x",
+			     bus->link_id, id->mfg_id, id->part_id,
 			     id->class_id);
 	} else {
-		/* name shall be sdw:ctrl:link:mfg:part:class:unique */
-		dev_set_name(&slave->dev, "sdw:%01x:%01x:%04x:%04x:%02x:%01x",
-			     bus->controller_id, bus->link_id, id->mfg_id, id->part_id,
+		/* name shall be sdw:link:mfg:part:class:unique */
+		dev_set_name(&slave->dev, "sdw:%01x:%04x:%04x:%02x:%01x",
+			     bus->link_id, id->mfg_id, id->part_id,
 			     id->class_id, id->unique_id);
 	}
 
@@ -72,17 +69,6 @@ int sdw_slave_add(struct sdw_bus *bus,
 	mutex_lock(&bus->bus_lock);
 	list_add_tail(&slave->node, &bus->slaves);
 	mutex_unlock(&bus->bus_lock);
-
-	/*
-	 * The Soundwire driver probe may optionally register SDCA
-	 * sub-devices, one per Function. This means the information
-	 * on the SDCA revision and the number/type of Functions need
-	 * to be extracted from platform firmware before the SoundWire
-	 * driver probe, and as a consequence before the SoundWire
-	 * device_register() below.
-	 */
-	sdca_lookup_interface_revision(slave);
-	sdca_lookup_functions(slave);
 
 	ret = device_register(&slave->dev);
 	if (ret) {
@@ -111,13 +97,18 @@ static bool find_slave(struct sdw_bus *bus,
 		       struct acpi_device *adev,
 		       struct sdw_slave_id *id)
 {
-	unsigned int link_id;
 	u64 addr;
-	int ret;
+	unsigned int link_id;
+	acpi_status status;
 
-	ret = acpi_get_local_u64_address(adev->handle, &addr);
-	if (ret < 0)
+	status = acpi_evaluate_integer(adev->handle,
+				       METHOD_NAME__ADR, NULL, &addr);
+
+	if (ACPI_FAILURE(status)) {
+		dev_err(bus->dev, "_ADR resolution failed: %x\n",
+			status);
 		return false;
+	}
 
 	if (bus->ops->override_adr)
 		addr = bus->ops->override_adr(bus, addr);
@@ -273,11 +264,3 @@ int sdw_of_find_slaves(struct sdw_bus *bus)
 
 	return 0;
 }
-
-struct device *of_sdw_find_device_by_node(struct device_node *np)
-{
-	return bus_find_device_by_of_node(&sdw_bus_type, np);
-}
-EXPORT_SYMBOL_GPL(of_sdw_find_device_by_node);
-
-MODULE_IMPORT_NS("SND_SOC_SDCA");

@@ -53,7 +53,7 @@ static int slpc_set_max_freq(struct intel_guc_slpc *slpc, u32 freq)
 static int slpc_set_freq(struct intel_gt *gt, u32 freq)
 {
 	int err;
-	struct intel_guc_slpc *slpc = &gt_to_guc(gt)->slpc;
+	struct intel_guc_slpc *slpc = &gt->uc.guc.slpc;
 
 	err = slpc_set_max_freq(slpc, freq);
 	if (err) {
@@ -70,46 +70,6 @@ static int slpc_set_freq(struct intel_gt *gt, u32 freq)
 	return err;
 }
 
-static int slpc_restore_freq(struct intel_guc_slpc *slpc, u32 min, u32 max)
-{
-	int err;
-
-	err = slpc_set_max_freq(slpc, max);
-	if (err) {
-		pr_err("Unable to restore max freq");
-		return err;
-	}
-
-	err = slpc_set_min_freq(slpc, min);
-	if (err) {
-		pr_err("Unable to restore min freq");
-		return err;
-	}
-
-	err = intel_guc_slpc_set_ignore_eff_freq(slpc, false);
-	if (err) {
-		pr_err("Unable to restore efficient freq");
-		return err;
-	}
-
-	return 0;
-}
-
-static u64 slpc_measure_power(struct intel_rps *rps, int *freq)
-{
-	u64 x[5];
-	int i;
-
-	for (i = 0; i < 5; i++)
-		x[i] = __measure_power(5);
-
-	*freq = (*freq + intel_rps_read_actual_frequency(rps)) / 2;
-
-	/* A simple triangle filter for better result stability */
-	sort(x, 5, sizeof(*x), cmp_u64, NULL);
-	return div_u64(x[1] + 2 * x[2] + x[3], 4);
-}
-
 static u64 measure_power_at_freq(struct intel_gt *gt, int *freq, u64 *power)
 {
 	int err = 0;
@@ -118,7 +78,7 @@ static u64 measure_power_at_freq(struct intel_gt *gt, int *freq, u64 *power)
 	if (err)
 		return err;
 	*freq = intel_rps_read_actual_frequency(&gt->rps);
-	*power = slpc_measure_power(&gt->rps, freq);
+	*power = measure_power(&gt->rps, freq);
 
 	return err;
 }
@@ -197,7 +157,7 @@ static int vary_min_freq(struct intel_guc_slpc *slpc, struct intel_rps *rps,
 
 static int slpc_power(struct intel_gt *gt, struct intel_engine_cs *engine)
 {
-	struct intel_guc_slpc *slpc = &gt_to_guc(gt)->slpc;
+	struct intel_guc_slpc *slpc = &gt->uc.guc.slpc;
 	struct {
 		u64 power;
 		int freq;
@@ -277,11 +237,10 @@ static int max_granted_freq(struct intel_guc_slpc *slpc, struct intel_rps *rps, 
 
 static int run_test(struct intel_gt *gt, int test_type)
 {
-	struct intel_guc_slpc *slpc = &gt_to_guc(gt)->slpc;
+	struct intel_guc_slpc *slpc = &gt->uc.guc.slpc;
 	struct intel_rps *rps = &gt->rps;
 	struct intel_engine_cs *engine;
 	enum intel_engine_id id;
-	intel_wakeref_t wakeref;
 	struct igt_spinner spin;
 	u32 slpc_min_freq, slpc_max_freq;
 	int err = 0;
@@ -309,7 +268,8 @@ static int run_test(struct intel_gt *gt, int test_type)
 
 	/*
 	 * Set min frequency to RPn so that we can test the whole
-	 * range of RPn-RP0.
+	 * range of RPn-RP0. This also turns off efficient freq
+	 * usage and makes results more predictable.
 	 */
 	err = slpc_set_min_freq(slpc, slpc->min_freq);
 	if (err) {
@@ -317,17 +277,8 @@ static int run_test(struct intel_gt *gt, int test_type)
 		return err;
 	}
 
-	/*
-	 * Turn off efficient frequency so RPn/RP0 ranges are obeyed.
-	 */
-	err = intel_guc_slpc_set_ignore_eff_freq(slpc, true);
-	if (err) {
-		pr_err("Unable to turn off efficient freq!");
-		return err;
-	}
-
 	intel_gt_pm_wait_for_idle(gt);
-	wakeref = intel_gt_pm_get(gt);
+	intel_gt_pm_get(gt);
 	for_each_engine(engine, gt, id) {
 		struct i915_request *rq;
 		u32 max_act_freq;
@@ -407,13 +358,14 @@ static int run_test(struct intel_gt *gt, int test_type)
 			break;
 	}
 
-	/* Restore min/max/efficient frequencies */
-	err = slpc_restore_freq(slpc, slpc_min_freq, slpc_max_freq);
+	/* Restore min/max frequencies */
+	slpc_set_max_freq(slpc, slpc_max_freq);
+	slpc_set_min_freq(slpc, slpc_min_freq);
 
 	if (igt_flush_test(gt->i915))
 		err = -EIO;
 
-	intel_gt_pm_put(gt, wakeref);
+	intel_gt_pm_put(gt);
 	igt_spinner_fini(&spin);
 	intel_gt_pm_wait_for_idle(gt);
 
@@ -504,7 +456,7 @@ static int live_slpc_tile_interaction(void *arg)
 		return -ENOMEM;
 
 	for_each_gt(gt, i915, i) {
-		threads[i].worker = kthread_run_worker(0, "igt/slpc_parallel:%d", gt->info.id);
+		threads[i].worker = kthread_create_worker(0, "igt/slpc_parallel:%d", gt->info.id);
 
 		if (IS_ERR(threads[i].worker)) {
 			ret = PTR_ERR(threads[i].worker);

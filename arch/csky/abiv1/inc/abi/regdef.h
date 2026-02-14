@@ -3,7 +3,7 @@
 #ifndef __ASM_CSKY_REGDEF_H
 #define __ASM_CSKY_REGDEF_H
 
-#ifdef __ASSEMBLER__
+#ifdef __ASSEMBLY__
 #define syscallid	r1
 #else
 #define syscallid	"r1"

@@ -146,11 +146,12 @@ def detect_kernel_config():
 
 
 def for_each_slab(prog):
-    slabtype = prog.constant('PGTY_slab')
+    PGSlab = 1 << prog.constant('PG_slab')
+    PGHead = 1 << prog.constant('PG_head')
 
     for page in for_each_page(prog):
         try:
-            if (page.page_type.value_() >> 24) == slabtype:
+            if page.flags.value_() & PGSlab:
                 yield cast('struct slab *', page)
         except FaultError:
             pass

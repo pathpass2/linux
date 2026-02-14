@@ -11,7 +11,6 @@ if [[ $(id -u) -ne 0 ]]; then
   exit $ksft_skip
 fi
 
-nr_hugepgs=$(cat /proc/sys/vm/nr_hugepages)
 usage_file=usage_in_bytes
 
 if [[ "$1" == "-cgroup-v2" ]]; then
@@ -21,22 +20,22 @@ fi
 
 
 if [[ $cgroup2 ]]; then
-  CGROUP_ROOT=$(mount -t cgroup2 | head -1 | awk '{print $3}')
+  CGROUP_ROOT=$(mount -t cgroup2 | head -1 | awk -e '{print $3}')
   if [[ -z "$CGROUP_ROOT" ]]; then
-    CGROUP_ROOT=$(mktemp -d)
+    CGROUP_ROOT=/dev/cgroup/memory
     mount -t cgroup2 none $CGROUP_ROOT
     do_umount=1
   fi
   echo "+hugetlb +memory" >$CGROUP_ROOT/cgroup.subtree_control
 else
-  CGROUP_ROOT=$(mount -t cgroup | grep ",hugetlb" | awk '{print $3}')
+  CGROUP_ROOT=$(mount -t cgroup | grep ",hugetlb" | awk -e '{print $3}')
   if [[ -z "$CGROUP_ROOT" ]]; then
     CGROUP_ROOT=/dev/cgroup/memory
     mount -t cgroup memory,hugetlb $CGROUP_ROOT
     do_umount=1
   fi
 fi
-MNT='/mnt/huge'
+MNT='/mnt/huge/'
 
 function get_machine_hugepage_size() {
   hpz=$(grep -i hugepagesize /proc/meminfo)
@@ -56,43 +55,8 @@ function cleanup() {
   rmdir "$CGROUP_ROOT"/a/b 2>/dev/null
   rmdir "$CGROUP_ROOT"/a 2>/dev/null
   rmdir "$CGROUP_ROOT"/test1 2>/dev/null
-  echo $nr_hugepgs >/proc/sys/vm/nr_hugepages
+  echo 0 >/proc/sys/vm/nr_hugepages
   set -e
-}
-
-function assert_with_retry() {
-  local actual_path="$1"
-  local expected="$2"
-  local tolerance=$((7 * 1024 * 1024))
-  local timeout=20
-  local interval=1
-  local start_time
-  local now
-  local elapsed
-  local actual
-
-  start_time=$(date +%s)
-
-  while true; do
-    actual="$(cat "$actual_path")"
-
-    if [[ $actual -ge $(($expected - $tolerance)) ]] &&
-        [[ $actual -le $(($expected + $tolerance)) ]]; then
-      return 0
-    fi
-
-    now=$(date +%s)
-    elapsed=$((now - start_time))
-
-    if [[ $elapsed -ge $timeout ]]; then
-      echo "actual = $((${actual%% *} / 1024 / 1024)) MB"
-      echo "expected = $((${expected%% *} / 1024 / 1024)) MB"
-      cleanup
-      exit 1
-    fi
-
-    sleep $interval
-  done
 }
 
 function assert_state() {
@@ -105,13 +69,58 @@ function assert_state() {
     expected_b="$3"
     expected_b_hugetlb="$4"
   fi
+  local tolerance=$((5 * 1024 * 1024))
 
-  assert_with_retry "$CGROUP_ROOT/a/memory.$usage_file" "$expected_a"
-  assert_with_retry "$CGROUP_ROOT/a/hugetlb.${MB}MB.$usage_file" "$expected_a_hugetlb"
+  local actual_a
+  actual_a="$(cat "$CGROUP_ROOT"/a/memory.$usage_file)"
+  if [[ $actual_a -lt $(($expected_a - $tolerance)) ]] ||
+    [[ $actual_a -gt $(($expected_a + $tolerance)) ]]; then
+    echo actual a = $((${actual_a%% *} / 1024 / 1024)) MB
+    echo expected a = $((${expected_a%% *} / 1024 / 1024)) MB
+    echo fail
 
-  if [[ -n "$expected_b" && -n "$expected_b_hugetlb" ]]; then
-    assert_with_retry "$CGROUP_ROOT/a/b/memory.$usage_file" "$expected_b"
-    assert_with_retry "$CGROUP_ROOT/a/b/hugetlb.${MB}MB.$usage_file" "$expected_b_hugetlb"
+    cleanup
+    exit 1
+  fi
+
+  local actual_a_hugetlb
+  actual_a_hugetlb="$(cat "$CGROUP_ROOT"/a/hugetlb.${MB}MB.$usage_file)"
+  if [[ $actual_a_hugetlb -lt $(($expected_a_hugetlb - $tolerance)) ]] ||
+    [[ $actual_a_hugetlb -gt $(($expected_a_hugetlb + $tolerance)) ]]; then
+    echo actual a hugetlb = $((${actual_a_hugetlb%% *} / 1024 / 1024)) MB
+    echo expected a hugetlb = $((${expected_a_hugetlb%% *} / 1024 / 1024)) MB
+    echo fail
+
+    cleanup
+    exit 1
+  fi
+
+  if [[ -z "$expected_b" || -z "$expected_b_hugetlb" ]]; then
+    return
+  fi
+
+  local actual_b
+  actual_b="$(cat "$CGROUP_ROOT"/a/b/memory.$usage_file)"
+  if [[ $actual_b -lt $(($expected_b - $tolerance)) ]] ||
+    [[ $actual_b -gt $(($expected_b + $tolerance)) ]]; then
+    echo actual b = $((${actual_b%% *} / 1024 / 1024)) MB
+    echo expected b = $((${expected_b%% *} / 1024 / 1024)) MB
+    echo fail
+
+    cleanup
+    exit 1
+  fi
+
+  local actual_b_hugetlb
+  actual_b_hugetlb="$(cat "$CGROUP_ROOT"/a/b/hugetlb.${MB}MB.$usage_file)"
+  if [[ $actual_b_hugetlb -lt $(($expected_b_hugetlb - $tolerance)) ]] ||
+    [[ $actual_b_hugetlb -gt $(($expected_b_hugetlb + $tolerance)) ]]; then
+    echo actual b hugetlb = $((${actual_b_hugetlb%% *} / 1024 / 1024)) MB
+    echo expected b hugetlb = $((${expected_b_hugetlb%% *} / 1024 / 1024)) MB
+    echo fail
+
+    cleanup
+    exit 1
   fi
 }
 
@@ -165,6 +174,7 @@ size=$((${MB} * 1024 * 1024 * 25)) # 50MB = 25 * 2MB hugepages.
 cleanup
 
 echo
+echo
 echo Test charge, rmdir, uncharge
 setup
 echo mkdir
@@ -184,6 +194,7 @@ cleanup
 
 echo done
 echo
+echo
 if [[ ! $cgroup2 ]]; then
   echo "Test parent and child hugetlb usage"
   setup
@@ -200,6 +211,7 @@ if [[ ! $cgroup2 ]]; then
   assert_state 0 $(($size * 2)) 0 $size
 
   rmdir "$CGROUP_ROOT"/a/b
+  sleep 5
   echo Assert memory reparent correctly.
   assert_state 0 $(($size * 2))
 
@@ -211,6 +223,7 @@ if [[ ! $cgroup2 ]]; then
   cleanup
 fi
 
+echo
 echo
 echo "Test child only hugetlb usage"
 echo setup
@@ -235,9 +248,5 @@ cleanup
 
 echo ALL PASS
 
-if [[ $do_umount ]]; then
-  umount $CGROUP_ROOT
-  rm -rf $CGROUP_ROOT
-fi
-
-echo "$nr_hugepgs" > /proc/sys/vm/nr_hugepages
+umount $CGROUP_ROOT
+rm -rf $CGROUP_ROOT

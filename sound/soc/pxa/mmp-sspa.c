@@ -340,7 +340,6 @@ static int mmp_sspa_probe(struct snd_soc_dai *dai)
 		SNDRV_PCM_FMTBIT_S32_LE)
 
 static const struct snd_soc_dai_ops mmp_sspa_dai_ops = {
-	.probe		= mmp_sspa_probe,
 	.startup	= mmp_sspa_startup,
 	.shutdown	= mmp_sspa_shutdown,
 	.trigger	= mmp_sspa_trigger,
@@ -351,6 +350,7 @@ static const struct snd_soc_dai_ops mmp_sspa_dai_ops = {
 };
 
 static struct snd_soc_dai_driver mmp_sspa_dai = {
+	.probe = mmp_sspa_probe,
 	.playback = {
 		.channels_min = 1,
 		.channels_max = 128,
@@ -545,7 +545,7 @@ static int asoc_mmp_sspa_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void asoc_mmp_sspa_remove(struct platform_device *pdev)
+static int asoc_mmp_sspa_remove(struct platform_device *pdev)
 {
 	struct sspa_priv *sspa = platform_get_drvdata(pdev);
 
@@ -553,10 +553,11 @@ static void asoc_mmp_sspa_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	if (pdev->dev.of_node)
-		return;
+		return 0;
 
 	clk_put(sspa->audio_clk);
 	clk_put(sspa->sysclk);
+	return 0;
 }
 
 #ifdef CONFIG_OF

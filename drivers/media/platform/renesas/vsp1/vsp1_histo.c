@@ -36,8 +36,9 @@ struct vsp1_histogram_buffer *
 vsp1_histogram_buffer_get(struct vsp1_histogram *histo)
 {
 	struct vsp1_histogram_buffer *buf = NULL;
+	unsigned long flags;
 
-	spin_lock(&histo->irqlock);
+	spin_lock_irqsave(&histo->irqlock, flags);
 
 	if (list_empty(&histo->irqqueue))
 		goto done;
@@ -48,7 +49,7 @@ vsp1_histogram_buffer_get(struct vsp1_histogram *histo)
 	histo->readout = true;
 
 done:
-	spin_unlock(&histo->irqlock);
+	spin_unlock_irqrestore(&histo->irqlock, flags);
 	return buf;
 }
 
@@ -57,6 +58,7 @@ void vsp1_histogram_buffer_complete(struct vsp1_histogram *histo,
 				    size_t size)
 {
 	struct vsp1_pipeline *pipe = histo->entity.pipe;
+	unsigned long flags;
 
 	/*
 	 * The pipeline pointer is guaranteed to be valid as this function is
@@ -68,10 +70,10 @@ void vsp1_histogram_buffer_complete(struct vsp1_histogram *histo,
 	vb2_set_plane_payload(&buf->buf.vb2_buf, 0, size);
 	vb2_buffer_done(&buf->buf.vb2_buf, VB2_BUF_STATE_DONE);
 
-	spin_lock(&histo->irqlock);
+	spin_lock_irqsave(&histo->irqlock, flags);
 	histo->readout = false;
 	wake_up(&histo->wait_queue);
-	spin_unlock(&histo->irqlock);
+	spin_unlock_irqrestore(&histo->irqlock, flags);
 }
 
 /* -----------------------------------------------------------------------------
@@ -122,10 +124,11 @@ static void histo_buffer_queue(struct vb2_buffer *vb)
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vsp1_histogram *histo = vb2_get_drv_priv(vb->vb2_queue);
 	struct vsp1_histogram_buffer *buf = to_vsp1_histogram_buffer(vbuf);
+	unsigned long flags;
 
-	spin_lock_irq(&histo->irqlock);
+	spin_lock_irqsave(&histo->irqlock, flags);
 	list_add_tail(&buf->queue, &histo->irqqueue);
-	spin_unlock_irq(&histo->irqlock);
+	spin_unlock_irqrestore(&histo->irqlock, flags);
 }
 
 static int histo_start_streaming(struct vb2_queue *vq, unsigned int count)
@@ -137,8 +140,9 @@ static void histo_stop_streaming(struct vb2_queue *vq)
 {
 	struct vsp1_histogram *histo = vb2_get_drv_priv(vq);
 	struct vsp1_histogram_buffer *buffer;
+	unsigned long flags;
 
-	spin_lock_irq(&histo->irqlock);
+	spin_lock_irqsave(&histo->irqlock, flags);
 
 	/* Remove all buffers from the IRQ queue. */
 	list_for_each_entry(buffer, &histo->irqqueue, queue)
@@ -148,13 +152,15 @@ static void histo_stop_streaming(struct vb2_queue *vq)
 	/* Wait for the buffer being read out (if any) to complete. */
 	wait_event_lock_irq(histo->wait_queue, !histo->readout, histo->irqlock);
 
-	spin_unlock_irq(&histo->irqlock);
+	spin_unlock_irqrestore(&histo->irqlock, flags);
 }
 
 static const struct vb2_ops histo_video_queue_qops = {
 	.queue_setup = histo_queue_setup,
 	.buf_prepare = histo_buffer_prepare,
 	.buf_queue = histo_buffer_queue,
+	.wait_prepare = vb2_ops_wait_prepare,
+	.wait_finish = vb2_ops_wait_finish,
 	.start_streaming = histo_start_streaming,
 	.stop_streaming = histo_stop_streaming,
 };
@@ -197,7 +203,7 @@ static int histo_get_selection(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_selection *sel)
 {
 	struct vsp1_histogram *histo = subdev_to_histo(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 	int ret = 0;
@@ -207,8 +213,9 @@ static int histo_get_selection(struct v4l2_subdev *subdev,
 
 	mutex_lock(&histo->entity.lock);
 
-	state = vsp1_entity_get_state(&histo->entity, sd_state, sel->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&histo->entity, sd_state,
+					    sel->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
@@ -216,7 +223,9 @@ static int histo_get_selection(struct v4l2_subdev *subdev,
 	switch (sel->target) {
 	case V4L2_SEL_TGT_COMPOSE_BOUNDS:
 	case V4L2_SEL_TGT_COMPOSE_DEFAULT:
-		crop = v4l2_subdev_state_get_crop(state, HISTO_PAD_SINK);
+		crop = vsp1_entity_get_pad_selection(&histo->entity, config,
+						     HISTO_PAD_SINK,
+						     V4L2_SEL_TGT_CROP);
 		sel->r.left = 0;
 		sel->r.top = 0;
 		sel->r.width = crop->width;
@@ -225,7 +234,8 @@ static int histo_get_selection(struct v4l2_subdev *subdev,
 
 	case V4L2_SEL_TGT_CROP_BOUNDS:
 	case V4L2_SEL_TGT_CROP_DEFAULT:
-		format = v4l2_subdev_state_get_format(state, HISTO_PAD_SINK);
+		format = vsp1_entity_get_pad_format(&histo->entity, config,
+						    HISTO_PAD_SINK);
 		sel->r.left = 0;
 		sel->r.top = 0;
 		sel->r.width = format->width;
@@ -233,11 +243,9 @@ static int histo_get_selection(struct v4l2_subdev *subdev,
 		break;
 
 	case V4L2_SEL_TGT_COMPOSE:
-		sel->r = *v4l2_subdev_state_get_compose(state, sel->pad);
-		break;
-
 	case V4L2_SEL_TGT_CROP:
-		sel->r = *v4l2_subdev_state_get_crop(state, sel->pad);
+		sel->r = *vsp1_entity_get_pad_selection(&histo->entity, config,
+							sel->pad, sel->target);
 		break;
 
 	default:
@@ -254,10 +262,13 @@ static int histo_set_crop(struct v4l2_subdev *subdev,
 			  struct v4l2_subdev_state *sd_state,
 			  struct v4l2_subdev_selection *sel)
 {
+	struct vsp1_histogram *histo = subdev_to_histo(subdev);
 	struct v4l2_mbus_framefmt *format;
+	struct v4l2_rect *selection;
 
 	/* The crop rectangle must be inside the input frame. */
-	format = v4l2_subdev_state_get_format(sd_state, HISTO_PAD_SINK);
+	format = vsp1_entity_get_pad_format(&histo->entity, sd_state,
+					    HISTO_PAD_SINK);
 	sel->r.left = clamp_t(unsigned int, sel->r.left, 0, format->width - 1);
 	sel->r.top = clamp_t(unsigned int, sel->r.top, 0, format->height - 1);
 	sel->r.width = clamp_t(unsigned int, sel->r.width, HISTO_MIN_SIZE,
@@ -266,8 +277,14 @@ static int histo_set_crop(struct v4l2_subdev *subdev,
 				format->height - sel->r.top);
 
 	/* Set the crop rectangle and reset the compose rectangle. */
-	*v4l2_subdev_state_get_crop(sd_state, sel->pad) = sel->r;
-	*v4l2_subdev_state_get_compose(sd_state, sel->pad) = sel->r;
+	selection = vsp1_entity_get_pad_selection(&histo->entity, sd_state,
+						  sel->pad, V4L2_SEL_TGT_CROP);
+	*selection = sel->r;
+
+	selection = vsp1_entity_get_pad_selection(&histo->entity, sd_state,
+						  sel->pad,
+						  V4L2_SEL_TGT_COMPOSE);
+	*selection = sel->r;
 
 	return 0;
 }
@@ -276,6 +293,7 @@ static int histo_set_compose(struct v4l2_subdev *subdev,
 			     struct v4l2_subdev_state *sd_state,
 			     struct v4l2_subdev_selection *sel)
 {
+	struct vsp1_histogram *histo = subdev_to_histo(subdev);
 	struct v4l2_rect *compose;
 	struct v4l2_rect *crop;
 	unsigned int ratio;
@@ -288,7 +306,9 @@ static int histo_set_compose(struct v4l2_subdev *subdev,
 	sel->r.left = 0;
 	sel->r.top = 0;
 
-	crop = v4l2_subdev_state_get_crop(sd_state, sel->pad);
+	crop = vsp1_entity_get_pad_selection(&histo->entity, sd_state,
+					     sel->pad,
+					     V4L2_SEL_TGT_CROP);
 
 	/*
 	 * Clamp the width and height to acceptable values first and then
@@ -313,7 +333,9 @@ static int histo_set_compose(struct v4l2_subdev *subdev,
 	ratio = 1 << (crop->height * 2 / sel->r.height / 3);
 	sel->r.height = crop->height / ratio;
 
-	compose = v4l2_subdev_state_get_compose(sd_state, sel->pad);
+	compose = vsp1_entity_get_pad_selection(&histo->entity, sd_state,
+						sel->pad,
+						V4L2_SEL_TGT_COMPOSE);
 	*compose = sel->r;
 
 	return 0;
@@ -324,7 +346,7 @@ static int histo_set_selection(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_selection *sel)
 {
 	struct vsp1_histogram *histo = subdev_to_histo(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	int ret;
 
 	if (sel->pad != HISTO_PAD_SINK)
@@ -332,16 +354,17 @@ static int histo_set_selection(struct v4l2_subdev *subdev,
 
 	mutex_lock(&histo->entity.lock);
 
-	state = vsp1_entity_get_state(&histo->entity, sd_state, sel->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&histo->entity, sd_state,
+					    sel->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
 
 	if (sel->target == V4L2_SEL_TGT_CROP)
-		ret = histo_set_crop(subdev, state, sel);
+		ret = histo_set_crop(subdev, config, sel);
 	else if (sel->target == V4L2_SEL_TGT_COMPOSE)
-		ret = histo_set_compose(subdev, state, sel);
+		ret = histo_set_compose(subdev, config, sel);
 	else
 		ret = -EINVAL;
 
@@ -350,21 +373,30 @@ done:
 	return ret;
 }
 
-static int histo_set_format(struct v4l2_subdev *subdev,
+static int histo_get_format(struct v4l2_subdev *subdev,
 			    struct v4l2_subdev_state *sd_state,
 			    struct v4l2_subdev_format *fmt)
 {
-	struct vsp1_histogram *histo = subdev_to_histo(subdev);
-
 	if (fmt->pad == HISTO_PAD_SOURCE) {
 		fmt->format.code = MEDIA_BUS_FMT_FIXED;
 		fmt->format.width = 0;
 		fmt->format.height = 0;
 		fmt->format.field = V4L2_FIELD_NONE;
 		fmt->format.colorspace = V4L2_COLORSPACE_RAW;
-
 		return 0;
 	}
+
+	return vsp1_subdev_get_pad_format(subdev, sd_state, fmt);
+}
+
+static int histo_set_format(struct v4l2_subdev *subdev,
+			    struct v4l2_subdev_state *sd_state,
+			    struct v4l2_subdev_format *fmt)
+{
+	struct vsp1_histogram *histo = subdev_to_histo(subdev);
+
+	if (fmt->pad != HISTO_PAD_SINK)
+		return histo_get_format(subdev, sd_state, fmt);
 
 	return vsp1_subdev_set_pad_format(subdev, sd_state, fmt,
 					  histo->formats, histo->num_formats,
@@ -375,7 +407,7 @@ static int histo_set_format(struct v4l2_subdev *subdev,
 static const struct v4l2_subdev_pad_ops histo_pad_ops = {
 	.enum_mbus_code = histo_enum_mbus_code,
 	.enum_frame_size = histo_enum_frame_size,
-	.get_fmt = vsp1_subdev_get_pad_format,
+	.get_fmt = histo_get_format,
 	.set_fmt = histo_set_format,
 	.get_selection = histo_get_selection,
 	.set_selection = histo_set_selection,
@@ -392,7 +424,7 @@ static const struct v4l2_subdev_ops histo_ops = {
 static int histo_v4l2_querycap(struct file *file, void *fh,
 			       struct v4l2_capability *cap)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct vsp1_histogram *histo = vdev_to_histo(vfh->vdev);
 
 	cap->capabilities = V4L2_CAP_DEVICE_CAPS | V4L2_CAP_STREAMING
@@ -409,7 +441,7 @@ static int histo_v4l2_querycap(struct file *file, void *fh,
 static int histo_v4l2_enum_format(struct file *file, void *fh,
 				  struct v4l2_fmtdesc *f)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct vsp1_histogram *histo = vdev_to_histo(vfh->vdev);
 
 	if (f->index > 0 || f->type != histo->queue.type)
@@ -423,7 +455,7 @@ static int histo_v4l2_enum_format(struct file *file, void *fh,
 static int histo_v4l2_get_format(struct file *file, void *fh,
 				 struct v4l2_format *format)
 {
-	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	struct v4l2_fh *vfh = file->private_data;
 	struct vsp1_histogram *histo = vdev_to_histo(vfh->vdev);
 	struct v4l2_meta_format *meta = &format->fmt.meta;
 

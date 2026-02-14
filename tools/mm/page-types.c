@@ -22,10 +22,9 @@
 #include <time.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <inttypes.h>
 #include <sys/types.h>
-#include <errno.h>
-#include <fcntl.h>
+#include <sys/errno.h>
+#include <sys/fcntl.h>
 #include <sys/mount.h>
 #include <sys/statfs.h>
 #include <sys/mman.h>
@@ -72,12 +71,12 @@
 /* [32-] kernel hacking assistances */
 #define KPF_RESERVED		32
 #define KPF_MLOCKED		33
-#define KPF_OWNER_2		34
+#define KPF_MAPPEDTODISK	34
 #define KPF_PRIVATE		35
 #define KPF_PRIVATE_2		36
 #define KPF_OWNER_PRIVATE	37
 #define KPF_ARCH		38
-#define KPF_UNCACHED		39	/* unused */
+#define KPF_UNCACHED		39
 #define KPF_SOFTDIRTY		40
 #define KPF_ARCH_2		41
 
@@ -86,6 +85,7 @@
  */
 #define KPF_ANON_EXCLUSIVE	47
 #define KPF_READAHEAD		48
+#define KPF_SLOB_FREE		49
 #define KPF_SLUB_FROZEN		50
 #define KPF_SLUB_DEBUG		51
 #define KPF_FILE		61
@@ -130,16 +130,18 @@ static const char * const page_flag_names[] = {
 
 	[KPF_RESERVED]		= "r:reserved",
 	[KPF_MLOCKED]		= "m:mlocked",
-	[KPF_OWNER_2]		= "d:owner_2",
+	[KPF_MAPPEDTODISK]	= "d:mappedtodisk",
 	[KPF_PRIVATE]		= "P:private",
 	[KPF_PRIVATE_2]		= "p:private_2",
 	[KPF_OWNER_PRIVATE]	= "O:owner_private",
 	[KPF_ARCH]		= "h:arch",
+	[KPF_UNCACHED]		= "c:uncached",
 	[KPF_SOFTDIRTY]		= "f:softdirty",
 	[KPF_ARCH_2]		= "H:arch_2",
 
 	[KPF_ANON_EXCLUSIVE]	= "d:anon_exclusive",
 	[KPF_READAHEAD]		= "I:readahead",
+	[KPF_SLOB_FREE]		= "P:slob_free",
 	[KPF_SLUB_FROZEN]	= "A:slub_frozen",
 	[KPF_SLUB_DEBUG]	= "E:slub_debug",
 
@@ -392,9 +394,9 @@ static void show_page_range(unsigned long voffset, unsigned long offset,
 		if (opt_file)
 			printf("%lx\t", voff);
 		if (opt_list_cgroup)
-			printf("@%" PRIu64 "\t", cgroup0);
+			printf("@%llu\t", (unsigned long long)cgroup0);
 		if (opt_list_mapcnt)
-			printf("%" PRIu64 "\t", mapcnt0);
+			printf("%lu\t", mapcnt0);
 		printf("%lx\t%lx\t%s\n",
 				index, count, page_flag_name(flags0));
 	}
@@ -420,9 +422,9 @@ static void show_page(unsigned long voffset, unsigned long offset,
 	if (opt_file)
 		printf("%lx\t", voffset);
 	if (opt_list_cgroup)
-		printf("@%" PRIu64 "\t", cgroup);
+		printf("@%llu\t", (unsigned long long)cgroup);
 	if (opt_list_mapcnt)
-		printf("%" PRIu64 "\t", mapcnt);
+		printf("%lu\t", mapcnt);
 
 	printf("%lx\t%s\n", offset, page_flag_name(flags));
 }
@@ -472,12 +474,14 @@ static int bit_mask_ok(uint64_t flags)
 
 static uint64_t expand_overloaded_flags(uint64_t flags, uint64_t pme)
 {
-	/* Anonymous pages use PG_owner_2 for anon_exclusive */
-	if ((flags & BIT(ANON)) && (flags & BIT(OWNER_2)))
-		flags ^= BIT(OWNER_2) | BIT(ANON_EXCLUSIVE);
+	/* Anonymous pages overload PG_mappedtodisk */
+	if ((flags & BIT(ANON)) && (flags & BIT(MAPPEDTODISK)))
+		flags ^= BIT(MAPPEDTODISK) | BIT(ANON_EXCLUSIVE);
 
-	/* SLUB overloads several page flags */
+	/* SLOB/SLUB overload several page flags */
 	if (flags & BIT(SLAB)) {
+		if (flags & BIT(PRIVATE))
+			flags ^= BIT(PRIVATE) | BIT(SLOB_FREE);
 		if (flags & BIT(ACTIVE))
 			flags ^= BIT(ACTIVE) | BIT(SLUB_FROZEN);
 		if (flags & BIT(ERROR))

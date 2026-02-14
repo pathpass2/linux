@@ -51,6 +51,7 @@
 #include <linux/mutex.h>
 #include <linux/netdevice.h>
 #include <linux/pci.h>
+#include <linux/aer.h>
 #include <linux/rtnetlink.h>
 #include <linux/sched.h>
 #include <linux/seq_file.h>
@@ -1175,7 +1176,7 @@ static u16 cxgb_select_queue(struct net_device *dev, struct sk_buff *skb,
 		txq = netdev_pick_tx(dev, skb, sb_dev);
 		if (xfrm_offload(skb) || is_ptp_enabled(skb, dev) ||
 		    skb->encapsulation ||
-		    tls_is_skb_tx_device_offloaded(skb) ||
+		    cxgb4_is_ktls_skb(skb) ||
 		    (proto != IPPROTO_TCP && proto != IPPROTO_UDP))
 			txq = txq % pi->nqsets;
 
@@ -1799,10 +1800,7 @@ void cxgb4_remove_tid(struct tid_info *t, unsigned int chan, unsigned int tid,
 	struct adapter *adap = container_of(t, struct adapter, tids);
 	struct sk_buff *skb;
 
-	if (tid_out_of_range(&adap->tids, tid)) {
-		dev_err(adap->pdev_dev, "tid %d out of range\n", tid);
-		return;
-	}
+	WARN_ON(tid_out_of_range(&adap->tids, tid));
 
 	if (t->tid_tab[tid - adap->tids.tid_base]) {
 		t->tid_tab[tid - adap->tids.tid_base] = NULL;
@@ -2190,6 +2188,18 @@ void cxgb4_get_tcp_stats(struct pci_dev *pdev, struct tp_tcp_stats *v4,
 	spin_unlock(&adap->stats_lock);
 }
 EXPORT_SYMBOL(cxgb4_get_tcp_stats);
+
+void cxgb4_iscsi_init(struct net_device *dev, unsigned int tag_mask,
+		      const unsigned int *pgsz_order)
+{
+	struct adapter *adap = netdev2adap(dev);
+
+	t4_write_reg(adap, ULP_RX_ISCSI_TAGMASK_A, tag_mask);
+	t4_write_reg(adap, ULP_RX_ISCSI_PSZ_A, HPZ0_V(pgsz_order[0]) |
+		     HPZ1_V(pgsz_order[1]) | HPZ2_V(pgsz_order[2]) |
+		     HPZ3_V(pgsz_order[3]));
+}
+EXPORT_SYMBOL(cxgb4_iscsi_init);
 
 int cxgb4_flush_eq_cache(struct net_device *dev)
 {
@@ -3042,87 +3052,12 @@ static void cxgb_get_stats(struct net_device *dev,
 		ns->rx_length_errors + stats.rx_len_err + ns->rx_fifo_errors;
 }
 
-static int cxgb_hwtstamp_get(struct net_device *dev,
-			     struct kernel_hwtstamp_config *config)
-{
-	struct port_info *pi = netdev_priv(dev);
-
-	*config = pi->tstamp_config;
-	return 0;
-}
-
-static int cxgb_hwtstamp_set(struct net_device *dev,
-			     struct kernel_hwtstamp_config *config,
-			     struct netlink_ext_ack *extack)
-{
-	struct port_info *pi = netdev_priv(dev);
-	struct adapter *adapter = pi->adapter;
-
-	if (is_t4(adapter->params.chip)) {
-		/* For T4 Adapters */
-		switch (config->rx_filter) {
-		case HWTSTAMP_FILTER_NONE:
-			pi->rxtstamp = false;
-			break;
-		case HWTSTAMP_FILTER_ALL:
-			pi->rxtstamp = true;
-			break;
-		default:
-			return -ERANGE;
-		}
-		pi->tstamp_config = *config;
-		return 0;
-	}
-
-	switch (config->tx_type) {
-	case HWTSTAMP_TX_OFF:
-	case HWTSTAMP_TX_ON:
-		break;
-	default:
-		return -ERANGE;
-	}
-
-	switch (config->rx_filter) {
-	case HWTSTAMP_FILTER_NONE:
-		pi->rxtstamp = false;
-		break;
-	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
-	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
-		cxgb4_ptprx_timestamping(pi, pi->port_id, PTP_TS_L4);
-		break;
-	case HWTSTAMP_FILTER_PTP_V2_EVENT:
-		cxgb4_ptprx_timestamping(pi, pi->port_id, PTP_TS_L2_L4);
-		break;
-	case HWTSTAMP_FILTER_ALL:
-	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
-	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
-	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
-	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
-		pi->rxtstamp = true;
-		break;
-	default:
-		return -ERANGE;
-	}
-
-	if (config->tx_type == HWTSTAMP_TX_OFF &&
-	    config->rx_filter == HWTSTAMP_FILTER_NONE) {
-		if (cxgb4_ptp_txtype(adapter, pi->port_id) >= 0)
-			pi->ptp_enable = false;
-	}
-
-	if (config->rx_filter != HWTSTAMP_FILTER_NONE) {
-		if (cxgb4_ptp_redirect_rx_packet(adapter, pi) >= 0)
-			pi->ptp_enable = true;
-	}
-	pi->tstamp_config = *config;
-	return 0;
-}
-
 static int cxgb_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 {
 	unsigned int mbox;
 	int ret = 0, prtad, devad;
 	struct port_info *pi = netdev_priv(dev);
+	struct adapter *adapter = pi->adapter;
 	struct mii_ioctl_data *data = (struct mii_ioctl_data *)&req->ifr_data;
 
 	switch (cmd) {
@@ -3151,6 +3086,81 @@ static int cxgb_ioctl(struct net_device *dev, struct ifreq *req, int cmd)
 			ret = t4_mdio_wr(pi->adapter, mbox, prtad, devad,
 					 data->reg_num, data->val_in);
 		break;
+	case SIOCGHWTSTAMP:
+		return copy_to_user(req->ifr_data, &pi->tstamp_config,
+				    sizeof(pi->tstamp_config)) ?
+			-EFAULT : 0;
+	case SIOCSHWTSTAMP:
+		if (copy_from_user(&pi->tstamp_config, req->ifr_data,
+				   sizeof(pi->tstamp_config)))
+			return -EFAULT;
+
+		if (!is_t4(adapter->params.chip)) {
+			switch (pi->tstamp_config.tx_type) {
+			case HWTSTAMP_TX_OFF:
+			case HWTSTAMP_TX_ON:
+				break;
+			default:
+				return -ERANGE;
+			}
+
+			switch (pi->tstamp_config.rx_filter) {
+			case HWTSTAMP_FILTER_NONE:
+				pi->rxtstamp = false;
+				break;
+			case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
+			case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+				cxgb4_ptprx_timestamping(pi, pi->port_id,
+							 PTP_TS_L4);
+				break;
+			case HWTSTAMP_FILTER_PTP_V2_EVENT:
+				cxgb4_ptprx_timestamping(pi, pi->port_id,
+							 PTP_TS_L2_L4);
+				break;
+			case HWTSTAMP_FILTER_ALL:
+			case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
+			case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
+			case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+			case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+				pi->rxtstamp = true;
+				break;
+			default:
+				pi->tstamp_config.rx_filter =
+					HWTSTAMP_FILTER_NONE;
+				return -ERANGE;
+			}
+
+			if ((pi->tstamp_config.tx_type == HWTSTAMP_TX_OFF) &&
+			    (pi->tstamp_config.rx_filter ==
+				HWTSTAMP_FILTER_NONE)) {
+				if (cxgb4_ptp_txtype(adapter, pi->port_id) >= 0)
+					pi->ptp_enable = false;
+			}
+
+			if (pi->tstamp_config.rx_filter !=
+				HWTSTAMP_FILTER_NONE) {
+				if (cxgb4_ptp_redirect_rx_packet(adapter,
+								 pi) >= 0)
+					pi->ptp_enable = true;
+			}
+		} else {
+			/* For T4 Adapters */
+			switch (pi->tstamp_config.rx_filter) {
+			case HWTSTAMP_FILTER_NONE:
+			pi->rxtstamp = false;
+			break;
+			case HWTSTAMP_FILTER_ALL:
+			pi->rxtstamp = true;
+			break;
+			default:
+			pi->tstamp_config.rx_filter =
+			HWTSTAMP_FILTER_NONE;
+			return -ERANGE;
+			}
+		}
+		return copy_to_user(req->ifr_data, &pi->tstamp_config,
+				    sizeof(pi->tstamp_config)) ?
+			-EFAULT : 0;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -3171,7 +3181,7 @@ static int cxgb_change_mtu(struct net_device *dev, int new_mtu)
 	ret = t4_set_rxmode(pi->adapter, pi->adapter->mbox, pi->viid,
 			    pi->viid_mirror, new_mtu, -1, -1, -1, -1, true);
 	if (!ret)
-		WRITE_ONCE(dev->mtu, new_mtu);
+		dev->mtu = new_mtu;
 	return ret;
 }
 
@@ -3237,7 +3247,7 @@ static int cxgb4_mgmt_set_vf_mac(struct net_device *dev, int vf, u8 *mac)
 
 	dev_info(pi->adapter->pdev_dev,
 		 "Setting MAC %pM on VF %d\n", mac, vf);
-	ret = t4_set_vf_mac_acl(adap, vf + 1, pi->lport, 1, mac);
+	ret = t4_set_vf_mac_acl(adap, vf + 1, 1, mac);
 	if (!ret)
 		ether_addr_copy(adap->vfinfo[vf].vf_mac_addr, mac);
 	return ret;
@@ -3297,7 +3307,7 @@ static int cxgb4_mgmt_set_vf_rate(struct net_device *dev, int vf,
 	}
 
 	if (max_tx_rate == 0) {
-		/* unbind VF to any Traffic Class */
+		/* unbind VF to to any Traffic Class */
 		fw_pfvf =
 		    (FW_PARAMS_MNEM_V(FW_PARAMS_MNEM_PFVF) |
 		     FW_PARAMS_PARAM_X_V(FW_PARAMS_PARAM_PFVF_SCHEDCLASS_ETH));
@@ -3485,7 +3495,7 @@ static int cxgb_set_tx_maxrate(struct net_device *dev, int index, u32 rate)
 	struct adapter *adap = pi->adapter;
 	struct ch_sched_queue qe = { 0 };
 	struct ch_sched_params p = { 0 };
-	struct ch_sched_class *e;
+	struct sched_class *e;
 	u32 req_rate;
 	int err = 0;
 
@@ -3875,8 +3885,6 @@ static const struct net_device_ops cxgb4_netdev_ops = {
 	.ndo_setup_tc         = cxgb_setup_tc,
 	.ndo_features_check   = cxgb_features_check,
 	.ndo_fix_features     = cxgb_fix_features,
-	.ndo_hwtstamp_get     = cxgb_hwtstamp_get,
-	.ndo_hwtstamp_set     = cxgb_hwtstamp_set,
 };
 
 #ifdef CONFIG_PCI_IOV
@@ -4818,7 +4826,7 @@ static int adap_init0(struct adapter *adap, int vpd_skip)
 			goto bye;
 		}
 
-		/* Get FW from /lib/firmware/ */
+		/* Get FW from from /lib/firmware/ */
 		ret = request_firmware(&fw, fw_info->fw_mod_name,
 				       adap->pdev_dev);
 		if (ret < 0) {
@@ -5458,6 +5466,7 @@ static pci_ers_result_t eeh_slot_reset(struct pci_dev *pdev)
 
 	if (!adap) {
 		pci_restore_state(pdev);
+		pci_save_state(pdev);
 		return PCI_ERS_RESULT_RECOVERED;
 	}
 
@@ -5472,6 +5481,7 @@ static pci_ers_result_t eeh_slot_reset(struct pci_dev *pdev)
 
 	pci_set_master(pdev);
 	pci_restore_state(pdev);
+	pci_save_state(pdev);
 
 	if (t4_wait_dev_ready(adap->regs) < 0)
 		return PCI_ERS_RESULT_DISCONNECT;
@@ -6480,11 +6490,10 @@ static const struct tlsdev_ops cxgb4_ktls_ops = {
 
 #if IS_ENABLED(CONFIG_CHELSIO_IPSEC_INLINE)
 
-static int cxgb4_xfrm_add_state(struct net_device *dev,
-				struct xfrm_state *x,
+static int cxgb4_xfrm_add_state(struct xfrm_state *x,
 				struct netlink_ext_ack *extack)
 {
-	struct adapter *adap = netdev2adap(dev);
+	struct adapter *adap = netdev2adap(x->xso.dev);
 	int ret;
 
 	if (!mutex_trylock(&uld_mutex)) {
@@ -6495,8 +6504,7 @@ static int cxgb4_xfrm_add_state(struct net_device *dev,
 	if (ret)
 		goto out_unlock;
 
-	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_add(dev, x,
-									extack);
+	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_add(x, extack);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
@@ -6504,9 +6512,9 @@ out_unlock:
 	return ret;
 }
 
-static void cxgb4_xfrm_del_state(struct net_device *dev, struct xfrm_state *x)
+static void cxgb4_xfrm_del_state(struct xfrm_state *x)
 {
-	struct adapter *adap = netdev2adap(dev);
+	struct adapter *adap = netdev2adap(x->xso.dev);
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6516,15 +6524,15 @@ static void cxgb4_xfrm_del_state(struct net_device *dev, struct xfrm_state *x)
 	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
 		goto out_unlock;
 
-	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_delete(dev, x);
+	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_delete(x);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
 }
 
-static void cxgb4_xfrm_free_state(struct net_device *dev, struct xfrm_state *x)
+static void cxgb4_xfrm_free_state(struct xfrm_state *x)
 {
-	struct adapter *adap = netdev2adap(dev);
+	struct adapter *adap = netdev2adap(x->xso.dev);
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6534,18 +6542,35 @@ static void cxgb4_xfrm_free_state(struct net_device *dev, struct xfrm_state *x)
 	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
 		goto out_unlock;
 
-	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_free(dev, x);
+	adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_state_free(x);
 
 out_unlock:
 	mutex_unlock(&uld_mutex);
+}
+
+static bool cxgb4_ipsec_offload_ok(struct sk_buff *skb, struct xfrm_state *x)
+{
+	struct adapter *adap = netdev2adap(x->xso.dev);
+	bool ret = false;
+
+	if (!mutex_trylock(&uld_mutex)) {
+		dev_dbg(adap->pdev_dev,
+			"crypto uld critical resource is under use\n");
+		return ret;
+	}
+	if (chcr_offload_state(adap, CXGB4_XFRMDEV_OPS))
+		goto out_unlock;
+
+	ret = adap->uld[CXGB4_ULD_IPSEC].xfrmdev_ops->xdo_dev_offload_ok(skb, x);
+
+out_unlock:
+	mutex_unlock(&uld_mutex);
+	return ret;
 }
 
 static void cxgb4_advance_esn_state(struct xfrm_state *x)
 {
 	struct adapter *adap = netdev2adap(x->xso.dev);
-
-	if (x->xso.dir != XFRM_DEV_OFFLOAD_IN)
-		return;
 
 	if (!mutex_trylock(&uld_mutex)) {
 		dev_dbg(adap->pdev_dev,
@@ -6565,6 +6590,7 @@ static const struct xfrmdev_ops cxgb4_xfrmdev_ops = {
 	.xdo_dev_state_add      = cxgb4_xfrm_add_state,
 	.xdo_dev_state_delete   = cxgb4_xfrm_del_state,
 	.xdo_dev_state_free     = cxgb4_xfrm_free_state,
+	.xdo_dev_offload_ok     = cxgb4_ipsec_offload_ok,
 	.xdo_dev_state_advance_esn = cxgb4_advance_esn_state,
 };
 
@@ -6661,6 +6687,7 @@ static int init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto out_free_adapter;
 	}
 
+	pci_enable_pcie_error_reporting(pdev);
 	pci_set_master(pdev);
 	pci_save_state(pdev);
 	adap_idx++;
@@ -7065,6 +7092,7 @@ fw_attach_fail:
  out_unmap_bar0:
 	iounmap(regs);
  out_disable_device:
+	pci_disable_pcie_error_reporting(pdev);
 	pci_disable_device(pdev);
  out_release_regions:
 	pci_release_regions(pdev);
@@ -7143,6 +7171,7 @@ static void remove_one(struct pci_dev *pdev)
 	}
 #endif
 	iounmap(adapter->regs);
+	pci_disable_pcie_error_reporting(pdev);
 	if ((adapter->flags & CXGB4_DEV_ENABLED)) {
 		pci_disable_device(pdev);
 		adapter->flags &= ~CXGB4_DEV_ENABLED;

@@ -9,6 +9,8 @@
 
 #include "main.h"
 
+static const struct acpi_device_id xge_acpi_match[];
+
 static int xge_get_resources(struct xge_pdata *pdata)
 {
 	struct platform_device *pdev;
@@ -688,7 +690,7 @@ err:
 	return ret;
 }
 
-static void xge_remove(struct platform_device *pdev)
+static int xge_remove(struct platform_device *pdev)
 {
 	struct xge_pdata *pdata;
 	struct net_device *ndev;
@@ -704,6 +706,8 @@ static void xge_remove(struct platform_device *pdev)
 	xge_mdio_remove(ndev);
 	unregister_netdev(ndev);
 	free_netdev(ndev);
+
+	return 0;
 }
 
 static void xge_shutdown(struct platform_device *pdev)
@@ -729,7 +733,7 @@ MODULE_DEVICE_TABLE(acpi, xge_acpi_match);
 static struct platform_driver xge_driver = {
 	.driver = {
 		   .name = "xgene-enet-v2",
-		   .acpi_match_table = xge_acpi_match,
+		   .acpi_match_table = ACPI_PTR(xge_acpi_match),
 	},
 	.probe = xge_probe,
 	.remove = xge_remove,

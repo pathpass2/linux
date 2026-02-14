@@ -10,7 +10,7 @@
 
 #include <asm-generic/int-ll64.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 typedef unsigned long addr_t;
 typedef __signed__ long saddr_t;
@@ -25,6 +25,6 @@ typedef struct {
 	};
 } __attribute__((packed, aligned(4))) __vector128;
 
-#endif /* __ASSEMBLER__ */
+#endif /* __ASSEMBLY__ */
 
 #endif /* _UAPI_S390_TYPES_H */

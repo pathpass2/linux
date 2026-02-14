@@ -73,21 +73,22 @@ CHECK(inner_map, pop_back, &iv->head);
 	int test##_missing_lock_##op(void *ctx)				\
 	{								\
 		INIT;							\
-		bpf_list_##op(hexpr, nexpr);				\
+		void (*p)(void *, void *) = (void *)&bpf_list_##op;	\
+		p(hexpr, nexpr);					\
 		return 0;						\
 	}
 
-CHECK(kptr, push_front, &f->head, &b->node);
-CHECK(kptr, push_back, &f->head, &b->node);
+CHECK(kptr, push_front, &f->head, b);
+CHECK(kptr, push_back, &f->head, b);
 
-CHECK(global, push_front, &ghead, &f->node2);
-CHECK(global, push_back, &ghead, &f->node2);
+CHECK(global, push_front, &ghead, f);
+CHECK(global, push_back, &ghead, f);
 
-CHECK(map, push_front, &v->head, &f->node2);
-CHECK(map, push_back, &v->head, &f->node2);
+CHECK(map, push_front, &v->head, f);
+CHECK(map, push_back, &v->head, f);
 
-CHECK(inner_map, push_front, &iv->head, &f->node2);
-CHECK(inner_map, push_back, &iv->head, &f->node2);
+CHECK(inner_map, push_front, &iv->head, f);
+CHECK(inner_map, push_back, &iv->head, f);
 
 #undef CHECK
 
@@ -134,31 +135,32 @@ CHECK_OP(pop_back);
 	int test##_incorrect_lock_##op(void *ctx)			\
 	{								\
 		INIT;							\
+		void (*p)(void *, void*) = (void *)&bpf_list_##op;	\
 		bpf_spin_lock(lexpr);					\
-		bpf_list_##op(hexpr, nexpr);				\
+		p(hexpr, nexpr);					\
 		return 0;						\
 	}
 
 #define CHECK_OP(op)							\
-	CHECK(kptr_kptr, op, &f1->lock, &f2->head, &b->node);		\
-	CHECK(kptr_global, op, &f1->lock, &ghead, &f->node2);		\
-	CHECK(kptr_map, op, &f1->lock, &v->head, &f->node2);		\
-	CHECK(kptr_inner_map, op, &f1->lock, &iv->head, &f->node2);	\
+	CHECK(kptr_kptr, op, &f1->lock, &f2->head, b);			\
+	CHECK(kptr_global, op, &f1->lock, &ghead, f);			\
+	CHECK(kptr_map, op, &f1->lock, &v->head, f);			\
+	CHECK(kptr_inner_map, op, &f1->lock, &iv->head, f);		\
 									\
-	CHECK(global_global, op, &glock2, &ghead, &f->node2);		\
-	CHECK(global_kptr, op, &glock, &f1->head, &b->node);		\
-	CHECK(global_map, op, &glock, &v->head, &f->node2);		\
-	CHECK(global_inner_map, op, &glock, &iv->head, &f->node2);	\
+	CHECK(global_global, op, &glock2, &ghead, f);			\
+	CHECK(global_kptr, op, &glock, &f1->head, b);			\
+	CHECK(global_map, op, &glock, &v->head, f);			\
+	CHECK(global_inner_map, op, &glock, &iv->head, f);		\
 									\
-	CHECK(map_map, op, &v->lock, &v2->head, &f->node2);		\
-	CHECK(map_kptr, op, &v->lock, &f2->head, &b->node);		\
-	CHECK(map_global, op, &v->lock, &ghead, &f->node2);		\
-	CHECK(map_inner_map, op, &v->lock, &iv->head, &f->node2);	\
+	CHECK(map_map, op, &v->lock, &v2->head, f);			\
+	CHECK(map_kptr, op, &v->lock, &f2->head, b);			\
+	CHECK(map_global, op, &v->lock, &ghead, f);			\
+	CHECK(map_inner_map, op, &v->lock, &iv->head, f);		\
 									\
-	CHECK(inner_map_inner_map, op, &iv->lock, &iv2->head, &f->node2);\
-	CHECK(inner_map_kptr, op, &iv->lock, &f2->head, &b->node);	\
-	CHECK(inner_map_global, op, &iv->lock, &ghead, &f->node2);	\
-	CHECK(inner_map_map, op, &iv->lock, &v->head, &f->node2);
+	CHECK(inner_map_inner_map, op, &iv->lock, &iv2->head, f);	\
+	CHECK(inner_map_kptr, op, &iv->lock, &f2->head, b);		\
+	CHECK(inner_map_global, op, &iv->lock, &ghead, f);		\
+	CHECK(inner_map_map, op, &iv->lock, &v->head, f);
 
 CHECK_OP(push_front);
 CHECK_OP(push_back);
@@ -226,7 +228,8 @@ int obj_new_no_composite(void *ctx)
 SEC("?tc")
 int obj_new_no_struct(void *ctx)
 {
-	(void)bpf_obj_new(union { int data; unsigned udata; });
+
+	bpf_obj_new(union { int data; unsigned udata; });
 	return 0;
 }
 
@@ -251,7 +254,7 @@ int new_null_ret(void *ctx)
 SEC("?tc")
 int obj_new_acq(void *ctx)
 {
-	(void)bpf_obj_new(struct foo);
+	bpf_obj_new(struct foo);
 	return 0;
 }
 
@@ -337,7 +340,7 @@ int direct_read_node(void *ctx)
 	f = bpf_obj_new(typeof(*f));
 	if (!f)
 		return 0;
-	return *(int *)&f->node2;
+	return *(int *)&f->node;
 }
 
 SEC("?tc")
@@ -348,12 +351,12 @@ int direct_write_node(void *ctx)
 	f = bpf_obj_new(typeof(*f));
 	if (!f)
 		return 0;
-	*(int *)&f->node2 = 0;
+	*(int *)&f->node = 0;
 	return 0;
 }
 
 static __always_inline
-int use_after_unlock(bool push_front)
+int use_after_unlock(void (*op)(void *head, void *node))
 {
 	struct foo *f;
 
@@ -362,10 +365,7 @@ int use_after_unlock(bool push_front)
 		return 0;
 	bpf_spin_lock(&glock);
 	f->data = 42;
-	if (push_front)
-		bpf_list_push_front(&ghead, &f->node2);
-	else
-		bpf_list_push_back(&ghead, &f->node2);
+	op(&ghead, &f->node);
 	bpf_spin_unlock(&glock);
 
 	return f->data;
@@ -374,17 +374,17 @@ int use_after_unlock(bool push_front)
 SEC("?tc")
 int use_after_unlock_push_front(void *ctx)
 {
-	return use_after_unlock(true);
+	return use_after_unlock((void *)bpf_list_push_front);
 }
 
 SEC("?tc")
 int use_after_unlock_push_back(void *ctx)
 {
-	return use_after_unlock(false);
+	return use_after_unlock((void *)bpf_list_push_back);
 }
 
 static __always_inline
-int list_double_add(bool push_front)
+int list_double_add(void (*op)(void *head, void *node))
 {
 	struct foo *f;
 
@@ -392,13 +392,8 @@ int list_double_add(bool push_front)
 	if (!f)
 		return 0;
 	bpf_spin_lock(&glock);
-	if (push_front) {
-		bpf_list_push_front(&ghead, &f->node2);
-		bpf_list_push_front(&ghead, &f->node2);
-	} else {
-		bpf_list_push_back(&ghead, &f->node2);
-		bpf_list_push_back(&ghead, &f->node2);
-	}
+	op(&ghead, &f->node);
+	op(&ghead, &f->node);
 	bpf_spin_unlock(&glock);
 
 	return 0;
@@ -407,13 +402,13 @@ int list_double_add(bool push_front)
 SEC("?tc")
 int double_push_front(void *ctx)
 {
-	return list_double_add(true);
+	return list_double_add((void *)bpf_list_push_front);
 }
 
 SEC("?tc")
 int double_push_back(void *ctx)
 {
-	return list_double_add(false);
+	return list_double_add((void *)bpf_list_push_back);
 }
 
 SEC("?tc")
@@ -455,7 +450,7 @@ int incorrect_node_var_off(struct __sk_buff *ctx)
 	if (!f)
 		return 0;
 	bpf_spin_lock(&glock);
-	bpf_list_push_front(&ghead, (void *)&f->node2 + ctx->protocol);
+	bpf_list_push_front(&ghead, (void *)&f->node + ctx->protocol);
 	bpf_spin_unlock(&glock);
 
 	return 0;
@@ -470,7 +465,7 @@ int incorrect_node_off1(void *ctx)
 	if (!f)
 		return 0;
 	bpf_spin_lock(&glock);
-	bpf_list_push_front(&ghead, (void *)&f->node2 + 1);
+	bpf_list_push_front(&ghead, (void *)&f->node + 1);
 	bpf_spin_unlock(&glock);
 
 	return 0;
@@ -485,7 +480,7 @@ int incorrect_node_off2(void *ctx)
 	if (!f)
 		return 0;
 	bpf_spin_lock(&glock);
-	bpf_list_push_front(&ghead, &f->node);
+	bpf_list_push_front(&ghead, &f->node2);
 	bpf_spin_unlock(&glock);
 
 	return 0;
@@ -515,7 +510,7 @@ int incorrect_head_var_off1(struct __sk_buff *ctx)
 	if (!f)
 		return 0;
 	bpf_spin_lock(&glock);
-	bpf_list_push_front((void *)&ghead + ctx->protocol, &f->node2);
+	bpf_list_push_front((void *)&ghead + ctx->protocol, &f->node);
 	bpf_spin_unlock(&glock);
 
 	return 0;
@@ -530,7 +525,7 @@ int incorrect_head_var_off2(struct __sk_buff *ctx)
 	if (!f)
 		return 0;
 	bpf_spin_lock(&glock);
-	bpf_list_push_front((void *)&f->head + ctx->protocol, &f->node2);
+	bpf_list_push_front((void *)&f->head + ctx->protocol, &f->node);
 	bpf_spin_unlock(&glock);
 
 	return 0;
@@ -562,13 +557,14 @@ SEC("?tc")
 int incorrect_head_off2(void *ctx)
 {
 	struct foo *f;
+	struct bar *b;
 
 	f = bpf_obj_new(typeof(*f));
 	if (!f)
 		return 0;
 
 	bpf_spin_lock(&glock);
-	bpf_list_push_front((void *)&ghead + 1, &f->node2);
+	bpf_list_push_front((void *)&ghead + 1, &f->node);
 	bpf_spin_unlock(&glock);
 
 	return 0;
@@ -590,9 +586,7 @@ int pop_ptr_off(void *(*op)(void *head))
 	n = op(&p->head);
 	bpf_spin_unlock(&p->lock);
 
-	if (!n)
-		return 0;
-	bpf_spin_lock((void *)n);
+	bpf_this_cpu_ptr(n);
 	return 0;
 }
 

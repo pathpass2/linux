@@ -45,11 +45,12 @@
 #include <linux/dmaengine.h>
 #include <linux/dma-mapping.h>
 #include <linux/list.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/of_dma.h>
+#include <linux/of_device.h>
 #include <linux/property.h>
 #include <linux/delay.h>
 #include <linux/acpi.h>
@@ -213,6 +214,7 @@ static int hidma_chan_init(struct hidma_dev *dmadev, u32 dma_sig)
 
 	spin_lock_init(&mchan->lock);
 	list_add_tail(&mchan->chan.device_node, &ddev->channels);
+	dmadev->ddev.chancnt++;
 	return 0;
 }
 
@@ -695,7 +697,7 @@ static void hidma_free_msis(struct hidma_dev *dmadev)
 			devm_free_irq(dev, virq, &dmadev->lldev);
 	}
 
-	platform_device_msi_free_irqs_all(dev);
+	platform_msi_domain_free_irqs(dev);
 #endif
 }
 
@@ -705,8 +707,8 @@ static int hidma_request_msi(struct hidma_dev *dmadev,
 #ifdef CONFIG_GENERIC_MSI_IRQ
 	int rc, i, virq;
 
-	rc = platform_device_msi_init_and_alloc_irqs(&pdev->dev, HIDMA_MSI_INTS,
-						     hidma_write_msi_msg);
+	rc = platform_msi_domain_alloc_irqs(&pdev->dev, HIDMA_MSI_INTS,
+					    hidma_write_msi_msg);
 	if (rc)
 		return rc;
 
@@ -744,7 +746,7 @@ static bool hidma_test_capability(struct device *dev, enum hidma_cap test_cap)
 {
 	enum hidma_cap cap;
 
-	cap = (uintptr_t) device_get_match_data(dev);
+	cap = (enum hidma_cap) device_get_match_data(dev);
 	return cap ? ((cap & test_cap) > 0) : 0;
 }
 
@@ -764,15 +766,17 @@ static int hidma_probe(struct platform_device *pdev)
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 
-	trca = devm_platform_get_and_ioremap_resource(pdev, 0, &trca_resource);
+	trca_resource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	trca = devm_ioremap_resource(&pdev->dev, trca_resource);
 	if (IS_ERR(trca)) {
-		rc = PTR_ERR(trca);
+		rc = -ENOMEM;
 		goto bailout;
 	}
 
-	evca = devm_platform_get_and_ioremap_resource(pdev, 1, &evca_resource);
+	evca_resource = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	evca = devm_ioremap_resource(&pdev->dev, evca_resource);
 	if (IS_ERR(evca)) {
-		rc = PTR_ERR(evca);
+		rc = -ENOMEM;
 		goto bailout;
 	}
 
@@ -782,7 +786,7 @@ static int hidma_probe(struct platform_device *pdev)
 	 */
 	chirq = platform_get_irq(pdev, 0);
 	if (chirq < 0) {
-		rc = chirq;
+		rc = -ENODEV;
 		goto bailout;
 	}
 
@@ -914,7 +918,7 @@ static void hidma_shutdown(struct platform_device *pdev)
 
 }
 
-static void hidma_remove(struct platform_device *pdev)
+static int hidma_remove(struct platform_device *pdev)
 {
 	struct hidma_dev *dmadev = platform_get_drvdata(pdev);
 
@@ -934,6 +938,8 @@ static void hidma_remove(struct platform_device *pdev)
 	dev_info(&pdev->dev, "HI-DMA engine removed\n");
 	pm_runtime_put_sync_suspend(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_ACPI)
@@ -946,16 +952,25 @@ static const struct acpi_device_id hidma_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, hidma_acpi_ids);
 #endif
 
+static const struct of_device_id hidma_match[] = {
+	{.compatible = "qcom,hidma-1.0",},
+	{.compatible = "qcom,hidma-1.1", .data = (void *)(HIDMA_MSI_CAP),},
+	{.compatible = "qcom,hidma-1.2",
+	 .data = (void *)(HIDMA_MSI_CAP | HIDMA_IDENTITY_CAP),},
+	{},
+};
+MODULE_DEVICE_TABLE(of, hidma_match);
+
 static struct platform_driver hidma_driver = {
 	.probe = hidma_probe,
 	.remove = hidma_remove,
 	.shutdown = hidma_shutdown,
 	.driver = {
 		   .name = "hidma",
+		   .of_match_table = hidma_match,
 		   .acpi_match_table = ACPI_PTR(hidma_acpi_ids),
 	},
 };
 
 module_platform_driver(hidma_driver);
-MODULE_DESCRIPTION("Qualcomm Technologies HIDMA Channel support");
 MODULE_LICENSE("GPL v2");

@@ -30,9 +30,6 @@ int verity_verify_sig_parse_opt_args(struct dm_arg_set *as, struct dm_verity *v,
 
 void verity_verify_sig_opts_cleanup(struct dm_verity_sig_opts *sig_opts);
 
-int __init dm_verity_verify_sig_init(void);
-void dm_verity_verify_sig_exit(void);
-
 #else
 
 #define DM_VERITY_ROOT_HASH_VERIFICATION_OPTS 0
@@ -56,15 +53,6 @@ static inline int verity_verify_sig_parse_opt_args(struct dm_arg_set *as,
 }
 
 static inline void verity_verify_sig_opts_cleanup(struct dm_verity_sig_opts *sig_opts)
-{
-}
-
-static inline int dm_verity_verify_sig_init(void)
-{
-	return 0;
-}
-
-static inline void dm_verity_verify_sig_exit(void)
 {
 }
 

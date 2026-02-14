@@ -17,6 +17,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 
 #include "sja1000.h"
 
@@ -105,7 +106,7 @@ static void sp_technologic_init(struct sja1000_priv *priv, struct device_node *o
 
 static void sp_rzn1_init(struct sja1000_priv *priv, struct device_node *of)
 {
-	priv->flags = SJA1000_QUIRK_NO_CDR_REG | SJA1000_QUIRK_RESET_ON_OVERRUN;
+	priv->flags = SJA1000_QUIRK_NO_CDR_REG;
 }
 
 static void sp_populate(struct sja1000_priv *priv,
@@ -230,9 +231,18 @@ static int sp_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	addr = devm_platform_get_and_ioremap_resource(pdev, 0, &res_mem);
-	if (IS_ERR(addr))
-		return PTR_ERR(addr);
+	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res_mem)
+		return -ENODEV;
+
+	if (!devm_request_mem_region(&pdev->dev, res_mem->start,
+				     resource_size(res_mem), DRV_NAME))
+		return -EBUSY;
+
+	addr = devm_ioremap(&pdev->dev, res_mem->start,
+				    resource_size(res_mem));
+	if (!addr)
+		return -ENOMEM;
 
 	if (of) {
 		irq = platform_get_irq(pdev, 0);
@@ -266,9 +276,6 @@ static int sp_probe(struct platform_device *pdev)
 	} else {
 		priv->irq_flags = IRQF_SHARED;
 	}
-
-	if (priv->flags & SJA1000_QUIRK_RESET_ON_OVERRUN)
-		priv->irq_flags |= IRQF_ONESHOT;
 
 	dev->irq = irq;
 	priv->reg_base = addr;
@@ -310,12 +317,14 @@ static int sp_probe(struct platform_device *pdev)
 	return err;
 }
 
-static void sp_remove(struct platform_device *pdev)
+static int sp_remove(struct platform_device *pdev)
 {
 	struct net_device *dev = platform_get_drvdata(pdev);
 
 	unregister_sja1000dev(dev);
 	free_sja1000dev(dev);
+
+	return 0;
 }
 
 static struct platform_driver sp_driver = {

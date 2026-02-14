@@ -66,6 +66,7 @@ static void adc_keys_poll(struct input_dev *input)
 static int adc_keys_load_keymap(struct device *dev, struct adc_keys_state *st)
 {
 	struct adc_keys_button *map;
+	struct fwnode_handle *child;
 	int i;
 
 	st->num_keys = device_get_child_node_count(dev);
@@ -79,10 +80,11 @@ static int adc_keys_load_keymap(struct device *dev, struct adc_keys_state *st)
 		return -ENOMEM;
 
 	i = 0;
-	device_for_each_child_node_scoped(dev, child) {
+	device_for_each_child_node(dev, child) {
 		if (fwnode_property_read_u32(child, "press-threshold-microvolt",
 					     &map[i].voltage)) {
 			dev_err(dev, "Key with invalid or missing voltage\n");
+			fwnode_handle_put(child);
 			return -EINVAL;
 		}
 		map[i].voltage /= 1000;
@@ -90,6 +92,7 @@ static int adc_keys_load_keymap(struct device *dev, struct adc_keys_state *st)
 		if (fwnode_property_read_u32(child, "linux,code",
 					     &map[i].keycode)) {
 			dev_err(dev, "Key with invalid or missing linux,code\n");
+			fwnode_handle_put(child);
 			return -EINVAL;
 		}
 

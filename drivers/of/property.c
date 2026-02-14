@@ -21,7 +21,6 @@
 
 #define pr_fmt(fmt)	"OF: " fmt
 
-#include <linux/ctype.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_device.h>
@@ -33,32 +32,6 @@
 #include "of_private.h"
 
 /**
- * of_property_read_bool - Find a property
- * @np:		device node from which the property value is to be read.
- * @propname:	name of the property to be searched.
- *
- * Search for a boolean property in a device node. Usage on non-boolean
- * property types is deprecated.
- *
- * Return: true if the property exists false otherwise.
- */
-bool of_property_read_bool(const struct device_node *np, const char *propname)
-{
-	struct property *prop = of_find_property(np, propname, NULL);
-
-	/*
-	 * Boolean properties should not have a value. Testing for property
-	 * presence should either use of_property_present() or just read the
-	 * property value and check the returned error code.
-	 */
-	if (prop && prop->length)
-		pr_warn("%pOF: Read of boolean property '%s' with a value.\n", np, propname);
-
-	return prop ? true : false;
-}
-EXPORT_SYMBOL(of_property_read_bool);
-
-/**
  * of_graph_is_present() - check graph's presence
  * @node: pointer to device_node containing graph port
  *
@@ -67,12 +40,15 @@ EXPORT_SYMBOL(of_property_read_bool);
  */
 bool of_graph_is_present(const struct device_node *node)
 {
-	struct device_node *ports __free(device_node) = of_get_child_by_name(node, "ports");
+	struct device_node *ports, *port;
 
+	ports = of_get_child_by_name(node, "ports");
 	if (ports)
 		node = ports;
 
-	struct device_node *port __free(device_node) = of_get_child_by_name(node, "port");
+	port = of_get_child_by_name(node, "port");
+	of_node_put(ports);
+	of_node_put(port);
 
 	return !!port;
 }
@@ -95,7 +71,7 @@ EXPORT_SYMBOL(of_graph_is_present);
 int of_property_count_elems_of_size(const struct device_node *np,
 				const char *propname, int elem_size)
 {
-	const struct property *prop = of_find_property(np, propname, NULL);
+	struct property *prop = of_find_property(np, propname, NULL);
 
 	if (!prop)
 		return -EINVAL;
@@ -131,7 +107,7 @@ EXPORT_SYMBOL_GPL(of_property_count_elems_of_size);
 static void *of_find_property_value_of_size(const struct device_node *np,
 			const char *propname, u32 min, u32 max, size_t *len)
 {
-	const struct property *prop = of_find_property(np, propname, NULL);
+	struct property *prop = of_find_property(np, propname, NULL);
 
 	if (!prop)
 		return ERR_PTR(-EINVAL);
@@ -147,72 +123,6 @@ static void *of_find_property_value_of_size(const struct device_node *np,
 
 	return prop->value;
 }
-
-/**
- * of_property_read_u8_index - Find and read a u8 from a multi-value property.
- *
- * @np:		device node from which the property value is to be read.
- * @propname:	name of the property to be searched.
- * @index:	index of the u8 in the list of values
- * @out_value:	pointer to return value, modified only if no error.
- *
- * Search for a property in a device node and read nth 8-bit value from
- * it.
- *
- * Return: 0 on success, -EINVAL if the property does not exist,
- * -ENODATA if property does not have a value, and -EOVERFLOW if the
- * property data isn't large enough.
- *
- * The out_value is modified only if a valid u8 value can be decoded.
- */
-int of_property_read_u8_index(const struct device_node *np,
-				       const char *propname,
-				       u32 index, u8 *out_value)
-{
-	const u8 *val = of_find_property_value_of_size(np, propname,
-					((index + 1) * sizeof(*out_value)),
-					0, NULL);
-
-	if (IS_ERR(val))
-		return PTR_ERR(val);
-
-	*out_value = val[index];
-	return 0;
-}
-EXPORT_SYMBOL_GPL(of_property_read_u8_index);
-
-/**
- * of_property_read_u16_index - Find and read a u16 from a multi-value property.
- *
- * @np:		device node from which the property value is to be read.
- * @propname:	name of the property to be searched.
- * @index:	index of the u16 in the list of values
- * @out_value:	pointer to return value, modified only if no error.
- *
- * Search for a property in a device node and read nth 16-bit value from
- * it.
- *
- * Return: 0 on success, -EINVAL if the property does not exist,
- * -ENODATA if property does not have a value, and -EOVERFLOW if the
- * property data isn't large enough.
- *
- * The out_value is modified only if a valid u16 value can be decoded.
- */
-int of_property_read_u16_index(const struct device_node *np,
-				       const char *propname,
-				       u32 index, u16 *out_value)
-{
-	const u16 *val = of_find_property_value_of_size(np, propname,
-					((index + 1) * sizeof(*out_value)),
-					0, NULL);
-
-	if (IS_ERR(val))
-		return PTR_ERR(val);
-
-	*out_value = be16_to_cpup(((__be16 *)val) + index);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(of_property_read_u16_index);
 
 /**
  * of_property_read_u32_index - Find and read a u32 from a multi-value property.
@@ -531,7 +441,6 @@ int of_property_read_string(const struct device_node *np, const char *propname,
 				const char **out_string)
 {
 	const struct property *prop = of_find_property(np, propname, NULL);
-
 	if (!prop)
 		return -EINVAL;
 	if (!prop->length)
@@ -545,17 +454,12 @@ EXPORT_SYMBOL_GPL(of_property_read_string);
 
 /**
  * of_property_match_string() - Find string in a list and return index
- * @np: pointer to the node containing the string list property
+ * @np: pointer to node containing string list property
  * @propname: string list property name
- * @string: pointer to the string to search for in the string list
+ * @string: pointer to string to search for in string list
  *
- * Search for an exact match of string in a device node property which is a
- * string of lists.
- *
- * Return: the index of the first occurrence of the string on success, -EINVAL
- * if the property does not exist, -ENODATA if the property does not have a
- * value, and -EILSEQ if the string is not null-terminated within the length of
- * the property data.
+ * This function searches a string list property and returns the index
+ * of a specific string value.
  */
 int of_property_match_string(const struct device_node *np, const char *propname,
 			     const char *string)
@@ -623,7 +527,7 @@ int of_property_read_string_helper(const struct device_node *np,
 }
 EXPORT_SYMBOL_GPL(of_property_read_string_helper);
 
-const __be32 *of_prop_next_u32(const struct property *prop, const __be32 *cur,
+const __be32 *of_prop_next_u32(struct property *prop, const __be32 *cur,
 			       u32 *pu)
 {
 	const void *curv = cur;
@@ -646,7 +550,7 @@ out_val:
 }
 EXPORT_SYMBOL_GPL(of_prop_next_u32);
 
-const char *of_prop_next_string(const struct property *prop, const char *cur)
+const char *of_prop_next_string(struct property *prop, const char *cur)
 {
 	const void *curv = cur;
 
@@ -674,8 +578,7 @@ EXPORT_SYMBOL_GPL(of_prop_next_string);
 int of_graph_parse_endpoint(const struct device_node *node,
 			    struct of_endpoint *endpoint)
 {
-	struct device_node *port_node __free(device_node) =
-			    of_get_parent(node);
+	struct device_node *port_node = of_get_parent(node);
 
 	WARN_ONCE(!port_node, "%s(): endpoint %pOF has no parent node\n",
 		  __func__, node);
@@ -689,6 +592,8 @@ int of_graph_parse_endpoint(const struct device_node *node,
 	 */
 	of_property_read_u32(port_node, "reg", &endpoint->port);
 	of_property_read_u32(node, "reg", &endpoint->id);
+
+	of_node_put(port_node);
 
 	return 0;
 }
@@ -704,88 +609,27 @@ EXPORT_SYMBOL(of_graph_parse_endpoint);
  */
 struct device_node *of_graph_get_port_by_id(struct device_node *parent, u32 id)
 {
-	struct device_node *node __free(device_node) = of_get_child_by_name(parent, "ports");
+	struct device_node *node, *port;
 
+	node = of_get_child_by_name(parent, "ports");
 	if (node)
 		parent = node;
 
-	for_each_child_of_node_scoped(parent, port) {
+	for_each_child_of_node(parent, port) {
 		u32 port_id = 0;
 
 		if (!of_node_name_eq(port, "port"))
 			continue;
 		of_property_read_u32(port, "reg", &port_id);
 		if (id == port_id)
-			return_ptr(port);
+			break;
 	}
 
-	return NULL;
+	of_node_put(node);
+
+	return port;
 }
 EXPORT_SYMBOL(of_graph_get_port_by_id);
-
-/**
- * of_graph_get_next_port() - get next port node.
- * @parent: pointer to the parent device node, or parent ports node
- * @prev: previous port node, or NULL to get first
- *
- * Parent device node can be used as @parent whether device node has ports node
- * or not. It will work same as ports@0 node.
- *
- * Return: A 'port' node pointer with refcount incremented. Refcount
- * of the passed @prev node is decremented.
- */
-struct device_node *of_graph_get_next_port(const struct device_node *parent,
-					   struct device_node *prev)
-{
-	if (!parent)
-		return NULL;
-
-	if (!prev) {
-		struct device_node *node __free(device_node) =
-			of_get_child_by_name(parent, "ports");
-
-		if (node)
-			parent = node;
-
-		return of_get_child_by_name(parent, "port");
-	}
-
-	do {
-		prev = of_get_next_child(parent, prev);
-		if (!prev)
-			break;
-	} while (!of_node_name_eq(prev, "port"));
-
-	return prev;
-}
-EXPORT_SYMBOL(of_graph_get_next_port);
-
-/**
- * of_graph_get_next_port_endpoint() - get next endpoint node in port.
- * If it reached to end of the port, it will return NULL.
- * @port: pointer to the target port node
- * @prev: previous endpoint node, or NULL to get first
- *
- * Return: An 'endpoint' node pointer with refcount incremented. Refcount
- * of the passed @prev node is decremented.
- */
-struct device_node *of_graph_get_next_port_endpoint(const struct device_node *port,
-						    struct device_node *prev)
-{
-	while (1) {
-		prev = of_get_next_child(port, prev);
-		if (!prev)
-			break;
-		if (WARN(!of_node_name_eq(prev, "endpoint"),
-			 "non endpoint node is used (%pOF)", prev))
-			continue;
-
-		break;
-	}
-
-	return prev;
-}
-EXPORT_SYMBOL(of_graph_get_next_port_endpoint);
 
 /**
  * of_graph_get_next_endpoint() - get next endpoint node
@@ -810,9 +654,17 @@ struct device_node *of_graph_get_next_endpoint(const struct device_node *parent,
 	 * parent port node.
 	 */
 	if (!prev) {
-		port = of_graph_get_next_port(parent, NULL);
+		struct device_node *node;
+
+		node = of_get_child_by_name(parent, "ports");
+		if (node)
+			parent = node;
+
+		port = of_get_child_by_name(parent, "port");
+		of_node_put(node);
+
 		if (!port) {
-			pr_debug("graph: no port node found in %pOF\n", parent);
+			pr_err("graph: no port node found in %pOF\n", parent);
 			return NULL;
 		}
 	} else {
@@ -828,7 +680,7 @@ struct device_node *of_graph_get_next_endpoint(const struct device_node *parent,
 		 * getting the next child. If the previous endpoint is NULL this
 		 * will return the first child.
 		 */
-		endpoint = of_graph_get_next_port_endpoint(port, prev);
+		endpoint = of_get_next_child(port, prev);
 		if (endpoint) {
 			of_node_put(port);
 			return endpoint;
@@ -837,9 +689,11 @@ struct device_node *of_graph_get_next_endpoint(const struct device_node *parent,
 		/* No more endpoints under this port, try the next one. */
 		prev = NULL;
 
-		port = of_graph_get_next_port(parent, port);
-		if (!port)
-			return NULL;
+		do {
+			port = of_get_next_child(parent, port);
+			if (!port)
+				return NULL;
+		} while (!of_node_name_eq(port, "port"));
 	}
 }
 EXPORT_SYMBOL(of_graph_get_next_endpoint);
@@ -908,9 +762,7 @@ struct device_node *of_graph_get_port_parent(struct device_node *node)
 	/* Walk 3 levels up only if there is 'ports' node. */
 	for (depth = 3; depth && node; depth--) {
 		node = of_get_next_parent(node);
-		if (depth == 2 && !of_node_name_eq(node, "ports") &&
-		    !of_node_name_eq(node, "in-ports") &&
-		    !of_node_name_eq(node, "out-ports"))
+		if (depth == 2 && !of_node_name_eq(node, "ports"))
 			break;
 	}
 	return node;
@@ -927,11 +779,16 @@ EXPORT_SYMBOL(of_graph_get_port_parent);
 struct device_node *of_graph_get_remote_port_parent(
 			       const struct device_node *node)
 {
-	/* Get remote endpoint node. */
-	struct device_node *np __free(device_node) =
-		of_graph_get_remote_endpoint(node);
+	struct device_node *np, *pp;
 
-	return of_graph_get_port_parent(np);
+	/* Get remote endpoint node. */
+	np = of_graph_get_remote_endpoint(node);
+
+	pp = of_graph_get_port_parent(np);
+
+	of_node_put(np);
+
+	return pp;
 }
 EXPORT_SYMBOL(of_graph_get_remote_port_parent);
 
@@ -954,16 +811,10 @@ struct device_node *of_graph_get_remote_port(const struct device_node *node)
 }
 EXPORT_SYMBOL(of_graph_get_remote_port);
 
-/**
- * of_graph_get_endpoint_count() - get the number of endpoints in a device node
- * @np: parent device node containing ports and endpoints
- *
- * Return: count of endpoint of this device node
- */
-unsigned int of_graph_get_endpoint_count(const struct device_node *np)
+int of_graph_get_endpoint_count(const struct device_node *np)
 {
 	struct device_node *endpoint;
-	unsigned int num = 0;
+	int num = 0;
 
 	for_each_endpoint_of_node(np, endpoint)
 		num++;
@@ -971,23 +822,6 @@ unsigned int of_graph_get_endpoint_count(const struct device_node *np)
 	return num;
 }
 EXPORT_SYMBOL(of_graph_get_endpoint_count);
-
-/**
- * of_graph_get_port_count() - get the number of port in a device or ports node
- * @np: pointer to the device or ports node
- *
- * Return: count of port of this device or ports node
- */
-unsigned int of_graph_get_port_count(struct device_node *np)
-{
-	unsigned int num = 0;
-
-	for_each_of_graph_port(np, port)
-		num++;
-
-	return num;
-}
-EXPORT_SYMBOL(of_graph_get_port_count);
 
 /**
  * of_graph_get_remote_node() - get remote parent device_node for given port/endpoint
@@ -1058,12 +892,6 @@ of_fwnode_device_get_dma_attr(const struct fwnode_handle *fwnode)
 
 static bool of_fwnode_property_present(const struct fwnode_handle *fwnode,
 				       const char *propname)
-{
-	return of_property_present(to_of_node(fwnode), propname);
-}
-
-static bool of_fwnode_property_read_bool(const struct fwnode_handle *fwnode,
-					 const char *propname)
 {
 	return of_property_read_bool(to_of_node(fwnode), propname);
 }
@@ -1215,12 +1043,14 @@ static int of_fwnode_graph_parse_endpoint(const struct fwnode_handle *fwnode,
 					  struct fwnode_endpoint *endpoint)
 {
 	const struct device_node *node = to_of_node(fwnode);
-	struct device_node *port_node __free(device_node) = of_get_parent(node);
+	struct device_node *port_node = of_get_parent(node);
 
 	endpoint->local_fwnode = fwnode;
 
 	of_property_read_u32(port_node, "reg", &endpoint->port);
 	of_property_read_u32(node, "reg", &endpoint->id);
+
+	of_node_put(port_node);
 
 	return 0;
 }
@@ -1232,24 +1062,57 @@ of_fwnode_device_get_match_data(const struct fwnode_handle *fwnode,
 	return of_device_get_match_data(dev);
 }
 
-static void of_link_to_phandle(struct device_node *con_np,
-			      struct device_node *sup_np,
-			      u8 flags)
+static struct device_node *of_get_compat_node(struct device_node *np)
 {
-	struct device_node *tmp_np __free(device_node) = of_node_get(sup_np);
+	of_node_get(np);
+
+	while (np) {
+		if (!of_device_is_available(np)) {
+			of_node_put(np);
+			np = NULL;
+		}
+
+		if (of_property_present(np, "compatible"))
+			break;
+
+		np = of_get_next_parent(np);
+	}
+
+	return np;
+}
+
+static struct device_node *of_get_compat_node_parent(struct device_node *np)
+{
+	struct device_node *parent, *node;
+
+	parent = of_get_parent(np);
+	node = of_get_compat_node(parent);
+	of_node_put(parent);
+
+	return node;
+}
+
+static void of_link_to_phandle(struct device_node *con_np,
+			      struct device_node *sup_np)
+{
+	struct device_node *tmp_np = of_node_get(sup_np);
 
 	/* Check that sup_np and its ancestors are available. */
 	while (tmp_np) {
-		if (of_fwnode_handle(tmp_np)->dev)
+		if (of_fwnode_handle(tmp_np)->dev) {
+			of_node_put(tmp_np);
 			break;
+		}
 
-		if (!of_device_is_available(tmp_np))
+		if (!of_device_is_available(tmp_np)) {
+			of_node_put(tmp_np);
 			return;
+		}
 
 		tmp_np = of_get_next_parent(tmp_np);
 	}
 
-	fwnode_link_add(of_fwnode_handle(con_np), of_fwnode_handle(sup_np), flags);
+	fwnode_link_add(of_fwnode_handle(con_np), of_fwnode_handle(sup_np));
 }
 
 /**
@@ -1295,6 +1158,17 @@ static struct device_node *parse_##fname(struct device_node *np,	  \
 	return parse_prop_cells(np, prop_name, index, name, cells);	  \
 }
 
+static int strcmp_suffix(const char *str, const char *suffix)
+{
+	unsigned int len, suffix_len;
+
+	len = strlen(str);
+	suffix_len = strlen(suffix);
+	if (len <= suffix_len)
+		return -1;
+	return strcmp(str + len - suffix_len, suffix);
+}
+
 /**
  * parse_suffix_prop_cells - Suffix property parsing function for suppliers
  *
@@ -1321,7 +1195,7 @@ static struct device_node *parse_suffix_prop_cells(struct device_node *np,
 {
 	struct of_phandle_args sup_args;
 
-	if (!strends(prop_name, suffix))
+	if (strcmp_suffix(prop_name, suffix))
 		return NULL;
 
 	if (of_parse_phandle_with_args(np, prop_name, cells_name, index,
@@ -1343,16 +1217,14 @@ static struct device_node *parse_##fname(struct device_node *np,	     \
  *
  * @parse_prop: function name
  *	parse_prop() finds the node corresponding to a supplier phandle
- *  parse_prop.np: Pointer to device node holding supplier phandle property
- *  parse_prop.prop_name: Name of property holding a phandle value
- *  parse_prop.index: For properties holding a list of phandles, this is the
+ * @parse_prop.np: Pointer to device node holding supplier phandle property
+ * @parse_prop.prop_name: Name of property holding a phandle value
+ * @parse_prop.index: For properties holding a list of phandles, this is the
  *		      index into the list
- * @get_con_dev: If the consumer node containing the property is never converted
- *		 to a struct device, implement this ops so fw_devlink can use it
- *		 to find the true consumer.
  * @optional: Describes whether a supplier is mandatory or not
- * @fwlink_flags: Optional fwnode link flags to use when creating a fwnode link
- *		  for this property.
+ * @node_not_dev: The consumer node containing the property is never converted
+ *		  to a struct device. Instead, parse ancestor nodes for the
+ *		  compatible property to find a node corresponding to a device.
  *
  * Returns:
  * parse_prop() return values are
@@ -1363,17 +1235,16 @@ static struct device_node *parse_##fname(struct device_node *np,	     \
 struct supplier_bindings {
 	struct device_node *(*parse_prop)(struct device_node *np,
 					  const char *prop_name, int index);
-	struct device_node *(*get_con_dev)(struct device_node *np);
 	bool optional;
-	u8 fwlink_flags;
+	bool node_not_dev;
 };
 
 DEFINE_SIMPLE_PROP(clocks, "clocks", "#clock-cells")
 DEFINE_SIMPLE_PROP(interconnects, "interconnects", "#interconnect-cells")
 DEFINE_SIMPLE_PROP(iommus, "iommus", "#iommu-cells")
 DEFINE_SIMPLE_PROP(mboxes, "mboxes", "#mbox-cells")
-DEFINE_SIMPLE_PROP(io_channels, "io-channels", "#io-channel-cells")
-DEFINE_SIMPLE_PROP(io_backends, "io-backends", "#io-backend-cells")
+DEFINE_SIMPLE_PROP(io_channels, "io-channel", "#io-channel-cells")
+DEFINE_SIMPLE_PROP(interrupt_parent, "interrupt-parent", NULL)
 DEFINE_SIMPLE_PROP(dmas, "dmas", "#dma-cells")
 DEFINE_SIMPLE_PROP(power_domains, "power-domains", "#power-domain-cells")
 DEFINE_SIMPLE_PROP(hwlocks, "hwlocks", "#hwlock-cells")
@@ -1381,36 +1252,27 @@ DEFINE_SIMPLE_PROP(extcon, "extcon", NULL)
 DEFINE_SIMPLE_PROP(nvmem_cells, "nvmem-cells", "#nvmem-cell-cells")
 DEFINE_SIMPLE_PROP(phys, "phys", "#phy-cells")
 DEFINE_SIMPLE_PROP(wakeup_parent, "wakeup-parent", NULL)
+DEFINE_SIMPLE_PROP(pinctrl0, "pinctrl-0", NULL)
+DEFINE_SIMPLE_PROP(pinctrl1, "pinctrl-1", NULL)
+DEFINE_SIMPLE_PROP(pinctrl2, "pinctrl-2", NULL)
+DEFINE_SIMPLE_PROP(pinctrl3, "pinctrl-3", NULL)
+DEFINE_SIMPLE_PROP(pinctrl4, "pinctrl-4", NULL)
+DEFINE_SIMPLE_PROP(pinctrl5, "pinctrl-5", NULL)
+DEFINE_SIMPLE_PROP(pinctrl6, "pinctrl-6", NULL)
+DEFINE_SIMPLE_PROP(pinctrl7, "pinctrl-7", NULL)
+DEFINE_SIMPLE_PROP(pinctrl8, "pinctrl-8", NULL)
+DEFINE_SIMPLE_PROP(remote_endpoint, "remote-endpoint", NULL)
 DEFINE_SIMPLE_PROP(pwms, "pwms", "#pwm-cells")
 DEFINE_SIMPLE_PROP(resets, "resets", "#reset-cells")
 DEFINE_SIMPLE_PROP(leds, "leds", NULL)
 DEFINE_SIMPLE_PROP(backlight, "backlight", NULL)
-DEFINE_SIMPLE_PROP(panel, "panel", NULL)
-DEFINE_SIMPLE_PROP(msi_parent, "msi-parent", "#msi-cells")
-DEFINE_SIMPLE_PROP(post_init_providers, "post-init-providers", NULL)
-DEFINE_SIMPLE_PROP(access_controllers, "access-controllers", "#access-controller-cells")
-DEFINE_SIMPLE_PROP(pses, "pses", "#pse-cells")
-DEFINE_SIMPLE_PROP(power_supplies, "power-supplies", NULL)
-DEFINE_SIMPLE_PROP(mmc_pwrseq, "mmc-pwrseq", NULL)
 DEFINE_SUFFIX_PROP(regulators, "-supply", NULL)
 DEFINE_SUFFIX_PROP(gpio, "-gpio", "#gpio-cells")
-
-static struct device_node *parse_pinctrl_n(struct device_node *np,
-					   const char *prop_name, int index)
-{
-	if (!strstarts(prop_name, "pinctrl-"))
-		return NULL;
-
-	if (!isdigit(prop_name[strlen("pinctrl-")]))
-		return NULL;
-
-	return of_parse_phandle(np, prop_name, index);
-}
 
 static struct device_node *parse_gpios(struct device_node *np,
 				       const char *prop_name, int index)
 {
-	if (strends(prop_name, ",nr-gpios"))
+	if (!strcmp_suffix(prop_name, ",nr-gpios"))
 		return NULL;
 
 	return parse_suffix_prop_cells(np, prop_name, index, "-gpios",
@@ -1463,58 +1325,6 @@ static struct device_node *parse_interrupts(struct device_node *np,
 	return of_irq_parse_one(np, index, &sup_args) ? NULL : sup_args.np;
 }
 
-static struct device_node *parse_interrupt_map(struct device_node *np,
-					       const char *prop_name, int index)
-{
-	const __be32 *imap, *imap_end;
-	struct of_phandle_args sup_args;
-	u32 addrcells, intcells;
-	int imaplen;
-
-	if (!IS_ENABLED(CONFIG_OF_IRQ))
-		return NULL;
-
-	if (strcmp(prop_name, "interrupt-map"))
-		return NULL;
-
-	if (of_property_read_u32(np, "#interrupt-cells", &intcells))
-		return NULL;
-	addrcells = of_bus_n_addr_cells(np);
-
-	imap = of_get_property(np, "interrupt-map", &imaplen);
-	if (!imap)
-		return NULL;
-	imaplen /= sizeof(*imap);
-
-	imap_end = imap + imaplen;
-
-	for (int i = 0; imap + addrcells + intcells + 1 < imap_end; i++) {
-		imap += addrcells + intcells;
-
-		imap = of_irq_parse_imap_parent(imap, imap_end - imap, &sup_args);
-		if (!imap)
-			return NULL;
-
-		if (i == index)
-			return sup_args.np;
-
-		of_node_put(sup_args.np);
-	}
-
-	return NULL;
-}
-
-static struct device_node *parse_remote_endpoint(struct device_node *np,
-						 const char *prop_name,
-						 int index)
-{
-	/* Return NULL for index > 0 to signify end of remote-endpoints. */
-	if (index > 0 || strcmp(prop_name, "remote-endpoint"))
-		return NULL;
-
-	return of_graph_get_remote_port_parent(np);
-}
-
 static const struct supplier_bindings of_supplier_bindings[] = {
 	{ .parse_prop = parse_clocks, },
 	{ .parse_prop = parse_interconnects, },
@@ -1522,7 +1332,7 @@ static const struct supplier_bindings of_supplier_bindings[] = {
 	{ .parse_prop = parse_iommu_maps, .optional = true, },
 	{ .parse_prop = parse_mboxes, },
 	{ .parse_prop = parse_io_channels, },
-	{ .parse_prop = parse_io_backends, },
+	{ .parse_prop = parse_interrupt_parent, },
 	{ .parse_prop = parse_dmas, .optional = true, },
 	{ .parse_prop = parse_power_domains, },
 	{ .parse_prop = parse_hwlocks, },
@@ -1530,31 +1340,25 @@ static const struct supplier_bindings of_supplier_bindings[] = {
 	{ .parse_prop = parse_nvmem_cells, },
 	{ .parse_prop = parse_phys, },
 	{ .parse_prop = parse_wakeup_parent, },
-	{ .parse_prop = parse_pinctrl_n, },
-	{
-		.parse_prop = parse_remote_endpoint,
-		.get_con_dev = of_graph_get_port_parent,
-	},
+	{ .parse_prop = parse_pinctrl0, },
+	{ .parse_prop = parse_pinctrl1, },
+	{ .parse_prop = parse_pinctrl2, },
+	{ .parse_prop = parse_pinctrl3, },
+	{ .parse_prop = parse_pinctrl4, },
+	{ .parse_prop = parse_pinctrl5, },
+	{ .parse_prop = parse_pinctrl6, },
+	{ .parse_prop = parse_pinctrl7, },
+	{ .parse_prop = parse_pinctrl8, },
+	{ .parse_prop = parse_remote_endpoint, .node_not_dev = true, },
 	{ .parse_prop = parse_pwms, },
 	{ .parse_prop = parse_resets, },
 	{ .parse_prop = parse_leds, },
 	{ .parse_prop = parse_backlight, },
-	{ .parse_prop = parse_panel, },
-	{ .parse_prop = parse_msi_parent, },
-	{ .parse_prop = parse_pses, },
-	{ .parse_prop = parse_power_supplies, },
-	{ .parse_prop = parse_mmc_pwrseq, },
 	{ .parse_prop = parse_gpio_compat, },
 	{ .parse_prop = parse_interrupts, },
-	{ .parse_prop = parse_interrupt_map, },
-	{ .parse_prop = parse_access_controllers, },
 	{ .parse_prop = parse_regulators, },
 	{ .parse_prop = parse_gpio, },
 	{ .parse_prop = parse_gpios, },
-	{
-		.parse_prop = parse_post_init_providers,
-		.fwlink_flags = FWLINK_FLAG_IGNORE,
-	},
 	{}
 };
 
@@ -1592,13 +1396,16 @@ static int of_link_property(struct device_node *con_np, const char *prop_name)
 		}
 
 		while ((phandle = s->parse_prop(con_np, prop_name, i))) {
-			struct device_node *con_dev_np __free(device_node) =
-				s->get_con_dev ? s->get_con_dev(con_np) : of_node_get(con_np);
+			struct device_node *con_dev_np;
 
+			con_dev_np = s->node_not_dev
+					? of_get_compat_node_parent(con_np)
+					: of_node_get(con_np);
 			matched = true;
 			i++;
-			of_link_to_phandle(con_dev_np, phandle, s->fwlink_flags);
+			of_link_to_phandle(con_dev_np, phandle);
 			of_node_put(phandle);
+			of_node_put(con_dev_np);
 		}
 		s++;
 	}
@@ -1622,7 +1429,7 @@ static int of_fwnode_irq_get(const struct fwnode_handle *fwnode,
 
 static int of_fwnode_add_links(struct fwnode_handle *fwnode)
 {
-	const struct property *p;
+	struct property *p;
 	struct device_node *con_np = to_of_node(fwnode);
 
 	if (IS_ENABLED(CONFIG_X86))
@@ -1645,7 +1452,6 @@ const struct fwnode_operations of_fwnode_ops = {
 	.device_dma_supported = of_fwnode_device_dma_supported,
 	.device_get_dma_attr = of_fwnode_device_get_dma_attr,
 	.property_present = of_fwnode_property_present,
-	.property_read_bool = of_fwnode_property_read_bool,
 	.property_read_int_array = of_fwnode_property_read_int_array,
 	.property_read_string_array = of_fwnode_property_read_string_array,
 	.get_name = of_fwnode_get_name,

@@ -14,14 +14,15 @@
 
 #include <linux/fs.h>
 #include <linux/init.h>
+#include <linux/compat.h>
 #include <linux/kernel.h>
 #include <linux/miscdevice.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/export.h>
 #include <linux/mutex.h>
 #include <linux/cma.h>
 #include <linux/mm.h>
-#include <asm/machine.h>
 #include <asm/cpcmd.h>
 #include <asm/debug.h>
 #include <asm/vmcp.h>
@@ -51,7 +52,7 @@ early_param("vmcp_cma", early_parse_vmcp_cma);
 
 void __init vmcp_cma_reserve(void)
 {
-	if (!machine_is_vm())
+	if (!MACHINE_IS_VM)
 		return;
 	cma_declare_contiguous(0, vmcp_cma_size, 0, 0, 0, false, "vmcp", &vmcp_cma);
 }
@@ -88,7 +89,7 @@ static void vmcp_response_free(struct vmcp_session *session)
 	order = get_order(session->bufsize);
 	nr_pages = ALIGN(session->bufsize, PAGE_SIZE) >> PAGE_SHIFT;
 	if (session->cma_alloc) {
-		page = virt_to_page(session->response);
+		page = virt_to_page((unsigned long)session->response);
 		cma_release(vmcp_cma, page, nr_pages);
 		session->cma_alloc = 0;
 	} else {
@@ -203,7 +204,10 @@ static long vmcp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	int __user *argp;
 
 	session = file->private_data;
-	argp = (int __user *)arg;
+	if (is_compat_task())
+		argp = compat_ptr(arg);
+	else
+		argp = (int __user *)arg;
 	if (mutex_lock_interruptible(&session->mutex))
 		return -ERESTARTSYS;
 	switch (cmd) {
@@ -237,6 +241,8 @@ static const struct file_operations vmcp_fops = {
 	.read		= vmcp_read,
 	.write		= vmcp_write,
 	.unlocked_ioctl	= vmcp_ioctl,
+	.compat_ioctl	= vmcp_ioctl,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice vmcp_dev = {
@@ -249,7 +255,7 @@ static int __init vmcp_init(void)
 {
 	int ret;
 
-	if (!machine_is_vm())
+	if (!MACHINE_IS_VM)
 		return 0;
 
 	vmcp_debug = debug_register("vmcp", 1, 1, 240);

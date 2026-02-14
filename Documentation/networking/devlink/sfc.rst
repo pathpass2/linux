@@ -5,7 +5,7 @@ sfc devlink support
 ===================
 
 This document describes the devlink features implemented by the ``sfc``
-device driver for the ef10 and ef100 devices.
+device driver for the ef100 device.
 
 Info versions
 =============
@@ -18,10 +18,6 @@ The ``sfc`` driver reports the following versions
    * - Name
      - Type
      - Description
-   * - ``fw.bundle_id``
-     - stored
-     - Version of the firmware "bundle" image that was last used to update
-       multiple components.
    * - ``fw.mgmt.suc``
      - running
      - For boards where the management function is split between multiple
@@ -59,13 +55,3 @@ The ``sfc`` driver reports the following versions
    * - ``fw.uefi``
      - running
      - UEFI driver version (No UNDI support).
-
-Flash Update
-============
-
-The ``sfc`` driver implements support for flash update using the
-``devlink-flash`` interface. It supports updating the device flash using a
-combined flash image ("bundle") that contains multiple components (on ef10,
-typically ``fw.mgmt``, ``fw.app``, ``fw.exprom`` and ``fw.uefi``).
-
-The driver does not support any overwrite mask flags.

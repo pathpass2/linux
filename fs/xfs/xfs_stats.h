@@ -125,11 +125,6 @@ struct __xfsstats {
 	uint32_t		xs_fibt_2[__XBTS_MAX];
 	uint32_t		xs_rmap_2[__XBTS_MAX];
 	uint32_t		xs_refcbt_2[__XBTS_MAX];
-	uint32_t		xs_rmap_mem_2[__XBTS_MAX];
-	uint32_t		xs_rcbag_2[__XBTS_MAX];
-	uint32_t		xs_rtrmap_2[__XBTS_MAX];
-	uint32_t		xs_rtrmap_mem_2[__XBTS_MAX];
-	uint32_t		xs_rtrefcbt_2[__XBTS_MAX];
 	uint32_t		xs_qm_dqreclaims;
 	uint32_t		xs_qm_dqreclaim_misses;
 	uint32_t		xs_qm_dquot_dups;
@@ -138,17 +133,11 @@ struct __xfsstats {
 	uint32_t		xs_qm_dqwants;
 	uint32_t		xs_qm_dquot;
 	uint32_t		xs_qm_dquot_unused;
-/* Zone GC counters */
-	uint32_t		xs_gc_read_calls;
-	uint32_t		xs_gc_write_calls;
-	uint32_t		xs_gc_zone_reset_calls;
-	uint32_t		__pad1;
 /* Extra precision counters */
 	uint64_t		xs_xstrat_bytes;
 	uint64_t		xs_write_bytes;
 	uint64_t		xs_read_bytes;
-	uint64_t		xs_defer_relog;
-	uint64_t		xs_gc_bytes;
+	uint64_t		defer_relog;
 };
 
 #define	xfsstats_offset(f)	(offsetof(struct __xfsstats, f)/sizeof(uint32_t))

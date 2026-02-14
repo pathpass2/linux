@@ -26,7 +26,6 @@ static int event_alternatives_tests_p10(void)
 {
 	struct event *e, events[5];
 	int i;
-	int pvr = PVR_VER(mfspr(SPRN_PVR));
 
 	/* Check for platform support for the test */
 	SKIP_IF(platform_check_for_tests());
@@ -37,7 +36,7 @@ static int event_alternatives_tests_p10(void)
 	 * code and using PVR will work correctly for all cases
 	 * including generic compat mode.
 	 */
-	SKIP_IF((pvr != POWER10) && (pvr != POWER11));
+	SKIP_IF(PVR_VER(mfspr(SPRN_PVR)) != POWER10);
 
 	SKIP_IF(check_for_generic_compat_pmu());
 

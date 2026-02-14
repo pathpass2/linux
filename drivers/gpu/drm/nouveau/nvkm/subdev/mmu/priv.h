@@ -4,16 +4,12 @@
 #define nvkm_mmu(p) container_of((p), struct nvkm_mmu, subdev)
 #include <subdev/mmu.h>
 
-int r535_mmu_new(const struct nvkm_mmu_func *hw, struct nvkm_device *, enum nvkm_subdev_type, int,
-		 struct nvkm_mmu **);
-
 void nvkm_mmu_ctor(const struct nvkm_mmu_func *, struct nvkm_device *, enum nvkm_subdev_type, int,
 		   struct nvkm_mmu *);
 int nvkm_mmu_new_(const struct nvkm_mmu_func *, struct nvkm_device *, enum nvkm_subdev_type, int,
 		  struct nvkm_mmu **);
 
 struct nvkm_mmu_func {
-	void (*dtor)(struct nvkm_mmu *);
 	void (*init)(struct nvkm_mmu *);
 
 	u8  dma_bits;
@@ -41,8 +37,6 @@ struct nvkm_mmu_func {
 
 	const u8 *(*kind)(struct nvkm_mmu *, int *count, u8 *invalid);
 	bool kind_sys;
-
-	int (*promote_vmm)(struct nvkm_vmm *);
 };
 
 extern const struct nvkm_mmu_func nv04_mmu;
@@ -52,8 +46,6 @@ const u8 *nv50_mmu_kind(struct nvkm_mmu *, int *count, u8 *invalid);
 const u8 *gf100_mmu_kind(struct nvkm_mmu *, int *count, u8 *invalid);
 
 const u8 *gm200_mmu_kind(struct nvkm_mmu *, int *, u8 *);
-
-const u8 *tu102_mmu_kind(struct nvkm_mmu *, int *, u8 *);
 
 struct nvkm_mmu_pt {
 	union {

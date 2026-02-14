@@ -4,7 +4,7 @@
  */
 
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
@@ -36,6 +36,7 @@ static const struct regmap_config pdc_regmap_config = {
 	.reg_stride	= 4,
 	.val_bits	= 32,
 	.max_register	= 0x20000,
+	.fast_io	= true,
 };
 
 static const struct qcom_pdc_reset_map sdm845_pdc_resets[] = {
@@ -113,6 +114,7 @@ static int qcom_pdc_reset_probe(struct platform_device *pdev)
 	struct qcom_pdc_reset_data *data;
 	struct device *dev = &pdev->dev;
 	void __iomem *base;
+	struct resource *res;
 
 	desc = device_get_match_data(&pdev->dev);
 	if (!desc)
@@ -123,7 +125,8 @@ static int qcom_pdc_reset_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	data->desc = desc;
-	base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 

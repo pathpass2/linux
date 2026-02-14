@@ -867,7 +867,7 @@ static struct super_block *quotactl_block(const char __user *special, int cmd)
 {
 #ifdef CONFIG_BLOCK
 	struct super_block *sb;
-	CLASS(filename, tmp)(special);
+	struct filename *tmp = getname(special);
 	bool excl = false, thawed = false;
 	int error;
 	dev_t dev;
@@ -875,6 +875,7 @@ static struct super_block *quotactl_block(const char __user *special, int cmd)
 	if (IS_ERR(tmp))
 		return ERR_CAST(tmp);
 	error = lookup_bdev(tmp->name, &dev);
+	putname(tmp);
 	if (error)
 		return ERR_PTR(error);
 
@@ -894,11 +895,9 @@ retry:
 			up_write(&sb->s_umount);
 		else
 			up_read(&sb->s_umount);
-		/* Wait for sb to unfreeze */
-		sb_start_write(sb);
-		sb_end_write(sb);
+		wait_event(sb->s_writers.wait_unfrozen,
+			   sb->s_writers.frozen == SB_UNFROZEN);
 		put_super(sb);
-		cond_resched();
 		goto retry;
 	}
 	return sb;
@@ -976,22 +975,24 @@ SYSCALL_DEFINE4(quotactl_fd, unsigned int, fd, unsigned int, cmd,
 	struct super_block *sb;
 	unsigned int cmds = cmd >> SUBCMDSHIFT;
 	unsigned int type = cmd & SUBCMDMASK;
-	CLASS(fd_raw, f)(fd);
+	struct fd f;
 	int ret;
 
-	if (fd_empty(f))
+	f = fdget_raw(fd);
+	if (!f.file)
 		return -EBADF;
 
+	ret = -EINVAL;
 	if (type >= MAXQUOTAS)
-		return -EINVAL;
+		goto out;
 
 	if (quotactl_cmd_write(cmds)) {
-		ret = mnt_want_write(fd_file(f)->f_path.mnt);
+		ret = mnt_want_write(f.file->f_path.mnt);
 		if (ret)
-			return ret;
+			goto out;
 	}
 
-	sb = fd_file(f)->f_path.mnt->mnt_sb;
+	sb = f.file->f_path.mnt->mnt_sb;
 	if (quotactl_cmd_onoff(cmds))
 		down_write(&sb->s_umount);
 	else
@@ -1005,6 +1006,8 @@ SYSCALL_DEFINE4(quotactl_fd, unsigned int, fd, unsigned int, cmd,
 		up_read(&sb->s_umount);
 
 	if (quotactl_cmd_write(cmds))
-		mnt_drop_write(fd_file(f)->f_path.mnt);
+		mnt_drop_write(f.file->f_path.mnt);
+out:
+	fdput(f);
 	return ret;
 }

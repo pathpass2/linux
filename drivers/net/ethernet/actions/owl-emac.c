@@ -1325,9 +1325,14 @@ static int owl_emac_mdio_init(struct net_device *netdev)
 	struct device_node *mdio_node;
 	int ret;
 
-	mdio_node = of_get_available_child_by_name(dev->of_node, "mdio");
+	mdio_node = of_get_child_by_name(dev->of_node, "mdio");
 	if (!mdio_node)
 		return -ENODEV;
+
+	if (!of_device_is_available(mdio_node)) {
+		ret = -ENODEV;
+		goto err_put_node;
+	}
 
 	priv->mii = devm_mdiobus_alloc(dev);
 	if (!priv->mii) {
@@ -1577,13 +1582,15 @@ static int owl_emac_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void owl_emac_remove(struct platform_device *pdev)
+static int owl_emac_remove(struct platform_device *pdev)
 {
 	struct owl_emac_priv *priv = platform_get_drvdata(pdev);
 
 	netif_napi_del(&priv->napi);
 	phy_disconnect(priv->netdev->phydev);
 	cancel_work_sync(&priv->mac_reset_task);
+
+	return 0;
 }
 
 static const struct of_device_id owl_emac_of_match[] = {

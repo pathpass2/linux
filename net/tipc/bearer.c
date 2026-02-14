@@ -163,12 +163,8 @@ static int bearer_name_validate(const char *name,
 
 	/* return bearer name components, if necessary */
 	if (name_parts) {
-		if (strscpy(name_parts->media_name, media_name,
-			    TIPC_MAX_MEDIA_NAME) < 0)
-			return 0;
-		if (strscpy(name_parts->if_name, if_name,
-			    TIPC_MAX_IF_NAME) < 0)
-			return 0;
+		strcpy(name_parts->media_name, media_name);
+		strcpy(name_parts->if_name, if_name);
 	}
 	return 1;
 }
@@ -180,7 +176,7 @@ static int bearer_name_validate(const char *name,
  */
 struct tipc_bearer *tipc_bearer_find(struct net *net, const char *name)
 {
-	struct tipc_net *tn = tipc_net(net);
+	struct tipc_net *tn = net_generic(net, tipc_net_id);
 	struct tipc_bearer *b;
 	u32 i;
 
@@ -215,10 +211,11 @@ int tipc_bearer_get_name(struct net *net, char *name, u32 bearer_id)
 
 void tipc_bearer_add_dest(struct net *net, u32 bearer_id, u32 dest)
 {
+	struct tipc_net *tn = net_generic(net, tipc_net_id);
 	struct tipc_bearer *b;
 
 	rcu_read_lock();
-	b = bearer_get(net, bearer_id);
+	b = rcu_dereference(tn->bearer_list[bearer_id]);
 	if (b)
 		tipc_disc_add_dest(b->disc);
 	rcu_read_unlock();
@@ -226,10 +223,11 @@ void tipc_bearer_add_dest(struct net *net, u32 bearer_id, u32 dest)
 
 void tipc_bearer_remove_dest(struct net *net, u32 bearer_id, u32 dest)
 {
+	struct tipc_net *tn = net_generic(net, tipc_net_id);
 	struct tipc_bearer *b;
 
 	rcu_read_lock();
-	b = bearer_get(net, bearer_id);
+	b = rcu_dereference(tn->bearer_list[bearer_id]);
 	if (b)
 		tipc_disc_remove_dest(b->disc);
 	rcu_read_unlock();
@@ -326,7 +324,7 @@ static int tipc_enable_bearer(struct net *net, const char *name,
 	if (!b)
 		return -ENOMEM;
 
-	strscpy(b->name, name);
+	strcpy(b->name, name);
 	b->media = m;
 	res = m->enable_media(net, b, attr);
 	if (res) {
@@ -433,7 +431,7 @@ int tipc_enable_l2_media(struct net *net, struct tipc_bearer *b,
 	dev = dev_get_by_name(net, dev_name);
 	if (!dev)
 		return -ENODEV;
-	if (tipc_mtu_bad(dev)) {
+	if (tipc_mtu_bad(dev, 0)) {
 		dev_put(dev);
 		return -EINVAL;
 	}
@@ -536,22 +534,9 @@ int tipc_bearer_mtu(struct net *net, u32 bearer_id)
 	struct tipc_bearer *b;
 
 	rcu_read_lock();
-	b = bearer_get(net, bearer_id);
+	b = rcu_dereference(tipc_net(net)->bearer_list[bearer_id]);
 	if (b)
 		mtu = b->mtu;
-	rcu_read_unlock();
-	return mtu;
-}
-
-int tipc_bearer_min_mtu(struct net *net, u32 bearer_id)
-{
-	int mtu = TIPC_MIN_BEARER_MTU;
-	struct tipc_bearer *b;
-
-	rcu_read_lock();
-	b = bearer_get(net, bearer_id);
-	if (b)
-		mtu += b->encap_hlen;
 	rcu_read_unlock();
 	return mtu;
 }
@@ -710,7 +695,7 @@ static int tipc_l2_device_event(struct notifier_block *nb, unsigned long evt,
 		test_and_set_bit_lock(0, &b->up);
 		break;
 	case NETDEV_CHANGEMTU:
-		if (tipc_mtu_bad(dev)) {
+		if (tipc_mtu_bad(dev, 0)) {
 			bearer_disable(net, b);
 			break;
 		}
@@ -747,7 +732,7 @@ void tipc_bearer_cleanup(void)
 
 void tipc_bearer_stop(struct net *net)
 {
-	struct tipc_net *tn = tipc_net(net);
+	struct tipc_net *tn = net_generic(net, tipc_net_id);
 	struct tipc_bearer *b;
 	u32 i;
 
@@ -883,7 +868,7 @@ int tipc_nl_bearer_dump(struct sk_buff *skb, struct netlink_callback *cb)
 	struct tipc_bearer *bearer;
 	struct tipc_nl_msg msg;
 	struct net *net = sock_net(skb->sk);
-	struct tipc_net *tn = tipc_net(net);
+	struct tipc_net *tn = net_generic(net, tipc_net_id);
 
 	if (i == MAX_BEARERS)
 		return 0;
@@ -1083,27 +1068,24 @@ int tipc_nl_bearer_add(struct sk_buff *skb, struct genl_info *info)
 	rtnl_lock();
 	b = tipc_bearer_find(net, name);
 	if (!b) {
+		rtnl_unlock();
 		NL_SET_ERR_MSG(info->extack, "Bearer not found");
-		err = -EINVAL;
-		goto out;
+		return -EINVAL;
 	}
 
 #ifdef CONFIG_TIPC_MEDIA_UDP
 	if (attrs[TIPC_NLA_BEARER_UDP_OPTS]) {
-		if (b->media->type_id != TIPC_MEDIA_TYPE_UDP) {
-			NL_SET_ERR_MSG(info->extack, "UDP option is unsupported");
-			err = -EINVAL;
-			goto out;
-		}
-
 		err = tipc_udp_nl_bearer_add(b,
 					     attrs[TIPC_NLA_BEARER_UDP_OPTS]);
+		if (err) {
+			rtnl_unlock();
+			return err;
+		}
 	}
 #endif
-out:
 	rtnl_unlock();
 
-	return err;
+	return 0;
 }
 
 int __tipc_nl_bearer_set(struct sk_buff *skb, struct genl_info *info)
@@ -1156,8 +1138,8 @@ int __tipc_nl_bearer_set(struct sk_buff *skb, struct genl_info *info)
 				return -EINVAL;
 			}
 #ifdef CONFIG_TIPC_MEDIA_UDP
-			if (nla_get_u32(props[TIPC_NLA_PROP_MTU]) <
-			    b->encap_hlen + TIPC_MIN_BEARER_MTU) {
+			if (tipc_udp_mtu_bad(nla_get_u32
+					     (props[TIPC_NLA_PROP_MTU]))) {
 				NL_SET_ERR_MSG(info->extack,
 					       "MTU value is out-of-range");
 				return -EINVAL;
@@ -1263,7 +1245,7 @@ int tipc_nl_media_get(struct sk_buff *skb, struct genl_info *info)
 	struct tipc_nl_msg msg;
 	struct tipc_media *media;
 	struct sk_buff *rep;
-	struct nlattr *attrs[TIPC_NLA_MEDIA_MAX + 1];
+	struct nlattr *attrs[TIPC_NLA_BEARER_MAX + 1];
 
 	if (!info->attrs[TIPC_NLA_MEDIA])
 		return -EINVAL;
@@ -1312,7 +1294,7 @@ int __tipc_nl_media_set(struct sk_buff *skb, struct genl_info *info)
 	int err;
 	char *name;
 	struct tipc_media *m;
-	struct nlattr *attrs[TIPC_NLA_MEDIA_MAX + 1];
+	struct nlattr *attrs[TIPC_NLA_BEARER_MAX + 1];
 
 	if (!info->attrs[TIPC_NLA_MEDIA])
 		return -EINVAL;

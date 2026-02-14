@@ -30,8 +30,8 @@
  * keep a constant PAGE_OFFSET and "fallback" to using the higher end
  * of the VMEMMAP where 52-bit support is not available in hardware.
  */
-#define VMEMMAP_RANGE	(_PAGE_END(VA_BITS_MIN) - PAGE_OFFSET)
-#define VMEMMAP_SIZE	((VMEMMAP_RANGE >> PAGE_SHIFT) * sizeof(struct page))
+#define VMEMMAP_SHIFT	(PAGE_SHIFT - STRUCT_PAGE_MAX_SHIFT)
+#define VMEMMAP_SIZE	((_PAGE_END(VA_BITS_MIN) - PAGE_OFFSET) >> VMEMMAP_SHIFT)
 
 /*
  * PAGE_OFFSET - the virtual address of the start of the linear map, at the
@@ -46,19 +46,15 @@
 #define KIMAGE_VADDR		(MODULES_END)
 #define MODULES_END		(MODULES_VADDR + MODULES_VSIZE)
 #define MODULES_VADDR		(_PAGE_END(VA_BITS_MIN))
-#define MODULES_VSIZE		(SZ_2G)
-#define VMEMMAP_START		(VMEMMAP_END - VMEMMAP_SIZE)
-#define VMEMMAP_END		(-UL(SZ_1G))
-#define PCI_IO_START		(VMEMMAP_END + SZ_8M)
-#define PCI_IO_END		(PCI_IO_START + PCI_IO_SIZE)
-#define FIXADDR_TOP		(-UL(SZ_8M))
+#define MODULES_VSIZE		(SZ_128M)
+#define VMEMMAP_START		(-(UL(1) << (VA_BITS - VMEMMAP_SHIFT)))
+#define VMEMMAP_END		(VMEMMAP_START + VMEMMAP_SIZE)
+#define PCI_IO_END		(VMEMMAP_START - SZ_8M)
+#define PCI_IO_START		(PCI_IO_END - PCI_IO_SIZE)
+#define FIXADDR_TOP		(VMEMMAP_START - SZ_32M)
 
 #if VA_BITS > 48
-#ifdef CONFIG_ARM64_16K_PAGES
-#define VA_BITS_MIN		(47)
-#else
 #define VA_BITS_MIN		(48)
-#endif
 #else
 #define VA_BITS_MIN		(VA_BITS)
 #endif
@@ -69,48 +65,20 @@
 #define KERNEL_END		_end
 
 /*
- * Generic and Software Tag-Based KASAN modes require 1/8th and 1/16th of the
- * kernel virtual address space for storing the shadow memory respectively.
- *
- * The mapping between a virtual memory address and its corresponding shadow
- * memory address is defined based on the formula:
- *
- *     shadow_addr = (addr >> KASAN_SHADOW_SCALE_SHIFT) + KASAN_SHADOW_OFFSET
- *
- * where KASAN_SHADOW_SCALE_SHIFT is the order of the number of bits that map
- * to a single shadow byte and KASAN_SHADOW_OFFSET is a constant that offsets
- * the mapping. Note that KASAN_SHADOW_OFFSET does not point to the start of
- * the shadow memory region.
- *
- * Based on this mapping, we define two constants:
- *
- *     KASAN_SHADOW_START: the start of the shadow memory region;
- *     KASAN_SHADOW_END: the end of the shadow memory region.
- *
- * KASAN_SHADOW_END is defined first as the shadow address that corresponds to
- * the upper bound of possible virtual kernel memory addresses UL(1) << 64
- * according to the mapping formula.
- *
- * KASAN_SHADOW_START is defined second based on KASAN_SHADOW_END. The shadow
- * memory start must map to the lowest possible kernel virtual memory address
- * and thus it depends on the actual bitness of the address space.
- *
- * As KASAN inserts redzones between stack variables, this increases the stack
- * memory usage significantly. Thus, we double the (minimum) stack size.
+ * Generic and tag-based KASAN require 1/8th and 1/16th of the kernel virtual
+ * address space for the shadow region respectively. They can bloat the stack
+ * significantly, so double the (minimum) stack size when they are in use.
  */
 #if defined(CONFIG_KASAN_GENERIC) || defined(CONFIG_KASAN_SW_TAGS)
 #define KASAN_SHADOW_OFFSET	_AC(CONFIG_KASAN_SHADOW_OFFSET, UL)
-#define KASAN_SHADOW_END	((UL(1) << (64 - KASAN_SHADOW_SCALE_SHIFT)) + KASAN_SHADOW_OFFSET)
-#define _KASAN_SHADOW_START(va)	(KASAN_SHADOW_END - (UL(1) << ((va) - KASAN_SHADOW_SCALE_SHIFT)))
-#define KASAN_SHADOW_START	_KASAN_SHADOW_START(vabits_actual)
-#define PAGE_END		KASAN_SHADOW_START
+#define KASAN_SHADOW_END	((UL(1) << (64 - KASAN_SHADOW_SCALE_SHIFT)) \
+					+ KASAN_SHADOW_OFFSET)
+#define PAGE_END		(KASAN_SHADOW_END - (1UL << (vabits_actual - KASAN_SHADOW_SCALE_SHIFT)))
 #define KASAN_THREAD_SHIFT	1
 #else
 #define KASAN_THREAD_SHIFT	0
 #define PAGE_END		(_PAGE_END(VA_BITS_MIN))
 #endif /* CONFIG_KASAN */
-
-#define DIRECT_MAP_PHYSMEM_END	__pa(PAGE_END - 1)
 
 #define MIN_THREAD_SHIFT	(14 + KASAN_THREAD_SHIFT)
 
@@ -118,7 +86,7 @@
  * VMAP'd stacks are allocated at page granularity, so we must ensure that such
  * stacks are a multiple of page size.
  */
-#if (MIN_THREAD_SHIFT < PAGE_SHIFT)
+#if defined(CONFIG_VMAP_STACK) && (MIN_THREAD_SHIFT < PAGE_SHIFT)
 #define THREAD_SHIFT		PAGE_SHIFT
 #else
 #define THREAD_SHIFT		MIN_THREAD_SHIFT
@@ -135,14 +103,15 @@
  * checking sp & (1 << THREAD_SHIFT), which we can do cheaply in the entry
  * assembly.
  */
+#ifdef CONFIG_VMAP_STACK
 #define THREAD_ALIGN		(2 * THREAD_SIZE)
+#else
+#define THREAD_ALIGN		THREAD_SIZE
+#endif
 
 #define IRQ_STACK_SIZE		THREAD_SIZE
 
 #define OVERFLOW_STACK_SIZE	SZ_4K
-
-#define NVHE_STACK_SHIFT       PAGE_SHIFT
-#define NVHE_STACK_SIZE        (UL(1) << NVHE_STACK_SHIFT)
 
 /*
  * With the minimum frame size of [x29, x30], exactly half the combined
@@ -150,7 +119,7 @@
  * save the unwinded stacktrace; plus an additional entry to delimit the
  * end.
  */
-#define NVHE_STACKTRACE_SIZE	((OVERFLOW_STACK_SIZE + NVHE_STACK_SIZE) / 2 + sizeof(long))
+#define NVHE_STACKTRACE_SIZE	((OVERFLOW_STACK_SIZE + PAGE_SIZE) / 2 + sizeof(long))
 
 /*
  * Alignment of kernel segments (e.g. .text, .data).
@@ -175,24 +144,17 @@
 #define MT_DEVICE_nGnRE		4
 
 /*
- * Memory types for Stage-2 translation when HCR_EL2.FWB=0. See R_HMNDG,
- * R_TNHFM, R_GQFSF and I_MCQKW for the details on how these attributes get
- * combined with Stage-1.
+ * Memory types for Stage-2 translation
  */
 #define MT_S2_NORMAL		0xf
-#define MT_S2_NORMAL_NC		0x5
 #define MT_S2_DEVICE_nGnRE	0x1
-#define MT_S2_AS_S1		MT_S2_NORMAL
 
 /*
- * Memory types for Stage-2 translation when HCR_EL2.FWB=1. Stage-2 enforces
- * Normal-WB and Device-nGnRE, unless we actively say that S1 wins. See
- * R_VRJSW and R_RHWZM for details.
+ * Memory types for Stage-2 translation when ID_AA64MMFR2_EL1.FWB is 0001
+ * Stage-2 enforces Normal-WB and Device-nGnRE
  */
 #define MT_S2_FWB_NORMAL	6
-#define MT_S2_FWB_NORMAL_NC	5
 #define MT_S2_FWB_DEVICE_nGnRE	1
-#define MT_S2_FWB_AS_S1		7
 
 #ifdef CONFIG_ARM64_4K_PAGES
 #define IOREMAP_MAX_ORDER	(PUD_SHIFT)
@@ -212,7 +174,7 @@
  */
 #define TRAMP_SWAPPER_OFFSET	(2 * PAGE_SIZE)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/bitops.h>
 #include <linux/compiler.h>
@@ -220,21 +182,9 @@
 #include <linux/types.h>
 #include <asm/boot.h>
 #include <asm/bug.h>
-#include <asm/sections.h>
-#include <asm/sysreg.h>
-
-static inline u64 __pure read_tcr(void)
-{
-	u64  tcr;
-
-	// read_sysreg() uses asm volatile, so avoid it here
-	asm("mrs %0, tcr_el1" : "=r"(tcr));
-	return tcr;
-}
 
 #if VA_BITS > 48
-// For reasons of #include hell, we can't use TCR_T1SZ_OFFSET/TCR_T1SZ_MASK here
-#define vabits_actual		(64 - ((read_tcr() >> 16) & 63))
+extern u64			vabits_actual;
 #else
 #define vabits_actual		((u64)VA_BITS)
 #endif
@@ -243,25 +193,26 @@ extern s64			memstart_addr;
 /* PHYS_OFFSET - the physical address of the start of memory. */
 #define PHYS_OFFSET		({ VM_BUG_ON(memstart_addr & 1); memstart_addr; })
 
+/* the virtual base of the kernel image */
+extern u64			kimage_vaddr;
+
 /* the offset between the kernel virtual and physical mappings */
 extern u64			kimage_voffset;
 
 static inline unsigned long kaslr_offset(void)
 {
-	return (u64)&_text - KIMAGE_VADDR;
+	return kimage_vaddr - KIMAGE_VADDR;
 }
 
-#ifdef CONFIG_RANDOMIZE_BASE
-void kaslr_init(void);
 static inline bool kaslr_enabled(void)
 {
-	extern bool __kaslr_is_enabled;
-	return __kaslr_is_enabled;
+	/*
+	 * The KASLR offset modulo MIN_KIMG_ALIGN is taken from the physical
+	 * placement of the image rather than from the seed, so a displacement
+	 * of less than MIN_KIMG_ALIGN means that no seed was provided.
+	 */
+	return kaslr_offset() >= MIN_KIMG_ALIGN;
 }
-#else
-static inline void kaslr_init(void) { }
-static inline bool kaslr_enabled(void) { return false; }
-#endif
 
 /*
  * Allow all memory at the discovery stage. We will clip it later.
@@ -310,12 +261,9 @@ static inline const void *__tag_set(const void *addr, u8 tag)
 }
 
 #ifdef CONFIG_KASAN_HW_TAGS
-#define arch_enable_tag_checks_sync()		mte_enable_kernel_sync()
-#define arch_enable_tag_checks_async()		mte_enable_kernel_async()
-#define arch_enable_tag_checks_asymm()		mte_enable_kernel_asymm()
-#define arch_enable_tag_checks_write_only()	mte_enable_kernel_store_only()
-#define arch_suppress_tag_checks_start()	mte_enable_tco()
-#define arch_suppress_tag_checks_stop()		mte_disable_tco()
+#define arch_enable_tagging_sync()		mte_enable_kernel_sync()
+#define arch_enable_tagging_async()		mte_enable_kernel_async()
+#define arch_enable_tagging_asymm()		mte_enable_kernel_asymm()
 #define arch_force_async_tag_fault()		mte_check_tfsr_exit()
 #define arch_get_random_tag()			mte_get_random_tag()
 #define arch_get_mem_tag(addr)			mte_get_mem_tag(addr)
@@ -359,6 +307,12 @@ extern phys_addr_t __phys_addr_symbol(unsigned long x);
 #define __phys_to_kimg(x)	((unsigned long)((x) + kimage_voffset))
 
 /*
+ * Convert a page to/from a physical address
+ */
+#define page_to_phys(page)	(__pfn_to_phys(page_to_pfn(page)))
+#define phys_to_page(phys)	(pfn_to_page(__phys_to_pfn(phys)))
+
+/*
  * Note: Drivers should NOT use these.  They are the wrong
  * translation for translating DMA addresses.  Use the driver
  * DMA support - see dma-mapping.h.
@@ -375,14 +329,6 @@ static inline void *phys_to_virt(phys_addr_t x)
 	return (void *)(__phys_to_virt(x));
 }
 
-/* Needed already here for resolving __phys_to_pfn() in virt_to_pfn() */
-#include <asm-generic/memory_model.h>
-
-static inline unsigned long virt_to_pfn(const void *kaddr)
-{
-	return __phys_to_pfn(virt_to_phys(kaddr));
-}
-
 /*
  * Drivers should NOT use these either.
  */
@@ -391,12 +337,14 @@ static inline unsigned long virt_to_pfn(const void *kaddr)
 #define __pa_nodebug(x)		__virt_to_phys_nodebug((unsigned long)(x))
 #define __va(x)			((void *)__phys_to_virt((phys_addr_t)(x)))
 #define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
+#define virt_to_pfn(x)		__phys_to_pfn(__virt_to_phys((unsigned long)(x)))
 #define sym_to_pfn(x)		__phys_to_pfn(__pa_symbol(x))
 
 /*
  *  virt_to_page(x)	convert a _valid_ virtual address to struct page *
  *  virt_addr_valid(x)	indicates whether a virtual address is valid
  */
+#define ARCH_PFN_OFFSET		((unsigned long)PHYS_PFN_OFFSET)
 
 #if defined(CONFIG_DEBUG_VIRTUAL)
 #define page_to_virt(x)	({						\
@@ -426,7 +374,12 @@ static inline unsigned long virt_to_pfn(const void *kaddr)
 })
 
 void dump_mem_limit(void);
-#endif /* !__ASSEMBLER__ */
+
+static inline bool defer_reserve_crashkernel(void)
+{
+	return IS_ENABLED(CONFIG_ZONE_DMA) || IS_ENABLED(CONFIG_ZONE_DMA32);
+}
+#endif /* !ASSEMBLY */
 
 /*
  * Given that the GIC architecture permits ITS implementations that can only be
@@ -448,5 +401,6 @@ void dump_mem_limit(void);
 #define INIT_MEMBLOCK_MEMORY_REGIONS	(INIT_MEMBLOCK_REGIONS * 8)
 #endif
 
+#include <asm-generic/memory_model.h>
 
 #endif /* __ASM_MEMORY_H */

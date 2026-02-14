@@ -63,7 +63,6 @@
 
 #include <linux/hp_sdc.h>
 #include <linux/errno.h>
-#include <linux/export.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/ioport.h>
@@ -981,7 +980,7 @@ static void hp_sdc_exit(void)
 	free_irq(hp_sdc.irq, &hp_sdc);
 	write_unlock_irq(&hp_sdc.lock);
 
-	timer_delete_sync(&hp_sdc.kicker);
+	del_timer_sync(&hp_sdc.kicker);
 
 	tasklet_kill(&hp_sdc.task);
 

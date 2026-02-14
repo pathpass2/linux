@@ -280,7 +280,7 @@ cia_pci_tbi(struct pci_controller *hose, dma_addr_t start, dma_addr_t end)
 #define CIA_BROKEN_TBIA_SIZE	1024
 
 /* Always called with interrupts disabled */
-static void
+void
 cia_pci_tbi_try2(struct pci_controller *hose,
 		 dma_addr_t start, dma_addr_t end)
 {
@@ -331,7 +331,10 @@ cia_prepare_tbia_workaround(int window)
 	long i;
 
 	/* Use minimal 1K map. */
-	ppte = memblock_alloc_or_panic(CIA_BROKEN_TBIA_SIZE, 32768);
+	ppte = memblock_alloc(CIA_BROKEN_TBIA_SIZE, 32768);
+	if (!ppte)
+		panic("%s: Failed to allocate %u bytes align=0x%x\n",
+		      __func__, CIA_BROKEN_TBIA_SIZE, 32768);
 	pte = (virt_to_phys(ppte) >> (PAGE_SHIFT - 1)) | 1;
 
 	for (i = 0; i < CIA_BROKEN_TBIA_SIZE / sizeof(unsigned long); ++i)
@@ -573,7 +576,7 @@ struct
     } window[4];
 } saved_config __attribute((common));
 
-static void
+void
 cia_save_srm_settings(int is_pyxis)
 {
 	int i;
@@ -599,7 +602,7 @@ cia_save_srm_settings(int is_pyxis)
 	mb();
 }
 
-static void
+void
 cia_restore_srm_settings(void)
 {
 	int i;

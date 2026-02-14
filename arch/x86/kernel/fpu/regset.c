@@ -8,7 +8,6 @@
 #include <asm/fpu/api.h>
 #include <asm/fpu/signal.h>
 #include <asm/fpu/regset.h>
-#include <asm/prctl.h>
 
 #include "context.h"
 #include "internal.h"
@@ -45,7 +44,7 @@ int regset_xregset_fpregs_active(struct task_struct *target, const struct user_r
  */
 static void sync_fpstate(struct fpu *fpu)
 {
-	if (fpu == x86_task_fpu(current))
+	if (fpu == &current->thread.fpu)
 		fpu_sync_fpstate(fpu);
 }
 
@@ -63,7 +62,7 @@ static void fpu_force_restore(struct fpu *fpu)
 	 * Only stopped child tasks can be used to modify the FPU
 	 * state in the fpstate buffer:
 	 */
-	WARN_ON_FPU(fpu == x86_task_fpu(current));
+	WARN_ON_FPU(fpu == &current->thread.fpu);
 
 	__fpu_invalidate_fpregs_state(fpu);
 }
@@ -71,7 +70,7 @@ static void fpu_force_restore(struct fpu *fpu)
 int xfpregs_get(struct task_struct *target, const struct user_regset *regset,
 		struct membuf to)
 {
-	struct fpu *fpu = x86_task_fpu(target);
+	struct fpu *fpu = &target->thread.fpu;
 
 	if (!cpu_feature_enabled(X86_FEATURE_FXSR))
 		return -ENODEV;
@@ -91,7 +90,7 @@ int xfpregs_set(struct task_struct *target, const struct user_regset *regset,
 		unsigned int pos, unsigned int count,
 		const void *kbuf, const void __user *ubuf)
 {
-	struct fpu *fpu = x86_task_fpu(target);
+	struct fpu *fpu = &target->thread.fpu;
 	struct fxregs_state newstate;
 	int ret;
 
@@ -133,7 +132,7 @@ int xstateregs_get(struct task_struct *target, const struct user_regset *regset,
 	if (!cpu_feature_enabled(X86_FEATURE_XSAVE))
 		return -ENODEV;
 
-	sync_fpstate(x86_task_fpu(target));
+	sync_fpstate(&target->thread.fpu);
 
 	copy_xstate_to_uabi_buf(to, target, XSTATE_COPY_XSAVE);
 	return 0;
@@ -143,7 +142,7 @@ int xstateregs_set(struct task_struct *target, const struct user_regset *regset,
 		  unsigned int pos, unsigned int count,
 		  const void *kbuf, const void __user *ubuf)
 {
-	struct fpu *fpu = x86_task_fpu(target);
+	struct fpu *fpu = &target->thread.fpu;
 	struct xregs_state *tmpbuf = NULL;
 	int ret;
 
@@ -174,87 +173,6 @@ out:
 	vfree(tmpbuf);
 	return ret;
 }
-
-#ifdef CONFIG_X86_USER_SHADOW_STACK
-int ssp_active(struct task_struct *target, const struct user_regset *regset)
-{
-	if (target->thread.features & ARCH_SHSTK_SHSTK)
-		return regset->n;
-
-	return 0;
-}
-
-int ssp_get(struct task_struct *target, const struct user_regset *regset,
-	    struct membuf to)
-{
-	struct fpu *fpu = x86_task_fpu(target);
-	struct cet_user_state *cetregs;
-
-	if (!cpu_feature_enabled(X86_FEATURE_USER_SHSTK) ||
-	    !ssp_active(target, regset))
-		return -ENODEV;
-
-	sync_fpstate(fpu);
-	cetregs = get_xsave_addr(&fpu->fpstate->regs.xsave, XFEATURE_CET_USER);
-	if (WARN_ON(!cetregs)) {
-		/*
-		 * This shouldn't ever be NULL because shadow stack was
-		 * verified to be enabled above. This means
-		 * MSR_IA32_U_CET.CET_SHSTK_EN should be 1 and so
-		 * XFEATURE_CET_USER should not be in the init state.
-		 */
-		return -ENODEV;
-	}
-
-	return membuf_write(&to, (unsigned long *)&cetregs->user_ssp,
-			    sizeof(cetregs->user_ssp));
-}
-
-int ssp_set(struct task_struct *target, const struct user_regset *regset,
-	    unsigned int pos, unsigned int count,
-	    const void *kbuf, const void __user *ubuf)
-{
-	struct fpu *fpu = x86_task_fpu(target);
-	struct xregs_state *xsave = &fpu->fpstate->regs.xsave;
-	struct cet_user_state *cetregs;
-	unsigned long user_ssp;
-	int r;
-
-	if (!cpu_feature_enabled(X86_FEATURE_USER_SHSTK) ||
-	    !ssp_active(target, regset))
-		return -ENODEV;
-
-	if (pos != 0 || count != sizeof(user_ssp))
-		return -EINVAL;
-
-	r = user_regset_copyin(&pos, &count, &kbuf, &ubuf, &user_ssp, 0, -1);
-	if (r)
-		return r;
-
-	/*
-	 * Some kernel instructions (IRET, etc) can cause exceptions in the case
-	 * of disallowed CET register values. Just prevent invalid values.
-	 */
-	if (user_ssp >= TASK_SIZE_MAX || !IS_ALIGNED(user_ssp, 8))
-		return -EINVAL;
-
-	fpu_force_restore(fpu);
-
-	cetregs = get_xsave_addr(xsave, XFEATURE_CET_USER);
-	if (WARN_ON(!cetregs)) {
-		/*
-		 * This shouldn't ever be NULL because shadow stack was
-		 * verified to be enabled above. This means
-		 * MSR_IA32_U_CET.CET_SHSTK_EN should be 1 and so
-		 * XFEATURE_CET_USER should not be in the init state.
-		 */
-		return -ENODEV;
-	}
-
-	cetregs->user_ssp = user_ssp;
-	return 0;
-}
-#endif /* CONFIG_X86_USER_SHADOW_STACK */
 
 #if defined CONFIG_X86_32 || defined CONFIG_IA32_EMULATION
 
@@ -368,7 +286,7 @@ static void __convert_from_fxsr(struct user_i387_ia32_struct *env,
 void
 convert_from_fxsr(struct user_i387_ia32_struct *env, struct task_struct *tsk)
 {
-	__convert_from_fxsr(env, tsk, &x86_task_fpu(tsk)->fpstate->regs.fxsave);
+	__convert_from_fxsr(env, tsk, &tsk->thread.fpu.fpstate->regs.fxsave);
 }
 
 void convert_to_fxsr(struct fxregs_state *fxsave,
@@ -401,7 +319,7 @@ void convert_to_fxsr(struct fxregs_state *fxsave,
 int fpregs_get(struct task_struct *target, const struct user_regset *regset,
 	       struct membuf to)
 {
-	struct fpu *fpu = x86_task_fpu(target);
+	struct fpu *fpu = &target->thread.fpu;
 	struct user_i387_ia32_struct env;
 	struct fxregs_state fxsave, *fx;
 
@@ -433,7 +351,7 @@ int fpregs_set(struct task_struct *target, const struct user_regset *regset,
 	       unsigned int pos, unsigned int count,
 	       const void *kbuf, const void __user *ubuf)
 {
-	struct fpu *fpu = x86_task_fpu(target);
+	struct fpu *fpu = &target->thread.fpu;
 	struct user_i387_ia32_struct env;
 	int ret;
 

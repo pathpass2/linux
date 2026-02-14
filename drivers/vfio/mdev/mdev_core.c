@@ -72,11 +72,17 @@ int mdev_register_parent(struct mdev_parent *parent, struct device *dev,
 	parent->nr_types = nr_types;
 	atomic_set(&parent->available_instances, mdev_driver->max_instances);
 
+	if (!mdev_bus_compat_class) {
+		mdev_bus_compat_class = class_compat_register("mdev_bus");
+		if (!mdev_bus_compat_class)
+			return -ENOMEM;
+	}
+
 	ret = parent_create_sysfs_files(parent);
 	if (ret)
 		return ret;
 
-	ret = class_compat_create_link(mdev_bus_compat_class, dev);
+	ret = class_compat_create_link(mdev_bus_compat_class, dev, NULL);
 	if (ret)
 		dev_warn(dev, "Failed to create compatibility class link\n");
 
@@ -98,7 +104,7 @@ void mdev_unregister_parent(struct mdev_parent *parent)
 	dev_info(parent->dev, "MDEV: Unregistering\n");
 
 	down_write(&parent->unreg_sem);
-	class_compat_remove_link(mdev_bus_compat_class, parent->dev);
+	class_compat_remove_link(mdev_bus_compat_class, parent->dev, NULL);
 	device_for_each_child(parent->dev, NULL, mdev_device_remove_cb);
 	parent_remove_sysfs_files(parent);
 	up_write(&parent->unreg_sem);
@@ -245,24 +251,13 @@ int mdev_device_remove(struct mdev_device *mdev)
 
 static int __init mdev_init(void)
 {
-	int ret;
-
-	ret = bus_register(&mdev_bus_type);
-	if (ret)
-		return ret;
-
-	mdev_bus_compat_class = class_compat_register("mdev_bus");
-	if (!mdev_bus_compat_class) {
-		bus_unregister(&mdev_bus_type);
-		return -ENOMEM;
-	}
-
-	return 0;
+	return bus_register(&mdev_bus_type);
 }
 
 static void __exit mdev_exit(void)
 {
-	class_compat_unregister(mdev_bus_compat_class);
+	if (mdev_bus_compat_class)
+		class_compat_unregister(mdev_bus_compat_class);
 	bus_unregister(&mdev_bus_type);
 }
 

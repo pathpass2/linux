@@ -501,6 +501,8 @@ static void get_meta_and_pte_attr(
 	log2_blk256_height = dml_log2((double) blk256_height);
 	blk_bytes = surf_linear ? 256 : get_blk_size_bytes((enum source_macro_tile_size) macro_tile_size);
 	log2_blk_bytes = dml_log2((double) blk_bytes);
+	log2_blk_height = 0;
+	log2_blk_width = 0;
 
 	// remember log rule
 	// "+" in log is multiply
@@ -567,6 +569,8 @@ static void get_meta_and_pte_attr(
 	log2_meta_req_width = log2_meta_req_bytes + 8 - log2_bytes_per_element - log2_meta_req_height;
 	meta_req_width = 1 << log2_meta_req_width;
 	meta_req_height = 1 << log2_meta_req_height;
+	log2_meta_row_height = 0;
+	meta_row_width_ub = 0;
 
 	// the dimensions of a meta row are meta_row_width x meta_row_height in elements.
 	// calculate upper bound of the meta_row_width
@@ -703,7 +707,7 @@ static void get_meta_and_pte_attr(
 	if (hostvm_enable)
 		rq_sizing_param->dpte_group_bytes = 512;
 	else {
-		if (!surf_linear && (log2_dpte_req_height_ptes == 0) && surf_vert) //reduced, in this case, will have page fault within a group
+		if (!surf_linear & (log2_dpte_req_height_ptes == 0) & surf_vert) //reduced, in this case, will have page fault within a group
 			rq_sizing_param->dpte_group_bytes = 512;
 		else
 			rq_sizing_param->dpte_group_bytes = 2048;
@@ -739,12 +743,13 @@ static void get_surf_rq_param(
 		bool is_chroma,
 		bool is_alpha)
 {
+	bool mode_422 = 0;
 	unsigned int vp_width = 0;
 	unsigned int vp_height = 0;
 	unsigned int data_pitch = 0;
 	unsigned int meta_pitch = 0;
 	unsigned int surface_height = 0;
-	unsigned int ppe = 1;
+	unsigned int ppe = mode_422 ? 2 : 1;
 
 	// FIXME check if ppe apply for both luma and chroma in 422 case
 	if (is_chroma | is_alpha) {
@@ -946,6 +951,7 @@ static void dml_rq_dlg_get_dlg_params(
 {
 	const display_pipe_source_params_st *src = &e2e_pipe_param[pipe_idx].pipe.src;
 	const display_pipe_dest_params_st *dst = &e2e_pipe_param[pipe_idx].pipe.dest;
+	const display_output_params_st *dout = &e2e_pipe_param[pipe_idx].dout;
 	const display_clocks_and_cfg_st *clks = &e2e_pipe_param[pipe_idx].clks_cfg;
 	const scaler_ratio_depth_st *scl = &e2e_pipe_param[pipe_idx].pipe.scale_ratio_depth;
 	const scaler_taps_st *taps = &e2e_pipe_param[pipe_idx].pipe.scale_taps;
@@ -968,6 +974,7 @@ static void dml_rq_dlg_get_dlg_params(
 	double min_ttu_vblank;
 	unsigned int dlg_vblank_start;
 	bool dual_plane;
+	bool mode_422;
 	unsigned int access_dir;
 	unsigned int vp_height_l;
 	unsigned int vp_width_l;
@@ -981,6 +988,7 @@ static void dml_rq_dlg_get_dlg_params(
 	double hratio_c;
 	double vratio_l;
 	double vratio_c;
+	bool scl_enable;
 
 	unsigned int swath_width_ub_l;
 	unsigned int dpte_groups_per_row_ub_l;
@@ -992,6 +1000,9 @@ static void dml_rq_dlg_get_dlg_params(
 	unsigned int vupdate_offset;
 	unsigned int vupdate_width;
 	unsigned int vready_offset;
+
+	unsigned int dppclk_delay_subtotal;
+	unsigned int dispclk_delay_subtotal;
 
 	unsigned int vstartup_start;
 	unsigned int dst_x_after_scaler;
@@ -1042,6 +1053,7 @@ static void dml_rq_dlg_get_dlg_params(
 
 	float vba__refcyc_per_req_delivery_pre_l = get_refcyc_per_req_delivery_pre_l_in_us(mode_lib, e2e_pipe_param, num_pipes, pipe_idx) * refclk_freq_in_mhz;  // From VBA
 	float vba__refcyc_per_req_delivery_l = get_refcyc_per_req_delivery_l_in_us(mode_lib, e2e_pipe_param, num_pipes, pipe_idx) * refclk_freq_in_mhz;  // From VBA
+	int blank_lines = 0;
 
 	memset(disp_dlg_regs, 0, sizeof(*disp_dlg_regs));
 	memset(disp_ttu_regs, 0, sizeof(*disp_ttu_regs));
@@ -1065,10 +1077,17 @@ static void dml_rq_dlg_get_dlg_params(
 	min_ttu_vblank = get_min_ttu_vblank_in_us(mode_lib, e2e_pipe_param, num_pipes, pipe_idx);	// From VBA
 
 	dlg_vblank_start = interlaced ? (vblank_start / 2) : vblank_start;
-	disp_dlg_regs->min_dst_y_next_start_us =
-		(vba__min_dst_y_next_start * dst->hactive) / (unsigned int) dst->pixel_rate_mhz;
-	disp_dlg_regs->min_dst_y_next_start = vba__min_dst_y_next_start * dml_pow(2, 2);
-
+	disp_dlg_regs->optimized_min_dst_y_next_start = disp_dlg_regs->min_dst_y_next_start;
+	disp_dlg_regs->optimized_min_dst_y_next_start_us = 0;
+	disp_dlg_regs->min_dst_y_next_start = (unsigned int) (((double) dlg_vblank_start) * dml_pow(2, 2));
+	blank_lines = (dst->vblank_end + dst->vtotal_min - dst->vblank_start - dst->vstartup_start - 1);
+	if (blank_lines < 0)
+		blank_lines = 0;
+	if (blank_lines != 0) {
+		disp_dlg_regs->optimized_min_dst_y_next_start = vba__min_dst_y_next_start;
+		disp_dlg_regs->optimized_min_dst_y_next_start_us = (disp_dlg_regs->optimized_min_dst_y_next_start * dst->hactive) / (unsigned int) dst->pixel_rate_mhz;
+		disp_dlg_regs->min_dst_y_next_start = disp_dlg_regs->optimized_min_dst_y_next_start;
+	}
 	ASSERT(disp_dlg_regs->min_dst_y_next_start < (unsigned int)dml_pow(2, 18));
 
 	dml_print("DML_DLG: %s: min_ttu_vblank (us)         = %3.2f\n", __func__, min_ttu_vblank);
@@ -1085,6 +1104,7 @@ static void dml_rq_dlg_get_dlg_params(
 	// Prefetch Calc
 	// Source
 	dual_plane = is_dual_plane((enum source_format_class) (src->source_format));
+	mode_422 = 0;
 	access_dir = (src->source_scan == dm_vert);	// vp access direction: horizontal or vertical accessed
 	vp_height_l = src->viewport_height;
 	vp_width_l = src->viewport_width;
@@ -1098,6 +1118,7 @@ static void dml_rq_dlg_get_dlg_params(
 	hratio_c = scl->hscl_ratio_c;
 	vratio_l = scl->vscl_ratio;
 	vratio_c = scl->vscl_ratio_c;
+	scl_enable = scl->scl_enable;
 
 	swath_width_ub_l = rq_dlg_param->rq_l.swath_width_ub;
 	dpte_groups_per_row_ub_l = rq_dlg_param->rq_l.dpte_groups_per_row_ub;
@@ -1109,6 +1130,22 @@ static void dml_rq_dlg_get_dlg_params(
 	vupdate_offset = dst->vupdate_offset;
 	vupdate_width = dst->vupdate_width;
 	vready_offset = dst->vready_offset;
+
+	dppclk_delay_subtotal = mode_lib->ip.dppclk_delay_subtotal;
+	dispclk_delay_subtotal = mode_lib->ip.dispclk_delay_subtotal;
+
+	if (scl_enable)
+		dppclk_delay_subtotal += mode_lib->ip.dppclk_delay_scl;
+	else
+		dppclk_delay_subtotal += mode_lib->ip.dppclk_delay_scl_lb_only;
+
+	dppclk_delay_subtotal += mode_lib->ip.dppclk_delay_cnvc_formatter + src->num_cursors * mode_lib->ip.dppclk_delay_cnvc_cursor;
+
+	if (dout->dsc_enable) {
+		double dsc_delay = get_dsc_delay(mode_lib, e2e_pipe_param, num_pipes, pipe_idx); // FROM VBA
+
+		dispclk_delay_subtotal += dsc_delay;
+	}
 
 	vstartup_start = dst->vstartup_start;
 	if (interlaced) {
@@ -1223,8 +1260,18 @@ static void dml_rq_dlg_get_dlg_params(
 	dpte_row_height_l = rq_dlg_param->rq_l.dpte_row_height;
 	dpte_row_height_c = rq_dlg_param->rq_c.dpte_row_height;
 
-	swath_width_pixels_ub_l = swath_width_ub_l;
-	swath_width_pixels_ub_c = swath_width_ub_c;
+	if (mode_422) {
+		swath_width_pixels_ub_l = swath_width_ub_l * 2;  // *2 for 2 pixel per element
+		swath_width_pixels_ub_c = swath_width_ub_c * 2;
+	} else {
+		swath_width_pixels_ub_l = swath_width_ub_l * 1;
+		swath_width_pixels_ub_c = swath_width_ub_c * 1;
+	}
+
+	hscale_pixel_rate_l = 0.;
+	hscale_pixel_rate_c = 0.;
+	min_hratio_fact_l = 1.0;
+	min_hratio_fact_c = 1.0;
 
 	if (hratio_l <= 1)
 		min_hratio_fact_l = 2.0;
@@ -1502,6 +1549,14 @@ static void dml_rq_dlg_get_dlg_params(
 	dml_print("DML_DLG: %s: disp_dlg_regs->dst_y_per_row_vblank = 0x%x\n", __func__, disp_dlg_regs->dst_y_per_row_vblank);
 	dml_print("DML_DLG: %s: disp_dlg_regs->dst_y_per_vm_flip    = 0x%x\n", __func__, disp_dlg_regs->dst_y_per_vm_flip);
 	dml_print("DML_DLG: %s: disp_dlg_regs->dst_y_per_row_flip   = 0x%x\n", __func__, disp_dlg_regs->dst_y_per_row_flip);
+
+	// hack for FPGA
+	if (mode_lib->project == DML_PROJECT_DCN31_FPGA) {
+		if (disp_dlg_regs->vratio_prefetch >= (unsigned int) dml_pow(2, 22)) {
+			disp_dlg_regs->vratio_prefetch = (unsigned int) dml_pow(2, 22) - 1;
+			dml_print("vratio_prefetch exceed the max value, the register field is [21:0]\n");
+		}
+	}
 
 	disp_dlg_regs->refcyc_per_pte_group_vblank_l = (unsigned int) (dst_y_per_row_vblank * (double) htotal * ref_freq_to_pix_freq / (double) dpte_groups_per_row_ub_l);
 	ASSERT(disp_dlg_regs->refcyc_per_pte_group_vblank_l < (unsigned int)dml_pow(2, 13));

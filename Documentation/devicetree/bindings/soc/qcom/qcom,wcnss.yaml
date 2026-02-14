@@ -20,7 +20,7 @@ properties:
 
   firmware-name:
     $ref: /schemas/types.yaml#/definitions/string
-    default: wlan/prima/WCNSS_qcom_wlan_nv.bin
+    default: "wlan/prima/WCNSS_qcom_wlan_nv.bin"
     description:
       Relative firmware image path for the WLAN NV blob.
 
@@ -54,7 +54,7 @@ properties:
       - compatible
 
   wifi:
-    unevaluatedProperties: false
+    additionalProperties: false
     type: object
     properties:
       compatible:
@@ -88,9 +88,6 @@ properties:
       - qcom,smem-states
       - qcom,smem-state-names
 
-    allOf:
-      - $ref: /schemas/net/wireless/wireless-controller.yaml#
-
 required:
   - compatible
   - qcom,mmio
@@ -119,8 +116,8 @@ examples:
 
             bluetooth {
                 compatible = "qcom,wcnss-bt";
-                /* Updated by boot firmware (little-endian order) */
-                local-bd-address = [ 00 00 00 00 00 00 ];
+                /* BD address 00:11:22:33:44:55 */
+                local-bd-address = [ 55 44 33 22 11 00 ];
             };
 
             wifi {

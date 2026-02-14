@@ -13,9 +13,9 @@
 #include <linux/mm.h>
 #include <linux/pfn.h>
 #include <linux/slab.h>
-#include <linux/pgalloc.h>
 
 #include <asm/page.h>
+#include <asm/pgalloc.h>
 
 #include "kasan.h"
 
@@ -126,10 +126,8 @@ static int __ref zero_pmd_populate(pud_t *pud, unsigned long addr,
 
 			if (slab_is_available())
 				p = pte_alloc_one_kernel(&init_mm);
-			else {
+			else
 				p = early_alloc(PAGE_SIZE, NUMA_NO_NODE);
-				kernel_pte_init(p);
-			}
 			if (!p)
 				return -ENOMEM;
 
@@ -168,9 +166,8 @@ static int __ref zero_pud_populate(p4d_t *p4d, unsigned long addr,
 				if (!p)
 					return -ENOMEM;
 			} else {
-				p = early_alloc(PAGE_SIZE, NUMA_NO_NODE);
-				pmd_init(p);
-				pud_populate(&init_mm, pud, p);
+				pud_populate(&init_mm, pud,
+					early_alloc(PAGE_SIZE, NUMA_NO_NODE));
 			}
 		}
 		zero_pmd_populate(pud, addr, next);
@@ -191,7 +188,7 @@ static int __ref zero_p4d_populate(pgd_t *pgd, unsigned long addr,
 			pud_t *pud;
 			pmd_t *pmd;
 
-			p4d_populate_kernel(addr, p4d,
+			p4d_populate(&init_mm, p4d,
 					lm_alias(kasan_early_shadow_pud));
 			pud = pud_offset(p4d, addr);
 			pud_populate(&init_mm, pud,
@@ -210,9 +207,8 @@ static int __ref zero_p4d_populate(pgd_t *pgd, unsigned long addr,
 				if (!p)
 					return -ENOMEM;
 			} else {
-				p = early_alloc(PAGE_SIZE, NUMA_NO_NODE);
-				pud_init(p);
-				p4d_populate_kernel(addr, p4d, p);
+				p4d_populate(&init_mm, p4d,
+					early_alloc(PAGE_SIZE, NUMA_NO_NODE));
 			}
 		}
 		zero_pud_populate(p4d, addr, next);
@@ -251,10 +247,10 @@ int __ref kasan_populate_early_shadow(const void *shadow_start,
 			 * puds,pmds, so pgd_populate(), pud_populate()
 			 * is noops.
 			 */
-			pgd_populate_kernel(addr, pgd,
+			pgd_populate(&init_mm, pgd,
 					lm_alias(kasan_early_shadow_p4d));
 			p4d = p4d_offset(pgd, addr);
-			p4d_populate_kernel(addr, p4d,
+			p4d_populate(&init_mm, p4d,
 					lm_alias(kasan_early_shadow_pud));
 			pud = pud_offset(p4d, addr);
 			pud_populate(&init_mm, pud,
@@ -266,12 +262,14 @@ int __ref kasan_populate_early_shadow(const void *shadow_start,
 		}
 
 		if (pgd_none(*pgd)) {
+			p4d_t *p;
 
 			if (slab_is_available()) {
-				if (!p4d_alloc(&init_mm, pgd, addr))
+				p = p4d_alloc(&init_mm, pgd, addr);
+				if (!p)
 					return -ENOMEM;
 			} else {
-				pgd_populate_kernel(addr, pgd,
+				pgd_populate(&init_mm, pgd,
 					early_alloc(PAGE_SIZE, NUMA_NO_NODE));
 			}
 		}
@@ -288,7 +286,7 @@ static void kasan_free_pte(pte_t *pte_start, pmd_t *pmd)
 
 	for (i = 0; i < PTRS_PER_PTE; i++) {
 		pte = pte_start + i;
-		if (!pte_none(ptep_get(pte)))
+		if (!pte_none(*pte))
 			return;
 	}
 
@@ -345,19 +343,16 @@ static void kasan_remove_pte_table(pte_t *pte, unsigned long addr,
 				unsigned long end)
 {
 	unsigned long next;
-	pte_t ptent;
 
 	for (; addr < end; addr = next, pte++) {
 		next = (addr + PAGE_SIZE) & PAGE_MASK;
 		if (next > end)
 			next = end;
 
-		ptent = ptep_get(pte);
-
-		if (!pte_present(ptent))
+		if (!pte_present(*pte))
 			continue;
 
-		if (WARN_ON(!kasan_early_shadow_page_entry(ptent)))
+		if (WARN_ON(!kasan_early_shadow_page_entry(*pte)))
 			continue;
 		pte_clear(&init_mm, addr, pte);
 	}

@@ -9,7 +9,6 @@
  */
 #include <linux/init.h>
 #include <linux/kernel.h>
-#include <linux/mmu_context.h>
 #include <linux/ptrace.h>
 #include <linux/smp.h>
 #include <linux/stddef.h>
@@ -37,8 +36,6 @@
 /* Hardware capabilities */
 unsigned int elf_hwcap __read_mostly;
 EXPORT_SYMBOL_GPL(elf_hwcap);
-
-static bool mmid_disabled_quirk;
 
 static inline unsigned long cpu_get_msa_id(void)
 {
@@ -182,6 +179,7 @@ void __init check_bugs32(void)
 static inline int cpu_has_confreg(void)
 {
 #ifdef CONFIG_CPU_R3000
+	extern unsigned long r3k_cache_size(unsigned long);
 	unsigned long size1, size2;
 	unsigned long cfg = read_c0_conf();
 
@@ -648,7 +646,7 @@ static inline unsigned int decode_config5(struct cpuinfo_mips *c)
 	config5 &= ~(MIPS_CONF5_UFR | MIPS_CONF5_UFE);
 
 	if (cpu_has_mips_r6) {
-		if (!mmid_disabled_quirk && (!__builtin_constant_p(cpu_has_mmid) || cpu_has_mmid))
+		if (!__builtin_constant_p(cpu_has_mmid) || cpu_has_mmid)
 			config5 |= MIPS_CONF5_MI;
 		else
 			config5 &= ~MIPS_CONF5_MI;
@@ -711,6 +709,7 @@ static inline unsigned int decode_config5(struct cpuinfo_mips *c)
 					max_mmid_width);
 				asid_mask = GENMASK(max_mmid_width - 1, 0);
 			}
+
 			set_cpu_asid_mask(c, asid_mask);
 		}
 	}
@@ -1140,7 +1139,7 @@ static inline void cpu_probe_legacy(struct cpuinfo_mips *c, unsigned int cpu)
 		 * This processor doesn't have an MMU, so it's not
 		 * "real easy" to run Linux on it. It is left purely
 		 * for documentation.  Commented out because it shares
-		 * its c0_prid id number with the TX3900.
+		 * it's c0_prid id number with the TX3900.
 		 */
 		c->cputype = CPU_R4650;
 		__cpu_name[cpu] = "R4650";
@@ -1288,14 +1287,14 @@ static inline void cpu_probe_legacy(struct cpuinfo_mips *c, unsigned int cpu)
 		set_cpu_asid_mask(c, MIPS_ENTRYHI_ASID);
 		c->writecombine = _CACHE_UNCACHED_ACCELERATED;
 		break;
-	case PRID_IMP_LOONGSON_32:
+	case PRID_IMP_LOONGSON_32:  /* Loongson-1 */
 		decode_configs(c);
 
 		c->cputype = CPU_LOONGSON32;
 
 		switch (c->processor_id & PRID_REV_MASK) {
-		case PRID_REV_LOONGSON1:
-			__cpu_name[cpu] = "ICT Loongson-1";
+		case PRID_REV_LOONGSON1B:
+			__cpu_name[cpu] = "Loongson 1B";
 			break;
 		}
 
@@ -1503,10 +1502,6 @@ static inline void cpu_probe_alchemy(struct cpuinfo_mips *c, unsigned int cpu)
 			break;
 		}
 		break;
-	case PRID_IMP_NETLOGIC_AU13XX:
-		c->cputype = CPU_ALCHEMY;
-		__cpu_name[cpu] = "Au1300";
-		break;
 	}
 }
 
@@ -1607,8 +1602,6 @@ static inline void cpu_probe_broadcom(struct cpuinfo_mips *c, unsigned int cpu)
 static inline void cpu_probe_cavium(struct cpuinfo_mips *c, unsigned int cpu)
 {
 	decode_configs(c);
-	/* Octeon has different cache interface */
-	c->options &= ~MIPS_CPU_4K_CACHE;
 	switch (c->processor_id & PRID_IMP_MASK) {
 	case PRID_IMP_CAVIUM_CN38XX:
 	case PRID_IMP_CAVIUM_CN31XX:
@@ -1678,10 +1671,7 @@ static inline void decode_cpucfg(struct cpuinfo_mips *c)
 
 static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu)
 {
-	c->cputype = CPU_LOONGSON64;
-
 	/* All Loongson processors covered here define ExcCode 16 as GSExc. */
-	decode_configs(c);
 	c->options |= MIPS_CPU_GSEXCEX;
 
 	switch (c->processor_id & PRID_IMP_MASK) {
@@ -1691,6 +1681,7 @@ static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu)
 		case PRID_REV_LOONGSON2K_R1_1:
 		case PRID_REV_LOONGSON2K_R1_2:
 		case PRID_REV_LOONGSON2K_R1_3:
+			c->cputype = CPU_LOONGSON64;
 			__cpu_name[cpu] = "Loongson-2K";
 			set_elf_platform(cpu, "gs264e");
 			set_isa(c, MIPS_CPU_ISA_M64R2);
@@ -1703,12 +1694,14 @@ static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu)
 		switch (c->processor_id & PRID_REV_MASK) {
 		case PRID_REV_LOONGSON3A_R2_0:
 		case PRID_REV_LOONGSON3A_R2_1:
+			c->cputype = CPU_LOONGSON64;
 			__cpu_name[cpu] = "ICT Loongson-3";
 			set_elf_platform(cpu, "loongson3a");
 			set_isa(c, MIPS_CPU_ISA_M64R2);
 			break;
 		case PRID_REV_LOONGSON3A_R3_0:
 		case PRID_REV_LOONGSON3A_R3_1:
+			c->cputype = CPU_LOONGSON64;
 			__cpu_name[cpu] = "ICT Loongson-3";
 			set_elf_platform(cpu, "loongson3a");
 			set_isa(c, MIPS_CPU_ISA_M64R2);
@@ -1726,21 +1719,20 @@ static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu)
 		c->ases |= (MIPS_ASE_LOONGSON_MMI | MIPS_ASE_LOONGSON_CAM |
 			MIPS_ASE_LOONGSON_EXT | MIPS_ASE_LOONGSON_EXT2);
 		c->ases &= ~MIPS_ASE_VZ; /* VZ of Loongson-3A2000/3000 is incomplete */
-		change_c0_config6(LOONGSON_CONF6_EXTIMER | LOONGSON_CONF6_INTIMER,
-				  LOONGSON_CONF6_INTIMER);
 		break;
 	case PRID_IMP_LOONGSON_64G:
+		c->cputype = CPU_LOONGSON64;
 		__cpu_name[cpu] = "ICT Loongson-3";
 		set_elf_platform(cpu, "loongson3a");
 		set_isa(c, MIPS_CPU_ISA_M64R2);
 		decode_cpucfg(c);
-		change_c0_config6(LOONGSON_CONF6_EXTIMER | LOONGSON_CONF6_INTIMER,
-				  LOONGSON_CONF6_INTIMER);
 		break;
 	default:
 		panic("Unknown Loongson Processor ID!");
 		break;
 	}
+
+	decode_configs(c);
 }
 #else
 static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu) { }
@@ -1869,7 +1861,6 @@ void cpu_probe(void)
 		cpu_probe_mips(c, cpu);
 		break;
 	case PRID_COMP_ALCHEMY:
-	case PRID_COMP_NETLOGIC:
 		cpu_probe_alchemy(c, cpu);
 		break;
 	case PRID_COMP_SIBYTE:
@@ -2047,40 +2038,4 @@ void cpu_set_vpe_id(struct cpuinfo_mips *cpuinfo, unsigned int vpe)
 
 	cpuinfo->globalnumber &= ~MIPS_GLOBALNUMBER_VP;
 	cpuinfo->globalnumber |= vpe << MIPS_GLOBALNUMBER_VP_SHF;
-}
-
-void cpu_disable_mmid(void)
-{
-	int i;
-	unsigned long asid_mask;
-	unsigned int cpu = smp_processor_id();
-	struct cpuinfo_mips *c = &current_cpu_data;
-	unsigned int config4 = read_c0_config4();
-	unsigned int config5 =  read_c0_config5();
-
-	/* Setup the initial ASID mask based on config4 */
-	asid_mask = MIPS_ENTRYHI_ASID;
-	if (config4 & MIPS_CONF4_AE)
-		asid_mask |= MIPS_ENTRYHI_ASIDX;
-	set_cpu_asid_mask(c, asid_mask);
-
-	/* Disable MMID in the C0 and update cpuinfo_mips accordingly */
-	config5 &= ~(MIPS_CONF5_UFR | MIPS_CONF5_UFE);
-	config5 &= ~MIPS_CONF5_MI;
-	write_c0_config5(config5);
-	/* Ensure the write to config5 above takes effect */
-	back_to_back_c0_hazard();
-	c->options &= ~MIPS_CPU_MMID;
-
-	/* Setup asid cache value cleared in per_cpu_trap_init() */
-	cpu_data[cpu].asid_cache = asid_first_version(cpu);
-
-	/* Reinit context for each CPU */
-	for_each_possible_cpu(i)
-		set_cpu_context(i, &init_mm, 0);
-
-	/* Ensure that now MMID will be seen as disable */
-	mmid_disabled_quirk = true;
-
-	pr_info("MMID support disabled due to hardware support issue\n");
 }

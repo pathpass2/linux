@@ -373,7 +373,7 @@ static int bnad_set_coalesce(struct net_device *netdev,
 			}
 			spin_unlock_irqrestore(&bnad->bna_lock, flags);
 			if (to_del)
-				timer_delete_sync(&bnad->dim_timer);
+				del_timer_sync(&bnad->dim_timer);
 			spin_lock_irqsave(&bnad->bna_lock, flags);
 			bnad_rx_coalescing_timeo_set(bnad);
 		}
@@ -608,7 +608,7 @@ bnad_get_strings(struct net_device *netdev, u32 stringset, u8 *string)
 
 	for (i = 0; i < BNAD_ETHTOOL_STATS_NUM; i++) {
 		BUG_ON(!(strlen(bnad_net_stats_strings[i]) < ETH_GSTRING_LEN));
-		ethtool_puts(&string, bnad_net_stats_strings[i]);
+		ethtool_sprintf(&string, bnad_net_stats_strings[i]);
 	}
 
 	bmap = bna_tx_rid_mask(&bnad->bna);

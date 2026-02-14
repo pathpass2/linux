@@ -24,8 +24,6 @@
 #include <net/ip.h>
 #include <net/ipv6.h>
 
-#include "../core/sock_destructor.h"
-
 /* Use skb->cb to track consecutive/adjacent fragments coming at
  * the end of the queue. Nodes in the rb-tree queue will
  * contain "runs" of one or more adjacent fragments.
@@ -41,7 +39,6 @@ struct ipfrag_skb_cb {
 	};
 	struct sk_buff		*next_frag;
 	int			frag_run_len;
-	int			ip_defrag_offset;
 };
 
 #define FRAG_CB(skb)		((struct ipfrag_skb_cb *)((skb)->cb))
@@ -133,7 +130,7 @@ static void inet_frags_free_cb(void *ptr, void *arg)
 	struct inet_frag_queue *fq = ptr;
 	int count;
 
-	count = timer_delete_sync(&fq->timer) ? 1 : 0;
+	count = del_timer_sync(&fq->timer) ? 1 : 0;
 
 	spin_lock_bh(&fq->lock);
 	fq->flags |= INET_FRAG_DROP;
@@ -145,7 +142,8 @@ static void inet_frags_free_cb(void *ptr, void *arg)
 	}
 	spin_unlock_bh(&fq->lock);
 
-	inet_frag_putn(fq, count);
+	if (refcount_sub_and_test(count, &fq->refcnt))
+		inet_frag_destroy(fq);
 }
 
 static LLIST_HEAD(fqdir_free_list);
@@ -174,7 +172,7 @@ static void fqdir_free_fn(struct work_struct *work)
 	}
 }
 
-static DECLARE_DELAYED_WORK(fqdir_free_work, fqdir_free_fn);
+static DECLARE_WORK(fqdir_free_work, fqdir_free_fn);
 
 static void fqdir_work_fn(struct work_struct *work)
 {
@@ -183,7 +181,7 @@ static void fqdir_work_fn(struct work_struct *work)
 	rhashtable_free_and_destroy(&fqdir->rhashtable, inet_frags_free_cb, NULL);
 
 	if (llist_add(&fqdir->free_list, &fqdir_free_list))
-		queue_delayed_work(system_percpu_wq, &fqdir_free_work, HZ);
+		queue_work(system_wq, &fqdir_free_work);
 }
 
 int fqdir_init(struct fqdir **fqdirp, struct inet_frags *f, struct net *net)
@@ -218,41 +216,6 @@ static int __init inet_frag_wq_init(void)
 
 pure_initcall(inet_frag_wq_init);
 
-void fqdir_pre_exit(struct fqdir *fqdir)
-{
-	struct inet_frag_queue *fq;
-	struct rhashtable_iter hti;
-
-	/* Prevent creation of new frags.
-	 * Pairs with READ_ONCE() in inet_frag_find().
-	 */
-	WRITE_ONCE(fqdir->high_thresh, 0);
-
-	/* Pairs with READ_ONCE() in inet_frag_kill(), ip_expire()
-	 * and ip6frag_expire_frag_queue().
-	 */
-	WRITE_ONCE(fqdir->dead, true);
-
-	rhashtable_walk_enter(&fqdir->rhashtable, &hti);
-	rhashtable_walk_start(&hti);
-
-	while ((fq = rhashtable_walk_next(&hti))) {
-		if (IS_ERR(fq)) {
-			if (PTR_ERR(fq) != -EAGAIN)
-				break;
-			continue;
-		}
-		spin_lock_bh(&fq->lock);
-		if (!(fq->flags & INET_FRAG_COMPLETE))
-			inet_frag_queue_flush(fq, 0);
-		spin_unlock_bh(&fq->lock);
-	}
-
-	rhashtable_walk_stop(&hti);
-	rhashtable_walk_exit(&hti);
-}
-EXPORT_SYMBOL(fqdir_pre_exit);
-
 void fqdir_exit(struct fqdir *fqdir)
 {
 	INIT_WORK(&fqdir->destroy_work, fqdir_work_fn);
@@ -260,10 +223,10 @@ void fqdir_exit(struct fqdir *fqdir)
 }
 EXPORT_SYMBOL(fqdir_exit);
 
-void inet_frag_kill(struct inet_frag_queue *fq, int *refs)
+void inet_frag_kill(struct inet_frag_queue *fq)
 {
-	if (timer_delete(&fq->timer))
-		(*refs)++;
+	if (del_timer(&fq->timer))
+		refcount_dec(&fq->refcnt);
 
 	if (!(fq->flags & INET_FRAG_COMPLETE)) {
 		struct fqdir *fqdir = fq->fqdir;
@@ -278,7 +241,7 @@ void inet_frag_kill(struct inet_frag_queue *fq, int *refs)
 		if (!READ_ONCE(fqdir->dead)) {
 			rhashtable_remove_fast(&fqdir->rhashtable, &fq->node,
 					       fqdir->f->rhash_params);
-			(*refs)++;
+			refcount_dec(&fq->refcnt);
 		} else {
 			fq->flags |= INET_FRAG_HASH_DEAD;
 		}
@@ -298,8 +261,8 @@ static void inet_frag_destroy_rcu(struct rcu_head *head)
 	kmem_cache_free(f->frags_cachep, q);
 }
 
-static unsigned int
-inet_frag_rbtree_purge(struct rb_root *root, enum skb_drop_reason reason)
+unsigned int inet_frag_rbtree_purge(struct rb_root *root,
+				    enum skb_drop_reason reason)
 {
 	struct rb_node *p = rb_first(root);
 	unsigned int sum = 0;
@@ -319,17 +282,7 @@ inet_frag_rbtree_purge(struct rb_root *root, enum skb_drop_reason reason)
 	}
 	return sum;
 }
-
-void inet_frag_queue_flush(struct inet_frag_queue *q,
-			   enum skb_drop_reason reason)
-{
-	unsigned int sum;
-
-	reason = reason ?: SKB_DROP_REASON_FRAG_REASM_TIMEOUT;
-	sum = inet_frag_rbtree_purge(&q->rb_fragments, reason);
-	sub_frag_mem_limit(q->fqdir, sum);
-}
-EXPORT_SYMBOL(inet_frag_queue_flush);
+EXPORT_SYMBOL(inet_frag_rbtree_purge);
 
 void inet_frag_destroy(struct inet_frag_queue *q)
 {
@@ -342,7 +295,7 @@ void inet_frag_destroy(struct inet_frag_queue *q)
 	reason = (q->flags & INET_FRAG_DROP) ?
 			SKB_DROP_REASON_FRAG_REASM_TIMEOUT :
 			SKB_CONSUMED;
-	WARN_ON(timer_delete(&q->timer) != 0);
+	WARN_ON(del_timer(&q->timer) != 0);
 
 	/* Release all fragment data. */
 	fqdir = q->fqdir;
@@ -372,10 +325,7 @@ static struct inet_frag_queue *inet_frag_alloc(struct fqdir *fqdir,
 
 	timer_setup(&q->timer, f->frag_expire, 0);
 	spin_lock_init(&q->lock);
-	/* One reference for the timer, one for the hash table.
-	 * We never take any extra references, only decrement this field.
-	 */
-	refcount_set(&q->refcnt, 2);
+	refcount_set(&q->refcnt, 3);
 
 	return q;
 }
@@ -397,20 +347,15 @@ static struct inet_frag_queue *inet_frag_create(struct fqdir *fqdir,
 	*prev = rhashtable_lookup_get_insert_key(&fqdir->rhashtable, &q->key,
 						 &q->node, f->rhash_params);
 	if (*prev) {
-		/* We could not insert in the hash table,
-		 * we need to cancel what inet_frag_alloc()
-		 * anticipated.
-		 */
-		int refs = 1;
-
 		q->flags |= INET_FRAG_COMPLETE;
-		inet_frag_kill(q, &refs);
-		inet_frag_putn(q, refs);
+		inet_frag_kill(q);
+		inet_frag_destroy(q);
 		return NULL;
 	}
 	return q;
 }
 
+/* TODO : call from rcu_read_lock() and no longer use refcount_inc_not_zero() */
 struct inet_frag_queue *inet_frag_find(struct fqdir *fqdir, void *key)
 {
 	/* This pairs with WRITE_ONCE() in fqdir_pre_exit(). */
@@ -420,11 +365,17 @@ struct inet_frag_queue *inet_frag_find(struct fqdir *fqdir, void *key)
 	if (!high_thresh || frag_mem_limit(fqdir) > high_thresh)
 		return NULL;
 
+	rcu_read_lock();
+
 	prev = rhashtable_lookup(&fqdir->rhashtable, key, fqdir->f->rhash_params);
 	if (!prev)
 		fq = inet_frag_create(fqdir, key, &prev);
-	if (!IS_ERR_OR_NULL(prev))
+	if (!IS_ERR_OR_NULL(prev)) {
 		fq = prev;
+		if (!refcount_inc_not_zero(&fq->refcnt))
+			fq = NULL;
+	}
+	rcu_read_unlock();
 	return fq;
 }
 EXPORT_SYMBOL(inet_frag_find);
@@ -445,12 +396,12 @@ int inet_frag_queue_insert(struct inet_frag_queue *q, struct sk_buff *skb,
 	 */
 	if (!last)
 		fragrun_create(q, skb);  /* First fragment. */
-	else if (FRAG_CB(last)->ip_defrag_offset + last->len < end) {
+	else if (last->ip_defrag_offset + last->len < end) {
 		/* This is the common case: skb goes to the end. */
 		/* Detect and discard overlaps. */
-		if (offset < FRAG_CB(last)->ip_defrag_offset + last->len)
+		if (offset < last->ip_defrag_offset + last->len)
 			return IPFRAG_OVERLAP;
-		if (offset == FRAG_CB(last)->ip_defrag_offset + last->len)
+		if (offset == last->ip_defrag_offset + last->len)
 			fragrun_append_to_last(q, skb);
 		else
 			fragrun_create(q, skb);
@@ -467,13 +418,13 @@ int inet_frag_queue_insert(struct inet_frag_queue *q, struct sk_buff *skb,
 
 			parent = *rbn;
 			curr = rb_to_skb(parent);
-			curr_run_end = FRAG_CB(curr)->ip_defrag_offset +
+			curr_run_end = curr->ip_defrag_offset +
 					FRAG_CB(curr)->frag_run_len;
-			if (end <= FRAG_CB(curr)->ip_defrag_offset)
+			if (end <= curr->ip_defrag_offset)
 				rbn = &parent->rb_left;
 			else if (offset >= curr_run_end)
 				rbn = &parent->rb_right;
-			else if (offset >= FRAG_CB(curr)->ip_defrag_offset &&
+			else if (offset >= curr->ip_defrag_offset &&
 				 end <= curr_run_end)
 				return IPFRAG_DUP;
 			else
@@ -487,9 +438,7 @@ int inet_frag_queue_insert(struct inet_frag_queue *q, struct sk_buff *skb,
 		rb_insert_color(&skb->rbnode, &q->rb_fragments);
 	}
 
-	FRAG_CB(skb)->ip_defrag_offset = offset;
-	if (offset)
-		nf_reset_ct(skb);
+	skb->ip_defrag_offset = offset;
 
 	return IPFRAG_OK;
 }
@@ -499,28 +448,13 @@ void *inet_frag_reasm_prepare(struct inet_frag_queue *q, struct sk_buff *skb,
 			      struct sk_buff *parent)
 {
 	struct sk_buff *fp, *head = skb_rb_first(&q->rb_fragments);
-	void (*destructor)(struct sk_buff *);
-	unsigned int orig_truesize = 0;
-	struct sk_buff **nextp = NULL;
-	struct sock *sk = skb->sk;
+	struct sk_buff **nextp;
 	int delta;
-
-	if (sk && is_skb_wmem(skb)) {
-		/* TX: skb->sk might have been passed as argument to
-		 * dst->output and must remain valid until tx completes.
-		 *
-		 * Move sk to reassembled skb and fix up wmem accounting.
-		 */
-		orig_truesize = skb->truesize;
-		destructor = skb->destructor;
-	}
 
 	if (head != skb) {
 		fp = skb_clone(skb, GFP_ATOMIC);
-		if (!fp) {
-			head = skb;
-			goto out_restore_sk;
-		}
+		if (!fp)
+			return NULL;
 		FRAG_CB(fp)->next_frag = FRAG_CB(skb)->next_frag;
 		if (RB_EMPTY_NODE(&skb->rbnode))
 			FRAG_CB(parent)->next_frag = fp;
@@ -529,12 +463,6 @@ void *inet_frag_reasm_prepare(struct inet_frag_queue *q, struct sk_buff *skb,
 					&q->rb_fragments);
 		if (q->fragments_tail == skb)
 			q->fragments_tail = fp;
-
-		if (orig_truesize) {
-			/* prevent skb_morph from releasing sk */
-			skb->sk = NULL;
-			skb->destructor = NULL;
-		}
 		skb_morph(skb, head);
 		FRAG_CB(skb)->next_frag = FRAG_CB(head)->next_frag;
 		rb_replace_node(&head->rbnode, &skb->rbnode,
@@ -542,13 +470,13 @@ void *inet_frag_reasm_prepare(struct inet_frag_queue *q, struct sk_buff *skb,
 		consume_skb(head);
 		head = skb;
 	}
-	WARN_ON(FRAG_CB(head)->ip_defrag_offset != 0);
+	WARN_ON(head->ip_defrag_offset != 0);
 
 	delta = -head->truesize;
 
 	/* Head of list must not be cloned. */
 	if (skb_unclone(head, GFP_ATOMIC))
-		goto out_restore_sk;
+		return NULL;
 
 	delta += head->truesize;
 	if (delta)
@@ -564,7 +492,7 @@ void *inet_frag_reasm_prepare(struct inet_frag_queue *q, struct sk_buff *skb,
 
 		clone = alloc_skb(0, GFP_ATOMIC);
 		if (!clone)
-			goto out_restore_sk;
+			return NULL;
 		skb_shinfo(clone)->frag_list = skb_shinfo(head)->frag_list;
 		skb_frag_list_init(head);
 		for (i = 0; i < skb_shinfo(head)->nr_frags; i++)
@@ -581,21 +509,6 @@ void *inet_frag_reasm_prepare(struct inet_frag_queue *q, struct sk_buff *skb,
 		nextp = &skb_shinfo(head)->frag_list;
 	}
 
-out_restore_sk:
-	if (orig_truesize) {
-		int ts_delta = head->truesize - orig_truesize;
-
-		/* if this reassembled skb is fragmented later,
-		 * fraglist skbs will get skb->sk assigned from head->sk,
-		 * and each frag skb will be released via sock_wfree.
-		 *
-		 * Update sk_wmem_alloc.
-		 */
-		head->sk = sk;
-		head->destructor = destructor;
-		refcount_add(ts_delta, &sk->sk_wmem_alloc);
-	}
-
 	return nextp;
 }
 EXPORT_SYMBOL(inet_frag_reasm_prepare);
@@ -603,8 +516,6 @@ EXPORT_SYMBOL(inet_frag_reasm_prepare);
 void inet_frag_reasm_finish(struct inet_frag_queue *q, struct sk_buff *head,
 			    void *reasm_data, bool try_coalesce)
 {
-	struct sock *sk = is_skb_wmem(head) ? head->sk : NULL;
-	const unsigned int head_truesize = head->truesize;
 	struct sk_buff **nextp = reasm_data;
 	struct rb_node *rbn;
 	struct sk_buff *fp;
@@ -667,10 +578,7 @@ void inet_frag_reasm_finish(struct inet_frag_queue *q, struct sk_buff *head,
 	skb_mark_not_on_list(head);
 	head->prev = NULL;
 	head->tstamp = q->stamp;
-	head->tstamp_type = q->tstamp_type;
-
-	if (sk)
-		refcount_add(sum_truesize - head_truesize, &sk->sk_wmem_alloc);
+	head->mono_delivery_time = q->mono_delivery_time;
 }
 EXPORT_SYMBOL(inet_frag_reasm_finish);
 

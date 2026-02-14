@@ -9,7 +9,6 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/oom.h>
-#include <linux/reboot.h>
 #include <kern_util.h>
 #include <os.h>
 #include <skas.h>
@@ -29,7 +28,7 @@ static void kill_off_processes(void)
 		t = find_lock_task_mm(p);
 		if (!t)
 			continue;
-		pid = t->mm->context.id.pid;
+		pid = t->mm->context.id.u.pid;
 		task_unlock(t);
 		os_kill_ptraced_process(pid, 1);
 	}
@@ -59,18 +58,3 @@ void machine_halt(void)
 {
 	machine_power_off();
 }
-
-static int sys_power_off_handler(struct sys_off_data *data)
-{
-	machine_power_off();
-	return 0;
-}
-
-static int register_power_off(void)
-{
-	register_sys_off_handler(SYS_OFF_MODE_POWER_OFF,
-				 SYS_OFF_PRIO_DEFAULT,
-				 sys_power_off_handler, NULL);
-	return 0;
-}
-__initcall(register_power_off);

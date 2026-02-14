@@ -660,15 +660,15 @@ static struct slave *rlb_arp_xmit(struct sk_buff *skb, struct bonding *bond)
 		return NULL;
 	arp = (struct arp_pkt *)skb_network_header(skb);
 
-	/* Don't modify or load balance ARPs that do not originate
-	 * from the bond itself or a VLAN directly above the bond.
+	/* Don't modify or load balance ARPs that do not originate locally
+	 * (e.g.,arrive via a bridge).
 	 */
-	if (!bond_slave_has_mac_rcu(bond, arp->mac_src))
+	if (!bond_slave_has_mac_rx(bond, arp->mac_src))
 		return NULL;
 
 	dev = ip_dev_find(dev_net(bond->dev), arp->ip_src);
 	if (dev) {
-		if (netif_is_any_bridge_master(dev)) {
+		if (netif_is_bridge_master(dev)) {
 			dev_put(dev);
 			return NULL;
 		}
@@ -985,8 +985,7 @@ static int alb_upper_dev_walk(struct net_device *upper,
 	if (netif_is_macvlan(upper) && !strict_match) {
 		tags = bond_verify_device_path(bond->dev, upper, 0);
 		if (IS_ERR_OR_NULL(tags))
-			return -ENOMEM;
-
+			BUG();
 		alb_send_lp_vid(slave, upper->dev_addr,
 				tags[0].vlan_proto, tags[0].vlan_id);
 		kfree(tags);
@@ -1035,7 +1034,7 @@ static int alb_set_slave_mac_addr(struct slave *slave, const u8 addr[],
 	 */
 	memcpy(ss.__data, addr, len);
 	ss.ss_family = dev->type;
-	if (dev_set_mac_address(dev, &ss, NULL)) {
+	if (dev_set_mac_address(dev, (struct sockaddr *)&ss, NULL)) {
 		slave_err(slave->bond->dev, dev, "dev_set_mac_address on slave failed! ALB mode requires that the base driver support setting the hw address also when the network device's interface is open\n");
 		return -EOPNOTSUPP;
 	}
@@ -1273,7 +1272,8 @@ unwind:
 			break;
 		bond_hw_addr_copy(tmp_addr, rollback_slave->dev->dev_addr,
 				  rollback_slave->dev->addr_len);
-		dev_set_mac_address(rollback_slave->dev, &ss, NULL);
+		dev_set_mac_address(rollback_slave->dev,
+				    (struct sockaddr *)&ss, NULL);
 		dev_addr_set(rollback_slave->dev, tmp_addr);
 	}
 
@@ -1762,7 +1762,8 @@ void bond_alb_handle_active_change(struct bonding *bond, struct slave *new_slave
 				  bond->dev->addr_len);
 		ss.ss_family = bond->dev->type;
 		/* we don't care if it can't change its mac, best effort */
-		dev_set_mac_address(new_slave->dev, &ss, NULL);
+		dev_set_mac_address(new_slave->dev, (struct sockaddr *)&ss,
+				    NULL);
 
 		dev_addr_set(new_slave->dev, tmp_addr);
 	}

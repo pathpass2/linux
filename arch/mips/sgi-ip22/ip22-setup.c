@@ -11,7 +11,6 @@
 #include <linux/types.h>
 #include <linux/console.h>
 #include <linux/sched.h>
-#include <linux/string.h>
 #include <linux/tty.h>
 
 #include <asm/addrspace.h>
@@ -26,6 +25,8 @@
 #include <asm/sgi/mc.h>
 #include <asm/sgi/hpc3.h>
 #include <asm/sgi/ip22.h>
+
+extern void ip22_be_init(void) __init;
 
 void __init plat_mem_setup(void)
 {
@@ -66,7 +67,7 @@ void __init plat_mem_setup(void)
 		static char options[8] __initdata;
 		char *baud = ArcGetEnvironmentVariable("dbaud");
 		if (baud)
-			strscpy(options, baud);
+			strcpy(options, baud);
 		add_preferred_console("ttyS", *(ctype + 1) == '2' ? 1 : 0,
 				      baud ? options : NULL);
 	} else if (!ctype || *ctype != 'g') {

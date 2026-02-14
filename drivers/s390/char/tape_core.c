@@ -11,9 +11,9 @@
  *		 Stefan Bader <shbader@de.ibm.com>
  */
 
-#define pr_fmt(fmt) "tape: " fmt
+#define KMSG_COMPONENT "tape"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/init.h>	     // for kernel parameters
 #include <linux/kmod.h>	     // for requesting modules
@@ -28,7 +28,6 @@
 
 #include "tape.h"
 #include "tape_std.h"
-#include "tape_class.h"
 
 #define LONG_BUSY_TIMEOUT 180 /* seconds */
 
@@ -75,7 +74,9 @@ const char *tape_op_verbose[TO_SIZE] =
 	[TO_LOAD] = "LOA",	[TO_READ_CONFIG] = "RCF",
 	[TO_READ_ATTMSG] = "RAT",
 	[TO_DIS] = "DIS",	[TO_ASSIGN] = "ASS",
-	[TO_UNASSIGN] = "UAS",  [TO_RDC] = "RDC",
+	[TO_UNASSIGN] = "UAS",  [TO_CRYPT_ON] = "CON",
+	[TO_CRYPT_OFF] = "COF",	[TO_KEKL_SET] = "KLS",
+	[TO_KEKL_QUERY] = "KLQ",[TO_RDC] = "RDC",
 };
 
 static int devid_to_int(struct ccw_dev_id *dev_id)
@@ -95,7 +96,7 @@ tape_medium_state_show(struct device *dev, struct device_attribute *attr, char *
 	struct tape_device *tdev;
 
 	tdev = dev_get_drvdata(dev);
-	return sysfs_emit(buf, "%i\n", tdev->medium_state);
+	return scnprintf(buf, PAGE_SIZE, "%i\n", tdev->medium_state);
 }
 
 static
@@ -107,7 +108,7 @@ tape_first_minor_show(struct device *dev, struct device_attribute *attr, char *b
 	struct tape_device *tdev;
 
 	tdev = dev_get_drvdata(dev);
-	return sysfs_emit(buf, "%i\n", tdev->first_minor);
+	return scnprintf(buf, PAGE_SIZE, "%i\n", tdev->first_minor);
 }
 
 static
@@ -119,8 +120,8 @@ tape_state_show(struct device *dev, struct device_attribute *attr, char *buf)
 	struct tape_device *tdev;
 
 	tdev = dev_get_drvdata(dev);
-	return sysfs_emit(buf, "%s\n", (tdev->first_minor < 0) ?
-			  "OFFLINE" : tape_state_verbose[tdev->tape_state]);
+	return scnprintf(buf, PAGE_SIZE, "%s\n", (tdev->first_minor < 0) ?
+		"OFFLINE" : tape_state_verbose[tdev->tape_state]);
 }
 
 static
@@ -134,17 +135,17 @@ tape_operation_show(struct device *dev, struct device_attribute *attr, char *buf
 
 	tdev = dev_get_drvdata(dev);
 	if (tdev->first_minor < 0)
-		return sysfs_emit(buf, "N/A\n");
+		return scnprintf(buf, PAGE_SIZE, "N/A\n");
 
 	spin_lock_irq(get_ccwdev_lock(tdev->cdev));
 	if (list_empty(&tdev->req_queue))
-		rc = sysfs_emit(buf, "---\n");
+		rc = scnprintf(buf, PAGE_SIZE, "---\n");
 	else {
 		struct tape_request *req;
 
 		req = list_entry(tdev->req_queue.next, struct tape_request,
 			list);
-		rc = sysfs_emit(buf, "%s\n", tape_op_verbose[req->op]);
+		rc = scnprintf(buf,PAGE_SIZE, "%s\n", tape_op_verbose[req->op]);
 	}
 	spin_unlock_irq(get_ccwdev_lock(tdev->cdev));
 	return rc;
@@ -160,7 +161,7 @@ tape_blocksize_show(struct device *dev, struct device_attribute *attr, char *buf
 
 	tdev = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%i\n", tdev->char_data.block_size);
+	return scnprintf(buf, PAGE_SIZE, "%i\n", tdev->char_data.block_size);
 }
 
 static
@@ -724,36 +725,6 @@ tape_free_request (struct tape_request * request)
 	kfree(request);
 }
 
-int
-tape_check_idalbuffer(struct tape_device *device, size_t size)
-{
-	struct idal_buffer **new;
-	size_t old_size = 0;
-
-	old_size = idal_buffer_array_datasize(device->char_data.ibs);
-	if (old_size == size)
-		return 0;
-
-	if (size > MAX_BLOCKSIZE) {
-		DBF_EVENT(3, "Invalid blocksize (%zd > %d)\n",
-			  size, MAX_BLOCKSIZE);
-		return -EINVAL;
-	}
-
-	/* The current idal buffer is not correct. Allocate a new one. */
-	new = idal_buffer_array_alloc(size, 0);
-	if (IS_ERR(new))
-		return -ENOMEM;
-
-	/* Free old idal buffer array */
-	if (device->char_data.ibs)
-		idal_buffer_array_free(&device->char_data.ibs);
-
-	device->char_data.ibs = new;
-
-	return 0;
-}
-
 static int
 __tape_start_io(struct tape_device *device, struct tape_request *request)
 {
@@ -850,7 +821,7 @@ tape_delayed_next_request(struct work_struct *work)
 
 static void tape_long_busy_timeout(struct timer_list *t)
 {
-	struct tape_device *device = timer_container_of(device, t, lb_timeout);
+	struct tape_device *device = from_timer(device, t, lb_timeout);
 	struct tape_request *request;
 
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
@@ -1127,10 +1098,9 @@ __tape_do_irq (struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 	}
 
 	/* May be an unsolicited irq */
-	if (request != NULL) {
+	if(request != NULL)
 		request->rescnt = irb->scsw.cmd.count;
-		memcpy(&request->irb, irb, sizeof(*irb));
-	} else if ((irb->scsw.cmd.dstat == 0x85 || irb->scsw.cmd.dstat == 0x80) &&
+	else if ((irb->scsw.cmd.dstat == 0x85 || irb->scsw.cmd.dstat == 0x80) &&
 		 !list_empty(&device->req_queue)) {
 		/* Not Ready to Ready after long busy ? */
 		struct tape_request *req;
@@ -1138,7 +1108,7 @@ __tape_do_irq (struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 				 struct tape_request, list);
 		if (req->status == TAPE_REQUEST_LONG_BUSY) {
 			DBF_EVENT(3, "(%08x): del timer\n", device->cdev_id);
-			if (timer_delete(&device->lb_timeout)) {
+			if (del_timer(&device->lb_timeout)) {
 				tape_put_device(device);
 				__tape_start_next_request(device);
 			}
@@ -1311,9 +1281,7 @@ tape_init (void)
 #endif
 	DBF_EVENT(3, "tape init\n");
 	tape_proc_init();
-	tape_class_init();
 	tapechar_init ();
-	tape_3490_init();
 	return 0;
 }
 
@@ -1326,15 +1294,14 @@ tape_exit(void)
 	DBF_EVENT(6, "tape exit\n");
 
 	/* Get rid of the frontends */
-	tape_3490_exit();
 	tapechar_exit();
-	tape_class_exit();
 	tape_proc_cleanup();
 	debug_unregister (TAPE_DBF_AREA);
 }
 
-MODULE_AUTHOR("IBM Corporation");
-MODULE_DESCRIPTION("s390 channel-attached tape device driver");
+MODULE_AUTHOR("(C) 2001 IBM Deutschland Entwicklung GmbH by Carsten Otte and "
+	      "Michael Holzheu (cotte@de.ibm.com,holzheu@de.ibm.com)");
+MODULE_DESCRIPTION("Linux on zSeries channel attached tape device driver");
 MODULE_LICENSE("GPL");
 
 module_init(tape_init);

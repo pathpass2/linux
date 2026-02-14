@@ -74,7 +74,7 @@ Supported chips:
 
     Datasheet:
 
-	https://www.analog.com/media/en/technical-documentation/data-sheets/MAX20796.pdf
+	Not published
 
   * Generic PMBus devices
 
@@ -152,7 +152,7 @@ Emerson DS1200 power modules might look as follows::
   }
 
   static const struct i2c_device_id ds1200_id[] = {
-	{"ds1200"},
+	{"ds1200", 0},
 	{}
   };
 
@@ -163,7 +163,7 @@ Emerson DS1200 power modules might look as follows::
 	.driver = {
 		   .name = "ds1200",
 		   },
-	.probe = ds1200_probe,
+	.probe_new = ds1200_probe,
 	.id_table = ds1200_id,
   };
 

@@ -45,7 +45,7 @@ static __be32 nfsacld_proc_getacl(struct svc_rqst *rqstp)
 	inode = d_inode(fh->fh_dentry);
 
 	if (argp->mask & ~NFS_ACL_MASK) {
-		resp->status = nfserr_io;
+		resp->status = nfserr_inval;
 		goto out;
 	}
 	resp->mask = argp->mask;
@@ -84,8 +84,6 @@ out:
 fail:
 	posix_acl_release(resp->acl_access);
 	posix_acl_release(resp->acl_default);
-	resp->acl_access = NULL;
-	resp->acl_default = NULL;
 	goto out;
 }
 
@@ -309,6 +307,8 @@ static void nfsaclsvc_release_access(struct svc_rqst *rqstp)
 
 	fh_put(&resp->fh);
 }
+
+struct nfsd3_voidargs { int dummy; };
 
 #define ST 1		/* status*/
 #define AT 21		/* attributes */

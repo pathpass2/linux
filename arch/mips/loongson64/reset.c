@@ -11,7 +11,6 @@
 #include <linux/init.h>
 #include <linux/kexec.h>
 #include <linux/pm.h>
-#include <linux/reboot.h>
 #include <linux/slab.h>
 
 #include <asm/bootinfo.h>
@@ -22,24 +21,39 @@
 #include <loongson.h>
 #include <boot_param.h>
 
-static int firmware_restart(struct sys_off_data *unusedd)
+static void loongson_restart(char *command)
 {
 
 	void (*fw_restart)(void) = (void *)loongson_sysconf.restart_addr;
 
 	fw_restart();
-	return NOTIFY_DONE;
+	while (1) {
+		if (cpu_wait)
+			cpu_wait();
+	}
 }
 
-static int firmware_poweroff(struct sys_off_data *unused)
+static void loongson_poweroff(void)
 {
 	void (*fw_poweroff)(void) = (void *)loongson_sysconf.poweroff_addr;
 
 	fw_poweroff();
-	return NOTIFY_DONE;
+	while (1) {
+		if (cpu_wait)
+			cpu_wait();
+	}
 }
 
-#ifdef CONFIG_KEXEC_CORE
+static void loongson_halt(void)
+{
+	pr_notice("\n\n** You can safely turn off the power now **\n\n");
+	while (1) {
+		if (cpu_wait)
+			cpu_wait();
+	}
+}
+
+#ifdef CONFIG_KEXEC
 
 /* 0X80000000~0X80200000 is safe */
 #define MAX_ARGS	64
@@ -140,19 +154,11 @@ static void loongson_crash_shutdown(struct pt_regs *regs)
 
 static int __init mips_reboot_setup(void)
 {
-	if (loongson_sysconf.restart_addr) {
-		register_sys_off_handler(SYS_OFF_MODE_RESTART,
-				 SYS_OFF_PRIO_FIRMWARE,
-				 firmware_restart, NULL);
-	}
+	_machine_restart = loongson_restart;
+	_machine_halt = loongson_halt;
+	pm_power_off = loongson_poweroff;
 
-	if (loongson_sysconf.poweroff_addr) {
-		register_sys_off_handler(SYS_OFF_MODE_POWER_OFF,
-				 SYS_OFF_PRIO_FIRMWARE,
-				 firmware_poweroff, NULL);
-	}
-
-#ifdef CONFIG_KEXEC_CORE
+#ifdef CONFIG_KEXEC
 	kexec_argv = kmalloc(KEXEC_ARGV_SIZE, GFP_KERNEL);
 	if (WARN_ON(!kexec_argv))
 		return -ENOMEM;

@@ -12,14 +12,11 @@ ACPI in general allows referring to device objects in the tree only.
 Hierarchical data extension nodes may not be referred to directly, hence this
 document defines a scheme to implement such references.
 
-A reference to a _DSD hierarchical data node is a string consisting of a
-device object reference followed by a dot (".") and a relative path to a data
-node object. Do not use non-string references as this will produce a copy of
-the hierarchical data node, not a reference!
-
-The hierarchical data extension node which is referred to shall be located
-directly under its parent object i.e. either the device object or another
-hierarchical data extension node [dsd-guide].
+A reference consist of the device object name followed by one or more
+hierarchical data extension [dsd-guide] keys. Specifically, the hierarchical
+data extension node which is referred to by the key shall lie directly under
+the parent object i.e. either the device object or another hierarchical data
+extension node.
 
 The keys in the hierarchical data nodes shall consist of the name of the node,
 "@" character and the number of the node in hexadecimal notation (without pre-
@@ -36,9 +33,11 @@ extension key.
 Example
 =======
 
-In the ASL snippet below, the "reference" _DSD property contains a string
-reference to a hierarchical data extension node ANOD under DEV0 under the parent
-of DEV1. ANOD is also the final target node of the reference.
+In the ASL snippet below, the "reference" _DSD property contains a
+device object reference to DEV0 and under that device object, a
+hierarchical data extension key "node@1" referring to the NOD1 object
+and lastly, a hierarchical data extension key "anothernode" referring to
+the ANOD object which is also the final target node of the reference.
 ::
 
 	Device (DEV0)
@@ -77,7 +76,10 @@ of DEV1. ANOD is also the final target node of the reference.
 	    Name (_DSD, Package () {
 		ToUUID("daffd814-6eba-4d8c-8a91-bc9bbf4aa301"),
 		Package () {
-		    Package () { "reference", "^DEV0.ANOD" }
+		    Package () {
+			"reference", Package () {
+			    ^DEV0, "node@1", "anothernode"
+			}
 		    },
 		}
 	    })

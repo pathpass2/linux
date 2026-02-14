@@ -7,6 +7,7 @@
 #include <linux/types.h>
 #include <linux/nodemask.h>
 #include <uapi/linux/oom.h>
+#include <linux/sched/coredump.h> /* MMF_* */
 #include <linux/mm.h> /* VM_FAULT* */
 
 struct zonelist;
@@ -91,7 +92,7 @@ static inline bool tsk_is_oom_victim(struct task_struct * tsk)
  */
 static inline vm_fault_t check_stable_address_space(struct mm_struct *mm)
 {
-	if (unlikely(mm_flags_test(MMF_UNSTABLE, mm)))
+	if (unlikely(test_bit(MMF_UNSTABLE, &mm->flags)))
 		return VM_FAULT_SIGBUS;
 	return 0;
 }

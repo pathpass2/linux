@@ -31,19 +31,18 @@
 #include <linux/llist.h>
 #include <linux/lockdep.h>
 
-#include <uapi/drm/i915_drm.h>
-
 #include "gem/i915_gem_context_types.h"
 #include "gt/intel_context_types.h"
 #include "gt/intel_engine_types.h"
 #include "gt/intel_timeline_types.h"
 
 #include "i915_gem.h"
-#include "i915_ptr_util.h"
 #include "i915_scheduler.h"
 #include "i915_selftest.h"
 #include "i915_sw_fence.h"
 #include "i915_vma_resource.h"
+
+#include <uapi/drm/i915_drm.h>
 
 struct drm_file;
 struct drm_i915_gem_object;
@@ -162,7 +161,7 @@ enum {
 	 * parent-child relationship (parallel submission, multi-lrc) that
 	 * hit an error while generating requests in the execbuf IOCTL.
 	 * Indicates this request should be skipped as another request in
-	 * submission / relationship encountered an error.
+	 * submission / relationship encoutered an error.
 	 */
 	I915_FENCE_FLAG_SKIP_PARALLEL,
 
@@ -173,7 +172,7 @@ enum {
 	I915_FENCE_FLAG_COMPOSITE,
 };
 
-/*
+/**
  * Request queue structure.
  *
  * The request queue allows us to note sequence numbers that have been emitted
@@ -188,7 +187,7 @@ enum {
  * RCU lookup of it that may race against reallocation of the struct
  * from the slab freelist. We intentionally do not zero the structure on
  * allocation so that the lookup can use the dangling pointers (and is
- * cognisant that those pointers may be wrong). Instead, everything that
+ * cogniscent that those pointers may be wrong). Instead, everything that
  * needs to be initialised must be done so explicitly.
  *
  * The requests are reference counted.
@@ -199,7 +198,7 @@ struct i915_request {
 
 	struct drm_i915_private *i915;
 
-	/*
+	/**
 	 * Context and ring buffer related to this request
 	 * Contexts are refcounted, so when this request is associated with a
 	 * context, we must increment the context's refcount, to guarantee that
@@ -252,9 +251,9 @@ struct i915_request {
 	};
 	struct llist_head execute_cb;
 	struct i915_sw_fence semaphore;
-	/*
-	 * complete submit fence from an IRQ if needed for locking hierarchy
-	 * reasons.
+	/**
+	 * @submit_work: complete submit fence from an IRQ if needed for
+	 * locking hierarchy reasons.
 	 */
 	struct irq_work submit_work;
 
@@ -278,35 +277,35 @@ struct i915_request {
 	 */
 	const u32 *hwsp_seqno;
 
-	/* Position in the ring of the start of the request */
+	/** Position in the ring of the start of the request */
 	u32 head;
 
-	/* Position in the ring of the start of the user packets */
+	/** Position in the ring of the start of the user packets */
 	u32 infix;
 
-	/*
+	/**
 	 * Position in the ring of the start of the postfix.
 	 * This is required to calculate the maximum available ring space
 	 * without overwriting the postfix.
 	 */
 	u32 postfix;
 
-	/* Position in the ring of the end of the whole request */
+	/** Position in the ring of the end of the whole request */
 	u32 tail;
 
-	/* Position in the ring of the end of any workarounds after the tail */
+	/** Position in the ring of the end of any workarounds after the tail */
 	u32 wa_tail;
 
-	/* Preallocate space in the ring for the emitting the request */
+	/** Preallocate space in the ring for the emitting the request */
 	u32 reserved_space;
 
-	/* Batch buffer pointer for selftest internal use. */
+	/** Batch buffer pointer for selftest internal use. */
 	I915_SELFTEST_DECLARE(struct i915_vma *batch);
 
 	struct i915_vma_resource *batch_res;
 
 #if IS_ENABLED(CONFIG_DRM_I915_CAPTURE_ERROR)
-	/*
+	/**
 	 * Additional buffers requested by userspace to be captured upon
 	 * a GPU hang. The vma/obj on this list are protected by their
 	 * active reference - all objects on this list must also be
@@ -315,29 +314,29 @@ struct i915_request {
 	struct i915_capture_list *capture_list;
 #endif
 
-	/* Time at which this request was emitted, in jiffies. */
+	/** Time at which this request was emitted, in jiffies. */
 	unsigned long emitted_jiffies;
 
-	/* timeline->request entry for this request */
+	/** timeline->request entry for this request */
 	struct list_head link;
 
-	/* Watchdog support fields. */
+	/** Watchdog support fields. */
 	struct i915_request_watchdog {
 		struct llist_node link;
 		struct hrtimer timer;
 	} watchdog;
 
-	/*
-	 * Requests may need to be stalled when using GuC submission waiting for
-	 * certain GuC operations to complete. If that is the case, stalled
-	 * requests are added to a per context list of stalled requests. The
-	 * below list_head is the link in that list. Protected by
+	/**
+	 * @guc_fence_link: Requests may need to be stalled when using GuC
+	 * submission waiting for certain GuC operations to complete. If that is
+	 * the case, stalled requests are added to a per context list of stalled
+	 * requests. The below list_head is the link in that list. Protected by
 	 * ce->guc_state.lock.
 	 */
 	struct list_head guc_fence_link;
 
-	/*
-	 * Priority level while the request is in flight. Differs
+	/**
+	 * @guc_prio: Priority level while the request is in flight. Differs
 	 * from i915 scheduler priority. See comment above
 	 * I915_SCHEDULER_CAP_STATIC_PRIORITY_MAP for details. Protected by
 	 * ce->guc_active.lock. Two special values (GUC_PRIO_INIT and
@@ -349,8 +348,8 @@ struct i915_request {
 #define	GUC_PRIO_FINI	0xfe
 	u8 guc_prio;
 
-	/*
-	 * wait queue entry used to wait on the HuC load to complete
+	/**
+	 * @hucq: wait queue entry used to wait on the HuC load to complete
 	 */
 	wait_queue_entry_t hucq;
 
@@ -474,7 +473,7 @@ i915_request_has_initial_breadcrumb(const struct i915_request *rq)
 	return test_bit(I915_FENCE_FLAG_INITIAL_BREADCRUMB, &rq->fence.flags);
 }
 
-/*
+/**
  * Returns true if seq1 is later than seq2.
  */
 static inline bool i915_seqno_passed(u32 seq1, u32 seq2)

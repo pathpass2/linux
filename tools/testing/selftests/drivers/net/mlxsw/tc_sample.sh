@@ -218,7 +218,7 @@ psample_capture_start()
 
 psample_capture_stop()
 {
-	kill_process %%
+	{ kill %% && wait %%; } 2>/dev/null
 }
 
 __tc_sample_rate_test()
@@ -499,7 +499,7 @@ tc_sample_md_out_tc_occ_test()
 	backlog=$(tc -j -p -s qdisc show dev $rp2 | jq '.[0]["backlog"]')
 
 	# Kill mausezahn.
-	kill_process %%
+	{ kill %% && wait %%; } 2>/dev/null
 
 	psample_capture_stop
 

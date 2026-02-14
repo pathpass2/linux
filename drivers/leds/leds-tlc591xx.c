@@ -8,6 +8,7 @@
 #include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
@@ -134,7 +135,7 @@ static const struct regmap_config tlc591xx_regmap = {
 	.max_register = 0x1e,
 };
 
-static const struct of_device_id of_tlc591xx_leds_match[] __maybe_unused = {
+static const struct of_device_id of_tlc591xx_leds_match[] = {
 	{ .compatible = "ti,tlc59116",
 	  .data = &tlc59116 },
 	{ .compatible = "ti,tlc59108",
@@ -146,7 +147,7 @@ MODULE_DEVICE_TABLE(of, of_tlc591xx_leds_match);
 static int
 tlc591xx_probe(struct i2c_client *client)
 {
-	struct device_node *np;
+	struct device_node *np, *child;
 	struct device *dev = &client->dev;
 	const struct tlc591xx *tlc591xx;
 	struct tlc591xx_priv *priv;
@@ -182,20 +183,22 @@ tlc591xx_probe(struct i2c_client *client)
 	if (err < 0)
 		return err;
 
-	for_each_available_child_of_node_scoped(np, child) {
+	for_each_available_child_of_node(np, child) {
 		struct tlc591xx_led *led;
 		struct led_init_data init_data = {};
 
 		init_data.fwnode = of_fwnode_handle(child);
 
 		err = of_property_read_u32(child, "reg", &reg);
-		if (err)
+		if (err) {
+			of_node_put(child);
 			return err;
-
+		}
 		if (reg < 0 || reg >= tlc591xx->max_leds ||
-		    priv->leds[reg].active)
+		    priv->leds[reg].active) {
+			of_node_put(child);
 			return -EINVAL;
-
+		}
 		led = &priv->leds[reg];
 
 		led->active = true;
@@ -205,10 +208,12 @@ tlc591xx_probe(struct i2c_client *client)
 		led->ldev.max_brightness = TLC591XX_MAX_BRIGHTNESS;
 		err = devm_led_classdev_register_ext(dev, &led->ldev,
 						     &init_data);
-		if (err < 0)
+		if (err < 0) {
+			of_node_put(child);
 			return dev_err_probe(dev, err,
 					     "couldn't register LED %s\n",
 					     led->ldev.name);
+		}
 	}
 	return 0;
 }
@@ -225,7 +230,7 @@ static struct i2c_driver tlc591xx_driver = {
 		.name = "tlc591xx",
 		.of_match_table = of_match_ptr(of_tlc591xx_leds_match),
 	},
-	.probe = tlc591xx_probe,
+	.probe_new = tlc591xx_probe,
 	.id_table = tlc591xx_id,
 };
 

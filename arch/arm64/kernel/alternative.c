@@ -24,8 +24,8 @@
 #define ALT_ORIG_PTR(a)		__ALT_PTR(a, orig_offset)
 #define ALT_REPL_PTR(a)		__ALT_PTR(a, alt_offset)
 
-#define ALT_CAP(a)		((a)->cpucap & ~ARM64_CB_BIT)
-#define ALT_HAS_CB(a)		((a)->cpucap & ARM64_CB_BIT)
+#define ALT_CAP(a)		((a)->cpufeature & ~ARM64_CB_BIT)
+#define ALT_HAS_CB(a)		((a)->cpufeature & ARM64_CB_BIT)
 
 /* Volatile, as we may be patching the guts of READ_ONCE() */
 static volatile int all_alternatives_applied;
@@ -37,12 +37,12 @@ struct alt_region {
 	struct alt_instr *end;
 };
 
-bool alternative_is_applied(u16 cpucap)
+bool alternative_is_applied(u16 cpufeature)
 {
-	if (WARN_ON(cpucap >= ARM64_NCAPS))
+	if (WARN_ON(cpufeature >= ARM64_NCAPS))
 		return false;
 
-	return test_bit(cpucap, applied_alternatives);
+	return test_bit(cpufeature, applied_alternatives);
 }
 
 /*
@@ -121,11 +121,11 @@ static noinstr void patch_alternative(struct alt_instr *alt,
  * accidentally call into the cache.S code, which is patched by us at
  * runtime.
  */
-static noinstr void clean_dcache_range_nopatch(u64 start, u64 end)
+static void clean_dcache_range_nopatch(u64 start, u64 end)
 {
 	u64 cur, d_size, ctr_el0;
 
-	ctr_el0 = arm64_ftr_reg_ctrel0.sys_val;
+	ctr_el0 = read_sanitised_ftr_reg(SYS_CTR_EL0);
 	d_size = 4 << cpuid_feature_extract_unsigned_field(ctr_el0,
 							   CTR_EL0_DminLine_SHIFT);
 	cur = start & ~(d_size - 1);
@@ -139,9 +139,9 @@ static noinstr void clean_dcache_range_nopatch(u64 start, u64 end)
 	} while (cur += d_size, cur < end);
 }
 
-static int __apply_alternatives(const struct alt_region *region,
-				bool is_module,
-				unsigned long *cpucap_mask)
+static void __apply_alternatives(const struct alt_region *region,
+				 bool is_module,
+				 unsigned long *feature_mask)
 {
 	struct alt_instr *alt;
 	__le32 *origptr, *updptr;
@@ -151,7 +151,7 @@ static int __apply_alternatives(const struct alt_region *region,
 		int nr_inst;
 		int cap = ALT_CAP(alt);
 
-		if (!test_bit(cap, cpucap_mask))
+		if (!test_bit(cap, feature_mask))
 			continue;
 
 		if (!cpus_have_cap(cap))
@@ -166,13 +166,10 @@ static int __apply_alternatives(const struct alt_region *region,
 		updptr = is_module ? origptr : lm_alias(origptr);
 		nr_inst = alt->orig_len / AARCH64_INSN_SIZE;
 
-		if (ALT_HAS_CB(alt)) {
+		if (ALT_HAS_CB(alt))
 			alt_cb  = ALT_REPL_PTR(alt);
-			if (is_module && !core_kernel_text((unsigned long)alt_cb))
-				return -ENOEXEC;
-		} else {
+		else
 			alt_cb = patch_alternative;
-		}
 
 		alt_cb(alt, origptr, updptr, nr_inst);
 
@@ -191,13 +188,12 @@ static int __apply_alternatives(const struct alt_region *region,
 		icache_inval_all_pou();
 		isb();
 
+		/* Ignore ARM64_CB bit from feature mask */
 		bitmap_or(applied_alternatives, applied_alternatives,
-			  cpucap_mask, ARM64_NCAPS);
+			  feature_mask, ARM64_NCAPS);
 		bitmap_and(applied_alternatives, applied_alternatives,
-			   system_cpucaps, ARM64_NCAPS);
+			   cpu_hwcaps, ARM64_NCAPS);
 	}
-
-	return 0;
 }
 
 static void __init apply_alternatives_vdso(void)
@@ -243,7 +239,7 @@ static int __init __apply_alternatives_multi_stop(void *unused)
 	} else {
 		DECLARE_BITMAP(remaining_capabilities, ARM64_NCAPS);
 
-		bitmap_complement(remaining_capabilities, boot_cpucaps,
+		bitmap_complement(remaining_capabilities, boot_capabilities,
 				  ARM64_NCAPS);
 
 		BUG_ON(all_alternatives_applied);
@@ -278,11 +274,11 @@ void __init apply_boot_alternatives(void)
 	pr_info("applying boot alternatives\n");
 
 	__apply_alternatives(&kernel_alternatives, false,
-			     &boot_cpucaps[0]);
+			     &boot_capabilities[0]);
 }
 
 #ifdef CONFIG_MODULES
-int apply_alternatives_module(void *start, size_t length)
+void apply_alternatives_module(void *start, size_t length)
 {
 	struct alt_region region = {
 		.begin	= start,
@@ -292,7 +288,7 @@ int apply_alternatives_module(void *start, size_t length)
 
 	bitmap_fill(all_capabilities, ARM64_NCAPS);
 
-	return __apply_alternatives(&region, true, &all_capabilities[0]);
+	__apply_alternatives(&region, true, &all_capabilities[0]);
 }
 #endif
 

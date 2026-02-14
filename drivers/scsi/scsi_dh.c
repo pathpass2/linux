@@ -353,8 +353,7 @@ EXPORT_SYMBOL_GPL(scsi_dh_attach);
  *      that may have a device handler attached
  * @gfp - the GFP mask used in the kmalloc() call when allocating memory
  *
- * Returns name of attached handler, NULL if no handler is attached, or
- * and error pointer if an error occurred.
+ * Returns name of attached handler, NULL if no handler is attached.
  * Caller must take care to free the returned string.
  */
 const char *scsi_dh_attached_handler_name(struct request_queue *q, gfp_t gfp)
@@ -364,11 +363,10 @@ const char *scsi_dh_attached_handler_name(struct request_queue *q, gfp_t gfp)
 
 	sdev = scsi_device_from_queue(q);
 	if (!sdev)
-		return ERR_PTR(-ENODEV);
+		return NULL;
 
 	if (sdev->handler)
-		handler_name = kstrdup(sdev->handler->name, gfp) ? :
-			       ERR_PTR(-ENOMEM);
+		handler_name = kstrdup(sdev->handler->name, gfp);
 	put_device(&sdev->sdev_gendev);
 	return handler_name;
 }

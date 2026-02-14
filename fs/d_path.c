@@ -7,7 +7,6 @@
 #include <linux/slab.h>
 #include <linux/prefetch.h>
 #include "mount.h"
-#include "internal.h"
 
 struct prepend_buffer {
 	char *buf;
@@ -241,9 +240,9 @@ static void get_fs_root_rcu(struct fs_struct *fs, struct path *root)
 	unsigned seq;
 
 	do {
-		seq = read_seqbegin(&fs->seq);
+		seq = read_seqcount_begin(&fs->seq);
 		*root = fs->root;
-	} while (read_seqretry(&fs->seq, seq));
+	} while (read_seqcount_retry(&fs->seq, seq));
 }
 
 /**
@@ -385,10 +384,10 @@ static void get_fs_root_and_pwd_rcu(struct fs_struct *fs, struct path *root,
 	unsigned seq;
 
 	do {
-		seq = read_seqbegin(&fs->seq);
+		seq = read_seqcount_begin(&fs->seq);
 		*root = fs->root;
 		*pwd = fs->pwd;
-	} while (read_seqretry(&fs->seq, seq));
+	} while (read_seqcount_retry(&fs->seq, seq));
 }
 
 /*

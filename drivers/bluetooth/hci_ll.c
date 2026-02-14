@@ -305,7 +305,7 @@ static void ll_device_woke_up(struct hci_uart *hu)
 	hci_uart_tx_wakeup(hu);
 }
 
-/* Enqueue frame for transmission (padding, crc, etc) */
+/* Enqueue frame for transmittion (padding, crc, etc) */
 /* may be called from two simultaneous tasklets */
 static int ll_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 {
@@ -429,7 +429,7 @@ static int ll_recv(struct hci_uart *hu, const void *data, int count)
 	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
 		return -EUNATCH;
 
-	ll->rx_skb = h4_recv_buf(hu, ll->rx_skb, data, count,
+	ll->rx_skb = h4_recv_buf(hu->hdev, ll->rx_skb, data, count,
 				 ll_recv_pkts, ARRAY_SIZE(ll_recv_pkts));
 	if (IS_ERR(ll->rx_skb)) {
 		int err = PTR_ERR(ll->rx_skb);
@@ -649,11 +649,11 @@ static int ll_setup(struct hci_uart *hu)
 		/* This means that there was an error getting the BD address
 		 * during probe, so mark the device as having a bad address.
 		 */
-		hci_set_quirk(hu->hdev, HCI_QUIRK_INVALID_BDADDR);
+		set_bit(HCI_QUIRK_INVALID_BDADDR, &hu->hdev->quirks);
 	} else if (bacmp(&lldev->bdaddr, BDADDR_ANY)) {
 		err = ll_set_bdaddr(hu->hdev, &lldev->bdaddr);
 		if (err)
-			hci_set_quirk(hu->hdev, HCI_QUIRK_INVALID_BDADDR);
+			set_bit(HCI_QUIRK_INVALID_BDADDR, &hu->hdev->quirks);
 	}
 
 	/* Operational speed if any */
@@ -786,7 +786,7 @@ MODULE_DEVICE_TABLE(of, hci_ti_of_match);
 static struct serdev_device_driver hci_ti_drv = {
 	.driver		= {
 		.name	= "hci-ti",
-		.of_match_table = hci_ti_of_match,
+		.of_match_table = of_match_ptr(hci_ti_of_match),
 	},
 	.probe	= hci_ti_probe,
 	.remove	= hci_ti_remove,

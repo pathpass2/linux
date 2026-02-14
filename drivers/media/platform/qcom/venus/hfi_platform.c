@@ -2,7 +2,7 @@
 /*
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
  */
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include "hfi_platform.h"
 #include "core.h"
 
@@ -21,9 +21,7 @@ const struct hfi_platform *hfi_platform_get(enum hfi_version version)
 }
 
 unsigned long
-hfi_platform_get_codec_vpp_freq(struct venus_core *core,
-				enum hfi_version version, u32 codec,
-				u32 session_type)
+hfi_platform_get_codec_vpp_freq(enum hfi_version version, u32 codec, u32 session_type)
 {
 	const struct hfi_platform *plat;
 	unsigned long freq = 0;
@@ -33,15 +31,13 @@ hfi_platform_get_codec_vpp_freq(struct venus_core *core,
 		return 0;
 
 	if (plat->codec_vpp_freq)
-		freq = plat->codec_vpp_freq(core, session_type, codec);
+		freq = plat->codec_vpp_freq(session_type, codec);
 
 	return freq;
 }
 
 unsigned long
-hfi_platform_get_codec_vsp_freq(struct venus_core *core,
-				enum hfi_version version, u32 codec,
-				u32 session_type)
+hfi_platform_get_codec_vsp_freq(enum hfi_version version, u32 codec, u32 session_type)
 {
 	const struct hfi_platform *plat;
 	unsigned long freq = 0;
@@ -51,15 +47,13 @@ hfi_platform_get_codec_vsp_freq(struct venus_core *core,
 		return 0;
 
 	if (plat->codec_vpp_freq)
-		freq = plat->codec_vsp_freq(core, session_type, codec);
+		freq = plat->codec_vsp_freq(session_type, codec);
 
 	return freq;
 }
 
 unsigned long
-hfi_platform_get_codec_lp_freq(struct venus_core *core,
-			       enum hfi_version version, u32 codec,
-			       u32 session_type)
+hfi_platform_get_codec_lp_freq(enum hfi_version version, u32 codec, u32 session_type)
 {
 	const struct hfi_platform *plat;
 	unsigned long freq = 0;
@@ -69,14 +63,13 @@ hfi_platform_get_codec_lp_freq(struct venus_core *core,
 		return 0;
 
 	if (plat->codec_lp_freq)
-		freq = plat->codec_lp_freq(core, session_type, codec);
+		freq = plat->codec_lp_freq(session_type, codec);
 
 	return freq;
 }
 
 int
-hfi_platform_get_codecs(struct venus_core *core, u32 *enc_codecs,
-			u32 *dec_codecs, u32 *count)
+hfi_platform_get_codecs(struct venus_core *core, u32 *enc_codecs, u32 *dec_codecs, u32 *count)
 {
 	const struct hfi_platform *plat;
 
@@ -85,9 +78,9 @@ hfi_platform_get_codecs(struct venus_core *core, u32 *enc_codecs,
 		return -EINVAL;
 
 	if (plat->codecs)
-		plat->codecs(core, enc_codecs, dec_codecs, count);
+		plat->codecs(enc_codecs, dec_codecs, count);
 
-	if (IS_IRIS2_1(core)) {
+	if (of_device_is_compatible(core->dev->of_node, "qcom,sc7280-venus")) {
 		*enc_codecs &= ~HFI_VIDEO_CODEC_VP8;
 		*dec_codecs &= ~HFI_VIDEO_CODEC_VP8;
 	}

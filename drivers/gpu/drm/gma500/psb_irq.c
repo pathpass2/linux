@@ -9,7 +9,6 @@
  **************************************************************************/
 
 #include <drm/drm_drv.h>
-#include <drm/drm_print.h>
 #include <drm/drm_vblank.h>
 
 #include "power.h"
@@ -30,6 +29,17 @@ static inline u32 gma_pipestat(int pipe)
 		return PIPEBSTAT;
 	if (pipe == 2)
 		return PIPECSTAT;
+	BUG();
+}
+
+static inline u32 gma_pipe_event(int pipe)
+{
+	if (pipe == 0)
+		return _PSB_PIPEA_EVENT_FLAG;
+	if (pipe == 1)
+		return _MDFLD_PIPEB_EVENT_FLAG;
+	if (pipe == 2)
+		return _MDFLD_PIPEC_EVENT_FLAG;
 	BUG();
 }
 
@@ -328,8 +338,6 @@ int gma_irq_install(struct drm_device *dev)
 
 	gma_irq_postinstall(dev);
 
-	dev_priv->irq_enabled = true;
-
 	return 0;
 }
 
@@ -339,9 +347,6 @@ void gma_irq_uninstall(struct drm_device *dev)
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	unsigned long irqflags;
 	unsigned int i;
-
-	if (!dev_priv->irq_enabled)
-		return;
 
 	spin_lock_irqsave(&dev_priv->irqmask_lock, irqflags);
 

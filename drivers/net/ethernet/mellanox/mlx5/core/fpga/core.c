@@ -57,7 +57,7 @@ static const char * const mlx5_fpga_qp_error_strings[] = {
 };
 static struct mlx5_fpga_device *mlx5_fpga_device_alloc(void)
 {
-	struct mlx5_fpga_device *fdev;
+	struct mlx5_fpga_device *fdev = NULL;
 
 	fdev = kzalloc(sizeof(*fdev), GFP_KERNEL);
 	if (!fdev)
@@ -211,7 +211,7 @@ int mlx5_fpga_device_start(struct mlx5_core_dev *mdev)
 	max_num_qps = MLX5_CAP_FPGA(mdev, shell_caps.max_num_qps);
 	if (!max_num_qps) {
 		mlx5_fpga_err(fdev, "FPGA reports 0 QPs in SHELL_CAPS\n");
-		err = -EOPNOTSUPP;
+		err = -ENOTSUPP;
 		goto out;
 	}
 
@@ -252,7 +252,7 @@ out:
 
 int mlx5_fpga_init(struct mlx5_core_dev *mdev)
 {
-	struct mlx5_fpga_device *fdev;
+	struct mlx5_fpga_device *fdev = NULL;
 
 	if (!MLX5_CAP_GEN(mdev, fpga)) {
 		mlx5_core_dbg(mdev, "FPGA capability not present\n");

@@ -9,8 +9,6 @@ title: STMicroelectronics STM32 digital thermal sensor (DTS)
 maintainers:
   - Pascal Paillet <p.paillet@foss.st.com>
 
-$ref: thermal-sensor.yaml#
-
 properties:
   compatible:
     const: st,stm32-thermal
@@ -32,13 +30,14 @@ properties:
     const: 0
 
 required:
+  - "#thermal-sensor-cells"
   - compatible
   - reg
   - interrupts
   - clocks
   - clock-names
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

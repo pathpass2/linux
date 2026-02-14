@@ -24,7 +24,7 @@ select:
     - compatible
 
 allOf:
-  - $ref: snps,dwmac.yaml#
+  - $ref: "snps,dwmac.yaml#"
 
 properties:
   compatible:
@@ -56,14 +56,6 @@ properties:
         - tx
         - mem
 
-  interrupts:
-    maxItems: 2
-
-  interrupt-names:
-    items:
-      - const: macirq
-      - const: eth_wake_irq
-
   intf_mode:
     $ref: /schemas/types.yaml#/definitions/phandle-array
     items:
@@ -73,10 +65,6 @@ properties:
     description:
       Should be phandle/offset pair. The phandle to the syscon node which
       encompases the GPR register, and the offset of the GPR register.
-
-  nvmem-cells: true
-
-  nvmem-cell-names: true
 
   snps,rmii_refclk_ext:
     $ref: /schemas/types.yaml#/definitions/flag

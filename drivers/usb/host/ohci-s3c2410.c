@@ -329,7 +329,7 @@ static void s3c2410_hcd_oc(struct s3c2410_hcd_info *info, int port_oc)
  * the HCD's stop() method.  It is always called from a thread
  * context, normally "rmmod", "apmd", or something similar.
  */
-static void
+static int
 ohci_hcd_s3c2410_remove(struct platform_device *dev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(dev);
@@ -337,6 +337,7 @@ ohci_hcd_s3c2410_remove(struct platform_device *dev)
 	usb_remove_hcd(hcd);
 	s3c2410_stop_hc(dev);
 	usb_put_hcd(hcd);
+	return 0;
 }
 
 /*
@@ -448,6 +449,13 @@ static const struct dev_pm_ops ohci_hcd_s3c2410_pm_ops = {
 	.resume		= ohci_hcd_s3c2410_drv_resume,
 };
 
+static const struct of_device_id ohci_hcd_s3c2410_dt_ids[] = {
+	{ .compatible = "samsung,s3c2410-ohci" },
+	{ /* sentinel */ }
+};
+
+MODULE_DEVICE_TABLE(of, ohci_hcd_s3c2410_dt_ids);
+
 static struct platform_driver ohci_hcd_s3c2410_driver = {
 	.probe		= ohci_hcd_s3c2410_probe,
 	.remove		= ohci_hcd_s3c2410_remove,
@@ -455,6 +463,7 @@ static struct platform_driver ohci_hcd_s3c2410_driver = {
 	.driver		= {
 		.name	= "s3c2410-ohci",
 		.pm	= &ohci_hcd_s3c2410_pm_ops,
+		.of_match_table	= ohci_hcd_s3c2410_dt_ids,
 	},
 };
 

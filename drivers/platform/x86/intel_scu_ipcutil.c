@@ -18,11 +18,11 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 
-#include <linux/platform_data/x86/intel_scu_ipc.h>
+#include <asm/intel_scu_ipc.h>
 
 static int major;
 
-static struct intel_scu_ipc_dev *scu;
+struct intel_scu_ipc_dev *scu;
 static DEFINE_MUTEX(scu_lock);
 
 /* IOCTL commands */

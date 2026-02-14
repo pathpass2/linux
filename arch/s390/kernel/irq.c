@@ -9,7 +9,6 @@
  */
 
 #include <linux/kernel_stat.h>
-#include <linux/cpufeature.h>
 #include <linux/interrupt.h>
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
@@ -26,13 +25,10 @@
 #include <asm/irq_regs.h>
 #include <asm/cputime.h>
 #include <asm/lowcore.h>
-#include <asm/machine.h>
 #include <asm/irq.h>
 #include <asm/hw_irq.h>
 #include <asm/stacktrace.h>
 #include <asm/softirq_stack.h>
-#include <asm/vtime.h>
-#include <asm/asm.h>
 #include "entry.h"
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct irq_stat, irq_stat);
@@ -79,13 +75,13 @@ static const struct irq_class irqclass_sub_desc[] = {
 	{.irq = IRQEXT_CMS, .name = "CMS", .desc = "[EXT] CPU-Measurement: Sampling"},
 	{.irq = IRQEXT_CMC, .name = "CMC", .desc = "[EXT] CPU-Measurement: Counter"},
 	{.irq = IRQEXT_FTP, .name = "FTP", .desc = "[EXT] HMC FTP Service"},
-	{.irq = IRQEXT_WTI, .name = "WTI", .desc = "[EXT] Warning Track"},
 	{.irq = IRQIO_CIO,  .name = "CIO", .desc = "[I/O] Common I/O Layer Interrupt"},
 	{.irq = IRQIO_DAS,  .name = "DAS", .desc = "[I/O] DASD"},
 	{.irq = IRQIO_C15,  .name = "C15", .desc = "[I/O] 3215"},
 	{.irq = IRQIO_C70,  .name = "C70", .desc = "[I/O] 3270"},
 	{.irq = IRQIO_TAP,  .name = "TAP", .desc = "[I/O] Tape"},
 	{.irq = IRQIO_VMR,  .name = "VMR", .desc = "[I/O] Unit Record Devices"},
+	{.irq = IRQIO_LCS,  .name = "LCS", .desc = "[I/O] LCS"},
 	{.irq = IRQIO_CTC,  .name = "CTC", .desc = "[I/O] CTC"},
 	{.irq = IRQIO_ADM,  .name = "ADM", .desc = "[I/O] EADM Subchannel"},
 	{.irq = IRQIO_CSC,  .name = "CSC", .desc = "[I/O] CHSC Subchannel"},
@@ -103,8 +99,8 @@ static const struct irq_class irqclass_sub_desc[] = {
 
 static void do_IRQ(struct pt_regs *regs, int irq)
 {
-	if (tod_after_eq(get_lowcore()->int_clock,
-			 get_lowcore()->clock_comparator))
+	if (tod_after_eq(S390_lowcore.int_clock,
+			 S390_lowcore.clock_comparator))
 		/* Serve timer interrupts first. */
 		clock_comparator_work();
 	generic_handle_irq(irq);
@@ -114,7 +110,7 @@ static int on_async_stack(void)
 {
 	unsigned long frame = current_frame_address();
 
-	return ((get_lowcore()->async_stack ^ frame) & ~(THREAD_SIZE - 1)) == 0;
+	return ((S390_lowcore.async_stack ^ frame) & ~(THREAD_SIZE - 1)) == 0;
 }
 
 static void do_irq_async(struct pt_regs *regs, int irq)
@@ -122,7 +118,7 @@ static void do_irq_async(struct pt_regs *regs, int irq)
 	if (on_async_stack()) {
 		do_IRQ(regs, irq);
 	} else {
-		call_on_stack(2, get_lowcore()->async_stack, void, do_IRQ,
+		call_on_stack(2, S390_lowcore.async_stack, void, do_IRQ,
 			      struct pt_regs *, regs, int, irq);
 	}
 }
@@ -131,13 +127,9 @@ static int irq_pending(struct pt_regs *regs)
 {
 	int cc;
 
-	asm volatile(
-		"	tpi	 0\n"
-		CC_IPM(cc)
-		: CC_OUT(cc, cc)
-		:
-		: CC_CLOBBER);
-	return CC_TRANSFORM(cc);
+	asm volatile("tpi 0\n"
+		     "ipm %0" : "=d" (cc) : : "cc");
+	return cc >> 28;
 }
 
 void noinstr do_io_irq(struct pt_regs *regs)
@@ -150,7 +142,7 @@ void noinstr do_io_irq(struct pt_regs *regs)
 
 	if (user_mode(regs)) {
 		update_timer_sys();
-		if (cpu_has_bear())
+		if (static_branch_likely(&cpu_has_bear))
 			current->thread.last_break = regs->last_break;
 	}
 
@@ -158,14 +150,13 @@ void noinstr do_io_irq(struct pt_regs *regs)
 	if (from_idle)
 		account_idle_time_irq();
 
-	set_cpu_flag(CIF_NOHZ_DELAY);
 	do {
-		regs->tpi_info = get_lowcore()->tpi_info;
-		if (get_lowcore()->tpi_info.adapter_IO)
+		regs->tpi_info = S390_lowcore.tpi_info;
+		if (S390_lowcore.tpi_info.adapter_IO)
 			do_irq_async(regs, THIN_INTERRUPT);
 		else
 			do_irq_async(regs, IO_INTERRUPT);
-	} while (machine_is_lpar() && irq_pending(regs));
+	} while (MACHINE_IS_LPAR && irq_pending(regs));
 
 	irq_exit_rcu();
 
@@ -186,13 +177,13 @@ void noinstr do_ext_irq(struct pt_regs *regs)
 
 	if (user_mode(regs)) {
 		update_timer_sys();
-		if (cpu_has_bear())
+		if (static_branch_likely(&cpu_has_bear))
 			current->thread.last_break = regs->last_break;
 	}
 
-	regs->int_code = get_lowcore()->ext_int_code_addr;
-	regs->int_parm = get_lowcore()->ext_params;
-	regs->int_parm_long = get_lowcore()->ext_params2;
+	regs->int_code = S390_lowcore.ext_int_code_addr;
+	regs->int_parm = S390_lowcore.ext_params;
+	regs->int_parm_long = S390_lowcore.ext_params2;
 
 	from_idle = test_and_clear_cpu_flag(CIF_ENABLED_WAIT);
 	if (from_idle)
@@ -259,7 +250,7 @@ int show_interrupts(struct seq_file *p, void *v)
 		seq_putc(p, '\n');
 		goto out;
 	}
-	if (index < irq_get_nr_irqs()) {
+	if (index < nr_irqs) {
 		show_msi_interrupt(p, index);
 		goto out;
 	}
@@ -394,7 +385,7 @@ void irq_subclass_register(enum irq_subclass subclass)
 {
 	spin_lock(&irq_subclass_lock);
 	if (!irq_subclass_refcount[subclass])
-		system_ctl_set_bit(0, subclass);
+		ctl_set_bit(0, subclass);
 	irq_subclass_refcount[subclass]++;
 	spin_unlock(&irq_subclass_lock);
 }
@@ -405,7 +396,7 @@ void irq_subclass_unregister(enum irq_subclass subclass)
 	spin_lock(&irq_subclass_lock);
 	irq_subclass_refcount[subclass]--;
 	if (!irq_subclass_refcount[subclass])
-		system_ctl_clear_bit(0, subclass);
+		ctl_clear_bit(0, subclass);
 	spin_unlock(&irq_subclass_lock);
 }
 EXPORT_SYMBOL(irq_subclass_unregister);

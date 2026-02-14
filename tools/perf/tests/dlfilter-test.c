@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Test dlfilter C API. A perf.data file is synthesized and then processed
- * by perf script with dlfilters named dlfilter-test-api-v*.so. Also a C file
+ * by perf script with a dlfilter named dlfilter-test-api-v0.so. Also a C file
  * is compiled to provide a dso to match the synthesized perf.data file.
  */
 
@@ -37,8 +37,6 @@
 
 #define MAP_START 0x400000
 
-#define DLFILTER_TEST_NAME_MAX 128
-
 struct test_data {
 	struct perf_tool tool;
 	struct machine *machine;
@@ -47,8 +45,6 @@ struct test_data {
 	u64 bar;
 	u64 ip;
 	u64 addr;
-	char name[DLFILTER_TEST_NAME_MAX];
-	char desc[DLFILTER_TEST_NAME_MAX];
 	char perf[PATH_MAX];
 	char perf_data_file_name[PATH_MAX];
 	char c_file_name[PATH_MAX];
@@ -62,7 +58,7 @@ static int test_result(const char *msg, int ret)
 	return ret;
 }
 
-static int process(const struct perf_tool *tool, union perf_event *event,
+static int process(struct perf_tool *tool, union perf_event *event,
 		   struct perf_sample *sample __maybe_unused,
 		   struct machine *machine __maybe_unused)
 {
@@ -219,7 +215,7 @@ static int write_prog(char *file_name)
 	return err ? -1 : 0;
 }
 
-static int get_dlfilters_path(const char *name, char *buf, size_t sz)
+static int get_dlfilters_path(char *buf, size_t sz)
 {
 	char perf[PATH_MAX];
 	char path[PATH_MAX];
@@ -228,12 +224,12 @@ static int get_dlfilters_path(const char *name, char *buf, size_t sz)
 
 	perf_exe(perf, sizeof(perf));
 	perf_path = dirname(perf);
-	snprintf(path, sizeof(path), "%s/dlfilters/%s", perf_path, name);
+	snprintf(path, sizeof(path), "%s/dlfilters/dlfilter-test-api-v0.so", perf_path);
 	if (access(path, R_OK)) {
 		exec_path = get_argv_exec_path();
 		if (!exec_path)
 			return -1;
-		snprintf(path, sizeof(path), "%s/dlfilters/%s", exec_path, name);
+		snprintf(path, sizeof(path), "%s/dlfilters/dlfilter-test-api-v0.so", exec_path);
 		free(exec_path);
 		if (access(path, R_OK))
 			return -1;
@@ -248,9 +244,9 @@ static int check_filter_desc(struct test_data *td)
 	char *desc = NULL;
 	int ret;
 
-	if (get_filter_desc(td->dlfilters, td->name, &desc, &long_desc) &&
+	if (get_filter_desc(td->dlfilters, "dlfilter-test-api-v0.so", &desc, &long_desc) &&
 	    long_desc && !strcmp(long_desc, "Filter used by the 'dlfilter C API' perf test") &&
-	    desc && !strcmp(desc, td->desc))
+	    desc && !strcmp(desc, "dlfilter to test v0 C API"))
 		ret = 0;
 	else
 		ret = -1;
@@ -288,7 +284,7 @@ static int get_ip_addr(struct test_data *td)
 static int do_run_perf_script(struct test_data *td, int do_early)
 {
 	return system_cmd("%s script -i %s "
-			  "--dlfilter %s/%s "
+			  "--dlfilter %s/dlfilter-test-api-v0.so "
 			  "--dlarg first "
 			  "--dlarg %d "
 			  "--dlarg %" PRIu64 " "
@@ -296,7 +292,7 @@ static int do_run_perf_script(struct test_data *td, int do_early)
 			  "--dlarg %d "
 			  "--dlarg last",
 			  td->perf, td->perf_data_file_name, td->dlfilters,
-			  td->name, verbose, td->ip, td->addr, do_early);
+			  verbose, td->ip, td->addr, do_early);
 }
 
 static int run_perf_script(struct test_data *td)
@@ -319,14 +315,13 @@ static int run_perf_script(struct test_data *td)
 
 static int test__dlfilter_test(struct test_data *td)
 {
-	struct perf_env host_env;
 	u64 sample_type = TEST_SAMPLE_TYPE;
 	pid_t pid = 12345;
 	pid_t tid = 12346;
 	u64 id = 99;
-	int err = TEST_OK;
+	int err;
 
-	if (get_dlfilters_path(td->name, td->dlfilters, PATH_MAX))
+	if (get_dlfilters_path(td->dlfilters, PATH_MAX))
 		return test_result("dlfilters not found", TEST_SKIP);
 
 	if (check_filter_desc(td))
@@ -353,42 +348,38 @@ static int test__dlfilter_test(struct test_data *td)
 		return test_result("Failed to find program symbols", TEST_FAIL);
 
 	pr_debug("Creating new host machine structure\n");
-	perf_env__init(&host_env);
-	td->machine = machine__new_host(&host_env);
+	td->machine = machine__new_host();
+	td->machine->env = &perf_env;
 
 	td->fd = creat(td->perf_data_file_name, 0644);
 	if (td->fd < 0)
 		return test_result("Failed to create test perf.data file", TEST_FAIL);
 
 	err = perf_header__write_pipe(td->fd);
-	if (err < 0) {
-		err = test_result("perf_header__write_pipe() failed", TEST_FAIL);
-		goto out;
-	}
+	if (err < 0)
+		return test_result("perf_header__write_pipe() failed", TEST_FAIL);
+
 	err = write_attr(td, sample_type, &id);
-	if (err) {
-		err = test_result("perf_event__synthesize_attr() failed", TEST_FAIL);
-		goto out;
-	}
-	if (write_comm(td->fd, pid, tid, "test-prog")) {
-		err = TEST_FAIL;
-		goto out;
-	}
-	if (write_mmap(td->fd, pid, tid, MAP_START, 0x10000, 0, td->prog_file_name)) {
-		err = TEST_FAIL;
-		goto out;
-	}
-	if (write_sample(td, sample_type, id, pid, tid) != TEST_OK) {
-		err = TEST_FAIL;
-		goto out;
-	}
+	if (err)
+		return test_result("perf_event__synthesize_attr() failed", TEST_FAIL);
+
+	if (write_comm(td->fd, pid, tid, "test-prog"))
+		return TEST_FAIL;
+
+	if (write_mmap(td->fd, pid, tid, MAP_START, 0x10000, 0, td->prog_file_name))
+		return TEST_FAIL;
+
+	if (write_sample(td, sample_type, id, pid, tid) != TEST_OK)
+		return TEST_FAIL;
+
 	if (verbose > 1)
 		system_cmd("%s script -i %s -D", td->perf, td->perf_data_file_name);
 
-	err = run_perf_script(td) ? TEST_FAIL : TEST_OK;
-out:
-	perf_env__exit(&host_env);
-	return err;
+	err = run_perf_script(td);
+	if (err)
+		return TEST_FAIL;
+
+	return TEST_OK;
 }
 
 static void unlink_path(const char *path)
@@ -408,18 +399,14 @@ static void test_data__free(struct test_data *td)
 	}
 }
 
-static int test__dlfilter_ver(int ver)
+static int test__dlfilter(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
 {
 	struct test_data td = {.fd = -1};
 	int pid = getpid();
 	int err;
 
-	pr_debug("\n-- Testing version %d API --\n", ver);
-
 	perf_exe(td.perf, sizeof(td.perf));
 
-	snprintf(td.name, sizeof(td.name), "dlfilter-test-api-v%d.so", ver);
-	snprintf(td.desc, sizeof(td.desc), "dlfilter to test v%d C API", ver);
 	snprintf(td.perf_data_file_name, PATH_MAX, "/tmp/dlfilter-test-%u-perf-data", pid);
 	snprintf(td.c_file_name, PATH_MAX, "/tmp/dlfilter-test-%u-prog.c", pid);
 	snprintf(td.prog_file_name, PATH_MAX, "/tmp/dlfilter-test-%u-prog", pid);
@@ -427,16 +414,6 @@ static int test__dlfilter_ver(int ver)
 	err = test__dlfilter_test(&td);
 	test_data__free(&td);
 	return err;
-}
-
-static int test__dlfilter(struct test_suite *test __maybe_unused, int subtest __maybe_unused)
-{
-	int err = test__dlfilter_ver(0);
-
-	if (err)
-		return err;
-	/* No test for version 1 */
-	return test__dlfilter_ver(2);
 }
 
 DEFINE_SUITE("dlfilter C API", dlfilter);

@@ -27,7 +27,8 @@ struct bdw_rt5677_priv {
 static int bdw_rt5677_event_hp(struct snd_soc_dapm_widget *w,
 			struct snd_kcontrol *k, int event)
 {
-	struct snd_soc_card *card = snd_soc_dapm_to_card(w->dapm);
+	struct snd_soc_dapm_context *dapm = w->dapm;
+	struct snd_soc_card *card = dapm->card;
 	struct bdw_rt5677_priv *bdw_rt5677 = snd_soc_card_get_drvdata(card);
 
 	if (SND_SOC_DAPM_EVENT_ON(event))
@@ -152,8 +153,8 @@ static int broadwell_ssp0_fixup(struct snd_soc_pcm_runtime *rtd,
 static int bdw_rt5677_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int ret;
 
 	ret = snd_soc_dai_set_sysclk(codec_dai, RT5677_SCLK_S_MCLK, 24576000,
@@ -169,8 +170,8 @@ static int bdw_rt5677_hw_params(struct snd_pcm_substream *substream,
 static int bdw_rt5677_dsp_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params)
 {
-	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	int ret;
 
 	ret = snd_soc_dai_set_sysclk(codec_dai, RT5677_SCLK_S_PLL1, 24576000,
@@ -226,8 +227,8 @@ static int bdw_rt5677_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct bdw_rt5677_priv *bdw_rt5677 =
 			snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_component *component = snd_soc_rtd_to_codec(rtd, 0)->component;
-	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
+	struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
+	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(component);
 	int ret;
 
 	ret = devm_acpi_dev_add_driver_gpios(component->dev, bdw_rt5677_gpios);
@@ -328,6 +329,8 @@ static struct snd_soc_dai_link bdw_rt5677_dais[] = {
 			SND_SOC_DPCM_TRIGGER_POST,
 			SND_SOC_DPCM_TRIGGER_POST
 		},
+		.dpcm_capture = 1,
+		.dpcm_playback = 1,
 		.ops = &bdw_rt5677_fe_ops,
 		SND_SOC_DAILINK_REG(fe, dummy, platform),
 	},
@@ -353,6 +356,8 @@ static struct snd_soc_dai_link bdw_rt5677_dais[] = {
 		.ignore_pmdown_time = 1,
 		.be_hw_params_fixup = broadwell_ssp0_fixup,
 		.ops = &bdw_rt5677_ops,
+		.dpcm_playback = 1,
+		.dpcm_capture = 1,
 		.init = bdw_rt5677_init,
 		.exit = bdw_rt5677_exit,
 		SND_SOC_DAILINK_REG(ssp0_port, be, platform),
@@ -365,7 +370,7 @@ static int bdw_rt5677_suspend_pre(struct snd_soc_card *card)
 	struct snd_soc_dapm_context *dapm;
 
 	if (bdw_rt5677->component) {
-		dapm = snd_soc_component_to_dapm(bdw_rt5677->component);
+		dapm = snd_soc_component_get_dapm(bdw_rt5677->component);
 		snd_soc_dapm_disable_pin(dapm, "MICBIAS1");
 	}
 	return 0;
@@ -377,7 +382,7 @@ static int bdw_rt5677_resume_post(struct snd_soc_card *card)
 	struct snd_soc_dapm_context *dapm;
 
 	if (bdw_rt5677->component) {
-		dapm = snd_soc_component_to_dapm(bdw_rt5677->component);
+		dapm = snd_soc_component_get_dapm(bdw_rt5677->component);
 		snd_soc_dapm_force_enable_pin(dapm, "MICBIAS1");
 	}
 	return 0;

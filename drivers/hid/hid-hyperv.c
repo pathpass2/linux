@@ -192,7 +192,7 @@ static void mousevsc_on_receive_device_info(struct mousevsc_dev *input_device,
 		goto cleanup;
 
 	input_device->report_desc_size = le16_to_cpu(
-					desc->rpt_desc.wDescriptorLength);
+					desc->desc[0].wDescriptorLength);
 	if (input_device->report_desc_size == 0) {
 		input_device->dev_info_status = -EINVAL;
 		goto cleanup;
@@ -210,7 +210,7 @@ static void mousevsc_on_receive_device_info(struct mousevsc_dev *input_device,
 
 	memcpy(input_device->report_desc,
 	       ((unsigned char *)desc) + desc->bLength,
-	       le16_to_cpu(desc->rpt_desc.wDescriptorLength));
+	       le16_to_cpu(desc->desc[0].wDescriptorLength));
 
 	/* Send the ack */
 	memset(&ack, 0, sizeof(struct mousevsc_prt_msg));
@@ -258,17 +258,19 @@ static void mousevsc_on_receive(struct hv_device *device,
 
 	switch (hid_msg_hdr->type) {
 	case SYNTH_HID_PROTOCOL_RESPONSE:
-		len = struct_size(pipe_msg, data, pipe_msg->size);
-
 		/*
 		 * While it will be impossible for us to protect against
 		 * malicious/buggy hypervisor/host, add a check here to
 		 * ensure we don't corrupt memory.
 		 */
-		if (WARN_ON(len > sizeof(struct mousevsc_prt_msg)))
+		if (struct_size(pipe_msg, data, pipe_msg->size)
+			> sizeof(struct mousevsc_prt_msg)) {
+			WARN_ON(1);
 			break;
+		}
 
-		memcpy(&input_dev->protocol_resp, pipe_msg, len);
+		memcpy(&input_dev->protocol_resp, pipe_msg,
+				struct_size(pipe_msg, data, pipe_msg->size));
 		complete(&input_dev->wait_event);
 		break;
 
@@ -422,25 +424,6 @@ static int mousevsc_hid_raw_request(struct hid_device *hid,
 	return 0;
 }
 
-static int mousevsc_hid_probe(struct hid_device *hid_dev, const struct hid_device_id *id)
-{
-	int ret;
-
-	ret = hid_parse(hid_dev);
-	if (ret) {
-		hid_err(hid_dev, "parse failed\n");
-		return ret;
-	}
-
-	ret = hid_hw_start(hid_dev, HID_CONNECT_HIDINPUT | HID_CONNECT_HIDDEV);
-	if (ret) {
-		hid_err(hid_dev, "hw start failed\n");
-		return ret;
-	}
-
-	return 0;
-}
-
 static const struct hid_ll_driver mousevsc_ll_driver = {
 	.parse = mousevsc_hid_parse,
 	.open = mousevsc_hid_open,
@@ -450,16 +433,7 @@ static const struct hid_ll_driver mousevsc_ll_driver = {
 	.raw_request = mousevsc_hid_raw_request,
 };
 
-static const struct hid_device_id mousevsc_devices[] = {
-	{ HID_DEVICE(BUS_VIRTUAL, HID_GROUP_ANY, 0x045E, 0x0621) },
-	{ }
-};
-
-static struct hid_driver mousevsc_hid_driver = {
-	.name = "hid-hyperv",
-	.id_table = mousevsc_devices,
-	.probe = mousevsc_hid_probe,
-};
+static struct hid_driver mousevsc_hid_driver;
 
 static int mousevsc_probe(struct hv_device *device,
 			const struct hv_vmbus_device_id *dev_id)
@@ -501,6 +475,7 @@ static int mousevsc_probe(struct hv_device *device,
 	}
 
 	hid_dev->ll_driver = &mousevsc_ll_driver;
+	hid_dev->driver = &mousevsc_hid_driver;
 	hid_dev->bus = BUS_VIRTUAL;
 	hid_dev->vendor = input_dev->hid_dev_info.vendor;
 	hid_dev->product = input_dev->hid_dev_info.product;
@@ -514,6 +489,20 @@ static int mousevsc_probe(struct hv_device *device,
 	ret = hid_add_device(hid_dev);
 	if (ret)
 		goto probe_err2;
+
+
+	ret = hid_parse(hid_dev);
+	if (ret) {
+		hid_err(hid_dev, "parse failed\n");
+		goto probe_err2;
+	}
+
+	ret = hid_hw_start(hid_dev, HID_CONNECT_HIDINPUT | HID_CONNECT_HIDDEV);
+
+	if (ret) {
+		hid_err(hid_dev, "hw start failed\n");
+		goto probe_err2;
+	}
 
 	device_init_wakeup(&device->device, true);
 
@@ -592,23 +581,12 @@ static struct  hv_driver mousevsc_drv = {
 
 static int __init mousevsc_init(void)
 {
-	int ret;
-
-	ret = hid_register_driver(&mousevsc_hid_driver);
-	if (ret)
-		return ret;
-
-	ret = vmbus_driver_register(&mousevsc_drv);
-	if (ret)
-		hid_unregister_driver(&mousevsc_hid_driver);
-
-	return ret;
+	return vmbus_driver_register(&mousevsc_drv);
 }
 
 static void __exit mousevsc_exit(void)
 {
 	vmbus_driver_unregister(&mousevsc_drv);
-	hid_unregister_driver(&mousevsc_hid_driver);
 }
 
 MODULE_LICENSE("GPL");

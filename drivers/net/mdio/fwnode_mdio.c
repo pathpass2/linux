@@ -7,7 +7,6 @@
  */
 
 #include <linux/acpi.h>
-#include <linux/dev_printk.h>
 #include <linux/fwnode_mdio.h>
 #include <linux/of.h>
 #include <linux/phy.h>
@@ -15,11 +14,9 @@
 
 MODULE_AUTHOR("Calvin Johnson <calvin.johnson@oss.nxp.com>");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("FWNODE MDIO bus (Ethernet PHY) accessors");
 
 static struct pse_control *
-fwnode_find_pse_control(struct fwnode_handle *fwnode,
-			struct phy_device *phydev)
+fwnode_find_pse_control(struct fwnode_handle *fwnode)
 {
 	struct pse_control *psec;
 	struct device_node *np;
@@ -31,7 +28,7 @@ fwnode_find_pse_control(struct fwnode_handle *fwnode,
 	if (!np)
 		return NULL;
 
-	psec = of_pse_control_get(np, phydev);
+	psec = of_pse_control_get(np);
 	if (PTR_ERR(psec) == -ENOENT)
 		return NULL;
 
@@ -41,7 +38,6 @@ fwnode_find_pse_control(struct fwnode_handle *fwnode,
 static struct mii_timestamper *
 fwnode_find_mii_timestamper(struct fwnode_handle *fwnode)
 {
-	struct mii_timestamper *mii_ts;
 	struct of_phandle_args arg;
 	int err;
 
@@ -55,16 +51,10 @@ fwnode_find_mii_timestamper(struct fwnode_handle *fwnode)
 	else if (err)
 		return ERR_PTR(err);
 
-	if (arg.args_count != 1) {
-		mii_ts = ERR_PTR(-EINVAL);
-		goto put_node;
-	}
+	if (arg.args_count != 1)
+		return ERR_PTR(-EINVAL);
 
-	mii_ts = register_mii_timestamper(arg.np, arg.args[0]);
-
-put_node:
-	of_node_put(arg.np);
-	return mii_ts;
+	return register_mii_timestamper(arg.np, arg.args[0]);
 }
 
 int fwnode_mdiobus_phy_device_register(struct mii_bus *mdio,
@@ -92,6 +82,11 @@ int fwnode_mdiobus_phy_device_register(struct mii_bus *mdio,
 	if (fwnode_property_read_bool(child, "broken-turn-around"))
 		mdio->phy_ignore_ta_mask |= 1 << addr;
 
+	fwnode_property_read_u32(child, "reset-assert-us",
+				 &phy->mdio.reset_assert_delay);
+	fwnode_property_read_u32(child, "reset-deassert-us",
+				 &phy->mdio.reset_deassert_delay);
+
 	/* Associate the fwnode with the device structure so it
 	 * can be looked up later
 	 */
@@ -108,7 +103,7 @@ int fwnode_mdiobus_phy_device_register(struct mii_bus *mdio,
 		return rc;
 	}
 
-	dev_dbg(&mdio->dev, "registered phy fwnode %pfw at address %i\n",
+	dev_dbg(&mdio->dev, "registered phy %p fwnode at address %i\n",
 		child, addr);
 	return 0;
 }
@@ -124,9 +119,15 @@ int fwnode_mdiobus_register_phy(struct mii_bus *bus,
 	u32 phy_id;
 	int rc;
 
+	psec = fwnode_find_pse_control(child);
+	if (IS_ERR(psec))
+		return PTR_ERR(psec);
+
 	mii_ts = fwnode_find_mii_timestamper(child);
-	if (IS_ERR(mii_ts))
-		return PTR_ERR(mii_ts);
+	if (IS_ERR(mii_ts)) {
+		rc = PTR_ERR(mii_ts);
+		goto clean_pse;
+	}
 
 	is_c45 = fwnode_device_is_compatible(child, "ethernet-phy-ieee802.3-c45");
 	if (is_c45 || fwnode_get_phy_id(child, &phy_id))
@@ -159,12 +160,6 @@ int fwnode_mdiobus_register_phy(struct mii_bus *bus,
 			goto clean_phy;
 	}
 
-	psec = fwnode_find_pse_control(child, phy);
-	if (IS_ERR(psec)) {
-		rc = PTR_ERR(psec);
-		goto unregister_phy;
-	}
-
 	phy->psec = psec;
 
 	/* phy->mii_ts may already be defined by the PHY driver. A
@@ -176,13 +171,12 @@ int fwnode_mdiobus_register_phy(struct mii_bus *bus,
 
 	return 0;
 
-unregister_phy:
-	if (is_acpi_node(child) || is_of_node(child))
-		phy_device_remove(phy);
 clean_phy:
 	phy_device_free(phy);
 clean_mii_ts:
 	unregister_mii_timestamper(mii_ts);
+clean_pse:
+	pse_control_put(psec);
 
 	return rc;
 }

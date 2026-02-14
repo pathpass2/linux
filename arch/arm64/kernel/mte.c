@@ -35,32 +35,41 @@ DEFINE_STATIC_KEY_FALSE(mte_async_or_asymm_mode);
 EXPORT_SYMBOL_GPL(mte_async_or_asymm_mode);
 #endif
 
-void mte_sync_tags(pte_t pte, unsigned int nr_pages)
+static void mte_sync_page_tags(struct page *page, pte_t old_pte,
+			       bool check_swap, bool pte_is_tagged)
+{
+	if (check_swap && is_swap_pte(old_pte)) {
+		swp_entry_t entry = pte_to_swp_entry(old_pte);
+
+		if (!non_swap_entry(entry))
+			mte_restore_tags(entry, page);
+	}
+
+	if (!pte_is_tagged)
+		return;
+
+	if (try_page_mte_tagging(page)) {
+		mte_clear_page_tags(page_address(page));
+		set_page_mte_tagged(page);
+	}
+}
+
+void mte_sync_tags(pte_t old_pte, pte_t pte)
 {
 	struct page *page = pte_page(pte);
-	struct folio *folio = page_folio(page);
-	unsigned long i;
+	long i, nr_pages = compound_nr(page);
+	bool check_swap = nr_pages == 1;
+	bool pte_is_tagged = pte_tagged(pte);
 
-	if (folio_test_hugetlb(folio)) {
-		unsigned long nr = folio_nr_pages(folio);
-
-		/* Hugetlb MTE flags are set for head page only */
-		if (folio_try_hugetlb_mte_tagging(folio)) {
-			for (i = 0; i < nr; i++, page++)
-				mte_clear_page_tags(page_address(page));
-			folio_set_hugetlb_mte_tagged(folio);
-		}
-
-		/* ensure the tags are visible before the PTE is set */
-		smp_wmb();
-
+	/* Early out if there's nothing to do */
+	if (!check_swap && !pte_is_tagged)
 		return;
-	}
 
 	/* if PG_mte_tagged is set, tags have already been initialised */
 	for (i = 0; i < nr_pages; i++, page++) {
-		if (try_page_mte_tagging(page)) {
-			mte_clear_page_tags(page_address(page));
+		if (!page_mte_tagged(page)) {
+			mte_sync_page_tags(page, old_pte, check_swap,
+					   pte_is_tagged);
 			set_page_mte_tagged(page);
 		}
 	}
@@ -84,7 +93,7 @@ int memcmp_pages(struct page *page1, struct page *page2)
 	/*
 	 * If the page content is identical but at least one of the pages is
 	 * tagged, return non-zero to avoid KSM merging. If only one of the
-	 * pages is tagged, __set_ptes() may zero or change the tags of the
+	 * pages is tagged, set_pte_at() may zero or change the tags of the
 	 * other page via mte_sync_tags().
 	 */
 	if (page_mte_tagged(page1) || page_mte_tagged(page2))
@@ -157,24 +166,6 @@ void mte_enable_kernel_asymm(void)
 		mte_enable_kernel_sync();
 	}
 }
-
-int mte_enable_kernel_store_only(void)
-{
-	/*
-	 * If the CPU does not support MTE store only,
-	 * the kernel checks all operations.
-	 */
-	if (!cpus_have_cap(ARM64_MTE_STORE_ONLY))
-		return -EINVAL;
-
-	sysreg_clear_set(sctlr_el1, SCTLR_EL1_TCSO_MASK,
-			 SYS_FIELD_PREP(SCTLR_EL1, TCSO, 1));
-	isb();
-
-	pr_info_once("MTE: enabled store only mode at EL1\n");
-
-	return 0;
-}
 #endif
 
 #ifdef CONFIG_KASAN_HW_TAGS
@@ -218,7 +209,7 @@ static void mte_update_sctlr_user(struct task_struct *task)
 	 * program requested values go with what was requested.
 	 */
 	resolved_mte_tcf = (mte_ctrl & pref) ? pref : mte_ctrl;
-	sctlr &= ~(SCTLR_EL1_TCF0_MASK | SCTLR_EL1_TCSO0_MASK);
+	sctlr &= ~SCTLR_EL1_TCF0_MASK;
 	/*
 	 * Pick an actual setting. The order in which we check for
 	 * set bits and map into register values determines our
@@ -230,10 +221,6 @@ static void mte_update_sctlr_user(struct task_struct *task)
 		sctlr |= SYS_FIELD_PREP_ENUM(SCTLR_EL1, TCF0, ASYNC);
 	else if (resolved_mte_tcf & MTE_CTRL_TCF_SYNC)
 		sctlr |= SYS_FIELD_PREP_ENUM(SCTLR_EL1, TCF0, SYNC);
-
-	if (mte_ctrl & MTE_CTRL_STORE_ONLY)
-		sctlr |= SYS_FIELD_PREP(SCTLR_EL1, TCSO0, 1);
-
 	task->thread.sctlr_user = sctlr;
 }
 
@@ -393,9 +380,6 @@ long set_mte_ctrl(struct task_struct *task, unsigned long arg)
 	    (arg & PR_MTE_TCF_SYNC))
 		mte_ctrl |= MTE_CTRL_TCF_ASYMM;
 
-	if (arg & PR_MTE_STORE_ONLY)
-		mte_ctrl |= MTE_CTRL_STORE_ONLY;
-
 	task->thread.mte_ctrl = mte_ctrl;
 	if (task == current) {
 		preempt_disable();
@@ -423,8 +407,6 @@ long get_mte_ctrl(struct task_struct *task)
 		ret |= PR_MTE_TCF_ASYNC;
 	if (mte_ctrl & MTE_CTRL_TCF_SYNC)
 		ret |= PR_MTE_TCF_SYNC;
-	if (mte_ctrl & MTE_CTRL_STORE_ONLY)
-		ret |= PR_MTE_STORE_ONLY;
 
 	return ret;
 }
@@ -437,9 +419,10 @@ long get_mte_ctrl(struct task_struct *task)
 static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 				struct iovec *kiov, unsigned int gup_flags)
 {
+	struct vm_area_struct *vma;
 	void __user *buf = kiov->iov_base;
 	size_t len = kiov->iov_len;
-	int err = 0;
+	int ret;
 	int write = gup_flags & FOLL_WRITE;
 
 	if (!access_ok(buf, len))
@@ -449,17 +432,14 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 		return -EIO;
 
 	while (len) {
-		struct vm_area_struct *vma;
 		unsigned long tags, offset;
 		void *maddr;
-		struct page *page = get_user_page_vma_remote(mm, addr,
-							     gup_flags, &vma);
-		struct folio *folio;
+		struct page *page = NULL;
 
-		if (IS_ERR(page)) {
-			err = PTR_ERR(page);
+		ret = get_user_pages_remote(mm, addr, 1, gup_flags, &page,
+					    &vma, NULL);
+		if (ret <= 0)
 			break;
-		}
 
 		/*
 		 * Only copy tags if the page has been mapped as PROT_MTE
@@ -469,17 +449,11 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 		 * was never mapped with PROT_MTE.
 		 */
 		if (!(vma->vm_flags & VM_MTE)) {
-			err = -EOPNOTSUPP;
+			ret = -EOPNOTSUPP;
 			put_page(page);
 			break;
 		}
-
-		folio = page_folio(page);
-		if (folio_test_hugetlb(folio))
-			WARN_ON_ONCE(!folio_test_hugetlb_mte_tagged(folio) &&
-				     !is_huge_zero_folio(folio));
-		else
-			WARN_ON_ONCE(!page_mte_tagged(page) && !is_zero_page(page));
+		WARN_ON_ONCE(!page_mte_tagged(page));
 
 		/* limit access to the end of the page */
 		offset = offset_in_page(addr);
@@ -508,7 +482,7 @@ static int __access_remote_tags(struct mm_struct *mm, unsigned long addr,
 	kiov->iov_len = buf - kiov->iov_base;
 	if (!kiov->iov_len) {
 		/* check for error accessing the tracee's address space */
-		if (err)
+		if (ret <= 0)
 			return -EIO;
 		else
 			return -EFAULT;
@@ -633,9 +607,12 @@ subsys_initcall(register_mte_tcf_preferred_sysctl);
 size_t mte_probe_user_range(const char __user *uaddr, size_t size)
 {
 	const char __user *end = uaddr + size;
+	int err = 0;
 	char val;
 
-	__raw_get_user(val, uaddr, efault);
+	__raw_get_user(val, uaddr, err);
+	if (err)
+		return size;
 
 	uaddr = PTR_ALIGN(uaddr, MTE_GRANULE_SIZE);
 	while (uaddr < end) {
@@ -643,13 +620,12 @@ size_t mte_probe_user_range(const char __user *uaddr, size_t size)
 		 * A read is sufficient for mte, the caller should have probed
 		 * for the pte write permission if required.
 		 */
-		__raw_get_user(val, uaddr, efault);
+		__raw_get_user(val, uaddr, err);
+		if (err)
+			return end - uaddr;
 		uaddr += MTE_GRANULE_SIZE;
 	}
 	(void)val;
 
 	return 0;
-
-efault:
-	return end - uaddr;
 }

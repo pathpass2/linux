@@ -1,6 +1,6 @@
-===================================
-efifb - Generic EFI platform driver
-===================================
+==============
+What is efifb?
+==============
 
 This is a generic EFI platform driver for systems with UEFI firmware. The
 system must be booted via the EFI stub for this to be usable. efifb supports

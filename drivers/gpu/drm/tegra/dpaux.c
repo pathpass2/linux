@@ -8,7 +8,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/pinctrl/pinconf-generic.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/pinmux.h>
@@ -447,6 +447,7 @@ static const struct pinmux_ops tegra_dpaux_pinmux_ops = {
 static int tegra_dpaux_probe(struct platform_device *pdev)
 {
 	struct tegra_dpaux *dpaux;
+	struct resource *regs;
 	u32 value;
 	int err;
 
@@ -460,13 +461,14 @@ static int tegra_dpaux_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&dpaux->list);
 	dpaux->dev = &pdev->dev;
 
-	dpaux->regs = devm_platform_ioremap_resource(pdev, 0);
+	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	dpaux->regs = devm_ioremap_resource(&pdev->dev, regs);
 	if (IS_ERR(dpaux->regs))
 		return PTR_ERR(dpaux->regs);
 
 	dpaux->irq = platform_get_irq(pdev, 0);
 	if (dpaux->irq < 0)
-		return dpaux->irq;
+		return -ENXIO;
 
 	if (!pdev->dev.pm_domain) {
 		dpaux->rst = devm_reset_control_get(&pdev->dev, "dpaux");
@@ -501,9 +503,14 @@ static int tegra_dpaux_probe(struct platform_device *pdev)
 
 	dpaux->vdd = devm_regulator_get_optional(&pdev->dev, "vdd");
 	if (IS_ERR(dpaux->vdd)) {
-		if (PTR_ERR(dpaux->vdd) != -ENODEV)
-			return dev_err_probe(&pdev->dev, PTR_ERR(dpaux->vdd),
-					     "failed to get VDD supply\n");
+		if (PTR_ERR(dpaux->vdd) != -ENODEV) {
+			if (PTR_ERR(dpaux->vdd) != -EPROBE_DEFER)
+				dev_err(&pdev->dev,
+					"failed to get VDD supply: %ld\n",
+					PTR_ERR(dpaux->vdd));
+
+			return PTR_ERR(dpaux->vdd);
+		}
 
 		dpaux->vdd = NULL;
 	}
@@ -517,7 +524,7 @@ static int tegra_dpaux_probe(struct platform_device *pdev)
 	if (err < 0) {
 		dev_err(dpaux->dev, "failed to request IRQ#%u: %d\n",
 			dpaux->irq, err);
-		goto err_pm_disable;
+		return err;
 	}
 
 	disable_irq(dpaux->irq);
@@ -537,7 +544,7 @@ static int tegra_dpaux_probe(struct platform_device *pdev)
 	 */
 	err = tegra_dpaux_pad_config(dpaux, DPAUX_PADCTL_FUNC_I2C);
 	if (err < 0)
-		goto err_pm_disable;
+		return err;
 
 #ifdef CONFIG_GENERIC_PINCONF
 	dpaux->desc.name = dev_name(&pdev->dev);
@@ -550,8 +557,7 @@ static int tegra_dpaux_probe(struct platform_device *pdev)
 	dpaux->pinctrl = devm_pinctrl_register(&pdev->dev, &dpaux->desc, dpaux);
 	if (IS_ERR(dpaux->pinctrl)) {
 		dev_err(&pdev->dev, "failed to register pincontrol\n");
-		err = PTR_ERR(dpaux->pinctrl);
-		goto err_pm_disable;
+		return PTR_ERR(dpaux->pinctrl);
 	}
 #endif
 	/* enable and clear all interrupts */
@@ -567,18 +573,13 @@ static int tegra_dpaux_probe(struct platform_device *pdev)
 	err = devm_of_dp_aux_populate_ep_devices(&dpaux->aux);
 	if (err < 0) {
 		dev_err(dpaux->dev, "failed to populate AUX bus: %d\n", err);
-		goto err_pm_disable;
+		return err;
 	}
 
 	return 0;
-
-err_pm_disable:
-	pm_runtime_put_sync(&pdev->dev);
-	pm_runtime_disable(&pdev->dev);
-	return err;
 }
 
-static void tegra_dpaux_remove(struct platform_device *pdev)
+static int tegra_dpaux_remove(struct platform_device *pdev)
 {
 	struct tegra_dpaux *dpaux = platform_get_drvdata(pdev);
 
@@ -593,6 +594,8 @@ static void tegra_dpaux_remove(struct platform_device *pdev)
 	mutex_lock(&dpaux_lock);
 	list_del(&dpaux->list);
 	mutex_unlock(&dpaux_lock);
+
+	return 0;
 }
 
 static int tegra_dpaux_suspend(struct device *dev)

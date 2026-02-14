@@ -16,11 +16,7 @@ description: |
 
 properties:
   compatible:
-    oneOf:
-      - items:
-          - const: mediatek,mt6319-regulator
-          - const: mediatek,mt6315-regulator
-      - const: mediatek,mt6315-regulator
+    const: mediatek,mt6315-regulator
 
   reg:
     maxItems: 1
@@ -32,8 +28,12 @@ properties:
     patternProperties:
       "^vbuck[1-4]$":
         type: object
-        $ref: regulator.yaml#
+        $ref: "regulator.yaml#"
         unevaluatedProperties: false
+
+        properties:
+          regulator-compatible:
+            pattern: "^vbuck[1-4]$"
 
     additionalProperties: false
 
@@ -52,6 +52,7 @@ examples:
 
       regulators {
         vbuck1 {
+          regulator-compatible = "vbuck1";
           regulator-min-microvolt = <300000>;
           regulator-max-microvolt = <1193750>;
           regulator-enable-ramp-delay = <256>;
@@ -59,6 +60,7 @@ examples:
         };
 
         vbuck3 {
+          regulator-compatible = "vbuck3";
           regulator-min-microvolt = <300000>;
           regulator-max-microvolt = <1193750>;
           regulator-enable-ramp-delay = <256>;

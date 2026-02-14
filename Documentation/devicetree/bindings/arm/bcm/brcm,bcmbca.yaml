@@ -34,7 +34,6 @@ properties:
           - enum:
               - netgear,r8000p
               - tplink,archer-c2300-v1
-              - zyxel,ex3510b
           - const: brcm,bcm4906
           - const: brcm,bcm4908
           - const: brcm,bcmbca
@@ -116,7 +115,6 @@ properties:
         items:
           - enum:
               - brcm,bcm96846
-              - genexis,xg6846b
           - const: brcm,bcm6846
           - const: brcm,bcmbca
 

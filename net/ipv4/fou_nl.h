@@ -2,7 +2,6 @@
 /* Do not edit directly, auto-generated from: */
 /*	Documentation/netlink/specs/fou.yaml */
 /* YNL-GEN kernel header */
-/* To regenerate run: tools/net/ynl/ynl-regen.sh */
 
 #ifndef _LINUX_FOU_GEN_H
 #define _LINUX_FOU_GEN_H
@@ -10,7 +9,7 @@
 #include <net/netlink.h>
 #include <net/genetlink.h>
 
-#include <uapi/linux/fou.h>
+#include <linux/fou.h>
 
 /* Global operation policy for fou */
 extern const struct nla_policy fou_nl_policy[FOU_ATTR_IFINDEX + 1];

@@ -22,6 +22,20 @@
 		stdout-path = "serial0:115200n8";
 	};
 
+	clocks {
+		xo_board: xo-board-clk {
+			compatible = "fixed-clock";
+			clock-frequency = <19200000>;
+			#clock-cells = <0>;
+		};
+
+		sleep_clk: sleep-clk {
+			compatible = "fixed-clock";
+			clock-frequency = <32000>;
+			#clock-cells = <0>;
+		};
+	};
+
 	ppvar_sys: ppvar-sys-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "ppvar_sys";
@@ -223,11 +237,6 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_LPM>;
 		};
 	};
-};
-
-&pon {
-	mode-bootloader = <0x2>;
-	mode-recovery = <0x1>;
 };
 
 &qup_i2c1_data_clk {
@@ -439,45 +448,6 @@
 	status = "okay";
 };
 
-&reserved_memory {
-	ecc_meta_data_mem: ecc-meta-data@f0000000 {
-		reg = <0x0 0xf0000000 0x0 0x10000000>;
-		no-map;
-	};
-
-	tenx_sp_mem: tenx-sp-buffer@800000000 {
-		reg = <0x8 0x0 0x0 0x80000000>;
-		no-map;
-	};
-};
-
-&tlmm {
-	gpio-reserved-ranges = <28 2>;
-};
-
 &uart7 {
-	status = "okay";
-};
-
-&usb_1 {
-	status = "okay";
-};
-
-&usb_1_dwc3 {
-	dr_mode = "peripheral";
-};
-
-&usb_1_hsphy {
-	vdda-pll-supply = <&vreg_l8a_0p91>;
-	vdda18-supply = <&vreg_l14a_1p8>;
-	vdda33-supply = <&vreg_l2a_2p3>;
-
-	status = "okay";
-};
-
-&usb_1_qmpphy {
-	vdda-phy-supply = <&vreg_l8a_0p91>;
-	vdda-pll-supply = <&vreg_l3a_1p2>;
-
 	status = "okay";
 };

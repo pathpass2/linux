@@ -198,6 +198,8 @@ summarize_posix_acl(struct posix_acl *acl, struct posix_acl_summary *pas)
 	memset(pas, 0, sizeof(*pas));
 	pas->mask = 07;
 
+	pe = acl->a_entries + acl->a_count;
+
 	FOREACH_ACL_ENTRY(pa, acl, pe) {
 		switch (pa->e_tag) {
 			case ACL_USER_OBJ:
@@ -369,21 +371,12 @@ pace_gt(struct posix_acl_entry *pace1, struct posix_acl_entry *pace2)
 	return false;
 }
 
-/**
- * sort_pacl_range - sort a range of POSIX ACL entries by tag and id
- * @pacl: POSIX ACL containing entries to sort
- * @start: starting index of range to sort
- * @end: ending index of range to sort (inclusive)
- *
- * Sorts ACL entries in place so that USER entries are ordered by UID
- * and GROUP entries are ordered by GID. Required before calling
- * posix_acl_valid().
- */
-void sort_pacl_range(struct posix_acl *pacl, int start, int end)
-{
+static void
+sort_pacl_range(struct posix_acl *pacl, int start, int end) {
 	int sorted = 0, i;
 
-	/* Bubble sort: acceptable here because ACLs are typically short. */
+	/* We just do a bubble sort; easy to do in place, and we're not
+	 * expecting acl's to be long enough to justify anything more. */
 	while (!sorted) {
 		sorted = 1;
 		for (i = start; i < end; i++) {
@@ -448,7 +441,7 @@ struct posix_ace_state_array {
  * calculated so far: */
 
 struct posix_acl_state {
-	unsigned char valid;
+	int empty;
 	struct posix_ace_state owner;
 	struct posix_ace_state group;
 	struct posix_ace_state other;
@@ -464,6 +457,7 @@ init_state(struct posix_acl_state *state, int cnt)
 	int alloc;
 
 	memset(state, 0, sizeof(struct posix_acl_state));
+	state->empty = 1;
 	/*
 	 * In the worst case, each individual acl could be for a distinct
 	 * named user or group, but we don't know which, so we allocate
@@ -506,7 +500,7 @@ posix_state_to_acl(struct posix_acl_state *state, unsigned int flags)
 	 * and effective cases: when there are no inheritable ACEs,
 	 * calls ->set_acl with a NULL ACL structure.
 	 */
-	if (!state->valid && (flags & NFS4_ACL_TYPE_DEFAULT))
+	if (state->empty && (flags & NFS4_ACL_TYPE_DEFAULT))
 		return NULL;
 
 	/*
@@ -628,12 +622,11 @@ static void process_one_v4_ace(struct posix_acl_state *state,
 				struct nfs4_ace *ace)
 {
 	u32 mask = ace->access_mask;
-	short type = ace2type(ace);
 	int i;
 
-	state->valid |= type;
+	state->empty = 0;
 
-	switch (type) {
+	switch (ace2type(ace)) {
 	case ACL_USER_OBJ:
 		if (ace->type == NFS4_ACE_ACCESS_ALLOWED_ACE_TYPE) {
 			allow_bits(&state->owner, mask);
@@ -733,30 +726,6 @@ static int nfs4_acl_nfsv4_to_posix(struct nfs4_acl *acl,
 		if (!(ace->flag & NFS4_ACE_INHERIT_ONLY_ACE))
 			process_one_v4_ace(&effective_acl_state, ace);
 	}
-
-	/*
-	 * At this point, the default ACL may have zeroed-out entries for owner,
-	 * group and other. That usually results in a non-sensical resulting ACL
-	 * that denies all access except to any ACE that was explicitly added.
-	 *
-	 * The setfacl command solves a similar problem with this logic:
-	 *
-	 * "If  a  Default  ACL  entry is created, and the Default ACL contains
-	 *  no owner, owning group, or others entry,  a  copy of  the  ACL
-	 *  owner, owning group, or others entry is added to the Default ACL."
-	 *
-	 * Copy any missing ACEs from the effective set, if any ACEs were
-	 * explicitly set.
-	 */
-	if (default_acl_state.valid) {
-		if (!(default_acl_state.valid & ACL_USER_OBJ))
-			default_acl_state.owner = effective_acl_state.owner;
-		if (!(default_acl_state.valid & ACL_GROUP_OBJ))
-			default_acl_state.group = effective_acl_state.group;
-		if (!(default_acl_state.valid & ACL_OTHER))
-			default_acl_state.other = effective_acl_state.other;
-	}
-
 	*pacl = posix_state_to_acl(&effective_acl_state, flags);
 	if (IS_ERR(*pacl)) {
 		ret = PTR_ERR(*pacl);

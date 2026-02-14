@@ -10,7 +10,6 @@
 
 #define __HAVE_ARCH_PMD_ALLOC_ONE
 #define __HAVE_ARCH_PUD_ALLOC_ONE
-#define __HAVE_ARCH_PTE_ALLOC_ONE_KERNEL
 #include <asm-generic/pgalloc.h>
 
 static inline void pmd_populate_kernel(struct mm_struct *mm,
@@ -45,40 +44,34 @@ extern void pagetable_init(void);
 
 extern pgd_t *pgd_alloc(struct mm_struct *mm);
 
-static inline pte_t *pte_alloc_one_kernel(struct mm_struct *mm)
-{
-	pte_t *pte = __pte_alloc_one_kernel(mm);
-
-	if (pte)
-		kernel_pte_init(pte);
-
-	return pte;
-}
-
-#define __pte_free_tlb(tlb, pte, address)	tlb_remove_ptdesc((tlb), page_ptdesc(pte))
+#define __pte_free_tlb(tlb, pte, address)			\
+do {							\
+	pgtable_pte_page_dtor(pte);			\
+	tlb_remove_page((tlb), pte);			\
+} while (0)
 
 #ifndef __PAGETABLE_PMD_FOLDED
 
 static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long address)
 {
 	pmd_t *pmd;
-	struct ptdesc *ptdesc;
+	struct page *pg;
 
-	ptdesc = pagetable_alloc(GFP_KERNEL_ACCOUNT, 0);
-	if (!ptdesc)
+	pg = alloc_page(GFP_KERNEL_ACCOUNT);
+	if (!pg)
 		return NULL;
 
-	if (!pagetable_pmd_ctor(mm, ptdesc)) {
-		pagetable_free(ptdesc);
+	if (!pgtable_pmd_page_ctor(pg)) {
+		__free_page(pg);
 		return NULL;
 	}
 
-	pmd = ptdesc_address(ptdesc);
+	pmd = (pmd_t *)page_address(pg);
 	pmd_init(pmd);
 	return pmd;
 }
 
-#define __pmd_free_tlb(tlb, x, addr)	tlb_remove_ptdesc((tlb), virt_to_ptdesc(x))
+#define __pmd_free_tlb(tlb, x, addr)	pmd_free((tlb)->mm, x)
 
 #endif
 
@@ -87,20 +80,15 @@ static inline pmd_t *pmd_alloc_one(struct mm_struct *mm, unsigned long address)
 static inline pud_t *pud_alloc_one(struct mm_struct *mm, unsigned long address)
 {
 	pud_t *pud;
-	struct ptdesc *ptdesc = pagetable_alloc(GFP_KERNEL, 0);
 
-	if (!ptdesc)
-		return NULL;
-	pagetable_pud_ctor(ptdesc);
-	pud = ptdesc_address(ptdesc);
-
-	pud_init(pud);
+	pud = (pud_t *) __get_free_page(GFP_KERNEL);
+	if (pud)
+		pud_init(pud);
 	return pud;
 }
 
-#define __pud_free_tlb(tlb, x, addr)	tlb_remove_ptdesc((tlb), virt_to_ptdesc(x))
+#define __pud_free_tlb(tlb, x, addr)	pud_free((tlb)->mm, x)
 
 #endif /* __PAGETABLE_PUD_FOLDED */
 
-extern pte_t * __init populate_kernel_pte(unsigned long addr);
 #endif /* _ASM_PGALLOC_H */

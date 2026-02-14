@@ -85,7 +85,7 @@
 	 */
 	extcon_usb: extcon-usb {
 		compatible = "linux,extcon-usb-gpio";
-		id-gpios = <&tlmm 58 GPIO_ACTIVE_HIGH>;
+		id-gpio = <&tlmm 58 GPIO_ACTIVE_HIGH>;
 	};
 };
 
@@ -107,7 +107,6 @@
 	status = "okay";
 
 	vdd-supply = <&vreg_l1b_0p925>;
-	vdda-pll-supply = <&vreg_l10a_1p8>;
 	vdda-phy-dpdm-supply = <&vreg_l7b_3p125>;
 };
 
@@ -405,8 +404,6 @@
 &sdhc_2 {
 	status = "okay";
 
-	cd-gpios = <&tlmm 54 GPIO_ACTIVE_HIGH>;
-
 	vmmc-supply = <&vreg_l5b_2p95>;
 	vqmmc-supply = <&vreg_l2b_2p95>;
 };
@@ -416,16 +413,10 @@
 };
 
 &usb3 {
-	qcom,select-utmi-as-pipe-clk;
-
 	status = "okay";
 };
 
 &usb3_dwc3 {
-	maximum-speed = "high-speed";
-	phys = <&qusb2phy0>;
-	phy-names = "usb2-phy";
-
 	dr_mode = "peripheral";
 	extcon = <&extcon_usb>;
 };

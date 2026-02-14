@@ -7,16 +7,17 @@
  */
 
 #include <linux/cdev.h>
+#include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/dma-buf.h>
-#include <linux/dma-heap.h>
 #include <linux/err.h>
-#include <linux/export.h>
-#include <linux/list.h>
-#include <linux/nospec.h>
-#include <linux/syscalls.h>
-#include <linux/uaccess.h>
 #include <linux/xarray.h>
+#include <linux/list.h>
+#include <linux/slab.h>
+#include <linux/nospec.h>
+#include <linux/uaccess.h>
+#include <linux/syscalls.h>
+#include <linux/dma-heap.h>
 #include <uapi/linux/dma-heap.h>
 
 #define DEVNAME "dma_heap"
@@ -27,10 +28,9 @@
  * struct dma_heap - represents a dmabuf heap in the system
  * @name:		used for debugging/device-node name
  * @ops:		ops struct for this heap
- * @priv:		private data for this heap
- * @heap_devt:		heap device node
- * @list:		list head connecting to list of heaps
- * @heap_cdev:		heap char device
+ * @heap_devt		heap device node
+ * @list		list head connecting to list of heaps
+ * @heap_cdev		heap char device
  *
  * Represents a heap of memory from which buffers can be made.
  */
@@ -49,14 +49,9 @@ static dev_t dma_heap_devt;
 static struct class *dma_heap_class;
 static DEFINE_XARRAY_ALLOC(dma_heap_minors);
 
-bool __read_mostly mem_accounting;
-module_param(mem_accounting, bool, 0444);
-MODULE_PARM_DESC(mem_accounting,
-		 "Enable cgroup-based memory accounting for dma-buf heap allocations (default=false).");
-
 static int dma_heap_buffer_alloc(struct dma_heap *heap, size_t len,
-				 u32 fd_flags,
-				 u64 heap_flags)
+				 unsigned int fd_flags,
+				 unsigned int heap_flags)
 {
 	struct dma_buf *dmabuf;
 	int fd;
@@ -198,21 +193,20 @@ static const struct file_operations dma_heap_fops = {
 };
 
 /**
- * dma_heap_get_drvdata - get per-heap driver data
+ * dma_heap_get_drvdata() - get per-subdriver data for the heap
  * @heap: DMA-Heap to retrieve private data for
  *
  * Returns:
- * The per-heap data for the heap.
+ * The per-subdriver data for the heap.
  */
 void *dma_heap_get_drvdata(struct dma_heap *heap)
 {
 	return heap->priv;
 }
-EXPORT_SYMBOL_NS_GPL(dma_heap_get_drvdata, "DMA_BUF_HEAP");
 
 /**
- * dma_heap_get_name - get heap name
- * @heap: DMA-Heap to retrieve the name of
+ * dma_heap_get_name() - get heap name
+ * @heap: DMA-Heap to retrieve private data for
  *
  * Returns:
  * The char* for the heap name.
@@ -221,12 +215,7 @@ const char *dma_heap_get_name(struct dma_heap *heap)
 {
 	return heap->name;
 }
-EXPORT_SYMBOL_NS_GPL(dma_heap_get_name, "DMA_BUF_HEAP");
 
-/**
- * dma_heap_add - adds a heap to dmabuf heaps
- * @exp_info: information needed to register this heap
- */
 struct dma_heap *dma_heap_add(const struct dma_heap_export_info *exp_info)
 {
 	struct dma_heap *heap, *h, *err_ret;
@@ -311,7 +300,6 @@ err0:
 	kfree(heap);
 	return err_ret;
 }
-EXPORT_SYMBOL_NS_GPL(dma_heap_add, "DMA_BUF_HEAP");
 
 static char *dma_heap_devnode(const struct device *dev, umode_t *mode)
 {
@@ -326,7 +314,7 @@ static int dma_heap_init(void)
 	if (ret)
 		return ret;
 
-	dma_heap_class = class_create(DEVNAME);
+	dma_heap_class = class_create(THIS_MODULE, DEVNAME);
 	if (IS_ERR(dma_heap_class)) {
 		unregister_chrdev_region(dma_heap_devt, NUM_HEAP_MINORS);
 		return PTR_ERR(dma_heap_class);

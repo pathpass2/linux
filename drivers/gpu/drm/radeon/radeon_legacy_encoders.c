@@ -136,9 +136,9 @@ static void radeon_legacy_lvds_update(struct drm_encoder *encoder, int mode)
 	}
 
 	if (rdev->is_atom_bios)
-		radeon_atombios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_atombios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 	else
-		radeon_combios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_combios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 
 }
 
@@ -450,7 +450,7 @@ void radeon_legacy_backlight_init(struct radeon_encoder *radeon_encoder,
 	}
 
 	bd->props.brightness = radeon_legacy_backlight_get_brightness(bd);
-	bd->props.power = BACKLIGHT_POWER_ON;
+	bd->props.power = FB_BLANK_UNBLANK;
 	backlight_update_status(bd);
 
 	DRM_INFO("radeon legacy LVDS backlight initialized\n");
@@ -545,9 +545,9 @@ static void radeon_legacy_primary_dac_dpms(struct drm_encoder *encoder, int mode
 	WREG32(RADEON_DAC_MACRO_CNTL, dac_macro_cntl);
 
 	if (rdev->is_atom_bios)
-		radeon_atombios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_atombios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 	else
-		radeon_combios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_combios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 
 }
 
@@ -742,9 +742,9 @@ static void radeon_legacy_tmds_int_dpms(struct drm_encoder *encoder, int mode)
 	WREG32(RADEON_FP_GEN_CNTL, fp_gen_cntl);
 
 	if (rdev->is_atom_bios)
-		radeon_atombios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_atombios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 	else
-		radeon_combios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_combios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 
 }
 
@@ -908,9 +908,9 @@ static void radeon_legacy_tmds_ext_dpms(struct drm_encoder *encoder, int mode)
 	WREG32(RADEON_FP2_GEN_CNTL, fp2_gen_cntl);
 
 	if (rdev->is_atom_bios)
-		radeon_atombios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_atombios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 	else
-		radeon_combios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_combios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 
 }
 
@@ -1113,9 +1113,9 @@ static void radeon_legacy_tv_dac_dpms(struct drm_encoder *encoder, int mode)
 	}
 
 	if (rdev->is_atom_bios)
-		radeon_atombios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_atombios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 	else
-		radeon_combios_encoder_dpms_scratch_regs(encoder, mode == DRM_MODE_DPMS_ON);
+		radeon_combios_encoder_dpms_scratch_regs(encoder, (mode == DRM_MODE_DPMS_ON) ? true : false);
 
 }
 
@@ -1692,7 +1692,7 @@ static struct radeon_encoder_int_tmds *radeon_legacy_get_tmds_info(struct radeon
 {
 	struct drm_device *dev = encoder->base.dev;
 	struct radeon_device *rdev = dev->dev_private;
-	struct radeon_encoder_int_tmds *tmds;
+	struct radeon_encoder_int_tmds *tmds = NULL;
 	bool ret;
 
 	tmds = kzalloc(sizeof(struct radeon_encoder_int_tmds), GFP_KERNEL);
@@ -1715,7 +1715,7 @@ static struct radeon_encoder_ext_tmds *radeon_legacy_get_ext_tmds_info(struct ra
 {
 	struct drm_device *dev = encoder->base.dev;
 	struct radeon_device *rdev = dev->dev_private;
-	struct radeon_encoder_ext_tmds *tmds;
+	struct radeon_encoder_ext_tmds *tmds = NULL;
 	bool ret;
 
 	if (rdev->is_atom_bios)

@@ -36,48 +36,75 @@ static int io_file_bitmap_get(struct io_ring_ctx *ctx)
 	return -ENFILE;
 }
 
-bool io_alloc_file_tables(struct io_ring_ctx *ctx, struct io_file_table *table,
-			  unsigned nr_files)
+bool io_alloc_file_tables(struct io_file_table *table, unsigned nr_files)
 {
-	if (io_rsrc_data_alloc(&table->data, nr_files))
+	table->files = kvcalloc(nr_files, sizeof(table->files[0]),
+				GFP_KERNEL_ACCOUNT);
+	if (unlikely(!table->files))
 		return false;
+
 	table->bitmap = bitmap_zalloc(nr_files, GFP_KERNEL_ACCOUNT);
-	if (table->bitmap)
-		return true;
-	io_rsrc_data_free(ctx, &table->data);
-	return false;
+	if (unlikely(!table->bitmap)) {
+		kvfree(table->files);
+		return false;
+	}
+
+	return true;
 }
 
-void io_free_file_tables(struct io_ring_ctx *ctx, struct io_file_table *table)
+void io_free_file_tables(struct io_file_table *table)
 {
-	io_rsrc_data_free(ctx, &table->data);
+	kvfree(table->files);
 	bitmap_free(table->bitmap);
+	table->files = NULL;
 	table->bitmap = NULL;
 }
 
 static int io_install_fixed_file(struct io_ring_ctx *ctx, struct file *file,
 				 u32 slot_index)
-	__must_hold(&ctx->uring_lock)
+	__must_hold(&req->ctx->uring_lock)
 {
-	struct io_rsrc_node *node;
+	bool needs_switch = false;
+	struct io_fixed_file *file_slot;
+	int ret;
 
 	if (io_is_uring_fops(file))
 		return -EBADF;
-	if (!ctx->file_table.data.nr)
+	if (!ctx->file_data)
 		return -ENXIO;
-	if (slot_index >= ctx->file_table.data.nr)
+	if (slot_index >= ctx->nr_user_files)
 		return -EINVAL;
 
-	node = io_rsrc_node_alloc(ctx, IORING_RSRC_FILE);
-	if (!node)
-		return -ENOMEM;
+	slot_index = array_index_nospec(slot_index, ctx->nr_user_files);
+	file_slot = io_fixed_file_slot(&ctx->file_table, slot_index);
 
-	if (!io_reset_rsrc_node(ctx, &ctx->file_table.data, slot_index))
+	if (file_slot->file_ptr) {
+		struct file *old_file;
+
+		ret = io_rsrc_node_switch_start(ctx);
+		if (ret)
+			goto err;
+
+		old_file = (struct file *)(file_slot->file_ptr & FFS_MASK);
+		ret = io_queue_rsrc_removal(ctx->file_data, slot_index,
+					    ctx->rsrc_node, old_file);
+		if (ret)
+			goto err;
+		file_slot->file_ptr = 0;
+		io_file_bitmap_clear(&ctx->file_table, slot_index);
+		needs_switch = true;
+	}
+
+	ret = io_scm_file_account(ctx, file);
+	if (!ret) {
+		*io_get_tag_slot(ctx->file_data, slot_index) = 0;
+		io_fixed_file_set(file_slot, file);
 		io_file_bitmap_set(&ctx->file_table, slot_index);
-
-	ctx->file_table.data.nodes[slot_index] = node;
-	io_fixed_file_set(node, file);
-	return 0;
+	}
+err:
+	if (needs_switch)
+		io_rsrc_node_switch(ctx, ctx->file_data);
+	return ret;
 }
 
 int __io_fixed_fd_install(struct io_ring_ctx *ctx, struct file *file,
@@ -121,18 +148,31 @@ int io_fixed_fd_install(struct io_kiocb *req, unsigned int issue_flags,
 
 int io_fixed_fd_remove(struct io_ring_ctx *ctx, unsigned int offset)
 {
-	struct io_rsrc_node *node;
+	struct io_fixed_file *file_slot;
+	struct file *file;
+	int ret;
 
-	if (unlikely(!ctx->file_table.data.nr))
+	if (unlikely(!ctx->file_data))
 		return -ENXIO;
-	if (offset >= ctx->file_table.data.nr)
+	if (offset >= ctx->nr_user_files)
 		return -EINVAL;
+	ret = io_rsrc_node_switch_start(ctx);
+	if (ret)
+		return ret;
 
-	node = io_rsrc_node_lookup(&ctx->file_table.data, offset);
-	if (!node)
+	offset = array_index_nospec(offset, ctx->nr_user_files);
+	file_slot = io_fixed_file_slot(&ctx->file_table, offset);
+	if (!file_slot->file_ptr)
 		return -EBADF;
-	io_reset_rsrc_node(ctx, &ctx->file_table.data, offset);
+
+	file = (struct file *)(file_slot->file_ptr & FFS_MASK);
+	ret = io_queue_rsrc_removal(ctx->file_data, offset, ctx->rsrc_node, file);
+	if (ret)
+		return ret;
+
+	file_slot->file_ptr = 0;
 	io_file_bitmap_clear(&ctx->file_table, offset);
+	io_rsrc_node_switch(ctx, ctx->file_data);
 	return 0;
 }
 
@@ -146,7 +186,7 @@ int io_register_file_alloc_range(struct io_ring_ctx *ctx,
 		return -EFAULT;
 	if (check_add_overflow(range.off, range.len, &end))
 		return -EOVERFLOW;
-	if (range.resv || end > ctx->file_table.data.nr)
+	if (range.resv || end > ctx->nr_user_files)
 		return -EINVAL;
 
 	io_file_table_set_alloc_range(ctx, range.off, range.len);

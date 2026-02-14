@@ -27,7 +27,6 @@
 #include <linux/init.h>
 #include <linux/isapnp.h>
 #include <linux/mutex.h>
-#include <linux/string_choices.h>
 #include <asm/io.h>
 
 #include "../base.h"
@@ -844,7 +843,6 @@ EXPORT_SYMBOL(isapnp_protocol);
 EXPORT_SYMBOL(isapnp_present);
 EXPORT_SYMBOL(isapnp_cfg_begin);
 EXPORT_SYMBOL(isapnp_cfg_end);
-EXPORT_SYMBOL(isapnp_read_byte);
 EXPORT_SYMBOL(isapnp_write_byte);
 
 static int isapnp_get_resources(struct pnp_dev *dev)
@@ -1038,7 +1036,7 @@ static int __init isapnp_init(void)
 	if (cards)
 		printk(KERN_INFO
 		       "isapnp: %i Plug & Play card%s detected total\n", cards,
-		       str_plural(cards));
+		       cards > 1 ? "s" : "");
 	else
 		printk(KERN_INFO "isapnp: No Plug & Play card found\n");
 

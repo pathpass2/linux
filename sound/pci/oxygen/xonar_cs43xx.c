@@ -309,7 +309,7 @@ static int rolloff_put(struct snd_kcontrol *ctl,
 	int changed;
 	u8 reg;
 
-	guard(mutex)(&chip->mutex);
+	mutex_lock(&chip->mutex);
 	reg = data->cs4398_regs[7];
 	if (value->value.enumerated.item[0])
 		reg |= CS4398_FILT_SEL;
@@ -324,6 +324,7 @@ static int rolloff_put(struct snd_kcontrol *ctl,
 			reg = data->cs4362a_regs[0x04] & ~CS4362A_FILT_SEL;
 		cs4362a_write(chip, 0x04, reg);
 	}
+	mutex_unlock(&chip->mutex);
 	return changed;
 }
 
@@ -339,10 +340,11 @@ static void xonar_d1_line_mic_ac97_switch(struct oxygen *chip,
 					  unsigned int reg, unsigned int mute)
 {
 	if (reg == AC97_LINE) {
-		guard(spinlock_irq)(&chip->reg_lock);
+		spin_lock_irq(&chip->reg_lock);
 		oxygen_write16_masked(chip, OXYGEN_GPIO_DATA,
 				      mute ? GPIO_D1_INPUT_ROUTE : 0,
 				      GPIO_D1_INPUT_ROUTE);
+		spin_unlock_irq(&chip->reg_lock);
 	}
 }
 

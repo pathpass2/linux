@@ -79,6 +79,10 @@
 #include "sis900.h"
 
 #define SIS900_MODULE_NAME "sis900"
+#define SIS900_DRV_VERSION "v1.08.10 Apr. 2 2006"
+
+static const char version[] =
+	KERN_INFO "sis900.c: " SIS900_DRV_VERSION "\n";
 
 static int max_interrupt_work = 40;
 static int multicast_filter_limit = 128;
@@ -438,6 +442,13 @@ static int sis900_probe(struct pci_dev *pci_dev,
 	const char *card_name = card_names[pci_id->driver_data];
 	const char *dev_name = pci_name(pci_dev);
 
+/* when built into the kernel, we only print version if device is found */
+#ifndef MODULE
+	static int printed_version;
+	if (!printed_version++)
+		printk(version);
+#endif
+
 	/* setup various bits in PCI command register */
 	ret = pcim_enable_device(pci_dev);
 	if(ret) return ret;
@@ -457,7 +468,7 @@ static int sis900_probe(struct pci_dev *pci_dev,
 	SET_NETDEV_DEV(net_dev, &pci_dev->dev);
 
 	/* We do a request_region() to register /proc/ioports info. */
-	ret = pcim_request_all_regions(pci_dev, "sis900");
+	ret = pci_request_regions(pci_dev, "sis900");
 	if (ret)
 		goto err_out;
 
@@ -1303,8 +1314,7 @@ static void sis630_set_eq(struct net_device *net_dev, u8 revision)
 
 static void sis900_timer(struct timer_list *t)
 {
-	struct sis900_private *sis_priv = timer_container_of(sis_priv, t,
-							     timer);
+	struct sis900_private *sis_priv = from_timer(sis_priv, t, timer);
 	struct net_device *net_dev = sis_priv->mii_info.dev;
 	struct mii_phy *mii_phy = sis_priv->mii;
 	static const int next_tick = 5*HZ;
@@ -1973,7 +1983,7 @@ static int sis900_close(struct net_device *net_dev)
 	/* Stop the chip's Tx and Rx Status Machine */
 	sw32(cr, RxDIS | TxDIS | sr32(cr));
 
-	timer_delete(&sis_priv->timer);
+	del_timer(&sis_priv->timer);
 
 	free_irq(pdev->irq, net_dev);
 
@@ -2018,6 +2028,7 @@ static void sis900_get_drvinfo(struct net_device *net_dev,
 	struct sis900_private *sis_priv = netdev_priv(net_dev);
 
 	strscpy(info->driver, SIS900_MODULE_NAME, sizeof(info->driver));
+	strscpy(info->version, SIS900_DRV_VERSION, sizeof(info->version));
 	strscpy(info->bus_info, pci_name(sis_priv->pci_dev),
 		sizeof(info->bus_info));
 }
@@ -2262,7 +2273,7 @@ static int sis900_set_config(struct net_device *dev, struct ifmap *map)
 		 * (which seems to be different from the ifport(pcmcia) definition) */
 		switch(map->port){
 		case IF_PORT_UNKNOWN: /* use auto here */
-			WRITE_ONCE(dev->if_port, map->port);
+			dev->if_port = map->port;
 			/* we are going to change the media type, so the Link
 			 * will be temporary down and we need to reflect that
 			 * here. When the Link comes up again, it will be
@@ -2283,7 +2294,7 @@ static int sis900_set_config(struct net_device *dev, struct ifmap *map)
 			break;
 
 		case IF_PORT_10BASET: /* 10BaseT */
-			WRITE_ONCE(dev->if_port, map->port);
+			dev->if_port = map->port;
 
 			/* we are going to change the media type, so the Link
 			 * will be temporary down and we need to reflect that
@@ -2304,7 +2315,7 @@ static int sis900_set_config(struct net_device *dev, struct ifmap *map)
 
 		case IF_PORT_100BASET: /* 100BaseT */
 		case IF_PORT_100BASETX: /* 100BaseTx */
-			WRITE_ONCE(dev->if_port, map->port);
+			dev->if_port = map->port;
 
 			/* we are going to change the media type, so the Link
 			 * will be temporary down and we need to reflect that
@@ -2555,4 +2566,21 @@ static struct pci_driver sis900_pci_driver = {
 	.driver.pm	= &sis900_pm_ops,
 };
 
-module_pci_driver(sis900_pci_driver);
+static int __init sis900_init_module(void)
+{
+/* when a module, this is printed whether or not devices are found in probe */
+#ifdef MODULE
+	printk(version);
+#endif
+
+	return pci_register_driver(&sis900_pci_driver);
+}
+
+static void __exit sis900_cleanup_module(void)
+{
+	pci_unregister_driver(&sis900_pci_driver);
+}
+
+module_init(sis900_init_module);
+module_exit(sis900_cleanup_module);
+

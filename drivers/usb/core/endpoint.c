@@ -14,7 +14,6 @@
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
-#include <linux/sysfs.h>
 #include <linux/usb.h>
 #include "usb.h"
 
@@ -40,7 +39,7 @@ static ssize_t field##_show(struct device *dev,			\
 			       char *buf)			\
 {								\
 	struct ep_device *ep = to_ep_device(dev);		\
-	return sysfs_emit(buf, format_string, ep->desc->field);	\
+	return sprintf(buf, format_string, ep->desc->field);	\
 }								\
 static DEVICE_ATTR_RO(field)
 
@@ -53,7 +52,7 @@ static ssize_t wMaxPacketSize_show(struct device *dev,
 				   struct device_attribute *attr, char *buf)
 {
 	struct ep_device *ep = to_ep_device(dev);
-	return sysfs_emit(buf, "%04x\n", usb_endpoint_maxp(ep->desc));
+	return sprintf(buf, "%04x\n", usb_endpoint_maxp(ep->desc));
 }
 static DEVICE_ATTR_RO(wMaxPacketSize);
 
@@ -77,7 +76,7 @@ static ssize_t type_show(struct device *dev, struct device_attribute *attr,
 		type = "Interrupt";
 		break;
 	}
-	return sysfs_emit(buf, "%s\n", type);
+	return sprintf(buf, "%s\n", type);
 }
 static DEVICE_ATTR_RO(type);
 
@@ -96,7 +95,7 @@ static ssize_t interval_show(struct device *dev, struct device_attribute *attr,
 		interval /= 1000;
 	}
 
-	return sysfs_emit(buf, "%d%cs\n", interval, unit);
+	return sprintf(buf, "%d%cs\n", interval, unit);
 }
 static DEVICE_ATTR_RO(interval);
 
@@ -112,7 +111,7 @@ static ssize_t direction_show(struct device *dev, struct device_attribute *attr,
 		direction = "in";
 	else
 		direction = "out";
-	return sysfs_emit(buf, "%s\n", direction);
+	return sprintf(buf, "%s\n", direction);
 }
 static DEVICE_ATTR_RO(direction);
 
@@ -142,7 +141,7 @@ static void ep_device_release(struct device *dev)
 	kfree(ep_dev);
 }
 
-const struct device_type usb_ep_device_type = {
+struct device_type usb_ep_device_type = {
 	.name =		"usb_endpoint",
 	.release = ep_device_release,
 };

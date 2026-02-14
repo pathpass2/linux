@@ -7,8 +7,6 @@
 #include <linux/hash.h>
 #include <linux/ratelimit.h>
 #include <linux/msdos_fs.h>
-#include <linux/fs_context.h>
-#include <linux/fs_parser.h>
 
 /*
  * vfat shortname flags
@@ -53,8 +51,7 @@ struct fat_mount_options {
 		 tz_set:1,	   /* Filesystem timestamps' offset set */
 		 rodir:1,	   /* allow ATTR_RO for directory */
 		 discard:1,	   /* Issue discard requests on deletions */
-		 dos1xfloppy:1,	   /* Assume default BPB for DOS 1.x floppies */
-		 debug:1;	   /* Not currently used */
+		 dos1xfloppy:1;	   /* Assume default BPB for DOS 1.x floppies */
 };
 
 #define FAT_HASH_BITS	8
@@ -418,21 +415,12 @@ extern struct inode *fat_iget(struct super_block *sb, loff_t i_pos);
 extern struct inode *fat_build_inode(struct super_block *sb,
 			struct msdos_dir_entry *de, loff_t i_pos);
 extern int fat_sync_inode(struct inode *inode);
-extern int fat_fill_super(struct super_block *sb, struct fs_context *fc,
-			  void (*setup)(struct super_block *));
+extern int fat_fill_super(struct super_block *sb, void *data, int silent,
+			  int isvfat, void (*setup)(struct super_block *));
 extern int fat_fill_inode(struct inode *inode, struct msdos_dir_entry *de);
 
 extern int fat_flush_inodes(struct super_block *sb, struct inode *i1,
 			    struct inode *i2);
-
-extern const struct fs_parameter_spec fat_param_spec[];
-int fat_init_fs_context(struct fs_context *fc, bool is_vfat);
-void fat_free_fc(struct fs_context *fc);
-
-int fat_parse_param(struct fs_context *fc, struct fs_parameter *param,
-		    bool is_vfat);
-int fat_reconfigure(struct fs_context *fc);
-
 static inline unsigned long fat_dir_hash(int logstart)
 {
 	return hash_32(logstart, FAT_HASH_BITS);
@@ -468,12 +456,12 @@ extern void fat_time_unix2fat(struct msdos_sb_info *sbi, struct timespec64 *ts,
 			      __le16 *time, __le16 *date, u8 *time_cs);
 extern struct timespec64 fat_truncate_atime(const struct msdos_sb_info *sbi,
 					    const struct timespec64 *ts);
-#define FAT_UPDATE_ATIME	(1u << 0)
-#define FAT_UPDATE_CMTIME	(1u << 1)
-void fat_truncate_time(struct inode *inode, struct timespec64 *now,
-		unsigned int flags);
-int fat_update_time(struct inode *inode, enum fs_update_time type,
-		unsigned int flags);
+extern struct timespec64 fat_truncate_mtime(const struct msdos_sb_info *sbi,
+					    const struct timespec64 *ts);
+extern int fat_truncate_time(struct inode *inode, struct timespec64 *now,
+			     int flags);
+extern int fat_update_time(struct inode *inode, struct timespec64 *now,
+			   int flags);
 extern int fat_sync_bhs(struct buffer_head **bhs, int nr_bhs);
 
 int fat_cache_init(void);

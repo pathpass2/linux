@@ -4,7 +4,7 @@
  * Copyright (C) 2022 Jonathan Lemon <jonathan.lemon@gmail.com>
  */
 
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include <linux/mii.h>
 #include <linux/phy.h>
 #include <linux/ptp_classify.h>
@@ -597,6 +597,9 @@ static int bcm_ptp_perout_locked(struct bcm_ptp_private *priv,
 
 	period = BCM_MAX_PERIOD_8NS;	/* write nonzero value */
 
+	if (req->flags & PTP_PEROUT_PHASE)
+		return -EOPNOTSUPP;
+
 	if (req->flags & PTP_PEROUT_DUTY_CYCLE)
 		pulse = ktime_to_ns(ktime_set(req->on.sec, req->on.nsec));
 	else
@@ -737,8 +740,6 @@ static const struct ptp_clock_info bcm_ptp_clock_info = {
 	.n_pins		= 1,
 	.n_per_out	= 1,
 	.n_ext_ts	= 1,
-	.supported_perout_flags = PTP_PEROUT_DUTY_CYCLE,
-	.supported_extts_flags = PTP_STRICT_FLAGS | PTP_RISING_EDGE,
 };
 
 static void bcm_ptp_txtstamp(struct mii_timestamper *mii_ts,
@@ -780,26 +781,17 @@ out:
 	kfree_skb(skb);
 }
 
-static int bcm_ptp_hwtstamp_get(struct mii_timestamper *mii_ts,
-				struct kernel_hwtstamp_config *cfg)
+static int bcm_ptp_hwtstamp(struct mii_timestamper *mii_ts,
+			    struct ifreq *ifr)
 {
 	struct bcm_ptp_private *priv = mii2priv(mii_ts);
-
-	cfg->rx_filter = priv->hwts_rx ? HWTSTAMP_FILTER_PTP_V2_EVENT
-				       : HWTSTAMP_FILTER_NONE;
-	cfg->tx_type = priv->tx_type;
-
-	return 0;
-}
-
-static int bcm_ptp_hwtstamp_set(struct mii_timestamper *mii_ts,
-				struct kernel_hwtstamp_config *cfg,
-				struct netlink_ext_ack *extack)
-{
-	struct bcm_ptp_private *priv = mii2priv(mii_ts);
+	struct hwtstamp_config cfg;
 	u16 mode, ctrl;
 
-	switch (cfg->rx_filter) {
+	if (copy_from_user(&cfg, ifr->ifr_data, sizeof(cfg)))
+		return -EFAULT;
+
+	switch (cfg.rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		priv->hwts_rx = false;
 		break;
@@ -812,14 +804,14 @@ static int bcm_ptp_hwtstamp_set(struct mii_timestamper *mii_ts,
 	case HWTSTAMP_FILTER_PTP_V2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
-		cfg->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
 		priv->hwts_rx = true;
 		break;
 	default:
 		return -ERANGE;
 	}
 
-	priv->tx_type = cfg->tx_type;
+	priv->tx_type = cfg.tx_type;
 
 	ctrl  = priv->hwts_rx ? SLICE_RX_EN : 0;
 	ctrl |= priv->tx_type != HWTSTAMP_TX_OFF ? SLICE_TX_EN : 0;
@@ -848,11 +840,11 @@ static int bcm_ptp_hwtstamp_set(struct mii_timestamper *mii_ts,
 	/* purge existing data */
 	skb_queue_purge(&priv->tx_queue);
 
-	return 0;
+	return copy_to_user(ifr->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
 }
 
 static int bcm_ptp_ts_info(struct mii_timestamper *mii_ts,
-			   struct kernel_ethtool_ts_info *ts_info)
+			   struct ethtool_ts_info *ts_info)
 {
 	struct bcm_ptp_private *priv = mii2priv(mii_ts);
 
@@ -910,8 +902,7 @@ static void bcm_ptp_init(struct bcm_ptp_private *priv)
 
 	priv->mii_ts.rxtstamp = bcm_ptp_rxtstamp;
 	priv->mii_ts.txtstamp = bcm_ptp_txtstamp;
-	priv->mii_ts.hwtstamp_set = bcm_ptp_hwtstamp_set;
-	priv->mii_ts.hwtstamp_get = bcm_ptp_hwtstamp_get;
+	priv->mii_ts.hwtstamp = bcm_ptp_hwtstamp;
 	priv->mii_ts.ts_info = bcm_ptp_ts_info;
 
 	priv->phydev->mii_ts = &priv->mii_ts;
@@ -943,9 +934,6 @@ struct bcm_ptp_private *bcm_ptp_probe(struct phy_device *phydev)
 		return ERR_CAST(clock);
 	priv->ptp_clock = clock;
 
-	/* Timestamp selected by default to keep legacy API */
-	phydev->default_timestamp = true;
-
 	priv->phydev = phydev;
 	bcm_ptp_init(priv);
 
@@ -954,4 +942,3 @@ struct bcm_ptp_private *bcm_ptp_probe(struct phy_device *phydev)
 EXPORT_SYMBOL_GPL(bcm_ptp_probe);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("Broadcom PHY PTP driver");

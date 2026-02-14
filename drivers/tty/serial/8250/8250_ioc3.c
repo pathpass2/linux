@@ -5,7 +5,7 @@
  * Copyright (C) 2019 Thomas Bogendoerfer <tbogendoerfer@suse.de>
  *
  * based on code Copyright (C) 2005 Stanislaw Skowronek <skylark@unaligned.org>
- *               Copyright (C) 2014 Joshua Kinard <linux@kumba.dev>
+ *               Copyright (C) 2014 Joshua Kinard <kumba@gentoo.org>
  */
 
 #include <linux/module.h>
@@ -21,12 +21,12 @@ struct ioc3_8250_data {
 	int line;
 };
 
-static u32 ioc3_serial_in(struct uart_port *p, unsigned int offset)
+static unsigned int ioc3_serial_in(struct uart_port *p, int offset)
 {
 	return readb(p->membase + (offset ^ 3));
 }
 
-static void ioc3_serial_out(struct uart_port *p, unsigned int offset, u32 value)
+static void ioc3_serial_out(struct uart_port *p, int offset, int value)
 {
 	writeb(value, p->membase + (offset ^ 3));
 }
@@ -75,11 +75,12 @@ static int serial8250_ioc3_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void serial8250_ioc3_remove(struct platform_device *pdev)
+static int serial8250_ioc3_remove(struct platform_device *pdev)
 {
 	struct ioc3_8250_data *data = platform_get_drvdata(pdev);
 
 	serial8250_unregister_port(data->line);
+	return 0;
 }
 
 static struct platform_driver serial8250_ioc3_driver = {

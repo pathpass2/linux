@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- *  HID driver for Kensington Slimblade Trackball
+ *  HID driver for Kensigton Slimblade Trackball
  *
  *  Copyright (c) 2009 Jiri Kosina
  */
@@ -46,5 +46,4 @@ static struct hid_driver ks_driver = {
 };
 module_hid_driver(ks_driver);
 
-MODULE_DESCRIPTION("HID driver for Kensington Slimblade Trackball");
 MODULE_LICENSE("GPL");

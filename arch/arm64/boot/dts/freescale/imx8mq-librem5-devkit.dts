@@ -139,6 +139,18 @@
 		regulator-always-on;
 	};
 
+	reg_usdhc2_vmmc: regulator-usdhc2-vmmc {
+		compatible = "regulator-fixed";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_usdhc2_pwr>;
+		regulator-name = "VSD_3V3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		gpio = <&gpio2 19 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-always-on;
+	};
+
 	wwan_codec: sound-wwan-codec {
 		compatible = "option,gtm601";
 		#sound-dai-cells = <0>;
@@ -172,7 +184,7 @@
 			"Headphones", "HP_OUT",
 			"Builtin Speaker", "Speaker Amp OUTR",
 			"Speaker Amp INR", "LINE_OUT";
-		simple-audio-card,hp-det-gpios = <&gpio3 20 GPIO_ACTIVE_HIGH>;
+		simple-audio-card,hp-det-gpio = <&gpio3 20 GPIO_ACTIVE_HIGH>;
 
 		simple-audio-card,cpu {
 			sound-dai = <&sai2>;
@@ -229,13 +241,6 @@
 		gpio = <&gpio3 5 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
 		regulator-always-on;
-	};
-
-	wifi_pwr_seq: pwrseq {
-		pinctrl-names = "default";
-		pinctrl-0 = <&pinctrl_usdhc2_rst>;
-		compatible = "mmc-pwrseq-simple";
-		reset-gpios = <&gpio2 19 GPIO_ACTIVE_LOW>;
 	};
 };
 
@@ -319,7 +324,6 @@
 				regulator-ramp-delay = <1250>;
 				rohm,dvs-run-voltage = <1000000>;
 				rohm,dvs-idle-voltage = <900000>;
-				regulator-always-on;
 			};
 
 			buck3_reg: BUCK3 {
@@ -429,7 +433,7 @@
 	};
 
 	typec_ptn5100: usb-typec@52 {
-		compatible = "nxp,ptn5110", "tcpci";
+		compatible = "nxp,ptn5110";
 		reg = <0x52>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_typec>;
@@ -557,9 +561,9 @@
 		reg = <0x6a>;
 		vdd-supply = <&reg_3v3_p>;
 		vddio-supply = <&reg_3v3_p>;
-		mount-matrix = "1",  "0",  "0",
-			       "0",  "1",  "0",
-			       "0",  "0", "-1";
+		mount-matrix =  "1",  "0",  "0",
+				"0",  "1",  "0",
+				"0",  "0", "-1";
 	};
 };
 
@@ -633,7 +637,7 @@
 
 	pinctrl_hpdet: hpdetgrp {
 		fsl,pins = <
-			MX8MQ_IOMUXC_SAI5_RXC_GPIO3_IO20	0xc0   /* HP_DET */
+			MX8MQ_IOMUXC_SAI5_RXC_GPIO3_IO20	0xC0   /* HP_DET */
 		>;
 	};
 
@@ -663,7 +667,7 @@
 		>;
 	};
 
-	pinctrl_spkamp: spkampgrp {
+	pinctrl_spkamp: spkamp {
 		fsl,pins = <
 			MX8MQ_IOMUXC_SPDIF_TX_GPIO5_IO3		0x81  /* MUTE */
 		>;
@@ -803,7 +807,7 @@
 		>;
 	};
 
-	pinctrl_usdhc2_rst: usdhc2rstgrp {
+	pinctrl_usdhc2_pwr: usdhc2pwrgrp {
 		fsl,pins = <
 			MX8MQ_IOMUXC_SD2_RESET_B_GPIO2_IO19	0x41
 		>;
@@ -979,27 +983,24 @@
 };
 
 &usb_dwc3_0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
 	dr_mode = "otg";
 	status = "okay";
 
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
+	port@0 {
+		reg = <0>;
 
-		port@0 {
-			reg = <0>;
-
-			typec_hs: endpoint {
-				remote-endpoint = <&usb_con_hs>;
-			};
+		typec_hs: endpoint {
+			remote-endpoint = <&usb_con_hs>;
 		};
+	};
 
-		port@1 {
-			reg = <1>;
+	port@1 {
+		reg = <1>;
 
-			typec_ss: endpoint {
-				remote-endpoint = <&usb_con_ss>;
-			};
+		typec_ss: endpoint {
+			remote-endpoint = <&usb_con_ss>;
 		};
 	};
 };
@@ -1029,8 +1030,8 @@
 	pinctrl-1 = <&pinctrl_usdhc2_100mhz>;
 	pinctrl-2 = <&pinctrl_usdhc2_200mhz>;
 	bus-width = <4>;
-	vmmc-supply = <&wifi_pwr_en>;
-	mmc-pwrseq = <&wifi_pwr_seq>;
+	vmmc-supply = <&reg_usdhc2_vmmc>;
+	power-supply = <&wifi_pwr_en>;
 	broken-cd;
 	disable-wp;
 	cap-sdio-irq;

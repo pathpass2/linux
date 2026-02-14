@@ -15,7 +15,6 @@ struct xfs_inode;
 struct xfs_mount;
 struct xfs_trans;
 struct xfs_bmalloca;
-struct xfs_zone_alloc_ctx;
 
 #ifdef CONFIG_XFS_RT
 int	xfs_bmap_rtalloc(struct xfs_bmalloca *ap);
@@ -31,9 +30,8 @@ xfs_bmap_rtalloc(struct xfs_bmalloca *ap)
 }
 #endif /* CONFIG_XFS_RT */
 
-void	xfs_bmap_punch_delalloc_range(struct xfs_inode *ip, int whichfork,
-		xfs_off_t start_byte, xfs_off_t end_byte,
-		struct xfs_zone_alloc_ctx *ac);
+int	xfs_bmap_punch_delalloc_range(struct xfs_inode *ip,
+		xfs_off_t start_byte, xfs_off_t end_byte);
 
 struct kgetbmap {
 	__s64		bmv_offset;	/* file offset of segment in blocks */
@@ -49,23 +47,23 @@ int	xfs_bmap_extsize_align(struct xfs_mount *mp, struct xfs_bmbt_irec *gotp,
 			       struct xfs_bmbt_irec *prevp, xfs_extlen_t extsz,
 			       int rt, int eof, int delay, int convert,
 			       xfs_fileoff_t *offp, xfs_extlen_t *lenp);
-bool	xfs_bmap_adjacent(struct xfs_bmalloca *ap);
+void	xfs_bmap_adjacent(struct xfs_bmalloca *ap);
 int	xfs_bmap_last_extent(struct xfs_trans *tp, struct xfs_inode *ip,
 			     int whichfork, struct xfs_bmbt_irec *rec,
 			     int *is_empty);
 
 /* preallocation and hole punch interface */
 int	xfs_alloc_file_space(struct xfs_inode *ip, xfs_off_t offset,
-		xfs_off_t len);
+			     xfs_off_t len);
 int	xfs_free_file_space(struct xfs_inode *ip, xfs_off_t offset,
-		xfs_off_t len, struct xfs_zone_alloc_ctx *ac);
+			    xfs_off_t len);
 int	xfs_collapse_file_space(struct xfs_inode *, xfs_off_t offset,
-		xfs_off_t len, struct xfs_zone_alloc_ctx *ac);
+				xfs_off_t len);
 int	xfs_insert_file_space(struct xfs_inode *, xfs_off_t offset,
-		xfs_off_t len);
+				xfs_off_t len);
 
 /* EOF block manipulation functions */
-bool	xfs_can_free_eofblocks(struct xfs_inode *ip);
+bool	xfs_can_free_eofblocks(struct xfs_inode *ip, bool force);
 int	xfs_free_eofblocks(struct xfs_inode *ip);
 
 int	xfs_swap_extents(struct xfs_inode *ip, struct xfs_inode *tip,

@@ -56,9 +56,7 @@ static const struct imx_pll14xx_rate_table imx_pll1416x_tbl[] = {
 	PLL_1416X_RATE(700000000U,  350, 3, 2),
 	PLL_1416X_RATE(640000000U,  320, 3, 2),
 	PLL_1416X_RATE(600000000U,  300, 3, 2),
-	PLL_1416X_RATE(416000000U,  208, 3, 2),
 	PLL_1416X_RATE(320000000U,  160, 3, 2),
-	PLL_1416X_RATE(208000000U,  208, 3, 3),
 };
 
 static const struct imx_pll14xx_rate_table imx_pll1443x_tbl[] = {
@@ -66,6 +64,8 @@ static const struct imx_pll14xx_rate_table imx_pll1443x_tbl[] = {
 	PLL_1443X_RATE(650000000U, 325, 3, 2, 0),
 	PLL_1443X_RATE(594000000U, 198, 2, 2, 0),
 	PLL_1443X_RATE(519750000U, 173, 2, 2, 16384),
+	PLL_1443X_RATE(393216000U, 262, 2, 3, 9437),
+	PLL_1443X_RATE(361267200U, 361, 3, 3, 17511),
 };
 
 struct imx_pll14xx_clk imx_1443x_pll = {
@@ -106,15 +106,15 @@ static const struct imx_pll14xx_rate_table *imx_get_pll_settings(
 static long pll14xx_calc_rate(struct clk_pll14xx *pll, int mdiv, int pdiv,
 			      int sdiv, int kdiv, unsigned long prate)
 {
-	u64 fout = prate;
+	u64 fvco = prate;
 
-	/* fout = (m * 65536 + k) * Fin / (p * 65536) / (1 << sdiv) */
-	fout *= (mdiv * 65536 + kdiv);
+	/* fvco = (m * 65536 + k) * Fin / (p * 65536) */
+	fvco *= (mdiv * 65536 + kdiv);
 	pdiv *= 65536;
 
-	do_div(fout, pdiv << sdiv);
+	do_div(fvco, pdiv << sdiv);
 
-	return fout;
+	return fvco;
 }
 
 static long pll1443x_calc_kdiv(int mdiv, int pdiv, int sdiv,
@@ -133,19 +133,19 @@ static void imx_pll14xx_calc_settings(struct clk_pll14xx *pll, unsigned long rat
 {
 	u32 pll_div_ctl0, pll_div_ctl1;
 	int mdiv, pdiv, sdiv, kdiv;
-	long fout, rate_min, rate_max, dist, best = LONG_MAX;
+	long fvco, rate_min, rate_max, dist, best = LONG_MAX;
 	const struct imx_pll14xx_rate_table *tt;
 
 	/*
 	 * Fractional PLL constrains:
 	 *
-	 * a) 1 <= p <= 63
-	 * b) 64 <= m <= 1023
-	 * c) 0 <= s <= 6
-	 * d) -32768 <= k <= 32767
+	 * a) 6MHz <= prate <= 25MHz
+	 * b) 1 <= p <= 63 (1 <= p <= 4 prate = 24MHz)
+	 * c) 64 <= m <= 1023
+	 * d) 0 <= s <= 6
+	 * e) -32768 <= k <= 32767
 	 *
 	 * fvco = (m * 65536 + k) * prate / (p * 65536)
-	 * fout = (m * 65536 + k) * prate / (p * 65536) / (1 << sdiv)
 	 */
 
 	/* First try if we can get the desired rate from one of the static entries */
@@ -176,8 +176,8 @@ static void imx_pll14xx_calc_settings(struct clk_pll14xx *pll, unsigned long rat
 		pr_debug("%s: in=%ld, want=%ld Only adjust kdiv %ld -> %d\n",
 			 clk_hw_get_name(&pll->hw), prate, rate,
 			 FIELD_GET(KDIV_MASK, pll_div_ctl1), kdiv);
-		fout = pll14xx_calc_rate(pll, mdiv, pdiv, sdiv, kdiv, prate);
-		t->rate = (unsigned int)fout;
+		fvco = pll14xx_calc_rate(pll, mdiv, pdiv, sdiv, kdiv, prate);
+		t->rate = (unsigned int)fvco;
 		t->mdiv = mdiv;
 		t->pdiv = pdiv;
 		t->sdiv = sdiv;
@@ -186,20 +186,20 @@ static void imx_pll14xx_calc_settings(struct clk_pll14xx *pll, unsigned long rat
 	}
 
 	/* Finally calculate best values */
-	for (pdiv = 1; pdiv <= 63; pdiv++) {
+	for (pdiv = 1; pdiv <= 7; pdiv++) {
 		for (sdiv = 0; sdiv <= 6; sdiv++) {
 			/* calc mdiv = round(rate * pdiv * 2^sdiv) / prate) */
 			mdiv = DIV_ROUND_CLOSEST(rate * (pdiv << sdiv), prate);
 			mdiv = clamp(mdiv, 64, 1023);
 
 			kdiv = pll1443x_calc_kdiv(mdiv, pdiv, sdiv, rate, prate);
-			fout = pll14xx_calc_rate(pll, mdiv, pdiv, sdiv, kdiv, prate);
+			fvco = pll14xx_calc_rate(pll, mdiv, pdiv, sdiv, kdiv, prate);
 
 			/* best match */
-			dist = abs((long)rate - (long)fout);
+			dist = abs((long)rate - (long)fvco);
 			if (dist < best) {
 				best = dist;
-				t->rate = (unsigned int)fout;
+				t->rate = (unsigned int)fvco;
 				t->mdiv = mdiv;
 				t->pdiv = pdiv;
 				t->sdiv = sdiv;
@@ -216,8 +216,8 @@ found:
 		 t->mdiv, t->kdiv);
 }
 
-static int clk_pll1416x_determine_rate(struct clk_hw *hw,
-				       struct clk_rate_request *req)
+static long clk_pll1416x_round_rate(struct clk_hw *hw, unsigned long rate,
+			unsigned long *prate)
 {
 	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
 	const struct imx_pll14xx_rate_table *rate_table = pll->rate_table;
@@ -225,29 +225,22 @@ static int clk_pll1416x_determine_rate(struct clk_hw *hw,
 
 	/* Assuming rate_table is in descending order */
 	for (i = 0; i < pll->rate_count; i++)
-		if (req->rate >= rate_table[i].rate) {
-			req->rate = rate_table[i].rate;
-
-			return 0;
-		}
+		if (rate >= rate_table[i].rate)
+			return rate_table[i].rate;
 
 	/* return minimum supported value */
-	req->rate = rate_table[pll->rate_count - 1].rate;
-
-	return 0;
+	return rate_table[pll->rate_count - 1].rate;
 }
 
-static int clk_pll1443x_determine_rate(struct clk_hw *hw,
-				       struct clk_rate_request *req)
+static long clk_pll1443x_round_rate(struct clk_hw *hw, unsigned long rate,
+			unsigned long *prate)
 {
 	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
 	struct imx_pll14xx_rate_table t;
 
-	imx_pll14xx_calc_settings(pll, req->rate, req->best_parent_rate, &t);
+	imx_pll14xx_calc_settings(pll, rate, *prate, &t);
 
-	req->rate = t.rate;
-
-	return 0;
+	return t.rate;
 }
 
 static unsigned long clk_pll14xx_recalc_rate(struct clk_hw *hw,
@@ -477,7 +470,7 @@ static const struct clk_ops clk_pll1416x_ops = {
 	.unprepare	= clk_pll14xx_unprepare,
 	.is_prepared	= clk_pll14xx_is_prepared,
 	.recalc_rate	= clk_pll14xx_recalc_rate,
-	.determine_rate = clk_pll1416x_determine_rate,
+	.round_rate	= clk_pll1416x_round_rate,
 	.set_rate	= clk_pll1416x_set_rate,
 };
 
@@ -490,7 +483,7 @@ static const struct clk_ops clk_pll1443x_ops = {
 	.unprepare	= clk_pll14xx_unprepare,
 	.is_prepared	= clk_pll14xx_is_prepared,
 	.recalc_rate	= clk_pll14xx_recalc_rate,
-	.determine_rate = clk_pll1443x_determine_rate,
+	.round_rate	= clk_pll1443x_round_rate,
 	.set_rate	= clk_pll1443x_set_rate,
 };
 

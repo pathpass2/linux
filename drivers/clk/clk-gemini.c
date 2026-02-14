@@ -67,10 +67,12 @@ struct gemini_gate_data {
  * struct clk_gemini_pci - Gemini PCI clock
  * @hw: corresponding clock hardware entry
  * @map: regmap to access the registers
+ * @rate: current rate
  */
 struct clk_gemini_pci {
 	struct clk_hw hw;
 	struct regmap *map;
+	unsigned long rate;
 };
 
 /**
@@ -126,16 +128,13 @@ static unsigned long gemini_pci_recalc_rate(struct clk_hw *hw,
 	return 33000000;
 }
 
-static int gemini_pci_determine_rate(struct clk_hw *hw,
-				     struct clk_rate_request *req)
+static long gemini_pci_round_rate(struct clk_hw *hw, unsigned long rate,
+				  unsigned long *prate)
 {
 	/* We support 33 and 66 MHz */
-	if (req->rate < 48000000)
-		req->rate = 33000000;
-	else
-		req->rate = 66000000;
-
-	return 0;
+	if (rate < 48000000)
+		return 33000000;
+	return 66000000;
 }
 
 static int gemini_pci_set_rate(struct clk_hw *hw, unsigned long rate,
@@ -182,7 +181,7 @@ static int gemini_pci_is_enabled(struct clk_hw *hw)
 
 static const struct clk_ops gemini_pci_clk_ops = {
 	.recalc_rate = gemini_pci_recalc_rate,
-	.determine_rate = gemini_pci_determine_rate,
+	.round_rate = gemini_pci_round_rate,
 	.set_rate = gemini_pci_set_rate,
 	.enable = gemini_pci_enable,
 	.disable = gemini_pci_disable,
@@ -277,6 +276,7 @@ static int gemini_clk_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
 	unsigned int mult, div;
+	struct resource *res;
 	u32 val;
 	int ret;
 	int i;
@@ -286,7 +286,8 @@ static int gemini_clk_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	/* Remap the system controller for the exclusive register */
-	base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
@@ -403,7 +404,6 @@ static void __init gemini_cc_init(struct device_node *np)
 				  GFP_KERNEL);
 	if (!gemini_clk_data)
 		return;
-	gemini_clk_data->num = GEMINI_NUM_CLKS;
 
 	/*
 	 * This way all clock fetched before the platform device probes,
@@ -457,6 +457,7 @@ static void __init gemini_cc_init(struct device_node *np)
 	gemini_clk_data->hws[GEMINI_CLK_APB] = hw;
 
 	/* Register the clocks to be accessed by the device tree */
+	gemini_clk_data->num = GEMINI_NUM_CLKS;
 	of_clk_add_hw_provider(np, of_clk_hw_onecell_get, gemini_clk_data);
 }
 CLK_OF_DECLARE_DRIVER(gemini_cc, "cortina,gemini-syscon", gemini_cc_init);

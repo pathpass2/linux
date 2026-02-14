@@ -27,21 +27,12 @@ static u32 unaligned_instructions_user;
 static u32 unaligned_instructions_kernel;
 #endif
 
-static inline u64 read_fpr(unsigned int idx)
+static inline unsigned long read_fpr(unsigned int idx)
 {
-#ifdef CONFIG_64BIT
 #define READ_FPR(idx, __value)		\
 	__asm__ __volatile__("movfr2gr.d %0, $f"#idx"\n\t" : "=r"(__value));
-#else
-#define READ_FPR(idx, __value)								\
-{											\
-	u32 __value_lo, __value_hi;							\
-	__asm__ __volatile__("movfr2gr.s  %0, $f"#idx"\n\t" : "=r"(__value_lo));	\
-	__asm__ __volatile__("movfrh2gr.s %0, $f"#idx"\n\t" : "=r"(__value_hi));	\
-	__value = (__value_lo | ((u64)__value_hi << 32));				\
-}
-#endif
-	u64 __value;
+
+	unsigned long __value;
 
 	switch (idx) {
 	case 0:
@@ -147,20 +138,11 @@ static inline u64 read_fpr(unsigned int idx)
 	return __value;
 }
 
-static inline void write_fpr(unsigned int idx, u64 value)
+static inline void write_fpr(unsigned int idx, unsigned long value)
 {
-#ifdef CONFIG_64BIT
 #define WRITE_FPR(idx, value)		\
 	__asm__ __volatile__("movgr2fr.d $f"#idx", %0\n\t" :: "r"(value));
-#else
-#define WRITE_FPR(idx, value)							\
-{										\
-	u32 value_lo = value;							\
-	u32 value_hi = value >> 32;						\
-	__asm__ __volatile__("movgr2fr.w  $f"#idx", %0\n\t" :: "r"(value_lo));	\
-	__asm__ __volatile__("movgr2frh.w $f"#idx", %0\n\t" :: "r"(value_hi));	\
-}
-#endif
+
 	switch (idx) {
 	case 0:
 		WRITE_FPR(0, value);
@@ -270,7 +252,7 @@ void emulate_load_store_insn(struct pt_regs *regs, void __user *addr, unsigned i
 	bool sign, write;
 	bool user = user_mode(regs);
 	unsigned int res, size = 0;
-	u64 value = 0;
+	unsigned long value = 0;
 	union loongarch_instruction insn;
 
 	perf_sw_event(PERF_COUNT_SW_EMULATION_FAULTS, 1, regs, 0);
@@ -500,10 +482,16 @@ sigbus:
 #ifdef CONFIG_DEBUG_FS
 static int __init debugfs_unaligned(void)
 {
+	struct dentry *d;
+
+	d = debugfs_create_dir("loongarch", NULL);
+	if (!d)
+		return -ENOMEM;
+
 	debugfs_create_u32("unaligned_instructions_user",
-				S_IRUGO, arch_debugfs_dir, &unaligned_instructions_user);
+				S_IRUGO, d, &unaligned_instructions_user);
 	debugfs_create_u32("unaligned_instructions_kernel",
-				S_IRUGO, arch_debugfs_dir, &unaligned_instructions_kernel);
+				S_IRUGO, d, &unaligned_instructions_kernel);
 
 	return 0;
 }

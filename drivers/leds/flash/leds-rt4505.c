@@ -365,7 +365,7 @@ static int rt4505_probe(struct i2c_client *client)
 		return ret;
 	}
 
-	child = device_get_next_child_node(&client->dev, NULL);
+	child = fwnode_get_next_available_child_node(client->dev.fwnode, NULL);
 	if (!child) {
 		dev_err(priv->dev, "Failed to get child node\n");
 		return -EINVAL;
@@ -419,12 +419,11 @@ static struct i2c_driver rt4505_driver = {
 		.name = "rt4505",
 		.of_match_table = of_match_ptr(rt4505_leds_match),
 	},
-	.probe = rt4505_probe,
+	.probe_new = rt4505_probe,
 	.remove = rt4505_remove,
 	.shutdown = rt4505_shutdown,
 };
 module_i2c_driver(rt4505_driver);
 
 MODULE_AUTHOR("ChiYuan Huang <cy_huang@richtek.com>");
-MODULE_DESCRIPTION("Richtek RT4505 LED driver");
 MODULE_LICENSE("GPL v2");

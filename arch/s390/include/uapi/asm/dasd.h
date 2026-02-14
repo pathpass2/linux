@@ -24,7 +24,7 @@
 /*
  * struct dasd_information2_t
  * represents any data about the device, which is visible to userspace.
- *  including format and featueres.
+ *  including foramt and featueres.
  */
 typedef struct dasd_information2_t {
 	unsigned int devno;	    /* S/390 devno */
@@ -78,7 +78,6 @@ typedef struct dasd_information2_t {
  * 0x040: give access to raw eckd data
  * 0x080: enable discard support
  * 0x100: enable autodisable for IFCC errors (default)
- * 0x200: enable requeue of all requests on autoquiesce
  */
 #define DASD_FEATURE_READONLY	      0x001
 #define DASD_FEATURE_USEDIAG	      0x002
@@ -89,7 +88,6 @@ typedef struct dasd_information2_t {
 #define DASD_FEATURE_USERAW	      0x040
 #define DASD_FEATURE_DISCARD	      0x080
 #define DASD_FEATURE_PATH_AUTODISABLE 0x100
-#define DASD_FEATURE_REQUEUEQUIESCE   0x200
 #define DASD_FEATURE_DEFAULT	      DASD_FEATURE_PATH_AUTODISABLE
 
 #define DASD_PARTN_BITS 2
@@ -294,7 +292,7 @@ struct dasd_snid_ioctl_data {
 /********************************************************************************
  * SECTION: Definition of IOCTLs
  *
- * Here is how the ioctl-nr should be used:
+ * Here ist how the ioctl-nr should be used:
  *    0 -   31   DASD driver itself
  *   32 -  239   still open
  *  240 -  255	 reserved for EMC

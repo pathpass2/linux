@@ -12,7 +12,8 @@
     |       arm64: |  ok  |
     |        csky: |  ok  |
     |     hexagon: | TODO |
-    |   loongarch: |  ok  |
+    |        ia64: | TODO |
+    |   loongarch: | TODO |
     |        m68k: | TODO |
     |  microblaze: | TODO |
     |        mips: |  ok  |
@@ -21,7 +22,7 @@
     |      parisc: | TODO |
     |     powerpc: |  ok  |
     |       riscv: |  ok  |
-    |        s390: |  ok  |
+    |        s390: | TODO |
     |          sh: |  ok  |
     |       sparc: | TODO |
     |          um: | TODO |

@@ -37,33 +37,23 @@ _pending_metrics = []
 _pending_metrics_tblname = None
 # Global BigCString shared by all structures.
 _bcs = None
-# Map from the name of a metric group to a description of the group.
-_metricgroups = {}
 # Order specific JsonEvent attributes will be visited.
 _json_event_attributes = [
     # cmp_sevent related attributes.
-    'name', 'topic', 'desc',
+    'name', 'pmu', 'topic', 'desc',
     # Seems useful, put it early.
     'event',
     # Short things in alphabetical order.
-    'compat', 'deprecated', 'perpkg', 'unit',
-    # Retirement latency specific to Intel granite rapids currently.
-    'retirement_latency_mean', 'retirement_latency_min',
-    'retirement_latency_max',
+    'aggr_mode', 'compat', 'deprecated', 'perpkg', 'unit',
     # Longer things (the last won't be iterated over during decompress).
     'long_desc'
 ]
 
 # Attributes that are in pmu_metric rather than pmu_event.
 _json_metric_attributes = [
-    'metric_name', 'metric_group', 'metric_expr', 'metric_threshold',
-    'desc', 'long_desc', 'unit', 'compat', 'metricgroup_no_group',
-    'default_metricgroup_name', 'aggr_mode', 'event_grouping',
-    'default_show_events'
+    'metric_name', 'metric_group', 'metric_constraint', 'metric_expr', 'desc',
+    'long_desc', 'unit', 'compat', 'aggr_mode'
 ]
-# Attributes that are bools or enum int values, encoded as '0', '1',...
-_json_enum_attributes = ['aggr_mode', 'deprecated', 'event_grouping', 'perpkg',
-                         'default_show_events']
 
 def removesuffix(s: str, suffix: str) -> str:
   """Remove the suffix from a string
@@ -88,7 +78,7 @@ def c_len(s: str) -> int:
   """Return the length of s a C string
 
   This doesn't handle all escape characters properly. It first assumes
-  all \\ are for escaping, it then adjusts as it will have over counted
+  all \ are for escaping, it then adjusts as it will have over counted
   \\. The code uses \000 rather than \0 as a terminator as an adjacent
   number would be folded into a string of \0 (ie. "\0" + "5" doesn't
   equal a terminator followed by the number 5 but the escape of
@@ -118,24 +108,13 @@ class BigCString:
   strings: Set[str]
   big_string: Sequence[str]
   offsets: Dict[str, int]
-  insert_number: int
-  insert_point: Dict[str, int]
-  metrics: Set[str]
 
   def __init__(self):
     self.strings = set()
-    self.insert_number = 0;
-    self.insert_point = {}
-    self.metrics = set()
 
-  def add(self, s: str, metric: bool) -> None:
+  def add(self, s: str) -> None:
     """Called to add to the big string."""
-    if s not in self.strings:
-      self.strings.add(s)
-      self.insert_point[s] = self.insert_number
-      self.insert_number += 1
-      if metric:
-        self.metrics.add(s)
+    self.strings.add(s)
 
   def compute(self) -> None:
     """Called once all strings are added to compute the string and offsets."""
@@ -176,11 +155,8 @@ class BigCString:
     self.big_string = []
     self.offsets = {}
 
-    def string_cmp_key(s: str) -> Tuple[bool, int, str]:
-      return (s in self.metrics, self.insert_point[s], s)
-
     # Emit all strings that aren't folded in a sorted manner.
-    for s in sorted(self.strings, key=string_cmp_key):
+    for s in sorted(self.strings):
       if s not in folded_strings:
         self.offsets[s] = big_string_offset
         self.big_string.append(f'/* offset={big_string_offset} */ "')
@@ -208,7 +184,7 @@ class JsonEvent:
 
     def llx(x: int) -> str:
       """Convert an int to a string similar to a printf modifier of %#llx."""
-      return str(x) if x >= 0 and x < 10 else hex(x)
+      return '0' if x == 0 else hex(x)
 
     def fixdesc(s: str) -> str:
       """Fix formatting issue for the desc string."""
@@ -227,19 +203,6 @@ class JsonEvent:
           'PerCore': '2',
       }
       return aggr_mode_to_enum[aggr_mode]
-
-    def convert_metric_constraint(metric_constraint: str) -> Optional[str]:
-      """Returns the metric_event_groups enum value associated with the JSON string."""
-      if not metric_constraint:
-        return None
-      metric_constraint_to_enum = {
-          'NO_GROUP_EVENTS': '1',
-          'NO_GROUP_EVENTS_NMI': '2',
-          'NO_NMI_WATCHDOG': '2',
-          'NO_GROUP_EVENTS_SMT': '3',
-          'NO_THRESHOLD_AND_NMI': '4',
-      }
-      return metric_constraint_to_enum[metric_constraint]
 
     def lookup_msr(num: str) -> Optional[str]:
       """Converts the msr number, or first in a list to the appropriate event field."""
@@ -272,7 +235,7 @@ class JsonEvent:
     def unit_to_pmu(unit: str) -> Optional[str]:
       """Convert a JSON Unit to Linux PMU name."""
       if not unit:
-        return 'default_core'
+        return None
       # Comment brought over from jevents.c:
       # it's not realistic to keep adding these, we need something more scalable ...
       table = {
@@ -283,42 +246,18 @@ class JsonEvent:
           'CPU-M-CF': 'cpum_cf',
           'CPU-M-SF': 'cpum_sf',
           'PAI-CRYPTO' : 'pai_crypto',
-          'PAI-EXT' : 'pai_ext',
           'UPI LL': 'uncore_upi',
           'hisi_sicl,cpa': 'hisi_sicl,cpa',
           'hisi_sccl,ddrc': 'hisi_sccl,ddrc',
           'hisi_sccl,hha': 'hisi_sccl,hha',
           'hisi_sccl,l3c': 'hisi_sccl,l3c',
           'imx8_ddr': 'imx8_ddr',
-          'imx9_ddr': 'imx9_ddr',
           'L3PMC': 'amd_l3',
           'DFPMC': 'amd_df',
-          'UMCPMC': 'amd_umc',
           'cpu_core': 'cpu_core',
           'cpu_atom': 'cpu_atom',
-          'ali_drw': 'ali_drw',
-          'arm_cmn': 'arm_cmn',
-          'software': 'software',
-          'tool': 'tool',
       }
       return table[unit] if unit in table else f'uncore_{unit.lower()}'
-
-    def is_zero(val: str) -> bool:
-        try:
-            if val.startswith('0x'):
-                return int(val, 16) == 0
-            else:
-                return int(val) == 0
-        except e:
-            return False
-
-    def canonicalize_value(val: str) -> str:
-        try:
-            if val.startswith('0x'):
-                return llx(int(val, 16))
-            return str(int(val))
-        except e:
-            return val
 
     eventcode = 0
     if 'EventCode' in jd:
@@ -326,9 +265,6 @@ class JsonEvent:
     if 'ExtSel' in jd:
       eventcode |= int(jd['ExtSel']) << 8
     configcode = int(jd['ConfigCode'], 0) if 'ConfigCode' in jd else None
-    eventidcode = int(jd['EventidCode'], 0) if 'EventidCode' in jd else None
-    legacy_hw_config = int(jd['LegacyConfigCode'], 0) if 'LegacyConfigCode' in jd else None
-    legacy_cache_config = int(jd['LegacyCacheCode'], 0) if 'LegacyCacheCode' in jd else None
     self.name = jd['EventName'].lower() if 'EventName' in jd else None
     self.topic = ''
     self.compat = jd.get('Compat')
@@ -350,37 +286,18 @@ class JsonEvent:
     self.perpkg = jd.get('PerPkg')
     self.aggr_mode = convert_aggr_mode(jd.get('AggregationMode'))
     self.deprecated = jd.get('Deprecated')
-    self.retirement_latency_mean = jd.get('RetirementLatencyMean')
-    self.retirement_latency_min = jd.get('RetirementLatencyMin')
-    self.retirement_latency_max = jd.get('RetirementLatencyMax')
     self.metric_name = jd.get('MetricName')
     self.metric_group = jd.get('MetricGroup')
-    self.metricgroup_no_group = jd.get('MetricgroupNoGroup')
-    self.default_metricgroup_name = jd.get('DefaultMetricgroupName')
-    self.event_grouping = convert_metric_constraint(jd.get('MetricConstraint'))
-    self.default_show_events = jd.get('DefaultShowEvents')
+    self.metric_constraint = jd.get('MetricConstraint')
     self.metric_expr = None
     if 'MetricExpr' in jd:
       self.metric_expr = metric.ParsePerfJson(jd['MetricExpr']).Simplify()
-    # Note, the metric formula for the threshold isn't parsed as the &
-    # and > have incorrect precedence.
-    self.metric_threshold = jd.get('MetricThreshold')
 
     arch_std = jd.get('ArchStdEvent')
     if precise and self.desc and '(Precise Event)' not in self.desc:
       extra_desc += ' (Must be precise)' if precise == '2' else (' (Precise '
                                                                  'event)')
-    event = None
-    if configcode is not None:
-      event = f'config={llx(configcode)}'
-    elif eventidcode is not None:
-      event = f'eventid={llx(eventidcode)}'
-    elif legacy_hw_config is not None:
-      event = f'legacy-hardware-config={llx(legacy_hw_config)}'
-    elif legacy_cache_config is not None:
-      event = f'legacy-cache-config={llx(legacy_cache_config)}'
-    else:
-      event = f'event={llx(eventcode)}'
+    event = f'config={llx(configcode)}' if configcode is not None else f'event={llx(eventcode)}'
     event_fields = [
         ('AnyThread', 'any='),
         ('PortMask', 'ch_mask='),
@@ -390,16 +307,10 @@ class JsonEvent:
         ('Invert', 'inv='),
         ('SampleAfterValue', 'period='),
         ('UMask', 'umask='),
-        ('NodeType', 'type='),
-        ('RdWrMask', 'rdwrmask='),
-        ('EnAllCores', 'enallcores='),
-        ('EnAllSlices', 'enallslices='),
-        ('SliceId', 'sliceid='),
-        ('ThreadMask', 'threadmask='),
     ]
     for key, value in event_fields:
-      if key in jd and not is_zero(jd[key]):
-        event += f',{value}{canonicalize_value(jd[key])}'
+      if key in jd and jd[key] != '0':
+        event += ',' + value + jd[key]
     if filter:
       event += f',{filter}'
     if msr:
@@ -408,18 +319,16 @@ class JsonEvent:
       self.desc += extra_desc
     if self.long_desc and extra_desc:
       self.long_desc += extra_desc
-    if self.desc and self.long_desc and self.desc == self.long_desc:
-        # Avoid duplicated descriptions.
-        self.long_desc = None
-    if arch_std:
-      if arch_std.lower() in _arch_std_events:
-        event = _arch_std_events[arch_std.lower()].event
-        # Copy from the architecture standard event to self for undefined fields.
-        for attr, value in _arch_std_events[arch_std.lower()].__dict__.items():
-          if hasattr(self, attr) and not getattr(self, attr):
-            setattr(self, attr, value)
-      else:
-        raise argparse.ArgumentTypeError('Cannot find arch std event:', arch_std)
+    if self.pmu:
+      if self.desc and not self.desc.endswith('. '):
+        self.desc += '. '
+      self.desc = (self.desc if self.desc else '') + ('Unit: ' + self.pmu + ' ')
+    if arch_std and arch_std.lower() in _arch_std_events:
+      event = _arch_std_events[arch_std.lower()].event
+      # Copy from the architecture standard event to self for undefined fields.
+      for attr, value in _arch_std_events[arch_std.lower()].__dict__.items():
+        if hasattr(self, attr) and not getattr(self, attr):
+          setattr(self, attr, value)
 
     self.event = real_event(self.name, event)
 
@@ -439,22 +348,14 @@ class JsonEvent:
         # Convert parsed metric expressions into a string. Slashes
         # must be doubled in the file.
         x = x.ToPerfJson().replace('\\', '\\\\')
-      if metric and x and attr == 'metric_threshold':
-        x = x.replace('\\', '\\\\')
-      if attr in _json_enum_attributes:
-        s += x if x else '0'
-      else:
-        s += f'{x}\\000' if x else '\\000'
+      s += f'{x}\\000' if x else '\\000'
     return s
 
   def to_c_string(self, metric: bool) -> str:
     """Representation of the event as a C struct initializer."""
 
-    def fix_comment(s: str) -> str:
-        return s.replace('*/', r'\*\/')
-
     s = self.build_c_string(metric)
-    return f'{{ { _bcs.offsets[s] } }}, /* {fix_comment(s)} */\n'
+    return f'{{ { _bcs.offsets[s] } }}, /* {s} */\n'
 
 
 @lru_cache(maxsize=None)
@@ -465,11 +366,11 @@ def read_json_events(path: str, topic: str) -> Sequence[JsonEvent]:
   except BaseException as err:
     print(f"Exception processing {path}")
     raise
-  metrics: list[Tuple[str, str, metric.Expression]] = []
+  metrics: list[Tuple[str, metric.Expression]] = []
   for event in events:
     event.topic = topic
     if event.metric_name and '-' not in event.metric_name:
-      metrics.append((event.pmu, event.metric_name, event.metric_expr))
+      metrics.append((event.metric_name, event.metric_expr))
   updates = metric.RewriteMetricsInTermsOfOthers(metrics)
   if updates:
     for event in events:
@@ -484,16 +385,12 @@ def preprocess_arch_std_files(archpath: str) -> None:
   """Read in all architecture standard events."""
   global _arch_std_events
   for item in os.scandir(archpath):
-    if not item.is_file() or not item.name.endswith('.json'):
-      continue
-    try:
+    if item.is_file() and item.name.endswith('.json'):
       for event in read_json_events(item.path, topic=''):
         if event.name:
           _arch_std_events[event.name.lower()] = event
         if event.metric_name:
           _arch_std_events[event.metric_name.lower()] = event
-    except Exception as e:
-        raise RuntimeError(f'Failure processing \'{item.name}\' in \'{archpath}\'') from e
 
 
 def add_events_table_entries(item: os.DirEntry, topic: str) -> None:
@@ -501,21 +398,20 @@ def add_events_table_entries(item: os.DirEntry, topic: str) -> None:
   for e in read_json_events(item.path, topic):
     if e.name:
       _pending_events.append(e)
-    if e.metric_name and not any(e.metric_name == x.metric_name and
-                                 e.pmu == x.pmu for x in _pending_metrics):
+    if e.metric_name:
       _pending_metrics.append(e)
 
 
 def print_pending_events() -> None:
   """Optionally close events table."""
 
-  def event_cmp_key(j: JsonEvent) -> Tuple[str, str, bool, str, str]:
+  def event_cmp_key(j: JsonEvent) -> Tuple[bool, str, str, str, str]:
     def fix_none(s: Optional[str]) -> str:
       if s is None:
         return ''
       return s
 
-    return (fix_none(j.pmu).replace(',','_'), fix_none(j.name), j.desc is not None, fix_none(j.topic),
+    return (j.desc is not None, fix_none(j.topic), fix_none(j.name), fix_none(j.pmu),
             fix_none(j.metric_name))
 
   global _pending_events
@@ -530,40 +426,13 @@ def print_pending_events() -> None:
     global event_tables
     _event_tables.append(_pending_events_tblname)
 
-  first = True
-  last_pmu = None
-  last_name = None
-  pmus = set()
-  for event in sorted(_pending_events, key=event_cmp_key):
-    if last_pmu and last_pmu == event.pmu:
-      assert event.name != last_name, f"Duplicate event: {last_pmu}/{last_name}/ in {_pending_events_tblname}"
-    if event.pmu != last_pmu:
-      if not first:
-        _args.output_file.write('};\n')
-      pmu_name = event.pmu.replace(',', '_')
-      _args.output_file.write(
-          f'static const struct compact_pmu_event {_pending_events_tblname}_{pmu_name}[] = {{\n')
-      first = False
-      last_pmu = event.pmu
-      pmus.add((event.pmu, pmu_name))
+  _args.output_file.write(
+      f'static const struct compact_pmu_event {_pending_events_tblname}[] = {{\n')
 
+  for event in sorted(_pending_events, key=event_cmp_key):
     _args.output_file.write(event.to_c_string(metric=False))
-    last_name = event.name
   _pending_events = []
 
-  _args.output_file.write(f"""
-}};
-
-static const struct pmu_table_entry {_pending_events_tblname}[] = {{
-""")
-  for (pmu, tbl_pmu) in sorted(pmus):
-    pmu_name = f"{pmu}\\000"
-    _args.output_file.write(f"""{{
-     .entries = {_pending_events_tblname}_{tbl_pmu},
-     .num_entries = ARRAY_SIZE({_pending_events_tblname}_{tbl_pmu}),
-     .pmu_name = {{ {_bcs.offsets[pmu_name]} /* {pmu_name} */ }},
-}},
-""")
   _args.output_file.write('};\n\n')
 
 def print_pending_metrics() -> None:
@@ -589,36 +458,13 @@ def print_pending_metrics() -> None:
     global metric_tables
     _metric_tables.append(_pending_metrics_tblname)
 
-  first = True
-  last_pmu = None
-  pmus = set()
-  for metric in sorted(_pending_metrics, key=metric_cmp_key):
-    if metric.pmu != last_pmu:
-      if not first:
-        _args.output_file.write('};\n')
-      pmu_name = metric.pmu.replace(',', '_')
-      _args.output_file.write(
-          f'static const struct compact_pmu_event {_pending_metrics_tblname}_{pmu_name}[] = {{\n')
-      first = False
-      last_pmu = metric.pmu
-      pmus.add((metric.pmu, pmu_name))
+  _args.output_file.write(
+      f'static const struct compact_pmu_event {_pending_metrics_tblname}[] = {{\n')
 
+  for metric in sorted(_pending_metrics, key=metric_cmp_key):
     _args.output_file.write(metric.to_c_string(metric=True))
   _pending_metrics = []
 
-  _args.output_file.write(f"""
-}};
-
-static const struct pmu_table_entry {_pending_metrics_tblname}[] = {{
-""")
-  for (pmu, tbl_pmu) in sorted(pmus):
-    pmu_name = f"{pmu}\\000"
-    _args.output_file.write(f"""{{
-     .entries = {_pending_metrics_tblname}_{tbl_pmu},
-     .num_entries = ARRAY_SIZE({_pending_metrics_tblname}_{tbl_pmu}),
-     .pmu_name = {{ {_bcs.offsets[pmu_name]} /* {pmu_name} */ }},
-}},
-""")
   _args.output_file.write('};\n\n')
 
 def get_topic(topic: str) -> str:
@@ -641,40 +487,23 @@ def preprocess_one_file(parents: Sequence[str], item: os.DirEntry) -> None:
   if not item.is_file() or not item.name.endswith('.json'):
     return
 
-  if item.name.endswith('metricgroups.json'):
-    metricgroup_descriptions = json.load(open(item.path))
-    for mgroup in metricgroup_descriptions:
-      assert len(mgroup) > 1, parents
-      description = f"{metricgroup_descriptions[mgroup]}\\000"
-      mgroup = f"{mgroup}\\000"
-      _bcs.add(mgroup, metric=True)
-      _bcs.add(description, metric=True)
-      _metricgroups[mgroup] = description
-    return
-
   topic = get_topic(item.name)
   for event in read_json_events(item.path, topic):
-    pmu_name = f"{event.pmu}\\000"
     if event.name:
-      _bcs.add(pmu_name, metric=False)
-      _bcs.add(event.build_c_string(metric=False), metric=False)
+      _bcs.add(event.build_c_string(metric=False))
     if event.metric_name:
-      _bcs.add(pmu_name, metric=True)
-      _bcs.add(event.build_c_string(metric=True), metric=True)
+      _bcs.add(event.build_c_string(metric=True))
 
 def process_one_file(parents: Sequence[str], item: os.DirEntry) -> None:
   """Process a JSON file during the main walk."""
-  def is_leaf_dir_ignoring_sys(path: str) -> bool:
+  def is_leaf_dir(path: str) -> bool:
     for item in os.scandir(path):
-      if item.is_dir() and item.name != 'sys':
+      if item.is_dir():
         return False
     return True
 
-  # Model directories are leaves (ignoring possible sys
-  # directories). The FTW will walk into the directory next. Flush
-  # pending events and metrics and update the table names for the new
-  # model directory.
-  if item.is_dir() and is_leaf_dir_ignoring_sys(item.path):
+  # model directory, reset topic
+  if item.is_dir() and is_leaf_dir(item.path):
     print_pending_events()
     print_pending_metrics()
 
@@ -694,7 +523,7 @@ def process_one_file(parents: Sequence[str], item: os.DirEntry) -> None:
 
   # Ignore other directories. If the file name does not have a .json
   # extension, ignore it. It could be a readme.txt for instance.
-  if not item.is_file() or not item.name.endswith('.json') or item.name.endswith('metricgroups.json'):
+  if not item.is_file() or not item.name.endswith('.json'):
     return
 
   add_events_table_entries(item, get_topic(item.name))
@@ -705,14 +534,14 @@ def print_mapping_table(archs: Sequence[str]) -> None:
   _args.output_file.write("""
 /* Struct used to make the PMU event table implementation opaque to callers. */
 struct pmu_events_table {
-        const struct pmu_table_entry *pmus;
-        uint32_t num_pmus;
+        const struct compact_pmu_event *entries;
+        size_t length;
 };
 
 /* Struct used to make the PMU metric table implementation opaque to callers. */
 struct pmu_metrics_table {
-        const struct pmu_table_entry *pmus;
-        uint32_t num_pmus;
+        const struct compact_pmu_event *entries;
+        size_t length;
 };
 
 /*
@@ -734,7 +563,7 @@ struct pmu_events_map {
  * Global table mapping each known CPU for the architecture to its
  * table of PMU events.
  */
-static const struct pmu_events_map pmu_events_map[] = {
+const struct pmu_events_map pmu_events_map[] = {
 """)
   for arch in archs:
     if arch == 'test':
@@ -742,27 +571,13 @@ static const struct pmu_events_map pmu_events_map[] = {
 \t.arch = "testarch",
 \t.cpuid = "testcpu",
 \t.event_table = {
-\t\t.pmus = pmu_events__test_soc_cpu,
-\t\t.num_pmus = ARRAY_SIZE(pmu_events__test_soc_cpu),
+\t\t.entries = pmu_events__test_soc_cpu,
+\t\t.length = ARRAY_SIZE(pmu_events__test_soc_cpu),
 \t},
 \t.metric_table = {
-\t\t.pmus = pmu_metrics__test_soc_cpu,
-\t\t.num_pmus = ARRAY_SIZE(pmu_metrics__test_soc_cpu),
+\t\t.entries = pmu_metrics__test_soc_cpu,
+\t\t.length = ARRAY_SIZE(pmu_metrics__test_soc_cpu),
 \t}
-},
-""")
-    elif arch == 'common':
-      _args.output_file.write("""{
-\t.arch = "common",
-\t.cpuid = "common",
-\t.event_table = {
-\t\t.pmus = pmu_events__common,
-\t\t.num_pmus = ARRAY_SIZE(pmu_events__common),
-\t},
-\t.metric_table = {
-\t\t.pmus = pmu_metrics__common,
-\t\t.num_pmus = ARRAY_SIZE(pmu_metrics__common),
-\t},
 },
 """)
     else:
@@ -791,12 +606,12 @@ static const struct pmu_events_map pmu_events_map[] = {
 \t.arch = "{arch}",
 \t.cpuid = "{cpuid}",
 \t.event_table = {{
-\t\t.pmus = {event_tblname},
-\t\t.num_pmus = {event_size}
+\t\t.entries = {event_tblname},
+\t\t.length = {event_size}
 \t}},
 \t.metric_table = {{
-\t\t.pmus = {metric_tblname},
-\t\t.num_pmus = {metric_size}
+\t\t.entries = {metric_tblname},
+\t\t.length = {metric_size}
 \t}}
 }},
 """)
@@ -827,15 +642,15 @@ static const struct pmu_sys_events pmu_sys_event_tables[] = {
   for tblname in _sys_event_tables:
     _args.output_file.write(f"""\t{{
 \t\t.event_table = {{
-\t\t\t.pmus = {tblname},
-\t\t\t.num_pmus = ARRAY_SIZE({tblname})
+\t\t\t.entries = {tblname},
+\t\t\t.length = ARRAY_SIZE({tblname})
 \t\t}},""")
     metric_tblname = _sys_event_table_to_metric_table_mapping[tblname]
     if metric_tblname in _sys_metric_tables:
       _args.output_file.write(f"""
 \t\t.metric_table = {{
-\t\t\t.pmus = {metric_tblname},
-\t\t\t.num_pmus = ARRAY_SIZE({metric_tblname})
+\t\t\t.entries = {metric_tblname},
+\t\t\t.length = ARRAY_SIZE({metric_tblname})
 \t\t}},""")
       printed_metric_tables.append(metric_tblname)
     _args.output_file.write(f"""
@@ -847,8 +662,8 @@ static const struct pmu_sys_events pmu_sys_event_tables[] = {
       continue
     _args.output_file.write(f"""\t{{
 \t\t.metric_table = {{
-\t\t\t.pmus = {tblname},
-\t\t\t.num_pmus = ARRAY_SIZE({tblname})
+\t\t\t.entries = {tblname},
+\t\t\t.length = ARRAY_SIZE({tblname})
 \t\t}},
 \t\t.name = \"{tblname}\",
 \t}},
@@ -864,17 +679,12 @@ static void decompress_event(int offset, struct pmu_event *pe)
 \tconst char *p = &big_c_string[offset];
 """)
   for attr in _json_event_attributes:
-    _args.output_file.write(f'\n\tpe->{attr} = ')
-    if attr in _json_enum_attributes:
-      _args.output_file.write("*p - '0';\n")
-    else:
-      _args.output_file.write("(*p == '\\0' ? NULL : p);\n")
+    _args.output_file.write(f"""
+\tpe->{attr} = (*p == '\\0' ? NULL : p);
+""")
     if attr == _json_event_attributes[-1]:
       continue
-    if attr in _json_enum_attributes:
-      _args.output_file.write('\tp++;')
-    else:
-      _args.output_file.write('\twhile (*p++);')
+    _args.output_file.write('\twhile (*p++);')
   _args.output_file.write("""}
 
 static void decompress_metric(int offset, struct pmu_metric *pm)
@@ -882,31 +692,23 @@ static void decompress_metric(int offset, struct pmu_metric *pm)
 \tconst char *p = &big_c_string[offset];
 """)
   for attr in _json_metric_attributes:
-    _args.output_file.write(f'\n\tpm->{attr} = ')
-    if attr in _json_enum_attributes:
-      _args.output_file.write("*p - '0';\n")
-    else:
-      _args.output_file.write("(*p == '\\0' ? NULL : p);\n")
+    _args.output_file.write(f"""
+\tpm->{attr} = (*p == '\\0' ? NULL : p);
+""")
     if attr == _json_metric_attributes[-1]:
       continue
-    if attr in _json_enum_attributes:
-      _args.output_file.write('\tp++;')
-    else:
-      _args.output_file.write('\twhile (*p++);')
+    _args.output_file.write('\twhile (*p++);')
   _args.output_file.write("""}
 
-static int pmu_events_table__for_each_event_pmu(const struct pmu_events_table *table,
-                                                const struct pmu_table_entry *pmu,
-                                                pmu_event_iter_fn fn,
-                                                void *data)
+int pmu_events_table_for_each_event(const struct pmu_events_table *table,
+                                    pmu_event_iter_fn fn,
+                                    void *data)
 {
-        int ret;
-        struct pmu_event pe = {
-                .pmu = &big_c_string[pmu->pmu_name.offset],
-        };
+        for (size_t i = 0; i < table->length; i++) {
+                struct pmu_event pe;
+                int ret;
 
-        for (uint32_t i = 0; i < pmu->num_entries; i++) {
-                decompress_event(pmu->entries[i].offset, &pe);
+                decompress_event(table->entries[i].offset, &pe);
                 if (!pe.name)
                         continue;
                 ret = fn(&pe, table, data);
@@ -914,125 +716,17 @@ static int pmu_events_table__for_each_event_pmu(const struct pmu_events_table *t
                         return ret;
         }
         return 0;
- }
-
-static int pmu_events_table__find_event_pmu(const struct pmu_events_table *table,
-                                            const struct pmu_table_entry *pmu,
-                                            const char *name,
-                                            pmu_event_iter_fn fn,
-                                            void *data)
-{
-        struct pmu_event pe = {
-                .pmu = &big_c_string[pmu->pmu_name.offset],
-        };
-        int low = 0, high = pmu->num_entries - 1;
-
-        while (low <= high) {
-                int cmp, mid = (low + high) / 2;
-
-                decompress_event(pmu->entries[mid].offset, &pe);
-
-                if (!pe.name && !name)
-                        goto do_call;
-
-                if (!pe.name && name) {
-                        low = mid + 1;
-                        continue;
-                }
-                if (pe.name && !name) {
-                        high = mid - 1;
-                        continue;
-                }
-
-                cmp = strcasecmp(pe.name, name);
-                if (cmp < 0) {
-                        low = mid + 1;
-                        continue;
-                }
-                if (cmp > 0) {
-                        high = mid - 1;
-                        continue;
-                }
-  do_call:
-                return fn ? fn(&pe, table, data) : 0;
-        }
-        return PMU_EVENTS__NOT_FOUND;
 }
 
-int pmu_events_table__for_each_event(const struct pmu_events_table *table,
-                                    struct perf_pmu *pmu,
-                                    pmu_event_iter_fn fn,
-                                    void *data)
+int pmu_metrics_table_for_each_metric(const struct pmu_metrics_table *table,
+                                     pmu_metric_iter_fn fn,
+                                     void *data)
 {
-        if (!table)
-                return 0;
-        for (size_t i = 0; i < table->num_pmus; i++) {
-                const struct pmu_table_entry *table_pmu = &table->pmus[i];
-                const char *pmu_name = &big_c_string[table_pmu->pmu_name.offset];
+        for (size_t i = 0; i < table->length; i++) {
+                struct pmu_metric pm;
                 int ret;
 
-                if (pmu && !perf_pmu__name_wildcard_match(pmu, pmu_name))
-                        continue;
-
-                ret = pmu_events_table__for_each_event_pmu(table, table_pmu, fn, data);
-                if (ret)
-                        return ret;
-        }
-        return 0;
-}
-
-int pmu_events_table__find_event(const struct pmu_events_table *table,
-                                 struct perf_pmu *pmu,
-                                 const char *name,
-                                 pmu_event_iter_fn fn,
-                                 void *data)
-{
-        if (!table)
-                return PMU_EVENTS__NOT_FOUND;
-        for (size_t i = 0; i < table->num_pmus; i++) {
-                const struct pmu_table_entry *table_pmu = &table->pmus[i];
-                const char *pmu_name = &big_c_string[table_pmu->pmu_name.offset];
-                int ret;
-
-                if (pmu && !perf_pmu__name_wildcard_match(pmu, pmu_name))
-                        continue;
-
-                ret = pmu_events_table__find_event_pmu(table, table_pmu, name, fn, data);
-                if (ret != PMU_EVENTS__NOT_FOUND)
-                        return ret;
-        }
-        return PMU_EVENTS__NOT_FOUND;
-}
-
-size_t pmu_events_table__num_events(const struct pmu_events_table *table,
-                                    struct perf_pmu *pmu)
-{
-        size_t count = 0;
-
-        if (!table)
-                return 0;
-        for (size_t i = 0; i < table->num_pmus; i++) {
-                const struct pmu_table_entry *table_pmu = &table->pmus[i];
-                const char *pmu_name = &big_c_string[table_pmu->pmu_name.offset];
-
-                if (perf_pmu__name_wildcard_match(pmu, pmu_name))
-                        count += table_pmu->num_entries;
-        }
-        return count;
-}
-
-static int pmu_metrics_table__for_each_metric_pmu(const struct pmu_metrics_table *table,
-                                                const struct pmu_table_entry *pmu,
-                                                pmu_metric_iter_fn fn,
-                                                void *data)
-{
-        int ret;
-        struct pmu_metric pm = {
-                .pmu = &big_c_string[pmu->pmu_name.offset],
-        };
-
-        for (uint32_t i = 0; i < pmu->num_entries; i++) {
-                decompress_metric(pmu->entries[i].offset, &pm);
+                decompress_metric(table->entries[i].offset, &pm);
                 if (!pm.metric_expr)
                         continue;
                 ret = fn(&pm, table, data);
@@ -1042,222 +736,58 @@ static int pmu_metrics_table__for_each_metric_pmu(const struct pmu_metrics_table
         return 0;
 }
 
-static int pmu_metrics_table__find_metric_pmu(const struct pmu_metrics_table *table,
-                                            const struct pmu_table_entry *pmu,
-                                            const char *metric,
-                                            pmu_metric_iter_fn fn,
-                                            void *data)
+const struct pmu_events_table *perf_pmu__find_events_table(struct perf_pmu *pmu)
 {
-        struct pmu_metric pm = {
-                .pmu = &big_c_string[pmu->pmu_name.offset],
-        };
-        int low = 0, high = pmu->num_entries - 1;
+        const struct pmu_events_table *table = NULL;
+        char *cpuid = perf_pmu__getcpuid(pmu);
+        int i;
 
-        while (low <= high) {
-                int cmp, mid = (low + high) / 2;
-
-                decompress_metric(pmu->entries[mid].offset, &pm);
-
-                if (!pm.metric_name && !metric)
-                        goto do_call;
-
-                if (!pm.metric_name && metric) {
-                        low = mid + 1;
-                        continue;
-                }
-                if (pm.metric_name && !metric) {
-                        high = mid - 1;
-                        continue;
-                }
-
-                cmp = strcmp(pm.metric_name, metric);
-                if (cmp < 0) {
-                        low = mid + 1;
-                        continue;
-                }
-                if (cmp > 0) {
-                        high = mid - 1;
-                        continue;
-                }
-  do_call:
-                return fn ? fn(&pm, table, data) : 0;
-        }
-        return PMU_METRICS__NOT_FOUND;
-}
-
-int pmu_metrics_table__for_each_metric(const struct pmu_metrics_table *table,
-                                     pmu_metric_iter_fn fn,
-                                     void *data)
-{
-        if (!table)
-                return 0;
-        for (size_t i = 0; i < table->num_pmus; i++) {
-                int ret = pmu_metrics_table__for_each_metric_pmu(table, &table->pmus[i],
-                                                                 fn, data);
-
-                if (ret)
-                        return ret;
-        }
-        return 0;
-}
-
-int pmu_metrics_table__find_metric(const struct pmu_metrics_table *table,
-                                 struct perf_pmu *pmu,
-                                 const char *metric,
-                                 pmu_metric_iter_fn fn,
-                                 void *data)
-{
-        if (!table)
-                return 0;
-        for (size_t i = 0; i < table->num_pmus; i++) {
-                const struct pmu_table_entry *table_pmu = &table->pmus[i];
-                const char *pmu_name = &big_c_string[table_pmu->pmu_name.offset];
-                int ret;
-
-                if (pmu && !perf_pmu__name_wildcard_match(pmu, pmu_name))
-                        continue;
-
-                ret = pmu_metrics_table__find_metric_pmu(table, table_pmu, metric, fn, data);
-                if (ret != PMU_METRICS__NOT_FOUND)
-                        return ret;
-        }
-        return PMU_METRICS__NOT_FOUND;
-}
-
-static const struct pmu_events_map *map_for_cpu(struct perf_cpu cpu)
-{
-        static struct {
-                const struct pmu_events_map *map;
-                struct perf_cpu cpu;
-        } last_result;
-        static struct {
-                const struct pmu_events_map *map;
-                char *cpuid;
-        } last_map_search;
-        static bool has_last_result, has_last_map_search;
-        const struct pmu_events_map *map = NULL;
-        char *cpuid = NULL;
-        size_t i;
-
-        if (has_last_result && last_result.cpu.cpu == cpu.cpu)
-                return last_result.map;
-
-        cpuid = get_cpuid_allow_env_override(cpu);
-
-        /*
-         * On some platforms which uses cpus map, cpuid can be NULL for
+        /* on some platforms which uses cpus map, cpuid can be NULL for
          * PMUs other than CORE PMUs.
          */
         if (!cpuid)
-                goto out_update_last_result;
-
-        if (has_last_map_search && !strcmp(last_map_search.cpuid, cpuid)) {
-                map = last_map_search.map;
-                free(cpuid);
-        } else {
-                i = 0;
-                for (;;) {
-                        map = &pmu_events_map[i++];
-
-                        if (!map->arch) {
-                                map = NULL;
-                                break;
-                        }
-
-                        if (!strcmp_cpuid_str(map->cpuid, cpuid))
-                                break;
-               }
-               free(last_map_search.cpuid);
-               last_map_search.cpuid = cpuid;
-               last_map_search.map = map;
-               has_last_map_search = true;
-        }
-out_update_last_result:
-        last_result.cpu = cpu;
-        last_result.map = map;
-        has_last_result = true;
-        return map;
-}
-
-static const struct pmu_events_map *map_for_pmu(struct perf_pmu *pmu)
-{
-        struct perf_cpu cpu = {-1};
-
-        if (pmu) {
-                for (size_t i = 0; i < ARRAY_SIZE(pmu_events__common); i++) {
-                        const char *pmu_name = &big_c_string[pmu_events__common[i].pmu_name.offset];
-
-                        if (!strcmp(pmu_name, pmu->name)) {
-                                const struct pmu_events_map *map = &pmu_events_map[0];
-
-                                while (strcmp("common", map->arch))
-                                        map++;
-                                return map;
-                        }
-                }
-                cpu = perf_cpu_map__min(pmu->cpus);
-        }
-        return map_for_cpu(cpu);
-}
-
-const struct pmu_events_table *perf_pmu__find_events_table(struct perf_pmu *pmu)
-{
-        const struct pmu_events_map *map = map_for_pmu(pmu);
-
-        if (!map)
                 return NULL;
 
-        if (!pmu)
-                return &map->event_table;
-
-        for (size_t i = 0; i < map->event_table.num_pmus; i++) {
-                const struct pmu_table_entry *table_pmu = &map->event_table.pmus[i];
-                const char *pmu_name = &big_c_string[table_pmu->pmu_name.offset];
-
-                if (perf_pmu__name_wildcard_match(pmu, pmu_name))
-                         return &map->event_table;
-        }
-        return NULL;
-}
-
-const struct pmu_events_table *perf_pmu__default_core_events_table(void)
-{
-        int i = 0;
-
+        i = 0;
         for (;;) {
                 const struct pmu_events_map *map = &pmu_events_map[i++];
-
                 if (!map->arch)
                         break;
 
-                if (!strcmp(map->cpuid, "common"))
-                        return &map->event_table;
+                if (!strcmp_cpuid_str(map->cpuid, cpuid)) {
+                        table = &map->event_table;
+                        break;
+                }
         }
-        return NULL;
+        free(cpuid);
+        return table;
 }
 
-const struct pmu_metrics_table *pmu_metrics_table__find(void)
+const struct pmu_metrics_table *perf_pmu__find_metrics_table(struct perf_pmu *pmu)
 {
-        struct perf_cpu cpu = {-1};
-        const struct pmu_events_map *map = map_for_cpu(cpu);
+        const struct pmu_metrics_table *table = NULL;
+        char *cpuid = perf_pmu__getcpuid(pmu);
+        int i;
 
-        return map ? &map->metric_table : NULL;
-}
+        /* on some platforms which uses cpus map, cpuid can be NULL for
+         * PMUs other than CORE PMUs.
+         */
+        if (!cpuid)
+                return NULL;
 
-const struct pmu_metrics_table *pmu_metrics_table__default(void)
-{
-        int i = 0;
-
+        i = 0;
         for (;;) {
                 const struct pmu_events_map *map = &pmu_events_map[i++];
-
                 if (!map->arch)
                         break;
 
-                if (!strcmp(map->cpuid, "common"))
-                        return &map->metric_table;
+                if (!strcmp_cpuid_str(map->cpuid, cpuid)) {
+                        table = &map->metric_table;
+                        break;
+                }
         }
-        return NULL;
+        free(cpuid);
+        return table;
 }
 
 const struct pmu_events_table *find_core_events_table(const char *arch, const char *cpuid)
@@ -1287,8 +817,7 @@ int pmu_for_each_core_event(pmu_event_iter_fn fn, void *data)
         for (const struct pmu_events_map *tables = &pmu_events_map[0];
              tables->arch;
              tables++) {
-                int ret = pmu_events_table__for_each_event(&tables->event_table,
-                                                           /*pmu=*/ NULL, fn, data);
+                int ret = pmu_events_table_for_each_event(&tables->event_table, fn, data);
 
                 if (ret)
                         return ret;
@@ -1301,7 +830,7 @@ int pmu_for_each_core_metric(pmu_metric_iter_fn fn, void *data)
         for (const struct pmu_events_map *tables = &pmu_events_map[0];
              tables->arch;
              tables++) {
-                int ret = pmu_metrics_table__for_each_metric(&tables->metric_table, fn, data);
+                int ret = pmu_metrics_table_for_each_metric(&tables->metric_table, fn, data);
 
                 if (ret)
                         return ret;
@@ -1325,8 +854,7 @@ int pmu_for_each_sys_event(pmu_event_iter_fn fn, void *data)
         for (const struct pmu_sys_events *tables = &pmu_sys_event_tables[0];
              tables->name;
              tables++) {
-                int ret = pmu_events_table__for_each_event(&tables->event_table,
-                                                           /*pmu=*/ NULL, fn, data);
+                int ret = pmu_events_table_for_each_event(&tables->event_table, fn, data);
 
                 if (ret)
                         return ret;
@@ -1339,7 +867,7 @@ int pmu_for_each_sys_metric(pmu_metric_iter_fn fn, void *data)
         for (const struct pmu_sys_events *tables = &pmu_sys_event_tables[0];
              tables->name;
              tables++) {
-                int ret = pmu_metrics_table__for_each_metric(&tables->metric_table, fn, data);
+                int ret = pmu_metrics_table_for_each_metric(&tables->metric_table, fn, data);
 
                 if (ret)
                         return ret;
@@ -1348,38 +876,6 @@ int pmu_for_each_sys_metric(pmu_metric_iter_fn fn, void *data)
 }
 """)
 
-def print_metricgroups() -> None:
-  _args.output_file.write("""
-static const int metricgroups[][2] = {
-""")
-  for mgroup in sorted(_metricgroups):
-    description = _metricgroups[mgroup]
-    _args.output_file.write(
-        f'\t{{ {_bcs.offsets[mgroup]}, {_bcs.offsets[description]} }}, /* {mgroup} => {description} */\n'
-    )
-  _args.output_file.write("""
-};
-
-const char *describe_metricgroup(const char *group)
-{
-        int low = 0, high = (int)ARRAY_SIZE(metricgroups) - 1;
-
-        while (low <= high) {
-                int mid = (low + high) / 2;
-                const char *mgroup = &big_c_string[metricgroups[mid][0]];
-                int cmp = strcmp(mgroup, group);
-
-                if (cmp == 0) {
-                        return &big_c_string[metricgroups[mid][1]];
-                } else if (cmp < 0) {
-                        low = mid + 1;
-                } else {
-                        high = mid - 1;
-                }
-        }
-        return NULL;
-}
-""")
 
 def main() -> None:
   global _args
@@ -1393,18 +889,15 @@ def main() -> None:
   def ftw(path: str, parents: Sequence[str],
           action: Callable[[Sequence[str], os.DirEntry], None]) -> None:
     """Replicate the directory/file walking behavior of C's file tree walk."""
-    for item in sorted(os.scandir(path), key=lambda e: e.name):
+    for item in os.scandir(path):
       if _args.model != 'all' and item.is_dir():
         # Check if the model matches one in _args.model.
         if len(parents) == _args.model.split(',')[0].count('/'):
           # We're testing the correct directory.
           item_path = '/'.join(parents) + ('/' if len(parents) > 0 else '') + item.name
-          if 'test' not in item_path and 'common' not in item_path and item_path not in _args.model.split(','):
+          if 'test' not in item_path and item_path not in _args.model.split(','):
             continue
-      try:
-        action(parents, item)
-      except Exception as e:
-        raise RuntimeError(f'Action failure for \'{item.name}\' in {parents}') from e
+      action(parents, item)
       if item.is_dir():
         ftw(item.path, parents + [item.name], action)
 
@@ -1424,25 +917,15 @@ such as "arm/cortex-a34".''',
       'output_file', type=argparse.FileType('w', encoding='utf-8'), nargs='?', default=sys.stdout)
   _args = ap.parse_args()
 
-  _args.output_file.write(f"""
-/* SPDX-License-Identifier: GPL-2.0 */
-/* THIS FILE WAS AUTOGENERATED BY jevents.py arch={_args.arch} model={_args.model} ! */
-""")
   _args.output_file.write("""
-#include <pmu-events/pmu-events.h>
+#include "pmu-events/pmu-events.h"
 #include "util/header.h"
 #include "util/pmu.h"
 #include <string.h>
 #include <stddef.h>
 
 struct compact_pmu_event {
-        int offset;
-};
-
-struct pmu_table_entry {
-        const struct compact_pmu_event *entries;
-        uint32_t num_entries;
-        struct compact_pmu_event pmu_name;
+  int offset;
 };
 
 """)
@@ -1450,10 +933,10 @@ struct pmu_table_entry {
   for item in os.scandir(_args.starting_dir):
     if not item.is_dir():
       continue
-    if item.name == _args.arch or _args.arch == 'all' or item.name == 'test' or item.name == 'common':
+    if item.name == _args.arch or _args.arch == 'all' or item.name == 'test':
       archs.append(item.name)
 
-  if len(archs) < 2 and _args.arch != 'none':
+  if len(archs) < 2:
     raise IOError(f'Missing architecture directory \'{_args.arch}\'')
 
   archs.sort()
@@ -1475,7 +958,7 @@ struct pmu_table_entry {
 
   print_mapping_table(archs)
   print_system_mapping_table()
-  print_metricgroups()
+
 
 if __name__ == '__main__':
   main()

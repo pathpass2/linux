@@ -30,6 +30,7 @@ struct tfp410 {
 	struct gpio_desc	*powerdown;
 
 	struct drm_bridge_timings timings;
+	struct drm_bridge	*next_bridge;
 
 	struct device *dev;
 };
@@ -49,20 +50,18 @@ drm_connector_to_tfp410(struct drm_connector *connector)
 static int tfp410_get_modes(struct drm_connector *connector)
 {
 	struct tfp410 *dvi = drm_connector_to_tfp410(connector);
-	const struct drm_edid *drm_edid;
+	struct edid *edid;
 	int ret;
 
-	if (dvi->bridge.next_bridge->ops & DRM_BRIDGE_OP_EDID) {
-		drm_edid = drm_bridge_edid_read(dvi->bridge.next_bridge, connector);
-		if (!drm_edid)
+	if (dvi->next_bridge->ops & DRM_BRIDGE_OP_EDID) {
+		edid = drm_bridge_get_edid(dvi->next_bridge, connector);
+		if (!edid)
 			DRM_INFO("EDID read failed. Fallback to standard modes\n");
 	} else {
-		drm_edid = NULL;
+		edid = NULL;
 	}
 
-	drm_edid_connector_update(connector, drm_edid);
-
-	if (!drm_edid) {
+	if (!edid) {
 		/*
 		 * No EDID, fallback on the XGA standard modes and prefer a mode
 		 * pretty much anything can handle.
@@ -72,9 +71,11 @@ static int tfp410_get_modes(struct drm_connector *connector)
 		return ret;
 	}
 
-	ret = drm_edid_connector_add_modes(connector);
+	drm_connector_update_edid_property(connector, edid);
 
-	drm_edid_free(drm_edid);
+	ret = drm_add_edid_modes(connector, edid);
+
+	kfree(edid);
 
 	return ret;
 }
@@ -88,7 +89,7 @@ tfp410_connector_detect(struct drm_connector *connector, bool force)
 {
 	struct tfp410 *dvi = drm_connector_to_tfp410(connector);
 
-	return drm_bridge_detect(dvi->bridge.next_bridge, connector);
+	return drm_bridge_detect(dvi->next_bridge);
 }
 
 static const struct drm_connector_funcs tfp410_con_funcs = {
@@ -119,13 +120,12 @@ static void tfp410_hpd_callback(void *arg, enum drm_connector_status status)
 }
 
 static int tfp410_attach(struct drm_bridge *bridge,
-			 struct drm_encoder *encoder,
 			 enum drm_bridge_attach_flags flags)
 {
 	struct tfp410 *dvi = drm_bridge_to_tfp410(bridge);
 	int ret;
 
-	ret = drm_bridge_attach(encoder, dvi->bridge.next_bridge, bridge,
+	ret = drm_bridge_attach(bridge->encoder, dvi->next_bridge, bridge,
 				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
 	if (ret < 0)
 		return ret;
@@ -133,14 +133,19 @@ static int tfp410_attach(struct drm_bridge *bridge,
 	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)
 		return 0;
 
-	if (dvi->bridge.next_bridge->ops & DRM_BRIDGE_OP_DETECT)
+	if (!bridge->encoder) {
+		dev_err(dvi->dev, "Missing encoder\n");
+		return -ENODEV;
+	}
+
+	if (dvi->next_bridge->ops & DRM_BRIDGE_OP_DETECT)
 		dvi->connector.polled = DRM_CONNECTOR_POLL_HPD;
 	else
 		dvi->connector.polled = DRM_CONNECTOR_POLL_CONNECT | DRM_CONNECTOR_POLL_DISCONNECT;
 
-	if (dvi->bridge.next_bridge->ops & DRM_BRIDGE_OP_HPD) {
+	if (dvi->next_bridge->ops & DRM_BRIDGE_OP_HPD) {
 		INIT_DELAYED_WORK(&dvi->hpd_work, tfp410_hpd_work_func);
-		drm_bridge_hpd_enable(dvi->bridge.next_bridge, tfp410_hpd_callback,
+		drm_bridge_hpd_enable(dvi->next_bridge, tfp410_hpd_callback,
 				      dvi);
 	}
 
@@ -148,8 +153,8 @@ static int tfp410_attach(struct drm_bridge *bridge,
 				 &tfp410_con_helper_funcs);
 	ret = drm_connector_init_with_ddc(bridge->dev, &dvi->connector,
 					  &tfp410_con_funcs,
-					  dvi->bridge.next_bridge->type,
-					  dvi->bridge.next_bridge->ddc);
+					  dvi->next_bridge->type,
+					  dvi->next_bridge->ddc);
 	if (ret) {
 		dev_err(dvi->dev, "drm_connector_init_with_ddc() failed: %d\n",
 			ret);
@@ -159,7 +164,7 @@ static int tfp410_attach(struct drm_bridge *bridge,
 	drm_display_info_set_bus_formats(&dvi->connector.display_info,
 					 &dvi->bus_format, 1);
 
-	drm_connector_attach_encoder(&dvi->connector, encoder);
+	drm_connector_attach_encoder(&dvi->connector, bridge->encoder);
 
 	return 0;
 }
@@ -168,8 +173,8 @@ static void tfp410_detach(struct drm_bridge *bridge)
 {
 	struct tfp410 *dvi = drm_bridge_to_tfp410(bridge);
 
-	if (dvi->connector.dev && dvi->bridge.next_bridge->ops & DRM_BRIDGE_OP_HPD) {
-		drm_bridge_hpd_disable(dvi->bridge.next_bridge);
+	if (dvi->connector.dev && dvi->next_bridge->ops & DRM_BRIDGE_OP_HPD) {
+		drm_bridge_hpd_disable(dvi->next_bridge);
 		cancel_delayed_work_sync(&dvi->hpd_work);
 	}
 }
@@ -201,55 +206,12 @@ static enum drm_mode_status tfp410_mode_valid(struct drm_bridge *bridge,
 	return MODE_OK;
 }
 
-static u32 *tfp410_get_input_bus_fmts(struct drm_bridge *bridge,
-				      struct drm_bridge_state *bridge_state,
-				      struct drm_crtc_state *crtc_state,
-				      struct drm_connector_state *conn_state,
-				      u32 output_fmt,
-				      unsigned int *num_input_fmts)
-{
-	struct tfp410 *dvi = drm_bridge_to_tfp410(bridge);
-	u32 *input_fmts;
-
-	*num_input_fmts = 0;
-
-	input_fmts = kzalloc(sizeof(*input_fmts), GFP_KERNEL);
-	if (!input_fmts)
-		return NULL;
-
-	*num_input_fmts = 1;
-	input_fmts[0] = dvi->bus_format;
-
-	return input_fmts;
-}
-
-static int tfp410_atomic_check(struct drm_bridge *bridge,
-			       struct drm_bridge_state *bridge_state,
-			       struct drm_crtc_state *crtc_state,
-			       struct drm_connector_state *conn_state)
-{
-	struct tfp410 *dvi = drm_bridge_to_tfp410(bridge);
-
-	/*
-	 * There might be flags negotiation supported in future.
-	 * Set the bus flags in atomic_check statically for now.
-	 */
-	bridge_state->input_bus_cfg.flags = dvi->timings.input_bus_flags;
-
-	return 0;
-}
-
 static const struct drm_bridge_funcs tfp410_bridge_funcs = {
 	.attach		= tfp410_attach,
 	.detach		= tfp410_detach,
 	.enable		= tfp410_enable,
 	.disable	= tfp410_disable,
 	.mode_valid	= tfp410_mode_valid,
-	.atomic_reset = drm_atomic_helper_bridge_reset,
-	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
-	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
-	.atomic_get_input_bus_fmts = tfp410_get_input_bus_fmts,
-	.atomic_check = tfp410_atomic_check,
 };
 
 static const struct drm_bridge_timings tfp410_default_timings = {
@@ -340,14 +302,14 @@ static int tfp410_init(struct device *dev, bool i2c)
 		return -ENXIO;
 	}
 
-	dvi = devm_drm_bridge_alloc(dev, struct tfp410, bridge,
-				    &tfp410_bridge_funcs);
-	if (IS_ERR(dvi))
-		return PTR_ERR(dvi);
+	dvi = devm_kzalloc(dev, sizeof(*dvi), GFP_KERNEL);
+	if (!dvi)
+		return -ENOMEM;
 
 	dvi->dev = dev;
 	dev_set_drvdata(dev, dvi);
 
+	dvi->bridge.funcs = &tfp410_bridge_funcs;
 	dvi->bridge.of_node = dev->of_node;
 	dvi->bridge.timings = &dvi->timings;
 	dvi->bridge.type = DRM_MODE_CONNECTOR_DVID;
@@ -361,10 +323,10 @@ static int tfp410_init(struct device *dev, bool i2c)
 	if (!node)
 		return -ENODEV;
 
-	dvi->bridge.next_bridge = of_drm_find_and_get_bridge(node);
+	dvi->next_bridge = of_drm_find_bridge(node);
 	of_node_put(node);
 
-	if (!dvi->bridge.next_bridge)
+	if (!dvi->next_bridge)
 		return -EPROBE_DEFER;
 
 	/* Get the powerdown GPIO. */
@@ -393,9 +355,11 @@ static int tfp410_probe(struct platform_device *pdev)
 	return tfp410_init(&pdev->dev, false);
 }
 
-static void tfp410_remove(struct platform_device *pdev)
+static int tfp410_remove(struct platform_device *pdev)
 {
 	tfp410_fini(&pdev->dev);
+
+	return 0;
 }
 
 static const struct of_device_id tfp410_match[] = {
@@ -406,7 +370,7 @@ MODULE_DEVICE_TABLE(of, tfp410_match);
 
 static struct platform_driver tfp410_platform_driver = {
 	.probe	= tfp410_probe,
-	.remove = tfp410_remove,
+	.remove	= tfp410_remove,
 	.driver	= {
 		.name		= "tfp410-bridge",
 		.of_match_table	= tfp410_match,
@@ -435,7 +399,7 @@ static void tfp410_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tfp410_i2c_ids[] = {
-	{ "tfp410" },
+	{ "tfp410", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tfp410_i2c_ids);
@@ -443,10 +407,10 @@ MODULE_DEVICE_TABLE(i2c, tfp410_i2c_ids);
 static struct i2c_driver tfp410_i2c_driver = {
 	.driver = {
 		.name	= "tfp410",
-		.of_match_table = tfp410_match,
+		.of_match_table = of_match_ptr(tfp410_match),
 	},
 	.id_table	= tfp410_i2c_ids,
-	.probe		= tfp410_i2c_probe,
+	.probe_new	= tfp410_i2c_probe,
 	.remove		= tfp410_i2c_remove,
 };
 #endif /* IS_ENABLED(CONFIG_I2C) */

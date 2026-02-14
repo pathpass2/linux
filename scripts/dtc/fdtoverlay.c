@@ -23,7 +23,9 @@
 /* Usage related data. */
 static const char usage_synopsis[] =
 	"apply a number of overlays to a base blob\n"
-	"	fdtoverlay <options> [<overlay.dtbo> [<overlay.dtbo>]]";
+	"	fdtoverlay <options> [<overlay.dtbo> [<overlay.dtbo>]]\n"
+	"\n"
+	USAGE_TYPE_MSG;
 static const char usage_short_opts[] = "i:o:v" USAGE_COMMON_SHORT_OPTS;
 static struct option const usage_long_opts[] = {
 	{"input",            required_argument, NULL, 'i'},
@@ -46,10 +48,9 @@ static void *apply_one(char *base, const char *overlay, size_t *buf_len,
 	char *tmp = NULL;
 	char *tmpo;
 	int ret;
-	bool has_symbols;
 
 	/*
-	 * We take copies first, because a failed apply can trash
+	 * We take a copies first, because a a failed apply can trash
 	 * both the base blob and the overlay
 	 */
 	tmpo = xmalloc(fdt_totalsize(overlay));
@@ -63,8 +64,6 @@ static void *apply_one(char *base, const char *overlay, size_t *buf_len,
 				fdt_strerror(ret));
 			goto fail;
 		}
-		ret = fdt_path_offset(tmp, "/__symbols__");
-		has_symbols = ret >= 0;
 
 		memcpy(tmpo, overlay, fdt_totalsize(overlay));
 
@@ -77,11 +76,6 @@ static void *apply_one(char *base, const char *overlay, size_t *buf_len,
 	if (ret) {
 		fprintf(stderr, "\nFailed to apply '%s': %s\n",
 			name, fdt_strerror(ret));
-		if (!has_symbols) {
-			fprintf(stderr,
-				"base blob does not have a '/__symbols__' node, "
-				"make sure you have compiled the base blob with '-@' option\n");
-		}
 		goto fail;
 	}
 

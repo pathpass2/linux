@@ -6,7 +6,7 @@
  */
 #include <linux/slab.h>
 #include <linux/statfs.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 #include "adfs.h"
 
 /*

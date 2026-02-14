@@ -33,7 +33,7 @@ static DEFINE_MUTEX(umwait_lock);
 static void umwait_update_control_msr(void * unused)
 {
 	lockdep_assert_irqs_disabled();
-	wrmsrq(MSR_IA32_UMWAIT_CONTROL, READ_ONCE(umwait_control_cached));
+	wrmsr(MSR_IA32_UMWAIT_CONTROL, READ_ONCE(umwait_control_cached), 0);
 }
 
 /*
@@ -71,7 +71,7 @@ static int umwait_cpu_offline(unsigned int cpu)
 	 * the original control MSR value in umwait_init(). So there
 	 * is no race condition here.
 	 */
-	wrmsrq(MSR_IA32_UMWAIT_CONTROL, orig_umwait_control_cached);
+	wrmsr(MSR_IA32_UMWAIT_CONTROL, orig_umwait_control_cached, 0);
 
 	return 0;
 }
@@ -86,17 +86,13 @@ static int umwait_cpu_offline(unsigned int cpu)
  * trust the firmware nor does it matter if the same value is written
  * again.
  */
-static void umwait_syscore_resume(void *data)
+static void umwait_syscore_resume(void)
 {
 	umwait_update_control_msr(NULL);
 }
 
-static const struct syscore_ops umwait_syscore_ops = {
+static struct syscore_ops umwait_syscore_ops = {
 	.resume	= umwait_syscore_resume,
-};
-
-static struct syscore umwait_syscore = {
-	.ops = &umwait_syscore_ops,
 };
 
 /* sysfs interface */
@@ -218,7 +214,7 @@ static int __init umwait_init(void)
 	 * changed. This is the only place where orig_umwait_control_cached
 	 * is modified.
 	 */
-	rdmsrq(MSR_IA32_UMWAIT_CONTROL, orig_umwait_control_cached);
+	rdmsrl(MSR_IA32_UMWAIT_CONTROL, orig_umwait_control_cached);
 
 	ret = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "umwait:online",
 				umwait_cpu_online, umwait_cpu_offline);
@@ -230,17 +226,13 @@ static int __init umwait_init(void)
 		return ret;
 	}
 
-	register_syscore(&umwait_syscore);
+	register_syscore_ops(&umwait_syscore_ops);
 
 	/*
 	 * Add umwait control interface. Ignore failure, so at least the
 	 * default values are set up in case the machine manages to boot.
 	 */
-	dev = bus_get_dev_root(&cpu_subsys);
-	if (dev) {
-		ret = sysfs_create_group(&dev->kobj, &umwait_attr_group);
-		put_device(dev);
-	}
-	return ret;
+	dev = cpu_subsys.dev_root;
+	return sysfs_create_group(&dev->kobj, &umwait_attr_group);
 }
 device_initcall(umwait_init);

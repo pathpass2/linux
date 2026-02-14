@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (C) 2016 Felix Fietkau <nbd@nbd.name>
  */
@@ -33,8 +33,8 @@ mt76_napi_threaded_set(void *data, u64 val)
 	if (!mt76_is_mmio(dev))
 		return -EOPNOTSUPP;
 
-	if (dev->napi_dev->threaded != val)
-		return dev_set_threaded(dev->napi_dev, val);
+	if (dev->napi_dev.threaded != val)
+		return dev_set_threaded(&dev->napi_dev, val);
 
 	return 0;
 }
@@ -44,7 +44,7 @@ mt76_napi_threaded_get(void *data, u64 *val)
 {
 	struct mt76_dev *dev = data;
 
-	*val = dev->napi_dev->threaded;
+	*val = dev->napi_dev.threaded;
 	return 0;
 }
 
@@ -93,9 +93,9 @@ void mt76_seq_puts_array(struct seq_file *file, const char *str,
 {
 	int i;
 
-	seq_printf(file, "%16s:", str);
+	seq_printf(file, "%10s:", str);
 	for (i = 0; i < len; i++)
-		seq_printf(file, " %4d", val[i]);
+		seq_printf(file, " %2d", val[i]);
 	seq_puts(file, "\n");
 }
 EXPORT_SYMBOL_GPL(mt76_seq_puts_array);
@@ -109,6 +109,8 @@ mt76_register_debugfs_fops(struct mt76_phy *phy,
 	struct dentry *dir;
 
 	dir = debugfs_create_dir("mt76", phy->hw->wiphy->debugfsdir);
+	if (!dir)
+		return NULL;
 
 	debugfs_create_u8("led_pin", 0600, dir, &phy->leds.pin);
 	debugfs_create_u32("regidx", 0600, dir, &dev->debugfs_reg);

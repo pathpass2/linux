@@ -24,8 +24,6 @@
 #include <linux/pm_domain.h>
 #include <linux/spinlock.h>
 
-#include <linux/irqchip/irq-msi-lib.h>
-
 #define IMX_MU_CHANS            4
 
 enum imx_mu_xcr {
@@ -116,6 +114,20 @@ static void imx_mu_msi_parent_ack_irq(struct irq_data *data)
 	imx_mu_read(msi_data, msi_data->cfg->xRR + data->hwirq * 4);
 }
 
+static struct irq_chip imx_mu_msi_irq_chip = {
+	.name = "MU-MSI",
+	.irq_ack = irq_chip_ack_parent,
+};
+
+static struct msi_domain_ops imx_mu_msi_irq_ops = {
+};
+
+static struct msi_domain_info imx_mu_msi_domain_info = {
+	.flags	= (MSI_FLAG_USE_DEF_DOM_OPS | MSI_FLAG_USE_DEF_CHIP_OPS),
+	.ops	= &imx_mu_msi_irq_ops,
+	.chip	= &imx_mu_msi_irq_chip,
+};
+
 static void imx_mu_msi_parent_compose_msg(struct irq_data *data,
 					  struct msi_msg *msg)
 {
@@ -183,7 +195,6 @@ static void imx_mu_msi_domain_irq_free(struct irq_domain *domain,
 }
 
 static const struct irq_domain_ops imx_mu_msi_domain_ops = {
-	.select	= msi_lib_irq_domain_select,
 	.alloc	= imx_mu_msi_domain_irq_alloc,
 	.free	= imx_mu_msi_domain_irq_free,
 };
@@ -205,39 +216,35 @@ static void imx_mu_msi_irq_handler(struct irq_desc *desc)
 	chained_irq_exit(chip, desc);
 }
 
-#define IMX_MU_MSI_FLAGS_REQUIRED	(MSI_FLAG_USE_DEF_DOM_OPS |	\
-					 MSI_FLAG_USE_DEF_CHIP_OPS |	\
-					 MSI_FLAG_PARENT_PM_DEV)
-
-#define IMX_MU_MSI_FLAGS_SUPPORTED	(MSI_GENERIC_FLAGS_MASK)
-
-static const struct msi_parent_ops imx_mu_msi_parent_ops = {
-	.supported_flags	= IMX_MU_MSI_FLAGS_SUPPORTED,
-	.required_flags		= IMX_MU_MSI_FLAGS_REQUIRED,
-	.chip_flags		= MSI_CHIP_FLAG_SET_EOI | MSI_CHIP_FLAG_SET_ACK,
-	.bus_select_token       = DOMAIN_BUS_NEXUS,
-	.bus_select_mask	= MATCH_PLATFORM_MSI,
-	.prefix			= "MU-MSI-",
-	.init_dev_msi_info	= msi_lib_init_dev_msi_info,
-};
-
 static int imx_mu_msi_domains_init(struct imx_mu_msi *msi_data, struct device *dev)
 {
-	struct irq_domain_info info = {
-		.ops		= &imx_mu_msi_domain_ops,
-		.fwnode		= dev_fwnode(dev),
-		.size		= IMX_MU_CHANS,
-		.host_data	= msi_data,
-	};
+	struct fwnode_handle *fwnodes = dev_fwnode(dev);
 	struct irq_domain *parent;
 
 	/* Initialize MSI domain parent */
-	parent = msi_create_parent_irq_domain(&info, &imx_mu_msi_parent_ops);
+	parent = irq_domain_create_linear(fwnodes,
+					    IMX_MU_CHANS,
+					    &imx_mu_msi_domain_ops,
+					    msi_data);
 	if (!parent) {
 		dev_err(dev, "failed to create IRQ domain\n");
 		return -ENOMEM;
 	}
-	parent->dev = parent->pm_dev = dev;
+
+	irq_domain_update_bus_token(parent, DOMAIN_BUS_NEXUS);
+
+	msi_data->msi_domain = platform_msi_create_irq_domain(fwnodes,
+					&imx_mu_msi_domain_info,
+					parent);
+
+	if (!msi_data->msi_domain) {
+		dev_err(dev, "failed to create MSI domain\n");
+		irq_domain_remove(parent);
+		return -ENOMEM;
+	}
+
+	irq_domain_set_pm_device(msi_data->msi_domain, dev);
+
 	return 0;
 }
 
@@ -296,9 +303,11 @@ static const struct imx_mu_dcfg imx_mu_cfg_imx8ulp = {
 		  },
 };
 
-static int imx_mu_probe(struct platform_device *pdev, struct device_node *parent,
-			const struct imx_mu_dcfg *cfg)
+static int __init imx_mu_of_init(struct device_node *dn,
+				 struct device_node *parent,
+				 const struct imx_mu_dcfg *cfg)
 {
+	struct platform_device *pdev = of_find_device_by_node(dn);
 	struct device_link *pd_link_a;
 	struct device_link *pd_link_b;
 	struct imx_mu_msi *msi_data;
@@ -330,8 +339,8 @@ static int imx_mu_probe(struct platform_device *pdev, struct device_node *parent
 	msi_data->msiir_addr = res->start + msi_data->cfg->xTR;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (irq <= 0)
+		return -ENODEV;
 
 	platform_set_drvdata(pdev, msi_data);
 
@@ -414,26 +423,30 @@ static const struct dev_pm_ops imx_mu_pm_ops = {
 			   imx_mu_runtime_resume, NULL)
 };
 
-static int imx_mu_imx7ulp_probe(struct platform_device *pdev, struct device_node *parent)
+static int __init imx_mu_imx7ulp_of_init(struct device_node *dn,
+					 struct device_node *parent)
 {
-	return imx_mu_probe(pdev, parent, &imx_mu_cfg_imx7ulp);
+	return imx_mu_of_init(dn, parent, &imx_mu_cfg_imx7ulp);
 }
 
-static int imx_mu_imx6sx_probe(struct platform_device *pdev, struct device_node *parent)
+static int __init imx_mu_imx6sx_of_init(struct device_node *dn,
+					struct device_node *parent)
 {
-	return imx_mu_probe(pdev, parent, &imx_mu_cfg_imx6sx);
+	return imx_mu_of_init(dn, parent, &imx_mu_cfg_imx6sx);
 }
 
-static int imx_mu_imx8ulp_probe(struct platform_device *pdev, struct device_node *parent)
+static int __init imx_mu_imx8ulp_of_init(struct device_node *dn,
+					 struct device_node *parent)
 {
-	return imx_mu_probe(pdev, parent, &imx_mu_cfg_imx8ulp);
+	return imx_mu_of_init(dn, parent, &imx_mu_cfg_imx8ulp);
 }
 
 IRQCHIP_PLATFORM_DRIVER_BEGIN(imx_mu_msi)
-IRQCHIP_MATCH("fsl,imx7ulp-mu-msi", imx_mu_imx7ulp_probe)
-IRQCHIP_MATCH("fsl,imx6sx-mu-msi", imx_mu_imx6sx_probe)
-IRQCHIP_MATCH("fsl,imx8ulp-mu-msi", imx_mu_imx8ulp_probe)
+IRQCHIP_MATCH("fsl,imx7ulp-mu-msi", imx_mu_imx7ulp_of_init)
+IRQCHIP_MATCH("fsl,imx6sx-mu-msi", imx_mu_imx6sx_of_init)
+IRQCHIP_MATCH("fsl,imx8ulp-mu-msi", imx_mu_imx8ulp_of_init)
 IRQCHIP_PLATFORM_DRIVER_END(imx_mu_msi, .pm = &imx_mu_pm_ops)
+
 
 MODULE_AUTHOR("Frank Li <Frank.Li@nxp.com>");
 MODULE_DESCRIPTION("Freescale MU MSI controller driver");

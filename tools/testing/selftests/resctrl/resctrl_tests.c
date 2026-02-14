@@ -10,36 +10,18 @@
  */
 #include "resctrl.h"
 
-/* Volatile memory sink to prevent compiler optimizations */
-static volatile int sink_target;
-volatile int *value_sink = &sink_target;
+#define BENCHMARK_ARGS		64
+#define BENCHMARK_ARG_SIZE	64
 
-static struct resctrl_test *resctrl_tests[] = {
-	&mbm_test,
-	&mba_test,
-	&cmt_test,
-	&l3_cat_test,
-	&l3_noncont_cat_test,
-	&l2_noncont_cat_test,
-};
-
-static unsigned int detect_vendor(void)
+static int detect_vendor(void)
 {
-	static unsigned int vendor_id;
-	static bool initialized;
+	FILE *inf = fopen("/proc/cpuinfo", "r");
+	int vendor_id = 0;
 	char *s = NULL;
-	FILE *inf;
 	char *res;
 
-	if (initialized)
+	if (!inf)
 		return vendor_id;
-
-	inf = fopen("/proc/cpuinfo", "r");
-	if (!inf) {
-		vendor_id = 0;
-		initialized = true;
-		return vendor_id;
-	}
 
 	res = fgrep(inf, "vendor_id");
 
@@ -50,22 +32,18 @@ static unsigned int detect_vendor(void)
 		vendor_id = ARCH_INTEL;
 	else if (s && !strcmp(s, ": AuthenticAMD\n"))
 		vendor_id = ARCH_AMD;
-	else if (s && !strcmp(s, ": HygonGenuine\n"))
-		vendor_id = ARCH_HYGON;
 
 	fclose(inf);
 	free(res);
-
-	initialized = true;
 	return vendor_id;
 }
 
-unsigned int get_vendor(void)
+int get_vendor(void)
 {
-	unsigned int vendor;
+	static int vendor = -1;
 
-	vendor = detect_vendor();
-
+	if (vendor == -1)
+		vendor = detect_vendor();
 	if (vendor == 0)
 		ksft_print_msg("Can not get vendor info...\n");
 
@@ -74,234 +52,144 @@ unsigned int get_vendor(void)
 
 static void cmd_help(void)
 {
-	int i;
-
-	printf("usage: resctrl_tests [-h] [-t test list] [-n no_of_bits] [-b benchmark_cmd [option]...]\n");
-	printf("\t-b benchmark_cmd [option]...: run specified benchmark for MBM, MBA and CMT\n");
+	printf("usage: resctrl_tests [-h] [-b \"benchmark_cmd [options]\"] [-t test list] [-n no_of_bits]\n");
+	printf("\t-b benchmark_cmd [options]: run specified benchmark for MBM, MBA and CMT\n");
 	printf("\t   default benchmark is builtin fill_buf\n");
-	printf("\t-t test list: run tests/groups specified by the list, ");
+	printf("\t-t test list: run tests specified in the test list, ");
 	printf("e.g. -t mbm,mba,cmt,cat\n");
-	printf("\t\tSupported tests (group):\n");
-	for (i = 0; i < ARRAY_SIZE(resctrl_tests); i++) {
-		if (resctrl_tests[i]->group)
-			printf("\t\t\t%s (%s)\n", resctrl_tests[i]->name, resctrl_tests[i]->group);
-		else
-			printf("\t\t\t%s\n", resctrl_tests[i]->name);
-	}
 	printf("\t-n no_of_bits: run cache tests using specified no of bits in cache bit mask\n");
 	printf("\t-p cpu_no: specify CPU number to run the test. 1 is default\n");
 	printf("\t-h: help\n");
 }
 
-static int test_prepare(const struct resctrl_test *test)
+void tests_cleanup(void)
+{
+	mbm_test_cleanup();
+	mba_test_cleanup();
+	cmt_test_cleanup();
+	cat_test_cleanup();
+}
+
+static void run_mbm_test(bool has_ben, char **benchmark_cmd, int span,
+			 int cpu_no, char *bw_report)
 {
 	int res;
 
-	res = signal_handler_register(test);
-	if (res) {
-		ksft_print_msg("Failed to register signal handler\n");
-		return res;
-	}
+	ksft_print_msg("Starting MBM BW change ...\n");
 
-	res = mount_resctrlfs();
-	if (res) {
-		signal_handler_unregister();
-		ksft_print_msg("Failed to mount resctrl FS\n");
-		return res;
-	}
-	return 0;
-}
-
-static void test_cleanup(const struct resctrl_test *test)
-{
-	if (test->cleanup)
-		test->cleanup();
-	umount_resctrlfs();
-	signal_handler_unregister();
-}
-
-static bool test_vendor_specific_check(const struct resctrl_test *test)
-{
-	if (!test->vendor_specific)
-		return true;
-
-	return get_vendor() & test->vendor_specific;
-}
-
-static void run_single_test(const struct resctrl_test *test, const struct user_params *uparams)
-{
-	int ret, snc_mode;
-
-	if (test->disabled)
-		return;
-
-	if (!test_vendor_specific_check(test)) {
-		ksft_test_result_skip("Hardware does not support %s\n", test->name);
+	if (!validate_resctrl_feature_request(MBM_STR)) {
+		ksft_test_result_skip("Hardware does not support MBM or MBM is disabled\n");
 		return;
 	}
 
-	snc_mode = snc_nodes_per_l3_cache();
+	if (!has_ben)
+		sprintf(benchmark_cmd[5], "%s", MBA_STR);
+	res = mbm_bw_change(span, cpu_no, bw_report, benchmark_cmd);
+	ksft_test_result(!res, "MBM: bw change\n");
+	if ((get_vendor() == ARCH_INTEL) && res)
+		ksft_print_msg("Intel MBM may be inaccurate when Sub-NUMA Clustering is enabled. Check BIOS configuration.\n");
+	mbm_test_cleanup();
+}
 
-	ksft_print_msg("Starting %s test ...\n", test->name);
+static void run_mba_test(bool has_ben, char **benchmark_cmd, int span,
+			 int cpu_no, char *bw_report)
+{
+	int res;
 
-	if (snc_mode == 1 && snc_unreliable && get_vendor() == ARCH_INTEL) {
-		ksft_test_result_skip("SNC detection unreliable due to offline CPUs. Test results may not be accurate if SNC enabled.\n");
+	ksft_print_msg("Starting MBA Schemata change ...\n");
+
+	if (!validate_resctrl_feature_request(MBA_STR)) {
+		ksft_test_result_skip("Hardware does not support MBA or MBA is disabled\n");
 		return;
 	}
 
-	if (test_prepare(test)) {
-		ksft_exit_fail_msg("Abnormal failure when preparing for the test\n");
+	if (!has_ben)
+		sprintf(benchmark_cmd[1], "%d", span);
+	res = mba_schemata_change(cpu_no, bw_report, benchmark_cmd);
+	ksft_test_result(!res, "MBA: schemata change\n");
+	mba_test_cleanup();
+}
+
+static void run_cmt_test(bool has_ben, char **benchmark_cmd, int cpu_no)
+{
+	int res;
+
+	ksft_print_msg("Starting CMT test ...\n");
+	if (!validate_resctrl_feature_request(CMT_STR)) {
+		ksft_test_result_skip("Hardware does not support CMT or CMT is disabled\n");
 		return;
 	}
 
-	if (!test->feature_check(test)) {
-		ksft_test_result_skip("Hardware does not support %s or %s is disabled\n",
-				      test->name, test->name);
-		goto cleanup;
-	}
-
-	ret = test->run_test(test, uparams);
-	ksft_test_result(!ret, "%s: test\n", test->name);
-
-cleanup:
-	test_cleanup(test);
+	if (!has_ben)
+		sprintf(benchmark_cmd[5], "%s", CMT_STR);
+	res = cmt_resctrl_val(cpu_no, 5, benchmark_cmd);
+	ksft_test_result(!res, "CMT: test\n");
+	if ((get_vendor() == ARCH_INTEL) && res)
+		ksft_print_msg("Intel CMT may be inaccurate when Sub-NUMA Clustering is enabled. Check BIOS configuration.\n");
+	cmt_test_cleanup();
 }
 
-/*
- * Allocate and initialize a struct fill_buf_param with user provided
- * (via "-b fill_buf <fill_buf parameters>") parameters.
- *
- * Use defaults (that may not be appropriate for all tests) for any
- * fill_buf parameters omitted by the user.
- *
- * Historically it may have been possible for user space to provide
- * additional parameters, "operation" ("read" vs "write") in
- * benchmark_cmd[3] and "once" (run "once" or until terminated) in
- * benchmark_cmd[4]. Changing these parameters have never been
- * supported with the default of "read" operation and running until
- * terminated built into the tests. Any unsupported values for
- * (original) "fill_buf" parameters are treated as failure.
- *
- * Return: On failure, forcibly exits the test on any parsing failure,
- *         returns NULL if no parsing needed (user did not actually provide
- *         "-b fill_buf").
- *         On success, returns pointer to newly allocated and fully
- *         initialized struct fill_buf_param that caller must free.
- */
-static struct fill_buf_param *alloc_fill_buf_param(struct user_params *uparams)
+static void run_cat_test(int cpu_no, int no_of_bits)
 {
-	struct fill_buf_param *fill_param = NULL;
-	char *endptr = NULL;
+	int res;
 
-	if (!uparams->benchmark_cmd[0] || strcmp(uparams->benchmark_cmd[0], "fill_buf"))
-		return NULL;
+	ksft_print_msg("Starting CAT test ...\n");
 
-	fill_param = malloc(sizeof(*fill_param));
-	if (!fill_param)
-		ksft_exit_skip("Unable to allocate memory for fill_buf parameters.\n");
-
-	if (uparams->benchmark_cmd[1] && *uparams->benchmark_cmd[1] != '\0') {
-		errno = 0;
-		fill_param->buf_size = strtoul(uparams->benchmark_cmd[1], &endptr, 10);
-		if (errno || *endptr != '\0') {
-			free(fill_param);
-			ksft_exit_skip("Unable to parse benchmark buffer size.\n");
-		}
-	} else {
-		fill_param->buf_size = MINIMUM_SPAN;
+	if (!validate_resctrl_feature_request(CAT_STR)) {
+		ksft_test_result_skip("Hardware does not support CAT or CAT is disabled\n");
+		return;
 	}
 
-	if (uparams->benchmark_cmd[2] && *uparams->benchmark_cmd[2] != '\0') {
-		errno = 0;
-		fill_param->memflush = strtol(uparams->benchmark_cmd[2], &endptr, 10) != 0;
-		if (errno || *endptr != '\0') {
-			free(fill_param);
-			ksft_exit_skip("Unable to parse benchmark memflush parameter.\n");
-		}
-	} else {
-		fill_param->memflush = true;
-	}
-
-	if (uparams->benchmark_cmd[3] && *uparams->benchmark_cmd[3] != '\0') {
-		if (strcmp(uparams->benchmark_cmd[3], "0")) {
-			free(fill_param);
-			ksft_exit_skip("Only read operations supported.\n");
-		}
-	}
-
-	if (uparams->benchmark_cmd[4] && *uparams->benchmark_cmd[4] != '\0') {
-		if (strcmp(uparams->benchmark_cmd[4], "false")) {
-			free(fill_param);
-			ksft_exit_skip("fill_buf is required to run until termination.\n");
-		}
-	}
-
-	return fill_param;
-}
-
-static void init_user_params(struct user_params *uparams)
-{
-	memset(uparams, 0, sizeof(*uparams));
-
-	uparams->cpu = 1;
-	uparams->bits = 0;
+	res = cat_perf_miss_val(cpu_no, no_of_bits, "L3");
+	ksft_test_result(!res, "CAT: test\n");
+	cat_test_cleanup();
 }
 
 int main(int argc, char **argv)
 {
-	struct fill_buf_param *fill_param = NULL;
-	int tests = ARRAY_SIZE(resctrl_tests);
-	bool test_param_seen = false;
-	struct user_params uparams;
-	int c, i;
+	bool has_ben = false, mbm_test = true, mba_test = true, cmt_test = true;
+	int c, cpu_no = 1, span = 250, argc_new = argc, i, no_of_bits = 0;
+	char *benchmark_cmd[BENCHMARK_ARGS], bw_report[64], bm_type[64];
+	char benchmark_cmd_area[BENCHMARK_ARGS][BENCHMARK_ARG_SIZE];
+	int ben_ind, ben_count, tests = 0;
+	bool cat_test = true;
 
-	init_user_params(&uparams);
+	for (i = 0; i < argc; i++) {
+		if (strcmp(argv[i], "-b") == 0) {
+			ben_ind = i + 1;
+			ben_count = argc - ben_ind;
+			argc_new = ben_ind - 1;
+			has_ben = true;
+			break;
+		}
+	}
 
-	while ((c = getopt(argc, argv, "ht:b:n:p:")) != -1) {
+	while ((c = getopt(argc_new, argv, "ht:b:n:p:")) != -1) {
 		char *token;
 
 		switch (c) {
-		case 'b':
-			/*
-			 * First move optind back to the (first) optarg and
-			 * then build the benchmark command using the
-			 * remaining arguments.
-			 */
-			optind--;
-			if (argc - optind >= BENCHMARK_ARGS)
-				ksft_exit_fail_msg("Too long benchmark command");
-
-			/* Extract benchmark command from command line. */
-			for (i = 0; i < argc - optind; i++)
-				uparams.benchmark_cmd[i] = argv[i + optind];
-			uparams.benchmark_cmd[i] = NULL;
-
-			goto last_arg;
 		case 't':
 			token = strtok(optarg, ",");
 
-			if (!test_param_seen) {
-				for (i = 0; i < ARRAY_SIZE(resctrl_tests); i++)
-					resctrl_tests[i]->disabled = true;
-				tests = 0;
-				test_param_seen = true;
-			}
+			mbm_test = false;
+			mba_test = false;
+			cmt_test = false;
+			cat_test = false;
 			while (token) {
-				bool found = false;
-
-				for (i = 0; i < ARRAY_SIZE(resctrl_tests); i++) {
-					if (!strcasecmp(token, resctrl_tests[i]->name) ||
-					    (resctrl_tests[i]->group &&
-					     !strcasecmp(token, resctrl_tests[i]->group))) {
-						if (resctrl_tests[i]->disabled)
-							tests++;
-						resctrl_tests[i]->disabled = false;
-						found = true;
-					}
-				}
-
-				if (!found) {
-					printf("invalid test: %s\n", token);
+				if (!strncmp(token, MBM_STR, sizeof(MBM_STR))) {
+					mbm_test = true;
+					tests++;
+				} else if (!strncmp(token, MBA_STR, sizeof(MBA_STR))) {
+					mba_test = true;
+					tests++;
+				} else if (!strncmp(token, CMT_STR, sizeof(CMT_STR))) {
+					cmt_test = true;
+					tests++;
+				} else if (!strncmp(token, CAT_STR, sizeof(CAT_STR))) {
+					cat_test = true;
+					tests++;
+				} else {
+					printf("invalid argument\n");
 
 					return -1;
 				}
@@ -309,11 +197,11 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'p':
-			uparams.cpu = atoi(optarg);
+			cpu_no = atoi(optarg);
 			break;
 		case 'n':
-			uparams.bits = atoi(optarg);
-			if (uparams.bits <= 0) {
+			no_of_bits = atoi(optarg);
+			if (no_of_bits <= 0) {
 				printf("Bail out! invalid argument for no_of_bits\n");
 				return -1;
 			}
@@ -328,11 +216,6 @@ int main(int argc, char **argv)
 			return -1;
 		}
 	}
-last_arg:
-
-	fill_param = alloc_fill_buf_param(&uparams);
-	if (fill_param)
-		uparams.fill_buf = fill_param;
 
 	ksft_print_header();
 
@@ -342,21 +225,52 @@ last_arg:
 	 * 2. We execute perf commands
 	 */
 	if (geteuid() != 0)
-		ksft_exit_skip("Not running as root. Skipping...\n");
+		return ksft_exit_skip("Not running as root. Skipping...\n");
+
+	if (has_ben) {
+		/* Extract benchmark command from command line. */
+		for (i = ben_ind; i < argc; i++) {
+			benchmark_cmd[i - ben_ind] = benchmark_cmd_area[i];
+			sprintf(benchmark_cmd[i - ben_ind], "%s", argv[i]);
+		}
+		benchmark_cmd[ben_count] = NULL;
+	} else {
+		/* If no benchmark is given by "-b" argument, use fill_buf. */
+		for (i = 0; i < 6; i++)
+			benchmark_cmd[i] = benchmark_cmd_area[i];
+
+		strcpy(benchmark_cmd[0], "fill_buf");
+		sprintf(benchmark_cmd[1], "%d", span);
+		strcpy(benchmark_cmd[2], "1");
+		strcpy(benchmark_cmd[3], "1");
+		strcpy(benchmark_cmd[4], "0");
+		strcpy(benchmark_cmd[5], "");
+		benchmark_cmd[6] = NULL;
+	}
+
+	sprintf(bw_report, "reads");
+	sprintf(bm_type, "fill_buf");
 
 	if (!check_resctrlfs_support())
-		ksft_exit_skip("resctrl FS does not exist. Enable X86_CPU_RESCTRL config option.\n");
-
-	if (umount_resctrlfs())
-		ksft_exit_skip("resctrl FS unmount failed.\n");
+		return ksft_exit_skip("resctrl FS does not exist. Enable X86_CPU_RESCTRL config option.\n");
 
 	filter_dmesg();
 
-	ksft_set_plan(tests);
+	ksft_set_plan(tests ? : 4);
 
-	for (i = 0; i < ARRAY_SIZE(resctrl_tests); i++)
-		run_single_test(resctrl_tests[i], &uparams);
+	if ((get_vendor() == ARCH_INTEL) && mbm_test)
+		run_mbm_test(has_ben, benchmark_cmd, span, cpu_no, bw_report);
 
-	free(fill_param);
-	ksft_finished();
+	if ((get_vendor() == ARCH_INTEL) && mba_test)
+		run_mba_test(has_ben, benchmark_cmd, span, cpu_no, bw_report);
+
+	if (cmt_test)
+		run_cmt_test(has_ben, benchmark_cmd, cpu_no);
+
+	if (cat_test)
+		run_cat_test(cpu_no, no_of_bits);
+
+	umount_resctrlfs();
+
+	return ksft_exit_pass();
 }

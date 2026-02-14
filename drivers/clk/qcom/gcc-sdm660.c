@@ -10,6 +10,7 @@
 #include <linux/platform_device.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
 #include <linux/reset-controller.h>
@@ -23,6 +24,8 @@
 #include "clk-branch.h"
 #include "reset.h"
 #include "gdsc.h"
+
+#define F(f, s, h, m, n) { (f), (s), (2 * (h) - 1), (m), (n) }
 
 enum {
 	P_XO,
@@ -2247,45 +2250,6 @@ static struct clk_branch gcc_usb_phy_cfg_ahb2phy_clk = {
 	},
 };
 
-static struct clk_branch hlos1_vote_lpass_adsp_smmu_clk = {
-	.halt_reg = 0x7d014,
-	.halt_check = BRANCH_VOTED,
-	.clkr = {
-		.enable_reg = 0x7d014,
-		.enable_mask = BIT(0),
-		.hw.init = &(const struct clk_init_data) {
-			.name = "hlos1_vote_lpass_adsp_smmu_clk",
-			.ops = &clk_branch2_ops,
-		},
-	},
-};
-
-static struct clk_branch hlos1_vote_turing_adsp_smmu_clk = {
-	.halt_reg = 0x7d048,
-	.halt_check = BRANCH_VOTED,
-	.clkr = {
-		.enable_reg = 0x7d048,
-		.enable_mask = BIT(0),
-		.hw.init = &(const struct clk_init_data) {
-			.name = "hlos1_vote_turing_adsp_smmu_clk",
-			.ops = &clk_branch2_ops,
-		},
-	},
-};
-
-static struct clk_branch hlos2_vote_turing_adsp_smmu_clk = {
-	.halt_reg = 0x7e048,
-	.halt_check = BRANCH_VOTED,
-	.clkr = {
-		.enable_reg = 0x7e048,
-		.enable_mask = BIT(0),
-		.hw.init = &(const struct clk_init_data) {
-			.name = "hlos2_vote_turing_adsp_smmu_clk",
-			.ops = &clk_branch2_ops,
-		},
-	},
-};
-
 static struct gdsc ufs_gdsc = {
 	.gdscr = 0x75004,
 	.gds_hw_ctrl = 0x0,
@@ -2311,33 +2275,6 @@ static struct gdsc pcie_0_gdsc = {
 	.gds_hw_ctrl = 0x0,
 	.pd = {
 		.name = "pcie_0_gdsc",
-	},
-	.pwrsts = PWRSTS_OFF_ON,
-	.flags = VOTABLE,
-};
-
-static struct gdsc hlos1_vote_turing_adsp_gdsc = {
-	.gdscr = 0x7d04c,
-	.pd = {
-		.name = "hlos1_vote_turing_adsp_gdsc",
-	},
-	.pwrsts = PWRSTS_OFF_ON,
-	.flags = VOTABLE,
-};
-
-static struct gdsc hlos2_vote_turing_adsp_gdsc = {
-	.gdscr = 0x7e04c,
-	.pd = {
-		.name = "hlos2_vote_turing_adsp_gdsc",
-	},
-	.pwrsts = PWRSTS_OFF_ON,
-	.flags = VOTABLE,
-};
-
-static struct gdsc hlos1_vote_lpass_adsp_gdsc = {
-	.gdscr = 0x7d034,
-	.pd = {
-		.name = "hlos1_vote_lpass_adsp_gdsc",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
 	.flags = VOTABLE,
@@ -2475,25 +2412,17 @@ static struct clk_regmap *gcc_sdm660_clocks[] = {
 	[USB30_MASTER_CLK_SRC] = &usb30_master_clk_src.clkr,
 	[USB30_MOCK_UTMI_CLK_SRC] = &usb30_mock_utmi_clk_src.clkr,
 	[USB3_PHY_AUX_CLK_SRC] = &usb3_phy_aux_clk_src.clkr,
-	[GCC_HLOS1_VOTE_LPASS_ADSP_SMMU_CLK] = &hlos1_vote_lpass_adsp_smmu_clk.clkr,
-	[GCC_HLOS1_VOTE_TURING_ADSP_SMMU_CLK] = &hlos1_vote_turing_adsp_smmu_clk.clkr,
-	[GCC_HLOS2_VOTE_TURING_ADSP_SMMU_CLK] = &hlos2_vote_turing_adsp_smmu_clk.clkr,
 };
 
 static struct gdsc *gcc_sdm660_gdscs[] = {
 	[UFS_GDSC] = &ufs_gdsc,
 	[USB_30_GDSC] = &usb_30_gdsc,
 	[PCIE_0_GDSC] = &pcie_0_gdsc,
-	[HLOS1_VOTE_TURING_ADSP_GDSC] = &hlos1_vote_turing_adsp_gdsc,
-	[HLOS2_VOTE_TURING_ADSP_GDSC] = &hlos2_vote_turing_adsp_gdsc,
-	[HLOS1_VOTE_LPASS_ADSP_GDSC] = &hlos1_vote_lpass_adsp_gdsc,
 };
 
 static const struct qcom_reset_map gcc_sdm660_resets[] = {
 	[GCC_QUSB2PHY_PRIM_BCR] = { 0x12000 },
 	[GCC_QUSB2PHY_SEC_BCR] = { 0x12004 },
-	[GCC_SDCC2_BCR] = { 0x14000 },
-	[GCC_SDCC1_BCR] = { 0x16000 },
 	[GCC_UFS_BCR] = { 0x75000 },
 	[GCC_USB3_DP_PHY_BCR] = { 0x50028 },
 	[GCC_USB3_PHY_BCR] = { 0x50020 },
@@ -2548,7 +2477,7 @@ static int gcc_sdm660_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return qcom_cc_really_probe(&pdev->dev, &gcc_sdm660_desc, regmap);
+	return qcom_cc_really_probe(pdev, &gcc_sdm660_desc, regmap);
 }
 
 static struct platform_driver gcc_sdm660_driver = {

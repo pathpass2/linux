@@ -28,7 +28,7 @@ static int test__openat_syscall_event_on_all_cpus(struct test_suite *test __mayb
 	struct evsel *evsel;
 	unsigned int nr_openat_calls = 111, i;
 	cpu_set_t cpu_set;
-	struct perf_thread_map *threads = thread_map__new_by_tid(getpid());
+	struct perf_thread_map *threads = thread_map__new(-1, getpid(), UINT_MAX);
 	char sbuf[STRERR_BUFSIZE];
 	char errbuf[BUFSIZ];
 
@@ -37,7 +37,7 @@ static int test__openat_syscall_event_on_all_cpus(struct test_suite *test __mayb
 		return -1;
 	}
 
-	cpus = perf_cpu_map__new_online_cpus();
+	cpus = perf_cpu_map__new(NULL);
 	if (cpus == NULL) {
 		pr_debug("perf_cpu_map__new\n");
 		goto out_thread_map_delete;

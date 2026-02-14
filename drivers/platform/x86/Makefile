@@ -5,15 +5,17 @@
 #
 
 # Windows Management Interface
+obj-$(CONFIG_ACPI_WMI)		+= wmi.o
 obj-$(CONFIG_WMI_BMOF)		+= wmi-bmof.o
 
 # WMI drivers
 obj-$(CONFIG_HUAWEI_WMI)		+= huawei-wmi.o
 obj-$(CONFIG_MXM_WMI)			+= mxm-wmi.o
 obj-$(CONFIG_NVIDIA_WMI_EC_BACKLIGHT)	+= nvidia-wmi-ec-backlight.o
+obj-$(CONFIG_PEAQ_WMI)			+= peaq-wmi.o
 obj-$(CONFIG_XIAOMI_WMI)		+= xiaomi-wmi.o
-obj-$(CONFIG_REDMI_WMI)			+= redmi-wmi.o
 obj-$(CONFIG_GIGABYTE_WMI)		+= gigabyte-wmi.o
+obj-$(CONFIG_YOGABOOK_WMI)		+= lenovo-yogabook-wmi.o
 
 # Acer
 obj-$(CONFIG_ACERHDF)		+= acerhdf.o
@@ -32,15 +34,11 @@ obj-$(CONFIG_APPLE_GMUX)	+= apple-gmux.o
 # ASUS
 obj-$(CONFIG_ASUS_LAPTOP)	+= asus-laptop.o
 obj-$(CONFIG_ASUS_WIRELESS)	+= asus-wireless.o
-obj-$(CONFIG_ASUS_ARMOURY)	+= asus-armoury.o
 obj-$(CONFIG_ASUS_WMI)		+= asus-wmi.o
 obj-$(CONFIG_ASUS_NB_WMI)	+= asus-nb-wmi.o
 obj-$(CONFIG_ASUS_TF103C_DOCK)	+= asus-tf103c-dock.o
 obj-$(CONFIG_EEEPC_LAPTOP)	+= eeepc-laptop.o
 obj-$(CONFIG_EEEPC_WMI)		+= eeepc-wmi.o
-
-# Ayaneo
-obj-$(CONFIG_AYANEO_EC)		+= ayaneo-ec.o
 
 # Cisco/Meraki
 obj-$(CONFIG_MERAKI_MX100)	+= meraki-mx100.o
@@ -62,29 +60,19 @@ obj-$(CONFIG_X86_PLATFORM_DRIVERS_HP)	+= hp/
 # Hewlett Packard Enterprise
 obj-$(CONFIG_UV_SYSFS)       += uv_sysfs.o
 
-obj-$(CONFIG_FW_ATTR_CLASS)	+= firmware_attributes_class.o
-
-# IBM Thinkpad (before 2005)
+# IBM Thinkpad and Lenovo
 obj-$(CONFIG_IBM_RTL)		+= ibm_rtl.o
+obj-$(CONFIG_IDEAPAD_LAPTOP)	+= ideapad-laptop.o
 obj-$(CONFIG_SENSORS_HDAPS)	+= hdaps.o
-
-# Lenovo
-obj-y				+= lenovo/
+obj-$(CONFIG_THINKPAD_ACPI)	+= thinkpad_acpi.o
+obj-$(CONFIG_THINKPAD_LMI)	+= think-lmi.o
 
 # Intel
 obj-y				+= intel/
 
-# Microsoft
-obj-$(CONFIG_ACPI_QUICKSTART)  += quickstart.o
-
-# MeeGoPad
-obj-$(CONFIG_MEEGOPAD_ANX7428)	+= meegopad_anx7428.o
-
 # MSI
-obj-$(CONFIG_MSI_EC)		+= msi-ec.o
 obj-$(CONFIG_MSI_LAPTOP)	+= msi-laptop.o
 obj-$(CONFIG_MSI_WMI)		+= msi-wmi.o
-obj-$(CONFIG_MSI_WMI_PLATFORM)	+= msi-wmi-platform.o
 
 # OLPC
 obj-$(CONFIG_XO15_EBOOK)	+= xo15-ebook.o
@@ -93,16 +81,12 @@ obj-$(CONFIG_XO1_RFKILL)	+= xo1-rfkill.o
 # PC Engines
 obj-$(CONFIG_PCENGINES_APU2)	+= pcengines-apuv2.o
 
-# Portwell
-obj-$(CONFIG_PORTWELL_EC)	+= portwell-ec.o
-
 # Barco
 obj-$(CONFIG_BARCO_P50_GPIO)	+= barco-p50-gpio.o
 
 # Samsung
-obj-$(CONFIG_SAMSUNG_GALAXYBOOK)	+= samsung-galaxybook.o
-obj-$(CONFIG_SAMSUNG_LAPTOP)		+= samsung-laptop.o
-obj-$(CONFIG_SAMSUNG_Q10)		+= samsung-q10.o
+obj-$(CONFIG_SAMSUNG_LAPTOP)	+= samsung-laptop.o
+obj-$(CONFIG_SAMSUNG_Q10)	+= samsung-q10.o
 
 # Toshiba
 obj-$(CONFIG_TOSHIBA_BT_RFKILL)	+= toshiba_bluetooth.o
@@ -112,15 +96,6 @@ obj-$(CONFIG_TOSHIBA_WMI)	+= toshiba-wmi.o
 # toshiba_acpi must link after wmi to ensure that wmi devices are found
 # before toshiba_acpi initializes
 obj-$(CONFIG_ACPI_TOSHIBA)	+= toshiba_acpi.o
-
-# Uniwill
-obj-y				+= uniwill/
-
-# Inspur
-obj-$(CONFIG_INSPUR_PLATFORM_PROFILE)	+= inspur_platform_profile.o
-
-# Dasharo
-obj-$(CONFIG_DASHARO_ACPI)	+= dasharo-acpi.o
 
 # Laptop drivers
 obj-$(CONFIG_ACPI_CMPC)		+= classmate-laptop.o
@@ -132,10 +107,12 @@ obj-$(CONFIG_SYSTEM76_ACPI)	+= system76_acpi.o
 obj-$(CONFIG_TOPSTAR_LAPTOP)	+= topstar-laptop.o
 
 # Platform drivers
+obj-$(CONFIG_FW_ATTR_CLASS)		+= firmware_attributes_class.o
 obj-$(CONFIG_SERIAL_MULTI_INSTANTIATE)	+= serial-multi-instantiate.o
+obj-$(CONFIG_MLX_PLATFORM)		+= mlx-platform.o
 obj-$(CONFIG_TOUCHSCREEN_DMI)		+= touchscreen_dmi.o
 obj-$(CONFIG_WIRELESS_HOTKEY)		+= wireless-hotkey.o
-obj-$(CONFIG_X86_ANDROID_TABLETS)	+= x86-android-tablets/
+obj-$(CONFIG_X86_ANDROID_TABLETS)	+= x86-android-tablets.o
 
 # Intel uncore drivers
 obj-$(CONFIG_INTEL_IPS)				+= intel_ips.o
@@ -153,19 +130,7 @@ obj-$(CONFIG_INTEL_SCU_IPC_UTIL)	+= intel_scu_ipcutil.o
 obj-$(CONFIG_X86_INTEL_LPSS)		+= pmc_atom.o
 
 # Siemens Simatic Industrial PCs
-obj-$(CONFIG_SIEMENS_SIMATIC_IPC)	+= siemens/
-
-# Silicom
-obj-$(CONFIG_SILICOM_PLATFORM)		+= silicom-platform.o
-
-# TUXEDO
-obj-y					+= tuxedo/
+obj-$(CONFIG_SIEMENS_SIMATIC_IPC)	+= simatic-ipc.o
 
 # Winmate
 obj-$(CONFIG_WINMATE_FM07_KEYS)		+= winmate-fm07-keys.o
-
-# SEL
-obj-$(CONFIG_SEL3350_PLATFORM)		+= sel3350-platform.o
-
-# OneXPlayer
-obj-$(CONFIG_OXP_EC)			+= oxpec.o

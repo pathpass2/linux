@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
- * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
 #ifndef _LINUX_QCOM_GENI_SE
@@ -36,8 +35,6 @@ enum geni_se_protocol_type {
 	GENI_SE_UART,
 	GENI_SE_I2C,
 	GENI_SE_I3C,
-	GENI_SE_SPI_SLAVE,
-	GENI_SE_INVALID_PROTO = 255,
 };
 
 struct geni_wrapper;
@@ -76,29 +73,23 @@ struct geni_se {
 
 /* Common SE registers */
 #define GENI_FORCE_DEFAULT_REG		0x20
-#define GENI_OUTPUT_CTRL		0x24
 #define SE_GENI_STATUS			0x40
 #define GENI_SER_M_CLK_CFG		0x48
 #define GENI_SER_S_CLK_CFG		0x4c
 #define GENI_IF_DISABLE_RO		0x64
 #define GENI_FW_REVISION_RO		0x68
 #define SE_GENI_CLK_SEL			0x7c
-#define SE_GENI_CFG_SEQ_START		0x84
 #define SE_GENI_DMA_MODE_EN		0x258
 #define SE_GENI_M_CMD0			0x600
 #define SE_GENI_M_CMD_CTRL_REG		0x604
 #define SE_GENI_M_IRQ_STATUS		0x610
 #define SE_GENI_M_IRQ_EN		0x614
 #define SE_GENI_M_IRQ_CLEAR		0x618
-#define SE_GENI_M_IRQ_EN_SET		0x61c
-#define SE_GENI_M_IRQ_EN_CLEAR		0x620
 #define SE_GENI_S_CMD0			0x630
 #define SE_GENI_S_CMD_CTRL_REG		0x634
 #define SE_GENI_S_IRQ_STATUS		0x640
 #define SE_GENI_S_IRQ_EN		0x644
 #define SE_GENI_S_IRQ_CLEAR		0x648
-#define SE_GENI_S_IRQ_EN_SET		0x64c
-#define SE_GENI_S_IRQ_EN_CLEAR		0x650
 #define SE_GENI_TX_FIFOn		0x700
 #define SE_GENI_RX_FIFOn		0x780
 #define SE_GENI_TX_FIFO_STATUS		0x800
@@ -107,8 +98,6 @@ struct geni_se {
 #define SE_GENI_RX_WATERMARK_REG	0x810
 #define SE_GENI_RX_RFR_WATERMARK_REG	0x814
 #define SE_GENI_IOS			0x908
-#define SE_GENI_M_GP_LENGTH		0x910
-#define SE_GENI_S_GP_LENGTH		0x914
 #define SE_DMA_TX_IRQ_STAT		0xc40
 #define SE_DMA_TX_IRQ_CLR		0xc44
 #define SE_DMA_TX_FSM_RST		0xc58
@@ -121,9 +110,6 @@ struct geni_se {
 
 /* GENI_FORCE_DEFAULT_REG fields */
 #define FORCE_DEFAULT	BIT(0)
-
-/* GENI_OUTPUT_CTRL fields */
-#define GENI_IO_MUX_0_EN		BIT(0)
 
 /* GENI_STATUS fields */
 #define M_GENI_CMD_ACTIVE		BIT(0)
@@ -143,9 +129,6 @@ struct geni_se {
 
 /* GENI_CLK_SEL fields */
 #define CLK_SEL_MSK			GENMASK(2, 0)
-
-/* SE_GENI_CFG_SEQ_START fields */
-#define START_TRIGGER			BIT(0)
 
 /* SE_GENI_DMA_MODE_EN */
 #define GENI_DMA_MODE_EN		BIT(0)
@@ -186,7 +169,6 @@ struct geni_se {
 #define M_GP_IRQ_3_EN			BIT(12)
 #define M_GP_IRQ_4_EN			BIT(13)
 #define M_GP_IRQ_5_EN			BIT(14)
-#define M_TX_FIFO_NOT_EMPTY_EN		BIT(21)
 #define M_IO_DATA_DEASSERT_EN		BIT(22)
 #define M_IO_DATA_ASSERT_EN		BIT(23)
 #define M_RX_FIFO_RD_ERR_EN		BIT(24)
@@ -242,9 +224,6 @@ struct geni_se {
 #define IO2_DATA_IN			BIT(1)
 #define RX_DATA_IN			BIT(0)
 
-/* SE_GENI_M_GP_LENGTH and SE_GENI_S_GP_LENGTH fields */
-#define GP_LENGTH			GENMASK(31, 0)
-
 /* SE_DMA_TX_IRQ_STAT Register fields */
 #define TX_DMA_DONE			BIT(0)
 #define TX_EOT				BIT(1)
@@ -260,28 +239,18 @@ struct geni_se {
 #define RX_DMA_PARITY_ERR		BIT(5)
 #define RX_DMA_BREAK			GENMASK(8, 7)
 #define RX_GENI_GP_IRQ			GENMASK(10, 5)
+#define RX_GENI_CANCEL_IRQ		BIT(11)
 #define RX_GENI_GP_IRQ_EXT		GENMASK(13, 12)
-#define RX_GENI_CANCEL_IRQ		BIT(14)
 
 /* SE_HW_PARAM_0 fields */
 #define TX_FIFO_WIDTH_MSK		GENMASK(29, 24)
 #define TX_FIFO_WIDTH_SHFT		24
-/*
- * For QUP HW Version >= 3.10 Tx fifo depth support is increased
- * to 256bytes and corresponding bits are 16 to 23
- */
-#define TX_FIFO_DEPTH_MSK_256_BYTES	GENMASK(23, 16)
 #define TX_FIFO_DEPTH_MSK		GENMASK(21, 16)
 #define TX_FIFO_DEPTH_SHFT		16
 
 /* SE_HW_PARAM_1 fields */
 #define RX_FIFO_WIDTH_MSK		GENMASK(29, 24)
 #define RX_FIFO_WIDTH_SHFT		24
-/*
- * For QUP HW Version >= 3.10 Rx fifo depth support is increased
- * to 256bytes and corresponding bits are 16 to 23
- */
-#define RX_FIFO_DEPTH_MSK_256_BYTES	GENMASK(23, 16)
 #define RX_FIFO_DEPTH_MSK		GENMASK(21, 16)
 #define RX_FIFO_DEPTH_SHFT		16
 
@@ -422,8 +391,7 @@ static inline void geni_se_abort_s_cmd(struct geni_se *se)
 
 /**
  * geni_se_get_tx_fifo_depth() - Get the TX fifo depth of the serial engine
- * based on QUP HW version
- * @se: Pointer to the concerned serial engine.
+ * @se:	Pointer to the concerned serial engine.
  *
  * This function is used to get the depth i.e. number of elements in the
  * TX fifo of the serial engine.
@@ -432,20 +400,11 @@ static inline void geni_se_abort_s_cmd(struct geni_se *se)
  */
 static inline u32 geni_se_get_tx_fifo_depth(struct geni_se *se)
 {
-	u32 val, hw_version, hw_major, hw_minor, tx_fifo_depth_mask;
-
-	hw_version = geni_se_get_qup_hw_version(se);
-	hw_major = GENI_SE_VERSION_MAJOR(hw_version);
-	hw_minor = GENI_SE_VERSION_MINOR(hw_version);
-
-	if ((hw_major == 3 && hw_minor >= 10) || hw_major > 3)
-		tx_fifo_depth_mask = TX_FIFO_DEPTH_MSK_256_BYTES;
-	else
-		tx_fifo_depth_mask = TX_FIFO_DEPTH_MSK;
+	u32 val;
 
 	val = readl_relaxed(se->base + SE_HW_PARAM_0);
 
-	return (val & tx_fifo_depth_mask) >> TX_FIFO_DEPTH_SHFT;
+	return (val & TX_FIFO_DEPTH_MSK) >> TX_FIFO_DEPTH_SHFT;
 }
 
 /**
@@ -468,8 +427,7 @@ static inline u32 geni_se_get_tx_fifo_width(struct geni_se *se)
 
 /**
  * geni_se_get_rx_fifo_depth() - Get the RX fifo depth of the serial engine
- * based on QUP HW version
- * @se: Pointer to the concerned serial engine.
+ * @se:	Pointer to the concerned serial engine.
  *
  * This function is used to get the depth i.e. number of elements in the
  * RX fifo of the serial engine.
@@ -478,20 +436,11 @@ static inline u32 geni_se_get_tx_fifo_width(struct geni_se *se)
  */
 static inline u32 geni_se_get_rx_fifo_depth(struct geni_se *se)
 {
-	u32 val, hw_version, hw_major, hw_minor, rx_fifo_depth_mask;
-
-	hw_version = geni_se_get_qup_hw_version(se);
-	hw_major = GENI_SE_VERSION_MAJOR(hw_version);
-	hw_minor = GENI_SE_VERSION_MINOR(hw_version);
-
-	if ((hw_major == 3 && hw_minor >= 10) || hw_major > 3)
-		rx_fifo_depth_mask = RX_FIFO_DEPTH_MSK_256_BYTES;
-	else
-		rx_fifo_depth_mask = RX_FIFO_DEPTH_MSK;
+	u32 val;
 
 	val = readl_relaxed(se->base + SE_HW_PARAM_1);
 
-	return (val & rx_fifo_depth_mask) >> RX_FIFO_DEPTH_SHFT;
+	return (val & RX_FIFO_DEPTH_MSK) >> RX_FIFO_DEPTH_SHFT;
 }
 
 void geni_se_init(struct geni_se *se, u32 rx_wm, u32 rx_rfr);
@@ -511,12 +460,8 @@ int geni_se_clk_freq_match(struct geni_se *se, unsigned long req_freq,
 			   unsigned int *index, unsigned long *res_freq,
 			   bool exact);
 
-void geni_se_tx_init_dma(struct geni_se *se, dma_addr_t iova, size_t len);
-
 int geni_se_tx_dma_prep(struct geni_se *se, void *buf, size_t len,
 			dma_addr_t *iova);
-
-void geni_se_rx_init_dma(struct geni_se *se, dma_addr_t iova, size_t len);
 
 int geni_se_rx_dma_prep(struct geni_se *se, void *buf, size_t len,
 			dma_addr_t *iova);
@@ -533,7 +478,5 @@ void geni_icc_set_tag(struct geni_se *se, u32 tag);
 int geni_icc_enable(struct geni_se *se);
 
 int geni_icc_disable(struct geni_se *se);
-
-int geni_load_se_firmware(struct geni_se *se, enum geni_se_protocol_type protocol);
 #endif
 #endif

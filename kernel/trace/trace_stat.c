@@ -128,7 +128,7 @@ static int stat_seq_init(struct stat_session *session)
 	int ret = 0;
 	int i;
 
-	guard(mutex)(&session->stat_mutex);
+	mutex_lock(&session->stat_mutex);
 	__reset_stat_session(session);
 
 	if (!ts->stat_cmp)
@@ -136,11 +136,11 @@ static int stat_seq_init(struct stat_session *session)
 
 	stat = ts->stat_start(ts);
 	if (!stat)
-		return 0;
+		goto exit;
 
 	ret = insert_stat(root, stat, ts->stat_cmp);
 	if (ret)
-		return ret;
+		goto exit;
 
 	/*
 	 * Iterate over the tracer stat entries and store them in an rbtree.
@@ -157,10 +157,13 @@ static int stat_seq_init(struct stat_session *session)
 			goto exit_free_rbtree;
 	}
 
+exit:
+	mutex_unlock(&session->stat_mutex);
 	return ret;
 
 exit_free_rbtree:
 	__reset_stat_session(session);
+	mutex_unlock(&session->stat_mutex);
 	return ret;
 }
 
@@ -305,7 +308,7 @@ static int init_stat_file(struct stat_session *session)
 int register_stat_tracer(struct tracer_stat *trace)
 {
 	struct stat_session *session, *node;
-	int ret;
+	int ret = -EINVAL;
 
 	if (!trace)
 		return -EINVAL;
@@ -313,18 +316,18 @@ int register_stat_tracer(struct tracer_stat *trace)
 	if (!trace->stat_start || !trace->stat_next || !trace->stat_show)
 		return -EINVAL;
 
-	guard(mutex)(&all_stat_sessions_mutex);
-
 	/* Already registered? */
+	mutex_lock(&all_stat_sessions_mutex);
 	list_for_each_entry(node, &all_stat_sessions, session_list) {
 		if (node->ts == trace)
-			return -EINVAL;
+			goto out;
 	}
 
+	ret = -ENOMEM;
 	/* Init the session */
 	session = kzalloc(sizeof(*session), GFP_KERNEL);
 	if (!session)
-		return -ENOMEM;
+		goto out;
 
 	session->ts = trace;
 	INIT_LIST_HEAD(&session->session_list);
@@ -333,13 +336,16 @@ int register_stat_tracer(struct tracer_stat *trace)
 	ret = init_stat_file(session);
 	if (ret) {
 		destroy_session(session);
-		return ret;
+		goto out;
 	}
 
+	ret = 0;
 	/* Register */
 	list_add_tail(&session->session_list, &all_stat_sessions);
+ out:
+	mutex_unlock(&all_stat_sessions_mutex);
 
-	return 0;
+	return ret;
 }
 
 void unregister_stat_tracer(struct tracer_stat *trace)

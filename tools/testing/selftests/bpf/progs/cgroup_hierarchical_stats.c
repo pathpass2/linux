@@ -37,9 +37,8 @@ struct {
 	__type(value, struct attach_counter);
 } attach_counters SEC(".maps");
 
-extern void css_rstat_updated(
-		struct cgroup_subsys_state *css, int cpu) __ksym;
-extern void css_rstat_flush(struct cgroup_subsys_state *css) __ksym;
+extern void cgroup_rstat_updated(struct cgroup *cgrp, int cpu) __ksym;
+extern void cgroup_rstat_flush(struct cgroup *cgrp) __ksym;
 
 static uint64_t cgroup_id(struct cgroup *cgrp)
 {
@@ -62,9 +61,9 @@ static int create_attach_counter(__u64 cg_id, __u64 state, __u64 pending)
 				   &init, BPF_NOEXIST);
 }
 
-SEC("tp_btf/cgroup_attach_task")
-int BPF_PROG(counter, struct cgroup *dst_cgrp, const char *path,
-	     struct task_struct *task, bool threadgroup)
+SEC("fentry/cgroup_attach_task")
+int BPF_PROG(counter, struct cgroup *dst_cgrp, struct task_struct *leader,
+	     bool threadgroup)
 {
 	__u64 cg_id = cgroup_id(dst_cgrp);
 	struct percpu_attach_counter *pcpu_counter = bpf_map_lookup_elem(
@@ -76,7 +75,7 @@ int BPF_PROG(counter, struct cgroup *dst_cgrp, const char *path,
 	else if (create_percpu_attach_counter(cg_id, 1))
 		return 0;
 
-	css_rstat_updated(&dst_cgrp->self, bpf_get_smp_processor_id());
+	cgroup_rstat_updated(dst_cgrp, bpf_get_smp_processor_id());
 	return 0;
 }
 
@@ -142,7 +141,7 @@ int BPF_PROG(dumper, struct bpf_iter_meta *meta, struct cgroup *cgrp)
 		return 1;
 
 	/* Flush the stats to make sure we get the most updated numbers */
-	css_rstat_flush(&cgrp->self);
+	cgroup_rstat_flush(cgrp);
 
 	total_counter = bpf_map_lookup_elem(&attach_counters, &cg_id);
 	if (!total_counter) {

@@ -31,6 +31,10 @@
 #include <linux/uaccess.h>
 #include <linux/security.h>
 
+#ifdef CONFIG_IA64
+# include <linux/efi.h>
+#endif
+
 #define DEVMEM_MINOR	1
 #define DEVPORT_MINOR	4
 
@@ -61,10 +65,35 @@ static inline int page_is_allowed(unsigned long pfn)
 {
 	return devmem_is_allowed(pfn);
 }
+static inline int range_is_allowed(unsigned long pfn, unsigned long size)
+{
+	u64 from = ((u64)pfn) << PAGE_SHIFT;
+	u64 to = from + size;
+	u64 cursor = from;
+
+	while (cursor < to) {
+		if (!devmem_is_allowed(pfn))
+			return 0;
+		cursor += PAGE_SIZE;
+		pfn++;
+	}
+	return 1;
+}
 #else
 static inline int page_is_allowed(unsigned long pfn)
 {
 	return 1;
+}
+static inline int range_is_allowed(unsigned long pfn, unsigned long size)
+{
+	return 1;
+}
+#endif
+
+#ifndef unxlate_dev_mem_ptr
+#define unxlate_dev_mem_ptr unxlate_dev_mem_ptr
+void __weak unxlate_dev_mem_ptr(phys_addr_t phys, void *addr)
+{
 }
 #endif
 
@@ -255,6 +284,13 @@ int __weak phys_mem_access_prot_allowed(struct file *file,
 #ifdef pgprot_noncached
 static int uncached_access(struct file *file, phys_addr_t addr)
 {
+#if defined(CONFIG_IA64)
+	/*
+	 * On ia64, we ignore O_DSYNC because we cannot tolerate memory
+	 * attribute aliases.
+	 */
+	return !(efi_mem_attributes(addr) & EFI_MEMORY_WB);
+#else
 	/*
 	 * Accessing memory above the top the kernel knows about or through a
 	 * file pointer
@@ -263,6 +299,7 @@ static int uncached_access(struct file *file, phys_addr_t addr)
 	if (file->f_flags & O_DSYNC)
 		return 1;
 	return addr >= __pa(high_memory);
+#endif
 }
 #endif
 
@@ -304,13 +341,13 @@ static unsigned zero_mmap_capabilities(struct file *file)
 }
 
 /* can't do an in-place private mapping if there's no MMU */
-static inline int private_mapping_ok(struct vm_area_desc *desc)
+static inline int private_mapping_ok(struct vm_area_struct *vma)
 {
-	return is_nommu_shared_mapping(desc->vm_flags);
+	return is_nommu_shared_mapping(vma->vm_flags);
 }
 #else
 
-static inline int private_mapping_ok(struct vm_area_desc *desc)
+static inline int private_mapping_ok(struct vm_area_struct *vma)
 {
 	return 1;
 }
@@ -322,53 +359,49 @@ static const struct vm_operations_struct mmap_mem_ops = {
 #endif
 };
 
-static int mmap_filter_error(int err)
+static int mmap_mem(struct file *file, struct vm_area_struct *vma)
 {
-	return -EAGAIN;
-}
-
-static int mmap_mem_prepare(struct vm_area_desc *desc)
-{
-	struct file *file = desc->file;
-	const size_t size = vma_desc_size(desc);
-	const phys_addr_t offset = (phys_addr_t)desc->pgoff << PAGE_SHIFT;
+	size_t size = vma->vm_end - vma->vm_start;
+	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
 
 	/* Does it even fit in phys_addr_t? */
-	if (offset >> PAGE_SHIFT != desc->pgoff)
+	if (offset >> PAGE_SHIFT != vma->vm_pgoff)
 		return -EINVAL;
 
 	/* It's illegal to wrap around the end of the physical address space. */
 	if (offset + (phys_addr_t)size - 1 < offset)
 		return -EINVAL;
 
-	if (!valid_mmap_phys_addr_range(desc->pgoff, size))
+	if (!valid_mmap_phys_addr_range(vma->vm_pgoff, size))
 		return -EINVAL;
 
-	if (!private_mapping_ok(desc))
+	if (!private_mapping_ok(vma))
 		return -ENOSYS;
 
-	if (!range_is_allowed(desc->pgoff, size))
+	if (!range_is_allowed(vma->vm_pgoff, size))
 		return -EPERM;
 
-	if (!phys_mem_access_prot_allowed(file, desc->pgoff, size,
-					  &desc->page_prot))
+	if (!phys_mem_access_prot_allowed(file, vma->vm_pgoff, size,
+						&vma->vm_page_prot))
 		return -EINVAL;
 
-	desc->page_prot = phys_mem_access_prot(file, desc->pgoff,
-					       size,
-					       desc->page_prot);
+	vma->vm_page_prot = phys_mem_access_prot(file, vma->vm_pgoff,
+						 size,
+						 vma->vm_page_prot);
 
-	desc->vm_ops = &mmap_mem_ops;
+	vma->vm_ops = &mmap_mem_ops;
 
-	/* Remap-pfn-range will mark the range VM_IO. */
-	mmap_action_remap_full(desc, desc->pgoff);
-	/* We filter remap errors to -EAGAIN. */
-	desc->action.error_hook = mmap_filter_error;
-
+	/* Remap-pfn-range will mark the range VM_IO */
+	if (remap_pfn_range(vma,
+			    vma->vm_start,
+			    vma->vm_pgoff,
+			    size,
+			    vma->vm_page_prot)) {
+		return -EAGAIN;
+	}
 	return 0;
 }
 
-#ifdef CONFIG_DEVPORT
 static ssize_t read_port(struct file *file, char __user *buf,
 			 size_t count, loff_t *ppos)
 {
@@ -410,7 +443,6 @@ static ssize_t write_port(struct file *file, const char __user *buf,
 	*ppos = i;
 	return tmp-buf;
 }
-#endif
 
 static ssize_t read_null(struct file *file, char __user *buf,
 			 size_t count, loff_t *ppos)
@@ -504,64 +536,38 @@ static ssize_t read_zero(struct file *file, char __user *buf,
 	return cleared;
 }
 
-static int mmap_zero_private_success(const struct vm_area_struct *vma)
-{
-	/*
-	 * This is a highly unique situation where we mark a MAP_PRIVATE mapping
-	 * of /dev/zero anonymous, despite it not being.
-	 */
-	vma_set_anonymous((struct vm_area_struct *)vma);
-
-	return 0;
-}
-
-static int mmap_zero_prepare(struct vm_area_desc *desc)
+static int mmap_zero(struct file *file, struct vm_area_struct *vma)
 {
 #ifndef CONFIG_MMU
 	return -ENOSYS;
 #endif
-	if (desc->vm_flags & VM_SHARED)
-		return shmem_zero_setup_desc(desc);
-
-	desc->action.success_hook = mmap_zero_private_success;
+	if (vma->vm_flags & VM_SHARED)
+		return shmem_zero_setup(vma);
+	vma_set_anonymous(vma);
 	return 0;
 }
 
-#ifndef CONFIG_MMU
 static unsigned long get_unmapped_area_zero(struct file *file,
 				unsigned long addr, unsigned long len,
 				unsigned long pgoff, unsigned long flags)
 {
-	return -ENOSYS;
-}
-#else
-static unsigned long get_unmapped_area_zero(struct file *file,
-				unsigned long addr, unsigned long len,
-				unsigned long pgoff, unsigned long flags)
-{
+#ifdef CONFIG_MMU
 	if (flags & MAP_SHARED) {
 		/*
-		 * mmap_zero_prepare() will call shmem_zero_setup() to create a
-		 * file, so use shmem's get_unmapped_area in case it can be
-		 * huge; and pass NULL for file as in mmap.c's
-		 * get_unmapped_area(), so as not to confuse shmem with our
-		 * handle on "/dev/zero".
+		 * mmap_zero() will call shmem_zero_setup() to create a file,
+		 * so use shmem's get_unmapped_area in case it can be huge;
+		 * and pass NULL for file as in mmap.c's get_unmapped_area(),
+		 * so as not to confuse shmem with our handle on "/dev/zero".
 		 */
 		return shmem_get_unmapped_area(NULL, addr, len, pgoff, flags);
 	}
 
-	/*
-	 * Otherwise flags & MAP_PRIVATE: with no shmem object beneath it,
-	 * attempt to map aligned to huge page size if possible, otherwise we
-	 * fall back to system page size mappings.
-	 */
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-	return thp_get_unmapped_area(file, addr, len, pgoff, flags);
+	/* Otherwise flags & MAP_PRIVATE: with no shmem object beneath it */
+	return current->mm->get_unmapped_area(file, addr, len, pgoff, flags);
 #else
-	return mm_get_unmapped_area(file, addr, len, pgoff, flags);
+	return -ENOSYS;
 #endif
 }
-#endif /* CONFIG_MMU */
 
 static ssize_t write_full(struct file *file, const char __user *buf,
 			  size_t count, loff_t *ppos)
@@ -641,20 +647,18 @@ static int open_port(struct inode *inode, struct file *filp)
 #define full_lseek      null_lseek
 #define write_zero	write_null
 #define write_iter_zero	write_iter_null
-#define splice_write_zero	splice_write_null
 #define open_mem	open_port
 
 static const struct file_operations __maybe_unused mem_fops = {
 	.llseek		= memory_lseek,
 	.read		= read_mem,
 	.write		= write_mem,
-	.mmap_prepare	= mmap_mem_prepare,
+	.mmap		= mmap_mem,
 	.open		= open_mem,
 #ifndef CONFIG_MMU
 	.get_unmapped_area = get_unmapped_area_mem,
 	.mmap_capabilities = memory_mmap_capabilities,
 #endif
-	.fop_flags	= FOP_UNSIGNED_OFFSET,
 };
 
 static const struct file_operations null_fops = {
@@ -667,14 +671,12 @@ static const struct file_operations null_fops = {
 	.uring_cmd	= uring_cmd_null,
 };
 
-#ifdef CONFIG_DEVPORT
-static const struct file_operations port_fops = {
+static const struct file_operations __maybe_unused port_fops = {
 	.llseek		= memory_lseek,
 	.read		= read_port,
 	.write		= write_port,
 	.open		= open_port,
 };
-#endif
 
 static const struct file_operations zero_fops = {
 	.llseek		= zero_lseek,
@@ -682,9 +684,7 @@ static const struct file_operations zero_fops = {
 	.read_iter	= read_iter_zero,
 	.read		= read_zero,
 	.write_iter	= write_iter_zero,
-	.splice_read	= copy_splice_read,
-	.splice_write	= splice_write_zero,
-	.mmap_prepare	= mmap_zero_prepare,
+	.mmap		= mmap_zero,
 	.get_unmapped_area = get_unmapped_area_zero,
 #ifndef CONFIG_MMU
 	.mmap_capabilities = zero_mmap_capabilities,
@@ -695,28 +695,27 @@ static const struct file_operations full_fops = {
 	.llseek		= full_lseek,
 	.read_iter	= read_iter_zero,
 	.write		= write_full,
-	.splice_read	= copy_splice_read,
 };
 
 static const struct memdev {
 	const char *name;
+	umode_t mode;
 	const struct file_operations *fops;
 	fmode_t fmode;
-	umode_t mode;
 } devlist[] = {
 #ifdef CONFIG_DEVMEM
-	[DEVMEM_MINOR] = { "mem", &mem_fops, 0, 0 },
+	 [DEVMEM_MINOR] = { "mem", 0, &mem_fops, FMODE_UNSIGNED_OFFSET },
 #endif
-	[3] = { "null", &null_fops, FMODE_NOWAIT, 0666 },
+	 [3] = { "null", 0666, &null_fops, FMODE_NOWAIT },
 #ifdef CONFIG_DEVPORT
-	[4] = { "port", &port_fops, 0, 0 },
+	 [4] = { "port", 0, &port_fops, 0 },
 #endif
-	[5] = { "zero", &zero_fops, FMODE_NOWAIT, 0666 },
-	[7] = { "full", &full_fops, 0, 0666 },
-	[8] = { "random", &random_fops, FMODE_NOWAIT, 0666 },
-	[9] = { "urandom", &urandom_fops, FMODE_NOWAIT, 0666 },
+	 [5] = { "zero", 0666, &zero_fops, FMODE_NOWAIT },
+	 [7] = { "full", 0666, &full_fops, 0 },
+	 [8] = { "random", 0666, &random_fops, FMODE_NOWAIT },
+	 [9] = { "urandom", 0666, &urandom_fops, FMODE_NOWAIT },
 #ifdef CONFIG_PRINTK
-	[11] = { "kmsg", &kmsg_fops, 0, 0644 },
+	[11] = { "kmsg", 0644, &kmsg_fops, 0 },
 #endif
 };
 
@@ -754,23 +753,20 @@ static char *mem_devnode(const struct device *dev, umode_t *mode)
 	return NULL;
 }
 
-static const struct class mem_class = {
-	.name		= "mem",
-	.devnode	= mem_devnode,
-};
+static struct class *mem_class;
 
 static int __init chr_dev_init(void)
 {
-	int retval;
 	int minor;
 
 	if (register_chrdev(MEM_MAJOR, "mem", &memory_fops))
 		printk("unable to get major %d for memory devs\n", MEM_MAJOR);
 
-	retval = class_register(&mem_class);
-	if (retval)
-		return retval;
+	mem_class = class_create(THIS_MODULE, "mem");
+	if (IS_ERR(mem_class))
+		return PTR_ERR(mem_class);
 
+	mem_class->devnode = mem_devnode;
 	for (minor = 1; minor < ARRAY_SIZE(devlist); minor++) {
 		if (!devlist[minor].name)
 			continue;
@@ -781,7 +777,7 @@ static int __init chr_dev_init(void)
 		if ((minor == DEVPORT_MINOR) && !arch_has_dev_port())
 			continue;
 
-		device_create(&mem_class, NULL, MKDEV(MEM_MAJOR, minor),
+		device_create(mem_class, NULL, MKDEV(MEM_MAJOR, minor),
 			      NULL, devlist[minor].name);
 	}
 

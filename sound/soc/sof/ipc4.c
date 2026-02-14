@@ -3,7 +3,7 @@
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
 //
-// Copyright(c) 2022 Intel Corporation
+// Copyright(c) 2022 Intel Corporation. All rights reserved.
 //
 // Authors: Rander Wang <rander.wang@linux.intel.com>
 //	    Peter Ujfalusi <peter.ujfalusi@linux.intel.com>
@@ -15,9 +15,16 @@
 #include "sof-audio.h"
 #include "ipc4-fw-reg.h"
 #include "ipc4-priv.h"
-#include "ipc4-topology.h"
-#include "ipc4-telemetry.h"
 #include "ops.h"
+
+#ifdef DEBUG_VERBOSE
+#define sof_ipc4_dump_payload(sdev, ipc_data, size)			\
+		print_hex_dump_debug("Message payload: ",		\
+				     DUMP_PREFIX_OFFSET,		\
+				     16, 4, ipc_data, size, false)
+#else
+#define sof_ipc4_dump_payload(sdev, ipc_data, size)	do { } while (0)
+#endif
 
 static const struct sof_ipc4_fw_status {
 	int status;
@@ -79,9 +86,6 @@ static const struct sof_ipc4_fw_status {
 	{165, "Reserved (ADSP_IPC_PIPELINE_ALREADY_EXISTS removed)"},
 };
 
-typedef void (*ipc4_notification_handler)(struct snd_sof_dev *sdev,
-					  struct sof_ipc4_msg *msg);
-
 static int sof_ipc4_check_reply_status(struct snd_sof_dev *sdev, u32 status)
 {
 	int i, ret;
@@ -104,10 +108,6 @@ static int sof_ipc4_check_reply_status(struct snd_sof_dev *sdev, u32 status)
 
 to_errno:
 	switch (status) {
-	case 2:
-	case 15:
-		ret = -EOPNOTSUPP;
-		break;
 	case 8:
 	case 11:
 	case 105 ... 109:
@@ -162,7 +162,6 @@ static const char * const ipc4_dbg_glb_msg_type[] = {
 	DBG_IPC4_MSG_TYPE_ENTRY(GLB_SAVE_PIPELINE),
 	DBG_IPC4_MSG_TYPE_ENTRY(GLB_RESTORE_PIPELINE),
 	DBG_IPC4_MSG_TYPE_ENTRY(GLB_LOAD_LIBRARY),
-	DBG_IPC4_MSG_TYPE_ENTRY(GLB_LOAD_LIBRARY_PREPARE),
 	DBG_IPC4_MSG_TYPE_ENTRY(GLB_INTERNAL_MESSAGE),
 	DBG_IPC4_MSG_TYPE_ENTRY(GLB_NOTIFICATION),
 };
@@ -238,26 +237,6 @@ static void sof_ipc4_log_header(struct device *dev, u8 *text, struct sof_ipc4_ms
 				msg->extension, str);
 	}
 }
-
-const char *sof_ipc4_pipeline_state_str(enum sof_ipc4_pipeline_state state)
-{
-	switch (state) {
-	case SOF_IPC4_PIPE_INVALID_STATE:
-		return " (INVALID_STATE)";
-	case SOF_IPC4_PIPE_UNINITIALIZED:
-		return " (UNINITIALIZED)";
-	case SOF_IPC4_PIPE_RESET:
-		return " (RESET)";
-	case SOF_IPC4_PIPE_PAUSED:
-		return " (PAUSED)";
-	case SOF_IPC4_PIPE_RUNNING:
-		return " (RUNNING)";
-	case SOF_IPC4_PIPE_EOS:
-		return " (EOS)";
-	default:
-		return " (<unknown>)";
-	}
-}
 #else /* CONFIG_SND_SOC_SOF_DEBUG_VERBOSE_IPC */
 static void sof_ipc4_log_header(struct device *dev, u8 *text, struct sof_ipc4_msg *msg,
 				bool data_size_valid)
@@ -275,19 +254,7 @@ static void sof_ipc4_log_header(struct device *dev, u8 *text, struct sof_ipc4_ms
 	else
 		dev_dbg(dev, "%s: %#x|%#x\n", text, msg->primary, msg->extension);
 }
-
-const char *sof_ipc4_pipeline_state_str(enum sof_ipc4_pipeline_state state)
-{
-	return "";
-}
 #endif
-
-static void sof_ipc4_dump_payload(struct snd_sof_dev *sdev,
-				  void *ipc_data, size_t size)
-{
-	print_hex_dump_debug("Message payload: ", DUMP_PREFIX_OFFSET,
-			     16, 4, ipc_data, size, false);
-}
 
 static int sof_ipc4_get_reply(struct snd_sof_dev *sdev)
 {
@@ -395,6 +362,9 @@ static int sof_ipc4_tx_msg(struct snd_sof_dev *sdev, void *msg_data, size_t msg_
 			   void *reply_data, size_t reply_bytes, bool no_pm)
 {
 	struct snd_sof_ipc *ipc = sdev->ipc;
+#ifdef DEBUG_VERBOSE
+	struct sof_ipc4_msg *msg = NULL;
+#endif
 	int ret;
 
 	if (!msg_data)
@@ -412,57 +382,34 @@ static int sof_ipc4_tx_msg(struct snd_sof_dev *sdev, void *msg_data, size_t msg_
 	}
 
 	/* Serialise IPC TX */
-	guard(mutex)(&ipc->tx_mutex);
+	mutex_lock(&ipc->tx_mutex);
 
 	ret = ipc4_tx_msg_unlocked(ipc, msg_data, msg_bytes, reply_data, reply_bytes);
 
-	if (sof_debug_check_flag(SOF_DBG_DUMP_IPC_MESSAGE_PAYLOAD)) {
-		struct sof_ipc4_msg *msg = NULL;
+	mutex_unlock(&ipc->tx_mutex);
 
-		/* payload is indicated by non zero msg/reply_bytes */
-		if (msg_bytes)
-			msg = msg_data;
-		else if (reply_bytes)
-			msg = reply_data;
+#ifdef DEBUG_VERBOSE
+	/* payload is indicated by non zero msg/reply_bytes */
+	if (msg_bytes)
+		msg = msg_data;
+	else if (reply_bytes)
+		msg = reply_data;
 
-		if (msg)
-			sof_ipc4_dump_payload(sdev, msg->data_ptr, msg->data_size);
-	}
+	if (msg)
+		sof_ipc4_dump_payload(sdev, msg->data_ptr, msg->data_size);
+#endif
 
 	return ret;
-}
-
-static bool sof_ipc4_tx_payload_for_get_data(struct sof_ipc4_msg *tx)
-{
-	/*
-	 * Messages that require TX payload with LARGE_CONFIG_GET.
-	 * The TX payload is placed into the IPC message data section by caller,
-	 * which needs to be copied to temporary buffer since the received data
-	 * will overwrite it.
-	 */
-	switch (tx->extension & SOF_IPC4_MOD_EXT_MSG_PARAM_ID_MASK) {
-	case SOF_IPC4_MOD_EXT_MSG_PARAM_ID(SOF_IPC4_SWITCH_CONTROL_PARAM_ID):
-	case SOF_IPC4_MOD_EXT_MSG_PARAM_ID(SOF_IPC4_ENUM_CONTROL_PARAM_ID):
-	case SOF_IPC4_MOD_EXT_MSG_PARAM_ID(SOF_IPC4_BYTES_CONTROL_PARAM_ID):
-		return true;
-	default:
-		return false;
-	}
 }
 
 static int sof_ipc4_set_get_data(struct snd_sof_dev *sdev, void *data,
 				 size_t payload_bytes, bool set)
 {
-	const struct sof_dsp_power_state target_state = {
-			.state = SOF_DSP_PM_D0,
-	};
 	size_t payload_limit = sdev->ipc->max_payload_size;
 	struct sof_ipc4_msg *ipc4_msg = data;
 	struct sof_ipc4_msg tx = {{ 0 }};
 	struct sof_ipc4_msg rx = {{ 0 }};
 	size_t remaining = payload_bytes;
-	void *tx_payload_for_get = NULL;
-	size_t tx_data_size = 0;
 	size_t offset = 0;
 	size_t chunk_size;
 	int ret;
@@ -488,23 +435,8 @@ static int sof_ipc4_set_get_data(struct snd_sof_dev *sdev, void *data,
 
 	tx.extension |= SOF_IPC4_MOD_EXT_MSG_FIRST_BLOCK(1);
 
-	if (sof_ipc4_tx_payload_for_get_data(&tx)) {
-		tx_data_size = min(ipc4_msg->data_size, payload_limit);
-		tx_payload_for_get = kmemdup(ipc4_msg->data_ptr, tx_data_size,
-					     GFP_KERNEL);
-		if (!tx_payload_for_get)
-			return -ENOMEM;
-	}
-
-	/* ensure the DSP is in D0i0 before sending IPC */
-	ret = snd_sof_dsp_set_power_state(sdev, &target_state);
-	if (ret < 0) {
-		kfree(tx_payload_for_get);
-		return ret;
-	}
-
 	/* Serialise IPC TX */
-	guard(mutex)(&sdev->ipc->tx_mutex);
+	mutex_lock(&sdev->ipc->tx_mutex);
 
 	do {
 		size_t tx_size, rx_size;
@@ -535,15 +467,7 @@ static int sof_ipc4_set_get_data(struct snd_sof_dev *sdev, void *data,
 			rx.data_size = chunk_size;
 			rx.data_ptr = ipc4_msg->data_ptr + offset;
 
-			if (tx_payload_for_get) {
-				tx_size = tx_data_size;
-				tx.data_size = tx_size;
-				tx.data_ptr = tx_payload_for_get;
-			} else {
-				tx_size = 0;
-				tx.data_size = 0;
-				tx.data_ptr = NULL;
-			}
+			tx_size = 0;
 			rx_size = chunk_size;
 		}
 
@@ -584,11 +508,10 @@ static int sof_ipc4_set_get_data(struct snd_sof_dev *sdev, void *data,
 	if (!set && payload_bytes != offset)
 		ipc4_msg->data_size = offset;
 
-out:
-	if (sof_debug_check_flag(SOF_DBG_DUMP_IPC_MESSAGE_PAYLOAD))
-		sof_ipc4_dump_payload(sdev, ipc4_msg->data_ptr, ipc4_msg->data_size);
+	sof_ipc4_dump_payload(sdev, ipc4_msg->data_ptr, ipc4_msg->data_size);
 
-	kfree(tx_payload_for_get);
+out:
+	mutex_unlock(&sdev->ipc->tx_mutex);
 
 	return ret;
 }
@@ -613,99 +536,46 @@ static int sof_ipc4_init_msg_memory(struct snd_sof_dev *sdev)
 	return 0;
 }
 
-size_t sof_ipc4_find_debug_slot_offset_by_type(struct snd_sof_dev *sdev,
-					       u32 slot_type)
-{
-	size_t slot_desc_type_offset;
-	u32 type;
-	int i;
-
-	/* The type is the second u32 in the slot descriptor */
-	slot_desc_type_offset = sdev->debug_box.offset + sizeof(u32);
-	for (i = 0; i < SOF_IPC4_MAX_DEBUG_SLOTS; i++) {
-		sof_mailbox_read(sdev, slot_desc_type_offset, &type, sizeof(type));
-
-		if (type == slot_type)
-			return sdev->debug_box.offset + (i + 1) * SOF_IPC4_DEBUG_SLOT_SIZE;
-
-		slot_desc_type_offset += SOF_IPC4_DEBUG_DESCRIPTOR_SIZE;
-	}
-
-	dev_dbg(sdev->dev, "Slot type %#x is not available in debug window\n", slot_type);
-	return 0;
-}
-EXPORT_SYMBOL(sof_ipc4_find_debug_slot_offset_by_type);
-
 static int ipc4_fw_ready(struct snd_sof_dev *sdev, struct sof_ipc4_msg *ipc4_msg)
 {
-	if (!sdev->first_boot) {
-		struct sof_ipc4_fw_data *ipc4_data = sdev->private;
+	int inbox_offset, inbox_size, outbox_offset, outbox_size;
 
-		/*
-		 * After the initial boot only check if the libraries have been
-		 * restored when full context save is not enabled
-		 */
-		if (!ipc4_data->fw_context_save)
-			ipc4_data->libraries_restored = !!(ipc4_msg->primary &
-							   SOF_IPC4_FW_READY_LIB_RESTORED);
-
+	/* no need to re-check version/ABI for subsequent boots */
+	if (!sdev->first_boot)
 		return 0;
-	}
 
-	sof_ipc4_create_exception_debugfs_node(sdev);
+	/* Set up the windows for IPC communication */
+	inbox_offset = snd_sof_dsp_get_mailbox_offset(sdev);
+	if (inbox_offset < 0) {
+		dev_err(sdev->dev, "%s: No mailbox offset\n", __func__);
+		return inbox_offset;
+	}
+	inbox_size = SOF_IPC4_MSG_MAX_SIZE;
+	outbox_offset = snd_sof_dsp_get_window_offset(sdev, SOF_IPC4_OUTBOX_WINDOW_IDX);
+	outbox_size = SOF_IPC4_MSG_MAX_SIZE;
+
+	sdev->fw_info_box.offset = snd_sof_dsp_get_window_offset(sdev, SOF_IPC4_INBOX_WINDOW_IDX);
+	sdev->fw_info_box.size = sizeof(struct sof_ipc4_fw_registers);
+	sdev->dsp_box.offset = inbox_offset;
+	sdev->dsp_box.size = inbox_size;
+	sdev->host_box.offset = outbox_offset;
+	sdev->host_box.size = outbox_size;
+
+	sdev->debug_box.offset = snd_sof_dsp_get_window_offset(sdev,
+							SOF_IPC4_DEBUG_WINDOW_IDX);
+
+	dev_dbg(sdev->dev, "mailbox upstream 0x%x - size 0x%x\n",
+		inbox_offset, inbox_size);
+	dev_dbg(sdev->dev, "mailbox downstream 0x%x - size 0x%x\n",
+		outbox_offset, outbox_size);
+	dev_dbg(sdev->dev, "debug box 0x%x\n", sdev->debug_box.offset);
 
 	return sof_ipc4_init_msg_memory(sdev);
-}
-
-static void sof_ipc4_module_notification_handler(struct snd_sof_dev *sdev,
-						 struct sof_ipc4_msg *ipc4_msg)
-{
-	struct sof_ipc4_notify_module_data *data = ipc4_msg->data_ptr;
-
-	/*
-	 * If the notification includes additional, module specific data, then
-	 * we need to re-allocate the buffer and re-read the whole payload,
-	 * including the event_data
-	 */
-	if (data->event_data_size) {
-		void *new;
-		int ret;
-
-		ipc4_msg->data_size += data->event_data_size;
-
-		new = krealloc(ipc4_msg->data_ptr, ipc4_msg->data_size, GFP_KERNEL);
-		if (!new) {
-			ipc4_msg->data_size -= data->event_data_size;
-			return;
-		}
-
-		/* re-read the whole payload */
-		ipc4_msg->data_ptr = new;
-		ret = snd_sof_ipc_msg_data(sdev, NULL, ipc4_msg->data_ptr,
-					   ipc4_msg->data_size);
-		if (ret < 0) {
-			dev_err(sdev->dev,
-				"Failed to read the full module notification: %d\n",
-				ret);
-			return;
-		}
-		data = ipc4_msg->data_ptr;
-	}
-
-	/* Handle ALSA kcontrol notification */
-	if ((data->event_id & SOF_IPC4_NOTIFY_MODULE_EVENTID_ALSA_MAGIC_MASK) ==
-	    SOF_IPC4_NOTIFY_MODULE_EVENTID_ALSA_MAGIC_VAL) {
-		const struct sof_ipc_tplg_ops *tplg_ops = sdev->ipc->ops->tplg;
-
-		if (tplg_ops->control->update)
-			tplg_ops->control->update(sdev, ipc4_msg);
-	}
 }
 
 static void sof_ipc4_rx_msg(struct snd_sof_dev *sdev)
 {
 	struct sof_ipc4_msg *ipc4_msg = sdev->ipc->msg.rx_data;
-	ipc4_notification_handler handler_func = NULL;
 	size_t data_size = 0;
 	int err;
 
@@ -738,13 +608,6 @@ static void sof_ipc4_rx_msg(struct snd_sof_dev *sdev)
 	case SOF_IPC4_NOTIFY_LOG_BUFFER_STATUS:
 		sof_ipc4_mtrace_update_pos(sdev, SOF_IPC4_LOG_CORE_GET(ipc4_msg->primary));
 		break;
-	case SOF_IPC4_NOTIFY_EXCEPTION_CAUGHT:
-		snd_sof_dsp_panic(sdev, 0, true);
-		break;
-	case SOF_IPC4_NOTIFY_MODULE_NOTIFICATION:
-		data_size = sizeof(struct sof_ipc4_notify_module_data);
-		handler_func = sof_ipc4_module_notification_handler;
-		break;
 	default:
 		dev_dbg(sdev->dev, "Unhandled DSP message: %#x|%#x\n",
 			ipc4_msg->primary, ipc4_msg->extension);
@@ -757,27 +620,12 @@ static void sof_ipc4_rx_msg(struct snd_sof_dev *sdev)
 			return;
 
 		ipc4_msg->data_size = data_size;
-		err = snd_sof_ipc_msg_data(sdev, NULL, ipc4_msg->data_ptr, ipc4_msg->data_size);
-		if (err < 0) {
-			dev_err(sdev->dev, "failed to read IPC notification data: %d\n", err);
-			kfree(ipc4_msg->data_ptr);
-			ipc4_msg->data_ptr = NULL;
-			ipc4_msg->data_size = 0;
-			return;
-		}
+		snd_sof_ipc_msg_data(sdev, NULL, ipc4_msg->data_ptr, ipc4_msg->data_size);
 	}
-
-	/* Handle notifications with payload */
-	if (handler_func)
-		handler_func(sdev, ipc4_msg);
 
 	sof_ipc4_log_header(sdev->dev, "ipc rx done ", ipc4_msg, true);
 
 	if (data_size) {
-		if (sof_debug_check_flag(SOF_DBG_DUMP_IPC_MESSAGE_PAYLOAD))
-			sof_ipc4_dump_payload(sdev, ipc4_msg->data_ptr,
-					      ipc4_msg->data_size);
-
 		kfree(ipc4_msg->data_ptr);
 		ipc4_msg->data_ptr = NULL;
 		ipc4_msg->data_size = 0;
@@ -840,37 +688,10 @@ static const struct sof_ipc_pm_ops ipc4_pm_ops = {
 static int sof_ipc4_init(struct snd_sof_dev *sdev)
 {
 	struct sof_ipc4_fw_data *ipc4_data = sdev->private;
-	int inbox_offset;
 
 	mutex_init(&ipc4_data->pipeline_state_mutex);
 
 	xa_init_flags(&ipc4_data->fw_lib_xa, XA_FLAGS_ALLOC);
-
-	/* Set up the windows for IPC communication */
-	inbox_offset = snd_sof_dsp_get_mailbox_offset(sdev);
-	if (inbox_offset < 0) {
-		dev_err(sdev->dev, "%s: No mailbox offset\n", __func__);
-		return inbox_offset;
-	}
-
-	sdev->dsp_box.offset = inbox_offset;
-	sdev->dsp_box.size = SOF_IPC4_MSG_MAX_SIZE;
-	sdev->host_box.offset = snd_sof_dsp_get_window_offset(sdev,
-							SOF_IPC4_OUTBOX_WINDOW_IDX);
-	sdev->host_box.size = SOF_IPC4_MSG_MAX_SIZE;
-
-	sdev->debug_box.offset = snd_sof_dsp_get_window_offset(sdev,
-							SOF_IPC4_DEBUG_WINDOW_IDX);
-
-	sdev->fw_info_box.offset = snd_sof_dsp_get_window_offset(sdev,
-							SOF_IPC4_INBOX_WINDOW_IDX);
-	sdev->fw_info_box.size = sizeof(struct sof_ipc4_fw_registers);
-
-	dev_dbg(sdev->dev, "mailbox upstream %#x - size %#x\n",
-		sdev->dsp_box.offset, SOF_IPC4_MSG_MAX_SIZE);
-	dev_dbg(sdev->dev, "mailbox downstream %#x - size %#x\n",
-		sdev->host_box.offset, SOF_IPC4_MSG_MAX_SIZE);
-	dev_dbg(sdev->dev, "debug box %#x\n", sdev->debug_box.offset);
 
 	return 0;
 }
@@ -897,14 +718,8 @@ static void sof_ipc4_exit(struct snd_sof_dev *sdev)
 
 static int sof_ipc4_post_boot(struct snd_sof_dev *sdev)
 {
-	if (sdev->first_boot) {
-		int  ret = sof_ipc4_complete_split_release(sdev);
-
-		if (ret)
-			return ret;
-
+	if (sdev->first_boot)
 		return sof_ipc4_query_fw_configuration(sdev);
-	}
 
 	return sof_ipc4_reload_fw_libraries(sdev);
 }
@@ -923,34 +738,3 @@ const struct sof_ipc_ops ipc4_ops = {
 	.pcm = &ipc4_pcm_ops,
 	.fw_tracing = &ipc4_mtrace_ops,
 };
-
-void sof_ipc4_mic_privacy_state_change(struct snd_sof_dev *sdev, bool state)
-{
-	struct sof_ipc4_msg msg;
-	u32 data = state;
-
-	/*
-	 * The mic privacy change notification's role is to notify the running
-	 * firmware that there is a change in mic privacy state from whatever
-	 * the state was before - since the firmware booted up or since the
-	 * previous change during runtime.
-	 *
-	 * If the firmware has not been booted up, there is no need to send
-	 * change notification (the firmware is not booted up).
-	 * The firmware checks the current state during its boot.
-	 */
-	if (sdev->fw_state != SOF_FW_BOOT_COMPLETE)
-		return;
-
-	msg.primary = SOF_IPC4_MSG_TARGET(SOF_IPC4_MODULE_MSG);
-	msg.primary |= SOF_IPC4_MSG_DIR(SOF_IPC4_MSG_REQUEST);
-	msg.primary |= SOF_IPC4_MOD_ID(SOF_IPC4_MOD_INIT_BASEFW_MOD_ID);
-	msg.primary |= SOF_IPC4_MOD_INSTANCE(SOF_IPC4_MOD_INIT_BASEFW_INSTANCE_ID);
-	msg.extension = SOF_IPC4_MOD_EXT_MSG_PARAM_ID(SOF_IPC4_FW_PARAM_MIC_PRIVACY_STATE_CHANGE);
-
-	msg.data_size = sizeof(data);
-	msg.data_ptr = &data;
-
-	sof_ipc4_set_get_data(sdev, &msg, msg.data_size, true);
-}
-EXPORT_SYMBOL(sof_ipc4_mic_privacy_state_change);

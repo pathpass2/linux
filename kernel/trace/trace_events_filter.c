@@ -46,19 +46,15 @@ static const char * ops[] = { OPS };
 enum filter_pred_fn {
 	FILTER_PRED_FN_NOP,
 	FILTER_PRED_FN_64,
-	FILTER_PRED_FN_64_CPUMASK,
 	FILTER_PRED_FN_S64,
 	FILTER_PRED_FN_U64,
 	FILTER_PRED_FN_32,
-	FILTER_PRED_FN_32_CPUMASK,
 	FILTER_PRED_FN_S32,
 	FILTER_PRED_FN_U32,
 	FILTER_PRED_FN_16,
-	FILTER_PRED_FN_16_CPUMASK,
 	FILTER_PRED_FN_S16,
 	FILTER_PRED_FN_U16,
 	FILTER_PRED_FN_8,
-	FILTER_PRED_FN_8_CPUMASK,
 	FILTER_PRED_FN_S8,
 	FILTER_PRED_FN_U8,
 	FILTER_PRED_FN_COMM,
@@ -68,25 +64,21 @@ enum filter_pred_fn {
 	FILTER_PRED_FN_PCHAR_USER,
 	FILTER_PRED_FN_PCHAR,
 	FILTER_PRED_FN_CPU,
-	FILTER_PRED_FN_CPU_CPUMASK,
-	FILTER_PRED_FN_CPUMASK,
-	FILTER_PRED_FN_CPUMASK_CPU,
 	FILTER_PRED_FN_FUNCTION,
 	FILTER_PRED_FN_,
 	FILTER_PRED_TEST_VISITED,
 };
 
 struct filter_pred {
-	struct regex		*regex;
-	struct cpumask          *mask;
+	enum filter_pred_fn 	fn_num;
+	u64 			val;
+	u64 			val2;
+	struct regex		regex;
 	unsigned short		*ops;
 	struct ftrace_event_field *field;
-	u64			val;
-	u64			val2;
-	enum filter_pred_fn	fn_num;
-	int			offset;
+	int 			offset;
 	int			not;
-	int			op;
+	int 			op;
 };
 
 /*
@@ -102,8 +94,6 @@ struct filter_pred {
 	C(TOO_MANY_OPEN,	"Too many '('"),			\
 	C(TOO_MANY_CLOSE,	"Too few '('"),				\
 	C(MISSING_QUOTE,	"Missing matching quote"),		\
-	C(MISSING_BRACE_OPEN,   "Missing '{'"),				\
-	C(MISSING_BRACE_CLOSE,  "Missing '}'"),				\
 	C(OPERAND_TOO_LONG,	"Operand too long"),			\
 	C(EXPECT_STRING,	"Expecting string field"),		\
 	C(EXPECT_DIGIT,		"Expecting numeric field"),		\
@@ -113,7 +103,6 @@ struct filter_pred {
 	C(BAD_SUBSYS_FILTER,	"Couldn't find or set field in one of a subsystem's events"), \
 	C(TOO_MANY_PREDS,	"Too many terms in predicate expression"), \
 	C(INVALID_FILTER,	"Meaningless filter expression"),	\
-	C(INVALID_CPULIST,	"Invalid cpulist"),	\
 	C(IP_FIELD_ONLY,	"Only 'ip' field is supported for function trace"), \
 	C(INVALID_VALUE,	"Invalid value (did you forget quotes)?"), \
 	C(NO_FUNCTION,		"Function not found"),			\
@@ -142,7 +131,7 @@ static bool is_not(const char *str)
 }
 
 /**
- * struct prog_entry - a single entry in the filter program
+ * struct prog_entry - a singe entry in the filter program
  * @target:	     Index to jump to on a branch (actually one minus the index)
  * @when_to_branch:  The value of the result of the predicate to do a branch
  * @pred:	     The predicate to execute.
@@ -196,15 +185,6 @@ enum {
 	PROCESS_AND	= 2,
 	PROCESS_OR	= 4,
 };
-
-static void free_predicate(struct filter_pred *pred)
-{
-	if (pred) {
-		kfree(pred->regex);
-		kfree(pred->mask);
-		kfree(pred);
-	}
-}
 
 /*
  * Without going into a formal proof, this explains the method that is used in
@@ -643,62 +623,10 @@ out_free:
 	kfree(inverts);
 	if (prog_stack) {
 		for (i = 0; prog_stack[i].pred; i++)
-			free_predicate(prog_stack[i].pred);
+			kfree(prog_stack[i].pred);
 		kfree(prog_stack);
 	}
 	return ERR_PTR(ret);
-}
-
-static inline int
-do_filter_cpumask(int op, const struct cpumask *mask, const struct cpumask *cmp)
-{
-	switch (op) {
-	case OP_EQ:
-		return cpumask_equal(mask, cmp);
-	case OP_NE:
-		return !cpumask_equal(mask, cmp);
-	case OP_BAND:
-		return cpumask_intersects(mask, cmp);
-	default:
-		return 0;
-	}
-}
-
-/* Optimisation of do_filter_cpumask() for scalar fields */
-static inline int
-do_filter_scalar_cpumask(int op, unsigned int cpu, const struct cpumask *mask)
-{
-	/*
-	 * Per the weight-of-one cpumask optimisations, the mask passed in this
-	 * function has a weight >= 2, so it is never equal to a single scalar.
-	 */
-	switch (op) {
-	case OP_EQ:
-		return false;
-	case OP_NE:
-		return true;
-	case OP_BAND:
-		return cpumask_test_cpu(cpu, mask);
-	default:
-		return 0;
-	}
-}
-
-static inline int
-do_filter_cpumask_scalar(int op, const struct cpumask *mask, unsigned int cpu)
-{
-	switch (op) {
-	case OP_EQ:
-		return cpumask_test_cpu(cpu, mask) &&
-			cpumask_nth(1, mask) >= nr_cpu_ids;
-	case OP_NE:
-		return !cpumask_test_cpu(cpu, mask) ||
-			cpumask_nth(1, mask) < nr_cpu_ids;
-	case OP_BAND:
-		return cpumask_test_cpu(cpu, mask);
-	default:
-		return 0;
-	}
 }
 
 enum pred_cmp_types {
@@ -744,18 +672,6 @@ static int filter_pred_##type(struct filter_pred *pred, void *event)	\
 	}								\
 }
 
-#define DEFINE_CPUMASK_COMPARISON_PRED(size)					\
-static int filter_pred_##size##_cpumask(struct filter_pred *pred, void *event)	\
-{										\
-	u##size *addr = (u##size *)(event + pred->offset);			\
-	unsigned int cpu = *addr;						\
-										\
-	if (cpu >= nr_cpu_ids)							\
-		return 0;							\
-										\
-	return do_filter_scalar_cpumask(pred->op, cpu, pred->mask);		\
-}
-
 #define DEFINE_EQUALITY_PRED(size)					\
 static int filter_pred_##size(struct filter_pred *pred, void *event)	\
 {									\
@@ -776,11 +692,6 @@ DEFINE_COMPARISON_PRED(s16);
 DEFINE_COMPARISON_PRED(u16);
 DEFINE_COMPARISON_PRED(s8);
 DEFINE_COMPARISON_PRED(u8);
-
-DEFINE_CPUMASK_COMPARISON_PRED(64);
-DEFINE_CPUMASK_COMPARISON_PRED(32);
-DEFINE_CPUMASK_COMPARISON_PRED(16);
-DEFINE_CPUMASK_COMPARISON_PRED(8);
 
 DEFINE_EQUALITY_PRED(64);
 DEFINE_EQUALITY_PRED(32);
@@ -808,7 +719,7 @@ static __always_inline char *test_string(char *str)
 	kstr = ubuf->buffer;
 
 	/* For safety, do not trust the string pointer */
-	if (strncpy_from_kernel_nofault(kstr, str, USTRING_BUF_SIZE) < 0)
+	if (!strncpy_from_kernel_nofault(kstr, str, USTRING_BUF_SIZE))
 		return NULL;
 	return kstr;
 }
@@ -827,7 +738,7 @@ static __always_inline char *test_ustring(char *str)
 
 	/* user space address? */
 	ustr = (char __user *)str;
-	if (strncpy_from_user_nofault(kstr, ustr, USTRING_BUF_SIZE) < 0)
+	if (!strncpy_from_user_nofault(kstr, ustr, USTRING_BUF_SIZE))
 		return NULL;
 
 	return kstr;
@@ -839,7 +750,7 @@ static int filter_pred_string(struct filter_pred *pred, void *event)
 	char *addr = (char *)(event + pred->offset);
 	int cmp, match;
 
-	cmp = pred->regex->match(addr, pred->regex, pred->regex->field_len);
+	cmp = pred->regex.match(addr, &pred->regex, pred->regex.field_len);
 
 	match = cmp ^ pred->not;
 
@@ -852,7 +763,7 @@ static __always_inline int filter_pchar(struct filter_pred *pred, char *str)
 	int len;
 
 	len = strlen(str) + 1;	/* including tailing '\0' */
-	cmp = pred->regex->match(str, pred->regex, len);
+	cmp = pred->regex.match(str, &pred->regex, len);
 
 	match = cmp ^ pred->not;
 
@@ -902,7 +813,7 @@ static int filter_pred_strloc(struct filter_pred *pred, void *event)
 	char *addr = (char *)(event + str_loc);
 	int cmp, match;
 
-	cmp = pred->regex->match(addr, pred->regex, str_len);
+	cmp = pred->regex.match(addr, &pred->regex, str_len);
 
 	match = cmp ^ pred->not;
 
@@ -925,7 +836,7 @@ static int filter_pred_strrelloc(struct filter_pred *pred, void *event)
 	char *addr = (char *)(&item[1]) + str_loc;
 	int cmp, match;
 
-	cmp = pred->regex->match(addr, pred->regex, str_len);
+	cmp = pred->regex.match(addr, &pred->regex, str_len);
 
 	match = cmp ^ pred->not;
 
@@ -958,42 +869,12 @@ static int filter_pred_cpu(struct filter_pred *pred, void *event)
 	}
 }
 
-/* Filter predicate for current CPU vs user-provided cpumask */
-static int filter_pred_cpu_cpumask(struct filter_pred *pred, void *event)
-{
-	int cpu = raw_smp_processor_id();
-
-	return do_filter_scalar_cpumask(pred->op, cpu, pred->mask);
-}
-
-/* Filter predicate for cpumask field vs user-provided cpumask */
-static int filter_pred_cpumask(struct filter_pred *pred, void *event)
-{
-	u32 item = *(u32 *)(event + pred->offset);
-	int loc = item & 0xffff;
-	const struct cpumask *mask = (event + loc);
-	const struct cpumask *cmp = pred->mask;
-
-	return do_filter_cpumask(pred->op, mask, cmp);
-}
-
-/* Filter predicate for cpumask field vs user-provided scalar  */
-static int filter_pred_cpumask_cpu(struct filter_pred *pred, void *event)
-{
-	u32 item = *(u32 *)(event + pred->offset);
-	int loc = item & 0xffff;
-	const struct cpumask *mask = (event + loc);
-	unsigned int cpu = pred->val;
-
-	return do_filter_cpumask_scalar(pred->op, mask, cpu);
-}
-
 /* Filter predicate for COMM. */
 static int filter_pred_comm(struct filter_pred *pred, void *event)
 {
 	int cmp;
 
-	cmp = pred->regex->match(current->comm, pred->regex,
+	cmp = pred->regex.match(current->comm, &pred->regex,
 				TASK_COMM_LEN);
 	return cmp ^ pred->not;
 }
@@ -1123,7 +1004,7 @@ enum regex_type filter_parse_regex(char *buff, int len, char **search, int *not)
 
 static void filter_build_regex(struct filter_pred *pred)
 {
-	struct regex *r = pred->regex;
+	struct regex *r = &pred->regex;
 	char *search;
 	enum regex_type type = MATCH_FULL;
 
@@ -1250,9 +1131,7 @@ static void append_filter_err(struct trace_array *tr,
 
 static inline struct event_filter *event_filter(struct trace_event_file *file)
 {
-	return rcu_dereference_protected(file->filter,
-					 lockdep_is_held(&event_mutex));
-
+	return file->filter;
 }
 
 /* caller must hold event_mutex */
@@ -1290,7 +1169,7 @@ static void free_prog(struct event_filter *filter)
 		return;
 
 	for (i = 0; prog[i].pred; i++)
-		free_predicate(prog[i].pred);
+		kfree(prog[i].pred);
 	kfree(prog);
 }
 
@@ -1322,7 +1201,7 @@ void free_event_filter(struct event_filter *filter)
 static inline void __remove_filter(struct trace_event_file *file)
 {
 	filter_disable(file);
-	remove_filter_string(event_filter(file));
+	remove_filter_string(file->filter);
 }
 
 static void filter_free_subsystem_preds(struct trace_subsystem_dir *dir,
@@ -1337,159 +1216,28 @@ static void filter_free_subsystem_preds(struct trace_subsystem_dir *dir,
 	}
 }
 
-struct filter_list {
-	struct list_head	list;
-	struct event_filter	*filter;
-};
-
-struct filter_head {
-	struct list_head	list;
-	union {
-		struct rcu_head		rcu;
-		struct rcu_work		rwork;
-	};
-};
-
-static void free_filter_list(struct filter_head *filter_list)
-{
-	struct filter_list *filter_item, *tmp;
-
-	list_for_each_entry_safe(filter_item, tmp, &filter_list->list, list) {
-		__free_filter(filter_item->filter);
-		list_del(&filter_item->list);
-		kfree(filter_item);
-	}
-	kfree(filter_list);
-}
-
-static void free_filter_list_work(struct work_struct *work)
-{
-	struct filter_head *filter_list;
-
-	filter_list = container_of(to_rcu_work(work), struct filter_head, rwork);
-	free_filter_list(filter_list);
-}
-
-static void free_filter_list_tasks(struct rcu_head *rhp)
-{
-	struct filter_head *filter_list = container_of(rhp, struct filter_head, rcu);
-
-	INIT_RCU_WORK(&filter_list->rwork, free_filter_list_work);
-	queue_rcu_work(system_dfl_wq, &filter_list->rwork);
-}
-
-/*
- * The tracepoint_synchronize_unregister() is a double rcu call.
- * It calls synchronize_rcu_tasks_trace() followed by synchronize_rcu().
- * Instead of waiting for it, simply call these via the call_rcu*()
- * variants.
- */
-static void delay_free_filter(struct filter_head *head)
-{
-	call_rcu_tasks_trace(&head->rcu, free_filter_list_tasks);
-}
-
-static void try_delay_free_filter(struct event_filter *filter)
-{
-	struct filter_head *head;
-	struct filter_list *item;
-
-	head = kmalloc(sizeof(*head), GFP_KERNEL);
-	if (!head)
-		goto free_now;
-
-	INIT_LIST_HEAD(&head->list);
-
-	item = kmalloc(sizeof(*item), GFP_KERNEL);
-	if (!item) {
-		kfree(head);
-		goto free_now;
-	}
-
-	item->filter = filter;
-	list_add_tail(&item->list, &head->list);
-	delay_free_filter(head);
-	return;
-
- free_now:
-	/* Make sure the filter is not being used */
-	tracepoint_synchronize_unregister();
-	__free_filter(filter);
-}
-
 static inline void __free_subsystem_filter(struct trace_event_file *file)
 {
-	__free_filter(event_filter(file));
+	__free_filter(file->filter);
 	file->filter = NULL;
 }
 
-static inline void event_set_filter(struct trace_event_file *file,
-				    struct event_filter *filter)
-{
-	rcu_assign_pointer(file->filter, filter);
-}
-
-static inline void event_clear_filter(struct trace_event_file *file)
-{
-	RCU_INIT_POINTER(file->filter, NULL);
-}
-
 static void filter_free_subsystem_filters(struct trace_subsystem_dir *dir,
-					  struct trace_array *tr,
-					  struct event_filter *filter)
+					  struct trace_array *tr)
 {
 	struct trace_event_file *file;
-	struct filter_head *head;
-	struct filter_list *item;
-
-	head = kmalloc(sizeof(*head), GFP_KERNEL);
-	if (!head)
-		goto free_now;
-
-	INIT_LIST_HEAD(&head->list);
 
 	list_for_each_entry(file, &tr->events, list) {
 		if (file->system != dir)
 			continue;
-		item = kmalloc(sizeof(*item), GFP_KERNEL);
-		if (!item)
-			goto free_now;
-		item->filter = event_filter(file);
-		list_add_tail(&item->list, &head->list);
-		event_clear_filter(file);
-	}
-
-	item = kmalloc(sizeof(*item), GFP_KERNEL);
-	if (!item)
-		goto free_now;
-
-	item->filter = filter;
-	list_add_tail(&item->list, &head->list);
-
-	delay_free_filter(head);
-	return;
- free_now:
-	tracepoint_synchronize_unregister();
-
-	if (head)
-		free_filter_list(head);
-
-	list_for_each_entry(file, &tr->events, list) {
-		if (file->system != dir || !file->filter)
-			continue;
 		__free_subsystem_filter(file);
 	}
-	__free_filter(filter);
 }
 
 int filter_assign_type(const char *type)
 {
-	if (strstr(type, "__data_loc")) {
-		if (strstr(type, "char"))
-			return FILTER_DYN_STRING;
-		if (strstr(type, "cpumask_t"))
-			return FILTER_CPUMASK;
-	}
+	if (strstr(type, "__data_loc") && strstr(type, "char"))
+		return FILTER_DYN_STRING;
 
 	if (strstr(type, "__rel_loc") && strstr(type, "char"))
 		return FILTER_RDYN_STRING;
@@ -1565,32 +1313,24 @@ static int filter_pred_fn_call(struct filter_pred *pred, void *event)
 	switch (pred->fn_num) {
 	case FILTER_PRED_FN_64:
 		return filter_pred_64(pred, event);
-	case FILTER_PRED_FN_64_CPUMASK:
-		return filter_pred_64_cpumask(pred, event);
 	case FILTER_PRED_FN_S64:
 		return filter_pred_s64(pred, event);
 	case FILTER_PRED_FN_U64:
 		return filter_pred_u64(pred, event);
 	case FILTER_PRED_FN_32:
 		return filter_pred_32(pred, event);
-	case FILTER_PRED_FN_32_CPUMASK:
-		return filter_pred_32_cpumask(pred, event);
 	case FILTER_PRED_FN_S32:
 		return filter_pred_s32(pred, event);
 	case FILTER_PRED_FN_U32:
 		return filter_pred_u32(pred, event);
 	case FILTER_PRED_FN_16:
 		return filter_pred_16(pred, event);
-	case FILTER_PRED_FN_16_CPUMASK:
-		return filter_pred_16_cpumask(pred, event);
 	case FILTER_PRED_FN_S16:
 		return filter_pred_s16(pred, event);
 	case FILTER_PRED_FN_U16:
 		return filter_pred_u16(pred, event);
 	case FILTER_PRED_FN_8:
 		return filter_pred_8(pred, event);
-	case FILTER_PRED_FN_8_CPUMASK:
-		return filter_pred_8_cpumask(pred, event);
 	case FILTER_PRED_FN_S8:
 		return filter_pred_s8(pred, event);
 	case FILTER_PRED_FN_U8:
@@ -1609,12 +1349,6 @@ static int filter_pred_fn_call(struct filter_pred *pred, void *event)
 		return filter_pred_pchar(pred, event);
 	case FILTER_PRED_FN_CPU:
 		return filter_pred_cpu(pred, event);
-	case FILTER_PRED_FN_CPU_CPUMASK:
-		return filter_pred_cpu_cpumask(pred, event);
-	case FILTER_PRED_FN_CPUMASK:
-		return filter_pred_cpumask(pred, event);
-	case FILTER_PRED_FN_CPUMASK_CPU:
-		return filter_pred_cpumask_cpu(pred, event);
 	case FILTER_PRED_FN_FUNCTION:
 		return filter_pred_function(pred, event);
 	case FILTER_PRED_TEST_VISITED:
@@ -1745,7 +1479,7 @@ static int parse_pred(const char *str, void *data,
 				goto err_free;
 			}
 
-			memcpy(num_buf, str + s, len);
+			strncpy(num_buf, str + s, len);
 			num_buf[len] = 0;
 
 			ret = kstrtoul(num_buf, 0, &ip);
@@ -1819,130 +1553,9 @@ static int parse_pred(const char *str, void *data,
 			goto err_free;
 		}
 
-		pred->regex = kzalloc(sizeof(*pred->regex), GFP_KERNEL);
-		if (!pred->regex)
-			goto err_mem;
-		pred->regex->len = len;
-		memcpy(pred->regex->pattern, str + s, len);
-		pred->regex->pattern[len] = 0;
-
-	} else if (!strncmp(str + i, "CPUS", 4)) {
-		unsigned int maskstart;
-		bool single;
-		char *tmp;
-
-		switch (field->filter_type) {
-		case FILTER_CPUMASK:
-		case FILTER_CPU:
-		case FILTER_OTHER:
-			break;
-		default:
-			parse_error(pe, FILT_ERR_ILLEGAL_FIELD_OP, pos + i);
-			goto err_free;
-		}
-
-		switch (op) {
-		case OP_EQ:
-		case OP_NE:
-		case OP_BAND:
-			break;
-		default:
-			parse_error(pe, FILT_ERR_ILLEGAL_FIELD_OP, pos + i);
-			goto err_free;
-		}
-
-		/* Skip CPUS */
-		i += 4;
-		if (str[i++] != '{') {
-			parse_error(pe, FILT_ERR_MISSING_BRACE_OPEN, pos + i);
-			goto err_free;
-		}
-		maskstart = i;
-
-		/* Walk the cpulist until closing } */
-		for (; str[i] && str[i] != '}'; i++)
-			;
-
-		if (str[i] != '}') {
-			parse_error(pe, FILT_ERR_MISSING_BRACE_CLOSE, pos + i);
-			goto err_free;
-		}
-
-		if (maskstart == i) {
-			parse_error(pe, FILT_ERR_INVALID_CPULIST, pos + i);
-			goto err_free;
-		}
-
-		/* Copy the cpulist between { and } */
-		tmp = kmalloc((i - maskstart) + 1, GFP_KERNEL);
-		if (!tmp)
-			goto err_mem;
-
-		strscpy(tmp, str + maskstart, (i - maskstart) + 1);
-		pred->mask = kzalloc(cpumask_size(), GFP_KERNEL);
-		if (!pred->mask) {
-			kfree(tmp);
-			goto err_mem;
-		}
-
-		/* Now parse it */
-		if (cpulist_parse(tmp, pred->mask)) {
-			kfree(tmp);
-			parse_error(pe, FILT_ERR_INVALID_CPULIST, pos + i);
-			goto err_free;
-		}
-		kfree(tmp);
-
-		/* Move along */
-		i++;
-
-		/*
-		 * Optimisation: if the user-provided mask has a weight of one
-		 * then we can treat it as a scalar input.
-		 */
-		single = cpumask_weight(pred->mask) == 1;
-		if (single) {
-			pred->val = cpumask_first(pred->mask);
-			kfree(pred->mask);
-			pred->mask = NULL;
-		}
-
-		if (field->filter_type == FILTER_CPUMASK) {
-			pred->fn_num = single ?
-				FILTER_PRED_FN_CPUMASK_CPU :
-				FILTER_PRED_FN_CPUMASK;
-		} else if (field->filter_type == FILTER_CPU) {
-			if (single) {
-				if (pred->op == OP_BAND)
-					pred->op = OP_EQ;
-
-				pred->fn_num = FILTER_PRED_FN_CPU;
-			} else {
-				pred->fn_num = FILTER_PRED_FN_CPU_CPUMASK;
-			}
-		} else if (single) {
-			if (pred->op == OP_BAND)
-				pred->op = OP_EQ;
-
-			pred->fn_num = select_comparison_fn(pred->op, field->size, false);
-			if (pred->op == OP_NE)
-				pred->not = 1;
-		} else {
-			switch (field->size) {
-			case 8:
-				pred->fn_num = FILTER_PRED_FN_64_CPUMASK;
-				break;
-			case 4:
-				pred->fn_num = FILTER_PRED_FN_32_CPUMASK;
-				break;
-			case 2:
-				pred->fn_num = FILTER_PRED_FN_16_CPUMASK;
-				break;
-			case 1:
-				pred->fn_num = FILTER_PRED_FN_8_CPUMASK;
-				break;
-			}
-		}
+		pred->regex.len = len;
+		strncpy(pred->regex.pattern, str + s, len);
+		pred->regex.pattern[len] = 0;
 
 	/* This is either a string, or an integer */
 	} else if (str[i] == '\'' || str[i] == '"') {
@@ -1984,12 +1597,9 @@ static int parse_pred(const char *str, void *data,
 			goto err_free;
 		}
 
-		pred->regex = kzalloc(sizeof(*pred->regex), GFP_KERNEL);
-		if (!pred->regex)
-			goto err_mem;
-		pred->regex->len = len;
-		memcpy(pred->regex->pattern, str + s, len);
-		pred->regex->pattern[len] = 0;
+		pred->regex.len = len;
+		strncpy(pred->regex.pattern, str + s, len);
+		pred->regex.pattern[len] = 0;
 
 		filter_build_regex(pred);
 
@@ -1998,7 +1608,7 @@ static int parse_pred(const char *str, void *data,
 
 		} else if (field->filter_type == FILTER_STATIC_STRING) {
 			pred->fn_num = FILTER_PRED_FN_STRING;
-			pred->regex->field_len = field->size;
+			pred->regex.field_len = field->size;
 
 		} else if (field->filter_type == FILTER_DYN_STRING) {
 			pred->fn_num = FILTER_PRED_FN_STRLOC;
@@ -2048,7 +1658,7 @@ static int parse_pred(const char *str, void *data,
 			goto err_free;
 		}
 
-		memcpy(num_buf, str + s, len);
+		strncpy(num_buf, str + s, len);
 		num_buf[len] = 0;
 
 		/* Make sure it is a value */
@@ -2081,10 +1691,10 @@ static int parse_pred(const char *str, void *data,
 	return i;
 
 err_free:
-	free_predicate(pred);
+	kfree(pred);
 	return -EINVAL;
 err_mem:
-	free_predicate(pred);
+	kfree(pred);
 	return -ENOMEM;
 }
 
@@ -2249,6 +1859,22 @@ static inline void event_set_filtered_flag(struct trace_event_file *file)
 		trace_buffered_event_enable();
 }
 
+static inline void event_set_filter(struct trace_event_file *file,
+				    struct event_filter *filter)
+{
+	rcu_assign_pointer(file->filter, filter);
+}
+
+static inline void event_clear_filter(struct trace_event_file *file)
+{
+	RCU_INIT_POINTER(file->filter, NULL);
+}
+
+struct filter_list {
+	struct list_head	list;
+	struct event_filter	*filter;
+};
+
 static int process_system_preds(struct trace_subsystem_dir *dir,
 				struct trace_array *tr,
 				struct filter_parse_error *pe,
@@ -2257,15 +1883,10 @@ static int process_system_preds(struct trace_subsystem_dir *dir,
 	struct trace_event_file *file;
 	struct filter_list *filter_item;
 	struct event_filter *filter = NULL;
-	struct filter_head *filter_list;
+	struct filter_list *tmp;
+	LIST_HEAD(filter_list);
 	bool fail = true;
 	int err;
-
-	filter_list = kmalloc(sizeof(*filter_list), GFP_KERNEL);
-	if (!filter_list)
-		return -ENOMEM;
-
-	INIT_LIST_HEAD(&filter_list->list);
 
 	list_for_each_entry(file, &tr->events, list) {
 
@@ -2293,7 +1914,7 @@ static int process_system_preds(struct trace_subsystem_dir *dir,
 		if (!filter_item)
 			goto fail_mem;
 
-		list_add_tail(&filter_item->list, &filter_list->list);
+		list_add_tail(&filter_item->list, &filter_list);
 		/*
 		 * Regardless of if this returned an error, we still
 		 * replace the filter for the call.
@@ -2313,22 +1934,31 @@ static int process_system_preds(struct trace_subsystem_dir *dir,
 	 * Do a synchronize_rcu() and to ensure all calls are
 	 * done with them before we free them.
 	 */
-	delay_free_filter(filter_list);
+	tracepoint_synchronize_unregister();
+	list_for_each_entry_safe(filter_item, tmp, &filter_list, list) {
+		__free_filter(filter_item->filter);
+		list_del(&filter_item->list);
+		kfree(filter_item);
+	}
 	return 0;
  fail:
 	/* No call succeeded */
-	free_filter_list(filter_list);
+	list_for_each_entry_safe(filter_item, tmp, &filter_list, list) {
+		list_del(&filter_item->list);
+		kfree(filter_item);
+	}
 	parse_error(pe, FILT_ERR_BAD_SUBSYS_FILTER, 0);
 	return -EINVAL;
  fail_mem:
 	__free_filter(filter);
-
 	/* If any call succeeded, we still need to sync */
 	if (!fail)
-		delay_free_filter(filter_list);
-	else
-		free_filter_list(filter_list);
-
+		tracepoint_synchronize_unregister();
+	list_for_each_entry_safe(filter_item, tmp, &filter_list, list) {
+		__free_filter(filter_item->filter);
+		list_del(&filter_item->list);
+		kfree(filter_item);
+	}
 	return -ENOMEM;
 }
 
@@ -2458,9 +2088,6 @@ int apply_event_filter(struct trace_event_file *file, char *filter_string)
 	struct event_filter *filter = NULL;
 	int err;
 
-	if (file->flags & EVENT_FILE_FL_FREED)
-		return -ENODEV;
-
 	if (!strcmp(strstrip(filter_string), "0")) {
 		filter_disable(file);
 		filter = event_filter(file);
@@ -2470,7 +2097,9 @@ int apply_event_filter(struct trace_event_file *file, char *filter_string)
 
 		event_clear_filter(file);
 
-		try_delay_free_filter(filter);
+		/* Make sure the filter is not being used */
+		tracepoint_synchronize_unregister();
+		__free_filter(filter);
 
 		return 0;
 	}
@@ -2494,8 +2123,11 @@ int apply_event_filter(struct trace_event_file *file, char *filter_string)
 
 		event_set_filter(file, filter);
 
-		if (tmp)
-			try_delay_free_filter(tmp);
+		if (tmp) {
+			/* Make sure the call is done with the filter */
+			tracepoint_synchronize_unregister();
+			__free_filter(tmp);
+		}
 	}
 
 	return err;
@@ -2509,11 +2141,13 @@ int apply_subsystem_event_filter(struct trace_subsystem_dir *dir,
 	struct event_filter *filter = NULL;
 	int err = 0;
 
-	guard(mutex)(&event_mutex);
+	mutex_lock(&event_mutex);
 
 	/* Make sure the system still has events */
-	if (!dir->nr_events)
-		return -ENODEV;
+	if (!dir->nr_events) {
+		err = -ENODEV;
+		goto out_unlock;
+	}
 
 	if (!strcmp(strstrip(filter_string), "0")) {
 		filter_free_subsystem_preds(dir, tr);
@@ -2521,8 +2155,10 @@ int apply_subsystem_event_filter(struct trace_subsystem_dir *dir,
 		filter = system->filter;
 		system->filter = NULL;
 		/* Ensure all filters are no longer used */
-		filter_free_subsystem_filters(dir, tr, filter);
-		return 0;
+		tracepoint_synchronize_unregister();
+		filter_free_subsystem_filters(dir, tr);
+		__free_filter(filter);
+		goto out_unlock;
 	}
 
 	err = create_system_filter(dir, filter_string, &filter);
@@ -2534,6 +2170,8 @@ int apply_subsystem_event_filter(struct trace_subsystem_dir *dir,
 		__free_filter(system->filter);
 		system->filter = filter;
 	}
+out_unlock:
+	mutex_unlock(&event_mutex);
 
 	return err;
 }
@@ -2649,8 +2287,8 @@ static int ftrace_function_set_filter_pred(struct filter_pred *pred,
 		return ret;
 
 	return __ftrace_function_set_filter(pred->op == OP_EQ,
-					    pred->regex->pattern,
-					    pred->regex->len,
+					    pred->regex.pattern,
+					    pred->regex.len,
 					    data);
 }
 
@@ -2710,15 +2348,17 @@ int ftrace_profile_set_filter(struct perf_event *event, int event_id,
 	struct event_filter *filter = NULL;
 	struct trace_event_call *call;
 
-	guard(mutex)(&event_mutex);
+	mutex_lock(&event_mutex);
 
 	call = event->tp_event;
 
+	err = -EINVAL;
 	if (!call)
-		return -EINVAL;
+		goto out_unlock;
 
+	err = -EEXIST;
 	if (event->filter)
-		return -EEXIST;
+		goto out_unlock;
 
 	err = create_filter(NULL, call, filter_str, false, &filter);
 	if (err)
@@ -2732,6 +2372,9 @@ int ftrace_profile_set_filter(struct perf_event *event, int event_id,
 free_filter:
 	if (err || ftrace_event_is_function(call))
 		__free_filter(filter);
+
+out_unlock:
+	mutex_unlock(&event_mutex);
 
 	return err;
 }
@@ -2911,10 +2554,6 @@ static __init int ftrace_test_event_filter(void)
 
 	if (i == DATA_CNT)
 		printk(KERN_CONT "OK\n");
-
-	/* Need to call ftrace_test_filter to prevent a warning */
-	if (!trace_ftrace_test_filter_enabled())
-		trace_ftrace_test_filter(1, 2, 3, 4, 5, 6, 7, 8);
 
 	return 0;
 }

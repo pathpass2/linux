@@ -683,7 +683,6 @@ static int ux500_msp_dai_of_probe(struct snd_soc_dai *dai)
 
 static const struct snd_soc_dai_ops ux500_msp_dai_ops[] = {
 	{
-		.probe = ux500_msp_dai_of_probe,
 		.set_sysclk = ux500_msp_dai_set_dai_sysclk,
 		.set_fmt = ux500_msp_dai_set_dai_fmt,
 		.set_tdm_slot = ux500_msp_dai_set_tdm_slot,
@@ -696,6 +695,7 @@ static const struct snd_soc_dai_ops ux500_msp_dai_ops[] = {
 };
 
 static struct snd_soc_dai_driver ux500_msp_dai_drv = {
+	.probe                 = ux500_msp_dai_of_probe,
 	.playback.channels_min = UX500_MSP_MIN_CHANNELS,
 	.playback.channels_max = UX500_MSP_MAX_CHANNELS,
 	.playback.rates        = UX500_I2S_RATES,
@@ -733,7 +733,7 @@ static int ux500_msp_drv_probe(struct platform_device *pdev)
 
 	drvdata->reg_vape = devm_regulator_get(&pdev->dev, "v-ape");
 	if (IS_ERR(drvdata->reg_vape)) {
-		ret = PTR_ERR(drvdata->reg_vape);
+		ret = (int)PTR_ERR(drvdata->reg_vape);
 		dev_err(&pdev->dev,
 			"%s: ERROR: Failed to get Vape supply (%d)!\n",
 			__func__, ret);
@@ -743,7 +743,7 @@ static int ux500_msp_drv_probe(struct platform_device *pdev)
 
 	drvdata->pclk = devm_clk_get(&pdev->dev, "apb_pclk");
 	if (IS_ERR(drvdata->pclk)) {
-		ret = PTR_ERR(drvdata->pclk);
+		ret = (int)PTR_ERR(drvdata->pclk);
 		dev_err(&pdev->dev,
 			"%s: ERROR: devm_clk_get of pclk failed (%d)!\n",
 			__func__, ret);
@@ -752,7 +752,7 @@ static int ux500_msp_drv_probe(struct platform_device *pdev)
 
 	drvdata->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(drvdata->clk)) {
-		ret = PTR_ERR(drvdata->clk);
+		ret = (int)PTR_ERR(drvdata->clk);
 		dev_err(&pdev->dev,
 			"%s: ERROR: devm_clk_get failed (%d)!\n",
 			__func__, ret);
@@ -791,7 +791,7 @@ err_reg_plat:
 	return ret;
 }
 
-static void ux500_msp_drv_remove(struct platform_device *pdev)
+static int ux500_msp_drv_remove(struct platform_device *pdev)
 {
 	struct ux500_msp_i2s_drvdata *drvdata = dev_get_drvdata(&pdev->dev);
 
@@ -802,6 +802,8 @@ static void ux500_msp_drv_remove(struct platform_device *pdev)
 	prcmu_qos_remove_requirement(PRCMU_QOS_APE_OPP, "ux500_msp_i2s");
 
 	ux500_msp_i2s_cleanup_msp(pdev, drvdata->msp);
+
+	return 0;
 }
 
 static const struct of_device_id ux500_msp_i2s_match[] = {
@@ -820,5 +822,4 @@ static struct platform_driver msp_i2s_driver = {
 };
 module_platform_driver(msp_i2s_driver);
 
-MODULE_DESCRIPTION("ASoC Ux500 I2S driver");
 MODULE_LICENSE("GPL v2");

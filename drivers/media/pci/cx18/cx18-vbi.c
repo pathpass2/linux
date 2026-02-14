@@ -4,7 +4,7 @@
  *
  *  Derived from ivtv-vbi.c
  *
- *  Copyright (C) 2007  Hans Verkuil <hverkuil@kernel.org>
+ *  Copyright (C) 2007  Hans Verkuil <hverkuil@xs4all.nl>
  */
 
 #include "cx18-driver.h"

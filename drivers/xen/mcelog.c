@@ -165,7 +165,9 @@ static long xen_mce_chrdev_ioctl(struct file *f, unsigned int cmd,
 	case MCE_GETCLEAR_FLAGS: {
 		unsigned flags;
 
-		flags = xchg(&xen_mcelog.flags, 0);
+		do {
+			flags = xen_mcelog.flags;
+		} while (cmpxchg(&xen_mcelog.flags, flags, 0) != flags);
 
 		return put_user(flags, p);
 	}
@@ -180,6 +182,7 @@ static const struct file_operations xen_mce_chrdev_ops = {
 	.read			= xen_mce_chrdev_read,
 	.poll			= xen_mce_chrdev_poll,
 	.unlocked_ioctl		= xen_mce_chrdev_ioctl,
+	.llseek			= no_llseek,
 };
 
 static struct miscdevice xen_mce_chrdev_device = {

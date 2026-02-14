@@ -234,10 +234,7 @@ enum fiq_hwirq {
 	AIC_NR_FIQ
 };
 
-/* True if UNCORE/UNCORE2 and Sn_... IPI registers are present and used (A11+) */
 static DEFINE_STATIC_KEY_TRUE(use_fast_ipi);
-/* True if SYS_IMP_APL_IPI_RR_LOCAL_EL1 exists for local fast IPIs (M1+) */
-static DEFINE_STATIC_KEY_TRUE(use_local_fast_ipi);
 
 struct aic_info {
 	int version;
@@ -255,7 +252,6 @@ struct aic_info {
 
 	/* Features */
 	bool fast_ipi;
-	bool local_fast_ipi;
 };
 
 static const struct aic_info aic1_info __initconst = {
@@ -274,32 +270,17 @@ static const struct aic_info aic1_fipi_info __initconst = {
 	.fast_ipi	= true,
 };
 
-static const struct aic_info aic1_local_fipi_info __initconst = {
-	.version	= 1,
-
-	.event		= AIC_EVENT,
-	.target_cpu	= AIC_TARGET_CPU,
-
-	.fast_ipi	= true,
-	.local_fast_ipi = true,
-};
-
 static const struct aic_info aic2_info __initconst = {
 	.version	= 2,
 
 	.irq_cfg	= AIC2_IRQ_CFG,
 
 	.fast_ipi	= true,
-	.local_fast_ipi = true,
 };
 
 static const struct of_device_id aic_info_match[] = {
 	{
 		.compatible = "apple,t8103-aic",
-		.data = &aic1_local_fipi_info,
-	},
-	{
-		.compatible = "apple,t8015-aic",
 		.data = &aic1_fipi_info,
 	},
 	{
@@ -409,18 +390,15 @@ static void __exception_irq_entry aic_handle_irq(struct pt_regs *regs)
 	 * in use, and be cleared when coming back from the handler.
 	 */
 	if (is_kernel_in_hyp_mode() &&
-	    (read_sysreg_s(SYS_ICH_HCR_EL2) & ICH_HCR_EL2_En) &&
+	    (read_sysreg_s(SYS_ICH_HCR_EL2) & ICH_HCR_EN) &&
 	    read_sysreg_s(SYS_ICH_MISR_EL2) != 0) {
-		u64 val;
-
 		generic_handle_domain_irq(aic_irqc->hw_domain,
 					  AIC_FIQ_HWIRQ(AIC_VGIC_MI));
 
-		if (unlikely((read_sysreg_s(SYS_ICH_HCR_EL2) & ICH_HCR_EL2_En) &&
-			     (val = read_sysreg_s(SYS_ICH_MISR_EL2)))) {
-			pr_err_ratelimited("vGIC IRQ fired and not handled by KVM (MISR=%llx), disabling.\n",
-					   val);
-			sysreg_clear_set_s(SYS_ICH_HCR_EL2, ICH_HCR_EL2_En, 0);
+		if (unlikely((read_sysreg_s(SYS_ICH_HCR_EL2) & ICH_HCR_EN) &&
+			     read_sysreg_s(SYS_ICH_MISR_EL2))) {
+			pr_err_ratelimited("vGIC IRQ fired and not handled by KVM, disabling.\n");
+			sysreg_clear_set_s(SYS_ICH_HCR_EL2, ICH_HCR_EN, 0);
 		}
 	}
 }
@@ -554,9 +532,14 @@ static void __exception_irq_entry aic_handle_fiq(struct pt_regs *regs)
 	 * we check for everything here, even things we don't support yet.
 	 */
 
-	if (static_branch_likely(&use_fast_ipi) &&
-	    (read_sysreg_s(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING))
-		aic_handle_ipi(regs);
+	if (read_sysreg_s(SYS_IMP_APL_IPI_SR_EL1) & IPI_SR_PENDING) {
+		if (static_branch_likely(&use_fast_ipi)) {
+			aic_handle_ipi(regs);
+		} else {
+			pr_err_ratelimited("Fast IPI fired. Acking.\n");
+			write_sysreg_s(IPI_SR_PENDING, SYS_IMP_APL_IPI_SR_EL1);
+		}
+	}
 
 	if (TIMER_FIRING(read_sysreg(cntp_ctl_el0)))
 		generic_handle_domain_irq(aic_irqc->hw_domain,
@@ -580,14 +563,19 @@ static void __exception_irq_entry aic_handle_fiq(struct pt_regs *regs)
 						  AIC_FIQ_HWIRQ(AIC_TMR_EL02_VIRT));
 	}
 
-	if ((read_sysreg_s(SYS_IMP_APL_PMCR0_EL1) & (PMCR0_IMODE | PMCR0_IACT)) ==
-			(FIELD_PREP(PMCR0_IMODE, PMCR0_IMODE_FIQ) | PMCR0_IACT))
+	if (read_sysreg_s(SYS_IMP_APL_PMCR0_EL1) & PMCR0_IACT) {
+		int irq;
+		if (cpumask_test_cpu(smp_processor_id(),
+				     &aic_irqc->fiq_aff[AIC_CPU_PMU_P]->aff))
+			irq = AIC_CPU_PMU_P;
+		else
+			irq = AIC_CPU_PMU_E;
 		generic_handle_domain_irq(aic_irqc->hw_domain,
-					  AIC_FIQ_HWIRQ(AIC_CPU_PMU_P));
+					  AIC_FIQ_HWIRQ(irq));
+	}
 
-	if (static_branch_likely(&use_fast_ipi) &&
-	    (FIELD_GET(UPMCR0_IMODE, read_sysreg_s(SYS_IMP_APL_UPMCR0_EL1)) == UPMCR0_IMODE_FIQ) &&
-	    (read_sysreg_s(SYS_IMP_APL_UPMSR_EL1) & UPMSR_IACT)) {
+	if (FIELD_GET(UPMCR0_IMODE, read_sysreg_s(SYS_IMP_APL_UPMCR0_EL1)) == UPMCR0_IMODE_FIQ &&
+			(read_sysreg_s(SYS_IMP_APL_UPMSR_EL1) & UPMSR_IACT)) {
 		/* Same story with uncore PMCs */
 		pr_err_ratelimited("Uncore PMC FIQ fired. Masking.\n");
 		sysreg_clear_set_s(SYS_IMP_APL_UPMCR0_EL1, UPMCR0_IMODE,
@@ -628,37 +616,21 @@ static int aic_irq_domain_map(struct irq_domain *id, unsigned int irq,
 				    handle_fasteoi_irq, NULL, NULL);
 		irqd_set_single_target(irq_desc_get_irq_data(irq_to_desc(irq)));
 	} else {
-		irq_set_percpu_devid(irq);
+		int fiq = FIELD_GET(AIC_EVENT_NUM, hw);
+
+		switch (fiq) {
+		case AIC_CPU_PMU_P:
+		case AIC_CPU_PMU_E:
+			irq_set_percpu_devid_partition(irq, &ic->fiq_aff[fiq]->aff);
+			break;
+		default:
+			irq_set_percpu_devid(irq);
+			break;
+		}
+
 		irq_domain_set_info(id, irq, hw, &fiq_chip, id->host_data,
 				    handle_percpu_devid_irq, NULL, NULL);
 	}
-
-	return 0;
-}
-
-static int aic_irq_get_fwspec_info(struct irq_fwspec *fwspec, struct irq_fwspec_info *info)
-{
-	const struct cpumask *mask;
-	u32 intid;
-
-	info->flags = 0;
-	info->affinity = NULL;
-
-	if (fwspec->param[0] != AIC_FIQ)
-		return 0;
-
-	if (fwspec->param_count == 3)
-		intid = fwspec->param[1];
-	else
-		intid = fwspec->param[2];
-
-	if (aic_irqc->fiq_aff[intid])
-		mask = &aic_irqc->fiq_aff[intid]->aff;
-	else
-		mask = cpu_possible_mask;
-
-	info->affinity = mask;
-	info->flags = IRQ_FWSPEC_INFO_AFFINITY_VALID;
 
 	return 0;
 }
@@ -717,10 +689,6 @@ static int aic_irq_domain_translate(struct irq_domain *id,
 				break;
 			}
 		}
-
-		/* Merge the two PMUs on a single interrupt */
-		if (*hwirq == AIC_CPU_PMU_E)
-			*hwirq = AIC_CPU_PMU_P;
 		break;
 	default:
 		return -EINVAL;
@@ -766,10 +734,9 @@ static void aic_irq_domain_free(struct irq_domain *domain, unsigned int virq,
 }
 
 static const struct irq_domain_ops aic_irq_domain_ops = {
-	.translate		= aic_irq_domain_translate,
-	.alloc			= aic_irq_domain_alloc,
-	.free			= aic_irq_domain_free,
-	.get_fwspec_info	= aic_irq_get_fwspec_info,
+	.translate	= aic_irq_domain_translate,
+	.alloc		= aic_irq_domain_alloc,
+	.free		= aic_irq_domain_free,
 };
 
 /*
@@ -783,12 +750,12 @@ static void aic_ipi_send_fast(int cpu)
 	u64 cluster = MPIDR_CLUSTER(mpidr);
 	u64 idx = MPIDR_CPU(mpidr);
 
-	if (static_branch_likely(&use_local_fast_ipi) && MPIDR_CLUSTER(my_mpidr) == cluster) {
-		write_sysreg_s(FIELD_PREP(IPI_RR_CPU, idx), SYS_IMP_APL_IPI_RR_LOCAL_EL1);
-	} else {
+	if (MPIDR_CLUSTER(my_mpidr) == cluster)
+		write_sysreg_s(FIELD_PREP(IPI_RR_CPU, idx),
+			       SYS_IMP_APL_IPI_RR_LOCAL_EL1);
+	else
 		write_sysreg_s(FIELD_PREP(IPI_RR_CPU, idx) | FIELD_PREP(IPI_RR_CLUSTER, cluster),
 			       SYS_IMP_APL_IPI_RR_GLOBAL_EL1);
-	}
 	isb();
 }
 
@@ -844,8 +811,7 @@ static int aic_init_cpu(unsigned int cpu)
 	/* Mask all hard-wired per-CPU IRQ/FIQ sources */
 
 	/* Pending Fast IPI FIQs */
-	if (static_branch_likely(&use_fast_ipi))
-		write_sysreg_s(IPI_SR_PENDING, SYS_IMP_APL_IPI_SR_EL1);
+	write_sysreg_s(IPI_SR_PENDING, SYS_IMP_APL_IPI_SR_EL1);
 
 	/* Timer FIQs */
 	sysreg_clear_set(cntp_ctl_el0, 0, ARCH_TIMER_CTRL_IT_MASK);
@@ -858,7 +824,7 @@ static int aic_init_cpu(unsigned int cpu)
 				   VM_TMR_FIQ_ENABLE_V | VM_TMR_FIQ_ENABLE_P, 0);
 
 		/* vGIC maintenance IRQ */
-		sysreg_clear_set_s(SYS_ICH_HCR_EL2, ICH_HCR_EL2_En, 0);
+		sysreg_clear_set_s(SYS_ICH_HCR_EL2, ICH_HCR_EN, 0);
 	}
 
 	/* PMC FIQ */
@@ -866,10 +832,8 @@ static int aic_init_cpu(unsigned int cpu)
 			   FIELD_PREP(PMCR0_IMODE, PMCR0_IMODE_OFF));
 
 	/* Uncore PMC FIQ */
-	if (static_branch_likely(&use_fast_ipi)) {
-		sysreg_clear_set_s(SYS_IMP_APL_UPMCR0_EL1, UPMCR0_IMODE,
-				   FIELD_PREP(UPMCR0_IMODE, UPMCR0_IMODE_OFF));
-	}
+	sysreg_clear_set_s(SYS_IMP_APL_UPMCR0_EL1, UPMCR0_IMODE,
+			   FIELD_PREP(UPMCR0_IMODE, UPMCR0_IMODE_OFF));
 
 	/* Commit all of the above */
 	isb();
@@ -1023,15 +987,14 @@ static int __init aic_of_ic_init(struct device_node *node, struct device_node *p
 	off += sizeof(u32) * (irqc->max_irq >> 5); /* MASK_CLR */
 	off += sizeof(u32) * (irqc->max_irq >> 5); /* HW_STATE */
 
-	if (!irqc->info.fast_ipi)
+	if (irqc->info.fast_ipi)
+		static_branch_enable(&use_fast_ipi);
+	else
 		static_branch_disable(&use_fast_ipi);
-
-	if (!irqc->info.local_fast_ipi)
-		static_branch_disable(&use_local_fast_ipi);
 
 	irqc->info.die_stride = off - start_off;
 
-	irqc->hw_domain = irq_domain_create_tree(of_fwnode_handle(node),
+	irqc->hw_domain = irq_domain_create_tree(of_node_to_fwnode(node),
 						 &aic_irq_domain_ops, irqc);
 	if (WARN_ON(!irqc->hw_domain))
 		goto err_unmap;
@@ -1084,7 +1047,7 @@ static int __init aic_of_ic_init(struct device_node *node, struct device_node *p
 
 	if (is_kernel_in_hyp_mode()) {
 		struct irq_fwspec mi = {
-			.fwnode		= of_fwnode_handle(node),
+			.fwnode		= of_node_to_fwnode(node),
 			.param_count	= 3,
 			.param		= {
 				[0]	= AIC_FIQ, /* This is a lie */

@@ -92,15 +92,8 @@ static int cffrml_receive(struct cflayer *layr, struct cfpkt *pkt)
 	len = le16_to_cpu(tmp);
 
 	/* Subtract for FCS on length if FCS is not used. */
-	if (!this->dofcs) {
-		if (len < 2) {
-			++cffrml_rcv_error;
-			pr_err("Invalid frame length (%d)\n", len);
-			cfpkt_destroy(pkt);
-			return -EPROTO;
-		}
+	if (!this->dofcs)
 		len -= 2;
-	}
 
 	if (cfpkt_setlen(pkt, len) < 0) {
 		++cffrml_rcv_error;

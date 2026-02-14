@@ -79,10 +79,11 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 	u64 formats = 0;
 	unsigned int rates = 0;
 	struct transfer_info v;
+	int result = 0;
 	int bus_factor = 0, sysclock_factor = 0;
 	int found_this;
 
-	guard(mutex)(&i2sdev->lock);
+	mutex_lock(&i2sdev->lock);
 
 	get_pcm_info(i2sdev, in, &pi, &other);
 
@@ -91,7 +92,8 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 
 	if (pi->active) {
 		/* alsa messed up */
-		return -EBUSY;
+		result = -EBUSY;
+		goto out_unlock;
 	}
 
 	/* we now need to assign the hw */
@@ -115,8 +117,10 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 			ti++;
 		}
 	}
-	if (!masks_inited || !bus_factor || !sysclock_factor)
-		return -ENODEV;
+	if (!masks_inited || !bus_factor || !sysclock_factor) {
+		result = -ENODEV;
+		goto out_unlock;
+	}
 	/* bus dependent stuff */
 	hw->info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
 		   SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_RESUME |
@@ -190,12 +194,15 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 	hw->periods_max = MAX_DBDMA_COMMANDS;
 	err = snd_pcm_hw_constraint_integer(pi->substream->runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
-	if (err < 0)
-		return err;
+	if (err < 0) {
+		result = err;
+		goto out_unlock;
+	}
 	list_for_each_entry(cii, &sdev->codec_list, list) {
 		if (cii->codec->open) {
 			err = cii->codec->open(cii, pi->substream);
 			if (err) {
+				result = err;
 				/* unwind */
 				found_this = 0;
 				list_for_each_entry_reverse(rev,
@@ -207,12 +214,14 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 					if (rev == cii)
 						found_this = 1;
 				}
-				return err;
+				goto out_unlock;
 			}
 		}
 	}
 
-	return 0;
+ out_unlock:
+	mutex_unlock(&i2sdev->lock);
+	return result;
 }
 
 #undef CHECK_RATE
@@ -223,7 +232,7 @@ static int i2sbus_pcm_close(struct i2sbus_dev *i2sdev, int in)
 	struct pcm_info *pi;
 	int err = 0, tmp;
 
-	guard(mutex)(&i2sdev->lock);
+	mutex_lock(&i2sdev->lock);
 
 	get_pcm_info(i2sdev, in, &pi, NULL);
 
@@ -237,6 +246,7 @@ static int i2sbus_pcm_close(struct i2sbus_dev *i2sdev, int in)
 
 	pi->substream = NULL;
 	pi->active = 0;
+	mutex_unlock(&i2sdev->lock);
 	return err;
 }
 
@@ -245,24 +255,24 @@ static void i2sbus_wait_for_stop(struct i2sbus_dev *i2sdev,
 {
 	unsigned long flags;
 	DECLARE_COMPLETION_ONSTACK(done);
-	unsigned long time_left;
+	long timeout;
 
 	spin_lock_irqsave(&i2sdev->low_lock, flags);
 	if (pi->dbdma_ring.stopping) {
 		pi->stop_completion = &done;
 		spin_unlock_irqrestore(&i2sdev->low_lock, flags);
-		time_left = wait_for_completion_timeout(&done, HZ);
+		timeout = wait_for_completion_timeout(&done, HZ);
 		spin_lock_irqsave(&i2sdev->low_lock, flags);
 		pi->stop_completion = NULL;
-		if (time_left == 0) {
+		if (timeout == 0) {
 			/* timeout expired, stop dbdma forcefully */
 			printk(KERN_ERR "i2sbus_wait_for_stop: timed out\n");
 			/* make sure RUN, PAUSE and S0 bits are cleared */
 			out_le32(&pi->dbdma->control, (RUN | PAUSE | 1) << 16);
 			pi->dbdma_ring.stopping = 0;
-			time_left = 10;
+			timeout = 10;
 			while (in_le32(&pi->dbdma->status) & ACTIVE) {
-				if (--time_left <= 0)
+				if (--timeout <= 0)
 					break;
 				udelay(1);
 			}
@@ -320,26 +330,33 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 	int input_16bit;
 	struct pcm_info *pi, *other;
 	int cnt;
+	int result = 0;
 	unsigned int cmd, stopaddr;
 
-	guard(mutex)(&i2sdev->lock);
+	mutex_lock(&i2sdev->lock);
 
 	get_pcm_info(i2sdev, in, &pi, &other);
 
-	if (pi->dbdma_ring.running)
-		return -EBUSY;
+	if (pi->dbdma_ring.running) {
+		result = -EBUSY;
+		goto out_unlock;
+	}
 	if (pi->dbdma_ring.stopping)
 		i2sbus_wait_for_stop(i2sdev, pi);
 
-	if (!pi->substream || !pi->substream->runtime)
-		return -EINVAL;
+	if (!pi->substream || !pi->substream->runtime) {
+		result = -EINVAL;
+		goto out_unlock;
+	}
 
 	runtime = pi->substream->runtime;
 	pi->active = 1;
 	if (other->active &&
 	    ((i2sdev->format != runtime->format)
-	     || (i2sdev->rate != runtime->rate)))
-		return -EINVAL;
+	     || (i2sdev->rate != runtime->rate))) {
+		result = -EINVAL;
+		goto out_unlock;
+	}
 
 	i2sdev->format = runtime->format;
 	i2sdev->rate = runtime->rate;
@@ -395,8 +412,10 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 			bi.bus_factor = cii->codec->bus_factor;
 			break;
 		}
-		if (!bi.bus_factor)
-			return -ENODEV;
+		if (!bi.bus_factor) {
+			result = -ENODEV;
+			goto out_unlock;
+		}
 		input_16bit = 1;
 		break;
 	case SNDRV_PCM_FORMAT_S32_BE:
@@ -407,7 +426,8 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 		input_16bit = 0;
 		break;
 	default:
-		return -EINVAL;
+		result = -EINVAL;
+		goto out_unlock;
 	}
 	/* we assume all sysclocks are the same! */
 	list_for_each_entry(cii, &i2sdev->sound.codec_list, list) {
@@ -418,8 +438,10 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 	if (clock_and_divisors(bi.sysclock_factor,
 			       bi.bus_factor,
 			       runtime->rate,
-			       &sfr) < 0)
-		return -EINVAL;
+			       &sfr) < 0) {
+		result = -EINVAL;
+		goto out_unlock;
+	}
 	switch (bi.bus_factor) {
 	case 32:
 		sfr |= I2S_SF_SERIAL_FORMAT_I2S_32X;
@@ -435,8 +457,10 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 		int err = 0;
 		if (cii->codec->prepare)
 			err = cii->codec->prepare(cii, &bi, pi->substream);
-		if (err)
-			return err;
+		if (err) {
+			result = err;
+			goto out_unlock;
+		}
 	}
 	/* codecs are fine with it, so set our clocks */
 	if (input_16bit)
@@ -452,7 +476,7 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 	/* not locking these is fine since we touch them only in this function */
 	if (in_le32(&i2sdev->intfregs->serial_format) == sfr
 	 && in_le32(&i2sdev->intfregs->data_word_sizes) == dws)
-		return 0;
+		goto out_unlock;
 
 	/* let's notify the codecs about clocks going away.
 	 * For now we only do mastering on the i2s cell... */
@@ -490,7 +514,9 @@ static int i2sbus_pcm_prepare(struct i2sbus_dev *i2sdev, int in)
 		if (cii->codec->switch_clock)
 			cii->codec->switch_clock(cii, CLOCK_SWITCH_SLAVE);
 
-	return 0;
+ out_unlock:
+	mutex_unlock(&i2sdev->lock);
+	return result;
 }
 
 #ifdef CONFIG_PM
@@ -505,16 +531,20 @@ static int i2sbus_pcm_trigger(struct i2sbus_dev *i2sdev, int in, int cmd)
 {
 	struct codec_info_item *cii;
 	struct pcm_info *pi;
+	int result = 0;
+	unsigned long flags;
 
-	guard(spinlock_irqsave)(&i2sdev->low_lock);
+	spin_lock_irqsave(&i2sdev->low_lock, flags);
 
 	get_pcm_info(i2sdev, in, &pi, NULL);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
-		if (pi->dbdma_ring.running)
-			return -EALREADY;
+		if (pi->dbdma_ring.running) {
+			result = -EALREADY;
+			goto out_unlock;
+		}
 		list_for_each_entry(cii, &i2sdev->sound.codec_list, list)
 			if (cii->codec->start)
 				cii->codec->start(cii, pi->substream);
@@ -528,7 +558,7 @@ static int i2sbus_pcm_trigger(struct i2sbus_dev *i2sdev, int in, int cmd)
 				udelay(10);
 				if (in_le32(&pi->dbdma->status) & ACTIVE) {
 					pi->dbdma_ring.stopping = 0;
-					return 0; /* keep running */
+					goto out_unlock; /* keep running */
 				}
 			}
 		}
@@ -554,8 +584,10 @@ static int i2sbus_pcm_trigger(struct i2sbus_dev *i2sdev, int in, int cmd)
 
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
-		if (!pi->dbdma_ring.running)
-			return -EALREADY;
+		if (!pi->dbdma_ring.running) {
+			result = -EALREADY;
+			goto out_unlock;
+		}
 		pi->dbdma_ring.running = 0;
 
 		/* Set the S0 bit to make the DMA branch to the stop cmd */
@@ -567,10 +599,13 @@ static int i2sbus_pcm_trigger(struct i2sbus_dev *i2sdev, int in, int cmd)
 				cii->codec->stop(cii, pi->substream);
 		break;
 	default:
-		return -EINVAL;
+		result = -EINVAL;
+		goto out_unlock;
 	}
 
-	return 0;
+ out_unlock:
+	spin_unlock_irqrestore(&i2sdev->low_lock, flags);
+	return result;
 }
 
 static snd_pcm_uframes_t i2sbus_pcm_pointer(struct i2sbus_dev *i2sdev, int in)
@@ -597,67 +632,70 @@ static inline void handle_interrupt(struct i2sbus_dev *i2sdev, int in)
 	int dma_stopped = 0;
 	struct snd_pcm_runtime *runtime;
 
-	scoped_guard(spinlock, &i2sdev->low_lock) {
-		get_pcm_info(i2sdev, in, &pi, NULL);
-		if (!pi->dbdma_ring.running && !pi->dbdma_ring.stopping)
-			return;
+	spin_lock(&i2sdev->low_lock);
+	get_pcm_info(i2sdev, in, &pi, NULL);
+	if (!pi->dbdma_ring.running && !pi->dbdma_ring.stopping)
+		goto out_unlock;
 
-		i = pi->current_period;
-		runtime = pi->substream->runtime;
-		while (pi->dbdma_ring.cmds[i].xfer_status) {
-			if (le16_to_cpu(pi->dbdma_ring.cmds[i].xfer_status) & BT)
-				/*
-				 * BT is the branch taken bit.  If it took a branch
-				 * it is because we set the S0 bit to make it
-				 * branch to the stop command.
-				 */
-				dma_stopped = 1;
-			pi->dbdma_ring.cmds[i].xfer_status = 0;
-
-			if (++i >= runtime->periods) {
-				i = 0;
-				pi->frame_count += runtime->buffer_size;
-			}
-			pi->current_period = i;
-
+	i = pi->current_period;
+	runtime = pi->substream->runtime;
+	while (pi->dbdma_ring.cmds[i].xfer_status) {
+		if (le16_to_cpu(pi->dbdma_ring.cmds[i].xfer_status) & BT)
 			/*
-			 * Check the frame count.  The DMA tends to get a bit
-			 * ahead of the frame counter, which confuses the core.
+			 * BT is the branch taken bit.  If it took a branch
+			 * it is because we set the S0 bit to make it
+			 * branch to the stop command.
 			 */
-			fc = in_le32(&i2sdev->intfregs->frame_count);
-			nframes = i * runtime->period_size;
-			if (fc < pi->frame_count + nframes)
-				pi->frame_count = fc - nframes;
+			dma_stopped = 1;
+		pi->dbdma_ring.cmds[i].xfer_status = 0;
+
+		if (++i >= runtime->periods) {
+			i = 0;
+			pi->frame_count += runtime->buffer_size;
 		}
+		pi->current_period = i;
 
-		if (dma_stopped) {
-			timeout = 1000;
-			for (;;) {
-				status = in_le32(&pi->dbdma->status);
-				if (!(status & ACTIVE) && (!in || (status & 0x80)))
-					break;
-				if (--timeout <= 0) {
-					printk(KERN_ERR
-					       "i2sbus: timed out waiting for DMA to stop!\n");
-					break;
-				}
-				udelay(1);
-			}
-
-			/* Turn off DMA controller, clear S0 bit */
-			out_le32(&pi->dbdma->control, (RUN | PAUSE | 1) << 16);
-
-			pi->dbdma_ring.stopping = 0;
-			if (pi->stop_completion)
-				complete(pi->stop_completion);
-		}
-
-		if (!pi->dbdma_ring.running)
-			return;
+		/*
+		 * Check the frame count.  The DMA tends to get a bit
+		 * ahead of the frame counter, which confuses the core.
+		 */
+		fc = in_le32(&i2sdev->intfregs->frame_count);
+		nframes = i * runtime->period_size;
+		if (fc < pi->frame_count + nframes)
+			pi->frame_count = fc - nframes;
 	}
 
+	if (dma_stopped) {
+		timeout = 1000;
+		for (;;) {
+			status = in_le32(&pi->dbdma->status);
+			if (!(status & ACTIVE) && (!in || (status & 0x80)))
+				break;
+			if (--timeout <= 0) {
+				printk(KERN_ERR "i2sbus: timed out "
+				       "waiting for DMA to stop!\n");
+				break;
+			}
+			udelay(1);
+		}
+
+		/* Turn off DMA controller, clear S0 bit */
+		out_le32(&pi->dbdma->control, (RUN | PAUSE | 1) << 16);
+
+		pi->dbdma_ring.stopping = 0;
+		if (pi->stop_completion)
+			complete(pi->stop_completion);
+	}
+
+	if (!pi->dbdma_ring.running)
+		goto out_unlock;
+	spin_unlock(&i2sdev->low_lock);
 	/* may call _trigger again, hence needs to be unlocked */
 	snd_pcm_period_elapsed(pi->substream);
+	return;
+
+ out_unlock:
+	spin_unlock(&i2sdev->low_lock);
 }
 
 irqreturn_t i2sbus_tx_intr(int irq, void *devid)
@@ -934,7 +972,7 @@ i2sbus_attach_codec(struct soundbus_dev *dev, struct snd_card *card,
 			goto out_put_ci_module;
 		snd_pcm_set_ops(dev->pcm, SNDRV_PCM_STREAM_PLAYBACK,
 				&i2sbus_playback_ops);
-		dev->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].dev->parent =
+		dev->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].dev.parent =
 			&dev->ofdev.dev;
 		i2sdev->out.created = 1;
 	}
@@ -951,7 +989,7 @@ i2sbus_attach_codec(struct soundbus_dev *dev, struct snd_card *card,
 			goto out_put_ci_module;
 		snd_pcm_set_ops(dev->pcm, SNDRV_PCM_STREAM_CAPTURE,
 				&i2sbus_record_ops);
-		dev->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].dev->parent =
+		dev->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].dev.parent =
 			&dev->ofdev.dev;
 		i2sdev->in.created = 1;
 	}

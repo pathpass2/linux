@@ -8,7 +8,7 @@
 #ifndef _MWIFIEX_IOCTL_H_
 #define _MWIFIEX_IOCTL_H_
 
-#define NUM_WEP_KEYS	4
+#include <net/lib80211.h>
 
 enum {
 	MWIFIEX_SCAN_TYPE_UNCHANGED = 0,
@@ -107,7 +107,6 @@ struct mwifiex_uap_bss_param {
 	u8 qos_info;
 	u8 power_constraint;
 	struct mwifiex_types_wmm_info wmm_info;
-	u8 mac_addr[ETH_ALEN];
 };
 
 enum {
@@ -156,11 +155,6 @@ struct mwifiex_bss_info {
 	u32 is_hs_configured;
 	u32 is_deep_sleep;
 	u8 bssid[ETH_ALEN];
-};
-
-struct mwifiex_sta_info {
-	u8 peer_mac[ETH_ALEN];
-	struct station_parameters *params;
 };
 
 #define MAX_NUM_TID     8

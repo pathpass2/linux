@@ -96,34 +96,30 @@ static int ea_foreach_i(struct gfs2_inode *ip, struct buffer_head *bh,
 		return -EIO;
 
 	for (ea = GFS2_EA_BH2FIRST(bh);; prev = ea, ea = GFS2_EA2NEXT(ea)) {
-		if (!GFS2_EA_REC_LEN(ea)) {
-			gfs2_consist_inode(ip);
-			return -EIO;
-		}
+		if (!GFS2_EA_REC_LEN(ea))
+			goto fail;
 		if (!(bh->b_data <= (char *)ea && (char *)GFS2_EA2NEXT(ea) <=
-						  bh->b_data + bh->b_size)) {
-			gfs2_consist_inode(ip);
-			return -EIO;
-		}
-		if (!gfs2_eatype_valid(sdp, ea->ea_type)) {
-			gfs2_consist_inode(ip);
-			return -EIO;
-		}
+						  bh->b_data + bh->b_size))
+			goto fail;
+		if (!gfs2_eatype_valid(sdp, ea->ea_type))
+			goto fail;
 		error = ea_call(ip, bh, ea, prev, data);
 		if (error)
 			return error;
 
 		if (GFS2_EA_IS_LAST(ea)) {
 			if ((char *)GFS2_EA2NEXT(ea) !=
-			    bh->b_data + bh->b_size) {
-				gfs2_consist_inode(ip);
-				return -EIO;
-			}
+			    bh->b_data + bh->b_size)
+				goto fail;
 			break;
 		}
 	}
 
 	return error;
+
+fail:
+	gfs2_consist_inode(ip);
+	return -EIO;
 }
 
 static int ea_foreach(struct gfs2_inode *ip, ea_call_t ea_call, void *data)
@@ -315,7 +311,7 @@ static int ea_dealloc_unstuffed(struct gfs2_inode *ip, struct buffer_head *bh,
 		ea->ea_num_ptrs = 0;
 	}
 
-	inode_set_ctime_current(&ip->i_inode);
+	ip->i_inode.i_ctime = current_time(&ip->i_inode);
 	__mark_inode_dirty(&ip->i_inode, I_DIRTY_DATASYNC);
 
 	gfs2_trans_end(sdp);
@@ -643,7 +639,7 @@ static int ea_alloc_blk(struct gfs2_inode *ip, struct buffer_head **bhp)
 	u64 block;
 	int error;
 
-	error = gfs2_alloc_blocks(ip, &block, &n, 0);
+	error = gfs2_alloc_blocks(ip, &block, &n, 0, NULL);
 	if (error)
 		return error;
 	gfs2_trans_remove_revoke(sdp, block, 1);
@@ -705,7 +701,7 @@ static int ea_write(struct gfs2_inode *ip, struct gfs2_ea_header *ea,
 			int mh_size = sizeof(struct gfs2_meta_header);
 			unsigned int n = 1;
 
-			error = gfs2_alloc_blocks(ip, &block, &n, 0);
+			error = gfs2_alloc_blocks(ip, &block, &n, 0, NULL);
 			if (error)
 				return error;
 			gfs2_trans_remove_revoke(sdp, block, 1);
@@ -767,7 +763,7 @@ static int ea_alloc_skeleton(struct gfs2_inode *ip, struct gfs2_ea_request *er,
 	if (error)
 		goto out_end_trans;
 
-	inode_set_ctime_current(&ip->i_inode);
+	ip->i_inode.i_ctime = current_time(&ip->i_inode);
 	__mark_inode_dirty(&ip->i_inode, I_DIRTY_DATASYNC);
 
 out_end_trans:
@@ -892,7 +888,7 @@ static int ea_set_simple_noalloc(struct gfs2_inode *ip, struct buffer_head *bh,
 	if (es->es_el)
 		ea_set_remove_stuffed(ip, es->es_el);
 
-	inode_set_ctime_current(&ip->i_inode);
+	ip->i_inode.i_ctime = current_time(&ip->i_inode);
 	__mark_inode_dirty(&ip->i_inode, I_DIRTY_DATASYNC);
 
 	gfs2_trans_end(GFS2_SB(&ip->i_inode));
@@ -1006,7 +1002,7 @@ static int ea_set_block(struct gfs2_inode *ip, struct gfs2_ea_request *er,
 	} else {
 		u64 blk;
 		unsigned int n = 1;
-		error = gfs2_alloc_blocks(ip, &blk, &n, 0);
+		error = gfs2_alloc_blocks(ip, &blk, &n, 0, NULL);
 		if (error)
 			return error;
 		gfs2_trans_remove_revoke(sdp, blk, 1);
@@ -1110,7 +1106,7 @@ static int ea_remove_stuffed(struct gfs2_inode *ip, struct gfs2_ea_location *el)
 		ea->ea_type = GFS2_EATYPE_UNUSED;
 	}
 
-	inode_set_ctime_current(&ip->i_inode);
+	ip->i_inode.i_ctime = current_time(&ip->i_inode);
 	__mark_inode_dirty(&ip->i_inode, I_DIRTY_DATASYNC);
 
 	gfs2_trans_end(GFS2_SB(&ip->i_inode));
@@ -1383,7 +1379,7 @@ out:
 	return error;
 }
 
-static int ea_dealloc_block(struct gfs2_inode *ip, bool initialized)
+static int ea_dealloc_block(struct gfs2_inode *ip)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
 	struct gfs2_rgrpd *rgd;
@@ -1416,7 +1412,7 @@ static int ea_dealloc_block(struct gfs2_inode *ip, bool initialized)
 	ip->i_eattr = 0;
 	gfs2_add_inode_blocks(&ip->i_inode, -1);
 
-	if (initialized) {
+	if (likely(!test_bit(GIF_ALLOC_FAILED, &ip->i_flags))) {
 		error = gfs2_meta_inode_buffer(ip, &dibh);
 		if (!error) {
 			gfs2_trans_add_meta(ip->i_gl, dibh);
@@ -1435,12 +1431,11 @@ out_gunlock:
 /**
  * gfs2_ea_dealloc - deallocate the extended attribute fork
  * @ip: the inode
- * @initialized: xattrs have been initialized
  *
  * Returns: errno
  */
 
-int gfs2_ea_dealloc(struct gfs2_inode *ip, bool initialized)
+int gfs2_ea_dealloc(struct gfs2_inode *ip)
 {
 	int error;
 
@@ -1452,7 +1447,7 @@ int gfs2_ea_dealloc(struct gfs2_inode *ip, bool initialized)
 	if (error)
 		return error;
 
-	if (initialized) {
+	if (likely(!test_bit(GIF_ALLOC_FAILED, &ip->i_flags))) {
 		error = ea_foreach(ip, ea_dealloc_unstuffed, NULL);
 		if (error)
 			goto out_quota;
@@ -1464,7 +1459,7 @@ int gfs2_ea_dealloc(struct gfs2_inode *ip, bool initialized)
 		}
 	}
 
-	error = ea_dealloc_block(ip, initialized);
+	error = ea_dealloc_block(ip);
 
 out_quota:
 	gfs2_quota_unhold(ip);
@@ -1499,14 +1494,16 @@ static const struct xattr_handler gfs2_xattr_trusted_handler = {
 	.set    = gfs2_xattr_set,
 };
 
-const struct xattr_handler * const gfs2_xattr_handlers_max[] = {
+const struct xattr_handler *gfs2_xattr_handlers_max[] = {
 	/* GFS2_FS_FORMAT_MAX */
 	&gfs2_xattr_trusted_handler,
 
 	/* GFS2_FS_FORMAT_MIN */
 	&gfs2_xattr_user_handler,
 	&gfs2_xattr_security_handler,
+	&posix_acl_access_xattr_handler,
+	&posix_acl_default_xattr_handler,
 	NULL,
 };
 
-const struct xattr_handler * const *gfs2_xattr_handlers_min = gfs2_xattr_handlers_max + 1;
+const struct xattr_handler **gfs2_xattr_handlers_min = gfs2_xattr_handlers_max + 1;

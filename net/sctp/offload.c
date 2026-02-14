@@ -22,7 +22,6 @@
 #include <net/sctp/sctp.h>
 #include <net/sctp/checksum.h>
 #include <net/protocol.h>
-#include <net/gso.h>
 
 static __le32 sctp_gso_make_checksum(struct sk_buff *skb)
 {
@@ -111,6 +110,7 @@ int __init sctp_offload_init(void)
 	if (ret)
 		goto ipv4;
 
+	crc32c_csum_stub = &sctp_csum_ops;
 	return ret;
 
 ipv4:

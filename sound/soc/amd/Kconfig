@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: GPL-2.0-only
-menu "AMD"
-
 config SND_SOC_AMD_ACP
 	tristate "AMD Audio Coprocessor support"
 	help
@@ -8,6 +6,7 @@ config SND_SOC_AMD_ACP
 
 config SND_SOC_AMD_CZ_DA7219MX98357_MACH
 	tristate "AMD CZ support for DA7219, RT5682 and MAX9835"
+	select CLK_FIXED_FCH
 	select SND_SOC_DA7219
 	select SND_SOC_RT5682_I2C
 	select SND_SOC_MAX98357A
@@ -44,6 +43,7 @@ config SND_SOC_AMD_ACP3x
 
 config SND_SOC_AMD_RV_RT5682_MACH
 	tristate "AMD RV support for RT5682"
+	select CLK_FIXED_FCH
 	select SND_SOC_RT5682_I2C
 	select SND_SOC_MAX98357A
 	select SND_SOC_CROS_EC_CODEC
@@ -71,7 +71,6 @@ config SND_SOC_AMD_RENOIR_MACH
 config SND_SOC_AMD_ACP5x
 	tristate "AMD Audio Coprocessor-v5.x I2S support"
 	depends on X86 && PCI
-	select SND_AMD_ACP_CONFIG
 	help
 	 This option enables ACP v5.x support on AMD platform
 
@@ -79,21 +78,18 @@ config SND_SOC_AMD_ACP5x
 	 ACP DMA driver, CPU DAI driver.
 
 config SND_SOC_AMD_VANGOGH_MACH
-	tristate "AMD Vangogh support for NAU8821/CS35L41/MAX98388"
+	tristate "AMD Vangogh support for NAU8821 CS35L41"
 	select SND_SOC_NAU8821
 	select SND_SOC_CS35L41_SPI
-	select SND_SOC_MAX98388
-	select SND_AMD_ACP_CONFIG
 	depends on SND_SOC_AMD_ACP5x && I2C && SPI_MASTER
 	help
 	  This option enables machine driver for Vangogh platform
-	  using NAU8821 and either CS35L41 or MAX98388 codecs.
+	  using NAU8821 and CS35L41 codecs.
 	  Say m if you have such a device.
 	  If unsure select "N".
 
 config SND_SOC_AMD_ACP6x
 	tristate "AMD Audio Coprocessor-v6.x Yellow Carp support"
-	select SND_AMD_ACP_CONFIG
 	depends on X86 && PCI
 	help
 	  This option enables Audio Coprocessor i.e ACP v6.x support on
@@ -105,7 +101,7 @@ config SND_SOC_AMD_ACP6x
 config SND_SOC_AMD_YC_MACH
 	tristate "AMD YC support for DMIC"
 	select SND_SOC_DMIC
-	depends on SND_SOC_AMD_ACP6x && ACPI
+	depends on SND_SOC_AMD_ACP6x
 	help
 	  This option enables machine driver for Yellow Carp platform
 	  using dmic. ACP IP has PDM Decoder block with DMA controller.
@@ -132,44 +128,13 @@ config SND_SOC_AMD_RPL_ACP6x
           Say m if you have such a device.
           If unsure select "N".
 
-config SND_SOC_AMD_ACP63_TOPLEVEL
-	tristate "support for AMD platforms with ACP version >= 6.3"
-	default SND_AMD_ACP_CONFIG
-	depends on SND_AMD_ACP_CONFIG
-	depends on SOUNDWIRE_AMD || !SOUNDWIRE_AMD
-	depends on X86 || COMPILE_TEST
-	help
-	  This adds support for AMD platforms with ACP version >= 6.3.
-	  Say Y if you have such a device.
-	  If unsure select "N".
-
-if SND_SOC_AMD_ACP63_TOPLEVEL
-
-config SND_SOC_AMD_SOUNDWIRE_LINK_BASELINE
-	tristate
-	select SND_AMD_SOUNDWIRE_ACPI if ACPI
-
-config SND_SOC_AMD_SOUNDWIRE
-	tristate "Support for SoundWire based AMD platforms"
-	default SND_SOC_AMD_SOUNDWIRE_LINK_BASELINE
-	depends on SND_SOC_AMD_SOUNDWIRE_LINK_BASELINE
-	depends on ACPI
-	depends on SOUNDWIRE_AMD
-	help
-	  This adds support for SoundWire for AMD platforms.
-	  Say Y if you want to enable SoundWire links with SOF.
-	  If unsure select "N".
-
 config SND_SOC_AMD_PS
-        tristate "AMD Audio Coprocessor-v6.3/v7.0/v7.1 support"
-	select SND_SOC_AMD_SOUNDWIRE_LINK_BASELINE
-	select SND_SOC_ACPI_AMD_MATCH
+        tristate "AMD Audio Coprocessor-v6.3 Pink Sardine support"
         depends on X86 && PCI && ACPI
         help
-	  This option enables Audio Coprocessor i.e ACP6.3/ACP7.0/ACP7.1
-	  variants support. By enabling this flag build will be triggered
-	  for ACP PCI driver, ACP PDM DMA driver, ACP SoundWire DMA
-	  driver.
+          This option enables Audio Coprocessor i.e ACP v6.3 support on
+          AMD Pink sardine platform. By enabling this flag build will be
+          triggered for ACP PCI driver, ACP PDM DMA driver.
           Say m if you have such a device.
           If unsure select "N".
 
@@ -183,6 +148,3 @@ config SND_SOC_AMD_PS_MACH
           DMIC can be connected directly to ACP IP.
           Say m if you have such a device.
           If unsure select "N".
-
-endif
-endmenu

@@ -13,11 +13,10 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/phy.h>
+#include <linux/of_platform.h>
 #include <linux/slab.h>
-#include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_mdio.h>
-#include <linux/platform_device.h>
 #include <asm/io.h>
 #include <asm/mpc52xx.h>
 #include "fec_mpc52xx.h"
@@ -94,7 +93,7 @@ static int mpc52xx_fec_mdio_probe(struct platform_device *of)
 		goto out_free;
 	}
 
-	snprintf(bus->id, MII_BUS_ID_SIZE, "%pa", &res.start);
+	snprintf(bus->id, MII_BUS_ID_SIZE, "%x", res.start);
 	bus->priv = priv;
 
 	bus->parent = dev;
@@ -118,7 +117,7 @@ static int mpc52xx_fec_mdio_probe(struct platform_device *of)
 	return err;
 }
 
-static void mpc52xx_fec_mdio_remove(struct platform_device *of)
+static int mpc52xx_fec_mdio_remove(struct platform_device *of)
 {
 	struct mii_bus *bus = platform_get_drvdata(of);
 	struct mpc52xx_fec_mdio_priv *priv = bus->priv;
@@ -127,6 +126,8 @@ static void mpc52xx_fec_mdio_remove(struct platform_device *of)
 	iounmap(priv->regs);
 	kfree(priv);
 	mdiobus_free(bus);
+
+	return 0;
 }
 
 static const struct of_device_id mpc52xx_fec_mdio_match[] = {

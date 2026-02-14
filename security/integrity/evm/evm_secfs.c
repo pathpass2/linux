@@ -17,6 +17,7 @@
 #include "evm.h"
 
 static struct dentry *evm_dir;
+static struct dentry *evm_init_tpm;
 static struct dentry *evm_symlink;
 
 #ifdef CONFIG_EVM_ADD_XATTRS
@@ -285,7 +286,7 @@ static int evm_init_xattrs(void)
 {
 	evm_xattrs = securityfs_create_file("evm_xattrs", 0660, evm_dir, NULL,
 					    &evm_xattr_ops);
-	if (IS_ERR(evm_xattrs))
+	if (!evm_xattrs || IS_ERR(evm_xattrs))
 		return -EFAULT;
 
 	return 0;
@@ -300,28 +301,21 @@ static int evm_init_xattrs(void)
 int __init evm_init_secfs(void)
 {
 	int error = 0;
-	struct dentry *dentry;
-
-	error = integrity_fs_init();
-	if (error < 0)
-		return -EFAULT;
 
 	evm_dir = securityfs_create_dir("evm", integrity_dir);
-	if (IS_ERR(evm_dir)) {
-		error = -EFAULT;
-		goto out;
-	}
+	if (!evm_dir || IS_ERR(evm_dir))
+		return -EFAULT;
 
-	dentry = securityfs_create_file("evm", 0660,
-				      evm_dir, NULL, &evm_key_ops);
-	if (IS_ERR(dentry)) {
+	evm_init_tpm = securityfs_create_file("evm", 0660,
+					      evm_dir, NULL, &evm_key_ops);
+	if (!evm_init_tpm || IS_ERR(evm_init_tpm)) {
 		error = -EFAULT;
 		goto out;
 	}
 
 	evm_symlink = securityfs_create_symlink("evm", NULL,
 						"integrity/evm/evm", NULL);
-	if (IS_ERR(evm_symlink)) {
+	if (!evm_symlink || IS_ERR(evm_symlink)) {
 		error = -EFAULT;
 		goto out;
 	}
@@ -334,7 +328,7 @@ int __init evm_init_secfs(void)
 	return 0;
 out:
 	securityfs_remove(evm_symlink);
+	securityfs_remove(evm_init_tpm);
 	securityfs_remove(evm_dir);
-	integrity_fs_fini();
 	return error;
 }

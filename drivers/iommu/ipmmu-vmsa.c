@@ -14,12 +14,11 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
-#include <linux/iopoll.h>
 #include <linux/io-pgtable.h>
 #include <linux/iommu.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/of_platform.h>
-#include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
@@ -31,6 +30,7 @@
 #define arm_iommu_create_mapping(...)	NULL
 #define arm_iommu_attach_device(...)	-ENODEV
 #define arm_iommu_release_mapping(...)	do {} while (0)
+#define arm_iommu_detach_device(...)	do {} while (0)
 #endif
 
 #define IPMMU_CTX_MAX		16U
@@ -64,6 +64,7 @@ struct ipmmu_vmsa_device {
 	struct ipmmu_vmsa_domain *domains[IPMMU_CTX_MAX];
 	s8 utlb_ctx[IPMMU_UTLB_MAX];
 
+	struct iommu_group *group;
 	struct dma_iommu_mapping *mapping;
 };
 
@@ -253,13 +254,17 @@ static void ipmmu_imuctr_write(struct ipmmu_vmsa_device *mmu,
 /* Wait for any pending TLB invalidations to complete */
 static void ipmmu_tlb_sync(struct ipmmu_vmsa_domain *domain)
 {
-	u32 val;
+	unsigned int count = 0;
 
-	if (read_poll_timeout_atomic(ipmmu_ctx_read_root, val,
-				     !(val & IMCTR_FLUSH), 1, TLB_LOOP_TIMEOUT,
-				     false, domain, IMCTR))
-		dev_err_ratelimited(domain->mmu->dev,
+	while (ipmmu_ctx_read_root(domain, IMCTR) & IMCTR_FLUSH) {
+		cpu_relax();
+		if (++count == TLB_LOOP_TIMEOUT) {
+			dev_err_ratelimited(domain->mmu->dev,
 			"TLB sync timed out -- MMU may be deadlocked\n");
+			return;
+		}
+		udelay(1);
+	}
 }
 
 static void ipmmu_tlb_invalidate(struct ipmmu_vmsa_domain *domain)
@@ -292,18 +297,6 @@ static void ipmmu_utlb_enable(struct ipmmu_vmsa_domain *domain,
 	ipmmu_imuctr_write(mmu, utlb, IMUCTR_TTSEL_MMU(domain->context_id) |
 				      IMUCTR_FLUSH | IMUCTR_MMUEN);
 	mmu->utlb_ctx[utlb] = domain->context_id;
-}
-
-/*
- * Disable MMU translation for the microTLB.
- */
-static void ipmmu_utlb_disable(struct ipmmu_vmsa_domain *domain,
-			       unsigned int utlb)
-{
-	struct ipmmu_vmsa_device *mmu = domain->mmu;
-
-	ipmmu_imuctr_write(mmu, utlb, 0);
-	mmu->utlb_ctx[utlb] = IPMMU_CTX_INVALID;
 }
 
 static void ipmmu_tlb_flush_all(void *cookie)
@@ -430,7 +423,7 @@ static int ipmmu_domain_init_context(struct ipmmu_vmsa_domain *domain)
 	 * non-secure mode.
 	 */
 	domain->cfg.quirks = IO_PGTABLE_QUIRK_ARM_NS;
-	domain->cfg.pgsize_bitmap = domain->io_domain.pgsize_bitmap;
+	domain->cfg.pgsize_bitmap = SZ_1G | SZ_2M | SZ_4K;
 	domain->cfg.ias = 32;
 	domain->cfg.oas = 40;
 	domain->cfg.tlb = &ipmmu_flush_ops;
@@ -562,16 +555,18 @@ static irqreturn_t ipmmu_irq(int irq, void *dev)
  * IOMMU Operations
  */
 
-static struct iommu_domain *ipmmu_domain_alloc_paging(struct device *dev)
+static struct iommu_domain *ipmmu_domain_alloc(unsigned type)
 {
 	struct ipmmu_vmsa_domain *domain;
+
+	if (type != IOMMU_DOMAIN_UNMANAGED && type != IOMMU_DOMAIN_DMA)
+		return NULL;
 
 	domain = kzalloc(sizeof(*domain), GFP_KERNEL);
 	if (!domain)
 		return NULL;
 
 	mutex_init(&domain->mutex);
-	domain->io_domain.pgsize_bitmap = SZ_1G | SZ_2M | SZ_4K;
 
 	return &domain->io_domain;
 }
@@ -590,7 +585,7 @@ static void ipmmu_domain_free(struct iommu_domain *io_domain)
 }
 
 static int ipmmu_attach_device(struct iommu_domain *io_domain,
-			       struct device *dev, struct iommu_domain *old)
+			       struct device *dev)
 {
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
@@ -636,36 +631,6 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 	return 0;
 }
 
-static int ipmmu_iommu_identity_attach(struct iommu_domain *identity_domain,
-				       struct device *dev,
-				       struct iommu_domain *old)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct ipmmu_vmsa_domain *domain;
-	unsigned int i;
-
-	if (old == identity_domain || !old)
-		return 0;
-
-	domain = to_vmsa_domain(old);
-	for (i = 0; i < fwspec->num_ids; ++i)
-		ipmmu_utlb_disable(domain, fwspec->ids[i]);
-
-	/*
-	 * TODO: Optimize by disabling the context when no device is attached.
-	 */
-	return 0;
-}
-
-static struct iommu_domain_ops ipmmu_iommu_identity_ops = {
-	.attach_dev = ipmmu_iommu_identity_attach,
-};
-
-static struct iommu_domain ipmmu_iommu_identity_domain = {
-	.type = IOMMU_DOMAIN_IDENTITY,
-	.ops = &ipmmu_iommu_identity_ops,
-};
-
 static int ipmmu_map(struct iommu_domain *io_domain, unsigned long iova,
 		     phys_addr_t paddr, size_t pgsize, size_t pgcount,
 		     int prot, gfp_t gfp, size_t *mapped)
@@ -710,7 +675,7 @@ static phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain,
 }
 
 static int ipmmu_init_platform_device(struct device *dev,
-				      const struct of_phandle_args *args)
+				      struct of_phandle_args *args)
 {
 	struct platform_device *ipmmu_pdev;
 
@@ -719,8 +684,6 @@ static int ipmmu_init_platform_device(struct device *dev,
 		return -ENODEV;
 
 	dev_iommu_priv_set(dev, platform_get_drvdata(ipmmu_pdev));
-
-	put_device(&ipmmu_pdev->dev);
 
 	return 0;
 }
@@ -734,6 +697,7 @@ static const struct soc_device_attribute soc_needs_opt_in[] = {
 
 static const struct soc_device_attribute soc_denylist[] = {
 	{ .soc_id = "r8a774a1", },
+	{ .soc_id = "r8a7795", .revision = "ES1.*" },
 	{ .soc_id = "r8a7795", .revision = "ES2.*" },
 	{ .soc_id = "r8a7796", },
 	{ /* sentinel */ }
@@ -761,10 +725,6 @@ static bool ipmmu_device_is_allowed(struct device *dev)
 	if (soc_device_match(soc_denylist))
 		return false;
 
-	/* Check whether this device is a PCI device */
-	if (dev_is_pci(dev))
-		return true;
-
 	/* Check whether this device can work with the IPMMU */
 	for (i = 0; i < ARRAY_SIZE(devices_allowlist); i++) {
 		if (!strcmp(dev_name(dev), devices_allowlist[i]))
@@ -776,7 +736,7 @@ static bool ipmmu_device_is_allowed(struct device *dev)
 }
 
 static int ipmmu_of_xlate(struct device *dev,
-			  const struct of_phandle_args *spec)
+			  struct of_phandle_args *spec)
 {
 	if (!ipmmu_device_is_allowed(dev))
 		return -ENODEV;
@@ -807,7 +767,8 @@ static int ipmmu_init_arm_mapping(struct device *dev)
 	if (!mmu->mapping) {
 		struct dma_iommu_mapping *mapping;
 
-		mapping = arm_iommu_create_mapping(dev, SZ_1G, SZ_2G);
+		mapping = arm_iommu_create_mapping(&platform_bus_type,
+						   SZ_1G, SZ_2G);
 		if (IS_ERR(mapping)) {
 			dev_err(mmu->dev, "failed to create ARM IOMMU mapping\n");
 			ret = PTR_ERR(mapping);
@@ -859,32 +820,32 @@ static void ipmmu_probe_finalize(struct device *dev)
 
 static void ipmmu_release_device(struct device *dev)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	arm_iommu_detach_device(dev);
+}
+
+static struct iommu_group *ipmmu_find_group(struct device *dev)
+{
 	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
-	unsigned int i;
+	struct iommu_group *group;
 
-	for (i = 0; i < fwspec->num_ids; ++i) {
-		unsigned int utlb = fwspec->ids[i];
+	if (mmu->group)
+		return iommu_group_ref_get(mmu->group);
 
-		ipmmu_imuctr_write(mmu, utlb, 0);
-		mmu->utlb_ctx[utlb] = IPMMU_CTX_INVALID;
-	}
+	group = iommu_group_alloc();
+	if (!IS_ERR(group))
+		mmu->group = group;
 
-	arm_iommu_release_mapping(mmu->mapping);
+	return group;
 }
 
 static const struct iommu_ops ipmmu_ops = {
-	.identity_domain = &ipmmu_iommu_identity_domain,
-	.domain_alloc_paging = ipmmu_domain_alloc_paging,
+	.domain_alloc = ipmmu_domain_alloc,
 	.probe_device = ipmmu_probe_device,
 	.release_device = ipmmu_release_device,
 	.probe_finalize = ipmmu_probe_finalize,
-	/*
-	 * FIXME: The device grouping is a fixed property of the hardware's
-	 * ability to isolate and control DMA, it should not depend on kconfig.
-	 */
 	.device_group = IS_ENABLED(CONFIG_ARM) && !IS_ENABLED(CONFIG_IOMMU_DMA)
-			? generic_device_group : generic_single_device_group,
+			? generic_device_group : ipmmu_find_group,
+	.pgsize_bitmap = SZ_1G | SZ_2M | SZ_4K,
 	.of_xlate = ipmmu_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= ipmmu_attach_device,
@@ -1006,6 +967,7 @@ static const struct of_device_id ipmmu_of_ids[] = {
 static int ipmmu_probe(struct platform_device *pdev)
 {
 	struct ipmmu_vmsa_device *mmu;
+	struct resource *res;
 	int irq;
 	int ret;
 
@@ -1025,7 +987,8 @@ static int ipmmu_probe(struct platform_device *pdev)
 		return ret;
 
 	/* Map I/O memory and request IRQ. */
-	mmu->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	mmu->base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(mmu->base))
 		return PTR_ERR(mmu->base);
 
@@ -1051,7 +1014,7 @@ static int ipmmu_probe(struct platform_device *pdev)
 	 * the lack of has_cache_leaf_nodes flag or renesas,ipmmu-main property.
 	 */
 	if (!mmu->features->has_cache_leaf_nodes ||
-	    !of_property_present(pdev->dev.of_node, "renesas,ipmmu-main"))
+	    !of_find_property(pdev->dev.of_node, "renesas,ipmmu-main", NULL))
 		mmu->root = mmu;
 	else
 		mmu->root = ipmmu_find_root();
@@ -1083,28 +1046,34 @@ static int ipmmu_probe(struct platform_device *pdev)
 		}
 	}
 
-	platform_set_drvdata(pdev, mmu);
 	/*
 	 * Register the IPMMU to the IOMMU subsystem in the following cases:
 	 * - R-Car Gen2 IPMMU (all devices registered)
 	 * - R-Car Gen3 IPMMU (leaf devices only - skip root IPMMU-MM device)
 	 */
-	if (mmu->features->has_cache_leaf_nodes && ipmmu_is_root(mmu))
-		return 0;
+	if (!mmu->features->has_cache_leaf_nodes || !ipmmu_is_root(mmu)) {
+		ret = iommu_device_sysfs_add(&mmu->iommu, &pdev->dev, NULL,
+					     dev_name(&pdev->dev));
+		if (ret)
+			return ret;
 
-	ret = iommu_device_sysfs_add(&mmu->iommu, &pdev->dev, NULL, "%s",
-				     dev_name(&pdev->dev));
-	if (ret)
-		return ret;
+		ret = iommu_device_register(&mmu->iommu, &ipmmu_ops, &pdev->dev);
+		if (ret)
+			return ret;
+	}
 
-	ret = iommu_device_register(&mmu->iommu, &ipmmu_ops, &pdev->dev);
-	if (ret)
-		iommu_device_sysfs_remove(&mmu->iommu);
+	/*
+	 * We can't create the ARM mapping here as it requires the bus to have
+	 * an IOMMU, which only happens when bus_set_iommu() is called in
+	 * ipmmu_init() after the probe function returns.
+	 */
 
-	return ret;
+	platform_set_drvdata(pdev, mmu);
+
+	return 0;
 }
 
-static void ipmmu_remove(struct platform_device *pdev)
+static int ipmmu_remove(struct platform_device *pdev)
 {
 	struct ipmmu_vmsa_device *mmu = platform_get_drvdata(pdev);
 
@@ -1114,8 +1083,11 @@ static void ipmmu_remove(struct platform_device *pdev)
 	arm_iommu_release_mapping(mmu->mapping);
 
 	ipmmu_device_reset(mmu);
+
+	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int ipmmu_resume_noirq(struct device *dev)
 {
 	struct ipmmu_vmsa_device *mmu = dev_get_drvdata(dev);
@@ -1145,16 +1117,20 @@ static int ipmmu_resume_noirq(struct device *dev)
 }
 
 static const struct dev_pm_ops ipmmu_pm  = {
-	NOIRQ_SYSTEM_SLEEP_PM_OPS(NULL, ipmmu_resume_noirq)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(NULL, ipmmu_resume_noirq)
 };
+#define DEV_PM_OPS	&ipmmu_pm
+#else
+#define DEV_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
 
 static struct platform_driver ipmmu_driver = {
 	.driver = {
 		.name = "ipmmu-vmsa",
-		.of_match_table = ipmmu_of_ids,
-		.pm = pm_sleep_ptr(&ipmmu_pm),
+		.of_match_table = of_match_ptr(ipmmu_of_ids),
+		.pm = DEV_PM_OPS,
 	},
 	.probe = ipmmu_probe,
-	.remove = ipmmu_remove,
+	.remove	= ipmmu_remove,
 };
 builtin_platform_driver(ipmmu_driver);

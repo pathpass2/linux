@@ -20,7 +20,6 @@
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/slab.h>
-#include <linux/string.h>
 #include <linux/module.h>
 #include <sound/core.h>
 #include <sound/initval.h>
@@ -281,13 +280,16 @@ static unsigned int snd_emu10k1x_ptr_read(struct emu10k1x * emu,
 					  unsigned int reg, 
 					  unsigned int chn)
 {
-	unsigned int regptr;
+	unsigned long flags;
+	unsigned int regptr, val;
   
 	regptr = (reg << 16) | chn;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outl(regptr, emu->port + PTR);
-	return inl(emu->port + DATA);
+	val = inl(emu->port + DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	return val;
 }
 
 static void snd_emu10k1x_ptr_write(struct emu10k1x *emu, 
@@ -296,36 +298,45 @@ static void snd_emu10k1x_ptr_write(struct emu10k1x *emu,
 				   unsigned int data)
 {
 	unsigned int regptr;
+	unsigned long flags;
 
 	regptr = (reg << 16) | chn;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outl(regptr, emu->port + PTR);
 	outl(data, emu->port + DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 static void snd_emu10k1x_intr_enable(struct emu10k1x *emu, unsigned int intrenb)
 {
+	unsigned long flags;
 	unsigned int intr_enable;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	intr_enable = inl(emu->port + INTE) | intrenb;
 	outl(intr_enable, emu->port + INTE);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 static void snd_emu10k1x_intr_disable(struct emu10k1x *emu, unsigned int intrenb)
 {
+	unsigned long flags;
 	unsigned int intr_enable;
 
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	intr_enable = inl(emu->port + INTE) & ~intrenb;
 	outl(intr_enable, emu->port + INTE);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 static void snd_emu10k1x_gpio_write(struct emu10k1x *emu, unsigned int value)
 {
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outl(value, emu->port + GPIO);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 static void snd_emu10k1x_pcm_free_substream(struct snd_pcm_runtime *runtime)
@@ -682,20 +693,26 @@ static unsigned short snd_emu10k1x_ac97_read(struct snd_ac97 *ac97,
 					     unsigned short reg)
 {
 	struct emu10k1x *emu = ac97->private_data;
+	unsigned long flags;
+	unsigned short val;
   
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outb(reg, emu->port + AC97ADDRESS);
-	return inw(emu->port + AC97DATA);
+	val = inw(emu->port + AC97DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
+	return val;
 }
 
 static void snd_emu10k1x_ac97_write(struct snd_ac97 *ac97,
 				    unsigned short reg, unsigned short val)
 {
 	struct emu10k1x *emu = ac97->private_data;
+	unsigned long flags;
   
-	guard(spinlock_irqsave)(&emu->emu_lock);
+	spin_lock_irqsave(&emu->emu_lock, flags);
 	outb(reg, emu->port + AC97ADDRESS);
 	outw(val, emu->port + AC97DATA);
+	spin_unlock_irqrestore(&emu->emu_lock, flags);
 }
 
 static int snd_emu10k1x_ac97(struct emu10k1x *chip)
@@ -823,15 +840,15 @@ static int snd_emu10k1x_pcm(struct emu10k1x *emu, int device)
 	pcm->info_flags = 0;
 	switch(device) {
 	case 0:
-		strscpy(pcm->name, "EMU10K1X Front");
+		strcpy(pcm->name, "EMU10K1X Front");
 		map = snd_pcm_std_chmaps;
 		break;
 	case 1:
-		strscpy(pcm->name, "EMU10K1X Rear");
+		strcpy(pcm->name, "EMU10K1X Rear");
 		map = surround_map;
 		break;
 	case 2:
-		strscpy(pcm->name, "EMU10K1X Center/LFE");
+		strcpy(pcm->name, "EMU10K1X Center/LFE");
 		map = clfe_map;
 		break;
 	}
@@ -867,7 +884,7 @@ static int snd_emu10k1x_create(struct snd_card *card,
 	spin_lock_init(&chip->emu_lock);
 	spin_lock_init(&chip->voice_lock);
   
-	err = pcim_request_all_regions(pci, "EMU10K1X");
+	err = pci_request_regions(pci, "EMU10K1X");
 	if (err < 0)
 		return err;
 	chip->port = pci_resource_start(pci, 0);
@@ -948,12 +965,14 @@ static void snd_emu10k1x_proc_reg_read(struct snd_info_entry *entry,
 {
 	struct emu10k1x *emu = entry->private_data;
 	unsigned long value,value1,value2;
+	unsigned long flags;
 	int i;
 
 	snd_iprintf(buffer, "Registers:\n\n");
 	for(i = 0; i < 0x20; i+=4) {
-		guard(spinlock_irqsave)(&emu->emu_lock);
+		spin_lock_irqsave(&emu->emu_lock, flags);
 		value = inl(emu->port + i);
+		spin_unlock_irqrestore(&emu->emu_lock, flags);
 		snd_iprintf(buffer, "Register %02X: %08lX\n", i, value);
 	}
 	snd_iprintf(buffer, "\nRegisters\n\n");
@@ -1186,28 +1205,28 @@ static void do_emu10k1x_midi_interrupt(struct emu10k1x *emu,
 		return;
 	}
 
-	scoped_guard(spinlock, &midi->input_lock) {
-		if ((status & midi->ipr_rx) && mpu401_input_avail(emu, midi)) {
-			if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_INPUT)) {
-				mpu401_clear_rx(emu, midi);
-			} else {
-				byte = mpu401_read_data(emu, midi);
-				if (midi->substream_input)
-					snd_rawmidi_receive(midi->substream_input, &byte, 1);
-			}
+	spin_lock(&midi->input_lock);
+	if ((status & midi->ipr_rx) && mpu401_input_avail(emu, midi)) {
+		if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_INPUT)) {
+			mpu401_clear_rx(emu, midi);
+		} else {
+			byte = mpu401_read_data(emu, midi);
+			if (midi->substream_input)
+				snd_rawmidi_receive(midi->substream_input, &byte, 1);
 		}
 	}
+	spin_unlock(&midi->input_lock);
 
-	scoped_guard(spinlock, &midi->output_lock) {
-		if ((status & midi->ipr_tx) && mpu401_output_ready(emu, midi)) {
-			if (midi->substream_output &&
-			    snd_rawmidi_transmit(midi->substream_output, &byte, 1) == 1) {
-				mpu401_write_data(emu, midi, byte);
-			} else {
-				snd_emu10k1x_intr_disable(emu, midi->tx_enable);
-			}
+	spin_lock(&midi->output_lock);
+	if ((status & midi->ipr_tx) && mpu401_output_ready(emu, midi)) {
+		if (midi->substream_output &&
+		    snd_rawmidi_transmit(midi->substream_output, &byte, 1) == 1) {
+			mpu401_write_data(emu, midi, byte);
+		} else {
+			snd_emu10k1x_intr_disable(emu, midi->tx_enable);
 		}
 	}
+	spin_unlock(&midi->output_lock);
 }
 
 static void snd_emu10k1x_midi_interrupt(struct emu10k1x *emu, unsigned int status)
@@ -1218,28 +1237,29 @@ static void snd_emu10k1x_midi_interrupt(struct emu10k1x *emu, unsigned int statu
 static int snd_emu10k1x_midi_cmd(struct emu10k1x * emu,
 				  struct emu10k1x_midi *midi, unsigned char cmd, int ack)
 {
+	unsigned long flags;
 	int timeout, ok;
 
-	scoped_guard(spinlock_irqsave, &midi->input_lock) {
-		mpu401_write_data(emu, midi, 0x00);
-		/* mpu401_clear_rx(emu, midi); */
+	spin_lock_irqsave(&midi->input_lock, flags);
+	mpu401_write_data(emu, midi, 0x00);
+	/* mpu401_clear_rx(emu, midi); */
 
-		mpu401_write_cmd(emu, midi, cmd);
-		if (ack) {
-			ok = 0;
-			timeout = 10000;
-			while (!ok && timeout-- > 0) {
-				if (mpu401_input_avail(emu, midi)) {
-					if (mpu401_read_data(emu, midi) == MPU401_ACK)
-						ok = 1;
-				}
+	mpu401_write_cmd(emu, midi, cmd);
+	if (ack) {
+		ok = 0;
+		timeout = 10000;
+		while (!ok && timeout-- > 0) {
+			if (mpu401_input_avail(emu, midi)) {
+				if (mpu401_read_data(emu, midi) == MPU401_ACK)
+					ok = 1;
 			}
-			if (!ok && mpu401_read_data(emu, midi) == MPU401_ACK)
-				ok = 1;
-		} else {
-			ok = 1;
 		}
+		if (!ok && mpu401_read_data(emu, midi) == MPU401_ACK)
+			ok = 1;
+	} else {
+		ok = 1;
 	}
+	spin_unlock_irqrestore(&midi->input_lock, flags);
 	if (!ok) {
 		dev_err(emu->card->dev,
 			"midi_cmd: 0x%x failed at 0x%lx (status = 0x%x, data = 0x%x)!!!\n",
@@ -1255,78 +1275,100 @@ static int snd_emu10k1x_midi_input_open(struct snd_rawmidi_substream *substream)
 {
 	struct emu10k1x *emu;
 	struct emu10k1x_midi *midi = substream->rmidi->private_data;
+	unsigned long flags;
 	
 	emu = midi->emu;
 	if (snd_BUG_ON(!emu))
 		return -ENXIO;
-	scoped_guard(spinlock_irqsave, &midi->open_lock) {
-		midi->midi_mode |= EMU10K1X_MIDI_MODE_INPUT;
-		midi->substream_input = substream;
-		if (midi->midi_mode & EMU10K1X_MIDI_MODE_OUTPUT)
-			return 0;
+	spin_lock_irqsave(&midi->open_lock, flags);
+	midi->midi_mode |= EMU10K1X_MIDI_MODE_INPUT;
+	midi->substream_input = substream;
+	if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_OUTPUT)) {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
+		if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 1))
+			goto error_out;
+		if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_ENTER_UART, 1))
+			goto error_out;
+	} else {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
 	}
-	if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 1))
-		return -EIO;
-	if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_ENTER_UART, 1))
-		return -EIO;
 	return 0;
+
+error_out:
+	return -EIO;
 }
 
 static int snd_emu10k1x_midi_output_open(struct snd_rawmidi_substream *substream)
 {
 	struct emu10k1x *emu;
 	struct emu10k1x_midi *midi = substream->rmidi->private_data;
+	unsigned long flags;
 
 	emu = midi->emu;
 	if (snd_BUG_ON(!emu))
 		return -ENXIO;
-	scoped_guard(spinlock_irqsave, &midi->open_lock) {
-		midi->midi_mode |= EMU10K1X_MIDI_MODE_OUTPUT;
-		midi->substream_output = substream;
-		if (midi->midi_mode & EMU10K1X_MIDI_MODE_INPUT)
-			return 0;
+	spin_lock_irqsave(&midi->open_lock, flags);
+	midi->midi_mode |= EMU10K1X_MIDI_MODE_OUTPUT;
+	midi->substream_output = substream;
+	if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_INPUT)) {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
+		if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 1))
+			goto error_out;
+		if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_ENTER_UART, 1))
+			goto error_out;
+	} else {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
 	}
-	if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 1))
-		return -EIO;
-	if (snd_emu10k1x_midi_cmd(emu, midi, MPU401_ENTER_UART, 1))
-		return -EIO;
 	return 0;
+
+error_out:
+	return -EIO;
 }
 
 static int snd_emu10k1x_midi_input_close(struct snd_rawmidi_substream *substream)
 {
 	struct emu10k1x *emu;
 	struct emu10k1x_midi *midi = substream->rmidi->private_data;
+	unsigned long flags;
+	int err = 0;
 
 	emu = midi->emu;
 	if (snd_BUG_ON(!emu))
 		return -ENXIO;
-	scoped_guard(spinlock_irqsave, &midi->open_lock) {
-		snd_emu10k1x_intr_disable(emu, midi->rx_enable);
-		midi->midi_mode &= ~EMU10K1X_MIDI_MODE_INPUT;
-		midi->substream_input = NULL;
-		if (midi->midi_mode & EMU10K1X_MIDI_MODE_OUTPUT)
-			return 0;
+	spin_lock_irqsave(&midi->open_lock, flags);
+	snd_emu10k1x_intr_disable(emu, midi->rx_enable);
+	midi->midi_mode &= ~EMU10K1X_MIDI_MODE_INPUT;
+	midi->substream_input = NULL;
+	if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_OUTPUT)) {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
+		err = snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 0);
+	} else {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
 	}
-	return snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 0);
+	return err;
 }
 
 static int snd_emu10k1x_midi_output_close(struct snd_rawmidi_substream *substream)
 {
 	struct emu10k1x *emu;
 	struct emu10k1x_midi *midi = substream->rmidi->private_data;
+	unsigned long flags;
+	int err = 0;
 
 	emu = midi->emu;
 	if (snd_BUG_ON(!emu))
 		return -ENXIO;
-	scoped_guard(spinlock_irqsave, &midi->open_lock) {
-		snd_emu10k1x_intr_disable(emu, midi->tx_enable);
-		midi->midi_mode &= ~EMU10K1X_MIDI_MODE_OUTPUT;
-		midi->substream_output = NULL;
-		if (midi->midi_mode & EMU10K1X_MIDI_MODE_INPUT)
-			return 0;
+	spin_lock_irqsave(&midi->open_lock, flags);
+	snd_emu10k1x_intr_disable(emu, midi->tx_enable);
+	midi->midi_mode &= ~EMU10K1X_MIDI_MODE_OUTPUT;
+	midi->substream_output = NULL;
+	if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_INPUT)) {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
+		err = snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 0);
+	} else {
+		spin_unlock_irqrestore(&midi->open_lock, flags);
 	}
-	return snd_emu10k1x_midi_cmd(emu, midi, MPU401_RESET, 0);
+	return err;
 }
 
 static void snd_emu10k1x_midi_input_trigger(struct snd_rawmidi_substream *substream, int up)
@@ -1347,6 +1389,7 @@ static void snd_emu10k1x_midi_output_trigger(struct snd_rawmidi_substream *subst
 {
 	struct emu10k1x *emu;
 	struct emu10k1x_midi *midi = substream->rmidi->private_data;
+	unsigned long flags;
 
 	emu = midi->emu;
 	if (snd_BUG_ON(!emu))
@@ -1357,21 +1400,22 @@ static void snd_emu10k1x_midi_output_trigger(struct snd_rawmidi_substream *subst
 		unsigned char byte;
 	
 		/* try to send some amount of bytes here before interrupts */
-		scoped_guard(spinlock_irqsave, &midi->output_lock) {
-			while (max > 0) {
-				if (mpu401_output_ready(emu, midi)) {
-					if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_OUTPUT) ||
-					    snd_rawmidi_transmit(substream, &byte, 1) != 1) {
-						/* no more data */
-						return;
-					}
-					mpu401_write_data(emu, midi, byte);
-					max--;
-				} else {
-					break;
+		spin_lock_irqsave(&midi->output_lock, flags);
+		while (max > 0) {
+			if (mpu401_output_ready(emu, midi)) {
+				if (!(midi->midi_mode & EMU10K1X_MIDI_MODE_OUTPUT) ||
+				    snd_rawmidi_transmit(substream, &byte, 1) != 1) {
+					/* no more data */
+					spin_unlock_irqrestore(&midi->output_lock, flags);
+					return;
 				}
+				mpu401_write_data(emu, midi, byte);
+				max--;
+			} else {
+				break;
 			}
 		}
+		spin_unlock_irqrestore(&midi->output_lock, flags);
 		snd_emu10k1x_intr_enable(emu, midi->tx_enable);
 	} else {
 		snd_emu10k1x_intr_disable(emu, midi->tx_enable);
@@ -1417,7 +1461,7 @@ static int emu10k1x_midi_init(struct emu10k1x *emu,
 	spin_lock_init(&midi->open_lock);
 	spin_lock_init(&midi->input_lock);
 	spin_lock_init(&midi->output_lock);
-	strscpy(rmidi->name, name);
+	strcpy(rmidi->name, name);
 	snd_rawmidi_set_ops(rmidi, SNDRV_RAWMIDI_STREAM_OUTPUT, &snd_emu10k1x_midi_output);
 	snd_rawmidi_set_ops(rmidi, SNDRV_RAWMIDI_STREAM_INPUT, &snd_emu10k1x_midi_input);
 	rmidi->info_flags |= SNDRV_RAWMIDI_INFO_OUTPUT |
@@ -1496,8 +1540,8 @@ static int __snd_emu10k1x_probe(struct pci_dev *pci,
 
 	snd_emu10k1x_proc_init(chip);
 
-	strscpy(card->driver, "EMU10K1X");
-	strscpy(card->shortname, "Dell Sound Blaster Live!");
+	strcpy(card->driver, "EMU10K1X");
+	strcpy(card->shortname, "Dell Sound Blaster Live!");
 	sprintf(card->longname, "%s at 0x%lx irq %i",
 		card->shortname, chip->port, chip->irq);
 

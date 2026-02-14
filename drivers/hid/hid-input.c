@@ -303,19 +303,6 @@ __s32 hidinput_calc_abs_res(const struct hid_field *field, __u16 code)
 		}
 		break;
 
-	case ABS_PRESSURE:
-	case ABS_MT_PRESSURE:
-		if (field->unit == HID_UNIT_NEWTON) {
-			/* Convert to grams, 1 newton is 101.97 grams */
-			prev = physical_extents;
-			physical_extents *= 10197;
-			if (physical_extents < prev)
-				return 0;
-			unit_exponent -= 2;
-		} else if (field->unit != HID_UNIT_GRAM) {
-			return 0;
-		}
-		break;
 	default:
 		return 0;
 	}
@@ -371,9 +358,6 @@ static const struct hid_device_id hid_battery_quirks[] = {
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
 		USB_DEVICE_ID_APPLE_ALU_WIRELESS_ANSI),
 	  HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
-	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
-		USB_DEVICE_ID_APPLE_MAGICTRACKPAD),
-	  HID_BATTERY_QUIRK_IGNORE },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_ELECOM,
 		USB_DEVICE_ID_ELECOM_BM084),
 	  HID_BATTERY_QUIRK_IGNORE },
@@ -386,6 +370,8 @@ static const struct hid_device_id hid_battery_quirks[] = {
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_LOGITECH,
 		USB_DEVICE_ID_LOGITECH_DINOVO_EDGE_KBD),
 	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_ASUS_TP420IA_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ELAN, USB_DEVICE_ID_ASUS_UX550_TOUCHSCREEN),
 	  HID_BATTERY_QUIRK_IGNORE },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_ELAN, USB_DEVICE_ID_ASUS_UX550VE_TOUCHSCREEN),
@@ -396,14 +382,22 @@ static const struct hid_device_id hid_battery_quirks[] = {
 	  HID_BATTERY_QUIRK_AVOID_QUERY },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_UGEE, USB_DEVICE_ID_UGEE_XPPEN_TABLET_DECO_PRO_SW),
 	  HID_BATTERY_QUIRK_AVOID_QUERY },
-	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_CHROMEBOOK_TROGDOR_POMPOM),
-	  HID_BATTERY_QUIRK_AVOID_QUERY },
-	/*
-	 * Elan HID touchscreens seem to all report a non present battery,
-	 * set HID_BATTERY_QUIRK_IGNORE for all Elan I2C and USB HID devices.
-	 */
-	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, HID_ANY_ID), HID_BATTERY_QUIRK_IGNORE },
-	{ HID_USB_DEVICE(USB_VENDOR_ID_ELAN, HID_ANY_ID), HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_ENVY_X360_15),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_ENVY_X360_15T_DR100),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_ENVY_X360_EU0009NV),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_SPECTRE_X360_15),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_HP_SPECTRE_X360_13_AW0020NG),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_SURFACE_GO_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_SURFACE_GO2_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
+	{ HID_I2C_DEVICE(USB_VENDOR_ID_ELAN, I2C_DEVICE_ID_LENOVO_YOGA_C630_TOUCHSCREEN),
+	  HID_BATTERY_QUIRK_IGNORE },
 	{}
 };
 
@@ -609,37 +603,14 @@ static void hidinput_cleanup_battery(struct hid_device *dev)
 	dev->battery = NULL;
 }
 
-static bool hidinput_update_battery_charge_status(struct hid_device *dev,
-						  unsigned int usage, int value)
-{
-	switch (usage) {
-	case HID_BAT_CHARGING:
-		dev->battery_charge_status = value ?
-					     POWER_SUPPLY_STATUS_CHARGING :
-					     POWER_SUPPLY_STATUS_DISCHARGING;
-		return true;
-	}
-
-	return false;
-}
-
-static void hidinput_update_battery(struct hid_device *dev, unsigned int usage,
-				    int value)
+static void hidinput_update_battery(struct hid_device *dev, int value)
 {
 	int capacity;
 
 	if (!dev->battery)
 		return;
 
-	if (hidinput_update_battery_charge_status(dev, usage, value)) {
-		power_supply_changed(dev->battery);
-		return;
-	}
-
-	if ((usage & HID_USAGE_PAGE) == HID_UP_DIGITIZER && value == 0)
-		return;
-
-	if (value < dev->battery_min || value > dev->battery_max)
+	if (value == 0 || value < dev->battery_min || value > dev->battery_max)
 		return;
 
 	capacity = hidinput_scale_battery_capacity(dev, value);
@@ -654,6 +625,20 @@ static void hidinput_update_battery(struct hid_device *dev, unsigned int usage,
 		power_supply_changed(dev->battery);
 	}
 }
+
+static bool hidinput_set_battery_charge_status(struct hid_device *dev,
+					       unsigned int usage, int value)
+{
+	switch (usage) {
+	case HID_BAT_CHARGING:
+		dev->battery_charge_status = value ?
+					     POWER_SUPPLY_STATUS_CHARGING :
+					     POWER_SUPPLY_STATUS_DISCHARGING;
+		return true;
+	}
+
+	return false;
+}
 #else  /* !CONFIG_HID_BATTERY_STRENGTH */
 static int hidinput_setup_battery(struct hid_device *dev, unsigned report_type,
 				  struct hid_field *field, bool is_percentage)
@@ -665,9 +650,14 @@ static void hidinput_cleanup_battery(struct hid_device *dev)
 {
 }
 
-static void hidinput_update_battery(struct hid_device *dev, unsigned int usage,
-				    int value)
+static void hidinput_update_battery(struct hid_device *dev, int value)
 {
+}
+
+static bool hidinput_set_battery_charge_status(struct hid_device *dev,
+					       unsigned int usage, int value)
+{
+	return false;
 }
 #endif	/* CONFIG_HID_BATTERY_STRENGTH */
 
@@ -700,10 +690,9 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 	if (field->report_count < 1)
 		goto ignore;
 
-	/* only LED and HAPTIC usages are supported in output fields */
+	/* only LED usages are supported in output fields */
 	if (field->report_type == HID_OUTPUT_REPORT &&
-	    (usage->hid & HID_USAGE_PAGE) != HID_UP_LED &&
-	    (usage->hid & HID_USAGE_PAGE) != HID_UP_HAPTIC) {
+			(usage->hid & HID_USAGE_PAGE) != HID_UP_LED) {
 		goto ignore;
 	}
 
@@ -829,31 +818,9 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			break;
 		}
 
-		if ((usage->hid & 0xf0) == 0x90) { /* SystemControl & D-pad */
-			switch (usage->hid) {
-			case HID_GD_UP:	   usage->hat_dir = 1; break;
-			case HID_GD_DOWN:  usage->hat_dir = 5; break;
-			case HID_GD_RIGHT: usage->hat_dir = 3; break;
-			case HID_GD_LEFT:  usage->hat_dir = 7; break;
-			case HID_GD_DO_NOT_DISTURB:
-				map_key_clear(KEY_DO_NOT_DISTURB); break;
-			default: goto unknown;
-			}
-
-			if (usage->hid <= HID_GD_LEFT) {
-				if (field->dpad) {
-					map_abs(field->dpad);
-					goto ignore;
-				}
-				map_abs(ABS_HAT0X);
-			}
-			break;
-		}
-
 		if ((usage->hid & 0xf0) == 0xa0) {	/* SystemControl */
 			switch (usage->hid & 0xf) {
 			case 0x9: map_key_clear(KEY_MICMUTE); break;
-			case 0xa: map_key_clear(KEY_ACCESSIBILITY); break;
 			default: goto ignore;
 			}
 			break;
@@ -876,30 +843,30 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 		if (field->application == HID_GD_SYSTEM_CONTROL)
 			goto ignore;
 
+		if ((usage->hid & 0xf0) == 0x90) {	/* D-pad */
+			switch (usage->hid) {
+			case HID_GD_UP:	   usage->hat_dir = 1; break;
+			case HID_GD_DOWN:  usage->hat_dir = 5; break;
+			case HID_GD_RIGHT: usage->hat_dir = 3; break;
+			case HID_GD_LEFT:  usage->hat_dir = 7; break;
+			default: goto unknown;
+			}
+			if (field->dpad) {
+				map_abs(field->dpad);
+				goto ignore;
+			}
+			map_abs(ABS_HAT0X);
+			break;
+		}
+
 		switch (usage->hid) {
 		/* These usage IDs map directly to the usage codes. */
-		case HID_GD_X: case HID_GD_Y:
+		case HID_GD_X: case HID_GD_Y: case HID_GD_Z:
 		case HID_GD_RX: case HID_GD_RY: case HID_GD_RZ:
 			if (field->flags & HID_MAIN_ITEM_RELATIVE)
 				map_rel(usage->hid & 0xf);
 			else
 				map_abs_clear(usage->hid & 0xf);
-			break;
-
-		case HID_GD_Z:
-			/* HID_GD_Z is mapped to ABS_DISTANCE for stylus/pen */
-			if (field->flags & HID_MAIN_ITEM_RELATIVE) {
-				map_rel(usage->hid & 0xf);
-			} else {
-				if (field->application == HID_DG_PEN ||
-				    field->physical == HID_DG_PEN ||
-				    field->logical == HID_DG_STYLUS ||
-				    field->physical == HID_DG_STYLUS ||
-				    field->application == HID_DG_DIGITIZER)
-					map_abs_clear(ABS_DISTANCE);
-				else
-					map_abs_clear(usage->hid & 0xf);
-			}
 			break;
 
 		case HID_GD_WHEEL:
@@ -1013,7 +980,6 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			return;
 
 		case 0x3c: /* Invert */
-			device->quirks &= ~HID_QUIRK_NOINVERT;
 			map_key_clear(BTN_TOOL_RUBBER);
 			break;
 
@@ -1039,13 +1005,9 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 		case 0x45: /* ERASER */
 			/*
 			 * This event is reported when eraser tip touches the surface.
-			 * Actual eraser (BTN_TOOL_RUBBER) is set and released either
-			 * by Invert if tool reports proximity or by Eraser directly.
+			 * Actual eraser (BTN_TOOL_RUBBER) is set by Invert usage when
+			 * tool gets in proximity.
 			 */
-			if (!test_bit(BTN_TOOL_RUBBER, input->keybit)) {
-				device->quirks |= HID_QUIRK_NOINVERT;
-				set_bit(BTN_TOOL_RUBBER, input->keybit);
-			}
 			map_key_clear(BTN_TOUCH);
 			break;
 
@@ -1123,10 +1085,6 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 		case 0x074: map_key_clear(KEY_BRIGHTNESS_MAX);		break;
 		case 0x075: map_key_clear(KEY_BRIGHTNESS_AUTO);		break;
 
-		case 0x076: map_key_clear(KEY_CAMERA_ACCESS_ENABLE);	break;
-		case 0x077: map_key_clear(KEY_CAMERA_ACCESS_DISABLE);	break;
-		case 0x078: map_key_clear(KEY_CAMERA_ACCESS_TOGGLE);	break;
-
 		case 0x079: map_key_clear(KEY_KBDILLUMUP);	break;
 		case 0x07a: map_key_clear(KEY_KBDILLUMDOWN);	break;
 		case 0x07c: map_key_clear(KEY_KBDILLUMTOGGLE);	break;
@@ -1173,6 +1131,9 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 		case 0x0cd: map_key_clear(KEY_PLAYPAUSE);	break;
 		case 0x0cf: map_key_clear(KEY_VOICECOMMAND);	break;
 
+		case 0x0d5: map_key_clear(KEY_CAMERA_ACCESS_ENABLE);		break;
+		case 0x0d6: map_key_clear(KEY_CAMERA_ACCESS_DISABLE);		break;
+		case 0x0d7: map_key_clear(KEY_CAMERA_ACCESS_TOGGLE);		break;
 		case 0x0d8: map_key_clear(KEY_DICTATE);		break;
 		case 0x0d9: map_key_clear(KEY_EMOJI_PICKER);	break;
 
@@ -1300,16 +1261,6 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 			return;
 		}
 		goto unknown;
-	case HID_UP_CAMERA:
-		switch (usage->hid & HID_USAGE) {
-		case 0x020:
-			map_key_clear(KEY_CAMERA_FOCUS);	break;
-		case 0x021:
-			map_key_clear(KEY_CAMERA);		break;
-		default:
-			goto ignore;
-		}
-		break;
 
 	case HID_UP_HPVENDOR:	/* Reported on a Dutch layout HP5308 */
 		set_bit(EV_REP, input->evbit);
@@ -1550,7 +1501,11 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 		return;
 
 	if (usage->type == EV_PWR) {
-		hidinput_update_battery(hid, usage->hid, value);
+		bool handled = hidinput_set_battery_charge_status(hid, usage->hid, value);
+
+		if (!handled)
+			hidinput_update_battery(hid, value);
+
 		return;
 	}
 
@@ -1606,15 +1561,6 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 		else if (report->tool != BTN_TOOL_RUBBER)
 			/* value is off, tool is not rubber, ignore */
 			return;
-		else if (*quirks & HID_QUIRK_NOINVERT &&
-			 !test_bit(BTN_TOUCH, input->key)) {
-			/*
-			 * There is no invert to release the tool, let hid_input
-			 * send BTN_TOUCH with scancode and release the tool after.
-			 */
-			hid_report_release_tool(report, input, BTN_TOOL_RUBBER);
-			return;
-		}
 
 		/* let hid-input set BTN_TOUCH */
 		break;
@@ -2374,7 +2320,7 @@ int hidinput_connect(struct hid_device *hid, unsigned int force)
 	}
 
 	if (list_empty(&hid->inputs)) {
-		hid_dbg(hid, "No inputs registered, leaving\n");
+		hid_err(hid, "No inputs registered, leaving\n");
 		goto out_unwind;
 	}
 
@@ -2415,13 +2361,6 @@ void hidinput_disconnect(struct hid_device *hid)
 	cancel_work_sync(&hid->led_work);
 }
 EXPORT_SYMBOL_GPL(hidinput_disconnect);
-
-void hidinput_reset_resume(struct hid_device *hid)
-{
-	/* renegotiate host-device shared state after reset */
-	hidinput_change_resolution_multipliers(hid);
-}
-EXPORT_SYMBOL_GPL(hidinput_reset_resume);
 
 #ifdef CONFIG_HID_KUNIT_TEST
 #include "hid-input-test.c"

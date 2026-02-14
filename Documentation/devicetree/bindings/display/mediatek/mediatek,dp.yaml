@@ -11,7 +11,7 @@ maintainers:
   - Jitao shi <jitao.shi@mediatek.com>
 
 description: |
-  MediaTek DP and eDP are different hardware and there are some features
+  MediaTek DP and eDP are different hardwares and there are some features
   which are not supported for eDP. For example, audio is not supported for
   eDP. Therefore, we need to use two different compatibles to describe them.
   In addition, We just need to enable the power domain of DP, so the clock
@@ -21,8 +21,6 @@ description: |
 properties:
   compatible:
     enum:
-      - mediatek,mt8188-dp-tx
-      - mediatek,mt8188-edp-tx
       - mediatek,mt8195-dp-tx
       - mediatek,mt8195-edp-tx
 
@@ -41,12 +39,6 @@ properties:
 
   interrupts:
     maxItems: 1
-
-  '#sound-dai-cells':
-    const: 0
-
-  aux-bus:
-    $ref: /schemas/display/dp-aux-bus.yaml#
 
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
@@ -91,21 +83,7 @@ required:
   - ports
   - max-linkrate-mhz
 
-allOf:
-  - $ref: /schemas/sound/dai-common.yaml#
-  - if:
-      not:
-        properties:
-          compatible:
-            contains:
-              enum:
-                - mediatek,mt8188-dp-tx
-                - mediatek,mt8195-dp-tx
-    then:
-      properties:
-        '#sound-dai-cells': false
-
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

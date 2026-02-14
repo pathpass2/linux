@@ -16,12 +16,7 @@ description:
 
 properties:
   compatible:
-    oneOf:
-      - const: qcom,pmi8998-lab-ibb
-      - items:
-          - enum:
-              - qcom,pmi8950-lab-ibb
-          - const: qcom,pmi8998-lab-ibb
+    const: qcom,pmi8998-lab-ibb
 
   lab:
     type: object

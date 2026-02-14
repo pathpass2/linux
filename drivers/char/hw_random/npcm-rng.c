@@ -8,11 +8,12 @@
 #include <linux/init.h>
 #include <linux/random.h>
 #include <linux/err.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/hw_random.h>
 #include <linux/delay.h>
+#include <linux/of_irq.h>
 #include <linux/pm_runtime.h>
+#include <linux/of_device.h>
 
 #define NPCM_RNGCS_REG		0x00	/* Control and status register */
 #define NPCM_RNGD_REG		0x04	/* Data register */
@@ -32,7 +33,6 @@
 struct npcm_rng {
 	void __iomem *base;
 	struct hwrng rng;
-	struct device *dev;
 	u32 clkp;
 };
 
@@ -58,7 +58,7 @@ static int npcm_rng_read(struct hwrng *rng, void *buf, size_t max, bool wait)
 	int retval = 0;
 	int ready;
 
-	pm_runtime_get_sync(priv->dev);
+	pm_runtime_get_sync((struct device *)priv->rng.priv);
 
 	while (max) {
 		if (wait) {
@@ -80,7 +80,8 @@ static int npcm_rng_read(struct hwrng *rng, void *buf, size_t max, bool wait)
 		max--;
 	}
 
-	pm_runtime_put_sync_autosuspend(priv->dev);
+	pm_runtime_mark_last_busy((struct device *)priv->rng.priv);
+	pm_runtime_put_sync_autosuspend((struct device *)priv->rng.priv);
 
 	return retval || !wait ? retval : -EIO;
 }
@@ -109,7 +110,7 @@ static int npcm_rng_probe(struct platform_device *pdev)
 #endif
 	priv->rng.name = pdev->name;
 	priv->rng.read = npcm_rng_read;
-	priv->dev = &pdev->dev;
+	priv->rng.priv = (unsigned long)&pdev->dev;
 	priv->clkp = (u32)(uintptr_t)of_device_get_match_data(&pdev->dev);
 
 	writel(NPCM_RNG_M1ROSEL, priv->base + NPCM_RNGMODE_REG);
@@ -126,13 +127,15 @@ static int npcm_rng_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static void npcm_rng_remove(struct platform_device *pdev)
+static int npcm_rng_remove(struct platform_device *pdev)
 {
 	struct npcm_rng *priv = platform_get_drvdata(pdev);
 
 	devm_hwrng_unregister(&pdev->dev, &priv->rng);
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM

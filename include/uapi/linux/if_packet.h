@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
-#ifndef _UAPI__LINUX_IF_PACKET_H
-#define _UAPI__LINUX_IF_PACKET_H
+#ifndef __LINUX_IF_PACKET_H
+#define __LINUX_IF_PACKET_H
 
 #include <asm/byteorder.h>
 #include <linux/types.h>
@@ -59,7 +59,6 @@ struct sockaddr_ll {
 #define PACKET_ROLLOVER_STATS		21
 #define PACKET_FANOUT_DATA		22
 #define PACKET_IGNORE_OUTGOING		23
-#define PACKET_VNET_HDR_SZ		24
 
 #define PACKET_FANOUT_HASH		0
 #define PACKET_FANOUT_LB		1
@@ -230,8 +229,8 @@ struct tpacket_hdr_v1 {
 	 * ts_first_pkt:
 	 *		Is always the time-stamp when the block was opened.
 	 *		Case a)	ZERO packets
-	 *			No packets to deal with but at least you know
-	 *			the time-interval of this block.
+	 *			No packets to deal with but atleast you know the
+	 *			time-interval of this block.
 	 *		Case b) Non-zero packets
 	 *			Use the ts of the first packet in the block.
 	 *
@@ -265,8 +264,7 @@ enum tpacket_versions {
    - struct tpacket_hdr
    - pad to TPACKET_ALIGNMENT=16
    - struct sockaddr_ll
-   - Gap, chosen so that packet data (Start+tp_net) aligns to
-     TPACKET_ALIGNMENT=16
+   - Gap, chosen so that packet data (Start+tp_net) alignes to TPACKET_ALIGNMENT=16
    - Start+tp_mac: [ Optional MAC header ]
    - Start+tp_net: Packet data, aligned to TPACKET_ALIGNMENT=16.
    - Pad to align to TPACKET_ALIGNMENT=16

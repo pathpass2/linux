@@ -8,6 +8,7 @@
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
@@ -86,7 +87,7 @@ static int mtk_ccifreq_set_voltage(struct mtk_ccifreq_drv *drv, int new_voltage)
 						      soc_data->sram_max_volt);
 				return ret;
 			}
-		} else {
+		} else if (pre_voltage > new_voltage) {
 			voltage = max(new_voltage,
 				      pre_vsram - soc_data->max_volt_shift);
 			ret = regulator_set_voltage(drv->proc_reg, voltage,
@@ -126,7 +127,7 @@ static int mtk_ccifreq_target(struct device *dev, unsigned long *freq,
 			      u32 flags)
 {
 	struct mtk_ccifreq_drv *drv = dev_get_drvdata(dev);
-	struct clk *cci_pll;
+	struct clk *cci_pll = clk_get_parent(drv->cci_clk);
 	struct dev_pm_opp *opp;
 	unsigned long opp_rate;
 	int voltage, pre_voltage, inter_voltage, target_voltage, ret;
@@ -137,18 +138,16 @@ static int mtk_ccifreq_target(struct device *dev, unsigned long *freq,
 	if (drv->pre_freq == *freq)
 		return 0;
 
-	mutex_lock(&drv->reg_lock);
-
 	inter_voltage = drv->inter_voltage;
-	cci_pll = clk_get_parent(drv->cci_clk);
 
 	opp_rate = *freq;
 	opp = devfreq_recommended_opp(dev, &opp_rate, 1);
 	if (IS_ERR(opp)) {
 		dev_err(dev, "failed to find opp for freq: %ld\n", opp_rate);
-		ret = PTR_ERR(opp);
-		goto out_unlock;
+		return PTR_ERR(opp);
 	}
+
+	mutex_lock(&drv->reg_lock);
 
 	voltage = dev_pm_opp_get_voltage(opp);
 	dev_pm_opp_put(opp);
@@ -228,9 +227,9 @@ static int mtk_ccifreq_opp_notifier(struct notifier_block *nb,
 	drv = container_of(nb, struct mtk_ccifreq_drv, opp_nb);
 
 	if (event == OPP_EVENT_ADJUST_VOLTAGE) {
-		mutex_lock(&drv->reg_lock);
 		freq = dev_pm_opp_get_freq(opp);
 
+		mutex_lock(&drv->reg_lock);
 		/* current opp item is changed */
 		if (freq == drv->pre_freq) {
 			volt = dev_pm_opp_get_voltage(opp);
@@ -386,14 +385,13 @@ out_disable_cci_clk:
 out_free_resources:
 	if (regulator_is_enabled(drv->proc_reg))
 		regulator_disable(drv->proc_reg);
-	if (!IS_ERR_OR_NULL(drv->sram_reg) &&
-	    regulator_is_enabled(drv->sram_reg))
+	if (drv->sram_reg && regulator_is_enabled(drv->sram_reg))
 		regulator_disable(drv->sram_reg);
 
 	return ret;
 }
 
-static void mtk_ccifreq_remove(struct platform_device *pdev)
+static int mtk_ccifreq_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct mtk_ccifreq_drv *drv;
@@ -406,6 +404,8 @@ static void mtk_ccifreq_remove(struct platform_device *pdev)
 	regulator_disable(drv->proc_reg);
 	if (drv->sram_reg)
 		regulator_disable(drv->sram_reg);
+
+	return 0;
 }
 
 static const struct mtk_ccifreq_platform_data mt8183_platform_data = {
@@ -431,7 +431,7 @@ MODULE_DEVICE_TABLE(of, mtk_ccifreq_machines);
 
 static struct platform_driver mtk_ccifreq_platdrv = {
 	.probe	= mtk_ccifreq_probe,
-	.remove = mtk_ccifreq_remove,
+	.remove	= mtk_ccifreq_remove,
 	.driver = {
 		.name = "mtk-ccifreq",
 		.of_match_table = mtk_ccifreq_machines,

@@ -96,7 +96,7 @@
 	transpose_4x4(c0, c1, c2, c3, a0, a1);		\
 	transpose_4x4(d0, d1, d2, d3, a0, a1);		\
 							\
-	vbroadcasti128 .Lshufb_16x16b(%rip), a0;	\
+	vbroadcasti128 .Lshufb_16x16b, a0;		\
 	vmovdqu st1, a1;				\
 	vpshufb a0, a2, a2;				\
 	vpshufb a0, a3, a3;				\
@@ -148,7 +148,7 @@
 	transpose_4x4(c0, c1, c2, c3, a0, a1);		\
 	transpose_4x4(d0, d1, d2, d3, a0, a1);		\
 							\
-	vbroadcasti128 .Lshufb_16x16b(%rip), a0;	\
+	vbroadcasti128 .Lshufb_16x16b, a0;		\
 	vmovdqu st1, a1;				\
 	vpshufb a0, a2, a2;				\
 	vpshufb a0, a3, a3;				\
@@ -302,15 +302,16 @@
 	vpbroadcastb ((round * 16) + idx + 4)(rk), t0;	\
 	vpxor t0, x7, x7;
 
+#ifdef CONFIG_AS_GFNI
 #define aria_sbox_8way_gfni(x0, x1, x2, x3,		\
 			    x4, x5, x6, x7,		\
 			    t0, t1, t2, t3,		\
 			    t4, t5, t6, t7)		\
-	vpbroadcastq .Ltf_s2_bitmatrix(%rip), t0;	\
-	vpbroadcastq .Ltf_inv_bitmatrix(%rip), t1;	\
-	vpbroadcastq .Ltf_id_bitmatrix(%rip), t2;	\
-	vpbroadcastq .Ltf_aff_bitmatrix(%rip), t3;	\
-	vpbroadcastq .Ltf_x2_bitmatrix(%rip), t4;	\
+	vpbroadcastq .Ltf_s2_bitmatrix, t0;		\
+	vpbroadcastq .Ltf_inv_bitmatrix, t1;		\
+	vpbroadcastq .Ltf_id_bitmatrix, t2;		\
+	vpbroadcastq .Ltf_aff_bitmatrix, t3;		\
+	vpbroadcastq .Ltf_x2_bitmatrix, t4;		\
 	vgf2p8affineinvqb $(tf_s2_const), t0, x1, x1;	\
 	vgf2p8affineinvqb $(tf_s2_const), t0, x5, x5;	\
 	vgf2p8affineqb $(tf_inv_const), t1, x2, x2;	\
@@ -324,18 +325,19 @@
 	vgf2p8affineinvqb $0, t2, x3, x3;		\
 	vgf2p8affineinvqb $0, t2, x7, x7
 
+#endif /* CONFIG_AS_GFNI */
 #define aria_sbox_8way(x0, x1, x2, x3,			\
 		       x4, x5, x6, x7,			\
 		       t0, t1, t2, t3,			\
 		       t4, t5, t6, t7)			\
 	vpxor t7, t7, t7;				\
 	vpxor t6, t6, t6;				\
-	vbroadcasti128 .Linv_shift_row(%rip), t0;	\
-	vbroadcasti128 .Lshift_row(%rip), t1;		\
-	vbroadcasti128 .Ltf_lo__inv_aff__and__s2(%rip), t2; \
-	vbroadcasti128 .Ltf_hi__inv_aff__and__s2(%rip), t3; \
-	vbroadcasti128 .Ltf_lo__x2__and__fwd_aff(%rip), t4; \
-	vbroadcasti128 .Ltf_hi__x2__and__fwd_aff(%rip), t5; \
+	vbroadcasti128 .Linv_shift_row, t0;		\
+	vbroadcasti128 .Lshift_row, t1;			\
+	vbroadcasti128 .Ltf_lo__inv_aff__and__s2, t2;	\
+	vbroadcasti128 .Ltf_hi__inv_aff__and__s2, t3;	\
+	vbroadcasti128 .Ltf_lo__x2__and__fwd_aff, t4;	\
+	vbroadcasti128 .Ltf_hi__x2__and__fwd_aff, t5;	\
 							\
 	vextracti128 $1, x0, t6##_x;			\
 	vaesenclast t7##_x, x0##_x, x0##_x;		\
@@ -367,7 +369,7 @@
 	vaesdeclast t7##_x, t6##_x, t6##_x;		\
 	vinserti128 $1, t6##_x, x6, x6;			\
 							\
-	vpbroadcastd .L0f0f0f0f(%rip), t6;		\
+	vpbroadcastd .L0f0f0f0f, t6;			\
 							\
 	/* AES inverse shift rows */			\
 	vpshufb t0, x0, x0;				\
@@ -596,7 +598,7 @@
 	aria_load_state_8way(y0, y1, y2, y3,		\
 			     y4, y5, y6, y7,		\
 			     mem_tmp, 8);
-
+#ifdef CONFIG_AS_GFNI
 #define aria_fe_gfni(x0, x1, x2, x3,			\
 		     x4, x5, x6, x7,			\
 		     y0, y1, y2, y3,			\
@@ -750,6 +752,7 @@
 	aria_load_state_8way(y0, y1, y2, y3,		\
 			     y4, y5, y6, y7,		\
 			     mem_tmp, 8);
+#endif /* CONFIG_AS_GFNI */
 
 .section        .rodata.cst32.shufb_16x16b, "aM", @progbits, 32
 .align 32
@@ -803,6 +806,7 @@
 .Ltf_hi__x2__and__fwd_aff:
 	.octa 0x3F893781E95FE1576CDA64D2BA0CB204
 
+#ifdef CONFIG_AS_GFNI
 .section	.rodata.cst8, "aM", @progbits, 8
 .align 8
 /* AES affine: */
@@ -863,6 +867,8 @@
 		    BV8(0, 0, 0, 0, 0, 1, 0, 0),
 		    BV8(0, 0, 0, 0, 0, 0, 1, 0),
 		    BV8(0, 0, 0, 0, 0, 0, 0, 1))
+
+#endif /* CONFIG_AS_GFNI */
 
 /* 4-bit mask */
 .section	.rodata.cst4.L0f0f0f0f, "aM", @progbits, 4
@@ -1213,6 +1219,7 @@ SYM_TYPED_FUNC_START(aria_aesni_avx2_ctr_crypt_32way)
 	RET;
 SYM_FUNC_END(aria_aesni_avx2_ctr_crypt_32way)
 
+#ifdef CONFIG_AS_GFNI
 SYM_FUNC_START_LOCAL(__aria_aesni_avx2_gfni_crypt_32way)
 	/* input:
 	 *      %r9: rk
@@ -1431,3 +1438,4 @@ SYM_TYPED_FUNC_START(aria_aesni_avx2_gfni_ctr_crypt_32way)
 	FRAME_END
 	RET;
 SYM_FUNC_END(aria_aesni_avx2_gfni_ctr_crypt_32way)
+#endif /* CONFIG_AS_GFNI */

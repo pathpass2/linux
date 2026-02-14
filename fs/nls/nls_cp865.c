@@ -384,5 +384,4 @@ static void __exit exit_nls_cp865(void)
 module_init(init_nls_cp865)
 module_exit(exit_nls_cp865)
 
-MODULE_DESCRIPTION("NLS Codepage 865 (Norwegian, Danish)");
 MODULE_LICENSE("Dual BSD/GPL");

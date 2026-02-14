@@ -19,6 +19,13 @@
 #define NVMF_DEF_FAIL_FAST_TMO		-1
 
 /*
+ * Reserved one command for internal usage.  This command is used for sending
+ * the connect command, as well as for the keep alive command on the admin
+ * queue once live.
+ */
+#define NVMF_RESERVED_TAGS	1
+
+/*
  * Define a host as seen by the target.  We allocate one at boot, but also
  * allow the override it when creating controllers.  This is both to provide
  * persistence of the Host NQN over multiple boots, and to allow using
@@ -63,10 +70,6 @@ enum {
 	NVMF_OPT_DISCOVERY	= 1 << 22,
 	NVMF_OPT_DHCHAP_SECRET	= 1 << 23,
 	NVMF_OPT_DHCHAP_CTRL_SECRET = 1 << 24,
-	NVMF_OPT_TLS		= 1 << 25,
-	NVMF_OPT_KEYRING	= 1 << 26,
-	NVMF_OPT_TLS_KEY	= 1 << 27,
-	NVMF_OPT_CONCAT		= 1 << 28,
 };
 
 /**
@@ -74,13 +77,10 @@ enum {
  *			      with the parsing opts enum.
  * @mask:	Used by the fabrics library to parse through sysfs options
  *		on adding a NVMe controller.
- * @max_reconnects: maximum number of allowed reconnect attempts before removing
- *		the controller, (-1) means reconnect forever, zero means remove
- *		immediately;
  * @transport:	Holds the fabric transport "technology name" (for a lack of
  *		better description) that will be used by an NVMe controller
  *		being added.
- * @subsysnqn:	Hold the fully qualified NQN subsystem name (format defined
+ * @subsysnqn:	Hold the fully qualified NQN subystem name (format defined
  *		in the NVMe specification, "NVMe Qualified Names").
  * @traddr:	The transport-specific TRADDR field for a port on the
  *              subsystem which is adding a controller.
@@ -96,13 +96,12 @@ enum {
  * @discovery_nqn: indicates if the subsysnqn is the well-known discovery NQN.
  * @kato:	Keep-alive timeout.
  * @host:	Virtual NVMe host, contains the NQN and Host ID.
+ * @max_reconnects: maximum number of allowed reconnect attempts before removing
+ *              the controller, (-1) means reconnect forever, zero means remove
+ *              immediately;
  * @dhchap_secret: DH-HMAC-CHAP secret
  * @dhchap_ctrl_secret: DH-HMAC-CHAP controller secret for bi-directional
  *              authentication
- * @keyring:    Keyring to use for key lookups
- * @tls_key:    TLS key for encrypted connections (TCP)
- * @tls:        Start TLS encrypted connections (TCP)
- * @concat:     Enabled Secure channel concatenation (TCP)
  * @disable_sqflow: disable controller sq flow control
  * @hdr_digest: generate/verify header digest (TCP)
  * @data_digest: generate/verify data digest (TCP)
@@ -113,7 +112,6 @@ enum {
  */
 struct nvmf_ctrl_options {
 	unsigned		mask;
-	int			max_reconnects;
 	char			*transport;
 	char			*subsysnqn;
 	char			*traddr;
@@ -127,12 +125,9 @@ struct nvmf_ctrl_options {
 	bool			duplicate_connect;
 	unsigned int		kato;
 	struct nvmf_host	*host;
+	int			max_reconnects;
 	char			*dhchap_secret;
 	char			*dhchap_ctrl_secret;
-	struct key		*keyring;
-	struct key		*tls_key;
-	bool			tls;
-	bool			concat;
 	bool			disable_sqflow;
 	bool			hdr_digest;
 	bool			data_digest;
@@ -156,7 +151,7 @@ struct nvmf_ctrl_options {
  * @create_ctrl():	function pointer that points to a non-NVMe
  *			implementation-specific fabric technology
  *			that would go into starting up that fabric
- *			for the purpose of connection to an NVMe controller
+ *			for the purpose of conneciton to an NVMe controller
  *			using that fabric technology.
  *
  * Notes:
@@ -165,7 +160,7 @@ struct nvmf_ctrl_options {
  *	2. create_ctrl() must be defined (even if it does nothing)
  *	3. struct nvmf_transport_ops must be statically allocated in the
  *	   modules .bss section so that a pure module_get on @module
- *	   prevents the memory from being freed.
+ *	   prevents the memory from beeing freed.
  */
 struct nvmf_transport_ops {
 	struct list_head	entry;
@@ -181,14 +176,12 @@ static inline bool
 nvmf_ctlr_matches_baseopts(struct nvme_ctrl *ctrl,
 			struct nvmf_ctrl_options *opts)
 {
-	enum nvme_ctrl_state state = nvme_ctrl_state(ctrl);
-
-	if (state == NVME_CTRL_DELETING ||
-	    state == NVME_CTRL_DELETING_NOIO ||
-	    state == NVME_CTRL_DEAD ||
+	if (ctrl->state == NVME_CTRL_DELETING ||
+	    ctrl->state == NVME_CTRL_DELETING_NOIO ||
+	    ctrl->state == NVME_CTRL_DEAD ||
 	    strcmp(opts->subsysnqn, ctrl->opts->subsysnqn) ||
 	    strcmp(opts->host->nqn, ctrl->opts->host->nqn) ||
-	    !uuid_equal(&opts->host->id, &ctrl->opts->host->id))
+	    memcmp(&opts->host->id, &ctrl->opts->host->id, sizeof(uuid_t)))
 		return false;
 
 	return true;
@@ -210,35 +203,17 @@ static inline void nvmf_complete_timed_out_request(struct request *rq)
 	}
 }
 
-static inline unsigned int nvmf_nr_io_queues(struct nvmf_ctrl_options *opts)
-{
-	return min(opts->nr_io_queues, num_online_cpus()) +
-		min(opts->nr_write_queues, num_online_cpus()) +
-		min(opts->nr_poll_queues, num_online_cpus());
-}
-
-static inline unsigned long nvmf_get_virt_boundary(struct nvme_ctrl *ctrl,
-						   bool is_admin)
-{
-	return 0;
-}
-
 int nvmf_reg_read32(struct nvme_ctrl *ctrl, u32 off, u32 *val);
 int nvmf_reg_read64(struct nvme_ctrl *ctrl, u32 off, u64 *val);
 int nvmf_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val);
-int nvmf_subsystem_reset(struct nvme_ctrl *ctrl);
 int nvmf_connect_admin_queue(struct nvme_ctrl *ctrl);
 int nvmf_connect_io_queue(struct nvme_ctrl *ctrl, u16 qid);
 int nvmf_register_transport(struct nvmf_transport_ops *ops);
 void nvmf_unregister_transport(struct nvmf_transport_ops *ops);
 void nvmf_free_options(struct nvmf_ctrl_options *opts);
 int nvmf_get_address(struct nvme_ctrl *ctrl, char *buf, int size);
-bool nvmf_should_reconnect(struct nvme_ctrl *ctrl, int status);
+bool nvmf_should_reconnect(struct nvme_ctrl *ctrl);
 bool nvmf_ip_options_match(struct nvme_ctrl *ctrl,
 		struct nvmf_ctrl_options *opts);
-void nvmf_set_io_queues(struct nvmf_ctrl_options *opts, u32 nr_io_queues,
-			u32 io_queues[HCTX_MAX_TYPES]);
-void nvmf_map_queues(struct blk_mq_tag_set *set, struct nvme_ctrl *ctrl,
-		     u32 io_queues[HCTX_MAX_TYPES]);
 
 #endif /* _NVME_FABRICS_H */

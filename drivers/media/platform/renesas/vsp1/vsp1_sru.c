@@ -14,7 +14,6 @@
 
 #include "vsp1.h"
 #include "vsp1_dl.h"
-#include "vsp1_entity.h"
 #include "vsp1_pipe.h"
 #include "vsp1_sru.h"
 
@@ -124,15 +123,16 @@ static int sru_enum_frame_size(struct v4l2_subdev *subdev,
 			       struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct vsp1_sru *sru = to_sru(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
-	state = vsp1_entity_get_state(&sru->entity, sd_state, fse->which);
-	if (!state)
+	config = vsp1_entity_get_pad_config(&sru->entity, sd_state,
+					    fse->which);
+	if (!config)
 		return -EINVAL;
 
-	format = v4l2_subdev_state_get_format(state, SRU_PAD_SINK);
+	format = vsp1_entity_get_pad_format(&sru->entity, config, SRU_PAD_SINK);
 
 	mutex_lock(&sru->entity.lock);
 
@@ -179,21 +179,15 @@ static void sru_try_format(struct vsp1_sru *sru,
 		    fmt->code != MEDIA_BUS_FMT_AYUV8_1X32)
 			fmt->code = MEDIA_BUS_FMT_AYUV8_1X32;
 
-		vsp1_entity_adjust_color_space(fmt);
-
 		fmt->width = clamp(fmt->width, SRU_MIN_SIZE, SRU_MAX_SIZE);
 		fmt->height = clamp(fmt->height, SRU_MIN_SIZE, SRU_MAX_SIZE);
 		break;
 
 	case SRU_PAD_SOURCE:
 		/* The SRU can't perform format conversion. */
-		format = v4l2_subdev_state_get_format(sd_state, SRU_PAD_SINK);
+		format = vsp1_entity_get_pad_format(&sru->entity, sd_state,
+						    SRU_PAD_SINK);
 		fmt->code = format->code;
-
-		fmt->colorspace = format->colorspace;
-		fmt->xfer_func = format->xfer_func;
-		fmt->ycbcr_enc = format->ycbcr_enc;
-		fmt->quantization = format->quantization;
 
 		/*
 		 * We can upscale by 2 in both direction, but not independently.
@@ -219,6 +213,7 @@ static void sru_try_format(struct vsp1_sru *sru,
 	}
 
 	fmt->field = V4L2_FIELD_NONE;
+	fmt->colorspace = V4L2_COLORSPACE_SRGB;
 }
 
 static int sru_set_format(struct v4l2_subdev *subdev,
@@ -226,29 +221,31 @@ static int sru_set_format(struct v4l2_subdev *subdev,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct vsp1_sru *sru = to_sru(subdev);
-	struct v4l2_subdev_state *state;
+	struct v4l2_subdev_state *config;
 	struct v4l2_mbus_framefmt *format;
 	int ret = 0;
 
 	mutex_lock(&sru->entity.lock);
 
-	state = vsp1_entity_get_state(&sru->entity, sd_state, fmt->which);
-	if (!state) {
+	config = vsp1_entity_get_pad_config(&sru->entity, sd_state,
+					    fmt->which);
+	if (!config) {
 		ret = -EINVAL;
 		goto done;
 	}
 
-	sru_try_format(sru, state, fmt->pad, &fmt->format);
+	sru_try_format(sru, config, fmt->pad, &fmt->format);
 
-	format = v4l2_subdev_state_get_format(state, fmt->pad);
+	format = vsp1_entity_get_pad_format(&sru->entity, config, fmt->pad);
 	*format = fmt->format;
 
 	if (fmt->pad == SRU_PAD_SINK) {
 		/* Propagate the format to the source pad. */
-		format = v4l2_subdev_state_get_format(state, SRU_PAD_SOURCE);
+		format = vsp1_entity_get_pad_format(&sru->entity, config,
+						    SRU_PAD_SOURCE);
 		*format = fmt->format;
 
-		sru_try_format(sru, state, SRU_PAD_SOURCE, format);
+		sru_try_format(sru, config, SRU_PAD_SOURCE, format);
 	}
 
 done:
@@ -257,6 +254,7 @@ done:
 }
 
 static const struct v4l2_subdev_pad_ops sru_pad_ops = {
+	.init_cfg = vsp1_entity_init_cfg,
 	.enum_mbus_code = sru_enum_mbus_code,
 	.enum_frame_size = sru_enum_frame_size,
 	.get_fmt = vsp1_subdev_get_pad_format,
@@ -272,7 +270,6 @@ static const struct v4l2_subdev_ops sru_ops = {
  */
 
 static void sru_configure_stream(struct vsp1_entity *entity,
-				 struct v4l2_subdev_state *state,
 				 struct vsp1_pipeline *pipe,
 				 struct vsp1_dl_list *dl,
 				 struct vsp1_dl_body *dlb)
@@ -283,8 +280,10 @@ static void sru_configure_stream(struct vsp1_entity *entity,
 	struct v4l2_mbus_framefmt *output;
 	u32 ctrl0;
 
-	input = v4l2_subdev_state_get_format(state, SRU_PAD_SINK);
-	output = v4l2_subdev_state_get_format(state, SRU_PAD_SOURCE);
+	input = vsp1_entity_get_pad_format(&sru->entity, sru->entity.config,
+					   SRU_PAD_SINK);
+	output = vsp1_entity_get_pad_format(&sru->entity, sru->entity.config,
+					    SRU_PAD_SOURCE);
 
 	if (input->code == MEDIA_BUS_FMT_ARGB8888_1X32)
 		ctrl0 = VI6_SRU_CTRL0_PARAM2 | VI6_SRU_CTRL0_PARAM3
@@ -305,14 +304,16 @@ static void sru_configure_stream(struct vsp1_entity *entity,
 }
 
 static unsigned int sru_max_width(struct vsp1_entity *entity,
-				  struct v4l2_subdev_state *state,
 				  struct vsp1_pipeline *pipe)
 {
+	struct vsp1_sru *sru = to_sru(&entity->subdev);
 	struct v4l2_mbus_framefmt *input;
 	struct v4l2_mbus_framefmt *output;
 
-	input = v4l2_subdev_state_get_format(state, SRU_PAD_SINK);
-	output = v4l2_subdev_state_get_format(state, SRU_PAD_SOURCE);
+	input = vsp1_entity_get_pad_format(&sru->entity, sru->entity.config,
+					   SRU_PAD_SINK);
+	output = vsp1_entity_get_pad_format(&sru->entity, sru->entity.config,
+					    SRU_PAD_SOURCE);
 
 	/*
 	 * The maximum input width of the SRU is 288 input pixels, but 32
@@ -326,24 +327,24 @@ static unsigned int sru_max_width(struct vsp1_entity *entity,
 }
 
 static void sru_partition(struct vsp1_entity *entity,
-			  struct v4l2_subdev_state *state,
 			  struct vsp1_pipeline *pipe,
 			  struct vsp1_partition *partition,
 			  unsigned int partition_idx,
-			  struct v4l2_rect *window)
+			  struct vsp1_partition_window *window)
 {
+	struct vsp1_sru *sru = to_sru(&entity->subdev);
 	struct v4l2_mbus_framefmt *input;
 	struct v4l2_mbus_framefmt *output;
 
-	input = v4l2_subdev_state_get_format(state, SRU_PAD_SINK);
-	output = v4l2_subdev_state_get_format(state, SRU_PAD_SOURCE);
+	input = vsp1_entity_get_pad_format(&sru->entity, sru->entity.config,
+					   SRU_PAD_SINK);
+	output = vsp1_entity_get_pad_format(&sru->entity, sru->entity.config,
+					    SRU_PAD_SOURCE);
 
 	/* Adapt if SRUx2 is enabled. */
 	if (input->width != output->width) {
 		window->width /= 2;
 		window->left /= 2;
-		window->height /= 2;
-		window->top /= 2;
 	}
 
 	partition->sru = *window;

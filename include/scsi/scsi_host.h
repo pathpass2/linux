@@ -84,15 +84,7 @@ struct scsi_host_template {
 	 *
 	 * STATUS: REQUIRED
 	 */
-	enum scsi_qc_status (*queuecommand)(struct Scsi_Host *,
-					    struct scsi_cmnd *);
-
-	/*
-	 * Queue a reserved command (BLK_MQ_REQ_RESERVED). The .queuecommand()
-	 * documentation also applies to the .queue_reserved_command() callback.
-	 */
-	enum scsi_qc_status (*queue_reserved_command)(struct Scsi_Host *,
-						      struct scsi_cmnd *);
+	int (* queuecommand)(struct Scsi_Host *, struct scsi_cmnd *);
 
 	/*
 	 * The commit_rqs function is used to trigger a hardware
@@ -176,20 +168,20 @@ struct scsi_host_template {
 	 * Return values: 0 on success, non-0 on failure
 	 *
 	 * Deallocation:  If we didn't find any devices at this ID, you will
-	 * get an immediate call to sdev_destroy().  If we find something
-	 * here then you will get a call to sdev_configure(), then the
+	 * get an immediate call to slave_destroy().  If we find something
+	 * here then you will get a call to slave_configure(), then the
 	 * device will be used for however long it is kept around, then when
 	 * the device is removed from the system (or * possibly at reboot
-	 * time), you will then get a call to sdev_destroy().  This is
-	 * assuming you implement sdev_configure and sdev_destroy.
+	 * time), you will then get a call to slave_destroy().  This is
+	 * assuming you implement slave_configure and slave_destroy.
 	 * However, if you allocate memory and hang it off the device struct,
-	 * then you must implement the sdev_destroy() routine at a minimum
+	 * then you must implement the slave_destroy() routine at a minimum
 	 * in order to avoid leaking memory
 	 * each time a device is tore down.
 	 *
 	 * Status: OPTIONAL
 	 */
-	int (* sdev_init)(struct scsi_device *);
+	int (* slave_alloc)(struct scsi_device *);
 
 	/*
 	 * Once the device has responded to an INQUIRY and we know the
@@ -214,24 +206,24 @@ struct scsi_host_template {
 	 *     specific setup basis...
 	 * 6.  Return 0 on success, non-0 on error.  The device will be marked
 	 *     as offline on error so that no access will occur.  If you return
-	 *     non-0, your sdev_destroy routine will never get called for this
+	 *     non-0, your slave_destroy routine will never get called for this
 	 *     device, so don't leave any loose memory hanging around, clean
 	 *     up after yourself before returning non-0
 	 *
 	 * Status: OPTIONAL
 	 */
-	int (* sdev_configure)(struct scsi_device *, struct queue_limits *lim);
+	int (* slave_configure)(struct scsi_device *);
 
 	/*
 	 * Immediately prior to deallocating the device and after all activity
 	 * has ceased the mid layer calls this point so that the low level
 	 * driver may completely detach itself from the scsi device and vice
 	 * versa.  The low level driver is responsible for freeing any memory
-	 * it allocated in the sdev_init or sdev_configure calls.
+	 * it allocated in the slave_alloc or slave_configure calls. 
 	 *
 	 * Status: OPTIONAL
 	 */
-	void (* sdev_destroy)(struct scsi_device *);
+	void (* slave_destroy)(struct scsi_device *);
 
 	/*
 	 * Before the mid layer attempts to scan for a new device attached
@@ -252,9 +244,6 @@ struct scsi_host_template {
 	 * after all activity to attached scsi devices has ceased, the
 	 * midlayer calls this point so that the driver may deallocate
 	 * and terminate any references to the target.
-	 *
-	 * Note: This callback is called with the host lock held and hence
-	 * must not sleep.
 	 *
 	 * Status: OPTIONAL
 	 */
@@ -326,7 +315,7 @@ struct scsi_host_template {
 	 *
 	 * Status: OPTIONAL
 	 */
-	int (* bios_param)(struct scsi_device *, struct gendisk *,
+	int (* bios_param)(struct scsi_device *, struct block_device *,
 			sector_t, int []);
 
 	/*
@@ -383,18 +372,9 @@ struct scsi_host_template {
 	/*
 	 * This determines if we will use a non-interrupt driven
 	 * or an interrupt driven scheme.  It is set to the maximum number
-	 * of simultaneous commands a single hw queue in HBA will accept
-	 * excluding internal commands.
+	 * of simultaneous commands a single hw queue in HBA will accept.
 	 */
 	int can_queue;
-
-	/*
-	 * This determines how many commands the HBA will set aside
-	 * for internal commands. This number will be added to
-	 * @can_queue to calculate the maximum number of simultaneous
-	 * commands sent to the host.
-	 */
-	int nr_reserved_cmds;
 
 	/*
 	 * In many instances, especially where disconnect / reconnect are
@@ -421,8 +401,6 @@ struct scsi_host_template {
 	 * Maximum size in bytes of a single segment.
 	 */
 	unsigned int max_segment_size;
-
-	unsigned int dma_alignment;
 
 	/*
 	 * DMA scatter gather segment boundary limit. A segment crossing this
@@ -451,10 +429,8 @@ struct scsi_host_template {
 	 */
 	short cmd_per_lun;
 
-	/*
-	 * Allocate tags starting from last allocated tag.
-	 */
-	bool tag_alloc_policy_rr : 1;
+	/* If use block layer to manage tags, this is tag allocation policy */
+	int tag_alloc_policy;
 
 	/*
 	 * Track QUEUE_FULL events and reduce queue depth on demand.
@@ -481,9 +457,6 @@ struct scsi_host_template {
 
 	/* True if the host uses host-wide tagspace */
 	unsigned host_tagset:1;
-
-	/* The queuecommand callback may block. See also BLK_MQ_F_BLOCKING. */
-	unsigned queuecommand_may_block:1;
 
 	/*
 	 * Countdown for host blocking with no commands outstanding.
@@ -518,6 +491,9 @@ struct scsi_host_template {
 	 *   scsi_netlink.h
 	 */
 	u64 vendor_id;
+
+	/* Delay for runtime autosuspend */
+	int rpm_autosuspend_delay;
 };
 
 /*
@@ -527,12 +503,10 @@ struct scsi_host_template {
  *
  */
 #define DEF_SCSI_QCMD(func_name) \
-	enum scsi_qc_status func_name(struct Scsi_Host *shost,		\
-				      struct scsi_cmnd *cmd)		\
+	int func_name(struct Scsi_Host *shost, struct scsi_cmnd *cmd)	\
 	{								\
 		unsigned long irq_flags;				\
-		enum scsi_qc_status rc;					\
-									\
+		int rc;							\
 		spin_lock_irqsave(shost->host_lock, irq_flags);		\
 		rc = func_name##_lck(cmd);				\
 		spin_unlock_irqrestore(shost->host_lock, irq_flags);	\
@@ -580,7 +554,7 @@ struct Scsi_Host {
 	struct completion     * eh_action; /* Wait for specific actions on the
 					      host. */
 	wait_queue_head_t       host_wait;
-	const struct scsi_host_template *hostt;
+	struct scsi_host_template *hostt;
 	struct scsi_transport_template *transportt;
 
 	struct kref		tagset_refcnt;
@@ -616,7 +590,7 @@ struct Scsi_Host {
 	 * have some way of identifying each detected host adapter properly
 	 * and uniquely.  For hosts that do not support more than one card
 	 * in the system at one time, this does not need to be set.  It is
-	 * initialized to 0 in scsi_host_alloc.
+	 * initialized to 0 in scsi_register.
 	 */
 	unsigned int unique_id;
 
@@ -630,24 +604,13 @@ struct Scsi_Host {
 	unsigned short max_cmd_len;
 
 	int this_id;
-
-	/*
-	 * Number of commands this host can handle at the same time.
-	 * This excludes reserved commands as specified by nr_reserved_cmds.
-	 */
 	int can_queue;
-	/*
-	 * Number of reserved commands to allocate, if any.
-	 */
-	unsigned int nr_reserved_cmds;
-
 	short cmd_per_lun;
 	short unsigned int sg_tablesize;
 	short unsigned int sg_prot_tablesize;
 	unsigned int max_sectors;
 	unsigned int opt_sectors;
 	unsigned int max_segment_size;
-	unsigned int dma_alignment;
 	unsigned long dma_boundary;
 	unsigned long virt_boundary_mask;
 	/*
@@ -690,9 +653,6 @@ struct Scsi_Host {
 	/* True if the host uses host-wide tagspace */
 	unsigned host_tagset:1;
 
-	/* The queuecommand callback may block. See also BLK_MQ_F_BLOCKING. */
-	unsigned queuecommand_may_block:1;
-
 	/* Host responded with short (<36 bytes) INQUIRY result */
 	unsigned short_inquiry:1;
 
@@ -702,6 +662,7 @@ struct Scsi_Host {
 	/*
 	 * Optional work queue to be utilized by the transport
 	 */
+	char work_q_name[20];
 	struct workqueue_struct *work_q;
 
 	/*
@@ -732,12 +693,6 @@ struct Scsi_Host {
 	struct device		shost_gendev, shost_dev;
 
 	/*
-	 * A SCSI device structure used for sending internal commands to the
-	 * HBA. There is no corresponding logical unit inside the SCSI device.
-	 */
-	struct scsi_device *pseudo_sdev;
-
-	/*
 	 * Points to the transport data (if any) which is allocated
 	 * separately
 	 */
@@ -748,9 +703,6 @@ struct Scsi_Host {
 	 * Needed just in case we have virtual hosts.
 	 */
 	struct device *dma_dev;
-
-	/* Delay for runtime autosuspend */
-	int rpm_autosuspend_delay;
 
 	/*
 	 * We should ensure that this is aligned, both for better performance
@@ -795,7 +747,7 @@ static inline int scsi_host_in_recovery(struct Scsi_Host *shost)
 extern int scsi_queue_work(struct Scsi_Host *, struct work_struct *);
 extern void scsi_flush_work(struct Scsi_Host *);
 
-extern struct Scsi_Host *scsi_host_alloc(const struct scsi_host_template *, int);
+extern struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *, int);
 extern int __must_check scsi_add_host_with_dma(struct Scsi_Host *,
 					       struct device *,
 					       struct device *);
@@ -806,13 +758,12 @@ scsi_template_proc_dir(const struct scsi_host_template *sht);
 #define scsi_template_proc_dir(sht) NULL
 #endif
 extern void scsi_scan_host(struct Scsi_Host *);
-extern int scsi_resume_device(struct scsi_device *sdev);
-extern int scsi_rescan_device(struct scsi_device *sdev);
+extern void scsi_rescan_device(struct device *);
 extern void scsi_remove_host(struct Scsi_Host *);
 extern struct Scsi_Host *scsi_host_get(struct Scsi_Host *);
 extern int scsi_host_busy(struct Scsi_Host *shost);
 extern void scsi_host_put(struct Scsi_Host *t);
-extern struct Scsi_Host *scsi_host_lookup(unsigned int hostnum);
+extern struct Scsi_Host *scsi_host_lookup(unsigned short);
 extern const char *scsi_host_state_name(enum scsi_host_state);
 extern void scsi_host_complete_all_commands(struct Scsi_Host *shost,
 					    enum scsi_host_status status);

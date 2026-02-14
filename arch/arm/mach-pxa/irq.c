@@ -147,11 +147,12 @@ pxa_init_irq_common(struct device_node *node, int irq_nr,
 	int n;
 
 	pxa_internal_irq_nr = irq_nr;
-	pxa_irq_domain = irq_domain_create_legacy(of_fwnode_handle(node), irq_nr, PXA_IRQ(0), 0,
-						  &pxa_irq_ops, NULL);
+	pxa_irq_domain = irq_domain_add_legacy(node, irq_nr,
+					       PXA_IRQ(0), 0,
+					       &pxa_irq_ops, NULL);
 	if (!pxa_irq_domain)
 		panic("Unable to add PXA IRQ domain\n");
-	irq_set_default_domain(pxa_irq_domain);
+	irq_set_default_host(pxa_irq_domain);
 
 	for (n = 0; n < irq_nr; n += 32) {
 		void __iomem *base = irq_base(n >> 5);
@@ -178,7 +179,7 @@ void __init pxa_init_irq(int irq_nr, int (*fn)(struct irq_data *, unsigned int))
 static unsigned long saved_icmr[MAX_INTERNAL_IRQS/32];
 static unsigned long saved_ipr[MAX_INTERNAL_IRQS];
 
-static int pxa_irq_suspend(void *data)
+static int pxa_irq_suspend(void)
 {
 	int i;
 
@@ -197,7 +198,7 @@ static int pxa_irq_suspend(void *data)
 	return 0;
 }
 
-static void pxa_irq_resume(void *data)
+static void pxa_irq_resume(void)
 {
 	int i;
 
@@ -219,13 +220,9 @@ static void pxa_irq_resume(void *data)
 #define pxa_irq_resume		NULL
 #endif
 
-static const struct syscore_ops pxa_irq_syscore_ops = {
+struct syscore_ops pxa_irq_syscore_ops = {
 	.suspend	= pxa_irq_suspend,
 	.resume		= pxa_irq_resume,
-};
-
-struct syscore pxa_irq_syscore = {
-	.ops = &pxa_irq_syscore_ops,
 };
 
 #ifdef CONFIG_OF
@@ -260,7 +257,8 @@ void __init pxa_dt_irq_init(int (*fn)(struct irq_data *, unsigned int))
 	}
 	pxa_irq_base = io_p2v(res.start);
 
-	cpu_has_ipr = of_property_read_bool(node, "marvell,intc-priority");
+	if (of_find_property(node, "marvell,intc-priority", NULL))
+		cpu_has_ipr = 1;
 
 	ret = irq_alloc_descs(-1, 0, pxa_internal_irq_nr, 0);
 	if (ret < 0) {

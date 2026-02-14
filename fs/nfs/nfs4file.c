@@ -10,7 +10,6 @@
 #include <linux/mount.h>
 #include <linux/nfs_fs.h>
 #include <linux/nfs_ssc.h>
-#include <linux/splice.h>
 #include "delegation.h"
 #include "internal.h"
 #include "iostat.h"
@@ -196,8 +195,8 @@ static ssize_t nfs4_copy_file_range(struct file *file_in, loff_t pos_in,
 	ret = __nfs4_copy_file_range(file_in, pos_in, file_out, pos_out, count,
 				     flags);
 	if (ret == -EOPNOTSUPP || ret == -EXDEV)
-		ret = splice_copy_file_range(file_in, pos_in, file_out,
-					     pos_out, count);
+		ret = generic_copy_file_range(file_in, pos_in, file_out,
+					      pos_out, count, flags);
 	return ret;
 }
 
@@ -225,14 +224,8 @@ static long nfs42_fallocate(struct file *filep, int mode, loff_t offset, loff_t 
 	if (!S_ISREG(inode->i_mode))
 		return -EOPNOTSUPP;
 
-	switch (mode) {
-	case 0:
-	case FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE:
-	case FALLOC_FL_ZERO_RANGE:
-		break;
-	default:
+	if ((mode != 0) && (mode != (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE)))
 		return -EOPNOTSUPP;
-	}
 
 	ret = inode_newsize_ok(inode, offset + len);
 	if (ret < 0)
@@ -240,8 +233,6 @@ static long nfs42_fallocate(struct file *filep, int mode, loff_t offset, loff_t 
 
 	if (mode & FALLOC_FL_PUNCH_HOLE)
 		return nfs42_proc_deallocate(filep, offset, len);
-	else if (mode & FALLOC_FL_ZERO_RANGE)
-		return nfs42_proc_zero_range(filep, offset ,len);
 	return nfs42_proc_allocate(filep, offset, len);
 }
 
@@ -253,6 +244,7 @@ static loff_t nfs42_remap_file_range(struct file *src_file, loff_t src_off,
 	struct nfs_server *server = NFS_SERVER(dst_inode);
 	struct inode *src_inode = file_inode(src_file);
 	unsigned int bs = server->clone_blksize;
+	bool same_inode = false;
 	int ret;
 
 	/* NFS does not support deduplication. */
@@ -274,15 +266,25 @@ static loff_t nfs42_remap_file_range(struct file *src_file, loff_t src_off,
 			goto out;
 	}
 
+	if (src_inode == dst_inode)
+		same_inode = true;
+
 	/* XXX: do we lock at all? what if server needs CB_RECALL_LAYOUT? */
-	lock_two_nondirectories(src_inode, dst_inode);
+	if (same_inode) {
+		inode_lock(src_inode);
+	} else if (dst_inode < src_inode) {
+		inode_lock_nested(dst_inode, I_MUTEX_PARENT);
+		inode_lock_nested(src_inode, I_MUTEX_CHILD);
+	} else {
+		inode_lock_nested(src_inode, I_MUTEX_PARENT);
+		inode_lock_nested(dst_inode, I_MUTEX_CHILD);
+	}
+
 	/* flush all pending writes on both src and dst so that server
 	 * has the latest data */
-	nfs_file_block_o_direct(NFS_I(src_inode));
 	ret = nfs_sync_inode(src_inode);
 	if (ret)
 		goto out_unlock;
-	nfs_file_block_o_direct(NFS_I(dst_inode));
 	ret = nfs_sync_inode(dst_inode);
 	if (ret)
 		goto out_unlock;
@@ -295,7 +297,15 @@ static loff_t nfs42_remap_file_range(struct file *src_file, loff_t src_off,
 		truncate_inode_pages_range(&dst_inode->i_data, dst_off, dst_off + count - 1);
 
 out_unlock:
-	unlock_two_nondirectories(src_inode, dst_inode);
+	if (same_inode) {
+		inode_unlock(src_inode);
+	} else if (dst_inode < src_inode) {
+		inode_unlock(src_inode);
+		inode_unlock(dst_inode);
+	} else {
+		inode_unlock(dst_inode);
+		inode_unlock(src_inode);
+	}
 out:
 	return ret < 0 ? ret : count;
 }
@@ -428,7 +438,7 @@ void nfs42_ssc_unregister_ops(void)
 }
 #endif /* CONFIG_NFS_V4_2 */
 
-static int nfs4_setlease(struct file *file, int arg, struct file_lease **lease,
+static int nfs4_setlease(struct file *file, long arg, struct file_lock **lease,
 			 void **priv)
 {
 	return nfs4_proc_setlease(file, arg, lease, priv);
@@ -437,14 +447,14 @@ static int nfs4_setlease(struct file *file, int arg, struct file_lease **lease,
 const struct file_operations nfs4_file_operations = {
 	.read_iter	= nfs_file_read,
 	.write_iter	= nfs_file_write,
-	.mmap_prepare	= nfs_file_mmap_prepare,
+	.mmap		= nfs_file_mmap,
 	.open		= nfs4_file_open,
 	.flush		= nfs4_file_flush,
 	.release	= nfs_file_release,
 	.fsync		= nfs_file_fsync,
 	.lock		= nfs_lock,
 	.flock		= nfs_flock,
-	.splice_read	= nfs_file_splice_read,
+	.splice_read	= generic_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.check_flags	= nfs_check_flags,
 	.setlease	= nfs4_setlease,
@@ -456,5 +466,4 @@ const struct file_operations nfs4_file_operations = {
 #else
 	.llseek		= nfs_file_llseek,
 #endif
-	.fop_flags	= FOP_DONTCACHE,
 };

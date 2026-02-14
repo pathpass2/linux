@@ -7,7 +7,7 @@
 #include <linux/init.h>
 #include <linux/sysctl.h>
 
-static const struct ctl_table fs_shared_sysctls[] = {
+static struct ctl_table fs_shared_sysctls[] = {
 	{
 		.procname	= "overflowuid",
 		.data		= &fs_overflowuid,
@@ -26,12 +26,14 @@ static const struct ctl_table fs_shared_sysctls[] = {
 		.extra1		= SYSCTL_ZERO,
 		.extra2		= SYSCTL_MAXOLDUID,
 	},
+	{ }
 };
+
+DECLARE_SYSCTL_BASE(fs, fs_shared_sysctls);
 
 static int __init init_fs_sysctls(void)
 {
-	register_sysctl_init("fs", fs_shared_sysctls);
-	return 0;
+	return register_sysctl_base(fs);
 }
 
 early_initcall(init_fs_sysctls);

@@ -21,8 +21,6 @@
 
 #include <asm/current.h>
 #include <asm/debug-monitors.h>
-#include <asm/esr.h>
-#include <asm/exception.h>
 #include <asm/hw_breakpoint.h>
 #include <asm/traps.h>
 #include <asm/cputype.h>
@@ -619,7 +617,8 @@ NOKPROBE_SYMBOL(toggle_bp_registers);
 /*
  * Debug exception handlers.
  */
-void do_breakpoint(unsigned long esr, struct pt_regs *regs)
+static int breakpoint_handler(unsigned long unused, unsigned long esr,
+			      struct pt_regs *regs)
 {
 	int i, step = 0, *kernel_step;
 	u32 ctrl_reg;
@@ -662,7 +661,7 @@ unlock:
 	}
 
 	if (!step)
-		return;
+		return 0;
 
 	if (user_mode(regs)) {
 		debug_info->bps_disabled = 1;
@@ -670,7 +669,7 @@ unlock:
 
 		/* If we're already stepping a watchpoint, just return. */
 		if (debug_info->wps_disabled)
-			return;
+			return 0;
 
 		if (test_thread_flag(TIF_SINGLESTEP))
 			debug_info->suspended_step = 1;
@@ -681,7 +680,7 @@ unlock:
 		kernel_step = this_cpu_ptr(&stepping_kernel_bp);
 
 		if (*kernel_step != ARM_KERNEL_STEP_NONE)
-			return;
+			return 0;
 
 		if (kernel_active_single_step()) {
 			*kernel_step = ARM_KERNEL_STEP_SUSPEND;
@@ -690,8 +689,10 @@ unlock:
 			kernel_enable_single_step(regs);
 		}
 	}
+
+	return 0;
 }
-NOKPROBE_SYMBOL(do_breakpoint);
+NOKPROBE_SYMBOL(breakpoint_handler);
 
 /*
  * Arm64 hardware does not always report a watchpoint hit address that matches
@@ -750,7 +751,8 @@ static int watchpoint_report(struct perf_event *wp, unsigned long addr,
 	return step;
 }
 
-void do_watchpoint(unsigned long addr, unsigned long esr, struct pt_regs *regs)
+static int watchpoint_handler(unsigned long addr, unsigned long esr,
+			      struct pt_regs *regs)
 {
 	int i, step = 0, *kernel_step, access, closest_match = 0;
 	u64 min_dist = -1, dist;
@@ -777,7 +779,7 @@ void do_watchpoint(unsigned long addr, unsigned long esr, struct pt_regs *regs)
 		 * Check that the access type matches.
 		 * 0 => load, otherwise => store
 		 */
-		access = (esr & ESR_ELx_WNR) ? HW_BREAKPOINT_W :
+		access = (esr & AARCH64_ESR_ACCESS_MASK) ? HW_BREAKPOINT_W :
 			 HW_BREAKPOINT_R;
 		if (!(access & hw_breakpoint_type(wp)))
 			continue;
@@ -805,7 +807,7 @@ void do_watchpoint(unsigned long addr, unsigned long esr, struct pt_regs *regs)
 	rcu_read_unlock();
 
 	if (!step)
-		return;
+		return 0;
 
 	/*
 	 * We always disable EL0 watchpoints because the kernel can
@@ -818,7 +820,7 @@ void do_watchpoint(unsigned long addr, unsigned long esr, struct pt_regs *regs)
 
 		/* If we're already stepping a breakpoint, just return. */
 		if (debug_info->bps_disabled)
-			return;
+			return 0;
 
 		if (test_thread_flag(TIF_SINGLESTEP))
 			debug_info->suspended_step = 1;
@@ -829,7 +831,7 @@ void do_watchpoint(unsigned long addr, unsigned long esr, struct pt_regs *regs)
 		kernel_step = this_cpu_ptr(&stepping_kernel_bp);
 
 		if (*kernel_step != ARM_KERNEL_STEP_NONE)
-			return;
+			return 0;
 
 		if (kernel_active_single_step()) {
 			*kernel_step = ARM_KERNEL_STEP_SUSPEND;
@@ -838,41 +840,44 @@ void do_watchpoint(unsigned long addr, unsigned long esr, struct pt_regs *regs)
 			kernel_enable_single_step(regs);
 		}
 	}
+
+	return 0;
 }
-NOKPROBE_SYMBOL(do_watchpoint);
+NOKPROBE_SYMBOL(watchpoint_handler);
 
 /*
  * Handle single-step exception.
  */
-bool try_step_suspended_breakpoints(struct pt_regs *regs)
+int reinstall_suspended_bps(struct pt_regs *regs)
 {
 	struct debug_info *debug_info = &current->thread.debug;
-	int *kernel_step = this_cpu_ptr(&stepping_kernel_bp);
-	bool handled_exception = false;
+	int handled_exception = 0, *kernel_step;
+
+	kernel_step = this_cpu_ptr(&stepping_kernel_bp);
 
 	/*
-	 * Called from single-step exception entry.
-	 * Return true if we stepped a breakpoint and can resume execution,
-	 * false if we need to handle a single-step.
+	 * Called from single-step exception handler.
+	 * Return 0 if execution can resume, 1 if a SIGTRAP should be
+	 * reported.
 	 */
 	if (user_mode(regs)) {
 		if (debug_info->bps_disabled) {
 			debug_info->bps_disabled = 0;
 			toggle_bp_registers(AARCH64_DBG_REG_BCR, DBG_ACTIVE_EL0, 1);
-			handled_exception = true;
+			handled_exception = 1;
 		}
 
 		if (debug_info->wps_disabled) {
 			debug_info->wps_disabled = 0;
 			toggle_bp_registers(AARCH64_DBG_REG_WCR, DBG_ACTIVE_EL0, 1);
-			handled_exception = true;
+			handled_exception = 1;
 		}
 
 		if (handled_exception) {
 			if (debug_info->suspended_step) {
 				debug_info->suspended_step = 0;
 				/* Allow exception handling to fall-through. */
-				handled_exception = false;
+				handled_exception = 0;
 			} else {
 				user_disable_single_step(current);
 			}
@@ -886,17 +891,17 @@ bool try_step_suspended_breakpoints(struct pt_regs *regs)
 
 		if (*kernel_step != ARM_KERNEL_STEP_SUSPEND) {
 			kernel_disable_single_step();
-			handled_exception = true;
+			handled_exception = 1;
 		} else {
-			handled_exception = false;
+			handled_exception = 0;
 		}
 
 		*kernel_step = ARM_KERNEL_STEP_NONE;
 	}
 
-	return handled_exception;
+	return !handled_exception;
 }
-NOKPROBE_SYMBOL(try_step_suspended_breakpoints);
+NOKPROBE_SYMBOL(reinstall_suspended_bps);
 
 /*
  * Context-switcher for restoring suspended breakpoints.
@@ -968,6 +973,14 @@ static int hw_breakpoint_reset(unsigned int cpu)
 	return 0;
 }
 
+#ifdef CONFIG_CPU_PM
+extern void cpu_suspend_set_dbg_restorer(int (*hw_bp_restore)(unsigned int));
+#else
+static inline void cpu_suspend_set_dbg_restorer(int (*hw_bp_restore)(unsigned int))
+{
+}
+#endif
+
 /*
  * One-time initialisation.
  */
@@ -980,6 +993,12 @@ static int __init arch_hw_breakpoint_init(void)
 
 	pr_info("found %d breakpoint and %d watchpoint registers.\n",
 		core_num_brps, core_num_wrps);
+
+	/* Register debug fault handlers. */
+	hook_debug_fault_code(DBG_ESR_EVT_HWBP, breakpoint_handler, SIGTRAP,
+			      TRAP_HWBKPT, "hw-breakpoint handler");
+	hook_debug_fault_code(DBG_ESR_EVT_HWWP, watchpoint_handler, SIGTRAP,
+			      TRAP_HWBKPT, "hw-watchpoint handler");
 
 	/*
 	 * Reset the breakpoint resources. We assume that a halting

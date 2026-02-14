@@ -24,18 +24,15 @@
 
 #include <linux/iio/dac/mcp4725.h>
 
+#define MCP4725_DRV_NAME "mcp4725"
+
 #define MCP472X_REF_VDD			0x00
 #define MCP472X_REF_VREF_UNBUFFERED	0x02
 #define MCP472X_REF_VREF_BUFFERED	0x03
 
-struct mcp4725_chip_info {
-	const struct iio_chan_spec *chan_spec;
-	u8 dac_reg_offset;
-	bool use_ext_ref_voltage;
-};
-
 struct mcp4725_data {
 	struct i2c_client *client;
+	int id;
 	unsigned ref_mode;
 	bool vref_buffered;
 	u16 dac_value;
@@ -50,18 +47,12 @@ static int mcp4725_suspend(struct device *dev)
 	struct mcp4725_data *data = iio_priv(i2c_get_clientdata(
 		to_i2c_client(dev)));
 	u8 outbuf[2];
-	int ret;
 
 	outbuf[0] = (data->powerdown_mode + 1) << 4;
 	outbuf[1] = 0;
 	data->powerdown = true;
 
-	ret = i2c_master_send(data->client, outbuf, 2);
-	if (ret < 0)
-		return ret;
-	else if (ret != 2)
-		return -EIO;
-	return 0;
+	return i2c_master_send(data->client, outbuf, 2);
 }
 
 static int mcp4725_resume(struct device *dev)
@@ -69,19 +60,13 @@ static int mcp4725_resume(struct device *dev)
 	struct mcp4725_data *data = iio_priv(i2c_get_clientdata(
 		to_i2c_client(dev)));
 	u8 outbuf[2];
-	int ret;
 
 	/* restore previous DAC value */
 	outbuf[0] = (data->dac_value >> 8) & 0xf;
 	outbuf[1] = data->dac_value & 0xff;
 	data->powerdown = false;
 
-	ret = i2c_master_send(data->client, outbuf, 2);
-	if (ret < 0)
-		return ret;
-	else if (ret != 2)
-		return -EIO;
-	return 0;
+	return i2c_master_send(data->client, outbuf, 2);
 }
 static DEFINE_SIMPLE_DEV_PM_OPS(mcp4725_pm_ops, mcp4725_suspend,
 				mcp4725_resume);
@@ -239,7 +224,7 @@ static const struct iio_chan_spec_ext_info mcp4725_ext_info[] = {
 			&mcp472x_powerdown_mode_enum[MCP4725]),
 	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE,
 			   &mcp472x_powerdown_mode_enum[MCP4725]),
-	{ }
+	{ },
 };
 
 static const struct iio_chan_spec_ext_info mcp4726_ext_info[] = {
@@ -253,7 +238,7 @@ static const struct iio_chan_spec_ext_info mcp4726_ext_info[] = {
 			&mcp472x_powerdown_mode_enum[MCP4726]),
 	IIO_ENUM_AVAILABLE("powerdown_mode", IIO_SHARED_BY_TYPE,
 			   &mcp472x_powerdown_mode_enum[MCP4726]),
-	{ }
+	{ },
 };
 
 static const struct iio_chan_spec mcp472x_channel[] = {
@@ -377,7 +362,7 @@ static int mcp4725_probe_dt(struct device *dev,
 			    struct mcp4725_platform_data *pdata)
 {
 	/* check if is the vref-supply defined */
-	pdata->use_vref = device_property_present(dev, "vref-supply");
+	pdata->use_vref = device_property_read_bool(dev, "vref-supply");
 	pdata->vref_buffered =
 		device_property_read_bool(dev, "microchip,vref-buffered");
 
@@ -387,7 +372,6 @@ static int mcp4725_probe_dt(struct device *dev,
 static int mcp4725_probe(struct i2c_client *client)
 {
 	const struct i2c_device_id *id = i2c_client_get_device_id(client);
-	const struct mcp4725_chip_info *info;
 	struct mcp4725_data *data;
 	struct iio_dev *indio_dev;
 	struct mcp4725_platform_data *pdata, pdata_dt;
@@ -402,7 +386,10 @@ static int mcp4725_probe(struct i2c_client *client)
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
 	data->client = client;
-	info = i2c_get_match_data(client);
+	if (dev_fwnode(&client->dev))
+		data->id = (uintptr_t)device_get_match_data(&client->dev);
+	else
+		data->id = id->driver_data;
 	pdata = dev_get_platdata(&client->dev);
 
 	if (!pdata) {
@@ -415,7 +402,7 @@ static int mcp4725_probe(struct i2c_client *client)
 		pdata = &pdata_dt;
 	}
 
-	if (info->use_ext_ref_voltage && pdata->use_vref) {
+	if (data->id == MCP4725 && pdata->use_vref) {
 		dev_err(&client->dev,
 			"external reference is unavailable on MCP4725");
 		return -EINVAL;
@@ -456,12 +443,12 @@ static int mcp4725_probe(struct i2c_client *client)
 
 	indio_dev->name = id->name;
 	indio_dev->info = &mcp4725_info;
-	indio_dev->channels = info->chan_spec;
+	indio_dev->channels = &mcp472x_channel[id->driver_data];
 	indio_dev->num_channels = 1;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
 	/* read current DAC value and settings */
-	err = i2c_master_recv(client, inbuf, info->dac_reg_offset);
+	err = i2c_master_recv(client, inbuf, data->id == MCP4725 ? 3 : 4);
 
 	if (err < 0) {
 		dev_err(&client->dev, "failed to read DAC value");
@@ -471,10 +458,10 @@ static int mcp4725_probe(struct i2c_client *client)
 	data->powerdown = pd > 0;
 	data->powerdown_mode = pd ? pd - 1 : 2; /* largest resistor to gnd */
 	data->dac_value = (inbuf[1] << 4) | (inbuf[2] >> 4);
-	if (!info->use_ext_ref_voltage)
+	if (data->id == MCP4726)
 		ref = (inbuf[3] >> 3) & 0x3;
 
-	if (!info->use_ext_ref_voltage && ref != data->ref_mode) {
+	if (data->id == MCP4726 && ref != data->ref_mode) {
 		dev_info(&client->dev,
 			"voltage reference mode differs (conf: %u, eeprom: %u), setting %u",
 			data->ref_mode, ref, data->ref_mode);
@@ -511,20 +498,9 @@ static void mcp4725_remove(struct i2c_client *client)
 	regulator_disable(data->vdd_reg);
 }
 
-static const struct mcp4725_chip_info mcp4725 = {
-	.chan_spec = &mcp472x_channel[MCP4725],
-	.dac_reg_offset = 3,
-	.use_ext_ref_voltage = true,
-};
-
-static const struct mcp4725_chip_info mcp4726 = {
-	.chan_spec = &mcp472x_channel[MCP4726],
-	.dac_reg_offset = 4,
-};
-
 static const struct i2c_device_id mcp4725_id[] = {
-	{ "mcp4725", (kernel_ulong_t)&mcp4725 },
-	{ "mcp4726", (kernel_ulong_t)&mcp4726 },
+	{ "mcp4725", MCP4725 },
+	{ "mcp4726", MCP4726 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mcp4725_id);
@@ -532,11 +508,11 @@ MODULE_DEVICE_TABLE(i2c, mcp4725_id);
 static const struct of_device_id mcp4725_of_match[] = {
 	{
 		.compatible = "microchip,mcp4725",
-		.data = &mcp4725
+		.data = (void *)MCP4725
 	},
 	{
 		.compatible = "microchip,mcp4726",
-		.data = &mcp4726
+		.data = (void *)MCP4726
 	},
 	{ }
 };
@@ -544,11 +520,11 @@ MODULE_DEVICE_TABLE(of, mcp4725_of_match);
 
 static struct i2c_driver mcp4725_driver = {
 	.driver = {
-		.name	= "mcp4725",
+		.name	= MCP4725_DRV_NAME,
 		.of_match_table = mcp4725_of_match,
 		.pm	= pm_sleep_ptr(&mcp4725_pm_ops),
 	},
-	.probe		= mcp4725_probe,
+	.probe_new	= mcp4725_probe,
 	.remove		= mcp4725_remove,
 	.id_table	= mcp4725_id,
 };

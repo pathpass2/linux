@@ -203,10 +203,6 @@ static const unsigned long cw1200_ttl[] = {
 };
 
 static const struct ieee80211_ops cw1200_ops = {
-	.add_chanctx = ieee80211_emulate_add_chanctx,
-	.remove_chanctx = ieee80211_emulate_remove_chanctx,
-	.change_chanctx = ieee80211_emulate_change_chanctx,
-	.switch_vif_chanctx = ieee80211_emulate_switch_vif_chanctx,
 	.start			= cw1200_start,
 	.stop			= cw1200_stop,
 	.add_interface		= cw1200_add_interface,
@@ -458,7 +454,7 @@ static void cw1200_unregister_common(struct ieee80211_hw *dev)
 
 	ieee80211_unregister_hw(dev);
 
-	timer_delete_sync(&priv->mcast_timeout);
+	del_timer_sync(&priv->mcast_timeout);
 	cw1200_unregister_bh(priv);
 
 	cw1200_debug_release(priv);

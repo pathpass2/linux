@@ -735,7 +735,7 @@ static const struct sysfs_ops cache_index_ops = {
 	.show = cache_index_show,
 };
 
-static const struct kobj_type cache_index_type = {
+static struct kobj_type cache_index_type = {
 	.release = cache_index_release,
 	.sysfs_ops = &cache_index_ops,
 	.default_groups = cache_index_default_groups,

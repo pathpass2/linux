@@ -8,3 +8,6 @@ dtb-$(CONFIG_SOC_VCOREIII)	+= \
 	ocelot_pcb123.dtb \
 	serval_pcb105.dtb \
 	serval_pcb106.dtb
+
+
+obj-$(CONFIG_BUILTIN_DTB)	+= $(addsuffix .o, $(dtb-y))

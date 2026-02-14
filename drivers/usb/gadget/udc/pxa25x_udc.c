@@ -38,7 +38,7 @@
 #include <asm/byteorder.h>
 #include <asm/dma.h>
 #include <asm/mach-types.h>
-#include <linux/unaligned.h>
+#include <asm/unaligned.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -1503,7 +1503,7 @@ reset_gadget(struct pxa25x_udc *dev, struct usb_gadget_driver *driver)
 		ep->stopped = 1;
 		nuke(ep, -ESHUTDOWN);
 	}
-	timer_delete_sync(&dev->timer);
+	del_timer_sync(&dev->timer);
 
 	/* report reset; the driver is already quiesced */
 	if (driver)
@@ -1530,7 +1530,7 @@ stop_activity(struct pxa25x_udc *dev, struct usb_gadget_driver *driver)
 		ep->stopped = 1;
 		nuke(ep, -ESHUTDOWN);
 	}
-	timer_delete_sync(&dev->timer);
+	del_timer_sync(&dev->timer);
 
 	/* report disconnect; the driver is already quiesced */
 	if (driver)
@@ -1574,7 +1574,7 @@ static inline void clear_ep_state (struct pxa25x_udc *dev)
 
 static void udc_watchdog(struct timer_list *t)
 {
-	struct pxa25x_udc	*dev = timer_container_of(dev, t, timer);
+	struct pxa25x_udc	*dev = from_timer(dev, t, timer);
 
 	local_irq_disable();
 	if (dev->ep0state == EP0_STALL
@@ -1607,14 +1607,14 @@ static void handle_ep0 (struct pxa25x_udc *dev)
 	if (udccs0 & UDCCS0_SST) {
 		nuke(ep, -EPIPE);
 		udc_ep0_set_UDCCS(dev, UDCCS0_SST);
-		timer_delete(&dev->timer);
+		del_timer(&dev->timer);
 		ep0_idle(dev);
 	}
 
 	/* previous request unfinished?  non-error iff back-to-back ... */
 	if ((udccs0 & UDCCS0_SA) != 0 && dev->ep0state != EP0_IDLE) {
 		nuke(ep, 0);
-		timer_delete(&dev->timer);
+		del_timer(&dev->timer);
 		ep0_idle(dev);
 	}
 
@@ -2348,14 +2348,15 @@ static int pxa25x_udc_probe(struct platform_device *pdev)
 	dev->transceiver = devm_usb_get_phy(&pdev->dev, USB_PHY_TYPE_USB2);
 
 	if (gpio_is_valid(dev->mach->gpio_pullup)) {
-		retval = devm_gpio_request_one(&pdev->dev, dev->mach->gpio_pullup,
-					       GPIOF_OUT_INIT_LOW, "pca25x_udc GPIO PULLUP");
+		retval = devm_gpio_request(&pdev->dev, dev->mach->gpio_pullup,
+					   "pca25x_udc GPIO PULLUP");
 		if (retval) {
 			dev_dbg(&pdev->dev,
 				"can't get pullup gpio %d, err: %d\n",
 				dev->mach->gpio_pullup, retval);
 			goto err;
 		}
+		gpio_direction_output(dev->mach->gpio_pullup, 0);
 	}
 
 	timer_setup(&dev->timer, udc_watchdog, 0);
@@ -2396,15 +2397,12 @@ static void pxa25x_udc_shutdown(struct platform_device *_dev)
 	pullup_off();
 }
 
-static void pxa25x_udc_remove(struct platform_device *pdev)
+static int pxa25x_udc_remove(struct platform_device *pdev)
 {
 	struct pxa25x_udc *dev = platform_get_drvdata(pdev);
 
-	if (dev->driver) {
-		dev_err(&pdev->dev,
-			"Driver still in use but removing anyhow\n");
-		return;
-	}
+	if (dev->driver)
+		return -EBUSY;
 
 	usb_del_gadget_udc(&dev->gadget);
 	dev->pullup = 0;
@@ -2416,6 +2414,7 @@ static void pxa25x_udc_remove(struct platform_device *pdev)
 		dev->transceiver = NULL;
 
 	the_controller = NULL;
+	return 0;
 }
 
 /*-------------------------------------------------------------------------*/

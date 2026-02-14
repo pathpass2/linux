@@ -26,8 +26,6 @@
 
 #include <linux/types.h>
 
-#define STACK_MAGIC	0xdeadbeef
-
 struct pci_dev;
 struct drm_i915_private;
 

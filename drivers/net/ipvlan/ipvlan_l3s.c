@@ -2,8 +2,6 @@
 /* Copyright (c) 2014 Mahesh Bandewar <maheshb@google.com>
  */
 
-#include <net/ip.h>
-
 #include "ipvlan.h"
 
 static unsigned int ipvlan_netid __read_mostly;
@@ -50,11 +48,11 @@ static struct sk_buff *ipvlan_l3_rcv(struct net_device *dev,
 	switch (proto) {
 	case AF_INET:
 	{
-		const struct iphdr *ip4h = ip_hdr(skb);
+		struct iphdr *ip4h = ip_hdr(skb);
 		int err;
 
 		err = ip_route_input_noref(skb, ip4h->daddr, ip4h->saddr,
-					   ip4h_dscp(ip4h), sdev);
+					   ip4h->tos, sdev);
 		if (unlikely(err))
 			goto out;
 		break;
@@ -104,10 +102,6 @@ static unsigned int ipvlan_nf_input(void *priv, struct sk_buff *skb,
 
 	skb->dev = addr->master->dev;
 	skb->skb_iif = skb->dev->ifindex;
-#if IS_ENABLED(CONFIG_IPV6)
-	if (addr->atype == IPVL_IPV6)
-		IP6CB(skb)->iif = skb->dev->ifindex;
-#endif
 	len = skb->len + ETH_HLEN;
 	ipvlan_count_rx(addr->master, len, true, false);
 out:
@@ -226,4 +220,5 @@ void ipvlan_l3s_unregister(struct ipvl_port *port)
 
 	dev->priv_flags &= ~IFF_L3MDEV_RX_HANDLER;
 	ipvlan_unregister_nf_hook(read_pnet(&port->pnet));
+	dev->l3mdev_ops = NULL;
 }

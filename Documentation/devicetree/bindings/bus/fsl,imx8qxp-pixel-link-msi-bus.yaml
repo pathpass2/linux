@@ -70,9 +70,12 @@ properties:
       - const: ahb
 
 patternProperties:
-  "@[0-9a-f]+$":
+  "^.*@[0-9a-f]+$":
     description: Devices attached to the bus
     type: object
+    properties:
+      reg:
+        maxItems: 1
 
     required:
       - reg
@@ -103,14 +106,11 @@ examples:
         clock-names = "msi", "ahb";
         power-domains = <&pd IMX_SC_R_DC_0>;
 
-        bus@56221000 {
-            compatible = "simple-pm-bus", "syscon";
+        syscon@56221000 {
+            compatible = "fsl,imx8qxp-mipi-lvds-csr", "syscon", "simple-mfd";
             reg = <0x56221000 0x1000>;
             clocks = <&mipi_lvds_0_di_mipi_lvds_regs_lpcg IMX_LPCG_CLK_4>;
             clock-names = "ipg";
-            #address-cells = <1>;
-            #size-cells = <1>;
-            ranges;
 
             pxl2dpi {
                 compatible = "fsl,imx8qxp-pxl2dpi";

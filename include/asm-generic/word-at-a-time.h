@@ -2,8 +2,7 @@
 #ifndef _ASM_WORD_AT_A_TIME_H
 #define _ASM_WORD_AT_A_TIME_H
 
-#include <linux/bitops.h>
-#include <linux/wordpart.h>
+#include <linux/kernel.h>
 #include <asm/byteorder.h>
 
 #ifdef __BIG_ENDIAN
@@ -39,7 +38,7 @@ static inline long find_zero(unsigned long mask)
 	return (mask >> 8) ? byte : byte + 1;
 }
 
-static inline unsigned long has_zero(unsigned long val, unsigned long *data, const struct word_at_a_time *c)
+static inline bool has_zero(unsigned long val, unsigned long *data, const struct word_at_a_time *c)
 {
 	unsigned long rhs = val | c->low_bits;
 	*data = rhs;

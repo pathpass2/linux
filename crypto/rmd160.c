@@ -9,14 +9,18 @@
  * Copyright (c) 2008 Adrian-Ken Rueegsegger <ken@codelabs.ch>
  */
 #include <crypto/internal/hash.h>
-#include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/module.h>
-#include <linux/string.h>
+#include <linux/mm.h>
+#include <linux/types.h>
+#include <asm/byteorder.h>
+
 #include "ripemd.h"
 
 struct rmd160_ctx {
 	u64 byte_count;
 	u32 state[5];
+	__le32 buffer[16];
 };
 
 #define K1  RMD_K1
@@ -261,59 +265,72 @@ static int rmd160_init(struct shash_desc *desc)
 	rctx->state[3] = RMD_H3;
 	rctx->state[4] = RMD_H4;
 
+	memset(rctx->buffer, 0, sizeof(rctx->buffer));
+
 	return 0;
 }
 
 static int rmd160_update(struct shash_desc *desc, const u8 *data,
 			 unsigned int len)
 {
-	int remain = len - round_down(len, RMD160_BLOCK_SIZE);
 	struct rmd160_ctx *rctx = shash_desc_ctx(desc);
-	__le32 buffer[RMD160_BLOCK_SIZE / 4];
+	const u32 avail = sizeof(rctx->buffer) - (rctx->byte_count & 0x3f);
 
-	rctx->byte_count += len - remain;
+	rctx->byte_count += len;
 
-	do {
-		memcpy(buffer, data, sizeof(buffer));
-		rmd160_transform(rctx->state, buffer);
-		data += sizeof(buffer);
-		len -= sizeof(buffer);
-	} while (len >= sizeof(buffer));
+	/* Enough space in buffer? If so copy and we're done */
+	if (avail > len) {
+		memcpy((char *)rctx->buffer + (sizeof(rctx->buffer) - avail),
+		       data, len);
+		goto out;
+	}
 
-	memzero_explicit(buffer, sizeof(buffer));
-	return remain;
+	memcpy((char *)rctx->buffer + (sizeof(rctx->buffer) - avail),
+	       data, avail);
+
+	rmd160_transform(rctx->state, rctx->buffer);
+	data += avail;
+	len -= avail;
+
+	while (len >= sizeof(rctx->buffer)) {
+		memcpy(rctx->buffer, data, sizeof(rctx->buffer));
+		rmd160_transform(rctx->state, rctx->buffer);
+		data += sizeof(rctx->buffer);
+		len -= sizeof(rctx->buffer);
+	}
+
+	memcpy(rctx->buffer, data, len);
+
+out:
+	return 0;
 }
 
 /* Add padding and return the message digest. */
-static int rmd160_finup(struct shash_desc *desc, const u8 *src,
-			unsigned int len, u8 *out)
+static int rmd160_final(struct shash_desc *desc, u8 *out)
 {
-	unsigned int bit_offset = RMD160_BLOCK_SIZE / 8 - 1;
 	struct rmd160_ctx *rctx = shash_desc_ctx(desc);
-	union {
-		__le64 l64[RMD160_BLOCK_SIZE / 4];
-		__le32 l32[RMD160_BLOCK_SIZE / 2];
-		u8 u8[RMD160_BLOCK_SIZE * 2];
-	} block = {};
+	u32 i, index, padlen;
+	__le64 bits;
 	__le32 *dst = (__le32 *)out;
-	u32 i;
+	static const u8 padding[64] = { 0x80, };
 
-	rctx->byte_count += len;
-	if (len >= bit_offset * 8)
-		bit_offset += RMD160_BLOCK_SIZE / 8;
-	memcpy(&block, src, len);
-	block.u8[len] = 0x80;
-	block.l64[bit_offset] = cpu_to_le64(rctx->byte_count << 3);
+	bits = cpu_to_le64(rctx->byte_count << 3);
 
-	rmd160_transform(rctx->state, block.l32);
-	if (bit_offset > RMD160_BLOCK_SIZE / 8)
-		rmd160_transform(rctx->state,
-				 block.l32 + RMD160_BLOCK_SIZE / 4);
-	memzero_explicit(&block, sizeof(block));
+	/* Pad out to 56 mod 64 */
+	index = rctx->byte_count & 0x3f;
+	padlen = (index < 56) ? (56 - index) : ((64+56) - index);
+	rmd160_update(desc, padding, padlen);
+
+	/* Append length */
+	rmd160_update(desc, (const u8 *)&bits, sizeof(bits));
 
 	/* Store state in digest */
 	for (i = 0; i < 5; i++)
 		dst[i] = cpu_to_le32p(&rctx->state[i]);
+
+	/* Wipe context */
+	memset(rctx, 0, sizeof(*rctx));
+
 	return 0;
 }
 
@@ -321,12 +338,11 @@ static struct shash_alg alg = {
 	.digestsize	=	RMD160_DIGEST_SIZE,
 	.init		=	rmd160_init,
 	.update		=	rmd160_update,
-	.finup		=	rmd160_finup,
+	.final		=	rmd160_final,
 	.descsize	=	sizeof(struct rmd160_ctx),
 	.base		=	{
 		.cra_name	 =	"rmd160",
 		.cra_driver_name =	"rmd160-generic",
-		.cra_flags	 =	CRYPTO_AHASH_ALG_BLOCK_ONLY,
 		.cra_blocksize	 =	RMD160_BLOCK_SIZE,
 		.cra_module	 =	THIS_MODULE,
 	}
@@ -342,7 +358,7 @@ static void __exit rmd160_mod_fini(void)
 	crypto_unregister_shash(&alg);
 }
 
-module_init(rmd160_mod_init);
+subsys_initcall(rmd160_mod_init);
 module_exit(rmd160_mod_fini);
 
 MODULE_LICENSE("GPL");

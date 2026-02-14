@@ -56,7 +56,9 @@ patternProperties:
           need to be configured and that is left for the implementation
           specific binding.
         minItems: 1
-        maxItems: 32
+        maxItems: 16
+        items:
+          maxItems: 1
 
       opp-microvolt:
         description: |

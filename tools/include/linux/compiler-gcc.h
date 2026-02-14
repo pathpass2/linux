@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _TOOLS_LINUX_COMPILER_H_
-#error "Please do not include <linux/compiler-gcc.h> directly, include <linux/compiler.h> instead."
+#error "Please don't include <linux/compiler-gcc.h> directly, include <linux/compiler.h> instead."
 #endif
 
 /*
@@ -12,10 +12,8 @@
 		     + __GNUC_PATCHLEVEL__)
 #endif
 
-#if __has_attribute(__fallthrough__)
-# define fallthrough                    __attribute__((__fallthrough__))
-#else
-# define fallthrough                    do {} while (0)  /* fallthrough */
+#if GCC_VERSION >= 70000 && !defined(__CHECKER__)
+# define __fallthrough __attribute__ ((fallthrough))
 #endif
 
 #if __has_attribute(__error__)

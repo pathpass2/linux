@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+// SPDX-License-Identifier: GPL-2.0 or BSD-3-Clause
 
 /* Authors: Bernard Metzler <bmt@zurich.ibm.com> */
 /* Copyright (c) 2008-2019, IBM Corporation */
@@ -18,15 +18,6 @@
 #include "siw.h"
 #include "siw_verbs.h"
 #include "siw_mem.h"
-
-static int siw_qp_state_to_ib_qp_state[SIW_QP_STATE_COUNT] = {
-	[SIW_QP_STATE_IDLE] = IB_QPS_INIT,
-	[SIW_QP_STATE_RTR] = IB_QPS_RTR,
-	[SIW_QP_STATE_RTS] = IB_QPS_RTS,
-	[SIW_QP_STATE_CLOSING] = IB_QPS_SQD,
-	[SIW_QP_STATE_TERMINATE] = IB_QPS_SQE,
-	[SIW_QP_STATE_ERROR] = IB_QPS_ERR
-};
 
 static int ib_qp_state_to_siw_qp_state[IB_QPS_ERR + 1] = {
 	[IB_QPS_RESET] = SIW_QP_STATE_IDLE,
@@ -75,9 +66,12 @@ int siw_mmap(struct ib_ucontext *ctx, struct vm_area_struct *vma)
 	entry = to_siw_mmap_entry(rdma_entry);
 
 	rv = remap_vmalloc_range(vma, entry->address, 0);
-	if (rv)
+	if (rv) {
 		pr_warn("remap_vmalloc_range failed: %lu, %zu\n", vma->vm_pgoff,
 			size);
+		goto out;
+	}
+out:
 	rdma_user_mmap_entry_put(rdma_entry);
 
 	return rv;
@@ -163,7 +157,7 @@ int siw_query_device(struct ib_device *base_dev, struct ib_device_attr *attr,
 	attr->vendor_part_id = sdev->vendor_part_id;
 
 	addrconf_addr_eui48((u8 *)&attr->sys_image_guid,
-			    sdev->raw_gid);
+			    sdev->netdev->dev_addr);
 
 	return 0;
 }
@@ -171,28 +165,21 @@ int siw_query_device(struct ib_device *base_dev, struct ib_device_attr *attr,
 int siw_query_port(struct ib_device *base_dev, u32 port,
 		   struct ib_port_attr *attr)
 {
-	struct net_device *ndev;
+	struct siw_device *sdev = to_siw_dev(base_dev);
 	int rv;
 
 	memset(attr, 0, sizeof(*attr));
 
 	rv = ib_get_eth_speed(base_dev, port, &attr->active_speed,
 			 &attr->active_width);
-	if (rv)
-		return rv;
-
-	ndev = ib_device_get_netdev(base_dev, SIW_PORT);
-	if (!ndev)
-		return -ENODEV;
-
 	attr->gid_tbl_len = 1;
 	attr->max_msg_sz = -1;
-	attr->max_mtu = ib_mtu_int_to_enum(ndev->max_mtu);
-	attr->active_mtu = ib_mtu_int_to_enum(READ_ONCE(ndev->mtu));
-	attr->state = ib_get_curr_port_state(ndev);
-	attr->phys_state = attr->state == IB_PORT_ACTIVE ?
+	attr->max_mtu = ib_mtu_int_to_enum(sdev->netdev->mtu);
+	attr->active_mtu = ib_mtu_int_to_enum(sdev->netdev->mtu);
+	attr->phys_state = sdev->state == IB_PORT_ACTIVE ?
 		IB_PORT_PHYS_STATE_LINK_UP : IB_PORT_PHYS_STATE_DISABLED;
 	attr->port_cap_flags = IB_PORT_CM_SUP | IB_PORT_DEVICE_MGMT_SUP;
+	attr->state = sdev->state;
 	/*
 	 * All zero
 	 *
@@ -206,7 +193,6 @@ int siw_query_port(struct ib_device *base_dev, u32 port,
 	 * attr->subnet_timeout = 0;
 	 * attr->init_type_repy = 0;
 	 */
-	dev_put(ndev);
 	return rv;
 }
 
@@ -232,7 +218,7 @@ int siw_query_gid(struct ib_device *base_dev, u32 port, int idx,
 
 	/* subnet_prefix == interface_id == 0; */
 	memset(gid, 0, sizeof(*gid));
-	memcpy(gid->raw, sdev->raw_gid, ETH_ALEN);
+	memcpy(&gid->raw[0], sdev->netdev->dev_addr, 6);
 
 	return 0;
 }
@@ -350,10 +336,11 @@ int siw_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attrs,
 		goto err_atomic;
 	}
 	/*
-	 * NOTE: we don't allow for a QP unable to hold any SQ WQE
+	 * NOTE: we allow for zero element SQ and RQ WQE's SGL's
+	 * but not for a QP unable to hold any WQE (SQ + RQ)
 	 */
-	if (attrs->cap.max_send_wr == 0) {
-		siw_dbg(base_dev, "QP must have send queue\n");
+	if (attrs->cap.max_send_wr + attrs->cap.max_recv_wr == 0) {
+		siw_dbg(base_dev, "QP must have send or receive queue\n");
 		rv = -EINVAL;
 		goto err_atomic;
 	}
@@ -373,21 +360,28 @@ int siw_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attrs,
 	if (rv)
 		goto err_atomic;
 
+	num_sqe = attrs->cap.max_send_wr;
+	num_rqe = attrs->cap.max_recv_wr;
 
 	/* All queue indices are derived from modulo operations
 	 * on a free running 'get' (consumer) and 'put' (producer)
 	 * unsigned counter. Having queue sizes at power of two
 	 * avoids handling counter wrap around.
 	 */
-	num_sqe = roundup_pow_of_two(attrs->cap.max_send_wr);
-	num_rqe = attrs->cap.max_recv_wr;
+	if (num_sqe)
+		num_sqe = roundup_pow_of_two(num_sqe);
+	else {
+		/* Zero sized SQ is not supported */
+		rv = -EINVAL;
+		goto err_out_xa;
+	}
 	if (num_rqe)
 		num_rqe = roundup_pow_of_two(num_rqe);
 
 	if (udata)
 		qp->sendq = vmalloc_user(num_sqe * sizeof(struct siw_sqe));
 	else
-		qp->sendq = vcalloc(num_sqe, sizeof(struct siw_sqe));
+		qp->sendq = vzalloc(num_sqe * sizeof(struct siw_sqe));
 
 	if (qp->sendq == NULL) {
 		rv = -ENOMEM;
@@ -420,7 +414,7 @@ int siw_create_qp(struct ib_qp *ibqp, struct ib_qp_init_attr *attrs,
 			qp->recvq =
 				vmalloc_user(num_rqe * sizeof(struct siw_rqe));
 		else
-			qp->recvq = vcalloc(num_rqe, sizeof(struct siw_rqe));
+			qp->recvq = vzalloc(num_rqe * sizeof(struct siw_rqe));
 
 		if (qp->recvq == NULL) {
 			rv = -ENOMEM;
@@ -513,24 +507,20 @@ int siw_query_qp(struct ib_qp *base_qp, struct ib_qp_attr *qp_attr,
 		 int qp_attr_mask, struct ib_qp_init_attr *qp_init_attr)
 {
 	struct siw_qp *qp;
-	struct net_device *ndev;
+	struct siw_device *sdev;
 
-	if (base_qp && qp_attr && qp_init_attr)
+	if (base_qp && qp_attr && qp_init_attr) {
 		qp = to_siw_qp(base_qp);
-	else
+		sdev = to_siw_dev(base_qp->device);
+	} else {
 		return -EINVAL;
-
-	ndev = ib_device_get_netdev(base_qp->device, SIW_PORT);
-	if (!ndev)
-		return -ENODEV;
-
-	qp_attr->qp_state = siw_qp_state_to_ib_qp_state[qp->attrs.state];
+	}
 	qp_attr->cap.max_inline_data = SIW_MAX_INLINE;
 	qp_attr->cap.max_send_wr = qp->attrs.sq_size;
 	qp_attr->cap.max_send_sge = qp->attrs.sq_max_sges;
 	qp_attr->cap.max_recv_wr = qp->attrs.rq_size;
 	qp_attr->cap.max_recv_sge = qp->attrs.rq_max_sges;
-	qp_attr->path_mtu = ib_mtu_int_to_enum(READ_ONCE(ndev->mtu));
+	qp_attr->path_mtu = ib_mtu_int_to_enum(sdev->netdev->mtu);
 	qp_attr->max_rd_atomic = qp->attrs.irq_size;
 	qp_attr->max_dest_rd_atomic = qp->attrs.orq_size;
 
@@ -545,7 +535,6 @@ int siw_query_qp(struct ib_qp *base_qp, struct ib_qp_attr *qp_attr,
 
 	qp_init_attr->cap = qp_attr->cap;
 
-	dev_put(ndev);
 	return 0;
 }
 
@@ -631,6 +620,9 @@ int siw_destroy_qp(struct ib_qp *base_qp, struct ib_udata *udata)
 	}
 	up_write(&qp->state_lock);
 
+	kfree(qp->tx_ctx.mpa_crc_hd);
+	kfree(qp->rx_stream.mpa_crc_hd);
+
 	qp->scq = qp->rcq = NULL;
 
 	siw_qp_put(qp);
@@ -668,7 +660,7 @@ static int siw_copy_inline_sgl(const struct ib_send_wr *core_wr,
 			bytes = -EINVAL;
 			break;
 		}
-		memcpy(kbuf, ib_virt_dma_to_ptr(core_sge->addr),
+		memcpy(kbuf, (void *)(uintptr_t)core_sge->addr,
 		       core_sge->length);
 
 		kbuf += core_sge->length;
@@ -769,7 +761,7 @@ int siw_post_send(struct ib_qp *base_qp, const struct ib_send_wr *wr,
 	struct siw_wqe *wqe = tx_wqe(qp);
 
 	unsigned long flags;
-	int rv = 0, imm_err = 0;
+	int rv = 0;
 
 	if (wr && !rdma_is_kernel_res(&qp->base_qp.res)) {
 		siw_dbg_qp(qp, "wr must be empty for user mapped sq\n");
@@ -936,7 +928,7 @@ int siw_post_send(struct ib_qp *base_qp, const struct ib_send_wr *wr,
 			rv = -EINVAL;
 			break;
 		}
-		siw_dbg_qp(qp, "opcode %d, flags 0x%x, wr_id 0x%p\n",
+		siw_dbg_qp(qp, "opcode %d, flags 0x%x, wr_id 0x%pK\n",
 			   sqe->opcode, sqe->flags,
 			   (void *)(uintptr_t)sqe->id);
 
@@ -955,17 +947,9 @@ int siw_post_send(struct ib_qp *base_qp, const struct ib_send_wr *wr,
 	 * Send directly if SQ processing is not in progress.
 	 * Eventual immediate errors (rv < 0) do not affect the involved
 	 * RI resources (Verbs, 8.3.1) and thus do not prevent from SQ
-	 * processing, if new work is already pending. But rv and pointer
-	 * to failed work request must be passed to caller.
+	 * processing, if new work is already pending. But rv must be passed
+	 * to caller.
 	 */
-	if (unlikely(rv < 0)) {
-		/*
-		 * Immediate error
-		 */
-		siw_dbg_qp(qp, "Immediate error %d\n", rv);
-		imm_err = rv;
-		*bad_wr = wr;
-	}
 	if (wqe->wr_status != SIW_WR_IDLE) {
 		spin_unlock_irqrestore(&qp->sq_lock, flags);
 		goto skip_direct_sending;
@@ -990,10 +974,15 @@ skip_direct_sending:
 
 	up_read(&qp->state_lock);
 
-	if (unlikely(imm_err))
-		return imm_err;
+	if (rv >= 0)
+		return 0;
+	/*
+	 * Immediate error
+	 */
+	siw_dbg_qp(qp, "error %d\n", rv);
 
-	return (rv >= 0) ? 0 : rv;
+	*bad_wr = wr;
+	return rv;
 }
 
 /*
@@ -1105,7 +1094,7 @@ int siw_post_receive(struct ib_qp *base_qp, const struct ib_recv_wr *wr,
 		siw_dbg_qp(qp, "error %d\n", rv);
 		*bad_wr = wr;
 	}
-	return rv;
+	return rv > 0 ? 0 : rv;
 }
 
 int siw_destroy_cq(struct ib_cq *base_cq, struct ib_udata *udata)
@@ -1136,13 +1125,12 @@ int siw_destroy_cq(struct ib_cq *base_cq, struct ib_udata *udata)
  *
  * @base_cq: CQ as allocated by RDMA midlayer
  * @attr: Initial CQ attributes
- * @attrs: uverbs bundle
+ * @udata: relates to user context
  */
 
 int siw_create_cq(struct ib_cq *base_cq, const struct ib_cq_init_attr *attr,
-		  struct uverbs_attr_bundle *attrs)
+		  struct ib_udata *udata)
 {
-	struct ib_udata *udata = &attrs->driver_udata;
 	struct siw_device *sdev = to_siw_dev(base_cq->device);
 	struct siw_cq *cq = to_siw_cq(base_cq);
 	int rv, size = attr->cqe;
@@ -1324,25 +1312,22 @@ int siw_dereg_mr(struct ib_mr *base_mr, struct ib_udata *udata)
  * @len:	len of MR
  * @rnic_va:	not used by siw
  * @rights:	MR access rights
- * @dmah:	dma handle
  * @udata:	user buffer to communicate STag and Key.
  */
 struct ib_mr *siw_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
-			      u64 rnic_va, int rights,  struct ib_dmah *dmah,
-			      struct ib_udata *udata)
+			      u64 rnic_va, int rights, struct ib_udata *udata)
 {
 	struct siw_mr *mr = NULL;
 	struct siw_umem *umem = NULL;
 	struct siw_ureq_reg_mr ureq;
 	struct siw_device *sdev = to_siw_dev(pd->device);
+
+	unsigned long mem_limit = rlimit(RLIMIT_MEMLOCK);
 	int rv;
 
-	siw_dbg_pd(pd, "start: 0x%p, va: 0x%p, len: %llu\n",
+	siw_dbg_pd(pd, "start: 0x%pK, va: 0x%pK, len: %llu\n",
 		   (void *)(uintptr_t)start, (void *)(uintptr_t)rnic_va,
 		   (unsigned long long)len);
-
-	if (dmah)
-		return ERR_PTR(-EOPNOTSUPP);
 
 	if (atomic_inc_return(&sdev->num_mr) > SIW_MAX_MR) {
 		siw_dbg_pd(pd, "too many mr's\n");
@@ -1353,7 +1338,20 @@ struct ib_mr *siw_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 		rv = -EINVAL;
 		goto err_out;
 	}
-	umem = siw_umem_get(pd->device, start, len, rights);
+	if (mem_limit != RLIM_INFINITY) {
+		unsigned long num_pages =
+			(PAGE_ALIGN(len + (start & ~PAGE_MASK))) >> PAGE_SHIFT;
+		mem_limit >>= PAGE_SHIFT;
+
+		if (num_pages > mem_limit - current->mm->locked_vm) {
+			siw_dbg_pd(pd, "pages req %lu, max %lu, lock %lu\n",
+				   num_pages, mem_limit,
+				   current->mm->locked_vm);
+			rv = -ENOMEM;
+			goto err_out;
+		}
+	}
+	umem = siw_umem_get(start, len, ib_access_writable(rights));
 	if (IS_ERR(umem)) {
 		rv = PTR_ERR(umem);
 		siw_dbg_pd(pd, "getting user memory failed: %d\n", rv);
@@ -1406,7 +1404,7 @@ err_out:
 		kfree_rcu(mr, rcu);
 	} else {
 		if (umem)
-			siw_umem_release(umem);
+			siw_umem_release(umem, false);
 	}
 	return ERR_PTR(rv);
 }
@@ -1496,7 +1494,7 @@ int siw_map_mr_sg(struct ib_mr *base_mr, struct scatterlist *sl, int num_sle,
 
 	if (pbl->max_buf < num_sle) {
 		siw_dbg_mem(mem, "too many SGE's: %d > %d\n",
-			    num_sle, pbl->max_buf);
+			    mem->pbl->max_buf, num_sle);
 		return -ENOMEM;
 	}
 	for_each_sg(sl, slp, num_sle, i) {
@@ -1525,7 +1523,7 @@ int siw_map_mr_sg(struct ib_mr *base_mr, struct scatterlist *sl, int num_sle,
 		}
 		siw_dbg_mem(mem,
 			"sge[%d], size %u, addr 0x%p, total %lu\n",
-			i, pble->size, ib_virt_dma_to_ptr(pble->addr),
+			i, pble->size, (void *)(uintptr_t)pble->addr,
 			pbl_size);
 	}
 	rv = ib_sg_to_pages(base_mr, sl, num_sle, sg_off, siw_set_pbl_page);
@@ -1533,7 +1531,7 @@ int siw_map_mr_sg(struct ib_mr *base_mr, struct scatterlist *sl, int num_sle,
 		mem->len = base_mr->length;
 		mem->va = base_mr->iova;
 		siw_dbg_mem(mem,
-			"%llu bytes, start 0x%p, %u SLE to %u entries\n",
+			"%llu bytes, start 0x%pK, %u SLE to %u entries\n",
 			mem->len, (void *)(uintptr_t)mem->va, num_sle,
 			pbl->num_buf);
 	}
@@ -1626,7 +1624,7 @@ int siw_create_srq(struct ib_srq *base_srq,
 		srq->recvq =
 			vmalloc_user(srq->num_rqe * sizeof(struct siw_rqe));
 	else
-		srq->recvq = vcalloc(srq->num_rqe, sizeof(struct siw_rqe));
+		srq->recvq = vzalloc(srq->num_rqe * sizeof(struct siw_rqe));
 
 	if (srq->recvq == NULL) {
 		rv = -ENOMEM;

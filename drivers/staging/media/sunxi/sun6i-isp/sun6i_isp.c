@@ -10,6 +10,7 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -386,7 +387,8 @@ static int sun6i_isp_resources_setup(struct sun6i_isp_device *isp_dev,
 
 	irq = platform_get_irq(platform_dev, 0);
 	if (irq < 0) {
-		ret = irq;
+		dev_err(dev, "failed to get interrupt\n");
+		ret = -ENXIO;
 		goto error_clock_rate_exclusive;
 	}
 
@@ -491,7 +493,7 @@ error_resources:
 	return ret;
 }
 
-static void sun6i_isp_remove(struct platform_device *platform_dev)
+static int sun6i_isp_remove(struct platform_device *platform_dev)
 {
 	struct sun6i_isp_device *isp_dev = platform_get_drvdata(platform_dev);
 
@@ -501,6 +503,8 @@ static void sun6i_isp_remove(struct platform_device *platform_dev)
 	sun6i_isp_v4l2_cleanup(isp_dev);
 	sun6i_isp_tables_cleanup(isp_dev);
 	sun6i_isp_resources_cleanup(isp_dev);
+
+	return 0;
 }
 
 /*
@@ -536,10 +540,10 @@ MODULE_DEVICE_TABLE(of, sun6i_isp_of_match);
 
 static struct platform_driver sun6i_isp_platform_driver = {
 	.probe	= sun6i_isp_probe,
-	.remove = sun6i_isp_remove,
+	.remove	= sun6i_isp_remove,
 	.driver	= {
 		.name		= SUN6I_ISP_NAME,
-		.of_match_table	= sun6i_isp_of_match,
+		.of_match_table	= of_match_ptr(sun6i_isp_of_match),
 		.pm		= &sun6i_isp_pm_ops,
 	},
 };

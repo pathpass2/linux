@@ -36,13 +36,10 @@ DEFINE_RAW_SPINLOCK(pci_lock);
 int noinline pci_bus_read_config_##size \
 	(struct pci_bus *bus, unsigned int devfn, int pos, type *value)	\
 {									\
+	int res;							\
 	unsigned long flags;						\
 	u32 data = 0;							\
-	int res;							\
-									\
-	if (PCI_##size##_BAD)						\
-		return PCIBIOS_BAD_REGISTER_NUMBER;			\
-									\
+	if (PCI_##size##_BAD) return PCIBIOS_BAD_REGISTER_NUMBER;	\
 	pci_lock_config(flags);						\
 	res = bus->ops->read(bus, devfn, pos, len, &data);		\
 	if (res)							\
@@ -50,7 +47,6 @@ int noinline pci_bus_read_config_##size \
 	else								\
 		*value = (type)data;					\
 	pci_unlock_config(flags);					\
-									\
 	return res;							\
 }
 
@@ -58,16 +54,12 @@ int noinline pci_bus_read_config_##size \
 int noinline pci_bus_write_config_##size \
 	(struct pci_bus *bus, unsigned int devfn, int pos, type value)	\
 {									\
-	unsigned long flags;						\
 	int res;							\
-									\
-	if (PCI_##size##_BAD)						\
-		return PCIBIOS_BAD_REGISTER_NUMBER;			\
-									\
+	unsigned long flags;						\
+	if (PCI_##size##_BAD) return PCIBIOS_BAD_REGISTER_NUMBER;	\
 	pci_lock_config(flags);						\
 	res = bus->ops->write(bus, devfn, pos, len, value);		\
 	pci_unlock_config(flags);					\
-									\
 	return res;							\
 }
 
@@ -224,27 +216,24 @@ static noinline void pci_wait_cfg(struct pci_dev *dev)
 }
 
 /* Returns 0 on success, negative values indicate error. */
-#define PCI_USER_READ_CONFIG(size, type)				\
+#define PCI_USER_READ_CONFIG(size, type)					\
 int pci_user_read_config_##size						\
 	(struct pci_dev *dev, int pos, type *val)			\
 {									\
+	int ret = PCIBIOS_SUCCESSFUL;					\
 	u32 data = -1;							\
-	int ret;							\
-									\
 	if (PCI_##size##_BAD)						\
 		return -EINVAL;						\
-									\
-	raw_spin_lock_irq(&pci_lock);					\
+	raw_spin_lock_irq(&pci_lock);				\
 	if (unlikely(dev->block_cfg_access))				\
 		pci_wait_cfg(dev);					\
 	ret = dev->bus->ops->read(dev->bus, dev->devfn,			\
-				  pos, sizeof(type), &data);		\
-	raw_spin_unlock_irq(&pci_lock);					\
+					pos, sizeof(type), &data);	\
+	raw_spin_unlock_irq(&pci_lock);				\
 	if (ret)							\
 		PCI_SET_ERROR_RESPONSE(val);				\
 	else								\
 		*val = (type)data;					\
-									\
 	return pcibios_err_to_errno(ret);				\
 }									\
 EXPORT_SYMBOL_GPL(pci_user_read_config_##size);
@@ -254,18 +243,15 @@ EXPORT_SYMBOL_GPL(pci_user_read_config_##size);
 int pci_user_write_config_##size					\
 	(struct pci_dev *dev, int pos, type val)			\
 {									\
-	int ret;							\
-									\
+	int ret = PCIBIOS_SUCCESSFUL;					\
 	if (PCI_##size##_BAD)						\
 		return -EINVAL;						\
-									\
-	raw_spin_lock_irq(&pci_lock);					\
+	raw_spin_lock_irq(&pci_lock);				\
 	if (unlikely(dev->block_cfg_access))				\
 		pci_wait_cfg(dev);					\
 	ret = dev->bus->ops->write(dev->bus, dev->devfn,		\
-				   pos, sizeof(type), val);		\
-	raw_spin_unlock_irq(&pci_lock);					\
-									\
+					pos, sizeof(type), val);	\
+	raw_spin_unlock_irq(&pci_lock);				\
 	return pcibios_err_to_errno(ret);				\
 }									\
 EXPORT_SYMBOL_GPL(pci_user_write_config_##size);
@@ -511,35 +497,22 @@ int pcie_capability_write_dword(struct pci_dev *dev, int pos, u32 val)
 }
 EXPORT_SYMBOL(pcie_capability_write_dword);
 
-int pcie_capability_clear_and_set_word_unlocked(struct pci_dev *dev, int pos,
-						u16 clear, u16 set)
+int pcie_capability_clear_and_set_word(struct pci_dev *dev, int pos,
+				       u16 clear, u16 set)
 {
 	int ret;
 	u16 val;
 
 	ret = pcie_capability_read_word(dev, pos, &val);
-	if (ret)
-		return ret;
-
-	val &= ~clear;
-	val |= set;
-	return pcie_capability_write_word(dev, pos, val);
-}
-EXPORT_SYMBOL(pcie_capability_clear_and_set_word_unlocked);
-
-int pcie_capability_clear_and_set_word_locked(struct pci_dev *dev, int pos,
-					      u16 clear, u16 set)
-{
-	unsigned long flags;
-	int ret;
-
-	spin_lock_irqsave(&dev->pcie_cap_lock, flags);
-	ret = pcie_capability_clear_and_set_word_unlocked(dev, pos, clear, set);
-	spin_unlock_irqrestore(&dev->pcie_cap_lock, flags);
+	if (!ret) {
+		val &= ~clear;
+		val |= set;
+		ret = pcie_capability_write_word(dev, pos, val);
+	}
 
 	return ret;
 }
-EXPORT_SYMBOL(pcie_capability_clear_and_set_word_locked);
+EXPORT_SYMBOL(pcie_capability_clear_and_set_word);
 
 int pcie_capability_clear_and_set_dword(struct pci_dev *dev, int pos,
 					u32 clear, u32 set)
@@ -548,12 +521,13 @@ int pcie_capability_clear_and_set_dword(struct pci_dev *dev, int pos,
 	u32 val;
 
 	ret = pcie_capability_read_dword(dev, pos, &val);
-	if (ret)
-		return ret;
+	if (!ret) {
+		val &= ~clear;
+		val |= set;
+		ret = pcie_capability_write_dword(dev, pos, val);
+	}
 
-	val &= ~clear;
-	val |= set;
-	return pcie_capability_write_dword(dev, pos, val);
+	return ret;
 }
 EXPORT_SYMBOL(pcie_capability_clear_and_set_dword);
 
@@ -612,15 +586,3 @@ int pci_write_config_dword(const struct pci_dev *dev, int where,
 	return pci_bus_write_config_dword(dev->bus, dev->devfn, where, val);
 }
 EXPORT_SYMBOL(pci_write_config_dword);
-
-void pci_clear_and_set_config_dword(const struct pci_dev *dev, int pos,
-				    u32 clear, u32 set)
-{
-	u32 val;
-
-	pci_read_config_dword(dev, pos, &val);
-	val &= ~clear;
-	val |= set;
-	pci_write_config_dword(dev, pos, val);
-}
-EXPORT_SYMBOL(pci_clear_and_set_config_dword);

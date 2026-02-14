@@ -15,9 +15,6 @@ description:
   These chips also have a Bluetooth portion described in a separate
   binding.
 
-allOf:
-  - $ref: /schemas/net/wireless/wireless-controller.yaml#
-
 properties:
   compatible:
     oneOf:
@@ -41,10 +38,8 @@ properties:
               - brcm,bcm4354-fmac
               - brcm,bcm4356-fmac
               - brcm,bcm4359-fmac
-              - brcm,bcm4366-fmac
               - cypress,cyw4373-fmac
               - cypress,cyw43012-fmac
-              - infineon,cyw43439-fmac
           - const: brcm,bcm4329-fmac
       - enum:
           - brcm,bcm4329-fmac
@@ -53,8 +48,6 @@ properties:
           - pci14e4,4488  # BCM4377
           - pci14e4,4425  # BCM4378
           - pci14e4,4433  # BCM4387
-          - pci14e4,4434  # BCM4388
-          - pci14e4,449d  # BCM43752
 
   reg:
     description: SDIO function number for the device (for most cases
@@ -123,19 +116,11 @@ properties:
       NVRAM. This would normally be filled in by the bootloader from platform
       configuration data.
 
-  clocks:
-    items:
-      - description: External Low Power Clock input (32.768KHz)
-
-  clock-names:
-    items:
-      - const: lpo
-
 required:
   - compatible
   - reg
 
-unevaluatedProperties: false
+additionalProperties: false
 
 examples:
   - |

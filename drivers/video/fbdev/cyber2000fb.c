@@ -227,6 +227,13 @@ cyber2000fb_copyarea(struct fb_info *info, const struct fb_copyarea *region)
 			   CO_REG_CMD_H, cfb);
 }
 
+static void
+cyber2000fb_imageblit(struct fb_info *info, const struct fb_image *image)
+{
+	cfb_imageblit(info, image);
+	return;
+}
+
 static int cyber2000fb_sync(struct fb_info *info)
 {
 	struct cfb_info *cfb = container_of(info, struct cfb_info, fb);
@@ -1054,7 +1061,6 @@ static int cyber2000fb_blank(int blank, struct fb_info *info)
 
 static const struct fb_ops cyber2000fb_ops = {
 	.owner		= THIS_MODULE,
-	__FB_DEFAULT_IOMEM_OPS_RDWR,
 	.fb_check_var	= cyber2000fb_check_var,
 	.fb_set_par	= cyber2000fb_set_par,
 	.fb_setcolreg	= cyber2000fb_setcolreg,
@@ -1062,9 +1068,8 @@ static const struct fb_ops cyber2000fb_ops = {
 	.fb_pan_display	= cyber2000fb_pan_display,
 	.fb_fillrect	= cyber2000fb_fillrect,
 	.fb_copyarea	= cyber2000fb_copyarea,
-	.fb_imageblit	= cfb_imageblit,
+	.fb_imageblit	= cyber2000fb_imageblit,
 	.fb_sync	= cyber2000fb_sync,
-	__FB_DEFAULT_IOMEM_OPS_MMAP,
 };
 
 /*
@@ -1089,6 +1094,7 @@ void cyber2000fb_enable_extregs(struct cfb_info *cfb)
 		cyber2000_grphw(EXT_FUNC_CTL, old, cfb);
 	}
 }
+EXPORT_SYMBOL(cyber2000fb_enable_extregs);
 
 /*
  * Disable access to the extended registers
@@ -1108,6 +1114,41 @@ void cyber2000fb_disable_extregs(struct cfb_info *cfb)
 	else
 		cfb->func_use_count -= 1;
 }
+EXPORT_SYMBOL(cyber2000fb_disable_extregs);
+
+/*
+ * Attach a capture/tv driver to the core CyberX0X0 driver.
+ */
+int cyber2000fb_attach(struct cyberpro_info *info, int idx)
+{
+	if (int_cfb_info != NULL) {
+		info->dev	      = int_cfb_info->fb.device;
+#ifdef CONFIG_FB_CYBER2000_I2C
+		info->i2c	      = &int_cfb_info->i2c_adapter;
+#else
+		info->i2c	      = NULL;
+#endif
+		info->regs	      = int_cfb_info->regs;
+		info->irq             = int_cfb_info->irq;
+		info->fb	      = int_cfb_info->fb.screen_base;
+		info->fb_size	      = int_cfb_info->fb.fix.smem_len;
+		info->info	      = int_cfb_info;
+
+		strscpy(info->dev_name, int_cfb_info->fb.fix.id,
+			sizeof(info->dev_name));
+	}
+
+	return int_cfb_info != NULL;
+}
+EXPORT_SYMBOL(cyber2000fb_attach);
+
+/*
+ * Detach a capture/tv driver from the core CyberX0X0 driver.
+ */
+void cyber2000fb_detach(int idx)
+{
+}
+EXPORT_SYMBOL(cyber2000fb_detach);
 
 #ifdef CONFIG_FB_CYBER2000_DDC
 
@@ -1191,6 +1232,7 @@ static int cyber2000fb_setup_ddc_bus(struct cfb_info *cfb)
 	strscpy(cfb->ddc_adapter.name, cfb->fb.fix.id,
 		sizeof(cfb->ddc_adapter.name));
 	cfb->ddc_adapter.owner		= THIS_MODULE;
+	cfb->ddc_adapter.class		= I2C_CLASS_DDC;
 	cfb->ddc_adapter.algo_data	= &cfb->ddc_algo;
 	cfb->ddc_adapter.dev.parent	= cfb->fb.device;
 	cfb->ddc_algo.setsda		= cyber2000fb_ddc_setsda;
@@ -1417,7 +1459,7 @@ static struct cfb_info *cyberpro_alloc_fb_info(unsigned int id, char *name)
 	cfb->fb.var.accel_flags	= FB_ACCELF_TEXT;
 
 	cfb->fb.fbops		= &cyber2000fb_ops;
-	cfb->fb.flags		= FBINFO_HWACCEL_YPAN;
+	cfb->fb.flags		= FBINFO_DEFAULT | FBINFO_HWACCEL_YPAN;
 	cfb->fb.pseudo_palette	= cfb->pseudo_palette;
 
 	spin_lock_init(&cfb->reg_b0_lock);

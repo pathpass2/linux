@@ -124,7 +124,7 @@ void __exit rose_loopback_clear(void)
 {
 	struct sk_buff *skb;
 
-	timer_delete(&loopback_timer);
+	del_timer(&loopback_timer);
 
 	while ((skb = skb_dequeue(&loopback_queue)) != NULL) {
 		skb->sk = NULL;

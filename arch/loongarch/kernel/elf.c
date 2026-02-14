@@ -6,6 +6,7 @@
 
 #include <linux/binfmts.h>
 #include <linux/elf.h>
+#include <linux/export.h>
 #include <linux/sched.h>
 
 #include <asm/cpu-features.h>
@@ -21,4 +22,9 @@ int arch_check_elf(void *_ehdr, bool has_interpreter, void *_interp_ehdr,
 		   struct arch_elf_state *state)
 {
 	return 0;
+}
+
+void loongarch_set_personality_fcsr(struct arch_elf_state *state)
+{
+	current->thread.fpu.fcsr = boot_cpu_data.fpu_csr0;
 }

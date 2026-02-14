@@ -14,8 +14,7 @@
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
-#include <linux/platform_device.h>
+#include <linux/of_device.h>
 #include <linux/spi/spi.h>
 
 #define DRIVER_NAME "spi-ar934x"
@@ -126,7 +125,7 @@ static int ar934x_spi_transfer_one_message(struct spi_controller *ctlr,
 				iowrite32(reg, sp->base + AR934X_SPI_DATAOUT);
 			}
 
-			reg = AR934X_SPI_SHIFT_VAL(spi_get_chipselect(spi, 0), term,
+			reg = AR934X_SPI_SHIFT_VAL(spi->chip_select, term,
 						   trx_cur * 8);
 			iowrite32(reg, sp->base + AR934X_SPI_REG_SHIFT_CTRL);
 			stat = readl_poll_timeout(
@@ -168,21 +167,27 @@ static int ar934x_spi_probe(struct platform_device *pdev)
 	struct ar934x_spi *sp;
 	void __iomem *base;
 	struct clk *clk;
+	int ret;
 
 	base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(base))
 		return PTR_ERR(base);
 
-	clk = devm_clk_get_enabled(&pdev->dev, NULL);
+	clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "failed to get clock\n");
 		return PTR_ERR(clk);
 	}
 
+	ret = clk_prepare_enable(clk);
+	if (ret)
+		return ret;
+
 	ctlr = devm_spi_alloc_host(&pdev->dev, sizeof(*sp));
 	if (!ctlr) {
 		dev_info(&pdev->dev, "failed to allocate spi controller\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto err_clk_disable;
 	}
 
 	/* disable flash mapping and expose spi controller registers */
@@ -195,6 +200,7 @@ static int ar934x_spi_probe(struct platform_device *pdev)
 	ctlr->transfer_one_message = ar934x_spi_transfer_one_message;
 	ctlr->bits_per_word_mask = SPI_BPW_MASK(32) | SPI_BPW_MASK(24) |
 				   SPI_BPW_MASK(16) | SPI_BPW_MASK(8);
+	ctlr->dev.of_node = pdev->dev.of_node;
 	ctlr->num_chipselect = 3;
 
 	dev_set_drvdata(&pdev->dev, ctlr);
@@ -205,15 +211,27 @@ static int ar934x_spi_probe(struct platform_device *pdev)
 	sp->clk_freq = clk_get_rate(clk);
 	sp->ctlr = ctlr;
 
-	return spi_register_controller(ctlr);
+	ret = spi_register_controller(ctlr);
+	if (!ret)
+		return 0;
+
+err_clk_disable:
+	clk_disable_unprepare(clk);
+	return ret;
 }
 
-static void ar934x_spi_remove(struct platform_device *pdev)
+static int ar934x_spi_remove(struct platform_device *pdev)
 {
 	struct spi_controller *ctlr;
+	struct ar934x_spi *sp;
 
 	ctlr = dev_get_drvdata(&pdev->dev);
+	sp = spi_controller_get_devdata(ctlr);
+
 	spi_unregister_controller(ctlr);
+	clk_disable_unprepare(sp->clk);
+
+	return 0;
 }
 
 static struct platform_driver ar934x_spi_driver = {

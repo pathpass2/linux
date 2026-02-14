@@ -18,7 +18,7 @@
 #include <asm/opal.h>
 #include <asm/cputhreads.h>
 #include <asm/cpuidle.h>
-#include <asm/text-patching.h>
+#include <asm/code-patching.h>
 #include <asm/smp.h>
 #include <asm/runlatch.h>
 #include <asm/dbell.h>
@@ -246,9 +246,9 @@ static inline void atomic_lock_thread_idle(void)
 {
 	int cpu = raw_smp_processor_id();
 	int first = cpu_first_thread_sibling(cpu);
-	unsigned long *lock = &paca_ptrs[first]->idle_lock;
+	unsigned long *state = &paca_ptrs[first]->idle_state;
 
-	while (unlikely(test_and_set_bit_lock(NR_PNV_CORE_IDLE_LOCK_BIT, lock)))
+	while (unlikely(test_and_set_bit_lock(NR_PNV_CORE_IDLE_LOCK_BIT, state)))
 		barrier();
 }
 
@@ -258,31 +258,29 @@ static inline void atomic_unlock_and_stop_thread_idle(void)
 	int first = cpu_first_thread_sibling(cpu);
 	unsigned long thread = 1UL << cpu_thread_in_core(cpu);
 	unsigned long *state = &paca_ptrs[first]->idle_state;
-	unsigned long *lock = &paca_ptrs[first]->idle_lock;
 	u64 s = READ_ONCE(*state);
 	u64 new, tmp;
 
-	BUG_ON(!(READ_ONCE(*lock) & PNV_CORE_IDLE_LOCK_BIT));
+	BUG_ON(!(s & PNV_CORE_IDLE_LOCK_BIT));
 	BUG_ON(s & thread);
 
 again:
-	new = s | thread;
+	new = (s | thread) & ~PNV_CORE_IDLE_LOCK_BIT;
 	tmp = cmpxchg(state, s, new);
 	if (unlikely(tmp != s)) {
 		s = tmp;
 		goto again;
 	}
-	clear_bit_unlock(NR_PNV_CORE_IDLE_LOCK_BIT, lock);
 }
 
 static inline void atomic_unlock_thread_idle(void)
 {
 	int cpu = raw_smp_processor_id();
 	int first = cpu_first_thread_sibling(cpu);
-	unsigned long *lock = &paca_ptrs[first]->idle_lock;
+	unsigned long *state = &paca_ptrs[first]->idle_state;
 
-	BUG_ON(!test_bit(NR_PNV_CORE_IDLE_LOCK_BIT, lock));
-	clear_bit_unlock(NR_PNV_CORE_IDLE_LOCK_BIT, lock);
+	BUG_ON(!test_bit(NR_PNV_CORE_IDLE_LOCK_BIT, state));
+	clear_bit_unlock(NR_PNV_CORE_IDLE_LOCK_BIT, state);
 }
 
 /* P7 and P8 */
@@ -1171,9 +1169,8 @@ static void __init pnv_arch300_idle_init(void)
 	u64 max_residency_ns = 0;
 	int i;
 
-	/* stop is not really architected, we only have p9,p10 and p11 drivers */
-	if (!pvr_version_is(PVR_POWER9) && !pvr_version_is(PVR_POWER10) &&
-		!pvr_version_is(PVR_POWER11))
+	/* stop is not really architected, we only have p9,p10 drivers */
+	if (!pvr_version_is(PVR_POWER10) && !pvr_version_is(PVR_POWER9))
 		return;
 
 	/*
@@ -1190,8 +1187,8 @@ static void __init pnv_arch300_idle_init(void)
 		struct pnv_idle_states_t *state = &pnv_idle_states[i];
 		u64 psscr_rl = state->psscr_val & PSSCR_RL_MASK;
 
-		/* No deep loss driver implemented for POWER10 and POWER11 yet */
-		if ((pvr_version_is(PVR_POWER10) || pvr_version_is(PVR_POWER11)) &&
+		/* No deep loss driver implemented for POWER10 yet */
+		if (pvr_version_is(PVR_POWER10) &&
 				state->flags & (OPAL_PM_TIMEBASE_STOP|OPAL_PM_LOSE_FULL_CONTEXT))
 			continue;
 
@@ -1467,19 +1464,14 @@ static int __init pnv_init_idle_states(void)
 			power7_fastsleep_workaround_entry = false;
 			power7_fastsleep_workaround_exit = false;
 		} else {
-			struct device *dev_root;
 			/*
 			 * OPAL_PM_SLEEP_ENABLED_ER1 is set. It indicates that
 			 * workaround is needed to use fastsleep. Provide sysfs
 			 * control to choose how this workaround has to be
 			 * applied.
 			 */
-			dev_root = bus_get_dev_root(&cpu_subsys);
-			if (dev_root) {
-				device_create_file(dev_root,
-						   &dev_attr_fastsleep_workaround_applyonce);
-				put_device(dev_root);
-			}
+			device_create_file(cpu_subsys.dev_root,
+				&dev_attr_fastsleep_workaround_applyonce);
 		}
 
 		update_subcore_sibling_mask();

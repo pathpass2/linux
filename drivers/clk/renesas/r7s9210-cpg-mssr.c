@@ -159,24 +159,22 @@ static void __init r7s9210_update_clk_table(struct clk *extal_clk,
 
 static struct clk * __init rza2_cpg_clk_register(struct device *dev,
 	const struct cpg_core_clk *core, const struct cpg_mssr_info *info,
-	struct cpg_mssr_pub *pub)
+	struct clk **clks, void __iomem *base,
+	struct raw_notifier_head *notifiers)
 {
-	void __iomem *base = pub->base0;
-	struct clk **clks = pub->clks;
+	struct clk *parent;
 	unsigned int mult = 1;
 	unsigned int div = 1;
-	struct clk *parent;
 
 	parent = clks[core->parent];
 	if (IS_ERR(parent))
 		return ERR_CAST(parent);
 
-	switch (core->type) {
-	case CLK_TYPE_RZA_MAIN:
-		r7s9210_update_clk_table(parent, base);
+	switch (core->id) {
+	case CLK_MAIN:
 		break;
 
-	case CLK_TYPE_RZA_PLL:
+	case CLK_PLL:
 		if (cpg_mode)
 			mult = 44;	/* Divider 1 is 1/2 */
 		else
@@ -186,6 +184,9 @@ static struct clk * __init rza2_cpg_clk_register(struct device *dev,
 	default:
 		return ERR_PTR(-EINVAL);
 	}
+
+	if (core->id == CLK_MAIN)
+		r7s9210_update_clk_table(parent, base);
 
 	return clk_register_fixed_factor(NULL, core->name,
 					 __clk_get_name(parent), 0, mult, div);

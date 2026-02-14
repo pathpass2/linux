@@ -44,49 +44,6 @@
 #include "protocol.h"
 #include "orangefs-kernel.h"
 
-/* a private internal type */
-struct __keyword_mask_s {
-	const char *keyword;
-	__u64 mask_val;
-};
-
-/*
- * Map all kmod keywords to kmod debug masks here. Keep this
- * structure "packed":
- *
- *   "all" is always last...
- *
- *   keyword     mask_val     index
- *     foo          1           0
- *     bar          2           1
- *     baz          4           2
- *     qux          8           3
- *      .           .           .
- */
-static struct __keyword_mask_s s_kmod_keyword_mask_map[] = {
-	{"super", GOSSIP_SUPER_DEBUG},
-	{"inode", GOSSIP_INODE_DEBUG},
-	{"file", GOSSIP_FILE_DEBUG},
-	{"dir", GOSSIP_DIR_DEBUG},
-	{"utils", GOSSIP_UTILS_DEBUG},
-	{"wait", GOSSIP_WAIT_DEBUG},
-	{"acl", GOSSIP_ACL_DEBUG},
-	{"dcache", GOSSIP_DCACHE_DEBUG},
-	{"dev", GOSSIP_DEV_DEBUG},
-	{"name", GOSSIP_NAME_DEBUG},
-	{"bufmap", GOSSIP_BUFMAP_DEBUG},
-	{"cache", GOSSIP_CACHE_DEBUG},
-	{"debugfs", GOSSIP_DEBUGFS_DEBUG},
-	{"xattr", GOSSIP_XATTR_DEBUG},
-	{"init", GOSSIP_INIT_DEBUG},
-	{"sysfs", GOSSIP_SYSFS_DEBUG},
-	{"none", GOSSIP_NO_DEBUG},
-	{"all", GOSSIP_MAX_DEBUG}
-};
-
-static const int num_kmod_keyword_mask_map = (int)
-	(ARRAY_SIZE(s_kmod_keyword_mask_map));
-
 #define DEBUG_HELP_STRING_SIZE 4096
 #define HELP_STRING_UNINITIALIZED \
 	"Client Debug Keywords are unknown until the first time\n" \
@@ -238,21 +195,19 @@ void orangefs_debugfs_init(int debug_mask)
 static void orangefs_kernel_debug_init(void)
 {
 	static char k_buffer[ORANGEFS_MAX_DEBUG_STRING_LEN] = { };
-	size_t len = strlen(kernel_debug_string);
 
 	gossip_debug(GOSSIP_DEBUGFS_DEBUG, "%s: start\n", __func__);
 
-	if (len + 1 < ORANGEFS_MAX_DEBUG_STRING_LEN) {
-		memcpy(k_buffer, kernel_debug_string, len);
-		k_buffer[len] = '\n';
-		k_buffer[len + 1] = '\0';
+	if (strlen(kernel_debug_string) + 1 < ORANGEFS_MAX_DEBUG_STRING_LEN) {
+		strcpy(k_buffer, kernel_debug_string);
+		strcat(k_buffer, "\n");
 	} else {
-		strscpy(k_buffer, "none\n");
+		strcpy(k_buffer, "none\n");
 		pr_info("%s: overflow 1!\n", __func__);
 	}
 
-	debugfs_create_file_aux_num(ORANGEFS_KMOD_DEBUG_FILE, 0444, debug_dir, k_buffer,
-			    0, &kernel_debug_fops);
+	debugfs_create_file(ORANGEFS_KMOD_DEBUG_FILE, 0444, debug_dir, k_buffer,
+			    &kernel_debug_fops);
 }
 
 
@@ -338,24 +293,24 @@ static int help_show(struct seq_file *m, void *v)
  */
 static void orangefs_client_debug_init(void)
 {
+
 	static char c_buffer[ORANGEFS_MAX_DEBUG_STRING_LEN] = { };
-	size_t len = strlen(client_debug_string);
 
 	gossip_debug(GOSSIP_DEBUGFS_DEBUG, "%s: start\n", __func__);
 
-	if (len + 1 < ORANGEFS_MAX_DEBUG_STRING_LEN) {
-		memcpy(c_buffer, client_debug_string, len);
-		c_buffer[len] = '\n';
-		c_buffer[len + 1] = '\0';
+	if (strlen(client_debug_string) + 1 < ORANGEFS_MAX_DEBUG_STRING_LEN) {
+		strcpy(c_buffer, client_debug_string);
+		strcat(c_buffer, "\n");
 	} else {
-		strscpy(c_buffer, "none\n");
+		strcpy(c_buffer, "none\n");
 		pr_info("%s: overflow! 2\n", __func__);
 	}
 
-	client_debug_dentry = debugfs_create_file_aux_num(
-					  ORANGEFS_CLIENT_DEBUG_FILE,
-					  0444, debug_dir, c_buffer, 1,
-					  &kernel_debug_fops);
+	client_debug_dentry = debugfs_create_file(ORANGEFS_CLIENT_DEBUG_FILE,
+						  0444,
+						  debug_dir,
+						  c_buffer,
+						  &kernel_debug_fops);
 }
 
 /* open ORANGEFS_KMOD_DEBUG_FILE or ORANGEFS_CLIENT_DEBUG_FILE.*/
@@ -399,7 +354,7 @@ static ssize_t orangefs_debug_read(struct file *file,
 		goto out;
 
 	mutex_lock(&orangefs_debug_lock);
-	sprintf_ret = scnprintf(buf, ORANGEFS_MAX_DEBUG_STRING_LEN, "%s", (char *)file->private_data);
+	sprintf_ret = sprintf(buf, "%s", (char *)file->private_data);
 	mutex_unlock(&orangefs_debug_lock);
 
 	read_ret = simple_read_from_buffer(ubuf, count, ppos, buf, sprintf_ret);
@@ -438,18 +393,19 @@ static ssize_t orangefs_debug_write(struct file *file,
 	 * Thwart users who try to jamb a ridiculous number
 	 * of bytes into the debug file...
 	 */
-	if (count > ORANGEFS_MAX_DEBUG_STRING_LEN) {
+	if (count > ORANGEFS_MAX_DEBUG_STRING_LEN + 1) {
 		silly = count;
-		count = ORANGEFS_MAX_DEBUG_STRING_LEN;
+		count = ORANGEFS_MAX_DEBUG_STRING_LEN + 1;
 	}
 
-	buf = memdup_user_nul(ubuf, count - 1);
-	if (IS_ERR(buf)) {
+	buf = kzalloc(ORANGEFS_MAX_DEBUG_STRING_LEN, GFP_KERNEL);
+	if (!buf)
+		goto out;
+
+	if (copy_from_user(buf, ubuf, count - 1)) {
 		gossip_debug(GOSSIP_DEBUGFS_DEBUG,
-			     "%s: memdup_user_nul failed!\n",
+			     "%s: copy_from_user failed!\n",
 			     __func__);
-		rc = PTR_ERR(buf);
-		buf = NULL;
 		goto out;
 	}
 
@@ -462,7 +418,8 @@ static ssize_t orangefs_debug_write(struct file *file,
 	 * A service operation is required to set a new client-side
 	 * debug mask.
 	 */
-	if (!debugfs_get_aux_num(file)) {	// kernel-debug
+	if (!strcmp(file->f_path.dentry->d_name.name,
+		    ORANGEFS_KMOD_DEBUG_FILE)) {
 		debug_string_to_mask(buf, &orangefs_gossip_debug_mask, 0);
 		debug_mask_to_string(&orangefs_gossip_debug_mask, 0);
 		debug_string = kernel_debug_string;
@@ -751,14 +708,15 @@ static void debug_mask_to_string(void *mask, int type)
 	else if (len)
 		kernel_debug_string[len - 1] = '\0';
 	else if (type)
-		strscpy(client_debug_string, "none");
+		strcpy(client_debug_string, "none");
 	else
-		strscpy(kernel_debug_string, "none");
+		strcpy(kernel_debug_string, "none");
 
 out:
 gossip_debug(GOSSIP_UTILS_DEBUG, "%s: string:%s:\n", __func__, debug_string);
 
 	return;
+
 }
 
 static void do_k_string(void *k_mask, int index)
@@ -770,14 +728,14 @@ static void do_k_string(void *k_mask, int index)
 
 	if (*mask & s_kmod_keyword_mask_map[index].mask_val) {
 		if ((strlen(kernel_debug_string) +
-		     strlen(s_kmod_keyword_mask_map[index].keyword) + 1)
-			< ORANGEFS_MAX_DEBUG_STRING_LEN) {
+		     strlen(s_kmod_keyword_mask_map[index].keyword))
+			< ORANGEFS_MAX_DEBUG_STRING_LEN - 1) {
 				strcat(kernel_debug_string,
 				       s_kmod_keyword_mask_map[index].keyword);
 				strcat(kernel_debug_string, ",");
 			} else {
 				gossip_err("%s: overflow!\n", __func__);
-				strscpy(kernel_debug_string, ORANGEFS_ALL);
+				strcpy(kernel_debug_string, ORANGEFS_ALL);
 				goto out;
 			}
 	}
@@ -798,13 +756,13 @@ static void do_c_string(void *c_mask, int index)
 	    (mask->mask2 & cdm_array[index].mask2)) {
 		if ((strlen(client_debug_string) +
 		     strlen(cdm_array[index].keyword) + 1)
-			< ORANGEFS_MAX_DEBUG_STRING_LEN) {
+			< ORANGEFS_MAX_DEBUG_STRING_LEN - 2) {
 				strcat(client_debug_string,
 				       cdm_array[index].keyword);
 				strcat(client_debug_string, ",");
 			} else {
 				gossip_err("%s: overflow!\n", __func__);
-				strscpy(client_debug_string, ORANGEFS_ALL);
+				strcpy(client_debug_string, ORANGEFS_ALL);
 				goto out;
 			}
 	}
@@ -840,14 +798,14 @@ static int check_amalgam_keyword(void *mask, int type)
 
 		if ((c_mask->mask1 == cdm_array[client_all_index].mask1) &&
 		    (c_mask->mask2 == cdm_array[client_all_index].mask2)) {
-			strscpy(client_debug_string, ORANGEFS_ALL);
+			strcpy(client_debug_string, ORANGEFS_ALL);
 			rc = 1;
 			goto out;
 		}
 
 		if ((c_mask->mask1 == cdm_array[client_verbose_index].mask1) &&
 		    (c_mask->mask2 == cdm_array[client_verbose_index].mask2)) {
-			strscpy(client_debug_string, ORANGEFS_VERBOSE);
+			strcpy(client_debug_string, ORANGEFS_VERBOSE);
 			rc = 1;
 			goto out;
 		}
@@ -856,7 +814,7 @@ static int check_amalgam_keyword(void *mask, int type)
 		k_mask = (__u64 *) mask;
 
 		if (*k_mask >= s_kmod_keyword_mask_map[k_all_index].mask_val) {
-			strscpy(kernel_debug_string, ORANGEFS_ALL);
+			strcpy(kernel_debug_string, ORANGEFS_ALL);
 			rc = 1;
 			goto out;
 		}

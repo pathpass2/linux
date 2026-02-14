@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: BSD-3-Clause-Clear
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (C) 2018 Stanislaw Gruszka <stf_xl@wp.pl>
  * Copyright (C) 2016 Felix Fietkau <nbd@nbd.name>
@@ -287,7 +287,8 @@ mt76x02_vif_init(struct mt76x02_dev *dev, struct ieee80211_vif *vif,
 
 	mvif->idx = idx;
 	mvif->group_wcid.idx = MT_VIF_WCID(idx);
-	mt76_wcid_init(&mvif->group_wcid, 0);
+	mvif->group_wcid.hw_key_idx = -1;
+	mt76_packet_id_init(&mvif->group_wcid);
 
 	mtxq = (struct mt76_txq *)vif->txq->drv_priv;
 	rcu_assign_pointer(dev->mt76.wcid[MT_VIF_WCID(idx)], &mvif->group_wcid);
@@ -345,7 +346,7 @@ void mt76x02_remove_interface(struct ieee80211_hw *hw,
 
 	dev->mt76.vif_mask &= ~BIT_ULL(mvif->idx);
 	rcu_assign_pointer(dev->mt76.wcid[mvif->group_wcid.idx], NULL);
-	mt76_wcid_cleanup(&dev->mt76, &mvif->group_wcid);
+	mt76_packet_id_flush(&dev->mt76, &mvif->group_wcid);
 }
 EXPORT_SYMBOL_GPL(mt76x02_remove_interface);
 
@@ -453,20 +454,20 @@ int mt76x02_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	msta = sta ? (struct mt76x02_sta *)sta->drv_priv : NULL;
 	wcid = msta ? &msta->wcid : &mvif->group_wcid;
 
-	if (cmd != SET_KEY) {
+	if (cmd == SET_KEY) {
+		key->hw_key_idx = wcid->idx;
+		wcid->hw_key_idx = idx;
+		if (key->flags & IEEE80211_KEY_FLAG_RX_MGMT) {
+			key->flags |= IEEE80211_KEY_FLAG_SW_MGMT_TX;
+			wcid->sw_iv = true;
+		}
+	} else {
 		if (idx == wcid->hw_key_idx) {
 			wcid->hw_key_idx = -1;
 			wcid->sw_iv = false;
 		}
 
-		return 0;
-	}
-
-	key->hw_key_idx = wcid->idx;
-	wcid->hw_key_idx = idx;
-	if (key->flags & IEEE80211_KEY_FLAG_RX_MGMT) {
-		key->flags |= IEEE80211_KEY_FLAG_SW_MGMT_TX;
-		wcid->sw_iv = true;
+		key = NULL;
 	}
 	mt76_wcid_key_setup(&dev->mt76, wcid, key);
 
@@ -548,7 +549,7 @@ void mt76x02_set_tx_ackto(struct mt76x02_dev *dev)
 EXPORT_SYMBOL_GPL(mt76x02_set_tx_ackto);
 
 void mt76x02_set_coverage_class(struct ieee80211_hw *hw,
-				int radio_idx, s16 coverage_class)
+				s16 coverage_class)
 {
 	struct mt76x02_dev *dev = hw->priv;
 
@@ -559,7 +560,7 @@ void mt76x02_set_coverage_class(struct ieee80211_hw *hw,
 }
 EXPORT_SYMBOL_GPL(mt76x02_set_coverage_class);
 
-int mt76x02_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx, u32 val)
+int mt76x02_set_rts_threshold(struct ieee80211_hw *hw, u32 val)
 {
 	struct mt76x02_dev *dev = hw->priv;
 
@@ -695,5 +696,4 @@ void mt76x02_config_mac_addr_list(struct mt76x02_dev *dev)
 }
 EXPORT_SYMBOL_GPL(mt76x02_config_mac_addr_list);
 
-MODULE_DESCRIPTION("MediaTek MT76x02 helpers");
 MODULE_LICENSE("Dual BSD/GPL");

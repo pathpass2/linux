@@ -78,7 +78,7 @@ teql_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 	struct net_device *dev = qdisc_dev(sch);
 	struct teql_sched_data *q = qdisc_priv(sch);
 
-	if (q->q.qlen < READ_ONCE(dev->tx_queue_len)) {
+	if (q->q.qlen < dev->tx_queue_len) {
 		__skb_queue_tail(&q->q, skb);
 		return NET_XMIT_SUCCESS;
 	}
@@ -177,11 +177,6 @@ static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt,
 
 	if (m->dev == dev)
 		return -ELOOP;
-
-	if (sch->parent != TC_H_ROOT) {
-		NL_SET_ERR_MSG_MOD(extack, "teql can only be used as root");
-		return -EOPNOTSUPP;
-	}
 
 	q->m = m;
 
@@ -302,7 +297,7 @@ restart:
 		struct net_device *slave = qdisc_dev(q);
 		struct netdev_queue *slave_txq = netdev_get_tx_queue(slave, 0);
 
-		if (rcu_access_pointer(slave_txq->qdisc_sleeping) != q)
+		if (slave_txq->qdisc_sleeping != q)
 			continue;
 		if (netif_xmit_stopped(netdev_get_tx_queue(slave, subq)) ||
 		    !netif_running(slave)) {
@@ -429,7 +424,7 @@ static int teql_master_mtu(struct net_device *dev, int new_mtu)
 		} while ((q = NEXT_SLAVE(q)) != m->slaves);
 	}
 
-	WRITE_ONCE(dev->mtu, new_mtu);
+	dev->mtu = new_mtu;
 	return 0;
 }
 
@@ -528,4 +523,3 @@ module_init(teql_init);
 module_exit(teql_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("True (or trivial) link equalizer qdisc");

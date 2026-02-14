@@ -32,7 +32,7 @@ static const char *lzma_strerror(lzma_ret ret)
 	}
 }
 
-int lzma_decompress_stream_to_file(FILE *infile, int output_fd)
+int lzma_decompress_to_file(const char *input, int output_fd)
 {
 	lzma_action action = LZMA_RUN;
 	lzma_stream strm   = LZMA_STREAM_INIT;
@@ -41,11 +41,20 @@ int lzma_decompress_stream_to_file(FILE *infile, int output_fd)
 
 	u8 buf_in[BUFSIZE];
 	u8 buf_out[BUFSIZE];
+	FILE *infile;
+
+	infile = fopen(input, "rb");
+	if (!infile) {
+		pr_err("lzma: fopen failed on %s: '%s'\n",
+		       input, strerror(errno));
+		return -1;
+	}
 
 	ret = lzma_stream_decoder(&strm, UINT64_MAX, LZMA_CONCATENATED);
 	if (ret != LZMA_OK) {
-		pr_debug("lzma: lzma_stream_decoder failed %s (%d)\n", lzma_strerror(ret), ret);
-		return err;
+		pr_err("lzma: lzma_stream_decoder failed %s (%d)\n",
+			lzma_strerror(ret), ret);
+		goto err_fclose;
 	}
 
 	strm.next_in   = NULL;
@@ -59,7 +68,7 @@ int lzma_decompress_stream_to_file(FILE *infile, int output_fd)
 			strm.avail_in = fread(buf_in, 1, sizeof(buf_in), infile);
 
 			if (ferror(infile)) {
-				pr_debug("lzma: read error: %s\n", strerror(errno));
+				pr_err("lzma: read error: %s\n", strerror(errno));
 				goto err_lzma_end;
 			}
 
@@ -73,7 +82,7 @@ int lzma_decompress_stream_to_file(FILE *infile, int output_fd)
 			ssize_t write_size = sizeof(buf_out) - strm.avail_out;
 
 			if (writen(output_fd, buf_out, write_size) != write_size) {
-				pr_debug("lzma: write error: %s\n", strerror(errno));
+				pr_err("lzma: write error: %s\n", strerror(errno));
 				goto err_lzma_end;
 			}
 
@@ -85,7 +94,7 @@ int lzma_decompress_stream_to_file(FILE *infile, int output_fd)
 			if (ret == LZMA_STREAM_END)
 				break;
 
-			pr_debug("lzma: failed %s\n", lzma_strerror(ret));
+			pr_err("lzma: failed %s\n", lzma_strerror(ret));
 			goto err_lzma_end;
 		}
 	}
@@ -93,23 +102,9 @@ int lzma_decompress_stream_to_file(FILE *infile, int output_fd)
 	err = 0;
 err_lzma_end:
 	lzma_end(&strm);
-	return err;
-}
-
-int lzma_decompress_to_file(const char *input, int output_fd)
-{
-	FILE *infile;
-	int ret;
-
-	infile = fopen(input, "rb");
-	if (!infile) {
-		pr_debug("lzma: fopen failed on %s: '%s'\n", input, strerror(errno));
-		return -1;
-	}
-
-	ret = lzma_decompress_stream_to_file(infile, output_fd);
+err_fclose:
 	fclose(infile);
-	return ret;
+	return err;
 }
 
 bool lzma_is_compressed(const char *input)
@@ -120,7 +115,7 @@ bool lzma_is_compressed(const char *input)
 	ssize_t rc;
 
 	if (fd < 0)
-		return false;
+		return -1;
 
 	rc = read(fd, buf, sizeof(buf));
 	close(fd);

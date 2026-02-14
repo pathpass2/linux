@@ -72,7 +72,7 @@ static struct tgfx {
 
 static void tgfx_timer(struct timer_list *t)
 {
-	struct tgfx *tgfx = timer_container_of(tgfx, t, timer);
+	struct tgfx *tgfx = from_timer(tgfx, t, timer);
 	struct input_dev *dev;
 	int data1, data2, i;
 
@@ -103,31 +103,33 @@ static void tgfx_timer(struct timer_list *t)
 static int tgfx_open(struct input_dev *dev)
 {
 	struct tgfx *tgfx = input_get_drvdata(dev);
+	int err;
 
-	scoped_guard(mutex_intr, &tgfx->sem) {
-		if (!tgfx->used++) {
-			parport_claim(tgfx->pd);
-			parport_write_control(tgfx->pd->port, 0x04);
-			mod_timer(&tgfx->timer, jiffies + TGFX_REFRESH_TIME);
-		}
+	err = mutex_lock_interruptible(&tgfx->sem);
+	if (err)
+		return err;
 
-		return 0;
+	if (!tgfx->used++) {
+		parport_claim(tgfx->pd);
+		parport_write_control(tgfx->pd->port, 0x04);
+		mod_timer(&tgfx->timer, jiffies + TGFX_REFRESH_TIME);
 	}
 
-	return -EINTR;
+	mutex_unlock(&tgfx->sem);
+	return 0;
 }
 
 static void tgfx_close(struct input_dev *dev)
 {
 	struct tgfx *tgfx = input_get_drvdata(dev);
 
-	guard(mutex)(&tgfx->sem);
-
+	mutex_lock(&tgfx->sem);
 	if (!--tgfx->used) {
-		timer_delete_sync(&tgfx->timer);
+		del_timer_sync(&tgfx->timer);
 		parport_write_control(tgfx->pd->port, 0x00);
 		parport_release(tgfx->pd);
 	}
+	mutex_unlock(&tgfx->sem);
 }
 
 
@@ -170,7 +172,7 @@ static void tgfx_attach(struct parport *pp)
 		return;
 	}
 
-	tgfx = kzalloc(sizeof(*tgfx), GFP_KERNEL);
+	tgfx = kzalloc(sizeof(struct tgfx), GFP_KERNEL);
 	if (!tgfx) {
 		printk(KERN_ERR "turbografx.c: Not enough memory\n");
 		goto err_unreg_pardev;
@@ -272,6 +274,7 @@ static struct parport_driver tgfx_parport_driver = {
 	.name = "turbografx",
 	.match_port = tgfx_attach,
 	.detach = tgfx_detach,
+	.devmodel = true,
 };
 
 static int __init tgfx_init(void)

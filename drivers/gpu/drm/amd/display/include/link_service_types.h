@@ -34,6 +34,10 @@
 struct ddc;
 struct irq_manager;
 
+enum {
+	MAX_CONTROLLER_NUM = 6
+};
+
 enum dp_power_state {
 	DP_POWER_STATE_D0 = 1,
 	DP_POWER_STATE_D3
@@ -53,7 +57,29 @@ enum {
 	BITS_PER_DP_BYTE = 10,
 	DATA_EFFICIENCY_8b_10b_x10000 = 8000, /* 80% data efficiency */
 	DATA_EFFICIENCY_8b_10b_FEC_EFFICIENCY_x100 = 97, /* 97% data efficiency when FEC is enabled */
-	DATA_EFFICIENCY_128b_132b_x10000 = 9641, /* 96.71% data efficiency x 99.7% downspread factor */
+	DATA_EFFICIENCY_128b_132b_x10000 = 9646, /* 96.71% data efficiency x 99.75% downspread factor */
+};
+
+enum link_training_result {
+	LINK_TRAINING_SUCCESS,
+	LINK_TRAINING_CR_FAIL_LANE0,
+	LINK_TRAINING_CR_FAIL_LANE1,
+	LINK_TRAINING_CR_FAIL_LANE23,
+	/* CR DONE bit is cleared during EQ step */
+	LINK_TRAINING_EQ_FAIL_CR,
+	/* CR DONE bit is cleared but LANE0_CR_DONE is set during EQ step */
+	LINK_TRAINING_EQ_FAIL_CR_PARTIAL,
+	/* other failure during EQ step */
+	LINK_TRAINING_EQ_FAIL_EQ,
+	LINK_TRAINING_LQA_FAIL,
+	/* one of the CR,EQ or symbol lock is dropped */
+	LINK_TRAINING_LINK_LOSS,
+	/* Abort link training (because sink unplugged) */
+	LINK_TRAINING_ABORT,
+	DP_128b_132b_LT_FAILED,
+	DP_128b_132b_MAX_LOOP_COUNT_REACHED,
+	DP_128b_132b_CHANNEL_EQ_DONE_TIMEOUT,
+	DP_128b_132b_CDS_DONE_TIMEOUT,
 };
 
 enum lttpr_mode {
@@ -73,6 +99,7 @@ struct link_training_settings {
 	enum dc_pre_emphasis *pre_emphasis;
 	enum dc_post_cursor2 *post_cursor2;
 	bool should_set_fec_ready;
+	/* TODO - factor lane_settings out because it changes during LT */
 	union dc_dp_ffe_preset *ffe_preset;
 
 	uint16_t cr_pattern_time;
@@ -88,8 +115,6 @@ struct link_training_settings {
 
 	bool enhanced_framing;
 	enum lttpr_mode lttpr_mode;
-
-	bool lttpr_early_tps2;
 
 	/* disallow different lanes to have different lane settings */
 	bool disallow_per_lane_settings;
@@ -169,15 +194,6 @@ enum dp_test_pattern {
 
 	DP_TEST_PATTERN_UNSUPPORTED
 };
-
-#define IS_DP_PHY_SQUARE_PATTERN(test_pattern)\
-		(DP_TEST_PATTERN_SQUARE_BEGIN <= test_pattern &&\
-		test_pattern <= DP_TEST_PATTERN_SQUARE_END)
-
-#define IS_DP_PHY_PATTERN(test_pattern)\
-		((DP_TEST_PATTERN_PHY_PATTERN_BEGIN <= test_pattern &&\
-		test_pattern <= DP_TEST_PATTERN_PHY_PATTERN_END) ||\
-		test_pattern == DP_TEST_PATTERN_VIDEO_MODE)
 
 enum dp_test_pattern_color_space {
 	DP_TEST_PATTERN_COLOR_SPACE_RGB,

@@ -13,12 +13,12 @@
 #include <linux/hyperv.h>
 #include <net/sock.h>
 #include <net/af_vsock.h>
-#include <hyperv/hvhdk.h>
+#include <asm/hyperv-tlfs.h>
 
 /* Older (VMBUS version 'VERSION_WIN10' or before) Windows hosts have some
  * stricter requirements on the hv_sock ring buffer size of six 4K pages.
- * HV_HYP_PAGE_SIZE is defined as 4K. Newer hosts don't have this limitation;
- * but, keep the defaults the same for compat.
+ * hyperv-tlfs defines HV_HYP_PAGE_SIZE as 4K. Newer hosts don't have this
+ * limitation; but, keep the defaults the same for compat.
  */
 #define RINGBUFFER_HVS_RCV_SIZE (HV_HYP_PAGE_SIZE * 6)
 #define RINGBUFFER_HVS_SND_SIZE (HV_HYP_PAGE_SIZE * 6)
@@ -549,7 +549,6 @@ static void hvs_destruct(struct vsock_sock *vsk)
 		vmbus_hvsock_device_unregister(chan);
 
 	kfree(hvs);
-	vsk->trans = NULL;
 }
 
 static int hvs_dgram_bind(struct vsock_sock *vsk, struct sockaddr_vm *addr)
@@ -570,7 +569,7 @@ static int hvs_dgram_enqueue(struct vsock_sock *vsk,
 	return -EOPNOTSUPP;
 }
 
-static bool hvs_dgram_allow(struct vsock_sock *vsk, u32 cid, u32 port)
+static bool hvs_dgram_allow(u32 cid, u32 port)
 {
 	return false;
 }
@@ -694,26 +693,15 @@ out:
 static s64 hvs_stream_has_data(struct vsock_sock *vsk)
 {
 	struct hvsock *hvs = vsk->trans;
-	bool need_refill;
 	s64 ret;
 
 	if (hvs->recv_data_len > 0)
-		return hvs->recv_data_len;
+		return 1;
 
 	switch (hvs_channel_readable_payload(hvs->chan)) {
 	case 1:
-		need_refill = !hvs->recv_desc;
-		if (!need_refill)
-			return -EIO;
-
-		hvs->recv_desc = hv_pkt_iter_first(hvs->chan);
-		if (!hvs->recv_desc)
-			return -ENOBUFS;
-
-		ret = hvs_update_recv_data(hvs);
-		if (ret)
-			return ret;
-		return hvs->recv_data_len;
+		ret = 1;
+		break;
 	case 0:
 		vsk->peer_shutdown |= SEND_SHUTDOWN;
 		ret = 0;
@@ -745,11 +733,8 @@ static bool hvs_stream_is_active(struct vsock_sock *vsk)
 	return hvs->chan != NULL;
 }
 
-static bool hvs_stream_allow(struct vsock_sock *vsk, u32 cid, u32 port)
+static bool hvs_stream_allow(u32 cid, u32 port)
 {
-	if (!vsock_net_mode_global(vsk))
-		return false;
-
 	if (cid == VMADDR_CID_HOST)
 		return true;
 
@@ -831,7 +816,7 @@ int hvs_notify_send_post_enqueue(struct vsock_sock *vsk, ssize_t written,
 }
 
 static
-int hvs_notify_set_rcvlowat(struct vsock_sock *vsk, int val)
+int hvs_set_rcvlowat(struct vsock_sock *vsk, int val)
 {
 	return -EOPNOTSUPP;
 }
@@ -871,7 +856,7 @@ static struct vsock_transport hvs_transport = {
 	.notify_send_pre_enqueue  = hvs_notify_send_pre_enqueue,
 	.notify_send_post_enqueue = hvs_notify_send_post_enqueue,
 
-	.notify_set_rcvlowat      = hvs_notify_set_rcvlowat
+	.set_rcvlowat             = hvs_set_rcvlowat
 };
 
 static bool hvs_check_transport(struct vsock_sock *vsk)

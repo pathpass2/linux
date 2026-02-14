@@ -8,16 +8,15 @@
 #ifndef __LINUX_MTD_MAP_H__
 #define __LINUX_MTD_MAP_H__
 
-#include <linux/bug.h>
-#include <linux/io.h>
-#include <linux/ioport.h>
-#include <linux/string.h>
 #include <linux/types.h>
-#include <linux/unaligned.h>
-#include <asm/barrier.h>
+#include <linux/list.h>
+#include <linux/string.h>
+#include <linux/bug.h>
+#include <linux/kernel.h>
+#include <linux/io.h>
 
-struct device_node;
-struct module;
+#include <asm/unaligned.h>
+#include <asm/barrier.h>
 
 #ifdef CONFIG_MTD_MAP_BANK_WIDTH_1
 #define map_bankwidth(map) 1
@@ -189,7 +188,6 @@ typedef union {
    of living.
 */
 
-struct mtd_chip_driver;
 struct map_info {
 	const char *name;
 	unsigned long size;

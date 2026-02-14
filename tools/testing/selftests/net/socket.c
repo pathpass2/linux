@@ -7,7 +7,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-#include "kselftest.h"
+#include "../kselftest.h"
 
 struct socket_testcase {
 	int	domain;
@@ -39,7 +39,6 @@ static int run_tests(void)
 {
 	char err_string1[ERR_STRING_SZ];
 	char err_string2[ERR_STRING_SZ];
-	const char *msg1, *msg2;
 	int i, err;
 
 	err = 0;
@@ -57,13 +56,13 @@ static int run_tests(void)
 			    errno == -s->expect)
 				continue;
 
-			msg1 = strerror_r(-s->expect, err_string1, ERR_STRING_SZ);
-			msg2 = strerror_r(errno, err_string2, ERR_STRING_SZ);
+			strerror_r(-s->expect, err_string1, ERR_STRING_SZ);
+			strerror_r(errno, err_string2, ERR_STRING_SZ);
 
 			fprintf(stderr, "socket(%d, %d, %d) expected "
 				"err (%s) got (%s)\n",
 				s->domain, s->type, s->protocol,
-				msg1, msg2);
+				err_string1, err_string2);
 
 			err = -1;
 			break;
@@ -71,12 +70,12 @@ static int run_tests(void)
 			close(fd);
 
 			if (s->expect < 0) {
-				msg1 = strerror_r(errno, err_string1, ERR_STRING_SZ);
+				strerror_r(errno, err_string1, ERR_STRING_SZ);
 
 				fprintf(stderr, "socket(%d, %d, %d) expected "
 					"success got err (%s)\n",
 					s->domain, s->type, s->protocol,
-					msg1);
+					err_string1);
 
 				err = -1;
 				break;

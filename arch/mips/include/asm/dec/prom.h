@@ -70,7 +70,7 @@ static inline bool prom_is_rex(u32 magic)
  */
 typedef struct {
 	int pagesize;
-	unsigned char bitmap[];
+	unsigned char bitmap[0];
 } memmap;
 
 
@@ -160,5 +160,6 @@ extern void prom_identify_arch(u32);
 extern void prom_init_cmdline(s32, s32 *, u32);
 
 extern void register_prom_console(void);
+extern void unregister_prom_console(void);
 
 #endif /* _ASM_DEC_PROM_H */

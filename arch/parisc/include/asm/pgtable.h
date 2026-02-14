@@ -12,7 +12,7 @@
 
 #include <asm/fixmap.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 /*
  * we simulate an x86-style page table for the linux mm code
  */
@@ -73,7 +73,16 @@ extern void __update_cache(pte_t pte);
 		mb();				\
 	} while(0)
 
-#endif /* !__ASSEMBLER__ */
+#define set_pte_at(mm, addr, pteptr, pteval)	\
+	do {					\
+		if (pte_present(pteval) &&	\
+		    pte_user(pteval))		\
+			__update_cache(pteval);	\
+		*(pteptr) = (pteval);		\
+		purge_tlb_entries(mm, addr);	\
+	} while (0)
+
+#endif /* !__ASSEMBLY__ */
 
 #define pte_ERROR(e) \
 	printk("%s:%d: bad pte %08lx.\n", __FILE__, __LINE__, pte_val(e))
@@ -226,7 +235,7 @@ extern void __update_cache(pte_t pte);
 #define PxD_FLAG_SHIFT    (4)
 #define PxD_VALUE_SHIFT   (PFN_PTE_SHIFT-PxD_FLAG_SHIFT)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #define PAGE_NONE	__pgprot(_PAGE_PRESENT | _PAGE_USER)
 #define PAGE_SHARED	__pgprot(_PAGE_PRESENT | _PAGE_USER | _PAGE_READ | _PAGE_WRITE)
@@ -276,7 +285,7 @@ extern unsigned long *empty_zero_page;
 #define pte_none(x)     (pte_val(x) == 0)
 #define pte_present(x)	(pte_val(x) & _PAGE_PRESENT)
 #define pte_user(x)	(pte_val(x) & _PAGE_USER)
-#define pte_clear(mm, addr, xp) set_pte_at((mm), (addr), (xp), __pte(0))
+#define pte_clear(mm, addr, xp)  set_pte_at(mm, addr, xp, __pte(0))
 
 #define pmd_flag(x)	(pmd_val(x) & PxD_FLAG_MASK)
 #define pmd_address(x)	((unsigned long)(pmd_val(x) &~ PxD_FLAG_MASK) << PxD_VALUE_SHIFT)
@@ -322,7 +331,7 @@ static inline pte_t pte_mkold(pte_t pte)	{ pte_val(pte) &= ~_PAGE_ACCESSED; retu
 static inline pte_t pte_wrprotect(pte_t pte)	{ pte_val(pte) &= ~_PAGE_WRITE; return pte; }
 static inline pte_t pte_mkdirty(pte_t pte)	{ pte_val(pte) |= _PAGE_DIRTY; return pte; }
 static inline pte_t pte_mkyoung(pte_t pte)	{ pte_val(pte) |= _PAGE_ACCESSED; return pte; }
-static inline pte_t pte_mkwrite_novma(pte_t pte)	{ pte_val(pte) |= _PAGE_WRITE; return pte; }
+static inline pte_t pte_mkwrite(pte_t pte)	{ pte_val(pte) |= _PAGE_WRITE; return pte; }
 static inline pte_t pte_mkspecial(pte_t pte)	{ pte_val(pte) |= _PAGE_SPECIAL; return pte; }
 
 /*
@@ -338,6 +347,10 @@ static inline pte_t pte_mkspecial(pte_t pte)	{ pte_val(pte) |= _PAGE_SPECIAL; re
 #endif
 
 
+/*
+ * Conversion functions: convert a page and protection to a page entry,
+ * and a page entry and page directory to the page they refer to.
+ */
 #define __mk_pte(addr,pgprot) \
 ({									\
 	pte_t __pte;							\
@@ -346,6 +359,8 @@ static inline pte_t pte_mkspecial(pte_t pte)	{ pte_val(pte) |= _PAGE_SPECIAL; re
 									\
 	__pte;								\
 })
+
+#define mk_pte(page, pgprot)	pfn_pte(page_to_pfn(page), (pgprot))
 
 static inline pte_t pfn_pte(unsigned long pfn, pgprot_t pgprot)
 {
@@ -376,30 +391,11 @@ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
 
 extern void paging_init (void);
 
-static inline void set_ptes(struct mm_struct *mm, unsigned long addr,
-		pte_t *ptep, pte_t pte, unsigned int nr)
-{
-	if (pte_present(pte) && pte_user(pte))
-		__update_cache(pte);
-	for (;;) {
-		*ptep = pte;
-		purge_tlb_entries(mm, addr);
-		if (--nr == 0)
-			break;
-		ptep++;
-		pte_val(pte) += 1 << PFN_PTE_SHIFT;
-		addr += PAGE_SIZE;
-	}
-}
-#define set_ptes set_ptes
-#define set_pte_at(mm, addr, ptep, pte) set_ptes(mm, addr, ptep, pte, 1)
-
 /* Used for deferring calls to flush_dcache_page() */
 
 #define PG_dcache_dirty         PG_arch_1
 
-#define update_mmu_cache_range(vmf, vma, addr, ptep, nr) __update_cache(*ptep)
-#define update_mmu_cache(vma, addr, ptep) __update_cache(*ptep)
+#define update_mmu_cache(vms,addr,ptep) __update_cache(*ptep)
 
 /*
  * Encode/decode swap entries and swap PTEs. Swap PTEs are all PTEs that
@@ -417,16 +413,16 @@ static inline void set_ptes(struct mm_struct *mm, unsigned long addr,
  *   For the 64bit version, the offset is extended by 32bit.
  */
 #define __swp_type(x)                     ((x).val & 0x1f)
-#define __swp_offset(x)                   ( (((x).val >> 5) & 0x7) | \
-					  (((x).val >> 10) << 3) )
+#define __swp_offset(x)                   ( (((x).val >> 6) &  0x7) | \
+					  (((x).val >> 8) & ~0x7) )
 #define __swp_entry(type, offset)         ((swp_entry_t) { \
 					    ((type) & 0x1f) | \
-					    ((offset & 0x7) << 5) | \
-					    ((offset >> 3) << 10) })
+					    ((offset &  0x7) << 6) | \
+					    ((offset & ~0x7) << 8) })
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)		((pte_t) { (x).val })
 
-static inline bool pte_swp_exclusive(pte_t pte)
+static inline int pte_swp_exclusive(pte_t pte)
 {
 	return pte_val(pte) & _PAGE_SWP_EXCLUSIVE;
 }
@@ -443,17 +439,14 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 	return pte;
 }
 
-static inline pte_t ptep_get(pte_t *ptep)
-{
-	return READ_ONCE(*ptep);
-}
-#define ptep_get ptep_get
-
 static inline int ptep_test_and_clear_young(struct vm_area_struct *vma, unsigned long addr, pte_t *ptep)
 {
 	pte_t pte;
 
-	pte = ptep_get(ptep);
+	if (!pte_young(*ptep))
+		return 0;
+
+	pte = *ptep;
 	if (!pte_young(pte)) {
 		return 0;
 	}
@@ -461,10 +454,17 @@ static inline int ptep_test_and_clear_young(struct vm_area_struct *vma, unsigned
 	return 1;
 }
 
-int ptep_clear_flush_young(struct vm_area_struct *vma, unsigned long addr, pte_t *ptep);
-pte_t ptep_clear_flush(struct vm_area_struct *vma, unsigned long addr, pte_t *ptep);
-
 struct mm_struct;
+static inline pte_t ptep_get_and_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
+{
+	pte_t old_pte;
+
+	old_pte = *ptep;
+	set_pte_at(mm, addr, ptep, __pte(0));
+
+	return old_pte;
+}
+
 static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
 {
 	set_pte_at(mm, addr, ptep, pte_wrprotect(*ptep));
@@ -472,7 +472,10 @@ static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addr, 
 
 #define pte_same(A,B)	(pte_val(A) == pte_val(B))
 
-#endif /* !__ASSEMBLER__ */
+struct seq_file;
+extern void arch_report_meminfo(struct seq_file *m);
+
+#endif /* !__ASSEMBLY__ */
 
 
 /* TLB page size encoding - see table 3-1 in parisc20.pdf */
@@ -502,8 +505,7 @@ static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addr, 
 #define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
 
 #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_YOUNG
-#define __HAVE_ARCH_PTEP_CLEAR_YOUNG_FLUSH
-#define __HAVE_ARCH_PTEP_CLEAR_FLUSH
+#define __HAVE_ARCH_PTEP_GET_AND_CLEAR
 #define __HAVE_ARCH_PTEP_SET_WRPROTECT
 #define __HAVE_ARCH_PTE_SAME
 

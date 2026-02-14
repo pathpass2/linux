@@ -12,16 +12,16 @@
 #include <asm/starfire.h>
 #include <asm/spitfire.h>
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 #include <linux/cpumask.h>
 #include <linux/cache.h>
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 #ifdef CONFIG_SMP
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /*
  *	Private routines/data
@@ -47,8 +47,9 @@ void arch_send_call_function_ipi_mask(const struct cpumask *mask);
 int hard_smp_processor_id(void);
 #define raw_smp_processor_id() (current_thread_info()->cpu)
 
+void smp_fill_in_cpu_possible_map(void);
 void smp_fill_in_sib_core_maps(void);
-void __noreturn cpu_play_dead(void);
+void cpu_play_dead(void);
 
 void smp_fetch_global_regs(void);
 void smp_fetch_global_pmu(void);
@@ -68,7 +69,7 @@ int __cpu_disable(void);
 void __cpu_die(unsigned int cpu);
 #endif
 
-#endif /* !(__ASSEMBLER__) */
+#endif /* !(__ASSEMBLY__) */
 
 #else
 
@@ -76,6 +77,7 @@ void __cpu_die(unsigned int cpu);
 #define smp_fill_in_sib_core_maps() do { } while (0)
 #define smp_fetch_global_regs() do { } while (0)
 #define smp_fetch_global_pmu() do { } while (0)
+#define smp_fill_in_cpu_possible_map() do { } while (0)
 #define smp_init_cpu_poke() do { } while (0)
 #define scheduler_poke() do { } while (0)
 

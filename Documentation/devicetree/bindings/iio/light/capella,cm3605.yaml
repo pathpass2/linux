@@ -8,7 +8,7 @@ title:
   Capella Microsystems CM3605 Ambient Light and Short Distance Proximity Sensor
 
 maintainers:
-  - Linus Walleij <linusw@kernel.org>
+  - Linus Walleij <linus.walleij@linaro.org>
   - Kevin Tsai <ktsai@capellamicro.com>
 
 description: |

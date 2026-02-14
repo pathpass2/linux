@@ -372,6 +372,7 @@ static struct subsys_interface sq_interface = {
 static int __init sq_api_init(void)
 {
 	unsigned int nr_pages = 0x04000000 >> PAGE_SHIFT;
+	unsigned int size = (nr_pages + (BITS_PER_LONG - 1)) / BITS_PER_LONG;
 	int ret = -ENOMEM;
 
 	printk(KERN_NOTICE "sq: Registering store queue API.\n");
@@ -381,7 +382,7 @@ static int __init sq_api_init(void)
 	if (unlikely(!sq_cache))
 		return ret;
 
-	sq_bitmap = bitmap_zalloc(nr_pages, GFP_KERNEL);
+	sq_bitmap = kzalloc(size, GFP_KERNEL);
 	if (unlikely(!sq_bitmap))
 		goto out;
 
@@ -392,7 +393,7 @@ static int __init sq_api_init(void)
 	return 0;
 
 out:
-	bitmap_free(sq_bitmap);
+	kfree(sq_bitmap);
 	kmem_cache_destroy(sq_cache);
 
 	return ret;
@@ -401,7 +402,7 @@ out:
 static void __exit sq_api_exit(void)
 {
 	subsys_interface_unregister(&sq_interface);
-	bitmap_free(sq_bitmap);
+	kfree(sq_bitmap);
 	kmem_cache_destroy(sq_cache);
 }
 

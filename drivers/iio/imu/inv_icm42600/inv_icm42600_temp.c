@@ -13,7 +13,7 @@
 #include "inv_icm42600.h"
 #include "inv_icm42600_temp.h"
 
-static int inv_icm42600_temp_read(struct inv_icm42600_state *st, s16 *temp)
+static int inv_icm42600_temp_read(struct inv_icm42600_state *st, int16_t *temp)
 {
 	struct device *dev = regmap_get_device(st->map);
 	__be16 *raw;
@@ -31,16 +31,13 @@ static int inv_icm42600_temp_read(struct inv_icm42600_state *st, s16 *temp)
 	if (ret)
 		goto exit;
 
-	*temp = (s16)be16_to_cpup(raw);
-	/*
-	 * Temperature data is invalid if both accel and gyro are off.
-	 * Return -EBUSY in this case.
-	 */
+	*temp = (int16_t)be16_to_cpup(raw);
 	if (*temp == INV_ICM42600_DATA_INVALID)
-		ret = -EBUSY;
+		ret = -EINVAL;
 
 exit:
 	mutex_unlock(&st->lock);
+	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
 
 	return ret;
@@ -51,7 +48,7 @@ int inv_icm42600_temp_read_raw(struct iio_dev *indio_dev,
 			       int *val, int *val2, long mask)
 {
 	struct inv_icm42600_state *st = iio_device_get_drvdata(indio_dev);
-	s16 temp;
+	int16_t temp;
 	int ret;
 
 	if (chan->type != IIO_TEMP)
@@ -59,28 +56,27 @@ int inv_icm42600_temp_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		if (!iio_device_claim_direct(indio_dev))
-			return -EBUSY;
+		ret = iio_device_claim_direct_mode(indio_dev);
+		if (ret)
+			return ret;
 		ret = inv_icm42600_temp_read(st, &temp);
-		iio_device_release_direct(indio_dev);
+		iio_device_release_direct_mode(indio_dev);
 		if (ret)
 			return ret;
 		*val = temp;
 		return IIO_VAL_INT;
 	/*
 	 * T°C = (temp / 132.48) + 25
-	 * Tm°C = 1000 * ((temp / 132.48) + 25)
-	 * Tm°C = 7.548309 * temp + 25000
-	 * Tm°C = (temp + 3312) * 7.548309
+	 * Tm°C = 1000 * ((temp * 100 / 13248) + 25)
 	 * scale: 100000 / 13248 ~= 7.548309
-	 * offset: 3312
+	 * offset: 25000
 	 */
 	case IIO_CHAN_INFO_SCALE:
 		*val = 7;
 		*val2 = 548309;
 		return IIO_VAL_INT_PLUS_MICRO;
 	case IIO_CHAN_INFO_OFFSET:
-		*val = 3312;
+		*val = 25000;
 		return IIO_VAL_INT;
 	default:
 		return -EINVAL;

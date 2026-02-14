@@ -33,9 +33,7 @@ properties:
       - const: allwinner,sun50i-h6-i2s
       - const: allwinner,sun50i-r329-i2s
       - items:
-          - enum:
-              - allwinner,sun20i-d1-i2s
-              - allwinner,sun55i-a523-i2s
+          - const: allwinner,sun20i-d1-i2s
           - const: allwinner,sun50i-r329-i2s
 
   reg:

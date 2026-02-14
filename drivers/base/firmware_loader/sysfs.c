@@ -25,7 +25,7 @@ void __fw_load_abort(struct fw_priv *fw_priv)
 }
 
 #ifdef CONFIG_FW_LOADER_USER_HELPER
-static ssize_t timeout_show(const struct class *class, const struct class_attribute *attr,
+static ssize_t timeout_show(struct class *class, struct class_attribute *attr,
 			    char *buf)
 {
 	return sysfs_emit(buf, "%d\n", __firmware_loading_timeout());
@@ -44,13 +44,10 @@ static ssize_t timeout_show(const struct class *class, const struct class_attrib
  *
  *	Note: zero means 'wait forever'.
  **/
-static ssize_t timeout_store(const struct class *class, const struct class_attribute *attr,
+static ssize_t timeout_store(struct class *class, struct class_attribute *attr,
 			     const char *buf, size_t count)
 {
-	int tmp_loading_timeout;
-
-	if (kstrtoint(buf, 10, &tmp_loading_timeout))
-		return -EINVAL;
+	int tmp_loading_timeout = simple_strtol(buf, NULL, 10);
 
 	if (tmp_loading_timeout < 0)
 		tmp_loading_timeout = 0;
@@ -160,10 +157,7 @@ static ssize_t firmware_loading_store(struct device *dev,
 	struct fw_sysfs *fw_sysfs = to_fw_sysfs(dev);
 	struct fw_priv *fw_priv;
 	ssize_t written = count;
-	int loading;
-
-	if (kstrtoint(buf, 10, &loading))
-		return -EINVAL;
+	int loading = simple_strtol(buf, NULL, 10);
 
 	mutex_lock(&fw_lock);
 	fw_priv = fw_sysfs->fw_priv;
@@ -265,7 +259,7 @@ static void firmware_rw(struct fw_priv *fw_priv, char *buffer,
 }
 
 static ssize_t firmware_data_read(struct file *filp, struct kobject *kobj,
-				  const struct bin_attribute *bin_attr,
+				  struct bin_attribute *bin_attr,
 				  char *buffer, loff_t offset, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -322,7 +316,7 @@ static int fw_realloc_pages(struct fw_sysfs *fw_sysfs, int min_size)
  *	the driver as a firmware image.
  **/
 static ssize_t firmware_data_write(struct file *filp, struct kobject *kobj,
-				   const struct bin_attribute *bin_attr,
+				   struct bin_attribute *bin_attr,
 				   char *buffer, loff_t offset, size_t count)
 {
 	struct device *dev = kobj_to_dev(kobj);
@@ -362,7 +356,7 @@ out:
 	return retval;
 }
 
-static const struct bin_attribute firmware_attr_data = {
+static struct bin_attribute firmware_attr_data = {
 	.attr = { .name = "data", .mode = 0644 },
 	.size = 0,
 	.read = firmware_data_read,
@@ -380,7 +374,7 @@ static struct attribute *fw_dev_attrs[] = {
 	NULL
 };
 
-static const struct bin_attribute *const fw_dev_bin_attrs[] = {
+static struct bin_attribute *fw_dev_bin_attrs[] = {
 	&firmware_attr_data,
 	NULL
 };

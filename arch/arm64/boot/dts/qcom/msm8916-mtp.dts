@@ -9,11 +9,10 @@
 
 / {
 	model = "Qualcomm Technologies, Inc. MSM 8916 MTP";
-	compatible = "qcom,msm8916-mtp", "qcom,msm8916";
-	chassis-type = "handset";
+	compatible = "qcom,msm8916-mtp", "qcom,msm8916-mtp/1", "qcom,msm8916";
 
 	aliases {
-		serial0 = &blsp_uart2;
+		serial0 = &blsp1_uart2;
 		usid0 = &pm8916_0;
 	};
 
@@ -22,9 +21,6 @@
 	};
 };
 
-&blsp_uart2 {
-	pinctrl-0 = <&blsp_uart2_console_default>;
-	pinctrl-1 = <&blsp_uart2_console_sleep>;
-	pinctrl-names = "default", "sleep";
+&blsp1_uart2 {
 	status = "okay";
 };

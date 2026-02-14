@@ -1,14 +1,16 @@
-// SPDX-License-Identifier: MIT
 /*
+ * SPDX-License-Identifier: MIT
+ *
  * Copyright © 2016 Intel Corporation
  */
 
 #include <drm/drm_cache.h>
 
+#include "display/intel_frontbuffer.h"
+
 #include "i915_config.h"
 #include "i915_drv.h"
 #include "i915_gem_clflush.h"
-#include "i915_gem_object_frontbuffer.h"
 #include "i915_sw_fence_work.h"
 #include "i915_trace.h"
 
@@ -113,7 +115,7 @@ bool i915_gem_clflush_object(struct drm_i915_gem_object *obj,
 	if (clflush) {
 		i915_sw_fence_await_reservation(&clflush->base.chain,
 						obj->base.resv, true,
-						i915_fence_timeout(),
+						i915_fence_timeout(i915),
 						I915_FENCE_GFP);
 		dma_resv_add_fence(obj->base.resv, &clflush->base.dma,
 				   DMA_RESV_USAGE_KERNEL);

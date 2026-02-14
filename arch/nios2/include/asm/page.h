@@ -18,7 +18,12 @@
 #include <linux/pfn.h>
 #include <linux/const.h>
 
-#include <vdso/page.h>
+/*
+ * PAGE_SHIFT determines the page size
+ */
+#define PAGE_SHIFT	12
+#define PAGE_SIZE	(_AC(1, UL) << PAGE_SHIFT)
+#define PAGE_MASK	(~(PAGE_SIZE - 1))
 
 /*
  * PAGE_OFFSET -- the first address of the first page of memory.
@@ -26,7 +31,7 @@
 #define PAGE_OFFSET	\
 	(CONFIG_NIOS2_MEM_BASE + CONFIG_NIOS2_KERNEL_REGION_BASE)
 
-#ifndef __ASSEMBLER__
+#ifndef __ASSEMBLY__
 
 /*
  * This gives the physical RAM offset.
@@ -45,7 +50,6 @@
 
 struct page;
 
-#define clear_user_page clear_user_page
 extern void clear_user_page(void *addr, unsigned long vaddr, struct page *page);
 extern void copy_user_page(void *vto, void *vfrom, unsigned long vaddr,
 				struct page *to);
@@ -91,6 +95,6 @@ extern struct page *mem_map;
 
 #include <asm-generic/getorder.h>
 
-#endif /* !__ASSEMBLER__ */
+#endif /* !__ASSEMBLY__ */
 
 #endif /* _ASM_NIOS2_PAGE_H */

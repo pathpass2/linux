@@ -373,14 +373,15 @@ static struct pci_driver sil24_pci_driver = {
 #endif
 };
 
-static const struct scsi_host_template sil24_sht = {
+static struct scsi_host_template sil24_sht = {
 	__ATA_BASE_SHT(DRV_NAME),
 	.can_queue		= SIL24_MAX_CMDS,
 	.sg_tablesize		= SIL24_MAX_SGE,
 	.dma_boundary		= ATA_DMA_BOUNDARY,
+	.tag_alloc_policy	= BLK_TAG_ALLOC_FIFO,
 	.sdev_groups		= ata_ncq_sdev_groups,
 	.change_queue_depth	= ata_scsi_change_queue_depth,
-	.sdev_configure		= ata_scsi_sdev_configure
+	.slave_configure	= ata_scsi_slave_config
 };
 
 static struct ata_port_operations sil24_ops = {
@@ -393,10 +394,10 @@ static struct ata_port_operations sil24_ops = {
 
 	.freeze			= sil24_freeze,
 	.thaw			= sil24_thaw,
-	.reset.softreset	= sil24_softreset,
-	.reset.hardreset	= sil24_hardreset,
-	.pmp_reset.softreset	= sil24_softreset,
-	.pmp_reset.hardreset	= sil24_pmp_hardreset,
+	.softreset		= sil24_softreset,
+	.hardreset		= sil24_hardreset,
+	.pmp_softreset		= sil24_softreset,
+	.pmp_hardreset		= sil24_pmp_hardreset,
 	.error_handler		= sil24_error_handler,
 	.post_internal_cmd	= sil24_post_internal_cmd,
 	.dev_config		= sil24_dev_config,
@@ -596,7 +597,7 @@ static int sil24_init_port(struct ata_port *ap)
 static int sil24_exec_polled_cmd(struct ata_port *ap, int pmp,
 				 const struct ata_taskfile *tf,
 				 int is_cmd, u32 ctrl,
-				 unsigned int timeout_msec)
+				 unsigned long timeout_msec)
 {
 	void __iomem *port = sil24_port_base(ap);
 	struct sil24_port_priv *pp = ap->private_data;
@@ -650,7 +651,7 @@ static int sil24_softreset(struct ata_link *link, unsigned int *class,
 {
 	struct ata_port *ap = link->ap;
 	int pmp = sata_srst_pmp(link);
-	unsigned int timeout_msec = 0;
+	unsigned long timeout_msec = 0;
 	struct ata_taskfile tf;
 	const char *reason;
 	int rc;
@@ -1316,7 +1317,7 @@ static int sil24_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	if (sata_sil24_msi && !pci_enable_msi(pdev)) {
 		dev_info(&pdev->dev, "Using MSI\n");
-		pcim_intx(pdev, 0);
+		pci_intx(pdev, 0);
 	}
 
 	pci_set_master(pdev);

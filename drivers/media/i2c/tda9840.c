@@ -3,7 +3,7 @@
     tda9840 - i2c-driver for the tda9840 by SGS Thomson
 
     Copyright (C) 1998-2003 Michael Hunold <michael@mihu.de>
-    Copyright (C) 2008 Hans Verkuil <hverkuil@kernel.org>
+    Copyright (C) 2008 Hans Verkuil <hverkuil@xs4all.nl>
 
     The tda9840 is a stereo/dual sound processor with digital
     identification. It can be found at address 0x84 on the i2c-bus.
@@ -182,7 +182,7 @@ static void tda9840_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tda9840_id[] = {
-	{ "tda9840" },
+	{ "tda9840", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tda9840_id);
@@ -191,7 +191,7 @@ static struct i2c_driver tda9840_driver = {
 	.driver = {
 		.name	= "tda9840",
 	},
-	.probe		= tda9840_probe,
+	.probe_new	= tda9840_probe,
 	.remove		= tda9840_remove,
 	.id_table	= tda9840_id,
 };

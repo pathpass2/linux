@@ -171,17 +171,14 @@ fan_show(struct device *dev, struct device_attribute *devattr, char *buf)
 	struct adm1029_data *data = adm1029_update_device(dev);
 	u16 val;
 
-	mutex_lock(&data->update_lock);
 	if (data->fan[attr->index] == 0 ||
 	    (data->fan_div[attr->index] & 0xC0) == 0 ||
 	    data->fan[attr->index] == 255) {
-		mutex_unlock(&data->update_lock);
 		return sprintf(buf, "0\n");
 	}
 
 	val = 1880 * 120 / DIV_FROM_REG(data->fan_div[attr->index])
 	    / data->fan[attr->index];
-	mutex_unlock(&data->update_lock);
 	return sprintf(buf, "%d\n", val);
 }
 
@@ -382,7 +379,7 @@ static int adm1029_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adm1029_id[] = {
-	{ "adm1029" },
+	{ "adm1029", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adm1029_id);
@@ -392,7 +389,7 @@ static struct i2c_driver adm1029_driver = {
 	.driver = {
 		.name = "adm1029",
 	},
-	.probe		= adm1029_probe,
+	.probe_new	= adm1029_probe,
 	.id_table	= adm1029_id,
 	.detect		= adm1029_detect,
 	.address_list	= normal_i2c,

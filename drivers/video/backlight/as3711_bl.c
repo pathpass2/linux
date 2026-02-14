@@ -10,10 +10,10 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
+#include <linux/fb.h>
 #include <linux/kernel.h>
 #include <linux/mfd/as3711.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -286,23 +286,23 @@ static int as3711_backlight_parse_dt(struct device *dev)
 		if (ret < 0)
 			goto err_put_bl;
 
-		if (of_property_read_bool(bl, "su2-feedback-voltage")) {
+		if (of_find_property(bl, "su2-feedback-voltage", NULL)) {
 			pdata->su2_feedback = AS3711_SU2_VOLTAGE;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-feedback-curr1")) {
+		if (of_find_property(bl, "su2-feedback-curr1", NULL)) {
 			pdata->su2_feedback = AS3711_SU2_CURR1;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-feedback-curr2")) {
+		if (of_find_property(bl, "su2-feedback-curr2", NULL)) {
 			pdata->su2_feedback = AS3711_SU2_CURR2;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-feedback-curr3")) {
+		if (of_find_property(bl, "su2-feedback-curr3", NULL)) {
 			pdata->su2_feedback = AS3711_SU2_CURR3;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-feedback-curr-auto")) {
+		if (of_find_property(bl, "su2-feedback-curr-auto", NULL)) {
 			pdata->su2_feedback = AS3711_SU2_CURR_AUTO;
 			count++;
 		}
@@ -312,19 +312,19 @@ static int as3711_backlight_parse_dt(struct device *dev)
 		}
 
 		count = 0;
-		if (of_property_read_bool(bl, "su2-fbprot-lx-sd4")) {
+		if (of_find_property(bl, "su2-fbprot-lx-sd4", NULL)) {
 			pdata->su2_fbprot = AS3711_SU2_LX_SD4;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-fbprot-gpio2")) {
+		if (of_find_property(bl, "su2-fbprot-gpio2", NULL)) {
 			pdata->su2_fbprot = AS3711_SU2_GPIO2;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-fbprot-gpio3")) {
+		if (of_find_property(bl, "su2-fbprot-gpio3", NULL)) {
 			pdata->su2_fbprot = AS3711_SU2_GPIO3;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-fbprot-gpio4")) {
+		if (of_find_property(bl, "su2-fbprot-gpio4", NULL)) {
 			pdata->su2_fbprot = AS3711_SU2_GPIO4;
 			count++;
 		}
@@ -334,15 +334,15 @@ static int as3711_backlight_parse_dt(struct device *dev)
 		}
 
 		count = 0;
-		if (of_property_read_bool(bl, "su2-auto-curr1")) {
+		if (of_find_property(bl, "su2-auto-curr1", NULL)) {
 			pdata->su2_auto_curr1 = true;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-auto-curr2")) {
+		if (of_find_property(bl, "su2-auto-curr2", NULL)) {
 			pdata->su2_auto_curr2 = true;
 			count++;
 		}
-		if (of_property_read_bool(bl, "su2-auto-curr3")) {
+		if (of_find_property(bl, "su2-auto-curr3", NULL)) {
 			pdata->su2_auto_curr3 = true;
 			count++;
 		}
@@ -383,8 +383,10 @@ static int as3711_backlight_probe(struct platform_device *pdev)
 
 	if (pdev->dev.parent->of_node) {
 		ret = as3711_backlight_parse_dt(&pdev->dev);
-		if (ret < 0)
-			return dev_err_probe(&pdev->dev, ret, "DT parsing failed\n");
+		if (ret < 0) {
+			dev_err(&pdev->dev, "DT parsing failed: %d\n", ret);
+			return ret;
+		}
 	}
 
 	if (!pdata->su1_fb && !pdata->su2_fb) {

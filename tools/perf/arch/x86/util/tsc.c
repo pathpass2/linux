@@ -24,40 +24,38 @@ u64 rdtsc(void)
  * ...
  * will return 3000000000.
  */
-static u64 cpuinfo_tsc_freq(void)
+static double cpuinfo_tsc_freq(void)
 {
-	u64 result = 0;
+	double result = 0;
 	FILE *cpuinfo;
 	char *line = NULL;
 	size_t len = 0;
 
 	cpuinfo = fopen("/proc/cpuinfo", "r");
 	if (!cpuinfo) {
-		pr_err("Failed to read /proc/cpuinfo for TSC frequency\n");
-		return 0;
+		pr_err("Failed to read /proc/cpuinfo for TSC frequency");
+		return NAN;
 	}
 	while (getline(&line, &len, cpuinfo) > 0) {
 		if (!strncmp(line, "model name", 10)) {
 			char *pos = strstr(line + 11, " @ ");
-			double float_result;
 
-			if (pos && sscanf(pos, " @ %lfGHz", &float_result) == 1) {
-				float_result *= 1000000000;
-				result = (u64)float_result;
+			if (pos && sscanf(pos, " @ %lfGHz", &result) == 1) {
+				result *= 1000000000;
 				goto out;
 			}
 		}
 	}
 out:
-	if (result == 0)
-		pr_err("Failed to find TSC frequency in /proc/cpuinfo\n");
+	if (fpclassify(result) == FP_ZERO)
+		pr_err("Failed to find TSC frequency in /proc/cpuinfo");
 
 	free(line);
 	fclose(cpuinfo);
 	return result;
 }
 
-u64 arch_get_tsc_freq(void)
+double arch_get_tsc_freq(void)
 {
 	unsigned int a, b, c, d, lvl;
 	static bool cached;
@@ -88,6 +86,6 @@ u64 arch_get_tsc_freq(void)
 		return tsc;
 	}
 
-	tsc = (u64)c * (u64)b / (u64)a;
+	tsc = (double)c * (double)b / (double)a;
 	return tsc;
 }

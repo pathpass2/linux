@@ -58,16 +58,12 @@
 			function = "usb2";
 			color = <LED_COLOR_ID_WHITE>;
 			gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
-			trigger-sources = <&ohci_port1>, <&ehci_port1>;
-			linux,default-trigger = "usbport";
 		};
 
 		led-usb3 {
 			function = "usb3";
 			color = <LED_COLOR_ID_WHITE>;
 			gpios = <&gpio0 18 GPIO_ACTIVE_LOW>;
-			trigger-sources = <&ohci_port2>, <&ehci_port2>, <&xhci_port2>;
-			linux,default-trigger = "usbport";
 		};
 
 		led-wifi {
@@ -125,11 +121,6 @@
 	};
 };
 
-&nand_controller {
-	brcm,wp-not-connected;
-	status = "okay";
-};
-
 &nandcs {
 	nand-ecc-strength = <4>;
 	nand-ecc-step-size = <512>;
@@ -144,17 +135,16 @@
 		#size-cells = <1>;
 
 		partition@0 {
+			compatible = "nvmem-cells";
 			label = "cferom";
 			reg = <0x0 0x100000>;
 
-			nvmem-layout {
-				compatible = "fixed-layout";
-				#address-cells = <1>;
-				#size-cells = <1>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0 0x0 0x100000>;
 
-				base_mac_addr: mac@106a0 {
-					reg = <0x106a0 0x6>;
-				};
+			base_mac_addr: mac@106a0 {
+				reg = <0x106a0 0x6>;
 			};
 		};
 

@@ -13,6 +13,7 @@
 #include <linux/security.h>
 #include <linux/workqueue.h>
 #include <linux/random.h>
+#include <linux/ima.h>
 #include <linux/err.h>
 #include "internal.h"
 
@@ -230,7 +231,6 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	struct key *key;
 	size_t desclen, quotalen;
 	int ret;
-	unsigned long irqflags;
 
 	key = ERR_PTR(-EINVAL);
 	if (!desc || !*desc)
@@ -260,7 +260,7 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 		unsigned maxbytes = uid_eq(uid, GLOBAL_ROOT_UID) ?
 			key_quota_root_maxbytes : key_quota_maxbytes;
 
-		spin_lock_irqsave(&user->lock, irqflags);
+		spin_lock(&user->lock);
 		if (!(flags & KEY_ALLOC_QUOTA_OVERRUN)) {
 			if (user->qnkeys + 1 > maxkeys ||
 			    user->qnbytes + quotalen > maxbytes ||
@@ -270,7 +270,7 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 
 		user->qnkeys++;
 		user->qnbytes += quotalen;
-		spin_unlock_irqrestore(&user->lock, irqflags);
+		spin_unlock(&user->lock);
 	}
 
 	/* allocate and initialise the key and its description */
@@ -294,11 +294,9 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	key->uid = uid;
 	key->gid = gid;
 	key->perm = perm;
-	key->expiry = TIME64_MAX;
 	key->restrict_link = restrict_link;
 	key->last_used_at = ktime_get_real_seconds();
 
-	key->flags |= 1 << KEY_FLAG_USER_ALIVE;
 	if (!(flags & KEY_ALLOC_NOT_IN_QUOTA))
 		key->flags |= 1 << KEY_FLAG_IN_QUOTA;
 	if (flags & KEY_ALLOC_BUILT_IN)
@@ -329,10 +327,10 @@ security_error:
 	kfree(key->description);
 	kmem_cache_free(key_jar, key);
 	if (!(flags & KEY_ALLOC_NOT_IN_QUOTA)) {
-		spin_lock_irqsave(&user->lock, irqflags);
+		spin_lock(&user->lock);
 		user->qnkeys--;
 		user->qnbytes -= quotalen;
-		spin_unlock_irqrestore(&user->lock, irqflags);
+		spin_unlock(&user->lock);
 	}
 	key_user_put(user);
 	key = ERR_PTR(ret);
@@ -342,10 +340,10 @@ no_memory_3:
 	kmem_cache_free(key_jar, key);
 no_memory_2:
 	if (!(flags & KEY_ALLOC_NOT_IN_QUOTA)) {
-		spin_lock_irqsave(&user->lock, irqflags);
+		spin_lock(&user->lock);
 		user->qnkeys--;
 		user->qnbytes -= quotalen;
-		spin_unlock_irqrestore(&user->lock, irqflags);
+		spin_unlock(&user->lock);
 	}
 	key_user_put(user);
 no_memory_1:
@@ -353,7 +351,7 @@ no_memory_1:
 	goto error;
 
 no_quota:
-	spin_unlock_irqrestore(&user->lock, irqflags);
+	spin_unlock(&user->lock);
 	key_user_put(user);
 	key = ERR_PTR(-EDQUOT);
 	goto error;
@@ -382,9 +380,8 @@ int key_payload_reserve(struct key *key, size_t datalen)
 	if (delta != 0 && test_bit(KEY_FLAG_IN_QUOTA, &key->flags)) {
 		unsigned maxbytes = uid_eq(key->user->uid, GLOBAL_ROOT_UID) ?
 			key_quota_root_maxbytes : key_quota_maxbytes;
-		unsigned long flags;
 
-		spin_lock_irqsave(&key->user->lock, flags);
+		spin_lock(&key->user->lock);
 
 		if (delta > 0 &&
 		    (key->user->qnbytes + delta > maxbytes ||
@@ -395,7 +392,7 @@ int key_payload_reserve(struct key *key, size_t datalen)
 			key->user->qnbytes += delta;
 			key->quotalen += delta;
 		}
-		spin_unlock_irqrestore(&key->user->lock, flags);
+		spin_unlock(&key->user->lock);
 	}
 
 	/* change the recorded data length if that didn't generate an error */
@@ -466,8 +463,10 @@ static int __key_instantiate_and_link(struct key *key,
 			if (authkey)
 				key_invalidate(authkey);
 
-			if (prep->expiry != TIME64_MAX)
-				key_set_expiry(key, prep->expiry);
+			if (prep->expiry != TIME64_MAX) {
+				key->expiry = prep->expiry;
+				key_schedule_gc(prep->expiry + key_gc_delay);
+			}
 		}
 	}
 
@@ -607,7 +606,8 @@ int key_reject_and_link(struct key *key,
 		atomic_inc(&key->user->nikeys);
 		mark_key_instantiated(key, -error);
 		notify_key(key, NOTIFY_KEY_INSTANTIATED, -error);
-		key_set_expiry(key, ktime_get_real_seconds() + timeout);
+		key->expiry = ktime_get_real_seconds() + timeout;
+		key_schedule_gc(key->expiry + key_gc_delay);
 
 		if (test_and_clear_bit(KEY_FLAG_USER_CONSTRUCT, &key->flags))
 			awaken = 1;
@@ -649,20 +649,8 @@ void key_put(struct key *key)
 	if (key) {
 		key_check(key);
 
-		if (refcount_dec_and_test(&key->usage)) {
-			unsigned long flags;
-
-			/* deal with the user's key tracking and quota */
-			if (test_bit(KEY_FLAG_IN_QUOTA, &key->flags)) {
-				spin_lock_irqsave(&key->user->lock, flags);
-				key->user->qnkeys--;
-				key->user->qnbytes -= key->quotalen;
-				spin_unlock_irqrestore(&key->user->lock, flags);
-			}
-			/* Mark key as safe for GC after key->user done. */
-			clear_bit_unlock(KEY_FLAG_USER_ALIVE, &key->flags);
+		if (refcount_dec_and_test(&key->usage))
 			schedule_work(&key_gc_work);
-		}
 	}
 }
 EXPORT_SYMBOL(key_put);
@@ -705,7 +693,6 @@ error:
 	spin_unlock(&key_serial_lock);
 	return key;
 }
-EXPORT_SYMBOL(key_lookup);
 
 /*
  * Find and lock the specified key type against removal.
@@ -735,14 +722,16 @@ found_kernel_type:
 
 void key_set_timeout(struct key *key, unsigned timeout)
 {
-	time64_t expiry = TIME64_MAX;
+	time64_t expiry = 0;
 
 	/* make the changes with the locks held to prevent races */
 	down_write(&key->sem);
 
 	if (timeout > 0)
 		expiry = ktime_get_real_seconds() + timeout;
-	key_set_expiry(key, expiry);
+
+	key->expiry = expiry;
+	key_schedule_gc(key->expiry + key_gc_delay);
 
 	up_write(&key->sem);
 }
@@ -945,8 +934,8 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 		goto error_link_end;
 	}
 
-	security_key_post_create_or_update(keyring, key, payload, plen, flags,
-					   true);
+	ima_post_key_create_or_update(keyring, key, payload, plen,
+				      flags, true);
 
 	key_ref = make_key_ref(key, is_key_possessed(keyring_ref));
 
@@ -979,8 +968,9 @@ error:
 	key_ref = __key_update(key_ref, &prep);
 
 	if (!IS_ERR(key_ref))
-		security_key_post_create_or_update(keyring, key, payload, plen,
-						   flags, false);
+		ima_post_key_create_or_update(keyring, key,
+					      payload, plen,
+					      flags, false);
 
 	goto error_free_prep;
 }

@@ -30,6 +30,8 @@ static inline netdev_tx_t efx_enqueue_skb(struct efx_tx_queue *tx_queue, struct 
 			       tx_queue, skb);
 }
 void efx_xmit_done_single(struct efx_tx_queue *tx_queue);
+int efx_setup_tc(struct net_device *net_dev, enum tc_setup_type type,
+		 void *type_data);
 extern unsigned int efx_piobuf_size;
 
 /* RX */
@@ -158,7 +160,7 @@ static inline s32 efx_filter_get_rx_ids(struct efx_nic *efx,
 }
 
 /* RSS contexts */
-static inline bool efx_rss_active(struct efx_rss_context_priv *ctx)
+static inline bool efx_rss_active(struct efx_rss_context *ctx)
 {
 	return ctx->context_id != EFX_MCDI_RSS_CONTEXT_INVALID;
 }
@@ -168,6 +170,7 @@ extern const struct ethtool_ops efx_ethtool_ops;
 
 /* Global */
 unsigned int efx_usecs_to_ticks(struct efx_nic *efx, unsigned int usecs);
+unsigned int efx_ticks_to_usecs(struct efx_nic *efx, unsigned int ticks);
 int efx_init_irq_moderation(struct efx_nic *efx, unsigned int tx_usecs,
 			    unsigned int rx_usecs, bool rx_adaptive,
 			    bool rx_may_override_tx);

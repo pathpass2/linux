@@ -22,8 +22,10 @@ static int __init fail_usercopy_debugfs(void)
 
 	dir = fault_create_debugfs_attr("fail_usercopy", NULL,
 					&fail_usercopy.attr);
+	if (IS_ERR(dir))
+		return PTR_ERR(dir);
 
-	return PTR_ERR_OR_ZERO(dir);
+	return 0;
 }
 
 late_initcall(fail_usercopy_debugfs);

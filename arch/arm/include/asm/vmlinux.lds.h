@@ -19,7 +19,7 @@
 #endif
 
 #ifdef CONFIG_MMU
-#define ARM_MMU_KEEP(x)		KEEP(x)
+#define ARM_MMU_KEEP(x)		x
 #define ARM_MMU_DISCARD(x)
 #else
 #define ARM_MMU_KEEP(x)
@@ -34,12 +34,6 @@
 #define NOCROSSREFS
 #endif
 
-#ifdef CONFIG_LD_CAN_USE_KEEP_IN_OVERLAY
-#define OVERLAY_KEEP(x)		KEEP(x)
-#else
-#define OVERLAY_KEEP(x)		x
-#endif
-
 /* Set start/end symbol names to the LMA for the section */
 #define ARM_LMA(sym, section)						\
 	sym##_start = LOADADDR(section);				\
@@ -48,7 +42,7 @@
 #define PROC_INFO							\
 		. = ALIGN(4);						\
 		__proc_info_begin = .;					\
-		KEEP(*(.proc.info.init))				\
+		*(.proc.info.init)					\
 		__proc_info_end = .;
 
 #define IDMAP_TEXT							\
@@ -131,13 +125,13 @@
 	__vectors_lma = .;						\
 	OVERLAY 0xffff0000 : NOCROSSREFS AT(__vectors_lma) {		\
 		.vectors {						\
-			OVERLAY_KEEP(*(.vectors))			\
+			*(.vectors)					\
 		}							\
 		.vectors.bhb.loop8 {					\
-			OVERLAY_KEEP(*(.vectors.bhb.loop8))		\
+			*(.vectors.bhb.loop8)				\
 		}							\
 		.vectors.bhb.bpiall {					\
-			OVERLAY_KEEP(*(.vectors.bhb.bpiall))		\
+			*(.vectors.bhb.bpiall)				\
 		}							\
 	}								\
 	ARM_LMA(__vectors, .vectors);					\

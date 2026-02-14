@@ -22,16 +22,6 @@
 		serial0 = &uart0;
 	};
 
-	backlight_lcd0: backlight-lcd0 {
-		compatible = "pwm-backlight";
-		brightness-levels = <0 1023>;
-		default-brightness-level = <576>;
-		enable-gpios = <&pio 82 GPIO_ACTIVE_HIGH>;
-		num-interpolated-steps = <1023>;
-		pwms = <&disp_pwm0 0 500000>;
-		power-supply = <&ppvar_sys>;
-	};
-
 	chosen {
 		stdout-path = "serial0:115200n8";
 	};
@@ -45,19 +35,6 @@
 	memory@40000000 {
 		device_type = "memory";
 		reg = <0 0x40000000 0 0x80000000>;
-	};
-
-	pp3300_disp_x: regulator-pp3300-disp-x {
-		compatible = "regulator-fixed";
-		regulator-name = "pp3300_disp_x";
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-		regulator-enable-ramp-delay = <2500>;
-		enable-active-high;
-		gpio = <&pio 55 GPIO_ACTIVE_HIGH>;
-		pinctrl-names = "default";
-		pinctrl-0 = <&panel_fixed_pins>;
-		vin-supply = <&pp3300_z2>;
 	};
 
 	/* system wide LDO 3.3V power rail */
@@ -127,77 +104,6 @@
 		regulator-boot-on;
 	};
 
-	/* Murata NCP03WF104F05RL */
-	tboard_thermistor1: thermal-sensor-t1 {
-		compatible = "generic-adc-thermal";
-		#thermal-sensor-cells = <0>;
-		io-channels = <&auxadc 0>;
-		io-channel-names = "sensor-channel";
-		temperature-lookup-table = <	(-10000) 1553
-						(-5000) 1485
-						0 1406
-						5000 1317
-						10000 1219
-						15000 1115
-						20000 1007
-						25000 900
-						30000 796
-						35000 697
-						40000 605
-						45000 523
-						50000 449
-						55000 384
-						60000 327
-						65000 279
-						70000 237
-						75000 202
-						80000 172
-						85000 147
-						90000 125
-						95000 107
-						100000 92
-						105000 79
-						110000 68
-						115000 59
-						120000 51
-						125000 44>;
-	};
-
-	tboard_thermistor2: thermal-sensor-t2 {
-		compatible = "generic-adc-thermal";
-		#thermal-sensor-cells = <0>;
-		io-channels = <&auxadc 1>;
-		io-channel-names = "sensor-channel";
-		temperature-lookup-table = <	(-10000) 1553
-						(-5000) 1485
-						0 1406
-						5000 1317
-						10000 1219
-						15000 1115
-						20000 1007
-						25000 900
-						30000 796
-						35000 697
-						40000 605
-						45000 523
-						50000 449
-						55000 384
-						60000 327
-						65000 279
-						70000 237
-						75000 202
-						80000 172
-						85000 147
-						90000 125
-						95000 107
-						100000 92
-						105000 79
-						110000 68
-						115000 59
-						120000 51
-						125000 44>;
-	};
-
 	usb_vbus: regulator-5v0-usb-vbus {
 		compatible = "regulator-fixed";
 		regulator-name = "usb-vbus";
@@ -240,7 +146,6 @@
 	spk_amplifier: rt1019p {
 		compatible = "realtek,rt1019p";
 		label = "rt1019p";
-		#sound-dai-cells = <0>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&rt1019p_pins_default>;
 		sdb-gpios = <&pio 100 GPIO_ACTIVE_HIGH>;
@@ -261,65 +166,12 @@
 	memory-region = <&afe_mem>;
 };
 
-&auxadc {
-	status = "okay";
-};
-
-&cpu0 {
-	cpu-supply = <&mt6359_vcore_buck_reg>;
-};
-
-&cpu1 {
-	cpu-supply = <&mt6359_vcore_buck_reg>;
-};
-
-&cpu2 {
-	cpu-supply = <&mt6359_vcore_buck_reg>;
-};
-
-&cpu3 {
-	cpu-supply = <&mt6359_vcore_buck_reg>;
-};
-
-&cpu4 {
-	cpu-supply = <&mt6315_6_vbuck1>;
-};
-
-&cpu5 {
-	cpu-supply = <&mt6315_6_vbuck1>;
-};
-
-&cpu6 {
-	cpu-supply = <&mt6315_6_vbuck1>;
-};
-
-&cpu7 {
-	cpu-supply = <&mt6315_6_vbuck1>;
-};
-
-&dither0_out {
-	remote-endpoint = <&dsc0_in>;
-};
-
 &dp_intf0 {
 	status = "okay";
 
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			reg = <0>;
-			dp_intf0_in: endpoint {
-				remote-endpoint = <&merge0_out>;
-			};
-		};
-
-		port@1 {
-			reg = <1>;
-			dp_intf0_out: endpoint {
-				remote-endpoint = <&edp_in>;
-			};
+	port {
+		dp_intf0_out: endpoint {
+			remote-endpoint = <&edp_in>;
 		};
 	};
 };
@@ -327,51 +179,9 @@
 &dp_intf1 {
 	status = "okay";
 
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0>;
-
-			dp_intf1_in: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&merge5_out>;
-			};
-		};
-
-		port@1 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <1>;
-
-			dp_intf1_out: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&dptx_in>;
-			};
-		};
-	};
-};
-
-&dsc0 {
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			reg = <0>;
-			dsc0_in: endpoint {
-				remote-endpoint = <&dither0_out>;
-			};
-		};
-
-		port@1 {
-			reg = <1>;
-			dsc0_out: endpoint {
-				remote-endpoint = <&merge0_in>;
-			};
+	port {
+		dp_intf1_out: endpoint {
+			remote-endpoint = <&dptx_in>;
 		};
 	};
 };
@@ -397,65 +207,14 @@
 			reg = <1>;
 			edp_out: endpoint {
 				data-lanes = <0 1 2 3>;
-				remote-endpoint = <&panel_in>;
 			};
 		};
 	};
-
-	aux-bus {
-		panel {
-			compatible = "edp-panel";
-			power-supply = <&pp3300_disp_x>;
-			backlight = <&backlight_lcd0>;
-			port {
-				panel_in: endpoint {
-					remote-endpoint = <&edp_out>;
-				};
-			};
-		};
-	};
-};
-
-&ethdr0 {
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0>;
-
-			ethdr0_in: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&vdosys1_ep_ext>;
-			};
-		};
-
-		port@1 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <1>;
-
-			ethdr0_out: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&merge5_in>;
-			};
-		};
-	};
-};
-
-&disp_pwm0 {
-	status = "okay";
-
-	pinctrl-names = "default";
-	pinctrl-0 = <&disp_pwm0_pin_default>;
 };
 
 &dp_tx {
 	status = "okay";
 
-	#sound-dai-cells = <0>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&dptx_pin>;
 
@@ -464,12 +223,8 @@
 		#size-cells = <0>;
 
 		port@0 {
-			#address-cells = <1>;
-			#size-cells = <0>;
 			reg = <0>;
-
-			dptx_in: endpoint@1 {
-				reg = <1>;
+			dptx_in: endpoint {
 				remote-endpoint = <&dp_intf1_out>;
 			};
 		};
@@ -481,15 +236,6 @@
 			};
 		};
 	};
-};
-
-&gic {
-	mediatek,broken-save-restore-fw;
-};
-
-&gpu {
-	status = "okay";
-	mali-supply = <&mt6315_7_vbuck1>;
 };
 
 &i2c0 {
@@ -530,13 +276,11 @@
 		/* Realtek RT5682i or RT5682s, sharing the same configuration */
 		reg = <0x1a>;
 		interrupts-extended = <&pio 89 IRQ_TYPE_EDGE_BOTH>;
-		#sound-dai-cells = <1>;
 		realtek,jd-src = <1>;
 
 		AVDD-supply = <&mt6359_vio18_ldo_reg>;
-		DBVDD-supply = <&mt6359_vio18_ldo_reg>;
 		MICVDD-supply = <&pp3300_z2>;
-		LDO1-IN-supply = <&mt6359_vio18_ldo_reg>;
+		VBAT-supply = <&pp3300_z5>;
 	};
 };
 
@@ -592,7 +336,7 @@
 	pinctrl-0 = <&i2c7_pins>;
 
 	pmic@34 {
-		#interrupt-cells = <2>;
+		#interrupt-cells = <1>;
 		compatible = "mediatek,mt6360";
 		reg = <0x34>;
 		interrupt-controller;
@@ -602,64 +346,6 @@
 		pinctrl-0 = <&subpmic_default>;
 		wakeup-source;
 	};
-};
-
-&merge0 {
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			reg = <0>;
-			merge0_in: endpoint {
-				remote-endpoint = <&dsc0_out>;
-			};
-		};
-
-		port@1 {
-			reg = <1>;
-			merge0_out: endpoint {
-				remote-endpoint = <&dp_intf0_in>;
-			};
-		};
-	};
-};
-
-&merge5 {
-	ports {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		port@0 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <0>;
-
-			merge5_in: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&ethdr0_out>;
-			};
-		};
-
-		port@1 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <1>;
-
-			merge5_out: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&dp_intf1_in>;
-			};
-		};
-	};
-};
-
-&mfg0 {
-	domain-supply = <&mt6315_7_vbuck1>;
-};
-
-&mfg1 {
-	domain-supply = <&mt6359_vsram_others_ldo_reg>;
 };
 
 &mmc0 {
@@ -732,6 +418,7 @@
 
 /* for GPU SRAM */
 &mt6359_vsram_others_ldo_reg {
+	regulator-always-on;
 	regulator-min-microvolt = <750000>;
 	regulator-max-microvolt = <750000>;
 };
@@ -753,17 +440,6 @@
 		spi-rx-bus-width = <2>;
 		spi-tx-bus-width = <2>;
 	};
-};
-
-&ovl0_in {
-	remote-endpoint = <&vdosys0_ep_main>;
-};
-
-&pcie1 {
-	status = "okay";
-
-	pinctrl-names = "default";
-	pinctrl-0 = <&pcie1_pins_default>;
 };
 
 &pio {
@@ -972,13 +648,6 @@
 		};
 	};
 
-	disp_pwm0_pin_default: disp-pwm0-default-pins {
-		pins-disp-pwm {
-			pinmux = <PINMUX_GPIO82__FUNC_GPIO82>,
-				 <PINMUX_GPIO97__FUNC_DISP_PWM0>;
-		};
-	};
-
 	dptx_pin: dptx-default-pins {
 		pins-cmd-dat {
 			pinmux = <PINMUX_GPIO18__FUNC_DP_TX_HPD>;
@@ -1154,30 +823,6 @@
 		};
 	};
 
-	pcie0_pins_default: pcie0-default-pins {
-		pins-bus {
-			pinmux = <PINMUX_GPIO19__FUNC_WAKEN>,
-				 <PINMUX_GPIO20__FUNC_PERSTN>,
-				 <PINMUX_GPIO21__FUNC_CLKREQN>;
-				 bias-pull-up;
-		};
-	};
-
-	pcie1_pins_default: pcie1-default-pins {
-		pins-bus {
-			pinmux = <PINMUX_GPIO22__FUNC_PERSTN_1>,
-				 <PINMUX_GPIO23__FUNC_CLKREQN_1>,
-				 <PINMUX_GPIO24__FUNC_WAKEN_1>;
-				 bias-pull-up;
-		};
-	};
-
-	panel_fixed_pins: panel-pwr-default-pins {
-		pins-vreg-en {
-			pinmux = <PINMUX_GPIO55__FUNC_GPIO55>;
-		};
-	};
-
 	pio_default: pio-default-pins {
 		pins-wifi-enable {
 			pinmux = <PINMUX_GPIO58__FUNC_GPIO58>;
@@ -1312,48 +957,6 @@
 		"AFE_SOF_DL2", "AFE_SOF_DL3", "AFE_SOF_UL4", "AFE_SOF_UL5";
 	pinctrl-names = "default";
 	pinctrl-0 = <&aud_pins_default>;
-
-	audio-routing =
-		"Headphone", "HPOL",
-		"Headphone", "HPOR",
-		"IN1P", "Headset Mic",
-		"Ext Spk", "Speaker";
-
-	mm-dai-link {
-		link-name = "ETDM1_IN_BE";
-		mediatek,clk-provider = "cpu";
-	};
-
-	hs-playback-dai-link {
-		link-name = "ETDM1_OUT_BE";
-		mediatek,clk-provider = "cpu";
-		codec {
-			sound-dai = <&audio_codec 0>;
-		};
-	};
-
-	hs-capture-dai-link {
-		link-name = "ETDM2_IN_BE";
-		mediatek,clk-provider = "cpu";
-		codec {
-			sound-dai = <&audio_codec 0>;
-		};
-	};
-
-	spk-playback-dai-link {
-		link-name = "ETDM2_OUT_BE";
-		mediatek,clk-provider = "cpu";
-		codec {
-			sound-dai = <&spk_amplifier>;
-		};
-	};
-
-	displayport-dai-link {
-		link-name = "DPTX_BE";
-		codec {
-			sound-dai = <&dp_tx>;
-		};
-	};
 };
 
 &spi0 {
@@ -1373,7 +976,10 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&cros_ec_int>;
 		spi-max-frequency = <3000000>;
-		wakeup-source;
+
+		keyboard-backlight {
+			compatible = "google,cros-kbd-led-backlight";
+		};
 
 		i2c_tunnel: i2c-tunnel {
 			compatible = "google,cros-ec-i2c-tunnel";
@@ -1432,8 +1038,9 @@
 
 		regulators {
 			mt6315_6_vbuck1: vbuck1 {
+				regulator-compatible = "vbuck1";
 				regulator-name = "Vbcpu";
-				regulator-min-microvolt = <400000>;
+				regulator-min-microvolt = <300000>;
 				regulator-max-microvolt = <1193750>;
 				regulator-enable-ramp-delay = <256>;
 				regulator-ramp-delay = <6250>;
@@ -1449,42 +1056,14 @@
 
 		regulators {
 			mt6315_7_vbuck1: vbuck1 {
+				regulator-compatible = "vbuck1";
 				regulator-name = "Vgpu";
-				regulator-min-microvolt = <400000>;
+				regulator-min-microvolt = <625000>;
 				regulator-max-microvolt = <1193750>;
 				regulator-enable-ramp-delay = <256>;
 				regulator-ramp-delay = <6250>;
 				regulator-allowed-modes = <0 1 2>;
-			};
-		};
-	};
-};
-
-&thermal_zones {
-	soc-area-thermal {
-		polling-delay = <1000>;
-		polling-delay-passive = <250>;
-		thermal-sensors = <&tboard_thermistor1>;
-
-		trips {
-			trip-crit {
-				temperature = <84000>;
-				hysteresis = <1000>;
-				type = "critical";
-			};
-		};
-	};
-
-	pmic-area-thermal {
-		polling-delay = <1000>;
-		polling-delay-passive = <0>;
-		thermal-sensors = <&tboard_thermistor2>;
-
-		trips {
-			trip-crit {
-				temperature = <84000>;
-				hysteresis = <1000>;
-				type = "critical";
+				regulator-always-on;
 			};
 		};
 	};
@@ -1510,71 +1089,24 @@
 	status = "okay";
 };
 
-&vdosys0 {
-	port {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		vdosys0_ep_main: endpoint@0 {
-			reg = <0>;
-			remote-endpoint = <&ovl0_in>;
-		};
-	};
-};
-
-/*
- * For the USB Type-C ports the role and alternate modes switching is
- * done by the EC so we set dr_mode to host to avoid interfering.
- */
-&ssusb0 {
-	dr_mode = "host";
-	vusb33-supply = <&mt6359_vusb_ldo_reg>;
-	status = "okay";
-};
-
-&ssusb2 {
-	dr_mode = "host";
-	vusb33-supply = <&mt6359_vusb_ldo_reg>;
-	status = "okay";
-};
-
-&ssusb3 {
-	dr_mode = "host";
-	vusb33-supply = <&mt6359_vusb_ldo_reg>;
-	status = "okay";
-};
-
-&vdosys1 {
-	port {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		vdosys1_ep_ext: endpoint@1 {
-			reg = <1>;
-			remote-endpoint = <&ethdr0_in>;
-		};
-	};
-};
-
 &xhci0 {
 	status = "okay";
 
-	rx-fifo-depth = <3072>;
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
 	vbus-supply = <&usb_vbus>;
 };
 
 &xhci1 {
 	status = "okay";
 
-	phys = <&u2port1 PHY_TYPE_USB2>;
-	rx-fifo-depth = <3072>;
 	vusb33-supply = <&mt6359_vusb_ldo_reg>;
 	vbus-supply = <&usb_vbus>;
-	mediatek,u3p-dis-msk = <1>;
 };
 
 &xhci2 {
 	status = "okay";
+
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
 	vbus-supply = <&usb_vbus>;
 };
 
@@ -1583,6 +1115,7 @@
 
 	/* MT7921's USB Bluetooth has issues with USB2 LPM */
 	usb2-lpm-disable;
+	vusb33-supply = <&mt6359_vusb_ldo_reg>;
 	vbus-supply = <&usb_vbus>;
 };
 
@@ -1601,11 +1134,6 @@
 		MATRIX_KEY(0x02, 0x09, 0)	/* T8 */
 		MATRIX_KEY(0x01, 0x09, 0)	/* T9 */
 		MATRIX_KEY(0x00, 0x04, 0)	/* T10 */
-
-		/* T11 to T13 are present only on Dojo */
-		MATRIX_KEY(0x00, 0x01, 0)	/* T11 */
-		MATRIX_KEY(0x01, 0x05, 0)	/* T12 */
-		MATRIX_KEY(0x03, 0x05, 0)	/* T13 */
 	>;
 
 	linux,keymap = <

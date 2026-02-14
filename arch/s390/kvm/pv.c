@@ -5,194 +5,18 @@
  * Copyright IBM Corp. 2019, 2020
  *    Author(s): Janosch Frank <frankja@linux.ibm.com>
  */
-
-#include <linux/export.h>
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
 #include <linux/minmax.h>
 #include <linux/pagemap.h>
 #include <linux/sched/signal.h>
+#include <asm/gmap.h>
 #include <asm/uv.h>
 #include <asm/mman.h>
 #include <linux/pagewalk.h>
 #include <linux/sched/mm.h>
 #include <linux/mmu_notifier.h>
 #include "kvm-s390.h"
-#include "dat.h"
-#include "gaccess.h"
-#include "gmap.h"
-#include "faultin.h"
-
-bool kvm_s390_pv_is_protected(struct kvm *kvm)
-{
-	lockdep_assert_held(&kvm->lock);
-	return !!kvm_s390_pv_get_handle(kvm);
-}
-EXPORT_SYMBOL_GPL(kvm_s390_pv_is_protected);
-
-bool kvm_s390_pv_cpu_is_protected(struct kvm_vcpu *vcpu)
-{
-	lockdep_assert_held(&vcpu->mutex);
-	return !!kvm_s390_pv_cpu_get_handle(vcpu);
-}
-EXPORT_SYMBOL_GPL(kvm_s390_pv_cpu_is_protected);
-
-/**
- * should_export_before_import() - Determine whether an export is needed
- * before an import-like operation.
- * @uvcb: The Ultravisor control block of the UVC to be performed.
- * @mm: The mm of the process.
- *
- * Returns whether an export is needed before every import-like operation.
- * This is needed for shared pages, which don't trigger a secure storage
- * exception when accessed from a different guest.
- *
- * Although considered as one, the Unpin Page UVC is not an actual import,
- * so it is not affected.
- *
- * No export is needed also when there is only one protected VM, because the
- * page cannot belong to the wrong VM in that case (there is no "other VM"
- * it can belong to).
- *
- * Return: %true if an export is needed before every import, otherwise %false.
- */
-static bool should_export_before_import(struct uv_cb_header *uvcb, struct mm_struct *mm)
-{
-	/*
-	 * The misc feature indicates, among other things, that importing a
-	 * shared page from a different protected VM will automatically also
-	 * transfer its ownership.
-	 */
-	if (uv_has_feature(BIT_UV_FEAT_MISC))
-		return false;
-	if (uvcb->cmd == UVC_CMD_UNPIN_PAGE_SHARED)
-		return false;
-	return atomic_read(&mm->context.protected_count) > 1;
-}
-
-struct pv_make_secure {
-	void *uvcb;
-	struct folio *folio;
-	int rc;
-	bool needs_export;
-};
-
-static int __kvm_s390_pv_make_secure(struct guest_fault *f, struct folio *folio)
-{
-	struct pv_make_secure *priv = f->priv;
-	int rc;
-
-	if (priv->needs_export)
-		uv_convert_from_secure(folio_to_phys(folio));
-
-	if (folio_test_hugetlb(folio))
-		return -EFAULT;
-	if (folio_test_large(folio))
-		return -E2BIG;
-
-	if (!f->page)
-		folio_get(folio);
-	rc = __make_folio_secure(folio, priv->uvcb);
-	if (!f->page)
-		folio_put(folio);
-
-	return rc;
-}
-
-static void _kvm_s390_pv_make_secure(struct guest_fault *f)
-{
-	struct pv_make_secure *priv = f->priv;
-	struct folio *folio;
-
-	folio = pfn_folio(f->pfn);
-	priv->rc = -EAGAIN;
-	if (folio_trylock(folio)) {
-		priv->rc = __kvm_s390_pv_make_secure(f, folio);
-		if (priv->rc == -E2BIG || priv->rc == -EBUSY) {
-			priv->folio = folio;
-			folio_get(folio);
-		}
-		folio_unlock(folio);
-	}
-}
-
-/**
- * kvm_s390_pv_make_secure() - make one guest page secure
- * @kvm: the guest
- * @gaddr: the guest address that needs to be made secure
- * @uvcb: the UVCB specifying which operation needs to be performed
- *
- * Context: needs to be called with kvm->srcu held.
- * Return: 0 on success, < 0 in case of error.
- */
-int kvm_s390_pv_make_secure(struct kvm *kvm, unsigned long gaddr, void *uvcb)
-{
-	struct pv_make_secure priv = { .uvcb = uvcb };
-	struct guest_fault f = {
-		.write_attempt = true,
-		.gfn = gpa_to_gfn(gaddr),
-		.callback = _kvm_s390_pv_make_secure,
-		.priv = &priv,
-	};
-	int rc;
-
-	lockdep_assert_held(&kvm->srcu);
-
-	priv.needs_export = should_export_before_import(uvcb, kvm->mm);
-
-	scoped_guard(mutex, &kvm->arch.pv.import_lock) {
-		rc = kvm_s390_faultin_gfn(NULL, kvm, &f);
-
-		if (!rc) {
-			rc = priv.rc;
-			if (priv.folio) {
-				rc = s390_wiggle_split_folio(kvm->mm, priv.folio);
-				if (!rc)
-					rc = -EAGAIN;
-			}
-		}
-	}
-	if (priv.folio)
-		folio_put(priv.folio);
-	return rc;
-}
-
-int kvm_s390_pv_convert_to_secure(struct kvm *kvm, unsigned long gaddr)
-{
-	struct uv_cb_cts uvcb = {
-		.header.cmd = UVC_CMD_CONV_TO_SEC_STOR,
-		.header.len = sizeof(uvcb),
-		.guest_handle = kvm_s390_pv_get_handle(kvm),
-		.gaddr = gaddr,
-	};
-
-	return kvm_s390_pv_make_secure(kvm, gaddr, &uvcb);
-}
-
-/**
- * kvm_s390_pv_destroy_page() - Destroy a guest page.
- * @kvm: the guest
- * @gaddr: the guest address to destroy
- *
- * An attempt will be made to destroy the given guest page. If the attempt
- * fails, an attempt is made to export the page. If both attempts fail, an
- * appropriate error is returned.
- *
- * Context: may sleep.
- */
-int kvm_s390_pv_destroy_page(struct kvm *kvm, unsigned long gaddr)
-{
-	struct page *page;
-	int rc = 0;
-
-	mmap_read_lock(kvm->mm);
-	page = gfn_to_page(kvm, gpa_to_gfn(gaddr));
-	if (page)
-		rc = __kvm_s390_pv_destroy_page(page);
-	kvm_release_page_clean(page);
-	mmap_read_unlock(kvm->mm);
-	return rc;
-}
 
 /**
  * struct pv_vm_to_be_destroyed - Represents a protected VM that needs to
@@ -401,6 +225,35 @@ done_fast:
 	return 0;
 }
 
+/**
+ * kvm_s390_destroy_lower_2g - Destroy the first 2GB of protected guest memory.
+ * @kvm: the VM whose memory is to be cleared.
+ *
+ * Destroy the first 2GB of guest memory, to avoid prefix issues after reboot.
+ * The CPUs of the protected VM need to be destroyed beforehand.
+ */
+static void kvm_s390_destroy_lower_2g(struct kvm *kvm)
+{
+	const unsigned long pages_2g = SZ_2G / PAGE_SIZE;
+	struct kvm_memory_slot *slot;
+	unsigned long len;
+	int srcu_idx;
+
+	srcu_idx = srcu_read_lock(&kvm->srcu);
+
+	/* Take the memslot containing guest absolute address 0 */
+	slot = gfn_to_memslot(kvm, 0);
+	/* Clear all slots or parts thereof that are below 2GB */
+	while (slot && slot->base_gfn < pages_2g) {
+		len = min_t(u64, slot->npages, pages_2g - slot->base_gfn) * PAGE_SIZE;
+		s390_uv_destroy_range(kvm->mm, slot->userspace_addr, slot->userspace_addr + len);
+		/* Take the next memslot */
+		slot = gfn_to_memslot(kvm, slot->base_gfn + slot->npages);
+	}
+
+	srcu_read_unlock(&kvm->srcu, srcu_idx);
+}
+
 static int kvm_s390_pv_deinit_vm_fast(struct kvm *kvm, u16 *rc, u16 *rrc)
 {
 	struct uv_cb_destroy_fast uvcb = {
@@ -415,12 +268,12 @@ static int kvm_s390_pv_deinit_vm_fast(struct kvm *kvm, u16 *rc, u16 *rrc)
 		*rc = uvcb.header.rc;
 	if (rrc)
 		*rrc = uvcb.header.rrc;
+	WRITE_ONCE(kvm->arch.gmap->guest_handle, 0);
 	KVM_UV_EVENT(kvm, 3, "PROTVIRT DESTROY VM FAST: rc %x rrc %x",
 		     uvcb.header.rc, uvcb.header.rrc);
-	WARN_ONCE(cc && uvcb.header.rc != 0x104,
-		  "protvirt destroy vm fast failed handle %llx rc %x rrc %x",
+	WARN_ONCE(cc, "protvirt destroy vm fast failed handle %llx rc %x rrc %x",
 		  kvm_s390_pv_get_handle(kvm), uvcb.header.rc, uvcb.header.rrc);
-	/* Intended memory leak on "impossible" error */
+	/* Inteded memory leak on "impossible" error */
 	if (!cc)
 		kvm_s390_pv_dealloc_vm(kvm);
 	return cc ? -EIO : 0;
@@ -461,11 +314,6 @@ int kvm_s390_pv_set_aside(struct kvm *kvm, u16 *rc, u16 *rrc)
 	 */
 	if (kvm->arch.pv.set_aside)
 		return -EINVAL;
-
-	/* Guest with segment type ASCE, refuse to destroy asynchronously */
-	if (kvm->arch.gmap->asce.dt == TABLE_TYPE_SEGMENT)
-		return -EINVAL;
-
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
@@ -476,7 +324,8 @@ int kvm_s390_pv_set_aside(struct kvm *kvm, u16 *rc, u16 *rrc)
 		priv->stor_var = kvm->arch.pv.stor_var;
 		priv->stor_base = kvm->arch.pv.stor_base;
 		priv->handle = kvm_s390_pv_get_handle(kvm);
-		priv->old_gmap_table = (unsigned long)dereference_asce(kvm->arch.gmap->asce);
+		priv->old_gmap_table = (unsigned long)kvm->arch.gmap->table;
+		WRITE_ONCE(kvm->arch.gmap->guest_handle, 0);
 		if (s390_replace_asce(kvm->arch.gmap))
 			res = -ENOMEM;
 	}
@@ -486,7 +335,7 @@ int kvm_s390_pv_set_aside(struct kvm *kvm, u16 *rc, u16 *rrc)
 		return res;
 	}
 
-	gmap_pv_destroy_range(kvm->arch.gmap, 0, gpa_to_gfn(SZ_2G), false);
+	kvm_s390_destroy_lower_2g(kvm);
 	kvm_s390_clear_pv_state(kvm);
 	kvm->arch.pv.set_aside = priv;
 
@@ -520,6 +369,7 @@ int kvm_s390_pv_deinit_vm(struct kvm *kvm, u16 *rc, u16 *rrc)
 
 	cc = uv_cmd_nodata(kvm_s390_pv_get_handle(kvm),
 			   UVC_CMD_DESTROY_SEC_CONF, rc, rrc);
+	WRITE_ONCE(kvm->arch.gmap->guest_handle, 0);
 	if (!cc) {
 		atomic_dec(&kvm->mm->context.protected_count);
 		kvm_s390_pv_dealloc_vm(kvm);
@@ -556,12 +406,8 @@ int kvm_s390_pv_deinit_cleanup_all(struct kvm *kvm, u16 *rc, u16 *rrc)
 	u16 _rc, _rrc;
 	int cc = 0;
 
-	/*
-	 * Nothing to do if the counter was already 0. Otherwise make sure
-	 * the counter does not reach 0 before calling s390_uv_destroy_range.
-	 */
-	if (!atomic_inc_not_zero(&kvm->mm->context.protected_count))
-		return 0;
+	/* Make sure the counter does not reach 0 before calling s390_uv_destroy_range */
+	atomic_inc(&kvm->mm->context.protected_count);
 
 	*rc = 1;
 	/* If the current VM is protected, destroy it */
@@ -602,7 +448,7 @@ int kvm_s390_pv_deinit_cleanup_all(struct kvm *kvm, u16 *rc, u16 *rrc)
 	 * cleanup has been performed.
 	 */
 	if (need_zap && mmget_not_zero(kvm->mm)) {
-		gmap_pv_destroy_range(kvm->arch.gmap, 0, asce_end(kvm->arch.gmap->asce), false);
+		s390_uv_destroy_range(kvm->mm, 0, TASK_SIZE);
 		mmput(kvm->mm);
 	}
 
@@ -640,7 +486,7 @@ int kvm_s390_pv_deinit_aside_vm(struct kvm *kvm, u16 *rc, u16 *rrc)
 		return -EINVAL;
 
 	/* When a fatal signal is received, stop immediately */
-	if (gmap_pv_destroy_range(kvm->arch.gmap, 0, asce_end(kvm->arch.gmap->asce), true))
+	if (s390_uv_destroy_range_interruptible(kvm->mm, 0, TASK_SIZE_MAX))
 		goto done;
 	if (kvm_s390_pv_dispose_one_leftover(kvm, p, rc, rrc))
 		ret = -EIO;
@@ -679,7 +525,6 @@ static void kvm_s390_pv_mmu_notifier_release(struct mmu_notifier *subscription,
 	r = kvm_s390_cpus_from_pv(kvm, &dummy, &dummy);
 	if (!r && is_destroy_fast_available() && kvm_s390_pv_get_handle(kvm))
 		kvm_s390_pv_deinit_vm_fast(kvm, &dummy, &dummy);
-	set_bit(GMAP_FLAG_EXPORT_ON_UNMAP, &kvm->arch.gmap->flags);
 }
 
 static const struct mmu_notifier_ops kvm_s390_pv_mmu_notifier_ops = {
@@ -695,17 +540,6 @@ int kvm_s390_pv_init_vm(struct kvm *kvm, u16 *rc, u16 *rrc)
 	int cc, ret;
 	u16 dummy;
 
-	/* Add the notifier only once. No races because we hold kvm->lock */
-	if (kvm->arch.pv.mmu_notifier.ops != &kvm_s390_pv_mmu_notifier_ops) {
-		/* The notifier will be unregistered when the VM is destroyed */
-		kvm->arch.pv.mmu_notifier.ops = &kvm_s390_pv_mmu_notifier_ops;
-		ret = mmu_notifier_register(&kvm->arch.pv.mmu_notifier, kvm->mm);
-		if (ret) {
-			kvm->arch.pv.mmu_notifier.ops = NULL;
-			return ret;
-		}
-	}
-
 	ret = kvm_s390_pv_alloc_vm(kvm);
 	if (ret)
 		return ret;
@@ -713,22 +547,17 @@ int kvm_s390_pv_init_vm(struct kvm *kvm, u16 *rc, u16 *rrc)
 	/* Inputs */
 	uvcb.guest_stor_origin = 0; /* MSO is 0 for KVM */
 	uvcb.guest_stor_len = kvm->arch.pv.guest_len;
-	uvcb.guest_asce = kvm->arch.gmap->asce.val;
+	uvcb.guest_asce = kvm->arch.gmap->asce;
 	uvcb.guest_sca = virt_to_phys(kvm->arch.sca);
 	uvcb.conf_base_stor_origin =
 		virt_to_phys((void *)kvm->arch.pv.stor_base);
 	uvcb.conf_virt_stor_origin = (u64)kvm->arch.pv.stor_var;
-	uvcb.flags.ap_allow_instr = kvm->arch.model.uv_feat_guest.ap;
-	uvcb.flags.ap_instr_intr = kvm->arch.model.uv_feat_guest.ap_intr;
-
-	clear_bit(GMAP_FLAG_ALLOW_HPAGE_1M, &kvm->arch.gmap->flags);
-	gmap_split_huge_pages(kvm->arch.gmap);
 
 	cc = uv_call_sched(0, (u64)&uvcb);
 	*rc = uvcb.header.rc;
 	*rrc = uvcb.header.rrc;
-	KVM_UV_EVENT(kvm, 3, "PROTVIRT CREATE VM: handle %llx len %llx rc %x rrc %x flags %04x",
-		     uvcb.guest_handle, uvcb.guest_stor_len, *rc, *rrc, uvcb.flags.raw);
+	KVM_UV_EVENT(kvm, 3, "PROTVIRT CREATE VM: handle %llx len %llx rc %x rrc %x",
+		     uvcb.guest_handle, uvcb.guest_stor_len, *rc, *rrc);
 
 	/* Outputs */
 	kvm->arch.pv.handle = uvcb.guest_handle;
@@ -742,6 +571,12 @@ int kvm_s390_pv_init_vm(struct kvm *kvm, u16 *rc, u16 *rrc)
 			kvm_s390_pv_dealloc_vm(kvm);
 		}
 		return -EIO;
+	}
+	kvm->arch.gmap->guest_handle = uvcb.guest_handle;
+	/* Add the notifier only once. No races because we hold kvm->lock */
+	if (kvm->arch.pv.mmu_notifier.ops != &kvm_s390_pv_mmu_notifier_ops) {
+		kvm->arch.pv.mmu_notifier.ops = &kvm_s390_pv_mmu_notifier_ops;
+		mmu_notifier_register(&kvm->arch.pv.mmu_notifier, kvm->mm);
 	}
 	return 0;
 }
@@ -776,16 +611,10 @@ static int unpack_one(struct kvm *kvm, unsigned long addr, u64 tweak,
 		.tweak[0] = tweak,
 		.tweak[1] = offset,
 	};
-	int ret = kvm_s390_pv_make_secure(kvm, addr, &uvcb);
+	int ret = gmap_make_secure(kvm->arch.gmap, addr, &uvcb);
 
 	*rc = uvcb.header.rc;
 	*rrc = uvcb.header.rrc;
-
-	if (ret == -ENXIO) {
-		ret = kvm_s390_faultin_gfn_simple(NULL, kvm, gpa_to_gfn(addr), true);
-		if (!ret)
-			return -EAGAIN;
-	}
 
 	if (ret && ret != -EAGAIN)
 		KVM_UV_EVENT(kvm, 3, "PROTVIRT VM UNPACK: failed addr %llx with rc %x rrc %x",
@@ -804,8 +633,6 @@ int kvm_s390_pv_unpack(struct kvm *kvm, unsigned long addr, unsigned long size,
 
 	KVM_UV_EVENT(kvm, 3, "PROTVIRT VM UNPACK: start addr %lx size %lx",
 		     addr, size);
-
-	guard(srcu)(&kvm->srcu);
 
 	while (offset < size) {
 		ret = unpack_one(kvm, addr, tweak, offset, rc, rrc);

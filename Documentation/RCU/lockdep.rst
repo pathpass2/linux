@@ -65,7 +65,7 @@ checking of rcu_dereference() primitives:
 	rcu_access_pointer(p):
 		Return the value of the pointer and omit all barriers,
 		but retain the compiler constraints that prevent duplicating
-		or coalescing.  This is useful when testing the
+		or coalescsing.  This is useful when testing the
 		value of the pointer itself, for example, against NULL.
 
 The rcu_dereference_check() check expression can be any boolean
@@ -106,7 +106,7 @@ or the RCU-protected data that it points to can change concurrently.
 Like rcu_dereference(), when lockdep is enabled, RCU list and hlist
 traversal primitives check for being called from within an RCU read-side
 critical section.  However, a lockdep expression can be passed to them
-as an additional optional argument.  With this lockdep expression, these
+as a additional optional argument.  With this lockdep expression, these
 traversal primitives will complain only if the lockdep expression is
 false and they are called from outside any RCU read-side critical section.
 

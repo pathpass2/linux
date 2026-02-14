@@ -20,14 +20,16 @@
 	qcom,pmic-id = <0x20009 0x2000a 0x00 0x00>;
 	qcom,board-id = <31 0>;
 
-	divclk2_haptics: divclk2 {
-		compatible = "fixed-clock";
-		#clock-cells = <0>;
-		clock-frequency = <32768>;
-		clock-output-names = "divclk2";
+	clocks {
+		divclk2_haptics: divclk2 {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+			clock-output-names = "divclk2";
 
-		pinctrl-names = "default";
-		pinctrl-0 = <&divclk2_pin_a>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&divclk2_pin_a>;
+		};
 	};
 };
 
@@ -64,7 +66,7 @@
 		};
 
 		led@1 {
-			reg = <1>;
+			reg = <0>;
 			chan-name = "button-backlight1";
 			led-cur = /bits/ 8 <0x32>;
 			max-cur = /bits/ 8 <0xc8>;
@@ -80,7 +82,7 @@
 		#size-cells = <0>;
 		interrupt-parent = <&tlmm>;
 		interrupts = <125 IRQ_TYPE_LEVEL_LOW>;
-		vio-supply = <&vreg_l6a_1p8>;
+		vdda-supply = <&vreg_l6a_1p8>;
 		vdd-supply = <&vdd_3v2_tp>;
 		reset-gpios = <&tlmm 89 GPIO_ACTIVE_LOW>;
 
@@ -91,11 +93,7 @@
 
 };
 
-&gpu_zap_shader {
-	firmware-name = "qcom/msm8996/gemini/a530_zap.mbn";
-};
-
-&mdss_dsi0 {
+&dsi0 {
 	status = "okay";
 
 	vdd-supply = <&vreg_l2a_1p25>;
@@ -114,14 +112,20 @@
 
 		port {
 			panel_in: endpoint {
-				remote-endpoint = <&mdss_dsi0_out>;
+				remote-endpoint = <&dsi0_out>;
 			};
 		};
 	};
 };
 
-&mdss_dsi0_out {
+&dsi0_out {
 	remote-endpoint = <&panel_in>;
+};
+
+&gpu {
+	zap-shader {
+		firmware-name = "qcom/msm8996/gemini/a530_zap.mbn";
+	};
 };
 
 &pmi8994_wled {
@@ -135,15 +139,15 @@
 
 &q6asmdai {
 	dai@0 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA1>;
+		reg = <0>;
 	};
 
 	dai@1 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA2>;
+		reg = <1>;
 	};
 
 	dai@2 {
-		reg = <MSM_FRONTEND_DAI_MULTIMEDIA3>;
+		reg = <2>;
 	};
 };
 
@@ -154,7 +158,10 @@
 &sound {
 	compatible = "qcom,apq8096-sndcard";
 	model = "gemini";
-	audio-routing = "RX_BIAS", "MCLK";
+	audio-routing = "RX_BIAS", "MCLK",
+		"MM_DL1",  "MultiMedia1 Playback",
+		"MM_DL2",  "MultiMedia2 Playback",
+		"MultiMedia3 Capture", "MM_UL3";
 
 	mm1-dai-link {
 		link-name = "MultiMedia1";

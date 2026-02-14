@@ -14,7 +14,7 @@
 #ifndef CONFIG_PREEMPT_RT
 
 /* Non PREEMPT_RT kernels map spinlock to raw_spinlock */
-context_lock_struct(spinlock) {
+typedef struct spinlock {
 	union {
 		struct raw_spinlock rlock;
 
@@ -26,8 +26,7 @@ context_lock_struct(spinlock) {
 		};
 #endif
 	};
-};
-typedef struct spinlock spinlock_t;
+} spinlock_t;
 
 #define ___SPIN_LOCK_INITIALIZER(lockname)	\
 	{					\
@@ -48,13 +47,12 @@ typedef struct spinlock spinlock_t;
 /* PREEMPT_RT kernels map spinlock to rt_mutex */
 #include <linux/rtmutex.h>
 
-context_lock_struct(spinlock) {
+typedef struct spinlock {
 	struct rt_mutex_base	lock;
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	dep_map;
 #endif
-};
-typedef struct spinlock spinlock_t;
+} spinlock_t;
 
 #define __SPIN_LOCK_UNLOCKED(name)				\
 	{							\

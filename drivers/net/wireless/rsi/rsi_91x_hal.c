@@ -424,7 +424,7 @@ out:
 
 int rsi_prepare_beacon(struct rsi_common *common, struct sk_buff *skb)
 {
-	struct rsi_hw *adapter = common->priv;
+	struct rsi_hw *adapter = (struct rsi_hw *)common->priv;
 	struct rsi_data_desc *bcn_frm;
 	struct ieee80211_hw *hw = common->priv->hw;
 	struct ieee80211_conf *conf = &hw->conf;
@@ -490,10 +490,10 @@ int rsi_prepare_beacon(struct rsi_common *common, struct sk_buff *skb)
 
 static void bl_cmd_timeout(struct timer_list *t)
 {
-	struct rsi_hw *adapter = timer_container_of(adapter, t, bl_cmd_timer);
+	struct rsi_hw *adapter = from_timer(adapter, t, bl_cmd_timer);
 
 	adapter->blcmd_timer_expired = true;
-	timer_delete(&adapter->bl_cmd_timer);
+	del_timer(&adapter->bl_cmd_timer);
 }
 
 static int bl_start_cmd_timer(struct rsi_hw *adapter, u32 timeout)
@@ -511,7 +511,7 @@ static int bl_stop_cmd_timer(struct rsi_hw *adapter)
 {
 	adapter->blcmd_timer_expired = false;
 	if (timer_pending(&adapter->bl_cmd_timer))
-		timer_delete(&adapter->bl_cmd_timer);
+		del_timer(&adapter->bl_cmd_timer);
 
 	return 0;
 }

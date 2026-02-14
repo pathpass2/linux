@@ -32,6 +32,13 @@ static void get_io_context(struct io_context *ioc)
 	atomic_long_inc(&ioc->refcount);
 }
 
+static void icq_free_icq_rcu(struct rcu_head *head)
+{
+	struct io_cq *icq = container_of(head, struct io_cq, __rcu_head);
+
+	kmem_cache_free(icq->__rcu_icq_cache, icq);
+}
+
 /*
  * Exit an icq. Called with ioc locked for blk-mq, and with both ioc
  * and queue locked for legacy.
@@ -70,10 +77,6 @@ static void ioc_destroy_icq(struct io_cq *icq)
 	struct elevator_type *et = q->elevator->type;
 
 	lockdep_assert_held(&ioc->lock);
-	lockdep_assert_held(&q->queue_lock);
-
-	if (icq->flags & ICQ_DESTROYED)
-		return;
 
 	radix_tree_delete(&ioc->icq_tree, icq->q->id);
 	hlist_del_init(&icq->ioc_node);
@@ -95,7 +98,7 @@ static void ioc_destroy_icq(struct io_cq *icq)
 	 */
 	icq->__rcu_icq_cache = et->icq_cache;
 	icq->flags |= ICQ_DESTROYED;
-	kfree_rcu(icq, __rcu_head);
+	call_rcu(&icq->__rcu_head, icq_free_icq_rcu);
 }
 
 /*
@@ -125,7 +128,12 @@ static void ioc_release_fn(struct work_struct *work)
 			spin_lock(&q->queue_lock);
 			spin_lock(&ioc->lock);
 
-			ioc_destroy_icq(icq);
+			/*
+			 * The icq may have been destroyed when the ioc lock
+			 * was released.
+			 */
+			if (!(icq->flags & ICQ_DESTROYED))
+				ioc_destroy_icq(icq);
 
 			spin_unlock(&q->queue_lock);
 			rcu_read_unlock();
@@ -163,20 +171,23 @@ static bool ioc_delay_free(struct io_context *ioc)
  */
 void ioc_clear_queue(struct request_queue *q)
 {
-	spin_lock_irq(&q->queue_lock);
-	while (!list_empty(&q->icq_list)) {
-		struct io_cq *icq =
-			list_first_entry(&q->icq_list, struct io_cq, q_node);
+	LIST_HEAD(icq_list);
 
-		/*
-		 * Other context won't hold ioc lock to wait for queue_lock, see
-		 * details in ioc_release_fn().
-		 */
-		spin_lock(&icq->ioc->lock);
-		ioc_destroy_icq(icq);
-		spin_unlock(&icq->ioc->lock);
-	}
+	spin_lock_irq(&q->queue_lock);
+	list_splice_init(&q->icq_list, &icq_list);
 	spin_unlock_irq(&q->queue_lock);
+
+	rcu_read_lock();
+	while (!list_empty(&icq_list)) {
+		struct io_cq *icq =
+			list_entry(icq_list.next, struct io_cq, q_node);
+
+		spin_lock_irq(&icq->ioc->lock);
+		if (!(icq->flags & ICQ_DESTROYED))
+			ioc_destroy_icq(icq);
+		spin_unlock_irq(&icq->ioc->lock);
+	}
+	rcu_read_unlock();
 }
 #else /* CONFIG_BLK_ICQ */
 static inline void ioc_exit_icqs(struct io_context *ioc)
@@ -286,7 +297,7 @@ out:
 }
 EXPORT_SYMBOL_GPL(set_task_ioprio);
 
-int __copy_io(u64 clone_flags, struct task_struct *tsk)
+int __copy_io(unsigned long clone_flags, struct task_struct *tsk)
 {
 	struct io_context *ioc = current->io_context;
 
@@ -308,23 +319,24 @@ int __copy_io(u64 clone_flags, struct task_struct *tsk)
 
 #ifdef CONFIG_BLK_ICQ
 /**
- * ioc_lookup_icq - lookup io_cq from ioc in io issue path
+ * ioc_lookup_icq - lookup io_cq from ioc
  * @q: the associated request_queue
  *
  * Look up io_cq associated with @ioc - @q pair from @ioc.  Must be called
- * from io issue path, either return NULL if current issue io to @q for the
- * first time, or return a valid icq.
+ * with @q->queue_lock held.
  */
 struct io_cq *ioc_lookup_icq(struct request_queue *q)
 {
 	struct io_context *ioc = current->io_context;
 	struct io_cq *icq;
 
+	lockdep_assert_held(&q->queue_lock);
+
 	/*
 	 * icq's are indexed from @ioc using radix tree and hint pointer,
-	 * both of which are protected with RCU, io issue path ensures that
-	 * both request_queue and current task are valid, the found icq
-	 * is guaranteed to be valid until the io is done.
+	 * both of which are protected with RCU.  All removals are done
+	 * holding both q and ioc locks, and we're holding q lock - if we
+	 * find a icq which points to us, it's guaranteed to be valid.
 	 */
 	rcu_read_lock();
 	icq = rcu_dereference(ioc->icq_hint);
@@ -418,7 +430,10 @@ struct io_cq *ioc_find_get_icq(struct request_queue *q)
 		task_unlock(current);
 	} else {
 		get_io_context(ioc);
+
+		spin_lock_irq(&q->queue_lock);
 		icq = ioc_lookup_icq(q);
+		spin_unlock_irq(&q->queue_lock);
 	}
 
 	if (!icq) {

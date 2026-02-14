@@ -27,16 +27,16 @@ NO=1
 
 xpass() { # pass test command
   echo "test case $NO ($*)... "
-  if ! ($@ && printf "\t\t[OK]\n"); then
-     printf "\t\t[NG]\n"; NG=$((NG + 1))
+  if ! ($@ && echo "\t\t[OK]"); then
+     echo "\t\t[NG]"; NG=$((NG + 1))
   fi
   NO=$((NO + 1))
 }
 
 xfail() { # fail test command
   echo "test case $NO ($*)... "
-  if ! (! $@ && printf "\t\t[OK]\n"); then
-     printf "\t\t[NG]\n"; NG=$((NG + 1))
+  if ! (! $@ && echo "\t\t[OK]"); then
+     echo "\t\t[NG]"; NG=$((NG + 1))
   fi
   NO=$((NO + 1))
 }
@@ -48,13 +48,13 @@ echo "Delete command should success without bootconfig"
 xpass $BOOTCONF -d $INITRD
 
 dd if=/dev/zero of=$INITRD bs=4096 count=1
-printf "key = value;" > $TEMPCONF
-bconf_size=$(wc -c < $TEMPCONF)
-initrd_size=$(wc -c < $INITRD)
+echo "key = value;" > $TEMPCONF
+bconf_size=$(stat -c %s $TEMPCONF)
+initrd_size=$(stat -c %s $INITRD)
 
 echo "Apply command test"
 xpass $BOOTCONF -a $TEMPCONF $INITRD
-new_size=$(wc -c < $INITRD)
+new_size=$(stat -c %s $INITRD)
 
 echo "Show command test"
 xpass $BOOTCONF $INITRD
@@ -69,13 +69,13 @@ echo "Apply command repeat test"
 xpass $BOOTCONF -a $TEMPCONF $INITRD
 
 echo "File size check"
-xpass test $new_size -eq $(wc -c < $INITRD)
+xpass test $new_size -eq $(stat -c %s $INITRD)
 
 echo "Delete command check"
 xpass $BOOTCONF -d $INITRD
 
 echo "File size check"
-new_size=$(wc -c < $INITRD)
+new_size=$(stat -c %s $INITRD)
 xpass test $new_size -eq $initrd_size
 
 echo "No error messge while applying"
@@ -97,20 +97,19 @@ BEGIN {
 ' > $TEMPCONF
 xpass $BOOTCONF -a $TEMPCONF $INITRD
 
-printf "badnode\n" >> $TEMPCONF
+echo "badnode" >> $TEMPCONF
 xfail $BOOTCONF -a $TEMPCONF $INITRD
 
 echo "Max filesize check"
 
 # Max size is 32767 (including terminal byte)
-printf "data = \"" > $TEMPCONF
+echo -n "data = \"" > $TEMPCONF
 dd if=/dev/urandom bs=768 count=32 | base64 -w0 >> $TEMPCONF
-printf "\"\n" >> $TEMPCONF
+echo "\"" >> $TEMPCONF
 xfail $BOOTCONF -a $TEMPCONF $INITRD
 
-dd if=$TEMPCONF of=$OUTFILE bs=1 count=32764
-cp $OUTFILE $TEMPCONF
-printf "\"\n" >> $TEMPCONF	# add 2 bytes + terminal ('\"\n\0')
+truncate -s 32764 $TEMPCONF
+echo "\"" >> $TEMPCONF	# add 2 bytes + terminal ('\"\n\0')
 xpass $BOOTCONF -a $TEMPCONF $INITRD
 
 echo "Adding same-key values"
@@ -140,7 +139,7 @@ xfail grep -q "baz" $OUTFILE
 xpass grep -q "qux" $OUTFILE
 
 echo "Double/single quotes test"
-printf "key = '\"string\"';" > $TEMPCONF
+echo "key = '\"string\"';" > $TEMPCONF
 $BOOTCONF -a $TEMPCONF $INITRD
 $BOOTCONF $INITRD > $TEMPCONF
 cat $TEMPCONF
@@ -168,8 +167,8 @@ echo > $INITRD
 
 xpass $BOOTCONF -a $TEMPCONF $INITRD
 $BOOTCONF $INITRD > $OUTFILE
-xfail grep -q 'val[[:space:]]' $OUTFILE
-xpass grep -q 'val2[[:space:]]' $OUTFILE
+xfail grep -q val[[:space:]] $OUTFILE
+xpass grep -q val2[[:space:]] $OUTFILE
 
 echo "=== expected failure cases ==="
 for i in samples/bad-* ; do
@@ -179,9 +178,6 @@ done
 echo "=== expected success cases ==="
 for i in samples/good-* ; do
   xpass $BOOTCONF -a $i $INITRD
-  x="samples/exp-"`basename $i`
-  $BOOTCONF $i > $TEMPCONF
-  xpass diff $x $TEMPCONF
 done
 
 

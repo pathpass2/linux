@@ -6,7 +6,6 @@
  *
  *  Author: Juri Lelli <j.lelli@sssup.it>
  */
-#include "sched.h"
 
 static inline int parent(int i)
 {
@@ -132,7 +131,7 @@ int cpudl_find(struct cpudl *cp, struct task_struct *p,
 			if (!dl_task_fits_capacity(p, cpu)) {
 				cpumask_clear_cpu(cpu, later_mask);
 
-				cap = arch_scale_cpu_capacity(cpu);
+				cap = capacity_orig_of(cpu);
 
 				if (cap > max_cap ||
 				    (cpu == task_cpu(p) && cap == max_cap)) {
@@ -166,13 +165,12 @@ int cpudl_find(struct cpudl *cp, struct task_struct *p,
  * cpudl_clear - remove a CPU from the cpudl max-heap
  * @cp: the cpudl max-heap context
  * @cpu: the target CPU
- * @online: the online state of the deadline runqueue
  *
  * Notes: assumes cpu_rq(cpu)->lock is locked
  *
  * Returns: (void)
  */
-void cpudl_clear(struct cpudl *cp, int cpu, bool online)
+void cpudl_clear(struct cpudl *cp, int cpu)
 {
 	int old_idx, new_cpu;
 	unsigned long flags;
@@ -185,7 +183,7 @@ void cpudl_clear(struct cpudl *cp, int cpu, bool online)
 	if (old_idx == IDX_INVALID) {
 		/*
 		 * Nothing to remove if old_idx was invalid.
-		 * This could happen if rq_online_dl or rq_offline_dl is
+		 * This could happen if a rq_offline_dl is
 		 * called for a CPU without -dl tasks running.
 		 */
 	} else {
@@ -196,12 +194,9 @@ void cpudl_clear(struct cpudl *cp, int cpu, bool online)
 		cp->elements[new_cpu].idx = old_idx;
 		cp->elements[cpu].idx = IDX_INVALID;
 		cpudl_heapify(cp, old_idx);
-	}
-	if (likely(online))
-		__cpumask_set_cpu(cpu, cp->free_cpus);
-	else
-		__cpumask_clear_cpu(cpu, cp->free_cpus);
 
+		cpumask_set_cpu(cpu, cp->free_cpus);
+	}
 	raw_spin_unlock_irqrestore(&cp->lock, flags);
 }
 
@@ -232,13 +227,33 @@ void cpudl_set(struct cpudl *cp, int cpu, u64 dl)
 		cp->elements[new_idx].cpu = cpu;
 		cp->elements[cpu].idx = new_idx;
 		cpudl_heapify_up(cp, new_idx);
-		__cpumask_clear_cpu(cpu, cp->free_cpus);
+		cpumask_clear_cpu(cpu, cp->free_cpus);
 	} else {
 		cp->elements[old_idx].dl = dl;
 		cpudl_heapify(cp, old_idx);
 	}
 
 	raw_spin_unlock_irqrestore(&cp->lock, flags);
+}
+
+/*
+ * cpudl_set_freecpu - Set the cpudl.free_cpus
+ * @cp: the cpudl max-heap context
+ * @cpu: rd attached CPU
+ */
+void cpudl_set_freecpu(struct cpudl *cp, int cpu)
+{
+	cpumask_set_cpu(cpu, cp->free_cpus);
+}
+
+/*
+ * cpudl_clear_freecpu - Clear the cpudl.free_cpus
+ * @cp: the cpudl max-heap context
+ * @cpu: rd attached CPU
+ */
+void cpudl_clear_freecpu(struct cpudl *cp, int cpu)
+{
+	cpumask_clear_cpu(cpu, cp->free_cpus);
 }
 
 /*

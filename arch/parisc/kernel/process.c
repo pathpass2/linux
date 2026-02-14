@@ -85,9 +85,6 @@ void machine_restart(char *cmd)
 #endif
 	/* set up a new led state on systems shipped with a LED State panel */
 	pdc_chassis_send_status(PDC_CHASSIS_DIRECT_SHUTDOWN);
-
-	/* prevent interrupts during reboot */
-	set_eiem(0);
 	
 	/* "Normal" system reset */
 	pdc_do_reset();
@@ -100,12 +97,18 @@ void machine_restart(char *cmd)
 
 }
 
+void (*chassis_power_off)(void);
+
 /*
  * This routine is called from sys_reboot to actually turn off the
  * machine 
  */
 void machine_power_off(void)
 {
+	/* If there is a registered power off handler, call it. */
+	if (chassis_power_off)
+		chassis_power_off();
+
 	/* Put the soft power button back under hardware control.
 	 * If the user had already pressed the power button, the
 	 * following call will immediately power off. */
@@ -119,18 +122,13 @@ void machine_power_off(void)
 	/* It seems we have no way to power the system off via
 	 * software. The user has to press the button himself. */
 
-	printk("Power off or press RETURN to reboot.\n");
+	printk(KERN_EMERG "System shut down completed.\n"
+	       "Please power this system off now.");
 
 	/* prevent soft lockup/stalled CPU messages for endless loop. */
 	rcu_sysrq_start();
 	lockup_detector_soft_poweroff();
-	while (1) {
-		/* reboot if user presses RETURN key */
-		if (pdc_iodc_getc() == 13) {
-			printk("Rebooting...\n");
-			machine_restart(NULL);
-		}
-	}
+	for (;;);
 }
 
 void (*pm_power_off)(void);
@@ -161,15 +159,15 @@ EXPORT_SYMBOL(running_on_qemu);
 /*
  * Called from the idle thread for the CPU which has been shutdown.
  */
-void __noreturn arch_cpu_idle_dead(void)
+void arch_cpu_idle_dead(void)
 {
 #ifdef CONFIG_HOTPLUG_CPU
 	idle_task_exit();
 
 	local_irq_disable();
 
-	/* Tell the core that this CPU is now safe to dispose of. */
-	cpuhp_ap_report_dead();
+	/* Tell __cpu_die() that this CPU is now safe to dispose of. */
+	(void)cpu_report_death();
 
 	/* Ensure that the cache lines are written out. */
 	flush_cache_all_local();
@@ -204,7 +202,7 @@ arch_initcall(parisc_idle_init);
 int
 copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
-	u64 clone_flags = args->flags;
+	unsigned long clone_flags = args->flags;
 	unsigned long usp = args->stack;
 	unsigned long tls = args->tls;
 	struct pt_regs *cregs = &(p->thread.regs);
@@ -280,4 +278,18 @@ __get_wchan(struct task_struct *p)
 			return ip;
 	} while (count++ < MAX_UNWIND_ENTRIES);
 	return 0;
+}
+
+static inline unsigned long brk_rnd(void)
+{
+	return (get_random_u32() & BRK_RND_MASK) << PAGE_SHIFT;
+}
+
+unsigned long arch_randomize_brk(struct mm_struct *mm)
+{
+	unsigned long ret = PAGE_ALIGN(mm->brk + brk_rnd());
+
+	if (ret < mm->brk)
+		return mm->brk;
+	return ret;
 }

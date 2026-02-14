@@ -14,33 +14,31 @@
 #include <asm/regdef.h>
 #include <asm/stackframe.h>
 #include <asm/thread_info.h>
-#include <asm/unwind_hints.h>
 
 	.text
 	.cfi_sections	.debug_frame
 	.align	5
-SYM_CODE_START(handle_syscall)
-	UNWIND_HINT_UNDEFINED
+SYM_FUNC_START(handle_syscall)
 	csrrd		t0, PERCPU_BASE_KS
 	la.pcrel	t1, kernelsp
-	PTR_ADD		t1, t1, t0
+	add.d		t1, t1, t0
 	move		t2, sp
-	PTR_L		sp, t1, 0
+	ld.d		sp, t1, 0
 
-	PTR_ADDI	sp, sp, -PT_SIZE
+	addi.d		sp, sp, -PT_SIZE
 	cfi_st		t2, PT_R3
 	cfi_rel_offset	sp, PT_R3
-	LONG_S		zero, sp, PT_R0
+	st.d		zero, sp, PT_R0
 	csrrd		t2, LOONGARCH_CSR_PRMD
-	LONG_S		t2, sp, PT_PRMD
+	st.d		t2, sp, PT_PRMD
 	csrrd		t2, LOONGARCH_CSR_CRMD
-	LONG_S		t2, sp, PT_CRMD
+	st.d		t2, sp, PT_CRMD
 	csrrd		t2, LOONGARCH_CSR_EUEN
-	LONG_S		t2, sp, PT_EUEN
+	st.d		t2, sp, PT_EUEN
 	csrrd		t2, LOONGARCH_CSR_ECFG
-	LONG_S		t2, sp, PT_ECFG
+	st.d		t2, sp, PT_ECFG
 	csrrd		t2, LOONGARCH_CSR_ESTAT
-	LONG_S		t2, sp, PT_ESTAT
+	st.d		t2, sp, PT_ESTAT
 	cfi_st		ra, PT_R1
 	cfi_st		a0, PT_R4
 	cfi_st		a1, PT_R5
@@ -51,7 +49,7 @@ SYM_CODE_START(handle_syscall)
 	cfi_st		a6, PT_R10
 	cfi_st		a7, PT_R11
 	csrrd		ra, LOONGARCH_CSR_ERA
-	LONG_S		ra, sp, PT_ERA
+	st.d		ra, sp, PT_ERA
 	cfi_rel_offset	ra, PT_ERA
 
 	cfi_st		tp, PT_R2
@@ -59,43 +57,34 @@ SYM_CODE_START(handle_syscall)
 	cfi_st		fp, PT_R22
 
 	SAVE_STATIC
-	UNWIND_HINT_REGS
-
-#ifdef CONFIG_KGDB
-	li.w		t1, CSR_CRMD_WE
-	csrxchg		t1, t1, LOONGARCH_CSR_CRMD
-#endif
 
 	move		u0, t0
-	LONG_LI		tp, ~_THREAD_MASK
+	li.d		tp, ~_THREAD_MASK
 	and		tp, tp, sp
 
 	move		a0, sp
 	bl		do_syscall
 
-	STACKLEAK_ERASE
 	RESTORE_ALL_AND_RET
-SYM_CODE_END(handle_syscall)
+SYM_FUNC_END(handle_syscall)
 _ASM_NOKPROBE(handle_syscall)
 
-SYM_CODE_START(ret_from_fork_asm)
-	UNWIND_HINT_REGS
-	move		a1, sp
-	bl 		ret_from_fork
-	STACKLEAK_ERASE
+SYM_CODE_START(ret_from_fork)
+	bl		schedule_tail		# a0 = struct task_struct *prev
+	move		a0, sp
+	bl 		syscall_exit_to_user_mode
 	RESTORE_STATIC
 	RESTORE_SOME
 	RESTORE_SP_AND_RET
-SYM_CODE_END(ret_from_fork_asm)
+SYM_CODE_END(ret_from_fork)
 
-SYM_CODE_START(ret_from_kernel_thread_asm)
-	UNWIND_HINT_REGS
-	move		a1, sp
-	move		a2, s0
-	move		a3, s1
-	bl		ret_from_kernel_thread
-	STACKLEAK_ERASE
+SYM_CODE_START(ret_from_kernel_thread)
+	bl		schedule_tail		# a0 = struct task_struct *prev
+	move		a0, s1
+	jirl		ra, s0, 0
+	move		a0, sp
+	bl		syscall_exit_to_user_mode
 	RESTORE_STATIC
 	RESTORE_SOME
 	RESTORE_SP_AND_RET
-SYM_CODE_END(ret_from_kernel_thread_asm)
+SYM_CODE_END(ret_from_kernel_thread)

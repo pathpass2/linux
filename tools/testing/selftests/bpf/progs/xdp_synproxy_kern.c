@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: LGPL-2.1 OR BSD-2-Clause
 /* Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved. */
 
-#define BPF_NO_KFUNC_PROTOTYPES
 #include "vmlinux.h"
 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include <asm/errno.h>
-
-#include "bpf_compiler.h"
 
 #define TC_ACT_OK 0
 #define TC_ACT_SHOT 2
@@ -21,6 +18,7 @@
 
 #define tcp_flag_word(tp) (((union tcp_word_hdr *)(tp))->words[3])
 
+#define IP_DF 0x4000
 #define IP_MF 0x2000
 #define IP_OFFSET 0x1fff
 
@@ -54,8 +52,6 @@
 #define DEFAULT_WSCALE 7
 #define DEFAULT_TTL 64
 #define MAX_ALLOWED_PORTS 8
-
-#define MAX_PACKET_OFF 0xffff
 
 #define swap(a, b) \
 	do { typeof(a) __tmp = (a); (a) = (b); (b) = __tmp; } while (0)
@@ -153,11 +149,11 @@ static __always_inline __u16 csum_ipv6_magic(const struct in6_addr *saddr,
 	__u64 sum = csum;
 	int i;
 
-	__pragma_loop_unroll
+#pragma unroll
 	for (i = 0; i < 4; i++)
 		sum += (__u32)saddr->in6_u.u6_addr32[i];
 
-	__pragma_loop_unroll
+#pragma unroll
 	for (i = 0; i < 4; i++)
 		sum += (__u32)daddr->in6_u.u6_addr32[i];
 
@@ -181,82 +177,69 @@ static __always_inline __u32 tcp_ns_to_ts(__u64 ns)
 	return ns / (NSEC_PER_SEC / TCP_TS_HZ);
 }
 
-static __always_inline __u32 tcp_clock_ms(void)
+static __always_inline __u32 tcp_time_stamp_raw(void)
 {
 	return tcp_ns_to_ts(tcp_clock_ns());
 }
 
 struct tcpopt_context {
-	void *data;
+	__u8 *ptr;
+	__u8 *end;
 	void *data_end;
 	__be32 *tsecr;
 	__u8 wscale;
 	bool option_timestamp;
 	bool option_sack;
-	__u32 off;
 };
-
-static __always_inline u8 *next(struct tcpopt_context *ctx, __u32 sz)
-{
-	__u64 off = ctx->off;
-	__u8 *data;
-
-	/* Verifier forbids access to packet when offset exceeds MAX_PACKET_OFF */
-	if (off > MAX_PACKET_OFF - sz)
-		return NULL;
-
-	data = ctx->data + off;
-	barrier_var(data);
-	if (data + sz >= ctx->data_end)
-		return NULL;
-
-	ctx->off += sz;
-	return data;
-}
 
 static int tscookie_tcpopt_parse(struct tcpopt_context *ctx)
 {
-	__u8 *opcode, *opsize, *wscale, *tsecr;
-	__u32 off = ctx->off;
+	__u8 opcode, opsize;
 
-	opcode = next(ctx, 1);
-	if (!opcode)
+	if (ctx->ptr >= ctx->end)
+		return 1;
+	if (ctx->ptr >= ctx->data_end)
 		return 1;
 
-	if (*opcode == TCPOPT_EOL)
+	opcode = ctx->ptr[0];
+
+	if (opcode == TCPOPT_EOL)
 		return 1;
-	if (*opcode == TCPOPT_NOP)
+	if (opcode == TCPOPT_NOP) {
+		++ctx->ptr;
 		return 0;
+	}
 
-	opsize = next(ctx, 1);
-	if (!opsize || *opsize < 2)
+	if (ctx->ptr + 1 >= ctx->end)
+		return 1;
+	if (ctx->ptr + 1 >= ctx->data_end)
+		return 1;
+	opsize = ctx->ptr[1];
+	if (opsize < 2)
 		return 1;
 
-	switch (*opcode) {
+	if (ctx->ptr + opsize > ctx->end)
+		return 1;
+
+	switch (opcode) {
 	case TCPOPT_WINDOW:
-		wscale = next(ctx, 1);
-		if (!wscale)
-			return 1;
-		if (*opsize == TCPOLEN_WINDOW)
-			ctx->wscale = *wscale < TCP_MAX_WSCALE ? *wscale : TCP_MAX_WSCALE;
+		if (opsize == TCPOLEN_WINDOW && ctx->ptr + TCPOLEN_WINDOW <= ctx->data_end)
+			ctx->wscale = ctx->ptr[2] < TCP_MAX_WSCALE ? ctx->ptr[2] : TCP_MAX_WSCALE;
 		break;
 	case TCPOPT_TIMESTAMP:
-		tsecr = next(ctx, 4);
-		if (!tsecr)
-			return 1;
-		if (*opsize == TCPOLEN_TIMESTAMP) {
+		if (opsize == TCPOLEN_TIMESTAMP && ctx->ptr + TCPOLEN_TIMESTAMP <= ctx->data_end) {
 			ctx->option_timestamp = true;
 			/* Client's tsval becomes our tsecr. */
-			*ctx->tsecr = get_unaligned((__be32 *)tsecr);
+			*ctx->tsecr = get_unaligned((__be32 *)(ctx->ptr + 2));
 		}
 		break;
 	case TCPOPT_SACK_PERM:
-		if (*opsize == TCPOLEN_SACK_PERM)
+		if (opsize == TCPOLEN_SACK_PERM)
 			ctx->option_sack = true;
 		break;
 	}
 
-	ctx->off = off + *opsize;
+	ctx->ptr += opsize;
 
 	return 0;
 }
@@ -273,21 +256,16 @@ static int tscookie_tcpopt_parse_batch(__u32 index, void *context)
 
 static __always_inline bool tscookie_init(struct tcphdr *tcp_header,
 					  __u16 tcp_len, __be32 *tsval,
-					  __be32 *tsecr, void *data, void *data_end)
+					  __be32 *tsecr, void *data_end)
 {
 	struct tcpopt_context loop_ctx = {
-		.data = data,
+		.ptr = (__u8 *)(tcp_header + 1),
+		.end = (__u8 *)tcp_header + tcp_len,
 		.data_end = data_end,
 		.tsecr = tsecr,
 		.wscale = TS_OPT_WSCALE_MASK,
 		.option_timestamp = false,
 		.option_sack = false,
-		/* Note: currently verifier would track .off as unbound scalar.
-		 *       In case if verifier would at some point get smarter and
-		 *       compute bounded value for this var, beware that it might
-		 *       hinder bpf_loop() convergence validation.
-		 */
-		.off = (__u8 *)(tcp_header + 1) - (__u8 *)data,
 	};
 	u32 cookie;
 
@@ -296,7 +274,7 @@ static __always_inline bool tscookie_init(struct tcphdr *tcp_header,
 	if (!loop_ctx.option_timestamp)
 		return false;
 
-	cookie = tcp_clock_ms() & ~TSMASK;
+	cookie = tcp_time_stamp_raw() & ~TSMASK;
 	cookie |= loop_ctx.wscale & TS_OPT_WSCALE_MASK;
 	if (loop_ctx.option_sack)
 		cookie |= TS_OPT_SACK;
@@ -441,7 +419,7 @@ static __always_inline int tcp_lookup(void *ctx, struct header_pointers *hdr, bo
 		/* TCP doesn't normally use fragments, and XDP can't reassemble
 		 * them.
 		 */
-		if ((hdr->ipv4->frag_off & bpf_htons(IP_MF | IP_OFFSET)) != 0)
+		if ((hdr->ipv4->frag_off & bpf_htons(IP_DF | IP_MF | IP_OFFSET)) != bpf_htons(IP_DF))
 			return XDP_DROP;
 
 		tup.ipv4.saddr = hdr->ipv4->saddr;
@@ -469,13 +447,13 @@ static __always_inline int tcp_lookup(void *ctx, struct header_pointers *hdr, bo
 		unsigned long status = ct->status;
 
 		bpf_ct_release(ct);
-		if (status & IPS_CONFIRMED)
+		if (status & IPS_CONFIRMED_BIT)
 			return XDP_PASS;
 	} else if (ct_lookup_opts.error != -ENOENT) {
 		return XDP_ABORTED;
 	}
 
-	/* error == -ENOENT || !(status & IPS_CONFIRMED) */
+	/* error == -ENOENT || !(status & IPS_CONFIRMED_BIT) */
 	return XDP_TX;
 }
 
@@ -657,7 +635,7 @@ static __always_inline int syncookie_handle_syn(struct header_pointers *hdr,
 	cookie = (__u32)value;
 
 	if (tscookie_init((void *)hdr->tcp, hdr->tcp_len,
-			  &tsopt_buf[0], &tsopt_buf[1], data, data_end))
+			  &tsopt_buf[0], &tsopt_buf[1], data_end))
 		tsopt = tsopt_buf;
 
 	/* Check that there is enough space for a SYNACK. It also covers
